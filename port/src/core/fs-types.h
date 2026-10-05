@@ -1,0 +1,105 @@
+/*---[ fs-types.h ]------------------------------------------------------
+ * Portable data types shared by the core, the UI and every platform
+ * backend.  This header must never pull in a platform or GTK header.
+ *--------------------------------------------------------------------*/
+#ifndef FS_TYPES_H
+#define FS_TYPES_H
+
+#include <glib.h>
+#include <glib-object.h>   /* GType */
+
+G_BEGIN_DECLS
+
+/* Firewall state as shown on the Status page.  Mirrors the original
+ * FirewallStatus enum in statusview.h. */
+typedef enum
+{
+	FS_FW_NONE,
+	FS_FW_STOPPED,
+	FS_FW_RUNNING,
+	FS_FW_LOCKED,
+	FS_FW_HIT
+} FsFirewallState;
+
+/* One network interface.  Replaces the GtkListStore that util.c used to
+ * build for the device choosers. */
+typedef struct
+{
+	gchar  *name;
+	gchar  *ip;
+	gchar  *netmask;
+	gboolean nat_capable;
+} FsInterface;
+
+void fs_interface_clear (FsInterface *iface);
+void fs_interface_free  (FsInterface *iface);
+
+/* A single logged event ("hit").  Same shape as the original Hit struct. */
+typedef struct
+{
+	gchar *time;
+	gchar *direction;
+	gchar *in;
+	gchar *out;
+	gchar *port;
+	gchar *source;
+	gchar *destination;
+	gchar *length;
+	gchar *tos;
+	gchar *protocol;
+	gchar *service;
+} FsHit;
+
+FsHit *fs_hit_new  (void);
+FsHit *fs_hit_copy (const FsHit *h);
+void   fs_hit_free (FsHit *h);
+
+/* Column indices for the Events view.  Same order as the original
+ * HITCOL_* enum. */
+typedef enum
+{
+	FS_HITCOL_TIME,
+	FS_HITCOL_DIRECTION,
+	FS_HITCOL_IN,
+	FS_HITCOL_OUT,
+	FS_HITCOL_PORT,
+	FS_HITCOL_SOURCE,
+	FS_HITCOL_DESTINATION,
+	FS_HITCOL_LENGTH,
+	FS_HITCOL_TOS,
+	FS_HITCOL_PROTOCOL,
+	FS_HITCOL_SERVICE,
+	FS_HITCOL_COLOR,
+	FS_NUM_HITCOLUMNS
+} FsHitColumn;
+
+/* Generic list/tree column description, replaces View_def in gui.h. */
+typedef struct
+{
+	const gchar *label;
+	GType        type;
+	gboolean     visible;
+	const gchar *pref_key;   /* remembers per-column visibility */
+} FsColumnDef;
+
+typedef struct
+{
+	const gchar         *title;
+	gint                 num_columns;
+	const FsColumnDef   *columns;
+} FsViewDef;
+
+/* Rule kinds understood by the policy editor. */
+typedef enum
+{
+	FS_RULETYPE_INBOUND_ALLOW_FROM,
+	FS_RULETYPE_INBOUND_ALLOW_SERVICE,
+	FS_RULETYPE_INBOUND_ALLOW_SERVICE_FROM,
+	FS_RULETYPE_OUTBOUND_ALLOW_TO,
+	FS_RULETYPE_OUTBOUND_ALLOW_SERVICE,
+	FS_RULETYPE_OUTBOUND_ALLOW_SERVICE_FROM
+} FsRuleType;
+
+G_END_DECLS
+
+#endif /* FS_TYPES_H */

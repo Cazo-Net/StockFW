@@ -1,0 +1,28 @@
+# Firestarter core tests
+
+Checks the platform-independent logic in `src/core/`: rule CSV
+round-tripping, host/port validation, the service table, and iptables
+script generation.  Pure GLib, so it runs headless on either platform.
+
+```sh
+cd port
+./tests/test-core.sh
+```
+
+The script compiles the suite against the core sources directly rather
+than through CMake, so a failing test points at the logic rather than a
+link problem. Set `MSYS2_PATH` if your toolchain is not on `/ucrt64/bin`.
+
+Rules are written under a temporary `FIRESTARTER_RULES_DIR`, so running
+the tests never touches a real `/etc/firestarter`.
+
+## Coverage
+
+| Suite | What it pins down |
+|---|---|
+| ports | single ports, ranges, hex, out-of-range, inverted ranges, empty |
+| hosts | dotted quads, hostnames, wildcards, bad octets, short forms |
+| rule CSV | every rule kind survives serialise/parse; over-long rows rejected |
+| policy | save/load round trip, defaults, add and remove by content |
+| services | port to name lookup, back-door ports, ICMP types, range expansion |
+| scripts | inbound/outbound rules, NAT, permissive vs restrictive defaults |

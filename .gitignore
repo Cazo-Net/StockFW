@@ -1,0 +1,69 @@
+# Build directories
+build/
+port/build/
+port/installer/nsis/stage/
+port/installer/nsis/*.exe
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# Compiled objects
+*.o
+*.obj
+*.exe
+*.dll
+*.lib
+*.a
+*.so
+*.dylib
+
+# Test outputs
+test-results/
+*.gcno
+*.gcda
+*.gcov
+
+# Installer outputs
+*.msi
+*.exe
+*.zip
+*.tar.gz
+
+# Local config
+local.conf
+*.local
+
+# MSYS2/MinGW
+.mingw/
+.msys/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node (if any)
+node_modules/
+npm-debug.log
+yarn-error.log
