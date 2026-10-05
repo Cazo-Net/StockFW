@@ -71,8 +71,23 @@ Section "Main Application" SecMain
     ; Main executable
     File "${PROJECT_DIR}\installer\nsis\stage\StockFW.exe"
 
-    ; GTK3 Runtime - copy entire gtk-runtime contents to install dir
-    File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\*"
+    ; GTK3 DLLs MUST be in the SAME folder as StockFW.exe
+    ; Windows loads DLLs from the exe's own directory first
+    SetOutPath "$INSTDIR"
+    File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\bin\*.dll"
+
+    ; GTK3 support directories (modules, themes, icons, locales)
+    SetOutPath "$INSTDIR\lib"
+    File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\lib\*"
+
+    SetOutPath "$INSTDIR\share"
+    File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\share\*"
+
+    SetOutPath "$INSTDIR\etc"
+    File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\etc\*"
+
+    ; Back to install root for remaining files
+    SetOutPath "$INSTDIR"
 
     ; Elevated launchers
     File "${PROJECT_DIR}\installer\nsis\stage\StockFW-elevated.vbs"
@@ -177,8 +192,20 @@ Section Uninstall
     Delete "$INSTDIR\README.md"
     Delete "$INSTDIR\CHANGELOG.md"
 
-    ; Remove GTK runtime
+    ; Remove ALL DLLs in install root
+    Delete "$INSTDIR\*.dll"
+
+    ; Remove GTK support directories
+    RMDir /r "$INSTDIR\lib"
+    RMDir /r "$INSTDIR\share"
+    RMDir /r "$INSTDIR\etc"
     RMDir /r "$INSTDIR\gtk-runtime"
+    RMDir /r "$INSTDIR\gtk-3.0"
+    RMDir /r "$INSTDIR\gdk-pixbuf-2.0"
+    RMDir /r "$INSTDIR\pango"
+    RMDir /r "$INSTDIR\themes"
+    RMDir /r "$INSTDIR\icons"
+    RMDir /r "$INSTDIR\locale"
 
     ; Remove shortcuts
     Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
