@@ -71,11 +71,8 @@ Section "Main Application" SecMain
     ; Main executable
     File "${PROJECT_DIR}\installer\nsis\stage\StockFW.exe"
 
-    ; GTK3 Runtime Dependencies - copy DLLs directly to install dir (same as .exe)
-    File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\bin\*"
-    File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\lib\*"
-    File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\share\*"
-    File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\etc\*"
+    ; GTK3 Runtime - copy entire gtk-runtime contents to install dir
+    File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\*"
 
     ; Elevated launchers
     File "${PROJECT_DIR}\installer\nsis\stage\StockFW-elevated.vbs"
