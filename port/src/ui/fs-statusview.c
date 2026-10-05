@@ -10,6 +10,9 @@
 #include "ui/fs-dialogs.h"
 #include "core/fs-backend.h"
 #include "core/fs-i18n.h"
+#include "stockfw-logo-128.h"
+
+#include <gdk-pixbuf/gdk-pixbuf.h>
 
 static FsFirewallState current_state = FS_FW_NONE;
 
@@ -20,10 +23,34 @@ static GtkWidget *button_start;
 static GtkWidget *button_stop;
 static GtkWidget *in_value;
 static GtkWidget *out_value;
+static GtkWidget *logo_image;
 
 /* Per-profile switches, used only when the backend supports them. */
 static GtkWidget *profile_switches[FS_PROFILE_COUNT];
 static GtkWidget *profiles_frame;
+
+/* Load the embedded StockFW logo. */
+static GdkPixbuf *
+load_status_logo (void)
+{
+	GError *error = NULL;
+	GdkPixbufLoader *loader;
+	GdkPixbuf *pixbuf = NULL;
+
+	loader = gdk_pixbuf_loader_new ();
+	if (gdk_pixbuf_loader_write (loader, stockfw_logo_128_png,
+	                             stockfw_logo_128_png_len, &error)) {
+		gdk_pixbuf_loader_close (loader, NULL);
+		pixbuf = gdk_pixbuf_loader_get_pixbuf (loader);
+		if (pixbuf)
+			g_object_ref (pixbuf);
+	} else {
+		g_clear_error (&error);
+	}
+	g_object_unref (loader);
+
+	return pixbuf;
+}
 
 /* [ state_to_text ] */
 static const gchar *
@@ -213,6 +240,45 @@ fs_statusview_page (void)
 
 	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
 	gtk_container_set_border_width (GTK_CONTAINER (page), 12);
+
+	/* StockFW Logo Banner */
+	{
+		GtkWidget *logo_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+		GdkPixbuf *logo = load_status_logo ();
+
+		if (logo != NULL) {
+			logo_image = gtk_image_new_from_pixbuf (logo);
+			g_object_unref (logo);
+			gtk_box_pack_start (GTK_BOX (logo_box), logo_image,
+			                    FALSE, FALSE, 0);
+		}
+
+		/* App title next to logo */
+		{
+			GtkWidget *title_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+			GtkWidget *title = gtk_label_new ("StockFW");
+			GtkWidget *subtitle = gtk_label_new (_("Smart Firewall Configuration Tool"));
+
+			gtk_label_set_xalign (GTK_LABEL (title), 0.0);
+			gtk_label_set_xalign (GTK_LABEL (subtitle), 0.0);
+
+			/* Style the title */
+			{
+				GtkStyleContext *ctx = gtk_widget_get_style_context (title);
+				gtk_style_context_add_class (ctx, "title");
+			}
+			{
+				GtkStyleContext *ctx = gtk_widget_get_style_context (subtitle);
+				gtk_style_context_add_class (ctx, "dim-label");
+			}
+
+			gtk_box_pack_start (GTK_BOX (title_box), title, FALSE, FALSE, 0);
+			gtk_box_pack_start (GTK_BOX (title_box), subtitle, FALSE, FALSE, 0);
+			gtk_box_pack_start (GTK_BOX (logo_box), title_box, TRUE, TRUE, 0);
+		}
+
+		gtk_box_pack_start (GTK_BOX (page), logo_box, FALSE, FALSE, 0);
+	}
 
 	/* State banner */
 	box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
