@@ -25,62 +25,17 @@ mkdir -p "$STAGE_DIR/gtk-runtime/etc"
 echo "[1/7] Copying main executable..."
 cp "$BUILD_DIR/StockFW.exe" "$STAGE_DIR/StockFW.exe"
 
-# 2. Copy GTK3 runtime dependencies
-echo "[2/7] Copying GTK3 runtime..."
+# 2. Copy GTK3 runtime dependencies - copy ALL DLLs (no whitelist)
+echo "[2/7] Copying GTK3 runtime (ALL DLLs)..."
 
 # Find and copy required DLLs from MSYS2
 MSYS_ROOT="/c/msys64/ucrt64"
 
-# Core GTK3 DLLs
-GTK_DLLS=(
-    "libgtk-3-0.dll"
-    "libgdk-3-0.dll"
-    "libgdk_pixbuf-2.0-0.dll"
-    "libpango-1.0-0.dll"
-    "libpangocairo-1.0-0.dll"
-    "libpangowin32-1.0-0.dll"
-    "libcairo-gobject-2.dll"
-    "libcairo-2.dll"
-    "libharfbuzz-0.dll"
-    "libatk-1.0-0.dll"
-    "libgobject-2.0-0.dll"
-    "libglib-2.0-0.dll"
-    "libgio-2.0-0.dll"
-    "libgmodule-2.0-0.dll"
-    "libintl-8.dll"
-    "libiconv-2.dll"
-    "libpixman-1-0.dll"
-    "libpng16-16.dll"
-    "libfreetype-6.dll"
-    "libfontconfig-1.dll"
-    "libbz2-1.dll"
-    "liblzma-5.dll"
-    "libzstd.dll"
-    "libgraphite2.dll"
-    "libfribidi-0.dll"
-    "libwebp-7.dll"
-    "libjpeg-8.dll"
-    "libtiff-6.dll"
-    "libwebpdemux-2.dll"
-    "libwebpmux-3.dll"
-    "libdatrie-1.dll"
-    "libthai-0.dll"
-    "libepoxy-0.dll"
-    "libgcc_s_seh-1.dll"
-    "libstdc++-6.dll"
-    "libwinpthread-1.dll"
-    "libffi-8.dll"
-    "zlib1.dll"
-    "libpcre2-8-0.dll"
-    "libbrotlidec.dll"
-    "libbrotlicommon.dll"
-)
-
-for dll in "${GTK_DLLS[@]}"; do
-    if [ -f "$MSYS_ROOT/bin/$dll" ]; then
-        cp "$MSYS_ROOT/bin/$dll" "$STAGE_DIR/gtk-runtime/bin/"
-    fi
-done
+# Copy ALL DLLs from MSYS2 ucrt64/bin
+# This ensures nothing is missing - Windows only needs DLLs that are
+# actually imported, extra DLLs are harmless
+cp "$MSYS_ROOT"/bin/*.dll "$STAGE_DIR/gtk-runtime/bin/" 2>/dev/null
+echo "  Copied $(ls "$STAGE_DIR/gtk-runtime/bin/"*.dll | wc -l) DLLs"
 
 # Copy GTK3 modules (immodules, printbackends, etc.)
 echo "[3/7] Copying GTK3 modules..."
