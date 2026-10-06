@@ -464,6 +464,40 @@ static void test_script_generation (void)
 	       "control script masquerades on the external interface");
 	g_free (script);
 
+	/* Host rules must use a real address match: iptables has no -H.
+	 * "to host" is a destination, "from host" a source. */
+	{
+		FsRule *to_host   = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
+		FsRule *from_host = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_FROM);
+		FsRule *deny_host = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
+
+		to_host->target   = g_strdup ("203.0.113.7");
+		from_host->target = g_strdup ("198.51.100.9");
+		deny_host->target = g_strdup ("192.0.2.66");
+
+		settings->restrictive_outbound = TRUE;
+		fs_policy_add (policy, to_host);
+		fs_policy_add (policy, from_host);
+		fs_policy_add (policy, deny_host);
+
+		script = fs_script_generate_outbound (policy, settings);
+
+		CHECK (strstr (script, "-H ") == NULL,
+		       "host rules never emit the invalid -H option");
+		CHECK (strstr (script, "-d 203.0.113.7 -j ACCEPT") != NULL,
+		       "allow-to host rule matches the destination");
+		CHECK (strstr (script, "-s 198.51.100.9 -j ACCEPT") != NULL,
+		       "allow-from host rule matches the source");
+		CHECK (strstr (script, "-d 192.0.2.66 -j DROP") != NULL,
+		       "deny-to host rule matches the destination");
+
+		g_free (script);
+		fs_rule_free (to_host);
+		fs_rule_free (from_host);
+		fs_rule_free (deny_host);
+		settings->restrictive_outbound = FALSE;
+	}
+
 	/* "Anyone" must not become a bogus -s match. */
 	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
 	rule->service = g_strdup ("DNS");

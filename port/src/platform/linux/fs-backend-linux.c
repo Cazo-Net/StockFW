@@ -78,6 +78,30 @@ run_command (gchar **argv)
 	return -1;
 }
 
+/* [ run_command_quiet ]
+ * Same as run_command but discards stderr too.  Used by the delete-until
+ * it-fails probes, where the final failure is the expected answer and
+ * would otherwise bury real errors in noise. */
+static gint
+run_command_quiet (gchar **argv)
+{
+	GError *error = NULL;
+	gint status = 0;
+
+	if (!g_spawn_sync (NULL, argv, NULL,
+	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+	                   G_SPAWN_STDERR_TO_DEV_NULL,
+	                   NULL, NULL, NULL, NULL, &status, &error)) {
+		g_clear_error (&error);
+		return -1;
+	}
+
+	if (WIFEXITED (status))
+		return WEXITSTATUS (status);
+
+	return -1;
+}
+
 /* [ chain_exists ]
  * Probes for our chain, which is how the backend reports state. */
 static gboolean
@@ -237,29 +261,67 @@ linux_start (GError **error)
 	return (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL);
 }
 
+/* [ detach_chain ]
+ * Removes every "-j <our_chain>" jump from a built-in chain.  iptables
+ * cannot delete all matches in one go, so delete in a loop until one
+ * fails (i.e. none are left). */
+static void
+detach_chain (const gchar *builtin, const gchar *our_chain)
+{
+	for (gint i = 0; i < 64; i++) {
+		gchar *args[] = { (gchar *) "iptables", (gchar *) "-w",
+		                  (gchar *) "-D", (gchar *) builtin,
+		                  (gchar *) "-j", (gchar *) our_chain, NULL };
+
+		if (run_command_quiet (args) != 0)
+			break;
+	}
+}
+
 static gboolean
 linux_stop (GError **error)
 {
-	/* Flush, then remove our chains.  -X fails while a chain is still
-	 * referenced, so the built-ins are detached first. */
-	gchar *flush[] = { (gchar *) "iptables", (gchar *) "-w",
-	                   (gchar *) "-F", NULL };
-	gchar *delete[] = { (gchar *) "iptables", (gchar *) "-w",
-	                    (gchar *) "-X", NULL };
-	gchar *nat_flush[] = { (gchar *) "iptables", (gchar *) "-w",
-	                       (gchar *) "-t", (gchar *) "nat",
-	                       (gchar *) "-F", NULL };
-	gchar *nat_delete[] = { (gchar *) "iptables", (gchar *) "-w",
-	                        (gchar *) "-t", (gchar *) "nat",
-	                        (gchar *) "-X", NULL };
+	/* Only our own chains are touched.  A blanket -F/-X on the filter
+	 * and nat tables would delete rules belonging to Docker, libvirt,
+	 * ufw and anything else sharing the machine. */
+	gchar *flush_in[]  = { (gchar *) "iptables", (gchar *) "-w",
+	                       (gchar *) "-F", (gchar *) "INBOUND", NULL };
+	gchar *flush_out[] = { (gchar *) "iptables", (gchar *) "-w",
+	                       (gchar *) "-F", (gchar *) "OUTBOUND", NULL };
+	gchar *del_in[]    = { (gchar *) "iptables", (gchar *) "-w",
+	                       (gchar *) "-X", (gchar *) "INBOUND", NULL };
+	gchar *del_out[]   = { (gchar *) "iptables", (gchar *) "-w",
+	                       (gchar *) "-X", (gchar *) "OUTBOUND", NULL };
 
 	if (!require_root (error))
 		return FALSE;
 
-	run_command (nat_flush);
-	run_command (flush);
-	run_command (nat_delete);
-	run_command (delete);
+	/* Detach first: -X refuses to remove a chain that is still the
+	 * target of a jump. */
+	detach_chain ("INPUT", "INBOUND");
+	detach_chain ("FORWARD", "INBOUND");
+	detach_chain ("OUTPUT", "OUTBOUND");
+
+	run_command (flush_in);
+	run_command (flush_out);
+	run_command (del_in);
+	run_command (del_out);
+
+	/* Undo our own NAT rules only.  Deleting a rule that is not there
+	 * fails harmlessly, and the loop drains duplicates from earlier
+	 * applies. */
+	if (current_settings != NULL && current_settings->ext_device != NULL) {
+		for (gint i = 0; i < 64; i++) {
+			gchar *args[] = { (gchar *) "iptables", (gchar *) "-w",
+			                  (gchar *) "-t", (gchar *) "nat",
+			                  (gchar *) "-D", (gchar *) "POSTROUTING",
+			                  (gchar *) "-o", current_settings->ext_device,
+			                  (gchar *) "-j", (gchar *) "MASQUERADE", NULL };
+
+			if (run_command_quiet (args) != 0)
+				break;
+		}
+	}
 
 	return TRUE;
 }
@@ -444,6 +506,26 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 		script = fs_script_generate_outbound (policy, current_settings);
 		ok = apply_lines (script);
 		g_free (script);
+	}
+
+	/* Hook the chains into the built-in ones.  Without this the
+	 * INBOUND/OUTBOUND chains are created and filled but never
+	 * consulted by the kernel, so nothing would actually be filtered
+	 * while the UI claimed the policy was applied. */
+	if (ok) {
+		gchar *hook_input[] = { (gchar *) "iptables", (gchar *) "-w",
+		                        (gchar *) "-A", (gchar *) "INPUT",
+		                        (gchar *) "-j", (gchar *) "INBOUND", NULL };
+		gchar *hook_output[] = { (gchar *) "iptables", (gchar *) "-w",
+		                         (gchar *) "-A", (gchar *) "OUTPUT",
+		                         (gchar *) "-j", (gchar *) "OUTBOUND", NULL };
+		gchar *hook_forward[] = { (gchar *) "iptables", (gchar *) "-w",
+		                          (gchar *) "-A", (gchar *) "FORWARD",
+		                          (gchar *) "-j", (gchar *) "INBOUND", NULL };
+
+		ok = (run_command (hook_input) == 0 &&
+		      run_command (hook_output) == 0 &&
+		      run_command (hook_forward) == 0);
 	}
 
 	/* NAT lives in the nat table, not the filter table, so the filter

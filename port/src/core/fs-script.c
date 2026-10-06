@@ -64,16 +64,19 @@ emit_service_rules (GString *out, const gchar *target, const gchar *port,
 }
 
 /* [ append_host_rules ]
- * Emits one "-H <host> -j <jump>" per line for host-based rules. */
+ * Emits one address match per line for host-based rules.  iptables has
+ * no -H: outbound "to host" rules match the destination (-d) and
+ * "from host" rules the source (-s). */
 static void
-append_host_rules (GString *out, GPtrArray *rules, const gchar *jump)
+append_host_rules (GString *out, GPtrArray *rules, const gchar *jump,
+                   const gchar *match)
 {
 	for (guint i = 0; i < rules->len; i++) {
 		FsRule *rule = g_ptr_array_index (rules, i);
 
 		if (rule->target != NULL && *rule->target != '\0')
-			g_string_append_printf (out, "$IPT -H %s -j %s\n",
-			                        rule->target, jump);
+			g_string_append_printf (out, "$IPT %s %s -j %s\n",
+			                        match, rule->target, jump);
 	}
 }
 
@@ -243,18 +246,19 @@ fs_script_generate_outbound (const FsPolicy *policy,
 		g_string_append (out, "# Deny rules are applied first\n");
 
 		append_host_rules (out,
-			policy->kinds[FS_RULE_OUTBOUND_DENY_TO], "DROP");
+			policy->kinds[FS_RULE_OUTBOUND_DENY_TO], "DROP", "-d");
 		append_host_rules (out,
-			policy->kinds[FS_RULE_OUTBOUND_DENY_FROM], "DROP");
+			policy->kinds[FS_RULE_OUTBOUND_DENY_FROM], "DROP", "-s");
 
 		append_service_rules (out,
 			policy->kinds[FS_RULE_OUTBOUND_DENY_SERVICE], "OUTBOUND", "DROP");
 	}
 
 	/* Allow rules. */
-	append_host_rules (out, policy->kinds[FS_RULE_OUTBOUND_ALLOW_TO], "ACCEPT");
+	append_host_rules (out, policy->kinds[FS_RULE_OUTBOUND_ALLOW_TO],
+	                   "ACCEPT", "-d");
 	append_host_rules (out, policy->kinds[FS_RULE_OUTBOUND_ALLOW_FROM],
-	                   "ACCEPT");
+	                   "ACCEPT", "-s");
 
 	append_service_rules (out,
 		policy->kinds[FS_RULE_OUTBOUND_ALLOW_SERVICE], "OUTBOUND", "ACCEPT");
