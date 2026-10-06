@@ -111,10 +111,16 @@ firewalled_get_state (void)
 	if (!any_on && !any_off)
 		return FS_FW_NONE;
 
-	/* Only when every profile is on do we call it plain "running";
-	 * a mix means partial coverage, reported as running with the
-	 * per-profile detail available from the backend later. */
-	return (any_on || any_off) ? FS_FW_RUNNING : FS_FW_STOPPED;
+	/* Only a state where *every* profile reports off counts as
+	 * stopped.  The previous test was (any_on || any_off), which is
+	 * true whenever a single profile answered at all -- so the state
+	 * read RUNNING even after a successful stop, and the Start button
+	 * stayed greyed out forever.  With all profiles off any_on is
+	 * FALSE, so this now reports STOPPED correctly.  A mix keeps
+	 * reporting RUNNING because at least one profile is still
+	 * filtering; the per-profile detail is available from the backend
+	 * for anyone who needs it. */
+	return any_on ? FS_FW_RUNNING : FS_FW_STOPPED;
 }
 
 /* [ set_profiles_enabled ]
