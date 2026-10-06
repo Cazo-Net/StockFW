@@ -56,6 +56,7 @@ build_menubar (void)
 	/* File */
 	menu = g_menu_new ();
 	section = g_menu_new ();
+	g_menu_append (section, _("_Preferences"), "app.preferences");
 	g_menu_append (section, _("_Quit"), "app.quit");
 	g_menu_append_section (menu, NULL, G_MENU_MODEL (section));
 	g_object_unref (section);
@@ -90,11 +91,19 @@ on_action_about (GSimpleAction *action, GVariant *parameter, gpointer data)
 	fs_dialogs_about (fsapp.window);
 }
 
+/* [ on_action_preferences ]
+ * "app.preferences" */
+static void
+on_action_preferences (GSimpleAction *action, GVariant *parameter, gpointer data)
+{
+	fs_dialogs_preferences (fsapp.window);
+}
+
 /* [ register_actions ] */
 static void
 register_actions (void)
 {
-	GSimpleAction *quit, *about;
+	GSimpleAction *quit, *about, *preferences;
 
 	quit = g_simple_action_new ("quit", NULL);
 	g_signal_connect (quit, "activate", G_CALLBACK (on_action_quit), NULL);
@@ -105,6 +114,11 @@ register_actions (void)
 	g_signal_connect (about, "activate", G_CALLBACK (on_action_about), NULL);
 	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (about));
 	g_object_unref (about);
+
+	preferences = g_simple_action_new ("preferences", NULL);
+	g_signal_connect (preferences, "activate", G_CALLBACK (on_action_preferences), NULL);
+	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (preferences));
+	g_object_unref (preferences);
 }
 
 /* [ add_page ]
