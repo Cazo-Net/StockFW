@@ -9,6 +9,7 @@
 
 #include "ui/fs-hitview.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-copilot.h"
 #include "core/fs-backend.h"
 #include "core/fs-service.h"
 #include "core/fs-prefs.h"
@@ -92,6 +93,9 @@ on_hit (const FsHit *hit, gpointer user_data)
 	extern FsCopilot *copilot;
 	if (copilot != NULL)
 		fs_copilot_feed_event (copilot, hit);
+
+	/* Update copilot stats counter. */
+	fs_copilot_note_event ();
 }
 
 gboolean
