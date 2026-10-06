@@ -511,7 +511,7 @@ fs_script_generate_control (const FsSettings *settings)
 
 	g_string_append (out,
 		"#!/bin/sh\n"
-		"# Firestarter control script (generated - do not edit)\n\n"
+		"# StockFW control script (generated - do not edit)\n\n"
 		"IPT=\"${IPT:-iptables}\"\n"
 		"export IPT\n\n"
 		"if [ \"$1\" = \"stop\" ]; then\n"

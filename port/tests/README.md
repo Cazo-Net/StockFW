@@ -1,4 +1,4 @@
-# Firestarter core tests
+# StockFW core tests
 
 Checks the platform-independent logic in `src/core/`: rule CSV
 round-tripping, host/port validation, the service table, and iptables

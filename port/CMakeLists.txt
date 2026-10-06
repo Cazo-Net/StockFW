@@ -21,7 +21,7 @@ elseif(UNIX AND NOT APPLE)
 else()
   message(FATAL_ERROR "Unsupported platform")
 endif()
-message(STATUS "Firestarter platform backend: ${FS_PLATFORM}")
+message(STATUS "StockFW platform backend: ${FS_PLATFORM}")
 
 # ------------------------------------------------------------------- deps
 find_package(PkgConfig REQUIRED)
@@ -93,8 +93,20 @@ if(WIN32)
     OUTPUT_NAME "StockFW"
     WIN32_EXECUTABLE TRUE
   )
-  # Embed icon + version info via resource compiler
-  target_sources(StockFW PRIVATE stockfw.rc)
+  # Embed icon + version info via resource compiler.
+  #
+  # The .rc is generated into the build tree rather than kept in the
+  # source tree, because windres resolves an ICON path against its own
+  # working directory: a checked-in stockfw.rc once carried an absolute
+  # path, so renaming the repository silently broke the exe's icon with
+  # "can't open icon file ... Invalid argument".  Substituting the icon
+  # location at configure time keeps it correct wherever the tree sits.
+  set(STOCKFW_ICON_ICO "${CMAKE_CURRENT_SOURCE_DIR}/installer/nsis/resources/stockfw_icon.ico")
+  if(NOT EXISTS "${STOCKFW_ICON_ICO}")
+    message(FATAL_ERROR "StockFW icon not found: ${STOCKFW_ICON_ICO}")
+  endif()
+  configure_file(stockfw.rc.in "${CMAKE_CURRENT_BINARY_DIR}/stockfw.rc" @ONLY)
+  target_sources(StockFW PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/stockfw.rc")
 endif()
 
 if(FS_BACKEND_LIBS)

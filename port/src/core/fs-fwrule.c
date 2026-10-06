@@ -171,16 +171,16 @@ fs_fwrule_default_name (FsRuleDirection direction, FsRuleAction action,
 	if (service != NULL && *service != '\0') {
 		if (address != NULL && *address != '\0' &&
 		    !fs_util_target_is_anyone (address))
-			return g_strdup_printf ("Firestarter: %s %s (%s, %s)",
+			return g_strdup_printf ("StockFW: %s %s (%s, %s)",
 			                        verb, service, dir, address);
 
-		return g_strdup_printf ("Firestarter: %s %s (%s)", verb, service, dir);
+		return g_strdup_printf ("StockFW: %s %s (%s)", verb, service, dir);
 	}
 
 	if (address != NULL && *address != '\0' && !fs_util_target_is_anyone (address))
-		return g_strdup_printf ("Firestarter: %s %s (%s)", verb, dir, address);
+		return g_strdup_printf ("StockFW: %s %s (%s)", verb, dir, address);
 
-	return g_strdup_printf ("Firestarter: %s %s", verb, dir);
+	return g_strdup_printf ("StockFW: %s %s", verb, dir);
 }
 
 /* [ address_or_null ]

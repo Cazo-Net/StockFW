@@ -163,7 +163,7 @@ set_profiles_enabled (GError **error, VARIANT_BOOL enabled)
 			             g_quark_from_static_string ("fs-backend-windows"),
 			             (int) hr,
 			             "Changing the firewall state requires "
-			             "administrator privileges. Restart Firestarter "
+			             "administrator privileges. Restart StockFW "
 			             "as an administrator and try again.");
 			ok = FALSE;
 			break;
@@ -230,7 +230,7 @@ netsh_safe_name (const gchar *name)
 {
 	GString *out = g_string_new (NULL);
 
-	for (const gchar *p = (name != NULL) ? name : "Firestarter rule";
+	for (const gchar *p = (name != NULL) ? name : "StockFW rule";
 	     *p != '\0'; p++) {
 		switch (*p) {
 		case ':':
@@ -387,7 +387,7 @@ netsh_add_rule (const FsFwRule *rule, GError **error)
 		                     0,
 		                     "Creating firewall rules requires "
 		                     "administrator privileges. Restart "
-		                     "Firestarter as an administrator and try "
+		                     "StockFW as an administrator and try "
 		                     "again.");
 	} else {
 		g_set_error (error,
@@ -524,7 +524,18 @@ firewalled_clear_rules (GError **error)
 			if (comma != NULL)
 				*comma = '\0';
 
-			if (g_str_has_prefix (line, "Firestarter "))
+			/* Names we created, in every spelling they have shipped
+			 * with.  netsh_safe_name rewrites the ':' of the display
+			 * name into '-', so ours arrive here as "StockFW- ...";
+			 * earlier builds produced "Firestarter- ...", and the
+			 * nameless fallback used "Firestarter ...".  Testing only
+			 * for the newest spelling would skip every rule a previous
+			 * version left behind, so each apply would pile another
+			 * copy of each rule on top. */
+			if (g_str_has_prefix (line, "StockFW-") ||
+			    g_str_has_prefix (line, "StockFW ") ||
+			    g_str_has_prefix (line, "Firestarter-") ||
+			    g_str_has_prefix (line, "Firestarter "))
 				g_hash_table_add (ours, g_strdup (line));
 		}
 
@@ -1407,7 +1418,7 @@ firewalled_set_profile_enabled (gint profile, gboolean enabled,
 		             g_quark_from_static_string ("fs-backend-windows"),
 		             (int) hr,
 		             "Changing the firewall state requires "
-		             "administrator privileges. Restart Firestarter "
+		             "administrator privileges. Restart StockFW "
 		             "as an administrator and try again.");
 		return FALSE;
 	}

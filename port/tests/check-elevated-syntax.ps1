@@ -3,8 +3,12 @@
 # them (running would raise a UAC prompt, which needs a human).
 #--------------------------------------------------------------------
 
+# Derived from this file's own location -- a hard-coded path here broke
+# when the repository was renamed.
+$portDir = Split-Path -Parent $PSScriptRoot
+
 $files = @(
-    'E:\PROJECTS\firestarter-1.0.3\firestarter-1.0.3\port\firestarter-elevated.ps1'
+    (Join-Path $portDir 'StockFW-elevated.ps1')
 )
 
 $failures = 0
@@ -33,8 +37,8 @@ foreach ($file in $files) {
 
 # The .vbs and .cmd are not parseable by PowerShell, so check them by
 # eye: confirm they reference the files that actually exist.
-$vbs = 'E:\PROJECTS\firestarter-1.0.3\firestarter-1.0.3\port\firestarter-elevated.vbs'
-$cmd = 'E:\PROJECTS\firestarter-1.0.3\firestarter-1.0.3\port\firestarter-elevated.cmd'
+$vbs = Join-Path $portDir 'StockFW-elevated.vbs'
+$cmd = Join-Path $portDir 'StockFW-elevated.cmd'
 
 foreach ($f in @($vbs, $cmd)) {
     if (Test-Path $f) {

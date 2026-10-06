@@ -9,9 +9,9 @@ elevation once and then run the same binary, which is what makes the
 
 | File | How | Console window |
 |---|---|---|
-| `firestarter-elevated.vbs` | double-click | none |
-| `firestarter-elevated.cmd` | double-click | flashes briefly |
-| `firestarter-elevated.ps1` | `powershell -File ...` | yes, shows errors |
+| `StockFW-elevated.vbs` | double-click | none |
+| `StockFW-elevated.cmd` | double-click | flashes briefly |
+| `StockFW-elevated.ps1` | `powershell -File ...` | yes, shows errors |
 
 The `.vbs` is the one to hand people. It runs the PowerShell wrapper
 hidden, so the only thing they see is the UAC prompt and then the app.
@@ -19,7 +19,7 @@ hidden, so the only thing they see is the UAC prompt and then the app.
 ## What it does
 
 `Start-Process -Verb RunAs` is the only way to trigger a UAC prompt from
-a script. The wrapper resolves `firestarter.exe` relative to itself, so
+a script. The wrapper resolves `StockFW.exe` relative to itself, so
 it can sit next to the binary or in the build directory.
 
 ## Verifying it works
@@ -27,7 +27,7 @@ it can sit next to the binary or in the build directory.
 Launch elevated, open the **Policy** tab, press **Apply policy**.
 
 Expected: a dialog saying the rules were applied, and five rules named
-`Firestarter ...` visible in
+`StockFW- ...` visible in
 *Windows Security → Firewall & network protection → Advanced settings →
 Inbound Rules*.
 

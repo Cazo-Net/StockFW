@@ -45,8 +45,8 @@ void
 fs_dialogs_about (GtkWidget *parent)
 {
 	static const gchar *authors[] = {
-		"Tomas Junnonen <majix@sci.fi> - Original Developer",
-		"Paul Drain <pd@cipherfunk.org> - Developer",
+		"Qusai Fethalrahman - Creator & Original Developer",
+		"H3xCore - Developer",
 		"StockFW Project - GTK3 Port, Windows Backend, Copilot",
 		NULL
 	};

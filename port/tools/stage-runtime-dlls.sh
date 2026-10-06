@@ -95,6 +95,33 @@ fi
 
 echo "stage-runtime-dlls: $copied DLL(s) -> $BUILD"
 
+# GLib does not call CreateProcess itself: it starts children through
+# gspawn-win64-helper.exe, resolved like any other program -- the
+# executable's own directory first, then PATH.  ldd can never report
+# this file, because StockFW does not import it (it is exec'd, not
+# linked), so the closure above deliberately does not cover it.
+#
+# Leaving it out does not stop the app from starting; it stops every
+# g_spawn from working, with "Failed to execute helper program (No such
+# file or directory)".  That is how an installed copy could show an
+# empty Events page and refuse to run netsh while looking perfectly
+# healthy, so a missing helper is an error here rather than a warning.
+helpers=0
+for helper in gspawn-win64-helper.exe gspawn-win64-helper-console.exe; do
+  if [ -f "$TOOL_BIN/$helper" ]; then
+    cp -f "$TOOL_BIN/$helper" "$BUILD/"
+    helpers=$((helpers + 1))
+  fi
+done
+
+if [ "$helpers" -eq 0 ]; then
+  echo "stage-runtime-dlls: GLib spawn helper missing from $TOOL_BIN" >&2
+  echo "  without it the app cannot run wevtutil.exe or netsh.exe at all" >&2
+  exit 1
+fi
+
+echo "stage-runtime-dlls: $helpers spawn helper(s) staged"
+
 # gdk-pixbuf/Pango/GTK read their module caches at run time, and the
 # icon theme is looked up relative to the DLLs.  Without these the app
 # starts but paints blank toolbar buttons.  The installer stages the

@@ -1,9 +1,9 @@
-#---[ firestarter-elevated.ahk ]-----------------------------------------
+#---[ StockFW-elevated.ahk ]-----------------------------------------
 # AutoHotkey launcher, for anyone who already runs AHK.
 #
 #   #Requires AutoHotkey v2.0
 #   RunAsAdmin() {
-;       Run '*RunAs "' A_ScriptDir '\firestarter.exe'"'
+;       Run '*RunAs "' A_ScriptDir '\StockFW.exe'"'
 ;   }
 ;   RunAsAdmin()
 #

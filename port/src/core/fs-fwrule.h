@@ -86,7 +86,7 @@ guint fs_fwrule_expand (const FsPolicy *policy, GList **out);
  * frees with fs_fwrule_list_free(). */
 GList *fs_fwrule_from_policy (const FsPolicy *policy);
 
-/* A name for a rule, e.g. "Firestarter: allow SSH".  Caller frees. */
+/* A name for a rule, e.g. "StockFW: allow SSH".  Caller frees. */
 gchar *fs_fwrule_default_name (FsRuleDirection direction,
                                FsRuleAction action,
                                const gchar *service,

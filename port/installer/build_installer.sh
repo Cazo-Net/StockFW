@@ -4,7 +4,11 @@
 
 set -e
 
-PORT_DIR="/e/PROJECTS/firestarter-1.0.3/firestarter-1.0.3/port"
+# Work out where port/ lives from this script's own location, instead of
+# hard-coding it: the tree has already been renamed once, and a stale
+# absolute path here meant the installer build quietly pointed at a
+# directory that no longer existed.
+PORT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$PORT_DIR/build"
 INSTALLER_DIR="$PORT_DIR/installer/nsis"
 STAGE_DIR="$INSTALLER_DIR/stage"
@@ -36,6 +40,32 @@ MSYS_ROOT="/c/msys64/ucrt64"
 # actually imported, extra DLLs are harmless
 cp "$MSYS_ROOT"/bin/*.dll "$STAGE_DIR/gtk-runtime/bin/" 2>/dev/null
 echo "  Copied $(ls "$STAGE_DIR/gtk-runtime/bin/"*.dll | wc -l) DLLs"
+
+# GLib does not call CreateProcess itself: it starts child processes
+# through gspawn-win64-helper.exe, resolved like any other program --
+# $INSTDIR first, then PATH.  Nothing above pulls it in, because it is
+# exec'd rather than linked and so never shows up in a dependency scan.
+#
+# Without it the app still starts and looks healthy, but every external
+# command fails with "Failed to execute helper program (No such file or
+# directory)": wevtutil.exe for traffic events, netsh.exe for applying
+# firewall rules.  Both variants are shipped because GLib picks the
+# console one when the child needs a console.
+helpers=0
+for helper in gspawn-win64-helper.exe gspawn-win64-helper-console.exe; do
+    if [ -f "$MSYS_ROOT/bin/$helper" ]; then
+        cp "$MSYS_ROOT/bin/$helper" "$STAGE_DIR/gtk-runtime/bin/"
+        helpers=$((helpers + 1))
+    fi
+done
+
+if [ "$helpers" -eq 0 ]; then
+    echo "ERROR: GLib spawn helper not found in $MSYS_ROOT/bin" >&2
+    echo "       Refusing to build an installer whose StockFW.exe" >&2
+    echo "       cannot run wevtutil.exe or netsh.exe at all." >&2
+    exit 1
+fi
+echo "  Copied $helpers spawn helper(s)"
 
 # Copy GTK3 modules (immodules, printbackends, etc.)
 echo "[3/7] Copying GTK3 modules..."
@@ -73,11 +103,20 @@ for mo in "$MSYS_ROOT/share/locale/en/LC_MESSAGES"/*.mo; do
     fi
 done
 
-# 5. Copy elevated launchers (rename to StockFW)
+# 5. Copy elevated launchers
 echo "[5/7] Copying elevated launchers..."
-sed 's/firestarter/StockFW/g' "$PORT_DIR/firestarter-elevated.vbs" > "$STAGE_DIR/StockFW-elevated.vbs"
-sed 's/firestarter/StockFW/g' "$PORT_DIR/firestarter-elevated.cmd" > "$STAGE_DIR/StockFW-elevated.cmd"
-sed 's/firestarter/StockFW/g' "$PORT_DIR/firestarter-elevated.ps1" > "$STAGE_DIR/StockFW-elevated.ps1"
+# The files are named StockFW-elevated.* in the tree already, so they are
+# copied unchanged -- the old version rewrote "firestarter" out of them
+# with sed on every build.  The guard fails the build if any old branding
+# survives inside one, rather than shipping it to users.
+for launcher in StockFW-elevated.vbs StockFW-elevated.cmd StockFW-elevated.ps1; do
+    cp "$PORT_DIR/$launcher" "$STAGE_DIR/$launcher"
+    if grep -qi 'firestarter' "$STAGE_DIR/$launcher"; then
+        echo "ERROR: $launcher still mentions firestarter:" >&2
+        grep -ni 'firestarter' "$STAGE_DIR/$launcher" >&2
+        exit 1
+    fi
+done
 
 # 6. Create LICENSE.txt
 echo "[6/7] Creating license file..."
@@ -161,8 +200,12 @@ echo "Generating gdk-pixbuf loader cache..."
 echo "Generating GTK immodules cache..."
 "$MSYS_ROOT/bin/gtk-query-immodules-3.0.exe" > "$STAGE_DIR/gtk-runtime/lib/gtk-3.0/3.0.0/immodules.cache" 2>/dev/null || true
 
-# Generate pango.modules.cache
+# Generate pango.modules.cache.  Pango >= 1.38 no longer ships any
+# modules, so the query tool prints nothing and the file legitimately
+# stays absent -- but the directory has to exist first, or the shell's
+# own redirection fails loudly on every build.
 echo "Generating Pango modules cache..."
+mkdir -p "$STAGE_DIR/gtk-runtime/lib/pango"
 "$MSYS_ROOT/bin/pango-querymodules.exe" > "$STAGE_DIR/gtk-runtime/lib/pango/pango.modules" 2>/dev/null || true
 
 echo ""
@@ -173,7 +216,6 @@ echo "=========================================="
 # Build installer with NSIS
 cd "$INSTALLER_DIR"
 NSIS_SCRIPT="StockFW.nsi"
-
 # Check if NSIS is available
 if command -v makensis &> /dev/null; then
     NSIS_CMD="makensis"
@@ -188,6 +230,11 @@ else
 fi
 
 echo "Using NSIS: $NSIS_CMD"
+# PROJECT_DIR reaches the script as the relative "..\.." define; it is
+# not passed with /D here.  Running makensis is done from $INSTALLER_DIR
+# above, so the relative path lands on port/, and an MSYS2 shell would
+# mangle a leading-slash /D argument into a file name anyway
+# ("Can't open script C:/msys64/DPROJECT_DIR=...").
 "$NSIS_CMD" "$NSIS_SCRIPT"
 
 echo ""

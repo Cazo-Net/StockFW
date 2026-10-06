@@ -1,4 +1,12 @@
-!define PROJECT_DIR "E:\PROJECTS\firestarter-1.0.3\firestarter-1.0.3\port"
+; Where port/ lives, so every ${PROJECT_DIR}\... reference below works.
+; This used to be a hard-coded absolute path, which survived a rename of
+; the repository and broke every installer build with "can't open file"
+; on the icon lookup.  It is relative now: build_installer.sh runs
+; makensis from this directory, so "..\.." is port/ wherever the tree
+; sits.
+!ifndef PROJECT_DIR
+  !define PROJECT_DIR "..\.."
+!endif
 
 !define APP_NAME "StockFW"
 !define APP_VERSION "1.0.3"

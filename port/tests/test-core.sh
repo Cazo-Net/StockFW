@@ -257,7 +257,7 @@ static void test_fwrule_expand (void)
 				CHECK (r->protocol == FS_PROTO_TCP,
 				       "SSH rule is TCP only");
 				CHECK (g_strcmp0 (r->name,
-				                  "Firestarter: Allow SSH "
+				                  "StockFW: Allow SSH "
 				                  "(inbound, 192.168.1.0/24)") == 0,
 				       "rule name reads \"%s\"", r->name);
 			}

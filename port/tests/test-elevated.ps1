@@ -9,16 +9,24 @@ $ErrorActionPreference = 'Stop'
 function Test-PathResolution {
     param([string]$ScriptDir)
 
-    $binary = Join-Path $ScriptDir 'firestarter.exe'
+    $binary = Join-Path $ScriptDir 'StockFW.exe'
     if (-not (Test-Path $binary)) {
-        $binary = Join-Path $ScriptDir 'build\firestarter.exe'
+        $binary = Join-Path $ScriptDir 'build\StockFW.exe'
     }
     return $binary
 }
 
+# Derived from this file's own location: the repository has been renamed
+# once, and hard-coded paths here pointed at a directory that no longer
+# existed, so the test could never pass again.
+$portDir  = Split-Path -Parent $PSScriptRoot
+$buildDir = Join-Path $portDir 'build'
+
 $cases = @(
-    @{ Name = 'binary next to script';   Dir = 'E:\PROJECTS\firestarter-1.0.3\firestarter-1.0.3\port\build'; Expected = 'E:\PROJECTS\firestarter-1.0.3\firestarter-1.0.3\port\build\firestarter.exe' },
-    @{ Name = 'script in build dir';     Dir = 'E:\PROJECTS\firestarter-1.0.3\firestarter-1.0.3\port\build'; Expected = 'E:\PROJECTS\firestarter-1.0.3\firestarter-1.0.3\port\build\firestarter.exe' }
+    # The exe sits in the directory the launcher looks in first.
+    @{ Name = 'binary next to script';       Dir = $buildDir; Expected = (Join-Path $buildDir 'StockFW.exe') },
+    # The launcher sits one level up and falls back to build\.
+    @{ Name = 'binary in build subdirectory'; Dir = $portDir;  Expected = (Join-Path $buildDir 'StockFW.exe') }
 )
 
 $failures = 0

@@ -1,4 +1,4 @@
-'---[ firestarter-elevated.vbs ]-----------------------------------------
+'---[ StockFW-elevated.vbs ]-------------------------------------------
 ' Silent double-click launcher.
 '
 ' The .cmd wrapper flashes a console window, which is wrong for a GUI
@@ -14,11 +14,11 @@ Dim shell, here, ps1, cmd
 
 Set shell = CreateObject("WScript.Shell")
 here = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\") - 1)
-ps1 = here & "\firestarter-elevated.ps1"
+ps1 = here & "\StockFW-elevated.ps1"
 
 If Not CreateObject("Scripting.FileSystemObject").FileExists(ps1) Then
-    MsgBox "firestarter-elevated.ps1 not found next to this launcher." & vbCrLf & _
-           "Expected: " & ps1, vbCritical, "Firestarter"
+    MsgBox "StockFW-elevated.ps1 not found next to this launcher." & vbCrLf & _
+           "Expected: " & ps1, vbCritical, "StockFW"
     WScript.Quit 1
 End If
 
