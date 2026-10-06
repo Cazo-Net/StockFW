@@ -799,6 +799,7 @@ fs_dialogs_preferences (GtkWidget *parent)
 	dialog = gtk_dialog_new ();
 	gtk_window_set_title (GTK_WINDOW (dialog), _("Preferences"));
 	gtk_window_set_modal (GTK_WINDOW (dialog), TRUE);
+	gtk_window_set_default_size (GTK_WINDOW (dialog), 640, 480);
 
 	if (parent != NULL) {
 		gtk_window_set_transient_for (GTK_WINDOW (dialog),
@@ -818,7 +819,7 @@ fs_dialogs_preferences (GtkWidget *parent)
 	g_object_unref (model);
 	gtk_tree_view_set_headers_visible (GTK_TREE_VIEW (tree), FALSE);
 	gtk_tree_view_set_enable_search (GTK_TREE_VIEW (tree), FALSE);
-	gtk_widget_set_size_request (tree, 175, -1);
+	gtk_widget_set_size_request (tree, 175, 320);
 	g_object_set (G_OBJECT (tree), "activate-on-single-click", FALSE, NULL);
 
 	scroll = gtk_scrolled_window_new (NULL, NULL);
