@@ -672,27 +672,39 @@ static gpointer  log_user_data = NULL;
 static gchar   *last_event_id = NULL;
 
 /* [ parse_firewall_event ]
- * wevtutil text output has the shape:
+ * wevtutil text output from the Security log has the shape:
  *
- *   Date: 2026-10-05 12:00:00
- *   ... Event ID: 5157 ...
+ *   Date: 2026-10-06T10:58:39.1040000Z
+ *   Event ID: 5157
+ *   ...
+ *   Description:
+ *   The Windows Filtering Platform has blocked a connection.
+ *
  *   Application Information:
- *       Protocol: 6 (TCP)
- *       Local Address: 192.168.1.5
- *       Local Port: 22
- *       Remote Address: 203.0.113.9
- *       Remote Port: 51234
+ *       Process ID:     11964
+ *       Application Name:  \device\harddiskvolume9\...brave.exe
+ *
+ *   Network Information:
+ *       Direction:      Inbound
+ *       Source Address:     fe80::...
+ *       Source Port:        5353
+ *       Destination Address: ff02::fb
+ *       Destination Port:   5353
+ *       Protocol:       17
  *
  * Pull the labelled fields out of it. */
 static gboolean
 parse_firewall_event (const gchar *text, FsHit *hit)
 {
-	static const gchar *keys[] = {
-		"Protocol", "Local Address", "Local Port",
-		"Remote Address", "Remote Port", NULL
-	};
 	gchar **lines = g_strsplit (text, "\r\n", -1);
 	gboolean got_address = FALSE;
+	gboolean is_blocked = FALSE;
+	gchar *app_path = NULL;
+	gchar *direction_str = NULL;
+
+	/* Detect blocked vs permitted from the description. */
+	if (strstr (text, "blocked a connection") != NULL)
+		is_blocked = TRUE;
 
 	for (gint i = 0; lines[i] != NULL; i++) {
 		gchar *line = g_strstrip (lines[i]);
@@ -701,53 +713,47 @@ parse_firewall_event (const gchar *text, FsHit *hit)
 		if (line == NULL || *line == '\0')
 			continue;
 
-		/* The first line carries the timestamp.  Strip the source
-		 * text first, then take a copy: g_strstrip returns a pointer
-		 * into the buffer it is given, and storing that in hit->time
-		 * means fs_hit_free later frees an interior pointer and
-		 * corrupts the heap. */
+		/* Timestamp line. */
 		if (g_str_has_prefix (line, "Date:")) {
 			hit->time = g_strdup (g_strstrip (line + 5));
 			continue;
 		}
 
 		colon = strchr (line, ':');
-
 		if (colon == NULL)
 			continue;
 
 		*colon = '\0';
+		line = g_strstrip (line);
 
 		{
 			const gchar *value = g_strstrip (colon + 1);
 
 			if (g_strcmp0 (line, "Protocol") == 0) {
 				gchar *sp = strchr (value, ' ');
-
 				if (sp != NULL)
 					*sp = '\0';
-
 				hit->protocol = g_strdup (value);
-			} else if (g_strcmp0 (line, "Local Address") == 0) {
-				hit->in = g_strdup (value);
-			} else if (g_strcmp0 (line, "Local Port") == 0) {
-				hit->out = g_strdup (value);
-				got_address = TRUE;
-			} else if (g_strcmp0 (line, "Remote Address") == 0) {
-				hit->destination = g_strdup (value);
-			} else if (g_strcmp0 (line, "Remote Port") == 0) {
+			} else if (g_strcmp0 (line, "Source Address") == 0) {
 				hit->source = g_strdup (value);
+			} else if (g_strcmp0 (line, "Source Port") == 0) {
+				hit->port = g_strdup (value);
+			} else if (g_strcmp0 (line, "Destination Address") == 0) {
+				hit->destination = g_strdup (value);
+				got_address = TRUE;
+			} else if (g_strcmp0 (line, "Destination Port") == 0) {
+				hit->out = g_strdup (value);
+			} else if (g_strcmp0 (line, "Direction") == 0) {
+				direction_str = g_strdup (value);
+			} else if (g_strcmp0 (line, "Application Name") == 0) {
+				app_path = g_strdup (value);
 			}
 		}
 	}
 
-	(void) keys;
 	g_strfreev (lines);
 
 	if (!got_address) {
-		/* Free only the fields parse allocated; "hit" itself is a
-		 * stack local in the caller, so fs_hit_free would try to
-		 * g_free() a stack address and corrupt the heap. */
 		g_clear_pointer (&hit->time, g_free);
 		g_clear_pointer (&hit->in, g_free);
 		g_clear_pointer (&hit->out, g_free);
@@ -755,26 +761,59 @@ parse_firewall_event (const gchar *text, FsHit *hit)
 		g_clear_pointer (&hit->destination, g_free);
 		g_clear_pointer (&hit->protocol, g_free);
 		g_clear_pointer (&hit->service, g_free);
+		g_clear_pointer (&direction_str, g_free);
+		g_clear_pointer (&app_path, g_free);
 		return FALSE;
 	}
 
-	/* Fill in what the log does not carry. */
-	hit->direction = g_strdup ("in");
-	hit->port = g_strdup (hit->out ? hit->out : "");
+	/* Direction. */
+	if (direction_str != NULL) {
+		if (g_ascii_strncasecmp (direction_str, "Inbound", 7) == 0)
+			hit->direction = g_strdup ("in");
+		else
+			hit->direction = g_strdup ("out");
+		g_free (direction_str);
+	} else {
+		hit->direction = g_strdup ("in");
+	}
 
+	/* Local address: we did not capture it separately, so show dest
+	 * for inbound and source for outbound. */
+	hit->in = g_strdup (hit->destination ? hit->destination : "?");
+
+	/* Protocol: numeric to name. */
 	if (hit->protocol != NULL) {
-		if (g_strcmp0 (hit->protocol, "6") == 0 ||
-		    g_ascii_strcasecmp (hit->protocol, "TCP") == 0)
+		if (g_strcmp0 (hit->protocol, "6") == 0)
 			hit->protocol = g_strdup ("TCP");
 		else if (g_strcmp0 (hit->protocol, "17") == 0)
 			hit->protocol = g_strdup ("UDP");
+		else if (g_strcmp0 (hit->protocol, "1") == 0)
+			hit->protocol = g_strdup ("ICMP");
 	}
 
-	hit->service = fs_service_lookup_port (atoi (hit->port
-	                                            ? hit->port : "0"));
-
+	/* Service name from port. */
+	hit->service = fs_service_lookup_port (atoi (hit->port ? hit->port : "0"));
 	if (hit->service == NULL)
 		hit->service = g_strdup (_("Unknown"));
+
+	/* Use application name as service if available (more specific). */
+	if (app_path != NULL) {
+		/* Extract the exe name from the full path. */
+		const gchar *base = strrchr (app_path, '\\');
+		base = base ? base + 1 : app_path;
+		if (*base != '\0') {
+			g_free (hit->service);
+			hit->service = g_strdup (base);
+		}
+		g_free (app_path);
+	}
+
+	/* Mark blocked events with a visible marker. */
+	if (is_blocked) {
+		gchar *old = hit->service;
+		hit->service = g_strdup_printf ("%s [BLOCKED]", old ? old : "?");
+		g_free (old);
+	}
 
 	return TRUE;
 }
@@ -783,12 +822,12 @@ parse_firewall_event (const gchar *text, FsHit *hit)
 static gboolean
 poll_events (gpointer data)
 {
-	/* The real channel name contains spaces; the widely copied
-	 * "WindowsFirewallWithAdvancedSecurity" spelling does not exist. */
+	/* Query the Security log for WFP connection events.
+	 * 5156 = permitted, 5157 = blocked. */
 	gchar *args[] = {
-		"wevtutil.exe", "qe",
-		"Microsoft-Windows-Windows Firewall With Advanced Security/Firewall",
-		"/c:20", "/rd:true", "/f:text", NULL
+		"wevtutil.exe", "qe", "Security",
+		"/q:*[System[(EventID=5156 or EventID=5157)]]",
+		"/c:10", "/rd:true", "/f:text", NULL
 	};
 	gchar *output = NULL;
 	gint status = 0;
@@ -841,10 +880,12 @@ poll_events (gpointer data)
 		 * local, so fs_hit_free would try to g_free() it and
 		 * corrupt the heap. */
 		g_clear_pointer (&hit.time, g_free);
+		g_clear_pointer (&hit.direction, g_free);
 		g_clear_pointer (&hit.in, g_free);
 		g_clear_pointer (&hit.out, g_free);
 		g_clear_pointer (&hit.source, g_free);
 		g_clear_pointer (&hit.destination, g_free);
+		g_clear_pointer (&hit.port, g_free);
 		g_clear_pointer (&hit.protocol, g_free);
 		g_clear_pointer (&hit.service, g_free);
 	}
