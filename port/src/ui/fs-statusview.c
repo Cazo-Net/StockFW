@@ -17,7 +17,6 @@
 static FsFirewallState current_state = FS_FW_NONE;
 
 static GtkWidget *state_label;
-static GtkWidget *banner_icon;
 static GtkWidget *backend_label;
 static GtkWidget *button_start;
 static GtkWidget *button_stop;
@@ -63,19 +62,6 @@ state_to_text (FsFirewallState state)
 	case FS_FW_HIT:     return _("The firewall has been hit");
 	case FS_FW_NONE:
 	default:            return _("Firewall state is unknown");
-	}
-}
-
-/* [ state_to_style ]
- * Maps a state onto the image used next to the label. */
-static const gchar *
-state_to_icon (FsFirewallState state)
-{
-	switch (state) {
-	case FS_FW_RUNNING:
-	case FS_FW_LOCKED:  return "dialog-information";
-	case FS_FW_STOPPED: return "dialog-warning";
-	default:            return "dialog-question";
 	}
 }
 
@@ -188,14 +174,6 @@ fs_statusview_set_state (FsFirewallState state)
 	if (state_label != NULL)
 		gtk_label_set_text (GTK_LABEL (state_label), state_to_text (state));
 
-	/* The banner is a box holding the icon and the text side by side,
-	 * so the image needs its own widget rather than reaching into the
-	 * label's internals the way the original code did. */
-	if (banner_icon != NULL)
-		gtk_image_set_from_icon_name (GTK_IMAGE (banner_icon),
-		                              state_to_icon (state),
-		                              GTK_ICON_SIZE_DIALOG);
-
 	refresh_controls ();
 }
 
@@ -280,11 +258,8 @@ fs_statusview_page (void)
 		gtk_box_pack_start (GTK_BOX (page), logo_box, FALSE, FALSE, 0);
 	}
 
-	/* State banner */
+	/* State banner - just the text, no icon */
 	box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-	banner_icon = gtk_image_new_from_icon_name ("dialog-question",
-	                                            GTK_ICON_SIZE_DIALOG);
-	gtk_box_pack_start (GTK_BOX (box), banner_icon, FALSE, FALSE, 0);
 
 	state_label = gtk_label_new (state_to_text (FS_FW_NONE));
 	gtk_label_set_xalign (GTK_LABEL (state_label), 0.0);
