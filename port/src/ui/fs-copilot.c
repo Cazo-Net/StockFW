@@ -317,9 +317,9 @@ fs_copilot_page (FsCopilot *copilot)
         gtk_widget_set_margin_bottom (stats, 4);
 
         GtkWidget *c1, *c2, *c3, *c4;
-        c1 = make_stat_card (_("Apps Learned"),    "system-users",   &stat_apps);
-        c2 = make_stat_card (_("Active Insights"),  "dialog-warning",  &stat_insights);
-        c3 = make_stat_card (_("Events Analyzed"),  "view-list",      &stat_events);
+        c1 = make_stat_card (_("Apps Learned"),     "system-users",       &stat_apps);
+        c2 = make_stat_card (_("Active Insights"),  "dialog-warning",     &stat_insights);
+        c3 = make_stat_card (_("Events Analyzed"),  "view-list",          &stat_events);
         c4 = make_stat_card (_("Policy Rules"),     "preferences-system", &stat_rules);
 
         gtk_box_pack_start (GTK_BOX (stats), c1, TRUE, TRUE, 0);
@@ -332,15 +332,10 @@ fs_copilot_page (FsCopilot *copilot)
 
     /* ===== Insights tree ===== */
     {
-        GtkWidget *hdr_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
-        GtkWidget *lbl_icon = gtk_image_new_from_icon_name (
-            "view-list", GTK_ICON_SIZE_MENU);
         GtkWidget *lbl = gtk_label_new (_("Insights & Suggestions"));
         gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "heading");
         gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
-        gtk_box_pack_start (GTK_BOX (hdr_box), lbl_icon, FALSE, FALSE, 0);
-        gtk_box_pack_start (GTK_BOX (hdr_box), lbl, FALSE, FALSE, 0);
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), hdr_box, FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (copilot_vbox), lbl, FALSE, FALSE, 0);
 
         insights_tree = build_insights_tree ();
         GtkWidget *scrolled = gtk_scrolled_window_new (NULL, NULL);
@@ -401,10 +396,6 @@ fs_copilot_page (FsCopilot *copilot)
         /* Ask input row */
         GtkWidget *ask_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 
-        GtkWidget *ask_icon = gtk_image_new_from_icon_name (
-            "chat-new", GTK_ICON_SIZE_MENU);
-        gtk_box_pack_start (GTK_BOX (ask_box), ask_icon, FALSE, FALSE, 0);
-
         ask_entry = gtk_entry_new ();
         gtk_entry_set_placeholder_text (GTK_ENTRY (ask_entry),
             _("Ask: What rules do I have? Show anomalies. Is port 8080 open?"));
@@ -430,14 +421,9 @@ fs_copilot_page (FsCopilot *copilot)
 
     /* ===== Policy Analysis ===== */
     {
-        GtkWidget *hdr_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
-        GtkWidget *a_icon = gtk_image_new_from_icon_name (
-            "system-search", GTK_ICON_SIZE_MENU);
         GtkWidget *a_lbl = gtk_label_new (_("Policy Analysis"));
         gtk_label_set_xalign (GTK_LABEL (a_lbl), 0.0);
-        gtk_box_pack_start (GTK_BOX (hdr_box), a_icon, FALSE, FALSE, 0);
-        gtk_box_pack_start (GTK_BOX (hdr_box), a_lbl, FALSE, FALSE, 0);
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), hdr_box, FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (copilot_vbox), a_lbl, FALSE, FALSE, 0);
 
         analysis_output = make_output_view ();
         gtk_widget_set_size_request (analysis_output, -1, 80);
