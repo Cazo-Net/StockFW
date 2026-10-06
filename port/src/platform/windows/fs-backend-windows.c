@@ -22,6 +22,11 @@
  * makes CoCreateInstance fail with CO_E_CLASSSTRING. */
 #include <winsock2.h>
 #include <windows.h>
+/* netioapi.h must precede iphlpapi.h: it only defines MIB_IF_TABLE2
+ * (and pulls in ws2ipdef.h) on the path where __IPHLPAPI_H__ is not
+ * already set, so including iphlpapi.h first silently drops the whole
+ * GetIfTable2 API. */
+#include <netioapi.h>
 #include <iphlpapi.h>
 #include <netfw.h>
 
@@ -253,22 +258,38 @@ run_netsh (gchar **args, GError **error, gint *exit_status,
 {
 	GError *local_error = NULL;
 	gchar *out = NULL;
+	gchar *err_text = NULL;
 
 	if (output != NULL)
 		*output = NULL;
 
+	/* G_SPAWN_STDIN_FROM_DEV_NULL plus a captured stderr means netsh
+	 * inherits no console handle at all, which is what stops Windows
+	 * from giving a console-mode child a terminal window of its own. */
 	if (!g_spawn_sync (NULL, args, NULL,
-	                   G_SPAWN_SEARCH_PATH,
+	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDIN_FROM_DEV_NULL,
 	                   NULL, NULL,
-	                   &out, NULL,
+	                   &out, &err_text,
 	                   exit_status, &local_error)) {
 		g_set_error (error,
 		             g_quark_from_static_string ("fs-backend-windows"),
 		             0, "Could not run netsh: %s",
 		             local_error->message);
 		g_error_free (local_error);
+		g_free (err_text);
 		return FALSE;
 	}
+
+	/* netsh reports some failures, the elevation ones especially, on
+	 * stderr only.  Handing that message to the caller is what lets
+	 * netsh_needs_elevation() fire instead of the reason vanishing. */
+	if (out == NULL || *out == '\0') {
+		g_free (out);
+		out = err_text;
+		err_text = NULL;
+	}
+
+	g_free (err_text);
 
 	if (output != NULL)
 		*output = out;
@@ -466,8 +487,13 @@ firewalled_clear_rules (GError **error)
 	}
 
 	if (status != 0) {
+		/* Decide the verdict while `output` is still alive: it is
+		 * freed below, and reading it afterwards would be a
+		 * use-after-free. */
+		gboolean needs_elevation = netsh_needs_elevation (output);
+
 		/* Cannot enumerate, so cannot safely delete anything. */
-		if (netsh_needs_elevation (output))
+		if (needs_elevation)
 			g_set_error_literal (error,
 			                     g_quark_from_static_string (
 				                     "fs-backend-windows"),
@@ -476,8 +502,7 @@ firewalled_clear_rules (GError **error)
 			                     "administrator privileges.");
 
 		g_free (output);
-		return netsh_needs_elevation (output) ? FS_APPLY_NO_PRIVILEGE
-		                                       : FS_APPLY_FAILED;
+		return needs_elevation ? FS_APPLY_NO_PRIVILEGE : FS_APPLY_FAILED;
 	}
 
 	ours = g_hash_table_new (g_str_hash, g_str_equal);
@@ -567,18 +592,30 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 	fs_fwrule_list_free (rules);
 
 	if (failed > 0 && applied == 0) {
+		/* Decide the verdict first: g_propagate_error() hands
+		 * ownership of first_error to *error (and g_clear_error()
+		 * would free it), so reading first_error->message afterwards
+		 * would be a use-after-free. */
+		gboolean needs_elevation =
+			netsh_needs_elevation (first_error != NULL
+			                       ? first_error->message : NULL);
+
 		if (error != NULL && first_error != NULL)
 			g_propagate_error (error, first_error);
-		else
-			g_set_error_literal (error,
-			                     g_quark_from_static_string (
-				                     "fs-backend-windows"),
-			                     0,
-			                     "None of the rules could be created.");
+		else {
+			if (error != NULL)
+				g_set_error_literal (
+					error,
+					g_quark_from_static_string (
+						"fs-backend-windows"),
+					0,
+					"None of the rules could be created.");
 
-		return netsh_needs_elevation (first_error ? first_error->message
-		                                          : NULL)
-			? FS_APPLY_NO_PRIVILEGE : FS_APPLY_FAILED;
+			/* Not propagated, so nobody else will free it. */
+			g_clear_error (&first_error);
+		}
+
+		return needs_elevation ? FS_APPLY_NO_PRIVILEGE : FS_APPLY_FAILED;
 	}
 
 	if (failed > 0) {
@@ -655,6 +692,209 @@ firewalled_list_interfaces (void)
 	g_free (adapters);
 
 	return list;
+}
+
+/* ---------------------------------------------------------------------
+ * Status page data sources.
+ *
+ * The original Status page had two live panels -- "Network" (per-device
+ * throughput) and "Active connections".  Neither is firewall state, so
+ * they come from the IP Helper API rather than from INetFwPolicy2.
+ *--------------------------------------------------------------------*/
+
+/* [ iface_type_name ]
+ * IANAifType-MIB numbers rendered the way the panel labels them.  The
+ * numeric literals are used rather than the IF_TYPE_* macros so this
+ * compiles against any SDK. */
+static const gchar *
+iface_type_name (ULONG type)
+{
+	switch (type) {
+	case 6:  return "Ethernet";    /* ethernetCsmacd      */
+	case 71: return "Wireless";    /* ieee80211           */
+	case 23: return "PPP";         /* ppp                 */
+	case 24: return "Loopback";    /* softwareLoopback    */
+	case 131: return "Tunnel";     /* tunnel               */
+	case 209: return "IPv4";       /* ipv4                 */
+	case 244: return "IPv6";       /* ipv6                 */
+	default: return "Other";
+	}
+}
+
+/* [ firewalled_list_interface_stats ]
+ * Cumulative rx/tx octets per interface.  The view samples twice and
+ * diffs these, which is where the "Activity" column comes from. */
+static GList *
+firewalled_list_interface_stats (void)
+{
+	MIB_IF_TABLE2 *table = NULL;
+	GList *list = NULL;
+
+	if (GetIfTable2 (&table) != NO_ERROR || table == NULL)
+		return NULL;
+
+	for (ULONG i = 0; i < table->NumEntries; i++) {
+		const MIB_IF_ROW2 *row = &table->Table[i];
+		FsIfaceStat *stat;
+
+		/* Loopback would dominate the list and is never interesting
+		 * in a firewall's traffic panel. */
+		if (row->Type == 24)
+			continue;
+
+		/* Skip adapters that are down and have never carried
+		 * anything: they are still enumerating. */
+		if (row->OperStatus != IfOperStatusUp &&
+		    row->InOctets == 0 && row->OutOctets == 0)
+			continue;
+
+		stat = g_new0 (FsIfaceStat, 1);
+
+		/* Alias is the friendly name Windows shows in the tray
+		 * ("Ethernet", "Wi-Fi"); Description is the hardware name. */
+		stat->device = g_utf16_to_utf8 (row->Alias, -1, NULL, NULL, NULL);
+		if (stat->device == NULL)
+			stat->device = g_utf16_to_utf8 (row->Description, -1,
+			                                NULL, NULL, NULL);
+		if (stat->device == NULL)
+			stat->device = g_strdup ("?");
+
+		stat->kind     = g_strdup (iface_type_name (row->Type));
+		stat->received = row->InOctets;
+		stat->sent     = row->OutOctets;
+		stat->up       = (row->OperStatus == IfOperStatusUp);
+
+		list = g_list_prepend (list, stat);
+	}
+
+	FreeMibTable (table);
+
+	return g_list_reverse (list);
+}
+
+/* [ ipv4_str ]
+ * A DWORD from the MIB is a network-order address; render it. */
+static gchar *
+ipv4_str (DWORD addr)
+{
+	struct in_addr in;
+
+	in.s_addr = addr;
+	return g_strdup (inet_ntoa (in));
+}
+
+/* [ program_for_pid ]
+ * Process image basename for a PID.  Returns NULL when the process has
+ * exited or is a protected system one we may not open. */
+static gchar *
+program_for_pid (DWORD pid)
+{
+	HANDLE process;
+	gchar path[MAX_PATH];
+	gchar *result = NULL;
+	DWORD length = MAX_PATH;
+
+	if (pid == 0)
+		return g_strdup ("System Idle");
+	if (pid == 4)
+		return g_strdup ("System");
+
+	process = OpenProcess (PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+
+	if (process == NULL)
+		return NULL;
+
+	if (QueryFullProcessImageNameA (process, 0, path, &length))
+		result = g_path_get_basename (path);
+
+	CloseHandle (process);
+	return result;
+}
+
+/* [ guess_direction ]
+ * TCP tells us the endpoints but not who dialled.  The heuristic: a
+ * well-known local port means someone reached a service we run, a
+ * well-known remote port means we reached one.  With neither, assume
+ * outbound, which is what a desktop mostly does. */
+static const gchar *
+guess_direction (guint local_port, guint remote_port)
+{
+	if (remote_port < 1024 && local_port >= 1024)
+		return "Outbound";
+	if (local_port < 1024)
+		return "Inbound";
+	if (local_port >= 49152)
+		return "Outbound";
+	if (remote_port >= 49152)
+		return "Inbound";
+
+	return "Outbound";
+}
+
+/* [ firewalled_list_connections ]
+ * Established TCP connections with their owning process.  Needs no
+ * elevation: GetExtendedTcpTable works for a normal user, and opening
+ * the process only fails for a handful of protected system processes. */
+static GList *
+firewalled_list_connections (void)
+{
+	MIB_TCPTABLE_OWNER_PID *table = NULL;
+	GList *list = NULL;
+	DWORD size = 0;
+	DWORD status;
+
+	status = GetExtendedTcpTable (NULL, &size, TRUE, AF_INET,
+	                              TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
+
+	if (status != ERROR_INSUFFICIENT_BUFFER || size == 0)
+		return NULL;
+
+	table = g_malloc (size);
+
+	status = GetExtendedTcpTable (table, &size, TRUE, AF_INET,
+	                              TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
+
+	if (status != NO_ERROR) {
+		g_free (table);
+		return NULL;
+	}
+
+	for (DWORD i = 0; i < table->dwNumEntries; i++) {
+		const MIB_TCPROW_OWNER_PID *row = &table->table[i];
+		FsConnection *conn;
+		guint local_port, remote_port;
+		gchar *service;
+
+		/* Unconnected rows would show as 0.0.0.0:0. */
+		if (row->dwRemoteAddr == 0 || row->dwRemotePort == 0)
+			continue;
+
+		local_port  = ntohs ((u_short) row->dwLocalPort);
+		remote_port = ntohs ((u_short) row->dwRemotePort);
+
+		conn = g_new0 (FsConnection, 1);
+
+		conn->source      = ipv4_str (row->dwLocalAddr);
+		conn->destination = ipv4_str (row->dwRemoteAddr);
+		conn->port        = g_strdup_printf ("%u", remote_port);
+		conn->protocol    = g_strdup ("TCP");
+		conn->direction   = g_strdup (guess_direction (local_port,
+		                                               remote_port));
+		conn->program     = program_for_pid (row->dwOwningPid);
+
+		service = fs_service_lookup_port ((gint) remote_port);
+		conn->service = service != NULL ? service
+		                                : g_strdup ("Unknown");
+
+		if (conn->program == NULL)
+			conn->program = g_strdup ("?");
+
+		list = g_list_prepend (list, conn);
+	}
+
+	g_free (table);
+
+	return g_list_reverse (list);
 }
 
 /* ---------------------------------------------------------------------
@@ -824,29 +1064,94 @@ parse_firewall_event (const gchar *text, FsHit *hit)
 	return TRUE;
 }
 
+/* [ run_wevtutil ]
+ * One Security-log query, with both output streams captured.
+ *
+ * stdin comes from the null device and stderr is captured instead of
+ * inherited.  With all three standard handles off the console, Windows
+ * has no reason to allocate one for wevtutil.exe -- which is how a
+ * stray terminal window quoting this very command line ended up on
+ * screen.  A GUI application must never hand a console to its
+ * children.
+ *
+ * On Windows g_spawn_sync reports the raw process exit code in
+ * wait_status rather than the Unix-encoded status, so 5 here really is
+ * ERROR_ACCESS_DENIED. */
+static gboolean
+run_wevtutil (gchar **standard_output, gchar **standard_error,
+              gint *exit_code, GError **error)
+{
+	gchar *args[] = {
+		"wevtutil.exe", "qe", "Security",
+		"/q:*[System[(EventID=5156 or EventID=5157)]]",
+		"/c:10", "/rd:true", "/f:text", NULL
+	};
+	gint status = 0;
+
+	if (standard_output != NULL)
+		*standard_output = NULL;
+	if (standard_error != NULL)
+		*standard_error = NULL;
+
+	if (!g_spawn_sync (NULL, args, NULL,
+	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDIN_FROM_DEV_NULL,
+	                   NULL, NULL,
+	                   standard_output, standard_error,
+	                   &status, error))
+		return FALSE;
+
+	if (exit_code != NULL)
+		*exit_code = status;
+
+	return TRUE;
+}
+
+/* [ security_log_denied ]
+ * The Security log is not readable without Administrator rights.
+ * wevtutil says so twice over: exit code 5, and "Access is denied" on
+ * stderr.  Either is enough. */
+static gboolean
+security_log_denied (gint exit_code, const gchar *stderr_text)
+{
+	return exit_code == ERROR_ACCESS_DENIED ||
+	       (stderr_text != NULL &&
+	        strstr (stderr_text, "Access is denied") != NULL);
+}
+
 /* [ poll_events ] */
 static gboolean
 poll_events (gpointer data)
 {
 	/* Query the Security log for WFP connection events.
 	 * 5156 = permitted, 5157 = blocked. */
-	gchar *args[] = {
-		"wevtutil.exe", "qe", "Security",
-		"/q:*[System[(EventID=5156 or EventID=5157)]]",
-		"/c:10", "/rd:true", "/f:text", NULL
-	};
 	gchar *output = NULL;
-	gint status = 0;
+	gchar *err_text = NULL;
+	gint exit_code = 0;
 	gchar **records;
 	guint new_events = 0;
 
-	if (!g_spawn_sync (NULL, args, NULL, G_SPAWN_SEARCH_PATH,
-	                   NULL, NULL, &output, NULL, &status, NULL)) {
-		g_free (output);
+	(void) data;
+
+	if (!run_wevtutil (&output, &err_text, &exit_code, NULL)) {
+		g_clear_pointer (&output, g_free);
+		g_clear_pointer (&err_text, g_free);
 		return G_SOURCE_CONTINUE;
 	}
 
-	if (status != 0 || output == NULL) {
+	if (exit_code != 0) {
+		/* firewalled_log_start() checks this before it starts the
+		 * timer, so reaching here means the right to read the log was
+		 * lost after monitoring began.  Nothing is shown because the
+		 * caller has no way to reach the UI; the alternative -- a
+		 * message every five seconds -- would be worse. */
+		g_free (output);
+		g_free (err_text);
+		return G_SOURCE_CONTINUE;
+	}
+
+	g_free (err_text);
+
+	if (output == NULL) {
 		g_free (output);
 		return G_SOURCE_CONTINUE;
 	}
@@ -907,8 +1212,62 @@ poll_events (gpointer data)
 static gboolean
 firewalled_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 {
+	gchar *output = NULL;
+	gchar *err_text = NULL;
+	gint exit_code = 0;
+	GError *local_error = NULL;
+
 	if (log_source_id != 0)
 		return TRUE;
+
+	/* Probe once before promising to watch.  Without Administrator
+	 * rights wevtutil can never return a single event, so starting the
+	 * five second timer anyway would tell the user the opposite of the
+	 * truth: monitoring would read as switched on while nothing could
+	 * ever arrive. */
+	if (!run_wevtutil (&output, &err_text, &exit_code, &local_error)) {
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-windows"),
+		             0, "Could not run wevtutil.exe: %s",
+		             local_error != NULL ? local_error->message
+		                                 : "unknown error");
+		g_clear_error (&local_error);
+		g_clear_pointer (&output, g_free);
+		g_clear_pointer (&err_text, g_free);
+		return FALSE;
+	}
+
+	g_clear_pointer (&output, g_free);
+
+	if (err_text != NULL)
+		g_strstrip (err_text);
+
+	if (exit_code != 0) {
+		if (security_log_denied (exit_code, err_text))
+			g_set_error_literal (
+				error,
+				g_quark_from_static_string ("fs-backend-windows"),
+				exit_code,
+				_("The Security log cannot be read without "
+				  "Administrator rights.  Start StockFW as "
+				  "Administrator to see incoming and "
+				  "outbound traffic."));
+		else
+			g_set_error (
+				error,
+				g_quark_from_static_string ("fs-backend-windows"),
+				exit_code,
+				_("wevtutil.exe could not read the Security log "
+				  "(exit %d): %s"),
+				exit_code,
+				(err_text != NULL && *err_text != '\0')
+					? err_text : _("no detail"));
+
+		g_clear_pointer (&err_text, g_free);
+		return FALSE;
+	}
+
+	g_clear_pointer (&err_text, g_free);
 
 	log_callback = callback;
 	log_user_data = user_data;
@@ -1056,23 +1415,29 @@ firewalled_set_profile_enabled (gint profile, gboolean enabled,
 	return TRUE;
 }
 
+/* Designated initialisers, not positional: adding a field to FsBackend
+ * then leaves every backend correct instead of silently shifting every
+ * entry after the insertion point. */
 static const FsBackend windows_backend = {
-	"windows",
-	"Windows Defender Firewall",
-	firewalled_com_available,
-	firewalled_get_state,
-	firewalled_start,
-	firewalled_stop,
-	firewalled_reload,
-	firewalled_apply_rules,
-	firewalled_clear_rules,
-	firewalled_list_interfaces,
-	firewalled_log_start,
-	firewalled_log_stop,
-	firewalled_log_active,
-	firewalled_dhcp_set_enabled,
-	firewalled_get_profile_enabled,
-	firewalled_set_profile_enabled
+	.name                  = "windows",
+	.display_name          = "Windows Defender Firewall",
+	.uses_settings         = FALSE,   /* builds rules from the policy alone */
+	.available             = firewalled_com_available,
+	.get_state             = firewalled_get_state,
+	.start                 = firewalled_start,
+	.stop                  = firewalled_stop,
+	.reload                = firewalled_reload,
+	.apply_rules           = firewalled_apply_rules,
+	.clear_rules           = firewalled_clear_rules,
+	.list_interfaces       = firewalled_list_interfaces,
+	.list_interface_stats  = firewalled_list_interface_stats,
+	.list_connections      = firewalled_list_connections,
+	.log_start             = firewalled_log_start,
+	.log_stop              = firewalled_log_stop,
+	.log_active            = firewalled_log_active,
+	.dhcp_set_enabled      = firewalled_dhcp_set_enabled,
+	.get_profile_enabled   = firewalled_get_profile_enabled,
+	.set_profile_enabled   = firewalled_set_profile_enabled
 };
 
 const FsBackend *

@@ -42,19 +42,16 @@ static gboolean is_anomalous_port (FsAppProfile *profile, guint port);
 static gboolean is_anomalous_destination (FsAppProfile *profile,
                                           const gchar *remote_ip);
 static gboolean is_anomalous_time (FsAppProfile *profile);
-static gboolean is_anomalous_volume (FsAppProfile *profile, guint64 bytes);
 static FsInsight *create_insight (FsInsightType type,
                                   FsCopilotSeverity severity,
                                   const gchar *title,
                                   const gchar *description,
                                   const gchar *app_name,
                                   const gchar *destination);
-static FsSimulationResult *simulate_against_rules (FsCopilot *copilot,
-                                                   const gchar *app_name,
-                                                   const gchar *remote_ip,
-                                                   guint port,
-                                                   const gchar *protocol,
-                                                   gboolean inbound);
+/* Note: simulate_against_rules() was declared here once but never
+ * written or called.  fs_copilot_simulate() says in its own comment
+ * that it still uses heuristics rather than the rule engine, which is
+ * what the declaration used to imply and was not true. */
 
 /* [ fs_copilot_new ] */
 FsCopilot *
@@ -208,12 +205,17 @@ fs_copilot_simulate (FsCopilot *copilot,
 	 * For now, return a simulated result based on current rules. */
 	FsSimulationResult *result = g_new0 (FsSimulationResult, 1);
 
+	/* The format carries six conversions; the caller's app_name was
+	 * never passed as the sixth argument, so this read whatever happened
+	 * to be next on the stack. */
 	result->scenario = g_strdup_printf (_("%s %s connection from %s to %s:%u (%s)"),
 	                                    inbound ? _("Inbound") : _("Outbound"),
 	                                    protocol ? protocol : "TCP",
 	                                    remote_ip ? remote_ip : "anywhere",
 	                                    inbound ? "local" : remote_ip,
-	                                    port);
+	                                    port,
+	                                    (app_name && *app_name) ? app_name
+	                                                          : _("an application"));
 
 	/* In a real implementation, this would iterate through the
 	 * actual policy rules. For now, simulate based on heuristics. */
@@ -490,14 +492,6 @@ is_anomalous_time (FsAppProfile *profile)
 		return TRUE; /* Unusual if < 5 connections in this hour historically */
 
 	return FALSE;
-}
-
-/* [ is_anomalous_volume ] - simplified */
-static gboolean
-is_anomalous_volume (FsAppProfile *profile, guint64 bytes)
-{
-	/* Would compare against historical average. Simplified. */
-	return bytes > 10 * 1024 * 1024; /* > 10MB in one connection */
 }
 
 /* [ create_insight ] */

@@ -28,6 +28,34 @@ fs_interface_free (FsInterface *iface)
 	g_free (iface);
 }
 
+void
+fs_iface_stat_free (FsIfaceStat *s)
+{
+	if (s == NULL)
+		return;
+
+	g_free (s->device);
+	g_free (s->kind);
+	g_free (s->ip);
+	g_free (s);
+}
+
+void
+fs_connection_free (FsConnection *c)
+{
+	if (c == NULL)
+		return;
+
+	g_free (c->source);
+	g_free (c->destination);
+	g_free (c->port);
+	g_free (c->protocol);
+	g_free (c->service);
+	g_free (c->program);
+	g_free (c->direction);
+	g_free (c);
+}
+
 FsHit *
 fs_hit_new (void)
 {

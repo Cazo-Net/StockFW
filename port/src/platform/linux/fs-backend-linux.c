@@ -684,6 +684,24 @@ linux_list_interfaces (void)
 	return list;
 }
 
+/* [ linux_list_interface_stats ]
+ * Not wired up yet.  Returning NULL hides the Status page's Network
+ * panel rather than showing invented numbers. */
+static GList *
+linux_list_interface_stats (void)
+{
+	return NULL;
+}
+
+/* [ linux_list_connections ]
+ * Same: enumerating sockets means walking /proc/net/tcp and matching
+ * inodes to processes, which is not written yet. */
+static GList *
+linux_list_connections (void)
+{
+	return NULL;
+}
+
 /* ------------------------------------------------------------ syslog tail
  *
  * The original read /var/log/messages with gnome-vfs.  Here the firewall
@@ -828,21 +846,42 @@ linux_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 	log_callback = callback;
 	log_user_data = user_data;
 
-	/* Reading the live log needs root; without it we simply do not
-	 * monitor rather than failing the whole app. */
-	if (geteuid () != 0)
-		return TRUE;
+	/* Reporting failure does not fail the app -- fs_hitview_start()
+	 * hands the message to the page.  Returning TRUE from here instead
+	 * was the real problem: monitoring read as switched on while the
+	 * list below stayed empty, with nothing to say why. */
+	if (geteuid () != 0) {
+		g_set_error_literal (error,
+		                     g_quark_from_static_string ("fs-backend-linux"),
+		                     EACCES,
+		                     _("The kernel log cannot be read without "
+		                       "root privileges.  Start StockFW as root "
+		                       "to see incoming and outbound traffic."));
+		return FALSE;
+	}
 
-	if (pipe (log_pipe) != 0)
-		return TRUE;
+	if (pipe (log_pipe) != 0) {
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-linux"),
+		             errno, _("Could not create a pipe: %s"),
+		             g_strerror (errno));
+		return FALSE;
+	}
 
 	log_pid = fork ();
 
 	if (log_pid < 0) {
+		int saved_errno = errno;
+
 		close (log_pipe[0]);
 		close (log_pipe[1]);
 		log_pipe[0] = log_pipe[1] = -1;
-		return TRUE;
+
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-linux"),
+		             saved_errno, _("Could not start the log reader: %s"),
+		             g_strerror (saved_errno));
+		return FALSE;
 	}
 
 	if (log_pid == 0) {
@@ -991,23 +1030,28 @@ fs_backend_set_context (FsPolicy *policy, FsSettings *settings)
 	(void) settings;
 }
 
+/* Designated initialisers: adding a field to FsBackend cannot silently
+ * shift these the way a positional list would. */
 static const FsBackend linux_backend = {
-	"linux",
-	"Linux (iptables)",
-	linux_available,
-	linux_get_state,
-	linux_start,
-	linux_stop,
-	linux_reload,
-	linux_apply_rules,
-	linux_clear_rules,
-	linux_list_interfaces,
-	linux_log_start,
-	linux_log_stop,
-	linux_log_active,
-	linux_dhcp_set_enabled,
-	linux_get_profile_enabled,
-	linux_set_profile_enabled
+	.name                  = "linux",
+	.display_name          = "Linux (iptables)",
+	.uses_settings         = TRUE,    /* rules are generated from FsSettings */
+	.available             = linux_available,
+	.get_state             = linux_get_state,
+	.start                 = linux_start,
+	.stop                  = linux_stop,
+	.reload                = linux_reload,
+	.apply_rules           = linux_apply_rules,
+	.clear_rules           = linux_clear_rules,
+	.list_interfaces       = linux_list_interfaces,
+	.list_interface_stats  = linux_list_interface_stats,
+	.list_connections      = linux_list_connections,
+	.log_start             = linux_log_start,
+	.log_stop              = linux_log_stop,
+	.log_active            = linux_log_active,
+	.dhcp_set_enabled      = linux_dhcp_set_enabled,
+	.get_profile_enabled   = linux_get_profile_enabled,
+	.set_profile_enabled   = linux_set_profile_enabled
 };
 
 const FsBackend *

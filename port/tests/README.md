@@ -26,3 +26,20 @@ the tests never touches a real `/etc/firestarter`.
 | policy | save/load round trip, defaults, add and remove by content |
 | services | port to name lookup, back-door ports, ICMP types, range expansion |
 | scripts | inbound/outbound rules, NAT, permissive vs restrictive defaults |
+
+## Event source (`tests/test-logstart.sh`)
+
+```sh
+cd port
+./tests/test-logstart.sh
+```
+
+Builds the platform backend on its own -- `fs-backend-windows.c` or
+`fs-backend-linux.c` -- and asks it to start monitoring traffic. Either
+it starts and `log_active()` agrees, or it refuses **and says why**.
+
+The case it exists for: `log_start()` used to return TRUE whether or not
+the Security log could be read, so a non-elevated Windows session and an
+unprivileged Linux session both showed an empty event list that read as a
+working firewall with nothing to report. Monitoring now has to be either
+honestly running or honestly explained.

@@ -73,14 +73,23 @@ null_get_profile_enabled (gint profile, gboolean *enabled)
 static gboolean
 null_set_profile_enabled (gint profile, gboolean enabled, GError **error)
 {
-	g_set_error_literal (error, g_quark_from_static_string ("fs-backend"),
-	                     1, "This build has no firewall backend");
-
-	return FALSE;
+	return null_unsupported (error);
 }
 
 static GList *
 null_list_interfaces (void)
+{
+	return NULL;
+}
+
+static GList *
+null_list_interface_stats (void)
+{
+	return NULL;
+}
+
+static GList *
+null_list_connections (void)
 {
 	return NULL;
 }
@@ -108,38 +117,26 @@ null_dhcp_set_enabled (gboolean enabled, GError **error)
 	return null_unsupported (error);
 }
 
-static gboolean
-null_get_profile_enabled (gint profile, gboolean *enabled)
-{
-	if (enabled != NULL)
-		*enabled = FALSE;
-
-	return FALSE;
-}
-
-static gboolean
-null_set_profile_enabled (gint profile, gboolean enabled, GError **error)
-{
-	return null_unsupported (error);
-}
-
 static const FsBackend null_backend = {
-	"none",
-	"No firewall backend",
-	null_available,
-	null_get_state,
-	null_start,
-	null_stop,
-	null_reload,
-	null_apply_rules,
-	null_clear_rules,
-	null_list_interfaces,
-	null_log_start,
-	null_log_stop,
-	null_log_active,
-	null_dhcp_set_enabled,
-	null_get_profile_enabled,
-	null_set_profile_enabled
+	.name                  = "none",
+	.display_name          = "No firewall backend",
+	.uses_settings         = FALSE,
+	.available             = null_available,
+	.get_state             = null_get_state,
+	.start                 = null_start,
+	.stop                  = null_stop,
+	.reload                = null_reload,
+	.apply_rules           = null_apply_rules,
+	.clear_rules           = null_clear_rules,
+	.list_interfaces       = null_list_interfaces,
+	.list_interface_stats  = null_list_interface_stats,
+	.list_connections      = null_list_connections,
+	.log_start             = null_log_start,
+	.log_stop              = null_log_stop,
+	.log_active            = null_log_active,
+	.dhcp_set_enabled      = null_dhcp_set_enabled,
+	.get_profile_enabled   = null_get_profile_enabled,
+	.set_profile_enabled   = null_set_profile_enabled
 };
 
 const FsBackend *

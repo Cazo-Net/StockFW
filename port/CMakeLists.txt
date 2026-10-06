@@ -101,4 +101,69 @@ if(FS_BACKEND_LIBS)
   target_link_libraries(StockFW PRIVATE ${FS_BACKEND_LIBS})
 endif()
 
+# Windows resolves a program's dependencies from the directory holding
+# the .exe, so build/StockFW.exe only starts if the GTK/GLib DLLs sit
+# beside it.  Without this the app runs from an MSYS2 shell -- where
+# /ucrt64/bin is already on PATH -- and nowhere else: Explorer,
+# PowerShell and the installed copy all die with a System Error dialog.
+# The script copies ldd's import closure rather than the whole 270 MB
+# toolchain.  Windows only: Linux links against a shared system GTK
+# and has no MSYS2 toolchain to stage from.
+if(WIN32)
+  find_program(FS_BASH bash)
+  if(FS_BASH)
+    add_custom_command(TARGET StockFW POST_BUILD
+      COMMAND "${FS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/stage-runtime-dlls.sh"
+              "$<TARGET_FILE_DIR:StockFW>"
+      COMMENT "Staging GTK runtime DLLs next to StockFW.exe"
+      VERBATIM)
+  endif()
+endif()
+
 install(TARGETS StockFW RUNTIME DESTINATION bin)
+
+# ------------------------------------------------------------------ smoke
+# UI smoke tests.  EXCLUDE_FROM_ALL so `ninja` alone never builds them
+# and nothing test-only can end up in StockFW.exe or the installer.
+#
+# These exist because a page that compiles can still crash the moment it
+# is built -- that is precisely the class of bug fs-core cannot see.
+# Shared by every UI test target: fs-hitview.c calls out to the
+# dialogs, and the page wiring in fs-app.c pulls in the rest.
+set(FS_UI_SOURCES
+  src/ui/fs-app.c
+  src/ui/fs-dialogs.c
+  src/ui/fs-statusview.c
+  src/ui/fs-policyview.c
+  src/ui/fs-hitview.c
+  src/ui/fs-copilot.c
+  ${FS_BACKEND_SOURCES}
+)
+add_executable(fs-ui-smoke EXCLUDE_FROM_ALL
+  tests/ui-prefs-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_link_libraries(fs-ui-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-ui-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-ui-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
+
+# The Events page and its reason strip.  Separate from fs-ui-smoke
+# because building the page starts the platform event source, which
+# the preferences walk deliberately never touches.
+add_executable(fs-hitview-smoke EXCLUDE_FROM_ALL
+  tests/ui-hitview-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_link_libraries(fs-hitview-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-hitview-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-hitview-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()

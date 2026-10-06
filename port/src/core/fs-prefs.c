@@ -160,12 +160,22 @@ fs_prefs_get_bool (const gchar *key, gboolean fallback)
 {
 	gchar *group = NULL;
 	gchar *leaf = NULL;
+	GError *error = NULL;
 	gboolean value;
 
 	fs_prefs_init ();
 	prefs_split_key (key, &group, &leaf);
 
-	value = g_key_file_get_boolean (prefs_file, group, leaf, NULL);
+	/* The error must be collected, not passed as NULL: g_key_file
+	 * returns FALSE for a missing key as well as for a real FALSE, so
+	 * without it the fallback argument was dead code and every
+	 * default in the application was silently ignored. */
+	value = g_key_file_get_boolean (prefs_file, group, leaf, &error);
+
+	if (error != NULL) {
+		g_clear_error (&error);
+		value = fallback;
+	}
 
 	g_free (group);
 	g_free (leaf);
@@ -235,12 +245,20 @@ fs_prefs_get_int (const gchar *key, gint fallback)
 {
 	gchar *group = NULL;
 	gchar *leaf = NULL;
+	GError *error = NULL;
 	gint value;
 
 	fs_prefs_init ();
 	prefs_split_key (key, &group, &leaf);
 
-	value = g_key_file_get_integer (prefs_file, group, leaf, NULL);
+	/* Same reason as fs_prefs_get_bool: a missing key has to become
+	 * the fallback rather than 0. */
+	value = g_key_file_get_integer (prefs_file, group, leaf, &error);
+
+	if (error != NULL) {
+		g_clear_error (&error);
+		value = fallback;
+	}
 
 	g_free (group);
 	g_free (leaf);

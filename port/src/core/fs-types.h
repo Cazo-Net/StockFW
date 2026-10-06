@@ -34,6 +34,36 @@ typedef struct
 void fs_interface_clear (FsInterface *iface);
 void fs_interface_free  (FsInterface *iface);
 
+/* Per-interface traffic counters for the Status page's Network panel.
+ * Kept apart from FsInterface so the settings choosers (which only need
+ * name and address) are unaffected.  Bytes are cumulative since boot;
+ * the view turns consecutive samples into an activity rate. */
+typedef struct
+{
+	gchar    *device;      /* friendly name, e.g. "Ethernet"        */
+	gchar    *kind;        /* "Ethernet", "Wireless", "Virtual" ... */
+	gchar    *ip;
+	guint64   received;    /* cumulative rx bytes                    */
+	guint64   sent;        /* cumulative tx bytes                    */
+	gboolean  up;
+} FsIfaceStat;
+
+void fs_iface_stat_free (FsIfaceStat *s);
+
+/* One row of the Status page's "Active connections" panel. */
+typedef struct
+{
+	gchar *source;
+	gchar *destination;
+	gchar *port;        /* remote port                              */
+	gchar *protocol;
+	gchar *service;     /* well-known name for the remote port      */
+	gchar *program;     /* owning process, when it could be read    */
+	gchar *direction;   /* "Inbound" / "Outbound"                   */
+} FsConnection;
+
+void fs_connection_free (FsConnection *c);
+
 /* A single logged event ("hit").  Same shape as the original Hit struct. */
 typedef struct
 {

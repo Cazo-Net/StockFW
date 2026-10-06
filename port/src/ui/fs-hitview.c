@@ -10,6 +10,7 @@
 #include "ui/fs-hitview.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-copilot.h"
+#include "ui/fs-statusview.h"
 #include "core/fs-backend.h"
 #include "core/fs-service.h"
 #include "core/fs-prefs.h"
@@ -25,6 +26,8 @@
 static GtkWidget    *view;
 static GtkListStore *store;
 static GtkWidget    *count_label;
+static GtkWidget    *monitor_warning;        /* strip; hidden unless needed */
+static GtkWidget    *monitor_warning_label;
 
 /* Column order matches FsHitColumn; the colour column is last. */
 enum
@@ -66,6 +69,26 @@ static const struct
 
 static guint row_count = 0;
 
+/* [ color_cell_data ]
+ * Applies the colour column to a text cell.  Rows with no colour keep
+ * the theme default. */
+static void
+color_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
+                 GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+{
+	gchar *color = NULL;
+
+	(void) column;
+	(void) data;
+
+	gtk_tree_model_get (model, iter, COL_COLOR, &color, -1);
+
+	g_object_set (renderer, "foreground",
+	              (color != NULL && *color != '\0') ? color : NULL,
+	              NULL);
+	g_free (color);
+}
+
 /* [ update_count_label ] */
 static void
 update_count_label (void)
@@ -81,13 +104,173 @@ update_count_label (void)
 	g_free (text);
 }
 
+/* [ hit_is_blocked ]
+ * The Windows backend marks dropped events by appending " [BLOCKED]"
+ * to the service field.  Everything the Status page counts as "serious"
+ * and everything the Events page paints red comes from this. */
+static gboolean
+hit_is_blocked (const FsHit *hit)
+{
+	return hit != NULL && hit->service != NULL &&
+	       strstr (hit->service, "[BLOCKED]") != NULL;
+}
+
+/* [ hit_is_inbound ]
+ * Direction arrives as "In"/"Out" from the parser and as the
+ * "Inbound"/"Outbound" wording from other paths, so both are accepted. */
+static gboolean
+hit_is_inbound (const FsHit *hit)
+{
+	if (hit == NULL || hit->direction == NULL)
+		return FALSE;
+
+	return g_ascii_strcasecmp (hit->direction, "In") == 0 ||
+	       g_ascii_strcasecmp (hit->direction, "Inbound") == 0;
+}
+
+/* [ hit_is_outbound ] */
+static gboolean
+hit_is_outbound (const FsHit *hit)
+{
+	if (hit == NULL || hit->direction == NULL)
+		return FALSE;
+
+	return g_ascii_strcasecmp (hit->direction, "Out") == 0 ||
+	       g_ascii_strcasecmp (hit->direction, "Outbound") == 0;
+}
+
+/* ---- the two Interface > Events filters -----------------------------
+ *
+ * Ported from the original hitview.c, which ran both inside
+ * hitview_append_hit() before the status counters were touched.  So a
+ * filtered event produces no row, no counter tick and no Copilot
+ * input -- it is as if the firewall had not logged it. */
+
+/* The row the list accepted most recently, kept as copies rather than
+ * as a pointer into the model because rows are trimmed once the cap
+ * is passed. */
+static gchar *last_port = NULL;
+static gchar *last_proto = NULL;
+static gchar *last_src = NULL;
+static gchar *last_dst = NULL;
+
+/* [ hit_is_redundant ]
+ * The original compared port, protocol, source and destination
+ * against the previous hit and treated a match as one event repeated.
+ * Checked most likely to differ first. */
+static gboolean
+hit_is_redundant (const FsHit *hit)
+{
+	if (hit == NULL || last_dst == NULL ||
+	    hit->port == NULL || hit->protocol == NULL ||
+	    hit->source == NULL || hit->destination == NULL)
+		return FALSE;
+
+	if (g_strcmp0 (hit->port, last_port) != 0)
+		return FALSE;
+
+	if (g_strcmp0 (hit->protocol, last_proto) != 0)
+		return FALSE;
+
+	if (g_strcmp0 (hit->source, last_src) != 0)
+		return FALSE;
+
+	return g_strcmp0 (hit->destination, last_dst) == 0;
+}
+
+static void
+remember_hit (const FsHit *hit)
+{
+	if (hit == NULL)
+		return;
+
+	g_free (last_port);
+	g_free (last_proto);
+	g_free (last_src);
+	g_free (last_dst);
+
+	last_port  = g_strdup (hit->port);
+	last_proto = g_strdup (hit->protocol);
+	last_src   = g_strdup (hit->source);
+	last_dst   = g_strdup (hit->destination);
+}
+
+/* Local addresses are refreshed on a timer rather than read per event:
+ * the Windows implementation asks GetAdaptersAddresses, which is far
+ * too heavy to call for every packet in a flood. */
+static GList  *local_addresses = NULL;
+static gint64  local_addresses_checked = 0;
+
+static GList *
+current_local_addresses (void)
+{
+	const gint64 now = g_get_monotonic_time ();
+
+	if (local_addresses == NULL || now - local_addresses_checked > 10 * G_USEC_PER_SEC) {
+		g_list_free_full (local_addresses,
+		                  (GDestroyNotify) fs_interface_free);
+		local_addresses = fs_backend ()->list_interfaces ();
+		local_addresses_checked = now;
+	}
+
+	return local_addresses;
+}
+
+/* [ hit_is_for_me ]
+ * TRUE when the destination is one of this machine's own addresses.
+ *
+ * The original compared against the single external interface's IP.
+ * Asking every interface is both more accurate and something that can
+ * work on Windows, which has no one "external device" to query.  The
+ * useful effect is the same: broadcast and multicast destinations are
+ * not us, so discovery noise stops flooding the list. */
+static gboolean
+hit_is_for_me (const FsHit *hit)
+{
+	GList *ifaces;
+	gboolean found = FALSE;
+
+	if (hit == NULL || hit->destination == NULL)
+		return FALSE;
+
+	ifaces = current_local_addresses ();
+
+	for (GList *l = ifaces; l != NULL; l = l->next) {
+		FsInterface *iface = l->data;
+
+		if (iface->ip != NULL &&
+		    g_ascii_strcasecmp (iface->ip, hit->destination) == 0) {
+			found = TRUE;
+			break;
+		}
+	}
+
+	return found;
+}
+
 /* [ on_hit ]
  * Backend log callback.  Runs on the main loop because the backend
  * delivers through a GLib source. */
 static void
 on_hit (const FsHit *hit, gpointer user_data)
 {
-	fs_hitview_append (hit);
+	gboolean blocked;
+
+	/* Both filters run before anything is counted, as they did in the
+	 * original. */
+	if (fs_prefs_get_bool (FS_PREFS_SKIP_REDUNDANT, FALSE) &&
+	    hit_is_redundant (hit))
+		return;
+
+	if (fs_prefs_get_bool (FS_PREFS_SKIP_NOT_FOR_FIREWALL, TRUE) &&
+	    !hit_is_for_me (hit) && !hit_is_outbound (hit))
+		return;
+
+	if (!fs_hitview_append (hit))
+		return;
+
+	blocked = hit_is_blocked (hit);
+	remember_hit (hit);
 
 	/* Feed to copilot for learning and anomaly detection. */
 	extern FsCopilot *copilot;
@@ -96,6 +279,13 @@ on_hit (const FsHit *hit, gpointer user_data)
 
 	/* Update copilot stats counter. */
 	fs_copilot_note_event ();
+
+	/* Status page counters.  These were declared but never called,
+	 * which is why the panel always read 0. */
+	if (hit_is_inbound (hit))
+		fs_statusview_event_in (blocked);
+	else
+		fs_statusview_event_out (blocked);
 }
 
 gboolean
@@ -118,7 +308,10 @@ fs_hitview_append (const FsHit *hit)
 	fields[COL_TOS]         = hit->tos;
 	fields[COL_PROTOCOL]    = hit->protocol;
 	fields[COL_SERVICE]     = hit->service;
-	fields[COL_COLOR]       = "";
+	/* Paint blocked events red, as the original did.  The colour is a
+	 * separate column because GtkCellRendererText has no per-row text
+	 * colour; a cell-data-func below reads it back. */
+	fields[COL_COLOR]       = hit_is_blocked (hit) ? "#cc0000" : "";
 
 	gtk_list_store_append (store, &iter);
 
@@ -177,14 +370,43 @@ fs_hitview_clear (void)
 	update_count_label ();
 }
 
+/* [ set_monitor_warning ]
+ * The reason monitoring cannot run, shown as a strip above the list.
+ * It stays on the page rather than flashing past in a dialog, because
+ * the user needs the cause to still be there when they look again and
+ * an empty list with no explanation is indistinguishable from a
+ * firewall with nothing to report.  NULL clears it. */
+static void
+set_monitor_warning (const gchar *reason)
+{
+	if (monitor_warning == NULL)
+		return;
+
+	if (reason == NULL) {
+		gtk_widget_hide (monitor_warning);
+		return;
+	}
+
+	gtk_label_set_text (GTK_LABEL (monitor_warning_label), reason);
+	gtk_widget_show (monitor_warning);
+}
+
 void
 fs_hitview_reload (void)
 {
+	GError *error = NULL;
+
 	/* The list is a live tail, not a file to re-read: restarting the
 	 * source is the equivalent of a reload. */
 	fs_hitview_clear ();
 	fs_hitview_stop  ();
-	fs_hitview_start (NULL);
+
+	if (!fs_hitview_start (&error)) {
+		set_monitor_warning (error != NULL
+		                     ? error->message
+		                     : _("Monitoring could not be restarted."));
+		g_clear_error (&error);
+	}
 }
 
 gboolean
@@ -274,12 +496,17 @@ on_start_toggled (GtkToggleButton *button, gpointer data)
 			fs_dialogs_error (NULL,
 			                  _("Could not monitor firewall events"),
 			                  error ? error->message : NULL);
+			set_monitor_warning (error != NULL
+			                     ? error->message
+			                     : _("Monitoring could not start."));
 			g_clear_error (&error);
 
 			/* Leave the switch off rather than pretending to monitor. */
 			gtk_toggle_button_set_active (button, FALSE);
 			return;
 		}
+
+		set_monitor_warning (NULL);
 	} else {
 		fs_hitview_stop ();
 	}
@@ -289,7 +516,7 @@ GtkWidget *
 fs_hitview_page (void)
 {
 	GtkWidget *page, *box, *scroll, *button_box, *button, *toggle;
-	GtkWidget *header;
+	GtkWidget *header, *image;
 
 	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 
@@ -321,6 +548,34 @@ fs_hitview_page (void)
 	gtk_box_pack_start (GTK_BOX (header), button_box, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (page), header, FALSE, FALSE, 0);
 
+	/* Strip that carries the reason monitoring is not running.  Hidden
+	 * by default, and marked no-show-all so gtk_widget_show_all() on
+	 * the page does not reveal it before it has a reason to be seen. */
+	monitor_warning = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	monitor_warning_label = gtk_label_new ("");
+	gtk_label_set_xalign (GTK_LABEL (monitor_warning_label), 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (monitor_warning_label), TRUE);
+
+	/* The contents are shown once here and then left alone: only the
+	 * strip itself is ever toggled.  no_show_all on the strip is what
+	 * keeps the page-wide gtk_widget_show_all() from revealing a bare
+	 * one, but that same flag stops the walk from reaching these
+	 * children -- so letting show_all do it would render a blank bar
+	 * exactly when a reason had to be read. */
+	image = gtk_image_new_from_icon_name ("dialog-warning",
+	                                      GTK_ICON_SIZE_BUTTON);
+	gtk_widget_show (image);
+	gtk_widget_show (monitor_warning_label);
+
+	gtk_box_pack_start (GTK_BOX (monitor_warning), image, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (monitor_warning), monitor_warning_label,
+	                    TRUE, TRUE, 0);
+	gtk_container_set_border_width (GTK_CONTAINER (monitor_warning), 6);
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (monitor_warning), "warning");
+	gtk_widget_set_no_show_all (monitor_warning, TRUE);
+	gtk_box_pack_start (GTK_BOX (page), monitor_warning, FALSE, FALSE, 0);
+
 	/* The list. */
 	store = gtk_list_store_newv (FS_NUM_HITCOLUMNS, (GType[FS_NUM_HITCOLUMNS])
 		{ G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
@@ -343,6 +598,12 @@ fs_hitview_page (void)
 			_(column_defs[i].label), renderer, "text", i, NULL);
 		gtk_tree_view_column_set_resizable (column, TRUE);
 
+		/* Every visible text column reads the colour column so a
+		 * blocked event is red right across the row. */
+		gtk_tree_view_column_set_cell_data_func (column, renderer,
+		                                         color_cell_data,
+		                                         NULL, NULL);
+
 		/* Column visibility is remembered, as in the original. */
 		if (column_defs[i].pref_key != NULL)
 			gtk_tree_view_column_set_visible (
@@ -364,8 +625,20 @@ fs_hitview_page (void)
 	gtk_box_pack_start (GTK_BOX (page), scroll, TRUE, TRUE, 0);
 
 	/* Start monitoring straight away: the whole point of the page is
-	 * watching events, and the original did this too. */
-	fs_hitview_start (NULL);
+	 * watching events, and the original did this too.  A failure here
+	 * used to be dropped on the floor, leaving an empty list that read
+	 * as a working firewall with nothing to report; it now has to say
+	 * why. */
+	{
+		GError *error = NULL;
+
+		if (!fs_hitview_start (&error)) {
+			set_monitor_warning (error != NULL
+			                     ? error->message
+			                     : _("Monitoring could not start."));
+			g_clear_error (&error);
+		}
+	}
 
 	(void) box;
 

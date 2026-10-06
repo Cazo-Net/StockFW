@@ -36,6 +36,13 @@ typedef struct
 	const gchar *name;          /* "linux" / "windows" */
 	const gchar *display_name;  /* human readable, for the About box */
 
+	/* TRUE when the backend's rules are built from the FsSettings the
+	 * Preferences dialog edits.  FALSE when the backend works straight
+	 * from the policy and ignores those settings entirely -- the
+	 * Windows backend does, so the dialog greys the Firewall pages out
+	 * rather than offering switches that would change nothing. */
+	gboolean uses_settings;
+
 	/* TRUE when the backend can actually manage a firewall here. */
 	gboolean (*available) (void);
 
@@ -63,6 +70,18 @@ typedef struct
 	 * FsInterface*, caller frees with g_list_free_full +
 	 * fs_interface_free. */
 	GList *(*list_interfaces) (void);
+
+	/* Live traffic counters for the Status page's Network panel.
+	 * Returns a GList of FsIfaceStat* (caller frees with
+	 * g_list_free_full (..., fs_iface_stat_free)).  Backends with no
+	 * counters return NULL and the panel is left out. */
+	GList *(*list_interface_stats) (void);
+
+	/* Currently open sockets for the Status page's Active connections
+	 * panel.  Returns a GList of FsConnection* (caller frees with
+	 * g_list_free_full (..., fs_connection_free)).  May return NULL
+	 * when the platform or the account cannot enumerate them. */
+	GList *(*list_connections) (void);
 
 	/* Live event monitor. */
 	gboolean (*log_start) (FsLogFunc callback, gpointer user_data, GError **error);

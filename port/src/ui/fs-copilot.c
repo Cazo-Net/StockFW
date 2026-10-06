@@ -205,9 +205,14 @@ text_view_append (GtkWidget *scrolled, const gchar *text, const gchar *tag)
 static GtkWidget *
 build_insights_tree (void)
 {
+    /* One G_TYPE_STRING per column above, in enum order, ending with
+     * COL_RULE_CSV.  Passing fewer than COL_N_COLS leaves GObject
+     * reading an uninitialised GType out of the varargs, which is a
+     * crash waiting to happen. */
     insights_store = gtk_list_store_new (COL_N_COLS,
         G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
-        G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+        G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+        G_TYPE_STRING);
 
     GtkWidget *tree = gtk_tree_view_new_with_model (GTK_TREE_MODEL (insights_store));
     g_object_unref (GTK_TREE_MODEL (insights_store));
@@ -285,8 +290,12 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
     {
         GtkWidget *hdr = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
 
+        /* security-high is the shield, which is what a firewall tool's
+         * header should carry.  The original pick,
+         * "utilities-system-monitor", is not shipped by any theme we
+         * bundle, so it would have rendered as a blank space. */
         GtkWidget *icon = gtk_image_new_from_icon_name (
-            "utilities-system-monitor", GTK_ICON_SIZE_DIALOG);
+            "security-high", GTK_ICON_SIZE_DIALOG);
         gtk_box_pack_start (GTK_BOX (hdr), icon, FALSE, FALSE, 0);
 
         GtkWidget *titles = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);

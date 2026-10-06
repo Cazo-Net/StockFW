@@ -24,6 +24,10 @@
 
 static FsApp fsapp = { NULL, NULL, NULL };
 
+/* Holds one toolbar row per notebook page; only the selected page's
+ * row is visible at a time. */
+static GtkWidget *toolbar_host = NULL;
+
 /* The traffic policy, shared by the Policy page and Apply. */
 static FsPolicy *policy = NULL;
 
@@ -104,14 +108,48 @@ register_actions (void)
 }
 
 /* [ add_page ]
- * Appends a notebook page and returns the tab label. */
+ * Appends a notebook page and pairs it with a row in the toolbar strip
+ * above the notebook.  Every page contributes a row -- even an empty
+ * one -- so the strip and the notebook stay index-aligned. */
 static void
-add_page (const gchar *title, GtkWidget *content)
+add_page (const gchar *title, GtkWidget *content, GtkWidget *toolbar)
 {
 	GtkWidget *label = gtk_label_new (title);
 
 	gtk_widget_show_all (content);
 	gtk_notebook_append_page (GTK_NOTEBOOK (fsapp.notebook), content, label);
+
+	if (toolbar == NULL)
+		toolbar = gtk_toolbar_new ();
+
+	gtk_box_pack_start (GTK_BOX (toolbar_host), toolbar, FALSE, FALSE, 0);
+	gtk_widget_set_no_show_all (toolbar, TRUE);
+	gtk_widget_hide (toolbar);
+}
+
+/* [ on_page_switched ]
+ * Show only the toolbar row that belongs to the selected page. */
+static void
+on_page_switched (GtkNotebook *notebook, GtkWidget *page, guint page_num,
+                  gpointer data)
+{
+	GList *children;
+	guint i = 0;
+
+	(void) notebook;
+	(void) page;
+	(void) data;
+
+	children = gtk_container_get_children (GTK_CONTAINER (toolbar_host));
+
+	for (GList *l = children; l != NULL; l = l->next, i++) {
+		if (i == page_num)
+			gtk_widget_show (l->data);
+		else
+			gtk_widget_hide (l->data);
+	}
+
+	g_list_free (children);
 }
 
 void
@@ -169,29 +207,65 @@ fs_app_activate (GtkApplication *app)
 		g_object_unref (loader);
 	}
 
-	/* Notebook pages */
+	/* Toolbar strip, above the notebook, one row per page. */
+	toolbar_host = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	gtk_box_pack_start (GTK_BOX (box), toolbar_host, FALSE, FALSE, 0);
+
+	/* Notebook pages.  Order matches the original: Status, Events,
+	 * Policy, with Copilot last. */
 	fsapp.notebook = gtk_notebook_new ();
 	gtk_widget_set_vexpand (fsapp.notebook, TRUE);
 	gtk_box_pack_start (GTK_BOX (box), fsapp.notebook, TRUE, TRUE, 0);
 
-	add_page (_("Status"), fs_statusview_page ());
+	g_signal_connect (fsapp.notebook, "switch-page",
+	                  G_CALLBACK (on_page_switched), NULL);
+
+	add_page (_("Status"), fs_statusview_page (),
+	          fs_statusview_toolbar ());
+	add_page (_("Events"), fs_hitview_page (), NULL);
 
 	policy = fs_policy_new ();
 	settings = fs_settings_new ();
+	fs_settings_load_prefs (settings);
 	fs_backend_set_context (policy, settings);
 
-	add_page (_("Policy"), fs_policyview_page (policy));
+	/* "Start the firewall on program startup".  A failure here is not
+	 * fatal: the window still opens and the state line reports what
+	 * actually happened. */
+	if (fs_prefs_get_bool (FS_PREFS_START_ON_GUI, FALSE) &&
+	    fs_backend ()->available ()) {
+		GError *error = NULL;
 
-	add_page (_("Events"), fs_hitview_page ());
+		if (!fs_backend ()->start (&error))
+			g_clear_error (&error);
+	}
+
+	add_page (_("Policy"), fs_policyview_page (policy), NULL);
 
 	/* Smart Firewall Copilot tab */
 	copilot = fs_copilot_new ();
-	add_page (_("Copilot"), fs_copilot_page (copilot, policy));
+	add_page (_("Copilot"), fs_copilot_page (copilot, policy), NULL);
 
 	gtk_widget_show_all (fsapp.window);
 
+	/* show_all() would reveal every toolbar row at once; reapply the
+	 * selection so only the current page's row is left visible. */
+	on_page_switched (NULL, NULL,
+	                  (guint) gtk_notebook_get_current_page (
+	                  GTK_NOTEBOOK (fsapp.notebook)), NULL);
+
 	/* Reflect the real firewall state, if the backend knows it. */
 	fs_statusview_set_state (fs_backend ()->get_state ());
+}
+
+void
+fs_app_reload_settings (void)
+{
+	if (settings == NULL)
+		return;
+
+	fs_settings_load_prefs (settings);
+	fs_backend_set_context (policy, settings);
 }
 
 void

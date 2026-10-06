@@ -249,6 +249,10 @@ refresh_group (FsPolicyGroup *group, const FsPolicy *policy)
 	}
 }
 
+/* Defined below; runs the policy through the backend when the
+ * "Apply policy changes immediately" preference is on. */
+static void maybe_apply_instantly (void);
+
 /* [ on_remove_clicked ] */
 static void
 on_remove_clicked (GtkButton *button, gpointer data)
@@ -268,6 +272,7 @@ on_remove_clicked (GtkButton *button, gpointer data)
 	                      g_ptr_array_index (group->rules, row))) {
 		refresh_group (group, current_policy);
 		fs_policyview_save (current_policy);
+		maybe_apply_instantly ();
 	}
 }
 
@@ -321,6 +326,7 @@ on_add_clicked (GtkButton *button, gpointer data)
 	select_row (group, (gint) group->rules->len - 1);
 
 	fs_policyview_save (current_policy);
+	maybe_apply_instantly ();
 }
 
 /* [ on_cell_edited ]
@@ -363,15 +369,20 @@ on_cell_edited (GtkCellRendererText *renderer, gchar *path_string,
 	fs_rule_free (new_rule);
 
 	fs_policyview_save (current_policy);
+	maybe_apply_instantly ();
 }
 
-/* [ on_apply_clicked ]
- * Persists the policy, then hands it to the platform backend.  On
- * Windows this creates INetFwRule objects, which needs elevation; the
- * backend says so through FS_APPLY_NO_PRIVILEGE rather than failing
- * silently. */
+/* [ apply_policy_now ]
+ * Shared by the Apply button and the "Apply policy changes
+ * immediately" preference.
+ *
+ * announce=TRUE is the confirmation the Apply button owes the user.
+ * Auto-apply is silent on success -- a dialog per edited cell would
+ * make the table unusable -- but every failure still reports, because
+ * a refusal that vanished would be exactly the kind of quiet lie this
+ * port has been removing. */
 static void
-on_apply_clicked (GtkButton *button, gpointer data)
+apply_policy_now (gboolean announce)
 {
 	const FsBackend *backend = fs_backend ();
 	FsApplyResult result;
@@ -400,10 +411,11 @@ on_apply_clicked (GtkButton *button, gpointer data)
 
 	switch (result) {
 	case FS_APPLY_OK:
-		fs_dialogs_info (NULL, _("Policy applied"),
-		                 g_strdup_printf (
-		                         _("%u rule(s) were applied to the "
-		                           "firewall."), count));
+		if (announce)
+			fs_dialogs_info (NULL, _("Policy applied"),
+			                 g_strdup_printf (
+			                         _("%u rule(s) were applied to the "
+			                           "firewall."), count));
 		break;
 
 	case FS_APPLY_NO_PRIVILEGE:
@@ -432,6 +444,28 @@ on_apply_clicked (GtkButton *button, gpointer data)
 	}
 
 	g_clear_error (&error);
+}
+
+static void
+on_apply_clicked (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+
+	apply_policy_now (TRUE);
+}
+
+/* [ maybe_apply_instantly ]
+ * Called by every handler that changes the policy.  With the
+ * preference on the change reaches the firewall at once instead of
+ * waiting for Apply. */
+static void
+maybe_apply_instantly (void)
+{
+	if (!fs_prefs_get_bool (FS_PREFS_APPLY_POLICY_INSTANTLY, TRUE))
+		return;
+
+	apply_policy_now (FALSE);
 }
 
 /* [ build_group ] */

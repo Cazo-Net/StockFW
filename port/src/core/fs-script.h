@@ -31,10 +31,34 @@ typedef struct
 	gboolean  block_non_routables;
 	gboolean  deny_packets;
 	gboolean  restrictive_outbound;
+
+	/* Which ICMP types the ICMP Filtering page lets through.  These
+	 * follow the original exactly, including the one that is not ICMP
+	 * at all: "Traceroute" opened UDP 33434, and "MS Traceroute"
+	 * allowed destination-unreachable.  Only consulted when
+	 * filter_icmp is set. */
+	gboolean  icmp_echo_request;
+	gboolean  icmp_echo_reply;
+	gboolean  icmp_traceroute;
+	gboolean  icmp_mstraceroute;
+	gboolean  icmp_unreachable;
+	gboolean  icmp_timestamping;
+	gboolean  icmp_masking;
+	gboolean  icmp_redirection;
+	gboolean  icmp_source_quenches;
 } FsSettings;
 
 FsSettings *fs_settings_new  (void);
 void        fs_settings_free (FsSettings *settings);
+
+/* Fills an FsSettings from the Firewall preferences, so the Preferences
+ * dialog changes the rules that are actually generated instead of
+ * writing keys nothing reads.  Call after fs_prefs_load() and again
+ * whenever the dialog is accepted. */
+void        fs_settings_load_prefs (FsSettings *settings);
+
+/* Writes an FsSettings back to the same keys. */
+void        fs_settings_save_prefs (const FsSettings *settings);
 
 /* The control script: detects iptables, loads the policy modules and
  * dispatches to the per-direction setup scripts. */

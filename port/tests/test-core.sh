@@ -30,6 +30,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-service.h"
 #include "core/fs-script.h"
 #include "core/fs-fwrule.h"
+#include "core/fs-prefs.h"
 
 static int failures = 0;
 
@@ -464,6 +465,87 @@ static void test_script_generation (void)
 	       "control script masquerades on the external interface");
 	g_free (script);
 
+	/* ICMP filtering: every tick on the Preferences page has to change
+	 * the rules that come out, or the page is decoration. */
+	{
+		script = fs_script_generate_inbound (policy, settings);
+		CHECK (strstr (script, "--icmp-type echo-request") != NULL,
+		       "default settings allow ping");
+		CHECK (strstr (script, "--icmp-type redirect") == NULL,
+		       "redirect is off by default");
+		CHECK (strstr (script, "--icmp-type timestamp-request") == NULL,
+		       "timestamping is off by default");
+		CHECK (strstr (script, "-p udp --dport 33434") != NULL,
+		       "traceroute tick opens UDP 33434 as the original did");
+		CHECK (strstr (script, "--icmp-type destination-unreachable") != NULL,
+		       "MS traceroute tick allows destination-unreachable");
+		g_free (script);
+
+		settings->icmp_echo_request = FALSE;
+		settings->icmp_redirection = TRUE;
+		script = fs_script_generate_inbound (policy, settings);
+		CHECK (strstr (script, "--icmp-type echo-request") == NULL,
+		       "unticking echo request removes the rule");
+		CHECK (strstr (script, "--icmp-type redirect") != NULL,
+		       "ticking redirection adds the rule");
+		g_free (script);
+
+		settings->icmp_echo_request = TRUE;
+		settings->icmp_redirection = FALSE;
+
+		/* Master switch off: everything ICMP is allowed. */
+		settings->filter_icmp = FALSE;
+		script = fs_script_generate_inbound (policy, settings);
+		CHECK (strstr (script, "-p icmp -m limit --limit 10/s "
+		                           "-j ACCEPT") != NULL,
+		       "filtering off allows all ICMP");
+		CHECK (strstr (script, "--icmp-type echo-request") == NULL,
+		       "filtering off emits no per-type rules");
+		g_free (script);
+		settings->filter_icmp = TRUE;
+	}
+
+	/* Advanced Options: the rejection method and the two broadcast /
+	 * reserved-address switches each have to reach the script. */
+	{
+		settings->deny_packets = TRUE;
+		script = fs_script_generate_inbound (policy, settings);
+		CHECK (strstr (script, "-j DROP\n") != NULL,
+		       "drop-silently is the default rejection method");
+		CHECK (strstr (script, "-j REJECT") == NULL,
+		       "drop mode emits no REJECT");
+		g_free (script);
+
+		settings->deny_packets = FALSE;
+		script = fs_script_generate_inbound (policy, settings);
+		CHECK (strstr (script, "-j REJECT --reject-with "
+		                       "icmp-host-unreachable") != NULL,
+		       "reject mode answers with an error packet");
+		g_free (script);
+		settings->deny_packets = TRUE;
+
+		settings->block_external_broadcast = TRUE;
+		script = fs_script_generate_inbound (policy, settings);
+		CHECK (strstr (script, "-i eth0 -d 255.255.255.255 -j DROP") != NULL,
+		       "external broadcast blocking is emitted");
+		g_free (script);
+		settings->block_external_broadcast = FALSE;
+
+		settings->block_internal_broadcast = TRUE;
+		script = fs_script_generate_inbound (policy, settings);
+		CHECK (strstr (script, "-i eth1 -d 255.255.255.255 -j DROP") != NULL,
+		       "internal broadcast blocking is emitted when NAT is on");
+		g_free (script);
+		settings->block_internal_broadcast = FALSE;
+
+		CHECK (settings->block_non_routables == TRUE,
+		       "reserved addresses are refused by default");
+		script = fs_script_generate_inbound (policy, settings);
+		CHECK (strstr (script, "-i eth0 -s 10.0.0.0/8 -j DROP") != NULL,
+		       "reserved-address blocking is emitted");
+		g_free (script);
+	}
+
 	/* Host rules must use a real address match: iptables has no -H.
 	 * "to host" is a destination, "from host" a source. */
 	{
@@ -602,8 +684,56 @@ static void test_copilot_suggestion_apply (void)
 	fs_policy_free (policy);
 }
 
+/* Regression: fs_prefs_get_bool()/get_int() used to pass NULL for the
+ * GError, so g_key_file returned FALSE for a missing key and the
+ * fallback argument was dead code.  Every default in the application
+ * -- ICMP filtering on, policy auto-apply on, reserved addresses
+ * refused -- was silently coming out FALSE on a fresh install. */
+static void test_prefs_fallbacks (void)
+{
+	gchar *s;
+
+	CHECK (fs_prefs_get_bool ("/apps/firestarter/client/never/set",
+	                          TRUE) == TRUE,
+	       "missing bool key falls back to TRUE");
+	CHECK (fs_prefs_get_bool ("/apps/firestarter/client/never/set",
+	                          FALSE) == FALSE,
+	       "missing bool key falls back to FALSE");
+	CHECK (fs_prefs_get_int ("/apps/firestarter/client/never/set",
+	                         42) == 42,
+	       "missing int key falls back to 42");
+
+	s = fs_prefs_get_string ("/apps/firestarter/client/never/set", "dflt");
+	CHECK (g_strcmp0 (s, "dflt") == 0, "missing string key falls back");
+	g_free (s);
+
+	/* A stored value still wins over the fallback, in both directions. */
+	fs_prefs_set_bool ("/apps/firestarter/client/sample", TRUE);
+	CHECK (fs_prefs_get_bool ("/apps/firestarter/client/sample",
+	                          FALSE) == TRUE,
+	       "stored TRUE beats a FALSE fallback");
+
+	fs_prefs_set_bool ("/apps/firestarter/client/sample", FALSE);
+	CHECK (fs_prefs_get_bool ("/apps/firestarter/client/sample",
+	                          TRUE) == FALSE,
+	       "stored FALSE beats a TRUE fallback");
+
+	fs_prefs_set_int ("/apps/firestarter/client/int_sample", 7);
+	CHECK (fs_prefs_get_int ("/apps/firestarter/client/int_sample",
+	                         99) == 7,
+	       "stored int beats the fallback");
+}
+
 int main (void)
 {
+	/* Point the preference file somewhere disposable before anything
+	 * reads it: the path is computed once, on first use. */
+#ifdef G_OS_WIN32
+	g_setenv ("APPDATA", g_get_tmp_dir (), TRUE);
+#else
+	g_setenv ("XDG_CONFIG_HOME", g_get_tmp_dir (), TRUE);
+#endif
+
 	test_ports ();
 	test_hosts ();
 	test_rule_csv ();
@@ -614,6 +744,7 @@ int main (void)
 	test_service_lookup ();
 	test_script_generation ();
 	test_copilot_suggestion_apply ();
+	test_prefs_fallbacks ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);
