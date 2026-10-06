@@ -462,7 +462,11 @@ on_apply_clicked (GtkButton *button, gpointer data)
 static void
 maybe_apply_instantly (void)
 {
-	if (!fs_prefs_get_bool (FS_PREFS_APPLY_POLICY_INSTANTLY, TRUE))
+	/* Default to FALSE: the original Firestarter required an explicit
+	 * Apply click.  Auto-apply on every edit was noisy and showed
+	 * "Administrator required" dialogs when not elevated.  The user
+	 * can enable it in Preferences → Interface if they run elevated. */
+	if (!fs_prefs_get_bool (FS_PREFS_APPLY_POLICY_INSTANTLY, FALSE))
 		return;
 
 	apply_policy_now (FALSE);
