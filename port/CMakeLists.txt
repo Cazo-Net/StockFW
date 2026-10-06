@@ -92,8 +92,9 @@ if(WIN32)
   set_target_properties(StockFW PROPERTIES
     OUTPUT_NAME "StockFW"
     WIN32_EXECUTABLE TRUE
-    ICON "${CMAKE_SOURCE_DIR}/installer/nsis/resources/stockfw_icon.ico"
   )
+  # Embed icon + version info via resource compiler
+  target_sources(StockFW PRIVATE stockfw.rc)
 endif()
 
 if(FS_BACKEND_LIBS)
