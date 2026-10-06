@@ -10,6 +10,8 @@
 #include "core/fs-util.h"
 #include "core/fs-service.h"
 #include "core/fs-i18n.h"
+#include "core/fs-fwrule.h"
+#include "core/fs-rules.h"
 
 #include <time.h>
 #include <stdlib.h>
@@ -22,6 +24,9 @@ struct _FsCopilot
 
 	/* Current insights. */
 	GList *insights;
+
+	/* Policy for simulation (set via fs_copilot_set_policy). */
+	FsPolicy *policy;
 
 	/* Configuration. */
 	gboolean learning_enabled;
@@ -62,11 +67,32 @@ fs_copilot_new (void)
 	copilot->profiles = g_hash_table_new_full (g_str_hash, g_str_equal,
 	                                           g_free, (GDestroyNotify) app_profile_free);
 	copilot->insights = NULL;
+	copilot->policy = NULL;
 	copilot->learning_enabled = TRUE;
 	copilot->anomaly_threshold = 2.0;       /* 2 standard deviations */
 	copilot->min_samples_for_baseline = 10; /* Need 10 connections baseline */
 
 	return copilot;
+}
+
+/* [ fs_copilot_set_policy ]
+ * Attach a policy to the copilot for what-if simulation.  The copilot
+ * does not take ownership -- the caller remains responsible for the
+ * policy's lifetime.  Passing NULL clears the reference. */
+void
+fs_copilot_set_policy (FsCopilot *copilot, FsPolicy *policy)
+{
+	if (copilot == NULL)
+		return;
+	copilot->policy = policy;
+}
+
+/* [ fs_copilot_get_policy ]
+ * Get the currently attached policy (may be NULL). */
+FsPolicy *
+fs_copilot_get_policy (FsCopilot *copilot)
+{
+	return (copilot != NULL) ? copilot->policy : NULL;
 }
 
 /* [ fs_copilot_free ] */
@@ -192,7 +218,10 @@ fs_copilot_clear_insights (FsCopilot *copilot)
 	copilot->insights = NULL;
 }
 
-/* [ fs_copilot_simulate ] */
+/* [ fs_copilot_simulate ]
+ * Runs a what-if simulation against the attached policy.  If no policy
+ * is attached, falls back to heuristic defaults (deny inbound, allow
+ * outbound) and notes the limitation in the explanation. */
 FsSimulationResult *
 fs_copilot_simulate (FsCopilot *copilot,
                      const gchar *app_name,
@@ -201,13 +230,9 @@ fs_copilot_simulate (FsCopilot *copilot,
                      const gchar *protocol,
                      gboolean inbound)
 {
-	/* This would use the rule engine to check what would happen.
-	 * For now, return a simulated result based on current rules. */
 	FsSimulationResult *result = g_new0 (FsSimulationResult, 1);
 
-	/* The format carries six conversions; the caller's app_name was
-	 * never passed as the sixth argument, so this read whatever happened
-	 * to be next on the stack. */
+	/* Build the human-readable scenario string. */
 	result->scenario = g_strdup_printf (_("%s %s connection from %s to %s:%u (%s)"),
 	                                    inbound ? _("Inbound") : _("Outbound"),
 	                                    protocol ? protocol : "TCP",
@@ -217,21 +242,145 @@ fs_copilot_simulate (FsCopilot *copilot,
 	                                    (app_name && *app_name) ? app_name
 	                                                          : _("an application"));
 
-	/* In a real implementation, this would iterate through the
-	 * actual policy rules. For now, simulate based on heuristics. */
-	if (inbound)
+	/* If no policy is attached, fall back to heuristic defaults. */
+	if (copilot == NULL || copilot->policy == NULL)
 	{
-		result->would_block = TRUE;  /* Default deny inbound */
-		result->matching_rule = g_strdup (_("Default deny (no allow rule)"));
-		result->explanation = g_strdup (_("No inbound allow rule matches this connection. "
-		                                  "Default policy is to block."));
+		if (inbound)
+		{
+			result->would_block = TRUE;
+			result->matching_rule = g_strdup (_("Default deny (no policy loaded)"));
+			result->explanation = g_strdup (_("No firewall policy is loaded in the copilot. "
+			                                  "Default behavior: deny inbound. "
+			                                  "Load a policy in the Policy tab for accurate simulation."));
+		}
+		else
+		{
+			result->would_block = FALSE;
+			result->matching_rule = g_strdup (_("Default allow (no policy loaded)"));
+			result->explanation = g_strdup (_("No firewall policy is loaded in the copilot. "
+			                                  "Default behavior: allow outbound. "
+			                                  "Load a policy in the Policy tab for accurate simulation."));
+		}
+
+		result->affected_connections = 1;
+		result->explanation = g_strdup_printf (_("Simulation: %s connection from %s to %s:%u (%s) "
+		                                         "would be %s. Reason: %s"),
+		                                       inbound ? _("inbound") : _("outbound"),
+		                                       remote_ip ? remote_ip : "anywhere",
+		                                       inbound ? "local" : remote_ip,
+		                                       port,
+		                                       protocol ? protocol : "TCP",
+		                                       result->would_block ? _("BLOCKED") : _("ALLOWED"),
+		                                       result->explanation);
+		return result;
+	}
+
+	/* Expand the policy into concrete rules. */
+	GList *rules = fs_fwrule_from_policy (copilot->policy);
+	if (rules == NULL)
+	{
+		/* No rules in policy -- use defaults. */
+		if (inbound)
+		{
+			result->would_block = TRUE;
+			result->matching_rule = g_strdup (_("Default deny (empty policy)"));
+			result->explanation = g_strdup (_("The loaded policy contains no rules. "
+			                                  "Default behavior: deny inbound."));
+		}
+		else
+		{
+			result->would_block = FALSE;
+			result->matching_rule = g_strdup (_("Default allow (empty policy)"));
+			result->explanation = g_strdup (_("The loaded policy contains no rules. "
+			                                  "Default behavior: allow outbound."));
+		}
 	}
 	else
 	{
-		result->would_block = FALSE; /* Default allow outbound */
-		result->matching_rule = g_strdup (_("Default allow"));
-		result->explanation = g_strdup (_("Outbound connections are allowed by default "
-		                                  "unless explicitly blocked."));
+		/* Match the scenario against each rule in order.
+		 * First match wins (like a real firewall). */
+		FsRuleProtocol proto = FS_PROTO_ANY;
+		if (protocol != NULL)
+		{
+			if (g_strcmp0 (protocol, "TCP") == 0)
+				proto = FS_PROTO_TCP;
+			else if (g_strcmp0 (protocol, "UDP") == 0)
+				proto = FS_PROTO_UDP;
+		}
+
+		const gchar *remote_addr = (remote_ip && *remote_ip) ? remote_ip : NULL;
+		const gchar *local_addr = inbound ? NULL : remote_addr; /* for outbound, remote is destination */
+
+		GList *match = NULL;
+		for (GList *l = rules; l != NULL; l = l->next)
+		{
+			FsFwRule *rule = l->data;
+
+			/* Direction must match. */
+			if (rule->direction != (inbound ? FS_DIR_INBOUND : FS_DIR_OUTBOUND))
+				continue;
+
+			/* Protocol must match (ANY matches TCP/UDP). */
+			if (rule->protocol != FS_PROTO_ANY && rule->protocol != proto)
+				continue;
+
+			/* Local port must match. */
+			if (rule->local_port != 0 && rule->local_port != (gint)port)
+				continue;
+
+			/* Remote port must match. */
+			if (rule->remote_port != 0 && rule->remote_port != (gint)port)
+				continue;
+
+			/* Local address must match. */
+			if (rule->local_address != NULL && local_addr != NULL)
+			{
+				if (g_strcmp0 (rule->local_address, local_addr) != 0)
+					continue;
+			}
+
+			/* Remote address must match. */
+			if (rule->remote_address != NULL && remote_addr != NULL)
+			{
+				if (g_strcmp0 (rule->remote_address, remote_addr) != 0)
+					continue;
+			}
+
+			/* All criteria matched. */
+			match = l;
+			break;
+		}
+
+		if (match != NULL)
+		{
+			FsFwRule *rule = match->data;
+			result->would_block = (rule->action == FS_ACTION_BLOCK);
+			result->matching_rule = g_strdup (rule->name);
+			result->explanation = g_strdup_printf (_("Matched rule '%s' (%s %s)."),
+			                                       rule->name,
+			                                       result->would_block ? _("blocks") : _("allows"),
+			                                       inbound ? _("inbound") : _("outbound"));
+		}
+		else
+		{
+			/* No rule matched -- apply default policy. */
+			if (inbound)
+			{
+				result->would_block = TRUE;
+				result->matching_rule = g_strdup (_("Default deny (no matching rule)"));
+				result->explanation = g_strdup (_("No rule in the loaded policy matches this connection. "
+				                                  "Default policy: deny inbound."));
+			}
+			else
+			{
+				result->would_block = FALSE;
+				result->matching_rule = g_strdup (_("Default allow (no matching rule)"));
+				result->explanation = g_strdup (_("No rule in the loaded policy matches this connection. "
+				                                  "Default policy: allow outbound."));
+			}
+		}
+
+		fs_fwrule_list_free (rules);
 	}
 
 	result->affected_connections = 1;

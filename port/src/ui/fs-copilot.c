@@ -283,6 +283,9 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
     global_copilot = copilot;
     copilot_policy = policy;
 
+    /* Attach the policy to the copilot for real rule-matching simulation. */
+    fs_copilot_set_policy (copilot, policy);
+
     copilot_vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
     gtk_container_set_border_width (GTK_CONTAINER (copilot_vbox), 8);
 

@@ -117,6 +117,13 @@ gchar *fs_copilot_export_json (FsCopilot *copilot);
 /* Import copilot state from JSON. */
 gboolean fs_copilot_import_json (FsCopilot *copilot, const gchar *json);
 
+/* Attach a policy for what-if simulation.  The copilot does not take
+ * ownership; passing NULL clears the reference. */
+void fs_copilot_set_policy (FsCopilot *copilot, FsPolicy *policy);
+
+/* Get the currently attached policy (may be NULL). */
+FsPolicy *fs_copilot_get_policy (FsCopilot *copilot);
+
 /* Free helpers. */
 void fs_insight_free (FsInsight *insight);
 void fs_simulation_result_free (FsSimulationResult *result);
