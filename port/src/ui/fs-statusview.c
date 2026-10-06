@@ -820,7 +820,11 @@ fs_statusview_page (void)
 		GdkPixbuf *logo = load_status_logo ();
 
 		if (logo != NULL) {
-			logo_image = gtk_image_new_from_pixbuf (logo);
+			/* Scale down from 96x96 to 48x48 for the header */
+			GdkPixbuf *scaled = gdk_pixbuf_scale_simple (logo, 48, 48,
+			                                             GDK_INTERP_BILINEAR);
+			logo_image = gtk_image_new_from_pixbuf (scaled);
+			g_object_unref (scaled);
 			g_object_unref (logo);
 			gtk_box_pack_start (GTK_BOX (header), logo_image,
 			                    FALSE, FALSE, 0);
