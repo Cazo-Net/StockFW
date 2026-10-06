@@ -128,10 +128,47 @@ require_root (GError **error)
 	                     g_quark_from_static_string ("fs-backend-linux"),
 	                     0,
 	                     "Managing the firewall requires root privileges. "
-	                     "Run Firestarter with sudo, or grant it "
+	                     "Run StockFW with sudo, or grant it "
 	                     "CAP_NET_ADMIN.");
 
 	return FALSE;
+}
+
+/* [ have_iptables ]
+ * Whether the iptables binary is on PATH.  Callers that silence
+ * iptables' own output still need to distinguish "nothing to do" from
+ * "there is no firewall tool here at all". */
+static gboolean
+have_iptables (GError **error)
+{
+	gchar *argv[] = { (gchar *) "iptables", (gchar *) "--version", NULL };
+	GError *local = NULL;
+
+	if (!g_find_program_in_path ("iptables")) {
+		g_set_error_literal (error,
+		                     g_quark_from_static_string ("fs-backend-linux"),
+		                     0,
+		                     "iptables was not found on PATH.");
+		return FALSE;
+	}
+
+	/* A present but unusable binary (missing kernel support, broken
+	 * alternatives link) still deserves a message.  The probe's own
+	 * output is discarded so it cannot leak into whatever the caller
+	 * is printing. */
+	if (!g_spawn_sync (NULL, argv, NULL,
+	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+	                   G_SPAWN_STDERR_TO_DEV_NULL,
+	                   NULL, NULL, NULL, NULL, NULL, &local)) {
+		g_clear_error (&local);
+		g_set_error_literal (error,
+		                     g_quark_from_static_string ("fs-backend-linux"),
+		                     0,
+		                     "iptables could not be executed.");
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
 /* [ default_route_interface ]
@@ -296,16 +333,21 @@ linux_stop (GError **error)
 	if (!require_root (error))
 		return FALSE;
 
+	if (!have_iptables (error))
+		return FALSE;
+
 	/* Detach first: -X refuses to remove a chain that is still the
-	 * target of a jump. */
+	 * target of a jump.  All four steps are quiet because on a first
+	 * run there is nothing there yet, and "no such chain" is the
+	 * expected answer rather than an error worth showing the user. */
 	detach_chain ("INPUT", "INBOUND");
 	detach_chain ("FORWARD", "INBOUND");
 	detach_chain ("OUTPUT", "OUTBOUND");
 
-	run_command (flush_in);
-	run_command (flush_out);
-	run_command (del_in);
-	run_command (del_out);
+	run_command_quiet (flush_in);
+	run_command_quiet (flush_out);
+	run_command_quiet (del_in);
+	run_command_quiet (del_out);
 
 	/* Undo our own NAT rules only.  Deleting a rule that is not there
 	 * fails harmlessly, and the loop drains duplicates from earlier
@@ -494,6 +536,9 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 
 	if (!require_root (error))
 		return FS_APPLY_FAILED;
+
+	if (!have_iptables (error))
+		return FS_APPLY_NO_IPTABLES;
 
 	/* Start from a clean slate so applying twice is idempotent. */
 	linux_stop (NULL);
