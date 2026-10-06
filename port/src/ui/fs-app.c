@@ -18,7 +18,7 @@
 #include "core/fs-script.h"
 #include "core/fs-copilot.h"
 #include "core/fs-i18n.h"
-#include "stockfw-logo-32.h"
+#include "stockfw-logo-64.h"
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
@@ -131,8 +131,8 @@ fs_app_activate (GtkApplication *app)
 		GError *error = NULL;
 		GdkPixbufLoader *loader = gdk_pixbuf_loader_new ();
 
-		if (gdk_pixbuf_loader_write (loader, stockfw_logo_32_png,
-		                             stockfw_logo_32_png_len, &error)) {
+		if (gdk_pixbuf_loader_write (loader, stockfw_logo_64_png,
+		                             stockfw_logo_64_png_len, &error)) {
 			gdk_pixbuf_loader_close (loader, NULL);
 			GdkPixbuf *icon = gdk_pixbuf_loader_get_pixbuf (loader);
 			if (icon != NULL)
@@ -151,6 +151,23 @@ fs_app_activate (GtkApplication *app)
 
 	register_actions ();
 	gtk_application_set_menubar (fsapp.app, build_menubar ());
+
+	/* Set the default icon for ALL windows (main, dialogs, about) */
+	{
+		GError *error = NULL;
+		GdkPixbufLoader *loader = gdk_pixbuf_loader_new ();
+
+		if (gdk_pixbuf_loader_write (loader, stockfw_logo_64_png,
+		                             stockfw_logo_64_png_len, &error)) {
+			gdk_pixbuf_loader_close (loader, NULL);
+			GdkPixbuf *icon = gdk_pixbuf_loader_get_pixbuf (loader);
+			if (icon != NULL)
+				gtk_window_set_default_icon (icon);
+		} else {
+			g_clear_error (&error);
+		}
+		g_object_unref (loader);
+	}
 
 	/* Notebook pages */
 	fsapp.notebook = gtk_notebook_new ();

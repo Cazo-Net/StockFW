@@ -10,7 +10,7 @@
 #include "ui/fs-dialogs.h"
 #include "core/fs-backend.h"
 #include "core/fs-i18n.h"
-#include "stockfw-logo-128.h"
+#include "stockfw-logo-96.h"
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
@@ -37,8 +37,8 @@ load_status_logo (void)
 	GdkPixbuf *pixbuf = NULL;
 
 	loader = gdk_pixbuf_loader_new ();
-	if (gdk_pixbuf_loader_write (loader, stockfw_logo_128_png,
-	                             stockfw_logo_128_png_len, &error)) {
+	if (gdk_pixbuf_loader_write (loader, stockfw_logo_96_png,
+	                             stockfw_logo_96_png_len, &error)) {
 		gdk_pixbuf_loader_close (loader, NULL);
 		pixbuf = gdk_pixbuf_loader_get_pixbuf (loader);
 		if (pixbuf)
