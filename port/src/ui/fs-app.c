@@ -186,7 +186,7 @@ fs_app_activate (GtkApplication *app)
 
 	/* Smart Firewall Copilot tab */
 	copilot = fs_copilot_new ();
-	add_page (_("Copilot"), fs_copilot_page (copilot));
+	add_page (_("Copilot"), fs_copilot_page (copilot, policy));
 
 	gtk_widget_show_all (fsapp.window);
 

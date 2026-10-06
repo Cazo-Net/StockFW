@@ -75,6 +75,11 @@ gboolean  fs_policy_save  (FsPolicy *policy);
 
 void      fs_policy_add    (FsPolicy *policy, FsRule *rule);
 gboolean  fs_policy_remove (FsPolicy *policy, FsRule *rule);
+
+/* TRUE when a rule identical to the one passed in is already stored.
+ * Identity is the CSV form, the same way fs_policy_remove matches. */
+gboolean  fs_policy_contains (const FsPolicy *policy, const FsRule *rule);
+
 void      fs_policy_install_defaults (FsPolicy *policy);
 
 /* Convenience: how many rules of a kind. */

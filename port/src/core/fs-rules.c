@@ -442,6 +442,44 @@ fs_policy_remove (FsPolicy *policy, FsRule *rule)
 	return FALSE;
 }
 
+/* [ fs_policy_contains ]
+ * TRUE when an identical row is already stored.  Rules are identified
+ * the same way fs_policy_remove identifies them: by their CSV form.
+ * Callers use this to avoid stacking duplicates, e.g. when a suggestion
+ * is applied more than once. */
+gboolean
+fs_policy_contains (const FsPolicy *policy, const FsRule *rule)
+{
+	gchar *needle;
+	gboolean found = FALSE;
+
+	if (policy == NULL || rule == NULL)
+		return FALSE;
+
+	if (rule->kind < 0 || rule->kind >= FS_RULE_N_KINDS)
+		return FALSE;
+
+	needle = fs_rule_to_csv (rule);
+
+	for (guint i = 0; i < policy->kinds[rule->kind]->len; i++) {
+		const FsRule *candidate =
+			g_ptr_array_index (policy->kinds[rule->kind], i);
+		gchar *csv = fs_rule_to_csv (candidate);
+
+		if (g_strcmp0 (csv, needle) == 0)
+			found = TRUE;
+
+		g_free (csv);
+
+		if (found)
+			break;
+	}
+
+	g_free (needle);
+
+	return found;
+}
+
 void
 fs_policy_install_defaults (FsPolicy *policy)
 {

@@ -6,10 +6,15 @@
 
 #include <gtk/gtk.h>
 #include "core/fs-copilot.h"
+#include "core/fs-rules.h"
 
 G_BEGIN_DECLS
 
-GtkWidget *fs_copilot_page (FsCopilot *copilot);
+/* Builds the Copilot tab.  policy is the shared traffic policy the
+ * Policy page edits too: the Copilot's "Apply Selected Rule" writes
+ * into it, so passing it here is what makes that button do something
+ * real instead of only printing a success message. */
+GtkWidget *fs_copilot_page (FsCopilot *copilot, FsPolicy *policy);
 
 void fs_copilot_view_refresh (void);
 

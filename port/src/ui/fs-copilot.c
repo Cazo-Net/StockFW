@@ -14,7 +14,9 @@
 #include "core/fs-copilot.h"
 #include "core/fs-rules.h"
 #include "core/fs-fwrule.h"
+#include "core/fs-backend.h"
 #include "ui/fs-app.h"
+#include "ui/fs-policyview.h"
 #include "core/fs-i18n.h"
 #include <gtk/gtk.h>
 #include <string.h>
@@ -54,6 +56,7 @@ static GtkWidget     *analysis_output  = NULL;
 static GtkWidget     *copilot_vbox     = NULL;
 
 static FsCopilot     *global_copilot   = NULL;
+static FsPolicy      *copilot_policy   = NULL;
 static guint          total_events     = 0;
 
 /* =====================================================================
@@ -270,9 +273,10 @@ build_insights_tree (void)
  * fs_copilot_page - Build the full Copilot tab
  * ===================================================================== */
 GtkWidget *
-fs_copilot_page (FsCopilot *copilot)
+fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 {
     global_copilot = copilot;
+    copilot_policy = policy;
 
     copilot_vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
     gtk_container_set_border_width (GTK_CONTAINER (copilot_vbox), 8);
@@ -805,7 +809,34 @@ on_simulate_clicked (GtkButton *btn, gpointer data)
 }
 
 /* =====================================================================
+ * Helpers for applying a suggestion for real
+ * ===================================================================== */
+
+/* [ apply_result_text ]
+ * Turns the backend's verdict into a sentence.  Kept in one place so
+ * the same result never gets reported two different ways. */
+static const gchar *
+apply_result_text (FsApplyResult result)
+{
+    switch (result) {
+    case FS_APPLY_OK:            return "the policy is live on the firewall";
+    case FS_APPLY_PARTIAL:       return "the firewall only accepted the policy partially";
+    case FS_APPLY_NO_IPTABLES:   return "iptables was not found on this system";
+    case FS_APPLY_NO_PRIVILEGE:  return "this account may not change the firewall";
+    case FS_APPLY_EXT_IF_FAILED: return "the external-interface rules were rejected";
+    case FS_APPLY_INT_IF_FAILED: return "the internal-interface rules were rejected";
+    case FS_APPLY_FAILED:
+    default:                     return "the firewall rejected the change";
+    }
+}
+
+/* =====================================================================
  * on_apply_suggestion_clicked
+ *
+ * Adds the selected suggestion to the shared policy, saves it, refreshes
+ * the Policy page and pushes it to the live firewall.  Every outcome is
+ * reported honestly: before this, the button printed "[OK] Applied" and
+ * touched nothing at all.
  * ===================================================================== */
 static void
 on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
@@ -836,13 +867,49 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
         return;
     }
 
+    if (copilot_policy == NULL) {
+        text_view_append (ask_output,
+            "\n[!] No traffic policy is loaded, so nothing can be applied.\n",
+            "orange");
+        g_free (rule_csv);
+        g_free (title);
+        return;
+    }
+
+    /* Parse before promising anything: a malformed suggestion must not
+     * be reported as applied. */
+    FsRule *rule = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE, rule_csv);
+
+    if (rule == NULL) {
+        text_view_append (ask_output,
+            "\n[!] Could not parse the suggested rule, nothing was applied:\n  ",
+            "orange");
+        text_view_append (ask_output, rule_csv, "bold");
+        text_view_append (ask_output, "\n", NULL);
+        g_free (rule_csv);
+        g_free (title);
+        return;
+    }
+
+    if (fs_policy_contains (copilot_policy, rule)) {
+        text_view_append (ask_output,
+            "\n[=] Already in your policy, not added again:\n  ", "dim");
+        text_view_append (ask_output, rule_csv, "bold");
+        text_view_append (ask_output, "\n", NULL);
+        fs_rule_free (rule);
+        g_free (rule_csv);
+        g_free (title);
+        return;
+    }
+
     GtkWidget *dialog = gtk_message_dialog_new (
         GTK_WINDOW (gtk_widget_get_toplevel (copilot_vbox)),
         GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
         _("Apply this AI-suggested rule?\n\n"
           "Insight: %s\n"
           "Rule: %s\n\n"
-          "This will add the rule to your policy."),
+          "This will add the rule to your policy, save it to disk and\n"
+          "push it to the firewall."),
         title ? title : "?", rule_csv);
 
     gtk_window_set_title (GTK_WINDOW (dialog), _("Apply AI Suggestion"));
@@ -850,15 +917,77 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
     gint response = gtk_dialog_run (GTK_DIALOG (dialog));
     gtk_widget_destroy (dialog);
 
-    if (response == GTK_RESPONSE_YES) {
+    if (response != GTK_RESPONSE_YES) {
+        fs_rule_free (rule);
+        g_free (rule_csv);
+        g_free (title);
+        return;
+    }
+
+    fs_policy_add (copilot_policy, rule);
+    fs_rule_free (rule);
+    rule = NULL;
+
+    /* Persist.  If the write fails, take the row back out so what the
+     * Policy page shows and what is on disk stay the same thing. */
+    if (!fs_policyview_save (copilot_policy)) {
+        FsRule *rollback = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE,
+                                             rule_csv);
+
+        if (rollback != NULL) {
+            fs_policy_remove (copilot_policy, rollback);
+            fs_rule_free (rollback);
+        }
+
         text_view_append (ask_output,
-            "\n[OK] Applied rule suggestion:\n  ", "green");
+            "\n[!] Could not save the rule to disk, nothing was applied:\n  ",
+            "red");
         text_view_append (ask_output, rule_csv, "bold");
         text_view_append (ask_output, "\n", NULL);
-
-        refresh_insights ();
-        update_stats ();
+        g_free (rule_csv);
+        g_free (title);
+        return;
     }
+
+    /* Show it on the Policy page straight away. */
+    fs_policyview_reload (copilot_policy);
+    update_stats ();
+
+    /* And put it in front of the actual firewall. */
+    {
+        GError *error = NULL;
+        FsApplyResult result = fs_backend ()->apply_rules (copilot_policy,
+                                                           &error);
+
+        if (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL) {
+            text_view_append (ask_output,
+                "\n[OK] Rule added, saved and applied:\n  ", "green");
+            text_view_append (ask_output, rule_csv, "bold");
+            text_view_append (ask_output, "\n     ", NULL);
+            text_view_append (ask_output, apply_result_text (result),
+                              result == FS_APPLY_OK ? "green" : "orange");
+            text_view_append (ask_output, "\n", NULL);
+        } else {
+            /* The row really is in the policy -- say so rather than
+             * implying the whole thing failed. */
+            text_view_append (ask_output,
+                "\n[!] Rule added to your policy and saved, but it is NOT "
+                "live yet:\n  ", "orange");
+            text_view_append (ask_output, rule_csv, "bold");
+            text_view_append (ask_output, "\n     ", NULL);
+            text_view_append (ask_output, apply_result_text (result), "orange");
+            if (error != NULL) {
+                text_view_append (ask_output, "\n     ", NULL);
+                text_view_append (ask_output, error->message, "dim");
+            }
+            text_view_append (ask_output,
+                "\n     Re-run StockFW as administrator and apply the "
+                "policy to activate it.\n", "dim");
+        }
+        g_clear_error (&error);
+    }
+
+    refresh_insights ();
 
     g_free (rule_csv);
     g_free (title);
