@@ -31,6 +31,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-script.h"
 #include "core/fs-fwrule.h"
 #include "core/fs-prefs.h"
+#include "core/fs-copilot.h"
 
 static int failures = 0;
 
@@ -724,6 +725,104 @@ static void test_prefs_fallbacks (void)
 	       "stored int beats the fallback");
 }
 
+/* Regression: fs_copilot_feed_event() re-inserted the profile on EVERY
+ * event, including the ones whose profile came from the lookup.  On a
+ * key that already exists, g_hash_table_insert() frees the OLD value
+ * through the table's destroy notify -- and old and new value were the
+ * same object.  So the profile was freed and immediately stored again
+ * as a dangling pointer: the next feed wrote into freed memory, the one
+ * after that freed it a second time.  That was the crash behind
+ * "enabling monitoring closes the app" -- g_hash_table_lookup() on the
+ * freed profile->common_ports inside is_anomalous_port (integer
+ * divide-by-zero / access violation in libglib) plus the heap
+ * fail-fasts from the double free, once a log carried a second event
+ * from the same service (which every real batch does).
+ *
+ * The junk blocks below are the teeth: they are the profile's size, so
+ * when the buggy code frees the profile, the next allocation reuses and
+ * zeroes it, and the dangling pointer becomes visibly poisoned instead
+ * of accidentally still looking healthy. */
+static void test_copilot_profile_lifetime (void)
+{
+	FsCopilot *copilot = fs_copilot_new ();
+	FsHit hit;
+	const FsAppProfile *profile;
+	gpointer junk[80];
+	gint i, j, n_junk = 0;
+
+	memset (&hit, 0, sizeof hit);
+	hit.service     = "SSH";
+	hit.source      = "192.168.1.50";
+	hit.destination = "192.168.1.10";
+	hit.port        = "22";
+	hit.protocol    = "TCP";
+	hit.direction   = "In";
+
+	fs_copilot_feed_event (copilot, &hit);   /* feed 1: creates it */
+	fs_copilot_feed_event (copilot, &hit);   /* feed 2: frees it under the bug */
+
+	/* Reuse the profile's block right after the buggy free, so the
+	 * dangling pointer is poisoned instead of accidentally healthy. */
+	for (j = 0; j < 4; j++)
+		junk[n_junk++] = g_malloc0 (sizeof (FsAppProfile));
+
+	profile = fs_copilot_get_profile (copilot, "SSH");
+	CHECK (profile != NULL, "SSH profile exists after feed 2");
+	CHECK (profile != NULL && profile->common_ports != NULL &&
+	       profile->common_destinations != NULL &&
+	       profile->hourly_activity != NULL,
+	       "profile's counting tables are live after feed 2");
+	CHECK (profile != NULL && profile->total_connections == 2,
+	       "2 feeds counted after feed 2 (got %" G_GUINT64_FORMAT ")",
+	       profile ? profile->total_connections : 0);
+
+	/* Flush before anything crash-prone: if the bug is present the
+	 * process may die later, and the evidence must already be on disk. */
+	fflush (stdout);
+
+	for (i = 2; i < 20; i++) {
+		fs_copilot_feed_event (copilot, &hit);
+
+		/* Reuse the profile's block right after each feed. */
+		for (j = 0; j < 4; j++)
+			junk[n_junk++] = g_malloc0 (sizeof (FsAppProfile));
+	}
+
+	profile = fs_copilot_get_profile (copilot, "SSH");
+	CHECK (profile != NULL, "SSH profile survives 20 feeds");
+	if (profile != NULL) {
+		CHECK (profile->common_ports != NULL &&
+		       profile->common_destinations != NULL &&
+		       profile->hourly_activity != NULL,
+		       "profile's counting tables are still live");
+		CHECK (profile->total_connections == 20,
+		       "all 20 feeds counted (got %" G_GUINT64_FORMAT ")",
+		       profile->total_connections);
+	}
+
+	/* A second application must get its own profile without touching
+	 * the first one. */
+	hit.service = "DNS";
+	hit.port    = "53";
+	for (i = 0; i < 5; i++)
+		fs_copilot_feed_event (copilot, &hit);
+
+	profile = fs_copilot_get_profile (copilot, "DNS");
+	CHECK (profile != NULL && profile->total_connections == 5,
+	       "DNS profile counts its own 5 feeds");
+
+	profile = fs_copilot_get_profile (copilot, "SSH");
+	CHECK (profile != NULL && profile->total_connections == 20,
+	       "SSH profile still intact after the DNS feeds");
+
+	fflush (stdout);
+
+	for (i = 0; i < n_junk; i++)
+		g_free (junk[i]);
+
+	fs_copilot_free (copilot);
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -745,6 +844,7 @@ int main (void)
 	test_script_generation ();
 	test_copilot_suggestion_apply ();
 	test_prefs_fallbacks ();
+	test_copilot_profile_lifetime ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

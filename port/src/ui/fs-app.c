@@ -40,8 +40,14 @@ FsCopilot *copilot = NULL;
 static void
 on_delete_event (GtkWidget *widget, GdkEvent *event, gpointer data)
 {
+	/* GTK owns the event it passes to the handler; freeing it here
+	 * made the main loop free the same block a second time when the
+	 * window closed -- a double free on every exit. */
+	(void) widget;
+	(void) event;
+	(void) data;
+
 	fs_app_quit ();
-	gdk_event_free (event);
 }
 
 /* [ build_menubar ]

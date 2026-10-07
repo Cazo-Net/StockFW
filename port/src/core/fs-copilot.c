@@ -122,15 +122,28 @@ fs_copilot_feed_event (FsCopilot *copilot, const FsHit *hit)
 	const gchar *protocol = hit->protocol ? hit->protocol : "TCP";
 	gboolean inbound = (hit->direction && g_strcmp0 (hit->direction, "In") == 0);
 
-	/* Get or create profile. */
+	/* Get or create profile.
+	 *
+	 * The insert belongs inside the "not found" branch and nowhere
+	 * else.  g_hash_table_insert() on a key that already exists frees
+	 * the OLD value through the table's destroy notify -- and when the
+	 * profile came from the lookup, old value and new value are the
+	 * same object.  So the unconditional insert used to free the very
+	 * profile it then stored: the table kept a dangling pointer, the
+	 * next event wrote into freed memory, and the one after that freed
+	 * it again.  That was the crash behind monitoring the log --
+	 * g_hash_table_lookup() inside is_anomalous_port() on the freed
+	 * profile->common_ports (integer divide-by-zero or access violation
+	 * in libglib), plus the heap fail-fasts from the double free. */
 	FsAppProfile *profile = g_hash_table_lookup (copilot->profiles, app_name);
 	if (profile == NULL)
+	{
 		profile = app_profile_new (app_name, NULL);
+		g_hash_table_insert (copilot->profiles, g_strdup (app_name), profile);
+	}
 
 	app_profile_record_connection (profile, remote_ip, port, protocol,
 	                               inbound, 0);
-
-	g_hash_table_insert (copilot->profiles, g_strdup (app_name), profile);
 
 	/* Analyze for anomalies if we have enough baseline. */
 	if (profile->total_connections >= copilot->min_samples_for_baseline)

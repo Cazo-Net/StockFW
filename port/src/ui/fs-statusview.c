@@ -462,6 +462,10 @@ refresh_network (void)
 		row++;
 	}
 
+	/* The backend documents the lists as caller-owned; freeing them
+	 * here is what keeps a 2 second timer from leaking every sample. */
+	g_list_free_full (stats, (GDestroyNotify) fs_iface_stat_free);
+
 	store_trim (net_store, row);
 }
 
@@ -505,6 +509,9 @@ refresh_connections (void)
 		store_set_nth (conn_store, row, values, CONN_N_COLS);
 		row++;
 	}
+
+	/* Caller-owned list, as documented in fs-backend.h. */
+	g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
 
 	store_trim (conn_store, row);
 }
