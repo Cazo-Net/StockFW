@@ -1,5 +1,4 @@
 /*---[ scriptwriter.c ]-----------------------------------------------
- * Copyright (C) 2000-2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,7 +16,7 @@
 #include <stdio.h>
 #include <errno.h>
 
-#include "firestarter.h"
+#include "stockfw.h"
 #include "globals.h"
 #include "wizard.h"
 #include "util.h"
@@ -29,7 +28,7 @@
 #include "policyview.h"
 
 #define PPP_HOOK_FILE "/etc/ppp/ip-up.local"
-const gchar* FIRESTARTER_HOOK = "sh "FIRESTARTER_CONTROL_SCRIPT" start\n";
+const gchar* STOCKFW_HOOK = "sh "STOCKFW_CONTROL_SCRIPT" start\n";
 
 static const gchar *
 test_bool (const gchar *conf_key)
@@ -44,9 +43,9 @@ test_bool (const gchar *conf_key)
 }
 
 void
-scriptwriter_output_firestarter_script ()
+scriptwriter_output_stockfw_script ()
 {
-	gchar *path = FIRESTARTER_CONTROL_SCRIPT;
+	gchar *path = STOCKFW_CONTROL_SCRIPT;
 	FILE *f = fopen (path, "w");
 
         if (f == NULL) {
@@ -57,10 +56,10 @@ scriptwriter_output_firestarter_script ()
 	chmod (path, 00700);
 
 	fprintf (f, "#!/bin/bash\n");
-	fprintf (f, "#-----------( Firestarter Control Script )-----------#\n\n");
+	fprintf (f, "#-----------( StockFW Control Script )-----------#\n\n");
 
 	fprintf (f, "# Load Configuration\n"
-		    "source "FIRESTARTER_CONFIGURATION_SCRIPT" 2>&1\n\n");
+		    "source "STOCKFW_CONFIGURATION_SCRIPT" 2>&1\n\n");
 
 	/* If the system binaries can't be found, try to locate them */
 	fprintf (f, "# --(Set program paths)--\n\n");
@@ -131,21 +130,21 @@ scriptwriter_output_firestarter_script ()
 
 	fprintf (f, "\n# --(Control Functions)--\n\n");
 
-	fprintf (f, "# Create Firestarter lock file\n"
-		    "lock_firestarter () {\n"
+	fprintf (f, "# Create StockFW lock file\n"
+		    "lock_stockfw () {\n"
 		    "	if [ -e /var/lock/subsys ]; then\n"
-		    "		touch /var/lock/subsys/firestarter\n"
+		    "		touch /var/lock/subsys/stockfw\n"
 		    "	else\n"
-		    "		touch /var/lock/firestarter\n"
+		    "		touch /var/lock/stockfw\n"
 		    "	fi\n"
 		    "}\n\n");
 
-	fprintf (f, "# Remove Firestarter lock file\n"
-		    "unlock_firestarter () {\n"
+	fprintf (f, "# Remove StockFW lock file\n"
+		    "unlock_stockfw () {\n"
 		    "	if [ -e /var/lock/subsys ]; then\n\n"
-		    "		rm -f /var/lock/subsys/firestarter\n"
+		    "		rm -f /var/lock/subsys/stockfw\n"
 		    "	else\n"
-		    "		rm -f /var/lock/firestarter\n"
+		    "		rm -f /var/lock/stockfw\n"
 		    "	fi\n"
 		    "}\n\n");
 
@@ -193,14 +192,14 @@ scriptwriter_output_firestarter_script ()
 
 	fprintf (f, "# Start the firewall, enforcing traffic policy\n"
 		    "start_firewall () {\n"
-		    "	lock_firestarter\n"
-		    "	source "FIRESTARTER_FIREWALL_SCRIPT" 2>&1\n"
+		    "	lock_stockfw\n"
+		    "	source "STOCKFW_FIREWALL_SCRIPT" 2>&1\n"
 		    "	retval=$?\n"
 		    "	if [ $retval -eq 0 ]; then\n"
 		    "		echo \"Firewall started\"\n"
 		    "	else\n"
 		    "		echo \"Firewall not started\"\n"
-		    "		unlock_firestarter\n"
+		    "		unlock_stockfw\n"
 		    "	exit $retval\n"
 		    "fi\n"
 		    "}\n\n");
@@ -221,7 +220,7 @@ scriptwriter_output_firestarter_script ()
 		    "	$IPT -t nat -Z 2>/dev/null\n"
 		    "	retval=$?\n"
 		    "	if [ $retval -eq 0 ]; then\n"
-		    "		unlock_firestarter\n"
+		    "		unlock_stockfw\n"
 		    "		echo \"Firewall stopped\"\n"
 		    "	fi\n"
 		    "	exit $retval\n"
@@ -244,10 +243,10 @@ scriptwriter_output_firestarter_script ()
 
 	fprintf (f, "# Report the status of the firewall\n"
 		    "status () {\n"
-		    "	if [ -e /var/lock/subsys/firestarter -o -e /var/lock/firestarter ]; then\n"
-		    "		echo \"Firestarter is running...\"\n"
+		    "	if [ -e /var/lock/subsys/stockfw -o -e /var/lock/stockfw ]; then\n"
+		    "		echo \"StockFW is running...\"\n"
 		    "	else\n"
-		    "		echo \"Firestarter is stopped\"\n"
+		    "		echo \"StockFW is stopped\"\n"
 		    "	fi\n"
 		    "}\n\n");
 
@@ -268,10 +267,10 @@ scriptwriter_output_firestarter_script ()
 		    "	status\n"
 		    ";;\n"
 		    "reload-inbound-policy)\n"
-		    "	source "FIRESTARTER_INBOUND_SETUP" 2>&1\n"
+		    "	source "STOCKFW_INBOUND_SETUP" 2>&1\n"
 		    ";;\n"
 		    "reload-outbound-policy)\n"
-		    "	source "FIRESTARTER_OUTBOUND_SETUP" 2>&1\n"
+		    "	source "STOCKFW_OUTBOUND_SETUP" 2>&1\n"
 		    ";;\n"
 		    "*)\n"
 		    "	echo \"usage: $0 {start|stop|lock|status}\"\n"
@@ -285,7 +284,7 @@ scriptwriter_output_firestarter_script ()
 void
 scriptwriter_output_configuration ()
 {
-	gchar *path = FIRESTARTER_CONFIGURATION_SCRIPT;
+	gchar *path = STOCKFW_CONFIGURATION_SCRIPT;
 	FILE *f = fopen (path, "w");
 
         if (f == NULL) {
@@ -295,7 +294,7 @@ scriptwriter_output_configuration ()
 	}
 	chmod (path, 00440);
 
-	fprintf (f, "#-----------( Firestarter Configuration File )-----------#\n\n");
+	fprintf (f, "#-----------( StockFW Configuration File )-----------#\n\n");
 
 	fprintf (f, "# --(External Interface)--\n"
 		    "# Name of external network interface\n"
@@ -428,7 +427,7 @@ script_exists (void)
 	struct stat statd;
 	gint retval;
 
-	retval = stat (FIRESTARTER_FIREWALL_SCRIPT, &statd);
+	retval = stat (STOCKFW_FIREWALL_SCRIPT, &statd);
 	// When installing from RPM the script might already exist but the size will be 0
 	return (retval != -1 && statd.st_size != 0);
 }
@@ -484,14 +483,14 @@ append_hook_to_script (FILE *f)
 	GList *link;
 
 	while (fgets (buf, 512, f) != NULL) {
-		if (strstr (buf, FIRESTARTER_HOOK))
+		if (strstr (buf, STOCKFW_HOOK))
 			return;
 		else
 			list = g_list_append (list, g_strdup (buf));
 	}
 
 	rewind (f);
-	fprintf (f, FIRESTARTER_HOOK);
+	fprintf (f, STOCKFW_HOOK);
 
 	link = list;
 	while (link != NULL) {
@@ -515,13 +514,13 @@ remove_hook (gchar *path)
 	f = fopen (path, "r");
 
 	if (f == NULL) {
-		perror (g_strconcat ("Could not remove firestarter hook in ", path, NULL));
+		perror (g_strconcat ("Could not remove stockfw hook in ", path, NULL));
 		return;
 	}
 
 	while (fgets (buf, 512, f) != NULL) {
 		list = g_list_append (list, g_strdup (buf));
-		if (strstr (buf, FIRESTARTER_HOOK))
+		if (strstr (buf, STOCKFW_HOOK))
 			link = g_list_nth (list, pos);
 			
 		pos++;
@@ -538,7 +537,7 @@ remove_hook (gchar *path)
 		f = fopen (path, "w");
 
 		if (f == NULL) {
-			perror (g_strconcat ("Could not remove firestarter hook in ", path, NULL));
+			perror (g_strconcat ("Could not remove stockfw hook in ", path, NULL));
 			return;
 		}
 
@@ -559,13 +558,13 @@ add_hook (gchar *path)
 {
 	FILE *f;
 
-	printf ("Adding Firestarter startup hook to %s\n", path);
+	printf ("Adding StockFW startup hook to %s\n", path);
 
 	if (file_exists (path)) {
 		f = fopen (path, "r+");
 
 		if (f == NULL) {
-			perror ("Could not append firestarter hook");
+			perror ("Could not append stockfw hook");
 			return;
 		}
 
@@ -576,11 +575,11 @@ add_hook (gchar *path)
 		f = fopen (path, "w");
 
 		if (f == NULL) {
-			perror ("Could not write firestarter hook");
+			perror ("Could not write stockfw hook");
 			return;
 		}
 
-		fprintf (f, FIRESTARTER_HOOK);
+		fprintf (f, STOCKFW_HOOK);
 		fclose (f);
 	}
 }
@@ -691,17 +690,17 @@ check_file (const gchar *path)
 static void
 create_rules_files (void)
 {
-	check_file (FIRESTARTER_CONTROL_SCRIPT);
-	check_file (FIRESTARTER_FIREWALL_SCRIPT);
-	check_file (FIRESTARTER_CONFIGURATION_SCRIPT);
-	check_file (FIRESTARTER_SYSCTL_SCRIPT);
-	check_file (FIRESTARTER_USER_PRE_SCRIPT);
-	check_file (FIRESTARTER_USER_POST_SCRIPT);
-	check_file (FIRESTARTER_NON_ROUTABLES_SCRIPT);
-	check_file (FIRESTARTER_FILTER_HOSTS_SCRIPT);
-	check_file (FIRESTARTER_FILTER_PORTS_SCRIPT);
-	check_file (FIRESTARTER_INBOUND_SETUP);
-	check_file (FIRESTARTER_OUTBOUND_SETUP);
+	check_file (STOCKFW_CONTROL_SCRIPT);
+	check_file (STOCKFW_FIREWALL_SCRIPT);
+	check_file (STOCKFW_CONFIGURATION_SCRIPT);
+	check_file (STOCKFW_SYSCTL_SCRIPT);
+	check_file (STOCKFW_USER_PRE_SCRIPT);
+	check_file (STOCKFW_USER_POST_SCRIPT);
+	check_file (STOCKFW_NON_ROUTABLES_SCRIPT);
+	check_file (STOCKFW_FILTER_HOSTS_SCRIPT);
+	check_file (STOCKFW_FILTER_PORTS_SCRIPT);
+	check_file (STOCKFW_INBOUND_SETUP);
+	check_file (STOCKFW_OUTBOUND_SETUP);
 
 	check_file (POLICY_IN_ALLOW_FROM);
 	check_file (POLICY_IN_ALLOW_SERVICE);
@@ -715,13 +714,13 @@ create_rules_files (void)
 }
 
 /* [ scriptwriter_output_scripts ]
- * Creates all of the firestarter scripts
+ * Creates all of the stockfw scripts
  */
 void
 scriptwriter_output_scripts (void)
 {
 	/* Creating the directories for scripts if they are missing */
-	mkdir (FIRESTARTER_RULES_DIR "/firestarter", 00700);
+	mkdir (STOCKFW_RULES_DIR "/stockfw", 00700);
 	mkdir (POLICY_IN_DIR, 00700);
 	mkdir (POLICY_OUT_DIR, 00700);
 
@@ -729,7 +728,7 @@ scriptwriter_output_scripts (void)
 	scriptwriter_output_configuration ();
 
 	/* Write the firewall control script */
-	scriptwriter_output_firestarter_script ();
+	scriptwriter_output_stockfw_script ();
 
 	/* Write main firewall script */
 	write_netfilter_script ();
@@ -760,12 +759,12 @@ scriptwriter_versions_match (void)
 	gchar *version;
 	gboolean current;
 
-	if (!file_exists (FIRESTARTER_FIREWALL_SCRIPT))
+	if (!file_exists (STOCKFW_FIREWALL_SCRIPT))
 		return FALSE;
 
-	f = fopen (FIRESTARTER_FIREWALL_SCRIPT, "r");
+	f = fopen (STOCKFW_FIREWALL_SCRIPT, "r");
 	fgets (buf, 512, f);
-	version = get_text_between (buf, "Firestarter ", ",");
+	version = get_text_between (buf, "StockFW ", ",");
 
 	current = g_str_equal (version, VERSION);
 	g_free (version);

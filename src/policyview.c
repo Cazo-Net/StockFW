@@ -1,5 +1,4 @@
 /*---[ policyview.c ]-------------------------------------------------
- * Copyright (C) 2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,7 +18,7 @@
 #include "globals.h"
 #include "preferences.h"
 #include "menus.h"
-#include "firestarter.h"
+#include "stockfw.h"
 #include "util.h"
 #include "scriptwriter.h"
 #include "service.h"
@@ -234,7 +233,7 @@ rule_dialog_validate_data (GtkDialog *dialog)
 			              _("Invalid host"),
 				      _("The host you have specified is not a valid host,\n"
 			                "please review your choice."),
-			              Firestarter.window);
+			              StockFW.window);
 			return FALSE;
 		}
 	}
@@ -246,7 +245,7 @@ rule_dialog_validate_data (GtkDialog *dialog)
 			              _("Invalid port"),
 				      _("The port you have specified is not a valid port,\n"
 			                "please review your choice."),
-			              Firestarter.window);
+			              StockFW.window);
 			return FALSE;
 		}
 	}
@@ -260,7 +259,7 @@ rule_dialog_validate_data (GtkDialog *dialog)
 			              _("Invalid host"),
 				      _("The host you have specified is not a valid host,\n"
 			                "please review your choice."),
-			              Firestarter.window);
+			              StockFW.window);
 			return FALSE;
 		}
 	}
@@ -272,7 +271,7 @@ rule_dialog_validate_data (GtkDialog *dialog)
 			              _("Invalid internal host"),
 				      _("The host you have specified is not a valid host,\n"
 			                "please review your choice."),
-			              Firestarter.window);
+			              StockFW.window);
 			return FALSE;
 		}
 		element = g_object_get_data (G_OBJECT (dialog), "forward_selector_port");
@@ -281,7 +280,7 @@ rule_dialog_validate_data (GtkDialog *dialog)
 			              _("Invalid internal port"),
 				      _("The port you have specified is not a valid port,\n"
 			                "please review your choice."),
-			              Firestarter.window);
+			              StockFW.window);
 			return FALSE;
 		}
 	}
@@ -738,7 +737,7 @@ create_dialog (gchar *title, ...)
 	va_list ap;
 
 	dialog = gtk_dialog_new_with_buttons (title,
-	                                      GTK_WINDOW (Firestarter.window),
+	                                      GTK_WINDOW (StockFW.window),
 	                                      GTK_DIALOG_DESTROY_WITH_PARENT | GTK_DIALOG_NO_SEPARATOR,
 	                                      /* GTK_STOCK_HELP, GTK_RESPONSE_HELP, */
 	                                      GTK_STOCK_CANCEL, GTK_RESPONSE_REJECT,
@@ -1005,11 +1004,11 @@ void
 policyview_reload_inbound_policy (void)
 {
 	gint retval;
-	gchar *arg[3] = {"firestarter.sh", "reload-inbound-policy", NULL};
+	gchar *arg[3] = {"stockfw.sh", "reload-inbound-policy", NULL};
 	gchar *output;
 	GError *error = NULL;
 
-	if (g_spawn_sync (FIRESTARTER_RULES_DIR "/firestarter",
+	if (g_spawn_sync (STOCKFW_RULES_DIR "/stockfw",
 	                  arg, NULL,
 	                  G_SPAWN_STDERR_TO_DEV_NULL,
 	                  NULL, NULL,
@@ -1028,7 +1027,7 @@ policyview_reload_inbound_policy (void)
 		              _("Failed to apply inbound policy"),
 		              g_strconcat (_("There was an error when applying the inbound policy:"),
 		                          "\n", output, NULL),
-		              Firestarter.window);
+		              StockFW.window);
 	}
 	g_free (output);
 }
@@ -1037,11 +1036,11 @@ void
 policyview_reload_outbound_policy (void)
 {
 	gint retval;
-	gchar *arg[3] = {"firestarter.sh", "reload-outbound-policy", NULL};
+	gchar *arg[3] = {"stockfw.sh", "reload-outbound-policy", NULL};
 	gchar *output;
 	GError *error = NULL;
 
-	if (g_spawn_sync (FIRESTARTER_RULES_DIR "/firestarter",
+	if (g_spawn_sync (STOCKFW_RULES_DIR "/stockfw",
 	                  arg, NULL,
 	                  G_SPAWN_STDERR_TO_DEV_NULL,
 	                  NULL, NULL,
@@ -1060,7 +1059,7 @@ policyview_reload_outbound_policy (void)
 		              _("Failed to apply outbound policy"),
 		              g_strconcat (_("There was an error when applying the outbound policy:"),
 		                          "\n", output, NULL),
-		              Firestarter.window);
+		              StockFW.window);
 	}
 	g_free (output);
 }

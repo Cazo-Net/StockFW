@@ -436,13 +436,13 @@ fs_script_generate_inbound (const FsPolicy *policy,
 	if (settings->deny_packets)
 		g_string_append (out,
 			"\n# Everything else is dropped silently\n"
-			"$IPT -A INBOUND -j LOG --log-prefix \"FIRESTARTER-DROP \" "
+			"$IPT -A INBOUND -j LOG --log-prefix \"STOCKFW-DROP \" "
 			"--log-level 6\n"
 			"$IPT -A INBOUND -j DROP\n");
 	else
 		g_string_append (out,
 			"\n# Everything else is answered with an error packet\n"
-			"$IPT -A INBOUND -j LOG --log-prefix \"FIRESTARTER-REJECT \" "
+			"$IPT -A INBOUND -j LOG --log-prefix \"STOCKFW-REJECT \" "
 			"--log-level 6\n"
 			"$IPT -A INBOUND -j REJECT --reject-with "
 			"icmp-host-unreachable\n");
@@ -550,8 +550,8 @@ fs_script_generate_control (const FsSettings *settings)
 
 	g_string_append (out,
 		"# Chains are defined by the per-direction setup scripts\n"
-		". /etc/firestarter/inbound/setup\n"
-		". /etc/firestarter/outbound/setup\n\n"
+		". /etc/stockfw/inbound/setup\n"
+		". /etc/stockfw/outbound/setup\n\n"
 		"# Hook the chains into the built-in ones\n"
 		"$IPT -A INPUT -j INBOUND\n"
 		"$IPT -A OUTPUT -j OUTBOUND\n"

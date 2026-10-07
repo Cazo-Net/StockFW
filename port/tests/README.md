@@ -13,8 +13,8 @@ The script compiles the suite against the core sources directly rather
 than through CMake, so a failing test points at the logic rather than a
 link problem. Set `MSYS2_PATH` if your toolchain is not on `/ucrt64/bin`.
 
-Rules are written under a temporary `FIRESTARTER_RULES_DIR`, so running
-the tests never touches a real `/etc/firestarter`.
+Rules are written under a temporary `STOCKFW_RULES_DIR`, so running
+the tests never touches a real `/etc/stockfw`.
 
 ## Coverage
 

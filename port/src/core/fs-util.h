@@ -41,7 +41,7 @@ gboolean fs_util_remove_line_from_file (const gchar *path, gint position);
 gboolean fs_util_ensure_parent_dir (const gchar *path);
 
 /* Directory holding the generated policy files.  Overridable with the
- * FIRESTARTER_RULES_DIR environment variable so the app can run
+ * STOCKFW_RULES_DIR environment variable so the app can run
  * unprivileged for development. */
 const gchar *fs_util_rules_dir (void);
 

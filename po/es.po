@@ -1,14 +1,9 @@
 # translation of es.po to Spanish
 # translation of es.po to
 # traducción de es.po al Spanish
-# translation of firestarter.HEAD.es.po to Spanish
-# Firestarter Spanish Traslation.
-# Copyright © 2001-2003 Free Software Foundation, Inc.
-# This file is distributed under the same license as the firestarter package.
-# Antonio de la Torre <adltorre@terra.es>, 2001.
-# Javier Fernández-Sanguino Peña <jfs@computer.org>, 2002.
-# Francisco Javier F. Serrador <serrador@cvs.gnome.org>, 2004, 2005.
-# Francisco Javier F.  Serrador <serrador@tecknolabs.com>, 2005.
+# translation of stockfw.HEAD.es.po to Spanish
+# StockFW Spanish Traslation.
+# This file is distributed under the same license as the stockfw package.
 #
 msgid ""
 msgstr ""
@@ -16,23 +11,21 @@ msgstr ""
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2005-01-29 14:33+0200\n"
 "PO-Revision-Date: 2005-01-10 16:59+0100\n"
-"Last-Translator: Francisco Javier F.  Serrador <serrador@tecknolabs.com>\n"
-"Language-Team: Spanish <traductores@es.gnome.org>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "X-Generator: KBabel 1.9.1\n"
 "Plural-Forms:  nplurals=2; plural=(n != 1);\n"
 
-#: firestarter.desktop.in.h:1
+#: stockfw.desktop.in.h:1
 msgid "Desktop Firewall Tool"
 msgstr "Herramienta de cortafuegos de escritorio"
 
-#: firestarter.desktop.in.h:2 src/firestarter.c:297
-msgid "Firestarter"
-msgstr "Firestarter"
+#: stockfw.desktop.in.h:2 src/stockfw.c:297
+msgid "StockFW"
+msgstr "StockFW"
 
-#: firestarter.schemas.in.h:1
+#: stockfw.schemas.in.h:1
 msgid ""
 "Apply changes made to policy immediately, the alternative is for the user to "
 "confirm the changes in advance."
@@ -40,33 +33,33 @@ msgstr ""
 "Aplicar los cambios hechos a la normativa inmediatamente, la alternativa es "
 "para el usuario, confirmar los cambios en adelante."
 
-#: firestarter.schemas.in.h:2
+#: stockfw.schemas.in.h:2
 msgid "Apply the ICMP settings, as configured in the wizard."
 msgstr "Aplicar los ajustes ICMP, como se configuraron en el asistente."
 
-#: firestarter.schemas.in.h:3
+#: stockfw.schemas.in.h:3
 msgid "Apply the settings of Type of Service, as configured in the wizard."
 msgstr ""
 "Aplicar los ajustes del Tipo de Servicio, como se configuraron en el "
 "asistente."
 
-#: firestarter.schemas.in.h:4 src/preferences.glade.h:29
+#: stockfw.schemas.in.h:4 src/preferences.glade.h:29
 msgid "Block broadcasts from external network"
 msgstr "Bloquear tráfico de difusión desde la red externa"
 
-#: firestarter.schemas.in.h:5
+#: stockfw.schemas.in.h:5
 msgid "Block broadcasts from external network."
 msgstr "Bloquear tráfico de difusión desde la red externa."
 
-#: firestarter.schemas.in.h:6 src/preferences.glade.h:30
+#: stockfw.schemas.in.h:6 src/preferences.glade.h:30
 msgid "Block broadcasts from internal network"
 msgstr "Bloquear tráfico de difusión desde la red interna"
 
-#: firestarter.schemas.in.h:7
+#: stockfw.schemas.in.h:7
 msgid "Block broadcasts from internal network."
 msgstr "Bloquear tráfico de difusión desde la red interna."
 
-#: firestarter.schemas.in.h:8
+#: stockfw.schemas.in.h:8
 msgid ""
 "Block potentially spoofed traffic claiming to come from IANA reserved "
 "address space on the external interface."
@@ -74,53 +67,53 @@ msgstr ""
 "Bloquear tráfico potencialmente falsificado que pretende venir desde un "
 "espacio de direcciones reservado por la IANA en el interfaz externo."
 
-#: firestarter.schemas.in.h:9
+#: stockfw.schemas.in.h:9
 msgid "Block traffic from reserved address space on the public interface"
 msgstr ""
 "Bloquear tráfico proveniente de un espacio de direcciones reservado en el "
 "interfaz público"
 
-#: firestarter.schemas.in.h:10
+#: stockfw.schemas.in.h:10
 msgid "Deny packets"
 msgstr "Denegar paquetes"
 
-#: firestarter.schemas.in.h:11
+#: stockfw.schemas.in.h:11
 msgid "Drop denied packets without sending an error packet back."
 msgstr ""
 "Usa drop en los paquetes denegados sin enviar un paquete de error de "
 "respuesta."
 
-#: firestarter.schemas.in.h:12
+#: stockfw.schemas.in.h:12
 msgid "Enable DHCP server for connection sharing"
 msgstr "Activar servidor DHCP para compartición de conexión"
 
-#: firestarter.schemas.in.h:13
+#: stockfw.schemas.in.h:13
 msgid "Enable NAT"
 msgstr "Activar NAT"
 
-#: firestarter.schemas.in.h:14
+#: stockfw.schemas.in.h:14
 msgid "Enable Network Address Translation, or Internet connection sharing."
 msgstr ""
 "Habilitar la traducción de direcciones (NAT), o la compartición de la "
 "conexión."
 
-#: firestarter.schemas.in.h:15
+#: stockfw.schemas.in.h:15
 msgid "Enable the configuration of ICMP"
 msgstr "Activar la configuración de ICMP"
 
-#: firestarter.schemas.in.h:16
+#: stockfw.schemas.in.h:16
 msgid "Enable the configuration of tos"
 msgstr "Activar la configuración del TdS"
 
-#: firestarter.schemas.in.h:17 src/preferences.glade.h:41
+#: stockfw.schemas.in.h:17 src/preferences.glade.h:41
 msgid "Enable tray icon"
 msgstr "Activar icono en el área de notificación"
 
-#: firestarter.schemas.in.h:18
+#: stockfw.schemas.in.h:18
 msgid "Filter out hits not targeted at the firewall"
 msgstr "Filtrar accesos sin destino en el cortafuegos"
 
-#: firestarter.schemas.in.h:19
+#: stockfw.schemas.in.h:19
 msgid ""
 "Filter out hits that have an destination IP that does not match the firewall "
 "host."
@@ -128,39 +121,39 @@ msgstr ""
 "Filtrar accesos que tengan una IP de destino que no coincida con la del host "
 "del cortafuegos."
 
-#: firestarter.schemas.in.h:20
+#: stockfw.schemas.in.h:20
 msgid "Filter out redundant hits"
 msgstr "Filtrar accesos redundantes"
 
-#: firestarter.schemas.in.h:21
+#: stockfw.schemas.in.h:21
 msgid "Filter out sequences of identical hits."
 msgstr "Filtrar secuencias de accesos idénticos"
 
-#: firestarter.schemas.in.h:22
+#: stockfw.schemas.in.h:22
 msgid "Highest IP in the range to serve to DHCP clients"
 msgstr "IP más alta en el rango para servir a los clientes DHCP"
 
-#: firestarter.schemas.in.h:23
+#: stockfw.schemas.in.h:23
 msgid "Is it the first time the user is running the program"
 msgstr "Es la primera vez que el usuario ejecuta este programa"
 
-#: firestarter.schemas.in.h:24
+#: stockfw.schemas.in.h:24
 msgid "Lowest IP in the range to serve to DHCP clients"
 msgstr "La IP más baja en el rango para servir a los clientes DHCP"
 
-#: firestarter.schemas.in.h:25
+#: stockfw.schemas.in.h:25
 msgid "Minimize to tray"
 msgstr "Minimizar al área de notificación"
 
-#: firestarter.schemas.in.h:26
+#: stockfw.schemas.in.h:26
 msgid "Nameserver DHCP clients should use"
 msgstr "Servidor de nombres que los clientes DHCP deben usar"
 
-#: firestarter.schemas.in.h:27
+#: stockfw.schemas.in.h:27
 msgid "Policy auto apply"
 msgstr "Auto-aplicar normativas"
 
-#: firestarter.schemas.in.h:28
+#: stockfw.schemas.in.h:28
 msgid ""
 "Restrict outbound traffic by default, only allowing whitelisted outgoing "
 "connections."
@@ -168,185 +161,185 @@ msgstr ""
 "Restringir el tráfico saliente por omisión, sólo permitir conexiones "
 "salientes en la lista blanca."
 
-#: firestarter.schemas.in.h:29
+#: stockfw.schemas.in.h:29
 msgid "Restrictive outbound policy mode"
 msgstr "Normativa de restricción de tráfico saliente"
 
-#: firestarter.schemas.in.h:30
+#: stockfw.schemas.in.h:30
 msgid ""
-"Run the system dhcpd server in conjunction with Firestarter Internet "
+"Run the system dhcpd server in conjunction with StockFW Internet "
 "connection sharing."
 msgstr ""
 "Ejecutar el servidor DHCP del sistema junto con la compartición de conexión "
-"de Internet de Firestarter."
+"de Internet de StockFW."
 
-#: firestarter.schemas.in.h:31
-msgid "Show the Firestarter icon in the notification area."
-msgstr "Muestra el icono de Firestarter en el área de notificación."
+#: stockfw.schemas.in.h:31
+msgid "Show the StockFW icon in the notification area."
+msgstr "Muestra el icono de StockFW en el área de notificación."
 
-#: firestarter.schemas.in.h:32
+#: stockfw.schemas.in.h:32
 msgid "Show the Type of Service column in the Hit View."
 msgstr "Muestra la columna del «Tipo de servicio» en la vista de accesos."
 
-#: firestarter.schemas.in.h:33
+#: stockfw.schemas.in.h:33
 msgid "Show the destination column in the Hit View"
 msgstr "Muestra la columna de destino en la vista de accesos"
 
-#: firestarter.schemas.in.h:34
+#: stockfw.schemas.in.h:34
 msgid "Show the destination column in the Hit View."
 msgstr "Muestra la columna de destino en la vista de accesos."
 
-#: firestarter.schemas.in.h:35
+#: stockfw.schemas.in.h:35
 msgid "Show the device the hit was received from in the Hit View."
 msgstr ""
 "Mostrar el dispositivo donde se recibió el acceso en la vista de accesos."
 
-#: firestarter.schemas.in.h:36
+#: stockfw.schemas.in.h:36
 msgid "Show the device the hit was routed to in the Hit View."
 msgstr ""
 "Mostrar el dispositivo al que el acceso fue encaminado en la vista de "
 "accesos."
 
-#: firestarter.schemas.in.h:37
+#: stockfw.schemas.in.h:37
 msgid "Show the direction column in the Hit View"
 msgstr "Muestra la columna de dirección en la vista de accesos"
 
-#: firestarter.schemas.in.h:38
+#: stockfw.schemas.in.h:38
 msgid "Show the direction column in the Hit View."
 msgstr "Muestra la columna de dirección en la vista de accesos."
 
-#: firestarter.schemas.in.h:39
+#: stockfw.schemas.in.h:39
 msgid "Show the in column in the Hit View"
 msgstr "Muestra la columna de entradas en la vista de accesos"
 
-#: firestarter.schemas.in.h:40
+#: stockfw.schemas.in.h:40
 msgid "Show the length column in the Hit View"
 msgstr "Muestra la columna de longitud en la vista de accesos"
 
-#: firestarter.schemas.in.h:41
+#: stockfw.schemas.in.h:41
 msgid "Show the out column in the Hit View"
 msgstr "Muestra la columna de salidas en la vista de accesos"
 
-#: firestarter.schemas.in.h:42
+#: stockfw.schemas.in.h:42
 msgid "Show the packet length column in the Hit View."
 msgstr ""
 "Muestra la columna con la longitud del paquete en la lista de conexiones."
 
-#: firestarter.schemas.in.h:43
+#: stockfw.schemas.in.h:43
 msgid "Show the port column in the Hit View"
 msgstr "Muestra la columna del puerto en la vista de accesos"
 
-#: firestarter.schemas.in.h:44
+#: stockfw.schemas.in.h:44
 msgid "Show the port column in the Hit View."
 msgstr "Muestra la columna del puerto en la vista de accesos."
 
-#: firestarter.schemas.in.h:45
+#: stockfw.schemas.in.h:45
 msgid "Show the protocol column in the Hit View"
 msgstr "Muestra la columna de protocolo en la vista de accesos"
 
-#: firestarter.schemas.in.h:46
+#: stockfw.schemas.in.h:46
 msgid "Show the protocol column in the Hit View."
 msgstr "Muestra la columna de protocolo en la vista de accesos."
 
-#: firestarter.schemas.in.h:47
+#: stockfw.schemas.in.h:47
 msgid "Show the service column in the Hit View"
 msgstr "Muestra la columna de servicio en la vista de accesos"
 
-#: firestarter.schemas.in.h:48
+#: stockfw.schemas.in.h:48
 msgid "Show the service column in the Hit View."
 msgstr "Muestra la columna de servicio en la vista de accesos"
 
-#: firestarter.schemas.in.h:49
+#: stockfw.schemas.in.h:49
 msgid "Show the source column in the Hit View"
 msgstr "Muestra la columna de origen en la vista de accesos."
 
-#: firestarter.schemas.in.h:50
+#: stockfw.schemas.in.h:50
 msgid "Show the source column in the Hit View."
 msgstr "Muestra la columna de origen en la vista de accesos."
 
-#: firestarter.schemas.in.h:51
+#: stockfw.schemas.in.h:51
 msgid "Show the time column in the Hit View"
 msgstr "Muestra la columna de la hora en la vista de accesos"
 
-#: firestarter.schemas.in.h:52
+#: stockfw.schemas.in.h:52
 msgid "Show the time column in the Hit View."
 msgstr "Muestra la columna con la hora en la vista de accesos"
 
-#: firestarter.schemas.in.h:53
+#: stockfw.schemas.in.h:53
 msgid "Show the tos column in the Hit View"
 msgstr "Muestra la columna de TdS en la vista de accesos"
 
-#: firestarter.schemas.in.h:54
+#: stockfw.schemas.in.h:54
 msgid "Specifies the higher limit of the IP space to use for DHCP leases."
 msgstr ""
 "Especifica el límite superior del espacio IPs a usar para las concesiones "
 "DHCP."
 
-#: firestarter.schemas.in.h:55
+#: stockfw.schemas.in.h:55
 msgid "Specifies the lower limit of the IP space to use for DHCP leases."
 msgstr ""
 "Especifica el límite inferior del espacio de IPs a usar para las concesiones "
 "DHCP."
 
-#: firestarter.schemas.in.h:56
+#: stockfw.schemas.in.h:56
 msgid "Start the firewall on a DHCP lease renewal"
 msgstr "Iniciar el cortafuegos al renovar una cesión DHCP"
 
-#: firestarter.schemas.in.h:57
+#: stockfw.schemas.in.h:57
 msgid "Start the firewall when the program loads"
 msgstr "Iniciar el cortafuegos cuando el programa se cargue"
 
-#: firestarter.schemas.in.h:58
+#: stockfw.schemas.in.h:58
 msgid "Start the firewall when the program loads."
 msgstr "Iniciar el cortafuegos cada vez que el programa se cargue."
 
-#: firestarter.schemas.in.h:59
+#: stockfw.schemas.in.h:59
 msgid "Start the firewall when the system boots"
 msgstr "Iniciar el cortafuegos cuando el programa arranca"
 
-#: firestarter.schemas.in.h:60
+#: stockfw.schemas.in.h:60
 msgid "Start the firewall when the system boots."
 msgstr "Iniciar el cortafuegos cuando el sistema arranca."
 
-#: firestarter.schemas.in.h:61
+#: stockfw.schemas.in.h:61
 msgid "Start the firewall when the system dials out"
 msgstr ""
 "Iniciar el cortafuegos cuando se marca una conexión telefónica al exterior"
 
-#: firestarter.schemas.in.h:62
+#: stockfw.schemas.in.h:62
 msgid "Start the firewall when the system establishes a PPP connection."
 msgstr "Iniciar el cortafuegos cuando el sistema establece una conexión PPP."
 
-#: firestarter.schemas.in.h:63
+#: stockfw.schemas.in.h:63
 msgid "Start the firewall when the system receives a new DHCP lease."
 msgstr "Iniciar el cortafuegos cuando el sistema recibe una cesión DHCP nueva."
 
-#: firestarter.schemas.in.h:64
+#: stockfw.schemas.in.h:64
 msgid "The Internet connected network interface. For example, ppp0 or eth0."
 msgstr "El interfaz de red conectado a Internet. Por ejemplo, ppp0 o eth0."
 
-#: firestarter.schemas.in.h:65
+#: stockfw.schemas.in.h:65
 msgid "The LAN connected network interface. For example, eth0 or eth1."
 msgstr "El interfaz de red conectado a la LAN. Por ejemplo, eth0 o eth1."
 
-#: firestarter.schemas.in.h:66
+#: stockfw.schemas.in.h:66
 msgid "The external interface"
 msgstr "La interfaz externa"
 
-#: firestarter.schemas.in.h:67
-msgid "The first time Firestarter starts several special actions are taken."
-msgstr "La primera vez que Firestarter se inicia toman lugar varias acciones."
+#: stockfw.schemas.in.h:67
+msgid "The first time StockFW starts several special actions are taken."
+msgstr "La primera vez que StockFW se inicia toman lugar varias acciones."
 
-#: firestarter.schemas.in.h:68
+#: stockfw.schemas.in.h:68
 msgid "The internal interface"
 msgstr "La interfaz interna"
 
-#: firestarter.schemas.in.h:69
+#: stockfw.schemas.in.h:69
 msgid "The location of the file the system logging daemon writes to."
 msgstr ""
 "La ubicación del archivo donde el demonio de registro del sistema escribe."
 
-#: firestarter.schemas.in.h:70
+#: stockfw.schemas.in.h:70
 msgid ""
 "The nameserver clients should use. You can specify multiple nameserver in a "
 "space separated list. A value of &lt;dynamic&gt; causes the nameservers to "
@@ -357,11 +350,11 @@ msgstr ""
 "de &lt;dynamic&gt; hace que los servidores de nombres se determinen en "
 "tiempo de ejecución."
 
-#: firestarter.schemas.in.h:71
+#: stockfw.schemas.in.h:71
 msgid "The system log file"
 msgstr "El archivo de informes del sistema"
 
-#: firestarter.schemas.in.h:72
+#: stockfw.schemas.in.h:72
 msgid "When closing the program window, instead of exiting, hide the window."
 msgstr ""
 "Cuando se cierre la ventana del programa,  en vez de salir, ocultar la "
@@ -375,29 +368,29 @@ msgstr "Falló al abrir el archivo de configuración DHCP para escritura: "
 msgid "Failed to write to DHCP server configuration file: "
 msgstr "Falló al escribir el archivo de configuración del servidor DHCP: "
 
-#: src/firestarter.c:83 src/firestarter.c:85 src/firestarter.c:86
+#: src/stockfw.c:83 src/stockfw.c:85 src/stockfw.c:86
 msgid "Failed to stop the firewall"
 msgstr "No pudo detenerse el cortafuegos"
 
-#: src/firestarter.c:87
+#: src/stockfw.c:87
 msgid "There was an undetermined error when trying to stop the firewall."
 msgstr ""
 "Ocurrió un error indeterminado cuando se intentó detener el cortafuegos."
 
-#: src/firestarter.c:126 src/firestarter.c:130
+#: src/stockfw.c:126 src/stockfw.c:130
 #, c-format
 msgid "The device %s is not ready."
 msgstr "El dispositivo %s no está preparado."
 
-#: src/firestarter.c:133
+#: src/stockfw.c:133
 msgid "Your kernel does not support iptables."
 msgstr "Su núcleo no soporta iptables."
 
-#: src/firestarter.c:135
+#: src/stockfw.c:135
 msgid "An unknown error occurred."
 msgstr "Ha ocurrido un error desconocido."
 
-#: src/firestarter.c:139
+#: src/stockfw.c:139
 msgid ""
 "Please check your network device settings and make sure your\n"
 "Internet connection is active."
@@ -405,32 +398,32 @@ msgstr ""
 "Compruebe la configuración de su dispositivo de red y asegúrese\n"
 "de que su conexión a Internet está disponible."
 
-#: src/firestarter.c:143
+#: src/stockfw.c:143
 msgid "Failed to start the firewall\n"
 msgstr "No se pudo arrancar el cortafuegos\n"
 
-#: src/firestarter.c:147 src/firestarter.c:148
+#: src/stockfw.c:147 src/stockfw.c:148
 msgid "Failed to start the firewall"
 msgstr "No se pudo arrancar el cortafuegos"
 
-#: src/firestarter.c:200 src/firestarter.c:202 src/firestarter.c:203
+#: src/stockfw.c:200 src/stockfw.c:202 src/stockfw.c:203
 msgid "Failed to lock the firewall"
 msgstr "No se pudo bloquear el cortafuegos"
 
-#: src/firestarter.c:204
+#: src/stockfw.c:204
 msgid "There was an undetermined error when trying to lock the firewall."
 msgstr ""
 "Ocurrió un error indeterminado cuando se intentó bloquear su cortafuegos."
 
-#: src/firestarter.c:298
+#: src/stockfw.c:298
 msgid ""
 " -s, --start            Start the firewall\n"
 " -p, --stop             Stop the firewall\n"
 "     --lock             Lock the firewall, blocking all traffic\n"
 "     --generate-scripts Generate firewall scripts from current "
 "configuration\n"
-"     --start-hidden     Start Firestarter with the GUI not visible\n"
-" -v, --version          Prints Firestarter's version number\n"
+"     --start-hidden     Start StockFW with the GUI not visible\n"
+" -v, --version          Prints StockFW's version number\n"
 " -h, --help             You're looking at it\n"
 msgstr ""
 " -s, --start          Arrancar el cortafuegos\n"
@@ -438,24 +431,24 @@ msgstr ""
 "     --lock            Bloquear el cortafuegos,  bloqueando todo tráfico\n"
 "     --generate-scripts  Genera scripts del cortafuegos usando la "
 "configuración actual\n"
-"    --start-hidden       Arranca Firestarter en el IGU no visible\n"
-" -v, --version        Imprime el número de versión de Firestarter\n"
+"    --start-hidden       Arranca StockFW en el IGU no visible\n"
+" -v, --version        Imprime el número de versión de StockFW\n"
 " -h, --help           La estás leyendo\n"
 
-#: src/firestarter.c:316 src/firestarter.c:318 src/firestarter.c:319
+#: src/stockfw.c:316 src/stockfw.c:318 src/stockfw.c:319
 msgid "Insufficient privileges"
 msgstr "Privilegios insuficientes"
 
-#: src/firestarter.c:320
-msgid "You must have root user privileges to use Firestarter."
-msgstr "Debe tener privilegios de administrador para usar Firestarter."
+#: src/stockfw.c:320
+msgid "You must have root user privileges to use StockFW."
+msgstr "Debe tener privilegios de administrador para usar StockFW."
 
-#: src/firestarter.c:423
+#: src/stockfw.c:423
 #, c-format
 msgid "Updating firewall to new version...\n"
 msgstr "Actualizando cortafuegos a la versión nueva...\n"
 
-#: src/firestarter.c:425
+#: src/stockfw.c:425
 #, c-format
 msgid "Firewall update complete\n"
 msgstr "Actualización del cortafuegos completa\n"
@@ -718,20 +711,20 @@ msgid "Open the online users' manual in a browser"
 msgstr "Abre el manual del usuario en un navegador"
 
 #: src/menus.c:71
-msgid "Firestarter _Homepage"
-msgstr "Página _web de Firestarter"
+msgid "StockFW _Homepage"
+msgstr "Página _web de StockFW"
 
 #: src/menus.c:71
-msgid "Open the Firestarter homepage in a browser"
-msgstr "Abre la página web de Firestarter en un navegador"
+msgid "Open the StockFW homepage in a browser"
+msgstr "Abre la página web de StockFW en un navegador"
 
 #: src/menus.c:72
 msgid "_About"
 msgstr "A_cerca de"
 
 #: src/menus.c:72
-msgid "About Firestarter"
-msgstr "Acerca de Firestarter"
+msgid "About StockFW"
+msgstr "Acerca de StockFW"
 
 #: src/menus.c:74
 msgid "Allow Connections From Source"
@@ -1042,19 +1035,19 @@ msgstr "Edición"
 
 #: src/preferences.c:155
 msgid ""
-"A proper configuration for Firestarter was not found. If you are running "
-"Firestarter from the directory you built it in, run 'make install-data-"
+"A proper configuration for StockFW was not found. If you are running "
+"StockFW from the directory you built it in, run 'make install-data-"
 "local' to install a configuration, or simply 'make install' to install the "
 "whole program.\n"
 "\n"
-"Firestarter will now close."
+"StockFW will now close."
 msgstr ""
-"No se encontró una configuración apropiada de Firestarter. Si está "
-"ejecutando Firestarter desde el directorio en que lo construyó, ejecute "
+"No se encontró una configuración apropiada de StockFW. Si está "
+"ejecutando StockFW desde el directorio en que lo construyó, ejecute "
 "«make install-data-local» para instalar una configuración, o simplemente "
 "«make install» para instalar el programa completo.\n"
 "\n"
-"Firestarter ahora se cerrará."
+"StockFW ahora se cerrará."
 
 #: src/preferences.c:235 src/preferences.glade.h:53
 msgid "Interface"
@@ -1109,8 +1102,8 @@ msgid "Missing file"
 msgstr "Falta un archivo"
 
 #: src/preferences.c:910
-msgid "Firestarter interface file not found"
-msgstr "No se encontró el interfaz de Firestarter"
+msgid "StockFW interface file not found"
+msgstr "No se encontró el interfaz de StockFW"
 
 #: src/preferences.c:911
 msgid "The interface markup file preferences.glade could not be found."
@@ -1507,16 +1500,16 @@ msgid "Firewall locked"
 msgstr "Cortafuegos bloqueado"
 
 #: src/tray.c:204
-msgid "_Show Firestarter"
-msgstr "_Mostrar Firestarter"
+msgid "_Show StockFW"
+msgstr "_Mostrar StockFW"
 
 #: src/tray.c:214
 msgid "_Exit"
 msgstr "_Salir"
 
 #: src/util.c:109
-msgid "Firestarter error"
-msgstr "Error de Firestarter"
+msgid "StockFW error"
+msgstr "Error de StockFW"
 
 #: src/util.c:138
 msgid ""
@@ -1622,12 +1615,12 @@ msgstr ""
 
 #: src/wizard.c:237
 msgid ""
-"Firestarter can share your Internet connection with the computers on your "
+"StockFW can share your Internet connection with the computers on your "
 "local network\n"
 "using a single public IP address and a method called Network Address "
 "Translation."
 msgstr ""
-"Firestarter puede compartir su conexión a Internet con las computadoras de "
+"StockFW puede compartir su conexión a Internet con las computadoras de "
 "su red local\n"
 "usando una sola dirección IP pública y un método llamado Traducción de "
 "Direcciones de Red (NAT)"
@@ -1719,8 +1712,8 @@ msgid "Firewall Wizard"
 msgstr "Asistente de cortafuegos"
 
 #: src/wizard.c:643
-msgid "Welcome to Firestarter"
-msgstr "Bienvenido a Firestarter"
+msgid "Welcome to StockFW"
+msgstr "Bienvenido a StockFW"
 
 #: src/wizard.c:649
 msgid "Network device setup"

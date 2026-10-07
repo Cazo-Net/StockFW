@@ -1,5 +1,4 @@
 /*---[ util.c ]-------------------------------------------------------
- * Copyright (C) 2000-2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,7 +19,7 @@
 #include <sys/ioctl.h>
 
 #include "globals.h"
-#include "firestarter.h"
+#include "stockfw.h"
 #include "util.h"
 #include "hitview.h"
 #include "preferences.h"
@@ -49,8 +48,8 @@ error_dialog (const gchar *title, const gchar *header, const gchar *message, Gtk
 	GtkWindow *window = NULL;
 	const gchar *text;	
 
-	if (Firestarter.window != NULL)
-		window = GTK_WINDOW (Firestarter.window);
+	if (StockFW.window != NULL)
+		window = GTK_WINDOW (StockFW.window);
 
 	dialog = gtk_dialog_new_with_buttons (
 		title,
@@ -106,7 +105,7 @@ show_error (gchar *message)
 	if (CONSOLE)
 		fprintf (stderr, "%s\n", message);
 	else
-		error_dialog (_("Firestarter error"), NULL, message, Firestarter.window);
+		error_dialog (_("StockFW error"), NULL, message, StockFW.window);
 }
 
 /* [ get_system_log_path ]

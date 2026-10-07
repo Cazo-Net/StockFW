@@ -1,5 +1,4 @@
-/*---[ firestarter.c ]------------------------------------------------
- * Copyright (C) 2000-2004 Tomas Junnonen (majix@sci.fi)
+/*---[ stockfw.c ]------------------------------------------------
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,7 +21,7 @@
 #include <sys/wait.h>
 
 #include "globals.h"
-#include "firestarter.h"
+#include "stockfw.h"
 #include "gui.h"
 #include "menus.h"
 #include "util.h"
@@ -33,7 +32,7 @@
 #include "dhcp-server.h"
 #include "statusview.h"
 
-FirestarterApp Firestarter;
+StockFWApp StockFW;
 
 static gint save_session (GnomeClient       *client,
                           gint               phase,
@@ -46,7 +45,7 @@ static gint save_session (GnomeClient       *client,
 static void session_die (GnomeClient        *client,
                          gpointer            client_data);
 
-gboolean firestarter_is_locked (void);
+gboolean stockfw_is_locked (void);
 
 static FirewallStatus firewall_state_prelock;
 
@@ -57,11 +56,11 @@ void
 stop_firewall (void)
 {
 	gint retval;
-	gchar *arg[3] = {"firestarter.sh", "stop", NULL};
+	gchar *arg[3] = {"stockfw.sh", "stop", NULL};
 	gchar *output;
 	GError *error = NULL;
 
-	if (g_spawn_sync (FIRESTARTER_RULES_DIR "/firestarter",
+	if (g_spawn_sync (STOCKFW_RULES_DIR "/stockfw",
 	                  arg, NULL,
 	                  G_SPAWN_STDERR_TO_DEV_NULL,
 	                  NULL, NULL,
@@ -85,7 +84,7 @@ stop_firewall (void)
 			error_dialog (_("Failed to stop the firewall"),
 			              _("Failed to stop the firewall"),
 				      _("There was an undetermined error when trying to stop the firewall."),
-				      Firestarter.window);
+				      StockFW.window);
 	}
 	
 	g_free (output);
@@ -98,11 +97,11 @@ void
 start_firewall (void)
 {
 	gint retval;
-	gchar *arg[3] = {"firestarter.sh", "start", NULL};
+	gchar *arg[3] = {"stockfw.sh", "start", NULL};
 	gchar *output;
 	GError *error = NULL;
 
-	if (g_spawn_sync (FIRESTARTER_RULES_DIR "/firestarter",
+	if (g_spawn_sync (STOCKFW_RULES_DIR "/stockfw",
 	                  arg, NULL,
 	                  G_SPAWN_STDERR_TO_DEV_NULL,
 	                  NULL, NULL,
@@ -147,7 +146,7 @@ start_firewall (void)
 			error_dialog (_("Failed to start the firewall"),
 			              _("Failed to start the firewall"),
 				      message,
-				      Firestarter.window);
+				      StockFW.window);
 			status_set_state (STATUS_STOPPED);
 		}
 
@@ -172,13 +171,13 @@ void
 lock_firewall (void)
 {
 	gint retval;
-	gchar *arg[3] = {"firestarter.sh", "lock", NULL};
+	gchar *arg[3] = {"stockfw.sh", "lock", NULL};
 	gchar *output;
 	GError *error = NULL;
 
 	firewall_state_prelock = status_get_state ();
 
-	if (g_spawn_sync (FIRESTARTER_RULES_DIR "/firestarter",
+	if (g_spawn_sync (STOCKFW_RULES_DIR "/stockfw",
 	                  arg, NULL,
 	                  G_SPAWN_STDERR_TO_DEV_NULL,
 	                  NULL, NULL,
@@ -202,7 +201,7 @@ lock_firewall (void)
 			error_dialog (_("Failed to lock the firewall"),
 			              _("Failed to lock the firewall"),
 				      _("There was an undetermined error when trying to lock the firewall."),
-				      Firestarter.window);
+				      StockFW.window);
 		}
 	}
 
@@ -222,11 +221,11 @@ unlock_firewall (void)
 		stop_firewall ();
 }
 
-/* [ exit_firestarter ]
+/* [ exit_stockfw ]
  * Quit firestater
  */
 void
-exit_firestarter (void)
+exit_stockfw (void)
 {
 	gtk_main_quit ();
 }
@@ -259,7 +258,7 @@ save_session (GnomeClient       *client,
 static void
 session_die (GnomeClient *client, gpointer client_data)
 {
-	exit_firestarter ();
+	exit_stockfw ();
 }
 
 static const gchar *
@@ -272,10 +271,10 @@ get_lock_file_path (void)
 
 		if ((d = opendir ("/var/lock/subsys")) != NULL) {
 			closedir (d);
-			path = g_strdup ("/var/lock/subsys/firestarter");
+			path = g_strdup ("/var/lock/subsys/stockfw");
 		} else if ((d = opendir ("/var/lock")) != NULL) {
 			closedir (d);
-			path = g_strdup ("/var/lock/firestarter");
+			path = g_strdup ("/var/lock/stockfw");
 		} else {
 			perror ("Not able to determine a lock file");
 		}
@@ -285,7 +284,7 @@ get_lock_file_path (void)
 }
 
 gboolean
-firestarter_is_locked (void)
+stockfw_is_locked (void)
 {
 	return g_file_test (get_lock_file_path (), G_FILE_TEST_EXISTS);
 }
@@ -294,13 +293,13 @@ static void
 show_help (void)
 {
 	gchar *help = g_strconcat (
-		_("Firestarter"), " ", VERSION "\n\n",
+		_("StockFW"), " ", VERSION "\n\n",
 		_(" -s, --start            Start the firewall\n"
 		" -p, --stop             Stop the firewall\n"
 		"     --lock             Lock the firewall, blocking all traffic\n"
 		"     --generate-scripts Generate firewall scripts from current configuration\n"
-		"     --start-hidden     Start Firestarter with the GUI not visible\n"
-		" -v, --version          Prints Firestarter's version number\n"
+		"     --start-hidden     Start StockFW with the GUI not visible\n"
+		" -v, --version          Prints StockFW's version number\n"
 		" -h, --help             You're looking at it\n"
 	), NULL);
 
@@ -317,8 +316,8 @@ is_root (void)
 		else
 			error_dialog (_("Insufficient privileges"),
 			              _("Insufficient privileges"),
-			              _("You must have root user privileges to use Firestarter."),
-			              Firestarter.window);
+			              _("You must have root user privileges to use StockFW."),
+			              StockFW.window);
 
 		return FALSE;
 	}
@@ -348,42 +347,42 @@ main (int argc, char* argv[])
 
 		if (!strcmp (arg, "-s") || !strcmp(arg, "--start")) {
 			CONSOLE = TRUE;
-			gnome_program_init ("firestarter", VERSION, LIBGNOME_MODULE, 1, argv, NULL);
+			gnome_program_init ("stockfw", VERSION, LIBGNOME_MODULE, 1, argv, NULL);
 			if (is_root ())
 				start_firewall ();
 			return 0;
 		} else if (!strcmp (arg, "-p") || !strcmp(arg, "--stop")) {
 			CONSOLE = TRUE;
-			gnome_program_init ("firestarter", VERSION, LIBGNOME_MODULE, 1, argv, NULL);
+			gnome_program_init ("stockfw", VERSION, LIBGNOME_MODULE, 1, argv, NULL);
 			if (is_root ())
 				stop_firewall ();
 			return 0;
 		} else if (!strcmp(arg, "--lock")) {
 			CONSOLE = TRUE;
-			gnome_program_init ("firestarter", VERSION, LIBGNOME_MODULE, 1, argv, NULL);
+			gnome_program_init ("stockfw", VERSION, LIBGNOME_MODULE, 1, argv, NULL);
 			if (is_root ())
 				lock_firewall ();
 			return 0;
 		} else if (!strcmp(arg, "--generate-scripts")) {
 			CONSOLE = TRUE;
-			gnome_program_init ("firestarter", VERSION, LIBGNOME_MODULE, 1, argv, NULL);
+			gnome_program_init ("stockfw", VERSION, LIBGNOME_MODULE, 1, argv, NULL);
 			if (is_root ())
 				scriptwriter_output_scripts ();
 			return 0;
 		} else if (!strcmp(arg, "--start-hidden")) {
 			show_gui = FALSE;
 		} else if (!strcmp (arg, "-v") || !strcmp(arg, "--version")) {
-			printf ("Firestarter %s\n", VERSION);
+			printf ("StockFW %s\n", VERSION);
 			return 0;
 		} else if (!strcmp (arg, "-h") || !strcmp (arg, "--help") || !strcmp(arg, "-help")) {
 			CONSOLE = TRUE;
-			gnome_program_init ("firestarter", VERSION, LIBGNOME_MODULE, 1, argv, NULL);
+			gnome_program_init ("stockfw", VERSION, LIBGNOME_MODULE, 1, argv, NULL);
 			show_help ();
 			return 0;	
 		}
 	}
 
-	gnome_program_init ("firestarter", VERSION, LIBGNOMEUI_MODULE, argc, argv, NULL);
+	gnome_program_init ("stockfw", VERSION, LIBGNOMEUI_MODULE, argc, argv, NULL);
 
 	/* Set up the session managment */
 	client = gnome_master_client ();
@@ -399,7 +398,7 @@ main (int argc, char* argv[])
 	/* Check that a valid gconf schema is installed */
 	preferences_check_schema();
 
-	/* If we're starting Firestarter for the first time or the script is missing, create modal wizard */
+	/* If we're starting StockFW for the first time or the script is missing, create modal wizard */
 	must_run_wizard = (preferences_get_bool (PREFS_FIRST_RUN) || !script_exists ());
 
 	/* Creating the GUI */

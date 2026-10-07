@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define FS_PREFS_GROUP_PREFIX "/apps/firestarter/"
+#define FS_PREFS_GROUP_PREFIX "/apps/stockfw/"
 #define FS_PREFS_GROUP_CLIENT  "client"
 #define FS_PREFS_GROUP_FW      "firewall"
 #define FS_PREFS_GROUP_UI      "client"
@@ -18,8 +18,8 @@ static gchar    *prefs_path = NULL;
 static gboolean  prefs_dirty = FALSE;
 
 /* [ prefs_default_path ]
- * $XDG_CONFIG_HOME/firestarter/firestarter.conf on Linux (what
- * g_get_user_config_dir() gives us), and %APPDATA%\firestarter on
+ * $XDG_CONFIG_HOME/stockfw/stockfw.conf on Linux (what
+ * g_get_user_config_dir() gives us), and %APPDATA%\stockfw on
  * Windows.  g_get_user_config_dir() returns the *local* AppData folder
  * on Windows, which is the wrong place for user settings. */
 static gchar *
@@ -29,21 +29,21 @@ prefs_default_path (void)
 	const gchar *appdata = g_getenv ("APPDATA");
 
 	if (appdata != NULL && *appdata != '\0')
-		return g_build_filename (appdata, "firestarter",
-		                         "firestarter.conf", NULL);
+		return g_build_filename (appdata, "stockfw",
+		                         "stockfw.conf", NULL);
 
 	return g_build_filename (g_get_home_dir (), "AppData", "Roaming",
-	                         "firestarter", "firestarter.conf", NULL);
+	                         "stockfw", "stockfw.conf", NULL);
 #else
 	return g_build_filename (g_get_user_config_dir (),
-	                         "firestarter",
-	                         "firestarter.conf",
+	                         "stockfw",
+	                         "stockfw.conf",
 	                         NULL);
 #endif
 }
 
 /* [ prefs_split_key ]
- * "/apps/firestarter/firewall/icmp/enable"
+ * "/apps/stockfw/firewall/icmp/enable"
  *   -> group "firewall", key "icmp/enable"
  * The sub-path may contain slashes, which ini keys allow. */
 static void

@@ -1,5 +1,4 @@
 /*---[ savelog.c ]----------------------------------------------------
- * Copyright (C) 2000-2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -10,7 +9,7 @@
  *--------------------------------------------------------------------*/
 
 #include "savelog.h"
-#include "firestarter.h"
+#include "stockfw.h"
 #include "globals.h"
 #include "hitview.h"
 #include "util.h"
@@ -90,13 +89,13 @@ savelog_show_dialog (void)
 	GtkWidget *dialog;
 
 	dialog = gtk_file_chooser_dialog_new (_("Save Events To File"),
-                                              GTK_WINDOW (Firestarter.window),
+                                              GTK_WINDOW (StockFW.window),
                                               GTK_FILE_CHOOSER_ACTION_SAVE,
                                               GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL,
                                               GTK_STOCK_SAVE, GTK_RESPONSE_ACCEPT,
                                               NULL);
 
-	gtk_file_chooser_set_current_name (GTK_FILE_CHOOSER (dialog), "firestarter-events.txt");
+	gtk_file_chooser_set_current_name (GTK_FILE_CHOOSER (dialog), "stockfw-events.txt");
 
 	g_signal_connect (G_OBJECT (dialog), "response",
 	                  G_CALLBACK (save_dialog_response_cb), NULL);

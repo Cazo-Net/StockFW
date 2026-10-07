@@ -1,5 +1,4 @@
 /*---[ tray.c ]-------------------------------------------------
- * Copyright (C) 2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -12,8 +11,8 @@
 #include "tray.h"
 #include "eggtrayicon.h"
 #include "globals.h"
-#include "xpm/firestarter-pixbufs.h"
-#include "firestarter.h"
+#include "xpm/stockfw-pixbufs.h"
+#include "stockfw.h"
 #include "gui.h"
 #include "util.h"
 #include "hitview.h"
@@ -49,7 +48,7 @@ void tray_init (void)
 	GtkWidget *eventbox;
 	GdkPixbuf *pixbuf;
 
-	tray_icon = egg_tray_icon_new ("Firestarter");
+	tray_icon = egg_tray_icon_new ("StockFW");
  	pixbuf = gdk_pixbuf_new_from_inline (-1, icon_stop_normal, FALSE, NULL);
 	tray_icon_image = gtk_image_new_from_pixbuf (pixbuf);
 
@@ -201,7 +200,7 @@ tray_menu (GtkWidget *widget, GdkEventButton *event, gpointer data)
 
 	status_menu = gtk_menu_new();
 
-	item = gtk_menu_item_new_with_mnemonic (_("_Show Firestarter"));
+	item = gtk_menu_item_new_with_mnemonic (_("_Show StockFW"));
 	gtk_container_add (GTK_CONTAINER (status_menu), item);
 	g_signal_connect (G_OBJECT (item), "activate",
 	                  G_CALLBACK (show_main_window_cb),
@@ -214,7 +213,7 @@ tray_menu (GtkWidget *widget, GdkEventButton *event, gpointer data)
 	item = gtk_menu_item_new_with_mnemonic (_("_Exit"));
 	gtk_container_add (GTK_CONTAINER (status_menu), item);
 	g_signal_connect (G_OBJECT (item), "activate",
-	                  G_CALLBACK (exit_firestarter),
+	                  G_CALLBACK (exit_stockfw),
 	                  NULL);
 
 

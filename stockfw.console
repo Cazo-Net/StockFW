@@ -1,4 +1,4 @@
 USER=root
 FALLBACK=true
-PROGRAM=%{_sbindir}/firestarter
+PROGRAM=%{_sbindir}/stockfw
 SESSION=true

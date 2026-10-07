@@ -2338,7 +2338,6 @@ dnl not every word.  This closes a longstanding sh security hole.
 *** depend on shared libraries, but programs linked with such libtool
 *** libraries will work regardless of this problem.  Nevertheless, you
 *** may want to report the problem to your system manager and/or to
-*** bug-libtool@gnu.org
 
 EOF
 	  fi ;;
@@ -4344,7 +4343,6 @@ ifelse([$1], [],
 # Free Software Foundation, Inc.
 #
 # This file is part of GNU Libtool:
-# Originally by Gordon Matzigkeit <gord@gnu.ai.mit.edu>, 1996
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -5489,7 +5487,6 @@ EOF
       _LT_AC_TAGVAR(hardcode_libdir_flag_spec, $1)='-L$libdir'
       _LT_AC_TAGVAR(hardcode_minus_L, $1)=yes
 
-      # Samuel A. Falvo II <kc5tja@dolphin.openprojects.net> reports
       # that the semantics of dynamic libraries on AmigaOS, at least up
       # to version 4, is to share data among multiple programs linked
       # with the same dynamic library.  Since this doesn't match the
@@ -5501,7 +5498,6 @@ EOF
     beos*)
       if $LD --help 2>&1 | grep ': supported targets:.* elf' > /dev/null; then
 	_LT_AC_TAGVAR(allow_undefined_flag, $1)=unsupported
-	# Joseph Beckenbach <jrb3@best.com> says some releases of gcc
 	# support --undefined.  This deserves some investigation.  FIXME
 	_LT_AC_TAGVAR(archive_cmds, $1)='$CC -nostart $libobjs $deplibs $compiler_flags ${wl}-soname $wl$soname -o $lib'
       else
@@ -6598,13 +6594,10 @@ AC_DEFUN([PKG_CHECK_MODULES], [
 # but which still want to provide support for the GNU gettext functionality.
 #
 # Macro to add for using GNU gettext.
-# Ulrich Drepper <drepper@cygnus.com>, 1995, 1996
 #
 # Modified to never use included libintl. 
-# Owen Taylor <otaylor@redhat.com>, 12/15/1998
 #
 # Major rework to remove unused code
-# Owen Taylor <otaylor@redhat.com>, 12/11/2002
 #
 # Added better handling of ALL_LINGUAS from GNU gettext version 
 # written by Bruno Haible, Owen Taylor <otaylor.redhat.com> 5/30/3002

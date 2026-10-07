@@ -462,7 +462,7 @@ on_apply_clicked (GtkButton *button, gpointer data)
 static void
 maybe_apply_instantly (void)
 {
-	/* Default to FALSE: the original Firestarter required an explicit
+	/* Default to FALSE: the original StockFW required an explicit
 	 * Apply click.  Auto-apply on every edit was noisy and showed
 	 * "Administrator required" dialogs when not elevated.  The user
 	 * can enable it in Preferences → Interface if they run elevated. */

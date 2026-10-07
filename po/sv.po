@@ -1,117 +1,111 @@
-# Swedish messages for Firestarter.
-# Copyright (C) 2000, 2001, 2002, 2003 Free Software Foundation, Inc.
-# Tomas Junnonen <majix@sci.fi>, 2000.
-# Christian Rose <menthos@menthos.com>, 2000, 2001, 2002, 2003.
+# Swedish messages for StockFW.
 #
-# $Id: sv.po,v 1.5 2003/06/08 22:35:02 menthos Exp $
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: firestarter\n"
+"Project-Id-Version: stockfw\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2005-01-29 14:33+0200\n"
 "PO-Revision-Date: 2003-06-09 00:34+0200\n"
-"Last-Translator: Christian Rose <menthos@menthos.com>\n"
-"Language-Team: Swedish <sv@li.org>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: firestarter.desktop.in.h:1
+#: stockfw.desktop.in.h:1
 #, fuzzy
 msgid "Desktop Firewall Tool"
-msgstr "Brandväggsverktyget Firestarter"
+msgstr "Brandväggsverktyget StockFW"
 
-#: firestarter.desktop.in.h:2 src/firestarter.c:297
-msgid "Firestarter"
-msgstr "Firestarter"
+#: stockfw.desktop.in.h:2 src/stockfw.c:297
+msgid "StockFW"
+msgstr "StockFW"
 
-#: firestarter.schemas.in.h:1
+#: stockfw.schemas.in.h:1
 msgid ""
 "Apply changes made to policy immediately, the alternative is for the user to "
 "confirm the changes in advance."
 msgstr ""
 
-#: firestarter.schemas.in.h:2
+#: stockfw.schemas.in.h:2
 msgid "Apply the ICMP settings, as configured in the wizard."
 msgstr "Verkställ ICMP-inställningarna som är konfigurerade i guiden."
 
-#: firestarter.schemas.in.h:3
+#: stockfw.schemas.in.h:3
 msgid "Apply the settings of Type of Service, as configured in the wizard."
 msgstr ""
 "Verkställ inställningarna i Typ av tjänst så som de är konfigurerade i "
 "guiden."
 
-#: firestarter.schemas.in.h:4 src/preferences.glade.h:29
+#: stockfw.schemas.in.h:4 src/preferences.glade.h:29
 msgid "Block broadcasts from external network"
 msgstr ""
 
-#: firestarter.schemas.in.h:5
+#: stockfw.schemas.in.h:5
 msgid "Block broadcasts from external network."
 msgstr ""
 
-#: firestarter.schemas.in.h:6 src/preferences.glade.h:30
+#: stockfw.schemas.in.h:6 src/preferences.glade.h:30
 msgid "Block broadcasts from internal network"
 msgstr ""
 
-#: firestarter.schemas.in.h:7
+#: stockfw.schemas.in.h:7
 msgid "Block broadcasts from internal network."
 msgstr ""
 
-#: firestarter.schemas.in.h:8
+#: stockfw.schemas.in.h:8
 msgid ""
 "Block potentially spoofed traffic claiming to come from IANA reserved "
 "address space on the external interface."
 msgstr ""
 
-#: firestarter.schemas.in.h:9
+#: stockfw.schemas.in.h:9
 msgid "Block traffic from reserved address space on the public interface"
 msgstr ""
 
-#: firestarter.schemas.in.h:10
+#: stockfw.schemas.in.h:10
 msgid "Deny packets"
 msgstr ""
 
-#: firestarter.schemas.in.h:11
+#: stockfw.schemas.in.h:11
 msgid "Drop denied packets without sending an error packet back."
 msgstr ""
 
-#: firestarter.schemas.in.h:12
+#: stockfw.schemas.in.h:12
 #, fuzzy
 msgid "Enable DHCP server for connection sharing"
 msgstr "Konfiguration av Internetanslutningsdelning"
 
-#: firestarter.schemas.in.h:13
+#: stockfw.schemas.in.h:13
 msgid "Enable NAT"
 msgstr "Aktivera NAT"
 
-#: firestarter.schemas.in.h:14
+#: stockfw.schemas.in.h:14
 msgid "Enable Network Address Translation, or Internet connection sharing."
 msgstr ""
 "Aktivera översättning av nätverksadresser (NAT) eller delning av "
 "Internetanslutning."
 
-#: firestarter.schemas.in.h:15
+#: stockfw.schemas.in.h:15
 msgid "Enable the configuration of ICMP"
 msgstr "Aktivera konfigurationen av ICMP"
 
-#: firestarter.schemas.in.h:16
+#: stockfw.schemas.in.h:16
 msgid "Enable the configuration of tos"
 msgstr "Aktivera konfigurationen av tos"
 
-#: firestarter.schemas.in.h:17 src/preferences.glade.h:41
+#: stockfw.schemas.in.h:17 src/preferences.glade.h:41
 #, fuzzy
 msgid "Enable tray icon"
 msgstr "Aktivera maskerad"
 
-#: firestarter.schemas.in.h:18
+#: stockfw.schemas.in.h:18
 #, fuzzy
 msgid "Filter out hits not targeted at the firewall"
 msgstr ""
 "Misslyckades med att starta brandväggen\n"
 "\n"
 
-#: firestarter.schemas.in.h:19
+#: stockfw.schemas.in.h:19
 #, fuzzy
 msgid ""
 "Filter out hits that have an destination IP that does not match the firewall "
@@ -119,236 +113,236 @@ msgid ""
 msgstr ""
 "Filtrera ut träffar som har ett destinations-IP som inte matchar ditt IP."
 
-#: firestarter.schemas.in.h:20
+#: stockfw.schemas.in.h:20
 msgid "Filter out redundant hits"
 msgstr "Filtrera bort identiska träffar"
 
-#: firestarter.schemas.in.h:21
+#: stockfw.schemas.in.h:21
 msgid "Filter out sequences of identical hits."
 msgstr "Filtrera bort sekvenser med identiska träffar."
 
-#: firestarter.schemas.in.h:22
+#: stockfw.schemas.in.h:22
 msgid "Highest IP in the range to serve to DHCP clients"
 msgstr ""
 
-#: firestarter.schemas.in.h:23
+#: stockfw.schemas.in.h:23
 msgid "Is it the first time the user is running the program"
 msgstr ""
 
-#: firestarter.schemas.in.h:24
+#: stockfw.schemas.in.h:24
 msgid "Lowest IP in the range to serve to DHCP clients"
 msgstr ""
 
-#: firestarter.schemas.in.h:25
+#: stockfw.schemas.in.h:25
 msgid "Minimize to tray"
 msgstr ""
 
-#: firestarter.schemas.in.h:26
+#: stockfw.schemas.in.h:26
 msgid "Nameserver DHCP clients should use"
 msgstr ""
 
-#: firestarter.schemas.in.h:27
+#: stockfw.schemas.in.h:27
 msgid "Policy auto apply"
 msgstr ""
 
-#: firestarter.schemas.in.h:28
+#: stockfw.schemas.in.h:28
 msgid ""
 "Restrict outbound traffic by default, only allowing whitelisted outgoing "
 "connections."
 msgstr ""
 
-#: firestarter.schemas.in.h:29
+#: stockfw.schemas.in.h:29
 msgid "Restrictive outbound policy mode"
 msgstr ""
 
-#: firestarter.schemas.in.h:30
+#: stockfw.schemas.in.h:30
 msgid ""
-"Run the system dhcpd server in conjunction with Firestarter Internet "
+"Run the system dhcpd server in conjunction with StockFW Internet "
 "connection sharing."
 msgstr ""
 
-#: firestarter.schemas.in.h:31
+#: stockfw.schemas.in.h:31
 #, fuzzy
-msgid "Show the Firestarter icon in the notification area."
+msgid "Show the StockFW icon in the notification area."
 msgstr "Visa destinationskolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:32
+#: stockfw.schemas.in.h:32
 msgid "Show the Type of Service column in the Hit View."
 msgstr "Visa Typ av tjänst-kolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:33
+#: stockfw.schemas.in.h:33
 msgid "Show the destination column in the Hit View"
 msgstr "Visa destinationskolumnen i träffvyn"
 
-#: firestarter.schemas.in.h:34
+#: stockfw.schemas.in.h:34
 msgid "Show the destination column in the Hit View."
 msgstr "Visa destinationskolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:35
+#: stockfw.schemas.in.h:35
 #, fuzzy
 msgid "Show the device the hit was received from in the Hit View."
 msgstr "Visa den enhet som träffen mottogs från i träffvyn."
 
-#: firestarter.schemas.in.h:36
+#: stockfw.schemas.in.h:36
 msgid "Show the device the hit was routed to in the Hit View."
 msgstr "Visa den enhet som träffen dirigerades till i träffvyn."
 
-#: firestarter.schemas.in.h:37
+#: stockfw.schemas.in.h:37
 #, fuzzy
 msgid "Show the direction column in the Hit View"
 msgstr "Visa inkolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:38
+#: stockfw.schemas.in.h:38
 #, fuzzy
 msgid "Show the direction column in the Hit View."
 msgstr "Visa destinationskolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:39
+#: stockfw.schemas.in.h:39
 msgid "Show the in column in the Hit View"
 msgstr "Visa inkolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:40
+#: stockfw.schemas.in.h:40
 msgid "Show the length column in the Hit View"
 msgstr "Visa längdkolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:41
+#: stockfw.schemas.in.h:41
 msgid "Show the out column in the Hit View"
 msgstr "Visa utkolumnen i träffvyn"
 
-#: firestarter.schemas.in.h:42
+#: stockfw.schemas.in.h:42
 msgid "Show the packet length column in the Hit View."
 msgstr "Visa paketlängdskolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:43
+#: stockfw.schemas.in.h:43
 msgid "Show the port column in the Hit View"
 msgstr "Visa portkolumnen i träffvyn"
 
-#: firestarter.schemas.in.h:44
+#: stockfw.schemas.in.h:44
 msgid "Show the port column in the Hit View."
 msgstr "Visa portkolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:45
+#: stockfw.schemas.in.h:45
 msgid "Show the protocol column in the Hit View"
 msgstr "Visa protokollkolumnen i träffvyn"
 
-#: firestarter.schemas.in.h:46
+#: stockfw.schemas.in.h:46
 msgid "Show the protocol column in the Hit View."
 msgstr "Visa protokollkolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:47
+#: stockfw.schemas.in.h:47
 msgid "Show the service column in the Hit View"
 msgstr "Visa tjänstekolumnen i träffvyn"
 
-#: firestarter.schemas.in.h:48
+#: stockfw.schemas.in.h:48
 msgid "Show the service column in the Hit View."
 msgstr "Visa tjänstekolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:49
+#: stockfw.schemas.in.h:49
 msgid "Show the source column in the Hit View"
 msgstr "Visa källkolumnen i träffvyn"
 
-#: firestarter.schemas.in.h:50
+#: stockfw.schemas.in.h:50
 msgid "Show the source column in the Hit View."
 msgstr "Visa källkolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:51
+#: stockfw.schemas.in.h:51
 msgid "Show the time column in the Hit View"
 msgstr "Visa tidskolumnen i träffvyn"
 
-#: firestarter.schemas.in.h:52
+#: stockfw.schemas.in.h:52
 msgid "Show the time column in the Hit View."
 msgstr "Visa tidskolumnen i träffvyn."
 
-#: firestarter.schemas.in.h:53
+#: stockfw.schemas.in.h:53
 msgid "Show the tos column in the Hit View"
 msgstr "Visa tos-kolumnen i träffvyn"
 
-#: firestarter.schemas.in.h:54
+#: stockfw.schemas.in.h:54
 msgid "Specifies the higher limit of the IP space to use for DHCP leases."
 msgstr ""
 
-#: firestarter.schemas.in.h:55
+#: stockfw.schemas.in.h:55
 msgid "Specifies the lower limit of the IP space to use for DHCP leases."
 msgstr ""
 
-#: firestarter.schemas.in.h:56
+#: stockfw.schemas.in.h:56
 #, fuzzy
 msgid "Start the firewall on a DHCP lease renewal"
 msgstr "Aktivera brandväggen vid uppringning"
 
-#: firestarter.schemas.in.h:57
+#: stockfw.schemas.in.h:57
 msgid "Start the firewall when the program loads"
 msgstr "Starta brandväggen när programmet startar"
 
-#: firestarter.schemas.in.h:58
+#: stockfw.schemas.in.h:58
 msgid "Start the firewall when the program loads."
 msgstr "Starta brandväggen när programmet startar"
 
-#: firestarter.schemas.in.h:59
+#: stockfw.schemas.in.h:59
 #, fuzzy
 msgid "Start the firewall when the system boots"
 msgstr "Starta brandväggen när programmet startar"
 
-#: firestarter.schemas.in.h:60
+#: stockfw.schemas.in.h:60
 #, fuzzy
 msgid "Start the firewall when the system boots."
 msgstr "Starta brandväggen när programmet startar"
 
-#: firestarter.schemas.in.h:61
+#: stockfw.schemas.in.h:61
 #, fuzzy
 msgid "Start the firewall when the system dials out"
 msgstr "Aktivera brandväggen vid uppringning"
 
-#: firestarter.schemas.in.h:62
+#: stockfw.schemas.in.h:62
 #, fuzzy
 msgid "Start the firewall when the system establishes a PPP connection."
 msgstr "Starta brandväggen när programmet startar"
 
-#: firestarter.schemas.in.h:63
+#: stockfw.schemas.in.h:63
 #, fuzzy
 msgid "Start the firewall when the system receives a new DHCP lease."
 msgstr "Starta brandväggen när programmet startar"
 
-#: firestarter.schemas.in.h:64
+#: stockfw.schemas.in.h:64
 msgid "The Internet connected network interface. For example, ppp0 or eth0."
 msgstr ""
 "Det nätverksgränssnitt som är anslutet till Internet. Till exempel ppp0 "
 "eller eth0."
 
-#: firestarter.schemas.in.h:65
+#: stockfw.schemas.in.h:65
 msgid "The LAN connected network interface. For example, eth0 or eth1."
 msgstr ""
 "Det nätverksgränssnitt som är ansluten till det lokala nätverket. Till "
 "exempel eth0 eller eth1."
 
-#: firestarter.schemas.in.h:66
+#: stockfw.schemas.in.h:66
 msgid "The external interface"
 msgstr "Det externa gränssnittet"
 
-#: firestarter.schemas.in.h:67
-msgid "The first time Firestarter starts several special actions are taken."
-msgstr "Första gången Firestarter startas vidtas flera speciella åtgärder."
+#: stockfw.schemas.in.h:67
+msgid "The first time StockFW starts several special actions are taken."
+msgstr "Första gången StockFW startas vidtas flera speciella åtgärder."
 
-#: firestarter.schemas.in.h:68
+#: stockfw.schemas.in.h:68
 msgid "The internal interface"
 msgstr "Det interna gränssnittet"
 
-#: firestarter.schemas.in.h:69
+#: stockfw.schemas.in.h:69
 msgid "The location of the file the system logging daemon writes to."
 msgstr "Platsen för den fil som systemloggningsdemonen skriver till."
 
-#: firestarter.schemas.in.h:70
+#: stockfw.schemas.in.h:70
 msgid ""
 "The nameserver clients should use. You can specify multiple nameserver in a "
 "space separated list. A value of &lt;dynamic&gt; causes the nameservers to "
 "be determined at run time."
 msgstr ""
 
-#: firestarter.schemas.in.h:71
+#: stockfw.schemas.in.h:71
 msgid "The system log file"
 msgstr "Systemloggfilen"
 
-#: firestarter.schemas.in.h:72
+#: stockfw.schemas.in.h:72
 msgid "When closing the program window, instead of exiting, hide the window."
 msgstr ""
 
@@ -360,34 +354,34 @@ msgstr ""
 msgid "Failed to write to DHCP server configuration file: "
 msgstr ""
 
-#: src/firestarter.c:83 src/firestarter.c:85 src/firestarter.c:86
+#: src/stockfw.c:83 src/stockfw.c:85 src/stockfw.c:86
 #, fuzzy
 msgid "Failed to stop the firewall"
 msgstr ""
 "Misslyckades med att stoppa brandväggen\n"
 "\n"
 
-#: src/firestarter.c:87
+#: src/stockfw.c:87
 #, fuzzy
 msgid "There was an undetermined error when trying to stop the firewall."
 msgstr "Ett obestämt fel inträffade då din brandvägg skulle stoppas."
 
-#: src/firestarter.c:126 src/firestarter.c:130
+#: src/stockfw.c:126 src/stockfw.c:130
 #, fuzzy, c-format
 msgid "The device %s is not ready."
 msgstr ""
 "Enheten %s är inte redo.\n"
 "\n"
 
-#: src/firestarter.c:133
+#: src/stockfw.c:133
 msgid "Your kernel does not support iptables."
 msgstr ""
 
-#: src/firestarter.c:135
+#: src/stockfw.c:135
 msgid "An unknown error occurred."
 msgstr ""
 
-#: src/firestarter.c:139
+#: src/stockfw.c:139
 msgid ""
 "Please check your network device settings and make sure your\n"
 "Internet connection is active."
@@ -395,33 +389,33 @@ msgstr ""
 "Kontrollera dina inställningar för nätverksenheten och försäkra\n"
 "dig om att din Internetanslutning är aktiv."
 
-#: src/firestarter.c:143
+#: src/stockfw.c:143
 #, fuzzy
 msgid "Failed to start the firewall\n"
 msgstr ""
 "Misslyckades med att starta brandväggen\n"
 "\n"
 
-#: src/firestarter.c:147 src/firestarter.c:148
+#: src/stockfw.c:147 src/stockfw.c:148
 #, fuzzy
 msgid "Failed to start the firewall"
 msgstr ""
 "Misslyckades med att starta brandväggen\n"
 "\n"
 
-#: src/firestarter.c:200 src/firestarter.c:202 src/firestarter.c:203
+#: src/stockfw.c:200 src/stockfw.c:202 src/stockfw.c:203
 #, fuzzy
 msgid "Failed to lock the firewall"
 msgstr ""
 "Misslyckades med att stoppa brandväggen\n"
 "\n"
 
-#: src/firestarter.c:204
+#: src/stockfw.c:204
 #, fuzzy
 msgid "There was an undetermined error when trying to lock the firewall."
 msgstr "Ett obestämt fel inträffade då din brandvägg skulle stoppas."
 
-#: src/firestarter.c:298
+#: src/stockfw.c:298
 #, fuzzy
 msgid ""
 " -s, --start            Start the firewall\n"
@@ -429,8 +423,8 @@ msgid ""
 "     --lock             Lock the firewall, blocking all traffic\n"
 "     --generate-scripts Generate firewall scripts from current "
 "configuration\n"
-"     --start-hidden     Start Firestarter with the GUI not visible\n"
-" -v, --version          Prints Firestarter's version number\n"
+"     --start-hidden     Start StockFW with the GUI not visible\n"
+" -v, --version          Prints StockFW's version number\n"
 " -h, --help             You're looking at it\n"
 msgstr ""
 "\n"
@@ -441,28 +435,28 @@ msgstr ""
 "(panikläge)\n"
 "     --generate-scripts Generera brandväggsskript från aktuell "
 "konfiguration\n"
-" -v, --version          Skriv ut Firestarters versionsnummer\n"
+" -v, --version          Skriv ut StockFWs versionsnummer\n"
 " -h, --help             Du tittar på den\n"
 
-#: src/firestarter.c:316 src/firestarter.c:318 src/firestarter.c:319
+#: src/stockfw.c:316 src/stockfw.c:318 src/stockfw.c:319
 #, fuzzy
 msgid "Insufficient privileges"
 msgstr ""
 "Otillräckliga rättigheter\n"
 "\n"
 
-#: src/firestarter.c:320
+#: src/stockfw.c:320
 #, fuzzy
-msgid "You must have root user privileges to use Firestarter."
+msgid "You must have root user privileges to use StockFW."
 msgstr ""
-"Du måste ha root-användarrättigheter för att kunna använda Firestarter.\n"
+"Du måste ha root-användarrättigheter för att kunna använda StockFW.\n"
 
-#: src/firestarter.c:423
+#: src/stockfw.c:423
 #, c-format
 msgid "Updating firewall to new version...\n"
 msgstr ""
 
-#: src/firestarter.c:425
+#: src/stockfw.c:425
 #, fuzzy, c-format
 msgid "Firewall update complete\n"
 msgstr "Brandväggen stannad"
@@ -665,7 +659,7 @@ msgstr "/_Redigera/_Inställningar..."
 #: src/menus.c:58
 #, fuzzy
 msgid "Program preferences"
-msgstr "Firestarter: Inställningar"
+msgstr "StockFW: Inställningar"
 
 #. F12
 #: src/menus.c:60
@@ -753,11 +747,11 @@ msgstr ""
 
 #: src/menus.c:71
 #, fuzzy
-msgid "Firestarter _Homepage"
-msgstr "/_Hjälp/Firestarters _hemsida"
+msgid "StockFW _Homepage"
+msgstr "/_Hjälp/StockFWs _hemsida"
 
 #: src/menus.c:71
-msgid "Open the Firestarter homepage in a browser"
+msgid "Open the StockFW homepage in a browser"
 msgstr ""
 
 #: src/menus.c:72
@@ -766,8 +760,8 @@ msgstr ""
 
 #: src/menus.c:72
 #, fuzzy
-msgid "About Firestarter"
-msgstr "Firestarter"
+msgid "About StockFW"
+msgstr "StockFW"
 
 #: src/menus.c:74
 #, fuzzy
@@ -1107,12 +1101,12 @@ msgstr "_Redigera"
 
 #: src/preferences.c:155
 msgid ""
-"A proper configuration for Firestarter was not found. If you are running "
-"Firestarter from the directory you built it in, run 'make install-data-"
+"A proper configuration for StockFW was not found. If you are running "
+"StockFW from the directory you built it in, run 'make install-data-"
 "local' to install a configuration, or simply 'make install' to install the "
 "whole program.\n"
 "\n"
-"Firestarter will now close."
+"StockFW will now close."
 msgstr ""
 
 #: src/preferences.c:235 src/preferences.glade.h:53
@@ -1174,8 +1168,8 @@ msgstr ""
 
 #: src/preferences.c:910
 #, fuzzy
-msgid "Firestarter interface file not found"
-msgstr "Brandväggsverktyget Firestarter"
+msgid "StockFW interface file not found"
+msgstr "Brandväggsverktyget StockFW"
 
 #: src/preferences.c:911
 msgid "The interface markup file preferences.glade could not be found."
@@ -1589,8 +1583,8 @@ msgstr "Brandväggen stannad"
 
 #: src/tray.c:204
 #, fuzzy
-msgid "_Show Firestarter"
-msgstr "Firestarter"
+msgid "_Show StockFW"
+msgstr "StockFW"
 
 #: src/tray.c:214
 #, fuzzy
@@ -1598,8 +1592,8 @@ msgid "_Exit"
 msgstr "Avsluta"
 
 #: src/util.c:109
-msgid "Firestarter error"
-msgstr "Firestarter-fel"
+msgid "StockFW error"
+msgstr "StockFW-fel"
 
 #: src/util.c:138
 msgid ""
@@ -1706,7 +1700,7 @@ msgstr ""
 
 #: src/wizard.c:237
 msgid ""
-"Firestarter can share your Internet connection with the computers on your "
+"StockFW can share your Internet connection with the computers on your "
 "local network\n"
 "using a single public IP address and a method called Network Address "
 "Translation."
@@ -1803,8 +1797,8 @@ msgid "Firewall Wizard"
 msgstr "Brandväggsguide"
 
 #: src/wizard.c:643
-msgid "Welcome to Firestarter"
-msgstr "Välkommen till Firestarter"
+msgid "Welcome to StockFW"
+msgstr "Välkommen till StockFW"
 
 #: src/wizard.c:649
 msgid "Network device setup"
@@ -1897,17 +1891,17 @@ msgstr "Redo att starta din brandvägg"
 #~ msgid "All traffic halted"
 #~ msgstr "All trafik stannad"
 
-#~ msgid "Firestarter "
-#~ msgstr "Firestarter "
+#~ msgid "StockFW "
+#~ msgstr "StockFW "
 
 #~ msgid ""
-#~ "Firestarter requires a Linux 2.4 or later kernel to function.\n"
+#~ "StockFW requires a Linux 2.4 or later kernel to function.\n"
 #~ "\n"
-#~ "A client for your system might be available at http://firestarter.sf.net"
+#~ "A client for your system might be available at http://stockfw.sf.net"
 #~ msgstr ""
-#~ "Firestarter kräver en Linux 2.4-kärna eller senare för att fungera.\n"
+#~ "StockFW kräver en Linux 2.4-kärna eller senare för att fungera.\n"
 #~ "\n"
-#~ "En klient för ditt system kan vara tillgänglig på http://firestarter.sf."
+#~ "En klient för ditt system kan vara tillgänglig på http://stockfw.sf."
 #~ "net"
 
 #~ msgid "Hits"
@@ -2117,11 +2111,11 @@ msgstr "Redo att starta din brandvägg"
 
 #~ msgid ""
 #~ "When closing the program window in tray mode the program is hid instead "
-#~ "of exited and can be restored by clicking the Firestarter system tray "
+#~ "of exited and can be restored by clicking the StockFW system tray "
 #~ "icon."
 #~ msgstr ""
 #~ "Då programfönstret stängs i lådläge döljs programmet istället för att "
-#~ "avslutas och kan återställas genom att klicka på Firestarters ikon i "
+#~ "avslutas och kan återställas genom att klicka på StockFWs ikon i "
 #~ "systemlådan."
 
 #~ msgid ""
@@ -2156,11 +2150,11 @@ msgstr "Redo att starta din brandvägg"
 #~ msgstr "Aktivera experimentella alternativ"
 
 #~ msgid ""
-#~ "If you enable this, Firestarter can use some experimental patches for "
+#~ "If you enable this, StockFW can use some experimental patches for "
 #~ "filtering. Do not enable this option until you have read the manual for "
 #~ "the prerequisites."
 #~ msgstr ""
-#~ "Om du aktiverar detta kan Firestarter använda en del experimentella fixar "
+#~ "Om du aktiverar detta kan StockFW använda en del experimentella fixar "
 #~ "för filtrering. Aktivera inte detta alternativ innan du har läst igenom "
 #~ "kraven i manualen."
 
@@ -2168,10 +2162,10 @@ msgstr "Redo att starta din brandvägg"
 #~ msgstr "Försök att hitta platsen för systembinärer"
 
 #~ msgid ""
-#~ "Check this and Firestarter will search for the location of some needed "
+#~ "Check this and StockFW will search for the location of some needed "
 #~ "binaries. Do not check unless you're having problems."
 #~ msgstr ""
-#~ "Om du kryssar för detta kommer Firestarter att söka efter platsen för "
+#~ "Om du kryssar för detta kommer StockFW att söka efter platsen för "
 #~ "vissa binärfiler som behövs. Kryssa inte för om du inte har problem."
 
 #~ msgid "Deny"
@@ -2485,11 +2479,11 @@ msgstr "Redo att starta din brandvägg"
 #~ msgstr "Guidealternativ"
 
 #~ msgid ""
-#~ "If you enable this, Firestarter can use some experimental patches for "
+#~ "If you enable this, StockFW can use some experimental patches for "
 #~ "filtering.Do not enable this option until you have read the manual for "
 #~ "the pre-requisties"
 #~ msgstr ""
-#~ "Om du aktiverar detta kan Firestarter använda en del experimentella fixar "
+#~ "Om du aktiverar detta kan StockFW använda en del experimentella fixar "
 #~ "för filtrering. Aktivera inte detta alternativ innan du har läst igenom "
 #~ "kraven i manualen"
 
@@ -2533,13 +2527,13 @@ msgstr "Redo att starta din brandvägg"
 #~ msgid ""
 #~ "\n"
 #~ "A firewall created by an older version of\n"
-#~ "Firestarter has been detected.\n"
+#~ "StockFW has been detected.\n"
 #~ "\n"
 #~ "OK to remove old firewall (recommended)?\n"
 #~ msgstr ""
 #~ "\n"
 #~ "En brandvägg som är gjord med en äldre version\n"
-#~ "av Firestarter har upptäckts.\n"
+#~ "av StockFW har upptäckts.\n"
 #~ "\n"
 #~ "Är det OK att ta bort den gamla brandväggen\n"
 #~ "(rekommenderas)?\n"
@@ -2660,8 +2654,8 @@ msgstr "Redo att starta din brandvägg"
 #~ msgid "Port Forwarding"
 #~ msgstr "Portvidarebefordran"
 
-#~ msgid "Firestarter Firewall Wizard"
-#~ msgstr "Firestarter-brandväggsguiden"
+#~ msgid "StockFW Firewall Wizard"
+#~ msgstr "StockFW-brandväggsguiden"
 
 #~ msgid "Exit program when window is closed (otherwise hide)"
 #~ msgstr "Avsluta programmet när fönstret stängs (göm annars)"
@@ -2678,7 +2672,7 @@ msgstr "Redo att starta din brandvägg"
 #~ msgstr "Starta gömt"
 
 #~ msgid ""
-#~ "Check this and Firestarter will start hidden. Click on the status button "
+#~ "Check this and StockFW will start hidden. Click on the status button "
 #~ "to unhide. Disabled by default."
 #~ msgstr ""
 #~ "Om du kryssar för detta kommer brandväggen att startas gömd. Klicka på "
@@ -2835,10 +2829,10 @@ msgstr "Redo att starta din brandvägg"
 #~ msgstr "Filtrera utgående paket"
 
 #~ msgid ""
-#~ "Check this and Firestarter will also filter Outbound packets. Do not "
+#~ "Check this and StockFW will also filter Outbound packets. Do not "
 #~ "check unless you are sure you need it."
 #~ msgstr ""
-#~ "Om du kryssar för detta kommer Firestarter också att filtrera utgående "
+#~ "Om du kryssar för detta kommer StockFW också att filtrera utgående "
 #~ "paket. Kryssa inte för detta om du inte är säker på att du behöver det."
 
 #~ msgid "Logging"

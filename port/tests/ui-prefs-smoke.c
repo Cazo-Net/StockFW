@@ -307,8 +307,8 @@ main (int argc, char **argv)
 
 			if (creator != NULL &&
 			    g_strcmp0 (creator,
-			               "Qusai Fethalrahman - Creator & "
-			               "Original Developer") != 0) {
+			               "Qusai Fethalrahman (Qusaifox2@gmail.com)"
+			               " - Creator & Original Developer") != 0) {
 				g_printerr ("ui-prefs-smoke: FAILED, creator "
 				            "line renders as \"%s\"\n", creator);
 				failed = TRUE;

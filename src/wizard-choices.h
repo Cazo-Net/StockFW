@@ -1,5 +1,4 @@
 /*---[ wizard-choices.h ]---------------------------------------------
- * Copyright (C) 2000-2002 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,8 +8,8 @@
  * Functions dealing with saving/restoring the users wizard choices
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_WIZARD_CHOICES
-#define _FIRESTARTER_WIZARD_CHOICES
+#ifndef _STOCKFW_WIZARD_CHOICES
+#define _STOCKFW_WIZARD_CHOICES
 
 #include <config.h>
 #include <gnome.h>

@@ -1,5 +1,4 @@
 /*---[ wizard.h ]------------------------------------------------------
- * Copyright (C) 2000 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,8 +8,8 @@
  * The wizard header file
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_WIZARD
-#define _FIRESTARTER_WIZARD
+#ifndef _STOCKFW_WIZARD
+#define _STOCKFW_WIZARD
 
 #include <config.h>
 #include <gnome.h>

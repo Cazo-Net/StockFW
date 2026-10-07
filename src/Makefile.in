@@ -72,8 +72,8 @@ ECHO = @ECHO@
 EGREP = @EGREP@
 EXEEXT = @EXEEXT@
 F77 = @F77@
-FIRESTARTER_CFLAGS = @FIRESTARTER_CFLAGS@
-FIRESTARTER_LIBS = @FIRESTARTER_LIBS@
+STOCKFW_CFLAGS = @STOCKFW_CFLAGS@
+STOCKFW_LIBS = @STOCKFW_LIBS@
 GCJ = @GCJ@
 GCJFLAGS = @GCJFLAGS@
 GCONFTOOL = @GCONFTOOL@
@@ -125,22 +125,22 @@ VERSION = @VERSION@
 WARN_CFLAGS = @WARN_CFLAGS@
 WARN_CXXFLAGS = @WARN_CXXFLAGS@
 
-gladedir = $(datadir)/firestarter/glade/
+gladedir = $(datadir)/stockfw/glade/
 SUBDIRS = xpm
 
 INCLUDES = \
 	$(WARN_CFLAGS) \
-	@FIRESTARTER_CFLAGS@ \
-	-DG_LOG_DOMAIN=\"Firestarter\" \
-	-DFIRESTARTER_RULES_DIR=\"@sysconfdir@\" \
+	@STOCKFW_CFLAGS@ \
+	-DG_LOG_DOMAIN=\"StockFW\" \
+	-DSTOCKFW_RULES_DIR=\"@sysconfdir@\" \
 	-DGNOMELOCALEDIR=\""$(datadir)/locale"\" \
-	-DGLADEDIR=\""$(datadir)/firestarter/glade"\"
+	-DGLADEDIR=\""$(datadir)/stockfw/glade"\"
 
 
-bin_PROGRAMS = firestarter
+bin_PROGRAMS = stockfw
 
-firestarter_SOURCES = \
-	firestarter.c	\
+stockfw_SOURCES = \
+	stockfw.c	\
 	gui.c		\
 	util.c		\
 	logread.c	\
@@ -159,7 +159,7 @@ firestarter_SOURCES = \
 	statusview.c	\
 	policyview.c	\
 	globals.h	\
-	firestarter.h	\
+	stockfw.h	\
 	gui.h		\
 	util.h		\
 	logread.h	\
@@ -183,13 +183,13 @@ glade_DATA = \
 	preferences.glade
 
 
-firestarter_LDADD = @FIRESTARTER_LIBS@
+stockfw_LDADD = @STOCKFW_LIBS@
 
 EXTRA_DIST = $(glade_DATA)
 mkinstalldirs = $(SHELL) $(top_srcdir)/mkinstalldirs
 CONFIG_HEADER = ../config.h
 CONFIG_CLEAN_FILES = 
-bin_PROGRAMS =  firestarter$(EXEEXT)
+bin_PROGRAMS =  stockfw$(EXEEXT)
 PROGRAMS =  $(bin_PROGRAMS)
 
 
@@ -197,14 +197,14 @@ DEFS = @DEFS@ -I. -I$(srcdir) -I..
 CPPFLAGS = @CPPFLAGS@
 LDFLAGS = @LDFLAGS@
 LIBS = @LIBS@
-firestarter_OBJECTS =  firestarter.$(OBJEXT) gui.$(OBJEXT) \
+stockfw_OBJECTS =  stockfw.$(OBJEXT) gui.$(OBJEXT) \
 util.$(OBJEXT) logread.$(OBJEXT) menus.$(OBJEXT) wizard.$(OBJEXT) \
 wizard-choices.$(OBJEXT) service.$(OBJEXT) preferences.$(OBJEXT) \
 scriptwriter.$(OBJEXT) savelog.$(OBJEXT) netfilter-script.$(OBJEXT) \
 hitview.$(OBJEXT) eggtrayicon.$(OBJEXT) tray.$(OBJEXT) \
 dhcp-server.$(OBJEXT) statusview.$(OBJEXT) policyview.$(OBJEXT)
-firestarter_DEPENDENCIES = 
-firestarter_LDFLAGS = 
+stockfw_DEPENDENCIES = 
+stockfw_LDFLAGS = 
 CFLAGS = @CFLAGS@
 COMPILE = $(CC) $(DEFS) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
 LTCOMPILE = $(LIBTOOL) --mode=compile $(CC) $(DEFS) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -219,8 +219,8 @@ DISTFILES = $(DIST_COMMON) $(SOURCES) $(HEADERS) $(TEXINFOS) $(EXTRA_DIST)
 
 TAR = gtar
 GZIP_ENV = --best
-SOURCES = $(firestarter_SOURCES)
-OBJECTS = $(firestarter_OBJECTS)
+SOURCES = $(stockfw_SOURCES)
+OBJECTS = $(stockfw_OBJECTS)
 
 all: all-redirect
 .SUFFIXES:
@@ -302,9 +302,9 @@ distclean-libtool:
 
 maintainer-clean-libtool:
 
-firestarter$(EXEEXT): $(firestarter_OBJECTS) $(firestarter_DEPENDENCIES)
-	@rm -f firestarter$(EXEEXT)
-	$(LINK) $(firestarter_LDFLAGS) $(firestarter_OBJECTS) $(firestarter_LDADD) $(LIBS)
+stockfw$(EXEEXT): $(stockfw_OBJECTS) $(stockfw_DEPENDENCIES)
+	@rm -f stockfw$(EXEEXT)
+	$(LINK) $(stockfw_LDFLAGS) $(stockfw_OBJECTS) $(stockfw_LDADD) $(LIBS)
 
 install-gladeDATA: $(glade_DATA)
 	@$(NORMAL_INSTALL)
@@ -440,51 +440,51 @@ distdir: $(DISTFILES)
 	  fi; \
 	done
 dhcp-server.o: dhcp-server.c dhcp-server.h ../config.h wizard.h \
-	preferences.h util.h firestarter.h
+	preferences.h util.h stockfw.h
 eggtrayicon.o: eggtrayicon.c ../config.h eggtrayicon.h
-firestarter.o: firestarter.c ../config.h globals.h firestarter.h gui.h \
+stockfw.o: stockfw.c ../config.h globals.h stockfw.h gui.h \
 	menus.h statusview.h util.h logread.h wizard.h preferences.h \
 	scriptwriter.h policyview.h dhcp-server.h
-gui.o: gui.c ../config.h globals.h firestarter.h gui.h statusview.h \
-	hitview.h util.h menus.h xpm/firestarter-pixbufs.h tray.h \
+gui.o: gui.c ../config.h globals.h stockfw.h gui.h statusview.h \
+	hitview.h util.h menus.h xpm/stockfw-pixbufs.h tray.h \
 	preferences.h policyview.h
-hitview.o: hitview.c ../config.h firestarter.h globals.h hitview.h \
+hitview.o: hitview.c ../config.h stockfw.h globals.h hitview.h \
 	util.h menus.h gui.h statusview.h preferences.h logread.h \
 	scriptwriter.h wizard.h policyview.h
-logread.o: logread.c ../config.h globals.h logread.h firestarter.h \
+logread.o: logread.c ../config.h globals.h logread.h stockfw.h \
 	util.h hitview.h statusview.h service.h
-menus.o: menus.c menus.h ../config.h gui.h firestarter.h statusview.h \
+menus.o: menus.c menus.h ../config.h gui.h stockfw.h statusview.h \
 	wizard.h savelog.h preferences.h hitview.h util.h globals.h \
-	policyview.h xpm/firestarter-pixbufs.h
+	policyview.h xpm/stockfw-pixbufs.h
 netfilter-script.o: netfilter-script.c wizard.h ../config.h \
-	netfilter-script.h util.h firestarter.h preferences.h \
+	netfilter-script.h util.h stockfw.h preferences.h \
 	policyview.h scriptwriter.h
-policyview.o: policyview.c ../config.h policyview.h firestarter.h gui.h \
+policyview.o: policyview.c ../config.h policyview.h stockfw.h gui.h \
 	globals.h preferences.h menus.h statusview.h util.h \
 	scriptwriter.h wizard.h service.h
-preferences.o: preferences.c globals.h ../config.h firestarter.h \
+preferences.o: preferences.c globals.h ../config.h stockfw.h \
 	preferences.h wizard.h wizard-choices.h scriptwriter.h \
 	policyview.h statusview.h util.h gui.h service.h tray.h \
 	dhcp-server.h
-savelog.o: savelog.c savelog.h ../config.h firestarter.h globals.h \
+savelog.o: savelog.c savelog.h ../config.h stockfw.h globals.h \
 	hitview.h util.h
-scriptwriter.o: scriptwriter.c ../config.h firestarter.h globals.h \
+scriptwriter.o: scriptwriter.c ../config.h stockfw.h globals.h \
 	wizard.h util.h scriptwriter.h policyview.h netfilter-script.h \
 	preferences.h gui.h dhcp-server.h
 service.o: service.c service.h ../config.h
-statusview.o: statusview.c ../config.h firestarter.h globals.h \
+statusview.o: statusview.c ../config.h stockfw.h globals.h \
 	statusview.h menus.h gui.h preferences.h util.h service.h \
-	tray.h xpm/firestarter-pixbufs.h
-tray.o: tray.c tray.h ../config.h statusview.h firestarter.h \
-	eggtrayicon.h globals.h xpm/firestarter-pixbufs.h gui.h util.h \
+	tray.h xpm/stockfw-pixbufs.h
+tray.o: tray.c tray.h ../config.h statusview.h stockfw.h \
+	eggtrayicon.h globals.h xpm/stockfw-pixbufs.h gui.h util.h \
 	hitview.h preferences.h
-util.o: util.c globals.h ../config.h firestarter.h util.h hitview.h \
+util.o: util.c globals.h ../config.h stockfw.h util.h hitview.h \
 	preferences.h
 wizard-choices.o: wizard-choices.c wizard-choices.h ../config.h wizard.h \
-	util.h firestarter.h preferences.h
-wizard.o: wizard.c globals.h ../config.h firestarter.h wizard.h \
+	util.h stockfw.h preferences.h
+wizard.o: wizard.c globals.h ../config.h stockfw.h wizard.h \
 	wizard-choices.h scriptwriter.h policyview.h util.h \
-	xpm/firestarter-pixbufs.h preferences.h dhcp-server.h gui.h \
+	xpm/stockfw-pixbufs.h preferences.h dhcp-server.h gui.h \
 	statusview.h
 
 info-am:

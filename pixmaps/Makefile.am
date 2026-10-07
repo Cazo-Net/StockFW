@@ -1,4 +1,4 @@
-EXTRA_DIST = firestarter.png
+EXTRA_DIST = stockfw.png
 
-icon_DATA = firestarter.png
+icon_DATA = stockfw.png
 icondir = $(datadir)/pixmaps

@@ -1,5 +1,4 @@
 /*---[ util.h ]-------------------------------------------------------
- * Copyright (C) 2000-2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -10,13 +9,13 @@
  * need to be widely accessible
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_UTIL
-#define _FIRESTARTER_UTIL
+#ifndef _STOCKFW_UTIL
+#define _STOCKFW_UTIL
 
 #include <config.h>
 #include <gnome.h>
 
-#include "firestarter.h"
+#include "stockfw.h"
 
 void show_error (gchar *message);
 void error_dialog (const gchar *title,

@@ -72,8 +72,8 @@ ECHO = @ECHO@
 EGREP = @EGREP@
 EXEEXT = @EXEEXT@
 F77 = @F77@
-FIRESTARTER_CFLAGS = @FIRESTARTER_CFLAGS@
-FIRESTARTER_LIBS = @FIRESTARTER_LIBS@
+STOCKFW_CFLAGS = @STOCKFW_CFLAGS@
+STOCKFW_LIBS = @STOCKFW_LIBS@
 GCJ = @GCJ@
 GCJFLAGS = @GCJFLAGS@
 GCONFTOOL = @GCONFTOOL@
@@ -152,7 +152,7 @@ EXTRA_DIST = \
 
 
 noinst_HEADERS = \
-	firestarter-pixbufs.h
+	stockfw-pixbufs.h
 
 mkinstalldirs = $(SHELL) $(top_srcdir)/mkinstalldirs
 CONFIG_HEADER = ../../config.h
@@ -284,11 +284,11 @@ distclean-generic clean-generic maintainer-clean-generic clean \
 mostlyclean distclean maintainer-clean
 
 
-firestarter-pixbufs.h: $(stock_images)
-		-rm -f firestarter-pixbufs.h
+stockfw-pixbufs.h: $(stock_images)
+		-rm -f stockfw-pixbufs.h
 		var=`echo "$(stock_images)" | sed -e 's,\([^\.]*\)\.png,\1 \0,g'` ; \
 		   echo $$var; \
-		   gdk-pixbuf-csource --raw --build-list $$var > firestarter-pixbufs.h
+		   gdk-pixbuf-csource --raw --build-list $$var > stockfw-pixbufs.h
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

@@ -1,8 +1,8 @@
-# Firestarter — Modern Port Plan (Windows + Linux)
+# StockFW — Modern Port Plan (Windows + Linux)
 
 ## What this is
 
-`firestarter-1.0.3` is the original GNOME 2 / GTK+ 2 firewall GUI (C, 2000-2005).
+`stockfw-1.0.3` is the original GNOME 2 / GTK+ 2 firewall GUI (C, 2000-2005).
 It targets Linux only, iptables only, and depends on libraries that no longer exist
 on modern systems:
 
@@ -60,8 +60,8 @@ port/
       fs-tray.c           tray icon
       fs-dialogs.c        about/error helpers
   data/
-    firestarter.1.ui      GtkBuilder XML
-    firestarter.desktop
+    stockfw.1.ui      GtkBuilder XML
+    stockfw.desktop
 ```
 
 Key rule: **`core/` never includes a platform header.** All OS access goes through
@@ -116,7 +116,7 @@ Both use the same `CMakeLists.txt`.
 ```sh
 cmake -S . -B build -G Ninja
 cmake --build build
-./build/firestarter
+./build/stockfw
 ```
 
 Note for MSYS2: run the toolchain from the UCRT64 shell, not `sh -c` with a
@@ -146,7 +146,7 @@ the GUIDs and profile constants.
 netsh specifics found while testing:
 
 - `g_spawn_sync` does no shell parsing, so arguments must not contain
-  quote characters; `name=Firestarter - Allow SSH` must be a single argv
+  quote characters; `name=StockFW - Allow SSH` must be a single argv
   element with no surrounding quotes.
 - netsh rejects rule names containing `:`, `(`, `)`, `/` or `,`, which
   the generated display names do contain. They are sanitised before use.
@@ -179,7 +179,7 @@ netsh specifics found while testing:
 - `eggtrayicon.c` pokes X11 internals; replaced wholesale by `GtkStatusIcon`.
 - `policyview.c` uses `gdk_pixbuf` inline XPM data built at build time by
   `src/xpm/Makefile.am` — needs a CMake equivalent or conversion to PNG.
-- Preferences keys are GConf paths (`/apps/firestarter/...`); GKeyFile needs a
+- Preferences keys are GConf paths (`/apps/stockfw/...`); GKeyFile needs a
   flat key mapping — keep the same macro names so call sites don't change.
 - The iptables script uses `$IPT` and bash-isms (`==`, `while read`); on Windows
   there is no bash, which is why the Windows backend must not shell out.

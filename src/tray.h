@@ -1,5 +1,4 @@
 /*---[ tray.h ]---------------------------------------------------------
- * Copyright (C) 2002-2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,8 +8,8 @@
  * Tray icon for the GNOME Notification Area applet
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_TRAY
-#define _FIRESTARTER_TRAY
+#ifndef _STOCKFW_TRAY
+#define _STOCKFW_TRAY
 
 #include <config.h>
 #include <gnome.h>

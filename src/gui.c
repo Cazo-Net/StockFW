@@ -1,5 +1,4 @@
 /*---[ gui.c ]--------------------------------------------------------
- * Copyright (C) 2002 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,13 +12,13 @@
 #include <gnome.h>
 
 #include "globals.h"
-#include "firestarter.h"
+#include "stockfw.h"
 #include "gui.h"
 #include "statusview.h"
 #include "hitview.h"
 #include "util.h"
 #include "menus.h"
-#include "xpm/firestarter-pixbufs.h"
+#include "xpm/stockfw-pixbufs.h"
 #include "tray.h"
 #include "preferences.h"
 #include "policyview.h"
@@ -101,7 +100,7 @@ gui_create_list_view (View_def *def, gint width, gint height)
 }
 
 /* [ gui_toggle_visibility ]
- * Toggle the visibility for the main Firestarter window
+ * Toggle the visibility for the main StockFW window
  */
 gboolean
 gui_toggle_visibility (void)
@@ -109,8 +108,8 @@ gui_toggle_visibility (void)
 	static int window_x = -1;
 	static int window_y = -1;
 
-	if (GTK_WIDGET_VISIBLE (Firestarter.window)) {
-		gtk_window_get_position (GTK_WINDOW (Firestarter.window),
+	if (GTK_WIDGET_VISIBLE (StockFW.window)) {
+		gtk_window_get_position (GTK_WINDOW (StockFW.window),
 		                         &window_x, &window_y);
 
 		gui_set_visibility (FALSE);
@@ -118,7 +117,7 @@ gui_toggle_visibility (void)
 		return FALSE;
 	} else {
 		if (window_x >= 0 && window_y >= 0) {
-			gtk_window_move (GTK_WINDOW (Firestarter.window),
+			gtk_window_move (GTK_WINDOW (StockFW.window),
 			                 window_x,
 			                 window_y);
 		}
@@ -145,15 +144,12 @@ show_about (GtkWidget *widget, gpointer data)
 	}
 	else {
 		const gchar *authors[] = {
-			"Tomas Junnonen <majix@sci.fi> - Main Developer, Maintainer",
-			"Paul Drain <pd@cipherfunk.org> - Developer",
 			NULL};
 
 		pixbuf = gdk_pixbuf_new_from_inline (-1, pengo, FALSE, NULL);
 
 		dialog = gnome_about_new (
-			"Firestarter", VERSION,
-			"(C) 2000-2005 Tomas Junnonen",
+			"StockFW", VERSION,
 			_("An all-in-one Linux firewall utility for GNOME.\n"),
 			authors,
 			NULL,
@@ -170,10 +166,10 @@ show_about (GtkWidget *widget, gpointer data)
 /* [ gui_get_active_view ]
  * Return the view mode that is currently selected
  */
-FirestarterView
+StockFWView
 gui_get_active_view (void)
 {
-	FirestarterView v;
+	StockFWView v;
 	
 	v = gtk_notebook_get_current_page (GTK_NOTEBOOK (notebook));
 	g_assert (v < NUM_VIEWS);
@@ -192,22 +188,22 @@ close_main_window (void)
 		gui_toggle_visibility ();
 		return TRUE;
 	} else {
-		exit_firestarter ();
+		exit_stockfw ();
 		return FALSE;
 	}
 }
 
 
 /* [ gui_set_visibility ]
- * Set the visibility of the main Firestarter window
+ * Set the visibility of the main StockFW window
  */
 void
 gui_set_visibility (gboolean visible)
 {
 	if (visible) {
-		gtk_widget_show (Firestarter.window);
+		gtk_widget_show (StockFW.window);
 	} else
-		gtk_widget_hide (Firestarter.window);
+		gtk_widget_hide (StockFW.window);
 }
 
 static void
@@ -245,24 +241,24 @@ gui_construct (void)
 	gchar hostname[40];
 
 	if (!gethostname (hostname, 39))
-		Firestarter.window = gnome_app_new (PACKAGE, g_strconcat ("Firestarter ", hostname, NULL));
+		StockFW.window = gnome_app_new (PACKAGE, g_strconcat ("StockFW ", hostname, NULL));
 	else
-		Firestarter.window = gnome_app_new (PACKAGE, "Firestarter");
+		StockFW.window = gnome_app_new (PACKAGE, "StockFW");
 
-	Firestarter.ttips = gtk_tooltips_new ();
+	StockFW.ttips = gtk_tooltips_new ();
 
 /* Set up the main window */
-	g_signal_connect (G_OBJECT (Firestarter.window), "delete_event",
+	g_signal_connect (G_OBJECT (StockFW.window), "delete_event",
 			  G_CALLBACK (close_main_window), NULL);
 
 	gnome_window_icon_set_default_from_file (
-		"/usr/share/pixmaps/firestarter.png");
+		"/usr/share/pixmaps/stockfw.png");
 
-	menus_initialize (Firestarter.window);
+	menus_initialize (StockFW.window);
 
 /* The main application is spread out over a set of notebook pages */
 	notebook = gtk_notebook_new ();
-	gnome_app_set_contents (GNOME_APP (Firestarter.window), notebook);
+	gnome_app_set_contents (GNOME_APP (StockFW.window), notebook);
 
 /* Set up the statusview page */
 	statusview_page = create_statusview_page ();
@@ -284,7 +280,7 @@ gui_construct (void)
 
 	/* FIXME: By making the window non-resizable the expanders collapse properly,
 	    but it would be nicer if it worked with a resizable window */
-	//gtk_window_set_resizable (GTK_WINDOW (Firestarter.window), FALSE);
+	//gtk_window_set_resizable (GTK_WINDOW (StockFW.window), FALSE);
 
 	/* Show the tray icon */
 	if (preferences_get_bool (PREFS_ENABLE_TRAY_ICON))

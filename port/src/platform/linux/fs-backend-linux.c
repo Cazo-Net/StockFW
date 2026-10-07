@@ -408,7 +408,7 @@ apply_lines (gchar *script)
 		argv = g_ptr_array_new_with_free_func (g_free);
 
 		/* Tokenise, treating a double-quoted run as one word so
-		 * --log-prefix "FIRESTARTER-DROP " survives. */
+		 * --log-prefix "STOCKFW-DROP " survives. */
 		{
 			GString *word = g_string_new (NULL);
 			gboolean in_quotes = FALSE;
@@ -713,7 +713,7 @@ linux_list_connections (void)
 /* [ parse_log_line ]
  * Turns one log line into a hit.
  *
- * The generator's LOG target uses the prefix "FIRESTARTER-DROP ", so
+ * The generator's LOG target uses the prefix "STOCKFW-DROP ", so
  * that is what identifies our own drops.  Fields are pulled out of the
  * netfilter key=value pairs that follow it. */
 static gboolean
@@ -734,9 +734,9 @@ parse_log_line (const gchar *line, FsHit *hit)
 		gchar *eq;
 
 		/* The marker is a bare word, not a key=value pair: it
-		 * appears as ": FIRESTARTER-DROP " in the line. */
-		if (g_strcmp0 (token, "FIRESTARTER-DROP") == 0 ||
-		    g_str_has_suffix (token, "FIRESTARTER-DROP")) {
+		 * appears as ": STOCKFW-DROP " in the line. */
+		if (g_strcmp0 (token, "STOCKFW-DROP") == 0 ||
+		    g_str_has_suffix (token, "STOCKFW-DROP")) {
 			is_ours = TRUE;
 			continue;
 		}
@@ -898,11 +898,11 @@ linux_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 		 * produced nothing forever.  Prefer the journal when the
 		 * traditional file is absent.
 		 *
-		 * FIRESTARTER_LOG_FILE overrides both, which is what makes
+		 * STOCKFW_LOG_FILE overrides both, which is what makes
 		 * this testable and also lets someone point at a remote or
 		 * relocated log. */
 		{
-			const gchar *override = g_getenv ("FIRESTARTER_LOG_FILE");
+			const gchar *override = g_getenv ("STOCKFW_LOG_FILE");
 
 			if (override != NULL && *override != '\0') {
 				execlp ("tail", "tail", "-n", "0", "-F",

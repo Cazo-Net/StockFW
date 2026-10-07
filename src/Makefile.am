@@ -1,18 +1,18 @@
-gladedir = $(datadir)/firestarter/glade/
+gladedir = $(datadir)/stockfw/glade/
 SUBDIRS = xpm
 
 INCLUDES = \
 	$(WARN_CFLAGS) \
-	@FIRESTARTER_CFLAGS@ \
-	-DG_LOG_DOMAIN=\"Firestarter\" \
-	-DFIRESTARTER_RULES_DIR=\"@sysconfdir@\" \
+	@STOCKFW_CFLAGS@ \
+	-DG_LOG_DOMAIN=\"StockFW\" \
+	-DSTOCKFW_RULES_DIR=\"@sysconfdir@\" \
 	-DGNOMELOCALEDIR=\""$(datadir)/locale"\" \
-	-DGLADEDIR=\""$(datadir)/firestarter/glade"\"
+	-DGLADEDIR=\""$(datadir)/stockfw/glade"\"
 
-bin_PROGRAMS = firestarter
+bin_PROGRAMS = stockfw
 
-firestarter_SOURCES = \
-	firestarter.c	\
+stockfw_SOURCES = \
+	stockfw.c	\
 	gui.c		\
 	util.c		\
 	logread.c	\
@@ -31,7 +31,7 @@ firestarter_SOURCES = \
 	statusview.c	\
 	policyview.c	\
 	globals.h	\
-	firestarter.h	\
+	stockfw.h	\
 	gui.h		\
 	util.h		\
 	logread.h	\
@@ -53,6 +53,6 @@ firestarter_SOURCES = \
 glade_DATA = \
 	preferences.glade
 
-firestarter_LDADD = @FIRESTARTER_LIBS@
+stockfw_LDADD = @STOCKFW_LIBS@
 
 EXTRA_DIST = $(glade_DATA)

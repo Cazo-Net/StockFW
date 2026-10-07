@@ -1,5 +1,4 @@
 /*---[ dhcp-server.h ]------------------------------------------------
- * Copyright (C) 2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,8 +8,8 @@
  * Functions related to running and configuring the system DHCP server
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_DHCP_SERVER
-#define _FIRESTARTER_DHCP_SERVER
+#ifndef _STOCKFW_DHCP_SERVER
+#define _STOCKFW_DHCP_SERVER
 
 #include <config.h>
 #include <gnome.h>

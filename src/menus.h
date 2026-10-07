@@ -1,5 +1,4 @@
 /*---[ menus.h ]------------------------------------------------------
- * Copyright (C) 2000 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,8 +8,8 @@
  * Functions for installing menus, toolbars and popups
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_MENUS
-#define _FIRESTARTER_MENUS
+#ifndef _STOCKFW_MENUS
+#define _STOCKFW_MENUS
 
 #include <config.h>
 #include <gnome.h>
@@ -20,7 +19,7 @@
 GtkWidget *appbar;
 
 void menus_initialize (GtkWidget *app);
-void menus_set_toolbar (FirestarterView new_view);
+void menus_set_toolbar (StockFWView new_view);
 
 GtkWidget *menus_get_events_inbound_context_menu (void);
 GtkWidget *menus_get_events_outbound_context_menu (void);

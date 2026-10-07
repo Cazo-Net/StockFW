@@ -1,16 +1,14 @@
 #!/bin/sh
 #
-# Init file for the Firestarter firewall
+# Init file for the StockFW firewall
 #
 # chkconfig: 2345 11 92
 #
 # description: Starts, stops, and lock the firewall
 #
 # Script Authors:
-#	Tomas Junnonen <majix@sci.fi>
-#	Paul Drain <pd@cipherfunk.org>
 #
-# config: /etc/firestarter/configuration
+# config: /etc/stockfw/configuration
 
 # Source function library.
 . /etc/init.d/functions
@@ -21,15 +19,15 @@
 # Check that networking is up.
 [ ${NETWORKING} = "no" ] && exit 0
 
-FS_CONTROL="/etc/firestarter/firestarter.sh"
+FS_CONTROL="/etc/stockfw/stockfw.sh"
 
 [ -x $FS_CONTROL ] || exit 0
-[ -s /etc/firestarter/configuration ] || exit 0
+[ -s /etc/stockfw/configuration ] || exit 0
 
 RETVAL=0
 
 start() {
-	echo -n "Starting the Firestarter firewall: "
+	echo -n "Starting the StockFW firewall: "
 	$FS_CONTROL start > /dev/null
 	RETVAL=$?
 	if [ $RETVAL -eq 0 ]; then
@@ -42,7 +40,7 @@ start() {
 }
 
 stop() {
-	echo -n "Stopping the Firestarter firewall:"
+	echo -n "Stopping the StockFW firewall:"
 	$FS_CONTROL stop > /dev/null
 	RETVAL=$?
 	if [ $RETVAL -eq 0 ]; then
@@ -55,7 +53,7 @@ stop() {
 }
 
 lock() {
-	echo -n "Locking the Firestarter firewall:"
+	echo -n "Locking the StockFW firewall:"
 	$FS_CONTROL lock > /dev/null
 	RETVAL=$?
 	if [ $RETVAL -eq 0 ]; then
@@ -87,15 +85,15 @@ case "$1" in
 	RETVAL=$?
 	;;
   status)
-	if [ -e /var/lock/subsys/firestarter -o -e /var/lock/firestarter ]; then
-		echo "Firestarter is running..."
+	if [ -e /var/lock/subsys/stockfw -o -e /var/lock/stockfw ]; then
+		echo "StockFW is running..."
 	else
-		echo "Firestarter is stopped"
+		echo "StockFW is stopped"
 	fi
 	RETVAL=$?
 	;;
   *)
-	echo "Usage: firestarter {start|stop|restart|lock|status}"
+	echo "Usage: stockfw {start|stop|restart|lock|status}"
 	exit 1
 esac
 exit $RETVAL

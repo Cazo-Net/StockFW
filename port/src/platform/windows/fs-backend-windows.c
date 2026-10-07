@@ -14,7 +14,7 @@
  * spawn_capture() below, never GLib's g_spawn (which cannot suppress
  * the console window a console child would otherwise get).
  *
- * Build: add the object to the firestarter target in CMakeLists.txt,
+ * Build: add the object to the stockfw target in CMakeLists.txt,
  * link against ole32/oleaut32/hnetcfg.h and drop the
  * fs-backend-null.c entry.
  *--------------------------------------------------------------------*/
@@ -104,7 +104,7 @@ firewalled_get_state (void)
 	}
 
 	/* Windows has three independent profiles (domain / private /
-	 * public) rather than the single on-off state Firestarter models.
+	 * public) rather than the single on-off state StockFW models.
 	 * get_FirewallEnabled() takes a VARIANT_BOOL (-1 / 0), not a
 	 * VARIANT. */
 	for (i = 0; i < G_N_ELEMENTS (profiles); i++) {
@@ -943,15 +943,15 @@ firewalled_clear_rules (GError **error)
 			/* Names we created, in every spelling they have shipped
 			 * with.  netsh_safe_name rewrites the ':' of the display
 			 * name into '-', so ours arrive here as "StockFW- ...";
-			 * earlier builds produced "Firestarter- ...", and the
-			 * nameless fallback used "Firestarter ...".  Testing only
+			 * earlier builds produced "StockFW- ...", and the
+			 * nameless fallback used "StockFW ...".  Testing only
 			 * for the newest spelling would skip every rule a previous
 			 * version left behind, so each apply would pile another
 			 * copy of each rule on top. */
 			if (g_str_has_prefix (line, "StockFW-") ||
 			    g_str_has_prefix (line, "StockFW ") ||
-			    g_str_has_prefix (line, "Firestarter-") ||
-			    g_str_has_prefix (line, "Firestarter "))
+			    g_str_has_prefix (line, "StockFW-") ||
+			    g_str_has_prefix (line, "StockFW "))
 				g_hash_table_add (ours, g_strdup (line));
 		}
 

@@ -1,5 +1,4 @@
 /*---[ scriptwriter.h ]-----------------------------------------------
- * Copyright (C) 2000 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,8 +8,8 @@
  * Functions to write firewall shell scripts
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_SCRIPTWRITER
-#define _FIRESTARTER_SCRIPTWRITER
+#ifndef _STOCKFW_SCRIPTWRITER
+#define _STOCKFW_SCRIPTWRITER
 
 #include <config.h>
 #include <gnome.h>
@@ -21,22 +20,22 @@
 #define RETURN_INT_FAILED 3
 #define RETURN_NO_IPTABLES 100
 
-#define FIRESTARTER_CONTROL_SCRIPT       FIRESTARTER_RULES_DIR "/firestarter/firestarter.sh"
-#define FIRESTARTER_FIREWALL_SCRIPT      FIRESTARTER_RULES_DIR "/firestarter/firewall"
-#define FIRESTARTER_CONFIGURATION_SCRIPT FIRESTARTER_RULES_DIR "/firestarter/configuration"
-#define FIRESTARTER_SYSCTL_SCRIPT        FIRESTARTER_RULES_DIR "/firestarter/sysctl-tuning"
-#define FIRESTARTER_USER_PRE_SCRIPT      FIRESTARTER_RULES_DIR "/firestarter/user-pre"
-#define FIRESTARTER_USER_POST_SCRIPT     FIRESTARTER_RULES_DIR "/firestarter/user-post"
-#define FIRESTARTER_NON_ROUTABLES_SCRIPT FIRESTARTER_RULES_DIR "/firestarter/non-routables"
-#define FIRESTARTER_FILTER_HOSTS_SCRIPT  FIRESTARTER_RULES_DIR "/firestarter/events-filter-hosts"
-#define FIRESTARTER_FILTER_PORTS_SCRIPT  FIRESTARTER_RULES_DIR "/firestarter/events-filter-ports"
-#define FIRESTARTER_INBOUND_SETUP        POLICY_IN_DIR"/setup"
-#define FIRESTARTER_OUTBOUND_SETUP       POLICY_OUT_DIR"/setup"
+#define STOCKFW_CONTROL_SCRIPT       STOCKFW_RULES_DIR "/stockfw/stockfw.sh"
+#define STOCKFW_FIREWALL_SCRIPT      STOCKFW_RULES_DIR "/stockfw/firewall"
+#define STOCKFW_CONFIGURATION_SCRIPT STOCKFW_RULES_DIR "/stockfw/configuration"
+#define STOCKFW_SYSCTL_SCRIPT        STOCKFW_RULES_DIR "/stockfw/sysctl-tuning"
+#define STOCKFW_USER_PRE_SCRIPT      STOCKFW_RULES_DIR "/stockfw/user-pre"
+#define STOCKFW_USER_POST_SCRIPT     STOCKFW_RULES_DIR "/stockfw/user-post"
+#define STOCKFW_NON_ROUTABLES_SCRIPT STOCKFW_RULES_DIR "/stockfw/non-routables"
+#define STOCKFW_FILTER_HOSTS_SCRIPT  STOCKFW_RULES_DIR "/stockfw/events-filter-hosts"
+#define STOCKFW_FILTER_PORTS_SCRIPT  STOCKFW_RULES_DIR "/stockfw/events-filter-ports"
+#define STOCKFW_INBOUND_SETUP        POLICY_IN_DIR"/setup"
+#define STOCKFW_OUTBOUND_SETUP       POLICY_OUT_DIR"/setup"
 
 gboolean script_exists (void);
 void scriptwriter_output_scripts (void);
 
-void scriptwriter_output_firestarter_script (void);
+void scriptwriter_output_stockfw_script (void);
 void scriptwriter_output_configuration (void);
 
 void scriptwriter_write_ppp_hook (void);

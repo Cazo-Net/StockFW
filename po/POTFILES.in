@@ -1,9 +1,9 @@
 # List of source files containing translatable strings.
 # Please keep this file sorted alphabetically.
-firestarter.desktop.in
-firestarter.schemas.in
+stockfw.desktop.in
+stockfw.schemas.in
 src/dhcp-server.c
-src/firestarter.c
+src/stockfw.c
 src/gui.c
 src/hitview.c
 src/logread.c

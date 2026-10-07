@@ -1,20 +1,20 @@
 <gconfschemafile>
   <schemalist>
     <schema>
-      <key>/schemas/apps/firestarter/client/first_run</key>
-      <applyto>/apps/firestarter/client/first_run</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/first_run</key>
+      <applyto>/apps/stockfw/client/first_run</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
         <short>Is it the first time the user is running the program</short>
-        <long>The first time Firestarter starts several special actions are taken.</long>
+        <long>The first time StockFW starts several special actions are taken.</long>
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/start_firewall_on_boot</key>
-      <applyto>/apps/firestarter/client/start_firewall_on_boot</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/start_firewall_on_boot</key>
+      <applyto>/apps/stockfw/client/start_firewall_on_boot</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
@@ -23,9 +23,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/start_firewall_on_gui</key>
-      <applyto>/apps/firestarter/client/start_firewall_on_gui</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/start_firewall_on_gui</key>
+      <applyto>/apps/stockfw/client/start_firewall_on_gui</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
@@ -34,9 +34,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/start_firewall_on_dial_out</key>
-      <applyto>/apps/firestarter/client/start_firewall_on_dial_out</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/start_firewall_on_dial_out</key>
+      <applyto>/apps/stockfw/client/start_firewall_on_dial_out</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -45,9 +45,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/start_firewall_on_dhcp</key>
-      <applyto>/apps/firestarter/client/start_firewall_on_dhcp</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/start_firewall_on_dhcp</key>
+      <applyto>/apps/stockfw/client/start_firewall_on_dhcp</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -56,20 +56,20 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/enable_tray_icon</key>
-      <applyto>/apps/firestarter/client/enable_tray_icon</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/enable_tray_icon</key>
+      <applyto>/apps/stockfw/client/enable_tray_icon</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
         <short>Enable tray icon</short>
-        <long>Show the Firestarter icon in the notification area.</long>
+        <long>Show the StockFW icon in the notification area.</long>
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/minimize_to_tray</key>
-      <applyto>/apps/firestarter/client/minimize_to_tray</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/minimize_to_tray</key>
+      <applyto>/apps/stockfw/client/minimize_to_tray</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -78,9 +78,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/system_log</key>
-      <applyto>/apps/firestarter/client/system_log</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/system_log</key>
+      <applyto>/apps/stockfw/client/system_log</applyto>
+      <owner>StockFW</owner>
       <type>string</type>
       <default>/var/log/messages</default>
       <locale name="C">
@@ -89,9 +89,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/policy_auto_apply</key>
-      <applyto>/apps/firestarter/client/policy_auto_apply</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/policy_auto_apply</key>
+      <applyto>/apps/stockfw/client/policy_auto_apply</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -101,9 +101,9 @@
     </schema>
 
     <schema>
-      <key>/schemas/apps/firestarter/client/filter/redundant</key>
-      <applyto>/apps/firestarter/client/filter/redundant</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/filter/redundant</key>
+      <applyto>/apps/stockfw/client/filter/redundant</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
@@ -112,9 +112,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/filter/not_for_firewall</key>
-      <applyto>/apps/firestarter/client/filter/not_for_firewall</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/filter/not_for_firewall</key>
+      <applyto>/apps/stockfw/client/filter/not_for_firewall</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -124,9 +124,9 @@
     </schema>
 
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_time_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_time_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_time_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_time_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
@@ -135,9 +135,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_direction_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_direction_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_direction_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_direction_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -146,9 +146,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_in_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_in_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_in_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_in_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -157,9 +157,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_out_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_out_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_out_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_out_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -168,9 +168,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_port_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_port_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_port_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_port_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
@@ -179,9 +179,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_source_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_source_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_source_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_source_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
@@ -190,9 +190,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_destination_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_destination_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_destination_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_destination_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -201,9 +201,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_length_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_length_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_length_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_length_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -212,9 +212,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_tos_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_tos_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_tos_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_tos_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -223,9 +223,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_protocol_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_protocol_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_protocol_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_protocol_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
@@ -234,9 +234,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/client/ui/hitview_service_col</key>
-      <applyto>/apps/firestarter/client/ui/hitview_service_col</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/client/ui/hitview_service_col</key>
+      <applyto>/apps/stockfw/client/ui/hitview_service_col</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
@@ -246,9 +246,9 @@
     </schema>
 
     <schema>
-      <key>/schemas/apps/firestarter/firewall/ext_if</key>
-      <applyto>/apps/firestarter/firewall/ext_if</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/ext_if</key>
+      <applyto>/apps/stockfw/firewall/ext_if</applyto>
+      <owner>StockFW</owner>
       <type>string</type>
       <default></default>
       <locale name="C">
@@ -257,9 +257,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/firewall/nat</key>
-      <applyto>/apps/firestarter/firewall/nat</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/nat</key>
+      <applyto>/apps/stockfw/firewall/nat</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -268,9 +268,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/firewall/int_if</key>
-      <applyto>/apps/firestarter/firewall/int_if</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/int_if</key>
+      <applyto>/apps/stockfw/firewall/int_if</applyto>
+      <owner>StockFW</owner>
       <type>string</type>
       <default></default>
       <locale name="C">
@@ -280,20 +280,20 @@
     </schema>
     
     <schema>
-      <key>/schemas/apps/firestarter/firewall/dhcp/enable_server</key>
-      <applyto>/apps/firestarter/firewall/dhcp/enable_server</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/dhcp/enable_server</key>
+      <applyto>/apps/stockfw/firewall/dhcp/enable_server</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
         <short>Enable DHCP server for connection sharing</short>
-        <long>Run the system dhcpd server in conjunction with Firestarter Internet connection sharing.</long>
+        <long>Run the system dhcpd server in conjunction with StockFW Internet connection sharing.</long>
       </locale>
     </schema>    
     <schema>
-      <key>/schemas/apps/firestarter/firewall/dhcp/lowest_ip</key>
-      <applyto>/apps/firestarter/firewall/dhcp/lowest_ip</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/dhcp/lowest_ip</key>
+      <applyto>/apps/stockfw/firewall/dhcp/lowest_ip</applyto>
+      <owner>StockFW</owner>
       <type>string</type>
       <default>192.168.0.100</default>
       <locale name="C">
@@ -302,9 +302,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/firewall/dhcp/highest_ip</key>
-      <applyto>/apps/firestarter/firewall/dhcp/highest_ip</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/dhcp/highest_ip</key>
+      <applyto>/apps/stockfw/firewall/dhcp/highest_ip</applyto>
+      <owner>StockFW</owner>
       <type>string</type>
       <default>192.168.0.254</default>
       <locale name="C">
@@ -313,9 +313,9 @@
       </locale>
     </schema>    
     <schema>
-      <key>/schemas/apps/firestarter/firewall/dhcp/nameserver</key>
-      <applyto>/apps/firestarter/firewall/dhcp/nameserver</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/dhcp/nameserver</key>
+      <applyto>/apps/stockfw/firewall/dhcp/nameserver</applyto>
+      <owner>StockFW</owner>
       <type>string</type>
       <default>&lt;dynamic&gt;</default>
       <locale name="C">
@@ -325,9 +325,9 @@
     </schema>    
     
     <schema>
-      <key>/schemas/apps/firestarter/firewall/deny_packets</key>
-      <applyto>/apps/firestarter/firewall/deny_packets</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/deny_packets</key>
+      <applyto>/apps/stockfw/firewall/deny_packets</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
@@ -336,9 +336,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/firewall/block_external_broadcast</key>
-      <applyto>/apps/firestarter/firewall/block_external_broadcast</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/block_external_broadcast</key>
+      <applyto>/apps/stockfw/firewall/block_external_broadcast</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>true</default>
       <locale name="C">
@@ -347,9 +347,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/firewall/block_internal_broadcast</key>
-      <applyto>/apps/firestarter/firewall/block_internal_broadcast</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/block_internal_broadcast</key>
+      <applyto>/apps/stockfw/firewall/block_internal_broadcast</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -358,9 +358,9 @@
       </locale>
     </schema>
     <schema>
-      <key>/schemas/apps/firestarter/firewall/block_non_routables</key>
-      <applyto>/apps/firestarter/firewall/block_non_routables</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/block_non_routables</key>
+      <applyto>/apps/stockfw/firewall/block_non_routables</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -370,9 +370,9 @@
     </schema>
 
     <schema>
-      <key>/schemas/apps/firestarter/firewall/restrictive_outbound</key>
-      <applyto>/apps/firestarter/firewall/restrictive_outbound</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/restrictive_outbound</key>
+      <applyto>/apps/stockfw/firewall/restrictive_outbound</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -382,9 +382,9 @@
     </schema>
 
     <schema>
-      <key>/schemas/apps/firestarter/firewall/tos/enable</key>
-      <applyto>/apps/firestarter/firewall/tos/enable</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/tos/enable</key>
+      <applyto>/apps/stockfw/firewall/tos/enable</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">
@@ -394,9 +394,9 @@
     </schema>
 
     <schema>
-      <key>/schemas/apps/firestarter/firewall/icmp/enable</key>
-      <applyto>/apps/firestarter/firewall/icmp/enable</applyto>
-      <owner>Firestarter</owner>
+      <key>/schemas/apps/stockfw/firewall/icmp/enable</key>
+      <applyto>/apps/stockfw/firewall/icmp/enable</applyto>
+      <owner>StockFW</owner>
       <type>bool</type>
       <default>false</default>
       <locale name="C">

@@ -1,5 +1,4 @@
 /*---[ savelog.h ]----------------------------------------------------
- * Copyright (C) 2000 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,8 +8,8 @@
  * Functions for saving the contents of the hit log to a disk file
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_SAVELOG
-#define _FIRESTARTER_SAVELOG
+#ifndef _STOCKFW_SAVELOG
+#define _STOCKFW_SAVELOG
 
 #include <config.h>
 #include <gnome.h>

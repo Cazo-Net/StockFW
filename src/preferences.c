@@ -1,5 +1,4 @@
 /*---[ preferences.c ]------------------------------------------------
- * Copyright (C) 2000-2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,7 +14,7 @@
 #include <glade/glade-xml.h>
 
 #include "globals.h"
-#include "firestarter.h"
+#include "stockfw.h"
 #include "preferences.h"
 #include "wizard.h"
 #include "wizard-choices.h"
@@ -133,13 +132,13 @@ preferences_init (void)
 		return;
 
 	client = gconf_client_get_default ();
-	gconf_client_add_dir (client, "/apps/firestarter", GCONF_CLIENT_PRELOAD_NONE, NULL);
+	gconf_client_add_dir (client, "/apps/stockfw", GCONF_CLIENT_PRELOAD_NONE, NULL);
 
 	prefs_init = TRUE;
 }
 
 /* [ preferences_check_schema ]
- * Check that a Firestarter gconf schema has been installed
+ * Check that a StockFW gconf schema has been installed
  * The schema is not optional
  */
 void
@@ -152,12 +151,12 @@ preferences_check_schema (void)
 
 	string = preferences_get_string (PREFS_SYSLOG_FILE);
         if (string == NULL) {
-		gchar msg[] = N_("A proper configuration for Firestarter was not found. "
-        	                 "If you are running Firestarter from the directory you "
+		gchar msg[] = N_("A proper configuration for StockFW was not found. "
+        	                 "If you are running StockFW from the directory you "
 	                         "built it in, run 'make install-data-local' to install a "
 	                         "configuration, or simply 'make install' to install the "
 	                         "whole program.\n\n"
-	                         "Firestarter will now close.");
+	                         "StockFW will now close.");
 		GtkWidget *dialog;
 
 		dialog = gtk_message_dialog_new (NULL, GTK_DIALOG_DESTROY_WITH_PARENT,
@@ -215,7 +214,6 @@ preferences_set_string (const gchar *gconf_key, const gchar *data)
 static void
 preferences_show_help (void)
 {
-	gnome_url_show ("http://www.fs-security.com/docs/preferences.php", NULL);
 }
 
 static GtkTreeModel*
@@ -355,9 +353,9 @@ filter_host_view_reload (GtkListStore *store)
 	GError *error = NULL;
 	gchar *line;
 
-	in = g_io_channel_new_file (FIRESTARTER_FILTER_HOSTS_SCRIPT, "r", &error);
+	in = g_io_channel_new_file (STOCKFW_FILTER_HOSTS_SCRIPT, "r", &error);
 	if (in == NULL) {
-		g_printerr ("Error reading file %s: %s\n", FIRESTARTER_FILTER_HOSTS_SCRIPT, error->message);
+		g_printerr ("Error reading file %s: %s\n", STOCKFW_FILTER_HOSTS_SCRIPT, error->message);
 		g_error_free (error);
 		return;
 	}	
@@ -378,9 +376,9 @@ filter_port_view_reload (GtkListStore *store)
 	GError *error = NULL;
 	gchar *line;
 
-	in = g_io_channel_new_file (FIRESTARTER_FILTER_PORTS_SCRIPT, "r", &error);
+	in = g_io_channel_new_file (STOCKFW_FILTER_PORTS_SCRIPT, "r", &error);
 	if (in == NULL) {
-		g_printerr ("Error reading file %s: %s\n", FIRESTARTER_FILTER_PORTS_SCRIPT, error->message);
+		g_printerr ("Error reading file %s: %s\n", STOCKFW_FILTER_PORTS_SCRIPT, error->message);
 		g_error_free (error);
 		return;
 	}	
@@ -405,7 +403,7 @@ filter_host_dialog_cb (GtkDialog *host_dialog, gint response, PreferencesDialog 
 		printf ("read host: %s\n", host);
 		store = GTK_LIST_STORE (gtk_tree_view_get_model (GTK_TREE_VIEW (dialog->view_host_filter)));
 		filter_host_view_append (store, host);
-		append_to_file (FIRESTARTER_FILTER_HOSTS_SCRIPT, host, TRUE);
+		append_to_file (STOCKFW_FILTER_HOSTS_SCRIPT, host, TRUE);
 		g_free (host);
 	}
 
@@ -426,7 +424,7 @@ filter_port_dialog_cb (GtkDialog *port_dialog, gint response, PreferencesDialog 
 		port = g_strdup (gtk_entry_get_text (GTK_ENTRY (dialog->entry_port)));
 		store = GTK_LIST_STORE (gtk_tree_view_get_model (GTK_TREE_VIEW (dialog->view_port_filter)));
 		filter_port_view_append (store, port);
-		append_to_file (FIRESTARTER_FILTER_PORTS_SCRIPT, port, TRUE);
+		append_to_file (STOCKFW_FILTER_PORTS_SCRIPT, port, TRUE);
 		g_free (port);
 	}
 
@@ -454,7 +452,7 @@ filter_host_remove (GtkTreeView *view)
 		pos = gtk_tree_path_get_indices(path)[0];
 		
 		gtk_list_store_remove (GTK_LIST_STORE (model), &iter);
-		remove_line_from_file (FIRESTARTER_FILTER_HOSTS_SCRIPT, pos);
+		remove_line_from_file (STOCKFW_FILTER_HOSTS_SCRIPT, pos);
 
 		gtk_tree_path_free (path);
 	}
@@ -477,7 +475,7 @@ filter_port_remove (GtkTreeView *view)
 		pos = gtk_tree_path_get_indices(path)[0];
 		
 		gtk_list_store_remove (GTK_LIST_STORE (model), &iter);
-		remove_line_from_file (FIRESTARTER_FILTER_PORTS_SCRIPT, pos);
+		remove_line_from_file (STOCKFW_FILTER_PORTS_SCRIPT, pos);
 
 		gtk_tree_path_free (path);
 	}
@@ -907,9 +905,9 @@ get_preferences_dialog (GtkWindow *parent)
 
 	if (gui == NULL) {
 		error_dialog (_("Missing file"),
-		              _("Firestarter interface file not found"),
+		              _("StockFW interface file not found"),
 			      _("The interface markup file preferences.glade could not be found."),
-			      Firestarter.window);
+			      StockFW.window);
 		return NULL;
 	}	
 
@@ -1034,7 +1032,7 @@ preferences_show (void)
 {
 	PreferencesDialog *dialog;
 
-	dialog = get_preferences_dialog (GTK_WINDOW (Firestarter.window));
+	dialog = get_preferences_dialog (GTK_WINDOW (StockFW.window));
 
 	if (!dialog)
 		return;

@@ -1,5 +1,4 @@
 /*---[ netfilter-script.h ]-------------------------------------------
- * Copyright (C) 2000 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,8 +8,8 @@
  * Functions to write the netfilter shell scripts
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_NETFILTER_SCRIPT
-#define _FIRESTARTER_NETFILTER_SCRIPT
+#ifndef _STOCKFW_NETFILTER_SCRIPT
+#define _STOCKFW_NETFILTER_SCRIPT
 
 #include <config.h>
 #include <gnome.h>

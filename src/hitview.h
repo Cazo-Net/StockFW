@@ -1,5 +1,4 @@
 /*---[ hitview.h ]-----------------------------------------------------
- * Copyright (C) 2002 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,14 +8,14 @@
  * The Hits page and related functions
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_HITVIEW
-#define _FIRESTARTER_HITVIEW
+#ifndef _STOCKFW_HITVIEW
+#define _STOCKFW_HITVIEW
 
 #include <config.h>
 #include <gnome.h>
 #include <libgnomevfs/gnome-vfs.h>
 
-#include "firestarter.h"
+#include "stockfw.h"
 
 void hitview_clear (void);
 void hitview_reload (void);

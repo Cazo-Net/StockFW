@@ -1,29 +1,24 @@
-# Catalan translation of firestarter
-# Copyright © 2003 Free Software Foundation, Inc.
-# David Rios <drios@andorra.ad>, 2002.
-# Xavier Conde Rueda <xaviconde@eresmas.com>, 2003, 2004.
+# Catalan translation of stockfw
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: firestarter\n"
+"Project-Id-Version: stockfw\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2005-01-29 14:33+0200\n"
 "PO-Revision-Date: 2004-12-31 19:22+0200\n"
-"Last-Translator: Xavier Conde Rueda <xaviconde@eresmas.com\n"
-"Language-Team: Catalan <tradgnome@softcatala.org>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: firestarter.desktop.in.h:1
+#: stockfw.desktop.in.h:1
 msgid "Desktop Firewall Tool"
-msgstr "Eina de tallafoc Firestarter per a l'escriptori"
+msgstr "Eina de tallafoc StockFW per a l'escriptori"
 
-#: firestarter.desktop.in.h:2 src/firestarter.c:297
-msgid "Firestarter"
-msgstr "Firestarter"
+#: stockfw.desktop.in.h:2 src/stockfw.c:297
+msgid "StockFW"
+msgstr "StockFW"
 
-#: firestarter.schemas.in.h:1
+#: stockfw.schemas.in.h:1
 msgid ""
 "Apply changes made to policy immediately, the alternative is for the user to "
 "confirm the changes in advance."
@@ -31,82 +26,82 @@ msgstr ""
 "Aplica inmeditament les canvis fets a les polítiques. En cas contrari, "
 "l'usuari les confirma més endavant."
 
-#: firestarter.schemas.in.h:2
+#: stockfw.schemas.in.h:2
 msgid "Apply the ICMP settings, as configured in the wizard."
 msgstr "Aplica els paràmetres d'ICMP, com es va configurar en l'assistent."
 
-#: firestarter.schemas.in.h:3
+#: stockfw.schemas.in.h:3
 msgid "Apply the settings of Type of Service, as configured in the wizard."
 msgstr ""
 "Aplica els paràmetres de tipus de servei, com es va configurar en "
 "l'assistent."
 
-#: firestarter.schemas.in.h:4 src/preferences.glade.h:29
+#: stockfw.schemas.in.h:4 src/preferences.glade.h:29
 msgid "Block broadcasts from external network"
 msgstr "Bloca les difusions de xarxes externes"
 
-#: firestarter.schemas.in.h:5
+#: stockfw.schemas.in.h:5
 msgid "Block broadcasts from external network."
 msgstr "Bloca les difusions de xarxes externes."
 
-#: firestarter.schemas.in.h:6 src/preferences.glade.h:30
+#: stockfw.schemas.in.h:6 src/preferences.glade.h:30
 msgid "Block broadcasts from internal network"
 msgstr "Bloca les difusions de xarxes internes"
 
-#: firestarter.schemas.in.h:7
+#: stockfw.schemas.in.h:7
 msgid "Block broadcasts from internal network."
 msgstr "Bloca les difusions de xarxes internes."
 
-#: firestarter.schemas.in.h:8
+#: stockfw.schemas.in.h:8
 msgid ""
 "Block potentially spoofed traffic claiming to come from IANA reserved "
 "address space on the external interface."
 msgstr ""
 
-#: firestarter.schemas.in.h:9
+#: stockfw.schemas.in.h:9
 msgid "Block traffic from reserved address space on the public interface"
 msgstr ""
 
-#: firestarter.schemas.in.h:10
+#: stockfw.schemas.in.h:10
 msgid "Deny packets"
 msgstr "Rebutja paquets"
 
-#: firestarter.schemas.in.h:11
+#: stockfw.schemas.in.h:11
 msgid "Drop denied packets without sending an error packet back."
 msgstr ""
 "Elimina els paquets rebutjats sense enviar un paquet d'error de retorn."
 
-#: firestarter.schemas.in.h:12
+#: stockfw.schemas.in.h:12
 msgid "Enable DHCP server for connection sharing"
 msgstr "Habilita el servidor DHCP per compartir la connexió"
 
-#: firestarter.schemas.in.h:13
+#: stockfw.schemas.in.h:13
 msgid "Enable NAT"
 msgstr "Habilita traducció d'adreces"
 
-#: firestarter.schemas.in.h:14
+#: stockfw.schemas.in.h:14
 msgid "Enable Network Address Translation, or Internet connection sharing."
 msgstr ""
 "Habilita la traducció d'adreces de xarxa o compartició de la connexió a "
 "Internet."
 
-#: firestarter.schemas.in.h:15
+#: stockfw.schemas.in.h:15
 msgid "Enable the configuration of ICMP"
 msgstr "Habilita la configuració d'ICMP"
 
-#: firestarter.schemas.in.h:16
+#: stockfw.schemas.in.h:16
 msgid "Enable the configuration of tos"
 msgstr "Habilita la configuració de tipus de servei"
 
-#: firestarter.schemas.in.h:17 src/preferences.glade.h:41
+#: stockfw.schemas.in.h:17 src/preferences.glade.h:41
 msgid "Enable tray icon"
 msgstr "Habilita la icona de la safata"
 
-#: firestarter.schemas.in.h:18
+#: stockfw.schemas.in.h:18
 msgid "Filter out hits not targeted at the firewall"
 msgstr "Filtra les peticions no dirigides al tallafoc"
 
-#: firestarter.schemas.in.h:19
+#: stockfw.schemas.in.h:19
 msgid ""
 "Filter out hits that have an destination IP that does not match the firewall "
 "host."
@@ -114,39 +109,39 @@ msgstr ""
 "Filtra les peticions que tenen una adreça IP destí que no coincideix amb la "
 "màquina del tallafoc."
 
-#: firestarter.schemas.in.h:20
+#: stockfw.schemas.in.h:20
 msgid "Filter out redundant hits"
 msgstr "Filtra peticions redundants"
 
-#: firestarter.schemas.in.h:21
+#: stockfw.schemas.in.h:21
 msgid "Filter out sequences of identical hits."
 msgstr "Filtra seqüències de peticions iguals."
 
-#: firestarter.schemas.in.h:22
+#: stockfw.schemas.in.h:22
 msgid "Highest IP in the range to serve to DHCP clients"
 msgstr "IP més alta en el rang per servir als clients DHCP"
 
-#: firestarter.schemas.in.h:23
+#: stockfw.schemas.in.h:23
 msgid "Is it the first time the user is running the program"
 msgstr "L'usuari executa el programa per primera vegada"
 
-#: firestarter.schemas.in.h:24
+#: stockfw.schemas.in.h:24
 msgid "Lowest IP in the range to serve to DHCP clients"
 msgstr "L'adreça IP més baixa per servir als clients DHCP"
 
-#: firestarter.schemas.in.h:25
+#: stockfw.schemas.in.h:25
 msgid "Minimize to tray"
 msgstr "Minimitza a la safata"
 
-#: firestarter.schemas.in.h:26
+#: stockfw.schemas.in.h:26
 msgid "Nameserver DHCP clients should use"
 msgstr "Servidor de noms que haurien de fer servir els clients DHCP"
 
-#: firestarter.schemas.in.h:27
+#: stockfw.schemas.in.h:27
 msgid "Policy auto apply"
 msgstr "Aplica automàticament les polítiques"
 
-#: firestarter.schemas.in.h:28
+#: stockfw.schemas.in.h:28
 msgid ""
 "Restrict outbound traffic by default, only allowing whitelisted outgoing "
 "connections."
@@ -154,185 +149,185 @@ msgstr ""
 "Restringeix el tràfic de sortida, només permet les connexions de sortida de "
 "la llista blanca."
 
-#: firestarter.schemas.in.h:29
+#: stockfw.schemas.in.h:29
 msgid "Restrictive outbound policy mode"
 msgstr "Mode de política de sortida restrictiva"
 
-#: firestarter.schemas.in.h:30
+#: stockfw.schemas.in.h:30
 msgid ""
-"Run the system dhcpd server in conjunction with Firestarter Internet "
+"Run the system dhcpd server in conjunction with StockFW Internet "
 "connection sharing."
 msgstr ""
 "Executa el servidor dhcpd del sistema juntament amb la compartició de "
-"connexió d'Internet del Firestarter."
+"connexió d'Internet del StockFW."
 
-#: firestarter.schemas.in.h:31
-msgid "Show the Firestarter icon in the notification area."
-msgstr "Mostra la icona del Firestarter en l'àrea de notificació."
+#: stockfw.schemas.in.h:31
+msgid "Show the StockFW icon in the notification area."
+msgstr "Mostra la icona del StockFW en l'àrea de notificació."
 
-#: firestarter.schemas.in.h:32
+#: stockfw.schemas.in.h:32
 msgid "Show the Type of Service column in the Hit View."
 msgstr "Mostra la columna de tipus de servei a la vista de peticions."
 
-#: firestarter.schemas.in.h:33
+#: stockfw.schemas.in.h:33
 msgid "Show the destination column in the Hit View"
 msgstr "Mostra la columna de destinació a la vista de peticions"
 
-#: firestarter.schemas.in.h:34
+#: stockfw.schemas.in.h:34
 msgid "Show the destination column in the Hit View."
 msgstr "Mostra la columna de destinació a la vista de peticions."
 
-#: firestarter.schemas.in.h:35
+#: stockfw.schemas.in.h:35
 msgid "Show the device the hit was received from in the Hit View."
 msgstr ""
 "Mostra el dispositiu des del que s'ha rebut la petició a la vista de "
 "peticions."
 
-#: firestarter.schemas.in.h:36
+#: stockfw.schemas.in.h:36
 msgid "Show the device the hit was routed to in the Hit View."
 msgstr ""
 "Mostra el dispositiu al qual s'ha encaminat la petició a la vista de "
 "peticions."
 
-#: firestarter.schemas.in.h:37
+#: stockfw.schemas.in.h:37
 msgid "Show the direction column in the Hit View"
 msgstr "Mostra la columna de direcció a la vista de peticions"
 
-#: firestarter.schemas.in.h:38
+#: stockfw.schemas.in.h:38
 msgid "Show the direction column in the Hit View."
 msgstr "Mostra la columna de direcció a la vista de peticions."
 
-#: firestarter.schemas.in.h:39
+#: stockfw.schemas.in.h:39
 msgid "Show the in column in the Hit View"
 msgstr "Mostra la columna d'entrada a la vista de peticions"
 
-#: firestarter.schemas.in.h:40
+#: stockfw.schemas.in.h:40
 msgid "Show the length column in the Hit View"
 msgstr "Mostra la columna de longitud a la vista de peticions"
 
-#: firestarter.schemas.in.h:41
+#: stockfw.schemas.in.h:41
 msgid "Show the out column in the Hit View"
 msgstr "Mostra la columna de sortida a la vista de peticions"
 
-#: firestarter.schemas.in.h:42
+#: stockfw.schemas.in.h:42
 msgid "Show the packet length column in the Hit View."
 msgstr "Mostra la columna de longitud del paquet a la vista de peticions"
 
-#: firestarter.schemas.in.h:43
+#: stockfw.schemas.in.h:43
 msgid "Show the port column in the Hit View"
 msgstr "Mostra la columna de port a la vista de peticions"
 
-#: firestarter.schemas.in.h:44
+#: stockfw.schemas.in.h:44
 msgid "Show the port column in the Hit View."
 msgstr "Mostra la columna de port a la vista de peticions."
 
-#: firestarter.schemas.in.h:45
+#: stockfw.schemas.in.h:45
 msgid "Show the protocol column in the Hit View"
 msgstr "Mostra la columna de protocol a la vista de peticions"
 
-#: firestarter.schemas.in.h:46
+#: stockfw.schemas.in.h:46
 msgid "Show the protocol column in the Hit View."
 msgstr "Mostra la columna de protocol a la vista de peticions."
 
-#: firestarter.schemas.in.h:47
+#: stockfw.schemas.in.h:47
 msgid "Show the service column in the Hit View"
 msgstr "Mostra la columna de servei a la vista de peticions"
 
-#: firestarter.schemas.in.h:48
+#: stockfw.schemas.in.h:48
 msgid "Show the service column in the Hit View."
 msgstr "Mostra la columna de servei a la vista de peticions."
 
-#: firestarter.schemas.in.h:49
+#: stockfw.schemas.in.h:49
 msgid "Show the source column in the Hit View"
 msgstr "Mostra la columna d'origen a la vista de peticions"
 
-#: firestarter.schemas.in.h:50
+#: stockfw.schemas.in.h:50
 msgid "Show the source column in the Hit View."
 msgstr "Mostra la columna d'origen a la vista de peticions."
 
-#: firestarter.schemas.in.h:51
+#: stockfw.schemas.in.h:51
 msgid "Show the time column in the Hit View"
 msgstr "Mostra la columna de temps a la vista de peticions"
 
-#: firestarter.schemas.in.h:52
+#: stockfw.schemas.in.h:52
 msgid "Show the time column in the Hit View."
 msgstr "Mostra la columna de temps a la vista de peticions."
 
-#: firestarter.schemas.in.h:53
+#: stockfw.schemas.in.h:53
 msgid "Show the tos column in the Hit View"
 msgstr "Mostra la columna de tipus de servei a la vista de peticions"
 
-#: firestarter.schemas.in.h:54
+#: stockfw.schemas.in.h:54
 msgid "Specifies the higher limit of the IP space to use for DHCP leases."
 msgstr ""
 "Especifica el límit superior de l'espai IP per fer servir en prèstecs DHCP."
 
-#: firestarter.schemas.in.h:55
+#: stockfw.schemas.in.h:55
 msgid "Specifies the lower limit of the IP space to use for DHCP leases."
 msgstr ""
 "Especifica el límit inferior de l'espai IP per fer servir en prèstecs DHCP."
 
-#: firestarter.schemas.in.h:56
+#: stockfw.schemas.in.h:56
 msgid "Start the firewall on a DHCP lease renewal"
 msgstr "Inicia el tallafoc quan es renova el prèstec DHCP"
 
-#: firestarter.schemas.in.h:57
+#: stockfw.schemas.in.h:57
 msgid "Start the firewall when the program loads"
 msgstr "Inicia el tallafoc en engegar el programa"
 
-#: firestarter.schemas.in.h:58
+#: stockfw.schemas.in.h:58
 msgid "Start the firewall when the program loads."
 msgstr "Inicia el tallafoc en engegar el programa."
 
-#: firestarter.schemas.in.h:59
+#: stockfw.schemas.in.h:59
 msgid "Start the firewall when the system boots"
 msgstr "Inicia el tallafoc quan el sistema arrenca"
 
-#: firestarter.schemas.in.h:60
+#: stockfw.schemas.in.h:60
 msgid "Start the firewall when the system boots."
 msgstr "Inicia el tallafoc quan el sistema arrenca."
 
-#: firestarter.schemas.in.h:61
+#: stockfw.schemas.in.h:61
 msgid "Start the firewall when the system dials out"
 msgstr "Inicia el tallafoc quan el sistema es connecta"
 
-#: firestarter.schemas.in.h:62
+#: stockfw.schemas.in.h:62
 msgid "Start the firewall when the system establishes a PPP connection."
 msgstr "Inicia el tallafoc quan el sistema estableix una connexió PPP."
 
-#: firestarter.schemas.in.h:63
+#: stockfw.schemas.in.h:63
 msgid "Start the firewall when the system receives a new DHCP lease."
 msgstr "Inicia el tallafoc quan el sistema rep un prèstec de DHCP."
 
-#: firestarter.schemas.in.h:64
+#: stockfw.schemas.in.h:64
 msgid "The Internet connected network interface. For example, ppp0 or eth0."
 msgstr ""
 "Interfície de la xarxa connectada a internet. Per exemple, ppp0 o eth0."
 
-#: firestarter.schemas.in.h:65
+#: stockfw.schemas.in.h:65
 msgid "The LAN connected network interface. For example, eth0 or eth1."
 msgstr "Interfície de la xarxa connectada a la LAN. Per exemple, eth0 o eth1."
 
-#: firestarter.schemas.in.h:66
+#: stockfw.schemas.in.h:66
 msgid "The external interface"
 msgstr "La interfície externa"
 
-#: firestarter.schemas.in.h:67
-msgid "The first time Firestarter starts several special actions are taken."
+#: stockfw.schemas.in.h:67
+msgid "The first time StockFW starts several special actions are taken."
 msgstr ""
-"El primer cop que s'inicia el Firestarter es realitzen una sèrie d'accions "
+"El primer cop que s'inicia el StockFW es realitzen una sèrie d'accions "
 "especials."
 
-#: firestarter.schemas.in.h:68
+#: stockfw.schemas.in.h:68
 msgid "The internal interface"
 msgstr "La interfície interna"
 
-#: firestarter.schemas.in.h:69
+#: stockfw.schemas.in.h:69
 msgid "The location of the file the system logging daemon writes to."
 msgstr ""
 "La ubicació de l'arxiu on escriu el dimoni de monitorització del sistema."
 
-#: firestarter.schemas.in.h:70
+#: stockfw.schemas.in.h:70
 msgid ""
 "The nameserver clients should use. You can specify multiple nameserver in a "
 "space separated list. A value of &lt;dynamic&gt; causes the nameservers to "
@@ -343,11 +338,11 @@ msgstr ""
 "dinàmic&gt; causa que es detecti el servidor de noms en el moment d'executar-"
 "se."
 
-#: firestarter.schemas.in.h:71
+#: stockfw.schemas.in.h:71
 msgid "The system log file"
 msgstr "Fitxer del registre del sistema"
 
-#: firestarter.schemas.in.h:72
+#: stockfw.schemas.in.h:72
 msgid "When closing the program window, instead of exiting, hide the window."
 msgstr "En tancar la finestra del programa, amaga-la en comptes de sortir."
 
@@ -359,28 +354,28 @@ msgstr "No s'ha pogut obrir el fitxer de configuració del servidor DHCP: "
 msgid "Failed to write to DHCP server configuration file: "
 msgstr "No s'ha pogut escriure el fitxer de configuració del servidor DHCP: "
 
-#: src/firestarter.c:83 src/firestarter.c:85 src/firestarter.c:86
+#: src/stockfw.c:83 src/stockfw.c:85 src/stockfw.c:86
 msgid "Failed to stop the firewall"
 msgstr "No s'ha pogut aturar el tallafoc"
 
-#: src/firestarter.c:87
+#: src/stockfw.c:87
 msgid "There was an undetermined error when trying to stop the firewall."
 msgstr "S'ha produït un error indeterminat en intentar aturar el tallafoc."
 
-#: src/firestarter.c:126 src/firestarter.c:130
+#: src/stockfw.c:126 src/stockfw.c:130
 #, c-format
 msgid "The device %s is not ready."
 msgstr "El dispositiu %s no està disponible."
 
-#: src/firestarter.c:133
+#: src/stockfw.c:133
 msgid "Your kernel does not support iptables."
 msgstr "El vostre nucli no suporta iptables."
 
-#: src/firestarter.c:135
+#: src/stockfw.c:135
 msgid "An unknown error occurred."
 msgstr "Ha succeït un error desconegut."
 
-#: src/firestarter.c:139
+#: src/stockfw.c:139
 msgid ""
 "Please check your network device settings and make sure your\n"
 "Internet connection is active."
@@ -388,31 +383,31 @@ msgstr ""
 "Reviseu els paràmetres del vostre dispositiu de xarxa i \n"
 "assegureu-vos de que la vostra connexió a Internet és activa."
 
-#: src/firestarter.c:143
+#: src/stockfw.c:143
 msgid "Failed to start the firewall\n"
 msgstr "No es pot iniciar el tallafoc\n"
 
-#: src/firestarter.c:147 src/firestarter.c:148
+#: src/stockfw.c:147 src/stockfw.c:148
 msgid "Failed to start the firewall"
 msgstr "No es pot iniciar el tallafoc"
 
-#: src/firestarter.c:200 src/firestarter.c:202 src/firestarter.c:203
+#: src/stockfw.c:200 src/stockfw.c:202 src/stockfw.c:203
 msgid "Failed to lock the firewall"
 msgstr "No s'ha pogut blocar el tallafoc"
 
-#: src/firestarter.c:204
+#: src/stockfw.c:204
 msgid "There was an undetermined error when trying to lock the firewall."
 msgstr "S'ha produït un error indeterminat en intentar blocar el tallafoc."
 
-#: src/firestarter.c:298
+#: src/stockfw.c:298
 msgid ""
 " -s, --start            Start the firewall\n"
 " -p, --stop             Stop the firewall\n"
 "     --lock             Lock the firewall, blocking all traffic\n"
 "     --generate-scripts Generate firewall scripts from current "
 "configuration\n"
-"     --start-hidden     Start Firestarter with the GUI not visible\n"
-" -v, --version          Prints Firestarter's version number\n"
+"     --start-hidden     Start StockFW with the GUI not visible\n"
+" -v, --version          Prints StockFW's version number\n"
 " -h, --help             You're looking at it\n"
 msgstr ""
 " -s, --start            Inicia el tallafoc\n"
@@ -421,23 +416,23 @@ msgstr ""
 "     --generate-scripts Genera seqüències d'ordres del tallafoc a partir de "
 "la configuració actual\n"
 "     --start-hidden     Inicia el tallafoc sense interfície\n"
-" -v, --version          Mostra el número de la versió del Firestarter\n"
+" -v, --version          Mostra el número de la versió del StockFW\n"
 " -h, --help             El que esteu veient\n"
 
-#: src/firestarter.c:316 src/firestarter.c:318 src/firestarter.c:319
+#: src/stockfw.c:316 src/stockfw.c:318 src/stockfw.c:319
 msgid "Insufficient privileges"
 msgstr "Privilegis insuficients"
 
-#: src/firestarter.c:320
-msgid "You must have root user privileges to use Firestarter."
+#: src/stockfw.c:320
+msgid "You must have root user privileges to use StockFW."
 msgstr "Heu de ser el superusuari per utilitzar el tallafoc."
 
-#: src/firestarter.c:423
+#: src/stockfw.c:423
 #, c-format
 msgid "Updating firewall to new version...\n"
 msgstr "S'està actualitzant una nova versió del tallafoc...\n"
 
-#: src/firestarter.c:425
+#: src/stockfw.c:425
 #, c-format
 msgid "Firewall update complete\n"
 msgstr "S'ha completat l'actualització del tallafoc\n"
@@ -700,20 +695,20 @@ msgid "Open the online users' manual in a browser"
 msgstr "Obre el manual d'usuaris en línia en un navegador"
 
 #: src/menus.c:71
-msgid "Firestarter _Homepage"
-msgstr "Pàgina de _Firestarter"
+msgid "StockFW _Homepage"
+msgstr "Pàgina de _StockFW"
 
 #: src/menus.c:71
-msgid "Open the Firestarter homepage in a browser"
-msgstr "Obre la pàgina web del Firestarter en un navegador"
+msgid "Open the StockFW homepage in a browser"
+msgstr "Obre la pàgina web del StockFW en un navegador"
 
 #: src/menus.c:72
 msgid "_About"
 msgstr "_Quant a"
 
 #: src/menus.c:72
-msgid "About Firestarter"
-msgstr "Quant al Firestarter"
+msgid "About StockFW"
+msgstr "Quant al StockFW"
 
 #: src/menus.c:74
 msgid "Allow Connections From Source"
@@ -1024,19 +1019,19 @@ msgstr "Edició"
 
 #: src/preferences.c:155
 msgid ""
-"A proper configuration for Firestarter was not found. If you are running "
-"Firestarter from the directory you built it in, run 'make install-data-"
+"A proper configuration for StockFW was not found. If you are running "
+"StockFW from the directory you built it in, run 'make install-data-"
 "local' to install a configuration, or simply 'make install' to install the "
 "whole program.\n"
 "\n"
-"Firestarter will now close."
+"StockFW will now close."
 msgstr ""
-"No s'ha trobat una configuració adequada per a Firestarter. Si esteu "
-"executant el Firestarter des del directori on l'heu muntat, executeu 'make "
+"No s'ha trobat una configuració adequada per a StockFW. Si esteu "
+"executant el StockFW des del directori on l'heu muntat, executeu 'make "
 "install-data-local' per instal·lar una configuració, o simplement 'make "
 "install' per instal·lar tot el programa.\n"
 "\n"
-"Es tancarà el Firestarter."
+"Es tancarà el StockFW."
 
 #: src/preferences.c:235 src/preferences.glade.h:53
 msgid "Interface"
@@ -1091,8 +1086,8 @@ msgid "Missing file"
 msgstr "Manca un fitxer"
 
 #: src/preferences.c:910
-msgid "Firestarter interface file not found"
-msgstr "No s'ha trobat el fitxer d'interfície Firestarter"
+msgid "StockFW interface file not found"
+msgstr "No s'ha trobat el fitxer d'interfície StockFW"
 
 #: src/preferences.c:911
 msgid "The interface markup file preferences.glade could not be found."
@@ -1487,16 +1482,16 @@ msgid "Firewall locked"
 msgstr "El tallafoc s'ha blocat"
 
 #: src/tray.c:204
-msgid "_Show Firestarter"
-msgstr "Mo_stra el Firestarter"
+msgid "_Show StockFW"
+msgstr "Mo_stra el StockFW"
 
 #: src/tray.c:214
 msgid "_Exit"
 msgstr "_Surt"
 
 #: src/util.c:109
-msgid "Firestarter error"
-msgstr "Error del Firestarter"
+msgid "StockFW error"
+msgstr "Error del StockFW"
 
 #: src/util.c:138
 msgid ""
@@ -1602,12 +1597,12 @@ msgstr ""
 
 #: src/wizard.c:237
 msgid ""
-"Firestarter can share your Internet connection with the computers on your "
+"StockFW can share your Internet connection with the computers on your "
 "local network\n"
 "using a single public IP address and a method called Network Address "
 "Translation."
 msgstr ""
-"El Firestarter pot compartir la vostra connexió a Internet amb ordinadors de "
+"El StockFW pot compartir la vostra connexió a Internet amb ordinadors de "
 "la vostra xarxa local fent servir una adreça IP pública i un mètode anomenat "
 "traducció d'adreces de xarxa (NAT)."
 
@@ -1700,8 +1695,8 @@ msgid "Firewall Wizard"
 msgstr "Assitent del tallafoc"
 
 #: src/wizard.c:643
-msgid "Welcome to Firestarter"
-msgstr "Benvinguts al Firestarter"
+msgid "Welcome to StockFW"
+msgstr "Benvinguts al StockFW"
 
 #: src/wizard.c:649
 msgid "Network device setup"

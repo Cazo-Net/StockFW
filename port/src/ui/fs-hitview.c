@@ -53,17 +53,17 @@ static const struct
 	gboolean     visible;
 	const gchar *pref_key;
 } column_defs[FS_NUM_HITCOLUMNS] = {
-	{ N_("Time"),        TRUE,  "/apps/firestarter/client/ui/hitview_time_col" },
-	{ N_("Direction"),   TRUE,  "/apps/firestarter/client/ui/hitview_direction_col" },
-	{ N_("In"),          TRUE,  "/apps/firestarter/client/ui/hitview_in_col" },
-	{ N_("Out"),         TRUE,  "/apps/firestarter/client/ui/hitview_out_col" },
-	{ N_("Port"),        TRUE,  "/apps/firestarter/client/ui/hitview_port_col" },
-	{ N_("Source"),      TRUE,  "/apps/firestarter/client/ui/hitview_source_col" },
-	{ N_("Destination"), TRUE,  "/apps/firestarter/client/ui/hitview_destination_col" },
-	{ N_("Length"),      FALSE, "/apps/firestarter/client/ui/hitview_length_col" },
-	{ N_("ToS"),         FALSE, "/apps/firestarter/client/ui/hitview_tos_col" },
-	{ N_("Protocol"),    TRUE,  "/apps/firestarter/client/ui/hitview_protocol_col" },
-	{ N_("Service"),     TRUE,  "/apps/firestarter/client/ui/hitview_service_col" },
+	{ N_("Time"),        TRUE,  "/apps/stockfw/client/ui/hitview_time_col" },
+	{ N_("Direction"),   TRUE,  "/apps/stockfw/client/ui/hitview_direction_col" },
+	{ N_("In"),          TRUE,  "/apps/stockfw/client/ui/hitview_in_col" },
+	{ N_("Out"),         TRUE,  "/apps/stockfw/client/ui/hitview_out_col" },
+	{ N_("Port"),        TRUE,  "/apps/stockfw/client/ui/hitview_port_col" },
+	{ N_("Source"),      TRUE,  "/apps/stockfw/client/ui/hitview_source_col" },
+	{ N_("Destination"), TRUE,  "/apps/stockfw/client/ui/hitview_destination_col" },
+	{ N_("Length"),      FALSE, "/apps/stockfw/client/ui/hitview_length_col" },
+	{ N_("ToS"),         FALSE, "/apps/stockfw/client/ui/hitview_tos_col" },
+	{ N_("Protocol"),    TRUE,  "/apps/stockfw/client/ui/hitview_protocol_col" },
+	{ N_("Service"),     TRUE,  "/apps/stockfw/client/ui/hitview_service_col" },
 	{ N_(""),            FALSE, NULL },   /* colour, never shown */
 };
 

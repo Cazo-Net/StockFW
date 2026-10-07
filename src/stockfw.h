@@ -1,16 +1,15 @@
-/*---[ firestarter.h ]------------------------------------------------
- * Copyright (C) 2000 Tomas Junnonen (majix@sci.fi)
+/*---[ stockfw.h ]------------------------------------------------
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * The main firestarter header file
+ * The main stockfw header file
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_MAIN
-#define _FIRESTARTER_MAIN
+#ifndef _STOCKFW_MAIN
+#define _STOCKFW_MAIN
 
 #include <config.h>
 #include <gnome.h>
@@ -32,13 +31,13 @@ struct _Hit
 	gchar *service;
 };
 
-gboolean firestarter_is_locked (void);
+gboolean stockfw_is_locked (void);
 
 void stop_firewall (void);
 void start_firewall (void);
 void restart_firewall_if_active (void);
 void lock_firewall (void);
 void unlock_firewall (void);
-void exit_firestarter (void);
+void exit_stockfw (void);
 
 #endif

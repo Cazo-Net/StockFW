@@ -23,10 +23,10 @@ EXTRA_DIST = \
 	$(stock_images)
 
 noinst_HEADERS = \
-	firestarter-pixbufs.h
+	stockfw-pixbufs.h
 
-firestarter-pixbufs.h: $(stock_images)
-		-rm -f firestarter-pixbufs.h
+stockfw-pixbufs.h: $(stock_images)
+		-rm -f stockfw-pixbufs.h
 		var=`echo "$(stock_images)" | sed -e 's,\([^\.]*\)\.png,\1 \0,g'` ; \
 		   echo $$var; \
-		   gdk-pixbuf-csource --raw --build-list $$var > firestarter-pixbufs.h
+		   gdk-pixbuf-csource --raw --build-list $$var > stockfw-pixbufs.h

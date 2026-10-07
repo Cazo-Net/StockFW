@@ -72,8 +72,8 @@ ECHO = @ECHO@
 EGREP = @EGREP@
 EXEEXT = @EXEEXT@
 F77 = @F77@
-FIRESTARTER_CFLAGS = @FIRESTARTER_CFLAGS@
-FIRESTARTER_LIBS = @FIRESTARTER_LIBS@
+STOCKFW_CFLAGS = @STOCKFW_CFLAGS@
+STOCKFW_LIBS = @STOCKFW_LIBS@
 GCJ = @GCJ@
 GCJFLAGS = @GCJFLAGS@
 GCONFTOOL = @GCONFTOOL@
@@ -125,9 +125,9 @@ VERSION = @VERSION@
 WARN_CFLAGS = @WARN_CFLAGS@
 WARN_CXXFLAGS = @WARN_CXXFLAGS@
 
-EXTRA_DIST = firestarter.png
+EXTRA_DIST = stockfw.png
 
-icon_DATA = firestarter.png
+icon_DATA = stockfw.png
 icondir = $(datadir)/pixmaps
 mkinstalldirs = $(SHELL) $(top_srcdir)/mkinstalldirs
 CONFIG_HEADER = ../config.h

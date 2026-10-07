@@ -3,7 +3,7 @@
  *
  * Replaces gnome_app_new()/gnome_app_set_contents()/gnome_app_set_menus()
  * and the gnome_program_init()/gnome_master_client() startup dance in
- * the original firestarter.c with a plain GtkApplication.
+ * the original stockfw.c with a plain GtkApplication.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-app.h"

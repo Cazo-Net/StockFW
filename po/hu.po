@@ -1,31 +1,25 @@
-# Hungarian translation of firestarter.
-# Copyright (C) 2000, 2004, 2005 Free Software Foundation, Inc.
-# This file is distributed under the same license as the firestarter package.
-# Balazs Nemeth <bnemeth@kfki-isys.hu>, 2000.
-# Lektor: Andras Timar <timar@gnome.hu>, 2000.
-# Gabor Kelemen <kelemeng@gnome.hu>, 2004, 2005.
+# Hungarian translation of stockfw.
+# This file is distributed under the same license as the stockfw package.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: firestarter\n"
+"Project-Id-Version: stockfw\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2005-01-29 14:33+0200\n"
 "PO-Revision-Date: 2005-01-29 09:20+0100\n"
-"Last-Translator: Gabor Kelemen <kelemeng@gnome.hu>\n"
-"Language-Team: Hungarian <gnome@gnome.hu>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: firestarter.desktop.in.h:1
+#: stockfw.desktop.in.h:1
 msgid "Desktop Firewall Tool"
 msgstr "Linuxos tűzfalbeállító eszköz"
 
-#: firestarter.desktop.in.h:2 src/firestarter.c:297
-msgid "Firestarter"
-msgstr "Firestarter"
+#: stockfw.desktop.in.h:2 src/stockfw.c:297
+msgid "StockFW"
+msgstr "StockFW"
 
-#: firestarter.schemas.in.h:1
+#: stockfw.schemas.in.h:1
 msgid ""
 "Apply changes made to policy immediately, the alternative is for the user to "
 "confirm the changes in advance."
@@ -33,32 +27,32 @@ msgstr ""
 "A szabályokban hozott változtatások azonnali alkalmazása, a felhasználó "
 "alternatívaként választhatja, hogy lépésenként erősíti meg a változtatásokat."
 
-#: firestarter.schemas.in.h:2
+#: stockfw.schemas.in.h:2
 msgid "Apply the ICMP settings, as configured in the wizard."
 msgstr "A varázslóban megadott ICMP beállítások alkalmazása."
 
-#: firestarter.schemas.in.h:3
+#: stockfw.schemas.in.h:3
 msgid "Apply the settings of Type of Service, as configured in the wizard."
 msgstr ""
 "A varázslóban megadott szolgáltatások típusa (ToS) beállítások alkalmazása."
 
-#: firestarter.schemas.in.h:4 src/preferences.glade.h:29
+#: stockfw.schemas.in.h:4 src/preferences.glade.h:29
 msgid "Block broadcasts from external network"
 msgstr "Broadcast forgalom blokkolása külső hálózatból"
 
-#: firestarter.schemas.in.h:5
+#: stockfw.schemas.in.h:5
 msgid "Block broadcasts from external network."
 msgstr "Broadcast forgalom blokkolása külső hálózatból."
 
-#: firestarter.schemas.in.h:6 src/preferences.glade.h:30
+#: stockfw.schemas.in.h:6 src/preferences.glade.h:30
 msgid "Block broadcasts from internal network"
 msgstr "Broadcast forgalom blokkolása belső hálózatból"
 
-#: firestarter.schemas.in.h:7
+#: stockfw.schemas.in.h:7
 msgid "Block broadcasts from internal network."
 msgstr "Broadcast forgalom blokkolása belső hálózatból."
 
-#: firestarter.schemas.in.h:8
+#: stockfw.schemas.in.h:8
 msgid ""
 "Block potentially spoofed traffic claiming to come from IANA reserved "
 "address space on the external interface."
@@ -66,89 +60,89 @@ msgstr ""
 "Potenciálisan hamisított, az IANA fenntartott címtérből érkező forgalom "
 "blokkolása a külső csatolón."
 
-#: firestarter.schemas.in.h:9
+#: stockfw.schemas.in.h:9
 msgid "Block traffic from reserved address space on the public interface"
 msgstr ""
 "A fenntartott címtérből érkező forgalom blokkolása a nyilvános csatolón"
 
-#: firestarter.schemas.in.h:10
+#: stockfw.schemas.in.h:10
 msgid "Deny packets"
 msgstr "Csomagok tiltása"
 
-#: firestarter.schemas.in.h:11
+#: stockfw.schemas.in.h:11
 msgid "Drop denied packets without sending an error packet back."
 msgstr ""
 "Visszautasított csomagok eldobása hibajelző csomag visszaküldése nélkül."
 
-#: firestarter.schemas.in.h:12
+#: stockfw.schemas.in.h:12
 msgid "Enable DHCP server for connection sharing"
 msgstr "DHCP kiszolgáló bekapcsolása a kapcsolatmegosztáshoz"
 
-#: firestarter.schemas.in.h:13
+#: stockfw.schemas.in.h:13
 msgid "Enable NAT"
 msgstr "NAT engedélyezése"
 
-#: firestarter.schemas.in.h:14
+#: stockfw.schemas.in.h:14
 msgid "Enable Network Address Translation, or Internet connection sharing."
 msgstr ""
 "Hálózati címfordítás (=NAT) vagy internetkapcsolat-megosztás engedélyezése."
 
-#: firestarter.schemas.in.h:15
+#: stockfw.schemas.in.h:15
 msgid "Enable the configuration of ICMP"
 msgstr "ICMP konfigurációjának engedélyezése"
 
-#: firestarter.schemas.in.h:16
+#: stockfw.schemas.in.h:16
 msgid "Enable the configuration of tos"
 msgstr "ToS konfigurációjának engedélyezése"
 
-#: firestarter.schemas.in.h:17 src/preferences.glade.h:41
+#: stockfw.schemas.in.h:17 src/preferences.glade.h:41
 msgid "Enable tray icon"
 msgstr "Tálcaikon bekapcsolása"
 
-#: firestarter.schemas.in.h:18
+#: stockfw.schemas.in.h:18
 msgid "Filter out hits not targeted at the firewall"
 msgstr "A nem a tűzfalra irányuló találatok kiszűrése"
 
-#: firestarter.schemas.in.h:19
+#: stockfw.schemas.in.h:19
 msgid ""
 "Filter out hits that have an destination IP that does not match the firewall "
 "host."
 msgstr ""
 "Azon találatok kiszűrése, melyek cél IP-je nem azonos a tűzfalgép IP-jével."
 
-#: firestarter.schemas.in.h:20
+#: stockfw.schemas.in.h:20
 msgid "Filter out redundant hits"
 msgstr "Többszörös találatok kiszűrése"
 
-#: firestarter.schemas.in.h:21
+#: stockfw.schemas.in.h:21
 msgid "Filter out sequences of identical hits."
 msgstr "Azonos találatokból álló sorozatok kiszűrése."
 
-#: firestarter.schemas.in.h:22
+#: stockfw.schemas.in.h:22
 msgid "Highest IP in the range to serve to DHCP clients"
 msgstr "A DHCP kliensek kiszolgálására használt IP tartomány legfelső eleme"
 
-#: firestarter.schemas.in.h:23
+#: stockfw.schemas.in.h:23
 msgid "Is it the first time the user is running the program"
 msgstr "A felhasználó először futtatja-e a programot?"
 
-#: firestarter.schemas.in.h:24
+#: stockfw.schemas.in.h:24
 msgid "Lowest IP in the range to serve to DHCP clients"
 msgstr "A DHCP kliensek kiszolgálására használt IP tartomány legalsó eleme"
 
-#: firestarter.schemas.in.h:25
+#: stockfw.schemas.in.h:25
 msgid "Minimize to tray"
 msgstr "Minimalizálás a tálcára"
 
-#: firestarter.schemas.in.h:26
+#: stockfw.schemas.in.h:26
 msgid "Nameserver DHCP clients should use"
 msgstr "A DHCP kliensek által használandó névkiszolgáló"
 
-#: firestarter.schemas.in.h:27
+#: stockfw.schemas.in.h:27
 msgid "Policy auto apply"
 msgstr "Szabályok automatikus alkalmazása"
 
-#: firestarter.schemas.in.h:28
+#: stockfw.schemas.in.h:28
 msgid ""
 "Restrict outbound traffic by default, only allowing whitelisted outgoing "
 "connections."
@@ -156,179 +150,179 @@ msgstr ""
 "Kimenő forgalom korlátozása alapértelmezés szerint, csak fehérlistás kimenő "
 "forgalom engedélyezése."
 
-#: firestarter.schemas.in.h:29
+#: stockfw.schemas.in.h:29
 msgid "Restrictive outbound policy mode"
 msgstr "Korlátozó kimeneti szabályozás mód"
 
-#: firestarter.schemas.in.h:30
+#: stockfw.schemas.in.h:30
 msgid ""
-"Run the system dhcpd server in conjunction with Firestarter Internet "
+"Run the system dhcpd server in conjunction with StockFW Internet "
 "connection sharing."
 msgstr ""
-"A rendszer dhcpd kiszolgálójának futtatása a Firestarter internet-kapcsolat "
+"A rendszer dhcpd kiszolgálójának futtatása a StockFW internet-kapcsolat "
 "megosztásával együtt."
 
-#: firestarter.schemas.in.h:31
-msgid "Show the Firestarter icon in the notification area."
-msgstr "A Firestarter ikon mutatása a figyelmeztető területen."
+#: stockfw.schemas.in.h:31
+msgid "Show the StockFW icon in the notification area."
+msgstr "A StockFW ikon mutatása a figyelmeztető területen."
 
-#: firestarter.schemas.in.h:32
+#: stockfw.schemas.in.h:32
 msgid "Show the Type of Service column in the Hit View."
 msgstr ""
 "A szolgáltatás típusát tartalmazó oszlop mutatása a találatok nézetben."
 
-#: firestarter.schemas.in.h:33
+#: stockfw.schemas.in.h:33
 msgid "Show the destination column in the Hit View"
 msgstr "A \"Cél\" oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:34
+#: stockfw.schemas.in.h:34
 msgid "Show the destination column in the Hit View."
 msgstr "A célt tartalmazó oszlop mutatása a találatok nézetben."
 
-#: firestarter.schemas.in.h:35
+#: stockfw.schemas.in.h:35
 msgid "Show the device the hit was received from in the Hit View."
 msgstr "Eszköz mutatása a találatok nézetben, amelytől a találat érkezett."
 
-#: firestarter.schemas.in.h:36
+#: stockfw.schemas.in.h:36
 msgid "Show the device the hit was routed to in the Hit View."
 msgstr ""
 "Azon eszköz megjelenítése a találati listában, melyen keresztül a találat "
 "érkezett."
 
-#: firestarter.schemas.in.h:37
+#: stockfw.schemas.in.h:37
 msgid "Show the direction column in the Hit View"
 msgstr "Az Irány oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:38
+#: stockfw.schemas.in.h:38
 msgid "Show the direction column in the Hit View."
 msgstr "Az Irány oszlop mutatása a találatok nézetben."
 
-#: firestarter.schemas.in.h:39
+#: stockfw.schemas.in.h:39
 msgid "Show the in column in the Hit View"
 msgstr "A \"Be\" oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:40
+#: stockfw.schemas.in.h:40
 msgid "Show the length column in the Hit View"
 msgstr "A \"Hossz\" oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:41
+#: stockfw.schemas.in.h:41
 msgid "Show the out column in the Hit View"
 msgstr "\"Ki\" oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:42
+#: stockfw.schemas.in.h:42
 msgid "Show the packet length column in the Hit View."
 msgstr "A csomag hosszát tartalmazó oszlop mutatása a találatok nézetben."
 
-#: firestarter.schemas.in.h:43
+#: stockfw.schemas.in.h:43
 msgid "Show the port column in the Hit View"
 msgstr "A Port oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:44
+#: stockfw.schemas.in.h:44
 msgid "Show the port column in the Hit View."
 msgstr "A Port oszlop mutatása a találatok nézetben."
 
-#: firestarter.schemas.in.h:45
+#: stockfw.schemas.in.h:45
 msgid "Show the protocol column in the Hit View"
 msgstr "A \"Protokoll\" oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:46
+#: stockfw.schemas.in.h:46
 msgid "Show the protocol column in the Hit View."
 msgstr "A protokollt tartalmazó oszlop mutatása a találatok nézetben."
 
-#: firestarter.schemas.in.h:47
+#: stockfw.schemas.in.h:47
 msgid "Show the service column in the Hit View"
 msgstr "A \"Szolgáltatás\" oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:48
+#: stockfw.schemas.in.h:48
 msgid "Show the service column in the Hit View."
 msgstr "A szolgáltatást tartalmazó oszlop mutatása a találatok nézetben."
 
-#: firestarter.schemas.in.h:49
+#: stockfw.schemas.in.h:49
 msgid "Show the source column in the Hit View"
 msgstr "A \"Forrás\" oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:50
+#: stockfw.schemas.in.h:50
 msgid "Show the source column in the Hit View."
 msgstr "A forrást tartalmazó oszlop mutatása a találatok nézetben."
 
-#: firestarter.schemas.in.h:51
+#: stockfw.schemas.in.h:51
 msgid "Show the time column in the Hit View"
 msgstr "Az \"Idő\" oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:52
+#: stockfw.schemas.in.h:52
 msgid "Show the time column in the Hit View."
 msgstr "Az időt tartalmazó oszlop mutatása a találatok nézetben."
 
-#: firestarter.schemas.in.h:53
+#: stockfw.schemas.in.h:53
 msgid "Show the tos column in the Hit View"
 msgstr "A \"Szolgáltatások típusa\" oszlop mutatása a találatok nézetben"
 
-#: firestarter.schemas.in.h:54
+#: stockfw.schemas.in.h:54
 msgid "Specifies the higher limit of the IP space to use for DHCP leases."
 msgstr "Megadja a DHCP-vel kiosztható IP tartomány felső határát."
 
-#: firestarter.schemas.in.h:55
+#: stockfw.schemas.in.h:55
 msgid "Specifies the lower limit of the IP space to use for DHCP leases."
 msgstr "Megadja a DHCP-vel kiosztható IP tartomány alsó határát."
 
-#: firestarter.schemas.in.h:56
+#: stockfw.schemas.in.h:56
 msgid "Start the firewall on a DHCP lease renewal"
 msgstr "Tűzfal indítása a DHCP bérlés megújításakor"
 
-#: firestarter.schemas.in.h:57
+#: stockfw.schemas.in.h:57
 msgid "Start the firewall when the program loads"
-msgstr "A tűzfal a Firestarter indításakor induljon el"
+msgstr "A tűzfal a StockFW indításakor induljon el"
 
-#: firestarter.schemas.in.h:58
+#: stockfw.schemas.in.h:58
 msgid "Start the firewall when the program loads."
-msgstr "Jelölje be ezt, és a tűzfal a Firestarter minden indításakor elindul."
+msgstr "Jelölje be ezt, és a tűzfal a StockFW minden indításakor elindul."
 
-#: firestarter.schemas.in.h:59
+#: stockfw.schemas.in.h:59
 msgid "Start the firewall when the system boots"
 msgstr "A tűzfal a rendszer indításakor induljon el"
 
-#: firestarter.schemas.in.h:60
+#: stockfw.schemas.in.h:60
 msgid "Start the firewall when the system boots."
 msgstr "A tűzfal a rendszer indításakor induljon el."
 
-#: firestarter.schemas.in.h:61
+#: stockfw.schemas.in.h:61
 msgid "Start the firewall when the system dials out"
 msgstr "Tűzfal indítása betárcsázáskor"
 
-#: firestarter.schemas.in.h:62
+#: stockfw.schemas.in.h:62
 msgid "Start the firewall when the system establishes a PPP connection."
 msgstr "A tűzfal elindítása PPP kapcsolat kialakításakor."
 
-#: firestarter.schemas.in.h:63
+#: stockfw.schemas.in.h:63
 msgid "Start the firewall when the system receives a new DHCP lease."
 msgstr "A tűzfal indítása, ha a rendszer új DHCP bérlést fogad."
 
-#: firestarter.schemas.in.h:64
+#: stockfw.schemas.in.h:64
 msgid "The Internet connected network interface. For example, ppp0 or eth0."
 msgstr "Az internetre csatlakozó hálózati csatoló. Például ppp0 vagy eth0."
 
-#: firestarter.schemas.in.h:65
+#: stockfw.schemas.in.h:65
 msgid "The LAN connected network interface. For example, eth0 or eth1."
 msgstr "A LAN-ra csatlakozó hálózati csatoló. Például eth0 vagy eth1."
 
-#: firestarter.schemas.in.h:66
+#: stockfw.schemas.in.h:66
 msgid "The external interface"
 msgstr "A külső csatoló"
 
-#: firestarter.schemas.in.h:67
-msgid "The first time Firestarter starts several special actions are taken."
+#: stockfw.schemas.in.h:67
+msgid "The first time StockFW starts several special actions are taken."
 msgstr ""
-"A Firestarter első indításakor számos különleges művelet hajtódik végre."
+"A StockFW első indításakor számos különleges művelet hajtódik végre."
 
-#: firestarter.schemas.in.h:68
+#: stockfw.schemas.in.h:68
 msgid "The internal interface"
 msgstr "A belső csatoló"
 
-#: firestarter.schemas.in.h:69
+#: stockfw.schemas.in.h:69
 msgid "The location of the file the system logging daemon writes to."
 msgstr "Azon fájl helye, ahová a rendszernaplózó (syslog) démon ír."
 
-#: firestarter.schemas.in.h:70
+#: stockfw.schemas.in.h:70
 msgid ""
 "The nameserver clients should use. You can specify multiple nameserver in a "
 "space separated list. A value of &lt;dynamic&gt; causes the nameservers to "
@@ -338,11 +332,11 @@ msgstr ""
 "szóközökkel elválasztva. A &lt;dynamic&gt; érték a névkiszolgáló futásidejű "
 "meghatározását jelenti."
 
-#: firestarter.schemas.in.h:71
+#: stockfw.schemas.in.h:71
 msgid "The system log file"
 msgstr "A syslog naplófájl"
 
-#: firestarter.schemas.in.h:72
+#: stockfw.schemas.in.h:72
 msgid "When closing the program window, instead of exiting, hide the window."
 msgstr "A program ablakának bezárásakor kilépés helyett az ablak elrejtése."
 
@@ -354,28 +348,28 @@ msgstr "Nem sikerült megnyitni írásra a DHCP kiszolgáló beállítófájljá
 msgid "Failed to write to DHCP server configuration file: "
 msgstr "Nem sikerült írni a DHCP kiszolgáló beállítófájljába: "
 
-#: src/firestarter.c:83 src/firestarter.c:85 src/firestarter.c:86
+#: src/stockfw.c:83 src/stockfw.c:85 src/stockfw.c:86
 msgid "Failed to stop the firewall"
 msgstr "Tűzfal leállítása sikertelen"
 
-#: src/firestarter.c:87
+#: src/stockfw.c:87
 msgid "There was an undetermined error when trying to stop the firewall."
 msgstr "Meghatározatlan hiba lépett fel a tűzfal leállítása közben."
 
-#: src/firestarter.c:126 src/firestarter.c:130
+#: src/stockfw.c:126 src/stockfw.c:130
 #, c-format
 msgid "The device %s is not ready."
 msgstr "A(z) %s eszköz nem áll készen."
 
-#: src/firestarter.c:133
+#: src/stockfw.c:133
 msgid "Your kernel does not support iptables."
 msgstr "Az Ön kernelje nem támogatja az iptables-t."
 
-#: src/firestarter.c:135
+#: src/stockfw.c:135
 msgid "An unknown error occurred."
 msgstr "Ismeretlen hiba lépett fel."
 
-#: src/firestarter.c:139
+#: src/stockfw.c:139
 msgid ""
 "Please check your network device settings and make sure your\n"
 "Internet connection is active."
@@ -383,31 +377,31 @@ msgstr ""
 "Kérem ellenőrizze a hálózati eszköz beállításait és \n"
 "győződjön meg, hogy az internet-kapcsolata aktív."
 
-#: src/firestarter.c:143
+#: src/stockfw.c:143
 msgid "Failed to start the firewall\n"
 msgstr "Tűzfal indítása sikertelen\n"
 
-#: src/firestarter.c:147 src/firestarter.c:148
+#: src/stockfw.c:147 src/stockfw.c:148
 msgid "Failed to start the firewall"
 msgstr "Tűzfal indítása sikertelen"
 
-#: src/firestarter.c:200 src/firestarter.c:202 src/firestarter.c:203
+#: src/stockfw.c:200 src/stockfw.c:202 src/stockfw.c:203
 msgid "Failed to lock the firewall"
 msgstr "Tűzfal zárolása sikertelen"
 
-#: src/firestarter.c:204
+#: src/stockfw.c:204
 msgid "There was an undetermined error when trying to lock the firewall."
 msgstr "Meghatározatlan hiba lépett fel a tűzfal zárolása közben."
 
-#: src/firestarter.c:298
+#: src/stockfw.c:298
 msgid ""
 " -s, --start            Start the firewall\n"
 " -p, --stop             Stop the firewall\n"
 "     --lock             Lock the firewall, blocking all traffic\n"
 "     --generate-scripts Generate firewall scripts from current "
 "configuration\n"
-"     --start-hidden     Start Firestarter with the GUI not visible\n"
-" -v, --version          Prints Firestarter's version number\n"
+"     --start-hidden     Start StockFW with the GUI not visible\n"
+" -v, --version          Prints StockFW's version number\n"
 " -h, --help             You're looking at it\n"
 msgstr ""
 " -s, --start            Tűzfal elindítása\n"
@@ -416,24 +410,24 @@ msgstr ""
 "blokkolása\n"
 "     --generate-scripts Tűzfalszkriptek generálása a jelenlegi "
 "konfigurációból\n"
-"     --start-hidden     Firestarter indítása rejtett GUI-val \n"
-" -v, --version          Kiírja a Firestarter verziószámát \n"
+"     --start-hidden     StockFW indítása rejtett GUI-val \n"
+" -v, --version          Kiírja a StockFW verziószámát \n"
 " -h, --help             Ezt látja most\n"
 
-#: src/firestarter.c:316 src/firestarter.c:318 src/firestarter.c:319
+#: src/stockfw.c:316 src/stockfw.c:318 src/stockfw.c:319
 msgid "Insufficient privileges"
 msgstr "Elégtelen jogosultságok"
 
-#: src/firestarter.c:320
-msgid "You must have root user privileges to use Firestarter."
-msgstr "Csak \"root\" jogosultságokkal használhatja a Firestarter-t."
+#: src/stockfw.c:320
+msgid "You must have root user privileges to use StockFW."
+msgstr "Csak \"root\" jogosultságokkal használhatja a StockFW-t."
 
-#: src/firestarter.c:423
+#: src/stockfw.c:423
 #, c-format
 msgid "Updating firewall to new version...\n"
 msgstr "Tűzfal frissítése egy új verzióra...\n"
 
-#: src/firestarter.c:425
+#: src/stockfw.c:425
 #, c-format
 msgid "Firewall update complete\n"
 msgstr "A tűzfal frissítése befejeződött\n"
@@ -696,20 +690,20 @@ msgid "Open the online users' manual in a browser"
 msgstr "Az online felhasználói kézikönyv megnyitása a böngészőben"
 
 #: src/menus.c:71
-msgid "Firestarter _Homepage"
-msgstr "A Firestarter _honlapja"
+msgid "StockFW _Homepage"
+msgstr "A StockFW _honlapja"
 
 #: src/menus.c:71
-msgid "Open the Firestarter homepage in a browser"
-msgstr "A Firestarter honlapjának megnyitása a böngészőben"
+msgid "Open the StockFW homepage in a browser"
+msgstr "A StockFW honlapjának megnyitása a böngészőben"
 
 #: src/menus.c:72
 msgid "_About"
 msgstr "_Névjegy"
 
 #: src/menus.c:72
-msgid "About Firestarter"
-msgstr "A Firestarter névjegye"
+msgid "About StockFW"
+msgstr "A StockFW névjegye"
 
 #: src/menus.c:74
 msgid "Allow Connections From Source"
@@ -1020,19 +1014,19 @@ msgstr "Szerkesztés"
 
 #: src/preferences.c:155
 msgid ""
-"A proper configuration for Firestarter was not found. If you are running "
-"Firestarter from the directory you built it in, run 'make install-data-"
+"A proper configuration for StockFW was not found. If you are running "
+"StockFW from the directory you built it in, run 'make install-data-"
 "local' to install a configuration, or simply 'make install' to install the "
 "whole program.\n"
 "\n"
-"Firestarter will now close."
+"StockFW will now close."
 msgstr ""
-"Nem található megfelelő konfiguráció a Firestarter-hez. Ha abból a "
+"Nem található megfelelő konfiguráció a StockFW-hez. Ha abból a "
 "könyvtárból futtatja, amelyikben lefordította, futtassa a 'make install-data-"
 "local'-t a konfiguráció telepítéséhez vagy egyszerűen a 'make install'-t az "
 "egész program telepítéséhez.\n"
 "\n"
-"A Firestarter most kilép."
+"A StockFW most kilép."
 
 #: src/preferences.c:235 src/preferences.glade.h:53
 msgid "Interface"
@@ -1087,8 +1081,8 @@ msgid "Missing file"
 msgstr "Hiányzó fájl"
 
 #: src/preferences.c:910
-msgid "Firestarter interface file not found"
-msgstr "A Firestarter felületfájlja nem található"
+msgid "StockFW interface file not found"
+msgstr "A StockFW felületfájlja nem található"
 
 #: src/preferences.c:911
 msgid "The interface markup file preferences.glade could not be found."
@@ -1483,16 +1477,16 @@ msgid "Firewall locked"
 msgstr "Tűzfal zárolva"
 
 #: src/tray.c:204
-msgid "_Show Firestarter"
-msgstr "Firestarter _mutatása"
+msgid "_Show StockFW"
+msgstr "StockFW _mutatása"
 
 #: src/tray.c:214
 msgid "_Exit"
 msgstr "_Kilépés"
 
 #: src/util.c:109
-msgid "Firestarter error"
-msgstr "Firestarter hiba"
+msgid "StockFW error"
+msgstr "StockFW hiba"
 
 #: src/util.c:138
 msgid ""
@@ -1598,12 +1592,12 @@ msgstr ""
 
 #: src/wizard.c:237
 msgid ""
-"Firestarter can share your Internet connection with the computers on your "
+"StockFW can share your Internet connection with the computers on your "
 "local network\n"
 "using a single public IP address and a method called Network Address "
 "Translation."
 msgstr ""
-"A Firestarter képes megosztani az internet-kapcsolatát a helyi hálózatán "
+"A StockFW képes megosztani az internet-kapcsolatát a helyi hálózatán "
 "lévő gépek között,\n"
 "egyetlen IP cím és a Hálózati címfordítás (NAT) nevű eljárás használatával."
 
@@ -1691,8 +1685,8 @@ msgid "Firewall Wizard"
 msgstr "Tűzfalvarázsló"
 
 #: src/wizard.c:643
-msgid "Welcome to Firestarter"
-msgstr "Üdvözli a Firestarter"
+msgid "Welcome to StockFW"
+msgstr "Üdvözli a StockFW"
 
 #: src/wizard.c:649
 msgid "Network device setup"

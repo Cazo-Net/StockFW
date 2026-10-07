@@ -1,5 +1,4 @@
 /*---[ gui.h ]---------------------------------------------------------
- * Copyright (C) 2002 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,12 +8,12 @@
  * The GUI header file
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_GUI
-#define _FIRESTARTER_GUI
+#ifndef _STOCKFW_GUI
+#define _STOCKFW_GUI
 
 #include <config.h>
 #include <gnome.h>
-#include "firestarter.h"
+#include "stockfw.h"
 
 void gui_construct (void);
 gboolean gui_toggle_visibility (void);
@@ -47,10 +46,10 @@ typedef enum
 	EVENTS_VIEW,
 	POLICY_VIEW,
 	NUM_VIEWS
-} FirestarterView;
+} StockFWView;
 
 void gui_widget_sensitivity_sync (GtkToggleButton *source, GtkWidget *target);
 
-FirestarterView gui_get_active_view (void);
+StockFWView gui_get_active_view (void);
 
 #endif

@@ -72,8 +72,8 @@ ECHO = @ECHO@
 EGREP = @EGREP@
 EXEEXT = @EXEEXT@
 F77 = @F77@
-FIRESTARTER_CFLAGS = @FIRESTARTER_CFLAGS@
-FIRESTARTER_LIBS = @FIRESTARTER_LIBS@
+STOCKFW_CFLAGS = @STOCKFW_CFLAGS@
+STOCKFW_LIBS = @STOCKFW_LIBS@
 GCJ = @GCJ@
 GCJFLAGS = @GCJFLAGS@
 GCONFTOOL = @GCONFTOOL@
@@ -128,10 +128,10 @@ WARN_CXXFLAGS = @WARN_CXXFLAGS@
 SUBDIRS = po src pixmaps scripts
 
 EXTRA_DIST = autogen.sh \
-	     firestarter.spec \
-	     firestarter.spec.in \
-	     firestarter.console \
-	     firestarter.pam \
+	     stockfw.spec \
+	     stockfw.spec.in \
+	     stockfw.console \
+	     stockfw.pam \
 	     CREDITS \
 	     fedora.init \
 	     intltool-extract.in \
@@ -142,22 +142,22 @@ EXTRA_DIST = autogen.sh \
              $(Applications_DATA)
 
 
-schema_in_files = firestarter.schemas.in
+schema_in_files = stockfw.schemas.in
 schemadir = @GCONF_SCHEMA_FILE_DIR@
 schema_DATA = $(schema_in_files:.schemas.in=.schemas)
 
 Applicationsdir = $(datadir)/gnome/apps/Internet
-Applications_in_files = firestarter.desktop.in
+Applications_in_files = stockfw.desktop.in
 Applications_DATA = $(Applications_in_files:.desktop.in=.desktop)
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 mkinstalldirs = $(SHELL) $(top_srcdir)/mkinstalldirs
 CONFIG_HEADER = config.h
-CONFIG_CLEAN_FILES =  firestarter.spec
+CONFIG_CLEAN_FILES =  stockfw.spec
 DATA =  $(Applications_DATA) $(schema_DATA)
 
 DIST_COMMON =  README ./stamp-h.in AUTHORS COPYING ChangeLog INSTALL \
 Makefile.am Makefile.in NEWS TODO aclocal.m4 config.guess config.h.in \
-config.sub configure configure.in firestarter.spec.in install-sh \
+config.sub configure configure.in stockfw.spec.in install-sh \
 ltmain.sh missing mkinstalldirs
 
 
@@ -209,7 +209,7 @@ distclean-hdr:
 	-rm -f config.h
 
 maintainer-clean-hdr:
-firestarter.spec: $(top_builddir)/config.status firestarter.spec.in
+stockfw.spec: $(top_builddir)/config.status stockfw.spec.in
 	cd $(top_builddir) && CONFIG_FILES=$@ CONFIG_HEADERS= $(SHELL) ./config.status
 
 install-ApplicationsDATA: $(Applications_DATA)

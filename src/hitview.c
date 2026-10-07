@@ -1,5 +1,4 @@
 /*---[ hitview.c ]-----------------------------------------------------
- * Copyright (C) 2002-2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -13,7 +12,7 @@
 #include <gnome.h>
 #include <libgnomevfs/gnome-vfs.h>
 
-#include "firestarter.h"
+#include "stockfw.h"
 #include "globals.h"
 #include "hitview.h"
 #include "util.h"
@@ -686,7 +685,7 @@ hitview_disable_events_selected_source (void)
 		return;
 
 	data = g_strconcat (h->source, "\n", NULL);
-	append_filter_file (FIRESTARTER_FILTER_HOSTS_SCRIPT, data);
+	append_filter_file (STOCKFW_FILTER_HOSTS_SCRIPT, data);
 	g_free (h);
 	g_free (data);
 
@@ -704,7 +703,7 @@ hitview_disable_events_selected_port (void)
 		return;
 
 	data = g_strconcat (h->port, "\n", NULL);
-	append_filter_file (FIRESTARTER_FILTER_PORTS_SCRIPT, data);
+	append_filter_file (STOCKFW_FILTER_PORTS_SCRIPT, data);
 	g_free (h);
 	g_free (data);
 

@@ -1,4 +1,4 @@
-Installing Firestarter
+Installing StockFW
 
 Short Version
 =============
@@ -7,11 +7,11 @@ Short Version
     su
     make install
 
-    If you want to run Firestarter as a system service, copy the
+    If you want to run StockFW as a system service, copy the
     fedora.init file (scripts for more distributions might be
     added later) to your /etc/init.d directory and rename it to
-    firestarter. Enable the script by running:
-        "chkconfig firestarter reset"
+    stockfw. Enable the script by running:
+        "chkconfig stockfw reset"
     as root.
 
 Long Version

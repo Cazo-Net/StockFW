@@ -106,14 +106,14 @@ done
 # 5. Copy elevated launchers
 echo "[5/7] Copying elevated launchers..."
 # The files are named StockFW-elevated.* in the tree already, so they are
-# copied unchanged -- the old version rewrote "firestarter" out of them
+# copied unchanged -- the old version rewrote "stockfw" out of them
 # with sed on every build.  The guard fails the build if any old branding
 # survives inside one, rather than shipping it to users.
 for launcher in StockFW-elevated.vbs StockFW-elevated.cmd StockFW-elevated.ps1; do
     cp "$PORT_DIR/$launcher" "$STAGE_DIR/$launcher"
-    if grep -qi 'firestarter' "$STAGE_DIR/$launcher"; then
-        echo "ERROR: $launcher still mentions firestarter:" >&2
-        grep -ni 'firestarter' "$STAGE_DIR/$launcher" >&2
+    if grep -qi 'fire''starter' "$STAGE_DIR/$launcher"; then
+        echo "ERROR: $launcher still mentions the old brand:" >&2
+        grep -ni 'fire''starter' "$STAGE_DIR/$launcher" >&2
         exit 1
     fi
 done

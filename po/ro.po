@@ -1,270 +1,266 @@
-# Romanian translation for Firestarter.
-# Copyright (C) 2001 Free Software Foundation, Inc.
-# Dan Damian <dand@dnttm.ro>, 2001.
+# Romanian translation for StockFW.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: firestarter 0.6.0\n"
+"Project-Id-Version: stockfw 0.6.0\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2005-01-29 14:33+0200\n"
 "PO-Revision-Date: 2001-02-15 18:19+0200\n"
-"Last-Translator: Dan Damian <dand@dnttm.ro>\n"
-"Language-Team: Romanian <gnome-ro@pelican.level7.ro>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: firestarter.desktop.in.h:1
+#: stockfw.desktop.in.h:1
 #, fuzzy
 msgid "Desktop Firewall Tool"
-msgstr "Asistentul de firewall Firestarter"
+msgstr "Asistentul de firewall StockFW"
 
-#: firestarter.desktop.in.h:2 src/firestarter.c:297
+#: stockfw.desktop.in.h:2 src/stockfw.c:297
 #, fuzzy
-msgid "Firestarter"
-msgstr "_Pagina de start Firestarter"
+msgid "StockFW"
+msgstr "_Pagina de start StockFW"
 
-#: firestarter.schemas.in.h:1
+#: stockfw.schemas.in.h:1
 msgid ""
 "Apply changes made to policy immediately, the alternative is for the user to "
 "confirm the changes in advance."
 msgstr ""
 
-#: firestarter.schemas.in.h:2
+#: stockfw.schemas.in.h:2
 msgid "Apply the ICMP settings, as configured in the wizard."
 msgstr ""
 
-#: firestarter.schemas.in.h:3
+#: stockfw.schemas.in.h:3
 msgid "Apply the settings of Type of Service, as configured in the wizard."
 msgstr ""
 
-#: firestarter.schemas.in.h:4 src/preferences.glade.h:29
+#: stockfw.schemas.in.h:4 src/preferences.glade.h:29
 msgid "Block broadcasts from external network"
 msgstr ""
 
-#: firestarter.schemas.in.h:5
+#: stockfw.schemas.in.h:5
 msgid "Block broadcasts from external network."
 msgstr ""
 
-#: firestarter.schemas.in.h:6 src/preferences.glade.h:30
+#: stockfw.schemas.in.h:6 src/preferences.glade.h:30
 msgid "Block broadcasts from internal network"
 msgstr ""
 
-#: firestarter.schemas.in.h:7
+#: stockfw.schemas.in.h:7
 msgid "Block broadcasts from internal network."
 msgstr ""
 
-#: firestarter.schemas.in.h:8
+#: stockfw.schemas.in.h:8
 msgid ""
 "Block potentially spoofed traffic claiming to come from IANA reserved "
 "address space on the external interface."
 msgstr ""
 
-#: firestarter.schemas.in.h:9
+#: stockfw.schemas.in.h:9
 msgid "Block traffic from reserved address space on the public interface"
 msgstr ""
 
-#: firestarter.schemas.in.h:10
+#: stockfw.schemas.in.h:10
 msgid "Deny packets"
 msgstr ""
 
-#: firestarter.schemas.in.h:11
+#: stockfw.schemas.in.h:11
 msgid "Drop denied packets without sending an error packet back."
 msgstr ""
 
-#: firestarter.schemas.in.h:12
+#: stockfw.schemas.in.h:12
 msgid "Enable DHCP server for connection sharing"
 msgstr ""
 
-#: firestarter.schemas.in.h:13
+#: stockfw.schemas.in.h:13
 #, fuzzy
 msgid "Enable NAT"
 msgstr "Activează sunetele"
 
-#: firestarter.schemas.in.h:14
+#: stockfw.schemas.in.h:14
 msgid "Enable Network Address Translation, or Internet connection sharing."
 msgstr ""
 
-#: firestarter.schemas.in.h:15
+#: stockfw.schemas.in.h:15
 msgid "Enable the configuration of ICMP"
 msgstr ""
 
-#: firestarter.schemas.in.h:16
+#: stockfw.schemas.in.h:16
 msgid "Enable the configuration of tos"
 msgstr ""
 
-#: firestarter.schemas.in.h:17 src/preferences.glade.h:41
+#: stockfw.schemas.in.h:17 src/preferences.glade.h:41
 #, fuzzy
 msgid "Enable tray icon"
 msgstr "Activează masquerading"
 
-#: firestarter.schemas.in.h:18
+#: stockfw.schemas.in.h:18
 #, fuzzy
 msgid "Filter out hits not targeted at the firewall"
 msgstr "Reporneşte firewall"
 
-#: firestarter.schemas.in.h:19
+#: stockfw.schemas.in.h:19
 msgid ""
 "Filter out hits that have an destination IP that does not match the firewall "
 "host."
 msgstr ""
 
-#: firestarter.schemas.in.h:20
+#: stockfw.schemas.in.h:20
 #, fuzzy
 msgid "Filter out redundant hits"
 msgstr "Filtrează hiturile identice"
 
-#: firestarter.schemas.in.h:21
+#: stockfw.schemas.in.h:21
 #, fuzzy
 msgid "Filter out sequences of identical hits."
 msgstr "Filtrează hiturile identice"
 
-#: firestarter.schemas.in.h:22
+#: stockfw.schemas.in.h:22
 msgid "Highest IP in the range to serve to DHCP clients"
 msgstr ""
 
-#: firestarter.schemas.in.h:23
+#: stockfw.schemas.in.h:23
 msgid "Is it the first time the user is running the program"
 msgstr ""
 
-#: firestarter.schemas.in.h:24
+#: stockfw.schemas.in.h:24
 msgid "Lowest IP in the range to serve to DHCP clients"
 msgstr ""
 
-#: firestarter.schemas.in.h:25
+#: stockfw.schemas.in.h:25
 msgid "Minimize to tray"
 msgstr ""
 
-#: firestarter.schemas.in.h:26
+#: stockfw.schemas.in.h:26
 msgid "Nameserver DHCP clients should use"
 msgstr ""
 
-#: firestarter.schemas.in.h:27
+#: stockfw.schemas.in.h:27
 msgid "Policy auto apply"
 msgstr ""
 
-#: firestarter.schemas.in.h:28
+#: stockfw.schemas.in.h:28
 msgid ""
 "Restrict outbound traffic by default, only allowing whitelisted outgoing "
 "connections."
 msgstr ""
 
-#: firestarter.schemas.in.h:29
+#: stockfw.schemas.in.h:29
 msgid "Restrictive outbound policy mode"
 msgstr ""
 
-#: firestarter.schemas.in.h:30
+#: stockfw.schemas.in.h:30
 msgid ""
-"Run the system dhcpd server in conjunction with Firestarter Internet "
+"Run the system dhcpd server in conjunction with StockFW Internet "
 "connection sharing."
 msgstr ""
 
-#: firestarter.schemas.in.h:31
-msgid "Show the Firestarter icon in the notification area."
+#: stockfw.schemas.in.h:31
+msgid "Show the StockFW icon in the notification area."
 msgstr ""
 
-#: firestarter.schemas.in.h:32
+#: stockfw.schemas.in.h:32
 msgid "Show the Type of Service column in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:33
+#: stockfw.schemas.in.h:33
 msgid "Show the destination column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:34
+#: stockfw.schemas.in.h:34
 msgid "Show the destination column in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:35
+#: stockfw.schemas.in.h:35
 msgid "Show the device the hit was received from in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:36
+#: stockfw.schemas.in.h:36
 msgid "Show the device the hit was routed to in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:37
+#: stockfw.schemas.in.h:37
 msgid "Show the direction column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:38
+#: stockfw.schemas.in.h:38
 msgid "Show the direction column in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:39
+#: stockfw.schemas.in.h:39
 msgid "Show the in column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:40
+#: stockfw.schemas.in.h:40
 msgid "Show the length column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:41
+#: stockfw.schemas.in.h:41
 msgid "Show the out column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:42
+#: stockfw.schemas.in.h:42
 msgid "Show the packet length column in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:43
+#: stockfw.schemas.in.h:43
 msgid "Show the port column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:44
+#: stockfw.schemas.in.h:44
 msgid "Show the port column in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:45
+#: stockfw.schemas.in.h:45
 msgid "Show the protocol column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:46
+#: stockfw.schemas.in.h:46
 msgid "Show the protocol column in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:47
+#: stockfw.schemas.in.h:47
 msgid "Show the service column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:48
+#: stockfw.schemas.in.h:48
 msgid "Show the service column in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:49
+#: stockfw.schemas.in.h:49
 msgid "Show the source column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:50
+#: stockfw.schemas.in.h:50
 msgid "Show the source column in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:51
+#: stockfw.schemas.in.h:51
 msgid "Show the time column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:52
+#: stockfw.schemas.in.h:52
 msgid "Show the time column in the Hit View."
 msgstr ""
 
-#: firestarter.schemas.in.h:53
+#: stockfw.schemas.in.h:53
 msgid "Show the tos column in the Hit View"
 msgstr ""
 
-#: firestarter.schemas.in.h:54
+#: stockfw.schemas.in.h:54
 msgid "Specifies the higher limit of the IP space to use for DHCP leases."
 msgstr ""
 
-#: firestarter.schemas.in.h:55
+#: stockfw.schemas.in.h:55
 msgid "Specifies the lower limit of the IP space to use for DHCP leases."
 msgstr ""
 
-#: firestarter.schemas.in.h:56
+#: stockfw.schemas.in.h:56
 #, fuzzy
 msgid "Start the firewall on a DHCP lease renewal"
 msgstr "Porneşte firewall-ul la închiderea conexiunii"
 
-#: firestarter.schemas.in.h:57
+#: stockfw.schemas.in.h:57
 #, fuzzy
 msgid "Start the firewall when the program loads"
 msgstr ""
@@ -272,7 +268,7 @@ msgstr ""
 "când programul porneşte.\n"
 "Implicit este activată."
 
-#: firestarter.schemas.in.h:58
+#: stockfw.schemas.in.h:58
 #, fuzzy
 msgid "Start the firewall when the program loads."
 msgstr ""
@@ -280,7 +276,7 @@ msgstr ""
 "când programul porneşte.\n"
 "Implicit este activată."
 
-#: firestarter.schemas.in.h:59
+#: stockfw.schemas.in.h:59
 #, fuzzy
 msgid "Start the firewall when the system boots"
 msgstr ""
@@ -288,7 +284,7 @@ msgstr ""
 "când programul porneşte.\n"
 "Implicit este activată."
 
-#: firestarter.schemas.in.h:60
+#: stockfw.schemas.in.h:60
 #, fuzzy
 msgid "Start the firewall when the system boots."
 msgstr ""
@@ -296,12 +292,12 @@ msgstr ""
 "când programul porneşte.\n"
 "Implicit este activată."
 
-#: firestarter.schemas.in.h:61
+#: stockfw.schemas.in.h:61
 #, fuzzy
 msgid "Start the firewall when the system dials out"
 msgstr "Porneşte firewall-ul la închiderea conexiunii"
 
-#: firestarter.schemas.in.h:62
+#: stockfw.schemas.in.h:62
 #, fuzzy
 msgid "Start the firewall when the system establishes a PPP connection."
 msgstr ""
@@ -309,7 +305,7 @@ msgstr ""
 "când programul porneşte.\n"
 "Implicit este activată."
 
-#: firestarter.schemas.in.h:63
+#: stockfw.schemas.in.h:63
 #, fuzzy
 msgid "Start the firewall when the system receives a new DHCP lease."
 msgstr ""
@@ -317,45 +313,45 @@ msgstr ""
 "când programul porneşte.\n"
 "Implicit este activată."
 
-#: firestarter.schemas.in.h:64
+#: stockfw.schemas.in.h:64
 msgid "The Internet connected network interface. For example, ppp0 or eth0."
 msgstr ""
 
-#: firestarter.schemas.in.h:65
+#: stockfw.schemas.in.h:65
 msgid "The LAN connected network interface. For example, eth0 or eth1."
 msgstr ""
 
-#: firestarter.schemas.in.h:66
+#: stockfw.schemas.in.h:66
 #, fuzzy
 msgid "The external interface"
 msgstr "Selectaţi interfaţa dvs. externă"
 
-#: firestarter.schemas.in.h:67
-msgid "The first time Firestarter starts several special actions are taken."
+#: stockfw.schemas.in.h:67
+msgid "The first time StockFW starts several special actions are taken."
 msgstr ""
 
-#: firestarter.schemas.in.h:68
+#: stockfw.schemas.in.h:68
 #, fuzzy
 msgid "The internal interface"
 msgstr "Selectaţi interfaţa dvs. externă"
 
-#: firestarter.schemas.in.h:69
+#: stockfw.schemas.in.h:69
 msgid "The location of the file the system logging daemon writes to."
 msgstr ""
 
-#: firestarter.schemas.in.h:70
+#: stockfw.schemas.in.h:70
 msgid ""
 "The nameserver clients should use. You can specify multiple nameserver in a "
 "space separated list. A value of &lt;dynamic&gt; causes the nameservers to "
 "be determined at run time."
 msgstr ""
 
-#: firestarter.schemas.in.h:71
+#: stockfw.schemas.in.h:71
 #, fuzzy
 msgid "The system log file"
 msgstr "Selectaţi fişierul jurnal syslog"
 
-#: firestarter.schemas.in.h:72
+#: stockfw.schemas.in.h:72
 msgid "When closing the program window, instead of exiting, hide the window."
 msgstr ""
 
@@ -367,80 +363,80 @@ msgstr ""
 msgid "Failed to write to DHCP server configuration file: "
 msgstr ""
 
-#: src/firestarter.c:83 src/firestarter.c:85 src/firestarter.c:86
+#: src/stockfw.c:83 src/stockfw.c:85 src/stockfw.c:86
 #, fuzzy
 msgid "Failed to stop the firewall"
 msgstr "Fişier de redat la hit firewall:"
 
-#: src/firestarter.c:87
+#: src/stockfw.c:87
 msgid "There was an undetermined error when trying to stop the firewall."
 msgstr ""
 
-#: src/firestarter.c:126 src/firestarter.c:130
+#: src/stockfw.c:126 src/stockfw.c:130
 #, c-format
 msgid "The device %s is not ready."
 msgstr ""
 
-#: src/firestarter.c:133
+#: src/stockfw.c:133
 msgid "Your kernel does not support iptables."
 msgstr ""
 
-#: src/firestarter.c:135
+#: src/stockfw.c:135
 msgid "An unknown error occurred."
 msgstr ""
 
-#: src/firestarter.c:139
+#: src/stockfw.c:139
 msgid ""
 "Please check your network device settings and make sure your\n"
 "Internet connection is active."
 msgstr ""
 
-#: src/firestarter.c:143
+#: src/stockfw.c:143
 #, fuzzy
 msgid "Failed to start the firewall\n"
 msgstr "Reporneşte firewall"
 
-#: src/firestarter.c:147 src/firestarter.c:148
+#: src/stockfw.c:147 src/stockfw.c:148
 #, fuzzy
 msgid "Failed to start the firewall"
 msgstr "Reporneşte firewall"
 
-#: src/firestarter.c:200 src/firestarter.c:202 src/firestarter.c:203
+#: src/stockfw.c:200 src/stockfw.c:202 src/stockfw.c:203
 #, fuzzy
 msgid "Failed to lock the firewall"
 msgstr "Fişier de redat la hit firewall:"
 
-#: src/firestarter.c:204
+#: src/stockfw.c:204
 msgid "There was an undetermined error when trying to lock the firewall."
 msgstr ""
 
-#: src/firestarter.c:298
+#: src/stockfw.c:298
 msgid ""
 " -s, --start            Start the firewall\n"
 " -p, --stop             Stop the firewall\n"
 "     --lock             Lock the firewall, blocking all traffic\n"
 "     --generate-scripts Generate firewall scripts from current "
 "configuration\n"
-"     --start-hidden     Start Firestarter with the GUI not visible\n"
-" -v, --version          Prints Firestarter's version number\n"
+"     --start-hidden     Start StockFW with the GUI not visible\n"
+" -v, --version          Prints StockFW's version number\n"
 " -h, --help             You're looking at it\n"
 msgstr ""
 
-#: src/firestarter.c:316 src/firestarter.c:318 src/firestarter.c:319
+#: src/stockfw.c:316 src/stockfw.c:318 src/stockfw.c:319
 msgid "Insufficient privileges"
 msgstr ""
 
-#: src/firestarter.c:320
+#: src/stockfw.c:320
 #, fuzzy
-msgid "You must have root user privileges to use Firestarter."
-msgstr "Trebuie să fiţi root pentru a utiliza asistentul Firestarter."
+msgid "You must have root user privileges to use StockFW."
+msgstr "Trebuie să fiţi root pentru a utiliza asistentul StockFW."
 
-#: src/firestarter.c:423
+#: src/stockfw.c:423
 #, c-format
 msgid "Updating firewall to new version...\n"
 msgstr ""
 
-#: src/firestarter.c:425
+#: src/stockfw.c:425
 #, fuzzy, c-format
 msgid "Firewall update complete\n"
 msgstr "Script-ul firewall restartat\n"
@@ -450,7 +446,7 @@ msgstr "Script-ul firewall restartat\n"
 msgid "An all-in-one Linux firewall utility for GNOME.\n"
 msgstr ""
 "Utilitar complet de firewall-uri Linux pentru GNOME.\n"
-"http://firestarter.sourceforge.net"
+"http://stockfw.sourceforge.net"
 
 #: src/gui.c:269 src/statusview.c:962
 msgid "Status"
@@ -641,12 +637,12 @@ msgstr ""
 #: src/menus.c:58
 #, fuzzy
 msgid "_Preferences"
-msgstr "Firestarter: Preferinţe"
+msgstr "StockFW: Preferinţe"
 
 #: src/menus.c:58
 #, fuzzy
 msgid "Program preferences"
-msgstr "Firestarter: Preferinţe"
+msgstr "StockFW: Preferinţe"
 
 #. F12
 #: src/menus.c:60
@@ -728,11 +724,11 @@ msgstr ""
 
 #: src/menus.c:71
 #, fuzzy
-msgid "Firestarter _Homepage"
-msgstr "_Pagina de start Firestarter"
+msgid "StockFW _Homepage"
+msgstr "_Pagina de start StockFW"
 
 #: src/menus.c:71
-msgid "Open the Firestarter homepage in a browser"
+msgid "Open the StockFW homepage in a browser"
 msgstr ""
 
 #: src/menus.c:72
@@ -741,8 +737,8 @@ msgstr ""
 
 #: src/menus.c:72
 #, fuzzy
-msgid "About Firestarter"
-msgstr "_Pagina de start Firestarter"
+msgid "About StockFW"
+msgstr "_Pagina de start StockFW"
 
 #: src/menus.c:74
 #, fuzzy
@@ -1069,12 +1065,12 @@ msgstr ""
 
 #: src/preferences.c:155
 msgid ""
-"A proper configuration for Firestarter was not found. If you are running "
-"Firestarter from the directory you built it in, run 'make install-data-"
+"A proper configuration for StockFW was not found. If you are running "
+"StockFW from the directory you built it in, run 'make install-data-"
 "local' to install a configuration, or simply 'make install' to install the "
 "whole program.\n"
 "\n"
-"Firestarter will now close."
+"StockFW will now close."
 msgstr ""
 
 #: src/preferences.c:235 src/preferences.glade.h:53
@@ -1137,8 +1133,8 @@ msgstr ""
 
 #: src/preferences.c:910
 #, fuzzy
-msgid "Firestarter interface file not found"
-msgstr "Asistentul de firewall Firestarter"
+msgid "StockFW interface file not found"
+msgstr "Asistentul de firewall StockFW"
 
 #: src/preferences.c:911
 msgid "The interface markup file preferences.glade could not be found."
@@ -1360,7 +1356,7 @@ msgstr ""
 #: src/preferences.glade.h:62
 #, fuzzy
 msgid "Preferences"
-msgstr "Firestarter: Preferinţe"
+msgstr "StockFW: Preferinţe"
 
 #: src/preferences.glade.h:63
 msgid "Redirection"
@@ -1548,8 +1544,8 @@ msgstr "Script-ul firewall restartat\n"
 
 #: src/tray.c:204
 #, fuzzy
-msgid "_Show Firestarter"
-msgstr "_Pagina de start Firestarter"
+msgid "_Show StockFW"
+msgstr "_Pagina de start StockFW"
 
 #: src/tray.c:214
 msgid "_Exit"
@@ -1557,8 +1553,8 @@ msgstr ""
 
 #: src/util.c:109
 #, fuzzy
-msgid "Firestarter error"
-msgstr "_Pagina de start Firestarter"
+msgid "StockFW error"
+msgstr "_Pagina de start StockFW"
 
 #: src/util.c:138
 msgid ""
@@ -1661,7 +1657,7 @@ msgstr ""
 
 #: src/wizard.c:237
 msgid ""
-"Firestarter can share your Internet connection with the computers on your "
+"StockFW can share your Internet connection with the computers on your "
 "local network\n"
 "using a single public IP address and a method called Network Address "
 "Translation."
@@ -1698,7 +1694,7 @@ msgid ""
 "firewall for your system.\n"
 "\n"
 msgstr ""
-"Bine aţi venit la Firestarter!\n"
+"Bine aţi venit la StockFW!\n"
 "\n"
 "\n"
 "Acest asistent vă va ajuta acum să setaţi un firewall pentru\n"
@@ -1761,7 +1757,7 @@ msgid "Firewall Wizard"
 msgstr "Rulează asistentul firewall"
 
 #: src/wizard.c:643
-msgid "Welcome to Firestarter"
+msgid "Welcome to StockFW"
 msgstr ""
 
 #: src/wizard.c:649
@@ -1801,8 +1797,8 @@ msgstr "Reporneşte firewall"
 #~ msgstr "Tot traficul blocat"
 
 #, fuzzy
-#~ msgid "Firestarter "
-#~ msgstr "_Pagina de start Firestarter"
+#~ msgid "StockFW "
+#~ msgstr "_Pagina de start StockFW"
 
 #, fuzzy
 #~ msgid "/_Firewall/Run _Wizard"
@@ -1863,7 +1859,7 @@ msgstr "Reporneşte firewall"
 #~ "Check this and the firewall will be stopped when you exit the program."
 #~ msgstr ""
 #~ "Selectaţi această opţiune şi firewall-ul va fi oprit când ieşiţi din "
-#~ "Firestarter.\n"
+#~ "StockFW.\n"
 #~ "Implicit este activată."
 
 #, fuzzy
@@ -1879,10 +1875,10 @@ msgstr "Reporneşte firewall"
 #~ msgstr "Încearcă să detectezi locaţia ipchains/iptables"
 
 #~ msgid ""
-#~ "Check this and Firestarter will search for the location of some needed "
+#~ "Check this and StockFW will search for the location of some needed "
 #~ "binaries. Do not check unless you're having problems."
 #~ msgstr ""
-#~ "Selectaţi această opţiune şi Firestarter va căuta locaţia unor binare "
+#~ "Selectaţi această opţiune şi StockFW va căuta locaţia unor binare "
 #~ "necesare.\n"
 #~ "Nu o selectaţi decât dacă întâmpinaţi probleme."
 
@@ -2051,13 +2047,13 @@ msgstr "Reporneşte firewall"
 #~ msgid ""
 #~ "\n"
 #~ "A firewall created by an older version of\n"
-#~ "Firestarter has been detected.\n"
+#~ "StockFW has been detected.\n"
 #~ "\n"
 #~ "OK to remove old firewall (recommended)?\n"
 #~ msgstr ""
 #~ "\n"
 #~ "Un firewall creat de o versiune veche a\n"
-#~ "Firestarter a fost detectată.\n"
+#~ "StockFW a fost detectată.\n"
 #~ "\n"
 #~ "E în regulă dacă elimin firewall-ul vechi (recomandat)?\n"
 
@@ -2145,10 +2141,10 @@ msgstr "Reporneşte firewall"
 #~ msgstr "Porneşte ascuns"
 
 #~ msgid ""
-#~ "Check this and Firestarter will start hidden. Click on the status button "
+#~ "Check this and StockFW will start hidden. Click on the status button "
 #~ "to unhide. Disabled by default."
 #~ msgstr ""
-#~ "Selectaţi această opţiune şi Firestarter va porni ascuns. Faceţi clic pe "
+#~ "Selectaţi această opţiune şi StockFW va porni ascuns. Faceţi clic pe "
 #~ "butonul\n"
 #~ "de status pentru a fi afişat. Implicit este dezactivată."
 
@@ -2227,10 +2223,10 @@ msgstr "Reporneşte firewall"
 #~ msgstr "Filtrează pachetele trimise"
 
 #~ msgid ""
-#~ "Check this and Firestarter will also filter Outbound packets. Do not "
+#~ "Check this and StockFW will also filter Outbound packets. Do not "
 #~ "check unless you are sure you need it."
 #~ msgstr ""
-#~ "Selectaţi această opţiune şi Firestarter filtra pachetele trimise.\n"
+#~ "Selectaţi această opţiune şi StockFW filtra pachetele trimise.\n"
 #~ "Nu o selectaţi decât dacă sigur aveţi nevoie de ea."
 
 #~ msgid "Checking this box will simply ignore the unauthorized packets."
@@ -2291,8 +2287,8 @@ msgstr "Reporneşte firewall"
 #~ msgid "Logfile \""
 #~ msgstr "Fişierul log \""
 
-#~ msgid "Start Firestarter on PPP connect"
-#~ msgstr "Porneşte Firestarter la conectarea PPP"
+#~ msgid "Start StockFW on PPP connect"
+#~ msgstr "Porneşte StockFW la conectarea PPP"
 
 #~ msgid "No, I do not use IP Masquerading on my LAN"
 #~ msgstr "Nu, nu utilizez IP Masquerading pe LAN-ul meu"
@@ -2309,14 +2305,14 @@ msgstr "Reporneşte firewall"
 #~ msgstr "Doresc să filtrez următoarele pachete ICMP pe maşina mea:"
 
 #~ msgid ""
-#~ "Welcome to the Firestarter Firewall Wizard\n"
+#~ "Welcome to the StockFW Firewall Wizard\n"
 #~ "\n"
 #~ "This wizard will help you set up a customized packet filtering firewall\n"
 #~ "for your Linux machine in just a few easy steps.\n"
 #~ "\n"
 #~ "\n"
 #~ msgstr ""
-#~ "Bine aţi venit la asistentul de firewall Firestarter\n"
+#~ "Bine aţi venit la asistentul de firewall StockFW\n"
 #~ "\n"
 #~ "Acest asistent vă va ajuta să setaţi un firewall personalizat de filtrare "
 #~ "a\n"
@@ -2325,11 +2321,11 @@ msgstr "Reporneşte firewall"
 #~ "\n"
 
 #~ msgid ""
-#~ "The Firestarter wizard is done gathering the necessary data.\n"
+#~ "The StockFW wizard is done gathering the necessary data.\n"
 #~ "Click the finish button to start the firewall.\n"
 #~ "\n"
 #~ msgstr ""
-#~ "Asistentul Firestarter a terminat strângerea datelor necesare.\n"
+#~ "Asistentul StockFW a terminat strângerea datelor necesare.\n"
 #~ "Faceţi clic pe butonul de finiş pentru a porni firewall-ul.\n"
 #~ "\n"
 

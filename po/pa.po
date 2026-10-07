@@ -1,346 +1,343 @@
 # KBST Punjab translation of punlinux.
-# Copyright (C) 2004 THE FIRESTARTER_HEAD'S COPYRIGHT HOLDER
-# This file is distributed under the same license as the FIRESTARTER_HEAD package.
-# jaswinder singh <jaswindersinghra@yahoo.com>, 2004.
-# jaswinder singh <jaswindersinghra@yahoo.com>, 2004.
+# Copyright (C) 2004 THE STOCKFW_HEAD'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the STOCKFW_HEAD package.
 # 
 # 
 msgid ""
 msgstr ""
-"Project-Id-Version: firestarter.HEAD\n"
+"Project-Id-Version: stockfw.HEAD\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2005-01-29 14:33+0200\n"
 "PO-Revision-Date: 2004-03-16 09:15+0530\n"
-"Last-Translator: Jaswinder Singh Phulewala <jaswinderlinux@netscape.net>\n"
 "Language-Team: Punjabi\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: firestarter.desktop.in.h:1
+#: stockfw.desktop.in.h:1
 #, fuzzy
 msgid "Desktop Firewall Tool"
 msgstr "ਫਾਇਰਸਟਾਰਟਰ ਫਾਇਰਵਾਲ ਸੰਦ"
 
-#: firestarter.desktop.in.h:2 src/firestarter.c:297
+#: stockfw.desktop.in.h:2 src/stockfw.c:297
 #, fuzzy
-msgid "Firestarter"
+msgid "StockFW"
 msgstr "ਫਾਇਰਸਟਾਰਟਰ"
 
-#: firestarter.schemas.in.h:1
+#: stockfw.schemas.in.h:1
 msgid ""
 "Apply changes made to policy immediately, the alternative is for the user to "
 "confirm the changes in advance."
 msgstr ""
 
-#: firestarter.schemas.in.h:2
+#: stockfw.schemas.in.h:2
 msgid "Apply the ICMP settings, as configured in the wizard."
 msgstr "ICMP ਵਿਵਸਥਾਂਵਾਂ ਜਿਸ ਤਰਾਂ ਤਖਤੀ ਵਿਚ ਦਿਤੀਆਂ ਹਨ ਲਾਗੂ ਕਰੋ।"
 
-#: firestarter.schemas.in.h:3
+#: stockfw.schemas.in.h:3
 msgid "Apply the settings of Type of Service, as configured in the wizard."
 msgstr "ਉਪਯੋਗ ਦੀਆਂ ਕਿਸਮਾਂ ਦੀਆਂ ਵਿਵਸਥਾਂਵਾਂ ਜਿਸ ਤਰਾਂ ਤਖਤੀ ਵਿਚ ਦਿਤੀਆਂ ਹਨ ਲਾਗੂ ਕਰੋ।"
 
-#: firestarter.schemas.in.h:4 src/preferences.glade.h:29
+#: stockfw.schemas.in.h:4 src/preferences.glade.h:29
 msgid "Block broadcasts from external network"
 msgstr ""
 
-#: firestarter.schemas.in.h:5
+#: stockfw.schemas.in.h:5
 msgid "Block broadcasts from external network."
 msgstr ""
 
-#: firestarter.schemas.in.h:6 src/preferences.glade.h:30
+#: stockfw.schemas.in.h:6 src/preferences.glade.h:30
 msgid "Block broadcasts from internal network"
 msgstr ""
 
-#: firestarter.schemas.in.h:7
+#: stockfw.schemas.in.h:7
 msgid "Block broadcasts from internal network."
 msgstr ""
 
-#: firestarter.schemas.in.h:8
+#: stockfw.schemas.in.h:8
 msgid ""
 "Block potentially spoofed traffic claiming to come from IANA reserved "
 "address space on the external interface."
 msgstr ""
 
-#: firestarter.schemas.in.h:9
+#: stockfw.schemas.in.h:9
 msgid "Block traffic from reserved address space on the public interface"
 msgstr ""
 
-#: firestarter.schemas.in.h:10
+#: stockfw.schemas.in.h:10
 msgid "Deny packets"
 msgstr ""
 
-#: firestarter.schemas.in.h:11
+#: stockfw.schemas.in.h:11
 msgid "Drop denied packets without sending an error packet back."
 msgstr ""
 
-#: firestarter.schemas.in.h:12
+#: stockfw.schemas.in.h:12
 #, fuzzy
 msgid "Enable DHCP server for connection sharing"
 msgstr "ਇੰਟਰਨੈਟ ਜੋੜ ਸਾਂਝ ਨਿਰਧਾਰਨ"
 
-#: firestarter.schemas.in.h:13
+#: stockfw.schemas.in.h:13
 msgid "Enable NAT"
 msgstr "NAT ਯੋਗ ਕਰੋ"
 
-#: firestarter.schemas.in.h:14
+#: stockfw.schemas.in.h:14
 msgid "Enable Network Address Translation, or Internet connection sharing."
 msgstr "ਨੈਟਵਰਕ ਪਤਾ ਉਲਥਾ ਜਾਂ ਇੰਟਰਨੈਟ ਜੋੜ ਸਾਂਝ ਯੋਗ ਕਰੋ"
 
-#: firestarter.schemas.in.h:15
+#: stockfw.schemas.in.h:15
 msgid "Enable the configuration of ICMP"
 msgstr "ICMP ਸੰਰਚਨਾ ਨੂੰ ਯੋਗ ਕਰੋ"
 
-#: firestarter.schemas.in.h:16
+#: stockfw.schemas.in.h:16
 msgid "Enable the configuration of tos"
 msgstr "tos ਰੂਪ ਨੂੰ ਯੋਗ ਕਰੋ"
 
-#: firestarter.schemas.in.h:17 src/preferences.glade.h:41
+#: stockfw.schemas.in.h:17 src/preferences.glade.h:41
 #, fuzzy
 msgid "Enable tray icon"
 msgstr "ਪ੍ਯੋਗਿਕ ਚੋਣ ਯੋਗ ਕਰੋ"
 
-#: firestarter.schemas.in.h:18
+#: stockfw.schemas.in.h:18
 #, fuzzy
 msgid "Filter out hits not targeted at the firewall"
 msgstr ""
 "ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰਨ ਵਿਚ ਅਸਫਲ \n"
 "\n"
 
-#: firestarter.schemas.in.h:19
+#: stockfw.schemas.in.h:19
 #, fuzzy
 msgid ""
 "Filter out hits that have an destination IP that does not match the firewall "
 "host."
 msgstr "ਪ੍ਭਾਵ ਜਿਸ ਵਿਚ ਲਕਸ਼ IP ਦਾ ਤੁਹਾਡੇ IP ਨਾਲ ਮੇਲ ਨਹੀਂ ਹੁੰਦਾ, ਨੂੰ ਵੱਖ ਕਰੋ।"
 
-#: firestarter.schemas.in.h:20
+#: stockfw.schemas.in.h:20
 msgid "Filter out redundant hits"
 msgstr "ਫਾਲਤੂ ਪ੍ਭਾਵ ਵੱਖ ਕਰੋ"
 
-#: firestarter.schemas.in.h:21
+#: stockfw.schemas.in.h:21
 msgid "Filter out sequences of identical hits."
 msgstr "ਸਮਾਨਾਰਥਕ ਪ੍ਭਾਵਾਂ ਦੀ ਲੜੀ ਨੂੰ ਵੱਖ ਕਰੋ।"
 
-#: firestarter.schemas.in.h:22
+#: stockfw.schemas.in.h:22
 msgid "Highest IP in the range to serve to DHCP clients"
 msgstr ""
 
-#: firestarter.schemas.in.h:23
+#: stockfw.schemas.in.h:23
 msgid "Is it the first time the user is running the program"
 msgstr ""
 
-#: firestarter.schemas.in.h:24
+#: stockfw.schemas.in.h:24
 msgid "Lowest IP in the range to serve to DHCP clients"
 msgstr ""
 
-#: firestarter.schemas.in.h:25
+#: stockfw.schemas.in.h:25
 msgid "Minimize to tray"
 msgstr ""
 
-#: firestarter.schemas.in.h:26
+#: stockfw.schemas.in.h:26
 msgid "Nameserver DHCP clients should use"
 msgstr ""
 
-#: firestarter.schemas.in.h:27
+#: stockfw.schemas.in.h:27
 msgid "Policy auto apply"
 msgstr ""
 
-#: firestarter.schemas.in.h:28
+#: stockfw.schemas.in.h:28
 msgid ""
 "Restrict outbound traffic by default, only allowing whitelisted outgoing "
 "connections."
 msgstr ""
 
-#: firestarter.schemas.in.h:29
+#: stockfw.schemas.in.h:29
 msgid "Restrictive outbound policy mode"
 msgstr ""
 
-#: firestarter.schemas.in.h:30
+#: stockfw.schemas.in.h:30
 msgid ""
-"Run the system dhcpd server in conjunction with Firestarter Internet "
+"Run the system dhcpd server in conjunction with StockFW Internet "
 "connection sharing."
 msgstr ""
 
-#: firestarter.schemas.in.h:31
+#: stockfw.schemas.in.h:31
 #, fuzzy
-msgid "Show the Firestarter icon in the notification area."
+msgid "Show the StockFW icon in the notification area."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿਚ ਲਕਸ਼ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:32
+#: stockfw.schemas.in.h:32
 msgid "Show the Type of Service column in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਸੇਵਾ ਦੀ ਕਿਸਮ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:33
+#: stockfw.schemas.in.h:33
 msgid "Show the destination column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਲਕਸ਼ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:34
+#: stockfw.schemas.in.h:34
 msgid "Show the destination column in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿਚ ਲਕਸ਼ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:35
+#: stockfw.schemas.in.h:35
 #, fuzzy
 msgid "Show the device the hit was received from in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਸਾਧਨ ਜਿਸ ਨੇ ਪ੍ਭਾਵ ਪ੍ਾਪਤ ਕੀਤਾ ਸੀ ਦਿਖਾਓ।"
 
-#: firestarter.schemas.in.h:36
+#: stockfw.schemas.in.h:36
 msgid "Show the device the hit was routed to in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਸਾਧਨ ਜਿਸ ਵਿਚੋਂ ਪ੍ਭਾਵ ਗੁਜਰਿਆ ਸੀ ਦਿਖਾਓ।"
 
-#: firestarter.schemas.in.h:37
+#: stockfw.schemas.in.h:37
 #, fuzzy
 msgid "Show the direction column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਅੰਦਰ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:38
+#: stockfw.schemas.in.h:38
 #, fuzzy
 msgid "Show the direction column in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿਚ ਲਕਸ਼ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:39
+#: stockfw.schemas.in.h:39
 msgid "Show the in column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਅੰਦਰ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:40
+#: stockfw.schemas.in.h:40
 msgid "Show the length column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਲੰਬਾਈ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:41
+#: stockfw.schemas.in.h:41
 msgid "Show the out column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਬਾਹਰੀ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:42
+#: stockfw.schemas.in.h:42
 msgid "Show the packet length column in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਪੈਕਟ ਲੰਬਾਈ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:43
+#: stockfw.schemas.in.h:43
 msgid "Show the port column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਪੋਰਟ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:44
+#: stockfw.schemas.in.h:44
 msgid "Show the port column in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਪੋਰਟ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:45
+#: stockfw.schemas.in.h:45
 msgid "Show the protocol column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਪਰੋਟੋਕੋਲ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:46
+#: stockfw.schemas.in.h:46
 msgid "Show the protocol column in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਪਰੋਟੋਕੋਲ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:47
+#: stockfw.schemas.in.h:47
 msgid "Show the service column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਸੇਵਾ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:48
+#: stockfw.schemas.in.h:48
 msgid "Show the service column in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਸੇਵਾ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:49
+#: stockfw.schemas.in.h:49
 msgid "Show the source column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਸ੍ਰੋਤ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:50
+#: stockfw.schemas.in.h:50
 msgid "Show the source column in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਸ੍ਰੋਤ ਕਾਲਮ ਦਿਖਾਓ ੤"
 
-#: firestarter.schemas.in.h:51
+#: stockfw.schemas.in.h:51
 msgid "Show the time column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਸਮਾਂ ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:52
+#: stockfw.schemas.in.h:52
 msgid "Show the time column in the Hit View."
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ ਸਮਾਂ ਕਾਲਮ ਦਿਖਾਓ ੤"
 
-#: firestarter.schemas.in.h:53
+#: stockfw.schemas.in.h:53
 msgid "Show the tos column in the Hit View"
 msgstr "ਪ੍ਭਾਵੀ ਦਰਿਸ਼ ਵਿੱਚ tos ਕਾਲਮ ਦਿਖਾਓ"
 
-#: firestarter.schemas.in.h:54
+#: stockfw.schemas.in.h:54
 msgid "Specifies the higher limit of the IP space to use for DHCP leases."
 msgstr ""
 
-#: firestarter.schemas.in.h:55
+#: stockfw.schemas.in.h:55
 msgid "Specifies the lower limit of the IP space to use for DHCP leases."
 msgstr ""
 
-#: firestarter.schemas.in.h:56
+#: stockfw.schemas.in.h:56
 #, fuzzy
 msgid "Start the firewall on a DHCP lease renewal"
 msgstr "dial-out ਉਪਰ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰੋ"
 
-#: firestarter.schemas.in.h:57
+#: stockfw.schemas.in.h:57
 msgid "Start the firewall when the program loads"
 msgstr "ਜਦੋਂ ਕਾਰਜ ਸਥਾਪਿਤ ਹੁੰਦਾ ਹੈ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰੋ।"
 
-#: firestarter.schemas.in.h:58
+#: stockfw.schemas.in.h:58
 msgid "Start the firewall when the program loads."
 msgstr "ਜਦੋਂ ਕਾਰਜ ਸਥਾਪਿਤ ਹੁੰਦਾ ਹੈ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰੋ ੤"
 
-#: firestarter.schemas.in.h:59
+#: stockfw.schemas.in.h:59
 #, fuzzy
 msgid "Start the firewall when the system boots"
 msgstr "ਜਦੋਂ ਕਾਰਜ ਸਥਾਪਿਤ ਹੁੰਦਾ ਹੈ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰੋ।"
 
-#: firestarter.schemas.in.h:60
+#: stockfw.schemas.in.h:60
 #, fuzzy
 msgid "Start the firewall when the system boots."
 msgstr "ਜਦੋਂ ਕਾਰਜ ਸਥਾਪਿਤ ਹੁੰਦਾ ਹੈ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰੋ ੤"
 
-#: firestarter.schemas.in.h:61
+#: stockfw.schemas.in.h:61
 #, fuzzy
 msgid "Start the firewall when the system dials out"
 msgstr "dial-out ਉਪਰ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰੋ"
 
-#: firestarter.schemas.in.h:62
+#: stockfw.schemas.in.h:62
 #, fuzzy
 msgid "Start the firewall when the system establishes a PPP connection."
 msgstr "ਜਦੋਂ ਕਾਰਜ ਸਥਾਪਿਤ ਹੁੰਦਾ ਹੈ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰੋ ੤"
 
-#: firestarter.schemas.in.h:63
+#: stockfw.schemas.in.h:63
 #, fuzzy
 msgid "Start the firewall when the system receives a new DHCP lease."
 msgstr "ਜਦੋਂ ਕਾਰਜ ਸਥਾਪਿਤ ਹੁੰਦਾ ਹੈ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰੋ ੤"
 
-#: firestarter.schemas.in.h:64
+#: stockfw.schemas.in.h:64
 msgid "The Internet connected network interface. For example, ppp0 or eth0."
 msgstr "ਇੰਟਰਨੈਟ ਨਾਲ ਜੁੜਿਆ ਹੋਇਆ ਨੈਟਵਰਕ ਤਾਲਮੇਲ। ਉਦਾਹਰਨ ਲਈ  ppp0 ਜਾਂ eth0।"
 
-#: firestarter.schemas.in.h:65
+#: stockfw.schemas.in.h:65
 msgid "The LAN connected network interface. For example, eth0 or eth1."
 msgstr "LAN ਨਾਲ ਜੁੜਿਆ ਹੋਇਆ ਨੈਟਵਰਕ ਤਾਲਮੇਲ। ਉਦਾਹਰਨ ਲਈ  eth0 ਜਾਂ eth1।"
 
-#: firestarter.schemas.in.h:66
+#: stockfw.schemas.in.h:66
 msgid "The external interface"
 msgstr "ਬਾਹਰੀ ਤਾਲਮੇਲ"
 
-#: firestarter.schemas.in.h:67
-msgid "The first time Firestarter starts several special actions are taken."
+#: stockfw.schemas.in.h:67
+msgid "The first time StockFW starts several special actions are taken."
 msgstr "ਪਹਿਲੀ ਵਾਰ ਫਾਇਰਸਟਾਰਟਰ ਸ਼ੁਰੂ ਹੋਣ ਸਮੇਂ ਕੁਝ ਖਾਸ ਕ੍ਰਿਆਂਵਾਂ ਕੀਤੀਆਂ ਗਈਆਂ।"
 
-#: firestarter.schemas.in.h:68
+#: stockfw.schemas.in.h:68
 msgid "The internal interface"
 msgstr "ਅੰਦਰੂਨੀ ਤਾਲਮੇਲ"
 
-#: firestarter.schemas.in.h:69
+#: stockfw.schemas.in.h:69
 msgid "The location of the file the system logging daemon writes to."
 msgstr "ਸਿਸਟਮ ਰੋਜ਼ਨਾਮਚਾ ਡੈਮਨ ਦੁਆਰਾ ਲਿਖੀ ਹੋਈ ਫਾਈਲ ਦੀ ਸਥਿਤੀ।"
 
-#: firestarter.schemas.in.h:70
+#: stockfw.schemas.in.h:70
 msgid ""
 "The nameserver clients should use. You can specify multiple nameserver in a "
 "space separated list. A value of &lt;dynamic&gt; causes the nameservers to "
 "be determined at run time."
 msgstr ""
 
-#: firestarter.schemas.in.h:71
+#: stockfw.schemas.in.h:71
 msgid "The system log file"
 msgstr "ਸਿਸਟਮ ਰੋਜ਼ਨਾਮਚਾ ਫਾਈਲ"
 
-#: firestarter.schemas.in.h:72
+#: stockfw.schemas.in.h:72
 msgid "When closing the program window, instead of exiting, hide the window."
 msgstr ""
 
@@ -352,34 +349,34 @@ msgstr ""
 msgid "Failed to write to DHCP server configuration file: "
 msgstr ""
 
-#: src/firestarter.c:83 src/firestarter.c:85 src/firestarter.c:86
+#: src/stockfw.c:83 src/stockfw.c:85 src/stockfw.c:86
 #, fuzzy
 msgid "Failed to stop the firewall"
 msgstr ""
 "ਫਾਇਰਵਾਲ ਰੋਕਣ ਵਿਚ ਅਸਫਲ \n"
 "\n"
 
-#: src/firestarter.c:87
+#: src/stockfw.c:87
 #, fuzzy
 msgid "There was an undetermined error when trying to stop the firewall."
 msgstr "ਜਦੋਂ ਤੁਹਾਡੇ ਫਾਇਰਵਾਲ ਨੂੰ ਰੋਕਣ ਦੀ ਕੋਸ਼ਿਸ਼ ਕਰਦੇ ਹਾਂ ਤਾਂ ਉਥੇ ਇਕ ਨਾ ਲੱਭੀ ਹੋਈ ਗਲਤੀ ਸੀ।"
 
-#: src/firestarter.c:126 src/firestarter.c:130
+#: src/stockfw.c:126 src/stockfw.c:130
 #, fuzzy, c-format
 msgid "The device %s is not ready."
 msgstr ""
 "ਯੰਤਰ %s ਤਿਆਰ ਨਹੀਂ ਹੈ।\n"
 "\n"
 
-#: src/firestarter.c:133
+#: src/stockfw.c:133
 msgid "Your kernel does not support iptables."
 msgstr ""
 
-#: src/firestarter.c:135
+#: src/stockfw.c:135
 msgid "An unknown error occurred."
 msgstr ""
 
-#: src/firestarter.c:139
+#: src/stockfw.c:139
 msgid ""
 "Please check your network device settings and make sure your\n"
 "Internet connection is active."
@@ -387,33 +384,33 @@ msgstr ""
 "ਕਿਰਪਾ ਕਰਕੇ ਨੈਟਵਰਕ ਯੰਤਰ ਵਿਵਸਥਾਂਵਾਂ ਦੀ ਜਾਂ ਕਰੋ ਅਤੇ ਵੇਖੋ ਕਿ ਤੁਹਾਡਾ \n"
 "ਇੰਟਰਨੈਟ ਜੋੜ ਸਰਗਰਮ ਹੈ।"
 
-#: src/firestarter.c:143
+#: src/stockfw.c:143
 #, fuzzy
 msgid "Failed to start the firewall\n"
 msgstr ""
 "ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰਨ ਵਿਚ ਅਸਫਲ \n"
 "\n"
 
-#: src/firestarter.c:147 src/firestarter.c:148
+#: src/stockfw.c:147 src/stockfw.c:148
 #, fuzzy
 msgid "Failed to start the firewall"
 msgstr ""
 "ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰਨ ਵਿਚ ਅਸਫਲ \n"
 "\n"
 
-#: src/firestarter.c:200 src/firestarter.c:202 src/firestarter.c:203
+#: src/stockfw.c:200 src/stockfw.c:202 src/stockfw.c:203
 #, fuzzy
 msgid "Failed to lock the firewall"
 msgstr ""
 "ਫਾਇਰਵਾਲ ਰੋਕਣ ਵਿਚ ਅਸਫਲ \n"
 "\n"
 
-#: src/firestarter.c:204
+#: src/stockfw.c:204
 #, fuzzy
 msgid "There was an undetermined error when trying to lock the firewall."
 msgstr "ਜਦੋਂ ਤੁਹਾਡੇ ਫਾਇਰਵਾਲ ਨੂੰ ਰੋਕਣ ਦੀ ਕੋਸ਼ਿਸ਼ ਕਰਦੇ ਹਾਂ ਤਾਂ ਉਥੇ ਇਕ ਨਾ ਲੱਭੀ ਹੋਈ ਗਲਤੀ ਸੀ।"
 
-#: src/firestarter.c:298
+#: src/stockfw.c:298
 #, fuzzy
 msgid ""
 " -s, --start            Start the firewall\n"
@@ -421,8 +418,8 @@ msgid ""
 "     --lock             Lock the firewall, blocking all traffic\n"
 "     --generate-scripts Generate firewall scripts from current "
 "configuration\n"
-"     --start-hidden     Start Firestarter with the GUI not visible\n"
-" -v, --version          Prints Firestarter's version number\n"
+"     --start-hidden     Start StockFW with the GUI not visible\n"
+" -v, --version          Prints StockFW's version number\n"
 " -h, --help             You're looking at it\n"
 msgstr ""
 "\n"
@@ -435,24 +432,24 @@ msgstr ""
 " -v, --ਵਰਜਨ         ਫਾਇਰਸਟਾਰਟਰ ਦਾ ਵਰਜਨ ਅੰਕ ਛਾਪਦਾ ਹੈ \n"
 "-h, --ਸਹਾੲਿਤਾ            ਤੁਸੀਂ ਇਸ ਉਪਰ ਵੇਖ ਰਹੇ ਹੋ \n"
 
-#: src/firestarter.c:316 src/firestarter.c:318 src/firestarter.c:319
+#: src/stockfw.c:316 src/stockfw.c:318 src/stockfw.c:319
 #, fuzzy
 msgid "Insufficient privileges"
 msgstr ""
 "ਨਾ ਕਾਫੀ ਅਧਿਕਾਰ \n"
 "\n"
 
-#: src/firestarter.c:320
+#: src/stockfw.c:320
 #, fuzzy
-msgid "You must have root user privileges to use Firestarter."
+msgid "You must have root user privileges to use StockFW."
 msgstr "ਫਾਇਰਸਟਾਰਟਰ ਵਰਤਣ ਲਈ ਤੁਹਾਡੇ ਕੇਲ root ਉਪਯੋਗੀ ਵਾਲੇ ਅਧਿਕਾਰ ਹੋਣੇ ਚਾਹੀਦੇ ਹਨ।\n"
 
-#: src/firestarter.c:423
+#: src/stockfw.c:423
 #, c-format
 msgid "Updating firewall to new version...\n"
 msgstr ""
 
-#: src/firestarter.c:425
+#: src/stockfw.c:425
 #, fuzzy, c-format
 msgid "Firewall update complete\n"
 msgstr "ਫਾਇਰਵਾਲ ਰੁੱਕ ਚੁੱਕੀ ਹੈ"
@@ -746,11 +743,11 @@ msgstr ""
 
 #: src/menus.c:71
 #, fuzzy
-msgid "Firestarter _Homepage"
+msgid "StockFW _Homepage"
 msgstr "/ਸਹਾੲਿਤਾ/ਫਾਇਰਸਟਾਰਟਰ ਮੁੱਖ ਵੈਬ ਸਫ਼ਾ"
 
 #: src/menus.c:71
-msgid "Open the Firestarter homepage in a browser"
+msgid "Open the StockFW homepage in a browser"
 msgstr ""
 
 #: src/menus.c:72
@@ -759,7 +756,7 @@ msgstr ""
 
 #: src/menus.c:72
 #, fuzzy
-msgid "About Firestarter"
+msgid "About StockFW"
 msgstr "ਫਾਇਰਸਟਾਰਟਰ"
 
 #: src/menus.c:74
@@ -1086,12 +1083,12 @@ msgstr "/ਸੋਧ"
 
 #: src/preferences.c:155
 msgid ""
-"A proper configuration for Firestarter was not found. If you are running "
-"Firestarter from the directory you built it in, run 'make install-data-"
+"A proper configuration for StockFW was not found. If you are running "
+"StockFW from the directory you built it in, run 'make install-data-"
 "local' to install a configuration, or simply 'make install' to install the "
 "whole program.\n"
 "\n"
-"Firestarter will now close."
+"StockFW will now close."
 msgstr ""
 
 #: src/preferences.c:235 src/preferences.glade.h:53
@@ -1153,7 +1150,7 @@ msgstr ""
 
 #: src/preferences.c:910
 #, fuzzy
-msgid "Firestarter interface file not found"
+msgid "StockFW interface file not found"
 msgstr "ਫਾਇਰਸਟਾਰਟਰ ਫਾਇਰਵਾਲ ਸੰਦ"
 
 #: src/preferences.c:911
@@ -1564,7 +1561,7 @@ msgstr "ਫਾਇਰਵਾਲ ਰੁੱਕ ਚੁੱਕੀ ਹੈ"
 
 #: src/tray.c:204
 #, fuzzy
-msgid "_Show Firestarter"
+msgid "_Show StockFW"
 msgstr "ਫਾਇਰਸਟਾਰਟਰ"
 
 #: src/tray.c:214
@@ -1573,8 +1570,8 @@ msgid "_Exit"
 msgstr "ਬਾਹਰ"
 
 #: src/util.c:109
-msgid "Firestarter error"
-msgstr "Firestarter ਗਲਤੀ"
+msgid "StockFW error"
+msgstr "StockFW ਗਲਤੀ"
 
 #: src/util.c:138
 msgid ""
@@ -1681,7 +1678,7 @@ msgstr ""
 
 #: src/wizard.c:237
 msgid ""
-"Firestarter can share your Internet connection with the computers on your "
+"StockFW can share your Internet connection with the computers on your "
 "local network\n"
 "using a single public IP address and a method called Network Address "
 "Translation."
@@ -1776,7 +1773,7 @@ msgid "Firewall Wizard"
 msgstr "ਫਾੲਿਰਵਾਲ ਤਖਤੀ"
 
 #: src/wizard.c:643
-msgid "Welcome to Firestarter"
+msgid "Welcome to StockFW"
 msgstr "ਫਾੲਿਰਸਟਾਟਰ ਵਲੋਂ ਜੀ ਆਇਆਂ ਨੂੰ"
 
 #: src/wizard.c:649
@@ -1866,13 +1863,13 @@ msgstr "ਤੁਹਾਡੀ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰਨ ਲਈ �
 #~ msgstr "ਸਾਰੀ ਭੀੜ ਵਿਰਾਮ ਕੀਤੀ ਗਈ"
 
 #~ msgid ""
-#~ "Firestarter requires a Linux 2.4 or later kernel to function.\n"
+#~ "StockFW requires a Linux 2.4 or later kernel to function.\n"
 #~ "\n"
-#~ "A client for your system might be available at http://firestarter.sf.net"
+#~ "A client for your system might be available at http://stockfw.sf.net"
 #~ msgstr ""
 #~ "ਫਾਇਰਸਟਾਰਟਰ ਕੰਮ ਕਰਨ ਲਈ ਲਾੲੀਨੈਕਸ ੨਼੪ ਜਾਂ ਬਾਅਦ ਵਾਲਾ ਕਰਨਲ ਚਾਹੁੰਦਾ ਹੈ।\n"
 #~ "\n"
-#~ "ਤੁਹਾਡੇ ਸਿਸਟਮ ਲਈ ਕਲਾਈਂਟ http://firestarter.sf.net ਉਪਰ ਉਪਲੱਬਧ ਹੋਵੇਗਾ"
+#~ "ਤੁਹਾਡੇ ਸਿਸਟਮ ਲਈ ਕਲਾਈਂਟ http://stockfw.sf.net ਉਪਰ ਉਪਲੱਬਧ ਹੋਵੇਗਾ"
 
 #~ msgid "Hits"
 #~ msgstr "ਪ੍ਭਾਵ"
@@ -2065,7 +2062,7 @@ msgstr "ਤੁਹਾਡੀ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰਨ ਲਈ �
 
 #~ msgid ""
 #~ "When closing the program window in tray mode the program is hid instead "
-#~ "of exited and can be restored by clicking the Firestarter system tray "
+#~ "of exited and can be restored by clicking the StockFW system tray "
 #~ "icon."
 #~ msgstr ""
 #~ "ਜਦੋਂ ਟ੍ਰੇ ਸਥਿਤੀ ਵਿਚ ਕਾਰਜ ਤਖਤੀ ਬੰਦ ਕਰਦੇ ਹਾਂ ਤਾਂ ਕਾਰਜ ਢਕਿਆ ਜਾਵੇਗਾ ਨਾ ਕਿ ਬੰਦ ਹੋਵੇਗਾ ਅਤੇ "
@@ -2099,7 +2096,7 @@ msgstr "ਤੁਹਾਡੀ ਫਾਇਰਵਾਲ ਸ਼ੁਰੂ ਕਰਨ ਲਈ �
 #~ " ਕਾਰਜ ਸੰਚਾਲਨ ਕਰਨ ਦਿੰਦਾ ਹੈ।\n"
 
 #~ msgid ""
-#~ "If you enable this, Firestarter can use some experimental patches for "
+#~ "If you enable this, StockFW can use some experimental patches for "
 #~ "filtering. Do not enable this option until you have read the manual for "
 #~ "the prerequisites."
 #~ msgstr ""

@@ -1,5 +1,4 @@
 /*---[ statusview.c ]-----------------------------------------------------
- * Copyright (C) 2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,7 +18,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 
-#include "firestarter.h"
+#include "stockfw.h"
 #include "globals.h"
 #include "statusview.h"
 #include "menus.h"
@@ -28,7 +27,7 @@
 #include "service.h"
 #include "tray.h"
 #include "gui.h"
-#include "xpm/firestarter-pixbufs.h"
+#include "xpm/stockfw-pixbufs.h"
  
 #define DEV_FILE "/proc/net/dev"
 #define TCP_FILE "/proc/net/tcp"
@@ -531,7 +530,7 @@ status_sync_timeout (gpointer data)
 	if (state == STATUS_HIT)
 		return TRUE;
 
-	if (firestarter_is_locked ()) {
+	if (stockfw_is_locked ()) {
 		if (state != STATUS_LOCKED)
 			status_set_state (STATUS_RUNNING);
 	} else if (state == STATUS_LOCKED)
@@ -908,9 +907,9 @@ expander_cb (GObject *object, GParamSpec *param_spec, gpointer user_data)
 	} else { /* Reclaim vertical space on expander collapse */
 		gint width;
 
-		gtk_window_get_size (GTK_WINDOW (Firestarter.window), &width, NULL);
+		gtk_window_get_size (GTK_WINDOW (StockFW.window), &width, NULL);
 		gtk_widget_hide (contents);
-		gtk_window_resize (GTK_WINDOW (Firestarter.window), width, 1);
+		gtk_window_resize (GTK_WINDOW (StockFW.window), width, 1);
 		active_connections_visible = FALSE;
 	}
 }

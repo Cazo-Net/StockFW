@@ -2,7 +2,7 @@
 
 **Version 1.0.3 · October 2026 · Classification: Internal / Distributable**
 
-*Prepared by the StockFW Project. StockFW is a GTK3 port and modernization of Firestarter 1.0.3, originally developed by Qusai Fethalrahman; the port and this document are authored by H3xCore / the StockFW Project.*
+*Prepared by the StockFW Project. StockFW is a GTK3 port and modernization of the firewall tool originally developed by Qusai Fethalrahman; the port and this document are authored by H3xCore / the StockFW Project.*
 
 ---
 
@@ -18,7 +18,7 @@
 
 **Chapter 5: Security Model & Threat Analysis** — 5.1 Trust Boundaries and Attacker Profiles · 5.2 Privilege-Escalation Analysis *(verified evidence table)* · 5.3 Injection Surfaces: netsh, CSV, Event Log · 5.4 Tamper Resistance of the Policy Store · 5.5 Data Privacy of Logs · 5.6 STRIDE Summary
 
-**Chapter 6: The User Interface & User Experience** — 6.1 Design Language and Firestarter Fidelity · 6.2 The Tab Model · 6.3 Real-Time Event Rendering Under Load · 6.4 Filtering, Deduplication, and Row Budgets · 6.5 Preferences: WYSIWYG as Policy · 6.6 Theming, Icons, and Accessibility
+**Chapter 6: The User Interface & User Experience** — 6.1 Design Language and StockFW Fidelity · 6.2 The Tab Model · 6.3 Real-Time Event Rendering Under Load · 6.4 Filtering, Deduplication, and Row Budgets · 6.5 Preferences: WYSIWYG as Policy · 6.6 Theming, Icons, and Accessibility
 
 **Chapter 7: Policy Management & Rule Engine** — 7.1 The CSV Schema and Round-Trip Guarantees · 7.2 Rule Lifecycle *(Mermaid: ER diagram)* · 7.3 Precedence and Conflict Semantics · 7.4 Per-Profile State: Domain, Private, Public · 7.5 Failure-Atomic Apply and Rollback · 7.6 Import, Export, and Versioning
 
@@ -38,13 +38,13 @@ StockFW is a Windows-first, cross-platform **smart firewall configuration and mo
 
 The product's defining architectural decision is what it **refuses** to be. StockFW contains **no kernel driver, no packet-interception shim, and no cloud dependency**. Every firewall mutation flows through documented, supported Windows mechanisms (`netsh advfirewall` for rule CRUD, the `INetFwPolicy2` COM interface for profile state); every observation flows out of the Windows Security event log. The consequence of this conservatism is a specific and defensible security posture: the application has no driver attack surface, no custom binary parsing of untrusted network packets, and no remote component to compromise. Privilege escalation is handled by an **asInvoker** manifest plus explicit, user-initiated UAC launchers; unelevated operations fail loudly rather than silently. This posture is not aspirational — it is the subject of an auditable verification table in Chapter 5, where each security claim is tied to source-file evidence.
 
-StockFW is a deliberate port and modernization of **Firestarter 1.0.3**, the GTK firewall configuration tool originally written by **Qusai Fethalrahman**, whose UI conventions — including the sectioned Preferences dialog with its tree sidebar and Help/Cancel/Accept button row — are reproduced faithfully. The port is developed by **H3xCore** under the StockFW Project. It preserves Firestarter's design language while replacing its Linux/iptables-era assumptions with a dual-backend architecture whose Windows side is the primary target.
+StockFW is a deliberate port and modernization of the **1.0.3** GTK firewall configuration tool originally written by **Qusai Fethalrahman**, whose UI conventions — including the sectioned Preferences dialog with its tree sidebar and Help/Cancel/Accept button row — are reproduced faithfully. The port is developed by **H3xCore** under the StockFW Project. It preserves StockFW's design language while replacing its Linux/iptables-era assumptions with a dual-backend architecture whose Windows side is the primary target.
 
 ### 1.2 Problem Statement
 
 Windows ships a competent firewall engine and almost unusable management ergonomics. The native controls are split across three surfaces with three different mental models: the per-profile toggles in Windows Security, the rule zoo of `wf.msc` (where hundreds of implicit allow rules make intent unreadable), and PowerShell's `NetSecurity` cmdlets (powerful, but a scripting barrier for exactly the users most likely to misconfigure a firewall). The result is well documented: users disable the firewall entirely, or they author rules they cannot later explain. Meanwhile the events that matter — *which process talked to which address, and was it allowed or blocked* — are buried in Event Viewer rows that require knowing event IDs 5156 and 5157 to extract.
 
-The original Firestarter solved this problem elegantly for Linux in the mid-2000s and is now effectively abandoned; its architecture (shell out to `iptables`, GTK2) does not survive contact with modern Windows. The gap StockFW fills is precisely this: **a single coherent application that makes a stock OS firewall legible** — policy as a readable, diffable CSV; events as a classified, searchable stream; advanced knobs (ICMP behavior, filtering options, rejection semantics) in one dialog; and an assistant layer that can answer "why is this blocked?" and "what would this rule do?" without a shell prompt.
+The original tool solved this problem elegantly for Linux in the mid-2000s and is now effectively abandoned; its architecture (shell out to `iptables`, GTK2) does not survive contact with modern Windows. The gap StockFW fills is precisely this: **a single coherent application that makes a stock OS firewall legible** — policy as a readable, diffable CSV; events as a classified, searchable stream; advanced knobs (ICMP behavior, filtering options, rejection semantics) in one dialog; and an assistant layer that can answer "why is this blocked?" and "what would this rule do?" without a shell prompt.
 
 The security problem statement is equally sharp. A firewall configuration tool is an attractive target precisely because it is a privilege amplifier: whatever the tool can be tricked into applying, it applies **with the user's elevation**. Therefore the design constraint that shapes the whole system is: *no input path — CSV file, event record, natural-language string, or UI event — may convert user-level access into firewall-changing action without passing typed validation, an explicit human confirmation, and an elevation check, in that order.*
 
@@ -68,11 +68,11 @@ The security problem statement is equally sharp. A firewall configuration tool i
 
 ### 1.4 Target Audience
 
-This document serves four readers. **Security reviewers and auditors**, who will read Chapters 3 and 5 first and expect every privilege-boundary claim to name files and functions; the verification table format is written for exactly this reader. **Software engineers** extending the codebase, for whom Chapters 2, 3, and 7 define the backend contract, the spawn/capture mechanics, and the rule lifecycle. **Technical end users and SOHO operators** evaluating whether StockFW is safe to run elevated — Chapters 1, 5, and 8 answer that directly. Finally, **product and business stakeholders** considering the roadmap and licensing questions in Chapter 10. The prerequisite bar is deliberately low in Chapters 1, 6, and 10, and rises through the middle chapters; no chapter assumes prior Firestarter knowledge, though familiarity with firewalls generally is assumed throughout.
+This document serves four readers. **Security reviewers and auditors**, who will read Chapters 3 and 5 first and expect every privilege-boundary claim to name files and functions; the verification table format is written for exactly this reader. **Software engineers** extending the codebase, for whom Chapters 2, 3, and 7 define the backend contract, the spawn/capture mechanics, and the rule lifecycle. **Technical end users and SOHO operators** evaluating whether StockFW is safe to run elevated — Chapters 1, 5, and 8 answer that directly. Finally, **product and business stakeholders** considering the roadmap and licensing questions in Chapter 10. The prerequisite bar is deliberately low in Chapters 1, 6, and 10, and rises through the middle chapters; no chapter assumes prior StockFW knowledge, though familiarity with firewalls generally is assumed throughout.
 
 ### 1.5 Scope, Conventions, and Evidence Grading
 
-Every architectural claim in this document describes the code as it exists in StockFW 1.0.3 (October 2026), not an aspirational design. Claims are graded: **[Verified]** marks behavior proven by source inspection or an automated test named in Chapter 8; **[Measured]** marks behavior with numbers from an executed experiment (e.g., the 150-second soak test in Chapter 9: 45.6 MB → 44.8 MB private bytes under a continuous 300-record event flood, clean exit); **[Roadmap]** marks intent only. Diagrams are Mermaid source blocks intended for rendering. Where the original Firestarter and StockFW differ, the difference is called out explicitly rather than silently. Security claims were re-verified against source for this edition: ten privilege-boundary properties were re-read line by line and are cited with file and line references in Chapter 5.
+Every architectural claim in this document describes the code as it exists in StockFW 1.0.3 (October 2026), not an aspirational design. Claims are graded: **[Verified]** marks behavior proven by source inspection or an automated test named in Chapter 8; **[Measured]** marks behavior with numbers from an executed experiment (e.g., the 150-second soak test in Chapter 9: 45.6 MB → 44.8 MB private bytes under a continuous 300-record event flood, clean exit); **[Roadmap]** marks intent only. Diagrams are Mermaid source blocks intended for rendering. Where the original design and StockFW differ, the difference is called out explicitly rather than silently. Security claims were re-verified against source for this edition: ten privilege-boundary properties were re-read line by line and are cited with file and line references in Chapter 5.
 
 ### 1.6 The System at a Glance
 
@@ -513,9 +513,9 @@ Data at rest is the user's own data in the user's own profile; the document's re
 
 ## Chapter 6: The User Interface & User Experience
 
-### 6.1 Design Language and Firestarter Fidelity
+### 6.1 Design Language and StockFW Fidelity
 
-StockFW is built in **GTK3** with one governing aesthetic rule: *the original Firestarter look, with real artwork.* The reference implementation is Firestarter 1.0.3's `logo.png`, center-cropped square, **embedded in the executable** — so an installed copy renders the same logo as a development build, with no file-path drift. The Status page carries it at **64×64**; the About dialog credits the original lineage correctly — **Qusai Fethalrahman** as Creator & Original Developer, **H3xCore** as Developer, and the StockFW Project for the GTK3 port — with the copyright line `(C) 04-10-2026 StockFW Project`, and contains no names from upstream projects that did not contribute to this lineage.
+StockFW is built in **GTK3** with one governing aesthetic rule: *the original design's look, with real artwork.* The reference implementation is the project's `logo.png`, center-cropped square, **embedded in the executable** — so an installed copy renders the same logo as a development build, with no file-path drift. The Status page carries it at **64×64**; the About dialog credits the original lineage correctly — **Qusai Fethalrahman** as Creator & Original Developer, **H3xCore** as Developer, and the StockFW Project for the GTK3 port — with the copyright line `(C) 04-10-2026 StockFW Project`, and contains no names from upstream projects that did not contribute to this lineage.
 
 A hard product rule inherited from earlier review: **no emoji anywhere — only real GTK stock/themed icons.** Emoji render differently per platform, fail monochrome symbolic contexts, and read as toy software; themed icons resolve from the user's icon theme and stay crisp at every scale. The same honesty extends to empty states: pages say *why* something is empty ("monitoring not enabled — enable the audit policy") instead of showing a zero-row table.
 
@@ -539,7 +539,7 @@ The Events page is where a firewall UI usually dies — an unbounded `GtkListSto
 1. **The intake never exceeds ten records per poll** (Section 3.3). The UI's input rate is capped before any UI code runs.
 2. **All parsing happens off the render path**: split/dedup complete in the poll handler; the UI receives an already-validated batch.
 3. **Rows are prepended once per batch, not per record re-layout**, keeping tree-store churn proportional to new rows.
-4. **A row budget trims the store**: when the list exceeds its maximum, the oldest rows are dropped (the original Firestarter's list behaved the same way — the event list is a *window*, not an archive; the OS log remains the archive).
+4. **A row budget trims the store**: when the list exceeds its maximum, the oldest rows are dropped (the predecessor's list behaved the same way — the event list is a *window*, not an archive; the OS log remains the archive).
 5. **Suppression of repeats**: "Hide repeated events" collapses bursts (a port scan becomes a few rows, not thousands), keyed on same source/port/action moments apart; "Skip events that are not for the firewall" filters non-actionable noise before render.
 
 The main-loop discipline is absolute: no blocking spawn (Section 3.7), no synchronous disk I/O in the poll path, no per-record markup parsing. The 150-second soak in Chapter 9 exercises exactly this path under continuous flood — the process's private bytes *shrank* while the event list was actively churning.
@@ -548,11 +548,11 @@ The main-loop discipline is absolute: no blocking spawn (Section 3.7), no synchr
 
 Deduplication happens twice, deliberately, at different layers: the **seen-set** (Section 3.4) stops the same *record* from being delivered twice, while **Hide repeated events** stops visually identical *connections* from flooding the list. These are not redundant — the first protects data integrity, the second protects attention.
 
-The host/port filter lists inherited from Firestarter's design (Ignored hosts / Ignored ports) are currently rendered **disabled with an explicit note** that they are not wired in this port — the honest alternative to showing live-looking widgets that do nothing. The search/filter work is on the roadmap (Chapter 10) with the design constraint already established by the next section: *if it is shown as active, it must work.*
+The host/port filter lists inherited from StockFW's design (Ignored hosts / Ignored ports) are currently rendered **disabled with an explicit note** that they are not wired in this port — the honest alternative to showing live-looking widgets that do nothing. The search/filter work is on the roadmap (Chapter 10) with the design constraint already established by the next section: *if it is shown as active, it must work.*
 
 ### 6.5 Preferences: WYSIWYG as Policy
 
-The Preferences dialog reproduces the original Firestarter structure: a **tree sidebar** (Interface → Events, Policy; Firewall → …) selecting notebook pages, with **Help / Cancel / Accept** at the bottom. Accept writes every bound widget back to the preference store in one pass (cancel writes nothing).
+The Preferences dialog reproduces the original design's structure: a **tree sidebar** (Interface → Events, Policy; Firewall → …) selecting notebook pages, with **Help / Cancel / Accept** at the bottom. Accept writes every bound widget back to the preference store in one pass (cancel writes nothing).
 
 The chapter-defining rule is **WYSIWYG**: *a settings page exists only if the backend reads it.* The Windows backend builds rules from the policy, not from the legacy Network/ICMP/ToS/Advanced preference pages — so those four pages and their sidebar rows are **not rendered on Windows at all** (Linux, which compiles them into rules, renders them). Earlier builds showed them greyed with a note admitting "this page has no effect here"; that was honest but still configuration theater — the review decision was to remove rather than annotate.
 
@@ -695,7 +695,7 @@ Results of the 150-second stress run after the fix: **30+ fake invocations (~220
 The installer is generated by **NSIS** (`StockFW.nsi`) from a staged directory built by `build_installer.sh`:
 
 1. Stage `StockFW.exe`, the **complete GTK3 runtime** (all DLLs, `gspawn` helpers, `share/`, `lib/`, `etc/`) so the app runs on a machine with no MSYS2 — every dependency sits beside the exe.
-2. Stage the three **elevation launchers** and validate them: the script **fails the build** if any staged launcher still contains the string `firestarter` (branding guard — a regression check, not a lint).
+2. Stage the three **elevation launchers** and validate them: the script **fails the build** if any staged launcher still contains the string `stockfw` (branding guard — a regression check, not a lint).
 3. Stage `LICENSE.txt` (Apache-2.0 text) and the logo/artwork; generate `StockFW-1.0.3-Setup.exe`.
 4. The NSIS script installs to Program Files, creates shortcuts (including "StockFW (Elevated)" pointing at the VBS launcher), and removes all staged files on uninstall.
 
@@ -831,11 +831,11 @@ Honest boundary: StockFW 1.0.3 has **no service component, no IPC, and no multi-
 
 ### 10.3 Licensing Analysis and Open Questions
 
-The repository currently carries **two license texts**: root `LICENSE` (Apache-2.0) and root `COPYING` (the original Firestarter's **GPLv2**). Because StockFW is a port and modernization of Firestarter 1.0.3 — reusing its UI design, concepts, and portions of its lineage — the derivative-work question is a **legal review item, not a documentation detail**:
+The repository currently carries **two license texts**: root `LICENSE` (Apache-2.0) and root `COPYING` (the inherited **GPLv2** text). Because StockFW is a port and modernization of an earlier GPLv2 firewall project — reusing its UI design, concepts, and portions of its lineage — the derivative-work question is a **legal review item, not a documentation detail**:
 
-- If the port is a derivative work of the GPLv2 Firestarter, distribution must be under **GPLv2-compatible terms**, with source availability for the covered portions — which the public repository satisfies.
+- If the port is a derivative work of the GPLv2 StockFW, distribution must be under **GPLv2-compatible terms**, with source availability for the covered portions — which the public repository satisfies.
 - Apache-2.0 and GPLv2 are **not compatible in the direction needed** for a GPLv2-derived combined work; carrying both texts without clarification creates ambiguity for downstream users and blockers for commercial licensing.
-- **Action items (owner: StockFW Project, with the original author Qusai Fethalrahman consulted):** (1) determine and state definitively which license governs the port; (2) if Apache-2.0 is intended for *original StockFW code only*, scope the root `LICENSE` to that and keep `COPYING` for the Firestarter-derived portions; (3) ensure any dual-licensing or commercial licensing path has clean provenance — you cannot re-license what you do not solely own.
+- **Action items (owner: StockFW Project, with the original author Qusai Fethalrahman consulted):** (1) determine and state definitively which license governs the port; (2) if Apache-2.0 is intended for *new StockFW code only*, scope the root `LICENSE` to that and keep `COPYING` for the inherited portions; (3) ensure any dual-licensing or commercial licensing path has clean provenance — you cannot re-license what you do not solely own.
 
 This section is analysis, not legal advice; counsel should confirm before any commercial release.
 

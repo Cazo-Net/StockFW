@@ -694,33 +694,33 @@ static void test_prefs_fallbacks (void)
 {
 	gchar *s;
 
-	CHECK (fs_prefs_get_bool ("/apps/firestarter/client/never/set",
+	CHECK (fs_prefs_get_bool ("/apps/stockfw/client/never/set",
 	                          TRUE) == TRUE,
 	       "missing bool key falls back to TRUE");
-	CHECK (fs_prefs_get_bool ("/apps/firestarter/client/never/set",
+	CHECK (fs_prefs_get_bool ("/apps/stockfw/client/never/set",
 	                          FALSE) == FALSE,
 	       "missing bool key falls back to FALSE");
-	CHECK (fs_prefs_get_int ("/apps/firestarter/client/never/set",
+	CHECK (fs_prefs_get_int ("/apps/stockfw/client/never/set",
 	                         42) == 42,
 	       "missing int key falls back to 42");
 
-	s = fs_prefs_get_string ("/apps/firestarter/client/never/set", "dflt");
+	s = fs_prefs_get_string ("/apps/stockfw/client/never/set", "dflt");
 	CHECK (g_strcmp0 (s, "dflt") == 0, "missing string key falls back");
 	g_free (s);
 
 	/* A stored value still wins over the fallback, in both directions. */
-	fs_prefs_set_bool ("/apps/firestarter/client/sample", TRUE);
-	CHECK (fs_prefs_get_bool ("/apps/firestarter/client/sample",
+	fs_prefs_set_bool ("/apps/stockfw/client/sample", TRUE);
+	CHECK (fs_prefs_get_bool ("/apps/stockfw/client/sample",
 	                          FALSE) == TRUE,
 	       "stored TRUE beats a FALSE fallback");
 
-	fs_prefs_set_bool ("/apps/firestarter/client/sample", FALSE);
-	CHECK (fs_prefs_get_bool ("/apps/firestarter/client/sample",
+	fs_prefs_set_bool ("/apps/stockfw/client/sample", FALSE);
+	CHECK (fs_prefs_get_bool ("/apps/stockfw/client/sample",
 	                          TRUE) == FALSE,
 	       "stored FALSE beats a TRUE fallback");
 
-	fs_prefs_set_int ("/apps/firestarter/client/int_sample", 7);
-	CHECK (fs_prefs_get_int ("/apps/firestarter/client/int_sample",
+	fs_prefs_set_int ("/apps/stockfw/client/int_sample", 7);
+	CHECK (fs_prefs_get_int ("/apps/stockfw/client/int_sample",
 	                         99) == 7,
 	       "stored int beats the fallback");
 }
@@ -866,7 +866,7 @@ cc "$BUILD_DIR/test-core.c" \
    $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
 
 # Keep rule files out of the real rules directory.
-export FIRESTARTER_RULES_DIR="$BUILD_DIR/rules"
-rm -rf "$FIRESTARTER_RULES_DIR"
+export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
+rm -rf "$STOCKFW_RULES_DIR"
 
 "$BUILD_DIR/test-core"

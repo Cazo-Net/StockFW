@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(firestarter
+project(stockfw
         VERSION 1.0.3
         DESCRIPTION "Firewall configuration tool (Windows + Linux port)"
         LANGUAGES C)

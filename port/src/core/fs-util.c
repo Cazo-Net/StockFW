@@ -317,7 +317,7 @@ const gchar *
 fs_util_rules_dir (void)
 {
 	static gchar *cached = NULL;
-	const gchar *env = g_getenv ("FIRESTARTER_RULES_DIR");
+	const gchar *env = g_getenv ("STOCKFW_RULES_DIR");
 
 	if (env != NULL && *env != '\0')
 		return env;
@@ -325,15 +325,15 @@ fs_util_rules_dir (void)
 	if (cached == NULL) {
 #ifdef G_OS_WIN32
 		cached = g_build_filename (g_get_user_data_dir (),
-		                           "firestarter", NULL);
+		                           "stockfw", NULL);
 #else
-		/* /etc/firestarter needs root; prefer a per-user copy unless the
+		/* /etc/stockfw needs root; prefer a per-user copy unless the
 		 * environment explicitly points at a system location. */
 		if (geteuid () != 0)
 			cached = g_build_filename (g_get_home_dir (),
-			                           ".firestarter", NULL);
+			                           ".stockfw", NULL);
 		else
-			cached = g_strdup ("/etc/firestarter");
+			cached = g_strdup ("/etc/stockfw");
 #endif
 	}
 

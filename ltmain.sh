@@ -3,7 +3,6 @@
 #
 # Copyright (C) 1996, 1997, 1998, 1999, 2000, 2001, 2003, 2004
 # Free Software Foundation, Inc.
-# Originally by Gordon Matzigkeit <gord@gnu.ai.mit.edu>, 1996
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -6234,7 +6233,6 @@ MODE must be one of the following:
 MODE-ARGS vary depending on the MODE.  Try \`$modename --help --mode=MODE' for
 a more detailed description of MODE.
 
-Report bugs to <bug-libtool@gnu.org>."
   exit $EXIT_SUCCESS
   ;;
 

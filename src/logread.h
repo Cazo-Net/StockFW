@@ -1,5 +1,4 @@
 /*---[ logread.h ]----------------------------------------------------
- * Copyright (C) 2000 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,13 +8,13 @@
  * Functions for reading from the syslog file
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_LOGREAD
-#define _FIRESTARTER_LOGREAD
+#ifndef _STOCKFW_LOGREAD
+#define _STOCKFW_LOGREAD
 
 #include <config.h>
 #include <gnome.h>
 #include <libgnomevfs/gnome-vfs.h>
-#include "firestarter.h"
+#include "stockfw.h"
 
 #define FILE_BUF 4096
 

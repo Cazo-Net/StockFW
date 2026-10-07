@@ -1,5 +1,4 @@
 /*---[ wizard.c ]------------------------------------------------------
- * Copyright (C) 2000-2002 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,12 +8,12 @@
  * The wizard functions
  *--------------------------------------------------------------------*/
 #include "globals.h"
-#include "firestarter.h"
+#include "stockfw.h"
 #include "wizard.h"
 #include "wizard-choices.h"
 #include "scriptwriter.h"
 #include "util.h"
-#include "xpm/firestarter-pixbufs.h"
+#include "xpm/stockfw-pixbufs.h"
 #include "preferences.h"
 #include "dhcp-server.h"
 #include "gui.h"
@@ -145,7 +144,7 @@ create_device_page (Wizard *data)
 
 	data->pppcheck = gtk_check_button_new_with_label (_(
 		"Start the firewall on dial-out"));
-	gtk_tooltips_set_tip (Firestarter.ttips, data->pppcheck, _(
+	gtk_tooltips_set_tip (StockFW.ttips, data->pppcheck, _(
 		"Check this option and the firewall will start when "
 		"you dial your Internet Service Provider."), "");
 	gtk_table_attach (GTK_TABLE (table), data->pppcheck, 0, 2, 3, 4,
@@ -153,7 +152,7 @@ create_device_page (Wizard *data)
 
 	data->dhcpcheck = gtk_check_button_new_with_label (_(
 		"IP address is assigned via DHCP"));
-	gtk_tooltips_set_tip (Firestarter.ttips, data->dhcpcheck, _(
+	gtk_tooltips_set_tip (StockFW.ttips, data->dhcpcheck, _(
 		"Check this option if you need to connect to a DHCP server. "
 		"Cable modem and DSL users should check this."), "");
 
@@ -195,7 +194,6 @@ manual_reference_new (gchar *description, gchar *url)
 
 	gtk_widget_set_events (event_box, GDK_BUTTON_PRESS_MASK | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
 	g_signal_connect_swapped (G_OBJECT (event_box), "button_press_event",
-		G_CALLBACK (gnome_url_show), "http://www.fs-security.com/docs/dhcp.php");
 
 	g_signal_connect_swapped (G_OBJECT (event_box), "enter_notify_event",
 		G_CALLBACK (manual_reference_enter), label);
@@ -234,7 +232,7 @@ create_masq_page (Wizard *data)
 	gtk_table_set_col_spacings (GTK_TABLE (table), GNOME_PAD_SMALL);
 
 	label = gtk_label_new (_(
-		"Firestarter can share your Internet connection with the computers on your local network\n"
+		"StockFW can share your Internet connection with the computers on your local network\n"
 		"using a single public IP address and a method called Network Address Translation."));
 
 	gtk_misc_set_alignment (GTK_MISC (label), 0.0, 0.0);
@@ -285,7 +283,6 @@ create_masq_page (Wizard *data)
 		GTK_FILL, GTK_FILL, GNOME_PAD, 3);
 
 	label = manual_reference_new (_("Explain the DHCP function..."),
-				     "http://www.fs-security.com/docs/dhcp.php");
 
 	gtk_table_attach (GTK_TABLE (table2), label, 1, 2, 1, 2,
 		GTK_FILL, GTK_FILL, GNOME_PAD, 3);
@@ -518,7 +515,7 @@ dialog_response_cb (GtkDialog *dialog, int response, gpointer data)
 
 	if (response == RESPONSE_QUIT) {
 		if (preferences_get_bool (PREFS_FIRST_RUN) || !script_exists ())
-			exit_firestarter ();
+			exit_stockfw ();
 
 		g_free (wizard);
 		gtk_widget_destroy (GTK_WIDGET(dialog));
@@ -640,7 +637,7 @@ run_wizard (void)
 	/* Create the basic wizard pages */
 	wizard->pages = g_ptr_array_new ();
 
-	page = create_page (_("Welcome to Firestarter"));
+	page = create_page (_("Welcome to StockFW"));
 	alignment = gtk_alignment_new (0.5, 0.5, 0.5, 0.5);
 	gtk_box_pack_start (GTK_BOX(page), alignment, TRUE, TRUE, 0);
 	gtk_container_add (GTK_CONTAINER(alignment), create_welcome_page (wizard));

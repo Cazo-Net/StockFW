@@ -1,5 +1,4 @@
 /*---[ statusview.h ]-----------------------------------------------------
- * Copyright (C) 2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,13 +8,13 @@
  * The Status page and related functions
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_STATUSVIEW
-#define _FIRESTARTER_STATUSVIEW
+#ifndef _STOCKFW_STATUSVIEW
+#define _STOCKFW_STATUSVIEW
 
 #include <config.h>
 #include <gnome.h>
 
-#include "firestarter.h"
+#include "stockfw.h"
 
 typedef enum
 {

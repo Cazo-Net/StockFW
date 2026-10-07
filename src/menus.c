@@ -1,5 +1,4 @@
 /*---[ menus.c ]------------------------------------------------------
- * Copyright (C) 2000-2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -10,7 +9,7 @@
  *--------------------------------------------------------------------*/
 
 #include "menus.h"
-#include "firestarter.h"
+#include "stockfw.h"
 #include "wizard.h"
 #include "savelog.h"
 #include "preferences.h"
@@ -21,14 +20,14 @@
 #include "policyview.h"
 #include "statusview.h"
 
-#include "xpm/firestarter-pixbufs.h"
+#include "xpm/stockfw-pixbufs.h"
 
-#define FIRESTARTER_STOCK_WIZARD "firestarter-wizard-icon"
-#define FIRESTARTER_STOCK_START_FIREWALL "firestarter-start-firewall-icon"
-#define FIRESTARTER_STOCK_STOP_FIREWALL "firestarter-stop-firewall-icon"
-#define FIRESTARTER_STOCK_LOCK_FIREWALL "firestarter-lock-firewall-icon"
-#define FIRESTARTER_STOCK_UNLOCK_FIREWALL "firestarter-unlock-firewall-icon"
-#define FIRESTARTER_STOCK_EDIT "firestarter-edit"
+#define STOCKFW_STOCK_WIZARD "stockfw-wizard-icon"
+#define STOCKFW_STOCK_START_FIREWALL "stockfw-start-firewall-icon"
+#define STOCKFW_STOCK_STOP_FIREWALL "stockfw-stop-firewall-icon"
+#define STOCKFW_STOCK_LOCK_FIREWALL "stockfw-lock-firewall-icon"
+#define STOCKFW_STOCK_UNLOCK_FIREWALL "stockfw-unlock-firewall-icon"
+#define STOCKFW_STOCK_EDIT "stockfw-edit"
 
 static GtkAccelGroup *main_accel_group;
 
@@ -47,12 +46,12 @@ static GtkActionEntry entries[] = {
 	{ "PolicyMenu", NULL, N_("_Policy") },
 	{ "HelpMenu", NULL, N_("_Help") },
 
-/*Q*/	{ "Quit", GTK_STOCK_QUIT, N_("_Quit"), "<control>Q", N_("Quit the program"), exit_firestarter },
-	{ "RunWizard", FIRESTARTER_STOCK_WIZARD, N_("Run _Wizard"), NULL, N_("Run the firewall wizard"), run_wizard },
-/*S*/	{ "StartFirewall", FIRESTARTER_STOCK_START_FIREWALL, N_("_Start Firewall"), "<control>S", N_("Start the firewall"), start_firewall },
-/*P*/	{ "StopFirewall", FIRESTARTER_STOCK_STOP_FIREWALL, N_("Sto_p Firewall"), "<control>P", N_("Stop the firewall"), stop_firewall },
-	{ "LockFirewall", FIRESTARTER_STOCK_LOCK_FIREWALL, N_("_Lock Firewall"), NULL, N_("Lock the firewall"), lock_firewall },
-	{ "UnlockFirewall", FIRESTARTER_STOCK_UNLOCK_FIREWALL, N_("_Unlock Firewall"), NULL, N_("Unlock the firewall"), unlock_firewall },
+/*Q*/	{ "Quit", GTK_STOCK_QUIT, N_("_Quit"), "<control>Q", N_("Quit the program"), exit_stockfw },
+	{ "RunWizard", STOCKFW_STOCK_WIZARD, N_("Run _Wizard"), NULL, N_("Run the firewall wizard"), run_wizard },
+/*S*/	{ "StartFirewall", STOCKFW_STOCK_START_FIREWALL, N_("_Start Firewall"), "<control>S", N_("Start the firewall"), start_firewall },
+/*P*/	{ "StopFirewall", STOCKFW_STOCK_STOP_FIREWALL, N_("Sto_p Firewall"), "<control>P", N_("Stop the firewall"), stop_firewall },
+	{ "LockFirewall", STOCKFW_STOCK_LOCK_FIREWALL, N_("_Lock Firewall"), NULL, N_("Lock the firewall"), lock_firewall },
+	{ "UnlockFirewall", STOCKFW_STOCK_UNLOCK_FIREWALL, N_("_Unlock Firewall"), NULL, N_("Unlock the firewall"), unlock_firewall },
 
 /*C*/	{ "CopyEvent", GTK_STOCK_COPY, N_("_Copy description"), "<control>C", N_("Copy event description"), copy_selected },
 	{ "Preferences", GTK_STOCK_PREFERENCES, N_("_Preferences"), NULL, N_("Program preferences"), preferences_show },
@@ -64,12 +63,12 @@ static GtkActionEntry entries[] = {
 
 	{ "RemoveRule", GTK_STOCK_REMOVE, N_("_Remove Rule"), NULL, N_("Remove the selected rule"), policyview_remove_rule },
 	{ "AddRule", GTK_STOCK_ADD, N_("_Add Rule"), NULL, N_("Add a rule to the selected policy group"), policyview_add_rule },
-	{ "EditRule", FIRESTARTER_STOCK_EDIT, N_("_Edit Rule"), NULL, N_("Edit the selected rule"), policyview_edit_rule },
+	{ "EditRule", STOCKFW_STOCK_EDIT, N_("_Edit Rule"), NULL, N_("Edit the selected rule"), policyview_edit_rule },
 	{ "ApplyPolicy", GTK_STOCK_APPLY, N_("A_pply Policy"), NULL, N_("Apply the changes made the policy"), policyview_apply },
 
 	{ "OpenManual", GTK_STOCK_HELP, N_("Online Users' _Manual"), NULL, N_("Open the online users' manual in a browser"), open_manual },
-	{ "OpenHomepage", GTK_STOCK_HOME, N_("Firestarter _Homepage"), NULL, N_("Open the Firestarter homepage in a browser"), open_homepage },
-	{ "ShowAbout", GNOME_STOCK_ABOUT, N_("_About"), NULL, N_("About Firestarter"), G_CALLBACK (show_about) },
+	{ "OpenHomepage", GTK_STOCK_HOME, N_("StockFW _Homepage"), NULL, N_("Open the StockFW homepage in a browser"), open_homepage },
+	{ "ShowAbout", GNOME_STOCK_ABOUT, N_("_About"), NULL, N_("About StockFW"), G_CALLBACK (show_about) },
 
 	{ "AllowInboundFrom", NULL, N_("Allow Connections From Source"), NULL, N_("Allow all connections from this source"), hitview_allow_host },
 	{ "AllowInboundService", NULL, N_("Allow Inbound Service for Everyone"), NULL, N_("Allow inbound service for everyone"), hitview_allow_service },
@@ -307,7 +306,7 @@ merge_ui (const gchar *description)
  * Switch the application toolbar to a view specific one
  */
 void
-menus_set_toolbar (FirestarterView new_view)
+menus_set_toolbar (StockFWView new_view)
 {
 	static guint merge_id = -1;
 	const char *description;
@@ -396,12 +395,12 @@ menus_initialize (GtkWidget *window)
 	icon_factory = gtk_icon_factory_new ();
 	gtk_icon_factory_add_default (icon_factory);
 
-	register_icon_set (icon_factory, FIRESTARTER_STOCK_WIZARD, icon_wizard);
-	register_icon_set (icon_factory, FIRESTARTER_STOCK_START_FIREWALL, icon_start_toolbar);
-	register_icon_set (icon_factory, FIRESTARTER_STOCK_STOP_FIREWALL, icon_stop_toolbar);
-	register_icon_set (icon_factory, FIRESTARTER_STOCK_EDIT, icon_edit);
-	register_icon_set (icon_factory, FIRESTARTER_STOCK_LOCK_FIREWALL, icon_locked);
-	register_icon_set (icon_factory, FIRESTARTER_STOCK_UNLOCK_FIREWALL, icon_unlocked);
+	register_icon_set (icon_factory, STOCKFW_STOCK_WIZARD, icon_wizard);
+	register_icon_set (icon_factory, STOCKFW_STOCK_START_FIREWALL, icon_start_toolbar);
+	register_icon_set (icon_factory, STOCKFW_STOCK_STOP_FIREWALL, icon_stop_toolbar);
+	register_icon_set (icon_factory, STOCKFW_STOCK_EDIT, icon_edit);
+	register_icon_set (icon_factory, STOCKFW_STOCK_LOCK_FIREWALL, icon_locked);
+	register_icon_set (icon_factory, STOCKFW_STOCK_UNLOCK_FIREWALL, icon_unlocked);
 
 	action_group = gtk_action_group_new ("MenuActions");
 	gtk_action_group_set_translation_domain (action_group, GETTEXT_PACKAGE);
@@ -452,7 +451,7 @@ menus_initialize (GtkWidget *window)
 	gnome_app_set_menus (GNOME_APP (window), GTK_MENU_BAR (menubar));
 
 	toolbar = gtk_ui_manager_get_widget (ui_manager, "/Toolbar");
-	gnome_app_set_toolbar (GNOME_APP (Firestarter.window), GTK_TOOLBAR (toolbar));
+	gnome_app_set_toolbar (GNOME_APP (StockFW.window), GTK_TOOLBAR (toolbar));
 	/* gtk_toolbar_set_style (GTK_TOOLBAR (toolbar), GTK_TOOLBAR_ICONS); */
 
 	menus_set_toolbar (STATUS_VIEW);
@@ -541,13 +540,11 @@ menus_policy_apply_enabled (gboolean enabled)
 static void
 open_homepage (void)
 {
-	gnome_url_show ("http://www.fs-security.com", NULL);
 }
 
 static void
 open_manual (void)
 {
-	gnome_url_show ("http://www.fs-security.com/docs/", NULL);
 }
 
 /* [ copy_selected ]
@@ -556,7 +553,7 @@ open_manual (void)
 static void
 copy_selected (void)
 {
-	FirestarterView v;
+	StockFWView v;
 
 	v = gui_get_active_view ();
 

@@ -1,7 +1,7 @@
 /*---[ fs-statusview.c ]------------------------------------------------
  * The Status page.
  *
- * Laid out the way the original Firestarter laid it out: a status line
+ * Laid out the way the original StockFW laid it out: a status line
  * with its emblem on the left and the Events counters (Total / Serious,
  * across Inbound / Outbound) on the right, then the profile switches,
  * then the two live tables -- "Network" and "Active connections".

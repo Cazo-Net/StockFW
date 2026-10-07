@@ -1,5 +1,4 @@
 /*---[ policyview.h ]-------------------------------------------------
- * Copyright (C) 2004 Tomas Junnonen (majix@sci.fi)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -9,13 +8,13 @@
  * The traffic policy editor functions
  *--------------------------------------------------------------------*/
 
-#ifndef _FIRESTARTER_POLICYVIEW
-#define _FIRESTARTER_POLICYVIEW
+#ifndef _STOCKFW_POLICYVIEW
+#define _STOCKFW_POLICYVIEW
 
-#include "firestarter.h"
+#include "stockfw.h"
 
-#define POLICY_IN_DIR  FIRESTARTER_RULES_DIR"/firestarter/inbound"
-#define POLICY_OUT_DIR FIRESTARTER_RULES_DIR"/firestarter/outbound"
+#define POLICY_IN_DIR  STOCKFW_RULES_DIR"/stockfw/inbound"
+#define POLICY_OUT_DIR STOCKFW_RULES_DIR"/stockfw/outbound"
 
 #define POLICY_IN_ALLOW_FROM    POLICY_IN_DIR"/allow-from"
 #define POLICY_IN_ALLOW_SERVICE POLICY_IN_DIR"/allow-service"

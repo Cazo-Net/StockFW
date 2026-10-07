@@ -59,7 +59,7 @@ const gchar **
 fs_dialogs_about_authors (void)
 {
 	static const gchar *raw[] = {
-		"Qusai Fethalrahman - Creator & Original Developer",
+		"Qusai Fethalrahman (Qusaifox2@gmail.com) - Creator & Original Developer",
 		"H3xCore - Developer",
 		"StockFW Project - GTK3 Port, Windows Backend, Copilot",
 		NULL
