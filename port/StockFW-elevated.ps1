@@ -38,16 +38,24 @@ if (-not (Test-Path $binary)) {
 # set in an interactive MSYS2 shell -- so keep the toolchain on PATH as
 # a fallback.
 #
+# WIDENING THE PATH PUTS A TOOLCHAIN DIRECTORY ON AN ELEVATED PROCESS'S
+# DLL SEARCH PATH, so only do it when it is actually needed: if the
+# runtime DLLs already sit beside this script (every installed copy),
+# the loader finds them in the application directory first and the
+# fallback would add nothing but risk.  A directory a non-admin can
+# write to must never end up on an elevated process's search path.
+#
 # Start-Process inherits the current process environment, so setting
 # $env:PATH here is enough.
+$scriptDirHasRuntime = Test-Path (Join-Path $scriptDir 'libglib-2.0-0.dll')
 $msysBin = 'C:\msys64\ucrt64\bin'
 
-if (Test-Path (Join-Path $msysBin 'libgio-2.0-0.dll')) {
+if (-not $scriptDirHasRuntime -and (Test-Path (Join-Path $msysBin 'libgio-2.0-0.dll'))) {
     if (($env:PATH -split ';') -notcontains $msysBin) {
         $env:PATH = "$msysBin;$env:PATH"
         Write-Host "Added $msysBin to PATH" -ForegroundColor DarkGray
     }
-} else {
+} elseif (-not $scriptDirHasRuntime) {
     Write-Host "Warning: $msysBin not found; the app may fail to start." `
               -ForegroundColor Yellow
 }

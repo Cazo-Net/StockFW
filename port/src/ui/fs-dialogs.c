@@ -777,6 +777,18 @@ create_sections_model (void)
 	for (guint i = 0; i < G_N_ELEMENTS (rows); i++) {
 		GtkTreeIter *container = NULL;
 
+		/* WYSIWYG: only offer the settings the backend actually reads.
+		 * Linux builds its rules from these pages; Windows builds
+		 * rules from the policy and ignores them, so showing the
+		 * pages there asked the user to configure a firewall that
+		 * was not listening (the old page admitted it with a note
+		 * that "has no effect here").  Hide the whole section
+		 * instead; the notebook below drops the pages too, so the
+		 * section index and the page index stay aligned. */
+		if (!fs_backend ()->uses_settings &&
+		    rows[i].parent_index == SECTION_FIREWALL)
+			continue;
+
 		if (rows[i].parent_index < 0) {
 			gtk_tree_store_append (store, &iter, NULL);
 			container = g_new (GtkTreeIter, 1);
@@ -924,17 +936,23 @@ fs_dialogs_preferences (GtkWidget *parent)
 	                          wrap_page (build_policy_page (&bind)), NULL);
 	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
 	                          wrap_page (build_firewall_page (&bind)), NULL);
-	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          wrap_page (build_network_page (&bind, applies)),
-	                          NULL);
-	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          wrap_page (build_icmp_page (&bind, applies)),
-	                          NULL);
-	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          wrap_page (build_tos_page (&bind)), NULL);
-	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          wrap_page (build_advanced_page (&bind, applies)),
-	                          NULL);
+
+	/* The four settings pages exist only when the backend reads them;
+	 * create_sections_model() skipped the matching sidebar rows, so
+	 * row i stays on page i. */
+	if (applies) {
+		gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
+		                          wrap_page (build_network_page (&bind, applies)),
+		                          NULL);
+		gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
+		                          wrap_page (build_icmp_page (&bind, applies)),
+		                          NULL);
+		gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
+		                          wrap_page (build_tos_page (&bind)), NULL);
+		gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
+		                          wrap_page (build_advanced_page (&bind, applies)),
+		                          NULL);
+	}
 
 	hbox = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
 	/* The tree expands too: with it packed FALSE it stayed at its

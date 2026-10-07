@@ -24,6 +24,8 @@
 #include <gtk/gtk.h>
 
 #include "core/fs-prefs.h"
+#include "core/fs-backend.h"
+#include "core/fs-i18n.h"
 #include "ui/fs-dialogs.h"
 
 /* Timeout so a dialog that never appears fails instead of hanging. */
@@ -206,17 +208,37 @@ drive_dialog (gpointer data)
 			return G_SOURCE_REMOVE;
 		}
 
+		/* WYSIWYG: a backend that does not read these settings must
+		 * not offer the controls for them at all -- the pages used to
+		 * appear with a note admitting they do nothing. */
+		if (!fs_backend ()->uses_settings && label != NULL &&
+		    (g_strcmp0 (label, _("Network Settings")) == 0 ||
+		     g_strcmp0 (label, _("ICMP Filtering")) == 0 ||
+		     g_strcmp0 (label, _("ToS Filtering")) == 0 ||
+		     g_strcmp0 (label, _("Advanced Options")) == 0)) {
+			g_printerr ("ui-prefs-smoke: FAILED, the backend does "
+			            "not read \"%s\" but it is offered\n",
+			            label);
+			failed = TRUE;
+			g_free (label);
+			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
+			return G_SOURCE_REMOVE;
+		}
+
 		g_free (label);
 		phase++;
 		return G_SOURCE_CONTINUE;
 	}
 
 	if (phase == rows) {
+		guint expected = fs_backend ()->uses_settings ? 8 : 4;
+
 		g_print ("ui-prefs-smoke: %u sections, all mapped correctly\n", rows);
 
-		if (rows != 8) {
-			g_printerr ("ui-prefs-smoke: FAILED, expected 8 sections, got %u\n",
-			            rows);
+		if (rows != expected) {
+			g_printerr ("ui-prefs-smoke: FAILED, expected %u "
+			            "sections for uses_settings=%d, got %u\n",
+			            expected, fs_backend ()->uses_settings, rows);
 			failed = TRUE;
 			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
 			return G_SOURCE_REMOVE;
