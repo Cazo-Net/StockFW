@@ -1684,6 +1684,18 @@ split_firewall_records (const gchar *output)
 				g_ptr_array_add (records,
 				                 g_string_free (current, FALSE));
 			current = g_string_new (NULL);
+
+			/* The marker itself is the record's POSITION in this
+			 * batch (Event[0] is the newest), and the positions move
+			 * every time a new event arrives: an event that was
+			 * Event[3] last poll is Event[4] this poll.  Keeping the
+			 * line in the record text made every shifted record a
+			 * "new" record to the de-duplication below, so one fresh
+			 * event re-delivered the whole batch as duplicates --
+			 * the same rows over and over in the list.  The content
+			 * after the marker is identical for the same event on
+			 * every poll, so that is what the record is made of. */
+			continue;
 		}
 
 		if (current == NULL)

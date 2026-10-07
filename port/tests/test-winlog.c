@@ -307,6 +307,74 @@ test_dedup_batches (void)
 	       "forget_all_records clears the set (restart works)");
 }
 
+/* [ test_dedup_index_shift ]
+ * The "Event[n]" number is the record's POSITION in the batch, and the
+ * positions move whenever a new event arrives: an event that was
+ * Event[0] last poll is Event[1] this poll.  The de-duplication has to
+ * key on the record's content, not on that position -- otherwise one
+ * fresh event re-delivers the whole batch as duplicates, which is how
+ * the live list showed the same row four times (196 "events analyzed"
+ * for 21 real events).  Drives the same pipeline as poll_deliver:
+ * split -> length -> record_seen -> remember -> parse. */
+static void
+test_dedup_index_shift (void)
+{
+	guint delivered = 0;
+	guint batch;
+	guint i;
+	gchar *shifted = g_strdup (RECORD_A);
+	gchar *marker = strstr (shifted, "Event[0]");
+
+	/* The very same event as RECORD_A, one slot further down. */
+	if (marker != NULL)
+		marker[6] = '1';          /* Event[0] -> Event[1] */
+
+	forget_all_records ();
+
+	for (batch = 0; batch < 2; batch++) {
+		gchar *text;
+		GPtrArray *records;
+		guint j;
+
+		if (batch == 0)
+			text = g_strdup (RECORD_A);
+		else
+			text = g_strconcat (RECORD_B, "\r\n", shifted, NULL);
+
+		records = split_firewall_records (text);
+
+		if (batch == 0 && records->len > 0) {
+			CHECK (!g_str_has_prefix (
+			           g_ptr_array_index (records, 0), "Event["),
+			       "the position marker is not part of the record");
+		}
+
+		for (j = 0; j < records->len; j++) {
+			const gchar *record = g_ptr_array_index (records, j);
+			FsHit hit = { 0 };
+
+			if (strlen (record) < 40)
+				continue;
+			if (record_seen (record))
+				continue;
+			remember_record (record);
+			if (parse_firewall_event (record, &hit))
+				delivered++;
+			free_hit_fields (&hit);
+		}
+
+		g_ptr_array_unref (records);
+		g_free (text);
+	}
+
+	g_free (shifted);
+
+	CHECK (delivered == 2,
+	       "the shifted duplicate is not re-delivered "
+	       "(poll 1: A, poll 2: B only; got %u deliveries)",
+	       delivered);
+}
+
 /* The table is bounded: it holds a couple of batches, never history. */
 static void
 test_dedup_bounded (void)
@@ -799,6 +867,7 @@ main (int argc, char **argv)
 	test_parse_junk ();
 	test_split_real_format ();
 	test_dedup_batches ();
+	test_dedup_index_shift ();
 	test_dedup_bounded ();
 	test_spawn_output_capture ();
 	test_spawn_no_console ();
