@@ -36,3 +36,15 @@ cc "$HERE/test-winlog.c" \
    $(pkg-config --libs glib-2.0 gio-2.0) -lws2_32 -lole32 -loleaut32 -liphlpapi
 
 "$BUILD_DIR/test-winlog"
+
+# The window-flash probe: runs as a console-less parent (FreeConsole),
+# which is the shape StockFW.exe has.  Its stdout must be a file, not
+# the console -- FreeConsole() invalidates console handles while file
+# handles keep working -- so capture first, then replay.
+probe_rc=0
+"$BUILD_DIR/test-winlog" --spawn-probe > "$BUILD_DIR/spawn-probe.out" || probe_rc=$?
+cat "$BUILD_DIR/spawn-probe.out"
+if [ "$probe_rc" -ne 0 ]; then
+  echo "spawn-probe exited $probe_rc"
+  exit "$probe_rc"
+fi

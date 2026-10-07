@@ -8,13 +8,23 @@
  *   INetFwRules      rule listing
  *   INetFwRule       creating / editing allow and block rules
  *
- * Unlike the Linux backend this never shells out: there is no bash and
- * no iptables on Windows, so rules are applied through COM directly.
+ * Rules are applied through the COM API where possible; two commands
+ * still have to be run as processes -- netsh for rule CRUD and
+ * wevtutil for the event log -- and both are launched through
+ * spawn_capture() below, never GLib's g_spawn (which cannot suppress
+ * the console window a console child would otherwise get).
  *
  * Build: add the object to the firestarter target in CMakeLists.txt,
  * link against ole32/oleaut32/hnetcfg.h and drop the
  * fs-backend-null.c entry.
  *--------------------------------------------------------------------*/
+
+/* PROC_THREAD_ATTRIBUTE_HANDLE_LIST (restricting which handles a child
+ * inherits) needs Vista or later; the feature test must precede every
+ * Windows header or the declaration never appears. */
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
 
 /* Windows headers come first and in this exact order: winsock2 must
  * precede windows.h, and doing it before the GLib headers avoids the
@@ -249,6 +259,391 @@ netsh_safe_name (const gchar *name)
 	return g_string_free (out, FALSE);
 }
 
+/* ---------------------------------------------------------------------
+ * Child processes: spawn_capture() and its helpers.
+ *
+ * g_spawn_sync cannot be used on Windows here, for two reasons that
+ * were seen live, not theorised:
+ *
+ *  1. GLib never passes CREATE_NO_WINDOW, so every console-mode child
+ *     (netsh, wevtutil) inherited or created a console window.  The
+ *     screenshot showed conhost titled "Select
+ *     C:\Windows\system32\wevtutil.exe" flashing every five seconds
+ *     while the event poll ran.
+ *
+ *  2. Its synchronous wait runs on the GTK main loop with no timeout,
+ *     so a child that stopped responding (that "Select" prompt is
+ *     exactly the paused state) froze the whole window in "(Not
+ *     Responding)".
+ *
+ * Everything below fixes both: CreateProcessW with CREATE_NO_WINDOW,
+ * output through temporary files, and a hard timeout that kills a
+ * wedged child instead of hanging the caller.
+ * ------------------------------------------------------------------ */
+
+/* Budgets.  wevtutil answers a ten-record query well under a second
+ * when it works at all, so ten seconds means "wedged" and killing it
+ * costs nothing but that poll's results.  netsh reconfigures the
+ * firewall and can legitimately take a while on a loaded machine. */
+#define SPAWN_TIMEOUT_WEVTUTIL_MS 10000
+#define SPAWN_TIMEOUT_NETSH_MS    30000
+
+/* [ win32_error_text ]
+ * The system's own message for a GetLastError() code, trimmed of the
+ * line break FormatMessage appends, or a numeric fallback. */
+static gchar *
+win32_error_text (DWORD code)
+{
+	WCHAR *wide = NULL;
+	gchar *text = NULL;
+
+	if (FormatMessageW (FORMAT_MESSAGE_ALLOCATE_BUFFER |
+	                    FORMAT_MESSAGE_FROM_SYSTEM |
+	                    FORMAT_MESSAGE_IGNORE_INSERTS,
+	                    NULL, code, 0, (LPWSTR) &wide, 0, NULL) != 0 &&
+	    wide != NULL)
+		text = g_utf16_to_utf8 (wide, -1, NULL, NULL, NULL);
+
+	if (wide != NULL)
+		LocalFree (wide);
+
+	if (text == NULL)
+		return g_strdup_printf ("Windows error %lu",
+		                        (unsigned long) code);
+
+	return g_strstrip (text);   /* drops the trailing CR/LF */
+}
+
+/* [ append_spawn_arg ]
+ * Appends one argv element the way CommandLineToArgvW (and therefore
+ * the child's CRT startup code) will parse it back: plain when that
+ * is unambiguous, otherwise quoted, with embedded quotes escaped and
+ * runs of backslashes that touch a quote doubled.  netsh rule names
+ * and wevtutil's "/q:*[System[(EventID=5156 ...)]]" both contain
+ * spaces, so this is not theoretical. */
+static void
+append_spawn_arg (GString *cmd, const gchar *arg)
+{
+	gint backslashes = 0;
+	const gchar *p;
+
+	if (*arg != '\0' && strpbrk (arg, " \t\"\n\r") == NULL) {
+		g_string_append (cmd, arg);
+		return;
+	}
+
+	g_string_append_c (cmd, '"');
+
+	for (p = arg; *p != '\0'; p++) {
+		if (*p == '\\') {
+			backslashes++;
+			continue;
+		}
+
+		if (*p == '"')
+			backslashes = backslashes * 2 + 1;
+
+		while (backslashes > 0) {
+			g_string_append_c (cmd, '\\');
+			backslashes--;
+		}
+
+		if (*p == '"')
+			g_string_append_c (cmd, '\\');
+
+		g_string_append_c (cmd, *p);
+	}
+
+	/* Backslashes running into the closing quote must be doubled,
+	 * or they would escape it. */
+	backslashes *= 2;
+	while (backslashes > 0) {
+		g_string_append_c (cmd, '\\');
+		backslashes--;
+	}
+
+	g_string_append_c (cmd, '"');
+}
+
+/* [ build_command_line ]
+ * The full command line for CreateProcessW.  May contain arguments
+ * with spaces; argv[0] is looked up through the standard search order
+ * when it carries no directory, exactly as g_spawn did. */
+static gchar *
+build_command_line (gchar **argv)
+{
+	GString *cmd = g_string_new (NULL);
+	gsize i;
+
+	for (i = 0; argv[i] != NULL; i++) {
+		if (i > 0)
+			g_string_append_c (cmd, ' ');
+		append_spawn_arg (cmd, argv[i]);
+	}
+
+	return g_string_free (cmd, FALSE);
+}
+
+/* [ read_handle_output ]
+ * Whatever the child wrote to the temp file.  The file object (and
+ * its write offset) is shared with the child through inheritance, so
+ * the offset sits at the end after the wait -- rewind first. */
+static gchar *
+read_handle_output (HANDLE handle)
+{
+	LARGE_INTEGER size;
+	LARGE_INTEGER zero;
+	gchar *text;
+	DWORD got = 0;
+
+	if (handle == INVALID_HANDLE_VALUE)
+		return NULL;
+
+	zero.QuadPart = 0;
+	if (!SetFilePointerEx (handle, zero, NULL, FILE_BEGIN))
+		return NULL;
+
+	if (!GetFileSizeEx (handle, &size) || size.QuadPart < 0)
+		return NULL;
+
+	/* A ten-record text query is a few kilobytes; a child gone wrong
+	 * must not get to allocate gigabytes of heap for us. */
+	if (size.QuadPart > 16 * 1024 * 1024)
+		size.QuadPart = 16 * 1024 * 1024;
+
+	text = g_malloc ((gsize) size.QuadPart + 1);
+
+	if (size.QuadPart > 0 &&
+	    !ReadFile (handle, text, (DWORD) size.QuadPart, &got, NULL)) {
+		g_free (text);
+		return NULL;
+	}
+
+	text[got] = '\0';
+	return text;
+}
+
+/* [ spawn_capture ]
+ * Runs argv with stdout and stderr captured and, critically, with no
+ * console window of its own (CREATE_NO_WINDOW).
+ *
+ * Output goes to temporary files rather than pipes on purpose: we
+ * block in WaitForSingleObject while the child writes, a pipe's
+ * buffer is finite, and a chatty child whose parent is not draining
+ * it yet deadlocks -- precisely the freeze we are eliminating.  stdin
+ * comes from the null device.  PROC_THREAD_ATTRIBUTE_HANDLE_LIST, for
+ * which _WIN32_WINNT is set at the top of this file, restricts the
+ * child to inheriting exactly those three handles instead of every
+ * inheritable handle in the process; if that setup fails we fall back
+ * to plain inheritance, which is merely untidy, never broken.
+ *
+ * Returns TRUE once the process was started, FALSE with @error set if
+ * it could not be.  *exit_status receives the raw process exit code
+ * -- the same value g_spawn_sync reported on Windows, so
+ * ERROR_ACCESS_DENIED (5) from an unprivileged wevtutil still means
+ * what it always did -- or ERROR_TIMEOUT (1460) when the budget ran
+ * out and the child was killed. */
+static gboolean
+spawn_capture (gchar **argv, gint timeout_ms,
+               gchar **standard_output, gchar **standard_error,
+               gint *exit_status, GError **error)
+{
+	SECURITY_ATTRIBUTES sa;
+	STARTUPINFOEXW si;
+	PROCESS_INFORMATION pi;
+	WCHAR temp_dir[MAX_PATH];
+	WCHAR out_path[MAX_PATH] = { 0 };
+	WCHAR err_path[MAX_PATH] = { 0 };
+	HANDLE in_handle = INVALID_HANDLE_VALUE;
+	HANDLE out_handle = INVALID_HANDLE_VALUE;
+	HANDLE err_handle = INVALID_HANDLE_VALUE;
+	HANDLE inherit_list[3];
+	PPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
+	gchar *cmd_line = NULL;
+	gunichar2 *wide_cmd = NULL;
+	gchar *out_text = NULL;
+	gchar *err_text = NULL;
+	GQuark quark = g_quark_from_static_string ("fs-backend-windows");
+	SIZE_T attr_size = 0;
+	guint n_handles = 0;
+	gboolean use_attrs = FALSE;
+	DWORD wait_result = WAIT_FAILED;   /* early exits must return FALSE */
+	DWORD code = 0;
+
+	if (standard_output != NULL)
+		*standard_output = NULL;
+	if (standard_error != NULL)
+		*standard_error = NULL;
+
+	cmd_line = build_command_line (argv);
+
+	wide_cmd = g_utf8_to_utf16 (cmd_line, -1, NULL, NULL, NULL);
+	g_free (cmd_line);
+
+	if (wide_cmd == NULL) {
+		if (error != NULL)
+			g_set_error_literal (error, quark, 0,
+			                     "The command line is not valid UTF-8");
+		return FALSE;
+	}
+
+	/* Two temp files for the output streams, opened inheritable so
+	 * the child writes straight into them. */
+	memset (&sa, 0, sizeof sa);
+	sa.nLength = sizeof sa;
+	sa.bInheritHandle = TRUE;
+
+	out_path[0] = L'\0';
+	err_path[0] = L'\0';
+
+	if (GetTempPathW (G_N_ELEMENTS (temp_dir), temp_dir) == 0 ||
+	    GetTempFileNameW (temp_dir, L"sfw", 0, out_path) == 0 ||
+	    GetTempFileNameW (temp_dir, L"sfw", 0, err_path) == 0) {
+		if (error != NULL)
+			g_set_error_literal (
+				error, quark, 0,
+				"Could not create temporary files to capture "
+				"process output");
+		goto out;
+	}
+
+	out_handle = CreateFileW (out_path, GENERIC_READ | GENERIC_WRITE,
+	                          FILE_SHARE_READ, &sa, OPEN_EXISTING,
+	                          FILE_ATTRIBUTE_TEMPORARY, NULL);
+	err_handle = CreateFileW (err_path, GENERIC_READ | GENERIC_WRITE,
+	                          FILE_SHARE_READ, &sa, OPEN_EXISTING,
+	                          FILE_ATTRIBUTE_TEMPORARY, NULL);
+	in_handle = CreateFileW (L"NUL", GENERIC_READ,
+	                         FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+	                         OPEN_EXISTING, 0, NULL);
+
+	if (out_handle == INVALID_HANDLE_VALUE ||
+	    err_handle == INVALID_HANDLE_VALUE ||
+	    in_handle == INVALID_HANDLE_VALUE) {
+		if (error != NULL)
+			g_set_error (error, quark, (gint) GetLastError (),
+			             "Could not open a temporary file: %s",
+			             win32_error_text (GetLastError ()));
+		goto out;
+	}
+
+	inherit_list[n_handles++] = in_handle;
+	inherit_list[n_handles++] = out_handle;
+	inherit_list[n_handles++] = err_handle;
+
+	/* Ask for the child to inherit our three handles and nothing
+	 * else.  The first call only measures the attribute list. */
+	InitializeProcThreadAttributeList (NULL, 1, 0, &attr_size);
+	if (attr_size > 0) {
+		attrs = g_malloc (attr_size);
+		if (attrs == NULL ||
+		    !InitializeProcThreadAttributeList (attrs, 1, 0,
+		                                        &attr_size)) {
+			g_clear_pointer (&attrs, g_free);
+		} else if (!UpdateProcThreadAttribute (
+			attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+			inherit_list, n_handles * sizeof (HANDLE),
+			NULL, NULL)) {
+			DeleteProcThreadAttributeList (attrs);
+			g_clear_pointer (&attrs, g_free);
+		} else {
+			use_attrs = TRUE;
+		}
+	}
+
+	memset (&si, 0, sizeof si);
+	si.StartupInfo.cb = use_attrs ? sizeof (STARTUPINFOEXW)
+	                              : sizeof (STARTUPINFOW);
+	si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+	si.StartupInfo.hStdInput = in_handle;
+	si.StartupInfo.hStdOutput = out_handle;
+	si.StartupInfo.hStdError = err_handle;
+
+	memset (&pi, 0, sizeof pi);
+
+	if (!CreateProcessW (NULL, wide_cmd, NULL, NULL, TRUE,
+	                     CREATE_NO_WINDOW |
+	                     (use_attrs ? EXTENDED_STARTUPINFO_PRESENT : 0),
+	                     NULL, NULL, &si.StartupInfo, &pi)) {
+		if (error != NULL)
+			g_set_error (error, quark, (gint) GetLastError (),
+			             "Could not run %s: %s", argv[0],
+			             win32_error_text (GetLastError ()));
+		goto out;
+	}
+
+	/* Our copies of the inherited handles are no longer needed to
+	 * hand over, but the same file object stays open for reading the
+	 * output back after the wait. */
+	CloseHandle (pi.hThread);
+	CloseHandle (in_handle);
+	in_handle = INVALID_HANDLE_VALUE;
+
+	wait_result = WaitForSingleObject (pi.hProcess,
+	                                    (DWORD) timeout_ms);
+
+	if (wait_result == WAIT_TIMEOUT) {
+		/* The point of the timeout: a child that never finishes
+		 * must not take the caller -- and through the caller, the
+		 * UI -- down with it. */
+		TerminateProcess (pi.hProcess, ERROR_TIMEOUT);
+		if (WaitForSingleObject (pi.hProcess, 5000) == WAIT_OBJECT_0)
+			GetExitCodeProcess (pi.hProcess, &code);
+		else
+			code = (DWORD) -1;   /* the kill failed: report it */
+	} else if (wait_result == WAIT_OBJECT_0) {
+		if (!GetExitCodeProcess (pi.hProcess, &code))
+			code = (DWORD) -1;
+	} else {
+		/* WAIT_FAILED: not expected with a valid handle; do not
+		 * pretend the child succeeded. */
+		code = (DWORD) -1;
+	}
+
+	CloseHandle (pi.hProcess);
+
+	out_text = read_handle_output (out_handle);
+	err_text = read_handle_output (err_handle);
+
+	if (out_text == NULL)
+		out_text = g_strdup ("");
+	if (err_text == NULL)
+		err_text = g_strdup ("");
+
+	if (standard_output != NULL) {
+		*standard_output = out_text;
+		out_text = NULL;
+	}
+	if (standard_error != NULL) {
+		*standard_error = err_text;
+		err_text = NULL;
+	}
+	if (exit_status != NULL)
+		*exit_status = (gint) code;
+
+out:
+	if (attrs != NULL) {
+		if (use_attrs)
+			DeleteProcThreadAttributeList (attrs);
+		g_free (attrs);
+	}
+	if (in_handle != INVALID_HANDLE_VALUE)
+		CloseHandle (in_handle);
+	if (out_handle != INVALID_HANDLE_VALUE)
+		CloseHandle (out_handle);
+	if (err_handle != INVALID_HANDLE_VALUE)
+		CloseHandle (err_handle);
+	if (out_path[0] != L'\0')
+		DeleteFileW (out_path);
+	if (err_path[0] != L'\0')
+		DeleteFileW (err_path);
+	g_free (out_text);
+	g_free (err_text);
+	g_free (wide_cmd);
+
+	return wait_result == WAIT_OBJECT_0 || wait_result == WAIT_TIMEOUT;
+}
+
 /* [ run_netsh ]
  * Runs netsh with the given arguments.  Returns TRUE on success, with
  * the exit status in *exit_status and any output in *output. */
@@ -256,29 +651,22 @@ static gboolean
 run_netsh (gchar **args, GError **error, gint *exit_status,
            gchar **output)
 {
-	GError *local_error = NULL;
 	gchar *out = NULL;
 	gchar *err_text = NULL;
+	gint status = 0;
 
 	if (output != NULL)
 		*output = NULL;
 
-	/* G_SPAWN_STDIN_FROM_DEV_NULL plus a captured stderr means netsh
-	 * inherits no console handle at all, which is what stops Windows
-	 * from giving a console-mode child a terminal window of its own. */
-	if (!g_spawn_sync (NULL, args, NULL,
-	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDIN_FROM_DEV_NULL,
-	                   NULL, NULL,
-	                   &out, &err_text,
-	                   exit_status, &local_error)) {
-		g_set_error (error,
-		             g_quark_from_static_string ("fs-backend-windows"),
-		             0, "Could not run netsh: %s",
-		             local_error->message);
-		g_error_free (local_error);
+	if (!spawn_capture (args, SPAWN_TIMEOUT_NETSH_MS,
+	                    &out, &err_text, &status, error)) {
+		g_free (out);
 		g_free (err_text);
 		return FALSE;
 	}
+
+	if (exit_status != NULL)
+		*exit_status = status;
 
 	/* netsh reports some failures, the elevation ones especially, on
 	 * stderr only.  Handing that message to the caller is what lets
@@ -332,8 +720,8 @@ netsh_add_rule (const FsFwRule *rule, GError **error)
 	g_ptr_array_add (args, g_strdup ("add"));
 	g_ptr_array_add (args, g_strdup ("rule"));
 
-	/* g_spawn_sync passes argv straight to CreateProcess with no shell
-	 * parsing, so arguments must not carry quote characters: the whole
+	/* spawn_capture() passes argv straight to CreateProcess with no
+	 * shell parsing, so arguments must not carry quote characters: the whole
 	 * "name=..." pair goes across as one element.  Adding quotes here
 	 * makes netsh mis-parse the value and then complain about the
 	 * profiles argument. */
@@ -920,12 +1308,38 @@ firewalled_list_connections (void)
  *
  * wevtutil is used rather than the Event Log COM API because MinGW's
  * headers for the latter are as unreliable as netfw.h was.  A GIO
- * timeout re-runs the query and hands anything new to the callback.
+ * timeout ticks every few seconds; each tick dispatches a worker
+ * thread that runs the query and hands the result back to the main
+ * loop with g_idle_add, so neither the child's runtime nor a hang can
+ * freeze the UI.
  * ------------------------------------------------------------------ */
 
 static guint     log_source_id = 0;
 static FsLogFunc log_callback = NULL;
 static gpointer  log_user_data = NULL;
+
+/* The wevtutil query runs on a worker thread and its result comes
+ * back through g_idle_add.  Even with no console window of its own, a
+ * synchronous query on the GTK main loop freezes the whole window for
+ * as long as the child takes -- which is how the app sat in "(Not
+ * Responding)" behind a paused conhost.
+ *
+ *   poll_in_flight  in-flight guard: a tick that finds a query still
+ *                   running skips instead of stacking another child.
+ *   log_generation  identifies the monitoring session; stop() bumps
+ *                   it so a result from a session that has already
+ *                   ended is dropped instead of delivered late.
+ */
+static gboolean poll_in_flight = FALSE;
+static guint    log_generation = 0;
+
+/* One finished (or timed out) query, waiting for the main loop. */
+typedef struct {
+	gchar *output;
+	gchar *err_text;
+	gint   exit_code;
+	guint  generation;
+} PollResult;
 
 /* Records already handed to the UI.  The query re-reads the latest ten
  * events on every poll, so each poll must drop whatever earlier ones
@@ -1109,15 +1523,9 @@ parse_firewall_event (const gchar *text, FsHit *hit)
 /* [ run_wevtutil ]
  * One Security-log query, with both output streams captured.
  *
- * stdin comes from the null device and stderr is captured instead of
- * inherited.  With all three standard handles off the console, Windows
- * has no reason to allocate one for wevtutil.exe -- which is how a
- * stray terminal window quoting this very command line ended up on
- * screen.  A GUI application must never hand a console to its
- * children.
- *
- * On Windows g_spawn_sync reports the raw process exit code in
- * wait_status rather than the Unix-encoded status, so 5 here really is
+ * Goes through spawn_capture(), so the query opens no console window
+ * and cannot hang the caller beyond the spawn budget.  On Windows the
+ * raw process exit code lands in *exit_code, so 5 here really is
  * ERROR_ACCESS_DENIED. */
 static gboolean
 run_wevtutil (gchar **standard_output, gchar **standard_error,
@@ -1135,11 +1543,9 @@ run_wevtutil (gchar **standard_output, gchar **standard_error,
 	if (standard_error != NULL)
 		*standard_error = NULL;
 
-	if (!g_spawn_sync (NULL, args, NULL,
-	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDIN_FROM_DEV_NULL,
-	                   NULL, NULL,
-	                   standard_output, standard_error,
-	                   &status, error))
+	if (!spawn_capture (args, SPAWN_TIMEOUT_WEVTUTIL_MS,
+	                    standard_output, standard_error,
+	                    &status, error))
 		return FALSE;
 
 	if (exit_code != NULL)
@@ -1219,46 +1625,40 @@ forget_all_records (void)
 	g_clear_pointer (&seen_records, g_hash_table_destroy);
 }
 
-/* [ poll_events ] */
+/* [ poll_deliver ]
+ * Runs on the GTK main loop (g_idle_add) -- the only place that may
+ * touch the callback, the seen-set and GTK, since the worker thread
+ * goes near none of them. */
 static gboolean
-poll_events (gpointer data)
+poll_deliver (gpointer data)
 {
-	/* Query the Security log for WFP connection events.
-	 * 5156 = permitted, 5157 = blocked. */
-	gchar *output = NULL;
-	gchar *err_text = NULL;
-	gint exit_code = 0;
+	PollResult *result = data;
 	gchar **records;
 	guint new_events = 0;
 
-	(void) data;
+	/* Release the in-flight guard first: even a discarded result
+	 * means the worker is done. */
+	poll_in_flight = FALSE;
 
-	if (!run_wevtutil (&output, &err_text, &exit_code, NULL)) {
-		g_clear_pointer (&output, g_free);
-		g_clear_pointer (&err_text, g_free);
-		return G_SOURCE_CONTINUE;
-	}
+	/* firewalled_log_stop() bumped log_generation while this query
+	 * ran: the batch belongs to a session that has ended. */
+	if (result->generation != log_generation)
+		goto out;
 
-	if (exit_code != 0) {
+	if (result->exit_code != 0) {
 		/* firewalled_log_start() checks this before it starts the
 		 * timer, so reaching here means the right to read the log was
 		 * lost after monitoring began.  Nothing is shown because the
 		 * caller has no way to reach the UI; the alternative -- a
 		 * message every five seconds -- would be worse. */
-		g_free (output);
-		g_free (err_text);
-		return G_SOURCE_CONTINUE;
+		goto out;
 	}
 
-	g_free (err_text);
-
-	if (output == NULL) {
-		g_free (output);
-		return G_SOURCE_CONTINUE;
-	}
+	if (result->output == NULL)
+		goto out;
 
 	/* wevtutil separates records with a blank line. */
-	records = g_strsplit (output, "\r\n\r\n", -1);
+	records = g_strsplit (result->output, "\r\n\r\n", -1);
 
 	for (gint i = 0; records[i] != NULL; i++) {
 		FsHit hit = { 0 };
@@ -1291,10 +1691,64 @@ poll_events (gpointer data)
 	}
 
 	g_strfreev (records);
-	g_free (output);
 
+out:
 	(void) new_events;
 
+	g_free (result->output);
+	g_free (result->err_text);
+	g_free (result);
+
+	return G_SOURCE_REMOVE;
+}
+
+/* [ poll_worker ]
+ * The worker thread itself: all it does is run wevtutil -- a plain
+ * Win32 spawn through spawn_capture(), no COM, no GTK, no shared
+ * state -- and post the result to the main loop. */
+static gpointer
+poll_worker (gpointer data)
+{
+	PollResult *result = data;
+
+	run_wevtutil (&result->output, &result->err_text,
+	              &result->exit_code, NULL);
+
+	g_idle_add (poll_deliver, result);
+	return NULL;
+}
+
+/* [ poll_events ]
+ * The five second tick.  It only dispatches: a tick that finds the
+ * previous query still running skips (poll_in_flight), and the query
+ * itself happens off the main loop, so a slow or wedged child costs
+ * the UI nothing. */
+static gboolean
+poll_events (gpointer data)
+{
+	PollResult *result;
+	GThread *thread;
+
+	(void) data;
+
+	if (poll_in_flight)
+		return G_SOURCE_CONTINUE;
+
+	result = g_new0 (PollResult, 1);
+	result->generation = log_generation;
+
+	poll_in_flight = TRUE;
+
+	thread = g_thread_try_new ("fs-poll", poll_worker, result, NULL);
+	if (thread == NULL) {
+		/* Out of memory: release the guard and retry next tick
+		 * rather than pretend a query is running forever. */
+		poll_in_flight = FALSE;
+		g_free (result);
+		return G_SOURCE_CONTINUE;
+	}
+
+	g_thread_unref (thread);
 	return G_SOURCE_CONTINUE;
 }
 
@@ -1315,12 +1769,15 @@ firewalled_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 	 * truth: monitoring would read as switched on while nothing could
 	 * ever arrive. */
 	if (!run_wevtutil (&output, &err_text, &exit_code, &local_error)) {
-		g_set_error (error,
-		             g_quark_from_static_string ("fs-backend-windows"),
-		             0, "Could not run wevtutil.exe: %s",
-		             local_error != NULL ? local_error->message
-		                                 : "unknown error");
-		g_clear_error (&local_error);
+		/* spawn_capture()'s message already names the program and the
+		 * Windows error ("Could not run wevtutil.exe: ..."). */
+		if (local_error != NULL)
+			g_propagate_error (error, local_error);
+		else
+			g_set_error_literal (
+				error,
+				g_quark_from_static_string ("fs-backend-windows"),
+				0, "Could not run wevtutil.exe");
 		g_clear_pointer (&output, g_free);
 		g_clear_pointer (&err_text, g_free);
 		return FALSE;
@@ -1375,6 +1832,13 @@ firewalled_log_stop (void)
 		g_source_remove (log_source_id);
 		log_source_id = 0;
 	}
+
+	/* A query may still be running on its worker thread.  Bumping the
+	 * generation makes poll_deliver drop its result instead of
+	 * pushing events from a stopped session into the list; the
+	 * in-flight guard it set is released when that delivery arrives,
+	 * so the next session starts polling again on its own. */
+	log_generation++;
 
 	log_callback = NULL;
 	log_user_data = NULL;
