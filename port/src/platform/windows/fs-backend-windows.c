@@ -926,7 +926,17 @@ firewalled_list_connections (void)
 static guint     log_source_id = 0;
 static FsLogFunc log_callback = NULL;
 static gpointer  log_user_data = NULL;
-static gchar   *last_event_id = NULL;
+
+/* Records already handed to the UI.  The query re-reads the latest ten
+ * events on every poll, so each poll must drop whatever earlier ones
+ * delivered.  Remembering a single timestamp was not enough: the batch
+ * shifts as new events arrive, and the old check only recognised the
+ * one record that happened to carry that exact timestamp -- everything
+ * else was re-announced, so the list filled with copies every five
+ * seconds.  Bounded well above the ten the query ever returns. */
+#define SEEN_RECORDS_MAX 64
+static GHashTable *seen_records = NULL;     /* record text -> TRUE      */
+static GQueue      seen_order = G_QUEUE_INIT; /* oldest at the tail     */
 
 /* [ parse_firewall_event ]
  * wevtutil text output from the Security log has the shape:
@@ -993,13 +1003,16 @@ parse_firewall_event (const gchar *text, FsHit *hit)
 				hit->protocol = g_strdup (value);
 			} else if (g_strcmp0 (line, "Source Address") == 0) {
 				hit->source = g_strdup (value);
-			} else if (g_strcmp0 (line, "Source Port") == 0) {
-				hit->port = g_strdup (value);
 			} else if (g_strcmp0 (line, "Destination Address") == 0) {
 				hit->destination = g_strdup (value);
 				got_address = TRUE;
 			} else if (g_strcmp0 (line, "Destination Port") == 0) {
-				hit->out = g_strdup (value);
+				/* DPT=: the port the original displayed -- the
+				 * service port for inbound, the remote port for
+				 * outbound.  The source port is an ephemeral
+				 * client port and was never shown; putting it in
+				 * "port" made every service lookup miss. */
+				hit->port = g_strdup (value);
 			} else if (g_strcmp0 (line, "Direction") == 0) {
 				direction_str = g_strdup (value);
 			} else if (g_strcmp0 (line, "Application Name") == 0) {
@@ -1016,6 +1029,7 @@ parse_firewall_event (const gchar *text, FsHit *hit)
 		g_clear_pointer (&hit->out, g_free);
 		g_clear_pointer (&hit->source, g_free);
 		g_clear_pointer (&hit->destination, g_free);
+		g_clear_pointer (&hit->port, g_free);
 		g_clear_pointer (&hit->protocol, g_free);
 		g_clear_pointer (&hit->service, g_free);
 		g_clear_pointer (&direction_str, g_free);
@@ -1024,28 +1038,45 @@ parse_firewall_event (const gchar *text, FsHit *hit)
 	}
 
 	/* Direction. */
+	gboolean inbound;
+
 	if (direction_str != NULL) {
-		if (g_ascii_strncasecmp (direction_str, "Inbound", 7) == 0)
-			hit->direction = g_strdup ("in");
-		else
-			hit->direction = g_strdup ("out");
+		inbound = g_ascii_strncasecmp (direction_str, "Inbound", 7) == 0;
 		g_free (direction_str);
 	} else {
-		hit->direction = g_strdup ("in");
+		inbound = TRUE;
+	}
+	hit->direction = g_strdup (inbound ? "in" : "out");
+
+	/* The original's In/Out columns showed the interface a packet
+	 * arrived on and left on (IN=, OUT=).  Event 5156/5157 carries no
+	 * interface, so show the local side under In and the remote side
+	 * under Out -- the same local/remote reading, direction aware. */
+	if (inbound) {
+		hit->in  = g_strdup (hit->destination ? hit->destination : "?");
+		hit->out = g_strdup (hit->source ? hit->source : "?");
+	} else {
+		hit->in  = g_strdup (hit->source ? hit->source : "?");
+		hit->out = g_strdup (hit->destination ? hit->destination : "?");
 	}
 
-	/* Local address: we did not capture it separately, so show dest
-	 * for inbound and source for outbound. */
-	hit->in = g_strdup (hit->destination ? hit->destination : "?");
-
-	/* Protocol: numeric to name. */
+	/* Protocol: numeric to name.  Replace in place -- assigning a new
+	 * string over the old one leaked the numeric original on every
+	 * event. */
 	if (hit->protocol != NULL) {
+		const gchar *name = NULL;
+
 		if (g_strcmp0 (hit->protocol, "6") == 0)
-			hit->protocol = g_strdup ("TCP");
+			name = "TCP";
 		else if (g_strcmp0 (hit->protocol, "17") == 0)
-			hit->protocol = g_strdup ("UDP");
+			name = "UDP";
 		else if (g_strcmp0 (hit->protocol, "1") == 0)
-			hit->protocol = g_strdup ("ICMP");
+			name = "ICMP";
+
+		if (name != NULL) {
+			g_free (hit->protocol);
+			hit->protocol = g_strdup (name);
+		}
 	}
 
 	/* Service name from port. */
@@ -1129,6 +1160,65 @@ security_log_denied (gint exit_code, const gchar *stderr_text)
 	        strstr (stderr_text, "Access is denied") != NULL);
 }
 
+/* [ free_hit_fields ]
+ * "hit" is a stack local; fs_hit_free would g_free() the struct itself
+ * and corrupt the heap.  Free only the strings parse allocated. */
+static void
+free_hit_fields (FsHit *hit)
+{
+	g_clear_pointer (&hit->time, g_free);
+	g_clear_pointer (&hit->direction, g_free);
+	g_clear_pointer (&hit->in, g_free);
+	g_clear_pointer (&hit->out, g_free);
+	g_clear_pointer (&hit->source, g_free);
+	g_clear_pointer (&hit->destination, g_free);
+	g_clear_pointer (&hit->port, g_free);
+	g_clear_pointer (&hit->protocol, g_free);
+	g_clear_pointer (&hit->service, g_free);
+}
+
+/* [ record_seen ] / [ remember_record ]
+ * The de-duplication the poll loop runs every record through.  Kept as
+ * named functions so tests can drive them directly: the old inline
+ * "does the record text contain the last timestamp" check re-delivered
+ * almost everything on every poll, and that bug was invisible without
+ * feeding it two identical batches. */
+static gboolean
+record_seen (const gchar *record)
+{
+	return seen_records != NULL &&
+	       g_hash_table_contains (seen_records, record);
+}
+
+static void
+remember_record (const gchar *record)
+{
+	gchar *key;
+
+	if (seen_records == NULL)
+		seen_records = g_hash_table_new_full (g_str_hash, g_str_equal,
+		                                       g_free, NULL);
+
+	/* Bounded: the query only ever returns SEEN_RECORDS_MAX-ish
+	 * records, so the table holds a batch or two, never history. */
+	while (g_queue_get_length (&seen_order) >= SEEN_RECORDS_MAX) {
+		gchar *oldest = g_queue_pop_tail (&seen_order);
+
+		g_hash_table_remove (seen_records, oldest);
+	}
+
+	key = g_strdup (record);
+	g_queue_push_head (&seen_order, key);
+	g_hash_table_insert (seen_records, key, GINT_TO_POINTER (1));
+}
+
+static void
+forget_all_records (void)
+{
+	g_queue_clear (&seen_order);
+	g_clear_pointer (&seen_records, g_hash_table_destroy);
+}
+
 /* [ poll_events ] */
 static gboolean
 poll_events (gpointer data)
@@ -1177,20 +1267,19 @@ poll_events (gpointer data)
 		if (len < 40)
 			continue;
 
-		/* Skip the ones already delivered. */
-		if (last_event_id != NULL &&
-		    strstr (records[i], last_event_id) != NULL)
+		/* Drop anything an earlier poll already delivered: the query
+		 * re-reads the latest ten events every time. */
+		if (record_seen (records[i]))
 			continue;
 
-		if (!parse_firewall_event (records[i], &hit))
+		/* Remember before parsing: a record we cannot parse is still
+		 * delivered again next poll, and would otherwise be parsed
+		 * (and rejected) forever. */
+		remember_record (records[i]);
+
+		if (!parse_firewall_event (records[i], &hit)) {
+			free_hit_fields (&hit);
 			continue;
-
-		/* Remember this record so the next poll does not repeat it. */
-		{
-			gchar *stamp = g_strdup_printf ("%s", hit.time ? hit.time : "");
-
-			g_free (last_event_id);
-			last_event_id = stamp;
 		}
 
 		if (log_callback != NULL)
@@ -1198,18 +1287,7 @@ poll_events (gpointer data)
 
 		new_events++;
 
-		/* Free only the fields parse allocated: "hit" is a stack
-		 * local, so fs_hit_free would try to g_free() it and
-		 * corrupt the heap. */
-		g_clear_pointer (&hit.time, g_free);
-		g_clear_pointer (&hit.direction, g_free);
-		g_clear_pointer (&hit.in, g_free);
-		g_clear_pointer (&hit.out, g_free);
-		g_clear_pointer (&hit.source, g_free);
-		g_clear_pointer (&hit.destination, g_free);
-		g_clear_pointer (&hit.port, g_free);
-		g_clear_pointer (&hit.protocol, g_free);
-		g_clear_pointer (&hit.service, g_free);
+		free_hit_fields (&hit);
 	}
 
 	g_strfreev (records);
@@ -1300,7 +1378,7 @@ firewalled_log_stop (void)
 
 	log_callback = NULL;
 	log_user_data = NULL;
-	g_clear_pointer (&last_event_id, g_free);
+	forget_all_records ();
 }
 
 static gboolean

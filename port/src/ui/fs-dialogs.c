@@ -225,6 +225,25 @@ install_prefs_css (void)
 	prefs_css_installed = TRUE;
 }
 
+/* [ wrap_page ]
+ * Wraps a notebook page in a scrolled window.  The dialog is a fixed
+ * 640x480 while pages like Events, ICMP and Advanced carry more
+ * content than that; without a scrollbar the overflow was simply
+ * clipped and unreachable. */
+static GtkWidget *
+wrap_page (GtkWidget *page)
+{
+	GtkWidget *scroll = gtk_scrolled_window_new (NULL, NULL);
+
+	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+	                                GTK_POLICY_NEVER,
+	                                GTK_POLICY_AUTOMATIC);
+	gtk_container_add (GTK_CONTAINER (scroll), page);
+	gtk_widget_show (page);
+
+	return scroll;
+}
+
 /* [ page_new ] -- a titled page of the notebook. */
 static GtkWidget *
 page_new (const gchar *title)
@@ -833,24 +852,30 @@ fs_dialogs_preferences (GtkWidget *parent)
 	gtk_notebook_set_show_border (GTK_NOTEBOOK (notebook), FALSE);
 
 	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          build_interface_page (&bind), NULL);
+	                          wrap_page (build_interface_page (&bind)), NULL);
 	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          build_events_page (&bind), NULL);
+	                          wrap_page (build_events_page (&bind)), NULL);
 	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          build_policy_page (&bind), NULL);
+	                          wrap_page (build_policy_page (&bind)), NULL);
 	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          build_firewall_page (&bind), NULL);
+	                          wrap_page (build_firewall_page (&bind)), NULL);
 	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          build_network_page (&bind, applies), NULL);
+	                          wrap_page (build_network_page (&bind, applies)),
+	                          NULL);
 	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          build_icmp_page (&bind, applies), NULL);
+	                          wrap_page (build_icmp_page (&bind, applies)),
+	                          NULL);
 	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          build_tos_page (&bind), NULL);
+	                          wrap_page (build_tos_page (&bind)), NULL);
 	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-	                          build_advanced_page (&bind, applies), NULL);
+	                          wrap_page (build_advanced_page (&bind, applies)),
+	                          NULL);
 
 	hbox = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
-	gtk_box_pack_start (GTK_BOX (hbox), scroll, FALSE, FALSE, 0);
+	/* The tree expands too: with it packed FALSE it stayed at its
+	 * 320px request and the dialog looked half-empty on the left while
+	 * pages were clipped on the right. */
+	gtk_box_pack_start (GTK_BOX (hbox), scroll, TRUE, TRUE, 0);
 	gtk_box_pack_start (GTK_BOX (hbox), notebook, TRUE, TRUE, 0);
 
 	area = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
