@@ -413,13 +413,41 @@ read_handle_output (HANDLE handle)
 
 	text = g_malloc ((gsize) size.QuadPart + 1);
 
-	if (size.QuadPart > 0 &&
-	    !ReadFile (handle, text, (DWORD) size.QuadPart, &got, NULL)) {
+	{
+		DWORD want = (DWORD) size.QuadPart;
+		DWORD chunk = 0;
+
+		while (got < want &&
+		       ReadFile (handle, text + got, want - got, &chunk, NULL) &&
+		       chunk > 0)
+			got += chunk;
+	}
+
+	if (got == 0 && size.QuadPart > 0) {
 		g_free (text);
 		return NULL;
 	}
 
-	text[got] = '\0';
+	/* wevtutil /f:text pads fixed-width header values with NUL bytes
+	 * ("Level: Information\0") and terminates the description the
+	 * same way -- seen in real output, not guessed.  Everything
+	 * downstream is C-string based: g_strsplit/strlen would stop at
+	 * the first NUL, discarding every line after it -- addresses,
+	 * ports, direction -- and the record would be rejected as
+	 * address-less, so the list stayed empty with a perfectly
+	 * readable log.  Strip them while the byte count is still known;
+	 * the output is text, and no caller wants the padding. */
+	{
+		gsize j = 0;
+		gsize k;
+
+		for (k = 0; k < got; k++) {
+			if (text[k] != '\0')
+				text[j++] = text[k];
+		}
+		text[j] = '\0';
+	}
+
 	return text;
 }
 
@@ -1625,6 +1653,69 @@ forget_all_records (void)
 	g_clear_pointer (&seen_records, g_hash_table_destroy);
 }
 
+/* [ split_firewall_records ]
+ * Cuts wevtutil /f:text output into one record per event, at every
+ * line starting with "Event[" -- wevtutil's own record marker.
+ *
+ * Blank lines are NOT record separators: a 5156/5157 record carries
+ * them inside its Description block (headline sentence, then the
+ * field sections).  The old blank-line split chopped every record in
+ * two -- the header half has no addresses and was dropped, the field
+ * half had no Date -- which on screen is an empty list no matter how
+ * much traffic there is.  Output without the marker falls back to the
+ * old split so an oddly shaped batch still yields something. */
+static GPtrArray *
+split_firewall_records (const gchar *output)
+{
+	GPtrArray *records = g_ptr_array_new_with_free_func (g_free);
+	gchar **lines;
+	GString *current = NULL;
+	gboolean saw_marker = FALSE;
+
+	if (output == NULL || *output == '\0')
+		return records;
+
+	lines = g_strsplit (output, "\r\n", -1);
+
+	for (gint i = 0; lines[i] != NULL; i++) {
+		if (g_str_has_prefix (lines[i], "Event[")) {
+			saw_marker = TRUE;
+			if (current != NULL)
+				g_ptr_array_add (records,
+				                 g_string_free (current, FALSE));
+			current = g_string_new (NULL);
+		}
+
+		if (current == NULL)
+			current = g_string_new (NULL);  /* text before marker */
+
+		g_string_append (current, lines[i]);
+		g_string_append (current, "\r\n");
+	}
+
+	if (current != NULL)
+		g_ptr_array_add (records, g_string_free (current, FALSE));
+
+	g_strfreev (lines);
+
+	if (!saw_marker) {
+		gchar **chunks;
+		GPtrArray *fallback = g_ptr_array_new_with_free_func (g_free);
+
+		g_ptr_array_unref (records);
+		records = fallback;
+
+		chunks = g_strsplit (output, "\r\n\r\n", -1);
+		for (gint i = 0; chunks[i] != NULL; i++) {
+			if (*chunks[i] != '\0')
+				g_ptr_array_add (records, g_strdup (chunks[i]));
+		}
+		g_strfreev (chunks);
+	}
+
+	return records;
+}
+
 /* [ poll_deliver ]
  * Runs on the GTK main loop (g_idle_add) -- the only place that may
  * touch the callback, the seen-set and GTK, since the worker thread
@@ -1633,7 +1724,7 @@ static gboolean
 poll_deliver (gpointer data)
 {
 	PollResult *result = data;
-	gchar **records;
+	GPtrArray *records;
 	guint new_events = 0;
 
 	/* Release the in-flight guard first: even a discarded result
@@ -1657,27 +1748,27 @@ poll_deliver (gpointer data)
 	if (result->output == NULL)
 		goto out;
 
-	/* wevtutil separates records with a blank line. */
-	records = g_strsplit (result->output, "\r\n\r\n", -1);
+	records = split_firewall_records (result->output);
 
-	for (gint i = 0; records[i] != NULL; i++) {
+	for (guint i = 0; i < records->len; i++) {
+		const gchar *record = g_ptr_array_index (records, i);
 		FsHit hit = { 0 };
-		guint len = strlen (records[i]);
+		guint len = strlen (record);
 
 		if (len < 40)
 			continue;
 
 		/* Drop anything an earlier poll already delivered: the query
 		 * re-reads the latest ten events every time. */
-		if (record_seen (records[i]))
+		if (record_seen (record))
 			continue;
 
 		/* Remember before parsing: a record we cannot parse is still
 		 * delivered again next poll, and would otherwise be parsed
 		 * (and rejected) forever. */
-		remember_record (records[i]);
+		remember_record (record);
 
-		if (!parse_firewall_event (records[i], &hit)) {
+		if (!parse_firewall_event (record, &hit)) {
 			free_hit_fields (&hit);
 			continue;
 		}
@@ -1690,7 +1781,7 @@ poll_deliver (gpointer data)
 		free_hit_fields (&hit);
 	}
 
-	g_strfreev (records);
+	g_ptr_array_unref (records);
 
 out:
 	(void) new_events;
@@ -1750,6 +1841,37 @@ poll_events (gpointer data)
 
 	g_thread_unref (thread);
 	return G_SOURCE_CONTINUE;
+}
+
+/* [ ensure_filtering_audit ]
+ * Event 5156/5157 reach the Security log only when the "Filtering
+ * Platform Connection" audit subcategory is enabled, and stock
+ * Windows ships with it off.  wevtutil can read the log perfectly and
+ * still return nothing, forever -- an empty list that reads as "a
+ * firewall with no traffic".  The caller only gets here after the
+ * read probe succeeded, i.e. while we hold Administrator rights, so
+ * switch the subcategory on before promising to watch.
+ *
+ * auditpol is idempotent and a failure changes nothing: group policy
+ * may lock the setting, and the subcategory name is English-only
+ * (this build ships no translations), in which case monitoring still
+ * runs against whatever the log holds. */
+static void
+ensure_filtering_audit (void)
+{
+	gchar *args[] = {
+		"auditpol.exe", "/set",
+		"/subcategory:Filtering Platform Connection",
+		"/success:enable", "/failure:enable", NULL
+	};
+	gchar *out = NULL;
+	gchar *err_text = NULL;
+
+	if (spawn_capture (args, SPAWN_TIMEOUT_WEVTUTIL_MS,
+	                    &out, &err_text, NULL, NULL)) {
+		g_free (out);
+		g_free (err_text);
+	}
 }
 
 static gboolean
@@ -1814,6 +1936,9 @@ firewalled_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 	}
 
 	g_clear_pointer (&err_text, g_free);
+
+	/* The log is readable; make sure Windows is recording into it. */
+	ensure_filtering_audit ();
 
 	log_callback = callback;
 	log_user_data = user_data;

@@ -35,6 +35,13 @@ cc "$HERE/test-winlog.c" \
    src/core/*.c \
    $(pkg-config --libs glib-2.0 gio-2.0) -lws2_32 -lole32 -loleaut32 -liphlpapi
 
+# The end-to-end test needs a fake wevtutil.exe beside the test
+# binary: CreateProcess searches the process's own directory before
+# System32, so the backend's probe and poll run against canned
+# (byte-honest) records without Administrator rights to read the real
+# Security log.
+cc "$HERE/fake-wevtutil.c" -o "$BUILD_DIR/wevtutil.exe"
+
 "$BUILD_DIR/test-winlog"
 
 # The window-flash probe: runs as a console-less parent (FreeConsole),

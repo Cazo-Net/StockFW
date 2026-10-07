@@ -41,16 +41,44 @@ load_logo_pixbuf (void)
 	return pixbuf;
 }
 
-void
-fs_dialogs_about (GtkWidget *parent)
+/* [ fs_dialogs_about_authors ]
+ * The About credits, pre-escaped for Pango markup.
+ *
+ * GtkAboutDialog's credits view wraps every author in
+ * <span size="small">... and parses the result as markup WITHOUT
+ * escaping the plain-text parts -- it only escapes text around links
+ * (gtkaboutdialog.c, add_credits_section).  A bare '&' therefore
+ * makes Pango fail to parse, and the label falls back to showing the
+ * raw markup: the dialog printed "Created by: <span size=...>Qusai
+ * Fethalrahman - Creator & Original Developer</span>" instead of the
+ * name.  Escaping here is what makes it render.  Exported so
+ * ui-prefs-smoke can run pango_parse_markup() over every string --
+ * the escape is the fix, the parse is the proof.
+ */
+const gchar **
+fs_dialogs_about_authors (void)
 {
-	static const gchar *authors[] = {
+	static const gchar *raw[] = {
 		"Qusai Fethalrahman - Creator & Original Developer",
 		"H3xCore - Developer",
 		"StockFW Project - GTK3 Port, Windows Backend, Copilot",
 		NULL
 	};
+	static gchar *safe[G_N_ELEMENTS (raw)] = { NULL };
+	static gboolean done = FALSE;
 
+	if (!done) {
+		for (guint i = 0; raw[i] != NULL; i++)
+			safe[i] = g_markup_escape_text (raw[i], -1);
+		done = TRUE;
+	}
+
+	return (const gchar **) safe;
+}
+
+void
+fs_dialogs_about (GtkWidget *parent)
+{
 	GtkWidget *dialog = gtk_about_dialog_new ();
 	GdkPixbuf *logo = load_logo_pixbuf ();
 
@@ -61,7 +89,8 @@ fs_dialogs_about (GtkWidget *parent)
 	gtk_about_dialog_set_comments (GTK_ABOUT_DIALOG (dialog),
 	                               "Smart Firewall Configuration Tool\n"
 	                               "with AI-powered anomaly detection.");
-	gtk_about_dialog_set_authors (GTK_ABOUT_DIALOG (dialog), authors);
+	gtk_about_dialog_set_authors (GTK_ABOUT_DIALOG (dialog),
+	                              fs_dialogs_about_authors ());
 	gtk_about_dialog_set_license_type (GTK_ABOUT_DIALOG (dialog),
 	                                    GTK_LICENSE_GPL_3_0);
 	gtk_about_dialog_set_wrap_license (GTK_ABOUT_DIALOG (dialog), TRUE);

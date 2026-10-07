@@ -25,6 +25,16 @@
  *     the query on a worker thread (poll_in_flight goes FALSE only
  *     when the main-loop delivery has run).
  *
+ *  5. The fixtures invented a record format wevtutil never emits.
+ *     Real output carries "Event[n]" markers, indented headers and
+ *     NUL padding; g_strsplit stops at the first NUL and a blank-line
+ *     split cuts records in half, so live events never appeared even
+ *     with the log readable.  On top of that, stock Windows has the
+ *     "Filtering Platform Connection" audit off, so the log holds
+ *     nothing to parse -- log_start now enables it while it holds
+ *     Administrator rights.  The end-to-end test drives the whole
+ *     path through a fake wevtutil.exe whose output is byte-honest.
+ *
  * The static functions are reached by including the backend source,
  * exactly as the parser has no public entry point.  Windows-only: on
  * Linux this test builds nothing.
@@ -54,44 +64,79 @@ static int failures = 0;
 	}                                                         \
 } while (0)
 
-/* A wevtutil /f:text record for one permitted inbound SSH connection:
- * destination port 22, source an ephemeral client port. */
+/* wevtutil /f:text records in the shape the tool really emits --
+ * verified against live output from this machine, not invented:
+ * the "Event[n]" marker at column 0, two-space-indented header
+ * fields, "Description: " with a trailing space, blank lines INSIDE
+ * the record between the headline and the field sections, and NUL
+ * padding after fixed-width values (those are stripped at capture
+ * time in read_handle_output, so record text carries none -- the
+ * end-to-end fake wevtutil.exe does emit them).
+ *
+ * Record A: one permitted inbound SSH connection, destination port
+ * 22, source an ephemeral client port. */
 static const gchar *RECORD_A =
-	"Event Id: 5156\r\n"
-	"Date: 2026-10-07T09:15:01.1000000Z\r\n"
-	"Description:\r\n"
+	"Event[0]\r\n"
+	"  Log Name: Security\r\n"
+	"  Source: Microsoft-Windows-Security-Auditing\r\n"
+	"  Date: 2026-10-07T09:15:01.1000000Z\r\n"
+	"  Event ID: 5156\r\n"
+	"  Task: Filtering Platform Connection\r\n"
+	"  Level: Information\r\n"
+	"  Keyword: Audit Success\r\n"
+	"  Computer: DESKTOP-TEST\r\n"
+	"  Description: \r\n"
 	"The Windows Filtering Platform permitted a connection.\r\n"
 	"\r\n"
-	"Network Information:\r\n"
-	"    Direction: Inbound\r\n"
-	"    Source Address: 192.168.1.50\r\n"
-	"    Source Port: 51234\r\n"
-	"    Destination Address: 192.168.1.10\r\n"
-	"    Destination Port: 22\r\n"
-	"    Protocol: 6\r\n"
-	"    Application Name: \\device\\harddiskvolume3\\openssh\\sshd.exe\r\n";
+	"    Application Information:\r\n"
+	"        Process ID: 0x2a3c\r\n"
+	"        Application Name: \\device\\harddiskvolume3\\openssh\\sshd.exe\r\n"
+	"\r\n"
+	"    Network Information:\r\n"
+	"        Direction: Inbound\r\n"
+	"        Source Address: 192.168.1.50\r\n"
+	"        Source Port: 51234\r\n"
+	"        Destination Address: 192.168.1.10\r\n"
+	"        Destination Port: 22\r\n"
+	"        Protocol: 6\r\n";
 
-/* A blocked outbound DNS query: destination port 53, UDP. */
+/* Record B: a blocked outbound DNS query -- destination port 53,
+ * UDP. */
 static const gchar *RECORD_B =
-	"Event Id: 5157\r\n"
-	"Date: 2026-10-07T09:15:02.2000000Z\r\n"
-	"Description:\r\n"
+	"Event[1]\r\n"
+	"  Log Name: Security\r\n"
+	"  Source: Microsoft-Windows-Security-Auditing\r\n"
+	"  Date: 2026-10-07T09:15:02.2000000Z\r\n"
+	"  Event ID: 5157\r\n"
+	"  Task: Filtering Platform Connection\r\n"
+	"  Level: Information\r\n"
+	"  Keyword: Audit Success\r\n"
+	"  Computer: DESKTOP-TEST\r\n"
+	"  Description: \r\n"
 	"The Windows Filtering Platform has blocked a connection.\r\n"
 	"\r\n"
-	"Network Information:\r\n"
-	"    Direction: Outbound\r\n"
-	"    Source Address: 192.168.1.10\r\n"
-	"    Source Port: 49152\r\n"
-	"    Destination Address: 8.8.8.8\r\n"
-	"    Destination Port: 53\r\n"
-	"    Protocol: 17\r\n"
-	"    Application Name: \\device\\harddiskvolume3\\app\\resolver.exe\r\n";
+	"    Application Information:\r\n"
+	"        Process ID: 0x4e20\r\n"
+	"        Application Name: \\device\\harddiskvolume3\\app\\resolver.exe\r\n"
+	"\r\n"
+	"    Network Information:\r\n"
+	"        Direction: Outbound\r\n"
+	"        Source Address: 192.168.1.10\r\n"
+	"        Source Port: 49152\r\n"
+	"        Destination Address: 8.8.8.8\r\n"
+	"        Destination Port: 53\r\n"
+	"        Protocol: 17\r\n";
 
-/* No destination address: must be rejected, not shown half-filled. */
+/* A record with no destination address: must be rejected, not shown
+ * half-filled. */
 static const gchar *RECORD_JUNK =
-	"Event Id: 5156\r\n"
-	"Date: 2026-10-07T09:15:03.3000000Z\r\n"
-	"Description:\r\n"
+	"Event[2]\r\n"
+	"  Log Name: Security\r\n"
+	"  Date: 2026-10-07T09:15:03.3000000Z\r\n"
+	"  Event ID: 5156\r\n"
+	"  Description: \r\n"
+	"The Windows Filtering Platform permitted a connection.\r\n"
+	"\r\n"
 	"Something without any network information at all.\r\n";
 
 static void
@@ -170,6 +215,48 @@ test_parse_junk (void)
 	       "a rejected record leaks no fields");
 
 	free_hit_fields (&hit);
+}
+
+/* [ test_split_real_format ]
+ * The batch exactly as wevtutil hands it over: "Event[n]" markers and
+ * blank lines inside each record.  A blank-line split would cut every
+ * record in half -- header half has no address (dropped), field half
+ * has no Date -- which on screen is an empty event list no matter how
+ * much traffic there is. */
+static void
+test_split_real_format (void)
+{
+	gchar *batch = g_strconcat (RECORD_A, "\r\n", RECORD_B, NULL);
+	GPtrArray *records = split_firewall_records (batch);
+	FsHit hit = { 0 };
+
+	CHECK (records->len == 2,
+	       "the batch splits into its two records (got %u)",
+	       records->len);
+
+	if (records->len == 2) {
+		CHECK (parse_firewall_event (g_ptr_array_index (records, 0),
+		                             &hit),
+		       "record 0 parses after the split");
+		CHECK (g_strcmp0 (hit.port, "22") == 0,
+		       "record 0 is the SSH connection (got %s)",
+		       hit.port ? hit.port : "(null)");
+		free_hit_fields (&hit);
+
+		CHECK (parse_firewall_event (g_ptr_array_index (records, 1),
+		                             &hit),
+		       "record 1 parses after the split");
+		CHECK (g_strcmp0 (hit.port, "53") == 0 &&
+		       hit.service != NULL &&
+		       strstr (hit.service, "[BLOCKED]") != NULL,
+		       "record 1 is the blocked DNS query (port %s, %s)",
+		       hit.port ? hit.port : "(null)",
+		       hit.service ? hit.service : "(null)");
+		free_hit_fields (&hit);
+	}
+
+	g_ptr_array_unref (records);
+	g_free (batch);
 }
 
 /* The heart of it: what wevtutil hands back every five seconds when
@@ -460,6 +547,134 @@ test_poll_async (void)
 	}
 }
 
+/* [ test_e2e_delivery ]
+ * End-to-end through every stage the production path uses, without
+ * needing Administrator rights: a fake wevtutil.exe sits beside the
+ * test binary (CreateProcess finds it before System32) and returns a
+ * canned two-record Security batch -- real format, NUL padding
+ * included.  log_start's probe, the worker thread, spawn_capture's
+ * temp-file capture, NUL stripping, Event[ splitting, parsing and
+ * main-loop delivery all have to work for the hits to appear; if any
+ * stage breaks (e.g. NUL stripping regresses and g_strsplit
+ * truncates at the padding), the count comes out 0 and this fails. */
+static guint   e2e_hits = 0;
+static gchar  *e2e_port = NULL;
+static gchar  *e2e_direction = NULL;
+static gchar  *e2e_in = NULL;
+static gchar  *e2e_out = NULL;
+
+static void
+on_e2e_hit (const FsHit *hit, gpointer user_data)
+{
+	(void) user_data;
+
+	e2e_hits++;
+	if (e2e_hits == 1) {
+		e2e_port = g_strdup (hit->port);
+		e2e_direction = g_strdup (hit->direction);
+		e2e_in = g_strdup (hit->in);
+		e2e_out = g_strdup (hit->out);
+	}
+}
+
+/* Pump the main loop until the in-flight query has been delivered. */
+static void
+e2e_pump (void)
+{
+	gint waits;
+
+	for (waits = 0; poll_in_flight && waits < 500; waits++) {
+		g_main_context_iteration (NULL, FALSE);
+		g_usleep (10000);   /* 5s cap; the fake answers in ms */
+	}
+	g_main_context_iteration (NULL, FALSE);
+}
+
+static void
+test_e2e_delivery (void)
+{
+	GError *error = NULL;
+	gboolean started;
+
+	/* The fake must be next to the test binary; test-winlog.sh
+	 * builds it.  Failing loudly here beats failing obscurely in the
+	 * probe below. */
+	{
+		gchar *self = self_exe ();
+		gchar *dir = self != NULL ? g_path_get_dirname (self) : NULL;
+		gchar *fake = dir != NULL
+		              ? g_build_filename (dir, "wevtutil.exe", NULL)
+		              : NULL;
+		gunichar2 *wfake = fake != NULL
+		                   ? g_utf8_to_utf16 (fake, -1, NULL, NULL, NULL)
+		                   : NULL;
+		gboolean present = wfake != NULL &&
+		                   GetFileAttributesW (wfake) !=
+		                   INVALID_FILE_ATTRIBUTES;
+
+		CHECK (present,
+		       "fake wevtutil.exe sits beside the test binary");
+		g_free (wfake);
+		g_free (fake);
+		g_free (dir);
+		g_free (self);
+
+		if (!present)
+			return;
+	}
+
+	forget_all_records ();
+	e2e_hits = 0;
+	g_clear_pointer (&e2e_port, g_free);
+	g_clear_pointer (&e2e_direction, g_free);
+	g_clear_pointer (&e2e_in, g_free);
+	g_clear_pointer (&e2e_out, g_free);
+
+	started = firewalled_log_start (on_e2e_hit, NULL, &error);
+
+	CHECK (started,
+	       "log_start's probe runs against the fake wevtutil%s%s",
+	       started ? "" : ": ",
+	       started ? "" : (error != NULL ? error->message : "no error"));
+
+	if (!started) {
+		g_clear_error (&error);
+		return;
+	}
+
+	poll_events (NULL);
+	e2e_pump ();
+
+	CHECK (e2e_hits == 2,
+	       "both canned events arrive end-to-end (got %u)", e2e_hits);
+	CHECK (g_strcmp0 (e2e_port, "22") == 0,
+	       "the delivered hit carries destination port 22 (got %s)",
+	       e2e_port ? e2e_port : "(null)");
+	CHECK (g_strcmp0 (e2e_direction, "in") == 0,
+	       "the delivered hit reads direction in (got %s)",
+	       e2e_direction ? e2e_direction : "(null)");
+	CHECK (g_strcmp0 (e2e_in, "192.168.1.10") == 0 &&
+	       g_strcmp0 (e2e_out, "192.168.1.50") == 0,
+	       "the delivered hit shows local/remote addresses");
+
+	/* The fake answers every poll with the same batch: the second
+	 * one must deliver nothing -- de-duplication through the real
+	 * async path, the bug this suite was first written for. */
+	poll_events (NULL);
+	e2e_pump ();
+
+	CHECK (e2e_hits == 2,
+	       "the second poll re-delivers nothing (got %u)", e2e_hits);
+
+	firewalled_log_stop ();
+	CHECK (!poll_in_flight, "monitoring stopped cleanly");
+
+	g_free (e2e_port);    e2e_port = NULL;
+	g_free (e2e_direction); e2e_direction = NULL;
+	g_free (e2e_in);      e2e_in = NULL;
+	g_free (e2e_out);     e2e_out = NULL;
+}
+
 /* [ run_spawn_probe ]
  * The real teeth for the window-flash bug, run as a separate
  * invocation (--spawn-probe) from test-winlog.sh after FreeConsole().
@@ -582,12 +797,14 @@ main (int argc, char **argv)
 	test_parse_inbound ();
 	test_parse_blocked ();
 	test_parse_junk ();
+	test_split_real_format ();
 	test_dedup_batches ();
 	test_dedup_bounded ();
 	test_spawn_output_capture ();
 	test_spawn_no_console ();
 	test_spawn_timeout ();
 	test_poll_async ();
+	test_e2e_delivery ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

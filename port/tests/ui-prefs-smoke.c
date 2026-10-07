@@ -15,6 +15,11 @@
  * or XDG_CONFIG_HOME (Linux) at a scratch directory, so Accept cannot
  * disturb the user's real settings.
  *
+ * It also asserts the About dialog's credits are valid Pango markup:
+ * GtkAboutDialog renders authors WITHOUT escaping them, so the bare
+ * '&' in the creator line once made Pango fail and the raw
+ * <span size=...> tags showed on screen instead of the name.
+ *
  *----------------------------------------------------------------------*/
 #include <gtk/gtk.h>
 
@@ -235,6 +240,60 @@ main (int argc, char **argv)
 
 	gtk_init (&argc, &argv);
 	fs_prefs_load ();
+
+	/* About credits: GtkAboutDialog parses the author strings as
+	 * markup without escaping them (see fs-dialogs.c), so every
+	 * string must be valid Pango markup -- and the creator line must
+	 * still READ as written once parsed, neither mangled nor
+	 * double-escaped.  Without g_markup_escape_text() the bare '&'
+	 * fails here, which is exactly what shipped: the dialog showed
+	 * the raw <span size=...> tags. */
+	{
+		const gchar **authors = fs_dialogs_about_authors ();
+		gchar *creator = NULL;
+
+		if (authors == NULL || authors[0] == NULL) {
+			g_printerr ("ui-prefs-smoke: FAILED, no About authors\n");
+			failed = TRUE;
+		} else {
+			for (guint i = 0; authors[i] != NULL; i++) {
+				GError *error = NULL;
+				gchar *plain = NULL;
+
+				if (!pango_parse_markup (authors[i], -1, '\0',
+				                          NULL, &plain, NULL,
+				                          &error)) {
+					g_printerr ("ui-prefs-smoke: FAILED, "
+					            "about author %u \"%s\" is "
+					            "not valid markup: %s\n",
+					            i, authors[i],
+					            error != NULL
+					            ? error->message : "?");
+					failed = TRUE;
+				} else {
+					g_print ("ui-prefs-smoke: about author "
+					         "%u renders as: %s\n",
+					         i, plain != NULL ? plain : "");
+					if (i == 0) {
+						creator = plain;
+						plain = NULL;
+					}
+				}
+				g_clear_error (&error);
+				g_free (plain);
+			}
+
+			if (creator != NULL &&
+			    g_strcmp0 (creator,
+			               "Qusai Fethalrahman - Creator & "
+			               "Original Developer") != 0) {
+				g_printerr ("ui-prefs-smoke: FAILED, creator "
+				            "line renders as \"%s\"\n", creator);
+				failed = TRUE;
+			}
+		}
+		g_free (creator);
+	}
 
 	g_timeout_add (SMOKE_STEP_MS, drive_dialog, NULL);
 

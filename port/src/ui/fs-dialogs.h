@@ -6,6 +6,11 @@
 G_BEGIN_DECLS
 
 void fs_dialogs_about   (GtkWidget *parent);
+
+/* About credits, escaped for GtkAboutDialog's markup rendering (it
+ * parses authors as markup WITHOUT escaping them; see fs-dialogs.c).
+ * ui-prefs-smoke asserts pango_parse_markup() accepts every string. */
+const gchar **fs_dialogs_about_authors (void);
 void fs_dialogs_error   (GtkWidget *parent,
                          const gchar *header,
                          const gchar *message);
