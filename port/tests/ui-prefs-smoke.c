@@ -134,6 +134,44 @@ drive_dialog (gpointer data)
 
 	model = gtk_tree_view_get_model (GTK_TREE_VIEW (tree));
 
+	/* A tree with a model but no column renders as a blank box --
+	 * exactly the bug that shipped once.  The model walk below would
+	 * still pass, so the column is checked separately. */
+	if (gtk_tree_view_get_n_columns (GTK_TREE_VIEW (tree)) < 1) {
+		g_printerr ("ui-prefs-smoke: FAILED, section tree has no "
+		            "column, it would render empty\n");
+		failed = TRUE;
+		gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
+		return G_SOURCE_REMOVE;
+	}
+
+	{
+		GList *columns = gtk_tree_view_get_columns (
+			GTK_TREE_VIEW (tree));
+		GList *l;
+		gboolean has_text_renderer = FALSE;
+
+		for (l = columns; l != NULL; l = l->next) {
+			GList *cells = gtk_cell_layout_get_cells (
+				GTK_CELL_LAYOUT (l->data));
+
+			for (GList *c = cells; c != NULL; c = c->next) {
+				if (GTK_IS_CELL_RENDERER_TEXT (c->data))
+					has_text_renderer = TRUE;
+			}
+			g_list_free (cells);
+		}
+		g_list_free (columns);
+
+		if (!has_text_renderer) {
+			g_printerr ("ui-prefs-smoke: FAILED, section tree "
+			            "column has no text renderer\n");
+			failed = TRUE;
+			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
+			return G_SOURCE_REMOVE;
+		}
+	}
+
 	if (paths == NULL)
 		paths = walk_paths (model, NULL, NULL);
 

@@ -810,6 +810,8 @@ fs_dialogs_preferences (GtkWidget *parent)
 	GtkWidget *hbox, *tree, *notebook, *scroll;
 	GtkWidget *area;
 	GtkTreeModel *model;
+	GtkCellRenderer *renderer;
+	GtkTreeViewColumn *column;
 	gboolean applies = fs_backend ()->uses_settings;
 	gint response;
 
@@ -819,6 +821,29 @@ fs_dialogs_preferences (GtkWidget *parent)
 	gtk_window_set_title (GTK_WINDOW (dialog), _("Preferences"));
 	gtk_window_set_modal (GTK_WINDOW (dialog), TRUE);
 	gtk_window_set_default_size (GTK_WINDOW (dialog), 640, 480);
+
+	/* Clamp to the screen: on a narrow or DPI-scaled display a fixed
+	 * 640 ran past the right edge and took Accept with it. */
+	{
+		GdkDisplay *display = gdk_display_get_default ();
+
+		if (display != NULL) {
+			GdkMonitor *monitor =
+				gdk_display_get_primary_monitor (display);
+
+			if (monitor != NULL) {
+				GdkRectangle workarea;
+
+				gdk_monitor_get_workarea (monitor, &workarea);
+
+				if (workarea.width > 0 && 640 > workarea.width)
+					gtk_window_set_default_size (
+						GTK_WINDOW (dialog),
+						MAX (workarea.width - 20, 400),
+						MIN (480, workarea.height - 20));
+			}
+		}
+	}
 
 	if (parent != NULL) {
 		gtk_window_set_transient_for (GTK_WINDOW (dialog),
@@ -836,6 +861,17 @@ fs_dialogs_preferences (GtkWidget *parent)
 	model = create_sections_model ();
 	tree = gtk_tree_view_new_with_model (model);
 	g_object_unref (model);
+
+	/* Without this the sidebar renders as a blank white box: a
+	 * GtkTreeView draws only through cell renderers, so a model with
+	 * eight rows and no column still shows nothing.  The original got
+	 * this from Glade (preferences.c line 929) and the port initially
+	 * dropped it. */
+	renderer = gtk_cell_renderer_text_new ();
+	column = gtk_tree_view_column_new_with_attributes ("", renderer,
+	                                                   "text", 1, NULL);
+	gtk_tree_view_append_column (GTK_TREE_VIEW (tree), column);
+
 	gtk_tree_view_set_headers_visible (GTK_TREE_VIEW (tree), FALSE);
 	gtk_tree_view_set_enable_search (GTK_TREE_VIEW (tree), FALSE);
 	gtk_widget_set_size_request (tree, 175, 320);
