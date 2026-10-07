@@ -85,7 +85,7 @@ fs_dialogs_about (GtkWidget *parent)
 	gtk_about_dialog_set_program_name (GTK_ABOUT_DIALOG (dialog), "StockFW");
 	gtk_about_dialog_set_version (GTK_ABOUT_DIALOG (dialog), FS_VERSION);
 	gtk_about_dialog_set_copyright (GTK_ABOUT_DIALOG (dialog),
-	                                "(C) 2000-2026 StockFW Project");
+	                                "(C) 04-10-2026 StockFW Project");
 	gtk_about_dialog_set_comments (GTK_ABOUT_DIALOG (dialog),
 	                               "Smart Firewall Configuration Tool\n"
 	                               "with AI-powered anomaly detection.");
