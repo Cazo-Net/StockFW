@@ -84,6 +84,16 @@ Section "Main Application" SecMain
     SetOutPath "$INSTDIR"
     File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\bin\*.dll"
 
+    ; GLib runs children through gspawn-win64-helper*.exe (exec'd, never
+    ; linked, so no dependency scan sees them).  The *.dll line above
+    ; silently skipped them -- they are .exe -- and the installed copy
+    ; then failed every g_spawn with "Failed to execute helper program
+    ; (No such file or directory)": wevtutil never ran, Events stayed
+    ; empty with that error, netsh could not apply rules.  Not /nonfatal:
+    ; an installer missing these is broken, so makensis must fail.
+    File "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\bin\gspawn-win64-helper.exe"
+    File "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\bin\gspawn-win64-helper-console.exe"
+
     ; GTK3 support directories (modules, themes, icons, locales)
     SetOutPath "$INSTDIR\lib"
     File /nonfatal /r "${PROJECT_DIR}\installer\nsis\stage\gtk-runtime\lib\*"
@@ -202,6 +212,9 @@ Section Uninstall
 
     ; Remove ALL DLLs in install root
     Delete "$INSTDIR\*.dll"
+    ; The spawn helpers are .exe, so *.dll never covered them.
+    Delete "$INSTDIR\gspawn-win64-helper.exe"
+    Delete "$INSTDIR\gspawn-win64-helper-console.exe"
 
     ; Remove GTK support directories
     RMDir /r "$INSTDIR\lib"
