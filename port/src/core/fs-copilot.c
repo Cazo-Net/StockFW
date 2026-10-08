@@ -32,6 +32,15 @@ struct _FsCopilot
 	gboolean learning_enabled;
 	gdouble anomaly_threshold;      /* Standard deviations for anomaly */
 	guint min_samples_for_baseline; /* Min connections before analyzing */
+
+	/* Sentinel (1.0.4): covert-channel and fan-out state.  Arrival
+	 * times are bucketed to whole seconds, so a polled batch of
+	 * records counts as one moment instead of a fake burst. */
+	GHashTable *beacon_stamps;      /* "host:port" -> GArray<gint64> */
+	GHashTable *beacon_reported;    /* "host:port" -> TRUE           */
+	GHashTable *fanout_seen;        /* host -> last bucketed second  */
+	GHashTable *fanout_blocked;     /* blocked host -> bucketed sec  */
+	gboolean    fanout_reported;    /* current window already told   */
 };
 
 /* Forward declarations. */
@@ -50,9 +59,26 @@ static gboolean is_anomalous_time (FsAppProfile *profile);
 static FsInsight *create_insight (FsInsightType type,
                                   FsCopilotSeverity severity,
                                   const gchar *title,
-                                  const gchar *description,
+                                  gchar *description,
                                   const gchar *app_name,
                                   const gchar *destination);
+
+/* ---- Sentinel thresholds (exercised by tests/test-core.sh) --------- */
+#define FS_SENTINEL_BEACON_MIN_SAMPLES 6    /* contacts before judging   */
+#define FS_SENTINEL_BEACON_MAX_CV      0.30 /* interval regularity       */
+#define FS_SENTINEL_BEACON_MIN_MEAN_S  10   /* seconds between contacts  */
+#define FS_SENTINEL_BEACON_MAX_MEAN_S  600
+#define FS_SENTINEL_BEACON_MAX_STAMPS  32
+#define FS_SENTINEL_FANOUT_WINDOW_S    60   /* rolling window, seconds   */
+#define FS_SENTINEL_FANOUT_LIMIT       60   /* distinct hosts, any       */
+#define FS_SENTINEL_FANOUT_BLOCKED     10   /* distinct hosts, blocked   */
+
+static FsInsight *sentinel_beacon_check (FsCopilot *copilot,
+                                         const FsHit *hit,
+                                         gint64 now_us);
+static FsInsight *sentinel_fanout_check (FsCopilot *copilot,
+                                         const FsHit *hit,
+                                         gint64 now_us);
 /* Note: simulate_against_rules() was declared here once but never
  * written or called.  fs_copilot_simulate() says in its own comment
  * that it still uses heuristics rather than the rule engine, which is
@@ -71,6 +97,17 @@ fs_copilot_new (void)
 	copilot->learning_enabled = TRUE;
 	copilot->anomaly_threshold = 2.0;       /* 2 standard deviations */
 	copilot->min_samples_for_baseline = 10; /* Need 10 connections baseline */
+
+	copilot->beacon_stamps = g_hash_table_new_full (
+		g_str_hash, g_str_equal, g_free,
+		(GDestroyNotify) g_array_unref);
+	copilot->beacon_reported = g_hash_table_new_full (
+		g_str_hash, g_str_equal, g_free, NULL);
+	copilot->fanout_seen = g_hash_table_new_full (
+		g_str_hash, g_str_equal, g_free, NULL);
+	copilot->fanout_blocked = g_hash_table_new_full (
+		g_str_hash, g_str_equal, g_free, NULL);
+	copilot->fanout_reported = FALSE;
 
 	return copilot;
 }
@@ -103,6 +140,10 @@ fs_copilot_free (FsCopilot *copilot)
 		return;
 
 	g_hash_table_unref (copilot->profiles);
+	g_hash_table_unref (copilot->beacon_stamps);
+	g_hash_table_unref (copilot->beacon_reported);
+	g_hash_table_unref (copilot->fanout_seen);
+	g_hash_table_unref (copilot->fanout_blocked);
 	g_list_free_full (copilot->insights, (GDestroyNotify) fs_insight_free);
 	g_free (copilot);
 }
@@ -110,6 +151,14 @@ fs_copilot_free (FsCopilot *copilot)
 /* [ fs_copilot_feed_event ] */
 void
 fs_copilot_feed_event (FsCopilot *copilot, const FsHit *hit)
+{
+	fs_copilot_feed_event_at (copilot, hit, g_get_monotonic_time ());
+}
+
+/* [ fs_copilot_feed_event_at ] */
+void
+fs_copilot_feed_event_at (FsCopilot *copilot, const FsHit *hit,
+                          gint64 now_us)
 {
 	if (copilot == NULL || hit == NULL || !copilot->learning_enabled)
 		return;
@@ -144,6 +193,25 @@ fs_copilot_feed_event (FsCopilot *copilot, const FsHit *hit)
 
 	app_profile_record_connection (profile, remote_ip, port, protocol,
 	                               inbound, 0);
+
+	/* Sentinel runs on every event, baseline or not: a control
+	 * channel has to be caught in its first minutes, not after the
+	 * learning baseline has had its 10 samples. */
+	{
+		FsInsight *beacon = sentinel_beacon_check (copilot, hit, now_us);
+		FsInsight *fanout = sentinel_fanout_check (copilot, hit, now_us);
+
+		if (beacon != NULL) {
+			beacon->timestamp = time (NULL);
+			copilot->insights = g_list_prepend (copilot->insights,
+			                                    beacon);
+		}
+		if (fanout != NULL) {
+			fanout->timestamp = time (NULL);
+			copilot->insights = g_list_prepend (copilot->insights,
+			                                    fanout);
+		}
+	}
 
 	/* Analyze for anomalies if we have enough baseline. */
 	if (profile->total_connections >= copilot->min_samples_for_baseline)
@@ -203,7 +271,8 @@ fs_copilot_feed_event (FsCopilot *copilot, const FsHit *hit)
 
 		if (insight != NULL)
 		{
-			insight->application = g_strdup (app_name);
+			/* create_insight() already carried the application
+			 * name; re-assigning it here leaked the first copy. */
 			insight->timestamp = time (NULL);
 			copilot->insights = g_list_prepend (copilot->insights, insight);
 		}
@@ -513,6 +582,57 @@ fs_simulation_result_free (FsSimulationResult *result)
 	g_free (result);
 }
 
+/* [ fs_insight_to_rule ] */
+FsRule *
+fs_insight_to_rule (const FsInsight *insight)
+{
+	if (insight == NULL || insight->rule_csv == NULL ||
+	    *insight->rule_csv == '\0')
+		return NULL;
+
+	return fs_rule_from_csv (insight->rule_kind, insight->rule_csv);
+}
+
+/* [ fs_insight_apply ]
+ * Stage an insight's rule: add a copy to the policy and persist.  The
+ * persist helper rolls the store back when the write fails, so FALSE
+ * here always means "the disk and the store do not carry this rule". */
+gboolean
+fs_insight_apply (const FsInsight *insight, FsPolicy *policy)
+{
+	FsRule *rule = fs_insight_to_rule (insight);
+	gboolean ok;
+
+	if (rule == NULL)
+		return FALSE;
+
+	if (policy == NULL) {
+		fs_rule_free (rule);
+		return FALSE;
+	}
+
+	ok = fs_policy_add_persist (policy, rule);
+	fs_rule_free (rule);
+	return ok;
+}
+
+/* [ fs_insight_is_auto_safe ]
+ * The auto-block invariant, in one place: an insight may be staged
+ * WITHOUT a human only when its rule can only TIGHTEN the policy --
+ * an outbound deny.  Suggestions that open things (service allows,
+ * which legacy insights carry for the user's confirmed Apply button)
+ * are never safe to stage automatically, whatever their flag says. */
+gboolean
+fs_insight_is_auto_safe (const FsInsight *insight)
+{
+	if (insight == NULL || insight->rule_csv == NULL ||
+	    *insight->rule_csv == '\0')
+		return FALSE;
+
+	return insight->rule_kind == FS_RULE_OUTBOUND_DENY_TO ||
+	       insight->rule_kind == FS_RULE_OUTBOUND_DENY_SERVICE;
+}
+
 /* [ app_profile_new ] */
 static FsAppProfile *
 app_profile_new (const gchar *name, const gchar *path)
@@ -656,12 +776,231 @@ is_anomalous_time (FsAppProfile *profile)
 	return FALSE;
 }
 
+/* ---- Sentinel: covert-channel and fan-out detection ---------------- */
+
+/* [ sentinel_hit_is_inbound ]
+ * The rogue-agent problem is egress: what leaves the host.  Sentinel
+ * watches outbound events only. */
+static gboolean
+sentinel_hit_is_inbound (const FsHit *hit)
+{
+	if (hit->direction == NULL)
+		return FALSE;
+
+	return g_ascii_strcasecmp (hit->direction, "In") == 0 ||
+	       g_ascii_strcasecmp (hit->direction, "Inbound") == 0;
+}
+
+/* [ sentinel_hit_is_blocked ]
+ * The Windows backend appends " [BLOCKED]" to the service field of
+ * dropped events; blocked fan-out is the strongest scan signal. */
+static gboolean
+sentinel_hit_is_blocked (const FsHit *hit)
+{
+	return hit->service != NULL &&
+	       strstr (hit->service, " [BLOCKED]") != NULL;
+}
+
+/* [ sentinel_beacon_check ]
+ * Regularity, not content: a host contacted every N seconds with
+ * metronomic intervals is running a check-in loop, because humans,
+ * page loads and even scheduled jobs jitter.  Arrival times are
+ * bucketed to whole seconds (a polled batch is one moment), the
+ * interval series is capped, and each host:port is reported once. */
+static FsInsight *
+sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us)
+{
+	const gchar *dst, *port;
+	gchar *key;
+	gboolean key_owned = FALSE;
+	GArray *stamps;
+	gint64 sec, last, sum = 0;
+	gdouble mean, var = 0.0;
+	guint i, n_diff;
+
+	if (sentinel_hit_is_inbound (hit))
+		return NULL;
+
+	dst  = hit->destination;
+	port = hit->port;
+	if (dst == NULL || *dst == '\0' || port == NULL || *port == '\0')
+		return NULL;
+
+	sec = now_us / G_USEC_PER_SEC;
+	key = g_strdup_printf ("%s:%s", dst, port);
+
+	stamps = g_hash_table_lookup (copilot->beacon_stamps, key);
+	if (stamps == NULL) {
+		stamps = g_array_new (FALSE, TRUE, sizeof (gint64));
+		g_hash_table_insert (copilot->beacon_stamps, key, stamps);
+		key_owned = TRUE;
+	}
+
+	if (stamps->len == 0) {
+		g_array_append_val (stamps, sec);
+	} else {
+		last = g_array_index (stamps, gint64, stamps->len - 1);
+
+		if (last < sec) {
+			g_array_append_val (stamps, sec);
+			if (stamps->len > FS_SENTINEL_BEACON_MAX_STAMPS)
+				g_array_remove_index (stamps, 0);
+		}
+		/* last == sec: same-second batch, no new information. */
+	}
+
+	if (stamps->len < FS_SENTINEL_BEACON_MIN_SAMPLES)
+		goto out;
+
+	n_diff = stamps->len - 1;
+	for (i = 0; i < n_diff; i++)
+		sum += g_array_index (stamps, gint64, i + 1) -
+		       g_array_index (stamps, gint64, i);
+
+	mean = (gdouble) sum / n_diff;
+	for (i = 0; i < n_diff; i++) {
+		gdouble d = (gdouble) (g_array_index (stamps, gint64, i + 1) -
+		                       g_array_index (stamps, gint64, i));
+
+		var += (d - mean) * (d - mean);
+	}
+
+	/* Regularity as cv^2 against the threshold -- no sqrt(), so no
+	 * libm dependency in the test build. */
+	if (mean < FS_SENTINEL_BEACON_MIN_MEAN_S ||
+	    mean > FS_SENTINEL_BEACON_MAX_MEAN_S ||
+	    var / n_diff > (FS_SENTINEL_BEACON_MAX_CV *
+	                    FS_SENTINEL_BEACON_MAX_CV) * mean * mean)
+		goto out;
+
+	if (g_hash_table_contains (copilot->beacon_reported, key))
+		goto out;
+
+	g_hash_table_insert (copilot->beacon_reported, g_strdup (key),
+	                     GINT_TO_POINTER (1));
+
+	{
+		FsInsight *insight = create_insight (
+			FS_INSIGHT_BEACON, FS_COPILOT_CRITICAL,
+			_("Periodic beacon traffic detected"),
+			g_strdup_printf (
+				_("Connection to %s:%s repeated %u times at "
+				  "near-identical intervals of about %d "
+				  "seconds. Traffic this metronomic is the "
+				  "signature of a control channel checking "
+				  "in. StockFW suggests blocking further "
+				  "outbound traffic to this destination."),
+				dst, port, stamps->len, (gint) (mean + 0.5)),
+			hit->service, dst);
+
+		insight->suggested_rule = g_strdup_printf (
+			_("Block outbound traffic to %s"), dst);
+		insight->rule_csv = g_strdup_printf (
+			"%s, %s", dst, "Sentinel: periodic beacon");
+		insight->rule_kind = FS_RULE_OUTBOUND_DENY_TO;
+		insight->auto_applicable = TRUE;
+
+		if (!key_owned)
+			g_free (key);
+		return insight;
+	}
+
+out:
+	if (!key_owned)
+		g_free (key);
+	return NULL;
+}
+
+/* [ sentinel_fanout_check ]
+ * One program reaching many distinct hosts inside a short window is a
+ * scan, a worm or data leaving by many doors.  Blocked hosts count on
+ * their own, lower, threshold: legitimate bulk traffic is mostly
+ * allowed, scanning is mostly refused.  One report per window; the
+ * episode ends when the window empties. */
+static FsInsight *
+sentinel_fanout_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us)
+{
+	const gchar *dst;
+	gint64 sec, window_start;
+	guint n_any, n_blocked;
+	GHashTableIter iter;
+	gpointer k, v;
+	FsInsight *insight;
+
+	if (sentinel_hit_is_inbound (hit))
+		return NULL;
+
+	dst = hit->destination;
+	if (dst == NULL || *dst == '\0')
+		return NULL;
+
+	sec         = now_us / G_USEC_PER_SEC;
+	window_start = sec - FS_SENTINEL_FANOUT_WINDOW_S;
+
+	g_hash_table_iter_init (&iter, copilot->fanout_seen);
+	while (g_hash_table_iter_next (&iter, &k, &v)) {
+		if (GPOINTER_TO_INT (v) < window_start)
+			g_hash_table_iter_remove (&iter);
+	}
+
+	g_hash_table_iter_init (&iter, copilot->fanout_blocked);
+	while (g_hash_table_iter_next (&iter, &k, &v)) {
+		if (GPOINTER_TO_INT (v) < window_start)
+			g_hash_table_iter_remove (&iter);
+	}
+
+	/* An emptied window starts a fresh episode. */
+	if (g_hash_table_size (copilot->fanout_seen) == 0)
+		copilot->fanout_reported = FALSE;
+
+	g_hash_table_insert (copilot->fanout_seen, g_strdup (dst),
+	                     GINT_TO_POINTER ((gint) sec));
+
+	if (sentinel_hit_is_blocked (hit))
+		g_hash_table_insert (copilot->fanout_blocked, g_strdup (dst),
+		                     GINT_TO_POINTER ((gint) sec));
+
+	n_any     = g_hash_table_size (copilot->fanout_seen);
+	n_blocked = g_hash_table_size (copilot->fanout_blocked);
+
+	if (n_blocked < FS_SENTINEL_FANOUT_BLOCKED &&
+	    n_any < FS_SENTINEL_FANOUT_LIMIT)
+		return NULL;
+
+	if (copilot->fanout_reported)
+		return NULL;
+
+	copilot->fanout_reported = TRUE;
+
+	insight = create_insight (
+		FS_INSIGHT_FANOUT, FS_COPILOT_CRITICAL,
+		_("Burst of distinct destinations"),
+		g_strdup_printf (
+			_("In the last %d seconds this host contacted %u "
+			  "distinct remote hosts, %u of them while being "
+			  "blocked. One program fanning out like this is a "
+			  "scan, a worm or data leaving by many doors. "
+			  "Right-click a row in Events to block a host."),
+			FS_SENTINEL_FANOUT_WINDOW_S, n_any, n_blocked),
+		hit->service, NULL);
+
+	/* No single guilty host exists, so this detection carries no
+	 * rule: auto-block must never guess. */
+	insight->suggested_rule = g_strdup (
+		_("Review the events and block the hosts that should not "
+		  "be reached"));
+	insight->rule_csv = NULL;
+	insight->auto_applicable = FALSE;
+
+	return insight;
+}
+
 /* [ create_insight ] */
 static FsInsight *
 create_insight (FsInsightType type,
                 FsCopilotSeverity severity,
                 const gchar *title,
-                const gchar *description,
+                gchar *description,
                 const gchar *app_name,
                 const gchar *destination)
 {
@@ -669,7 +1008,15 @@ create_insight (FsInsightType type,
 	insight->type = type;
 	insight->severity = severity;
 	insight->title = g_strdup (title);
-	insight->description = g_strdup (description);
+	/* Every caller passes a freshly formatted string here (and a
+	 * literal for the title), so the description is taken over as it
+	 * stands -- the g_strdup this used to do leaked one string per
+	 * insight. */
+	insight->description = description;
+	/* Legacy suggestions are CSV rows shaped as outbound service
+	 * allows; Sentinel block suggestions override this with the deny
+	 * kind they were built for. */
+	insight->rule_kind = FS_RULE_OUTBOUND_ALLOW_SERVICE;
 	insight->application = g_strdup (app_name);
 	insight->destination = destination ? g_strdup (destination) : NULL;
 	return insight;

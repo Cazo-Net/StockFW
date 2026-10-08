@@ -76,6 +76,13 @@ gboolean  fs_policy_save  (FsPolicy *policy);
 void      fs_policy_add    (FsPolicy *policy, FsRule *rule);
 gboolean  fs_policy_remove (FsPolicy *policy, FsRule *rule);
 
+/* Add / remove and persist in one step.  On a save failure the store
+ * is put back the way it was and FALSE is returned, so callers never
+ * have to hand-roll the rollback.  fs_policy_add_persist also refuses
+ * duplicates (FALSE when the rule is already stored). */
+gboolean  fs_policy_add_persist    (FsPolicy *policy, FsRule *rule);
+gboolean  fs_policy_remove_persist (FsPolicy *policy, FsRule *rule);
+
 /* TRUE when a rule identical to the one passed in is already stored.
  * Identity is the CSV form, the same way fs_policy_remove matches. */
 gboolean  fs_policy_contains (const FsPolicy *policy, const FsRule *rule);

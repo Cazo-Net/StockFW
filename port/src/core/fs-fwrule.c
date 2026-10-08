@@ -168,19 +168,35 @@ fs_fwrule_default_name (FsRuleDirection direction, FsRuleAction action,
 	const gchar *dir = (direction == FS_DIR_INBOUND) ? _("inbound")
 	                                                  : _("outbound");
 
+	/* F-3: control characters must not reach the rule name, which is
+	 * textual output both in netsh and in every listing of it. */
+	gchar *clean_service = fs_util_strip_controls (service);
+	gchar *clean_address = fs_util_strip_controls (address);
+	gchar *name;
+
+	service = clean_service;
+	address = clean_address;
+
 	if (service != NULL && *service != '\0') {
 		if (address != NULL && *address != '\0' &&
 		    !fs_util_target_is_anyone (address))
-			return g_strdup_printf ("StockFW: %s %s (%s, %s)",
+			name = g_strdup_printf ("StockFW: %s %s (%s, %s)",
 			                        verb, service, dir, address);
-
-		return g_strdup_printf ("StockFW: %s %s (%s)", verb, service, dir);
+		else
+			name = g_strdup_printf ("StockFW: %s %s (%s)",
+			                        verb, service, dir);
+	} else if (address != NULL && *address != '\0' &&
+	           !fs_util_target_is_anyone (address)) {
+		name = g_strdup_printf ("StockFW: %s %s (%s)", verb, dir,
+		                        address);
+	} else {
+		name = g_strdup_printf ("StockFW: %s %s", verb, dir);
 	}
 
-	if (address != NULL && *address != '\0' && !fs_util_target_is_anyone (address))
-		return g_strdup_printf ("StockFW: %s %s (%s)", verb, dir, address);
+	g_free (clean_service);
+	g_free (clean_address);
 
-	return g_strdup_printf ("StockFW: %s %s", verb, dir);
+	return name;
 }
 
 /* [ address_or_null ]

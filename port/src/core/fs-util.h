@@ -51,6 +51,20 @@ gchar *fs_util_rules_path (const gchar *relative);
 /* Human readable form of an FsApplyResult. */
 const gchar *fs_util_apply_result_to_string (int result);
 
+/* Case-insensitive substring match of needle against one row of
+ * fields.  Empty/NULL needle matches everything (the filter bar with
+ * nothing typed).  Fields may contain NULL entries, which never
+ * match.  Used by the Events page filter bar; kept here so the core
+ * suite can cover the matcher without GTK. */
+gboolean fs_util_filter_match (const gchar *needle,
+                               const gchar *const *fields,
+                               gint n_fields);
+
+/* Returns a copy of text with control characters (C0 and DEL)
+ * removed, or NULL for NULL.  Rule names go through this before they
+ * appear in any textual output (F-3). */
+gchar *fs_util_strip_controls (const gchar *text);
+
 G_END_DECLS
 
 #endif /* FS_UTIL_H */

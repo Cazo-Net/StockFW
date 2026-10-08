@@ -19,11 +19,28 @@ dialog; and an assistant layer that can answer "why is this blocked?" and
 - **Events** — a live, deduplicated event stream. On Windows: Security
   log 5156/5157 (connection allowed/blocked) parsed from
   `wevtutil /f:text`, polled every 5 seconds with a batch cap. On Linux:
-  kernel drop logging. Rows are classified, searchable, and the list is a
-  window over the OS log — the OS log remains the archive.
+  kernel drop logging. Rows are classified, and a **filter bar** narrows
+  the list as you type (case-insensitive, any field — the count label
+  shows *"3 of 1200 events"* so an empty result is never mistaken for an
+  idle firewall). **Right-click any row for one-click Event → Rule**:
+  block/allow that destination, block this service to it, or trust an
+  inbound source — every action confirms, saves with rollback if the
+  write fails, and reports honestly whether it is live or only staged.
+  The list is a window over the OS log — the OS log remains the archive.
+- **Sentinel** — detect *and* auto-block rogue-agent behavior in the
+  event feed: **periodic beacons** (metronomic egress to one host:port —
+  a covert-channel signature; jitter, polled batches and inbound traffic
+  don't trip it) and **fan-out scans** (60+ distinct destinations in 60
+  seconds, or 10 distinct blocked ones). In auto mode a beacon's
+  ready-made deny is staged into the policy and pushed with a
+  **10-minute time-box** plus one-click Undo — auto-block can only ever
+  tighten policy, never open it, and user-authored rules are never
+  touched. Detect-only mode reports without staging. Every stage, push,
+  undo and expiry is written to an append-only `audit.log`.
 - **Policy** — add / edit / duplicate / delete rules with **round-trip
   CSV save/load**: what you save is what loads back, typed and validated
-  (ports, addresses, protocols checked fail-closed).
+  (ports, addresses, protocols checked fail-closed — IPv4/IPv6/CIDR and
+  port ranges included).
 - **Copilot** — a **local, deterministic** rule parser. It reads what you
   typed, proposes the exact firewall rule it would install, shows it in a
   Yes/No dialog before anything is written, is **allow-only** (it can
@@ -99,7 +116,7 @@ Every claim in the documentation is graded `[Verified]` / `[Measured]` /
 
 ```sh
 cd port
-bash tests/test-core.sh              # rule engine, CSV round-trip, copilot
+bash tests/test-core.sh              # rule engine, CSV, copilot, sentinel, event-rule
 bash tests/test-winlog.sh            # Security-log parsing + dedup
 bash tests/test-logstart.sh          # event stream start-up
 bash tests/test-installer-spawn.sh   # staged spawn helpers
@@ -108,7 +125,7 @@ bash tests/test-uaf-analyze.sh       # analyzer proves the UAF fix
 
 ninja -C build fs-ui-smoke fs-hitview-smoke
 ./build/fs-ui-smoke                  # UI wiring smoke
-./build/fs-hitview-smoke             # hit-view rendering smoke
+./build/fs-hitview-smoke             # hit-view rendering + filter smoke
 ```
 
 The suites include *teeth* tests: known bugs are re-injected to prove the

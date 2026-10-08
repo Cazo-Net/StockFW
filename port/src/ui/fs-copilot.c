@@ -15,6 +15,9 @@
 #include "core/fs-rules.h"
 #include "core/fs-fwrule.h"
 #include "core/fs-backend.h"
+#include "core/fs-prefs.h"
+#include "core/fs-audit.h"
+#include "core/fs-util.h"
 #include "ui/fs-app.h"
 #include "ui/fs-policyview.h"
 #include "core/fs-i18n.h"
@@ -37,6 +40,8 @@ enum
     COL_DEST,
     COL_SUGGESTION,
     COL_RULE_CSV,
+    COL_KIND,        /* FsRuleKind that rule_csv parses as (int) */
+    COL_STATUS,      /* Sentinel auto-block state, or empty */
     COL_N_COLS
 };
 
@@ -59,6 +64,32 @@ static FsCopilot     *global_copilot   = NULL;
 static FsPolicy      *copilot_policy   = NULL;
 static guint          total_events     = 0;
 
+/* ===== Sentinel state (1.0.4) =====================================
+ *
+ * Mode is detect|auto (default auto), cached so the per-event pass
+ * does not read the key file.  Auto-blocked rules are tracked with
+ * the time they were staged: the user can undo any of them, and
+ * every one expires ten minutes after staging unless it was staged
+ * manually through the Policy page first. */
+static GtkWidget     *sentinel_combo   = NULL;
+static gchar          sentinel_mode[16] = "auto";
+
+#define FS_AUTOBLOCK_TTL_S 600     /* auto-blocks lift after 10 min */
+#define FS_AUTOBLOCK_RETRY_US (60 * G_USEC_PER_SEC)
+
+typedef struct
+{
+    FsRuleKind kind;
+    gchar     *csv;                /* the staged rule, for removal */
+    gchar     *title;              /* insight title, for messages  */
+    gint64     at_us;              /* when it was staged           */
+} AutoBlock;
+
+static GPtrArray *auto_blocks       = NULL;  /* AutoBlock*, free_func set */
+static guint      auto_block_expiry_id = 0;
+static gint64     auto_block_last_fail = 0;
+static gboolean   auto_block_failed_once = FALSE;
+
 /* =====================================================================
  * Forward declarations
  * ===================================================================== */
@@ -70,6 +101,9 @@ static void on_apply_suggestion_clicked (GtkButton *btn, gpointer data);
 static void on_ask_clicked (GtkButton *btn, gpointer data);
 static void on_analyze_clicked (GtkButton *btn, gpointer data);
 static void on_clear_clicked (GtkButton *btn, gpointer data);
+static void on_sentinel_mode_changed (GtkComboBox *combo, gpointer data);
+static void on_undo_auto_clicked (GtkButton *btn, gpointer data);
+static gboolean auto_block_expire_cb (gpointer data);
 static void on_row_activated (GtkTreeView *tree, GtkTreePath *path,
                               GtkTreeViewColumn *col, gpointer data);
 static const gchar *severity_to_icon (FsCopilotSeverity sev);
@@ -205,14 +239,15 @@ text_view_append (GtkWidget *scrolled, const gchar *text, const gchar *tag)
 static GtkWidget *
 build_insights_tree (void)
 {
-    /* One G_TYPE_STRING per column above, in enum order, ending with
-     * COL_RULE_CSV.  Passing fewer than COL_N_COLS leaves GObject
-     * reading an uninitialised GType out of the varargs, which is a
-     * crash waiting to happen. */
+    /* G_TYPE_STRING for every string column above (COL_ICON ..
+     * COL_RULE_CSV, COL_STATUS), G_TYPE_INT for COL_KIND, in enum
+     * order ending at COL_N_COLS.  Passing fewer columns leaves
+     * GObject reading an uninitialised GType out of the varargs,
+     * which is a crash waiting to happen. */
     insights_store = gtk_list_store_new (COL_N_COLS,
         G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
         G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
-        G_TYPE_STRING);
+        G_TYPE_STRING, G_TYPE_INT,   G_TYPE_STRING);
 
     GtkWidget *tree = gtk_tree_view_new_with_model (GTK_TREE_MODEL (insights_store));
     g_object_unref (GTK_TREE_MODEL (insights_store));
@@ -271,6 +306,13 @@ build_insights_tree (void)
     gtk_tree_view_column_set_min_width (c, 80);
     gtk_tree_view_append_column (GTK_TREE_VIEW (tree), c);
 
+    /* Sentinel auto-block status */
+    r = gtk_cell_renderer_text_new ();
+    c = gtk_tree_view_column_new_with_attributes (_("Status"), r,
+                                                  "text", COL_STATUS, NULL);
+    gtk_tree_view_column_set_min_width (c, 90);
+    gtk_tree_view_append_column (GTK_TREE_VIEW (tree), c);
+
     return tree;
 }
 
@@ -285,6 +327,18 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 
     /* Attach the policy to the copilot for real rule-matching simulation. */
     fs_copilot_set_policy (copilot, policy);
+
+    /* Sentinel mode, default auto.  Cached in sentinel_mode so the
+     * per-event pass never touches the key file. */
+    {
+        gchar *pref = fs_prefs_get_string (
+            "/apps/stockfw/client/sentinel/mode", "auto");
+
+        g_strlcpy (sentinel_mode,
+                   (pref != NULL && *pref != '\0') ? pref : "auto",
+                   sizeof sentinel_mode);
+        g_free (pref);
+    }
 
     copilot_vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
     gtk_container_set_border_width (GTK_CONTAINER (copilot_vbox), 8);
@@ -315,6 +369,30 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         gtk_box_pack_start (GTK_BOX (titles), t2, FALSE, FALSE, 0);
 
         gtk_box_pack_start (GTK_BOX (hdr), titles, TRUE, TRUE, 0);
+
+        /* Sentinel mode: detect only, or detect + auto-block.  The
+         * auto path stages critical insights into the policy with a
+         * ten-minute time-box (see fs_copilot_sentinel_auto_pass). */
+        {
+            GtkWidget *mode_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+            GtkWidget *mode_lbl = gtk_label_new (_("Sentinel:"));
+
+            sentinel_combo = gtk_combo_box_text_new ();
+            gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (sentinel_combo),
+                                       "detect", _("Detect only"));
+            gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (sentinel_combo),
+                                       "auto", _("Detect + auto-block"));
+            gtk_combo_box_set_active_id (GTK_COMBO_BOX (sentinel_combo),
+                                         sentinel_mode);
+            g_signal_connect (sentinel_combo, "changed",
+                              G_CALLBACK (on_sentinel_mode_changed), NULL);
+
+            gtk_box_pack_start (GTK_BOX (mode_box), mode_lbl,
+                                FALSE, FALSE, 0);
+            gtk_box_pack_start (GTK_BOX (mode_box), sentinel_combo,
+                                FALSE, FALSE, 0);
+            gtk_box_pack_start (GTK_BOX (hdr), mode_box, FALSE, FALSE, 0);
+        }
 
         GtkWidget *analyze_btn = button_with_icon ("system-search", _("Run Analysis"));
         gtk_style_context_add_class (gtk_widget_get_style_context (analyze_btn),
@@ -375,6 +453,12 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         GtkWidget *clear_btn = button_with_icon ("edit-clear", _("Clear Insights"));
         g_signal_connect (clear_btn, "clicked", G_CALLBACK (on_clear_clicked), NULL);
         gtk_box_pack_start (GTK_BOX (btn_box), clear_btn, FALSE, FALSE, 0);
+
+        GtkWidget *undo_btn = button_with_icon ("edit-undo",
+                                                _("Undo Auto-Block"));
+        g_signal_connect (undo_btn, "clicked",
+                          G_CALLBACK (on_undo_auto_clicked), NULL);
+        gtk_box_pack_start (GTK_BOX (btn_box), undo_btn, FALSE, FALSE, 0);
 
         gtk_box_pack_start (GTK_BOX (copilot_vbox), btn_box, FALSE, FALSE, 0);
     }
@@ -469,6 +553,335 @@ fs_copilot_view_refresh (void)
 }
 
 /* =====================================================================
+ * Sentinel auto-block: stage, undo, expire
+ *
+ * In auto mode every auto-applicable insight whose rule is not already
+ * in the policy is staged (add + save, rolled back on a failed write)
+ * and pushed at the firewall.  Each staged rule carries the time it
+ * was staged: Undo lifts one immediately, and all of them lift ten
+ * minutes after staging -- a false positive must not be a permanent
+ * policy change.  Every step is written to the append-only audit log.
+ * ===================================================================== */
+
+static AutoBlock *
+auto_block_find (FsRuleKind kind, const gchar *csv)
+{
+    guint i;
+
+    if (auto_blocks == NULL || csv == NULL)
+        return NULL;
+
+    for (i = 0; i < auto_blocks->len; i++) {
+        AutoBlock *ab = g_ptr_array_index (auto_blocks, i);
+
+        if (ab->kind == kind && g_strcmp0 (ab->csv, csv) == 0)
+            return ab;
+    }
+
+    return NULL;
+}
+
+static void
+auto_block_free (gpointer data)
+{
+    AutoBlock *ab = data;
+
+    if (ab == NULL)
+        return;
+
+    g_free (ab->csv);
+    g_free (ab->title);
+    g_free (ab);
+}
+
+/* [ auto_block_push ]
+ * Put the current policy in front of the firewall and record honestly
+ * whether it went live. */
+static void
+auto_block_push (void)
+{
+    GError *error = NULL;
+    FsApplyResult result;
+
+    if (copilot_policy == NULL)
+        return;
+
+    result = fs_backend ()->apply_rules (copilot_policy, &error);
+
+    if (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL)
+        fs_audit_log ("sentinel auto-block is live",
+                      fs_util_apply_result_to_string (result));
+    else
+        fs_audit_log ("sentinel auto-block staged, not live",
+                      fs_util_apply_result_to_string (result));
+
+    g_clear_error (&error);
+}
+
+/* [ auto_block_drop ]
+ * Take one staged auto-block back out of the policy.  The removal is
+ * persisted with the same rollback-on-failure discipline as the add,
+ * so a failed write keeps the rule (and says so) rather than
+ * pretending the block is gone.  Does not touch the array; callers
+ * remove the entry. */
+static void
+auto_block_drop (AutoBlock *ab, const gchar *why)
+{
+    FsRule *rule;
+    gboolean removed = FALSE;
+    gchar *detail;
+
+    if (ab == NULL)
+        return;
+
+    if (copilot_policy != NULL) {
+        rule = fs_rule_from_csv (ab->kind, ab->csv);
+
+        if (rule != NULL) {
+            removed = fs_policy_remove_persist (copilot_policy, rule);
+            fs_rule_free (rule);
+        }
+    }
+
+    detail = g_strdup_printf ("%s (%s)", ab->csv, why);
+    fs_audit_log (removed ? "sentinel auto-block removed"
+                          : "sentinel auto-block removal had no effect",
+                  detail);
+    g_free (detail);
+
+    if (removed)
+        fs_policyview_reload (copilot_policy);
+}
+
+/* [ auto_block_expire_cb ]
+ * The ten-minute time-box.  First call is one TTL after the first
+ * auto-block; later calls reschedule for the earliest rule still
+ * inside its window. */
+static gboolean
+auto_block_expire_cb (gpointer data)
+{
+    gint64 now = g_get_monotonic_time ();
+    gboolean dropped = FALSE;
+    guint i;
+
+    (void) data;
+
+    if (auto_blocks == NULL) {
+        auto_block_expiry_id = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    for (i = 0; i < auto_blocks->len; ) {
+        AutoBlock *ab = g_ptr_array_index (auto_blocks, i);
+
+        if (now - ab->at_us >=
+            (gint64) FS_AUTOBLOCK_TTL_S * G_USEC_PER_SEC) {
+            auto_block_drop (ab, "expired after 10 minutes");
+            g_ptr_array_remove_index (auto_blocks, i);  /* frees ab */
+            dropped = TRUE;
+        } else {
+            i++;
+        }
+    }
+
+    if (dropped)
+        auto_block_push ();
+
+    if (auto_blocks->len == 0) {
+        auto_block_expiry_id = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    /* Some rule is still inside its window: come back for the
+     * earliest of those, not a fixed tick. */
+    {
+        gint64 next = -1;
+
+        for (i = 0; i < auto_blocks->len; i++) {
+            AutoBlock *ab = g_ptr_array_index (auto_blocks, i);
+            gint64 due = ab->at_us +
+                (gint64) FS_AUTOBLOCK_TTL_S * G_USEC_PER_SEC;
+
+            if (next < 0 || due < next)
+                next = due;
+        }
+
+        auto_block_expiry_id = g_timeout_add (
+            (guint) (((next - now) / G_USEC_PER_SEC) * 1000 + 1000),
+            auto_block_expire_cb, NULL);
+    }
+
+    return G_SOURCE_REMOVE;
+}
+
+gboolean
+fs_copilot_sentinel_auto_pass (void)
+{
+    GList *insights, *l;
+    gboolean changed = FALSE;
+    gint64 now;
+
+    if (global_copilot == NULL || copilot_policy == NULL ||
+        g_strcmp0 (sentinel_mode, "auto") != 0)
+        return FALSE;
+
+    if (auto_blocks == NULL)
+        auto_blocks = g_ptr_array_new_with_free_func (auto_block_free);
+
+    now = g_get_monotonic_time ();
+
+    /* While the disk is refusing writes, do not hammer it once per
+     * event: one attempt per minute, one audit line per episode. */
+    if (auto_block_failed_once &&
+        now - auto_block_last_fail < FS_AUTOBLOCK_RETRY_US)
+        return FALSE;
+
+    insights = fs_copilot_get_insights (global_copilot);
+
+    for (l = insights; l != NULL; l = l->next) {
+        FsInsight *ins = l->data;
+        AutoBlock *ab;
+        FsRule *probe;
+
+        if (!ins->auto_applicable)
+            continue;
+
+        /* The auto-block invariant: stage only rules that TIGHTEN the
+         * policy, whatever the insight's own flag claims -- legacy
+         * insights flag service allows TRUE for the user's confirmed
+         * Apply button, and those are never staged here. */
+        if (!fs_insight_is_auto_safe (ins))
+            continue;
+
+        if (auto_block_find (ins->rule_kind, ins->rule_csv) != NULL)
+            continue;
+
+        /* Already in the policy but not staged by us: the user put
+         * it there, so it is not ours to manage or expire. */
+        probe = fs_insight_to_rule (ins);
+        if (probe == NULL)
+            continue;
+
+        if (fs_policy_contains (copilot_policy, probe)) {
+            fs_rule_free (probe);
+            continue;
+        }
+        fs_rule_free (probe);
+
+        if (!fs_insight_apply (ins, copilot_policy)) {
+            if (!auto_block_failed_once) {
+                fs_audit_log ("sentinel auto-block failed",
+                              ins->rule_csv);
+                auto_block_failed_once = TRUE;
+            }
+            auto_block_last_fail = now;
+            continue;
+        }
+
+        auto_block_failed_once = FALSE;
+
+        ab = g_new0 (AutoBlock, 1);
+        ab->kind  = ins->rule_kind;
+        ab->csv   = g_strdup (ins->rule_csv);
+        ab->title = g_strdup (ins->title);
+        ab->at_us = now;
+        g_ptr_array_add (auto_blocks, ab);
+
+        fs_audit_log ("sentinel auto-block", ins->rule_csv);
+        changed = TRUE;
+
+        if (auto_block_expiry_id == 0)
+            auto_block_expiry_id = g_timeout_add_seconds (
+                FS_AUTOBLOCK_TTL_S, auto_block_expire_cb, NULL);
+    }
+
+    g_list_free (insights);
+
+    if (changed) {
+        fs_policyview_reload (copilot_policy);
+        auto_block_push ();
+    }
+
+    return changed;
+}
+
+static const gchar *
+auto_block_status (FsInsight *ins)
+{
+    if (ins->rule_csv == NULL || *ins->rule_csv == '\0')
+        return "";
+
+    return auto_block_find (ins->rule_kind, ins->rule_csv) != NULL
+           ? _("Auto-blocked") : "";
+}
+
+/* [ on_undo_auto_clicked ]
+ * Lift the most recent Sentinel auto-block right now. */
+static void
+on_undo_auto_clicked (GtkButton *btn, gpointer data)
+{
+    AutoBlock *ab;
+    gchar *csv;
+
+    (void) btn;
+    (void) data;
+
+    if (auto_blocks == NULL || auto_blocks->len == 0) {
+        text_view_append (ask_output,
+            "\n[=] No Sentinel auto-block is staged.\n", "dim");
+        return;
+    }
+
+    ab  = g_ptr_array_index (auto_blocks, auto_blocks->len - 1);
+    csv = g_strdup (ab->csv);
+
+    auto_block_drop (ab, "undone by user");
+    g_ptr_array_remove_index (auto_blocks, auto_blocks->len - 1);
+
+    auto_block_push ();
+    refresh_insights ();
+    update_stats ();
+
+    text_view_append (ask_output,
+        "\n[OK] Sentinel auto-block undone:\n  ", "green");
+    text_view_append (ask_output, csv, "bold");
+    text_view_append (ask_output, "\n", NULL);
+    g_free (csv);
+}
+
+/* [ on_sentinel_mode_changed ] */
+static void
+on_sentinel_mode_changed (GtkComboBox *combo, gpointer data)
+{
+    const gchar *id = gtk_combo_box_get_active_id (combo);
+
+    (void) data;
+
+    if (id == NULL)
+        return;
+
+    g_strlcpy (sentinel_mode, id, sizeof sentinel_mode);
+    fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode",
+                         sentinel_mode);
+
+    if (g_strcmp0 (sentinel_mode, "auto") == 0) {
+        gboolean staged = fs_copilot_sentinel_auto_pass ();
+
+        if (staged)
+            refresh_insights ();
+
+        text_view_append (ask_output,
+            "\n[Sentinel] auto-block armed: critical insights with a "
+            "ready rule are staged into the policy for 10 minutes "
+            "(Undo on this page lifts one early).\n", "dim");
+    } else {
+        text_view_append (ask_output,
+            "\n[Sentinel] detect only: insights are reported, nothing "
+            "is staged.\n", "dim");
+    }
+}
+
+/* =====================================================================
  * refresh_insights - Reload insights into the tree
  * ===================================================================== */
 static void
@@ -498,6 +911,8 @@ refresh_insights (void)
             COL_DEST,       ins->destination ? ins->destination : "-",
             COL_SUGGESTION, ins->suggested_rule ? ins->suggested_rule : "-",
             COL_RULE_CSV,   ins->rule_csv ? ins->rule_csv : "",
+            COL_KIND,       (gint) ins->rule_kind,
+            COL_STATUS,     auto_block_status (ins),
             -1);
     }
 
@@ -865,9 +1280,11 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
 
     gchar *rule_csv = NULL;
     gchar *title = NULL;
+    gint rule_kind = FS_RULE_OUTBOUND_ALLOW_SERVICE;
     gtk_tree_model_get (model, &iter,
                         COL_RULE_CSV, &rule_csv,
                         COL_TITLE, &title,
+                        COL_KIND, &rule_kind,
                         -1);
 
     if (!rule_csv || !*rule_csv) {
@@ -889,8 +1306,10 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
     }
 
     /* Parse before promising anything: a malformed suggestion must not
-     * be reported as applied. */
-    FsRule *rule = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE, rule_csv);
+     * be reported as applied.  The kind comes from the insight itself
+     * -- a Sentinel block suggestion parses as a deny, not as the
+     * service-allow every legacy suggestion used. */
+    FsRule *rule = fs_rule_from_csv ((FsRuleKind) rule_kind, rule_csv);
 
     if (rule == NULL) {
         text_view_append (ask_output,
@@ -943,7 +1362,7 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
     /* Persist.  If the write fails, take the row back out so what the
      * Policy page shows and what is on disk stay the same thing. */
     if (!fs_policyview_save (copilot_policy)) {
-        FsRule *rollback = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE,
+        FsRule *rollback = fs_rule_from_csv ((FsRuleKind) rule_kind,
                                              rule_csv);
 
         if (rollback != NULL) {
@@ -1081,6 +1500,8 @@ insight_type_to_string (FsInsightType type)
     case FS_INSIGHT_MISSING_RULE:         return _("Missing Rule");
     case FS_INSIGHT_SUSPICIOUS_BEHAVIOR:  return _("Suspicious");
     case FS_INSIGHT_RULE_OPTIMIZATION:    return _("Optimization");
+    case FS_INSIGHT_BEACON:               return _("Beacon");
+    case FS_INSIGHT_FANOUT:               return _("Fan-Out");
     default:                              return _("Unknown");
     }
 }

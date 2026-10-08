@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(stockfw
-        VERSION 1.0.3
+        VERSION 1.0.4
         DESCRIPTION "Firewall configuration tool (Windows + Linux port)"
         LANGUAGES C)
 
@@ -39,6 +39,8 @@ add_library(fs-core STATIC
   src/core/fs-service.c
   src/core/fs-fwrule.c
   src/core/fs-copilot.c
+  src/core/fs-eventrule.c
+  src/core/fs-audit.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)

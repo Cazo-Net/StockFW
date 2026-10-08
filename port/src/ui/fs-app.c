@@ -245,6 +245,12 @@ fs_app_activate (GtkApplication *app)
 	add_page (_("Events"), fs_hitview_page (), NULL);
 
 	policy = fs_policy_new ();
+
+	/* The Events page was built above (before there was a policy to
+	 * give it); its right-click Event -> Rule actions need the
+	 * pointer now that it exists. */
+	fs_hitview_set_policy (policy);
+
 	settings = fs_settings_new ();
 	fs_settings_load_prefs (settings);
 	fs_backend_set_context (policy, settings);

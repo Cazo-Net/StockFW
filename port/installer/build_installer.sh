@@ -122,7 +122,7 @@ done
 echo "[6/7] Creating license file..."
 cat > "$STAGE_DIR/LICENSE.txt" << 'EOF'
 StockFW Firewall Configuration Tool
-Version 1.0.3
+Version 1.0.4
 
 Copyright (C) 2024-2026 StockFW Project
 
@@ -178,7 +178,7 @@ if [ ! -f "$PORT_DIR/CHANGELOG.md" ]; then
     cat > "$STAGE_DIR/CHANGELOG.md" << 'EOF'
 # StockFW Changelog
 
-## Version 1.0.3 (2024)
+## Version 1.0.4 (2024)
 - Initial release of StockFW
 - GTK3-based firewall configuration tool
 - Smart Firewall Copilot with AI-powered anomaly detection
@@ -240,5 +240,5 @@ echo "Using NSIS: $NSIS_CMD"
 echo ""
 echo "=========================================="
 echo "Installer built successfully!"
-echo "Output: $INSTALLER_DIR/StockFW-1.0.3-Setup.exe"
+echo "Output: $INSTALLER_DIR/StockFW-1.0.4-Setup.exe"
 echo "=========================================="

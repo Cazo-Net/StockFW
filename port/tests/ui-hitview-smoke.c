@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "core/fs-backend.h"
+#include "core/fs-types.h"
 #include "ui/fs-hitview.h"
 
 static int failures = 0;
@@ -118,6 +119,143 @@ shown_up_to (GtkWidget *widget, GtkWidget *top)
 	return TRUE;
 }
 
+/* The filter bar: a GtkSearchEntry somewhere in the page. */
+static gboolean
+find_search_entry (GtkWidget *widget, GtkWidget **out)
+{
+	if (GTK_IS_SEARCH_ENTRY (widget)) {
+		*out = widget;
+		return TRUE;
+	}
+
+	if (GTK_IS_CONTAINER (widget)) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (widget));
+		GList *l;
+
+		for (l = children; l != NULL; l = l->next) {
+			if (find_search_entry (GTK_WIDGET (l->data), out)) {
+				g_list_free (children);
+				return TRUE;
+			}
+		}
+		g_list_free (children);
+	}
+
+	return FALSE;
+}
+
+/* The count label: the only label on the page that ends in "events". */
+static gboolean
+find_count_label (GtkWidget *widget, GtkWidget **out)
+{
+	if (GTK_IS_LABEL (widget)) {
+		const gchar *text = gtk_label_get_text (GTK_LABEL (widget));
+
+		if (text != NULL && strstr (text, "events") != NULL) {
+			*out = widget;
+			return TRUE;
+		}
+	}
+
+	if (GTK_IS_CONTAINER (widget)) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (widget));
+		GList *l;
+
+		for (l = children; l != NULL; l = l->next) {
+			if (find_count_label (GTK_WIDGET (l->data), out)) {
+				g_list_free (children);
+				return TRUE;
+			}
+		}
+		g_list_free (children);
+	}
+
+	return FALSE;
+}
+
+/* [ check_filter_bar ]
+ * 1.0.4: type a needle, only matching rows remain, the count label
+ * says both numbers, clearing brings everything back. */
+static void
+check_filter_bar (GtkWidget *page)
+{
+	GtkWidget *entry = NULL;
+	GtkWidget *label = NULL;
+	FsHit hit;
+	guint i;
+
+	static const struct {
+		const gchar *dest;
+		const gchar *port;
+		const gchar *protocol;
+		const gchar *service;
+		const gchar *direction;
+		const gchar *source;
+	} rows[] = {
+		{ "203.0.113.9",  "443", "TCP", "HTTPS", "Out", "192.168.1.5" },
+		{ "198.51.100.7", "53",  "UDP", "DNS",   "Out", "192.168.1.5" },
+		{ "192.168.1.99", "22",  "TCP", "SSH",   "In",  "10.0.0.8"    },
+	};
+
+	for (i = 0; i < G_N_ELEMENTS (rows); i++) {
+		memset (&hit, 0, sizeof hit);
+		hit.time        = "12:00:00";
+		hit.direction   = (gchar *) rows[i].direction;
+		hit.source      = (gchar *) rows[i].source;
+		hit.destination = (gchar *) rows[i].dest;
+		hit.port        = (gchar *) rows[i].port;
+		hit.protocol    = (gchar *) rows[i].protocol;
+		hit.service     = (gchar *) rows[i].service;
+
+		CHECK (fs_hitview_append (&hit), "row %u is appended", i);
+	}
+
+	CHECK (fs_hitview_count () == G_N_ELEMENTS (rows),
+	       "all three rows are listed");
+	CHECK (fs_hitview_visible_count () == G_N_ELEMENTS (rows),
+	       "with no filter, every row is visible");
+
+	CHECK (find_search_entry (page, &entry),
+	       "the page carries a search entry for filtering");
+	if (entry == NULL)
+		return;
+
+	/* A needle that matches nothing: list intact, visibility zero. */
+	gtk_entry_set_text (GTK_ENTRY (entry), "999nope");
+	g_signal_emit_by_name (entry, "search-changed");
+	CHECK (fs_hitview_count () == G_N_ELEMENTS (rows),
+	       "filtering does not delete rows");
+	CHECK (fs_hitview_visible_count () == 0,
+	       "a non-matching needle hides every row");
+
+	find_count_label (page, &label);
+	if (label != NULL) {
+		const gchar *text = gtk_label_get_text (GTK_LABEL (label));
+
+		CHECK (strstr (text, "0 of 3 events") != NULL,
+		       "the count label reports both numbers (got \"%s\")",
+		       text ? text : "(null)");
+	}
+
+	/* A needle that matches one row. */
+	gtk_entry_set_text (GTK_ENTRY (entry), "DNS");
+	g_signal_emit_by_name (entry, "search-changed");
+	CHECK (fs_hitview_visible_count () == 1,
+	       "a matching needle keeps exactly the matching row");
+
+	/* Case-insensitive, on a different field. */
+	gtk_entry_set_text (GTK_ENTRY (entry), "ssh");
+	g_signal_emit_by_name (entry, "search-changed");
+	CHECK (fs_hitview_visible_count () == 1,
+	       "the needle matches case-insensitively");
+
+	/* Clearing restores everything. */
+	gtk_entry_set_text (GTK_ENTRY (entry), "");
+	g_signal_emit_by_name (entry, "search-changed");
+	CHECK (fs_hitview_visible_count () == G_N_ELEMENTS (rows),
+	       "clearing the needle restores every row");
+}
+
 int
 main (int argc, char **argv)
 {
@@ -160,6 +298,8 @@ main (int argc, char **argv)
 		CHECK (running,
 		       "no reason shown, so monitoring must really be running");
 	}
+
+	check_filter_bar (page);
 
 	fs_hitview_stop ();
 	gtk_widget_destroy (page);

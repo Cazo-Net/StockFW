@@ -21,6 +21,12 @@ void fs_copilot_view_refresh (void);
 /* Called from the events feed to update the stats counter. */
 void fs_copilot_note_event (void);
 
+/* Sentinel auto-block pass: stages every auto-applicable insight
+ * (that is not already in the policy) when Sentinel is in auto mode.
+ * Returns TRUE when something was staged, so the caller knows whether
+ * the insights list needs rebuilding. */
+gboolean fs_copilot_sentinel_auto_pass (void);
+
 G_END_DECLS
 
 #endif /* FS_COPILOT_VIEW_H */

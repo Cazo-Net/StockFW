@@ -32,6 +32,8 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-fwrule.h"
 #include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
+#include "core/fs-eventrule.h"
+#include "core/fs-audit.h"
 
 static int failures = 0;
 
@@ -56,6 +58,11 @@ static void test_ports (void)
 	CHECK (!fs_util_is_valid_port ("0x50"), "port 0x50 rejected");
 	CHECK (!fs_util_is_valid_port ("70000"), "port 70000 rejected");
 	CHECK (!fs_util_is_valid_port ("200:100"), "inverted range rejected");
+	CHECK (fs_util_is_valid_port ("67-68"),
+	       "hyphen range from the default ruleset accepted");
+	CHECK (!fs_util_is_valid_port ("68-67"),
+	       "inverted hyphen range rejected");
+	CHECK (!fs_util_is_valid_port ("67-"), "half a hyphen range rejected");
 	CHECK (!fs_util_is_valid_port (""), "empty port rejected");
 	CHECK (!fs_util_is_valid_port (NULL), "NULL port rejected");
 }
@@ -70,6 +77,17 @@ static void test_hosts (void)
 	CHECK (!fs_util_is_valid_host ("1.2.3"), "three octets rejected");
 	CHECK (!fs_util_is_valid_host ("192.168..1"), "empty label rejected");
 	CHECK (!fs_util_is_valid_host (NULL), "NULL host rejected");
+	CHECK (fs_util_is_valid_host ("192.168.1.0/24"), "cidr v4");
+	CHECK (fs_util_is_valid_host ("2001:db8::1/64"), "cidr v6");
+	CHECK (fs_util_is_valid_host ("2001:db8::1"), "ipv6");
+	CHECK (!fs_util_is_valid_host ("192.168.1.0/33"),
+	       "v4 prefix over /32 rejected");
+	CHECK (!fs_util_is_valid_host ("2001:db8::1/129"),
+	       "v6 prefix over /128 rejected");
+	CHECK (!fs_util_is_valid_host ("example.com/24"),
+	       "hostnames do not take a prefix");
+	CHECK (!fs_util_is_valid_host ("192.168.1.0/"), "empty prefix rejected");
+	CHECK (!fs_util_is_valid_host ("nonsense:stuff"), "junk ipv6 rejected");
 }
 
 static void test_rule_csv (void)
@@ -823,6 +841,643 @@ static void test_copilot_profile_lifetime (void)
 	fs_copilot_free (copilot);
 }
 
+/* =====================================================================
+ * 1.0.4: Event -> Rule builders (right-click on an event row).
+ * Pure data: no GTK, no OS calls, so the core suite covers them.
+ * ===================================================================== */
+
+static void test_eventrule_builders (void)
+{
+	FsHit out_hit, in_hit;
+	FsRule *rule;
+	FsPolicy *policy;
+	const FsRule *found;
+
+	memset (&out_hit, 0, sizeof out_hit);
+	out_hit.direction   = "Out";
+	out_hit.source      = "192.168.1.7";
+	out_hit.destination = "203.0.113.9";
+	out_hit.port        = "443";
+	out_hit.protocol    = "TCP";
+	out_hit.service     = "HTTPS [BLOCKED]";
+
+	memset (&in_hit, 0, sizeof in_hit);
+	in_hit.direction   = "In";
+	in_hit.source      = "2001:DB8::1";
+	in_hit.port        = "22";
+	in_hit.protocol    = "TCP";
+	in_hit.service     = "SSH";
+
+	rule = fs_eventrule_build (&out_hit, FS_EVENTRULE_BLOCK_DEST);
+	CHECK (rule != NULL, "outbound BLOCK_DEST builds");
+	if (rule != NULL) {
+		CHECK (rule->kind == FS_RULE_OUTBOUND_DENY_TO,
+		       "BLOCK_DEST is an outbound deny");
+		CHECK (g_strcmp0 (rule->target, "203.0.113.9") == 0,
+		       "BLOCK_DEST targets the event's destination");
+		fs_rule_free (rule);
+	}
+
+	rule = fs_eventrule_build (&out_hit, FS_EVENTRULE_ALLOW_DEST);
+	CHECK (rule != NULL && rule->kind == FS_RULE_OUTBOUND_ALLOW_TO,
+	       "ALLOW_DEST is an outbound allow");
+	fs_rule_free (rule);
+
+	rule = fs_eventrule_build (&out_hit, FS_EVENTRULE_BLOCK_SERVICE);
+	CHECK (rule != NULL, "BLOCK_SERVICE builds");
+	if (rule != NULL) {
+		CHECK (rule->kind == FS_RULE_OUTBOUND_DENY_SERVICE,
+		       "BLOCK_SERVICE is a service deny");
+		CHECK (g_strcmp0 (rule->service, "HTTPS") == 0,
+		       "[BLOCKED] marker never reaches the rule");
+		CHECK (g_strcmp0 (rule->port, "443") == 0 &&
+		       g_strcmp0 (rule->target, "203.0.113.9") == 0,
+		       "service deny carries port and destination");
+		fs_rule_free (rule);
+	}
+
+	rule = fs_eventrule_build (&in_hit, FS_EVENTRULE_TRUST_SOURCE);
+	CHECK (rule != NULL, "inbound TRUST_SOURCE builds");
+	if (rule != NULL) {
+		CHECK (rule->kind == FS_RULE_INBOUND_ALLOW_FROM,
+		       "TRUST_SOURCE is an inbound allow");
+		CHECK (g_strcmp0 (rule->target, "2001:DB8::1") == 0,
+		       "TRUST_SOURCE targets the event's source");
+		fs_rule_free (rule);
+	}
+
+	/* Direction mismatches must return NULL rather than invent a
+	 * rule the model cannot express (there is no inbound deny). */
+	CHECK (fs_eventrule_build (&in_hit, FS_EVENTRULE_BLOCK_DEST) == NULL,
+	       "BLOCK_DEST on an inbound event is refused");
+	CHECK (fs_eventrule_build (&out_hit, FS_EVENTRULE_TRUST_SOURCE) == NULL,
+	       "TRUST_SOURCE on an outbound event is refused");
+	CHECK (fs_eventrule_build (NULL, FS_EVENTRULE_BLOCK_DEST) == NULL,
+	       "a NULL hit builds nothing");
+
+	/* UNTRUST: find the stored allow by target alone -- the user's
+	 * comment can be anything, so CSV identity must not be used. */
+	policy = fs_policy_new ();
+	CHECK (fs_eventrule_find_trust (policy, &in_hit) == NULL,
+	       "no trust rule exists yet");
+
+	rule = fs_eventrule_build (&in_hit, FS_EVENTRULE_TRUST_SOURCE);
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	found = fs_eventrule_find_trust (policy, &in_hit);
+	CHECK (found != NULL, "trust rule is found again");
+	CHECK (found != NULL &&
+	       g_ascii_strcasecmp (found->target, "2001:db8::1") == 0,
+	       "the match is case-insensitive (literal IPv6 letters)");
+
+	CHECK (fs_eventrule_untrust (policy, &in_hit),
+	       "untrust removes and persists the allow");
+	CHECK (fs_eventrule_find_trust (policy, &in_hit) == NULL,
+	       "the allow is gone afterwards");
+	CHECK (!fs_eventrule_untrust (policy, &in_hit),
+	       "untrust with nothing to remove reports failure");
+
+	fs_policy_free (policy);
+}
+
+/* Rollback teeth: when the disk refuses the write, add/remove must
+ * put the store back exactly as it was.  The rules directory is
+ * pointed at a regular FILE so every write beneath it fails. */
+static void test_policy_persist_rollback (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
+	FsRule *r2 = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
+	gchar *good_dir;
+	gchar *bad_path;
+	guint before, after;
+
+	rule->target  = g_strdup ("198.51.100.201");
+	rule->comment = g_strdup ("rollback teeth");
+
+	CHECK (fs_policy_add_persist (policy, rule),
+	       "add_persist succeeds while writes work");
+	before = fs_policy_count (policy, FS_RULE_OUTBOUND_DENY_TO);
+	CHECK (before == 1, "one deny is stored");
+	CHECK (!fs_policy_add_persist (policy, rule),
+	       "duplicate add_persist is refused");
+
+	good_dir = g_strdup (fs_util_rules_dir ());
+	bad_path = g_build_filename (g_get_tmp_dir (),
+	                            "stockfw-rules-as-file", NULL);
+	g_file_set_contents (bad_path, "not a directory", -1, NULL);
+	g_setenv ("STOCKFW_RULES_DIR", bad_path, TRUE);
+
+	r2->target  = g_strdup ("198.51.100.202");
+	r2->comment = g_strdup ("must roll back");
+
+	CHECK (!fs_policy_add_persist (policy, r2),
+	       "add_persist reports the save failure");
+	after = fs_policy_count (policy, FS_RULE_OUTBOUND_DENY_TO);
+	CHECK (after == before,
+	       "failed save rolled the store back (got %u, want %u)",
+	       after, before);
+
+	CHECK (!fs_policy_remove_persist (policy, rule),
+	       "remove_persist reports the save failure too");
+	CHECK (fs_policy_contains (policy, rule),
+	       "failed removal was rolled back into the store");
+
+	/* Repair the disk: the same removal must now take. */
+	g_setenv ("STOCKFW_RULES_DIR", good_dir, TRUE);
+	CHECK (fs_policy_remove_persist (policy, rule),
+	       "removal succeeds once writes work again");
+	CHECK (!fs_policy_contains (policy, rule),
+	       "the rule is gone after the successful removal");
+
+	remove (bad_path);
+	g_free (good_dir);
+	g_free (bad_path);
+	fs_rule_free (rule);
+	fs_rule_free (r2);
+	fs_policy_free (policy);
+}
+
+/* =====================================================================
+ * 1.0.4 Sentinel: beacon (covert channel) and fan-out (scan) --
+ * driven through fs_copilot_feed_event_at() so the arrival times are
+ * exact instead of whatever the wall clock happens to do.
+ * ===================================================================== */
+
+static guint count_insights (FsCopilot *copilot, FsInsightType type)
+{
+	GList *insights = fs_copilot_get_insights (copilot);
+	GList *l;
+	guint n = 0;
+
+	for (l = insights; l != NULL; l = l->next) {
+		FsInsight *ins = l->data;
+
+		if (ins->type == type)
+			n++;
+	}
+
+	g_list_free (insights);
+	return n;
+}
+
+static const FsInsight *find_insight (FsCopilot *copilot, FsInsightType type)
+{
+	GList *insights = fs_copilot_get_insights (copilot);
+	GList *l;
+	const FsInsight *hit_insight = NULL;
+
+	for (l = insights; l != NULL; l = l->next) {
+		FsInsight *ins = l->data;
+
+		if (ins->type == type) {
+			hit_insight = ins;
+			break;
+		}
+	}
+
+	g_list_free (insights);
+	return hit_insight;
+}
+
+static void test_sentinel_beacon (void)
+{
+	FsCopilot *copilot = fs_copilot_new ();
+	FsHit hit;
+	const FsInsight *beacon;
+	gint i;
+	const gint64 t0 = (gint64) 500000 * G_USEC_PER_SEC;
+	const gint64 gaps[] = { 60, 60, 60, 60, 150 };
+
+	memset (&hit, 0, sizeof hit);
+	hit.direction   = "Out";
+	hit.source      = "192.168.1.7";
+	hit.destination = "203.0.113.9";
+	hit.port        = "8443";
+	hit.protocol    = "TCP";
+	hit.service     = "unknown";
+
+	/* Six contacts at exact 60 s intervals: a control channel. */
+	for (i = 0; i < 6; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 1,
+	       "six metronomic contacts raise exactly one beacon");
+
+	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	if (beacon != NULL) {
+		FsPolicy *policy = fs_policy_new ();
+		FsRule *probe;
+
+		CHECK (beacon->severity == FS_COPILOT_CRITICAL,
+		       "the beacon is CRITICAL");
+		CHECK (beacon->auto_applicable && beacon->rule_csv != NULL,
+		       "the beacon carries an auto-applicable rule");
+		CHECK (beacon->rule_kind == FS_RULE_OUTBOUND_DENY_TO,
+		       "the rule parses as an outbound deny, not a service allow");
+
+		/* The point of the whole feature: the suggestion stages a
+		 * real deny into the policy. */
+		CHECK (fs_insight_apply (beacon, policy),
+		       "the beacon rule stages into the policy");
+		probe = fs_insight_to_rule (beacon);
+		CHECK (probe != NULL && fs_policy_contains (policy, probe),
+		       "the staged rule is in the policy");
+		fs_rule_free (probe);
+		fs_policy_free (policy);
+	}
+
+	/* More of the same must not stack reports. */
+	for (i = 6; i < 9; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 1,
+	       "a beacon is reported once, not once per contact");
+
+	fs_copilot_free (copilot);
+
+	/* Jitter is what humans and page loads look like: intervals
+	 * 60/60/60/60/150 give cv = 0.46, well over the 0.30 limit. */
+	copilot = fs_copilot_new ();
+	{
+		gint64 t = t0;
+
+		for (i = 0; i < 6; i++) {
+			fs_copilot_feed_event_at (copilot, &hit, t);
+			if (i < 5)
+				t += gaps[i] * G_USEC_PER_SEC;
+		}
+	}
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 0,
+	       "jittered intervals are not a beacon");
+	fs_copilot_free (copilot);
+
+	/* A polled batch: ten records delivered in the same second are
+	 * one moment, not ten contacts. */
+	copilot = fs_copilot_new ();
+	for (i = 0; i < 10; i++)
+		fs_copilot_feed_event_at (copilot, &hit, t0);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 0,
+	       "a same-second batch does not fire the detector");
+	fs_copilot_free (copilot);
+
+	/* 5-second chatter is below the beacon floor (mean >= 10 s). */
+	copilot = fs_copilot_new ();
+	for (i = 0; i < 8; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 5 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 0,
+	       "5-second chatter is not a beacon");
+	fs_copilot_free (copilot);
+
+	/* Sentinel watches egress; inbound regularity is out of scope. */
+	copilot = fs_copilot_new ();
+	hit.direction = "In";
+	for (i = 0; i < 6; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 0,
+	       "inbound traffic is not scored as an egress beacon");
+	fs_copilot_free (copilot);
+}
+
+static void test_sentinel_fanout (void)
+{
+	FsCopilot *copilot = fs_copilot_new ();
+	FsHit hit;
+	gchar dest[32];
+	gint i;
+	const gint64 t0 = (gint64) 700000 * G_USEC_PER_SEC;
+
+	memset (&hit, 0, sizeof hit);
+	hit.direction = "Out";
+	hit.source    = "192.168.1.7";
+	hit.port      = "443";
+	hit.protocol  = "TCP";
+	hit.service   = "HTTPS";
+
+	/* 60 distinct hosts inside 60 seconds: a scan. */
+	for (i = 0; i < 60; i++) {
+		g_snprintf (dest, sizeof dest, "203.0.113.%d", i);
+		hit.destination = dest;
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * G_USEC_PER_SEC);
+	}
+
+	CHECK (count_insights (copilot, FS_INSIGHT_FANOUT) == 1,
+	       "60 distinct hosts in the window raise one fan-out");
+	{
+		const FsInsight *fo = find_insight (copilot, FS_INSIGHT_FANOUT);
+
+		if (fo != NULL) {
+			CHECK (fo->severity == FS_COPILOT_CRITICAL,
+			       "the fan-out is CRITICAL");
+			CHECK (fo->rule_csv == NULL && !fo->auto_applicable,
+			       "fan-out carries no guessed rule to auto-apply");
+		}
+	}
+
+	/* One report per window, however the traffic continues. */
+	hit.destination = "203.0.113.250";
+	fs_copilot_feed_event_at (copilot, &hit,
+	                          t0 + 60 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_FANOUT) == 1,
+	       "the same window reports only once");
+
+	/* After a quiet minute the episode ends and a new burst is
+	 * reported again. */
+	for (i = 0; i < 60; i++) {
+		g_snprintf (dest, sizeof dest, "198.18.0.%d", i);
+		hit.destination = dest;
+		fs_copilot_feed_event_at (
+			copilot, &hit,
+			t0 + 600 * G_USEC_PER_SEC + (gint64) i * G_USEC_PER_SEC);
+	}
+	CHECK (count_insights (copilot, FS_INSIGHT_FANOUT) == 2,
+	       "a second burst after a quiet window reports again");
+
+	fs_copilot_free (copilot);
+
+	/* 60 hosts spread over two minutes never reach 60-in-60s. */
+	copilot = fs_copilot_new ();
+	for (i = 0; i < 60; i++) {
+		g_snprintf (dest, sizeof dest, "203.0.113.%d", i);
+		hit.destination = dest;
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 2 * G_USEC_PER_SEC);
+	}
+	CHECK (count_insights (copilot, FS_INSIGHT_FANOUT) == 0,
+	       "60 hosts over 120 seconds is not a burst");
+	fs_copilot_free (copilot);
+
+	/* Refused contacts are the strongest scan signal: ten distinct
+	 * blocked hosts are enough on their own. */
+	copilot = fs_copilot_new ();
+	hit.service = "TROJAN [BLOCKED]";
+	for (i = 0; i < 10; i++) {
+		g_snprintf (dest, sizeof dest, "198.51.100.%d", i);
+		hit.destination = dest;
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * G_USEC_PER_SEC);
+	}
+	CHECK (count_insights (copilot, FS_INSIGHT_FANOUT) == 1,
+	       "10 distinct blocked hosts raise a fan-out");
+	fs_copilot_free (copilot);
+}
+
+/* The append-only audit trail: one line per action, never rewritten. */
+static void test_audit_log (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-audit-test", NULL);
+	gchar *file = g_build_filename (dir, "audit.log", NULL);
+	gchar *contents = NULL;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	g_setenv ("STOCKFW_AUDIT_FILE", file, TRUE);
+
+	CHECK (fs_audit_log ("sentinel auto-block",
+	                     "203.0.113.9, Sentinel: periodic beacon"),
+	       "first audit line is written");
+	CHECK (fs_audit_log ("event rule added", "198.51.100.4, block"),
+	       "second audit line is written");
+
+	CHECK (g_file_get_contents (file, &contents, NULL, NULL),
+	       "the audit file exists on disk");
+	if (contents != NULL) {
+		CHECK (strstr (contents,
+		               "| sentinel auto-block | 203.0.113.9") != NULL,
+		       "action and detail reach the line");
+		CHECK (strstr (contents, "| event rule added |") != NULL,
+		       "the second line was appended, not written over");
+		CHECK (strstr (contents, "T") != NULL &&
+		       strstr (contents, "Z |") != NULL,
+		       "the line carries an ISO-8601 UTC stamp");
+	}
+	g_free (contents);
+
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	g_free (file);
+	g_free (dir);
+}
+
+/* The Events filter bar's matcher, kept in core for exactly this. */
+static void test_filter_match (void)
+{
+	const gchar *fields[] = { "192.168.1.5", "HTTPS", NULL, "443" };
+
+	CHECK (fs_util_filter_match (NULL, fields, 4),
+	       "NULL needle matches everything");
+	CHECK (fs_util_filter_match ("", fields, 4),
+	       "empty needle matches everything");
+	CHECK (fs_util_filter_match ("https", fields, 4),
+	       "match is case-insensitive");
+	CHECK (fs_util_filter_match ("2.168", fields, 4),
+	       "a substring of an address matches");
+	CHECK (fs_util_filter_match ("443", fields, 4),
+	       "a later field matches even with a NULL field in between");
+	CHECK (!fs_util_filter_match ("2001", fields, 4),
+	       "absent needle does not match");
+	CHECK (!fs_util_filter_match ("DNS", NULL, 0),
+	       "no fields, no match");
+}
+
+/* fs_insight_to_rule/apply: the staging path Sentinel auto-block and
+ * the Copilot's Apply button share. */
+static void test_insight_apply (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsInsight *insight = g_new0 (FsInsight, 1);
+	FsRule *probe;
+
+	insight->rule_kind = FS_RULE_OUTBOUND_DENY_TO;
+	insight->rule_csv = g_strdup (
+		"198.51.100.77, Sentinel: periodic beacon");
+
+	probe = fs_insight_to_rule (insight);
+	CHECK (probe != NULL && probe->kind == FS_RULE_OUTBOUND_DENY_TO,
+	       "the insight parses as its own rule kind");
+	fs_rule_free (probe);
+
+	CHECK (fs_insight_apply (insight, policy),
+	       "apply stages and saves the rule");
+	probe = fs_insight_to_rule (insight);
+	CHECK (probe != NULL && fs_policy_contains (policy, probe),
+	       "the staged rule is in the policy afterwards");
+	fs_rule_free (probe);
+
+	CHECK (!fs_insight_apply (insight, policy),
+	       "a second apply is refused instead of stacking a duplicate");
+
+	/* A suggestion with nothing in it must not stage anything. */
+	g_free (insight->rule_csv);
+	insight->rule_csv = g_strdup ("");
+	CHECK (fs_insight_to_rule (insight) == NULL,
+	       "an empty suggestion parses to nothing");
+	CHECK (!fs_insight_apply (insight, policy),
+	       "an empty suggestion applies to nothing");
+
+	/* The auto-block invariant: only a rule that can TIGHTEN the
+	 * policy may be staged without a human.  Legacy insights flag
+	 * service allows auto-applicable for the confirmed Apply
+	 * button -- the auto gate must refuse them regardless. */
+	insight->rule_kind = FS_RULE_OUTBOUND_ALLOW_SERVICE;
+	g_free (insight->rule_csv);
+	insight->rule_csv = g_strdup (
+		"evil.exe, 80, 198.51.100.9, Auto-generated by Copilot");
+	CHECK (!fs_insight_is_auto_safe (insight),
+	       "a service allow is never auto-safe, whatever its flag says");
+
+	insight->rule_kind = FS_RULE_OUTBOUND_DENY_TO;
+	CHECK (fs_insight_is_auto_safe (insight),
+	       "an outbound deny is auto-safe");
+
+	insight->rule_kind = FS_RULE_OUTBOUND_DENY_SERVICE;
+	CHECK (fs_insight_is_auto_safe (insight),
+	       "a service deny is auto-safe");
+
+	g_free (insight->rule_csv);
+	insight->rule_csv = NULL;
+	CHECK (!fs_insight_is_auto_safe (insight),
+	       "a missing suggestion is not auto-safe");
+	CHECK (!fs_insight_is_auto_safe (NULL),
+	       "a NULL insight is not auto-safe");
+
+	g_free (insight->rule_csv);
+	g_free (insight);
+	fs_policy_free (policy);
+}
+
+/* =====================================================================
+ * 1.0.4 F-1/F-3 hygiene: validation at load, control-character
+ * stripping before a rule name reaches textual output.
+ * ===================================================================== */
+
+static void test_policy_load_validation_f1 (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	gchar *good_dir = g_strdup (fs_util_rules_dir ());
+	gchar *test_dir = g_build_filename (g_get_tmp_dir (),
+	                                    "stockfw-f1-rules", NULL);
+	gchar *deny_path;
+	gchar *svc_path;
+	gchar *trust_path;
+	gchar *body;
+	gint malformed = -1;
+
+	/* A clean directory so earlier tests' rows cannot pollute the
+	 * counts. */
+	g_setenv ("STOCKFW_RULES_DIR", test_dir, TRUE);
+
+	deny_path = fs_util_rules_path ("outbound/deny-to");
+	svc_path  = fs_util_rules_path ("outbound/allow-service");
+	CHECK (deny_path != NULL && svc_path != NULL,
+	       "rule paths are built under the test directory");
+	CHECK (fs_util_ensure_parent_dir (deny_path) &&
+	       fs_util_ensure_parent_dir (svc_path),
+	       "the rule directories are created");
+
+	body = g_strdup (
+		"198.51.100.1, good v4\n"
+		"999.1.2.3, octet over 255\n");
+	g_file_set_contents (deny_path, body, -1, NULL);
+	g_free (body);
+
+	body = g_strdup (
+		"HTTPS, 99999, 198.51.100.2, port over the range\n"
+		"DNS, 53, 198.18.0.0/15, good cidr row\n"
+		"SSH, 22, , empty target means any\n");
+	g_file_set_contents (svc_path, body, -1, NULL);
+	g_free (body);
+
+	trust_path = fs_util_rules_path ("inbound/allow-from");
+	CHECK (trust_path != NULL &&
+	       fs_util_ensure_parent_dir (trust_path),
+	       "the inbound rule directory is created");
+	body = g_strdup ("2001:db8::1, ipv6 trust\n");
+	g_file_set_contents (trust_path, body, -1, NULL);
+	g_free (body);
+
+	CHECK (fs_policy_load (policy, &malformed), "the files load");
+	CHECK (malformed == 2,
+	       "exactly the bad host and the bad port are rejected "
+	       "(got %d)", malformed);
+	CHECK (fs_policy_count (policy, FS_RULE_OUTBOUND_DENY_TO) == 1,
+	       "the valid deny row survives the load");
+	CHECK (fs_policy_count (policy, FS_RULE_OUTBOUND_ALLOW_SERVICE) == 2,
+	       "the cidr and empty-field service rows survive");
+	CHECK (fs_policy_count (policy, FS_RULE_INBOUND_ALLOW_FROM) == 1,
+	       "the inbound trust row loads");
+
+	/* The IPv6 row specifically: it must round-trip, because the
+	 * trust-source rules the Events page builds can be IPv6. */
+	{
+		FsHit in_hit;
+		const FsRule *found;
+
+		memset (&in_hit, 0, sizeof in_hit);
+		in_hit.direction = "In";
+		in_hit.source    = "2001:DB8::1";
+
+		found = fs_eventrule_find_trust (policy, &in_hit);
+		CHECK (found != NULL,
+		       "an IPv6 trust rule loads instead of being dropped");
+	}
+
+	g_setenv ("STOCKFW_RULES_DIR", good_dir, TRUE);
+
+	g_free (good_dir);
+	g_free (test_dir);
+	g_free (deny_path);
+	g_free (svc_path);
+	g_free (trust_path);
+	fs_policy_free (policy);
+}
+
+static void test_name_hygiene_f3 (void)
+{
+	gchar *clean;
+	gchar *name;
+
+	clean = fs_util_strip_controls ("ab" "\001" "cd" "\033" "ef");
+	CHECK (g_strcmp0 (clean, "abcdef") == 0,
+	       "C0 characters are stripped from a name");
+	g_free (clean);
+
+	clean = fs_util_strip_controls ("tab\there");
+	CHECK (g_strcmp0 (clean, "tabhere") == 0,
+	       "the tab character is stripped too");
+	g_free (clean);
+
+	CHECK (fs_util_strip_controls (NULL) == NULL,
+	       "NULL passes through untouched");
+
+	name = fs_fwrule_default_name (FS_DIR_OUTBOUND, FS_ACTION_BLOCK,
+	                               "EV\x1bIL", "198.51.100.9");
+	CHECK (name != NULL, "a rule name is built");
+	if (name != NULL) {
+		CHECK (strchr (name, '\x1b') == NULL,
+		       "no ESC byte reaches the rule name");
+		CHECK (strstr (name, "EVIL") != NULL,
+		       "the printable text of the name survives");
+		g_free (name);
+	}
+
+	name = fs_fwrule_default_name (FS_DIR_INBOUND, FS_ACTION_ALLOW,
+	                               NULL, "10.0.0." "\007" "5");
+	if (name != NULL) {
+		CHECK (strchr (name, '\x07') == NULL,
+		       "addresses are stripped as well");
+		CHECK (strstr (name, "10.0.0.5") != NULL,
+		       "the address text survives");
+		g_free (name);
+	}
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -845,6 +1500,15 @@ int main (void)
 	test_copilot_suggestion_apply ();
 	test_prefs_fallbacks ();
 	test_copilot_profile_lifetime ();
+	test_eventrule_builders ();
+	test_policy_persist_rollback ();
+	test_sentinel_beacon ();
+	test_sentinel_fanout ();
+	test_audit_log ();
+	test_filter_match ();
+	test_insight_apply ();
+	test_policy_load_validation_f1 ();
+	test_name_hygiene_f3 ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

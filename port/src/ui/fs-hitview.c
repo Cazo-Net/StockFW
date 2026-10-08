@@ -11,10 +11,15 @@
 #include "ui/fs-dialogs.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-statusview.h"
+#include "ui/fs-policyview.h"
 #include "core/fs-backend.h"
 #include "core/fs-service.h"
 #include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
+#include "core/fs-eventrule.h"
+#include "core/fs-rules.h"
+#include "core/fs-audit.h"
+#include "core/fs-util.h"
 #include "core/fs-i18n.h"
 
 #include <string.h>
@@ -28,6 +33,16 @@ static GtkListStore *store;
 static GtkWidget    *count_label;
 static GtkWidget    *monitor_warning;        /* strip; hidden unless needed */
 static GtkWidget    *monitor_warning_label;
+
+/* Filter bar state.  The matcher lives in core (fs_util_filter_match)
+ * so the test suite can cover it without GTK. */
+static gchar        *filter_text  = NULL;
+static GtkTreeModel *filter_model = NULL;    /* GtkTreeModelFilter over store */
+static GtkWidget    *filter_entry = NULL;
+
+/* The policy the Event -> Rule actions stage into; NULL until
+ * fs-app.c hands it over (the page is built before the policy). */
+static FsPolicy     *hitview_policy = NULL;
 
 /* Column order matches FsHitColumn; the colour column is last. */
 enum
@@ -89,7 +104,9 @@ color_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
 	g_free (color);
 }
 
-/* [ update_count_label ] */
+/* [ update_count_label ]
+ * With a filter typed in the label reports both numbers, so an empty
+ * list under a filter cannot be mistaken for an idle firewall. */
 static void
 update_count_label (void)
 {
@@ -98,10 +115,69 @@ update_count_label (void)
 	if (count_label == NULL)
 		return;
 
-	text = g_strdup_printf (row_count == 1 ? "%u event" : "%u events",
-	                        row_count);
+	if (filter_text != NULL && *filter_text != '\0' &&
+	    filter_model != NULL) {
+		guint shown = (guint) gtk_tree_model_iter_n_children (
+			filter_model, NULL);
+
+		text = g_strdup_printf ("%u of %u events", shown, row_count);
+	} else {
+		text = g_strdup_printf (row_count == 1 ? "%u event" : "%u events",
+		                        row_count);
+	}
+
 	gtk_label_set_text (GTK_LABEL (count_label), text);
 	g_free (text);
+}
+
+/* [ filter_visible ]
+ * The filter bar's visible-function: show the row when the needle
+ * appears in any of its fields. */
+static gboolean
+filter_visible (GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+{
+	gchar *fields[FS_NUM_HITCOLUMNS - 1];         /* everything but colour */
+	gboolean visible;
+	gint i;
+
+	(void) data;
+
+	for (i = 0; i < FS_NUM_HITCOLUMNS - 1; i++)
+		gtk_tree_model_get (model, iter, i, &fields[i], -1);
+
+	visible = fs_util_filter_match (filter_text,
+	                                (const gchar *const *) fields,
+	                                FS_NUM_HITCOLUMNS - 1);
+
+	for (i = 0; i < FS_NUM_HITCOLUMNS - 1; i++)
+		g_free (fields[i]);
+
+	return visible;
+}
+
+/* [ on_filter_changed ] */
+static void
+on_filter_changed (GtkSearchEntry *entry, gpointer data)
+{
+	(void) data;
+
+	g_clear_pointer (&filter_text, g_free);
+	filter_text = g_strdup (gtk_entry_get_text (GTK_ENTRY (entry)));
+
+	if (filter_model != NULL)
+		gtk_tree_model_filter_refilter (
+			GTK_TREE_MODEL_FILTER (filter_model));
+
+	update_count_label ();
+}
+
+guint
+fs_hitview_visible_count (void)
+{
+	if (filter_model == NULL)
+		return row_count;
+
+	return (guint) gtk_tree_model_iter_n_children (filter_model, NULL);
 }
 
 /* [ hit_is_blocked ]
@@ -277,6 +353,13 @@ on_hit (const FsHit *hit, gpointer user_data)
 	if (copilot != NULL)
 		fs_copilot_feed_event (copilot, hit);
 
+	/* Sentinel auto-block: in auto mode a fresh beacon insight is
+	 * staged into the policy right here, not the next time someone
+	 * opens the Copilot page.  The pass itself is a cheap walk; the
+	 * insight list is only rebuilt when a block was actually staged. */
+	if (fs_copilot_sentinel_auto_pass ())
+		fs_copilot_view_refresh ();
+
 	/* Update copilot stats counter. */
 	fs_copilot_note_event ();
 
@@ -333,7 +416,9 @@ fs_hitview_append (const FsHit *hit)
 	}
 
 	/* Follow the tail when the list is already scrolled to the end, so
-	 * a user watching events sees new ones without scrolling. */
+	 * a user watching events sees new ones without scrolling.  The view
+	 * shows the filter model, so the target is the last VISIBLE row
+	 * (and there may be none while a filter hides everything). */
 	{
 		GtkWidget *parent = gtk_widget_get_parent (view);
 		GtkAdjustment *adj = NULL;
@@ -344,9 +429,22 @@ fs_hitview_append (const FsHit *hit)
 
 		if (adj != NULL &&
 		    gtk_adjustment_get_value (adj) >=
-		    gtk_adjustment_get_upper (adj) - 1.0)
-			gtk_tree_view_scroll_to_cell (GTK_TREE_VIEW (view), NULL,
-			                               NULL, FALSE, 0, 0);
+		    gtk_adjustment_get_upper (adj) - 1.0) {
+			gint n = (filter_model != NULL)
+			         ? (gint) gtk_tree_model_iter_n_children (
+			             filter_model, NULL)
+			         : (gint) row_count;
+
+			if (n > 0) {
+				GtkTreePath *path =
+					gtk_tree_path_new_from_indices (n - 1, -1);
+
+				gtk_tree_view_scroll_to_cell (
+					GTK_TREE_VIEW (view), path, NULL,
+					FALSE, 0, 0);
+				gtk_tree_path_free (path);
+			}
+		}
 	}
 
 	update_count_label ();
@@ -358,6 +456,12 @@ guint
 fs_hitview_count (void)
 {
 	return row_count;
+}
+
+void
+fs_hitview_set_policy (FsPolicy *policy)
+{
+	hitview_policy = policy;
 }
 
 void
@@ -470,6 +574,334 @@ fs_hitview_selected (void)
 	return &hit;
 }
 
+/* ---- right-click: Event -> Rule -----------------------------------
+ *
+ * The menu offers only what the event can actually express: outbound
+ * events can block/allow their destination or its service, inbound
+ * events can trust their source (or drop that trust again).  Every
+ * action follows the same confirm -> add -> save (rollback on
+ * failure) -> reload -> push ceremony the Copilot uses, and the
+ * result message says honestly whether the change reached the
+ * firewall. */
+
+/* [ push_policy ]
+ * Put the policy in front of the actual firewall and report the
+ * outcome without spin: staged is staged, live is live. */
+static void
+push_policy (const gchar *what, const gchar *csv)
+{
+	GError *error = NULL;
+	FsApplyResult result = fs_backend ()->apply_rules (hitview_policy,
+	                                                   &error);
+	gchar *msg;
+
+	if (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL) {
+		msg = g_strdup_printf (_("%s\n\nRule: %s\n\n%s"),
+		                       what, csv != NULL ? csv : "-",
+		                       fs_util_apply_result_to_string (result));
+		fs_dialogs_info (NULL, _("Policy updated"), msg);
+	} else {
+		msg = g_strdup_printf (
+			_("%s\n\nRule: %s\n\nSaved in the policy but NOT live yet: "
+			  "%s. Run StockFW as administrator and apply the policy to "
+			  "activate it."),
+			what, csv != NULL ? csv : "-",
+			fs_util_apply_result_to_string (result));
+		fs_dialogs_info (NULL, _("Policy updated, not live yet"), msg);
+	}
+
+	g_free (msg);
+	g_clear_error (&error);
+}
+
+/* [ stage_rule ]
+ * Confirm one rule built from the selected event, persist it and
+ * push it.  Takes ownership of rule. */
+static void
+stage_rule (FsRule *rule, const gchar *what)
+{
+	gchar *csv;
+	gchar *question;
+	gboolean confirmed = FALSE;
+	gboolean present;
+
+	if (rule == NULL)
+		return;
+
+	if (hitview_policy == NULL) {
+		fs_rule_free (rule);
+		fs_dialogs_error (NULL, _("No policy is loaded"),
+		                  _("Open the Policy page first; without a "
+		                    "policy there is nowhere to stage this rule."));
+		return;
+	}
+
+	csv     = fs_rule_to_csv (rule);
+	present = fs_policy_contains (hitview_policy, rule);
+
+	question = g_strdup_printf (
+		"%s\n\nRule: %s\n\nThe rule is added to your policy and saved "
+		"to disk, then pushed to the firewall.",
+		what, csv != NULL ? csv : "?");
+
+	fs_dialogs_confirm (NULL, question, &confirmed);
+	g_free (question);
+
+	if (!confirmed) {
+		fs_rule_free (rule);
+		g_free (csv);
+		return;
+	}
+
+	if (present) {
+		gchar *msg = g_strdup_printf (
+			_("The rule is already in your policy, nothing was added:"
+			  "\n\n%s"), csv != NULL ? csv : "-");
+
+		fs_dialogs_info (NULL, _("Already in the policy"), msg);
+		g_free (msg);
+		fs_rule_free (rule);
+		g_free (csv);
+		return;
+	}
+
+	/* Save, rolling the store back when the write fails, so the
+	 * Policy page and the disk never disagree. */
+	if (!fs_policy_add_persist (hitview_policy, rule)) {
+		fs_dialogs_error (NULL, _("Could not save the rule"),
+		                  _("The rule was not written to disk, so it "
+		                    "was taken back out of the policy. Nothing "
+		                    "changed."));
+		fs_rule_free (rule);
+		g_free (csv);
+		return;
+	}
+
+	fs_rule_free (rule);
+	fs_policyview_reload (hitview_policy);
+	fs_audit_log ("event rule added", csv);
+
+	push_policy (what, csv);
+	g_free (csv);
+}
+
+/* [ on_menu_rule_activated ] */
+static void
+on_menu_rule_activated (GtkMenuItem *item, gpointer data)
+{
+	FsEventRuleAction action = GPOINTER_TO_INT (data);
+	const FsHit *hit = fs_hitview_selected ();
+	FsRule *rule;
+	gchar *what = NULL;
+
+	(void) item;
+
+	if (hit == NULL)
+		return;
+
+	rule = fs_eventrule_build (hit, action);
+	if (rule == NULL)
+		return;
+
+	switch (action) {
+	case FS_EVENTRULE_BLOCK_DEST:
+		what = g_strdup_printf (_("Block all traffic to %s"),
+		                        hit->destination);
+		break;
+	case FS_EVENTRULE_ALLOW_DEST:
+		what = g_strdup_printf (_("Allow traffic to %s"),
+		                        hit->destination);
+		break;
+	case FS_EVENTRULE_BLOCK_SERVICE:
+		what = g_strdup_printf (
+			_("Block %s to %s"),
+			(hit->service != NULL && *hit->service != '\0')
+				? hit->service : (hit->port ? hit->port : "?"),
+			hit->destination);
+		break;
+	case FS_EVENTRULE_TRUST_SOURCE:
+		what = g_strdup_printf (
+			_("Trust %s for inbound traffic"), hit->source);
+		break;
+	default:
+		fs_rule_free (rule);
+		return;
+	}
+
+	stage_rule (rule, what);
+	g_free (what);
+}
+
+/* [ on_menu_untrust_activated ]
+ * The inbound mirror: there is no inbound DENY kind, so "untrust" is
+ * removing the stored allow -- default-deny already does the
+ * blocking. */
+static void
+on_menu_untrust_activated (GtkMenuItem *item, gpointer data)
+{
+	const FsHit *hit = fs_hitview_selected ();
+	FsRule *existing;
+	gchar *source;
+	gchar *question;
+	gboolean confirmed = FALSE;
+
+	(void) item;
+	(void) data;
+
+	if (hit == NULL || hitview_policy == NULL)
+		return;
+
+	existing = fs_eventrule_find_trust (hitview_policy, hit);
+	if (existing == NULL) {
+		fs_dialogs_info (NULL, _("Source is not trusted"),
+		                  _("No inbound allow exists for this source, "
+		                    "so the default-deny inbound policy already "
+		                    "blocks it."));
+		return;
+	}
+
+	/* The store frees its copy on removal, so keep the address for
+	 * the messages first. */
+	source  = g_strdup (existing->target);
+	question = g_strdup_printf (
+		_("Remove the inbound allow for %s?\n\nThe default-deny "
+		  "inbound policy blocks it again as soon as the change is "
+		  "applied."), source != NULL ? source : "?");
+
+	fs_dialogs_confirm (NULL, question, &confirmed);
+	g_free (question);
+
+	if (!confirmed) {
+		g_free (source);
+		return;
+	}
+
+	if (!fs_eventrule_untrust (hitview_policy, hit)) {
+		fs_dialogs_error (NULL, _("Could not remove the rule"),
+		                  _("The change was not written to disk, so "
+		                    "the allow rule was kept. Nothing changed."));
+		g_free (source);
+		return;
+	}
+
+	fs_policyview_reload (hitview_policy);
+	fs_audit_log ("event trust removed", source);
+
+	push_policy (_("Inbound allow removed"), source);
+	g_free (source);
+}
+
+/* [ on_view_button_press ]
+ * Right-click selects the row under the cursor and pops the menu of
+ * actions that fit this event's direction. */
+static gboolean
+on_view_button_press (GtkWidget *widget, GdkEventButton *event,
+                      gpointer data)
+{
+	GtkWidget *menu;
+	const FsHit *hit;
+	gboolean added = FALSE;
+
+	(void) data;
+
+	if (event->type != GDK_BUTTON_PRESS || event->button != 3)
+		return FALSE;
+
+	{
+		GtkTreePath *path = NULL;
+
+		if (gtk_tree_view_get_path_at_pos (GTK_TREE_VIEW (widget),
+		                                   (gint) event->x,
+		                                   (gint) event->y,
+		                                   &path, NULL, NULL, NULL)) {
+			gtk_tree_view_set_cursor (GTK_TREE_VIEW (widget), path,
+			                          NULL, FALSE);
+			gtk_tree_path_free (path);
+		}
+	}
+
+	hit = fs_hitview_selected ();
+	if (hit == NULL)
+		return FALSE;
+
+	menu = gtk_menu_new ();
+
+	if (hit_is_outbound (hit) &&
+	    hit->destination != NULL && *hit->destination != '\0') {
+		GtkWidget *item;
+		gchar *label;
+
+		label = g_strdup_printf (_("Block %s (all traffic)"),
+		                         hit->destination);
+		item = gtk_menu_item_new_with_label (label);
+		g_free (label);
+		g_signal_connect (item, "activate",
+		                  G_CALLBACK (on_menu_rule_activated),
+		                  GINT_TO_POINTER (FS_EVENTRULE_BLOCK_DEST));
+		gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+		added = TRUE;
+
+		label = g_strdup_printf (_("Allow %s (all traffic)"),
+		                         hit->destination);
+		item = gtk_menu_item_new_with_label (label);
+		g_free (label);
+		g_signal_connect (item, "activate",
+		                  G_CALLBACK (on_menu_rule_activated),
+		                  GINT_TO_POINTER (FS_EVENTRULE_ALLOW_DEST));
+		gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+
+		if (hit->port != NULL && *hit->port != '\0') {
+			label = g_strdup_printf (
+				_("Block this service to %s"), hit->destination);
+			item = gtk_menu_item_new_with_label (label);
+			g_free (label);
+			g_signal_connect (item, "activate",
+			                  G_CALLBACK (on_menu_rule_activated),
+			                  GINT_TO_POINTER (
+			                  FS_EVENTRULE_BLOCK_SERVICE));
+			gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+		}
+	} else if (hit_is_inbound (hit) &&
+	           hit->source != NULL && *hit->source != '\0') {
+		GtkWidget *item;
+		gchar *label;
+
+		if (hitview_policy != NULL &&
+		    fs_eventrule_find_trust (hitview_policy, hit) != NULL) {
+			label = g_strdup_printf (
+				_("Remove trust for %s"), hit->source);
+			item = gtk_menu_item_new_with_label (label);
+			g_free (label);
+			g_signal_connect (item, "activate",
+			                  G_CALLBACK (
+			                  on_menu_untrust_activated),
+			                  NULL);
+		} else {
+			label = g_strdup_printf (
+				_("Trust %s (inbound allow)"), hit->source);
+			item = gtk_menu_item_new_with_label (label);
+			g_free (label);
+			g_signal_connect (item, "activate",
+			                  G_CALLBACK (on_menu_rule_activated),
+			                  GINT_TO_POINTER (
+			                  FS_EVENTRULE_TRUST_SOURCE));
+		}
+
+		gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+		added = TRUE;
+	}
+
+	if (!added) {
+		gtk_widget_destroy (menu);
+		return FALSE;
+	}
+
+	gtk_widget_show_all (menu);
+	gtk_menu_popup_at_pointer (GTK_MENU (menu), (GdkEvent *) event);
+
+	return TRUE;
+}
+
 /* [ on_clear_clicked ] */
 static void
 on_clear_clicked (GtkButton *button, gpointer data)
@@ -528,6 +960,17 @@ fs_hitview_page (void)
 	gtk_label_set_xalign (GTK_LABEL (count_label), 0.0);
 	gtk_box_pack_start (GTK_BOX (header), count_label, TRUE, TRUE, 0);
 
+	/* Filter bar.  SearchEntry, so Escape clears and typing filters
+	 * the list live through the GtkTreeModelFilter below. */
+	filter_entry = gtk_search_entry_new ();
+	gtk_entry_set_placeholder_text (
+		GTK_ENTRY (filter_entry),
+		_("Filter events (host, port, protocol)"));
+	gtk_widget_set_size_request (filter_entry, 240, -1);
+	g_signal_connect (filter_entry, "search-changed",
+	                  G_CALLBACK (on_filter_changed), NULL);
+	gtk_box_pack_start (GTK_BOX (header), filter_entry, FALSE, FALSE, 0);
+
 	button_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 
 	toggle = gtk_check_button_new_with_mnemonic (_("_Monitor"));
@@ -582,7 +1025,19 @@ fs_hitview_page (void)
 		  G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
 		  G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING });
 
-	view = gtk_tree_view_new_with_model (GTK_TREE_MODEL (store));
+	/* The view shows the filtered model; rows are still appended to
+	 * and trimmed from the store underneath. */
+	filter_model = gtk_tree_model_filter_new (GTK_TREE_MODEL (store),
+	                                          NULL);
+	gtk_tree_model_filter_set_visible_func (
+		GTK_TREE_MODEL_FILTER (filter_model), filter_visible,
+		NULL, NULL);
+
+	view = gtk_tree_view_new_with_model (filter_model);
+
+	/* Right-click: Event -> Rule menu. */
+	g_signal_connect (view, "button-press-event",
+	                  G_CALLBACK (on_view_button_press), NULL);
 
 	for (gint i = 0; i < FS_NUM_HITCOLUMNS; i++) {
 		GtkCellRenderer *renderer;

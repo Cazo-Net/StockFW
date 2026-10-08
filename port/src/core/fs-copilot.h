@@ -36,7 +36,9 @@ typedef enum
 	FS_INSIGHT_REDUNDANT_RULE,       /* Rule covered by another */
 	FS_INSIGHT_MISSING_RULE,         /* Traffic not covered by any rule */
 	FS_INSIGHT_SUSPICIOUS_BEHAVIOR,  /* Potential malware/C2 */
-	FS_INSIGHT_RULE_OPTIMIZATION     /* Rules can be merged/simplified */
+	FS_INSIGHT_RULE_OPTIMIZATION,    /* Rules can be merged/simplified */
+	FS_INSIGHT_BEACON,               /* Periodic callback traffic: covert channel */
+	FS_INSIGHT_FANOUT                /* Burst of distinct destinations: scan/spread */
 } FsInsightType;
 
 /* A single insight from the copilot. */
@@ -50,6 +52,7 @@ typedef struct
 	gchar               *destination;     /* Remote host/port if applicable */
 	gchar               *suggested_rule;  /* Natural-language rule suggestion */
 	gchar               *rule_csv;        /* CSV rule ready to apply */
+	FsRuleKind          rule_kind;        /* policy kind rule_csv parses as */
 	guint64              timestamp;       /* When detected */
 	gboolean             auto_applicable; /* Can be applied without review */
 } FsInsight;
@@ -89,6 +92,12 @@ void       fs_copilot_free (FsCopilot *copilot);
 /* Feed a network event to the copilot for learning/analysis. */
 void fs_copilot_feed_event (FsCopilot *copilot, const FsHit *hit);
 
+/* Same, with an explicit arrival time in monotonic microseconds.
+ * Production passes g_get_monotonic_time(); the Sentinel detector
+ * tests drive time through this so beacon regularity is deterministic. */
+void fs_copilot_feed_event_at (FsCopilot *copilot, const FsHit *hit,
+                               gint64 now_us);
+
 /* Get current insights (caller frees with g_list_free_full + fs_insight_free). */
 GList *fs_copilot_get_insights (FsCopilot *copilot);
 
@@ -127,6 +136,19 @@ FsPolicy *fs_copilot_get_policy (FsCopilot *copilot);
 /* Free helpers. */
 void fs_insight_free (FsInsight *insight);
 void fs_simulation_result_free (FsSimulationResult *result);
+
+/* Stage an insight's suggestion: parse rule_csv as insight->rule_kind.
+ * fs_insight_to_rule returns a caller-owned rule or NULL.  The apply
+ * helper adds it to the policy and saves, rolling the store back when
+ * the write fails; FALSE when the insight carries no rule, the CSV
+ * does not parse, or the rule is already stored. */
+FsRule   *fs_insight_to_rule (const FsInsight *insight);
+gboolean   fs_insight_apply   (const FsInsight *insight, FsPolicy *policy);
+
+/* TRUE only when the insight's rule can be staged without a human:
+ * it must be able to only tighten the policy (an outbound deny).
+ * Auto-block consults this; the confirmed Apply button does not. */
+gboolean   fs_insight_is_auto_safe (const FsInsight *insight);
 
 G_END_DECLS
 

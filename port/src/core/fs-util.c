@@ -28,21 +28,24 @@
 #include <errno.h>
 
 /* [ fs_util_is_valid_port ]
- * Accepts a single port ("80") or a range ("1024:65535"), matching what
- * the original editor accepted. */
+ * Accepts a single port ("80") or a range in either separator the
+ * policy files use: "1024:65535" or the hyphen form "67-68" that the
+ * default ruleset ships. */
 gboolean
 fs_util_is_valid_port (const gchar *port)
 {
-	const gchar *colon;
+	const gchar *sep;
 	gchar *endptr = NULL;
 	gint first, last;
 
 	if (port == NULL || *port == '\0')
 		return FALSE;
 
-	colon = strchr (port, ':');
+	sep = strchr (port, ':');
+	if (sep == NULL)
+		sep = strchr (port, '-');
 
-	if (colon == NULL) {
+	if (sep == NULL) {
 		first = (gint) strtol (port, &endptr, 10);
 
 		if (endptr == port || *endptr != '\0')
@@ -51,13 +54,13 @@ fs_util_is_valid_port (const gchar *port)
 		return (first >= 0 && first <= 65535);
 	}
 
-	if (colon != port && *(colon + 1) != '\0') {
+	if (sep != port && *(sep + 1) != '\0') {
 		first = (gint) strtol (port, &endptr, 10);
 
-		if (endptr != colon)
+		if (endptr != sep)
 			return FALSE;
 
-		last = (gint) strtol (colon + 1, &endptr, 10);
+		last = (gint) strtol (sep + 1, &endptr, 10);
 
 		if (*endptr != '\0')
 			return FALSE;
@@ -88,6 +91,60 @@ fs_util_is_valid_host (const gchar *host)
 
 	if (strcmp (host, "*") == 0)
 		return TRUE;
+
+	/* CIDR: an address plus its prefix length (netsh accepts the
+	 * slash form and the policy files use it, e.g. 192.168.1.0/24).
+	 * Only addresses take a prefix -- not hostnames. */
+	{
+		const gchar *slash = strchr (host, '/');
+
+		if (slash != NULL) {
+			gchar *addr;
+			const gchar *q;
+			glong prefix;
+			gboolean numeric;
+			gboolean v6;
+			gboolean ok;
+
+			/* Exactly one slash, neither side empty. */
+			if (slash == host || *(slash + 1) == '\0' ||
+			    strchr (slash + 1, '/') != NULL)
+				return FALSE;
+
+			for (q = slash + 1; *q != '\0'; q++) {
+				if (!g_ascii_isdigit (*q))
+					return FALSE;
+			}
+
+			addr = g_strndup (host, (gsize) (slash - host));
+			prefix = g_ascii_strtoll (slash + 1, NULL, 10);
+			v6 = (strchr (addr, ':') != NULL);
+
+			numeric = TRUE;
+			if (!v6) {
+				for (q = addr; *q != '\0'; q++) {
+					if (*q != '.' && !g_ascii_isdigit (*q)) {
+						numeric = FALSE;
+						break;
+					}
+				}
+			}
+
+			ok = numeric && fs_util_is_valid_host (addr) &&
+			     prefix >= 0 && prefix <= (v6 ? 128 : 32);
+
+			g_free (addr);
+			return ok;
+		}
+	}
+
+	/* IPv6: the digit/letter heuristics below cannot tell an address
+	 * from a hostname (":" is neither), so hand it to the OS parser. */
+	if (strchr (host, ':') != NULL) {
+		struct in6_addr v6;
+
+		return inet_pton (AF_INET6, host, &v6) == 1;
+	}
 
 	for (p = host; *p != '\0'; p++) {
 		if (*p != '.' && !g_ascii_isdigit (*p)) {
@@ -371,4 +428,82 @@ fs_util_apply_result_to_string (int result)
 	default:
 		return "Failed to apply the firewall rules";
 	}
+}
+
+/* [ fs_util_filter_match ]
+ * The Events filter bar, in core: a row is shown when the needle
+ * appears (case-insensitively) in any of its fields. */
+static gboolean
+ascii_case_contains (const gchar *haystack, const gchar *needle)
+{
+	gsize nlen = strlen (needle);
+	const gchar *p;
+
+	for (p = haystack; *p != '\0'; p++) {
+		gsize i;
+
+		for (i = 0; i < nlen; i++) {
+			if (p[i] == '\0' ||
+			    g_ascii_tolower (p[i]) != g_ascii_tolower (needle[i]))
+				break;
+		}
+
+		if (i == nlen)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+gboolean
+fs_util_filter_match (const gchar *needle,
+                      const gchar *const *fields,
+                      gint n_fields)
+{
+	gint i;
+
+	if (needle == NULL || *needle == '\0')
+		return TRUE;
+
+	if (fields == NULL || n_fields <= 0)
+		return FALSE;
+
+	for (i = 0; i < n_fields; i++) {
+		if (fields[i] == NULL || *fields[i] == '\0')
+			continue;
+
+		if (ascii_case_contains (fields[i], needle))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/* [ fs_util_strip_controls ]
+ * F-3 rule-name hygiene: control characters (C0 and DEL) must never
+ * reach textual output -- a rule name containing ESC or CR could
+ * rewrite a terminal or forge a log line.  Byte-wise is safe on UTF-8:
+ * continuation bytes are always >= 0x80.  NULL passes through. */
+gchar *
+fs_util_strip_controls (const gchar *text)
+{
+	GString *out;
+	gsize i;
+	gsize len;
+
+	if (text == NULL)
+		return NULL;
+
+	out = g_string_new (NULL);
+
+	for (i = 0, len = strlen (text); i < len; i++) {
+		guchar c = (guchar) text[i];
+
+		if (c < 0x20 || c == 0x7f)
+			continue;
+
+		g_string_append_c (out, (gchar) c);
+	}
+
+	return g_string_free (out, FALSE);
 }

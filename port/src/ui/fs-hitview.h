@@ -10,16 +10,26 @@
 
 #include <gtk/gtk.h>
 #include "core/fs-types.h"
+#include "core/fs-rules.h"
 
 G_BEGIN_DECLS
 
 GtkWidget *fs_hitview_page (void);
+
+/* The policy the right-click Event -> Rule actions stage into.  Set by
+ * fs-app.c once the policy exists: the Events page is built before
+ * the policy is created, so the pointer arrives after the page. */
+void fs_hitview_set_policy (FsPolicy *policy);
 
 /* Appends one hit and returns FALSE when the cap is reached. */
 gboolean fs_hitview_append (const FsHit *hit);
 
 /* How many hits are currently listed. */
 guint fs_hitview_count (void);
+
+/* How many rows pass the filter bar (equals the row count when the
+ * filter is empty). */
+guint fs_hitview_visible_count (void);
 
 /* Starts / stops the platform event source feeding the list. */
 gboolean fs_hitview_start (GError **error);

@@ -276,6 +276,43 @@ fs_rule_kind_path (FsRuleKind kind)
 	}
 }
 
+/* [ rule_fields_sane ]
+ * F-1: reject rows whose host or port fields cannot name a real host
+ * or port, before the row ever reaches netsh's own parser.  An empty
+ * field means "any" and is legitimate; a present-but-bad value is
+ * not.  Unknown kinds validate their target field as a host. */
+static gboolean
+sane_host_field (const gchar *host)
+{
+	return (host == NULL || *host == '\0' || fs_util_is_valid_host (host));
+}
+
+static gboolean
+sane_port_field (const gchar *port)
+{
+	return (port == NULL || *port == '\0' || fs_util_is_valid_port (port));
+}
+
+static gboolean
+rule_fields_sane (const FsRule *rule)
+{
+	switch (rule->kind) {
+	case FS_RULE_INBOUND_FORWARD:
+		return sane_port_field (rule->port) &&
+		       sane_host_field (rule->to) &&
+		       sane_port_field (rule->to_port);
+
+	case FS_RULE_INBOUND_ALLOW_SERVICE:
+	case FS_RULE_OUTBOUND_ALLOW_SERVICE:
+	case FS_RULE_OUTBOUND_DENY_SERVICE:
+		return sane_port_field (rule->port) &&
+		       sane_host_field (rule->target);
+
+	default:
+		return sane_host_field (rule->target);
+	}
+}
+
 gboolean
 fs_policy_load (FsPolicy *policy, gint *malformed)
 {
@@ -318,6 +355,16 @@ fs_policy_load (FsPolicy *policy, gint *malformed)
 
 			if (rule == NULL) {
 				g_printerr ("Malformed rule in %s: %s\n", relative, line);
+				bad++;
+				continue;
+			}
+
+			/* F-1: a row that cannot name a valid host or port is
+			 * rejected here, not handed to netsh to fail on later. */
+			if (!rule_fields_sane (rule)) {
+				g_printerr ("Invalid host/port in %s: %s\n",
+				            relative, line);
+				fs_rule_free (rule);
 				bad++;
 				continue;
 			}
@@ -404,6 +451,50 @@ fs_policy_add (FsPolicy *policy, FsRule *rule)
 		return;
 
 	g_ptr_array_add (policy->kinds[rule->kind], fs_rule_copy (rule));
+}
+
+/* [ fs_policy_add_persist ]
+ * Add a copy of the rule and save; if the write fails the copy comes
+ * back out, so the store and the disk never disagree about what the
+ * policy is. */
+gboolean
+fs_policy_add_persist (FsPolicy *policy, FsRule *rule)
+{
+	if (policy == NULL || rule == NULL)
+		return FALSE;
+
+	if (fs_policy_contains (policy, rule))
+		return FALSE;
+
+	fs_policy_add (policy, rule);
+
+	if (!fs_policy_save (policy)) {
+		fs_policy_remove (policy, rule);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+/* [ fs_policy_remove_persist ]
+ * Remove the matching rule and save; if the write fails the rule is
+ * re-added, because a removal that did not reach disk must not look
+ * like it did. */
+gboolean
+fs_policy_remove_persist (FsPolicy *policy, FsRule *rule)
+{
+	if (policy == NULL || rule == NULL)
+		return FALSE;
+
+	if (!fs_policy_remove (policy, rule))
+		return FALSE;
+
+	if (!fs_policy_save (policy)) {
+		fs_policy_add (policy, rule);
+		return FALSE;
+	}
+
+	return TRUE;
 }
 
 /* [ fs_policy_remove ]
