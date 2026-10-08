@@ -63,7 +63,12 @@ typedef struct
 	gchar               *scenario;        /* Human-readable scenario */
 	gboolean             would_block;     /* Would traffic be blocked? */
 	gchar               *matching_rule;   /* Which rule would match */
-	gchar               *explanation;     /* Why */
+	gchar               *explanation;     /* Why, as one log sentence */
+	gchar               *reason;          /* Why, without the
+	                                       * "Simulation: ... would be"
+	                                       * wrapper -- what the
+	                                       * visualizer shows under
+	                                       * "Explanation"            */
 	guint                affected_connections; /* Est. connections affected */
 } FsSimulationResult;
 
@@ -142,6 +147,17 @@ void        fs_scenario_free (FsScenario *scenario);
 FsSimulationResult *fs_copilot_simulate_text (FsCopilot *copilot,
                                               const gchar *text,
                                               FsScenario **parsed_out);
+
+/* The "how to allow this" sentence for a parsed scenario: "Allow
+ * inbound TCP port 22 from 192.168.1.5."  Returns a newly allocated
+ * string, NULL only for NULL input.  Presentation reads this so the
+ * suggestion and the tests speak the same words. */
+gchar *fs_copilot_allow_suggestion (const FsScenario *scenario);
+
+/* The policy rule that would let a parsed scenario through: the
+ * service-allow kind of the scenario's direction, the scenario's port
+ * and host.  Caller frees with fs_rule_free; NULL for NULL input. */
+FsRule *fs_copilot_allow_rule_for (const FsScenario *scenario);
 
 /* Get learned profile for an application (or NULL if unknown). */
 const FsAppProfile *fs_copilot_get_profile (FsCopilot *copilot,

@@ -59,8 +59,17 @@ rules — without a shell prompt.
   192.168.1.50 on port 22"* and answers **BLOCKED/ALLOWED** against
   the real policy: block rules take precedence the way Windows
   Firewall resolves them, a shadowed allow is called out as shadowed,
-  a `/24` block covers the hosts inside it, and nothing is written —
-  it is a question, not a change. **No network, no telemetry.**
+  a `/24` block covers the hosts inside it, and the line itself writes
+  nothing — it is a question, not a change. It reads the shapes people
+  type: *ssh is open at 22 port*, *port 80*, *:22*, *local:22*,
+  *rdp* → 3389, *ping* → ICMP. The verdict then plays in the
+  **Simulation Visualizer** — a small modal window that animates
+  source → firewall → destination (the packet travels; the wall
+  answers with a green check or a red shake; a blocked packet bounces
+  back and the far line grays out), shows the parsed packet details
+  and the reason in plain English, and offers **Create This Rule**,
+  which prints the literal rule, asks, and only then stages it.
+  **No network, no telemetry.**
 - **Preferences** — what you see is what you save: pages that do not
   apply to the current backend are not shown, so there are no dead
   settings that silently do nothing.

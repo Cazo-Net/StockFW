@@ -81,6 +81,7 @@ add_executable(StockFW
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
   src/ui/fs-copilot.c
+  src/ui/fs-simviz.c
   ${FS_BACKEND_SOURCES}
 )
 target_link_libraries(StockFW PRIVATE fs-core PkgConfig::GTK3)
@@ -151,6 +152,7 @@ set(FS_UI_SOURCES
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
   src/ui/fs-copilot.c
+  src/ui/fs-simviz.c
   ${FS_BACKEND_SOURCES}
 )
 add_executable(fs-ui-smoke EXCLUDE_FROM_ALL
@@ -181,3 +183,14 @@ target_compile_definitions(fs-hitview-smoke PRIVATE
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-hitview-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+
+# The What-If Simulation Visualizer: its timeline is pure math, so the
+# smoke test checks every phase (allowed / blocked / error) and then
+# builds each window variant to see what the user would read on it.
+# Only the component and fs-core are needed -- the visualizer never
+# touches the app wiring.
+add_executable(fs-simviz-smoke EXCLUDE_FROM_ALL
+  tests/ui-simviz-smoke.c
+  src/ui/fs-simviz.c
+)
+target_link_libraries(fs-simviz-smoke PRIVATE fs-core PkgConfig::GTK3)

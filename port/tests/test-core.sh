@@ -1645,6 +1645,222 @@ static void test_whatif_simulate (void)
 	}
 }
 
+/* The reading itself: the shapes people actually type.  Each one
+ * here once read as port 0 -- "local:0" in the verdict -- or as
+ * the wrong port entirely, which is how a simulation can be
+ * honest about the wrong question. */
+static void test_whatif_reading (void)
+{
+	FsScenario *sc;
+	FsSimulationResult *r;
+	FsCopilot *bare;
+	FsRule *rule;
+	gchar *s;
+
+	sc = fs_copilot_parse_scenario ("ssh is open at 22 port");
+	CHECK (sc != NULL, "the 'N port' shape parses");
+	if (sc != NULL) {
+		CHECK (sc->had_port && sc->port == 22,
+		       "the number before 'port' is the port");
+		CHECK (g_strcmp0 (sc->protocol, "TCP") == 0,
+		       "ssh reads as TCP");
+		CHECK (!sc->inbound,
+		       "with no direction word the default is outbound");
+		CHECK (g_strcmp0 (sc->app, "ssh") == 0,
+		       "the service name is the application");
+		fs_scenario_free (sc);
+	}
+
+	sc = fs_copilot_parse_scenario ("scan at 8080 port");
+	CHECK (sc != NULL, "an unknown service with 'N port' parses");
+	if (sc != NULL) {
+		CHECK (sc->had_port && sc->port == 8080,
+		       "8080 is read without any service name to help");
+		fs_scenario_free (sc);
+	}
+
+	sc = fs_copilot_parse_scenario ("allow anything to :22");
+	CHECK (sc != NULL, "a bare ':N' port parses");
+	if (sc != NULL) {
+		CHECK (sc->had_port && sc->port == 22,
+		       "the bare colon port is read");
+		CHECK (!sc->had_addr,
+		       "':22' is a local port, not a host");
+		CHECK (!sc->inbound, "'to' still reads as outbound");
+		fs_scenario_free (sc);
+	}
+
+	sc = fs_copilot_parse_scenario ("block local:22 inbound");
+	CHECK (sc != NULL, "the 'local:N' shorthand parses");
+	if (sc != NULL) {
+		CHECK (sc->had_port && sc->port == 22,
+		       "the local shorthand port is read");
+		CHECK (sc->inbound, "the inbound keyword is read");
+		CHECK (!sc->had_addr, "and it names no remote host");
+		fs_scenario_free (sc);
+	}
+
+	sc = fs_copilot_parse_scenario ("allow RDP to 10.0.0.9");
+	CHECK (sc != NULL, "an RDP line parses");
+	if (sc != NULL) {
+		CHECK (sc->had_port && sc->port == 3389,
+		       "RDP supplies port 3389");
+		CHECK (g_strcmp0 (sc->remote_ip, "10.0.0.9") == 0,
+		       "the host is still read");
+		fs_scenario_free (sc);
+	}
+
+	sc = fs_copilot_parse_scenario ("block ftp to 1.2.3.4");
+	CHECK (sc != NULL, "an FTP line parses");
+	if (sc != NULL) {
+		CHECK (sc->had_port && sc->port == 21,
+		       "FTP is the control port 21, not the table's 20");
+		fs_scenario_free (sc);
+	}
+
+	sc = fs_copilot_parse_scenario ("block port 80 outbound");
+	CHECK (sc != NULL, "the plain 'port N' shape parses");
+	if (sc != NULL) {
+		CHECK (sc->had_port && sc->port == 80, "port 80 is read");
+		CHECK (!sc->inbound, "the outbound keyword is read");
+		fs_scenario_free (sc);
+	}
+
+	sc = fs_copilot_parse_scenario ("allow ping from 192.168.1.5");
+	CHECK (sc != NULL, "a ping line parses");
+	if (sc != NULL) {
+		CHECK (g_strcmp0 (sc->protocol, "ICMP") == 0,
+		       "ping reads as ICMP");
+		CHECK (sc->inbound && sc->had_addr,
+		       "the source host and direction are read");
+		CHECK (!sc->had_port,
+		       "ICMP asks for no port, so had_port stays clear");
+		fs_scenario_free (sc);
+	}
+
+	/* The honesty boundary: a hostname-shaped token is not a host,
+	 * and "example.com:22" must not smuggle a port past that rule
+	 * either. */
+	sc = fs_copilot_parse_scenario ("block example.com:22");
+	CHECK (sc != NULL, "a hostname-shaped line still parses");
+	if (sc != NULL) {
+		CHECK (!sc->had_addr, "a hostname is not read as a host");
+		CHECK (!sc->had_port,
+		       "and its ':22' is not read as a port");
+		fs_scenario_free (sc);
+	}
+
+	/* The suggestion sentence and the rule behind it. */
+	sc = fs_copilot_parse_scenario ("allow ssh from 192.168.1.50 on port 22");
+	if (sc != NULL) {
+		s = fs_copilot_allow_suggestion (sc);
+		CHECK (s != NULL, "a blocked scenario gets a suggestion");
+		if (s != NULL) {
+			CHECK (strstr (s,
+			              "Allow inbound TCP port 22 from 192.168.1.50.")
+			       != NULL,
+			       "the suggestion names direction, protocol, "
+			       "port and host (got \"%s\")", s);
+			g_free (s);
+		}
+
+		rule = fs_copilot_allow_rule_for (sc);
+		CHECK (rule != NULL, "a blocked scenario gets a rule");
+		if (rule != NULL) {
+			CHECK (rule->kind == FS_RULE_INBOUND_ALLOW_SERVICE,
+			       "inbound maps to the inbound service-allow kind");
+			CHECK (g_strcmp0 (rule->service, "SSH") == 0,
+			       "port 22 carries its well-known name");
+			CHECK (g_strcmp0 (rule->port, "22") == 0,
+			       "the rule carries the port as text");
+			CHECK (g_strcmp0 (rule->target, "192.168.1.50") == 0,
+			       "the rule carries the host");
+			CHECK (rule->comment != NULL,
+			       "the rule says where it came from");
+			fs_rule_free (rule);
+		}
+		fs_scenario_free (sc);
+	} else {
+		CHECK (FALSE, "the suggestion scenario parses");
+	}
+
+	sc = fs_copilot_parse_scenario ("allow anything outbound");
+	if (sc != NULL) {
+		s = fs_copilot_allow_suggestion (sc);
+		CHECK (s != NULL && strstr (s, "Allow outbound TCP traffic.")
+		       != NULL,
+		       "a line that named no port suggests 'traffic' "
+		       "(got \"%s\")", s ? s : "(null)");
+		g_free (s);
+		fs_scenario_free (sc);
+	} else {
+		CHECK (FALSE, "the no-port scenario parses");
+	}
+
+	sc = fs_copilot_parse_scenario ("allow ping from 192.168.1.5");
+	if (sc != NULL) {
+		s = fs_copilot_allow_suggestion (sc);
+		CHECK (s != NULL, "the ICMP scenario gets a suggestion");
+		if (s != NULL) {
+			CHECK (strstr (s, "port") == NULL,
+			       "ICMP is not offered a port (got \"%s\")", s);
+			g_free (s);
+		}
+
+		rule = fs_copilot_allow_rule_for (sc);
+		CHECK (rule != NULL, "the ICMP scenario gets a rule");
+		if (rule != NULL) {
+			CHECK (g_strcmp0 (rule->service, "ICMP") == 0 &&
+			       g_strcmp0 (rule->port, "") == 0,
+			       "the ICMP rule names ICMP and no port");
+			fs_rule_free (rule);
+		}
+		fs_scenario_free (sc);
+	} else {
+		CHECK (FALSE, "the ICMP scenario parses");
+	}
+
+	sc = fs_copilot_parse_scenario ("outbound to 203.0.113.9:8443");
+	if (sc != NULL) {
+		rule = fs_copilot_allow_rule_for (sc);
+		CHECK (rule != NULL, "the odd-port scenario gets a rule");
+		if (rule != NULL) {
+			CHECK (g_strcmp0 (rule->port, "8443") == 0 &&
+			       g_strcmp0 (rule->target, "203.0.113.9") == 0,
+			       "the rule carries the odd port and the host");
+			CHECK (g_strcmp0 (rule->service, "TCP") == 0,
+			       "a port with no well-known name falls back "
+			       "to the protocol word");
+			fs_rule_free (rule);
+		}
+		fs_scenario_free (sc);
+	} else {
+		CHECK (FALSE, "the odd-port scenario parses");
+	}
+
+	CHECK (fs_copilot_allow_suggestion (NULL) == NULL &&
+	       fs_copilot_allow_rule_for (NULL) == NULL,
+	       "NULL scenarios suggest nothing");
+
+	/* The result now carries the reason twice: as the log sentence
+	 * and on its own for the visualizer's Explanation section. */
+	bare = fs_copilot_new ();
+	r = fs_copilot_simulate_text (bare, "allow ssh from 10.0.0.2 on port 22",
+	                              NULL);
+	CHECK (r != NULL, "the reason probe answers");
+	if (r != NULL) {
+		CHECK (r->reason != NULL && *r->reason != '\0',
+		       "the result carries a bare reason");
+		CHECK (strstr (r->explanation, "Simulation:") != NULL,
+		       "the log sentence keeps its wrapper");
+		CHECK (r->reason != NULL &&
+		       strstr (r->reason, "Simulation:") == NULL,
+		       "the bare reason drops the wrapper");
+		fs_simulation_result_free (r);
+	}
+	fs_copilot_free (bare);
+}
+
 /* The bi-directional Direction setting: the pairing map, the labels,
  * the twin rule and the all-or-nothing persist.  The teeth are for the
  * three ways this feature could lie -- pairing a kind that has no
@@ -1868,6 +2084,7 @@ int main (void)
 	test_policy_load_validation_f1 ();
 	test_name_hygiene_f3 ();
 	test_whatif_simulate ();
+	test_whatif_reading ();
 	test_direction_pairing ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",

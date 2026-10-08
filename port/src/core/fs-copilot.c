@@ -304,11 +304,15 @@ fs_copilot_clear_insights (FsCopilot *copilot)
  * The simulator takes one line of plain text, e.g.
  *   allow SSH from 192.168.1.50 on port 22
  *   block DNS to 8.8.8.8 on port 53 udp
+ *   ssh is open at 22 port          (the number may precede "port")
+ *   allow anything to :22           (a port on this machine, no host)
  * The grammar is closed on purpose: direction keywords (inbound,
  * outbound, ingress, egress, from, to), a numeric host or CIDR block,
- * a "port N" clause or a known service name, and a protocol keyword.
- * Everything the parser reads out lands in FsScenario, so the verdict
- * is never based on a reading the user cannot see. */
+ * a "port N" / "N port" clause, a bare ":N" or "local:N" port, or a
+ * known service name (ssh=22, http=80, https=443, dns=53, rdp=3389,
+ * ftp=21, smtp=25, ...), and a protocol keyword.  Everything the
+ * parser reads out lands in FsScenario, so the verdict is never based
+ * on a reading the user cannot see. */
 
 /* [ find_word_ci ]
  * Case-insensitive whole-word occurrence of needle (already lowercase)
@@ -524,7 +528,10 @@ fs_copilot_parse_scenario (const gchar *text)
 		sc->protocol = g_strdup ("ICMP");
 	}
 
-	/* "port N" -- the explicit clause wins over a service name. */
+	/* "port N" -- the explicit clause wins over a service name.  The
+	 * number may follow the word ("port 22") or precede it ("ssh is
+	 * open at 22 port", "scan at 8080 port"): both shapes were typed
+	 * by real users and one of them used to read as no port at all. */
 	hit = find_word_ci (lower, "port");
 	if (hit != NULL) {
 		const gchar *d = hit + 4;
@@ -538,6 +545,28 @@ fs_copilot_parse_scenario (const gchar *text)
 			if (v >= 0 && v <= 65535) {
 				sc->port = (guint) v;
 				sc->had_port = TRUE;
+			}
+		} else {
+			/* "22 port": the digits directly before the word. */
+			const gchar *last = hit;
+			const gchar *first;
+
+			while (last > lower && (last[-1] == ' ' ||
+			                       last[-1] == '\t'))
+				last--;
+
+			first = last;
+
+			while (first > lower && g_ascii_isdigit (first[-1]))
+				first--;
+
+			if (first < last && g_ascii_isdigit (*first)) {
+				glong v = g_ascii_strtoll (first, NULL, 10);
+
+				if (v >= 1 && v <= 65535) {
+					sc->port = (guint) v;
+					sc->had_port = TRUE;
+				}
 			}
 		}
 	}
@@ -590,6 +619,43 @@ fs_copilot_parse_scenario (const gchar *text)
 					sc->app = g_strndup (text + (start - lower),
 					                      (gsize) (p - start));
 			}
+		}
+	}
+
+	/* The small well-known map, asked before the big service table
+	 * below: these answer exactly as documented.  FTP means the
+	 * control port 21 (the table's first port is 20, the data
+	 * channel) and RDP lives here because the table predates it. */
+	{
+		static const struct {
+			const gchar *name;
+			guint        port;
+		} known[] = {
+			{ "ssh",    22   },
+			{ "http",   80   },
+			{ "https",  443  },
+			{ "dns",    53   },
+			{ "rdp",    3389 },
+			{ "ftp",    21   },
+			{ "smtp",   25   },
+			{ "telnet", 23   }
+		};
+
+		for (guint i = 0; i < G_N_ELEMENTS (known); i++) {
+			const gchar *m = find_word_ci (lower, known[i].name);
+
+			if (m == NULL)
+				continue;
+
+			if (!sc->had_port) {
+				sc->port = known[i].port;
+				sc->had_port = TRUE;
+			}
+
+			if (sc->app == NULL)
+				sc->app = g_strndup (text + (m - lower),
+				                      strlen (known[i].name));
+			break;
 		}
 	}
 
@@ -670,16 +736,15 @@ fs_copilot_parse_scenario (const gchar *text)
 			} else {
 				const gchar *colon = strchr (tok, ':');
 
-				if (colon != NULL && colon == strrchr (tok, ':') &&
-				    colon > tok) {
+				if (colon != NULL && colon == strrchr (tok, ':')) {
 					gchar *head = g_strndup (tok,
 					                          (gsize) (colon - tok));
 
-					if (looks_ipv4 (head)) {
+					if (colon > tok && looks_ipv4 (head)) {
 						if (!sc->had_port &&
 						    g_ascii_isdigit (colon[1])) {
-							glong v = g_ascii_strtoll (colon + 1,
-							                            NULL, 10);
+							glong v = g_ascii_strtoll (
+								colon + 1, NULL, 10);
 
 							if (v >= 1 && v <= 65535) {
 								sc->port = (guint) v;
@@ -690,6 +755,53 @@ fs_copilot_parse_scenario (const gchar *text)
 						sc->remote_ip = head;
 						sc->had_addr = TRUE;
 						head = NULL;
+					} else if (!sc->had_port &&
+					           g_ascii_isdigit (colon[1])) {
+						/* ":22" or "local:22": a port on this
+						 * machine, not a host.  Only the empty
+						 * head and the names for "us" count --
+						 * "example.com:22" is a hostname-shaped
+						 * token and stays rejected. */
+						static const gchar *local_heads[] = {
+							"", "local", "localhost", "me",
+							"myself", "self", "this", NULL
+						};
+						const gchar *e = colon + 1;
+						gboolean all_digits = TRUE;
+
+						while (*e != '\0') {
+							if (!g_ascii_isdigit (*e)) {
+								all_digits = FALSE;
+								break;
+							}
+							e++;
+						}
+
+						if (all_digits &&
+						    e - (colon + 1) <= 5) {
+							gboolean ours = FALSE;
+
+							for (guint i = 0;
+							     local_heads[i] != NULL;
+							     i++) {
+								if (g_ascii_strcasecmp (
+								    head,
+								    local_heads[i]) == 0) {
+									ours = TRUE;
+									break;
+								}
+							}
+
+							if (ours) {
+								glong v = g_ascii_strtoll (
+								colon + 1, NULL, 10);
+
+								if (v >= 1 && v <= 65535) {
+									sc->port = (guint) v;
+									sc->had_port = TRUE;
+								}
+							}
+						}
 					}
 
 					g_free (head);
@@ -894,6 +1006,7 @@ fs_copilot_simulate (FsCopilot *copilot,
 	}
 
 	result->affected_connections = 1;
+	result->reason = g_strdup (reason);
 	result->explanation = g_strdup_printf (_("Simulation: %s would be %s. "
 	                                         "Reason: %s"),
 	                                       result->scenario,
@@ -903,6 +1016,85 @@ fs_copilot_simulate (FsCopilot *copilot,
 	g_free (reason);
 
 	return result;
+}
+
+/* [ fs_copilot_allow_suggestion ]
+ * The "how to allow this" sentence a blocked verdict shows.  Built in
+ * core so the panel, the visualizer and the tests read the same
+ * words. */
+gchar *
+fs_copilot_allow_suggestion (const FsScenario *scenario)
+{
+	GString *s;
+	gboolean icmp;
+
+	if (scenario == NULL)
+		return NULL;
+
+	icmp = (g_strcmp0 (scenario->protocol, "ICMP") == 0);
+
+	s = g_string_new ("Allow ");
+	g_string_append (s, scenario->inbound ? _("inbound") : _("outbound"));
+	g_string_append_c (s, ' ');
+	g_string_append (s, (scenario->protocol != NULL &&
+	                     *scenario->protocol != '\0')
+	                  ? scenario->protocol : "TCP");
+
+	/* ICMP has no ports; saying "port 0" or "any port" for it would
+	 * be a question the line never asked. */
+	if (scenario->had_port)
+		g_string_append_printf (s, " %s %u", _("port"), scenario->port);
+	else if (!icmp)
+		g_string_append (s, _(" traffic"));
+
+	if (scenario->remote_ip != NULL && *scenario->remote_ip != '\0')
+		g_string_append_printf (s, " %s %s",
+		                        scenario->inbound ? _("from") : _("to"),
+		                        scenario->remote_ip);
+
+	g_string_append_c (s, '.');
+
+	return g_string_free (s, FALSE);
+}
+
+/* [ fs_copilot_allow_rule_for ]
+ * The rule that would let the scenario through: the service-allow kind
+ * of its direction, its port, its host.  The service column carries
+ * the well-known name when the port has one ("SSH" for 22) and the
+ * protocol word when it does not ("TCP" for 8443), so the Policy page
+ * shows something a person can recognize either way. */
+FsRule *
+fs_copilot_allow_rule_for (const FsScenario *scenario)
+{
+	FsRule *rule;
+	gchar *service = NULL;
+
+	if (scenario == NULL)
+		return NULL;
+
+	rule = fs_rule_new (scenario->inbound
+	                    ? FS_RULE_INBOUND_ALLOW_SERVICE
+	                    : FS_RULE_OUTBOUND_ALLOW_SERVICE);
+
+	if (scenario->port > 0)
+		service = fs_service_lookup_port ((gint) scenario->port);
+
+	if (service == NULL)
+		service = g_strdup ((scenario->protocol != NULL &&
+		                     *scenario->protocol != '\0')
+		                    ? scenario->protocol : "TCP");
+
+	rule->service = service;
+	rule->port = (scenario->port > 0)
+	             ? g_strdup_printf ("%u", scenario->port)
+	             : g_strdup ("");
+	rule->target = (scenario->remote_ip != NULL &&
+	                *scenario->remote_ip != '\0')
+	               ? g_strdup (scenario->remote_ip)
+	               : g_strdup (FS_TARGET_ANY);
+	rule->comment = g_strdup ("What-If Simulator suggestion");
+
+	return rule;
 }
 
 /* [ fs_copilot_get_profile ] */
@@ -1005,6 +1197,7 @@ fs_simulation_result_free (FsSimulationResult *result)
 	g_free (result->scenario);
 	g_free (result->matching_rule);
 	g_free (result->explanation);
+	g_free (result->reason);
 	g_free (result);
 }
 

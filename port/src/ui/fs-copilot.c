@@ -19,6 +19,7 @@
 #include "core/fs-util.h"
 #include "ui/fs-app.h"
 #include "ui/fs-policyview.h"
+#include "ui/fs-simviz.h"
 #include "core/fs-i18n.h"
 #include <gtk/gtk.h>
 #include <string.h>
@@ -95,6 +96,7 @@ static void refresh_insights (void);
 static void update_stats (void);
 static void run_policy_analysis (void);
 static void on_simulate_clicked (GtkButton *btn, gpointer data);
+static void create_rule_from_scenario (const FsScenario *sc);
 static void on_apply_suggestion_clicked (GtkButton *btn, gpointer data);
 static void on_analyze_clicked (GtkButton *btn, gpointer data);
 static void on_clear_clicked (GtkButton *btn, gpointer data);
@@ -1003,10 +1005,21 @@ on_analyze_clicked (GtkButton *btn, gpointer data)
  * on_simulate_clicked - What-if simulation
  *
  * The line is parsed and simulated in core (fs_copilot_simulate_text),
- * and the result lands in the panel below the entry: the parsed
- * reading first, so a grammar misreading is visible instead of hiding
- * behind the verdict.  Nothing is written to the policy -- this is a
- * question, not a change.
+ * and the result lands in two places:
+ *
+ *   - the panel below the entry, as the scrollback: the parsed
+ *     reading first, so a grammar misreading is visible instead of
+ *     hiding behind the verdict.  Iterating on a line stays one
+ *     glance at text.
+ *   - the Simulation Visualizer window (fs-simviz), which plays the
+ *     verdict: source, firewall, destination, the packet, and the
+ *     wall's answer.  Same result, different presentation -- the
+ *     component never re-judges anything.
+ *
+ * Nothing is written to the policy by simulating -- that stays a
+ * question, not a change.  The visualizer's "Create This Rule"
+ * button only returns a response; the rule is built and persisted
+ * here, in create_rule_from_scenario(), after the user asked for it.
  * ===================================================================== */
 static void
 on_simulate_clicked (GtkButton *btn, gpointer data)
@@ -1014,16 +1027,21 @@ on_simulate_clicked (GtkButton *btn, gpointer data)
     const gchar *text;
     FsScenario *sc = NULL;
     FsSimulationResult *result;
+    GtkWidget *parent;
 
     (void)btn; (void)data;
 
     text = gtk_entry_get_text (GTK_ENTRY (scenario_entry));
     if (!text || !*text) return;
 
+    parent = gtk_widget_get_toplevel (scenario_entry);
+
     result = fs_copilot_simulate_text (global_copilot, text, &sc);
     if (result == NULL) {
         /* An honest refusal: no verdict at all beats a verdict for a
-         * line nobody could read. */
+         * line nobody could read.  The visualizer shows the same
+         * refusal in its neutral state -- examples instead of an
+         * animation, because there is nothing to animate. */
         text_view_append (sim_output, "\n> ", "bold");
         text_view_append (sim_output, text, "blue");
         text_view_append (sim_output, "\n  ", NULL);
@@ -1031,6 +1049,7 @@ on_simulate_clicked (GtkButton *btn, gpointer data)
             "Nothing could be read from that line: no direction, host, "
             "port or service was recognized. Nothing was evaluated.\n",
             "dim");
+        fs_simviz_run (parent, NULL, NULL, text);
         gtk_entry_set_text (GTK_ENTRY (scenario_entry), "");
         return;
     }
@@ -1043,8 +1062,11 @@ on_simulate_clicked (GtkButton *btn, gpointer data)
     text_view_append (sim_output, "\n", NULL);
 
     /* Say out loud what the line did not say: a verdict read against
-     * "any port" must not look like a verdict for one port. */
-    if (sc != NULL && !sc->had_port)
+     * "any port" must not look like a verdict for one port.  ICMP has
+     * no ports at all, so the note would be a question the line
+     * never asked. */
+    if (sc != NULL && !sc->had_port &&
+        g_strcmp0 (sc->protocol, "ICMP") != 0)
         text_view_append (sim_output,
             "  Note: the line named no port; every port was simulated.\n",
             "dim");
@@ -1052,6 +1074,10 @@ on_simulate_clicked (GtkButton *btn, gpointer data)
         text_view_append (sim_output,
             "  Note: the line named no host; every host was simulated.\n",
             "dim");
+
+    /* The window: same verdict, played.  Returns only when closed. */
+    if (fs_simviz_run (parent, result, sc, text) == FS_SIMVIZ_CREATE_RULE)
+        create_rule_from_scenario (sc);
 
     fs_simulation_result_free (result);
     fs_scenario_free (sc);
@@ -1245,6 +1271,138 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
 
     g_free (rule_csv);
     g_free (title);
+}
+
+/* =====================================================================
+ * create_rule_from_scenario - the "Create This Rule" response
+ *
+ * The visualizer only returns a response; everything that changes
+ * state happens here, after the user pressed the button, on the same
+ * shared policy the Policy page edits: build the rule from the very
+ * scenario the verdict answered, refuse duplicates, persist with the
+ * usual rollback, refresh the Policy page, then push the policy to
+ * the live firewall -- reporting each step honestly, because "the row
+ * exists" and "the firewall enforces it" are two different claims.
+ * ===================================================================== */
+static void
+create_rule_from_scenario (const FsScenario *sc)
+{
+    FsRule *rule;
+    gchar *csv;
+
+    if (sc == NULL)
+        return;
+
+    if (copilot_policy == NULL) {
+        text_view_append (sim_output,
+            "\n[!] No traffic policy is loaded, so no rule was created.\n",
+            "orange");
+        return;
+    }
+
+    rule = fs_copilot_allow_rule_for (sc);
+    if (rule == NULL) {
+        text_view_append (sim_output,
+            "\n[!] The scenario could not be turned into a rule; "
+            "nothing was created.\n", "orange");
+        return;
+    }
+
+    csv = fs_rule_to_csv (rule);
+
+    if (fs_policy_contains (copilot_policy, rule)) {
+        text_view_append (sim_output,
+            "\n[=] Already in your policy, not added again:\n  ", "dim");
+        text_view_append (sim_output, csv, "bold");
+        text_view_append (sim_output, "\n", NULL);
+        fs_rule_free (rule);
+        g_free (csv);
+        return;
+    }
+
+    /* The same guardrail the suggestion path uses (Ch. 4.4): a dialog
+     * that prints the literal rule, and nothing is written until a
+     * human answers Yes to that exact CSV row. */
+    {
+        GtkWidget *confirm = gtk_message_dialog_new (
+            GTK_WINDOW (gtk_widget_get_toplevel (sim_output)),
+            GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
+            _("Create this rule?\n\n"
+              "Rule: %s\n\n"
+              "This will add the rule to your policy, save it to disk and\n"
+              "push it to the firewall."),
+            csv);
+        gint response;
+
+        gtk_window_set_title (GTK_WINDOW (confirm),
+                              _("Create This Rule"));
+        response = gtk_dialog_run (GTK_DIALOG (confirm));
+        gtk_widget_destroy (confirm);
+
+        if (response != GTK_RESPONSE_YES) {
+            text_view_append (sim_output,
+                "\n[=] Rule creation cancelled; nothing was written.\n",
+                "dim");
+            fs_rule_free (rule);
+            g_free (csv);
+            return;
+        }
+    }
+
+    /* Persist.  A failed write must leave no row behind, so the
+     * store and the disk never disagree -- add_persist rolls back. */
+    if (!fs_policy_add_persist (copilot_policy, rule)) {
+        text_view_append (sim_output,
+            "\n[!] Could not save the new rule to disk, "
+            "nothing was added:\n  ", "red");
+        text_view_append (sim_output, csv, "bold");
+        text_view_append (sim_output, "\n", NULL);
+        fs_rule_free (rule);
+        g_free (csv);
+        return;
+    }
+
+    /* Show it on the Policy page straight away. */
+    fs_policyview_reload (copilot_policy);
+    update_stats ();
+
+    text_view_append (sim_output,
+        "\n[OK] Rule created from the simulation and saved "
+        "to your policy:\n  ", "green");
+    text_view_append (sim_output, csv, "bold");
+    text_view_append (sim_output, "\n", NULL);
+
+    /* And put it in front of the actual firewall. */
+    {
+        GError *error = NULL;
+        FsApplyResult result = fs_backend ()->apply_rules (copilot_policy,
+                                                           &error);
+
+        if (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL) {
+            text_view_append (sim_output, "     ", NULL);
+            text_view_append (sim_output, apply_result_text (result),
+                              result == FS_APPLY_OK ? "green" : "orange");
+            text_view_append (sim_output, "\n", NULL);
+        } else {
+            /* The row really is in the policy -- say so rather than
+             * implying the whole thing failed. */
+            text_view_append (sim_output,
+                "     Saved, but it is NOT live yet: ", "orange");
+            text_view_append (sim_output, apply_result_text (result),
+                              "orange");
+            if (error != NULL) {
+                text_view_append (sim_output, " - ", NULL);
+                text_view_append (sim_output, error->message, "dim");
+            }
+            text_view_append (sim_output,
+                "\n     Re-run StockFW as administrator and apply the "
+                "policy to activate it.\n", "dim");
+        }
+        g_clear_error (&error);
+    }
+
+    fs_rule_free (rule);
+    g_free (csv);
 }
 
 /* =====================================================================
