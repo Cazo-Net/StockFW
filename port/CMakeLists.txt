@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(stockfw
-        VERSION 1.0.4
+        VERSION 1.0.5
         DESCRIPTION "Firewall configuration tool (Windows + Linux port)"
         LANGUAGES C)
 

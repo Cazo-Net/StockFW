@@ -67,6 +67,21 @@ typedef struct
 	guint                affected_connections; /* Est. connections affected */
 } FsSimulationResult;
 
+/* A parsed What-If Simulator line: the grammar is deliberately small
+ * (direction keywords, a host, a port or service name, a protocol) so
+ * that what the simulator evaluates is always what the user typed --
+ * plain data, freed with fs_scenario_free. */
+typedef struct
+{
+	gboolean inbound;    /* TRUE when the traffic arrives at us         */
+	guint    port;       /* service port; 0 when the line named none   */
+	gchar   *protocol;   /* "TCP", "UDP" or "ICMP"                      */
+	gchar   *remote_ip;  /* address or CIDR the line named, or NULL     */
+	gchar   *app;        /* application/service the line named, or NULL */
+	gboolean had_port;   /* the line actually carried a port            */
+	gboolean had_addr;   /* the line actually carried an address        */
+} FsScenario;
+
 /* Application behavior profile learned over time. */
 typedef struct
 {
@@ -112,6 +127,21 @@ FsSimulationResult *fs_copilot_simulate (FsCopilot *copilot,
                                          guint port,
                                          const gchar *protocol,
                                          gboolean inbound);
+
+/* Parse one What-If line into its scenario fields.  Returns NULL only
+ * for NULL/empty input; a line that names nothing still parses, with
+ * the had_port/had_addr flags clear and the documented defaults
+ * (outbound, any host, any port).  Caller frees with fs_scenario_free. */
+FsScenario *fs_copilot_parse_scenario (const gchar *text);
+void        fs_scenario_free (FsScenario *scenario);
+
+/* Parse a What-If line and run it against the policy in one step.
+ * Returns NULL when the line is empty.  When parsed_out is non-NULL it
+ * receives the scenario for the caller to free; otherwise the scenario
+ * is freed here. */
+FsSimulationResult *fs_copilot_simulate_text (FsCopilot *copilot,
+                                              const gchar *text,
+                                              FsScenario **parsed_out);
 
 /* Get learned profile for an application (or NULL if unknown). */
 const FsAppProfile *fs_copilot_get_profile (FsCopilot *copilot,

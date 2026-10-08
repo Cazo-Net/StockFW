@@ -50,6 +50,23 @@ FsRule *fs_rule_new  (FsRuleKind kind);
 FsRule *fs_rule_copy (const FsRule *rule);
 void    fs_rule_free (FsRule *rule);
 
+/* The kind that pairs with this one for a bi-directional rule (the
+ * same host or service, the opposite direction), or FS_RULE_N_KINDS
+ * when the kind has no counterpart.  Only the allow kinds pair: the
+ * policy has no inbound-deny kind (inbound is default-deny already)
+ * and forward rules only point one way. */
+FsRuleKind fs_rule_counterpart_kind (FsRuleKind kind);
+
+/* The counterpart of a rule: the same fields under the counterpart
+ * kind, or NULL when the kind has none.  Caller frees. */
+FsRule *fs_rule_counterpart (const FsRule *rule);
+
+/* The Direction setting's own-direction entry for a kind ("Outbound
+ * only" / "Inbound only"), or NULL when the kind has no counterpart
+ * and the setting has nothing to choose.  The second entry of the
+ * setting is always "Bi-directional". */
+const gchar *fs_rule_direction_label (FsRuleKind kind);
+
 /* Column labels for a kind, in CSV order.  num_columns is an in/out:
  * on entry the capacity, on return the number written. */
 const gchar * const *fs_rule_columns (FsRuleKind kind, gint *num_columns);
@@ -82,6 +99,13 @@ gboolean  fs_policy_remove (FsPolicy *policy, FsRule *rule);
  * duplicates (FALSE when the rule is already stored). */
 gboolean  fs_policy_add_persist    (FsPolicy *policy, FsRule *rule);
 gboolean  fs_policy_remove_persist (FsPolicy *policy, FsRule *rule);
+
+/* Add a rule and its counterpart as one change: either both end up
+ * stored and saved, or neither does.  counterpart == NULL makes this
+ * fs_policy_add_persist.  A counterpart that is already stored counts
+ * as success -- the intent, both directions present, then holds. */
+gboolean  fs_policy_add_persist_pair (FsPolicy *policy, FsRule *rule,
+                                      FsRule *counterpart);
 
 /* TRUE when a rule identical to the one passed in is already stored.
  * Identity is the CSV form, the same way fs_policy_remove matches. */

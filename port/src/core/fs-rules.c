@@ -476,6 +476,107 @@ fs_policy_add_persist (FsPolicy *policy, FsRule *rule)
 	return TRUE;
 }
 
+/* [ fs_rule_counterpart_kind ] */
+FsRuleKind
+fs_rule_counterpart_kind (FsRuleKind kind)
+{
+	switch (kind) {
+	case FS_RULE_OUTBOUND_ALLOW_TO:
+		return FS_RULE_INBOUND_ALLOW_FROM;
+	case FS_RULE_INBOUND_ALLOW_FROM:
+		return FS_RULE_OUTBOUND_ALLOW_TO;
+	case FS_RULE_OUTBOUND_ALLOW_SERVICE:
+		return FS_RULE_INBOUND_ALLOW_SERVICE;
+	case FS_RULE_INBOUND_ALLOW_SERVICE:
+		return FS_RULE_OUTBOUND_ALLOW_SERVICE;
+	default:
+		/* Deny kinds have no inbound twin -- the policy has no
+		 * inbound-deny kind, because inbound is default-deny
+		 * already -- the forward points one way, and
+		 * OUTBOUND_ALLOW_FROM would need an INBOUND_ALLOW_TO that
+		 * does not exist. */
+		return FS_RULE_N_KINDS;
+	}
+}
+
+/* [ fs_rule_counterpart ] */
+FsRule *
+fs_rule_counterpart (const FsRule *rule)
+{
+	FsRuleKind kind;
+	FsRule *copy;
+
+	if (rule == NULL)
+		return NULL;
+
+	kind = fs_rule_counterpart_kind (rule->kind);
+	if (kind == FS_RULE_N_KINDS)
+		return NULL;
+
+	/* The paired kinds share their fields (host: target+comment,
+	 * service: service+port+target+comment), so the twin is the same
+	 * row under the other kind. */
+	copy = fs_rule_copy (rule);
+	copy->kind = kind;
+
+	return copy;
+}
+
+/* [ fs_rule_direction_label ]
+ * What the Direction setting's first entry says for this kind, or
+ * NULL when the kind has no twin and the setting has nothing to
+ * choose. */
+const gchar *
+fs_rule_direction_label (FsRuleKind kind)
+{
+	if (fs_rule_counterpart_kind (kind) == FS_RULE_N_KINDS)
+		return NULL;
+
+	switch (kind) {
+	case FS_RULE_INBOUND_ALLOW_FROM:
+	case FS_RULE_INBOUND_ALLOW_SERVICE:
+		return _("Inbound only");
+	default:
+		return _("Outbound only");
+	}
+}
+
+/* [ fs_policy_add_persist_pair ]
+ * The bi-directional add: stage both copies, save once, and take both
+ * back out together when the write fails, so a pair is either fully
+ * stored or not there at all. */
+gboolean
+fs_policy_add_persist_pair (FsPolicy *policy, FsRule *rule,
+                            FsRule *counterpart)
+{
+	if (counterpart == NULL)
+		return fs_policy_add_persist (policy, rule);
+
+	if (policy == NULL || rule == NULL)
+		return FALSE;
+
+	/* A stored primary is refused the same way add_persist refuses
+	 * it: nothing changes. */
+	if (fs_policy_contains (policy, rule))
+		return FALSE;
+
+	/* The twin already stored: writing the other half completes the
+	 * intent (both directions present) on its own. */
+	if (fs_policy_contains (policy, counterpart))
+		return fs_policy_add_persist (policy, rule);
+
+	fs_policy_add (policy, rule);
+	fs_policy_add (policy, counterpart);
+
+	if (!fs_policy_save (policy)) {
+		fs_policy_remove (policy, rule);
+		fs_policy_remove (policy, counterpart);
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 /* [ fs_policy_remove_persist ]
  * Remove the matching rule and save; if the write fails the rule is
  * re-added, because a removal that did not reach disk must not look

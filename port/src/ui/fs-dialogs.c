@@ -15,7 +15,7 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
 #ifndef FS_VERSION
-#define FS_VERSION "1.0.4"
+#define FS_VERSION "1.0.5"
 #endif
 
 /* Load the embedded StockFW logo as a GdkPixbuf. */

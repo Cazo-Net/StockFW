@@ -14,6 +14,12 @@ G_BEGIN_DECLS
 gboolean fs_util_is_valid_port (const gchar *port);
 gboolean fs_util_is_valid_host (const gchar *host);
 
+/* TRUE when addr falls inside the CIDR block cidr ("a.b.c.d/len" or an
+ * IPv6 prefix).  Both sides must be numeric addresses -- a hostname is
+ * never "inside" a block.  Used by the What-If simulator so a block
+ * written as a subnet still covers the host being probed. */
+gboolean fs_util_addr_in_cidr (const gchar *cidr, const gchar *addr);
+
 /* TRUE when a policy target means "every host", so no address match
  * should be emitted.  Shared by the script generator and the rule
  * translator. */

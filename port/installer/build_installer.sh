@@ -122,7 +122,7 @@ done
 echo "[6/7] Creating license file..."
 cat > "$STAGE_DIR/LICENSE.txt" << 'EOF'
 StockFW Firewall Configuration Tool
-Version 1.0.4
+Version 1.0.5
 
 Copyright (C) 2024-2026 StockFW Project
 
@@ -178,7 +178,20 @@ if [ ! -f "$PORT_DIR/CHANGELOG.md" ]; then
     cat > "$STAGE_DIR/CHANGELOG.md" << 'EOF'
 # StockFW Changelog
 
-## Version 1.0.4 (2024)
+## Version 1.0.5 (2026)
+- What-If Simulator: type a line like "allow SSH from 192.168.1.50 on
+  port 22" and get a BLOCKED/ALLOWED verdict against the real policy
+  (block precedence, shadowed-allow reporting, CIDR coverage) without
+  writing anything
+- Bi-directional Direction setting on the pairable rule kinds: one
+  option, one all-or-nothing save for both directions
+- AI Assistant pane removed from the Copilot page; status messages
+  live in the Policy Analysis log
+- Canonical test runner tests/full-suite.sh (302 core checks)
+
+## Version 1.0.4 (2026)
+- Event -> Rule one-click staging, Events filter bar
+- Sentinel detect/auto-block with time-boxed undo
 - Initial release of StockFW
 - GTK3-based firewall configuration tool
 - Smart Firewall Copilot with AI-powered anomaly detection
@@ -240,5 +253,5 @@ echo "Using NSIS: $NSIS_CMD"
 echo ""
 echo "=========================================="
 echo "Installer built successfully!"
-echo "Output: $INSTALLER_DIR/StockFW-1.0.4-Setup.exe"
+echo "Output: $INSTALLER_DIR/StockFW-1.0.5-Setup.exe"
 echo "=========================================="

@@ -614,16 +614,86 @@ push_policy (const gchar *what, const gchar *csv)
 	g_clear_error (&error);
 }
 
+/* [ confirm_stage ]
+ * The confirm step, carrying the Direction setting for kinds that have
+ * a twin.  The default entry is the rule's own direction: one rule is
+ * the narrower grant, so the pair has to be asked for, never slipped
+ * in.  Returns whether to stage; *bidirectional follows the combo and
+ * is FALSE whenever the setting does not apply. */
+static gboolean
+confirm_stage (const gchar *question, const gchar *direction_label,
+               gboolean *bidirectional)
+{
+	GtkWidget *dialog;
+	GtkWidget *content;
+	GtkWidget *label;
+	GtkWidget *row;
+	GtkWidget *combo;
+	gint response;
+
+	*bidirectional = FALSE;
+
+	if (direction_label == NULL) {
+		gboolean confirmed = FALSE;
+
+		fs_dialogs_confirm (NULL, question, &confirmed);
+		return confirmed;
+	}
+
+	dialog = gtk_dialog_new_with_buttons (
+		_("Stage this rule"), NULL, GTK_DIALOG_MODAL,
+		_("_Cancel"), GTK_RESPONSE_CANCEL,
+		_("_Stage"), GTK_RESPONSE_OK,
+		NULL);
+
+	content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+	gtk_container_set_border_width (GTK_CONTAINER (content), 8);
+	gtk_box_set_spacing (GTK_BOX (content), 8);
+
+	label = gtk_label_new (question);
+	gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (label), 60);
+	gtk_box_pack_start (GTK_BOX (content), label, FALSE, FALSE, 0);
+
+	row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	gtk_box_pack_start (GTK_BOX (row), gtk_label_new (_("Direction:")),
+	                    FALSE, FALSE, 0);
+
+	combo = gtk_combo_box_text_new ();
+	gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (combo),
+	                                direction_label);
+	gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (combo),
+	                                _("Bi-directional"));
+	gtk_combo_box_set_active (GTK_COMBO_BOX (combo), 0);
+	gtk_box_pack_start (GTK_BOX (row), combo, TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (content), row, FALSE, FALSE, 0);
+
+	gtk_widget_show_all (content);
+	response = gtk_dialog_run (GTK_DIALOG (dialog));
+
+	*bidirectional = (response == GTK_RESPONSE_OK &&
+	                  gtk_combo_box_get_active (
+	                 	GTK_COMBO_BOX (combo)) == 1);
+
+	gtk_widget_destroy (dialog);
+
+	return response == GTK_RESPONSE_OK;
+}
+
 /* [ stage_rule ]
- * Confirm one rule built from the selected event, persist it and
- * push it.  Takes ownership of rule. */
+ * Confirm one rule built from the selected event, persist it (with its
+ * twin when the Direction setting asked for one) and push it.  Takes
+ * ownership of rule. */
 static void
 stage_rule (FsRule *rule, const gchar *what)
 {
 	gchar *csv;
 	gchar *question;
 	gboolean confirmed = FALSE;
+	gboolean bidirectional = FALSE;
 	gboolean present;
+	const gchar *direction_label;
+	FsRule *counterpart = NULL;
 
 	if (rule == NULL)
 		return;
@@ -644,7 +714,8 @@ stage_rule (FsRule *rule, const gchar *what)
 		"to disk, then pushed to the firewall.",
 		what, csv != NULL ? csv : "?");
 
-	fs_dialogs_confirm (NULL, question, &confirmed);
+	direction_label = fs_rule_direction_label (rule->kind);
+	confirmed = confirm_stage (question, direction_label, &bidirectional);
 	g_free (question);
 
 	if (!confirmed) {
@@ -665,13 +736,27 @@ stage_rule (FsRule *rule, const gchar *what)
 		return;
 	}
 
-	/* Save, rolling the store back when the write fails, so the
-	 * Policy page and the disk never disagree. */
-	if (!fs_policy_add_persist (hitview_policy, rule)) {
+	/* The twin: same host or service, opposite direction.  A NULL here
+	 * would silently stage one direction while the dialog said two. */
+	if (bidirectional) {
+		counterpart = fs_rule_counterpart (rule);
+		if (counterpart == NULL)
+			bidirectional = FALSE;
+	}
+
+	/* Save the pair as one change, rolling the store back when the
+	 * write fails, so the Policy page and the disk never disagree. */
+	if (!fs_policy_add_persist_pair (hitview_policy, rule, counterpart)) {
 		fs_dialogs_error (NULL, _("Could not save the rule"),
-		                  _("The rule was not written to disk, so it "
+		                  counterpart != NULL
+		                  ? _("Neither half of the bi-directional "
+		                    "pair was written to disk, so the "
+		                    "policy was left as it was. Nothing "
+		                    "changed.")
+		                  : _("The rule was not written to disk, so it "
 		                    "was taken back out of the policy. Nothing "
 		                    "changed."));
+		fs_rule_free (counterpart);
 		fs_rule_free (rule);
 		g_free (csv);
 		return;
@@ -681,7 +766,22 @@ stage_rule (FsRule *rule, const gchar *what)
 	fs_policyview_reload (hitview_policy);
 	fs_audit_log ("event rule added", csv);
 
-	push_policy (what, csv);
+	if (counterpart != NULL) {
+		gchar *cp_csv = fs_rule_to_csv (counterpart);
+		gchar *both;
+
+		fs_audit_log ("event rule added (bi-directional twin)",
+		              cp_csv);
+		both = g_strdup_printf ("%s\n%s", csv,
+		                        cp_csv != NULL ? cp_csv : "?");
+		g_free (cp_csv);
+		fs_rule_free (counterpart);
+		push_policy (what, both);
+		g_free (both);
+	} else {
+		push_policy (what, csv);
+	}
+
 	g_free (csv);
 }
 

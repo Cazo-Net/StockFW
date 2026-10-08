@@ -217,6 +217,94 @@ fs_util_target_is_anyone (const gchar *target)
 	        g_ascii_strcasecmp (target, "all") == 0);
 }
 
+/* [ fs_util_addr_in_cidr ]
+ * Prefix containment for IPv4 and IPv6 blocks.  Hostnames never match:
+ * there is no honest answer to "is this name inside that subnet", so
+ * the answer is no. */
+gboolean
+fs_util_addr_in_cidr (const gchar *cidr, const gchar *addr)
+{
+	const gchar *slash;
+	gchar *net;
+	glong prefix;
+	gsize bytes;
+	gsize full;
+	gsize rem;
+	guint8 mask;
+	guint8 net_bytes[16];
+	guint8 addr_bytes[16];
+	gboolean v6;
+
+	if (cidr == NULL || addr == NULL)
+		return FALSE;
+
+	slash = strchr (cidr, '/');
+
+	/* Exactly one slash, neither side empty, digits only after it. */
+	if (slash == NULL || slash == cidr || *(slash + 1) == '\0' ||
+	    strchr (slash + 1, '/') != NULL)
+		return FALSE;
+
+	for (const gchar *q = slash + 1; *q != '\0'; q++) {
+		if (!g_ascii_isdigit (*q))
+			return FALSE;
+	}
+
+	/* The probe must be a bare address; a block is not a host. */
+	if (strchr (addr, '/') != NULL)
+		return FALSE;
+
+	prefix = g_ascii_strtoll (slash + 1, NULL, 10);
+	v6 = (strchr (addr, ':') != NULL);
+	bytes = v6 ? 16 : 4;
+
+	if (prefix < 0 || prefix > (glong) (bytes * 8))
+		return FALSE;
+
+	net = g_strndup (cidr, (gsize) (slash - cidr));
+
+	if (v6) {
+		struct in6_addr n6;
+		struct in6_addr a6;
+
+		if (inet_pton (AF_INET6, net, &n6) != 1 ||
+		    inet_pton (AF_INET6, addr, &a6) != 1) {
+			g_free (net);
+			return FALSE;
+		}
+
+		memcpy (net_bytes, &n6, sizeof n6);
+		memcpy (addr_bytes, &a6, sizeof a6);
+	} else {
+		struct in_addr n4;
+		struct in_addr a4;
+
+		if (inet_pton (AF_INET, net, &n4) != 1 ||
+		    inet_pton (AF_INET, addr, &a4) != 1) {
+			g_free (net);
+			return FALSE;
+		}
+
+		memcpy (net_bytes, &n4, sizeof n4);
+		memcpy (addr_bytes, &a4, sizeof a4);
+	}
+
+	g_free (net);
+
+	full = (gsize) prefix / 8;
+	rem = (gsize) prefix % 8;
+
+	if (memcmp (net_bytes, addr_bytes, full) != 0)
+		return FALSE;
+
+	if (rem == 0)
+		return TRUE;
+
+	mask = (guint8) (0xff << (8 - rem));
+
+	return (net_bytes[full] & mask) == (addr_bytes[full] & mask);
+}
+
 /* [ fs_util_get_text_between ] */
 gchar *
 fs_util_get_text_between (const gchar *string,

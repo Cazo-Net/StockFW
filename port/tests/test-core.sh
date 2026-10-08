@@ -1478,6 +1478,364 @@ static void test_name_hygiene_f3 (void)
 	}
 }
 
+/* The What-If simulator: the closed grammar in core/fs-copilot.c and
+ * the verdict it produces against a real policy.  The teeth here are
+ * for the two lies a simulator can tell -- a verdict based on a wrong
+ * reading of the line, and a verdict that ignores block precedence or
+ * pretends a subnet block does not cover its hosts. */
+static void test_whatif_simulate (void)
+{
+	FsScenario *sc;
+	FsSimulationResult *r;
+	FsCopilot *copilot;
+	FsPolicy *policy;
+	FsRule *rule;
+
+	sc = fs_copilot_parse_scenario ("allow SSH from 192.168.1.50 on port 22");
+	CHECK (sc != NULL, "a full scenario line parses");
+	if (sc != NULL) {
+		CHECK (sc->inbound, "'from' reads as inbound");
+		CHECK (sc->had_port && sc->port == 22, "port 22 is read");
+		CHECK (sc->had_addr &&
+		       g_strcmp0 (sc->remote_ip, "192.168.1.50") == 0,
+		       "the host is read");
+		CHECK (g_strcmp0 (sc->protocol, "TCP") == 0,
+		       "TCP is the default protocol");
+		CHECK (g_strcmp0 (sc->app, "SSH") == 0,
+		       "the token after 'allow' is the application");
+		fs_scenario_free (sc);
+	}
+
+	sc = fs_copilot_parse_scenario ("block DNS to 8.8.8.8 on port 53 udp");
+	CHECK (sc != NULL, "a deny-style line parses");
+	if (sc != NULL) {
+		CHECK (!sc->inbound, "'to' reads as outbound");
+		CHECK (sc->had_port && sc->port == 53, "port 53 is read");
+		CHECK (g_strcmp0 (sc->remote_ip, "8.8.8.8") == 0,
+		       "the host is read");
+		CHECK (g_strcmp0 (sc->protocol, "UDP") == 0,
+		       "the udp keyword is read");
+		CHECK (g_strcmp0 (sc->app, "DNS") == 0,
+		       "a service name supplies the application");
+		fs_scenario_free (sc);
+	}
+
+	/* No port clause: a known service name supplies the port, and
+	 * with no direction words the documented default is outbound. */
+	sc = fs_copilot_parse_scenario ("allow HTTPS to 10.0.0.1");
+	CHECK (sc != NULL, "a service-only line parses");
+	if (sc != NULL) {
+		CHECK (!sc->inbound, "the default direction is outbound");
+		CHECK (sc->had_port && sc->port == 443,
+		       "HTTPS supplies port 443");
+		CHECK (g_strcmp0 (sc->remote_ip, "10.0.0.1") == 0,
+		       "the host is read");
+		fs_scenario_free (sc);
+	}
+
+	/* The host:port shorthand. */
+	sc = fs_copilot_parse_scenario ("outbound to 203.0.113.9:8443");
+	CHECK (sc != NULL, "a host:port line parses");
+	if (sc != NULL) {
+		CHECK (!sc->inbound, "the outbound keyword is read");
+		CHECK (sc->had_addr &&
+		       g_strcmp0 (sc->remote_ip, "203.0.113.9") == 0,
+		       "the host survives the colon shorthand");
+		CHECK (sc->had_port && sc->port == 8443,
+		       "the port is read from the colon shorthand");
+		fs_scenario_free (sc);
+	}
+
+	/* No port, no host: the line still parses, with the flags clear
+	 * so the panel can say what was left out. */
+	sc = fs_copilot_parse_scenario ("allow anything outbound");
+	CHECK (sc != NULL, "a line with no port and no host parses");
+	if (sc != NULL) {
+		CHECK (!sc->had_port, "a missing port leaves had_port clear");
+		CHECK (!sc->had_addr, "a missing host leaves had_addr clear");
+		fs_scenario_free (sc);
+	}
+
+	CHECK (fs_copilot_parse_scenario ("") == NULL,
+	       "an empty line parses to nothing");
+	CHECK (fs_copilot_parse_scenario (NULL) == NULL,
+	       "a NULL line parses to nothing");
+
+	/* --- Verdicts against a real policy --- */
+	policy = fs_policy_new ();
+	copilot = fs_copilot_new ();
+	fs_copilot_set_policy (copilot, policy);
+
+	/* The same host allowed and blocked: Windows Firewall gives the
+	 * block precedence, and so must the answer. */
+	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
+	rule->target = g_strdup ("203.0.113.5");
+	fs_policy_add (policy, rule);
+
+	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
+	rule->target = g_strdup ("203.0.113.5");
+	fs_policy_add (policy, rule);
+
+	r = fs_copilot_simulate_text (copilot,
+	                              "allow SSH to 203.0.113.5 on port 22",
+	                              NULL);
+	CHECK (r != NULL, "simulate_text answers");
+	if (r != NULL) {
+		CHECK (r->would_block,
+		       "a block rule beats an allow rule on the same host");
+		CHECK (r->matching_rule != NULL,
+		       "the verdict names the rule that decided it");
+		CHECK (strstr (r->explanation, "shadowed") != NULL,
+		       "the dead allow is reported as shadowed");
+		fs_simulation_result_free (r);
+	}
+
+	/* A block written as a subnet still covers a host inside it. */
+	fs_policy_clear (policy);
+	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
+	rule->target = g_strdup ("203.0.113.0/24");
+	fs_policy_add (policy, rule);
+
+	r = fs_copilot_simulate_text (copilot,
+	                              "outbound ping to 203.0.113.77", NULL);
+	CHECK (r != NULL, "simulate_text answers for the subnet probe");
+	if (r != NULL) {
+		CHECK (r->would_block,
+		       "a /24 block covers a host inside the block");
+		fs_simulation_result_free (r);
+	}
+
+	/* An allow with no block: the probe is allowed, and says by what. */
+	fs_policy_clear (policy);
+	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
+	rule->target = g_strdup ("198.51.100.10");
+	fs_policy_add (policy, rule);
+
+	r = fs_copilot_simulate_text (copilot,
+	                              "allow HTTPS to 198.51.100.10", NULL);
+	CHECK (r != NULL, "simulate_text answers for the allow probe");
+	if (r != NULL) {
+		CHECK (!r->would_block,
+		       "a covering allow lets the traffic through");
+		CHECK (r->matching_rule != NULL,
+		       "the allow verdict names its rule too");
+		fs_simulation_result_free (r);
+	}
+
+	fs_copilot_free (copilot);
+	fs_policy_free (policy);
+
+	/* No policy attached: the fallback says so instead of pretending
+	 * to have read rules it does not have. */
+	{
+		FsCopilot *bare = fs_copilot_new ();
+
+		r = fs_copilot_simulate_text (
+			bare, "allow SSH from 10.0.0.2 on port 22", NULL);
+		CHECK (r != NULL, "simulate_text answers without a policy");
+		if (r != NULL) {
+			CHECK (r->would_block,
+			       "inbound falls back to the deny default");
+			CHECK (strstr (r->explanation,
+			              "No firewall policy") != NULL,
+			       "the fallback is labelled honestly");
+			fs_simulation_result_free (r);
+		}
+		fs_copilot_free (bare);
+	}
+}
+
+/* The bi-directional Direction setting: the pairing map, the labels,
+ * the twin rule and the all-or-nothing persist.  The teeth are for the
+ * three ways this feature could lie -- pairing a kind that has no
+ * counterpart (there is no inbound-deny kind), silently staging one
+ * direction while the dialog said two, and leaving half a pair behind
+ * when the write fails. */
+static void test_direction_pairing (void)
+{
+	FsPolicy *policy;
+	FsPolicy *fresh;
+	FsRule *rule;
+	FsRule *twin;
+	FsRule *cp;
+	gchar *good_dir;
+	gchar *bad_path;
+	guint out_before, in_before;
+	gint malformed = -1;
+
+	/* --- the pairing map --- */
+	CHECK (fs_rule_counterpart_kind (FS_RULE_OUTBOUND_ALLOW_TO)
+	       == FS_RULE_INBOUND_ALLOW_FROM,
+	       "an outbound allow-to pairs with an inbound allow-from");
+	CHECK (fs_rule_counterpart_kind (FS_RULE_INBOUND_ALLOW_FROM)
+	       == FS_RULE_OUTBOUND_ALLOW_TO,
+	       "the host pairing is symmetric");
+	CHECK (fs_rule_counterpart_kind (FS_RULE_OUTBOUND_ALLOW_SERVICE)
+	       == FS_RULE_INBOUND_ALLOW_SERVICE,
+	       "an outbound service allow pairs with the inbound one");
+	CHECK (fs_rule_counterpart_kind (FS_RULE_INBOUND_ALLOW_SERVICE)
+	       == FS_RULE_OUTBOUND_ALLOW_SERVICE,
+	       "the service pairing is symmetric");
+	CHECK (fs_rule_counterpart_kind (FS_RULE_OUTBOUND_DENY_TO)
+	       == FS_RULE_N_KINDS,
+	       "a deny has no counterpart (inbound is default-deny)");
+	CHECK (fs_rule_counterpart_kind (FS_RULE_OUTBOUND_DENY_SERVICE)
+	       == FS_RULE_N_KINDS,
+	       "a service deny has no counterpart either");
+	CHECK (fs_rule_counterpart_kind (FS_RULE_INBOUND_FORWARD)
+	       == FS_RULE_N_KINDS,
+	       "a forward only points one way");
+	CHECK (fs_rule_counterpart_kind (FS_RULE_OUTBOUND_ALLOW_FROM)
+	       == FS_RULE_N_KINDS,
+	       "outbound-from would need an inbound-to kind, which the "
+	       "policy does not have");
+
+	/* --- the Direction setting's first entry --- */
+	CHECK (g_strcmp0 (fs_rule_direction_label (FS_RULE_OUTBOUND_ALLOW_TO),
+	                  "Outbound only") == 0,
+	       "a pairable outbound kind defaults to Outbound only");
+	CHECK (g_strcmp0 (fs_rule_direction_label (FS_RULE_INBOUND_ALLOW_FROM),
+	                  "Inbound only") == 0,
+	       "a pairable inbound kind defaults to Inbound only");
+	CHECK (fs_rule_direction_label (FS_RULE_OUTBOUND_DENY_TO) == NULL,
+	       "no Direction setting where the kind has no pair");
+
+	/* --- the twin rule --- */
+	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
+	rule->target  = g_strdup ("198.51.100.7");
+	rule->comment = g_strdup ("pair teeth");
+	cp = fs_rule_counterpart (rule);
+	CHECK (cp != NULL, "a host allow has a twin");
+	if (cp != NULL) {
+		CHECK (cp->kind == FS_RULE_INBOUND_ALLOW_FROM,
+		       "the twin carries the counterpart kind");
+		CHECK (g_strcmp0 (cp->target, "198.51.100.7") == 0,
+		       "the twin keeps the host");
+		CHECK (g_strcmp0 (cp->comment, "pair teeth") == 0,
+		       "the twin keeps the comment");
+		fs_rule_free (cp);
+	}
+	fs_rule_free (rule);
+
+	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+	rule->service = g_strdup ("brave.exe");
+	rule->port    = g_strdup ("443");
+	rule->target  = g_strdup ("203.0.113.8");
+	cp = fs_rule_counterpart (rule);
+	CHECK (cp != NULL, "a service allow has a twin");
+	if (cp != NULL) {
+		CHECK (cp->kind == FS_RULE_INBOUND_ALLOW_SERVICE,
+		       "the service twin carries the counterpart kind");
+		CHECK (g_strcmp0 (cp->service, "brave.exe") == 0 &&
+		       g_strcmp0 (cp->port, "443") == 0 &&
+		       g_strcmp0 (cp->target, "203.0.113.8") == 0,
+		       "service, port and host all survive the pairing");
+		fs_rule_free (cp);
+	}
+	fs_rule_free (rule);
+
+	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
+	CHECK (fs_rule_counterpart (rule) == NULL,
+	       "a deny has no twin to stage");
+	fs_rule_free (rule);
+
+	/* --- the pair persists as one change --- */
+	policy = fs_policy_new ();
+
+	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
+	rule->target  = g_strdup ("198.51.100.221");
+	rule->comment = g_strdup ("pair persist teeth");
+	twin = fs_rule_counterpart (rule);
+
+	out_before = fs_policy_count (policy, FS_RULE_OUTBOUND_ALLOW_TO);
+	in_before  = fs_policy_count (policy, FS_RULE_INBOUND_ALLOW_FROM);
+
+	CHECK (fs_policy_add_persist_pair (policy, rule, twin),
+	       "the pair persists while writes work");
+	CHECK (fs_policy_count (policy, FS_RULE_OUTBOUND_ALLOW_TO)
+	       == out_before + 1,
+	       "the first half is stored");
+	CHECK (fs_policy_count (policy, FS_RULE_INBOUND_ALLOW_FROM)
+	       == in_before + 1,
+	       "the second half is stored too");
+
+	/* The disk agrees: a fresh load sees both halves. */
+	fresh = fs_policy_new ();
+	CHECK (fs_policy_load (fresh, &malformed), "the files reload");
+	CHECK (fs_policy_contains (fresh, rule),
+	       "the first half reached disk");
+	CHECK (fs_policy_contains (fresh, twin),
+	       "the second half reached disk too");
+	fs_policy_free (fresh);
+
+	/* A stored primary is refused, like add_persist. */
+	CHECK (!fs_policy_add_persist_pair (policy, rule, twin),
+	       "a duplicate primary is refused");
+	CHECK (fs_policy_count (policy, FS_RULE_OUTBOUND_ALLOW_TO)
+	       == out_before + 1,
+	       "the refusal changed nothing");
+
+	/* --- rollback: the write fails, neither half stays --- */
+	good_dir = g_strdup (fs_util_rules_dir ());
+	bad_path = g_build_filename (g_get_tmp_dir (),
+	                            "stockfw-rules-as-file", NULL);
+	g_file_set_contents (bad_path, "not a directory", -1, NULL);
+	g_setenv ("STOCKFW_RULES_DIR", bad_path, TRUE);
+
+	{
+		FsRule *r2 = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
+		FsRule *t2;
+
+		r2->target  = g_strdup ("198.51.100.222");
+		r2->comment = g_strdup ("pair rollback teeth");
+		t2 = fs_rule_counterpart (r2);
+
+		CHECK (!fs_policy_add_persist_pair (policy, r2, t2),
+		       "the pair save failure is reported");
+		CHECK (fs_policy_count (policy, FS_RULE_OUTBOUND_ALLOW_TO)
+		       == out_before + 1,
+		       "neither half of the failed pair stayed behind (out)");
+		CHECK (fs_policy_count (policy, FS_RULE_INBOUND_ALLOW_FROM)
+		       == in_before + 1,
+		       "neither half of the failed pair stayed behind (in)");
+
+		fs_rule_free (r2);
+		fs_rule_free (t2);
+	}
+
+	g_setenv ("STOCKFW_RULES_DIR", good_dir, TRUE);
+	remove (bad_path);
+
+	/* --- an already-stored twin completes the pair --- */
+	{
+		FsPolicy *half = fs_policy_new ();
+		FsRule *r2 = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
+		FsRule *t2;
+
+		r2->target = g_strdup ("198.51.100.223");
+		t2 = fs_rule_counterpart (r2);
+
+		CHECK (fs_policy_add_persist (half, t2),
+		       "the twin alone persists first");
+		CHECK (fs_policy_add_persist_pair (half, r2, t2),
+		       "an existing twin counts as the pair completing");
+		CHECK (fs_policy_count (half, FS_RULE_OUTBOUND_ALLOW_TO) == 1,
+		       "the missing half was added");
+		CHECK (fs_policy_count (half, FS_RULE_INBOUND_ALLOW_FROM) == 1,
+		       "the existing twin stayed");
+
+		fs_rule_free (r2);
+		fs_rule_free (t2);
+		fs_policy_free (half);
+	}
+
+	g_free (good_dir);
+	g_free (bad_path);
+	fs_rule_free (rule);
+	fs_rule_free (twin);
+	fs_policy_free (policy);
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -1509,6 +1867,8 @@ int main (void)
 	test_insight_apply ();
 	test_policy_load_validation_f1 ();
 	test_name_hygiene_f3 ();
+	test_whatif_simulate ();
+	test_direction_pairing ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

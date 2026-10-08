@@ -1,13 +1,15 @@
 # StockFW
 
 **Smart firewall configuration tool with a local AI copilot.**
-GTK3 · Windows and Linux · status, live events, policy editing, and an
-assistant that explains and proposes rules — entirely offline.
+GTK3 · Windows and Linux · status, live events, policy editing, and a
+Copilot page that analyzes, explains and simulates rules — entirely
+offline.
 
 StockFW makes a stock OS firewall *legible*: policy as a readable, diffable
 CSV; events as a classified, searchable stream; advanced knobs in one
-dialog; and an assistant layer that can answer "why is this blocked?" and
-"what would this rule do?" without a shell prompt.
+dialog; and a Copilot layer that can answer "why is this blocked?"
+(analysis), "what would happen if?" (what-if simulation) and propose
+rules — without a shell prompt.
 
 ## Features
 
@@ -24,8 +26,11 @@ dialog; and an assistant layer that can answer "why is this blocked?" and
   shows *"3 of 1200 events"* so an empty result is never mistaken for an
   idle firewall). **Right-click any row for one-click Event → Rule**:
   block/allow that destination, block this service to it, or trust an
-  inbound source — every action confirms, saves with rollback if the
-  write fails, and reports honestly whether it is live or only staged.
+  inbound source — where the kind has an opposite-direction twin the
+  confirm dialog carries the **Direction** setting (one direction by
+  default, **Bi-directional** stages the twin as the same change),
+  every action confirms, saves with rollback if the write fails, and
+  reports honestly whether it is live or only staged.
   The list is a window over the OS log — the OS log remains the archive.
 - **Sentinel** — detect *and* auto-block rogue-agent behavior in the
   event feed: **periodic beacons** (metronomic egress to one host:port —
@@ -40,12 +45,22 @@ dialog; and an assistant layer that can answer "why is this blocked?" and
 - **Policy** — add / edit / duplicate / delete rules with **round-trip
   CSV save/load**: what you save is what loads back, typed and validated
   (ports, addresses, protocols checked fail-closed — IPv4/IPv6/CIDR and
-  port ranges included).
-- **Copilot** — a **local, deterministic** rule parser. It reads what you
-  typed, proposes the exact firewall rule it would install, shows it in a
-  Yes/No dialog before anything is written, is **allow-only** (it can
-  never silently open more than you approve), and rolls back if the save
-  fails. **No LLM, no network, no telemetry.**
+  port ranges included). The pairable allow kinds carry a **Direction**
+  setting: the default is one direction (*Outbound only*, or *Inbound
+  only* on the inbound groups), and **Bi-directional** stages the
+  opposite-direction twin as one all-or-nothing save — if the write
+  fails, neither half stays.
+- **Copilot** — a **local, deterministic** analysis page, no LLM. Policy
+  Analysis reads the event feed and your rules and proposes the exact
+  firewall rule it would install, shows it in a Yes/No dialog before
+  anything is written, is **allow-only** (it can never silently open
+  more than you approve), and rolls back if the save fails. The
+  **What-If Simulator** takes a line like *"allow SSH from
+  192.168.1.50 on port 22"* and answers **BLOCKED/ALLOWED** against
+  the real policy: block rules take precedence the way Windows
+  Firewall resolves them, a shadowed allow is called out as shadowed,
+  a `/24` block covers the hosts inside it, and nothing is written —
+  it is a question, not a change. **No network, no telemetry.**
 - **Preferences** — what you see is what you save: pages that do not
   apply to the current backend are not shown, so there are no dead
   settings that silently do nothing.
@@ -116,7 +131,8 @@ Every claim in the documentation is graded `[Verified]` / `[Measured]` /
 
 ```sh
 cd port
-bash tests/test-core.sh              # rule engine, CSV, copilot, sentinel, event-rule
+bash tests/full-suite.sh             # every suite below, one pass, one verdict
+bash tests/test-core.sh              # rule engine, CSV, copilot, sentinel, event-rule, what-if, direction pairing
 bash tests/test-winlog.sh            # Security-log parsing + dedup
 bash tests/test-logstart.sh          # event stream start-up
 bash tests/test-installer-spawn.sh   # staged spawn helpers

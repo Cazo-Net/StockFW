@@ -3,7 +3,6 @@
  *
  * Features:
  *   - Dashboard stats (learned apps, insights, events, rules)
- *   - Conversational AI assistant (natural language Q&A)
  *   - Policy rule analyzer (conflicts, redundancies, gaps)
  *   - Anomaly detection insights with color-coded severity
  *   - What-if traffic simulation against real rules
@@ -51,8 +50,7 @@ enum
 static GtkListStore  *insights_store   = NULL;
 static GtkWidget     *insights_tree    = NULL;
 static GtkWidget     *scenario_entry   = NULL;
-static GtkWidget     *ask_entry        = NULL;
-static GtkWidget     *ask_output       = NULL;
+static GtkWidget     *sim_output       = NULL;
 static GtkWidget     *stat_apps        = NULL;
 static GtkWidget     *stat_insights    = NULL;
 static GtkWidget     *stat_events      = NULL;
@@ -98,7 +96,6 @@ static void update_stats (void);
 static void run_policy_analysis (void);
 static void on_simulate_clicked (GtkButton *btn, gpointer data);
 static void on_apply_suggestion_clicked (GtkButton *btn, gpointer data);
-static void on_ask_clicked (GtkButton *btn, gpointer data);
 static void on_analyze_clicked (GtkButton *btn, gpointer data);
 static void on_clear_clicked (GtkButton *btn, gpointer data);
 static void on_sentinel_mode_changed (GtkComboBox *combo, gpointer data);
@@ -363,7 +360,7 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         gtk_box_pack_start (GTK_BOX (titles), t1, FALSE, FALSE, 0);
 
         GtkWidget *t2 = gtk_label_new (
-            _("AI-powered anomaly detection, rule analysis & natural-language assistant"));
+            _("AI-powered anomaly detection, rule analysis & what-if simulation"));
         gtk_style_context_add_class (gtk_widget_get_style_context (t2), "dim-label");
         gtk_label_set_xalign (GTK_LABEL (t2), 0.0);
         gtk_box_pack_start (GTK_BOX (titles), t2, FALSE, FALSE, 0);
@@ -466,54 +463,32 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
     /* ===== What-if simulator ===== */
     {
         GtkWidget *frame = gtk_frame_new (_("What-If Simulator"));
-        GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width (GTK_CONTAINER (box), 6);
+
+        GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 
         scenario_entry = gtk_entry_new ();
         gtk_entry_set_placeholder_text (GTK_ENTRY (scenario_entry),
             _("e.g. allow SSH from 192.168.1.50 on port 22"));
         gtk_widget_set_hexpand (scenario_entry, TRUE);
-        gtk_box_pack_start (GTK_BOX (box), scenario_entry, TRUE, TRUE, 0);
+        gtk_box_pack_start (GTK_BOX (row), scenario_entry, TRUE, TRUE, 0);
 
         GtkWidget *sim_btn = button_with_icon ("media-playback-start", _("Simulate"));
         g_signal_connect (sim_btn, "clicked",
                           G_CALLBACK (on_simulate_clicked), NULL);
-        gtk_box_pack_start (GTK_BOX (box), sim_btn, FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (row), sim_btn, FALSE, FALSE, 0);
 
         g_signal_connect (scenario_entry, "activate",
                           G_CALLBACK (on_simulate_clicked), NULL);
 
-        gtk_container_add (GTK_CONTAINER (frame), box);
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), frame, FALSE, FALSE, 0);
-    }
+        gtk_box_pack_start (GTK_BOX (box), row, FALSE, FALSE, 0);
 
-    /* ===== AI Assistant ===== */
-    {
-        GtkWidget *frame = gtk_frame_new (_("AI Assistant"));
-        GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
-        gtk_container_set_border_width (GTK_CONTAINER (box), 6);
-
-        /* Ask input row */
-        GtkWidget *ask_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-
-        ask_entry = gtk_entry_new ();
-        gtk_entry_set_placeholder_text (GTK_ENTRY (ask_entry),
-            _("Ask: What rules do I have? Show anomalies. Is port 8080 open?"));
-        gtk_widget_set_hexpand (ask_entry, TRUE);
-        gtk_box_pack_start (GTK_BOX (ask_box), ask_entry, TRUE, TRUE, 0);
-
-        GtkWidget *ask_btn = button_with_icon ("go-next", _("Ask"));
-        g_signal_connect (ask_btn, "clicked", G_CALLBACK (on_ask_clicked), NULL);
-        gtk_box_pack_start (GTK_BOX (ask_box), ask_btn, FALSE, FALSE, 0);
-        g_signal_connect (ask_entry, "activate",
-                          G_CALLBACK (on_ask_clicked), NULL);
-
-        gtk_box_pack_start (GTK_BOX (box), ask_box, FALSE, FALSE, 0);
-
-        /* Output */
-        ask_output = make_output_view ();
-        gtk_widget_set_size_request (ask_output, -1, 90);
-        gtk_box_pack_start (GTK_BOX (box), ask_output, TRUE, TRUE, 0);
+        /* The parsed reading and the verdict, in the panel itself:
+         * iterating on a scenario must not cost a dialog per try. */
+        sim_output = make_output_view ();
+        gtk_widget_set_size_request (sim_output, -1, 90);
+        gtk_box_pack_start (GTK_BOX (box), sim_output, TRUE, TRUE, 0);
 
         gtk_container_add (GTK_CONTAINER (frame), box);
         gtk_box_pack_start (GTK_BOX (copilot_vbox), frame, FALSE, FALSE, 0);
@@ -533,11 +508,6 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
     /* Initial data */
     refresh_insights ();
     update_stats ();
-
-    /* Welcome message */
-    text_view_append (ask_output,
-        "StockFW Copilot ready. Ask me about your firewall rules,\n"
-        "anomalies, or type a natural-language question.\n", "dim");
 
     return copilot_vbox;
 }
@@ -827,7 +797,7 @@ on_undo_auto_clicked (GtkButton *btn, gpointer data)
     (void) data;
 
     if (auto_blocks == NULL || auto_blocks->len == 0) {
-        text_view_append (ask_output,
+        text_view_append (analysis_output,
             "\n[=] No Sentinel auto-block is staged.\n", "dim");
         return;
     }
@@ -842,10 +812,10 @@ on_undo_auto_clicked (GtkButton *btn, gpointer data)
     refresh_insights ();
     update_stats ();
 
-    text_view_append (ask_output,
+    text_view_append (analysis_output,
         "\n[OK] Sentinel auto-block undone:\n  ", "green");
-    text_view_append (ask_output, csv, "bold");
-    text_view_append (ask_output, "\n", NULL);
+    text_view_append (analysis_output, csv, "bold");
+    text_view_append (analysis_output, "\n", NULL);
     g_free (csv);
 }
 
@@ -870,12 +840,12 @@ on_sentinel_mode_changed (GtkComboBox *combo, gpointer data)
         if (staged)
             refresh_insights ();
 
-        text_view_append (ask_output,
+        text_view_append (analysis_output,
             "\n[Sentinel] auto-block armed: critical insights with a "
             "ready rule are staged into the policy for 10 minutes "
             "(Undo on this page lifts one early).\n", "dim");
     } else {
-        text_view_append (ask_output,
+        text_view_append (analysis_output,
             "\n[Sentinel] detect only: insights are reported, nothing "
             "is staged.\n", "dim");
     }
@@ -1030,208 +1000,61 @@ on_analyze_clicked (GtkButton *btn, gpointer data)
 }
 
 /* =====================================================================
- * on_ask_clicked - AI assistant Q&A
- * ===================================================================== */
-static void
-on_ask_clicked (GtkButton *btn, gpointer data)
-{
-    (void)btn; (void)data;
-
-    const gchar *q = gtk_entry_get_text (GTK_ENTRY (ask_entry));
-    if (!q || !*q) return;
-
-    text_view_append (ask_output, "\n> ", "bold");
-    text_view_append (ask_output, q, "blue");
-
-    gchar *qlower = g_ascii_strdown (q, -1);
-
-    /* Rule questions */
-    if (strstr (qlower, "rule") &&
-        (strstr (qlower, "how many") || strstr (qlower, "count") ||
-         strstr (qlower, "what"))) {
-        text_view_append (ask_output, "\nYour policy rules:\n", "bold");
-        text_view_append (ask_output,
-            "  Check the Policy tab for the full list.\n"
-            "  Rules are organized by: Inbound Allow, Outbound Allow,\n"
-            "  Deny, and Forward.\n", NULL);
-    }
-    /* Anomaly questions */
-    else if (strstr (qlower, "anomal") || strstr (qlower, "insight") ||
-             strstr (qlower, "suspicious") || strstr (qlower, "unusual")) {
-        GList *ins = fs_copilot_get_insights (global_copilot);
-        guint n = g_list_length (ins);
-        g_list_free (ins);
-
-        if (n == 0) {
-            text_view_append (ask_output,
-                "\n[OK] No active anomalies. The copilot is monitoring traffic.\n"
-                "Anomalies appear when apps use unusual ports, destinations,\n"
-                "or hours.\n", "green");
-        } else {
-            text_view_append (ask_output,
-                g_strdup_printf ("\nFound %u active insight(s):\n", n),
-                "orange");
-            GList *list = fs_copilot_get_insights (global_copilot);
-            for (GList *l = list; l; l = l->next) {
-                FsInsight *ins2 = l->data;
-                text_view_append (ask_output,
-                    g_strdup_printf ("  [%s] %s\n",
-                                     severity_to_string (ins2->severity),
-                                     ins2->title), NULL);
-            }
-            g_list_free (list);
-        }
-    }
-    /* Port questions */
-    else if (strstr (qlower, "port")) {
-        const gchar *p = qlower;
-        while (*p && !g_ascii_isdigit (*p)) p++;
-        if (*p) {
-            guint port = (guint) atoi (p);
-            text_view_append (ask_output,
-                g_strdup_printf ("\nPort %u analysis:\n", port), "bold");
-
-            if (port == 22 || port == 80 || port == 443)
-                text_view_append (ask_output,
-                    "  Common service port - usually safe to allow.\n",
-                    "green");
-            else if (port >= 1 && port <= 1023)
-                text_view_append (ask_output,
-                    "  Well-known port range. Verify the service needs it.\n",
-                    "orange");
-            else if (port >= 49152)
-                text_view_append (ask_output,
-                    "  Dynamic/private port - often used by ephemeral\n"
-                    "  connections.\n", NULL);
-            else
-                text_view_append (ask_output,
-                    "  Registered port. Check if any app legitimately\n"
-                    "  uses it.\n", NULL);
-
-            text_view_append (ask_output,
-                "  Use the What-If Simulator to test if it would be\n"
-                "  allowed.\n", "dim");
-        } else {
-            text_view_append (ask_output,
-                "\nPlease specify a port number,\n"
-                "e.g. \"is port 8080 open?\"\n", "dim");
-        }
-    }
-    /* Help */
-    else if (strstr (qlower, "help") || strstr (qlower, "what can") ||
-             strstr (qlower, "capabilit")) {
-        text_view_append (ask_output,
-            "\nI can help with:\n"
-            "  - Analyze your firewall rules for conflicts & gaps\n"
-            "  - Detect anomalies in network traffic\n"
-            "  - Simulate what-if scenarios before applying rules\n"
-            "  - Suggest new rules in natural language\n"
-            "  - Show learned application behavior profiles\n"
-            "  - Answer questions like \"is port 443 open?\"\n", NULL);
-    }
-    /* Status */
-    else if (strstr (qlower, "status") || strstr (qlower, "summary") ||
-             strstr (qlower, "overview")) {
-        GList *ins = fs_copilot_get_insights (global_copilot);
-        guint ni = g_list_length (ins);
-        g_list_free (ins);
-        GList *pr = fs_copilot_get_all_profiles (global_copilot);
-        guint na = g_list_length (pr);
-        g_list_free (pr);
-
-        text_view_append (ask_output, "\nCopilot Status:\n", "title");
-        text_view_append (ask_output,
-            g_strdup_printf ("  Apps learned:      %u\n", na), NULL);
-        text_view_append (ask_output,
-            g_strdup_printf ("  Active insights:   %u\n", ni), NULL);
-        text_view_append (ask_output,
-            g_strdup_printf ("  Events analyzed:   %u\n", total_events), NULL);
-        text_view_append (ask_output,
-            g_strdup_printf ("  Learning:          %s\n",
-                             global_copilot ? "ON" : "OFF"), NULL);
-    }
-    /* Default */
-    else {
-        text_view_append (ask_output,
-            "\nTry asking:\n"
-            "  \"What anomalies do you see?\"\n"
-            "  \"Is port 443 open?\"\n"
-            "  \"Show me a status summary\"\n"
-            "  \"What can you do?\"\n", "dim");
-    }
-
-    g_free (qlower);
-    gtk_entry_set_text (GTK_ENTRY (ask_entry), "");
-}
-
-/* =====================================================================
  * on_simulate_clicked - What-if simulation
+ *
+ * The line is parsed and simulated in core (fs_copilot_simulate_text),
+ * and the result lands in the panel below the entry: the parsed
+ * reading first, so a grammar misreading is visible instead of hiding
+ * behind the verdict.  Nothing is written to the policy -- this is a
+ * question, not a change.
  * ===================================================================== */
 static void
 on_simulate_clicked (GtkButton *btn, gpointer data)
 {
+    const gchar *text;
+    FsScenario *sc = NULL;
+    FsSimulationResult *result;
+
     (void)btn; (void)data;
 
-    const gchar *text = gtk_entry_get_text (GTK_ENTRY (scenario_entry));
+    text = gtk_entry_get_text (GTK_ENTRY (scenario_entry));
     if (!text || !*text) return;
 
-    gboolean inbound = TRUE;
-    guint port = 0;
-    gchar remote_ip[64] = "any";
-    gchar app_name[64] = "Unknown";
-
-    if (strstr (text, "outbound") || strstr (text, "outgoing"))
-        inbound = FALSE;
-
-    gchar *ps = strstr (text, "port ");
-    if (ps) port = (guint) atoi (ps + 5);
-
-    const gchar *dot = strchr (text, '.');
-    if (dot) {
-        const gchar *s = dot;
-        while (s > text && (g_ascii_isdigit (*s) || *s == '.')) s--;
-        s++;
-        g_strlcpy (remote_ip, s, sizeof remote_ip);
-        for (gchar *c = remote_ip; *c; c++) {
-            if (!g_ascii_isdigit (*c) && *c != '.') { *c = '\0'; break; }
-        }
+    result = fs_copilot_simulate_text (global_copilot, text, &sc);
+    if (result == NULL) {
+        /* An honest refusal: no verdict at all beats a verdict for a
+         * line nobody could read. */
+        text_view_append (sim_output, "\n> ", "bold");
+        text_view_append (sim_output, text, "blue");
+        text_view_append (sim_output, "\n  ", NULL);
+        text_view_append (sim_output,
+            "Nothing could be read from that line: no direction, host, "
+            "port or service was recognized. Nothing was evaluated.\n",
+            "dim");
+        gtk_entry_set_text (GTK_ENTRY (scenario_entry), "");
+        return;
     }
 
-    const gchar *a = strstr (text, "allow ");
-    if (!a) a = strstr (text, "allowing ");
-    if (a) {
-        a = strchr (a, ' ');
-        while (*a == ' ') a++;
-        g_strlcpy (app_name, a, sizeof app_name);
-        for (gchar *c = app_name; *c; c++) {
-            if (*c == ' ' || *c == ',') { *c = '\0'; break; }
-        }
-    }
-
-    FsSimulationResult *result = fs_copilot_simulate (
-        global_copilot, app_name, remote_ip, port, "TCP", inbound);
-
-    /* Result dialog */
-    GtkWidget *dialog = gtk_message_dialog_new (
-        GTK_WINDOW (gtk_widget_get_toplevel (copilot_vbox)),
-        GTK_DIALOG_MODAL,
-        result->would_block ? GTK_MESSAGE_WARNING : GTK_MESSAGE_INFO,
-        GTK_BUTTONS_OK,
-        "%s", result->explanation);
-    gtk_window_set_title (GTK_WINDOW (dialog), _("What-If Simulation"));
-    gtk_dialog_run (GTK_DIALOG (dialog));
-    gtk_widget_destroy (dialog);
-
-    /* Log to AI output */
-    text_view_append (ask_output, "\nSimulation: ", "title");
-    text_view_append (ask_output, text, "bold");
-    text_view_append (ask_output, result->would_block ?
-                      " -> BLOCKED\n" : " -> ALLOWED\n",
+    text_view_append (sim_output, "\n> ", "bold");
+    text_view_append (sim_output, text, "blue");
+    text_view_append (sim_output, "\n  ", NULL);
+    text_view_append (sim_output, result->explanation,
                       result->would_block ? "red" : "green");
-    text_view_append (ask_output, result->explanation, NULL);
-    text_view_append (ask_output, "\n", NULL);
+    text_view_append (sim_output, "\n", NULL);
+
+    /* Say out loud what the line did not say: a verdict read against
+     * "any port" must not look like a verdict for one port. */
+    if (sc != NULL && !sc->had_port)
+        text_view_append (sim_output,
+            "  Note: the line named no port; every port was simulated.\n",
+            "dim");
+    if (sc != NULL && !sc->had_addr)
+        text_view_append (sim_output,
+            "  Note: the line named no host; every host was simulated.\n",
+            "dim");
 
     fs_simulation_result_free (result);
+    fs_scenario_free (sc);
     gtk_entry_set_text (GTK_ENTRY (scenario_entry), "");
 }
 
@@ -1288,7 +1111,7 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
                         -1);
 
     if (!rule_csv || !*rule_csv) {
-        text_view_append (ask_output,
+        text_view_append (analysis_output,
             "\n[!] Selected insight has no auto-applicable rule.\n",
             "orange");
         g_free (rule_csv);
@@ -1297,7 +1120,7 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
     }
 
     if (copilot_policy == NULL) {
-        text_view_append (ask_output,
+        text_view_append (analysis_output,
             "\n[!] No traffic policy is loaded, so nothing can be applied.\n",
             "orange");
         g_free (rule_csv);
@@ -1312,21 +1135,21 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
     FsRule *rule = fs_rule_from_csv ((FsRuleKind) rule_kind, rule_csv);
 
     if (rule == NULL) {
-        text_view_append (ask_output,
+        text_view_append (analysis_output,
             "\n[!] Could not parse the suggested rule, nothing was applied:\n  ",
             "orange");
-        text_view_append (ask_output, rule_csv, "bold");
-        text_view_append (ask_output, "\n", NULL);
+        text_view_append (analysis_output, rule_csv, "bold");
+        text_view_append (analysis_output, "\n", NULL);
         g_free (rule_csv);
         g_free (title);
         return;
     }
 
     if (fs_policy_contains (copilot_policy, rule)) {
-        text_view_append (ask_output,
+        text_view_append (analysis_output,
             "\n[=] Already in your policy, not added again:\n  ", "dim");
-        text_view_append (ask_output, rule_csv, "bold");
-        text_view_append (ask_output, "\n", NULL);
+        text_view_append (analysis_output, rule_csv, "bold");
+        text_view_append (analysis_output, "\n", NULL);
         fs_rule_free (rule);
         g_free (rule_csv);
         g_free (title);
@@ -1370,11 +1193,11 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
             fs_rule_free (rollback);
         }
 
-        text_view_append (ask_output,
+        text_view_append (analysis_output,
             "\n[!] Could not save the rule to disk, nothing was applied:\n  ",
             "red");
-        text_view_append (ask_output, rule_csv, "bold");
-        text_view_append (ask_output, "\n", NULL);
+        text_view_append (analysis_output, rule_csv, "bold");
+        text_view_append (analysis_output, "\n", NULL);
         g_free (rule_csv);
         g_free (title);
         return;
@@ -1391,27 +1214,27 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
                                                            &error);
 
         if (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL) {
-            text_view_append (ask_output,
+            text_view_append (analysis_output,
                 "\n[OK] Rule added, saved and applied:\n  ", "green");
-            text_view_append (ask_output, rule_csv, "bold");
-            text_view_append (ask_output, "\n     ", NULL);
-            text_view_append (ask_output, apply_result_text (result),
+            text_view_append (analysis_output, rule_csv, "bold");
+            text_view_append (analysis_output, "\n     ", NULL);
+            text_view_append (analysis_output, apply_result_text (result),
                               result == FS_APPLY_OK ? "green" : "orange");
-            text_view_append (ask_output, "\n", NULL);
+            text_view_append (analysis_output, "\n", NULL);
         } else {
             /* The row really is in the policy -- say so rather than
              * implying the whole thing failed. */
-            text_view_append (ask_output,
+            text_view_append (analysis_output,
                 "\n[!] Rule added to your policy and saved, but it is NOT "
                 "live yet:\n  ", "orange");
-            text_view_append (ask_output, rule_csv, "bold");
-            text_view_append (ask_output, "\n     ", NULL);
-            text_view_append (ask_output, apply_result_text (result), "orange");
+            text_view_append (analysis_output, rule_csv, "bold");
+            text_view_append (analysis_output, "\n     ", NULL);
+            text_view_append (analysis_output, apply_result_text (result), "orange");
             if (error != NULL) {
-                text_view_append (ask_output, "\n     ", NULL);
-                text_view_append (ask_output, error->message, "dim");
+                text_view_append (analysis_output, "\n     ", NULL);
+                text_view_append (analysis_output, error->message, "dim");
             }
-            text_view_append (ask_output,
+            text_view_append (analysis_output,
                 "\n     Re-run StockFW as administrator and apply the "
                 "policy to activate it.\n", "dim");
         }
@@ -1435,7 +1258,7 @@ on_clear_clicked (GtkButton *btn, gpointer data)
         fs_copilot_clear_insights (global_copilot);
     refresh_insights ();
     update_stats ();
-    text_view_append (ask_output, "\nInsights cleared.\n", "dim");
+    text_view_append (analysis_output, "\nInsights cleared.\n", "dim");
 }
 
 /* =====================================================================

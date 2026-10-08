@@ -1,6 +1,6 @@
 # StockFW — Technical Architecture and Security Document
 
-**Version 1.0.4 · October 2026 · Classification: Internal / Distributable**
+**Version 1.0.5 · October 2026 · Classification: Internal / Distributable**
 
 *Prepared by the StockFW Project. StockFW is a GTK3 port and modernization of the firewall tool originally developed by Qusai Fethalrahman; the port and this document are authored by H3xCore / the StockFW Project.*
 
@@ -14,7 +14,7 @@
 
 **Chapter 3: The Core Engine (How it Works)** — 3.1 User-Mode by Design · 3.2 Rule Compilation to `netsh advfirewall` · 3.3 Event Acquisition: 5156/5157 and `wevtutil` · 3.4 Record Splitting, Deduplication, and the Seen-Set · 3.5 Monitoring Bootstrap: `auditpol` · 3.6 The Linux Backend · 3.7 Spawn Mechanics and Failure Modes *(Mermaid: sequence diagram)*
 
-**Chapter 4: The AI Copilot & NLP Engine** — 4.1 Deterministic Local Parsing, No Cloud Model · 4.2 The Intent Pipeline *(Mermaid: flowchart)* · 4.3 What-If Simulator and Anomaly Detection · 4.4 Guardrails: Allow-Only, Confirm, Rollback · 4.5 Prompt-Injection Threat Surface Analyzed · 4.6 Mapping Natural Language to Rule Grammar
+**Chapter 4: The AI Copilot & NLP Engine** — 4.1 Deterministic Local Parsing, No Cloud Model · 4.2 The Scenario Pipeline *(Mermaid: flowchart)* · 4.3 What-If Simulator and Anomaly Detection · 4.4 Guardrails: Allow-Only, Confirm, Rollback · 4.5 Prompt-Injection Threat Surface Analyzed · 4.6 Mapping Natural Language to Rule Grammar
 
 **Chapter 5: Security Model & Threat Analysis** — 5.1 Trust Boundaries and Attacker Profiles · 5.2 Privilege-Escalation Analysis *(verified evidence table)* · 5.3 Injection Surfaces: netsh, CSV, Event Log · 5.4 Tamper Resistance of the Policy Store · 5.5 Data Privacy of Logs · 5.6 STRIDE Summary
 
@@ -29,6 +29,8 @@
 **Chapter 10: Future Roadmap & Commercialization** — 10.1 Feature Roadmap · 10.2 Enterprise and "SaaS" Considerations · 10.3 Licensing Analysis and Open Questions · 10.4 Monetization Options · 10.5 Compliance, Signing, and Distribution
 
 **Chapter 11: 1.0.4 Addendum** — 11.1 Event → Rule, One Click · 11.2 Events Filter Bar · 11.3 Sentinel: Detection and Auto-Block · 11.4 F-1/F-3 Hygiene · 11.5 Repairs and Version
+
+**Chapter 12: 1.0.5 Addendum** — 12.1 AI Assistant Removed, What-If Developed · 12.2 Bi-Directional Direction Setting · 12.3 Runner and Version
 
 ---
 
@@ -46,7 +48,7 @@ StockFW is a deliberate port and modernization of the GTK firewall configuration
 
 Windows ships a competent firewall engine and almost unusable management ergonomics. The native controls are split across three surfaces with three different mental models: the per-profile toggles in Windows Security, the rule zoo of `wf.msc` (where hundreds of implicit allow rules make intent unreadable), and PowerShell's `NetSecurity` cmdlets (powerful, but a scripting barrier for exactly the users most likely to misconfigure a firewall). The result is well documented: users disable the firewall entirely, or they author rules they cannot later explain. Meanwhile the events that matter — *which process talked to which address, and was it allowed or blocked* — are buried in Event Viewer rows that require knowing event IDs 5156 and 5157 to extract.
 
-The original tool solved this problem elegantly for Linux in the mid-2000s and is now effectively abandoned; its architecture (shell out to `iptables`, GTK2) does not survive contact with modern Windows. The gap StockFW fills is precisely this: **a single coherent application that makes a stock OS firewall legible** — policy as a readable, diffable CSV; events as a classified, searchable stream; advanced knobs (ICMP behavior, filtering options, rejection semantics) in one dialog; and an assistant layer that can answer "why is this blocked?" and "what would this rule do?" without a shell prompt.
+The original tool solved this problem elegantly for Linux in the mid-2000s and is now effectively abandoned; its architecture (shell out to `iptables`, GTK2) does not survive contact with modern Windows. The gap StockFW fills is precisely this: **a single coherent application that makes a stock OS firewall legible** — policy as a readable, diffable CSV; events as a classified, searchable stream; advanced knobs (ICMP behavior, filtering options, rejection semantics) in one dialog; and a Copilot layer that answers "why is this blocked?" (analysis), "what would happen if?" (what-if simulation), and proposes concrete rules — without a shell prompt.
 
 The security problem statement is equally sharp. A firewall configuration tool is an attractive target precisely because it is a privilege amplifier: whatever the tool can be tricked into applying, it applies **with the user's elevation**. Therefore the design constraint that shapes the whole system is: *no input path — CSV file, event record, natural-language string, or UI event — may convert user-level access into firewall-changing action without passing typed validation, an explicit human confirmation, and an elevation check, in that order.*
 
@@ -57,7 +59,7 @@ The security problem statement is equally sharp. A firewall configuration tool i
 - **Legible firewall management** on Windows (primary) and Linux (secondary) from one codebase, with policy stored as human-readable CSV that survives load/save round trips semantically unchanged.
 - **Real monitoring**: live inbound/outbound event classification with process names, verdicts, addresses, and ports — not a static dashboard.
 - **WYSIWYG honesty**: every control shown does something on the running backend; settings pages the backend cannot honor are not displayed, and that guarantee is enforced by an automated test (Chapter 6).
-- **A Copilot that earns the word "smart"** — natural-language rule authoring, anomaly insight, and a what-if simulator — with allow-only rule generation, mandatory confirmation showing the exact rule, and rollback if persistence fails.
+- **A Copilot that earns the word "smart"** — anomaly insight, natural-language what-if simulation, and rule suggestions from observed traffic — with allow-only rule generation, mandatory confirmation showing the exact rule, and rollback if persistence fails.
 - **Verifiable security claims**: every statement in the threat model maps to source code that can be inspected, and every regression test can be forced to fail (the "teeth" methodology, Chapter 8).
 
 **Non-goals (equally load-bearing):**
@@ -74,11 +76,11 @@ This document serves four readers. **Security reviewers and auditors**, who will
 
 ### 1.5 Scope, Conventions, and Evidence Grading
 
-Every architectural claim in this document describes the code as it exists in StockFW 1.0.4 (October 2026), not an aspirational design; Chapters 1–10 carry the 1.0.3 base text and Chapter 11 records the 1.0.4 additions, which are authoritative where they differ. Claims are graded: **[Verified]** marks behavior proven by source inspection or an automated test named in Chapter 8; **[Measured]** marks behavior with numbers from an executed experiment (e.g., the 150-second soak test in Chapter 9: 45.6 MB → 44.8 MB private bytes under a continuous 300-record event flood, clean exit); **[Roadmap]** marks intent only. Diagrams are Mermaid source blocks intended for rendering. Where the original design and StockFW differ, the difference is called out explicitly rather than silently. Security claims were re-verified against source for this edition: ten privilege-boundary properties were re-read line by line and are cited with file and line references in Chapter 5.
+Every architectural claim in this document describes the code as it exists in StockFW 1.0.5 (October 2026), not an aspirational design; Chapters 1–10 carry the 1.0.3 base text, Chapter 11 records the 1.0.4 additions, and Chapter 12 records the 1.0.5 additions — the addendum chapters are authoritative where they differ. Claims are graded: **[Verified]** marks behavior proven by source inspection or an automated test named in Chapter 8; **[Measured]** marks behavior with numbers from an executed experiment (e.g., the 150-second soak test in Chapter 9: 45.6 MB → 44.8 MB private bytes under a continuous 300-record event flood, clean exit); **[Roadmap]** marks intent only. Diagrams are Mermaid source blocks intended for rendering. Where the original design and StockFW differ, the difference is called out explicitly rather than silently. Security claims were re-verified against source for this edition: ten privilege-boundary properties were re-read line by line and are cited with file and line references in Chapter 5.
 
 ### 1.6 The System at a Glance
 
-| Aspect | StockFW 1.0.4 (actual) |
+| Aspect | StockFW 1.0.5 (actual) |
 |---|---|
 | Language / standard | C (GNU C11), GLib/GIO/GTK3 |
 | UI framework | **GTK3** — native widgets, no Electron/WPF/Qt |
@@ -100,7 +102,7 @@ flowchart LR
         U["Human user<br/>(admin only via explicit UAC)"]
     end
 
-    subgraph App["StockFW 1.0.4 — user-mode GTK3 application"]
+    subgraph App["StockFW 1.0.5 — user-mode GTK3 application"]
         UI["Status · Events · Policy · Copilot"]
         CORE["Rule / Policy Core<br/>(CSV round-trip, validation)"]
         BACK["Platform Backends<br/>Windows | Linux"]
@@ -353,37 +355,37 @@ The failure modes are enumerated deliberately:
 
 ### 4.1 Deterministic Local Parsing, No Cloud Model
 
-StockFW's Copilot is advertised as "AI," and this document's job is to say precisely what that means. The Copilot is a **local, deterministic natural-language understanding layer**: a tokenizer, a synonym/alias table, an intent classifier over a closed set of intents, and a rule synthesizer that emits one fixed CSV dialect. There is **no LLM, no cloud API, no model weights, and no network call anywhere in the Copilot path**.
+StockFW's Copilot is advertised as "AI," and this document's job is to say precisely what that means. The Copilot is a **local, deterministic understanding layer**: a tokenizer, a synonym/alias table, a **closed-grammar scenario parser** (direction keywords, hosts recognized by shape, port phrases, protocol words), and on the suggestion path a rule synthesizer that emits one fixed CSV dialect. There is **no LLM, no cloud API, no model weights, and no network call anywhere in the Copilot path**.
 
-This is an architectural position, not a shortcut. A firewall configuration assistant that ships its users' rule requests, observed traffic patterns, and anomaly context to a third-party endpoint would violate the privacy expectation of exactly the audience that installs a firewall. A probabilistic model that can hallucinate an argument list is the wrong tool for generating firewall rules where a typo is a real misconfiguration. And an offline-by-construction assistant keeps working on an air-gapped machine, which firewall users plausibly are. The costs are equally real and are stated plainly: the parser handles a bounded grammar rather than arbitrary conversation, and its comprehension ceiling is the size of its alias table. Chapter 10 discusses model-assisted parsing as a future, opt-in, on-device option — not part of 1.0.4.
+This is an architectural position, not a shortcut. A firewall configuration assistant that ships its users' rule requests, observed traffic patterns, and anomaly context to a third-party endpoint would violate the privacy expectation of exactly the audience that installs a firewall. A probabilistic model that can hallucinate an argument list is the wrong tool for generating firewall rules where a typo is a real misconfiguration. And an offline-by-construction assistant keeps working on an air-gapped machine, which firewall users plausibly are. The costs are equally real and are stated plainly: the parser handles a bounded grammar rather than arbitrary conversation, and its comprehension ceiling is the size of its alias table. Chapter 10 discusses model-assisted parsing as a future, opt-in, on-device option — not part of 1.0.5.
 
-What the Copilot *does* deliver, from real code paths: **rule suggestions from observed traffic** ("`brave.exe` was blocked from 203.0.113.7:443 — allow it?"), **anomaly insights** (unusual destination ports, novel application profiles — `is_anomalous_port` and the per-profile counting tables), a **what-if simulator** ("if I added this rule, what would happen?"), and a **natural-language query surface** ("what rules do I have?", "show anomalies").
+What the Copilot *does* deliver, from real code paths: **rule suggestions from observed traffic** ("`brave.exe` was blocked from 203.0.113.7:443 — allow it?"), **anomaly insights** (unusual destination ports, novel application profiles — `is_anomalous_port` and the per-profile counting tables), and a **what-if simulator** that reads a line like *"allow SSH from 192.168.1.50 on port 22"* and answers BLOCKED/ALLOWED against the real policy. The standalone ask box that once sat on the Copilot page has been **removed**: free text now enters only through the What-If Simulator's entry, which is read-only, and the grammar tables that fed the ask box (service aliases, direction keywords, port phrases) serve the scenario parser instead. Status messages from apply/undo/clear operations are logged in the Policy Analysis pane, so every write-path message lands in the log next to the suggestions that caused it.
 
-### 4.2 The Intent Pipeline
+### 4.2 The Scenario Pipeline
 
 ```mermaid
 flowchart TD
-    IN["User input (free text)"] --> TOK["Tokenizer<br/>normalize case, split, strip punctuation"]
-    TOK --> CLS{"Intent classifier<br/>(closed set, keyword/structure rules)"}
-    CLS -->|"rule intent<br/>allow / block / who / what"| ENT["Entity extraction<br/>service ↔ port, address, direction, action"]
-    CLS -->|"query intent"| Q["Answer from policy / counters<br/>(text only, no side effects)"]
-    CLS -->|"simulator intent"| SIM["What-if: compile candidate rule"]
-    CLS -->|"unknown"| REP["Honest refusal:<br/>parse what is understood, ask for the rest"]
-    ENT --> V{"Typed validation<br/>port ∈ [0,65535], address shape, action enum"}
-    V -->|fail| REP
-    V -->|pass| GEN["Synthesize FsRule via the fixed dialect<br/>fs_rule_from_csv(FS_RULE_OUTBOUND_ALLOW_SERVICE, …)"]
-    GEN --> DLG["Confirmation dialog shows:<br/>insight text + exact rule CSV"]
+    IN["Free text: the What-If entry<br/>(the ask box was removed)"] --> TOK["Tokenizer<br/>normalize case, split, strip punctuation"]
+    TOK --> SC{"Scenario parser<br/>fs_copilot_parse_scenario:<br/>direction keywords, host/CIDR by shape,<br/>port phrases, service aliases, protocol words"}
+    SC -->|"line understood"| SIM["fs_copilot_simulate_text:<br/>walk the loaded policy,<br/>block rules take precedence,<br/>shadowed allows reported"]
+    SC -->|"nothing parseable"| REP["Honest refusal:<br/>NULL scenario, no verdict,<br/>nothing evaluated, nothing written"]
+    SIM --> OUT["Verdict + explanation appended<br/>to the What-If panel<br/>read-only: no dialog, no policy write"]
+
+    EV["Blocked-connection event"] --> INS["FsInsight carries rule_csv in<br/>the fixed dialect (fs_rule_from_csv:<br/>FS_RULE_OUTBOUND_ALLOW_SERVICE)"]
+    INS --> V{"Typed validation<br/>port ∈ [0,65535], address shape"}
+    V -->|fail| REP2["Suggestion withheld:<br/>malformed rows never surface"]
+    V -->|pass| DLG["Confirmation dialog shows:<br/>insight text + exact rule CSV"]
     DLG -->|user: No| DROP["Discarded. Nothing written."]
     DLG -->|user: Yes| ADD["fs_policy_add → save (rollback on failure)<br/>→ live apply only now"]
 ```
 
-The pipeline has one-way ratchet semantics: **understanding may fail, but failure is always non-destructive.** At every stage — classification, entity extraction, validation, synthesis — the failure branch leads to text output or a refusal, never to a state change. The only transition that can alter anything is the user's explicit `Yes` on a dialog that prints the literal rule that will be created.
+The free-text path has **no write path at all**: every branch — parsing, simulation, refusal — ends as text in the What-If panel, so for that path the ratchet is trivially true: nothing but a verdict string can result. The suggestion path (event-driven, not typed) keeps the ratchet for real: at every stage — extraction, validation, synthesis — failure leads to a withheld suggestion or a refusal, never to a state change. The only transition that can alter anything is the user's explicit `Yes` on a dialog that prints the literal rule that will be created.
 
-Entity extraction is table-driven: service aliases resolve through the same service database the rest of the app uses (`SSH` → 22, `DNS` → 53, `RDP` → 3389 …), addresses are recognized by shape, and port phrases ("on port 22", "port 22") bind to the extracted port. A rule suggestion synthesized from a blocked-connection event reuses the event's own fields, so suggestions are grounded in observed reality rather than invented.
+Entity extraction is table-driven: service aliases resolve through the same service database the rest of the app uses (`SSH` → 22, `DNS` → 53, `RDP` → 3389 …), addresses are recognized by shape (a `host:port` shorthand included; a *hostname* is deliberately not accepted as a host — `open.code.exe` must not parse as an address), and port phrases ("on port 22", "port 22") bind to the extracted port, beating the service default when both appear. A rule suggestion synthesized from a blocked-connection event reuses the event's own fields, so suggestions are grounded in observed reality rather than invented.
 
 ### 4.3 What-If Simulator and Anomaly Detection
 
-The **simulator** answers a policy question before any change: given a candidate rule, walk the current policy and report the outcome. Its core returns a structured result — including `would_block`, computed by comparing the candidate against existing block rules (`fs-copilot.c`) — so the user is told *before applying* whether a proposed allow is shadowed by an existing deny (or vice versa). This is the "explain the verdict" feature that raw `wf.msc` cannot offer, and it doubles as a conflict detector for Chapter 7.
+The **simulator** answers a policy question before any change. A line of free text is parsed in core (`fs_copilot_parse_scenario` → `FsScenario`: direction — default **outbound** — host/CIDR, port, protocol, application) and evaluated against the loaded policy by `fs_copilot_simulate_text`, which writes nothing. The verdict is computed the way Windows Firewall resolves real traffic: **block rules take precedence over covering allows**, and when both match, the result reports the allow as *shadowed* instead of pretending it wins. Address matching covers CIDR (`fs_util_addr_in_cidr` — a `/24` block covers the hosts inside it), a known service name supplies the port when the line names none, and when no policy is loaded the verdict says so rather than inventing rules it does not have. The panel prints the parsed reading next to the verdict, and a line that named no port or no host carries an explicit note — a verdict read against "any port" must not look like a verdict for one port. Results land inline below the entry (no modal dialog), and neither a policy row nor an audit line is written: the simulator is a question, not a change. This is the "explain the verdict" feature that raw `wf.msc` cannot offer, and it doubles as a conflict detector for Chapter 7.
 
 **Anomaly detection** is statistical, not speculative. Per-profile counters track each application's observed behavior (destination ports, peers, direction mix); `is_anomalous_port` flags first-time or rare service usage for that profile (e.g., a chat client suddenly using a database port). Insights are generated only when a threshold observed in *this user's* traffic is crossed, which is why the Insights list is clearable and bounded — insight history is session state, not an ever-growing database. Because counters are fed only by deduplicated event records (Section 2.2), an attacker cannot cheaply flood the Copilot's memory: intake is capped at ten records per five seconds before the Copilot ever sees a record.
 
@@ -391,7 +393,7 @@ The **simulator** answers a policy question before any change: given a candidate
 
 Four independent guardrails stand between a Copilot string and the kernel:
 
-1. **Structural allow-only.** Suggestions parse through the `FS_RULE_OUTBOUND_ALLOW_SERVICE` dialect. The grammar has no verb for "deny," "remove," or "disable." A malicious input asking to "delete the firewall" or "block all traffic" does not fail *securely* — it fails *syntactically*, because the intent classifier's closed set contains no such intent. An allow-only assistant structurally cannot produce the rule that breaks DNS: at worst it proposes allowing something more, which the confirmation dialog still gates.
+1. **Structural allow-only (suggestions).** Suggestions parse through the `FS_RULE_OUTBOUND_ALLOW_SERVICE` dialect, which has no verb for "deny," "remove," or "disable." A malicious input asking to "delete the firewall" or "block all traffic" does not fail *securely* — it fails *syntactically*, because the dialect contains no such operation. The What-If grammar *does* read words like "block" — it must, to answer "would this be blocked?" — but its only output is a verdict string; nothing from a simulation reaches the policy. An allow-only suggestion path structurally cannot produce the rule that breaks DNS: at worst it proposes allowing something more, which the confirmation dialog still gates.
 2. **Typed validation before synthesis.** Ports must be all digits in range (Section 5.3), addresses must pass shape checks; malformed entities abort to the refusal branch.
 3. **Mandatory human confirmation showing the literal rule.** `on_apply_suggestion_clicked` opens a modal `GtkMessageDialog` containing the insight title *and the exact CSV rule*; answering No discards everything. There is no "apply all," no auto-accept, and no setting that skips the dialog.
 4. **Rollback on persistence failure.** After Yes, the rule enters the in-memory policy and is saved; if the CSV write fails, the edit is **taken back out** so the Policy page, the file, and the firewall cannot diverge. Only then does the live apply run.
@@ -403,25 +405,26 @@ Undo is not a special feature because it does not need to be: a Copilot-created 
 "If a user types a malicious prompt, could it be tricked into creating a rule that opens a backdoor?" The honest answer requires separating two architectures, because the answer differs completely between them:
 
 - **Against an LLM with tools**, prompt injection is a first-order threat: hidden instructions in retrieved text can steer tool calls.
-- **Against a deterministic keyword parser with a closed intent set and a human confirmation gate**, "injection" has no semantic channel to exploit. There is no instruction-following behavior to hijack. The parser does not execute, delegate, persist, or auto-apply anything.
+- **Against a deterministic keyword parser with a closed grammar and a human confirmation gate**, "injection" has no semantic channel to exploit. There is no instruction-following behavior to hijack. The parser does not execute, delegate, persist, or auto-apply anything.
 
-What an attacker who controls input can actually accomplish, fully enumerated: get text echoed back in the conversation pane (no impact); cause a *candidate* allow-rule to be suggested (impact: none until a human clicks Yes on a dialog printing that rule); or craft policy CSV content directly (impact: analyzed in Chapter 5 — nothing applies it without a human pressing Apply in an elevated instance). There is no path from input string to open port that skips a human reading the port number.
+What an attacker who controls input can actually accomplish, fully enumerated: get text echoed back in the What-If result panel (no impact — the panel never interprets it as instruction); cause a *candidate* allow-rule to be suggested (impact: none until a human clicks Yes on a dialog printing that rule); or craft policy CSV content directly (impact: analyzed in Chapter 5 — nothing applies it without a human pressing Apply in an elevated instance). There is no path from input string to open port that skips a human reading the port number.
 
 Residual risks worth naming so they are not silently ignored: **social engineering of the human** (a convincing-sounding suggestion that the user approves without reading — mitigated by printing the literal rule, not a paraphrase), **traffic-engineered suggestions** (a peer generating connection patterns to induce a suggestion — again gated by the same dialog, and suggestions only ever *add* scoped allows), and **display spoofing through rule content** (a rule whose *name* contains an error phrase could theoretically appear confusing in downstream textual output — display-only, no state effect, logged as a residual in Chapter 5).
 
 ### 4.6 Mapping Natural Language to Rule Grammar
 
-The translation problem is made tractable by inverting the usual direction: instead of parsing arbitrary English *into* an arbitrary rule language, StockFW parses a **narrow command register** into a **four-field grammar** (action, service/port, target, direction). The user's prompt — *"allow SSH from 192.168.1.50 on port 22"* — decomposes:
+The translation problem is made tractable by inverting the usual direction: instead of parsing arbitrary English *into* an arbitrary rule language, StockFW parses a **narrow command register** into a **five-field scenario** (direction, host, port, protocol, application). The line a user types — today into the What-If Simulator, since the ask box was removed — *"allow SSH from 192.168.1.50 on port 22"* — decomposes:
 
 | Phrase fragment | Analysis | Result |
 |---|---|---|
-| "allow" | action alias (also: permit, open, accept) | `ALLOW` |
-| "SSH" | service alias → port 22 | service `ssh`, port `22` |
-| "from 192.168.1.50" | source/target by shape | target `192.168.1.50` |
-| "on port 22" | explicit port (wins over service default) | port `22` confirmed |
-| *(no keyword "in"/"out")* | default: direction implied by verb context | synthesized as dialect default, shown in dialog |
+| "allow" | action word; the following token is read as the application | application `SSH` |
+| "SSH" | service alias → default port (used only when the line names no port) | port `22` available |
+| "from 192.168.1.50" | direction keyword (`from`/`to`/`inbound`/`outbound`/`ingress`/`egress`…) + address by shape | direction **inbound**, host `192.168.1.50` |
+| "on port 22" | explicit port clause | port `22` confirmed (beats the alias) |
+| *(no protocol word)* | protocol keywords `tcp`/`udp`/`icmp`/`ping` | default `TCP` |
+| *(direction keyword absent entirely)* | documented default | direction `outbound`, printed with the verdict |
 
-Design rules that keep the mapping honest: **explicit beats inferred** (a stated port overrides a service default; any conflict is surfaced in the confirmation text rather than silently resolved), **ambiguity is reported, not guessed** ("did you mean block or allow?" beats a coin flip), and **unknown words degrade to partial rules plus a question**, never to invented values. The alias tables — service names, action verbs, direction keywords — are data, not code, so extending comprehension is a table edit covered by parse-level unit tests (the core suite's 132 checks include suggestion-parse coverage).
+Design rules that keep the mapping honest: **explicit beats inferred** (a stated port clause beats the service default), **known shapes only** (addresses parse by digits, dots and colons — a hostname never becomes a host: `open.code.exe` must not parse as an address), and **nothing parseable means no verdict**: the parser returns NULL, the panel says the line could not be read, and no policy walk happens. The alias tables — service names, direction keywords, protocol words — are data, not code, so extending comprehension is a table edit covered by parse-level unit tests (the core suite's 302 checks include both suggestion-parse and scenario-parse coverage).
 
 ---
 
@@ -447,7 +450,7 @@ StockFW exposes **no listening socket, no IPC endpoint, and no parser reachable 
 
 ### 5.2 Privilege-Escalation Analysis
 
-The following table re-verifies, against source, the claim that user-level access cannot be converted into firewall-changing action. Each row was re-read for this document; file references are to StockFW 1.0.4.
+The following table re-verifies, against source, the claim that user-level access cannot be converted into firewall-changing action. Each row was re-read for this document; file references are to StockFW 1.0.5.
 
 | # | Property | Mechanism | Evidence |
 |---|---|---|---|
@@ -530,7 +533,7 @@ The application is a four-tab notebook, each tab owning a toolbar row:
 - **Status** — live dashboard: logo, firewall state, profile toggles (Domain/Private/Public), network and connection counters on 2 s / 3 s refresh timers, and the elevation status line.
 - **Events** — the adjudicated-connection stream: time, process, direction, address, port, verdict, with repeated-event suppression.
 - **Policy** — the rule store: list, add/edit/remove, dirty tracking, Apply, and a status line reporting the real backend outcome (including "needs elevation").
-- **Copilot** — Insights & Suggestions, the What-If Simulator, and the natural-language ask box (Chapter 4).
+- **Copilot** — Insights & Suggestions and the What-If Simulator (Chapter 4). The natural-language ask box was removed: free text enters only through the simulator's read-only entry.
 
 Page switching re-applies toolbar visibility so only the active page's buttons show; the design goal per tab is *one glance, one decision*: Status answers "is my firewall on?", Events answers "what just happened?", Policy answers "what will happen?", Copilot answers "what should I do?".
 
@@ -574,7 +577,7 @@ Accessibility posture, stated honestly: GTK3 provides keyboard navigation, focus
 
 The policy is a **CSV file** — the single source of truth for what StockFW intends the firewall to do. Each row describes one rule in the port's fixed dialect (rule kind/direction, service, port specification, target address), parsed by `fs-rules.c` into typed `FsFwRule` structures. CSV was chosen over a database, JSON, and a binary format for reasons that matter to this product's audience: it is diffable in a code review, editable in Notepad, copyable as a backup, and diffable again after an edit round trip.
 
-**Round-trip guarantee:** loading a policy and saving it without edits must produce a semantically identical file, and every row that loaded must save back, and vice versa. This is not an aspiration — the core suite (132 checks) includes round-trip tests that load→save→load and compare, plus negative tests asserting malformed rows are **skipped and counted**, never silently transformed. A row the parser does not fully understand cannot survive into the saved file in a mutated form; it is rejected at load, where the user can see the "N malformed policy rule(s) were skipped" report and fix it by hand.
+**Round-trip guarantee:** loading a policy and saving it without edits must produce a semantically identical file, and every row that loaded must save back, and vice versa. This is not an aspiration — the core suite (302 checks) includes round-trip tests that load→save→load and compare, plus negative tests asserting malformed rows are **skipped and counted**, never silently transformed. A row the parser does not fully understand cannot survive into the saved file in a mutated form; it is rejected at load, where the user can see the "N malformed policy rule(s) were skipped" report and fix it by hand.
 
 Validation at the parse boundary (all **[Verified]**): port fields must be pure digits (defeating `strtol`'s acceptance of `80abc` and `0x50`), single ports and ranges must fall in 0–65535 with `first ≤ last`, direction and action are enums with fixed vocabularies, and target text passes through `address_or_null()` (normalizing "Anyone"/empty to *any*, with the pass-through limitation tracked as finding F-1 in Chapter 5).
 
@@ -621,7 +624,10 @@ StockFW does **not** impose its own packet-walk order — that would mean implem
 
 - **Windows Firewall** resolves per-connection: an explicit **block** match wins over an allow match; among equals, the more specific scope (address/port) is what the OS evaluates. StockFW's job is to *make those outcomes legible* rather than re-implement them.
 - **Direction matters**: inbound and outbound are separate rule spaces; a rule for one direction says nothing about the other.
+- **The device is stateful**: return traffic on an already-established connection needs no explicit response rule — Windows Firewall accepts it as part of the connection, and the Linux script emits explicit `# Accept return traffic` chains (`fs-script.c`) for the same reason. Statefulness covers *responses*; a **new** connection in the opposite direction is a new decision, which is why both directions remain separate rule spaces.
 - **Duplication is idempotent by name**: two saves of the same rule do not create two netsh entries, because add/delete key on the canonical name.
+
+**Bi-directional rules.** Because the two directions are separate spaces, allowing a peer both ways would normally mean authoring two rules. The **Direction** setting does it in one step: on the pairable kinds, the Policy page's Add row and the Event → Rule confirm dialog carry a second entry, **Bi-directional**, next to the default one-direction entry (*Outbound only* — or *Inbound only* on the inbound kinds, since a direction label must tell the truth about the rule it labels). The pairing is exact: `OUTBOUND_ALLOW_TO ↔ INBOUND_ALLOW_FROM` for host rules and `OUTBOUND_ALLOW_SERVICE ↔ INBOUND_ALLOW_SERVICE` for service rules (`fs_rule_counterpart_kind`). It is deliberately closed: deny kinds have no inbound twin (the policy has no inbound-deny kind — inbound is default-deny already), a forward points one way, and `OUTBOUND_ALLOW_FROM` would need an `INBOUND_ALLOW_TO` that does not exist. For those kinds `fs_rule_counterpart_kind` returns `FS_RULE_N_KINDS` and the Direction control is simply **absent** — a choice that cannot be honored is not rendered. The pair stages as **one all-or-nothing change** (`fs_policy_add_persist_pair`): both copies enter the store, a single save writes them, and a failed write takes *both* back out — the store and the disk never keep half a pair. What statefulness means for the setting: Bi-directional is not about responses (those need no rule), it is about **new** connections in the opposite direction — a peer you reach out to should also be able to knock back.
 
 Conflicts are surfaced where users can act on them, in two places. The **What-If simulator** evaluates a candidate against the current policy and reports shadowing — notably `would_block`, when a proposed allow is dead because a block already covers it — *before* anything is written (Chapter 4). The **Policy page** itself is the human-readable conflict view: because the policy is flat CSV, "what rules exist?" is answered by scrolling a list, not by decoding `wf.msc`'s mixed implicit/explicit zoo. Automated conflict-checking across the whole policy (e.g., "this allow is fully shadowed by that block") is roadmap (Chapter 10) — the simulator already contains the core comparison logic.
 
@@ -661,7 +667,7 @@ CMake targets include the application (`StockFW.exe` / `StockFW`) and **test-onl
 
 | Suite | Checks | What it proves |
 |---|---|---|
-| **Core** (`test-core.sh`) | **132** | Rule parsing/round-trip, validation edge cases, Copilot suggestion apply + profile-lifetime, policy save/rollback |
+| **Core** (`test-core.sh`) | **302** | Rule parsing/round-trip, validation edge cases, Copilot suggestion apply + profile-lifetime, policy save/rollback + bi-directional pair persistence, What-If scenario parsing and verdicts (block precedence, shadowing, CIDR coverage) |
 | **Winlog + spawn probe** | **56** | Real `wevtutil` format parsing, split/dedup incl. `test_dedup_index_shift`, spawn/capture behavior |
 | **Installer spawn** | **9** | The installed layout spawns correctly (PATH/DLL resolution from the shipped directory) |
 | **Logstart** | **5** | `auditpol` bootstrap is idempotent and reports honestly |
@@ -698,7 +704,7 @@ The installer is generated by **NSIS** (`StockFW.nsi`) from a staged directory b
 
 1. Stage `StockFW.exe`, the **complete GTK3 runtime** (all DLLs, `gspawn` helpers, `share/`, `lib/`, `etc/`) so the app runs on a machine with no MSYS2 — every dependency sits beside the exe.
 2. Stage the three **elevation launchers** and validate them: the script **fails the build** if any staged launcher still contains the string `stockfw` (branding guard — a regression check, not a lint).
-3. Stage `LICENSE.txt` (Apache-2.0 text) and the logo/artwork; generate `StockFW-1.0.4-Setup.exe`.
+3. Stage `LICENSE.txt` (Apache-2.0 text) and the logo/artwork; generate `StockFW-1.0.5-Setup.exe`.
 4. The NSIS script installs to Program Files, creates shortcuts (including "StockFW (Elevated)" pointing at the VBS launcher), and removes all staged files on uninstall.
 
 The installed exe's manifest is `asInvoker` (verified against the built binary in Chapter 5), so a default double-click never triggers UAC; elevation remains an explicit, separately-labeled action.
@@ -829,7 +835,7 @@ A firewall *configuration* tool has an unusual relationship with SaaS: the enfor
 - **Reporting**: aggregate *metadata* (counts, rule coverage) rather than connection contents — keeps the privacy story (5.5) intact.
 - **Support/SLA**: the commercially realistic core — updates, compatibility with new Windows builds, and response time.
 
-Honest boundary: StockFW 1.0.4 has **no service component, no IPC, and no multi-tenant anything**; every enterprise line above is architecture work with its own threat model, not packaging.
+Honest boundary: StockFW 1.0.5 has **no service component, no IPC, and no multi-tenant anything**; every enterprise line above is architecture work with its own threat model, not packaging.
 
 ### 10.3 Licensing Analysis and Open Questions
 
@@ -866,7 +872,7 @@ Launch checklist for a commercial-grade 1.0 → 1.1 transition:
 5. **Privacy/registry posture**: because the tool runs elevated and touches firewall state, publish a short privacy statement ("no telemetry, no network client — verify it in the source") as a *checkable* claim rather than a policy promise.
 6. **Update mechanism**: signed, user-visible updates (no silent self-mutation — an auto-updater for an elevated tool is itself a privileged attack surface and needs its own threat model).
 
-**Closing assessment.** StockFW 1.0.4 is a deliberately conservative architecture — user-mode management over the OS's own enforcement engine, a typed pipeline from untrusted text to privileged action, a human at every transition, and an evidence-based security claim set (Chapter 5) backed by teeth-tested regressions (Chapter 8). Its limits are named rather than hidden: no kernel visibility, no cloud, no enterprise plane yet, and signing/CI as honest gaps. The roadmap above is ordered so that the security findings close first, functional parity follows, and commercialization only proceeds once provenance, signing, and process are in place — because for a firewall product, shipping trust is the entire business.
+**Closing assessment.** StockFW 1.0.5 is a deliberately conservative architecture — user-mode management over the OS's own enforcement engine, a typed pipeline from untrusted text to privileged action, a human at every transition, and an evidence-based security claim set (Chapter 5) backed by teeth-tested regressions (Chapter 8). Its limits are named rather than hidden: no kernel visibility, no cloud, no enterprise plane yet, and signing/CI as honest gaps. The roadmap above is ordered so that the security findings close first, functional parity follows, and commercialization only proceeds once provenance, signing, and process are in place — because for a firewall product, shipping trust is the entire business.
 
 ---
 
@@ -913,7 +919,32 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 
 ---
 
-*End of document. StockFW 1.0.4 — Technical Architecture and Security Document. Claims marked [Verified] correspond to source in this repository; [Measured] values come from the executed experiments cited in Chapters 8 and 9; [Roadmap] items are intent, not current capability.*
+## Chapter 12: 1.0.5 Addendum
+
+*This chapter records what shipped in StockFW 1.0.5 (October 2026). Chapters 1–10 carry the 1.0.3 base text and Chapter 11 the 1.0.4 additions; where this chapter restates an earlier claim, it is authoritative. Every feature below is teeth-tested by the suites named in Chapter 8.*
+
+### 12.1 AI Assistant Removed, What-If Developed
+
+The Copilot page's AI Assistant frame — input entry, Ask button, output pane, welcome message — is **gone**; no conversational surface exists anywhere in the application (4.1). What remains of the assistant's grammar now serves the **What-If Simulator**, which was developed from a stub into the page's centerpiece:
+
+- **Parsing in core** (`fs_copilot_parse_scenario` → `FsScenario`): direction keywords (default **outbound**), hosts by shape only — IPv4/IPv6/CIDR, hostnames deliberately rejected so `open.code.exe` never parses as an address — a `host:port` shorthand, port clauses that beat service-name aliases, protocol keywords (`tcp`/`udp`/`icmp`/`ping`, default TCP), and the application token after "allow"/"allowing". **[Verified]** `test_whatif_simulate` (including NULL/empty → NULL).
+- **Verdicts that match the OS** (`fs_copilot_simulate`): block rules win over covering allows (Windows Firewall precedence), a shadowed allow is reported *shadowed*, CIDR containment through `fs_util_addr_in_cidr` (a `/24` block covers the hosts inside it), and with no policy loaded the verdict says so instead of inventing rules. **[Verified]** `test_whatif_simulate` — teeth demonstrated: disabling block precedence fails 3 of those checks.
+- **An honest panel**: results land inline under the entry (no modal per try); the parsed reading prints next to the verdict; a line that named no port or no host carries an explicit note; an unreadable line says *nothing could be read* rather than answering in silence. Status messages from apply/undo/clear re-homed to the Policy Analysis log, where the suggestions that caused them live. **[Verified]** `fs-ui-smoke`.
+
+### 12.2 Bi-Directional Direction Setting
+
+- **Pairing in core** — `fs_rule_counterpart_kind()` maps exactly the four kinds with real counterparts (`OUTBOUND_ALLOW_TO ↔ INBOUND_ALLOW_FROM`, `OUTBOUND_ALLOW_SERVICE ↔ INBOUND_ALLOW_SERVICE`) and returns `FS_RULE_N_KINDS` for everything else; `fs_rule_direction_label()` yields the first Direction entry (*Outbound only* / *Inbound only*) or NULL when no twin exists (7.3). **[Verified]** `test_direction_pairing`.
+- **One all-or-nothing save** — `fs_policy_add_persist_pair()` stages both copies, saves once, and takes *both* back out when the write fails; an already-stored twin completes the pair instead of failing it. **[Verified]** `test_direction_pairing`, including the rollback — teeth demonstrated: breaking the pairing map fails 8 checks.
+- **Both surfaces** — the Policy page shows the Direction combo only on pairable groups' Add rows (the control is absent where it cannot be honored), and the Event → Rule confirm dialog grows the same combo only when the staged rule's kind has a twin; unpairable actions (block destination, block service) keep the plain confirm dialog unchanged.
+
+### 12.3 Runner and Version
+
+- `port/tests/full-suite.sh` is committed as the canonical runner Chapter 8 names: every suite in one pass, one binary verdict (302 core checks as of this release).
+- Version markers moved 1.0.4 → 1.0.5 in every site the build, About dialog, installer, and `.rc` read from (CMake, `main.c`, `fs-dialogs.c`, NSIS, `build_installer.sh`, `stockfw.rc.in`, `configure.in`); the installer's fallback changelog now carries a real 1.0.5 entry.
+
+---
+
+*End of document. StockFW 1.0.5 — Technical Architecture and Security Document. Claims marked [Verified] correspond to source in this repository; [Measured] values come from the executed experiments cited in Chapters 8 and 9; [Roadmap] items are intent, not current capability.*
 
 
 

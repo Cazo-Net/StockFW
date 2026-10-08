@@ -30,6 +30,8 @@ typedef struct
 	GtkListStore  *store;
 	GPtrArray     *rules;      /* mirrors the store rows */
 	gint           num_columns;
+	GtkWidget     *direction;  /* Direction combo, or NULL when the
+	                              kind has no counterpart */
 } FsPolicyGroup;
 
 /* The kinds shown, in the order they appear on the page. */
@@ -308,18 +310,61 @@ blank_rule (FsRuleKind kind)
 	return rule;
 }
 
+/* [ group_for_kind ]
+ * The group displaying this kind, or NULL.  Needed when a bi-
+ * directional add stages a rule into a group other than the one whose
+ * Add button was pressed. */
+static FsPolicyGroup *
+group_for_kind (FsRuleKind kind)
+{
+	for (GList *l = groups; l != NULL; l = l->next) {
+		FsPolicyGroup *g = l->data;
+
+		if (g->kind == kind)
+			return g;
+	}
+
+	return NULL;
+}
+
 /* [ on_add_clicked ] */
 static void
 on_add_clicked (GtkButton *button, gpointer data)
 {
 	FsPolicyGroup *group = data;
 	FsRule *rule;
+	gboolean pair;
 
 	if (current_policy == NULL)
 		return;
 
+	/* The Direction setting: the default entry stages only this
+	 * group's rule; "Bi-directional" stages the twin as well. */
+	pair = (group->direction != NULL &&
+	        gtk_combo_box_get_active (
+	        	GTK_COMBO_BOX (group->direction)) == 1);
+
 	rule = blank_rule (group->kind);
 	fs_policy_add (current_policy, rule);
+
+	if (pair) {
+		FsRule *counterpart = fs_rule_counterpart (rule);
+
+		if (counterpart != NULL) {
+			fs_policy_add (current_policy, counterpart);
+			fs_rule_free (counterpart);
+
+			/* The twin lives in another group; its mirror must
+			 * see it too. */
+			FsPolicyGroup *other =
+				group_for_kind (fs_rule_counterpart_kind (
+				                 group->kind));
+
+			if (other != NULL)
+				refresh_group (other, current_policy);
+		}
+	}
+
 	fs_rule_free (rule);
 
 	refresh_group (group, current_policy);
@@ -526,6 +571,23 @@ build_group (FsRuleKind kind, const gchar *title)
 
 	button_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 	gtk_widget_set_halign (button_box, GTK_ALIGN_END);
+
+	/* The Direction setting -- only where the kind has a twin.  On the
+	 * kinds without one a second entry would be a choice that does
+	 * nothing (the policy has no inbound-deny kind: inbound is
+	 * default-deny already), so the control is simply absent. */
+	if (fs_rule_direction_label (kind) != NULL) {
+		group->direction = gtk_combo_box_text_new ();
+		gtk_combo_box_text_append_text (
+			GTK_COMBO_BOX_TEXT (group->direction),
+			fs_rule_direction_label (kind));
+		gtk_combo_box_text_append_text (
+			GTK_COMBO_BOX_TEXT (group->direction),
+			_("Bi-directional"));
+		gtk_combo_box_set_active (GTK_COMBO_BOX (group->direction), 0);
+		gtk_box_pack_start (GTK_BOX (button_box), group->direction,
+		                    FALSE, FALSE, 0);
+	}
 
 	button = gtk_button_new_with_label (_("_Add"));
 	g_signal_connect (button, "clicked", G_CALLBACK (on_add_clicked), group);
