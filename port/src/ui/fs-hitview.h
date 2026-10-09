@@ -14,6 +14,12 @@
 
 G_BEGIN_DECLS
 
+/* How many rows the list keeps.  Beyond this the OLDEST row is
+ * dropped (the list reads newest-first), so a long-running session
+ * cannot exhaust memory.  Here because the smoke test asserts the
+ * budget against the same number the code uses. */
+#define FS_HITVIEW_MAX_ROWS 2000
+
 GtkWidget *fs_hitview_page (void);
 
 /* The policy the right-click Event -> Rule actions stage into.  Set by
@@ -21,8 +27,16 @@ GtkWidget *fs_hitview_page (void);
  * the policy is created, so the pointer arrives after the page. */
 void fs_hitview_set_policy (FsPolicy *policy);
 
-/* Appends one hit and returns FALSE when the cap is reached. */
+/* Appends one hit, newest first (a batch arrives newest-first and
+ * must be placed by time, not stacked).  Returns FALSE when the row
+ * is already listed: the same row twice is one event. */
 gboolean fs_hitview_append (const FsHit *hit);
+
+/* What the Time column shows for a backend timestamp: local clock
+ * (plus the date when the event is from another day), or the input
+ * unchanged when it is not a wevtutil stamp.  Exposed for the smoke
+ * test. */
+gchar *fs_hitview_format_time (const gchar *raw);
 
 /* How many hits are currently listed. */
 guint fs_hitview_count (void);

@@ -24,10 +24,6 @@
 
 #include <string.h>
 
-/* How many rows to keep.  Beyond this the oldest is dropped, so a
- * long-running session cannot exhaust memory. */
-#define FS_HITVIEW_MAX_ROWS 2000
-
 static GtkWidget    *view;
 static GtkListStore *store;
 static GtkWidget    *count_label;
@@ -39,6 +35,18 @@ static GtkWidget    *monitor_warning_label;
 static gchar        *filter_text  = NULL;
 static GtkTreeModel *filter_model = NULL;    /* GtkTreeModelFilter over store */
 static GtkWidget    *filter_entry = NULL;
+
+/* [ shown_rows ] -- the de-duplication append runs against, keyed on
+ * the row itself.  The backend keeps its own seen-set while its
+ * source runs, but a Monitor restart (stop -> start) forgets it and
+ * re-delivers the trailing window -- into a list that still holds
+ * those rows, which is how one event could appear twice.  These keys
+ * live exactly as long as the rows: fs_hitview_clear drops both, so
+ * Clear and Reload keep their meaning (cleared stays cleared, a
+ * reload re-reads the tail). */
+#define SHOWN_ROWS_MAX 64
+static GHashTable *shown_rows  = NULL;          /* key -> TRUE      */
+static GQueue      shown_order = G_QUEUE_INIT;  /* newest at the head */
 
 /* The policy the Event -> Rule actions stage into; NULL until
  * fs-app.c hands it over (the page is built before the policy). */
@@ -143,6 +151,75 @@ color_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
 	              "background", background,
 	              "foreground", foreground,
 	              NULL);
+}
+
+/* [ fs_hitview_format_time ]
+ * What the Time column shows.  The backend hands over the wevtutil
+ * stamp verbatim -- ISO-8601 UTC with a seven-digit fraction
+ * ("2026-10-09T12:35:34.0780000Z") -- honest as a key, but far too
+ * wide for the column and on the wrong clock.  Show local time,
+ * seconds only, with the date only for events from another day.
+ * Anything that does not parse (the smoke test's "12:00:00", a
+ * backend with a different stamp) is returned unchanged: a display
+ * helper must not invent a time.  Exposed for the smoke test. */
+gchar *
+fs_hitview_format_time (const gchar *raw)
+{
+	gchar rebuilt[21];
+	GDateTime *utc, *local, *now;
+	gchar *text;
+
+	if (raw == NULL || *raw == '\0')
+		return g_strdup ("");
+
+	/* The first 19 characters are "YYYY-MM-DDTHH:MM:SS"; the
+	 * fraction and the 'Z' follow. */
+	if (strlen (raw) < 19)
+		return g_strdup (raw);
+
+	memcpy (rebuilt, raw, 19);
+	rebuilt[19] = 'Z';
+	rebuilt[20] = '\0';
+
+	utc = g_date_time_new_from_iso8601 (rebuilt, NULL);
+	if (utc == NULL)
+		return g_strdup (raw);
+
+	local = g_date_time_to_local (utc);
+	now = g_date_time_new_now_local ();
+
+	if (g_date_time_get_year (local) == g_date_time_get_year (now) &&
+	    g_date_time_get_month (local) == g_date_time_get_month (now) &&
+	    g_date_time_get_day_of_month (local) ==
+	    g_date_time_get_day_of_month (now))
+		text = g_date_time_format (local, "%H:%M:%S");
+	else
+		text = g_date_time_format (local, "%m-%d %H:%M:%S");
+
+	g_date_time_unref (utc);
+	g_date_time_unref (local);
+	g_date_time_unref (now);
+
+	return text != NULL ? text : g_strdup (raw);
+}
+
+/* [ time_cell_data ]
+ * The Time column's cell function: the formatted text first, then
+ * the same row paint every other column gets. */
+static void
+time_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
+                GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+{
+	gchar *raw = NULL;
+	gchar *text;
+
+	gtk_tree_model_get (model, iter, COL_TIME, &raw, -1);
+	text = fs_hitview_format_time (raw);
+	g_object_set (renderer, "text", text, NULL);
+	g_free (text);
+	g_free (raw);
+
+	color_cell_data (column, renderer, model, iter, data);
 }
 
 /* [ update_count_label ]
@@ -412,11 +489,65 @@ on_hit (const FsHit *hit, gpointer user_data)
 		fs_statusview_event_out (blocked);
 }
 
+/* [ row_key_new ] / [ row_shown ] / [ remember_row ] /
+ * [ forget_shown_rows ]
+ * Append-level de-duplication: a row identical to one already listed
+ * is one event, not two.  The key is every field the row stores
+ * (the colour flag included, though it only restates the service),
+ * joined with a separator that cannot appear in a field.  Bounded
+ * like the backend's seen-set: a batch or two of the most recently
+ * listed rows, never history. */
+static gchar *
+row_key_new (const gchar **fields)
+{
+	GString *key = g_string_sized_new (96);
+	gint i;
+
+	for (i = 0; i < COL_COUNT; i++) {
+		if (i > 0)
+			g_string_append_c (key, '\x1f');
+		g_string_append (key, fields[i] != NULL ? fields[i] : "");
+	}
+
+	return g_string_free (key, FALSE);
+}
+
+static gboolean
+row_shown (const gchar *key)
+{
+	return shown_rows != NULL && g_hash_table_contains (shown_rows, key);
+}
+
+static void
+remember_row (gchar *key)             /* takes ownership of key */
+{
+	if (shown_rows == NULL)
+		shown_rows = g_hash_table_new_full (g_str_hash, g_str_equal,
+		                                    g_free, NULL);
+
+	while (g_queue_get_length (&shown_order) >= SHOWN_ROWS_MAX) {
+		gchar *oldest = g_queue_pop_tail (&shown_order);
+
+		g_hash_table_remove (shown_rows, oldest);
+	}
+
+	g_queue_push_head (&shown_order, key);
+	g_hash_table_insert (shown_rows, key, GINT_TO_POINTER (1));
+}
+
+static void
+forget_shown_rows (void)
+{
+	g_queue_clear (&shown_order);
+	g_clear_pointer (&shown_rows, g_hash_table_destroy);
+}
+
 gboolean
 fs_hitview_append (const FsHit *hit)
 {
 	GtkTreeIter iter;
 	const gchar *fields[FS_NUM_HITCOLUMNS];
+	gchar *key;
 
 	if (store == NULL || hit == NULL)
 		return FALSE;
@@ -438,56 +569,93 @@ fs_hitview_append (const FsHit *hit)
 	 * alert tint. */
 	fields[COL_COLOR]       = hit_is_blocked (hit) ? "#cc0000" : "";
 
-	gtk_list_store_append (store, &iter);
+	key = row_key_new (fields);
+
+	/* The same row twice is one event, not two: the backend forgets
+	 * its seen-set when monitoring restarts, and the trailing window
+	 * comes back to a list that still holds those rows. */
+	if (row_shown (key)) {
+		g_free (key);
+		return FALSE;
+	}
+
+	remember_row (key);
+
+	/* Newest first -- the documented order (prepend, then drop the
+	 * oldest).  wevtutil hands a batch newest-first, so a plain
+	 * append stacked each fresh batch UNDER older rows and the list
+	 * read as shuffled after every poll.  Walk until a row older
+	 * than the new one and insert above it; equal stamps keep
+	 * arrival order, and a row older than everything lands last,
+	 * where the oldest row is trimmed. */
+	{
+		GtkTreeIter pos;
+		gboolean placed = FALSE;
+
+		if (gtk_tree_model_get_iter_first (GTK_TREE_MODEL (store),
+		                                    &pos)) {
+			do {
+				gchar *row_time = NULL;
+
+				gtk_tree_model_get (GTK_TREE_MODEL (store), &pos,
+				                    COL_TIME, &row_time, -1);
+
+				if (row_time != NULL && *row_time != '\0' &&
+				    fields[COL_TIME] != NULL &&
+				    *fields[COL_TIME] != '\0' &&
+				    strcmp (row_time, fields[COL_TIME]) < 0)
+					placed = TRUE;
+
+				g_free (row_time);
+
+				if (placed)
+					break;
+			} while (gtk_tree_model_iter_next (
+				GTK_TREE_MODEL (store), &pos));
+		}
+
+		if (placed)
+			gtk_list_store_insert_before (store, &iter, &pos);
+		else
+			gtk_list_store_append (store, &iter);
+	}
 
 	for (gint i = 0; i < FS_NUM_HITCOLUMNS; i++)
 		gtk_list_store_set (store, &iter, i, fields[i] ? fields[i] : "", -1);
 
 	row_count++;
 
-	/* Drop the oldest row once the cap is passed.  GtkListStore has no
-	 * "remove first" helper, so walk to the first row and remove it. */
+	/* Drop the oldest row once the cap is passed.  The oldest is the
+	 * LAST row now (the list reads newest-first), and GtkListStore
+	 * has no "remove last" helper: locate it by index -- iter_n_children
+	 * is O(1) on GtkListStore -- and remove it. */
 	while (row_count > FS_HITVIEW_MAX_ROWS) {
-		GtkTreeIter first;
+		GtkTreeIter last;
+		GtkTreePath *path;
+		gint n = gtk_tree_model_iter_n_children (GTK_TREE_MODEL (store),
+		                                         NULL);
 
-		if (!gtk_tree_model_get_iter_first (GTK_TREE_MODEL (store), &first))
+		if (n <= 0)
 			break;
 
-		gtk_list_store_remove (store, &first);
+		path = gtk_tree_path_new_from_indices (n - 1, -1);
+
+		if (!gtk_tree_model_get_iter (GTK_TREE_MODEL (store), &last,
+		                              path)) {
+			gtk_tree_path_free (path);
+			break;
+		}
+
+		gtk_list_store_remove (store, &last);
+		gtk_tree_path_free (path);
 		row_count--;
 	}
 
-	/* Follow the tail when the list is already scrolled to the end, so
-	 * a user watching events sees new ones without scrolling.  The view
-	 * shows the filter model, so the target is the last VISIBLE row
-	 * (and there may be none while a filter hides everything). */
-	{
-		GtkWidget *parent = gtk_widget_get_parent (view);
-		GtkAdjustment *adj = NULL;
-
-		if (GTK_IS_SCROLLED_WINDOW (parent))
-			adj = gtk_scrolled_window_get_vadjustment (
-				GTK_SCROLLED_WINDOW (parent));
-
-		if (adj != NULL &&
-		    gtk_adjustment_get_value (adj) >=
-		    gtk_adjustment_get_upper (adj) - 1.0) {
-			gint n = (filter_model != NULL)
-			         ? (gint) gtk_tree_model_iter_n_children (
-			             filter_model, NULL)
-			         : (gint) row_count;
-
-			if (n > 0) {
-				GtkTreePath *path =
-					gtk_tree_path_new_from_indices (n - 1, -1);
-
-				gtk_tree_view_scroll_to_cell (
-					GTK_TREE_VIEW (view), path, NULL,
-					FALSE, 0, 0);
-				gtk_tree_path_free (path);
-			}
-		}
-	}
+	/* No follow-scroll.  The newest row is inserted at the TOP,
+	 * where a list parked at the top already looks, and a reader
+	 * further down is reading history and must not be yanked
+	 * anywhere.  The old scroll-to-last-row chased the bottom,
+	 * which under newest-first is the oldest end of the list. */
 
 	update_count_label ();
 
@@ -511,6 +679,10 @@ fs_hitview_clear (void)
 {
 	if (store != NULL)
 		gtk_list_store_clear (store);
+
+	/* The rows are gone, and so is what they stood for: a Reload
+	 * re-reads the tail instead of suppressing it as a duplicate. */
+	forget_shown_rows ();
 
 	row_count = 0;
 	update_count_label ();
@@ -1112,17 +1284,14 @@ fs_hitview_page (void)
 	gtk_label_set_xalign (GTK_LABEL (count_label), 0.0);
 	gtk_style_context_add_class (gtk_widget_get_style_context (count_label),
 	                             "events-count");
-	gtk_box_pack_start (GTK_BOX (header), count_label, FALSE, FALSE, 0);
+	/* The label absorbs the slack, which parks the filter bar
+	 * directly left of the Monitor/Clear/Refresh group -- where the
+	 * bar has sat since 1.0.4, and where it goes back to after a
+	 * centreing experiment moved it mid-bar. */
+	gtk_box_pack_start (GTK_BOX (header), count_label, TRUE, TRUE, 0);
 
 	/* Filter bar.  SearchEntry, so Escape clears and typing filters
-	 * the list live through the GtkTreeModelFilter below.  Two
-	 * expanding spacers hold it in the middle of the bar. */
-	{
-		GtkWidget *pad = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-		gtk_widget_set_hexpand (pad, TRUE);
-		gtk_box_pack_start (GTK_BOX (header), pad, TRUE, TRUE, 0);
-	}
-
+	 * the list live through the GtkTreeModelFilter below. */
 	filter_entry = gtk_search_entry_new ();
 	gtk_entry_set_placeholder_text (
 		GTK_ENTRY (filter_entry),
@@ -1131,12 +1300,6 @@ fs_hitview_page (void)
 	g_signal_connect (filter_entry, "search-changed",
 	                  G_CALLBACK (on_filter_changed), NULL);
 	gtk_box_pack_start (GTK_BOX (header), filter_entry, FALSE, FALSE, 0);
-
-	{
-		GtkWidget *pad = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-		gtk_widget_set_hexpand (pad, TRUE);
-		gtk_box_pack_start (GTK_BOX (header), pad, TRUE, TRUE, 0);
-	}
 
 	button_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 
@@ -1148,6 +1311,12 @@ fs_hitview_page (void)
 		                    FALSE, 0);
 
 		toggle = gtk_switch_new ();
+		/* A horizontal GtkBox allocates every child the full row
+		 * height (the pack "fill" flag is main-axis only, and the
+		 * default valign is FILL), so the 46x22 switch would
+		 * stretch to the taller search entry beside it and render
+		 * as a tall blob.  Center it at its natural size instead. */
+		gtk_widget_set_valign (toggle, GTK_ALIGN_CENTER);
 		g_signal_connect (toggle, "notify::active",
 		                  G_CALLBACK (on_start_toggled), NULL);
 		gtk_box_pack_start (GTK_BOX (button_box), toggle, FALSE,
@@ -1240,10 +1409,14 @@ fs_hitview_page (void)
 		gtk_tree_view_column_set_resizable (column, TRUE);
 
 		/* Every visible text column reads the colour column so a
-		 * blocked event is red right across the row. */
-		gtk_tree_view_column_set_cell_data_func (column, renderer,
-		                                         color_cell_data,
-		                                         NULL, NULL);
+		 * blocked event is red right across the row; the Time
+		 * column also formats the stamp the store holds. */
+		if (i == COL_TIME)
+			gtk_tree_view_column_set_cell_data_func (
+				column, renderer, time_cell_data, NULL, NULL);
+		else
+			gtk_tree_view_column_set_cell_data_func (
+				column, renderer, color_cell_data, NULL, NULL);
 
 		/* Column visibility is remembered, as in the original. */
 		if (column_defs[i].pref_key != NULL)

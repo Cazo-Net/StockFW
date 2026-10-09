@@ -173,6 +173,50 @@ find_count_label (GtkWidget *widget, GtkWidget **out)
 	return FALSE;
 }
 
+/* The event list itself: the order of its rows is the order the user
+ * reads. */
+static gboolean
+find_tree_view (GtkWidget *widget, GtkWidget **out)
+{
+	if (GTK_IS_TREE_VIEW (widget)) {
+		*out = widget;
+		return TRUE;
+	}
+
+	if (GTK_IS_CONTAINER (widget)) {
+		GList *children = gtk_container_get_children (GTK_CONTAINER (widget));
+		GList *l;
+
+		for (l = children; l != NULL; l = l->next) {
+			if (find_tree_view (GTK_WIDGET (l->data), out)) {
+				g_list_free (children);
+				return TRUE;
+			}
+		}
+		g_list_free (children);
+	}
+
+	return FALSE;
+}
+
+/* The Time cell of visible row n, as the store holds it (column 0
+ * is COL_TIME).  Caller frees. */
+static gchar *
+row_time_at (GtkWidget *tree, guint n)
+{
+	GtkTreeModel *model = gtk_tree_view_get_model (GTK_TREE_VIEW (tree));
+	GtkTreeIter iter;
+	gchar *path = g_strdup_printf ("%u", n);
+	gchar *time = NULL;
+
+	if (model != NULL &&
+	    gtk_tree_model_get_iter_from_string (model, &iter, path))
+		gtk_tree_model_get (model, &iter, 0, &time, -1);
+
+	g_free (path);
+	return time;
+}
+
 /* [ check_filter_bar ]
  * 1.0.4: type a needle, only matching rows remain, the count label
  * says both numbers, clearing brings everything back. */
@@ -256,6 +300,159 @@ check_filter_bar (GtkWidget *page)
 	       "clearing the needle restores every row");
 }
 
+/* [ check_list_behaviour ]
+ * The three ways the list went wrong in live use, each pinned here:
+ *
+ *   1. order -- two batches as the backend delivers them (newest of
+ *      each first) used to be stacked at the bottom, so the list
+ *      read as shuffled after every poll; the documented order is
+ *      prepend.  An out-of-order old event must land at the bottom:
+ *      the order is by time, not by arrival, in either direction.
+ *   2. de-duplication -- a Monitor restart re-delivers the trailing
+ *      window into a list that still holds those rows; the same row
+ *      must not be appended twice, and a Clear must reset that so
+ *      Reload can re-read the tail.
+ *   3. row budget -- with newest first, the oldest row is the LAST
+ *      one; the cap must drop it, not the newest rows.
+ *
+ * Plus the Time column: a clock, not the raw wevtutil stamp. */
+static void
+check_list_behaviour (GtkWidget *page)
+{
+	GtkWidget *tree = NULL;
+	FsHit hit;
+	guint i;
+	gchar *text;
+
+	static const struct {
+		const gchar *time;
+		const gchar *dest;
+	} batch1[] = {
+		{ "2026-10-09T12:00:02Z", "198.51.100.1" },
+		{ "2026-10-09T12:00:01Z", "198.51.100.2" },
+		{ "2026-10-09T12:00:00Z", "198.51.100.3" },
+	};
+	static const struct {
+		const gchar *time;
+		const gchar *dest;
+	} batch2[] = {                       /* a later poll, all newer */
+		{ "2026-10-09T12:00:05Z", "198.51.100.4" },
+		{ "2026-10-09T12:00:04Z", "198.51.100.5" },
+		{ "2026-10-09T12:00:03Z", "198.51.100.6" },
+	};
+
+	CHECK (find_tree_view (page, &tree), "the page carries an event list");
+	if (tree == NULL)
+		return;
+
+	for (i = 0; i < G_N_ELEMENTS (batch1); i++) {
+		memset (&hit, 0, sizeof hit);
+		hit.time        = (gchar *) batch1[i].time;
+		hit.destination = (gchar *) batch1[i].dest;
+		CHECK (fs_hitview_append (&hit), "batch 1 row %u is listed", i);
+	}
+	for (i = 0; i < G_N_ELEMENTS (batch2); i++) {
+		memset (&hit, 0, sizeof hit);
+		hit.time        = (gchar *) batch2[i].time;
+		hit.destination = (gchar *) batch2[i].dest;
+		CHECK (fs_hitview_append (&hit), "batch 2 row %u is listed", i);
+	}
+
+	CHECK (fs_hitview_count () == 6, "both batches are listed (6 rows)");
+
+	text = row_time_at (tree, 0);
+	CHECK (text != NULL && g_strcmp0 (text, "2026-10-09T12:00:05Z") == 0,
+	       "the later batch is at the TOP, not stacked below (got \"%s\")",
+	       text ? text : "(null)");
+	g_free (text);
+
+	text = row_time_at (tree, 3);
+	CHECK (text != NULL && g_strcmp0 (text, "2026-10-09T12:00:02Z") == 0,
+	       "batch 1 sits below batch 2 in time order (got \"%s\")",
+	       text ? text : "(null)");
+	g_free (text);
+
+	/* An event older than everything: by time it goes to the bottom,
+	 * wherever it arrived from. */
+	memset (&hit, 0, sizeof hit);
+	hit.time        = (gchar *) "2026-10-09T11:59:59Z";
+	hit.destination = (gchar *) "198.51.100.7";
+	CHECK (fs_hitview_append (&hit), "an out-of-order old row is listed");
+
+	text = row_time_at (tree, 6);
+	CHECK (text != NULL && g_strcmp0 (text, "2026-10-09T11:59:59Z") == 0,
+	       "the old row goes LAST, not first (got \"%s\")",
+	       text ? text : "(null)");
+	g_free (text);
+
+	/* The redelivered row: one event, not two. */
+	memset (&hit, 0, sizeof hit);
+	hit.time        = (gchar *) "2026-10-09T12:00:05Z";
+	hit.destination = (gchar *) "198.51.100.4";
+	CHECK (!fs_hitview_append (&hit),
+	       "the same row is not appended a second time");
+	CHECK (fs_hitview_count () == 7, "the refused duplicate changed no count");
+
+	/* Clear drops rows AND keys: what was cleared can be listed
+	 * again (this is what makes Reload re-read the tail). */
+	fs_hitview_clear ();
+	CHECK (fs_hitview_count () == 0, "clear empties the list");
+	CHECK (fs_hitview_append (&hit), "after a clear the row lists again");
+
+	/* Row budget: 2001 rows, one per second from 12:00:00, each
+	 * newer than the last.  The cap is 2000, so exactly the FIRST
+	 * (oldest) row must be gone; the newest stays on top. */
+	fs_hitview_clear ();
+	for (i = 0; i < FS_HITVIEW_MAX_ROWS + 1; i++) {
+		memset (&hit, 0, sizeof hit);
+		hit.time = g_strdup_printf (
+			"2026-10-09T%02d:%02d:%02dZ",
+			12 + (gint) (i / 3600), (gint) ((i / 60) % 60),
+			(gint) (i % 60));
+		hit.destination = (gchar *) "198.51.100.9";
+		fs_hitview_append (&hit);
+		g_free (hit.time);
+	}
+
+	CHECK (fs_hitview_count () == FS_HITVIEW_MAX_ROWS,
+	       "the cap holds (%u rows)", fs_hitview_count ());
+
+	text = row_time_at (tree, 0);
+	CHECK (text != NULL && g_strcmp0 (text, "2026-10-09T12:33:20Z") == 0,
+	       "the NEWEST row is kept on top (got \"%s\")",
+	       text ? text : "(null)");
+	g_free (text);
+
+	text = row_time_at (tree, FS_HITVIEW_MAX_ROWS - 1);
+	CHECK (text != NULL && g_strcmp0 (text, "2026-10-09T12:00:01Z") == 0,
+	       "the OLDEST row is the one dropped (got \"%s\")",
+	       text ? text : "(null)");
+	g_free (text);
+
+	fs_hitview_clear ();
+	CHECK (fs_hitview_count () == 0,
+	       "the list is empty again for the filter checks");
+
+	/* The Time column: a clock, not the raw wevtutil stamp. */
+	text = fs_hitview_format_time ("2026-10-09T12:35:34.0780000Z");
+	CHECK (text != NULL &&
+	       (strlen (text) == 8 || strlen (text) == 11) &&
+	       strchr (text, ':') != NULL,
+	       "a wevtutil stamp becomes clock text (got \"%s\")",
+	       text ? text : "(null)");
+	g_free (text);
+
+	text = fs_hitview_format_time ("12:00:00");
+	CHECK (text != NULL && g_strcmp0 (text, "12:00:00") == 0,
+	       "input that is not a wevtutil stamp passes through unchanged");
+	g_free (text);
+
+	text = fs_hitview_format_time (NULL);
+	CHECK (text != NULL && *text == '\0',
+	       "a NULL stamp reads as empty, not a crash");
+	g_free (text);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -299,6 +496,7 @@ main (int argc, char **argv)
 		       "no reason shown, so monitoring must really be running");
 	}
 
+	check_list_behaviour (page);
 	check_filter_bar (page);
 
 	fs_hitview_stop ();

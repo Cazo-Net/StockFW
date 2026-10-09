@@ -566,7 +566,7 @@ The Events page is where a firewall UI usually dies — an unbounded `GtkListSto
 
 1. **The intake never exceeds ten records per poll** (Section 3.3). The UI's input rate is capped before any UI code runs.
 2. **All parsing happens off the render path**: split/dedup complete in the poll handler; the UI receives an already-validated batch.
-3. **Rows are prepended once per batch, not per record re-layout**, keeping tree-store churn proportional to new rows.
+3. **Rows land newest-first by time, once per batch, not per record re-layout**: each row is inserted in sorted order (so an out-of-order arrival still displays correctly), keeping tree-store churn proportional to new rows.
 4. **A row budget trims the store**: when the list exceeds its maximum, the oldest rows are dropped (the predecessor's list behaved the same way — the event list is a *window*, not an archive; the OS log remains the archive).
 5. **Suppression of repeats**: "Hide repeated events" collapses bursts (a port scan becomes a few rows, not thousands), keyed on same source/port/action moments apart; "Skip events that are not for the firewall" filters non-actionable noise before render.
 
@@ -574,7 +574,7 @@ The main-loop discipline is absolute: no blocking spawn (Section 3.7), no synchr
 
 ### 6.4 Filtering, Deduplication, and Row Budgets
 
-Deduplication happens twice, deliberately, at different layers: the **seen-set** (Section 3.4) stops the same *record* from being delivered twice, while **Hide repeated events** stops visually identical *connections* from flooding the list. These are not redundant — the first protects data integrity, the second protects attention.
+Deduplication happens three times, deliberately, at different layers: the **seen-set** (Section 3.4) stops the same *record* from being delivered twice, the list store's **row keys** stop the same *row* (all twelve fields joined) from being inserted twice — the UI absorbs a stopped-and-restarted monitor's re-delivery when the backend's seen-set has forgotten, and a Reload/Clear forgets the keys along with the rows — while **Hide repeated events** stops visually identical *connections* from flooding the list. These are not redundant: the first protects data integrity, the second survives backend forgetfulness, the third protects attention.
 
 The host/port filter lists inherited from StockFW's design (Ignored hosts / Ignored ports) are currently rendered **disabled with an explicit note** that they are not wired in this port — the honest alternative to showing live-looking widgets that do nothing. The search/filter work is on the roadmap (Chapter 10) with the design constraint already established by the next section: *if it is shown as active, it must work.*
 
@@ -915,7 +915,7 @@ Every action follows the ceremony already established by the Copilot's Apply but
 
 ### 11.2 Events Filter Bar
 
-A `GtkSearchEntry` filters the list live through a `GtkTreeModelFilter` over the existing list store; rows are still appended and trimmed from the store underneath, so the 2,000-row budget (6.4) is unchanged. The matcher lives in core — `fs_util_filter_match()`: case-insensitive substring against every field except the colour column, `NULL`/empty needle matches everything, `NULL` fields never match. While a filter is active the count label reports both numbers (*"3 of 1200 events"*) so an empty result cannot be mistaken for an idle firewall. **[Verified]** `test_filter_match`; `ui-hitview-smoke` (entry present, non-matching needle hides all rows without deleting them, matching needle keeps exactly one, case-insensitive, clearing restores, label text).
+A `GtkSearchEntry` filters the list live through a `GtkTreeModelFilter` over the existing list store; rows are inserted newest-first (a sorted insert, so an out-of-order arrival still lands by timestamp) and trimmed from the bottom, so the 2,000-row budget (6.4) is unchanged. The matcher lives in core — `fs_util_filter_match()`: case-insensitive substring against every field except the colour column, `NULL`/empty needle matches everything, `NULL` fields never match. While a filter is active the count label reports both numbers (*"3 of 1200 events"*) so an empty result cannot be mistaken for an idle firewall. **[Verified]** `test_filter_match`; `ui-hitview-smoke` (entry present, non-matching needle hides all rows without deleting them, matching needle keeps exactly one, case-insensitive, clearing restores, label text — plus the list-behaviour checks: batch order newest-first, out-of-order arrival placed by time, a duplicate row refused, Clear resetting both rows and dedup keys, the 2,001st row dropping the oldest, and the local `HH:MM:SS` time formatting).
 
 ### 11.3 Sentinel: Detection and Auto-Block
 
@@ -935,7 +935,7 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 
 ### 11.5 Repairs and Version
 
-- The Events page's follow-tail scroll passed `NULL, NULL` to `gtk_tree_view_scroll_to_cell()`, tripping a GTK assertion on every appended row while the scroll itself never happened. It now targets the last **visible** row through the filter model and is a no-op when the filter hides everything. **[Verified]** `ui-hitview-smoke` runs free of `Gtk-CRITICAL`.
+- The Events page's follow-tail scroll — which passed `NULL, NULL` to `gtk_tree_view_scroll_to_cell()`, tripping a GTK assertion on every appended row while the scroll itself never happened — was removed outright once rows landed newest-first at the top: the newest row is already visible, so chasing the tail was chasing the oldest end. **[Verified]** `ui-hitview-smoke` runs free of `Gtk-CRITICAL`.
 - The Copilot's *Apply Selected Rule* parses with the insight's own `rule_kind` (11.3) instead of the hardcoded service-allow kind, and rolls the store back with the same kind on save failure.
 - Version markers moved 1.0.3 → 1.0.4 in every site the build, About dialog, installer, and `.rc` read from (CMake, `main.c`, `fs-dialogs.c`, NSIS, `build_installer.sh`, `stockfw.rc.in`, `configure.in`).
 - Honest gaps unchanged from Chapter 10: still unsigned, still no CI runner, no tray icon, no CSV import UI — the roadmap items remain roadmap items.
