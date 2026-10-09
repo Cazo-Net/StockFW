@@ -1,0 +1,13 @@
+/* Generated from src/ui/fs-theme.css at configure time -- do not edit
+ * this file; edit fs-theme.css and re-run CMake.
+ *
+ * The stylesheet is compiled into the binary so the installed program
+ * needs no data files beside it (the installer stages the exe and the
+ * GTK runtime, nothing else). */
+#ifndef FS_THEME_CSS_H
+#define FS_THEME_CSS_H
+
+static const gchar fs_theme_css[] =
+"@FS_THEME_CSS@";
+
+#endif /* FS_THEME_CSS_H */

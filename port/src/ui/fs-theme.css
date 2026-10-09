@@ -1,0 +1,407 @@
+/* =====================================================================
+ * StockFW Light Theme (GTK3)
+ *
+ * Palette:
+ *   canvas #F0F2F5   surfaces #FFFFFF   tab band #E6ECF4
+ *   active tab #0066CC (white text)     grid lines #E0E0E0
+ *   selected row #1976D2 (white text)   alert row #FFEBEE / #B71C1C
+ *   success #2E7D32   danger #C62828    warning #B26A00 / #E65100
+ *
+ * Only GTK3 properties are used; this file is compiled into the
+ * binary at configure time (see fs-theme-css.h.in / CMakeLists.txt).
+ * ===================================================================== */
+
+/* --- window & canvas ------------------------------------------------ */
+window {
+	background-color: #f0f2f5;
+}
+
+/* --- menubar -------------------------------------------------------- */
+menubar {
+	background-color: #f0f2f5;
+	border-bottom: 1px solid #e0e0e0;
+}
+menubar menuitem {
+	color: #424242;
+	padding: 2px 8px;
+}
+menubar menuitem:hover {
+	background-color: #e0e0e0;
+	color: #212121;
+}
+
+/* --- tab band (replaces the notebook's tab row) --------------------- */
+.tab-band {
+	background-color: #e6ecf4;
+	border-bottom: 1px solid #d0d8e0;
+	padding: 4px 8px;
+}
+.tab-button:not(.tab-active) {
+	background-color: transparent;
+	background-image: none;
+	border: none;
+	color: #424242;
+	border-radius: 6px;
+	padding: 7px 18px;
+	margin: 0 3px;
+	font-weight: bold;
+	font-size: 13px;
+	min-height: 20px;
+}
+.tab-button:not(.tab-active):hover {
+	background-color: #d5dde8;
+	background-image: none;
+	color: #212121;
+}
+.tab-button:not(.tab-active):active {
+	background-color: #c9d3e0;
+	background-image: none;
+}
+/* The active tab.  Two GTK3 traps kept this from painting blue at
+ * first: (1) equal-specificity rules resolve in first-match order,
+ * so `.tab-button:hover` used to win -- the rules above carry
+ * `:not(.tab-active)` so the active tab matches only this block;
+ * and (2) Adwaita paints buttons with `background-image`, which
+ * draws OVER background-color, so without `background-image: none`
+ * this block rendered theme-grey no matter what colour was set
+ * (the red/green diagnostic on the inactive tabs proved it). */
+.tab-active,
+.tab-active:hover,
+.tab-active:active {
+	background-color: #0066cc;
+	background-image: none;
+	color: #ffffff;
+}
+
+/* --- generic surfaces ----------------------------------------------- */
+.card-frame {
+	background-color: #ffffff;
+	border: 1px solid #e0e0e0;
+	border-radius: 8px;
+}
+.content-area {
+	background-color: #f0f2f5;
+}
+
+/* --- buttons -------------------------------------------------------- */
+/* White face, fine grey border: the spec's control buttons. */
+.btn-subtle {
+	background-image: linear-gradient(to bottom, #ffffff, #f4f6f8);
+	background-color: #ffffff;
+	border: 1px solid #c8cdd4;
+	border-radius: 4px;
+	color: #212121;
+	padding: 6px 16px;
+	font-weight: bold;
+	font-size: 13px;
+}
+.btn-subtle:hover {
+	background-image: linear-gradient(to bottom, #f2f7fd, #e8f0fa);
+	border-color: #0066cc;
+	color: #0066cc;
+}
+.btn-subtle:disabled {
+	background-image: none;
+	background-color: #f0f0f0;
+	color: #9e9e9e;
+	border-color: #dcdcdc;
+}
+
+.btn-primary {
+	background-color: #0066cc;
+	background-image: none;
+	border: 1px solid #0052a3;
+	border-radius: 4px;
+	color: #ffffff;
+	padding: 6px 16px;
+	font-weight: bold;
+	font-size: 13px;
+}
+.btn-primary:hover {
+	background-color: #0052a3;
+}
+.btn-primary:active {
+	background-color: #004080;
+}
+.btn-primary:disabled {
+	background-color: #b0bec5;
+	border-color: #b0bec5;
+	color: #eeeeee;
+}
+
+.btn-danger {
+	background-color: #ffffff;
+	background-image: none;
+	border: 1px solid #c62828;
+	border-radius: 4px;
+	color: #c62828;
+	padding: 6px 16px;
+	font-weight: bold;
+	font-size: 13px;
+}
+.btn-danger:hover {
+	background-color: #fdeaea;
+}
+
+/* Toolbar strip buttons. */
+.toolbar-button {
+	padding: 4px 8px;
+}
+
+/* --- entries & combos ------------------------------------------------ */
+entry,
+.entry,
+GtkSearchEntry {
+	background-color: #ffffff;
+	border: 1px solid #d5d9de;
+	border-radius: 4px;
+	color: #212121;
+	padding: 6px 10px;
+	font-size: 13px;
+}
+entry:focus,
+.entry:focus,
+GtkSearchEntry:focus {
+	border-color: #0066cc;
+	background-color: #ffffff;
+}
+
+combobox,
+combo {
+	border: 1px solid #d5d9de;
+	border-radius: 4px;
+	background-color: #ffffff;
+}
+
+/* --- switches (profile toggles) -------------------------------------- */
+switch {
+	background-color: #c9cdd2;
+	border: 1px solid #b8bdc3;
+	border-radius: 12px;
+	min-width: 46px;
+	min-height: 22px;
+}
+switch:checked {
+	background-color: #0066cc;
+	border-color: #0052a3;
+}
+switch slider {
+	background-color: #ffffff;
+	border: 1px solid #aeb3b8;
+	border-radius: 10px;
+	min-width: 18px;
+	min-height: 18px;
+}
+
+/* --- data grids ------------------------------------------------------ *
+ * Thin light-grey rules, grey header band with bold dark text, and a
+ * white canvas.  Row striping: GtkTreeView has no per-row nth-child
+ * matching that reaches the row area on every theme, so the store's
+ * odd rows carry the .row-alt class from the cell renderer below.    */
+.data-grid,
+treeview {
+	background-color: #ffffff;
+	color: #212121;
+	font-size: 12px;
+	/* Monospace-friendly cells: ports, IPs and counts line up. */
+	font-family: "Cascadia Mono", "Consolas", monospace;
+}
+.data-grid header,
+treeview header {
+	background-color: #f2f3f5;
+	border-bottom: 1px solid #dcdfe3;
+}
+.data-grid header button,
+treeview header button {
+	background-color: #f2f3f5;
+	background-image: none;
+	color: #303236;
+	border: none;
+	border-right: 1px solid #dcdfe3;
+	padding: 6px 10px;
+	font-weight: bold;
+	font-size: 11px;
+}
+.data-grid header button:hover,
+treeview header button:hover {
+	background-color: #e6e9ec;
+}
+.data-grid row,
+treeview row {
+	background-color: #ffffff;
+	color: #212121;
+}
+.data-grid row.row-alt,
+treeview row.row-alt {
+	background-color: #f9f9f9;
+}
+/* Selection: solid medium blue, text inverted. */
+.data-grid:selected,
+treeview:selected,
+.data-grid row:selected,
+treeview row:selected {
+	background-color: #1976d2;
+	color: #ffffff;
+}
+/* Blocked rows: soft pastel alert tint, dark red text.  Painted by
+ * the cell renderer (background + foreground columns), not by CSS,
+ * so it survives selection and theme quirks. */
+.data-grid row.alert,
+treeview row.alert {
+	background-color: #ffebee;
+	color: #b71c1c;
+}
+.data-grid row.alert:selected,
+treeview row.alert:selected {
+	background-color: #c62828;
+	color: #ffffff;
+}
+.data-grid row:selected,
+treeview row:selected {
+	border: none;
+}
+/* In-cell text padding for compact network strings. */
+.data-grid cell,
+treeview cell {
+	font-size: 12px;
+}
+
+/* --- status line (hero) ---------------------------------------------- */
+.hero-status {
+	background-color: #ffffff;
+	border: 1px solid #e0e0e0;
+	border-radius: 8px;
+	padding: 14px;
+}
+/* Circular badge around the state icon. */
+.hero-badge {
+	background-color: #78909c;
+	border-radius: 40px;
+	padding: 10px;
+}
+.hero-badge.badge-active {
+	background-color: #2e7d32;
+}
+.hero-badge.badge-stopped {
+	background-color: #c62828;
+}
+.hero-badge.badge-locked {
+	background-color: #b26a00;
+}
+.hero-badge.badge-unknown {
+	background-color: #78909c;
+}
+.hero-badge image {
+	color: #ffffff;
+}
+.state-active {
+	font-weight: bold;
+	color: #2e7d32;
+}
+.state-stopped {
+	font-weight: bold;
+	color: #c62828;
+}
+.state-locked {
+	font-weight: bold;
+	color: #b26a00;
+}
+.fs-counter {
+	font-weight: bold;
+	color: #212121;
+}
+.fs-counter-head {
+	font-weight: bold;
+	color: #424242;
+}
+.events-summary {
+	background-color: #ffffff;
+	border: 1px solid #e0e0e0;
+	border-radius: 8px;
+	padding: 8px;
+}
+/* Thin rules under each counter row, the summary's grid lines. */
+.events-summary label {
+	padding: 3px 8px;
+}
+.profile-row {
+	padding: 4px 0;
+}
+.profile-label {
+	font-size: 13px;
+	color: #212121;
+}
+
+/* --- headings & labels ----------------------------------------------- */
+.title-label {
+	font-weight: bold;
+	font-size: 16px;
+	color: #212121;
+}
+.heading-label {
+	font-weight: bold;
+	font-size: 14px;
+	color: #212121;
+}
+.dim-label {
+	color: #757575;
+	font-size: 12px;
+}
+
+/* --- reason strip on Events ------------------------------------------ */
+.warning-strip {
+	background-color: #fff8e1;
+	border: 1px solid #ffe082;
+	border-radius: 4px;
+	color: #b26a00;
+}
+.error-strip {
+	background-color: #ffebee;
+	border: 1px solid #ffcdd2;
+	border-radius: 4px;
+	color: #c62828;
+}
+
+/* --- Events sub-header utility bar ------------------------------------ */
+.events-toolbar {
+	background-color: #ffffff;
+	border-bottom: 1px solid #e0e0e0;
+}
+.events-count {
+	font-weight: bold;
+	font-size: 13px;
+	color: #212121;
+}
+
+/* --- read-only output panels (Copilot scrollback) --------------------- */
+.output-view {
+	background-color: #fafafa;
+	border: 1px solid #e0e0e0;
+	border-radius: 4px;
+}
+.output-view textview,
+.output-view text {
+	background-color: #fafafa;
+	color: #333333;
+	font-family: monospace;
+	font-size: 12px;
+}
+
+/* --- scrollbars ------------------------------------------------------ *
+ * Deliberately NOT styled.  The flat-slider rules that were here made
+ * GTK allocate a scrollbar slider a negative height (slider
+ * min-height + margins exceeded what the trough handed out), which
+ * showed up as gtk_widget_size_allocate warnings on every window
+ * open.  The theme's own scrollbars are fine and the spec asks for
+ * nothing more.                                                 */
+
+/* --- notebook (tabs are hidden; content on the canvas) --------------- */
+notebook {
+	background-color: #f0f2f5;
+	border: none;
+}
+
+/* --- dialogs --------------------------------------------------------- */
+dialog {
+	background-color: #f0f2f5;
+}

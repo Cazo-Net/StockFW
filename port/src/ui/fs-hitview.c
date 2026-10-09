@@ -85,23 +85,64 @@ static const struct
 static guint row_count = 0;
 
 /* [ color_cell_data ]
- * Applies the colour column to a text cell.  Rows with no colour keep
- * the theme default. */
+ * Paints each row:
+ *   - selected   -> left to the theme, so the blue highlight and the
+ *                   inverted text are not painted over by cell colours;
+ *   - blocked    -> soft pastel alert tint with dark red text, the
+ *                   whole row, as the spec has it;
+ *   - otherwise  -> alternating white / off-white by visible position
+ *                   (position, not append index: the list trims its
+ *                   oldest row at the cap, which shifts every row).
+ * The colour column is only the blocked flag here. */
 static void
 color_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
                  GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
 {
 	gchar *color = NULL;
+	const gchar *background = NULL;
+	const gchar *foreground = NULL;
+	gboolean blocked;
+	gboolean selected = FALSE;
 
 	(void) column;
 	(void) data;
 
 	gtk_tree_model_get (model, iter, COL_COLOR, &color, -1);
-
-	g_object_set (renderer, "foreground",
-	              (color != NULL && *color != '\0') ? color : NULL,
-	              NULL);
+	blocked = (color != NULL && *color != '\0');
 	g_free (color);
+
+	if (view != NULL) {
+		GtkTreeSelection *sel =
+			gtk_tree_view_get_selection (GTK_TREE_VIEW (view));
+
+		selected = gtk_tree_selection_iter_is_selected (sel, iter);
+	}
+
+	if (blocked) {
+		background = "#ffebee";
+		foreground = "#b71c1c";
+	} else {
+		GtkTreePath *path = gtk_tree_model_get_path (model, iter);
+
+		if (path != NULL) {
+			gint *indices = gtk_tree_path_get_indices (path);
+
+			if (indices != NULL && indices[0] % 2 == 1)
+				background = "#f9f9f9";
+
+			gtk_tree_path_free (path);
+		}
+	}
+
+	if (selected) {
+		background = NULL;
+		foreground = NULL;
+	}
+
+	g_object_set (renderer,
+	              "background", background,
+	              "foreground", foreground,
+	              NULL);
 }
 
 /* [ update_count_label ]
@@ -391,9 +432,10 @@ fs_hitview_append (const FsHit *hit)
 	fields[COL_TOS]         = hit->tos;
 	fields[COL_PROTOCOL]    = hit->protocol;
 	fields[COL_SERVICE]     = hit->service;
-	/* Paint blocked events red, as the original did.  The colour is a
-	 * separate column because GtkCellRendererText has no per-row text
-	 * colour; a cell-data-func below reads it back. */
+	/* Blocked flag for the row painter below: a separate column
+	 * because GtkCellRendererText has no per-row colour, and the
+	 * cell-data-func turns a non-empty value into the whole-row
+	 * alert tint. */
 	fields[COL_COLOR]       = hit_is_blocked (hit) ? "#cc0000" : "";
 
 	gtk_list_store_append (store, &iter);
@@ -1017,13 +1059,18 @@ on_reload_clicked (GtkButton *button, gpointer data)
 }
 
 /* [ on_start_toggled ]
- * Starts or stops the event source. */
+ * Starts or stops the event source.  The control is a GtkSwitch now
+ * (the spec's "toggle switch for Monitor"), so it reports through
+ * notify::active rather than a button's toggled. */
 static void
-on_start_toggled (GtkToggleButton *button, gpointer data)
+on_start_toggled (GtkSwitch *sw, GParamSpec *pspec, gpointer data)
 {
 	GError *error = NULL;
 
-	if (gtk_toggle_button_get_active (button)) {
+	(void) pspec;
+	(void) data;
+
+	if (gtk_switch_get_active (sw)) {
 		if (!fs_hitview_start (&error)) {
 			fs_dialogs_error (NULL,
 			                  _("Could not monitor firewall events"),
@@ -1033,8 +1080,10 @@ on_start_toggled (GtkToggleButton *button, gpointer data)
 			                     : _("Monitoring could not start."));
 			g_clear_error (&error);
 
-			/* Leave the switch off rather than pretending to monitor. */
-			gtk_toggle_button_set_active (button, FALSE);
+			/* Leave the switch off rather than pretending to
+			 * monitor.  The re-entry sees FALSE and calls stop
+			 * on a source that never started -- a no-op. */
+			gtk_switch_set_active (sw, FALSE);
 			return;
 		}
 
@@ -1052,16 +1101,28 @@ fs_hitview_page (void)
 
 	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 
-	/* Header: what is shown, and the controls. */
+	/* Sub-header utility bar: live counter, filter, monitor switch,
+	 * Clear and Refresh, as the spec has them. */
 	header = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 	gtk_container_set_border_width (GTK_CONTAINER (header), 6);
+	gtk_style_context_add_class (gtk_widget_get_style_context (header),
+	                             "events-toolbar");
 
 	count_label = gtk_label_new ("0 events");
 	gtk_label_set_xalign (GTK_LABEL (count_label), 0.0);
-	gtk_box_pack_start (GTK_BOX (header), count_label, TRUE, TRUE, 0);
+	gtk_style_context_add_class (gtk_widget_get_style_context (count_label),
+	                             "events-count");
+	gtk_box_pack_start (GTK_BOX (header), count_label, FALSE, FALSE, 0);
 
 	/* Filter bar.  SearchEntry, so Escape clears and typing filters
-	 * the list live through the GtkTreeModelFilter below. */
+	 * the list live through the GtkTreeModelFilter below.  Two
+	 * expanding spacers hold it in the middle of the bar. */
+	{
+		GtkWidget *pad = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+		gtk_widget_set_hexpand (pad, TRUE);
+		gtk_box_pack_start (GTK_BOX (header), pad, TRUE, TRUE, 0);
+	}
+
 	filter_entry = gtk_search_entry_new ();
 	gtk_entry_set_placeholder_text (
 		GTK_ENTRY (filter_entry),
@@ -1071,19 +1132,38 @@ fs_hitview_page (void)
 	                  G_CALLBACK (on_filter_changed), NULL);
 	gtk_box_pack_start (GTK_BOX (header), filter_entry, FALSE, FALSE, 0);
 
+	{
+		GtkWidget *pad = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+		gtk_widget_set_hexpand (pad, TRUE);
+		gtk_box_pack_start (GTK_BOX (header), pad, TRUE, TRUE, 0);
+	}
+
 	button_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 
-	toggle = gtk_check_button_new_with_mnemonic (_("_Monitor"));
-	g_signal_connect (toggle, "toggled", G_CALLBACK (on_start_toggled),
-	                  NULL);
-	gtk_box_pack_start (GTK_BOX (button_box), toggle, FALSE, FALSE, 0);
+	/* Monitor: a switch, not a checkbox -- the spec's toggle. */
+	{
+		GtkWidget *mlabel = gtk_label_new_with_mnemonic (_("_Monitor"));
+
+		gtk_box_pack_start (GTK_BOX (button_box), mlabel, FALSE,
+		                    FALSE, 0);
+
+		toggle = gtk_switch_new ();
+		g_signal_connect (toggle, "notify::active",
+		                  G_CALLBACK (on_start_toggled), NULL);
+		gtk_box_pack_start (GTK_BOX (button_box), toggle, FALSE,
+		                    FALSE, 0);
+	}
 
 	button = gtk_button_new_with_mnemonic (_("_Clear"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
 	g_signal_connect (button, "clicked", G_CALLBACK (on_clear_clicked),
 	                  NULL);
 	gtk_box_pack_start (GTK_BOX (button_box), button, FALSE, FALSE, 0);
 
 	button = gtk_button_new_with_mnemonic (_("Re_fresh"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
 	g_signal_connect (button, "clicked", G_CALLBACK (on_reload_clicked),
 	                  NULL);
 	gtk_box_pack_start (GTK_BOX (button_box), button, FALSE, FALSE, 0);
@@ -1116,6 +1196,8 @@ fs_hitview_page (void)
 	gtk_container_set_border_width (GTK_CONTAINER (monitor_warning), 6);
 	gtk_style_context_add_class (
 		gtk_widget_get_style_context (monitor_warning), "warning");
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (monitor_warning), "warning-strip");
 	gtk_widget_set_no_show_all (monitor_warning, TRUE);
 	gtk_box_pack_start (GTK_BOX (page), monitor_warning, FALSE, FALSE, 0);
 
@@ -1134,6 +1216,10 @@ fs_hitview_page (void)
 		NULL, NULL);
 
 	view = gtk_tree_view_new_with_model (filter_model);
+	gtk_style_context_add_class (gtk_widget_get_style_context (view),
+	                             "data-grid");
+	gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (view),
+	                              GTK_TREE_VIEW_GRID_LINES_BOTH);
 
 	/* Right-click: Event -> Rule menu. */
 	g_signal_connect (view, "button-press-event",
@@ -1192,6 +1278,11 @@ fs_hitview_page (void)
 			                     ? error->message
 			                     : _("Monitoring could not start."));
 			g_clear_error (&error);
+		} else if (toggle != NULL) {
+			/* Monitoring really runs: the switch must say so.
+			 * The re-entry calls start again, which answers
+			 * "already active" and changes nothing. */
+			gtk_switch_set_active (GTK_SWITCH (toggle), TRUE);
 		}
 	}
 

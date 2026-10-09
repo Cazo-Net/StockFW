@@ -134,7 +134,11 @@ make_stat_card (const gchar *label, const gchar *icon_name, GtkWidget **value_ou
 {
     GtkWidget *frame = gtk_frame_new (NULL);
     gtk_widget_set_size_request (frame, 120, 72);
-    gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_ETCHED_IN);
+    /* The card's own border comes from the theme; no etched shadow
+     * stacked on top of it. */
+    gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_NONE);
+    gtk_style_context_add_class (gtk_widget_get_style_context (frame),
+                                 "card-frame");
 
     GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
     gtk_container_set_border_width (GTK_CONTAINER (box), 8);
@@ -171,8 +175,11 @@ make_output_view (void)
     GtkWidget *scrolled = gtk_scrolled_window_new (NULL, NULL);
     gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scrolled),
                                     GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    /* The theme's .output-view draws the border; no double frame. */
     gtk_scrolled_window_set_shadow_type (GTK_SCROLLED_WINDOW (scrolled),
-                                         GTK_SHADOW_IN);
+                                         GTK_SHADOW_NONE);
+    gtk_style_context_add_class (gtk_widget_get_style_context (scrolled),
+                                 "output-view");
 
     GtkWidget *view = gtk_text_view_new ();
     gtk_text_view_set_editable (GTK_TEXT_VIEW (view), FALSE);
@@ -251,8 +258,10 @@ build_insights_tree (void)
     GtkWidget *tree = gtk_tree_view_new_with_model (GTK_TREE_MODEL (insights_store));
     g_object_unref (GTK_TREE_MODEL (insights_store));
     gtk_tree_view_set_headers_visible (GTK_TREE_VIEW (tree), TRUE);
+    gtk_style_context_add_class (gtk_widget_get_style_context (tree),
+                                 "data-grid");
     gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (tree),
-                                  GTK_TREE_VIEW_GRID_LINES_HORIZONTAL);
+                                  GTK_TREE_VIEW_GRID_LINES_BOTH);
 
     g_signal_connect (tree, "row-activated", G_CALLBACK (on_row_activated), NULL);
 
@@ -395,7 +404,7 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 
         GtkWidget *analyze_btn = button_with_icon ("system-search", _("Run Analysis"));
         gtk_style_context_add_class (gtk_widget_get_style_context (analyze_btn),
-                                     "suggested-action");
+                                     "btn-primary");
         g_signal_connect (analyze_btn, "clicked",
                           G_CALLBACK (on_analyze_clicked), NULL);
         gtk_box_pack_end (GTK_BOX (hdr), analyze_btn, FALSE, FALSE, 0);
@@ -444,17 +453,21 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 
         GtkWidget *apply_btn = button_with_icon ("list-add", _("Apply Selected Rule"));
         gtk_style_context_add_class (gtk_widget_get_style_context (apply_btn),
-                                     "suggested-action");
+                                     "btn-primary");
         g_signal_connect (apply_btn, "clicked",
                           G_CALLBACK (on_apply_suggestion_clicked), NULL);
         gtk_box_pack_start (GTK_BOX (btn_box), apply_btn, FALSE, FALSE, 0);
 
         GtkWidget *clear_btn = button_with_icon ("edit-clear", _("Clear Insights"));
+        gtk_style_context_add_class (gtk_widget_get_style_context (clear_btn),
+                                     "btn-subtle");
         g_signal_connect (clear_btn, "clicked", G_CALLBACK (on_clear_clicked), NULL);
         gtk_box_pack_start (GTK_BOX (btn_box), clear_btn, FALSE, FALSE, 0);
 
         GtkWidget *undo_btn = button_with_icon ("edit-undo",
                                                 _("Undo Auto-Block"));
+        gtk_style_context_add_class (gtk_widget_get_style_context (undo_btn),
+                                     "btn-subtle");
         g_signal_connect (undo_btn, "clicked",
                           G_CALLBACK (on_undo_auto_clicked), NULL);
         gtk_box_pack_start (GTK_BOX (btn_box), undo_btn, FALSE, FALSE, 0);
@@ -465,6 +478,8 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
     /* ===== What-if simulator ===== */
     {
         GtkWidget *frame = gtk_frame_new (_("What-If Simulator"));
+        gtk_style_context_add_class (gtk_widget_get_style_context (frame),
+                                     "card-frame");
         GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width (GTK_CONTAINER (box), 6);
 
@@ -477,6 +492,8 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         gtk_box_pack_start (GTK_BOX (row), scenario_entry, TRUE, TRUE, 0);
 
         GtkWidget *sim_btn = button_with_icon ("media-playback-start", _("Simulate"));
+        gtk_style_context_add_class (gtk_widget_get_style_context (sim_btn),
+                                     "btn-primary");
         g_signal_connect (sim_btn, "clicked",
                           G_CALLBACK (on_simulate_clicked), NULL);
         gtk_box_pack_start (GTK_BOX (row), sim_btn, FALSE, FALSE, 0);

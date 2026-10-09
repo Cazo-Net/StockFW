@@ -72,6 +72,21 @@ if(FS_BACKEND_SOURCES)
   target_link_libraries(fs-backend-probe PRIVATE fs-core)
 endif()
 
+# ------------------------------------------------------------------ theme
+# The light stylesheet lives in src/ui/fs-theme.css and is compiled
+# into fs-theme-css.h (build tree) so StockFW.exe carries it and the
+# installer has no data file to stage.  CMAKE_CONFIGURE_DEPENDS makes
+# an edit to the .css re-run configure automatically.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/ui/fs-theme.css" FS_THEME_CSS)
+string(REPLACE "\\" "\\\\" FS_THEME_CSS "${FS_THEME_CSS}")
+string(REPLACE "\"" "\\\"" FS_THEME_CSS "${FS_THEME_CSS}")
+string(REPLACE "\r" ""    FS_THEME_CSS "${FS_THEME_CSS}")
+string(REPLACE "\n" "\\n" FS_THEME_CSS "${FS_THEME_CSS}")
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/ui/fs-theme-css.h.in"
+               "${CMAKE_CURRENT_BINARY_DIR}/fs-theme-css.h" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY
+             CMAKE_CONFIGURE_DEPENDS src/ui/fs-theme.css)
+
 # -------------------------------------------------------------------- app
 add_executable(StockFW
   src/main.c
@@ -84,6 +99,7 @@ add_executable(StockFW
   src/ui/fs-simviz.c
   ${FS_BACKEND_SOURCES}
 )
+target_include_directories(StockFW PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(StockFW PRIVATE fs-core PkgConfig::GTK3)
 target_compile_definitions(StockFW PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
@@ -159,6 +175,7 @@ add_executable(fs-ui-smoke EXCLUDE_FROM_ALL
   tests/ui-prefs-smoke.c
   ${FS_UI_SOURCES}
 )
+target_include_directories(fs-ui-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-ui-smoke PRIVATE fs-core PkgConfig::GTK3)
 target_compile_definitions(fs-ui-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
@@ -175,6 +192,7 @@ add_executable(fs-hitview-smoke EXCLUDE_FROM_ALL
   tests/ui-hitview-smoke.c
   ${FS_UI_SOURCES}
 )
+target_include_directories(fs-hitview-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-hitview-smoke PRIVATE fs-core PkgConfig::GTK3)
 target_compile_definitions(fs-hitview-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"

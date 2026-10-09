@@ -4,6 +4,10 @@
  * Replaces gnome_app_new()/gnome_app_set_contents()/gnome_app_set_menus()
  * and the gnome_program_init()/gnome_master_client() startup dance in
  * the original stockfw.c with a plain GtkApplication.
+ *
+ * Layout (light theme): menubar (GtkApplication) -> custom tab band
+ * (the notebook's own tabs are hidden; the band carries the four page
+ * buttons) -> per-page toolbar strip -> notebook content.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-app.h"
@@ -19,6 +23,7 @@
 #include "core/fs-copilot.h"
 #include "core/fs-i18n.h"
 #include "stockfw-logo-64.h"
+#include "fs-theme-css.h"        /* generated from src/ui/fs-theme.css */
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
@@ -27,6 +32,15 @@ static FsApp fsapp = { NULL, NULL, NULL };
 /* Holds one toolbar row per notebook page; only the selected page's
  * row is visible at a time. */
 static GtkWidget *toolbar_host = NULL;
+
+/* The four buttons of the custom tab band, index-aligned with the
+ * notebook pages. */
+#define FS_TAB_COUNT 4
+static GtkWidget *tab_buttons[FS_TAB_COUNT] = { NULL, NULL, NULL, NULL };
+
+/* Set while the band is being re-synced to the notebook, so the
+ * band's own handlers do not fire back into the notebook. */
+static gboolean tabs_syncing = FALSE;
 
 /* The traffic policy, shared by the Policy page and Apply. */
 static FsPolicy *policy = NULL;
@@ -147,8 +161,103 @@ add_page (const gchar *title, GtkWidget *content, GtkWidget *toolbar)
 	gtk_widget_hide (toolbar);
 }
 
+/* [ sync_tab_band ]
+ * Push the notebook's current page into the band: active button gets
+ * the "tab-active" class (the one deterministic way to colour the
+ * selected tab), the rest lose it. */
+static void
+sync_tab_band (guint page_num)
+{
+	tabs_syncing = TRUE;
+
+	for (guint i = 0; i < FS_TAB_COUNT; i++) {
+		GtkStyleContext *ctx;
+
+		if (tab_buttons[i] == NULL)
+			continue;
+
+		ctx = gtk_widget_get_style_context (tab_buttons[i]);
+
+		if (i == page_num) {
+			gtk_toggle_button_set_active (
+				GTK_TOGGLE_BUTTON (tab_buttons[i]), TRUE);
+			gtk_style_context_add_class (ctx, "tab-active");
+		} else {
+			gtk_toggle_button_set_active (
+				GTK_TOGGLE_BUTTON (tab_buttons[i]), FALSE);
+			gtk_style_context_remove_class (ctx, "tab-active");
+		}
+	}
+
+	tabs_syncing = FALSE;
+}
+
+/* [ on_tab_clicked ]
+ * A band button was pressed.  A press on the already-active tab
+ * toggles the button off; tabs are not optional, so put it straight
+ * back instead of leaving the band with no selection. */
+static void
+on_tab_clicked (GtkToggleButton *button, gpointer data)
+{
+	guint page = GPOINTER_TO_UINT (data);
+
+	if (tabs_syncing)
+		return;
+
+	if (!gtk_toggle_button_get_active (button)) {
+		gtk_toggle_button_set_active (button, TRUE);
+		return;
+	}
+
+	gtk_notebook_set_current_page (GTK_NOTEBOOK (fsapp.notebook),
+	                               (gint) page);
+}
+
+/* [ build_tab_band ]
+ * The full-width light-slate band that replaces the notebook's own
+ * tab row: flat buttons, rounded corners, the selected one filled
+ * classic blue with white text. */
+static GtkWidget *
+build_tab_band (void)
+{
+	static const gchar *labels[FS_TAB_COUNT];
+	GtkWidget *band;
+	GtkWidget *spacer;
+
+	band = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+	gtk_widget_set_hexpand (band, TRUE);
+	gtk_style_context_add_class (gtk_widget_get_style_context (band),
+	                             "tab-band");
+
+	labels[0] = _("Status");
+	labels[1] = _("Events");
+	labels[2] = _("Policy");
+	labels[3] = _("Copilot");
+
+	for (guint i = 0; i < FS_TAB_COUNT; i++) {
+		GtkWidget *btn = gtk_toggle_button_new_with_label (labels[i]);
+
+		gtk_style_context_add_class (gtk_widget_get_style_context (btn),
+		                             "tab-button");
+		gtk_button_set_relief (GTK_BUTTON (btn), GTK_RELIEF_NONE);
+		g_signal_connect (btn, "toggled",
+		                  G_CALLBACK (on_tab_clicked),
+		                  GUINT_TO_POINTER (i));
+		gtk_box_pack_start (GTK_BOX (band), btn, FALSE, FALSE, 0);
+		tab_buttons[i] = btn;
+	}
+
+	/* Keep the tabs left-aligned when the band is wider than they are. */
+	spacer = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_widget_set_hexpand (spacer, TRUE);
+	gtk_box_pack_start (GTK_BOX (band), spacer, TRUE, TRUE, 0);
+
+	return band;
+}
+
 /* [ on_page_switched ]
- * Show only the toolbar row that belongs to the selected page. */
+ * Show only the toolbar row that belongs to the selected page, and
+ * keep the tab band in step with the notebook. */
 static void
 on_page_switched (GtkNotebook *notebook, GtkWidget *page, guint page_num,
                   gpointer data)
@@ -170,6 +279,39 @@ on_page_switched (GtkNotebook *notebook, GtkWidget *page, guint page_num,
 	}
 
 	g_list_free (children);
+
+	sync_tab_band (page_num);
+}
+
+/* [ install_theme ]
+ * One stylesheet for the whole application: the light palette from
+ * src/ui/fs-theme.css, compiled into the binary (fs-theme-css.h is
+ * generated at configure time), so the installed exe needs no data
+ * files beside it. */
+static void
+install_theme (void)
+{
+	GtkCssProvider *provider = gtk_css_provider_new ();
+	GError *error = NULL;
+
+	if (!gtk_css_provider_load_from_data (provider, fs_theme_css,
+	                                       -1, &error)) {
+		/* A stylesheet that will not parse must not stop the
+		 * window from opening; the app then runs in the system
+		 * theme and says so on stderr. */
+		g_warning ("StockFW theme failed to load: %s",
+		           error ? error->message : "unknown error");
+		g_clear_error (&error);
+		g_object_unref (provider);
+		return;
+	}
+
+	gtk_style_context_add_provider_for_screen (
+		gdk_screen_get_default (),
+		GTK_STYLE_PROVIDER (provider),
+		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+	g_object_unref (provider);
 }
 
 void
@@ -204,6 +346,9 @@ fs_app_activate (GtkApplication *app)
 	g_signal_connect (fsapp.window, "delete-event",
 	                   G_CALLBACK (on_delete_event), NULL);
 
+	/* Theme first: everything built below picks up the classes. */
+	install_theme ();
+
 	box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 	gtk_container_add (GTK_CONTAINER (fsapp.window), box);
 
@@ -227,6 +372,11 @@ fs_app_activate (GtkApplication *app)
 		g_object_unref (loader);
 	}
 
+	/* Tab band, above the toolbar strip: four flat buttons standing
+	 * in for the notebook's tab row (which is switched off below). */
+	gtk_box_pack_start (GTK_BOX (box), build_tab_band (),
+	                    FALSE, FALSE, 0);
+
 	/* Toolbar strip, above the notebook, one row per page. */
 	toolbar_host = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 	gtk_box_pack_start (GTK_BOX (box), toolbar_host, FALSE, FALSE, 0);
@@ -234,6 +384,8 @@ fs_app_activate (GtkApplication *app)
 	/* Notebook pages.  Order matches the original: Status, Events,
 	 * Policy, with Copilot last. */
 	fsapp.notebook = gtk_notebook_new ();
+	gtk_notebook_set_show_tabs (GTK_NOTEBOOK (fsapp.notebook), FALSE);
+	gtk_notebook_set_show_border (GTK_NOTEBOOK (fsapp.notebook), FALSE);
 	gtk_widget_set_vexpand (fsapp.notebook, TRUE);
 	gtk_box_pack_start (GTK_BOX (box), fsapp.notebook, TRUE, TRUE, 0);
 

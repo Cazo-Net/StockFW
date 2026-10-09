@@ -33,7 +33,7 @@ static gboolean policy_locked = FALSE;
 
 static GtkWidget *state_label;
 static GtkWidget *state_icon;
-static GtkWidget *backend_label;
+static GtkWidget *state_badge;   /* circle behind the state icon */
 static GtkWidget *logo_image;
 
 /* Toolbar buttons, kept so the state change can enable/disable them. */
@@ -128,17 +128,20 @@ state_to_text (FsFirewallState state)
 	}
 }
 
-/* [ state_to_icon ] -- themed emblem beside the status line. */
+/* [ state_to_icon ] -- themed emblem inside the status badge.  The
+ * symbolic variants are drawn in the badge's colour (white), which is
+ * what makes the circle read as one shape; all five are shipped by the
+ * Adwaita theme the runtime stages. */
 static const gchar *
 state_to_icon (FsFirewallState state)
 {
 	switch (state) {
-	case FS_FW_STOPPED: return "media-playback-stop";
-	case FS_FW_RUNNING: return "media-playback-start";
-	case FS_FW_LOCKED:  return "changes-prevent";
-	case FS_FW_HIT:     return "dialog-warning";
+	case FS_FW_STOPPED: return "media-playback-stop-symbolic";
+	case FS_FW_RUNNING: return "media-playback-start-symbolic";
+	case FS_FW_LOCKED:  return "changes-prevent-symbolic";
+	case FS_FW_HIT:     return "dialog-warning-symbolic";
 	case FS_FW_NONE:
-	default:            return "dialog-question";
+	default:            return "dialog-question-symbolic";
 	}
 }
 
@@ -156,6 +159,20 @@ state_to_class (FsFirewallState state)
 	}
 }
 
+/* [ badge_to_class ] -- colour of the circular badge around the icon. */
+static const gchar *
+badge_to_class (FsFirewallState state)
+{
+	switch (state) {
+	case FS_FW_STOPPED: return "badge-stopped";
+	case FS_FW_LOCKED:  return "badge-locked";
+	case FS_FW_RUNNING:
+	case FS_FW_HIT:     return "badge-active";
+	case FS_FW_NONE:
+	default:            return "badge-unknown";
+	}
+}
+
 /* [ install_css ]
  * Status colours live here rather than in gtk_widget_override_color,
  * which is deprecated and had no bold-face equivalent anyway. */
@@ -163,9 +180,9 @@ static void
 install_css (GtkWidget *for_widget)
 {
 	static const gchar *css =
-		".fs-state-active  { font-weight: bold; color: #2e7d32; }\n"
-		".fs-state-stopped { font-weight: bold; color: #c62828; }\n"
-		".fs-state-locked  { font-weight: bold; color: #b26a00; }\n"
+		".fs-state-active  { font-weight: bold; font-size: 15px; color: #2e7d32; }\n"
+		".fs-state-stopped { font-weight: bold; font-size: 15px; color: #c62828; }\n"
+		".fs-state-locked  { font-weight: bold; font-size: 15px; color: #b26a00; }\n"
 		".fs-counter       { font-weight: bold; }\n"
 		".fs-counter-head  { font-weight: bold; }\n";
 	GError *error = NULL;
@@ -623,16 +640,44 @@ fs_statusview_set_state (FsFirewallState state)
 {
 	GtkStyleContext *ctx;
 	const gchar *klass;
+	const gchar *backend_name;
 
 	current_state = state;
 
-	if (state_label != NULL)
-		gtk_label_set_text (GTK_LABEL (state_label), state_to_text (state));
+	/* One line, as the spec reads it: the state, then who reports it
+	 * ("The firewall is running - Windows Defender Firewall"). */
+	if (state_label != NULL) {
+		backend_name = fs_backend ()->display_name;
+
+		if (backend_name != NULL && *backend_name != '\0') {
+			gchar *combined = g_strdup_printf (
+				"%s - %s", state_to_text (state), backend_name);
+
+			gtk_label_set_text (GTK_LABEL (state_label), combined);
+			g_free (combined);
+		} else {
+			gtk_label_set_text (GTK_LABEL (state_label),
+			                    state_to_text (state));
+		}
+	}
 
 	if (state_icon != NULL)
 		gtk_image_set_from_icon_name (GTK_IMAGE (state_icon),
 		                              state_to_icon (state),
 		                              GTK_ICON_SIZE_DIALOG);
+
+	/* The badge takes the state's colour too, so the circle itself
+	 * carries the verdict even before the text is read. */
+	if (state_badge != NULL) {
+		GtkStyleContext *bctx =
+			gtk_widget_get_style_context (state_badge);
+
+		gtk_style_context_remove_class (bctx, "badge-active");
+		gtk_style_context_remove_class (bctx, "badge-stopped");
+		gtk_style_context_remove_class (bctx, "badge-locked");
+		gtk_style_context_remove_class (bctx, "badge-unknown");
+		gtk_style_context_add_class (bctx, badge_to_class (state));
+	}
 
 	/* Swap the colour class rather than stacking them. */
 	klass = state_to_class (state);
@@ -663,6 +708,44 @@ fs_statusview_get_state (void)
 /* [ make_table ]
  * A scrolled tree view inside a labelled frame, both sized so the page
  * scrolls as a whole instead of each table claiming the window. */
+/* [ stripe_cell_data ]
+ * Alternating row tint for the Status tables, by visible position
+ * (the refresh path rebuilds the store, so position, not append
+ * order, is what the user sees).  A selected row is left alone so
+ * the theme's selection highlight is not painted over. */
+static void
+stripe_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
+                  GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+{
+	GtkWidget *view = data;
+	const gchar *background = NULL;
+	GtkTreePath *path;
+
+	(void) column;
+
+	if (view != NULL) {
+		GtkTreeSelection *sel =
+			gtk_tree_view_get_selection (GTK_TREE_VIEW (view));
+
+		if (gtk_tree_selection_iter_is_selected (sel, iter))
+			background = NULL;
+		else {
+			path = gtk_tree_model_get_path (model, iter);
+
+			if (path != NULL) {
+				gint *indices = gtk_tree_path_get_indices (path);
+
+				if (indices != NULL && indices[0] % 2 == 1)
+					background = "#f9f9f9";
+
+				gtk_tree_path_free (path);
+			}
+		}
+	}
+
+	g_object_set (renderer, "background", background, NULL);
+}
+
 static GtkWidget *
 make_table (const gchar *title, GtkListStore **store_out,
             const gchar *const *labels, gint n_cols)
@@ -678,12 +761,21 @@ make_table (const gchar *title, GtkListStore **store_out,
 
 	view = gtk_tree_view_new_with_model (GTK_TREE_MODEL (*store_out));
 	gtk_tree_view_set_headers_visible (GTK_TREE_VIEW (view), TRUE);
+	/* Thin light-grey rules between cells, as the spec's data grids. */
+	gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (view),
+	                              GTK_TREE_VIEW_GRID_LINES_BOTH);
+	gtk_style_context_add_class (gtk_widget_get_style_context (view),
+	                             "data-grid");
 
 	for (gint i = 0; i < n_cols; i++) {
 		renderer = gtk_cell_renderer_text_new ();
 		column = gtk_tree_view_column_new_with_attributes (
 			_(labels[i]), renderer, "text", i, NULL);
 		gtk_tree_view_column_set_resizable (column, TRUE);
+		/* The alternating rows the spec asks for on Status. */
+		gtk_tree_view_column_set_cell_data_func (column, renderer,
+		                                         stripe_cell_data,
+		                                         view, NULL);
 		gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
 	}
 
@@ -691,10 +783,16 @@ make_table (const gchar *title, GtkListStore **store_out,
 	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
 	                                GTK_POLICY_AUTOMATIC,
 	                                GTK_POLICY_AUTOMATIC);
+	/* The card frame draws the border; an etched scroll shadow
+	 * inside it would be a second border. */
+	gtk_scrolled_window_set_shadow_type (GTK_SCROLLED_WINDOW (scroll),
+	                                     GTK_SHADOW_NONE);
 	gtk_widget_set_size_request (scroll, -1, 140);
 	gtk_container_add (GTK_CONTAINER (scroll), view);
 
 	frame = gtk_frame_new (_(title));
+	gtk_style_context_add_class (gtk_widget_get_style_context (frame),
+	                             "card-frame");
 	gtk_container_add (GTK_CONTAINER (frame), scroll);
 
 	return frame;
@@ -744,6 +842,8 @@ build_events_box (void)
 	}
 
 	frame = gtk_frame_new (_("Events"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (frame),
+	                             "events-summary");
 	gtk_container_add (GTK_CONTAINER (frame), grid);
 
 	return frame;
@@ -809,14 +909,13 @@ fs_statusview_toolbar (void)
 GtkWidget *
 fs_statusview_page (void)
 {
-	GtkWidget *page, *header, *top, *left, *button_box;
+	GtkWidget *page, *header, *top, *left, *hero, *button_box;
 	static const gchar *net_labels[NET_N_COLS] = {
 		"Device", "Type", "Received", "Sent", "Activity"
 	};
 	static const gchar *conn_labels[CONN_N_COLS] = {
 		"Source", "Destination", "Port", "Service", "Program", "Direction"
 	};
-	const FsBackend *backend = fs_backend ();
 
 	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
 	gtk_container_set_border_width (GTK_CONTAINER (page), 10);
@@ -857,15 +956,25 @@ fs_statusview_page (void)
 	}
 	gtk_box_pack_start (GTK_BOX (page), header, FALSE, FALSE, 0);
 
-	/* ---- status line + events counters ---- */
+	/* ---- status line + events counters, on one white hero card ---- */
 	top = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
 
-	left = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+	left = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
 	gtk_widget_set_valign (left, GTK_ALIGN_START);
+
+	/* The circular badge: state colour behind a symbolic glyph, so
+	 * the verdict is readable before the text is. */
+	state_badge = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (state_badge), "hero-badge");
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (state_badge),
+		badge_to_class (FS_FW_NONE));
 
 	state_icon = gtk_image_new_from_icon_name (state_to_icon (FS_FW_NONE),
 	                                           GTK_ICON_SIZE_DIALOG);
-	gtk_box_pack_start (GTK_BOX (left), state_icon, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (state_badge), state_icon, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (left), state_badge, FALSE, FALSE, 0);
 
 	{
 		GtkWidget *col = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
@@ -876,19 +985,18 @@ fs_statusview_page (void)
 		gtk_style_context_add_class (gtk_widget_get_style_context (state_label),
 		                             state_to_class (FS_FW_NONE));
 
-		backend_label = gtk_label_new (backend->display_name);
-		gtk_label_set_xalign (GTK_LABEL (backend_label), 0.0);
-		gtk_style_context_add_class (
-			gtk_widget_get_style_context (backend_label), "dim-label");
-
 		gtk_box_pack_start (GTK_BOX (col), state_label, FALSE, FALSE, 0);
-		gtk_box_pack_start (GTK_BOX (col), backend_label, FALSE, FALSE, 0);
 		gtk_box_pack_start (GTK_BOX (left), col, TRUE, TRUE, 0);
 	}
 
 	gtk_box_pack_start (GTK_BOX (top), left, TRUE, TRUE, 0);
 	gtk_box_pack_start (GTK_BOX (top), build_events_box (), FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (page), top, FALSE, FALSE, 0);
+
+	hero = gtk_frame_new (NULL);
+	gtk_style_context_add_class (gtk_widget_get_style_context (hero),
+	                             "hero-status");
+	gtk_container_add (GTK_CONTAINER (hero), top);
+	gtk_box_pack_start (GTK_BOX (page), hero, FALSE, FALSE, 0);
 
 	/* ---- start/stop, for when the toolbar is collapsed ---- */
 	button_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
@@ -896,6 +1004,10 @@ fs_statusview_page (void)
 
 	button_start = gtk_button_new_with_label (_("Start firewall"));
 	button_stop  = gtk_button_new_with_label (_("Stop firewall"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button_start),
+	                             "btn-subtle");
+	gtk_style_context_add_class (gtk_widget_get_style_context (button_stop),
+	                             "btn-subtle");
 
 	g_signal_connect (button_start, "clicked",
 	                  G_CALLBACK (on_start_clicked), NULL);
@@ -909,6 +1021,8 @@ fs_statusview_page (void)
 
 	/* ---- profile switches ---- */
 	profiles_frame = gtk_frame_new (_("Firewall profiles"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (profiles_frame),
+	                             "card-frame");
 	{
 		GtkWidget *inner = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
 		const gchar *names[] = { _("Domain"), _("Private"), _("Public") };
@@ -922,6 +1036,10 @@ fs_statusview_page (void)
 			GtkWidget *toggle = gtk_switch_new ();
 			gboolean enabled = FALSE;
 
+			gtk_style_context_add_class (
+				gtk_widget_get_style_context (row), "profile-row");
+			gtk_style_context_add_class (
+				gtk_widget_get_style_context (label), "profile-label");
 			gtk_label_set_xalign (GTK_LABEL (label), 0.0);
 			gtk_widget_set_hexpand (label, TRUE);
 			g_object_set_data (G_OBJECT (toggle), "user-data",

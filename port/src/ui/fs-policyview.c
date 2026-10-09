@@ -534,12 +534,18 @@ build_group (FsRuleKind kind, const gchar *title)
 		(GDestroyNotify) fs_rule_free);
 
 	frame = gtk_frame_new (title);
+	gtk_style_context_add_class (gtk_widget_get_style_context (frame),
+	                             "card-frame");
 	box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
 	gtk_container_set_border_width (GTK_CONTAINER (box), 6);
 	gtk_container_add (GTK_CONTAINER (frame), box);
 
 	group->view = gtk_tree_view_new_with_model (
 		GTK_TREE_MODEL (group->store));
+	gtk_style_context_add_class (gtk_widget_get_style_context (group->view),
+	                             "data-grid");
+	gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (group->view),
+	                              GTK_TREE_VIEW_GRID_LINES_BOTH);
 
 	columns = fs_rule_columns (kind, &n);
 
@@ -563,8 +569,9 @@ build_group (FsRuleKind kind, const gchar *title)
 	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
 	                                GTK_POLICY_AUTOMATIC,
 	                                GTK_POLICY_AUTOMATIC);
+	/* The card frame is the border; no etched shadow inside it. */
 	gtk_scrolled_window_set_shadow_type (GTK_SCROLLED_WINDOW (scroll),
-	                                     GTK_SHADOW_IN);
+	                                     GTK_SHADOW_NONE);
 	gtk_widget_set_vexpand (scroll, TRUE);
 	gtk_container_add (GTK_CONTAINER (scroll), group->view);
 	gtk_box_pack_start (GTK_BOX (box), scroll, TRUE, TRUE, 0);
@@ -590,10 +597,14 @@ build_group (FsRuleKind kind, const gchar *title)
 	}
 
 	button = gtk_button_new_with_label (_("_Add"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
 	g_signal_connect (button, "clicked", G_CALLBACK (on_add_clicked), group);
 	gtk_box_pack_start (GTK_BOX (button_box), button, FALSE, FALSE, 0);
 
 	button = gtk_button_new_with_label (_("_Remove"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
 	g_signal_connect (button, "clicked", G_CALLBACK (on_remove_clicked),
 	                  group);
 	gtk_box_pack_start (GTK_BOX (button_box), button, FALSE, FALSE, 0);
@@ -621,6 +632,8 @@ fs_policyview_page (FsPolicy *policy)
 	gtk_container_set_border_width (GTK_CONTAINER (bar), 6);
 
 	button = gtk_button_new_with_mnemonic (_("_Apply policy"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-primary");
 	g_signal_connect (button, "clicked", G_CALLBACK (on_apply_clicked),
 	                  NULL);
 	gtk_box_pack_start (GTK_BOX (bar), button, FALSE, FALSE, 0);

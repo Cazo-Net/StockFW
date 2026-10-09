@@ -20,6 +20,13 @@
  * '&' in the creator line once made Pango fail and the raw
  * <span size=...> tags showed on screen instead of the name.
  *
+ * And it checks the compiled-in light stylesheet (fs-theme-css.h):
+ * the sheet must load without a GError, must still carry the palette
+ * tokens the design pins down, and must not use the pseudo-class
+ * names this GTK3.24 deprecates (:focused, :insensitive) -- GTK only
+ * reports those at widget style resolution, where no test can see
+ * them, so they are asserted absent as substrings instead.
+ *
  *----------------------------------------------------------------------*/
 #include <gtk/gtk.h>
 
@@ -27,6 +34,7 @@
 #include "core/fs-backend.h"
 #include "core/fs-i18n.h"
 #include "ui/fs-dialogs.h"
+#include "fs-theme-css.h"   /* generated from src/ui/fs-theme.css */
 
 /* Timeout so a dialog that never appears fails instead of hanging. */
 #define SMOKE_STEP_MS  150
@@ -35,6 +43,24 @@
 static guint phase = 0;
 static guint runs = 0;
 static gboolean failed = FALSE;
+
+/* The light theme ships inside the binary (fs-theme-css.h,
+ * generated from src/ui/fs-theme.css at configure time).  Three
+ * assertions, because GTK reports CSS problems three different ways:
+ *
+ *   - hard parse errors -> load_from_data() returns FALSE with a
+ *     GError (demonstrated: "not-a-color" fails the load);
+ *   - soft problems (deprecated pseudo-classes) only surface at
+ *     widget style resolution, where no test hook can count them --
+ *     so those names are asserted absent as substrings instead
+ *     (demonstrated: adding ":insensitive" fails this check; it is
+ *     exactly what the first themed spawn reported);
+ *   - a sheet that parses fine but lost a design colour is invisible
+ *     to GTK altogether -- the pinned palette tokens are asserted
+ *     present (demonstrated: removing #1976d2 fails this check).
+ *
+ * No log handler is installed: every CSS defect class found so far
+ * is either a hard load failure or one of the two substrings above. */
 
 /* Every row in the tree, depth first, so the children of Interface and
  * Firewall are visited too -- iter_n_children() with a NULL parent only
@@ -315,6 +341,63 @@ main (int argc, char **argv)
 			}
 		}
 		g_free (creator);
+	}
+
+	/* The stylesheet checks: load, pinned palette, forbidden
+	 * pseudo-classes -- see the file comment for each one's teeth. */
+	{
+		static const gchar *const tokens[] = {
+			"#f0f2f5",   /* canvas                        */
+			"#e6ecf4",   /* tab band                      */
+			"#0066cc",   /* active tab / primary action   */
+			"#1976d2",   /* selected row                  */
+			"#ffebee",   /* blocked row background        */
+			"#b71c1c",   /* blocked row text              */
+			"#f9f9f9",   /* alternating status rows       */
+		};
+		static const gchar *const forbidden[] = {
+			":focused",     /* GTK4 name; GTK3.24 warns "use
+			                   :focus instead" at style resolve */
+			":insensitive", /* ditto, use :disabled            */
+		};
+		GtkCssProvider *provider = gtk_css_provider_new ();
+		GError *error = NULL;
+		gboolean loaded;
+
+		loaded = gtk_css_provider_load_from_data (provider,
+		                                          fs_theme_css,
+		                                          -1, &error);
+
+		if (!loaded || error != NULL) {
+			g_printerr ("ui-prefs-smoke: FAILED, stylesheet "
+			            "did not load: %s\n",
+			            error != NULL ? error->message : "?");
+			failed = TRUE;
+		} else {
+			g_print ("ui-prefs-smoke: theme loads clean\n");
+		}
+
+		for (guint i = 0; i < G_N_ELEMENTS (tokens); i++) {
+			if (g_strstr_len (fs_theme_css, -1, tokens[i]) == NULL) {
+				g_printerr ("ui-prefs-smoke: FAILED, theme is "
+				            "missing palette token %s\n",
+				            tokens[i]);
+				failed = TRUE;
+			}
+		}
+
+		for (guint i = 0; i < G_N_ELEMENTS (forbidden); i++) {
+			if (g_strstr_len (fs_theme_css, -1,
+			                  forbidden[i]) != NULL) {
+				g_printerr ("ui-prefs-smoke: FAILED, theme uses "
+				            "deprecated pseudo-class %s\n",
+				            forbidden[i]);
+				failed = TRUE;
+			}
+		}
+
+		g_clear_error (&error);
+		g_object_unref (provider);
 	}
 
 	g_timeout_add (SMOKE_STEP_MS, drive_dialog, NULL);
