@@ -2,10 +2,11 @@
  * StockFW Light Theme (GTK3)
  *
  * Palette:
- *   canvas #F0F2F5   surfaces #FFFFFF   tab band #E6ECF4
- *   active tab #0066CC (white text)     grid lines #E0E0E0
- *   selected row #1976D2 (white text)   alert row #FFEBEE / #B71C1C
+ *   canvas #F0F2F5   surfaces #FFFFFF   tab band #F0F0F0
+ *   active tab #AE0000 (white text)     grid lines #E0E0E0
+ *   selected row #AE0000 (white text)   alert row #FFEBEE / #B71C1C
  *   success #2E7D32   danger #C62828    warning #B26A00 / #E65100
+ *   primary button #AE0000 (white text; hover #8B0000, active #6F0000)
  *
  * Only GTK3 properties are used; this file is compiled into the
  * binary at configure time (see fs-theme-css.h.in / CMakeLists.txt).
@@ -32,44 +33,61 @@ menubar menuitem:hover {
 
 /* --- tab band (replaces the notebook's tab row) --------------------- */
 .tab-band {
-	background-color: #e6ecf4;
-	border-bottom: 1px solid #d0d8e0;
+	background-color: #f0f0f0;
+	border-bottom: 1px solid #dcdcdc;
 	padding: 4px 8px;
 }
-.tab-button:not(.tab-active) {
-	background-color: transparent;
-	background-image: none;
-	border: none;
-	color: #424242;
-	border-radius: 6px;
+/* Every tab-button state shares ONE set of size metrics (padding,
+ * border, radius, font).  Only colours differ below.  This matters
+ * for layout, not looks: GTK paints a switch in several passes, and
+ * the just-checked button briefly matches only Adwaita's default
+ * button rules (border + different padding = +2px) before the
+ * .tab-active class lands.  With per-state metrics the band itself
+ * changed height on every page switch, shoving the toolbar strip
+ * and the whole page down 2px and back -- the visible "shake" on
+ * tab switching, and the one-way window growth on the first
+ * switch (the toplevel never shrinks back). */
+.tab-button {
 	padding: 7px 18px;
 	margin: 0 3px;
+	border: none;
+	border-radius: 6px;
 	font-weight: bold;
 	font-size: 13px;
 	min-height: 20px;
+	background-image: none;
+}
+.tab-button:not(.tab-active) {
+	background-color: transparent;
+	color: #424242;
 }
 .tab-button:not(.tab-active):hover {
-	background-color: #d5dde8;
-	background-image: none;
+	background-color: #e4e4e4;
 	color: #212121;
 }
 .tab-button:not(.tab-active):active {
-	background-color: #c9d3e0;
-	background-image: none;
+	background-color: #d8d8d8;
 }
-/* The active tab.  Two GTK3 traps kept this from painting blue at
- * first: (1) equal-specificity rules resolve in first-match order,
- * so `.tab-button:hover` used to win -- the rules above carry
+/* The active tab.  Two GTK3 traps kept this from painting the accent
+ * colour at first: (1) equal-specificity rules resolve in first-match
+ * order, so `.tab-button:hover` used to win -- the rules above carry
  * `:not(.tab-active)` so the active tab matches only this block;
  * and (2) Adwaita paints buttons with `background-image`, which
  * draws OVER background-color, so without `background-image: none`
  * this block rendered theme-grey no matter what colour was set
- * (the red/green diagnostic on the inactive tabs proved it). */
+ * (the red/green diagnostic on the inactive tabs proved it).
+ *
+ * `:checked` is listed alongside .tab-active because the checked
+ * flag flips a beat before the class does; styling both alike
+ * makes that beat render the final red pill (same size, same
+ * colour) instead of Adwaita's pale default. */
+.tab-button:checked,
+.tab-button:checked:hover,
+.tab-button:checked:active,
 .tab-active,
 .tab-active:hover,
 .tab-active:active {
-	background-color: #0066cc;
-	background-image: none;
+	background-color: #ae0000;
 	color: #ffffff;
 }
 
@@ -96,9 +114,9 @@ menubar menuitem:hover {
 	font-size: 13px;
 }
 .btn-subtle:hover {
-	background-image: linear-gradient(to bottom, #f2f7fd, #e8f0fa);
-	border-color: #0066cc;
-	color: #0066cc;
+	background-image: linear-gradient(to bottom, #fdeeee, #fbe9e7);
+	border-color: #ae0000;
+	color: #ae0000;
 }
 .btn-subtle:disabled {
 	background-image: none;
@@ -108,25 +126,29 @@ menubar menuitem:hover {
 }
 
 .btn-primary {
-	background-color: #0066cc;
+	background-color: #ae0000;
 	background-image: none;
-	border: 1px solid #0052a3;
+	border: 1px solid #8b0000;
 	border-radius: 4px;
 	color: #ffffff;
 	padding: 6px 16px;
 	font-weight: bold;
 	font-size: 13px;
+	box-shadow: none;
 }
 .btn-primary:hover {
-	background-color: #0052a3;
+	background-color: #8b0000;
+	box-shadow: none;
 }
 .btn-primary:active {
-	background-color: #004080;
+	background-color: #6f0000;
+	box-shadow: none;
 }
 .btn-primary:disabled {
 	background-color: #b0bec5;
 	border-color: #b0bec5;
 	color: #eeeeee;
+	box-shadow: none;
 }
 
 .btn-danger {
@@ -141,6 +163,23 @@ menubar menuitem:hover {
 }
 .btn-danger:hover {
 	background-color: #fdeaea;
+}
+
+/* The white sliver: Adwaita paints a 1px white inset highlight along
+ * the top edge of a button in its hover / active / checked / focus
+ * states.  This file never cleared box-shadow, so on every mouse-over
+ * a thin white line appeared just inside the top border -- the "bit of
+ * white above any button" (reproduced at y=1 in a pixel scan of a
+ * hovered .btn-primary).  Our provider outranks the theme, so this one
+ * state block removes the sliver for every button in the app -- tabs,
+ * toolbar strips and dialogs included.  Keyboard focus stays visible
+ * through the border/colour change that Adwaita keeps. */
+button:hover,
+button:active,
+button:checked,
+button:disabled,
+button:focus {
+	box-shadow: none;
 }
 
 /* Toolbar strip buttons. */
@@ -162,7 +201,7 @@ GtkSearchEntry {
 entry:focus,
 .entry:focus,
 GtkSearchEntry:focus {
-	border-color: #0066cc;
+	border-color: #ae0000;
 	background-color: #ffffff;
 }
 
@@ -182,8 +221,8 @@ switch {
 	min-height: 22px;
 }
 switch:checked {
-	background-color: #0066cc;
-	border-color: #0052a3;
+	background-color: #ae0000;
+	border-color: #8b0000;
 }
 switch slider {
 	background-color: #ffffff;
@@ -235,12 +274,12 @@ treeview row {
 treeview row.row-alt {
 	background-color: #f9f9f9;
 }
-/* Selection: solid medium blue, text inverted. */
+/* Selection: solid accent red, text inverted. */
 .data-grid:selected,
 treeview:selected,
 .data-grid row:selected,
 treeview row:selected {
-	background-color: #1976d2;
+	background-color: #ae0000;
 	color: #ffffff;
 }
 /* Blocked rows: soft pastel alert tint, dark red text.  Painted by

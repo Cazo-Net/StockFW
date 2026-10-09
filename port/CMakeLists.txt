@@ -212,3 +212,16 @@ add_executable(fs-simviz-smoke EXCLUDE_FROM_ALL
   src/ui/fs-simviz.c
 )
 target_link_libraries(fs-simviz-smoke PRIVATE fs-core PkgConfig::GTK3)
+
+# The light theme's teeth: src/ui/fs-theme.css compiled to
+# fs-theme-css.h is the contract for tab-band geometry (the
+# page-switch shake: every state and class variant of a tab button
+# must size identically) and the accent palette (red actions and
+# pill, no white hover sliver).  The smoke installs that same
+# stylesheet at APPLICATION priority, then reads sizes and
+# rendered pixels back the way a user's eye would.
+add_executable(fs-theme-smoke EXCLUDE_FROM_ALL
+  tests/ui-theme-smoke.c
+)
+target_include_directories(fs-theme-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-theme-smoke PRIVATE PkgConfig::GTK3)
