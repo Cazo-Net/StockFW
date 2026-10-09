@@ -14,6 +14,18 @@
 !define APP_WEBSITE "https://github.com/stockfw/stockfw"
 !define APP_EXE "StockFW.exe"
 !define INSTALLER_NAME "StockFW-${APP_VERSION}-Setup.exe"
+; Windows file-properties version resource.  VIProductVersion wants a
+; strict four-part X.X.X.X number, so the display version carries a
+; ".0" build part; the human-readable strings below carry it as-is.
+!define APP_VERSION_FULL "${APP_VERSION}.0"
+VIProductVersion "${APP_VERSION_FULL}"
+VIFileVersion "${APP_VERSION_FULL}"
+VIAddVersionKey /LANG=0 "ProductName" "${APP_NAME}"
+VIAddVersionKey /LANG=0 "ProductVersion" "${APP_VERSION}"
+VIAddVersionKey /LANG=0 "FileVersion" "${APP_VERSION_FULL}"
+VIAddVersionKey /LANG=0 "FileDescription" "${APP_NAME} Setup"
+VIAddVersionKey /LANG=0 "CompanyName" "${APP_PUBLISHER}"
+VIAddVersionKey /LANG=0 "LegalCopyright" "(C) 04-10-2026 StockFW Project"
 
 ;------------------------------------------------------------------------------
 ; Modern UI 2 Configuration
