@@ -926,8 +926,10 @@ fs_statusview_page (void)
 		GdkPixbuf *logo = load_status_logo ();
 
 		if (logo != NULL) {
-			/* Scale down from 96x96 to 64x64 for the header */
-			GdkPixbuf *scaled = gdk_pixbuf_scale_simple (logo, 64, 64,
+			/* Scale the 96x96 source to the 89x89 the design asks
+			 * for: the header logo must read bigger than the
+			 * run/stop badge in the hero card. */
+			GdkPixbuf *scaled = gdk_pixbuf_scale_simple (logo, 89, 89,
 			                                             GDK_INTERP_BILINEAR);
 			logo_image = gtk_image_new_from_pixbuf (scaled);
 			g_object_unref (scaled);
@@ -959,8 +961,18 @@ fs_statusview_page (void)
 	/* ---- status line + events counters, on one white hero card ---- */
 	top = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
 
+	/* The left area holds the badge + status text as ONE group,
+	 * centred both ways in the space the Events counters leave: two
+	 * equal expanding spacers do the horizontal centre, the children's
+	 * valign does the vertical one.  (The group used to park itself in
+	 * the top-left corner, which read as a layout bug next to the
+	 * centred counters.) */
 	left = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
-	gtk_widget_set_valign (left, GTK_ALIGN_START);
+	{
+		GtkWidget *spacer = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+
+		gtk_box_pack_start (GTK_BOX (left), spacer, TRUE, TRUE, 0);
+	}
 
 	/* The circular badge: state colour behind a symbolic glyph, so
 	 * the verdict is readable before the text is. */
@@ -974,10 +986,12 @@ fs_statusview_page (void)
 	state_icon = gtk_image_new_from_icon_name (state_to_icon (FS_FW_NONE),
 	                                           GTK_ICON_SIZE_DIALOG);
 	gtk_box_pack_start (GTK_BOX (state_badge), state_icon, FALSE, FALSE, 0);
+	gtk_widget_set_valign (state_badge, GTK_ALIGN_CENTER);
 	gtk_box_pack_start (GTK_BOX (left), state_badge, FALSE, FALSE, 0);
 
 	{
 		GtkWidget *col = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+		GtkWidget *spacer = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 
 		state_label = gtk_label_new (state_to_text (FS_FW_NONE));
 		gtk_label_set_xalign (GTK_LABEL (state_label), 0.0);
@@ -986,7 +1000,9 @@ fs_statusview_page (void)
 		                             state_to_class (FS_FW_NONE));
 
 		gtk_box_pack_start (GTK_BOX (col), state_label, FALSE, FALSE, 0);
-		gtk_box_pack_start (GTK_BOX (left), col, TRUE, TRUE, 0);
+		gtk_widget_set_valign (col, GTK_ALIGN_CENTER);
+		gtk_box_pack_start (GTK_BOX (left), col, FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (left), spacer, TRUE, TRUE, 0);
 	}
 
 	gtk_box_pack_start (GTK_BOX (top), left, TRUE, TRUE, 0);
