@@ -82,13 +82,23 @@ typedef struct
     FsRuleKind kind;
     gchar     *csv;                /* the staged rule, for removal */
     gchar     *title;              /* insight title, for messages  */
-    gint64     at_us;              /* when it was staged           */
+    gint64     at_us;              /* when it was staged (monotonic) */
+    gint64     at_epoch;           /* staging time, wall clock (persisted) */
 } AutoBlock;
 
 static GPtrArray *auto_blocks       = NULL;  /* AutoBlock*, free_func set */
 static guint      auto_block_expiry_id = 0;
 static gint64     auto_block_last_fail = 0;
 static gboolean   auto_block_failed_once = FALSE;
+
+/* P6: session memory of every auto-block this process staged and then
+ * took down (expiry, Undo, user allow, mode switch).  Staging the
+ * same rule again is the 2026-10-10 incident -- drop after ten
+ * minutes, re-block the next second, forever -- so the auto pass
+ * refuses it.  Memory-only by design: it protects the session from a
+ * loop and never outlives the process, so a restart makes a fresh
+ * decision instead of inheriting a grudge. */
+static GHashTable *auto_block_cooldown = NULL;  /* "kind|csv" -> TRUE */
 
 /* =====================================================================
  * Forward declarations
@@ -584,6 +594,120 @@ auto_block_free (gpointer data)
     g_free (ab);
 }
 
+/* =====================================================================
+ * P6 (false-outage hardening): cooldown memory + persistent staging
+ *
+ * The 2026-10-10 incident was three silent loops stacked: a
+ * ten-minute expiry whose re-stage ran forever, staging records that
+ * lived only in memory while the policy rows they created survived
+ * every restart, and a user Allow that the block rule outranked on
+ * Windows.  These helpers close all three: the cooldown breaks the
+ * re-stage loop, the state file gives the boot restore something to
+ * expire, and the lift functions give the user's Allow the last word.
+ * ===================================================================== */
+
+static gchar *
+auto_block_key (FsRuleKind kind, const gchar *csv)
+{
+    return g_strdup_printf ("%d|%s", (int) kind, csv != NULL ? csv : "");
+}
+
+static void
+auto_block_cooldown_add (FsRuleKind kind, const gchar *csv)
+{
+    if (auto_block_cooldown == NULL)
+        auto_block_cooldown = g_hash_table_new_full (g_str_hash,
+                                                     g_str_equal,
+                                                     g_free, NULL);
+
+    g_hash_table_add (auto_block_cooldown, auto_block_key (kind, csv));
+}
+
+static gboolean
+auto_block_cooldown_contains (FsRuleKind kind, const gchar *csv)
+{
+    gboolean hit;
+    gchar *key;
+
+    if (auto_block_cooldown == NULL)
+        return FALSE;
+
+    key = auto_block_key (kind, csv);
+    hit = g_hash_table_contains (auto_block_cooldown, key);
+    g_free (key);
+
+    return hit;
+}
+
+/* [ auto_block_state_path ] -- next to behavior.csv and trust.csv;
+ * STOCKFW_AUTOBLOCK_FILE overrides it for the tests. */
+static gchar *
+auto_block_state_path (void)
+{
+    const gchar *env = g_getenv ("STOCKFW_AUTOBLOCK_FILE");
+
+    if (env != NULL && *env != '\0')
+        return g_strdup (env);
+
+#ifdef G_OS_WIN32
+    {
+        const gchar *appdata = g_getenv ("APPDATA");
+
+        if (appdata != NULL && *appdata != '\0')
+            return g_build_filename (appdata, "stockfw", "autoblocks",
+                                     NULL);
+
+        return g_build_filename (g_get_home_dir (), "AppData", "Roaming",
+                                 "stockfw", "autoblocks", NULL);
+    }
+#else
+    return g_build_filename (g_get_user_config_dir (), "stockfw",
+                             "autoblocks", NULL);
+#endif
+}
+
+/* [ auto_block_state_save ]
+ * Rewrite the staged list from the array: one row per block this
+ * session staged -- "S,<epoch>,<kind>,<csv>", csv last so its commas
+ * survive the split.  Called on every stage and every retire, so the
+ * file mirrors the session's OWN blocks and never a user's manual
+ * rule.  A failed write is audited, not swallowed: without this file
+ * a restart turns managed blocks into orphans nobody expires. */
+static void
+auto_block_state_save (void)
+{
+    gchar *path = auto_block_state_path ();
+    gchar *dir;
+    GString *out;
+    GError *error = NULL;
+    guint i;
+
+    out = g_string_new (NULL);
+
+    if (auto_blocks != NULL) {
+        for (i = 0; i < auto_blocks->len; i++) {
+            AutoBlock *ab = g_ptr_array_index (auto_blocks, i);
+
+            g_string_append_printf (out, "S,%" G_GINT64_FORMAT ",%d,%s\n",
+                                    ab->at_epoch, (int) ab->kind,
+                                    ab->csv != NULL ? ab->csv : "");
+        }
+    }
+
+    dir = g_path_get_dirname (path);
+    g_mkdir_with_parents (dir, 0700);
+    g_free (dir);
+
+    if (!g_file_set_contents (path, out->str, -1, &error)) {
+        fs_audit_log ("sentinel auto-block state save failed",
+                      error != NULL ? error->message : path);
+        g_clear_error (&error);
+    }
+
+    g_string_free (out, TRUE);
+    g_free (path);
+}
+
 /* [ auto_block_push ]
  * Put the current policy in front of the firewall and record honestly
  * whether it went live -- through the P3 gate, so a held or rolled-back
@@ -650,6 +774,50 @@ auto_block_drop (AutoBlock *ab, const gchar *why)
         fs_policyview_reload (copilot_policy);
 }
 
+/* [ auto_block_rule_in_policy ]
+ * TRUE when the staged rule is (still) in the policy: either the user
+ * put it there, or the removal just failed.  The boot restore keeps
+ * tracking such a row so the expiry timer retries the drop instead of
+ * leaving a block nobody manages. */
+static gboolean
+auto_block_rule_in_policy (AutoBlock *ab)
+{
+    FsRule *rule;
+    gboolean in;
+
+    if (ab == NULL || copilot_policy == NULL)
+        return FALSE;
+
+    rule = fs_rule_from_csv (ab->kind, ab->csv);
+    if (rule == NULL)
+        return TRUE;   /* cannot see it: assume the worst */
+
+    in = fs_policy_contains (copilot_policy, rule);
+    fs_rule_free (rule);
+
+    return in;
+}
+
+/* [ auto_block_retire ]
+ * Take a staged auto-block down for good: out of the policy, into the
+ * session cooldown so the auto pass cannot stage it right back, and
+ * out of the array (freeing it) when it was in one -- which also
+ * rewrites the state file, so a retirement never leaves a stale row
+ * behind.  Rows that were never in the array (the boot restore's
+ * stale file rows) are the caller's to save afterwards. */
+static void
+auto_block_retire (AutoBlock *ab, const gchar *why)
+{
+    if (ab == NULL)
+        return;
+
+    auto_block_drop (ab, why);
+    auto_block_cooldown_add (ab->kind, ab->csv);
+
+    if (auto_blocks != NULL && g_ptr_array_remove (auto_blocks, ab))
+        auto_block_state_save ();
+}
+
 /* [ auto_block_expire_cb ]
  * The ten-minute time-box.  First call is one TTL after the first
  * auto-block; later calls reschedule for the earliest rule still
@@ -673,8 +841,10 @@ auto_block_expire_cb (gpointer data)
 
         if (now - ab->at_us >=
             (gint64) FS_AUTOBLOCK_TTL_S * G_USEC_PER_SEC) {
-            auto_block_drop (ab, "expired after 10 minutes");
-            g_ptr_array_remove_index (auto_blocks, i);  /* frees ab */
+            /* Retire, not plain drop: the cooldown is what stops the
+             * expiry -> immediate re-stage loop that ran for two days
+             * in the 2026-10-10 incident. */
+            auto_block_retire (ab, "expired after 10 minutes");
             dropped = TRUE;
         } else {
             i++;
@@ -753,6 +923,14 @@ fs_copilot_sentinel_auto_pass (void)
         if (auto_block_find (ins->rule_kind, ins->rule_csv) != NULL)
             continue;
 
+        /* P6: never re-stage what this session staged and took back
+         * down (expiry, Undo, user allow, mode switch).  The incident
+         * was exactly this loop: drop after ten minutes, stage again
+         * the next second. */
+        if (auto_block_cooldown_contains (ins->rule_kind,
+                                          ins->rule_csv))
+            continue;
+
         /* Already in the policy but not staged by us: the user put
          * it there, so it is not ours to manage or expire. */
         probe = fs_insight_to_rule (ins);
@@ -782,6 +960,7 @@ fs_copilot_sentinel_auto_pass (void)
         ab->csv   = g_strdup (ins->rule_csv);
         ab->title = g_strdup (ins->title);
         ab->at_us = now;
+        ab->at_epoch = g_get_real_time () / G_USEC_PER_SEC;
         g_ptr_array_add (auto_blocks, ab);
 
         fs_audit_log ("sentinel auto-block", ins->rule_csv);
@@ -795,6 +974,7 @@ fs_copilot_sentinel_auto_pass (void)
     g_list_free (insights);
 
     if (changed) {
+        auto_block_state_save ();
         fs_policyview_reload (copilot_policy);
         auto_block_push ();
     }
@@ -832,8 +1012,9 @@ on_undo_auto_clicked (GtkButton *btn, gpointer data)
     ab  = g_ptr_array_index (auto_blocks, auto_blocks->len - 1);
     csv = g_strdup (ab->csv);
 
-    auto_block_drop (ab, "undone by user");
-    g_ptr_array_remove_index (auto_blocks, auto_blocks->len - 1);
+    /* Retire: drop + cooldown + out of the state file, so the next
+     * auto pass cannot stage the very rule the user just lifted. */
+    auto_block_retire (ab, "undone by user");
 
     auto_block_push ();
     refresh_insights ();
@@ -844,6 +1025,284 @@ on_undo_auto_clicked (GtkButton *btn, gpointer data)
     text_view_append (analysis_output, csv, "bold");
     text_view_append (analysis_output, "\n", NULL);
     g_free (csv);
+}
+
+/* [ fs_copilot_lift_all_auto_blocks ]
+ * Take every staged auto-block down at once -- the Undo button does
+ * one, this does the set.  Leaving auto mode uses it, and it is what
+ * a "stop blocking things NOW" would want.  Returns TRUE when
+ * anything was staged. */
+gboolean
+fs_copilot_lift_all_auto_blocks (const gchar *why)
+{
+    gboolean lifted = FALSE;
+
+    while (auto_blocks != NULL && auto_blocks->len > 0) {
+        AutoBlock *ab = g_ptr_array_index (auto_blocks,
+                                           auto_blocks->len - 1);
+
+        auto_block_retire (ab, why != NULL ? why : "lifted by user");
+        lifted = TRUE;
+    }
+
+    if (lifted) {
+        fs_policyview_reload (copilot_policy);
+        auto_block_push ();
+        refresh_insights ();
+    }
+
+    return lifted;
+}
+
+/* [ comment_is_sentinel ]
+ * A policy comment belongs to Sentinel when it starts with the
+ * Sentinel prefix, allowing for however many spaces the CSV split
+ * left in front of it. */
+static gboolean
+comment_is_sentinel (const gchar *comment)
+{
+    if (comment == NULL)
+        return FALSE;
+
+    while (g_ascii_isspace (*comment))
+        comment++;
+
+    return g_str_has_prefix (comment, "Sentinel:");
+}
+
+/* [ fs_copilot_lift_auto_blocks_for_dest ]
+ * The user's explicit Allow for a destination is the last word.  On
+ * Windows a block rule outranks an allow rule, so an event-view Allow
+ * that left the Sentinel block standing was a silent no-op -- the
+ * "user's Allow lost silently" failure of the 2026-10-10 incident.
+ * Staged blocks for this destination are retired (cooldown included,
+ * so the next pass cannot stage them straight back) and persisted
+ * rows that SENTINEL created for it are removed from the policy;
+ * the user's own rules are never touched.  Returns TRUE when anything
+ * changed -- the caller's own push then takes the result to the
+ * firewall. */
+gboolean
+fs_copilot_lift_auto_blocks_for_dest (const gchar *dest)
+{
+    gboolean changed = FALSE;
+    guint i;
+
+    if (dest == NULL || *dest == '\0')
+        return FALSE;
+
+    /* 1. Blocks this session staged. */
+    if (auto_blocks != NULL) {
+        for (i = 0; i < auto_blocks->len; ) {
+            AutoBlock *ab = g_ptr_array_index (auto_blocks, i);
+            FsRule *probe = fs_rule_from_csv (ab->kind, ab->csv);
+            gboolean match = probe != NULL && probe->target != NULL &&
+                g_ascii_strcasecmp (probe->target, dest) == 0;
+
+            fs_rule_free (probe);
+
+            if (match) {
+                auto_block_retire (ab, "user allowed this destination");
+                changed = TRUE;
+            } else {
+                i++;
+            }
+        }
+    }
+
+    /* 2. Rows Sentinel wrote to the policy in an earlier session:
+     *    outbound deny, this destination, a Sentinel comment. */
+    if (copilot_policy != NULL) {
+        GPtrArray *rows = copilot_policy->kinds[FS_RULE_OUTBOUND_DENY_TO];
+
+        for (i = 0; i < rows->len; ) {
+            FsRule *r = g_ptr_array_index (rows, i);
+
+            if (r->target != NULL && r->comment != NULL &&
+                g_ascii_strcasecmp (r->target, dest) == 0 &&
+                comment_is_sentinel (r->comment)) {
+                gchar *target = g_strdup (r->target);
+
+                if (fs_policy_remove_persist (copilot_policy, r)) {
+                    fs_audit_log ("sentinel rule removed "
+                                  "(user allow for destination)",
+                                  target);
+                    changed = TRUE;
+                    /* index i now points at the next row */
+                } else {
+                    fs_audit_log ("sentinel rule removal had no effect",
+                                  target);
+                    i++;
+                }
+
+                g_free (target);
+            } else {
+                i++;
+            }
+        }
+    }
+
+    if (changed)
+        fs_policyview_reload (copilot_policy);
+
+    return changed;
+}
+
+/* [ fs_copilot_autoblocks_restore ]
+ * Boot restore, called once from fs-app.c after the Copilot page owns
+ * the shared policy -- before any apply can push a stale block.
+ * Reads the staged list the previous session persisted: rows older
+ * than the ten-minute TTL come out of the policy (they expired while
+ * StockFW was not running to expire them), a Sentinel mode that is
+ * not "auto" takes the lot down, and fresh rows are re-staged with
+ * their original wall-clock time so the REMAINING TTL is honored --
+ * a restart must not grant a fresh ten minutes.  The state file is
+ * rewritten to mirror what survived, and any row whose removal
+ * failed stays tracked so the expiry timer retries it instead of
+ * leaving a block nobody manages. */
+void
+fs_copilot_autoblocks_restore (FsPolicy *policy)
+{
+    gchar *path;
+    gchar *contents = NULL;
+    gchar **lines;
+    guint i;
+    gint64 now_epoch;
+    guint stale = 0, lifted = 0, armed = 0, gone = 0, retried = 0;
+
+    if (policy == NULL)
+        return;
+
+    /* The shared policy, even if the Copilot page is not built yet:
+     * the drop helper works through this pointer. */
+    copilot_policy = policy;
+
+    path = auto_block_state_path ();
+
+    if (!g_file_get_contents (path, &contents, NULL, NULL)) {
+        g_free (path);
+        return;                    /* nothing was staged last session */
+    }
+
+    now_epoch = g_get_real_time () / G_USEC_PER_SEC;
+    lines = g_strsplit (contents, "\n", -1);
+
+    if (auto_blocks == NULL)
+        auto_blocks = g_ptr_array_new_with_free_func (auto_block_free);
+
+    for (i = 0; lines[i] != NULL; i++) {
+        const gchar *line = lines[i];
+        gchar **parts;
+        AutoBlock *ab;
+        gint64 epoch;
+        gint kind;
+
+        if (*line == '\0' || *line == '#')
+            continue;
+
+        parts = g_strsplit (line, ",", 4);
+
+        if (g_strv_length (parts) != 4 || g_strcmp0 (parts[0], "S") != 0 ||
+            *parts[3] == '\0') {
+            g_strfreev (parts);
+            continue;
+        }
+
+        epoch = g_ascii_strtoll (parts[1], NULL, 10);
+        kind  = (gint) g_ascii_strtoll (parts[2], NULL, 10);
+
+        if (epoch <= 0 || epoch > now_epoch ||
+            kind < 0 || kind >= FS_RULE_N_KINDS) {
+            g_strfreev (parts);
+            continue;
+        }
+
+        ab = g_new0 (AutoBlock, 1);
+        ab->kind     = (FsRuleKind) kind;
+        ab->csv      = g_strdup (parts[3]);
+        ab->at_epoch = epoch;
+        /* Backdate the monotonic clock from the wall clock: the TTL
+         * counts from staging, not from boot. */
+        ab->at_us    = g_get_monotonic_time () -
+                       (now_epoch - epoch) * G_USEC_PER_SEC;
+        g_strfreev (parts);
+
+        if (now_epoch - epoch >= FS_AUTOBLOCK_TTL_S ||
+            g_strcmp0 (sentinel_mode, "auto") != 0) {
+            const gchar *why =
+                now_epoch - epoch >= FS_AUTOBLOCK_TTL_S
+                ? "expired while StockFW was not running"
+                : "Sentinel is not in auto mode";
+
+            if (auto_block_rule_in_policy (ab))
+                auto_block_drop (ab, why);
+
+            if (auto_block_rule_in_policy (ab)) {
+                /* The removal failed (disk or ACL): keep the row
+                 * tracked, the expiry timer retries the drop. */
+                g_ptr_array_add (auto_blocks, ab);
+                retried++;
+            } else {
+                auto_block_cooldown_add (ab->kind, ab->csv);
+                auto_block_free (ab);
+
+                if (g_strcmp0 (why, "Sentinel is not in auto mode") == 0)
+                    lifted++;
+                else
+                    stale++;
+            }
+        } else if (!auto_block_rule_in_policy (ab)) {
+            /* The user already deleted the rule themselves: forget
+             * the row, remember the cooldown. */
+            auto_block_cooldown_add (ab->kind, ab->csv);
+            auto_block_free (ab);
+            gone++;
+        } else {
+            g_ptr_array_add (auto_blocks, ab);
+            armed++;
+        }
+    }
+
+    g_strfreev (lines);
+
+    /* The file now mirrors what survived. */
+    auto_block_state_save ();
+
+    /* Re-arm the expiry timer for the earliest survivor: restored
+     * rows may have under a minute of TTL left. */
+    if (auto_blocks->len > 0 && auto_block_expiry_id == 0) {
+        gint64 next = -1;
+        gint64 remain_s;
+
+        for (i = 0; i < auto_blocks->len; i++) {
+            AutoBlock *ab = g_ptr_array_index (auto_blocks, i);
+            gint64 due = ab->at_us +
+                (gint64) FS_AUTOBLOCK_TTL_S * G_USEC_PER_SEC;
+
+            if (next < 0 || due < next)
+                next = due;
+        }
+
+        remain_s = (next - g_get_monotonic_time ()) / G_USEC_PER_SEC;
+        if (remain_s < 1)
+            remain_s = 1;
+
+        auto_block_expiry_id = g_timeout_add_seconds (
+            (guint) remain_s, auto_block_expire_cb, NULL);
+    }
+
+    if (stale > 0 || lifted > 0 || armed > 0 || gone > 0 || retried > 0) {
+        gchar *detail = g_strdup_printf (
+            "%u expired while StockFW was not running, %u lifted "
+            "(Sentinel not in auto mode), %u re-armed, %u already "
+            "gone from the policy, %u kept for a removal retry",
+            stale, lifted, armed, gone, retried);
+
+        fs_audit_log ("sentinel auto-blocks restored", detail);
+        g_free (detail);
+    }
+
+    g_free (contents);
+    g_free (path);
 }
 
 /* [ on_sentinel_mode_changed ] */
@@ -872,6 +1331,10 @@ on_sentinel_mode_changed (GtkComboBox *combo, gpointer data)
             "ready rule are staged into the policy for 10 minutes "
             "(Undo on this page lifts one early).\n", "dim");
     } else {
+        /* P6: leaving auto mode takes down what auto mode staged --
+         * detect means detect, not "whatever is still lingering". */
+        fs_copilot_lift_all_auto_blocks ("Sentinel switched to detect");
+
         text_view_append (analysis_output,
             "\n[Sentinel] detect only: insights are reported, nothing "
             "is staged.\n", "dim");

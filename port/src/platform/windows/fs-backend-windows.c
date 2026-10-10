@@ -48,6 +48,7 @@
 #include "core/fs-settings-plan.h"
 #include "core/fs-service.h"
 #include "core/fs-i18n.h"
+#include "core/fs-util.h"
 #include "netfw-compat.h"
 
 /* Linked through CMake: ole32, oleaut32, iphlpapi, ws2_32 */
@@ -1010,26 +1011,19 @@ netsh_delete_one (const gchar *rule_name, GError **error)
 	return ok;
 }
 
-/* [ firewalled_clear_rules ]
- * Removes the rules this application installed on a previous apply.
- *
- * Deliberately NOT "name=all": that would delete every rule on the
- * machine, including ones the user or Windows created.  Instead we ask
- * netsh for the current rule list, keep the names that match our own
- * prefix, and delete exactly those.
- *
- * Returns the number of rules removed through *removed when given. */
+/* [ netsh_list_our_names ]
+ * One enumeration pass: ask netsh for every rule and parse out the
+ * names that are ours.  Returns FS_APPLY_OK with *sink set (an empty
+ * table is a valid result: none of ours exist), or a failure verdict
+ * with *sink NULL. */
 static FsApplyResult
-firewalled_clear_rules (GError **error)
+netsh_list_our_names (GHashTable **sink, GError **error)
 {
-	gint removed = 0;
-	GHashTable *ours;
-	GList *names, *iter;
 	gchar *output = NULL;
 	gint status = 0;
-	FsApplyResult result = FS_APPLY_OK;
 
-	/* Ask for every rule as CSV: Name, dir, action, ... */
+	*sink = NULL;
+
 	{
 		gchar *args[] = {
 			"netsh.exe", "advfirewall", "firewall", "show", "rule",
@@ -1061,64 +1055,77 @@ firewalled_clear_rules (GError **error)
 		return needs_elevation ? FS_APPLY_NO_PRIVILEGE : FS_APPLY_FAILED;
 	}
 
-	ours = g_hash_table_new (g_str_hash, g_str_equal);
-
-	/* Output is CSV-ish; the first field of each record is the rule
-	 * name.  Collect the ones we created. */
-	{
-		gchar **lines = g_strsplit (output, "\r\n", -1);
-
-		for (gint i = 0; lines[i] != NULL; i++) {
-			gchar *line = g_strstrip (lines[i]);
-			gchar *comma;
-
-			if (line == NULL || *line == '\0')
-				continue;
-
-			comma = strchr (line, ',');
-
-			if (comma != NULL)
-				*comma = '\0';
-
-			/* Names we created, in every spelling they have shipped
-			 * with.  netsh_safe_name rewrites the ':' of the display
-			 * name into '-', so ours arrive here as "StockFW- ...";
-			 * earlier builds produced "StockFW- ...", and the
-			 * nameless fallback used "StockFW ...".  Testing only
-			 * for the newest spelling would skip every rule a previous
-			 * version left behind, so each apply would pile another
-			 * copy of each rule on top. */
-			if (g_str_has_prefix (line, "StockFW-") ||
-			    g_str_has_prefix (line, "StockFW ") ||
-			    g_str_has_prefix (line, "StockFW-") ||
-			    g_str_has_prefix (line, "StockFW "))
-				g_hash_table_add (ours, g_strdup (line));
-		}
-
-		g_strfreev (lines);
-	}
-
-	names = g_hash_table_get_keys (ours);
-
-	for (iter = names; iter != NULL; iter = iter->next) {
-		GError *local = NULL;
-
-		if (netsh_delete_one (iter->data, &local))
-			removed++;
-
-		g_clear_error (&local);
-	}
-
-	if (error != NULL && removed > 0 && g_hash_table_size (ours) > 0) {
-		/* Silent on success: deleting our own rules is not something
-		 * the user needs a dialog about. */
-	}
-
-	g_list_free (names);
-	g_hash_table_destroy (ours);
+	*sink = fs_netsh_rule_names_extract (output);
 	g_free (output);
 
-	return result;
+	return FS_APPLY_OK;
+}
+
+/* [ firewalled_clear_rules ]
+ * Removes the rules this application installed on a previous apply.
+ *
+ * Deliberately NOT "name=all": that would delete every rule on the
+ * machine, including ones the user or Windows created.  Instead we ask
+ * netsh for the current rule list, keep the names that match our own
+ * prefix, and delete exactly those -- and then ASK AGAIN.
+ *
+ * The re-ask is the P6 fix for two silent failures found in the field:
+ * the parser used to expect CSV while netsh prints text ("Rule Name:
+ * <name>"), so zero names matched and every full apply piled another
+ * copy of each rule on top (479 rules, 28 copies of one name); and a
+ * delete that leaves a same-named copy behind used to count as done.
+ * The loop ends on a VERIFIED zero, not an assumed one.
+ *
+ * Returns FS_APPLY_OK only when a fresh enumeration finds none of our
+ * rules left. */
+static FsApplyResult
+firewalled_clear_rules (GError **error)
+{
+	guint pass;
+
+	/* Bounded: every pass either finds nothing (done), or deletes
+	 * every name it found, so a healthy machine finishes in two. */
+	for (pass = 0; pass < 5; pass++) {
+		GHashTable *ours;
+		GList *names, *iter;
+		FsApplyResult listed;
+
+		listed = netsh_list_our_names (&ours, error);
+		if (listed != FS_APPLY_OK)
+			return listed;
+
+		if (g_hash_table_size (ours) == 0) {
+			g_hash_table_destroy (ours);
+			return FS_APPLY_OK;   /* verified: none of ours remain */
+		}
+
+		names = g_hash_table_get_keys (ours);
+
+		for (iter = names; iter != NULL; iter = iter->next) {
+			GError *local = NULL;
+
+			/* A name netsh cannot find is a clean no-op; the next
+			 * enumeration is what decides whether it worked. */
+			netsh_delete_one ((const gchar *) iter->data, &local);
+			g_clear_error (&local);
+		}
+
+		g_list_free (names);
+		g_hash_table_destroy (ours);
+	}
+
+	/* Five delete+verify passes and rules of ours are still there:
+	 * say so instead of letting the caller believe the clear. */
+	if (error != NULL)
+		g_set_error_literal (error,
+		                     g_quark_from_static_string (
+			                     "fs-backend-windows"),
+		                     0,
+		                     "Some of StockFW's previous firewall "
+		                     "rules could not be removed; stale "
+		                     "rules may still be active.");
+
+	return FS_APPLY_PARTIAL;
 }
 
 /* [ firewalled_apply_rules ]
@@ -1130,6 +1137,7 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 	guint applied = 0;
 	guint failed = 0;
 	GError *first_error = NULL;
+	FsApplyResult clear_result;
 
 	if (policy == NULL)
 		return FS_APPLY_FAILED;
@@ -1137,8 +1145,11 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 	rules = fs_fwrule_from_policy (policy);
 
 	/* Drop the previous set first so applying twice does not
-	 * accumulate duplicates. */
-	firewalled_clear_rules (NULL);
+	 * accumulate duplicates.  P6: the clear verifies its own work by
+	 * re-enumerating, and a failure here is not swallowed -- the
+	 * verdict below degrades to PARTIAL so the caller never hears
+	 * "Rules applied" while stale copies are still active. */
+	clear_result = firewalled_clear_rules (&first_error);
 
 	for (iter = rules; iter != NULL; iter = iter->next) {
 		GError *local = NULL;
@@ -1220,7 +1231,22 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 		g_set_error (error, g_quark_from_static_string ("fs-backend-windows"),
 		             (int) failed, "%u of %u rules could not be created",
 		             failed, applied + failed);
+		/* The dialog gets the count; the first concrete reason is
+		 * still owned here and must not leak. */
+		g_clear_error (&first_error);
 		return FS_APPLY_PARTIAL;
+	}
+
+	/* P6: nothing to add failed, but the clear could not verify that
+	 * the previous set is gone -- the verdict must still say so, with
+	 * the reason the clear recorded in first_error. */
+	if (clear_result != FS_APPLY_OK) {
+		if (error != NULL && first_error != NULL)
+			g_propagate_error (error, first_error);
+		else
+			g_clear_error (&first_error);
+
+		return clear_result;
 	}
 
 	return FS_APPLY_OK;
@@ -1263,6 +1289,47 @@ firewalled_apply_delta (const GList *remove, const GList *add,
 			first_error = g_error_copy (local);
 
 		g_clear_error (&local);
+	}
+
+	/* 1b. P6: verify the deletions.  A name can survive its own
+	 *     delete (same-named copies stack up), and an unverified
+	 *     remove is how 22 copies of one block rule stayed active
+	 *     after the policy row was gone.  One re-enumeration: what is
+	 *     still present gets deleted again, and a delete that fails
+	 *     twice is reported instead of believed. */
+	if (remove != NULL) {
+		GHashTable *ours = NULL;
+
+		if (netsh_list_our_names (&ours, NULL) == FS_APPLY_OK &&
+		    ours != NULL) {
+			GList *leftover = NULL;
+			const GList *r;
+
+			for (r = remove; r != NULL; r = r->next) {
+				if (g_hash_table_contains (ours, r->data))
+					leftover = g_list_prepend (leftover,
+					                            (gpointer) r->data);
+			}
+
+			for (r = leftover; r != NULL; r = r->next) {
+				GError *local = NULL;
+
+				if (!netsh_delete_one ((const gchar *) r->data,
+				                       &local)) {
+					failed++;
+
+					if (first_error == NULL && local != NULL)
+						first_error = g_error_copy (local);
+				}
+
+				g_clear_error (&local);
+			}
+
+			g_list_free (leftover);
+		}
+
+		if (ours != NULL)
+			g_hash_table_destroy (ours);
 	}
 
 	/* 2. Re-create kept rules whose names the deletions took. */

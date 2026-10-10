@@ -27,6 +27,29 @@ void fs_copilot_note_event (void);
  * the insights list needs rebuilding. */
 gboolean fs_copilot_sentinel_auto_pass (void);
 
+/* P6 (false-outage hardening).  Boot restore: take the staged
+ * auto-blocks whose ten minutes ran out while StockFW was not
+ * running out of the policy, re-arm the rest with their ORIGINAL
+ * wall-clock time (a restart grants no fresh ten minutes), and lift
+ * everything when Sentinel is not in auto mode.  Call once, after
+ * the Copilot page has been built with `policy'. */
+void fs_copilot_autoblocks_restore (FsPolicy *policy);
+
+/* Lift every staged auto-block in one go (leaving auto mode does
+ * this).  Each retirement enters the session cooldown, so the next
+ * auto pass does not stage them straight back.  Returns TRUE when
+ * anything was staged. */
+gboolean fs_copilot_lift_all_auto_blocks (const gchar *why);
+
+/* The user's explicit Allow for `dest' is the last word: on Windows
+ * a block rule outranks an allow rule, so a staged Sentinel block
+ * would make the Allow a silent no-op.  Retires staged blocks for
+ * that destination and removes Sentinel's own persisted deny rows
+ * for it; the user's own rules are never touched.  Returns TRUE when
+ * anything changed -- the caller's push then takes it to the
+ * firewall. */
+gboolean fs_copilot_lift_auto_blocks_for_dest (const gchar *dest);
+
 G_END_DECLS
 
 #endif /* FS_COPILOT_VIEW_H */

@@ -232,9 +232,28 @@ FsRule   *fs_insight_to_rule (const FsInsight *insight);
 gboolean   fs_insight_apply   (const FsInsight *insight, FsPolicy *policy);
 
 /* TRUE only when the insight's rule can be staged without a human:
- * it must be able to only tighten the policy (an outbound deny).
+ * it must be able to only tighten the policy (an outbound deny), and
+ * its destination must not be one of the classes that must never be
+ * auto-blocked (P6: multicast / broadcast / loopback / link-local /
+ * the private address space, or anything unparseable).
  * Auto-block consults this; the confirmed Apply button does not. */
 gboolean   fs_insight_is_auto_safe (const FsInsight *insight);
+
+/* P6 (false-outage hardening).  TRUE when NO automatic block may ever
+ * target this destination: the reserved and private IPv4 ranges, the
+ * multicast/broadcast/reserved tail, IPv6 loopback / link-local /
+ * multicast / ULA, IPv4-mapped forms of any of those, and anything
+ * that is not a literal address at all.  Pure; unit-tested. */
+gboolean   fs_sentinel_dest_never_auto_block (const gchar *dest);
+
+/* P6.  TRUE when the historical behavior baseline already records at
+ * least FS_SENTINEL_BASELINE_DEST_MIN connections from `app' to
+ * `dest': an established destination is normal traffic, and Sentinel
+ * reports (but never automatically blocks) even metronomic traffic to
+ * it. */
+gboolean   fs_copilot_baseline_dest_established (FsCopilot *copilot,
+                                                 const gchar *app,
+                                                 const gchar *dest);
 
 G_END_DECLS
 

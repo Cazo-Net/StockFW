@@ -84,6 +84,22 @@ void fs_util_csv_append_field (GString *out, const gchar *value,
  * g_ptr_array_unref. */
 GPtrArray *fs_util_csv_split_line (const gchar *line);
 
+/* Collects our own rule names out of "netsh advfirewall firewall
+ * show rule name=all" output.  netsh prints TEXT records -- a
+ * "Rule Name:  <name>" line per rule -- not CSV, and the old
+ * comma-splitting parser matched zero names because of it: the clear
+ * step removed nothing and every full apply piled another copy of
+ * each rule onto the firewall (the 2026-10-10 incident reached 479
+ * rules with 28 copies of a single name).  Each line yields one
+ * candidate -- the rest of a "Rule Name:" label, or the line up to
+ * its first comma (bare name / CSV first field; names never contain
+ * commas) -- and only candidates carrying our own prefix are kept, so
+ * a foreign rule cannot match, and a delete of a name that does not
+ * exist is a clean no-op.  Note: like the elevation matcher, the
+ * label match assumes English netsh output.  Returns a new GHashTable
+ * of name strings (caller destroys with g_hash_table_destroy). */
+GHashTable *fs_netsh_rule_names_extract (const gchar *output);
+
 G_END_DECLS
 
 #endif /* FS_UTIL_H */

@@ -496,6 +496,64 @@ fs_util_rules_path (const gchar *relative)
 	return g_build_filename (dir, relative, NULL);
 }
 
+/* [ name_is_ours ] -- every spelling our rule names have shipped
+ * with: the "StockFW- " prefix (netsh-safe, ':' rewritten to '-')
+ * and the older "StockFW " space prefix. */
+static gboolean
+name_is_ours (const gchar *name)
+{
+	return g_str_has_prefix (name, "StockFW-") ||
+	       g_str_has_prefix (name, "StockFW ");
+}
+
+/* [ fs_netsh_rule_names_extract ] -- see fs-util.h. */
+GHashTable *
+fs_netsh_rule_names_extract (const gchar *output)
+{
+	GHashTable *names;
+	gchar **lines;
+	gint i;
+
+	names = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+
+	if (output == NULL || *output == '\0')
+		return names;
+
+	/* Splitting on "\n" covers both line endings; the strip below
+	 * removes the "\r" of CRLF output. */
+	lines = g_strsplit (output, "\n", -1);
+
+	for (i = 0; lines[i] != NULL; i++) {
+		gchar *line = g_strstrip (lines[i]);
+		gchar *name;
+
+		if (line == NULL || *line == '\0')
+			continue;
+
+		/* One candidate per line: the rest of a "Rule Name:" label
+		 * (the shape netsh actually prints; the name may contain
+		 * spaces), or the line up to its first comma (bare name or
+		 * first CSV field -- names never contain commas).  The
+		 * prefix gate below is what decides, so a foreign rule's
+		 * description cannot match by looking helpful. */
+		if (g_str_has_prefix (line, "Rule Name:"))
+			name = g_strstrip (line + strlen ("Rule Name:"));
+		else {
+			gchar *comma = strchr (line, ',');
+
+			if (comma != NULL)
+				*comma = '\0';
+			name = g_strstrip (line);
+		}
+
+		if (name != NULL && *name != '\0' && name_is_ours (name))
+			g_hash_table_add (names, g_strdup (name));
+	}
+
+	g_strfreev (lines);
+	return names;
+}
+
 const gchar *
 fs_util_apply_result_to_string (int result)
 {

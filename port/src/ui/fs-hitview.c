@@ -1005,6 +1005,17 @@ stage_rule (FsRule *rule, const gchar *what)
 		return;
 	}
 
+	/* P6: the user's Allow is the last word for this destination --
+	 * on Windows a block rule outranks an allow rule, so a Sentinel
+	 * block left standing would make this Allow a silent no-op (the
+	 * "user's Allow lost silently" half of the 2026-10-10 incident).
+	 * Staged auto-blocks and Sentinel's own persisted rows for the
+	 * destination go; the push below takes the Allow and that
+	 * removal to the firewall together.  Runs only on the success
+	 * path, so the "Nothing changed" refusal above stays true. */
+	if (rule->kind == FS_RULE_OUTBOUND_ALLOW_TO && rule->target != NULL)
+		fs_copilot_lift_auto_blocks_for_dest (rule->target);
+
 	fs_rule_free (rule);
 	fs_policyview_reload (hitview_policy);
 	fs_audit_log ("event rule added", csv);

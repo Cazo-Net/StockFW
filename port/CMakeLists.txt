@@ -251,6 +251,26 @@ if(FS_BACKEND_LIBS)
   target_link_libraries(fs-tray-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
 
+# Sentinel's P6 auto-block state machine: boot restore, session
+# cooldown, staged/persisted dest lifts, lift-all, and the detect-mode
+# gate.  Separate because it drives the Copilot page's statics
+# directly against scratch files -- the incident class (expiry loops,
+# orphaned rows, an Allow a block outranks) lives exactly there and
+# fs-core cannot see any of it.
+add_executable(fs-copilot-smoke EXCLUDE_FROM_ALL
+  tests/ui-copilot-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_include_directories(fs-copilot-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-copilot-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-copilot-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-copilot-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
+
 # The What-If Simulation Visualizer: its timeline is pure math, so the
 # smoke test checks every phase (allowed / blocked / error) and then
 # builds each window variant to see what the user would read on it.

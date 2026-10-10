@@ -66,6 +66,10 @@ static void behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
                               gint64 now_unix);
 static void emit_insight (FsCopilot *copilot, FsInsight *insight);
 static gboolean sentinel_hit_is_inbound (const FsHit *hit);
+static void hit_app_key (const FsHit *hit, gchar *buf, gsize size);
+static gboolean sentinel_dest_auto_ok (FsCopilot *copilot,
+                                       const gchar *app,
+                                       const gchar *dest);
 static FsInsight *create_insight (FsInsightType type,
                                   FsCopilotSeverity severity,
                                   const gchar *title,
@@ -82,6 +86,13 @@ static FsInsight *create_insight (FsInsightType type,
 #define FS_SENTINEL_FANOUT_WINDOW_S    60   /* rolling window, seconds   */
 #define FS_SENTINEL_FANOUT_LIMIT       60   /* distinct hosts, any       */
 #define FS_SENTINEL_FANOUT_BLOCKED     10   /* distinct hosts, blocked   */
+
+/* P6 (false-outage hardening): how many recorded connections to one
+ * destination make it ESTABLISHED for that application.  Below this a
+ * destination is still "new"; at or above it, auto-block withholds and
+ * the finding stays visible instead.  The count is the same one
+ * behavior.csv persists, so the protection survives a restart. */
+#define FS_SENTINEL_BASELINE_DEST_MIN  3
 
 static FsInsight *sentinel_beacon_check (FsCopilot *copilot,
                                          const FsHit *hit,
@@ -241,12 +252,7 @@ fs_copilot_feed_event_full (FsCopilot *copilot, const FsHit *hit,
 	 * baseline is supposed to compare against.  Events without an
 	 * Application Name carry the port's service name instead -- that
 	 * is what the log held, and the profile's key says so. */
-	g_strlcpy (app_buf, hit->service != NULL ? hit->service : "",
-	           sizeof app_buf);
-	if (g_str_has_suffix (app_buf, " [BLOCKED]"))
-		app_buf[strlen (app_buf) - strlen (" [BLOCKED]")] = '\0';
-	if (*app_buf == '\0')
-		g_strlcpy (app_buf, "Unknown", sizeof app_buf);
+	hit_app_key (hit, app_buf, sizeof app_buf);
 	app_name = app_buf;
 
 	/* Which end is the remote host depends on the direction: an
@@ -1786,16 +1792,258 @@ fs_insight_apply (const FsInsight *insight, FsPolicy *policy)
  * WITHOUT a human only when its rule can only TIGHTEN the policy --
  * an outbound deny.  Suggestions that open things (service allows,
  * which legacy insights carry for the user's confirmed Apply button)
- * are never safe to stage automatically, whatever their flag says. */
+ * are never safe to stage automatically, whatever their flag says.
+ *
+ * P6 adds a second gate at this choke point: even a deny is refused
+ * when its destination is one of the classes that must never be
+ * auto-blocked (multicast, loopback, link-local, the private LAN).
+ * These are protocol infrastructure and the user's own machines --
+ * the 2026-10-10 incident was exactly this: Windows' own LLMNR
+ * multicast and two LAN hosts auto-blocked as "beacons". */
 gboolean
 fs_insight_is_auto_safe (const FsInsight *insight)
 {
+	FsRule *rule;
+	gboolean safe;
+
 	if (insight == NULL || insight->rule_csv == NULL ||
 	    *insight->rule_csv == '\0')
 		return FALSE;
 
-	return insight->rule_kind == FS_RULE_OUTBOUND_DENY_TO ||
-	       insight->rule_kind == FS_RULE_OUTBOUND_DENY_SERVICE;
+	if (insight->rule_kind != FS_RULE_OUTBOUND_DENY_TO &&
+	    insight->rule_kind != FS_RULE_OUTBOUND_DENY_SERVICE)
+		return FALSE;
+
+	rule = fs_rule_from_csv (insight->rule_kind, insight->rule_csv);
+	if (rule == NULL)
+		return FALSE;
+
+	safe = !fs_sentinel_dest_never_auto_block (rule->target);
+	fs_rule_free (rule);
+
+	return safe;
+}
+
+/* [ parse_ipv4_strict ] -- four decimal octets, dots between, nothing
+ * else.  Hostnames and junk fail: they are not classifiable, and an
+ * unclassifiable destination is never auto-blocked. */
+static gboolean
+parse_ipv4_strict (const gchar *s, guint8 out[4])
+{
+	guint i;
+
+	if (s == NULL || *s == '\0')
+		return FALSE;
+
+	for (i = 0; i < 4; i++) {
+		guint value = 0;
+		gint digits = 0;
+
+		while (digits < 3 && g_ascii_isdigit (*s)) {
+			value = value * 10 + (guint) (*s - '0');
+			s++;
+			digits++;
+		}
+
+		if (digits == 0 || value > 255)
+			return FALSE;
+
+		out[i] = (guint8) value;
+
+		if (i < 3) {
+			if (*s != '.')
+				return FALSE;
+			s++;
+		}
+	}
+
+	return *s == '\0';
+}
+
+/* [ v4_dest_never_auto_block ] -- the IPv4 classes that are protocol
+ * infrastructure or the user's own address space.  Blocking any of
+ * them "automatically" has already broken real machines: 224.0.0.252
+ * is Windows' own LLMNR, 239.255.255.250 is SSDP discovery, and the
+ * 192.168/16 hits were the user's own LAN hosts. */
+static gboolean
+v4_dest_never_auto_block (const guint8 o[4])
+{
+	if (o[0] == 0)                                 /* "this network"   */
+		return TRUE;
+	if (o[0] == 10)                                /* RFC 1918         */
+		return TRUE;
+	if (o[0] == 100 && o[1] >= 64 && o[1] <= 127)  /* CGNAT 100.64/10  */
+		return TRUE;
+	if (o[0] == 127)                               /* loopback         */
+		return TRUE;
+	if (o[0] == 169 && o[1] == 254)                /* link-local       */
+		return TRUE;
+	if (o[0] == 172 && o[1] >= 16 && o[1] <= 31)   /* RFC 1918         */
+		return TRUE;
+	if (o[0] == 192 && o[1] == 168)                /* RFC 1918         */
+		return TRUE;
+	if (o[0] >= 224 && o[0] <= 239)                /* multicast 224/4  */
+		return TRUE;
+	if (o[0] >= 240)                               /* reserved 240/4,
+	                                                * incl. broadcast  */
+		return TRUE;
+
+	return FALSE;
+}
+
+/* [ fs_sentinel_dest_never_auto_block ]
+ * TRUE when no automatic block may ever target this destination.
+ * Literal addresses only: anything that does not parse as an IP is
+ * unclassifiable, and unclassifiable means withheld.  Sentinel hits
+ * always carry literal addresses, so this costs nothing real and a
+ * future source of junk destinations cannot smuggle a block through.
+ *
+ * IPv4-mapped IPv6 (::ffff:a.b.c.d) is judged as the IPv4 address it
+ * stands for, so the mapping cannot launder a LAN address into
+ * "public". */
+gboolean
+fs_sentinel_dest_never_auto_block (const gchar *dest)
+{
+	guint8 v4[4];
+	GInetAddress *addr;
+	gboolean never = TRUE;
+
+	if (dest == NULL || *dest == '\0')
+		return TRUE;
+
+	if (parse_ipv4_strict (dest, v4))
+		return v4_dest_never_auto_block (v4);
+
+	addr = g_inet_address_new_from_string (dest);
+	if (addr == NULL)
+		return TRUE;   /* not an address: withheld */
+
+	{
+		const guint8 *b = g_inet_address_to_bytes (addr);
+
+		if (g_inet_address_get_family (addr) == G_SOCKET_FAMILY_IPV4) {
+			never = v4_dest_never_auto_block (b);
+		} else {
+			gboolean v6_never = FALSE;
+
+			if (g_inet_address_get_is_loopback (addr) ||
+			    g_inet_address_get_is_multicast (addr) ||
+			    g_inet_address_get_is_link_local (addr) ||
+			    g_inet_address_get_is_site_local (addr) ||
+			    g_inet_address_get_is_any (addr))
+				v6_never = TRUE;
+			else if ((b[0] & 0xfe) == 0xfc)          /* ULA fc00::/7    */
+				v6_never = TRUE;
+			else if (b[0] == 0 && b[1] == 0 && b[2] == 0 &&
+			         b[3] == 0 && b[4] == 0 && b[5] == 0 &&
+			         b[6] == 0 && b[7] == 0 && b[8] == 0 &&
+			         b[9] == 0 && b[10] == 0xff && b[11] == 0xff)
+				/* ::ffff:a.b.c.d: judged as the IPv4 it stands
+				 * for, so the mapping cannot launder a LAN
+				 * address into "public". */
+				v6_never = v4_dest_never_auto_block (b + 12);
+
+			never = v6_never;
+		}
+	}
+
+	g_object_unref (addr);
+	return never;
+}
+
+/* [ baseline_dest_count ] -- how many connections from `app' to
+ * `dest' the historical behavior baseline holds (any port). */
+static guint
+baseline_dest_count (FsCopilot *copilot, const gchar *app,
+                     const gchar *dest)
+{
+	FsAppProfile *profile;
+	guint *count;
+
+	if (copilot == NULL || app == NULL || dest == NULL || *dest == '\0')
+		return 0;
+
+	profile = g_hash_table_lookup (copilot->profiles, app);
+	if (profile == NULL || profile->common_destinations == NULL)
+		return 0;
+
+	count = g_hash_table_lookup (profile->common_destinations, dest);
+	if (count == NULL)
+		return 0;
+
+	return *count;
+}
+
+/* [ fs_copilot_baseline_dest_established ]
+ * The other half of the P6 gate: a destination the behavior baseline
+ * already records for THIS application is normal traffic, and normal
+ * traffic is never auto-blocked, however metronomic its timing looks.
+ * That is the browser-to-CDN case from the incident: brave.exe had
+ * 27 recorded connections to the "beacon" host -- established,
+ * not covert. */
+gboolean
+fs_copilot_baseline_dest_established (FsCopilot *copilot,
+                                      const gchar *app,
+                                      const gchar *dest)
+{
+	return baseline_dest_count (copilot, app, dest) >=
+	       FS_SENTINEL_BASELINE_DEST_MIN;
+}
+
+/* [ hit_app_key ] -- the per-application profile key, shared by the
+ * profile feed and by Sentinel so both consult the SAME baseline row:
+ * the service field, minus the Windows backend's " [BLOCKED]"
+ * marker, "Unknown" when absent. */
+static void
+hit_app_key (const FsHit *hit, gchar *buf, gsize size)
+{
+	g_strlcpy (buf, hit->service != NULL ? hit->service : "", size);
+
+	if (g_str_has_suffix (buf, " [BLOCKED]"))
+		buf[strlen (buf) - strlen (" [BLOCKED]")] = '\0';
+
+	if (*buf == '\0')
+		g_strlcpy (buf, "Unknown", size);
+}
+
+/* [ sentinel_dest_auto_ok ] -- both P6 gates in one verdict: the
+ * destination class and the established baseline. */
+static gboolean
+sentinel_dest_auto_ok (FsCopilot *copilot, const gchar *app,
+                       const gchar *dest)
+{
+	if (fs_sentinel_dest_never_auto_block (dest))
+		return FALSE;
+
+	if (fs_copilot_baseline_dest_established (copilot, app, dest))
+		return FALSE;
+
+	return TRUE;
+}
+
+/* [ sentinel_dest_auto_ok_before_run ]
+ * The beacon's form of the verdict.  The baseline count includes the
+ * metronomic run that is being flagged right now -- those samples are
+ * the SUSPICION, not the history, so they come off before comparing:
+ * a first-contact stranger's six contacts leave zero history and stay
+ * auto-blockable, while a CDN with recorded history beyond the run
+ * reads as established and stays report-only.  Subtracting is exact
+ * for the run (one dest:port, all in the window); other ports and
+ * older contacts to the same destination keep counting, which is
+ * precisely the evidence the incident's browser case rested on. */
+static gboolean
+sentinel_dest_auto_ok_before_run (FsCopilot *copilot, const gchar *app,
+                                  const gchar *dest, guint run_samples)
+{
+	guint before;
+
+	if (fs_sentinel_dest_never_auto_block (dest))
+		return FALSE;
+
+	before = baseline_dest_count (copilot, app, dest);
+	before = before > run_samples ? before - run_samples : 0;
+
+	return before < FS_SENTINEL_BASELINE_DEST_MIN;
 }
 
 /* [ app_profile_new ] */
@@ -2256,7 +2504,10 @@ behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
 		                                     app_name, port,
 		                                     remote_ip,
 		                                     _("Auto-generated by Copilot"));
-		insight->auto_applicable = TRUE;
+		/* P6: same two gates as Sentinel's own blocks -- an
+		 * established baseline destination is never auto-staged. */
+		insight->auto_applicable =
+			sentinel_dest_auto_ok (copilot, app_name, remote_ip);
 	}
 
 	insight->timestamp = now_unix;
@@ -2407,7 +2658,19 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us)
 		insight->rule_csv = g_strdup_printf (
 			"%s, %s", dst, "Sentinel: periodic beacon");
 		insight->rule_kind = FS_RULE_OUTBOUND_DENY_TO;
-		insight->auto_applicable = TRUE;
+
+		/* P6: the finding is always reported; the automatic block is
+		 * withheld when the destination is protocol infrastructure
+		 * (multicast, loopback, the LAN) or when the application's
+		 * own baseline -- beyond this very run -- already knows it. */
+		{
+			gchar app_buf[256];
+
+			hit_app_key (hit, app_buf, sizeof app_buf);
+			insight->auto_applicable =
+				sentinel_dest_auto_ok_before_run (
+					copilot, app_buf, dst, stamps->len);
+		}
 
 		if (!key_owned)
 			g_free (key);

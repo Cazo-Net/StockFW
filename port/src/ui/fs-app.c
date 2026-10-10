@@ -502,6 +502,15 @@ fs_app_activate (GtkApplication *app)
 
 	add_page (_("Copilot"), fs_copilot_page (copilot, policy), NULL);
 
+	/* P6 (false-outage hardening): the Sentinel staged-block list is
+	 * persisted, so a restart must reconcile it -- rows whose ten
+	 * minutes ran out while StockFW was not running come out of the
+	 * policy BEFORE any apply can push them, the rest are re-armed
+	 * with their original clock, and a Sentinel mode that is not
+	 * "auto" lifts the lot.  The page above owns the shared policy
+	 * and the mode cache this reads. */
+	fs_copilot_autoblocks_restore (policy);
+
 	/* Trust tab: the application trust engine's surface. */
 	add_page (_("Trust"), fs_trustview_page (), NULL);
 

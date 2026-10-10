@@ -1230,6 +1230,265 @@ static void test_sentinel_fanout (void)
 	fs_copilot_free (copilot);
 }
 
+/* ==== P6: false-outage hardening (2026-10-10 incident) ============
+ * StockFW blocked this machine's own internet, and the demand was
+ * "not just DeepSeek, any platform".  These checks pin the three
+ * gates that make that true: the destination classes that may never
+ * be auto-blocked (protocol infrastructure and the user's own
+ * address space), the established-baseline veto (metronomic traffic
+ * to a destination the application already talks to is reported, not
+ * blocked), and the netsh name parser whose CSV-only shape let every
+ * clear delete nothing while full applies stacked 479 rules with 28
+ * copies of a single name. */
+
+static void test_sentinel_auto_gates (void)
+{
+	static const gchar *never[] = {
+		/* the incident's own hits, plus the rest of the classes */
+		"224.0.0.252",          /* LLMNR, Windows' own multicast     */
+		"239.255.255.250",      /* SSDP discovery                    */
+		"192.168.1.21",         /* the user's own machine            */
+		"192.168.50.2",         /* the user's own gateway            */
+		"127.0.0.1",            /* loopback                          */
+		"0.0.0.0", "10.0.0.1", "100.64.0.1", "100.127.255.255",
+		"169.254.10.10", "172.16.0.1", "172.31.255.254",
+		"224.0.0.1", "239.1.2.3", "240.0.0.1", "255.255.255.255",
+		"::1", "::", "fe80::1", "ff02::1", "fd00::1", "fec0::1",
+		"::ffff:192.168.1.1",   /* mapped: laundering buys nothing  */
+		"::ffff:127.0.0.1",
+		"",                     /* unparseable is withheld           */
+		"not-an-ip",
+		"evil.example.com"
+	};
+	static const gchar *ok[] = {
+		"3.173.21.63",          /* the incident's CDN: genuinely public */
+		"8.8.8.8", "1.1.1.1", "9.9.9.9",
+		"203.0.113.9", "198.51.100.77", "104.20.32.17",
+		"2606:4700::1111", "::ffff:8.8.8.8"
+	};
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS (never); i++)
+		CHECK (fs_sentinel_dest_never_auto_block (never[i]),
+		       "never auto-blocked: \"%s\"", never[i]);
+
+	CHECK (fs_sentinel_dest_never_auto_block (NULL),
+	       "a NULL destination is withheld");
+
+	for (i = 0; i < G_N_ELEMENTS (ok); i++)
+		CHECK (!fs_sentinel_dest_never_auto_block (ok[i]),
+		       "still blockable (public): \"%s\"", ok[i]);
+
+	/* The choke point refuses a deny at a withheld destination even
+	 * when the insight itself claims auto. */
+	{
+		FsInsight ins;
+
+		memset (&ins, 0, sizeof ins);
+		ins.type = FS_INSIGHT_BEACON;
+		ins.severity = FS_COPILOT_CRITICAL;
+		ins.auto_applicable = TRUE;
+
+		ins.rule_kind = FS_RULE_OUTBOUND_DENY_TO;
+		ins.rule_csv = (gchar *) "224.0.0.252, Sentinel: periodic beacon";
+		CHECK (!fs_insight_is_auto_safe (&ins),
+		       "a multicast deny is never auto-safe");
+
+		ins.rule_csv = (gchar *) "192.168.1.21, Sentinel: periodic beacon";
+		CHECK (!fs_insight_is_auto_safe (&ins),
+		       "a LAN deny is never auto-safe");
+
+		ins.rule_csv = (gchar *) "203.0.113.9, Sentinel: periodic beacon";
+		CHECK (fs_insight_is_auto_safe (&ins),
+		       "a public deny stays auto-safe");
+
+		ins.rule_kind = FS_RULE_OUTBOUND_ALLOW_SERVICE;
+		ins.rule_csv = (gchar *) "HTTP, 80, 203.0.113.9, hi";
+		CHECK (!fs_insight_is_auto_safe (&ins),
+		       "an allow suggestion is never auto-safe");
+
+		ins.rule_kind = FS_RULE_OUTBOUND_DENY_TO;
+		ins.rule_csv = NULL;
+		CHECK (!fs_insight_is_auto_safe (&ins),
+		       "no rule is never auto-safe");
+	}
+
+	/* The established-baseline veto: three recorded connections and
+	 * the destination is part of the application's normal life. */
+	{
+		FsCopilot *c = fs_copilot_new ();
+		FsHit hit;
+		gint n;
+
+		CHECK (!fs_copilot_baseline_dest_established (c, "app.exe",
+		                                              "9.9.9.9"),
+		       "no profile at all: nothing is established");
+
+		memset (&hit, 0, sizeof hit);
+		hit.direction   = "Out";
+		hit.source      = "192.168.1.7";
+		hit.destination = "9.9.9.9";
+		hit.port        = "80";
+		hit.protocol    = "TCP";
+		hit.service     = "app.exe";
+
+		for (n = 0; n < 2; n++)
+			fs_copilot_feed_event_at (c, &hit,
+			                          (gint64) 400000 * G_USEC_PER_SEC +
+			                          (gint64) n * 600 * G_USEC_PER_SEC);
+
+		CHECK (!fs_copilot_baseline_dest_established (c, "app.exe",
+		                                              "9.9.9.9"),
+		       "two connections: the destination is still new");
+
+		fs_copilot_feed_event_at (c, &hit,
+		                          (gint64) 400000 * G_USEC_PER_SEC +
+		                          2 * 600 * G_USEC_PER_SEC);
+
+		CHECK (fs_copilot_baseline_dest_established (c, "app.exe",
+		                                             "9.9.9.9"),
+		       "three connections: the destination is established");
+		CHECK (!fs_copilot_baseline_dest_established (c, "other.exe",
+		                                              "9.9.9.9"),
+		       "another application does not inherit the baseline");
+		CHECK (!fs_copilot_baseline_dest_established (c, "app.exe",
+		                                              "8.8.8.8"),
+		       "the baseline is per destination");
+		fs_copilot_free (c);
+	}
+
+	/* Same metronomic traffic, three verdicts: a public stranger is
+	 * auto-blockable; the LAN, the multicast infrastructure and an
+	 * established CDN are report-only.  These are the incident's
+	 * exact shapes. */
+	{
+		FsCopilot *c;
+		FsHit hit;
+		const FsInsight *b;
+		gint i;
+		const gint64 t0 = (gint64) 910000 * G_USEC_PER_SEC;
+
+		memset (&hit, 0, sizeof hit);
+		hit.direction = "Out";
+		hit.source    = "192.168.1.7";
+		hit.port      = "443";
+		hit.protocol  = "TCP";
+
+		/* a public destination the baseline has never seen */
+		c = fs_copilot_new ();
+		hit.service     = "stranger.exe";
+		hit.destination = "203.0.113.50";
+		for (i = 0; i < 6; i++)
+			fs_copilot_feed_event_at (c, &hit,
+			                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+		b = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (b != NULL && b->auto_applicable,
+		       "a metronomic stranger is reported and auto-blockable");
+		fs_copilot_free (c);
+
+		/* the user's own LAN host */
+		c = fs_copilot_new ();
+		hit.service     = "lan.exe";
+		hit.destination = "192.168.77.50";
+		for (i = 0; i < 6; i++)
+			fs_copilot_feed_event_at (c, &hit,
+			                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+		b = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (b != NULL, "the LAN beacon is still reported");
+		CHECK (b == NULL || !b->auto_applicable,
+		       "the LAN beacon is never auto-blockable");
+		fs_copilot_free (c);
+
+		/* Windows' own LLMNR multicast */
+		c = fs_copilot_new ();
+		hit.service     = "svchost.exe";
+		hit.destination = "224.0.0.252";
+		for (i = 0; i < 6; i++)
+			fs_copilot_feed_event_at (c, &hit,
+			                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+		b = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (b != NULL, "the multicast beacon is still reported");
+		CHECK (b == NULL || !b->auto_applicable,
+		       "the multicast beacon is never auto-blockable");
+		fs_copilot_free (c);
+
+		/* the browser's own established CDN: history first (port 80),
+		 * then the metronomic tail (port 443).  The beacon key is
+		 * dst:port, the baseline key is app+dest -- so the history
+		 * vetoes the auto-block without hiding the report. */
+		c = fs_copilot_new ();
+		hit.service     = "browser.exe";
+		hit.destination = "104.20.32.17";
+		hit.port        = "80";
+		for (i = 0; i < 3; i++)
+			fs_copilot_feed_event_at (c, &hit,
+			                          t0 + (gint64) i * 3600 * G_USEC_PER_SEC);
+		hit.port = "443";
+		for (i = 0; i < 6; i++)
+			fs_copilot_feed_event_at (
+				c, &hit,
+				t0 + 3 * 3600 * G_USEC_PER_SEC +
+				(gint64) i * 60 * G_USEC_PER_SEC);
+		b = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (b != NULL,
+		       "the established CDN beacon is still reported");
+		CHECK (b == NULL || !b->auto_applicable,
+		       "an established baseline destination is not auto-blockable");
+		fs_copilot_free (c);
+	}
+
+	/* The netsh name parser: text records, our prefix only.  This is
+	 * the piece whose CSV-only shape let every clear delete nothing
+	 * and every full apply stack copies (479 rules, 28 of one name). */
+	{
+		static const gchar fixture[] =
+			"Rule Name:                            "
+			    "StockFW- Block outbound -3.173.21.63-\r\n"
+			"Enabled:                              Yes\r\n"
+			"Rule Name:                            "
+			    "StockFW- Allow outbound -203.0.113.9-\r\n"
+			"Rule Name:                            "
+			    "Core Networking - DNS (UDP-Out)\r\n"
+			"Rule Name:                            "
+			    "@FirewallAPI.dll,-28752\r\n"
+			"Rule Name:                            "
+			    "StockFW Allow service -HTTP-\r\n"
+			"Rule Name:                            NotStockFW- not ours\r\n"
+			"\r\n"
+			"StockFW- bare name line\r\n"
+			"StockFW- csv shaped,Outbound,Yes\r\n";
+		GHashTable *names = fs_netsh_rule_names_extract (fixture);
+
+		CHECK (g_hash_table_size (names) == 5,
+		       "the parser finds exactly our 5 names (got %u)",
+		       g_hash_table_size (names));
+		CHECK (g_hash_table_contains (names,
+		       "StockFW- Block outbound -3.173.21.63-"),
+		       "text-form block name collected");
+		CHECK (g_hash_table_contains (names,
+		       "StockFW- Allow outbound -203.0.113.9-"),
+		       "text-form allow name collected");
+		CHECK (g_hash_table_contains (names,
+		       "StockFW Allow service -HTTP-"),
+		       "the space prefix still matches (legacy rules)");
+		CHECK (g_hash_table_contains (names, "StockFW- bare name line"),
+		       "a bare name line is collected");
+		CHECK (g_hash_table_contains (names, "StockFW- csv shaped"),
+		       "the CSV first field is collected without its tail");
+		CHECK (!g_hash_table_contains (names,
+		       "Core Networking - DNS (UDP-Out)"),
+		       "a foreign rule name is not ours");
+		CHECK (!g_hash_table_contains (names, "NotStockFW- not ours"),
+		       "a near-miss prefix is not ours");
+		g_hash_table_destroy (names);
+
+		names = fs_netsh_rule_names_extract (NULL);
+		CHECK (g_hash_table_size (names) == 0,
+		       "empty output yields no names");
+		g_hash_table_destroy (names);
+	}
+}
+
 /* ==== P2: explainable behavior analysis ============================
  * Historical baselines (persisted) and correlated findings.  Every
  * check pins one honest input or one explainability promise: the
@@ -1856,10 +2115,27 @@ static void test_insight_apply (void)
 	CHECK (!fs_insight_is_auto_safe (insight),
 	       "a service allow is never auto-safe, whatever its flag says");
 
+	/* P6: the destination gate holds at the choke point too, so a
+	 * deny gets the csv it will actually carry (host + comment). */
 	insight->rule_kind = FS_RULE_OUTBOUND_DENY_TO;
+	g_free (insight->rule_csv);
+	insight->rule_csv = g_strdup (
+		"198.51.100.9, Auto-generated by Copilot");
 	CHECK (fs_insight_is_auto_safe (insight),
 	       "an outbound deny is auto-safe");
 
+	/* An unclassifiable destination (here a leftover app name) is
+	 * never auto-blocked, whatever the kind says: not an address
+	 * means not classifiable means withheld. */
+	g_free (insight->rule_csv);
+	insight->rule_csv = g_strdup (
+		"evil.exe, Auto-generated by Copilot");
+	CHECK (!fs_insight_is_auto_safe (insight),
+	       "an unclassifiable destination is never auto-safe");
+
+	g_free (insight->rule_csv);
+	insight->rule_csv = g_strdup (
+		"evil.exe, 80, 198.51.100.9, Auto-generated by Copilot");
 	insight->rule_kind = FS_RULE_OUTBOUND_DENY_SERVICE;
 	CHECK (fs_insight_is_auto_safe (insight),
 	       "a service deny is auto-safe");
@@ -4169,6 +4445,7 @@ int main (void)
 	test_policy_persist_rollback ();
 	test_sentinel_beacon ();
 	test_sentinel_fanout ();
+	test_sentinel_auto_gates ();
 	test_behavior_derivation ();
 	test_behavior_signals ();
 	test_behavior_hour_guard ();
