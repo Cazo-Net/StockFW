@@ -179,15 +179,35 @@ if [ ! -f "$PORT_DIR/CHANGELOG.md" ]; then
 # StockFW Changelog
 
 ## Version 1.0.5 (2026)
-- What-If Simulator: type a line like "allow SSH from 192.168.1.50 on
-  port 22" and get a BLOCKED/ALLOWED verdict against the real policy
-  (block precedence, shadowed-allow reporting, CIDR coverage) without
-  writing anything
+- Sentinel false-outage hardening: auto-block refuses whole
+  destination classes (your own network, loopback, multicast,
+  protocol infrastructure, anything unclassifiable), never
+  re-stages a rule it just took down, persists its staged blocks
+  across restarts with their *remaining* time, and an Allow in the
+  event view lifts Sentinel's block for that destination - it can
+  no longer lock you out of legitimate sites
+- Application trust engine: signed/unsigned identification,
+  SHA-256, publisher identity, attested baselines that notice
+  unexpected changes
+- Explainable behavior analysis: per-application baselines and
+  correlated, sentence-level findings on the Copilot page
+- Safe policy enforcement: apply gate with impact preview, an
+  applied-policy journal, narrow delta application and verified
+  rollback
+- System tray and background operation (close/minimize to tray,
+  firewall-state tooltip, Open/Quit menu)
+- Preferences made real on Windows: ICMP, broadcast, profile,
+  port-range and notification settings apply for real; pages
+  Windows cannot honor stay hidden rather than greyed
+- What-If Simulator: type a line like "allow SSH from 192.168.1.50
+  on port 22" and get a BLOCKED/ALLOWED verdict against the real
+  policy (block precedence, shadowed-allow reporting, CIDR
+  coverage) without writing anything
 - Bi-directional Direction setting on the pairable rule kinds: one
   option, one all-or-nothing save for both directions
 - AI Assistant pane removed from the Copilot page; status messages
   live in the Policy Analysis log
-- Canonical test runner tests/full-suite.sh (302 core checks)
+- Canonical test runner tests/full-suite.sh (653 core checks)
 
 ## Version 1.0.4 (2026)
 - Event -> Rule one-click staging, Events filter bar
