@@ -41,6 +41,7 @@ add_library(fs-core STATIC
   src/core/fs-copilot.c
   src/core/fs-eventrule.c
   src/core/fs-audit.c
+  src/core/fs-trust.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
@@ -62,8 +63,11 @@ endif()
 
 if(FS_PLATFORM STREQUAL "windows")
   set(FS_BACKEND_SOURCES
-      src/platform/windows/fs-backend-windows.c)
-  set(FS_BACKEND_LIBS ole32 oleaut32 iphlpapi ws2_32)
+      src/platform/windows/fs-backend-windows.c
+      src/platform/windows/fs-trust-win.c)
+  # wintrust = WinVerifyTrust, crypt32 = CryptQueryObject + the
+  # certificate store calls the trust engine's publisher half uses.
+  set(FS_BACKEND_LIBS ole32 oleaut32 iphlpapi ws2_32 wintrust crypt32)
 endif()
 
 # Standalone build of the backend alone, for quick compile checks.

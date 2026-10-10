@@ -30,7 +30,7 @@
 
 **Chapter 11: 1.0.4 Addendum** — 11.1 Event → Rule, One Click · 11.2 Events Filter Bar · 11.3 Sentinel: Detection and Auto-Block · 11.4 F-1/F-3 Hygiene · 11.5 Repairs and Version
 
-**Chapter 12: 1.0.5 Addendum** — 12.1 AI Assistant Removed, What-If Developed · 12.2 Bi-Directional Direction Setting · 12.3 Runner and Version
+**Chapter 12: 1.0.5 Addendum** — 12.1 AI Assistant Removed, What-If Developed · 12.2 Bi-Directional Direction Setting · 12.3 Runner and Version · 12.4 Application Trust Engine (Priority 1)
 
 ---
 
@@ -92,7 +92,7 @@ Every architectural claim in this document describes the code as it exists in St
 | AI layer | Local deterministic NLP parser + heuristics; **no network calls** |
 | Privilege model | `asInvoker` manifest; UAC only via user-launched elevated wrappers; fail-loud unelevated errors |
 | Installer | NSIS, bundling the complete GTK3 runtime beside `StockFW.exe` |
-| Test suites | Core 371, Winlog 56, Installer-spawn 9, Logstart 5, UI smokes, teeth-verified regressions |
+| Test suites | Core 408, Winlog 56, Installer-spawn 9, Logstart 5, UI smokes, teeth-verified regressions |
 
 ### 1.7 System Context Diagram
 
@@ -144,8 +144,8 @@ block-beta
     columns 1
     L1["Layer 1 — Presentation (GTK3): Status, Events, Policy, Copilot pages; Preferences and About dialogs; toolbar actions"]
     L2["Layer 2 — Application Coordination: fs-app.c (window, notebook, page switching, timers), fs-policyview (dirty state, Apply), fs-statusview (refresh loops)"]
-    L3["Layer 3 — Domain Core: fs-rules / fs-fwrule (policy model, parsing, validation), fs-prefs (settings), fs-copilot (insights, suggestions, what-if), fs-util (validators)"]
-    L4["Layer 4 — Platform Backend: FsBackend vtable; fs-backend-windows.c (netsh, COM, wevtutil) · fs-backend-linux.c (iptables)"]
+    L3["Layer 3 — Domain Core: fs-rules / fs-fwrule (policy model, parsing, validation), fs-prefs (settings), fs-copilot (insights, suggestions, what-if), fs-trust (file hashing, attested baselines), fs-util (validators)"]
+    L4["Layer 4 — Platform Backend: FsBackend vtable; fs-backend-windows.c (netsh, COM, wevtutil) · fs-trust-win.c (Authenticode) · fs-backend-linux.c (iptables)"]
     L5["Layer 5 — Operating System: Windows Filtering Platform, Security Event Log, netsh/INetFwPolicy2, iptables/netfilter"]
     style L1 fill:#e8f0fe
     style L3 fill:#e6f4ea
@@ -229,6 +229,7 @@ Both platforms implement one vtable, `FsBackend` (`fs-backend.h`), which is how 
 | `apply(policy)` | Compile and push rules | One `netsh advfirewall add rule` argv per rule | `iptables` argv per rule (script generation in `fs-script.c`) |
 | `poll / hits` | Fetch new adjudicated connections | `wevtutil` on 5156/5157, split + dedup (Section 2.2) | Netfilter log / connection listing |
 | `refresh_network` / `refresh_connections` | Dashboard counters | `GetExtendedTcpTable`, interface stats (no elevation needed) | `/proc` and route queries |
+| `trust_signature` | Authenticode verdict + signer for one executable (trust engine, 12.4) | `WinVerifyTrust` + `CryptQueryObject`, offline (`fs-trust-win.c`) | Slot NULL — verdict stays *not checked* |
 | `uses_settings` | Do Network/ICMP/ToS/Advanced preference pages apply? | **FALSE** — rules come from the policy | **TRUE** — pages build rules |
 
 `uses_settings` deserves special mention because it is the architectural root of the WYSIWYG guarantee: the Preferences dialog asks the backend whether to render those pages *at all* (Chapter 6), and the UI smoke test fails if a page the backend ignores is offered (Chapter 8).
@@ -690,7 +691,7 @@ CMake targets include the application (`StockFW.exe` / `StockFW`) and **test-onl
 
 | Suite | Checks | What it proves |
 |---|---|---|
-| **Core** (`test-core.sh`) | **371** | Rule parsing/round-trip, validation edge cases, Copilot suggestion apply + profile-lifetime, policy save/rollback + bi-directional pair persistence, What-If scenario parsing and verdicts (block precedence, shadowing, CIDR coverage, port/wildcard symmetry, ICMP-vs-ports, best-match naming, forward disclosure), reading shapes (`N port`, `:N`, `local:N`, service map) and the visualizer's suggestion/rule builders |
+| **Core** (`test-core.sh`) | **408** | Rule parsing/round-trip, validation edge cases, Copilot suggestion apply + profile-lifetime, policy save/rollback + bi-directional pair persistence, What-If scenario parsing and verdicts (block precedence, shadowing, CIDR coverage, port/wildcard symmetry, ICMP-vs-ports, best-match naming, forward disclosure), reading shapes (`N port`, `:N`, `local:N`, service map) and the visualizer's suggestion/rule builders, and the trust engine (known-digest inspect, provider verdict states, baseline NEW/UNCHANGED/CHANGED/GONE, CSV quoting round-trip, audit lines) |
 | **Winlog + spawn probe** | **56** | Real `wevtutil` format parsing, split/dedup incl. `test_dedup_index_shift`, spawn/capture behavior |
 | **Installer spawn** | **9** | The installed layout spawns correctly (PATH/DLL resolution from the shipped directory) |
 | **Logstart** | **5** | `auditpol` bootstrap is idempotent and reports honestly |
@@ -707,6 +708,7 @@ A regression test without teeth is theater: it passes whether or not the bug is 
 1. **Copilot profile lifetime (UAF/double-free).** Re-injecting the original defect (inserting an existing profile key, which frees the old value through the hash table's destroy-notify) makes the test fail with `profile's counting tables are live after feed 2` and `2 feeds counted after feed 2 (got 0)`; the restored build passes. This is the test that pins the original crash-on-monitoring bug.
 2. **Event dedup index shift.** Re-injecting marker-inclusive dedup keys makes `test_dedup_index_shift` fail with `got 3 deliveries` (expected 2) — exactly the duplicate-rows symptom a user screenshot showed; the fixed splitter passes.
 3. **Preferences WYSIWYG.** Re-injecting the four dead pages makes the UI smoke fail with `the backend does not read "Network Settings" but it is offered`; the gated build passes.
+4. **Trust engine.** Faking the SHA-256 (a constant instead of the file's digest) and muting the change-detector (never reporting *changed*) makes the core suite fail exactly 6 checks — the digest constant, the baseline's remembered hash, both change proofs, the gone-row's hash, and the audit line; the real engine passes.
 
 The discipline matters because each of these bugs was *shipped once*. Pinning it with a test that provably fails means it cannot ship again silently.
 
@@ -830,6 +832,12 @@ The design's one-sentence performance contract: **StockFW's cost per second is a
 
 Ordered by (user-visible value × security relevance) ÷ effort; each item is `[Roadmap]` unless noted:
 
+**The copilot program (strategic direction):**
+- **P1 — Application trust engine**: signed/unsigned identification, SHA-256, publisher identity, attested baselines that notice unexpected changes. **Core engine shipped (12.4)**; a Trust UI surface and running-process scans remain.
+- **P2 — Explainable behavior analysis**: historical baselines per application; correlate process, destination, port, timing, and connection frequency into explainable findings.
+- **P3 — Safe policy enforcement**: rule-impact previews (the What-If engine is the seed), audit-only testing mode, narrowly scoped apply, verified rollback.
+- **P4 — Detection validation**: a repeatable adversarial suite — port scans, suspicious outbound patterns, benign developer tools, false positives, rule rollback — run against the engine.
+
 **Security/robustness (first):**
 - **F-1**: wire the existing-but-uncalled `fs_util_is_valid_host`/`_is_valid_port` into the policy load path (defense-in-depth ahead of netsh's own parser) — small, high value, currently *fail-closed without it*.
 - **Apply staging/verification**: compile-and-validate all rules before committing any, narrowing the partial-apply window (7.5).
@@ -951,7 +959,7 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 The Copilot page's AI Assistant frame — input entry, Ask button, output pane, welcome message — is **gone**; no conversational surface exists anywhere in the application (4.1). What remains of the assistant's grammar now serves the **What-If Simulator**, which was developed from a stub into the page's centerpiece:
 
 - **Parsing in core** (`fs_copilot_parse_scenario` → `FsScenario`): direction keywords (default **outbound**), hosts by shape only — IPv4/IPv6/CIDR, hostnames deliberately rejected so `open.code.exe` never parses as an address — a `host:port` shorthand, port clauses that beat service-name aliases, protocol keywords (`tcp`/`udp`/`icmp`/`ping`, default TCP), and the application token after "allow"/"allowing". **[Verified]** `test_whatif_simulate` (including NULL/empty → NULL).
-- **Verdicts that match the OS** (`fs_copilot_simulate`): block rules win over covering allows (Windows Firewall precedence), a shadowed allow is reported *shadowed*, CIDR containment through `fs_util_addr_in_cidr` (a `/24` block covers the hosts inside it), ports mirror addresses (either side unnamed = unconstrained — a no-port line meets the rule that opens one; ICMP never meets a ported rule), the best-scoring rule is named (exact port beats any-port, policy order breaks ties), the reason carries the deciding port and a forward's destination, and with no policy loaded the verdict says so instead of inventing rules. **[Verified]** `test_whatif_simulate` (371 checks) — teeth demonstrated: disabling block precedence fails 3 of those checks; reverting the precision round fails 7 of them (portless line missing the ported rule, ICMP joined to a port, any-port rule named instead of the exact-port one, forward hiding its destination).
+- **Verdicts that match the OS** (`fs_copilot_simulate`): block rules win over covering allows (Windows Firewall precedence), a shadowed allow is reported *shadowed*, CIDR containment through `fs_util_addr_in_cidr` (a `/24` block covers the hosts inside it), ports mirror addresses (either side unnamed = unconstrained — a no-port line meets the rule that opens one; ICMP never meets a ported rule), the best-scoring rule is named (exact port beats any-port, policy order breaks ties), the reason carries the deciding port and a forward's destination, and with no policy loaded the verdict says so instead of inventing rules. **[Verified]** `test_whatif_simulate` (408-check suite) — teeth demonstrated: disabling block precedence fails 3 of those checks; reverting the precision round fails 7 of them (portless line missing the ported rule, ICMP joined to a port, any-port rule named instead of the exact-port one, forward hiding its destination).
 - **An honest panel**: results land inline under the entry (no modal per try); the parsed reading prints next to the verdict; a line that named no port or no host carries an explicit note; an unreadable line says *nothing could be read* rather than answering in silence. Status messages from apply/undo/clear re-homed to the Policy Analysis log, where the suggestions that caused them live. **[Verified]** `fs-ui-smoke`.
 
 ### 12.2 Bi-Directional Direction Setting
@@ -962,8 +970,18 @@ The Copilot page's AI Assistant frame — input entry, Ask button, output pane, 
 
 ### 12.3 Runner and Version
 
-- `port/tests/full-suite.sh` is committed as the canonical runner Chapter 8 names: every suite in one pass, one binary verdict (302 core checks as of this release).
+- `port/tests/full-suite.sh` is committed as the canonical runner Chapter 8 names: every suite in one pass, one binary verdict (408 core checks as of this writing).
 - Version markers moved 1.0.4 → 1.0.5 in every site the build, About dialog, installer, and `.rc` read from (CMake, `main.c`, `fs-dialogs.c`, NSIS, `build_installer.sh`, `stockfw.rc.in`, `configure.in`); the installer's fallback changelog now carries a real 1.0.5 entry.
+
+### 12.4 Application Trust Engine (Priority 1)
+
+Priority 1 of the copilot program (10.1) — *identify signed versus unsigned executables, file hashes, publisher identity, and unexpected changes to previously trusted applications* — ships as a new module split along the same seam as everything else:
+
+- **Portable core** (`fs-trust.c/h`, Layer 3): `fs_trust_inspect()` makes one pass over the file — size, mtime, a streamed **SHA-256** (GLib `GChecksum`; a hash it could not finish is an error, never a half-report), and executability from the `MZ` header. Signature verdicts arrive through a **provider callback** the app installs, so the core keeps its no-OS-headers rule and the tests decide the states themselves. **[Verified]** `test_trust_engine` — the digest constant was computed by `sha256sum` from the same bytes, not by the code under test.
+- **The baseline store**: `trust.csv` beside the preferences (`$STOCKFW_TRUST_FILE` for tests), quote-aware CSV so paths and publisher names may hold commas and quotes, ASCII-case-insensitive lookup (Windows path semantics), and five honest outcomes per assessment — **new**, **unchanged**, **changed** (same path, different attested bytes: the row this engine exists for), **gone** (attested before, now missing), **unreadable**. Attest and forget both append to the append-only audit log (5.4). **[Verified]** `test_trust_engine`, teeth demonstrated: a fake digest plus a mute change-detector fail exactly 6 checks.
+- **Platform half** (`fs-trust-win.c`, Layer 4): `WinVerifyTrust` — offline by construction (`WTD_UI_NONE`, `WTD_REVOKE_NONE`, no URL retrieval: no network, no hangs) — classifies *verified / unsigned / signed-but-invalid* (a bad digest means somebody edited the bytes under the signature), and `CryptQueryObject` names the signer. Any verdict the platform cannot reach stays *not checked*, never guessed. Exposed as `FsBackend.trust_signature`; backends without the engine (Linux) leave the slot NULL. **[Verified]** every backend-linking suite (winlog, logstart, state-windows, ui-smoke) compiles and links against the vtable on each run.
+
+Not yet in this priority: a Trust UI surface and running-process scans — the engine is the substrate both will stand on (10.1, P1).
 
 ---
 

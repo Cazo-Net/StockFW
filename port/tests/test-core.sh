@@ -34,6 +34,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-copilot.h"
 #include "core/fs-eventrule.h"
 #include "core/fs-audit.h"
+#include "core/fs-trust.h"
 
 static int failures = 0;
 
@@ -2174,6 +2175,301 @@ static void test_direction_pairing (void)
 	fs_policy_free (policy);
 }
 
+/* The application trust engine: a file's hash and facts, signature
+ * states through an injected provider, and the baseline that
+ * notices when attested bytes change underneath us. */
+
+static gboolean fake_sign_provider (const gchar *path,
+                                    FsTrustSignature *out_sig,
+                                    gchar **out_publisher,
+                                    gpointer user)
+{
+	(void) path;
+	(void) user;
+	*out_sig = FS_TRUST_SIG_VALID;
+	*out_publisher = g_strdup ("Example, \"Signer\", Inc.");
+	return TRUE;
+}
+
+static gboolean fake_unsigned_provider (const gchar *path,
+                                        FsTrustSignature *out_sig,
+                                        gchar **out_publisher,
+                                        gpointer user)
+{
+	(void) path;
+	(void) user;
+	*out_sig = FS_TRUST_SIG_UNSIGNED;
+	*out_publisher = NULL;
+	return TRUE;
+}
+
+static gboolean fake_silent_provider (const gchar *path,
+                                      FsTrustSignature *out_sig,
+                                      gchar **out_publisher,
+                                      gpointer user)
+{
+	(void) path;
+	(void) out_sig;
+	(void) out_publisher;
+	(void) user;
+	return FALSE;
+}
+
+static void test_trust_engine (void)
+{
+	const gchar *payload_text = "StockFW trust engine test payload\n";
+	const gchar *payload_sha =
+		"7de4fddf8f5fdd52ac594d71ace412adf55291e66b38c18e42c046fd27240d4c";
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-trust-test", NULL);
+	gchar *payload = g_build_filename (dir, "payload.txt", NULL);
+	gchar *missing = g_build_filename (dir, "gone.exe", NULL);
+	gchar *fakeexe = g_build_filename (dir, "maybe.exe", NULL);
+	gchar *store_file = g_build_filename (dir, "trust.csv", NULL);
+	gchar *weird_file = g_build_filename (dir, "weird.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsTrustStore *store;
+	FsTrustReport *report;
+	FsTrustAssessment *assessment;
+	GError *error = NULL;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (payload);
+	remove (missing);
+	remove (fakeexe);
+	remove (store_file);
+	remove (weird_file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+	g_file_set_contents (payload, payload_text, 34, NULL);
+
+	/* Facts a digest can prove: the constant below was computed from
+	 * the bytes above by `sha256sum', not by this code. */
+	report = fs_trust_inspect (payload, &error);
+	CHECK (report != NULL && error == NULL,
+	       "a readable file yields a report");
+	if (report != NULL) {
+		CHECK (g_strcmp0 (report->sha256, payload_sha) == 0,
+		       "the SHA-256 is the file's own (got %s)",
+		       report->sha256);
+		CHECK (report->size == 34,
+		       "the byte count is the file's (got %"
+		       G_GUINT64_FORMAT ")", report->size);
+		CHECK (report->executable == FALSE,
+		       "a text payload is not an executable");
+		CHECK (report->sig == FS_TRUST_SIG_NOT_APPLICABLE,
+		       "signature work is skipped for non-executables");
+		fs_trust_report_free (report);
+	}
+
+	/* Nothing readable is an error, never a half-report. */
+	report = fs_trust_inspect (missing, &error);
+	CHECK (report == NULL && error != NULL,
+	       "a missing file is an error, not a report");
+	g_clear_error (&error);
+
+	/* The signature half arrives as a provider, so its states are
+	 * decided by the test -- not by this machine's certificate
+	 * stores or clock. */
+	g_file_set_contents (fakeexe, "MZ this is a fake executable", -1,
+	                     NULL);
+
+	report = fs_trust_inspect (fakeexe, NULL);
+	CHECK (report != NULL && report->executable == TRUE,
+	       "an MZ header marks an executable");
+	CHECK (report != NULL && report->sig == FS_TRUST_SIG_UNKNOWN,
+	       "an executable with nobody to ask reads as not checked");
+	fs_trust_report_free (report);
+
+	fs_trust_set_signature_provider (fake_sign_provider, NULL);
+	report = fs_trust_inspect (fakeexe, NULL);
+	CHECK (report != NULL && report->sig == FS_TRUST_SIG_VALID,
+	       "a verifying platform verdict reaches the report");
+	CHECK (report != NULL && g_strcmp0 (report->publisher,
+	                                    "Example, \"Signer\", Inc.") == 0,
+	       "the signer's name survives quoting intact");
+	fs_trust_report_free (report);
+
+	fs_trust_set_signature_provider (fake_unsigned_provider, NULL);
+	report = fs_trust_inspect (fakeexe, NULL);
+	CHECK (report != NULL && report->sig == FS_TRUST_SIG_UNSIGNED &&
+	       report->publisher == NULL,
+	       "an unsigned executable reports no signer");
+	fs_trust_report_free (report);
+
+	fs_trust_set_signature_provider (fake_silent_provider, NULL);
+	report = fs_trust_inspect (fakeexe, NULL);
+	CHECK (report != NULL && report->sig == FS_TRUST_SIG_UNKNOWN,
+	       "a provider that cannot answer leaves the state unknown");
+	fs_trust_report_free (report);
+	fs_trust_set_signature_provider (NULL, NULL);
+
+	/* The store path honours the same override style as the audit
+	 * file, so tests never touch the user's baseline. */
+	g_setenv ("STOCKFW_TRUST_FILE", store_file, TRUE);
+	{
+		gchar *home = fs_trust_store_path ();
+
+		CHECK (g_strcmp0 (home, store_file) == 0,
+		       "STOCKFW_TRUST_FILE decides the baseline's home");
+		g_free (home);
+	}
+	g_unsetenv ("STOCKFW_TRUST_FILE");
+
+	store = fs_trust_store_load (store_file);
+	CHECK (store != NULL && fs_trust_store_count (store) == 0,
+	       "no baseline yet: an empty store");
+
+	assessment = fs_trust_assess (store, payload);
+	CHECK (assessment != NULL &&
+	       assessment->change == FS_TRUST_CHANGE_NEW,
+	       "a never-attested file reads as new");
+	fs_trust_assessment_free (assessment);
+
+	report = fs_trust_inspect (payload, NULL);
+	CHECK (fs_trust_attest (store, report),
+	       "the report is attested into the baseline");
+	fs_trust_report_free (report);
+
+	assessment = fs_trust_assess (store, payload);
+	CHECK (assessment != NULL &&
+	       assessment->change == FS_TRUST_CHANGE_UNCHANGED,
+	       "an untouched file stays unchanged");
+	CHECK (assessment != NULL &&
+	       g_strcmp0 (assessment->baseline_sha256, payload_sha) == 0,
+	       "the baseline remembers the attested hash");
+	fs_trust_assessment_free (assessment);
+
+	CHECK (fs_trust_store_save (store, &error) && error == NULL,
+	       "the baseline saves to disk");
+	fs_trust_store_free (store);
+	g_clear_error (&error);
+
+	store = fs_trust_store_load (store_file);
+	CHECK (fs_trust_store_count (store) == 1,
+	       "the attested row comes back from disk");
+
+	/* Change the bytes under the attested name: the change the whole
+	 * engine exists to notice. */
+	g_file_set_contents (payload,
+	                     "StockFW trust engine test payload, edited\n",
+	                     -1, NULL);
+	assessment = fs_trust_assess (store, payload);
+	CHECK (assessment != NULL &&
+	       assessment->change == FS_TRUST_CHANGE_CHANGED,
+	       "an edited file is a change, loudly");
+	CHECK (assessment != NULL && assessment->report != NULL &&
+	       g_strcmp0 (assessment->report->sha256,
+	                  assessment->baseline_sha256) != 0,
+	       "the change is proven by two different hashes");
+	fs_trust_assessment_free (assessment);
+
+	/* Vanish it: the baseline is the only witness left. */
+	remove (payload);
+	assessment = fs_trust_assess (store, payload);
+	CHECK (assessment != NULL &&
+	       assessment->change == FS_TRUST_CHANGE_GONE,
+	       "an attested file that disappears reads as gone");
+	CHECK (assessment != NULL &&
+	       g_strcmp0 (assessment->baseline_sha256, payload_sha) == 0,
+	       "gone still carries what was attested");
+	fs_trust_assessment_free (assessment);
+
+	/* Forgetting is a write with a witness too. */
+	CHECK (fs_trust_remove (store, payload),
+	       "the baseline forgets a row");
+	CHECK (!fs_trust_remove (store, payload),
+	       "forgetting twice is refused, not invented");
+	CHECK (fs_trust_store_count (store) == 0,
+	       "the forgotten row is gone");
+
+	/* Paths and publishers may hold commas and quotes; the CSV
+	 * quotes them and the round trip must not lose either. */
+	{
+		FsTrustStore *weird = fs_trust_store_new (weird_file);
+		FsTrustReport hand;
+
+		memset (&hand, 0, sizeof (hand));
+		hand.path = (gchar *) "C:\\Apps\\weird, dir\\app \"two\".exe";
+		hand.sha256 = (gchar *)
+			"aa11bb22cc33dd44ee55ff6677889900"
+			"112233445566778899aabbccddee00ff";
+		hand.size = 7;
+		hand.mtime = 8;
+		hand.sig = FS_TRUST_SIG_INVALID;
+		hand.publisher = (gchar *)
+			"Example, \"The Signer\", Inc.";
+
+		CHECK (fs_trust_attest (weird, &hand),
+		       "a comma-laden path attests");
+		CHECK (fs_trust_store_save (weird, &error) && error == NULL,
+		       "and saves");
+		fs_trust_store_free (weird);
+		g_clear_error (&error);
+
+		weird = fs_trust_store_load (weird_file);
+		CHECK (fs_trust_store_count (weird) == 1,
+		       "the quoted row reloads whole");
+		assessment = fs_trust_assess (weird, hand.path);
+		CHECK (assessment != NULL &&
+		       assessment->change == FS_TRUST_CHANGE_GONE &&
+		       g_strcmp0 (assessment->baseline_sha256,
+		                  hand.sha256) == 0 &&
+		       g_strcmp0 (assessment->baseline_publisher,
+		                  "Example, \"The Signer\", Inc.") == 0,
+		       "commas and quotes survive the round trip");
+		fs_trust_assessment_free (assessment);
+
+		CHECK (fs_trust_store_save (weird, &error) && error == NULL,
+		       "the reloaded baseline saves again");
+		fs_trust_store_free (weird);
+		g_clear_error (&error);
+	}
+
+	{
+		gchar *contents = NULL;
+
+		CHECK (g_file_get_contents (weird_file, &contents, NULL,
+		                            NULL) &&
+		       strstr (contents, ",invalid,") != NULL,
+		       "the signature state has a spelling on disk");
+		g_free (contents);
+	}
+
+	/* Every attestation and every forgetting was appended to the
+	 * audit log: the baseline can be questioned afterwards. */
+	{
+		gchar *contents = NULL;
+
+		CHECK (g_file_get_contents (audit_file, &contents, NULL,
+		                            NULL),
+		       "the audit file exists on disk");
+		if (contents != NULL) {
+			CHECK (strstr (contents, "trust-attest") != NULL,
+			       "attestations reach the audit log");
+			CHECK (strstr (contents, "trust-forget") != NULL,
+			       "so does a forgetting");
+			CHECK (strstr (contents, payload_sha) != NULL,
+			       "with the hash that was attested");
+		}
+		g_free (contents);
+	}
+
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (payload);
+	remove (fakeexe);
+	remove (store_file);
+	remove (weird_file);
+	remove (audit_file);
+	g_free (payload);
+	g_free (missing);
+	g_free (fakeexe);
+	g_free (store_file);
+	g_free (weird_file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -2208,6 +2504,7 @@ int main (void)
 	test_whatif_simulate ();
 	test_whatif_reading ();
 	test_direction_pairing ();
+	test_trust_engine ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

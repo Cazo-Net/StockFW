@@ -2127,7 +2127,8 @@ static const FsBackend windows_backend = {
 	.log_active            = firewalled_log_active,
 	.dhcp_set_enabled      = firewalled_dhcp_set_enabled,
 	.get_profile_enabled   = firewalled_get_profile_enabled,
-	.set_profile_enabled   = firewalled_set_profile_enabled
+	.set_profile_enabled   = firewalled_set_profile_enabled,
+	.trust_signature       = fs_trust_win_signature
 };
 
 const FsBackend *

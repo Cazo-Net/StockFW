@@ -21,6 +21,7 @@
 #include "core/fs-rules.h"
 #include "core/fs-script.h"
 #include "core/fs-copilot.h"
+#include "core/fs-trust.h"
 #include "core/fs-i18n.h"
 #include "stockfw-logo-64.h"
 #include "fs-theme-css.h"        /* generated from src/ui/fs-theme.css */
@@ -314,12 +315,30 @@ install_theme (void)
 	g_object_unref (provider);
 }
 
+/* The trust engine asks the platform for Authenticode verdicts
+ * through the backend vtable: core stays portable, the UI stays the
+ * only place that knows both halves exist. */
+static gboolean
+app_trust_signature (const gchar *path, FsTrustSignature *sig,
+                     gchar **publisher, gpointer user)
+{
+	const FsBackend *backend = fs_backend ();
+
+	(void) user;
+	if (backend->trust_signature == NULL)
+		return FALSE;
+
+	return backend->trust_signature (path, sig, publisher);
+}
+
 void
 fs_app_activate (GtkApplication *app)
 {
 	GtkWidget *box;
 
 	fsapp.app = GTK_APPLICATION (app);
+
+	fs_trust_set_signature_provider (app_trust_signature, NULL);
 
 	/* Window */
 	fsapp.window = gtk_application_window_new (app);

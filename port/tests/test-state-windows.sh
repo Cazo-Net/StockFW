@@ -161,8 +161,9 @@ gcc -o "$BUILD_DIR/test-state" \
 	-I "$PORT/src" $CF \
 	"$BUILD_DIR/test-state.c" \
 	"$PORT/src/platform/windows/fs-backend-windows.c" \
+	"$PORT/src/platform/windows/fs-trust-win.c" \
 	"$PORT/build/libfs-core.a" \
-	$LF -lole32 -loleaut32 -liphlpapi -lws2_32 \
+	$LF -lole32 -loleaut32 -liphlpapi -lws2_32 -lwintrust -lcrypt32 \
 	2> "$BUILD_DIR/cc.log"
 
 CHECK $? "test program compiles against the real Windows backend"

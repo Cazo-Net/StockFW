@@ -13,6 +13,7 @@
 #include "core/fs-types.h"
 #include "core/fs-rules.h"
 #include "core/fs-script.h"
+#include "core/fs-trust.h"
 
 G_BEGIN_DECLS
 
@@ -98,6 +99,15 @@ typedef struct
 	gboolean (*get_profile_enabled) (gint profile, gboolean *enabled);
 	gboolean (*set_profile_enabled) (gint profile, gboolean enabled,
 	                                GError **error);
+
+	/* Authenticode status for one executable -- the platform half of
+	 * the trust engine.  Returns TRUE with the verdict (and a
+	 * signer's name when there is one), FALSE when the platform
+	 * cannot say.  Backends with no trust engine leave the slot
+	 * NULL and their executables read "Signature not checked". */
+	gboolean (*trust_signature) (const gchar *path,
+	                             FsTrustSignature *sig,
+	                             gchar **publisher);
 } FsBackend;
 
 /* Profile identifiers, matching Windows' own numbering. */
