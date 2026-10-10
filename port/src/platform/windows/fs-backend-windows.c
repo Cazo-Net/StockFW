@@ -39,6 +39,7 @@
 #include <netioapi.h>
 #include <iphlpapi.h>
 #include <netfw.h>
+#include <tlhelp32.h>   /* CreateToolhelp32Snapshot: process enumeration */
 
 #include <stdio.h>   /* _snwprintf */
 
@@ -1238,6 +1239,64 @@ program_for_pid (DWORD pid)
 	return result;
 }
 
+/* [ firewalled_list_processes ]
+ * Full image paths of every process the snapshot shows, deduplicated
+ * case-insensitively (Windows paths do not distinguish case).  No
+ * elevation: PROCESS_QUERY_LIMITED_INFORMATION answers for user
+ * processes and fails quietly for the protected few, whose rows are
+ * simply absent -- a scan reports what it could actually read. */
+static GList *
+firewalled_list_processes (void)
+{
+	HANDLE snapshot;
+	PROCESSENTRY32 entry;
+	GList *paths = NULL;
+	GHashTable *seen;
+
+	snapshot = CreateToolhelp32Snapshot (TH32CS_SNAPPROCESS, 0);
+	if (snapshot == INVALID_HANDLE_VALUE)
+		return NULL;
+
+	seen = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
+	                              NULL);
+
+	entry.dwSize = sizeof (entry);
+	if (Process32First (snapshot, &entry)) {
+		do {
+			HANDLE process;
+			gchar path[MAX_PATH];
+			DWORD length = MAX_PATH;
+
+			if (entry.th32ProcessID == 0 ||
+			    entry.th32ProcessID == 4)
+				continue;   /* Idle and System have no image */
+
+			process = OpenProcess (
+				PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+				entry.th32ProcessID);
+			if (process == NULL)
+				continue;
+
+			if (QueryFullProcessImageNameA (process, 0, path,
+			                                &length) &&
+			    !g_hash_table_contains (seen, path)) {
+				g_hash_table_insert (seen, g_ascii_strdown (
+				                             path, -1),
+				                      NULL);
+				paths = g_list_prepend (paths,
+				                         g_strdup (path));
+			}
+
+			CloseHandle (process);
+		} while (Process32Next (snapshot, &entry));
+	}
+
+	CloseHandle (snapshot);
+	g_hash_table_unref (seen);
+
+	return g_list_reverse (paths);
+}
+
 /* [ guess_direction ]
  * TCP tells us the endpoints but not who dialled.  The heuristic: a
  * well-known local port means someone reached a service we run, a
@@ -2122,6 +2181,7 @@ static const FsBackend windows_backend = {
 	.list_interfaces       = firewalled_list_interfaces,
 	.list_interface_stats  = firewalled_list_interface_stats,
 	.list_connections      = firewalled_list_connections,
+	.list_processes        = firewalled_list_processes,
 	.log_start             = firewalled_log_start,
 	.log_stop              = firewalled_log_stop,
 	.log_active            = firewalled_log_active,

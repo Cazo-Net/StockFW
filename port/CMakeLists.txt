@@ -173,6 +173,7 @@ set(FS_UI_SOURCES
   src/ui/fs-hitview.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
+  src/ui/fs-trustview.c
   ${FS_BACKEND_SOURCES}
 )
 add_executable(fs-ui-smoke EXCLUDE_FROM_ALL
@@ -202,6 +203,25 @@ target_compile_definitions(fs-hitview-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
   FS_PLATFORM_NAME="${FS_PLATFORM}"
 )
+
+# The Trust page's smoke: builds the page against a scratch store,
+# drives inspect / attest / refresh / forget by clicking the real
+# buttons (with an auto-responder standing in for the user's OK in
+# the confirm dialogs), and reads the engine's outcomes back through
+# the page's small accessor seam.
+add_executable(fs-trustview-smoke EXCLUDE_FROM_ALL
+  tests/ui-trustview-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_include_directories(fs-trustview-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-trustview-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-trustview-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-trustview-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-hitview-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()

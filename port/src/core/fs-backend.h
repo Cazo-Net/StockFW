@@ -84,6 +84,13 @@ typedef struct
 	 * when the platform or the account cannot enumerate them. */
 	GList *(*list_connections) (void);
 
+	/* Executable paths of currently running processes, deduplicated
+	 * (case-insensitively: two spellings of one path are one row).
+	 * Returns a GList of gchar* -- caller frees with g_list_free_full
+	 * (..., g_free).  NULL when the platform cannot enumerate.  The
+	 * Trust page scans these through the trust engine. */
+	GList *(*list_processes) (void);
+
 	/* Live event monitor. */
 	gboolean (*log_start) (FsLogFunc callback, gpointer user_data, GError **error);
 	void     (*log_stop)  (void);

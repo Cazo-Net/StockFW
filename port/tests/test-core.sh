@@ -2329,6 +2329,12 @@ static void test_trust_engine (void)
 	report = fs_trust_inspect (payload, NULL);
 	CHECK (fs_trust_attest (store, report),
 	       "the report is attested into the baseline");
+	CHECK (g_strcmp0 (fs_trust_store_path_at (store, 0),
+	                  payload) == 0,
+	       "the store hands out row paths for the page's list");
+	CHECK (fs_trust_store_path_at (store, 1) == NULL &&
+	       fs_trust_store_path_at (store, (guint) -1) == NULL,
+	       "reading past the rows is refused");
 	fs_trust_report_free (report);
 
 	assessment = fs_trust_assess (store, payload);

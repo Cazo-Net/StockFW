@@ -124,6 +124,11 @@ void fs_trust_store_free (FsTrustStore *store);
 const gchar *fs_trust_store_file (FsTrustStore *store);
 guint fs_trust_store_count (FsTrustStore *store);
 
+/* Path of row `index' (insertion order), or NULL when out of range.
+ * Borrowed pointer, lives as long as the store does.  The Trust page
+ * lists the baseline through this; it also drives assess-per-row. */
+const gchar *fs_trust_store_path_at (FsTrustStore *store, guint index);
+
 /* Compare the file at `path' against the baseline.  Never NULL:
  * every outcome is a row the caller can show.  Paths compare
  * ASCII-case-insensitively -- Windows paths do, and the store only

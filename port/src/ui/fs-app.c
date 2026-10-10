@@ -16,6 +16,7 @@
 #include "ui/fs-policyview.h"
 #include "ui/fs-hitview.h"
 #include "ui/fs-copilot.h"
+#include "ui/fs-trustview.h"
 #include "core/fs-backend.h"
 #include "core/fs-prefs.h"
 #include "core/fs-rules.h"
@@ -34,10 +35,12 @@ static FsApp fsapp = { NULL, NULL, NULL };
  * row is visible at a time. */
 static GtkWidget *toolbar_host = NULL;
 
-/* The four buttons of the custom tab band, index-aligned with the
+/* The five buttons of the custom tab band, index-aligned with the
  * notebook pages. */
-#define FS_TAB_COUNT 4
-static GtkWidget *tab_buttons[FS_TAB_COUNT] = { NULL, NULL, NULL, NULL };
+#define FS_TAB_COUNT 5
+static GtkWidget *tab_buttons[FS_TAB_COUNT] = {
+	NULL, NULL, NULL, NULL, NULL
+};
 
 /* Set while the band is being re-synced to the notebook, so the
  * band's own handlers do not fire back into the notebook. */
@@ -234,6 +237,7 @@ build_tab_band (void)
 	labels[1] = _("Events");
 	labels[2] = _("Policy");
 	labels[3] = _("Copilot");
+	labels[4] = _("Trust");
 
 	for (guint i = 0; i < FS_TAB_COUNT; i++) {
 		GtkWidget *btn = gtk_toggle_button_new_with_label (labels[i]);
@@ -391,7 +395,7 @@ fs_app_activate (GtkApplication *app)
 		g_object_unref (loader);
 	}
 
-	/* Tab band, above the toolbar strip: four flat buttons standing
+	/* Tab band, above the toolbar strip: five flat buttons standing
 	 * in for the notebook's tab row (which is switched off below). */
 	gtk_box_pack_start (GTK_BOX (box), build_tab_band (),
 	                    FALSE, FALSE, 0);
@@ -401,7 +405,7 @@ fs_app_activate (GtkApplication *app)
 	gtk_box_pack_start (GTK_BOX (box), toolbar_host, FALSE, FALSE, 0);
 
 	/* Notebook pages.  Order matches the original: Status, Events,
-	 * Policy, with Copilot last. */
+	 * Policy, with Copilot and Trust last. */
 	fsapp.notebook = gtk_notebook_new ();
 	gtk_notebook_set_show_tabs (GTK_NOTEBOOK (fsapp.notebook), FALSE);
 	gtk_notebook_set_show_border (GTK_NOTEBOOK (fsapp.notebook), FALSE);
@@ -442,6 +446,9 @@ fs_app_activate (GtkApplication *app)
 	/* Smart Firewall Copilot tab */
 	copilot = fs_copilot_new ();
 	add_page (_("Copilot"), fs_copilot_page (copilot, policy), NULL);
+
+	/* Trust tab: the application trust engine's surface. */
+	add_page (_("Trust"), fs_trustview_page (), NULL);
 
 	gtk_widget_show_all (fsapp.window);
 

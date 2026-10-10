@@ -49,8 +49,8 @@ fs_trust_inspect (const gchar *path, GError **error)
 	GInputStream *stream;
 	GChecksum *sum;
 	FsTrustReport *report;
-	gchar head[2];
-	gchar buffer[65536];
+	guint8 head[2];
+	guint8 buffer[65536];
 	gssize n, head_n;
 	gchar *publisher = NULL;
 	FsTrustSignature sig;
@@ -275,6 +275,18 @@ guint
 fs_trust_store_count (FsTrustStore *store)
 {
 	return store != NULL ? store->rows->len : 0;
+}
+
+const gchar *
+fs_trust_store_path_at (FsTrustStore *store, guint index)
+{
+	FsTrustEntry *entry;
+
+	if (store == NULL || index >= store->rows->len)
+		return NULL;
+
+	entry = g_ptr_array_index (store->rows, index);
+	return entry->path;
 }
 
 /* Windows paths do not distinguish case, so neither does the lookup.

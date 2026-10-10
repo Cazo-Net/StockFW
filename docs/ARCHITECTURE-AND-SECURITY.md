@@ -92,7 +92,7 @@ Every architectural claim in this document describes the code as it exists in St
 | AI layer | Local deterministic NLP parser + heuristics; **no network calls** |
 | Privilege model | `asInvoker` manifest; UAC only via user-launched elevated wrappers; fail-loud unelevated errors |
 | Installer | NSIS, bundling the complete GTK3 runtime beside `StockFW.exe` |
-| Test suites | Core 408, Winlog 56, Installer-spawn 9, Logstart 5, UI smokes, teeth-verified regressions |
+| Test suites | Core 410, Winlog 56, Installer-spawn 9, Logstart 5, UI smokes, teeth-verified regressions |
 
 ### 1.7 System Context Diagram
 
@@ -142,7 +142,7 @@ StockFW is organized as five strict layers. Dependencies point downward only; no
 ```mermaid
 block-beta
     columns 1
-    L1["Layer 1 — Presentation (GTK3): Status, Events, Policy, Copilot pages; Preferences and About dialogs; toolbar actions"]
+    L1["Layer 1 — Presentation (GTK3): Status, Events, Policy, Copilot, Trust pages; Preferences and About dialogs; toolbar actions"]
     L2["Layer 2 — Application Coordination: fs-app.c (window, notebook, page switching, timers), fs-policyview (dirty state, Apply), fs-statusview (refresh loops)"]
     L3["Layer 3 — Domain Core: fs-rules / fs-fwrule (policy model, parsing, validation), fs-prefs (settings), fs-copilot (insights, suggestions, what-if), fs-trust (file hashing, attested baselines), fs-util (validators)"]
     L4["Layer 4 — Platform Backend: FsBackend vtable; fs-backend-windows.c (netsh, COM, wevtutil) · fs-trust-win.c (Authenticode) · fs-backend-linux.c (iptables)"]
@@ -552,14 +552,15 @@ The visual layer is CSS compiled into the binary (installed via `install_css()` 
 
 ### 6.2 The Tab Model
 
-The application is a four-tab notebook, each tab owning a toolbar row. The notebook's own tab row is hidden; a custom band in `fs-app.c` — full width, light neutral `#F0F0F0`, four rounded flat buttons with the active tab filled `#AE0000` on white text — stands in for it and drives `gtk_notebook_set_current_page()`:
+The application is a five-tab notebook, each tab owning a toolbar row. The notebook's own tab row is hidden; a custom band in `fs-app.c` — full width, light neutral `#F0F0F0`, five rounded flat buttons with the active tab filled `#AE0000` on white text — stands in for it and drives `gtk_notebook_set_current_page()`:
 
 - **Status** — live dashboard: logo, firewall state, profile toggles (Domain/Private/Public), network and connection counters on 2 s / 3 s refresh timers, and the elevation status line.
 - **Events** — the adjudicated-connection stream: time, process, direction, address, port, verdict, with repeated-event suppression.
 - **Policy** — the rule store: list, add/edit/remove, dirty tracking, Apply, and a status line reporting the real backend outcome (including "needs elevation").
 - **Copilot** — Insights & Suggestions and the What-If Simulator (Chapter 4). The natural-language ask box was removed: free text enters only through the simulator's read-only entry.
+- **Trust** — the application trust engine's surface (12.4): inspect a file (streamed SHA-256, signature verdict, publisher), attest or forget it behind a confirmation with an audit line, a baseline list with live per-row status, and a scan of the running processes. Hashing runs on a worker thread, one task at a time, so a two-hundred-megabyte installer never freezes the window.
 
-Page switching re-applies toolbar visibility so only the active page's buttons show; the design goal per tab is *one glance, one decision*: Status answers "is my firewall on?", Events answers "what just happened?", Policy answers "what will happen?", Copilot answers "what should I do?".
+Page switching re-applies toolbar visibility so only the active page's buttons show; the design goal per tab is *one glance, one decision*: Status answers "is my firewall on?", Events answers "what just happened?", Policy answers "what will happen?", Copilot answers "what should I do?", Trust answers "can I trust this file?".
 
 ### 6.3 Real-Time Event Rendering Under Load
 
@@ -691,13 +692,13 @@ CMake targets include the application (`StockFW.exe` / `StockFW`) and **test-onl
 
 | Suite | Checks | What it proves |
 |---|---|---|
-| **Core** (`test-core.sh`) | **408** | Rule parsing/round-trip, validation edge cases, Copilot suggestion apply + profile-lifetime, policy save/rollback + bi-directional pair persistence, What-If scenario parsing and verdicts (block precedence, shadowing, CIDR coverage, port/wildcard symmetry, ICMP-vs-ports, best-match naming, forward disclosure), reading shapes (`N port`, `:N`, `local:N`, service map) and the visualizer's suggestion/rule builders, and the trust engine (known-digest inspect, provider verdict states, baseline NEW/UNCHANGED/CHANGED/GONE, CSV quoting round-trip, audit lines) |
+| **Core** (`test-core.sh`) | **410** | Rule parsing/round-trip, validation edge cases, Copilot suggestion apply + profile-lifetime, policy save/rollback + bi-directional pair persistence, What-If scenario parsing and verdicts (block precedence, shadowing, CIDR coverage, port/wildcard symmetry, ICMP-vs-ports, best-match naming, forward disclosure), reading shapes (`N port`, `:N`, `local:N`, service map) and the visualizer's suggestion/rule builders, and the trust engine (known-digest inspect, provider verdict states, baseline NEW/UNCHANGED/CHANGED/GONE, CSV quoting round-trip, audit lines, row enumeration for the page's list) |
 | **Winlog + spawn probe** | **56** | Real `wevtutil` format parsing, split/dedup incl. `test_dedup_index_shift`, spawn/capture behavior |
 | **Installer spawn** | **9** | The installed layout spawns correctly (PATH/DLL resolution from the shipped directory) |
 | **Logstart** | **5** | `auditpol` bootstrap is idempotent and reports honestly |
 | **State-windows** | 1 | The real Windows backend **compiles** against the test harness (link-level canary) |
 | **UAF analyze** | 1 | The copilot profile-lifetime regression stays fixed |
-| **UI smokes** | pass/fail | Real dialogs open; sidebar↔notebook index alignment; WYSIWYG section gating; About Pango markup; Accept save path; light stylesheet parses clean with zero "Theme parsing error" warnings and still carries every pinned palette token; **theme geometry/colour teeth** — tab-button height identical across all sixteen state×class combinations, accent faces render `#AE0000`/`#8B0000`, the checked-before-class pill beat stays red, and no state shows the white hover sliver (teeth verified: the old sheet fails 8 checks); Events-page reason strip; **Simulation Visualizer** — the pure timeline for all three outcomes (packet travel, firewall verdict, bounce/fade, end-state freeze) and each window variant read by what is on screen (badge, details, suggestion, Create-This-Rule present only when it could act) |
+| **UI smokes** | pass/fail | Real dialogs open; sidebar↔notebook index alignment; WYSIWYG section gating; About Pango markup; Accept save path; light stylesheet parses clean with zero "Theme parsing error" warnings and still carries every pinned palette token; **theme geometry/colour teeth** — tab-button height identical across all sixteen state×class combinations, accent faces render `#AE0000`/`#8B0000`, the checked-before-class pill beat stays red, and no state shows the white hover sliver (teeth verified: the old sheet fails 8 checks); Events-page reason strip; **Simulation Visualizer** — the pure timeline for all three outcomes (packet travel, firewall verdict, bounce/fade, end-state freeze) and each window variant read by what is on screen (badge, details, suggestion, Create-This-Rule present only when it could act); **Trust page** — inspect a scratch file by clicking Inspect (digest read back through the page seam), attest behind a self-answering confirm dialog (row reaches the list, audit line lands), edit the file and re-inspect (**CHANGED** on the page with the attested hash remembered), refresh, forget behind its own confirm (row gone, audit line), missing-file honesty, and a running-process scan (teeth verified: a mute attest fails 8 checks) |
 
 The canonical runner (`full-suite.sh`) executes every suite and fails the build if any fails; the summary state is binary — **ALL SUITES PASSED** or a non-zero exit. UI smokes isolate `%APPDATA%`/`XDG_CONFIG_HOME` to a scratch directory so "pressing Accept" in a test cannot rewrite a developer's real settings.
 
@@ -833,7 +834,7 @@ The design's one-sentence performance contract: **StockFW's cost per second is a
 Ordered by (user-visible value × security relevance) ÷ effort; each item is `[Roadmap]` unless noted:
 
 **The copilot program (strategic direction):**
-- **P1 — Application trust engine**: signed/unsigned identification, SHA-256, publisher identity, attested baselines that notice unexpected changes. **Core engine shipped (12.4)**; a Trust UI surface and running-process scans remain.
+- **P1 — Application trust engine**: signed/unsigned identification, SHA-256, publisher identity, attested baselines that notice unexpected changes. **Shipped** (12.4): core engine, Authenticode provider, and the Trust page with process scans.
 - **P2 — Explainable behavior analysis**: historical baselines per application; correlate process, destination, port, timing, and connection frequency into explainable findings.
 - **P3 — Safe policy enforcement**: rule-impact previews (the What-If engine is the seed), audit-only testing mode, narrowly scoped apply, verified rollback.
 - **P4 — Detection validation**: a repeatable adversarial suite — port scans, suspicious outbound patterns, benign developer tools, false positives, rule rollback — run against the engine.
@@ -959,7 +960,7 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 The Copilot page's AI Assistant frame — input entry, Ask button, output pane, welcome message — is **gone**; no conversational surface exists anywhere in the application (4.1). What remains of the assistant's grammar now serves the **What-If Simulator**, which was developed from a stub into the page's centerpiece:
 
 - **Parsing in core** (`fs_copilot_parse_scenario` → `FsScenario`): direction keywords (default **outbound**), hosts by shape only — IPv4/IPv6/CIDR, hostnames deliberately rejected so `open.code.exe` never parses as an address — a `host:port` shorthand, port clauses that beat service-name aliases, protocol keywords (`tcp`/`udp`/`icmp`/`ping`, default TCP), and the application token after "allow"/"allowing". **[Verified]** `test_whatif_simulate` (including NULL/empty → NULL).
-- **Verdicts that match the OS** (`fs_copilot_simulate`): block rules win over covering allows (Windows Firewall precedence), a shadowed allow is reported *shadowed*, CIDR containment through `fs_util_addr_in_cidr` (a `/24` block covers the hosts inside it), ports mirror addresses (either side unnamed = unconstrained — a no-port line meets the rule that opens one; ICMP never meets a ported rule), the best-scoring rule is named (exact port beats any-port, policy order breaks ties), the reason carries the deciding port and a forward's destination, and with no policy loaded the verdict says so instead of inventing rules. **[Verified]** `test_whatif_simulate` (408-check suite) — teeth demonstrated: disabling block precedence fails 3 of those checks; reverting the precision round fails 7 of them (portless line missing the ported rule, ICMP joined to a port, any-port rule named instead of the exact-port one, forward hiding its destination).
+- **Verdicts that match the OS** (`fs_copilot_simulate`): block rules win over covering allows (Windows Firewall precedence), a shadowed allow is reported *shadowed*, CIDR containment through `fs_util_addr_in_cidr` (a `/24` block covers the hosts inside it), ports mirror addresses (either side unnamed = unconstrained — a no-port line meets the rule that opens one; ICMP never meets a ported rule), the best-scoring rule is named (exact port beats any-port, policy order breaks ties), the reason carries the deciding port and a forward's destination, and with no policy loaded the verdict says so instead of inventing rules. **[Verified]** `test_whatif_simulate` (410-check suite) — teeth demonstrated: disabling block precedence fails 3 of those checks; reverting the precision round fails 7 of them (portless line missing the ported rule, ICMP joined to a port, any-port rule named instead of the exact-port one, forward hiding its destination).
 - **An honest panel**: results land inline under the entry (no modal per try); the parsed reading prints next to the verdict; a line that named no port or no host carries an explicit note; an unreadable line says *nothing could be read* rather than answering in silence. Status messages from apply/undo/clear re-homed to the Policy Analysis log, where the suggestions that caused them live. **[Verified]** `fs-ui-smoke`.
 
 ### 12.2 Bi-Directional Direction Setting
@@ -970,7 +971,7 @@ The Copilot page's AI Assistant frame — input entry, Ask button, output pane, 
 
 ### 12.3 Runner and Version
 
-- `port/tests/full-suite.sh` is committed as the canonical runner Chapter 8 names: every suite in one pass, one binary verdict (408 core checks as of this writing).
+- `port/tests/full-suite.sh` is committed as the canonical runner Chapter 8 names: every suite in one pass, one binary verdict (410 core checks as of this writing).
 - Version markers moved 1.0.4 → 1.0.5 in every site the build, About dialog, installer, and `.rc` read from (CMake, `main.c`, `fs-dialogs.c`, NSIS, `build_installer.sh`, `stockfw.rc.in`, `configure.in`); the installer's fallback changelog now carries a real 1.0.5 entry.
 
 ### 12.4 Application Trust Engine (Priority 1)
@@ -980,8 +981,9 @@ Priority 1 of the copilot program (10.1) — *identify signed versus unsigned ex
 - **Portable core** (`fs-trust.c/h`, Layer 3): `fs_trust_inspect()` makes one pass over the file — size, mtime, a streamed **SHA-256** (GLib `GChecksum`; a hash it could not finish is an error, never a half-report), and executability from the `MZ` header. Signature verdicts arrive through a **provider callback** the app installs, so the core keeps its no-OS-headers rule and the tests decide the states themselves. **[Verified]** `test_trust_engine` — the digest constant was computed by `sha256sum` from the same bytes, not by the code under test.
 - **The baseline store**: `trust.csv` beside the preferences (`$STOCKFW_TRUST_FILE` for tests), quote-aware CSV so paths and publisher names may hold commas and quotes, ASCII-case-insensitive lookup (Windows path semantics), and five honest outcomes per assessment — **new**, **unchanged**, **changed** (same path, different attested bytes: the row this engine exists for), **gone** (attested before, now missing), **unreadable**. Attest and forget both append to the append-only audit log (5.4). **[Verified]** `test_trust_engine`, teeth demonstrated: a fake digest plus a mute change-detector fail exactly 6 checks.
 - **Platform half** (`fs-trust-win.c`, Layer 4): `WinVerifyTrust` — offline by construction (`WTD_UI_NONE`, `WTD_REVOKE_NONE`, no URL retrieval: no network, no hangs) — classifies *verified / unsigned / signed-but-invalid* (a bad digest means somebody edited the bytes under the signature), and `CryptQueryObject` names the signer. Any verdict the platform cannot reach stays *not checked*, never guessed. Exposed as `FsBackend.trust_signature`; backends without the engine (Linux) leave the slot NULL. **[Verified]** every backend-linking suite (winlog, logstart, state-windows, ui-smoke) compiles and links against the vtable on each run.
+- **The Trust page** (Layer 1, fifth tab, 6.2): path entry with **Inspect** (Enter works too), the report grid — file, publisher, signature, full SHA-256 (selectable), size, mtime, baseline verdict — and gated **Attest** / **Forget** buttons that confirm first and append to the audit log through the engine. **Refresh** re-lists every baseline row with live status; **Scan processes** runs the running executables through `FsBackend.list_processes` (Toolhelp snapshot, `PROCESS_QUERY_LIMITED_INFORMATION`, case-insensitive dedup; protected processes simply do not appear, which the scan reports honestly). All hashing runs on GTask workers, one task at a time — while a task flies the write buttons are disabled, so the store is never mutated under the reader. **[Verified]** `fs-trustview-smoke` — drives the real buttons end to end (confirm dialogs answer themselves from a timeout responder, deliberately not an idle source, which spins a pump loop forever); teeth demonstrated: muting the attest write fails 8 checks.
 
-Not yet in this priority: a Trust UI surface and running-process scans — the engine is the substrate both will stand on (10.1, P1).
+Not yet in this priority: correlating trust verdicts with live behavior — that is P2's job (10.1).
 
 ---
 
