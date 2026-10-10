@@ -38,6 +38,7 @@ run_sh () {   # run_sh <label> <script> [pattern]
 }
 
 run_sh "CORE"        tests/test-core.sh
+run_sh "P4 ADVERSARIAL" tests/test-adversarial.sh
 run_sh "LOG START"   tests/test-logstart.sh
 run_sh "WINLOG + SPAWN PROBE" tests/test-winlog.sh
 run_sh "INSTALLER SPAWN" tests/test-installer-spawn.sh
