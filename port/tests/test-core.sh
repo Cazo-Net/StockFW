@@ -29,6 +29,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-util.h"
 #include "core/fs-service.h"
 #include "core/fs-script.h"
+#include "core/fs-settings-plan.h"
 #include "core/fs-fwrule.h"
 #include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
@@ -3855,6 +3856,293 @@ static void test_apply_gate (void)
 	g_free (dir);
 }
 
+/* --- the settings plan ------------------------------------------------
+ * fs-settings-plan.c maps the Firewall preferences onto portable rules
+ * that the Windows backend executes.  Each mapping is pinned here: the
+ * checkboxes, the original's quirks (traceroute is UDP 33434; the two
+ * unconditional ICMP types; MS Traceroute subsuming host-unreachable),
+ * the profile scoping that stands in for iptables' interface scoping,
+ * and the naming contract the rule lifecycle depends on. */
+
+static const FsSettingRule *
+plan_find (FsSettingsPlan *plan, const gchar *name)
+{
+	for (guint i = 0; i < plan->rules->len; i++) {
+		const FsSettingRule *r = g_ptr_array_index (plan->rules, i);
+
+		if (g_strcmp0 (r->name, name) == 0)
+			return r;
+	}
+
+	return NULL;
+}
+
+static FsSettings *
+plan_settings_with (gboolean all_types_off)
+{
+	FsSettings *s = fs_settings_new ();
+
+	/* Start every checkbox from a known state instead of trusting
+	 * the constructor, so each check isolates one mapping. */
+	s->block_external_broadcast = FALSE;
+	s->block_internal_broadcast = FALSE;
+	s->block_non_routables      = FALSE;
+
+	if (all_types_off) {
+		s->icmp_echo_request    = FALSE;
+		s->icmp_echo_reply      = FALSE;
+		s->icmp_traceroute      = FALSE;
+		s->icmp_mstraceroute    = FALSE;
+		s->icmp_unreachable     = FALSE;
+		s->icmp_timestamping    = FALSE;
+		s->icmp_masking         = FALSE;
+		s->icmp_redirection     = FALSE;
+		s->icmp_source_quenches = FALSE;
+	}
+
+	return s;
+}
+
+static void test_settings_plan (void)
+{
+	FsSettings *s;
+	FsSettingsPlan *plan;
+	const FsSettingRule *r;
+
+	/* --- filtering off collapses to one allow-all rule ------- */
+	s = plan_settings_with (TRUE);
+	s->filter_icmp = FALSE;
+	plan = fs_settings_plan_new (s);
+	CHECK (plan->rules->len == 1,
+	       "filtering off: exactly one rule (%u)", plan->rules->len);
+	r = plan_find (plan, "StockFW ICMP allow (filtering disabled)");
+	CHECK (r != NULL && r->allow && r->proto == FS_SETPLAN_PROTO_ICMP &&
+	       r->icmp == NULL,
+	       "filtering off: one untyped ICMP allow");
+	fs_settings_plan_free (plan);
+
+	/* --- filtering on, nothing ticked: the two unconditional --- */
+	s->filter_icmp = TRUE;
+	plan = fs_settings_plan_new (s);
+	CHECK (plan->rules->len == 2,
+	       "filtering on, nothing ticked: the two unconditional rules "
+	       "alone (%u)", plan->rules->len);
+	r = plan_find (plan, "StockFW ICMP allow time exceeded");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "11,any") == 0,
+	       "time-exceeded is 11,any");
+	r = plan_find (plan, "StockFW ICMP allow parameter problem");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "12,any") == 0,
+	       "parameter-problem is 12,any");
+	fs_settings_plan_free (plan);
+
+	/* --- the per-checkbox mappings --------------------------- */
+	s->icmp_echo_request = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan, "StockFW ICMP allow echo request");
+	CHECK (r != NULL && r->allow && g_strcmp0 (r->icmp, "8,any") == 0,
+	       "echo request is 8,any");
+	fs_settings_plan_free (plan);
+	s->icmp_echo_request = FALSE;
+
+	s->icmp_echo_reply = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan, "StockFW ICMP allow echo reply");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "0,any") == 0,
+	       "echo reply is 0,any");
+	fs_settings_plan_free (plan);
+	s->icmp_echo_reply = FALSE;
+
+	/* The original's quirk: this checkbox never was ICMP. */
+	s->icmp_traceroute = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan, "StockFW allow traceroute (UDP 33434)");
+	CHECK (r != NULL && r->proto == FS_SETPLAN_PROTO_UDP &&
+	       r->port == 33434 && r->icmp == NULL,
+	       "traceroute is UDP 33434, not ICMP");
+	CHECK (plan_find (plan, "StockFW ICMP allow traceroute") == NULL,
+	       "no ICMP rule pretends to be traceroute");
+	fs_settings_plan_free (plan);
+	s->icmp_traceroute = FALSE;
+
+	s->icmp_mstraceroute = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan, "StockFW ICMP allow destination unreachable");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "3,any") == 0,
+	       "MS Traceroute is destination-unreachable 3,any");
+	fs_settings_plan_free (plan);
+	s->icmp_mstraceroute = FALSE;
+
+	s->icmp_unreachable = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan, "StockFW ICMP allow host unreachable");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "3,1") == 0,
+	       "Unreachable alone is the narrower 3,1");
+	fs_settings_plan_free (plan);
+
+	s->icmp_mstraceroute = TRUE;
+	plan = fs_settings_plan_new (s);
+	CHECK (plan_find (plan, "StockFW ICMP allow host unreachable") == NULL,
+	       "3,1 is dropped when 3,any already covers it");
+	fs_settings_plan_free (plan);
+	s->icmp_mstraceroute = FALSE;
+	s->icmp_unreachable = FALSE;
+
+	s->icmp_timestamping = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan, "StockFW ICMP allow timestamp request");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "13,any") == 0,
+	       "timestamping: request is 13,any");
+	r = plan_find (plan, "StockFW ICMP allow timestamp reply");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "14,any") == 0,
+	       "timestamping: reply is 14,any");
+	fs_settings_plan_free (plan);
+	s->icmp_timestamping = FALSE;
+
+	s->icmp_masking = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan, "StockFW ICMP allow address mask request");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "17,any") == 0,
+	       "masking: request is 17,any");
+	r = plan_find (plan, "StockFW ICMP allow address mask reply");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "18,any") == 0,
+	       "masking: reply is 18,any");
+	fs_settings_plan_free (plan);
+	s->icmp_masking = FALSE;
+
+	s->icmp_redirection = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan, "StockFW ICMP allow redirect");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "5,any") == 0,
+	       "redirection is 5,any");
+	fs_settings_plan_free (plan);
+	s->icmp_redirection = FALSE;
+
+	s->icmp_source_quenches = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan, "StockFW ICMP allow source quench");
+	CHECK (r != NULL && g_strcmp0 (r->icmp, "4,any") == 0,
+	       "source quench is 4,any");
+	fs_settings_plan_free (plan);
+	s->icmp_source_quenches = FALSE;
+
+	/* --- the Advanced Options blocks ------------------------- */
+	s->block_external_broadcast = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan,
+	               "StockFW block broadcasts from the external "
+	               "network");
+	CHECK (r != NULL && !r->allow &&
+	       g_strcmp0 (r->remote, "255.255.255.255") == 0 &&
+	       r->profiles == FS_FWP_PROFILE_PUBLIC,
+	       "external broadcasts: blocked to limited broadcast, "
+	       "public profile (the ext-interface scoping)");
+	fs_settings_plan_free (plan);
+	s->block_external_broadcast = FALSE;
+
+	s->block_internal_broadcast = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan,
+	               "StockFW block broadcasts from the internal "
+	               "network");
+	CHECK (r != NULL && !r->allow &&
+	       r->profiles == FS_FWP_PROFILE_PRIVATE,
+	       "internal broadcasts: private profile (the int-interface "
+	       "scoping)");
+	fs_settings_plan_free (plan);
+	s->block_internal_broadcast = FALSE;
+
+	s->block_non_routables = TRUE;
+	plan = fs_settings_plan_new (s);
+	r = plan_find (plan,
+	               "StockFW block reserved source addresses on "
+	               "public networks");
+	CHECK (r != NULL && !r->allow &&
+	       r->profiles == FS_FWP_PROFILE_PUBLIC &&
+	       g_strcmp0 (r->remote,
+	                  "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,"
+	                  "127.0.0.0/8") == 0,
+	       "reserved sources: the same four ranges, public profile");
+	fs_settings_plan_free (plan);
+
+	/* --- the everything-on snapshot -------------------------- */
+	s = plan_settings_with (TRUE);
+	s->icmp_echo_request    = TRUE;
+	s->icmp_echo_reply      = TRUE;
+	s->icmp_traceroute      = TRUE;
+	s->icmp_mstraceroute    = TRUE;
+	s->icmp_unreachable     = TRUE;
+	s->icmp_timestamping    = TRUE;
+	s->icmp_masking         = TRUE;
+	s->icmp_redirection     = TRUE;
+	s->icmp_source_quenches = TRUE;
+	s->block_external_broadcast = TRUE;
+	s->block_internal_broadcast = TRUE;
+	s->block_non_routables      = TRUE;
+	plan = fs_settings_plan_new (s);
+	/* 2 unconditional + echo req + echo reply + traceroute +
+	 * mstraceroute (3,1 skipped as a subset) + 2 timestamping +
+	 * 2 masking + redirect + quench = 12 ICMP/UDP, plus 3 blocks. */
+	CHECK (plan->rules->len == 15,
+	       "everything ticked plans 15 rules (%u)", plan->rules->len);
+
+	/* Naming contract: the rule lifecycle owns everything starting
+	 * with "StockFW", and policy rules always arrive as "StockFW-"
+	 * after netsh_safe_name -- so the settings spelling must be the
+	 * space form, and no name may carry a character netsh would have
+	 * to rewrite (or the lifecycle could never delete it again). */
+	{
+		gboolean names_ok = TRUE;
+
+		for (guint i = 0; i < plan->rules->len; i++) {
+			const FsSettingRule *sr =
+				g_ptr_array_index (plan->rules, i);
+
+			if (!g_str_has_prefix (sr->name, "StockFW ") ||
+			    strchr (sr->name, ':') != NULL ||
+			    strchr (sr->name, ',') != NULL ||
+			    strchr (sr->name, '"') != NULL) {
+				names_ok = FALSE;
+				break;
+			}
+		}
+
+		CHECK (names_ok,
+		       "every planned name is the netsh-safe StockFW space "
+		       "spelling");
+	}
+	fs_settings_plan_free (plan);
+	fs_settings_free (s);
+
+	/* --- edges ---------------------------------------------- */
+	plan = fs_settings_plan_new (NULL);
+	CHECK (plan->rules->len == 0, "no settings: an empty plan");
+	fs_settings_plan_free (plan);
+	fs_settings_plan_free (NULL);
+	s = fs_settings_new ();
+	s->block_non_routables = FALSE;
+	plan = fs_settings_plan_new (s);
+	CHECK (plan_find (plan,
+	                  "StockFW block reserved source addresses on "
+	                  "public networks") == NULL,
+	       "the reserved-source block follows its checkbox off");
+	/* Defaults: every offered-page mapping that ships ticked. */
+	r = plan_find (plan, "StockFW ICMP allow echo request");
+	CHECK (r != NULL, "fresh settings keep ping working (echo request)");
+	CHECK (plan_find (plan, "StockFW ICMP allow echo reply") != NULL,
+	       "fresh settings keep pong working (echo reply)");
+	fs_settings_plan_free (plan);
+	fs_settings_free (s);
+
+	CHECK (g_strcmp0 (fs_settings_plan_profile_name (
+	                  FS_FWP_PROFILE_PRIVATE), "private") == 0 &&
+	       g_strcmp0 (fs_settings_plan_profile_name (
+	                  FS_FWP_PROFILE_PUBLIC), "public") == 0 &&
+	       g_strcmp0 (fs_settings_plan_profile_name (
+	                  FS_FWP_PROFILE_DOMAIN), "domain") == 0 &&
+	       fs_settings_plan_profile_name (0) == NULL,
+	       "profile bits render as their netsh names");
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -3903,6 +4191,7 @@ int main (void)
 	test_apply_impact ();
 	test_apply_delta ();
 	test_apply_gate ();
+	test_settings_plan ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

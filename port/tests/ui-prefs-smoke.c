@@ -285,30 +285,54 @@ drive_dialog (gpointer data)
 
 		g_print ("ui-prefs-smoke: %2u %-20s section %d -> page %d %s\n",
 		         phase, label ? label : "?", section, page,
-		         page == section ? "ok" : "MISMATCH");
+		         page == (gint) phase ? "ok" : "MISMATCH");
 
-		if (page != section) {
-			g_printerr ("ui-prefs-smoke: FAILED\n");
+		/* Row i must select notebook page i -- the invariant the
+		 * sidebar's alignment rests on.  (Not "section == page":
+		 * per-page FS_FWSEC_* gating makes the section enums of the
+		 * offered pages non-contiguous on purpose.) */
+		if (page != (gint) phase) {
+			g_printerr ("ui-prefs-smoke: FAILED, sidebar row %u "
+			            "selected page %d\n", phase, page);
 			failed = TRUE;
 			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
 			return G_SOURCE_REMOVE;
 		}
 
-		/* WYSIWYG: a backend that does not read these settings must
-		 * not offer the controls for them at all -- the pages used to
-		 * appear with a note admitting they do nothing. */
-		if (!fs_backend ()->uses_settings && label != NULL &&
-		    (g_strcmp0 (label, _("Network Settings")) == 0 ||
-		     g_strcmp0 (label, _("ICMP Filtering")) == 0 ||
-		     g_strcmp0 (label, _("ToS Filtering")) == 0 ||
-		     g_strcmp0 (label, _("Advanced Options")) == 0)) {
-			g_printerr ("ui-prefs-smoke: FAILED, the backend does "
-			            "not read \"%s\" but it is offered\n",
-			            label);
-			failed = TRUE;
-			g_free (label);
-			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
-			return G_SOURCE_REMOVE;
+		/* WYSIWYG: a Firewall sub-page must appear exactly when the
+		 * backend's fw_sections bit says it reads it.  A page offered
+		 * without its bit asks the user to configure a firewall that
+		 * is not listening; a bit without its page hides a real
+		 * feature. */
+		if (label != NULL) {
+			static const struct
+			{
+				const gchar *label;
+				guint32      bit;
+			} fw_pages[] = {
+				{ "Network Settings", FS_FWSEC_NETWORK },
+				{ "ICMP Filtering",   FS_FWSEC_ICMP },
+				{ "ToS Filtering",    FS_FWSEC_TOS },
+				{ "Advanced Options", FS_FWSEC_ADVANCED }
+			};
+
+			for (guint i = 0; i < G_N_ELEMENTS (fw_pages); i++) {
+				if (g_strcmp0 (label, _(fw_pages[i].label)) != 0)
+					continue;
+
+				if ((fs_backend ()->fw_sections &
+				     fw_pages[i].bit) == 0) {
+					g_printerr ("ui-prefs-smoke: FAILED, "
+					            "\"%s\" is offered but the "
+					            "backend does not read it\n",
+					            fw_pages[i].label);
+					failed = TRUE;
+					g_free (label);
+					gtk_dialog_response (dialog,
+					                     GTK_RESPONSE_CANCEL);
+					return G_SOURCE_REMOVE;
+				}
+			}
 		}
 
 		/* The tray switches are implemented (src/ui/fs-tray.c), so
@@ -372,20 +396,166 @@ drive_dialog (gpointer data)
 				         "described\n");
 		}
 
+		/* The settings pages, as the backend's capability bits
+		 * declare them.  ICMP is live wherever it is offered (both
+		 * backends read it, through the plan on Windows and the
+		 * script generator on Linux); the rate-limit disclosure
+		 * appears exactly where the backend cannot rate-limit. */
+		if (label != NULL &&
+		    g_strcmp0 (label, _("ICMP Filtering")) == 0) {
+			GtkWidget *icmp_page =
+				gtk_notebook_get_nth_page (
+					GTK_NOTEBOOK (notebook), page);
+			GtkWidget *master = icmp_page != NULL
+				? find_check_under (icmp_page,
+				                    _("Enable ICMP filtering"))
+				: NULL;
+
+			if (master == NULL ||
+			    !gtk_widget_get_sensitive (master)) {
+				g_printerr ("ui-prefs-smoke: FAILED, the ICMP "
+				            "master switch is missing or "
+				            "insensitive on an offered page\n");
+				failed = TRUE;
+			} else {
+				g_print ("ui-prefs-smoke: ICMP page live "
+				         "(master switch sensitive)\n");
+			}
+
+			if (icmp_page != NULL) {
+				gboolean wants_note =
+					(fs_backend ()->fw_honors &
+					 FS_FWHON_RATE_LIMIT) == 0;
+
+				if (wants_note !=
+				    label_mentions (icmp_page, "rate limits")) {
+					g_printerr ("ui-prefs-smoke: FAILED, the "
+					            "ICMP rate-limit disclosure "
+					            "does not match "
+					            "FS_FWHON_RATE_LIMIT\n");
+					failed = TRUE;
+				}
+			}
+		}
+
+		/* Advanced Options: the blocks are live wherever the page
+		 * is offered, but the rejection method is live only where
+		 * the backend can actually reject -- and where it cannot
+		 * (Windows drops silently) it stays disabled with an
+		 * admission, never live and inert. */
+		if (label != NULL &&
+		    g_strcmp0 (label, _("Advanced Options")) == 0) {
+			GtkWidget *adv_page =
+				gtk_notebook_get_nth_page (
+					GTK_NOTEBOOK (notebook), page);
+			GtkWidget *reject = adv_page != NULL
+				? find_check_under (adv_page,
+				                    _("Reject with error packet"))
+				: NULL;
+			gboolean can = (fs_backend ()->fw_honors &
+			                FS_FWHON_REJECT_METHOD) != 0;
+
+			if (reject == NULL) {
+				g_printerr ("ui-prefs-smoke: FAILED, the "
+				            "rejection radio pair is missing\n");
+				failed = TRUE;
+			} else if (gtk_widget_get_sensitive (reject) != can) {
+				g_printerr ("ui-prefs-smoke: FAILED, the "
+				            "rejection method is %s but "
+				            "FS_FWHON_REJECT_METHOD says %s\n",
+				            gtk_widget_get_sensitive (reject)
+					            ? "live" : "disabled",
+				            can ? "live" : "disabled");
+				failed = TRUE;
+			} else if (!can &&
+			           !label_mentions (adv_page,
+			                            "drops blocked packets")) {
+				g_printerr ("ui-prefs-smoke: FAILED, the "
+				            "disabled rejection method carries "
+				            "no admission note\n");
+				failed = TRUE;
+			} else {
+				g_print ("ui-prefs-smoke: rejection method "
+				         "honestly %s\n",
+				         can ? "live"
+				             : "disabled with a note");
+			}
+
+			if (adv_page != NULL) {
+				static const gchar *live_checks[] = {
+					"Block broadcasts from external network",
+					"Block broadcasts from internal network",
+					"Block traffic from reserved addresses "
+					"on public interfaces"
+				};
+				gboolean blocks_ok = TRUE;
+
+				for (guint i = 0;
+				     i < G_N_ELEMENTS (live_checks); i++) {
+					GtkWidget *check =
+						find_check_under (adv_page,
+						                  _(live_checks[i]));
+
+					if (check == NULL ||
+					    !gtk_widget_get_sensitive (check)) {
+						g_printerr ("ui-prefs-smoke: "
+						            "FAILED, \"%s\" is "
+						            "missing or "
+						            "insensitive on an "
+						            "offered page\n",
+						            live_checks[i]);
+						failed = TRUE;
+						blocks_ok = FALSE;
+					}
+				}
+
+				if (blocks_ok)
+					g_print ("ui-prefs-smoke: broadcast and "
+					         "reserved-source blocks live\n");
+			}
+		}
+
 		g_free (label);
 		phase++;
 		return G_SOURCE_CONTINUE;
 	}
 
 	if (phase == rows) {
-		guint expected = fs_backend ()->uses_settings ? 8 : 4;
+		/* Four base pages, plus one per FS_FWSEC_* bit the backend
+		 * sets: Linux offers all four sub-pages (8 sections),
+		 * Windows offers ICMP Filtering and Advanced Options (6), a
+		 * backend that reads no settings offers the base pages
+		 * alone (4). */
+		guint32 secs = fs_backend ()->fw_sections;
+		guint expected = 4;
 
-		g_print ("ui-prefs-smoke: %u sections, all mapped correctly\n", rows);
+		for (guint32 bit = 1; bit != 0; bit <<= 1)
+			if (secs & bit)
+				expected++;
+
+		/* Pin the shipped capability sets.  The count check above
+		 * derives from the same bits the pages are gated on, so on
+		 * its own it would pass no matter which bits a sabotage
+		 * flipped; this anchors them to the backend's identity. */
+		if (g_strcmp0 (fs_backend ()->name, "windows") == 0 &&
+		    (secs != (FS_FWSEC_ICMP | FS_FWSEC_ADVANCED) ||
+		     fs_backend ()->fw_honors != 0)) {
+			g_printerr ("ui-prefs-smoke: FAILED, the Windows "
+			            "capability set drifted "
+			            "(fw_sections=0x%x fw_honors=0x%x)\n",
+			            secs, fs_backend ()->fw_honors);
+			failed = TRUE;
+			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
+			return G_SOURCE_REMOVE;
+		}
+
+		g_print ("ui-prefs-smoke: %u sections (fw_sections=0x%x), "
+		         "all mapped correctly\n", rows, secs);
 
 		if (rows != expected) {
 			g_printerr ("ui-prefs-smoke: FAILED, expected %u "
-			            "sections for uses_settings=%d, got %u\n",
-			            expected, fs_backend ()->uses_settings, rows);
+			            "sections for fw_sections=0x%x, got %u\n",
+			            expected, secs, rows);
 			failed = TRUE;
 			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
 			return G_SOURCE_REMOVE;

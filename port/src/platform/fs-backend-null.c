@@ -120,7 +120,11 @@ null_dhcp_set_enabled (gboolean enabled, GError **error)
 static const FsBackend null_backend = {
 	.name                  = "none",
 	.display_name          = "No firewall backend",
-	.uses_settings         = FALSE,
+	/* No sections, no honors: the dialog offers the four base pages
+	 * only, which is what a backend that cannot apply anything should
+	 * get. */
+	.fw_sections           = 0,
+	.fw_honors             = 0,
 	.available             = null_available,
 	.get_state             = null_get_state,
 	.start                 = null_start,

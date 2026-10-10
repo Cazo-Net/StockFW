@@ -45,11 +45,19 @@
 
 #include "core/fs-backend.h"
 #include "core/fs-fwrule.h"
+#include "core/fs-settings-plan.h"
 #include "core/fs-service.h"
 #include "core/fs-i18n.h"
 #include "netfw-compat.h"
 
 /* Linked through CMake: ole32, oleaut32, iphlpapi, ws2_32 */
+
+/* The policy and the settings the apply paths read.  Set through
+ * fs_backend_set_context(); the settings feed the settings-plan rules
+ * that every whole-set apply re-establishes (see the plan header for
+ * the mapping and why these rules share the "StockFW" prefix). */
+static FsPolicy   *ctx_policy   = NULL;
+static FsSettings *ctx_settings = NULL;
 
 /* Windows exposes three independently switchable firewall profiles. */
 static const NET_FW_PROFILE_TYPE2 profiles[] = {
@@ -830,6 +838,132 @@ out:
 	return ok;
 }
 
+/* [ setting_profiles_arg ]
+ * The plan's portable profile mask as one netsh argument. */
+static gchar *
+setting_profiles_arg (guint mask)
+{
+	static const guint bits[] = {
+		FS_FWP_PROFILE_DOMAIN, FS_FWP_PROFILE_PRIVATE,
+		FS_FWP_PROFILE_PUBLIC
+	};
+	GString *out = g_string_new ("profile=");
+	gboolean first = TRUE;
+
+	if (mask == 0) {
+		g_string_append (out, "any");
+	} else {
+		for (guint i = 0; i < G_N_ELEMENTS (bits); i++) {
+			const gchar *name;
+
+			if ((mask & bits[i]) == 0)
+				continue;
+
+			name = fs_settings_plan_profile_name (bits[i]);
+
+			if (!first)
+				g_string_append_c (out, ',');
+			g_string_append (out, name);
+			first = FALSE;
+		}
+
+		/* A mask with no known bit must not become "profile=" with
+		 * an empty value; netsh would reject the whole rule. */
+		if (first)
+			g_string_append (out, "any");
+	}
+
+	return g_string_free (out, FALSE);
+}
+
+/* [ netsh_add_setting_rule ]
+ * Creates one rule from the settings plan.  Same spawn and
+ * classification path as netsh_add_rule; the differences are the
+ * plan's fields -- profile scoping, an ICMP type/code pair, and a
+ * comma-joined remote list.  The error text stays separate from the
+ * policy path's because it names the setting, not the policy rule. */
+static gboolean
+netsh_add_setting_rule (const FsSettingRule *rule, GError **error)
+{
+	GPtrArray *args;
+	gchar *output = NULL;
+	gint status = 0;
+	gboolean ok = FALSE;
+
+	args = g_ptr_array_new_with_free_func (g_free);
+	g_ptr_array_add (args, g_strdup ("netsh.exe"));
+	g_ptr_array_add (args, g_strdup ("advfirewall"));
+	g_ptr_array_add (args, g_strdup ("firewall"));
+	g_ptr_array_add (args, g_strdup ("add"));
+	g_ptr_array_add (args, g_strdup ("rule"));
+
+	g_ptr_array_add (args, g_strdup_printf ("name=%s", rule->name));
+	g_ptr_array_add (args, g_strdup ("dir=in"));
+	g_ptr_array_add (args,
+	                 g_strdup_printf ("action=%s",
+	                                  rule->allow ? "allow" : "block"));
+	g_ptr_array_add (args, g_strdup ("enable=yes"));
+	g_ptr_array_add (args, setting_profiles_arg (rule->profiles));
+
+	if (rule->proto == FS_SETPLAN_PROTO_ICMP) {
+		/* netsh's grammar is icmpv4:type,code with the literal
+		 * "any" for a wildcard; "*" is not accepted (verified by
+		 * probe: the parser rejects it with "A specified protocol
+		 * value is not valid"). */
+		if (rule->icmp != NULL)
+			g_ptr_array_add (args,
+			                 g_strdup_printf ("protocol=icmpv4:%s",
+			                                  rule->icmp));
+		else
+			g_ptr_array_add (args, g_strdup ("protocol=icmpv4"));
+	} else if (rule->proto == FS_SETPLAN_PROTO_UDP) {
+		g_ptr_array_add (args, g_strdup ("protocol=udp"));
+		g_ptr_array_add (args,
+		                 g_strdup_printf ("localport=%u", rule->port));
+	}
+	/* FS_SETPLAN_PROTO_ANY: netsh's protocol default is already
+	 * "any", and a port field would be rejected alongside it. */
+
+	if (rule->remote != NULL)
+		g_ptr_array_add (args,
+		                 g_strdup_printf ("remoteip=%s", rule->remote));
+
+	g_ptr_array_add (args, NULL);
+
+	if (!run_netsh ((gchar **) args->pdata, error, &status, &output))
+		goto out;
+
+	if (status == 0) {
+		ok = TRUE;
+		goto out;
+	}
+
+	if (netsh_needs_elevation (output)) {
+		g_set_error_literal (error,
+		                     g_quark_from_static_string (
+			                     "fs-backend-windows"),
+		                     0,
+		                     "Creating firewall rules requires "
+		                     "administrator privileges. Restart "
+		                     "StockFW as an administrator and try "
+		                     "again.");
+	} else {
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-windows"),
+		             status,
+		             "netsh could not create the rule for the setting "
+		             "\"%s\": %s",
+		             rule->name ? rule->name : "(unnamed)",
+		             output ? g_strstrip (output) : "no output");
+	}
+
+out:
+	g_free (output);
+	g_ptr_array_unref (args);
+
+	return ok;
+}
+
 /* [ netsh_delete_one ]
  * Deletes a single rule by exact name.  Returns TRUE when netsh exited
  * cleanly; a "no rules match" result is not an error here. */
@@ -1023,6 +1157,37 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 	}
 
 	fs_fwrule_list_free (rules);
+
+	/* P5: the Preferences settings this backend honors (the ICMP
+	 * allow-list, broadcast blocks, reserved-source blocks) become
+	 * rules of their own.  firewalled_clear_rules() above already
+	 * retired the previous copies -- they carry the same "StockFW"
+	 * prefix the rule lifecycle owns -- and the apply gate is still
+	 * the only path into this function, so settings cannot reach the
+	 * firewall around it.  A settings failure counts exactly like a
+	 * policy failure: partial is partial. */
+	if (ctx_settings != NULL) {
+		FsSettingsPlan *plan = fs_settings_plan_new (ctx_settings);
+
+		for (guint i = 0; i < plan->rules->len; i++) {
+			const FsSettingRule *srule =
+				g_ptr_array_index (plan->rules, i);
+			GError *local = NULL;
+
+			if (netsh_add_setting_rule (srule, &local))
+				applied++;
+			else {
+				failed++;
+
+				if (first_error == NULL && local != NULL)
+					first_error = g_error_copy (local);
+
+				g_clear_error (&local);
+			}
+		}
+
+		fs_settings_plan_free (plan);
+	}
 
 	if (failed > 0 && applied == 0) {
 		/* Decide the verdict first: g_propagate_error() hands
@@ -2281,7 +2446,16 @@ firewalled_set_profile_enabled (gint profile, gboolean enabled,
 static const FsBackend windows_backend = {
 	.name                  = "windows",
 	.display_name          = "Windows Defender Firewall",
-	.uses_settings         = FALSE,   /* builds rules from the policy alone */
+	/* The pages Windows now reads: the ICMP allow-list and the
+	 * Advanced Options blocks.  Network Settings stays unoffered
+	 * (Internet Connection Sharing needs the HNetCfg COM API, which
+	 * the port does not carry) and ToS cannot be marked by Windows
+	 * Firewall at all -- hiding both is the WYSIWYG rule working,
+	 * not a missing feature note. */
+	.fw_sections           = FS_FWSEC_ICMP | FS_FWSEC_ADVANCED,
+	/* No per-rule reject (Windows drops silently) and no rate limits
+	 * on the ICMP rules, so neither FS_FWHON_* bit is set. */
+	.fw_honors             = 0,
 	.available             = firewalled_com_available,
 	.get_state             = firewalled_get_state,
 	.start                 = firewalled_start,
@@ -2315,12 +2489,14 @@ fs_error_domain (void)
 	return "fs-backend-windows";
 }
 
-/* The Windows backend builds rules straight from the policy and needs
- * no generator settings.  This exists so the UI can call the same hook
- * on either platform. */
+/* [ fs_backend_set_context ]
+ * The policy rules come from the policy parameter of apply_rules; the
+ * settings rules come from here, so this stores both (the policy
+ * pointer is kept for symmetry with the Linux backend and future
+ * settings that need it). */
 void
 fs_backend_set_context (FsPolicy *policy, FsSettings *settings)
 {
-	(void) policy;
-	(void) settings;
+	ctx_policy = policy;
+	ctx_settings = settings;
 }

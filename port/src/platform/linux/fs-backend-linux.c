@@ -1035,7 +1035,14 @@ fs_backend_set_context (FsPolicy *policy, FsSettings *settings)
 static const FsBackend linux_backend = {
 	.name                  = "linux",
 	.display_name          = "Linux (iptables)",
-	.uses_settings         = TRUE,    /* rules are generated from FsSettings */
+	/* Every Firewall sub-page: the generator reads all four (ToS is
+	 * offered as an admitted-dead page, matching the original's
+	 * layout).  REJECT vs DROP is a real iptables choice, and the
+	 * ICMP rules carry -m limit. */
+	.fw_sections           = FS_FWSEC_NETWORK | FS_FWSEC_ICMP |
+	                         FS_FWSEC_TOS | FS_FWSEC_ADVANCED,
+	.fw_honors             = FS_FWHON_REJECT_METHOD |
+	                         FS_FWHON_RATE_LIMIT,
 	.available             = linux_available,
 	.get_state             = linux_get_state,
 	.start                 = linux_start,

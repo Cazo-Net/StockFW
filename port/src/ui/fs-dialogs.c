@@ -186,18 +186,38 @@ fs_dialogs_confirm (GtkWidget *parent, const gchar *question,
  * and Help / Cancel / Accept along the bottom.
  *
  * Honesty rule: a control is only left enabled when the application
- * actually acts on it.
+ * actually acts on it.  Which Firewall sub-pages exist at all follows
+ * the backend's fw_sections bits (core/fs-backend.h); inside an offered
+ * page, a control the backend cannot reproduce is disabled with a note,
+ * never live and inert.
  *
  *   Effective on both platforms
  *     Interface > Events, Interface > Policy, Firewall > startup,
  *     the Interface tray switches (fs-tray.c follows both)
  *
- *   Effective on Linux only -- the Windows backend builds its rules
- *   straight from the policy and never reads FsSettings
- *     Firewall > Network Settings, ICMP Filtering, Advanced Options
+ *   Effective on both, mapped per backend (core/fs-settings-plan.h)
+ *     Firewall > ICMP Filtering (Windows: the same allow-list, as
+ *     Windows Firewall ICMP rules; the Linux rate limits have no
+ *     Windows equivalent, and the page says so), Advanced Options
+ *     (Windows: the broadcast and reserved-source blocks scoped to
+ *     the public/private profiles, the honest equivalent of the
+ *     iptables rules' external/internal interface scoping)
+ *
+ *   Effective on Linux only
+ *     Firewall > Network Settings (ext/int devices, NAT -- Windows
+ *     would need Internet Connection Sharing, not yet carried)
+ *
+ *   Offered but partially: disabled with a reason
+ *     Advanced Options > rejection method on Windows (Windows Firewall
+ *     always drops silently; no per-rule reject exists)
+ *
+ *   Not offered where the backend cannot act at all
+ *     Network Settings and ToS Filtering on Windows (ToS has no
+ *     marking field in Windows Firewall)
  *
  *   Not wired up anywhere yet, so disabled with a reason
- *     dial-out / DHCP startup, ToS Filtering,
+ *     dial-out / DHCP startup, ToS Filtering's controls on Linux
+ *     (an admitted-dead page matching the original layout),
  *     the Events host and port filter lists, the DHCP server block
  */
 
@@ -502,20 +522,16 @@ build_firewall_page (PrefBinding *bind)
 	return page;
 }
 
-/* [ build_network_page ] -- the two device choosers are fed from the
- * backend, so they list what is really attached. */
+/* [ build_network_page ] -- Linux-only: the two device choosers are fed
+ * from the backend, so they list what is really attached.  Windows does
+ * not offer this page (its fw_sections has no FS_FWSEC_NETWORK bit):
+ * the Windows equivalent would be Internet Connection Sharing, which
+ * the port does not carry, and inert switches are worse than none. */
 static GtkWidget *
-build_network_page (PrefBinding *bind, gboolean applies)
+build_network_page (PrefBinding *bind)
 {
 	GtkWidget *page = page_new (_("Network Settings"));
 	const gchar *any = _("Any device");
-
-	if (!applies) {
-		add_note (page,
-			_("The Windows backend builds its rules directly from the "
-			  "policy and does not read these settings, so this page "
-			  "has no effect here."));
-	}
 
 	add_section (page, _("Internet connected network device"));
 	{
@@ -553,7 +569,6 @@ build_network_page (PrefBinding *bind, gboolean applies)
 		g_object_set_data (G_OBJECT (combo), "pref-type",
 		                   (gpointer) "combo");
 		bind->widgets = g_list_append (bind->widgets, combo);
-		gtk_widget_set_sensitive (combo, applies);
 		gtk_box_pack_start (GTK_BOX (page), combo, FALSE, FALSE, 0);
 
 		g_free (current);
@@ -574,14 +589,13 @@ build_network_page (PrefBinding *bind, gboolean applies)
 		g_object_set_data (G_OBJECT (combo), "pref-type",
 		                   (gpointer) "combo");
 		bind->widgets = g_list_append (bind->widgets, combo);
-		gtk_widget_set_sensitive (combo, applies);
 		gtk_box_pack_start (GTK_BOX (page), combo, FALSE, FALSE, 0);
 
 		g_free (current);
 	}
 
 	add_check (page, bind, FS_PREFS_FW_NAT,
-	           _("Enable Internet connection sharing"), FALSE, applies);
+	           _("Enable Internet connection sharing"), FALSE, TRUE);
 	add_check (page, bind, FS_PREFS_FW_DHCP_ENABLE,
 	           _("Enable DHCP for the local network"), FALSE, FALSE);
 
@@ -592,8 +606,11 @@ build_network_page (PrefBinding *bind, gboolean applies)
 	return page;
 }
 
+/* [ build_icmp_page ] -- live on both backends: the checkboxes map onto
+ * iptables --icmp-type rules on Linux and onto Windows Firewall ICMP
+ * type/code rules through core/fs-settings-plan.h on Windows. */
 static GtkWidget *
-build_icmp_page (PrefBinding *bind, gboolean applies)
+build_icmp_page (PrefBinding *bind)
 {
 	static const struct
 	{
@@ -615,13 +632,6 @@ build_icmp_page (PrefBinding *bind, gboolean applies)
 	GtkWidget *grid;
 	GtkWidget *master;
 
-	if (!applies) {
-		add_note (page,
-			_("The Windows backend builds its rules directly from the "
-			  "policy and does not read these settings, so this page "
-			  "has no effect here."));
-	}
-
 	add_explainer (page,
 		_("ICMP filtering lets you restrict control packet creation and "
 		  "reception by the firewall, potentially preventing Denial of "
@@ -629,7 +639,7 @@ build_icmp_page (PrefBinding *bind, gboolean applies)
 		  "tools."));
 
 	master = add_check (page, bind, FS_PREFS_FW_FILTER_ICMP,
-	                    _("Enable ICMP filtering"), TRUE, applies);
+	                    _("Enable ICMP filtering"), TRUE, TRUE);
 	bind->icmp_master = master;
 
 	add_section (page, _("Allow the following ICMP packet types"));
@@ -650,7 +660,7 @@ build_icmp_page (PrefBinding *bind, gboolean applies)
 		g_object_set_data (G_OBJECT (check), "pref-type",
 		                   (gpointer) "bool");
 		g_object_set_data (G_OBJECT (check), "can-work",
-		                   GINT_TO_POINTER (applies ? 1 : 0));
+		                   GINT_TO_POINTER (1));
 
 		bind->widgets = g_list_append (bind->widgets, check);
 		bind->icmp_types = g_list_append (bind->icmp_types, check);
@@ -661,9 +671,23 @@ build_icmp_page (PrefBinding *bind, gboolean applies)
 	gtk_box_pack_start (GTK_BOX (page), grid, FALSE, FALSE, 0);
 	bind_dependents (master, &bind->icmp_types);
 
+	/* The Linux generator emits -m limit on its ICMP accepts; Windows
+	 * Firewall has no per-rule rate field, so the same allow-list
+	 * arrives there without one.  Say so rather than let the parity
+	 * look exact when it is not. */
+	if ((fs_backend ()->fw_honors & FS_FWHON_RATE_LIMIT) == 0)
+		add_note (page,
+			_("Windows Firewall applies these rules without the rate "
+			  "limits the Linux backend puts on its ICMP accepts."));
+
 	return page;
 }
 
+/* [ build_tos_page ] -- offered wherever the backend sets
+ * FS_FWSEC_TOS (today: Linux only), and honest there: Type-of-Service
+ * marking is not wired into the generator, so every control on the
+ * page is dead and says so.  The page exists to match the original's
+ * layout; the UI smoke pins the admission note in place. */
 static GtkWidget *
 build_tos_page (PrefBinding *bind)
 {
@@ -677,7 +701,6 @@ build_tos_page (PrefBinding *bind)
 	};
 	GtkWidget *page = page_new (_("ToS Filtering"));
 	GtkWidget *master;
-	gboolean applies = fs_backend ()->uses_settings;
 
 	add_note (page,
 		_("Type-of-Service marking is not wired into the rule generator "
@@ -713,64 +736,86 @@ build_tos_page (PrefBinding *bind)
 		gtk_box_pack_start (GTK_BOX (page), check, FALSE, FALSE, 0);
 	}
 
-	(void) applies;
 	bind_dependents (master, &bind->tos_types);
 
 	return page;
 }
 
+/* [ build_advanced_page ] -- live on both backends, one control per
+ * effect the backend can actually reproduce.  The rejection method is
+ * the one that is not: iptables offers REJECT as well as DROP, Windows
+ * Firewall always drops silently, so on the backend without the
+ * FS_FWHON_REJECT_METHOD bit the radio stays disabled with that
+ * admission. */
 static GtkWidget *
-build_advanced_page (PrefBinding *bind, gboolean applies)
+build_advanced_page (PrefBinding *bind)
 {
 	GtkWidget *page = page_new (_("Advanced Options"));
-
-	if (!applies) {
-		add_note (page,
-			_("The Windows backend builds its rules directly from the "
-			  "policy and does not read these settings, so this page "
-			  "has no effect here."));
-	}
+	gboolean reject_method =
+		(fs_backend ()->fw_honors & FS_FWHON_REJECT_METHOD) != 0;
 
 	add_section (page, _("Preferred packet rejection method"));
 	add_radio_pair (page, bind, FS_PREFS_FW_DENY_PACKETS, TRUE,
 	                _("Reject with error packet"),
-	                _("Drop silently"), applies);
+	                _("Drop silently"), reject_method);
+
+	if (!reject_method)
+		add_note (page,
+			_("Windows Firewall always drops blocked packets "
+			  "silently and has no per-rule reject, so the "
+			  "rejection method is fixed here.  The choice applies "
+			  "to the Linux backend."));
 
 	add_section (page, _("Broadcast traffic"));
 	add_check (page, bind, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST,
-	           _("Block broadcasts from external network"), FALSE, applies);
+	           _("Block broadcasts from external network"), FALSE, TRUE);
 	add_check (page, bind, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST,
-	           _("Block broadcasts from internal network"), FALSE, applies);
+	           _("Block broadcasts from internal network"), FALSE, TRUE);
 
 	add_section (page, _("Traffic validation"));
 	add_check (page, bind, FS_PREFS_FW_BLOCK_NON_ROUTABLES,
 	           _("Block traffic from reserved addresses on public interfaces"),
-	           TRUE, applies);
+	           TRUE, TRUE);
 
 	return page;
 }
 
-/* [ create_sections_model ] -- identical layout to the original. */
+/* [ create_sections_model ] -- identical layout to the original.  The
+ * model carries three columns: the Section enum (for the callers that
+ * care about semantics), the label, and the notebook page index the
+ * row selects.  That third column exists because per-page FS_FWSEC_*
+ * gating means the section enums of offered pages are no longer
+ * contiguous -- ICMP Filtering may be section 5 while being notebook
+ * page 4 -- and the sidebar must still land on the right page. */
 static GtkTreeModel *
 create_sections_model (void)
 {
-	GtkTreeStore *store = gtk_tree_store_new (2, G_TYPE_INT, G_TYPE_STRING);
+	GtkTreeStore *store = gtk_tree_store_new (3, G_TYPE_INT,
+	                                          G_TYPE_STRING,
+	                                          G_TYPE_INT);
 	GtkTreeIter iter;
 	GtkTreeIter *parent;
+	guint page_index = 0;
 	static const struct
 	{
 		Section     section;
 		const gchar *label;
 		gint        parent_index;   /* -1 for a top level row */
+		guint32     bit;            /* FS_FWSEC_* for sub-pages,
+		                             * 0 for the always-offered rows */
 	} rows[] = {
-		{ SECTION_INTERFACE,         N_("Interface"),         -1 },
-		{ SECTION_INTERFACE_EVENTS,  N_("Events"),            SECTION_INTERFACE },
-		{ SECTION_INTERFACE_POLICY,  N_("Policy"),            SECTION_INTERFACE },
-		{ SECTION_FIREWALL,          N_("Firewall"),          -1 },
-		{ SECTION_FIREWALL_NETWORK,  N_("Network Settings"),  SECTION_FIREWALL },
-		{ SECTION_FIREWALL_ICMP,     N_("ICMP Filtering"),    SECTION_FIREWALL },
-		{ SECTION_FIREWALL_TOS,      N_("ToS Filtering"),     SECTION_FIREWALL },
-		{ SECTION_FIREWALL_ADVANCED, N_("Advanced Options"),  SECTION_FIREWALL }
+		{ SECTION_INTERFACE,         N_("Interface"),         -1, 0 },
+		{ SECTION_INTERFACE_EVENTS,  N_("Events"),            SECTION_INTERFACE, 0 },
+		{ SECTION_INTERFACE_POLICY,  N_("Policy"),            SECTION_INTERFACE, 0 },
+		{ SECTION_FIREWALL,          N_("Firewall"),          -1, 0 },
+		{ SECTION_FIREWALL_NETWORK,  N_("Network Settings"),  SECTION_FIREWALL,
+		  FS_FWSEC_NETWORK },
+		{ SECTION_FIREWALL_ICMP,     N_("ICMP Filtering"),    SECTION_FIREWALL,
+		  FS_FWSEC_ICMP },
+		{ SECTION_FIREWALL_TOS,      N_("ToS Filtering"),     SECTION_FIREWALL,
+		  FS_FWSEC_TOS },
+		{ SECTION_FIREWALL_ADVANCED, N_("Advanced Options"),  SECTION_FIREWALL,
+		  FS_FWSEC_ADVANCED }
 	};
 
 	parent = NULL;
@@ -778,16 +823,16 @@ create_sections_model (void)
 	for (guint i = 0; i < G_N_ELEMENTS (rows); i++) {
 		GtkTreeIter *container = NULL;
 
-		/* WYSIWYG: only offer the settings the backend actually reads.
-		 * Linux builds its rules from these pages; Windows builds
-		 * rules from the policy and ignores them, so showing the
-		 * pages there asked the user to configure a firewall that
-		 * was not listening (the old page admitted it with a note
-		 * that "has no effect here").  Hide the whole section
-		 * instead; the notebook below drops the pages too, so the
+		/* WYSIWYG: only offer the settings pages the backend
+		 * actually reads.  The Windows backend used to ignore every
+		 * one of them, and showing the pages asked the user to
+		 * configure a firewall that was not listening; now that it
+		 * reads some (ICMP, Advanced Options) those appear and the
+		 * rest stay hidden, each gated by its own FS_FWSEC_* bit.
+		 * The notebook below drops the matching pages too, so the
 		 * section index and the page index stay aligned. */
-		if (!fs_backend ()->uses_settings &&
-		    rows[i].parent_index == SECTION_FIREWALL)
+		if (rows[i].parent_index == SECTION_FIREWALL &&
+		    (fs_backend ()->fw_sections & rows[i].bit) == 0)
 			continue;
 
 		if (rows[i].parent_index < 0) {
@@ -803,7 +848,9 @@ create_sections_model (void)
 		gtk_tree_store_set (store, &iter,
 		                    0, (gint) rows[i].section,
 		                    1, _(rows[i].label),
+		                    2, (gint) page_index,
 		                    -1);
+		page_index++;
 
 		if (container != NULL) {
 			g_free (parent);
@@ -854,7 +901,7 @@ fs_dialogs_preferences (GtkWidget *parent)
 	GtkTreeModel *model;
 	GtkCellRenderer *renderer;
 	GtkTreeViewColumn *column;
-	gboolean applies = fs_backend ()->uses_settings;
+	guint32 sections = fs_backend ()->fw_sections;
 	gint response;
 
 	install_prefs_css ();
@@ -938,22 +985,24 @@ fs_dialogs_preferences (GtkWidget *parent)
 	gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
 	                          wrap_page (build_firewall_page (&bind)), NULL);
 
-	/* The four settings pages exist only when the backend reads them;
-	 * create_sections_model() skipped the matching sidebar rows, so
-	 * row i stays on page i. */
-	if (applies) {
+	/* The settings pages exist only for the FS_FWSEC_* bits the
+	 * backend sets; create_sections_model() skipped the matching
+	 * sidebar rows, so row i stays on page i. */
+	if (sections & FS_FWSEC_NETWORK)
 		gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-		                          wrap_page (build_network_page (&bind, applies)),
+		                          wrap_page (build_network_page (&bind)),
 		                          NULL);
+	if (sections & FS_FWSEC_ICMP)
 		gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-		                          wrap_page (build_icmp_page (&bind, applies)),
+		                          wrap_page (build_icmp_page (&bind)),
 		                          NULL);
+	if (sections & FS_FWSEC_TOS)
 		gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
 		                          wrap_page (build_tos_page (&bind)), NULL);
+	if (sections & FS_FWSEC_ADVANCED)
 		gtk_notebook_append_page (GTK_NOTEBOOK (notebook),
-		                          wrap_page (build_advanced_page (&bind, applies)),
+		                          wrap_page (build_advanced_page (&bind)),
 		                          NULL);
-	}
 
 	hbox = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
 	/* The tree expands too: with it packed FALSE it stayed at its
@@ -1051,13 +1100,16 @@ on_section_changed (GtkTreeView *view, gpointer data)
 	GtkTreeSelection *selection = gtk_tree_view_get_selection (view);
 	GtkTreeModel *model;
 	GtkTreeIter iter;
-	gint section = 0;
+	gint page = 0;
 
 	if (!gtk_tree_selection_get_selected (selection, &model, &iter))
 		return;
 
-	gtk_tree_model_get (model, &iter, 0, &section, -1);
-	gtk_notebook_set_current_page (GTK_NOTEBOOK (data), section);
+	/* Column 2, not the Section enum: with per-page gating the enums
+	 * of the offered pages need not be contiguous, while the notebook
+	 * index always is. */
+	gtk_tree_model_get (model, &iter, 2, &page, -1);
+	gtk_notebook_set_current_page (GTK_NOTEBOOK (data), page);
 }
 
 static void

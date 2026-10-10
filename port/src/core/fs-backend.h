@@ -37,17 +37,41 @@ typedef enum
 /* Callback invoked for each event reported by the platform's firewall. */
 typedef void (*FsLogFunc) (const FsHit *hit, gpointer user_data);
 
+/* Which Firewall sub-pages of the Preferences dialog this backend
+ * actually reads, one bit per page.  WYSIWYG: a page is offered only
+ * when its bit is set -- showing a page the backend ignores asks the
+ * user to configure a firewall that is not listening.  "uses_settings"
+ * was the single all-or-nothing version of this; per-page bits let a
+ * backend honor some pages (Windows: ICMP and Advanced Options) while
+ * honestly hiding the rest (Network Settings needs ICS, ToS cannot be
+ * marked at all). */
+#define FS_FWSEC_NETWORK  (1u << 0)  /* ext/int devices, NAT          */
+#define FS_FWSEC_ICMP     (1u << 1)  /* the ICMP allow-list           */
+#define FS_FWSEC_TOS      (1u << 2)  /* ToS page (offered as an
+	                                  * admitted-dead page)          */
+#define FS_FWSEC_ADVANCED (1u << 3)  /* rejection method, broadcasts,
+	                                  * reserved source addresses    */
+
+/* Finer-grained effects on offered pages.  A control whose effect the
+ * backend cannot reproduce stays disabled with a note that says why,
+ * never live and inert. */
+#define FS_FWHON_REJECT_METHOD (1u << 0) /* deny_packets: REJECT vs
+	                                  * DROP is a real choice       */
+#define FS_FWHON_RATE_LIMIT    (1u << 1) /* ICMP rules are emitted
+	                                  * with rate limits           */
+
 typedef struct
 {
 	const gchar *name;          /* "linux" / "windows" */
 	const gchar *display_name;  /* human readable, for the About box */
 
-	/* TRUE when the backend's rules are built from the FsSettings the
-	 * Preferences dialog edits.  FALSE when the backend works straight
-	 * from the policy and ignores those settings entirely -- the
-	 * Windows backend does, so the dialog greys the Firewall pages out
-	 * rather than offering switches that would change nothing. */
-	gboolean uses_settings;
+	/* FS_FWSEC_* bits: which Firewall sub-pages the backend honors.
+	 * The dialog offers exactly these pages, and fs_ui smoke asserts
+	 * the count against them. */
+	guint32 fw_sections;
+
+	/* FS_FWHON_* bits: per-control effects inside offered pages. */
+	guint32 fw_honors;
 
 	/* TRUE when the backend can actually manage a firewall here. */
 	gboolean (*available) (void);

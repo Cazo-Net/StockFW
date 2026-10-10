@@ -36,6 +36,7 @@ add_library(fs-core STATIC
   src/core/fs-util.c
   src/core/fs-rules.c
   src/core/fs-script.c
+  src/core/fs-settings-plan.c
   src/core/fs-service.c
   src/core/fs-fwrule.c
   src/core/fs-copilot.c
