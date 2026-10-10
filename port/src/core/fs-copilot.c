@@ -852,6 +852,98 @@ fs_copilot_simulate_text (FsCopilot *copilot, const gchar *text,
 	return result;
 }
 
+/* [ rule_port_covers ]
+ * Port matching mirrors address matching: a port either side left
+ * unnamed constrains nothing.  A rule with no port governs every
+ * probe, and a line that named no port still meets the rule that
+ * opens a specific one -- the same "every port" reading the panel's
+ * no-port note promises and the no-host note gets from
+ * addr_covers().  ICMP has no ports at all, so a ported rule cannot
+ * govern ICMP traffic however the line phrased it. */
+static gboolean
+rule_port_covers (guint probe_port, gboolean icmp, gint rule_port)
+{
+	if (rule_port == 0)
+		return TRUE;
+
+	if (icmp)
+		return FALSE;
+
+	if (probe_port == 0)
+		return TRUE;
+
+	return rule_port == (gint) probe_port;
+}
+
+/* [ port_score ]
+ * How precisely a rule's port answers the probe: the exact port
+ * asked is the sharpest answer, a rule naming no port covers every
+ * port, and a rule on some port a portless line never named is the
+ * weakest cover of all. */
+static gint
+port_score (guint probe_port, gint rule_port)
+{
+	if (rule_port == 0)
+		return 1;
+
+	if (probe_port == (guint) rule_port)
+		return 2;
+
+	return 0;
+}
+
+/* [ match_score ]
+ * The rule the verdict names should be the rule that actually
+ * decided this traffic, not merely the first one that fits.  Every
+ * matching rule on each side is scored -- port precision first,
+ * then address precision -- and the higher score wins; ties keep
+ * the policy's own order.  A line that named no port or no host is
+ * scored the same way: the widest answer (any-port, anyone) beats a
+ * rule covering only a slice of what the line left open. */
+static gint
+match_score (guint probe_port, const gchar *probe_addr,
+             const FsFwRule *rule)
+{
+	gint port = MAX (port_score (probe_port, rule->local_port),
+	                 port_score (probe_port, rule->remote_port));
+	gint addr;
+
+	if (probe_addr == NULL || *probe_addr == '\0')
+		addr = (rule->remote_address == NULL) ? 3 : 1;
+	else if (rule->remote_address == NULL)
+		addr = 2;
+	else if (g_ascii_strcasecmp (rule->remote_address, probe_addr) == 0)
+		addr = 3;
+	else
+		addr = 2;   /* CIDR containment: the subnet covers it. */
+
+	return (port * 10) + addr;
+}
+
+/* [ match_where ]
+ * The " on port N (forwarded to X)" tail a verdict appends when the
+ * rule that decided it pinned a port or redirects the traffic.  The
+ * panel's no-port/no-host notes point the reader at exactly this:
+ * without it, a verdict reached through a specific port would read
+ * like a verdict for every port. */
+static gchar *
+match_where (const FsFwRule *rule)
+{
+	GString *s = g_string_new (NULL);
+	gint port = (rule->local_port != 0) ? rule->local_port
+	                                    : rule->remote_port;
+
+	if (port != 0)
+		g_string_append_printf (s, _(" on port %d"), port);
+
+	if (rule->forward && rule->forward_address != NULL &&
+	    *rule->forward_address != '\0')
+		g_string_append_printf (s, _(" (forwarded to %s)"),
+		                        rule->forward_address);
+
+	return g_string_free (s, FALSE);
+}
+
 /* [ fs_copilot_simulate ]
  * Runs a what-if simulation against the attached policy: the first
  * allow and the first block that cover the probe are collected, and a
@@ -903,17 +995,25 @@ fs_copilot_simulate (FsCopilot *copilot,
 		}
 		else
 		{
-			/* Collect the first allow and the first block that fit the
+			/* Collect the best allow and the best block that fit the
 			 * probe.  A block wins over an allow matching the same
 			 * traffic -- Windows Firewall gives block rules precedence
 			 * whatever order they were written in -- so reporting the
 			 * allow as if it applied would be the quiet lie this port
-			 * exists to remove. */
+			 * exists to remove.  Within each side every candidate is
+			 * scored (match_score) so the rule the verdict names is
+			 * the one that actually decided this traffic: the exact
+			 * port and host beat an any-port or anyone rule, and the
+			 * policy's own order breaks ties. */
 			FsRuleProtocol proto = FS_PROTO_ANY;
 			const gchar *remote_addr = (remote_ip && *remote_ip)
 			                           ? remote_ip : NULL;
 			FsFwRule *allow_match = NULL;
 			FsFwRule *block_match = NULL;
+			gint allow_score = -1;
+			gint block_score = -1;
+			gboolean icmp = (protocol != NULL &&
+			                 g_ascii_strcasecmp (protocol, "ICMP") == 0);
 
 			if (protocol != NULL)
 			{
@@ -927,26 +1027,22 @@ fs_copilot_simulate (FsCopilot *copilot,
 			{
 				FsFwRule *rule = l->data;
 				gboolean is_block = (rule->action == FS_ACTION_BLOCK);
-
-				/* One match per side is enough. */
-				if (is_block ? block_match != NULL : allow_match != NULL)
-					continue;
+				gint score;
 
 				/* Direction must match. */
 				if (rule->direction != (inbound ? FS_DIR_INBOUND
 				                                 : FS_DIR_OUTBOUND))
 					continue;
 
-				/* Protocol must match (ANY matches TCP/UDP). */
+				/* Protocol must match (ANY matches TCP/UDP/ICMP). */
 				if (rule->protocol != FS_PROTO_ANY && rule->protocol != proto)
 					continue;
 
-				/* Local port must match. */
-				if (rule->local_port != 0 && rule->local_port != (gint)port)
+				/* Ports: a port either side left unnamed constrains
+				 * nothing; ICMP meets only portless rules. */
+				if (!rule_port_covers (port, icmp, rule->local_port))
 					continue;
-
-				/* Remote port must match. */
-				if (rule->remote_port != 0 && rule->remote_port != (gint)port)
+				if (!rule_port_covers (port, icmp, rule->remote_port))
 					continue;
 
 				/* Address: the compiled rule must cover the probe, as an
@@ -956,37 +1052,52 @@ fs_copilot_simulate (FsCopilot *copilot,
 				if (!addr_covers (rule->remote_address, remote_addr))
 					continue;
 
-				if (is_block)
-					block_match = rule;
-				else
-					allow_match = rule;
+				score = match_score (port, remote_addr, rule);
+
+				if (is_block) {
+					if (score > block_score) {
+						block_match = rule;
+						block_score = score;
+					}
+				} else {
+					if (score > allow_score) {
+						allow_match = rule;
+						allow_score = score;
+					}
+				}
 			}
 
 			if (block_match != NULL)
 			{
+				gchar *where = match_where (block_match);
+
 				result->would_block = TRUE;
 				result->matching_rule = g_strdup (block_match->name);
 
 				if (allow_match != NULL)
 					reason = g_strdup_printf (
-						_("Rule '%s' blocks it. The allow rule '%s' also "
-						  "matches, but block rules take precedence, so "
-						  "that allow is shadowed."),
-						block_match->name, allow_match->name);
+						_("Rule '%s'%s blocks it. The allow rule '%s' "
+						  "also matches, but block rules take "
+						  "precedence, so that allow is shadowed."),
+						block_match->name, where, allow_match->name);
 				else
 					reason = g_strdup_printf (
-						_("Matched rule '%s', which %s %s traffic."),
-						block_match->name, _("blocks"),
+						_("Matched rule '%s'%s, which %s %s traffic."),
+						block_match->name, where, _("blocks"),
 						inbound ? _("inbound") : _("outbound"));
+				g_free (where);
 			}
 			else if (allow_match != NULL)
 			{
+				gchar *where = match_where (allow_match);
+
 				result->would_block = FALSE;
 				result->matching_rule = g_strdup (allow_match->name);
 				reason = g_strdup_printf (
-					_("Matched rule '%s', which %s %s traffic."),
-					allow_match->name, _("allows"),
+					_("Matched rule '%s'%s, which %s %s traffic."),
+					allow_match->name, where, _("allows"),
 					inbound ? _("inbound") : _("outbound"));
+				g_free (where);
 			}
 			else
 			{

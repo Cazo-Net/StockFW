@@ -433,14 +433,41 @@ check_list_behaviour (GtkWidget *page)
 	CHECK (fs_hitview_count () == 0,
 	       "the list is empty again for the filter checks");
 
-	/* The Time column: a clock, not the raw wevtutil stamp. */
+	/* The Time column: a clock, not the raw wevtutil stamp.  Neither
+	 * check may depend on the day the suite runs: the hardcoded
+	 * stamp is permanently another day (%m-%d %H:%M:%S = 14 chars),
+	 * and the dynamic one is today's instant round-tripped through
+	 * UTC, which must come back as clock only (8 chars) in any
+	 * timezone. */
 	text = fs_hitview_format_time ("2026-10-09T12:35:34.0780000Z");
 	CHECK (text != NULL &&
-	       (strlen (text) == 8 || strlen (text) == 11) &&
+	       (strlen (text) == 8 || strlen (text) == 14) &&
 	       strchr (text, ':') != NULL,
 	       "a wevtutil stamp becomes clock text (got \"%s\")",
 	       text ? text : "(null)");
 	g_free (text);
+
+	{
+		GDateTime *now_utc = g_date_time_new_now_utc ();
+		gchar *stamp = now_utc != NULL
+		               ? g_date_time_format (now_utc,
+		                                     "%Y-%m-%dT%H:%M:%S.0000000Z")
+		               : NULL;
+
+		if (stamp != NULL) {
+			text = fs_hitview_format_time (stamp);
+			CHECK (text != NULL && strlen (text) == 8 &&
+			       strchr (text, ':') != NULL,
+			       "an event from today shows the clock only "
+			       "(got \"%s\")", text ? text : "(null)");
+			g_free (text);
+		} else {
+			CHECK (FALSE, "today's stamp could be built");
+		}
+		g_free (stamp);
+		if (now_utc != NULL)
+			g_date_time_unref (now_utc);
+	}
 
 	text = fs_hitview_format_time ("12:00:00");
 	CHECK (text != NULL && g_strcmp0 (text, "12:00:00") == 0,

@@ -1078,18 +1078,20 @@ on_simulate_clicked (GtkButton *btn, gpointer data)
                       result->would_block ? "red" : "green");
     text_view_append (sim_output, "\n", NULL);
 
-    /* Say out loud what the line did not say: a verdict read against
-     * "any port" must not look like a verdict for one port.  ICMP has
-     * no ports at all, so the note would be a question the line
-     * never asked. */
+    /* Say out loud what the line did not say, and point at where the
+     * answer to the omission lives: the verdict names any port or
+     * host that decided it.  ICMP has no ports at all, so the port
+     * note would be a question the line never asked. */
     if (sc != NULL && !sc->had_port &&
         g_strcmp0 (sc->protocol, "ICMP") != 0)
         text_view_append (sim_output,
-            "  Note: the line named no port; every port was simulated.\n",
+            "  Note: the line named no port; the verdict names any "
+            "port that decided it.\n",
             "dim");
     if (sc != NULL && !sc->had_addr)
         text_view_append (sim_output,
-            "  Note: the line named no host; every host was simulated.\n",
+            "  Note: the line named no host; the verdict names any "
+            "host that decided it.\n",
             "dim");
 
     /* The window: same verdict, played.  Returns only when closed. */

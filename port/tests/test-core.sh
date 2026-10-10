@@ -1480,9 +1480,14 @@ static void test_name_hygiene_f3 (void)
 
 /* The What-If simulator: the closed grammar in core/fs-copilot.c and
  * the verdict it produces against a real policy.  The teeth here are
- * for the two lies a simulator can tell -- a verdict based on a wrong
- * reading of the line, and a verdict that ignores block precedence or
- * pretends a subnet block does not cover its hosts. */
+ * for the lies a simulator can tell -- a verdict based on a wrong
+ * reading of the line; a verdict that ignores block precedence or
+ * pretends a subnet block does not cover its hosts; and a verdict
+ * reached through the wrong rule: the portless line that misses the
+ * rule opening a port, ICMP joined to a ported rule, an any-port
+ * rule named where the exact-port rule decided, a forward hiding
+ * where the traffic goes, or a deciding port/host left out of the
+ * reason the panel's notes point at. */
 static void test_whatif_simulate (void)
 {
 	FsScenario *sc;
@@ -1619,6 +1624,123 @@ static void test_whatif_simulate (void)
 		       "a covering allow lets the traffic through");
 		CHECK (r->matching_rule != NULL,
 		       "the allow verdict names its rule too");
+		fs_simulation_result_free (r);
+	}
+
+	/* --- Precision: symmetric ports, ICMP, best match, forwards ---
+	 *
+	 * A port constrains the same way a host does: a port either side
+	 * left unnamed is unconstrained.  So a line with no port must
+	 * still find the rule that opens one (and say which port), ICMP
+	 * must never meet a ported rule, the rule the verdict names must
+	 * be the exact-port one rather than an earlier any-port rule, and
+	 * a forward must say where the traffic goes after it is let in. */
+	fs_policy_clear (policy);
+	rule = fs_rule_new (FS_RULE_INBOUND_ALLOW_SERVICE);
+	rule->service = g_strdup ("mystery");
+	rule->port = g_strdup ("22");
+	rule->target = g_strdup ("192.168.1.50");
+	fs_policy_add (policy, rule);
+
+	r = fs_copilot_simulate_text (copilot, "allow from 192.168.1.50",
+	                              NULL);
+	CHECK (r != NULL, "the portless probe answers");
+	if (r != NULL) {
+		CHECK (!r->would_block,
+		       "a line with no port finds the rule that opens one");
+		CHECK (strstr (r->explanation, "on port 22") != NULL,
+		       "and the verdict names the port that decided it");
+		fs_simulation_result_free (r);
+	}
+
+	r = fs_copilot_simulate_text (copilot,
+	                              "allow ping from 192.168.1.50", NULL);
+	CHECK (r != NULL, "the ICMP probe answers");
+	if (r != NULL) {
+		CHECK (r->would_block,
+		       "ICMP meets no ported rule, portless line or not");
+		fs_simulation_result_free (r);
+	}
+
+	r = fs_copilot_simulate_text (
+		copilot, "allow ping from 192.168.1.50 port 22", NULL);
+	if (r != NULL) {
+		CHECK (r->would_block,
+		       "not even a typed port joins ICMP to a ported rule");
+		fs_simulation_result_free (r);
+	}
+
+	r = fs_copilot_simulate_text (copilot,
+	                              "allow from 192.168.1.50 port 80", NULL);
+	if (r != NULL) {
+		CHECK (r->would_block,
+		       "a port the rule does not open stays blocked");
+		fs_simulation_result_free (r);
+	}
+
+	/* The exact-port rule decides port-443 traffic even when an
+	 * any-port rule is listed before it (host rows expand first). */
+	fs_policy_clear (policy);
+	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
+	rule->target = g_strdup ("203.0.113.9");
+	fs_policy_add (policy, rule);
+
+	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+	rule->service = g_strdup ("HTTPS");
+	rule->port = g_strdup ("443");
+	rule->target = g_strdup ("203.0.113.9");
+	fs_policy_add (policy, rule);
+
+	r = fs_copilot_simulate_text (copilot,
+	                              "allow HTTPS to 203.0.113.9", NULL);
+	CHECK (r != NULL, "the exact-port probe answers");
+	if (r != NULL) {
+		CHECK (!r->would_block,
+		       "the host allow covers it as well");
+		CHECK (r->matching_rule != NULL &&
+		       strstr (r->matching_rule, "HTTPS") != NULL,
+		       "the exact-port rule, not the earlier any-port "
+		       "rule, is the one named");
+		CHECK (strstr (r->explanation, "on port 443") != NULL,
+		       "the deciding port is in the reason");
+		fs_simulation_result_free (r);
+	}
+
+	/* A forward is a real allow; the verdict says where the traffic
+	 * is sent after it is let in. */
+	fs_policy_clear (policy);
+	rule = fs_rule_new (FS_RULE_INBOUND_FORWARD);
+	rule->service = g_strdup ("HTTP");
+	rule->port = g_strdup ("8080");
+	rule->to = g_strdup ("10.0.0.5");
+	rule->to_port = g_strdup ("80");
+	fs_policy_add (policy, rule);
+
+	r = fs_copilot_simulate_text (copilot, "inbound port 8080", NULL);
+	CHECK (r != NULL, "the forward probe answers");
+	if (r != NULL) {
+		CHECK (!r->would_block, "a forward opens its port");
+		CHECK (strstr (r->explanation, "on port 8080") != NULL,
+		       "the forward's port is in the reason");
+		CHECK (strstr (r->explanation, "10.0.0.5") != NULL,
+		       "the verdict says where the traffic is forwarded");
+		fs_simulation_result_free (r);
+	}
+
+	/* A line that named no host meets the host-scoped block, and the
+	 * block's own host is in the reason the panel's note points at. */
+	fs_policy_clear (policy);
+	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
+	rule->target = g_strdup ("203.0.113.5");
+	fs_policy_add (policy, rule);
+
+	r = fs_copilot_simulate_text (copilot, "block outbound", NULL);
+	CHECK (r != NULL, "the no-host probe answers");
+	if (r != NULL) {
+		CHECK (r->would_block,
+		       "a line with no host meets the host-scoped block");
+		CHECK (strstr (r->explanation, "203.0.113.5") != NULL,
+		       "the block's host is named in the reason");
 		fs_simulation_result_free (r);
 	}
 
