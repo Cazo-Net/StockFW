@@ -101,6 +101,7 @@ add_executable(StockFW
   src/ui/fs-hitview.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
+  src/ui/fs-trustview.c
   ${FS_BACKEND_SOURCES}
 )
 target_include_directories(StockFW PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
