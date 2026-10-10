@@ -103,6 +103,7 @@ add_executable(StockFW
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
+  src/ui/fs-tray.c
   ${FS_BACKEND_SOURCES}
 )
 target_include_directories(StockFW PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
@@ -176,6 +177,7 @@ set(FS_UI_SOURCES
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
+  src/ui/fs-tray.c
   ${FS_BACKEND_SOURCES}
 )
 add_executable(fs-ui-smoke EXCLUDE_FROM_ALL
@@ -226,6 +228,26 @@ if(FS_BACKEND_LIBS)
 endif()
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-hitview-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
+
+# The tray/background surface.  Proves the preference gates against the
+# live Windows shell: icon off means nothing is installed, icon on means
+# Shell_NotifyIcon really embedded it, and the window only ever hides
+# when both preferences AND an embedded icon say so.  It creates one
+# real (brief) notification-area icon -- that is the integration being
+# proven -- and takes it down on exit.
+add_executable(fs-tray-smoke EXCLUDE_FROM_ALL
+  tests/ui-tray-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_include_directories(fs-tray-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-tray-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-tray-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-tray-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
 
 # The What-If Simulation Visualizer: its timeline is pure math, so the

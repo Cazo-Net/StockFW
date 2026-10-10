@@ -189,14 +189,15 @@ fs_dialogs_confirm (GtkWidget *parent, const gchar *question,
  * actually acts on it.
  *
  *   Effective on both platforms
- *     Interface > Events, Interface > Policy, Firewall > startup
+ *     Interface > Events, Interface > Policy, Firewall > startup,
+ *     the Interface tray switches (fs-tray.c follows both)
  *
  *   Effective on Linux only -- the Windows backend builds its rules
  *   straight from the policy and never reads FsSettings
  *     Firewall > Network Settings, ICMP Filtering, Advanced Options
  *
  *   Not wired up anywhere yet, so disabled with a reason
- *     Interface (tray icon), dial-out / DHCP startup, ToS Filtering,
+ *     dial-out / DHCP startup, ToS Filtering,
  *     the Events host and port filter lists, the DHCP server block
  */
 
@@ -416,14 +417,14 @@ build_interface_page (PrefBinding *bind)
 {
 	GtkWidget *page = page_new (_("Interface"));
 
-	add_note (page,
-		_("Tray icon support is not implemented in this port, so both "
-		  "settings below have no effect yet."));
-
 	add_check (page, bind, FS_PREFS_ENABLE_TRAY_ICON,
-	           _("Show a tray icon"), FALSE, FALSE);
+	           _("Show a tray icon"), TRUE, TRUE);
 	add_check (page, bind, FS_PREFS_MINIMIZE_TO_TRAY,
-	           _("Minimize to the tray"), FALSE, FALSE);
+	           _("Minimize to the tray"), TRUE, TRUE);
+	add_note (page,
+		_("With the tray icon shown, closing or minimizing this "
+		  "window keeps StockFW running in the background; the "
+		  "tray menu opens it again or quits the program."));
 
 	return page;
 }

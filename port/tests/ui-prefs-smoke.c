@@ -106,6 +106,66 @@ find_widget (GtkWidget *root, GType type)
 	return found;
 }
 
+/* [ find_check_under ] depth first search for the check button whose
+ * label reads as given (already translated by the caller). */
+static GtkWidget *
+find_check_under (GtkWidget *root, const gchar *want)
+{
+	GtkWidget *found = NULL;
+
+	if (root == NULL)
+		return NULL;
+
+	if (GTK_IS_CHECK_BUTTON (root)) {
+		const gchar *label = gtk_button_get_label (GTK_BUTTON (root));
+
+		if (label != NULL && g_strcmp0 (label, want) == 0)
+			return root;
+	}
+
+	if (!GTK_IS_CONTAINER (root))
+		return NULL;
+
+	GList *children = gtk_container_get_children (GTK_CONTAINER (root));
+
+	for (GList *l = children; l != NULL && found == NULL; l = l->next)
+		found = find_check_under (l->data, want);
+
+	g_list_free (children);
+
+	return found;
+}
+
+/* [ label_mentions ] TRUE when a label somewhere below reads as
+ * containing the needle -- the disclosure-note probe. */
+static gboolean
+label_mentions (GtkWidget *root, const gchar *needle)
+{
+	gboolean found = FALSE;
+
+	if (root == NULL)
+		return FALSE;
+
+	if (GTK_IS_LABEL (root)) {
+		const gchar *text = gtk_label_get_text (GTK_LABEL (root));
+
+		if (text != NULL && g_strrstr (text, needle) != NULL)
+			return TRUE;
+	}
+
+	if (!GTK_IS_CONTAINER (root))
+		return FALSE;
+
+	GList *children = gtk_container_get_children (GTK_CONTAINER (root));
+
+	for (GList *l = children; l != NULL && !found; l = l->next)
+		found = label_mentions (l->data, needle);
+
+	g_list_free (children);
+
+	return found;
+}
+
 /* [ find_dialog ] the Preferences window, once it exists */
 static GtkDialog *
 find_dialog (void)
@@ -249,6 +309,67 @@ drive_dialog (gpointer data)
 			g_free (label);
 			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
 			return G_SOURCE_REMOVE;
+		}
+
+		/* The tray switches are implemented (src/ui/fs-tray.c), so
+		 * both must be PRESENT and SENSITIVE on the Interface page,
+		 * and the page must not still carry the old note admitting
+		 * the settings do nothing.  A regression to the disabled
+		 * state fails here, not in review. */
+		if (label != NULL &&
+		    g_strcmp0 (label, _("Interface")) == 0) {
+			GtkWidget *iface =
+				gtk_notebook_get_nth_page (
+					GTK_NOTEBOOK (notebook), page);
+			static const gchar *tray_checks[] = {
+				"Show a tray icon", "Minimize to the tray"
+			};
+			gboolean tray_ok = TRUE;
+
+			if (iface == NULL) {
+				g_printerr ("ui-prefs-smoke: FAILED, the "
+				            "Interface page is not in the "
+				            "notebook\n");
+				failed = TRUE;
+				tray_ok = FALSE;
+			}
+
+			for (guint i = 0;
+			     iface != NULL && i < G_N_ELEMENTS (tray_checks);
+			     i++) {
+				GtkWidget *check =
+					find_check_under (iface, _(tray_checks[i]));
+
+				if (check == NULL) {
+					g_printerr ("ui-prefs-smoke: FAILED, "
+					            "\"%s\" is missing from the "
+					            "Interface page\n",
+					            tray_checks[i]);
+					failed = TRUE;
+					tray_ok = FALSE;
+				} else if (!gtk_widget_get_sensitive (check)) {
+					g_printerr ("ui-prefs-smoke: FAILED, "
+					            "\"%s\" is insensitive but the "
+					            "tray module implements it\n",
+					            tray_checks[i]);
+					failed = TRUE;
+					tray_ok = FALSE;
+				}
+			}
+
+			if (iface != NULL &&
+			    label_mentions (iface, "not implemented")) {
+				g_printerr ("ui-prefs-smoke: FAILED, the "
+				            "Interface page still carries a "
+				            "\"not implemented\" note\n");
+				failed = TRUE;
+				tray_ok = FALSE;
+			}
+
+			if (tray_ok)
+				g_print ("ui-prefs-smoke: tray switches "
+				         "present, live, and honestly "
+				         "described\n");
 		}
 
 		g_free (label);

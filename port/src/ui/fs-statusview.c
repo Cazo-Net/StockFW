@@ -14,6 +14,7 @@
 
 #include "ui/fs-statusview.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-tray.h"
 #include "core/fs-backend.h"
 #include "core/fs-i18n.h"
 #include "stockfw-logo-96.h"
@@ -665,6 +666,11 @@ fs_statusview_set_state (FsFirewallState state)
 		gtk_image_set_from_icon_name (GTK_IMAGE (state_icon),
 		                              state_to_icon (state),
 		                              GTK_ICON_SIZE_DIALOG);
+
+	/* The tray tooltip carries the same sentence, so the background
+	 * app answers a glance even while the window is hidden.  No icon
+	 * up: fs-tray.c keeps the text for the next one. */
+	fs_tray_set_state (state_to_text (state));
 
 	/* The badge takes the state's colour too, so the circle itself
 	 * carries the verdict even before the text is read. */

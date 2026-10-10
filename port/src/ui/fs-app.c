@@ -17,6 +17,7 @@
 #include "ui/fs-hitview.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-trustview.h"
+#include "ui/fs-tray.h"
 #include "core/fs-backend.h"
 #include "core/fs-prefs.h"
 #include "core/fs-rules.h"
@@ -55,17 +56,54 @@ static FsSettings *settings = NULL;
 /* Smart Firewall Copilot instance. */
 FsCopilot *copilot = NULL;
 
-static void
+static gboolean
 on_delete_event (GtkWidget *widget, GdkEvent *event, gpointer data)
 {
 	/* GTK owns the event it passes to the handler; freeing it here
 	 * made the main loop free the same block a second time when the
 	 * window closed -- a double free on every exit. */
-	(void) widget;
 	(void) event;
 	(void) data;
 
+	/* Background mode: with the tray icon up and "Minimize to the
+	 * tray" on, the window closes INTO the icon and the firewall
+	 * keeps running behind it; the tray menu's Quit is the way out.
+	 * The gate refuses unless an icon is really embedded with the
+	 * shell, so this can never hide the window with nothing to bring
+	 * it back from. */
+	if (fs_tray_hide_on_close ()) {
+		gtk_widget_hide (widget);
+		return TRUE;
+	}
+
+	/* No tray (or the preference is off): quit.  TRUE on both paths --
+	 * this handler decides the window's fate, so the default handler
+	 * must not destroy it underneath the quit.  The old void return
+	 * left this signal's boolean result as whatever the callee had in
+	 * a register. */
 	fs_app_quit ();
+	return TRUE;
+}
+
+/* [ on_window_state_event ] -- "Minimize to the tray": the minimize
+ * button hides the window behind the icon under the same gate as the
+ * close button, for the same reason.  Hiding an already-hidden window
+ * cannot happen here: the gate only sees ICONIFIED arriving, and an
+ * unmap removes it from the new state. */
+static gboolean
+on_window_state_event (GtkWidget *widget, GdkEventWindowState *event,
+                       gpointer data)
+{
+	(void) data;
+
+	if ((event->changed_mask & GDK_WINDOW_STATE_ICONIFIED) != 0 &&
+	    (event->new_window_state & GDK_WINDOW_STATE_ICONIFIED) != 0 &&
+	    fs_tray_hide_on_close ()) {
+		gtk_widget_hide (widget);
+		return TRUE;
+	}
+
+	return FALSE;
 }
 
 /* [ build_menubar ]
@@ -368,6 +406,8 @@ fs_app_activate (GtkApplication *app)
 
 	g_signal_connect (fsapp.window, "delete-event",
 	                   G_CALLBACK (on_delete_event), NULL);
+	g_signal_connect (fsapp.window, "window-state-event",
+	                   G_CALLBACK (on_window_state_event), NULL);
 
 	/* Theme first: everything built below picks up the classes. */
 	install_theme ();
@@ -475,6 +515,11 @@ fs_app_activate (GtkApplication *app)
 
 	/* Reflect the real firewall state, if the backend knows it. */
 	fs_statusview_set_state (fs_backend ()->get_state ());
+
+	/* Tray last: the icon reuses the window logo set above, and the
+	 * state call just now already fed the tooltip text. */
+	fs_tray_set_window (GTK_WINDOW (fsapp.window));
+	fs_tray_sync ();
 }
 
 void
@@ -485,11 +530,18 @@ fs_app_reload_settings (void)
 
 	fs_settings_load_prefs (settings);
 	fs_backend_set_context (policy, settings);
+
+	/* The Preferences dialog may have toggled the tray switches. */
+	fs_tray_sync ();
 }
 
 void
 fs_app_quit (void)
 {
+	/* Icon down first: a tray icon that outlives the program is a
+	 * dead icon that still looks clickable. */
+	fs_tray_uninstall ();
+
 	fs_prefs_save ();
 
 	if (policy != NULL) {

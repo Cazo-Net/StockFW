@@ -86,8 +86,9 @@ iptables on Linux and the Windows Firewall API on Windows.
   - DONE: script generation (`core/fs-script.c`) — iptables text for the
     Linux backend.
   - DONE: core test suite (`port/tests/test-core.sh`), 40 assertions.
-  - TODO: wire these into the Policy/Events pages, plus preferences and
-    the tray icon.
+  - DONE: tray icon (`src/ui/fs-tray.c`) — notification-area icon with an
+    Open/Quit menu and close/minimize-to-tray, shipped in 1.0.5.
+  - TODO: wire these into the Policy/Events pages, plus preferences.
 - **M3 — Linux firewall backend.** DONE, except DHCP.
   - Builds and runs under WSL2/Kali via WSLg.
   - `iptables` rules applied and verified with `iptables -L`: inbound
