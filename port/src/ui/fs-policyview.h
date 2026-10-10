@@ -22,6 +22,12 @@ void fs_policyview_reload (FsPolicy *policy);
 /* Persists the policy to disk. */
 gboolean fs_policyview_save (FsPolicy *policy);
 
+/* The single answer to "may this apply touch the firewall?" for every
+ * page that pushes policy: the audit-only testing mode's reason, the
+ * Status page's Lock, or NULL to apply live.  Returned strings are
+ * borrowed (static or preference-backed), never freed. */
+const gchar *fs_policyview_hold_reason (void);
+
 G_END_DECLS
 
 #endif /* FS_POLICYVIEW_H */

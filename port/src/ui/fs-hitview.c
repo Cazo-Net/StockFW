@@ -20,6 +20,7 @@
 #include "core/fs-rules.h"
 #include "core/fs-audit.h"
 #include "core/fs-util.h"
+#include "core/fs-apply.h"
 #include "core/fs-i18n.h"
 
 #include <string.h>
@@ -800,32 +801,60 @@ fs_hitview_selected (void)
 
 /* [ push_policy ]
  * Put the policy in front of the actual firewall and report the
- * outcome without spin: staged is staged, live is live. */
+ * outcome without spin: staged is staged, live is live, and a
+ * rolled-back failure says so. */
 static void
 push_policy (const gchar *what, const gchar *csv)
 {
 	GError *error = NULL;
-	FsApplyResult result = fs_backend ()->apply_rules (hitview_policy,
-	                                                   &error);
+	FsApplyOutcome *outcome = fs_policy_apply_safe (
+		fs_backend (), hitview_policy, "event menu",
+		fs_policyview_hold_reason (), &error);
 	gchar *msg;
 
-	if (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL) {
+	if (outcome->held) {
+		msg = g_strdup_printf (
+			_("%s\n\nRule: %s\n\nSaved in the policy and written "
+			  "to the audit log, but held back (%s) -- the "
+			  "firewall was deliberately not touched."),
+			what, csv != NULL ? csv : "-", outcome->hold_reason);
+		fs_dialogs_info (NULL, _("Policy updated, held"), msg);
+	} else if (outcome->applied) {
 		msg = g_strdup_printf (_("%s\n\nRule: %s\n\n%s"),
 		                       what, csv != NULL ? csv : "-",
-		                       fs_util_apply_result_to_string (result));
+		                       fs_util_apply_result_to_string (
+		                               (int) outcome->result));
 		fs_dialogs_info (NULL, _("Policy updated"), msg);
 	} else {
+		const gchar *rollback;
+
+		if (outcome->rollback_attempted &&
+		    outcome->rollback_verified)
+			rollback = _(" The firewall was restored to the last "
+			              "applied policy and that restore was "
+			              "verified.");
+		else if (outcome->rollback_attempted)
+			rollback = _(" The rollback ALSO failed: the firewall "
+			              "may be in an inconsistent state -- check "
+			              "the Status page.");
+		else
+			rollback = _(" There is no recorded previously "
+			              "applied policy, so nothing could be "
+			              "restored.");
+
 		msg = g_strdup_printf (
-			_("%s\n\nRule: %s\n\nSaved in the policy but NOT live yet: "
-			  "%s. Run StockFW as administrator and apply the policy to "
-			  "activate it."),
+			_("%s\n\nRule: %s\n\nSaved in the policy but NOT live "
+			  "yet: %s.%s Run StockFW as administrator and apply "
+			  "the policy to activate it."),
 			what, csv != NULL ? csv : "-",
-			fs_util_apply_result_to_string (result));
+			fs_util_apply_result_to_string ((int) outcome->result),
+			rollback);
 		fs_dialogs_info (NULL, _("Policy updated, not live yet"), msg);
 	}
 
 	g_free (msg);
 	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
 }
 
 /* [ confirm_stage ]

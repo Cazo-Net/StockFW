@@ -84,7 +84,14 @@ guint fs_fwrule_expand (const FsPolicy *policy, GList **out);
 
 /* Convenience: the whole policy as a list of concrete rules.  Caller
  * frees with fs_fwrule_list_free(). */
+/* Translate the whole policy into concrete rules (a list of
+ * FsFwRule*, caller frees with fs_fwrule_list_free). */
 GList *fs_fwrule_from_policy (const FsPolicy *policy);
+
+/* TRUE when two concrete rules match on every resolved field.  Used by
+ * the narrow apply to tell "unchanged" from "same name, different
+ * port". */
+gboolean fs_fwrule_equal (const FsFwRule *a, const FsFwRule *b);
 
 /* A name for a rule, e.g. "StockFW: allow SSH".  Caller frees. */
 gchar *fs_fwrule_default_name (FsRuleDirection direction,

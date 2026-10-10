@@ -26,6 +26,11 @@ typedef enum
 	FS_APPLY_INT_IF_FAILED,
 	FS_APPLY_NO_PRIVILEGE,
 	FS_APPLY_PARTIAL,
+	/* The request was deliberately not applied to the firewall
+	 * (audit-only mode, or the Status page Lock).  Backends never
+	 * return this; the apply gate does, so "nothing was applied"
+	 * is never reported as a failure or as a success. */
+	FS_APPLY_DRY_RUN,
 	FS_APPLY_FAILED
 } FsApplyResult;
 
@@ -62,6 +67,21 @@ typedef struct
 	 * Either way it works from the same FsPolicy, which is why the
 	 * signature takes the policy rather than pre-rendered text. */
 	FsApplyResult (*apply_rules) (const FsPolicy *policy, GError **error);
+
+	/* Optional narrow apply (P3): touch only what changed.
+	 *
+	 * `remove' holds rule names to delete, `add' the concrete rules
+	 * to create, and `repair' the unchanged rules whose names collide
+	 * with a deletion (deleting by name would take them too, so the
+	 * backend re-creates them right after the delete).  Rules present
+	 * in both policy states are otherwise left alone -- no
+	 * clear-then-recreate window, no churn on untouched rules.
+	 * NULL slot means "whole-set apply only": callers fall back to
+	 * apply_rules, which is still the honest contract. */
+	FsApplyResult (*apply_delta) (const GList *remove,    /* gchar*  */
+	                              const GList *add,        /* FsFwRule* */
+	                              const GList *repair,     /* FsFwRule* */
+	                              GError **error);
 
 	/* Remove every rule this application previously created, leaving
 	 * rules owned by the user or by Windows alone. */

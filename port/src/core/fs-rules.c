@@ -293,8 +293,11 @@ sane_port_field (const gchar *port)
 	return (port == NULL || *port == '\0' || fs_util_is_valid_port (port));
 }
 
-static gboolean
-rule_fields_sane (const FsRule *rule)
+/* Exported: the apply gate's journal rows get the same F-1 gate the
+ * policy files get, so a tampered rollback target can never name a
+ * host or port the live policy would have refused. */
+gboolean
+fs_rule_fields_sane (const FsRule *rule)
 {
 	switch (rule->kind) {
 	case FS_RULE_INBOUND_FORWARD:
@@ -361,7 +364,7 @@ fs_policy_load (FsPolicy *policy, gint *malformed)
 
 			/* F-1: a row that cannot name a valid host or port is
 			 * rejected here, not handed to netsh to fail on later. */
-			if (!rule_fields_sane (rule)) {
+			if (!fs_rule_fields_sane (rule)) {
 				g_printerr ("Invalid host/port in %s: %s\n",
 				            relative, line);
 				fs_rule_free (rule);

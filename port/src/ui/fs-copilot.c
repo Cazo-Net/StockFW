@@ -20,6 +20,7 @@
 #include "ui/fs-app.h"
 #include "ui/fs-policyview.h"
 #include "ui/fs-simviz.h"
+#include "core/fs-apply.h"
 #include "core/fs-i18n.h"
 #include <gtk/gtk.h>
 #include <string.h>
@@ -585,25 +586,32 @@ auto_block_free (gpointer data)
 
 /* [ auto_block_push ]
  * Put the current policy in front of the firewall and record honestly
- * whether it went live. */
+ * whether it went live -- through the P3 gate, so a held or rolled-back
+ * push never gets an "is live" line. */
 static void
 auto_block_push (void)
 {
     GError *error = NULL;
-    FsApplyResult result;
+    FsApplyOutcome *outcome;
 
     if (copilot_policy == NULL)
         return;
 
-    result = fs_backend ()->apply_rules (copilot_policy, &error);
+    outcome = fs_policy_apply_safe (fs_backend (), copilot_policy,
+                                    "sentinel auto-block",
+                                    fs_policyview_hold_reason (), &error);
 
-    if (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL)
+    if (outcome->applied)
         fs_audit_log ("sentinel auto-block is live",
-                      fs_util_apply_result_to_string (result));
+                      fs_util_apply_result_to_string ((int) outcome->result));
+    else if (outcome->held)
+        fs_audit_log ("sentinel auto-block staged, not live",
+                      outcome->hold_reason);
     else
         fs_audit_log ("sentinel auto-block staged, not live",
-                      fs_util_apply_result_to_string (result));
+                      fs_util_apply_result_to_string ((int) outcome->result));
 
+    fs_apply_outcome_free (outcome);
     g_clear_error (&error);
 }
 
@@ -1120,6 +1128,7 @@ apply_result_text (FsApplyResult result)
     case FS_APPLY_NO_PRIVILEGE:  return "this account may not change the firewall";
     case FS_APPLY_EXT_IF_FAILED: return "the external-interface rules were rejected";
     case FS_APPLY_INT_IF_FAILED: return "the internal-interface rules were rejected";
+    case FS_APPLY_DRY_RUN:       return "held back on purpose (audit-only mode or the Policy Lock), never sent to the firewall";
     case FS_APPLY_FAILED:
     default:                     return "the firewall rejected the change";
     }
@@ -1255,17 +1264,29 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
     /* And put it in front of the actual firewall. */
     {
         GError *error = NULL;
-        FsApplyResult result = fs_backend ()->apply_rules (copilot_policy,
-                                                           &error);
+        FsApplyOutcome *outcome = fs_policy_apply_safe (
+            fs_backend (), copilot_policy, "copilot suggestion",
+            fs_policyview_hold_reason (), &error);
 
-        if (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL) {
+        if (outcome->applied) {
             text_view_append (analysis_output,
                 "\n[OK] Rule added, saved and applied:\n  ", "green");
             text_view_append (analysis_output, rule_csv, "bold");
             text_view_append (analysis_output, "\n     ", NULL);
-            text_view_append (analysis_output, apply_result_text (result),
-                              result == FS_APPLY_OK ? "green" : "orange");
+            text_view_append (analysis_output, apply_result_text (outcome->result),
+                              outcome->result == FS_APPLY_OK ? "green" : "orange");
             text_view_append (analysis_output, "\n", NULL);
+        } else if (outcome->held) {
+            text_view_append (analysis_output,
+                "\n[..] Rule added to your policy and saved, but held "
+                "back on purpose -- not applied:\n  ", "orange");
+            text_view_append (analysis_output, rule_csv, "bold");
+            text_view_append (analysis_output, "\n     ", NULL);
+            text_view_append (analysis_output, outcome->hold_reason, "orange");
+            text_view_append (analysis_output,
+                "\n     Turn the hold off (Audit-only on the Policy page, "
+                "or the Lock on the Status page) and apply again.\n",
+                "dim");
         } else {
             /* The row really is in the policy -- say so rather than
              * implying the whole thing failed. */
@@ -1274,15 +1295,30 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
                 "live yet:\n  ", "orange");
             text_view_append (analysis_output, rule_csv, "bold");
             text_view_append (analysis_output, "\n     ", NULL);
-            text_view_append (analysis_output, apply_result_text (result), "orange");
+            text_view_append (analysis_output, apply_result_text (outcome->result), "orange");
             if (error != NULL) {
                 text_view_append (analysis_output, "\n     ", NULL);
                 text_view_append (analysis_output, error->message, "dim");
             }
+            /* The rollback truth sits right under the failure. */
+            text_view_append (analysis_output, "\n     ", NULL);
+            if (outcome->rollback_attempted && outcome->rollback_verified)
+                text_view_append (analysis_output,
+                    "The previous policy was restored to the firewall and "
+                    "that restore was verified.", "dim");
+            else if (outcome->rollback_attempted)
+                text_view_append (analysis_output,
+                    "The rollback ALSO failed -- the firewall may be in an "
+                    "inconsistent state; check the Status page.", "dim");
+            else
+                text_view_append (analysis_output,
+                    "No previously applied policy is recorded, so nothing "
+                    "could be restored.", "dim");
             text_view_append (analysis_output,
                 "\n     Re-run StockFW as administrator and apply the "
                 "policy to activate it.\n", "dim");
         }
+        fs_apply_outcome_free (outcome);
         g_clear_error (&error);
     }
 
@@ -1394,29 +1430,50 @@ create_rule_from_scenario (const FsScenario *sc)
     /* And put it in front of the actual firewall. */
     {
         GError *error = NULL;
-        FsApplyResult result = fs_backend ()->apply_rules (copilot_policy,
-                                                           &error);
+        FsApplyOutcome *outcome = fs_policy_apply_safe (
+            fs_backend (), copilot_policy, "what-if create",
+            fs_policyview_hold_reason (), &error);
 
-        if (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL) {
+        if (outcome->applied) {
             text_view_append (sim_output, "     ", NULL);
-            text_view_append (sim_output, apply_result_text (result),
-                              result == FS_APPLY_OK ? "green" : "orange");
+            text_view_append (sim_output, apply_result_text (outcome->result),
+                              outcome->result == FS_APPLY_OK ? "green" : "orange");
             text_view_append (sim_output, "\n", NULL);
+        } else if (outcome->held) {
+            text_view_append (sim_output, "     held back on purpose (",
+                              "orange");
+            text_view_append (sim_output, outcome->hold_reason, "orange");
+            text_view_append (sim_output,
+                              ") -- saved, not applied\n", "orange");
         } else {
             /* The row really is in the policy -- say so rather than
              * implying the whole thing failed. */
             text_view_append (sim_output,
                 "     Saved, but it is NOT live yet: ", "orange");
-            text_view_append (sim_output, apply_result_text (result),
+            text_view_append (sim_output, apply_result_text (outcome->result),
                               "orange");
             if (error != NULL) {
                 text_view_append (sim_output, " - ", NULL);
                 text_view_append (sim_output, error->message, "dim");
             }
+            text_view_append (sim_output, "\n     ", NULL);
+            if (outcome->rollback_attempted && outcome->rollback_verified)
+                text_view_append (sim_output,
+                    "The previous policy was restored to the firewall and "
+                    "that restore was verified.", "dim");
+            else if (outcome->rollback_attempted)
+                text_view_append (sim_output,
+                    "The rollback ALSO failed -- the firewall may be in an "
+                    "inconsistent state; check the Status page.", "dim");
+            else
+                text_view_append (sim_output,
+                    "No previously applied policy is recorded, so nothing "
+                    "could be restored.", "dim");
             text_view_append (sim_output,
                 "\n     Re-run StockFW as administrator and apply the "
                 "policy to activate it.\n", "dim");
         }
+        fs_apply_outcome_free (outcome);
         g_clear_error (&error);
     }
 

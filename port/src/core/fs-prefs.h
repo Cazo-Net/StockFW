@@ -27,6 +27,9 @@ G_BEGIN_DECLS
 #define FS_PREFS_SKIP_REDUNDANT          "/apps/stockfw/client/filter/redundant"
 #define FS_PREFS_SKIP_NOT_FOR_FIREWALL   "/apps/stockfw/client/filter/not_for_firewall"
 #define FS_PREFS_APPLY_POLICY_INSTANTLY  "/apps/stockfw/client/policy_auto_apply"
+/* P3 audit-only testing mode: changes reach the policy file and the
+ * audit log but never the firewall, until the user turns it off. */
+#define FS_PREFS_AUDIT_ONLY              "/apps/stockfw/client/policy_audit_only"
 
 #define FS_PREFS_START_ON_BOOT    "/apps/stockfw/client/start_firewall_on_boot"
 #define FS_PREFS_START_ON_GUI     "/apps/stockfw/client/start_firewall_on_gui"

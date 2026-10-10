@@ -718,13 +718,18 @@ run_netsh (gchar **args, GError **error, gint *exit_status,
 
 /* [ netsh_needs_elevation ]
  * netsh reports a specific error for a non-administrator caller; map
- * that onto our own result so the UI can explain what to do. */
+ * that onto our own result so the UI can explain what to do.  Our own
+ * rewritten messages match too ("... requires administrator
+ * privileges"): apply_rules classifies failures by the stored error
+ * message, and without that phrase the elevation verdict was silently
+ * reported as a plain failure. */
 static gboolean
 netsh_needs_elevation (const gchar *output)
 {
 	return (output != NULL &&
 	        (strstr (output, "requested operation requires elevation") != NULL ||
-	         strstr (output, "Access is denied") != NULL));
+	         strstr (output, "Access is denied") != NULL ||
+	         strstr (output, "requires administrator privileges") != NULL));
 }
 
 /* [ netsh_add_rule ]
@@ -1050,6 +1055,112 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 		g_set_error (error, g_quark_from_static_string ("fs-backend-windows"),
 		             (int) failed, "%u of %u rules could not be created",
 		             failed, applied + failed);
+		return FS_APPLY_PARTIAL;
+	}
+
+	return FS_APPLY_OK;
+}
+
+/* [ firewalled_apply_delta ]
+ * The narrow path: delete only the names that are going away, restore
+ * the kept rules whose names those deletions would take with them, and
+ * create the new rules.  Rules present in both policy states are never
+ * touched -- applying a one-rule edit does not clear and recreate the
+ * whole set, and there is no window where the firewall carries none
+ * of our rules at all.  The verdict shape matches
+ * firewalled_apply_rules: all-or-nothing failures report the first
+ * reason (with elevation recognised), anything in between is PARTIAL
+ * and gets rolled back by the apply gate. */
+static FsApplyResult
+firewalled_apply_delta (const GList *remove, const GList *add,
+                        const GList *repair, GError **error)
+{
+	const GList *iter;
+	guint created = 0;
+	guint failed = 0;
+	GError *first_error = NULL;
+
+	if (remove == NULL && add == NULL && repair == NULL)
+		return FS_APPLY_OK;
+
+	/* 1. Delete the names that are going away.  A name netsh cannot
+	 *    find is a clean exit: the absent rule is the state we
+	 *    wanted. */
+	for (iter = remove; iter != NULL; iter = iter->next) {
+		GError *local = NULL;
+
+		if (netsh_delete_one ((const gchar *) iter->data, &local))
+			continue;
+
+		failed++;
+
+		if (first_error == NULL && local != NULL)
+			first_error = g_error_copy (local);
+
+		g_clear_error (&local);
+	}
+
+	/* 2. Re-create kept rules whose names the deletions took. */
+	for (iter = repair; iter != NULL; iter = iter->next) {
+		GError *local = NULL;
+
+		if (netsh_add_rule ((const FsFwRule *) iter->data, &local)) {
+			created++;
+			continue;
+		}
+
+		failed++;
+
+		if (first_error == NULL && local != NULL)
+			first_error = g_error_copy (local);
+
+		g_clear_error (&local);
+	}
+
+	/* 3. Create the new rules. */
+	for (iter = add; iter != NULL; iter = iter->next) {
+		GError *local = NULL;
+
+		if (netsh_add_rule ((const FsFwRule *) iter->data, &local)) {
+			created++;
+			continue;
+		}
+
+		failed++;
+
+		if (first_error == NULL && local != NULL)
+			first_error = g_error_copy (local);
+
+		g_clear_error (&local);
+	}
+
+	if (failed > 0 && created == 0) {
+		gboolean needs_elevation =
+			netsh_needs_elevation (first_error != NULL
+			                       ? first_error->message : NULL);
+
+		if (error != NULL && first_error != NULL)
+			g_propagate_error (error, first_error);
+		else {
+			if (error != NULL)
+				g_set_error_literal (
+					error,
+					g_quark_from_static_string (
+						"fs-backend-windows"),
+					0,
+					"None of the required rule changes "
+					"could be made.");
+
+			g_clear_error (&first_error);
+		}
+
+		return needs_elevation ? FS_APPLY_NO_PRIVILEGE : FS_APPLY_FAILED;
+	}
+
+	if (failed > 0) {
+		g_set_error (error, g_quark_from_static_string ("fs-backend-windows"),
+		             (int) failed, "%u of %u rule changes failed",
+		             failed, created + failed);
 		return FS_APPLY_PARTIAL;
 	}
 
@@ -2177,6 +2288,7 @@ static const FsBackend windows_backend = {
 	.stop                  = firewalled_stop,
 	.reload                = firewalled_reload,
 	.apply_rules           = firewalled_apply_rules,
+	.apply_delta           = firewalled_apply_delta,
 	.clear_rules           = firewalled_clear_rules,
 	.list_interfaces       = firewalled_list_interfaces,
 	.list_interface_stats  = firewalled_list_interface_stats,

@@ -71,6 +71,10 @@ const gchar *fs_rule_direction_label (FsRuleKind kind);
  * on entry the capacity, on return the number written. */
 const gchar * const *fs_rule_columns (FsRuleKind kind, gint *num_columns);
 
+/* TRUE when a rule's host and port fields could name real ones (F-1).
+ * Used by the policy loader and by the apply gate's journal loader. */
+gboolean fs_rule_fields_sane (const FsRule *rule);
+
 /* Serialise / parse.  Both return newly allocated strings. */
 gchar   *fs_rule_to_csv   (const FsRule *rule);
 FsRule  *fs_rule_from_csv (FsRuleKind kind, const gchar *csv);

@@ -35,6 +35,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-eventrule.h"
 #include "core/fs-audit.h"
 #include "core/fs-trust.h"
+#include "core/fs-apply.h"
 
 static int failures = 0;
 
@@ -3042,6 +3043,818 @@ static void test_trust_engine (void)
 	g_free (dir);
 }
 
+/* =====================================================================
+ * P3: safe policy enforcement -- the apply gate.
+ *
+ * A scripted fake backend drives every branch: hold, first apply,
+ * narrow delta, the no-change fast path, failure with a verified
+ * rollback, failure with a failed rollback, failure with nothing to
+ * restore, a missing backend, and a backend with no delta slot.  The
+ * backend is a parameter of the gate precisely so none of this needs
+ * a firewall.
+ * ===================================================================== */
+
+/* --- small helpers -------------------------------------------------- */
+
+static FsRule *
+gate_rule (FsRuleKind kind, const gchar *service, const gchar *port,
+           const gchar *target)
+{
+	FsRule *rule = fs_rule_new (kind);
+
+	rule->service = g_strdup (service);
+	rule->port = g_strdup (port);
+	rule->target = g_strdup (target);
+
+	return rule;
+}
+
+/* One allow-service (DNS) plus one deny-host: an allow and a block,
+ * so the impact's allow/block split has something to count. */
+static FsPolicy *
+gate_policy_two (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *rule;
+
+	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE, "DNS", "53",
+	                  FS_TARGET_ANY);
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	rule = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+	                  "198.51.100.9");
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	return policy;
+}
+
+static FsPolicy *
+gate_policy_copy (const FsPolicy *src)
+{
+	FsPolicy *dst = fs_policy_new ();
+
+	for (gint kind = 0; kind < FS_RULE_N_KINDS; kind++) {
+		for (guint i = 0; i < src->kinds[kind]->len; i++)
+			fs_policy_add (dst,
+			               g_ptr_array_index (src->kinds[kind], i));
+	}
+
+	return dst;
+}
+
+static guint
+gate_policy_total (const FsPolicy *policy)
+{
+	guint total = 0;
+
+	for (gint kind = 0; kind < FS_RULE_N_KINDS; kind++)
+		total += policy->kinds[kind]->len;
+
+	return total;
+}
+
+static gchar *
+gate_audit_read (void)
+{
+	gchar *contents = NULL;
+	const gchar *path = g_getenv ("STOCKFW_AUDIT_FILE");
+
+	if (path != NULL)
+		g_file_get_contents (path, &contents, NULL, NULL);
+
+	return contents;
+}
+
+/* --- the scripted fake backend -------------------------------------- */
+
+#define FAKE_MAX_QUEUE 8
+
+static FsApplyResult fake_queue[FAKE_MAX_QUEUE];
+static gint fake_queue_len, fake_queue_pos;
+static gint fake_full_calls, fake_delta_calls;
+static gboolean fake_available_flag = TRUE;
+static FsPolicy *fake_seen[FAKE_MAX_QUEUE];
+static gint fake_seen_len;
+static gint fake_last_remove_n, fake_last_add_n, fake_last_repair_n;
+
+static void
+fake_reset (void)
+{
+	for (gint i = 0; i < fake_seen_len; i++)
+		fs_policy_free (fake_seen[i]);
+
+	fake_seen_len = 0;
+	fake_queue_len = fake_queue_pos = 0;
+	fake_full_calls = fake_delta_calls = 0;
+	fake_last_remove_n = fake_last_add_n = fake_last_repair_n = 0;
+	fake_available_flag = TRUE;
+}
+
+static void
+fake_enqueue (FsApplyResult result)
+{
+	fake_queue[fake_queue_len++] = result;
+}
+
+static FsApplyResult
+fake_next (GError **error)
+{
+	FsApplyResult result = FS_APPLY_OK;
+
+	if (fake_queue_pos < fake_queue_len)
+		result = fake_queue[fake_queue_pos++];
+
+	if (result != FS_APPLY_OK)
+		g_set_error_literal (error,
+		                     g_quark_from_static_string ("fake-backend"),
+		                     (int) result,
+		                     "scripted backend failure");
+
+	return result;
+}
+
+static gboolean
+fake_available (void)
+{
+	return fake_available_flag;
+}
+
+static FsApplyResult
+fake_apply_rules (const FsPolicy *policy, GError **error)
+{
+	fake_full_calls++;
+
+	if (fake_seen_len < FAKE_MAX_QUEUE)
+		fake_seen[fake_seen_len++] = gate_policy_copy (policy);
+
+	return fake_next (error);
+}
+
+/* Lengths only: the delta's lists belong to the gate and are freed
+ * when it returns, so recording the pointers would dangle. */
+static FsApplyResult
+fake_apply_delta (const GList *remove, const GList *add,
+                  const GList *repair, GError **error)
+{
+	fake_delta_calls++;
+	fake_last_remove_n = g_list_length ((GList *) remove);
+	fake_last_add_n = g_list_length ((GList *) add);
+	fake_last_repair_n = g_list_length ((GList *) repair);
+
+	return fake_next (error);
+}
+
+static const FsBackend fake_backend = {
+	.name = "fake",
+	.display_name = "scripted fake backend",
+	.available = fake_available,
+	.apply_rules = fake_apply_rules,
+	.apply_delta = fake_apply_delta,
+};
+
+/* The same fake without the narrow slot: whole-set apply only. */
+static const FsBackend fake_backend_no_delta = {
+	.name = "fake-full",
+	.display_name = "scripted fake backend, no delta",
+	.available = fake_available,
+	.apply_rules = fake_apply_rules,
+};
+
+/* --- fs_fwrule_equal: full-field identity, not name identity -------- */
+
+static void test_fwrule_equal (void)
+{
+	FsPolicy *a = fs_policy_new ();
+	FsPolicy *b = fs_policy_new ();
+	FsPolicy *c = fs_policy_new ();
+	FsRule *r;
+	GList *la, *lb, *lc;
+	FsFwRule *a0, *b0, *c0;
+	gchar *saved;
+
+	r = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE, "SSH", "22",
+	               FS_TARGET_ANY);
+	fs_policy_add (a, r);
+	fs_rule_free (r);
+	r = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE, "SSH", "2222",
+	               FS_TARGET_ANY);
+	fs_policy_add (b, r);
+	fs_rule_free (r);
+	r = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE, "SSH", "22",
+	               FS_TARGET_ANY);
+	fs_policy_add (c, r);
+	fs_rule_free (r);
+
+	la = fs_fwrule_from_policy (a);
+	lb = fs_fwrule_from_policy (b);
+	lc = fs_fwrule_from_policy (c);
+	a0 = la->data;
+	b0 = lb->data;
+	c0 = lc->data;
+
+	CHECK (fs_fwrule_equal (a0, a0), "a rule equals itself");
+	CHECK (fs_fwrule_equal (NULL, NULL), "two NULLs are equal");
+	CHECK (!fs_fwrule_equal (a0, NULL), "a rule and NULL differ");
+	CHECK (g_strcmp0 (a0->name, b0->name) == 0,
+	       "SSH on 22 and SSH on 2222 share one default name");
+	CHECK (!fs_fwrule_equal (a0, b0),
+	       "...but they are not equal: the port differs");
+	CHECK (fs_fwrule_equal (a0, c0),
+	       "the same row expands to equal concrete rules");
+
+	/* Every field, one at a time: change it, expect inequality,
+	 * restore it. */
+	c0->remote_port = 65535;
+	CHECK (!fs_fwrule_equal (a0, c0), "a different remote port is not equal");
+	c0->remote_port = a0->remote_port;
+
+	c0->local_port = 8080;
+	CHECK (!fs_fwrule_equal (a0, c0), "a different local port is not equal");
+	c0->local_port = a0->local_port;
+
+	saved = c0->name;
+	c0->name = g_strdup ("StockFW: something else");
+	CHECK (!fs_fwrule_equal (a0, c0), "a different name is not equal");
+	g_free (c0->name);
+	c0->name = saved;
+
+	/* "Anyone" resolves to no address, so the originals are NULL:
+	 * restore NULL rather than aliasing a0's pointers into c0. */
+	c0->remote_address = g_strdup ("10.0.0.1");
+	CHECK (!fs_fwrule_equal (a0, c0), "a different remote address is not equal");
+	g_free (c0->remote_address);
+	c0->remote_address = NULL;
+
+	c0->local_address = g_strdup ("10.0.0.2");
+	CHECK (!fs_fwrule_equal (a0, c0), "a different local address is not equal");
+	g_free (c0->local_address);
+	c0->local_address = NULL;
+
+	c0->forward_address = g_strdup ("10.0.0.3");
+	CHECK (!fs_fwrule_equal (a0, c0), "a different forward address is not equal");
+	g_free (c0->forward_address);
+	c0->forward_address = NULL;
+
+	c0->forward = !a0->forward;
+	CHECK (!fs_fwrule_equal (a0, c0), "a different forward flag is not equal");
+	c0->forward = a0->forward;
+
+	c0->direction = a0->direction == FS_DIR_INBOUND ? FS_DIR_OUTBOUND
+	                                                : FS_DIR_INBOUND;
+	CHECK (!fs_fwrule_equal (a0, c0), "a different direction is not equal");
+	c0->direction = a0->direction;
+
+	c0->action = a0->action == FS_ACTION_ALLOW ? FS_ACTION_BLOCK
+	                                           : FS_ACTION_ALLOW;
+	CHECK (!fs_fwrule_equal (a0, c0), "a different action is not equal");
+	c0->action = a0->action;
+
+	c0->protocol = a0->protocol == FS_PROTO_ANY ? FS_PROTO_TCP
+	                                            : FS_PROTO_ANY;
+	CHECK (!fs_fwrule_equal (a0, c0), "a different protocol is not equal");
+	c0->protocol = a0->protocol;
+
+	CHECK (fs_fwrule_equal (a0, c0),
+	       "every field restored: equality comes back");
+
+	fs_fwrule_list_free (la);
+	fs_fwrule_list_free (lb);
+	fs_fwrule_list_free (lc);
+	fs_policy_free (a);
+	fs_policy_free (b);
+	fs_policy_free (c);
+}
+
+/* --- the journal ----------------------------------------------------- */
+
+static void test_apply_journal (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-apply-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	FsPolicy *policy = fs_policy_new ();
+	FsPolicy *loaded = fs_policy_new ();
+	GError *error = NULL;
+	FsRule *rule;
+	gchar *tampered;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+
+	CHECK (!fs_apply_journal_load (loaded, &error) && error != NULL &&
+	       g_error_matches (error, FS_APPLY_ERROR,
+	                        FS_APPLY_ERR_NO_JOURNAL),
+	       "a missing journal reports NO_JOURNAL");
+	g_clear_error (&error);
+
+	/* Two rows, one carrying a comment: it has to survive the shared
+	 * CSV dialect unquoted and read back identically. */
+	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE, "DNS", "53",
+	                  FS_TARGET_ANY);
+	rule->comment = g_strdup ("primary resolver");
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	rule = gate_rule (FS_RULE_INBOUND_ALLOW_FROM, NULL, NULL, "10.0.0.7");
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	CHECK (fs_apply_journal_save (policy, &error),
+	       "saving the journal succeeds");
+	g_clear_error (&error);
+
+	CHECK (fs_apply_journal_load (loaded, &error),
+	       "the journal loads back");
+	g_clear_error (&error);
+
+	CHECK (gate_policy_total (loaded) == 2,
+	       "both rows survive the round trip");
+	{
+		/* Row identity is the CSV form, comment included -- the
+		 * needle has to carry the same comment to match. */
+		FsRule *needle = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE,
+		                            "DNS", "53", FS_TARGET_ANY);
+
+		needle->comment = g_strdup ("primary resolver");
+		CHECK (fs_policy_contains (loaded, needle),
+		       "the service row is found by content");
+		fs_rule_free (needle);
+	}
+	CHECK (loaded->kinds[FS_RULE_OUTBOUND_ALLOW_SERVICE]->len == 1 &&
+	       g_strcmp0 (((FsRule *) loaded->kinds[
+	                    FS_RULE_OUTBOUND_ALLOW_SERVICE]->pdata[0])->comment,
+	                  "primary resolver") == 0,
+	       "the comment survives the round trip");
+
+	/* The dialect cannot represent a comma inside a comment: the row
+	 * would not parse back.  The journal refuses such a journal
+	 * outright instead of loading half of it -- the same strictness
+	 * as any other malformed row. */
+	{
+		FsPolicy *comma = fs_policy_new ();
+		FsRule *crow = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE,
+		                          "DNS", "53", FS_TARGET_ANY);
+
+		crow->comment = g_strdup ("resolver, primary");
+		fs_policy_add (comma, crow);
+		fs_rule_free (crow);
+		CHECK (fs_apply_journal_save (comma, NULL),
+		       "the comma-carrying journal writes");
+		CHECK (!fs_apply_journal_load (loaded, &error) && error != NULL &&
+		       g_error_matches (error, FS_APPLY_ERROR,
+		                        FS_APPLY_ERR_MALFORMED),
+		       "but the dialect refuses to read it back -- no half-load");
+		g_clear_error (&error);
+		fs_policy_free (comma);
+	}
+
+	/* F-1 applies to the rollback target too: a tampered journal is
+	 * refused, never half-loaded. */
+	tampered = g_strdup_printf (
+		"# StockFW applied policy journal v1\n"
+		"%d,10.0.0.7\n"
+		"%d,999.1.1.1\n",
+		(int) FS_RULE_INBOUND_ALLOW_FROM,
+		(int) FS_RULE_OUTBOUND_DENY_TO);
+	g_file_set_contents (file, tampered, -1, NULL);
+	g_free (tampered);
+
+	CHECK (!fs_apply_journal_load (loaded, &error) && error != NULL &&
+	       g_error_matches (error, FS_APPLY_ERROR,
+	                        FS_APPLY_ERR_MALFORMED),
+	       "an invalid host in the journal is malformed");
+	g_clear_error (&error);
+	CHECK (gate_policy_total (loaded) == 0,
+	       "a refused journal leaves nothing half-loaded");
+
+	/* An out-of-range kind is malformed too. */
+	g_file_set_contents (file, "99,whatever\n", -1, NULL);
+	CHECK (!fs_apply_journal_load (loaded, &error) && error != NULL &&
+	       g_error_matches (error, FS_APPLY_ERROR,
+	                        FS_APPLY_ERR_MALFORMED),
+	       "an unknown kind in the journal is malformed");
+	g_clear_error (&error);
+	CHECK (gate_policy_total (loaded) == 0,
+	       "and it too leaves nothing behind");
+
+	/* A save failure is normalised onto the FS_APPLY_ERROR quark so
+	 * callers match one domain.  Pointing the journal at a directory
+	 * makes the write fail after the parent dir check passed. */
+	g_setenv ("STOCKFW_APPLIED_FILE", dir, TRUE);
+	error = NULL;
+	CHECK (!fs_apply_journal_save (policy, &error) && error != NULL &&
+	       g_error_matches (error, FS_APPLY_ERROR,
+	                        FS_APPLY_ERR_UNREADABLE),
+	       "a failed save is normalised onto the apply error domain");
+	g_clear_error (&error);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	remove (file);
+	fs_policy_free (policy);
+	fs_policy_free (loaded);
+	g_free (file);
+	g_free (dir);
+}
+
+/* --- impact measurement --------------------------------------------- */
+
+static void test_apply_impact (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir(),
+	                               "stockfw-impact-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	FsPolicy *before = gate_policy_two ();
+	FsPolicy *after = gate_policy_two ();
+	FsPolicyImpact *impact;
+	gchar *desc;
+	FsRule *needle;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+
+	impact = fs_policy_impact (before, after);
+	CHECK (impact->added == 0 && impact->removed == 0 &&
+	       impact->unchanged == 2,
+	       "identical policies: nothing added or removed");
+	desc = fs_policy_impact_describe (impact);
+	CHECK (strstr (desc, "+0 added") != NULL &&
+	       strstr (desc, "=2 unchanged") != NULL,
+	       "describe counts the unchanged rows");
+	g_free (desc);
+	fs_policy_impact_free (impact);
+
+	/* Change: the deny becomes an allow, a new row joins. */
+	needle = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+	                    "198.51.100.9");
+	fs_policy_remove (after, needle);
+	fs_rule_free (needle);
+
+	needle = gate_rule (FS_RULE_OUTBOUND_ALLOW_TO, NULL, NULL,
+	                    "203.0.113.80");
+	fs_policy_add (after, needle);
+	fs_rule_free (needle);
+
+	impact = fs_policy_impact (before, after);
+	CHECK (impact->added == 1 && impact->added_allows == 1 &&
+	       impact->added_blocks == 0,
+	       "the new allow counts on the added side");
+	CHECK (impact->removed == 1 && impact->removed_allows == 0 &&
+	       impact->removed_blocks == 1,
+	       "the removed deny counts on the removed side");
+	CHECK (impact->unchanged == 1, "the DNS row is untouched");
+	desc = fs_policy_impact_describe (impact);
+	CHECK (strstr (desc, "+1 added (1 allow, 0 block)") != NULL,
+	       "describe names the added side");
+	CHECK (strstr (desc, "-1 removed (0 allow, 1 block)") != NULL,
+	       "describe names the removed side");
+	g_free (desc);
+	fs_policy_impact_free (impact);
+
+	/* No record of what is live: everything counts as added --
+	 * nothing is claimed live that is not known to be. */
+	impact = fs_policy_impact (NULL, before);
+	CHECK (impact->added == 2 && impact->removed == 0 &&
+	       impact->unchanged == 0,
+	       "NULL before means every row is added");
+	fs_policy_impact_free (impact);
+
+	/* The preview reads the journal for what is live. */
+	g_mkdir_with_parents (dir, 0700);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	CHECK (fs_apply_journal_save (before, NULL), "the preview journal saves");
+	impact = fs_policy_impact_preview (after);
+	CHECK (impact->added == 1 && impact->removed == 1 &&
+	       impact->unchanged == 1,
+	       "the preview measures against the journal, not a guess");
+	fs_policy_impact_free (impact);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	remove (file);
+
+	fs_policy_free (before);
+	fs_policy_free (after);
+	g_free (file);
+	g_free (dir);
+}
+
+/* --- the delta work lists ------------------------------------------- */
+
+static void test_apply_delta (void)
+{
+	FsPolicy *base = gate_policy_two ();
+	FsPolicy *copy = gate_policy_copy (base);
+	FsPolicy *more = gate_policy_copy (base);
+	FsPolicy *ssh_before = fs_policy_new ();
+	FsPolicy *ssh_after = fs_policy_new ();
+	FsPolicyDelta *delta;
+	FsRule *rule;
+
+	delta = fs_policy_delta (NULL, base);
+	CHECK (g_list_length (delta->add) == 2 &&
+	       g_list_length (delta->remove) == 0 && !delta->empty,
+	       "no previous state: the whole set is an add");
+	fs_policy_delta_free (delta);
+
+	delta = fs_policy_delta (base, copy);
+	CHECK (delta->empty, "identical policies: nothing to do at all");
+	CHECK (g_list_length (delta->add) == 0 &&
+	       g_list_length (delta->remove) == 0 &&
+	       g_list_length (delta->repair) == 0,
+	       "and every work list stays empty");
+	fs_policy_delta_free (delta);
+
+	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_TO, NULL, NULL,
+	                  "203.0.113.44");
+	fs_policy_add (more, rule);
+	fs_rule_free (rule);
+
+	delta = fs_policy_delta (base, more);
+	CHECK (!delta->empty && g_list_length (delta->add) == 1 &&
+	       g_list_length (delta->remove) == 0 &&
+	       g_list_length (delta->repair) == 0,
+	       "one row added is one concrete add");
+	fs_policy_delta_free (delta);
+
+	/* The name-collision repair: SSH on 22 and SSH on 2222 share one
+	 * firewall name.  Dropping the first would take the second down
+	 * with it by name -- unless the survivor is re-created. */
+	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE, "SSH", "22",
+	                  FS_TARGET_ANY);
+	fs_policy_add (ssh_before, rule);
+	fs_rule_free (rule);
+	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE, "SSH", "2222",
+	                  FS_TARGET_ANY);
+	fs_policy_add (ssh_before, rule);
+	fs_policy_add (ssh_after, rule);
+	fs_rule_free (rule);
+
+	delta = fs_policy_delta (ssh_before, ssh_after);
+	CHECK (g_list_length (delta->remove) == 1,
+	       "the dropped SSH row is one removal");
+	CHECK (g_list_length (delta->repair) == 1,
+	       "the kept SSH row is repaired -- its name is going away "
+	       "with its twin");
+	CHECK (g_list_length (delta->add) == 0,
+	       "the kept row is not re-added as something new");
+	CHECK (delta->repair != NULL && delta->remove != NULL &&
+	       g_strcmp0 (delta->remove->data,
+	                 ((FsFwRule *) delta->repair->data)->name) == 0,
+	       "the collision is exactly the shared name");
+	fs_policy_delta_free (delta);
+
+	fs_policy_free (base);
+	fs_policy_free (copy);
+	fs_policy_free (more);
+	fs_policy_free (ssh_before);
+	fs_policy_free (ssh_after);
+}
+
+/* --- the gate --------------------------------------------------------- */
+
+static void test_apply_gate (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir(),
+	                               "stockfw-gate-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy;
+	FsPolicy *loaded;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	gchar *contents;
+	guint rows;
+	FsRule *rule;
+	const gchar *hold;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+
+	fake_reset ();
+	policy = gate_policy_two ();
+	rows = gate_policy_total (policy);
+	loaded = fs_policy_new ();
+
+	/* --- hold: nothing reaches the backend -------------------------- */
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "gate test",
+	                                "audit-only testing mode", &error);
+	CHECK (outcome->result == FS_APPLY_DRY_RUN && outcome->held &&
+	       !outcome->applied,
+	       "a hold is reported as a dry run, not as success or failure");
+	CHECK (fake_full_calls == 0 && fake_delta_calls == 0,
+	       "a held apply never calls the backend");
+	CHECK (error == NULL, "a hold is not an error");
+	CHECK (!g_file_test (file, G_FILE_TEST_EXISTS),
+	       "a held apply writes no journal: nothing is live");
+	CHECK (outcome->impact != NULL && outcome->impact->added == rows,
+	       "the hold still measures the change honestly");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents,
+	               "| policy held, firewall untouched |") != NULL &&
+	       strstr (contents, "audit-only testing mode") != NULL,
+	       "the hold is an audit line in those words");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	/* --- first apply: no journal, whole-set path -------------------- */
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "gate test",
+	                                NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       !outcome->narrow,
+	       "the first apply runs whole-set: nothing is known to be live");
+	CHECK (fake_full_calls == 1 && fake_delta_calls == 0,
+	       "exactly one whole-set call");
+	CHECK (fs_apply_journal_load (loaded, &error) &&
+	       gate_policy_total (loaded) == rows,
+	       "a successful apply journals what is live");
+	g_clear_error (&error);
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| policy applied |") != NULL &&
+	       strstr (contents, "gate test | full |") != NULL,
+	       "the applied audit line carries source, mode and impact");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	/* --- no change: zero backend work -------------------------------- */
+	fake_reset ();
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "gate test",
+	                                NULL, &error);
+	CHECK (outcome->applied && outcome->narrow &&
+	       fake_full_calls == 0 && fake_delta_calls == 0,
+	       "an unchanged policy touches nothing at all");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| policy apply: no change |") != NULL,
+	       "the no-change apply is still an audit line");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	/* --- narrow: one row added ----------------------------------------- */
+	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_TO, NULL, NULL,
+	                  "203.0.113.9");
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "gate test",
+	                                NULL, &error);
+	CHECK (outcome->applied && outcome->narrow,
+	       "one row added applies narrowly");
+	CHECK (fake_delta_calls == 1 && fake_full_calls == 0,
+	       "the narrow path never falls back to a whole-set apply");
+	CHECK (fake_last_add_n == 1 && fake_last_remove_n == 0 &&
+	       fake_last_repair_n == 0,
+	       "one rule to create, none to delete, none to repair");
+	CHECK (fs_apply_journal_load (loaded, &error) &&
+	       gate_policy_total (loaded) == rows + 1,
+	       "the journal follows the change");
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	/* --- failure, rollback verified ------------------------------------ */
+	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_TO, NULL, NULL,
+	                  "203.0.113.10");
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	fake_reset ();
+	fake_enqueue (FS_APPLY_PARTIAL);   /* the narrow apply */
+	fake_enqueue (FS_APPLY_OK);        /* the rollback     */
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "gate test",
+	                                NULL, &error);
+	CHECK (outcome->result == FS_APPLY_PARTIAL && !outcome->applied,
+	       "a partial apply is never reported as applied");
+	CHECK (outcome->rollback_attempted && outcome->rollback_verified,
+	       "the rollback runs and its verdict is verified");
+	CHECK (fake_delta_calls == 1 && fake_full_calls == 1,
+	       "failure from the narrow path, rollback restored whole-set");
+	CHECK (fake_seen_len == 1 &&
+	       gate_policy_total (fake_seen[0]) == rows + 1,
+	       "the rollback restores the last applied policy, not the new one");
+	CHECK (fs_apply_journal_load (loaded, &error) &&
+	       gate_policy_total (loaded) == rows + 1,
+	       "a failed apply does not journal the new state");
+	g_clear_error (&error);
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| policy apply failed |") != NULL &&
+	       strstr (contents, "rollback verified:") != NULL,
+	       "the failure and the verified rollback are one audit line");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	/* --- failure, rollback failed --------------------------------------- */
+	fake_reset ();
+	fake_enqueue (FS_APPLY_FAILED);
+	fake_enqueue (FS_APPLY_FAILED);
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "gate test",
+	                                NULL, &error);
+	CHECK (!outcome->applied && outcome->rollback_attempted &&
+	       !outcome->rollback_verified,
+	       "a failed rollback is reported as failed, never assumed");
+	CHECK (outcome->rollback_detail != NULL &&
+	       strstr (outcome->rollback_detail, "rollback FAILED") != NULL,
+	       "the detail names the failed rollback");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "rollback FAILED:") != NULL,
+	       "the failed rollback is in the audit log too");
+	g_free (contents);
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	/* --- failure with nothing to restore --------------------------------- */
+	remove (file);
+	fake_reset ();
+	fake_enqueue (FS_APPLY_FAILED);
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "gate test",
+	                                NULL, &error);
+	CHECK (!outcome->applied && !outcome->rollback_attempted &&
+	       outcome->rollback_detail != NULL &&
+	       strstr (outcome->rollback_detail,
+	               "no applied-policy journal") != NULL,
+	       "with no journal there is nothing to restore, and it says so");
+	CHECK (fake_full_calls == 1 && fake_delta_calls == 0,
+	       "without a journal the apply is whole-set");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "rollback skipped") != NULL,
+	       "the skipped rollback is in the audit log too");
+	g_free (contents);
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	/* --- no backend -------------------------------------------------------- */
+	fake_reset ();
+	fake_available_flag = FALSE;
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "gate test",
+	                                NULL, &error);
+	CHECK (outcome->result == FS_APPLY_NO_IPTABLES && error != NULL &&
+	       g_error_matches (error, FS_APPLY_ERROR,
+	                        FS_APPLY_ERR_NO_BACKEND),
+	       "a missing backend is refused before anything runs");
+	CHECK (fake_full_calls == 0 && fake_delta_calls == 0,
+	       "no backend means no calls");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| policy apply refused |") != NULL,
+	       "the refusal is an audit line");
+	g_free (contents);
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	/* --- backend without the delta slot ----------------------------------- */
+	fake_reset ();
+	CHECK (fs_apply_journal_save (policy, NULL),
+	       "journal restored for the fallback test");
+	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_TO, NULL, NULL,
+	                  "203.0.113.11");
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	outcome = fs_policy_apply_safe (&fake_backend_no_delta, policy,
+	                                "gate test", NULL, &error);
+	CHECK (outcome->applied && !outcome->narrow,
+	       "a backend without a delta slot falls back to whole-set");
+	CHECK (fake_full_calls == 1 && fake_delta_calls == 0,
+	       "the fallback is exactly one whole-set call");
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	/* --- the preference-driven hold --------------------------------------- */
+	fake_reset ();
+	fs_apply_set_audit_only (TRUE);
+	hold = fs_apply_hold_reason ();
+	CHECK (hold != NULL && strstr (hold, "audit-only") != NULL,
+	       "the preference produces a hold reason");
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "gate test",
+	                                hold, &error);
+	CHECK (outcome->held && fake_full_calls == 0 &&
+	       fake_delta_calls == 0,
+	       "the preference-driven hold keeps the backend untouched");
+	fs_apply_outcome_free (outcome);
+	fs_apply_set_audit_only (FALSE);
+	CHECK (fs_apply_hold_reason () == NULL,
+	       "turning the mode off releases the hold");
+
+	fake_reset ();
+	fs_policy_free (policy);
+	fs_policy_free (loaded);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -3085,6 +3898,11 @@ int main (void)
 	test_whatif_reading ();
 	test_direction_pairing ();
 	test_trust_engine ();
+	test_fwrule_equal ();
+	test_apply_journal ();
+	test_apply_impact ();
+	test_apply_delta ();
+	test_apply_gate ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

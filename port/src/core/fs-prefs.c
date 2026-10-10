@@ -311,6 +311,10 @@ fs_prefs_set_defaults (void)
 	                         "policy_auto_apply", NULL))
 		fs_prefs_set_bool (FS_PREFS_APPLY_POLICY_INSTANTLY, FALSE);
 
+	if (!g_key_file_has_key (prefs_file, FS_PREFS_GROUP_CLIENT,
+	                         "policy_audit_only", NULL))
+		fs_prefs_set_bool (FS_PREFS_AUDIT_ONLY, FALSE);
+
 	fs_prefs_set_bool (FS_PREFS_FW_NAT, FALSE);
 	fs_prefs_set_bool (FS_PREFS_FW_FILTER_ICMP, TRUE);
 	fs_prefs_set_bool (FS_PREFS_FW_FILTER_TOS, TRUE);

@@ -395,3 +395,31 @@ fs_fwrule_from_policy (const FsPolicy *policy)
 
 	return out;
 }
+
+/* [ fs_fwrule_equal ]
+ * Full-field identity of two concrete rules.  The name alone is not
+ * identity: "service ssh, port 22" and "service ssh, port 2222" both
+ * translate to "StockFW: Allow ssh (outbound)" yet differ where it
+ * counts, and the narrow apply has to tell them apart. */
+gboolean
+fs_fwrule_equal (const FsFwRule *a, const FsFwRule *b)
+{
+	if (a == b)
+		return TRUE;
+
+	if (a == NULL || b == NULL)
+		return FALSE;
+
+	if (a->direction != b->direction ||
+	    a->action != b->action ||
+	    a->protocol != b->protocol ||
+	    a->local_port != b->local_port ||
+	    a->remote_port != b->remote_port ||
+	    a->forward != b->forward)
+		return FALSE;
+
+	return (g_strcmp0 (a->name, b->name) == 0 &&
+	        g_strcmp0 (a->local_address, b->local_address) == 0 &&
+	        g_strcmp0 (a->remote_address, b->remote_address) == 0 &&
+	        g_strcmp0 (a->forward_address, b->forward_address) == 0);
+}

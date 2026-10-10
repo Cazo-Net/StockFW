@@ -13,10 +13,12 @@
 
 #include "ui/fs-policyview.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-statusview.h"
 #include "core/fs-prefs.h"
 #include "core/fs-backend.h"
 #include "core/fs-fwrule.h"
 #include "core/fs-util.h"
+#include "core/fs-apply.h"
 #include "core/fs-i18n.h"
 
 #include <stdlib.h>
@@ -417,20 +419,51 @@ on_cell_edited (GtkCellRendererText *renderer, gchar *path_string,
 	maybe_apply_instantly ();
 }
 
+/* [ fs_policyview_hold_reason ]
+ * The single answer to "may this apply touch the firewall?" for every
+ * page that pushes policy: audit-only testing mode first (a core
+ * preference), then the Status page's Lock.  English on purpose --
+ * the reason is recorded verbatim in the append-only audit log. */
+const gchar *
+fs_policyview_hold_reason (void)
+{
+	const gchar *hold = fs_apply_hold_reason ();
+
+	if (hold == NULL && fs_statusview_policy_locked ())
+		return "policy locked on the Status page";
+
+	return hold;
+}
+
+/* [ on_audit_only_toggled ]
+ * The Policy page's Audit-only switch.  While it is on, Apply stages
+ * and audits but never reaches the firewall -- and the toggle's own
+ * state is what makes that visible instead of a silent lie. */
+static void
+on_audit_only_toggled (GtkToggleButton *button, gpointer data)
+{
+	(void) data;
+
+	fs_apply_set_audit_only (gtk_toggle_button_get_active (button));
+}
+
 /* [ apply_policy_now ]
  * Shared by the Apply button and the "Apply policy changes
  * immediately" preference.
  *
- * announce=TRUE is the confirmation the Apply button owes the user.
- * Auto-apply is silent on success -- a dialog per edited cell would
- * make the table unusable -- but every failure still reports, because
- * a refusal that vanished would be exactly the kind of quiet lie this
- * port has been removing. */
+ * announce=TRUE is the confirmation the Apply button owes the user:
+ * the impact preview (P3) is shown before anything is touched, and a
+ * cancelled preview leaves the firewall alone.  Auto-apply is silent
+ * on success -- a dialog per edited cell would make the table
+ * unusable -- but every failure still reports, because a refusal that
+ * vanished would be exactly the kind of quiet lie this port has been
+ * removing. */
 static void
 apply_policy_now (gboolean announce)
 {
 	const FsBackend *backend = fs_backend ();
-	FsApplyResult result;
+	const gchar *hold;
+	FsApplyOutcome *outcome;
 	GError *error = NULL;
 	GList *rules;
 	guint count;
@@ -445,49 +478,139 @@ apply_policy_now (gboolean announce)
 	count = g_list_length (rules);
 	fs_fwrule_list_free (rules);
 
-	if (!backend->available ()) {
-		fs_dialogs_error (NULL, _("Cannot apply the policy"),
-		                  _("No firewall backend is available on this "
-		                    "system."));
-		return;
+	hold = fs_policyview_hold_reason ();
+
+	/* The preview only owes a question when the apply could actually
+	 * bite: a hold never reaches the firewall, so it gets its own
+	 * message below instead of confirmation theatre. */
+	if (announce && hold == NULL) {
+		FsPolicyImpact *preview =
+			fs_policy_impact_preview (current_policy);
+		gboolean changes = (preview->added > 0 ||
+		                    preview->removed > 0);
+
+		if (changes) {
+			gchar *desc = fs_policy_impact_describe (preview);
+			gchar *question = g_strdup_printf (
+				_("Apply these policy changes to the firewall?"
+				  "\n\n%s"),
+				desc);
+			gboolean confirmed = FALSE;
+
+			fs_dialogs_confirm (NULL, question, &confirmed);
+			g_free (question);
+			g_free (desc);
+			fs_policy_impact_free (preview);
+
+			if (!confirmed)
+				return;
+		} else {
+			fs_policy_impact_free (preview);
+		}
 	}
 
-	result = backend->apply_rules (current_policy, &error);
+	outcome = fs_policy_apply_safe (backend, current_policy,
+	                                "policy page", hold, &error);
 
-	switch (result) {
-	case FS_APPLY_OK:
-		if (announce)
-			fs_dialogs_info (NULL, _("Policy applied"),
-			                 g_strdup_printf (
-			                         _("%u rule(s) were applied to the "
-			                           "firewall."), count));
-		break;
+	if (outcome->held) {
+		if (announce) {
+			gchar *desc = fs_policy_impact_describe (outcome->impact);
+			gchar *msg = g_strdup_printf (
+				_("Reason: %s.\n\n%s\n\nThe change is saved in "
+				  "your policy and written to the audit log, "
+				  "but the firewall was deliberately left "
+				  "untouched. Turn the hold off (Audit-only on "
+				  "this page, or the Lock on the Status page) "
+				  "and apply again to make it live."),
+				hold, desc);
 
-	case FS_APPLY_NO_PRIVILEGE:
-		fs_dialogs_error (NULL, _("Administrator privileges required"),
-		                  error ? error->message
-		                        : _("Changing the firewall needs elevated "
-		                          "privileges."));
-		break;
+			fs_dialogs_info (NULL, _("Policy staged, not applied"),
+			                 msg);
+			g_free (msg);
+			g_free (desc);
+		}
+	} else if (outcome->result == FS_APPLY_OK) {
+		if (announce) {
+			if (outcome->impact->added == 0 &&
+			    outcome->impact->removed == 0) {
+				fs_dialogs_info (
+					NULL, _("Nothing to change"),
+					_("The policy already matches what is "
+					  "live on the firewall."));
+			} else {
+				gchar *desc =
+					fs_policy_impact_describe (outcome->impact);
+				gchar *msg = g_strdup_printf (
+					_("%u rule(s) were applied to the "
+					  "firewall.\n\n%s"),
+					count, desc);
 
-	case FS_APPLY_PARTIAL:
-		fs_dialogs_error (NULL, _("Policy only partly applied"),
-		                  error ? error->message
-		                        : _("Some rules could not be created."));
-		break;
+				fs_dialogs_info (NULL, _("Policy applied"), msg);
+				g_free (msg);
+				g_free (desc);
+			}
+		}
+	} else {
+		/* Every failure tells the rollback truth next to the
+		 * reason: restored-and-verified, failed-too, or honestly
+		 * nothing to restore. */
+		const gchar *body = error != NULL
+			? _(error->message)
+			: _(fs_util_apply_result_to_string (
+			       (int) outcome->result));
+		const gchar *rollback;
+		gchar *msg;
 
-	case FS_APPLY_NO_IPTABLES:
-	case FS_APPLY_EXT_IF_FAILED:
-	case FS_APPLY_INT_IF_FAILED:
-	case FS_APPLY_FAILED:
-	default:
-		fs_dialogs_error (NULL, _("Failed to apply the policy"),
-		                  error ? error->message
-		                        : _(fs_util_apply_result_to_string (
-		                              (int) result)));
-		break;
+		if (outcome->rollback_attempted &&
+		    outcome->rollback_verified)
+			rollback = _("The firewall was restored to the last "
+			              "applied policy, and that restore was "
+			              "verified.");
+		else if (outcome->rollback_attempted)
+			rollback = _("The rollback ALSO failed: the firewall "
+			              "may be in an inconsistent state. Check "
+			              "the Status page and apply again from a "
+			              "session running as administrator.");
+		else
+			rollback = _("No previously applied policy is "
+			              "recorded, so there was nothing to "
+			              "restore.");
+
+		msg = g_strdup_printf ("%s\n\n%s", body, rollback);
+
+		switch (outcome->result) {
+		case FS_APPLY_NO_PRIVILEGE:
+			fs_dialogs_error (NULL,
+			                  _("Administrator privileges required"),
+			                  msg);
+			break;
+
+		case FS_APPLY_NO_IPTABLES:
+			fs_dialogs_error (NULL, _("Cannot apply the policy"),
+			                  msg);
+			break;
+
+		case FS_APPLY_PARTIAL:
+			fs_dialogs_error (NULL, _("Policy only partly applied"),
+			                  msg);
+			break;
+
+		case FS_APPLY_DRY_RUN:
+			/* Held paths are handled above; belt and braces so no
+			 * result value is silently unclassified. */
+		case FS_APPLY_EXT_IF_FAILED:
+		case FS_APPLY_INT_IF_FAILED:
+		case FS_APPLY_FAILED:
+		default:
+			fs_dialogs_error (NULL, _("Failed to apply the policy"),
+			                  msg);
+			break;
+		}
+
+		g_free (msg);
 	}
 
+	fs_apply_outcome_free (outcome);
 	g_clear_error (&error);
 }
 
@@ -636,6 +759,21 @@ fs_policyview_page (FsPolicy *policy)
 	                             "btn-primary");
 	g_signal_connect (button, "clicked", G_CALLBACK (on_apply_clicked),
 	                  NULL);
+	gtk_box_pack_start (GTK_BOX (bar), button, FALSE, FALSE, 0);
+
+	/* Audit-only (P3): the testing mode switch, beside the button it
+	 * guards.  Its state is the honest signal that Apply will stage
+	 * and audit without touching the firewall. */
+	button = gtk_toggle_button_new_with_label (_("Audit-only"));
+	gtk_widget_set_tooltip_text (button,
+	                             _("Stage changes and write audit "
+	                               "lines without touching the "
+	                               "firewall. While this is on, Apply "
+	                               "never reaches the firewall."));
+	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (button),
+	                              fs_apply_audit_only ());
+	g_signal_connect (button, "toggled",
+	                  G_CALLBACK (on_audit_only_toggled), NULL);
 	gtk_box_pack_start (GTK_BOX (bar), button, FALSE, FALSE, 0);
 
 	gtk_box_pack_start (GTK_BOX (outer), bar, FALSE, FALSE, 0);

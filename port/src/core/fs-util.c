@@ -512,6 +512,8 @@ fs_util_apply_result_to_string (int result)
 		return "Administrator privileges are required";
 	case FS_APPLY_PARTIAL:
 		return "Only some of the rules could be applied";
+	case FS_APPLY_DRY_RUN:
+		return "Held, not applied (audit-only mode or the Policy Lock)";
 	case FS_APPLY_FAILED:
 	default:
 		return "Failed to apply the firewall rules";
