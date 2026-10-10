@@ -445,6 +445,21 @@ fs_app_activate (GtkApplication *app)
 
 	/* Smart Firewall Copilot tab */
 	copilot = fs_copilot_new ();
+
+	/* Resume the historical behavior baseline (P2): yesterday's
+	 * learned ports, destinations, hours and rates are loaded before
+	 * the first event arrives, so a restart does not call every old
+	 * port new.  A missing file is a fresh start, not an error. */
+	{
+		gchar *baseline = fs_copilot_baseline_path ();
+		GError *baseline_err = NULL;
+
+		if (!fs_copilot_baseline_load (copilot, baseline,
+		                               &baseline_err))
+			g_clear_error (&baseline_err);
+		g_free (baseline);
+	}
+
 	add_page (_("Copilot"), fs_copilot_page (copilot, policy), NULL);
 
 	/* Trust tab: the application trust engine's surface. */
@@ -488,6 +503,13 @@ fs_app_quit (void)
 	}
 
 	if (copilot != NULL) {
+		/* Best effort: an unsaved baseline only costs relearning,
+		 * never a wrong rule or a lost audit line. */
+		gchar *baseline = fs_copilot_baseline_path ();
+
+		fs_copilot_baseline_save (copilot, baseline, NULL);
+		g_free (baseline);
+
 		fs_copilot_free (copilot);
 		copilot = NULL;
 	}

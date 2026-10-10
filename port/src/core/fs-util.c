@@ -595,3 +595,87 @@ fs_util_strip_controls (const gchar *text)
 
 	return g_string_free (out, FALSE);
 }
+
+/* [ fs_util_csv_append_field ]
+ * Quote a field the way a spreadsheet would: only when it must.
+ * Moved here from the trust store so the copilot's behavior baseline
+ * writes the same dialect the trust parser reads. */
+void
+fs_util_csv_append_field (GString *out, const gchar *value, gboolean first)
+{
+	gboolean quote;
+
+	if (!first)
+		g_string_append_c (out, ',');
+
+	if (value == NULL)
+		value = "";
+
+	quote = (strchr (value, ',') != NULL ||
+	         strchr (value, '"') != NULL ||
+	         strchr (value, '\n') != NULL ||
+	         strchr (value, '\r') != NULL);
+
+	if (!quote) {
+		g_string_append (out, value);
+		return;
+	}
+
+	g_string_append_c (out, '"');
+	for (; *value != '\0'; value++) {
+		if (*value == '"')
+			g_string_append_c (out, '"');
+		g_string_append_c (out, *value);
+	}
+	g_string_append_c (out, '"');
+}
+
+/* [ fs_util_csv_split_line ]
+ * Split one line into fields, honouring quotes.  Returns a GPtrArray
+ * of gchar* (caller frees with g_ptr_array_unref). */
+GPtrArray *
+fs_util_csv_split_line (const gchar *line)
+{
+	GPtrArray *fields = g_ptr_array_new_with_free_func (g_free);
+	GString *field = g_string_new (NULL);
+	gboolean quoted = FALSE;
+	gboolean started = FALSE;
+
+	while (*line != '\0') {
+		if (quoted) {
+			if (*line == '"') {
+				if (*(line + 1) == '"') {
+					g_string_append_c (field, '"');
+					line += 2;
+					continue;
+				}
+				quoted = FALSE;
+				line++;
+				continue;
+			}
+			g_string_append_c (field, *line);
+			line++;
+			continue;
+		}
+
+		if (*line == '"' && !started) {
+			quoted = TRUE;
+			started = TRUE;
+			line++;
+			continue;
+		}
+		if (*line == ',') {
+			g_ptr_array_add (fields, g_string_free (field, FALSE));
+			field = g_string_new (NULL);
+			started = FALSE;
+			line++;
+			continue;
+		}
+		g_string_append_c (field, *line);
+		started = TRUE;
+		line++;
+	}
+	g_ptr_array_add (fields, g_string_free (field, FALSE));
+
+	return fields;
+}

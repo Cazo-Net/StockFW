@@ -1228,6 +1228,527 @@ static void test_sentinel_fanout (void)
 	fs_copilot_free (copilot);
 }
 
+/* ==== P2: explainable behavior analysis ============================
+ * Historical baselines (persisted) and correlated findings.  Every
+ * check pins one honest input or one explainability promise: the
+ * right end of the conversation is learned, one profile per program,
+ * every signal in one finding, timing and rate driven by an
+ * injectable clock, and a baseline that survives the restart. */
+
+static void
+behavior_hit (FsHit *hit, const gchar *service, const gchar *src,
+              const gchar *dst, const gchar *port, const gchar *dir)
+{
+	memset (hit, 0, sizeof *hit);
+	hit->service = (gchar *) service;
+	hit->source = (gchar *) src;
+	hit->destination = (gchar *) dst;
+	hit->port = (gchar *) port;
+	hit->direction = (gchar *) dir;
+	hit->protocol = (gchar *) "TCP";
+}
+
+/* Same-second arrival on purpose: a batch is one moment, so Sentinel
+ * never sees a beacon between two behavior-test events. */
+static void
+behavior_feed (FsCopilot *copilot, FsHit *hit, gint64 now_unix)
+{
+	fs_copilot_feed_event_full (copilot, hit,
+	                            (gint64) 420000 * G_USEC_PER_SEC,
+	                            now_unix);
+}
+
+static guint
+total_insights (FsCopilot *copilot)
+{
+	GList *insights = fs_copilot_get_insights (copilot);
+	guint n = g_list_length (insights);
+
+	g_list_free (insights);
+	return n;
+}
+
+static void test_behavior_derivation (void)
+{
+	FsCopilot *copilot = fs_copilot_new ();
+	FsHit hit;
+	const FsAppProfile *p;
+	GList *all;
+
+	/* Outbound: the remote host is the DESTINATION; the source is
+	 * our own address. */
+	behavior_hit (&hit, "chrome.exe", "192.168.1.7", "203.0.113.9",
+	              "443", "out");
+	behavior_feed (copilot, &hit, 1700000000);
+	p = fs_copilot_get_profile (copilot, "chrome.exe");
+	CHECK (p != NULL, "the profile is keyed by the executable name");
+	CHECK (p != NULL &&
+	       g_hash_table_contains (p->common_destinations, "203.0.113.9"),
+	       "an outbound event records the remote destination");
+	CHECK (p != NULL &&
+	       !g_hash_table_contains (p->common_destinations, "192.168.1.7"),
+	       "an outbound event never mistakes our own address for a destination");
+
+	/* Inbound, lowercase as the Windows backend writes it: the
+	 * remote host is the SOURCE. */
+	behavior_hit (&hit, "chrome.exe", "198.51.100.20", "192.168.1.7",
+	              "443", "in");
+	behavior_feed (copilot, &hit, 1700000000);
+	p = fs_copilot_get_profile (copilot, "chrome.exe");
+	CHECK (p != NULL &&
+	       g_hash_table_contains (p->common_destinations, "198.51.100.20"),
+	       "an inbound event records the source as the remote host");
+
+	/* The blocked marker must not split the profile in two. */
+	behavior_hit (&hit, "svchost.exe [BLOCKED]", "192.168.1.7",
+	              "203.0.113.9", "443", "out");
+	behavior_feed (copilot, &hit, 1700000000);
+	CHECK (fs_copilot_get_profile (copilot, "svchost.exe") != NULL,
+	       "a blocked event is filed under the program, not the marker");
+	all = fs_copilot_get_all_profiles (copilot);
+	CHECK (g_list_length (all) == 2,
+	       "the [BLOCKED] marker does not start a second profile");
+	g_list_free (all);
+
+	behavior_hit (&hit, "svchost.exe", "192.168.1.7", "203.0.113.9",
+	              "443", "out");
+	behavior_feed (copilot, &hit, 1700000000);
+	p = fs_copilot_get_profile (copilot, "svchost.exe");
+	CHECK (p != NULL && p->total_connections == 2,
+	       "blocked and allowed events share one history");
+
+	/* No service at all: one honest "Unknown" profile. */
+	behavior_hit (&hit, NULL, "192.168.1.7", "203.0.113.9", "53", "out");
+	behavior_feed (copilot, &hit, 1700000000);
+	CHECK (fs_copilot_get_profile (copilot, "Unknown") != NULL,
+	       "an event without a service lands in one Unknown profile");
+
+	fs_copilot_free (copilot);
+}
+
+static void test_behavior_signals (void)
+{
+	FsCopilot *copilot = fs_copilot_new ();
+	FsHit hit;
+	const FsInsight *ins;
+	const FsAppProfile *p;
+	GDateTime *dt;
+	gchar *expected;
+	gint i;
+	/* 5-hour steps: four local hours stay distinct on any timezone,
+	 * including across a DST jump. */
+	const gint64 w0 = 1700000400;
+	const gint64 step = 5 * 3600;
+
+	/* Baseline: 10 connections, port 443, one host, three hours. */
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "198.51.100.10",
+	              "443", "out");
+	for (i = 0; i < 4; i++)
+		behavior_feed (copilot, &hit, w0);
+	for (i = 0; i < 3; i++)
+		behavior_feed (copilot, &hit, w0 + step);
+	for (i = 0; i < 3; i++)
+		behavior_feed (copilot, &hit, w0 + 2 * step);
+
+	CHECK (total_insights (copilot) == 0,
+	       "the baseline phase raises nothing at all");
+
+	/* The correlation moment: ONE event, a new port AND a new
+	 * destination together. */
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "203.0.113.66",
+	              "8443", "out");
+	behavior_feed (copilot, &hit, w0 + step);
+
+	CHECK (total_insights (copilot) == 1,
+	       "two signals on one event raise exactly one finding");
+	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_PORT);
+	CHECK (ins != NULL, "the finding is typed by its strongest signal");
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_CRITICAL,
+	       "correlated signals escalate to critical");
+	if (ins != NULL) {
+		CHECK (strstr (ins->description, "8443") != NULL,
+		       "the description names the new port");
+		CHECK (strstr (ins->description, "203.0.113.66") != NULL,
+		       "and the new destination");
+		CHECK (strstr (ins->description, "\n- ") != NULL,
+		       "as two listed signals, not one");
+		CHECK (ins->rule_csv == NULL && !ins->auto_applicable,
+		       "a correlated finding suggests no rule -- a human's call");
+	}
+
+	/* A single novel destination still gets the allow suggestion. */
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "203.0.113.77",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0 + step);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 1,
+	       "a first contact raises one destination finding");
+	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_DESTINATION);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING,
+	       "a single signal is a warning");
+	if (ins != NULL) {
+		CHECK (strstr (ins->description, "203.0.113.77") != NULL,
+		       "the description names the host");
+		CHECK (strstr (ins->description, "the baseline knew 2") != NULL,
+		       "and how many destinations the baseline knew");
+		CHECK (ins->rule_csv != NULL &&
+		       strstr (ins->rule_csv, "203.0.113.77") != NULL,
+		       "a single-signal finding carries its allow suggestion");
+	}
+
+	/* First activity in a fourth hour, once the app HAS hours. */
+	dt = g_date_time_new_from_unix_local (w0 + 3 * step);
+	expected = g_strdup_printf ("first activity at %02d:00",
+	                            g_date_time_get_hour (dt));
+	g_date_time_unref (dt);
+
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "198.51.100.10",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0 + 3 * step);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_TIME) == 1,
+	       "the first activity in a fourth hour is a timing finding");
+	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_TIME);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO,
+	       "a lone timing finding stays informational");
+	if (ins != NULL) {
+		CHECK (strstr (ins->description, expected) != NULL,
+		       "the description names the unexpected hour");
+		CHECK (strstr (ins->description, "established hours") != NULL,
+		       "and points at the established ones");
+	}
+	g_free (expected);
+
+	/* Absorbed: a second event in that hour says nothing. */
+	behavior_feed (copilot, &hit, w0 + 3 * step);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_TIME) == 1,
+	       "a second event in that hour says nothing new");
+
+	/* And the known port is quiet against the grown profile. */
+	p = fs_copilot_get_profile (copilot, "sync.exe");
+	CHECK (p != NULL && p->total_connections == 14,
+	       "every event reached the profile, signals or not");
+
+	fs_copilot_free (copilot);
+}
+
+static void test_behavior_hour_guard (void)
+{
+	FsCopilot *copilot = fs_copilot_new ();
+	FsHit hit;
+	gint i;
+	const gint64 w0 = 1700000400;
+
+	/* Ten connections in one hour: the profile has no "usual hours"
+	 * yet, so a new hour must not be judged unusual. */
+	behavior_hit (&hit, "young.exe", "192.168.1.7", "198.51.100.10",
+	              "443", "out");
+	for (i = 0; i < 10; i++)
+		behavior_feed (copilot, &hit, w0);
+	behavior_feed (copilot, &hit, w0 + 5 * 3600);
+
+	CHECK (total_insights (copilot) == 0,
+	       "without established hours, a new hour claims nothing");
+
+	fs_copilot_free (copilot);
+}
+
+static void test_behavior_rate (void)
+{
+	FsCopilot *copilot = fs_copilot_new ();
+	FsHit hit;
+	const FsInsight *ins;
+	gint i, b;
+	const gint64 r0 = 1700000400;   /* aligned to the 10-min window */
+
+	behavior_hit (&hit, "burst.exe", "192.168.1.7", "198.51.100.30",
+	              "443", "out");
+
+	/* Ten quiet buckets of three: the rate this app established. */
+	for (b = 0; b < 10; b++)
+		for (i = 0; i < 3; i++)
+			behavior_feed (copilot, &hit,
+			               r0 + (gint64) b * 600);
+
+	CHECK (total_insights (copilot) == 0,
+	       "a steady rate raises nothing");
+
+	/* Ten times that rate, inside one bucket. */
+	for (i = 0; i < 30; i++)
+		behavior_feed (copilot, &hit, r0 + 9 * 600);
+
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_VOLUME) == 1,
+	       "the burst raises exactly one rate finding");
+	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_VOLUME);
+	if (ins != NULL) {
+		CHECK (strstr (ins->description,
+		               "connections in the last 10 minutes") != NULL,
+		       "the finding counts the burst");
+		CHECK (strstr (ins->description,
+		               "usual rate is about 3") != NULL,
+		       "and names the rate the app established");
+	}
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_VOLUME) == 1,
+	       "a burst is reported once per window, not per event");
+
+	/* The next quiet bucket stays quiet. */
+	for (i = 0; i < 3; i++)
+		behavior_feed (copilot, &hit, r0 + 10 * 600);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_VOLUME) == 1,
+	       "the next quiet bucket says nothing");
+
+	fs_copilot_free (copilot);
+}
+
+static void test_behavior_insight_cap (void)
+{
+	FsCopilot *copilot = fs_copilot_new ();
+	FsHit hit;
+	gchar dest[64];
+	gint i;
+
+	/* Baseline, then a flood of first contacts: the insight list is
+	 * bounded, and the flood cannot grow it without end. */
+	behavior_hit (&hit, "scan.exe", "192.168.1.7", "198.51.100.1",
+	              "443", "out");
+	for (i = 0; i < 10; i++)
+		behavior_feed (copilot, &hit, 1700000400);
+
+	for (i = 1; i <= 205; i++) {
+		g_snprintf (dest, sizeof dest, "203.0.113.%d", i);
+		hit.destination = dest;
+		behavior_feed (copilot, &hit, 1700000400);
+	}
+
+	CHECK (total_insights (copilot) == 200,
+	       "the insight list stops at its cap, however loud the flood");
+
+	fs_copilot_free (copilot);
+}
+
+static void test_behavior_persistence (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-behavior-test", NULL);
+	gchar *file = g_build_filename (dir, "behavior.csv", NULL);
+	gchar *file2 = g_build_filename (dir, "broken.csv", NULL);
+	FsCopilot *a = fs_copilot_new ();
+	FsCopilot *b = fs_copilot_new ();
+	GError *err = NULL;
+	FsHit hit;
+	const FsAppProfile *pa, *pb;
+	GList *all;
+	gchar *path;
+	guint hours_a;
+	gint bidx;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+
+	/* A file that is not there is a fresh start, not an error. */
+	CHECK (!fs_copilot_baseline_load (a, file, &err) && err == NULL,
+	       "a missing baseline is a quiet fresh start");
+
+	/* The documented path honors the environment override. */
+	g_setenv ("STOCKFW_BEHAVIOR_FILE", file, TRUE);
+	path = fs_copilot_baseline_path ();
+	CHECK (path != NULL && g_strcmp0 (path, file) == 0,
+	       "STOCKFW_BEHAVIOR_FILE overrides the store path");
+	g_free (path);
+	g_unsetenv ("STOCKFW_BEHAVIOR_FILE");
+
+	/* Ten windows of one connection each: totals, a destination, a
+	 * port, hours, settled rate state. */
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "198.51.100.10",
+	              "443", "out");
+	for (bidx = 0; bidx < 10; bidx++)
+		behavior_feed (a, &hit, 1700000400 + (gint64) bidx * 600);
+
+	/* And a comma-laden name, to pin the CSV quoting. */
+	behavior_hit (&hit, "odd,name.exe", "192.168.1.7", "198.51.100.11",
+	              "8080", "out");
+	behavior_feed (a, &hit, 1700000400);
+
+	pa = fs_copilot_get_profile (a, "sync.exe");
+	hours_a = pa != NULL ? g_hash_table_size (pa->hourly_activity) : 0;
+
+	CHECK (fs_copilot_baseline_save (a, file, &err),
+	       "the baseline saves to disk");
+	CHECK (err == NULL, "and saves without an error");
+	CHECK (fs_copilot_baseline_save (a, file, NULL),
+	       "a save with no error slot still works");
+
+	/* The fresh copilot resumes the history. */
+	CHECK (fs_copilot_baseline_load (b, file, &err),
+	       "a fresh copilot loads the baseline back");
+	CHECK (err == NULL, "and loads without an error");
+
+	pb = fs_copilot_get_profile (b, "sync.exe");
+	CHECK (pb != NULL, "the application comes back");
+	CHECK (pb != NULL && pb->total_connections == 10,
+	       "the connection total survives the restart");
+	CHECK (pb != NULL &&
+	       g_hash_table_contains (pb->common_destinations,
+	                              "198.51.100.10"),
+	       "the destination set survives");
+	if (pb != NULL && pa != NULL) {
+		guint *port_count = g_hash_table_lookup (pb->common_ports,
+		                                         GUINT_TO_POINTER (443));
+
+		CHECK (port_count != NULL && *port_count == 10,
+		       "port counts survive");
+		CHECK (g_hash_table_size (pb->hourly_activity) == hours_a,
+		       "the hour buckets survive");
+		CHECK (pb->rate_ema_milli == 1000 && pb->rate_buckets == 9,
+		       "the established rate survives");
+		CHECK (pb->first_seen == pa->first_seen &&
+		       pb->last_seen == pa->last_seen,
+		       "first and last seen survive");
+	}
+	CHECK (fs_copilot_get_profile (b, "odd,name.exe") != NULL,
+	       "a comma in a name round-trips through the quoted CSV");
+
+	/* The resumed history silences what it knows ... */
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "198.51.100.10",
+	              "443", "out");
+	behavior_feed (b, &hit, 1700000400);
+	CHECK (total_insights (b) == 0,
+	       "a known port and host say nothing after the restart");
+
+	/* ... and a genuinely new port still speaks up. */
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "198.51.100.10",
+	              "9999", "out");
+	behavior_feed (b, &hit, 1700000400);
+	CHECK (count_insights (b, FS_INSIGHT_UNUSUAL_PORT) == 1,
+	       "a new port still fires against the loaded baseline");
+
+	/* Garbage lines are skipped, not fatal. */
+	{
+		GError *err2 = NULL;
+		FsCopilot *c;
+
+		g_file_set_contents (file2,
+		                     "# broken\nnot,a,valid,row\ngarbage\n",
+		                     -1, NULL);
+		c = fs_copilot_new ();
+		CHECK (fs_copilot_baseline_load (c, file2, &err2),
+		       "a file with garbage lines still loads");
+		CHECK (err2 == NULL, "and the garbage sets no error");
+		all = fs_copilot_get_all_profiles (c);
+		CHECK (g_list_length (all) == 0,
+		       "the garbage rows invent no profiles");
+		g_list_free (all);
+		g_clear_error (&err2);
+		fs_copilot_free (c);
+	}
+
+	fs_copilot_free (a);
+	fs_copilot_free (b);
+	remove (file);
+	remove (file2);
+	g_free (file);
+	g_free (file2);
+	g_free (dir);
+}
+
+static void test_behavior_partial (void)
+{
+	FsCopilot *copilot = fs_copilot_new ();
+	FsHit hit;
+	const FsAppProfile *p;
+	gchar dest[64];
+	gint i;
+
+	/* Port cap: a profile that exceeds it stops claiming novelty. */
+	behavior_hit (&hit, "scanner.exe", "192.168.1.7", "203.0.113.5",
+	              "443", "out");
+	for (i = 0; i < 10; i++)
+		behavior_feed (copilot, &hit, 1700000400);
+	for (i = 1024; i < 1400; i++) {
+		gchar port[16];
+
+		g_snprintf (port, sizeof port, "%d", i);
+		hit.port = port;
+		behavior_feed (copilot, &hit, 1700000400);
+	}
+	p = fs_copilot_get_profile (copilot, "scanner.exe");
+	CHECK (p != NULL && p->baseline_partial,
+	       "hitting the port cap marks the baseline partial");
+
+	fs_copilot_clear_insights (copilot);
+	hit.port = "5000";
+	behavior_feed (copilot, &hit, 1700000400);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_PORT) == 0,
+	       "a partial baseline does not claim a new port is novel");
+
+	/* The cap that filled here was the PORT set, so port 5000 above
+	 * was never even recorded -- that check passes by construction.
+	 * Destinations still have room, so this first contact WOULD be
+	 * recordable and novel; only the partial guard keeps it quiet,
+	 * and that guard is what this line pins. */
+	hit.port = "443";
+	hit.destination = "203.0.113.77";
+	behavior_feed (copilot, &hit, 1700000400);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 0 &&
+	       count_insights (copilot, FS_INSIGHT_UNUSUAL_PORT) == 0,
+	       "and a recordable first contact stays quiet too");
+
+	/* Destination cap: same discipline, same flag. */
+	behavior_hit (&hit, "flood.exe", "192.168.1.7", "198.51.100.40",
+	              "443", "out");
+	for (i = 0; i < 10; i++)
+		behavior_feed (copilot, &hit, 1700000400);
+	for (i = 1; i <= 1024; i++) {
+		g_snprintf (dest, sizeof dest, "203.0.113.%d", i);
+		hit.destination = dest;
+		behavior_feed (copilot, &hit, 1700000400);
+	}
+	p = fs_copilot_get_profile (copilot, "flood.exe");
+	CHECK (p != NULL && p->baseline_partial,
+	       "hitting the destination cap marks the baseline partial");
+
+	fs_copilot_clear_insights (copilot);
+	hit.destination = "198.51.100.99";
+	behavior_feed (copilot, &hit, 1700000400);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 0,
+	       "and it does not claim a new destination is novel either");
+
+	/* Mirror image: the DESTINATION set filled here, so 198.51.100.99
+	 * above was never recorded.  Ports still have room -- port 8443
+	 * would be recorded and novel, so the partial guard is again
+	 * the only thing keeping the finding quiet. */
+	hit.port = "8443";
+	behavior_feed (copilot, &hit, 1700000400);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_PORT) == 0 &&
+	       count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 0,
+	       "and a recordable new port stays quiet too");
+
+	fs_copilot_free (copilot);
+}
+
+static void test_behavior_app_cap (void)
+{
+	FsCopilot *copilot = fs_copilot_new ();
+	FsHit hit;
+	GList *all;
+	gchar service[32];
+	gint i;
+
+	/* 260 one-event applications: the profile table stays bounded,
+	 * the least recently seen makes room. */
+	for (i = 0; i < 260; i++) {
+		g_snprintf (service, sizeof service, "app%d.exe", i);
+		behavior_hit (&hit, service, "192.168.1.7", "198.51.100.10",
+		              "443", "out");
+		behavior_feed (copilot, &hit, 1700000400);
+	}
+
+	all = fs_copilot_get_all_profiles (copilot);
+	CHECK (g_list_length (all) == 256,
+	       "the profile table stops at its cap");
+	g_list_free (all);
+
+	fs_copilot_free (copilot);
+}
+
 /* The append-only audit trail: one line per action, never rewritten. */
 static void test_audit_log (void)
 {
@@ -2227,6 +2748,7 @@ static void test_trust_engine (void)
 	gchar *fakeexe = g_build_filename (dir, "maybe.exe", NULL);
 	gchar *store_file = g_build_filename (dir, "trust.csv", NULL);
 	gchar *weird_file = g_build_filename (dir, "weird.csv", NULL);
+	gchar *pair_file = g_build_filename (dir, "pair.csv", NULL);
 	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
 	FsTrustStore *store;
 	FsTrustReport *report;
@@ -2239,6 +2761,7 @@ static void test_trust_engine (void)
 	remove (fakeexe);
 	remove (store_file);
 	remove (weird_file);
+	remove (pair_file);
 	remove (audit_file);
 	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
 	g_file_set_contents (payload, payload_text, 34, NULL);
@@ -2442,6 +2965,47 @@ static void test_trust_engine (void)
 		g_free (contents);
 	}
 
+	/* Two rows must survive a save/reload together.  The writer used
+	 * to prefix every row after the first with a comma, giving them
+	 * nine fields against the parser's exact eight -- so the second
+	 * attestation vanished on the next load. */
+	{
+		FsTrustStore *pair = fs_trust_store_new (pair_file);
+		FsTrustReport ra, rb;
+
+		memset (&ra, 0, sizeof ra);
+		ra.path = (gchar *) "C:/Apps/one.exe";
+		ra.sha256 = (gchar *)
+			"aa11bb22cc33dd44ee55ff6677889900"
+			"112233445566778899aabbccddee00ff";
+		ra.size = 1;
+		ra.mtime = 2;
+		ra.sig = FS_TRUST_SIG_INVALID;
+
+		memset (&rb, 0, sizeof rb);
+		rb.path = (gchar *) "C:/Apps/two.exe";
+		rb.sha256 = (gchar *)
+			"112233445566778899aabbccddee00ff"
+			"aa11bb22cc33dd44ee55ff6677889900";
+		rb.size = 3;
+		rb.mtime = 4;
+		rb.sig = FS_TRUST_SIG_INVALID;
+
+		CHECK (fs_trust_attest (pair, &ra) && fs_trust_attest (pair, &rb),
+		       "two programs attest");
+		CHECK (fs_trust_store_count (pair) == 2,
+		       "both rows are in the store");
+		CHECK (fs_trust_store_save (pair, &error) && error == NULL,
+		       "the pair saves");
+		fs_trust_store_free (pair);
+		g_clear_error (&error);
+
+		pair = fs_trust_store_load (pair_file);
+		CHECK (fs_trust_store_count (pair) == 2,
+		       "both rows reload, not just the first");
+		fs_trust_store_free (pair);
+	}
+
 	/* Every attestation and every forgetting was appended to the
 	 * audit log: the baseline can be questioned afterwards. */
 	{
@@ -2466,12 +3030,14 @@ static void test_trust_engine (void)
 	remove (fakeexe);
 	remove (store_file);
 	remove (weird_file);
+	remove (pair_file);
 	remove (audit_file);
 	g_free (payload);
 	g_free (missing);
 	g_free (fakeexe);
 	g_free (store_file);
 	g_free (weird_file);
+	g_free (pair_file);
 	g_free (audit_file);
 	g_free (dir);
 }
@@ -2502,6 +3068,14 @@ int main (void)
 	test_policy_persist_rollback ();
 	test_sentinel_beacon ();
 	test_sentinel_fanout ();
+	test_behavior_derivation ();
+	test_behavior_signals ();
+	test_behavior_hour_guard ();
+	test_behavior_rate ();
+	test_behavior_insight_cap ();
+	test_behavior_persistence ();
+	test_behavior_partial ();
+	test_behavior_app_cap ();
 	test_audit_log ();
 	test_filter_match ();
 	test_insight_apply ();

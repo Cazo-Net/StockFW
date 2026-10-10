@@ -13,6 +13,7 @@
 #include "core/fs-fwrule.h"
 #include "core/fs-rules.h"
 
+#include <gio/gio.h>
 #include <time.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,18 +45,27 @@ struct _FsCopilot
 };
 
 /* Forward declarations. */
-static FsAppProfile *app_profile_new (const gchar *name, const gchar *path);
+static FsAppProfile *app_profile_new (const gchar *name, const gchar *path,
+                                      gint64 now_unix);
 static void app_profile_free (FsAppProfile *profile);
 static void app_profile_record_connection (FsAppProfile *profile,
                                            const gchar *remote_ip,
                                            guint port,
                                            const gchar *protocol,
                                            gboolean inbound,
-                                           guint64 bytes);
-static gboolean is_anomalous_port (FsAppProfile *profile, guint port);
-static gboolean is_anomalous_destination (FsAppProfile *profile,
-                                          const gchar *remote_ip);
-static gboolean is_anomalous_time (FsAppProfile *profile);
+                                           guint64 bytes,
+                                           gint64 now_unix);
+static gboolean is_novel_port (FsAppProfile *profile, guint port);
+static gboolean is_novel_destination (FsAppProfile *profile,
+                                      const gchar *remote_ip);
+static gboolean is_novel_hour (FsAppProfile *profile, gint64 now_unix);
+static gboolean rate_spike_take (FsAppProfile *profile, gint64 now_unix);
+static void behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
+                              const gchar *app_name,
+                              const gchar *remote_ip, guint port,
+                              gint64 now_unix);
+static void emit_insight (FsCopilot *copilot, FsInsight *insight);
+static gboolean sentinel_hit_is_inbound (const FsHit *hit);
 static FsInsight *create_insight (FsInsightType type,
                                   FsCopilotSeverity severity,
                                   const gchar *title,
@@ -83,6 +93,19 @@ static FsInsight *sentinel_fanout_check (FsCopilot *copilot,
  * written or called.  fs_copilot_simulate() says in its own comment
  * that it still uses heuristics rather than the rule engine, which is
  * what the declaration used to imply and was not true. */
+
+/* ---- Behavior analysis bounds (P2) -------------------------------
+ * Every structure here is bounded (Chapter 9):256 applications,
+ * 256 ports and 1024 destinations per application, 200 insights in
+ * the list, one rate report per 10-minute bucket. */
+#define FS_BEHAVIOR_MAX_APPS          256
+#define FS_BEHAVIOR_MAX_PORTS         256
+#define FS_BEHAVIOR_MAX_DESTS         1024
+#define FS_COPILOT_MAX_INSIGHTS       200
+#define FS_BEHAVIOR_WINDOW_S          600    /* rate window: 10 minutes */
+#define FS_BEHAVIOR_RATE_MIN_BUCKETS  8      /* buckets before judging rate */
+#define FS_BEHAVIOR_RATE_MIN_EVENTS   10     /* floor: events per bucket    */
+#define FS_BEHAVIOR_HOURS_MIN_DISTINCT 4     /* hours before judging hours  */
 
 /* [ fs_copilot_new ] */
 FsCopilot *
@@ -152,7 +175,8 @@ fs_copilot_free (FsCopilot *copilot)
 void
 fs_copilot_feed_event (FsCopilot *copilot, const FsHit *hit)
 {
-	fs_copilot_feed_event_at (copilot, hit, g_get_monotonic_time ());
+	fs_copilot_feed_event_full (copilot, hit, g_get_monotonic_time (),
+	                            time (NULL));
 }
 
 /* [ fs_copilot_feed_event_at ] */
@@ -160,16 +184,95 @@ void
 fs_copilot_feed_event_at (FsCopilot *copilot, const FsHit *hit,
                           gint64 now_us)
 {
+	fs_copilot_feed_event_full (copilot, hit, now_us, time (NULL));
+}
+
+/* [ evict_lru_profile ]
+ * Room for a newcomer when the profile table is full: the least
+ * recently seen application goes.  Its insights are plain strings and
+ * stay valid; only its learned history resets. */
+static void
+evict_lru_profile (FsCopilot *copilot)
+{
+	GHashTableIter iter;
+	gpointer key, value;
+	gpointer oldest_key = NULL;
+	FsAppProfile *oldest = NULL;
+
+	g_hash_table_iter_init (&iter, copilot->profiles);
+	while (g_hash_table_iter_next (&iter, &key, &value)) {
+		FsAppProfile *p = value;
+
+		if (oldest == NULL || p->last_seen < oldest->last_seen) {
+			oldest = p;
+			oldest_key = key;
+		}
+	}
+
+	if (oldest_key != NULL)
+		g_hash_table_remove (copilot->profiles, oldest_key);
+}
+
+/* [ fs_copilot_feed_event_full ]
+ * One event, three jobs: teach the profile, run Sentinel, then judge
+ * the event against the baseline it just joined -- correlating every
+ * signal (port, destination, hour, rate) into a single finding
+ * instead of the else-if chain that reported one signal and silently
+ * dropped the others. */
+void
+fs_copilot_feed_event_full (FsCopilot *copilot, const FsHit *hit,
+                            gint64 now_us, gint64 now_unix)
+{
+	gchar app_buf[256];
+	const gchar *app_name;
+	const gchar *remote_ip;
+	const gchar *protocol;
+	guint port;
+	gboolean inbound;
+	FsAppProfile *profile;
+
 	if (copilot == NULL || hit == NULL || !copilot->learning_enabled)
 		return;
 
-	/* Extract app name from hit - in reality this would come from
-	 * process tracking. For now, infer from port/service. */
-	const gchar *app_name = hit->service ? hit->service : "Unknown";
-	const gchar *remote_ip = hit->source ? hit->source : hit->destination;
-	guint port = hit->port ? atoi (hit->port) : 0;
-	const gchar *protocol = hit->protocol ? hit->protocol : "TCP";
-	gboolean inbound = (hit->direction && g_strcmp0 (hit->direction, "In") == 0);
+	/* The per-application key.  The Windows backend appends
+	 * " [BLOCKED]" to the service field of dropped events; without
+	 * stripping it here, every blocked connection would start a
+	 * SECOND profile for the same program and split the history the
+	 * baseline is supposed to compare against.  Events without an
+	 * Application Name carry the port's service name instead -- that
+	 * is what the log held, and the profile's key says so. */
+	g_strlcpy (app_buf, hit->service != NULL ? hit->service : "",
+	           sizeof app_buf);
+	if (g_str_has_suffix (app_buf, " [BLOCKED]"))
+		app_buf[strlen (app_buf) - strlen (" [BLOCKED]")] = '\0';
+	if (*app_buf == '\0')
+		g_strlcpy (app_buf, "Unknown", sizeof app_buf);
+	app_name = app_buf;
+
+	/* Which end is the remote host depends on the direction: an
+	 * outbound packet carries OUR address as the source.  Taking
+	 * `source' unconditionally taught every outbound event that our
+	 * own IP was a destination -- the baseline learned the wrong half
+	 * of the conversation.  The direction test is case-insensitive
+	 * because the Windows backend writes "in"/"out". */
+	inbound = sentinel_hit_is_inbound (hit);
+	if (inbound)
+		remote_ip = (hit->source != NULL && *hit->source != '\0')
+		            ? hit->source : hit->destination;
+	else
+		remote_ip = (hit->destination != NULL &&
+		             *hit->destination != '\0')
+		            ? hit->destination : hit->source;
+
+	port = 0;
+	if (hit->port != NULL && *hit->port != '\0') {
+		glong parsed = strtol (hit->port, NULL, 10);
+
+		if (parsed > 0 && parsed <= 65535)
+			port = (guint) parsed;
+	}
+
+	protocol = hit->protocol != NULL ? hit->protocol : "TCP";
 
 	/* Get or create profile.
 	 *
@@ -181,18 +284,23 @@ fs_copilot_feed_event_at (FsCopilot *copilot, const FsHit *hit,
 	 * profile it then stored: the table kept a dangling pointer, the
 	 * next event wrote into freed memory, and the one after that freed
 	 * it again.  That was the crash behind monitoring the log --
-	 * g_hash_table_lookup() inside is_anomalous_port() on the freed
+	 * g_hash_table_lookup() inside the anomaly checks on the freed
 	 * profile->common_ports (integer divide-by-zero or access violation
 	 * in libglib), plus the heap fail-fasts from the double free. */
-	FsAppProfile *profile = g_hash_table_lookup (copilot->profiles, app_name);
+	profile = g_hash_table_lookup (copilot->profiles, app_name);
 	if (profile == NULL)
 	{
-		profile = app_profile_new (app_name, NULL);
-		g_hash_table_insert (copilot->profiles, g_strdup (app_name), profile);
+		if (g_hash_table_size (copilot->profiles) >=
+		    FS_BEHAVIOR_MAX_APPS)
+			evict_lru_profile (copilot);
+
+		profile = app_profile_new (app_name, NULL, now_unix);
+		g_hash_table_insert (copilot->profiles, g_strdup (app_name),
+		                     profile);
 	}
 
 	app_profile_record_connection (profile, remote_ip, port, protocol,
-	                               inbound, 0);
+	                               inbound, 0, now_unix);
 
 	/* Sentinel runs on every event, baseline or not: a control
 	 * channel has to be caught in its first minutes, not after the
@@ -202,81 +310,19 @@ fs_copilot_feed_event_at (FsCopilot *copilot, const FsHit *hit,
 		FsInsight *fanout = sentinel_fanout_check (copilot, hit, now_us);
 
 		if (beacon != NULL) {
-			beacon->timestamp = time (NULL);
-			copilot->insights = g_list_prepend (copilot->insights,
-			                                    beacon);
+			beacon->timestamp = now_unix;
+			emit_insight (copilot, beacon);
 		}
 		if (fanout != NULL) {
-			fanout->timestamp = time (NULL);
-			copilot->insights = g_list_prepend (copilot->insights,
-			                                    fanout);
+			fanout->timestamp = now_unix;
+			emit_insight (copilot, fanout);
 		}
 	}
 
-	/* Analyze for anomalies if we have enough baseline. */
+	/* Judge the event against the baseline once it has one. */
 	if (profile->total_connections >= copilot->min_samples_for_baseline)
-	{
-		FsInsight *insight = NULL;
-
-		if (is_anomalous_port (profile, port))
-		{
-			insight = create_insight (FS_INSIGHT_UNUSUAL_PORT,
-			                          FS_COPILOT_WARNING,
-			                          _("Unusual port for application"),
-			                          g_strdup_printf (_("Application '%s' is using port %u, "
-			                                            "which it has never used before. "
-			                                            "This could indicate a new service or compromise."),
-			                                         app_name, port),
-			                          app_name,
-			                          g_strdup_printf ("%s:%u", remote_ip ? remote_ip : "?", port));
-			insight->suggested_rule = g_strdup_printf (_("Allow %s on port %u for %s"),
-			                                           app_name, port, remote_ip ? remote_ip : "any");
-			insight->rule_csv = g_strdup_printf ("%s, %u, %s, %s",
-			                                     app_name, port,
-			                                     remote_ip ? remote_ip : "Anyone",
-			                                     _("Auto-generated by Copilot"));
-			insight->auto_applicable = TRUE;
-		}
-		else if (is_anomalous_destination (profile, remote_ip))
-		{
-			insight = create_insight (FS_INSIGHT_UNUSUAL_DESTINATION,
-			                          FS_COPILOT_WARNING,
-			                          _("Unusual destination"),
-			                          g_strdup_printf (_("Application '%s' is connecting to %s, "
-			                                            "which it has never contacted before. "
-			                                            "Verify this is expected."),
-			                                         app_name, remote_ip ? remote_ip : "?"),
-			                          app_name,
-			                          remote_ip ? g_strdup (remote_ip) : NULL);
-			insight->suggested_rule = g_strdup_printf (_("Allow %s to connect to %s"),
-			                                           app_name, remote_ip ? remote_ip : "that host");
-			insight->rule_csv = g_strdup_printf ("%s, %u, %s, %s",
-			                                     app_name, port,
-			                                     remote_ip ? remote_ip : "Anyone",
-			                                     _("Auto-generated by Copilot"));
-			insight->auto_applicable = TRUE;
-		}
-		else if (is_anomalous_time (profile))
-		{
-			insight = create_insight (FS_INSIGHT_UNUSUAL_TIME,
-			                          FS_COPILOT_INFO,
-			                          _("Activity at unusual time"),
-			                          g_strdup_printf (_("Application '%s' is active at %s, "
-			                                            "outside its normal hours."),
-			                                         app_name,
-			                                         ctime (&(time_t){time(NULL)})),
-			                          app_name,
-			                          NULL);
-		}
-
-		if (insight != NULL)
-		{
-			/* create_insight() already carried the application
-			 * name; re-assigning it here leaked the first copy. */
-			insight->timestamp = time (NULL);
-			copilot->insights = g_list_prepend (copilot->insights, insight);
-		}
-	}
+		behavior_analyze (copilot, profile, app_name, remote_ip,
+		                  port, now_unix);
 }
 
 /* [ fs_copilot_get_insights ] */
@@ -1282,6 +1328,395 @@ fs_copilot_import_json (FsCopilot *copilot, const gchar *json)
 	return FALSE;
 }
 
+/* ---- Historical behavior baseline (P2) ----------------------------
+ * One CSV row per learned fact, in the trust store's dialect (the
+ * shared writer/parser in fs-util): a "meta" row carries totals and
+ * first/last seen, a "rate" row the frequency state, and
+ * port/dest/hour rows the learned sets.  The file is what makes the
+ * baseline HISTORICAL -- a restart resumes yesterday's knowledge
+ * instead of relearning it and calling every old port new. */
+
+/* [ parse_u64 ] -- strict: digits only, the whole field. */
+static gboolean
+parse_u64 (const gchar *text, guint64 *out)
+{
+	gchar *end = NULL;
+	guint64 value;
+
+	if (text == NULL || *text == '\0' || !g_ascii_isdigit (*text))
+		return FALSE;
+
+	value = g_ascii_strtoull (text, &end, 10);
+	if (end == text || *end != '\0')
+		return FALSE;
+
+	*out = value;
+	return TRUE;
+}
+
+/* [ fs_copilot_baseline_path ] -- follows the trust store's
+ * convention; STOCKFW_BEHAVIOR_FILE overrides it for the tests. */
+gchar *
+fs_copilot_baseline_path (void)
+{
+	const gchar *env = g_getenv ("STOCKFW_BEHAVIOR_FILE");
+
+	if (env != NULL && *env != '\0')
+		return g_strdup (env);
+
+#ifdef G_OS_WIN32
+	/* Same home as stockfw.conf and trust.csv: the roaming AppData
+	 * folder, not the local one g_get_user_config_dir() would give. */
+	{
+		const gchar *appdata = g_getenv ("APPDATA");
+
+		if (appdata != NULL && *appdata != '\0')
+			return g_build_filename (appdata, "stockfw",
+			                         "behavior.csv", NULL);
+
+		return g_build_filename (g_get_home_dir (), "AppData",
+		                         "Roaming", "stockfw",
+		                         "behavior.csv", NULL);
+	}
+#else
+	return g_build_filename (g_get_user_config_dir (), "stockfw",
+	                         "behavior.csv", NULL);
+#endif
+}
+
+/* [ cmp_app_name ] -- g_strcmp0 as a GCompareFunc, without the cast
+ * GCC's -Wcast-function-type would complain about. */
+static gint
+cmp_app_name (gconstpointer a, gconstpointer b)
+{
+	return g_strcmp0 ((const gchar *) a, (const gchar *) b);
+}
+
+/* [ fs_copilot_baseline_save ]
+ * Deterministic output: application names sorted, one group per
+ * application (meta, rate, partial flag, ports, destinations, hours),
+ * so two saves of the same state are the same file. */
+gboolean
+fs_copilot_baseline_save (FsCopilot *copilot, const gchar *path,
+                          GError **error)
+{
+	GString *out;
+	GList *names = NULL;
+	GList *l;
+	GHashTableIter iter;
+	gpointer key, value;
+	gboolean ok;
+
+	if (copilot == NULL || path == NULL || *path == '\0') {
+		if (error != NULL)
+			g_set_error_literal (error, G_IO_ERROR,
+			                     G_IO_ERROR_INVALID_ARGUMENT,
+			                     "behavior baseline has no file to write");
+		return FALSE;
+	}
+
+	if (!fs_util_ensure_parent_dir (path)) {
+		if (error != NULL)
+			g_set_error_literal (error, G_IO_ERROR,
+			                     G_IO_ERROR_FAILED,
+			                     "the baseline directory could not be created");
+		return FALSE;
+	}
+
+	g_hash_table_iter_init (&iter, copilot->profiles);
+	while (g_hash_table_iter_next (&iter, &key, &value))
+		names = g_list_prepend (names, (gchar *) key);
+	names = g_list_sort (names, cmp_app_name);
+
+	out = g_string_new ("# StockFW behavior baseline v1\n");
+
+	for (l = names; l != NULL; l = l->next) {
+		const gchar *app = l->data;
+		FsAppProfile *p = g_hash_table_lookup (copilot->profiles, app);
+		gchar num[3][32];
+
+		if (p == NULL)
+			continue;
+
+		/* meta: total connections, first seen, last seen.  Every
+		 * row's first field is written with first=TRUE -- the flag
+		 * skips the separator, and each row starts a new line. */
+		g_snprintf (num[0], sizeof num[0],
+		            "%" G_GUINT64_FORMAT, p->total_connections);
+		g_snprintf (num[1], sizeof num[1],
+		            "%" G_GUINT64_FORMAT, p->first_seen);
+		g_snprintf (num[2], sizeof num[2],
+		            "%" G_GUINT64_FORMAT, p->last_seen);
+		fs_util_csv_append_field (out, app, TRUE);
+		fs_util_csv_append_field (out, "meta", FALSE);
+		fs_util_csv_append_field (out, num[0], FALSE);
+		fs_util_csv_append_field (out, num[1], FALSE);
+		fs_util_csv_append_field (out, num[2], FALSE);
+		g_string_append_c (out, '\n');
+
+		/* rate: EWMA x1000, buckets closed, bucket reported */
+		g_snprintf (num[0], sizeof num[0], "%u", p->rate_ema_milli);
+		g_snprintf (num[1], sizeof num[1], "%u", p->rate_buckets);
+		g_snprintf (num[2], sizeof num[2],
+		            "%" G_GUINT64_FORMAT, p->rate_reported);
+		fs_util_csv_append_field (out, app, TRUE);
+		fs_util_csv_append_field (out, "rate", FALSE);
+		fs_util_csv_append_field (out, num[0], FALSE);
+		fs_util_csv_append_field (out, num[1], FALSE);
+		fs_util_csv_append_field (out, num[2], FALSE);
+		g_string_append_c (out, '\n');
+
+		/* partial: this profile's sets were capped somewhere */
+		if (p->baseline_partial) {
+			fs_util_csv_append_field (out, app, TRUE);
+			fs_util_csv_append_field (out, "partial", FALSE);
+			g_string_append_c (out, '\n');
+		}
+
+		/* ports */
+		{
+			GHashTableIter set_iter;
+			gpointer pkey, pvalue;
+
+			g_hash_table_iter_init (&set_iter, p->common_ports);
+			while (g_hash_table_iter_next (&set_iter, &pkey,
+			                               &pvalue)) {
+				g_snprintf (num[0], sizeof num[0], "%u",
+				            GPOINTER_TO_UINT (pkey));
+				g_snprintf (num[1], sizeof num[1], "%u",
+				            *(guint *) pvalue);
+				fs_util_csv_append_field (out, app, TRUE);
+				fs_util_csv_append_field (out, "port", FALSE);
+				fs_util_csv_append_field (out, num[0], FALSE);
+				fs_util_csv_append_field (out, num[1], FALSE);
+				g_string_append_c (out, '\n');
+			}
+		}
+
+		/* destinations */
+		{
+			GHashTableIter set_iter;
+			gpointer pkey, pvalue;
+
+			g_hash_table_iter_init (&set_iter,
+			                        p->common_destinations);
+			while (g_hash_table_iter_next (&set_iter, &pkey,
+			                               &pvalue)) {
+				g_snprintf (num[1], sizeof num[1], "%u",
+				            *(guint *) pvalue);
+				fs_util_csv_append_field (out, app, TRUE);
+				fs_util_csv_append_field (out, "dest", FALSE);
+				fs_util_csv_append_field (out, (const gchar *)
+				                          pkey, FALSE);
+				fs_util_csv_append_field (out, num[1], FALSE);
+				g_string_append_c (out, '\n');
+			}
+		}
+
+		/* hours */
+		{
+			GHashTableIter set_iter;
+			gpointer pkey, pvalue;
+
+			g_hash_table_iter_init (&set_iter, p->hourly_activity);
+			while (g_hash_table_iter_next (&set_iter, &pkey,
+			                               &pvalue)) {
+				g_snprintf (num[0], sizeof num[0], "%u",
+				            GPOINTER_TO_UINT (pkey));
+				g_snprintf (num[1], sizeof num[1],
+				            "%" G_GUINT64_FORMAT,
+				            *(guint64 *) pvalue);
+				fs_util_csv_append_field (out, app, TRUE);
+				fs_util_csv_append_field (out, "hour", FALSE);
+				fs_util_csv_append_field (out, num[0], FALSE);
+				fs_util_csv_append_field (out, num[1], FALSE);
+				g_string_append_c (out, '\n');
+			}
+		}
+	}
+
+	g_list_free (names);
+
+	ok = g_file_set_contents (path, out->str, out->len, error);
+	g_string_free (out, TRUE);
+	return ok;
+}
+
+/* [ fs_copilot_baseline_load ]
+ * Merges the file into whatever the copilot already knows: meta rows
+ * replace totals, fact rows accumulate (a port row adds its count).
+ * Unknown rows are skipped -- a newer format still loads what it
+ * understands.  Rows refused by a cap mark that profile partial, so
+ * a truncated baseline never claims to know everything. */
+gboolean
+fs_copilot_baseline_load (FsCopilot *copilot, const gchar *path,
+                          GError **error)
+{
+	gchar *contents = NULL;
+	gchar **lines;
+	guint i;
+
+	if (copilot == NULL || path == NULL) {
+		if (error != NULL)
+			g_set_error_literal (error, G_IO_ERROR,
+			                     G_IO_ERROR_INVALID_ARGUMENT,
+			                     "behavior baseline load needs a file");
+		return FALSE;
+	}
+
+	if (!g_file_get_contents (path, &contents, NULL, error)) {
+		/* A file that is not there is a fresh start, not a failure. */
+		if (error != NULL && *error != NULL &&
+		    g_error_matches (*error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
+			g_clear_error (error);
+		return FALSE;
+	}
+
+	lines = g_strsplit (contents, "\n", -1);
+	g_free (contents);
+
+	for (i = 0; lines[i] != NULL; i++) {
+		GPtrArray *fields;
+		const gchar *app, *kind;
+		FsAppProfile *p;
+		guint64 a, b, c;
+
+		g_strstrip (lines[i]);
+		if (*lines[i] == '\0' || *lines[i] == '#')
+			continue;
+
+		fields = fs_util_csv_split_line (lines[i]);
+		if (fields->len < 2) {
+			g_ptr_array_unref (fields);
+			continue;
+		}
+
+		app = g_ptr_array_index (fields, 0);
+		kind = g_ptr_array_index (fields, 1);
+		if (*app == '\0') {
+			g_ptr_array_unref (fields);
+			continue;
+		}
+
+		/* An unknown kind is skipped whole -- and creates no
+		 * profile: nothing understands the row, so nothing should
+		 * pretend this application was learned from it. */
+		if (g_strcmp0 (kind, "meta") != 0 &&
+		    g_strcmp0 (kind, "rate") != 0 &&
+		    g_strcmp0 (kind, "partial") != 0 &&
+		    g_strcmp0 (kind, "port") != 0 &&
+		    g_strcmp0 (kind, "dest") != 0 &&
+		    g_strcmp0 (kind, "hour") != 0) {
+			g_ptr_array_unref (fields);
+			continue;
+		}
+
+		p = g_hash_table_lookup (copilot->profiles, app);
+		if (p == NULL) {
+			if (g_hash_table_size (copilot->profiles) >=
+			    FS_BEHAVIOR_MAX_APPS) {
+				g_ptr_array_unref (fields);
+				continue;   /* whole app past the cap: ignored */
+			}
+			p = app_profile_new (app, NULL, time (NULL));
+			g_hash_table_insert (copilot->profiles,
+			                     g_strdup (app), p);
+		}
+
+		if (g_strcmp0 (kind, "meta") == 0) {
+			if (fields->len >= 5 &&
+			    parse_u64 (g_ptr_array_index (fields, 2), &a) &&
+			    parse_u64 (g_ptr_array_index (fields, 3), &b) &&
+			    parse_u64 (g_ptr_array_index (fields, 4), &c)) {
+				p->total_connections = a;
+				p->first_seen = b;
+				p->last_seen = c;
+			}
+		} else if (g_strcmp0 (kind, "rate") == 0) {
+			if (fields->len >= 5 &&
+			    parse_u64 (g_ptr_array_index (fields, 2), &a) &&
+			    parse_u64 (g_ptr_array_index (fields, 3), &b) &&
+			    parse_u64 (g_ptr_array_index (fields, 4), &c)) {
+				p->rate_ema_milli = (guint) MIN (a,
+				                                  G_MAXUINT);
+				p->rate_buckets = (guint) MIN (b, G_MAXUINT);
+				p->rate_reported = c;
+			}
+		} else if (g_strcmp0 (kind, "partial") == 0) {
+			p->baseline_partial = TRUE;
+		} else if (g_strcmp0 (kind, "port") == 0) {
+			if (fields->len >= 4 &&
+			    parse_u64 (g_ptr_array_index (fields, 2), &a) &&
+			    parse_u64 (g_ptr_array_index (fields, 3), &b) &&
+			    a > 0 && a <= 65535) {
+				guint *existing = g_hash_table_lookup (
+					p->common_ports,
+					GUINT_TO_POINTER ((guint) a));
+				if (existing != NULL)
+					*existing += (guint) MIN (b, G_MAXUINT);
+				else if (g_hash_table_size (p->common_ports) >=
+				         FS_BEHAVIOR_MAX_PORTS)
+					p->baseline_partial = TRUE;
+				else {
+					guint *slot = g_new (guint, 1);
+					*slot = (guint) MIN (b, G_MAXUINT);
+					g_hash_table_insert (p->common_ports,
+					                     GUINT_TO_POINTER (
+					                             (guint) a),
+					                     slot);
+				}
+			}
+		} else if (g_strcmp0 (kind, "dest") == 0) {
+			const gchar *addr = g_ptr_array_index (fields, 2);
+
+			if (fields->len >= 4 && *addr != '\0' &&
+			    parse_u64 (g_ptr_array_index (fields, 3), &b)) {
+				guint *existing = g_hash_table_lookup (
+					p->common_destinations, addr);
+				if (existing != NULL)
+					*existing += (guint) MIN (b, G_MAXUINT);
+				else if (g_hash_table_size (
+				         p->common_destinations) >=
+				         FS_BEHAVIOR_MAX_DESTS)
+					p->baseline_partial = TRUE;
+				else {
+					guint *slot = g_new (guint, 1);
+					*slot = (guint) MIN (b, G_MAXUINT);
+					g_hash_table_insert (
+						p->common_destinations,
+						g_strdup (addr), slot);
+				}
+			}
+		} else if (g_strcmp0 (kind, "hour") == 0) {
+			if (fields->len >= 4 &&
+			    parse_u64 (g_ptr_array_index (fields, 2), &a) &&
+			    parse_u64 (g_ptr_array_index (fields, 3), &b) &&
+			    a < 24) {
+				guint64 *existing = g_hash_table_lookup (
+					p->hourly_activity,
+					GUINT_TO_POINTER ((guint) a));
+				if (existing != NULL)
+					*existing += b;
+				else {
+					guint64 *slot = g_new (guint64, 1);
+					*slot = b;
+					g_hash_table_insert (p->hourly_activity,
+					                     GUINT_TO_POINTER (
+					                             (guint) a),
+					                     slot);
+				}
+			}
+		}
+		/* Unknown kinds were skipped above: a newer format still
+		 * loads what this reader understands. */
+
+		g_ptr_array_unref (fields);
+	}
+
+	g_strfreev (lines);
+	return TRUE;
+}
+
 /* [ fs_insight_free ] */
 void
 fs_insight_free (FsInsight *insight)
@@ -1365,7 +1800,7 @@ fs_insight_is_auto_safe (const FsInsight *insight)
 
 /* [ app_profile_new ] */
 static FsAppProfile *
-app_profile_new (const gchar *name, const gchar *path)
+app_profile_new (const gchar *name, const gchar *path, gint64 now_unix)
 {
 	FsAppProfile *profile = g_new0 (FsAppProfile, 1);
 	profile->app_name = g_strdup (name);
@@ -1376,7 +1811,7 @@ app_profile_new (const gchar *name, const gchar *path)
 	                                                      g_free, NULL);
 	profile->hourly_activity = g_hash_table_new_full (g_direct_hash, g_direct_equal,
                                                       NULL, NULL);
-	profile->first_seen = time (NULL);
+	profile->first_seen = (guint64) now_unix;
 	return profile;
 }
 
@@ -1395,17 +1830,32 @@ app_profile_free (FsAppProfile *profile)
 	g_free (profile);
 }
 
-/* [ app_profile_record_connection ] */
+/* [ app_profile_record_connection ]
+ * The single write path of a profile: totals, port, destination,
+ * hour of day, and the open rate window.  The clock arrives from the
+ * caller (feed_event_full), so the tests drive wall time and every
+ * timing finding is deterministic.  Port 0 (ICMP, unparsed) is not a
+ * port and is never stored.  The set tables are bounded; hitting a
+ * cap marks the profile partial so no later signal can claim a
+ * truncated baseline knows everything. */
 static void
 app_profile_record_connection (FsAppProfile *profile,
                                const gchar *remote_ip,
                                guint port,
                                const gchar *protocol,
                                gboolean inbound,
-                               guint64 bytes)
+                               guint64 bytes,
+                               gint64 now_unix)
 {
+	guint64 bucket;
+	GDateTime *dt;
+	gint hour;
+
+	(void) protocol;
+	(void) inbound;
+
 	profile->total_connections++;
-	profile->last_seen = time (NULL);
+	profile->last_seen = (guint64) now_unix;
 
 	if (bytes > 0)
 	{
@@ -1416,18 +1866,27 @@ app_profile_record_connection (FsAppProfile *profile,
 	}
 
 	/* Record port usage. */
-	guint *port_count = g_hash_table_lookup (profile->common_ports,
-	                                         GUINT_TO_POINTER (port));
-	if (port_count == NULL)
+	if (port != 0)
 	{
-		guint *new_count = g_new (guint, 1);
-		*new_count = 1;
-		g_hash_table_insert (profile->common_ports,
-		                     GUINT_TO_POINTER (port), new_count);
-	}
-	else
-	{
-		(*port_count)++;
+		guint *port_count = g_hash_table_lookup (profile->common_ports,
+		                                         GUINT_TO_POINTER (port));
+		if (port_count == NULL)
+		{
+			if (g_hash_table_size (profile->common_ports) >=
+			    FS_BEHAVIOR_MAX_PORTS)
+				profile->baseline_partial = TRUE;
+			else {
+				guint *new_count = g_new (guint, 1);
+				*new_count = 1;
+				g_hash_table_insert (profile->common_ports,
+				                     GUINT_TO_POINTER (port),
+				                     new_count);
+			}
+		}
+		else
+		{
+			(*port_count)++;
+		}
 	}
 
 	/* Record destination. */
@@ -1437,10 +1896,16 @@ app_profile_record_connection (FsAppProfile *profile,
 		                                         remote_ip);
 		if (dest_count == NULL)
 		{
-			guint *new_count = g_new (guint, 1);
-			*new_count = 1;
-			g_hash_table_insert (profile->common_destinations,
-			                     g_strdup (remote_ip), new_count);
+			if (g_hash_table_size (profile->common_destinations) >=
+			    FS_BEHAVIOR_MAX_DESTS)
+				profile->baseline_partial = TRUE;
+			else {
+				guint *new_count = g_new (guint, 1);
+				*new_count = 1;
+				g_hash_table_insert (profile->common_destinations,
+				                     g_strdup (remote_ip),
+				                     new_count);
+			}
 		}
 		else
 		{
@@ -1448,62 +1913,376 @@ app_profile_record_connection (FsAppProfile *profile,
 		}
 	}
 
-	/* Record hourly activity. */
-	time_t now = time (NULL);
-	struct tm *tm = localtime (&now);
-	guint hour = tm->tm_hour;
-	guint64 *hour_count = g_hash_table_lookup (profile->hourly_activity,
-	                                           GUINT_TO_POINTER (hour));
-	if (hour_count == NULL)
+	/* Record hourly activity from the caller's wall clock. */
+	dt = g_date_time_new_from_unix_local (now_unix);
+	hour = dt != NULL ? g_date_time_get_hour (dt) : 0;
+	if (dt != NULL)
+		g_date_time_unref (dt);
+
 	{
-		guint64 *new_count = g_new (guint64, 1);
-		*new_count = 1;
-		g_hash_table_insert (profile->hourly_activity,
-		                     GUINT_TO_POINTER (hour), new_count);
+		guint64 *hour_count = g_hash_table_lookup (profile->hourly_activity,
+		                                           GUINT_TO_POINTER (hour));
+		if (hour_count == NULL)
+		{
+			guint64 *new_count = g_new (guint64, 1);
+			*new_count = 1;
+			g_hash_table_insert (profile->hourly_activity,
+			                     GUINT_TO_POINTER (hour), new_count);
+		}
+		else
+		{
+			(*hour_count)++;
+		}
 	}
-	else
+
+	/* Record the rate window: close the open one when the clock has
+	 * moved to another 10-minute bucket, then count this event in the
+	 * current bucket.  The established rate is an integer EWMA
+	 * (x1000, alpha 0.25) seeded with the first closed bucket. */
+	bucket = (guint64) ((now_unix / FS_BEHAVIOR_WINDOW_S) *
+	                    FS_BEHAVIOR_WINDOW_S);
+	if (bucket == 0)
+		bucket = FS_BEHAVIOR_WINDOW_S;   /* guard: 0 means "no window" */
+
+	if (profile->rate_window_start != 0 &&
+	    profile->rate_window_start != bucket)
 	{
-		(*hour_count)++;
+		if (profile->rate_buckets == 0)
+			profile->rate_ema_milli =
+				profile->rate_window_count * 1000;
+		else
+			profile->rate_ema_milli = (guint) (
+				(gint64) profile->rate_ema_milli +
+				((250 * ((gint64) profile->rate_window_count * 1000 -
+				         (gint64) profile->rate_ema_milli)) / 1000));
+		profile->rate_buckets++;
+		profile->rate_window_count = 0;
 	}
+
+	profile->rate_window_start = bucket;
+	profile->rate_window_count++;
 }
 
-/* [ is_anomalous_port ] */
+/* [ is_novel_port ]
+ * Recording happens BEFORE analysis, so a port first used by THIS
+ * event has a count of exactly 1 -- that is the whole honest test.
+ * (The old check fired while the count was < 3, so the same port was
+ * reported two or three times while its message claimed the app had
+ * "never used it before".) */
 static gboolean
-is_anomalous_port (FsAppProfile *profile, guint port)
+is_novel_port (FsAppProfile *profile, guint port)
 {
+	guint *count;
+
 	if (port == 0)
 		return FALSE;
 
-	guint *count = g_hash_table_lookup (profile->common_ports,
-	                                    GUINT_TO_POINTER (port));
-	return (count == NULL || *count < 3); /* Anomalous if never seen or < 3 times */
+	count = g_hash_table_lookup (profile->common_ports,
+	                             GUINT_TO_POINTER (port));
+	return count != NULL && *count == 1;
 }
 
-/* [ is_anomalous_destination ] */
+/* [ is_novel_destination ] -- same discipline: count == 1 means this
+ * event made first contact. */
 static gboolean
-is_anomalous_destination (FsAppProfile *profile, const gchar *remote_ip)
+is_novel_destination (FsAppProfile *profile, const gchar *remote_ip)
 {
+	guint *count;
+
 	if (remote_ip == NULL || *remote_ip == '\0')
 		return FALSE;
 
-	guint *count = g_hash_table_lookup (profile->common_destinations, remote_ip);
-	return (count == NULL || *count < 3);
+	count = g_hash_table_lookup (profile->common_destinations, remote_ip);
+	return count != NULL && *count == 1;
 }
 
-/* [ is_anomalous_time ] */
+/* [ is_novel_hour ]
+ * The first time an application is active in an hour -- but only once
+ * it has ESTABLISHED hours to be outside of: with fewer than four
+ * hour buckets the profile has no "usual hours" yet, and calling any
+ * new hour unusual would be theater. */
 static gboolean
-is_anomalous_time (FsAppProfile *profile)
+is_novel_hour (FsAppProfile *profile, gint64 now_unix)
 {
-	time_t now = time (NULL);
-	struct tm *tm = localtime (&now);
-	guint hour = tm->tm_hour;
+	GDateTime *dt;
+	guint64 *count;
+	gboolean novel;
 
-	guint64 *count = g_hash_table_lookup (profile->hourly_activity,
-	                                      GUINT_TO_POINTER (hour));
-	if (count == NULL || *count < 5)
-		return TRUE; /* Unusual if < 5 connections in this hour historically */
+	dt = g_date_time_new_from_unix_local (now_unix);
+	if (dt == NULL)
+		return FALSE;
 
-	return FALSE;
+	count = g_hash_table_lookup (profile->hourly_activity,
+	                             GUINT_TO_POINTER (g_date_time_get_hour (dt)));
+	g_date_time_unref (dt);
+
+	if (count == NULL || *count != 1)
+		return FALSE;
+
+	novel = g_hash_table_size (profile->hourly_activity) >=
+	        FS_BEHAVIOR_HOURS_MIN_DISTINCT;
+	return novel;
+}
+
+/* [ rate_spike_take ]
+ * Connection frequency: this event's 10-minute bucket holds far more
+ * than the rate the application has established over the previous
+ * buckets.  TRUE at most once per bucket (rate_reported is consumed
+ * here -- the count keeps growing while the bucket is open, and one
+ * report per burst is the honest number).  Integer arithmetic only:
+ * same inputs, same verdict, every run. */
+static gboolean
+rate_spike_take (FsAppProfile *profile, gint64 now_unix)
+{
+	guint64 window;
+	guint threshold;
+
+	if (profile->rate_buckets < FS_BEHAVIOR_RATE_MIN_BUCKETS)
+		return FALSE;                   /* rate not established yet */
+
+	window = (guint64) ((now_unix / FS_BEHAVIOR_WINDOW_S) *
+	                    FS_BEHAVIOR_WINDOW_S);
+	if (window == 0)
+		window = FS_BEHAVIOR_WINDOW_S;
+
+	if (profile->rate_window_start != window)
+		return FALSE;                   /* only the open bucket counts */
+	if (profile->rate_reported == window)
+		return FALSE;                   /* already reported this burst */
+	if (profile->rate_window_count < FS_BEHAVIOR_RATE_MIN_EVENTS)
+		return FALSE;                   /* floor, whatever the rate */
+
+	threshold = (profile->rate_ema_milli / 1000) * 3 + 5;
+	if (profile->rate_window_count <= threshold)
+		return FALSE;
+
+	profile->rate_reported = window;
+	return TRUE;
+}
+
+/* [ brief_ports ] / [ brief_hours ]
+ * The numbers a signal line shows: up to six sorted ports, up to
+ * eight sorted hours, "... past the cut, "none" when empty.  Bounded
+ * on purpose -- a finding is a sentence, not a dump. */
+static gint
+cmp_port_key (gconstpointer a, gconstpointer b)
+{
+	return (gint) GPOINTER_TO_UINT (a) - (gint) GPOINTER_TO_UINT (b);
+}
+
+static gchar *
+brief_ports (FsAppProfile *profile)
+{
+	GList *keys = g_hash_table_get_keys (profile->common_ports);
+	GString *out = g_string_new (NULL);
+	GList *l;
+	guint n = 0;
+
+	keys = g_list_sort (keys, cmp_port_key);
+	for (l = keys; l != NULL; l = l->next) {
+		if (n == 6) {
+			g_string_append (out, ", ...");
+			break;
+		}
+		if (n > 0)
+			g_string_append (out, ", ");
+		g_string_append_printf (out, "%u",
+		                        GPOINTER_TO_UINT (l->data));
+		n++;
+	}
+	g_list_free (keys);
+
+	if (out->len == 0)
+		g_string_append (out, "none");
+
+	return g_string_free (out, FALSE);
+}
+
+static gchar *
+brief_hours (FsAppProfile *profile)
+{
+	GList *keys = g_hash_table_get_keys (profile->hourly_activity);
+	GString *out = g_string_new (NULL);
+	GList *l;
+	guint n = 0;
+
+	keys = g_list_sort (keys, cmp_port_key);
+	for (l = keys; l != NULL; l = l->next) {
+		if (n == 8) {
+			g_string_append (out, ", ...");
+			break;
+		}
+		if (n > 0)
+			g_string_append (out, ", ");
+		g_string_append_printf (out, "%02u",
+		                        GPOINTER_TO_UINT (l->data));
+		n++;
+	}
+	g_list_free (keys);
+
+	if (out->len == 0)
+		g_string_append (out, "none");
+
+	return g_string_free (out, FALSE);
+}
+
+/* [ behavior_analyze ]
+ * P2's whole point: correlate, don't chain.  Every signal this event
+ * raises -- new port, new destination, first activity in an hour,
+ * rate far above the app's own -- goes into ONE finding whose
+ * description lists each signal with its numbers, so the reader sees
+ * what fired and why together.  Two or more signals on one event
+ * escalate to CRITICAL: that is what correlation buys.  A correlated
+ * finding carries no suggested rule; a single port/destination one
+ * keeps the legacy allow suggestion (an outbound service allow,
+ * never auto-safe, so the Sentinel path cannot stage it). */
+static void
+behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
+                  const gchar *app_name, const gchar *remote_ip,
+                  guint port, gint64 now_unix)
+{
+	gboolean sig_port, sig_dest, sig_hour, sig_rate;
+	GPtrArray *lines;
+	GString *desc;
+	FsInsightType type;
+	FsCopilotSeverity severity;
+	FsInsight *insight;
+	const gchar *title;
+	gchar *owned_title = NULL;
+	gchar *dest_owned = NULL;
+	guint n, i;
+
+	sig_port = !profile->baseline_partial &&
+	           is_novel_port (profile, port);
+	sig_dest = !profile->baseline_partial &&
+	           is_novel_destination (profile, remote_ip);
+	sig_hour = is_novel_hour (profile, now_unix);
+	sig_rate = rate_spike_take (profile, now_unix);
+
+	if (!sig_port && !sig_dest && !sig_hour && !sig_rate)
+		return;
+
+	lines = g_ptr_array_new_with_free_func (g_free);
+
+	if (sig_port) {
+		gchar *known = brief_ports (profile);
+
+		g_ptr_array_add (lines, g_strdup_printf (
+			_("first use of port %u -- before this, the baseline "
+			  "knew %s"),
+			port, known));
+		g_free (known);
+	}
+	if (sig_dest) {
+		g_ptr_array_add (lines, g_strdup_printf (
+			_("first contact with %s -- the baseline knew %u "
+			  "destinations"),
+			remote_ip,
+			g_hash_table_size (profile->common_destinations) - 1));
+	}
+	if (sig_hour) {
+		GDateTime *dt = g_date_time_new_from_unix_local (now_unix);
+		gchar *hours = brief_hours (profile);
+		gint hour = dt != NULL ? g_date_time_get_hour (dt) : 0;
+
+		g_ptr_array_add (lines, g_strdup_printf (
+			_("first activity at %02d:00 -- established hours: %s"),
+			hour, hours));
+		g_free (hours);
+		if (dt != NULL)
+			g_date_time_unref (dt);
+	}
+	if (sig_rate) {
+		g_ptr_array_add (lines, g_strdup_printf (
+			_("%u connections in the last 10 minutes -- the usual "
+			  "rate is about %u per 10 minutes"),
+			profile->rate_window_count,
+			profile->rate_ema_milli / 1000));
+	}
+
+	n = lines->len;
+
+	type = sig_port ? FS_INSIGHT_UNUSUAL_PORT
+	     : sig_dest ? FS_INSIGHT_UNUSUAL_DESTINATION
+	     : sig_rate ? FS_INSIGHT_UNUSUAL_VOLUME
+	     :            FS_INSIGHT_UNUSUAL_TIME;
+	severity = n > 1 ? FS_COPILOT_CRITICAL
+	         : (type == FS_INSIGHT_UNUSUAL_TIME ? FS_COPILOT_INFO
+	                                             : FS_COPILOT_WARNING);
+
+	if (n > 1) {
+		title = owned_title = g_strdup_printf (
+			_("Multiple signals for %s"), app_name);
+	} else if (sig_port) {
+		title = _("Unusual port for application");
+	} else if (sig_dest) {
+		title = _("Unusual destination");
+	} else if (sig_rate) {
+		title = _("Unusual connection rate");
+	} else {
+		title = _("Activity at unusual time");
+	}
+
+	desc = g_string_new (NULL);
+	g_string_append_printf (desc,
+	                        _("%s deviates from its established "
+	                          "baseline:"),
+	                        app_name);
+	for (i = 0; i < n; i++)
+		g_string_append_printf (desc, "\n- %s",
+		                        (const gchar *)
+		                        g_ptr_array_index (lines, i));
+
+	if (sig_dest && remote_ip != NULL && *remote_ip != '\0')
+		dest_owned = g_strdup (remote_ip);
+	else if (sig_port && remote_ip != NULL && *remote_ip != '\0')
+		dest_owned = g_strdup_printf ("%s:%u", remote_ip, port);
+
+	insight = create_insight (type, severity, title,
+	                          g_string_free (desc, FALSE), app_name,
+	                          dest_owned);
+
+	if (n == 1 && port != 0 && remote_ip != NULL &&
+	    *remote_ip != '\0' && (sig_port || sig_dest)) {
+		if (sig_port)
+			insight->suggested_rule = g_strdup_printf (
+				_("Allow %s on port %u for %s"),
+				app_name, port, remote_ip);
+		else
+			insight->suggested_rule = g_strdup_printf (
+				_("Allow %s to connect to %s"),
+				app_name, remote_ip);
+		insight->rule_csv = g_strdup_printf ("%s, %u, %s, %s",
+		                                     app_name, port,
+		                                     remote_ip,
+		                                     _("Auto-generated by Copilot"));
+		insight->auto_applicable = TRUE;
+	}
+
+	insight->timestamp = now_unix;
+	emit_insight (copilot, insight);
+
+	g_ptr_array_unref (lines);
+	g_free (owned_title);
+	g_free (dest_owned);
+}
+
+/* [ emit_insight ]
+ * Every insight enters through here: the list is bounded (Chapter
+ * 9).  The oldest falls off at the cap, so a scanning flood cannot
+ * grow the list without end. */
+static void
+emit_insight (FsCopilot *copilot, FsInsight *insight)
+{
+	copilot->insights = g_list_prepend (copilot->insights, insight);
+
+	while (g_list_length (copilot->insights) > FS_COPILOT_MAX_INSIGHTS) {
+		GList *oldest = g_list_last (copilot->insights);
+
+		fs_insight_free (oldest->data);
+		copilot->insights = g_list_delete_link (copilot->insights,
+		                                        oldest);
+	}
 }
 
 /* ---- Sentinel: covert-channel and fan-out detection ---------------- */

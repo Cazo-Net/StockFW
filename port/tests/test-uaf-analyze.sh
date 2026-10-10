@@ -51,6 +51,16 @@ fi
 
 # -fanalyzer is noisy about things we are not testing for; keep only
 # the use-after-free findings.
+
+# Generated project headers (fs-theme-css.h) live in the build tree --
+# CMake puts ${CMAKE_CURRENT_BINARY_DIR} on every UI target's include
+# path, so this analysis must too, or src/ui/fs-app.c could never be
+# examined here.
+BUILD_INC=""
+if [ -d "$PORT/build" ]; then
+	BUILD_INC="-I $PORT/build"
+fi
+
 gcc -fanalyzer -Dg_free=free \
 	-Wno-analyzer-malloc-leak \
 	-Wno-analyzer-possible-null-argument \
@@ -62,6 +72,7 @@ gcc -fanalyzer -Dg_free=free \
 	-I "$PORT/src" \
 	-I "$PORT/resources" \
 	-I "$PORT/src/platform/windows" \
+	$BUILD_INC \
 	$CFLAGS \
 	-c -o "$TMP/out.o" "$SRC" 2> "$TMP/analyzer.log"
 compile_rc=$?

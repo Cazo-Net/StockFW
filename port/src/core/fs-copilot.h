@@ -93,13 +93,28 @@ typedef struct
 	gchar               *app_name;
 	gchar               *app_path;
 	GHashTable          *common_ports;        /* port -> count */
-	GHashTable          *common_destinations; /* IP:port -> count */
-	GHashTable          *hourly_activity;     /* hour -> byte count */
+	GHashTable          *common_destinations; /* IP -> count */
+	GHashTable          *hourly_activity;     /* hour -> count */
 	guint64             total_connections;
 	guint64             total_bytes_sent;
 	guint64             total_bytes_recv;
 	guint64             first_seen;
 	guint64             last_seen;
+
+	/* Connection frequency (P2): events per 10-minute wall-clock
+	 * bucket.  The established rate is an EWMA over closed buckets
+	 * (x1000, integer, alpha 0.25); rate findings fire once per
+	 * bucket (rate_reported is the bucket already reported, 0 for
+	 * none).  baseline_partial marks a profile whose port/destination
+	 * sets were capped on save, load or ingest -- it can no longer
+	 * claim "never seen before", so novelty signals stay quiet for
+	 * it. */
+	guint64             rate_window_start;    /* open bucket, unix sec; 0 = none */
+	guint               rate_window_count;    /* events in the open bucket       */
+	guint               rate_ema_milli;       /* events/bucket x1000             */
+	guint               rate_buckets;         /* buckets closed so far           */
+	guint64             rate_reported;        /* bucket already reported, 0 none */
+	gboolean            baseline_partial;
 } FsAppProfile;
 
 /* Opaque copilot context. */
@@ -117,6 +132,13 @@ void fs_copilot_feed_event (FsCopilot *copilot, const FsHit *hit);
  * tests drive time through this so beacon regularity is deterministic. */
 void fs_copilot_feed_event_at (FsCopilot *copilot, const FsHit *hit,
                                gint64 now_us);
+
+/* Same, with an explicit wall-clock arrival time in unix seconds as
+ * well: hourly buckets and rate windows read the wall clock, so the
+ * behavior tests drive it to make timing findings deterministic.
+ * Production passes time(NULL). */
+void fs_copilot_feed_event_full (FsCopilot *copilot, const FsHit *hit,
+                                 gint64 now_us, gint64 now_unix);
 
 /* Get current insights (caller frees with g_list_free_full + fs_insight_free). */
 GList *fs_copilot_get_insights (FsCopilot *copilot);
@@ -171,6 +193,24 @@ gchar *fs_copilot_export_json (FsCopilot *copilot);
 
 /* Import copilot state from JSON. */
 gboolean fs_copilot_import_json (FsCopilot *copilot, const gchar *json);
+
+/* The historical behavior baseline (P2): one CSV row per learned fact
+ * (totals, rate state, ports, destinations, hourly buckets) so a
+ * restart resumes with yesterday's history instead of learning it
+ * again.  Path follows the trust store's convention;
+ * STOCKFW_BEHAVIOR_FILE overrides it (tests).  Caller frees with
+ * g_free. */
+gchar *fs_copilot_baseline_path (void);
+
+/* Save/load the baseline.  Load of a missing file is a fresh start:
+ * it returns FALSE with no error set.  Rows beyond the per-profile
+ * caps mark that profile baseline_partial (novelty signals go quiet
+ * for it rather than claim a truncated baseline knows everything).
+ * Save makes the parent directory as needed. */
+gboolean fs_copilot_baseline_save (FsCopilot *copilot, const gchar *path,
+                                   GError **error);
+gboolean fs_copilot_baseline_load (FsCopilot *copilot, const gchar *path,
+                                   GError **error);
 
 /* Attach a policy for what-if simulation.  The copilot does not take
  * ownership; passing NULL clears the reference. */

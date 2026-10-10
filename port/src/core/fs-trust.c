@@ -13,6 +13,7 @@
 
 #include "core/fs-trust.h"
 #include "core/fs-audit.h"
+#include "core/fs-util.h"
 
 /*------------------------------------------------------ provider slot */
 
@@ -311,87 +312,11 @@ store_lookup (FsTrustStore *store, const gchar *path)
 	return NULL;
 }
 
-/*----------------------------------------------------------- CSV I/O */
-
-/* Quote a field the way a spreadsheet would: only when it must. */
-static void
-csv_append_field (GString *out, const gchar *value, gboolean first)
-{
-	gboolean quote;
-
-	if (!first)
-		g_string_append_c (out, ',');
-
-	if (value == NULL)
-		value = "";
-
-	quote = (strchr (value, ',') != NULL ||
-	         strchr (value, '"') != NULL ||
-	         strchr (value, '\n') != NULL ||
-	         strchr (value, '\r') != NULL);
-
-	if (!quote) {
-		g_string_append (out, value);
-		return;
-	}
-
-	g_string_append_c (out, '"');
-	for (; *value != '\0'; value++) {
-		if (*value == '"')
-			g_string_append_c (out, '"');
-		g_string_append_c (out, *value);
-	}
-	g_string_append_c (out, '"');
-}
-
-/* Split one line into fields, honouring quotes.  Returns a GPtrArray
- * of gchar* (caller frees with g_ptr_array_unref). */
-static GPtrArray *
-csv_split_line (const gchar *line)
-{
-	GPtrArray *fields = g_ptr_array_new_with_free_func (g_free);
-	GString *field = g_string_new (NULL);
-	gboolean quoted = FALSE;
-	gboolean started = FALSE;
-
-	while (*line != '\0') {
-		if (quoted) {
-			if (*line == '"') {
-				if (*(line + 1) == '"') {
-					g_string_append_c (field, '"');
-					line += 2;
-					continue;
-				}
-				quoted = FALSE;
-				line++;
-				continue;
-			}
-			g_string_append_c (field, *line);
-			line++;
-			continue;
-		}
-
-		if (*line == '"' && !started) {
-			quoted = TRUE;
-			started = TRUE;
-			line++;
-			continue;
-		}
-		if (*line == ',') {
-			g_ptr_array_add (fields, g_string_free (field, FALSE));
-			field = g_string_new (NULL);
-			started = FALSE;
-			line++;
-			continue;
-		}
-		g_string_append_c (field, *line);
-		started = TRUE;
-		line++;
-	}
-	g_ptr_array_add (fields, g_string_free (field, FALSE));
-
-	return fields;
-}
+/*----------------------------------------------------------- CSV I/O
+ * The writer and the parser live in fs-util (fs_util_csv_append_field
+ * / fs_util_csv_split_line): the copilot's behavior baseline reads the
+ * same dialect, so there is one implementation of the quoting rules
+ * and one set of edge cases for the suite to pin down. */
 
 static const gchar *
 sig_to_token (FsTrustSignature sig)
@@ -449,7 +374,7 @@ fs_trust_store_load (const gchar *csv_path)
 		if (*line == '\0' || *line == '#')
 			continue;
 
-		fields = csv_split_line (line);
+		fields = fs_util_csv_split_line (line);
 		if (fields->len != 8) {
 			g_ptr_array_unref (fields);
 			continue;   /* one bad row must not lose the store */
@@ -516,18 +441,21 @@ fs_trust_store_save (FsTrustStore *store, GError **error)
 		g_snprintf (last, sizeof (last), "%" G_GINT64_FORMAT,
 		            entry->last_seen);
 
-		csv_append_field (out, entry->path, i == 0);
-		/* After the first row a comma is needed before every field
-		 * of the row -- including the first.  csv_append_field's
-		 * `first' only skips that separator, so append the rest
-		 * with first = FALSE. */
-		csv_append_field (out, entry->sha256, FALSE);
-		csv_append_field (out, size, FALSE);
-		csv_append_field (out, mtime, FALSE);
-		csv_append_field (out, sig_to_token (entry->sig), FALSE);
-		csv_append_field (out, entry->publisher, FALSE);
-		csv_append_field (out, first, FALSE);
-		csv_append_field (out, last, FALSE);
+		/* Every row's first field is written with first=TRUE: the
+		 * flag skips the SEPARATOR, and every row after the first
+		 * begins at the start of a new line, not mid-row.  Passing
+		 * i == 0 here (what this used to do) prefixed rows 2..n
+		 * with a comma, giving them nine fields -- and the parser
+		 * requires exactly eight, so every attestation but the
+		 * first was silently dropped on the next load. */
+		fs_util_csv_append_field (out, entry->path, TRUE);
+		fs_util_csv_append_field (out, entry->sha256, FALSE);
+		fs_util_csv_append_field (out, size, FALSE);
+		fs_util_csv_append_field (out, mtime, FALSE);
+		fs_util_csv_append_field (out, sig_to_token (entry->sig), FALSE);
+		fs_util_csv_append_field (out, entry->publisher, FALSE);
+		fs_util_csv_append_field (out, first, FALSE);
+		fs_util_csv_append_field (out, last, FALSE);
 		g_string_append_c (out, '\n');
 	}
 

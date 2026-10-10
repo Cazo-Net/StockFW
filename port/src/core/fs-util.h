@@ -71,6 +71,19 @@ gboolean fs_util_filter_match (const gchar *needle,
  * appear in any textual output (F-3). */
 gchar *fs_util_strip_controls (const gchar *text);
 
+/* Quote-aware CSV, shared by the trust store and the copilot's
+ * behavior baseline -- one writer, one parser, so what one writes the
+ * other can always read.  fs_util_csv_append_field quotes a field
+ * only when it carries a comma, a quote or a newline; `first' skips
+ * the separating comma for the first field of a row. */
+void fs_util_csv_append_field (GString *out, const gchar *value,
+                               gboolean first);
+
+/* Splits one line into fields honouring quotes (" doubled inside a
+ * quoted field).  Returns a GPtrArray of gchar*; caller frees with
+ * g_ptr_array_unref. */
+GPtrArray *fs_util_csv_split_line (const gchar *line);
+
 G_END_DECLS
 
 #endif /* FS_UTIL_H */
