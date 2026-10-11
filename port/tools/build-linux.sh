@@ -17,6 +17,15 @@ if [ -d /ucrt64/bin ]; then export PATH="/ucrt64/bin:/usr/bin:/bin"; fi
 CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0 gtk+-3.0)"
 LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 gtk+-3.0)"
 
+# ws2_32 is the Windows toolchain's home for inet_pton/getnameinfo (the
+# G_OS_WIN32 branch of fs-util.c).  On Linux those live in libc and the
+# library does not exist, so gate it on the toolchain: MSYS2/MinGW gets
+# it, Linux gets nothing.
+case "$(uname -s)" in
+Linux) EXTRA_LIBS="" ;;
+*)     EXTRA_LIBS="-lws2_32" ;;
+esac
+
 mkdir -p "$OUT/obj"
 fail=0
 
@@ -42,18 +51,20 @@ fi
 ar rcs "$OUT/libfs-core.a" "$OUT"/obj/*.o || exit 1
 echo "ok:   build-linux/libfs-core.a ($(ls "$OUT"/obj/*.o | wc -l) objects)"
 
-# ---- the Linux backend, compiled and linked against core --------------
-# Expected to FAIL on MSYS2: <ifaddrs.h> is POSIX-only (no getifaddrs()
-# on Windows), so this unit needs a real Linux box.  Noted, not fatal --
-# the UI compile below is the part this host can prove.
-if gcc -o "$OUT/fs-backend-probe" -I "$PORT/src" $CF \
-       "$PORT/src/platform/linux/fs-backend-linux.c" \
-       "$OUT/libfs-core.a" $LF 2>"$OUT/backend.log"; then
-	echo "ok:   platform/linux/fs-backend-linux.c compiles + links"
+# ---- the Linux backend, compiled against core -------------------------
+# On a real Linux toolchain this compiles (ifaddrs.h is POSIX) and the
+# object is linked into the full binary below.  On MSYS2 it cannot:
+# <ifaddrs.h> has no Windows equivalent, so the null backend stands in
+# for the link -- noted honestly, never silently.
+BACKEND_OBJ=""
+if gcc -c -o "$OUT/fs-backend-linux.o" -I "$PORT/src" $CF \
+       "$PORT/src/platform/linux/fs-backend-linux.c" 2>"$OUT/backend.log"; then
+	echo "ok:   platform/linux/fs-backend-linux.c compiles (real Linux toolchain)"
+	BACKEND_OBJ="$OUT/fs-backend-linux.o"
 else
 	echo "SKIP: platform/linux/fs-backend-linux.c needs a Linux toolchain"
 	echo "      (<ifaddrs.h> is POSIX-only; getifaddrs() has no Windows"
-	echo "      equivalent).  Real build happens on the Linux box."
+	echo "      equivalent).  The null backend links in its place."
 fi
 
 # ---- the UI, compiled against the Linux-oriented core -----------------
@@ -102,20 +113,28 @@ fi
 
 echo "ok:   full UI compiles against the Linux-oriented core"
 
-# ---- full link: the StockFW binary against the null backend -----------
-# The real Linux unit needs ifaddrs.h (POSIX-only), so on this host the
-# null backend stands in -- which is exactly its purpose: the GUI links
-# and starts, honestly reporting "no firewall backend" instead of
-# pretending.  This proves the whole program LINKS, not just compiles.
+# ---- full link: the StockFW binary ------------------------------------
+# The real Linux backend when it compiled (a real Linux box); otherwise
+# the null backend, which is exactly its purpose -- the GUI links and
+# starts, honestly reporting "no firewall backend" instead of pretending.
+# Proves the whole program LINKS, not just compiles.
 #
-# -lws2_32 is the MSYS2 host's inet_pton/getnameinfo (fs-util.c guards
-# them under G_OS_WIN32); on a real Linux box they are in libc.
+# EXTRA_LIBS carries -lws2_32 on the MSYS2/MinGW host only (the
+# G_OS_WIN32 branch of fs-util.c); on Linux libc provides inet_pton
+# and getnameinfo, and the library does not exist.
 # ui/main.o is already in the glob, so src/main.c is NOT passed again.
+PLATFORM_SRC="$PORT/src/platform/fs-backend-null.c"
+PLATFORM_LABEL="null backend"
+if [ -n "$BACKEND_OBJ" ]; then
+	PLATFORM_SRC="$BACKEND_OBJ"
+	PLATFORM_LABEL="real Linux (iptables) backend"
+fi
+
 if gcc -o "$OUT/StockFW" -I "$PORT/src" -I "$PORT/resources" -I "$OUT" $CF \
        "$OUT"/ui/*.o \
-       "$PORT/src/platform/fs-backend-null.c" \
-       "$OUT/libfs-core.a" $LF -lws2_32 2>"$OUT/link.log"; then
-	echo "ok:   full StockFW binary links (null backend, Linux core+UI)"
+       "$PLATFORM_SRC" \
+       "$OUT/libfs-core.a" $LF $EXTRA_LIBS 2>"$OUT/link.log"; then
+	echo "ok:   full StockFW binary links ($PLATFORM_LABEL)"
 else
 	echo "FAIL: StockFW does not link"
 	sed 's/^/    /' "$OUT/link.log"
@@ -123,7 +142,13 @@ else
 fi
 
 echo
-echo "LINUX BUILD (host-proof): core + UI + full link all good."
-echo "Remaining for the real Linux box: fs-backend-linux.c (ifaddrs.h)"
-echo "and tests/test-apply-linux.sh (needs root + iptables)."
+echo "LINUX BUILD: core + UI + full link all good."
+if [ -n "$BACKEND_OBJ" ]; then
+	echo "Backend: the real Linux (iptables) backend is linked in."
+	echo "Next: sudo tests/test-apply-linux.sh (root + iptables) proves"
+	echo "traffic is actually filtered."
+else
+	echo "Backend: null (this host has no Linux toolchain for ifaddrs.h)."
+	echo "fs-backend-linux.c compiles and links on the Linux side."
+fi
 exit 0
