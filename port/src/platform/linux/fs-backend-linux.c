@@ -777,11 +777,15 @@ on_log_poll (gpointer data)
 	gchar buffer[4096];
 	gssize got;
 
-	if (log_pipe[1] < 0)
+	/* log_pipe[0] is the READ end -- pipe() order is [0] read, [1]
+	 * write, and the child put [1] on stdout.  Reading [1] here read a
+	 * write-only fd: EBADF on every poll, so no event ever arrived
+	 * while log_active() still read TRUE. */
+	if (log_pipe[0] < 0)
 		return G_SOURCE_REMOVE;
 
 	/* Read everything available; the fd is non-blocking. */
-	while ((got = read (log_pipe[1], buffer, sizeof (buffer) - 1)) > 0) {
+	while ((got = read (log_pipe[0], buffer, sizeof (buffer) - 1)) > 0) {
 		gchar **lines;
 		gint i;
 
@@ -921,7 +925,10 @@ linux_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 		_exit (127);
 	}
 
-	close (log_pipe[0]);
+	/* The parent keeps only the READ end [0]; its copy of the write end
+	 * [1] must go, or read() would never see EOF when tail exits. */
+	close (log_pipe[1]);
+	log_pipe[1] = -1;
 
 	/* Poll the pipe rather than using a GIOChannel watch.
 	 *
@@ -929,7 +936,7 @@ linux_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 	 * buffered reader fight over the same data, and on a busy main loop
 	 * the reader can block the whole UI.  Polling on a short timeout is
 	 * simpler, cannot starve anything, and is far easier to test. */
-	g_unix_set_fd_nonblocking (log_pipe[1], TRUE, NULL);
+	g_unix_set_fd_nonblocking (log_pipe[0], TRUE, NULL);
 
 	log_watch = g_timeout_add (250, on_log_poll, NULL);
 
@@ -949,9 +956,9 @@ linux_log_stop (void)
 		log_watch = 0;
 	}
 
-	if (log_pipe[1] >= 0) {
-		close (log_pipe[1]);
-		log_pipe[1] = -1;
+	if (log_pipe[0] >= 0) {
+		close (log_pipe[0]);
+		log_pipe[0] = -1;
 	}
 
 	if (log_pid > 0) {
