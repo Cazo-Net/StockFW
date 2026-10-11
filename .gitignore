@@ -3,6 +3,7 @@ build/
 port/build/
 port/installer/nsis/stage/
 port/installer/nsis/*.exe
+port/installer/linux/dist/
 
 # IDE/Editor files
 .vscode/

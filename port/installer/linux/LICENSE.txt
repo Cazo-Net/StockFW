@@ -1,0 +1,38 @@
+StockFW Firewall Configuration Tool
+Version 1.0.5
+
+Copyright (C) 2024-2026 StockFW Project
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+---
+
+Third-party Components (Linux build):
+
+GTK3 (GNU LGPL v2.1)
+GLib (GNU LGPL v2.1)
+Cairo (LGPL v2.1 / MPL v1.1)
+Pango (LGPL v2.1)
+HarfBuzz (MIT)
+gdk-pixbuf (LGPL v2.1)
+
+These are linked dynamically and provided by your distribution's own
+packages; they are not bundled with this installer.
+
+Linux kernel netfilter / iptables (GPL v2) -- invoked as an external
+program, not linked.
+
+---
+
+Icons and branding derived from original project assets.
