@@ -32,32 +32,31 @@ if (-not (Test-Path $binary)) {
     exit 1
 }
 
-# The binary is a MinGW build and needs its runtime DLLs.  The normal
-# build has them staged beside StockFW.exe, but a binary copied around
-# on its own does not, and an elevated process does not inherit a PATH
-# set in an interactive MSYS2 shell -- so keep the toolchain on PATH as
-# a fallback.
-#
-# WIDENING THE PATH PUTS A TOOLCHAIN DIRECTORY ON AN ELEVATED PROCESS'S
-# DLL SEARCH PATH, so only do it when it is actually needed: if the
-# runtime DLLs already sit beside this script (every installed copy),
-# the loader finds them in the application directory first and the
-# fallback would add nothing but risk.  A directory a non-admin can
-# write to must never end up on an elevated process's search path.
-#
-# Start-Process inherits the current process environment, so setting
-# $env:PATH here is enough.
-$scriptDirHasRuntime = Test-Path (Join-Path $scriptDir 'libglib-2.0-0.dll')
-$msysBin = 'C:\msys64\ucrt64\bin'
+# The binary is a MinGW build and needs its runtime DLLs, which the
+# loader finds in the application directory -- the folder holding
+# StockFW.exe.  That is where we require them, whether that folder is
+# this script's own directory (installed copy) or build\ (dev tree).
+$binDir    = Split-Path -Parent $binary
+$hasRuntime = Test-Path (Join-Path $binDir 'libglib-2.0-0.dll')
 
-if (-not $scriptDirHasRuntime -and (Test-Path (Join-Path $msysBin 'libgio-2.0-0.dll'))) {
-    if (($env:PATH -split ';') -notcontains $msysBin) {
-        $env:PATH = "$msysBin;$env:PATH"
-        Write-Host "Added $msysBin to PATH" -ForegroundColor DarkGray
-    }
-} elseif (-not $scriptDirHasRuntime) {
-    Write-Host "Warning: $msysBin not found; the app may fail to start." `
+# SECURITY: a missing runtime is a broken install, so stop and say so.
+# The launcher must NOT fall back to a development toolchain directory.
+# Widening the elevated process's PATH to one means a DLL planted there
+# by a non-administrator would load into an administrator process -- a
+# privilege-escalation primitive, not a convenience.  A directory a
+# non-admin can write to must never reach an elevated search path.
+if (-not $hasRuntime) {
+    Write-Host "StockFW runtime DLLs are missing next to StockFW.exe." `
+              -ForegroundColor Red
+    Write-Host "Expected to find: $(Join-Path $binDir 'libglib-2.0-0.dll')" `
               -ForegroundColor Yellow
+    Write-Host "Reinstall StockFW (the runtime belongs beside StockFW.exe)." `
+              -ForegroundColor Yellow
+    Write-Host "Not falling back to a toolchain directory: widening an" `
+              -ForegroundColor DarkGray
+    Write-Host "elevated DLL search path is a privilege-escalation risk." `
+              -ForegroundColor DarkGray
+    exit 1
 }
 
 Write-Host "Launching elevated: $binary" -ForegroundColor Cyan
