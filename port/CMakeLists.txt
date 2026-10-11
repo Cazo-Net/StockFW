@@ -209,6 +209,24 @@ target_compile_definitions(fs-hitview-smoke PRIVATE
   FS_PLATFORM_NAME="${FS_PLATFORM}"
 )
 
+# The Status page's profile frame.  Separate from fs-ui-smoke because
+# the regression it guards is about visibility after a page-wide
+# show_all(), which only shows up once the real page is built and shown
+# the way fs-app.c shows it.
+add_executable(fs-statusview-smoke EXCLUDE_FROM_ALL
+  tests/ui-statusview-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_include_directories(fs-statusview-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-statusview-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-statusview-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-statusview-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
+
 # The Trust page's smoke: builds the page against a scratch store,
 # drives inspect / attest / refresh / forget by clicking the real
 # buttons (with an auto-responder standing in for the user's OK in

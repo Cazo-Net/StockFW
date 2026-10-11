@@ -1082,7 +1082,13 @@ fs_statusview_page (void)
 	}
 
 	/* The backend decides whether to show this: Windows has three
-	 * profiles, Linux has one global state and hides the box. */
+	 * profiles, Linux has one global state and hides the box.  The
+	 * frame is marked no-show-all before hiding, because fs-app.c
+	 * calls gtk_widget_show_all() on the whole window after this page
+	 * is built -- without the flag that walk re-shows the frame and
+	 * presents Linux with three switches that can only ever answer
+	 * "Linux has a single firewall state".  Same trap, same remedy as
+	 * the monitor strip in fs-hitview.c. */
 	{
 		gboolean any = FALSE;
 
@@ -1091,10 +1097,12 @@ fs_statusview_page (void)
 				any = TRUE;
 		}
 
-		if (any)
+		if (any) {
 			gtk_widget_show_all (profiles_frame);
-		else
+		} else {
+			gtk_widget_set_no_show_all (profiles_frame, TRUE);
 			gtk_widget_hide (profiles_frame);
+		}
 	}
 
 	gtk_box_pack_start (GTK_BOX (page), profiles_frame, FALSE, FALSE, 0);

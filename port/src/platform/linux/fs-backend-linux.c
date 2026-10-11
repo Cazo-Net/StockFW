@@ -103,7 +103,14 @@ run_command_quiet (gchar **argv)
 }
 
 /* [ chain_exists ]
- * Probes for our chain, which is how the backend reports state. */
+ * Probes for our chain, which is how the backend reports state.
+ *
+ * Quiet on purpose.  This runs on every status refresh and, for a
+ * non-root launch, iptables answers "Could not fetch rule set
+ * generation id: Permission denied (you must be root)" on stderr --
+ * which is the probe's *expected* failure, not a diagnostic, and was
+ * leaking raw iptables noise into the user's terminal.  The exit status
+ * is the entire result, so stderr carries nothing a caller can use. */
 static gboolean
 chain_exists (void)
 {
@@ -112,7 +119,7 @@ chain_exists (void)
 	                  (gchar *) "-n",    (gchar *) "-L",
 	                  (gchar *) "INBOUND", NULL };
 
-	return (run_command (args) == 0);
+	return (run_command_quiet (args) == 0);
 }
 
 /* [ require_root ]

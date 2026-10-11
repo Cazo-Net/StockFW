@@ -37,7 +37,20 @@ applying rules needs it.
 ## Run
 
     StockFW          read-only: status, events, policy, simulation
-    sudo StockFW     the full tool, including applying rules
+    sudo /usr/local/bin/StockFW     the full tool, including applying rules
+
+Use the full path with `sudo`. `sudo` runs commands with its own search
+path (`Defaults secure_path` in `/etc/sudoers`), which on Debian and Kali
+is typically `/usr/sbin:/usr/bin:/sbin:/bin` and does **not** include
+`/usr/local/bin`. On such a system the shorter `sudo StockFW` reports
+"command not found" even though plain `StockFW` works — because your
+login shell's PATH includes `/usr/local/bin` while sudo's does not.
+
+If `sudo StockFW` works on your system, keep using it; the full path is
+always correct either way. This installer does not edit `/etc/sudoers`:
+widening `secure_path` so that one tool can be found would widen it for
+every command on the system, which is a worse trade than typing the
+path.
 
 The Linux backend invokes `iptables` directly and expects to already be
 running as root. It does not re-exec itself through `sudo`, and the

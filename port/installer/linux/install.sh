@@ -167,10 +167,45 @@ chmod 755 "$BINDIR/stockfw-uninstall"
 ok "$BINDIR/stockfw-uninstall"
 
 # --- summary -------------------------------------------------------------
+# The launch command is given as an absolute path on purpose.  sudo runs
+# with its own search path (Defaults secure_path in sudoers), which on
+# Debian/Kali is typically "/usr/sbin:/usr/bin:/sbin:/bin" and does NOT
+# include /usr/local/bin -- so the bare "sudo StockFW" that a user will
+# naturally type fails with "command not found" even though "StockFW"
+# works perfectly as an ordinary user.  The absolute path is correct on
+# every system regardless of how sudoers is configured.
+SUDO_CMD="$BINDIR/StockFW"
+
+# Detect that exact trap and say so, rather than letting the user
+# rediscover it.  Reading sudoers is only possible as root, which is
+# where we already are.
+sudo_path_has_bindir () {
+    local sp
+    sp=$( { grep -hE '^[[:space:]]*Defaults[[:space:]]+secure_path=' \
+                 /etc/sudoers /etc/sudoers.d/* 2>/dev/null \
+           || true; } \
+         | sed -n 's/.*secure_path="\([^"]*\)".*/\1/p' \
+         | tr ':' '\n' )
+    [ -z "$sp" ] && return 0   # no secure_path set: sudo inherits PATH
+    printf '%s\n' "$sp" | grep -qxF "$BINDIR"
+}
+
 printf '\n'
 printf '%sInstalled.%s\n\n' "$G" "$N"
 printf 'Launch from your desktop menu, or:\n'
-printf '    StockFW            (read-only: status, events, policy, simulate)\n'
-printf '    sudo StockFW       (apply rules: the backend needs root)\n\n'
-printf 'Remove with:\n'
+printf '    %-20s %s\n' "StockFW" \
+        "(read-only: status, events, policy, simulate)"
+printf '    sudo %s\n' "$SUDO_CMD"
+printf '    %-20s %s\n' "" "(apply rules: the backend needs root)"
+
+if ! sudo_path_has_bindir; then
+    printf '\n'
+    warn "sudo's secure_path does not include $BINDIR,"
+    warn "so the shorter 'sudo StockFW' will report 'command not found'."
+    warn "Use the full path shown above.  (This installer deliberately"
+    warn "does not edit sudoers: widening secure_path for one tool would"
+    warn "widen it for every command on the system.)"
+fi
+
+printf '\nRemove with:\n'
 printf '    sudo %s\n\n' "$BINDIR/stockfw-uninstall"
