@@ -117,6 +117,19 @@ null_dhcp_set_enabled (gboolean enabled, GError **error)
 	return null_unsupported (error);
 }
 
+/* Every backend exports this -- fs-app.c calls it before the first
+ * apply so the rule generator has a policy and settings to work from.
+ * The null backend keeps nothing to generate against, so it accepts
+ * and ignores the pointers.  Without this symbol the GUI could not
+ * LINK against the null backend at all, which is precisely the
+ * configuration this file exists for. */
+void
+fs_backend_set_context (FsPolicy *policy, FsSettings *settings)
+{
+	(void) policy;
+	(void) settings;
+}
+
 static const FsBackend null_backend = {
 	.name                  = "none",
 	.display_name          = "No firewall backend",
