@@ -31,6 +31,14 @@ VIAddVersionKey /LANG=0 "LegalCopyright" "(C) 04-10-2026 StockFW Project"
 ; Modern UI 2 Configuration
 ;------------------------------------------------------------------------------
 !include MUI2.nsh
+!include LogicLib.nsh
+
+; String search behind the uninstaller's running-process check.  StrFunc ships
+; a separate ${UnStrStr} for uninstaller code -- the installer-side ${StrStr}
+; is not visible to Section Uninstall -- so it is declared here, ahead of the
+; uninstaller section that calls it.
+!include StrFunc.nsh
+${UnStrStr}
 
 ;------------------------------------------------------------------------------
 ; Custom Branding Resources
@@ -212,7 +220,97 @@ FunctionEnd
 ;------------------------------------------------------------------------------
 ; Uninstaller
 ;------------------------------------------------------------------------------
+; Is the app running?  In: $R7 = image name.  Out: $R7 = 1 running, 0 not.
+;
+; tasklist's exit code is 0 whether or not a row matched, so it cannot serve as
+; the signal.  The verdict comes from its output text instead: a matched row
+; always contains the image name, and the localised "no tasks" notice never
+; does, so containment is locale-proof.  StrStr rather than a prefix compare,
+; because a matched row arrives with a leading CRLF that the no-match line does
+; not have -- a fixed-offset compare falls into that every time.  (Both facts
+; were teeth-tested against the real tasklist before this was written.)
+Function un.IsRunning
+    Push $R8
+    Push $R9
+    nsExec::ExecToStack '"$SYSDIR\tasklist.exe" /FI "IMAGENAME eq $R7" /NH'
+    Pop $R8                      ; exit code -- discarded, proved useless
+    Pop $R8                      ; output text
+    ${UnStrStr} $R9 $R8 "$R7"
+    StrCmp $R9 "" not_running
+        StrCpy $R7 1
+        Goto done
+    not_running:
+        StrCpy $R7 0
+    done:
+    Pop $R9
+    Pop $R8
+FunctionEnd
+
+; Wait for the app to stop, up to about five seconds.  Out: $R7 = 1 still
+; running, 0 gone.
+Function un.WaitForExit
+    StrCpy $R9 0
+    ${Do}
+        StrCpy $R7 "${APP_EXE}"
+        Call un.IsRunning
+        ${If} $R7 = 0
+            Return
+        ${EndIf}
+        IntOp $R9 $R9 + 1
+        ${If} $R9 >= 20
+            Return
+        ${EndIf}
+        Sleep 250
+    ${Loop}
+FunctionEnd
+
 Section Uninstall
+    ; Refuse to half-uninstall.  A running ${APP_EXE} has its image and the
+    ; DLLs beside it locked by Windows, so the Delete lines below would fail
+    ; silently and the non-recursive RMDir at the end would leave the whole
+    ; binary tree behind -- roughly 47 MB of husk -- while the uninstaller
+    ; still reported success.  A reinstall over the top cannot repair that.
+    ; So find out first, and leave the machine untouched if the app cannot be
+    ; closed.
+    StrCpy $R7 "${APP_EXE}"
+    Call un.IsRunning
+    StrCmp $R7 0 NotRunning
+
+    IfSilent CloseApp AskFirst
+
+AskFirst:
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION \
+        "${APP_EXE} is still running.$\r$\n$\r$\nUninstalling now would remove everything except the files Windows has locked, leaving a partial installation that a reinstall cannot repair.$\r$\n$\r$\nClose ${APP_NAME} and continue?" \
+        /SD IDNO IDYES CloseApp
+
+    MessageBox MB_ICONINFORMATION \
+        "${APP_NAME} was not uninstalled.  Nothing was removed." \
+        /SD IDOK
+    Quit
+
+CloseApp:
+    ; Graceful first -- taskkill without /F posts WM_CLOSE, so the app gets to
+    ; exit on its own terms and may refuse.  Only force it if it ignores that.
+    DetailPrint "${APP_EXE} is running; closing it before removing files."
+    nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM ${APP_EXE}'
+    Pop $R7
+    Pop $R8
+    Call un.WaitForExit
+    StrCmp $R7 0 NotRunning
+
+    DetailPrint "A graceful close was ignored; forcing ${APP_EXE} to stop."
+    nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM ${APP_EXE}'
+    Pop $R7
+    Pop $R8
+    Call un.WaitForExit
+    StrCmp $R7 0 NotRunning
+
+    MessageBox MB_ICONEXCLAMATION \
+        "${APP_EXE} would not stop, so nothing was uninstalled.$\r$\n$\r$\nYour installation is untouched.  Close ${APP_NAME} yourself, then run Uninstall again." \
+        /SD IDOK
+    Quit
+
+NotRunning:
     ; Remove files
     Delete "$INSTDIR\${APP_EXE}"
     Delete "$INSTDIR\uninstall.exe"
@@ -256,6 +354,15 @@ Section Uninstall
 
     ; Remove install directory
     RMDir "$INSTDIR"
+
+    ; RMDir only succeeds on an empty directory, and it fails silently.  If
+    ; anything survived -- most often a file another process still holds --
+    ; say so, rather than letting the user believe the uninstall was clean.
+    IfFileExists "$INSTDIR\*.*" 0 UninstallComplete
+        MessageBox MB_ICONEXCLAMATION \
+            "Some files in:$\r$\n$INSTDIR$\r$\ncould not be removed because they are still in use.$\r$\n$\r$\nThey have been left behind and must be removed by hand." \
+            /SD IDOK
+    UninstallComplete:
 SectionEnd
 
 ;------------------------------------------------------------------------------
