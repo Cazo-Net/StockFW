@@ -137,7 +137,7 @@ main (int argc, char **argv)
 	GtkWidget *window;
 	GtkWidget *menu;
 	GList *items;
-	GtkMenuItem *quit_item;
+	GtkMenuItem *quit_item = NULL;
 	GdkPixbuf *logo;
 	gchar *scratch;
 
@@ -249,25 +249,77 @@ main (int argc, char **argv)
 		       "the tray tooltip carries the firewall state sentence");
 	}
 
-	/* 7. The menu: exactly Open, then Quit. */
+	/* 7. The menu: a live status header, then Open and About, then
+	 * Quit fenced off behind its own separator.
+	 *
+	 * The header is the row that earns this menu its keep, so it is
+	 * checked properly rather than only counted.  It must carry the
+	 * sentence fed in at step 6, which proves it is read when the
+	 * menu is asked for and not frozen when it was first built.  And
+	 * it must be insensitive: a greyed row reads as information,
+	 * where an enabled row that does nothing reads as a broken
+	 * control. */
 	menu = fs_tray_menu ();
 	check (GTK_IS_MENU (menu), "the tray popup is a GtkMenu");
 	items = gtk_container_get_children (GTK_CONTAINER (menu));
-	check (g_list_length (items) == 2,
-	       "the tray menu has exactly two items");
-	check (items != NULL && items->next != NULL &&
-	       g_strcmp0 (gtk_menu_item_get_label (
-	                      GTK_MENU_ITEM (items->data)),
-	                  _("Open StockFW")) == 0,
-	       "the first tray menu item is Open StockFW");
-	check (items != NULL && items->next != NULL &&
-	       g_strcmp0 (gtk_menu_item_get_label (
-	                      GTK_MENU_ITEM (items->next->data)),
-	                  _("Quit StockFW")) == 0,
-	       "the second tray menu item is Quit StockFW");
-	quit_item = items != NULL && items->next != NULL
-	          ? GTK_MENU_ITEM (items->next->data) : NULL;
+	check (g_list_length (items) == 6,
+	       "the tray menu has six rows: status, separator, Open, "
+	       "About, separator, Quit");
+
+	if (g_list_length (items) == 6) {
+		GtkWidget *row[6];
+		GList *walk;
+		guint i;
+
+		for (i = 0, walk = items; walk != NULL; i++, walk = walk->next)
+			row[i] = GTK_WIDGET (walk->data);
+
+		check (GTK_IS_MENU_ITEM (row[0]) &&
+		       !gtk_widget_get_sensitive (row[0]),
+		       "the status row is insensitive: it is information, "
+		       "not a control that appears to work and does not");
+		check (g_strcmp0 (gtk_menu_item_get_label (
+		                      GTK_MENU_ITEM (row[0])),
+		                  _("The firewall is running")) == 0,
+		       "the status row carries the live firewall state "
+		       "sentence rather than a stale one");
+		check (GTK_IS_SEPARATOR_MENU_ITEM (row[1]),
+		       "a separator follows the status row");
+		check (g_strcmp0 (gtk_menu_item_get_label (
+		                      GTK_MENU_ITEM (row[2])),
+		                  _("_Open StockFW")) == 0,
+		       "row 3 is Open StockFW");
+		check (g_strcmp0 (gtk_menu_item_get_label (
+		                      GTK_MENU_ITEM (row[3])),
+		                  _("_About StockFW")) == 0,
+		       "row 4 is About StockFW");
+		check (GTK_IS_SEPARATOR_MENU_ITEM (row[4]),
+		       "Quit is fenced off behind its own separator");
+		check (g_strcmp0 (gtk_menu_item_get_label (
+		                      GTK_MENU_ITEM (row[5])),
+		                  _("_Quit StockFW")) == 0,
+		       "Quit StockFW is the last row");
+		quit_item = GTK_MENU_ITEM (row[5]);
+	}
 	g_list_free (items);
+
+	/* 7b. The header is not frozen.  Changing the state and asking for
+	 * the menu again must show the new sentence -- otherwise the tray
+	 * would confidently report a firewall state it stopped seeing. */
+	fs_tray_set_state ("The firewall has been hit");
+	{
+		GList *again = gtk_container_get_children (
+		                   GTK_CONTAINER (menu));
+
+		check (again != NULL &&
+		       g_strcmp0 (gtk_menu_item_get_label (
+		                      GTK_MENU_ITEM (again->data)),
+		                  _("The firewall has been hit")) == 0,
+		       "the status row follows the state through a later "
+		       "change, so it cannot report a stale verdict");
+		g_list_free (again);
+	}
+	fs_tray_set_state ("The firewall is running");
 
 	/* 8. The restore path: hide the window the way close-to-tray
 	 * does, then bring it back the way the tray does. */
