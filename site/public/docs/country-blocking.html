@@ -4,18 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Country and network-owner blocking · StockFW</title>
-<meta name="description" content="Blocking traffic by the country an address is registered in or by the network that announces it, planned for 1.0.7: where the data comes from, how it is verified, what “country” honestly means for an address, and the anycast warning.">
-<meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#16181d">
+<meta name="description" content="Blocking traffic by the country an address is registered in or by the network that announces it: where the data comes from, how it is verified, what “country” honestly means for an address, and the anycast warning.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Country and network-owner blocking · StockFW">
-<meta property="og:description" content="Blocking traffic by the country an address is registered in or by the network that announces it, planned for 1.0.7: where the data comes from, how it is verified, what “country” honestly means for an address, and the anycast warning.">
+<meta property="og:description" content="Blocking traffic by the country an address is registered in or by the network that announces it: where the data comes from, how it is verified, what “country” honestly means for an address, and the anycast warning.">
 <meta property="og:type" content="website">
 <link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
 <link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../assets/css/site.css">
 <link rel="stylesheet" href="../assets/css/docs.css">
-<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
 </head>
 <body class="layout-docs">
 <a class="skip" href="#main">Skip to content</a>
@@ -24,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -37,9 +36,6 @@
 			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
 				<span>Search docs</span><kbd>/</kbd>
-			</button>
-			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
 			</button>
 			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
@@ -97,12 +93,9 @@
 		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Protection</p>
 		<article class="prose">
 <h1>Country and network-owner blocking</h1>
-<p class="lede">Some servers have no business talking to any country but their own, and some attacks come from a handful of networks. 1.0.7 adds two more kinds of threat-intel set, built from an offline database rather than a feed: every address registered to a country, and every address announced by a network owner (an autonomous system).</p>
+<p class="lede">Some servers have no business talking to any country but their own, and some attacks come from a handful of networks. StockFW has two more kinds of threat-intel set, built from an offline database rather than a feed: every address registered to a country, and every address announced by a network owner (an autonomous system).</p>
 
-<div class="callout soon">
-<span class="label">Where this stands</span>
-<p>This is round two of the 1.0.7 threat-intel work, after <a href="../docs/threat-intel.html">blocklists</a>. The data source is decided and its reader is being written <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span>; the picker and the sets follow. The database’s licence terms are being confirmed with its publisher before release, and a fallback source is chosen in case they cannot be.</p>
-</div>
+<p><span class="plat">Linux</span> Country and network-owner sets are enforced on Linux, through the same nftables table as the <a href="../docs/threat-intel.html">blocklists</a>. On Windows the Threat Intel page says blocklists are not available there, and the policy alone is in force. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></p>
 
 <h2 id="where-the-data-comes-from">Where the data comes from<a class="anchor" href="#where-the-data-comes-from" aria-label="Link to this section">#</a></h2>
 <p>The <a href="https://location.ipfire.org/">IPFire Location database</a>: one file, about 6 MB compressed, published daily, no account needed, with IPv4 and IPv6 in one structure. For every range it gives the country of registration, the announcing network (AS number and name), and flags for anonymous proxies, satellite providers and <em>anycast</em> networks. It is the same database the IPFire firewall uses for its own country blocking.</p>
@@ -127,7 +120,7 @@
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/threat-intel.html"><span>Previous</span><strong>Threat-intel blocklists</strong></a><a class="next" href="../docs/cli.html"><span>Next</span><strong>Command line</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/country-blocking.html">Edit this page on GitHub</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/country-blocking.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -158,7 +151,7 @@
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>
@@ -182,12 +175,15 @@
 			</div>
 		</div>
 		<div class="foot-note">
-			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span>Made by Stock Team.</span>
 			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
 		</div>
 	</div>
 </footer>
 
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
 <dialog class="search-dialog" id="search" aria-label="Search the documentation">
 	<div class="search-box">
 		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>

@@ -15,7 +15,7 @@ description: The Copilot page: how the behaviour baseline is learned, the twelve
 <li><strong>Run analysis</strong> looks at the current policy and the events seen so far and lists what it finds. Sentinel’s detectors run on every event regardless.</li>
 <li>Four tiles: <em>Apps learned</em>, <em>Active insights</em>, <em>Events analyzed</em>, <em>Policy rules</em>.</li>
 <li><strong>Insights and suggestions:</strong> a table of findings with title, type, severity, description, program and status. Double-click a row for the full explanation. <em>Apply selected rule</em> stages the rule a finding suggests, after showing it; <em>Clear insights</em> empties the list; <em>Undo auto-block</em> lifts what Sentinel staged.</li>
-<li><strong>What-if simulator:</strong> a question about traffic, answered against the saved policy. It has <a href="{{root}}docs/simulator.html">its own page</a>.</li>
+<li><strong>What-If simulator:</strong> a question about a connection in plain words, with <em>Read as</em> chips showing how the line was understood, the verdict in one row, and <strong>Details</strong> opening the What-If window beside the page. It has <a href="{{root}}docs/simulator.html">its own page</a>.</li>
 </ul>
 
 <h2>The baseline</h2>
@@ -71,5 +71,4 @@ description: The Copilot page: how the behaviour baseline is learned, the twelve
 <li>On Linux the kernel log carries no program name, so profiles are keyed by what the connection table can attribute; a connection that closes before the next poll is counted without a program. [[gap]]</li>
 <li>Sentinel has no inbound scan detector, by design.</li>
 <li>The behaviour analysis is heuristic. It is explained in plain words so you can judge it; it is not a verdict about the program’s intent.</li>
-<li>An older About dialog still describes the Copilot as “AI-powered”. It is rule-based; the wording is being corrected. [[soon]]</li>
 </ul>

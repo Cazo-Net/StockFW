@@ -1,26 +1,26 @@
 ---
 title: Download
 eyebrow: Download
-description: StockFW 1.0.5 for Windows and Linux, with checksums, and how to build the newer 1.0.6 and 1.0.7 code from source.
+description: StockFW 1.0.7 for Windows and Linux: the installer, the Linux tarball, the checksums, what each platform needs, and how to build the same code from source.
 ---
 <div class="prose">
-<h2 id="release">Current release: StockFW {{release}}</h2>
-<p class="lede">Released 11 October 2026, “the hardening release”. Both downloads come from the project’s GitHub Releases page; this site does not host files.</p>
+<h2 id="release">StockFW {{release}}</h2>
+<p class="lede">Both downloads come from the project’s GitHub Releases page; this site does not host files. The size and SHA-256 of each file are listed on the release page next to it.</p>
 
 <div class="tbl-wrap">
 <table class="tbl">
-<thead><tr><th>Platform</th><th>File</th><th class="num">Size</th><th>Notes</th></tr></thead>
+<thead><tr><th>Platform</th><th>File</th><th>Notes</th></tr></thead>
 <tbody>
-<tr><td>Windows 10 and 11, 64-bit</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-Setup.exe">StockFW-{{release}}-Setup.exe</a></td><td class="num">44.6 MB</td><td>NSIS installer. Bundles the GTK3 runtime, so nothing else needs installing.</td></tr>
-<tr><td>Linux x86-64</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-linux-x86_64.tar.gz">StockFW-{{release}}-linux-x86_64.tar.gz</a></td><td class="num">194 KB</td><td>Tarball with <code>install.sh</code>. Needs GTK3 and <code>iptables</code> from your distribution.</td></tr>
-<tr><td>Checksums</td><td><a href="{{repo}}/releases/download/v{{release}}/SHA256SUMS.txt">SHA256SUMS.txt</a></td><td class="num">192 B</td><td>SHA-256 of both files.</td></tr>
+<tr><td>Windows 10 and 11, 64-bit</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-Setup.exe">StockFW-{{release}}-Setup.exe</a></td><td>NSIS installer. Bundles the GTK3 runtime, so nothing else needs installing.</td></tr>
+<tr><td>Linux x86-64</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-linux-x86_64.tar.gz">StockFW-{{release}}-linux-x86_64.tar.gz</a></td><td>Tarball with <code>install.sh</code>. Needs GTK3, <code>iptables</code> and <code>ip6tables</code> from your distribution.</td></tr>
+<tr><td>Checksums</td><td><a href="{{repo}}/releases/download/v{{release}}/SHA256SUMS.txt">SHA256SUMS.txt</a></td><td>SHA-256 of both files.</td></tr>
 </tbody>
 </table>
 </div>
 
 <div class="callout note">
-<span class="label">Not signed yet</span>
-<p>The Windows installer is not code-signed, so SmartScreen will show “Windows protected your PC”. Choose <em>More info</em>, then <em>Run anyway</em>, after you have checked the checksum below. Code signing is on the roadmap; until then the checksum is your verification.</p>
+<span class="label">Not code-signed</span>
+<p>The Windows installer is not code-signed, so SmartScreen shows “Windows protected your PC”. Choose <em>More info</em>, then <em>Run anyway</em>, after you have checked the checksum below. The checksum is your verification.</p>
 </div>
 
 <h3 id="verify">Check the download</h3>
@@ -32,46 +32,32 @@ StockFW-{{release}}-linux-x86_64.tar.gz: OK</pre>
 <h3 id="requirements">Requirements</h3>
 <dl>
 <dt>Windows</dt><dd>Windows 10 or 11, 64-bit. Windows Defender Firewall must be present (it always is). To change rules, run the <em>StockFW (Elevated)</em> shortcut; everything else works without administrator rights.</dd>
-<dt>Linux</dt><dd>An x86-64 distribution with GTK 3 (<code>libgtk-3-0</code>) and <code>iptables</code>. For IPv6 filtering in 1.0.7, <code>ip6tables</code> as well. Tested on Debian, Kali, Ubuntu and WSL2. Reading events and applying rules need root; <code>sudo /usr/local/bin/StockFW</code> is the full tool.</dd>
+<dt>Linux</dt><dd>An x86-64 distribution with GTK 3 (<code>libgtk-3-0</code>), <code>iptables</code> and <code>ip6tables</code>; <code>nft</code> for threat-intel blocklists. Tested on Debian, Kali, Ubuntu and WSL2. Reading events and applying rules need root; <code>sudo /usr/local/bin/StockFW</code> is the full tool.</dd>
 </dl>
 <p>Step-by-step instructions: <a href="{{root}}docs/install-windows.html">Install on Windows</a>, <a href="{{root}}docs/install-linux.html">Install on Linux</a>.</p>
 
-<h2 id="newer">Newer than the release</h2>
-<p>Two versions sit ahead of {{release}} on GitHub. Neither has an installer yet; both build from source in a few commands.</p>
-<div class="tbl-wrap">
-<table class="tbl">
-<thead><tr><th>Version</th><th>Where</th><th>What it adds</th></tr></thead>
-<tbody>
-<tr><td>1.0.6</td><td>merged into <code>main</code>, no package</td><td>The Activity page with its graphs, the <code>stockfw</code> command line and local dashboard on Linux, truthful Linux events, real network and connection panels on Linux. See the <a href="{{root}}changelog.html#v1-0-6">changelog</a>.</td></tr>
-<tr><td>{{next}} (in development)</td><td>branch <code>main</code></td><td>IPv6 on Linux, the redesigned app, the Covers column, events from the kernel ring buffer, the new logo. Threat-intel blocklists and country blocking are being built. See <a href="{{root}}index.html#next">what is coming</a>.</td></tr>
-</tbody>
-</table>
-</div>
+<h2 id="build">Build from source</h2>
+<p>The release is built from the tag <code>v{{release}}</code> in the repository. The same code builds on either platform in a few commands.</p>
 
 <h3 id="build-windows">Build on Windows (MSYS2)</h3>
 <p>Install <a href="https://www.msys2.org/">MSYS2</a>, open the <strong>UCRT64</strong> shell (as administrator if you want to apply rules from the build), then:</p>
 <pre data-lang="sh" data-title="MSYS2 UCRT64 shell">$ pacman -S --needed base-devel git mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake}
-$ git clone {{repo}}.git          # main: the 1.0.7 development code
+$ git clone --branch v{{release}} {{repo}}.git
 $ cd StockFW/port
 $ cmake -S . -B build -G Ninja
 $ cmake --build build
 $ ./build/StockFW.exe</pre>
-<p>To make an installer from the build, run <code>installer/build_installer.sh</code>; it stages the GTK runtime beside the executable and fails if any launcher still carries old branding.</p>
+<p>To make the installer from the build, run <code>installer/build_installer.sh</code>; it stages the GTK runtime beside the executable and fails if any launcher still carries old branding.</p>
 
 <h3 id="build-linux">Build on Linux</h3>
-<pre data-lang="sh" data-title="Debian, Kali, Ubuntu, WSL2">$ sudo apt install build-essential cmake ninja-build git libgtk-3-dev iptables
-$ git clone {{repo}}.git          # main: the 1.0.7 development code
+<pre data-lang="sh" data-title="Debian, Kali, Ubuntu, WSL2">$ sudo apt install build-essential cmake ninja-build git libgtk-3-dev iptables nftables
+$ git clone --branch v{{release}} {{repo}}.git
 $ cd StockFW/port
 $ cmake -S . -B build-linux -G Ninja
 $ cmake --build build-linux
 $ sudo ./build-linux/StockFW                      # the desktop app
 $ ./build-linux/stockfw status                    # the command line</pre>
 <p>To make the same tarball the release ships, run <code>installer/linux/build_installer_linux.sh</code> after building.</p>
-
-<div class="callout">
-<span class="label">Version strings</span>
-<p>A build from the 1.0.7 branch still reports <code>1.0.6</code> in About and <code>--version</code> until the release bump, which is the last commit before a release. The features are there; the number lags.</p>
-</div>
 
 <h2 id="uninstall">Uninstall</h2>
 <dl>

@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Files and formats · StockFW</title>
 <meta name="description" content="Every file StockFW keeps, where it is on each platform, and its exact format: the policy files, the applied journal, preferences, the audit log, the Trust baseline, the behaviour baseline and Sentinel’s staging record.">
-<meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#16181d">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Files and formats · StockFW">
 <meta property="og:description" content="Every file StockFW keeps, where it is on each platform, and its exact format: the policy files, the applied journal, preferences, the audit log, the Trust baseline, the behaviour baseline and Sentinel’s staging record.">
 <meta property="og:type" content="website">
@@ -15,7 +15,6 @@
 <link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../assets/css/site.css">
 <link rel="stylesheet" href="../assets/css/docs.css">
-<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
 </head>
 <body class="layout-docs">
 <a class="skip" href="#main">Skip to content</a>
@@ -24,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -37,9 +36,6 @@
 			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
 				<span>Search docs</span><kbd>/</kbd>
-			</button>
-			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
 			</button>
 			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
@@ -104,9 +100,9 @@
 <table class="tbl">
 <thead><tr><th>Platform</th><th>Policy and journal</th><th>Preferences, logs, baselines</th></tr></thead>
 <tbody>
-<tr><td>Windows</td><td><code>%LOCALAPPDATA%\stockfw\</code></td><td><code>%APPDATA%\stockfw\</code></td></tr>
-<tr><td>Linux, as your user</td><td><code>~/.stockfw/</code></td><td><code>~/.config/stockfw/</code></td></tr>
-<tr><td>Linux, as root</td><td><code>/etc/stockfw/</code></td><td><code>/root/.config/stockfw/</code></td></tr>
+<tr><td>Windows</td><td><code>%LOCALAPPDATA%\<wbr>stockfw\</code></td><td><code>%APPDATA%\<wbr>stockfw\</code></td></tr>
+<tr><td>Linux, as your user</td><td><code>~/<wbr>.stockfw/</code></td><td><code>~/<wbr>.config/<wbr>stockfw/</code></td></tr>
+<tr><td>Linux, as root</td><td><code>/etc/<wbr>stockfw/</code></td><td><code>/root/<wbr>.config/<wbr>stockfw/</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -118,11 +114,11 @@
 <table class="tbl">
 <thead><tr><th>File</th><th>Columns</th></tr></thead>
 <tbody>
-<tr><td><code>inbound/allow-from</code></td><td>host, comment</td></tr>
-<tr><td><code>inbound/allow-service</code></td><td>service, port, for, comment</td></tr>
-<tr><td><code>inbound/forward</code></td><td>service, firewall port, to, port, comment</td></tr>
-<tr><td><code>outbound/allow-to</code>, <code>outbound/allow-from</code>, <code>outbound/deny-to</code>, <code>outbound/deny-from</code></td><td>host, comment</td></tr>
-<tr><td><code>outbound/allow-service</code>, <code>outbound/deny-service</code></td><td>service, port, for, comment</td></tr>
+<tr><td><code>inbound/<wbr>allow-from</code></td><td>host, comment</td></tr>
+<tr><td><code>inbound/<wbr>allow-service</code></td><td>service, port, for, comment</td></tr>
+<tr><td><code>inbound/<wbr>forward</code></td><td>service, firewall port, to, port, comment</td></tr>
+<tr><td><code>outbound/<wbr>allow-to</code>, <code>outbound/<wbr>allow-from</code>, <code>outbound/<wbr>deny-to</code>, <code>outbound/<wbr>deny-from</code></td><td>host, comment</td></tr>
+<tr><td><code>outbound/<wbr>allow-service</code>, <code>outbound/<wbr>deny-service</code></td><td>service, port, for, comment</td></tr>
 </tbody>
 </table>
 </div>
@@ -198,7 +194,7 @@ curl,partial,1</code></pre></div>
 <h2 id="in-the-engine">In the engine<a class="anchor" href="#in-the-engine" aria-label="Link to this section">#</a></h2>
 <ul>
 <li><span class="plat">Windows</span> Rules named <code>StockFW-…</code> are policy rules; <code>StockFW …</code> (with a space) are Preferences rules. StockFW owns everything with those prefixes and nothing else. <code>wf.msc</code> or <code>netsh advfirewall firewall show rule name=all</code> lists them.</li>
-<li><span class="plat">Linux</span> Chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>FORWARD</code> (router mode), <code>PREROUTING</code> and <code>POSTROUTING</code>; log prefixes <code>STOCKFW-DROP</code>, <code>STOCKFW-REJECT</code> and <code>STOCKFW-ALLOW</code>. In 1.0.7, the nftables table <code>inet stockfw_intel</code> for threat intel, with the log prefix <code>STOCKFW-TI</code>. <code>nft list ruleset</code> shows all of it.</li>
+<li><span class="plat">Linux</span> Chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>FORWARD</code> (router mode), <code>PREROUTING</code> and <code>POSTROUTING</code>; log prefixes <code>STOCKFW-DROP</code>, <code>STOCKFW-REJECT</code> and <code>STOCKFW-ALLOW</code>. The nftables table <code>inet stockfw_intel</code> for threat intel, with the log prefix <code>STOCKFW-TI</code>. <code>nft list ruleset</code> shows all of it.</li>
 </ul>
 
 <h2 id="backing-up">Backing up<a class="anchor" href="#backing-up" aria-label="Link to this section">#</a></h2>
@@ -207,7 +203,7 @@ curl,partial,1</code></pre></div>
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/dashboard.html"><span>Previous</span><strong>Dashboard</strong></a><a class="next" href="../docs/troubleshooting.html"><span>Next</span><strong>Troubleshooting</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/files.html">Edit this page on GitHub</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/files.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -244,7 +240,7 @@ curl,partial,1</code></pre></div>
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>
@@ -268,12 +264,15 @@ curl,partial,1</code></pre></div>
 			</div>
 		</div>
 		<div class="foot-note">
-			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span>Made by Stock Team.</span>
 			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
 		</div>
 	</div>
 </footer>
 
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
 <dialog class="search-dialog" id="search" aria-label="Search the documentation">
 	<div class="search-box">
 		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>

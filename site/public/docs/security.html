@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Security model · StockFW</title>
 <meta name="description" content="How StockFW protects you and how it protects itself: trust boundaries, the apply gate, why user-level code cannot change the firewall, what tampering with its files can and cannot do, and what it never sends anywhere.">
-<meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#16181d">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Security model · StockFW">
 <meta property="og:description" content="How StockFW protects you and how it protects itself: trust boundaries, the apply gate, why user-level code cannot change the firewall, what tampering with its files can and cannot do, and what it never sends anywhere.">
 <meta property="og:type" content="website">
@@ -15,7 +15,6 @@
 <link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../assets/css/site.css">
 <link rel="stylesheet" href="../assets/css/docs.css">
-<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
 </head>
 <body class="layout-docs">
 <a class="skip" href="#main">Skip to content</a>
@@ -24,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -37,9 +36,6 @@
 			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
 				<span>Search docs</span><kbd>/</kbd>
-			</button>
-			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
 			</button>
 			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
@@ -103,7 +99,7 @@
 <p>StockFW contains no packet filter, no driver and no service. It configures the engine your operating system already has, through the tools that system documents (<code>netsh advfirewall</code> and the firewall COM interfaces on Windows; <code>iptables-restore</code>, <code>ip6tables-restore</code> and <code>nft</code> on Linux), and it reads the verdicts that engine already logs. If StockFW is closed, crashes or is uninstalled, the engine keeps enforcing whatever was last applied. Nothing StockFW does can make the firewall <em>less</em> enforced by failing.</p>
 
 <h2 id="three-boundaries">Three boundaries<a class="anchor" href="#three-boundaries" aria-label="Link to this section">#</a></h2>
-<dl>
+<dl class="cols">
 <dt>Enforcement</dt>
 <dd>Anything that changes firewall state must run with administrator or root rights, and StockFW contains no code that raises its own rights: no <code>runas</code>, no <code>ShellExecute</code>, no <code>sudo</code>, no setuid helper, no polkit rule. The Windows manifest says <code>asInvoker</code>. Elevation happens only when you choose the elevated shortcut and answer the UAC prompt, or type <code>sudo</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-installer-spawn.sh</span></dd>
 <dt>Input</dt>
@@ -145,7 +141,7 @@
 <p>There is no language model and no prompt. The what-if parser recognises a dozen words; the behaviour analysis is counters. An attacker’s only input is the traffic it generates, which becomes rows and numbers, never instructions. Everything the Copilot proposes is printed as the exact rule in a Yes/No dialog, allow rules are never applied without that dialog, and the one autonomous action, Sentinel’s auto-block, can only add a deny for a public destination, expires in ten minutes, and is fenced as described on <a href="../docs/copilot.html">the Copilot page</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-adversarial.sh</span></p>
 
 <h2 id="what-leaves-your-computer">What leaves your computer<a class="anchor" href="#what-leaves-your-computer" aria-label="Link to this section">#</a></h2>
-<p>Nothing. StockFW has no telemetry, no analytics, no update check and no network client. The only processes it starts are local system tools. Event data lives in memory and on screen; the policy records intent, not history; the audit log records what StockFW did, not what you connected to. In 1.0.7 the threat-intel feature will download lists, each only after you turn it on and accept its publisher’s terms, from that publisher and no mirror, and the consent dialog says what the publisher learns (your public address and <code>StockFW/<em>version</em></code>). <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></p>
+<p>Nothing. StockFW has no telemetry, no analytics, no update check and no network client. The only processes it starts are local system tools. Event data lives in memory and on screen; the policy records intent, not history; the audit log records what StockFW did, not what you connected to. The one exception is threat intel: a feed is downloaded only after you turn it on and accept its publisher’s terms, from that publisher and no mirror, and the consent dialog says what the publisher learns (your public address and <code>StockFW/<em>version</em></code>).</p>
 <p>One machine setting outside the firewall is changed, and disclosed when it happens: on Windows, enabling monitoring turns on the <em>Filtering Platform Connection</em> audit subcategory with <code>auditpol</code>.</p>
 
 <h2 id="the-local-dashboard">The local dashboard<a class="anchor" href="#the-local-dashboard" aria-label="Link to this section">#</a></h2>
@@ -162,7 +158,7 @@
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/background.html"><span>Previous</span><strong>Background and the tray</strong></a><a class="next" href="../docs/ipv6.html"><span>Next</span><strong>IPv6</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/security.html">Edit this page on GitHub</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/security.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -198,7 +194,7 @@
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>
@@ -222,12 +218,15 @@
 			</div>
 		</div>
 		<div class="foot-note">
-			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span>Made by Stock Team.</span>
 			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
 		</div>
 	</div>
 </footer>
 
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
 <dialog class="search-dialog" id="search" aria-label="Search the documentation">
 	<div class="search-box">
 		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>

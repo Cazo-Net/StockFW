@@ -24,7 +24,7 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <dt>“Monitoring is not available” on Linux</dt>
 <dd>The kernel log needs root. Start the app with <code>sudo</code>, or add yourself to the <code>adm</code> group for the command line’s <code>events</code>.</dd>
 <dt>The list stays empty although the firewall is running</dt>
-<dd>Read the sentence under the empty list. “Waiting for the first event” means nothing has been blocked or logged yet; try an inbound connection from another machine to a closed port. On Linux, allowed connections are logged only from 1.0.7 and only with <em>Log allowed connections</em> on; before that, the page shows drops and rejects only.</dd>
+<dd>Read the sentence under the empty list. “Waiting for the first event” means nothing has been blocked or logged yet; try an inbound connection from another machine to a closed port. On Linux, allowed connections are logged only with <em>Log allowed connections</em> on; otherwise the page shows drops and rejects only.</dd>
 <dt>No events in WSL2, a container or a network namespace</dt>
 <dd>[[linux]] The kernel delivers firewall log lines from a non-initial network namespace only when <code>net.netfilter.nf_log_all_netns=1</code>. Set it on the host: <code>sudo sysctl -w net.netfilter.nf_log_all_netns=1</code>. WSL2’s kernel also needs the netfilter log modules; a stock Ubuntu WSL image has them.</dd>
 <dt>The Program column is empty</dt>
@@ -52,7 +52,7 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <h2>IPv6</h2>
 <dl>
 <dt>The IPv6 tile reads “Not filtered: ip6tables is not installed”</dt>
-<dd>[[linux]] <code>sudo apt install iptables</code> brings <code>ip6tables</code> on Debian-family systems; <code>dnf install iptables-nft</code> on Fedora. Then Apply again. Until then only IPv4 is filtered, and the app says so rather than pretending. 1.0.5 and 1.0.6 never filter IPv6 on Linux. [[gap]]</dd>
+<dd>[[linux]] <code>sudo apt install iptables</code> brings <code>ip6tables</code> on Debian-family systems; <code>dnf install iptables-nft</code> on Fedora. Then Apply again. Until then only IPv4 is filtered, and the app says so rather than pretending. [[gap]]</dd>
 <dt>“None on this system”</dt>
 <dd>The kernel has no IPv6 stack. Nothing to filter, nothing wrong.</dd>
 </dl>
@@ -81,8 +81,6 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <dd>Under <code>sudo</code> StockFW will not start a browser as root. Copy the printed URL into your own browser. The token is in it.</dd>
 <dt>The dashboard page shows “Unauthorized”</dt>
 <dd>The browser tab lost the token: the <code>#token=…</code> fragment was cut from the URL before the page loaded, the tab was reopened in a new session, or the URL is from an earlier run. Start again and open the freshly printed URL.</dd>
-<dt><code>stockfw: error: unknown command: intel</code></dt>
-<dd>You have 1.0.6. <code>stockfw intel</code> arrives with 1.0.7. [[soon]]</dd>
 </dl>
 
 <h2>Uninstalling and starting over</h2>

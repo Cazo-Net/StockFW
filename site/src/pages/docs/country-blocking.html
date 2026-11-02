@@ -2,15 +2,12 @@
 title: Country and network-owner blocking
 section: Protection
 order: 23
-description: Blocking traffic by the country an address is registered in or by the network that announces it, planned for 1.0.7: where the data comes from, how it is verified, what “country” honestly means for an address, and the anycast warning.
+description: Blocking traffic by the country an address is registered in or by the network that announces it: where the data comes from, how it is verified, what “country” honestly means for an address, and the anycast warning.
 ---
 <h1>Country and network-owner blocking</h1>
-<p class="lede">Some servers have no business talking to any country but their own, and some attacks come from a handful of networks. 1.0.7 adds two more kinds of threat-intel set, built from an offline database rather than a feed: every address registered to a country, and every address announced by a network owner (an autonomous system).</p>
+<p class="lede">Some servers have no business talking to any country but their own, and some attacks come from a handful of networks. StockFW has two more kinds of threat-intel set, built from an offline database rather than a feed: every address registered to a country, and every address announced by a network owner (an autonomous system).</p>
 
-<div class="callout soon">
-<span class="label">Where this stands</span>
-<p>This is round two of the 1.0.7 threat-intel work, after <a href="{{root}}docs/threat-intel.html">blocklists</a>. The data source is decided and its reader is being written [[soon]]; the picker and the sets follow. The database’s licence terms are being confirmed with its publisher before release, and a fallback source is chosen in case they cannot be.</p>
-</div>
+<p>[[linux]] Country and network-owner sets are enforced on Linux, through the same nftables table as the <a href="{{root}}docs/threat-intel.html">blocklists</a>. On Windows the Threat Intel page says blocklists are not available there, and the policy alone is in force. [[gap]]</p>
 
 <h2>Where the data comes from</h2>
 <p>The <a href="https://location.ipfire.org/">IPFire Location database</a>: one file, about 6 MB compressed, published daily, no account needed, with IPv4 and IPv6 in one structure. For every range it gives the country of registration, the announcing network (AS number and name), and flags for anonymous proxies, satellite providers and <em>anycast</em> networks. It is the same database the IPFire firewall uses for its own country blocking.</p>

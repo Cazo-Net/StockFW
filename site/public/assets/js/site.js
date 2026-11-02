@@ -1,45 +1,27 @@
-/* StockFW site: theme, menus, copy buttons, the app tour, search.
- * No libraries, no requests to other servers.  Every feature degrades
- * to plain links and visible text without JavaScript. */
+/* StockFW site: menus, copy buttons, the app tour, search.
+ * No libraries, no requests to other servers, nothing stored in the
+ * browser.  Every feature degrades to plain links and visible text
+ * without JavaScript. */
 (function () {
 	"use strict";
 
 	var root = document.documentElement;
 	var ROOT = root.getAttribute("data-root") || "./";
 
-	function store(key, value) {
-		try {
-			if (value === undefined) return window.localStorage.getItem(key);
-			if (value === null) window.localStorage.removeItem(key);
-			else window.localStorage.setItem(key, value);
-		} catch (e) { /* private window or blocked storage: no memory */ }
-		return null;
+	/* ------------------------------------------- start at the top */
+	/* Every page opens at its top.  Browsers, and some embedded viewers,
+	 * put a page back at its last scroll position on reload, on Back and
+	 * when a frame is reloaded, which left a page opened from the docs
+	 * sidebar half-way down.  A link to a section (#anchor) still lands
+	 * on that section, and a page brought back live from the
+	 * back-forward cache keeps where the reader was. */
+	if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+	function startAtTop(e) {
+		if (e && e.persisted) return;
+		if (!location.hash) window.scrollTo(0, 0);
 	}
-
-	/* ---------------------------------------------------------- theme */
-	var THEMES = ["system", "light", "dark"];
-	var themeBtn = document.getElementById("theme-btn");
-
-	function applyTheme(t) {
-		if (t === "light" || t === "dark") root.setAttribute("data-theme", t);
-		else root.removeAttribute("data-theme");
-		if (themeBtn) {
-			var label = t === "system" ? "Theme: follows your system" : "Theme: " + t;
-			themeBtn.setAttribute("aria-label", label + ". Change theme");
-			themeBtn.setAttribute("title", label);
-			themeBtn.setAttribute("data-mode", t);
-		}
-	}
-	var current = store("sfw-theme") || "system";
-	if (THEMES.indexOf(current) < 0) current = "system";
-	applyTheme(current);
-	if (themeBtn) {
-		themeBtn.addEventListener("click", function () {
-			current = THEMES[(THEMES.indexOf(current) + 1) % THEMES.length];
-			store("sfw-theme", current === "system" ? null : current);
-			applyTheme(current);
-		});
-	}
+	startAtTop();
+	window.addEventListener("pageshow", startAtTop);
 
 	/* ------------------------------------------------------- menus */
 	function toggler(btnId, panelId) {
@@ -60,6 +42,36 @@
 	}
 	toggler("menu-btn", "site-nav");
 	toggler("rail-btn", "docs-rail");
+
+	/* In the docs rail, bring the current page into view without
+	 * moving the page itself (scrollIntoView would scroll the window too). */
+	var rail = document.getElementById("docs-rail");
+	var railCur = rail && rail.querySelector('a[aria-current="page"]');
+	if (rail && railCur) {
+		var want = railCur.offsetTop - rail.clientHeight / 2;
+		if (want > 0) rail.scrollTop = want;
+	}
+
+	/* ------------------------------------------------- back to top */
+	var topBtn = document.getElementById("top-btn");
+	var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+	function toTop(e) {
+		if (e) e.preventDefault();
+		window.scrollTo({ top: 0, left: 0, behavior: reduceMotion ? "auto" : "smooth" });
+		var main = document.getElementById("main");
+		if (main) { main.setAttribute("tabindex", "-1"); main.focus({ preventScroll: true }); }
+	}
+	if (topBtn) {
+		var shown = false;
+		var onScroll = function () {
+			var show = window.scrollY > 600;
+			if (show !== shown) { shown = show; topBtn.hidden = !show; }
+		};
+		window.addEventListener("scroll", onScroll, { passive: true });
+		onScroll();
+		topBtn.addEventListener("click", toTop);
+	}
+	document.querySelectorAll("a.to-top").forEach(function (a) { a.addEventListener("click", toTop); });
 
 	/* ------------------------------------------------- copy buttons */
 	document.querySelectorAll(".code[data-copy]").forEach(function (block) {
