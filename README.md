@@ -192,6 +192,11 @@ both.
 | CINS Army (`cins-army`) | Up to 15,000 addresses with the poorest reputation in the CINS network. Daily, inbound | no licence named ([cinsscore.com](https://cinsscore.com/)) | see terms | CINS Army list, cinsscore.com |
 | Tor exit relays (`tor-exits`) | The relays Tor traffic leaves from. This is a choice about Tor users, not protection from a threat. Every 6 h, inbound | no licence named ([bulk exit list](https://check.torproject.org/api/bulk)) | see terms | The Tor Project, check.torproject.org |
 
+The direction shown is the default; `stockfw intel enable ID
+--direction in|out|both` chooses another (the page uses the default).
+The update interval is fixed per feed (24 hours for a feed you add
+yourself).
+
 The lists and their data belong to their publishers. StockFW only
 downloads them for you, from each publisher and from no mirror. The
 page, `stockfw intel feeds` and the dashboard show each list's licence
