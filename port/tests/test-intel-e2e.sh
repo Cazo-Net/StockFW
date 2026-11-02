@@ -638,8 +638,12 @@ CLI="${STOCKFW_CLI:-$PORT/build-linux/stockfw}"
 CLI_RAN=0
 if [ -x "$CLI" ] && command -v iptables >/dev/null; then
   CLI_RAN=1
-  mkdir -p "$W/config"
-  cli() { PATH="$W/log:$PATH" XDG_CONFIG_HOME="$W/config" "$CLI" "$@"; }
+  mkdir -p "$W/config" "$W/clirules"
+  cli() { PATH="$W/log:$PATH" XDG_CONFIG_HOME="$W/config" STOCKFW_RULES_DIR="$W/clirules" "$CLI" "$@"; }
+  # `stockfw start' refuses to start with no policy saved and none
+  # applied before (the start gate): give it one rule of its own, in
+  # the scratch directory, never /etc/stockfw.
+  cli -q policy add inbound-allow-service SSH 22 Anyone > /dev/null
   out="$(cli stop)"; rc=$?
   check '[ $rc -eq 0 ] && grep -q -x "Firewall stopped." <<<"$out" && [ "$(live)" = absent ] && grep -q "^suspended: " <<<"$(drv state)"' \
         "stockfw stop: the firewall stops, the lists are removed and suspended ($out)"

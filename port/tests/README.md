@@ -2164,3 +2164,65 @@ cannot run it (that covers W1, W2, W7 and the COM halves of W3 and W6:
 the policy's name listing through `INetFwRules`, the cut-off netsh
 output as an error, the rollback's read-back). `fs-intel-windows-test` is its check on the CI's Windows
 runner.
+
+## Threat intel, one feature on Linux and Windows (`intel-r3/integrated` with the Windows enforcement and main)
+
+The Windows enforcement (`claude/stockfw-1.0.7-wintel`) and main (the
+start gate, Preferences, background mode, the tray) were merged into
+`intel-r3/integrated`. The places where the Linux surfaces did not yet
+know the Windows states were fixed, each with a check (design 11.12):
+
+| check | where | what it proves |
+|---|---|---|
+| `windows: PRESENT with the digest is in force (no counters ...)` | `fs-intel-test` | `fs_intel_lookup_live` answers from the firewall's rules on Windows, with no counters slot |
+| `windows: INACTIVE with the same digest is never in force` | `fs-intel-test` | rules there but not enforced are not "in force"; the detail is the backend's sentence |
+| `windows: PARTIAL rules are never in force`, `windows: PRESENT with another digest is not in force` | `fs-intel-test` | rules not whole, or of an older list, are never in force |
+| `windows: no store, PARTIAL rules there: differs`, `... INACTIVE ...`, `... and asking created no store` | `fs-intel-test` | with no store, any rules of ours read differs, as PRESENT ones did, and nothing is created |
+| `windows: a backend without counters says counts are ...` | `fs-intel-test` | `fs_intel_counts_unavailable()` gives a sentence on Windows and none where there are counters |
+| `windows: rules the firewall does not enforce: "Not in force" ...` | `fs-intelview-smoke` | the page's card for the not-in-force state, with the backend's sentence |
+| `windows: the Overview and tray summary says not in force` | `fs-intelview-smoke` | `fs_intelview_summary`, which the Overview's verdict and the tray's tooltip show |
+| `windows: no count per feed, the reason instead` | `fs-intelview-smoke` | no "Blocked N packets" or "Nothing blocked yet" where there are no counts |
+| `windows: the Blocked tile says n/a, never 0` | `fs-intelview-smoke` | the tile never shows a zero it cannot know |
+| `windows: rules not whole read "Changed outside StockFW"`, `windows: whole and enforced again: "Protected"` | `fs-intelview-smoke` | PARTIAL reads differs on the page, and the page comes back |
+| `engine lock: taken at once ...`, `engine lock: a second holder ... waits`, `engine lock: a symbolic link in its place is refused` | `fs-intel-windows-test` | `LockFileEx` on `engine.lock` (Windows only) |
+
+The start gate from main refuses `stockfw start` when no policy is
+saved and none was applied. `test-intel-cli.sh` (section 8) and
+`test-intel-e2e.sh` stop and start the firewall, so each now saves one
+policy rule first (`policy add inbound-allow-service SSH 22 Anyone`);
+`test-intel-e2e.sh` keeps that rule in its scratch directory through
+`STOCKFW_RULES_DIR`. Without it, 3 and 4 of their checks failed on
+the merged tree.
+
+Teeth (each injected into the real source by a script that asserts the
+exact old text occurs once, rebuilds, runs the test, looks for the
+named check among the failures, then restores the file with `cp` and
+checks it with `cmp`; all seven bit and all seven files were identical
+after):
+
+| injected bug | check that fails |
+|---|---|
+| no store: only PRESENT rules read differs (not `live_holds`) | `windows: no store, PARTIAL rules there: differs` |
+| `fs_intel_lookup_live` also answers in the not-in-force state | `windows: INACTIVE with the same digest is never in force` |
+| the per-feed facts ignore `counts_unavailable` | `windows: no count per feed, the reason instead` |
+| the Blocked tile shows the count whatever | `windows: the Blocked tile says n/a, never 0` |
+| the page's card has no not-in-force case | `windows: rules the firewall does not enforce: "Not in force"` |
+| the summary has no not-in-force case | `windows: the Overview and tray summary says not in force` |
+| the page never updates the summary (`summary_update` removed) | `windows: the Overview and tray summary says not in force` |
+
+Not covered:
+
+- `stockfw intel status` printing "n/a" and `counts_unavailable` in
+  its JSON: the CLI is built on Linux only, where there are always
+  counts, so that branch cannot be reached by a test here.
+- `fs-intel-windows-test` (the engine lock checks above included) is
+  compiled and linked with mingw against the Windows headers in the
+  development container and not run there; it runs on the CI's
+  Windows runner.
+- The Overview's verdict and the tray's tooltip are not read back by a
+  smoke; the smoke checks `fs_intelview_summary`, which both show.
+
+Every suite, module test and smoke was run on the merged tree (the
+smokes under `xvfb-run -a`; `fs-tray-smoke` fails headless as before).
+The Windows sources compile (`wincheck.sh`) and `StockFW.exe` links
+(`winlink.sh`) with mingw.

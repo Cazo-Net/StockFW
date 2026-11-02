@@ -452,6 +452,9 @@ check '[ $rc -eq 3 ] && grep -q "needs-root" <<<"$out"' "status as nobody, with 
 
 # ------------------------------------- 8. update and the running firewall
 if command -v iptables >/dev/null; then
+  # `stockfw start' refuses to start with no policy saved and none
+  # applied before (the start gate): give it one rule to start with.
+  S -q policy add inbound-allow-service SSH 22 Anyone > /dev/null
   run stop
   check '[ $rc -eq 0 ] && [ "$(live)" = absent ]' "(stockfw stop: the lists are suspended)"
   run --json intel lookup 203.0.113.9

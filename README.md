@@ -119,12 +119,12 @@ discovery, router adverts, path-MTU and DHCPv6 are always allowed, even
 in restrictive mode, because IPv6 does not work without them. Without
 `ip6tables` installed, the apply reports that IPv6 is not filtered.
 
-## Threat-intel blocklists (Linux, 1.0.7)
+## Threat-intel blocklists (Linux and Windows, 1.0.7)
 
 StockFW can block the addresses on public threat-intel lists ("feeds")
-and on lists you make yourself. It is **Linux only for now**: on Windows
-the page says *Not supported on Windows yet* and nothing is downloaded
-or blocked there.
+and on lists you make yourself, on Linux and on Windows. The Windows
+side is built and compiled but has not yet been run on a real Windows
+computer (see *On Windows* below).
 
 **How it works.** Each list you turn on is downloaded from its own
 publisher over HTTPS, checked, stored under `/var/lib/stockfw/intel`
@@ -132,6 +132,18 @@ publisher over HTTPS, checked, stored under `/var/lib/stockfw/intel`
 `inet stockfw_intel`. That table is checked before the iptables policy,
 and a policy apply never touches it. Blocked packets are logged with the
 list's name, so on the Events page a block reads *Threat intel: <list>*.
+
+**On Windows.** The same page, the same feeds and the same checks.
+The lists are stored under `%ProgramData%\StockFW\intel` (Administrators
+and SYSTEM only) and enforced as block rules of StockFW's own in Windows
+Firewall. Changing anything needs StockFW to run elevated. Windows
+Firewall keeps no per-rule counts, so where Linux says *Blocked N
+packets* the page says why there is no number, and the Blocked tile
+reads *n/a*. When the rules are there but Windows Firewall is not
+enforcing them (the service stopped, a profile off, or Group Policy in
+charge) the page says *Not in force* and why; rules changed by someone
+else read *Changed outside StockFW*. The `stockfw` command is built on
+Linux only.
 
 ### Turning it on
 
@@ -248,8 +260,8 @@ It does not:
 - answer from What-If, Copilot or `stockfw simulate` yet: these still
   judge the policy alone. Ask `stockfw intel lookup` or the page's
   lookup box;
-- run on Windows yet, or block by country or network owner. Both are
-  later rounds.
+- block by country or network owner, on either platform. That is a
+  later round.
 
 ## Running in the background, and after a reboot (1.0.7)
 
