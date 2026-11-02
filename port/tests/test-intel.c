@@ -19,6 +19,7 @@
 #include "core/fs-intelset.h"
 #include "core/fs-feed.h"
 #include "core/fs-hostnet.h"
+#include "core/fs-intelwin.h"
 
 #ifdef G_OS_UNIX
 #include <fcntl.h>
@@ -588,6 +589,10 @@ typedef struct
 	                             * fails G_IO_ERROR_NOT_FOUND, live
 	                             * UNKNOWN, counters NULL            */
 	gboolean    counters_unreadable; /* the chains cannot be listed  */
+	gboolean    apply_inactive; /* an apply leaves rules that are not
+	                             * enforced (Windows: firewall off for
+	                             * the profile in use)               */
+	gchar      *not_in_force;   /* intel_not_in_force's sentence     */
 	FsIntelLive live;           /* what the kernel holds             */
 	gchar      *live_digest;
 	GHashTable *counters;       /* of the live table: id -> counter  */
@@ -657,8 +662,9 @@ fake_apply (const FsIntelRuleset *rs, GError **error)
 	kern.got_sets = rs->sets->len;
 	if (kern.mode == APPLY_OK || kern.mode == APPLY_COMMITTED) {
 		/* The empty rule set renders no table. */
-		kern.live = rs->sets->len ? FS_INTEL_LIVE_PRESENT
-		                          : FS_INTEL_LIVE_ABSENT;
+		kern.live = rs->sets->len == 0 ? FS_INTEL_LIVE_ABSENT
+		            : kern.apply_inactive ? FS_INTEL_LIVE_INACTIVE
+		            : FS_INTEL_LIVE_PRESENT;
 		g_free (kern.live_digest);
 		kern.live_digest = rs->sets->len ? g_strdup (digest) : NULL;
 		/* A new table: every set with addresses has its counter
@@ -736,7 +742,8 @@ fake_live (gchar **digest)
 		*digest = NULL;
 	if (kern.live_unknown || kern.no_tool)
 		return FS_INTEL_LIVE_UNKNOWN;
-	if (digest != NULL && kern.live == FS_INTEL_LIVE_PRESENT)
+	if (digest != NULL && (kern.live == FS_INTEL_LIVE_PRESENT ||
+	                       kern.live == FS_INTEL_LIVE_INACTIVE))
 		*digest = g_strdup (kern.live_digest);
 	return kern.live;
 }
@@ -747,8 +754,14 @@ fake_live_error (void)
 	return g_strdup (kern.live_error);
 }
 
+static gchar *
+fake_not_in_force (void)
+{
+	return g_strdup (kern.not_in_force);
+}
+
 static FsBackend fake_backend;
-static FsBackend bare_backend;   /* no intel slots (Windows today)   */
+static FsBackend bare_backend;   /* no intel slots (another platform) */
 
 static void
 kern_reset (void)
@@ -761,6 +774,8 @@ kern_reset (void)
 	kern.live_unknown = FALSE;
 	kern.no_tool = FALSE;
 	kern.counters_unreadable = FALSE;
+	kern.apply_inactive = FALSE;
+	g_clear_pointer (&kern.not_in_force, g_free);
 	kern.live = FS_INTEL_LIVE_ABSENT;
 	g_clear_pointer (&kern.live_digest, g_free);
 	g_clear_pointer (&kern.got_digest, g_free);
@@ -775,6 +790,7 @@ kern_reset (void)
 	fake_backend.intel_clear = fake_clear;
 	fake_backend.intel_counters = fake_counters;
 	fake_backend.intel_live = fake_live;
+	fake_backend.intel_not_in_force = NULL;
 	bare_backend.name = "bare";
 }
 
@@ -2201,6 +2217,39 @@ test_build (void)
 	if (notes != NULL)
 		for (guint i = 0; i < notes->len; i++)
 			g_print ("      note: %s\n", (gchar *) notes->pdata[i]);
+	if (rs != NULL) {
+		/* Windows Firewall has no "allow wins": a block rule beats any
+		 * allow rule, so an exception only holds because the build
+		 * subtracted it before any rule was written.  The rules the
+		 * Windows backend would write never name a subtracted address. */
+		FsIntelWinPlan *plan = fs_intelwin_plan (rs, "g00000001",
+		                                         FS_INTELWIN_MAX_TOKENS,
+		                                         FS_INTELWIN_MAX_CHARS);
+		FsRangeSet *all = fs_range_set_new ();
+		gboolean parsed = plan != NULL && plan->rules->len > 1;
+
+		for (guint i = 0; plan != NULL && i < plan->rules->len; i++) {
+			const FsIntelWinRule *r = plan->rules->pdata[i];
+
+			if (r->family != FS_AF_NONE &&
+			    !fs_intelwin_parse_remote (r->remote, all))
+				parsed = FALSE;
+		}
+		fs_range_set_normalize (all);
+		CHECK (parsed &&
+		       fs_range_set_contains_text (all, "45.0.0.1") &&
+		       !fs_range_set_contains_text (all, "45.0.0.7") &&
+		       !fs_range_set_contains_text (all, "64:ff9b::2d08:2") &&
+		       !fs_range_set_contains_text (all, "64:ff9b::2d00:7") &&
+		       !fs_range_set_contains_text (all, "203.0.113.5") &&
+		       !fs_range_set_contains_text (all, "192.0.2.22") &&
+		       !fs_range_set_contains_text (all, "203.0.113.1"),
+		       "build -> Windows rules: exceptions and kept addresses are "
+		       "subtracted before any rule is written, so no Windows "
+		       "block rule names them");
+		fs_range_set_free (all);
+		fs_intelwin_plan_free (plan);
+	}
 	g_free (text);
 	g_clear_pointer (&notes, g_ptr_array_unref);
 	fs_intel_ruleset_free (rs);
@@ -3187,6 +3236,174 @@ typedef struct
 	gboolean     prot, exc, host;
 } LookupCase;
 
+
+/* ---- Windows: rules that are not whole, or not in force (Round 3) --- */
+
+static void
+test_state_windows (void)
+{
+	FsIntelConfig *c = fs_intel_config_new ();
+	FsHostNet *h = host_fixture ();
+	FsBackend win = { 0 };
+	FsIntelOutcome *o;
+	GError *e = NULL;
+	gchar *detail = NULL, *digest;
+	FsIntelState st;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+	audit_reset ();
+	fake_backend.intel_not_in_force = fake_not_in_force;
+	g_free (import_text (c, "Win", "45.0.0.1\n45.0.0.3\n",
+	                     FS_INTEL_DIR_BOTH, NULL));
+	fs_intel_config_save (c, NULL);
+
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_OK &&
+	       state_of (c, NULL) == FS_INTEL_STATE_ENFORCED,
+	       "windows states: applied and read back whole is enforced");
+	digest = o ? g_strdup (o->digest) : NULL;
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+
+	/* PARTIAL: some of our rules there, not as written. */
+	kern.live = FS_INTEL_LIVE_PARTIAL;
+	st = state_of (c, &detail);
+	CHECK (st == FS_INTEL_STATE_DIFFERS && detail &&
+	       strstr (detail, "missing or were changed"),
+	       "windows states: rules missing or edited outside StockFW read "
+	       "\"differs\", never enforced (%s)", detail);
+	g_clear_pointer (&detail, g_free);
+
+	/* Apply over PARTIAL replaces them. */
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_OK && kern.apply_calls == 2 &&
+	       kern.live == FS_INTEL_LIVE_PRESENT,
+	       "windows states: an apply over partial rules writes them "
+	       "again, even with the same digest");
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+
+	/* INACTIVE: the rules are whole, the firewall does not enforce
+	 * them. */
+	kern.live = FS_INTEL_LIVE_INACTIVE;
+	kern.not_in_force = g_strdup ("Windows Firewall is off for the "
+	                              "Public profile.");
+	st = state_of (c, &detail);
+	CHECK (st == FS_INTEL_STATE_NOT_IN_FORCE &&
+	       g_strcmp0 (detail, kern.not_in_force) == 0,
+	       "windows states: whole rules the firewall does not enforce read "
+	       "\"not in force\" with the backend's reason (%s)", detail);
+	g_clear_pointer (&detail, g_free);
+	CHECK (g_strcmp0 (fs_intel_state_to_string (st), "not-in-force") == 0,
+	       "windows states: the state's name is \"not-in-force\"");
+
+	g_free (kern.live_digest);
+	kern.live_digest = g_strdup ("0123456789abcdef0123456789abcdef");
+	st = state_of (c, &detail);
+	CHECK (st == FS_INTEL_STATE_NOT_IN_FORCE && detail &&
+	       strstr (detail, "Public profile") &&
+	       strstr (detail, "not the ones StockFW last applied"),
+	       "windows states: not in force with other rules says both (%s)",
+	       detail);
+	g_clear_pointer (&detail, g_free);
+	g_free (kern.live_digest);
+	kern.live_digest = g_strdup (digest);
+
+	g_clear_pointer (&kern.not_in_force, g_free);
+	st = state_of (c, &detail);
+	CHECK (st == FS_INTEL_STATE_NOT_IN_FORCE && detail && *detail,
+	       "windows states: not in force without a reason still says so "
+	       "(%s)", detail);
+	g_clear_pointer (&detail, g_free);
+
+	/* UNKNOWN, and the platform knows nothing is enforced. */
+	kern.live_unknown = TRUE;
+	kern.not_in_force = g_strdup ("The Windows Firewall service (MpsSvc) "
+	                              "is not running.");
+	st = state_of (c, &detail);
+	CHECK (st == FS_INTEL_STATE_NOT_IN_FORCE &&
+	       detail && strstr (detail, "MpsSvc"),
+	       "windows states: rules that cannot be read with the service "
+	       "stopped read \"not in force\" (%s)", detail);
+	g_clear_pointer (&detail, g_free);
+	g_clear_pointer (&kern.not_in_force, g_free);
+	st = state_of (c, NULL);
+	CHECK (st == FS_INTEL_STATE_UNKNOWN || st == FS_INTEL_STATE_NEEDS_ROOT,
+	       "windows states: unreadable with nothing known is never "
+	       "\"not in force\" or \"enforced\" (%s)",
+	       fs_intel_state_to_string (st));
+	kern.live_unknown = FALSE;
+
+	/* An apply that leaves the rules not in force: OK, with a note
+	 * that says they block nothing yet. */
+	kern.apply_inactive = TRUE;
+	kern.not_in_force = g_strdup ("Windows Firewall is off for the "
+	                              "Public profile.");
+	kern.live = FS_INTEL_LIVE_ABSENT;
+	g_clear_pointer (&kern.live_digest, g_free);
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	{
+		gboolean noted = FALSE;
+
+		for (guint i = 0; o != NULL && i < o->notes->len; i++)
+			if (strstr (o->notes->pdata[i], "not in force") &&
+			    strstr (o->notes->pdata[i], "Public profile"))
+				noted = TRUE;
+		CHECK (o && o->result == FS_APPLY_OK && noted,
+		       "windows states: an apply whose rules are not enforced "
+		       "is OK and says, in its notes, that they are not in "
+		       "force");
+	}
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+	kern.apply_inactive = FALSE;
+
+	/* Stop removes rules that are there, whole or not. */
+	kern.live = FS_INTEL_LIVE_PARTIAL;
+	kern.clear_calls = 0;
+	CHECK (fs_intel_suspend (&fake_backend, "test", &e) &&
+	       kern.clear_calls == 1 && kern.live == FS_INTEL_LIVE_ABSENT,
+	       "windows states: Stop removes partial rules too");
+	g_clear_error (&e);
+	kern.live = FS_INTEL_LIVE_INACTIVE;
+	kern.live_digest = g_strdup (digest);
+	kern.clear_calls = 0;
+	CHECK (fs_intel_suspend (&fake_backend, "test", &e) &&
+	       kern.clear_calls == 1 && kern.live == FS_INTEL_LIVE_ABSENT,
+	       "windows states: Stop removes rules that are not in force");
+	g_clear_error (&e);
+
+	/* Counts: a backend that applies but cannot count says so, never
+	 * "0 blocked". */
+	win.name = "windows-like";
+	win.intel_apply = fake_apply;
+	win.intel_clear = fake_clear;
+	win.intel_live = fake_live;
+	{
+		GHashTable *t = fs_intel_counters (&win);
+
+		CHECK (fs_intel_counts_unavailable (&win) != NULL &&
+		       strstr (fs_intel_counts_unavailable (&win),
+		               "cannot show") &&
+		       t != NULL && g_hash_table_size (t) == 0,
+		       "windows states: no counters slot -> counts are not "
+		       "available (\"%s\"), and no list gets a count of 0",
+		       fs_intel_counts_unavailable (&win));
+		g_hash_table_unref (t);
+	}
+	CHECK (fs_intel_counts_unavailable (&fake_backend) == NULL &&
+	       fs_intel_counts_unavailable (&bare_backend) == NULL,
+	       "windows states: a backend that counts, or has no blocklists "
+	       "at all, gets no such sentence");
+
+	fake_backend.intel_not_in_force = NULL;
+	g_free (digest);
+	fs_hostnet_free (h);
+	fs_intel_config_free (c);
+}
+
 static void
 test_lookup (void)
 {
@@ -3729,6 +3946,7 @@ test_engine (const gchar *argv0)
 	test_gate_same_digest ();
 	test_gate_start_stop ();
 	test_state_rules ();
+	test_state_windows ();
 	test_lookup ();
 	test_lookup_live ();
 	test_engine_lock ();

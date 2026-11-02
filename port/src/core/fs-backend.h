@@ -59,7 +59,22 @@ typedef enum
 {
 	FS_INTEL_LIVE_UNKNOWN = 0,   /* cannot tell (not root, no nft)       */
 	FS_INTEL_LIVE_ABSENT,
-	FS_INTEL_LIVE_PRESENT
+	FS_INTEL_LIVE_PRESENT,
+	/* Round 3 (Windows), where the rules are many and can be edited
+	 * one by one: */
+	FS_INTEL_LIVE_PARTIAL,       /* some of StockFW's rules are there,
+	                              * but not a whole, unaltered rule set
+	                              * (a rule removed, edited or added);
+	                              * never with a digest                 */
+	FS_INTEL_LIVE_INACTIVE       /* some of StockFW's rules are there
+	                              * (with the digest when they are
+	                              * whole), and the firewall does not
+	                              * enforce them on some network in
+	                              * use: intel_not_in_force says why.
+	                              * Rules that cannot be read at all
+	                              * (the firewall service is stopped)
+	                              * are UNKNOWN; intel_not_in_force
+	                              * still says why nothing is enforced */
 } FsIntelLive;
 
 /* Where this computer is connected and which firewall profiles are in
@@ -264,6 +279,16 @@ typedef struct
 	 * Install the nftables package ..."); NULL when it did not or the
 	 * platform cannot say.  Caller frees.  Optional (NULL slot). */
 	gchar *(*intel_live_error) (void);
+	/* Round 3: why the platform's firewall does not enforce the rules
+	 * right now -- one caller-owned sentence ("Windows Firewall is off
+	 * for the Public profile, which the network in use has.") -- or
+	 * NULL when it does, or cannot tell.  When StockFW's rules are
+	 * there, intel_live answers INACTIVE exactly when this has
+	 * something to say; when they cannot be read, UNKNOWN, and this
+	 * still says why nothing is in force.  NULL slot: rules that
+	 * are loaded are in force (Linux: the nft table filters whether or
+	 * not the policy runs). */
+	gchar *(*intel_not_in_force) (void);
 } FsBackend;
 
 /* Profile identifiers, matching Windows' own numbering. */

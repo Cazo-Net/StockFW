@@ -566,12 +566,15 @@ fs_util_rules_path (const gchar *relative)
 	return g_build_filename (dir, relative, NULL);
 }
 
-/* [ name_is_ours ] -- every spelling our rule names have shipped
+/* [ fs_netsh_rule_name_is_ours ] -- every spelling our rule names have shipped
  * with: the "StockFW- " prefix (netsh-safe, ':' rewritten to '-')
  * and the older "StockFW " space prefix. */
-static gboolean
-name_is_ours (const gchar *name)
+gboolean
+fs_netsh_rule_name_is_ours (const gchar *name)
 {
+	if (name == NULL)
+		return FALSE;
+
 	return g_str_has_prefix (name, "StockFW-") ||
 	       g_str_has_prefix (name, "StockFW ");
 }
@@ -616,7 +619,7 @@ fs_netsh_rule_names_extract (const gchar *output)
 			name = g_strstrip (line);
 		}
 
-		if (name != NULL && *name != '\0' && name_is_ours (name))
+		if (name != NULL && *name != '\0' && fs_netsh_rule_name_is_ours (name))
 			g_hash_table_add (names, g_strdup (name));
 	}
 
