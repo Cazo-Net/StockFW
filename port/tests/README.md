@@ -274,10 +274,12 @@ differ) and offers only fixes it re-simulated.  The design is
 `docs/ARCHITECTURE-AND-SECURITY.md` section 14.3.  `test-whatif.c`
 (pure GLib) pins:
 
-- the reading: 25 lines with what was recognised, and refusals
+- the reading: 54 lines with what was recognised, and refusals
   instead of guesses (nothing recognisable, port 0 or above 65535, a
-  bad address);
-- a 92-row golden table over both models: CIDR blocks both ways,
+  bad address, a port range or list, a second host, a pattern, a zone,
+  a negated request); host names read as the far end but not looked
+  up; durations and counts that are not ports;
+- a 112-row golden table over both models: CIDR blocks both ways,
   IPv6, ICMP types and the settings behind them, host names ("depends
   on DNS"), DEPENDS with the split in words, both directions for a line
   without one, the user's verb, Sentinel's blocks with their expiry, a
@@ -297,7 +299,12 @@ differ) and offers only fixes it re-simulated.  The design is
   named-service, every-host and host-name rows;
 - a brute-force sweep: every allow offered for 35 lines x 6 policies x
   3 settings x 2 platforms is one TCP or UDP port, both in the rules
-  Windows compiles for it and in every line it adds to the Linux script.
+  Windows compiles for it and in every line it adds to the Linux script;
+- the second review (`test_review`): no allow for a line naming no host
+  or an unread one, the allow for anyone labelled and warned, the
+  stopped firewall's two verdicts, forwards outside router mode,
+  "Block all incoming", interfaces in router mode, ICMP replies, and
+  the notes each of these adds.
 
 The card and the window are driven by two UI smokes (run under
 `xvfb-run -a`; set `FS_SHOT_DIR` to a directory to save screenshots):
@@ -320,9 +327,13 @@ The card and the window are driven by two UI smokes (run under
   on hold and, as root, in a network namespace of its own.
 
 `test-whatif-live.sh` runs in a private network namespace with a veth
-peer that plays every remote host.  It loads three policy/settings
-rounds through the real Linux backend, then sends 36 real TCP, UDP and
-ICMP probes (Python sockets, raw ICMP echo) in both directions.  The
+peer that plays every remote host, and a third namespace behind v2
+that plays a machine on the computer's own network.  It loads six
+policy/settings rounds through the real Linux backend, then sends 46
+real TCP, UDP and ICMP probes (Python sockets, raw ICMP echo) in both
+directions: zero-padded ports (round 4), an echo reply nobody asked
+for (caught by a raw socket after INPUT), a forward in router mode
+(round 5) and outside it with IP forwarding off and on (round 6).  The
 engine's verdict must equal what the kernel did for each one.  IPv4
 only, since the test kernel has no IPv6.  It SKIPs without root,
 iptables, ip, unshare, nsenter or python3.
@@ -340,6 +351,13 @@ Teeth, each re-injected into `fs-whatif.c`, seen failing, and restored
 | the Linux model reads an outbound service row's host as the destination (b6) | 53 pin checks; live: round 2's DNS probe |
 | the matcher ignores an outbound row's source address (the pin cannot see it) | live: round 2's DNS probe; the golden local-address row |
 | "from the internet" not read as a direction | "read: \"block RDP from the internet\"", "read: \"allow https to anywhere\"" |
+| a hostless allow offered for every host | golden "allow inbound ssh" offers no Create |
+| an unread host name allowed as "anyone" | "review: an unread name is never widened to anyone" |
+| IP forwarding not modelled | the forward goldens; live round 6 |
+| the ESTABLISHED rule matching unsolicited replies | live round 4's unasked echo reply |
+| "Block all incoming" ignored | the shields goldens and their note |
+| an ICMP answer to an open connection counted against a block row | "fix: on Windows a whole host is blocked with a deny-to row" |
+| ports written as typed (`fs-script.c`) | test-core "a zero-padded port is written in plain decimal"; live round 4 |
 
 And in the UI (`fs-simviz.c`, `fs-copilot.c`):
 
@@ -350,4 +368,7 @@ And in the UI (`fs-simviz.c`, `fs-copilot.c`):
 | Close without the primary style | "Close is the dialog's sensitive default action, primary style" (and the dark run's face check) |
 | the animation played with animations off | "reduced motion: the final frame at once, nothing to replay" |
 | the card's line without the saved-policy caveat | "what-if: with applies on hold the one line says it describes the saved policy" |
+| folded rows left in the focus chain | "review: a run of non-matching rules is folded, its rows hidden" |
+| the allow-for-everyone button primary | "review: an allow for everyone is offered, not as the primary button" |
+| the stopped header saying it describes the saved policy | "a stopped firewall and a held policy are said up front" |
 | Create written without asking | "Create asks first", "answering No writes nothing" |

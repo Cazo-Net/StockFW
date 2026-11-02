@@ -91,6 +91,8 @@ fs_whatif_query_copy (const FsWhatIfQuery *query)
 	q->icmp_type = g_strdup (query->icmp_type);
 	q->service = g_strdup (query->service);
 	q->confidence = query->confidence;
+	q->host_unread = g_strdup (query->host_unread);
+	q->host_any_said = query->host_any_said;
 
 	for (guint i = 0; query->pieces != NULL && i < query->pieces->len; i++) {
 		const FsWhatIfPiece *src = g_ptr_array_index (query->pieces, i);
@@ -115,6 +117,7 @@ fs_whatif_query_free (FsWhatIfQuery *query)
 	g_free (query->host);
 	g_free (query->icmp_type);
 	g_free (query->service);
+	g_free (query->host_unread);
 	if (query->pieces != NULL)
 		g_ptr_array_unref (query->pieces);
 	g_free (query);
@@ -149,8 +152,10 @@ fs_whatif_context_new (FsWhatIfPlatform platform, const FsPolicy *policy,
 	ctx->policy = policy;
 	ctx->settings = settings;
 	ctx->firewall = FS_WHATIF_FW_UNKNOWN;
-	for (gint i = 0; i < 3; i++)
+	for (gint i = 0; i < 3; i++) {
 		ctx->profile_enabled[i] = -1;
+		ctx->block_all_inbound[i] = -1;
+	}
 	ctx->auto_blocks = g_ptr_array_new_with_free_func (auto_block_free);
 	ctx->local_addresses = g_ptr_array_new_with_free_func (g_free);
 	return ctx;
@@ -682,52 +687,247 @@ find_phrase (GArray *toks, const gchar *phrase)
 	return -1;
 }
 
-/* [ table_service ]
- * The service table's longest name the line contains as whole
- * words, or NULL. */
-static const FsService *
-table_service (const gchar *lower)
+/* [ find_free_phrase ]
+ * Where a run of words (split the way the line is split) starts among
+ * tokens no recogniser has taken, or -1; *n_out gets its length.  A
+ * service is only ever a whole word of its own: never a piece of a
+ * host name ("telnet.example.com") or of another word. */
+static gint
+find_free_phrase (GArray *toks, const gchar *phrase, guint *n_out)
 {
-	const FsService *best = NULL;
-	gsize best_len = 0;
-	guint counts[2];
-	const FsService *lists[2];
+	GArray *words = tokenize (phrase);
+	gint found = -1;
 
-	lists[0] = fs_service_user_list (&counts[0]);
-	lists[1] = fs_service_misc_list (&counts[1]);
+	for (guint i = 0; words->len > 0 && i + words->len <= toks->len &&
+	                  found < 0; i++) {
+		gboolean all = TRUE;
 
-	for (guint l = 0; l < 2; l++) {
-		for (guint i = 0; i < counts[l]; i++) {
-			gchar *needle = g_ascii_strdown (lists[l][i].name, -1);
-			gsize nlen = strlen (needle);
-			const gchar *p = lower;
+		for (guint k = 0; k < words->len && all; k++) {
+			const Tok *t = TOK (toks, i + k);
 
-			while ((p = strstr (p, needle)) != NULL) {
-				gboolean left = (p == lower || !g_ascii_isalnum (p[-1]));
-				gboolean right = !g_ascii_isalnum (p[nlen]);
-
-				if (left && right && nlen > best_len) {
-					best = &lists[l][i];
-					best_len = nlen;
-				}
-				p++;
-			}
-			g_free (needle);
+			all = !t->used &&
+			      strcmp (t->lower, TOK (words, k)->lower) == 0;
 		}
+		if (all)
+			found = (gint) i;
 	}
 
-	return best;
+	if (n_out != NULL)
+		*n_out = words->len;
+	g_array_unref (words);
+	return found;
 }
 
-static const gchar *self_words[] = {
-	"me", "us", "myself", "localhost", "here", "local", "this", "my", NULL
+/* "from me", "to us": this computer, whatever follows. */
+static const gchar *self_always[] = {
+	"me", "us", "myself", "localhost", "here", NULL
 };
+
+/* "this computer", "the local machine", "my own pc": this computer --
+ * but "my laptop 192.168.1.20" and "the local network" are not. */
+static const gchar *self_nouns[] = {
+	"computer", "machine", "pc", "host", "box", "device", "system",
+	"server", "laptop", "desktop", "workstation", NULL
+};
+static const gchar *self_nouns_my[] = {
+	"computer", "machine", "pc", NULL
+};
+
+/* [ self_at ]
+ * How many tokens at i say "this computer" (0: they do not). */
+static guint
+self_at (GArray *toks, gint i)
+{
+	gint n;
+
+	if (tok_is_any (toks, i, self_always))
+		return 1;
+
+	if (!tok_is (toks, i, "this") && !tok_is (toks, i, "my") &&
+	    !tok_is (toks, i, "local"))
+		return 0;
+
+	n = i + 1;
+	if (tok_is (toks, n, "own"))
+		n++;
+	if ((guint) n >= toks->len)
+		return (guint) (n - i);      /* "from this", "to my own" */
+	if (tok_is_any (toks, n, tok_is (toks, i, "my") ? self_nouns_my
+	                                              : self_nouns))
+		return (guint) (n - i + 1);
+	/* "reach my SSH", "this web server": a service already read is
+	 * one this computer runs. */
+	if (!tok_is (toks, i, "local") && TOK (toks, n)->used)
+		return (guint) (n - i);
+	return 0;
+}
+
+/* Somewhere that is not this computer and could be anyone. */
+static const gchar *any_words[] = {
+	"internet", "outside", "anywhere", "anyone", "everyone", "everybody",
+	"anybody", "world", "wan", "public", "all", NULL
+};
+static const gchar *any_heads[] = { "any", "all", "every", NULL };
+static const gchar *any_tails[] = {
+	"host", "hosts", "address", "addresses", "ip", "ips", "computer",
+	"computers", "machine", "machines", "one", "where", NULL
+};
+
+/* [ any_at ] -- tokens at i saying "anyone" ("any host", "the
+ * internet"); 0 when they do not. */
+static guint
+any_at (GArray *toks, gint i)
+{
+	if (tok_is_any (toks, i, any_words))
+		return 1;
+	if (tok_is_any (toks, i, any_heads) && tok_is_any (toks, i + 1, any_tails))
+		return 2;
+	return 0;
+}
+
+/* The local network: other computers, but not "anyone". */
+static const gchar *lan_words[] = {
+	"lan", "intranet", "subnet", "network", "wifi", "wlan", NULL
+};
+static const gchar *lan_heads[] = {
+	"local", "home", "office", "internal", "private", "my", "our", NULL
+};
+
+/* [ lan_at ] -- tokens at i naming the local network; 0 if not. */
+static guint
+lan_at (GArray *toks, gint i)
+{
+	if (tok_is_any (toks, i, lan_words))
+		return 1;
+	if (tok_is_any (toks, i, lan_heads) && tok_is_any (toks, i + 1, lan_words))
+		return 2;
+	return 0;
+}
+
+static gboolean
+has_non_ascii (const gchar *s)
+{
+	for (; *s != '\0'; s++)
+		if ((guchar) *s >= 0x80)
+			return TRUE;
+	return FALSE;
+}
+
+/* [ is_port_range_token ] -- "22-80", "8000:8010". */
+static gboolean
+is_port_range_token (const gchar *s)
+{
+	const gchar *sep = strpbrk (s, "-:");
+	gchar *head;
+	gboolean ok;
+
+	if (sep == NULL || sep == s || sep[1] == '\0')
+		return FALSE;
+	head = g_strndup (s, (gsize) (sep - s));
+	ok = all_digits (head) && all_digits (sep + 1);
+	g_free (head);
+	return ok;
+}
+
+/* [ unreadable_host ]
+ * A token written as an address that is not one: a pattern, a range,
+ * an address with a zone, a block with a bad length, digits that are
+ * not 0-9.  Its error, or NULL.  Dropping such a token would answer
+ * (and offer a rule) for every host instead of the one meant. */
+static gchar *
+unreadable_host (const gchar *text, const gchar *lower)
+{
+	gboolean addressy = (strchr (lower, '.') != NULL ||
+	                     strchr (lower, ':') != NULL);
+	gboolean digit = FALSE;
+	const gchar *cut;
+
+	for (const gchar *p = lower; *p != '\0'; p++)
+		if (g_ascii_isdigit (*p))
+			digit = TRUE;
+
+	if (strchr (lower, '*') != NULL && (addressy || digit))
+		return g_strdup_printf (_("\"%s\" is a pattern, not an address: "
+		                          "type one address, or a block such as "
+		                          "192.168.1.0/24."), text);
+
+	if (!addressy)
+		return NULL;
+
+	if (has_non_ascii (text))
+		return g_strdup_printf (_("\"%s\" is not an address I can read: "
+		                          "type it with the digits 0-9 (host "
+		                          "names are not looked up here)."), text);
+
+	if (strchr (lower, '%') != NULL)
+		return g_strdup_printf (_("\"%s\" names a zone: type the address "
+		                          "without the %%... part."), text);
+
+	if ((cut = strchr (lower, '-')) != NULL) {
+		gchar *head = g_strndup (lower, (gsize) (cut - lower));
+		gchar *addr = canonical_host (head);
+		gboolean range = (addr != NULL || looks_numeric_host (head));
+
+		g_free (addr);
+		g_free (head);
+		if (range)
+			return g_strdup_printf (_("\"%s\" is a range: type one "
+			                          "address, or a block such as "
+			                          "10.0.0.0/24."), text);
+	}
+
+	if ((cut = strchr (lower, '/')) != NULL) {
+		gchar *head = g_strndup (lower, (gsize) (cut - lower));
+		gchar *addr = canonical_host (head);
+		gboolean block = (addr != NULL || looks_numeric_host (head));
+
+		g_free (addr);
+		g_free (head);
+		if (block)
+			return g_strdup_printf (_("\"%s\" is not a block: the length "
+			                          "after / is a number up to 32 (128 "
+			                          "for IPv6)."), text);
+	}
+
+	return NULL;
+}
+
+/* [ port_take ]
+ * The line's port.  A second, different port is an error: an answer
+ * (and a rule) for the first alone would quietly drop the other. */
+static gboolean
+port_take (FsWhatIfQuery *q, guint port, const gchar *text,
+           gchar *meaning, GError **error)
+{
+	if (q->port == 0) {
+		q->port = port;
+		piece_add (q, FS_WHATIF_PIECE_PORT, text, meaning);
+		return TRUE;
+	}
+
+	g_free (meaning);
+	if (q->port == port)
+		return TRUE;
+
+	g_set_error (error, FS_WHATIF_PARSE_ERROR, FS_WHATIF_ERR_BAD_PORT,
+	             _("Ask about one port at a time: the line names port %u "
+	               "and port %u."), q->port, port);
+	return FALSE;
+}
+
+static void
+host_unread_set (FsWhatIfQuery *q, const gchar *text)
+{
+	if (q->host_unread == NULL)
+		q->host_unread = g_strdup (text);
+}
 
 /* [ read_tokens ]
  * Hosts, host:port, [v6]:port, tcp/22 and 53/udp.  Errors for an
- * address or port that cannot be one.  Returns the host token. */
+ * address or port that cannot be one, and for a second host.  Returns
+ * the host token. */
 static gint
-read_tokens (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
+read_tokens (FsWhatIfQuery *q, GArray *toks,
              gint *ignored, GError **error)
 {
 	gint host_tok = -1;
@@ -738,6 +938,7 @@ read_tokens (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
 		guint port = 0;
 		gint proto = P_ANY;
 		GError *local = NULL;
+		gchar *bad;
 
 		if (t->lower[0] == '[') {
 			/* [2001:db8::1] or [2001:db8::1]:443 */
@@ -763,6 +964,10 @@ read_tokens (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
 						             close + 2);
 				}
 				g_free (inner);
+			} else {
+				g_set_error (&local, FS_WHATIF_PARSE_ERROR,
+				             FS_WHATIF_ERR_BAD_HOST,
+				             _("\"%s\" is not an address."), t->text);
 			}
 		} else if (g_str_has_prefix (t->lower, "tcp/") ||
 		           g_str_has_prefix (t->lower, "udp/") ||
@@ -776,7 +981,13 @@ read_tokens (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
 			                    : g_strndup (t->lower,
 			                                 strlen (t->lower) - 4);
 
-			port = read_port (num, &local);
+			if (is_port_range_token (num))
+				g_set_error (&local, FS_WHATIF_PARSE_ERROR,
+				             FS_WHATIF_ERR_BAD_PORT,
+				             _("Ask about one port at a time: \"%s\" is "
+				               "a range of ports."), t->text);
+			else
+				port = read_port (num, &local);
 			if (port != 0)
 				proto = (strstr (t->lower, "tcp") != NULL) ? P_TCP
 				                                           : P_UDP;
@@ -785,6 +996,15 @@ read_tokens (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
 		            strchr (t->text, ':') != NULL) &&
 		           (host = canonical_host (t->text)) != NULL) {
 			/* a plain address or block */
+		} else if (is_port_range_token (t->lower)) {
+			g_set_error (&local, FS_WHATIF_PARSE_ERROR,
+			             FS_WHATIF_ERR_BAD_PORT,
+			             _("Ask about one port at a time: \"%s\" is a "
+			               "range of ports."), t->text);
+		} else if ((bad = unreadable_host (t->text, t->lower)) != NULL) {
+			g_set_error_literal (&local, FS_WHATIF_PARSE_ERROR,
+			                     FS_WHATIF_ERR_BAD_HOST, bad);
+			g_free (bad);
 		} else {
 			const gchar *colon = strrchr (t->text, ':');
 
@@ -814,6 +1034,7 @@ read_tokens (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
 					piece_add (q, FS_WHATIF_PIECE_IGNORED, t->text,
 					           g_strdup (_("host names are not looked "
 					                       "up here; type its address")));
+					host_unread_set (q, head);
 					(*ignored)++;
 					t->used = TRUE;
 				}
@@ -830,9 +1051,16 @@ read_tokens (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
 				piece_add (q, FS_WHATIF_PIECE_IGNORED, t->text,
 				           g_strdup (_("host names are not looked up "
 				                       "here; type its address")));
+				host_unread_set (q, t->text);
 				(*ignored)++;
 				t->used = TRUE;
 			}
+		}
+
+		if (local == NULL && port != 0) {
+			t->used = TRUE;
+			port_take (q, port, t->text,
+			           g_strdup_printf (_("port %u"), port), &local);
 		}
 
 		if (local != NULL) {
@@ -850,24 +1078,17 @@ read_tokens (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
 				                            ? _("hosts in %s")
 				                            : _("host %s"), host));
 			} else if (strcmp (q->host, host) != 0) {
-				piece_add (q, FS_WHATIF_PIECE_IGNORED, t->text,
-				           g_strdup (_("a second host: one connection "
-				                       "has one other end")));
-				(*conflicts)++;
+				/* Answering for the first and dropping the second
+				 * would answer, and offer a rule for, less than was
+				 * asked without saying so. */
+				g_set_error (error, FS_WHATIF_PARSE_ERROR,
+				             FS_WHATIF_ERR_BAD_HOST,
+				             _("Ask about one host at a time: the line "
+				               "names %s and %s."), q->host, host);
 				g_free (host);
+				return -1;
 			} else {
 				g_free (host);
-			}
-			t->used = TRUE;
-		}
-
-		if (port != 0) {
-			if (q->port == 0) {
-				q->port = port;
-				piece_add (q, FS_WHATIF_PIECE_PORT, t->text,
-				           g_strdup_printf (_("port %u"), port));
-			} else if (q->port != port) {
-				(*conflicts)++;
 			}
 			t->used = TRUE;
 		}
@@ -886,8 +1107,7 @@ read_tokens (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
 /* [ read_port_words ]
  * "port N", "N port", "on N", "tcp N", "port number N". */
 static gboolean
-read_port_words (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
-                 GError **error)
+read_port_words (FsWhatIfQuery *q, GArray *toks, GError **error)
 {
 	static const gchar *before[] = {
 		"port", "ports", "on", "at", "tcp", "udp", NULL
@@ -920,28 +1140,43 @@ read_port_words (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
 			continue;
 
 		port = read_port (digits, &local);
+		if (local == NULL) {
+			t->used = TRUE;
+			port_take (q, port, t->text,
+			           g_strdup_printf (_("port %u"), port), &local);
+		}
 		if (local != NULL) {
 			g_propagate_error (error, local);
 			return FALSE;
 		}
-
-		t->used = TRUE;
-		if (q->port == 0) {
-			q->port = port;
-			piece_add (q, FS_WHATIF_PIECE_PORT, t->text,
-			           g_strdup_printf (_("port %u"), port));
-		} else if (q->port != port) {
-			piece_add (q, FS_WHATIF_PIECE_IGNORED, t->text,
-			           g_strdup_printf (_("a second port: %u is used"),
-			                            q->port));
-			(*conflicts)++;
-		}
 	}
 
-	/* A number standing on its own ("allow 8080", "443 to
-	 * 203.0.113.9") is a port: nothing else in a firewall question is
-	 * a bare number. */
-	for (guint i = 0; i < toks->len && q->port == 0; i++) {
+	return TRUE;
+}
+
+/* A number followed by one of these counts or times something; it is
+ * not a port ("for 1 hour", "3 times"). */
+static const gchar *count_words[] = {
+	"second", "seconds", "sec", "secs", "minute", "minutes", "min", "mins",
+	"hour", "hours", "hr", "hrs", "day", "days", "week", "weeks", "month",
+	"months", "year", "years", "time", "times", "x", "percent",
+	"attempt", "attempts", "try", "tries", "connection", "connections",
+	"packet", "packets", "user", "users", "people", "device", "devices",
+	"computer", "computers", "host", "hosts", "pc", "pcs", "am", "pm",
+	NULL
+};
+
+/* [ read_bare_numbers ]
+ * A number standing on its own ("allow 8080", "443 to 203.0.113.9") is
+ * a port -- unless a count or time word follows it.  Run after the
+ * service, so "rdp for 1 hour" stays RDP's port: when the service
+ * already gave the port, a different bare number is shown as not used
+ * rather than replacing it. */
+static gboolean
+read_bare_numbers (FsWhatIfQuery *q, GArray *toks, gboolean port_from_service,
+                   gint *conflicts, GError **error)
+{
+	for (guint i = 0; i < toks->len; i++) {
 		Tok *t = TOK (toks, i);
 		GError *local = NULL;
 		guint port;
@@ -949,17 +1184,39 @@ read_port_words (FsWhatIfQuery *q, GArray *toks, gint *conflicts,
 		if (t->used || !all_digits (t->lower))
 			continue;
 
+		if (tok_is_any (toks, (gint) i + 1, count_words)) {
+			t->used = TRUE;
+			piece_add (q, FS_WHATIF_PIECE_IGNORED, t->text,
+			           g_strdup_printf (_("\"%s %s\" counts or times "
+			                              "something; it is not a port"),
+			                            t->text, TOK (toks, i + 1)->text));
+			continue;
+		}
+
 		port = read_port (t->lower, &local);
 		if (local != NULL) {
 			g_propagate_error (error, local);
 			return FALSE;
 		}
-
 		t->used = TRUE;
-		q->port = port;
-		piece_add (q, FS_WHATIF_PIECE_PORT, t->text,
-		           g_strdup_printf (_("port %u (a number on its own is "
-		                              "read as a port)"), port));
+
+		if (port_from_service && q->port != 0 && q->port != port) {
+			piece_add (q, FS_WHATIF_PIECE_IGNORED, t->text,
+			           g_strdup_printf (_("a number on its own: %s's port "
+			                              "%u is used; write \"port %s\" "
+			                              "to ask about that port"),
+			                            q->service != NULL ? q->service
+			                                               : _("the service"),
+			                            q->port, t->text));
+			(*conflicts)++;
+			continue;
+		}
+
+		if (!port_take (q, port, t->text,
+		                g_strdup_printf (_("port %u (a number on its own "
+		                                   "is read as a port)"), port),
+		                error))
+			return FALSE;
 	}
 
 	return TRUE;
@@ -1027,27 +1284,54 @@ read_protocol (FsWhatIfQuery *q, GArray *toks, gint *conflicts)
 }
 
 /* [ read_service ]
- * A service name: the alias list, then the service table.  It gives
- * the port when the line named none, and the protocol when the
- * service has exactly one and the line named none. */
+ * A service name: the alias list, then the service table's names for
+ * services people run (not its list of old trojan ports: "girlfriend"
+ * is a word, not port 21544).  Matched only as whole words no other
+ * recogniser took, so a host name ("dns.google") never names a
+ * service.  It gives the port when the line named none, and the
+ * protocol when the service has exactly one and the line named none. */
 static void
-read_service (FsWhatIfQuery *q, GArray *toks, const gchar *lower)
+read_service (FsWhatIfQuery *q, GArray *toks)
 {
 	const Alias *best = NULL;
+	const FsService *svc = NULL;
 	gint best_at = -1;
+	guint best_n = 0;
 	gsize best_len = 0;
 	gint proto = P_ANY;
 	gboolean had_port = (q->port != 0);
 
 	for (guint a = 0; a < G_N_ELEMENTS (aliases); a++) {
-		gint at = find_phrase (toks, aliases[a].word);
+		guint n = 0;
+		gint at = find_free_phrase (toks, aliases[a].word, &n);
 
 		if (at >= 0 && strlen (aliases[a].word) > best_len) {
 			best = &aliases[a];
 			best_at = at;
+			best_n = n;
 			best_len = strlen (aliases[a].word);
 		}
 	}
+
+	if (best == NULL) {
+		guint count = 0;
+		const FsService *list = fs_service_user_list (&count);
+
+		for (guint i = 0; i < count; i++) {
+			guint n = 0;
+			gint at = find_free_phrase (toks, list[i].name, &n);
+
+			if (at >= 0 && strlen (list[i].name) > best_len) {
+				svc = &list[i];
+				best_at = at;
+				best_n = n;
+				best_len = strlen (list[i].name);
+			}
+		}
+	}
+
+	for (guint k = 0; best_at >= 0 && k < best_n; k++)
+		TOK (toks, (guint) best_at + k)->used = TRUE;
 
 	if (best != NULL) {
 		q->service = g_strdup (best->name);
@@ -1061,26 +1345,22 @@ read_service (FsWhatIfQuery *q, GArray *toks, const gchar *lower)
 		                            ? _("TCP or UDP")
 		                            : proto_name (best->proto),
 		                            had_port ? q->port : best->port));
-	} else {
-		const FsService *svc = table_service (lower);
+	} else if (svc != NULL) {
+		gchar *spec = fs_fwrule_port_spec (svc->ports);
+		guint first = spec ? (guint) g_ascii_strtoull (spec, NULL, 10)
+		                   : 0;
 
-		if (svc != NULL) {
-			gchar *spec = fs_fwrule_port_spec (svc->ports);
-			guint first = spec ? (guint) g_ascii_strtoull (spec, NULL, 10)
-			                   : 0;
-
-			g_free (spec);
-			q->service = g_strdup (svc->name);
-			proto = (svc->tcp_ports != NULL && svc->udp_ports == NULL)
-			        ? P_TCP
-			        : (svc->udp_ports != NULL && svc->tcp_ports == NULL)
-			        ? P_UDP : P_ANY;
-			if (!had_port && first >= 1 && first <= 65535)
-				q->port = first;
-			piece_add (q, FS_WHATIF_PIECE_SERVICE, svc->name,
-			           g_strdup_printf (_("service %s: port %u"),
-			                            svc->name, q->port));
-		}
+		g_free (spec);
+		q->service = g_strdup (svc->name);
+		proto = (svc->tcp_ports != NULL && svc->udp_ports == NULL)
+		        ? P_TCP
+		        : (svc->udp_ports != NULL && svc->tcp_ports == NULL)
+		        ? P_UDP : P_ANY;
+		if (!had_port && first >= 1 && first <= 65535)
+			q->port = first;
+		piece_add (q, FS_WHATIF_PIECE_SERVICE, svc->name,
+		           g_strdup_printf (_("service %s: port %u"),
+		                            svc->name, q->port));
 	}
 
 	if (q->protocol == FS_WHATIF_PROTO_ANY && q->port != 0 &&
@@ -1089,13 +1369,78 @@ read_service (FsWhatIfQuery *q, GArray *toks, const gchar *lower)
 		                               : FS_WHATIF_PROTO_UDP;
 }
 
+/* [ host_follows ]
+ * "from my laptop 192.168.1.20": the host comes a few plain words after
+ * "from" / "to". */
+static gboolean
+host_follows (GArray *toks, gint next, gint host_tok)
+{
+	static const gchar *stop[] = {
+		"from", "to", "into", "towards", "and", "or", "but", "on", "at",
+		"port", "ports", NULL
+	};
+
+	if (host_tok < next || host_tok - next > 3)
+		return FALSE;
+
+	for (gint k = next; k < host_tok; k++) {
+		const Tok *t = TOK (toks, k);
+
+		if (t->used || tok_is_any (toks, k, stop))
+			return FALSE;
+		for (const gchar *p = t->lower; *p != '\0'; p++)
+			if (!g_ascii_isalpha (*p))
+				return FALSE;
+	}
+	return TRUE;
+}
+
+/* [ unread_host_at ]
+ * TRUE when the token at i is a host the line named but that is not
+ * read: a name already set aside ("server.example.com"), or a one-word
+ * machine name with a digit or a hyphen in it ("nas01", "ssh-gw") --
+ * plain words ("from bob") are left alone, since they are as likely
+ * ordinary English.  Such a name is set aside here. */
+static gboolean
+unread_host_at (FsWhatIfQuery *q, GArray *toks, gint i)
+{
+	const Tok *t;
+	gboolean marked = FALSE;
+
+	if (i < 0 || (guint) i >= toks->len)
+		return FALSE;
+	t = TOK (toks, i);
+
+	if (q->host_unread != NULL && strcmp (t->text, q->host_unread) == 0)
+		return TRUE;
+	if (t->used || all_digits (t->lower) ||
+	    !g_ascii_isalpha (t->lower[0]) || !fs_util_is_valid_host (t->text))
+		return FALSE;
+	for (const gchar *c = t->lower; *c != '\0'; c++)
+		if (g_ascii_isdigit (*c) || *c == '-')
+			marked = TRUE;
+	if (!marked)
+		return FALSE;
+
+	piece_add (q, FS_WHATIF_PIECE_IGNORED, t->text,
+	           g_strdup (_("host names are not looked up here; type its "
+	                       "address")));
+	host_unread_set (q, t->text);
+	TOK (toks, i)->used = TRUE;
+	return TRUE;
+}
+
 /* [ read_direction ]
  * Keywords first; then what "from" and "to" point at: "from <host>"
  * is inbound, "to <host>" outbound, and "to me" / "from this computer"
- * the other way round.  A line that says neither is asked both ways. */
+ * the other way round.  "From the internet" / "to anywhere" say the
+ * other end is anyone; "from the local network" that it is another
+ * computer, but not which.  "Open port 8080 to the internet" exposes
+ * this computer: inbound.  A line that says none of this is asked both
+ * ways. */
 static void
 read_direction (FsWhatIfQuery *q, GArray *toks, gint host_tok,
-                gint *conflicts)
+                gboolean exposure_verb, gint *conflicts)
 {
 	static const gchar *in_words[] = {
 		"inbound", "incoming", "ingress", NULL
@@ -1108,11 +1453,7 @@ read_direction (FsWhatIfQuery *q, GArray *toks, gint host_tok,
 		"to", "into", "towards", "reach", "reaching", "access",
 		"contact", NULL
 	};
-	/* Somewhere that is not this computer, with no host named. */
-	static const gchar *remote_words[] = {
-		"internet", "outside", "anywhere", "anyone", "everyone",
-		"world", "wan", NULL
-	};
+	static const gchar *articles[] = { "the", "a", "an", NULL };
 	gboolean in = FALSE, out = FALSE;
 	gboolean keyword;
 
@@ -1141,31 +1482,60 @@ read_direction (FsWhatIfQuery *q, GArray *toks, gint host_tok,
 		gboolean is_to = tok_is_any (toks, (gint) i, to_w);
 		gint next = (gint) i + 1;
 		FsWhatIfDirection implied = FS_WHATIF_DIR_BOTH;
-		gboolean remote = FALSE;
+		const gchar *meaning = NULL;
+		guint span = 0;
 
 		if (!is_from && !is_to)
 			continue;
 
-		while (tok_is (toks, next, "the") || tok_is (toks, next, "host") ||
-		       tok_is (toks, next, "address") || tok_is (toks, next, "ip") ||
-		       tok_is (toks, next, "server") ||
-		       tok_is (toks, next, "machine"))
+		while (tok_is_any (toks, next, articles))
 			next++;
 
-		if (host_tok >= 0 && next == host_tok)
+		if (host_tok >= 0 && (next == host_tok ||
+		                      host_follows (toks, next, host_tok))) {
 			implied = is_from ? FS_WHATIF_DIR_INBOUND
 			                  : FS_WHATIF_DIR_OUTBOUND;
-		else if (tok_is_any (toks, next, self_words))
+		} else if (self_at (toks, next) > 0) {
 			implied = is_from ? FS_WHATIF_DIR_OUTBOUND
 			                  : FS_WHATIF_DIR_INBOUND;
-		else if (host_tok < 0 && tok_is_any (toks, next, remote_words)) {
-			/* "from the internet", "to anywhere": the far end is
-			 * somewhere else, and which host stays open. */
+		} else if (host_tok < 0 && unread_host_at (q, toks, next)) {
+			/* "from server.example.com": a host, just not read. */
 			implied = is_from ? FS_WHATIF_DIR_INBOUND
 			                  : FS_WHATIF_DIR_OUTBOUND;
-			TOK (toks, next)->used = TRUE;
-			remote = TRUE;
+		} else if (host_tok < 0 && (span = any_at (toks, next)) > 0) {
+			/* "from the internet", "to anywhere": the far end is
+			 * anyone, and which host stays open. */
+			q->host_any_said = TRUE;
+			if (is_to && exposure_verb) {
+				implied = FS_WHATIF_DIR_INBOUND;
+				meaning = _("inbound: reachable from any host");
+			} else {
+				implied = is_from ? FS_WHATIF_DIR_INBOUND
+				                  : FS_WHATIF_DIR_OUTBOUND;
+				meaning = is_from ? _("inbound, from any host")
+				                  : _("outbound, to any host");
+			}
+		} else if (host_tok < 0 && (span = lan_at (toks, next)) > 0) {
+			/* "from the local network": other computers, but which
+			 * addresses that is, the line does not say. */
+			if (is_to && exposure_verb) {
+				implied = FS_WHATIF_DIR_INBOUND;
+				meaning = _("inbound: reachable from the local network "
+				            "(its addresses are not named)");
+			} else {
+				implied = is_from ? FS_WHATIF_DIR_INBOUND
+				                  : FS_WHATIF_DIR_OUTBOUND;
+				meaning = is_from
+					? _("inbound, from the local network (its "
+					    "addresses are not named)")
+					: _("outbound, to the local network (its "
+					    "addresses are not named)");
+			}
 		}
+
+		if (span > 0)
+			for (guint k = 0; k < span; k++)
+				TOK (toks, (guint) next + k)->used = TRUE;
 
 		if (implied == FS_WHATIF_DIR_BOTH)
 			continue;
@@ -1177,17 +1547,15 @@ read_direction (FsWhatIfQuery *q, GArray *toks, gint host_tok,
 			continue;
 		}
 
-		if (q->direction == FS_WHATIF_DIR_BOTH && remote) {
-			gchar *words = g_strdup_printf ("%s %s%s",
-				TOK (toks, i)->text,
-				next > (gint) i + 1 ? "the " : "",
-				TOK (toks, next)->text);
+		if (q->direction == FS_WHATIF_DIR_BOTH && meaning != NULL) {
+			GString *words = g_string_new (TOK (toks, i)->text);
 
-			piece_add (q, FS_WHATIF_PIECE_DIRECTION, words,
-			           g_strdup (implied == FS_WHATIF_DIR_INBOUND
-			                     ? _("inbound, from any host")
-			                     : _("outbound, to any host")));
-			g_free (words);
+			for (gint k = (gint) i + 1; k < next + (gint) span; k++)
+				g_string_append_printf (words, " %s",
+				                        TOK (toks, k)->text);
+			piece_add (q, FS_WHATIF_PIECE_DIRECTION, words->str,
+			           g_strdup (meaning));
+			g_string_free (words, TRUE);
 		} else if (q->direction == FS_WHATIF_DIR_BOTH)
 			piece_add (q, FS_WHATIF_PIECE_DIRECTION, TOK (toks, i)->text,
 			           g_strdup (implied == FS_WHATIF_DIR_INBOUND
@@ -1196,30 +1564,75 @@ read_direction (FsWhatIfQuery *q, GArray *toks, gint host_tok,
 	}
 }
 
+/* Words that turn a request around: "let nobody in", "don't allow". */
+static const gchar *negators[] = {
+	"no", "not", "nobody", "noone", "none", "never", "nothing", "neither",
+	"nor", "cannot", "dont", "cant", "wont", "doesnt", "isnt", "shouldnt",
+	"mustnt", "wouldnt", "couldnt", "didnt", "arent", "aint", "except",
+	"excluding", "besides", "unless", "without", "but", NULL
+};
+
+/* [ find_negation ] -- the first token that negates, or -1. */
+static gint
+find_negation (GArray *toks)
+{
+	for (guint i = 0; i < toks->len; i++) {
+		const Tok *t = TOK (toks, i);
+
+		if (tok_is_any (toks, (gint) i, negators)) {
+			/* "port no 22" is a port number. */
+			if (tok_is (toks, (gint) i, "no") &&
+			    (tok_is (toks, (gint) i - 1, "port") ||
+			     tok_is (toks, (gint) i - 1, "ports")))
+				continue;
+			return (gint) i;
+		}
+		/* "don't", "can't": the apostrophe splits them into "don"
+		 * "t"; a typographic one does not. */
+		if (strcmp (t->lower, "t") == 0 && i > 0 &&
+		    g_str_has_suffix (TOK (toks, i - 1)->lower, "n"))
+			return (gint) i;
+		if (g_str_has_suffix (t->lower, "n\xe2\x80\x99t"))
+			return (gint) i;
+	}
+	return -1;
+}
+
 FsWhatIfQuery *
 fs_whatif_parse (const gchar *text, GError **error)
 {
 	static const gchar *allow_verbs[] = {
 		"allow", "permit", "unblock", "open", "let", "accept",
-		"enable", "whitelist", "allowlist", NULL
+		"enable", "whitelist", "allowlist", "expose", NULL
 	};
 	static const gchar *block_verbs[] = {
 		"block", "deny", "drop", "reject", "close", "forbid",
 		"prevent", "stop", "disable", "disallow", "blacklist",
-		"blocklist", NULL
+		"blocklist", "unexpose", NULL
+	};
+	static const gchar *exposure_verbs[] = {
+		"open", "close", "expose", "unexpose", NULL
 	};
 	static const gchar *fillers[] = {
 		"please", "i", "want", "to", "would", "like", "you", "can",
 		"could", "how", "do", "should", "we", "need", "just", "lets",
 		"i'd", "i'll", "will", "go", "and", NULL
 	};
+	/* A line that starts like this asks; it does not tell. */
+	static const gchar *question_words[] = {
+		"is", "are", "am", "was", "were", "does", "did", "why", "what",
+		"which", "who", "when", "where", "has", "have", NULL
+	};
 	FsWhatIfQuery *q;
 	GArray *toks;
 	gchar *trimmed;
-	gchar *lower;
 	gint host_tok;
 	gint conflicts = 0;
 	gint ignored = 0;
+	gint verb_tok = -1;
+	gint first_word = -1;
+	gint negation;
+	gboolean port_from_service;
 	GError *local = NULL;
 
 	trimmed = g_strstrip (g_strdup (text != NULL ? text : ""));
@@ -1234,18 +1647,27 @@ fs_whatif_parse (const gchar *text, GError **error)
 	q = fs_whatif_query_new ();
 	q->text = g_strdup (trimmed);
 	toks = tokenize (trimmed);
-	lower = g_ascii_strdown (trimmed, -1);
 
-	/* The verb: an imperative at the start, after any politeness. */
+	/* The verb: an imperative at the start, after any politeness
+	 * ("let's" and "let us" are politeness too, not "let"). */
 	for (guint i = 0; i < toks->len; i++) {
+		if (tok_is (toks, (gint) i, "let") &&
+		    (tok_is (toks, (gint) i + 1, "s") ||
+		     tok_is (toks, (gint) i + 1, "us"))) {
+			i++;
+			continue;
+		}
+		if (tok_is_any (toks, (gint) i, fillers))
+			continue;
+
+		first_word = (gint) i;
 		if (tok_is_any (toks, (gint) i, allow_verbs))
 			q->verb = FS_WHATIF_VERB_ALLOW;
 		else if (tok_is_any (toks, (gint) i, block_verbs))
 			q->verb = FS_WHATIF_VERB_BLOCK;
-		else if (tok_is_any (toks, (gint) i, fillers))
-			continue;
 
 		if (q->verb != FS_WHATIF_VERB_NONE) {
+			verb_tok = (gint) i;
 			TOK (toks, i)->used = TRUE;
 			piece_add (q, FS_WHATIF_PIECE_VERB, TOK (toks, i)->text,
 			           g_strdup (q->verb == FS_WHATIF_VERB_ALLOW
@@ -1255,21 +1677,62 @@ fs_whatif_parse (const gchar *text, GError **error)
 		break;
 	}
 
-	host_tok = read_tokens (q, toks, &conflicts, &ignored, &local);
+	/* "let nobody from the internet use RDP", "don't allow telnet":
+	 * read word by word these say the opposite of what is meant, so a
+	 * request with a negation in it is not guessed at.  A question
+	 * ("is port 22 not open?") is still answered. */
+	negation = find_negation (toks);
+	if (negation >= 0 && !tok_is_any (toks, first_word, question_words)) {
+		gboolean verb_word = (verb_tok >= 0);
+
+		for (guint i = 0; i < toks->len && !verb_word; i++)
+			verb_word = tok_is_any (toks, (gint) i, allow_verbs) ||
+			            tok_is_any (toks, (gint) i, block_verbs);
+
+		if (verb_word) {
+			/* "don" "t" were one word, "don't". */
+			gchar *neg_words = (strcmp (TOK (toks, negation)->lower,
+			                            "t") == 0)
+				? g_strdup_printf ("%s'%s",
+				                   TOK (toks, negation - 1)->text,
+				                   TOK (toks, negation)->text)
+				: g_strdup (TOK (toks, negation)->text);
+
+			g_set_error (error, FS_WHATIF_PARSE_ERROR,
+			             FS_WHATIF_ERR_UNREADABLE,
+			             _("\"%s\" turns the request around, and I would "
+			               "rather not guess which way you mean it. Say "
+			               "it plainly, for example \"block RDP from the "
+			               "internet\", or ask \"can the internet reach "
+			               "RDP?\"."),
+			             neg_words);
+			g_free (neg_words);
+			g_array_unref (toks);
+			fs_whatif_query_free (q);
+			g_free (trimmed);
+			return NULL;
+		}
+	}
+
+	host_tok = read_tokens (q, toks, &ignored, &local);
 	if (local == NULL)
-		read_port_words (q, toks, &conflicts, &local);
+		read_port_words (q, toks, &local);
+	if (local == NULL) {
+		guint before = q->port;
+
+		read_protocol (q, toks, &conflicts);
+		read_service (q, toks);
+		port_from_service = (before == 0 && q->port != 0);
+		read_bare_numbers (q, toks, port_from_service, &conflicts, &local);
+	}
 
 	if (local != NULL) {
 		g_propagate_error (error, local);
 		g_array_unref (toks);
 		fs_whatif_query_free (q);
 		g_free (trimmed);
-		g_free (lower);
 		return NULL;
 	}
-
-	read_protocol (q, toks, &conflicts);
-	read_service (q, toks, lower);
 
 	/* ICMP has no ports. */
 	if (q->protocol == FS_WHATIF_PROTO_ICMP && q->port != 0) {
@@ -1279,7 +1742,10 @@ fs_whatif_parse (const gchar *text, GError **error)
 		conflicts++;
 	}
 
-	read_direction (q, toks, host_tok, &conflicts);
+	read_direction (q, toks, host_tok,
+	                verb_tok >= 0 && tok_is_any (toks, verb_tok,
+	                                             exposure_verbs),
+	                &conflicts);
 
 	/* Nothing recognisable at all is not a question. */
 	{
@@ -1305,7 +1771,6 @@ fs_whatif_parse (const gchar *text, GError **error)
 			g_array_unref (toks);
 			fs_whatif_query_free (q);
 			g_free (trimmed);
-			g_free (lower);
 			return NULL;
 		}
 
@@ -1318,7 +1783,6 @@ fs_whatif_parse (const gchar *text, GError **error)
 
 	g_array_unref (toks);
 	g_free (trimmed);
-	g_free (lower);
 	return q;
 }
 
@@ -1488,6 +1952,31 @@ addr_is_loopback (const Addr *a)
 	return a->b[15] == 1;
 }
 
+/* [ addr_is_self ]
+ * One address of this computer: loopback, or one of the addresses the
+ * context knows it has. */
+static gboolean
+addr_is_self (const FsWhatIfContext *ctx, const Addr *a)
+{
+	if (a->kind != ADDR_BLOCK || a->prefix != addr_bits (a))
+		return FALSE;
+	if (addr_is_loopback (a))
+		return TRUE;
+
+	for (guint i = 0; ctx != NULL && i < ctx->local_addresses->len; i++) {
+		Addr l;
+		gboolean same;
+
+		addr_parse (&l, g_ptr_array_index (ctx->local_addresses, i));
+		same = (l.kind == ADDR_BLOCK && l.fam == a->fam &&
+		        memcmp (l.b, a->b, l.fam == 6 ? 16 : 4) == 0);
+		addr_clear (&l);
+		if (same)
+			return TRUE;
+	}
+	return FALSE;
+}
+
 /* ================================================================
  * 4. The rule model
  *
@@ -1538,6 +2027,8 @@ typedef struct
 	gchar          *burst;
 	guint           profiles;       /* FS_FWP_PROFILE_* mask; 0 = all */
 	gchar          *forward_to;     /* "10.0.0.5:80"                  */
+	gchar          *not_forwarded;  /* Windows: a forward row's target,
+	                                 * which nothing passes traffic to */
 	gchar          *left_out;       /* why it is not in force         */
 	gboolean        tail;           /* Linux: a settings drop after the
 	                                 * policy's allows (broadcast,
@@ -1571,6 +2062,7 @@ wrule_free (gpointer data)
 	g_free (r->limit);
 	g_free (r->burst);
 	g_free (r->forward_to);
+	g_free (r->not_forwarded);
 	g_free (r->left_out);
 	g_free (r->r_dport);
 	g_free (r->r_sport);
@@ -1632,6 +2124,16 @@ typedef struct
 	const gchar *ext;        /* valid external interface, or NULL */
 	const gchar *intf;       /* valid internal interface, or NULL */
 
+	/* Deciders that are not rules of a chain, so the trace and the
+	 * cases can name them.  Linux: a forward to another computer with
+	 * IP forwarding off goes nowhere.  Windows: traffic to itself is not
+	 * filtered; "Block all incoming connections" overrides every allow
+	 * (one per profile). */
+	WRule     *fwd_gate;
+	WRule     *win_loopback;
+	WRule     *win_return;
+	WRule     *win_shields[3];
+
 	GPtrArray *notes;        /* gchar*: things the model knows */
 } Model;
 
@@ -1644,6 +2146,11 @@ model_free (Model *m)
 		g_ptr_array_unref (m->dnat[f]);
 	}
 	g_ptr_array_unref (m->notes);
+	g_clear_pointer (&m->fwd_gate, wrule_free);
+	g_clear_pointer (&m->win_loopback, wrule_free);
+	g_clear_pointer (&m->win_return, wrule_free);
+	for (gint p = 0; p < 3; p++)
+		g_clear_pointer (&m->win_shields[p], wrule_free);
 	fs_settings_free (m->own_settings);
 	fs_policy_free (m->own_policy);
 	g_free (m);
@@ -1701,21 +2208,31 @@ lin_accept (const FsSettings *s)
 }
 
 /* [ lin_port ]
- * A row's port as the generator writes it ("67-68" -> "67:68"), and
- * the spec the probe is matched against.  FALSE when the generator
- * would refuse it (fs_util_is_valid_port). */
+ * A row's port as the generator writes it ("67-68" -> "67:68", "022"
+ * -> "22": fs_script_port_text, the generator's own function), and the
+ * spec the probe is matched against, read from that same text so the
+ * two cannot disagree.  A spec of NULL (port 0) matches no connection,
+ * as --dport 0 does not.  FALSE when the generator would refuse it. */
 static gboolean
 lin_port (const gchar *text, gchar **render, gchar **spec)
 {
-	*render = NULL;
-	*spec = NULL;
+	const gchar *colon;
+	guint first, last;
 
-	if (!fs_util_is_valid_port (text))
+	*spec = NULL;
+	*render = fs_script_port_text (text);
+	if (*render == NULL)
 		return FALSE;
 
-	*render = g_strdup (text);
-	g_strdelimit (*render, "-", ':');
-	*spec = fs_fwrule_port_spec (text);
+	colon = strchr (*render, ':');
+	first = (guint) g_ascii_strtoull (*render, NULL, 10);
+	last = colon != NULL ? (guint) g_ascii_strtoull (colon + 1, NULL, 10)
+	                     : first;
+	if (first < 1)
+		first = 1;
+	if (last >= first && last <= 65535)
+		*spec = (first == last) ? g_strdup_printf ("%u", first)
+		                        : g_strdup_printf ("%u-%u", first, last);
 	return TRUE;
 }
 
@@ -2124,7 +2641,7 @@ lin_forwards (Model *m, GPtrArray *in, gint fam)
 
 		if (!lin_port (row->port, &port_r, &port_s) ||
 		    !lin_port (row->to_port, &to_r, &to_s) ||
-		    strchr (to_r, ':') != NULL) {
+		    strchr (to_r, ':') != NULL || to_s == NULL) {
 			add_left_out (in, g_strdup (name), FS_WHATIF_ORIGIN_POLICY,
 			              FS_RULE_INBOUND_FORWARD, (gint) i, TRUE, FALSE,
 			              g_strdup (_("its ports are not valid")));
@@ -2201,7 +2718,8 @@ lin_inbound (Model *m, gint fam)
 		g_free (name);
 	}
 
-	r = wrule_new (_("Malformed packets"), FS_WHATIF_ORIGIN_BUILTIN, TRUE,
+	r = wrule_new (_("Invalid packets (malformed, or a reply to nothing "
+	                 "this computer sent)"), FS_WHATIF_ORIGIN_BUILTIN, TRUE,
 	               T_DROP, "DROP");
 	r->fam = fam;
 	r->ctstate = g_strdup ("INVALID");
@@ -2474,8 +2992,12 @@ win_from_fwrule (Model *m, const FsFwRule *fw, FsRuleKind kind, gint row,
 				_("\"%s\" is not an address"), fw->remote_address);
 	}
 
+	/* A forward row compiles to an allow of its listen port on this
+	 * computer and nothing else: netsh gets no forwarding (no
+	 * portproxy, no connection sharing), so the answer must not say the
+	 * traffic is passed on. */
 	if (fw->forward && fw->forward_address != NULL)
-		r->forward_to = g_strdup (fw->forward_address);
+		r->not_forwarded = g_strdup (fw->forward_address);
 
 	g_ptr_array_add (inbound ? m->in[0] : m->out[0], r);
 }
@@ -2614,9 +3136,32 @@ model_build (const FsWhatIfContext *ctx, const FsPolicy *policy)
 			lin_inbound (m, fam);
 			lin_outbound (m, fam);
 		}
+
+		/* Only router mode makes StockFW turn IP forwarding on. */
+		if (!m->settings->nat)
+			m->fwd_gate = wrule_new (
+				_("IP forwarding is off (StockFW turns it on only in "
+				  "router mode)"), FS_WHATIF_ORIGIN_SETTINGS, TRUE, T_DROP,
+				NULL);
 	} else {
 		win_policy (m);
 		win_settings (m);
+
+		m->win_loopback = wrule_new (
+			_("Loopback (this computer to itself)"),
+			FS_WHATIF_ORIGIN_BUILTIN, TRUE, T_ACCEPT, NULL);
+		m->win_return = wrule_new (
+			_("Return traffic for connections already open"),
+			FS_WHATIF_ORIGIN_BUILTIN, TRUE, T_ACCEPT, NULL);
+		for (gint p = 0; p < 3; p++) {
+			gchar *name = g_strdup_printf (
+				_("Block all incoming connections (%s profile)"),
+				profile_name (p));
+
+			m->win_shields[p] = wrule_new (name, FS_WHATIF_ORIGIN_SETTINGS,
+			                               TRUE, T_DROP, NULL);
+			g_free (name);
+		}
 	}
 
 	return m;
@@ -2643,10 +3188,39 @@ typedef struct
 	                            * the addresses any rule names        */
 	const gchar *iface;        /* arrives on / leaves by; NULL unnamed */
 	gint         profile;      /* Windows profile, else -1             */
+	gint         ct;           /* CT_NEW / CT_REPLY / CT_INVALID       */
+	gboolean     self;         /* the other end is this computer       */
+	gboolean     fwd_on;       /* Linux, router mode off: IP forwarding
+	                            * is on anyway (another program set it) */
 
 	gboolean     dnat;         /* set while evaluating                 */
 	Addr         dnat_to;
 } Probe;
+
+/* What conntrack makes of a probe.  A TCP/UDP question and an ICMP
+ * request are NEW.  An ICMP reply or error is either the answer to
+ * something this computer sent (RELATED / ESTABLISHED) or unsolicited,
+ * which conntrack calls INVALID. */
+enum { CT_NEW = 0, CT_REPLY, CT_INVALID };
+
+/* [ icmp_is_reply ]
+ * The ICMP types that only ever answer something: replies, and the
+ * errors conntrack ties to the connection they are about. */
+static gboolean
+icmp_is_reply (const gchar *type)
+{
+	static const gchar *replies[] = {
+		"echo-reply", "timestamp-reply", "address-mask-reply",
+		"destination-unreachable", "host-unreachable",
+		"address-unreachable", "time-exceeded", "parameter-problem",
+		"source-quench", "redirect", "packet-too-big", NULL
+	};
+
+	for (guint i = 0; type != NULL && replies[i] != NULL; i++)
+		if (strcmp (type, replies[i]) == 0)
+			return TRUE;
+	return FALSE;
+}
 
 typedef struct
 {
@@ -2728,13 +3302,23 @@ lin_meets (const WRule *r, const Probe *p, gchar **why)
 					                   "forward redirected"));
 				return FALSE;
 			}
-		} else {
+		} else if (g_str_has_prefix (r->ctstate, "ESTABLISHED")) {
+			if (p->ct != CT_REPLY) {
+				if (why != NULL)
+					*why = g_strdup (p->ct == CT_NEW
+						? _("only for replies to connections already "
+						    "open; this is a new connection")
+						: _("only for replies to connections already "
+						    "open; this answers none"));
+				return FALSE;
+			}
+		} else if (p->ct != CT_INVALID) {
 			if (why != NULL)
-				*why = g_strdup (g_str_has_prefix (r->ctstate,
-				                                   "ESTABLISHED")
-					? _("only for replies to connections already "
-					    "open; this is a new connection")
-					: _("only for malformed packets"));
+				*why = g_strdup (p->ct == CT_NEW
+					? _("only for invalid packets; this is a new "
+					    "connection")
+					: _("only for invalid packets; this answers "
+					    "a connection already open"));
 			return FALSE;
 		}
 	}
@@ -2993,6 +3577,26 @@ eval_linux (Model *m, const Probe *in, gint *decided, GPtrArray *steps)
 				p.dnat_to = d->to;
 				p.port = d->to_port;
 				o.dnat = d;
+
+				/* Router mode off: StockFW leaves IP forwarding as
+				 * it found it, and with it off what the forward sends
+				 * to another computer is dropped by the kernel before
+				 * any chain sees it. */
+				if (m->fwd_gate != NULL && !p.fwd_on &&
+				    !addr_is_self (m->ctx, &d->to)) {
+					step_add (steps, FS_WHATIF_STEP_MATCHED, m->fwd_gate,
+					          steps ? g_strdup_printf (
+					                  _("%s is another computer and IP "
+					                    "forwarding is off, so the kernel "
+					                    "drops what the forward sends "
+					                    "there"), d->to.text) : NULL);
+					if (decided != NULL && steps != NULL)
+						*decided = (gint) steps->len - 1;
+					o.allowed = FALSE;
+					o.rule = m->fwd_gate;
+					o.origin = m->fwd_gate->origin;
+					return o;
+				}
 				break;
 			}
 		}
@@ -3074,6 +3678,26 @@ eval_windows (Model *m, const Probe *p, gint *decided, GPtrArray *steps)
 		return o;
 	}
 
+	/* Windows Firewall does not filter what this computer sends to
+	 * itself, and lets back in what answers its own traffic. */
+	if (p->self || p->ct == CT_REPLY) {
+		const WRule *r = p->self ? m->win_loopback : m->win_return;
+
+		step_add (steps, FS_WHATIF_STEP_MATCHED, r,
+		          steps ? g_strdup (p->self
+		                  ? _("Windows Firewall does not filter traffic "
+		                      "this computer sends to itself")
+		                  : _("Windows Firewall is stateful: it lets back "
+		                      "in what answers this computer's own "
+		                      "traffic")) : NULL);
+		if (decided != NULL && steps != NULL)
+			*decided = (gint) steps->len - 1;
+		o.allowed = TRUE;
+		o.rule = r;
+		o.origin = r->origin;
+		return o;
+	}
+
 	for (guint i = 0; i < list->len; i++) {
 		const WRule *r = g_ptr_array_index (list, i);
 		gchar *why = NULL;
@@ -3114,6 +3738,31 @@ eval_windows (Model *m, const Probe *p, gint *decided, GPtrArray *steps)
 		o.allowed = FALSE;
 		o.rule = block;
 		o.origin = block->origin;
+		return o;
+	}
+
+	/* "Block all incoming connections, including those in the list of
+	 * allowed apps": Windows ignores every inbound allow. */
+	if (p->inbound && m->ctx->block_all_inbound[p->profile] == 1) {
+		const WRule *r = m->win_shields[p->profile];
+
+		step_add (steps, FS_WHATIF_STEP_MATCHED, r,
+		          steps ? (allow != NULL
+		                   ? g_strdup_printf (_("on for the %s profile: "
+		                                        "Windows ignores every allow "
+		                                        "rule, '%s' too"),
+		                                      profile_name (p->profile),
+		                                      allow->name)
+		                   : g_strdup_printf (_("on for the %s profile: "
+		                                        "everything inbound is "
+		                                        "blocked"),
+		                                      profile_name (p->profile)))
+		                : NULL);
+		if (decided != NULL && steps != NULL)
+			*decided = (gint) steps->len - 1;
+		o.allowed = FALSE;
+		o.rule = r;
+		o.origin = r->origin;
 		return o;
 	}
 
@@ -3183,7 +3832,7 @@ eval_probe (Model *m, const Probe *p, gint *decided, GPtrArray *steps)
  * ================================================================ */
 
 enum { D_PROTO, D_PORT, D_ICMP, D_HOST, D_DNS, D_LOCAL, D_IFACE, D_PROFILE,
-       D_N };
+       D_STATE, D_FWD, D_N };
 
 typedef struct
 {
@@ -3195,8 +3844,14 @@ typedef struct
 	GArray    *locals;       /* Addr (owned text), ANY first */
 	GPtrArray *ifaces;       /* const gchar* */
 	GArray    *profiles;     /* gint */
+	guint      n_state;      /* 2: ICMP replies are asked both ways --
+	                          * answering this computer, and unsolicited */
+	guint      n_fwd;        /* 2: whether IP forwarding is on is not
+	                          * known (Linux, router mode off, a forward
+	                          * to another computer) */
 	gboolean   open[D_N];
 	gboolean   host_typed;   /* the line named a single host */
+	gboolean   host_self;    /* ... and it is this computer */
 	gboolean   capped;
 } Cands;
 
@@ -3501,6 +4156,7 @@ cands_build (Model *m, const FsWhatIfQuery *q, gboolean inbound, Cands *c)
 		    typed.prefix == addr_bits (&typed)) {
 			host_add (c->hosts, &typed);
 			c->host_typed = TRUE;
+			c->host_self = addr_is_self (ctx, &typed);
 		} else {
 			Addr base;
 			static const gchar *generic[] = {
@@ -3631,16 +4287,59 @@ cands_build (Model *m, const FsWhatIfQuery *q, gboolean inbound, Cands *c)
 		c->open[D_LOCAL] = (c->locals->len > 1);
 	}
 
-	/* Interfaces (Linux). */
+	/* Interfaces (Linux).  A rule that names an interface ("-i v0",
+	 * "-o v0", the forwards' "-i v0" in the nat table) only meets what
+	 * really arrives on it or leaves by it; which one a connection uses
+	 * is routing, not the question.  So the external interface, the
+	 * internal one in router mode, and NULL for "any other interface"
+	 * are all tried.  Outbound only router mode names one. */
 	if (m->platform == FS_WHATIF_LINUX_FIRST_MATCH) {
-		g_ptr_array_add (c->ifaces, (gpointer) m->ext);
-		if (inbound && m->settings->nat && m->intf != NULL &&
-		    g_strcmp0 (m->intf, m->ext) != 0)
-			g_ptr_array_add (c->ifaces, (gpointer) m->intf);
+		gboolean router = (m->settings->nat && m->intf != NULL &&
+		                   g_strcmp0 (m->intf, m->ext) != 0);
+
+		if (inbound) {
+			/* The common case first: arriving from outside. */
+			if (m->ext != NULL)
+				g_ptr_array_add (c->ifaces, (gpointer) m->ext);
+			else
+				g_ptr_array_add (c->ifaces, NULL);
+			if (router)
+				g_ptr_array_add (c->ifaces, (gpointer) m->intf);
+			if (m->ext != NULL)
+				g_ptr_array_add (c->ifaces, NULL);
+		} else {
+			if (m->settings->nat && m->ext != NULL) {
+				g_ptr_array_add (c->ifaces, (gpointer) m->ext);
+				if (router)
+					g_ptr_array_add (c->ifaces, (gpointer) m->intf);
+			}
+			g_ptr_array_add (c->ifaces, NULL);
+		}
 		c->open[D_IFACE] = (c->ifaces->len > 1);
 	} else {
 		g_ptr_array_add (c->ifaces, NULL);
 	}
+
+	/* ICMP replies and errors: the answer to something this computer
+	 * sent, or unsolicited. */
+	c->n_state = 1;
+	for (guint i = 0; i < c->protos->len; i++)
+		if (g_array_index (c->protos, gint, i) == P_ICMP)
+			for (guint k = 0; k < c->icmps->len; k++)
+				if (icmp_is_reply (g_ptr_array_index (c->icmps, k)))
+					c->n_state = 2;
+	c->open[D_STATE] = (c->n_state > 1);
+
+	/* A forward to another computer with router mode off reaches it
+	 * only if something else turned IP forwarding on. */
+	c->n_fwd = 1;
+	if (inbound && m->fwd_gate != NULL)
+		for (gint f = 0; f < 2; f++)
+			for (guint i = 0; i < m->dnat[f]->len; i++)
+				if (!addr_is_self (ctx, &((const Dnat *)
+				                   g_ptr_array_index (m->dnat[f], i))->to))
+					c->n_fwd = 2;
+	c->open[D_FWD] = (c->n_fwd > 1);
 
 	/* Profiles (Windows). */
 	if (m->platform == FS_WHATIF_WINDOWS_BLOCK_WINS) {
@@ -3672,7 +4371,7 @@ cands_build (Model *m, const FsWhatIfQuery *q, gboolean inbound, Cands *c)
 			per_host += (g_array_index (c->protos, gint, i) == P_ICMP)
 			            ? c->icmps->len : MAX (c->ports->len, 1);
 		n = per_host * c->hosts->len * c->dns->len * c->locals->len *
-		    c->ifaces->len * c->profiles->len;
+		    c->ifaces->len * c->profiles->len * c->n_state * c->n_fwd;
 
 		if (n <= MAX_COMBINATIONS)
 			break;
@@ -3721,10 +4420,15 @@ probe_fill (Model *m, const Cands *c, gboolean inbound, const guint *ix,
 	p->local = g_array_index (c->locals, Addr, ix[D_LOCAL]);
 	p->iface = g_ptr_array_index (c->ifaces, ix[D_IFACE]);
 	p->profile = g_array_index (c->profiles, gint, ix[D_PROFILE]);
+	p->ct = CT_NEW;
+	if (p->proto == P_ICMP && icmp_is_reply (p->icmp))
+		p->ct = (ix[D_STATE] == 0) ? CT_REPLY : CT_INVALID;
+	p->fwd_on = (ix[D_FWD] != 0);
 
-	/* What this computer sends to itself goes over loopback. */
-	if (m->platform == FS_WHATIF_LINUX_FIRST_MATCH && c->host_typed &&
-	    addr_is_loopback (&p->host))
+	/* What this computer sends to itself -- to 127.0.0.1 or to one of
+	 * its own addresses -- goes over loopback. */
+	p->self = c->host_self;
+	if (m->platform == FS_WHATIF_LINUX_FIRST_MATCH && p->self)
 		p->iface = "lo";
 }
 
@@ -3752,6 +4456,8 @@ evaluate_all (Model *m, const Cands *c, gboolean inbound)
 	len[D_LOCAL] = c->locals->len;
 	len[D_IFACE] = c->ifaces->len;
 	len[D_PROFILE] = c->profiles->len;
+	len[D_STATE] = c->n_state;
+	len[D_FWD] = c->n_fwd;
 
 	memset (ix, 0, sizeof ix);
 
@@ -3760,10 +4466,16 @@ evaluate_all (Model *m, const Cands *c, gboolean inbound)
 		gboolean skip = (proto == P_ICMP && ix[D_PORT] != 0) ||
 		                (proto != P_ICMP && ix[D_ICMP] != 0) ||
 		                (proto != P_ICMP && c->ports->len == 0);
+		Probe p;
+
+		/* Only an ICMP reply or error has a second conntrack state. */
+		if (!skip && ix[D_STATE] != 0) {
+			probe_fill (m, c, inbound, ix, &p);
+			skip = (p.ct == CT_NEW);
+		}
 
 		if (!skip) {
 			Eval e;
-			Probe p;
 
 			memcpy (e.ix, ix, sizeof ix);
 			probe_fill (m, c, inbound, ix, &p);
@@ -3800,6 +4512,8 @@ dim_len (const Cands *c, gint d)
 	case D_DNS:     return c->dns->len;
 	case D_LOCAL:   return c->locals->len;
 	case D_IFACE:   return c->ifaces->len;
+	case D_STATE:   return c->n_state;
+	case D_FWD:     return c->n_fwd;
 	default:        return c->profiles->len;
 	}
 }
@@ -3873,6 +4587,12 @@ probe_text (const Probe *p)
 		g_string_append_printf (s, p->inbound ? _(" arriving on %s")
 		                                      : _(" leaving by %s"),
 		                        p->iface);
+	if (p->ct == CT_REPLY)
+		g_string_append (s, _(", answering a connection already open"));
+	else if (p->ct == CT_INVALID)
+		g_string_append (s, _(", unsolicited"));
+	if (p->fwd_on)
+		g_string_append (s, _(", with IP forwarding on"));
 	if (p->profile >= 0)
 		g_string_append_printf (s, _(" on a %s network"),
 		                        profile_name (p->profile));
@@ -4008,6 +4728,12 @@ outcome_reason (const Model *m, const Outcome *o, gboolean inbound)
 			return g_strdup_printf (_("Rule '%s' lets it in and "
 			                          "forwards it to %s."),
 			                        name, o->rule->forward_to);
+		if (o->allowed && o->rule != NULL && o->rule->not_forwarded != NULL)
+			return g_strdup_printf (_("Rule '%s' lets it in to this "
+			                          "computer. It is not forwarded to "
+			                          "%s: on Windows StockFW sets up no "
+			                          "forwarding."),
+			                        name, o->rule->not_forwarded);
 		return g_strdup_printf (o->allowed ? _("Rule '%s' allows it.")
 		                                   : _("Rule '%s' blocks it."),
 		                        name);
@@ -4074,6 +4800,9 @@ by_text (const Model *m, FsWhatIfOrigin origin, const WRule *r,
 
 	switch (origin) {
 	case FS_WHATIF_ORIGIN_POLICY:
+		if (r != NULL && r->forward_to != NULL)
+			return g_strdup_printf (_("by rule '%s', which forwards it "
+			                          "to %s"), name, r->forward_to);
 		return g_strdup_printf (_("by rule '%s'"), name);
 	case FS_WHATIF_ORIGIN_SENTINEL:
 		return g_strdup_printf (_("by Sentinel's automatic block '%s'"),
@@ -4209,6 +4938,11 @@ group_values (const Cands *c, GArray *evals, const Group *g, gint dim)
 		gboolean seen = FALSE;
 
 		if ((dim == D_ICMP && !icmp) || (dim == D_PORT && icmp))
+			continue;
+		/* The conntrack state only means something for a reply. */
+		if (dim == D_STATE &&
+		    (!icmp || !icmp_is_reply (g_ptr_array_index (c->icmps,
+		                                                  e->ix[D_ICMP]))))
 			continue;
 
 		for (guint k = 0; k < vals->len && !seen; k++)
@@ -4380,18 +5114,41 @@ group_condition (Model *m, const Cands *c, GArray *evals, const Group *g,
 
 	if (part[D_IFACE]) {
 		GPtrArray *w = g_ptr_array_new ();
+		gboolean other = FALSE;
+		gchar *names;
 
 		for (guint k = 0; k < vals[D_IFACE]->len; k++) {
 			const gchar *ifn = g_ptr_array_index (c->ifaces, g_array_index (
 				vals[D_IFACE], guint, k));
 
-			g_ptr_array_add (w, (gpointer) (ifn != NULL ? ifn
-			                 : _("an interface that is not the external one")));
+			if (ifn != NULL)
+				g_ptr_array_add (w, (gpointer) ifn);
+			else
+				other = TRUE;
 		}
-		cond_add (s, fmt_list (inbound ? _("when it arrives on %s")
-		                               : _("when it leaves by %s"), w));
+		names = join_words (w);
+		cond_add (s, g_strdup_printf (
+			inbound ? _("when it arrives on %s%s%s")
+			        : _("when it leaves by %s%s%s"),
+			names, (w->len > 0 && other) ? _(" or ") : "",
+			other ? _("any other interface") : ""));
+		g_free (names);
 		g_ptr_array_unref (w);
 	}
+
+	if (part[D_STATE])
+		cond_add (s, g_strdup (vals[D_STATE]->len == 1 &&
+		                       g_array_index (vals[D_STATE], guint, 0) == 0
+		                       ? _("when it answers a connection already "
+		                           "open")
+		                       : _("when it answers no open connection "
+		                           "(unsolicited)")));
+
+	if (part[D_FWD])
+		cond_add (s, g_strdup (g_array_index (vals[D_FWD], guint, 0) == 0
+		                       ? _("when IP forwarding is off")
+		                       : _("when IP forwarding is on (another "
+		                           "program turned it on)")));
 
 	if (part[D_PROFILE]) {
 		GPtrArray *w = g_ptr_array_new ();
@@ -4474,8 +5231,16 @@ base_condition (Model *m, const Cands *c, const FsWhatIfQuery *q,
 		return ifn != NULL
 		       ? g_strdup_printf (inbound ? _("when it arrives on %s")
 		                                  : _("when it leaves by %s"), ifn)
-		       : g_strdup (_("on other interfaces"));
+		       : g_strdup (inbound ? _("when it arrives on another "
+		                               "interface")
+		                           : _("when it leaves by another "
+		                               "interface"));
 	}
+	case D_STATE:
+		return g_strdup (_("when it answers a connection already open"));
+	case D_FWD:
+		return g_strdup (_("when IP forwarding is off, as StockFW leaves "
+		                   "it outside router mode"));
 	default:
 		return g_strdup_printf (_("on %s networks"), profile_name (
 			g_array_index (c->profiles, gint, 0)));
@@ -4577,45 +5342,63 @@ typedef struct
 	const gchar *where;
 	const gchar *page;
 	gboolean     icmp;
+	const gchar *scope;     /* what else it changes, in words */
 } Flip;
+
+#define SCOPE_ICMP_TYPE N_("It applies to this kind of ICMP from every " \
+                           "host, not only the one asked about.")
+#define SCOPE_ALL_ICMP  N_("It lets every kind of ICMP in from every host.")
+#define SCOPE_EVERYONE  N_("It applies to every host and every port, not " \
+                           "only this question.")
 
 #define ICMP_PAGE N_("Preferences > Firewall > ICMP Filtering")
 #define ADV_PAGE  N_("Preferences > Firewall > Advanced Options")
 
 static const Flip flips[] = {
 	{ "icmp_echo_request", G_STRUCT_OFFSET (FsSettings, icmp_echo_request),
-	  N_("Echo request (ping)"), ICMP_PAGE, "icmp", TRUE },
+	  N_("Echo request (ping)"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE },
 	{ "icmp_echo_reply", G_STRUCT_OFFSET (FsSettings, icmp_echo_reply),
-	  N_("Echo reply (pong)"), ICMP_PAGE, "icmp", TRUE },
+	  N_("Echo reply (pong)"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE },
 	{ "icmp_traceroute", G_STRUCT_OFFSET (FsSettings, icmp_traceroute),
-	  N_("Traceroute"), ICMP_PAGE, "icmp", TRUE },
+	  N_("Traceroute"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE },
 	{ "icmp_mstraceroute", G_STRUCT_OFFSET (FsSettings, icmp_mstraceroute),
-	  N_("MS Traceroute"), ICMP_PAGE, "icmp", TRUE },
+	  N_("MS Traceroute"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE },
 	{ "icmp_unreachable", G_STRUCT_OFFSET (FsSettings, icmp_unreachable),
-	  N_("Unreachable"), ICMP_PAGE, "icmp", TRUE },
+	  N_("Unreachable"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE },
 	{ "icmp_timestamping", G_STRUCT_OFFSET (FsSettings, icmp_timestamping),
-	  N_("Timestamping (IPv4 only)"), ICMP_PAGE, "icmp", TRUE },
+	  N_("Timestamping (IPv4 only)"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE },
 	{ "icmp_masking", G_STRUCT_OFFSET (FsSettings, icmp_masking),
-	  N_("Address Masking (IPv4 only)"), ICMP_PAGE, "icmp", TRUE },
+	  N_("Address Masking (IPv4 only)"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE },
 	{ "icmp_redirection", G_STRUCT_OFFSET (FsSettings, icmp_redirection),
-	  N_("Redirection"), ICMP_PAGE, "icmp", TRUE },
+	  N_("Redirection"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE },
 	{ "icmp_source_quenches",
 	  G_STRUCT_OFFSET (FsSettings, icmp_source_quenches),
-	  N_("Source Quenching (IPv4 only)"), ICMP_PAGE, "icmp", TRUE },
+	  N_("Source Quenching (IPv4 only)"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE },
 	{ "filter_icmp", G_STRUCT_OFFSET (FsSettings, filter_icmp),
-	  N_("Enable ICMP filtering"), ICMP_PAGE, "icmp", TRUE },
+	  N_("Enable ICMP filtering"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ALL_ICMP },
 	{ "block_external_broadcast",
 	  G_STRUCT_OFFSET (FsSettings, block_external_broadcast),
 	  N_("Block broadcasts from external network"), ADV_PAGE, "advanced",
-	  FALSE },
+	  FALSE, SCOPE_EVERYONE },
 	{ "block_internal_broadcast",
 	  G_STRUCT_OFFSET (FsSettings, block_internal_broadcast),
 	  N_("Block broadcasts from internal network"), ADV_PAGE, "advanced",
-	  FALSE },
+	  FALSE, SCOPE_EVERYONE },
 	{ "block_non_routables",
 	  G_STRUCT_OFFSET (FsSettings, block_non_routables),
 	  N_("Block traffic from reserved addresses on public interfaces"),
-	  ADV_PAGE, "advanced", FALSE }
+	  ADV_PAGE, "advanced", FALSE,
+	  SCOPE_EVERYONE }
 };
 
 static const Flip *
@@ -4675,15 +5458,19 @@ question_check (const FsWhatIfContext *ctx, const FsPolicy *policy,
 
 	for (guint i = 0; i < ev->len; i++) {
 		const Eval *e = &g_array_index (ev, Eval, i);
+		Probe p;
 
 		if (e->o.allowed == want_allowed)
 			continue;
-		if (wrong == 0 && example != NULL) {
-			Probe p;
-
-			probe_fill (m, &c, inbound, e->ix, &p);
+		probe_fill (m, &c, inbound, e->ix, &p);
+		/* An ICMP reply or error answering traffic already let
+		 * through follows that traffic, whatever the rows say; a
+		 * question that did not name the ICMP type is not about it
+		 * (the answer's notes say so). */
+		if (p.ct == CT_REPLY && q->icmp_type == NULL)
+			continue;
+		if (wrong == 0 && example != NULL)
 			*example = probe_text (&p);
-		}
 		wrong++;
 	}
 
@@ -4863,11 +5650,19 @@ verify_create (const FsWhatIfContext *ctx, const FsWhatIfQuery *q,
 
 		for (guint i = 0; i < ev->len; i++) {
 			const Eval *e = &g_array_index (ev, Eval, i);
+			Probe rp;
 
 			if (e->o.allowed == want) {
 				right++;
 				continue;
 			}
+
+			/* As in question_check: an ICMP reply answering an open
+			 * connection follows it, and the line did not ask about
+			 * it by type. */
+			probe_fill (ma, &c, act->inbound, e->ix, &rp);
+			if (rp.ct == CT_REPLY && dq->icmp_type == NULL)
+				continue;
 
 			if (want && e->o.origin == FS_WHATIF_ORIGIN_SETTINGS &&
 			    e->o.rule != NULL && e->o.rule->target == T_DROP) {
@@ -5260,8 +6055,9 @@ fs_whatif_action_verify (const FsWhatIfContext *ctx,
 /* [ create_row ]
  * The one row that would give the question the verdict asked for, as
  * narrow as the question: one protocol and one port for an allow,
- * never a portless or every-port row.  NULL with *why when there is no
- * such row. */
+ * never a portless or every-port row, and never a row for every host
+ * unless the line itself said so ("from anyone", "from the internet").
+ * NULL with *why when there is no such row. */
 static FsRule *
 create_row (const FsWhatIfQuery *q, gboolean inbound, gboolean allow,
             gchar **why)
@@ -5271,6 +6067,16 @@ create_row (const FsWhatIfQuery *q, gboolean inbound, gboolean allow,
 	gchar *label;
 
 	*why = NULL;
+
+	/* A host the line named but that could not be read: a row for
+	 * anyone is not the row that was asked for, in either direction. */
+	if (q->host_unread != NULL) {
+		*why = g_strdup_printf (_("No rule is offered: \"%s\" is not an "
+		                          "address StockFW can read, and a rule "
+		                          "for every host is not what was asked. "
+		                          "Type its address."), q->host_unread);
+		return NULL;
+	}
 
 	if (allow) {
 		if (q->protocol == FS_WHATIF_PROTO_ICMP || q->icmp_type != NULL)
@@ -5287,6 +6093,20 @@ create_row (const FsWhatIfQuery *q, gboolean inbound, gboolean allow,
 			                          "(\"tcp %u\"), since an offered "
 			                          "allow opens one protocol on one "
 			                          "port."), q->port);
+			return NULL;
+		}
+		if (q->host == NULL &&
+		    !(q->verb == FS_WHATIF_VERB_ALLOW && q->host_any_said)) {
+			*why = g_strdup (inbound
+				? _("No rule is offered: the question names no host. "
+				    "Say who may connect, for example \"from "
+				    "192.168.1.20\" -- or ask to allow it \"from "
+				    "anyone\" to open it to every address, the internet "
+				    "included.")
+				: _("No rule is offered: the question names no host. "
+				    "Say where it may go, for example \"to "
+				    "203.0.113.9\" -- or ask to allow it \"to "
+				    "anywhere\"."));
 			return NULL;
 		}
 
@@ -5403,7 +6223,7 @@ row_words (const FsRule *row)
 typedef struct
 {
 	gboolean by_default, by_tail, by_settings, by_builtin, by_policy,
-	         by_sentinel, icmpish;
+	         by_sentinel, icmpish, by_forwarding, by_shields;
 	GArray    *rows;        /* gint pairs: kind, index */
 	GPtrArray *targets;     /* const gchar*: Sentinel targets */
 	const WRule *builtin;
@@ -5422,6 +6242,11 @@ causes_collect (Model *m, GArray *ev, gboolean want_allowed, Causes *k)
 		const WRule *r = e->o.rule;
 
 		if (e->o.allowed == want_allowed)
+			continue;
+		/* An ICMP reply nothing asked for is dropped as invalid by
+		 * the connection tracker; no row or setting changes that, and
+		 * it is not what a fix is for. */
+		if (e->ix[D_STATE] != 0)
 			continue;
 
 		switch (e->o.origin) {
@@ -5459,6 +6284,19 @@ causes_collect (Model *m, GArray *ev, gboolean want_allowed, Causes *k)
 		}
 
 		case FS_WHATIF_ORIGIN_SETTINGS:
+			/* IP forwarding being off, and Windows' "Block all
+			 * incoming connections", are not rows or checkboxes a fix
+			 * can name here: each gets its own note. */
+			if (r != NULL && r == m->fwd_gate) {
+				k->by_forwarding = TRUE;
+				break;
+			}
+			if (r != NULL && (r == m->win_shields[0] ||
+			                  r == m->win_shields[1] ||
+			                  r == m->win_shields[2])) {
+				k->by_shields = TRUE;
+				break;
+			}
 			/* A settings drop (reserved sources, broadcasts) is the
 			 * background the user chose; a settings allow (ICMP) is
 			 * something to change. */
@@ -5494,6 +6332,53 @@ causes_clear (Causes *k)
 	g_ptr_array_unref (k->targets);
 }
 
+/* [ running_verdict ]
+ * The question, one direction, once the firewall (and every profile)
+ * runs: ALLOWED, BLOCKED, or DEPENDS when its cases disagree. */
+static FsWhatIfVerdict
+running_verdict (const FsWhatIfContext *ctx, const FsWhatIfQuery *q,
+                 gboolean inbound)
+{
+	FsWhatIfContext run;
+	Model *m;
+	Cands c;
+	GArray *ev;
+	guint yes = 0, no = 0;
+
+	ctx_running (ctx, &run);
+	m = model_build (&run, ctx->policy);
+	cands_build (m, q, inbound, &c);
+	ev = evaluate_all (m, &c, inbound);
+
+	for (guint i = 0; i < ev->len; i++) {
+		if (g_array_index (ev, Eval, i).o.allowed)
+			yes++;
+		else
+			no++;
+	}
+
+	g_array_unref (ev);
+	cands_free (&c);
+	model_free (m);
+
+	if (yes == 0 && no == 0)
+		return FS_WHATIF_ERROR;
+	return no == 0 ? FS_WHATIF_ALLOWED
+	     : yes == 0 ? FS_WHATIF_BLOCKED : FS_WHATIF_DEPENDS;
+}
+
+static const gchar *
+verdict_words (FsWhatIfVerdict v)
+{
+	switch (v) {
+	case FS_WHATIF_ALLOWED: return _("allowed");
+	case FS_WHATIF_BLOCKED: return _("blocked");
+	case FS_WHATIF_DEPENDS: return _("allowed in some cases and blocked "
+	                                 "in others");
+	default:                return _("not known");
+	}
+}
+
 /* [ answer_actions ]
  * What would give the user what they asked for, each re-simulated. */
 static void
@@ -5511,48 +6396,70 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 	GPtrArray *start = g_ptr_array_new ();
 	GPtrArray *lists[5];
 	gchar *why = NULL;
+	gboolean stopped = FALSE;
+	gboolean whole;
+	FsWhatIfVerdict judged = ans->verdict;
+	gboolean reply_type = (q->icmp_type != NULL &&
+	                       icmp_is_reply (q->icmp_type));
 
 	lists[0] = create; lists[1] = lift; lists[2] = open;
 	lists[3] = sett; lists[4] = start;
 
-	if (ans->verdict != want &&
-	    !(q->verb == FS_WHATIF_VERB_NONE && ans->verdict == FS_WHATIF_ALLOWED)) {
-		gboolean stopped = FALSE;
+	for (guint i = 0; i < evals->len; i++)
+		if (g_array_index (evals, Eval, i).o.origin ==
+		    FS_WHATIF_ORIGIN_STOPPED)
+			stopped = TRUE;
+	whole = (ctx->firewall == FS_WHATIF_FW_STOPPED);
+
+	/* With the firewall off, "allowed" is only the firewall being off:
+	 * what to change is judged by what the rules do once it runs. */
+	if (stopped)
+		judged = running_verdict (ctx, q, inbound);
+
+	/* Starting the firewall: for a block, it is (part of) the fix; for
+	 * a plain question whose answer is "allowed" only because nothing
+	 * is filtered, it is what makes the rules decide. */
+	if (stopped && (q->verb == FS_WHATIF_VERB_BLOCK ||
+	                (q->verb == FS_WHATIF_VERB_NONE &&
+	                 judged != FS_WHATIF_ALLOWED))) {
+		FsWhatIfAction *a = action_new (FS_WHATIF_ACT_START_FIREWALL,
+		                                inbound, want);
+		const gchar *off = whole
+			? _("The firewall is not running, so nothing is filtered.")
+			: _("Windows Firewall is off for a network profile in use, "
+			    "so nothing is filtered there.");
+
+		a->label = g_strdup (whole ? _("Start the firewall")
+		                           : _("Turn Windows Firewall on"));
+		if (q->verb == FS_WHATIF_VERB_BLOCK) {
+			a->verified = verify_change (ctx, q, a, &why);
+			a->explanation = a->verified
+				? g_strdup_printf (_("%s Once it runs, this is blocked."),
+				                   off)
+				: g_strdup_printf (_("%s Even once it runs, %s."), off,
+				                   why);
+		} else {
+			/* Not a change to check: this is the simulation of the
+			 * rules themselves. */
+			a->gives = judged;
+			a->verified = (judged != FS_WHATIF_ERROR);
+			a->explanation = g_strdup_printf (
+				_("%s This is allowed only because of that. Once it "
+				  "runs, the rules decide: this is %s."), off,
+				verdict_words (judged));
+		}
+		g_clear_pointer (&why, g_free);
+		g_ptr_array_add (start, a);
+	}
+
+	if (judged != want &&
+	    !(q->verb == FS_WHATIF_VERB_NONE && judged == FS_WHATIF_ALLOWED)) {
 		FsWhatIfContext run;
 		Model *rm;
 		Cands c;
 		GArray *ev;
 		Causes k;
-
-		for (guint i = 0; i < evals->len; i++)
-			if (g_array_index (evals, Eval, i).o.origin ==
-			    FS_WHATIF_ORIGIN_STOPPED)
-				stopped = TRUE;
-
-		if (stopped && !want_allowed) {
-			FsWhatIfAction *a = action_new (FS_WHATIF_ACT_START_FIREWALL,
-			                                inbound, want);
-			gboolean whole = (ctx->firewall == FS_WHATIF_FW_STOPPED);
-
-			a->label = g_strdup (whole ? _("Start the firewall")
-			                           : _("Turn Windows Firewall on"));
-			a->verified = verify_change (ctx, q, a, &why);
-			a->explanation = a->verified
-				? g_strdup_printf (_("%s Once it runs, this is blocked."),
-				                   whole ? _("The firewall is not running, "
-				                             "so nothing is filtered.")
-				                         : _("Windows Firewall is off for a "
-				                             "network profile in use, so "
-				                             "nothing is filtered there."))
-				: g_strdup_printf (_("%s Even once it runs, %s."),
-				                   whole ? _("The firewall is not running, "
-				                             "so nothing is filtered.")
-				                         : _("Windows Firewall is off for a "
-				                             "network profile in use."),
-				                   why);
-			g_clear_pointer (&why, g_free);
-			g_ptr_array_add (start, a);
-		}
+		const gchar *once = stopped ? _(" once the firewall runs") : "";
 
 		/* What decides once the firewall runs. */
 		ctx_running (ctx, &run);
@@ -5571,6 +6478,7 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 			 * the fix (offered below). */
 			gboolean eligible = !k.by_policy && !k.by_sentinel &&
 			                    !k.by_settings && !k.by_builtin &&
+			                    !k.by_forwarding && !k.by_shields &&
 			                    (k.by_default ||
 			                     (k.by_tail && m->platform ==
 			                                   FS_WHATIF_LINUX_FIRST_MATCH));
@@ -5593,26 +6501,45 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 					FsWhatIfAction *a = action_new (
 						FS_WHATIF_ACT_CREATE_ALLOW, inbound, want);
 					gchar *words = row_words (row);
-
+					gboolean anyone = fs_util_target_is_anyone (row->target);
 					gchar *kept = NULL;
 
 					a->row = row;
 					a->verified = action_verify_full (ctx, q, a, &why,
 					                                  &kept);
 					if (a->verified) {
+						GString *e = g_string_new (NULL);
+
 						/* Allowed except where a setting still blocks
 						 * it is not plain ALLOWED. */
 						if (kept != NULL)
 							a->gives = FS_WHATIF_DEPENDS;
-						a->label = g_strdup_printf (_("Allow %s"), words);
-						a->explanation = g_strdup_printf (
+						a->label = anyone
+							? g_strdup_printf (_("Allow %s (every "
+							                     "address, the internet "
+							                     "included)"), words)
+							: g_strdup_printf (_("Allow %s"), words);
+						g_string_append_printf (e,
 							_("Adds one row to the policy (%s): %s. "
 							  "Checked: with it this question is "
-							  "allowed%s%s, and nothing changes except "
-							  "%s."),
-							kind_words (row->kind), words,
+							  "allowed%s%s%s, and nothing else "
+							  "changes."),
+							kind_words (row->kind), words, once,
 							kept != NULL ? " " : "",
-							kept != NULL ? kept : "", words);
+							kept != NULL ? kept : "");
+						if (anyone)
+							g_string_append_printf (e,
+								_(" Careful: it opens %s port %s to "
+								  "every address, the internet "
+								  "included."),
+								row->service, row->port);
+						if (inbound && ctx->platform ==
+						    FS_WHATIF_LINUX_FIRST_MATCH)
+							g_string_append (e,
+								_(" On Linux the row also applies to "
+								  "traffic this computer forwards to "
+								  "other machines."));
+						a->explanation = g_string_free (e, FALSE);
 						g_ptr_array_add (create, a);
 					} else {
 						note_add (res->notes, g_strdup_printf (
@@ -5658,10 +6585,8 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 					a->explanation = g_strdup_printf (
 						_("Adds one row to the policy (%s): %s. Checked: "
 						  "with it this question is blocked%s, and "
-						  "nothing changes except %s."),
-						kind_words (row->kind), words,
-						stopped ? _(" once the firewall runs") : "",
-						words);
+						  "nothing else changes."),
+						kind_words (row->kind), words, once);
 					g_ptr_array_add (create, a);
 				} else {
 					note_add (res->notes, g_strdup_printf (
@@ -5726,10 +6651,19 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 			g_ptr_array_add (open, a);
 		}
 
-		/* A Preferences checkbox. */
-		if (k.by_settings || k.by_tail ||
-		    (k.by_default && (q->protocol == FS_WHATIF_PROTO_ICMP ||
-		                      q->icmp_type != NULL))) {
+		/* A Preferences checkbox -- but not for an ICMP reply or error:
+		 * what answers this computer's own traffic already comes back,
+		 * and the setting would also let in unsolicited ones. */
+		if (reply_type && want_allowed &&
+		    (k.by_default || k.by_settings || k.by_tail || k.by_builtin)) {
+			note_add (res->notes, g_strdup (
+				_("A reply or an error that answers traffic this computer "
+				  "sent is let back in as return traffic. The ICMP "
+				  "settings would also let in ones nothing here asked "
+				  "for, so none is offered for this.")));
+		} else if (k.by_settings || k.by_tail ||
+		           (k.by_default && (q->protocol == FS_WHATIF_PROTO_ICMP ||
+		                             q->icmp_type != NULL))) {
 			gboolean icmp = k.icmpish || q->protocol == FS_WHATIF_PROTO_ICMP ||
 			                q->icmp_type != NULL;
 			gboolean found = FALSE;
@@ -5739,6 +6673,7 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 				const FsSettings *s = rm->settings;
 				gboolean now_on = *flip_field ((FsSettings *) s, f);
 				FsWhatIfAction *a;
+				const gchar *scope;
 
 				if (f->icmp != icmp)
 					continue;
@@ -5757,13 +6692,21 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 					continue;
 				}
 
+				/* Turning ICMP filtering back on filters every kind;
+				 * turning it off lets every kind in. */
+				scope = (strcmp (f->key, "filter_icmp") == 0 &&
+				         a->setting_on)
+					? _("It filters every kind of ICMP again, for every "
+					    "host.")
+					: _(f->scope);
 				found = TRUE;
 				a->label = g_strdup (f->icmp ? _("Open ICMP settings")
 				                             : _("Open Advanced Options"));
 				a->explanation = g_strdup_printf (
-					_("Turn %s '%s' on %s. Checked: then this is %s."),
+					_("Turn %s '%s' on %s. %s Checked: then this "
+					  "question is %s."),
 					a->setting_on ? _("on") : _("off"), _(f->label),
-					_(f->where),
+					_(f->where), scope,
 					want_allowed ? _("allowed") : _("blocked"));
 				g_ptr_array_add (sett, a);
 			}
@@ -5776,11 +6719,28 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 					k.setting->name));
 		}
 
-		if (k.by_builtin && k.builtin != NULL)
+		if (k.by_builtin && k.builtin != NULL && !reply_type)
 			note_add (res->notes, g_strdup_printf (
 				_("'%s' is built in: StockFW keeps it so the computer "
 				  "keeps working, and no rule or setting changes it."),
 				k.builtin->name));
+
+		if (k.by_forwarding && want_allowed)
+			note_add (res->notes, g_strdup (
+				_("A port forward to another computer needs IP "
+				  "forwarding. StockFW turns it on only in router mode "
+				  "('Enable Internet connection sharing' on Preferences > "
+				  "Firewall > Network Settings); without it the forward "
+				  "goes nowhere unless another program turned forwarding "
+				  "on.")));
+
+		if (k.by_shields && want_allowed)
+			note_add (res->notes, g_strdup (
+				_("'Block all incoming connections' is on in Windows "
+				  "Firewall, so no allow rule can let this in. Turn it "
+				  "off in Windows Security > Firewall & network "
+				  "protection for the network in use to let the rules "
+				  "decide.")));
 
 		if (inbound && !want_allowed && k.by_default &&
 		    m->platform == FS_WHATIF_WINDOWS_BLOCK_WINS)
@@ -5801,18 +6761,18 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 		g_ptr_array_unref (lists[l]);
 	}
 
-	if (first_answer && (ctx->live == FS_WHATIF_LIVE_HELD ||
-	                     ctx->live == FS_WHATIF_LIVE_FAILED ||
+	/* The saved policy is not the one in force.  Applying it is a fix
+	 * only when an apply can go through: with applies on hold (audit-
+	 * only testing, the Policy Lock) the apply gate would hold it back
+	 * again, and the hold's own note says what lifts it. */
+	if (first_answer && (ctx->live == FS_WHATIF_LIVE_FAILED ||
 	                     ctx->live == FS_WHATIF_LIVE_STALE)) {
 		FsWhatIfAction *a = action_new (FS_WHATIF_ACT_APPLY_POLICY, inbound,
 		                                ans->verdict);
 
 		a->label = g_strdup (_("Apply the policy"));
 		a->explanation = g_strdup (
-			ctx->live == FS_WHATIF_LIVE_HELD
-			? _("Applies are on hold, so the rules in force may be older "
-			    "than the saved policy this answer describes.")
-			: ctx->live == FS_WHATIF_LIVE_FAILED
+			ctx->live == FS_WHATIF_LIVE_FAILED
 			? _("The last apply failed, so the rules in force are not the "
 			    "saved policy this answer describes.")
 			: _("The policy changed after it was last applied, so the "
@@ -6002,8 +6962,10 @@ answer_build (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 			gchar *t = probe_text (&p);
 
 			step_note (ans->steps, FS_WHATIF_ORIGIN_BUILTIN, NULL,
-			           g_strdup_printf (_("traced for one stand-in for what "
-			                              "the question left open: %s"), t));
+			           g_strdup_printf (_("Shown for one example of what the "
+			                              "question left open: %s. Any other "
+			                              "address or port that no rule "
+			                              "names gets the same answer."), t));
 			g_free (t);
 		}
 		eval_probe (m, &p, &decided, ans->steps);
@@ -6094,6 +7056,17 @@ answer_build (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 	}
 
 	/* What the answer rests on. */
+	if (q->verb == FS_WHATIF_VERB_BLOCK && c.n_state > 1 &&
+	    q->icmp_type == NULL)
+		note_add (res->notes, g_strdup (
+			_("ICMP replies and errors that answer traffic already let "
+			  "through still pass: they follow that traffic, and no "
+			  "rule blocks them.")));
+	if (first && q->host_unread != NULL)
+		note_add (res->notes, g_strdup_printf (
+			_("\"%s\" is not an address StockFW can read, so it was not "
+			  "looked up: this is the answer for every host."),
+			q->host_unread));
 	if (c.capped)
 		note_add (res->notes, g_strdup (
 			_("The question left so much open that only part of it was "
@@ -6146,6 +7119,13 @@ context_notes (const FsWhatIfContext *ctx, const Model *m,
 			_("StockFW could not tell whether the firewall is running; "
 			  "the answer assumes it is.")));
 
+	if (ctx->platform == FS_WHATIF_LINUX_FIRST_MATCH)
+		note_add (res->notes, g_strdup (
+			_("Only StockFW's own rules are known here: rules other "
+			  "programs (container or VM tools, fail2ban) put ahead of "
+			  "StockFW's can also allow or block this, and Sentinel's "
+			  "threat lists are not checked.")));
+
 	if (ctx->platform == FS_WHATIF_WINDOWS_BLOCK_WINS) {
 		note_add (res->notes, g_strdup (
 			_("Only the rules StockFW manages are known here: other "
@@ -6195,9 +7175,16 @@ context_notes (const FsWhatIfContext *ctx, const Model *m,
 }
 
 static gchar *
-result_summary (const FsWhatIfQuery *q, const FsWhatIfResult *r)
+result_summary (const FsWhatIfContext *ctx, const FsWhatIfQuery *q,
+                const FsWhatIfResult *r)
 {
 	GString *s = g_string_new (NULL);
+	/* "Already" and "currently" claim what the computer does now; that
+	 * is only true when the saved policy is what is in force. */
+	gboolean saved_only = r->stopped_decides ||
+	                      ctx->live == FS_WHATIF_LIVE_HELD ||
+	                      ctx->live == FS_WHATIF_LIVE_FAILED ||
+	                      ctx->live == FS_WHATIF_LIVE_STALE;
 	FsWhatIfVerdict want = (q->verb == FS_WHATIF_VERB_BLOCK)
 	                       ? FS_WHATIF_BLOCKED : FS_WHATIF_ALLOWED;
 
@@ -6217,6 +7204,12 @@ result_summary (const FsWhatIfQuery *q, const FsWhatIfResult *r)
 
 		if (q->verb == FS_WHATIF_VERB_NONE)
 			g_string_append_printf (s, "%s. %s", v, a->reason);
+		else if (r->stopped_decides)
+			g_string_append_printf (s, _("With the firewall off it is %s. "
+			                             "%s"), v, a->reason);
+		else if (saved_only)
+			g_string_append_printf (s, _("The saved policy has it %s. %s"),
+			                        v, a->reason);
 		else if (a->verdict == want)
 			g_string_append_printf (s, _("It is already %s. %s"), v,
 			                        a->reason);
@@ -6299,13 +7292,15 @@ fs_whatif_simulate (const FsWhatIfContext *ctx, const FsWhatIfQuery *query)
 
 	/* "Allowed, the firewall is off" is true and not the whole story:
 	 * say what the rules do once it runs again, first. */
-	if (ctx->firewall != FS_WHATIF_FW_RUNNING && stopped_decides (r)) {
+	if (stopped_decides (r)) {
 		FsWhatIfContext run;
 		FsWhatIfResult *on;
 		gchar *words;
 
 		ctx_running (ctx, &run);
 		on = fs_whatif_simulate (&run, query);
+		r->stopped_decides = TRUE;
+		r->verdict_running = on->verdict;
 		words = answers_words (on);
 		g_ptr_array_insert (r->notes, 0, g_strdup_printf (
 			_("Once the firewall runs: %s"), words));
@@ -6323,7 +7318,9 @@ fs_whatif_simulate (const FsWhatIfContext *ctx, const FsWhatIfQuery *query)
 			r->verdict = FS_WHATIF_DEPENDS;
 	}
 
-	r->summary = result_summary (query, r);
+	if (!r->stopped_decides)
+		r->verdict_running = r->verdict;
+	r->summary = result_summary (ctx, query, r);
 	model_free (m);
 	return r;
 }

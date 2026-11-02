@@ -246,6 +246,13 @@ typedef struct
 	 * their own default). */
 	gboolean (*get_profile_defaults) (gint profile, gboolean *inbound_block,
 	                                  gboolean *outbound_block);
+
+	/* 1.0.7 What-If: whether one profile has "Block all incoming
+	 * connections, including those in the list of allowed apps"
+	 * switched on, which refuses inbound traffic whatever the allow
+	 * rules say.  FALSE when it cannot be read; the What-If then judges
+	 * by the rules alone.  NULL slot: the platform has no such switch. */
+	gboolean (*get_profile_block_all_inbound) (gint profile, gboolean *on);
 } FsBackend;
 
 /* Profile identifiers, matching Windows' own numbering. */

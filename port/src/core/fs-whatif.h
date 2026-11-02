@@ -136,6 +136,15 @@ typedef struct
 	gchar            *service;     /* the service the line named, or NULL */
 	gdouble           confidence;  /* 0..1                             */
 	GPtrArray        *pieces;      /* FsWhatIfPiece*                   */
+
+	/* A host the line named that could not be read as an address (a
+	 * host name): the answer is for every host, and no rule is offered,
+	 * since a row for "anyone" is not the row that was asked for. */
+	gchar            *host_unread;
+	/* The line itself said the other end is anyone ("from anyone",
+	 * "from the internet", "to anywhere").  Only then is a row for
+	 * every host offered. */
+	gboolean          host_any_said;
 } FsWhatIfQuery;
 
 /* An empty query (direction BOTH, everything open), for callers that
@@ -216,6 +225,10 @@ typedef struct
 	gint             profile_enabled[3];
 	FsWhatIfDefault  default_inbound[3];
 	FsWhatIfDefault  default_outbound[3];
+	/* "Block all incoming connections, including those in the list of
+	 * allowed apps" (netsh blockinboundalways) per profile: -1 not
+	 * known, 0 off, 1 on.  On, Windows ignores every inbound allow. */
+	gint             block_all_inbound[3];
 
 	FsWhatIfLive     live;
 	gchar           *live_detail;  /* owned; why, in words, or NULL    */
@@ -362,6 +375,12 @@ typedef struct
 	gchar           *summary;      /* one line: "You asked to block
 	                                * this. It is currently ALLOWED." */
 	gchar           *error;        /* ERROR only: why                   */
+
+	/* The firewall (or, on Windows, a profile) being off decided part
+	 * of the answer.  verdict_running is then the verdict the same
+	 * question gets once it runs; otherwise it equals verdict. */
+	gboolean         stopped_decides;
+	FsWhatIfVerdict  verdict_running;
 } FsWhatIfResult;
 
 /* Answers a query.  Never NULL. */

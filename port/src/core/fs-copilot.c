@@ -549,6 +549,10 @@ fs_copilot_whatif_observe (FsWhatIfContext *ctx, const FsBackend *backend,
 				ctx->default_outbound[p] = out_block
 					? FS_WHATIF_DEFAULT_BLOCK : FS_WHATIF_DEFAULT_ALLOW;
 			}
+
+			if (backend->get_profile_block_all_inbound != NULL &&
+			    backend->get_profile_block_all_inbound (p, &on))
+				ctx->block_all_inbound[p] = on ? 1 : 0;
 		}
 	}
 

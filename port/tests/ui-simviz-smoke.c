@@ -511,7 +511,8 @@ test_blocked (void)
 	FsPolicy *p = policy_of (deny);
 	FsWhatIfResult *r = NULL;
 	GtkWidget *w = window_for (FS_WHATIF_LINUX_FIRST_MATCH, empty, NULL,
-	                           "allow tcp port 8443 inbound", &r);
+	                           "allow tcp port 8443 inbound from "
+	                           "192.168.1.20", &r);
 	GtkWidget *btn, *hit;
 	const FsWhatIfAction *act = fs_whatif_result_create_action (r);
 
@@ -531,7 +532,7 @@ test_blocked (void)
 	CHECK (btn != NULL && has_class (btn, "btn-primary"),
 	       "blocked by the default: one Create allow rule button");
 	hit = fs_simviz_find_named (w, "whatif-create-row");
-	CHECK (fs_simviz_find_label (hit, "TCP, 8443, Anyone") != NULL &&
+	CHECK (fs_simviz_find_label (hit, "TCP, 8443, 192.168.1.20") != NULL &&
 	       fs_simviz_find_label (hit, "Allow inbound service") != NULL,
 	       "blocked: the exact row a Create writes is shown");
 	handler_reset ();
@@ -539,8 +540,8 @@ test_blocked (void)
 		gtk_button_clicked (GTK_BUTTON (btn));
 	CHECK (handler_calls == 1 && handler_kind == FS_WHATIF_ACT_CREATE_ALLOW &&
 	       handler_verified &&
-	       g_strcmp0 (handler_row, "TCP, 8443, Anyone, What-If: allow TCP "
-	                               "8443") == 0,
+	       g_strcmp0 (handler_row, "TCP, 8443, 192.168.1.20, What-If: "
+	                               "allow TCP 8443") == 0,
 	       "blocked: Create hands the verified row to the caller (%s)",
 	       handler_row ? handler_row : "none");
 	CHECK (fs_simviz_find_label (fs_simviz_find_named (w, "whatif-decides"),
@@ -557,7 +558,7 @@ test_blocked (void)
 		FsWhatIfContext *ctx = context (FS_WHATIF_LINUX_FIRST_MATCH, empty,
 		                                s, NULL);
 		FsWhatIfResult *again = fs_whatif_simulate_text (
-			ctx, "allow tcp port 8443 inbound");
+			ctx, "allow tcp port 8443 inbound from 192.168.1.20");
 		FsWhatIfAction *a2 = (FsWhatIfAction *)
 			fs_whatif_result_create_action (again);
 
@@ -613,11 +614,12 @@ test_blocked (void)
 		                "allow outbound tcp to 203.0.113.50 port 443", &r);
 		fs_simviz_window_set_action_func (w, on_action, NULL);
 		show (w);
-		btn = fs_simviz_find_button (w, "Lift Sentinel block (expires in");
+		btn = fs_simviz_find_button (w, "Lift Sentinel block (it ends "
+		                                "by itself at");
 		CHECK (btn != NULL &&
 		       fs_simviz_find_button (w, "Create allow rule") == NULL,
-		       "a Sentinel block offers Lift Sentinel block (expires in "
-		       "N min), not a rule");
+		       "a Sentinel block offers Lift Sentinel block (it ends by "
+		       "itself at HH:MM), not a rule");
 		handler_reset ();
 		if (btn != NULL)
 			gtk_button_clicked (GTK_BUTTON (btn));
@@ -779,14 +781,19 @@ test_honesty (void)
 
 	strip = fs_simviz_find_named (w, "whatif-window-honesty");
 	CHECK (strip != NULL &&
-	       fs_simviz_find_label (strip, "The firewall is not running") &&
+	       fs_simviz_find_label (strip, "Firewall off: ALLOWED right now") &&
+	       fs_simviz_find_label (strip, "once it runs: BLOCKED") &&
 	       fs_simviz_find_label (strip, "applies are on hold"),
 	       "a stopped firewall and a held policy are said up front");
+	CHECK (fs_simviz_find_label (w, "describes the saved policy") == NULL,
+	       "stopped: the answer is not said to describe the saved policy");
 	CHECK (fs_simviz_find_label (fs_simviz_find_named (w, "whatif-facts"),
 	                             "Saved, applies on hold") != NULL,
 	       "the facts say the policy is not live");
-	CHECK (fs_simviz_find_button (w, "Apply policy") != NULL,
-	       "the held policy can be applied from the window");
+	/* On hold is the user's choice: the window does not offer to
+	 * apply over it. */
+	CHECK (fs_simviz_find_button (w, "Apply policy") == NULL,
+	       "a held policy is not offered for applying from the window");
 	shoot (w, "window-stopped-held");
 	gtk_widget_destroy (w);
 	fs_whatif_context_free (ctx);
@@ -1021,6 +1028,110 @@ run_dark_child (const gchar *self)
 	g_strfreev (envp);
 }
 
+/* Collects the widgets Tab can stop on under `root'. */
+static void
+collect_focusable (GtkWidget *w, gpointer data)
+{
+	GPtrArray *out = data;
+
+	if (!gtk_widget_get_visible (w))
+		return;
+	if (gtk_widget_get_can_focus (w) && gtk_widget_get_mapped (w))
+		g_ptr_array_add (out, w);
+	if (GTK_IS_CONTAINER (w))
+		gtk_container_forall (GTK_CONTAINER (w), collect_focusable, out);
+}
+
+/* The second review: folded rows, an allow for everyone, a new answer
+ * scrolled into view. */
+static void
+test_review (void)
+{
+	static const gchar *denies[] = {
+		"6:203.0.113.1,a", "6:203.0.113.2,b", "6:203.0.113.3,c",
+		"6:203.0.113.4,d", NULL };
+	FsPolicy *p = policy_of (denies);
+	FsPolicy *empty = fs_policy_new ();
+	FsWhatIfResult *r = NULL;
+	GtkWidget *w, *fold, *rows, *btn;
+	GPtrArray *stops;
+	gboolean inside = FALSE;
+
+	/* A run of rules that did not match is folded, and Tab does not
+	 * walk through it while it is. */
+	w = window_for (FS_WHATIF_LINUX_FIRST_MATCH, p, NULL,
+	                "outbound tcp to 198.51.100.4 port 443", &r);
+	show (w);
+	fold = fs_simviz_find_named (w, "whatif-skipped");
+	rows = fs_simviz_find_named (w, "whatif-skipped-rows");
+	CHECK (fold != NULL && rows != NULL &&
+	       !gtk_expander_get_expanded (GTK_EXPANDER (fold)) &&
+	       !gtk_widget_get_visible (rows),
+	       "review: a run of non-matching rules is folded, its rows hidden");
+	stops = g_ptr_array_new ();
+	collect_focusable (w, stops);
+	for (guint i = 0; rows != NULL && i < stops->len; i++)
+		if (gtk_widget_is_ancestor (g_ptr_array_index (stops, i), rows))
+			inside = TRUE;
+	CHECK (!inside, "review: no Tab stop inside a folded run");
+	g_ptr_array_unref (stops);
+	if (fold != NULL) {
+		gtk_expander_set_expanded (GTK_EXPANDER (fold), TRUE);
+		CHECK (gtk_widget_get_visible (rows),
+		       "review: unfolding shows the rows");
+		gtk_expander_set_expanded (GTK_EXPANDER (fold), FALSE);
+		CHECK (!gtk_widget_get_visible (rows),
+		       "review: folding hides them again");
+	}
+	shoot (w, "window-folded");
+
+	/* A new answer starts at the top. */
+	{
+		GtkWidget *sw = fs_simviz_find_named (w, "whatif-scroller");
+		GtkAdjustment *adj = sw != NULL
+			? gtk_scrolled_window_get_vadjustment (
+			      GTK_SCROLLED_WINDOW (sw)) : NULL;
+		FsSettings *st = fs_settings_new ();
+		FsWhatIfContext *ctx = context (FS_WHATIF_LINUX_FIRST_MATCH, p,
+		                                st, NULL);
+
+		if (adj != NULL)
+			gtk_adjustment_set_value (adj, gtk_adjustment_get_upper (adj));
+		fs_simviz_window_set_result (w, fs_whatif_simulate_text (
+			ctx, "inbound ssh from 10.1.2.3"), ctx, NULL);
+		CHECK (adj != NULL && gtk_adjustment_get_value (adj) ==
+		       gtk_adjustment_get_lower (adj),
+		       "review: a new answer is shown from the top");
+		fs_whatif_context_free (ctx);
+		fs_settings_free (st);
+	}
+	gtk_widget_destroy (w);
+
+	/* An allow for every address: offered, never the primary button. */
+	w = window_for (FS_WHATIF_LINUX_FIRST_MATCH, empty, NULL,
+	                "allow tcp port 8443 from anyone", &r);
+	show (w);
+	btn = fs_simviz_find_button (w, "Create allow rule for everyone");
+	CHECK (btn != NULL && !has_class (btn, "btn-primary"),
+	       "review: an allow for everyone is offered, not as the primary "
+	       "button");
+	CHECK (fs_simviz_find_label (w, "Careful") != NULL,
+	       "review: and it says what it opens");
+	shoot (w, "window-allow-everyone");
+	gtk_widget_destroy (w);
+
+	/* No host named: no button at all. */
+	w = window_for (FS_WHATIF_LINUX_FIRST_MATCH, empty, NULL,
+	                "allow tcp port 8443 inbound", &r);
+	show (w);
+	CHECK (fs_simviz_find_button (w, "Create allow rule") == NULL,
+	       "review: a line naming no host gets no Create button");
+	gtk_widget_destroy (w);
+
+	fs_policy_free (p);
+	fs_policy_free (empty);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1044,6 +1155,7 @@ main (int argc, char **argv)
 	test_both_ways ();
 	test_error ();
 	test_honesty ();
+	test_review ();
 	test_in_place ();
 	test_keys ();
 	test_reduced_motion ();

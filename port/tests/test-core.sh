@@ -1013,6 +1013,37 @@ static void test_script_generation (void)
 	       "inbound service rule also covers udp");
 	CHECK (strstr (script, "-A INBOUND -i lo -j ACCEPT") != NULL,
 	       "loopback trusted");
+
+	/* iptables reads a tcp/udp port with base 0: "022" written as typed
+	 * would be port 18.  The generator writes plain decimal. */
+	{
+		FsPolicy *padded = fs_policy_new ();
+		FsRule *row = fs_rule_new (FS_RULE_INBOUND_ALLOW_SERVICE);
+		gchar *text, *a, *b;
+
+		row->service = g_strdup ("SSH");
+		row->port = g_strdup ("022");
+		row->target = g_strdup ("192.168.1.0/24");
+		fs_policy_add (padded, row);
+		fs_rule_free (row);
+		text = fs_script_generate_inbound (padded, settings);
+		CHECK (text != NULL &&
+		       strstr (text, "-p tcp --dport 22 -j ACCEPT") != NULL &&
+		       strstr (text, "--dport 022") == NULL,
+		       "a zero-padded port is written in plain decimal");
+		g_free (text);
+		fs_policy_free (padded);
+
+		a = fs_script_port_text ("0067-068");
+		b = fs_script_port_text ("+22");
+		CHECK (g_strcmp0 (a, "67:68") == 0,
+		       "a padded range is written as 67:68 (%s)", a ? a : "NULL");
+		CHECK (b == NULL || strcmp (b, "22") == 0,
+		       "a signed port is refused or written plain (%s)",
+		       b ? b : "NULL");
+		g_free (a);
+		g_free (b);
+	}
 	CHECK (strstr (script, "-A INBOUND -i eth1 -j ACCEPT") != NULL,
 	       "internal interface accepted when NAT is on");
 	CHECK (strstr (script, "-j DROP") != NULL,

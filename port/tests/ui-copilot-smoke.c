@@ -508,6 +508,26 @@ test_whatif_card (FsPolicy *policy, GtkWidget *page)
 	       "what-if: a Details button sits on the answer row");
 	CHECK (history_rows (card) == 1,
 	       "what-if: the question is in Recent");
+	/* The chips are words, not Tab stops; and the rows they sit in can
+	 * shrink again to their widest chip. */
+	{
+		GList *kids = gtk_container_get_children (
+			GTK_CONTAINER (named (card, "whatif-chips")));
+		gboolean focusable = FALSE;
+		gint min = 0, nat = 0;
+
+		for (GList *l = kids; l != NULL; l = l->next)
+			if (gtk_widget_get_can_focus (l->data))
+				focusable = TRUE;
+		CHECK (kids != NULL && !focusable,
+		       "what-if: no chip takes a Tab stop");
+		g_list_free (kids);
+		gtk_widget_get_preferred_width (named (card, "whatif-examples"),
+		                                &min, &nat);
+		CHECK (min > 0 && min < nat,
+		       "what-if: the examples row can shrink below one line "
+		       "(%d < %d)", min, nat);
+	}
 	shoot (top, "card-answer");
 
 	/* An example chip asks its line. */
@@ -547,7 +567,7 @@ test_whatif_card (FsPolicy *policy, GtkWidget *page)
 	       "what-if: a Recent row asks its line again");
 
 	/* Details: a window beside the page, not over it. */
-	ask (card, "allow tcp port 8443 inbound");
+	ask (card, "allow tcp port 8443 inbound from 192.168.1.20");
 	CHECK (card_verdict_is (card, "BLOCKED"),
 	       "what-if: TCP 8443 inbound is blocked by the default");
 	gtk_button_clicked (GTK_BUTTON (named (card, "whatif-details")));
@@ -567,8 +587,8 @@ test_whatif_card (FsPolicy *policy, GtkWidget *page)
 
 	btn = fs_simviz_find_button (win, "Create allow rule");
 	CHECK (btn != NULL, "what-if: a verified allow row is offered");
-	CHECK (fs_simviz_find_label (win, "TCP, 8443, Anyone, What-If: allow "
-	                                  "TCP 8443") != NULL,
+	CHECK (fs_simviz_find_label (win, "TCP, 8443, 192.168.1.20, What-If: "
+	                                  "allow TCP 8443") != NULL,
 	       "what-if: the exact row is shown before anything is written");
 
 	timer = g_timeout_add (40, answer_confirm, NULL);
@@ -580,12 +600,12 @@ test_whatif_card (FsPolicy *policy, GtkWidget *page)
 		gtk_button_clicked (GTK_BUTTON (btn));
 	pump (60);
 	CHECK (confirm_seen == 1 && confirm_text != NULL &&
-	       strstr (confirm_text, "TCP, 8443, Anyone, What-If: allow TCP 8443")
+	       strstr (confirm_text, "TCP, 8443, 192.168.1.20, What-If: allow TCP 8443")
 	       != NULL && confirm_parent_ok,
 	       "what-if: Create asks first, over the window, with the literal "
 	       "row");
 	CHECK (!policy_has (policy, FS_RULE_INBOUND_ALLOW_SERVICE,
-	                    "TCP, 8443, Anyone, What-If: allow TCP 8443"),
+	                    "TCP, 8443, 192.168.1.20, What-If: allow TCP 8443"),
 	       "what-if: answering No writes nothing");
 
 	/* Yes: one row, held, and asked again. */
@@ -597,7 +617,7 @@ test_whatif_card (FsPolicy *policy, GtkWidget *page)
 	pump (120);
 	CHECK (confirm_seen == 1 &&
 	       policy_has (policy, FS_RULE_INBOUND_ALLOW_SERVICE,
-	                   "TCP, 8443, Anyone, What-If: allow TCP 8443"),
+	                   "TCP, 8443, 192.168.1.20, What-If: allow TCP 8443"),
 	       "what-if: answering Yes writes exactly the row shown");
 	CHECK (audit_mentions ("what-if rule created"),
 	       "what-if: the new rule is audited");

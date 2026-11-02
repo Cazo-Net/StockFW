@@ -2550,6 +2550,45 @@ firewalled_get_profile_defaults (gint profile, gboolean *inbound_block,
 	return TRUE;
 }
 
+/* [ firewalled_get_profile_block_all_inbound ]
+ * Whether one profile has "Block all incoming connections" switched on:
+ * Windows then refuses inbound traffic whatever the allow rules say, so
+ * the What-If must not answer ALLOWED from the rules alone.  FALSE when
+ * the profile id is unknown or the COM call fails. */
+static gboolean
+firewalled_get_profile_block_all_inbound (gint profile, gboolean *on)
+{
+	INetFwPolicy2 *policy = NULL;
+	HRESULT hr;
+	VARIANT_BOOL block = VARIANT_FALSE;
+
+	if (profile < 0 || profile >= FS_PROFILE_COUNT)
+		return FALSE;
+
+	CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
+
+	hr = CoCreateInstance (&FS_CLSID_NetFwPolicy2, NULL, CLSCTX_ALL,
+	                       &FS_IID_INetFwPolicy2, (void **) &policy);
+
+	if (FAILED (hr) || policy == NULL) {
+		CoUninitialize ();
+		return FALSE;
+	}
+
+	hr = policy->lpVtbl->get_BlockAllInboundTraffic (
+		policy, profile_from_index (profile), &block);
+
+	policy->lpVtbl->Release (policy);
+	CoUninitialize ();
+
+	if (FAILED (hr))
+		return FALSE;
+
+	if (on != NULL)
+		*on = (block != VARIANT_FALSE);
+	return TRUE;
+}
+
 /* [ firewalled_set_profile_enabled ]
  * Switches one profile.  Changing the firewall state needs elevation,
  * so a plain session gets a clear error rather than a silent failure. */
@@ -2851,7 +2890,8 @@ static const FsBackend windows_backend = {
 	.set_profile_enabled   = firewalled_set_profile_enabled,
 	.network_place         = firewalled_network_place,
 	.trust_signature       = fs_trust_win_signature,
-	.get_profile_defaults  = firewalled_get_profile_defaults
+	.get_profile_defaults  = firewalled_get_profile_defaults,
+	.get_profile_block_all_inbound = firewalled_get_profile_block_all_inbound
 };
 
 const FsBackend *

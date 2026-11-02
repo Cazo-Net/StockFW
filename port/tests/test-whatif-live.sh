@@ -11,7 +11,8 @@
 # Runs itself in a private network namespace (unshare -n): this side is
 # "the computer" (198.51.100.1 on v0); a peer namespace on the other end
 # of a veth pair plays every remote host (198.51.100.2, 10.1.2.3,
-# 192.0.2.7, 203.0.113.9 on v1).  TCP and UDP listeners and probes and
+# 192.0.2.7, 203.0.113.9 on v1), and a third namespace behind v2 plays a
+# machine on the computer's own network (192.168.50.2), for forwards.  TCP and UDP listeners and probes and
 # raw ICMP echo are Python; no ping binary is needed.  IPv4 only: the
 # kernel here may have no IPv6 stack.
 #
@@ -45,7 +46,7 @@ BUILD_DIR="$(mktemp -d)"
 PEER_PID=""
 SERVE_PIDS=""
 cleanup() {
-	for p in $SERVE_PIDS $PEER_PID; do
+	for p in $SERVE_PIDS $PEER_PID ${LAN_PID:-}; do
 		kill "$p" 2>/dev/null
 	done
 	rm -rf "$BUILD_DIR"
@@ -123,15 +124,79 @@ round_of (gint n, FsPolicy *p, FsSettings *s)
 		row (p, FS_RULE_INBOUND_ALLOW_SERVICE, "SSH,22,198.51.100.2,peer");
 		row (p, FS_RULE_INBOUND_ALLOW_FROM, "192.0.2.7,friend");
 		break;
+	case 4:
+		/* Zero-padded ports: iptables would read "022" as octal
+		 * (port 18); the generator writes 22, and the engine says
+		 * 22.  No ping replies: a reply nothing asked for. */
+		s->icmp_echo_reply = FALSE;
+		row (p, FS_RULE_INBOUND_ALLOW_SERVICE, "TCP,022,Anyone,padded");
+		row (p, FS_RULE_OUTBOUND_DENY_SERVICE, "SMTP,025,Anyone,padded");
+		break;
+	case 5:
+	case 6:
+		/* A forward to a machine behind this one: in router mode
+		 * (5) StockFW turns IP forwarding on; outside it (6) it does
+		 * not, and the forward reaches nothing. */
+		g_free (s->ext_device);
+		s->ext_device = g_strdup ("v0");
+		if (n == 5) {
+			g_free (s->int_device);
+			s->int_device = g_strdup ("v2");
+			s->nat = TRUE;
+		}
+		s->log_allowed = FALSE;
+		row (p, FS_RULE_INBOUND_FORWARD, "HTTP,8080,192.168.50.2,80,web");
+		row (p, FS_RULE_INBOUND_ALLOW_SERVICE, "SSH,22,10.0.0.0/8,lan");
+		break;
 	default:
 		fprintf (stderr, "no round %d\n", n);
 		exit (2);
 	}
 }
 
-/* A DEPENDS answer that splits only on the interface the packet uses:
- * the probes here all use v0, so the case that names it applies, or
- * the common case when none does. */
+/* Whether a DEPENDS case's condition holds for the probes here: they
+ * all use v0; IP forwarding is as $FWD says (0 or 1); an ICMP reply is
+ * unsolicited when $STATE is "unsolicited", else an answer.  -1 when
+ * the condition names something else, which the probe cannot settle. */
+static gint
+case_holds (const gchar *cond)
+{
+	const gchar *fwd = g_getenv ("FWD");
+	const gchar *state = g_getenv ("STATE");
+	gboolean known = FALSE, holds = TRUE;
+
+	if (strstr (cond, "arrives on") != NULL ||
+	    strstr (cond, "leaves by") != NULL ||
+	    strstr (cond, "another interface") != NULL) {
+		known = TRUE;
+		if (strstr (cond, " v0") == NULL)
+			holds = FALSE;
+	}
+	if (strstr (cond, "IP forwarding is off") != NULL) {
+		known = TRUE;
+		if (g_strcmp0 (fwd, "0") != 0)
+			holds = FALSE;
+	}
+	if (strstr (cond, "IP forwarding is on") != NULL) {
+		known = TRUE;
+		if (g_strcmp0 (fwd, "1") != 0)
+			holds = FALSE;
+	}
+	if (strstr (cond, "answers a connection already open") != NULL) {
+		known = TRUE;
+		if (g_strcmp0 (state, "unsolicited") == 0)
+			holds = FALSE;
+	}
+	if (strstr (cond, "answers no open connection") != NULL) {
+		known = TRUE;
+		if (g_strcmp0 (state, "unsolicited") != 0)
+			holds = FALSE;
+	}
+	return known ? (holds ? 1 : 0) : -1;
+}
+
+/* A DEPENDS answer settled for the probe: the first case whose
+ * condition holds; the common case when none of the others does. */
 static FsWhatIfVerdict
 on_v0 (const FsWhatIfAnswer *a)
 {
@@ -142,14 +207,15 @@ on_v0 (const FsWhatIfAnswer *a)
 	base = g_ptr_array_index (a->cases, 0);
 	for (guint i = 1; i < a->cases->len; i++) {
 		const FsWhatIfCase *c = g_ptr_array_index (a->cases, i);
+		gint h = case_holds (c->condition);
 
-		if (strstr (c->condition, "arrives on v0") != NULL ||
-		    strstr (c->condition, "leaves by v0") != NULL)
-			return c->verdict;
-		if (strstr (c->condition, " on ") == NULL &&
-		    strstr (c->condition, " by ") == NULL)
+		if (h < 0)
 			return FS_WHATIF_DEPENDS;
+		if (h == 1)
+			return c->verdict;
 	}
+	if (case_holds (base->condition) == 0)
+		return FS_WHATIF_DEPENDS;
 	return base->verdict;
 }
 
@@ -328,8 +394,42 @@ def probe(proto, src, dst, port):
     return False
 
 
+def send_reply(src, dst):
+    """An ICMP echo reply nothing asked for."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+    s.bind((src, 0))
+    head = struct.pack("!BBHHH", 0, 0, 0, 0x5157, 7)
+    body = b"whatif-unasked"
+    pkt = struct.pack("!BBHHH", 0, 0, checksum(head + body), 0x5157, 7) + body
+    for _ in range(3):
+        s.sendto(pkt, (dst, 0))
+        time.sleep(0.1)
+
+
+def catch(src):
+    """OPEN if that echo reply reaches this side's sockets."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+    print("READY", flush=True)
+    end = time.time() + 2 * TIMEOUT
+    while time.time() < end:
+        r, _, _ = select.select([s], [], [], max(0, end - time.time()))
+        if not r:
+            break
+        data, addr = s.recvfrom(2048)
+        ihl = (data[0] & 0x0F) * 4
+        typ, _, _, rid, _ = struct.unpack("!BBHHH", data[ihl:ihl + 8])
+        if typ == 0 and rid == 0x5157 and addr[0] == src:
+            print("OPEN", flush=True)
+            return
+    print("SHUT", flush=True)
+
+
 if sys.argv[1] == "serve":
     serve([int(p) for p in sys.argv[2:]])
+elif sys.argv[1] == "sendreply":
+    send_reply(sys.argv[2], sys.argv[3])
+elif sys.argv[1] == "catch":
+    catch(sys.argv[2])
 else:
     proto, src, dst = sys.argv[2], sys.argv[3], sys.argv[4]
     port = int(sys.argv[5]) if len(sys.argv) > 5 else 0
@@ -353,16 +453,32 @@ for a in 10.1.2.3 192.0.2.7 203.0.113.9; do
 	ip route add "$a/32" dev v0
 done
 $PEER ip link set v1 up
+
+# A machine on this computer's own network, for forwards.
+unshare -n sleep 600 &
+LAN_PID=$!
+sleep 0.3
+LAN="nsenter -t $LAN_PID -n"
+ip link add v2 type veth peer name v3 netns "$LAN_PID"
+ip addr add 192.168.50.1/24 dev v2
+ip link set v2 up
+$LAN ip link set lo up
+$LAN ip addr add 192.168.50.2/24 dev v3
+$LAN ip link set v3 up
+$LAN ip route add default via 192.168.50.1
 sleep 1
 
-PORTS="22 25 53 80 443 587 3389 5000 7005 8080 8443 33434"
+PORTS="18 22 25 53 80 443 587 3389 5000 7005 8080 8443 33434"
 $PROBE serve $PORTS > "$BUILD_DIR/serve-here.txt" 2>&1 &
 SERVE_PIDS="$!"
 $PEER $PROBE serve $PORTS > "$BUILD_DIR/serve-peer.txt" 2>&1 &
 SERVE_PIDS="$SERVE_PIDS $!"
+$LAN $PROBE serve 80 > "$BUILD_DIR/serve-lan.txt" 2>&1 &
+SERVE_PIDS="$SERVE_PIDS $!"
 sleep 1
 T_READY=0
-grep -q READY "$BUILD_DIR/serve-here.txt" && grep -q READY "$BUILD_DIR/serve-peer.txt" || T_READY=1
+grep -q READY "$BUILD_DIR/serve-here.txt" && grep -q READY "$BUILD_DIR/serve-peer.txt" &&
+	grep -q READY "$BUILD_DIR/serve-lan.txt" || T_READY=1
 CHECK $T_READY "listeners are up on both sides"
 
 # Before any firewall: every probe gets through, so a SHUT later is the
@@ -399,6 +515,27 @@ probe() {
 	checked=$((checked + 1))
 	[ "${model%%	*}" = "$got" ]
 	CHECK $? "round $round: \"$line\": the engine says ${model%%	*}, the kernel $got -- ${model#*	}"
+}
+
+# An echo reply the peer sends unasked: does it reach this side?
+probe_unasked() {
+	local round="$1" line="$2" remote="$3"
+	local model kernel got
+	model="$(STATE=unsolicited "$DRIVER" ask "$round" "$line")"
+	$PROBE catch "$remote" > "$BUILD_DIR/catch.txt" &
+	local cpid=$!
+	sleep 0.3
+	$PEER $PROBE sendreply "$remote" 198.51.100.1
+	wait "$cpid"
+	kernel="$(tail -1 "$BUILD_DIR/catch.txt")"
+	case "$kernel" in
+		OPEN) got=ALLOWED ;;
+		SHUT) got=BLOCKED ;;
+		*) got="probe failed: $kernel" ;;
+	esac
+	checked=$((checked + 1))
+	[ "${model%%	*}" = "$got" ]
+	CHECK $? "round $round: \"$line\" (unasked): the engine says ${model%%	*}, the kernel $got -- ${model#*	}"
 }
 
 apply_round() {
@@ -453,6 +590,33 @@ probe 3 "inbound tcp port 80 from 203.0.113.9"     tcp in 203.0.113.9 80
 probe 3 "inbound ping from 10.1.2.3"               icmp in 10.1.2.3
 probe 3 "outbound tcp to 10.1.2.3 port 443"        tcp out 10.1.2.3 443
 probe 3 "outbound tcp to 203.0.113.9 port 443"     tcp out 203.0.113.9 443
+
+# ---------- round 4: zero-padded ports, an echo reply nothing asked for
+apply_round 4
+probe 4 "inbound tcp port 22 from 198.51.100.2"    tcp in 198.51.100.2 22
+probe 4 "inbound tcp port 18 from 198.51.100.2"    tcp in 198.51.100.2 18
+probe 4 "outbound tcp to 198.51.100.2 port 25"     tcp out 198.51.100.2 25
+probe 4 "outbound tcp to 198.51.100.2 port 18"     tcp out 198.51.100.2 18
+probe 4 "outbound ping to 198.51.100.2"            icmp out 198.51.100.2
+probe_unasked 4 "inbound echo-reply from 198.51.100.2" 198.51.100.2
+
+# ----------- round 5: router mode -- a forward reaches the machine behind
+apply_round 5
+fwd="$(cat /proc/sys/net/ipv4/ip_forward)"
+CHECK $([ "$fwd" = 1 ]; echo $?) "round 5: router mode turned IP forwarding on"
+FWD=1 probe 5 "inbound tcp port 8080 from 198.51.100.2" tcp in 198.51.100.2 8080
+FWD=1 probe 5 "inbound tcp port 8081 from 198.51.100.2" tcp in 198.51.100.2 8081
+
+# --- round 6: no router mode, forwarding off -- the forward goes nowhere
+echo 0 > /proc/sys/net/ipv4/ip_forward
+apply_round 6
+fwd="$(cat /proc/sys/net/ipv4/ip_forward)"
+CHECK $([ "$fwd" = 0 ]; echo $?) "round 6: outside router mode StockFW leaves IP forwarding off"
+FWD=0 probe 6 "inbound tcp port 8080 from 198.51.100.2" tcp in 198.51.100.2 8080
+# ...and if another program turned it on, the forward works.
+echo 1 > /proc/sys/net/ipv4/ip_forward
+FWD=1 probe 6 "inbound tcp port 8080 from 198.51.100.2" tcp in 198.51.100.2 8080
+echo 0 > /proc/sys/net/ipv4/ip_forward
 
 CHECK $([ "$checked" -ge 30 ]; echo $?) \
 	"$checked probes compared: the engine's verdict is the kernel's for every one"

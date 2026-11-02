@@ -1764,6 +1764,7 @@ typedef struct
 {
     gchar          *line;
     FsWhatIfVerdict verdict;
+    gboolean        off;        /* answered with the firewall off   */
 } WhatIfPast;
 
 static GtkWidget     *whatif_readas      = NULL;  /* "Read as" + chips   */
@@ -1781,7 +1782,6 @@ static GString       *whatif_report      = NULL;  /* what a fix did      */
 static FsSimvizStatus whatif_report_level = FS_SIMVIZ_STATUS_OK;
 
 static void whatif_reveal (GtkWidget *w, gboolean on);
-static void whatif_flow_queue_refit (GtkWidget *flow);
 static void whatif_window_action (GtkWidget *window,
                                   const FsWhatIfResult *result,
                                   const FsWhatIfAction *act,
@@ -2005,7 +2005,6 @@ whatif_show_chips (const FsWhatIfQuery *q)
     }
 
     whatif_reveal (whatif_readas, TRUE);
-    whatif_flow_queue_refit (whatif_chips);
 }
 
 /* The answer in one line: the engine's summary, or for a line asked
@@ -2059,7 +2058,16 @@ whatif_show_result (const FsWhatIfResult *r, FsWhatIfLive live)
                        fs_simviz_badge_new (r->verdict));
 
     line = whatif_one_line (r);
-    if (r->verdict != FS_WHATIF_ERROR)
+    if (r->verdict != FS_WHATIF_ERROR && r->stopped_decides) {
+        /* "Allowed" with the firewall off is the firewall being off;
+         * the saved policy's answer is for once it runs. */
+        g_free (line);
+        line = g_strdup_printf (_("Firewall off: %s (nothing is filtered). "
+                                  "With the saved policy, once it runs: "
+                                  "%s."),
+                                fs_whatif_verdict_name (r->verdict),
+                                fs_whatif_verdict_name (r->verdict_running));
+    } else if (r->verdict != FS_WHATIF_ERROR)
         caveat = live == FS_WHATIF_LIVE_HELD
                  ? _("Saved policy, applies on hold: ")
                  : live == FS_WHATIF_LIVE_FAILED
@@ -2134,9 +2142,13 @@ whatif_history_render (void)
         GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *dot = gtk_label_new ("●");
         GtkWidget *text = gtk_label_new (p->line);
-        GtkWidget *verdict = gtk_label_new (fs_whatif_verdict_name (p->verdict));
+        gchar *was = p->off
+            ? g_strdup_printf (_("%s, firewall off"),
+                               fs_whatif_verdict_name (p->verdict))
+            : g_strdup (fs_whatif_verdict_name (p->verdict));
+        GtkWidget *verdict = gtk_label_new (was);
         gchar *a11y = g_strdup_printf (_("Ask again: %s (was %s)"), p->line,
-                                       fs_whatif_verdict_name (p->verdict));
+                                       was);
 
         gtk_style_context_add_class (gtk_widget_get_style_context (btn),
                                      "fs-wi-history");
@@ -2164,6 +2176,7 @@ whatif_history_render (void)
         gtk_box_pack_start (GTK_BOX (whatif_history_rows), btn,
                             FALSE, FALSE, 0);
         g_free (a11y);
+        g_free (was);
     }
 
     whatif_reveal (whatif_history, whatif_past.length > 0);
@@ -2171,7 +2184,8 @@ whatif_history_render (void)
 
 /* Newest first, one entry per line, five at most. */
 static void
-whatif_history_push (const gchar *line, FsWhatIfVerdict verdict)
+whatif_history_push (const gchar *line, FsWhatIfVerdict verdict,
+                     gboolean off)
 {
     WhatIfPast *p;
 
@@ -2188,6 +2202,7 @@ whatif_history_push (const gchar *line, FsWhatIfVerdict verdict)
     p = g_new0 (WhatIfPast, 1);
     p->line = g_strdup (line);
     p->verdict = verdict;
+    p->off = off;
     g_queue_push_head (&whatif_past, p);
 
     while (whatif_past.length > WHATIF_HISTORY_MAX)
@@ -2207,7 +2222,8 @@ whatif_present (FsWhatIfResult *result, const FsWhatIfContext *ctx)
     whatif_show_result (result, ctx != NULL ? ctx->live
                                             : FS_WHATIF_LIVE_UNKNOWN);
     if (whatif_line != NULL)
-        whatif_history_push (whatif_line, result->verdict);
+        whatif_history_push (whatif_line, result->verdict,
+                             result->stopped_decides);
 
     if (whatif_window != NULL)
         fs_simviz_window_set_result (whatif_window, result, ctx, whatif_line);
@@ -2295,94 +2311,185 @@ on_whatif_details_clicked (GtkButton *btn, gpointer data)
     fs_settings_free (settings);
 }
 
-/* [ whatif_flow_fit ]
- * Chips as wide as their words, wrapping only when the row is full.
- * A GtkFlowBox either spreads spare width over its children or, kept
- * to its natural width, stacks them one per line; so the row works out
- * how many fit and asks for that many on the first line. */
-static gboolean
-whatif_flow_refit (gpointer data)
+/* [ FsWiWrap ]
+ * Chips and examples as wide as their words, wrapping when the row is
+ * full.  Its narrowest is its widest child, so the row can always
+ * shrink again (a flow box asked for N per line cannot), and its
+ * children are the widgets themselves: a chip that is a label takes no
+ * Tab stop, while an example button keeps its own. */
+typedef struct
 {
-    GtkWidget *flow = data;
-    GtkWidget *row = gtk_widget_get_parent (flow);
-    GList *kids;
-    gint avail, used = 0, fit = 0;
-    guint spacing;
+    GtkContainer parent;
+    GList       *kids;
+} FsWiWrap;
 
-    g_object_set_data (G_OBJECT (flow), "fs-wi-refit", NULL);
-    if (row == NULL)
-        return G_SOURCE_REMOVE;
+typedef struct
+{
+    GtkContainerClass parent_class;
+} FsWiWrapClass;
 
-    avail = gtk_widget_get_allocated_width (row);
-    kids = gtk_container_get_children (GTK_CONTAINER (row));
-    for (GList *l = kids; l != NULL; l = l->next)
-        if (l->data != flow && gtk_widget_get_visible (l->data))
-            avail -= gtk_widget_get_allocated_width (l->data) +
-                     gtk_box_get_spacing (GTK_BOX (row));
-    g_list_free (kids);
+#define FS_WI_WRAP_HGAP 6
+#define FS_WI_WRAP_VGAP 6
 
-    spacing = gtk_flow_box_get_column_spacing (GTK_FLOW_BOX (flow));
-    kids = gtk_container_get_children (GTK_CONTAINER (flow));
-    for (GList *l = kids; l != NULL; l = l->next) {
-        gint nat = 0;
+GType fs_wi_wrap_get_type (void);
+G_DEFINE_TYPE (FsWiWrap, fs_wi_wrap, GTK_TYPE_CONTAINER)
+
+/* Lays the children out in `width'; allocates them when `origin' is
+ * given.  Returns the height used. */
+static gint
+fs_wi_wrap_layout (FsWiWrap *w, gint width, const GtkAllocation *origin)
+{
+    gint x = 0, y = 0, line = 0;
+
+    for (GList *l = w->kids; l != NULL; l = l->next) {
+        GtkWidget *kid = l->data;
+        gint min_w, nat_w, min_h, nat_h, cw;
+
+        if (!gtk_widget_get_visible (kid))
+            continue;
+        gtk_widget_get_preferred_width (kid, &min_w, &nat_w);
+        cw = MIN (nat_w, MAX (width, min_w));
+        gtk_widget_get_preferred_height_for_width (kid, cw, &min_h, &nat_h);
+
+        if (x > 0 && x + FS_WI_WRAP_HGAP + cw > width) {
+            y += line + FS_WI_WRAP_VGAP;
+            x = 0;
+            line = 0;
+        }
+        if (x > 0)
+            x += FS_WI_WRAP_HGAP;
+
+        if (origin != NULL) {
+            GtkAllocation a = { origin->x + x, origin->y + y, cw, nat_h };
+
+            gtk_widget_size_allocate (kid, &a);
+        }
+        x += cw;
+        line = MAX (line, nat_h);
+    }
+    return y + line;
+}
+
+static GtkSizeRequestMode
+fs_wi_wrap_request_mode (GtkWidget *widget)
+{
+    (void) widget;
+    return GTK_SIZE_REQUEST_HEIGHT_FOR_WIDTH;
+}
+
+static void
+fs_wi_wrap_preferred_width (GtkWidget *widget, gint *min, gint *nat)
+{
+    FsWiWrap *w = (FsWiWrap *) widget;
+    gint mn = 0, nt = 0, n = 0;
+
+    for (GList *l = w->kids; l != NULL; l = l->next) {
+        gint a, b;
 
         if (!gtk_widget_get_visible (l->data))
             continue;
-        gtk_widget_get_preferred_width (l->data, NULL, &nat);
-        if (fit > 0 && used + (gint) spacing + nat > avail)
-            break;
-        used += (fit > 0 ? (gint) spacing : 0) + nat;
-        fit++;
+        gtk_widget_get_preferred_width (l->data, &a, &b);
+        mn = MAX (mn, a);
+        nt += b + (n++ > 0 ? FS_WI_WRAP_HGAP : 0);
     }
-    g_list_free (kids);
-
-    if (fit < 1)
-        fit = 1;
-    if ((guint) fit != gtk_flow_box_get_min_children_per_line (
-                           GTK_FLOW_BOX (flow)))
-        gtk_flow_box_set_min_children_per_line (GTK_FLOW_BOX (flow),
-                                                (guint) fit);
-    return G_SOURCE_REMOVE;
+    *min = mn;
+    *nat = nt;
 }
 
 static void
-whatif_flow_queue_refit (GtkWidget *flow)
+fs_wi_wrap_preferred_height_for_width (GtkWidget *widget, gint width,
+                                       gint *min, gint *nat)
 {
-    if (g_object_get_data (G_OBJECT (flow), "fs-wi-refit") != NULL)
-        return;
-    g_object_set_data (G_OBJECT (flow), "fs-wi-refit", GINT_TO_POINTER (1));
-    g_idle_add_full (G_PRIORITY_HIGH_IDLE, whatif_flow_refit,
-                     g_object_ref (flow), g_object_unref);
+    *min = *nat = fs_wi_wrap_layout ((FsWiWrap *) widget, width, NULL);
 }
 
 static void
-on_whatif_row_allocated (GtkWidget *row, GdkRectangle *a, gpointer flow)
+fs_wi_wrap_preferred_height (GtkWidget *widget, gint *min, gint *nat)
 {
-    gint last = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (row),
-                                                    "fs-wi-width"));
+    gint mn, nt;
 
-    (void) a;
-    if (last == gtk_widget_get_allocated_width (row))
-        return;
-    g_object_set_data (G_OBJECT (row), "fs-wi-width",
-                       GINT_TO_POINTER (gtk_widget_get_allocated_width (row)));
-    whatif_flow_queue_refit (flow);
+    fs_wi_wrap_preferred_width (widget, &mn, &nt);
+    fs_wi_wrap_preferred_height_for_width (widget, nt, min, nat);
 }
 
-/* A flow box of chips in `row', fitted as above. */
+static void
+fs_wi_wrap_size_allocate (GtkWidget *widget, GtkAllocation *alloc)
+{
+    gtk_widget_set_allocation (widget, alloc);
+    fs_wi_wrap_layout ((FsWiWrap *) widget, alloc->width, alloc);
+}
+
+static void
+fs_wi_wrap_add (GtkContainer *container, GtkWidget *child)
+{
+    FsWiWrap *w = (FsWiWrap *) container;
+
+    w->kids = g_list_append (w->kids, child);
+    gtk_widget_set_parent (child, GTK_WIDGET (container));
+}
+
+static void
+fs_wi_wrap_remove (GtkContainer *container, GtkWidget *child)
+{
+    FsWiWrap *w = (FsWiWrap *) container;
+    gboolean was_visible = gtk_widget_get_visible (child);
+
+    w->kids = g_list_remove (w->kids, child);
+    gtk_widget_unparent (child);
+    if (was_visible)
+        gtk_widget_queue_resize (GTK_WIDGET (container));
+}
+
+static void
+fs_wi_wrap_forall (GtkContainer *container, gboolean internals,
+                   GtkCallback callback, gpointer data)
+{
+    FsWiWrap *w = (FsWiWrap *) container;
+    GList *l = w->kids;
+
+    (void) internals;
+    while (l != NULL) {
+        GtkWidget *kid = l->data;
+
+        l = l->next;     /* the callback may remove it */
+        callback (kid, data);
+    }
+}
+
+static void
+fs_wi_wrap_class_init (FsWiWrapClass *klass)
+{
+    GtkWidgetClass *wc = GTK_WIDGET_CLASS (klass);
+    GtkContainerClass *cc = GTK_CONTAINER_CLASS (klass);
+
+    wc->get_request_mode = fs_wi_wrap_request_mode;
+    wc->get_preferred_width = fs_wi_wrap_preferred_width;
+    wc->get_preferred_height = fs_wi_wrap_preferred_height;
+    wc->get_preferred_height_for_width =
+        fs_wi_wrap_preferred_height_for_width;
+    wc->size_allocate = fs_wi_wrap_size_allocate;
+    cc->add = fs_wi_wrap_add;
+    cc->remove = fs_wi_wrap_remove;
+    cc->forall = fs_wi_wrap_forall;
+}
+
+static void
+fs_wi_wrap_init (FsWiWrap *w)
+{
+    gtk_widget_set_has_window (GTK_WIDGET (w), FALSE);
+    w->kids = NULL;
+}
+
+/* A wrapping row of chips or examples, to be packed with room to grow
+ * into its row. */
 static GtkWidget *
-whatif_flow_new (GtkWidget *row)
+whatif_flow_new (void)
 {
-    GtkWidget *flow = gtk_flow_box_new ();
+    GtkWidget *flow = g_object_new (fs_wi_wrap_get_type (), NULL);
 
-    gtk_flow_box_set_selection_mode (GTK_FLOW_BOX (flow), GTK_SELECTION_NONE);
-    gtk_flow_box_set_column_spacing (GTK_FLOW_BOX (flow), 6);
-    gtk_flow_box_set_row_spacing (GTK_FLOW_BOX (flow), 6);
-    gtk_flow_box_set_max_children_per_line (GTK_FLOW_BOX (flow), 12);
-    gtk_widget_set_halign (flow, GTK_ALIGN_START);
+    gtk_widget_set_halign (flow, GTK_ALIGN_FILL);
     gtk_widget_set_valign (flow, GTK_ALIGN_START);
-    g_signal_connect (row, "size-allocate",
-                      G_CALLBACK (on_whatif_row_allocated), flow);
+    gtk_widget_set_hexpand (flow, TRUE);
     return flow;
 }
 
@@ -2456,7 +2563,7 @@ whatif_card_new (void)
     gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "muted");
     gtk_widget_set_valign (lbl, GTK_ALIGN_CENTER);
     gtk_box_pack_start (GTK_BOX (row), lbl, FALSE, FALSE, 0);
-    flow = whatif_flow_new (row);
+    flow = whatif_flow_new ();
     gtk_widget_set_name (flow, "whatif-examples");
     for (guint i = 0; i < G_N_ELEMENTS (examples); i++) {
         gchar *a11y = g_strdup_printf (_("Try the example: %s"), examples[i]);
@@ -2470,7 +2577,7 @@ whatif_card_new (void)
         gtk_container_add (GTK_CONTAINER (flow), btn);
         g_free (a11y);
     }
-    gtk_box_pack_start (GTK_BOX (row), flow, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (row), flow, TRUE, TRUE, 0);
     gtk_box_pack_start (GTK_BOX (body), row, FALSE, FALSE, 0);
 
     /* How the line was read. */
@@ -2481,9 +2588,9 @@ whatif_card_new (void)
     gtk_widget_set_valign (lbl, GTK_ALIGN_START);
     gtk_widget_set_margin_top (lbl, 2);
     gtk_box_pack_start (GTK_BOX (whatif_readas), lbl, FALSE, FALSE, 0);
-    whatif_chips = whatif_flow_new (whatif_readas);
+    whatif_chips = whatif_flow_new ();
     gtk_widget_set_name (whatif_chips, "whatif-chips");
-    gtk_box_pack_start (GTK_BOX (whatif_readas), whatif_chips, FALSE, FALSE,
+    gtk_box_pack_start (GTK_BOX (whatif_readas), whatif_chips, TRUE, TRUE,
                         0);
     gtk_widget_set_no_show_all (whatif_readas, TRUE);
     gtk_box_pack_start (GTK_BOX (body), whatif_readas, FALSE, FALSE, 0);
@@ -2861,9 +2968,19 @@ lift_sentinel_from_whatif (const FsWhatIfResult *result,
 
 /* [ whatif_open_rule ] -- the Policy page, at the row that decided. */
 static void
-whatif_open_rule (const FsWhatIfAction *act)
+whatif_open_rule (GtkWidget *window, const FsWhatIfAction *act)
 {
+    GtkWidget *main_window = (window != NULL)
+        ? GTK_WIDGET (gtk_window_get_transient_for (GTK_WINDOW (window)))
+        : NULL;
+
     fs_app_show_page (FS_PAGE_POLICY);
+    /* The Details window sits over the main window: put the Policy page
+     * where it can be seen, rather than behind it. */
+    if (window != NULL)
+        gtk_widget_hide (window);
+    if (main_window != NULL)
+        gtk_window_present (GTK_WINDOW (main_window));
     if (act->policy_kind < 0 || act->policy_kind >= FS_RULE_N_KINDS ||
         !fs_policyview_select ((FsRuleKind) act->policy_kind,
                                act->policy_index)) {
@@ -2911,6 +3028,13 @@ whatif_apply_policy (const FsWhatIfResult *result,
 {
     if (copilot_policy == NULL)
         return;
+    if (fs_policyview_hold_reason () != NULL) {
+        whatif_log ("\n[=] Applies are on hold (", "orange");
+        whatif_log (fs_policyview_hold_reason (), "orange");
+        whatif_log ("): the policy was not applied. Lift the hold first.\n",
+                    "orange");
+        return;
+    }
     if (!whatif_confirm (_("Apply the policy"),
                          _("Apply the saved policy to the firewall now?\n\n"
                            "The firewall then runs exactly the rules on the "
@@ -2945,7 +3069,7 @@ whatif_window_action (GtkWidget *window, const FsWhatIfResult *result,
         lift_sentinel_from_whatif (result, act);
         break;
     case FS_WHATIF_ACT_OPEN_RULE:
-        whatif_open_rule (act);
+        whatif_open_rule (window, act);
         break;
     case FS_WHATIF_ACT_OPEN_ICMP_SETTINGS:
     case FS_WHATIF_ACT_OPEN_SETTINGS:

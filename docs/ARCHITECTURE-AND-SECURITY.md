@@ -1436,4 +1436,50 @@ Lift Sentinel's Block confirms, lifts, applies and asks again in the same way. T
 
 - The Windows model has not been checked against a running Windows Firewall. It is built from the same compiled rules netsh receives, but Windows' own and other programs' rules are unknown to it, and the answer says so.
 - IPv6 is pinned as rule text but not probed live, because the test kernel has no IPv6 stack.
-- Forwards and threat-intel sets are not probed live.
+- Threat-intel sets are not probed live. Forwards are, since the second review (below).
+
+#### 14.3.1 The Second Review
+
+A second review measured the engine against the kernel and the window against a keyboard and a dark theme, and found answers that were wrong in the dangerous direction, and offered rows that opened more than the line asked for. What changed:
+
+**The model.**
+
+- *Interfaces.* A Linux answer now depends on the interface a packet uses: router mode accepts everything arriving on the internal interface, and a forward's DNAT happens only on the external one. The cases say so ("when it arrives on eth1").
+- *Connection state.* ICMP replies and errors (echo-reply, unreachable, time-exceeded and the rest) are answers to an open connection or are unsolicited. Linux's connection tracker drops an unsolicited one as invalid, whatever the ICMP settings say; the ESTABLISHED rule lets an answer in. Both are cases of the answer now, and the live test sends an echo reply nobody asked for.
+- *IP forwarding.* StockFW turns IP forwarding on only in router mode and never turns it off. A forward to another computer outside router mode reaches it only if another program turned forwarding on, so the answer depends on that, and a note names the Preferences switch. No allow row is offered for it, since a row cannot fix it.
+- *Ports.* iptables reads a TCP or UDP port with base 0, so a policy port typed as `022` was enforced as port 18 while the engine said 22. The generator now writes every port in plain decimal (`fs_script_port_text`), and the engine uses the same text.
+- *Windows.* StockFW sets up no forwarding on Windows, so a forward row lets traffic in to this computer and the answer says it goes no further. Traffic to this computer's own addresses goes over loopback, which Windows Firewall does not filter, and answers to open connections are let through. The "Block all incoming connections" switch of a profile is read through a new optional backend slot (`get_profile_block_all_inbound`, `INetFwPolicy2::get_BlockAllInboundTraffic`); when it is on, every inbound allow is ignored and no allow row is offered.
+- *Notes.* Linux answers say that rules other programs put ahead of StockFW's, and Sentinel's threat lists, are not seen. A block of a host says ICMP answers to open connections still pass.
+
+**The reading.** A line is refused, not answered for part of it, when it names a port range or list, a second port or a second host, a pattern (`192.168.1.*`), an address with a zone (`%eth0`), a bad block length or a non-ASCII host. A request with a negation in it ("don't allow", "let nobody in", "except", "but") is refused rather than guessed; a question with "not" in it is still answered. Host names ("server.example.com", "nas01") are read as the far end of the connection, so the direction is right, but are not looked up: the answer is for every host and says so. A service's name inside a host name is no longer read as the service. Numbers that are durations or counts ("for 10 minutes", "3 times") are not ports. "Expose ... to the internet", "my SSH", "the local network" and "let's" are read.
+
+**What is offered.** An allow row never opens more than the line named:
+
+- no row when the line names no host, unless it said "from anyone" or "to anywhere"; then the label says *every address, the internet included*, the explanation begins its warning with *Careful*, and the window's button is not the primary one;
+- no row for a host the line named but that could not be read, even with "anyone" in the same line;
+- no row where IP forwarding, "Block all incoming", or an ICMP reply's connection state decides;
+- a settings change says how far it reaches ("from every host, not only the one asked about");
+- on Linux, an inbound allow's explanation says it also applies to traffic this computer forwards;
+- with the firewall off, the plain answer is ALLOWED, but what to change is judged by what the saved policy does once it runs. The result carries both (`stopped_decides`, `verdict_running`), the summary says "With the firewall off it is ALLOWED", and Start the firewall is offered with what it gives;
+- applying the policy is offered when the last apply failed or the policy changed since, not when applies are on hold: a hold is the user's choice, and the Copilot page refuses to apply over one.
+
+**The window and the card.** With the firewall off the header and the card's line say "Firewall off: ALLOWED ... With the saved policy, once it runs: BLOCKED", never that the answer describes the saved policy. Recent marks such an answer. The card's answer row keeps its own ink on its light surface in a dark theme, and the window takes its palette from the window it opens over. Folded runs of rules hide their rows, so Tab does not walk through what cannot be seen. The chips and examples wrap in a container whose narrowest is its widest chip, so the row can shrink again, and a chip takes no Tab stop. A new answer starts at the top of the window, and a status line is scrolled into view. Open rule hides the window and raises the Policy page. The Sentinel button names the clock time its block ends.
+
+**Verified.** `test-whatif.c` runs 450 checks: 54 reading lines (refusals included), 112 golden rows, and a review section for each change above. `test-core.sh` checks the generator's plain-decimal ports. `test-whatif-live.sh` adds three rounds and a third namespace behind the computer: round 4 loads `022` and `025` and sends an echo reply nobody asked for; round 5 is router mode, with a forward reaching the machine behind; round 6 is the same forward outside router mode, with forwarding off and then turned on by hand. 46 probes, each the engine's verdict equal to the kernel's. The smokes check the folded rows, the button for everyone, a hostless allow, the stopped header and the chips. The test program runs clean under AddressSanitizer and UBSan.
+
+**Teeth (second review).**
+
+| Bug re-injected | Caught by |
+|---|---|
+| a hostless allow offered for every host | golden "allow inbound ssh" (offers no Create) |
+| an unread host name allowed as "anyone" | "an unread name is never widened to anyone" |
+| ports written as typed | test-core "a zero-padded port is written in plain decimal"; live round 4 (the kernel enforced port 18) |
+| IP forwarding not modelled | goldens for the forward outside router mode; live round 6 |
+| the ESTABLISHED rule matching unsolicited replies | live round 4's unasked echo reply |
+| "Block all incoming" ignored | the Windows shields goldens and their note |
+| an ICMP answer to an open connection counted against a block row | "on Windows a whole host is blocked with a deny-to row", the "still pass" note |
+| folded rows left in the focus chain | "a run of non-matching rules is folded, its rows hidden" |
+| the allow-for-everyone button primary | "an allow for everyone is offered, not as the primary button" |
+| the stopped header saying "describes the saved policy" | "a stopped firewall and a held policy are said up front" |
+
+**Not verified.** "Block all incoming" and the Windows loopback and return-traffic rules are compiled and linked for Windows but not run against a Windows Firewall. Rules that other programs put in INPUT or OUTPUT ahead of StockFW's jump are named in a note, not detected.
