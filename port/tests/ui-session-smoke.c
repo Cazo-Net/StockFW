@@ -23,7 +23,11 @@
  *     - a quit that arrives while a dialog runs its own loop (a signal,
  *       --quit) writes everything and takes the icon down at once,
  *       frees nothing under the dialog, closes the dialog as its close
- *       button would, and finishes once the dialog has returned.
+ *       button would, and finishes once the dialog has returned;
+ *   prefs
+ *     - the same with the Preferences window open, which is no
+ *       GtkDialog and runs a loop of its own: the quit closes it as its
+ *       Cancel would (a change made in it is not saved) and finishes.
  *
  * Needs a display (xvfb-run).  Everything the app writes goes to a
  * scratch directory.
@@ -41,6 +45,7 @@
 #include "core/fs-rules.h"
 #include "ui/fs-app.h"
 #include "ui/fs-copilot.h"
+#include "ui/fs-dialogs.h"
 #include "ui/fs-statusview.h"
 #include "ui/fs-tray.h"
 
@@ -470,6 +475,113 @@ run_dialog (gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+/* --- prefs: a quit while the Preferences window is open ---------------
+ * That window is no GtkDialog: it runs a loop of its own, so closing
+ * GtkDialogs alone left the quit waiting for whoever sat at the
+ * computer to close it. */
+
+static gboolean prefs_fallback_fired = FALSE;
+static gboolean prefs_redundant_before = FALSE;
+
+static GtkWidget *
+find_named (GtkWidget *root, const gchar *name)
+{
+	GtkWidget *found = NULL;
+
+	if (root == NULL)
+		return NULL;
+	if (g_strcmp0 (gtk_widget_get_name (root), name) == 0)
+		return root;
+	if (GTK_IS_CONTAINER (root)) {
+		GList *kids = gtk_container_get_children (GTK_CONTAINER (root));
+
+		for (GList *l = kids; l != NULL && found == NULL; l = l->next)
+			found = find_named (l->data, name);
+		g_list_free (kids);
+	}
+	return found;
+}
+
+static GtkWidget *
+prefs_window (void)
+{
+	GList *tops = gtk_window_list_toplevels ();
+	GtkWidget *found = NULL;
+
+	for (GList *l = tops; l != NULL && found == NULL; l = l->next)
+		if (g_strcmp0 (gtk_widget_get_name (l->data),
+		               "fs-preferences") == 0 &&
+		    gtk_widget_get_visible (l->data))
+			found = l->data;
+	g_list_free (tops);
+	return found;
+}
+
+static gboolean
+prefs_fallback (gpointer data)
+{
+	GtkWidget *win = prefs_window ();
+
+	(void) data;
+	/* Without the fix nothing closes the window: do it here, so the
+	 * checks can tell. */
+	prefs_fallback_fired = TRUE;
+	if (win != NULL)
+		gtk_button_clicked (GTK_BUTTON (find_named (win,
+		                                            "prefs-cancel")));
+	return G_SOURCE_REMOVE;
+}
+
+static gboolean
+quit_from_prefs (gpointer data)
+{
+	GtkWidget *win = prefs_window ();
+	GtkWidget *sw = find_named (win, FS_PREFS_SKIP_REDUNDANT);
+
+	(void) data;
+	CHECK (win != NULL && sw != NULL && g_main_depth () > 1,
+	       "(Preferences is open, its own loop running the quit)");
+	/* An unsaved change in it. */
+	if (sw != NULL)
+		gtk_switch_set_active (GTK_SWITCH (sw), !prefs_redundant_before);
+
+	fs_app_quit ();     /* what SIGTERM and --quit do */
+
+	CHECK (fs_tray_icon () == NULL, "the icon is taken down at once");
+	CHECK (copilot != NULL,
+	       "nothing is freed while Preferences' caller still runs");
+	return G_SOURCE_REMOVE;
+}
+
+static gboolean
+run_prefs (gpointer data)
+{
+	guint fallback;
+
+	(void) data;
+
+	prefs_redundant_before = fs_prefs_bool (FS_PREFS_SKIP_REDUNDANT);
+	fallback = g_timeout_add (4000, prefs_fallback, NULL);
+	g_timeout_add (300, quit_from_prefs, NULL);
+
+	fs_dialogs_preferences (GTK_WIDGET (
+		gtk_application_get_active_window (the_app)));
+
+	CHECK (!prefs_fallback_fired,
+	       "the quit closes the Preferences window");
+	CHECK (prefs_window () == NULL, "...and it is gone");
+	CHECK (fs_prefs_bool (FS_PREFS_SKIP_REDUNDANT) ==
+	       prefs_redundant_before &&
+	       !file_has (prefs_file, prefs_redundant_before
+	                              ? "redundant=false" : "redundant=true"),
+	       "...as Cancel: the change made in it is not saved");
+	CHECK (copilot != NULL,
+	       "its caller still finds everything in place when it returns");
+	if (!prefs_fallback_fired)
+		g_source_remove (fallback);
+	return G_SOURCE_REMOVE;
+}
+
 /* The quit and a timer that reads the shared policy come due in the
  * same loop pass (a loop that was late, as a stopped or busy process
  * is): GLib dispatches both, the reader after the quit.  It used to
@@ -538,6 +650,8 @@ on_activate (GtkApplication *app, gpointer data)
 
 	if (g_strcmp0 (scenario, "dialog") == 0)
 		g_timeout_add (200, run_dialog, NULL);
+	else if (g_strcmp0 (scenario, "prefs") == 0)
+		g_timeout_add (200, run_prefs, NULL);
 	else if (g_strcmp0 (scenario, "sametick") == 0)
 		g_timeout_add (200, arm_same_tick, NULL);
 	else
@@ -570,7 +684,7 @@ static int
 run_all (const gchar *self)
 {
 	static const gchar *const all[] = { "autosave", "queryend", "dialog",
-	                                    "sametick" };
+	                                    "prefs", "sametick" };
 	int bad = 0;
 
 	for (guint i = 0; i < G_N_ELEMENTS (all); i++) {
@@ -634,9 +748,12 @@ main (int argc, char **argv)
 		CHECK (copilot == NULL,
 		       "everything is freed once the loop has ended");
 	}
-	if (g_strcmp0 (scenario, "dialog") == 0) {
+	if (g_strcmp0 (scenario, "dialog") == 0 ||
+	    g_strcmp0 (scenario, "prefs") == 0) {
 		CHECK (copilot == NULL,
-		       "the quit finished once the dialog had returned");
+		       "the quit finished once the %s had returned",
+		       g_strcmp0 (scenario, "prefs") == 0
+		       ? "Preferences window" : "dialog");
 		CHECK (g_get_monotonic_time () - started < 3 * G_USEC_PER_SEC,
 		       "...promptly");
 	}

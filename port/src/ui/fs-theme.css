@@ -884,6 +884,17 @@ button.fs-link label {
 	padding: 10px 12px;
 	margin: 2px 18px 12px 18px;
 }
+/* A Save that the system refused (start at sign-in): a deep red on a
+ * pale red, 5.8:1. */
+.pref-error {
+	background-color: #fdeeee;
+	border: 1px solid #f2c4c4;
+	border-radius: 8px;
+	color: #b3261e;
+	font-size: 12px;
+	padding: 10px 12px;
+	margin: 2px 18px 12px 18px;
+}
 .pref-note {
 	color: #5b6472;
 	font-size: 12px;

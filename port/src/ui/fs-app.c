@@ -29,7 +29,6 @@
 #include "core/fs-prefs.h"
 #include "core/fs-rules.h"
 #include "core/fs-script.h"
-#include "core/fs-apply.h"
 #include "core/fs-copilot.h"
 #include "core/fs-trust.h"
 #include "core/fs-util.h"
@@ -1212,12 +1211,16 @@ fs_app_test_set_context (FsPolicy *test_policy, FsSettings *test_settings)
 
 /* [ cancel_dialogs ] -- answer every open dialog as its close button
  * would (GTK_RESPONSE_DELETE_EVENT), which ends a gtk_dialog_run()
- * loop on its caller's "closed, change nothing" path. */
+ * loop on its caller's "closed, change nothing" path.  The Preferences
+ * window is no GtkDialog but runs a loop of its own: it is cancelled
+ * the same way (nothing saved), or the quit would wait for it. */
 static void
 cancel_dialogs (void)
 {
 	GList *tops = gtk_window_list_toplevels ();
 	GList *l;
+
+	fs_dialogs_preferences_cancel ();
 
 	/* A response handler may destroy other windows in the list. */
 	for (l = tops; l != NULL; l = l->next)

@@ -126,8 +126,9 @@ the copy you started with rights is the one that runs. `StockFW --background` (o
 hidden; if no notification area takes the icon within five seconds the
 window is shown instead, so it is never running out of reach.
 
-**Start at sign-in** (tray menu, or `--enable-autostart` /
-`--disable-autostart`):
+**Start at sign-in** (tray menu, the Background card on Preferences >
+General, or `--enable-autostart` / `--disable-autostart`; the tray's
+tick and the Preferences switch always show the same thing):
 
 - Windows: a Task Scheduler task for the signed-in account, in the
   `\StockFW` folder, runs `StockFW.exe --background` at sign-in WITHOUT

@@ -66,6 +66,20 @@ gboolean fs_autostart_remove_all (GError **error);
  * Preferences dialog. */
 const gchar *fs_autostart_description (void);
 
+/* The Linux boot unit (installer/linux/stockfw.service) that puts the
+ * firewall rules back at every boot -- what keeps the rules independent
+ * of start at sign-in, which runs without root.  Preferences says which
+ * of these is true here rather than promising that the unit exists. */
+typedef enum {
+	FS_BOOT_UNIT_NONE,       /* no such thing here (Windows keeps its
+	                          * rules across restarts by itself)      */
+	FS_BOOT_UNIT_ABSENT,     /* stockfw.service is not installed      */
+	FS_BOOT_UNIT_DISABLED,   /* installed but not enabled: not run    */
+	FS_BOOT_UNIT_ENABLED     /* installed and enabled at boot         */
+} FsBootUnit;
+
+FsBootUnit fs_autostart_boot_unit (void);
+
 /* Exposed for the tests; portable, so Linux can check what Windows is
  * handed.  All return newly allocated strings. */
 

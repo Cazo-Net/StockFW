@@ -152,6 +152,30 @@ What it pins down, each seen failing when the old bug is put back:
   cannot act.
 - A switch with keyboard focus is ringed solid, at least 2px, at 3:1 or
   more against its slider, as the theme computes it.
+- Start at sign-in (General, Background card; scenarios `signin-*`,
+  with `STOCKFW_AUTOSTART_DIR` and `STOCKFW_SYSTEMD_DIR` in the
+  scratch directory; Linux only, since on Windows they would register
+  a real Task Scheduler task on the machine): the switch shows what the system has; moving it
+  is one unsaved change and writes nothing; Cancel writes nothing; Save
+  writes or removes the entry and nothing else, and applies nothing.
+  When the entry cannot be written, Save saves nothing at all and the
+  window stays open on General with the reason under the switch, the
+  switch back to what is really set and the other change still
+  pending.  A copy that may not change it (unelevated Windows) shows it
+  greyed with the reason and never counts it as a change.  Changed
+  from outside while the window is open, an unmoved switch follows and
+  a moved one stays.  The note under it says whether the Linux boot
+  unit is enabled, installed but not enabled (with the command), or
+  missing.
+
+Teeth for the sign-in row: let Save go on after the entry failed and
+"the window stays open after Save" and "nothing was saved" fail; count
+a switch the copy cannot act on and the "never a change to save" check
+fails; leave it out of the footer's count and the three count checks
+fail.  `test-core.sh` reads the boot unit from a scratch
+`STOCKFW_SYSTEMD_DIR` (absent, installed, linked, a link to nothing, a
+link left behind); trust a link without following it and "a link to
+nothing is not enabled" fails.
 
 The settings apply itself (`fs_settings_apply_safe`) is covered in
 `test-core.sh`: an unchanged policy is applied whole under the new
@@ -371,8 +395,14 @@ shows as such the moment the menu opens, and on the slow timer
 (`STOCKFW_TRAY_REFRESH_S=1`) with no menu open; Start at sign-in writes and
 removes the entry, and a failure is reported with the tick left
 showing the truth; Preferences and About open; Quit (firewall stays
-on) leaves the firewall running.  `test-core.sh` pins the block tally
-itself (wording, five kept, midnight).
+on) leaves the firewall running.  Preferences... from a hidden window
+brings the window up and opens over it, and asked for again while it
+is open it gives no second window.  The tray's Start at sign-in and
+the Preferences switch agree: ticked in the tray, the open switch
+follows with nothing to save; moved in Preferences, nothing changes
+until Save, and then the tick follows at once (read without opening
+the menu again, which would re-read it anyway).  `test-core.sh` pins
+the block tally itself (wording, five kept, midnight).
 
 `STOCKFW_TRAYMENU_SHOT=menu.png ./build-linux/fs-traymenu-smoke main`
 pops the menu up with Recent blocks open and saves a screenshot
@@ -389,6 +419,11 @@ refresh the tick from the request instead of from the system and the
 failed Start at sign-in check fails (this one was a real bug the smoke
 caught while it was written); stop asking the backend again when the
 menu opens, or on the timer, and the "outside StockFW" checks fail.
+Drop the one-window guard and "still one window" fails (a second
+window opened inside the first); leave the open Preferences out when
+the tray changes the setting and "the open Preferences switch follows"
+fails; leave the tray out when Preferences saves it and "the tray's
+tick follows at once" fails.
 
 
 ## Session safety (`fs-session-smoke`)
@@ -418,6 +453,11 @@ per process:
   frees nothing while the dialog's caller still runs, closes the dialog
   as its close button would, and finishes the quit once it has
   returned.
+- `prefs`: the same with the Preferences window open and a setting
+  moved in it.  That window is no GtkDialog but runs a loop of its
+  own; the quit closes it as Cancel would (the moved setting is not
+  saved) instead of waiting for it, and the Copilot's state is still
+  intact.
 
 No scenario stops the firewall.  `test-core.sh` pins
 `fs_prefs_dirty()`.
@@ -431,4 +471,6 @@ list fails the three recovery checks; a dirty flag that is always set
 fails "nothing changed: nothing written" and two core checks; no save
 on the Stop path fails its check; freeing the state in the quit
 instead of in shutdown fails "sametick" (a timer due in the same loop
-pass as the quit found freed memory).
+pass as the quit found freed memory); leave the Preferences window out
+of the quit and "the quit closes the Preferences window" and
+"promptly" fail.

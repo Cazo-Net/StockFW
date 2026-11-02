@@ -253,8 +253,9 @@ menu_autostart_toggled (GtkCheckMenuItem *item, gpointer data)
 		g_clear_error (&error);
 	}
 	/* Whatever happened, the tick shows what is now true -- not what
-	 * was asked for. */
+	 * was asked for -- and so does an open Preferences window. */
 	refresh_autostart ();
+	fs_dialogs_preferences_autostart_changed ();
 }
 
 static void
@@ -886,6 +887,16 @@ fs_tray_refresh (void)
 {
 	update_tooltip ();
 	refresh_rows ();
+}
+
+/* [ fs_tray_autostart_changed ] -- Preferences changed start at
+ * sign-in.  Nothing to do before the menu exists: building it reads the
+ * setting. */
+void
+fs_tray_autostart_changed (void)
+{
+	if (item_autostart != NULL)
+		refresh_autostart ();
 }
 
 /* [ fs_tray_menu ] -- the popup, built on first use. */

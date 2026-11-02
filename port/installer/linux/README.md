@@ -98,14 +98,17 @@ from your init system's boot scripts.
 
 ## Start at sign-in
 
-"Start at sign-in" in StockFW's tray menu (or `StockFW
---enable-autostart`) adds `~/.config/autostart/stockfw.desktop`, which
+"Start at sign-in" in StockFW's tray menu, or "Start StockFW in the
+background when I sign in" on Preferences > General (or `StockFW
+--enable-autostart`), adds `~/.config/autostart/stockfw.desktop`, which
 starts `StockFW --background` in the notification area when you sign in
 to the desktop. The desktop starts it as you, **without root**: it shows
 the firewall's state as unknown, because iptables cannot be read
 without root, and cannot change rules or watch blocked traffic.
 `sudo StockFW` takes over from it (the copy without root quits).
-The rules themselves come from the boot service above, not from this.
+The rules themselves come from the boot service above, not from this;
+the note under the Preferences switch says whether that service is
+enabled, installed but not enabled, or missing.
 When StockFW runs with `sudo`, the entry is still written into your own
 home, as you. `StockFW --disable-autostart` removes it.
 

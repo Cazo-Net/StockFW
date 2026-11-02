@@ -208,6 +208,10 @@ find_named (GtkWidget *root, const gchar *name)
 	return found;
 }
 
+/* Section 8: when the Preferences window opened from the tray comes up,
+ * prefs_with (if set) is run on it instead of closing it with Cancel. */
+static void (*prefs_with) (GtkWidget *prefs) = NULL;
+
 static gboolean
 answer_dialogs (gpointer data)
 {
@@ -228,8 +232,14 @@ answer_dialogs (gpointer data)
 			title = gtk_window_get_title (GTK_WINDOW (w));
 			g_string_append_printf (dialogs_seen, "[%s]",
 			                        title != NULL ? title : "");
-			if (cancel != NULL)
+			if (prefs_with != NULL) {
+				void (*with) (GtkWidget *) = prefs_with;
+
+				prefs_with = NULL;
+				with (w);
+			} else if (cancel != NULL) {
 				gtk_button_clicked (GTK_BUTTON (cancel));
+			}
 			continue;
 		}
 		if (!GTK_IS_DIALOG (w) || !gtk_widget_get_visible (w))
@@ -347,6 +357,125 @@ main_window (void)
 			found = l->data;
 	g_list_free (tops);
 	return found;
+}
+
+static guint
+prefs_count (void)
+{
+	GList *tops = gtk_window_list_toplevels ();
+	guint n = 0;
+
+	for (GList *l = tops; l != NULL; l = l->next)
+		if (g_strcmp0 (gtk_widget_get_name (l->data),
+		               "fs-preferences") == 0 &&
+		    gtk_widget_get_visible (l->data))
+			n++;
+	g_list_free (tops);
+	return n;
+}
+
+static gboolean prefs_opened = FALSE;
+static gboolean prefs_nested = FALSE;
+
+/* A second Preferences window opened inside the first would run its own
+ * loop under this check, where answer_dialogs (being dispatched) cannot
+ * close it: this closes it instead, and says it was there. */
+static gboolean
+close_nested_prefs (gpointer data)
+{
+	GList *tops = gtk_window_list_toplevels ();
+
+	for (GList *l = tops; l != NULL; l = l->next)
+		if (l->data != data &&
+		    g_strcmp0 (gtk_widget_get_name (l->data),
+		               "fs-preferences") == 0 &&
+		    gtk_widget_get_visible (l->data)) {
+			GtkWidget *cancel = find_named (l->data, "prefs-cancel");
+
+			prefs_nested = TRUE;
+			if (cancel != NULL)
+				gtk_button_clicked (GTK_BUTTON (cancel));
+		}
+	g_list_free (tops);
+	return G_SOURCE_CONTINUE;
+}
+
+/* The tray's Start at sign-in item, as it was while Preferences was
+ * open: read afterwards WITHOUT opening the menu again (which re-reads
+ * the setting anyway), so the check sees what Preferences told it. */
+static GtkWidget *signin_item = NULL;
+
+/* Section 8: the Preferences window the tray opened, while it is open
+ * (its own loop is running under this). */
+static void
+with_prefs (GtkWidget *prefs)
+{
+	GtkWindow *main = main_window ();
+
+	prefs_opened = TRUE;
+	CHECK (main != NULL && gtk_widget_get_visible (GTK_WIDGET (main)) &&
+	       gtk_window_get_transient_for (GTK_WINDOW (prefs)) == main,
+	       "from the tray, the hidden window comes up first and "
+	       "Preferences opens over it");
+
+	/* One at a time: asked for again from the tray, no second one. */
+	{
+		guint closer = g_timeout_add (1000, close_nested_prefs, prefs);
+
+		gtk_menu_item_activate (GTK_MENU_ITEM (
+			item_labelled (fs_tray_menu (), "Pr_eferences...")));
+		g_source_remove (closer);
+	}
+	CHECK (!prefs_nested && prefs_count () == 1,
+	       "Preferences... while it is open: still one window (%u%s)",
+	       prefs_count (), prefs_nested ? ", a second one opened inside "
+	                                      "it" : "");
+
+#ifdef G_OS_WIN32
+	/* Start at sign-in would register a real Task Scheduler task. */
+	gtk_button_clicked (GTK_BUTTON (find_named (prefs, "prefs-cancel")));
+#else
+	{
+		gchar *entry_path = g_build_filename (scratch, "autostart",
+		                                      "stockfw.desktop", NULL);
+		GtkWidget *sw = find_named (prefs, "prefs-signin");
+		GtkWidget *status = find_named (prefs, "prefs-status");
+		GtkWidget *item = item_labelled (fs_tray_menu (),
+		                                 "_Start at sign-in");
+
+		signin_item = item;
+		CHECK (sw != NULL && item != NULL &&
+		       !gtk_switch_get_active (GTK_SWITCH (sw)) &&
+		       !gtk_check_menu_item_get_active (
+		           GTK_CHECK_MENU_ITEM (item)) &&
+		       !g_file_test (entry_path, G_FILE_TEST_EXISTS),
+		       "Preferences shows Start at sign-in as the tray does "
+		       "(off)");
+
+		/* The tray changes it while Preferences is open. */
+		gtk_menu_item_activate (GTK_MENU_ITEM (item));
+		CHECK (g_file_test (entry_path, G_FILE_TEST_EXISTS) &&
+		       gtk_check_menu_item_get_active (
+		           GTK_CHECK_MENU_ITEM (item)) &&
+		       sw != NULL && gtk_switch_get_active (GTK_SWITCH (sw)) &&
+		       g_strcmp0 (gtk_label_get_text (GTK_LABEL (status)),
+		                  "No changes") == 0,
+		       "ticked in the tray, the open Preferences switch "
+		       "follows, with nothing to save");
+
+		/* Preferences changes it back: only on Save. */
+		if (sw != NULL)
+			gtk_switch_set_active (GTK_SWITCH (sw), FALSE);
+		CHECK (g_file_test (entry_path, G_FILE_TEST_EXISTS) &&
+		       gtk_check_menu_item_get_active (
+		           GTK_CHECK_MENU_ITEM (item)),
+		       "moving the Preferences switch changes nothing before "
+		       "Save");
+		g_free (entry_path);
+		gtk_button_clicked (GTK_BUTTON (find_named (prefs,
+		                                            "prefs-save")));
+	}
+#endif
 }
 
 static void
@@ -693,13 +822,32 @@ check_main (void)
 	}
 #endif
 
-	/* 8. Preferences and About. */
+	/* 8. Preferences and About.  Preferences is opened from the tray
+	 * with the window hidden, as it is in background mode. */
 	answer = GTK_RESPONSE_CANCEL;
 	g_string_truncate (dialogs_seen, 0);
+	gtk_widget_hide (GTK_WIDGET (main_window ()));
+	prefs_opened = FALSE;
+	prefs_with = with_prefs;
 	click (item_labelled (fs_tray_menu (), "Pr_eferences..."));
-	CHECK (strstr (dialogs_seen->str, "[Preferences]") != NULL,
-	       "Preferences... opens the Preferences dialog (%s)",
+	CHECK (strstr (dialogs_seen->str, "[Preferences]") != NULL &&
+	       prefs_opened,
+	       "Preferences... opens the Preferences window (%s)",
 	       dialogs_seen->str);
+#ifndef G_OS_WIN32
+	{
+		gchar *entry_path = g_build_filename (scratch, "autostart",
+		                                      "stockfw.desktop", NULL);
+
+		CHECK (!g_file_test (entry_path, G_FILE_TEST_EXISTS) &&
+		       signin_item != NULL &&
+		       !gtk_check_menu_item_get_active (
+		           GTK_CHECK_MENU_ITEM (signin_item)),
+		       "Save in Preferences removed the entry, and the tray's "
+		       "tick follows at once (off)");
+		g_free (entry_path);
+	}
+#endif
 	g_string_truncate (dialogs_seen, 0);
 	click (item_labelled (fs_tray_menu (), "_About StockFW"));
 	CHECK (dialogs_seen->len > 0, "About StockFW opens About (%s)",

@@ -696,6 +696,13 @@ fs_autostart_description (void)
 	         "start StockFW (Elevated); it takes over from this copy.");
 }
 
+/* Windows Firewall keeps its own rules across restarts: no boot unit. */
+FsBootUnit
+fs_autostart_boot_unit (void)
+{
+	return FS_BOOT_UNIT_NONE;
+}
+
 #else
 /* =====================================================================
  * Linux: an XDG autostart entry
@@ -993,5 +1000,34 @@ fs_autostart_description (void)
 	         "read nor change the rules nor watch blocked traffic. The "
 	         "rules themselves are loaded at boot by the stockfw "
 	         "service; start StockFW with sudo to manage them.");
+}
+
+/* [ fs_autostart_boot_unit ]
+ * Where installer/linux/install.sh puts the unit, and where enabling it
+ * links it (its [Install] section says WantedBy=multi-user.target).
+ * Read from the file system, so it needs neither root nor systemctl.
+ * The link is followed: a link to a unit that is gone reads as not
+ * enabled.  STOCKFW_SYSTEMD_DIR points it elsewhere for the tests. */
+FsBootUnit
+fs_autostart_boot_unit (void)
+{
+	const gchar *env = g_getenv ("STOCKFW_SYSTEMD_DIR");
+	const gchar *dir = (env != NULL && *env != '\0') ? env
+	                                                 : "/etc/systemd/system";
+	gchar *unit = g_build_filename (dir, "stockfw.service", NULL);
+	gchar *wants = g_build_filename (dir, "multi-user.target.wants",
+	                                 "stockfw.service", NULL);
+	FsBootUnit state;
+
+	if (!g_file_test (unit, G_FILE_TEST_IS_REGULAR))
+		state = FS_BOOT_UNIT_ABSENT;
+	else if (g_file_test (wants, G_FILE_TEST_EXISTS))
+		state = FS_BOOT_UNIT_ENABLED;
+	else
+		state = FS_BOOT_UNIT_DISABLED;
+
+	g_free (unit);
+	g_free (wants);
+	return state;
 }
 #endif

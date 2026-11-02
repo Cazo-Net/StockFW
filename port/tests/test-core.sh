@@ -45,6 +45,9 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-autostart.h"
 #include "core/fs-blocktally.h"
 #include <glib/gstdio.h>
+#ifndef G_OS_WIN32
+#include <unistd.h>
+#endif
 
 static int failures = 0;
 
@@ -4845,6 +4848,55 @@ static void test_autostart (void)
 	g_rmdir (dir);
 	g_free (entry);
 	g_free (dir);
+
+	/* The boot unit Preferences reports beside it: read from where
+	 * install.sh puts it and where enabling it links it. */
+	{
+		gchar *sd = g_build_filename (g_get_tmp_dir (),
+		                              "stockfw-systemd-test", NULL);
+		gchar *wants = g_build_filename (sd, "multi-user.target.wants",
+		                                 NULL);
+		gchar *unit = g_build_filename (sd, "stockfw.service", NULL);
+		gchar *link = g_build_filename (wants, "stockfw.service", NULL);
+		gchar *gone = g_build_filename (sd, "gone.service", NULL);
+
+		remove (link);
+		remove (unit);
+		g_rmdir (wants);
+		g_rmdir (sd);
+		g_setenv ("STOCKFW_SYSTEMD_DIR", sd, TRUE);
+
+		CHECK (fs_autostart_boot_unit () == FS_BOOT_UNIT_ABSENT,
+		       "boot unit: none installed reads as absent");
+		g_mkdir_with_parents (wants, 0700);
+		g_file_set_contents (unit, "[Unit]\n", -1, NULL);
+		CHECK (fs_autostart_boot_unit () == FS_BOOT_UNIT_DISABLED,
+		       "boot unit: installed, not linked, reads as not enabled");
+		CHECK (symlink (unit, link) == 0 &&
+		       fs_autostart_boot_unit () == FS_BOOT_UNIT_ENABLED,
+		       "boot unit: linked into multi-user.target.wants reads "
+		       "as enabled");
+		remove (link);
+		CHECK (symlink (gone, link) == 0 &&
+		       fs_autostart_boot_unit () == FS_BOOT_UNIT_DISABLED,
+		       "boot unit: a link to nothing is not enabled");
+		remove (link);
+		remove (unit);
+		CHECK (symlink (unit, link) == 0 &&
+		       fs_autostart_boot_unit () == FS_BOOT_UNIT_ABSENT,
+		       "boot unit: a link left behind with the unit removed "
+		       "reads as absent");
+
+		remove (link);
+		g_rmdir (wants);
+		g_rmdir (sd);
+		g_unsetenv ("STOCKFW_SYSTEMD_DIR");
+		g_free (sd);
+		g_free (wants);
+		g_free (unit);
+		g_free (link);
+		g_free (gone);
+	}
 #endif
 }
 

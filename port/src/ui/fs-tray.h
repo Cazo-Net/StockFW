@@ -63,6 +63,11 @@ void fs_tray_set_firewall (FsFirewallState state, const gchar *place);
  * a slow timer also calls it so the count resets at midnight). */
 void fs_tray_refresh (void);
 
+/* "Start at sign-in" was changed elsewhere (Preferences): the menu's
+ * tick is read again from the system now.  The menu also reads it every
+ * time it opens, so the two can never disagree for long. */
+void fs_tray_autostart_changed (void);
+
 /* The tray popup menu, freshly read, for tests that must read its
  * contents without clicking the real shell. */
 GtkWidget *fs_tray_menu (void);
