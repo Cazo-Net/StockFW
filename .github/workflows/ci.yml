@@ -109,10 +109,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: msys2/setup-msys2@v2
+      # MSYS2 setup downloads its package databases from mirror.msys2.org,
+      # which sometimes stalls ("Operation too slow ... failed to
+      # synchronize all databases").  That fails the job before any of our
+      # code is built, so a stalled mirror is retried once after a pause,
+      # into a fresh directory, instead of turning the run red.  A second
+      # failure still fails the job.
+      - name: Set up MSYS2
+        id: msys2
+        continue-on-error: true
+        uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
+          install: >-
+            git
+            base-devel
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-gtk3
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-nsis
+
+      - name: Wait before retrying MSYS2 setup
+        if: steps.msys2.outcome == 'failure'
+        shell: pwsh
+        run: Start-Sleep -Seconds 60
+
+      - name: Set up MSYS2 (retry)
+        if: steps.msys2.outcome == 'failure'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          location: D:\msys2-retry
           install: >-
             git
             base-devel
