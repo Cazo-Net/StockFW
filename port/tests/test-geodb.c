@@ -2201,6 +2201,40 @@ test_malformed (EVP_PKEY *key)
 			g_clear_error (&e);
 		}
 		g_free (d);
+
+		/* ::/8 with no IPv4 subtree at all: the trie has no node at
+		 * ::ffff:0:0/96 to skip, so only the final subtraction keeps
+		 * IPv4-mapped space out of the IPv6 set */
+		d = synth_chain (8, &sl);
+		resign (d, sl, key);
+		{
+			GError *e = NULL;
+			FsGeodb *db = open_buf (d, sl, &e);
+			const gchar *de[] = { "DE", NULL };
+			FsGeodbFilter flt = { de, NULL, 0, 0 };
+			FsRangeSet *set = db != NULL ? fs_geodb_enumerate (db, &flt, NULL)
+			                             : NULL;
+			gchar *text = set != NULL ? fs_range_set_to_text (set) : NULL;
+
+			CHECK (set != NULL &&
+			       fs_range_set_contains_text (set, "::1") &&
+			       fs_range_set_contains_text (set, "::fffe:ffff:ffff") &&
+			       fs_range_set_contains_text (set, "::1:0:0:0") &&
+			       !fs_range_set_contains_text (set, "::ffff:0.0.0.0") &&
+			       !fs_range_set_contains_text (set, "::ffff:1.2.3.4") &&
+			       !fs_range_set_contains_text (set, "::ffff:255.255.255.255") &&
+			       fs_range_set_count4 (set) == 0 &&
+			       fs_range_set_count6 (set) == 2,
+			       "::/8 and no IPv4 subtree: enumerate gives ::/8 without "
+			       "::ffff:0:0/96, and no IPv4 (%s; %s)",
+			       outcome_text (db, e), text != NULL ? text : "no set");
+			g_free (text);
+			if (set != NULL)
+				fs_range_set_free (set);
+			fs_geodb_close (db);
+			g_clear_error (&e);
+		}
+		g_free (d);
 		d = synth_chain (129, &sl);
 		expect_malformed (d, sl, key, "a chain 129 nodes deep");
 		g_free (d);
