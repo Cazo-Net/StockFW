@@ -1,10 +1,13 @@
 /*---[ fs-copilot.h ]---------------------------------------------------
- * Smart Firewall Copilot - AI-powered network behavior analysis.
+ * Copilot: rule-based, local analysis of the event log and the policy.
+ * Every finding states the rule that raised it and the events behind
+ * it.
  *
- * A unique innovation: no other firewall GUI has an AI copilot that
- * learns application network behavior, detects anomalies, suggests
- * rules with natural-language explanations, and simulates "what-if"
- * scenarios before applying.
+ * It is a set of fixed, documented checks (thresholds and counts, see
+ * the FS_SENTINEL_* and FS_BEHAVIOR_* constants in fs-copilot.c), not a
+ * model: the same events always give the same findings.  It runs on
+ * this computer and sends nothing anywhere.  The policy half is
+ * fs-health.h; "would this be allowed?" is fs-whatif.h.
  *--------------------------------------------------------------------*/
 #ifndef FS_COPILOT_H
 #define FS_COPILOT_H
@@ -26,37 +29,64 @@ typedef enum
 	FS_COPILOT_CRITICAL
 } FsCopilotSeverity;
 
-/* Types of insights the copilot can generate. */
+/* What the Copilot reports.  Each type is one documented check. */
 typedef enum
 {
-	FS_INSIGHT_NEW_APPLICATION,      /* App seen for first time */
-	FS_INSIGHT_UNUSUAL_PORT,         /* App using unexpected port */
-	FS_INSIGHT_UNUSUAL_DESTINATION,  /* App talking to new IP/region */
-	FS_INSIGHT_UNUSUAL_VOLUME,       /* Sudden spike in traffic */
-	FS_INSIGHT_UNUSUAL_TIME,         /* Activity at unusual hours */
-	FS_INSIGHT_RULE_CONFLICT,        /* Rules that contradict */
-	FS_INSIGHT_REDUNDANT_RULE,       /* Rule covered by another */
-	FS_INSIGHT_MISSING_RULE,         /* Traffic not covered by any rule */
-	FS_INSIGHT_SUSPICIOUS_BEHAVIOR,  /* Potential malware/C2 */
-	FS_INSIGHT_RULE_OPTIMIZATION,    /* Rules can be merged/simplified */
-	FS_INSIGHT_BEACON,               /* Periodic callback traffic: covert channel */
-	FS_INSIGHT_FANOUT                /* Burst of distinct destinations: scan/spread */
+	FS_INSIGHT_UNUSUAL_PORT,         /* first use of a port by a known app   */
+	FS_INSIGHT_UNUSUAL_DESTINATION,  /* new public destination, known app    */
+	FS_INSIGHT_UNUSUAL_VOLUME,       /* connection rate spike                */
+	FS_INSIGHT_UNUSUAL_TIME,         /* first activity in a new hour         */
+	FS_INSIGHT_BEACON,               /* contacts at a near-fixed interval    */
+	FS_INSIGHT_FANOUT,               /* one app, many hosts in a minute      */
+	FS_INSIGHT_INBOUND_SCAN,         /* one source, many local ports         */
+	FS_INSIGHT_BRUTE_FORCE,          /* repeated attempts on a login port    */
+	FS_INSIGHT_THREAT_INTEL          /* traffic a block list or country rule hit */
 } FsInsightType;
 
-/* A single insight from the copilot. */
+/* One event behind a finding, as the log gave it. */
+typedef struct
+{
+	gint64    when;          /* unix seconds                          */
+	gboolean  inbound;
+	gchar    *remote;        /* the other end                         */
+	guint     port;          /* 0 = none (ICMP)                       */
+	gchar    *protocol;
+	gboolean  blocked;
+	gchar    *rule;          /* what blocked it, when the log says    */
+} FsEvidence;
+
+void fs_evidence_free (FsEvidence *ev);
+
+#define FS_INSIGHT_MAX_EVIDENCE 12
+
+/* A single finding. */
 typedef struct
 {
 	FsInsightType        type;
 	FsCopilotSeverity    severity;
-	gchar               *title;           /* Short human-readable title */
-	gchar               *description;     /* Detailed explanation */
-	gchar               *application;     /* App name/path if known */
-	gchar               *destination;     /* Remote host/port if applicable */
-	gchar               *suggested_rule;  /* Natural-language rule suggestion */
-	gchar               *rule_csv;        /* CSV rule ready to apply */
+	gchar               *title;           /* one line                       */
+	gchar               *description;     /* what was seen, in sentences    */
+	gchar               *application;     /* app (Windows) or service (Linux) */
+	gchar               *destination;     /* the remote host, if one        */
+	gchar               *suggested_rule;  /* the rule in words, or NULL     */
+	gchar               *rule_csv;        /* a deny row, or NULL            */
 	FsRuleKind          rule_kind;        /* policy kind rule_csv parses as */
-	guint64              timestamp;       /* When detected */
-	gboolean             auto_applicable; /* Can be applied without review */
+	guint64              timestamp;       /* last updated, unix seconds     */
+	gboolean             auto_applicable; /* Sentinel may stage it (deny only) */
+
+	/* 1.0.7: the evidence and the reasoning. */
+	gchar               *key;             /* "type|app|subject": a new event
+	                                       * for an open finding updates it */
+	gchar               *subject;         /* the host or app it is about    */
+	gchar               *why;             /* the numbers next to the limits */
+	gchar               *benign;          /* "Could be harmless because"    */
+	gchar               *withheld;        /* why Sentinel will not auto-block,
+	                                       * or NULL                        */
+	gchar               *whatif_line;     /* a line for the What-If card    */
+	gchar               *events_filter;   /* text for the Events filter     */
+	GPtrArray           *evidence;        /* FsEvidence*, newest last, at most
+	                                       * FS_INSIGHT_MAX_EVIDENCE        */
+	guint                count;           /* events that matched so far     */
 } FsInsight;
 
 /* A "what-if" simulation result: the What-If engine's answer
@@ -109,6 +139,12 @@ typedef struct
 	guint               rate_buckets;         /* buckets closed so far           */
 	guint64             rate_reported;        /* bucket already reported, 0 none */
 	gboolean            baseline_partial;
+
+	/* 1.0.7: first contacts with new destinations in the last 7 days
+	 * (unix seconds, in memory only).  20 or more marks the app as one
+	 * that meets new hosts all the time (a browser), and new-destination
+	 * findings stay quiet for it. */
+	GArray             *new_dest_times;
 } FsAppProfile;
 
 /* Opaque copilot context. */
@@ -134,8 +170,20 @@ void fs_copilot_feed_event_at (FsCopilot *copilot, const FsHit *hit,
 void fs_copilot_feed_event_full (FsCopilot *copilot, const FsHit *hit,
                                  gint64 now_us, gint64 now_unix);
 
-/* Get current insights (caller frees with g_list_free_full + fs_insight_free). */
+/* The current findings, newest first.  The list is the caller's (free
+ * with g_list_free); the findings stay the copilot's. */
 GList *fs_copilot_get_insights (FsCopilot *copilot);
+
+/* How many events have been fed since the copilot was made. */
+guint64 fs_copilot_events_seen (FsCopilot *copilot);
+
+/* The DNS resolvers this computer uses, from resolv.conf text: Sentinel
+ * does not time DNS to them (it is periodic by nature).  fs_copilot_new
+ * reads STOCKFW_RESOLV_CONF, or /etc/resolv.conf on Linux. */
+void fs_copilot_set_resolvers (FsCopilot *copilot, const gchar *resolv_conf);
+
+/* "Unusual port", "Beacon", ... */
+const gchar *fs_insight_type_name (FsInsightType type);
 
 /* Clear all insights. */
 void fs_copilot_clear_insights (FsCopilot *copilot);

@@ -1623,14 +1623,48 @@ static void test_sentinel_beacon (void)
 	       "six metronomic contacts raise exactly one beacon");
 
 	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	CHECK (beacon != NULL && beacon->severity == FS_COPILOT_WARNING,
+	       "the beacon is a Warning, not Critical: timing alone is not proof");
+	CHECK (beacon != NULL && !beacon->auto_applicable &&
+	       beacon->withheld != NULL &&
+	       strstr (beacon->withheld, "waits for 8 contacts") != NULL,
+	       "at six contacts it is report-only, and says it waits for 8");
+	CHECK (beacon != NULL && beacon->evidence != NULL &&
+	       beacon->evidence->len == 6 &&
+	       ((FsEvidence *) g_ptr_array_index (beacon->evidence, 5))->when -
+	       ((FsEvidence *) g_ptr_array_index (beacon->evidence, 4))->when == 60,
+	       "the evidence holds the six contacts, 60 s apart");
+	CHECK (beacon != NULL && beacon->why != NULL &&
+	       strstr (beacon->why, "0.30") != NULL &&
+	       strstr (beacon->why, "6 contacts") != NULL,
+	       "why: the numbers next to the limits (\"%s\")",
+	       beacon != NULL && beacon->why != NULL ? beacon->why : "");
+	CHECK (beacon != NULL && beacon->benign != NULL &&
+	       strstr (beacon->benign, "Update checks") != NULL &&
+	       strstr (beacon->description, "so do update checks") != NULL,
+	       "the text says what else looks like this");
+	CHECK (beacon != NULL &&
+	       g_strcmp0 (beacon->whatif_line,
+	                  "outbound tcp port 8443 to 203.0.113.9") == 0,
+	       "Ask What-If gets the matching line");
+
+	/* Contacts 7 and 8: the same finding, now eligible for the block. */
+	for (i = 6; i < 8; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 1,
+	       "contacts 7 and 8 update the finding, they add no second one");
+	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	CHECK (beacon != NULL && beacon->count >= 2 &&
+	       beacon->evidence->len == 8,
+	       "the updated finding holds all eight contacts");
 	if (beacon != NULL) {
 		FsPolicy *policy = fs_policy_new ();
 		FsRule *probe;
 
-		CHECK (beacon->severity == FS_COPILOT_CRITICAL,
-		       "the beacon is CRITICAL");
-		CHECK (beacon->auto_applicable && beacon->rule_csv != NULL,
-		       "the beacon carries an auto-applicable rule");
+		CHECK (beacon->auto_applicable && beacon->rule_csv != NULL &&
+		       beacon->withheld == NULL,
+		       "at eight contacts the beacon carries an auto-applicable rule");
 		CHECK (beacon->rule_kind == FS_RULE_OUTBOUND_DENY_TO,
 		       "the rule parses as an outbound deny, not a service allow");
 
@@ -1646,7 +1680,7 @@ static void test_sentinel_beacon (void)
 	}
 
 	/* More of the same must not stack reports. */
-	for (i = 6; i < 9; i++)
+	for (i = 8; i < 11; i++)
 		fs_copilot_feed_event_at (copilot, &hit,
 		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
 	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 1,
@@ -1697,6 +1731,69 @@ static void test_sentinel_beacon (void)
 	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 0,
 	       "inbound traffic is not scored as an egress beacon");
 	fs_copilot_free (copilot);
+	hit.direction = "Out";
+
+	/* Two programs polling one server are two series: interleaved,
+	 * each is every 60 s; mixed together they would be every 30 s. */
+	copilot = fs_copilot_new ();
+	for (i = 0; i < 6; i++) {
+		hit.service = "agent-a.exe";
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+		hit.service = "agent-b.exe";
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) (i * 60 + 30) * G_USEC_PER_SEC);
+	}
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 2,
+	       "two apps polling one destination are two series (got %u)",
+	       count_insights (copilot, FS_INSIGHT_BEACON));
+	fs_copilot_free (copilot);
+	hit.service = "unknown";
+
+	/* Time sync is periodic by nature: port 123 is never timed. */
+	copilot = fs_copilot_new ();
+	hit.port = "123";
+	hit.protocol = "UDP";
+	for (i = 0; i < 10; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 64 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 0,
+	       "NTP (port 123) is never reported as a beacon");
+	fs_copilot_free (copilot);
+
+	/* DNS to this computer's resolvers is never timed; DNS to another
+	 * server is. */
+	copilot = fs_copilot_new ();
+	fs_copilot_set_resolvers (copilot, "# test\nnameserver 203.0.113.9\n");
+	hit.port = "53";
+	for (i = 0; i < 8; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 0,
+	       "DNS to a configured resolver is not a beacon");
+	hit.destination = "198.51.100.53";
+	for (i = 0; i < 8; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 1,
+	       "DNS to some other server is timed like anything else");
+	fs_copilot_free (copilot);
+
+	/* A beacon to an address a block list names is Critical. */
+	copilot = fs_copilot_new ();
+	hit.port = "8443";
+	hit.protocol = "TCP";
+	hit.destination = "203.0.113.66";
+	hit.rule = "Threat intel: Spamhaus DROP";
+	for (i = 0; i < 6; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	CHECK (beacon != NULL && beacon->severity == FS_COPILOT_CRITICAL &&
+	       strstr (beacon->why, "block list") != NULL,
+	       "a beacon to a listed address is Critical and says why");
+	fs_copilot_free (copilot);
+	hit.rule = NULL;
 }
 
 static void test_sentinel_fanout (void)
@@ -1728,8 +1825,12 @@ static void test_sentinel_fanout (void)
 		const FsInsight *fo = find_insight (copilot, FS_INSIGHT_FANOUT);
 
 		if (fo != NULL) {
-			CHECK (fo->severity == FS_COPILOT_CRITICAL,
-			       "the fan-out is CRITICAL");
+			CHECK (fo->severity == FS_COPILOT_WARNING,
+			       "the fan-out is a Warning");
+			CHECK (fo->why != NULL && strstr (fo->why, "60 distinct") &&
+			       fo->application != NULL &&
+			       strstr (fo->title, "HTTPS") != NULL,
+			       "it names the program and the numbers");
 			CHECK (fo->rule_csv == NULL && !fo->auto_applicable,
 			       "fan-out carries no guessed rule to auto-apply");
 		}
@@ -1780,6 +1881,24 @@ static void test_sentinel_fanout (void)
 	}
 	CHECK (count_insights (copilot, FS_INSIGHT_FANOUT) == 1,
 	       "10 distinct blocked hosts raise a fan-out");
+	fs_copilot_free (copilot);
+
+	/* Per program: two apps reaching 40 hosts each are not one app
+	 * reaching 80. */
+	copilot = fs_copilot_new ();
+	for (i = 0; i < 40; i++) {
+		g_snprintf (dest, sizeof dest, "203.0.113.%d", i);
+		hit.destination = dest;
+		hit.service = "browser.exe";
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * G_USEC_PER_SEC);
+		g_snprintf (dest, sizeof dest, "198.51.100.%d", i);
+		hit.service = "mail.exe";
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * G_USEC_PER_SEC);
+	}
+	CHECK (count_insights (copilot, FS_INSIGHT_FANOUT) == 0,
+	       "two apps reaching 40 hosts each do not trip the 60-host limit");
 	fs_copilot_free (copilot);
 }
 
@@ -1931,7 +2050,7 @@ static void test_sentinel_auto_gates (void)
 		c = fs_copilot_new ();
 		hit.service     = "stranger.exe";
 		hit.destination = "203.0.113.50";
-		for (i = 0; i < 6; i++)
+		for (i = 0; i < 8; i++)
 			fs_copilot_feed_event_at (c, &hit,
 			                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
 		b = find_insight (c, FS_INSIGHT_BEACON);
@@ -1943,7 +2062,7 @@ static void test_sentinel_auto_gates (void)
 		c = fs_copilot_new ();
 		hit.service     = "lan.exe";
 		hit.destination = "192.168.77.50";
-		for (i = 0; i < 6; i++)
+		for (i = 0; i < 8; i++)
 			fs_copilot_feed_event_at (c, &hit,
 			                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
 		b = find_insight (c, FS_INSIGHT_BEACON);
@@ -1956,7 +2075,7 @@ static void test_sentinel_auto_gates (void)
 		c = fs_copilot_new ();
 		hit.service     = "svchost.exe";
 		hit.destination = "224.0.0.252";
-		for (i = 0; i < 6; i++)
+		for (i = 0; i < 8; i++)
 			fs_copilot_feed_event_at (c, &hit,
 			                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
 		b = find_insight (c, FS_INSIGHT_BEACON);
@@ -1977,7 +2096,7 @@ static void test_sentinel_auto_gates (void)
 			fs_copilot_feed_event_at (c, &hit,
 			                          t0 + (gint64) i * 3600 * G_USEC_PER_SEC);
 		hit.port = "443";
-		for (i = 0; i < 6; i++)
+		for (i = 0; i < 8; i++)
 			fs_copilot_feed_event_at (
 				c, &hit,
 				t0 + (gint64) 3 * 3600 * G_USEC_PER_SEC +
@@ -1987,6 +2106,77 @@ static void test_sentinel_auto_gates (void)
 		       "the established CDN beacon is still reported");
 		CHECK (b == NULL || !b->auto_applicable,
 		       "an established baseline destination is not auto-blockable");
+		CHECK (b != NULL && b->withheld != NULL &&
+		       strstr (b->withheld, "already talked") != NULL,
+		       "and the row says why the block was withheld");
+		fs_copilot_free (c);
+	}
+
+	/* No finding that could open something is ever auto-applicable:
+	 * every check, on a mixed corpus, offers auto only on deny rows. */
+	{
+		FsCopilot *c = fs_copilot_new ();
+		FsHit hit;
+		GList *all, *l;
+		guint autos = 0, bad = 0;
+		gchar port[16], src[32];
+		gint i;
+		const gint64 t0 = (gint64) 930000 * G_USEC_PER_SEC;
+
+		memset (&hit, 0, sizeof hit);
+		hit.direction = "Out";
+		hit.source = "192.168.1.7";
+		hit.protocol = "TCP";
+		hit.service = "mixed.exe";
+		hit.destination = "203.0.113.70";
+		for (i = 0; i < 40; i++) {           /* baseline, then new ports */
+			g_snprintf (port, sizeof port, "%d", i < 12 ? 443 : 2000 + i);
+			hit.port = port;
+			fs_copilot_feed_event_full (c, &hit,
+				t0 + (gint64) i * 7 * G_USEC_PER_SEC, 1700000000 + i);
+		}
+		hit.port = "8443";
+		hit.destination = "203.0.113.71";
+		for (i = 0; i < 9; i++)              /* a beacon */
+			fs_copilot_feed_event_full (c, &hit,
+				t0 + (gint64) (1000 + i * 60) * G_USEC_PER_SEC,
+				1700001000 + i * 60);
+		hit.direction = "In";
+		hit.destination = "192.168.1.7";
+		hit.service = "SSH [BLOCKED]";
+		hit.port = "22";
+		for (i = 0; i < 12; i++) {           /* login attempts + a scan */
+			g_snprintf (src, sizeof src, "198.51.100.%d", 1 + (i % 2));
+			hit.source = src;
+			fs_copilot_feed_event_full (c, &hit,
+				t0 + (gint64) (2000 + i) * G_USEC_PER_SEC,
+				1700002000 + i);
+		}
+		all = fs_copilot_get_insights (c);
+		for (l = all; l != NULL; l = l->next) {
+			FsInsight *ins = l->data;
+
+			if (!ins->auto_applicable)
+				continue;
+			autos++;
+			if (ins->rule_kind != FS_RULE_OUTBOUND_DENY_TO &&
+			    ins->rule_kind != FS_RULE_OUTBOUND_DENY_SERVICE)
+				bad++;
+		}
+		CHECK (g_list_length (all) >= 2 && autos == 1 && bad == 0,
+		       "a mixed corpus: only the beacon's deny is auto-applicable "
+		       "(%u auto, %u not a deny, of %u findings)", autos, bad,
+		       g_list_length (all));
+		for (l = all; l != NULL; l = l->next) {
+			FsInsight *ins = l->data;
+
+			if (ins->type != FS_INSIGHT_BEACON)
+				CHECK (ins->rule_csv == NULL &&
+				       ins->suggested_rule == NULL,
+				       "\"%s\" offers no rule (an anomaly is not answered "
+				       "with an allow)", ins->title);
+		}
+		g_list_free (all);
 		fs_copilot_free (c);
 	}
 
@@ -2140,30 +2330,33 @@ static void test_behavior_derivation (void)
 	fs_copilot_free (copilot);
 }
 
+/* A profile that is 8 days old with 50 connections over three hours:
+ * old and large enough for the new-destination check. */
+static void
+behavior_mature (FsCopilot *copilot, FsHit *hit, const gchar *app,
+                 gint64 start)
+{
+	const gint64 step = 5 * 3600;
+
+	behavior_hit (hit, app, "192.168.1.7", "198.51.100.10", "443", "out");
+	for (gint k = 0; k < 3; k++)
+		for (gint i = 0; i < (k < 2 ? 17 : 16); i++)
+			behavior_feed (copilot, hit, start + k * step);
+}
+
 static void test_behavior_signals (void)
 {
 	FsCopilot *copilot = fs_copilot_new ();
 	FsHit hit;
 	const FsInsight *ins;
-	const FsAppProfile *p;
 	GDateTime *dt;
 	gchar *expected;
+	gchar dest[32];
 	gint i;
-	/* 5-hour steps: four local hours stay distinct on any timezone,
-	 * including across a DST jump. */
 	const gint64 w0 = 1700000400;
-	const gint64 step = 5 * 3600;
+	const gint64 start = w0 - 8 * 86400;   /* same local hour as w0 */
 
-	/* Baseline: 10 connections, port 443, one host, three hours. */
-	behavior_hit (&hit, "sync.exe", "192.168.1.7", "198.51.100.10",
-	              "443", "out");
-	for (i = 0; i < 4; i++)
-		behavior_feed (copilot, &hit, w0);
-	for (i = 0; i < 3; i++)
-		behavior_feed (copilot, &hit, w0 + step);
-	for (i = 0; i < 3; i++)
-		behavior_feed (copilot, &hit, w0 + 2 * step);
-
+	behavior_mature (copilot, &hit, "sync.exe", start);
 	CHECK (total_insights (copilot) == 0,
 	       "the baseline phase raises nothing at all");
 
@@ -2171,14 +2364,15 @@ static void test_behavior_signals (void)
 	 * destination together. */
 	behavior_hit (&hit, "sync.exe", "192.168.1.7", "203.0.113.66",
 	              "8443", "out");
-	behavior_feed (copilot, &hit, w0 + step);
+	behavior_feed (copilot, &hit, w0);
 
 	CHECK (total_insights (copilot) == 1,
 	       "two signals on one event raise exactly one finding");
 	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_PORT);
 	CHECK (ins != NULL, "the finding is typed by its strongest signal");
-	CHECK (ins != NULL && ins->severity == FS_COPILOT_CRITICAL,
-	       "correlated signals escalate to critical");
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING,
+	       "two signals together are a Warning (Critical needs a Critical "
+	       "check or two different checks)");
 	if (ins != NULL) {
 		CHECK (strstr (ins->description, "8443") != NULL,
 		       "the description names the new port");
@@ -2186,62 +2380,141 @@ static void test_behavior_signals (void)
 		       "and the new destination");
 		CHECK (strstr (ins->description, "\n- ") != NULL,
 		       "as two listed signals, not one");
-		CHECK (ins->rule_csv == NULL && !ins->auto_applicable,
-		       "a correlated finding suggests no rule -- a human's call");
+		CHECK (ins->rule_csv == NULL && ins->suggested_rule == NULL &&
+		       !ins->auto_applicable,
+		       "a behavior finding suggests no rule");
+		CHECK (ins->why != NULL && strstr (ins->why, "8 days") != NULL &&
+		       strstr (ins->why, "50 connections") != NULL,
+		       "why: the profile's age and size next to the limits (%s)",
+		       ins->why != NULL ? ins->why : "");
+		CHECK (ins->evidence != NULL && ins->evidence->len == 1 &&
+		       ((FsEvidence *) g_ptr_array_index (ins->evidence, 0))->port
+		       == 8443,
+		       "the event behind it is the evidence");
 	}
 
-	/* A single novel destination still gets the allow suggestion. */
+	/* A single new destination: Info, no allow offered. */
 	behavior_hit (&hit, "sync.exe", "192.168.1.7", "203.0.113.77",
 	              "443", "out");
-	behavior_feed (copilot, &hit, w0 + step);
+	behavior_feed (copilot, &hit, w0 + 60);
 	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 1,
 	       "a first contact raises one destination finding");
 	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_DESTINATION);
-	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING,
-	       "a single signal is a warning");
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO,
+	       "a single signal is Info");
 	if (ins != NULL) {
 		CHECK (strstr (ins->description, "203.0.113.77") != NULL,
 		       "the description names the host");
-		CHECK (strstr (ins->description, "the baseline knew 2") != NULL,
+		CHECK (strstr (ins->description, "The baseline knew 2") != NULL,
 		       "and how many destinations the baseline knew");
-		CHECK (ins->rule_csv != NULL &&
-		       strstr (ins->rule_csv, "203.0.113.77") != NULL,
-		       "a single-signal finding carries its allow suggestion");
+		CHECK (ins->rule_csv == NULL && ins->suggested_rule == NULL,
+		       "no allow is offered for an anomaly");
+		CHECK (g_strcmp0 (ins->whatif_line,
+		                  "outbound tcp port 443 to 203.0.113.77") == 0,
+		       "Ask What-If gets the line instead");
 	}
 
-	/* First activity in a fourth hour, once the app HAS hours. */
-	dt = g_date_time_new_from_unix_local (w0 + 3 * step);
+	/* A second new destination in the same hour joins that finding. */
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "203.0.113.78",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0 + 120);
+	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_DESTINATION);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 1 &&
+	       ins != NULL && ins->count == 2 && ins->evidence->len == 2,
+	       "one finding per app per hour: the second contact updates it");
+
+	/* Our own network and infrastructure are never "new destinations". */
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "192.168.5.5",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0 + 5 * 3600);
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "224.0.0.251",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0 + 5 * 3600);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 1,
+	       "a LAN or multicast first contact is not reported");
+
+	/* First activity in a new hour, once the app HAS hours. */
+	dt = g_date_time_new_from_unix_local (w0 + 2 * 3600);
 	expected = g_strdup_printf ("first activity at %02d:00",
 	                            g_date_time_get_hour (dt));
 	g_date_time_unref (dt);
 
 	behavior_hit (&hit, "sync.exe", "192.168.1.7", "198.51.100.10",
 	              "443", "out");
-	behavior_feed (copilot, &hit, w0 + 3 * step);
+	behavior_feed (copilot, &hit, w0 + 2 * 3600);
 	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_TIME) == 1,
-	       "the first activity in a fourth hour is a timing finding");
+	       "the first activity in a new hour is a timing finding");
 	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_TIME);
 	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO,
 	       "a lone timing finding stays informational");
 	if (ins != NULL) {
 		CHECK (strstr (ins->description, expected) != NULL,
 		       "the description names the unexpected hour");
-		CHECK (strstr (ins->description, "established hours") != NULL,
+		CHECK (strstr (ins->description, "Established hours") != NULL,
 		       "and points at the established ones");
 	}
 	g_free (expected);
 
-	/* Absorbed: a second event in that hour says nothing. */
-	behavior_feed (copilot, &hit, w0 + 3 * step);
+	behavior_feed (copilot, &hit, w0 + 2 * 3600);
 	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_TIME) == 1,
 	       "a second event in that hour says nothing new");
-
-	/* And the known port is quiet against the grown profile. */
-	p = fs_copilot_get_profile (copilot, "sync.exe");
-	CHECK (p != NULL && p->total_connections == 14,
-	       "every event reached the profile, signals or not");
-
 	fs_copilot_free (copilot);
+
+	/* Too young or too small: no new-destination finding at all. */
+	copilot = fs_copilot_new ();
+	behavior_hit (&hit, "young.exe", "192.168.1.7", "198.51.100.10",
+	              "443", "out");
+	for (i = 0; i < 60; i++)
+		behavior_feed (copilot, &hit, w0 - 86400);
+	behavior_hit (&hit, "young.exe", "192.168.1.7", "203.0.113.90",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 0,
+	       "a one-day-old profile (60 connections) raises no destination "
+	       "finding: the check needs 7 days");
+	fs_copilot_free (copilot);
+
+	copilot = fs_copilot_new ();
+	behavior_hit (&hit, "small.exe", "192.168.1.7", "198.51.100.10",
+	              "443", "out");
+	for (i = 0; i < 40; i++)
+		behavior_feed (copilot, &hit, start);
+	behavior_hit (&hit, "small.exe", "192.168.1.7", "203.0.113.90",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 0,
+	       "an 8-day-old profile with 40 connections raises none: the check "
+	       "needs 50");
+	fs_copilot_free (copilot);
+
+	/* The churn guard: an app that meets 20 new hosts in a week is
+	 * browser-like, and the 21st is not news. */
+	for (gint churn = 0; churn < 2; churn++) {
+		guint before, after;
+
+		copilot = fs_copilot_new ();
+		behavior_mature (copilot, &hit, "browser.exe", start);
+		for (i = 0; i < (churn ? 20 : 1); i++) {
+			g_snprintf (dest, sizeof dest, "203.0.113.%d", 100 + i);
+			behavior_hit (&hit, "browser.exe", "192.168.1.7", dest,
+			              "443", "out");
+			behavior_feed (copilot, &hit, w0);
+		}
+		before = count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION);
+		behavior_hit (&hit, "browser.exe", "192.168.1.7", "198.51.100.200",
+		              "443", "out");
+		behavior_feed (copilot, &hit, w0 + 10 * 3600);
+		after = count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION);
+		if (churn)
+			CHECK (before == 1 && after == 1,
+			       "after 20 new hosts in a week the app is browser-like: "
+			       "the next new host raises nothing");
+		else
+			CHECK (before == 1 && after == 2,
+			       "with one earlier new host, a new host in another hour "
+			       "is a second finding");
+		fs_copilot_free (copilot);
+	}
 }
 
 static void test_behavior_hour_guard (void)
@@ -2319,23 +2592,315 @@ static void test_behavior_insight_cap (void)
 	gchar dest[64];
 	gint i;
 
-	/* Baseline, then a flood of first contacts: the insight list is
-	 * bounded, and the flood cannot grow it without end. */
-	behavior_hit (&hit, "scan.exe", "192.168.1.7", "198.51.100.1",
-	              "443", "out");
-	for (i = 0; i < 10; i++)
-		behavior_feed (copilot, &hit, 1700000400);
-
+	/* A flood of findings: 205 sources each scanning 12 ports.  The
+	 * insight list is bounded, and the flood cannot grow it without
+	 * end. */
 	for (i = 1; i <= 205; i++) {
-		g_snprintf (dest, sizeof dest, "203.0.113.%d", i);
-		hit.destination = dest;
-		behavior_feed (copilot, &hit, 1700000400);
+		g_snprintf (dest, sizeof dest, "203.0.%d.%d", 100 + i / 200,
+		            i % 200 + 1);
+		for (gint p = 0; p < 12; p++) {
+			gchar port[8];
+
+			g_snprintf (port, sizeof port, "%d", 1000 + p);
+			behavior_hit (&hit, "Unknown [BLOCKED]", dest, "192.168.1.7",
+			              port, "In");
+			behavior_feed (copilot, &hit, 1700000400);
+		}
 	}
 
 	CHECK (total_insights (copilot) == 200,
 	       "the insight list stops at its cap, however loud the flood");
 
 	fs_copilot_free (copilot);
+}
+
+/* ==== 1.0.7 Copilot: inbound checks, block lists, dedup ==========
+ * Driven with exact clocks (monotonic for the windows, unix for the
+ * evidence and the once-per-hour memory). */
+
+static void
+inbound_feed (FsCopilot *c, const gchar *src, guint port,
+              gboolean blocked, gint64 sec)
+{
+	FsHit hit;
+	gchar p[8];
+
+	g_snprintf (p, sizeof p, "%u", port);
+	memset (&hit, 0, sizeof hit);
+	hit.direction = (gchar *) "In";
+	hit.source = (gchar *) src;
+	hit.destination = (gchar *) "192.168.1.7";
+	hit.port = p;
+	hit.protocol = (gchar *) "TCP";
+	hit.service = (gchar *) (blocked ? "Unknown [BLOCKED]" : "Unknown");
+	fs_copilot_feed_event_full (c, &hit,
+	                            (gint64) (950000 + sec) * G_USEC_PER_SEC,
+	                            1700100000 + sec);
+}
+
+static void test_inbound_scan (void)
+{
+	FsCopilot *c;
+	const FsInsight *ins;
+	gint i;
+
+	/* 12 distinct ports in a minute, all refused: one Info finding. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 12; i++)
+		inbound_feed (c, "203.0.113.5", 1000 + i, TRUE, i * 4);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1,
+	       "scan: 12 local ports in 60 s from one source report once");
+	ins = find_insight (c, FS_INSIGHT_INBOUND_SCAN);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO &&
+	       strstr (ins->description, "was refused") != NULL,
+	       "scan: all refused is Info, and says so");
+	CHECK (ins != NULL && ins->rule_csv == NULL && !ins->auto_applicable &&
+	       ins->withheld != NULL,
+	       "scan: never a rule, never auto");
+	CHECK (ins != NULL && ins->evidence->len == 12 &&
+	       strstr (ins->description, "1000, 1001") != NULL &&
+	       strstr (ins->why, "12 distinct ports in the last 60 seconds") != NULL,
+	       "scan: the evidence and the counts next to the limits");
+
+	/* More ports from the same source within the hour: still one. */
+	for (i = 12; i < 30; i++)
+		inbound_feed (c, "203.0.113.5", 1000 + i, TRUE, 50 + i);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1,
+	       "scan: one report per source per hour");
+	fs_copilot_free (c);
+
+	/* 11 ports, each tried twice: 22 events, not a scan. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 22; i++)
+		inbound_feed (c, "203.0.113.6", 2000 + i % 11, TRUE, i * 2);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 0,
+	       "scan: 11 distinct ports do not (22 events: ports, not events, "
+	       "count)");
+	fs_copilot_free (c);
+
+	/* 25 ports over 10 minutes, slowly. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 25; i++)
+		inbound_feed (c, "203.0.113.7", 3000 + i, TRUE, i * 20);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1,
+	       "scan: 25 ports in 10 minutes report, however slow");
+	fs_copilot_free (c);
+
+	/* Some got through to allowed ports: a Warning naming them. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 12; i++)
+		inbound_feed (c, "198.51.100.40", i == 3 ? 22 : 4000 + i, i != 3,
+		              i);
+	ins = find_insight (c, FS_INSIGHT_INBOUND_SCAN);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING &&
+	       strstr (ins->description, "ports your policy allows: 22") != NULL,
+	       "scan: reaching an allowed port is a Warning that names it");
+	fs_copilot_free (c);
+
+	/* From the LAN: Info, whatever got through. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 12; i++)
+		inbound_feed (c, "192.168.1.50", 5000 + i, FALSE, i);
+	ins = find_insight (c, FS_INSIGHT_INBOUND_SCAN);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO &&
+	       strstr (ins->why, "local network") != NULL,
+	       "scan: a LAN scanner is reported as Info");
+	fs_copilot_free (c);
+
+	/* Loopback is not a scanner. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 20; i++)
+		inbound_feed (c, "127.0.0.1", 6000 + i, FALSE, i);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 0,
+	       "scan: loopback is ignored");
+	fs_copilot_free (c);
+}
+
+static void test_brute_force (void)
+{
+	FsCopilot *c;
+	FsPolicy *policy;
+	const FsInsight *ins;
+	gint i;
+
+	/* 10 refused SSH attempts in 5 minutes, no policy attached. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "198.51.100.23", 22, TRUE, i * 25);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 1,
+	       "brute: 10 attempts in 5 minutes report");
+	ins = find_insight (c, FS_INSIGHT_BRUTE_FORCE);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO &&
+	       ins->rule_csv == NULL && !ins->auto_applicable,
+	       "brute: all refused is Info, never a rule, never auto");
+	CHECK (ins != NULL && strstr (ins->description, "SSH") != NULL &&
+	       strstr (ins->description, "allowed-event logging") != NULL &&
+	       ins->evidence->len == 10,
+	       "brute: names the service, the logging caveat, the attempts");
+	fs_copilot_free (c);
+
+	/* 9 do not. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 9; i++)
+		inbound_feed (c, "198.51.100.23", 22, TRUE, i * 25);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 0,
+	       "brute: 9 attempts do not");
+	fs_copilot_free (c);
+
+	/* 10 spread over 6 minutes: never 10 inside any 5 minutes. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "198.51.100.23", 22, TRUE, i * 40);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 0,
+	       "brute: 10 attempts over 6 minutes do not (the window expires)");
+	fs_copilot_free (c);
+
+	/* Not a login port. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 15; i++)
+		inbound_feed (c, "198.51.100.23", 8080, TRUE, i * 5);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 0,
+	       "brute: port 8080 is not a login port");
+	fs_copilot_free (c);
+
+	/* The policy lets the source in: Critical. */
+	c = fs_copilot_new ();
+	policy = fs_policy_new ();
+	{
+		FsRule *r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                              "RDP, 3389, Anyone");
+
+		fs_policy_add (policy, r);
+		fs_rule_free (r);
+	}
+	fs_copilot_set_policy (c, policy);
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "198.51.100.24", 3389, TRUE, i * 25);
+	ins = find_insight (c, FS_INSIGHT_BRUTE_FORCE);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_CRITICAL &&
+	       strstr (ins->title, "the policy lets it in") != NULL &&
+	       strstr (ins->why, "ALLOWED") != NULL,
+	       "brute: Critical when What-If says the policy allows the source");
+	CHECK (ins != NULL && ins->rule_csv == NULL && !ins->auto_applicable,
+	       "brute: even then, never auto-applicable");
+
+	/* From the LAN, allowed: a Warning. */
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "192.168.1.60", 3389, FALSE, 400 + i * 2);
+	{
+		GList *all = fs_copilot_get_insights (c);
+		gboolean lan_warn = FALSE;
+
+		for (GList *l = all; l != NULL; l = l->next) {
+			FsInsight *x = l->data;
+
+			if (x->type == FS_INSIGHT_BRUTE_FORCE &&
+			    g_strcmp0 (x->subject, "192.168.1.60") == 0)
+				lan_warn = x->severity == FS_COPILOT_WARNING;
+		}
+		g_list_free (all);
+		CHECK (lan_warn, "brute: an allowed LAN source is a Warning");
+	}
+	fs_copilot_free (c);
+	fs_policy_free (policy);
+}
+
+static void
+intel_feed (FsCopilot *c, const gchar *dir, const gchar *src,
+            const gchar *dst, const gchar *rule, gint64 unix_sec)
+{
+	FsHit hit;
+
+	memset (&hit, 0, sizeof hit);
+	hit.direction = (gchar *) dir;
+	hit.source = (gchar *) src;
+	hit.destination = (gchar *) dst;
+	hit.port = (gchar *) "443";
+	hit.protocol = (gchar *) "TCP";
+	hit.service = (gchar *) "browser.exe [BLOCKED]";
+	hit.rule = (gchar *) rule;
+	fs_copilot_feed_event_full (c, &hit, (gint64) 960000 * G_USEC_PER_SEC,
+	                            unix_sec);
+}
+
+static void test_threat_intel (void)
+{
+	FsCopilot *c = fs_copilot_new ();
+	const FsInsight *ins;
+	const gint64 h0 = 1700200800;   /* on the hour */
+
+	intel_feed (c, "Out", "192.168.1.7", "203.0.113.200",
+	            "Threat intel: Spamhaus DROP", h0);
+	ins = find_insight (c, FS_INSIGHT_THREAT_INTEL);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING &&
+	       strstr (ins->title, "Spamhaus DROP") != NULL &&
+	       strstr (ins->title, "browser.exe") != NULL,
+	       "intel: outbound is a Warning naming the list and the app");
+	CHECK (ins != NULL && ins->rule_csv == NULL && !ins->auto_applicable,
+	       "intel: nothing to stage, the list already blocks it");
+
+	intel_feed (c, "In", "198.51.100.1", "192.168.1.7",
+	            "Threat intel: FireHOL level 1", h0 + 10);
+	intel_feed (c, "In", "198.51.100.2", "192.168.1.7",
+	            "Threat intel: FireHOL level 1", h0 + 20);
+	intel_feed (c, "In", "198.51.100.3", "192.168.1.7",
+	            "Threat intel: FireHOL level 1", h0 + 30);
+	CHECK (count_insights (c, FS_INSIGHT_THREAT_INTEL) == 2,
+	       "intel: three inbound drops in an hour roll up into one finding");
+	ins = find_insight (c, FS_INSIGHT_THREAT_INTEL);
+	CHECK (ins != NULL && ins->count == 3 && ins->evidence->len == 3 &&
+	       ins->severity == FS_COPILOT_INFO,
+	       "intel: the roll-up is Info and counts all three");
+
+	intel_feed (c, "In", "198.51.100.4", "192.168.1.7",
+	            "Threat intel: FireHOL level 1", h0 + 3700);
+	CHECK (count_insights (c, FS_INSIGHT_THREAT_INTEL) == 3,
+	       "intel: the next hour starts a new roll-up");
+
+	intel_feed (c, "In", "198.51.100.5", "192.168.1.7", "Location block",
+	            h0 + 3710);
+	CHECK (count_insights (c, FS_INSIGHT_THREAT_INTEL) == 4,
+	       "intel: a country block is its own roll-up");
+
+	intel_feed (c, "In", "198.51.100.6", "192.168.1.7", NULL, h0 + 3720);
+	CHECK (count_insights (c, FS_INSIGHT_THREAT_INTEL) == 4,
+	       "intel: an event with no rule is no intel finding");
+	fs_copilot_free (c);
+}
+
+static void test_insight_dedup (void)
+{
+	FsCopilot *c = fs_copilot_new ();
+	FsHit hit;
+	const FsInsight *b, *t;
+	gint i;
+
+	/* A beacon and a block-list hit on the same host within the hour:
+	 * two different checks, so both become Critical and say why. */
+	memset (&hit, 0, sizeof hit);
+	hit.direction = "Out";
+	hit.source = "192.168.1.7";
+	hit.destination = "203.0.113.150";
+	hit.port = "8443";
+	hit.protocol = "TCP";
+	hit.service = "agent.exe";
+	for (i = 0; i < 6; i++)
+		fs_copilot_feed_event_full (c, &hit,
+			(gint64) (970000 + i * 60) * G_USEC_PER_SEC,
+			1700300000 + i * 60);
+	b = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (b != NULL && b->severity == FS_COPILOT_WARNING,
+	       "dedup: the beacon alone is a Warning");
+	intel_feed (c, "Out", "192.168.1.7", "203.0.113.150",
+	            "Threat intel: Spamhaus DROP", 1700300400);
+	b = find_insight (c, FS_INSIGHT_BEACON);
+	t = find_insight (c, FS_INSIGHT_THREAT_INTEL);
+	CHECK (b != NULL && t != NULL && b->severity == FS_COPILOT_CRITICAL &&
+	       t->severity == FS_COPILOT_CRITICAL &&
+	       strstr (b->why, "Also flagged") != NULL,
+	       "dedup: two different checks on one host within the hour are "
+	       "Critical, and say so");
+	fs_copilot_free (c);
 }
 
 static void test_behavior_persistence (void)
@@ -6816,6 +7381,10 @@ int main (void)
 	test_behavior_hour_guard ();
 	test_behavior_rate ();
 	test_behavior_insight_cap ();
+	test_inbound_scan ();
+	test_brute_force ();
+	test_threat_intel ();
+	test_insight_dedup ();
 	test_behavior_persistence ();
 	test_behavior_partial ();
 	test_behavior_app_cap ();
@@ -6888,3 +7457,28 @@ cc ${STOCKFW_TEST_CFLAGS:-} tests/test-whatif.c \
    $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
 
 "$BUILD_DIR/test-whatif"
+
+# The Copilot's policy health check (tests/test-health.c): exact coverage,
+# the golden table on both platform models, every fix verified by the
+# What-If engine, apply and undo proved on the rules file.
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} tests/test-health.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0) \
+   -o "$BUILD_DIR/test-health" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
+
+"$BUILD_DIR/test-health"
+
+# Wording guard: the Copilot is a set of fixed rules, and nothing in the
+# program or the docs may call it AI.  The one sentence that says there
+# is no AI model is allowed.
+WORDING_HITS="$(grep -rnE '\bAI\b|AI-' src ../docs ../README.md 2>/dev/null \
+  | grep -v 'There is no AI model' || true)"
+if [ -n "$WORDING_HITS" ]; then
+  echo "FAIL: \"AI\" wording in the program or the docs:"
+  echo "$WORDING_HITS"
+  exit 1
+fi
+echo "ok:   wording guard: no \"AI\" claims in src, docs or README"

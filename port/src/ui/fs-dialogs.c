@@ -88,7 +88,7 @@ fs_dialogs_about (GtkWidget *parent)
 	                                "(C) 04-10-2026 StockFW Project");
 	gtk_about_dialog_set_comments (GTK_ABOUT_DIALOG (dialog),
 	                               "Smart Firewall Configuration Tool\n"
-	                               "with AI-powered anomaly detection.");
+	                               "with local, rule-based traffic analysis.");
 	gtk_about_dialog_set_authors (GTK_ABOUT_DIALOG (dialog),
 	                              fs_dialogs_about_authors ());
 	gtk_about_dialog_set_license_type (GTK_ABOUT_DIALOG (dialog),

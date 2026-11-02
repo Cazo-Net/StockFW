@@ -504,6 +504,15 @@ static void
 on_hit (const FsHit *hit, gpointer user_data)
 {
 	gboolean blocked;
+	extern FsCopilot *copilot;
+
+	/* The Copilot sees every event, before the display filters: "skip
+	 * repeats" is about what the list shows, and a run of identical
+	 * attempts is exactly the shape of a login storm or a timed
+	 * check-in.  Hiding the repeats from the checks would let them
+	 * reach the Copilot as one event. */
+	if (copilot != NULL)
+		fs_copilot_feed_event (copilot, hit);
 
 	/* Both filters run before anything is counted, as they did in the
 	 * original. */
@@ -523,11 +532,6 @@ on_hit (const FsHit *hit, gpointer user_data)
 
 	/* The Activity page counts exactly what this list shows. */
 	fs_activityview_note_hit (hit);
-
-	/* Feed to copilot for learning and anomaly detection. */
-	extern FsCopilot *copilot;
-	if (copilot != NULL)
-		fs_copilot_feed_event (copilot, hit);
 
 	/* Sentinel auto-block: in auto mode a fresh beacon insight is
 	 * staged into the policy right here, not the next time someone
