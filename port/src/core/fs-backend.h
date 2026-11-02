@@ -83,6 +83,12 @@ typedef void (*FsLogFunc) (const FsHit *hit, gpointer user_data);
 	                                  * connections" is a real switch
 	                                  * (Linux); Windows logs them
 	                                  * through its audit policy     */
+#define FS_FWHON_HOST_NAMES    (1u << 3) /* 1.0.7: a host name in a
+	                                  * rule is looked up at apply
+	                                  * time and written as each
+	                                  * family's addresses (Linux);
+	                                  * Windows Firewall takes
+	                                  * addresses only              */
 
 typedef struct
 {
@@ -194,6 +200,15 @@ typedef struct
 	 * a caller-owned sentence for the UI (may be set to NULL).  NULL
 	 * slot means FS_IPV6_UNKNOWN. */
 	FsIpv6State (*ipv6_state) (gchar **detail);
+
+	/* 1.0.7: what the last successful apply_rules left out or could
+	 * not cover, one sentence per line ("IPv6 is not filtered:
+	 * ip6tables is not installed."), or NULL when nothing.  These are
+	 * notes on an apply that succeeded -- the policy is in force --
+	 * so they are not a PARTIAL result, which the apply gate rightly
+	 * treats as a failure and rolls back.  Caller frees.  NULL slot:
+	 * the backend has none. */
+	gchar *(*apply_notes) (void);
 
 	/* 1.0.7 threat intel: replace every blocklist/location rule this
 	 * application owns with `ruleset' (an empty ruleset removes them),

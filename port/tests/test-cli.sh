@@ -169,6 +169,35 @@ check "status --json parses and counts the saved rules" py "
 import json, subprocess
 d = json.loads(subprocess.run(['$S', '--json', 'status'], capture_output=True, text=True).stdout)
 assert d['policy_saved'] is True and d['rules']['outbound-deny-to'] == 1, d"
+check "status --json says whether IPv6 is filtered, and why" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'status'], capture_output=True, text=True).stdout)
+assert d['ipv6']['state'] in ('filtered', 'not-filtered', 'absent', 'unknown'), d['ipv6']
+assert d['ipv6']['detail'], d['ipv6']"
+check "status has an IPv6 line" \
+  bash -c "'$S' status | grep -qE '^  IPv6 +(filtered|not filtered|none on this system|unknown)'"
+
+# Which families each rule covers (1.0.7): the answer follows the
+# generator, and the JSON carries the reason.
+"$S" policy add inbound-allow-from 2001:db8:1::/48 > /dev/null
+"$S" policy add inbound-allow-service HTTP 80 192.168.7.0/24 > /dev/null
+"$S" policy add inbound-forward Web 8080 2001:db8::5 80 > /dev/null
+check "policy list marks each rule with what it covers" \
+  bash -c "'$S' policy list > '$TMP/pl.txt' && grep -q '2001:db8:1::/48  \[IPv6 only\]' '$TMP/pl.txt' && grep -q 'for 192.168.7.0/24  \[IPv4 only\]' '$TMP/pl.txt' && grep -q 'SSH  port 22  for Anyone  \[IPv4 + IPv6\]' '$TMP/pl.txt'"
+check "  ...and writes an IPv6 forward [address]:port" \
+  grep -qF -- '-> [2001:db8::5]:80  [IPv6 only]' "$TMP/pl.txt"
+check "policy list --json gives covers and the reason" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'policy', 'list'], capture_output=True, text=True).stdout)
+by = {(r['kind'], r['target'] or r['to']): r for r in d['rules']}
+r = by[('inbound-allow-service', '192.168.7.0/24')]
+assert r['covers'] == ['ipv4'] and 'IPv4 range' in r['covers_why'], r
+assert by[('inbound-allow-from', '2001:db8:1::/48')]['covers'] == ['ipv6']
+assert by[('inbound-forward', '2001:db8::5')]['covers'] == ['ipv6']
+assert by[('inbound-allow-service', 'Anyone')]['covers'] == ['ipv4', 'ipv6']"
+"$S" policy remove inbound-forward 1 > /dev/null
+"$S" policy remove inbound-allow-service 2 > /dev/null
+"$S" policy remove inbound-allow-from 1 > /dev/null
 
 # --------------------------------------------------------- dashboard
 DPORT=$(py 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
@@ -223,6 +252,10 @@ check "a path outside the API is 404, not a file read" \
   bash -c "[ \$(curl -sS --path-as-is -o /dev/null -w '%{http_code}' -H 'X-StockFW-Token: $TOKEN' '$B/../../etc/passwd') = 404 ]"
 
 api () { curl -sS -H "X-StockFW-Token: $TOKEN" "$B/api/$1"; }
+check "summary says whether IPv6 is filtered, and logs allowed traffic by default" py "
+import json; d = json.load(open('$TMP/s.json'))
+assert d['ipv6']['state'] in ('filtered', 'not-filtered', 'absent', 'unknown') and d['ipv6']['detail'], d
+assert d['logs_allowed'] is True, d"
 check "summary counts the fixture's blocked events and the saved policy" py "
 import json; d = json.load(open('$TMP/s.json'))
 assert d['blocked_24h'] == 4 and d['blocked_1h'] == 4, d

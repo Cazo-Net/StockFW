@@ -3495,6 +3495,23 @@ static const FsBackend fake_backend = {
 	.apply_delta = fake_apply_delta,
 };
 
+/* A backend that applies and leaves notes (Linux without ip6tables, a
+ * skipped allow): the notes ride on a success. */
+static gchar *
+fake_notes (void)
+{
+	return g_strdup ("IPv6 is not filtered: ip6tables is not installed.\n"
+	                 "2026-11-02 | forged audit entry");
+}
+
+static const FsBackend fake_backend_notes = {
+	.name = "fake-notes",
+	.display_name = "scripted fake backend with apply notes",
+	.available = fake_available,
+	.apply_rules = fake_apply_rules,
+	.apply_notes = fake_notes,
+};
+
 /* The same fake without the narrow slot: whole-set apply only. */
 static const FsBackend fake_backend_no_delta = {
 	.name = "fake-full",
@@ -4105,6 +4122,32 @@ static void test_apply_gate (void)
 	       "a backend without a delta slot falls back to whole-set");
 	CHECK (fake_full_calls == 1 && fake_delta_calls == 0,
 	       "the fallback is exactly one whole-set call");
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	/* --- notes on a success: applied, journalled, no rollback ------------ */
+	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_TO, NULL, NULL,
+	                  "203.0.113.12");
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+	fake_reset ();
+	outcome = fs_policy_apply_safe (&fake_backend_notes, policy,
+	                                "gate test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       !outcome->rollback_attempted && fake_full_calls == 1,
+	       "an apply with notes is a success: no rollback (a host "
+	       "without ip6tables must not have every apply undone)");
+	CHECK (outcome->notes != NULL &&
+	       strstr (outcome->notes, "ip6tables is not installed") != NULL,
+	       "and the notes reach the caller");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| policy applied, with notes |") != NULL &&
+	       strstr (contents, "not installed. 2026-11-02 | forged") != NULL &&
+	       strstr (contents, "\n2026-11-02 | forged") == NULL,
+	       "the audit line carries the notes on one line: a line break "
+	       "in a detail cannot forge a second entry");
+	g_free (contents);
 	g_clear_error (&error);
 	fs_apply_outcome_free (outcome);
 
@@ -5475,6 +5518,58 @@ static void test_target_families (void)
 	       !fs_util_is_valid_ifname ("eth0\""),
 	       "empty, option-like, too long (16), newline, space and quote "
 	       "are not interface names");
+	/* What a rule covers, as the Policy page and the CLI show it. */
+	{
+		struct { FsRuleKind kind; const gchar *target, *to;
+		         gboolean names; FsFamily want; const gchar *why; } c[] = {
+			{ FS_RULE_INBOUND_ALLOW_SERVICE, "Anyone", NULL, TRUE,
+			  FS_FAMILY_BOTH, "IPv4 and IPv6" },
+			{ FS_RULE_INBOUND_ALLOW_SERVICE, "192.168.1.0/24", NULL, TRUE,
+			  FS_FAMILY_IPV4, "IPv4 range" },
+			{ FS_RULE_INBOUND_ALLOW_FROM, "10.0.0.5", NULL, TRUE,
+			  FS_FAMILY_IPV4, "second rule" },
+			{ FS_RULE_OUTBOUND_DENY_TO, "2001:db8::bad", NULL, TRUE,
+			  FS_FAMILY_IPV6, "IPv6 only" },
+			{ FS_RULE_OUTBOUND_DENY_TO, "example.org", NULL, TRUE,
+			  FS_FAMILY_BOTH, "looked up" },
+			{ FS_RULE_OUTBOUND_DENY_TO, "example.org", NULL, FALSE,
+			  FS_FAMILY_NONE, "addresses only" },
+			{ FS_RULE_OUTBOUND_DENY_TO, "not a host", NULL, TRUE,
+			  FS_FAMILY_NONE, "left out" },
+			{ FS_RULE_INBOUND_FORWARD, NULL, "2001:db8::5", TRUE,
+			  FS_FAMILY_IPV6, "IPv6 address" },
+			{ FS_RULE_INBOUND_FORWARD, NULL, "192.168.1.5", TRUE,
+			  FS_FAMILY_IPV4, "IPv4 address" },
+			{ FS_RULE_INBOUND_FORWARD, NULL, "nas.lan", TRUE,
+			  FS_FAMILY_NONE, "needs an IP address" },
+			{ FS_RULE_INBOUND_FORWARD, NULL, "192.168.1.0/24", TRUE,
+			  FS_FAMILY_NONE, "not a range" },
+			{ FS_RULE_INBOUND_FORWARD, NULL, "", TRUE,
+			  FS_FAMILY_NONE, "destination address" },
+		};
+
+		for (gsize i = 0; i < G_N_ELEMENTS (c); i++) {
+			FsRule *r = fs_rule_new (c[i].kind);
+			gchar *why = NULL;
+			FsFamily got;
+
+			r->target = g_strdup (c[i].target);
+			r->to = g_strdup (c[i].to);
+			got = fs_rule_coverage (r, c[i].names, &why);
+			CHECK (got == c[i].want && why != NULL &&
+			       strstr (why, c[i].why) != NULL,
+			       "coverage of %s%s%s: %s -- \"%s\"",
+			       c[i].kind == FS_RULE_INBOUND_FORWARD ? "a forward to " : "",
+			       c[i].target != NULL ? c[i].target : c[i].to,
+			       c[i].names ? "" : " (names not looked up)",
+			       c[i].want == FS_FAMILY_NONE ? "nothing"
+			         : fs_util_families_label (c[i].want),
+			       why != NULL ? why : "(none)");
+			g_free (why);
+			fs_rule_free (r);
+		}
+	}
+
 	CHECK (!fs_util_is_valid_host ("-evil.example") &&
 	       !fs_util_is_valid_host ("ok.-evil.example") &&
 	       fs_util_is_valid_host ("ok-fine.example"),
@@ -5674,6 +5769,24 @@ static void test_restore_plan (void)
 	g_clear_error (&error);
 	fs_restore_plan_free (plan);
 
+	/* ...unless nothing is loaded yet: then refusing protects nobody. */
+	plan = fs_script_restore_plan_ex (p, s, FS_PLAN_LENIENT_BLOCKS, &error);
+	CHECK (plan != NULL && error == NULL,
+	       "with nothing loaded (lenient), the same policy plans");
+	if (plan != NULL) {
+		gboolean said = FALSE;
+
+		for (guint i = 0; i < plan->skipped->len; i++)
+			said |= g_str_has_prefix (g_ptr_array_index (plan->skipped, i),
+			                          "NOT BLOCKED: down.test could not "
+			                          "be looked up");
+		CHECK (said && strstr (plan->v4.filter, "-d 192.0.2.66 -j DROP"),
+		       "the unresolvable block is listed as NOT BLOCKED, and every "
+		       "other block is in");
+	}
+	g_clear_error (&error);
+	fs_restore_plan_free (plan);
+
 out:
 	fs_policy_free (p);
 	fs_settings_free (s);
@@ -5718,6 +5831,44 @@ out:
 
 	fs_policy_free (p);
 	fs_settings_free (s);
+
+	/* "Covers" says what the generator does: for each target, a
+	 * family is covered exactly when that family's payload names it. */
+	{
+		struct { const gchar *target, *v4, *v6; } c[] = {
+			{ "10.0.0.5",        "-d 10.0.0.5 ",        NULL },
+			{ "192.168.1.0/24",  "-d 192.168.1.0/24 ",  NULL },
+			{ "2001:db8::bad",   NULL,                  "-d 2001:db8::bad " },
+			{ "2001:db8:9::/48", NULL,                  "-d 2001:db8:9::/48 " },
+			{ "example.test",    "-d 192.0.2.66 ",      "-d 2001:db8::66 " },
+		};
+
+		for (gsize i = 0; i < G_N_ELEMENTS (c); i++) {
+			FsPolicy *cp = fs_policy_new ();
+			FsSettings *cs = fs_settings_new ();
+			FsRestorePlan *pl;
+			FsFamily said;
+			FsRule *r;
+
+			plan_add (cp, FS_RULE_OUTBOUND_DENY_TO, NULL, c[i].target,
+			          NULL, NULL);
+			r = g_ptr_array_index (cp->kinds[FS_RULE_OUTBOUND_DENY_TO], 0);
+			said = fs_rule_coverage (r, TRUE, NULL);
+			pl = fs_script_restore_plan (cp, cs, NULL);
+			CHECK (pl != NULL &&
+			       ((said & FS_FAMILY_IPV4) != 0) ==
+			         (c[i].v4 != NULL && strstr (pl->v4.filter, c[i].v4) != NULL) &&
+			       ((said & FS_FAMILY_IPV6) != 0) ==
+			         (c[i].v6 != NULL && strstr (pl->v6.filter, c[i].v6) != NULL) &&
+			       (c[i].v4 != NULL || !strstr (pl->v4.filter, "-A OUTBOUND -d ")) &&
+			       (c[i].v6 != NULL || !strstr (pl->v6.filter, "-A OUTBOUND -d ")),
+			       "\"Covers %s\" for %s matches what each family's rules "
+			       "contain", fs_util_families_label (said), c[i].target);
+			fs_restore_plan_free (pl);
+			fs_settings_free (cs);
+			fs_policy_free (cp);
+		}
+	}
 
 	/* The text form (scripts, What-If) keeps a name for iptables. */
 	p = fs_policy_new ();

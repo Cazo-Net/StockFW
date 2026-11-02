@@ -389,9 +389,49 @@ summary_json (Dash *dash)
 	fs_json_kv_str (out, "hold", fs_apply_hold_reason ());     g_string_append_c (out, ',');
 	fs_json_kv_bool (out, "monitoring", dash->monitoring);     g_string_append_c (out, ',');
 	fs_json_kv_str (out, "monitor_note", dash->monitor_note);  g_string_append_c (out, ',');
-	fs_json_kv_bool (out, "logs_allowed",
-	                 g_strcmp0 (backend->name, "linux") != 0);
-	g_string_append_c (out, ',');
+	/* Allowed connections reach the event stream on Windows (audit
+	 * policy) and, from 1.0.7, on Linux while "Log allowed
+	 * connections" is on. */
+	{
+		gboolean logs_allowed = TRUE;
+
+		if ((backend->fw_honors & FS_FWHON_LOG_ALLOWED) != 0) {
+			FsSettings *settings = fs_settings_new ();
+
+			fs_settings_load_prefs (settings);
+			logs_allowed = settings->log_allowed;
+			fs_settings_free (settings);
+		}
+		fs_json_kv_bool (out, "logs_allowed", logs_allowed);
+		g_string_append_c (out, ',');
+	}
+	/* Whether IPv6 is filtered; a backend without the probe covers
+	 * both families with every rule (Windows Firewall). */
+	{
+		/* The probe runs ip6tables; the page polls every 5 s, so the
+		 * answer is kept for 30 s rather than spawned each time. */
+		static gint64 v6_at = 0;
+		static FsIpv6State v6_state = FS_IPV6_FILTERED;
+		static gchar *v6_detail = NULL;
+		gint64 now_us = g_get_monotonic_time ();
+
+		if (v6_at == 0 || now_us - v6_at > 30 * G_USEC_PER_SEC) {
+			g_clear_pointer (&v6_detail, g_free);
+			if (backend->ipv6_state != NULL)
+				v6_state = backend->ipv6_state (&v6_detail);
+			else
+				v6_detail = g_strdup ("Windows Firewall applies every "
+				                      "rule to IPv4 and IPv6.");
+			v6_at = now_us;
+		}
+
+		fs_json_key (out, "ipv6");
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "state", fs_ipv6_state_to_string (v6_state));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "detail", v6_detail);
+		g_string_append (out, "},");
+	}
 	fs_json_kv_uint (out, "blocked_1h",
 	                 fs_activity_total (dash->events, FS_ACTIVITY_BLOCKED, 3600));
 	g_string_append_c (out, ',');

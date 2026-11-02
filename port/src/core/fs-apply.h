@@ -100,6 +100,8 @@ typedef struct
 	gboolean        rollback_verified;
 	gchar          *rollback_detail;   /* owned; NULL when no rollback    */
 	FsPolicyImpact *impact;            /* owned; never NULL               */
+	gchar          *notes;             /* owned; the backend's notes on a
+	                                    * successful apply, or NULL     */
 } FsApplyOutcome;
 
 /* The single safe path from a policy to the firewall.  The policy

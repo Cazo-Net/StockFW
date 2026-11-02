@@ -65,10 +65,16 @@ fs_cli_rule_summary (const FsRule *rule)
 {
 	switch (rule->kind) {
 	case FS_RULE_INBOUND_FORWARD:
-		return g_strdup_printf ("%s  port %s -> %s:%s",
+		/* [addr]:port for IPv6, as DNAT writes it: 2001:db8::5:80
+		 * reads as a different address. */
+		return g_strdup_printf ("%s  port %s -> %s%s%s:%s",
 		                        rule->service ? rule->service : "?",
 		                        rule->port ? rule->port : "?",
+		                        fs_util_target_families (rule->to) ==
+		                            FS_FAMILY_IPV6 ? "[" : "",
 		                        rule->to ? rule->to : "?",
+		                        fs_util_target_families (rule->to) ==
+		                            FS_FAMILY_IPV6 ? "]" : "",
 		                        rule->to_port ? rule->to_port : "?");
 	case FS_RULE_INBOUND_ALLOW_SERVICE:
 	case FS_RULE_OUTBOUND_ALLOW_SERVICE:
@@ -174,6 +180,43 @@ local_time (const gchar *iso)
 	return text;
 }
 
+/* [ append_lines_json ] -- "a\nb" as ["a","b"]; NULL as []. */
+static void
+append_lines_json (GString *out, const gchar *text)
+{
+	gchar **lines = g_strsplit (text != NULL ? text : "", "\n", -1);
+	gboolean first = TRUE;
+
+	g_string_append_c (out, '[');
+	for (gint i = 0; lines[i] != NULL; i++) {
+		if (*lines[i] == '\0')
+			continue;
+		if (!first)
+			g_string_append_c (out, ',');
+		fs_json_string (out, lines[i]);
+		first = FALSE;
+	}
+	g_string_append_c (out, ']');
+	g_strfreev (lines);
+}
+
+/* [ print_notes ] -- an apply's notes, one amber line each. */
+static void
+print_notes (const gchar *notes)
+{
+	gchar **lines;
+
+	if (notes == NULL)
+		return;
+
+	lines = g_strsplit (notes, "\n", -1);
+	for (gint i = 0; lines[i] != NULL; i++)
+		if (*lines[i] != '\0')
+			printf ("%snote:%s %s\n", fs_cli_amber (), fs_cli_reset (),
+			        lines[i]);
+	g_strfreev (lines);
+}
+
 /* -------------------------------------------------------------- status */
 
 gint
@@ -188,6 +231,8 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 	const gchar *hold = fs_apply_hold_reason ();
 	GList *stats = NULL, *conns = NULL;
 	const gchar *state_word;
+	FsIpv6State ipv6;
+	gchar *ipv6_detail = NULL;
 
 	if (argc > 1) {
 		fs_cli_error ("status takes no arguments");
@@ -214,12 +259,27 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 	if (backend->list_connections != NULL)
 		conns = backend->list_connections ();
 
+	/* IPv6: Linux answers (1.0.7); a backend without the slot covers
+	 * both families with every rule (Windows Firewall). */
+	if (backend->ipv6_state != NULL) {
+		ipv6 = backend->ipv6_state (&ipv6_detail);
+	} else {
+		ipv6 = FS_IPV6_FILTERED;
+		ipv6_detail = g_strdup ("Windows Firewall applies every rule to "
+		                        "IPv4 and IPv6.");
+	}
+
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{");
 
 		fs_json_kv_str (out, "version", FS_VERSION);       g_string_append_c (out, ',');
 		fs_json_kv_str (out, "backend", backend->name);   g_string_append_c (out, ',');
 		fs_json_kv_str (out, "state", state_word);        g_string_append_c (out, ',');
+		fs_json_key (out, "ipv6");
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "state", fs_ipv6_state_to_string (ipv6));  g_string_append_c (out, ',');
+		fs_json_kv_str (out, "detail", ipv6_detail);
+		g_string_append (out, "},");
 		fs_json_kv_bool (out, "root", root);              g_string_append_c (out, ',');
 		fs_json_kv_str (out, "rules_dir", fs_util_rules_dir ()); g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "policy_saved", on_disk);   g_string_append_c (out, ',');
@@ -276,6 +336,25 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 			        fs_cli_dim (), fs_cli_reset ());
 		printf ("\n");
 
+		/* IPv6 gets its own line: "running" says nothing about a
+		 * family that passes unfiltered. */
+		{
+			const gchar *c6 = ipv6 == FS_IPV6_FILTERED ? fs_cli_green ()
+			                : ipv6 == FS_IPV6_UNFILTERED ? fs_cli_amber ()
+			                : fs_cli_dim ();
+			const gchar *w6 = ipv6 == FS_IPV6_FILTERED ? "filtered"
+			                : ipv6 == FS_IPV6_UNFILTERED ? "not filtered"
+			                : ipv6 == FS_IPV6_ABSENT ? "none on this system"
+			                : "unknown";
+
+			printf ("  %-12s %s%s%s", "IPv6", c6, w6, fs_cli_reset ());
+			if (ipv6_detail != NULL && ipv6 != FS_IPV6_FILTERED &&
+			    ipv6 != FS_IPV6_ABSENT)
+				printf ("%s  (%s)%s", fs_cli_dim (), ipv6_detail,
+				        fs_cli_reset ());
+			printf ("\n");
+		}
+
 		if (on_disk) {
 			printf ("  %-12s %u rule%s in %s\n", "Policy",
 			        policy_total (policy),
@@ -326,6 +405,7 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 
 	g_list_free_full (stats, (GDestroyNotify) fs_iface_stat_free);
 	g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
+	g_free (ipv6_detail);
 	fs_policy_free (policy);
 
 	return FS_EXIT_OK;
@@ -340,6 +420,7 @@ policy_list (gint argc, gchar **argv)
 	gboolean on_disk;
 	gint malformed;
 	FsPolicy *policy;
+	gboolean names = (fs_backend ()->fw_honors & FS_FWHON_HOST_NAMES) != 0;
 
 	for (gint i = 0; i < argc; i++) {
 		if (strcmp (argv[i], "--kind") == 0 && i + 1 < argc) {
@@ -387,6 +468,23 @@ policy_list (gint argc, gchar **argv)
 					fs_json_kv_str (out, "to", r->to);        g_string_append_c (out, ',');
 					fs_json_kv_str (out, "to_port", r->to_port); g_string_append_c (out, ',');
 					fs_json_kv_str (out, "comment", r->comment);
+					g_string_append_c (out, ',');
+					{
+						gchar *why = NULL;
+						FsFamily fam = fs_rule_coverage (r, names, &why);
+
+						fs_json_key (out, "covers");
+						g_string_append_c (out, '[');
+						if (fam & FS_FAMILY_IPV4)
+							g_string_append (out, "\"ipv4\"");
+						if (fam == FS_FAMILY_BOTH)
+							g_string_append_c (out, ',');
+						if (fam & FS_FAMILY_IPV6)
+							g_string_append (out, "\"ipv6\"");
+						g_string_append (out, "],");
+						fs_json_kv_str (out, "covers_why", why);
+						g_free (why);
+					}
 					g_string_append_c (out, '}');
 				}
 			}
@@ -423,7 +521,14 @@ policy_list (gint argc, gchar **argv)
 			FsRule *r = g_ptr_array_index (rules, i);
 			gchar *summary = fs_cli_rule_summary (r);
 
+			FsFamily fam = fs_rule_coverage (r, names, NULL);
+
 			printf ("  %3u  %s", i + 1, summary);
+			printf ("  %s[%s]%s",
+			        fam == FS_FAMILY_NONE ? fs_cli_amber () : fs_cli_dim (),
+			        fam == FS_FAMILY_NONE ? "covers nothing"
+			                              : fs_util_families_label (fam),
+			        fs_cli_reset ());
 			if (r->comment != NULL && *r->comment != '\0')
 				printf ("  %s# %s%s", fs_cli_dim (), r->comment,
 				        fs_cli_reset ());
@@ -831,6 +936,9 @@ fs_cli_cmd_apply (gint argc, gchar **argv)
 		fs_json_kv_str (out, "error", error ? error->message : NULL); g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "rollback_attempted", outcome->rollback_attempted); g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "rollback_verified", outcome->rollback_verified);
+		g_string_append_c (out, ',');
+		fs_json_key (out, "notes");
+		append_lines_json (out, outcome->notes);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
@@ -847,6 +955,7 @@ fs_cli_cmd_apply (gint argc, gchar **argv)
 			        fs_cli_reset (),
 			        outcome->narrow ? "only the changes" : "whole policy",
 			        desc);
+		print_notes (outcome->notes);
 	} else {
 		fs_cli_error ("%s", error != NULL ? error->message
 		              : fs_util_apply_result_to_string ((int) outcome->result));
@@ -879,6 +988,7 @@ start_or_stop (gint argc, gboolean start)
 	FsSettings *settings;
 	GError *error = NULL;
 	gboolean ok;
+	gchar *notes;
 
 	if (argc > 1) {
 		fs_cli_error ("%s takes no arguments", start ? "start" : "stop");
@@ -892,18 +1002,24 @@ start_or_stop (gint argc, gboolean start)
 	settings = backend_context (policy);
 
 	ok = start ? fs_backend ()->start (&error) : fs_backend ()->stop (&error);
+	notes = (ok && start && fs_backend ()->apply_notes != NULL)
+	        ? fs_backend ()->apply_notes () : NULL;
 
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{");
 
 		fs_json_kv_bool (out, "ok", ok);  g_string_append_c (out, ',');
 		fs_json_kv_str (out, "error", error ? error->message : NULL);
+		g_string_append_c (out, ',');
+		fs_json_key (out, "notes");
+		append_lines_json (out, notes);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else if (ok) {
 		if (!fs_cli.quiet)
 			printf ("Firewall %s.\n", start ? "started" : "stopped");
+		print_notes (notes);
 	} else {
 		fs_cli_error ("could not %s the firewall: %s",
 		              start ? "start" : "stop",
@@ -911,6 +1027,7 @@ start_or_stop (gint argc, gboolean start)
 	}
 
 	g_clear_error (&error);
+	g_free (notes);
 	fs_settings_free (settings);
 	fs_policy_free (policy);
 

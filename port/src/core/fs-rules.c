@@ -710,3 +710,87 @@ fs_policy_count (const FsPolicy *policy, FsRuleKind kind)
 
 	return policy->kinds[kind]->len;
 }
+
+/* [ fs_rule_coverage ] -- see fs-rules.h. */
+FsFamily
+fs_rule_coverage (const FsRule *rule, gboolean names_resolved,
+                  gchar **detail)
+{
+	const gchar *target;
+	FsFamily fam;
+	gchar *text = NULL;
+
+	if (rule == NULL) {
+		if (detail != NULL)
+			*detail = NULL;
+		return FS_FAMILY_NONE;
+	}
+
+	target = (rule->kind == FS_RULE_INBOUND_FORWARD) ? rule->to
+	                                                 : rule->target;
+	fam = fs_util_target_families (target);
+
+	if (rule->kind == FS_RULE_INBOUND_FORWARD) {
+		if (target == NULL || *target == '\0') {
+			fam = FS_FAMILY_NONE;
+			text = g_strdup (_("A forward needs a destination address."));
+		} else if (fam == FS_FAMILY_IPV4 || fam == FS_FAMILY_IPV6) {
+			if (strchr (target, '/') != NULL) {
+				fam = FS_FAMILY_NONE;
+				text = g_strdup_printf (_("A forward goes to one address, "
+				                          "not a range like %s; it is "
+				                          "left out when applied."),
+				                        target);
+			} else {
+				text = g_strdup_printf (_("Forwarded to %s, an %s "
+				                          "address."), target,
+				                        fam == FS_FAMILY_IPV4 ? "IPv4"
+				                                              : "IPv6");
+			}
+		} else {
+			fam = FS_FAMILY_NONE;
+			text = g_strdup_printf (_("A forward needs an IP address, not "
+			                          "\"%s\"; it is left out when "
+			                          "applied."), target);
+		}
+	} else if (fs_util_target_is_anyone (target)) {
+		text = g_strdup (_("Anyone: the rule applies to IPv4 and IPv6."));
+	} else if (fam == FS_FAMILY_IPV4) {
+		text = g_strdup_printf (strchr (target, '/') != NULL
+			? _("%s is an IPv4 range, so the rule covers IPv4 only. "
+			    "Add a second rule for the IPv6 range if there is one.")
+			: _("%s is an IPv4 address, so the rule covers IPv4 only. "
+			    "Add a second rule for the host's IPv6 address if it "
+			    "has one."), target);
+	} else if (fam == FS_FAMILY_IPV6) {
+		text = g_strdup_printf (strchr (target, '/') != NULL
+			? _("%s is an IPv6 range, so the rule covers IPv6 only.")
+			: _("%s is an IPv6 address, so the rule covers IPv6 only."),
+			target);
+	} else if (fam == FS_FAMILY_BOTH) {
+		if (names_resolved) {
+			text = g_strdup_printf (_("%s is a name. It is looked up "
+			                          "each time the policy is applied, "
+			                          "and the rule covers every IPv4 "
+			                          "and IPv6 address it has then."),
+			                        target);
+		} else {
+			fam = FS_FAMILY_NONE;
+			text = g_strdup_printf (_("%s is a name, and Windows "
+			                          "Firewall takes addresses only. "
+			                          "Use the host's IP address."),
+			                        target);
+		}
+	} else {
+		text = g_strdup_printf (_("\"%s\" is not an address or host "
+		                          "name; the rule is left out when "
+		                          "applied."), target);
+	}
+
+	if (detail != NULL)
+		*detail = text;
+	else
+		g_free (text);
+
+	return fam;
+}

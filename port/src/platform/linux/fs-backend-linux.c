@@ -49,6 +49,10 @@
  * Netfilter is stateless from our point of view: we decide the firewall
  * is "running" when our INBOUND chain exists. */
 static gboolean log_running = FALSE;
+
+/* What the last successful apply left out or could not cover; see
+ * FsBackend.apply_notes. */
+static gchar *last_notes = NULL;
 static int      log_pipe[2] = { -1, -1 };
 /* 1.0.7: /dev/kmsg read directly (no child) when it can be opened. */
 static int      log_kmsg = -1;
@@ -254,6 +258,7 @@ interface_is_nat_capable (const gchar *name)
 static FsApplyResult linux_apply_rules (const FsPolicy *policy,
                                         GError **error);
 static void linux_sysctl_forwarding (void);
+static void linux_sysctl_forwarding6 (const gchar *ext);
 static void linux_log_stop (void);
 
 static gboolean
@@ -785,7 +790,7 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 	gboolean do6, ok;
 	gchar *why = NULL;
 	FsApplyResult result = FS_APPLY_OK;
-	GString *partial = NULL;
+	GString *notes;
 
 	if (!require_root (error))
 		return FS_APPLY_FAILED;
@@ -802,7 +807,15 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 
 	/* Everything is rendered (and every host name looked up) before
 	 * anything in the kernel changes. */
-	plan = fs_script_restore_plan (policy, current_settings, &local);
+	/* A block whose name cannot be looked up: while StockFW's rules
+	 * are loaded the apply is refused and they stay (they hold the
+	 * last good addresses); with nothing loaded, refusing would leave
+	 * every host unfiltered, so the block is left out and the apply's
+	 * notes say NOT BLOCKED. */
+	plan = fs_script_restore_plan_ex (policy, current_settings,
+	                                  chain_exists () ? FS_PLAN_STRICT_BLOCKS
+	                                                  : FS_PLAN_LENIENT_BLOCKS,
+	                                  &local);
 	if (plan == NULL) {
 		g_propagate_error (error, local);
 		return FS_APPLY_FAILED;
@@ -850,32 +863,36 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 		result = FS_APPLY_FAILED;
 	}
 
+	g_clear_pointer (&last_notes, g_free);
+
 	if (result == FS_APPLY_OK) {
 		legacy_cleanup ();
 
-		if (current_settings->nat)
+		if (current_settings->nat) {
 			linux_sysctl_forwarding ();
-
-		if (!do6 && kernel_has_ipv6 ()) {
-			partial = g_string_new ("IPv6 is not filtered: ip6tables "
-			                        "is not installed.");
+			if (do6 && plan->v6.nat != NULL)
+				linux_sysctl_forwarding6 (current_settings->ext_device);
 		}
 
-		for (guint i = 0; i < plan->skipped->len; i++) {
-			if (partial == NULL)
-				partial = g_string_new (NULL);
-			else
-				g_string_append_c (partial, '\n');
-			g_string_append (partial,
-			                 g_ptr_array_index (plan->skipped, i));
-		}
-
-		if (partial != NULL) {
-			g_set_error_literal (error,
-			                     g_quark_from_static_string ("fs-backend-linux"),
-			                     0, partial->str);
-			g_string_free (partial, TRUE);
-			result = FS_APPLY_PARTIAL;
+		/* Notes, not a PARTIAL result: the policy is in force as
+		 * planned.  PARTIAL would make the apply gate roll back to
+		 * the previous policy -- on every apply, on a host without
+		 * ip6tables. */
+		notes = g_string_new (NULL);
+		if (!do6 && kernel_has_ipv6 ())
+			g_string_append (notes, "IPv6 is not filtered: ip6tables "
+			                        "is not installed.\n");
+		for (guint i = 0; i < plan->skipped->len; i++)
+			g_string_append_printf (notes, "%s\n", (const gchar *)
+			                        g_ptr_array_index (plan->skipped, i));
+		for (guint i = 0; i < plan->notes->len; i++)
+			g_string_append_printf (notes, "%s\n", (const gchar *)
+			                        g_ptr_array_index (plan->notes, i));
+		if (notes->len > 0) {
+			g_string_truncate (notes, notes->len - 1);
+			last_notes = g_string_free (notes, FALSE);
+		} else {
+			g_string_free (notes, TRUE);
 		}
 	}
 
@@ -884,6 +901,13 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 	family_snap_clear (&snap6);
 	fs_restore_plan_free (plan);
 	return result;
+}
+
+/* [ linux_apply_notes ] -- see FsBackend.apply_notes. */
+static gchar *
+linux_apply_notes (void)
+{
+	return g_strdup (last_notes);
 }
 
 /* [ linux_ipv6_state ] -- see FsBackend.ipv6_state. */
@@ -930,6 +954,41 @@ linux_sysctl_forwarding (void)
 {
 	FILE *fp = fopen ("/proc/sys/net/ipv4/ip_forward", "w");
 
+	if (fp == NULL)
+		return;
+
+	fputs ("1\n", fp);
+	fclose (fp);
+}
+
+/* [ linux_sysctl_forwarding6 ]
+ * IPv6 port forwards need IPv6 forwarding.  Turning it on makes the
+ * kernel treat the host as a router, and a router ignores router
+ * advertisements -- the host would lose its own IPv6 default route on
+ * the outside interface.  accept_ra=2 there first keeps them ("accept
+ * even when forwarding"), and only when it was 1 (the default): 0
+ * means someone turned adverts off on purpose. */
+static void
+linux_sysctl_forwarding6 (const gchar *ext)
+{
+	FILE *fp;
+
+	if (fs_util_is_valid_ifname (ext)) {
+		gchar *path = g_strdup_printf ("/proc/sys/net/ipv6/conf/%s/accept_ra",
+		                               ext);
+		gchar *now = NULL;
+
+		if (g_file_get_contents (path, &now, NULL, NULL) &&
+		    g_strcmp0 (g_strstrip (now), "1") == 0 &&
+		    (fp = fopen (path, "w")) != NULL) {
+			fputs ("2\n", fp);
+			fclose (fp);
+		}
+		g_free (now);
+		g_free (path);
+	}
+
+	fp = fopen ("/proc/sys/net/ipv6/conf/all/forwarding", "w");
 	if (fp == NULL)
 		return;
 
@@ -1768,7 +1827,8 @@ static const FsBackend linux_backend = {
 	                         FS_FWSEC_TOS | FS_FWSEC_ADVANCED,
 	.fw_honors             = FS_FWHON_REJECT_METHOD |
 	                         FS_FWHON_RATE_LIMIT |
-	                         FS_FWHON_LOG_ALLOWED,
+	                         FS_FWHON_LOG_ALLOWED |
+	                         FS_FWHON_HOST_NAMES,
 	.available             = linux_available,
 	.get_state             = linux_get_state,
 	.start                 = linux_start,
@@ -1787,7 +1847,8 @@ static const FsBackend linux_backend = {
 	.dhcp_set_enabled      = linux_dhcp_set_enabled,
 	.get_profile_enabled   = linux_get_profile_enabled,
 	.set_profile_enabled   = linux_set_profile_enabled,
-	.ipv6_state            = linux_ipv6_state
+	.ipv6_state            = linux_ipv6_state,
+	.apply_notes           = linux_apply_notes
 };
 
 const FsBackend *

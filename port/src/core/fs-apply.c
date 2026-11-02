@@ -561,6 +561,8 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 		gchar *detail;
 
 		outcome->applied = TRUE;
+		if (backend->apply_notes != NULL)
+			outcome->notes = backend->apply_notes ();
 
 		if (!fs_apply_journal_save (policy, &save_error)) {
 			detail = apply_detail (
@@ -571,8 +573,11 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 			g_free (detail);
 			g_clear_error (&save_error);
 		} else {
-			detail = apply_detail (source, mode, desc, NULL, NULL);
-			fs_audit_log ("policy applied", detail);
+			detail = apply_detail (source, mode, desc, outcome->notes,
+			                       NULL);
+			fs_audit_log (outcome->notes != NULL
+			              ? "policy applied, with notes"
+			              : "policy applied", detail);
 			g_free (detail);
 		}
 	} else {
@@ -644,5 +649,6 @@ fs_apply_outcome_free (FsApplyOutcome *outcome)
 
 	fs_policy_impact_free (outcome->impact);
 	g_free (outcome->rollback_detail);
+	g_free (outcome->notes);
 	g_free (outcome);
 }

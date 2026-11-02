@@ -200,6 +200,8 @@ typedef struct
 	const FsSettings *settings;
 	FsFamily    family;      /* FS_FAMILY_IPV4 or FS_FAMILY_IPV6     */
 	gboolean    resolve;     /* restore form: names become addresses */
+	gboolean    lenient;     /* unresolvable blocks are skipped, not
+	                          * fatal (FS_PLAN_LENIENT_BLOCKS)       */
 	GHashTable *cache;       /* host -> Resolved*, shared by passes  */
 	GPtrArray  *notes;       /* informational sentences (nullable)   */
 	GPtrArray  *skipped;     /* rules not enforced (nullable)        */
@@ -394,11 +396,16 @@ gen_addresses (Gen *g, const gchar *target, gboolean deny)
 	r = lookup_host (g, target);
 
 	if (r->error != NULL) {
-		if (deny)
+		if (deny && !g->lenient)
 			gen_fail (g, FS_SCRIPT_ERR_RESOLVE,
 			          _("Cannot block %s: its address could not be "
 			            "looked up (%s). Nothing was changed."),
 			          target, r->error->message);
+		else if (deny && g->family == FS_FAMILY_IPV4)
+			add_unique (g->skipped, g_strdup_printf (
+				_("NOT BLOCKED: %s could not be looked up (%s). "
+				  "Apply the policy again once name lookups work."),
+				target, r->error->message));
 		else if (g->family == FS_FAMILY_IPV4)
 			add_unique (g->skipped, g_strdup_printf (
 				_("%s could not be looked up (%s); its rules "
@@ -418,10 +425,14 @@ gen_addresses (Gen *g, const gchar *target, gboolean deny)
 				: _("%s has no IPv4 address; its rules cover IPv6 only."),
 				target));
 		else if (g->family == FS_FAMILY_IPV4) {
-			if (deny)
+			if (deny && !g->lenient)
 				gen_fail (g, FS_SCRIPT_ERR_RESOLVE,
 				          _("Cannot block %s: it has no address."),
 				          target);
+			else if (deny)
+				add_unique (g->skipped, g_strdup_printf (
+					_("NOT BLOCKED: %s has no address."),
+					target));
 			else
 				add_unique (g->skipped, g_strdup_printf (
 					_("%s has no address; its rules were "
@@ -1353,6 +1364,15 @@ FsRestorePlan *
 fs_script_restore_plan (const FsPolicy *policy, const FsSettings *settings,
                         GError **error)
 {
+	return fs_script_restore_plan_ex (policy, settings,
+	                                  FS_PLAN_STRICT_BLOCKS, error);
+}
+
+FsRestorePlan *
+fs_script_restore_plan_ex (const FsPolicy *policy,
+                           const FsSettings *settings, FsPlanBlocks blocks,
+                           GError **error)
+{
 	FsRestorePlan *plan;
 	GHashTable *cache;
 	Gen *g4, *g6;
@@ -1371,6 +1391,7 @@ fs_script_restore_plan (const FsPolicy *policy, const FsSettings *settings,
 
 	g4->notes = g6->notes = plan->notes;
 	g4->skipped = g6->skipped = plan->skipped;
+	g4->lenient = g6->lenient = (blocks == FS_PLAN_LENIENT_BLOCKS);
 
 	build_part (g4, policy, &plan->v4);
 	if (g4->error == NULL)

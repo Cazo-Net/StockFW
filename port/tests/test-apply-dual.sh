@@ -133,6 +133,9 @@ main (int argc, char **argv)
 		} else if (strcmp (argv[i], "extra") == 0)
 			add (p, FS_RULE_INBOUND_ALLOW_SERVICE, "HTTP", "80", "Anyone",
 			     NULL, NULL);
+		else if (strcmp (argv[i], "downallow") == 0)
+			add (p, FS_RULE_INBOUND_ALLOW_FROM, NULL, NULL, "down.test",
+			     NULL, NULL);
 		else if (strcmp (argv[i], "badhost") == 0)
 			add (p, FS_RULE_OUTBOUND_DENY_TO, NULL, NULL, "broken.test",
 			     NULL, NULL);
@@ -148,8 +151,16 @@ main (int argc, char **argv)
 	if (strcmp (mode, "apply") == 0) {
 		FsApplyResult r = b->apply_rules (p, &error);
 
-		printf ("RESULT %s | %s\n", fs_util_apply_result_to_string (r),
-		        error != NULL ? error->message : "");
+		gchar *notes = (r == FS_APPLY_OK && b->apply_notes != NULL)
+		               ? b->apply_notes () : NULL;
+
+		if (notes != NULL)
+			g_strdelimit (notes, "\n", '/');
+		printf ("RESULT %s | %s | NOTES %s\n",
+		        fs_util_apply_result_to_string (r),
+		        error != NULL ? error->message : "",
+		        notes != NULL ? notes : "");
+		g_free (notes);
 	} else if (strcmp (mode, "stop") == 0) {
 		printf ("STOP %s\n", b->stop (&error) ? "ok" : error->message);
 	} else if (strcmp (mode, "state") == 0) {
@@ -250,6 +261,17 @@ T '[ "$(iptables -S; iptables -t nat -S)" = "$before4" ]' \
 	"IPv4 is exactly as it was: the half-applied new policy was rolled back"
 T '[ "$(ip6tables -S; ip6tables -t nat -S)" = "$before6" ]' "IPv6 is untouched"
 
+# ------------------------------- an allow that cannot resolve: a note
+out="$("$DUAL" apply downallow)"
+T '[ "${out%% |*}" = "$APPLIED" ]' \
+	"an allow whose name cannot be looked up does not fail the apply -- got [$out]"
+T 'grep -q "| NOTES .*down.test" <<<"$out"' \
+	"the apply says the rule was left out"
+T '! iptables -S | grep -q down.test' "and nothing names it in the kernel"
+out="$("$DUAL" apply)"
+T 'grep -q "| NOTES $" <<<"$out"' "a clean apply has no notes -- got [$out]"
+before4="$(iptables -S; iptables -t nat -S)"; before6="$(ip6tables -S; ip6tables -t nat -S)"
+
 # ------------------------------------------- a block that cannot resolve
 out="$("$DUAL" apply badhost)"
 T 'grep -q "^RESULT Failed.*Cannot block broken.test" <<<"$out"' \
@@ -336,6 +358,21 @@ T '! ip6tables -C FORWARD -j INBOUND 2>/dev/null' \
 T '[ "$(iptables -S; iptables -t nat -S)" = "$before4" ] && [ "$(ip6tables -S; ip6tables -t nat -S)" = "$before6" ]' \
 	"both families are exactly as they were"
 
+# ------------------------------------------- a host without ip6tables
+mkdir -p "$BUILD_DIR/v4bin"
+for tool in iptables iptables-restore iptables-save; do
+	ln -s "$(command -v $tool)" "$BUILD_DIR/v4bin/$tool"
+done
+out="$(PATH="$BUILD_DIR/v4bin:/usr/bin:/bin" "$DUAL" apply)"
+T '[ "${out%% |*}" = "$APPLIED" ]' \
+	"without ip6tables the apply still succeeds for IPv4 -- got [$out]"
+T 'grep -q "| NOTES IPv6 is not filtered: ip6tables is not installed" <<<"$out"' \
+	"and says IPv6 is not filtered"
+out="$(PATH="$BUILD_DIR/v4bin:/usr/bin:/bin" "$DUAL" state)"
+T 'grep -q "^IPV6 not-filtered.*ip6tables is not installed" <<<"$out"' \
+	"ipv6_state says the same -- got [$out]"
+out="$("$DUAL" apply nolog)"
+
 # ------------------------------------------------------------------ state
 out="$("$DUAL" state)"
 T 'grep -q "^IPV6 filtered" <<<"$out"' "ipv6_state: filtered -- got [$out]"
@@ -364,6 +401,17 @@ done
 out="$("$DUAL" state)"
 T 'grep -q "^IPV6 not-filtered.*stopped" <<<"$out"' \
 	"after stop: not filtered, firewall stopped -- got [$out]"
+
+# ------------- starting from stopped: one unresolvable block is not fatal
+out="$("$DUAL" apply badhost)"
+T '[ "${out%% |*}" = "$APPLIED" ]' \
+	"from stopped, a block whose name cannot be looked up does not keep the whole firewall down -- got [$out]"
+T 'grep -q "| NOTES .*NOT BLOCKED: broken.test could not be looked up" <<<"$out"' \
+	"and the notes say it is NOT BLOCKED"
+T 'iptables -C INPUT -j INBOUND && ip6tables -C INPUT -j INBOUND && iptables -C OUTBOUND -d 192.0.2.66/32 -j DROP' \
+	"everything else is in force, in both families"
+out="$("$DUAL" stop)"
+T '[ "$out" = "STOP ok" ] && ! iptables -n -L INBOUND >/dev/null 2>&1' "and stops cleanly"
 
 echo ""
 if [ "$failures" -eq 0 ]; then echo "PASSED: 0 failure(s)"; else echo "FAILED: $failures failure(s)"; fi

@@ -33,6 +33,7 @@ static FsFirewallState current_state = FS_FW_NONE;
 static gboolean policy_locked = FALSE;
 
 static GtkWidget *state_label;
+static GtkWidget *ipv6_label;    /* "IPv4 + IPv6 filtered", or why not */
 static GtkWidget *state_icon;
 static GtkWidget *state_badge;   /* circle behind the state icon */
 static GtkWidget *logo_image;
@@ -184,6 +185,7 @@ install_css (GtkWidget *for_widget)
 		".fs-state-active  { font-weight: bold; font-size: 15px; color: #2e7d32; }\n"
 		".fs-state-stopped { font-weight: bold; font-size: 15px; color: #c62828; }\n"
 		".fs-state-locked  { font-weight: bold; font-size: 15px; color: #b26a00; }\n"
+		".fs-ipv6-warn     { color: #b26a00; }\n"
 		".fs-counter       { font-weight: bold; }\n"
 		".fs-counter-head  { font-weight: bold; }\n";
 	GError *error = NULL;
@@ -578,6 +580,18 @@ on_start_clicked (GtkButton *button, gpointer data)
 	}
 
 	fs_statusview_set_state (fs_backend ()->get_state ());
+
+	/* Started, with notes: what the policy in force does not cover
+	 * (a block whose name could not be looked up, IPv6 without
+	 * ip6tables).  The user pressed Start, so this is the moment. */
+	if (fs_backend ()->apply_notes != NULL) {
+		gchar *notes = fs_backend ()->apply_notes ();
+
+		if (notes != NULL)
+			fs_dialogs_info (NULL, _("Firewall started, with notes"),
+			                 notes);
+		g_free (notes);
+	}
 }
 
 static void
@@ -701,6 +715,77 @@ fs_statusview_set_state (FsFirewallState state)
 		                                   policy_locked);
 
 	refresh_controls ();
+	fs_statusview_refresh_ipv6 ();
+}
+
+/* [ fs_statusview_refresh_ipv6 ] -- see fs-statusview.h.
+ * One line under the state.  Filtered and "no IPv6 here" are quiet;
+ * not filtered is amber and says why, because a firewall that reads
+ * "running" while half the traffic passes unfiltered is exactly the
+ * gap 1.0.7 closed.  Hidden where the backend has no answer (Windows
+ * Firewall applies every rule to both families). */
+void
+fs_statusview_refresh_ipv6 (void)
+{
+	const FsBackend *backend = fs_backend ();
+	GtkStyleContext *ctx;
+	gchar *detail = NULL;
+	gchar *text;
+	FsIpv6State st;
+
+	if (ipv6_label == NULL)
+		return;
+
+	if (backend->ipv6_state == NULL) {
+		gtk_widget_set_no_show_all (ipv6_label, TRUE);
+		gtk_widget_hide (ipv6_label);
+		return;
+	}
+
+	st = backend->ipv6_state (&detail);
+	ctx = gtk_widget_get_style_context (ipv6_label);
+	gtk_style_context_remove_class (ctx, "fs-ipv6-warn");
+	gtk_style_context_remove_class (ctx, "dim-label");
+
+	switch (st) {
+	case FS_IPV6_FILTERED:
+		text = g_strdup (_("IPv4 and IPv6 are filtered by the same "
+		                   "policy."));
+		gtk_style_context_add_class (ctx, "dim-label");
+		break;
+	case FS_IPV6_ABSENT:
+		text = g_strdup (_("IPv4 is filtered. This system has no IPv6."));
+		gtk_style_context_add_class (ctx, "dim-label");
+		break;
+	case FS_IPV6_UNFILTERED:
+		/* A stopped firewall filters neither family; the state line
+		 * above already says so in red. */
+		if (current_state == FS_FW_STOPPED) {
+			text = NULL;
+			break;
+		}
+		text = g_strdup_printf (_("IPv6 is not filtered. %s"),
+		                        detail != NULL ? _(detail) : "");
+		gtk_style_context_add_class (ctx, "fs-ipv6-warn");
+		break;
+	case FS_IPV6_UNKNOWN:
+	default:
+		text = g_strdup (detail != NULL ? _(detail) : "");
+		gtk_style_context_add_class (ctx, "dim-label");
+		break;
+	}
+
+	if (text != NULL && *text != '\0') {
+		gtk_label_set_text (GTK_LABEL (ipv6_label), text);
+		gtk_widget_set_no_show_all (ipv6_label, FALSE);
+		gtk_widget_show (ipv6_label);
+	} else {
+		gtk_widget_set_no_show_all (ipv6_label, TRUE);
+		gtk_widget_hide (ipv6_label);
+	}
+
+	g_free (text);
+	g_free (detail);
 }
 
 FsFirewallState
@@ -1006,6 +1091,17 @@ fs_statusview_page (void)
 		                             state_to_class (FS_FW_NONE));
 
 		gtk_box_pack_start (GTK_BOX (col), state_label, FALSE, FALSE, 0);
+
+		/* Starts hidden and no-show-all, so fs-app's show_all walk
+		 * cannot reveal an empty line; refresh_ipv6 shows it once it
+		 * has something true to say. */
+		ipv6_label = gtk_label_new (NULL);
+		gtk_label_set_xalign (GTK_LABEL (ipv6_label), 0.0);
+		gtk_label_set_line_wrap (GTK_LABEL (ipv6_label), TRUE);
+		gtk_label_set_max_width_chars (GTK_LABEL (ipv6_label), 52);
+		gtk_widget_set_no_show_all (ipv6_label, TRUE);
+		gtk_box_pack_start (GTK_BOX (col), ipv6_label, FALSE, FALSE, 0);
+
 		gtk_widget_set_valign (col, GTK_ALIGN_CENTER);
 		gtk_box_pack_start (GTK_BOX (left), col, FALSE, FALSE, 0);
 		gtk_box_pack_start (GTK_BOX (left), spacer, TRUE, TRUE, 0);

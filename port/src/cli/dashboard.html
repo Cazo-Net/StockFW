@@ -155,6 +155,7 @@ select {
 .tile .k { color: var(--text-3); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
 .tile .v { font-size: 26px; font-weight: 650; margin-top: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile .d { color: var(--text-3); font-size: 12.5px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .d.warn-text { color: var(--warn); font-weight: 600; }
 .pill {
   display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 8px;
   border-radius: 999px; font-size: 13px; font-weight: 650; margin-top: 8px;
@@ -768,7 +769,7 @@ code {
     $("activity-sub").textContent = sm.logs_allowed === false
       ? "Blocked packets per minute" : "Events per minute, allowed and blocked";
     $("activity-note").textContent = sm.logs_allowed === false
-      ? "On Linux StockFW logs only the packets it drops or rejects, so this graph shows blocked traffic; allowed traffic appears under Network I/O."
+      ? "Logging of allowed connections is off (Preferences, Advanced Options), so this graph shows blocked traffic only; allowed traffic appears under Network I/O."
       : "";
     var dev = a.device ? a.device : "all adapters";
     $("net-sub").textContent = "Average throughput, " + dev;
@@ -797,11 +798,18 @@ code {
     if (sm.state === "running") st.appendChild(pill("good", "Running", ICON_OK));
     else if (sm.state === "stopped") st.appendChild(pill("bad", "Stopped", ICON_X));
     else st.appendChild(pill("warn", "Unknown", ICON_Q));
-    $("t-state-d").textContent = sm.state === "unknown" && !sm.root ? "Reading the firewall needs root"
+    var v6 = sm.ipv6 || {};
+    var d = $("t-state-d");
+    d.classList.remove("warn-text");
+    d.title = v6.detail || "";
+    d.textContent = sm.state === "unknown" && !sm.root ? "Reading the firewall needs root"
       : sm.hold ? "Audit-only: applies are recorded, not made"
-      : sm.state === "running" ? "StockFW's rules are in force"
+      : sm.state === "running" && v6.state === "not-filtered" ? "IPv4 only: IPv6 is not filtered"
+      : sm.state === "running" && v6.state === "absent" ? "StockFW's rules are in force (IPv4; no IPv6 here)"
+      : sm.state === "running" ? "In force for IPv4 and IPv6"
       : sm.state === "stopped" ? "StockFW's rules are not loaded"
       : "State could not be read";
+    if (sm.state === "running" && v6.state === "not-filtered") d.classList.add("warn-text");
 
     $("t-blocked").textContent = sm.monitoring || sm.blocked_1h ? fmtNum(sm.blocked_1h) : "–";
     $("t-blocked-d").textContent = sm.monitoring

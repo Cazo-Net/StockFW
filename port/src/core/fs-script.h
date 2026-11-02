@@ -157,11 +157,31 @@ typedef struct
 	GPtrArray *skipped;  /* gchar*: rules that are not enforced         */
 } FsRestorePlan;
 
+/* How a block whose host name cannot be looked up is treated.
+ *   STRICT   the plan fails (FS_SCRIPT_ERR_RESOLVE).  Right while
+ *            StockFW's rules are loaded: the apply is refused and the
+ *            rules in force -- holding that host's addresses from the
+ *            last good lookup -- stay.
+ *   LENIENT  the block is left out and listed in `skipped' ("Not
+ *            blocked: ...").  Right when nothing is loaded yet:
+ *            refusing to start over one name would leave every host
+ *            unfiltered, which protects nothing. */
+typedef enum
+{
+	FS_PLAN_STRICT_BLOCKS = 0,
+	FS_PLAN_LENIENT_BLOCKS
+} FsPlanBlocks;
+
 /* NULL with error when the policy cannot be applied safely as a whole
- * (a block that cannot be resolved, an invalid interface name). */
+ * (a block that cannot be resolved under STRICT, an invalid interface
+ * name).  fs_script_restore_plan is the STRICT form. */
 FsRestorePlan *fs_script_restore_plan (const FsPolicy *policy,
                                        const FsSettings *settings,
                                        GError **error);
+FsRestorePlan *fs_script_restore_plan_ex (const FsPolicy *policy,
+                                          const FsSettings *settings,
+                                          FsPlanBlocks blocks,
+                                          GError **error);
 void           fs_restore_plan_free   (FsRestorePlan *plan);
 
 /* Everything a start needs, as one script. */

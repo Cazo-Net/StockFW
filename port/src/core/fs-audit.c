@@ -65,10 +65,20 @@ fs_audit_log (const gchar *action, const gchar *detail)
 	stamp = g_date_time_format (now, "%Y-%m-%dT%H:%M:%SZ");
 	g_date_time_unref (now);
 
-	written = fprintf (file, "%s | %s | %s\n",
-	                   stamp,
-	                   action,
-	                   (detail != NULL && *detail != '\0') ? detail : "-");
+	/* One entry is one line: a line break inside an action or a
+	 * detail (a multi-line backend message, a note list) would
+	 * otherwise read as a second, forged entry. */
+	{
+		gchar *one_action = g_strdelimit (g_strdup (action), "\r\n", ' ');
+		gchar *one_detail = g_strdelimit (
+			g_strdup ((detail != NULL && *detail != '\0') ? detail : "-"),
+			"\r\n", ' ');
+
+		written = fprintf (file, "%s | %s | %s\n", stamp, one_action,
+		                   one_detail);
+		g_free (one_action);
+		g_free (one_detail);
+	}
 
 	g_free (stamp);
 	g_free (path);
