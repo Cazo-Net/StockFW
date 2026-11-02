@@ -600,8 +600,7 @@ verify (const guint8 *data, gsize size, guint8 hdr[HEADER_LEN],
 		}
 		usable = TRUE;
 	}
-	if (!usable) { *slot = 0; EVP_PKEY_free (key); return TRUE; }
-	if (0) {
+	if (!usable) {
 		EVP_PKEY_free (key);
 		ERR_clear_error ();
 		g_set_error (error, FS_GEODB_ERROR, FS_GEODB_ERR_SIGNATURE,
