@@ -929,6 +929,17 @@ label.pref-group-title {
 	padding: 10px 12px;
 	margin: 2px 18px 12px 18px;
 }
+/* A Save that the system refused (start at sign-in): a deep red on a
+ * pale red, 5.8:1. */
+.pref-error {
+	background-color: #fdeeee;
+	border: 1px solid #f2c4c4;
+	border-radius: 8px;
+	color: #b3261e;
+	font-size: 12px;
+	padding: 10px 12px;
+	margin: 2px 18px 12px 18px;
+}
 .pref-note {
 	color: #5b6472;
 	font-size: 12px;
@@ -974,7 +985,7 @@ label.prefs-status.pending {
  * help smoke measures the contrast of every label under it.
  *   body text #2B303A on white    links #1D4ED8
  *   note #1E3A8A on #EEF4FF    warning #6B3F00 on #FFF8EB
- *   coming in 1.0.7 #3A4250 on white, dashed border
+ *   not in this build #3A4250 on white, dashed border
  * ===================================================================== */
 .help-nav scrolledwindow,
 .help-nav viewport {

@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>IPv6 · StockFW</title>
+<meta name="description" content="How StockFW filters IPv6: natively on Windows, and on Linux with one policy rendered for both families, one rollback, honest status, and the Covers column that says what each rule reaches.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="IPv6 · StockFW">
+<meta property="og:description" content="How StockFW filters IPv6: natively on Windows, and on Linux with one policy rendered for both families, one rollback, honest status, and the Covers column that says what each rule reaches.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html" aria-current="page"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Protection
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Protection</p>
+		<article class="prose">
+<h1>IPv6</h1>
+<p class="lede">A rule that only exists for IPv4 is a door left open on every network that also speaks IPv6, which today is most of them. StockFW tells you, per rule and on the Overview, exactly which families are filtered, and on Linux it filters both from the same policy.</p>
+
+<h2 id="windows">Windows<a class="anchor" href="#windows" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Windows</span> Windows Firewall rules apply to both families unless an address scopes them, so a rule for <em>Anyone</em> covers IPv4 and IPv6, and a rule for <code>2001:db8::5</code> covers IPv6 only. The Overview’s two tiles both read “Filtered” whenever the firewall is on. One limit: the Windows engine takes addresses, not names, so a rule whose target is a host name covers nothing there, and the Covers column says so. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></p>
+
+<h2 id="linux">Linux<a class="anchor" href="#linux" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Linux</span> The whole policy is rendered <em>before</em> the kernel is touched into two payloads, one for <code>iptables-restore</code> and one for <code>ip6tables-restore</code>, each with a filter part and, in router mode, a nat part. The backend snapshots StockFW’s chains in both families, loads IPv4, then IPv6, and on any failure puts back every table it changed. Each payload is loaded with <code>--noflush</code> and declares only StockFW’s own chains, so rules that Docker, libvirt or ufw keep in the same tables are never seen, and the hook from <code>INPUT</code> into <code>INBOUND</code> is not removed and re-added during a re-apply. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-apply-dual.sh</span></p>
+<p>The rollback covers both families, always. The first version rolled IPv6 back and skipped IPv4 whenever the IPv6 restore itself failed, which would have left IPv4 on the new policy while the dialog said nothing changed; four “teeth” runs now pin it, each removing one part of the rollback and watching a specific check go red.</p>
+
+<h3 id="which-family-a-rule-reaches">Which family a rule reaches<a class="anchor" href="#which-family-a-rule-reaches" aria-label="Link to this section">#</a></h3>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Target</th><th>Rendered into</th></tr></thead>
+<tbody>
+<tr><td>An IPv4 address or network</td><td>The IPv4 payload only.</td></tr>
+<tr><td>An IPv6 address or network</td><td>The IPv6 payload only.</td></tr>
+<tr><td><em>Anyone</em>, or empty</td><td>Both.</td></tr>
+<tr><td>A host name</td><td>Looked up once per apply and written as each family’s addresses, so no name is left for the tools to resolve while loading. A name with no address in one family gets a note. An <em>allow</em> whose name cannot be looked up is left out and reported (it fails closed). A <em>block</em> whose name cannot be looked up refuses the apply while rules are loaded, so the last good addresses stay blocked; when nothing is loaded yet (Start), it is left out and the notes begin with “NOT BLOCKED:”, because refusing would leave every host unfiltered over one name. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_restore_plan</span></td></tr>
+<tr><td>A port forward</td><td>Its destination’s family, written as <code>[2001:db8::5]:80</code> for IPv6. Masquerading stays IPv4-only. A destination that is a name or a range is left out and noted.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The same decision drives the <em>Covers</em> column on the <a href="../docs/policy.html#covers">Policy page</a>, <code>stockfw policy list</code> and its JSON, and a test checks that “Covers” names a family exactly when that family’s payload contains the rule. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
+
+<h3 id="what-ipv6-always-needs">What IPv6 always needs<a class="anchor" href="#what-ipv6-always-needs" aria-label="Link to this section">#</a></h3>
+<p>Neighbour discovery is ICMPv6, not ARP, so it goes through the filter, and a firewall that drops it takes the host off the network. Ahead of every preference and never rate-limited, INBOUND accepts packet-too-big, time-exceeded and parameter-problem; router advertisements from <code>fe80::/10</code>, neighbour solicitations and advertisements, all with hop limit 255; multicast listener discovery with hop limit 1; and DHCPv6 replies from link-local. OUTBOUND lets the host’s own solicitations, advertisements, listener reports, packet-too-big and DHCPv6 requests out, ahead of restrictive mode’s default drop. The ICMP preferences map to ICMPv6 where a counterpart exists; timestamps, address masks and source quench are IPv4-only and labelled so.</p>
+
+<h3 id="router-mode">Router mode<a class="anchor" href="#router-mode" aria-label="Link to this section">#</a></h3>
+<p>IPv6 forwarding is hooked only in router mode, because container and VM runtimes accept forwarded traffic in their own tables and would otherwise be cut by INBOUND’s default drop. An IPv6 forward needs <code>net.ipv6.conf.all.forwarding=1</code>, and a forwarding host ignores router advertisements, which would drop its own default route; before turning forwarding on, the backend sets <code>accept_ra=2</code> on the external interface, and only if it was 1, since 0 means someone turned advertisements off on purpose.</p>
+
+<h2 id="what-the-app-tells-you">What the app tells you<a class="anchor" href="#what-the-app-tells-you" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>The Overview has an <em>IPv6 traffic</em> tile that reads the kernel: “Filtered”, or “Not filtered” with the reason in the sidebar: <code>ip6tables</code> not installed, chains not loaded, loaded but not hooked, or the firewall stopped. “None on this system” when the kernel has no IPv6 stack. It never infers IPv6 from IPv4.</li>
+<li><code>stockfw status</code> has an <em>IPv6</em> line and an <code>ipv6</code> object in its JSON.</li>
+<li>The dashboard’s Firewall tile reads “In force for IPv4 and IPv6” or warns “IPv4 only”.</li>
+<li>A successful apply on a host without <code>ip6tables</code> is a success with a note, not a failure: “IPv6 is not filtered: ip6tables is not installed”. Install the package and Apply again.</li>
+</ul>
+
+<h2 id="testing-it-without-ipv6">Testing it without IPv6<a class="anchor" href="#testing-it-without-ipv6" aria-label="Link to this section">#</a></h2>
+<p>The project’s test container has no IPv6 stack. <code>STOCKFW_ASSUME_IPV6=1</code> makes the backend load the IPv6 payload anyway, so rule loading is exercised for real in a private network namespace while packet behaviour is checked as rule text. The screenshots on this site were taken that way.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/security.html"><span>Previous</span><strong>Security model</strong></a><a class="next" href="../docs/threat-intel.html"><span>Next</span><strong>Threat-intel blocklists</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/ipv6.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#windows">Windows</a></li>
+			<li class="lvl2"><a href="#linux">Linux</a></li>
+			<li class="lvl3"><a href="#which-family-a-rule-reaches">Which family a rule reaches</a></li>
+			<li class="lvl3"><a href="#what-ipv6-always-needs">What IPv6 always needs</a></li>
+			<li class="lvl3"><a href="#router-mode">Router mode</a></li>
+			<li class="lvl2"><a href="#what-the-app-tells-you">What the app tells you</a></li>
+			<li class="lvl2"><a href="#testing-it-without-ipv6">Testing it without IPv6</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stock Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

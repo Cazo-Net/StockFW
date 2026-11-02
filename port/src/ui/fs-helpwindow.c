@@ -860,7 +860,7 @@ callout (FsHelpKind kind, const gchar *markup)
 		break;
 	case FS_HELP_SOON:
 		klass = "help-soon";
-		heading = _("Coming in 1.0.7");
+		heading = _("Not in this build");
 		kind_icon = FS_ICON_FORWARD;
 		break;
 	default:

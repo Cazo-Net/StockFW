@@ -800,10 +800,18 @@ static const gchar *const PROTECTED[] = {
 	"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
 	"169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16",
 	"224.0.0.0/4", "240.0.0.0/4",
+	/* Special-purpose blocks real local setups use, none reachable on
+	 * the internet (design rev. 2, s3, [P7]): IETF protocol
+	 * assignments (464XLAT, DS-Lite), the 6to4 relay anycast, and
+	 * the benchmarking block that fake-IP DNS proxies hand out. */
+	"192.0.0.0/24", "192.88.99.0/24", "198.18.0.0/15",
 	/* IPv6 (::ffff:0:0/96 is the mapped block: stated as a range so
 	 * it stays IPv6 instead of folding into IPv4) */
 	"::/128", "::1/128", "::ffff:0.0.0.0-::ffff:255.255.255.255",
 	"fe80::/10", "fc00::/7", "ff00::/8",
+	/* NAT64: one listed entry here would cut all of IPv4 for an
+	 * IPv6-only network [S7.3]. */
+	"64:ff9b::/96", "64:ff9b:1::/48",
 	NULL
 };
 

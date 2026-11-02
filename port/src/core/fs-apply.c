@@ -26,6 +26,9 @@ fs_apply_error_quark (void)
  * Journal: what is actually live
  * ===================================================================== */
 
+/* The comment line naming the rule translation behind the journal. */
+#define JOURNAL_TRANSLATION_TAG "# rules translation "
+
 /* [ fs_apply_journal_path ] */
 gchar *
 fs_apply_journal_path (void)
@@ -92,6 +95,13 @@ fs_apply_journal_save (const FsPolicy *policy, GError **error)
 	path = fs_apply_journal_path ();
 	out = g_string_new ("# StockFW applied policy journal v1\n");
 
+	/* Which translation wrote the rules now live: a later version
+	 * reading this journal knows whether a delta computed from it
+	 * describes the firewall (see fs-apply.h).  A comment line, so
+	 * the row format and older readers are unchanged. */
+	g_string_append_printf (out, JOURNAL_TRANSLATION_TAG "%d\n",
+	                        FS_FWRULE_TRANSLATION);
+
 	for (gint kind = 0; kind < FS_RULE_N_KINDS; kind++) {
 		for (guint i = 0; i < policy->kinds[kind]->len; i++) {
 			const FsRule *rule =
@@ -135,19 +145,26 @@ fs_apply_journal_save (const FsPolicy *policy, GError **error)
 	return ok;
 }
 
-/* [ fs_apply_journal_load ]
+/* [ journal_load ]
  * Strict by design: policy files may skip a malformed line and carry
  * on, a rollback target may not.  One bad row and the whole journal
  * is refused -- an honest "nothing to restore" beats a half-truth
- * pushed at the firewall in an emergency. */
-gboolean
-fs_apply_journal_load (FsPolicy *policy, GError **error)
+ * pushed at the firewall in an emergency.
+ *
+ * *translation (optional) receives the rule translation the journal
+ * names, 1 when it names none: every journal written before the line
+ * existed came from translation 1. */
+static gboolean
+journal_load (FsPolicy *policy, guint *translation, GError **error)
 {
 	gchar *path;
 	gchar *contents = NULL;
 	gchar **lines;
 	GError *inner = NULL;
 	gint row = 0;
+
+	if (translation != NULL)
+		*translation = 1;
 
 	if (policy == NULL) {
 		g_set_error_literal (error, FS_APPLY_ERROR,
@@ -183,6 +200,21 @@ fs_apply_journal_load (FsPolicy *policy, GError **error)
 		gint64 kind;
 
 		row = i + 1;
+
+		if (g_str_has_prefix (line, JOURNAL_TRANSLATION_TAG)) {
+			guint64 value = 0;
+
+			/* An unreadable number counts as "not this
+			 * translation": the full apply is the safe answer. */
+			if (!g_ascii_string_to_unsigned (
+				    line + strlen (JOURNAL_TRANSLATION_TAG),
+				    10, 0, G_MAXUINT, &value, NULL))
+				value = 0;
+
+			if (translation != NULL)
+				*translation = (guint) value;
+			continue;
+		}
 
 		if (*line == '\0' || *line == '#')
 			continue;
@@ -316,6 +348,13 @@ fs_apply_settings_pending (void)
 	return pending;
 }
 
+/* [ fs_apply_journal_load ] */
+gboolean
+fs_apply_journal_load (FsPolicy *policy, GError **error)
+{
+	return journal_load (policy, NULL, error);
+}
+
 /* =====================================================================
  * Impact: what would this change, against what is live?
  * ===================================================================== */
@@ -433,15 +472,43 @@ list_has_rule (const GList *rules, const FsFwRule *needle)
 	return FALSE;
 }
 
+/* [ delete_key ]
+ * What a delete by name actually removes: netsh deletes by the netsh
+ * spelling of a name (fs_fwrule_netsh_name), which folds ':', '(',
+ * ')', '/', ',' and '"' into other characters.  So "Allow a/b
+ * (inbound)" and "Allow a-b (inbound)" are one name to netsh, and
+ * deleting either takes both.  Case is folded too, on the assumption
+ * that Windows matches rule names without regard to it.  The delta
+ * keys removals and repairs on this, never on the display name: a key
+ * that is too wide only re-creates a rule that did not need it, one
+ * that is too narrow loses a rule the journal says is live.  Caller
+ * frees. */
+static gchar *
+delete_key (const gchar *name)
+{
+	gchar *netsh = fs_fwrule_netsh_name (name);
+	gchar *key = g_ascii_strdown (netsh, -1);
+
+	g_free (netsh);
+	return key;
+}
+
 static gboolean
 name_is_removed (const GList *remove, const gchar *name)
 {
-	for (const GList *iter = remove; iter != NULL; iter = iter->next) {
-		if (g_strcmp0 (iter->data, name) == 0)
-			return TRUE;
+	gchar *key = delete_key (name);
+	gboolean removed = FALSE;
+
+	for (const GList *iter = remove; iter != NULL && !removed;
+	     iter = iter->next) {
+		gchar *other = delete_key (iter->data);
+
+		removed = (strcmp (other, key) == 0);
+		g_free (other);
 	}
 
-	return FALSE;
+	g_free (key);
+	return removed;
 }
 
 /* [ fs_policy_delta ]
@@ -456,24 +523,29 @@ fs_policy_delta (const FsPolicy *before, const FsPolicy *after)
 	GList *old_rules;
 	GList *new_rules;
 	GList *iter;
+	GPtrArray *refused = NULL;
 
 	if (after == NULL) {
 		delta->empty = TRUE;
 		return delta;
 	}
 
-	new_rules = fs_fwrule_from_policy (after);
+	new_rules = fs_fwrule_from_policy_checked (after, &refused);
+	delta->refused = refused->len;
+	g_ptr_array_unref (refused);
 
 	if (before == NULL) {
 		/* Nothing known to be live: the whole set is an add. */
 		delta->add = new_rules;
-		delta->empty = (new_rules == NULL);
+		delta->empty = (new_rules == NULL && delta->refused == 0);
 		return delta;
 	}
 
 	old_rules = fs_fwrule_from_policy (before);
 
-	/* Remove: in old, not in new -- as unique names. */
+	/* Remove: in old, not in new -- one delete per name netsh tells
+	 * apart (a second delete of the same name finds nothing and
+	 * fails). */
 	{
 		GHashTable *seen = g_hash_table_new_full (g_str_hash, g_str_equal,
 		                                          g_free, NULL);
@@ -484,7 +556,7 @@ fs_policy_delta (const FsPolicy *before, const FsPolicy *after)
 			if (list_has_rule (new_rules, rule))
 				continue;
 
-			if (g_hash_table_add (seen, g_strdup (rule->name))) {
+			if (g_hash_table_add (seen, delete_key (rule->name))) {
 				delta->remove = g_list_prepend (
 					delta->remove, g_strdup (rule->name));
 			}
@@ -513,9 +585,11 @@ fs_policy_delta (const FsPolicy *before, const FsPolicy *after)
 	g_list_free (new_rules);          /* nodes only; data handled above */
 	fs_fwrule_list_free (old_rules);  /* nodes + data                   */
 
+	/* A refused row is work nobody did: never "nothing to change". */
 	delta->empty = (delta->remove == NULL &&
 	                delta->add == NULL &&
-	                delta->repair == NULL);
+	                delta->repair == NULL &&
+	                delta->refused == 0);
 
 	return delta;
 }
@@ -603,6 +677,7 @@ apply_gate (const FsBackend *backend, FsPolicy *policy,
 	gboolean have_before;
 	gboolean settings = (settings_swap != NULL);
 	gboolean pending = FALSE;
+	guint translation = 0;
 	gchar *desc;
 	const gchar *mode = settings ? "full, settings" : "full";
 
@@ -612,7 +687,7 @@ apply_gate (const FsBackend *backend, FsPolicy *policy,
 	outcome->result = FS_APPLY_FAILED;
 
 	before = fs_policy_new ();
-	have_before = fs_apply_journal_load (before, &journal_error);
+	have_before = journal_load (before, &translation, &journal_error);
 
 	if (!settings && have_before && fs_apply_settings_pending ()) {
 		pending = TRUE;
@@ -658,8 +733,19 @@ apply_gate (const FsBackend *backend, FsPolicy *policy,
 	/* Narrow path -- including the best case of all: nothing changed,
 	 * so the firewall is not touched at all.  Never for a settings
 	 * change, nor while settings are pending: those rules are not
-	 * policy rows. */
-	if (have_before && !outcome->settings) {
+	 * policy rows.  And only when the live rules came from this
+	 * translation: after an upgrade the journal's rows are the same
+	 * but the rules on the firewall are the old translation's (1.0.6:
+	 * "allow DNS" as allow-everything), and a delta computed from the
+	 * rows would find nothing to change and leave them in force.  The
+	 * full apply clears every StockFW rule and writes the set again.
+	 * The rollback target stays the journal's rows either way. */
+	if (have_before && !outcome->settings &&
+	    translation != FS_FWRULE_TRANSLATION)
+		mode = "full (rule translation upgrade)";
+
+	if (have_before && !outcome->settings &&
+	    translation == FS_FWRULE_TRANSLATION) {
 		delta = fs_policy_delta (before, policy);
 
 		if (delta->empty) {
@@ -690,7 +776,11 @@ apply_gate (const FsBackend *backend, FsPolicy *policy,
 		}
 	}
 
-	if (delta != NULL && backend->apply_delta != NULL) {
+	/* Refused rows go the full way: the backend's whole-set apply is
+	 * what reports them (Windows: PARTIAL with the reason), while a
+	 * delta has no rule to carry them in. */
+	if (delta != NULL && delta->refused == 0 &&
+	    backend->apply_delta != NULL) {
 		outcome->narrow = TRUE;
 		mode = "narrow";
 		outcome->result = backend->apply_delta (delta->remove,
@@ -833,4 +923,321 @@ fs_apply_outcome_free (FsApplyOutcome *outcome)
 	g_free (outcome->rollback_detail);
 	g_free (outcome->notes);
 	g_free (outcome);
+}
+
+/* =====================================================================
+ * Start and stop through the gate (1.0.7)
+ * ===================================================================== */
+
+/* [ start_record_live ]
+ * A start that installed `policy' (Linux): the journal now says so,
+ * and the audit line carries the backend's notes. */
+static void
+start_record_live (const FsBackend *backend, FsApplyOutcome *outcome,
+                   const FsPolicy *policy, const gchar *source,
+                   const gchar *mode, const gchar *what,
+                   const gchar *extra)
+{
+	GError *save_error = NULL;
+	gchar *detail;
+
+	outcome->applied = TRUE;
+	if (backend->apply_notes != NULL)
+		outcome->notes = backend->apply_notes ();
+
+	if (!fs_apply_journal_save (policy, &save_error)) {
+		detail = apply_detail (source, mode, what,
+		                       "started but the journal could not be "
+		                       "saved",
+		                       save_error != NULL ? save_error->message
+		                                          : NULL);
+		fs_audit_log ("firewall started, journal NOT saved", detail);
+		g_clear_error (&save_error);
+	} else {
+		detail = apply_detail (source, mode, what, extra,
+		                       outcome->notes);
+		fs_audit_log ("firewall started", detail);
+	}
+	g_free (detail);
+}
+
+/* [ journal_minus ] -- take every rule of `lift' out of `journal' (in
+ * memory only).  Returns how many were there. */
+static guint
+journal_minus (FsPolicy *journal, const FsPolicy *lift)
+{
+	guint taken = 0;
+
+	if (lift == NULL)
+		return 0;
+
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++) {
+		GPtrArray *rules = lift->kinds[k];
+
+		for (guint i = 0; rules != NULL && i < rules->len; i++)
+			if (fs_policy_remove (journal,
+			                      g_ptr_array_index (rules, i)))
+				taken++;
+	}
+	return taken;
+}
+
+/* [ fs_firewall_start_safe ] */
+FsApplyOutcome *
+fs_firewall_start_safe (const FsBackend *backend, FsPolicy *policy,
+                        const gchar *source, const gchar *hold,
+                        GError **error)
+{
+	return fs_firewall_start_lifting (backend, policy, NULL, source, hold,
+	                                  error);
+}
+
+/* [ fs_firewall_start_lifting ] */
+FsApplyOutcome *
+fs_firewall_start_lifting (const FsBackend *backend, FsPolicy *policy,
+                           const FsPolicy *lift, const gchar *source,
+                           const gchar *hold, GError **error)
+{
+	FsApplyOutcome *outcome;
+	FsPolicy *before;
+	GError *journal_error = NULL;
+	gboolean have_before, held;
+	gchar *desc;
+
+	g_return_val_if_fail (policy != NULL, NULL);
+
+	outcome = g_new0 (FsApplyOutcome, 1);
+	outcome->result = FS_APPLY_FAILED;
+
+	before = fs_policy_new ();
+	have_before = fs_apply_journal_load (before, &journal_error);
+	/* What a start leaves off the firewall: the changes not applied
+	 * yet (journal -> file).  With no journal, the whole file. */
+	outcome->impact = fs_policy_impact (have_before ? before : NULL,
+	                                    policy);
+	desc = fs_policy_impact_describe (outcome->impact);
+	held = (hold != NULL && *hold != '\0');
+
+	if (backend == NULL || backend->available == NULL ||
+	    backend->start == NULL || !backend->available ()) {
+		gchar *detail = apply_detail (source, "refused",
+		                              "no firewall backend available",
+		                              desc, NULL);
+
+		outcome->result = FS_APPLY_NO_IPTABLES;
+		g_set_error_literal (error, FS_APPLY_ERROR,
+		                     FS_APPLY_ERR_NO_BACKEND,
+		                     "No firewall backend is available on "
+		                     "this system.");
+		fs_audit_log ("firewall start refused", detail);
+		g_free (detail);
+		goto out;
+	}
+
+	if (!backend->start_applies_policy) {
+		/* Windows profiles: enforcement is switched on, and the
+		 * rules in the firewall's own store are whatever the last
+		 * apply left there -- the journal is already right and a
+		 * hold has nothing to hold back. */
+		if (!backend->start (error)) {
+			gchar *detail = apply_detail (
+				source, "start", "FAILED",
+				(error != NULL && *error != NULL)
+				? (*error)->message : NULL, NULL);
+
+			fs_audit_log ("firewall start failed", detail);
+			g_free (detail);
+			goto out;
+		}
+		outcome->result = FS_APPLY_OK;
+		outcome->held = held;
+		outcome->hold_reason = held ? hold : NULL;
+		{
+			gchar *detail = apply_detail (
+				source, "start",
+				"enforcement switched on, rules unchanged",
+				held ? hold : NULL, NULL);
+
+			fs_audit_log ("firewall started", detail);
+			g_free (detail);
+		}
+		goto out;
+	}
+
+	/* From here the start installs a policy (Linux), and which one is
+	 * the whole question.  A start brings back what was live; it never
+	 * puts live what nobody applied -- that is `apply's job, and the
+	 * boot unit runs this unattended at every boot. */
+
+	if (!have_before &&
+	    !g_error_matches (journal_error, FS_APPLY_ERROR,
+	                      FS_APPLY_ERR_NO_JOURNAL)) {
+		/* A journal that is there but cannot be trusted: neither it
+		 * nor the file (which may hold changes nobody applied) is
+		 * safe to start.  Refused, firewall untouched. */
+		gchar *detail = apply_detail (
+			source, "refused",
+			"the applied-policy journal could not be read",
+			journal_error != NULL ? journal_error->message : NULL,
+			desc);
+
+		outcome->result = FS_APPLY_FAILED;
+		g_set_error (error, FS_APPLY_ERROR,
+		             journal_error != NULL ? journal_error->code
+		                                   : FS_APPLY_ERR_UNREADABLE,
+		             "the record of the last applied policy could "
+		             "not be read (%s), so there is no safe policy "
+		             "to start with; apply the policy to start the "
+		             "firewall",
+		             journal_error != NULL ? journal_error->message
+		                                   : "unknown error");
+		fs_audit_log ("firewall start refused", detail);
+		g_free (detail);
+		goto out;
+	}
+
+	if (have_before) {
+		/* The last policy that was really live, less the Sentinel
+		 * blocks whose time ran out (`lift') -- never the file: it
+		 * may hold changes not applied yet, held or simply never
+		 * applied. */
+		guint lifted = journal_minus (before, lift);
+		gchar *what, *pending;
+
+		outcome->held = held;
+		outcome->hold_reason = held ? hold : NULL;
+		outcome->result = backend->apply_rules != NULL
+		                ? backend->apply_rules (before, error)
+		                : FS_APPLY_FAILED;
+
+		if (outcome->result != FS_APPLY_OK &&
+		    outcome->result != FS_APPLY_PARTIAL) {
+			gchar *detail = apply_detail (
+				source, held ? "held" : "start",
+				fs_util_apply_result_to_string (
+					(int) outcome->result),
+				(error != NULL && *error != NULL)
+				? (*error)->message : NULL, desc);
+
+			fs_audit_log ("firewall start failed", detail);
+			g_free (detail);
+			goto out;
+		}
+
+		outcome->result = FS_APPLY_OK;
+		what = lifted > 0
+		     ? g_strdup_printf ("started with the last applied "
+		                        "policy, %u expired Sentinel block(s) "
+		                        "left out; changes not applied stay "
+		                        "off the firewall", lifted)
+		     : g_strdup ("started with the last applied policy; "
+		                 "changes not applied stay off the firewall");
+		pending = g_strdup_printf ("%s%snot applied: %s",
+		                           held ? hold : "", held ? "; " : "",
+		                           desc);
+		start_record_live (backend, outcome, before, source,
+		                   held ? "held" : "start", what, pending);
+		g_free (pending);
+		g_free (what);
+		goto out;
+	}
+
+	/* No journal: nothing was ever applied through the gate. */
+	if (held) {
+		gchar *detail = apply_detail (
+			source, "held", hold,
+			"no applied-policy journal to start from", desc);
+
+		outcome->held = TRUE;
+		outcome->hold_reason = hold;
+		outcome->result = FS_APPLY_DRY_RUN;
+		fs_audit_log ("firewall start held, firewall untouched",
+		              detail);
+		g_free (detail);
+		goto out;
+	}
+
+	/* Unheld with no record of anything live: this start IS the
+	 * first apply of the policy.  The caller vouches that it was
+	 * really loaded (`stockfw start' refuses a missing or malformed
+	 * policy file before it gets here). */
+	if (!backend->start (error)) {
+		gchar *detail = apply_detail (
+			source, "start", "FAILED",
+			(error != NULL && *error != NULL) ? (*error)->message
+			                                  : NULL, desc);
+
+		outcome->result = FS_APPLY_FAILED;
+		fs_audit_log ("firewall start failed", detail);
+		g_free (detail);
+		goto out;
+	}
+
+	outcome->result = FS_APPLY_OK;
+	start_record_live (backend, outcome, policy, source, "start", desc,
+	                   "nothing applied before: started the policy "
+	                   "file");
+
+out:
+	g_clear_error (&journal_error);
+	fs_policy_free (before);
+	g_free (desc);
+
+	return outcome;
+}
+
+/* [ fs_firewall_lift_live ] */
+FsApplyOutcome *
+fs_firewall_lift_live (const FsBackend *backend, const FsPolicy *lift,
+                       const gchar *source, const gchar *hold,
+                       GError **error)
+{
+	FsPolicy *live;
+	FsApplyOutcome *outcome = NULL;
+
+	if (lift == NULL)
+		return NULL;
+
+	/* Nothing on record as live: nothing to take off. */
+	live = fs_policy_new ();
+	if (fs_apply_journal_load (live, NULL) &&
+	    journal_minus (live, lift) > 0)
+		outcome = fs_policy_apply_safe (backend, live, source, hold,
+		                                error);
+
+	fs_policy_free (live);
+	return outcome;
+}
+
+/* [ fs_firewall_stop_logged ] */
+gboolean
+fs_firewall_stop_logged (const FsBackend *backend, const gchar *source,
+                         GError **error)
+{
+	gboolean ok;
+	gchar *detail;
+
+	if (backend == NULL || backend->available == NULL ||
+	    backend->stop == NULL || !backend->available ()) {
+		g_set_error_literal (error, FS_APPLY_ERROR,
+		                     FS_APPLY_ERR_NO_BACKEND,
+		                     "No firewall backend is available on "
+		                     "this system.");
+		detail = apply_detail (source, "refused",
+		                       "no firewall backend available", NULL,
+		                       NULL);
+		fs_audit_log ("firewall stop refused", detail);
+		g_free (detail);
+		return FALSE;
+	}
+
+	ok = backend->stop (error);
+	detail = apply_detail (source, "stop", ok ? "stopped" : "FAILED",
+	                       (!ok && error != NULL && *error != NULL)
+	                       ? (*error)->message : NULL, NULL);
+	fs_audit_log (ok ? "firewall stopped" : "firewall stop failed",
+	              detail);
+	g_free (detail);
+
+	return ok;
 }

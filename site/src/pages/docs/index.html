@@ -1,0 +1,44 @@
+---
+title: Documentation
+nav: Welcome
+section: Get started
+order: 1
+description: What StockFW is, how its four parts fit together, and how to read these pages.
+---
+<h1>StockFW documentation</h1>
+<p class="lede">StockFW is a desktop firewall manager for Windows and Linux. It does not filter packets itself. It configures the firewall engine your operating system already has, shows you every connection that engine allowed or blocked, keeps your policy as plain text, and lets you try a change before you make it.</p>
+
+<h2>Start here</h2>
+<ul>
+<li><a href="{{root}}docs/install-windows.html">Install on Windows</a>: the installer, the elevated shortcut, and enabling monitoring.</li>
+<li><a href="{{root}}docs/install-linux.html">Install on Linux</a>: the tarball, <code>sudo</code> and its search path, and the command line.</li>
+<li><a href="{{root}}docs/first-steps.html">Your first ten minutes</a>: check protection, watch events, add a rule, apply it, ask the simulator a question.</li>
+</ul>
+
+<h2>How StockFW is put together</h2>
+<p>Four parts, and knowing them makes every page of the app predictable.</p>
+<dl>
+<dt>The engine</dt>
+<dd>Your operating system’s firewall: the Windows Filtering Platform behind Windows Defender Firewall, or netfilter behind <code>iptables</code> on Linux. StockFW adds and removes rules in it through supported tools and never replaces it. If StockFW is closed or crashes, the engine keeps enforcing whatever was last applied.</dd>
+<dt>The policy</dt>
+<dd>What you want the engine to do, stored as one small comma-separated file per rule kind in your profile. The Policy page, the Copilot and the command line all edit the same files. Saving a rule does not change the firewall; <strong>Apply</strong> does.</dd>
+<dt>The events</dt>
+<dd>What the engine decided, read from the log it already writes: Security events 5156 and 5157 on Windows, the kernel ring buffer on Linux. StockFW never sees packets, only verdicts, and it shows them as they are.</dd>
+<dt>The gate</dt>
+<dd>Every path that could change the firewall, the Apply button, an event’s right-click menu, a Copilot suggestion, Sentinel’s auto-block, <code>stockfw apply</code>, goes through one function. It measures the change against what is live, records what it applied, rolls back if the engine refuses, and writes one audit line. There is no second door.</dd>
+</dl>
+
+<h2>How to read these pages</h2>
+<p>Claims about behaviour carry a stamp. A stamp is a promise about evidence, not decoration:</p>
+<ul>
+<li>[[verified:test name]] An automated test in the repository proves it. The name is the test, so you can run it: most live in <code>port/tests/</code> and in <code>tests/test-core.sh</code>.</li>
+<li>[[measured:a number]] A number from an experiment that was run, such as the 150-second memory soak.</li>
+<li>[[gap]] A limit StockFW has, written down so it is not mistaken for a feature.</li>
+</ul>
+<p>Where the two platforms differ, a badge says which one a sentence is about: [[win]] [[linux]]. Everything without a badge applies to both.</p>
+
+<h2>Version</h2>
+<p>These pages describe StockFW {{version}}, the release on the <a href="{{root}}download.html">download page</a>. What changed in earlier versions is in the <a href="{{root}}changelog.html">changelog</a>.</p>
+
+<h2>The longer document</h2>
+<p>These pages explain how to use StockFW. The reasoning behind it, the threat model with file-and-line evidence, every defect found and how it was fixed, and the measurements, are in <a href="{{repo}}/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">the architecture and security document</a> in the repository, one chapter per release. When these pages and that document disagree, the document is right and this site has a bug; please <a href="{{repo}}/issues">report it</a>.</p>

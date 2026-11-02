@@ -3,6 +3,9 @@
  *--------------------------------------------------------------------*/
 #include "cli/fs-cli.h"
 #include "core/fs-apply.h"
+#include "core/fs-audit.h"
+#include "core/fs-autoblock.h"
+#include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
 #include "core/fs-service.h"
 #include "core/fs-json.h"
@@ -987,7 +990,8 @@ start_or_stop (gint argc, gboolean start)
 	FsPolicy *policy;
 	FsSettings *settings;
 	GError *error = NULL;
-	gboolean ok;
+	gboolean ok, on_disk = FALSE;
+	gint malformed = 0;
 	gchar *notes;
 
 	if (argc > 1) {
@@ -998,13 +1002,101 @@ start_or_stop (gint argc, gboolean start)
 	if (geteuid () != 0)
 		return need_root (start ? "start" : "stop");
 
-	policy = fs_cli_load_policy (NULL, NULL);
+	/* Load first, always: the backend starts from the policy it was
+	 * handed, and an unloaded one is an empty one. */
+	policy = fs_cli_load_policy (&on_disk, &malformed);
 	settings = backend_context (policy);
 
-	ok = start ? fs_backend ()->start (&error) : fs_backend ()->stop (&error);
-	notes = (ok && start && fs_backend ()->apply_notes != NULL)
-	        ? fs_backend ()->apply_notes () : NULL;
+	if (start) {
+		FsApplyOutcome *outcome;
+		FsPolicy *lift = fs_policy_new ();
+		gchar *mode = fs_prefs_get_string (FS_PREFS_SENTINEL_MODE,
+		                                   "auto");
+		gchar *journal = fs_apply_journal_path ();
+		gboolean have_journal = g_file_test (journal,
+		                                     G_FILE_TEST_EXISTS);
 
+		g_free (journal);
+
+		/* Sentinel's blocks whose ten minutes ran out while nothing
+		 * was running to lift them (a reboot) come out of the file,
+		 * and the start leaves every one of them out of what it
+		 * installs. */
+		fs_autoblock_expire (policy, g_get_real_time () / G_USEC_PER_SEC,
+		                     g_strcmp0 (mode, "auto") != 0, lift);
+		g_free (mode);
+
+		if (fs_backend ()->start_applies_policy && !have_journal &&
+		    (!on_disk || malformed > 0)) {
+			/* Nothing was ever applied, so this start would be the
+			 * first apply of the file: refused when there is no
+			 * file or a line of it could not be read, rather than
+			 * starting a policy that is empty or missing rules. */
+			fs_audit_log ("firewall start refused",
+			              !on_disk
+			              ? "cli | refused | no policy saved and none "
+			                "applied before"
+			              : "cli | refused | malformed lines in the "
+			                "saved policy and none applied before");
+			if (!on_disk)
+				g_set_error (&error, FS_APPLY_ERROR, 0,
+				             "no policy saved in %s and none applied "
+				             "before, so there is nothing to start",
+				             fs_util_rules_dir ());
+			else
+				g_set_error (&error, FS_APPLY_ERROR, 0,
+				             "%d line(s) of the policy in %s could not "
+				             "be read and no policy was applied before; "
+				             "fix them, then run `stockfw apply'",
+				             malformed, fs_util_rules_dir ());
+			ok = FALSE;
+			notes = NULL;
+			fs_policy_free (lift);
+			goto report;
+		}
+
+		/* Through the start gate: the last APPLIED policy is what
+		 * starts (changes saved but not applied stay off, held or
+		 * not), audit-only mode is honoured, and the start is on the
+		 * audit record. */
+		outcome = fs_firewall_start_lifting (fs_backend (), policy, lift,
+		                                     "cli",
+		                                     fs_apply_hold_reason (),
+		                                     &error);
+		fs_policy_free (lift);
+		ok = (outcome->result == FS_APPLY_OK);
+		if (outcome->result == FS_APPLY_DRY_RUN && error == NULL)
+			g_set_error (&error, FS_APPLY_ERROR, 0,
+			             "held (%s) and no policy was ever applied, "
+			             "so there is nothing safe to start with",
+			             outcome->hold_reason);
+		else if (!ok && error == NULL)
+			g_set_error_literal (&error, FS_APPLY_ERROR, 0,
+				fs_util_apply_result_to_string (
+					(int) outcome->result));
+		notes = ok ? g_strdup (outcome->notes) : NULL;
+		if (ok && outcome->held && !fs_cli.json && !fs_cli.quiet)
+			printf ("%sHeld:%s %s.  Started with the last applied "
+			        "policy; later changes stay held.\n",
+			        fs_cli_amber (), fs_cli_reset (),
+			        outcome->hold_reason);
+		else if (ok && have_journal &&
+		         fs_backend ()->start_applies_policy &&
+		         (outcome->impact->added > 0 ||
+		          outcome->impact->removed > 0) &&
+		         !fs_cli.json && !fs_cli.quiet)
+			printf ("%sNot applied:%s the saved policy has changes "
+			        "that are not live.  Started with the last "
+			        "applied policy; `stockfw apply --dry-run' lists "
+			        "them, `stockfw apply' puts them live.\n",
+			        fs_cli_amber (), fs_cli_reset ());
+		fs_apply_outcome_free (outcome);
+	} else {
+		ok = fs_firewall_stop_logged (fs_backend (), "cli", &error);
+		notes = NULL;
+	}
+
+report:
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{");
 
@@ -1039,17 +1131,294 @@ gint fs_cli_cmd_stop  (gint argc, gchar **argv) { return start_or_stop (argc, FA
 
 /* ------------------------------------------------------------ simulate */
 
+/* [ fs_cli_whatif ] */
+FsWhatIfResult *
+fs_cli_whatif (const gchar *line, gboolean assume_running)
+{
+	FsPolicy *policy = fs_cli_load_policy (NULL, NULL);
+	FsSettings *settings = fs_settings_new ();
+	FsWhatIfContext *ctx;
+	FsWhatIfResult *result;
+
+	fs_settings_load_prefs (settings);
+	ctx = fs_whatif_context_new (fs_whatif_native_platform (), policy,
+	                             settings);
+
+	/* Reading netfilter needs CAP_NET_ADMIN: without it every chain
+	 * reads as missing, and "stopped" would turn into "allowed". */
+	fs_copilot_whatif_observe (ctx, fs_backend (), geteuid () == 0);
+	if (assume_running)
+		ctx->firewall = FS_WHATIF_FW_RUNNING;
+	fs_copilot_whatif_live (ctx, policy, fs_apply_hold_reason ());
+
+	result = fs_whatif_simulate_text (ctx, line);
+
+	fs_whatif_context_free (ctx);
+	fs_settings_free (settings);
+	fs_policy_free (policy);
+	return result;
+}
+
+static const gchar *
+whatif_origin_word (FsWhatIfOrigin origin)
+{
+	switch (origin) {
+	case FS_WHATIF_ORIGIN_DEFAULT:  return "default";
+	case FS_WHATIF_ORIGIN_POLICY:   return "policy";
+	case FS_WHATIF_ORIGIN_SENTINEL: return "sentinel";
+	case FS_WHATIF_ORIGIN_SETTINGS: return "settings";
+	case FS_WHATIF_ORIGIN_BUILTIN:  return "builtin";
+	case FS_WHATIF_ORIGIN_STOPPED:  return "stopped";
+	default:                        return "unknown";
+	}
+}
+
+static const gchar *
+whatif_action_word (FsWhatIfActionKind kind)
+{
+	switch (kind) {
+	case FS_WHATIF_ACT_CREATE_ALLOW:       return "create-allow";
+	case FS_WHATIF_ACT_CREATE_BLOCK:       return "create-block";
+	case FS_WHATIF_ACT_OPEN_RULE:          return "open-rule";
+	case FS_WHATIF_ACT_LIFT_SENTINEL:      return "lift-sentinel";
+	case FS_WHATIF_ACT_OPEN_ICMP_SETTINGS: return "open-icmp-settings";
+	case FS_WHATIF_ACT_OPEN_SETTINGS:      return "open-settings";
+	case FS_WHATIF_ACT_START_FIREWALL:     return "start-firewall";
+	case FS_WHATIF_ACT_APPLY_POLICY:       return "apply-policy";
+	default:                               return "unknown";
+	}
+}
+
+static void
+json_kv_int (GString *out, const gchar *key, gint value)
+{
+	if (value < 0) {
+		fs_json_kv_str (out, key, NULL);
+		return;
+	}
+	fs_json_kv_uint (out, key, (guint64) value);
+}
+
+/* The answer the flat fields describe: the only one, or the first
+ * whose verdict is the overall one. */
+static const FsWhatIfAnswer *
+whatif_main_answer (const FsWhatIfResult *r)
+{
+	if (r->answers->len == 0)
+		return NULL;
+	if (r->answers->len == 1)
+		return g_ptr_array_index (r->answers, 0);
+
+	for (guint i = 0; i < r->answers->len; i++) {
+		const FsWhatIfAnswer *a = g_ptr_array_index (r->answers, i);
+
+		if (a->verdict == r->verdict)
+			return a;
+	}
+	return NULL;
+}
+
+/* [ fs_cli_whatif_json ] */
+void
+fs_cli_whatif_json (GString *out, const FsWhatIfResult *r,
+                    const gchar *input)
+{
+	const FsWhatIfQuery *q = r->query;
+	const FsWhatIfAnswer *main_a = whatif_main_answer (r);
+	const FsWhatIfAction *primary = fs_whatif_result_primary_action (r);
+	const FsWhatIfAction *suggest = primary;
+
+	if (suggest == NULL) {
+		for (guint i = 0; i < r->answers->len && suggest == NULL; i++) {
+			const FsWhatIfAnswer *a = g_ptr_array_index (r->answers, i);
+
+			if (a->actions->len > 0)
+				suggest = g_ptr_array_index (a->actions, 0);
+		}
+	}
+
+	g_string_append_c (out, '{');
+	fs_json_kv_str (out, "input", input);              g_string_append_c (out, ',');
+	fs_json_kv_str (out, "verdict", fs_whatif_verdict_name (r->verdict));
+	g_string_append_c (out, ',');
+
+	if (r->verdict == FS_WHATIF_ERROR || q == NULL) {
+		fs_json_kv_str (out, "error", r->error);
+		g_string_append_c (out, '}');
+		return;
+	}
+
+	fs_json_kv_str (out, "summary", r->summary);        g_string_append_c (out, ',');
+	fs_json_kv_str (out, "scenario", r->answers->len == 1 && main_a != NULL
+	                                 ? main_a->probe : q->text);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "direction",
+	                q->direction == FS_WHATIF_DIR_INBOUND ? "inbound"
+	                : q->direction == FS_WHATIF_DIR_OUTBOUND ? "outbound"
+	                                                        : "both");
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "protocol",
+	                q->protocol == FS_WHATIF_PROTO_TCP ? "TCP"
+	                : q->protocol == FS_WHATIF_PROTO_UDP ? "UDP"
+	                : q->protocol == FS_WHATIF_PROTO_ICMP ? "ICMP" : NULL);
+	g_string_append_c (out, ',');
+	if (q->port > 0)
+		fs_json_kv_uint (out, "port", q->port);
+	else
+		fs_json_kv_str (out, "port", NULL);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "remote", q->host);            g_string_append_c (out, ',');
+	fs_json_kv_str (out, "rule", main_a != NULL ? main_a->rule : NULL);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "reason", r->answers->len == 1 && main_a != NULL
+	                               ? main_a->reason : r->summary);
+	g_string_append_c (out, ',');
+	if (suggest != NULL) {
+		gchar *s = g_strdup_printf ("%s: %s", suggest->label,
+		                            suggest->explanation != NULL
+		                            ? suggest->explanation : "");
+
+		fs_json_kv_str (out, "suggestion", s);
+		g_free (s);
+	} else {
+		fs_json_kv_str (out, "suggestion", NULL);
+	}
+	g_string_append_c (out, ',');
+
+	/* What the line was read as. */
+	g_string_append_printf (out, "\"confidence\":%.2f,", q->confidence);
+	g_string_append (out, "\"read_as\":[");
+	for (guint i = 0; i < q->pieces->len; i++) {
+		const FsWhatIfPiece *p = g_ptr_array_index (q->pieces, i);
+
+		if (i > 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "text", p->text);       g_string_append_c (out, ',');
+		fs_json_kv_str (out, "meaning", p->meaning);
+		g_string_append_c (out, '}');
+	}
+	g_string_append (out, "],");
+
+	/* Each direction in full: trace, cases, actions. */
+	g_string_append (out, "\"answers\":[");
+	for (guint i = 0; i < r->answers->len; i++) {
+		const FsWhatIfAnswer *a = g_ptr_array_index (r->answers, i);
+
+		if (i > 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "direction", a->inbound ? "inbound" : "outbound");
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "verdict", fs_whatif_verdict_name (a->verdict));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "probe", a->probe);      g_string_append_c (out, ',');
+		fs_json_kv_str (out, "reason", a->reason);    g_string_append_c (out, ',');
+		fs_json_kv_str (out, "rule", a->rule);        g_string_append_c (out, ',');
+		fs_json_kv_str (out, "origin", whatif_origin_word (a->origin));
+		g_string_append_c (out, ',');
+		json_kv_int (out, "policy_kind", a->policy_kind);
+		g_string_append_c (out, ',');
+		json_kv_int (out, "policy_row", a->policy_index);
+		g_string_append (out, ",\"cases\":[");
+		for (guint k = 0; k < a->cases->len; k++) {
+			const FsWhatIfCase *c = g_ptr_array_index (a->cases, k);
+
+			if (k > 0)
+				g_string_append_c (out, ',');
+			g_string_append_c (out, '{');
+			fs_json_kv_str (out, "verdict", fs_whatif_verdict_name (c->verdict));
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "condition", c->condition);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "rule", c->rule);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "origin", whatif_origin_word (c->origin));
+			g_string_append_c (out, '}');
+		}
+		g_string_append (out, "],\"trace\":[");
+		for (guint k = 0; k < a->steps->len; k++) {
+			const FsWhatIfStep *st = g_ptr_array_index (a->steps, k);
+
+			if (k > 0)
+				g_string_append_c (out, ',');
+			g_string_append_c (out, '{');
+			fs_json_kv_str (out, "step",
+			                st->kind == FS_WHATIF_STEP_MATCHED ? "matched"
+			                : st->kind == FS_WHATIF_STEP_NOTE ? "note"
+			                                                   : "skipped");
+			g_string_append_c (out, ',');
+			fs_json_kv_bool (out, "decides", (gint) k == a->decided_by);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "rule", st->rule);  g_string_append_c (out, ',');
+			fs_json_kv_str (out, "origin", whatif_origin_word (st->origin));
+			g_string_append_c (out, ',');
+			json_kv_int (out, "policy_kind", st->policy_kind);
+			g_string_append_c (out, ',');
+			json_kv_int (out, "policy_row", st->policy_index);
+			g_string_append_c (out, ',');
+			fs_json_kv_bool (out, "allows", st->allows);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "detail", st->detail);
+			g_string_append_c (out, '}');
+		}
+		g_string_append (out, "],\"actions\":[");
+		for (guint k = 0; k < a->actions->len; k++) {
+			const FsWhatIfAction *act = g_ptr_array_index (a->actions, k);
+			gchar *csv = act->row != NULL ? fs_rule_to_csv (act->row) : NULL;
+
+			if (k > 0)
+				g_string_append_c (out, ',');
+			g_string_append_c (out, '{');
+			fs_json_kv_str (out, "kind", whatif_action_word (act->kind));
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "label", act->label);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "explanation", act->explanation);
+			g_string_append_c (out, ',');
+			fs_json_kv_bool (out, "verified", act->verified);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "gives", fs_whatif_verdict_name (act->gives));
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "row_kind", act->row != NULL
+			                ? fs_cli_kind_name (act->row->kind) : NULL);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "row", csv);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "target", act->target);
+			g_string_append_c (out, '}');
+			g_free (csv);
+		}
+		g_string_append (out, "]}");
+	}
+	g_string_append (out, "],\"notes\":[");
+	for (guint i = 0; i < r->notes->len; i++) {
+		if (i > 0)
+			g_string_append_c (out, ',');
+		fs_json_string (out, g_ptr_array_index (r->notes, i));
+	}
+	g_string_append (out, "]}");
+}
+
 gint
 fs_cli_cmd_simulate (gint argc, gchar **argv)
 {
-	FsPolicy *policy;
-	FsCopilot *copilot;
-	FsScenario *scenario = NULL;
-	FsSimulationResult *result;
+	FsWhatIfResult *result;
+	GPtrArray *words = g_ptr_array_new ();
+	gboolean assume_running = FALSE;
 	gchar *line;
 	gint status;
 
-	if (argc < 2) {
+	for (gint i = 1; i < argc; i++) {
+		if (strcmp (argv[i], "--assume-running") == 0)
+			assume_running = TRUE;
+		else
+			g_ptr_array_add (words, argv[i]);
+	}
+	g_ptr_array_add (words, NULL);
+
+	if (words->len < 2) {
+		g_ptr_array_free (words, TRUE);
 		fs_cli_error ("simulate needs a description of the traffic");
 		fs_cli_hint ("stockfw simulate \"allow ssh from 192.168.1.50 on "
 		             "port 22\"");
@@ -1057,83 +1426,48 @@ fs_cli_cmd_simulate (gint argc, gchar **argv)
 	}
 
 	/* Unquoted words are one line, as the user would have typed it. */
-	line = g_strjoinv (" ", argv + 1);
+	line = g_strjoinv (" ", (gchar **) words->pdata);
+	g_ptr_array_free (words, TRUE);
 
-	policy = fs_cli_load_policy (NULL, NULL);
-	copilot = fs_copilot_new ();
-	fs_copilot_set_policy (copilot, policy);
+	result = fs_cli_whatif (line, assume_running);
 
-	result = fs_copilot_simulate_text (copilot, line, &scenario);
-
-	if (result == NULL) {
-		fs_cli_error ("nothing to simulate");
-		g_free (line);
-		fs_copilot_free (copilot);
-		fs_policy_free (policy);
-		return FS_EXIT_USAGE;
+	switch (result->verdict) {
+	case FS_WHATIF_ALLOWED: status = FS_EXIT_OK;      break;
+	case FS_WHATIF_BLOCKED: status = FS_EXIT_BLOCKED; break;
+	case FS_WHATIF_DEPENDS: status = FS_EXIT_DEPENDS; break;
+	case FS_WHATIF_ERROR:
+	default:                status = FS_EXIT_USAGE;   break;
 	}
-
-	status = result->would_block ? FS_EXIT_BLOCKED : FS_EXIT_OK;
 
 	if (fs_cli.json) {
-		GString *out = g_string_new ("{");
-		gchar *suggest = result->would_block
-		                 ? fs_copilot_allow_suggestion (scenario) : NULL;
+		GString *out = g_string_new (NULL);
 
-		fs_json_kv_str (out, "input", line);                     g_string_append_c (out, ',');
-		fs_json_kv_str (out, "verdict", result->would_block ? "BLOCKED" : "ALLOWED");
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "scenario", result->scenario);     g_string_append_c (out, ',');
-		fs_json_kv_str (out, "direction", scenario->inbound ? "inbound" : "outbound");
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "protocol", scenario->protocol);   g_string_append_c (out, ',');
-		fs_json_kv_uint (out, "port", scenario->port);          g_string_append_c (out, ',');
-		fs_json_kv_str (out, "remote", scenario->remote_ip);    g_string_append_c (out, ',');
-		fs_json_kv_str (out, "rule", result->matching_rule);    g_string_append_c (out, ',');
-		fs_json_kv_str (out, "reason", result->reason);         g_string_append_c (out, ',');
-		fs_json_kv_str (out, "suggestion", suggest);
-		g_string_append_c (out, '}');
+		fs_cli_whatif_json (out, result, line);
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
-		g_free (suggest);
+	} else if (result->verdict == FS_WHATIF_ERROR) {
+		fs_cli_error ("%s", result->error);
+		fs_cli_hint ("stockfw simulate \"allow ssh from 192.168.1.50 on "
+		             "port 22\"");
 	} else {
-		printf ("%s%s%s  %s\n",
-		        result->would_block ? fs_cli_red () : fs_cli_green (),
-		        result->would_block ? "BLOCKED" : "ALLOWED",
-		        fs_cli_reset (), result->scenario ? result->scenario : line);
+		gchar *text = fs_whatif_result_describe (result);
+		gchar *rest = strchr (text, '\n');
+		const gchar *colour =
+			result->verdict == FS_WHATIF_ALLOWED ? fs_cli_green ()
+			: result->verdict == FS_WHATIF_BLOCKED ? fs_cli_red ()
+			                                       : fs_cli_amber ();
 
-		printf ("  %-10s %s %s", "Packet",
-		        scenario->inbound ? "inbound" : "outbound",
-		        scenario->protocol ? scenario->protocol : "TCP");
-		if (scenario->had_port)
-			printf (" port %u", scenario->port);
-		if (scenario->remote_ip != NULL)
-			printf (" %s %s", scenario->inbound ? "from" : "to",
-			        scenario->remote_ip);
-		printf ("\n");
-
-		if (result->matching_rule != NULL && *result->matching_rule)
-			printf ("  %-10s %s\n", "Rule", result->matching_rule);
-		if (result->reason != NULL && *result->reason)
-			printf ("  %-10s %s\n", "Why", result->reason);
-
-		if (result->would_block) {
-			gchar *suggest = fs_copilot_allow_suggestion (scenario);
-
-			if (suggest != NULL)
-				printf ("  %-10s %s%s%s\n", "To allow", fs_cli_dim (),
-				        suggest, fs_cli_reset ());
-			g_free (suggest);
-		}
-
+		/* The summary names the verdict; it gets the colour. */
+		if (rest != NULL)
+			*rest++ = '\0';
+		printf ("%s%s%s\n%s", colour, text, fs_cli_reset (),
+		        rest != NULL ? rest : "");
 		printf ("%sA simulation only: nothing was written.%s\n",
 		        fs_cli_dim (), fs_cli_reset ());
+		g_free (text);
 	}
 
-	fs_simulation_result_free (result);
-	fs_scenario_free (scenario);
-	fs_copilot_free (copilot);
-	fs_policy_free (policy);
+	fs_whatif_result_free (result);
 	g_free (line);
 
 	return status;

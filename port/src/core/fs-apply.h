@@ -75,13 +75,21 @@ FsPolicyImpact *fs_policy_impact_preview (const FsPolicy *after);
  *             (deleting by name would take them too; the backend
  *             re-creates them right after the delete).
  * empty means there is nothing to do at all.  before == NULL means
- * the whole set is an add. */
+ * the whole set is an add.
+ *
+ * refused counts the rows of `after' the translation refused
+ * (fs_fwrule_expand_checked: a port that does not parse).  They have
+ * no rule in any list, so a delta that carried on without them would
+ * report success for a row it dropped; a delta with refusals is never
+ * empty, and the gate takes the full apply, whose verdict reports
+ * them. */
 typedef struct
 {
 	GList   *remove;   /* gchar*, owned by the delta    */
 	GList   *add;      /* FsFwRule*, owned              */
 	GList   *repair;   /* FsFwRule*, owned              */
 	gboolean empty;
+	guint    refused;
 } FsPolicyDelta;
 
 FsPolicyDelta *fs_policy_delta      (const FsPolicy *before,
@@ -122,6 +130,75 @@ FsApplyOutcome *fs_policy_apply_safe (const FsBackend *backend,
                                       GError **error);
 void fs_apply_outcome_free (FsApplyOutcome *outcome);
 
+/* Start the firewall through the gate (1.0.7).  Every start -- the
+ * app's "start on program startup", the Start/Resume buttons, `stockfw
+ * start' at boot -- comes through here, so a start is held, refused
+ * and audited exactly like an apply.  A start brings back what was
+ * live; it never puts live a change nobody applied:
+ *
+ *   - no backend available: refused (FS_APPLY_NO_IPTABLES), nothing
+ *     touched;
+ *   - a backend whose start only switches enforcement on (Windows
+ *     profiles): started, held or not -- the rules in the firewall's
+ *     own store do not change, so there is nothing to hold back and
+ *     the journal is already right;
+ *   - a backend whose start installs a policy (start_applies_policy,
+ *     Linux) installs the JOURNAL -- the last policy that was really
+ *     live -- less the rules in `lift' (Sentinel blocks whose ten
+ *     minutes ran out), held or not.  The policy file may carry
+ *     changes not applied yet (held by audit-only mode or the Policy
+ *     Lock, or simply never applied); those stay off the firewall, and
+ *     the audit line says what they are;
+ *   - such a backend with a journal that exists but cannot be read:
+ *     refused (FS_APPLY_FAILED), firewall untouched -- neither the
+ *     journal nor the file is known to be safe;
+ *   - such a backend with no journal at all (nothing ever applied):
+ *     held -> FS_APPLY_DRY_RUN, firewall untouched; unheld ->
+ *     backend->start(), which installs `policy' (the first apply), and
+ *     the journal records it.  The caller must have checked that the
+ *     policy really loaded (`stockfw start' refuses a missing or
+ *     malformed policy file first).
+ *
+ * `policy' must be the policy already handed to the backend with
+ * fs_backend_set_context(), loaded from disk: the caller loads first,
+ * this never does.  `lift' may be NULL.  Returns a caller-owned
+ * outcome (result FS_APPLY_OK means the firewall is now running);
+ * NULL only if policy was NULL. */
+FsApplyOutcome *fs_firewall_start_lifting (const FsBackend *backend,
+                                           FsPolicy *policy,
+                                           const FsPolicy *lift,
+                                           const gchar *source,
+                                           const gchar *hold,
+                                           GError **error);
+
+/* fs_firewall_start_lifting() with nothing to lift. */
+FsApplyOutcome *fs_firewall_start_safe (const FsBackend *backend,
+                                        FsPolicy *policy,
+                                        const gchar *source,
+                                        const gchar *hold,
+                                        GError **error);
+
+/* Take the rules in `lift' (Sentinel blocks whose time ran out) off
+ * the firewall and nothing else: the journal -- what is live -- less
+ * those rules goes through fs_policy_apply_safe(), so the only change
+ * the firewall sees is their removal.  The policy FILE is never
+ * applied here: it may hold changes nobody applied.  NULL (nothing
+ * touched, nothing audited) when there is no journal or none of the
+ * rules is in it; otherwise the apply's outcome, caller-owned. */
+FsApplyOutcome *fs_firewall_lift_live (const FsBackend *backend,
+                                       const FsPolicy *lift,
+                                       const gchar *source,
+                                       const gchar *hold,
+                                       GError **error);
+
+/* Stop the firewall, on the record.  Never held: a hold keeps policy
+ * CHANGES off the firewall, while stopping is the user's own way out
+ * of a ruleset that broke something, and must always work.  The audit
+ * line says who stopped it and whether it worked. */
+gboolean fs_firewall_stop_logged (const FsBackend *backend,
+                                  const gchar *source,
+                                  GError **error);
+
 /* The same gate for a change of firewall settings (Preferences: ICMP,
  * rejection method, devices ...).  The caller has already put the new
  * settings in the backend's context.  Differences from the policy
@@ -161,7 +238,15 @@ void         fs_apply_set_audit_only (gboolean on);
  * on the firewall successfully.  One CSV of <kind>,<rule-csv> rows in
  * the shared dialect.  $STOCKFW_APPLIED_FILE overrides the location
  * (tests point it somewhere disposable), otherwise applied.csv in the
- * rules directory. */
+ * rules directory.
+ *
+ * The journal also records which rule translation wrote the live
+ * rules (FS_FWRULE_TRANSLATION, a "# rules translation N" line; a
+ * journal without one is translation 1).  fs_policy_apply_safe uses
+ * the narrow path only when that matches the running code: rules
+ * written by an older translation are not what this code would
+ * compute from the journal, so a delta against them would leave them
+ * in place, and the gate replaces the whole set instead. */
 gchar    *fs_apply_journal_path   (void);
 gboolean  fs_apply_journal_save   (const FsPolicy *policy, GError **error);
 /* FALSE with FS_APPLY_ERR_NO_JOURNAL when there is simply no journal

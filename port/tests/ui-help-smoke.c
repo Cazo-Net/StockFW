@@ -12,6 +12,11 @@
  *       does is said: what is logged on Linux, the Windows broadcast
  *       and reserved-address blocks, when an expired Sentinel block
  *       leaves the firewall, rule names, what the licence is
+ *   H8  1.0.7 as merged: only threat intel (and country/ASN blocking)
+ *       carries a "Not in this build" callout; What-If, the tray menu
+ *       and its Help item, start at sign-in, one copy per user, the
+ *       hidden start and the Linux boot service are described in the
+ *       present tense, as the code does them
  *   H3  search filters the topic list (and says when nothing matches);
  *       Enter opens the first topic found
  *   H4  links, related chips, Next, Back and Forward navigate
@@ -491,12 +496,13 @@ check_claims (void)
 		  "ACC-3: on Windows the reserved block outranks your allows "
 		  "on public networks" },
 		{ "whatif", "<b>Block outgoing unless allowed</b>, or at rules",
-		  "the ICMP and Protection settings",
-		  "ACC-3: What-If says it ignores the Protection settings" },
+		  "the broadcast and reserved-address blocks",
+		  "ACC-3 (1.0.7 What-If): the answer takes the Protection "
+		  "settings into account" },
 		{ "background", "starts again and lifts it",
-		  "until the policy is next applied",
-		  "ACC-4: an expired Sentinel block stays until the next "
-		  "apply" },
+		  "a block whose ten minutes ran out meanwhile is taken off",
+		  "ACC-4 (1.0.7): an expired Sentinel block is taken off when "
+		  "StockFW starts again with the rights to" },
 		{ "windows", "<tt>StockFW-</tt> followed", "names start with",
 		  "ACC-6: rule names start with StockFW" },
 		{ "threat-intel", "Windows, and blocking by country",
@@ -527,6 +533,107 @@ check_claims (void)
 		g_string_free (squeezed, TRUE);
 		g_free (flat);
 		g_free (text);
+	}
+}
+
+/* H8: the features PR #14 and #17 brought into this build are
+ * described as present, in the words the code uses; only what is not
+ * in it carries the "Not in this build" callout. */
+static void
+check_merged_107 (void)
+{
+	static const struct
+	{
+		const gchar *id, *gone, *said, *what;
+	} claims[] = {
+		{ "whatif", "A line with no direction is read as outbound",
+		  "<b>DEPENDS</b>",
+		  "What-If answers DEPENDS and asks both ways when the line "
+		  "names no direction" },
+		{ "whatif", "It does not look at whether the firewall is running",
+		  "whether the firewall is running",
+		  "What-If takes the firewall's state into account" },
+		{ "whatif", "Create This Rule", "<b>Create allow rule</b>",
+		  "What-If's fixes carry the window's button names" },
+		{ "background", "<b>Open StockFW</b>, <b>About StockFW</b> and "
+		  "<b>Quit StockFW</b>", "<b>Quit (firewall stays on)</b>",
+		  "the tray menu is described as it is" },
+		{ "background", "Coming in", "<b>Help</b> (which opens this "
+		  "topic)", "the tray menu's Help item opens this topic" },
+		{ "background", "Coming in", "brings the running window forward",
+		  "one StockFW per user" },
+		{ "background", "Coming in", "<tt>StockFW --background</tt>",
+		  "the hidden start" },
+		{ "sentinel", "coming in 1.0.7",
+		  "<b>Pause Sentinel auto-block for 1 hour</b>",
+		  "pausing Sentinel from the tray" },
+		{ "prefs-general", "Starting StockFW at sign-in is coming",
+		  "<b>Start StockFW in the background when I sign in</b>",
+		  "the sign-in switch on the General page" },
+		{ "linux", "is coming in 1.0.7", "<tt>stockfw.service</tt>",
+		  "the Linux boot service" },
+		{ "cli", "says blocked.",
+		  "6 simulate says it depends",
+		  "stockfw simulate exits 6 for DEPENDS" },
+	};
+	guint soon_elsewhere = 0, soon_intel = 0;
+
+	for (guint i = 0; i < G_N_ELEMENTS (claims); i++) {
+		gchar *text = topic_text (claims[i].id);
+		GString *squeezed = g_string_new (NULL);
+
+		for (const gchar *c = text; *c != '\0'; c++)
+			if (!(*c == ' ' && squeezed->len > 0
+			      && squeezed->str[squeezed->len - 1] == ' '))
+				g_string_append_c (squeezed, *c);
+		CHECK (strstr (squeezed->str, claims[i].gone) == NULL
+		       && strstr (squeezed->str, claims[i].said) != NULL,
+		       "[H8] %s (%s)", claims[i].what, claims[i].id);
+		g_string_free (squeezed, TRUE);
+		g_free (text);
+	}
+
+	for (guint i = 0; i < fs_help_topic_count (); i++) {
+		const FsHelpTopic *t = fs_help_topic_nth (i);
+
+		for (const FsHelpBlock *b = t->blocks; b->kind != FS_HELP_END;
+		     b++) {
+			gboolean soon = b->kind == FS_HELP_SOON;
+			gboolean says = b->text != NULL &&
+			                strstr (b->text, "1.0.7") != NULL;
+
+			if (soon && strcmp (t->id, "threat-intel") == 0)
+				soon_intel++;
+			else if (soon || says)
+				soon_elsewhere++;
+		}
+		if (strstr (t->summary, "Coming") != NULL)
+			soon_elsewhere++;
+	}
+	CHECK (soon_elsewhere == 0 && soon_intel == 1,
+	       "[H8] only threat intel is marked as not in this build (%u "
+	       "callouts or mentions of 1.0.7 elsewhere)", soon_elsewhere);
+	{
+		gchar *intel = topic_text ("threat-intel");
+
+		CHECK (strstr (intel, "not available in this build") != NULL,
+		       "[H8] threat intel and country/ASN blocking say they are "
+		       "not available in this build");
+		g_free (intel);
+	}
+	{
+		/* This build is 1.0.7: the callout's heading must not
+		 * promise it. */
+		gchar *shown;
+
+		fs_help_show (NULL, "threat-intel");
+		pump ();
+		shown = text_of (fs_help_window ());
+		CHECK (strstr (shown, "Not in this build") != NULL &&
+		       strstr (shown, "Coming in") == NULL,
+		       "[H8] the callout reads \"Not in this build\", not "
+		       "\"Coming in 1.0.7\"");
+		g_free (shown);
 	}
 }
 
@@ -1590,6 +1697,7 @@ run_all (gpointer data)
 	printf ("theme: %s\n", g_getenv ("GTK_THEME"));
 	check_table ();
 	check_claims ();
+	check_merged_107 ();
 	check_opening ();
 	check_every_topic ();
 	check_search ();

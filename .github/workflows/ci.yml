@@ -43,7 +43,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config libgtk-3-dev \
             librsvg2-common shared-mime-info \
-            iptables nftables xvfb xauth
+            iptables nftables xvfb xauth \
+            xdotool stalonetray desktop-file-utils
 
       - name: Build
         run: |
@@ -57,9 +58,12 @@ jobs:
           bash tests/test-adversarial.sh
           bash tests/test-cli.sh
           bash tests/test-logstart.sh
-          ninja -C build-linux fs-intel-test fs-netplace-test fs-nftset-load
+          bash tests/test-licence-texts.sh
+          ninja -C build-linux fs-intel-test fs-netplace-test fs-nftset-load \
+            fs-whatif-test
           ./build-linux/fs-intel-test
           ./build-linux/fs-netplace-test
+          ./build-linux/fs-whatif-test
 
       - name: UI smoke tests on a virtual display
         working-directory: port
@@ -72,12 +76,30 @@ jobs:
           smokes="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke
                   fs-simviz-smoke fs-theme-smoke fs-trustview-smoke
                   fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
-                  fs-overview-place-smoke"
+                  fs-overview-place-smoke
+                  fs-startup-smoke fs-traymenu-smoke fs-session-smoke
+                  fs-help-smoke"
           ninja -C build-linux $smokes
           for t in $smokes; do
             echo "== $t"
             xvfb-run -a "./build-linux/$t"
           done
+
+      - name: One instance, background start and --quit (real binary)
+        working-directory: port
+        env:
+          NO_AT_BRIDGE: "1"
+        run: |
+          # As the runner's user: the backend is unavailable, so the app
+          # cannot touch the firewall.  stalonetray stands in for the
+          # notification area; xdotool reads which windows are on screen.
+          ninja -C build-linux StockFW
+          xvfb-run -a bash tests/test-instance.sh
+
+      - name: Start at sign-in (XDG autostart entry)
+        working-directory: port
+        run: |
+          bash tests/test-autostart.sh
 
       - name: Live firewall tests as root, each in a private network namespace
         working-directory: port
@@ -99,6 +121,13 @@ jobs:
           strict tests/test-apply-linux.sh
           strict tests/test-apply-dual.sh
           strict tests/test-nftset.sh
+          strict tests/test-whatif-live.sh
+          # The boot unit and `stockfw start' as the unit runs it; the
+          # Linux installer in a private mount namespace; start at
+          # sign-in written as root on a user's behalf.
+          strict tests/test-boot-start.sh
+          strict tests/test-linux-install.sh
+          strict tests/test-autostart.sh
 
   windows:
     name: Windows build, tests and installer

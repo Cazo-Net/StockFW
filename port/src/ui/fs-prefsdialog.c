@@ -23,7 +23,8 @@
  * block that needs an Internet device nobody chose) stays visible but
  * disabled, with the reason under it.
  *
- *   General     tray icon, close/minimize to tray, start on open
+ *   General     tray icon, close/minimize to tray, start the firewall
+ *               when StockFW opens, start StockFW at sign-in
  *   Events      hide repeats, skip events for other machines
  *   Policy      apply immediately; audit-only shown, set on Policy
  *   Firewall    reject or drop, outbound mode, log allowed
@@ -42,6 +43,16 @@
  * the settings; when a firewall setting changed and the firewall is
  * running it offers to apply them now, through the apply gate
  * (fs_settings_apply_safe), and reports what the gate did.
+ *
+ * Start at sign-in is not in stockfw.conf: it is a Task Scheduler task
+ * (Windows) or an XDG autostart entry (Linux), fs-autostart.c.  Its
+ * switch follows the same rules all the same: it shows what the system
+ * says when the window opens, a change counts as one unsaved change,
+ * Cancel drops it, and Save writes it only if the user moved it.  Save
+ * writes it first; if the system refuses, nothing at all is saved, the
+ * window stays open on General with the reason, and the switch shows
+ * what is really set.  The tray menu's "Start at sign-in" reads the same
+ * system setting, and each tells the other when it changes it.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-dialogs.h"
@@ -50,6 +61,8 @@
 #include "ui/fs-icons.h"
 #include "ui/fs-policyview.h"
 #include "ui/fs-statusview.h"
+#include "ui/fs-tray.h"
+#include "core/fs-autostart.h"
 #include "core/fs-backend.h"
 #include "core/fs-apply.h"
 #include "core/fs-i18n.h"
@@ -110,6 +123,15 @@ struct _PrefsWin
 	GtkWidget   *policy_link;
 	GtkWidget   *outbound_warning;
 	GtkWidget   *absent_note;   /* a stored device is not present   */
+	/* Start at sign-in: outside stockfw.conf, so not a Row. */
+	GtkWidget   *signin;        /* its GtkSwitch                    */
+	GtkWidget   *signin_reason; /* why this copy cannot change it   */
+	GtkWidget   *signin_error;  /* why the last Save could not      */
+	const gchar *signin_about;
+	gboolean     signin_can;    /* this copy may change it          */
+	gboolean     signin_orig;   /* what the system says is set      */
+	GtkWidget   *signin_box;    /* its row, for the "changed" bar   */
+	GtkWidget   *signin_dot;    /* its page's "changed" dot         */
 	GMainLoop   *loop;
 	PrefsResponse response;
 	gboolean     syncing;
@@ -200,6 +222,43 @@ row_describe (Row *row)
 	g_free (text);
 }
 
+/* Start at sign-in moved away from what the system says, by a copy
+ * that may change it: one change for Save to write. */
+static gboolean
+signin_pending (PrefsWin *win)
+{
+	return win->signin != NULL && win->signin_can &&
+	       gtk_switch_get_active (GTK_SWITCH (win->signin)) !=
+	       win->signin_orig;
+}
+
+/* What a screen reader says after "Start StockFW in the background when
+ * I sign in": first why it cannot act or why Save failed, then what it
+ * does. */
+static void
+signin_describe (PrefsWin *win)
+{
+	AtkObject *atk = gtk_widget_get_accessible (win->signin);
+	const gchar *why = NULL, *failed = NULL;
+	gchar *text;
+
+	if (atk == NULL)
+		return;
+	if (win->signin_reason != NULL &&
+	    gtk_widget_get_visible (win->signin_reason))
+		why = gtk_label_get_text (GTK_LABEL (win->signin_reason));
+	if (gtk_widget_get_visible (win->signin_error))
+		failed = gtk_label_get_text (GTK_LABEL (win->signin_error));
+
+	text = g_strjoin (" ", failed != NULL ? failed : "",
+	                  why != NULL ? why : "",
+	                  win->signin_about != NULL ? win->signin_about : "",
+	                  NULL);
+	g_strstrip (text);
+	atk_object_set_description (atk, text);
+	g_free (text);
+}
+
 static void
 set_blocked (Row *row, gboolean blocked)
 {
@@ -267,15 +326,23 @@ refresh (PrefsWin *win)
 		                        edit_bool (win,
 		                                   FS_PREFS_FW_RESTRICTIVE_OUTBOUND));
 
+	if (win->signin != NULL) {
+		gtk_widget_set_sensitive (win->signin, win->signin_can);
+		signin_describe (win);
+	}
+
 	/* Where the changes are: a bar on each changed row, a dot on its
 	 * page in the sidebar.  Dots first off, then on for any page that
-	 * holds a changed row. */
+	 * holds a changed row (start at sign-in included: it is not a Row,
+	 * but a move of its switch is a change like any other). */
 	for (guint i = 0; i < win->rows->len; i++) {
 		Row *row = g_ptr_array_index (win->rows, i);
 
 		if (row->nav_dot != NULL)
 			gtk_widget_hide (row->nav_dot);
 	}
+	if (win->signin_dot != NULL)
+		gtk_widget_hide (win->signin_dot);
 	for (guint i = 0; i < win->rows->len; i++) {
 		Row *row = g_ptr_array_index (win->rows, i);
 		GtkStyleContext *ctx = gtk_widget_get_style_context (row->box);
@@ -288,9 +355,23 @@ refresh (PrefsWin *win)
 			gtk_style_context_remove_class (ctx, "pref-changed");
 		}
 	}
+	if (win->signin_box != NULL) {
+		GtkStyleContext *ctx =
+			gtk_widget_get_style_context (win->signin_box);
 
-	/* What Save will write, exactly: changed keys this window offers. */
-	changed = fs_prefs_edit_n_pending (win->edit);
+		if (signin_pending (win)) {
+			gtk_style_context_add_class (ctx, "pref-changed");
+			if (win->signin_dot != NULL)
+				gtk_widget_show (win->signin_dot);
+		} else {
+			gtk_style_context_remove_class (ctx, "pref-changed");
+		}
+	}
+
+	/* What Save will write, exactly: changed keys this window offers,
+	 * and start at sign-in if it was moved. */
+	changed = fs_prefs_edit_n_pending (win->edit) +
+	          (signin_pending (win) ? 1 : 0);
 	if (changed == 0)
 		gtk_style_context_remove_class (
 			gtk_widget_get_style_context (win->status), "pending");
@@ -352,17 +433,61 @@ on_combo_changed (GtkComboBox *combo, gpointer data)
 
 /* --------------------------------------------------------------- rows */
 
-/* [ row_new ]
- * One setting: the name and its one line on the left, the control on
- * the right (the Overview's profile rows, the same shape). */
+/* [ row_shell ]
+ * The shape of every setting: the name and its one line on the left,
+ * the control on the right (the Overview's profile rows, the same
+ * shape), packed into `card'.  Widget names follow `id': the row is
+ * "row:<id>", the control "<id>", the reason "reason:<id>".  The reason
+ * starts hidden; *reason_out gets it (NULL without one). */
+static GtkWidget *
+row_shell (GtkWidget *card, const gchar *id, const gchar *title,
+           const gchar *about, const gchar *reason, GtkWidget *control,
+           GtkWidget **reason_out)
+{
+	GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 3);
+	GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
+	gchar *name;
+
+	*reason_out = NULL;
+	add_class (box, "pref-row");
+	name = g_strconcat ("row:", id, NULL);
+	gtk_widget_set_name (box, name);
+	g_free (name);
+
+	gtk_box_pack_start (GTK_BOX (text), label_new (title, "pref-label", TRUE),
+	                    FALSE, FALSE, 0);
+	if (about != NULL)
+		gtk_box_pack_start (GTK_BOX (text),
+		                    label_new (about, "muted", TRUE),
+		                    FALSE, FALSE, 0);
+	if (reason != NULL) {
+		*reason_out = label_new (reason, "pref-reason", TRUE);
+		name = g_strconcat ("reason:", id, NULL);
+		gtk_widget_set_name (*reason_out, name);
+		g_free (name);
+		/* refresh() decides; show_all must not. */
+		gtk_widget_set_no_show_all (*reason_out, TRUE);
+		gtk_box_pack_start (GTK_BOX (text), *reason_out,
+		                    FALSE, FALSE, 0);
+	}
+	gtk_box_pack_start (GTK_BOX (box), text, TRUE, TRUE, 0);
+
+	gtk_widget_set_name (control, id);
+	gtk_widget_set_valign (control, GTK_ALIGN_CENTER);
+	atk_object_set_name (gtk_widget_get_accessible (control), title);
+	gtk_box_pack_start (GTK_BOX (box), control, FALSE, FALSE, 0);
+
+	gtk_box_pack_start (GTK_BOX (card), box, FALSE, FALSE, 0);
+	return box;
+}
+
+/* [ row_new ] -- one setting of stockfw.conf, in a row_shell. */
 static Row *
 row_new (PrefsWin *win, GtkWidget *card, const gchar *key, RowKind kind,
          const gchar *title, const gchar *about, const gchar *reason,
          GtkWidget *control)
 {
 	Row *row = g_new0 (Row, 1);
-	GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 3);
-	gchar *name;
 
 	row->win = win;
 	row->key = key;
@@ -376,37 +501,9 @@ row_new (PrefsWin *win, GtkWidget *card, const gchar *key, RowKind kind,
 	 * written, whatever the copy holds (D8). */
 	fs_prefs_edit_set_writable (win->edit, key, TRUE);
 
-	row->box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
-	add_class (row->box, "pref-row");
-	name = g_strconcat ("row:", key, NULL);
-	gtk_widget_set_name (row->box, name);
-	g_free (name);
-
-	gtk_box_pack_start (GTK_BOX (text), label_new (title, "pref-label", TRUE),
-	                    FALSE, FALSE, 0);
-	if (about != NULL)
-		gtk_box_pack_start (GTK_BOX (text),
-		                    label_new (about, "muted", TRUE),
-		                    FALSE, FALSE, 0);
-	if (reason != NULL) {
-		row->reason = label_new (reason, "pref-reason", TRUE);
-		name = g_strconcat ("reason:", key, NULL);
-		gtk_widget_set_name (row->reason, name);
-		g_free (name);
-		/* refresh() decides; show_all must not. */
-		gtk_widget_set_no_show_all (row->reason, TRUE);
-		gtk_box_pack_start (GTK_BOX (text), row->reason,
-		                    FALSE, FALSE, 0);
-	}
-	gtk_box_pack_start (GTK_BOX (row->box), text, TRUE, TRUE, 0);
-
-	gtk_widget_set_name (control, key);
-	gtk_widget_set_valign (control, GTK_ALIGN_CENTER);
-	atk_object_set_name (gtk_widget_get_accessible (control), title);
+	row->box = row_shell (card, key, title, about, reason, control,
+	                      &row->reason);
 	g_object_set_data (G_OBJECT (control), "fs-pref-row", row);
-	gtk_box_pack_start (GTK_BOX (row->box), control, FALSE, FALSE, 0);
-
-	gtk_box_pack_start (GTK_BOX (card), row->box, FALSE, FALSE, 0);
 	g_ptr_array_add (win->rows, row);
 
 	return row;
@@ -674,17 +771,193 @@ card_new (GtkWidget *cards, const gchar *heading)
 	return card;
 }
 
+/* ------------------------------------------------- start at sign-in */
+
+#ifdef FS_PREFS_FAKE_BACKEND
+gboolean (*fs_prefs_test_signin_can_change) (gchar **why) = NULL;
+#endif
+
+/* May this copy change start at sign-in?  FALSE with a one-line reason
+ * (caller frees) when not: no mechanism here, or on Windows a copy that
+ * is not running as administrator. */
+static gboolean
+signin_can_change (gchar **why)
+{
+	*why = NULL;
+#ifdef FS_PREFS_FAKE_BACKEND
+	if (fs_prefs_test_signin_can_change != NULL)
+		return fs_prefs_test_signin_can_change (why);
+#endif
+	if (!fs_autostart_supported ()) {
+		*why = g_strdup (_("Not available on this system."));
+		return FALSE;
+	}
+	return fs_autostart_can_change (why);
+}
+
+static void
+signin_show (PrefsWin *win, gboolean on)
+{
+	win->syncing = TRUE;
+	gtk_switch_set_active (GTK_SWITCH (win->signin), on);
+	win->syncing = FALSE;
+}
+
+/* [ signin_reread ]
+ * What the system says now.  A switch the user has not moved follows
+ * it; with keep_moved, one the user did move stays as they left it (and
+ * is a change only while it differs from the system). */
+static void
+signin_reread (PrefsWin *win, gboolean keep_moved)
+{
+	gboolean moved = signin_pending (win);
+
+	win->signin_orig = fs_autostart_enabled ();
+	if (!(keep_moved && moved))
+		signin_show (win, win->signin_orig);
+}
+
+static void
+on_signin_active (GObject *object, GParamSpec *pspec, gpointer data)
+{
+	PrefsWin *win = data;
+
+	(void) object;
+	(void) pspec;
+	if (win->syncing)
+		return;
+
+	/* A failure from an earlier Save is about a choice now replaced. */
+	gtk_widget_hide (win->signin_error);
+	refresh (win);
+}
+
+/* [ signin_save ]
+ * Save's first step, while the window is still up.  TRUE: nothing to
+ * write, or written.  FALSE: the system refused.  Then nothing else is
+ * saved either: the window stays open on General with the reason under
+ * the switch, and the switch shows what is really set, as the tray's
+ * tick does. */
+static gboolean
+signin_save (PrefsWin *win)
+{
+	GError *error = NULL;
+	gboolean want;
+	gchar *text;
+
+	if (!signin_pending (win))
+		return TRUE;
+
+	want = gtk_switch_get_active (GTK_SWITCH (win->signin));
+	if (fs_autostart_set (want, &error)) {
+		win->signin_orig = want;
+		gtk_widget_hide (win->signin_error);
+		fs_tray_autostart_changed ();
+		return TRUE;
+	}
+
+	text = g_strdup_printf ("%s %s",
+		want ? _("StockFW could not be set to start at sign-in, so "
+		         "nothing was saved.")
+		     : _("StockFW could not stop starting at sign-in, so "
+		         "nothing was saved."),
+		error != NULL ? error->message
+		              : _("The system gave no reason."));
+	gtk_label_set_text (GTK_LABEL (win->signin_error), text);
+	gtk_widget_show (win->signin_error);
+	g_free (text);
+	g_clear_error (&error);
+
+	signin_reread (win, FALSE);
+	fs_tray_autostart_changed ();
+	gtk_stack_set_visible_child_name (GTK_STACK (win->stack), "general");
+	refresh (win);
+	gtk_widget_grab_focus (win->signin);
+	return FALSE;
+}
+
+/* [ boot_note ]
+ * Start at sign-in brings back the window, not the rules.  Say what does
+ * keep the rules across a restart here -- and on Linux whether the boot
+ * unit that does it is really installed and enabled. */
+static const gchar *
+boot_note (void)
+{
+	switch (fs_autostart_boot_unit ()) {
+	case FS_BOOT_UNIT_ENABLED:
+		return _("The firewall rules do not depend on this: the stockfw "
+		         "boot service puts the last policy applied with sudo "
+		         "back at every boot, before the network comes up.");
+	case FS_BOOT_UNIT_DISABLED:
+		return _("The firewall rules do not depend on this, but Linux "
+		         "forgets them at every restart, and the stockfw boot "
+		         "service that puts them back is installed but not "
+		         "enabled. To enable it: sudo systemctl enable "
+		         "stockfw.service");
+	case FS_BOOT_UNIT_ABSENT:
+		return _("The firewall rules do not depend on this, but Linux "
+		         "forgets them at every restart, and the stockfw boot "
+		         "service that puts them back is not installed here. "
+		         "The Linux installer sets it up.");
+	case FS_BOOT_UNIT_NONE:
+	default:
+		return _("The firewall rules do not depend on this: Windows "
+		         "Firewall keeps them across restarts. For monitoring "
+		         "and changes after you sign in, start StockFW "
+		         "(Elevated); it takes over from the copy started at "
+		         "sign-in.");
+	}
+}
+
 /* [ add_background_rows ]
- * The place for settings that keep StockFW at work while nobody has it
- * open (starting it at sign-in).  It adds nothing yet and says so by
- * returning FALSE, which keeps the "Background" card hidden: a heading
- * over no settings would promise something that does not exist. */
+ * What keeps StockFW at work while nobody has opened it: start at
+ * sign-in.  Always shown -- greyed with the reason where this copy
+ * cannot change it, never hidden, so an unelevated Windows copy still
+ * says whether it is on.  Returns FALSE (the card stays hidden) only if
+ * it added nothing. */
 static gboolean
 add_background_rows (PrefsWin *win, GtkWidget *card)
 {
-	(void) win;
-	(void) card;
-	return FALSE;
+	gchar *why = NULL;
+	GtkWidget *note;
+
+	win->signin = gtk_switch_new ();
+	win->signin_can = signin_can_change (&why);
+	win->signin_orig = fs_autostart_enabled ();
+	signin_show (win, win->signin_orig);
+#ifdef G_OS_WIN32
+	win->signin_about = _("Puts StockFW in the notification area when you "
+	                      "sign in, without administrator rights: it "
+	                      "shows the firewall's state, but cannot change "
+	                      "it or watch blocked traffic.");
+#else
+	win->signin_about = _("Puts StockFW in the notification area when you "
+	                      "sign in to the desktop. It runs without root, so "
+	                      "it cannot read or change the rules or watch "
+	                      "blocked traffic: it shows the firewall's state "
+	                      "as unknown.");
+#endif
+
+	win->signin_dot = win->page_dot;
+	win->signin_box = row_shell (card, "prefs-signin",
+	                             _("Start StockFW in the background when I sign in"),
+	                             win->signin_about,
+	                             why != NULL ? why : _("Not available on this system."),
+	                             win->signin, &win->signin_reason);
+	gtk_widget_set_visible (win->signin_reason, !win->signin_can);
+	g_free (why);
+
+	win->signin_error = label_new ("", "pref-error", TRUE);
+	gtk_widget_set_name (win->signin_error, "prefs-signin-error");
+	gtk_widget_set_no_show_all (win->signin_error, TRUE);
+	gtk_box_pack_start (GTK_BOX (card), win->signin_error, FALSE, FALSE, 0);
+
+	note = add_note (card, boot_note ());
+	gtk_widget_set_name (note, "prefs-boot-note");
+
+	g_signal_connect (win->signin, "notify::active",
+	                  G_CALLBACK (on_signin_active), win);
+	return TRUE;
 }
 
 static void
@@ -1084,6 +1357,12 @@ on_save (GtkButton *button, gpointer data)
 	PrefsWin *win = data;
 
 	(void) button;
+
+	/* Start at sign-in first, while the window can still show why it
+	 * failed; on a failure nothing else is saved and it stays open. */
+	if (win->signin != NULL && !signin_save (win))
+		return;
+
 	win->response = PREFS_SAVE;
 	g_main_loop_quit (win->loop);
 }
@@ -1333,7 +1612,7 @@ offer_apply (GtkWidget *parent, const FsSettings *saved_before)
 	state = backend->get_state ();
 	running = (state == FS_FW_RUNNING || state == FS_FW_HIT ||
 	           state == FS_FW_LOCKED);
-	start_applies = (backend->fw_honors & FS_FWHON_START_APPLIES) != 0;
+	start_applies = backend->start_applies_policy;
 	if (!running && (start_applies || state != FS_FW_STOPPED))
 		return;   /* Start applies the whole policy, saved settings
 		           * included; or the firewall cannot be reached */
@@ -1530,13 +1809,49 @@ commit (PrefsWin *win, guint *written)
 	return firewall;
 }
 
+/* The window that is open, if any: one at a time.  Set for the whole
+ * call, including the apply question after Save (window already NULL
+ * by then). */
+static PrefsWin *open_prefs = NULL;
+
+void
+fs_dialogs_preferences_autostart_changed (void)
+{
+	if (open_prefs == NULL || open_prefs->window == NULL ||
+	    open_prefs->signin == NULL)
+		return;
+
+	signin_reread (open_prefs, TRUE);
+	refresh (open_prefs);
+}
+
+void
+fs_dialogs_preferences_cancel (void)
+{
+	if (open_prefs == NULL || open_prefs->loop == NULL ||
+	    !g_main_loop_is_running (open_prefs->loop))
+		return;
+
+	open_prefs->response = PREFS_CANCEL;
+	g_main_loop_quit (open_prefs->loop);
+}
+
 /* [ fs_dialogs_preferences ]
- * Modal; nothing is written unless Save is pressed. */
+ * Modal; nothing is written unless Save is pressed.  Asked again while
+ * it is open (the tray's Preferences..., which Windows still delivers
+ * past a modal window), it brings the open window forward instead of
+ * nesting a second one inside it. */
 void
 fs_dialogs_preferences (GtkWidget *parent)
 {
 	PrefsWin win;
 	GtkWidget *save;
+
+	if (open_prefs != NULL) {
+		if (open_prefs->window != NULL)
+			gtk_window_present (GTK_WINDOW (open_prefs->window));
+		return;
+	}
 
 	memset (&win, 0, sizeof (win));
 	win.nav = g_ptr_array_new ();
@@ -1549,6 +1864,7 @@ fs_dialogs_preferences (GtkWidget *parent)
 
 	save = build_window (&win, parent);
 	refresh (&win);
+	open_prefs = &win;
 
 	gtk_widget_show_all (win.window);
 	gtk_stack_set_visible_child_name (GTK_STACK (win.stack), "general");
@@ -1585,6 +1901,7 @@ fs_dialogs_preferences (GtkWidget *parent)
 			fs_app_show_page (FS_PAGE_POLICY);
 	}
 
+	open_prefs = NULL;
 	g_main_loop_unref (win.loop);
 	g_ptr_array_unref (win.rows);
 	g_ptr_array_unref (win.nav);

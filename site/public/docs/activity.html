@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Activity · StockFW</title>
+<meta name="description" content="The Activity page: the Policy activity and Network I/O graphs, the range and adapter pickers, the no-data band, the crosshair and the table view.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Activity · StockFW">
+<meta property="og:description" content="The Activity page: the Policy activity and Network I/O graphs, the range and adapter pickers, the no-data band, the crosshair and the table view.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html" aria-current="page"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Using the app
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
+		<article class="prose">
+<h1>Activity</h1>
+<p class="lede">Two graphs over the last 15 minutes to 24 hours: how many connections your policy allowed and blocked per minute, and how many bytes per second crossed your adapters.</p>
+
+<figure class="shot"><img src="../assets/screens/activity.webp" alt="The Activity page: 15 min selected, three tiles (blocked 405, allowed 505, throughput 111 kB/s received and 1000 B/s sent), and two graphs with a shaded no-data band on the left, red and blue lines on the right." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Fifteen minutes of a staged port scan arriving while a download runs. The grey band is time before the app opened.</figcaption></figure>
+
+<h2 id="the-controls">The controls<a class="anchor" href="#the-controls" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Range:</strong> 15 min, 1 hour, 6 hours, 24 hours. Both graphs follow it.</li>
+<li><strong>Adapter:</strong> all adapters together, or one. It affects the Network I/O graph and the throughput tile.</li>
+<li><strong>Show as table:</strong> every interval as a row, for reading exact numbers or copying them.</li>
+</ul>
+<p>The three tiles summarise the range: blocked and allowed counts for the last hour and the last 24 hours, with “counting since 16:23” when the app has been open for less than that, and the current throughput in and out.</p>
+
+<h2 id="policy-activity">Policy activity<a class="anchor" href="#policy-activity" aria-label="Link to this section">#</a></h2>
+<p>Events per minute, allowed in blue and blocked in red. It counts exactly what the <a href="../docs/events.html">Events page</a> lists, after that page’s filters and its duplicate check, and it counts each event at the event’s own time, not when the app happened to read it. That matters on Windows, where the first poll delivers a batch of recent history: those events land in their own minutes, and anything older than the app is dropped into the no-data band rather than piled into the current minute as a false spike. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-activity-smoke</span></p>
+<p>On Linux the allowed line is only as real as the kernel log: the policy logs the first packet of each new allowed connection when <em>Log allowed connections</em> is on. With it off, the card says the line is not drawn, rather than drawing a flat line that would claim nothing was allowed.</p>
+
+<h2 id="network-i-o">Network I/O<a class="anchor" href="#network-i-o" aria-label="Link to this section">#</a></h2>
+<p>Bytes per second received and sent, from the adapters’ own cumulative counters: <code>GetIfTable2</code> on Windows, <code>/proc/net/dev</code> on Linux. No packet capture, no trace session, no elevation. A counter that goes backwards (a driver reload) starts a new baseline rather than drawing negative traffic. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
+
+<h2 id="why-the-grey-band">Why the grey band<a class="anchor" href="#why-the-grey-band" aria-label="Link to this section">#</a></h2>
+<p>A graph that starts at zero looks like a quiet night. StockFW did not observe anything before it was opened, so that stretch is shaded “no data” and never drawn as a line. The newest point is partial, and its rate divides by the seconds that have actually elapsed, so the last sample is not drawn artificially low. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-activity-smoke</span></p>
+
+<h2 id="reading-a-point">Reading a point<a class="anchor" href="#reading-a-point" aria-label="Link to this section">#</a></h2>
+<p>Move the mouse over a graph for a crosshair and a tooltip with the values at that interval; or focus the graph and use the arrow keys. Each graph has one y axis with round gridlines, time ticks spaced for their labels, a legend and a label at the end of each line, and the colours were checked for contrast in light mode: allowed and received <code>#2a78d6</code>, blocked <code>#e34948</code>, sent <code>#eb6834</code>.</p>
+
+<h2 id="how-the-data-is-kept">How the data is kept<a class="anchor" href="#how-the-data-is-kept" aria-label="Link to this section">#</a></h2>
+<p>Counters are kept in 10-second slots, 8,640 per series (24 hours), at most 24 series, about 1.6 MB when full, so a week in the tray costs the same memory as an hour. Nothing is written to disk; the graphs are about this session. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span> The <a href="../docs/dashboard.html">dashboard</a> draws the same two graphs from the same code, and can backfill from the kernel log so its history starts before it was opened.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/events.html"><span>Previous</span><strong>Events</strong></a><a class="next" href="../docs/policy.html"><span>Next</span><strong>Policy</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/activity.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#the-controls">The controls</a></li>
+			<li class="lvl2"><a href="#policy-activity">Policy activity</a></li>
+			<li class="lvl2"><a href="#network-i-o">Network I/O</a></li>
+			<li class="lvl2"><a href="#why-the-grey-band">Why the grey band</a></li>
+			<li class="lvl2"><a href="#reading-a-point">Reading a point</a></li>
+			<li class="lvl2"><a href="#how-the-data-is-kept">How the data is kept</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stock Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

@@ -668,12 +668,9 @@ static gchar *
 simulate_json (GHashTable *params, guint *status)
 {
 	const gchar *q = params ? g_hash_table_lookup (params, "q") : NULL;
-	FsPolicy *policy;
-	FsCopilot *copilot;
-	FsScenario *scenario = NULL;
-	FsSimulationResult *result;
+	FsWhatIfResult *result;
 	GString *out;
-	gchar *suggest;
+	gboolean assume;
 
 	if (q == NULL || *q == '\0' || strlen (q) > 300) {
 		*status = 400;
@@ -681,44 +678,25 @@ simulate_json (GHashTable *params, guint *status)
 		                 "characters.\"}");
 	}
 
-	policy = fs_cli_load_policy (NULL, NULL);
-	copilot = fs_copilot_new ();
-	fs_copilot_set_policy (copilot, policy);
-	result = fs_copilot_simulate_text (copilot, q, &scenario);
+	/* assume_running=1 asks about the policy as if the firewall ran,
+	 * like the command line's --assume-running. */
+	assume = params != NULL &&
+	         g_strcmp0 (g_hash_table_lookup (params, "assume_running"),
+	                    "1") == 0;
+	result = fs_cli_whatif (q, assume);
 
-	if (result == NULL) {
-		fs_copilot_free (copilot);
-		fs_policy_free (policy);
+	if (result->verdict == FS_WHATIF_ERROR) {
+		out = g_string_new ("{");
+		fs_json_kv_str (out, "error", result->error);
+		g_string_append_c (out, '}');
+		fs_whatif_result_free (result);
 		*status = 400;
-		return g_strdup ("{\"error\":\"Nothing to simulate.\"}");
+		return g_string_free (out, FALSE);
 	}
 
-	suggest = result->would_block ? fs_copilot_allow_suggestion (scenario)
-	                              : NULL;
-	out = g_string_new ("{");
-	fs_json_kv_str (out, "input", q);                          g_string_append_c (out, ',');
-	fs_json_kv_str (out, "verdict", result->would_block ? "BLOCKED" : "ALLOWED");
-	g_string_append_c (out, ',');
-	fs_json_kv_str (out, "scenario", result->scenario);       g_string_append_c (out, ',');
-	fs_json_kv_str (out, "direction", scenario->inbound ? "inbound" : "outbound");
-	g_string_append_c (out, ',');
-	fs_json_kv_str (out, "protocol", scenario->protocol);     g_string_append_c (out, ',');
-	if (scenario->had_port)
-		fs_json_kv_uint (out, "port", scenario->port);
-	else
-		fs_json_kv_str (out, "port", NULL);
-	g_string_append_c (out, ',');
-	fs_json_kv_str (out, "remote", scenario->remote_ip);      g_string_append_c (out, ',');
-	fs_json_kv_str (out, "rule", result->matching_rule);      g_string_append_c (out, ',');
-	fs_json_kv_str (out, "reason", result->reason);           g_string_append_c (out, ',');
-	fs_json_kv_str (out, "suggestion", suggest);
-	g_string_append_c (out, '}');
-
-	g_free (suggest);
-	fs_simulation_result_free (result);
-	fs_scenario_free (scenario);
-	fs_copilot_free (copilot);
-	fs_policy_free (policy);
+	out = g_string_new (NULL);
+	fs_cli_whatif_json (out, result, q);
+	fs_whatif_result_free (result);
 
 	*status = 200;
 	return g_string_free (out, FALSE);

@@ -29,8 +29,8 @@ typedef enum
 	FS_HELP_ITEM,      /* a bullet                                  */
 	FS_HELP_NOTE,      /* a callout: good to know                   */
 	FS_HELP_WARN,      /* a callout: a consequence worth stopping for */
-	FS_HELP_SOON,      /* a callout: on a 1.0.7 branch, not in this
-	                    * build yet                                 */
+	FS_HELP_SOON,      /* a callout: "Not in this build", for a
+	                    * feature this build does not have yet     */
 	FS_HELP_KEYS,      /* "keys|what they do": one shortcut row     */
 	FS_HELP_CODE,      /* a command, shown in a fixed-width face    */
 	FS_HELP_SEE        /* related topics: ids separated by spaces   */

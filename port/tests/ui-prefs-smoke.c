@@ -63,6 +63,7 @@
 #include "core/fs-rules.h"
 #include "core/fs-script.h"
 #include "core/fs-apply.h"
+#include "core/fs-autostart.h"
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-helpwindow.h"
@@ -98,10 +99,11 @@ count_warnings (GLogLevelFlags level, const GLogField *fields,
 #define LINUX_SECTIONS (FS_FWSEC_NETWORK | FS_FWSEC_ICMP | FS_FWSEC_ADVANCED)
 #define LINUX_HONORS   (FS_FWHON_REJECT_METHOD | FS_FWHON_RATE_LIMIT | \
                         FS_FWHON_LOG_ALLOWED | FS_FWHON_HOST_NAMES |   \
-                        FS_FWHON_OUTBOUND_MODE | FS_FWHON_ICMP_EXACT | \
-                        FS_FWHON_START_APPLIES)
+                        FS_FWHON_OUTBOUND_MODE | FS_FWHON_ICMP_EXACT)
+#define LINUX_START_APPLIES TRUE    /* Start installs the whole policy */
 #define WINDOWS_SECTIONS (FS_FWSEC_ICMP | FS_FWSEC_ADVANCED)
 #define WINDOWS_HONORS   0u
+#define WINDOWS_START_APPLIES FALSE /* Start only switches profiles on */
 
 /* ===================================================== fake backend */
 #ifdef FS_PREFS_FAKE_BACKEND
@@ -176,6 +178,7 @@ fake_as_linux (void)
 	fake_backend.display_name = "Linux (iptables)";
 	fake_backend.fw_sections = LINUX_SECTIONS;
 	fake_backend.fw_honors = LINUX_HONORS;
+	fake_backend.start_applies_policy = LINUX_START_APPLIES;
 	fake_backend.ipv6_state = fake_ipv6_state;
 	fake_backend.list_interfaces = fake_list_interfaces;
 }
@@ -187,6 +190,7 @@ fake_as_windows (void)
 	fake_backend.display_name = "Windows Defender Firewall";
 	fake_backend.fw_sections = WINDOWS_SECTIONS;
 	fake_backend.fw_honors = WINDOWS_HONORS;
+	fake_backend.start_applies_policy = WINDOWS_START_APPLIES;
 	fake_backend.ipv6_state = NULL;
 	fake_backend.list_interfaces = fake_list_interfaces;
 }
@@ -264,6 +268,43 @@ mentions (GtkWidget *root, const gchar *needle)
 	gboolean found;
 
 	gather_text (root, text);
+	found = strstr (text->str, needle) != NULL;
+	g_string_free (text, TRUE);
+	return found;
+}
+
+/* Like mentions(), leaving out the widget called `skip' and all it
+ * holds. */
+static void
+gather_except (GtkWidget *root, const gchar *skip, GString *out)
+{
+	GList *children;
+
+	if (g_strcmp0 (gtk_widget_get_name (root), skip) == 0)
+		return;
+	if (GTK_IS_LABEL (root)) {
+		g_string_append (out, gtk_label_get_text (GTK_LABEL (root)));
+		g_string_append_c (out, '\n');
+	}
+	if (GTK_IS_BUTTON (root) && gtk_button_get_label (GTK_BUTTON (root))) {
+		g_string_append (out, gtk_button_get_label (GTK_BUTTON (root)));
+		g_string_append_c (out, '\n');
+	}
+	if (!GTK_IS_CONTAINER (root))
+		return;
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (GList *l = children; l != NULL; l = l->next)
+		gather_except (l->data, skip, out);
+	g_list_free (children);
+}
+
+G_GNUC_UNUSED static gboolean
+mentions_except (GtkWidget *root, const gchar *skip, const gchar *needle)
+{
+	GString *text = g_string_new (NULL);
+	gboolean found;
+
+	gather_except (root, skip, text);
 	found = strstr (text->str, needle) != NULL;
 	g_string_free (text, TRUE);
 	return found;
@@ -660,6 +701,10 @@ static Scenario *current = NULL;
 static gchar *last_question = NULL;   /* the apply question's text */
 static guint runs = 0;
 static gboolean scenario_done = FALSE;
+/* A driver's second step, run on a later tick -- after control went
+ * back to the window's loop -- and only if the window is still open.
+ * A step left set when the scenario ends means the window closed. */
+static void (*then_drive) (GtkWidget *win) = NULL;
 
 /* [ tick ]
  * Drives one scenario: the window first, then any question or report
@@ -714,6 +759,14 @@ tick (gpointer data)
 		pump ();
 		current->drove = TRUE;
 		current->drive (win);
+	} else if (then_drive != NULL) {
+		void (*step) (GtkWidget *win) = then_drive;
+
+		win = find_prefs ();
+		if (win == NULL)
+			return G_SOURCE_CONTINUE;
+		then_drive = NULL;
+		step (win);
 	}
 
 	return scenario_done ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
@@ -903,10 +956,25 @@ check_pages (GtkWidget *win, const gchar *tag)
 
 	{
 		GtkWidget *bg = find_named (win, "prefs-background");
+		GtkWidget *sw = find_named (win, "prefs-signin");
+		GtkWidget *note = find_named (win, "prefs-boot-note");
+		GtkWidget *err = find_named (win, "prefs-signin-error");
 
-		CHECK (bg != NULL && !gtk_widget_get_visible (bg),
-		       "[%s] the Background card is in place and hidden until "
-		       "it has a setting", tag);
+		CHECK (bg != NULL && gtk_widget_get_visible (bg) &&
+		       sw != NULL && GTK_IS_SWITCH (sw) &&
+		       gtk_widget_is_ancestor (sw, bg) &&
+		       mentions (bg, "Start StockFW in the background when I "
+		                     "sign in") &&
+		       note != NULL && gtk_widget_get_visible (note) &&
+		       err != NULL && !gtk_widget_get_visible (err),
+		       "[%s] the Background card shows \"Start StockFW in the "
+		       "background when I sign in\" with its note, no error",
+		       tag);
+		CHECK (sw != NULL &&
+		       gtk_switch_get_active (GTK_SWITCH (sw)) ==
+		       fs_autostart_enabled (),
+		       "[%s] the sign-in switch shows what the system says (%d)",
+		       tag, fs_autostart_enabled ());
 	}
 	{
 		/* 1.0.7: the footer has a Help button (it opens the topic
@@ -932,16 +1000,20 @@ drive_real (GtkWidget *win)
 
 	if (g_strcmp0 (b->name, "linux") == 0)
 		CHECK (b->fw_sections == LINUX_SECTIONS &&
-		       b->fw_honors == LINUX_HONORS,
+		       b->fw_honors == LINUX_HONORS &&
+		       b->start_applies_policy == LINUX_START_APPLIES,
 		       "the Linux capability set is the one the fake smoke "
-		       "tests (sections 0x%x honors 0x%x)",
-		       b->fw_sections, b->fw_honors);
+		       "tests (sections 0x%x honors 0x%x start applies %d)",
+		       b->fw_sections, b->fw_honors,
+		       b->start_applies_policy);
 	else if (g_strcmp0 (b->name, "windows") == 0)
 		CHECK (b->fw_sections == WINDOWS_SECTIONS &&
-		       b->fw_honors == WINDOWS_HONORS,
+		       b->fw_honors == WINDOWS_HONORS &&
+		       b->start_applies_policy == WINDOWS_START_APPLIES,
 		       "the Windows capability set is the one the fake smoke "
-		       "tests (sections 0x%x honors 0x%x)",
-		       b->fw_sections, b->fw_honors);
+		       "tests (sections 0x%x honors 0x%x start applies %d)",
+		       b->fw_sections, b->fw_honors,
+		       b->start_applies_policy);
 
 	check_pages (win, b->name);
 
@@ -1181,11 +1253,17 @@ drive_windows (GtkWidget *win)
 	       "Windows: no device choosers and no connection sharing");
 	{
 		GtkWidget *pages = find_named (win, "prefs-pages");
+		/* The Background card describes the sign-in mechanism this
+		 * BUILD has (fs-autostart.c is chosen at compile time), so
+		 * here, a Linux build answering as Windows, it rightly names
+		 * Linux: everything else is checked. */
+		gboolean linux_named = mentions_except (pages, "prefs-background",
+		                                        "Linux");
 
 		CHECK (mentions (pages, "IPv4 only") &&
 		       mentions (pages, "Windows' own rules") &&
 		       mentions (pages, "does not rate-limit these messages") &&
-		       !mentions (pages, "Linux") &&
+		       !linux_named &&
 		       !mentions (pages, "IPv6 uses the same choices"),
 		       "Windows ICMP notes: IPv4 allow rules beside Windows' "
 		       "own, no rate limits, said without naming Linux");
@@ -1478,6 +1556,268 @@ file_mentions (const gchar *path, const gchar *needle)
 	return found;
 }
 
+/* ------------------------------------------------- start at sign-in
+ * The Background card's switch against the real Linux mechanism (the
+ * XDG entry, in a scratch directory through STOCKFW_AUTOSTART_DIR) and
+ * a scratch systemd directory (STOCKFW_SYSTEMD_DIR) for the boot note.
+ * Not on Windows: there the switch is a Task Scheduler task, which a
+ * test must not register on the machine it runs on. */
+#ifndef G_OS_WIN32
+
+static gchar *signin_entry = NULL;    /* <autostart dir>/stockfw.desktop */
+
+/* With STOCKFW_PREFS_SHOTS set: the page shown now, scrolled to its end
+ * (where the Background card is), as <name>.png. */
+static void
+snap_end (GtkWidget *win, const gchar *name)
+{
+	const gchar *dir = g_getenv ("STOCKFW_PREFS_SHOTS");
+	GtkWidget *scroll;
+	GtkAdjustment *adj;
+	GdkWindow *gw;
+	GdkPixbuf *pix;
+	gchar *file;
+
+	if (dir == NULL)
+		return;
+	scroll = gtk_stack_get_visible_child (
+		GTK_STACK (find_named (win, "prefs-pages")));
+	adj = GTK_IS_SCROLLED_WINDOW (scroll)
+		? gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (scroll))
+		: NULL;
+	pump ();
+	if (adj != NULL)
+		gtk_adjustment_set_value (adj, gtk_adjustment_get_upper (adj));
+	pump ();
+
+	gw = gtk_widget_get_window (win);
+	pix = gdk_pixbuf_get_from_window (gw, 0, 0, gdk_window_get_width (gw),
+	                                  gdk_window_get_height (gw));
+	file = g_strdup_printf ("%s/%s.png", dir, name);
+	if (pix != NULL) {
+		gdk_pixbuf_save (pix, file, "png", NULL, NULL);
+		g_object_unref (pix);
+		g_print ("shot: %s\n", file);
+	}
+	g_free (file);
+}
+
+static gboolean
+signin_entry_exists (void)
+{
+	return g_file_test (signin_entry, G_FILE_TEST_EXISTS);
+}
+
+static gboolean
+signin_on (GtkWidget *win)
+{
+	GtkWidget *sw = find_named (win, "prefs-signin");
+
+	return sw != NULL && gtk_switch_get_active (GTK_SWITCH (sw));
+}
+
+static const gchar *
+label_text (GtkWidget *win, const gchar *name)
+{
+	GtkWidget *w = find_named (win, name);
+
+	return (w != NULL && GTK_IS_LABEL (w))
+	       ? gtk_label_get_text (GTK_LABEL (w)) : "";
+}
+
+static gboolean
+shown (GtkWidget *win, const gchar *name)
+{
+	GtkWidget *w = find_named (win, name);
+
+	return w != NULL && gtk_widget_get_visible (w);
+}
+
+static const gchar *
+signin_atk (GtkWidget *win)
+{
+	GtkWidget *sw = find_named (win, "prefs-signin");
+	const gchar *d = sw != NULL
+		? atk_object_get_description (gtk_widget_get_accessible (sw))
+		: NULL;
+
+	return d != NULL ? d : "";
+}
+
+/* Off, nothing set, no boot unit: offered, and Cancel writes nothing. */
+static void
+drive_signin_cancel (GtkWidget *win)
+{
+	CHECK (!signin_on (win) && sensitive (win, "prefs-signin") &&
+	       !shown (win, "reason:prefs-signin"),
+	       "sign-in: offered, off, no reason shown");
+	CHECK (strstr (label_text (win, "prefs-boot-note"),
+	               "is not installed here") != NULL,
+	       "sign-in: with no boot unit the note says the rules are not "
+	       "put back at boot here (\"%s\")",
+	       label_text (win, "prefs-boot-note"));
+	CHECK (strstr (signin_atk (win), "without root") != NULL,
+	       "sign-in: a screen reader hears what it does (\"%s\")",
+	       signin_atk (win));
+	set_switch (win, "prefs-signin", TRUE);
+	CHECK (g_strcmp0 (footer (win), "1 unsaved change") == 0 &&
+	       !signin_entry_exists (),
+	       "sign-in: turned on, it is one unsaved change and nothing is "
+	       "written yet (footer \"%s\")", footer (win));
+	/* 1.0.7 redesign: start at sign-in is not a stockfw.conf Row, but
+	 * a move of its switch is marked like any other change. */
+	CHECK (has_class (find_named (win, "row:prefs-signin"),
+	                  "pref-changed") &&
+	       shown (win, "nav-dot:general"),
+	       "sign-in: the moved switch marks its row and General in the "
+	       "sidebar");
+	set_switch (win, "prefs-signin", FALSE);
+	CHECK (!has_class (find_named (win, "row:prefs-signin"),
+	                   "pref-changed") &&
+	       !shown (win, "nav-dot:general") &&
+	       g_strcmp0 (footer (win), "No changes") == 0,
+	       "sign-in: moved back, its marks go");
+	click (win, "prefs-cancel");
+}
+
+static void
+drive_signin_on (GtkWidget *win)
+{
+	set_switch (win, "prefs-signin", TRUE);
+	click (win, "prefs-save");
+}
+
+/* On, boot unit enabled: the note says the rules come back at boot;
+ * turning it off removes the entry. */
+static void
+drive_signin_off (GtkWidget *win)
+{
+	CHECK (signin_on (win), "sign-in: the switch shows the entry is set");
+	CHECK (strstr (label_text (win, "prefs-boot-note"),
+	               "puts the last policy applied with sudo back at every "
+	               "boot") != NULL,
+	       "sign-in: with the boot unit enabled the note says so");
+	snap_end (win, "linux-signin-on-boot-enabled");
+	set_switch (win, "prefs-signin", FALSE);
+	click (win, "prefs-save");
+}
+
+static void signin_fail_after (GtkWidget *win);
+
+/* The entry cannot be written: Save writes nothing at all, stays open
+ * on General with the reason, and the switch shows the truth.  What
+ * follows the Save runs on a later tick: a Save that ended the window
+ * anyway would only show once control is back in its loop. */
+static void
+drive_signin_fail (GtkWidget *win)
+{
+	CHECK (strstr (label_text (win, "prefs-boot-note"),
+	               "installed but not enabled") != NULL,
+	       "sign-in: with the boot unit installed but not enabled the "
+	       "note says how to enable it");
+
+	set_switch (win, FS_PREFS_SKIP_REDUNDANT, TRUE);
+	set_switch (win, "prefs-signin", TRUE);
+	CHECK (g_strcmp0 (footer (win), "2 unsaved changes") == 0,
+	       "sign-in: counted with the other change (\"%s\")",
+	       footer (win));
+	gtk_stack_set_visible_child_name (
+		GTK_STACK (find_named (win, "prefs-pages")), "events");
+
+	then_drive = signin_fail_after;
+	click (win, "prefs-save");
+}
+
+static void
+signin_fail_after (GtkWidget *win)
+{
+	pump ();
+	CHECK (shown (win, "prefs-signin-error") &&
+	       strstr (label_text (win, "prefs-signin-error"),
+	               "could not be set to start at sign-in, so nothing "
+	               "was saved") != NULL,
+	       "sign-in failed: the reason is shown under the switch "
+	       "(\"%s\")", label_text (win, "prefs-signin-error"));
+	CHECK (!signin_on (win) && !signin_entry_exists (),
+	       "sign-in failed: the switch shows what is really set (off)");
+	CHECK (g_strcmp0 (gtk_stack_get_visible_child_name (
+		GTK_STACK (find_named (win, "prefs-pages"))), "general") == 0,
+	       "sign-in failed: the window shows General, where the reason "
+	       "is");
+	CHECK (g_strcmp0 (footer (win), "1 unsaved change") == 0 &&
+	       !disk_has (FS_PREFS_SKIP_REDUNDANT, NULL),
+	       "sign-in failed: the other change is still pending, not "
+	       "saved (footer \"%s\")", footer (win));
+	CHECK (g_str_has_prefix (signin_atk (win), "StockFW could not"),
+	       "sign-in failed: a screen reader hears the failure first");
+	snap_end (win, "linux-signin-failed");
+
+	/* A new choice replaces the failed one. */
+	set_switch (win, "prefs-signin", TRUE);
+	CHECK (!shown (win, "prefs-signin-error"),
+	       "sign-in: moving the switch again clears the old failure");
+	click (win, "prefs-cancel");
+}
+
+static gboolean
+cannot_change (gchar **why)
+{
+	*why = g_strdup ("Only an administrator can change this. Start "
+	                 "StockFW as administrator and try again.");
+	return FALSE;
+}
+
+/* A copy that may not change it (unelevated Windows): greyed with the
+ * reason, still showing what is set, and never written. */
+static void
+drive_signin_denied (GtkWidget *win)
+{
+	CHECK (signin_on (win) && !sensitive (win, "prefs-signin") &&
+	       shown (win, "reason:prefs-signin") &&
+	       strstr (label_text (win, "reason:prefs-signin"),
+	               "Only an administrator") != NULL,
+	       "sign-in, no right to change it: greyed with the reason, "
+	       "still showing that it is on");
+	CHECK (g_str_has_prefix (signin_atk (win), "Only an administrator"),
+	       "sign-in, no right to change it: a screen reader hears the "
+	       "reason first");
+	snap_end (win, "signin-cannot-change");
+	set_switch (win, "prefs-signin", FALSE);
+	CHECK (g_strcmp0 (footer (win), "No changes") == 0,
+	       "sign-in, no right to change it: a switch this copy cannot "
+	       "act on is never a change to save");
+	click (win, "prefs-save");
+}
+
+/* Changed outside the window (the tray menu's path) while it is open:
+ * a switch the user has not moved follows; one they moved stays. */
+static void
+drive_signin_outside (GtkWidget *win)
+{
+	CHECK (!signin_on (win), "sign-in: off at the start");
+
+	fs_autostart_set (TRUE, NULL);
+	fs_dialogs_preferences_autostart_changed ();
+	CHECK (signin_on (win) && g_strcmp0 (footer (win), "No changes") == 0,
+	       "sign-in: turned on from the tray, the open window follows "
+	       "and has nothing to save");
+
+	set_switch (win, FS_PREFS_SKIP_REDUNDANT, TRUE);
+	set_switch (win, "prefs-signin", FALSE);
+	fs_autostart_set (TRUE, NULL);
+	fs_dialogs_preferences_autostart_changed ();
+	CHECK (!signin_on (win) &&
+	       g_strcmp0 (footer (win), "2 unsaved changes") == 0,
+	       "sign-in: a switch the user moved stays as they left it");
+
+	/* The quit path closes it as Cancel would.  (One window at a time,
+	 * asked for again while open, is fs-traymenu-smoke's: from the tray,
+	 * where the second request comes from.) */
+	fs_dialogs_preferences_cancel ();
+}
+
+#endif /* !G_OS_WIN32 */
+
 #endif
 
 /* ============================================================== main */
@@ -1623,12 +1963,16 @@ main (int argc, char **argv)
 		static Scenario real = { "real", drive_real, ANSWER_NONE,
 		                         FALSE, FALSE, FALSE, NULL };
 		gchar *keys;
+		gboolean signin_before = fs_autostart_enabled ();
 
 		seed ("[client]\nenable_tray_icon=true\n");
 		run_scenario (&real);
 		keys = disk_table_keys ();
 		CHECK (g_strcmp0 (keys, "client/enable_tray_icon=true;") == 0,
 		       "Save without a change writes nothing (%s)", keys);
+		CHECK (fs_autostart_enabled () == signin_before,
+		       "...and leaves start at sign-in as it was (%d)",
+		       signin_before);
 		g_free (keys);
 	}
 #else
@@ -1884,6 +2228,131 @@ main (int argc, char **argv)
 		       strstr (fresh_run.report_text, "now uses") == NULL,
 		       "firewall off: the report says the settings wait for it "
 		       "to be turned on, not that it uses them now");
+
+		/* ---- Start at sign-in: the Background card ---- */
+#ifdef G_OS_WIN32
+		g_print ("---- signin-*: skipped on Windows (would register "
+		         "a real Task Scheduler task)\n");
+#else
+		{
+			static Scenario signin_cancel = {
+				"signin-cancel", drive_signin_cancel, ANSWER_NONE,
+				FALSE, FALSE, FALSE, NULL };
+			static Scenario signin_save_on = {
+				"signin-on", drive_signin_on, ANSWER_NONE,
+				FALSE, FALSE, FALSE, NULL };
+			static Scenario signin_save_off = {
+				"signin-off", drive_signin_off, ANSWER_NONE,
+				FALSE, FALSE, FALSE, NULL };
+			static Scenario signin_failed = {
+				"signin-fail", drive_signin_fail, ANSWER_NONE,
+				FALSE, FALSE, FALSE, NULL };
+			static Scenario signin_denied = {
+				"signin-denied", drive_signin_denied, ANSWER_NONE,
+				FALSE, FALSE, FALSE, NULL };
+			static Scenario signin_outside = {
+				"signin-outside", drive_signin_outside, ANSWER_NONE,
+				FALSE, FALSE, FALSE, NULL };
+			gchar *adir = g_build_filename (dir, "autostart", NULL);
+			gchar *sdir = g_build_filename (dir, "systemd", NULL);
+			gchar *wants = g_build_filename (sdir,
+			                                 "multi-user.target.wants",
+			                                 NULL);
+			gchar *unit = g_build_filename (sdir, "stockfw.service",
+			                                NULL);
+			gchar *link = g_build_filename (wants, "stockfw.service",
+			                                NULL);
+			gchar *blocker = g_build_filename (dir, "not-a-dir", NULL);
+			gchar *bad = g_build_filename (blocker, "autostart", NULL);
+			gchar *after;
+
+			fake_as_linux ();
+			fake_state = FS_FW_RUNNING;
+			g_setenv ("STOCKFW_AUTOSTART_DIR", adir, TRUE);
+			g_setenv ("STOCKFW_SYSTEMD_DIR", sdir, TRUE);
+			signin_entry = g_build_filename (adir, "stockfw.desktop",
+			                                 NULL);
+
+			seed ("");
+			keys = disk_table_keys ();
+			run_scenario (&signin_cancel);
+			CHECK (!signin_entry_exists (),
+			       "sign-in: Cancel wrote no entry");
+
+			calls = fake_apply_calls;
+			run_scenario (&signin_save_on);
+			after = disk_table_keys ();
+			CHECK (signin_entry_exists () &&
+			       g_strcmp0 (keys, after) == 0 &&
+			       fake_apply_calls == calls,
+			       "sign-in: Save wrote the entry and nothing else, "
+			       "and applied nothing (%s)", after);
+			g_free (after);
+			g_free (keys);
+
+			/* The boot unit installed and enabled. */
+			g_mkdir_with_parents (wants, 0700);
+			g_file_set_contents (unit, "[Unit]\n", -1, NULL);
+			g_file_set_contents (link, "[Unit]\n", -1, NULL);
+			run_scenario (&signin_save_off);
+			CHECK (!signin_entry_exists (),
+			       "sign-in: turned off and saved, the entry is gone");
+
+			/* Installed, not enabled; and an entry that cannot be
+			 * written. */
+			g_remove (link);
+			g_file_set_contents (blocker, "", -1, NULL);
+			g_setenv ("STOCKFW_AUTOSTART_DIR", bad, TRUE);
+			g_free (signin_entry);
+			signin_entry = g_build_filename (bad, "stockfw.desktop",
+			                                 NULL);
+			seed ("");
+			run_scenario (&signin_failed);
+			CHECK (then_drive == NULL,
+			       "sign-in failed: the window stays open after Save");
+			then_drive = NULL;
+			CHECK (!disk_has (FS_PREFS_SKIP_REDUNDANT, NULL) &&
+			       !signin_entry_exists (),
+			       "sign-in failed, then Cancel: nothing was saved");
+
+			/* A copy that may not change it, with the entry set. */
+			g_setenv ("STOCKFW_AUTOSTART_DIR", adir, TRUE);
+			g_free (signin_entry);
+			signin_entry = g_build_filename (adir, "stockfw.desktop",
+			                                 NULL);
+			CHECK (fs_autostart_set (TRUE, NULL) &&
+			       signin_entry_exists (), "(entry set for the test)");
+			fs_prefs_test_signin_can_change = cannot_change;
+			run_scenario (&signin_denied);
+			fs_prefs_test_signin_can_change = NULL;
+			CHECK (signin_entry_exists (),
+			       "sign-in, no right to change it: Save left the "
+			       "entry alone");
+
+			/* Changed outside while open, then closed by the quit
+			 * path. */
+			fs_autostart_set (FALSE, NULL);
+			seed ("");
+			run_scenario (&signin_outside);
+			CHECK (signin_entry_exists () &&
+			       !disk_has (FS_PREFS_SKIP_REDUNDANT, NULL),
+			       "sign-in: closed by the quit path as Cancel: the "
+			       "change made outside stands, nothing in the window "
+			       "was saved");
+			fs_autostart_set (FALSE, NULL);
+
+			g_unsetenv ("STOCKFW_AUTOSTART_DIR");
+			g_unsetenv ("STOCKFW_SYSTEMD_DIR");
+			g_clear_pointer (&signin_entry, g_free);
+			g_free (adir);
+			g_free (sdir);
+			g_free (wants);
+			g_free (unit);
+			g_free (link);
+			g_free (blocker);
+			g_free (bad);
+		}
+#endif
 
 		fs_app_test_set_context (NULL, NULL);
 		fs_policy_free (loaded);

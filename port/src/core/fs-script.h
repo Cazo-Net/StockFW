@@ -107,6 +107,12 @@ gchar *fs_script_generate_outbound_family (const FsPolicy *policy,
                                            const FsSettings *settings,
                                            FsFamily family);
 
+/* A policy row's port as the generator writes it for iptables: one
+ * port or a "first:last" range, each bound read in base 10 and written
+ * as a plain decimal number ("022" -> "22", "67-68" -> "67:68").  NULL
+ * when fs_util_is_valid_port() refuses it.  Caller frees. */
+gchar *fs_script_port_text (const gchar *port);
+
 /* ---- iptables-restore form (1.0.7) ---------------------------------
  *
  * What the Linux backend loads: per family, one iptables-restore input

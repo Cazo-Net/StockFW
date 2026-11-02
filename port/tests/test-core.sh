@@ -41,6 +41,14 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-netparse.h"
 #include "core/fs-activity.h"
 #include "core/fs-json.h"
+#include "core/fs-autoblock.h"
+#include "core/fs-autostart.h"
+#include "core/fs-blocktally.h"
+#include <glib/gstdio.h>
+#ifndef G_OS_WIN32
+#include <unistd.h>
+#endif
+#include "core/fs-i18n.h"
 
 static int failures = 0;
 
@@ -195,33 +203,450 @@ static void test_policy_persist (void)
 	fs_policy_free (policy);
 }
 
+/* --- Windows rule translation (1.0.7) ---------------------------------
+ *
+ * Golden tests for fs_fwrule_*: what each policy row compiles to
+ * (protocol, side, port spec, name) and the exact netsh argv.  Before
+ * 1.0.7 most services compiled to protocol "any" with the port
+ * dropped (allow-everything), '-' ranges and lists became "any port",
+ * outbound service ports sat on the local side, and NTP was TCP. */
+
 static void test_fwrule_ports (void)
 {
-	gint port = 0;
-	gint first = 0, last = 0;
+	/* Each case: the port text, and the netsh spec (NULL: refused). */
+	static const struct { const gchar *text; const gchar *spec; } cases[] = {
+		{ "22", "22" },
+		{ "67-68", "67-68" },
+		{ "67:68", "67-68" },
+		{ "1024:65535", "1024-65535" },
+		{ "137-139 445", "137-139,445" },
+		{ "137:139,445", "137-139,445" },
+		{ "1234,1243,2772,2773", "1234,1243,2772,2773" },
+		{ "80, 443", "80,443" },
+		{ " 22 ", "22" },
+		{ "22-22", "22" },
+		{ "80,80", "80" },
+		{ "1", "1" },
+		{ "65535", "65535" },
+		{ "0", NULL },
+		{ "0-10", NULL },
+		{ "65536", NULL },
+		{ "99999", NULL },
+		{ "200:100", NULL },
+		{ "68-67", NULL },
+		{ "67-", NULL },
+		{ "-67", NULL },
+		{ "1-2-3", NULL },
+		{ "1:2-3", NULL },
+		{ "abc", NULL },
+		{ "0x50", NULL },
+		{ "+80", NULL },
+		{ "80abc", NULL },
+		{ "22;23", NULL },
+		{ "22\t23", NULL },
+		{ "000022", NULL },
+		{ "22,abc", NULL },
+		{ ",", NULL },
+		{ "", NULL },
+	};
 
-	CHECK (fs_fwrule_parse_port ("80", &port) && port == 80, "parse port 80");
-	CHECK (fs_fwrule_parse_port (NULL, &port) && port == 0, "NULL port = any");
-	CHECK (fs_fwrule_parse_port ("", &port) && port == 0, "empty port = any");
-	CHECK (!fs_fwrule_parse_port ("1024:2000", &port),
-	       "a range is not a single port");
-	CHECK (!fs_fwrule_parse_port ("abc", &port), "garbage port rejected");
+	for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
+		gchar *spec = fs_fwrule_port_spec (cases[i].text);
 
-	CHECK (fs_fwrule_parse_range ("1024:65535", &first, &last) &&
-	       first == 1024 && last == 65535, "range parsed");
-	CHECK (fs_fwrule_parse_range ("80", &first, &last) &&
-	       first == 80 && last == 80, "single port as a 1:1 range");
-	CHECK (!fs_fwrule_parse_range ("200:100", &first, &last),
-	       "inverted range rejected");
-	CHECK (!fs_fwrule_parse_range ("99999", &first, &last),
-	       "out of range port rejected");
+		CHECK (g_strcmp0 (spec, cases[i].spec) == 0,
+		       "port text \"%s\" -> %s (got %s)", cases[i].text,
+		       cases[i].spec != NULL ? cases[i].spec : "refused",
+		       spec != NULL ? spec : "refused");
+		g_free (spec);
+	}
 
-	CHECK (fs_fwrule_protocol_for_service ("SSH") == FS_PROTO_TCP,
-	       "SSH is TCP");
-	CHECK (fs_fwrule_protocol_for_service ("Samba (SMB)") == FS_PROTO_ANY,
-	       "Samba is left as any-protocol");
-	CHECK (fs_fwrule_protocol_for_service (NULL) == FS_PROTO_ANY,
-	       "unknown service is any-protocol");
+	CHECK (fs_fwrule_port_spec (NULL) == NULL, "NULL port text is no spec");
+
+	CHECK (fs_fwrule_port_spec_covers ("137-139,445", 138) &&
+	       fs_fwrule_port_spec_covers ("137-139,445", 445) &&
+	       fs_fwrule_port_spec_covers ("137-139,445", 137) &&
+	       fs_fwrule_port_spec_covers ("137-139,445", 139),
+	       "a spec covers every port in its ranges and list");
+	CHECK (!fs_fwrule_port_spec_covers ("137-139,445", 140) &&
+	       !fs_fwrule_port_spec_covers ("137-139,445", 136) &&
+	       !fs_fwrule_port_spec_covers ("137-139,445", 444),
+	       "and no port outside them");
+	CHECK (fs_fwrule_port_spec_covers (NULL, 1) &&
+	       fs_fwrule_port_spec_covers (NULL, 65535),
+	       "no spec covers every port");
+}
+
+/* One expected rule of a golden case. */
+typedef struct
+{
+	FsRuleProtocol proto;
+	const gchar   *local;     /* expected local_ports  (NULL: any) */
+	const gchar   *remote;    /* expected remote_ports (NULL: any) */
+	const gchar   *suffix;    /* expected name ending, or NULL     */
+} FwExpect;
+
+static const gchar *
+fw_proto_name (FsRuleProtocol p)
+{
+	return p == FS_PROTO_TCP ? "TCP" : p == FS_PROTO_UDP ? "UDP" : "ANY";
+}
+
+/* [ fw_golden ]
+ * Compiles one row alone and compares every rule with the expected
+ * list, in order.  n == 0 means the row must be refused, with a
+ * reason. */
+static void
+fw_golden (FsRuleKind kind, const gchar *service, const gchar *port,
+           const FwExpect *want, guint n)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *row = fs_rule_new (kind);
+	GPtrArray *refused = NULL;
+	GList *rules;
+	gboolean inbound = (kind == FS_RULE_INBOUND_ALLOW_SERVICE ||
+	                    kind == FS_RULE_INBOUND_FORWARD);
+	guint i = 0;
+
+	row->service = g_strdup (service);
+	row->port = g_strdup (port);
+	if (kind == FS_RULE_INBOUND_FORWARD) {
+		row->to = g_strdup ("192.168.1.50");
+		row->to_port = g_strdup ("8080");
+	} else {
+		row->target = g_strdup (FS_TARGET_ANY);
+	}
+	fs_policy_add (policy, row);
+	fs_rule_free (row);
+
+	rules = fs_fwrule_from_policy_checked (policy, &refused);
+
+	if (n == 0) {
+		CHECK (rules == NULL && refused->len == 1,
+		       "%s %s port \"%s\" is refused, not widened "
+		       "(%u rules, %u refusals)",
+		       inbound ? "inbound" : "outbound",
+		       service != NULL ? service : "(none)",
+		       port != NULL ? port : "",
+		       g_list_length (rules), refused->len);
+		if (refused->len == 1)
+			CHECK (strstr (g_ptr_array_index (refused, 0),
+			               "was not applied") != NULL,
+			       "the refusal says the rule was not applied: %s",
+			       (gchar *) g_ptr_array_index (refused, 0));
+	} else {
+		CHECK (g_list_length (rules) == n && refused->len == 0,
+		       "%s %s port \"%s\" compiles to %u rule(s) (got %u, "
+		       "%u refused)", inbound ? "inbound" : "outbound",
+		       service, port != NULL ? port : "", n,
+		       g_list_length (rules), refused->len);
+	}
+
+	for (GList *l = rules; l != NULL && i < n; l = l->next, i++) {
+		FsFwRule *r = l->data;
+
+		CHECK (r->protocol == want[i].proto &&
+		       g_strcmp0 (r->local_ports, want[i].local) == 0 &&
+		       g_strcmp0 (r->remote_ports, want[i].remote) == 0,
+		       "  %s \"%s\" rule %u: %s local=%s remote=%s "
+		       "(got %s local=%s remote=%s)",
+		       service, port != NULL ? port : "", i,
+		       fw_proto_name (want[i].proto),
+		       want[i].local ? want[i].local : "any",
+		       want[i].remote ? want[i].remote : "any",
+		       fw_proto_name (r->protocol),
+		       r->local_ports ? r->local_ports : "any",
+		       r->remote_ports ? r->remote_ports : "any");
+		CHECK (r->direction == (inbound ? FS_DIR_INBOUND
+		                                : FS_DIR_OUTBOUND),
+		       "  %s \"%s\" rule %u keeps its direction", service,
+		       port != NULL ? port : "", i);
+		CHECK (fs_fwrule_is_sound (r),
+		       "  %s \"%s\" rule %u is sound (a port means TCP or UDP)",
+		       service, port != NULL ? port : "", i);
+		if (want[i].suffix != NULL)
+			CHECK (g_str_has_suffix (r->name, want[i].suffix),
+			       "  name \"%s\" ends in \"%s\"", r->name,
+			       want[i].suffix);
+		else
+			CHECK (!g_str_has_suffix (r->name, "(TCP)") &&
+			       !g_str_has_suffix (r->name, "(UDP)"),
+			       "  name \"%s\" carries no protocol suffix",
+			       r->name);
+	}
+
+	g_ptr_array_unref (refused);
+	fs_fwrule_list_free (rules);
+	fs_policy_free (policy);
+}
+
+static void test_fwrule_services_golden (void)
+{
+	const FsRuleKind IN = FS_RULE_INBOUND_ALLOW_SERVICE;
+	const FsRuleKind OUT = FS_RULE_OUTBOUND_ALLOW_SERVICE;
+	const FsRuleKind DENY = FS_RULE_OUTBOUND_DENY_SERVICE;
+	const gchar *T = " (TCP)";
+	const gchar *U = " (UDP)";
+
+	/* Every service in the user table, inbound on its default ports:
+	 * the protocols it really uses, ports on the local side. */
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "6881-6889", NULL, T },
+		                 { FS_PROTO_UDP, "6881-6889", NULL, U } };
+		fw_golden (IN, "BitTorrent", "6881-6889", e, 2);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_UDP, "67-68", NULL, NULL } };
+		fw_golden (IN, "DHCP", "67-68", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "53", NULL, T },
+		                 { FS_PROTO_UDP, "53", NULL, U } };
+		fw_golden (IN, "DNS", "53", e, 2);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "20-21", NULL, NULL } };
+		fw_golden (IN, "FTP", "20-21", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "80", NULL, NULL } };
+		fw_golden (IN, "HTTP", "80", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "443", NULL, T },
+		                 { FS_PROTO_UDP, "443", NULL, U } };
+		fw_golden (IN, "HTTPS", "443", e, 2);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "143", NULL, NULL } };
+		fw_golden (IN, "IMAP", "143", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "111,2049", NULL, T },
+		                 { FS_PROTO_UDP, "111,2049", NULL, U } };
+		fw_golden (IN, "NFS", "111 2049", e, 2);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "119", NULL, NULL } };
+		fw_golden (IN, "NNTP", "119", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_UDP, "123", NULL, NULL } };
+		fw_golden (IN, "NTP", "123", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "110", NULL, NULL } };
+		fw_golden (IN, "POP3", "110", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "139,445", NULL, T },
+		                 { FS_PROTO_UDP, "137-138", NULL, U } };
+		fw_golden (IN, "Samba (SMB)", "137-139 445", e, 2);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "25", NULL, NULL } };
+		fw_golden (IN, "SMTP", "25", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "22", NULL, NULL } };
+		fw_golden (IN, "SSH", "22", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "23", NULL, NULL } };
+		fw_golden (IN, "Telnet", "23", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "6000-6015", NULL, NULL } };
+		fw_golden (IN, "Xwindows", "6000-6015", e, 1);
+	}
+
+	/* SSDP, from the back-door table, is UDP 1900; the other entries
+	 * there have no protocol data and block both. */
+	{
+		FwExpect e[] = { { FS_PROTO_UDP, NULL, "1900", NULL } };
+		fw_golden (DENY, "SSDP", "1900", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, NULL, "12345,12346", T },
+		                 { FS_PROTO_UDP, NULL, "12345,12346", U } };
+		fw_golden (DENY, "Netbus", "12345,12346", e, 2);
+	}
+
+	/* Outbound: the service port is the REMOTE port. */
+	{
+		FwExpect e[] = { { FS_PROTO_UDP, NULL, "67-68", NULL } };
+		fw_golden (OUT, "DHCP", "67-68", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, NULL, "53", T },
+		                 { FS_PROTO_UDP, NULL, "53", U } };
+		fw_golden (OUT, "DNS", "53", e, 2);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_UDP, NULL, "123", NULL } };
+		fw_golden (OUT, "NTP", "123", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, NULL, "25", NULL } };
+		fw_golden (DENY, "SMTP", "25", e, 1);
+	}
+
+	/* Names as policies store them: hand-edited case, and the
+	 * default policy's _("DHCP"). */
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "22", NULL, NULL } };
+		fw_golden (IN, "ssh", "22", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_UDP, NULL, "67-68", NULL } };
+		fw_golden (OUT, _("DHCP"), "67-68", e, 1);
+	}
+
+	/* A moved service: the row's ports, the service's protocols. */
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "2222", NULL, NULL } };
+		fw_golden (IN, "SSH", "2222", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "445", NULL, T },
+		                 { FS_PROTO_UDP, "445", NULL, U } };
+		fw_golden (IN, "Samba (SMB)", "445", e, 2);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_UDP, NULL, "5353", NULL } };
+		fw_golden (OUT, "NTP", "5353", e, 1);
+	}
+
+	/* No port text: a known service uses its own ports. */
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "139,445", NULL, T },
+		                 { FS_PROTO_UDP, "137-138", NULL, U } };
+		fw_golden (IN, "Samba (SMB)", "", e, 2);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "1234,1243,2772,2773", NULL, T },
+		                 { FS_PROTO_UDP, "1234,1243,2772,2773", NULL, U } };
+		fw_golden (IN, "Subseven", NULL, e, 2);
+	}
+
+	/* A custom name: both protocols on the row's ports, ranges and
+	 * lists in both notations. */
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "8080", NULL, T },
+		                 { FS_PROTO_UDP, "8080", NULL, U } };
+		fw_golden (IN, "My game server", "8080", e, 2);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, NULL, "5000-5010,6000", T },
+		                 { FS_PROTO_UDP, NULL, "5000-5010,6000", U } };
+		fw_golden (OUT, "Custom", "5000:5010 6000", e, 2);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "10000-20000", NULL, T },
+		                 { FS_PROTO_UDP, "10000-20000", NULL, U } };
+		fw_golden (IN, "Wide", "10000-20000", e, 2);
+	}
+
+	/* The pseudo-services the simulator writes: exactly that
+	 * protocol.  With no port they are refused (test_fwrule_review). */
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "8443", NULL, NULL } };
+		fw_golden (IN, "TCP", "8443", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_UDP, NULL, "5000-5010", NULL } };
+		fw_golden (OUT, "UDP", "5000-5010", e, 1);
+	}
+
+	/* Port forwards: inbound, on the exposed local port. */
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "8080", NULL, NULL } };
+		fw_golden (FS_RULE_INBOUND_FORWARD, "HTTP", "8080", e, 1);
+	}
+	{
+		FwExpect e[] = { { FS_PROTO_TCP, "27015", NULL, T },
+		                 { FS_PROTO_UDP, "27015", NULL, U } };
+		fw_golden (FS_RULE_INBOUND_FORWARD, "Game", "27015", e, 2);
+	}
+
+	/* Refused, never "any port". */
+	fw_golden (IN, "SSH", "0", NULL, 0);
+	fw_golden (IN, "DNS", "70000", NULL, 0);
+	fw_golden (OUT, "Custom", "200:100", NULL, 0);
+	fw_golden (DENY, "SMTP", "25x", NULL, 0);
+	fw_golden (IN, "Custom", "22;23", NULL, 0);
+	fw_golden (IN, "TCP", "1-2-3", NULL, 0);
+	fw_golden (IN, "My service", "", NULL, 0);
+	fw_golden (IN, "ICMP", "", NULL, 0);
+	fw_golden (FS_RULE_INBOUND_FORWARD, "HTTP", "eighty", NULL, 0);
+}
+
+/* Every concrete rule of the default policy and the old defects in
+ * one place: no rule of any policy may be ANY with a port. */
+static void test_fwrule_default_policy (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	GPtrArray *refused = NULL;
+	GList *rules;
+	guint unsound = 0;
+
+	fs_policy_install_defaults (policy);
+	rules = fs_fwrule_from_policy_checked (policy, &refused);
+
+	CHECK (g_list_length (rules) == 3 && refused->len == 0,
+	       "the default policy compiles to 3 rules (DHCP UDP, DNS TCP "
+	       "and UDP; got %u, %u refused)", g_list_length (rules),
+	       refused->len);
+
+	for (GList *l = rules; l != NULL; l = l->next) {
+		FsFwRule *r = l->data;
+
+		if (!fs_fwrule_is_sound (r))
+			unsound++;
+		CHECK (r->protocol != FS_PROTO_ANY && r->remote_ports != NULL &&
+		       r->local_ports == NULL,
+		       "default rule \"%s\" is %s to remote port %s",
+		       r->name, fw_proto_name (r->protocol),
+		       r->remote_ports != NULL ? r->remote_ports : "ANY");
+	}
+
+	CHECK (unsound == 0, "every default rule is sound");
+
+	/* The soundness rule itself. */
+	{
+		FsFwRule *bad = fs_fwrule_new ();
+
+		bad->name = g_strdup ("StockFW: Allow DNS (inbound)");
+		bad->protocol = FS_PROTO_ANY;
+		bad->local_ports = g_strdup ("53");
+		CHECK (!fs_fwrule_is_sound (bad),
+		       "protocol ANY with a port is not sound");
+		CHECK (fs_fwrule_netsh_args (bad) == NULL,
+		       "and netsh is never given it");
+
+		bad->protocol = FS_PROTO_TCP;
+		CHECK (fs_fwrule_is_sound (bad), "the same rule as TCP is");
+
+		g_free (bad->local_ports);
+		bad->local_ports = g_strdup ("53 54");
+		CHECK (!fs_fwrule_is_sound (bad),
+		       "a spec not in netsh form is not sound");
+
+		g_free (bad->local_ports);
+		bad->local_ports = NULL;
+		bad->remote_ports = g_strdup ("0");
+		CHECK (!fs_fwrule_is_sound (bad), "port 0 is not sound");
+
+		g_free (bad->remote_ports);
+		bad->remote_ports = NULL;
+		bad->protocol = FS_PROTO_ANY;
+		CHECK (fs_fwrule_is_sound (bad),
+		       "protocol ANY with no port (a host rule) is sound");
+		fs_fwrule_free (bad);
+	}
+
+	g_ptr_array_unref (refused);
+	fs_fwrule_list_free (rules);
+	fs_policy_free (policy);
 }
 
 static void test_fwrule_expand (void)
@@ -248,7 +673,8 @@ static void test_fwrule_expand (void)
 	fs_policy_add (policy, row);
 	fs_rule_free (row);
 
-	/* A port range should expand to individual rules. */
+	/* A range stays ONE spec per protocol: 1.0.6 wrote one rule per
+	 * port (and any-port past 1024 ports). */
 	row = fs_rule_new (FS_RULE_INBOUND_ALLOW_SERVICE);
 	row->service = g_strdup ("SMB");
 	row->port = g_strdup ("137:139");
@@ -264,6 +690,7 @@ static void test_fwrule_expand (void)
 
 	rules = fs_fwrule_from_policy (policy);
 
+	/* SSH TCP, HTTPS TCP+UDP, "SMB" (a custom name) TCP+UDP, host. */
 	CHECK (g_list_length (rules) == 6,
 	       "policy expands to 6 concrete rules (got %u)",
 	       g_list_length (rules));
@@ -275,7 +702,8 @@ static void test_fwrule_expand (void)
 		for (iter = rules; iter != NULL; iter = iter->next) {
 			FsFwRule *r = iter->data;
 
-			if (r->direction == FS_DIR_INBOUND && r->local_port == 22) {
+			if (r->direction == FS_DIR_INBOUND &&
+			    g_strcmp0 (r->local_ports, "22") == 0) {
 				found = TRUE;
 				CHECK (g_strcmp0 (r->remote_address,
 				                  "192.168.1.0/24") == 0,
@@ -294,38 +722,34 @@ static void test_fwrule_expand (void)
 
 	/* The "Anyone" rule has no remote address. */
 	{
-		gboolean found = FALSE;
+		guint found = 0;
 
 		for (iter = rules; iter != NULL; iter = iter->next) {
 			FsFwRule *r = iter->data;
 
-			if (r->local_port == 443) {
-				found = TRUE;
+			if (g_strcmp0 (r->local_ports, "443") == 0) {
+				found++;
 				CHECK (r->remote_address == NULL,
 				       "\"Anyone\" becomes no address constraint");
 			}
 		}
 
-		CHECK (found, "HTTPS rule present");
+		CHECK (found == 2, "HTTPS rules present, TCP and UDP");
 	}
 
-	/* The range expanded to 137, 138 and 139. */
+	/* The range is one spec on each protocol. */
 	{
-		gboolean have137 = FALSE, have138 = FALSE, have139 = FALSE;
-		gboolean have140 = FALSE;
+		guint ranged = 0;
 
 		for (iter = rules; iter != NULL; iter = iter->next) {
 			FsFwRule *r = iter->data;
 
-			if (r->local_port == 137) have137 = TRUE;
-			if (r->local_port == 138) have138 = TRUE;
-			if (r->local_port == 139) have139 = TRUE;
-			if (r->local_port == 140) have140 = TRUE;
+			if (g_strcmp0 (r->local_ports, "137-139") == 0)
+				ranged++;
 		}
 
-		CHECK (have137 && have138 && have139,
-		       "range 137:139 expands to three rules");
-		CHECK (!have140, "range does not overshoot");
+		CHECK (ranged == 2, "range 137:139 is one 137-139 rule per "
+		       "protocol (got %u)", ranged);
 	}
 
 	/* The blocked host became a block rule. */
@@ -336,6 +760,9 @@ static void test_fwrule_expand (void)
 			outbound_blocks++;
 			CHECK (r->action == FS_ACTION_BLOCK,
 			       "outbound deny is a block");
+			CHECK (r->protocol == FS_PROTO_ANY &&
+			       r->local_ports == NULL && r->remote_ports == NULL,
+			       "a host rule stays protocol ANY with no port");
 		}
 
 		if (r->direction == FS_DIR_INBOUND &&
@@ -386,13 +813,142 @@ static void test_fwrule_forward (void)
 		FsFwRule *r = rules->data;
 
 		CHECK (r->forward, "rule is marked as a forward");
-		CHECK (r->local_port == 80, "forward listens on the firewall port");
+		CHECK (r->direction == FS_DIR_INBOUND &&
+		       g_strcmp0 (r->local_ports, "80") == 0 &&
+		       r->remote_ports == NULL,
+		       "forward listens on the firewall's local port");
 		CHECK (g_strcmp0 (r->forward_address, "192.168.1.50") == 0,
 		       "forward targets the internal host");
 	}
 
 	fs_fwrule_list_free (rules);
 	fs_policy_free (policy);
+}
+
+/* [ netsh_golden ]
+ * The argv of the first rule a one-row policy compiles to (index
+ * `which'), joined with '|' for one comparison. */
+static gchar *
+netsh_golden (FsRuleKind kind, const gchar *service, const gchar *port,
+              const gchar *target, guint which)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *row = fs_rule_new (kind);
+	GList *rules;
+	gchar *joined = NULL;
+	FsFwRule *rule;
+
+	row->service = g_strdup (service);
+	row->port = g_strdup (port);
+	if (kind == FS_RULE_INBOUND_FORWARD) {
+		row->to = g_strdup ("192.168.1.50");
+		row->to_port = g_strdup ("80");
+	} else {
+		row->target = g_strdup (target);
+	}
+	fs_policy_add (policy, row);
+	fs_rule_free (row);
+
+	rules = fs_fwrule_from_policy (policy);
+	rule = g_list_nth_data (rules, which);
+
+	if (rule != NULL) {
+		GStrv args = fs_fwrule_netsh_args (rule);
+
+		if (args != NULL)
+			joined = g_strjoinv ("|", args);
+		g_strfreev (args);
+	}
+
+	fs_fwrule_list_free (rules);
+	fs_policy_free (policy);
+
+	return joined;
+}
+
+static void test_fwrule_netsh_golden (void)
+{
+	static const gchar *head =
+		"netsh.exe|advfirewall|firewall|add|rule|";
+	struct {
+		FsRuleKind kind;
+		const gchar *service, *port, *target;
+		guint which;
+		const gchar *argv;      /* after head */
+		const gchar *what;
+	} cases[] = {
+		{ FS_RULE_INBOUND_ALLOW_SERVICE, "SSH", "22", FS_TARGET_ANY, 0,
+		  "name=StockFW- Allow SSH -inbound-|profile=any|dir=in|"
+		  "action=allow|protocol=TCP|enable=yes|localport=22",
+		  "inbound service" },
+		{ FS_RULE_INBOUND_ALLOW_SERVICE, "SSH", "22", "192.168.1.0/24", 0,
+		  "name=StockFW- Allow SSH -inbound- 192.168.1.0-24-|"
+		  "profile=any|dir=in|action=allow|protocol=TCP|enable=yes|"
+		  "localport=22|remoteip=192.168.1.0/24",
+		  "inbound service from a network" },
+		{ FS_RULE_OUTBOUND_DENY_SERVICE, "SMTP", "25", FS_TARGET_ANY, 0,
+		  "name=StockFW- Block SMTP -outbound-|profile=any|dir=out|"
+		  "action=block|protocol=TCP|enable=yes|remoteport=25",
+		  "outbound service block on the remote port" },
+		{ FS_RULE_OUTBOUND_ALLOW_SERVICE, "DHCP", "67-68", FS_TARGET_ANY, 0,
+		  "name=StockFW- Allow DHCP -outbound-|profile=any|dir=out|"
+		  "action=allow|protocol=UDP|enable=yes|remoteport=67-68",
+		  "outbound DHCP, UDP on a '-' range" },
+		{ FS_RULE_INBOUND_ALLOW_SERVICE, "DNS", "53", FS_TARGET_ANY, 0,
+		  "name=StockFW- Allow DNS -inbound- -TCP-|profile=any|dir=in|"
+		  "action=allow|protocol=TCP|enable=yes|localport=53",
+		  "both-protocol service, the TCP half" },
+		{ FS_RULE_INBOUND_ALLOW_SERVICE, "DNS", "53", FS_TARGET_ANY, 1,
+		  "name=StockFW- Allow DNS -inbound- -UDP-|profile=any|dir=in|"
+		  "action=allow|protocol=UDP|enable=yes|localport=53",
+		  "both-protocol service, the UDP half" },
+		{ FS_RULE_INBOUND_ALLOW_SERVICE, "Samba (SMB)", "137-139 445",
+		  FS_TARGET_ANY, 0,
+		  "name=StockFW- Allow Samba -SMB- -inbound- -TCP-|profile=any|"
+		  "dir=in|action=allow|protocol=TCP|enable=yes|"
+		  "localport=139,445",
+		  "a port list in netsh form" },
+		{ FS_RULE_OUTBOUND_DENY_TO, NULL, NULL, "10.0.0.7", 0,
+		  "name=StockFW- Block outbound -10.0.0.7-|profile=any|dir=out|"
+		  "action=block|protocol=any|enable=yes|remoteip=10.0.0.7",
+		  "host rule: protocol any, no port" },
+		{ FS_RULE_INBOUND_FORWARD, "HTTP", "8080", NULL, 0,
+		  "name=StockFW- Allow HTTP -inbound-|profile=any|dir=in|"
+		  "action=allow|protocol=TCP|enable=yes|localport=8080",
+		  "port forward on the exposed port" },
+		{ FS_RULE_INBOUND_ALLOW_SERVICE, "TCP", "8443", FS_TARGET_ANY, 0,
+		  "name=StockFW- Allow TCP -inbound-|profile=any|dir=in|"
+		  "action=allow|protocol=TCP|enable=yes|localport=8443",
+		  "TCP pseudo-service: TCP only, on its port" },
+	};
+
+	for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
+		gchar *got = netsh_golden (cases[i].kind, cases[i].service,
+		                           cases[i].port, cases[i].target,
+		                           cases[i].which);
+		gchar *want = g_strconcat (head, cases[i].argv, NULL);
+
+		CHECK (g_strcmp0 (got, want) == 0,
+		       "netsh argv, %s:\n        want %s\n        got  %s",
+		       cases[i].what, want, got != NULL ? got : "(none)");
+
+		CHECK (got == NULL || strchr (got, '"') == NULL,
+		       "netsh argv, %s: no quote characters", cases[i].what);
+
+		g_free (want);
+		g_free (got);
+	}
+
+	{
+		gchar *name = fs_fwrule_netsh_name (
+			"StockFW: Allow DNS (inbound, 2001:db8::/32) (UDP)");
+
+		CHECK (g_strcmp0 (name, "StockFW- Allow DNS -inbound- "
+		                        "2001-db8---32- -UDP-") == 0,
+		       "netsh names keep the StockFW prefix the clear relies "
+		       "on (got %s)", name);
+		g_free (name);
+	}
 }
 
 static void test_service_lookup (void)
@@ -464,6 +1020,37 @@ static void test_script_generation (void)
 	       "inbound service rule also covers udp");
 	CHECK (strstr (script, "-A INBOUND -i lo -j ACCEPT") != NULL,
 	       "loopback trusted");
+
+	/* iptables reads a tcp/udp port with base 0: "022" written as typed
+	 * would be port 18.  The generator writes plain decimal. */
+	{
+		FsPolicy *padded = fs_policy_new ();
+		FsRule *row = fs_rule_new (FS_RULE_INBOUND_ALLOW_SERVICE);
+		gchar *text, *a, *b;
+
+		row->service = g_strdup ("SSH");
+		row->port = g_strdup ("022");
+		row->target = g_strdup ("192.168.1.0/24");
+		fs_policy_add (padded, row);
+		fs_rule_free (row);
+		text = fs_script_generate_inbound (padded, settings);
+		CHECK (text != NULL &&
+		       strstr (text, "-p tcp --dport 22 -j ACCEPT") != NULL &&
+		       strstr (text, "--dport 022") == NULL,
+		       "a zero-padded port is written in plain decimal");
+		g_free (text);
+		fs_policy_free (padded);
+
+		a = fs_script_port_text ("0067-068");
+		b = fs_script_port_text ("+22");
+		CHECK (g_strcmp0 (a, "67:68") == 0,
+		       "a padded range is written as 67:68 (%s)", a ? a : "NULL");
+		CHECK (b == NULL || strcmp (b, "22") == 0,
+		       "a signed port is refused or written plain (%s)",
+		       b ? b : "NULL");
+		g_free (a);
+		g_free (b);
+	}
 	CHECK (strstr (script, "-A INBOUND -i eth1 -j ACCEPT") != NULL,
 	       "internal interface accepted when NAT is on");
 	CHECK (strstr (script, "-j DROP") != NULL,
@@ -748,6 +1335,23 @@ static void test_prefs_fallbacks (void)
 	CHECK (fs_prefs_get_int ("/apps/stockfw/client/int_sample",
 	                         99) == 7,
 	       "stored int beats the fallback");
+
+	/* 1.0.7 session safety: the running program's periodic save
+	 * writes the settings only when this says they changed. */
+	{
+		const gchar *path = fs_prefs_path ();
+		gboolean existed = g_file_test (path, G_FILE_TEST_EXISTS);
+
+		CHECK (fs_prefs_dirty (), "a setter marks the settings dirty");
+		CHECK (fs_prefs_save () && !fs_prefs_dirty (),
+		       "a save leaves them clean");
+		fs_prefs_set_string ("/apps/stockfw/client/str_sample", "x");
+		CHECK (fs_prefs_dirty (), "the next setter marks them again");
+		CHECK (fs_prefs_load () && !fs_prefs_dirty (),
+		       "a load leaves them clean");
+		if (!existed)
+			g_unlink (path);
+	}
 }
 
 /* Regression: fs_copilot_feed_event() re-inserted the profile on EVERY
@@ -2305,509 +2909,217 @@ static void test_name_hygiene_f3 (void)
 	}
 }
 
-/* The What-If simulator: the closed grammar in core/fs-copilot.c and
- * the verdict it produces against a real policy.  The teeth here are
- * for the lies a simulator can tell -- a verdict based on a wrong
- * reading of the line; a verdict that ignores block precedence or
- * pretends a subnet block does not cover its hosts; and a verdict
- * reached through the wrong rule: the portless line that misses the
- * rule opening a port, ICMP joined to a ported rule, an any-port
- * rule named where the exact-port rule decided, a forward hiding
- * where the traffic goes, or a deciding port/host left out of the
- * reason the panel's notes point at. */
+/* The What-If simulator through the copilot's wrappers: what the older
+ * callers (the Copilot page's log, the CLI) read from the engine in
+ * core/fs-whatif.c.  The engine's own golden table is
+ * tests/test-whatif.c, run after this program; what is pinned here is
+ * that the wrappers carry the engine's reading and verdicts through
+ * unchanged on whichever platform this runs, and refuse rather than
+ * guess. */
+
+/* [ whatif_ask ] -- one line against a policy, on a named platform,
+ * with the firewall running and the policy in force. */
+static FsWhatIfResult *
+whatif_ask (FsWhatIfPlatform platform, const FsPolicy *policy,
+            const gchar *line)
+{
+	FsSettings *settings = fs_settings_new ();
+	FsWhatIfContext *ctx = fs_whatif_context_new (platform, policy, settings);
+	FsWhatIfResult *r;
+
+	ctx->firewall = FS_WHATIF_FW_RUNNING;
+	ctx->live = FS_WHATIF_LIVE_YES;
+	r = fs_whatif_simulate_text (ctx, line);
+	fs_whatif_context_free (ctx);
+	fs_settings_free (settings);
+	return r;
+}
+
+static const FsWhatIfAnswer *
+whatif_answer (const FsWhatIfResult *r)
+{
+	return (r != NULL && r->answers->len > 0)
+	       ? g_ptr_array_index (r->answers, 0) : NULL;
+}
+
 static void test_whatif_simulate (void)
 {
-	FsScenario *sc;
 	FsSimulationResult *r;
+	FsWhatIfQuery *q = NULL;
 	FsCopilot *copilot;
 	FsPolicy *policy;
 	FsRule *rule;
 
-	sc = fs_copilot_parse_scenario ("allow SSH from 192.168.1.50 on port 22");
-	CHECK (sc != NULL, "a full scenario line parses");
-	if (sc != NULL) {
-		CHECK (sc->inbound, "'from' reads as inbound");
-		CHECK (sc->had_port && sc->port == 22, "port 22 is read");
-		CHECK (sc->had_addr &&
-		       g_strcmp0 (sc->remote_ip, "192.168.1.50") == 0,
-		       "the host is read");
-		CHECK (g_strcmp0 (sc->protocol, "TCP") == 0,
-		       "TCP is the default protocol");
-		CHECK (g_strcmp0 (sc->app, "SSH") == 0,
-		       "the token after 'allow' is the application");
-		fs_scenario_free (sc);
+	/* The reading comes back with the answer. */
+	copilot = fs_copilot_new ();
+	r = fs_copilot_simulate_text (copilot,
+	                              "allow SSH from 192.168.1.50 on port 22", &q);
+	CHECK (r != NULL && q != NULL, "a full line is read and answered");
+	if (q != NULL) {
+		CHECK (q->direction == FS_WHATIF_DIR_INBOUND,
+		       "'from' reads as inbound");
+		CHECK (q->port == 22 && q->protocol == FS_WHATIF_PROTO_TCP,
+		       "port 22, TCP");
+		CHECK (g_strcmp0 (q->host, "192.168.1.50") == 0, "the host is read");
+		CHECK (q->verb == FS_WHATIF_VERB_ALLOW, "the verb is read");
+		CHECK (q->confidence >= 0.8 && q->pieces->len >= 3,
+		       "and the reading says what it recognised (%.0f%%)",
+		       q->confidence * 100);
+		fs_whatif_query_free (q);
+		q = NULL;
+	}
+	if (r != NULL) {
+		CHECK (r->verdict == FS_WHATIF_BLOCKED && r->would_block,
+		       "no rule: the default blocks it");
+		CHECK (r->whatif != NULL && r->whatif->answers->len == 1,
+		       "the whole answer rides along");
+		CHECK (strstr (r->explanation, "Simulation:") != NULL &&
+		       r->reason != NULL && *r->reason != '\0' &&
+		       strstr (r->reason, "Simulation:") == NULL,
+		       "the log sentence keeps its wrapper; the reason does not");
+		fs_simulation_result_free (r);
 	}
 
-	sc = fs_copilot_parse_scenario ("block DNS to 8.8.8.8 on port 53 udp");
-	CHECK (sc != NULL, "a deny-style line parses");
-	if (sc != NULL) {
-		CHECK (!sc->inbound, "'to' reads as outbound");
-		CHECK (sc->had_port && sc->port == 53, "port 53 is read");
-		CHECK (g_strcmp0 (sc->remote_ip, "8.8.8.8") == 0,
-		       "the host is read");
-		CHECK (g_strcmp0 (sc->protocol, "UDP") == 0,
-		       "the udp keyword is read");
-		CHECK (g_strcmp0 (sc->app, "DNS") == 0,
-		       "a service name supplies the application");
-		fs_scenario_free (sc);
+	/* A line with no direction is asked both ways. */
+	r = fs_copilot_simulate_text (copilot, "ssh is open at 22 port", &q);
+	CHECK (r != NULL && q != NULL && q->direction == FS_WHATIF_DIR_BOTH &&
+	       q->port == 22 && r->whatif->answers->len == 2,
+	       "a line that names no direction is answered both ways");
+	fs_whatif_query_free (q);
+	q = NULL;
+	fs_simulation_result_free (r);
+
+	/* Refusals, never guesses. */
+	CHECK (fs_copilot_simulate_text (copilot, "", NULL) == NULL &&
+	       fs_copilot_simulate_text (copilot, "   ", NULL) == NULL &&
+	       fs_copilot_simulate_text (copilot, NULL, NULL) == NULL,
+	       "an empty line is no question");
+	{
+		static const gchar *bad[] = {
+			"hello there", "allow port 0 from 10.0.0.1",
+			"inbound tcp port 65536", "outbound to 203.0.113.9:70000",
+			"inbound from 999.1.1.1 port 22",
+		};
+
+		for (guint i = 0; i < G_N_ELEMENTS (bad); i++) {
+			r = fs_copilot_simulate_text (copilot, bad[i], &q);
+			CHECK (r != NULL && r->verdict == FS_WHATIF_ERROR &&
+			       !r->would_block && q == NULL &&
+			       r->reason != NULL && *r->reason != '\0',
+			       "\"%s\" is refused with a reason (%s)", bad[i],
+			       r != NULL && r->reason ? r->reason : "-");
+			fs_simulation_result_free (r);
+		}
 	}
+	r = fs_copilot_simulate (copilot, NULL, "example.com", 22, "TCP", TRUE);
+	CHECK (r != NULL && r->verdict == FS_WHATIF_ERROR,
+	       "the field-by-field call refuses a host that is not an address");
+	fs_simulation_result_free (r);
+	fs_copilot_free (copilot);
 
-	/* No port clause: a known service name supplies the port, and
-	 * with no direction words the documented default is outbound. */
-	sc = fs_copilot_parse_scenario ("allow HTTPS to 10.0.0.1");
-	CHECK (sc != NULL, "a service-only line parses");
-	if (sc != NULL) {
-		CHECK (!sc->inbound, "the default direction is outbound");
-		CHECK (sc->had_port && sc->port == 443,
-		       "HTTPS supplies port 443");
-		CHECK (g_strcmp0 (sc->remote_ip, "10.0.0.1") == 0,
-		       "the host is read");
-		fs_scenario_free (sc);
-	}
-
-	/* The host:port shorthand. */
-	sc = fs_copilot_parse_scenario ("outbound to 203.0.113.9:8443");
-	CHECK (sc != NULL, "a host:port line parses");
-	if (sc != NULL) {
-		CHECK (!sc->inbound, "the outbound keyword is read");
-		CHECK (sc->had_addr &&
-		       g_strcmp0 (sc->remote_ip, "203.0.113.9") == 0,
-		       "the host survives the colon shorthand");
-		CHECK (sc->had_port && sc->port == 8443,
-		       "the port is read from the colon shorthand");
-		fs_scenario_free (sc);
-	}
-
-	/* No port, no host: the line still parses, with the flags clear
-	 * so the panel can say what was left out. */
-	sc = fs_copilot_parse_scenario ("allow anything outbound");
-	CHECK (sc != NULL, "a line with no port and no host parses");
-	if (sc != NULL) {
-		CHECK (!sc->had_port, "a missing port leaves had_port clear");
-		CHECK (!sc->had_addr, "a missing host leaves had_addr clear");
-		fs_scenario_free (sc);
-	}
-
-	CHECK (fs_copilot_parse_scenario ("") == NULL,
-	       "an empty line parses to nothing");
-	CHECK (fs_copilot_parse_scenario (NULL) == NULL,
-	       "a NULL line parses to nothing");
-
-	/* --- Verdicts against a real policy --- */
+	/* --- Verdicts against a real policy, on this platform --- */
 	policy = fs_policy_new ();
 	copilot = fs_copilot_new ();
 	fs_copilot_set_policy (copilot, policy);
 
-	/* The same host allowed and blocked: Windows Firewall gives the
-	 * block precedence, and so must the answer. */
+	/* The same host allowed and blocked: blocked on both platforms
+	 * (Windows: the block wins; Linux: deny rows come first). */
 	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
 	rule->target = g_strdup ("203.0.113.5");
 	fs_policy_add (policy, rule);
-
+	fs_rule_free (rule);
 	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
 	rule->target = g_strdup ("203.0.113.5");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
-	r = fs_copilot_simulate_text (copilot,
-	                              "allow SSH to 203.0.113.5 on port 22",
+	r = fs_copilot_simulate_text (copilot, "outbound tcp to 203.0.113.5 port 22",
 	                              NULL);
-	CHECK (r != NULL, "simulate_text answers");
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "a block rule beats an allow rule on the same host");
-		CHECK (r->matching_rule != NULL,
-		       "the verdict names the rule that decided it");
-		CHECK (strstr (r->explanation, "shadowed") != NULL,
-		       "the dead allow is reported as shadowed");
-		fs_simulation_result_free (r);
-	}
+	CHECK (r != NULL && r->would_block && r->matching_rule != NULL &&
+	       strstr (r->matching_rule, "Block outbound") != NULL,
+	       "a block rule beats an allow rule on the same host, and is named "
+	       "(%s)", r != NULL && r->matching_rule ? r->matching_rule : "-");
+	fs_simulation_result_free (r);
 
-	/* A block written as a subnet still covers a host inside it. */
+	/* A block written as a subnet covers a host inside it. */
 	fs_policy_clear (policy);
 	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
 	rule->target = g_strdup ("203.0.113.0/24");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+	r = fs_copilot_simulate (copilot, NULL, "203.0.113.77", 80, "TCP", FALSE);
+	CHECK (r != NULL && r->would_block, "a /24 block covers a host inside it");
+	fs_simulation_result_free (r);
+	r = fs_copilot_simulate (copilot, NULL, "203.0.112.0/23", 80, "TCP", FALSE);
+	CHECK (r != NULL && r->verdict == FS_WHATIF_DEPENDS &&
+	       strstr (r->reason, "203.0.113.0/24") != NULL,
+	       "a wider block of hosts is only partly blocked, and says where "
+	       "(%s)", r != NULL ? r->reason : "-");
+	fs_simulation_result_free (r);
 
-	r = fs_copilot_simulate_text (copilot,
-	                              "outbound ping to 203.0.113.77", NULL);
-	CHECK (r != NULL, "simulate_text answers for the subnet probe");
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "a /24 block covers a host inside the block");
-		fs_simulation_result_free (r);
-	}
-
-	/* An allow with no block: the probe is allowed, and says by what. */
-	fs_policy_clear (policy);
-	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
-	rule->target = g_strdup ("198.51.100.10");
-	fs_policy_add (policy, rule);
-
-	r = fs_copilot_simulate_text (copilot,
-	                              "allow HTTPS to 198.51.100.10", NULL);
-	CHECK (r != NULL, "simulate_text answers for the allow probe");
-	if (r != NULL) {
-		CHECK (!r->would_block,
-		       "a covering allow lets the traffic through");
-		CHECK (r->matching_rule != NULL,
-		       "the allow verdict names its rule too");
-		fs_simulation_result_free (r);
-	}
-
-	/* --- Precision: symmetric ports, ICMP, best match, forwards ---
-	 *
-	 * A port constrains the same way a host does: a port either side
-	 * left unnamed is unconstrained.  So a line with no port must
-	 * still find the rule that opens one (and say which port), ICMP
-	 * must never meet a ported rule, the rule the verdict names must
-	 * be the exact-port one rather than an earlier any-port rule, and
-	 * a forward must say where the traffic goes after it is let in. */
+	/* b1, inverted: a line with no port used to be answered "allowed"
+	 * because one rule opened one port.  It is DEPENDS now, with the
+	 * port that is open and the rest that is not. */
 	fs_policy_clear (policy);
 	rule = fs_rule_new (FS_RULE_INBOUND_ALLOW_SERVICE);
 	rule->service = g_strdup ("mystery");
 	rule->port = g_strdup ("22");
 	rule->target = g_strdup ("192.168.1.50");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
-	r = fs_copilot_simulate_text (copilot, "allow from 192.168.1.50",
+	r = fs_copilot_simulate_text (copilot, "inbound from 192.168.1.50", NULL);
+	CHECK (r != NULL && r->verdict == FS_WHATIF_DEPENDS && !r->would_block,
+	       "b1: a portless line meets a one-port rule: DEPENDS, not ALLOWED "
+	       "(%s)", r != NULL ? r->reason : "-");
+	if (r != NULL && r->verdict == FS_WHATIF_DEPENDS) {
+		const FsWhatIfAnswer *a = whatif_answer (r->whatif);
+		gboolean open22 = FALSE, closed = FALSE;
+
+		for (guint i = 0; a != NULL && i < a->cases->len; i++) {
+			const FsWhatIfCase *c = g_ptr_array_index (a->cases, i);
+
+			if (c->verdict == FS_WHATIF_ALLOWED &&
+			    strstr (c->condition, "port 22") != NULL &&
+			    c->rule != NULL && strstr (c->rule, "mystery") != NULL)
+				open22 = TRUE;
+			if (c->verdict == FS_WHATIF_BLOCKED)
+				closed = TRUE;
+		}
+		CHECK (open22 && closed,
+		       "b1: the split names port 22 and its rule, and the blocked "
+		       "rest");
+	}
+	fs_simulation_result_free (r);
+
+	r = fs_copilot_simulate_text (copilot,
+	                              "inbound tcp port 80 from 192.168.1.50", NULL);
+	CHECK (r != NULL && r->would_block,
+	       "a port the rule does not open stays blocked");
+	fs_simulation_result_free (r);
+	r = fs_copilot_simulate_text (copilot, "inbound ping from 192.168.1.50",
 	                              NULL);
-	CHECK (r != NULL, "the portless probe answers");
-	if (r != NULL) {
-		CHECK (!r->would_block,
-		       "a line with no port finds the rule that opens one");
-		CHECK (strstr (r->explanation, "on port 22") != NULL,
-		       "and the verdict names the port that decided it");
-		fs_simulation_result_free (r);
-	}
-
-	r = fs_copilot_simulate_text (copilot,
-	                              "allow ping from 192.168.1.50", NULL);
-	CHECK (r != NULL, "the ICMP probe answers");
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "ICMP meets no ported rule, portless line or not");
-		fs_simulation_result_free (r);
-	}
-
-	r = fs_copilot_simulate_text (
-		copilot, "allow ping from 192.168.1.50 port 22", NULL);
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "not even a typed port joins ICMP to a ported rule");
-		fs_simulation_result_free (r);
-	}
-
-	r = fs_copilot_simulate_text (copilot,
-	                              "allow from 192.168.1.50 port 80", NULL);
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "a port the rule does not open stays blocked");
-		fs_simulation_result_free (r);
-	}
-
-	/* The exact-port rule decides port-443 traffic even when an
-	 * any-port rule is listed before it (host rows expand first). */
-	fs_policy_clear (policy);
-	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
-	rule->target = g_strdup ("203.0.113.9");
-	fs_policy_add (policy, rule);
-
-	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
-	rule->service = g_strdup ("HTTPS");
-	rule->port = g_strdup ("443");
-	rule->target = g_strdup ("203.0.113.9");
-	fs_policy_add (policy, rule);
-
-	r = fs_copilot_simulate_text (copilot,
-	                              "allow HTTPS to 203.0.113.9", NULL);
-	CHECK (r != NULL, "the exact-port probe answers");
-	if (r != NULL) {
-		CHECK (!r->would_block,
-		       "the host allow covers it as well");
-		CHECK (r->matching_rule != NULL &&
-		       strstr (r->matching_rule, "HTTPS") != NULL,
-		       "the exact-port rule, not the earlier any-port "
-		       "rule, is the one named");
-		CHECK (strstr (r->explanation, "on port 443") != NULL,
-		       "the deciding port is in the reason");
-		fs_simulation_result_free (r);
-	}
-
-	/* A forward is a real allow; the verdict says where the traffic
-	 * is sent after it is let in. */
-	fs_policy_clear (policy);
-	rule = fs_rule_new (FS_RULE_INBOUND_FORWARD);
-	rule->service = g_strdup ("HTTP");
-	rule->port = g_strdup ("8080");
-	rule->to = g_strdup ("10.0.0.5");
-	rule->to_port = g_strdup ("80");
-	fs_policy_add (policy, rule);
-
-	r = fs_copilot_simulate_text (copilot, "inbound port 8080", NULL);
-	CHECK (r != NULL, "the forward probe answers");
-	if (r != NULL) {
-		CHECK (!r->would_block, "a forward opens its port");
-		CHECK (strstr (r->explanation, "on port 8080") != NULL,
-		       "the forward's port is in the reason");
-		CHECK (strstr (r->explanation, "10.0.0.5") != NULL,
-		       "the verdict says where the traffic is forwarded");
-		fs_simulation_result_free (r);
-	}
-
-	/* A line that named no host meets the host-scoped block, and the
-	 * block's own host is in the reason the panel's note points at. */
-	fs_policy_clear (policy);
-	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
-	rule->target = g_strdup ("203.0.113.5");
-	fs_policy_add (policy, rule);
-
-	r = fs_copilot_simulate_text (copilot, "block outbound", NULL);
-	CHECK (r != NULL, "the no-host probe answers");
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "a line with no host meets the host-scoped block");
-		CHECK (strstr (r->explanation, "203.0.113.5") != NULL,
-		       "the block's host is named in the reason");
-		fs_simulation_result_free (r);
-	}
+	CHECK (r != NULL && (r->whatif->answers->len == 1) &&
+	       (r->matching_rule == NULL ||
+	        strstr (r->matching_rule, "mystery") == NULL),
+	       "ICMP never meets a ported rule (%s)",
+	       r != NULL && r->matching_rule ? r->matching_rule : "-");
+	fs_simulation_result_free (r);
 
 	fs_copilot_free (copilot);
 	fs_policy_free (policy);
 
-	/* No policy attached: the fallback says so instead of pretending
-	 * to have read rules it does not have. */
+	/* No policy attached: an empty policy, said plainly. */
 	{
 		FsCopilot *bare = fs_copilot_new ();
 
-		r = fs_copilot_simulate_text (
-			bare, "allow SSH from 10.0.0.2 on port 22", NULL);
-		CHECK (r != NULL, "simulate_text answers without a policy");
-		if (r != NULL) {
-			CHECK (r->would_block,
-			       "inbound falls back to the deny default");
-			CHECK (strstr (r->explanation,
-			              "No firewall policy") != NULL,
-			       "the fallback is labelled honestly");
-			fs_simulation_result_free (r);
-		}
+		r = fs_copilot_simulate_text (bare,
+		                              "inbound ssh from 10.0.0.2", NULL);
+		CHECK (r != NULL && r->would_block,
+		       "inbound with no rules falls to the deny default");
+		fs_simulation_result_free (r);
 		fs_copilot_free (bare);
 	}
-}
-
-/* The reading itself: the shapes people actually type.  Each one
- * here once read as port 0 -- "local:0" in the verdict -- or as
- * the wrong port entirely, which is how a simulation can be
- * honest about the wrong question. */
-static void test_whatif_reading (void)
-{
-	FsScenario *sc;
-	FsSimulationResult *r;
-	FsCopilot *bare;
-	FsRule *rule;
-	gchar *s;
-
-	sc = fs_copilot_parse_scenario ("ssh is open at 22 port");
-	CHECK (sc != NULL, "the 'N port' shape parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 22,
-		       "the number before 'port' is the port");
-		CHECK (g_strcmp0 (sc->protocol, "TCP") == 0,
-		       "ssh reads as TCP");
-		CHECK (!sc->inbound,
-		       "with no direction word the default is outbound");
-		CHECK (g_strcmp0 (sc->app, "ssh") == 0,
-		       "the service name is the application");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("scan at 8080 port");
-	CHECK (sc != NULL, "an unknown service with 'N port' parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 8080,
-		       "8080 is read without any service name to help");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("allow anything to :22");
-	CHECK (sc != NULL, "a bare ':N' port parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 22,
-		       "the bare colon port is read");
-		CHECK (!sc->had_addr,
-		       "':22' is a local port, not a host");
-		CHECK (!sc->inbound, "'to' still reads as outbound");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("block local:22 inbound");
-	CHECK (sc != NULL, "the 'local:N' shorthand parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 22,
-		       "the local shorthand port is read");
-		CHECK (sc->inbound, "the inbound keyword is read");
-		CHECK (!sc->had_addr, "and it names no remote host");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("allow RDP to 10.0.0.9");
-	CHECK (sc != NULL, "an RDP line parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 3389,
-		       "RDP supplies port 3389");
-		CHECK (g_strcmp0 (sc->remote_ip, "10.0.0.9") == 0,
-		       "the host is still read");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("block ftp to 1.2.3.4");
-	CHECK (sc != NULL, "an FTP line parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 21,
-		       "FTP is the control port 21, not the table's 20");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("block port 80 outbound");
-	CHECK (sc != NULL, "the plain 'port N' shape parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 80, "port 80 is read");
-		CHECK (!sc->inbound, "the outbound keyword is read");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("allow ping from 192.168.1.5");
-	CHECK (sc != NULL, "a ping line parses");
-	if (sc != NULL) {
-		CHECK (g_strcmp0 (sc->protocol, "ICMP") == 0,
-		       "ping reads as ICMP");
-		CHECK (sc->inbound && sc->had_addr,
-		       "the source host and direction are read");
-		CHECK (!sc->had_port,
-		       "ICMP asks for no port, so had_port stays clear");
-		fs_scenario_free (sc);
-	}
-
-	/* The honesty boundary: a hostname-shaped token is not a host,
-	 * and "example.com:22" must not smuggle a port past that rule
-	 * either. */
-	sc = fs_copilot_parse_scenario ("block example.com:22");
-	CHECK (sc != NULL, "a hostname-shaped line still parses");
-	if (sc != NULL) {
-		CHECK (!sc->had_addr, "a hostname is not read as a host");
-		CHECK (!sc->had_port,
-		       "and its ':22' is not read as a port");
-		fs_scenario_free (sc);
-	}
-
-	/* The suggestion sentence and the rule behind it. */
-	sc = fs_copilot_parse_scenario ("allow ssh from 192.168.1.50 on port 22");
-	if (sc != NULL) {
-		s = fs_copilot_allow_suggestion (sc);
-		CHECK (s != NULL, "a blocked scenario gets a suggestion");
-		if (s != NULL) {
-			CHECK (strstr (s,
-			              "Allow inbound TCP port 22 from 192.168.1.50.")
-			       != NULL,
-			       "the suggestion names direction, protocol, "
-			       "port and host (got \"%s\")", s);
-			g_free (s);
-		}
-
-		rule = fs_copilot_allow_rule_for (sc);
-		CHECK (rule != NULL, "a blocked scenario gets a rule");
-		if (rule != NULL) {
-			CHECK (rule->kind == FS_RULE_INBOUND_ALLOW_SERVICE,
-			       "inbound maps to the inbound service-allow kind");
-			CHECK (g_strcmp0 (rule->service, "SSH") == 0,
-			       "port 22 carries its well-known name");
-			CHECK (g_strcmp0 (rule->port, "22") == 0,
-			       "the rule carries the port as text");
-			CHECK (g_strcmp0 (rule->target, "192.168.1.50") == 0,
-			       "the rule carries the host");
-			CHECK (rule->comment != NULL,
-			       "the rule says where it came from");
-			fs_rule_free (rule);
-		}
-		fs_scenario_free (sc);
-	} else {
-		CHECK (FALSE, "the suggestion scenario parses");
-	}
-
-	sc = fs_copilot_parse_scenario ("allow anything outbound");
-	if (sc != NULL) {
-		s = fs_copilot_allow_suggestion (sc);
-		CHECK (s != NULL && strstr (s, "Allow outbound TCP traffic.")
-		       != NULL,
-		       "a line that named no port suggests 'traffic' "
-		       "(got \"%s\")", s ? s : "(null)");
-		g_free (s);
-		fs_scenario_free (sc);
-	} else {
-		CHECK (FALSE, "the no-port scenario parses");
-	}
-
-	sc = fs_copilot_parse_scenario ("allow ping from 192.168.1.5");
-	if (sc != NULL) {
-		s = fs_copilot_allow_suggestion (sc);
-		CHECK (s != NULL, "the ICMP scenario gets a suggestion");
-		if (s != NULL) {
-			CHECK (strstr (s, "port") == NULL,
-			       "ICMP is not offered a port (got \"%s\")", s);
-			g_free (s);
-		}
-
-		rule = fs_copilot_allow_rule_for (sc);
-		CHECK (rule != NULL, "the ICMP scenario gets a rule");
-		if (rule != NULL) {
-			CHECK (g_strcmp0 (rule->service, "ICMP") == 0 &&
-			       g_strcmp0 (rule->port, "") == 0,
-			       "the ICMP rule names ICMP and no port");
-			fs_rule_free (rule);
-		}
-		fs_scenario_free (sc);
-	} else {
-		CHECK (FALSE, "the ICMP scenario parses");
-	}
-
-	sc = fs_copilot_parse_scenario ("outbound to 203.0.113.9:8443");
-	if (sc != NULL) {
-		rule = fs_copilot_allow_rule_for (sc);
-		CHECK (rule != NULL, "the odd-port scenario gets a rule");
-		if (rule != NULL) {
-			CHECK (g_strcmp0 (rule->port, "8443") == 0 &&
-			       g_strcmp0 (rule->target, "203.0.113.9") == 0,
-			       "the rule carries the odd port and the host");
-			CHECK (g_strcmp0 (rule->service, "TCP") == 0,
-			       "a port with no well-known name falls back "
-			       "to the protocol word");
-			fs_rule_free (rule);
-		}
-		fs_scenario_free (sc);
-	} else {
-		CHECK (FALSE, "the odd-port scenario parses");
-	}
-
-	CHECK (fs_copilot_allow_suggestion (NULL) == NULL &&
-	       fs_copilot_allow_rule_for (NULL) == NULL,
-	       "NULL scenarios suggest nothing");
-
-	/* The result now carries the reason twice: as the log sentence
-	 * and on its own for the visualizer's Explanation section. */
-	bare = fs_copilot_new ();
-	r = fs_copilot_simulate_text (bare, "allow ssh from 10.0.0.2 on port 22",
-	                              NULL);
-	CHECK (r != NULL, "the reason probe answers");
-	if (r != NULL) {
-		CHECK (r->reason != NULL && *r->reason != '\0',
-		       "the result carries a bare reason");
-		CHECK (strstr (r->explanation, "Simulation:") != NULL,
-		       "the log sentence keeps its wrapper");
-		CHECK (r->reason != NULL &&
-		       strstr (r->reason, "Simulation:") == NULL,
-		       "the bare reason drops the wrapper");
-		fs_simulation_result_free (r);
-	}
-	fs_copilot_free (bare);
 }
 
 /* The bi-directional Direction setting: the pairing map, the labels,
@@ -3216,6 +3528,7 @@ static void test_trust_engine (void)
 	       "forgetting twice is refused, not invented");
 	CHECK (fs_trust_store_count (store) == 0,
 	       "the forgotten row is gone");
+	fs_trust_store_free (store);
 
 	/* Paths and publishers may hold commas and quotes; the CSV
 	 * quotes them and the round trip must not lose either. */
@@ -3587,13 +3900,18 @@ static void test_fwrule_equal (void)
 
 	/* Every field, one at a time: change it, expect inequality,
 	 * restore it. */
-	c0->remote_port = 65535;
+	/* Outbound SSH carries its port on the remote side; the local
+	 * side is NULL (any). */
+	saved = c0->remote_ports;
+	c0->remote_ports = g_strdup ("65535");
 	CHECK (!fs_fwrule_equal (a0, c0), "a different remote port is not equal");
-	c0->remote_port = a0->remote_port;
+	g_free (c0->remote_ports);
+	c0->remote_ports = saved;
 
-	c0->local_port = 8080;
+	c0->local_ports = g_strdup ("8080");
 	CHECK (!fs_fwrule_equal (a0, c0), "a different local port is not equal");
-	c0->local_port = a0->local_port;
+	g_free (c0->local_ports);
+	c0->local_ports = NULL;
 
 	saved = c0->name;
 	c0->name = g_strdup ("StockFW: something else");
@@ -3873,8 +4191,9 @@ static void test_apply_delta (void)
 	FsPolicyDelta *delta;
 	FsRule *rule;
 
+	/* DNS is a TCP and a UDP rule, plus the host block: three. */
 	delta = fs_policy_delta (NULL, base);
-	CHECK (g_list_length (delta->add) == 2 &&
+	CHECK (g_list_length (delta->add) == 3 &&
 	       g_list_length (delta->remove) == 0 && !delta->empty,
 	       "no previous state: the whole set is an add");
 	fs_policy_delta_free (delta);
@@ -4200,6 +4519,749 @@ static void test_apply_gate (void)
 	g_free (file);
 	g_free (audit_file);
 	g_free (dir);
+}
+
+/* --- the start gate (1.0.7) -------------------------------------------
+ * Every start -- at launch, Start/Resume, `stockfw start' at boot --
+ * goes through fs_firewall_start_safe.  A backend whose start installs
+ * the policy (Linux) must never start the policy FILE while changes
+ * are held; it starts the journal instead, or nothing at all. */
+
+static gint fake_starts, fake_stops;
+static gboolean fake_start_ok = TRUE;
+
+static gboolean
+fake_start (GError **error)
+{
+	fake_starts++;
+	if (!fake_start_ok)
+		g_set_error_literal (error,
+		                     g_quark_from_static_string ("fake-backend"),
+		                     1, "scripted start failure");
+	return fake_start_ok;
+}
+
+static gboolean
+fake_stop (GError **error)
+{
+	(void) error;
+	fake_stops++;
+	return TRUE;
+}
+
+static const FsBackend fake_backend_linux_start = {
+	.name = "fake-linux",
+	.display_name = "scripted fake, start installs the policy",
+	.start_applies_policy = TRUE,
+	.available = fake_available,
+	.start = fake_start,
+	.stop = fake_stop,
+	.apply_rules = fake_apply_rules,
+	.apply_notes = fake_notes,
+};
+
+static const FsBackend fake_backend_windows_start = {
+	.name = "fake-windows",
+	.display_name = "scripted fake, start switches profiles on",
+	.available = fake_available,
+	.start = fake_start,
+	.stop = fake_stop,
+	.apply_rules = fake_apply_rules,
+};
+
+static void test_start_gate (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-start-gate-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy, *live, *loaded;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	gchar *audit;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+
+	policy = gate_policy_two ();
+
+	/* 1. Linux-shaped, no hold, no journal: start() runs, the journal
+	 * now records the policy as live, notes ride along. */
+	fake_reset ();
+	fake_starts = fake_stops = 0;
+	fake_start_ok = TRUE;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       !outcome->held && fake_starts == 1 && fake_full_calls == 0,
+	       "start gate: no hold -> backend start, policy live");
+	CHECK (outcome->notes != NULL,
+	       "start gate: the backend's notes are kept on a start");
+	loaded = fs_policy_new ();
+	CHECK (fs_apply_journal_load (loaded, NULL) &&
+	       fs_policy_count (loaded, FS_RULE_OUTBOUND_ALLOW_SERVICE) ==
+	       fs_policy_count (policy, FS_RULE_OUTBOUND_ALLOW_SERVICE),
+	       "start gate: a start that installs the policy updates the "
+	       "journal");
+	fs_policy_free (loaded);
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 2. Held, journal present: start() is NOT called (it would
+	 * install the file); the journal policy is applied instead. */
+	live = fs_policy_new ();
+	fs_policy_add (live, gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE,
+	                                "SSH", "22", FS_TARGET_ANY));
+	fs_apply_journal_save (live, NULL);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", "audit-only testing mode",
+	                                  &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->held &&
+	       outcome->applied && fake_starts == 0 && fake_full_calls == 1,
+	       "start gate: held -> the journal is started, never the file "
+	       "(%d starts, %d applies)", fake_starts, fake_full_calls);
+	CHECK (fake_seen_len == 1 &&
+	       fs_policy_count (fake_seen[0], FS_RULE_OUTBOUND_ALLOW_SERVICE)
+	       == 1,
+	       "start gate: what was applied is exactly the journal");
+	loaded = fs_policy_new ();
+	fs_apply_journal_load (loaded, NULL);
+	CHECK (fs_policy_count (loaded, FS_RULE_OUTBOUND_ALLOW_SERVICE) == 1,
+	       "start gate: a held start leaves the journal alone");
+	fs_policy_free (loaded);
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	fs_policy_free (live);
+
+	/* 3. Held, no journal: nothing safe to start with. */
+	remove (file);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", "policy locked", &error);
+	CHECK (outcome->result == FS_APPLY_DRY_RUN && outcome->held &&
+	       !outcome->applied && fake_starts == 0 && fake_full_calls == 0,
+	       "start gate: held with no journal -> firewall untouched");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 4. Windows-shaped: start only switches profiles on, so a hold
+	 * has nothing to hold back, and the journal is not touched. */
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_windows_start,
+	                                  policy, "test",
+	                                  "audit-only testing mode", &error);
+	CHECK (outcome->result == FS_APPLY_OK && fake_starts == 1 &&
+	       !outcome->applied && fake_full_calls == 0,
+	       "start gate: a profiles-only start runs even when held, and "
+	       "never claims the policy went live");
+	CHECK (!g_file_test (file, G_FILE_TEST_EXISTS),
+	       "start gate: a profiles-only start writes no journal");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 5. A failing start reports it; an absent backend is refused. */
+	fake_reset ();
+	fake_start_ok = FALSE;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_FAILED && !outcome->applied &&
+	       error != NULL,
+	       "start gate: a failed start is a failure, with the reason");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	fake_start_ok = TRUE;
+
+	fake_reset ();
+	fake_available_flag = FALSE;
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_NO_IPTABLES && fake_starts == 0 &&
+	       error != NULL,
+	       "start gate: no backend available -> refused, not started");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	CHECK (!fs_firewall_stop_logged (&fake_backend_linux_start, "test",
+	                                 &error) && fake_stops == 0,
+	       "stop: no backend available -> refused");
+	g_clear_error (&error);
+	fake_available_flag = TRUE;
+
+	/* 6. Stop is never held, and is on the record. */
+	fake_stops = 0;
+	CHECK (fs_firewall_stop_logged (&fake_backend_linux_start, "test",
+	                                &error) && fake_stops == 1,
+	       "stop: the backend stops");
+	g_clear_error (&error);
+
+	audit = NULL;
+	g_file_get_contents (audit_file, &audit, NULL, NULL);
+	CHECK (audit != NULL && strstr (audit, "firewall started") &&
+	       strstr (audit, "firewall start held") &&
+	       strstr (audit, "firewall start failed") &&
+	       strstr (audit, "firewall start refused") &&
+	       strstr (audit, "firewall stopped"),
+	       "start gate: every start and stop outcome is audited");
+	g_free (audit);
+
+	fake_reset ();
+	fs_policy_free (policy);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
+/* --- a start installs what was APPLIED, never the file (1.0.7) ----------
+ * The boot unit runs `stockfw start' unattended at every boot.  A
+ * start that installed the policy FILE put live whatever had been
+ * saved but never applied (an allow nobody pushed), and with the rule
+ * files gone it started an empty policy over a working one.  A start
+ * on a backend whose start installs a policy now installs the journal,
+ * less the expired Sentinel rows it is handed, held or not; a journal
+ * that cannot be read refuses the start.  fs_firewall_lift_live takes
+ * expired rows off without applying anything else. */
+
+static void test_start_from_journal (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-start-journal-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *file_policy, *live, *lift, *loaded;
+	FsRule *allow, *block, *sentinel;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	gchar *audit;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+
+	allow = gate_rule (FS_RULE_INBOUND_ALLOW_SERVICE, "SSH", "22",
+	                   FS_TARGET_ANY);
+	block = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+	                   "203.0.113.9");
+	sentinel = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+	                      "198.51.100.77");
+
+	/* Applied: the block and a Sentinel block.  Saved since, never
+	 * applied: an SSH allow. */
+	live = fs_policy_new ();
+	fs_policy_add (live, block);
+	fs_policy_add (live, sentinel);
+	fs_apply_journal_save (live, NULL);
+	file_policy = fs_policy_new ();
+	fs_policy_add (file_policy, block);
+	fs_policy_add (file_policy, sentinel);
+	fs_policy_add (file_policy, allow);
+
+	/* 1. Unheld, journal present: the journal goes in, start() (which
+	 * would install the file) is never called. */
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start,
+	                                  file_policy, "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       fake_starts == 0 && fake_full_calls == 1,
+	       "start: with a journal, the journal is installed, not the "
+	       "file (%d starts, %d applies)", fake_starts, fake_full_calls);
+	CHECK (fake_seen_len == 1 && gate_policy_total (fake_seen[0]) == 2 &&
+	       !fs_policy_contains (fake_seen[0], allow),
+	       "start: the allow that was saved but never applied stays "
+	       "OFF the firewall");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 2. ...less what it is told to lift (expired Sentinel rows), and
+	 * the journal then records that as live. */
+	lift = fs_policy_new ();
+	fs_policy_add (lift, sentinel);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_lifting (&fake_backend_linux_start,
+	                                     file_policy, lift, "test", NULL,
+	                                     &error);
+	CHECK (outcome->result == FS_APPLY_OK && fake_starts == 0 &&
+	       fake_seen_len == 1 && gate_policy_total (fake_seen[0]) == 1 &&
+	       fs_policy_contains (fake_seen[0], block) &&
+	       !fs_policy_contains (fake_seen[0], sentinel),
+	       "start: the expired Sentinel block is left out, the user's "
+	       "block goes in");
+	loaded = fs_policy_new ();
+	CHECK (fs_apply_journal_load (loaded, NULL) &&
+	       gate_policy_total (loaded) == 1 &&
+	       !fs_policy_contains (loaded, sentinel),
+	       "start: the journal records what this start installed");
+	fs_policy_free (loaded);
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	audit = gate_audit_read ();
+	CHECK (audit != NULL &&
+	       strstr (audit, "started with the last applied policy") &&
+	       strstr (audit, "expired Sentinel block") &&
+	       strstr (audit, "not applied:"),
+	       "start: the audit line says the journal started, what was "
+	       "left out and what stays unapplied");
+	g_free (audit);
+
+	/* 3. The rule files are gone (empty policy) but the journal is
+	 * there: the start still installs what was applied. */
+	fs_apply_journal_save (live, NULL);
+	{
+		FsPolicy *empty = fs_policy_new ();
+
+		fake_reset ();
+		fake_starts = 0;
+		outcome = fs_firewall_start_safe (&fake_backend_linux_start,
+		                                  empty, "test", NULL, &error);
+		CHECK (outcome->result == FS_APPLY_OK && fake_starts == 0 &&
+		       fake_seen_len == 1 &&
+		       gate_policy_total (fake_seen[0]) == 2,
+		       "start: an empty policy file never replaces what was "
+		       "live (%d rules installed, want 2)",
+		       fake_seen_len == 1 ? (gint) gate_policy_total (
+		       fake_seen[0]) : -1);
+		fs_apply_outcome_free (outcome);
+		g_clear_error (&error);
+		fs_policy_free (empty);
+	}
+
+	/* 4. A journal that is there but cannot be read: refused, neither
+	 * it nor the file goes in. */
+	g_file_set_contents (file, "this is not a journal row\n", -1, NULL);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start,
+	                                  file_policy, "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_FAILED && !outcome->applied &&
+	       fake_starts == 0 && fake_full_calls == 0 && error != NULL,
+	       "start: an unreadable journal refuses the start, firewall "
+	       "untouched");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	audit = gate_audit_read ();
+	CHECK (audit != NULL &&
+	       strstr (audit, "journal could not be read") != NULL,
+	       "start: the refusal is audited");
+	g_free (audit);
+
+	/* 5. Lifting expired rows off a running firewall: only their
+	 * removal, never the file. */
+	fs_apply_journal_save (live, NULL);
+	fake_reset ();
+	outcome = fs_firewall_lift_live (&fake_backend_linux_start, lift,
+	                                 "test", NULL, &error);
+	CHECK (outcome != NULL && outcome->applied && fake_seen_len == 1 &&
+	       gate_policy_total (fake_seen[0]) == 1 &&
+	       fs_policy_contains (fake_seen[0], block) &&
+	       !fs_policy_contains (fake_seen[0], allow),
+	       "lift: the journal less the expired block is applied -- the "
+	       "unapplied allow does not ride along");
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	fake_reset ();
+	outcome = fs_firewall_lift_live (&fake_backend_linux_start, lift,
+	                                 "test", NULL, &error);
+	CHECK (outcome == NULL && fake_full_calls == 0,
+	       "lift: a row that is not live any more changes nothing");
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
+
+	remove (file);
+	fake_reset ();
+	outcome = fs_firewall_lift_live (&fake_backend_linux_start, lift,
+	                                 "test", NULL, &error);
+	CHECK (outcome == NULL && fake_full_calls == 0,
+	       "lift: no journal, nothing known to be live, nothing done");
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
+
+	fake_reset ();
+	fs_rule_free (allow);
+	fs_rule_free (block);
+	fs_rule_free (sentinel);
+	fs_policy_free (lift);
+	fs_policy_free (live);
+	fs_policy_free (file_policy);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_rmdir (dir);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
+/* --- Sentinel's persisted blocks at a start without the app ------------
+ * `stockfw start' at boot has no Sentinel running to lift a block whose
+ * ten minutes ran out while the machine was off; fs_autoblock_expire
+ * takes such rows out of the policy BEFORE the start can install them. */
+
+static void test_autoblock_expire (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-autoblock-test", NULL);
+	gchar *state = g_build_filename (dir, "autoblocks", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	const gchar *old_csv = "203.0.113.9, Sentinel: old beacon";
+	const gchar *new_csv = "203.0.113.10, Sentinel: fresh beacon";
+	const gchar *user_csv = "198.51.100.7, mine";
+	gint64 now = 1800000000;
+	FsPolicy *policy, *lifted;
+	FsRule *probe;
+	gchar *rows, *after = NULL;
+	guint dropped;
+
+	g_mkdir_with_parents (dir, 0700);
+	g_setenv ("STOCKFW_AUTOBLOCK_FILE", state, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+
+	policy = fs_policy_new ();
+	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	                                         old_csv));
+	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	                                         new_csv));
+	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	                                         user_csv));
+	fs_policy_save (policy);
+
+	rows = g_strdup_printf ("S,%" G_GINT64_FORMAT ",%d,%s\n"
+	                        "S,%" G_GINT64_FORMAT ",%d,%s\n"
+	                        "garbage row\n",
+	                        now - 3600, (int) FS_RULE_OUTBOUND_DENY_TO,
+	                        old_csv,
+	                        now - 60, (int) FS_RULE_OUTBOUND_DENY_TO,
+	                        new_csv);
+	g_file_set_contents (state, rows, -1, NULL);
+	g_free (rows);
+
+	{
+		/* A second stale row whose rule the user already deleted
+		 * from the file: the journal may still hold it. */
+		gchar *more = NULL, *both;
+
+		g_file_get_contents (state, &more, NULL, NULL);
+		both = g_strdup_printf ("%sS,%" G_GINT64_FORMAT ",%d,%s\n",
+		                        more, now - 7200,
+		                        (int) FS_RULE_OUTBOUND_DENY_TO,
+		                        "192.0.2.200, Sentinel: deleted");
+		g_file_set_contents (state, both, -1, NULL);
+		g_free (both);
+		g_free (more);
+	}
+	lifted = fs_policy_new ();
+	dropped = fs_autoblock_expire (policy, now, FALSE, lifted);
+	CHECK (dropped == 1, "autoblock expire: one stale block came out "
+	       "(got %u)", dropped);
+	probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, old_csv);
+	CHECK (fs_policy_contains (lifted, probe) &&
+	       fs_policy_count (lifted, FS_RULE_OUTBOUND_DENY_TO) == 2,
+	       "autoblock expire: every due row is handed back for the "
+	       "start to leave out, the one already gone from the file "
+	       "too (%u)", fs_policy_count (lifted, FS_RULE_OUTBOUND_DENY_TO));
+	fs_rule_free (probe);
+	fs_policy_free (lifted);
+	probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, old_csv);
+	CHECK (!fs_policy_contains (policy, probe),
+	       "autoblock expire: the stale block left the policy");
+	fs_rule_free (probe);
+	{
+		FsPolicy *disk = fs_policy_new ();
+
+		fs_policy_load (disk, NULL);
+		probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, old_csv);
+		CHECK (!fs_policy_contains (disk, probe),
+		       "autoblock expire: ...and the policy file");
+		fs_rule_free (probe);
+		probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, new_csv);
+		CHECK (fs_policy_contains (disk, probe),
+		       "autoblock expire: a block inside its ten minutes "
+		       "stays for the app to re-arm");
+		fs_rule_free (probe);
+		probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, user_csv);
+		CHECK (fs_policy_contains (disk, probe),
+		       "autoblock expire: the user's own rule is never touched");
+		fs_rule_free (probe);
+		fs_policy_free (disk);
+	}
+	g_file_get_contents (state, &after, NULL, NULL);
+	CHECK (after != NULL && strstr (after, new_csv) != NULL &&
+	       strstr (after, old_csv) == NULL &&
+	       strstr (after, "garbage") == NULL,
+	       "autoblock expire: the state file keeps only the live row");
+	g_free (after);
+
+	dropped = fs_autoblock_expire (policy, now, TRUE, NULL);
+	CHECK (dropped == 1, "autoblock expire: Sentinel out of auto mode "
+	       "lifts the rest (got %u)", dropped);
+	CHECK (fs_autoblock_expire (policy, now, FALSE, NULL) == 0,
+	       "autoblock expire: nothing left, nothing removed");
+
+	fs_policy_clear (policy);
+	fs_policy_save (policy);
+	fs_policy_free (policy);
+	g_unsetenv ("STOCKFW_AUTOBLOCK_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (state);
+	remove (audit_file);
+	g_rmdir (dir);
+	g_free (state);
+	g_free (audit_file);
+	g_free (dir);
+}
+
+/* Start at sign-in (core/fs-autostart.c).  The Windows half is the
+ * task XML -- what the Task Scheduler is handed decides whose sign-in
+ * starts it, whether it runs elevated and what it runs -- so it is
+ * pinned here, portably.  The Linux half is the XDG entry, written to
+ * a scratch directory through $STOCKFW_AUTOSTART_DIR. */
+static gboolean
+xml_has (const gchar *xml, const gchar *needle)
+{
+	return strstr (xml, needle) != NULL;
+}
+
+static void test_autostart (void)
+{
+	gchar *xml = fs_autostart_task_xml (
+		"PC\\Ann & Bob",
+		"C:\\Program Files\\StockFW\\StockFW.exe");
+	gchar *name, *exec;
+#ifndef G_OS_WIN32
+	gchar *dir, *entry, *contents = NULL;
+	GKeyFile *kf;
+#endif
+
+	CHECK (xml_has (xml, "<LogonTrigger>") &&
+	       xml_has (xml, "<UserId>PC\\Ann &amp; Bob</UserId>\n"
+	                     "      <Delay>"),
+	       "autostart task: a logon trigger for this user only");
+	CHECK (xml_has (xml, "<LogonType>InteractiveToken</LogonType>") &&
+	       xml_has (xml, "<RunLevel>LeastPrivilege</RunLevel>") &&
+	       !xml_has (xml, "HighestAvailable"),
+	       "autostart task: runs in the user's session, NOT elevated "
+	       "(an elevated task with no prompt is a silent UAC bypass)");
+	CHECK (xml_has (xml, "<AllowStartOnDemand>false</AllowStartOnDemand>") &&
+	       !xml_has (xml, "<AllowStartOnDemand>true"),
+	       "autostart task: cannot be started on demand, only at sign-in");
+	CHECK (xml_has (xml, "<Command>C:\\Program Files\\StockFW\\StockFW.exe</Command>") &&
+	       xml_has (xml, "<Arguments>--background</Arguments>") &&
+	       xml_has (xml, "<WorkingDirectory>C:\\Program Files\\StockFW</WorkingDirectory>"),
+	       "autostart task: runs <exe dir>\\StockFW.exe --background");
+	CHECK (xml_has (xml, "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") &&
+	       xml_has (xml, "<DisallowStartIfOnBatteries>false") &&
+	       xml_has (xml, "<StopIfGoingOnBatteries>false") &&
+	       xml_has (xml, "<MultipleInstancesPolicy>IgnoreNew"),
+	       "autostart task: no time limit, runs on battery, one copy");
+	CHECK (!xml_has (xml, "Ann & Bob<"),
+	       "autostart task: the user name is XML-escaped");
+	g_free (xml);
+
+	name = fs_autostart_task_name ("PC\\Ann");
+	CHECK (strcmp (name, "Start at sign-in (PC_Ann)") == 0,
+	       "autostart task name: no backslash (got \"%s\")", name);
+	g_free (name);
+
+	exec = fs_autostart_desktop_exec ("/usr/local/bin/StockFW", TRUE);
+	CHECK (strcmp (exec, "StockFW --background") == 0,
+	       "autostart Exec: bare name when PATH finds this binary");
+	g_free (exec);
+	exec = fs_autostart_desktop_exec ("/opt/StockFW/StockFW", FALSE);
+	CHECK (strcmp (exec, "/opt/StockFW/StockFW --background") == 0,
+	       "autostart Exec: absolute path otherwise (got \"%s\")", exec);
+	g_free (exec);
+	exec = fs_autostart_desktop_exec ("/home/a b/100%\"$x/StockFW", FALSE);
+	CHECK (strcmp (exec, "\"/home/a b/100%%\\\"\\$x/StockFW\" --background") == 0,
+	       "autostart Exec: reserved characters quoted per the Desktop "
+	       "Entry spec (got %s)", exec);
+	g_free (exec);
+
+#ifndef G_OS_WIN32
+	/* The Linux entry itself.  (On Windows the same calls would
+	 * register a real Task Scheduler task.) */
+	dir = g_build_filename (g_get_tmp_dir (), "stockfw-autostart-test", NULL);
+	entry = g_build_filename (dir, "stockfw.desktop", NULL);
+	g_setenv ("STOCKFW_AUTOSTART_DIR", dir, TRUE);
+	remove (entry);
+	g_rmdir (dir);
+
+	CHECK (fs_autostart_supported (), "autostart: supported on Linux");
+	CHECK (!fs_autostart_enabled (), "autostart: off with no entry");
+	CHECK (fs_autostart_set (TRUE, NULL), "autostart: turned on");
+	CHECK (fs_autostart_enabled (), "autostart: on after turning on");
+	kf = g_key_file_new ();
+	CHECK (g_key_file_load_from_file (kf, entry, G_KEY_FILE_NONE, NULL),
+	       "autostart: the entry is a valid key file");
+	exec = g_key_file_get_string (kf, "Desktop Entry", "Exec", NULL);
+	CHECK (exec != NULL && g_str_has_suffix (exec, " --background"),
+	       "autostart: Exec ends in --background (got %s)",
+	       exec != NULL ? exec : "(none)");
+	g_free (exec);
+	g_key_file_free (kf);
+
+	/* A desktop's "startup applications" switch turns it off by key. */
+	g_file_set_contents (entry,
+		"[Desktop Entry]\nType=Application\nName=StockFW\n"
+		"Exec=StockFW --background\nX-GNOME-Autostart-enabled=false\n",
+		-1, NULL);
+	CHECK (!fs_autostart_enabled (),
+	       "autostart: X-GNOME-Autostart-enabled=false reads as off");
+	g_file_set_contents (entry,
+		"[Desktop Entry]\nType=Application\nName=StockFW\n"
+		"Exec=StockFW --background\nHidden=true\n", -1, NULL);
+	CHECK (!fs_autostart_enabled (), "autostart: Hidden=true reads as off");
+	CHECK (fs_autostart_set (TRUE, NULL) && fs_autostart_enabled (),
+	       "autostart: turning on again rewrites a switched-off entry");
+	g_file_get_contents (entry, &contents, NULL, NULL);
+	CHECK (contents != NULL && strstr (contents, "Hidden") == NULL,
+	       "autostart: the rewrite drops Hidden=true");
+	g_free (contents);
+
+	CHECK (fs_autostart_set (FALSE, NULL) && !fs_autostart_enabled () &&
+	       !g_file_test (entry, G_FILE_TEST_EXISTS),
+	       "autostart: turned off, the entry is gone");
+	CHECK (fs_autostart_set (FALSE, NULL),
+	       "autostart: turning off what is off succeeds");
+
+	g_unsetenv ("STOCKFW_AUTOSTART_DIR");
+	g_rmdir (dir);
+	g_free (entry);
+	g_free (dir);
+
+	/* The boot unit Preferences reports beside it: read from where
+	 * install.sh puts it and where enabling it links it. */
+	{
+		gchar *sd = g_build_filename (g_get_tmp_dir (),
+		                              "stockfw-systemd-test", NULL);
+		gchar *wants = g_build_filename (sd, "multi-user.target.wants",
+		                                 NULL);
+		gchar *unit = g_build_filename (sd, "stockfw.service", NULL);
+		gchar *link = g_build_filename (wants, "stockfw.service", NULL);
+		gchar *gone = g_build_filename (sd, "gone.service", NULL);
+
+		remove (link);
+		remove (unit);
+		g_rmdir (wants);
+		g_rmdir (sd);
+		g_setenv ("STOCKFW_SYSTEMD_DIR", sd, TRUE);
+
+		CHECK (fs_autostart_boot_unit () == FS_BOOT_UNIT_ABSENT,
+		       "boot unit: none installed reads as absent");
+		g_mkdir_with_parents (wants, 0700);
+		g_file_set_contents (unit, "[Unit]\n", -1, NULL);
+		CHECK (fs_autostart_boot_unit () == FS_BOOT_UNIT_DISABLED,
+		       "boot unit: installed, not linked, reads as not enabled");
+		CHECK (symlink (unit, link) == 0 &&
+		       fs_autostart_boot_unit () == FS_BOOT_UNIT_ENABLED,
+		       "boot unit: linked into multi-user.target.wants reads "
+		       "as enabled");
+		remove (link);
+		CHECK (symlink (gone, link) == 0 &&
+		       fs_autostart_boot_unit () == FS_BOOT_UNIT_DISABLED,
+		       "boot unit: a link to nothing is not enabled");
+		remove (link);
+		remove (unit);
+		CHECK (symlink (unit, link) == 0 &&
+		       fs_autostart_boot_unit () == FS_BOOT_UNIT_ABSENT,
+		       "boot unit: a link left behind with the unit removed "
+		       "reads as absent");
+
+		remove (link);
+		g_rmdir (wants);
+		g_rmdir (sd);
+		g_unsetenv ("STOCKFW_SYSTEMD_DIR");
+		g_free (sd);
+		g_free (wants);
+		g_free (unit);
+		g_free (link);
+		g_free (gone);
+	}
+#endif
+}
+
+/* The tray's "Blocked today" and Recent blocks (core/fs-blocktally.c). */
+static void test_block_tally (void)
+{
+	GTimeZone *tz = g_time_zone_new_utc ();
+	GDateTime *morning = g_date_time_new (tz, 2026, 11, 2, 9, 5, 0);
+	GDateTime *night = g_date_time_new (tz, 2026, 11, 2, 23, 59, 0);
+	GDateTime *next = g_date_time_new (tz, 2026, 11, 3, 0, 1, 0);
+	GDateTime *year_on = g_date_time_new (tz, 2027, 11, 2, 9, 0, 0);
+	FsHit *in = fs_hit_new (), *out = fs_hit_new (), *bare = fs_hit_new ();
+	gchar *s, **rows;
+
+	in->direction = g_strdup ("In");
+	in->protocol = g_strdup ("tcp");
+	in->port = g_strdup ("445");
+	in->source = g_strdup ("203.0.113.5");
+	in->destination = g_strdup ("192.0.2.1");
+	out->direction = g_strdup ("Outbound");
+	out->protocol = g_strdup ("UDP");
+	out->port = g_strdup ("53");
+	out->source = g_strdup ("192.0.2.1");
+	out->destination = g_strdup ("198.51.100.53");
+
+	s = fs_block_tally_describe (in, "10:42");
+	CHECK (strcmp (s, "TCP 445 from 203.0.113.5 (10:42)") == 0,
+	       "block tally: inbound reads \"proto port from host (time)\" "
+	       "(got \"%s\")", s);
+	g_free (s);
+	s = fs_block_tally_describe (out, "10:43");
+	CHECK (strcmp (s, "UDP 53 to 198.51.100.53 (10:43)") == 0,
+	       "block tally: outbound names where it was going (got \"%s\")",
+	       s);
+	g_free (s);
+	s = fs_block_tally_describe (bare, NULL);
+	CHECK (strcmp (s, "Traffic to unknown") == 0,
+	       "block tally: an event with nothing in it still reads as a "
+	       "sentence (got \"%s\")", s);
+	g_free (s);
+
+	fs_block_tally_reset ();
+	CHECK (fs_block_tally_today (morning) == 0,
+	       "block tally: nothing counted yet");
+	for (gint i = 0; i < 7; i++)
+		fs_block_tally_note (i % 2 ? out : in, i < 6 ? morning : night);
+	CHECK (fs_block_tally_today (night) == 7,
+	       "block tally: seven blocks on one day count seven");
+	rows = fs_block_tally_recent ();
+	CHECK (g_strv_length (rows) == FS_BLOCK_TALLY_RECENT &&
+	       strcmp (rows[0], "TCP 445 from 203.0.113.5 (23:59)") == 0,
+	       "block tally: the last five are kept, newest first");
+	g_strfreev (rows);
+	CHECK (fs_block_tally_today (next) == 0,
+	       "block tally: the count is zero after midnight");
+	CHECK (fs_block_tally_today (year_on) == 0,
+	       "block tally: the same date a year on is another day");
+	fs_block_tally_note (out, next);
+	CHECK (fs_block_tally_today (next) == 1,
+	       "block tally: a new day starts again from one");
+	fs_block_tally_reset ();
+
+	fs_hit_free (in);
+	fs_hit_free (out);
+	fs_hit_free (bare);
+	g_date_time_unref (morning);
+	g_date_time_unref (night);
+	g_date_time_unref (next);
+	g_date_time_unref (year_on);
+	g_time_zone_unref (tz);
 }
 
 /* --- firewall settings through the apply gate (Preferences, D5) ------
@@ -4896,6 +5958,610 @@ plan_settings_with (gboolean all_types_off)
 	return s;
 }
 
+/* --- 1.0.7: the first apply after the rule translation changed --------
+ *
+ * A machine upgraded from 1.0.6 carries the old translation's rules
+ * (allow DNS = allow everything) and a journal whose rows equal the
+ * policy.  A delta computed from those rows finds nothing to change,
+ * so the gate must take the full apply, which clears every StockFW
+ * rule and writes the new set.  And a row the translation refuses must
+ * never let an apply report success. */
+
+static void test_apply_translation_upgrade (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-upgrade-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy = gate_policy_two ();
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	GString *old_journal;
+	gchar *contents = NULL;
+	FsRule *rule;
+	FsPolicyDelta *delta;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+	fake_reset ();
+
+	/* The journal exactly as 1.0.6 wrote it: the same header and
+	 * rows, without the translation line. */
+	CHECK (fs_apply_journal_save (policy, NULL), "journal written");
+	g_file_get_contents (file, &contents, NULL, NULL);
+	old_journal = g_string_new (NULL);
+	{
+		gchar **lines = g_strsplit (contents != NULL ? contents : "",
+		                            "\n", -1);
+
+		for (guint i = 0; lines[i] != NULL; i++) {
+			if (g_str_has_prefix (lines[i], "# rules translation"))
+				continue;
+			if (*lines[i] != '\0')
+				g_string_append_printf (old_journal, "%s\n",
+				                        lines[i]);
+		}
+		g_strfreev (lines);
+	}
+	g_free (contents);
+	contents = NULL;
+	CHECK (g_str_has_prefix (old_journal->str,
+	                         "# StockFW applied policy journal v1\n") &&
+	       strstr (old_journal->str, "translation") == NULL,
+	       "the stand-in 1.0.6 journal has no translation line");
+	g_file_set_contents (file, old_journal->str, -1, NULL);
+	g_string_free (old_journal, TRUE);
+
+	{
+		FsPolicy *loaded = fs_policy_new ();
+
+		CHECK (fs_apply_journal_load (loaded, NULL) &&
+		       gate_policy_total (loaded) == gate_policy_total (policy),
+		       "a 1.0.6 journal still loads (it is the rollback "
+		       "target)");
+		fs_policy_free (loaded);
+	}
+
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "upgrade test",
+	                                NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       !outcome->narrow,
+	       "upgrade: an unchanged policy over a 1.0.6 journal is NOT "
+	       "\"no change\"");
+	CHECK (fake_full_calls == 1 && fake_delta_calls == 0,
+	       "upgrade: the whole set is replaced (full %d, narrow %d)",
+	       fake_full_calls, fake_delta_calls);
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	g_file_get_contents (file, &contents, NULL, NULL);
+	CHECK (contents != NULL &&
+	       strstr (contents, "# rules translation 2\n") != NULL,
+	       "the journal now records the translation that wrote the "
+	       "rules");
+	g_free (contents);
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "full (rule translation upgrade)") != NULL,
+	       "the audit line says why the apply was a full one");
+	g_free (contents);
+
+	/* Once upgraded, the narrow path is back: no change is no work. */
+	fake_reset ();
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "upgrade test",
+	                                NULL, &error);
+	CHECK (outcome->applied && outcome->narrow &&
+	       fake_full_calls == 0 && fake_delta_calls == 0,
+	       "after the upgrade apply, an unchanged policy touches "
+	       "nothing");
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	/* A journal naming another translation (a newer one, or a
+	 * garbled number) is treated the same way. */
+	g_file_get_contents (file, &contents, NULL, NULL);
+	{
+		gchar **parts = g_strsplit (contents, "# rules translation 2\n",
+		                            2);
+		gchar *odd = g_strjoinv ("# rules translation x\n", parts);
+
+		g_file_set_contents (file, odd, -1, NULL);
+		g_free (odd);
+		g_strfreev (parts);
+	}
+	g_free (contents);
+	fake_reset ();
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "upgrade test",
+	                                NULL, &error);
+	CHECK (outcome->applied && fake_full_calls == 1 &&
+	       fake_delta_calls == 0,
+	       "an unreadable translation line also means a full apply");
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	/* --- a refused row ---------------------------------------------- */
+	rule = gate_rule (FS_RULE_INBOUND_ALLOW_SERVICE, "Custom", "0",
+	                  FS_TARGET_ANY);
+	{
+		FsPolicy *with_bad = gate_policy_copy (policy);
+
+		fs_policy_add (with_bad, rule);
+
+		delta = fs_policy_delta (policy, with_bad);
+		CHECK (delta->refused == 1 && !delta->empty &&
+		       delta->add == NULL && delta->remove == NULL,
+		       "a refused row makes the delta non-empty, with nothing "
+		       "to add for it");
+		fs_policy_delta_free (delta);
+
+		delta = fs_policy_delta (NULL, with_bad);
+		CHECK (delta->refused == 1 && !delta->empty,
+		       "the same with no previous state");
+		fs_policy_delta_free (delta);
+
+		/* The gate must not call that "no change", nor hand it to the
+		 * narrow path (which has no rule to carry it): the full apply
+		 * is the one that reports refusals. */
+		fake_reset ();
+		outcome = fs_policy_apply_safe (&fake_backend, with_bad,
+		                                "refusal test", NULL, &error);
+		CHECK (fake_full_calls == 1 && fake_delta_calls == 0,
+		       "a policy with a refused row goes the full way "
+		       "(full %d, narrow %d)", fake_full_calls,
+		       fake_delta_calls);
+		g_clear_error (&error);
+		fs_apply_outcome_free (outcome);
+		fs_policy_free (with_bad);
+	}
+	fs_rule_free (rule);
+
+	fake_reset ();
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	fs_policy_free (policy);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
+/* --- 1.0.7: the simulator reads the new rules --------------------------
+ *
+ * The What-If engine's Windows model answers from the same compiled
+ * rules netsh gets, so the translation fixes show here too: DHCP is UDP
+ * to remote ports 67-68, not "any outbound traffic", and an outbound
+ * block sits on the remote port the traffic goes to.  The platform is
+ * named, so this runs the same on either build. */
+
+static void test_whatif_winrules (void)
+{
+	const FsWhatIfPlatform W = FS_WHATIF_WINDOWS_BLOCK_WINS;
+	FsPolicy *policy = fs_policy_new ();
+	FsWhatIfResult *r;
+	const FsWhatIfAnswer *a;
+	FsRule *rule;
+
+	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE, "DHCP", "67-68",
+	                  FS_TARGET_ANY);
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	r = whatif_ask (W, policy, "outbound tcp to 203.0.113.5 port 22");
+	a = whatif_answer (r);
+	CHECK (a != NULL && (a->rule == NULL || strstr (a->rule, "DHCP") == NULL),
+	       "\"Allow DHCP (outbound)\" does not decide outbound TCP 22 "
+	       "(decided by: %s)", a != NULL && a->rule ? a->rule : "(default)");
+	fs_whatif_result_free (r);
+
+	r = whatif_ask (W, policy, "outbound tcp to 203.0.113.5 port 67");
+	a = whatif_answer (r);
+	CHECK (a != NULL && (a->rule == NULL || strstr (a->rule, "DHCP") == NULL),
+	       "nor outbound TCP 67: DHCP is UDP (decided by: %s)",
+	       a != NULL && a->rule ? a->rule : "(default)");
+	fs_whatif_result_free (r);
+
+	r = whatif_ask (W, policy, "outbound udp to 203.0.113.5 port 68");
+	a = whatif_answer (r);
+	CHECK (r->verdict == FS_WHATIF_ALLOWED && a != NULL && a->rule != NULL &&
+	       strstr (a->rule, "DHCP") != NULL &&
+	       a->origin == FS_WHATIF_ORIGIN_POLICY &&
+	       a->policy_kind == FS_RULE_OUTBOUND_ALLOW_SERVICE &&
+	       a->policy_index == 0,
+	       "but outbound UDP 68 is the DHCP rule, row 0 (%s)",
+	       a != NULL ? a->reason : "(none)");
+	fs_whatif_result_free (r);
+
+	/* An outbound block on SMTP: the traffic goes TO port 25. */
+	rule = gate_rule (FS_RULE_OUTBOUND_DENY_SERVICE, "SMTP", "25",
+	                  FS_TARGET_ANY);
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	r = whatif_ask (W, policy, "outbound tcp to 198.51.100.25 port 25");
+	a = whatif_answer (r);
+	CHECK (r->verdict == FS_WHATIF_BLOCKED && a != NULL && a->rule != NULL &&
+	       strstr (a->rule, "SMTP") != NULL,
+	       "an outbound SMTP block matches remote port 25 (%s)",
+	       a != NULL ? a->reason : "(none)");
+	fs_whatif_result_free (r);
+
+	r = whatif_ask (W, policy, "outbound tcp to 198.51.100.25 port 587");
+	CHECK (r->verdict == FS_WHATIF_ALLOWED,
+	       "and it does not block another port");
+	fs_whatif_result_free (r);
+
+	/* "Allow DNS (inbound)" opens DNS, not every inbound port. */
+	fs_policy_clear (policy);
+	rule = gate_rule (FS_RULE_INBOUND_ALLOW_SERVICE, "DNS", "53",
+	                  FS_TARGET_ANY);
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	r = whatif_ask (W, policy, "inbound tcp port 3389 from 203.0.113.5");
+	CHECK (r->verdict == FS_WHATIF_BLOCKED,
+	       "\"Allow DNS (inbound)\" does not allow inbound TCP 3389");
+	fs_whatif_result_free (r);
+
+	r = whatif_ask (W, policy, "inbound udp port 53 from 203.0.113.5");
+	a = whatif_answer (r);
+	CHECK (r->verdict == FS_WHATIF_ALLOWED && a != NULL && a->rule != NULL &&
+	       strstr (a->rule, "(UDP)") != NULL,
+	       "but it allows inbound UDP 53, by its UDP rule (%s)",
+	       a != NULL && a->rule ? a->rule : "(none)");
+	fs_whatif_result_free (r);
+
+	fs_policy_free (policy);
+}
+
+/* --- 1.0.7 review: hostile input to the Windows translation ------------
+ *
+ * What a second pair of eyes found by attacking the translation: port
+ * texts a fuzzer would try, a bare "TCP" with no port (the What-If's
+ * "Create This Rule" for a portless probe), Samba's own ports written
+ * in another order, a quote in a service name, and a block row that
+ * cannot be compiled -- which must stop a whole-set apply before it
+ * removes the block that is in force. */
+
+/* [ review_policy ] -- one row, the way the Policy page stores it. */
+static FsPolicy *
+review_policy (FsRuleKind kind, const gchar *service, const gchar *port)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *rule = gate_rule (kind, service, port, FS_TARGET_ANY);
+
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+	return policy;
+}
+
+static void test_fwrule_review (void)
+{
+	const FsRuleKind IN = FS_RULE_INBOUND_ALLOW_SERVICE;
+	const FsRuleKind OUT = FS_RULE_OUTBOUND_ALLOW_SERVICE;
+	const FsRuleKind DENY = FS_RULE_OUTBOUND_DENY_SERVICE;
+	static const struct { const gchar *text; const gchar *spec; } cases[] = {
+		{ " ", NULL },
+		{ "   ,  , ", NULL },
+		{ "80-", NULL },
+		{ "-80", NULL },
+		{ "80--90", NULL },
+		{ "80::90", NULL },
+		{ "80:70", NULL },
+		{ "1:2:3", NULL },
+		{ "65536", NULL },
+		{ "0", NULL },
+		{ "00000", NULL },
+		{ "4294967376", NULL },          /* 2^32 + 80: no wrap to 80 */
+		{ "8\xd9\xa0", NULL },           /* Arabic-Indic zero        */
+		{ "\xef\xbc\x98\xef\xbc\x90", NULL }, /* fullwidth "80"       */
+		{ "\xc2\xa0" "80", NULL },       /* no-break space is no sep */
+		{ "80\n443", NULL },
+		{ "1,,2", "1,2" },
+		{ "80 , 443", "80,443" },
+		{ "00080", "80" },
+		{ "1-65535", "1-65535" },
+		{ "65535:65535", "65535" },
+	};
+	FwExpect e_smb[] = { { FS_PROTO_TCP, "139,445", NULL, " (TCP)" },
+	                     { FS_PROTO_UDP, "137-138", NULL, " (UDP)" } };
+
+	for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
+		gchar *spec = fs_fwrule_port_spec (cases[i].text);
+
+		CHECK (g_strcmp0 (spec, cases[i].spec) == 0,
+		       "review: hostile port text #%u -> %s (got %s)", i,
+		       cases[i].spec != NULL ? cases[i].spec : "refused",
+		       spec != NULL ? spec : "refused");
+		g_free (spec);
+	}
+
+	/* Every port, listed one by one and then again: one spec, each
+	 * port once, in the order written. */
+	{
+		GString *text = g_string_new (NULL);
+		gchar *spec;
+
+		for (guint pass = 0; pass < 2; pass++)
+			for (guint p = 1; p <= 65535; p++)
+				g_string_append_printf (text, "%u ", p);
+
+		spec = fs_fwrule_port_spec (text->str);
+		CHECK (spec != NULL && g_str_has_prefix (spec, "1,2,3,") &&
+		       g_str_has_suffix (spec, ",65534,65535") &&
+		       strstr (spec, ",1,") == NULL,
+		       "review: a list of all 65535 ports twice compiles once "
+		       "each (%" G_GSIZE_FORMAT " bytes)",
+		       spec != NULL ? strlen (spec) : 0);
+		CHECK (fs_fwrule_port_spec_covers (spec, 40000) &&
+		       !fs_fwrule_port_spec_covers (spec, 0),
+		       "review: and the simulator reads it whole");
+		g_free (spec);
+		g_string_free (text, TRUE);
+	}
+
+	/* A bare protocol is no service: with no port it is refused, as
+	 * Linux writes no rule for it, never "every TCP port". */
+	fw_golden (IN, "TCP", "", NULL, 0);
+	fw_golden (OUT, "UDP", "", NULL, 0);
+	fw_golden (IN, "tcp", "  ", NULL, 0);
+	fw_golden (DENY, "TCP", "", NULL, 0);
+	fw_golden (FS_RULE_INBOUND_FORWARD, "UDP", "", NULL, 0);
+
+	/* What-If "Create This Rule" for a probe with no port: the engine
+	 * offers no row at all, on either platform, and the safety check
+	 * the Create button runs refuses the portless row the old
+	 * simulator used to write -- which Windows would refuse too, rather
+	 * than open every inbound TCP port. */
+	{
+		FsPolicy *empty = fs_policy_new ();
+		FsWhatIfAction act;
+		FsRule *rule;
+		FsPolicy *policy = fs_policy_new ();
+		GPtrArray *refused = NULL;
+		GList *rules;
+		gchar *why = NULL;
+
+		for (gint plat = 0; plat < 2; plat++) {
+			FsWhatIfResult *r = whatif_ask (
+				plat ? FS_WHATIF_WINDOWS_BLOCK_WINS
+				     : FS_WHATIF_LINUX_FIRST_MATCH,
+				empty, "allow inbound tcp");
+			gboolean any_create = FALSE;
+
+			for (guint i = 0; i < r->answers->len; i++) {
+				const FsWhatIfAnswer *a = g_ptr_array_index (r->answers, i);
+
+				for (guint k = 0; k < a->actions->len; k++) {
+					const FsWhatIfAction *x =
+						g_ptr_array_index (a->actions, k);
+
+					if (x->kind == FS_WHATIF_ACT_CREATE_ALLOW)
+						any_create = TRUE;
+				}
+			}
+			CHECK (r->verdict == FS_WHATIF_BLOCKED && !any_create,
+			       "review: the What-If offers no row for a portless "
+			       "probe (%s)", plat ? "Windows" : "Linux");
+			fs_whatif_result_free (r);
+		}
+
+		rule = fs_rule_new (FS_RULE_INBOUND_ALLOW_SERVICE);
+		rule->service = g_strdup ("TCP");
+		rule->port = g_strdup ("");
+		rule->target = g_strdup (FS_TARGET_ANY);
+		memset (&act, 0, sizeof act);
+		act.kind = FS_WHATIF_ACT_CREATE_ALLOW;
+		act.row = rule;
+		CHECK (!fs_whatif_row_is_safe (&act, &why) && why != NULL,
+		       "review: the Create check refuses a portless TCP row (%s)",
+		       why != NULL ? why : "accepted");
+		g_free (why);
+
+		fs_policy_add (policy, rule);
+		fs_rule_free (rule);
+		rules = fs_fwrule_from_policy_checked (policy, &refused);
+		CHECK (rules == NULL && refused->len == 1,
+		       "review: and that row opens nothing on Windows -- not "
+		       "every inbound TCP port (%u rules)",
+		       g_list_length (rules));
+		fs_fwrule_list_free (rules);
+		g_ptr_array_unref (refused);
+		fs_policy_free (policy);
+		fs_policy_free (empty);
+	}
+
+	/* Samba's own ports in any order or spelling keep the split. */
+	fw_golden (IN, "Samba (SMB)", "445 137-139", e_smb, 2);
+	fw_golden (IN, "Samba (SMB)", "137:138,139 445", e_smb, 2);
+	fw_golden (IN, "Samba (SMB)", "445,139,138,137", e_smb, 2);
+	{
+		/* A real change of ports still applies to both protocols. */
+		FwExpect e[] = { { FS_PROTO_TCP, "137-139", NULL, " (TCP)" },
+		                 { FS_PROTO_UDP, "137-139", NULL, " (UDP)" } };
+		fw_golden (IN, "Samba (SMB)", "137-139", e, 2);
+	}
+
+	/* A quote in a service name must not reach netsh's command line,
+	 * where it would end the name and start new arguments. */
+	{
+		FsPolicy *policy = review_policy (IN,
+			"x\" dir=in action=allow protocol=any \"y", "80");
+		GList *rules = fs_fwrule_from_policy (policy);
+		gboolean clean = (rules != NULL);
+
+		for (GList *l = rules; l != NULL; l = l->next) {
+			gchar **argv = fs_fwrule_netsh_args (l->data);
+
+			for (guint i = 0; argv != NULL && argv[i] != NULL; i++)
+				if (strchr (argv[i], '"') != NULL)
+					clean = FALSE;
+			if (argv == NULL || g_strv_length (argv) != 12)
+				clean = FALSE;
+			g_strfreev (argv);
+		}
+		CHECK (clean,
+		       "review: a quote in a service name never reaches netsh");
+		fs_fwrule_list_free (rules);
+		fs_policy_free (policy);
+	}
+	{
+		gchar *name = fs_fwrule_netsh_name ("StockFW: Allow a\"b (inbound)");
+
+		CHECK (g_strcmp0 (name, "StockFW- Allow a'b -inbound-") == 0,
+		       "review: the netsh spelling of a quote is ' (got %s)",
+		       name);
+		g_free (name);
+	}
+
+	/* Block rows the translation refuses stop a whole-set apply;
+	 * refused allows do not. */
+	{
+		FsPolicy *policy = review_policy (DENY, "SMTP", "25x");
+		gchar *why = fs_fwrule_block_refusals (policy);
+
+		CHECK (why != NULL && strstr (why, "SMTP") != NULL &&
+		       strstr (why, "25x") != NULL,
+		       "review: a block with a bad port is a block refusal "
+		       "(%s)", why != NULL ? why : "none");
+		g_free (why);
+		fs_policy_free (policy);
+
+		policy = review_policy (DENY, "Mystery", "");
+		why = fs_fwrule_block_refusals (policy);
+		CHECK (why != NULL,
+		       "review: so is a block that names nothing to block");
+		g_free (why);
+		fs_policy_free (policy);
+
+		policy = review_policy (IN, "SSH", "0");
+		why = fs_fwrule_block_refusals (policy);
+		CHECK (why == NULL,
+		       "review: a refused allow is not a block refusal");
+		g_free (why);
+		fs_policy_free (policy);
+
+		policy = review_policy (DENY, "SMTP", "25");
+		why = fs_fwrule_block_refusals (policy);
+		CHECK (why == NULL,
+		       "review: a block that compiles is no refusal");
+		g_free (why);
+		fs_policy_free (policy);
+
+		CHECK (fs_fwrule_block_refusals (NULL) == NULL,
+		       "review: no policy, no refusal");
+	}
+
+	/* The narrow apply deletes by name, and netsh decides which names
+	 * are the same: its spelling folds "a/b" and "a-b" together and
+	 * ignores case.  A rule that shares a netsh name with a removed
+	 * one has to be re-created, and the shared name deleted once. */
+	{
+		FsPolicy *before = fs_policy_new ();
+		FsPolicy *after = fs_policy_new ();
+		FsPolicyDelta *delta;
+		FsRule *rule;
+
+		rule = gate_rule (DENY, "a/b", "25", FS_TARGET_ANY);
+		fs_policy_add (before, rule);
+		fs_rule_free (rule);
+		rule = gate_rule (DENY, "a-b", "26", FS_TARGET_ANY);
+		fs_policy_add (before, rule);
+		fs_policy_add (after, rule);
+		fs_rule_free (rule);
+
+		delta = fs_policy_delta (before, after);
+		CHECK (g_list_length (delta->remove) == 2 &&
+		       g_list_length (delta->repair) == 2 &&
+		       delta->add == NULL,
+		       "review: removing \"a/b\" re-creates \"a-b\", which netsh "
+		       "deletes with it (remove %u, repair %u, add %u)",
+		       g_list_length (delta->remove),
+		       g_list_length (delta->repair),
+		       g_list_length (delta->add));
+		fs_policy_delta_free (delta);
+
+		fs_policy_clear (after);
+		delta = fs_policy_delta (before, after);
+		CHECK (g_list_length (delta->remove) == 2,
+		       "review: and removing both deletes each netsh name once "
+		       "(%u deletes for 4 rules under 2 netsh names)",
+		       g_list_length (delta->remove));
+		fs_policy_delta_free (delta);
+
+		/* Case: "SSH" and "ssh" are one name to netsh. */
+		fs_policy_clear (before);
+		fs_policy_clear (after);
+		rule = gate_rule (IN, "SSH", "22", FS_TARGET_ANY);
+		fs_policy_add (before, rule);
+		fs_policy_add (after, rule);
+		fs_rule_free (rule);
+		rule = gate_rule (IN, "ssh", "2222", FS_TARGET_ANY);
+		fs_policy_add (before, rule);
+		fs_rule_free (rule);
+
+		delta = fs_policy_delta (before, after);
+		CHECK (g_list_length (delta->remove) == 1 &&
+		       g_list_length (delta->repair) == 1,
+		       "review: removing \"ssh\" re-creates \"SSH\" (remove %u, "
+		       "repair %u)", g_list_length (delta->remove),
+		       g_list_length (delta->repair));
+		fs_policy_delta_free (delta);
+
+		/* A both-protocol row that moves: both halves go, both come
+		 * back, nothing else is touched. */
+		fs_policy_clear (before);
+		fs_policy_clear (after);
+		rule = gate_rule (IN, "DNS", "53", FS_TARGET_ANY);
+		fs_policy_add (before, rule);
+		fs_rule_free (rule);
+		rule = gate_rule (IN, "DNS", "5353", FS_TARGET_ANY);
+		fs_policy_add (after, rule);
+		fs_rule_free (rule);
+
+		delta = fs_policy_delta (before, after);
+		CHECK (g_list_length (delta->remove) == 2 &&
+		       g_list_length (delta->add) == 2 &&
+		       delta->repair == NULL,
+		       "review: DNS moved to 5353 is two deletes and two adds");
+		fs_policy_delta_free (delta);
+
+		fs_policy_free (before);
+		fs_policy_free (after);
+	}
+
+	/* The simulator's Windows model on lists and ranges: inside any
+	 * element is covered, the gaps between them are not. */
+	{
+		FsPolicy *policy = review_policy (IN, "Game",
+		                                  "7000-7010 7100,7200");
+		static const struct { guint port; gboolean open; } probe[] = {
+			{ 7000, TRUE }, { 7005, TRUE }, { 7010, TRUE },
+			{ 7011, FALSE }, { 7099, FALSE }, { 7100, TRUE },
+			{ 7150, FALSE }, { 7200, TRUE }, { 7201, FALSE },
+		};
+
+		for (guint i = 0; i < G_N_ELEMENTS (probe); i++) {
+			gchar *line = g_strdup_printf ("inbound udp port %u from "
+			                               "203.0.113.5", probe[i].port);
+			FsWhatIfResult *r = whatif_ask (FS_WHATIF_WINDOWS_BLOCK_WINS,
+			                                policy, line);
+
+			CHECK (r->verdict == (probe[i].open ? FS_WHATIF_ALLOWED
+			                                    : FS_WHATIF_BLOCKED),
+			       "review: inbound UDP %u on \"7000-7010 7100,7200\" "
+			       "is %s", probe[i].port,
+			       probe[i].open ? "allowed" : "blocked");
+			fs_whatif_result_free (r);
+			g_free (line);
+		}
+		fs_policy_free (policy);
+	}
+}
+
 static void test_settings_plan (void)
 {
 	FsSettings *s;
@@ -5057,6 +6723,7 @@ static void test_settings_plan (void)
 	                  "127.0.0.0/8") == 0,
 	       "reserved sources: the same four ranges, public profile");
 	fs_settings_plan_free (plan);
+	fs_settings_free (s);
 
 	/* --- the everything-on snapshot -------------------------- */
 	s = plan_settings_with (TRUE);
@@ -5616,43 +7283,59 @@ static void test_sharing_needs_both_devices (void)
 }
 
 /* --- "Start the firewall when StockFW opens" -------------------------
- * On Linux, start applies the policy in the backend's context.  At
- * launch that policy is created empty and only filled when the Policy
- * page is built, and Sentinel's expired blocks come out of it after
- * that; starting any earlier would take every block and forward down.
- * The window cannot be built here, so the order in fs_app_activate is
- * read from the source: one start, in start_on_open, called once,
- * after both. */
+ * On Linux, start applies a policy.  At launch the shared policy is
+ * created empty and only filled when the Policy page is built, and
+ * Sentinel's expired blocks come out of it after that; starting any
+ * earlier would take every block and forward down.  The window cannot
+ * be built here, so the order in fs_app_activate is read from the
+ * source: no direct backend start anywhere in fs-app.c, one start
+ * through the start gate, in start_at_launch, called once, after both.
+ * (tests/ui-startup-smoke.c drives the same start at runtime.) */
 static void test_start_on_open_order (void)
 {
 	gchar *src = NULL;
-	const gchar *body, *end, *page, *restore, *start, *call;
-	guint starts = 0, calls = 0;
+	const gchar *body, *end, *page, *restore, *start, *gate, *call;
+	guint direct = 0, gates = 0, calls = 0;
 
 	CHECK (g_file_get_contents ("src/ui/fs-app.c", &src, NULL, NULL),
 	       "start on open: fs-app.c is readable");
 	if (src == NULL)
 		return;
+	/* A Windows checkout (core.autocrlf) has CRLF line ends; the
+	 * patterns below match LF, so read the source as LF. */
+	{
+		gchar *w = src;
+		for (const gchar *r = src; *r != '\0'; r++)
+			if (*r != '\r')
+				*w++ = *r;
+		*w = '\0';
+	}
 
 	for (const gchar *p = src; (p = strstr (p, "->start (")) != NULL; p++)
-		starts++;
-	for (const gchar *p = src; (p = strstr (p, "start_on_open ();")) != NULL;
-	     p++)
+		direct++;
+	for (const gchar *p = src;
+	     (p = strstr (p, "fs_firewall_start_")) != NULL; p++)
+		gates++;
+	for (const gchar *p = src;
+	     (p = strstr (p, "start_at_launch (due);")) != NULL; p++)
 		calls++;
 
 	body = strstr (src, "\nfs_app_activate (GtkApplication *app)\n{");
 	end = body != NULL ? strstr (body, "\n}\n") : NULL;
-	start = strstr (src, "\nstart_on_open (void)\n{");
+	start = strstr (src, "\nstart_at_launch (const FsPolicy *due)\n{");
+	gate = start != NULL ? strstr (start, "fs_firewall_start_lifting (")
+	                     : NULL;
 	page = body != NULL ? strstr (body, "fs_policyview_page (policy)") : NULL;
 	restore = body != NULL
-		? strstr (body, "fs_copilot_autoblocks_restore (policy);") : NULL;
-	call = body != NULL ? strstr (body, "start_on_open ();") : NULL;
+		? strstr (body, "fs_copilot_autoblocks_restore (policy, due);")
+		: NULL;
+	call = body != NULL ? strstr (body, "start_at_launch (due);") : NULL;
 
-	CHECK (starts == 1 && calls == 1 && start != NULL &&
-	       strstr (start, "->start (") != NULL &&
-	       strstr (start, "->start (") < strstr (start + 1, "\n}\n"),
-	       "start on open: the app's only start is in start_on_open, "
-	       "called once (%u start, %u call)", starts, calls);
+	CHECK (direct == 0 && gates == 1 && calls == 1 && start != NULL &&
+	       gate != NULL && gate < strstr (start + 1, "\n}\n"),
+	       "start on open: the app's only start goes through the start "
+	       "gate in start_at_launch, called once (%u direct start, "
+	       "%u gate, %u call)", direct, gates, calls);
 	CHECK (body != NULL && end != NULL && page != NULL &&
 	       restore != NULL && call != NULL && call < end &&
 	       page < call && restore < call,
@@ -5664,8 +7347,9 @@ static void test_start_on_open_order (void)
 static void test_activity_series (void)
 {
 	FsActivity *a;
-	guint64 values[8];
-	guint covered[8];
+	/* Room for the widest window asked below (26 points). */
+	guint64 values[32];
+	guint covered[32];
 	gint64 start;
 	guint step;
 
@@ -5749,6 +7433,7 @@ static void test_activity_series (void)
 	/* The series cap: new names past it are refused, old ones count. */
 	{
 		guint accepted = 0;
+		GList *names;
 
 		for (guint i = 0; i < FS_ACTIVITY_MAX_SERIES + 5; i++) {
 			gchar *name = g_strdup_printf ("test.%u", i);
@@ -5758,10 +7443,12 @@ static void test_activity_series (void)
 			g_free (name);
 		}
 
-		CHECK (g_list_length (fs_activity_series_names (a)) ==
-		       FS_ACTIVITY_MAX_SERIES,
+		names = fs_activity_series_names (a);
+
+		CHECK (g_list_length (names) == FS_ACTIVITY_MAX_SERIES,
 		       "activity: never more than %d series",
 		       FS_ACTIVITY_MAX_SERIES);
+		g_list_free (names);
 		CHECK (fs_activity_add (a, FS_ACTIVITY_ALLOWED, 1),
 		       "activity: an existing series still counts at the cap "
 		       "(%u new names accepted)", accepted);
@@ -6691,8 +8378,11 @@ int main (void)
 	test_rule_csv ();
 	test_policy_persist ();
 	test_fwrule_ports ();
+	test_fwrule_services_golden ();
+	test_fwrule_default_policy ();
 	test_fwrule_expand ();
 	test_fwrule_forward ();
+	test_fwrule_netsh_golden ();
 	test_service_lookup ();
 	test_script_generation ();
 	test_copilot_suggestion_apply ();
@@ -6718,7 +8408,6 @@ int main (void)
 	test_policy_load_validation_f1 ();
 	test_name_hygiene_f3 ();
 	test_whatif_simulate ();
-	test_whatif_reading ();
 	test_direction_pairing ();
 	test_trust_engine ();
 	test_fwrule_equal ();
@@ -6726,9 +8415,17 @@ int main (void)
 	test_apply_impact ();
 	test_apply_delta ();
 	test_apply_gate ();
+	test_start_gate ();
+	test_start_from_journal ();
+	test_autoblock_expire ();
+	test_autostart ();
+	test_block_tally ();
 	test_settings_apply_gate ();
 	test_prefs_table ();
 	test_settings_pending ();
+	test_apply_translation_upgrade ();
+	test_whatif_winrules ();
+	test_fwrule_review ();
 	test_settings_plan ();
 	test_netparse_log ();
 	test_netparse_proc ();
@@ -6752,10 +8449,13 @@ EOF
 
 EXTRA_LIBS=""
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
-  EXTRA_LIBS="-lws2_32"
+  EXTRA_LIBS="-lws2_32 -lole32 -loleaut32"
 fi
 
-cc "$BUILD_DIR/test-core.c" \
+# STOCKFW_TEST_CFLAGS adds compiler flags, for the sanitizer run the
+# README describes (-fsanitize=address,undefined ...).
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} "$BUILD_DIR/test-core.c" \
    -I src \
    $(pkg-config --cflags glib-2.0 gio-2.0) \
    -o "$BUILD_DIR/test-core" \
@@ -6767,3 +8467,16 @@ export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
 rm -rf "$STOCKFW_RULES_DIR"
 
 "$BUILD_DIR/test-core"
+
+# The What-If engine's golden table (tests/test-whatif.c): the reading of
+# a line, both firewall models, the Linux model pinned to the generator,
+# and the fixes it offers.  Same compiler flags as above.
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} tests/test-whatif.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0) \
+   -o "$BUILD_DIR/test-whatif" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
+
+"$BUILD_DIR/test-whatif"

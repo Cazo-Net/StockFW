@@ -11,7 +11,7 @@
 # GTK3 comes from the distribution's own packages and the dynamic linker
 # resolves it.  Bundling it would be both unnecessary and wrong (it would
 # bypass the distro's security updates).  The payload is therefore small:
-# binary, desktop entry, icon, license, install script.
+# binary, desktop entry, icon, license, install script, boot unit.
 set -euo pipefail
 
 PORT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -114,6 +114,8 @@ echo "  ok: README.md, LICENSE.txt"
 # 4. installer scripts
 echo "[4/5] Copying installer scripts..."
 cp "$LINUX_DIR/install.sh" "$STAGE/"
+# The boot unit (1.0.7): without it the rules are gone after a reboot.
+cp "$LINUX_DIR/stockfw.service" "$STAGE/"
 
 # 5. tar it up
 echo "[5/5] Creating archive..."

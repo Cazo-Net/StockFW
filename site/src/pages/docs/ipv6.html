@@ -1,0 +1,47 @@
+---
+title: IPv6
+section: Protection
+order: 21
+description: How StockFW filters IPv6: natively on Windows, and on Linux with one policy rendered for both families, one rollback, honest status, and the Covers column that says what each rule reaches.
+---
+<h1>IPv6</h1>
+<p class="lede">A rule that only exists for IPv4 is a door left open on every network that also speaks IPv6, which today is most of them. StockFW tells you, per rule and on the Overview, exactly which families are filtered, and on Linux it filters both from the same policy.</p>
+
+<h2>Windows</h2>
+<p>[[win]] Windows Firewall rules apply to both families unless an address scopes them, so a rule for <em>Anyone</em> covers IPv4 and IPv6, and a rule for <code>2001:db8::5</code> covers IPv6 only. The Overview’s two tiles both read “Filtered” whenever the firewall is on. One limit: the Windows engine takes addresses, not names, so a rule whose target is a host name covers nothing there, and the Covers column says so. [[gap]]</p>
+
+<h2>Linux</h2>
+<p>[[linux]] The whole policy is rendered <em>before</em> the kernel is touched into two payloads, one for <code>iptables-restore</code> and one for <code>ip6tables-restore</code>, each with a filter part and, in router mode, a nat part. The backend snapshots StockFW’s chains in both families, loads IPv4, then IPv6, and on any failure puts back every table it changed. Each payload is loaded with <code>--noflush</code> and declares only StockFW’s own chains, so rules that Docker, libvirt or ufw keep in the same tables are never seen, and the hook from <code>INPUT</code> into <code>INBOUND</code> is not removed and re-added during a re-apply. [[verified:test-apply-dual.sh]]</p>
+<p>The rollback covers both families, always. The first version rolled IPv6 back and skipped IPv4 whenever the IPv6 restore itself failed, which would have left IPv4 on the new policy while the dialog said nothing changed; four “teeth” runs now pin it, each removing one part of the rollback and watching a specific check go red.</p>
+
+<h3>Which family a rule reaches</h3>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Target</th><th>Rendered into</th></tr></thead>
+<tbody>
+<tr><td>An IPv4 address or network</td><td>The IPv4 payload only.</td></tr>
+<tr><td>An IPv6 address or network</td><td>The IPv6 payload only.</td></tr>
+<tr><td><em>Anyone</em>, or empty</td><td>Both.</td></tr>
+<tr><td>A host name</td><td>Looked up once per apply and written as each family’s addresses, so no name is left for the tools to resolve while loading. A name with no address in one family gets a note. An <em>allow</em> whose name cannot be looked up is left out and reported (it fails closed). A <em>block</em> whose name cannot be looked up refuses the apply while rules are loaded, so the last good addresses stay blocked; when nothing is loaded yet (Start), it is left out and the notes begin with “NOT BLOCKED:”, because refusing would leave every host unfiltered over one name. [[verified:test_restore_plan]]</td></tr>
+<tr><td>A port forward</td><td>Its destination’s family, written as <code>[2001:db8::5]:80</code> for IPv6. Masquerading stays IPv4-only. A destination that is a name or a range is left out and noted.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The same decision drives the <em>Covers</em> column on the <a href="{{root}}docs/policy.html#covers">Policy page</a>, <code>stockfw policy list</code> and its JSON, and a test checks that “Covers” names a family exactly when that family’s payload contains the rule. [[verified:test-core.sh]]</p>
+
+<h3>What IPv6 always needs</h3>
+<p>Neighbour discovery is ICMPv6, not ARP, so it goes through the filter, and a firewall that drops it takes the host off the network. Ahead of every preference and never rate-limited, INBOUND accepts packet-too-big, time-exceeded and parameter-problem; router advertisements from <code>fe80::/10</code>, neighbour solicitations and advertisements, all with hop limit 255; multicast listener discovery with hop limit 1; and DHCPv6 replies from link-local. OUTBOUND lets the host’s own solicitations, advertisements, listener reports, packet-too-big and DHCPv6 requests out, ahead of restrictive mode’s default drop. The ICMP preferences map to ICMPv6 where a counterpart exists; timestamps, address masks and source quench are IPv4-only and labelled so.</p>
+
+<h3>Router mode</h3>
+<p>IPv6 forwarding is hooked only in router mode, because container and VM runtimes accept forwarded traffic in their own tables and would otherwise be cut by INBOUND’s default drop. An IPv6 forward needs <code>net.ipv6.conf.all.forwarding=1</code>, and a forwarding host ignores router advertisements, which would drop its own default route; before turning forwarding on, the backend sets <code>accept_ra=2</code> on the external interface, and only if it was 1, since 0 means someone turned advertisements off on purpose.</p>
+
+<h2>What the app tells you</h2>
+<ul>
+<li>The Overview has an <em>IPv6 traffic</em> tile that reads the kernel: “Filtered”, or “Not filtered” with the reason in the sidebar: <code>ip6tables</code> not installed, chains not loaded, loaded but not hooked, or the firewall stopped. “None on this system” when the kernel has no IPv6 stack. It never infers IPv6 from IPv4.</li>
+<li><code>stockfw status</code> has an <em>IPv6</em> line and an <code>ipv6</code> object in its JSON.</li>
+<li>The dashboard’s Firewall tile reads “In force for IPv4 and IPv6” or warns “IPv4 only”.</li>
+<li>A successful apply on a host without <code>ip6tables</code> is a success with a note, not a failure: “IPv6 is not filtered: ip6tables is not installed”. Install the package and Apply again.</li>
+</ul>
+
+<h2>Testing it without IPv6</h2>
+<p>The project’s test container has no IPv6 stack. <code>STOCKFW_ASSUME_IPV6=1</code> makes the backend load the IPv6 payload anyway, so rule loading is exercised for real in a private network namespace while packet behaviour is checked as rule text. The screenshots on this site were taken that way.</p>

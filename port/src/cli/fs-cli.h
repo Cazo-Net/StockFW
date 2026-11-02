@@ -22,6 +22,7 @@
 #include <glib.h>
 #include "core/fs-backend.h"
 #include "core/fs-rules.h"
+#include "core/fs-whatif.h"
 
 G_BEGIN_DECLS
 
@@ -36,7 +37,10 @@ enum
 	FS_EXIT_FAILURE   = 1,
 	FS_EXIT_USAGE     = 2,
 	FS_EXIT_NEED_ROOT = 3,
-	FS_EXIT_BLOCKED   = 5    /* simulate: the traffic would be blocked */
+	FS_EXIT_BLOCKED   = 5,   /* simulate: the traffic would be blocked */
+	FS_EXIT_DEPENDS   = 6    /* simulate: allowed in some cases, blocked
+	                          * in others (never 0: scripts that branch
+	                          * on "allowed" must not take it as yes) */
 };
 
 /* Global output switches, set once by main. */
@@ -81,6 +85,19 @@ void fs_cli_print_json (GString *json);
 /* The policy on disk (the rules directory both front ends share).
  * Sets *on_disk to FALSE when no rule file exists yet. */
 FsPolicy *fs_cli_load_policy (gboolean *on_disk, gint *malformed);
+
+/* One What-If line answered against the saved policy and Firewall
+ * preferences, with what the backend can tell about the firewall
+ * (unknown without root) and whether the policy is the applied one.
+ * assume_running answers as if the firewall ran.  Never NULL; free
+ * with fs_whatif_result_free. */
+FsWhatIfResult *fs_cli_whatif (const gchar *line, gboolean assume_running);
+
+/* The answer as one JSON object: the flat fields the dashboard reads
+ * (verdict, direction, protocol, port, remote, rule, reason,
+ * suggestion) and every direction in full (trace, cases, actions). */
+void fs_cli_whatif_json (GString *out, const FsWhatIfResult *result,
+                         const gchar *input);
 
 /* Command-line names for rule kinds: "inbound-allow-service" ... */
 const gchar *fs_cli_kind_name  (FsRuleKind kind);

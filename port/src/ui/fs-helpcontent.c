@@ -3,8 +3,11 @@
  *
  * Rules for this file:
  *   - Say what the build in front of the reader does today.  A feature
- *     that lives on a 1.0.7 branch and is not in this build gets one
- *     FS_HELP_SOON callout, never a sentence that reads as present.
+ *     that is not in this build gets one FS_HELP_SOON callout ("Not in
+ *     this build"), never a sentence that reads as present.  In 1.0.7
+ *     that is threat intel and blocking by country or network owner
+ *     only: parts of their core are merged, but nothing in the app
+ *     turns them on yet.
  *   - Never promise protection the app does not give.
  *   - Plain sentences, no em dashes.
  *   - Topic ids are stable: Preferences and F1 open topics by id, and
@@ -295,52 +298,76 @@ static const FsHelpBlock copilot[] = {
 };
 
 static const FsHelpBlock whatif[] = {
-	{ FS_HELP_PARA, N_("Describe a connection in the What-If box on the "
-	  "Copilot page and press <b>Simulate</b>. StockFW checks it against "
-	  "your policy, answers <b>ALLOWED</b> or <b>BLOCKED</b>, names the "
-	  "rule that decided, and plays the answer in a small window. Asking "
-	  "writes nothing: it is a question, not a change.") },
+	{ FS_HELP_PARA, N_("Describe a connection in the What-If box at the "
+	  "bottom of the Copilot page and press <b>Simulate</b>. StockFW "
+	  "answers <b>ALLOWED</b>, <b>BLOCKED</b> or <b>DEPENDS</b> the way "
+	  "the firewall on this computer would decide, names the rule that "
+	  "decided, and offers fixes it has checked. Asking writes nothing: "
+	  "it is a question, not a change.") },
 	{ FS_HELP_HEAD, N_("Asking") },
-	{ FS_HELP_PARA, N_("Say what you know: a direction (inbound or "
-	  "outbound), a service or port, a host, a protocol. For example:") },
-	{ FS_HELP_CODE, "allow SSH from 192.168.1.50 on port 22" },
-	{ FS_HELP_CODE, "inbound ssh from 203.0.113.5" },
-	{ FS_HELP_CODE, "outbound tcp to 203.0.113.9 port 443" },
-	{ FS_HELP_PARA, N_("Short forms work too: <tt>port 80</tt>, "
-	  "<tt>:22</tt>, <tt>rdp</tt> for port 3389, <tt>ping</tt> for ICMP. "
-	  "A line with no direction is read as outbound, and one with no "
-	  "protocol as TCP. Host names are not read as hosts, so use an "
-	  "address.") },
+	{ FS_HELP_PARA, N_("Write it the way you would say it: a direction "
+	  "(inbound or outbound), a service or port, an address or network, a "
+	  "protocol, and what you want (allow or block). The order of the "
+	  "words does not matter. For example:") },
+	{ FS_HELP_CODE, "Can 192.168.1.50 reach my SSH?" },
+	{ FS_HELP_CODE, "Is outbound DNS to 8.8.8.8 allowed?" },
+	{ FS_HELP_CODE, "block RDP from the internet" },
+	{ FS_HELP_PARA, N_("<b>Try</b> under the box offers these examples, "
+	  "and <b>Read as</b> shows as chips how your line was understood, "
+	  "with anything it left open marked as open. Whatever the line "
+	  "leaves open (the direction, protocol, port or host) stays open: "
+	  "a line with no direction is answered both ways, and one with no "
+	  "host for every host your rules tell apart. <tt>internet</tt>, "
+	  "<tt>anyone</tt> or <tt>anywhere</tt> means any host. A host name "
+	  "is not looked up, so the answer is for every host and no rule is "
+	  "offered: use an address.") },
+	{ FS_HELP_PARA, N_("A line with nothing StockFW recognises gets no "
+	  "answer, only a note on how to ask. The last five questions stay "
+	  "under <b>Recent</b>, one click from being asked again.") },
 	{ FS_HELP_HEAD, N_("Reading the answer") },
-	{ FS_HELP_ITEM, N_("Your line is shown with what StockFW read from "
-	  "it, so a misreading is easy to spot.") },
-	{ FS_HELP_ITEM, N_("A deny wins over an allow that also matches. When "
-	  "that happens the answer says the allow is shadowed.") },
-	{ FS_HELP_ITEM, N_("With no matching rule the answer uses the "
-	  "default: inbound is blocked and outbound is allowed.") },
-	{ FS_HELP_ITEM, N_("If the line named no port or no host, a note "
-	  "says so; the answer names any port or host that decided it.") },
-	{ FS_HELP_ITEM, N_("A line with nothing StockFW recognises gets no "
-	  "answer at all, and the window shows examples instead.") },
-	{ FS_HELP_WARN, N_("The answer is about your StockFW policy as "
-	  "written. It does not look at whether the firewall is running, at "
-	  "<b>Block outgoing unless allowed</b>, at the ICMP and Protection "
-	  "settings in Preferences, or at rules that other programs or "
-	  "Windows itself added. On Windows, for example, the reserved-address "
-	  "block can stop a connection from a private address that the answer "
-	  "calls ALLOWED.") },
-	{ FS_HELP_HEAD, N_("Creating a rule") },
-	{ FS_HELP_PARA, N_("The answer window offers <b>Create This Rule</b>. "
-	  "It shows the allow rule it would add and asks first. Once you say "
-	  "yes, the rule is saved to your policy and the policy is applied at "
-	  "once, unless Audit-only or Lock policy is holding changes "
-	  "back.") },
-	{ FS_HELP_SOON, N_("A rebuilt What-If is coming in 1.0.7. It follows "
-	  "how each firewall really decides, takes the firewall's state and "
-	  "your Preferences into account, and can answer <b>DEPENDS</b> when "
-	  "the outcome differs by host, port or protocol, naming each case "
-	  "and the rule behind it. It offers a rule only after checking that "
-	  "the rule gives the answer you asked for.") },
+	{ FS_HELP_PARA, N_("The card shows the verdict and one sentence. "
+	  "<b>Details</b> opens the What-If window beside the page: it is not "
+	  "modal, and asking again refreshes it.") },
+	{ FS_HELP_ITEM, N_("The verdict, the connection in one sentence, and "
+	  "a diagram that plays it: the packet passes the wall, bounces off "
+	  "it, or waits at it when the answer depends.") },
+	{ FS_HELP_ITEM, N_("<b>DEPENDS</b> means the answer differs for "
+	  "part of what the line left open, such as some hosts or ports. "
+	  "Each case is listed with its own verdict and the rule that "
+	  "decides it.") },
+	{ FS_HELP_ITEM, N_("<b>Why</b> lists every rule checked, in the "
+	  "firewall's own order, and marks the one that decides. On Linux "
+	  "the first rule that matches decides; on Windows any matching "
+	  "block wins over any allow. A rule from your policy has a link to "
+	  "its row on the Policy page.") },
+	{ FS_HELP_ITEM, N_("<b>Good to know</b> lists what the answer had "
+	  "to assume.") },
+	{ FS_HELP_PARA, N_("The answer takes into account what changes the "
+	  "outcome besides your rules: the Firewall, ICMP and Protection "
+	  "settings in Preferences (including the broadcast and "
+	  "reserved-address blocks), whether the firewall is running, "
+	  "whether the saved policy is the one in force, Sentinel's "
+	  "automatic blocks, and on Windows the network profile in use. When "
+	  "the firewall is stopped, or the saved policy is not the one "
+	  "loaded, the answer says so first.") },
+	{ FS_HELP_WARN, N_("What-If knows only StockFW's own policy and "
+	  "settings. Rules that other programs or Windows itself added, or "
+	  "that someone wrote with iptables directly, can also allow or "
+	  "block the connection.") },
+	{ FS_HELP_HEAD, N_("Fixing it") },
+	{ FS_HELP_PARA, N_("<b>What you can do</b> lists only fixes StockFW "
+	  "has checked: with the change in place the question gets the "
+	  "answer you asked for, and nothing else changes. <b>Create allow "
+	  "rule</b> or <b>Create block rule</b> shows the exact row first; "
+	  "a created allow always names one port and one protocol. Other "
+	  "fixes open the rule in Policy, lift a Sentinel block, open the "
+	  "Preferences page that decides, start the firewall or apply the "
+	  "policy.") },
+	{ FS_HELP_PARA, N_("After you say yes, the row is checked again, "
+	  "saved to your policy and applied through the same steps as "
+	  "<b>Apply policy</b>, unless Audit-only or Lock policy is holding "
+	  "changes back. <b>What changed</b> on the card says whether the "
+	  "rule is in force or only saved.") },
 	{ FS_HELP_SEE, "copilot policy cli" },
 	{ FS_HELP_END, NULL }
 };
@@ -386,8 +413,11 @@ static const FsHelpBlock sentinel[] = {
 	  "what the event log shows. It is an early warning, not a "
 	  "guarantee: a program that varies its timing, or talks to an "
 	  "address it has used before, is not caught.") },
-	{ FS_HELP_SOON, N_("Pausing Sentinel's auto-block for an hour from the "
-	  "tray menu is coming in 1.0.7.") },
+	{ FS_HELP_PARA, N_("<b>Pause Sentinel auto-block for 1 hour</b> in "
+	  "the tray menu stops new automatic blocks for an hour: Sentinel "
+	  "still reports what it sees, and blocks already in place keep their "
+	  "own ten minutes. The same row resumes it sooner. Both are written "
+	  "to the audit log.") },
 	{ FS_HELP_SEE, "copilot events background" },
 	{ FS_HELP_END, NULL }
 };
@@ -445,7 +475,7 @@ static const FsHelpBlock preferences[] = {
 	{ FS_HELP_HEAD, N_("The pages") },
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-general\">General</a>: the "
 	  "tray icon, closing to the tray, starting the firewall when "
-	  "StockFW opens.") },
+	  "StockFW opens, and starting StockFW when you sign in.") },
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-events\">Events</a>: what "
 	  "the Events list leaves out.") },
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-policy\">Policy</a>: when "
@@ -479,10 +509,28 @@ static const FsHelpBlock prefs_general[] = {
 	{ FS_HELP_ITEM, N_("<b>Start the firewall when StockFW opens</b> (off "
 	  "by default): turns the firewall on each time StockFW starts. It "
 	  "needs the rights to change the firewall; without them StockFW "
-	  "opens and the Overview shows the firewall as it is.") },
-	{ FS_HELP_SOON, N_("Starting StockFW at sign-in is coming in "
-	  "1.0.7.") },
-	{ FS_HELP_SEE, "background preferences" },
+	  "opens and the Overview shows the firewall as it is. Audit-only "
+	  "and Lock policy hold it back as they hold an apply, and on Linux "
+	  "it puts back the last policy that was applied, not edits nobody "
+	  "applied.") },
+	{ FS_HELP_HEAD, N_("Background") },
+	{ FS_HELP_ITEM, N_("<b>Start StockFW in the background when I sign "
+	  "in</b> (off by default): starts StockFW in the notification area "
+	  "when you sign in, without administrator or root rights. That copy "
+	  "shows the firewall's state (on Linux as unknown, because it "
+	  "cannot read the rules) but cannot change the rules or watch "
+	  "blocked traffic. It is the same setting as <b>Start at "
+	  "sign-in</b> in the tray menu, and like every other row it is "
+	  "written only when you press Save.") },
+	{ FS_HELP_PARA, N_("On Windows only an administrator can change it, "
+	  "so the switch is greyed in a copy that is not elevated. If the "
+	  "system refuses the change, nothing is saved and the window stays "
+	  "open with the reason.") },
+	{ FS_HELP_NOTE, N_("Your firewall rules do not depend on this "
+	  "setting. Windows keeps them across restarts, and on Linux the "
+	  "stockfw boot service puts them back. The note under the switch "
+	  "says whether that service is enabled on this computer.") },
+	{ FS_HELP_SEE, "background linux preferences" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -638,9 +686,10 @@ static const FsHelpBlock prefs_protection[] = {
 /* ------------------------------------------------------------- more */
 
 static const FsHelpBlock threat_intel[] = {
-	{ FS_HELP_SOON, N_("Threat-intel blocklists are coming in 1.0.7 and "
-	  "are not part of this build. Nothing described here is protecting "
-	  "this computer yet.") },
+	{ FS_HELP_SOON, N_("Threat-intel blocklists, and blocking by country "
+	  "or network owner (ASN), are not available in this build. Nothing "
+	  "described here is protecting this computer, and StockFW downloads "
+	  "no lists.") },
 	{ FS_HELP_PARA, N_("What is planned: you pick well-known public "
 	  "blocklists, such as Spamhaus DROP or the abuse.ch Feodo Tracker, "
 	  "and accept each list's terms. StockFW downloads them from their "
@@ -665,31 +714,74 @@ static const FsHelpBlock threat_intel[] = {
 
 static const FsHelpBlock background[] = {
 	{ FS_HELP_PARA, N_("With <b>Show a tray icon</b> on (the default), "
-	  "StockFW puts an icon in the notification area. Its tooltip shows "
-	  "the firewall's state. Click it to bring the window back; "
-	  "right-click it for <b>Open StockFW</b>, <b>About StockFW</b> and "
-	  "<b>Quit StockFW</b>.") },
+	  "StockFW puts an icon in the notification area. Its tooltip says "
+	  "whether the firewall is on and how many connections were blocked "
+	  "today, or that events are not being watched. Click it to bring "
+	  "the window back.") },
 	{ FS_HELP_PARA, N_("With <b>Close and minimize to the tray</b> on, "
 	  "closing or minimizing the window hides it in the tray instead of "
 	  "quitting, so event monitoring and Sentinel keep running. StockFW "
 	  "hides the window only when the icon really appeared; where the "
 	  "desktop has no notification area, closing quits, so StockFW is "
 	  "never left running with no way back.") },
+	{ FS_HELP_HEAD, N_("The tray menu") },
+	{ FS_HELP_PARA, N_("Right-click the icon for the menu. The firewall's "
+	  "state is read again each time it opens.") },
+	{ FS_HELP_ITEM, N_("At the top, greyed because they are information: "
+	  "<b>Firewall: On</b> or <b>Off</b> with the network in use, and "
+	  "<b>Blocked today</b>, or a note that events are not being "
+	  "watched. <b>Recent blocks</b> lists the last few; each opens the "
+	  "Events page.") },
+	{ FS_HELP_ITEM, N_("<b>Open StockFW</b>, and <b>Go to</b> for each "
+	  "page.") },
+	{ FS_HELP_ITEM, N_("<b>Pause protection</b> stops the firewall after "
+	  "the same question the Overview asks, and then reads <b>Resume "
+	  "protection</b>.") },
+	{ FS_HELP_ITEM, N_("<b>Pause Sentinel auto-block for 1 hour</b>: see "
+	  "<a href=\"help:sentinel\">Sentinel</a>.") },
+	{ FS_HELP_ITEM, N_("<b>Start at sign-in</b>: the same setting as on "
+	  "the <a href=\"help:prefs-general\">General</a> page of "
+	  "Preferences.") },
+	{ FS_HELP_ITEM, N_("<b>Preferences</b>, <b>Help</b> (which opens this "
+	  "topic) and <b>About StockFW</b>.") },
+	{ FS_HELP_ITEM, N_("<b>Quit (firewall stays on)</b>.") },
+	{ FS_HELP_PARA, N_("A row that cannot act right now is greyed, and "
+	  "pointing at it says why, for example that it needs StockFW "
+	  "running as administrator or started with sudo.") },
+	{ FS_HELP_HEAD, N_("Starting in the background") },
+	{ FS_HELP_PARA, N_("<b>Start StockFW in the background when I sign "
+	  "in</b>, in Preferences or the tray menu, starts StockFW in the "
+	  "tray when you sign in, without administrator or root rights. "
+	  "That copy shows the state but cannot change the rules or watch "
+	  "blocked traffic. Start <b>StockFW (Elevated)</b> on Windows, or "
+	  "StockFW with sudo on Linux, and it takes over from the copy "
+	  "started at sign-in.") },
+	{ FS_HELP_PARA, N_("<tt>StockFW --background</tt> starts with the "
+	  "window hidden in the tray. If no tray icon appears within a few "
+	  "seconds, the window is shown instead.") },
+	{ FS_HELP_HEAD, N_("One StockFW at a time") },
+	{ FS_HELP_PARA, N_("Each user runs one StockFW. Starting it again "
+	  "brings the running window forward instead of opening a second "
+	  "copy, and <tt>StockFW --quit</tt> asks the running copy to quit. "
+	  "A copy started with more rights takes over from one started "
+	  "without them.") },
 	{ FS_HELP_NOTE, N_("Quitting StockFW does not turn the firewall off. "
 	  "The rules stay in force; event monitoring, Sentinel and the "
-	  "graphs stop until StockFW runs again. A Sentinel block that is "
-	  "live when you quit stays on the firewall until the policy is next "
-	  "applied after StockFW starts again.") },
+	  "graphs stop until StockFW runs again. A Sentinel block that is in "
+	  "force when you quit stays on the firewall while StockFW is "
+	  "closed. When StockFW starts again with the rights to change the "
+	  "firewall, a block whose ten minutes ran out meanwhile is taken "
+	  "off. On Linux that happens only while the firewall is running; "
+	  "otherwise the block goes when the firewall next starts.") },
+	{ FS_HELP_NOTE, N_("Your settings, and what the Copilot learned, are "
+	  "saved every few minutes and when you sign out or shut down, not "
+	  "only when you quit.") },
 	{ FS_HELP_WARN, N_("On Linux the kernel forgets the rules at a "
-	  "reboot. After each reboot, start the firewall from StockFW running "
-	  "as root, or run <tt>sudo stockfw start</tt>. <b>Start the firewall "
-	  "when StockFW opens</b> in Preferences does it whenever StockFW "
-	  "starts as root.") },
-	{ FS_HELP_SOON, N_("Coming in 1.0.7: one StockFW per user (starting it "
-	  "again brings the running window forward), starting at sign-in, a "
-	  "hidden start in the tray, a tray menu with the day's blocks, Pause "
-	  "protection and Pause Sentinel, and on Linux a system service that "
-	  "loads the last applied policy at boot.") },
+	  "reboot. The stockfw boot service, which the Linux installer sets "
+	  "up, puts the last applied policy back at every boot. Without it, "
+	  "start the firewall from StockFW running with sudo, or run "
+	  "<tt>sudo stockfw start</tt>. See "
+	  "<a href=\"help:linux\">Linux notes</a>.") },
 	{ FS_HELP_SEE, "prefs-general linux sentinel" },
 	{ FS_HELP_END, NULL }
 };
@@ -712,7 +804,8 @@ static const FsHelpBlock cli[] = {
 	  "stop</tt>: start or stop the firewall (root).") },
 	{ FS_HELP_ITEM, N_("<tt>stockfw simulate</tt> followed by a quoted "
 	  "line: the What-If answer. It exits with 5 when the traffic would "
-	  "be blocked.") },
+	  "be blocked and 6 when it depends. <tt>--assume-running</tt> "
+	  "answers as if the firewall were running.") },
 	{ FS_HELP_ITEM, N_("<tt>stockfw events -f</tt>: follow events live "
 	  "(root).") },
 	{ FS_HELP_ITEM, N_("<tt>stockfw connections</tt> and <tt>stockfw "
@@ -723,7 +816,7 @@ static const FsHelpBlock cli[] = {
 	{ FS_HELP_CODE, "stockfw simulate \"inbound ssh from 203.0.113.5\"" },
 	{ FS_HELP_PARA, N_("Every command takes <tt>--json</tt> for scripts. "
 	  "Exit codes: 0 success, 1 failure, 2 usage error, 3 needs root, "
-	  "5 simulate says blocked.") },
+	  "5 simulate says blocked, 6 simulate says it depends.") },
 	{ FS_HELP_HEAD, N_("The local dashboard") },
 	{ FS_HELP_PARA, N_("<tt>stockfw dashboard</tt> serves a read-only web "
 	  "page with the graphs, live events, connections, the simulator and "
@@ -780,11 +873,29 @@ static const FsHelpBlock linux_notes[] = {
 	{ FS_HELP_PARA, N_("If <tt>ip6tables</tt> is not installed, IPv6 is "
 	  "not filtered: the apply says so and the Overview turns amber.") },
 	{ FS_HELP_HEAD, N_("After a reboot") },
-	{ FS_HELP_PARA, N_("The kernel keeps the rules in memory only. After a "
-	  "reboot they are gone until StockFW or <tt>stockfw start</tt> loads "
-	  "them again.") },
-	{ FS_HELP_SOON, N_("A system service that loads the last applied "
-	  "policy at boot is coming in 1.0.7.") },
+	{ FS_HELP_PARA, N_("The kernel keeps the rules in memory only, so a "
+	  "reboot empties them. The Linux installer sets up the stockfw boot "
+	  "service (<tt>stockfw.service</tt>), which runs <tt>stockfw "
+	  "start</tt> early at every boot, before the network comes up.") },
+	{ FS_HELP_ITEM, N_("It puts back the last policy applied as root, "
+	  "from /etc/stockfw. Changes that were saved but not applied wait "
+	  "for the next apply.") },
+	{ FS_HELP_ITEM, N_("It does nothing until a policy has been applied "
+	  "with sudo at least once, so installing StockFW never firewalls a "
+	  "computer nobody has set up.") },
+	{ FS_HELP_ITEM, N_("A block by host name is left out at boot, because "
+	  "names cannot be looked up before the network is up. "
+	  "<tt>journalctl -u stockfw</tt> says which, and it goes in with "
+	  "the next apply.") },
+	{ FS_HELP_ITEM, N_("Stopping the service or shutting down never takes "
+	  "the rules away. To stop the firewall, run <tt>sudo stockfw "
+	  "stop</tt> or use Pause protection.") },
+	{ FS_HELP_PARA, N_("To check it: <tt>systemctl is-enabled "
+	  "stockfw.service</tt>. Preferences, on the General page, says "
+	  "whether it is enabled too.") },
+	{ FS_HELP_PARA, N_("Start at sign-in runs StockFW without root, so "
+	  "that copy cannot read the rules: it shows the firewall's state as "
+	  "unknown. Start StockFW with sudo to take over from it.") },
 	{ FS_HELP_HEAD, N_("Events") },
 	{ FS_HELP_PARA, N_("Events come from the kernel's own buffer "
 	  "(/dev/kmsg), or from /var/log/kern.log or <tt>journalctl -k</tt> "
@@ -811,6 +922,12 @@ static const FsHelpBlock windows_notes[] = {
 	  "menu.") },
 	{ FS_HELP_STEP, N_("Answer Yes to the User Account Control "
 	  "prompt.") },
+	{ FS_HELP_PARA, N_("If StockFW is already running without those "
+	  "rights, for example the copy started at sign-in, the elevated "
+	  "copy takes over from it. The copy started at sign-in never runs "
+	  "elevated: a program that starts with administrator rights and no "
+	  "prompt would hand those rights to anything that can change what "
+	  "it loads.") },
 	{ FS_HELP_HEAD, N_("Profiles") },
 	{ FS_HELP_PARA, N_("Windows gives each network a profile: Domain for "
 	  "work networks with a domain controller, Private for home and other "
@@ -1045,9 +1162,9 @@ static const FsHelpTopic topics[] = {
 	  preferences },
 	{ "prefs-general", "preferences", NULL,
 	  N_("General"),
-	  N_("The tray icon, closing to the tray, and starting the firewall "
-	     "when StockFW opens."),
-	  N_("tray minimize close start"),
+	  N_("The tray icon, closing to the tray, starting the firewall when "
+	     "StockFW opens, and starting StockFW at sign-in."),
+	  N_("tray minimize close start sign-in login autostart boot"),
 	  prefs_general },
 	{ "prefs-events", "preferences", NULL,
 	  N_("Events settings"),
@@ -1084,13 +1201,16 @@ static const FsHelpTopic topics[] = {
 
 	{ "threat-intel", NULL, N_("More"),
 	  N_("Threat intel"),
-	  N_("Blocklists of known bad addresses. Coming in 1.0.7."),
+	  N_("Blocklists of known bad addresses. Not available in this "
+	     "build."),
 	  N_("blocklist feeds spamhaus feodo country asn nftables"),
 	  threat_intel },
 	{ "background", NULL, NULL,
 	  N_("Running in the background"),
-	  N_("The tray icon, closing to the tray, and what keeps running."),
-	  N_("tray notification area minimize quit reboot sign-in autostart"),
+	  N_("The tray icon and its menu, starting at sign-in, one StockFW at "
+	     "a time, and what keeps running."),
+	  N_("tray notification area menu pause minimize quit reboot sign-in "
+	     "login autostart background single instance boot service"),
 	  background },
 	{ "cli", NULL, NULL,
 	  N_("Command line and dashboard"),
@@ -1100,9 +1220,10 @@ static const FsHelpTopic topics[] = {
 
 	{ "linux", NULL, N_("Platforms"),
 	  N_("Linux notes"),
-	  N_("Root, iptables and nftables, IPv6, and what a reboot does."),
-	  N_("sudo root iptables nftables ip6tables ipv6 kernel reboot ufw "
-	     "docker"),
+	  N_("Root, iptables and nftables, IPv6, and the boot service that "
+	     "puts the rules back after a reboot."),
+	  N_("sudo root iptables nftables ip6tables ipv6 kernel reboot boot "
+	     "systemd service ufw docker"),
 	  linux_notes },
 	{ "windows", NULL, NULL,
 	  N_("Windows notes"),

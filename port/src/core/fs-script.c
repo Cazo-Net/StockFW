@@ -12,6 +12,7 @@
 
 #include <gio/gio.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* [ settings_fill ]
@@ -488,6 +489,33 @@ gen_addresses (Gen *g, const gchar *target, gboolean deny)
 	return out;
 }
 
+/* [ fs_script_port_text ] -- see fs-script.h.
+ * Each bound is read in base 10 and written back as a plain decimal
+ * number.  The text is never passed through as typed: iptables reads a
+ * tcp/udp port with base 0, so "022" would be port 18 (octal) in one
+ * match and 22 in another, and "+22" fails the generator's line check
+ * and with it the whole apply. */
+gchar *
+fs_script_port_text (const gchar *port)
+{
+	const gchar *sep;
+	glong first, last;
+
+	if (!fs_util_is_valid_port (port))
+		return NULL;
+
+	sep = strchr (port, ':');
+	if (sep == NULL)
+		sep = strchr (port, '-');
+
+	first = strtol (port, NULL, 10);
+	if (sep == NULL)
+		return g_strdup_printf ("%ld", first);
+
+	last = strtol (sep + 1, NULL, 10);
+	return g_strdup_printf ("%ld:%ld", first, last);
+}
+
 /* [ ipt_port ]
  * iptables writes a port range with ':'; the policy files also use
  * '-' ("67-68"), which iptables refuses.  NULL when the port is not
@@ -495,14 +523,7 @@ gen_addresses (Gen *g, const gchar *target, gboolean deny)
 static gchar *
 ipt_port (const gchar *port)
 {
-	gchar *out;
-
-	if (!fs_util_is_valid_port (port))
-		return NULL;
-
-	out = g_strdup (port);
-	g_strdelimit (out, "-", ':');
-	return out;
+	return fs_script_port_text (port);
 }
 
 /* [ gen_ifname ]
@@ -584,7 +605,11 @@ append_host_rules (Gen *g, GString *out, GPtrArray *rules,
 }
 
 /* [ append_service_rules ]
- * The tcp/udp pair for each service rule, per address of its target. */
+ * The tcp/udp pair for each service rule, per address of its target.
+ * The pseudo-services "TCP" and "UDP" (what the What-If's "Create This
+ * Rule" writes, and what fs-fwrule.c already reads as one protocol)
+ * get their own protocol's line only: a row that says TCP must not
+ * open UDP on Linux when it does not on Windows. */
 static void
 append_service_rules (Gen *g, GString *out, GPtrArray *rules,
                       const gchar *chain, const gchar *jump, gboolean deny)
@@ -593,6 +618,14 @@ append_service_rules (Gen *g, GString *out, GPtrArray *rules,
 		FsRule *rule = g_ptr_array_index (rules, i);
 		gchar *port;
 		GPtrArray *addrs;
+		gboolean tcp = TRUE, udp = TRUE;
+
+		if (rule->service != NULL &&
+		    g_ascii_strcasecmp (rule->service, "TCP") == 0)
+			udp = FALSE;
+		else if (rule->service != NULL &&
+		         g_ascii_strcasecmp (rule->service, "UDP") == 0)
+			tcp = FALSE;
 
 		if (rule->port == NULL || *rule->port == '\0')
 			continue;
@@ -617,10 +650,14 @@ append_service_rules (Gen *g, GString *out, GPtrArray *rules,
 			gchar *src = addr != NULL ? g_strdup_printf ("-s %s ", addr)
 			                          : g_strdup ("");
 
-			g_string_append_printf (out,
-				"$IPT -A %s %s-p tcp --dport %s -j %s\n"
-				"$IPT -A %s %s-p udp --dport %s -j %s\n",
-				chain, src, port, jump, chain, src, port, jump);
+			if (tcp)
+				g_string_append_printf (out,
+					"$IPT -A %s %s-p tcp --dport %s -j %s\n",
+					chain, src, port, jump);
+			if (udp)
+				g_string_append_printf (out,
+					"$IPT -A %s %s-p udp --dport %s -j %s\n",
+					chain, src, port, jump);
 			g_free (src);
 		}
 

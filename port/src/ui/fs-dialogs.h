@@ -33,6 +33,24 @@ void fs_dialogs_confirm (GtkWidget *parent,
  * to a running firewall through the apply gate. */
 void fs_dialogs_preferences (GtkWidget *parent);
 
+/* Start at sign-in was changed elsewhere (the tray menu): an open
+ * Preferences window shows the new state, unless the user has already
+ * moved its switch, which then stays as they left it. */
+void fs_dialogs_preferences_autostart_changed (void);
+
+/* Close an open Preferences window as its Cancel button would: nothing
+ * is saved.  The quit path (tray Quit, --quit, SIGTERM) uses it, because
+ * the window runs its own loop and the quit waits for that loop to end. */
+void fs_dialogs_preferences_cancel (void);
+
+#ifdef FS_PREFS_FAKE_BACKEND
+/* tests/ui-prefs-smoke.c only -- compiled into the fake-backend smoke,
+ * never into StockFW: answers "may this copy change start at sign-in?"
+ * in place of the system (an unelevated Windows copy, say).  NULL: ask
+ * the system. */
+extern gboolean (*fs_prefs_test_signin_can_change) (gchar **why);
+#endif
+
 G_END_DECLS
 
 #endif /* FS_DIALOGS_H */
