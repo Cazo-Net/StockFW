@@ -30,7 +30,8 @@
  * Review additions: an apply over a foreign rule in the group repairs
  * it; the policy's own clear works beside blocklists of more than
  * 16 MiB of addresses and leaves them whole; a %ProgramData%\StockFW
- * another account made first (a folder, a link) is moved aside.
+ * another account made first (a folder, a link) is moved aside; two
+ * applies on two threads at once leave one whole rule set (R3-1).
  * Built by `ninja -C build fs-intel-windows-test'; tests/full-suite.sh
  * runs it on Windows.
  *--------------------------------------------------------------------*/
@@ -666,6 +667,87 @@ check_policy_beside_big_lists (const FsBackend *b)
 
 /* ------------------------------------------- a store another made first */
 
+/* Review R3-1: two applies at once, on two threads, with different
+ * rule sets.  Each removes every rule of ours that is not its own
+ * generation, so without the lock that keeps them apart each takes out
+ * the other's rules half written.  With it they run one after the
+ * other: both succeed and the group ends PRESENT with one of the two
+ * digests, every rule of that plan there. */
+typedef struct
+{
+	const FsIntelRuleset *rs;
+	gboolean              ok;
+	gchar                *msg;
+} ApplyJob;
+
+static gpointer
+apply_job (gpointer p)
+{
+	ApplyJob *job = p;
+	GError *e = NULL;
+
+	job->ok = fs_backend ()->intel_apply (job->rs, &e);
+	job->msg = g_strdup (e != NULL ? e->message : "ok");
+	g_clear_error (&e);
+	return NULL;
+}
+
+static FsIntelRuleset *
+race_ruleset (guint32 base)
+{
+	FsIntelRuleset *rs = fs_intel_ruleset_new ();
+	FsRangeSet *s = fs_range_set_new ();
+
+	/* 20,000 separate addresses in 240.0.0.0/4 (reserved): twenty
+	 * rules both ways, so each apply takes long enough to overlap. */
+	for (guint i = 0; i < 20000; i++)
+		fs_range_set_add4 (s, base + i * 4, base + i * 4);
+	fs_range_set_normalize (s);
+	fs_intel_ruleset_add (rs, "wintest-race", "StockFW Windows test, race",
+	                      FS_INTEL_DIR_BOTH, s);
+	return rs;
+}
+
+static void
+check_concurrent_applies (void)
+{
+	FsIntelRuleset *ra = race_ruleset (0xf0000000u);
+	FsIntelRuleset *rb = race_ruleset (0xf1000000u);
+	gchar *da = fs_intel_ruleset_digest (ra);
+	gchar *db = fs_intel_ruleset_digest (rb);
+
+	for (guint round = 1; round <= 3; round++) {
+		ApplyJob ja = { ra, FALSE, NULL }, jb = { rb, FALSE, NULL };
+		GThread *ta, *tb;
+		gchar *digest = NULL;
+		FsIntelLive l;
+
+		ta = g_thread_new ("apply-a", apply_job, &ja);
+		tb = g_thread_new ("apply-b", apply_job, &jb);
+		g_thread_join (ta);
+		g_thread_join (tb);
+		CHECK (ja.ok && jb.ok,
+		       "two applies at once (round %u): both succeed (%s; %s)",
+		       round, ja.msg, jb.msg);
+		l = live (&digest);
+		CHECK (l == FS_INTEL_LIVE_PRESENT &&
+		       (g_strcmp0 (digest, da) == 0 ||
+		        g_strcmp0 (digest, db) == 0),
+		       "two applies at once (round %u): the group reads PRESENT "
+		       "with one of the two digests (%d)", round, (int) l);
+		if (l == FS_INTEL_LIVE_PRESENT)
+			check_rules_are_plan (g_strcmp0 (digest, da) == 0 ? ra : rb,
+			                      "two applies at once", NULL);
+		g_free (digest);
+		g_free (ja.msg);
+		g_free (jb.msg);
+	}
+	g_free (da);
+	g_free (db);
+	fs_intel_ruleset_free (ra);
+	fs_intel_ruleset_free (rb);
+}
+
 static gboolean
 enable_privilege (const wchar_t *name)
 {
@@ -1082,6 +1164,8 @@ main (void)
 		for (gint i = 0; got_ok && i < FS_PROFILE_COUNT; i++)
 			b->set_profile_enabled (i, saved[i], NULL);
 	}
+
+	check_concurrent_applies ();
 
 	/* ---- clear ------------------------------------------------------- */
 	CHECK (b->intel_clear (&e), "clear: success (%s)", e ? e->message : "ok");

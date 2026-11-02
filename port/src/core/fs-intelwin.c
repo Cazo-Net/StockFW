@@ -825,8 +825,10 @@ fs_intelwin_not_in_force (const FsIntelWinForce *f)
 		                   "not running, so no firewall rule is in "
 		                   "force, the blocklists included."));
 	/* What cannot be read is never taken as "on": the engine would
-	 * then report the blocklists as enforced (design 11.6, review W5). */
-	if (!f->policy_read || !f->gp_read)
+	 * then report the blocklists as enforced (design 11.6, review W5).
+	 * A service state the service manager would not give counts as
+	 * unread too (review R3-2). */
+	if (!f->service_known || !f->policy_read || !f->gp_read)
 		return g_strdup (_("StockFW cannot read whether Windows Firewall "
 		                   "is on for the network in use, so it does not "
 		                   "report the blocklists as in force."));
@@ -851,6 +853,12 @@ fs_intelwin_not_in_force (const FsIntelWinForce *f)
 			n_excluded++;
 		}
 	}
+	/* No known profile in use: every profile was skipped, so nothing
+	 * says the firewall is on anywhere (review R3-2). */
+	if (in_use == 0)
+		return g_strdup (_("StockFW cannot read whether Windows Firewall "
+		                   "is on for the network in use, so it does not "
+		                   "report the blocklists as in force."));
 	if (n_off > 0) {
 		names = profile_list (off);
 		if (n_off == in_use)

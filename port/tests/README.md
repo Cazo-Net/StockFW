@@ -1388,7 +1388,10 @@ checked on Linux.
 - **the real limits** (`test_intelwin_limits`): 2500 IPv4 addresses
   take 3 rules (1000, 1000, 500); 1500 long IPv6 ranges split by the
   32,000-character cap; a token longer than the cap gets a rule of its
-  own, never cut.
+  own, never cut. At the boundary (review R3-3): three 7-character
+  tokens under a cap of 15 fill the first rule exactly ("a,b", 15
+  characters, the comma counted) and under a cap of 14 give three rules
+  of 7.
 - **`RemoteAddresses` read back** (`test_intelwin_parse_remote`): dotted
   masks, ranges, IPv6, spaces after commas; `*`, keywords, empty
   tokens, masks with holes, prefixes over 32 and names are refused and
@@ -1412,7 +1415,11 @@ checked on Linux.
   gives none. Settings, Group Policy's state or a profile in use that
   could not be read give "StockFW cannot read whether ...", never
   nothing (review W5); a profile known to be off is named first, and an
-  unreadable profile no network has does not matter.
+  unreadable profile no network has does not matter. No profile in use
+  (`CurrentProfileTypes` 0, with every profile off or on), a profile
+  type StockFW does not know, and a service state the service manager
+  would not give also give "StockFW cannot read whether ..." (review
+  R3-2).
 - **review** (`test_intelwin_review`): `fs_intelwin_count_gen` counts
   every rule of a generation, past a foreign rule in the group and an
   earlier apply's rule, and never one outside the group (W6);
@@ -1470,9 +1477,15 @@ computer holds no StockFW policy rules). "Store squatted" makes
 BUILTIN\Users and once as a link to another folder, and checks that
 `fs_intel_dir` moves it aside (the link as a link: the folder it points
 to keeps its file and gets no `intel`) and makes its own protected
-folder (W7; it runs only when the computer has no StockFW store). It
-was compiled and linked with mingw against the Windows headers in the
-development container, not run there.
+folder (W7; it runs only when the computer has no StockFW store).
+"Two applies at once" (review R3-1) runs, three times, two applies on
+two threads with different rule sets of 20,000 addresses both ways:
+both must succeed, and the group must read PRESENT with one of the two
+digests and hold exactly that plan's rules, read back through
+`INetFwRules`. Without the backend's named mutex each apply removes the
+other's half-written generation. It was compiled and linked with mingw
+against the Windows headers in the development container, not run
+there.
 
 Teeth, each injected into the real source by `teeth.py` in a scratch
 directory, which asserts the exact old text occurs once, runs the
@@ -1499,9 +1512,15 @@ file with `cp` and checks it with `cmp`:
 | (W6) the name key is not case-folded | `intelwin review: rule names that differ only in case share one key` |
 | (W6) the generation count ignores the group | `intelwin review: rules outside the group are never counted` |
 | (W3) blocklist names pass as the policy's | `intelwin review: the policy's rule names are told apart ...` |
+| (R3-2) no profile in use falls through to "in force" (the `in_use == 0` check removed) | `intelwin force: no profile in use (CurrentProfileTypes 0) with every profile off ...`, `... with every profile on ...`, `... a profile type StockFW does not know ...` |
+| (R3-2) a service state that could not be read is ignored (`!f->service_known ||` removed) | `intelwin force: a service state the service manager would not give is never in force` |
+| (R3-3) the comma is not counted (`cur->remote->len + len > max_chars`) | `intelwin limits: no chunk grows one character past the cap when the comma would cross it` |
+| (R3-3) a chunk may not reach the cap (`>=` for `>`) | `intelwin limits: a chunk fills the character cap exactly (15 of 15, comma counted) ...` |
 
 The Windows backend's COM code itself has no tooth here: the container
 cannot run it (that covers W1, W2, W7 and the COM halves of W3 and W6:
 the policy's name listing through `INetFwRules`, the cut-off netsh
-output as an error, the rollback's read-back). `fs-intel-windows-test` is its check on the CI's Windows
+output as an error, the rollback's read-back; and R3-1, the named mutex
+around apply and clear, and R3-4, an `INetFwRule3` condition or a rule
+group that cannot be read counting as narrowed or failing the listing). `fs-intel-windows-test` is its check on the CI's Windows
 runner.

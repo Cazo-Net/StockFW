@@ -2981,11 +2981,13 @@ variant_count (const VARIANT *v)
 	return v->vt == VT_EMPTY || v->vt == VT_NULL ? 0 : 1;
 }
 
-/* A string property that must be empty to keep a rule whole. */
+/* A string property that must be empty to keep a rule whole.  One
+ * that cannot be read counts as set: an unread condition never makes
+ * a rule whole (review R3-4). */
 static gboolean
 bstr_is_set (HRESULT hr, BSTR b)
 {
-	gboolean set = SUCCEEDED (hr) && b != NULL && SysStringLen (b) > 0;
+	gboolean set = FAILED (hr) || (b != NULL && SysStringLen (b) > 0);
 
 	SysFreeString (b);
 	return set;
@@ -2993,8 +2995,9 @@ bstr_is_set (HRESULT hr, BSTR b)
 
 /* INetFwRule3's conditions: an app package, the owner or authorized
  * users, remote users or machines, or IPsec flags.  Any of them makes
- * the rule apply to less than everything.  A Windows without
- * INetFwRule3 (7) has none of them. */
+ * the rule apply to less than everything, and so does one that cannot
+ * be read (review R3-4).  A Windows without INetFwRule3 (7) has none
+ * of them. */
 static gboolean
 rule_has_conditions (INetFwRule *r)
 {
@@ -3020,7 +3023,7 @@ rule_has_conditions (INetFwRule *r)
 	any |= bstr_is_set (r3->lpVtbl->get_RemoteMachineAuthorizedList (r3,
 	                                                                 &b),
 	                    b);
-	if (SUCCEEDED (r3->lpVtbl->get_SecureFlags (r3, &flags)) && flags != 0)
+	if (FAILED (r3->lpVtbl->get_SecureFlags (r3, &flags)) || flags != 0)
 		any = TRUE;
 	r3->lpVtbl->Release (r3);
 	return any;
@@ -3157,7 +3160,20 @@ fw_intel_list (FwIntel *fw, GPtrArray *ours, GPtrArray *objs,
 			BSTR b = NULL;
 			gchar *group;
 
-			r->lpVtbl->get_Grouping (r, &b);
+			/* A rule whose group cannot be read might be ours:
+			 * skipping it would let a clear or an apply report
+			 * success with it still in force, so the listing
+			 * fails instead (review R3-4). */
+			hr = r->lpVtbl->get_Grouping (r, &b);
+			if (FAILED (hr)) {
+				SysFreeString (b);
+				r->lpVtbl->Release (r);
+				VariantClear (&v);
+				intel_hr_error (error, hr, "The group of a Windows "
+				                "Firewall rule could not be read");
+				ok = FALSE;
+				break;
+			}
 			group = bstr_take (b);
 			if (fs_intelwin_in_group (group)) {
 				FsIntelWinSeen *s = seen_from_rule (r, group);
@@ -3523,9 +3539,65 @@ firewalled_intel_live (gchar **digest)
 	return live;
 }
 
-/* [ firewalled_intel_apply ] -- see FsBackend.intel_apply. */
+/* [ intel_lock ]
+ * Apply and clear take many firewall calls each (a full rule set is
+ * hundreds of INetFwRules::Add), and each removes every rule of ours
+ * that is not its own generation.  Two of them at once, in two
+ * processes (the window and `stockfw start', two windows) or two
+ * threads, would take out each other's rules half written, so both
+ * hold this named mutex from their first read to their read-back
+ * (design 11.3, review R3-1).  It lives in the Global namespace, so
+ * every session shares it; creating there needs SeCreateGlobalPrivilege,
+ * which a standard user does not have, and the default DACL of an
+ * elevated token keeps other accounts from opening it.  An abandoned
+ * mutex (its holder died mid-apply) is taken over: the apply that
+ * follows reads the firewall afresh and repairs what was left. */
+#define FS_INTEL_LOCK_NAME    L"Global\\StockFW-ThreatIntel"
+#define FS_INTEL_LOCK_WAIT_MS (10u * 60u * 1000u)
+
+static HANDLE
+intel_lock (GError **error)
+{
+	HANDLE m = CreateMutexW (NULL, FALSE, FS_INTEL_LOCK_NAME);
+	DWORD w;
+
+	if (m == NULL) {
+		intel_hr_error (error, HRESULT_FROM_WIN32 (GetLastError ()),
+		                "The lock that keeps two StockFW blocklist "
+		                "changes apart could not be taken. Nothing was "
+		                "changed");
+		return NULL;
+	}
+	w = WaitForSingleObject (m, FS_INTEL_LOCK_WAIT_MS);
+	if (w == WAIT_OBJECT_0 || w == WAIT_ABANDONED)
+		return m;
+	CloseHandle (m);
+	if (w == WAIT_TIMEOUT)
+		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_BUSY,
+		                     "Another StockFW has been changing the "
+		                     "blocklist rules for 10 minutes. Nothing was "
+		                     "changed; try again when it has finished.");
+	else
+		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		                     "The lock that keeps two StockFW blocklist "
+		                     "changes apart could not be waited for. "
+		                     "Nothing was changed.");
+	return NULL;
+}
+
+static void
+intel_unlock (HANDLE m)
+{
+	if (m != NULL) {
+		ReleaseMutex (m);
+		CloseHandle (m);
+	}
+}
+
+/* [ firewalled_intel_apply ] -- see FsBackend.intel_apply.  Runs under
+ * intel_lock (firewalled_intel_apply below). */
 static gboolean
-firewalled_intel_apply (const FsIntelRuleset *ruleset, GError **error)
+intel_apply_locked (const FsIntelRuleset *ruleset, GError **error)
 {
 	FwIntel fw;
 	FsIntelWinRead before, after;
@@ -3682,11 +3754,27 @@ out:
 	return ok;
 }
 
+static gboolean
+firewalled_intel_apply (const FsIntelRuleset *ruleset, GError **error)
+{
+	HANDLE lock;
+	gboolean ok;
+
+	g_return_val_if_fail (ruleset != NULL, FALSE);
+	lock = intel_lock (error);
+	if (lock == NULL)
+		return FALSE;
+	ok = intel_apply_locked (ruleset, error);
+	intel_unlock (lock);
+	return ok;
+}
+
 /* [ firewalled_intel_clear ] -- see FsBackend.intel_clear.
  * Every rule in the group, and nothing else; then the firewall is
- * listed again, and only none left is success. */
+ * listed again, and only none left is success.  Runs under intel_lock
+ * (firewalled_intel_clear below). */
 static gboolean
-firewalled_intel_clear (GError **error)
+intel_clear_locked (GError **error)
 {
 	FwIntel fw;
 	GError *local = NULL;
@@ -3721,6 +3809,19 @@ firewalled_intel_clear (GError **error)
 	g_clear_error (&local);
 	g_ptr_array_unref (seen);
 	fw_intel_close (&fw);
+	return ok;
+}
+
+static gboolean
+firewalled_intel_clear (GError **error)
+{
+	HANDLE lock = intel_lock (error);
+	gboolean ok;
+
+	if (lock == NULL)
+		return FALSE;
+	ok = intel_clear_locked (error);
+	intel_unlock (lock);
 	return ok;
 }
 

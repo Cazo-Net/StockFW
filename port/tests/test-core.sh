@@ -7276,12 +7276,13 @@ test_intelwin_plan (void)
 		const FsIntelSet *set = g_ptr_array_index (rs->sets, s);
 
 		for (guint d = 1; d <= 2; d++) {
-			FsRangeSet *got = fs_range_set_new ();
+			FsRangeSet *got;
 			gchar *a, *b;
 			gchar *prefix;
 
 			if ((set->dir & d) == 0)
 				continue;
+			got = fs_range_set_new ();
 			prefix = g_strdup_printf ("SFW-TI %s %s ", set->id,
 			                          d == 1 ? "in" : "out");
 			for (guint i = 0; i < plan->rules->len; i++) {
@@ -7454,6 +7455,49 @@ test_intelwin_limits (void)
 	       "a rule of its own, never cut");
 	fs_intelwin_plan_free (plan);
 	fs_intel_ruleset_free (rs);
+
+	/* Review R3-3: the character cap at its exact boundary, comma
+	 * counted.  Three 7-character tokens: "1.2.3.4,1.2.3.6" is 15. */
+	{
+		static const gchar *const three[] = {
+			"1.2.3.4", "1.2.3.6", "1.2.3.8", NULL };
+		const FsIntelWinRule *r1, *r2;
+		gsize most = 0;
+
+		rs = fs_intel_ruleset_new ();
+		fs_intel_ruleset_add (rs, "edge", "Edge", FS_INTEL_DIR_IN,
+		                      iw_set (three));
+
+		/* Cap 15: two tokens and their comma land exactly on it. */
+		plan = fs_intelwin_plan (rs, IW_GEN, 1000, 15);
+		r1 = plan ? iw_rule (plan, "SFW-TI edge in IPv4 1/2 " IW_GEN)
+		          : NULL;
+		r2 = plan ? iw_rule (plan, "SFW-TI edge in IPv4 2/2 " IW_GEN)
+		          : NULL;
+		CHECK (r1 != NULL && r2 != NULL && strlen (r1->remote) == 15 &&
+		       r1->tokens == 2 && strlen (r2->remote) == 7,
+		       "intelwin limits: a chunk fills the character cap exactly "
+		       "(15 of 15, comma counted) and the third token starts the "
+		       "next rule (%s)", r1 ? r1->remote : "(none)");
+		fs_intelwin_plan_free (plan);
+
+		/* Cap 14: "a,b" would be 15, one past it, so every token
+		 * stands alone. */
+		plan = fs_intelwin_plan (rs, IW_GEN, 1000, 14);
+		for (guint i = 0; plan != NULL && i < plan->rules->len; i++) {
+			const FsIntelWinRule *r = g_ptr_array_index (plan->rules,
+			                                             i);
+
+			if (r->family != FS_AF_NONE)
+				most = MAX (most, strlen (r->remote));
+		}
+		CHECK (plan != NULL && plan->rules->len == 3 + 1 && most <= 14,
+		       "intelwin limits: no chunk grows one character past the "
+		       "cap when the comma would cross it (%u rules, longest %"
+		       G_GSIZE_FORMAT ")", plan ? plan->rules->len : 0u, most);
+		fs_intelwin_plan_free (plan);
+		fs_intel_ruleset_free (rs);
+	}
 }
 
 static void
@@ -7898,6 +7942,43 @@ test_intelwin_force (void)
 	CHECK (s && strstr (s, "cannot read"),
 	       "intelwin force: a Group Policy state that could not be read is "
 	       "never in force (%s)", s);
+	g_free (s);
+
+	/* Review R3-2: no profile in use, and a service state that could
+	 * not be read, are never "in force". */
+	IW_FORCE_OK ();
+	f.current = 0;
+	f.enabled[0] = f.enabled[1] = f.enabled[2] = 0;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read") &&
+	       strstr (s, "does not report the blocklists as in force"),
+	       "intelwin force: no profile in use (CurrentProfileTypes 0) with "
+	       "every profile off is never in force (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.current = 0;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read"),
+	       "intelwin force: no profile in use with every profile on is "
+	       "still not reported as in force (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.current = 8;   /* a bit that names none of the three profiles */
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read"),
+	       "intelwin force: a profile type StockFW does not know is never "
+	       "in force (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.service_known = FALSE;
+	f.service_running = FALSE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read"),
+	       "intelwin force: a service state the service manager would not "
+	       "give is never in force (%s)", s);
 	g_free (s);
 #undef IW_FORCE_OK
 }
