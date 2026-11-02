@@ -815,3 +815,188 @@ button.fs-link label {
 	padding-top: 2px;
 	padding-bottom: 2px;
 }
+
+/* =====================================================================
+ * Copilot page (1.0.7): findings, policy health, changes.
+ * Light first; every rule has a dark twin under .cp-dark, which the
+ * page sets when the desktop theme writes light text.
+ * ===================================================================== */
+.cp-title {
+	font-size: 13px;
+	font-weight: bold;
+	color: #16181d;
+}
+.cp-sub,
+.cp-body {
+	font-size: 13px;
+	color: #3a4250;
+}
+.cp-meta,
+.cp-caption {
+	font-size: 12px;
+	color: #5b6472;
+}
+.cp-drawer-head {
+	font-size: 12px;
+	font-weight: bold;
+	color: #16181d;
+	margin-top: 4px;
+}
+.cp-arrow {
+	color: #5b6472;
+	font-size: 12px;
+}
+.cp-drawer {
+	padding: 8px 0 4px 0;
+	border-top: 1px solid #eef0f3;
+	margin-top: 6px;
+}
+.cp-list-frame {
+	background-color: #ffffff;
+	border: 1px solid #e3e6eb;
+	border-radius: 10px;
+}
+.cp-list-frame > border {
+	border: none;
+}
+list.cp-list {
+	background-color: transparent;
+}
+list.cp-list row.cp-row {
+	padding: 10px 12px;
+	border-bottom: 1px solid #eef0f3;
+	background-color: transparent;
+}
+list.cp-list row.cp-row:last-child {
+	border-bottom: none;
+}
+list.cp-list row.cp-row:hover {
+	background-color: #f7f8fa;
+}
+list.cp-list row.cp-row:focus {
+	outline: 2px solid #1d4ed8;
+	outline-offset: -2px;
+}
+.cp-pill {
+	padding: 2px 8px;
+}
+.cp-strip {
+	padding: 8px 12px;
+	font-size: 13px;
+}
+.ok-strip {
+	background-color: #f4fbf7;
+	border: 1px solid #bfe3cf;
+	border-radius: 4px;
+	color: #145a38;
+}
+/* The What-If log's tones (its text tags read these colours). */
+.output-view textview.tone-ok   { color: #1e7f4f; }
+.output-view textview.tone-bad  { color: #b42318; }
+.output-view textview.tone-warn { color: #8a5300; }
+.output-view textview.tone-info { color: #1d4ed8; }
+.output-view textview.tone-dim  { color: #5b6472; }
+
+/* ---- dark ---- */
+.cp-dark {
+	background-color: #15171c;
+}
+.cp-dark .card {
+	background-color: #1d2027;
+	border-color: #2f3440;
+	box-shadow: none;
+}
+.cp-dark .card-heading,
+.cp-dark .stat-big,
+.cp-dark .cp-title,
+.cp-dark .cp-drawer-head {
+	color: #e7e9ee;
+}
+.cp-dark .cp-sub,
+.cp-dark .cp-body,
+.cp-dark .mono {
+	color: #cbd2dc;
+}
+.cp-dark .muted,
+.cp-dark .stat-caption,
+.cp-dark .stat-note,
+.cp-dark .cp-meta,
+.cp-dark .cp-caption,
+.cp-dark .cp-arrow,
+.cp-dark .empty-state {
+	color: #a0a8b6;
+}
+.cp-dark .card-foot,
+.cp-dark .cp-drawer {
+	border-top-color: #2f3440;
+}
+.cp-dark .cp-list-frame {
+	background-color: #1d2027;
+	border-color: #2f3440;
+}
+.cp-dark list.cp-list row.cp-row {
+	border-bottom-color: #2f3440;
+}
+.cp-dark list.cp-list row.cp-row:hover {
+	background-color: #252932;
+}
+.cp-dark list.cp-list row.cp-row:focus {
+	outline-color: #93b4f5;
+}
+.cp-dark .segmented button.seg-button {
+	background-color: #262a33;
+	border-color: #3c424e;
+	color: #e7e9ee;
+}
+.cp-dark .segmented button.seg-button label {
+	color: #e7e9ee;
+}
+.cp-dark .segmented button.seg-button:hover {
+	background-color: #2f3440;
+}
+.cp-dark .segmented button.seg-button:checked {
+	background-color: #e7e9ee;
+	border-color: #e7e9ee;
+}
+.cp-dark .segmented button.seg-button:checked label {
+	color: #15171c;
+}
+.cp-dark .warning-strip {
+	background-color: #2a2113;
+	border-color: #6b5220;
+	color: #fcd34d;
+}
+.cp-dark .error-strip {
+	background-color: #2a1816;
+	border-color: #6b2a24;
+	color: #fca5a5;
+}
+.cp-dark .ok-strip {
+	background-color: #16251d;
+	border-color: #275a3d;
+	color: #86efac;
+}
+.cp-dark button.fs-link {
+	color: #93b4f5;
+}
+.cp-dark expander title label,
+.cp-dark expander title arrow {
+	color: #cbd2dc;
+}
+.cp-dark entry {
+	background-color: #15171c;
+	border-color: #3c424e;
+	color: #e7e9ee;
+}
+.cp-dark .output-view,
+.cp-dark .output-view textview,
+.cp-dark .output-view text {
+	background-color: #15171c;
+	border-color: #2f3440;
+	color: #e7e9ee;
+}
+.cp-dark .output-view textview.tone-ok   { color: #86efac; }
+.cp-dark .output-view textview.tone-bad  { color: #fca5a5; }
+.cp-dark .output-view textview.tone-warn { color: #fcd34d; }
+.cp-dark .output-view textview.tone-info { color: #93b4f5; }
+.cp-dark .output-view textview.tone-dim  { color: #a0a8b6; }

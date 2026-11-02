@@ -107,6 +107,34 @@ static FsSettings *settings = NULL;
 /* Smart Firewall Copilot instance. */
 FsCopilot *copilot = NULL;
 
+/* The behavior baseline is saved every 15 minutes as well as on quit,
+ * so a crash or a power cut costs at most a quarter of an hour of
+ * learning. */
+#define FS_BASELINE_SAVE_S (15 * 60)
+static guint baseline_timer = 0;
+
+static gboolean
+baseline_save_cb (gpointer data)
+{
+	gchar *path;
+	GError *error = NULL;
+
+	(void) data;
+	if (copilot == NULL) {
+		baseline_timer = 0;
+		return G_SOURCE_REMOVE;
+	}
+
+	path = fs_copilot_baseline_path ();
+	if (!fs_copilot_baseline_save (copilot, path, &error)) {
+		g_warning ("behavior baseline not saved: %s",
+		           error != NULL ? error->message : path);
+		g_clear_error (&error);
+	}
+	g_free (path);
+	return G_SOURCE_CONTINUE;
+}
+
 static gboolean
 on_delete_event (GtkWidget *widget, GdkEvent *event, gpointer data)
 {
@@ -714,10 +742,13 @@ fs_app_activate (GtkApplication *app)
 			g_clear_error (&baseline_err);
 		g_free (baseline);
 	}
+	baseline_timer = g_timeout_add_seconds (FS_BASELINE_SAVE_S,
+	                                        baseline_save_cb, NULL);
 
 	add_page (_("Copilot"),
-	          _("Learns each program's usual traffic, flags what is "
-	            "unusual, and tries rule changes before you make them."),
+	          _("Checks the event log and the policy with fixed rules, "
+	            "shows the evidence, and tries rule changes before you "
+	            "make them."),
 	          fs_copilot_page (copilot, policy), TRUE);
 
 	/* P6 (false-outage hardening): the Sentinel staged-block list is
@@ -781,6 +812,11 @@ fs_app_quit (void)
 	if (settings != NULL) {
 		fs_settings_free (settings);
 		settings = NULL;
+	}
+
+	if (baseline_timer != 0) {
+		g_source_remove (baseline_timer);
+		baseline_timer = 0;
 	}
 
 	if (copilot != NULL) {

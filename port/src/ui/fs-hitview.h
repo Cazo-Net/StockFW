@@ -55,6 +55,14 @@ void     fs_hitview_reload (void);
 
 const FsHit *fs_hitview_selected (void);
 
+/* Puts `text' in the filter bar and filters at once (the Copilot's
+ * "Show in Events"). */
+void fs_hitview_set_filter (const gchar *text);
+
+/* Why no events arrive (the backend's own reason when it gives one),
+ * or NULL while monitoring runs.  Caller frees. */
+gchar *fs_hitview_monitor_problem (void);
+
 G_END_DECLS
 
 #endif /* FS_HITVIEW_H */

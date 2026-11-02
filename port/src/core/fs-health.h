@@ -32,6 +32,7 @@
 #include "core/fs-rules.h"
 #include "core/fs-whatif.h"
 #include "core/fs-copilot.h"
+#include "core/fs-backend.h"
 
 G_BEGIN_DECLS
 
@@ -112,6 +113,11 @@ const gchar *fs_health_severity_name (FsCopilotSeverity severity);
 /* The network of ip/netmask as "a.b.c.d/n", or NULL when either is
  * not an IPv4 address or the address is not private.  Caller frees. */
 gchar *fs_health_lan_prefix (const gchar *ip, const gchar *netmask);
+
+/* The local network to narrow to: STOCKFW_LAN_PREFIX when set (tests),
+ * otherwise the first adapter with a private IPv4 address, from the
+ * backend's interface list.  NULL when there is none.  Caller frees. */
+gchar *fs_health_lan_prefix_auto (const FsBackend *backend);
 
 /* TRUE when two findings describe the same problem with the same fix
  * and the same check results: what the apply path compares after

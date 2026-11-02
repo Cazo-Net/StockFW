@@ -1335,6 +1335,28 @@ fs_health_lan_prefix (const gchar *ip, const gchar *netmask)
 	}
 }
 
+gchar *
+fs_health_lan_prefix_auto (const FsBackend *backend)
+{
+	const gchar *env = g_getenv ("STOCKFW_LAN_PREFIX");
+	GList *ifaces, *l;
+	gchar *prefix = NULL;
+
+	if (env != NULL && *env != '\0')
+		return g_strdup (env);
+	if (backend == NULL || backend->list_interfaces == NULL)
+		return NULL;
+
+	ifaces = backend->list_interfaces ();
+	for (l = ifaces; l != NULL && prefix == NULL; l = l->next) {
+		FsInterface *iface = l->data;
+
+		prefix = fs_health_lan_prefix (iface->ip, iface->netmask);
+	}
+	g_list_free_full (ifaces, (GDestroyNotify) fs_interface_free);
+	return prefix;
+}
+
 gboolean
 fs_health_finding_same (const FsHealthFinding *a, const FsHealthFinding *b)
 {
