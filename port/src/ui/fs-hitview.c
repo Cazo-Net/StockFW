@@ -18,6 +18,7 @@
 #include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
 #include "core/fs-eventrule.h"
+#include "ui/fs-intelview.h"
 #include "core/fs-rules.h"
 #include "core/fs-audit.h"
 #include "core/fs-util.h"
@@ -99,6 +100,20 @@ static const struct
 	{ N_(""),            FALSE, NULL },   /* colour, never shown */
 };
 
+/* The colour column holds "" for an allowed event, ROW_BLOCKED for a
+ * block, or -- 1.0.7 -- the rule that blocked it when the event says
+ * ("Threat intel: Spamhaus DROP (IPv4)", FsHit.rule).  Any non-empty
+ * value paints the row red; a rule is also shown after the service. */
+#define ROW_BLOCKED "#cc0000"
+
+/* The rule stored in a row's colour column, or NULL. */
+static const gchar *
+row_rule (const gchar *color)
+{
+	return color != NULL && *color != '\0' &&
+	       strcmp (color, ROW_BLOCKED) != 0 ? color : NULL;
+}
+
 static guint row_count = 0;
 
 /* [ color_cell_data ]
@@ -160,6 +175,24 @@ color_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
 	              "background", background,
 	              "foreground", foreground,
 	              NULL);
+
+	/* The Service column also names the rule that blocked it. */
+	if (GPOINTER_TO_INT (data) == COL_SERVICE) {
+		gchar *service = NULL, *flag = NULL;
+
+		gtk_tree_model_get (model, iter, COL_SERVICE, &service,
+		                    COL_COLOR, &flag, -1);
+		if (row_rule (flag) != NULL) {
+			gchar *text = g_strdup_printf ("%s \xc2\xb7 %s",
+			                               service ? service : "",
+			                               row_rule (flag));
+
+			g_object_set (renderer, "text", text, NULL);
+			g_free (text);
+		}
+		g_free (service);
+		g_free (flag);
+	}
 }
 
 /* [ fs_hitview_format_time ]
@@ -321,6 +354,16 @@ filter_visible (GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
 	visible = fs_util_filter_match (filter_text,
 	                                (const gchar *const *) fields,
 	                                FS_NUM_HITCOLUMNS - 1);
+	if (!visible) {
+		gchar *flag = NULL;
+		const gchar *one[1];
+
+		gtk_tree_model_get (model, iter, COL_COLOR, &flag, -1);
+		one[0] = row_rule (flag);
+		if (one[0] != NULL)
+			visible = fs_util_filter_match (filter_text, one, 1);
+		g_free (flag);
+	}
 
 	for (i = 0; i < FS_NUM_HITCOLUMNS - 1; i++)
 		g_free (fields[i]);
@@ -629,7 +672,9 @@ fs_hitview_append (const FsHit *hit)
 	 * because GtkCellRendererText has no per-row colour, and the
 	 * cell-data-func turns a non-empty value into the whole-row
 	 * alert tint. */
-	fields[COL_COLOR]       = hit_is_blocked (hit) ? "#cc0000" : "";
+	fields[COL_COLOR]       = !hit_is_blocked (hit) ? ""
+	                          : hit->rule != NULL && *hit->rule != '\0'
+	                          ? hit->rule : ROW_BLOCKED;
 
 	key = row_key_new (fields);
 
@@ -835,7 +880,7 @@ fs_hitview_selected (void)
 	if (!gtk_tree_selection_get_selected (selection, &model, &iter))
 		return NULL;
 
-	for (gint i = 0; i < FS_NUM_HITCOLUMNS - 1; i++) {
+	for (gint i = 0; i < FS_NUM_HITCOLUMNS; i++) {
 		g_clear_pointer (&fields[i], g_free);
 		gtk_tree_model_get (model, &iter, i, &fields[i], -1);
 	}
@@ -851,6 +896,7 @@ fs_hitview_selected (void)
 	hit.tos         = fields[COL_TOS];
 	hit.protocol    = fields[COL_PROTOCOL];
 	hit.service     = fields[COL_SERVICE];
+	hit.rule        = (gchar *) row_rule (fields[COL_COLOR]);
 
 	return &hit;
 }
@@ -1211,6 +1257,25 @@ on_menu_untrust_activated (GtkMenuItem *item, gpointer data)
 	g_free (source);
 }
 
+/* [ on_menu_intel_exception ] -- "Add exception for <address>". */
+static void
+on_menu_intel_exception (GtkMenuItem *item, gpointer data)
+{
+	const FsHit *hit = fs_hitview_selected ();
+	GtkWidget *top;
+
+	(void) item;
+	(void) data;
+	if (hit == NULL)
+		return;
+	top = view != NULL ? gtk_widget_get_toplevel (view) : NULL;
+	fs_intelview_add_exception (top != NULL && GTK_IS_WINDOW (top)
+	                            ? GTK_WINDOW (top) : NULL,
+	                            hit_is_outbound (hit) ? hit->destination
+	                                                  : hit->source,
+	                            hit->rule);
+}
+
 /* [ on_view_button_press ]
  * Right-click selects the row under the cursor and pops the menu of
  * actions that fit this event's direction. */
@@ -1245,6 +1310,30 @@ on_view_button_press (GtkWidget *widget, GdkEventButton *event,
 		return FALSE;
 
 	menu = gtk_menu_new ();
+
+	/* A blocklist's block (design 8, [P2]): an Allow rule would not
+	 * help, the list would still block it; the way out is an
+	 * exception on the Threat Intel page. */
+	if (fs_intelview_rule_is_intel (hit->rule)) {
+		const gchar *remote = hit_is_outbound (hit) ? hit->destination
+		                                            : hit->source;
+		GtkWidget *item;
+		gchar *label;
+
+		if (remote == NULL || *remote == '\0') {
+			gtk_widget_destroy (menu);
+			return FALSE;
+		}
+		label = g_strdup_printf (_("Add exception for %s"), remote);
+		item = gtk_menu_item_new_with_label (label);
+		g_free (label);
+		g_signal_connect (item, "activate",
+		                  G_CALLBACK (on_menu_intel_exception), NULL);
+		gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+		gtk_widget_show_all (menu);
+		gtk_menu_popup_at_pointer (GTK_MENU (menu), (GdkEvent *) event);
+		return TRUE;
+	}
 
 	if (hit_is_outbound (hit) &&
 	    hit->destination != NULL && *hit->destination != '\0') {
@@ -1564,7 +1653,8 @@ fs_hitview_page (void)
 				column, renderer, time_cell_data, NULL, NULL);
 		else
 			gtk_tree_view_column_set_cell_data_func (
-				column, renderer, color_cell_data, NULL, NULL);
+				column, renderer, color_cell_data,
+				GINT_TO_POINTER (i), NULL);
 
 		/* Column visibility is remembered, as in the original. */
 		if (column_defs[i].pref_key != NULL)

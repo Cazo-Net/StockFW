@@ -24,6 +24,7 @@
 #include "core/fs-netparse.h"
 #include "core/fs-i18n.h"
 #include "core/fs-script.h"
+#include "core/fs-intel.h"
 #include "core/fs-intelset.h"
 #include "core/fs-nftset.h"
 
@@ -1781,12 +1782,71 @@ static GString *log_partial = NULL;
  * page's Serious column stayed at zero and Sentinel's blocked fan-out
  * signal could not fire).  An ALLOW line (1.0.7) is the first packet
  * of a connection the policy accepted, and stays unmarked. */
+/* [ intel_rule_text ]
+ * "Threat intel: <the list's name>" for a list id.  Names are cached:
+ * an id is the slug of its name, so it keeps its name for as long as
+ * it exists, and the log can deliver ten lines a second per list. */
+static gchar *
+intel_rule_text (const gchar *id)
+{
+	static GHashTable *labels = NULL;
+	const gchar *label;
+
+	if (labels == NULL)
+		labels = g_hash_table_new_full (g_str_hash, g_str_equal,
+		                                g_free, g_free);
+	label = g_hash_table_lookup (labels, id);
+	if (label == NULL) {
+		const FsFeedInfo *fi = fs_feed_catalog_find (id);
+		gchar *name = NULL;
+
+		if (fi != NULL) {
+			name = g_strdup (fi->name);
+		} else {
+			FsIntelConfig *config = fs_intel_config_load (NULL);
+
+			if (config != NULL &&
+			    fs_intel_config_label (config, id) != NULL)
+				name = g_strdup (fs_intel_config_label (config,
+				                                        id));
+			fs_intel_config_free (config);
+		}
+		if (name == NULL)
+			return g_strdup_printf (_("Threat intel: %s"), id);
+		g_hash_table_replace (labels, g_strdup (id), name);
+		label = name;
+	}
+	return g_strdup_printf (_("Threat intel: %s"), label);
+}
+
 static void
 deliver_log_line (const gchar *line)
 {
 	FsHit hit = { 0 };
+	gchar *intel_id = NULL;
 
-	if (*line == '\0' || !fs_netparse_log_line (line, &hit, NULL))
+	if (*line == '\0')
+		return;
+
+	/* A threat-intel block (design 7): shown only when the id is a set
+	 * of the rule set StockFW applied, so a stale or invented
+	 * "STOCKFW-TI" line is never attributed to a list [S17.3]. */
+	if (fs_netparse_intel_line (line, &hit, NULL, &intel_id)) {
+		if (!fs_intel_applied_has (intel_id)) {
+			g_free (intel_id);
+			fs_netparse_clear_hit (&hit);
+			return;
+		}
+		fs_netparse_name_blocked (&hit);
+		hit.rule = intel_rule_text (intel_id);
+		g_free (intel_id);
+		if (log_callback != NULL)
+			log_callback (&hit, log_user_data);
+		fs_netparse_clear_hit (&hit);
+		return;
+	}
+
+	if (!fs_netparse_log_line (line, &hit, NULL))
 		return;
 
 	/* DROP/REJECT lines are blocked packets; since 1.0.7 the policy's

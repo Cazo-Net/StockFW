@@ -1481,3 +1481,86 @@ failures, restores with `cp`, checks with `cmp`):
 The sanitizer build (`build-asan`) runs `test-cli.sh` and
 `test-intel-cli.sh` (with `STOCKFW_BUILD` / `STOCKFW_INTEL_CLI` naming
 it) with no AddressSanitizer or UndefinedBehaviorSanitizer report.
+
+## The Threat Intel page and Events attribution (1.0.7, design 8)
+
+`fs-intelview-smoke` (`ninja -C port/build-linux fs-intelview-smoke`,
+then `xvfb-run -a port/build-linux/fs-intelview-smoke`, as root or with
+`STOCKFW_TEST_SAFE_DIR` set to a directory the engine accepts as a store
+parent) builds the real page in an offscreen window against a fake
+intel backend (`fs_intelview_set_backend`: an in-memory table with a
+digest, counters and a firewall state) and a fake downloader
+(`fs_intel_set_fetcher`), with its own store, audit file and `HOME`.
+An auto-responder stands in for the user at every dialog
+(`fs_intelview_set_responder`). It flips the switches, clicks the
+buttons, types into the editors and reads back what the user reads:
+
+- no store: "Off", every feed "Off.", the page creates no store, and
+  FireHOL level 1 shows "Non-commercial use only" and a credit link to
+  its publisher;
+- turning a feed on asks first (the consent text names the host); Cancel
+  downloads and applies nothing; Accept downloads once and applies once,
+  "Protected", "Up to date and in force.", entries, last and next update;
+- the work runs in the worker: a 10 ms timer keeps firing on the main
+  loop during a 0.4 s download, the progress line names the download,
+  and while an update runs the controls are insensitive;
+- the blocked counter per feed and the card's tiles;
+- a list that shrank is refused, "Accept smaller list" is offered and
+  lets it in (and is applied); a failed download says so and keeps the
+  copy;
+- "Not loaded" with Apply, which puts it back; "Changed outside
+  StockFW"; "Paused" after the engine's suspend; "Unknown"; "Not
+  supported on this platform" with nothing usable (the Windows build
+  says "Not supported on Windows yet");
+- with the firewall stopped a change is saved, nothing applied, and the
+  page says when it will be; under a hold (the Overview's Lock) a change
+  is saved, not applied, and the reason is shown; Apply afterwards puts
+  it in;
+- lookup: a listed address (blocked, naming the list), an address on no
+  list, text that is not an address; the allow list (saved, then the
+  lookup says it is never blocked; a bad line is refused as an error);
+  your blocklist (saved as "My blocklist", applied, blocks); importing a
+  file ("Office VPN.txt" becomes `local-office-vpn`, applied) and
+  removing it (asked first);
+- Events: a line from `fs_netparse_intel_line` with its rule shows
+  "SSH [BLOCKED] · Threat intel: Spamhaus DROP (IPv4)" in the Service
+  column while a policy block shows as before; the selection carries the
+  rule and an untouched service; the filter finds the row by the list's
+  name; Add exception asks first naming the list, Cancel changes
+  nothing, Accept puts the address on the allow list.
+
+`INTEL_SMOKE_SHOTS=<dir>` writes a PNG of each state (off, protected,
+updating, refused, not loaded, differs, paused, your lists, events,
+unknown, unsupported).
+
+`test-core.sh` gains `test_netparse_intel_line`: the id and the fields of
+a `STOCKFW-TI <id>` line (RFC 3339 and classic syslog), an id the engine
+could not have written, a bare marker and a policy line are not intel
+events, and the policy parser never takes an intel line (so the CLI's
+event list cannot show one as a policy block). `fs-intel-test` gains the
+refusal's override: a shrink records `--accept-shrink`, sudden growth
+`--accept-coverage` (and only that flag lets it in), a body that is not
+a list records none, and an accepted copy clears it.
+
+Not covered: the Linux backend's check that a `STOCKFW-TI` line names a
+set of the applied rule set (`fs_intel_applied_has`) is in a static
+function of the log reader and is built, not run; the Events page's
+right-click menu itself (the smoke calls `fs_intelview_add_exception`,
+which the menu item calls); the page as a non-root user (needs root).
+
+Teeth (`teeth.py` in a scratch directory, the same procedure as above):
+
+| Bug re-injected | Check that failed |
+|---|---|
+| no consent dialog before a feed is turned on | `turning a feed on asks first, naming the host contacted` |
+| the job run on the main thread | `the window kept running during a 0.4 s download (1 timer ticks ...)` |
+| the refusal's override not recorded | `and "Accept smaller list" is offered`; `a shrink refusal records that --accept-shrink lets it in` (fs-intel-test) |
+| Events ignores the rule | `events: the list's block names the list in the Service column` |
+| the page creates the store when it opens | `opening the page creates no store (Stop and Start stay no-ops)` |
+| the Overview's Lock does not hold the apply | `under a hold: saved, not applied, and why` |
+| applied while the firewall is stopped | `firewall stopped: turning a feed on saves it, applies nothing, ...` |
+| controls usable while a job runs | `mid-update: the progress line shows (...), and the controls wait for it` |
+| the intel parser takes any id | `intel line: an id the engine could not have written is not an event` |
+| the policy parser takes intel lines | `the policy parser never takes an intel line` |
+| "Not loaded" shown as "Protected" | `table gone behind StockFW's back: "Not loaded", with Apply` |
+| the Events filter ignores the rule | `events: the filter finds the list's block by the list's name` |

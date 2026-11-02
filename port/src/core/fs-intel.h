@@ -70,11 +70,12 @@ enum
 gchar *fs_intel_dir (GError **error);
 
 /* Whether the store directory is there at all, found without creating
- * it (fs_intel_dir creates it).  A computer where no list was ever
- * turned on has none; the read-only surfaces (`stockfw intel status',
- * `feeds', the dashboard) then show the defaults rather than make one.
- * An error other than "no such file" counts as there, so the caller's
- * next store call says what is wrong.  Always FALSE off Linux. */
+ * it (fs_intel_dir creates it): FALSE means no list was ever turned on
+ * here.  The read-only surfaces (`stockfw intel status', `feeds', the
+ * dashboard, the Threat Intel page opening) ask this first and then
+ * show the defaults rather than make one.  An error other than "no
+ * such file" counts as there, so the caller's next store call says
+ * what is wrong.  Always FALSE off Linux. */
 gboolean fs_intel_store_exists (void);
 
 /* ---- configuration (design 6.2) ------------------------------------ */
@@ -202,6 +203,14 @@ typedef struct
 	guint64       carried_packets;/* counters carried across re-applies   */
 	guint64       carried_bytes;
 	gint64        counted_since;  /* unix s the first counter was taken   */
+	guint         refused_override; /* with `refused': the
+	                               * FS_INTEL_UPDATE_ACCEPT_* flag that
+	                               * lets that copy in (SHRINK for a
+	                               * list that shrank, emptied or went
+	                               * back in time, COVERAGE for one that
+	                               * grew); 0 when nothing overrides the
+	                               * refusal (not a list, over a cap,
+	                               * dated in the future)                 */
 } FsIntelSourceState;
 
 /* NULL when the source was never stored. */
