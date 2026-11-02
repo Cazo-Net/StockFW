@@ -50,6 +50,8 @@ add_library(fs-core STATIC
   src/core/fs-iprange.c
   src/core/fs-nftset.c
   src/core/fs-netplace.c
+  src/core/fs-feed.c
+  src/core/fs-geo.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
@@ -385,9 +387,9 @@ add_executable(fs-theme-smoke EXCLUDE_FROM_ALL
 target_include_directories(fs-theme-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-theme-smoke PRIVATE PkgConfig::GTK3)
 # ------------------------------------------------------- 1.0.7 core tests
-# Threat intel: address ranges and the blocklist-to-nftables script
-# (test-intel.c).  GLib only, no display, no network, no root: runs
-# anywhere the core builds.  `ninja fs-intel-test'.
+# Threat intel: address ranges and feed parsing (test-intel.c), the
+# location database (test-geo.c).  GLib only, no display, no network:
+# both run anywhere the core builds.  `ninja fs-intel-test fs-geo-test'.
 add_executable(fs-intel-test EXCLUDE_FROM_ALL tests/test-intel.c)
 target_link_libraries(fs-intel-test PRIVATE fs-core-nogui)
 # Driver for tests/test-nftset.sh (real nft in a network namespace).
@@ -412,3 +414,5 @@ target_compile_definitions(fs-overview-place-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
   FS_PLATFORM_NAME="${FS_PLATFORM}"
 )
+add_executable(fs-geo-test EXCLUDE_FROM_ALL tests/test-geo.c)
+target_link_libraries(fs-geo-test PRIVATE fs-core-nogui)
