@@ -175,7 +175,16 @@ and says why; that `--quit` returns only once the copy is gone, which
 must exit 0 with its settings saved; and that `--quit` with nothing
 running succeeds and says so.
 
+`--background` is checked the same way: with stalonetray standing in
+for the notification area the window stays hidden past the five-second
+embed timeout (the docked 24-pixel tray icon carries the same window
+name, so the test only counts windows wider than 100 pixels), a second
+`--minimized` launch leaves it hidden, a normal launch brings it up;
+with no notification area the window is shown and the reason goes to
+stderr, so a hidden start never leaves a copy nobody can reach.
+
 Teeth: let `main()` ignore the "another copy runs" answer and the
 second launch stays up (killed by the test's timeout, rc 124); let the
 socket accept `quit` from anyone and the other user's `--quit` closes
-the app.
+the app; drop the fallback show and the no-tray check fails; ignore
+`--background` and the hidden checks fail.

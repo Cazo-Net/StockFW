@@ -191,6 +191,37 @@ on_popup_menu (GtkStatusIcon *icon, guint button, guint activate_time,
 	                button, activate_time);
 }
 
+/* [ lost_icon_check ] -- the shell dropped our icon (Explorer
+ * restarted, the panel crashed) while the window was hidden behind
+ * it.  Shells usually take the icon back within a moment; if this one
+ * has not after a few seconds, the window comes back instead, so the
+ * running app never ends up with no way in. */
+static guint lost_icon_timeout = 0;
+
+static gboolean
+lost_icon_check (gpointer data)
+{
+	(void) data;
+
+	lost_icon_timeout = 0;
+	if (tray_icon != NULL && !fs_tray_active () && tray_window != NULL &&
+	    !gtk_widget_get_visible (GTK_WIDGET (tray_window)))
+		fs_tray_show_window ();
+	return G_SOURCE_REMOVE;
+}
+
+static void
+on_embedded_changed (GObject *icon, GParamSpec *pspec, gpointer data)
+{
+	(void) icon;
+	(void) pspec;
+	(void) data;
+
+	if (!fs_tray_active () && lost_icon_timeout == 0)
+		lost_icon_timeout = g_timeout_add_seconds (5, lost_icon_check,
+		                                           NULL);
+}
+
 /* [ create_icon ] -- only from fs_tray_sync(), window already known.
  * The icon reuses the window's logo so the tray and the title bar
  * agree; the themed fallback covers a window without one. */
@@ -207,6 +238,8 @@ create_icon (void)
 	                  NULL);
 	g_signal_connect (tray_icon, "popup-menu",
 	                  G_CALLBACK (on_popup_menu), NULL);
+	g_signal_connect (tray_icon, "notify::embedded",
+	                  G_CALLBACK (on_embedded_changed), NULL);
 	update_tooltip ();
 }
 
@@ -218,6 +251,10 @@ destroy_icon (void)
 	if (tray_icon == NULL)
 		return;
 
+	/* Taken down on purpose: not a lost icon to recover from. */
+	g_signal_handlers_disconnect_by_func (tray_icon,
+	                                      G_CALLBACK (on_embedded_changed),
+	                                      NULL);
 	gtk_status_icon_set_visible (tray_icon, FALSE);
 	g_clear_object (&tray_icon);
 }

@@ -640,6 +640,89 @@ start_at_launch (gboolean restore_dropped)
 		fs_copilot_autoblocks_push ();
 }
 
+/* --------------------------------------------------------- hidden start
+ *
+ * --background: the window stays hidden behind the tray icon -- but
+ * only once the shell has really embedded that icon.  Embedding is
+ * asynchronous (X11 docks it when the tray answers; Windows when
+ * Explorer's notification area is up), so the window waits up to
+ * HIDDEN_START_WAIT_S for it and is shown if it never comes: a hidden
+ * window with no icon would leave a running firewall front-end nobody
+ * can reach. */
+
+#define HIDDEN_START_WAIT_S 5
+
+static gboolean start_hidden = FALSE;
+static guint    hidden_timeout = 0;
+static gulong   hidden_embed_handler = 0;
+
+static void
+hidden_start_end (void)
+{
+	GtkStatusIcon *icon = fs_tray_icon ();
+
+	if (hidden_timeout != 0) {
+		g_source_remove (hidden_timeout);
+		hidden_timeout = 0;
+	}
+	if (hidden_embed_handler != 0) {
+		if (icon != NULL)
+			g_signal_handler_disconnect (icon,
+			                             hidden_embed_handler);
+		hidden_embed_handler = 0;
+	}
+}
+
+/* [ hidden_start_give_up ] -- no icon in time: show the window. */
+static gboolean
+hidden_start_give_up (gpointer data)
+{
+	(void) data;
+
+	hidden_timeout = 0;
+	hidden_start_end ();
+
+	if (!fs_tray_active ()) {
+		g_message ("StockFW: no notification area took the icon "
+		           "within %d s; showing the window instead of "
+		           "staying hidden", HIDDEN_START_WAIT_S);
+		gtk_widget_show (fsapp.window);
+	}
+	return G_SOURCE_REMOVE;
+}
+
+static void
+on_hidden_icon_embedded (GObject *icon, GParamSpec *pspec, gpointer data)
+{
+	(void) icon;
+	(void) pspec;
+	(void) data;
+
+	/* Docked: the window may stay hidden; nothing more to wait for. */
+	if (fs_tray_active ())
+		hidden_start_end ();
+}
+
+static void
+hidden_start_begin (void)
+{
+	GtkStatusIcon *icon = fs_tray_icon ();
+
+	if (icon == NULL) {
+		/* "Show a tray icon" is off: nothing to hide behind. */
+		gtk_widget_show (fsapp.window);
+		return;
+	}
+	if (fs_tray_active ())
+		return;
+
+	hidden_embed_handler = g_signal_connect (
+		icon, "notify::embedded",
+		G_CALLBACK (on_hidden_icon_embedded), NULL);
+	hidden_timeout = g_timeout_add_seconds (HIDDEN_START_WAIT_S,
+	                                        hidden_start_give_up, NULL);
+}
+
 void
 fs_app_activate (GtkApplication *app)
 {
@@ -784,7 +867,9 @@ fs_app_activate (GtkApplication *app)
 	/* Policy loaded, Sentinel reconciled: now the firewall may start. */
 	start_at_launch (restore_dropped);
 
-	gtk_widget_show_all (fsapp.window);
+	/* Everything inside the window is shown now; the window itself
+	 * only below, once it is known whether it may stay hidden. */
+	gtk_widget_show_all (box);
 	sync_nav ((guint) gtk_notebook_get_current_page (
 		GTK_NOTEBOOK (fsapp.notebook)));
 
@@ -794,18 +879,34 @@ fs_app_activate (GtkApplication *app)
 	/* Reflect the real firewall state, if the backend knows it. */
 	fs_statusview_set_state (fs_backend ()->get_state ());
 
-	/* Tray last: the icon reuses the window logo set above, and the
-	 * state call just now already fed the tooltip text. */
+	/* The tray before the window: a hidden start needs the icon up
+	 * first, to come back from.  It reuses the window logo set above,
+	 * and the state call just now already fed the tooltip text. */
 	fs_tray_set_window (GTK_WINDOW (fsapp.window));
 	fs_tray_sync ();
+
+	if (start_hidden)
+		hidden_start_begin ();
+	else
+		gtk_widget_show (fsapp.window);
+}
+
+void
+fs_app_set_start_hidden (gboolean hidden)
+{
+	start_hidden = hidden;
 }
 
 void
 fs_app_present (void)
 {
-	if (fsapp.window == NULL)
+	/* Asked for before the window exists: open it visible. */
+	if (fsapp.window == NULL) {
+		start_hidden = FALSE;
 		return;
+	}
 
+	hidden_start_end ();
 	fs_tray_show_window ();
 }
 

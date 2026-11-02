@@ -85,8 +85,17 @@ minimize_to_tray=true
 EOF
 
 listening () { grep -q "@$STOCKFW_INSTANCE_NAME\$" /proc/net/unix; }
-visible_windows () { xdotool search --onlyvisible --name '^StockFW$' 2>/dev/null | wc -l; }
-any_window () { xdotool search --onlyvisible --name '^StockFW$' 2>/dev/null | head -1; }
+# The main window: a visible "StockFW" window wider than the 24-pixel
+# tray icon, which carries the same name once it docks.
+main_windows () {
+	local w WIDTH
+	for w in $(xdotool search --onlyvisible --name '^StockFW$' 2>/dev/null); do
+		eval "$(xdotool getwindowgeometry --shell "$w" 2>/dev/null | grep '^WIDTH=')"
+		[ "${WIDTH:-0}" -gt 100 ] && echo "$w"
+	done
+}
+visible_windows () { main_windows | wc -l; }
+any_window () { main_windows | head -1; }
 
 wait_for () {   # wait_for <seconds> <command...>
 	local limit=$(( $1 * 10 )); shift
@@ -151,6 +160,52 @@ timeout 30 "$BIN" --quit > "$SCRATCH/quit2.log" 2>&1
 rc=$?
 check "--quit with nothing running succeeds and says so (rc=$rc)" \
 	[ "$rc" -eq 0 ] && grep -q "not running" "$SCRATCH/quit2.log"
+
+# ---------------------------------------------------------------- 4. --background, with a tray
+if command -v stalonetray >/dev/null 2>&1; then
+	stalonetray --geometry 4x1+0+0 > "$SCRATCH/tray.log" 2>&1 &
+	TRAY_PID=$!
+	sleep 1
+
+	"$BIN" --background > "$SCRATCH/bg.log" 2>&1 &
+	A=$!
+	check "--background claims the instance" wait_for 30 listening
+	# Past the embed timeout (5 s): still hidden, because the icon
+	# really docked in the notification area.
+	sleep 7
+	check "--background with a notification area: the window stays hidden" is_hidden
+	check "...and the copy runs behind the icon" alive "$A"
+
+	timeout 15 "$BIN" --minimized > "$SCRATCH/bg2.log" 2>&1
+	rc=$?
+	check "a second background launch (--minimized) exits at once (rc=$rc)" [ "$rc" -eq 0 ]
+	sleep 1
+	check "...and leaves the running copy hidden" is_hidden
+
+	timeout 15 "$BIN" > "$SCRATCH/bg3.log" 2>&1
+	check "a normal second launch brings the hidden window up" wait_for 10 is_visible
+
+	timeout 30 "$BIN" --quit > /dev/null 2>&1
+	check "--quit ends the background copy" wait_for 5 dead "$A"
+	wait "$A" 2>/dev/null
+
+	kill "$TRAY_PID" 2>/dev/null
+	wait "$TRAY_PID" 2>/dev/null
+	TRAY_PID=""
+	sleep 1
+else
+	echo "SKIP: stalonetray not installed -- no notification area to hide behind"
+fi
+
+# ---------------------------------------------------------------- 5. --background, no tray
+"$BIN" --background > "$SCRATCH/notray.log" 2>&1 &
+A=$!
+check "--background with no notification area: the copy starts" wait_for 30 listening
+check "...and shows its window rather than hide with no way back" wait_for 15 is_visible
+grep -q "no notification area took the icon" "$SCRATCH/notray.log" &&
+	ok "...and says why on stderr" || fail "...and says why on stderr"
+timeout 30 "$BIN" --quit > /dev/null 2>&1
+wait "$A" 2>/dev/null
 
 echo
 if [ "$failures" -eq 0 ]; then

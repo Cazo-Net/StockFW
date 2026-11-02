@@ -28,10 +28,16 @@
 
 static gboolean opt_version = FALSE;
 static gboolean opt_quit = FALSE;
+static gboolean opt_background = FALSE;
 
 static const GOptionEntry options[] = {
 	{ "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
 	  "Show the program version and exit", NULL },
+	{ "background", 'b', 0, G_OPTION_ARG_NONE, &opt_background,
+	  "Start in the notification area with the window hidden (it is "
+	  "shown if no notification area takes the icon)", NULL },
+	{ "minimized", 'm', 0, G_OPTION_ARG_NONE, &opt_background,
+	  "Same as --background", NULL },
 	{ "quit", 0, 0, G_OPTION_ARG_NONE, &opt_quit,
 	  "Ask the running StockFW to quit (the firewall stays on)", NULL },
 	{ NULL, 0, 0, 0, NULL, NULL, NULL }
@@ -148,6 +154,12 @@ main (int argc, char *argv[])
 
 	/* One copy per session.  A second launch hands over and exits. */
 	role = fs_instance_acquire ();
+
+	/* A background start (sign-in) finding StockFW already up has
+	 * nothing to do: the user did not ask to see a window. */
+	if (role == FS_INSTANCE_SECONDARY && opt_background)
+		return 0;
+
 	if (role == FS_INSTANCE_SECONDARY) {
 		switch (fs_instance_send (FS_INSTANCE_SHOW, 3000)) {
 		case FS_INSTANCE_SENT:
@@ -175,6 +187,7 @@ main (int argc, char *argv[])
 	                           G_APPLICATION_NON_UNIQUE);
 
 	g_signal_connect (app, "activate", G_CALLBACK (on_activate), NULL);
+	fs_app_set_start_hidden (opt_background);
 
 	if (role == FS_INSTANCE_PRIMARY)
 		fs_instance_listen (on_instance_command, NULL);

@@ -36,6 +36,12 @@ void fs_app_activate (GtkApplication *app);
  * hidden start instead, so the window opens visible. */
 void fs_app_present (void);
 
+/* --background: build everything but keep the window hidden behind the
+ * tray icon.  The window is shown anyway when no icon is embedded
+ * within a few seconds (or the icon is switched off), so a hidden
+ * start never leaves a copy nobody can reach.  Call before activate. */
+void fs_app_set_start_hidden (gboolean hidden);
+
 /* Selects a page, as a click on its sidebar item would.  Does nothing
  * before the window is built. */
 void fs_app_show_page (FsAppPage page);
