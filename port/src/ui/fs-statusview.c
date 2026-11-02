@@ -1616,6 +1616,9 @@ build_profiles (void)
 	 * it by that title. */
 	profiles_frame = gtk_frame_new (_("Firewall profiles"));
 	add_class (profiles_frame, "card-frame");
+	/* The card draws the border; the frame's own would be a second
+	 * box inside it (as the Policy and Copilot cards already do). */
+	gtk_frame_set_shadow_type (GTK_FRAME (profiles_frame), GTK_SHADOW_NONE);
 	gtk_container_add (GTK_CONTAINER (profiles_frame), inner);
 
 	for (gint i = 0; i < FS_PROFILE_COUNT; i++) {
