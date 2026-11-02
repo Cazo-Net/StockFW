@@ -1012,6 +1012,19 @@ per process:
   own; the quit closes it as Cancel would (the moved setting is not
   saved) instead of waiting for it, and the Copilot's state is still
   intact.
+- `background` (`STOCKFW_AUTOSAVE_S=1`; the DNS server and gateway
+  fixed through `STOCKFW_RESOLV_CONF` and `STOCKFW_ROUTE_FILE`): the
+  window is hidden as "Minimize to the tray" hides it (directly, since
+  xvfb has no notification area for the icon to embed in), and then
+  the Copilot must keep working.  A Sentinel block restored with three
+  seconds left is lifted from the policy and the staged list on time,
+  and audited; seven timed contacts fed into the app's Copilot and the
+  eighth delivered through the Events page's own callback stage a
+  Sentinel block (policy, staged list, apply gate); the periodic save
+  writes what was learned; the tray's "Pause Sentinel auto-block for 1
+  hour" is offered, pauses, the menu then offers Resume, and a second
+  timed series stages nothing while paused; no window or dialog came
+  up meanwhile (the tray icon's own window aside).
 
 No scenario stops the firewall.  `test-core.sh` pins
 `fs_prefs_dirty()`.
@@ -1028,6 +1041,17 @@ instead of in shutdown fails "sametick" (a timer due in the same loop
 pass as the quit found freed memory); leave the Preferences window out
 of the quit and "the quit closes the Preferences window" and
 "promptly" fail.
+
+Teeth for `background`, each re-injected in the real file, seen
+failing with `fs-session-smoke background`, restored with `cp` and
+proved with `cmp`:
+
+| Bug re-injected | Checks that caught it |
+|---|---|
+| the Copilot fed only while the Events page is on screen (`fs-hitview.c`) | "an event delivered while hidden reaches the Copilot (7 seen)", "the contact that completes a timed series is staged ...", "what the Copilot learned while hidden is written ..." |
+| the expiry timer waits while the Copilot page is not on screen (`fs-copilot.c`) | "a Sentinel block whose ten minutes ran out while the window was hidden is lifted ...", "...and audited (0)" |
+| the periodic save skipped while the window is hidden (`fs-app.c`) | "what the Copilot learned while hidden is written by the periodic save" |
+| Sentinel's automatic pass run only while the Events page is on screen (`fs-hitview.c`) | "the contact that completes a timed series is staged as a Sentinel block while the window is hidden" |
 ## Windows rule translation (`tests/test-core.sh`)
 
 ```sh
@@ -1290,7 +1314,11 @@ bash tests/test-cli.sh                      # stockfw copilot health
 ```
 
 The Copilot is a set of fixed rules; the design is
-`docs/ARCHITECTURE-AND-SECURITY.md` section 14.4.
+`docs/ARCHITECTURE-AND-SECURITY.md` chapter 4 (every detection, its
+limits, Sentinel's gates, what each platform's log shows) and section
+14.4 (the 1.0.7 rework, the health check and the page).  That the
+Copilot keeps working with the window hidden is `fs-session-smoke`'s
+`background` scenario (Session safety, above).
 
 `test-health.c` (pure GLib) pins the policy health check
 (`core/fs-health.c`):
