@@ -337,6 +337,35 @@ T '[ "$(iptables -S; iptables -t nat -S)" = "$before4" ]' \
 T '[ "$(ip6tables -S; ip6tables -t nat -S)" = "$before6" ]' \
 	"IPv6's filter table, already replaced, was put back too"
 
+# ------------- IPv6 cannot even be put back: IPv4 is still rolled back
+# The first payload (the new IPv6 filter table) is accepted; every later
+# one is refused, the nat step and the rollback alike.  IPv6 is left
+# half-changed and the error says so; IPv4 must still be put back.
+# Teeth: `back6 && back4' written as one && expression skips IPv4 here.
+before4="$(iptables -S; iptables -t nat -S)"
+mkdir -p "$BUILD_DIR/once6bin"
+cat > "$BUILD_DIR/once6bin/ip6tables-restore" <<FAKE
+#!/bin/bash
+input="\$(cat)"
+n=\$(( \$(cat "$BUILD_DIR/once6.count" 2>/dev/null || echo 0) + 1 ))
+echo "\$n" > "$BUILD_DIR/once6.count"
+if [ "\$n" = 1 ]; then
+	exec "$real6" "\$@" <<<"\$input"
+fi
+echo "ip6tables-restore: injected failure \$n" >&2
+exit 1
+FAKE
+chmod +x "$BUILD_DIR/once6bin/ip6tables-restore"
+rm -f "$BUILD_DIR/once6.count"
+out="$(PATH="$BUILD_DIR/once6bin:$PATH" "$DUAL" apply nat extra)"
+T 'grep -q "^RESULT Failed.*IPv6 rules were refused.*Putting the previous rules back also failed" <<<"$out"' \
+	"when IPv6 cannot be put back, the error says so instead of \"nothing changed\" -- got [$out]"
+T '[ "$(iptables -S; iptables -t nat -S)" = "$before4" ]' \
+	"IPv4 is still put back exactly as it was"
+out="$("$DUAL" apply nat)"
+T '[ "${out%% |*}" = "$APPLIED" ]' \
+	"and the next apply brings IPv6 back in line -- got [$out]"
+
 # -------------------------------------------------- back out of router mode
 out="$("$DUAL" apply nolog)"
 T '[ "${out%% |*}" = "$APPLIED" ]' "leaving router mode, logging off -- got [$out]"
