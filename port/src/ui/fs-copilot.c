@@ -646,13 +646,21 @@ auto_block_state_path (void)
     return fs_autoblock_state_path ();
 }
 
+/* TRUE while the file is behind the array: the last write failed.
+ * fs_copilot_autoblocks_flush() retries it (the periodic save and the
+ * end of the session call it), so one failed write is not left until
+ * the next stage or retire happens to come along. */
+static gboolean auto_block_state_unsaved = FALSE;
+
 /* [ auto_block_state_save ]
  * Rewrite the staged list from the array: one row per block this
  * session staged -- "S,<epoch>,<kind>,<csv>", csv last so its commas
  * survive the split.  Called on every stage and every retire, so the
  * file mirrors the session's OWN blocks and never a user's manual
  * rule.  A failed write is audited, not swallowed: without this file
- * a restart turns managed blocks into orphans nobody expires. */
+ * a restart turns managed blocks into orphans nobody expires.  Once
+ * per run of failures, so a retry every few minutes against a full
+ * disk does not fill the audit log; the recovery is audited too. */
 static void
 auto_block_state_save (void)
 {
@@ -679,13 +687,28 @@ auto_block_state_save (void)
     g_free (dir);
 
     if (!g_file_set_contents (path, out->str, -1, &error)) {
-        fs_audit_log ("sentinel auto-block state save failed",
-                      error != NULL ? error->message : path);
+        if (!auto_block_state_unsaved)
+            fs_audit_log ("sentinel auto-block state save failed",
+                          error != NULL ? error->message : path);
+        auto_block_state_unsaved = TRUE;
         g_clear_error (&error);
+    } else if (auto_block_state_unsaved) {
+        fs_audit_log ("sentinel auto-block state saved after a failed "
+                      "write", path);
+        auto_block_state_unsaved = FALSE;
     }
 
     g_string_free (out, TRUE);
     g_free (path);
+}
+
+gboolean
+fs_copilot_autoblocks_flush (void)
+{
+    if (auto_block_state_unsaved)
+        auto_block_state_save ();
+
+    return !auto_block_state_unsaved;
 }
 
 /* [ auto_block_push ]

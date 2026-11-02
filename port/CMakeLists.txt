@@ -456,3 +456,23 @@ target_compile_definitions(fs-traymenu-smoke PRIVATE
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-traymenu-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+
+# Session safety (1.0.7) against the real app: the periodic save writes
+# only what changed and retries a failed Sentinel list write, query-end
+# writes everything without holding up the logout, and a quit that
+# arrives under a running dialog frees nothing under it.  Supplies
+# fs_backend() itself.
+add_executable(fs-session-smoke EXCLUDE_FROM_ALL
+  tests/ui-session-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-session-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-session-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-session-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-session-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()

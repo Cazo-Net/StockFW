@@ -144,6 +144,13 @@ action, and leaves out blocks by host name until the next apply because
 names cannot be looked up before the network is up. Details:
 [`port/installer/linux/README.md`](port/installer/linux/README.md).
 
+**Signing out does not lose anything.** While it runs, StockFW writes
+its settings and what the Copilot has learned every five minutes when
+they have changed, and writes everything when the session is about to
+end (Windows sign-out or shutdown, a GNOME or Xfce logout) without
+holding the logout up. `kill`, Ctrl+C and closing its terminal quit it
+the same way as the tray's Quit. None of this turns the firewall off.
+
 ## Privilege model (summary)
 
 StockFW runs **asInvoker** — it never silently self-elevates. All

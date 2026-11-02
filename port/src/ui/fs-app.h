@@ -49,7 +49,14 @@ void fs_app_show_page (FsAppPage page);
 /* The page on show; FS_PAGE_COUNT before the window is built. */
 FsAppPage fs_app_current_page (void);
 
+/* Quit StockFW, leaving the firewall as it is: the icon goes, the
+ * settings and the Copilot baseline are written, and the program
+ * ends.  Called again while quitting, it does nothing. */
 void fs_app_quit    (void);
+
+/* The Copilot learned from an event: its baseline has changed and the
+ * next periodic save writes it (1.0.7 session safety). */
+void fs_app_note_learning (void);
 
 /* Re-reads the preferences into the shared FsSettings and hands the
  * refreshed context back to the backend.  Called after the Preferences

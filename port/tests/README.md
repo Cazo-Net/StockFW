@@ -183,6 +183,12 @@ name, so the test only counts windows wider than 100 pixels), a second
 with no notification area the window is shown and the reason goes to
 stderr, so a hidden start never leaves a copy nobody can reach.
 
+Last, SIGTERM, SIGINT and SIGHUP each make a running copy exit 0 with
+its settings and Copilot baseline written.  Teeth: without the signal
+handlers SIGTERM and SIGHUP kill it (exit 143 and 129, nothing
+written) and SIGINT is ignored altogether, as it is for any background
+job of a script.
+
 Teeth: let `main()` ignore the "another copy runs" answer and the
 second launch stays up (killed by the test's timeout, rc 124); let the
 socket accept `quit` from anyone and the other user's `--quit` closes
@@ -293,3 +299,44 @@ counting blocks and the count, Recent blocks and tooltip checks fail;
 refresh the tick from the request instead of from the system and the
 failed Start at sign-in check fails (this one was a real bug the smoke
 caught while it was written).
+
+
+## Session safety (`fs-session-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-session-smoke
+xvfb-run -a ./build-linux/fs-session-smoke      # needs a display
+```
+
+Runs the real `fs_app_activate()` against a fake backend, one scenario
+per process:
+
+- `autosave` (`STOCKFW_AUTOSAVE_S=1` in place of five minutes): with
+  nothing changed nothing is written; a changed setting, and what the
+  Copilot learned from an event fed through the app's monitor
+  callback, are written while the app keeps running; a Sentinel
+  staged-list write that fails is audited once, retries do not repeat
+  the line, and once the file can be written the periodic save brings
+  it up to date and audits that.
+- `queryend`: emitting GtkApplication's `query-end` writes the settings
+  and the baseline at once, inhibits nothing and quits nothing; a
+  session manager's Stop (`g_application_quit` without
+  `fs_app_quit()`) still writes what changed after it.
+- `dialog`: `fs_app_quit()` dispatched inside a running
+  `gtk_dialog_run()` writes everything and takes the icon down at once,
+  frees nothing while the dialog's caller still runs, closes the dialog
+  as its close button would, and finishes the quit once it has
+  returned.
+
+No scenario stops the firewall.  `test-core.sh` pins
+`fs_prefs_dirty()`.
+
+Teeth: a periodic save that does nothing fails the three "written
+within the period" checks; a `query-end` handler that does nothing
+fails both "at once" checks; a quit that frees everything at once
+under the dialog fails "nothing is freed" and then crashes the
+scenario (the use-after-free this prevents); no retry of the staged
+list fails the three recovery checks; a dirty flag that is always set
+fails "nothing changed: nothing written" and two core checks; no save
+on the Stop path fails its check.

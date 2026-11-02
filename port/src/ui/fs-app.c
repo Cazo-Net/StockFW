@@ -39,6 +39,11 @@
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
+#ifdef G_OS_WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>             /* MSG, WM_QUERYENDSESSION */
+#endif
+
 static FsApp fsapp = { NULL, NULL, NULL };
 
 /* [ logo_pixbuf ] -- one embedded logo size, or NULL. */
@@ -735,6 +740,157 @@ hidden_start_begin (void)
 	                                        hidden_start_give_up, NULL);
 }
 
+/*---[ session safety (1.0.7) ]-----------------------------------------
+ * A copy that lives in the notification area for weeks is ended by a
+ * sign-out, a shutdown or a kill far more often than by its Quit item,
+ * and what the user set and what the Copilot learned must not depend
+ * on that item.  So:
+ *
+ *   - every AUTOSAVE_S the settings and the Copilot baseline are
+ *     written if they changed since the last write, and a Sentinel
+ *     staged-list write that failed is retried (that list is otherwise
+ *     written on every stage and retire);
+ *   - the session manager's query-end (register-session, main.c) and
+ *     Windows' WM_QUERYENDSESSION write everything at once.  Neither
+ *     asks to delay the sign-out: there is nothing here worth holding
+ *     a user's logout for, and the firewall runs without us;
+ *   - SIGTERM, SIGINT and SIGHUP quit through fs_app_quit() (main.c).
+ *
+ * None of this touches the firewall: it stays as it is.
+ * STOCKFW_AUTOSAVE_S shortens the period for the tests. */
+
+#define AUTOSAVE_S 300
+
+static guint    autosave_id = 0;
+static gboolean baseline_dirty = FALSE;
+static gboolean quit_started = FALSE;
+#ifdef G_OS_WIN32
+static gboolean session_ending = FALSE;
+#endif
+
+void
+fs_app_note_learning (void)
+{
+	baseline_dirty = TRUE;
+}
+
+/* [ save_state ] -- `everything' writes the settings and the baseline
+ * whether or not they changed (quit, end of session); otherwise only
+ * what changed since the last write.  Best effort throughout: each
+ * writer reports its own failure, and a baseline that could not be
+ * written stays dirty for the next round. */
+static void
+save_state (gboolean everything)
+{
+	if (everything || fs_prefs_dirty ())
+		fs_prefs_save ();
+
+	if (copilot != NULL && (everything || baseline_dirty)) {
+		gchar *path = fs_copilot_baseline_path ();
+
+		if (fs_copilot_baseline_save (copilot, path, NULL))
+			baseline_dirty = FALSE;
+		g_free (path);
+	}
+
+	fs_copilot_autoblocks_flush ();
+}
+
+static guint
+autosave_period (void)
+{
+	const gchar *env = g_getenv ("STOCKFW_AUTOSAVE_S");
+
+	if (env != NULL && *env != '\0') {
+		gchar *end = NULL;
+		guint64 s = g_ascii_strtoull (env, &end, 10);
+
+		if (end != NULL && *end == '\0' && s >= 1 && s <= 86400)
+			return (guint) s;
+	}
+	return AUTOSAVE_S;
+}
+
+static gboolean
+on_autosave (gpointer data)
+{
+	(void) data;
+
+	save_state (FALSE);
+	return G_SOURCE_CONTINUE;
+}
+
+/* [ on_query_end ] -- the session manager is about to end the session.
+ * No gtk_application_inhibit(): see the block comment above. */
+static void
+on_query_end (GtkApplication *app, gpointer data)
+{
+	(void) app;
+	(void) data;
+
+	save_state (TRUE);
+}
+
+/* [ on_shutdown ] -- the run loop ended without fs_app_quit(): the
+ * session manager's Stop quits the application directly.  Write what
+ * changed since query-end. */
+static void
+on_shutdown (GApplication *app, gpointer data)
+{
+	(void) app;
+	(void) data;
+
+	if (!quit_started)
+		save_state (FALSE);
+}
+
+#ifdef G_OS_WIN32
+/* [ on_win32_message ] -- every message to a StockFW window passes
+ * here first.  Windows sends WM_QUERYENDSESSION to each top-level
+ * window before a sign-out or shutdown and WM_ENDSESSION after, and
+ * kills the process soon after that.  CONTINUE always: the default
+ * answer lets the session end. */
+static GdkFilterReturn
+on_win32_message (GdkXEvent *xevent, GdkEvent *event, gpointer data)
+{
+	const MSG *msg = (const MSG *) xevent;
+
+	(void) event;
+	(void) data;
+
+	if (msg->message == WM_QUERYENDSESSION) {
+		/* Once per sign-out, not once per window. */
+		if (!session_ending) {
+			session_ending = TRUE;
+			save_state (TRUE);
+		}
+	} else if (msg->message == WM_ENDSESSION) {
+		if (msg->wParam)
+			save_state (FALSE);
+		else
+			session_ending = FALSE;    /* someone cancelled it */
+	}
+	return GDK_FILTER_CONTINUE;
+}
+#endif
+
+static void
+session_safety_begin (GtkApplication *app)
+{
+	autosave_id = g_timeout_add_seconds (autosave_period (),
+	                                     on_autosave, NULL);
+	g_signal_connect (app, "query-end", G_CALLBACK (on_query_end), NULL);
+	g_signal_connect (app, "shutdown", G_CALLBACK (on_shutdown), NULL);
+
+#ifdef G_OS_WIN32
+	/* WM_QUERYENDSESSION only reaches windows that exist; a hidden
+	 * start never shows (so never creates) the main one.  Realized,
+	 * it exists without being shown. */
+	gtk_widget_realize (fsapp.window);
+	gdk_window_add_filter (NULL, on_win32_message, NULL);
+#endif
+}
+
 void
 fs_app_activate (GtkApplication *app)
 {
@@ -897,6 +1053,9 @@ fs_app_activate (GtkApplication *app)
 	fs_tray_set_window (GTK_WINDOW (fsapp.window));
 	fs_tray_sync ();
 
+	/* Everything that is saved now exists: save it as it changes. */
+	session_safety_begin (app);
+
 	if (start_hidden)
 		hidden_start_begin ();
 	else
@@ -935,14 +1094,90 @@ fs_app_reload_settings (void)
 	fs_tray_sync ();
 }
 
+/* [ cancel_dialogs ] -- answer every open dialog as its close button
+ * would (GTK_RESPONSE_DELETE_EVENT), which ends a gtk_dialog_run()
+ * loop on its caller's "closed, change nothing" path. */
+static void
+cancel_dialogs (void)
+{
+	GList *tops = gtk_window_list_toplevels ();
+	GList *l;
+
+	/* A response handler may destroy other windows in the list. */
+	for (l = tops; l != NULL; l = l->next)
+		g_object_ref (l->data);
+	for (l = tops; l != NULL; l = l->next) {
+		if (GTK_IS_DIALOG (l->data) &&
+		    gtk_widget_get_visible (GTK_WIDGET (l->data)))
+			gtk_dialog_response (GTK_DIALOG (l->data),
+			                     GTK_RESPONSE_DELETE_EVENT);
+	}
+	g_list_free_full (tops, g_object_unref);
+}
+
+static void quit_finish (void);
+
+static gboolean
+quit_when_unwound (gpointer data)
+{
+	(void) data;
+
+	if (g_main_depth () > 1)
+		return G_SOURCE_CONTINUE;
+
+	quit_finish ();
+	return G_SOURCE_REMOVE;
+}
+
+/* [ fs_app_quit ]
+ * The tray's Quit, the window's close button without a tray, --quit
+ * from another launch, and SIGTERM/SIGINT/SIGHUP all end here.  The
+ * firewall is left as it is.
+ *
+ * A quit can arrive while a dialog runs its own loop: a signal or
+ * --quit is dispatched by whatever loop is running.  Freeing the
+ * policy under that dialog would hand its caller freed memory when
+ * the dialog returns, so in that case the state is saved and the icon
+ * taken down at once, the dialogs are closed, and the rest waits for
+ * the outer loop. */
 void
 fs_app_quit (void)
 {
+	if (quit_started)
+		return;
+	quit_started = TRUE;
+
+	if (autosave_id != 0) {
+		g_source_remove (autosave_id);
+		autosave_id = 0;
+	}
+
 	/* Icon down first: a tray icon that outlives the program is a
 	 * dead icon that still looks clickable. */
 	fs_tray_uninstall ();
 
-	fs_prefs_save ();
+	/* Settings, the Copilot baseline (best effort: an unsaved
+	 * baseline only costs relearning, never a wrong rule or a lost
+	 * audit line) and a staged list still owed to its file. */
+	save_state (TRUE);
+
+	if (g_main_depth () > 1) {
+		cancel_dialogs ();
+		g_timeout_add (100, quit_when_unwound, NULL);
+		return;
+	}
+
+	quit_finish ();
+}
+
+static void
+quit_finish (void)
+{
+	GApplication *app = fsapp.app != NULL ? G_APPLICATION (fsapp.app)
+	                                      : g_application_get_default ();
+
+	/* Whatever changed while the dialogs closed. */
+	save_state (FALSE);
 
 	if (policy != NULL) {
 		fs_policy_free (policy);
@@ -955,17 +1190,12 @@ fs_app_quit (void)
 	}
 
 	if (copilot != NULL) {
-		/* Best effort: an unsaved baseline only costs relearning,
-		 * never a wrong rule or a lost audit line. */
-		gchar *baseline = fs_copilot_baseline_path ();
-
-		fs_copilot_baseline_save (copilot, baseline, NULL);
-		g_free (baseline);
-
 		fs_copilot_free (copilot);
 		copilot = NULL;
 	}
 
-	if (fsapp.app != NULL)
-		g_application_quit (G_APPLICATION (fsapp.app));
+	/* Through the default application too: a signal can come before
+	 * activate has recorded ours. */
+	if (app != NULL)
+		g_application_quit (app);
 }

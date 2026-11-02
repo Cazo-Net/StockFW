@@ -14,10 +14,19 @@
  * --enable-autostart / --disable-autostart switch "start at sign-in"
  * for the current user and exit (core/fs-autostart.h); the Windows
  * installer runs the first, the uninstaller --remove-all-autostart.
+ *
+ * The end of the session (the session manager's query-end, Windows'
+ * WM_QUERYENDSESSION) and SIGTERM/SIGINT/SIGHUP save what the running
+ * copy holds without touching the firewall: see fs-app.c.
  *--------------------------------------------------------------------*/
 
 #include <gtk/gtk.h>
 #include <locale.h>
+
+#ifndef G_OS_WIN32
+#include <glib-unix.h>
+#include <signal.h>
+#endif
 
 #include "core/fs-prefs.h"
 #include "core/fs-backend.h"
@@ -77,6 +86,24 @@ on_instance_command (FsInstanceCommand command, gpointer data)
 	else
 		fs_app_present ();
 }
+
+#ifndef G_OS_WIN32
+/* [ on_quit_signal ] -- SIGTERM (systemd ending the session, a logout
+ * without a session manager, kill), SIGINT (Ctrl+C in the terminal it
+ * was started from) and SIGHUP (that terminal closed) quit the way the
+ * tray's Quit does: settings and what the Copilot learned are written
+ * and the firewall stays on.  They used to end the process on the
+ * spot.  The source stays: a second signal while quitting is a no-op
+ * rather than the default action. */
+static gboolean
+on_quit_signal (gpointer data)
+{
+	(void) data;
+
+	fs_app_quit ();
+	return G_SOURCE_CONTINUE;
+}
+#endif
 
 /* [ quit_running ] -- --quit: ask, then wait for it to be gone, so a
  * caller (the uninstaller) can delete the files right after.  Exit 0
@@ -241,6 +268,17 @@ main (int argc, char *argv[])
 
 	g_signal_connect (app, "activate", G_CALLBACK (on_activate), NULL);
 	fs_app_set_start_hidden (opt_background);
+
+	/* Hear the session manager's "about to end" (GtkApplication's
+	 * query-end; fs-app.c writes everything then, without delaying
+	 * the logout).  Where none is running this does nothing. */
+	g_object_set (app, "register-session", TRUE, NULL);
+
+#ifndef G_OS_WIN32
+	g_unix_signal_add (SIGTERM, on_quit_signal, NULL);
+	g_unix_signal_add (SIGINT, on_quit_signal, NULL);
+	g_unix_signal_add (SIGHUP, on_quit_signal, NULL);
+#endif
 
 	if (role == FS_INSTANCE_PRIMARY)
 		fs_instance_listen (on_instance_command, NULL);

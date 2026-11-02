@@ -752,6 +752,23 @@ static void test_prefs_fallbacks (void)
 	CHECK (fs_prefs_get_int ("/apps/stockfw/client/int_sample",
 	                         99) == 7,
 	       "stored int beats the fallback");
+
+	/* 1.0.7 session safety: the running program's periodic save
+	 * writes the settings only when this says they changed. */
+	{
+		const gchar *path = fs_prefs_path ();
+		gboolean existed = g_file_test (path, G_FILE_TEST_EXISTS);
+
+		CHECK (fs_prefs_dirty (), "a setter marks the settings dirty");
+		CHECK (fs_prefs_save () && !fs_prefs_dirty (),
+		       "a save leaves them clean");
+		fs_prefs_set_string ("/apps/stockfw/client/str_sample", "x");
+		CHECK (fs_prefs_dirty (), "the next setter marks them again");
+		CHECK (fs_prefs_load () && !fs_prefs_dirty (),
+		       "a load leaves them clean");
+		if (!existed)
+			g_unlink (path);
+	}
 }
 
 /* Regression: fs_copilot_feed_event() re-inserted the profile on EVERY

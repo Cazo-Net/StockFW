@@ -73,7 +73,7 @@ jobs:
           smokes="fs-ui-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke
                   fs-trustview-smoke fs-copilot-smoke fs-statusview-smoke
                   fs-activity-smoke fs-overview-place-smoke
-                  fs-startup-smoke fs-traymenu-smoke"
+                  fs-startup-smoke fs-traymenu-smoke fs-session-smoke"
           ninja -C build-linux $smokes
           for t in $smokes; do
             echo "== $t"

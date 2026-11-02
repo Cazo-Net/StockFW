@@ -14,7 +14,9 @@
 #     behind the tray icon; a second launch shows it; with NO
 #     notification area the window is shown after the embed timeout,
 #     so there is never an unreachable copy; a second --background
-#     launch leaves a running copy alone.
+#     launch leaves a running copy alone;
+#   - SIGTERM, SIGINT and SIGHUP quit cleanly: exit 0, settings and
+#     the Copilot baseline written.
 #
 # Needs a display (xvfb-run -a bash tests/test-instance.sh) and
 # xdotool; stalonetray provides the notification area (those checks
@@ -206,6 +208,39 @@ grep -q "no notification area took the icon" "$SCRATCH/notray.log" &&
 	ok "...and says why on stderr" || fail "...and says why on stderr"
 timeout 30 "$BIN" --quit > /dev/null 2>&1
 wait "$A" 2>/dev/null
+
+# ---------------------------------------------------------------- 6. signals
+# SIGTERM (systemd ending the session, kill), SIGINT (Ctrl+C) and
+# SIGHUP (its terminal closed) quit the way the tray's Quit does: exit
+# 0, settings and Copilot baseline written, firewall left alone.  They
+# used to end the process where it stood (SIGINT was even ignored, as
+# for any background job of a script).
+CONF="$XDG_CONFIG_HOME/stockfw/stockfw.conf"
+for sig in TERM INT HUP; do
+	rm -f "$STOCKFW_BEHAVIOR_FILE"
+	before="$(stat -c %i "$CONF")"
+	"$BIN" > "$SCRATCH/sig-$sig.log" 2>&1 &
+	A=$!
+	# The window is up once activate is done, long after the
+	# handlers were installed.
+	check "SIG$sig: the copy starts" wait_for 30 is_visible
+	kill -s "$sig" "$A"
+	check "SIG$sig: the copy goes" wait_for 10 dead "$A"
+	if dead "$A"; then
+		wait "$A"
+		rc=$?
+	else
+		kill -9 "$A" 2>/dev/null
+		wait "$A" 2>/dev/null
+		rc=137
+	fi
+	check "SIG$sig: it quit cleanly, not killed (exit $rc)" [ "$rc" -eq 0 ]
+	check "SIG$sig: it wrote its settings on the way out" \
+		[ "$(stat -c %i "$CONF")" != "$before" ]
+	check "SIG$sig: ...and what the Copilot learned" [ -s "$STOCKFW_BEHAVIOR_FILE" ]
+	check "SIG$sig: the name is free again" \
+		wait_for 5 bash -c "! grep -q '@$STOCKFW_INSTANCE_NAME\$' /proc/net/unix"
+done
 
 echo
 if [ "$failures" -eq 0 ]; then

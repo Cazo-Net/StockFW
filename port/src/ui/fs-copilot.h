@@ -52,6 +52,12 @@ gboolean fs_copilot_autoblocks_restore (FsPolicy *policy);
  * policy or calls this to push it through the apply gate. */
 void fs_copilot_autoblocks_push (void);
 
+/* The staged list is written on every stage and every retire; this
+ * retries the write when the last one failed, and does nothing
+ * otherwise (it never writes an empty list over the file before the
+ * restore has read it).  TRUE when the file matches what is staged. */
+gboolean fs_copilot_autoblocks_flush (void);
+
 /* Lift every staged auto-block in one go (leaving auto mode does
  * this).  Each retirement enters the session cooldown, so the next
  * auto pass does not stage them straight back.  Returns TRUE when
