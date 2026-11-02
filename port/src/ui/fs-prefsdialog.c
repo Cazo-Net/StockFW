@@ -15,7 +15,10 @@
  * disabled, with the reason under it.
  *
  *   General     tray icon, close/minimize to tray, start on open
- *   Events      hide repeats, skip events for other machines
+ *   Events      hide repeats, skip events for other machines; how many
+ *               events the list keeps, and the history on disk (on or
+ *               off, days, size), with what it holds and a way to
+ *               delete it
  *   Policy      apply immediately; audit-only shown, set on Policy
  *   Firewall    reject or drop, outbound mode, log allowed
  *               (rows only where the backend sets FS_FWHON_*:
@@ -37,10 +40,13 @@
 #include "ui/fs-dialogs.h"
 #include "ui/fs-app.h"
 #include "ui/fs-icons.h"
+#include "ui/fs-hitview.h"
 #include "ui/fs-policyview.h"
 #include "ui/fs-statusview.h"
 #include "core/fs-backend.h"
 #include "core/fs-apply.h"
+#include "core/fs-eventlog.h"
+#include "core/fs-eventstore.h"
 #include "core/fs-i18n.h"
 #include "core/fs-prefs.h"
 #include "core/fs-script.h"
@@ -63,7 +69,8 @@ typedef enum
 {
 	ROW_SWITCH,
 	ROW_CHOICE,           /* two-way combo over a boolean        */
-	ROW_DEVICE            /* network device combo over a string  */
+	ROW_DEVICE,           /* network device combo over a string  */
+	ROW_NUMBER            /* spin button over a number string    */
 } RowKind;
 
 typedef struct _PrefsWin PrefsWin;
@@ -97,6 +104,7 @@ struct _PrefsWin
 	GtkWidget   *policy_link;
 	GtkWidget   *outbound_warning;
 	GtkWidget   *absent_note;   /* a stored device is not present   */
+	GtkWidget   *history_usage; /* what the history folder holds    */
 	GMainLoop   *loop;
 	PrefsResponse response;
 	gboolean     syncing;
@@ -308,6 +316,22 @@ on_combo_changed (GtkComboBox *combo, gpointer data)
 	refresh (row->win);
 }
 
+static void
+on_spin_changed (GtkSpinButton *spin, gpointer data)
+{
+	Row *row = data;
+	gchar *text;
+
+	if (row->win->syncing)
+		return;
+
+	text = g_strdup_printf ("%u",
+	                        (guint) gtk_spin_button_get_value_as_int (spin));
+	fs_prefs_edit_set_string (row->win->edit, row->key, text);
+	g_free (text);
+	refresh (row->win);
+}
+
 /* --------------------------------------------------------------- rows */
 
 /* [ row_new ]
@@ -461,6 +485,43 @@ add_device (PrefsWin *win, GtkWidget *card, const gchar *key,
 
 	row = row_new (win, card, key, ROW_DEVICE, title, about, NULL, combo);
 	g_signal_connect (combo, "changed", G_CALLBACK (on_combo_changed), row);
+	return row;
+}
+
+/* [ add_number ]
+ * A number kept as text (FS_PREF_STRING), shown as a spin button.  A
+ * stored value outside min..max shows clamped; it is written back only
+ * when the user changes it. */
+static Row *
+add_number (PrefsWin *win, GtkWidget *card, const gchar *key,
+            const gchar *title, const gchar *about, guint min, guint max,
+            guint step)
+{
+	GtkWidget *spin = gtk_spin_button_new_with_range (min, max, step);
+	const gchar *text = fs_prefs_edit_get_string (win->edit, key);
+	const FsPrefSpec *spec = fs_prefs_spec (key);
+	guint64 value = 0;
+	gchar *end = NULL;
+	Row *row;
+
+	if (text != NULL && g_ascii_isdigit (*text))
+		value = g_ascii_strtoull (text, &end, 10);
+	if (end == NULL || *end != '\0')
+		value = g_ascii_strtoull (spec->string_default, NULL, 10);
+
+	gtk_spin_button_set_numeric (GTK_SPIN_BUTTON (spin), TRUE);
+	gtk_spin_button_set_update_policy (GTK_SPIN_BUTTON (spin),
+	                                   GTK_UPDATE_IF_VALID);
+	gtk_entry_set_width_chars (GTK_ENTRY (spin), 9);
+	win->syncing = TRUE;
+	gtk_spin_button_set_value (GTK_SPIN_BUTTON (spin),
+	                           (gdouble) CLAMP (value, (guint64) min,
+	                                            (guint64) max));
+	win->syncing = FALSE;
+
+	row = row_new (win, card, key, ROW_NUMBER, title, about, NULL, spin);
+	g_signal_connect (spin, "value-changed", G_CALLBACK (on_spin_changed),
+	                  row);
 	return row;
 }
 
@@ -631,12 +692,82 @@ build_general (PrefsWin *win, GtkWidget *nav)
 		gtk_widget_set_no_show_all (card, TRUE);
 }
 
+/* [ history_usage_text ]
+ * What the history folder holds now, and where it is. */
+static gchar *
+history_usage_text (void)
+{
+	gchar *dir = fs_hitview_history_dir ();
+	const gchar *problem = fs_hitview_history_problem ();
+	guint64 bytes = 0;
+	guint files = 0;
+	gchar *size, *text;
+
+	fs_eventlog_usage (dir, &bytes, &files);
+	size = g_format_size (bytes);
+	if (files == 0)
+		text = g_strdup_printf (_("No saved history in %s."), dir);
+	else
+		text = g_strdup_printf (files == 1
+		                        ? _("%s in %u file, in %s.")
+		                        : _("%s in %u files, in %s."),
+		                        size, files, dir);
+	if (problem != NULL) {
+		gchar *more = g_strdup_printf (_("%s\nNot being written: %s"),
+		                               text, problem);
+
+		g_free (text);
+		text = more;
+	}
+
+	g_free (size);
+	g_free (dir);
+	return text;
+}
+
+/* [ on_clear_history ]
+ * Acts at once, after asking: deleting files is not a setting that
+ * waits for Save. */
+static void
+on_clear_history (GtkButton *button, gpointer data)
+{
+	PrefsWin *win = data;
+	gboolean confirmed = FALSE;
+	GError *error = NULL;
+	gchar *text;
+
+	(void) button;
+
+	fs_dialogs_confirm (win->window,
+		_("Delete the saved event history?\n\nEvery history file is "
+		  "deleted now, whatever you choose in this window.  The Events "
+		  "list keeps what it shows until you clear it or quit."),
+		&confirmed);
+	if (!confirmed)
+		return;
+
+	fs_hitview_clear_history (&error);
+	if (error != NULL) {
+		fs_dialogs_error (win->window, _("Some history was not deleted"),
+		                  error->message);
+		g_error_free (error);
+	}
+
+	text = history_usage_text ();
+	gtk_label_set_text (GTK_LABEL (win->history_usage), text);
+	g_free (text);
+}
+
 static void
 build_events (PrefsWin *win, GtkWidget *nav)
 {
 	GtkWidget *cards = page_new (win, nav, "events", FS_ICON_LIST,
-		_("Events"), _("What the Events list shows."));
+		_("Events"), _("What the Events list shows, how much it keeps, "
+		               "and the history saved on disk."));
 	GtkWidget *card = card_new (cards, _("Event list"));
+	GtkWidget *row, *text, *button;
+	Row *history;
+	gchar *usage;
 
 	/* fs-hitview.c hit_is_redundant: the hit just before, nothing
 	 * older, and the action is not compared. */
@@ -651,6 +782,64 @@ build_events (PrefsWin *win, GtkWidget *nav)
 		_("Leaves out broadcasts and traffic meant for other machines. "
 		  "Connections this computer starts are always listed."),
 		NULL);
+	/* The figures are tests/test-eventstore.sh bench: about 75 bytes
+	 * an event in memory, strings included. */
+	add_number (win, card, FS_PREFS_EVENTS_MAX,
+		_("Events kept in the list"),
+		_("The newest events the list holds; past this the oldest go. "
+		  "Each takes about 75 bytes of memory: 100,000 is about 7 MB, "
+		  "1,000,000 about 70 MB. Filtering and scrolling stay quick at "
+		  "either size."),
+		FS_EVENTSTORE_MIN_CAPACITY, FS_EVENTSTORE_MAX_CAPACITY, 10000);
+
+	card = card_new (cards, _("History on disk"));
+	history = add_switch (win, card, FS_PREFS_EVENTS_HISTORY,
+		_("Keep event history"),
+		_("Saves every listed event to files only your account can "
+		  "read, so the list is filled again when StockFW starts and "
+		  "the command line (stockfw events --history) can search "
+		  "further back. At "
+		  "start the newest events, up to the list size, are read "
+		  "back: about a tenth of a second per 100,000. Off: nothing is "
+		  "written or read back; files already saved stay until you "
+		  "delete them."),
+		NULL);
+	add_number (win, card, FS_PREFS_EVENTS_HISTORY_DAYS,
+		_("Keep history for (days)"),
+		_("Files from days longer ago than this are deleted."),
+		FS_EVENTLOG_MIN_DAYS, 365, 1)->master = history;
+	add_number (win, card, FS_PREFS_EVENTS_HISTORY_MB,
+		_("History size limit (MB)"),
+		_("Past this the oldest files are deleted, whatever their age. "
+		  "An event takes about 120 bytes on disk: 200 MB holds about "
+		  "1.7 million."),
+		FS_EVENTLOG_MIN_MB, 10000, 10)->master = history;
+
+	/* What is saved now, and the way to delete it. */
+	row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
+	add_class (row, "pref-row");
+	gtk_widget_set_name (row, "row:events-history-usage");
+	text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 3);
+	gtk_box_pack_start (GTK_BOX (text),
+	                    label_new (_("Saved history"), "pref-label", TRUE),
+	                    FALSE, FALSE, 0);
+	usage = history_usage_text ();
+	win->history_usage = label_new (usage, "muted", TRUE);
+	gtk_label_set_selectable (GTK_LABEL (win->history_usage), TRUE);
+	gtk_widget_set_name (win->history_usage, "events-history-usage");
+	g_free (usage);
+	gtk_box_pack_start (GTK_BOX (text), win->history_usage, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (row), text, TRUE, TRUE, 0);
+
+	button = gtk_button_new_with_mnemonic (_("_Delete history..."));
+	gtk_widget_set_name (button, "events-history-clear");
+	gtk_widget_set_valign (button, GTK_ALIGN_CENTER);
+	add_class (button, "btn-subtle");
+	gtk_widget_set_tooltip_text (button,
+		_("Deletes every saved history file now, after asking."));
+	g_signal_connect (button, "clicked", G_CALLBACK (on_clear_history), win);
+	gtk_box_pack_start (GTK_BOX (row), button, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (card), row, FALSE, FALSE, 0);
 }
 
 static void

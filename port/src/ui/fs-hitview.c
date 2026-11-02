@@ -5,9 +5,17 @@
  * original kept every hit in a GList and appended straight to the
  * model; on a busy machine that grows without limit, so rows are capped
  * and the oldest dropped.
+ *
+ * 1.0.7: the rows live in the core event store (100,000 by default,
+ * up to 1,000,000), the view reads them through a model that copies
+ * nothing (fs-eventmodel.c), the filter bar narrows by text, direction,
+ * action, protocol, port, address block and time, and every accepted
+ * event is also kept in the history files (fs-eventlog.c), so the list
+ * survives a restart.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-hitview.h"
+#include "ui/fs-eventmodel.h"
 #include "ui/fs-activityview.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-copilot.h"
@@ -22,12 +30,12 @@
 #include "core/fs-audit.h"
 #include "core/fs-util.h"
 #include "core/fs-apply.h"
+#include "core/fs-eventlog.h"
 #include "core/fs-i18n.h"
 
 #include <string.h>
 
 static GtkWidget    *view;
-static GtkListStore *store;
 static GtkWidget    *count_label;
 
 /* Shown over the empty list, so an empty list says what it is waiting
@@ -39,23 +47,37 @@ static GtkWidget    *monitor_warning_label;
 static GtkWidget    *monitor_toggle = NULL;   /* the Monitor switch     */
 static guint         monitor_watchdog = 0;
 
-/* Filter bar state.  The matcher lives in core (fs_util_filter_match)
- * so the test suite can cover it without GTK. */
-static gchar        *filter_text  = NULL;
-static GtkTreeModel *filter_model = NULL;    /* GtkTreeModelFilter over store */
-static GtkWidget    *filter_entry = NULL;
+/* [ the store ]
+ * The events live in core (fs-eventstore.c): a ring of compact records
+ * with interned strings, deduplicated against the last 64 accepted.
+ * The view reads them through FsEventModel, which holds only the seqs
+ * the filter lets through, so nothing is copied per row. */
+static FsEventStore *estore = NULL;
+static FsEventModel *emodel = NULL;
 
-/* [ shown_rows ] -- the de-duplication append runs against, keyed on
- * the row itself.  The backend keeps its own seen-set while its
- * source runs, but a Monitor restart (stop -> start) forgets it and
- * re-delivers the trailing window -- into a list that still holds
- * those rows, which is how one event could appear twice.  These keys
- * live exactly as long as the rows: fs_hitview_clear drops both, so
- * Clear and Reload keep their meaning (cleared stays cleared, a
- * reload re-reads the tail). */
-#define SHOWN_ROWS_MAX 64
-static GHashTable *shown_rows  = NULL;          /* key -> TRUE      */
-static GQueue      shown_order = G_QUEUE_INIT;  /* newest at the head */
+/* [ history ]
+ * Accepted events are also appended to the history files
+ * (fs-eventlog.c) and the newest are read back when the page is built,
+ * so the list survives a restart.  Flushed every second. */
+static FsEventLog   *elog = NULL;
+static guint         elog_flush_id = 0;
+static guint         history_loaded = 0;
+static gchar        *history_problem = NULL;
+
+/* The filter bar: the search entry plus the row of boxes under it.
+ * The matching lives in core (FsEventQuery), decided once per distinct
+ * string, so filtering 100,000 events takes milliseconds. */
+static GtkWidget    *filter_entry = NULL;
+static GtkWidget    *filter_direction = NULL;
+static GtkWidget    *filter_action = NULL;
+static GtkWidget    *filter_protocol = NULL;
+static GtkWidget    *filter_port = NULL;
+static GtkWidget    *filter_address = NULL;
+static GtkWidget    *filter_since = NULL;
+static GtkWidget    *filter_until = NULL;
+static GtkWidget    *filter_error = NULL;     /* why a box is refused */
+static guint         filter_timeout = 0;
+static gboolean      filter_active = FALSE;   /* any part set         */
 
 /* The policy the Event -> Rule actions stage into; NULL until
  * fs-app.c hands it over (the page is built before the policy). */
@@ -98,8 +120,6 @@ static const struct
 	{ N_("Service"),     TRUE,  "/apps/stockfw/client/ui/hitview_service_col" },
 	{ N_(""),            FALSE, NULL },   /* colour, never shown */
 };
-
-static guint row_count = 0;
 
 /* [ color_cell_data ]
  * Paints each row:
@@ -232,40 +252,45 @@ time_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
 }
 
 /* [ update_count_label ]
- * With a filter typed in the label reports both numbers, so an empty
- * list under a filter cannot be mistaken for an idle firewall. */
+ * With a filter set the label reports both numbers, so an empty list
+ * under a filter cannot be mistaken for an idle firewall.  Numbers
+ * are grouped ("100,000"), since they now run to six digits. */
 static const gchar *empty_text (void);
+
+static gchar *
+grouped (guint n)
+{
+	if (n < 1000)
+		return g_strdup_printf ("%u", n);
+	if (n < 1000000)
+		return g_strdup_printf ("%u,%03u", n / 1000, n % 1000);
+	return g_strdup_printf ("%u,%03u,%03u", n / 1000000, (n / 1000) % 1000,
+	                        n % 1000);
+}
 
 static void
 update_count_label (void)
 {
-	gchar *text;
+	guint total = fs_hitview_count ();
+	guint shown = fs_hitview_visible_count ();
+	gchar *text, *a, *b;
 
 	if (count_label == NULL)
 		return;
 
-	if (filter_text != NULL && *filter_text != '\0' &&
-	    filter_model != NULL) {
-		guint shown = (guint) gtk_tree_model_iter_n_children (
-			filter_model, NULL);
-
-		text = g_strdup_printf ("%u of %u events", shown, row_count);
-	} else {
-		text = g_strdup_printf (row_count == 1 ? "%u event" : "%u events",
-		                        row_count);
-	}
-
+	a = grouped (shown);
+	b = grouped (total);
+	if (filter_active)
+		text = g_strdup_printf (_("%s of %s events"), a, b);
+	else
+		text = g_strdup_printf (total == 1 ? _("%s event") : _("%s events"),
+		                        b);
 	gtk_label_set_text (GTK_LABEL (count_label), text);
 	g_free (text);
+	g_free (a);
+	g_free (b);
 
 	if (empty_label != NULL) {
-		gboolean filtering = filter_text != NULL && *filter_text != '\0';
-		guint shown = row_count;
-
-		if (filtering && filter_model != NULL)
-			shown = (guint) gtk_tree_model_iter_n_children (filter_model,
-			                                                NULL);
-
 		gtk_label_set_text (GTK_LABEL (empty_label), empty_text ());
 		gtk_widget_set_visible (empty_label, shown == 0);
 	}
@@ -280,7 +305,7 @@ empty_text (void)
 {
 	const FsBackend *backend = fs_backend ();
 
-	if (row_count > 0)
+	if (fs_hitview_count () > 0)
 		return _("No event matches the filter.");
 
 	if (!fs_hitview_active ())
@@ -303,54 +328,283 @@ empty_text (void)
 	         "rules allow or block them.");
 }
 
-/* [ filter_visible ]
- * The filter bar's visible-function: show the row when the needle
- * appears in any of its fields. */
-static gboolean
-filter_visible (GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+/* ---- the filter bar ----------------------------------------------- */
+
+static const gchar *
+entry_text (GtkWidget *entry)
 {
-	gchar *fields[FS_NUM_HITCOLUMNS - 1];         /* everything but colour */
-	gboolean visible;
-	gint i;
-
-	(void) data;
-
-	for (i = 0; i < FS_NUM_HITCOLUMNS - 1; i++)
-		gtk_tree_model_get (model, iter, i, &fields[i], -1);
-
-	visible = fs_util_filter_match (filter_text,
-	                                (const gchar *const *) fields,
-	                                FS_NUM_HITCOLUMNS - 1);
-
-	for (i = 0; i < FS_NUM_HITCOLUMNS - 1; i++)
-		g_free (fields[i]);
-
-	return visible;
+	return entry != NULL ? gtk_entry_get_text (GTK_ENTRY (entry)) : NULL;
 }
 
-/* [ on_filter_changed ] */
+/* [ mark_entry ]
+ * A box whose text is refused turns red and says why in its tooltip;
+ * the reason is also shown beside the boxes. */
 static void
-on_filter_changed (GtkSearchEntry *entry, gpointer data)
+mark_entry (GtkWidget *entry, const gchar *why)
+{
+	GtkStyleContext *ctx;
+
+	if (entry == NULL)
+		return;
+
+	ctx = gtk_widget_get_style_context (entry);
+	if (why != NULL)
+		gtk_style_context_add_class (ctx, "error");
+	else
+		gtk_style_context_remove_class (ctx, "error");
+	gtk_widget_set_tooltip_text (entry, why != NULL
+	                             ? why
+	                             : g_object_get_data (G_OBJECT (entry),
+	                                                  "fs-tip"));
+}
+
+static void
+show_filter_error (const gchar *text)
+{
+	if (filter_error == NULL)
+		return;
+
+	gtk_label_set_text (GTK_LABEL (filter_error), text != NULL ? text : "");
+	gtk_widget_set_visible (filter_error, text != NULL);
+}
+
+/* [ swap_model ]
+ * Rebuilding the rows under a new filter or after a reload is done
+ * with the model detached: one rebuild instead of a row-deleted and a
+ * row-inserted per event. */
+static void
+model_detach (void)
+{
+	if (view != NULL)
+		gtk_tree_view_set_model (GTK_TREE_VIEW (view), NULL);
+}
+
+static void
+model_attach (void)
+{
+	if (view != NULL && emodel != NULL)
+		gtk_tree_view_set_model (GTK_TREE_VIEW (view),
+		                         GTK_TREE_MODEL (emodel));
+}
+
+gboolean
+fs_hitview_refilter_now (void)
+{
+	FsEventFilter f;
+	FsEventQuery *query;
+	GError *error = NULL;
+	const gint64 now = g_get_real_time ();
+	gint64 since = 0, until = 0;
+	gboolean ok = TRUE;
+
+	if (filter_timeout != 0) {
+		g_source_remove (filter_timeout);
+		filter_timeout = 0;
+	}
+
+	if (emodel == NULL)
+		return FALSE;
+
+	memset (&f, 0, sizeof f);
+	f.text     = entry_text (filter_entry);
+	f.protocol = entry_text (filter_protocol);
+	f.port     = entry_text (filter_port);
+	f.address  = entry_text (filter_address);
+	if (filter_direction != NULL)
+		f.direction = (FsEventDirFilter) gtk_combo_box_get_active (
+			GTK_COMBO_BOX (filter_direction));
+	if (filter_action != NULL)
+		f.action = (FsEventActionFilter) gtk_combo_box_get_active (
+			GTK_COMBO_BOX (filter_action));
+
+	mark_entry (filter_since, NULL);
+	mark_entry (filter_until, NULL);
+	mark_entry (filter_port, NULL);
+	mark_entry (filter_address, NULL);
+
+	if (!fs_event_parse_time_spec (entry_text (filter_since), now, FALSE,
+	                               &since, &error)) {
+		mark_entry (filter_since, error->message);
+		ok = FALSE;
+	} else if (!fs_event_parse_time_spec (entry_text (filter_until), now,
+	                                      TRUE, &until, &error)) {
+		mark_entry (filter_until, error->message);
+		ok = FALSE;
+	}
+	f.since_us = since;
+	f.until_us = until;
+
+	query = ok ? fs_eventquery_new (&f, &error) : NULL;
+	if (query == NULL) {
+		gchar *msg;
+
+		if (ok && error != NULL) {
+			if (error->code == FS_EVENTQUERY_ERROR_PORT)
+				mark_entry (filter_port, error->message);
+			else if (error->code == FS_EVENTQUERY_ERROR_ADDRESS)
+				mark_entry (filter_address, error->message);
+			else {
+				mark_entry (filter_since, error->message);
+				mark_entry (filter_until, error->message);
+			}
+		}
+		msg = g_strdup_printf (_("Filter not changed: %s."),
+		                       error != NULL ? error->message : "?");
+		show_filter_error (msg);
+		g_free (msg);
+		g_clear_error (&error);
+		return FALSE;
+	}
+
+	show_filter_error (NULL);
+	filter_active = !fs_eventquery_is_empty (query);
+
+	model_detach ();
+	fs_event_model_set_query (emodel, filter_active ? query : NULL);
+	if (!filter_active)
+		fs_eventquery_free (query);
+	model_attach ();
+
+	update_count_label ();
+	return TRUE;
+}
+
+static gboolean
+on_filter_timeout (gpointer data)
 {
 	(void) data;
 
-	g_clear_pointer (&filter_text, g_free);
-	filter_text = g_strdup (gtk_entry_get_text (GTK_ENTRY (entry)));
+	filter_timeout = 0;
+	fs_hitview_refilter_now ();
+	return G_SOURCE_REMOVE;
+}
 
-	if (filter_model != NULL)
-		gtk_tree_model_filter_refilter (
-			GTK_TREE_MODEL_FILTER (filter_model));
+/* [ on_filter_changed ]
+ * Any box: wait for a short pause in the typing, then filter once. */
+static void
+on_filter_changed (GtkWidget *widget, gpointer data)
+{
+	(void) widget;
+	(void) data;
 
-	update_count_label ();
+	if (filter_timeout != 0)
+		g_source_remove (filter_timeout);
+	filter_timeout = g_timeout_add (250, on_filter_timeout, NULL);
+}
+
+/* The search entry already waits for a pause (search-changed). */
+static void
+on_search_changed (GtkSearchEntry *entry, gpointer data)
+{
+	(void) entry;
+	(void) data;
+
+	fs_hitview_refilter_now ();
+}
+
+static void
+on_filter_reset (GtkButton *button, gpointer data)
+{
+	GtkWidget *entries[] = { filter_entry, filter_protocol, filter_port,
+	                         filter_address, filter_since, filter_until };
+
+	(void) button;
+	(void) data;
+
+	for (guint i = 0; i < G_N_ELEMENTS (entries); i++)
+		if (entries[i] != NULL)
+			gtk_entry_set_text (GTK_ENTRY (entries[i]), "");
+	if (filter_direction != NULL)
+		gtk_combo_box_set_active (GTK_COMBO_BOX (filter_direction), 0);
+	if (filter_action != NULL)
+		gtk_combo_box_set_active (GTK_COMBO_BOX (filter_action), 0);
+
+	fs_hitview_refilter_now ();
 }
 
 guint
 fs_hitview_visible_count (void)
 {
-	if (filter_model == NULL)
-		return row_count;
+	return emodel != NULL ? fs_event_model_n_rows (emodel) : 0;
+}
 
-	return (guint) gtk_tree_model_iter_n_children (filter_model, NULL);
+FsEventStore *
+fs_hitview_store (void)
+{
+	return estore;
+}
+
+gboolean
+fs_hitview_export_csv (const gchar *path, guint *written, GError **error)
+{
+	GArray *rows;
+	gboolean ok;
+
+	if (written != NULL)
+		*written = 0;
+	if (emodel == NULL) {
+		g_set_error_literal (error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
+		                     _("The Events page is not built."));
+		return FALSE;
+	}
+
+	rows = fs_event_model_rows (emodel);
+	ok = fs_eventstore_write_csv (estore, (const guint64 *) rows->data,
+	                              rows->len, path, written, error);
+	g_array_unref (rows);
+	return ok;
+}
+
+/* [ on_export_clicked ]
+ * The rows as shown -- filtered and in the shown order -- to a CSV file
+ * the user picks. */
+static void
+on_export_clicked (GtkButton *button, gpointer data)
+{
+	GtkFileChooserNative *chooser;
+	GtkWidget *top = gtk_widget_get_toplevel (GTK_WIDGET (button));
+	GDateTime *now = g_date_time_new_now_local ();
+	gchar *name = g_date_time_format (now, "stockfw-events-%Y%m%d-%H%M%S.csv");
+
+	(void) data;
+
+	chooser = gtk_file_chooser_native_new (
+		_("Export events"),
+		GTK_IS_WINDOW (top) ? GTK_WINDOW (top) : NULL,
+		GTK_FILE_CHOOSER_ACTION_SAVE, _("_Export"), _("_Cancel"));
+	gtk_file_chooser_set_do_overwrite_confirmation (
+		GTK_FILE_CHOOSER (chooser), TRUE);
+	gtk_file_chooser_set_current_name (GTK_FILE_CHOOSER (chooser), name);
+
+	if (gtk_native_dialog_run (GTK_NATIVE_DIALOG (chooser)) ==
+	    GTK_RESPONSE_ACCEPT) {
+		gchar *path = gtk_file_chooser_get_filename (
+			GTK_FILE_CHOOSER (chooser));
+		GError *error = NULL;
+		guint written = 0;
+
+		if (path != NULL &&
+		    fs_hitview_export_csv (path, &written, &error)) {
+			gchar *msg = g_strdup_printf (
+				filter_active
+				? _("%u events, the ones the filter shows, were "
+				    "written to\n%s")
+				: _("%u events were written to\n%s"),
+				written, path);
+
+			fs_dialogs_info (NULL, _("Events exported"), msg);
+			g_free (msg);
+		} else {
+			fs_dialogs_error (NULL, _("Could not export the events"),
+			                  error != NULL ? error->message : NULL);
+		}
+		g_clear_error (&error);
+		g_free (path);
+	}
+
+	g_object_unref (chooser);
+	g_free (name);
+	g_date_time_unref (now);
 }
 
 /* [ hit_is_blocked ]
@@ -551,173 +805,168 @@ on_hit (const FsHit *hit, gpointer user_data)
 		fs_statusview_note_block (hit);
 }
 
-/* [ row_key_new ] / [ row_shown ] / [ remember_row ] /
- * [ forget_shown_rows ]
- * Append-level de-duplication: a row identical to one already listed
- * is one event, not two.  The key is every field the row stores
- * (the colour flag included, though it only restates the service),
- * joined with a separator that cannot appear in a field.  Bounded
- * like the backend's seen-set: a batch or two of the most recently
- * listed rows, never history. */
-static gchar *
-row_key_new (const gchar **fields)
+/* ---- history ------------------------------------------------------- */
+
+gchar *
+fs_hitview_history_dir (void)
 {
-	GString *key = g_string_sized_new (96);
-	gint i;
+	return fs_eventlog_default_dir ();
+}
 
-	for (i = 0; i < COL_COUNT; i++) {
-		if (i > 0)
-			g_string_append_c (key, '\x1f');
-		g_string_append (key, fields[i] != NULL ? fields[i] : "");
-	}
+const gchar *
+fs_hitview_history_problem (void)
+{
+	if (elog != NULL && fs_eventlog_problem (elog) != NULL)
+		return fs_eventlog_problem (elog);
+	return history_problem;
+}
 
-	return g_string_free (key, FALSE);
+guint
+fs_hitview_history_loaded (void)
+{
+	return history_loaded;
 }
 
 static gboolean
-row_shown (const gchar *key)
+on_history_flush (gpointer data)
 {
-	return shown_rows != NULL && g_hash_table_contains (shown_rows, key);
+	(void) data;
+
+	if (elog != NULL)
+		fs_eventlog_flush (elog, NULL);
+	return G_SOURCE_CONTINUE;
 }
 
 static void
-remember_row (gchar *key)             /* takes ownership of key */
+history_close (void)
 {
-	if (shown_rows == NULL)
-		shown_rows = g_hash_table_new_full (g_str_hash, g_str_equal,
-		                                    g_free, NULL);
+	if (elog_flush_id != 0) {
+		g_source_remove (elog_flush_id);
+		elog_flush_id = 0;
+	}
+	if (elog != NULL) {
+		fs_eventlog_close (elog);
+		elog = NULL;
+	}
+}
 
-	while (g_queue_get_length (&shown_order) >= SHOWN_ROWS_MAX) {
-		gchar *oldest = g_queue_pop_tail (&shown_order);
+/* [ history_open ]
+ * Opens the history folder under the saved limits, or closes it when
+ * history is switched off.  Opening prunes it to the limits. */
+static void
+history_open (void)
+{
+	guint days = fs_prefs_uint (FS_PREFS_EVENTS_HISTORY_DAYS,
+	                            FS_EVENTLOG_MIN_DAYS, FS_EVENTLOG_MAX_DAYS);
+	guint mb = fs_prefs_uint (FS_PREFS_EVENTS_HISTORY_MB,
+	                          FS_EVENTLOG_MIN_MB, FS_EVENTLOG_MAX_MB);
 
-		g_hash_table_remove (shown_rows, oldest);
+	if (!fs_prefs_bool (FS_PREFS_EVENTS_HISTORY)) {
+		history_close ();
+		g_clear_pointer (&history_problem, g_free);
+		return;
 	}
 
-	g_queue_push_head (&shown_order, key);
-	g_hash_table_insert (shown_rows, key, GINT_TO_POINTER (1));
+	if (elog != NULL) {
+		fs_eventlog_set_limits (elog, days, (guint64) mb * 1024 * 1024);
+		return;
+	}
+
+	{
+		gchar *dir = fs_eventlog_default_dir ();
+		GError *error = NULL;
+
+		elog = fs_eventlog_open (dir, days, (guint64) mb * 1024 * 1024,
+		                         &error);
+		g_clear_pointer (&history_problem, g_free);
+		if (elog == NULL)
+			history_problem = g_strdup (error != NULL ? error->message
+			                                          : dir);
+		g_clear_error (&error);
+		g_free (dir);
+	}
+
+	if (elog != NULL && elog_flush_id == 0)
+		elog_flush_id = g_timeout_add_seconds (1, on_history_flush, NULL);
 }
 
-static void
-forget_shown_rows (void)
+void
+fs_hitview_shutdown (void)
 {
-	g_queue_clear (&shown_order);
-	g_clear_pointer (&shown_rows, g_hash_table_destroy);
+	history_close ();
+}
+
+guint
+fs_hitview_clear_history (GError **error)
+{
+	gchar *dir;
+	guint removed;
+
+	if (elog != NULL)
+		return fs_eventlog_clear (elog, error);
+
+	dir = fs_eventlog_default_dir ();
+	removed = fs_eventlog_clear_dir (dir, error);
+	g_free (dir);
+	return removed;
+}
+
+/* [ fs_hitview_apply_settings ]
+ * After Preferences > Events was saved.  A smaller list drops its
+ * oldest events at once; that is done with the model detached, so
+ * 100,000 drops are one rebuild and not 100,000 row-deleted signals. */
+void
+fs_hitview_apply_settings (void)
+{
+	guint cap = fs_prefs_uint (FS_PREFS_EVENTS_MAX,
+	                           FS_EVENTSTORE_MIN_CAPACITY,
+	                           FS_EVENTSTORE_MAX_CAPACITY);
+
+	/* No Events page (a test, or the page not built yet): nothing to
+	 * resize, and the history is opened when the page is built. */
+	if (estore == NULL)
+		return;
+
+	history_open ();
+
+	if (cap == fs_eventstore_capacity (estore))
+		return;
+
+	model_detach ();
+	fs_eventstore_set_evict_func (estore, NULL, NULL);
+	fs_eventstore_set_capacity (estore, cap);
+	g_object_unref (emodel);
+	emodel = fs_event_model_new (estore);
+	fs_hitview_refilter_now ();       /* the filter, and attach */
+	model_attach ();
+	update_count_label ();
 }
 
 gboolean
 fs_hitview_append (const FsHit *hit)
 {
-	GtkTreeIter iter;
-	const gchar *fields[FS_NUM_HITCOLUMNS];
-	gchar *key;
+	guint64 seq;
 
-	if (store == NULL || hit == NULL)
+	if (estore == NULL || hit == NULL)
 		return FALSE;
-
-	fields[COL_TIME]        = hit->time;
-	fields[COL_DIRECTION]   = hit->direction;
-	fields[COL_IN]          = hit->in;
-	fields[COL_OUT]         = hit->out;
-	fields[COL_PORT]        = hit->port;
-	fields[COL_SOURCE]      = hit->source;
-	fields[COL_DESTINATION] = hit->destination;
-	fields[COL_LENGTH]      = hit->length;
-	fields[COL_TOS]         = hit->tos;
-	fields[COL_PROTOCOL]    = hit->protocol;
-	fields[COL_SERVICE]     = hit->service;
-	/* Blocked flag for the row painter below: a separate column
-	 * because GtkCellRendererText has no per-row colour, and the
-	 * cell-data-func turns a non-empty value into the whole-row
-	 * alert tint. */
-	fields[COL_COLOR]       = hit_is_blocked (hit) ? "#cc0000" : "";
-
-	key = row_key_new (fields);
 
 	/* The same row twice is one event, not two: the backend forgets
 	 * its seen-set when monitoring restarts, and the trailing window
-	 * comes back to a list that still holds those rows. */
-	if (row_shown (key)) {
-		g_free (key);
+	 * comes back to a list that still holds those rows (and, since
+	 * 1.0.7, to history read back at start).  The store refuses it. */
+	seq = fs_eventstore_append (estore, hit, g_get_real_time ());
+	if (seq == 0)
 		return FALSE;
-	}
 
-	remember_row (key);
+	if (elog != NULL)
+		fs_eventlog_append (elog, hit, fs_eventstore_ticks (estore, seq));
 
-	/* Newest first -- the documented order (prepend, then drop the
-	 * oldest).  wevtutil hands a batch newest-first, so a plain
-	 * append stacked each fresh batch UNDER older rows and the list
-	 * read as shuffled after every poll.  Walk until a row older
-	 * than the new one and insert above it; equal stamps keep
-	 * arrival order, and a row older than everything lands last,
-	 * where the oldest row is trimmed. */
-	{
-		GtkTreeIter pos;
-		gboolean placed = FALSE;
-
-		if (gtk_tree_model_get_iter_first (GTK_TREE_MODEL (store),
-		                                    &pos)) {
-			do {
-				gchar *row_time = NULL;
-
-				gtk_tree_model_get (GTK_TREE_MODEL (store), &pos,
-				                    COL_TIME, &row_time, -1);
-
-				if (row_time != NULL && *row_time != '\0' &&
-				    fields[COL_TIME] != NULL &&
-				    *fields[COL_TIME] != '\0' &&
-				    strcmp (row_time, fields[COL_TIME]) < 0)
-					placed = TRUE;
-
-				g_free (row_time);
-
-				if (placed)
-					break;
-			} while (gtk_tree_model_iter_next (
-				GTK_TREE_MODEL (store), &pos));
-		}
-
-		if (placed)
-			gtk_list_store_insert_before (store, &iter, &pos);
-		else
-			gtk_list_store_append (store, &iter);
-	}
-
-	for (gint i = 0; i < FS_NUM_HITCOLUMNS; i++)
-		gtk_list_store_set (store, &iter, i, fields[i] ? fields[i] : "", -1);
-
-	row_count++;
-
-	/* Drop the oldest row once the cap is passed.  The oldest is the
-	 * LAST row now (the list reads newest-first), and GtkListStore
-	 * has no "remove last" helper: locate it by index -- iter_n_children
-	 * is O(1) on GtkListStore -- and remove it. */
-	while (row_count > FS_HITVIEW_MAX_ROWS) {
-		GtkTreeIter last;
-		GtkTreePath *path;
-		gint n = gtk_tree_model_iter_n_children (GTK_TREE_MODEL (store),
-		                                         NULL);
-
-		if (n <= 0)
-			break;
-
-		path = gtk_tree_path_new_from_indices (n - 1, -1);
-
-		if (!gtk_tree_model_get_iter (GTK_TREE_MODEL (store), &last,
-		                              path)) {
-			gtk_tree_path_free (path);
-			break;
-		}
-
-		gtk_list_store_remove (store, &last);
-		gtk_tree_path_free (path);
-		row_count--;
-	}
-
-	/* No follow-scroll.  The newest row is inserted at the TOP,
-	 * where a list parked at the top already looks, and a reader
-	 * further down is reading history and must not be yanked
-	 * anywhere.  The old scroll-to-last-row chased the bottom,
-	 * which under newest-first is the oldest end of the list. */
+	/* Placed by time (or the chosen column), not by arrival: a batch
+	 * comes newest first.  No follow-scroll: the newest row goes to
+	 * the TOP, where a list parked at the top already looks, and a
+	 * reader further down is reading history and must not be yanked
+	 * anywhere. */
+	fs_event_model_note_append (emodel, seq);
 
 	update_count_label ();
 
@@ -727,7 +976,7 @@ fs_hitview_append (const FsHit *hit)
 guint
 fs_hitview_count (void)
 {
-	return row_count;
+	return estore != NULL ? fs_eventstore_length (estore) : 0;
 }
 
 void
@@ -739,14 +988,16 @@ fs_hitview_set_policy (FsPolicy *policy)
 void
 fs_hitview_clear (void)
 {
-	if (store != NULL)
-		gtk_list_store_clear (store);
+	if (estore != NULL) {
+		model_detach ();
+		/* The rows go, and so does what they stood for: a Reload
+		 * re-reads the tail instead of suppressing it as a
+		 * duplicate.  The history files are not touched. */
+		fs_eventstore_clear (estore);
+		fs_event_model_rebuild (emodel);
+		model_attach ();
+	}
 
-	/* The rows are gone, and so is what they stood for: a Reload
-	 * re-reads the tail instead of suppressing it as a duplicate. */
-	forget_shown_rows ();
-
-	row_count = 0;
 	update_count_label ();
 }
 
@@ -824,10 +1075,10 @@ fs_hitview_selected (void)
 	GtkTreeSelection *selection;
 	GtkTreeModel *model;
 	GtkTreeIter iter;
-	static gchar *fields[FS_NUM_HITCOLUMNS];
-	static FsHit hit;
+	static FsHit *hit = NULL;     /* valid until the next call */
+	guint64 seq;
 
-	if (view == NULL)
+	if (view == NULL || emodel == NULL)
 		return NULL;
 
 	selection = gtk_tree_view_get_selection (GTK_TREE_VIEW (view));
@@ -835,24 +1086,14 @@ fs_hitview_selected (void)
 	if (!gtk_tree_selection_get_selected (selection, &model, &iter))
 		return NULL;
 
-	for (gint i = 0; i < FS_NUM_HITCOLUMNS - 1; i++) {
-		g_clear_pointer (&fields[i], g_free);
-		gtk_tree_model_get (model, &iter, i, &fields[i], -1);
-	}
+	seq = fs_event_model_iter_seq (emodel, &iter);
+	if (seq == 0)
+		return NULL;
 
-	hit.time        = fields[COL_TIME];
-	hit.direction   = fields[COL_DIRECTION];
-	hit.in          = fields[COL_IN];
-	hit.out         = fields[COL_OUT];
-	hit.port        = fields[COL_PORT];
-	hit.source      = fields[COL_SOURCE];
-	hit.destination = fields[COL_DESTINATION];
-	hit.length      = fields[COL_LENGTH];
-	hit.tos         = fields[COL_TOS];
-	hit.protocol    = fields[COL_PROTOCOL];
-	hit.service     = fields[COL_SERVICE];
+	g_clear_pointer (&hit, fs_hit_free);
+	hit = fs_eventstore_get_hit (estore, seq);
 
-	return &hit;
+	return hit;
 }
 
 /* ---- right-click: Event -> Rule -----------------------------------
@@ -1366,7 +1607,7 @@ on_monitor_watchdog (gpointer data)
 		gtk_switch_set_active (GTK_SWITCH (monitor_toggle), FALSE);
 	}
 
-	if (row_count == 0 && gtk_widget_get_mapped (monitor_toggle))
+	if (fs_hitview_count () == 0 && gtk_widget_get_mapped (monitor_toggle))
 		update_count_label ();
 
 	return G_SOURCE_CONTINUE;
@@ -1407,11 +1648,81 @@ on_start_toggled (GtkSwitch *sw, GParamSpec *pspec, gpointer data)
 	}
 }
 
+/* [ filter_box ] -- a narrow entry in the filter row. */
+static GtkWidget *
+filter_box (GtkWidget *row, const gchar *name, const gchar *placeholder,
+            const gchar *tip, gint width_chars)
+{
+	GtkWidget *entry = gtk_entry_new ();
+
+	gtk_widget_set_name (entry, name);
+	gtk_entry_set_placeholder_text (GTK_ENTRY (entry), placeholder);
+	gtk_entry_set_width_chars (GTK_ENTRY (entry), width_chars);
+	g_object_set_data_full (G_OBJECT (entry), "fs-tip", g_strdup (tip),
+	                        g_free);
+	gtk_widget_set_tooltip_text (entry, tip);
+	atk_object_set_name (gtk_widget_get_accessible (entry), placeholder);
+	g_signal_connect (entry, "changed", G_CALLBACK (on_filter_changed), NULL);
+	gtk_box_pack_start (GTK_BOX (row), entry, FALSE, FALSE, 0);
+	return entry;
+}
+
+static GtkWidget *
+filter_combo (GtkWidget *row, const gchar *name, const gchar *const *items)
+{
+	GtkWidget *combo = gtk_combo_box_text_new ();
+
+	gtk_widget_set_name (combo, name);
+	for (guint i = 0; items[i] != NULL; i++)
+		gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (combo),
+		                                _(items[i]));
+	gtk_combo_box_set_active (GTK_COMBO_BOX (combo), 0);
+	gtk_widget_set_valign (combo, GTK_ALIGN_CENTER);
+	g_signal_connect (combo, "changed", G_CALLBACK (on_filter_changed), NULL);
+	gtk_box_pack_start (GTK_BOX (row), combo, FALSE, FALSE, 0);
+	return combo;
+}
+
+/* [ build_store ]
+ * The store at the size Preferences gives, filled from history when
+ * history is kept, then the model over it. */
+static void
+build_store (void)
+{
+	guint cap = fs_prefs_uint (FS_PREFS_EVENTS_MAX,
+	                           FS_EVENTSTORE_MIN_CAPACITY,
+	                           FS_EVENTSTORE_MAX_CAPACITY);
+
+	if (estore != NULL)
+		return;
+
+	estore = fs_eventstore_new (cap);
+	history_loaded = 0;
+
+	history_open ();
+	if (elog != NULL) {
+		FsEventLogStats stats;
+
+		history_loaded = fs_eventlog_load_recent (fs_eventlog_dir (elog),
+		                                          estore, cap, &stats);
+	}
+
+	emodel = fs_event_model_new (estore);
+}
+
+/* Fixed widths, so the view can run in fixed-height mode: it never
+ * measures rows it is not drawing.  Resizable all the same. */
+static const gint column_width[FS_NUM_HITCOLUMNS] = {
+	120, 80, 70, 70, 70, 190, 190, 70, 60, 80, 170, 0
+};
+
 GtkWidget *
 fs_hitview_page (void)
 {
-	GtkWidget *page, *box, *scroll, *button_box, *button, *toggle;
-	GtkWidget *header, *image;
+	GtkWidget *page, *scroll, *button_box, *button, *toggle;
+	GtkWidget *header, *image, *frow;
+
+	build_store ();
 
 	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 
@@ -1431,15 +1742,16 @@ fs_hitview_page (void)
 	 * centreing experiment moved it mid-bar. */
 	gtk_box_pack_start (GTK_BOX (header), count_label, TRUE, TRUE, 0);
 
-	/* Filter bar.  SearchEntry, so Escape clears and typing filters
-	 * the list live through the GtkTreeModelFilter below. */
+	/* Search.  SearchEntry, so Escape clears and the list filters
+	 * once typing pauses. */
 	filter_entry = gtk_search_entry_new ();
+	gtk_widget_set_name (filter_entry, "events-filter-text");
 	gtk_entry_set_placeholder_text (
 		GTK_ENTRY (filter_entry),
-		_("Filter events (host, port, protocol)"));
-	gtk_widget_set_size_request (filter_entry, 240, -1);
+		_("Search events (host, port, service, rule)"));
+	gtk_widget_set_size_request (filter_entry, 260, -1);
 	g_signal_connect (filter_entry, "search-changed",
-	                  G_CALLBACK (on_filter_changed), NULL);
+	                  G_CALLBACK (on_search_changed), NULL);
 	gtk_box_pack_start (GTK_BOX (header), filter_entry, FALSE, FALSE, 0);
 
 	button_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
@@ -1467,6 +1779,9 @@ fs_hitview_page (void)
 	button = gtk_button_new_with_mnemonic (_("_Clear"));
 	gtk_style_context_add_class (gtk_widget_get_style_context (button),
 	                             "btn-subtle");
+	gtk_widget_set_tooltip_text (button,
+		_("Empties the list.  Saved history is kept: delete it in "
+		  "Preferences > Events."));
 	g_signal_connect (button, "clicked", G_CALLBACK (on_clear_clicked),
 	                  NULL);
 	gtk_box_pack_start (GTK_BOX (button_box), button, FALSE, FALSE, 0);
@@ -1480,6 +1795,70 @@ fs_hitview_page (void)
 
 	gtk_box_pack_start (GTK_BOX (header), button_box, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (page), header, FALSE, FALSE, 0);
+
+	/* The filter row: the parts of an event that are worth narrowing
+	 * by, each optional, all applied together. */
+	frow = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	gtk_widget_set_name (frow, "events-filter-row");
+	gtk_style_context_add_class (gtk_widget_get_style_context (frow),
+	                             "events-toolbar");
+	{
+		static const gchar *const dirs[] = {
+			N_("Both directions"), N_("Inbound"), N_("Outbound"), NULL
+		};
+		static const gchar *const actions[] = {
+			N_("Blocked and allowed"), N_("Blocked"), N_("Allowed"), NULL
+		};
+
+		filter_direction = filter_combo (frow, "events-filter-direction",
+		                                 dirs);
+		filter_action = filter_combo (frow, "events-filter-action",
+		                              actions);
+	}
+	filter_protocol = filter_box (frow, "events-filter-protocol",
+		_("Protocol"), _("TCP, UDP, ICMP ... the whole name"), 7);
+	filter_port = filter_box (frow, "events-filter-port", _("Port"),
+		_("A port (443) or a range (1000-2000)"), 9);
+	filter_address = filter_box (frow, "events-filter-address",
+		_("Address or CIDR"),
+		_("Source or destination: an address, a block such as "
+		  "10.0.0.0/8 or 2001:db8::/32, or a range a-b"), 16);
+	filter_since = filter_box (frow, "events-filter-since", _("From"),
+		_("15m, 2h, 3d, 2026-11-01 or 2026-11-01 14:30 (local time)"),
+		10);
+	filter_until = filter_box (frow, "events-filter-until", _("To"),
+		_("Before this time: 1h, 2026-11-01 (the whole day) or "
+		  "2026-11-01 14:30"), 10);
+
+	button = gtk_button_new_with_mnemonic (_("Rese_t"));
+	gtk_widget_set_name (button, "events-filter-reset");
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
+	gtk_widget_set_tooltip_text (button, _("Clears every filter."));
+	g_signal_connect (button, "clicked", G_CALLBACK (on_filter_reset), NULL);
+	gtk_box_pack_start (GTK_BOX (frow), button, FALSE, FALSE, 0);
+
+	filter_error = gtk_label_new (NULL);
+	gtk_widget_set_name (filter_error, "events-filter-error");
+	gtk_label_set_xalign (GTK_LABEL (filter_error), 0.0);
+	gtk_label_set_ellipsize (GTK_LABEL (filter_error), PANGO_ELLIPSIZE_END);
+	gtk_style_context_add_class (gtk_widget_get_style_context (filter_error),
+	                             "pref-reason");
+	gtk_widget_set_no_show_all (filter_error, TRUE);
+	gtk_box_pack_start (GTK_BOX (frow), filter_error, TRUE, TRUE, 0);
+
+	button = gtk_button_new_with_mnemonic (_("_Export CSV..."));
+	gtk_widget_set_name (button, "events-export");
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
+	gtk_widget_set_tooltip_text (button,
+		_("Saves the events the list shows, filtered and in this "
+		  "order, as a CSV file."));
+	g_signal_connect (button, "clicked", G_CALLBACK (on_export_clicked),
+	                  NULL);
+	gtk_box_pack_end (GTK_BOX (frow), button, FALSE, FALSE, 0);
+
+	gtk_box_pack_start (GTK_BOX (page), frow, FALSE, FALSE, 0);
 
 	/* Strip that carries the reason monitoring is not running.  Hidden
 	 * by default, and marked no-show-all so gtk_widget_show_all() on
@@ -1511,26 +1890,17 @@ fs_hitview_page (void)
 	gtk_widget_set_no_show_all (monitor_warning, TRUE);
 	gtk_box_pack_start (GTK_BOX (page), monitor_warning, FALSE, FALSE, 0);
 
-	/* The list. */
-	store = gtk_list_store_newv (FS_NUM_HITCOLUMNS, (GType[FS_NUM_HITCOLUMNS])
-		{ G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
-		  G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
-		  G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING });
-
-	/* The view shows the filtered model; rows are still appended to
-	 * and trimmed from the store underneath. */
-	filter_model = gtk_tree_model_filter_new (GTK_TREE_MODEL (store),
-	                                          NULL);
-	gtk_tree_model_filter_set_visible_func (
-		GTK_TREE_MODEL_FILTER (filter_model), filter_visible,
-		NULL, NULL);
-
-	view = gtk_tree_view_new_with_model (filter_model);
+	/* The list: a view over FsEventModel, which answers each cell from
+	 * the store when it is drawn. */
+	view = gtk_tree_view_new_with_model (GTK_TREE_MODEL (emodel));
+	gtk_widget_set_name (view, "events-list");
 	gtk_style_context_add_class (gtk_widget_get_style_context (view),
 	                             "data-grid");
 	/* Hairlines between rows only, as on the Overview. */
 	gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (view),
 	                              GTK_TREE_VIEW_GRID_LINES_HORIZONTAL);
+	/* Type-ahead would walk every row looking for a match. */
+	gtk_tree_view_set_enable_search (GTK_TREE_VIEW (view), FALSE);
 
 	/* Right-click: Event -> Rule menu. */
 	g_signal_connect (view, "button-press-event",
@@ -1551,10 +1921,16 @@ fs_hitview_page (void)
 		 * font. */
 		if (i == COL_PORT || i == COL_SOURCE || i == COL_DESTINATION)
 			g_object_set (renderer, "family", "monospace", NULL);
+		g_object_set (renderer, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
 
 		column = gtk_tree_view_column_new_with_attributes (
 			_(column_defs[i].label), renderer, "text", i, NULL);
 		gtk_tree_view_column_set_resizable (column, TRUE);
+		gtk_tree_view_column_set_sizing (column,
+		                                 GTK_TREE_VIEW_COLUMN_FIXED);
+		gtk_tree_view_column_set_fixed_width (column, column_width[i]);
+		/* Click a heading to sort by it; again to reverse. */
+		gtk_tree_view_column_set_sort_column_id (column, i);
 
 		/* Every visible text column reads the colour column so a
 		 * blocked event is red right across the row; the Time
@@ -1575,6 +1951,11 @@ fs_hitview_page (void)
 
 		gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
 	}
+
+	/* Every row one height, every column a set width: the view lays
+	 * out only the rows on screen, which is what keeps 100,000 rows
+	 * smooth. */
+	gtk_tree_view_set_fixed_height_mode (GTK_TREE_VIEW (view), TRUE);
 
 	scroll = gtk_scrolled_window_new (NULL, NULL);
 	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
@@ -1612,6 +1993,16 @@ fs_hitview_page (void)
 		gtk_box_pack_start (GTK_BOX (page), card, TRUE, TRUE, 0);
 	}
 
+	/* History that could not be opened is said, not swallowed. */
+	if (fs_hitview_history_problem () != NULL) {
+		gchar *msg = g_strdup_printf (
+			_("Event history is not being saved: %s"),
+			fs_hitview_history_problem ());
+
+		set_monitor_warning (msg);
+		g_free (msg);
+	}
+
 	/* Start monitoring straight away: the whole point of the page is
 	 * watching events, and the original did this too.  A failure here
 	 * used to be dropped on the floor, leaving an empty list that read
@@ -1642,7 +2033,10 @@ fs_hitview_page (void)
 		monitor_watchdog = g_timeout_add_seconds (2, on_monitor_watchdog,
 		                                          NULL);
 
-	(void) box;
+	g_signal_connect (view, "destroy", G_CALLBACK (gtk_widget_destroyed),
+	                  &view);
+
+	update_count_label ();
 
 	return page;
 }

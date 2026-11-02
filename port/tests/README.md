@@ -68,8 +68,73 @@ parsed back, and the dashboard's security model: loopback only, the
 per-run token (header only, never the query string or the page), the
 Host check against DNS rebinding, GET/HEAD only, the 16 KB request-head
 cap, the CSP nonce, and the dashboard leaving its own sockets out of the
-connection list.
+connection list.  `stockfw events` is checked with its filters
+against the kernel log, and `--history` against a history folder the
+test writes by hand (so the file format is pinned too): oldest first
+across days, `-n` keeping the newest, `--since`/`--until` by day and
+by stamp, every filter, a damaged and a cut-short line skipped and
+counted, unreadable filters refused with exit 2, and a missing folder
+named with where it would be.
 
+
+## Event store and history (`tests/test-eventstore.sh`)
+
+```sh
+cd port
+bash tests/test-eventstore.sh               # the checks
+bash tests/test-eventstore.sh bench 100000  # timings and memory
+bash tests/test-eventstore.sh bench 1000000
+```
+
+Compiles `src/core/*.c` by hand, like `test-core.sh`; GLib only.  It
+pins down `core/fs-eventstore.c` (the ring buffer behind the Events
+list) and `core/fs-eventlog.c` (the history on disk):
+
+- times: both backend stamps read and written back exactly, anything
+  else kept as text; every `--since`/From form.
+- the ring: the oldest goes first, the evict callback sees it still
+  readable, growing and shrinking keep the newest, 1,000,000 is the cap.
+- interning: one copy of each string, freed with its last event, ids
+  reused; a query's cached answer is not reused for a new string that
+  got an old id.
+- duplicates: the same row twice is one event, as before.
+- filters: text, direction, verdict, protocol, port (single, range,
+  colon), address (v4 and v6 CIDR, ranges; names and /33 refused), time
+  window, and every combination agreeing with the store-free check the
+  command line uses.
+- CSV: the header, quoting, formula-looking fields defused, mode 0600.
+- history: round trip with escapes and a text stamp; a cut-short last
+  line and a damaged middle line skipped and counted, the next write
+  starting on a fresh line; folder 0700 and files 0600 (a loosened file
+  put back); age and size limits (a file that is not ours left alone);
+  the bounded load at start reads only the newest files it needs.
+
+## Events list at scale (`fs-hitview-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-hitview-smoke
+xvfb-run -a -s "-screen 0 1280x900x24" ./build-linux/fs-hitview-smoke
+STOCKFW_EVENTS_SHOTS=/some/dir xvfb-run -a ./build-linux/fs-hitview-smoke
+```
+
+Builds the real Events page with its history in a scratch folder
+(`STOCKFW_EVENTS_DIR`).  Besides the page's older checks, it reads 500
+saved events back at start, then appends 100,000 events into the shown
+list and checks: the list's model is the virtual one (no GtkListStore,
+no filter copy) in fixed-height mode; appending reads only the visible
+cells; a scroll frame at 100,000 rows costs what it costs at 1,000;
+the port, CIDR, protocol and combined filters give the store's own
+count, label included, and every shown row matches; live events at the
+cap land or are left out as the filter says; a bad port is refused and
+the list kept; CSV export writes the filtered rows; sorting by port is
+numeric both ways and a live event lands in sorted place; the history
+files are written.  Timings are printed as `measure:` lines.
+
+The Preferences smoke (below) covers Preferences > Events: the list
+size, the history switch with its days and size rows live only while
+it is on, values clamped to the row's range, and Delete history asking
+first, then deleting only history files.
 
 ## Where the computer is connected (`fs-netplace-test`, `fs-overview-place-smoke`)
 

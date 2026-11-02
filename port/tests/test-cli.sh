@@ -158,6 +158,95 @@ assert len(ev) == 1 and ev[0]['port'] == '443', ev"
 check "events as a table has a header and a BLOCKED row per event" \
   bash -c "[ \$('$S' events -n 50 | grep -c BLOCKED) -eq 4 ]"
 
+check "events with a filter looks further back and keeps what matches" py "
+import json, subprocess
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '-n', '1', '--port', '445'], capture_output=True, text=True).stdout)
+assert [e['port'] for e in ev] == ['445'], ev
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '-n', '50', '--dir', 'out'], capture_output=True, text=True).stdout)
+assert [e['port'] for e in ev] == ['443'], ev
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '-n', '50', '--allowed'], capture_output=True, text=True).stdout)
+assert ev == [], ev"
+
+# --------------------------------------------------------- events --history
+# The history the desktop app saves (core/fs-eventlog.c): one file per
+# UTC day, a tab-separated line per event with an FNV-1a checksum.
+# Written here by hand, so the test also pins the file format.
+H="$TMP/history"
+py "
+import os
+H = '$H'
+os.makedirs(H, mode=0o700)
+def fnv(b):
+    h = 2166136261
+    for c in b:
+        h = ((h ^ c) * 16777619) & 0xffffffff
+    return h
+def line(stamp, ticks, d, port, src, dst, proto, service):
+    f = [str(ticks), stamp, d, 'eth0' if d == 'in' else '', 'eth0' if d == 'out' else '',
+         port, src, dst, '60', '0x00', proto, service, 'STOCKFW-DROP']
+    body = '\t'.join(f)
+    return body + '\t%08x\n' % fnv(body.encode())
+def t(day, hh, mm):
+    import datetime
+    dt = datetime.datetime(2026, 10, day, hh, mm, tzinfo=datetime.timezone.utc)
+    return dt.strftime('%Y-%m-%dT%H:%M:%SZ'), int(dt.timestamp()) * 10000000
+ev30 = [
+  line(*t(30, 9, 0), 'in', '22', '203.0.113.5', '10.0.0.5', 'TCP', 'SSH [BLOCKED]'),
+  line(*t(30, 9, 5), 'in', '3389', '198.51.100.7', '10.0.0.5', 'TCP', 'Remote Desktop [BLOCKED]'),
+]
+ev31 = [
+  line(*t(31, 8, 0), 'out', '443', '10.0.0.5', '203.0.113.9', 'TCP', 'HTTPS'),
+  line(*t(31, 8, 1), 'in', '22', '10.1.2.3', '10.0.0.5', 'TCP', 'SSH [BLOCKED]'),
+]
+with open(os.path.join(H, 'events-2026-10-30-000.log'), 'w') as f:
+    f.write('# StockFW event history 1\n' + ''.join(ev30))
+bad = ev31[0][:-9] + 'deadbeef\n'           # checksum does not match
+cut = ev31[1][:40]                           # a crash mid-write
+with open(os.path.join(H, 'events-2026-10-31-000.log'), 'w') as f:
+    f.write('# StockFW event history 1\n' + ev31[1] + bad + ev31[0] + cut)
+"
+check "events --history reads the saved days oldest first, a damaged and a cut-short line skipped" py "
+import json, subprocess
+r = subprocess.run(['$S', 'events', '--history-dir', '$H', '-n', '100'], capture_output=True, text=True)
+assert r.returncode == 0 and r.stdout.count('BLOCKED') == 3 and 'ALLOWED' in r.stdout, r
+assert '2 damaged or cut-short line(s)' in r.stderr, r.stderr
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$H', '-n', '100'], capture_output=True, text=True).stdout)
+assert [e['port'] for e in ev] == ['22', '3389', '22', '443'], ev
+assert ev[0]['service'] == 'SSH' and ev[0]['blocked'] and not ev[3]['blocked'], ev"
+check "  ...-n keeps the newest" py "
+import json, subprocess
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$H', '-n', '2'], capture_output=True, text=True).stdout)
+assert [e['port'] for e in ev] == ['22', '443'], ev"
+check "  ...--since and --until by day, the --until day taken whole" py "
+import json, subprocess
+def q(*a): return [e['port'] for e in json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$H', *a], capture_output=True, text=True).stdout)]
+assert q('--since', '2026-10-31') == ['22', '443'], q('--since', '2026-10-31')
+assert q('--until', '2026-10-30') == ['22', '3389']
+assert q('--since', '2026-10-30T09:05:00Z', '--until', '2026-10-31T08:01:00Z') == ['3389', '443']"
+check "  ...--port, --dir, --addr (CIDR), --proto, --grep, --blocked and --allowed" py "
+import json, subprocess
+def q(*a): return [e['port'] for e in json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$H', '-n', '100', *a], capture_output=True, text=True).stdout)]
+assert q('--port', '22') == ['22', '22']
+assert q('--port', '400-4000') == ['3389', '443']
+assert q('--dir', 'out') == ['443']
+assert q('--addr', '10.1.0.0/16') == ['22']
+assert q('--addr', '203.0.113.0/24') == ['22', '443']
+assert q('--proto', 'udp') == []
+assert q('--grep', 'remote desk') == ['3389']
+assert q('--blocked', '--dir', 'in', '--port', '22') == ['22', '22']
+assert q('--allowed') == ['443']"
+check "a filter that cannot be read is a usage error, not an empty answer" bash -c "
+  '$S' events --history-dir '$H' --port 70000 2> '$TMP/err'; [ \$? -eq 2 ] && grep -q 'port' '$TMP/err' &&
+  '$S' events --history-dir '$H' --since yesterday-ish 2> /dev/null; [ \$? -eq 2 ] &&
+  '$S' events --history-dir '$H' --addr example.com 2> /dev/null; [ \$? -eq 2 ] &&
+  '$S' events --history-dir '$H' --dir sideways 2> /dev/null; [ \$? -eq 2 ] &&
+  '$S' events --history-dir '$H' --port 2> /dev/null; [ \$? -eq 2 ]"
+check "no saved history is said plainly, with where it would be" bash -c "
+  STOCKFW_EVENTS_DIR='$TMP/none' '$S' events --history 2> '$TMP/err'; [ \$? -eq 1 ] &&
+  grep -q 'no saved event history in $TMP/none' '$TMP/err' && grep -q 'Keep event history' '$TMP/err'"
+check "--history follows STOCKFW_EVENTS_DIR and needs no root" bash -c "
+  [ \$(STOCKFW_EVENTS_DIR='$H' '$S' --json events --history | python3 -I -c 'import json,sys; print(len(json.load(sys.stdin)))') -eq 4 ]"
+
 # --------------------------------------------------------- read-only views
 check "connections --json parses" \
   bash -c "'$S' --json connections > '$TMP/c.json' && python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' '$TMP/c.json'"

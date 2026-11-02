@@ -779,6 +779,9 @@ fs_app_reload_settings (void)
 
 	/* The Preferences dialog may have toggled the tray switches. */
 	fs_tray_sync ();
+
+	/* ... and changed the list size or the history settings. */
+	fs_hitview_apply_settings ();
 }
 
 /* [ settings_swap ]
@@ -837,6 +840,9 @@ fs_app_quit (void)
 	fs_tray_uninstall ();
 
 	fs_prefs_save ();
+
+	/* The last second of events into the history file. */
+	fs_hitview_shutdown ();
 
 	if (policy != NULL) {
 		fs_policy_free (policy);
