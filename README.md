@@ -112,6 +112,38 @@ discovery, router adverts, path-MTU and DHCPv6 are always allowed, even
 in restrictive mode, because IPv6 does not work without them. Without
 `ip6tables` installed, the apply reports that IPv6 is not filtered.
 
+## Running in the background, and after a reboot (1.0.7)
+
+One StockFW runs per desktop session: starting it again brings the
+running copy's window forward, and `StockFW --quit` asks it to quit
+cleanly (the firewall stays on). `StockFW --background` (or
+`--minimized`) starts it in the notification area with the window
+hidden; if no notification area takes the icon within five seconds the
+window is shown instead, so it is never running out of reach.
+
+**Start at sign-in** (tray menu, or `--enable-autostart` /
+`--disable-autostart`):
+
+- Windows: a Task Scheduler task for your account, in the `\StockFW`
+  folder, runs `StockFW.exe --background` at sign-in with the highest
+  privileges, so there is no UAC prompt. Changing it needs StockFW
+  running as administrator. The installer offers it as a component
+  (ticked by default) and the uninstaller removes it. Windows Firewall
+  keeps its rules across reboots by itself.
+- Linux: `~/.config/autostart/stockfw.desktop`. The desktop starts it
+  without root, so it shows the firewall's state but cannot change rules
+  or watch blocked traffic.
+
+**Linux rules vanish at reboot** unless something loads them again: the
+kernel keeps iptables rules in memory only. The Linux installer installs
+and enables `stockfw.service`, which runs `stockfw start` before the
+network comes up, using root's policy in `/etc/stockfw` (the one
+`sudo StockFW` edits; a policy in `~/.stockfw` is not used). It does
+nothing until a policy has been applied as root once, has no stop
+action, and leaves out blocks by host name until the next apply because
+names cannot be looked up before the network is up. Details:
+[`port/installer/linux/README.md`](port/installer/linux/README.md).
+
 ## Privilege model (summary)
 
 StockFW runs **asInvoker** — it never silently self-elevates. All

@@ -182,6 +182,23 @@ Section "Desktop Shortcut" SecDesktop
     CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
 SectionEnd
 
+; Ticked by default.  StockFW.exe registers a Task Scheduler task for the
+; account running this installer (src/core/fs-autostart.c): at that
+; account's sign-in it starts "StockFW.exe --background" with the highest
+; privileges, so it comes up in the notification area without a UAC
+; prompt.  The installer already runs elevated, which registering an
+; elevated task needs.  A failure is reported and does not fail the
+; install: the option is also in StockFW's tray menu.
+Section "Start StockFW in the background when I sign in" SecAutostart
+    DetailPrint "Setting ${APP_NAME} to start in the background at sign-in..."
+    ClearErrors
+    ExecWait '"$INSTDIR\${APP_EXE}" --enable-autostart' $0
+    ${If} ${Errors}
+    ${OrIf} $0 != 0
+        DetailPrint "Could not set up start at sign-in (exit code $0).  Turn it on later from the ${APP_NAME} tray menu."
+    ${EndIf}
+SectionEnd
+
 ;------------------------------------------------------------------------------
 ; Section Descriptions (disabled to avoid MUI2 warnings)
 ;------------------------------------------------------------------------------
@@ -300,9 +317,19 @@ AskFirst:
     Quit
 
 CloseApp:
-    ; Graceful first -- taskkill without /F posts WM_CLOSE, so the app gets to
+    ; Cleanest first: "StockFW.exe --quit" asks the running copy to quit
+    ; through its own instance channel (src/core/fs-instance.c), so it
+    ; saves its settings and Sentinel's state and leaves the firewall on;
+    ; it returns once that copy is gone, or after 15 seconds.  A copy it
+    ; cannot reach -- another user's -- falls through to taskkill.
+    DetailPrint "${APP_EXE} is running; asking it to quit before removing files."
+    ExecWait '"$INSTDIR\${APP_EXE}" --quit' $R8
+    Call un.WaitForExit
+    StrCmp $R7 0 NotRunning
+
+    ; Then graceful -- taskkill without /F posts WM_CLOSE, so the app gets to
     ; exit on its own terms and may refuse.  Only force it if it ignores that.
-    DetailPrint "${APP_EXE} is running; closing it before removing files."
+    DetailPrint "${APP_EXE} is still running; closing it before removing files."
     nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM ${APP_EXE}'
     Pop $R7
     Pop $R8
@@ -322,6 +349,13 @@ CloseApp:
     Quit
 
 NotRunning:
+    ; Start at sign-in: every user's task in the \StockFW Task Scheduler
+    ; folder, and the folder.  Before the files go -- it is StockFW.exe
+    ; that removes them -- and whatever the outcome, since a task left
+    ; behind would only fail to start a program that is gone.
+    DetailPrint "Removing ${APP_NAME}'s sign-in tasks..."
+    ExecWait '"$INSTDIR\${APP_EXE}" --remove-all-autostart' $R8
+
     ; Remove files
     Delete "$INSTDIR\${APP_EXE}"
     Delete "$INSTDIR\uninstall.exe"

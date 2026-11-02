@@ -52,6 +52,7 @@ add_library(fs-core STATIC
   src/core/fs-netplace.c
   src/core/fs-autoblock.c
   src/core/fs-instance.c
+  src/core/fs-autostart.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
@@ -65,13 +66,14 @@ add_library(fs-core-nogui STATIC EXCLUDE_FROM_ALL ${FS_CORE_SOURCES})
 target_include_directories(fs-core-nogui PUBLIC src resources)
 target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY)
 if(WIN32)
-  target_link_libraries(fs-core-nogui PUBLIC ws2_32)
+  target_link_libraries(fs-core-nogui PUBLIC ws2_32 ole32 oleaut32)
 endif()
 
 # core/ uses getnameinfo()/inet_pton() for reverse lookups; Windows keeps
-# those in ws2_32, POSIX has them in libc.
+# those in ws2_32, POSIX has them in libc.  fs-autostart.c registers the
+# sign-in task through the Task Scheduler's COM API: ole32 + oleaut32.
 if(WIN32)
-  target_link_libraries(fs-core PUBLIC ws2_32)
+  target_link_libraries(fs-core PUBLIC ws2_32 ole32 oleaut32)
 endif()
 
 # -------------------------------------------------------------- platform

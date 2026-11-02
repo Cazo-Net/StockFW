@@ -139,6 +139,46 @@ if [ -f "$CLI" ]; then
     ok "$BINDIR/stockfw (command line and local dashboard)"
 fi
 
+# The boot service: iptables rules live in the kernel only, so without
+# it every rule is gone after a reboot until someone starts StockFW
+# with sudo again.  It runs `stockfw start' before the network comes up
+# and does nothing until a policy has been applied as root once
+# (see the unit file).  Enabled, not started: installing never changes
+# the running firewall.
+UNIT_DIR="/etc/systemd/system"
+UNIT="$UNIT_DIR/stockfw.service"
+SERVICE_STATE="not installed"
+if [ -x "$BINDIR/stockfw" ] && [ -f "$HERE/stockfw.service" ] &&
+   command -v systemctl >/dev/null 2>&1 && [ -d "$UNIT_DIR" ]; then
+    sed "s|/usr/local/bin/stockfw|$BINDIR/stockfw|" "$HERE/stockfw.service" \
+        > "$UNIT.tmp"
+    install -m644 "$UNIT.tmp" "$UNIT"
+    rm -f "$UNIT.tmp"
+    ok "$UNIT (puts the rules back at boot)"
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        if systemctl enable stockfw.service >/dev/null 2>&1; then
+            ok "stockfw.service enabled"
+            SERVICE_STATE="enabled"
+        else
+            warn "could not enable stockfw.service -- run: systemctl enable stockfw.service"
+            SERVICE_STATE="installed, not enabled"
+        fi
+    else
+        # Installing into an image or chroot: systemctl enable works
+        # offline (it only makes the symlink).
+        if systemctl enable stockfw.service >/dev/null 2>&1; then
+            ok "stockfw.service enabled (systemd not running here)"
+            SERVICE_STATE="enabled"
+        else
+            SERVICE_STATE="installed, not enabled"
+        fi
+    fi
+else
+    warn "no systemd: firewall rules will NOT come back after a reboot"
+    warn "until StockFW is started with sudo (or 'sudo stockfw start' runs)"
+fi
+
 install -Dm644 "$HERE/stockfw.desktop" "$DATADIR/applications/$APPID.desktop"
 ok "$DATADIR/applications/$APPID.desktop"
 
@@ -175,6 +215,23 @@ PREFIX="\${PREFIX:-$PREFIX}"
 if [ "\$(id -u)" -ne 0 ]; then
     echo "Run as root:  sudo \$0" >&2
     exit 1
+fi
+# The boot service: disabled and removed.  Not stopped first -- it has
+# no ExecStop, and removing StockFW does not take the running rules
+# down ('sudo stockfw stop' before uninstalling does).
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable stockfw.service >/dev/null 2>&1 || true
+fi
+rm -f /etc/systemd/system/stockfw.service
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+# A running StockFW is asked to quit cleanly, so it saves its settings.
+# The sign-in entry of the user running this through sudo goes too
+# (written as that user; other users' entries are theirs to remove).
+if [ -x "\$PREFIX/bin/StockFW" ]; then
+    timeout 20 "\$PREFIX/bin/StockFW" --quit >/dev/null 2>&1 || true
+    timeout 20 "\$PREFIX/bin/StockFW" --disable-autostart >/dev/null 2>&1 || true
 fi
 rm -f "\$PREFIX/bin/StockFW"
 rm -f "\$PREFIX/bin/stockfw"
@@ -226,6 +283,15 @@ if [ -x "$BINDIR/stockfw" ]; then
     printf '\nFrom a terminal:\n'
     printf '    %-20s %s\n' "stockfw help" "(status, policy, simulate, events, ...)"
     printf '    %-20s %s\n' "stockfw dashboard" "(local web dashboard, 127.0.0.1 only)"
+fi
+
+printf '\nAt boot:\n'
+if [ "$SERVICE_STATE" = "enabled" ]; then
+    printf '    stockfw.service puts the rules back before the network comes up,\n'
+    printf '    once a policy has been applied with sudo.\n'
+else
+    printf '    %sstockfw.service is %s: the firewall rules will be gone after%s\n' "$Y" "$SERVICE_STATE" "$N"
+    printf '    %sa reboot until StockFW is started with sudo again.%s\n' "$Y" "$N"
 fi
 
 if ! sudo_path_has_bindir; then

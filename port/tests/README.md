@@ -188,3 +188,65 @@ second launch stays up (killed by the test's timeout, rc 124); let the
 socket accept `quit` from anyone and the other user's `--quit` closes
 the app; drop the fallback show and the no-tray check fails; ignore
 `--background` and the hidden checks fail.
+
+
+## Start at sign-in (`tests/test-autostart.sh`, `test_autostart` in `test-core.sh`)
+
+```sh
+cd port
+ninja -C build-linux StockFW
+bash tests/test-autostart.sh          # the sudo half needs root
+```
+
+`StockFW --enable-autostart` must write
+`$XDG_CONFIG_HOME/autostart/stockfw.desktop` running this very binary
+with `--background` (by name when PATH finds it, by a quoted absolute
+path when not; `desktop-file-validate` must accept it), and
+`--disable-autostart` must remove it.  As root on behalf of a user
+(`SUDO_UID`), the entry is written with that user's file permissions:
+it ends up owned by the user, and a directory only root may write is
+refused rather than written by root.
+
+`test-core.sh` pins what Windows is handed (portably, as text): the
+Task Scheduler XML runs `<exe dir>\StockFW.exe --background` at THIS
+user's logon, in their session (`InteractiveToken`), elevated
+(`HighestAvailable`), with no time limit and on battery.  It also pins
+the Desktop Entry quoting and which keys switch an entry off
+(`Hidden=true`, `X-GNOME-Autostart-enabled=false`).  Registering the
+task through COM needs a Windows machine.
+
+Teeth: skip the per-user file permissions and the root checks fail
+(the entry is root's, the read-only directory is written); skip the
+quoting and both the core check and the "path with a space" check fail.
+
+
+## The boot service (`tests/test-boot-start.sh`, `tests/test-linux-install.sh`)
+
+```sh
+cd port
+ninja -C build-linux stockfw StockFW
+sudo bash tests/test-boot-start.sh
+sudo bash tests/test-linux-install.sh
+```
+
+Linux keeps iptables rules in the kernel only; `stockfw.service` puts
+them back at boot.  `test-boot-start.sh` checks the unit (oneshot,
+`RemainAfterExit`, before `network-pre.target`, no `ExecStop`, a no-op
+until a policy was applied, `systemd-analyze verify` clean) and then,
+in a private network namespace, runs `stockfw start` as the unit does:
+the user's block is in the kernel, a Sentinel block whose ten minutes
+ran out is neither installed nor left in the files, a block by a host
+name that cannot be looked up is named in the output without stopping
+the start, and in audit-only mode the last applied policy goes in, not
+the held change.
+
+`test-linux-install.sh` runs `install.sh` and the `stockfw-uninstall`
+it writes for real, in a private mount namespace with a scratch PREFIX
+and a tmpfs over `/etc/systemd/system`: the unit is installed pointing
+at the installed `stockfw` and enabled, and the uninstaller disables
+and removes it.
+
+Teeth: drop the Sentinel expiry from `stockfw start` and three checks
+fail; start without the hold and the audit-only checks fail; leave the
+`systemctl disable` out of the uninstaller and "disabled" fails (a
+dangling enable link counts as still enabled).

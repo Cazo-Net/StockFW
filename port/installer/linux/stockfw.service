@@ -1,0 +1,41 @@
+# StockFW: put the firewall rules back at boot.
+#
+# Linux keeps iptables rules in the kernel only: a reboot empties them.
+# This unit runs `stockfw start' once, early, before any network
+# interface is brought up (network-pre.target), so the machine is never
+# on the network unfiltered between boot and sign-in.
+#
+# It uses root's StockFW files -- the ones StockFW uses when started
+# with sudo: the policy in /etc/stockfw, the preferences in
+# /root/.config/stockfw.  A policy edited by StockFW running WITHOUT
+# sudo lives in ~/.stockfw and is not seen here.
+#
+# It does nothing until a policy has been applied as root at least once
+# (/etc/stockfw/applied.csv), so installing StockFW never firewalls a
+# machine nobody has set up yet.  Audit-only mode is honoured: the last
+# applied policy is started and later changes stay held.
+#
+# There is deliberately no ExecStop: stopping this unit, or shutting
+# down, never takes the rules away.  Stop the firewall with
+# `sudo stockfw stop' (or Pause protection in StockFW).
+#
+# Blocks by host name: before the network is up a name cannot be looked
+# up, so such a block is left out at boot (the journal says which:
+# `journalctl -u stockfw') and goes in with the next apply.
+
+[Unit]
+Description=StockFW firewall rules
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+ConditionPathExists=/etc/stockfw/applied.csv
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/stockfw start
+
+[Install]
+WantedBy=multi-user.target

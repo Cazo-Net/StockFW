@@ -42,6 +42,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-activity.h"
 #include "core/fs-json.h"
 #include "core/fs-autoblock.h"
+#include "core/fs-autostart.h"
 #include <glib/gstdio.h>
 
 static int failures = 0;
@@ -4500,6 +4501,122 @@ static void test_autoblock_expire (void)
 	g_free (dir);
 }
 
+/* Start at sign-in (core/fs-autostart.c).  The Windows half is the
+ * task XML -- what the Task Scheduler is handed decides whose sign-in
+ * starts it, whether it runs elevated and what it runs -- so it is
+ * pinned here, portably.  The Linux half is the XDG entry, written to
+ * a scratch directory through $STOCKFW_AUTOSTART_DIR. */
+static gboolean
+xml_has (const gchar *xml, const gchar *needle)
+{
+	return strstr (xml, needle) != NULL;
+}
+
+static void test_autostart (void)
+{
+	gchar *xml = fs_autostart_task_xml (
+		"PC\\Ann & Bob",
+		"C:\\Program Files\\StockFW\\StockFW.exe");
+	gchar *name, *exec;
+#ifndef G_OS_WIN32
+	gchar *dir, *entry, *contents = NULL;
+	GKeyFile *kf;
+#endif
+
+	CHECK (xml_has (xml, "<LogonTrigger>") &&
+	       xml_has (xml, "<UserId>PC\\Ann &amp; Bob</UserId>\n"
+	                     "      <Delay>"),
+	       "autostart task: a logon trigger for this user only");
+	CHECK (xml_has (xml, "<LogonType>InteractiveToken</LogonType>") &&
+	       xml_has (xml, "<RunLevel>HighestAvailable</RunLevel>"),
+	       "autostart task: runs in the user's session, elevated "
+	       "(no UAC prompt at sign-in)");
+	CHECK (xml_has (xml, "<Command>C:\\Program Files\\StockFW\\StockFW.exe</Command>") &&
+	       xml_has (xml, "<Arguments>--background</Arguments>") &&
+	       xml_has (xml, "<WorkingDirectory>C:\\Program Files\\StockFW</WorkingDirectory>"),
+	       "autostart task: runs <exe dir>\\StockFW.exe --background");
+	CHECK (xml_has (xml, "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") &&
+	       xml_has (xml, "<DisallowStartIfOnBatteries>false") &&
+	       xml_has (xml, "<StopIfGoingOnBatteries>false") &&
+	       xml_has (xml, "<MultipleInstancesPolicy>IgnoreNew"),
+	       "autostart task: no time limit, runs on battery, one copy");
+	CHECK (!xml_has (xml, "Ann & Bob<"),
+	       "autostart task: the user name is XML-escaped");
+	g_free (xml);
+
+	name = fs_autostart_task_name ("PC\\Ann");
+	CHECK (strcmp (name, "Start at sign-in (PC_Ann)") == 0,
+	       "autostart task name: no backslash (got \"%s\")", name);
+	g_free (name);
+
+	exec = fs_autostart_desktop_exec ("/usr/local/bin/StockFW", TRUE);
+	CHECK (strcmp (exec, "StockFW --background") == 0,
+	       "autostart Exec: bare name when PATH finds this binary");
+	g_free (exec);
+	exec = fs_autostart_desktop_exec ("/opt/StockFW/StockFW", FALSE);
+	CHECK (strcmp (exec, "/opt/StockFW/StockFW --background") == 0,
+	       "autostart Exec: absolute path otherwise (got \"%s\")", exec);
+	g_free (exec);
+	exec = fs_autostart_desktop_exec ("/home/a b/100%\"$x/StockFW", FALSE);
+	CHECK (strcmp (exec, "\"/home/a b/100%%\\\"\\$x/StockFW\" --background") == 0,
+	       "autostart Exec: reserved characters quoted per the Desktop "
+	       "Entry spec (got %s)", exec);
+	g_free (exec);
+
+#ifndef G_OS_WIN32
+	/* The Linux entry itself.  (On Windows the same calls would
+	 * register a real Task Scheduler task.) */
+	dir = g_build_filename (g_get_tmp_dir (), "stockfw-autostart-test", NULL);
+	entry = g_build_filename (dir, "stockfw.desktop", NULL);
+	g_setenv ("STOCKFW_AUTOSTART_DIR", dir, TRUE);
+	remove (entry);
+	g_rmdir (dir);
+
+	CHECK (fs_autostart_supported (), "autostart: supported on Linux");
+	CHECK (!fs_autostart_enabled (), "autostart: off with no entry");
+	CHECK (fs_autostart_set (TRUE, NULL), "autostart: turned on");
+	CHECK (fs_autostart_enabled (), "autostart: on after turning on");
+	kf = g_key_file_new ();
+	CHECK (g_key_file_load_from_file (kf, entry, G_KEY_FILE_NONE, NULL),
+	       "autostart: the entry is a valid key file");
+	exec = g_key_file_get_string (kf, "Desktop Entry", "Exec", NULL);
+	CHECK (exec != NULL && g_str_has_suffix (exec, " --background"),
+	       "autostart: Exec ends in --background (got %s)",
+	       exec != NULL ? exec : "(none)");
+	g_free (exec);
+	g_key_file_free (kf);
+
+	/* A desktop's "startup applications" switch turns it off by key. */
+	g_file_set_contents (entry,
+		"[Desktop Entry]\nType=Application\nName=StockFW\n"
+		"Exec=StockFW --background\nX-GNOME-Autostart-enabled=false\n",
+		-1, NULL);
+	CHECK (!fs_autostart_enabled (),
+	       "autostart: X-GNOME-Autostart-enabled=false reads as off");
+	g_file_set_contents (entry,
+		"[Desktop Entry]\nType=Application\nName=StockFW\n"
+		"Exec=StockFW --background\nHidden=true\n", -1, NULL);
+	CHECK (!fs_autostart_enabled (), "autostart: Hidden=true reads as off");
+	CHECK (fs_autostart_set (TRUE, NULL) && fs_autostart_enabled (),
+	       "autostart: turning on again rewrites a switched-off entry");
+	g_file_get_contents (entry, &contents, NULL, NULL);
+	CHECK (contents != NULL && strstr (contents, "Hidden") == NULL,
+	       "autostart: the rewrite drops Hidden=true");
+	g_free (contents);
+
+	CHECK (fs_autostart_set (FALSE, NULL) && !fs_autostart_enabled () &&
+	       !g_file_test (entry, G_FILE_TEST_EXISTS),
+	       "autostart: turned off, the entry is gone");
+	CHECK (fs_autostart_set (FALSE, NULL),
+	       "autostart: turning off what is off succeeds");
+
+	g_unsetenv ("STOCKFW_AUTOSTART_DIR");
+	g_rmdir (dir);
+	g_free (entry);
+	g_free (dir);
+#endif
+}
+
 /* --- the settings plan ------------------------------------------------
  * fs-settings-plan.c maps the Firewall preferences onto portable rules
  * that the Windows backend executes.  Each mapping is pinned here: the
@@ -6258,6 +6375,7 @@ int main (void)
 	test_apply_gate ();
 	test_start_gate ();
 	test_autoblock_expire ();
+	test_autostart ();
 	test_settings_plan ();
 	test_netparse_log ();
 	test_netparse_proc ();
@@ -6279,7 +6397,7 @@ EOF
 
 EXTRA_LIBS=""
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
-  EXTRA_LIBS="-lws2_32"
+  EXTRA_LIBS="-lws2_32 -lole32 -loleaut32"
 fi
 
 cc "$BUILD_DIR/test-core.c" \

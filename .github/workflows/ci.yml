@@ -44,7 +44,7 @@ jobs:
             build-essential cmake ninja-build pkg-config libgtk-3-dev \
             librsvg2-common shared-mime-info \
             iptables nftables xvfb xauth \
-            xdotool stalonetray
+            xdotool stalonetray desktop-file-utils
 
       - name: Build
         run: |
@@ -91,6 +91,11 @@ jobs:
           ninja -C build-linux StockFW
           xvfb-run -a bash tests/test-instance.sh
 
+      - name: Start at sign-in (XDG autostart entry)
+        working-directory: port
+        run: |
+          bash tests/test-autostart.sh
+
       - name: Live firewall tests as root, each in a private network namespace
         working-directory: port
         run: |
@@ -111,6 +116,12 @@ jobs:
           strict tests/test-apply-linux.sh
           strict tests/test-apply-dual.sh
           strict tests/test-nftset.sh
+          # The boot unit and `stockfw start' as the unit runs it; the
+          # Linux installer in a private mount namespace; start at
+          # sign-in written as root on a user's behalf.
+          strict tests/test-boot-start.sh
+          strict tests/test-linux-install.sh
+          strict tests/test-autostart.sh
 
   windows:
     name: Windows build, tests and installer

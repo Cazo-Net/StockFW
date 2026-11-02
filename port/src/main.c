@@ -10,6 +10,10 @@
  * launch asks the first to show its window and exits, and --quit asks
  * it to quit cleanly -- the uninstaller's way to stop it with its
  * settings saved.  Neither needs a display, so they run before GTK.
+ *
+ * --enable-autostart / --disable-autostart switch "start at sign-in"
+ * for the current user and exit (core/fs-autostart.h); the Windows
+ * installer runs the first, the uninstaller --remove-all-autostart.
  *--------------------------------------------------------------------*/
 
 #include <gtk/gtk.h>
@@ -18,6 +22,7 @@
 #include "core/fs-prefs.h"
 #include "core/fs-backend.h"
 #include "core/fs-instance.h"
+#include "core/fs-autostart.h"
 #include "core/fs-i18n.h"
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
@@ -29,6 +34,9 @@
 static gboolean opt_version = FALSE;
 static gboolean opt_quit = FALSE;
 static gboolean opt_background = FALSE;
+static gboolean opt_autostart_on = FALSE;
+static gboolean opt_autostart_off = FALSE;
+static gboolean opt_autostart_purge = FALSE;
 
 static const GOptionEntry options[] = {
 	{ "version", 'V', 0, G_OPTION_ARG_NONE, &opt_version,
@@ -40,6 +48,13 @@ static const GOptionEntry options[] = {
 	  "Same as --background", NULL },
 	{ "quit", 0, 0, G_OPTION_ARG_NONE, &opt_quit,
 	  "Ask the running StockFW to quit (the firewall stays on)", NULL },
+	{ "enable-autostart", 0, 0, G_OPTION_ARG_NONE, &opt_autostart_on,
+	  "Start StockFW in the background when you sign in, then exit", NULL },
+	{ "disable-autostart", 0, 0, G_OPTION_ARG_NONE, &opt_autostart_off,
+	  "Stop starting StockFW when you sign in, then exit", NULL },
+	{ "remove-all-autostart", 0, G_OPTION_FLAG_HIDDEN, G_OPTION_ARG_NONE,
+	  &opt_autostart_purge,
+	  "Remove start at sign-in for every user (uninstaller)", NULL },
 	{ NULL, 0, 0, 0, NULL, NULL, NULL }
 };
 
@@ -90,6 +105,41 @@ quit_running (void)
 		g_printerr ("StockFW is running but could not be reached.\n");
 		return 1;
 	}
+}
+
+/* [ autostart_command ] -- the three autostart switches: change it,
+ * say what happened, exit 0 or 1.  No GTK, no instance. */
+static int
+autostart_command (void)
+{
+	GError *error = NULL;
+	gboolean ok;
+
+	if ((opt_autostart_on ? 1 : 0) + (opt_autostart_off ? 1 : 0) +
+	    (opt_autostart_purge ? 1 : 0) > 1) {
+		g_printerr ("Give only one of --enable-autostart, "
+		            "--disable-autostart and --remove-all-autostart.\n");
+		return 1;
+	}
+	if (opt_autostart_purge)
+		ok = fs_autostart_remove_all (&error);
+	else
+		ok = fs_autostart_set (opt_autostart_on, &error);
+
+	if (!ok) {
+		g_printerr ("%s\n", error != NULL ? error->message
+		                                  : "Could not change it.");
+		g_clear_error (&error);
+		return 1;
+	}
+	if (opt_autostart_on)
+		g_print ("StockFW will start in the background when you sign "
+		         "in.\n%s\n", fs_autostart_description ());
+	else if (opt_autostart_off)
+		g_print ("StockFW will no longer start when you sign in.\n");
+	else
+		g_print ("Start at sign-in removed for every user.\n");
+	return 0;
 }
 
 /* [ already_running_notice ] -- the second launch could not reach the
@@ -148,6 +198,9 @@ main (int argc, char *argv[])
 		         FS_VERSION, fs_backend ()->display_name);
 		return 0;
 	}
+
+	if (opt_autostart_on || opt_autostart_off || opt_autostart_purge)
+		return autostart_command ();
 
 	if (opt_quit)
 		return quit_running ();

@@ -18,6 +18,7 @@ This installs:
     /usr/local/share/icons/hicolor/{48x48,128x128,256x256}/apps/stockfw.png
     /usr/local/share/doc/stockfw/LICENSE.txt
     /usr/local/bin/stockfw-uninstall                    removal script
+    /etc/systemd/system/stockfw.service                 puts the rules back at boot (enabled)
 
 The installer checks that every runtime library the binary links against
 is present, by soname. It reports sonames rather than package names
@@ -60,6 +61,51 @@ able to silently rewrite the entire firewall is a worse security posture
 than one that asks for root openly. Grant privilege by launching with
 `sudo`, or through your desktop environment's own mechanism.
 
+## After a reboot: the boot service
+
+Linux keeps firewall rules in the kernel only. **A reboot empties
+them**: without something to load them again, the machine runs
+unfiltered until someone starts StockFW with `sudo` again.
+
+`install.sh` therefore installs and enables `stockfw.service`, which runs
+`stockfw start` once at boot, before any network interface comes up
+(`Before=network-pre.target`). What it does:
+
+- It uses root's StockFW files, the ones `sudo /usr/local/bin/StockFW`
+  uses: the policy in `/etc/stockfw` and the preferences in
+  `/root/.config/stockfw`. A policy edited by StockFW running **without**
+  sudo lives in `~/.stockfw`; the service does not see it.
+- It does nothing until a policy has been applied as root at least once
+  (`/etc/stockfw/applied.csv` exists), so installing StockFW never
+  firewalls a machine nobody has set up yet.
+- Audit-only mode is honoured: the last applied policy is started and
+  later changes stay held. Sentinel blocks whose ten minutes ran out
+  while the machine was off are not put back.
+- It has no stop action. `systemctl stop stockfw` and shutting down
+  never take the rules away; `sudo stockfw stop` does.
+- A block by host name cannot be looked up before the network is up, so
+  it is left out at boot (`journalctl -u stockfw` names it) and goes in
+  with the next apply (`sudo /usr/local/bin/stockfw apply`, or applying
+  from StockFW).
+
+Without systemd the installer says so, and the rules do not come back
+after a reboot on their own: run `sudo /usr/local/bin/stockfw start`
+from your init system's boot scripts.
+
+    systemctl status stockfw          did it run at boot, and what it said
+    sudo systemctl disable stockfw    stop loading the rules at boot
+
+## Start at sign-in
+
+"Start at sign-in" in StockFW's tray menu (or `StockFW
+--enable-autostart`) adds `~/.config/autostart/stockfw.desktop`, which
+starts `StockFW --background` in the notification area when you sign in
+to the desktop. The desktop starts it as you, **without root**: it shows
+the firewall's state but cannot change rules or watch blocked traffic.
+The rules themselves come from the boot service above, not from this.
+When StockFW runs with `sudo`, the entry is still written into your own
+home, as you. `StockFW --disable-autostart` removes it.
+
 ## Command line and dashboard
 
 `stockfw` drives the same policy files, simulator and apply gate as the
@@ -83,7 +129,10 @@ search-path note as above applies: use `sudo /usr/local/bin/stockfw`.
 
     sudo stockfw-uninstall
 
-Removes exactly what `install.sh` created.
+Removes exactly what `install.sh` created, disables the boot service,
+asks a running StockFW to quit and removes your own sign-in entry. It
+does not stop the firewall: run `sudo /usr/local/bin/stockfw stop`
+first if you want the rules gone too.
 
 ## Building from source
 
