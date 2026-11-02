@@ -646,6 +646,14 @@ fs_app_activate (GtkApplication *app)
 	GtkWidget *box;
 	gboolean restore_dropped;
 
+	/* Everything below builds static state once: a second activate
+	 * would start a second monitor, a second Sentinel and a second
+	 * tray icon.  It only means "show me". */
+	if (fsapp.window != NULL) {
+		fs_app_present ();
+		return;
+	}
+
 	fsapp.app = GTK_APPLICATION (app);
 
 	fs_trust_set_signature_provider (app_trust_signature, NULL);
@@ -790,6 +798,15 @@ fs_app_activate (GtkApplication *app)
 	 * state call just now already fed the tooltip text. */
 	fs_tray_set_window (GTK_WINDOW (fsapp.window));
 	fs_tray_sync ();
+}
+
+void
+fs_app_present (void)
+{
+	if (fsapp.window == NULL)
+		return;
+
+	fs_tray_show_window ();
 }
 
 void

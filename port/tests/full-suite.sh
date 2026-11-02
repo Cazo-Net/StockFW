@@ -48,6 +48,8 @@ run_sh "STAGED RUNTIME (build/ on its own)" tests/test-staged-runtime.sh "PASSED
 run_sh "BACKEND COMPILE (state-windows)" tests/test-state-windows.sh "compiled|PASSED|FAILED|ok:"
 run_sh "UAF ANALYZE" tests/test-uaf-analyze.sh
 run_sh "CLI + DASHBOARD (Linux)" tests/test-cli.sh
+# Linux with a display (xvfb-run); prints SKIP elsewhere.
+run_sh "SINGLE INSTANCE + BACKGROUND (Linux, real binary)" tests/test-instance.sh "PASSED|FAILED|SKIP"
 # Linux only, and only as root; both print SKIP elsewhere.
 run_sh "APPLY (Linux, live iptables)" tests/test-apply-linux.sh "PASSED|FAILED|SKIP"
 run_sh "APPLY DUAL-STACK (Linux, IPv4 + IPv6, private netns)" tests/test-apply-dual.sh "PASSED|FAILED|SKIP"

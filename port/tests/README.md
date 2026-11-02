@@ -152,3 +152,30 @@ Teeth: put the start back above the Policy page in `fs-app.c` and
 `start_at_launch()` and "push" fails.  `tests/test-core.sh` pins the
 start gate itself (`fs_firewall_start_safe`) and the boot-time expiry
 of Sentinel rows (`fs_autoblock_expire`).
+
+
+## One StockFW per session (`tests/test-instance.sh`)
+
+```sh
+cd port
+ninja -C build-linux StockFW
+xvfb-run -a bash tests/test-instance.sh   # needs xdotool; stalonetray optional
+```
+
+Drives the real `StockFW` binary.  As root the whole test re-runs
+itself in a private network namespace, every file the app writes goes
+to a scratch directory, the firewall is never started, and the instance
+name is private to the run (`STOCKFW_INSTANCE_NAME`), so a StockFW you
+are using is not disturbed.
+
+It checks that a second launch exits at once and the first copy brings
+its window back; that there is still one window and one instance;
+that another user's `--quit` is refused (root only, through `setpriv`)
+and says why; that `--quit` returns only once the copy is gone, which
+must exit 0 with its settings saved; and that `--quit` with nothing
+running succeeds and says so.
+
+Teeth: let `main()` ignore the "another copy runs" answer and the
+second launch stays up (killed by the test's timeout, rc 124); let the
+socket accept `quit` from anyone and the other user's `--quit` closes
+the app.

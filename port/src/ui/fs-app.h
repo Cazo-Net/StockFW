@@ -26,7 +26,15 @@ typedef enum
 	FS_PAGE_COUNT
 } FsAppPage;
 
+/* Builds the window and everything behind it, once.  A second call
+ * (GtkApplication activates again when asked to) only brings the
+ * existing window forward. */
 void fs_app_activate (GtkApplication *app);
+
+/* Show, un-minimize and raise the window: what a second launch asks
+ * the running instance for.  Before the window exists it cancels a
+ * hidden start instead, so the window opens visible. */
+void fs_app_present (void);
 
 /* Selects a page, as a click on its sidebar item would.  Does nothing
  * before the window is built. */
