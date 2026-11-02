@@ -39,6 +39,7 @@ run_sh () {   # run_sh <label> <script> [pattern]
 
 run_sh "CORE"        tests/test-core.sh
 run_sh "EVENT STORE + HISTORY" tests/test-eventstore.sh
+run_sh "WINDOWS EVENT LOG READER (fake log, any platform)" tests/test-winevt.sh
 run_sh "P4 ADVERSARIAL" tests/test-adversarial.sh
 run_sh "LOG START"   tests/test-logstart.sh
 run_sh "LOG EVENTS (file)" tests/test-logstart-events.sh

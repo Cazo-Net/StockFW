@@ -28,6 +28,15 @@
  *     - the same with the Preferences window open, which is no
  *       GtkDialog and runs a loop of its own: the quit closes it as its
  *       Cancel would (a change made in it is not saved) and finishes.
+ *   history (1.0.7 events)
+ *     - started in the background (--background: the window hidden),
+ *       with Keep event history on: a burst of 4,000 events reaches the
+ *       list and the history file while the window stays hidden;
+ *     - events the source says it skipped show beside the count;
+ *     - a quit right after more events still writes them (the history
+ *       is flushed and closed in on_shutdown), and lets the folder's
+ *       writer lock go, so a copy taking over can write it;
+ *     - while this copy runs, a second writer on the folder is refused.
  *
  * Needs a display (xvfb-run).  Everything the app writes goes to a
  * scratch directory.
@@ -39,6 +48,7 @@
 #include <string.h>
 
 #include "core/fs-backend.h"
+#include "core/fs-eventlog.h"
 #include "core/fs-copilot.h"
 #include "core/fs-netplace.h"
 #include "core/fs-prefs.h"
@@ -46,6 +56,7 @@
 #include "ui/fs-app.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-hitview.h"
 #include "ui/fs-statusview.h"
 #include "ui/fs-tray.h"
 
@@ -117,6 +128,8 @@ fake_log_start (FsLogFunc cb, gpointer user, GError **error)
 static void     fake_log_stop (void) { log_cb = NULL; }
 static gboolean fake_log_active (void) { return log_cb != NULL; }
 static const gchar *fake_log_text (void) { return NULL; }
+static guint64 fake_skipped = 0;
+static guint64 fake_log_skipped (void) { return fake_skipped; }
 
 static gboolean
 fake_get_profile (gint profile, gboolean *on)
@@ -151,6 +164,7 @@ static const FsBackend fake_backend = {
 	.log_active           = fake_log_active,
 	.log_source           = fake_log_text,
 	.log_problem          = fake_log_text,
+	.log_skipped          = fake_log_skipped,
 	.get_profile_enabled  = fake_get_profile,
 	.ipv6_state           = fake_ipv6,
 };
@@ -285,6 +299,7 @@ prepare (void)
 	SCRATCH_ENV ("STOCKFW_BEHAVIOR_FILE", "behavior.csv");
 	SCRATCH_ENV ("STOCKFW_TRUST_FILE", "trust.csv");
 	SCRATCH_ENV ("STOCKFW_AUTOSTART_DIR", "autostart");
+	SCRATCH_ENV ("STOCKFW_EVENTS_DIR", "events");
 	if (g_strcmp0 (scenario, "autosave") == 0)
 		g_setenv ("STOCKFW_AUTOSAVE_S", "1", TRUE);
 	else
@@ -312,6 +327,8 @@ prepare (void)
 	fs_prefs_set_bool (FS_PREFS_ENABLE_TRAY_ICON, TRUE);
 	fs_prefs_set_bool (FS_PREFS_SKIP_NOT_FOR_FIREWALL, FALSE);
 	fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode", "auto");
+	fs_prefs_set_bool (FS_PREFS_EVENTS_HISTORY,
+	                   g_strcmp0 (scenario, "history") == 0);
 	fs_prefs_save ();
 	prefs_file = g_strdup (fs_prefs_path ());
 }
@@ -412,6 +429,144 @@ check_queryend (void)
 	 * without fs_app_quit().  Checked in main() once the run ends. */
 	fs_prefs_set_string (PROBE_KEY, "stopped");
 	g_application_quit (G_APPLICATION (the_app));
+}
+
+/* ------------------------------------------------------------ history */
+
+/* Events in the history folder: lines that are not the header. */
+static guint
+history_lines (void)
+{
+	gchar *dir = in_scratch ("events");
+	GDir *d = g_dir_open (dir, 0, NULL);
+	const gchar *name;
+	guint n = 0;
+
+	while (d != NULL && (name = g_dir_read_name (d)) != NULL) {
+		gchar *path, *text = NULL;
+
+		if (!g_str_has_prefix (name, "events-"))
+			continue;
+		path = g_build_filename (dir, name, NULL);
+		if (g_file_get_contents (path, &text, NULL, NULL)) {
+			for (gchar *line = text; *line != '\0';) {
+				gchar *nl = strchr (line, '\n');
+
+				if (*line != '#')
+					n++;
+				if (nl == NULL)
+					break;
+				line = nl + 1;
+			}
+		}
+		g_free (text);
+		g_free (path);
+	}
+	if (d != NULL)
+		g_dir_close (d);
+	g_free (dir);
+	return n;
+}
+
+/* Distinct events: the store treats the same row twice as one. */
+static void
+feed_burst (guint from, guint n)
+{
+	for (guint i = from; i < from + n; i++) {
+		FsHit *hit = fs_hit_new ();
+
+		hit->time = g_strdup_printf ("2026-11-02T10:%02u:%02u.%07uZ",
+		                             (i / 60) % 60, i % 60, i);
+		hit->direction = g_strdup ("out");
+		hit->protocol = g_strdup ("TCP");
+		hit->port = g_strdup_printf ("%u", 1024 + i % 50000);
+		hit->source = g_strdup ("192.0.2.20");
+		hit->destination = g_strdup_printf ("198.51.100.%u", i % 250);
+		hit->service = g_strdup ("burst.exe");
+		if (log_cb != NULL)
+			log_cb (hit, log_user);
+		fs_hit_free (hit);
+	}
+}
+
+static GtkWidget *
+main_window (void)
+{
+	GList *windows = gtk_application_get_windows (the_app);
+
+	return windows != NULL ? GTK_WIDGET (g_list_last (windows)->data)
+	                       : NULL;
+}
+
+static gboolean
+find_label_with (GtkWidget *widget, const gchar *needle, GtkWidget **out)
+{
+	if (GTK_IS_LABEL (widget)) {
+		const gchar *text = gtk_label_get_text (GTK_LABEL (widget));
+
+		if (text != NULL && strstr (text, needle) != NULL) {
+			*out = widget;
+			return TRUE;
+		}
+	}
+	if (GTK_IS_CONTAINER (widget)) {
+		GList *kids = gtk_container_get_children (GTK_CONTAINER (widget));
+		gboolean found = FALSE;
+
+		for (GList *l = kids; l != NULL && !found; l = l->next)
+			found = find_label_with (GTK_WIDGET (l->data), needle, out);
+		g_list_free (kids);
+		return found;
+	}
+	return FALSE;
+}
+
+static void
+check_history (void)
+{
+	GtkWidget *window = main_window ();
+	GtkWidget *label = NULL;
+	gchar *dir = in_scratch ("events");
+	GError *error = NULL;
+	FsEventLog *second;
+
+	CHECK (window != NULL && !gtk_widget_get_visible (window),
+	       "history: started in the background, the window is hidden");
+	CHECK (log_cb != NULL,
+	       "history: the Events page's monitor runs with the window hidden");
+
+	feed_burst (0, 4000);
+	CHECK (fs_hitview_count () == 4000,
+	       "history: a burst of 4,000 events is all in the list (%u)",
+	       fs_hitview_count ());
+	wait_s (1.6);
+	CHECK (history_lines () == 4000,
+	       "history: ...and all in the history file within a second, "
+	       "the window still hidden (%u lines)", history_lines ());
+	CHECK (!gtk_widget_get_visible (window), "history: (still hidden)");
+
+	second = fs_eventlog_open (dir, 30, 0, &error);
+	CHECK (second == NULL && g_error_matches (error, FS_EVENTLOG_ERROR,
+	                                          FS_EVENTLOG_ERROR_IN_USE),
+	       "history: while this copy runs, no second writer gets the "
+	       "folder (%s)", error != NULL ? error->message : "it opened");
+	if (second != NULL)
+		fs_eventlog_close (second);
+	g_clear_error (&error);
+
+	fake_skipped = 1234;
+	wait_s (2.5);
+	CHECK (find_label_with (window, "(up to 1,234 skipped)", &label),
+	       "history: events the source skipped show beside the count "
+	       "(%s)", label != NULL ? gtk_label_get_text (GTK_LABEL (label))
+	                             : "not found");
+	CHECK (label != NULL && gtk_widget_get_tooltip_text (label) != NULL,
+	       "history: ...with a tooltip saying why");
+
+	/* Quit right after ten more: no flush tick between them. */
+	feed_burst (4000, 10);
+	fs_app_quit ();
+	g_free (dir);
 }
 
 /* When the dialog or Preferences scenario made its quit.  "Promptly"
@@ -642,6 +797,8 @@ run_checks (gpointer data)
 		fs_app_quit ();
 	} else if (g_strcmp0 (scenario, "queryend") == 0) {
 		check_queryend ();
+	} else if (g_strcmp0 (scenario, "history") == 0) {
+		check_history ();
 	}
 	return G_SOURCE_REMOVE;
 }
@@ -692,7 +849,7 @@ static int
 run_all (const gchar *self)
 {
 	static const gchar *const all[] = { "autosave", "queryend", "dialog",
-	                                    "prefs", "sametick" };
+	                                    "prefs", "sametick", "history" };
 	int bad = 0;
 
 	for (guint i = 0; i < G_N_ELEMENTS (all); i++) {
@@ -739,6 +896,8 @@ main (int argc, char **argv)
 	app = gtk_application_new ("org.stockfw.SessionSmoke",
 	                           G_APPLICATION_NON_UNIQUE);
 	g_signal_connect (app, "activate", G_CALLBACK (on_activate), NULL);
+	/* What main.c does for --background. */
+	fs_app_set_start_hidden (g_strcmp0 (scenario, "history") == 0);
 	started = g_get_monotonic_time ();
 	{
 		gchar *args[] = { argv[0], NULL };
@@ -750,6 +909,20 @@ main (int argc, char **argv)
 		CHECK (file_has (prefs_file, "session_probe=stopped"),
 		       "a Stop without fs_app_quit() still writes what "
 		       "changed after query-end");
+	if (g_strcmp0 (scenario, "history") == 0) {
+		gchar *dir = in_scratch ("events");
+		FsEventLog *next = fs_eventlog_open (dir, 30, 0, NULL);
+
+		CHECK (history_lines () == 4010,
+		       "history: the ten events queued at the quit were written "
+		       "on the way out (%u lines)", history_lines ());
+		CHECK (next != NULL,
+		       "history: the quit let the folder go: a copy taking "
+		       "over can write it");
+		if (next != NULL)
+			fs_eventlog_close (next);
+		g_free (dir);
+	}
 	if (g_strcmp0 (scenario, "sametick") == 0) {
 		CHECK (same_tick_ran,
 		       "(the reader ran in the quit's loop pass)");

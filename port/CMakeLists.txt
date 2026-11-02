@@ -53,6 +53,7 @@ add_library(fs-core STATIC
   src/core/fs-netplace.c
   src/core/fs-eventstore.c
   src/core/fs-eventlog.c
+  src/core/fs-winevt.c
   src/core/fs-autoblock.c
   src/core/fs-instance.c
   src/core/fs-autostart.c

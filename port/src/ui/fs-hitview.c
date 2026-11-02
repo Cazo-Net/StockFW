@@ -62,6 +62,7 @@ static FsEventModel *emodel = NULL;
  * so the list survives a restart.  Flushed every second. */
 static FsEventLog   *elog = NULL;
 static guint         elog_flush_id = 0;
+static guint         elog_retry_id = 0;   /* another copy holds it */
 static guint         history_loaded = 0;
 static gchar        *history_problem = NULL;
 /* The history warning on the strip, while it is there, and what the
@@ -274,6 +275,35 @@ grouped (guint n)
 	                        n % 1000);
 }
 
+/* Any size, thousands grouped with commas. */
+static gchar *
+grouped64 (guint64 n)
+{
+	gchar *digits = g_strdup_printf ("%" G_GUINT64_FORMAT, n);
+	gsize len = strlen (digits);
+	GString *out = g_string_new (NULL);
+
+	for (gsize i = 0; i < len; i++) {
+		if (i > 0 && (len - i) % 3 == 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, digits[i]);
+	}
+	g_free (digits);
+	return g_string_free (out, FALSE);
+}
+
+/* What the source says it skipped this session (0: nothing, or a
+ * source that never skips). */
+static guint64 skipped_shown = 0;
+
+static guint64
+monitor_skipped (void)
+{
+	const FsBackend *backend = fs_backend ();
+
+	return backend->log_skipped != NULL ? backend->log_skipped () : 0;
+}
+
 static void
 update_count_label (void)
 {
@@ -291,6 +321,26 @@ update_count_label (void)
 	else
 		text = g_strdup_printf (total == 1 ? _("%s event") : _("%s events"),
 		                        b);
+
+	/* Events the source could not read (Windows: more than 10,000 in
+	 * one five-second read).  Said where the count is, so the count
+	 * is never read as everything that happened. */
+	skipped_shown = monitor_skipped ();
+	if (skipped_shown > 0) {
+		gchar *n = grouped64 (skipped_shown);
+		gchar *more = g_strdup_printf (_("%s (up to %s skipped)"), text, n);
+
+		g_free (text);
+		g_free (n);
+		text = more;
+	}
+	gtk_widget_set_tooltip_text (count_label, skipped_shown > 0
+		? _("More events arrived at once than one read of the event "
+		    "log takes (10,000 every five seconds). The newest were "
+		    "listed; the older ones of that burst were skipped. The "
+		    "number is an upper bound: the log numbers every security "
+		    "event, not only firewall events.")
+		: NULL);
 	gtk_label_set_text (GTK_LABEL (count_label), text);
 	g_free (text);
 	g_free (a);
@@ -903,10 +953,31 @@ history_close (void)
 		g_source_remove (elog_flush_id);
 		elog_flush_id = 0;
 	}
+	if (elog_retry_id != 0) {
+		g_source_remove (elog_retry_id);
+		elog_retry_id = 0;
+	}
 	if (elog != NULL) {
 		fs_eventlog_close (elog);
 		elog = NULL;
 	}
+}
+
+static void history_open (void);
+
+/* [ on_history_retry ]
+ * Another copy of StockFW had the history (FS_EVENTLOG_ERROR_IN_USE):
+ * try again every few seconds, so this copy takes over writing once
+ * that one has gone, and the page stops saying it does not save. */
+static gboolean
+on_history_retry (gpointer data)
+{
+	(void) data;
+
+	elog_retry_id = 0;
+	history_open ();
+	history_warning_sync ();
+	return G_SOURCE_REMOVE;
 }
 
 /* [ history_open ]
@@ -941,6 +1012,12 @@ history_open (void)
 		if (elog == NULL)
 			history_problem = g_strdup (error != NULL ? error->message
 			                                          : dir);
+		if (elog == NULL &&
+		    g_error_matches (error, FS_EVENTLOG_ERROR,
+		                     FS_EVENTLOG_ERROR_IN_USE) &&
+		    elog_retry_id == 0)
+			elog_retry_id = g_timeout_add_seconds (
+				5, on_history_retry, NULL);
 		g_clear_error (&error);
 		g_free (dir);
 	}
@@ -1689,7 +1766,8 @@ on_monitor_watchdog (gpointer data)
 		gtk_switch_set_active (GTK_SWITCH (monitor_toggle), FALSE);
 	}
 
-	if (fs_hitview_count () == 0 && gtk_widget_get_mapped (monitor_toggle))
+	if ((fs_hitview_count () == 0 && gtk_widget_get_mapped (monitor_toggle)) ||
+	    monitor_skipped () != skipped_shown)
 		update_count_label ();
 
 	return G_SOURCE_CONTINUE;

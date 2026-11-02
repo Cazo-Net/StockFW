@@ -35,6 +35,16 @@
  *     Administrator rights.  The end-to-end test drives the whole
  *     path through a fake wevtutil.exe whose output is byte-honest.
  *
+ *  6. (1.0.7) Each poll read only the newest ten events (/c:10), so a
+ *     burst of thousands reached the list as ten.  Every poll now
+ *     reads every 5156/5157 event after the last record it delivered,
+ *     in XML (core/fs-winevt.c, whose parsing and bookkeeping
+ *     tests/test-winevt.sh checks on every platform).  The text-form
+ *     parser and the seen-record set that items 1 and 5 were about
+ *     are gone with it; test_e2e_delivery drives the new reader
+ *     through the real spawn against a fake log of thousands of
+ *     events (fake-wevtutil.c, tests/winevt-fixture.h).
+ *
  * The static functions are reached by including the backend source,
  * exactly as the parser has no public entry point.  Windows-only: on
  * Linux this test builds nothing.
@@ -43,6 +53,7 @@
  */
 
 #include <glib.h>
+#include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -63,351 +74,6 @@ static int failures = 0;
 		printf ("\n");                                     \
 	}                                                         \
 } while (0)
-
-/* wevtutil /f:text records in the shape the tool really emits --
- * verified against live output from this machine, not invented:
- * the "Event[n]" marker at column 0, two-space-indented header
- * fields, "Description: " with a trailing space, blank lines INSIDE
- * the record between the headline and the field sections, and NUL
- * padding after fixed-width values (those are stripped at capture
- * time in read_handle_output, so record text carries none -- the
- * end-to-end fake wevtutil.exe does emit them).
- *
- * Record A: one permitted inbound SSH connection, destination port
- * 22, source an ephemeral client port. */
-static const gchar *RECORD_A =
-	"Event[0]\r\n"
-	"  Log Name: Security\r\n"
-	"  Source: Microsoft-Windows-Security-Auditing\r\n"
-	"  Date: 2026-10-07T09:15:01.1000000Z\r\n"
-	"  Event ID: 5156\r\n"
-	"  Task: Filtering Platform Connection\r\n"
-	"  Level: Information\r\n"
-	"  Keyword: Audit Success\r\n"
-	"  Computer: DESKTOP-TEST\r\n"
-	"  Description: \r\n"
-	"The Windows Filtering Platform permitted a connection.\r\n"
-	"\r\n"
-	"    Application Information:\r\n"
-	"        Process ID: 0x2a3c\r\n"
-	"        Application Name: \\device\\harddiskvolume3\\openssh\\sshd.exe\r\n"
-	"\r\n"
-	"    Network Information:\r\n"
-	"        Direction: Inbound\r\n"
-	"        Source Address: 192.168.1.50\r\n"
-	"        Source Port: 51234\r\n"
-	"        Destination Address: 192.168.1.10\r\n"
-	"        Destination Port: 22\r\n"
-	"        Protocol: 6\r\n";
-
-/* Record B: a blocked outbound DNS query -- destination port 53,
- * UDP. */
-static const gchar *RECORD_B =
-	"Event[1]\r\n"
-	"  Log Name: Security\r\n"
-	"  Source: Microsoft-Windows-Security-Auditing\r\n"
-	"  Date: 2026-10-07T09:15:02.2000000Z\r\n"
-	"  Event ID: 5157\r\n"
-	"  Task: Filtering Platform Connection\r\n"
-	"  Level: Information\r\n"
-	"  Keyword: Audit Success\r\n"
-	"  Computer: DESKTOP-TEST\r\n"
-	"  Description: \r\n"
-	"The Windows Filtering Platform has blocked a connection.\r\n"
-	"\r\n"
-	"    Application Information:\r\n"
-	"        Process ID: 0x4e20\r\n"
-	"        Application Name: \\device\\harddiskvolume3\\app\\resolver.exe\r\n"
-	"\r\n"
-	"    Network Information:\r\n"
-	"        Direction: Outbound\r\n"
-	"        Source Address: 192.168.1.10\r\n"
-	"        Source Port: 49152\r\n"
-	"        Destination Address: 8.8.8.8\r\n"
-	"        Destination Port: 53\r\n"
-	"        Protocol: 17\r\n";
-
-/* A record with no destination address: must be rejected, not shown
- * half-filled. */
-static const gchar *RECORD_JUNK =
-	"Event[2]\r\n"
-	"  Log Name: Security\r\n"
-	"  Date: 2026-10-07T09:15:03.3000000Z\r\n"
-	"  Event ID: 5156\r\n"
-	"  Description: \r\n"
-	"The Windows Filtering Platform permitted a connection.\r\n"
-	"\r\n"
-	"Something without any network information at all.\r\n";
-
-static void
-test_parse_inbound (void)
-{
-	FsHit hit = { 0 };
-
-	CHECK (parse_firewall_event (RECORD_A, &hit),
-	       "inbound record parses");
-
-	CHECK (hit.port != NULL && g_strcmp0 (hit.port, "22") == 0,
-	       "port is the destination port 22 (got %s)",
-	       hit.port ? hit.port : "(null)");
-	CHECK (g_strcmp0 (hit.direction, "in") == 0,
-	       "direction reads in (got %s)",
-	       hit.direction ? hit.direction : "(null)");
-	CHECK (g_strcmp0 (hit.protocol, "TCP") == 0,
-	       "protocol 6 becomes TCP (got %s)",
-	       hit.protocol ? hit.protocol : "(null)");
-	CHECK (g_strcmp0 (hit.source, "192.168.1.50") == 0,
-	       "source address kept");
-	CHECK (g_strcmp0 (hit.destination, "192.168.1.10") == 0,
-	       "destination address kept");
-	CHECK (g_strcmp0 (hit.in, "192.168.1.10") == 0,
-	       "In column shows the local side (got %s)",
-	       hit.in ? hit.in : "(null)");
-	CHECK (g_strcmp0 (hit.out, "192.168.1.50") == 0,
-	       "Out column shows the remote side (got %s)",
-	       hit.out ? hit.out : "(null)");
-	CHECK (hit.service != NULL && strstr (hit.service, "sshd.exe") != NULL,
-	       "service names the application (got %s)",
-	       hit.service ? hit.service : "(null)");
-	CHECK (strstr (hit.service, "[BLOCKED]") == NULL,
-	       "a permitted connection is not marked blocked");
-
-	free_hit_fields (&hit);
-}
-
-static void
-test_parse_blocked (void)
-{
-	FsHit hit = { 0 };
-
-	CHECK (parse_firewall_event (RECORD_B, &hit),
-	       "blocked record parses");
-
-	CHECK (hit.port != NULL && g_strcmp0 (hit.port, "53") == 0,
-	       "port is the destination port 53 (got %s)",
-	       hit.port ? hit.port : "(null)");
-	CHECK (g_strcmp0 (hit.direction, "out") == 0,
-	       "direction reads out (got %s)",
-	       hit.direction ? hit.direction : "(null)");
-	CHECK (g_strcmp0 (hit.protocol, "UDP") == 0,
-	       "protocol 17 becomes UDP (got %s)",
-	       hit.protocol ? hit.protocol : "(null)");
-	CHECK (hit.service != NULL &&
-	       strstr (hit.service, "[BLOCKED]") != NULL,
-	       "a blocked connection carries the blocked marker (got %s)",
-	       hit.service ? hit.service : "(null)");
-	CHECK (g_strcmp0 (hit.in, "192.168.1.10") == 0,
-	       "outbound: In column shows the local side");
-	CHECK (g_strcmp0 (hit.out, "8.8.8.8") == 0,
-	       "outbound: Out column shows the remote side");
-
-	free_hit_fields (&hit);
-}
-
-static void
-test_parse_junk (void)
-{
-	FsHit hit = { 0 };
-
-	CHECK (!parse_firewall_event (RECORD_JUNK, &hit),
-	       "a record with no address is rejected");
-	CHECK (hit.port == NULL && hit.time == NULL && hit.source == NULL,
-	       "a rejected record leaks no fields");
-
-	free_hit_fields (&hit);
-}
-
-/* [ test_split_real_format ]
- * The batch exactly as wevtutil hands it over: "Event[n]" markers and
- * blank lines inside each record.  A blank-line split would cut every
- * record in half -- header half has no address (dropped), field half
- * has no Date -- which on screen is an empty event list no matter how
- * much traffic there is. */
-static void
-test_split_real_format (void)
-{
-	gchar *batch = g_strconcat (RECORD_A, "\r\n", RECORD_B, NULL);
-	GPtrArray *records = split_firewall_records (batch);
-	FsHit hit = { 0 };
-
-	CHECK (records->len == 2,
-	       "the batch splits into its two records (got %u)",
-	       records->len);
-
-	if (records->len == 2) {
-		CHECK (parse_firewall_event (g_ptr_array_index (records, 0),
-		                             &hit),
-		       "record 0 parses after the split");
-		CHECK (g_strcmp0 (hit.port, "22") == 0,
-		       "record 0 is the SSH connection (got %s)",
-		       hit.port ? hit.port : "(null)");
-		free_hit_fields (&hit);
-
-		CHECK (parse_firewall_event (g_ptr_array_index (records, 1),
-		                             &hit),
-		       "record 1 parses after the split");
-		CHECK (g_strcmp0 (hit.port, "53") == 0 &&
-		       hit.service != NULL &&
-		       strstr (hit.service, "[BLOCKED]") != NULL,
-		       "record 1 is the blocked DNS query (port %s, %s)",
-		       hit.port ? hit.port : "(null)",
-		       hit.service ? hit.service : "(null)");
-		free_hit_fields (&hit);
-	}
-
-	g_ptr_array_unref (records);
-	g_free (batch);
-}
-
-/* The heart of it: what wevtutil hands back every five seconds when
- * the network is quiet is the same batch over and over.  The second
- * batch must produce nothing. */
-static void
-test_dedup_batches (void)
-{
-	guint delivered = 0;
-	guint i;
-
-	forget_all_records ();
-
-	for (i = 0; i < 2; i++) {          /* poll 1, then poll 2 */
-		const gchar *batch[] = { RECORD_A, RECORD_B, NULL };
-		guint j;
-
-		for (j = 0; batch[j] != NULL; j++) {
-			if (record_seen (batch[j]))
-				continue;
-
-			remember_record (batch[j]);
-
-			{
-				FsHit hit = { 0 };
-
-				if (parse_firewall_event (batch[j], &hit))
-					delivered++;
-
-				free_hit_fields (&hit);
-			}
-		}
-	}
-
-	CHECK (delivered == 2,
-	       "the same batch twice delivers 2 events, not 4 (got %u)",
-	       delivered);
-
-	/* A genuinely new record still gets through. */
-	CHECK (!record_seen (RECORD_JUNK), "an unseen record is not seen");
-	remember_record (RECORD_JUNK);
-	CHECK (record_seen (RECORD_JUNK), "a remembered record is seen");
-
-	/* Stopping monitoring starts a clean slate: after a restart the
-	 * newest events must be shown again, not swallowed as repeats. */
-	forget_all_records ();
-	CHECK (!record_seen (RECORD_A),
-	       "forget_all_records clears the set (restart works)");
-}
-
-/* [ test_dedup_index_shift ]
- * The "Event[n]" number is the record's POSITION in the batch, and the
- * positions move whenever a new event arrives: an event that was
- * Event[0] last poll is Event[1] this poll.  The de-duplication has to
- * key on the record's content, not on that position -- otherwise one
- * fresh event re-delivers the whole batch as duplicates, which is how
- * the live list showed the same row four times (196 "events analyzed"
- * for 21 real events).  Drives the same pipeline as poll_deliver:
- * split -> length -> record_seen -> remember -> parse. */
-static void
-test_dedup_index_shift (void)
-{
-	guint delivered = 0;
-	guint batch;
-	guint i;
-	gchar *shifted = g_strdup (RECORD_A);
-	gchar *marker = strstr (shifted, "Event[0]");
-
-	/* The very same event as RECORD_A, one slot further down. */
-	if (marker != NULL)
-		marker[6] = '1';          /* Event[0] -> Event[1] */
-
-	forget_all_records ();
-
-	for (batch = 0; batch < 2; batch++) {
-		gchar *text;
-		GPtrArray *records;
-		guint j;
-
-		if (batch == 0)
-			text = g_strdup (RECORD_A);
-		else
-			text = g_strconcat (RECORD_B, "\r\n", shifted, NULL);
-
-		records = split_firewall_records (text);
-
-		if (batch == 0 && records->len > 0) {
-			CHECK (!g_str_has_prefix (
-			           g_ptr_array_index (records, 0), "Event["),
-			       "the position marker is not part of the record");
-		}
-
-		for (j = 0; j < records->len; j++) {
-			const gchar *record = g_ptr_array_index (records, j);
-			FsHit hit = { 0 };
-
-			if (strlen (record) < 40)
-				continue;
-			if (record_seen (record))
-				continue;
-			remember_record (record);
-			if (parse_firewall_event (record, &hit))
-				delivered++;
-			free_hit_fields (&hit);
-		}
-
-		g_ptr_array_unref (records);
-		g_free (text);
-	}
-
-	g_free (shifted);
-
-	CHECK (delivered == 2,
-	       "the shifted duplicate is not re-delivered "
-	       "(poll 1: A, poll 2: B only; got %u deliveries)",
-	       delivered);
-}
-
-/* The table is bounded: it holds a couple of batches, never history. */
-static void
-test_dedup_bounded (void)
-{
-	gint i;
-
-	forget_all_records ();
-
-	for (i = 0; i < SEEN_RECORDS_MAX * 3; i++) {
-		gchar *fake = g_strdup_printf ("synthetic record %d", i);
-
-		remember_record (fake);
-		g_free (fake);
-	}
-
-	CHECK (g_queue_get_length (&seen_order) <= SEEN_RECORDS_MAX,
-	       "the seen set stays bounded (got %u entries)",
-	       g_queue_get_length (&seen_order));
-
-	/* The oldest entries were evicted, the newest are kept. */
-	CHECK (!record_seen ("synthetic record 0"),
-	       "the oldest record was evicted");
-
-	{
-		gchar *newest = g_strdup_printf ("synthetic record %d",
-		                                 SEEN_RECORDS_MAX * 3 - 1);
-
-		CHECK (record_seen (newest), "the newest record is kept");
-		g_free (newest);
-	}
-
-	forget_all_records ();
-}
 
 /* ---------------------------------------------------------------------
  * spawn_capture() and the asynchronous poll: the console-window flash
@@ -618,18 +284,20 @@ test_poll_async (void)
 /* [ test_e2e_delivery ]
  * End-to-end through every stage the production path uses, without
  * needing Administrator rights: a fake wevtutil.exe sits beside the
- * test binary (CreateProcess finds it before System32) and returns a
- * canned two-record Security batch -- real format, NUL padding
- * included.  log_start's probe, the worker thread, spawn_capture's
- * temp-file capture, NUL stripping, Event[ splitting, parsing and
- * main-loop delivery all have to work for the hits to appear; if any
- * stage breaks (e.g. NUL stripping regresses and g_strsplit
- * truncates at the padding), the count comes out 0 and this fails. */
+ * test binary (CreateProcess finds it before System32) and answers
+ * like a Security log holding the records STOCKFW_FAKE_WEVTUTIL_LOG
+ * names ("first last", tests/winevt-fixture.h), honouring the
+ * query's EventRecordID>, /c: and /rd:, with NUL padding.  log_start's
+ * probe, the worker thread, spawn_capture_max's temp-file capture,
+ * NUL stripping, XML parsing, the cursor and main-loop delivery all
+ * have to work for the counts below. */
 static guint   e2e_hits = 0;
 static gchar  *e2e_port = NULL;
 static gchar  *e2e_direction = NULL;
 static gchar  *e2e_in = NULL;
 static gchar  *e2e_out = NULL;
+static gchar  *e2e_last_time = NULL;
+static gboolean e2e_ordered = TRUE;
 
 static void
 on_e2e_hit (const FsHit *hit, gpointer user_data)
@@ -643,6 +311,13 @@ on_e2e_hit (const FsHit *hit, gpointer user_data)
 		e2e_in = g_strdup (hit->in);
 		e2e_out = g_strdup (hit->out);
 	}
+	/* Oldest first: the fixture's times rise with the record number
+	 * (within an hour, which every batch here stays in). */
+	if (e2e_last_time != NULL && hit->time != NULL &&
+	    strcmp (hit->time, e2e_last_time) < 0)
+		e2e_ordered = FALSE;
+	g_free (e2e_last_time);
+	e2e_last_time = g_strdup (hit->time);
 }
 
 /* Pump the main loop until the in-flight query has been delivered. */
@@ -651,11 +326,19 @@ e2e_pump (void)
 {
 	gint waits;
 
-	for (waits = 0; poll_in_flight && waits < 500; waits++) {
+	for (waits = 0; poll_in_flight && waits < 3500; waits++) {
 		g_main_context_iteration (NULL, FALSE);
-		g_usleep (10000);   /* 5s cap; the fake answers in ms */
+		g_usleep (10000);   /* 35 s cap, past the 30 s poll budget */
 	}
 	g_main_context_iteration (NULL, FALSE);
+}
+
+static void
+e2e_poll (const gchar *log)
+{
+	g_setenv ("STOCKFW_FAKE_WEVTUTIL_LOG", log, TRUE);
+	poll_events (NULL);
+	e2e_pump ();
 }
 
 static void
@@ -663,6 +346,8 @@ test_e2e_delivery (void)
 {
 	GError *error = NULL;
 	gboolean started;
+	gchar *args_path, *args_text = NULL;
+	guint before;
 
 	/* The fake must be next to the test binary; test-winlog.sh
 	 * builds it.  Failing loudly here beats failing obscurely in the
@@ -691,12 +376,19 @@ test_e2e_delivery (void)
 			return;
 	}
 
-	forget_all_records ();
+	args_path = g_build_filename (g_get_tmp_dir (),
+	                              "stockfw-fake-wevtutil-args.txt", NULL);
+	g_remove (args_path);
+	g_setenv ("STOCKFW_FAKE_WEVTUTIL_ARGS", args_path, TRUE);
+	g_setenv ("STOCKFW_FAKE_WEVTUTIL_LOG", "1 2", TRUE);
+
 	e2e_hits = 0;
+	e2e_ordered = TRUE;
 	g_clear_pointer (&e2e_port, g_free);
 	g_clear_pointer (&e2e_direction, g_free);
 	g_clear_pointer (&e2e_in, g_free);
 	g_clear_pointer (&e2e_out, g_free);
+	g_clear_pointer (&e2e_last_time, g_free);
 
 	started = firewalled_log_start (on_e2e_hit, NULL, &error);
 
@@ -707,40 +399,104 @@ test_e2e_delivery (void)
 
 	if (!started) {
 		g_clear_error (&error);
+		g_free (args_path);
 		return;
 	}
+	CHECK (log_cursor.last_id == 2,
+	       "start: the reader starts after the newest record (got %"
+	       G_GUINT64_FORMAT ")", log_cursor.last_id);
 
-	poll_events (NULL);
-	e2e_pump ();
+	e2e_poll ("1 2");
+	CHECK (e2e_hits == 0,
+	       "records from before the start are not delivered (got %u)",
+	       e2e_hits);
 
-	CHECK (e2e_hits == 2,
-	       "both canned events arrive end-to-end (got %u)", e2e_hits);
-	CHECK (g_strcmp0 (e2e_port, "22") == 0,
-	       "the delivered hit carries destination port 22 (got %s)",
+	/* The owner's case: 4,000 events in one five-second poll
+	 * (records 3..4006, four of them logons the query leaves out). */
+	e2e_poll ("1 4006");
+	CHECK (e2e_hits == 4000,
+	       "a burst of 4,000 arrives whole end-to-end (got %u)", e2e_hits);
+	CHECK (e2e_ordered, "oldest first");
+	CHECK (g_strcmp0 (e2e_port, "22") == 0 &&
+	       g_strcmp0 (e2e_direction, "in") == 0,
+	       "the first hit is record 3: inbound, port 22 (got %s %s)",
+	       e2e_direction ? e2e_direction : "(null)",
 	       e2e_port ? e2e_port : "(null)");
-	CHECK (g_strcmp0 (e2e_direction, "in") == 0,
-	       "the delivered hit reads direction in (got %s)",
-	       e2e_direction ? e2e_direction : "(null)");
 	CHECK (g_strcmp0 (e2e_in, "192.168.1.10") == 0 &&
 	       g_strcmp0 (e2e_out, "192.168.1.50") == 0,
 	       "the delivered hit shows local/remote addresses");
+	CHECK (firewalled_log_skipped () == 0, "nothing skipped");
 
-	/* The fake answers every poll with the same batch: the second
-	 * one must deliver nothing -- de-duplication through the real
-	 * async path, the bug this suite was first written for. */
-	poll_events (NULL);
-	e2e_pump ();
+	/* The fake answers the same log again: nothing twice. */
+	e2e_poll ("1 4006");
+	CHECK (e2e_hits == 4000,
+	       "the next poll re-delivers nothing (got %u)", e2e_hits);
 
-	CHECK (e2e_hits == 2,
-	       "the second poll re-delivers nothing (got %u)", e2e_hits);
+	/* Past the cap: 30,030 records more; the newest 10,000 come, the
+	 * rest is counted. */
+	before = e2e_hits;
+	e2e_poll ("1 34036");
+	CHECK (e2e_hits - before == FS_WINEVT_POLL_CAP,
+	       "past the cap: 10,000 delivered (got %u)", e2e_hits - before);
+	CHECK (firewalled_log_skipped () > 0 &&
+	       firewalled_log_skipped () == log_cursor.skipped,
+	       "the skip shows through log_skipped (%" G_GUINT64_FORMAT ")",
+	       firewalled_log_skipped ());
+
+	/* The log is cleared: numbers start again at 1. */
+	before = e2e_hits;
+	e2e_poll ("1 5");
+	e2e_poll ("1 5");
+	CHECK (e2e_hits - before == 5 && log_cursor.clears == 1,
+	       "after a clear the 5 new records arrive (got %u)",
+	       e2e_hits - before);
+
+	/* An event log that refuses the record condition: the poll asks
+	 * again without it, and only the new records come. */
+	before = e2e_hits;
+	{
+		guint64 skipped = firewalled_log_skipped ();
+
+		g_setenv ("STOCKFW_FAKE_WEVTUTIL_NO_RECORDID", "1", TRUE);
+		e2e_poll ("1 9");
+		g_unsetenv ("STOCKFW_FAKE_WEVTUTIL_NO_RECORDID");
+		CHECK (e2e_hits - before == 4 &&
+		       firewalled_log_skipped () == skipped,
+		       "a refused record condition: the 4 new records still "
+		       "arrive, once, nothing counted as skipped (got %u)",
+		       e2e_hits - before);
+	}
+
+	/* What the fake was run with, one line per run, each argument in
+	 * brackets: the query must arrive as one argument. */
+	if (g_file_get_contents (args_path, &args_text, NULL, NULL)) {
+		CHECK (strstr (args_text,
+		               "[/q:*[System[(EventID=5156 or EventID=5157) and "
+		               "EventRecordID>4006]]][/c:10000][/rd:true][/f:xml]")
+		       != NULL,
+		       "the poll's query reached wevtutil as one argument");
+		CHECK (strstr (args_text, "[/c:10]") == NULL,
+		       "no poll asked for ten");
+		CHECK (strstr (args_text, "[qe][Security][/c:1][/rd:true][/f:xml]")
+		       != NULL,
+		       "the probe asked for the newest record of any kind");
+	} else {
+		CHECK (FALSE, "the fake recorded its arguments in %s", args_path);
+	}
 
 	firewalled_log_stop ();
 	CHECK (!poll_in_flight, "monitoring stopped cleanly");
 
-	g_free (e2e_port);    e2e_port = NULL;
-	g_free (e2e_direction); e2e_direction = NULL;
-	g_free (e2e_in);      e2e_in = NULL;
-	g_free (e2e_out);     e2e_out = NULL;
+	g_unsetenv ("STOCKFW_FAKE_WEVTUTIL_ARGS");
+	g_unsetenv ("STOCKFW_FAKE_WEVTUTIL_LOG");
+	g_remove (args_path);
+	g_free (args_path);
+	g_free (args_text);
+	g_clear_pointer (&e2e_port, g_free);
+	g_clear_pointer (&e2e_direction, g_free);
+	g_clear_pointer (&e2e_in, g_free);
+	g_clear_pointer (&e2e_out, g_free);
+	g_clear_pointer (&e2e_last_time, g_free);
 }
 
 /* [ run_spawn_probe ]
@@ -862,13 +618,6 @@ main (int argc, char **argv)
 		return failures ? 1 : 0;
 	}
 
-	test_parse_inbound ();
-	test_parse_blocked ();
-	test_parse_junk ();
-	test_split_real_format ();
-	test_dedup_batches ();
-	test_dedup_index_shift ();
-	test_dedup_bounded ();
 	test_spawn_output_capture ();
 	test_spawn_no_console ();
 	test_spawn_timeout ();

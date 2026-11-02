@@ -55,6 +55,8 @@ jobs:
         working-directory: port
         run: |
           bash tests/test-core.sh
+          bash tests/test-eventstore.sh
+          bash tests/test-winevt.sh
           bash tests/test-adversarial.sh
           bash tests/test-cli.sh
           bash tests/test-logstart.sh

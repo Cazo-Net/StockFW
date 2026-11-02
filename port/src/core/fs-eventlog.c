@@ -14,7 +14,9 @@
 
 #ifdef G_OS_WIN32
 #include <io.h>
+#include <windows.h>
 #else
+#include <sys/file.h>
 #include <unistd.h>
 #endif
 
@@ -54,7 +56,16 @@ struct _FsEventLog
 	gint64   retry_at;      /* monotonic us: the next try         */
 	guint    retry_s;       /* the back-off now                   */
 	guint64  dropped;       /* events lost to failed writes       */
+
+	/* The writer lock on <dir>/.lock (fs_eventlog_open). */
+#ifdef G_OS_WIN32
+	HANDLE   lock;          /* INVALID_HANDLE_VALUE: none         */
+#else
+	int      lock;          /* -1: none                           */
+#endif
 };
+
+G_DEFINE_QUARK (fs-eventlog-error-quark, fs_eventlog_error)
 
 /* ------------------------------------------------------------ names */
 
@@ -515,6 +526,70 @@ fs_eventlog_prune_dir (const gchar *dir, guint max_days, guint64 max_bytes,
 	return removed;
 }
 
+/* [ take_lock ]
+ * One writer per folder.  Two copies of StockFW appending to the same
+ * day's file would interleave their lines and save each event twice
+ * (both read the same firewall log).  One copy per user is the
+ * instance guard's job (core/fs-instance.h), but it can be bypassed:
+ * a squatted instance name, or a privileged copy that could not make
+ * the running one quit, runs "unguarded" beside it.  The lock holds
+ * for as long as the log is open, and the system drops it when the
+ * process ends, so there is never a stale lock to clean up.
+ *
+ * Linux: flock() on <dir>/.lock (0600).  Windows: <dir>\.lock opened
+ * with no sharing.  A lock file that cannot be opened at all (the
+ * folder is someone else's) is no reason to refuse: writing will say
+ * what is wrong.  Returns FALSE only when another writer holds it. */
+#define LOCK_NAME ".lock"
+
+static gboolean
+take_lock (FsEventLog *log, GError **error)
+{
+	gchar *path = g_build_filename (log->dir, LOCK_NAME, NULL);
+	gboolean busy = FALSE;
+#ifdef G_OS_WIN32
+	gunichar2 *wide = g_utf8_to_utf16 (path, -1, NULL, NULL, NULL);
+
+	log->lock = INVALID_HANDLE_VALUE;
+	if (wide != NULL) {
+		log->lock = CreateFileW (wide, GENERIC_READ | GENERIC_WRITE, 0,
+		                         NULL, OPEN_ALWAYS,
+		                         FILE_ATTRIBUTE_HIDDEN, NULL);
+		busy = log->lock == INVALID_HANDLE_VALUE &&
+		       GetLastError () == ERROR_SHARING_VIOLATION;
+	}
+	g_free (wide);
+#else
+	log->lock = open (path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+	                  0600);
+	if (log->lock >= 0 && flock (log->lock, LOCK_EX | LOCK_NB) != 0) {
+		busy = errno == EWOULDBLOCK || errno == EAGAIN;
+		close (log->lock);
+		log->lock = -1;
+	}
+#endif
+	if (busy)
+		g_set_error (error, FS_EVENTLOG_ERROR, FS_EVENTLOG_ERROR_IN_USE,
+		             "another copy of StockFW is saving the history in "
+		             "%s; this one does not write it", log->dir);
+	g_free (path);
+	return !busy;
+}
+
+static void
+drop_lock (FsEventLog *log)
+{
+#ifdef G_OS_WIN32
+	if (log->lock != INVALID_HANDLE_VALUE)
+		CloseHandle (log->lock);
+	log->lock = INVALID_HANDLE_VALUE;
+#else
+	if (log->lock >= 0)
+		close (log->lock);     /* drops the flock */
+	log->lock = -1;
+#endif
+}
+
 FsEventLog *
 fs_eventlog_open (const gchar *dir, guint max_days, guint64 max_bytes,
                   GError **error)
@@ -529,6 +604,11 @@ fs_eventlog_open (const gchar *dir, guint max_days, guint64 max_bytes,
 	log = g_new0 (FsEventLog, 1);
 	log->dir = g_strdup (dir);
 	log->fd = -1;
+	if (!take_lock (log, error)) {
+		g_free (log->dir);
+		g_free (log);
+		return NULL;
+	}
 	log->buf = g_string_sized_new (FLUSH_AT + 1024);
 	fs_eventlog_set_limits (log, max_days, max_bytes);
 
@@ -831,6 +911,7 @@ fs_eventlog_close (FsEventLog *log)
 	log->retry_at = 0;
 	fs_eventlog_flush (log, NULL);
 	close_current (log);
+	drop_lock (log);
 	g_string_free (log->buf, TRUE);
 	g_free (log->problem);
 	g_free (log->dir);

@@ -127,6 +127,77 @@ list) and `core/fs-eventlog.c` (the history on disk):
   waits out the back-off, then history goes on; new limits (Preferences
   > Save) try again at once; every event is either in the history or
   counted as lost.
+- one writer per folder: a second log on the same folder is refused
+  (`FS_EVENTLOG_ERROR_IN_USE`, "another copy of StockFW is saving the
+  history") while the first is open, from this process and from a
+  forked child; once the child is killed without closing (a crash) the
+  system has dropped its lock and the folder opens again.  The lock file
+  is 0600, not counted as history and not deleted by Delete history.
+
+Teeth: open the lock without `flock()` and "a second log on the same
+folder is refused while it is open" fails.
+
+## The Windows event log reader (`tests/test-winevt.sh`)
+
+```sh
+cd port
+bash tests/test-winevt.sh
+```
+
+Runs `core/fs-winevt.c`, the logic of the Windows backend's
+Security-log reader, on any platform, against a fake log
+(`tests/winevt-fixture.h`: records first..last in wevtutil's raw
+`/f:xml` shape, 5156 and 5157 alternating, a 4624 logon every
+thousandth).  Until 1.0.7 the backend read the newest ten events every
+five seconds (`/c:10`), so a burst of 4,000 reached the Events list as
+ten.  It checks:
+
+- parsing: a 5156 and a 5157 give the rows the text reader gave (port
+  is the destination port, In and Out the local and remote side by
+  direction, `%%14592`/`%%14593` and the rendered words, protocol
+  names, the program's file name as the service, `[BLOCKED]` on 5157,
+  `&amp;` and `&#233;` unescaped, the time from `TimeCreated`); another
+  event id or no `DestAddress` gives no row; double quotes, a BOM and
+  an `EventID` with attributes are read; a cut-short last element is
+  left out and said.
+- the command: the poll's exact argv (`/q:` with `EventRecordID>N`,
+  `/c:10000`, `/rd:true`, `/f:xml`), no metacharacter in the query, and
+  the probe's argv (the newest record of any kind).
+- polls against the fake log: the start skips what was there; a burst
+  of 4,000 arrives whole, oldest first, once, and all 4,000 land in an
+  event store; the same log again delivers nothing; a burst of 30,000
+  delivers the newest 10,000 and counts the gap below them as skipped
+  (an upper bound: the gap holds the logons too); a cut-short read
+  counts what it lost; a cleared log (newest record below the cursor)
+  sends the cursor back to 0 and the records since the clear arrive,
+  once; rollover needs nothing; overlapping batches in both orders give
+  each record once; a timed-out read halves the next request down to
+  500 and good reads double it back; when the event log refuses the
+  record condition, the newest records read without it deliver only
+  what is new and a full batch that reaches back past the cursor (also
+  over a logon record) counts nothing as skipped.  Parsing 10,000 events must take
+  well under a poll (about 75 ms here).
+
+Teeth (each restored with `cp` and checked with `cmp`): `/c:10` fails
+"poll argv"; taking records at the cursor (`>=`) fails "once each";
+no sort fails "oldest first"; no skip count fails "skipped: the record
+gap"; no clear check fails "cleared"; no halving fails "timeout: half";
+the time looked for outside `<System>` fails "the time is
+TimeCreated's SystemTime"; no `&amp;` fails "&amp; unescaped"; a
+full batch counting a skip though it reached the cursor fails "no
+record condition (fallback)".
+
+On Windows `tests/test-winlog.sh` runs the same fake log through the
+real spawn: `fake-wevtutil.exe` (built beside the test, found before
+System32) answers for `STOCKFW_FAKE_WEVTUTIL_LOG` ("first last"),
+honours the query's `EventRecordID>`, `/c:` and `/rd:`, pads with NULs
+and records its arguments; with `STOCKFW_FAKE_WEVTUTIL_NO_RECORDID=1`
+it refuses a query with the record condition (exit 15001).  The test starts monitoring, checks a burst
+of 4,000 arrives whole and in order, nothing twice, 10,000 of a
+30,000 burst with the skip shown through `log_skipped`, the records
+after a clear, that a refused record condition still brings the new
+records once with nothing counted as skipped, and that the query
+reached wevtutil as one argument.
 
 ## Events list at scale (`fs-hitview-smoke`)
 
@@ -938,6 +1009,13 @@ half from uid 65534 and half from root, do not hold up a show or a
 launch with `SUDO_UID=65534` makes it quit cleanly and takes its place,
 after which the user launching again only raises root's window.
 
+With Keep event history on, the test also reads which processes hold
+the history folder's writer lock (`/proc/*/fd`): the first copy does;
+after a second launch hands over, still only the first copy (the
+handoff never opens the history); a hidden `--background` copy has it
+open and a second `--minimized` launch does not; after `--quit` no
+process holds it.
+
 Teeth: read from a connection before checking who it is (as 1.0.7
 did) and five "silent" checks fail; skip the takeover in `main()`
 and five "takeover" checks fail; install the SIGHUP handler over
@@ -1110,6 +1188,14 @@ per process:
   own; the quit closes it as Cancel would (the moved setting is not
   saved) instead of waiting for it, and the Copilot's state is still
   intact.
+- `history`: started as `--background` starts it (window hidden) with
+  Keep event history on.  A burst of 4,000 events fed through the
+  app's monitor callback is all in the Events list and, within a
+  second, all in the history file, the window still hidden; a second
+  writer on the folder is refused while the app runs; a skip count from
+  the backend (`log_skipped`) shows beside the count as "(up to 1,234
+  skipped)" with a tooltip; ten events fed right before `fs_app_quit()`
+  are in the file after the run, and the folder's lock is free again.
 
 No scenario stops the firewall.  `test-core.sh` pins
 `fs_prefs_dirty()`.
@@ -1125,7 +1211,11 @@ on the Stop path fails its check; freeing the state in the quit
 instead of in shutdown fails "sametick" (a timer due in the same loop
 pass as the quit found freed memory); leave the Preferences window out
 of the quit and "the quit closes the Preferences window" and
-"promptly" fail.
+"promptly" fail.  For `history`: no `fs_hitview_shutdown()` in
+`on_shutdown` fails "the quit let the folder go"; without it and
+without the flush in `save_state(TRUE)` "written on the way out"
+fails (4,000 lines, not 4,010); no `flock()` fails "no second
+writer"; no skip text fails "skipped show beside the count".
 ## Windows rule translation (`tests/test-core.sh`)
 
 ```sh

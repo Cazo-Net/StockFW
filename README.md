@@ -21,9 +21,12 @@ rules — without a shell prompt.
   executable, so an installed copy and a development build render
   identically. Icons are real GTK stock/themed icons — no emoji, ever.
 - **Events** — a live, deduplicated event stream. On Windows: Security
-  log 5156/5157 (connection allowed/blocked) parsed from
-  `wevtutil /f:text`, polled every 5 seconds with a batch cap. On Linux:
-  kernel drop logging. Rows are classified, and a **filter bar** narrows
+  log 5156/5157 (connection allowed/blocked) read with `wevtutil` every
+  5 seconds: every record after the last one read, up to 10,000 a poll,
+  so a burst of thousands reaches the list whole (until 1.0.7 a poll
+  read the newest ten); past 10,000 in one poll the newest are listed
+  and the count says how many were skipped. On Linux: kernel drop
+  logging. Rows are classified, and a **filter bar** narrows
   the list as you type (case-insensitive, any column shown, the time
   included — the count label shows *"3 of 1,200 events"* so an empty
   result is never mistaken for an idle firewall), with direction,
@@ -51,8 +54,9 @@ rules — without a shell prompt.
   bytes are read), and `stockfw events --history` searches them. If
   the disk fills, the Events page says so, counts what was not saved,
   and history picks up again once there is room. Preferences > Events
-  has the limits and a Delete history button. Nothing leaves the
-  machine.
+  has the limits and a Delete history button. History is saved while
+  StockFW runs hidden in the notification area too, and only one copy
+  writes it at a time. Nothing leaves the machine.
 - **Sentinel** — detect *and* auto-block rogue-agent behavior in the
   event feed: **periodic beacons** (metronomic egress to one host:port —
   a covert-channel signature; jitter, polled batches and inbound traffic

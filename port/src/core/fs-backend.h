@@ -211,6 +211,10 @@ typedef struct
 	 * there is nothing to say.  NULL slots: not reported. */
 	const gchar *(*log_source)  (void);
 	const gchar *(*log_problem) (void);
+	/* 1.0.7: events the monitor knows it did not read this session
+	 * (Windows: a poll that came back full, at most 10,000 events in
+	 * five seconds), as an upper bound.  NULL slot: it never skips. */
+	guint64      (*log_skipped) (void);
 
 	/* DHCP server control (meaningful for a router build). */
 	gboolean (*dhcp_set_enabled) (gboolean enabled, GError **error);

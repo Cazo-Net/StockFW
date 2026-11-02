@@ -15,6 +15,8 @@
 #include <sys/utime.h>
 #else
 #include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <sys/resource.h>
 #include <utime.h>
 #endif
@@ -1761,6 +1763,112 @@ bench (guint n, const gchar *tmp)
 	g_free (dir);
 }
 
+/* One writer per history folder (1.0.7, with one copy per user): a
+ * second log on the same folder is refused while the first is open,
+ * in this process and from another one, and allowed once it closes.
+ * Two copies writing the same day's file interleaved their lines and
+ * saved each event twice. */
+static void
+test_log_one_writer (const gchar *tmp)
+{
+	gchar *dir = g_build_filename (tmp, "onewriter", NULL);
+	GError *error = NULL;
+	FsEventLog *a, *b;
+	Ev e;
+	guint64 bytes = 0;
+	guint files = 0;
+
+	printf ("\n# one writer per history folder\n");
+
+	a = fs_eventlog_open (dir, 30, 0, &error);
+	CHECK (a != NULL && error == NULL, "the first log opens");
+	b = fs_eventlog_open (dir, 30, 0, &error);
+	CHECK (b == NULL && g_error_matches (error, FS_EVENTLOG_ERROR,
+	                                     FS_EVENTLOG_ERROR_IN_USE),
+	       "a second log on the same folder is refused while it is open "
+	       "(%s)", error != NULL ? error->message : "no error");
+	CHECK (error != NULL && strstr (error->message, "another copy") != NULL,
+	       "...saying another copy is saving it");
+	g_clear_error (&error);
+	if (b != NULL)
+		fs_eventlog_close (b);
+
+	ev_make (&e, 1);
+	fs_eventlog_append (a, &e.hit, 0);
+	CHECK (fs_eventlog_flush (a, NULL), "the first one still writes");
+	fs_eventlog_usage (dir, &bytes, &files);
+	CHECK (files == 1, "the lock file is not counted as history (%u)", files);
+	CHECK (fs_eventlog_clear_dir (dir, NULL) == 1,
+	       "Delete history deletes the history, not the lock");
+	{
+		gchar *lock = g_build_filename (dir, ".lock", NULL);
+
+		CHECK (g_file_test (lock, G_FILE_TEST_EXISTS),
+		       "the lock file stays while the log is open");
+#ifndef G_OS_WIN32
+		{
+			GStatBuf st;
+
+			CHECK (g_stat (lock, &st) == 0 && (st.st_mode & 0777) == 0600,
+			       "the lock file is 0600 (%o)", st.st_mode & 0777);
+		}
+#endif
+		g_free (lock);
+	}
+	fs_eventlog_close (a);
+
+#ifndef G_OS_WIN32
+	/* Another process: a child holds it, then is killed without
+	 * closing it (a crash): the system drops the lock with it. */
+	{
+		int ready[2];
+		pid_t child = -1;
+		char c = 'n';
+
+		if (pipe (ready) == 0 && (child = fork ()) == 0) {
+			FsEventLog *held = fs_eventlog_open (dir, 30, 0, NULL);
+
+			if (write (ready[1], held != NULL ? "y" : "n", 1) != 1)
+				_exit (2);
+			sleep (30);
+			_exit (0);
+		}
+		if (child > 0 && read (ready[0], &c, 1) == 1 && c == 'y') {
+			b = fs_eventlog_open (dir, 30, 0, &error);
+			CHECK (b == NULL && g_error_matches (error, FS_EVENTLOG_ERROR,
+			                                     FS_EVENTLOG_ERROR_IN_USE),
+			       "another process's open log keeps this one out");
+			g_clear_error (&error);
+			if (b != NULL)
+				fs_eventlog_close (b);
+			kill (child, SIGKILL);
+			waitpid (child, NULL, 0);
+			b = fs_eventlog_open (dir, 30, 0, &error);
+			CHECK (b != NULL, "...until that process is gone, killed "
+			       "without closing it");
+			if (b != NULL)
+				fs_eventlog_close (b);
+			g_clear_error (&error);
+		} else {
+			CHECK (FALSE, "the child could not open the log");
+			if (child > 0) {
+				kill (child, SIGKILL);
+				waitpid (child, NULL, 0);
+			}
+		}
+		close (ready[0]);
+		close (ready[1]);
+	}
+#endif
+
+	b = fs_eventlog_open (dir, 30, 0, &error);
+	CHECK (b != NULL, "once the first is closed, another may open it");
+	if (b != NULL)
+		fs_eventlog_close (b);
+	g_clear_error (&error);
+	g_free (dir);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1793,6 +1901,7 @@ main (int argc, char **argv)
 	test_log_write_failure (tmp);
 #endif
 	test_log_big_cap (tmp);
+	test_log_one_writer (tmp);
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

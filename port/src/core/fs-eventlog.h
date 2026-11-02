@@ -30,6 +30,12 @@
  * On Windows the folder is under %LOCALAPPDATA%, whose permissions
  * already admit only the account, SYSTEM and Administrators.
  *
+ * One writer: fs_eventlog_open locks <dir>/.lock (flock on Linux, a
+ * file opened without sharing on Windows) until the log is closed or
+ * the process ends.  A second copy of StockFW on the same folder gets
+ * FS_EVENTLOG_ERROR_IN_USE and writes nothing, so no event is saved
+ * twice and no two writers interleave lines.  Reading needs no lock.
+ *
  * Limits: files older than the day limit and, oldest first, files
  * past the size cap are deleted when the log opens, when it moves to
  * a new file, and when the cap is passed.  A file counts as of the day
@@ -65,12 +71,24 @@ G_BEGIN_DECLS
 
 typedef struct _FsEventLog FsEventLog;
 
+#define FS_EVENTLOG_ERROR (fs_eventlog_error_quark ())
+GQuark fs_eventlog_error_quark (void);
+
+typedef enum
+{
+	/* Another process has this folder's history open for writing. */
+	FS_EVENTLOG_ERROR_IN_USE = 1
+} FsEventLogError;
+
 /* STOCKFW_EVENTS_DIR, or <user data dir>/stockfw/events.  Caller frees. */
 gchar      *fs_eventlog_default_dir (void);
 
 /* Opens (creating, owner-only) the folder and prunes it to the limits.
  * max_bytes 0 or max_days 0 mean the defaults.  NULL with error when
- * the folder cannot be created. */
+ * the folder cannot be created, or FS_EVENTLOG_ERROR_IN_USE when
+ * another process (another copy of StockFW) has it open: one writer
+ * per folder, by a lock on <dir>/.lock held until fs_eventlog_close
+ * or the end of the process. */
 FsEventLog *fs_eventlog_open       (const gchar *dir, guint max_days,
                                     guint64 max_bytes, GError **error);
 /* Flushes and closes. */
