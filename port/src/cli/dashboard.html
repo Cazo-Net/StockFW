@@ -925,13 +925,16 @@ code {
     api("/api/simulate?q=" + encodeURIComponent(q)).then(function (r) {
       clear(v);
       v.className = "verdict show";
-      v.appendChild(r.verdict === "BLOCKED" ? pill("bad", "Blocked", ICON_X) : pill("good", "Allowed", ICON_OK));
+      v.appendChild(r.verdict === "ALLOWED" ? pill("good", "Allowed", ICON_OK)
+                    : r.verdict === "BLOCKED" ? pill("bad", "Blocked", ICON_X)
+                    : pill("warn", "Depends", ICON_Q));
       var dl = el("dl");
       function row(k, val) { if (!val) return; dl.appendChild(el("dt", null, k)); dl.appendChild(el("dd", null, val)); }
-      row("Packet", r.direction + " " + (r.protocol || "TCP") + (r.port !== null ? " port " + r.port : "") + (r.remote ? (r.direction === "inbound" ? " from " : " to ") + r.remote : ""));
+      row("Traffic", r.scenario);
+      row("Answer", r.summary);
       row("Rule", r.rule);
-      row("Why", r.reason);
-      row("To allow", r.suggestion);
+      row("Fix", r.suggestion);
+      (r.notes || []).forEach(function (n) { row("Note", n); });
       v.appendChild(dl);
     }).catch(function (e) {
       clear(v);

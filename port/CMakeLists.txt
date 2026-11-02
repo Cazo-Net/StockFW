@@ -39,6 +39,7 @@ add_library(fs-core STATIC
   src/core/fs-settings-plan.c
   src/core/fs-service.c
   src/core/fs-fwrule.c
+  src/core/fs-whatif.c
   src/core/fs-copilot.c
   src/core/fs-eventrule.c
   src/core/fs-audit.c
@@ -380,9 +381,21 @@ endif()
 # directly against scratch files -- the incident class (expiry loops,
 # orphaned rows, an Allow a block outranks) lives exactly there and
 # fs-core cannot see any of it.
+# On Windows the smoke supplies fs_backend() itself: the real backend
+# is compiled under another name (tests/ui-copilot-backend-win.c) and
+# the What-If section swaps in a Windows-shaped stand-in with a known
+# state, since Windows has no network namespace to isolate it in.
+if(FS_PLATFORM STREQUAL "windows")
+  set(FS_COPILOT_SMOKE_BACKEND
+      tests/ui-copilot-backend-win.c
+      src/platform/windows/fs-trust-win.c)
+else()
+  set(FS_COPILOT_SMOKE_BACKEND ${FS_BACKEND_SOURCES})
+endif()
 add_executable(fs-copilot-smoke EXCLUDE_FROM_ALL
   tests/ui-copilot-smoke.c
-  ${FS_UI_SOURCES}
+  ${FS_UI_ONLY_SOURCES}
+  ${FS_COPILOT_SMOKE_BACKEND}
 )
 target_include_directories(fs-copilot-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-copilot-smoke PRIVATE fs-core PkgConfig::GTK3)
@@ -403,6 +416,7 @@ add_executable(fs-simviz-smoke EXCLUDE_FROM_ALL
   tests/ui-simviz-smoke.c
   src/ui/fs-simviz.c
 )
+target_include_directories(fs-simviz-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-simviz-smoke PRIVATE fs-core PkgConfig::GTK3)
 
 # The light theme's teeth: src/ui/fs-theme.css compiled to
@@ -430,6 +444,11 @@ target_link_libraries(fs-nftset-load PRIVATE fs-core-nogui)
 # "profile in use is off" judgement (test-netplace.c).  GLib only.
 add_executable(fs-netplace-test EXCLUDE_FROM_ALL tests/test-netplace.c)
 target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)
+# The What-If engine's golden table: the reading of a line, both firewall
+# models, the Linux model pinned to the generator's chains, and the
+# fixes it offers (test-whatif.c; test-core.sh runs it too).  GLib only.
+add_executable(fs-whatif-test EXCLUDE_FROM_ALL tests/test-whatif.c)
+target_link_libraries(fs-whatif-test PRIVATE fs-core-nogui)
 # The Overview against a fake backend that answers the way Windows does
 # (profiles, the profile in use, the network's name), so the Windows
 # half of the page is exercised on any platform.  The test supplies

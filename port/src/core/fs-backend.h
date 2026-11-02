@@ -275,6 +275,23 @@ typedef struct
 	 * a table removed behind StockFW's back (a reboot, `nft flush
 	 * ruleset') is reported, never assumed [S10]. */
 	FsIntelLive (*intel_live) (gchar **digest);
+
+	/* 1.0.7 What-If: one profile's default actions -- what Windows
+	 * Firewall does with traffic no rule matches.  *inbound_block /
+	 * *outbound_block are TRUE for "block".  FALSE when they cannot be
+	 * read; the What-If then assumes Windows' own default (block
+	 * inbound, allow outbound) and says so.  NULL slot: the platform
+	 * has no per-profile default (Linux: the generated chains end in
+	 * their own default). */
+	gboolean (*get_profile_defaults) (gint profile, gboolean *inbound_block,
+	                                  gboolean *outbound_block);
+
+	/* 1.0.7 What-If: whether one profile has "Block all incoming
+	 * connections, including those in the list of allowed apps"
+	 * switched on, which refuses inbound traffic whatever the allow
+	 * rules say.  FALSE when it cannot be read; the What-If then judges
+	 * by the rules alone.  NULL slot: the platform has no such switch. */
+	gboolean (*get_profile_block_all_inbound) (gint profile, gboolean *on);
 } FsBackend;
 
 /* Profile identifiers, matching Windows' own numbering. */

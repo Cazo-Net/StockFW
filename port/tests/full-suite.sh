@@ -53,6 +53,7 @@ run_sh "SINGLE INSTANCE + BACKGROUND (Linux, real binary)" tests/test-instance.s
 # Linux only, and only as root; both print SKIP elsewhere.
 run_sh "APPLY (Linux, live iptables)" tests/test-apply-linux.sh "PASSED|FAILED|SKIP"
 run_sh "APPLY DUAL-STACK (Linux, IPv4 + IPv6, private netns)" tests/test-apply-dual.sh "PASSED|FAILED|SKIP"
+run_sh "WHAT-IF vs KERNEL (Linux, private netns)" tests/test-whatif-live.sh "PASSED|FAILED|SKIP"
 # Start at sign-in (XDG entry; the sudo half as root), the boot unit and
 # `stockfw start' live in a private netns (root), the Linux installer in
 # a private mount namespace (root).

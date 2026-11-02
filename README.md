@@ -64,13 +64,19 @@ rules — without a shell prompt.
   a `/24` block covers the hosts inside it, and the line itself writes
   nothing — it is a question, not a change. It reads the shapes people
   type: *ssh is open at 22 port*, *port 80*, *:22*, *local:22*,
-  *rdp* → 3389, *ping* → ICMP. The verdict then plays in the
-  **Simulation Visualizer** — a small modal window that animates
-  source → firewall → destination (the packet travels; the wall
-  answers with a green check or a red shake; a blocked packet bounces
-  back and the far line grays out), shows the parsed packet details
-  and the reason in plain English, and offers **Create This Rule**,
-  which prints the literal rule, asks, and only then stages it.
+  *rdp* → 3389, *ping* → ICMP. The card keeps the line, shows how it
+  was read as chips (direction, protocol, port or service, host and
+  whether it is on the LAN or the Internet), answers in one row
+  (badge, one line, **Details**) and keeps the last five questions.
+  **Details** opens the **What-If window** beside the page (not
+  modal): the verdict and the question in plain words, an animated
+  diagram (this computer, the StockFW wall, the LAN or Internet host;
+  a still final frame when animations are off), the facts, *Why* (the
+  rules in the order the firewall checks them, the deciding one
+  highlighted and linked to its row on the Policy page) and *What you
+  can do*: one button per fix the engine verified, such as **Create
+  allow rule** with the exact row shown, which asks before anything
+  is written.
   **No network, no telemetry.**
 - **Activity** *(1.0.6)* — two graphs over 15 minutes to 24 hours:
   **Policy activity** (events per minute, allowed and blocked; blocked
