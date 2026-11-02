@@ -452,7 +452,8 @@ gchar   *fs_intel_lookup_sentence (const FsIntelConfig *config,
 
 /* Whether `id' is a set in the rule set last applied (and not
  * suspended): the kernel log parser accepts a "STOCKFW-TI <id>" line
- * only then [S17.3].  Cheap: cached by applied.state's mtime. */
+ * only then [S17.3].  Cheap: cached by applied.state's mtime.  FALSE
+ * without creating anything where there is no store. */
 gboolean fs_intel_applied_has (const gchar *id);
 
 G_END_DECLS

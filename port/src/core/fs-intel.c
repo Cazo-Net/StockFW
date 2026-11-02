@@ -1558,8 +1558,9 @@ fs_intel_consent_text (const FsIntelConfig *config, const gchar *id)
 	g_string_append (out, "\n\n");
 	g_string_append (out,
 		_("Blocklists contain mistakes. If a list blocks something you "
-		  "need, add that address to the allow list on the Threat Intel "
-		  "page, or run \"sudo stockfw intel except <address>\"."));
+		  "need, add an exception for that address: put it on the allow "
+		  "list on the Threat Intel page, or run \"sudo stockfw intel "
+		  "except <address>\"."));
 	g_free (often);
 	g_free (host);
 	return g_string_free (out, FALSE);
@@ -4152,7 +4153,12 @@ fs_intel_applied_has (const gchar *id)
 	struct stat st;
 	gboolean has = FALSE;
 
-	if (!fs_intel_id_is_valid (id) || !store_open (&store, NULL))
+	/* No store: nothing was ever applied.  The Linux log reader asks
+	 * this for every "STOCKFW-TI" line, which is only text in the
+	 * kernel log; it must not create the store any more than the other
+	 * read-only questions do. */
+	if (!fs_intel_id_is_valid (id) || !store_exists () ||
+	    !store_open (&store, NULL))
 		return FALSE;
 	G_LOCK (applied_cache);
 	if (fstatat (store.fd, APPLIED_NAME, &st, AT_SYMLINK_NOFOLLOW) != 0) {

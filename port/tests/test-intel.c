@@ -3045,6 +3045,11 @@ test_gate_start_stop (void)
 		       "no store: stop and start do nothing, create nothing");
 		fs_intel_outcome_free (o);
 		g_clear_error (&e);
+		/* The log reader asks this for any "STOCKFW-TI" line. */
+		CHECK (!fs_intel_applied_has ("local-start") &&
+		       !g_file_test (never, G_FILE_TEST_EXISTS),
+		       "no store: a list's log line is not attributed, and "
+		       "asking creates nothing");
 		kern.live = FS_INTEL_LIVE_PRESENT;
 		kern.live_digest = g_strdup ("0123456789abcdef0123456789abcdef");
 		CHECK (fs_intel_suspend (&fake_backend, "test", &e) &&

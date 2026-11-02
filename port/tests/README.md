@@ -1568,16 +1568,17 @@ Teeth (`teeth.py` in a scratch directory, the same procedure as above):
 ## Threat intel after the CLI and the page were merged (`intel-r3/integrated`)
 
 The CLI (`intel-r3/cli`) and the Threat Intel page (`intel-r3/ui`) were
-built side by side on the round 2 engine.  Once merged, three places
+built side by side on the round 2 engine.  Once merged, the places
 where they disagreed were fixed, each with a check:
 
 | check | where | what it proves |
 |---|---|---|
 | `Spamhaus DROP: the credit names The Spamhaus Project` | `fs-intelview-smoke` | the page's credit link is the catalog's credit line (`FsFeedInfo.credit`), the words `stockfw intel feeds` and the dashboard print, not the download host |
-| `the consent text sends mistakes to this page's allow list` | `fs-intelview-smoke` | the consent text names the page's allow list (it said "Exceptions", a heading the page does not have) |
+| `the consent text sends mistakes to this page's allow list` | `fs-intelview-smoke` | the consent text names the page's allow list (it said "Exceptions on the Threat Intel page", a heading the page does not have); `fs-intel-test`'s consent check still finds "exception" |
 | `... and it names the flag that takes it (the page's Accept smaller list)` | `test-intel-cli.sh` | a refused shrink prints `sudo stockfw intel update --feed ID --now --accept-shrink`, from the engine's `refused_override` |
 | `... the status says refused, accept_with --accept-shrink` | `test-intel-cli.sh` | `feeds --json` carries the same flag as `accept_with` |
 | `... update --json: refused, accept_with --accept-shrink` | `test-intel-cli.sh` | so does `update --json` |
+| `no store: a list's log line is not attributed, and asking creates nothing` | `fs-intel-test` | `fs_intel_applied_has`, which the Linux log reader (UI branch) asks for every `STOCKFW-TI` line, no longer creates the store, like the other read-only questions the CLI branch fixed |
 
 Teeth (each injected, rebuilt, run, restored with `cp`, checked with
 `cmp`):
@@ -1588,6 +1589,7 @@ Teeth (each injected, rebuilt, run, restored with `cp`, checked with
 | the consent text says "Exceptions on the Threat Intel page" again | `the consent text sends mistakes to this page's allow list` |
 | the CLI never reports an override (`accept_flag` returns NULL) | the three `test-intel-cli.sh` checks above |
 | the CLI maps a shrink to `--accept-coverage` | the same three checks |
+| `fs_intel_applied_has` without its `store_exists` check | `no store: a list's log line is not attributed, ...` (and then `no store, a table left behind: stop removes it, creates nothing`) |
 
 Every suite, module test and smoke was run on the merged tree (the
 smokes under `xvfb-run -a`; `fs-tray-smoke` fails headless as before).
