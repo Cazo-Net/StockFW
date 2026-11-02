@@ -197,6 +197,12 @@ fs_prefs_backup_path (void)
 }
 
 gboolean
+fs_prefs_dirty (void)
+{
+	return prefs_dirty;
+}
+
+gboolean
 fs_prefs_get_bool (const gchar *key, gboolean fallback)
 {
 	gchar *group = NULL;

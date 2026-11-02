@@ -79,6 +79,8 @@ guint fs_hitview_history_loaded (void);
 
 /* Writes out what is queued for the history file and closes it (quit). */
 void fs_hitview_shutdown (void);
+/* Writes the events queued for the history file now. */
+void fs_hitview_flush_history (void);
 
 /* Starts / stops the platform event source feeding the list. */
 gboolean fs_hitview_start (GError **error);

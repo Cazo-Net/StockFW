@@ -1,0 +1,74 @@
+---
+title: Copilot
+section: Using the app
+order: 14
+description: The Copilot page: how the behaviour baseline is learned, the twelve kinds of insight, Sentinel’s beacon and fan-out detectors, what auto-block may and may not do, and the audit trail behind it.
+---
+<h1>Copilot</h1>
+<p class="lede">A local analyst that reads the same events the Events page shows, learns what each program normally does, and tells you when something steps outside that. It is a parser and a set of counters, not a language model: it has no network, no account and no prompt, so it works on an air-gapped machine and cannot be talked into anything.</p>
+
+[[shot:copilot|The Copilot page: Sentinel mode set to “Detect + auto-block”, four tiles (apps learned, active insights, events analysed, policy rules), two warning insights about an unusual port and an unusual destination, and the What-if simulator box.|Two findings after a scan: a program using a port it never used, and a first contact with a new destination. Neither stages a rule by itself.]]
+
+<h2>What is on the page</h2>
+<ul>
+<li><strong>Sentinel:</strong> <em>Detect only</em> or <em>Detect + auto-block</em>. Detect only is the default and reports without touching the policy.</li>
+<li><strong>Run analysis</strong> looks at the current policy and the events seen so far and lists what it finds. Sentinel’s detectors run on every event regardless.</li>
+<li>Four tiles: <em>Apps learned</em>, <em>Active insights</em>, <em>Events analyzed</em>, <em>Policy rules</em>.</li>
+<li><strong>Insights and suggestions:</strong> a table of findings with title, type, severity, description, program and status. Double-click a row for the full explanation. <em>Apply selected rule</em> stages the rule a finding suggests, after showing it; <em>Clear insights</em> empties the list; <em>Undo auto-block</em> lifts what Sentinel staged.</li>
+<li><strong>What-If simulator:</strong> a question about a connection in plain words, with <em>Read as</em> chips showing how the line was understood, the verdict in one row, and <strong>Details</strong> opening the What-If window beside the page. It has <a href="{{root}}docs/simulator.html">its own page</a>.</li>
+</ul>
+
+<h2>The baseline</h2>
+<p>Every event is attributed to a program (on Windows the event carries its path; on Linux the connection table does), and each program gets a profile: the ports it has used, the destinations it has contacted, the hours of the day it is active, and how many connections it makes per ten-minute window. The profile is written to <code>behavior.csv</code> in your profile folder and read back at the next start, so what was learned survives a restart.</p>
+<p>The profile is deliberately bounded: 256 programs, 256 ports and 1,024 destinations each. When a program reaches a cap its profile is marked <em>partial</em>, and the novelty findings (“first time on this port”) go quiet for it, because a truncated baseline cannot honestly claim “never seen before”. Findings about hours need four distinct hours of history first; findings about rate need eight completed windows and at least ten events in the window being judged. [[verified:test-core.sh]]</p>
+
+<h2>The insights</h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Type</th><th>What it means</th><th>Carries a rule?</th></tr></thead>
+<tbody>
+<tr><td>New App</td><td>A program made its first connection.</td><td>No</td></tr>
+<tr><td>Unusual Port</td><td>A known program used a port it never used before.</td><td>Suggests an allow for review</td></tr>
+<tr><td>Unusual Dest</td><td>A known program contacted a destination it never contacted before.</td><td>Suggests an allow for review</td></tr>
+<tr><td>Unusual Volume</td><td>A program’s connection rate jumped far above its established rate.</td><td>No</td></tr>
+<tr><td>Unusual Time</td><td>Activity at an hour the program has never been active at.</td><td>No</td></tr>
+<tr><td>Rule Conflict, Redundant Rule, Missing Rule, Optimization</td><td>Findings about the policy itself: rules that contradict, duplicate or could be merged, and traffic no rule describes.</td><td>Sometimes, always shown first</td></tr>
+<tr><td>Suspicious</td><td>Behaviour that matches the shape of malware traffic.</td><td>No</td></tr>
+<tr><td>Beacon</td><td>Sentinel: metronomic outbound contact with one host. See below.</td><td>A deny, the only kind that can auto-stage</td></tr>
+<tr><td>Fan-Out</td><td>Sentinel: a burst of distinct destinations, the shape of a scan or a spreading worm.</td><td>Never: a line, not a judgement</td></tr>
+</tbody>
+</table>
+</div>
+<p>Severities are Info, Warning and Critical. The list keeps the newest 200 findings. A finding that suggests an <em>allow</em> is only ever a suggestion: nothing on this page can open the firewall without you pressing a button and reading the rule in a Yes/No dialog first. [[verified:test-adversarial.sh]]</p>
+
+<h2>Sentinel</h2>
+<p>Sentinel watches outbound traffic for the two signatures of a program that is no longer working for you. It is egress-only by design: an inbound scan is the Events page’s business, and the engine already drops it.</p>
+<dl>
+<dt>Beacon</dt>
+<dd>Six or more contacts with the same host and port, at a mean interval between 10 seconds and 10 minutes, with a coefficient of variation of 0.30 or less. A human clicking, a browser’s jittered keep-alives and git’s background fetches do not pass that regularity test; a command-and-control callback does. The finding is Critical and carries a deny rule for the destination.</dd>
+<dt>Fan-out</dt>
+<dd>Sixty distinct destinations within sixty seconds, or ten distinct destinations the firewall <em>blocked</em> within sixty seconds. The finding is Critical and deliberately carries no rule, because “block everything this program touched” is a decision for you, not for a counter. A package manager pulling from 59 mirrors reports nothing; the 60th reports a line.</dd>
+</dl>
+<p>Both thresholds are pinned by the adversarial suite, which plays a blocked port scan, a single-host port sweep, a command-and-control beacon, a replay of a real incident, benign developer tools, an exfiltration burst and a failed apply through the detectors, and asserts that only the beacon would ever reach the firewall unattended. [[verified:test-adversarial.sh]]</p>
+
+<h2>Auto-block, and what it may never do</h2>
+<p>With Sentinel set to <em>Detect + auto-block</em>, a beacon’s deny rule is staged into the policy and pushed through the <a href="{{root}}docs/policy.html#apply-step-by-step">apply gate</a> without waiting for you. Because that is the one place where StockFW acts on its own, it is fenced on every side:</p>
+<ul>
+<li><strong>Only a deny, only for a public stranger.</strong> Auto-block can tighten the policy, never loosen it. A destination that is loopback, link-local, multicast, a private LAN range, carrier NAT, a reserved range, or an IPv4-mapped IPv6 address standing for any of those, is never auto-blocked, and neither is anything that does not parse as an address. A destination this program has contacted three or more times before the current run is <em>established</em>, and established traffic is reported, never blocked. That is the browser-talking-to-a-CDN case. [[verified:test_sentinel_auto_gates]]</li>
+<li><strong>Ten minutes.</strong> Every staged block expires ten minutes after it was staged. The staging record is written to the <code>autoblocks</code> file as it changes, so a block survives a restart with its <em>original</em> clock: a restart grants no fresh ten minutes, and a block that expired while StockFW was closed is taken out at the next start, with an audit line saying so. [[verified:fs-copilot-smoke]]</li>
+<li><strong>No loops.</strong> Once a block is taken down, by expiry, by Undo, by your own Allow or by switching to Detect only, the same rule cannot be staged again in this session. The incident that shaped these rules was a ten-minute block that re-staged itself every ten minutes for two days.</li>
+<li><strong>Your Allow wins.</strong> Allowing a destination from the Events page first lifts any Sentinel block for it, then pushes the allow, so both reach the firewall together. On Windows a block rule outranks an allow rule, so without this your Allow would have changed nothing on the wire.</li>
+<li><strong>Detect means detect.</strong> Switching Sentinel out of auto mode takes every staged block down at once.</li>
+<li><strong>Your rules are never touched.</strong> Sentinel’s rows carry a <code>Sentinel:</code> comment and are the only rows it will ever remove.</li>
+</ul>
+<p>In the <em>Status</em> column a staged rule reads <em>Auto-blocked</em>; the <em>Undo auto-block</em> button lifts the selected one at once.</p>
+
+<h2>The audit trail</h2>
+<p>Every stage, push, undo, expiry, restore at start-up and mode switch is one line in <code>audit.log</code>: <code>sentinel auto-block</code>, <code>sentinel auto-block is live</code>, <code>sentinel auto-block staged, not live</code>, <code>sentinel rule removed</code>, <code>sentinel auto-blocks restored</code>, and the failure variants. The file is only ever appended to. <a href="{{root}}docs/files.html#audit-log">Files and formats</a> describes the line.</p>
+
+<h2>Honest limits</h2>
+<ul>
+<li>On Linux the kernel log carries no program name, so profiles are keyed by what the connection table can attribute; a connection that closes before the next poll is counted without a program. [[gap]]</li>
+<li>Sentinel has no inbound scan detector, by design.</li>
+<li>The behaviour analysis is heuristic. It is explained in plain words so you can judge it; it is not a verdict about the program’s intent.</li>
+</ul>

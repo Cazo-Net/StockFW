@@ -49,18 +49,27 @@ run_sh "STAGED RUNTIME (build/ on its own)" tests/test-staged-runtime.sh "PASSED
 run_sh "BACKEND COMPILE (state-windows)" tests/test-state-windows.sh "compiled|PASSED|FAILED|ok:"
 run_sh "UAF ANALYZE" tests/test-uaf-analyze.sh
 run_sh "CLI + DASHBOARD (Linux)" tests/test-cli.sh
+# Linux with a display (xvfb-run); prints SKIP elsewhere.
+run_sh "SINGLE INSTANCE + BACKGROUND (Linux, real binary)" tests/test-instance.sh "PASSED|FAILED|SKIP"
 # Linux only, and only as root; both print SKIP elsewhere.
 run_sh "APPLY (Linux, live iptables)" tests/test-apply-linux.sh "PASSED|FAILED|SKIP"
 run_sh "APPLY DUAL-STACK (Linux, IPv4 + IPv6, private netns)" tests/test-apply-dual.sh "PASSED|FAILED|SKIP"
+run_sh "WHAT-IF vs KERNEL (Linux, private netns)" tests/test-whatif-live.sh "PASSED|FAILED|SKIP"
+# Start at sign-in (XDG entry; the sudo half as root), the boot unit and
+# `stockfw start' live in a private netns (root), the Linux installer in
+# a private mount namespace (root).
+run_sh "START AT SIGN-IN (Linux, real binary)" tests/test-autostart.sh "PASSED|FAILED|SKIP"
+run_sh "BOOT START (unit + stockfw start, private netns)" tests/test-boot-start.sh "PASSED|FAILED|SKIP"
+run_sh "LINUX INSTALLER (boot unit, private mount ns)" tests/test-linux-install.sh "PASSED|FAILED|SKIP"
 
 section "UI SMOKE TARGETS"
 rc=0
-ninja -C build fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
+ninja -C build fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
 echo "ninja exit=$rc"
 grep "error:" "$TMP/last-ninja.txt" | head -5
 [ "$rc" -eq 0 ] || fails=$((fails+1))
 
-for exe in fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke; do
+for exe in fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke; do
   rc=0
   "./build/$exe" > "$TMP/last-suite.txt" 2>&1 || rc=$?
   echo "--- $exe exit=$rc"

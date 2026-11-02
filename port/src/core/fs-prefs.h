@@ -158,6 +158,10 @@ const gchar *fs_prefs_path (void);
 /* Where an unreadable settings file is kept: "<path>.bad".  Caller frees. */
 gchar       *fs_prefs_backup_path (void);
 
+/* TRUE when a setter changed something since the last load or save:
+ * what the running program's periodic save checks (1.0.7). */
+gboolean fs_prefs_dirty (void);
+
 gboolean  fs_prefs_get_bool   (const gchar *key, gboolean fallback);
 void      fs_prefs_set_bool   (const gchar *key, gboolean value);
 gchar    *fs_prefs_get_string (const gchar *key, const gchar *fallback);

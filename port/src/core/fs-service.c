@@ -8,86 +8,105 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Ported verbatim from service.c. */
+/* Ported from service.c, with the protocols each service really
+ * uses.  This is the one place that says so: the Windows rule
+ * translation reads it, and a wrong entry here is a wrong firewall
+ * rule there (1.0.6 had NTP as TCP, and every service not on its
+ * TCP list became "any protocol, any port").
+ *   - DHCP is UDP only (67 server, 68 client).
+ *   - DNS answers on UDP and uses TCP for large replies and zone
+ *     transfers.
+ *   - NTP is UDP 123.
+ *   - Samba: the NetBIOS name and datagram services are UDP 137-138,
+ *     the session service TCP 139 and direct SMB TCP 445.
+ *   - NFS: the portmapper and nfsd listen on both protocols.
+ *   - HTTPS includes HTTP/3 (QUIC), which runs over UDP 443.
+ *   - BitTorrent peers speak TCP, and uTP and DHT over UDP, on the
+ *     same range.
+ * The rest are TCP. */
 static const FsService user_services[] = {
-	{ "BitTorrent", "6881-6889" },
-	{ "DHCP", "67-68" },
-	{ "DNS", "53" },
-	{ "FTP", "20-21" },
-	{ "HTTP", "80" },
-	{ "HTTPS", "443" },
-	{ "IMAP", "143" },
-	{ "NFS", "111 2049" },
-	{ "NNTP", "119" },
-	{ "NTP", "123" },
-	{ "POP3", "110" },
-	{ "Samba (SMB)", "137-139 445" },
-	{ "SMTP", "25" },
-	{ "SSH", "22" },
-	{ "Telnet", "23" },
-	{ "Xwindows", "6000-6015" }
+	{ "BitTorrent", "6881-6889", "6881-6889", "6881-6889" },
+	{ "DHCP", "67-68", NULL, "67-68" },
+	{ "DNS", "53", "53", "53" },
+	{ "FTP", "20-21", "20-21", NULL },
+	{ "HTTP", "80", "80", NULL },
+	{ "HTTPS", "443", "443", "443" },
+	{ "IMAP", "143", "143", NULL },
+	{ "NFS", "111 2049", "111,2049", "111,2049" },
+	{ "NNTP", "119", "119", NULL },
+	{ "NTP", "123", NULL, "123" },
+	{ "POP3", "110", "110", NULL },
+	{ "Samba (SMB)", "137-139 445", "139,445", "137-138" },
+	{ "SMTP", "25", "25", NULL },
+	{ "SSH", "22", "22", NULL },
+	{ "Telnet", "23", "23", NULL },
+	{ "Xwindows", "6000-6015", "6000-6015", NULL }
 };
 
+/* Back doors and other ports worth blocking.  Their protocol columns
+ * are empty: a block should cover whatever the thing speaks, so they
+ * get both protocols, the rule for any name that is not a well-known
+ * service.  SSDP is the exception: it is UDP 1900 only. */
 static const FsService misc_services[] = {
-	{ "DCOM-scm", "135" },
-	{ "PhAse zero", "555" },
-	{ "PC server backdoor", "600" },
-	{ "Mountd bug", "635" },
-	{ "Kazaa", "1214" },
-	{ "Nessus", "1241" },
-	{ "Subseven", "1234,1243,2772,2773" },
-	{ "Trin00", "1524,27444,31335" },
-	{ "SSDP", "1900" },
-	{ "Backdoor-g/Subseven", "1999" },
-	{ "CPQ-Wbem", "2301" },
-	{ "Master's paradise", "3129" },
-	{ "HotU chat", "3449" },
-	{ "MS IPSec NAT-T", "4500" },
-	{ "eDonkey", "4662" },
-	{ "uPNP", "5000" },
-	{ "SIP", "5060" },
-	{ "SIP over TLS", "5061" },
-	{ "AOL IM", "5190-5193" },
-	{ "pcAnywhere", "5623" },
-	{ "VNC reflector", "5999" },
-	{ "VNC", "5900,5500,5800" },
-	{ "Gnutella", "6346" },
-	{ "Deep throat", "6670" },
-	{ "Sub-7", "6711-6713,6776,16959" },
-	{ "Gatecrasher", "6969" },
-	{ "RealAudio", "6970" },
-	{ "Sub-7 matrix chat", "7215" },
-	{ "Unreal", "7777-7778" },
-	{ "SHOUTcast", "8000" },
-	{ "Teamspeak server", "8767" },
-	{ "Webadmin", "10000" },
-	{ "Cheeseworm", "10008" },
-	{ "Netbus", "12345,12346" },
-	{ "PowWow", "13223" },
-	{ "Teamspeak server", "14534" },
-	{ "Stacheldraht", "16660,60001,65000" },
-	{ "Conducent", "17027" },
-	{ "Kuang2", "17300" },
-	{ "Useradmin", "20000" },
-	{ "Netbus 2 pro", "20034" },
-	{ "Acidkor", "20002" },
-	{ "Girlfriend", "21544" },
-	{ "Evilftp", "23456" },
-	{ "Half-life", "27015" },
-	{ "Backdoor-G or Sub-7", "27374" },
-	{ "Quake", "27910-27961" },
-	{ "Netsphere", "30100" },
-	{ "Back orifice", "31337-31338" },
-	{ "Hack'a'tack", "31789" },
-	{ "Sun-RPC portmap", "32770-32900" },
-	{ "Trinity v3", "33270" },
-	{ "Traceroute", "33434-33600" },
-	{ "Inoculan", "41508" },
-	{ "Teamspeak network", "45647" },
-	{ "Sockets de troi", "50505" },
-	{ "Teamspeak query port", "51234" },
-	{ "Sub-7 spy port", "54283" },
-	{ "Back orifice 2K", "54320-54321" }
+	{ "DCOM-scm", "135", NULL, NULL },
+	{ "PhAse zero", "555", NULL, NULL },
+	{ "PC server backdoor", "600", NULL, NULL },
+	{ "Mountd bug", "635", NULL, NULL },
+	{ "Kazaa", "1214", NULL, NULL },
+	{ "Nessus", "1241", NULL, NULL },
+	{ "Subseven", "1234,1243,2772,2773", NULL, NULL },
+	{ "Trin00", "1524,27444,31335", NULL, NULL },
+	{ "SSDP", "1900", NULL, "1900" },
+	{ "Backdoor-g/Subseven", "1999", NULL, NULL },
+	{ "CPQ-Wbem", "2301", NULL, NULL },
+	{ "Master's paradise", "3129", NULL, NULL },
+	{ "HotU chat", "3449", NULL, NULL },
+	{ "MS IPSec NAT-T", "4500", NULL, NULL },
+	{ "eDonkey", "4662", NULL, NULL },
+	{ "uPNP", "5000", NULL, NULL },
+	{ "SIP", "5060", NULL, NULL },
+	{ "SIP over TLS", "5061", NULL, NULL },
+	{ "AOL IM", "5190-5193", NULL, NULL },
+	{ "pcAnywhere", "5623", NULL, NULL },
+	{ "VNC reflector", "5999", NULL, NULL },
+	{ "VNC", "5900,5500,5800", NULL, NULL },
+	{ "Gnutella", "6346", NULL, NULL },
+	{ "Deep throat", "6670", NULL, NULL },
+	{ "Sub-7", "6711-6713,6776,16959", NULL, NULL },
+	{ "Gatecrasher", "6969", NULL, NULL },
+	{ "RealAudio", "6970", NULL, NULL },
+	{ "Sub-7 matrix chat", "7215", NULL, NULL },
+	{ "Unreal", "7777-7778", NULL, NULL },
+	{ "SHOUTcast", "8000", NULL, NULL },
+	{ "Teamspeak server", "8767", NULL, NULL },
+	{ "Webadmin", "10000", NULL, NULL },
+	{ "Cheeseworm", "10008", NULL, NULL },
+	{ "Netbus", "12345,12346", NULL, NULL },
+	{ "PowWow", "13223", NULL, NULL },
+	{ "Teamspeak server", "14534", NULL, NULL },
+	{ "Stacheldraht", "16660,60001,65000", NULL, NULL },
+	{ "Conducent", "17027", NULL, NULL },
+	{ "Kuang2", "17300", NULL, NULL },
+	{ "Useradmin", "20000", NULL, NULL },
+	{ "Netbus 2 pro", "20034", NULL, NULL },
+	{ "Acidkor", "20002", NULL, NULL },
+	{ "Girlfriend", "21544", NULL, NULL },
+	{ "Evilftp", "23456", NULL, NULL },
+	{ "Half-life", "27015", NULL, NULL },
+	{ "Backdoor-G or Sub-7", "27374", NULL, NULL },
+	{ "Quake", "27910-27961", NULL, NULL },
+	{ "Netsphere", "30100", NULL, NULL },
+	{ "Back orifice", "31337-31338", NULL, NULL },
+	{ "Hack'a'tack", "31789", NULL, NULL },
+	{ "Sun-RPC portmap", "32770-32900", NULL, NULL },
+	{ "Trinity v3", "33270", NULL, NULL },
+	{ "Traceroute", "33434-33600", NULL, NULL },
+	{ "Inoculan", "41508", NULL, NULL },
+	{ "Teamspeak network", "45647", NULL, NULL },
+	{ "Sockets de troi", "50505", NULL, NULL },
+	{ "Teamspeak query port", "51234", NULL, NULL },
+	{ "Sub-7 spy port", "54283", NULL, NULL },
+	{ "Back orifice 2K", "54320-54321", NULL, NULL }
 };
 
 const FsService *
@@ -106,6 +125,36 @@ fs_service_misc_list (guint *count)
 		*count = G_N_ELEMENTS (misc_services);
 
 	return misc_services;
+}
+
+/* [ service_name_matches ]
+ * A policy row stores the name it was written with: the table's own
+ * spelling, its translation (the default policy writes _("DHCP")), or
+ * a hand-edited lower-case one. */
+static gboolean
+service_name_matches (const gchar *name, const gchar *table_name)
+{
+	return (g_ascii_strcasecmp (name, table_name) == 0 ||
+	        g_strcmp0 (name, _(table_name)) == 0);
+}
+
+const FsService *
+fs_service_find (const gchar *name)
+{
+	if (name == NULL || *name == '\0')
+		return NULL;
+
+	for (guint i = 0; i < G_N_ELEMENTS (user_services); i++) {
+		if (service_name_matches (name, user_services[i].name))
+			return &user_services[i];
+	}
+
+	for (guint i = 0; i < G_N_ELEMENTS (misc_services); i++) {
+		if (service_name_matches (name, misc_services[i].name))
+			return &misc_services[i];
+	}
+
+	return NULL;
 }
 
 void

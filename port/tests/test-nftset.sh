@@ -40,8 +40,8 @@ ok()   { echo "ok:   $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails + 1)); }
 check() { if eval "$1"; then ok "$2"; else bad "$2"; fi; }
 
-set4() { nft list set inet stockfw_intel blocklist 2>/dev/null; }
-set6() { nft list set inet stockfw_intel blocklist6 2>/dev/null; }
+set4() { nft list set inet stockfw_blocklist blocklist 2>/dev/null; }
+set6() { nft list set inet stockfw_blocklist blocklist6 2>/dev/null; }
 
 cat > "$W/a.csv" <<'EOF'
 ip,comment
@@ -90,7 +90,7 @@ cat > "$W/bin/nft" <<EOF
 script="\$(cat)"
 if grep -q "add element" <<<"\$script"; then
   script="\$script
-add element inet stockfw_intel blocklist { 999.1.1.1 }"
+add element inet stockfw_blocklist blocklist { 999.1.1.1 }"
 fi
 printf '%s\n' "\$script" | "$REAL_NFT" "\$@"
 EOF
@@ -118,16 +118,16 @@ out="$("$LOAD" "$W/wide.csv")"; rc=$?
 check '[ $rc -ne 0 ] && grep -q "198.51.100.99" <<<"$(set4)"' \
       "a /7 is refused as too wide (${out:0:70})"
 
-out="$("$LOAD" "$W/a.csv" stockfw_intel 'x;flush')"; rc=$?
+out="$("$LOAD" "$W/a.csv" stockfw_blocklist 'x;flush')"; rc=$?
 check '[ $rc -ne 0 ]'                                  "a hostile set name is refused (${out:0:60})"
 
 # --- 5. a rule using the set drops traffic to a listed address
 ip link set lo up
 ip addr add 198.51.100.99/32 dev lo
 ip addr add 198.51.100.50/32 dev lo
-nft add chain inet stockfw_intel output \
+nft add chain inet stockfw_blocklist output \
   '{ type filter hook output priority filter - 10; policy accept; }'
-nft add rule inet stockfw_intel output ip daddr @blocklist counter drop
+nft add rule inet stockfw_blocklist output ip daddr @blocklist counter drop
 ( exec 3<>/dev/tcp/198.51.100.50/9 ) 2>/dev/null; plain=$?
 timeout 3 bash -c '( exec 3<>/dev/tcp/198.51.100.99/9 )' 2>/dev/null; listed=$?
 # Port 9 has no listener: an unlisted address answers at once with a
@@ -136,12 +136,12 @@ timeout 3 bash -c '( exec 3<>/dev/tcp/198.51.100.99/9 )' 2>/dev/null; listed=$?
 check '[ $plain -eq 1 ]'                               "an unlisted address answers (refused at once)"
 echo "      (connect: unlisted=$plain listed=$listed)"
 check '[ $listed -eq 124 ]'                            "a listed address is dropped (no answer, timed out)"
-check 'nft list chain inet stockfw_intel output | grep -q "packets [1-9]"' \
+check 'nft list chain inet stockfw_blocklist output | grep -q "packets [1-9]"' \
       "the rule's counter saw the dropped packets"
 
 # --- 6. reloading keeps the chain that uses the set
 "$LOAD" "$W/a.csv" >/dev/null; rc=$?
-check '[ $rc -eq 0 ] && nft list chain inet stockfw_intel output | grep -q "@blocklist"' \
+check '[ $rc -eq 0 ] && nft list chain inet stockfw_blocklist output | grep -q "@blocklist"' \
       "a reload leaves the table's chains in place"
 
 echo

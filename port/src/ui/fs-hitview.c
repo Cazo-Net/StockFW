@@ -21,6 +21,7 @@
 #include "ui/fs-copilot.h"
 #include "ui/fs-statusview.h"
 #include "ui/fs-policyview.h"
+#include "ui/fs-app.h"
 #include "core/fs-backend.h"
 #include "core/fs-service.h"
 #include "core/fs-prefs.h"
@@ -785,8 +786,11 @@ on_hit (const FsHit *hit, gpointer user_data)
 
 	/* Feed to copilot for learning and anomaly detection. */
 	extern FsCopilot *copilot;
-	if (copilot != NULL)
+	if (copilot != NULL) {
 		fs_copilot_feed_event (copilot, hit);
+		/* The baseline changed: the next periodic save writes it. */
+		fs_app_note_learning ();
+	}
 
 	/* Sentinel auto-block: in auto mode a fresh beacon insight is
 	 * staged into the policy right here, not the next time someone
@@ -949,6 +953,13 @@ void
 fs_hitview_shutdown (void)
 {
 	history_close ();
+}
+
+void
+fs_hitview_flush_history (void)
+{
+	if (elog != NULL)
+		fs_eventlog_flush (elog, NULL);
 }
 
 guint

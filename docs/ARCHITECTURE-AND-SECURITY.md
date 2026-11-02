@@ -278,6 +278,8 @@ The args are collected as `char **` and handed to `spawn_capture()`, which build
 
 Netsh's own limitations are handled explicitly rather than discovered at runtime: rule names are sanitized because netsh rejects colons, parentheses and slashes that the UI's display names legitimately contain; port specifications are dropped for protocol `any` because netsh refuses them; profile is always `any` so the compiled rule behaves uniformly as the user toggles Domain/Private/Public.
 
+**1.0.7:** dropping the port for protocol `any` was a security defect, not a safe limitation: most services compiled to `any`, so their rules matched all traffic in their direction. Ports are now netsh port specs, a ported rule is always TCP or UDP, and the argv is built in core by `fs_fwrule_netsh_args()`. See 14.2.
+
 ### 3.3 Event Acquisition: 5156/5157 and `wevtutil`
 
 The monitoring side reads two Security log events: **5156** (the Windows Filtering Platform permitted a connection) and **5157** (it blocked one). Each record carries exactly the fields the Events page shows: application path (hence the process name, e.g. `brave.exe` or `svchost.exe`), source and destination addresses, ports, protocol, direction, and the verdict.
@@ -403,6 +405,8 @@ Entity extraction is table-driven: service aliases resolve through the same serv
 
 ### 4.3 What-If Simulator and Anomaly Detection
 
+*1.0.7: the simulator described here was replaced by the What-If engine (§14.3), which models Linux and Windows separately, answers every case a line leaves open, and verifies each fix it offers. The paragraph below records the 1.0.5 design.*
+
 The **simulator** answers a policy question before any change. A line of free text is parsed in core (`fs_copilot_parse_scenario` → `FsScenario`: direction — default **outbound** — host/CIDR, port, protocol, application) and evaluated against the loaded policy by `fs_copilot_simulate_text`, which writes nothing. The verdict is computed the way Windows Firewall resolves real traffic: **block rules take precedence over covering allows**, and when both match, the result reports the allow as *shadowed* instead of pretending it wins. Address matching covers CIDR (`fs_util_addr_in_cidr` — a `/24` block covers the hosts inside it), and **ports match the same way**: a port either side left unnamed is unconstrained, so a line that named no port still meets the rule that opens a specific one, while ICMP — which has no ports — never meets a ported rule however the line phrased it. Among the rules that fit, the best-scoring one is the rule the verdict names, not merely the first: the exact port and host beat an any-port or anyone rule, with the policy's own order breaking ties, and the reason carries the deciding port — and a forward's destination — so a verdict reached through one slice of the policy reads like one. A known service name supplies the port when the line names none, and when no policy is loaded the verdict says so rather than inventing rules it does not have. The panel prints the parsed reading next to the verdict, and a line that named no port or no host carries an explicit note pointing at the verdict, which names any port or host that decided it — a verdict read against "any port" cannot silently pass for a verdict for one port (ICMP lines skip the port note: they have no ports to name). The same result then plays in the **Simulation Visualizer** (§4.7) — the panel keeps the scrollback, the window plays the verdict — and neither a policy row nor an audit line is written by simulating: the simulator is a question, not a change. This is the "explain the verdict" feature that raw `wf.msc` cannot offer, and it doubles as a conflict detector for Chapter 7.
 
 **Anomaly detection** is statistical, not speculative. Per-profile counters track each application's observed behavior (destination ports, peers, direction mix); `is_anomalous_port` flags first-time or rare service usage for that profile (e.g., a chat client suddenly using a database port). Insights are generated only when a threshold observed in *this user's* traffic is crossed, which is why the Insights list is clearable and bounded — insight history is session state, not an ever-growing database. Because counters are fed only by deduplicated event records (Section 2.2), an attacker cannot cheaply flood the Copilot's memory: intake is capped at ten records per five seconds before the Copilot ever sees a record.
@@ -445,6 +449,12 @@ The translation problem is made tractable by inverting the usual direction: inst
 Design rules that keep the mapping honest: **explicit beats inferred** (a stated port clause beats the service default), **known shapes only** (addresses parse by digits, dots and colons — a hostname never becomes a host: `open.code.exe` must not parse as an address), and **nothing parseable means no verdict**: the parser returns NULL, the panel says the line could not be read, and no policy walk happens. The alias tables — service names, direction keywords, protocol words — are data, not code, so extending comprehension is a table edit covered by parse-level unit tests (the core suite's 353 checks include both suggestion-parse and scenario-parse coverage, including the reading shapes the visualizer's examples rely on (`ssh is open at 22 port`, `:22`, `local:22`, `rdp`, `ftp`)).
 
 ### 4.7 Simulation Visualizer: One Verdict, Two Surfaces
+
+*1.0.7: the window now plays the What-If engine's result (§14.3), and the card and window were redesigned. What follows the note describes 1.0.6; in 1.0.7:*
+
+- *The card keeps the typed line, shows how it was read as chips (verb, direction, protocol, port or service, host with its LAN/Internet zone, and anything seen but not used), answers in one row (verdict badge, one line, **Details**) and keeps the last five questions (newest first, a repeat moves up). When the answer describes a saved policy the firewall is not running (applies held, last apply failed, changed since), the line says so first.*
+- *Details opens `fs_simviz_window_new()`: a transient, non-modal window (about 760 x 640, scrolled) that the card updates in place when another question is asked. Its header carries the verdict (ALLOWED, BLOCKED, DEPENDS, ERROR) and the question in plain words; a line asked both ways gets one tab per direction. Then the diagram (device cards that say what they are, the zone of each side, the wall and the model it stands for; Replay as an icon over it; a still final frame when `gtk-enable-animations` is off), the facts (protocol, from, to, port/service, direction, the platform's model, the Windows profile), *Why* (the trace numbered in the order the firewall checks it, long runs of non-matching rules folded, the deciding step highlighted, policy rows linked to the Policy page) and *What you can do* (one button per verified action, the exact row a Create writes shown above it; with nothing to do, the reason). Close is the dialog's default action: Enter and Esc work.*
+- *The window only presents. Its buttons call back into `fs-copilot.c`, which re-checks a Create against the policy as it is now, asks with the literal row, saves, pushes through the apply gate, and asks the question again so the window shows whether the verdict really changed.*
 
 The verdict from §4.3 is computed once and shown twice: the panel keeps the scrollback (cheap iteration), and `fs-simviz` (`SimulationVisualizer` as a C component: `fs_simviz_run (parent, result, scenario, query)`) plays it in a modal window — header bar titled *What-If Simulation* with the native (X), the typed question as a pill, the diagram, a banner, the explanation, and a footer. Esc closes it; it centers over the Copilot window; the layout is theme-font and shrinks to 520 px wide. **The component only presents** — it receives the `FsSimulationResult` and re-judges nothing.
 
@@ -1039,13 +1049,24 @@ Priority 3 of the copilot program (10.1) — *rule-impact previews, audit-only t
 
 The roadmap's *Tray icon* item (10.1) — and the requirement that StockFW keep working in the background the way a tray application does — ships as a small new UI module plus the two Preferences switches that used to be disabled with an admission note.
 
-- **The surface** (`fs-tray.c/h`, Layer 1): GTK3's `GtkStatusIcon` — deprecated since 3.14, but the only tray API the toolkit ships, and on MSYS2 it is fully wired: the toolkit calls `Shell_NotifyIconW` and reports the result honestly through `gtk_status_icon_is_embedded()` (verified against the live Windows shell). The file compiles inside `G_GNUC_BEGIN_IGNORE_DEPRECATIONS` on purpose rather than hand-rolling a Win32 shim no test could trust. The icon reuses the window's logo, its tooltip carries the firewall state sentence fed from `fs_statusview_set_state()` — a glance at the tray answers the question a background firewall exists for — a left click restores the window, and the right-click menu holds exactly **Open StockFW** and **Quit StockFW**.
+- **The surface** (`fs-tray.c/h`, Layer 1): GTK3's `GtkStatusIcon` — deprecated since 3.14, but the only tray API the toolkit ships, and on MSYS2 it is fully wired: the toolkit calls `Shell_NotifyIconW`. (Through 1.0.6 this section said the toolkit reports the result honestly through `gtk_status_icon_is_embedded()`; on Win32 that call answers TRUE whatever the shell did, so since 1.0.7 Windows checks for Explorer's taskbar instead — see 1.0.7 below.) The file compiles inside `G_GNUC_BEGIN_IGNORE_DEPRECATIONS` on purpose rather than hand-rolling a Win32 shim no test could trust. The icon reuses the window's logo, its tooltip carries the firewall state sentence fed from `fs_statusview_set_state()` — a glance at the tray answers the question a background firewall exists for — a left click restores the window, and the right-click menu held **Open StockFW** and **Quit StockFW** (1.0.7 extends it: see below).
 - **Close/minimize to the tray, gate failing closed**: `on_delete_event` is now a `gboolean` handler (it used to be `void` on a boolean-returning signal, leaving the result as whatever a register held) and hides the window — instead of quitting — only when `fs_tray_hide_on_close()` says so: the *Minimize to the tray* preference **and** an icon object **and** an icon the shell really embedded. No icon, no hiding: a shell that rejected the icon, or a user who turned the tray off, gets the old quit behavior — the program can never end up running invisibly with no way back. The minimize button takes the same gate through `window-state-event`.
 - **The switches are live**: *Show a tray icon* and *Minimize to the tray* render enabled with a note describing what they actually do, and accepting Preferences re-syncs the icon in both directions while the program runs. The old disclosure note ("Tray icon support is not implemented in this port") is gone, and the UI smoke fails if either switch goes insensitive again or that note comes back.
 - **Quit paths stay real**: the tray menu's Quit and File → Quit both run `fs_app_quit()`, whose first act is `fs_tray_uninstall()` — a tray icon that outlived the process would be a dead icon that still looks clickable.
 - **[Verified]** `fs-tray-smoke` (23 checks) against the **real Windows shell**: preference off ⇒ nothing installed and close quits even with minimize-on; preference on ⇒ installed **and embedded** (a real `NIM_ADD` — the integration a unit test cannot fake); the minimize switch gates independently of the icon; a live preference flip takes the icon down and brings it back; the tooltip read back through the shell-side getter, not the module's own bookkeeping; the menu's exact contents; hide→show restore; teardown; and activating the real Quit item runs `fs_app_quit` — observed as the prefs save in a scratch dir, with the smoke still standing afterwards. `ui-prefs-smoke` additionally asserts both switches are present and sensitive on the Interface page. **Runtime evidence for the app wiring** (no smoke runs `fs_app_activate`): manual `WM_CLOSE` runs against the built executable — with the tray preference on, the process survives hidden; with it off, the process quits cleanly. **Teeth battery (fifteen)**: ten sabotages — install ignoring the preference, the hide gate losing the icon or losing the preference, sync never uninstalling, the Quit item dropped, the Quit handler neutered, `set_window` ignored, uninstall a no-op, the checkbox going insensitive again, the old admission note restored — each fails exactly the checks that pin it, plus five static pins for the `fs-app.c`/`fs-statusview.c` wiring, labelled STATIC because no smoke exercises it (the manual runs are its runtime counterpart).
 - **Honest limits**: the menu's interactive feel (left click, right-click positioning) rests on `GtkStatusIcon`'s documented signal contract and was not clicked through by a human here; the close-button hide was proven by posting `WM_CLOSE` to the built executable, not by clicking the title-bar X; a new tray icon may land in Windows' overflow flyout until the user drags it out — normal shell behavior.
 
+
+**1.0.7: running in the background.**
+
+- **One copy per user** (`core/fs-instance.c`; on Windows per sign-in session): a second launch asks the first to bring its window forward and exits; `StockFW --quit` asks it to quit cleanly (the uninstallers use it before any `taskkill`). On Linux the name carries the uid, not the display, so a launch on a second display of the same user raises the first copy where it is. Linux: an abstract Unix socket per desktop user, the peer checked with `SO_PEERCRED` the moment it connects — before anything is read — so another account gets "denied" and is closed at once; a trusted peer gets its own watch and a one-second deadline (at most eight at a time), so a silent connection never freezes the main loop ("quit" only from root or the instance's own user, so an unprivileged user cannot make the root copy quit). Windows: a `Local\` mutex plus two named events; the mutex's owner is read back (`GetSecurityInfo`): objects someone else created first are treated as squatted, and StockFW runs unguarded rather than obeying them or exiting; an elevated copy takes "quit" from administrators and SYSTEM only. **Takeover**: a launch with more rights than the running copy (root over the user's sign-in copy, an elevated copy over the unelevated one) asks it to quit, waits for it, and takes the lock, because the copy without rights can neither watch events nor change the firewall. A failed takeover runs unguarded rather than exiting silently. GApplication's D-Bus uniqueness was not used: `sudo` strips the session bus address, and the Windows build would need gdbus autolaunch, which the installer does not ship.
+- **Hidden start**: `--background` (`--minimized`) keeps the window hidden only once the shell has really embedded the icon; with no icon after five seconds the window is shown and stderr says why. The same rule covers an icon the shell drops later. On Windows GTK's `gtk_status_icon_is_embedded()` answers TRUE whatever `Shell_NotifyIconW` did and never notifies, so there the check is whether Explorer's taskbar (`Shell_TrayWnd`) exists, on a three-second watch while the window is hidden; `TaskbarCreated` is let through UIPI (`ChangeWindowMessageFilter`) so an elevated copy gets its icon back after Explorer restarts.
+- **Starting the firewall** (Start, Resume, start on program startup, the boot unit): on Linux a start installs the last policy that was actually **applied** (the journal), less Sentinel blocks that expired meanwhile; saved changes nobody applied stay off the firewall until Apply, and the Overview says so. With nothing ever applied, only an explicit start installs the policy file, and never a missing or malformed one. At launch, expired Sentinel blocks are taken out by applying the journal less those rules, never by pushing the policy file.
+- **State read again**: the tray's menu and its slow timer ask the backend again, so a firewall stopped from a terminal or the system's own settings shows as Off at once.
+- **Start at sign-in** (`core/fs-autostart.c`): Windows registers a per-user Task Scheduler task (logon trigger for the account that owns the desktop's shell, `InteractiveToken`, `LeastPrivilege`, not startable on demand) through the COM API. It deliberately does **not** run elevated: a prompt-free elevated GTK program loads modules, settings and pixbuf loaders named by the user's environment and profile, and DLLs from the install directory, so any unelevated process of that user could reach administrator rights at the next sign-in (a silent UAC bypass). The sign-in copy shows the state; StockFW (Elevated) takes over from it for monitoring and changes. Linux writes an XDG autostart entry, which starts the app without root; that copy cannot read iptables and shows the state as unknown, never as Off. Linux rules are put back at boot by `stockfw.service`, not by the GUI. Preferences > General carries the same setting as a switch in its Background card, saved only with Save like every other row (a failure saves nothing and keeps the window open with the reason), greyed with the reason where this copy cannot change it, and kept in step with the tray's tick both ways; the note under it reads the boot unit's state on Linux (enabled, installed but not enabled, missing).
+- **The menu** shows "Firewall: On - Private network" and "Blocked today: N" as greyed information rows, the last five blocks (each opens the Events page), every page, Pause/Resume protection through the Overview's own confirmed start and stop (Cancel is the default), Pause Sentinel auto-block for an hour, Start at sign-in, Preferences, About and "Quit (firewall stays on)". A row that cannot act is greyed with the reason as its tooltip. The tooltip reads "StockFW - Firewall on, N blocked today", or says that events are not being watched rather than showing a zero.
+- **Session safety** (`ui/fs-app.c`): a copy that lives in the tray is ended by a sign-out, a shutdown or a signal far more often than by its Quit item, so nothing it holds depends on that item. Every five minutes the settings and the Copilot baseline are written if they changed, and a Sentinel staged-list write that failed is retried (that list is otherwise written on every stage and retire; a run of failures is audited once, the recovery once). The session manager's `query-end` (GtkApplication `register-session`) and Windows' `WM_QUERYENDSESSION` write everything at once; neither inhibits the logout. SIGTERM, SIGINT and SIGHUP quit the way the tray's Quit does. None of these paths touches the firewall. A quit that arrives while a dialog runs its own loop writes everything and takes the icon down at once, closes the dialogs as their close buttons would, and frees the policy only once the loop has unwound; freeing it under the dialog handed its caller freed memory.
+- **[Verified on Linux]** `fs-traymenu-smoke` drives every row against the real app with a fake backend, including a blocked event fed through the app's own monitor callback; `fs-tray-smoke` pins the layout; `fs-session-smoke` covers the periodic save, `query-end` and a quit under a running dialog; `tests/test-instance.sh` (including the three signals), `tests/test-autostart.sh` and `tests/test-boot-start.sh` drive the real binaries. `test-instance.sh` also covers the root takeover, connections that never speak (from another account and from root), and `nohup`. The Windows halves (named objects and their owner check, the elevated takeover, Task Scheduler, the shell's tray and its taskbar check, `WM_QUERYENDSESSION`) are compile- and link-checked only.
 ---
 
 ### 12.8 Preferences Settings Made Real on Windows
@@ -1247,3 +1268,229 @@ Recorded, not fixed in 1.0.6:
 
 **State.** `ipv6_state` (backend vtable) answers *filtered*, *not filtered* (with the reason: tool missing, rules not loaded, loaded but unhooked, firewall stopped), *absent* (no IPv6 stack) or *unknown* (not root). The kernel in the test container has no IPv6 stack, so `STOCKFW_ASSUME_IPV6=1` makes the backend load IPv6 anyway; rule loading is real, packet behaviour is checked as rule text.
 
+### 14.2 Windows Rule Translation: Protocols, Port Specs and Sides
+
+**The defect.** On Windows every policy row is compiled by `core/fs-fwrule.c` into `FsFwRule`s, and `netsh_add_rule` turns each into a `netsh advfirewall firewall add rule` call. Up to 1.0.6 that translation was wrong in four ways, each reproduced by compiling policies through `fs_fwrule_from_policy`:
+
+1. Every service not on a short TCP list (DHCP, DNS, Samba, NFS, any user-defined name, and the "TCP"/"UDP" pseudo-services the What-If Simulator's "Create This Rule" writes) compiled to protocol `any`. netsh refuses ports with `protocol=any`, so the port was dropped and the rule matched **all traffic in its direction**: "Allow DNS (inbound)" allowed every inbound connection, and an outbound block on such a service blocked all outbound traffic.
+2. Port text with `-` ranges (`67-68`, the default policy's DHCP row) or lists (`137-139 445`) did not parse and silently became "any port". `:` ranges were expanded into one rule per port.
+3. Outbound service rows put the service port in `localport=`. An outbound connection's service port is the remote one, so outbound service allows and blocks never matched real traffic ("Block SMTP (outbound)" blocked nothing).
+4. NTP was listed as TCP; it is UDP 123.
+
+The Linux backend never used this path (it writes iptables from the rows, `fs-script.c`, a tcp and a udp rule on `--dport` for each service row) and was not affected.
+
+**The fix.**
+
+- *One source of truth for protocols.* `FsService` (`core/fs-service.c`) carries `tcp_ports` and `udp_ports` per service: DHCP UDP 67-68; DNS TCP+UDP 53; NTP UDP 123; Samba UDP 137-138 and TCP 139,445; NFS TCP+UDP 111,2049; SSDP UDP 1900; HTTPS TCP+UDP 443 (HTTP/3); BitTorrent TCP+UDP; the other well-known services TCP. Names are found by `fs_service_find()` the way rows store them (case-insensitive, and the translated name). Any other name, user-defined or a back door, gets a TCP and a UDP rule on the row's ports (the Linux pair); the pseudo-services "TCP" and "UDP" mean exactly that protocol, on the row's ports. A row whose ports differ from the service's default (SSH on 2222) applies them to the service's protocols; a row with no port uses the service's own.
+- *Port specs.* `FsFwRule` carries `local_ports` / `remote_ports` as netsh specs (`22`, `67-68`, `137-139,445`; NULL is any). `fs_fwrule_port_spec()` accepts `-` and `:` ranges and lists separated by commas or spaces, checks every element (1-65535, low <= high, digits only) and normalises. A rule with a port is TCP or UDP, never `any` (`fs_fwrule_is_sound()`); host rules stay `any` with no port.
+- *Sides.* Inbound service rows use the local port, outbound rows the remote port, port forwards the exposed local port.
+- *Refusal, not widening.* Port text that does not parse, an unknown name with no port, or a bare "TCP"/"UDP" with no port is refused: no rule, and a sentence saying why. On Windows a refused allow counts as a failed rule, so the apply is `FS_APPLY_PARTIAL` (or `FAILED`) with the refusal in the error the dialog shows, and the apply gate rolls back; it never reports success for a row it dropped. A refused *block* stops the whole-set apply before anything is cleared (`fs_fwrule_block_refusals()`): the firewall is left as it was and the verdict is `FAILED` with the reason, because clearing first would delete the block in force and put nothing in its place, the way the Linux generator refuses a whole script for a deny it cannot write. The gate also never takes the narrow path or the "no change" shortcut while a row is refused (`FsPolicyDelta.refused`).
+- *The argv in core.* `fs_fwrule_netsh_args()` builds the exact argv (`name=`, `profile=any`, `dir=`, `action=`, `protocol=`, `enable=yes`, `localport=`, `remoteport=`, `remoteip=`, no quote characters) and returns NULL for an unsound rule; `netsh_add_rule` only runs it. `fs_fwrule_netsh_name()` is the one spelling of rule names for add, list and delete.
+- *Names.* A row that yields both protocols names its rules "... (TCP)" and "... (UDP)", so delete-by-name removes one rule and the narrow apply's repair logic stays exact; the "StockFW" prefix the clear relies on is unchanged. The delta keys its deletes and repairs on what netsh deletes: the netsh spelling, with case folded too (a wider key only re-creates a rule that did not need it). "a/b" and "a-b", or "SSH" and "ssh", are one name to netsh, so removing one re-creates the other and the shared name is deleted once. A double quote in a name is spelled `'`, so it cannot end the name on netsh's command line. The narrow apply's delete verification now looks up the netsh spelling of each removed name; it compared the display spelling before and never found a survivor.
+
+**Upgraded machines.** A 1.0.6 machine carries the old rules and a journal whose rows equal the policy, so a delta computed from it would find nothing to change and leave allow-everything rules in force. The journal now records the translation that wrote the live rules (`# rules translation 2`, `FS_FWRULE_TRANSLATION`); a journal without that line, or with another number, makes `fs_policy_apply_safe` take the full apply (audit mode "full (rule translation upgrade)"), which deletes every StockFW rule and writes the new set. Every path into the firewall goes through that gate (the Policy page, the What-If and Events pages, the command line), so the first apply after upgrading, whatever starts it, replaces every old rule. Until that apply the 1.0.6 rules stay in force exactly as they were, so the upgrade notes should tell Windows users to apply the policy once. The journal's rows remain the rollback target.
+
+**What-If Simulator.** It reads the same rules: a spec covers a port inside one of its ranges, and the probe's port is matched on the side its direction makes the service port (local inbound, remote outbound). "Allow DHCP (outbound)" no longer matches outbound TCP 22, and an outbound SMTP block matches remote port 25.
+
+**Second review.** An adversarial pass found and fixed: a bare "TCP"/"UDP" with no port (what the What-If writes for a portless probe) opened every port of that protocol, where Linux writes no rule; a refused block row let the whole-set apply clear the live block first; Samba's default ports in another order lost the TCP/UDP split; a quote in a service name reached netsh; the delta compared display names where netsh deletes by its own spelling; and the port-list parser deduplicated in quadratic time. Its sanitizer run also fixed a leak of every behaviour profile's counters in `fs-copilot.c` and several test-only faults.
+
+**Tests.** The core suite (`tests/test-core.sh`) has golden tests for every known service, custom names, the pseudo-services, ranges and lists in both notations, refused port texts, the default policy, the netsh argv of representative rules and the upgrade path through the apply gate, with nine teeth; see "Windows rule translation" in `port/tests/README.md`. The second review's hostile inputs, block refusals, netsh-name collisions and simulator ranges are in `test_fwrule_review`, with eight more teeth; see "Windows rule translation, second review" there.
+
+### 14.3 The What-If Engine: Two Models, Every Case, Verified Fixes
+
+**Why it was rebuilt.** The simulator of §4.3 answered every line with one model, Windows' block-wins, on both platforms, and only one probe per line. Measured against what the firewalls do, it was wrong in ways that all pointed the dangerous way:
+
+- Linux is first match, in the order `fs-script.c` writes the chains. Outbound ICMP is accepted before any deny row, reserved-source and broadcast drops sit after the allows, and restrictive mode is the chain's tail. The old model knew none of this.
+- A line with no port met any rule that opened one port and came back ALLOWED, called b1 here. "Can 192.168.1.50 reach me?" against an SSH-only rule said yes, for every port.
+- A line with no direction was silently treated as outbound.
+- The answer ignored the Firewall preferences, whether the firewall was running, which Windows profile was in use, and Sentinel's automatic blocks.
+- "Create This Rule" wrote a portless "TCP" row for a portless probe, and never checked that the row it wrote did what the button said.
+
+**Shape.** `core/fs-whatif.[ch]` is pure GLib. It does no I/O and answers the same way every time.
+
+- `FsWhatIfQuery` is the line as read.
+- `FsWhatIfContext` holds everything the answer depends on:
+  - the platform model: `LINUX_FIRST_MATCH` or `WINDOWS_BLOCK_WINS`;
+  - the policy and the `FsSettings`;
+  - whether the firewall is running, stopped or unknown;
+  - on Windows, the profiles in use, which are on, and each one's default inbound and outbound action;
+  - whether the saved policy is the one in force (yes, held, failed, changed since, unknown);
+  - Sentinel's automatic blocks with their expiry;
+  - this computer's addresses and the clock.
+- `FsWhatIfResult` holds an overall verdict (ALLOWED, BLOCKED, DEPENDS or ERROR), one answer per direction asked, notes on everything that was assumed, and a one-line summary.
+
+The engine never reads the machine. Two helpers in `core/fs-copilot.c` fill the context:
+
+- `fs_copilot_whatif_observe()` reads the backend.
+  - Firewall state: on Linux without root every chain reads as missing, so a "stopped" reading is only trusted as root. Otherwise the state stays unknown, because "allowed, the firewall is off" for a firewall that runs would be wrong in the dangerous direction.
+  - Addresses.
+  - On Windows, the network profiles and, through a new optional backend slot `get_profile_defaults`, each profile's default actions. When a slot is missing or fails, Windows' own defaults (block inbound, allow outbound) are assumed, and the answer says so.
+- `fs_copilot_whatif_live()` sets whether the saved policy is in force. A hold reason means held (audit-only mode, the Policy Lock). Otherwise it compares the apply journal row by row. With no journal it is unknown.
+
+The Copilot page, `stockfw simulate` and the dashboard build the full context. The older `fs_copilot_simulate[_text]` wrappers still answer, with the native model and fresh-install preferences.
+
+**Reading a line.** `fs_whatif_parse()` tokenises the line and records every piece it recognised with what it took it to mean, plus a confidence. The panel prints "Read as: service SSH: TCP port 22; host 192.168.1.50; inbound (confidence 90%)". It recognises:
+
+- verbs (allow, block, deny, open, close);
+- direction words, with "from X" meaning inbound and "to X" meaning outbound;
+- protocol words;
+- service names from the service table, with FTP read as port 21;
+- ports, written as `port N`, `N port`, `:N`, `host:N`, `[v6]:N` or `local:N`;
+- IPv4 and IPv6 addresses and blocks, which are canonicalised;
+- ICMP words (ping, echo).
+
+It refuses rather than guesses. A line with nothing recognisable, port 0, a port above 65535 or an address that is not one is an ERROR with the reason ("0 is not a port: ports run from 1 to 65535"), never an answer for "any". A name such as `example.com` is not a host. A line that names no direction is answered both ways.
+
+**Two models, one pinned to the generator.**
+
+The Linux model builds the INBOUND and OUTBOUND chains the way `fs-script.c` writes them, rule for rule, in each family:
+
+- ICMP preference rules, conntrack and loopback;
+- the reserved-source and broadcast drops on the external device;
+- policy rows, including the generator's quirks listed below;
+- forwards, which are reached only through the external device's DNAT;
+- the default LOG plus DROP or REJECT, and restrictive outbound.
+
+`fs_whatif_linux_chain_text()` renders that model as iptables lines. The golden test requires it to equal the generator's chains line for line. It checks both the `$IPT` text and the `iptables-restore` form the backend loads, in both families, for 5 policies × 13 settings combinations: 520 comparisons. If the model ever drifts from what is enforced, that test fails.
+
+The Windows model is the rules `fs_fwrule_from_policy` compiles plus the rules `fs-settings-plan.c` adds, judged block-wins, per profile:
+
+- A profile that is switched off answers "Windows Firewall is off for the Public profile".
+- A rule netsh would refuse, such as a host name, is shown in the trace as "not in force" with the reason.
+- The answer always notes that rules from Windows itself and from other programs are not known.
+
+**Answering every case.** A question usually leaves dimensions open: protocol, port, ICMP type, host, a host name a rule matches through DNS, local address, interface, or Windows profile. For each open dimension the engine takes one value no rule names plus one value inside every region some rule draws. Region edges count too: a block's first and last address, a range's first port and the port after it. It then evaluates every combination of those values, up to a cap of 40,000; past the cap it says so.
+
+If every combination agrees, that is the answer. Otherwise the answer is DEPENDS, and the combinations that differ from the common case are grouped by the rule that decided them and described in words: "Blocked for most hosts; allowed from 10.0.0.0/8 by rule 'StockFW: Allow SSH (inbound, 10.0.0.0/8) (TCP)'." b1 is now DEPENDS with the port that is open and the rest that is not. A rule naming a host name gives "allowed if the host is an address of host.example (that depends on DNS)".
+
+Every answer also carries a trace, which records:
+
+- each rule checked, and why it did or did not match;
+- the deciding step's index;
+- the deciding rule's display name, policy kind and row index;
+- under block-wins, the allow that matched but lost.
+
+The reason is one plain sentence.
+
+If the firewall is stopped, the answer is ALLOWED ("nothing is filtered"), and a note leads with what it would be once the firewall runs. If applies are on hold, the last apply failed, or the policy changed after it was last applied, the answer still describes the saved policy, and a note says the rules in force may differ.
+
+**Fixes, each verified by re-simulation.** Each answer offers only the actions that change it:
+
+- CREATE_ALLOW and CREATE_BLOCK add a policy row.
+- OPEN_RULE opens the policy row that decided.
+- LIFT_SENTINEL lifts Sentinel's block, and says when the block would lift by itself ("at 14:05 (in 7 minutes)").
+- OPEN_ICMP_SETTINGS and OPEN_SETTINGS name the preference and the value it needs.
+- START_FIREWALL turns the firewall on.
+- APPLY_POLICY applies the saved policy when it is not in force.
+
+The rules, all of them enforced in core:
+
+- **An allow is offered only where the default decided.** On Linux the drops at the chain's tail also count. An allow is never offered when a block rule, a Sentinel block, a setting or a built-in rule decided, because there a new allow either changes nothing (block-wins) or would hide a block someone put there. The fix offered then is the rule or the block itself.
+- **The row is the narrowest that answers the question.** It is a service row naming exactly one protocol (TCP or UDP) and one port, from or to the asked host, or from or to anyone if the line named no host. It is never portless, never a range or a list, never a named service that opens both protocols, never "any protocol", and never a host name. A question with no port or no protocol gets no row, and a note says why. `fs_whatif_row_is_safe()` states the rule and is called again by the Create button.
+- **b6 is refused.** On Linux an outbound service row's host is matched as the source address (b6, below), so an outbound row to one host is not offered there, and the note says why.
+- **Every row is checked by re-simulation.** The engine adds the row and re-asks. It re-asks the question's own cases, then a fixed set of probes in both directions: the representatives of every rule, common ports, the ports either side of the asked one, private and public hosts in both families, and the addresses just outside the asked block. Every case of the question must get the verdict promised. Every probe the row does not name must keep its answer. A row that fails either check is not offered.
+- **A partial fix promises DEPENDS.** Where the row works except where a setting still blocks it (Windows' reserved-source block on Public), the action promises DEPENDS and its explanation says what still blocks it.
+- **Setting changes are checked the same way.** The setting is flipped, or the firewall started, and the question re-asked.
+- **Unconfirmed actions are labelled.** Actions that cannot be checked in core, such as applying the saved policy, carry `verified = FALSE` and say so.
+
+**"Create" in the UI, hardened.** The Copilot page and the Simulation window act only on the result's primary action, and `create_rule_from_whatif()` takes these steps before anything is written:
+
+1. Checks the action is a verified CREATE whose row passes `fs_whatif_row_is_safe()`.
+2. Re-verifies it against a fresh context, because the policy may have changed since the answer.
+3. Checks for a duplicate.
+4. Shows the confirmation dialog with the label, the literal CSV row and the explanation, and cancels on No.
+5. Adds the row with `fs_policy_add_persist`, which rolls back if the write fails, and writes the audit line.
+6. Reloads the Policy page.
+7. Applies through `fs_policy_apply_safe`.
+8. Asks the question again and reports the new answer. If that differs from what was promised, the report says so. If the apply journal does not show the firewall running the saved policy (held, failed, or no record), the report says the new answer is not in force yet, instead of a green line.
+
+Lift Sentinel's Block confirms, lifts, applies and asks again in the same way. The visualizer gained a DEPENDS state (an amber "?" at the wall, the packet holding there), lists every offered fix, and shows the action button only for a verified primary action.
+
+**Command line and dashboard.** `stockfw simulate "LINE"` prints the description with its first line coloured. It exits 0 for ALLOWED, 5 for BLOCKED, 6 for DEPENDS and 2 for a line it could not read. `--json` carries the reading, every answer's trace, cases and actions, and the notes. `--assume-running` answers as if the firewall ran. The dashboard's `/api/simulate` returns the same JSON; a line it cannot read gets a 400 with the parser's message.
+
+**What the models found about the generator** (left as they are, reported):
+
+- **b6.** On Linux an outbound service row with a host is written with `-s host`: the host is matched as the source, not the destination.
+- Outbound "allow/deny from" rows likewise match this computer's own address.
+- An inbound "allow from Anyone" row accepts everything on Linux and writes no rule on Windows.
+- Linux opens a named service's port for TCP and UDP both, while Windows uses the service's own protocols.
+- Linux leaves out rows with a port list or no port, which Windows accepts.
+- Forwards are TCP only on Linux.
+- Linux accepts outbound ICMP ahead of every deny row, so a deny-to row on Linux still lets ping through. The engine does not offer such a block there.
+
+**Verified.**
+
+- `tests/test-whatif.c`, built and run by `tests/test-core.sh` and as `ninja fs-whatif-test`, runs 325 checks:
+  - the reading table (25 lines, including every refusal);
+  - a 92-row golden table over both models. Each row checks the verdict, its words, the actions that must and must not be offered, that a DEPENDS answer has an allowed and a blocked case, and that every answer's trace marks its deciding step;
+  - the pin to the generator (520 comparisons);
+  - the fixes, including re-verification against a changed policy and the refusal table for unsafe rows;
+  - a brute-force sweep. Every row offered for 35 lines × 6 policies × 3 settings × 2 platforms (542 rows) must be one TCP or UDP port, both in the rules Windows compiles for it and in each line it adds to the Linux script.
+- `test-core.sh` checks the wrappers, b1 inverted, and the Windows-model checks of §14.2 run against the engine with the platform named.
+- `tests/test-whatif-live.sh` is a differential test against the kernel. In a private network namespace it loads three policy and settings rounds through the real Linux backend. It sends 36 real TCP, UDP and ICMP probes from a peer namespace, which plays every remote host, and from this side. The engine's verdict must equal what the kernel did for every one. Each probe is first shown to get through with no firewall loaded.
+- `tests/test-cli.sh` checks the exit codes, the JSON, the dashboard API, and a stopped firewall in a private namespace.
+- `fs-simviz-smoke` checks the visualizer, using real engine results.
+
+**Teeth.** Each bug was re-injected into `fs-whatif.c`, seen failing, and the file restored with `cmp`:
+
+| Bug re-injected | Caught by |
+|---|---|
+| Windows lets a matching allow win over a block | 14 golden and detail checks |
+| a portless line meeting a one-port rule answers ALLOWED (b1) | 11 golden checks and the core b1 check |
+| the safety check removed and a portless allow widened to 1-65535 | the sweep (108 offered rows named), the portless and safe-row checks |
+| the Create path's re-check skipped | "re-checked after a block for the host was added, it is refused" |
+| created rows not re-simulated | the re-check, the Linux ICMP block, the Windows partial fix |
+| the model reads b6 as a destination | 53 pin checks and the live round 2 DNS probe |
+| the matcher ignores an outbound row's source address (the pin cannot see this) | the live round 2 DNS probe and the golden local-address row |
+
+**Not verified here.**
+
+- The Windows model has not been checked against a running Windows Firewall. It is built from the same compiled rules netsh receives, but Windows' own and other programs' rules are unknown to it, and the answer says so.
+- IPv6 is pinned as rule text but not probed live, because the test kernel has no IPv6 stack.
+- Threat-intel sets are not probed live. Forwards are, since the second review (below).
+
+#### 14.3.1 The Second Review
+
+A second review measured the engine against the kernel and the window against a keyboard and a dark theme, and found answers that were wrong in the dangerous direction, and offered rows that opened more than the line asked for. What changed:
+
+**The model.**
+
+- *Interfaces.* A Linux answer now depends on the interface a packet uses: router mode accepts everything arriving on the internal interface, and a forward's DNAT happens only on the external one. The cases say so ("when it arrives on eth1").
+- *Connection state.* ICMP replies and errors (echo-reply, unreachable, time-exceeded and the rest) are answers to an open connection or are unsolicited. Linux's connection tracker drops an unsolicited one as invalid, whatever the ICMP settings say; the ESTABLISHED rule lets an answer in. Both are cases of the answer now, and the live test sends an echo reply nobody asked for.
+- *IP forwarding.* StockFW turns IP forwarding on only in router mode and never turns it off. A forward to another computer outside router mode reaches it only if another program turned forwarding on, so the answer depends on that, and a note names the Preferences switch. No allow row is offered for it, since a row cannot fix it.
+- *Ports.* iptables reads a TCP or UDP port with base 0, so a policy port typed as `022` was enforced as port 18 while the engine said 22. The generator now writes every port in plain decimal (`fs_script_port_text`), and the engine uses the same text.
+- *Windows.* StockFW sets up no forwarding on Windows, so a forward row lets traffic in to this computer and the answer says it goes no further. Traffic to this computer's own addresses goes over loopback, which Windows Firewall does not filter, and answers to open connections are let through. The "Block all incoming connections" switch of a profile is read through a new optional backend slot (`get_profile_block_all_inbound`, `INetFwPolicy2::get_BlockAllInboundTraffic`); when it is on, every inbound allow is ignored and no allow row is offered.
+- *Notes.* Linux answers say that rules other programs put ahead of StockFW's, and Sentinel's threat lists, are not seen. A block of a host says ICMP answers to open connections still pass.
+
+**The reading.** A line is refused, not answered for part of it, when it names a port range or list, a second port or a second host, a pattern (`192.168.1.*`), an address with a zone (`%eth0`), a bad block length or a non-ASCII host. A request with a negation in it ("don't allow", "let nobody in", "except", "but") is refused rather than guessed; a question with "not" in it is still answered. Host names ("server.example.com", "nas01") are read as the far end of the connection, so the direction is right, but are not looked up: the answer is for every host and says so. A service's name inside a host name is no longer read as the service. Numbers that are durations or counts ("for 10 minutes", "3 times") are not ports. "Expose ... to the internet", "my SSH", "the local network" and "let's" are read.
+
+**What is offered.** An allow row never opens more than the line named:
+
+- no row when the line names no host, unless it said "from anyone" or "to anywhere"; then the label says *every address, the internet included*, the explanation begins its warning with *Careful*, and the window's button is not the primary one;
+- no row for a host the line named but that could not be read, even with "anyone" in the same line;
+- no row where IP forwarding, "Block all incoming", or an ICMP reply's connection state decides;
+- a settings change says how far it reaches ("from every host, not only the one asked about");
+- on Linux, an inbound allow's explanation says it also applies to traffic this computer forwards;
+- with the firewall off, the plain answer is ALLOWED, but what to change is judged by what the saved policy does once it runs. The result carries both (`stopped_decides`, `verdict_running`), the summary says "With the firewall off it is ALLOWED", and Start the firewall is offered with what it gives;
+- applying the policy is offered when the last apply failed or the policy changed since, not when applies are on hold: a hold is the user's choice, and the Copilot page refuses to apply over one.
+
+**The window and the card.** With the firewall off the header and the card's line say "Firewall off: ALLOWED ... With the saved policy, once it runs: BLOCKED", never that the answer describes the saved policy. Recent marks such an answer. The card's answer row keeps its own ink on its light surface in a dark theme, and the window takes its palette from the window it opens over. Folded runs of rules hide their rows, so Tab does not walk through what cannot be seen. The chips and examples wrap in a container whose narrowest is its widest chip, so the row can shrink again, and a chip takes no Tab stop. A new answer starts at the top of the window, and a status line is scrolled into view. Open rule hides the window and raises the Policy page. The Sentinel button names the clock time its block ends.
+
+**Verified.** `test-whatif.c` runs 450 checks: 54 reading lines (refusals included), 112 golden rows, and a review section for each change above. `test-core.sh` checks the generator's plain-decimal ports. `test-whatif-live.sh` adds three rounds and a third namespace behind the computer: round 4 loads `022` and `025` and sends an echo reply nobody asked for; round 5 is router mode, with a forward reaching the machine behind; round 6 is the same forward outside router mode, with forwarding off and then turned on by hand. 46 probes, each the engine's verdict equal to the kernel's. The smokes check the folded rows, the button for everyone, a hostless allow, the stopped header and the chips. The test program runs clean under AddressSanitizer and UBSan.
+
+**Teeth (second review).**
+
+| Bug re-injected | Caught by |
+|---|---|
+| a hostless allow offered for every host | golden "allow inbound ssh" (offers no Create) |
+| an unread host name allowed as "anyone" | "an unread name is never widened to anyone" |
+| ports written as typed | test-core "a zero-padded port is written in plain decimal"; live round 4 (the kernel enforced port 18) |
+| IP forwarding not modelled | goldens for the forward outside router mode; live round 6 |
+| the ESTABLISHED rule matching unsolicited replies | live round 4's unasked echo reply |
+| "Block all incoming" ignored | the Windows shields goldens and their note |
+| an ICMP answer to an open connection counted against a block row | "on Windows a whole host is blocked with a deny-to row", the "still pass" note |
+| folded rows left in the focus chain | "a run of non-matching rules is folded, its rows hidden" |
+| the allow-for-everyone button primary | "an allow for everyone is offered, not as the primary button" |
+| the stopped header saying "describes the saved policy" | "a stopped firewall and a held policy are said up front" |
+
+**Not verified.** "Block all incoming" and the Windows loopback and return-traffic rules are compiled and linked for Windows but not run against a Windows Firewall. Rules that other programs put in INPUT or OUTPUT ahead of StockFW's jump are named in a note, not detected.

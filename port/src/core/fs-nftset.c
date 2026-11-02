@@ -8,6 +8,11 @@
 #include <glib/gstdio.h>
 #include <string.h>
 
+#ifdef G_OS_UNIX
+#include <signal.h>
+#include <time.h>
+#endif
+
 /* Elements per `add element' statement: keeps each line of the script a
  * sane length; the statements still share one transaction. */
 #define ELEMENTS_PER_STATEMENT 1000
@@ -183,55 +188,310 @@ fs_nftset_script (const gchar *table, const gchar *set,
 
 /* ================================================================= run */
 
-gboolean
-fs_nft_run_script (const gchar *script, gboolean check_only, GError **error)
+/* Writing to the stdin of an nft that has died raises SIGPIPE, whose
+ * default action would end this process -- the root GUI or the CLI --
+ * instead of failing one apply.  It is held back in this thread while
+ * nft runs (GLib writes to a pipe from the thread that iterates the
+ * context, and that is this one), and one that arrived is discarded
+ * before the mask is restored.  The process-wide disposition is left
+ * alone. */
+typedef struct
 {
-	const gchar *argv_apply[] = { "nft", "-f", "-", NULL };
-	const gchar *argv_check[] = { "nft", "-c", "-f", "-", NULL };
-	GSubprocess *proc;
+#ifdef G_OS_UNIX
+	sigset_t saved;
+#else
+	int      unused;
+#endif
+} SigpipeHold;
+
+static void
+sigpipe_hold (SigpipeHold *hold)
+{
+#ifdef G_OS_UNIX
+	sigset_t set;
+
+	sigemptyset (&set);
+	sigaddset (&set, SIGPIPE);
+	pthread_sigmask (SIG_BLOCK, &set, &hold->saved);
+#endif
+}
+
+static void
+sigpipe_release (SigpipeHold *hold)
+{
+#ifdef G_OS_UNIX
+	if (!sigismember (&hold->saved, SIGPIPE)) {
+		struct timespec now = { 0, 0 };
+		sigset_t set;
+
+		sigemptyset (&set);
+		sigaddset (&set, SIGPIPE);
+		while (sigtimedwait (&set, NULL, &now) == SIGPIPE)
+			;
+	}
+	pthread_sigmask (SIG_SETMASK, &hold->saved, NULL);
+#endif
+}
+
+/* One nft run: its pipes, and the timer that kills it [S8.4]. */
+typedef struct
+{
+	GSubprocess  *proc;
+	GCancellable *cancel;
+	gboolean      communicated;
+	gboolean      waited;
+	gboolean      timed_out;
+	GBytes       *out;
+	GBytes       *err;
+	GError       *error;
+} NftRun;
+
+static void
+nft_run_communicated (GObject *source, GAsyncResult *result, gpointer data)
+{
+	NftRun *run = data;
+
+	g_subprocess_communicate_finish (G_SUBPROCESS (source), result,
+	                                 &run->out, &run->err, &run->error);
+	run->communicated = TRUE;
+}
+
+static void
+nft_run_waited (GObject *source, GAsyncResult *result, gpointer data)
+{
+	NftRun *run = data;
+
+	g_subprocess_wait_finish (G_SUBPROCESS (source), result, NULL);
+	run->waited = TRUE;
+}
+
+static gboolean
+nft_run_expired (gpointer data)
+{
+	NftRun *run = data;
+
+	/* SIGKILL, and stop reading: a child of a wrapper may hold the
+	 * pipes open long after the process we started is gone. */
+	run->timed_out = TRUE;
+	g_subprocess_force_exit (run->proc);
+	g_cancellable_cancel (run->cancel);
+	return G_SOURCE_REMOVE;
+}
+
+/* The first line of nft's complaint, at most 300 bytes and valid UTF-8,
+ * for an error message: nft prints the offending statement and a caret
+ * under it on the lines after.  Never NULL. */
+static gchar *
+first_line (GBytes *bytes)
+{
+	const gchar *data = NULL;
+	gsize len = 0, start = 0, n;
+	gchar *line;
+
+	if (bytes != NULL)
+		data = g_bytes_get_data (bytes, &len);
+	if (data == NULL)
+		return g_strdup ("");
+
+	while (start < len && g_ascii_isspace (data[start]))
+		start++;
+	for (n = 0; start + n < len && n < 300; n++)
+		if (data[start + n] == '\n' || data[start + n] == '\0')
+			break;
+	line = g_utf8_make_valid (data + start, (gssize) n);
+	return g_strstrip (line);
+}
+
+/* Runs `nft <args>' with `input' on stdin (NULL: stdin is /dev/null),
+ * collecting stdout when `out' is not NULL, and kills it after
+ * timeout_ms.  TRUE when nft ran to its end, whatever its exit status:
+ * *exit_ok says whether it exited 0, *complaint (caller frees) is the
+ * first line of its stderr.  FALSE with error when nft could not be
+ * started, timed out, or its pipes failed. */
+static gboolean
+nft_spawn (const gchar *const *args, const gchar *input, guint timeout_ms,
+           GBytes **out, gboolean *exit_ok, gchar **complaint,
+           GError **error)
+{
+	GSubprocessFlags flags = G_SUBPROCESS_FLAGS_STDERR_PIPE;
+	GPtrArray *argv = g_ptr_array_new ();
+	GBytes *stdin_bytes = NULL;
+	GMainContext *ctx;
+	GSource *timer;
+	SigpipeHold hold;
+	NftRun run;
 	GError *local = NULL;
-	gchar *err_text = NULL;
-	gboolean ok;
+	gboolean ok = FALSE, finished;
 
-	g_return_val_if_fail (script != NULL, FALSE);
+	memset (&run, 0, sizeof run);
+	g_ptr_array_add (argv, (gpointer) "nft");
+	for (guint i = 0; args[i] != NULL; i++)
+		g_ptr_array_add (argv, (gpointer) args[i]);
+	g_ptr_array_add (argv, NULL);
 
-	/* An argv, not a command line: no shell ever sees the script, and
-	 * the script itself travels on stdin, never as an argument. */
-	proc = g_subprocess_newv (check_only ? argv_check : argv_apply,
-	                          G_SUBPROCESS_FLAGS_STDIN_PIPE |
-	                          G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
-	                          G_SUBPROCESS_FLAGS_STDERR_PIPE, &local);
-	if (proc == NULL) {
+	if (input != NULL) {
+		flags |= G_SUBPROCESS_FLAGS_STDIN_PIPE;
+		stdin_bytes = g_bytes_new_static (input, strlen (input));
+	}
+	flags |= out != NULL ? G_SUBPROCESS_FLAGS_STDOUT_PIPE :
+	                       G_SUBPROCESS_FLAGS_STDOUT_SILENCE;
+
+	/* A private main context, current in this thread while nft runs:
+	 * a worker thread can call this, and the caller's own loop (the
+	 * UI's) is never iterated behind its back. */
+	ctx = g_main_context_new ();
+	g_main_context_push_thread_default (ctx);
+
+	/* An argv, not a command line: no shell ever sees an argument,
+	 * and a script travels on stdin.  nft is found on PATH, as the
+	 * backend finds iptables-restore. */
+	run.proc = g_subprocess_newv ((const gchar *const *) argv->pdata,
+	                              flags, &local);
+	if (run.proc == NULL) {
 		g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
 		             "Could not run nft (is the nftables package "
 		             "installed?): %s", local->message);
 		g_error_free (local);
-		return FALSE;
+		goto out;
 	}
 
-	/* communicate() writes all of stdin while draining stderr, so a
-	 * large script cannot deadlock against a full pipe. */
-	ok = g_subprocess_communicate_utf8 (proc, script, NULL, NULL,
-	                                    &err_text, &local);
-	if (ok && !(g_subprocess_get_if_exited (proc) &&
-	            g_subprocess_get_exit_status (proc) == 0)) {
-		const gchar *first = err_text != NULL ? err_text : "";
-		gsize n = strcspn (first, "\n");
+	/* Held only after the spawn, so nft itself starts with the
+	 * ordinary signal mask. */
+	sigpipe_hold (&hold);
 
+	/* communicate() writes all of stdin while draining stdout and
+	 * stderr, so a large script cannot deadlock against a full pipe. */
+	run.cancel = g_cancellable_new ();
+	g_subprocess_communicate_async (run.proc, stdin_bytes, run.cancel,
+	                                nft_run_communicated, &run);
+	timer = g_timeout_source_new (timeout_ms);
+	g_source_set_callback (timer, nft_run_expired, &run, NULL);
+	g_source_attach (timer, ctx);
+
+	while (!run.communicated)
+		g_main_context_iteration (ctx, TRUE);
+	g_source_destroy (timer);
+	g_source_unref (timer);
+
+	/* After a failure nft may still be running: make sure it is gone,
+	 * and wait for it either way, so its exit status is known and
+	 * every pipe operation has ended before the context goes away. */
+	if (run.error != NULL)
+		g_subprocess_force_exit (run.proc);
+	g_subprocess_wait_async (run.proc, NULL, nft_run_waited, &run);
+	while (!run.waited)
+		g_main_context_iteration (ctx, TRUE);
+	while (g_main_context_pending (ctx))
+		g_main_context_iteration (ctx, FALSE);
+
+	sigpipe_release (&hold);
+
+	/* nft that exited on its own just as the timer fired still counts
+	 * as finished; one the timer killed did not. */
+	finished = run.error == NULL && g_subprocess_get_if_exited (run.proc);
+	if (run.timed_out && !finished) {
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT,
+		             "nft timed out: it did not finish within %u.%03u s "
+		             "and was stopped", timeout_ms / 1000,
+		             timeout_ms % 1000);
+	} else if (run.error != NULL) {
 		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
-		             "nft refused the change: %.*s",
-		             (gint) MIN (n, 300),
-		             n > 0 ? first : "no reason given");
-		ok = FALSE;
-	} else if (!ok) {
-		g_propagate_error (error, local);
-		local = NULL;
+		             "Could not talk to nft: %s", run.error->message);
+	} else {
+		*exit_ok = finished &&
+		           g_subprocess_get_exit_status (run.proc) == 0;
+		*complaint = first_line (run.err);
+		if (**complaint == '\0' && !finished) {
+			g_free (*complaint);
+			*complaint = g_strdup ("nft was killed by a signal");
+		}
+		if (out != NULL)
+			*out = run.out != NULL ? g_bytes_ref (run.out) : NULL;
+		ok = TRUE;
 	}
 
-	g_clear_error (&local);
-	g_free (err_text);
-	g_object_unref (proc);
+out:
+	g_main_context_pop_thread_default (ctx);
+	g_main_context_unref (ctx);
+	g_clear_error (&run.error);
+	g_clear_pointer (&run.out, g_bytes_unref);
+	g_clear_pointer (&run.err, g_bytes_unref);
+	g_clear_object (&run.cancel);
+	g_clear_object (&run.proc);
+	g_clear_pointer (&stdin_bytes, g_bytes_unref);
+	g_ptr_array_unref (argv);
 	return ok;
+}
+
+gboolean
+fs_nft_run_script_full (const gchar *script, gboolean check_only,
+                        guint timeout_ms, GError **error)
+{
+	static const gchar *const apply_args[] = { "-f", "-", NULL };
+	static const gchar *const check_args[] = { "-c", "-f", "-", NULL };
+	gboolean exit_ok = FALSE;
+	gchar *complaint = NULL;
+
+	g_return_val_if_fail (script != NULL, FALSE);
+	g_return_val_if_fail (timeout_ms > 0, FALSE);
+
+	if (!nft_spawn (check_only ? check_args : apply_args, script,
+	                timeout_ms, NULL, &exit_ok, &complaint, error))
+		return FALSE;
+
+	if (!exit_ok)
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "nft refused the change: %s",
+		             *complaint != '\0' ? complaint : "no reason given");
+	g_free (complaint);
+	return exit_ok;
+}
+
+gboolean
+fs_nft_run_script (const gchar *script, gboolean check_only, GError **error)
+{
+	return fs_nft_run_script_full (script, check_only, FS_NFT_TIMEOUT_MS,
+	                               error);
+}
+
+gchar *
+fs_nft_capture (const gchar *const *args, guint timeout_ms, GError **error)
+{
+	GBytes *out = NULL;
+	gboolean exit_ok = FALSE;
+	gchar *complaint = NULL, *text = NULL;
+	const gchar *data = NULL;
+	gsize len = 0;
+
+	g_return_val_if_fail (args != NULL, NULL);
+	g_return_val_if_fail (timeout_ms > 0, NULL);
+
+	if (!nft_spawn (args, NULL, timeout_ms, &out, &exit_ok, &complaint,
+	                error))
+		return NULL;
+
+	if (!exit_ok) {
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "nft failed: %s",
+		             *complaint != '\0' ? complaint : "no reason given");
+		goto out;
+	}
+
+	if (out != NULL)
+		data = g_bytes_get_data (out, &len);
+	/* Listings are parsed as text; a NUL or a broken sequence means
+	 * this is not the nft we think it is. */
+	if (data != NULL && !g_utf8_validate_len (data, len, NULL)) {
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+		             "nft printed something that is not UTF-8 text");
+		goto out;
+	}
+	text = g_strndup (data != NULL ? data : "", len);
+
+out:
+	g_free (complaint);
+	g_clear_pointer (&out, g_bytes_unref);
+	return text;
 }
 
 /* ============================================================== guards */

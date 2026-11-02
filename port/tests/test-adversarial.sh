@@ -744,7 +744,7 @@ EOF
 
 EXTRA_LIBS=""
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
-  EXTRA_LIBS="-lws2_32"
+  EXTRA_LIBS="-lws2_32 -lole32 -loleaut32"
 fi
 
 cc "$BUILD_DIR/test-adversarial.c" \

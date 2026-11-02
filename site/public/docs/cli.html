@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Command line · StockFW</title>
+<meta name="description" content="The stockfw command on Linux: every command with its real output, the global options, exit codes you can branch on, JSON for scripts, and the environment variables that redirect its files.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Command line · StockFW">
+<meta property="og:description" content="The stockfw command on Linux: every command with its real output, the global options, exit codes you can branch on, JSON for scripts, and the environment variables that redirect its files.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html" aria-current="page"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Command line
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Command line</p>
+		<article class="prose">
+<h1>Command line</h1>
+<p class="lede"><code>stockfw</code> is the desktop app without the display: the same policy files, the same simulator, the same apply gate. A rule added here is the rule the Policy page shows, and an apply here writes the same audit line. <span class="plat">Linux</span> There is no Windows command line; on Windows, use the app.</p>
+
+<div class="code" data-copy="commands"><div class="code-head"><span>stockfw --help</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>Usage: stockfw [--json] [--no-color] [-q] &lt;command&gt; [arguments]
+
+StockFW from the command line: the same policy, simulator and apply
+gate as the desktop app, without a display.
+
+Commands:
+  status                     Firewall state, policy and monitoring at a glance
+  policy list|add|remove     Read and edit the traffic policy
+  apply [--dry-run]          Push the saved policy to the firewall (root)
+  start | stop               Start or stop the firewall (root)
+  simulate "&lt;traffic&gt;"       What-if: would this traffic be allowed or blocked?
+  events [-n N] [-f]         Recent firewall events; -f follows live (root)
+  connections                Active TCP connections and their programs
+  interfaces [--watch]       Network adapters with traffic counters and rates
+  dashboard [--port N]       Serve the local web dashboard and open it
+  help [command]             Help for one command
+  version                    Print the version
+
+Global options:
+  --json        Machine-readable output (one JSON document; NDJSON for -f)
+  --no-color    Plain output (also honoured: NO_COLOR, TERM=dumb, pipes)
+  -q, --quiet   Only errors and the essential result
+  -h, --help    This help;  -V, --version  the version
+
+Exit status:
+  0  success          2  usage error           5  simulate: BLOCKED
+  1  failure          3  needs root privileges
+                                               6  simulate: DEPENDS
+
+Policy files live in ~/.stockfw (or /etc/stockfw when run as root) --
+the same files the desktop app edits.  Nothing here talks to the
+network: the dashboard listens on 127.0.0.1 only.</code></pre></div>
+
+<h2 id="before-you-start-whose-policy">Before you start: whose policy?<a class="anchor" href="#before-you-start-whose-policy" aria-label="Link to this section">#</a></h2>
+<p>As your own user the policy lives in <code>~/.stockfw</code>; as root, in <code>/etc/stockfw</code>. A rule added without <code>sudo</code> is not the rule <code>sudo stockfw apply</code> pushes. Pick one identity and keep to it; the simplest is <code>sudo</code> for everything, so the app, the command line and the firewall all read <code>/etc/stockfw</code>. For a script that must not depend on who runs it, set <code>STOCKFW_RULES_DIR</code>. <code>sudo</code> on Debian and Kali does not search <code>/usr/local/bin</code>, so write <code>sudo /usr/local/bin/stockfw</code> or add an alias. See <a href="../docs/install-linux.html">Install on Linux</a>.</p>
+
+<h2 id="status">status<a class="anchor" href="#status" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw status</span>
+StockFW 1.0.7  Linux (iptables)
+
+  Firewall     ● running
+  IPv6         filtered
+  Policy       9 rules in /etc/stockfw
+                 3  inbound-allow-from
+                 2  inbound-allow-service
+                 1  inbound-forward
+                 1  outbound-allow-to
+                 1  outbound-deny-to
+                 1  outbound-deny-service
+  Apply mode   live
+  Monitoring   available (stockfw events -f, stockfw dashboard)
+  Adapters     eth0       192.168.1.20    ↓ 84.5 MB  ↑ 270.4 MB
+  Connections  16 active</code></pre></div>
+<p>Reading the firewall state needs root; without it the state is reported as <em>unknown</em> rather than guessed. <em>Apply mode</em> reads <em>audit-only</em> or <em>locked</em> when a hold is on. With <code>--json</code>:</p>
+<div class="code" data-copy="all"><div class="code-head"><span>JSON</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>{"version":"1.0.7","backend":"linux","state":"running",
+ "ipv6":{"state":"filtered","detail":"IPv4 and IPv6 are filtered by the same policy."},
+ "root":true,"rules_dir":"/etc/stockfw","policy_saved":true,"malformed_rules":0,
+ "rules":{"inbound-allow-from":3,"inbound-allow-service":2,"inbound-forward":1,
+          "outbound-allow-to":1,"outbound-allow-from":0,"outbound-allow-service":0,
+          "outbound-deny-to":1,"outbound-deny-from":0,"outbound-deny-service":1},
+ "apply_hold":null,"monitoring_available":true,"connections":16,
+ "interfaces":[{"device":"eth0","type":"Ethernet","ip":"192.168.1.20","up":true,
+                "received":84498082,"sent":270438518}]}</code></pre></div>
+
+<h2 id="policy">policy list, add, remove<a class="anchor" href="#policy" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw policy add inbound-allow-service SSH 22 192.168.1.0/24 --comment "admin LAN"</span>
++ inbound-allow-service SSH 22 192.168.1.0/24
+Saved in /etc/stockfw.  Not live yet: run `sudo stockfw apply'.
+
+<span class="p">$ </span><span class="cmd">sudo stockfw policy add outbound-allow-to 192.0.2.10 --both --comment "backup server"</span>
++ outbound-allow-to 192.0.2.10
++ inbound-allow-from 192.0.2.10
+Saved in /etc/stockfw.  Not live yet: run `sudo stockfw apply'.
+
+<span class="p">$ </span><span class="cmd">sudo stockfw policy list</span>
+inbound-allow-from (3)
+    1  192.168.1.1  [IPv4 only]  # router
+    2  2001:db8:1::/48  [IPv6 only]  # office v6
+    3  192.0.2.10  [IPv4 only]  # backup server
+inbound-allow-service (2)
+    1  SSH  port 22  for 192.168.1.0/24  [IPv4 only]  # admin LAN
+    2  HTTPS  port 443  for Anyone  [IPv4 + IPv6]  # web server
+inbound-forward (1)
+    1  Web  port 8080 -> 192.168.1.30:80  [IPv4 only]  # lab box
+outbound-allow-to (1)
+    1  192.0.2.10  [IPv4 only]  # backup server
+outbound-deny-to (1)
+    1  198.51.100.66  [IPv4 only]  # known bad host
+outbound-deny-service (1)
+    1  Telnet  port 23  for Anyone  [IPv4 + IPv6]  # no cleartext logins
+
+<span class="p">$ </span><span class="cmd">sudo stockfw policy remove outbound-deny-to 1</span>
+- outbound-deny-to 198.51.100.66
+Saved.  Not live yet: run `sudo stockfw apply'.</code></pre></div>
+<p>The kinds and their fields are those of the <a href="../docs/policy.html#the-rule-kinds">Policy page</a>: <code>inbound-allow-from HOST</code>, <code>inbound-allow-service SERVICE PORT FOR</code>, <code>inbound-forward SERVICE FIREWALL-PORT TO PORT</code>, <code>outbound-allow-to HOST</code>, <code>outbound-allow-from HOST</code>, <code>outbound-allow-service SERVICE PORT FOR</code>, <code>outbound-deny-to HOST</code>, <code>outbound-deny-from HOST</code>, <code>outbound-deny-service SERVICE PORT FOR</code>. <em>FOR</em> is a host, a network or <code>Anyone</code>. <code>--both</code> adds the opposite-direction twin of an allow rule as one change. <code>N</code> in <em>remove</em> is the number printed by <em>list</em>. <code>--kind KIND</code> narrows the list.</p>
+<p>Validation fails closed, with the same rules as the app:</p>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw policy add inbound-allow-service SSH 80abc Anyone</span>
+stockfw: error: not a valid inbound-allow-service rule: check the host, port or range
+stockfw: hint: hosts are addresses, networks (10.0.0.0/8) or "Anyone"; ports are 1-65535 or a range 1024:2048
+<span class="p">$ </span><span class="cmd">echo $?</span>
+2</code></pre></div>
+<p><code>policy list --json</code> gives every rule with its kind, number, fields, comment, <code>covers</code> (<code>["ipv4"]</code>, <code>["ipv6"]</code> or both) and <code>covers_why</code>, the sentence the Policy page shows as a tooltip:</p>
+<div class="code" data-copy="all"><div class="code-head"><span>JSON</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>{"kind":"inbound-allow-service","number":1,"service":"SSH","port":"22",
+ "target":"192.168.1.0/24","to":null,"to_port":null,"comment":"admin LAN",
+ "covers":["ipv4"],
+ "covers_why":"192.168.1.0/24 is an IPv4 range, so the rule covers IPv4 only. Add a second rule for the IPv6 range if there is one."}</code></pre></div>
+
+<h2 id="apply">apply, start, stop<a class="anchor" href="#apply" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw apply --dry-run</span>
+Would apply: +1 added (1 allow, 0 block), -0 removed (0 allow, 0 block), =8 unchanged
+Nothing was changed (dry run).
+
+<span class="p">$ </span><span class="cmd">sudo stockfw apply</span>
+Applied (only the changes): +1 added (1 allow, 0 block), -0 removed (0 allow, 0 block), =8 unchanged
+
+<span class="p">$ </span><span class="cmd">sudo stockfw apply</span>
+Nothing to change: the policy already matches the firewall.</code></pre></div>
+<p><code>apply</code> goes through the gate described on the <a href="../docs/policy.html#apply-step-by-step">Policy page</a>: only what changed is touched, a refused apply is rolled back to the last applied policy and the rollback is verified, and every attempt is one audit line with the source <code>cli</code>. When Audit-only or Lock is on in the app, <code>apply</code> records the change and leaves the firewall alone: “Held: audit-only mode is on.  The firewall was left untouched.” Notes from the engine (“IPv6 is not filtered: ip6tables is not installed”) are printed after the result. <code>start</code> builds the firewall from the saved policy and starts it; <code>stop</code> removes StockFW’s own chains and nothing else. All three need root and exit 3 without it.</p>
+
+<h2 id="simulate">simulate<a class="anchor" href="#simulate" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw simulate "allow ssh from 192.168.1.50 on port 22"</span>
+You asked to allow this. It is already ALLOWED. Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.
+Read as: you want it allowed; host 192.168.1.50; port 22; service SSH: TCP port 22; inbound (confidence 100%)
+
+Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer: ALLOWED
+  Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.
+  How it was decided:
+    - StockFW: Allow inbound (192.168.1.1): 192.168.1.50 is not 192.168.1.1
+    - StockFW: Allow inbound (192.0.2.10): 192.168.1.50 is not 192.0.2.10
+    =&gt; StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP): matches: allows it
+
+Good to know:
+  - No valid internet-facing interface is set, so the reserved-address and broadcast blocks are not in force.
+A simulation only: nothing was written.
+<span class="p">$ </span><span class="cmd">echo $?</span>
+0
+
+<span class="p">$ </span><span class="cmd">stockfw simulate "outbound tcp port 443"</span>
+DEPENDS. Allowed for most hosts; blocked to 198.51.100.66 by rule 'StockFW: Block outbound (198.51.100.66)'.
+Read as: port 443; TCP; outbound (confidence 90%)
+…
+<span class="p">$ </span><span class="cmd">echo $?</span>
+6
+
+<span class="p">$ </span><span class="cmd">stockfw --json simulate "outbound tcp to 198.51.100.66 port 443"</span>
+{"input":"outbound tcp to 198.51.100.66 port 443","verdict":"BLOCKED",
+ "summary":"BLOCKED. Rule 'StockFW: Block outbound (198.51.100.66)' blocks it.",
+ "scenario":"Outbound TCP port 443 from this computer to 198.51.100.66",
+ "direction":"outbound","protocol":"TCP","port":443,"remote":"198.51.100.66",
+ "rule":"StockFW: Block outbound (198.51.100.66)",
+ "reason":"Rule 'StockFW: Block outbound (198.51.100.66)' blocks it.",
+ "suggestion":"Open rule 'StockFW: Block outbound (198.51.100.66)': … Without it, this is allowed.",
+ "confidence":0.90,
+ "read_as":[{"text":"198.51.100.66","meaning":"host 198.51.100.66"},{"text":"443","meaning":"port 443"},
+            {"text":"tcp","meaning":"TCP"},{"text":"outbound","meaning":"outbound"}],
+ "answers":[{"direction":"outbound","verdict":"BLOCKED",
+             "probe":"Outbound TCP port 443 from this computer to 198.51.100.66",
+             "rule":"StockFW: Block outbound (198.51.100.66)","origin":"policy","policy_kind":6,"policy_row":0,
+             "cases":[],
+             "trace":[{"step":"skipped","decides":false,"rule":"Return traffic for connections already open", …},
+                      {"step":"matched","decides":true,"rule":"StockFW: Block outbound (198.51.100.66)","allows":false, …}],
+             "actions":[{"kind":"open-rule","label":"Open rule 'StockFW: Block outbound (198.51.100.66)'","verified":true, …}]}]}
+<span class="p">$ </span><span class="cmd">echo $?</span>
+5</code></pre></div>
+<p>Exit 0 means ALLOWED, 5 BLOCKED and 6 DEPENDS, so a script can branch without parsing; 2 means the line could not be read. The plain output is the window in text: the verdict in a sentence, how the line was read with a confidence, then for each direction the trace (<code>-</code> skipped, <code>*</code> a note, <code>=&gt;</code> the deciding step) and the checked fixes in brackets. The JSON carries the same, with <code>read_as</code>, and under <code>answers</code> every direction’s <code>trace</code>, <code>cases</code> and <code>actions</code>, each action with the exact policy <code>row</code> it would write. The sentence grammar is on the <a href="../docs/simulator.html">simulator page</a>. Simulating reads the saved policy and needs no root; reading whether the firewall is running does, so <code>--assume-running</code> answers for the firewall as it would run.</p>
+<div class="code" data-copy="commands"><div class="code-head"><span>In a deployment script</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>if ! stockfw simulate "inbound https from 0.0.0.0/0" >/dev/null; then
+    echo "port 443 would be closed; refusing to deploy" >&amp;2
+    exit 1
+fi</code></pre></div>
+
+<h2 id="events">events<a class="anchor" href="#events" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw events -n 4</span>
+TIME             VERDICT  DIR  SOURCE        DESTINATION   PORT  SERVICE      PROTO
+Nov 02 16:41:06  ALLOWED  in   192.168.1.50  192.168.1.20  22    SSH          TCP
+Nov 02 16:41:07  BLOCKED  in   203.0.113.50  192.168.1.20  445   Samba (SMB)  TCP
+Nov 02 16:41:07  BLOCKED  in   203.0.113.50  192.168.1.20  3389  Unknown      TCP
+Nov 02 16:41:09  BLOCKED  out  192.168.1.20  203.0.113.7   23    Telnet       TCP
+
+<span class="p">$ </span><span class="cmd">sudo stockfw events -n 1 --json</span>
+[{"time":"2026-11-02T16:41:09Z","direction":"out","source":"192.168.1.20","destination":"203.0.113.7","port":"23","protocol":"TCP","service":"Telnet","in":"","out":"eth0","blocked":true}]</code></pre></div>
+<p>The last N events (default 20) that StockFW’s rules logged, read from the kernel log, which remains the archive. <code>-f</code> follows until Ctrl-C and, with <code>--json</code>, prints one object per line. <code>--blocked</code> shows only blocks. Reading the kernel log needs root or the <code>adm</code> group. Allowed rows appear when the policy logs the first packet of each new allowed connection, which <em>Log allowed connections</em> in Preferences turns on.</p>
+
+<h2 id="connections">connections, interfaces<a class="anchor" href="#connections" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw connections</span>
+LOCAL         REMOTE          PORT  SERVICE  DIRECTION  PROGRAM
+192.168.1.20  192.168.1.50    22    SSH      Inbound    sshd
+192.168.1.20  104.16.4.34     443   HTTPS    Outbound   firefox
+
+<span class="p">$ </span><span class="cmd">stockfw interfaces</span>
+ADAPTER  TYPE      ADDRESS       RECEIVED  SENT      ↓ NOW     ↑ NOW
+eth0     Ethernet  192.168.1.20  84.5 MB   270.4 MB  237 B/s   198 B/s</code></pre></div>
+<p>The same connection table and adapter counters the Overview shows, with direction decided by what is listening. <code>interfaces --watch</code> refreshes every second. Programs owned by other users are readable only as root; the cell reads <code>?</code> otherwise.</p>
+
+<h2 id="dashboard">dashboard<a class="anchor" href="#dashboard" aria-label="Link to this section">#</a></h2>
+<p><code>stockfw dashboard [--port N] [--no-open]</code> serves the <a href="../docs/dashboard.html">local dashboard</a> and opens it in your browser. There is deliberately no <code>--bind</code>.</p>
+
+<h2 id="output-conventions">Output conventions<a class="anchor" href="#output-conventions" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><code>--json</code> prints one JSON document per command, or one object per line for <code>events -f</code> and <code>interfaces --watch</code>. Keys are stable across releases; new keys may be added.</li>
+<li>Colour is off when the output is not a terminal, when <code>NO_COLOR</code> is set or <code>TERM=dumb</code>, or with <code>--no-color</code>.</li>
+<li>Errors go to standard error as <code>stockfw: error: …</code>, usually followed by <code>stockfw: hint: …</code> saying what to do.</li>
+<li><code>-q</code> keeps only the essential line.</li>
+</ul>
+
+<h2 id="environment-variables">Environment variables<a class="anchor" href="#environment-variables" aria-label="Link to this section">#</a></h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Variable</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td><code>STOCKFW_RULES_DIR</code></td><td>Where the policy and <code>applied.csv</code> live, regardless of who runs the program. The app honours it too.</td></tr>
+<tr><td><code>STOCKFW_AUDIT_FILE</code></td><td>The audit log, instead of <code>audit.log</code> next to the preferences.</td></tr>
+<tr><td><code>STOCKFW_TRUST_FILE</code></td><td>The Trust baseline, instead of <code>trust.csv</code>.</td></tr>
+<tr><td><code>STOCKFW_AUTOBLOCK_FILE</code></td><td>Sentinel’s staging record.</td></tr>
+<tr><td><code>STOCKFW_LOG_FILE</code></td><td>Read events from this file instead of the kernel ring buffer (for tests and relocated logs).</td></tr>
+<tr><td><code>STOCKFW_ASSUME_IPV6</code></td><td><code>1</code> loads the IPv6 payload on a kernel without an IPv6 stack (tests).</td></tr>
+<tr><td><code>XDG_CONFIG_HOME</code></td><td>Where <code>stockfw/<wbr>stockfw.conf</code> and the logs go, as usual.</td></tr>
+<tr><td><code>NO_COLOR</code></td><td>Plain output.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="intel">intel<a class="anchor" href="#intel" aria-label="Link to this section">#</a></h2>
+<p><code>stockfw intel</code> manages <a href="../docs/threat-intel.html">threat-intel blocklists</a> and <a href="../docs/country-blocking.html">country and network-owner sets</a>: <code>status</code>, <code>feeds</code>, <code>enable</code>, <code>disable</code>, <code>update</code>, <code>apply</code>, <code>clear</code>, <code>import</code>, <code>remove</code>, <code>except</code>, <code>unexcept</code>, <code>exceptions</code>, <code>lookup</code>, <code>on</code> and <code>off</code>, each with <code>--json</code>. <code>enable</code> shows the feed’s terms and records your consent before anything is downloaded. <code>status</code> gains an <code>intel</code> object, and <code>simulate</code> answers “Blocked by threat intel: <em>list</em>” for an address a list covers. Changing the sets needs root, like every other change to the kernel.</p>
+
+<h2 id="tests">Tests<a class="anchor" href="#tests" aria-label="Link to this section">#</a></h2>
+<p><code>tests/test-cli.sh</code> drives every command above against a scratch policy, checks the exit codes and the JSON, starts a dashboard and exercises its token and Host checks. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/country-blocking.html"><span>Previous</span><strong>Country and network-owner blocking</strong></a><a class="next" href="../docs/dashboard.html"><span>Next</span><strong>Dashboard</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/cli.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#before-you-start-whose-policy">Before you start: whose policy?</a></li>
+			<li class="lvl2"><a href="#status">status</a></li>
+			<li class="lvl2"><a href="#policy">policy list, add, remove</a></li>
+			<li class="lvl2"><a href="#apply">apply, start, stop</a></li>
+			<li class="lvl2"><a href="#simulate">simulate</a></li>
+			<li class="lvl2"><a href="#events">events</a></li>
+			<li class="lvl2"><a href="#connections">connections, interfaces</a></li>
+			<li class="lvl2"><a href="#dashboard">dashboard</a></li>
+			<li class="lvl2"><a href="#output-conventions">Output conventions</a></li>
+			<li class="lvl2"><a href="#environment-variables">Environment variables</a></li>
+			<li class="lvl2"><a href="#intel">intel</a></li>
+			<li class="lvl2"><a href="#tests">Tests</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stock Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

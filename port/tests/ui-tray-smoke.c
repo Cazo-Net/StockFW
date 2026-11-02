@@ -15,10 +15,11 @@
  *      the icon's presence, in both directions.
  *   5. fs_tray_sync() follows a live preference flip both ways, the
  *      way accepting the Preferences dialog does.
- *   6. The tooltip carries the firewall state sentence (read back
- *      through the real GtkStatusIcon getter, not the module's own
- *      bookkeeping).
- *   7. The popup menu exists with exactly Open and Quit, labelled.
+ *   6. The tooltip carries the firewall's state (read back through the
+ *      real GtkStatusIcon getter, not the module's own bookkeeping).
+ *   7. The popup menu's layout: the two information rows first, Quit
+ *      last behind its own separator.  (What each row DOES is
+ *      tests/ui-traymenu-smoke.c, against the real app.)
  *   8. The restore path shows a hidden window again.
  *   9. Uninstall takes the icon down and the hide gate refuses again.
  *
@@ -29,6 +30,7 @@
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-tray.h"
+#include "core/fs-backend.h"
 #include "core/fs-prefs.h"
 #include "core/fs-i18n.h"
 
@@ -228,11 +230,11 @@ main (int argc, char **argv)
 	check (wait_active (3 * G_USEC_PER_SEC),
 	       "re-enabling Show a tray icon brings the icon back");
 
-	/* 6. Tooltip: state in through fs_tray_set_state, read back out
-	 * through the shell-side getter -- not through the module's own
-	 * statics, which would only prove the bookkeeping agrees with
+	/* 6. Tooltip: state in through fs_tray_set_firewall, read back
+	 * out through the shell-side getter -- not through the module's
+	 * own statics, which would only prove the bookkeeping agrees with
 	 * itself. */
-	fs_tray_set_state ("The firewall is running");
+	fs_tray_set_firewall (FS_FW_RUNNING, "Private network");
 	{
 		GtkStatusIcon *icon = fs_tray_icon ();
 		const gchar *tip;
@@ -245,29 +247,22 @@ main (int argc, char **argv)
 		G_GNUC_END_IGNORE_DEPRECATIONS
 
 		check (tip != NULL &&
-		       g_strrstr (tip, "The firewall is running") != NULL,
-		       "the tray tooltip carries the firewall state sentence");
+		       g_str_has_prefix (tip, "StockFW - Firewall on"),
+		       "the tray tooltip says the firewall is on");
 	}
 
-	/* 7. The menu: a live status header, then Open and About, then
-	 * Quit fenced off behind its own separator.
-	 *
-	 * The header is the row that earns this menu its keep, so it is
-	 * checked properly rather than only counted.  It must carry the
-	 * sentence fed in at step 6, which proves it is read when the
-	 * menu is asked for and not frozen when it was first built.  And
-	 * it must be insensitive: a greyed row reads as information,
-	 * where an enabled row that does nothing reads as a broken
-	 * control. */
+	/* 7. The menu: the state first, as greyed information (a greyed
+	 * row reads as information, an enabled row that does nothing
+	 * reads as a broken control), and Quit last behind its own
+	 * separator, saying the firewall stays on. */
 	menu = fs_tray_menu ();
 	check (GTK_IS_MENU (menu), "the tray popup is a GtkMenu");
 	items = gtk_container_get_children (GTK_CONTAINER (menu));
-	check (g_list_length (items) == 6,
-	       "the tray menu has six rows: status, separator, Open, "
-	       "About, separator, Quit");
+	check (g_list_length (items) == 15,
+	       "the tray menu has fifteen rows");
 
-	if (g_list_length (items) == 6) {
-		GtkWidget *row[6];
+	if (g_list_length (items) == 15) {
+		GtkWidget *row[15];
 		GList *walk;
 		guint i;
 
@@ -275,38 +270,42 @@ main (int argc, char **argv)
 			row[i] = GTK_WIDGET (walk->data);
 
 		check (GTK_IS_MENU_ITEM (row[0]) &&
-		       !gtk_widget_get_sensitive (row[0]),
-		       "the status row is insensitive: it is information, "
-		       "not a control that appears to work and does not");
-		check (g_strcmp0 (gtk_menu_item_get_label (
-		                      GTK_MENU_ITEM (row[0])),
-		                  _("The firewall is running")) == 0,
-		       "the status row carries the live firewall state "
-		       "sentence rather than a stale one");
-		check (GTK_IS_SEPARATOR_MENU_ITEM (row[1]),
-		       "a separator follows the status row");
-		check (g_strcmp0 (gtk_menu_item_get_label (
-		                      GTK_MENU_ITEM (row[2])),
-		                  _("_Open StockFW")) == 0,
-		       "row 3 is Open StockFW");
-		check (g_strcmp0 (gtk_menu_item_get_label (
-		                      GTK_MENU_ITEM (row[3])),
-		                  _("_About StockFW")) == 0,
-		       "row 4 is About StockFW");
-		check (GTK_IS_SEPARATOR_MENU_ITEM (row[4]),
+		       !gtk_widget_get_sensitive (row[0]) &&
+		       !gtk_widget_get_sensitive (row[1]),
+		       "the two information rows are insensitive");
+		{
+			/* Opening the menu asks the backend again (a state
+			 * fed in earlier may be stale by now), so the row
+			 * says what the real backend says this moment. */
+			FsFirewallState live = fs_backend ()->get_state ();
+			const gchar *want =
+				live == FS_FW_RUNNING || live == FS_FW_HIT
+				? _("Firewall: On")
+				: live == FS_FW_LOCKED
+				? _("Firewall: On, policy locked")
+				: live == FS_FW_STOPPED ? _("Firewall: Off")
+				: _("Firewall: state unknown");
+			const gchar *got = gtk_menu_item_get_label (
+				GTK_MENU_ITEM (row[0]));
+
+			check (got != NULL && g_str_has_prefix (got, want),
+			       "the first row carries the state the backend "
+			       "reports when the menu opens");
+		}
+		check (GTK_IS_SEPARATOR_MENU_ITEM (row[13]),
 		       "Quit is fenced off behind its own separator");
 		check (g_strcmp0 (gtk_menu_item_get_label (
-		                      GTK_MENU_ITEM (row[5])),
-		                  _("_Quit StockFW")) == 0,
-		       "Quit StockFW is the last row");
-		quit_item = GTK_MENU_ITEM (row[5]);
+		                      GTK_MENU_ITEM (row[14])),
+		                  _("_Quit (firewall stays on)")) == 0,
+		       "Quit is the last row and says the firewall stays on");
+		quit_item = GTK_MENU_ITEM (row[14]);
 	}
 	g_list_free (items);
 
-	/* 7b. The header is not frozen.  Changing the state and asking for
-	 * the menu again must show the new sentence -- otherwise the tray
-	 * would confidently report a firewall state it stopped seeing. */
-	fs_tray_set_state ("The firewall has been hit");
+	/* 7b. The header is not frozen.  Changing the state must show the
+	 * new one -- otherwise the tray would confidently report a
+	 * firewall state it stopped seeing. */
+	fs_tray_set_firewall (FS_FW_STOPPED, NULL);
 	{
 		GList *again = gtk_container_get_children (
 		                   GTK_CONTAINER (menu));
@@ -314,12 +313,12 @@ main (int argc, char **argv)
 		check (again != NULL &&
 		       g_strcmp0 (gtk_menu_item_get_label (
 		                      GTK_MENU_ITEM (again->data)),
-		                  _("The firewall has been hit")) == 0,
+		                  _("Firewall: Off")) == 0,
 		       "the status row follows the state through a later "
 		       "change, so it cannot report a stale verdict");
 		g_list_free (again);
 	}
-	fs_tray_set_state ("The firewall is running");
+	fs_tray_set_firewall (FS_FW_RUNNING, NULL);
 
 	/* 8. The restore path: hide the window the way close-to-tray
 	 * does, then bring it back the way the tray does. */
