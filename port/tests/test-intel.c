@@ -3819,6 +3819,8 @@ apply_thread (gpointer data)
 
 /* Inside the apply: a Stop arrives from another thread (the Status
  * page's worker, or `stockfw stop' in another process). */
+static gboolean racer_blocked;
+
 static void
 race_stop_during_apply (void)
 {
@@ -3826,6 +3828,10 @@ race_stop_during_apply (void)
 	g_atomic_int_set (&racer_done, 0);
 	racer = g_thread_new ("stop", stop_thread, NULL);
 	g_usleep (300 * 1000);
+	/* Still inside the lock holder: the racer must be blocked now.
+	 * (Reading racer_done after the holder returns races with the
+	 * racer finishing the moment the lock is released.) */
+	racer_blocked = !g_atomic_int_get (&racer_done);
 }
 
 static void
@@ -3835,6 +3841,7 @@ race_apply_during_stop (void)
 	g_atomic_int_set (&racer_done, 0);
 	racer = g_thread_new ("apply", apply_thread, NULL);
 	g_usleep (300 * 1000);
+	racer_blocked = !g_atomic_int_get (&racer_done);
 }
 
 static void
@@ -3857,8 +3864,9 @@ test_engine_lock (void)
 	/* A Stop during an apply waits for it, then takes the lists down:
 	 * the apply never writes "enforced" over the Stop's "suspended". */
 	kern.during_apply = race_stop_during_apply;
+	racer_blocked = FALSE;
 	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, NULL);
-	waited = !g_atomic_int_get (&racer_done);
+	waited = racer_blocked;
 	g_thread_join (racer);
 	audit = audit_text ();
 	pa = strstr (audit, "| intel-apply | source=test result=ok");
@@ -3880,8 +3888,9 @@ test_engine_lock (void)
 	racer_config = c;
 	racer_host = h;
 	kern.during_clear = race_apply_during_stop;
+	racer_blocked = FALSE;
 	CHECK (fs_intel_suspend (&fake_backend, "test", NULL), "(suspend)");
-	waited = !g_atomic_int_get (&racer_done);
+	waited = racer_blocked;
 	g_thread_join (racer);
 	CHECK (racer_outcome != NULL && racer_outcome->held &&
 	       racer_outcome->result == FS_APPLY_DRY_RUN && waited &&

@@ -4257,7 +4257,14 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 		                           : FS_INTEL_STATE_NEEDS_ROOT;
 		/* Say why when the backend can (no nft installed, a
 		 * timeout): "could not be read" alone gives nothing to do. */
-		if (state == FS_INTEL_STATE_NEEDS_ROOT)
+		/* Without rights, still say what the backend saw: when nft
+		 * is missing, administrator rights alone will not help. */
+		if (state == FS_INTEL_STATE_NEEDS_ROOT && why != NULL &&
+		    *why != '\0')
+			set_detail (detail, g_strdup_printf (
+				_("Reading " FS_INTEL_WHERE "'s rules needs administrator "
+				  "rights. %s"), why));
+		else if (state == FS_INTEL_STATE_NEEDS_ROOT)
 			set_detail (detail, g_strdup (
 				_("Reading " FS_INTEL_WHERE "'s rules needs administrator "
 				  "rights.")));
