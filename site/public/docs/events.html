@@ -98,7 +98,7 @@
 [[shot:events|The Events page: a count of 211 events, a filter box, the Monitor switch, Clear and Refresh, and a table of time, direction, interface, port, source, destination, protocol and service with blocked rows in red.|Blocked rows are red and carry the [BLOCKED] marker that every other part of the app keys on.]]
 
 <h2 id="where-the-events-come-from">Where the events come from<a class="anchor" href="#where-the-events-come-from" aria-label="Link to this section">#</a></h2>
-<dl>
+<dl class="cols">
 <dt><span class="plat">Windows</span></dt>
 <dd>The Security event log, events <strong>5156</strong> (the Windows Filtering Platform permitted a connection) and <strong>5157</strong> (it blocked one). StockFW runs <code>wevtutil</code> every five seconds, asking for at most ten new records in text form, splits and de-duplicates them, and hands them on. Each record carries the program path, both addresses, the ports, the protocol and the direction, so the Events page on Windows names the program. The audit policy that makes Windows write these events is switched on the first time the elevated app runs; see <a href="../docs/install-windows.html#enable-monitoring">Enable monitoring</a>.</dd>
 <dt><span class="plat">Linux</span></dt>

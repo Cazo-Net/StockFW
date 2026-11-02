@@ -32,6 +32,11 @@ The HTML is plain.  A few shortcodes expand at build time:
 | `[[shot:name\|alt text\|caption]]` | A screenshot from `public/assets/screens/name.webp`, with its real dimensions. |
 
 Code blocks are `<pre data-lang="sh" data-title="optional title">`.
+A `<dl>` whose terms are all short (28 characters or fewer) is shown in
+two columns, term beside definition; a list with a longer term stacks
+each definition under its term.  A path in a table's `<code>` gets a
+soft break after each slash, backslash and comma, so it wraps instead of
+squeezing the other columns.
 `{{root}}` is the relative path to the site root (so links work from
 `docs/`), and `{{release}}`, `{{version}}` and `{{repo}}`
 come from `CONFIG` at the top of `build.py`.

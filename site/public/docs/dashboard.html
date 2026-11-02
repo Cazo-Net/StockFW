@@ -124,7 +124,7 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 
 <h2 id="why-it-is-safe-to-run">Why it is safe to run<a class="anchor" href="#why-it-is-safe-to-run" aria-label="Link to this section">#</a></h2>
 <p>A page that shows your firewall is a page an attacker would like to read, or to use as a lever. The dashboard is designed so that neither works, and a test exercises each point. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
-<dl>
+<dl class="cols">
 <dt>Loopback only</dt>
 <dd>It binds <code>127.0.0.1</code>. There is no option to listen anywhere else; <code>--bind</code> does not exist, and asking for it prints why. Someone on your network cannot reach it. To use it from another machine, forward the port over SSH.</dd>
 <dt>A token for this run</dt>
@@ -145,13 +145,13 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 <table class="tbl">
 <thead><tr><th>Path</th><th>Returns</th></tr></thead>
 <tbody>
-<tr><td><code>/api/summary</code></td><td>Firewall state, IPv6 state, rule counts, totals.</td></tr>
-<tr><td><code>/api/activity</code></td><td>The per-interval series for both graphs, for the requested range.</td></tr>
-<tr><td><code>/api/events</code></td><td>Recent events.</td></tr>
-<tr><td><code>/api/connections</code></td><td>Established connections with programs.</td></tr>
-<tr><td><code>/api/interfaces</code></td><td>Adapters with counters and rates.</td></tr>
-<tr><td><code>/api/policy</code></td><td>The saved policy, as <code>stockfw policy list --json</code> prints it.</td></tr>
-<tr><td><code>/api/simulate?q=…</code></td><td>A what-if verdict, as <code>stockfw simulate --json</code> prints it.</td></tr>
+<tr><td><code>/api/<wbr>summary</code></td><td>Firewall state, IPv6 state, rule counts, totals.</td></tr>
+<tr><td><code>/api/<wbr>activity</code></td><td>The per-interval series for both graphs, for the requested range.</td></tr>
+<tr><td><code>/api/<wbr>events</code></td><td>Recent events.</td></tr>
+<tr><td><code>/api/<wbr>connections</code></td><td>Established connections with programs.</td></tr>
+<tr><td><code>/api/<wbr>interfaces</code></td><td>Adapters with counters and rates.</td></tr>
+<tr><td><code>/api/<wbr>policy</code></td><td>The saved policy, as <code>stockfw policy list --json</code> prints it.</td></tr>
+<tr><td><code>/api/<wbr>simulate?q=…</code></td><td>A what-if verdict, as <code>stockfw simulate --json</code> prints it.</td></tr>
 </tbody>
 </table>
 </div>

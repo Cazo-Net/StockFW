@@ -99,7 +99,7 @@
 <p>StockFW contains no packet filter, no driver and no service. It configures the engine your operating system already has, through the tools that system documents (<code>netsh advfirewall</code> and the firewall COM interfaces on Windows; <code>iptables-restore</code>, <code>ip6tables-restore</code> and <code>nft</code> on Linux), and it reads the verdicts that engine already logs. If StockFW is closed, crashes or is uninstalled, the engine keeps enforcing whatever was last applied. Nothing StockFW does can make the firewall <em>less</em> enforced by failing.</p>
 
 <h2 id="three-boundaries">Three boundaries<a class="anchor" href="#three-boundaries" aria-label="Link to this section">#</a></h2>
-<dl>
+<dl class="cols">
 <dt>Enforcement</dt>
 <dd>Anything that changes firewall state must run with administrator or root rights, and StockFW contains no code that raises its own rights: no <code>runas</code>, no <code>ShellExecute</code>, no <code>sudo</code>, no setuid helper, no polkit rule. The Windows manifest says <code>asInvoker</code>. Elevation happens only when you choose the elevated shortcut and answer the UAC prompt, or type <code>sudo</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-installer-spawn.sh</span></dd>
 <dt>Input</dt>

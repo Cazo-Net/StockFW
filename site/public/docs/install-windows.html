@@ -116,12 +116,12 @@
 <table class="tbl">
 <thead><tr><th>Where</th><th>What</th></tr></thead>
 <tbody>
-<tr><td><code>C:\Program Files\StockFW\StockFW.exe</code></td><td>The application. Its manifest says <code>asInvoker</code>: it runs with the rights of whoever starts it and never raises them itself.</td></tr>
-<tr><td><code>…\StockFW\*.dll</code>, <code>lib\</code>, <code>share\</code>, <code>etc\</code></td><td>The GTK 3 runtime, complete, so the app does not depend on anything else on the machine.</td></tr>
-<tr><td><code>…\StockFW\StockFW-elevated.vbs</code>, <code>.cmd</code>, <code>.ps1</code></td><td>The elevated launchers. Each finds <code>StockFW.exe</code> next to itself and asks Windows for administrator rights with a normal UAC prompt.</td></tr>
-<tr><td><code>…\StockFW\README.md</code>, <code>CHANGELOG.md</code></td><td>The project README and release notes.</td></tr>
+<tr><td><code>C:\<wbr>Program Files\<wbr>StockFW\<wbr>StockFW.exe</code></td><td>The application. Its manifest says <code>asInvoker</code>: it runs with the rights of whoever starts it and never raises them itself.</td></tr>
+<tr><td><code>…\<wbr>StockFW\<wbr>*.dll</code>, <code>lib\</code>, <code>share\</code>, <code>etc\</code></td><td>The GTK 3 runtime, complete, so the app does not depend on anything else on the machine.</td></tr>
+<tr><td><code>…\<wbr>StockFW\<wbr>StockFW-elevated.vbs</code>, <code>.cmd</code>, <code>.ps1</code></td><td>The elevated launchers. Each finds <code>StockFW.exe</code> next to itself and asks Windows for administrator rights with a normal UAC prompt.</td></tr>
+<tr><td><code>…\<wbr>StockFW\<wbr>README.md</code>, <code>CHANGELOG.md</code></td><td>The project README and release notes.</td></tr>
 <tr><td>Start menu › StockFW</td><td><em>StockFW</em>, <em>StockFW (Elevated)</em>, <em>Documentation</em>, <em>Uninstall</em>.</td></tr>
-<tr><td>Registry, <code>HKLM\Software\StockFW</code></td><td>The install folder, and the usual entry under <em>Apps &amp; features</em>.</td></tr>
+<tr><td>Registry, <code>HKLM\<wbr>Software\<wbr>StockFW</code></td><td>The install folder, and the usual entry under <em>Apps &amp; features</em>.</td></tr>
 </tbody>
 </table>
 </div>
@@ -148,11 +148,11 @@
 <table class="tbl">
 <thead><tr><th>File</th><th>Holds</th></tr></thead>
 <tbody>
-<tr><td><code>%LOCALAPPDATA%\stockfw\inbound\…</code>, <code>outbound\…</code></td><td>The policy, one file per rule kind. See <a href="../docs/files.html">Files and formats</a>.</td></tr>
-<tr><td><code>%LOCALAPPDATA%\stockfw\applied.csv</code></td><td>The last policy the firewall accepted: the journal Apply measures against and rolls back to.</td></tr>
-<tr><td><code>%APPDATA%\stockfw\stockfw.conf</code></td><td>Preferences.</td></tr>
-<tr><td><code>%APPDATA%\stockfw\audit.log</code></td><td>One line per apply, attest, forget and Sentinel action. Append-only.</td></tr>
-<tr><td><code>%APPDATA%\stockfw\trust.csv</code>, <code>behavior.csv</code>, <code>autoblocks</code></td><td>The Trust baseline, the Copilot’s learned behaviour, and Sentinel’s staged blocks.</td></tr>
+<tr><td><code>%LOCALAPPDATA%\<wbr>stockfw\<wbr>inbound\<wbr>…</code>, <code>outbound\<wbr>…</code></td><td>The policy, one file per rule kind. See <a href="../docs/files.html">Files and formats</a>.</td></tr>
+<tr><td><code>%LOCALAPPDATA%\<wbr>stockfw\<wbr>applied.csv</code></td><td>The last policy the firewall accepted: the journal Apply measures against and rolls back to.</td></tr>
+<tr><td><code>%APPDATA%\<wbr>stockfw\<wbr>stockfw.conf</code></td><td>Preferences.</td></tr>
+<tr><td><code>%APPDATA%\<wbr>stockfw\<wbr>audit.log</code></td><td>One line per apply, attest, forget and Sentinel action. Append-only.</td></tr>
+<tr><td><code>%APPDATA%\<wbr>stockfw\<wbr>trust.csv</code>, <code>behavior.csv</code>, <code>autoblocks</code></td><td>The Trust baseline, the Copilot’s learned behaviour, and Sentinel’s staged blocks.</td></tr>
 </tbody>
 </table>
 </div>

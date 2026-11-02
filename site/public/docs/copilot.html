@@ -131,7 +131,7 @@
 
 <h2 id="sentinel">Sentinel<a class="anchor" href="#sentinel" aria-label="Link to this section">#</a></h2>
 <p>Sentinel watches outbound traffic for the two signatures of a program that is no longer working for you. It is egress-only by design: an inbound scan is the Events page’s business, and the engine already drops it.</p>
-<dl>
+<dl class="cols">
 <dt>Beacon</dt>
 <dd>Six or more contacts with the same host and port, at a mean interval between 10 seconds and 10 minutes, with a coefficient of variation of 0.30 or less. A human clicking, a browser’s jittered keep-alives and git’s background fetches do not pass that regularity test; a command-and-control callback does. The finding is Critical and carries a deny rule for the destination.</dd>
 <dt>Fan-out</dt>

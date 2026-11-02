@@ -99,7 +99,7 @@
 
 <h2 id="the-protection-card">The protection card<a class="anchor" href="#the-protection-card" aria-label="Link to this section">#</a></h2>
 <p>Green with a shield when the firewall is running and your policy is in force; red when it is stopped. The sentence under the heading says what that means for traffic, and the four tiles break it down:</p>
-<dl>
+<dl class="cols">
 <dt>IPv4 traffic, IPv6 traffic</dt>
 <dd>“Filtered” or “Not filtered”, separately. On Linux the IPv6 tile reads the real state of the kernel: if <code>ip6tables</code> is not installed, the IPv6 chains are not loaded, or they are loaded but not hooked, it says “Not filtered” and the sidebar shows the reason, rather than inferring IPv6 from IPv4. On Windows both read “Filtered” when the firewall is on, because Windows Firewall rules cover both families.</dd>
 <dt>Policy</dt>

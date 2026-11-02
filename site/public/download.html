@@ -81,7 +81,7 @@
 StockFW-1.0.7-linux-x86_64.tar.gz: OK</code></pre></div>
 
 <h3 id="requirements">Requirements<a class="anchor" href="#requirements" aria-label="Link to this section">#</a></h3>
-<dl>
+<dl class="cols">
 <dt>Windows</dt><dd>Windows 10 or 11, 64-bit. Windows Defender Firewall must be present (it always is). To change rules, run the <em>StockFW (Elevated)</em> shortcut; everything else works without administrator rights.</dd>
 <dt>Linux</dt><dd>An x86-64 distribution with GTK 3 (<code>libgtk-3-0</code>), <code>iptables</code> and <code>ip6tables</code>; <code>nft</code> for threat-intel blocklists. Tested on Debian, Kali, Ubuntu and WSL2. Reading events and applying rules need root; <code>sudo /usr/local/bin/StockFW</code> is the full tool.</dd>
 </dl>
@@ -111,7 +111,7 @@ StockFW-1.0.7-linux-x86_64.tar.gz: OK</code></pre></div>
 <p>To make the same tarball the release ships, run <code>installer/linux/build_installer_linux.sh</code> after building.</p>
 
 <h2 id="uninstall">Uninstall<a class="anchor" href="#uninstall" aria-label="Link to this section">#</a></h2>
-<dl>
+<dl class="cols">
 <dt>Windows</dt><dd><em>Settings → Apps</em>, or the <em>Uninstall</em> shortcut in the StockFW Start menu folder. Firewall rules StockFW created stay in Windows Firewall; remove them with <em>Stop firewall</em> in the app first, or in <code>wf.msc</code> (they are all named <code>StockFW-…</code>).</dd>
 <dt>Linux</dt><dd><code>sudo /usr/local/bin/stockfw-uninstall</code> removes the binaries, the menu entry and the icons. Your policy in <code>~/.stockfw</code> or <code>/etc/stockfw</code> is kept; delete it yourself if you want it gone.</dd>
 </dl>
