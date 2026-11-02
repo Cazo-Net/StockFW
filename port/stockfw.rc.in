@@ -17,12 +17,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "StockFW Project"
             VALUE "FileDescription", "StockFW - Smart Firewall Configuration Tool"
-            VALUE "FileVersion", "1.0.5"
+            VALUE "FileVersion", "1.0.6"
             VALUE "InternalName", "StockFW"
             VALUE "LegalCopyright", "(C) 2000-2026 StockFW Project"
             VALUE "OriginalFilename", "StockFW.exe"
             VALUE "ProductName", "StockFW"
-            VALUE "ProductVersion", "1.0.5"
+            VALUE "ProductVersion", "1.0.6"
         END
     END
     BLOCK "VarFileInfo"

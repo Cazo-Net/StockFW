@@ -1,6 +1,7 @@
 # Build directories
 build/
 port/build/
+port/build-*/
 port/installer/nsis/stage/
 port/installer/nsis/*.exe
 port/installer/linux/dist/

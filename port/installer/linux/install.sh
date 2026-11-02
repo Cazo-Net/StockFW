@@ -127,6 +127,18 @@ ok "installing to $PREFIX"
 install -Dm755 "$SRC" "$BINDIR/StockFW"
 ok "$BINDIR/StockFW"
 
+# The command-line tool (1.0.6), staged as cli/stockfw; from a repo
+# checkout, the build directory's.  Optional: an older payload without
+# it still installs the desktop app.
+CLI="$HERE/cli/stockfw"
+if [ ! -f "$CLI" ] && [ -f "$HERE/../../build-linux/stockfw" ]; then
+    CLI="$(cd "$HERE/../../build-linux" && pwd)/stockfw"
+fi
+if [ -f "$CLI" ]; then
+    install -Dm755 "$CLI" "$BINDIR/stockfw"
+    ok "$BINDIR/stockfw (command line and local dashboard)"
+fi
+
 install -Dm644 "$HERE/stockfw.desktop" "$DATADIR/applications/$APPID.desktop"
 ok "$DATADIR/applications/$APPID.desktop"
 
@@ -155,6 +167,7 @@ if [ "\$(id -u)" -ne 0 ]; then
     exit 1
 fi
 rm -f "\$PREFIX/bin/StockFW"
+rm -f "\$PREFIX/bin/stockfw"
 rm -f "\$PREFIX/share/applications/stockfw.desktop"
 rm -f "\$PREFIX/share/icons/hicolor/128x128/apps/stockfw.png"
 rm -f "\$PREFIX/share/doc/stockfw/LICENSE.txt"
@@ -197,6 +210,11 @@ printf '    %-20s %s\n' "StockFW" \
         "(read-only: status, events, policy, simulate)"
 printf '    sudo %s\n' "$SUDO_CMD"
 printf '    %-20s %s\n' "" "(apply rules: the backend needs root)"
+if [ -x "$BINDIR/stockfw" ]; then
+    printf '\nFrom a terminal:\n'
+    printf '    %-20s %s\n' "stockfw help" "(status, policy, simulate, events, ...)"
+    printf '    %-20s %s\n' "stockfw dashboard" "(local web dashboard, 127.0.0.1 only)"
+fi
 
 if ! sudo_path_has_bindir; then
     printf '\n'

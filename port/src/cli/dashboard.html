@@ -1,0 +1,1020 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>StockFW Dashboard</title>
+<link rel="icon" href="/logo.png">
+<style nonce="{{NONCE}}">
+:root {
+  color-scheme: light;
+  --page: #f3f4f6;
+  --surface: #ffffff;
+  --surface-2: #f7f8fa;
+  --line: #e3e5e9;
+  --grid: #eceef1;
+  --text: #17191c;
+  --text-2: #4b5059;
+  --text-3: #6f7580;
+  --brand: #ae0000;
+  --brand-ink: #ffffff;
+  --allowed: #2a78d6;
+  --blocked: #e34948;
+  --rx: #2a78d6;
+  --tx: #eb6834;
+  --good: #1f7a3a;
+  --good-bg: #e7f4eb;
+  --bad: #b3261e;
+  --bad-bg: #fbe9e8;
+  --warn: #8a5a00;
+  --warn-bg: #fdf3dc;
+  --focus: #2a78d6;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06);
+  --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", "Liberation Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Ubuntu, Cantarell, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #111214;
+    --surface: #1c1d21;
+    --surface-2: #232429;
+    --line: #2e3036;
+    --grid: #2a2c31;
+    --text: #eceef1;
+    --text-2: #b9bdc6;
+    --text-3: #8d929c;
+    --brand: #e0423f;
+    --allowed: #3987e5;
+    --blocked: #e66767;
+    --rx: #3987e5;
+    --tx: #d95926;
+    --good: #6fcf8e;
+    --good-bg: #17301f;
+    --bad: #ff8a80;
+    --bad-bg: #3a1a19;
+    --warn: #f2c35b;
+    --warn-bg: #3a2e12;
+    --focus: #6aa8f0;
+    --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #111214;
+  --surface: #1c1d21;
+  --surface-2: #232429;
+  --line: #2e3036;
+  --grid: #2a2c31;
+  --text: #eceef1;
+  --text-2: #b9bdc6;
+  --text-3: #8d929c;
+  --brand: #e0423f;
+  --allowed: #3987e5;
+  --blocked: #e66767;
+  --rx: #3987e5;
+  --tx: #d95926;
+  --good: #6fcf8e;
+  --good-bg: #17301f;
+  --bad: #ff8a80;
+  --bad-bg: #3a1a19;
+  --warn: #f2c35b;
+  --warn-bg: #3a2e12;
+  --focus: #6aa8f0;
+  --shadow: none;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--page);
+  color: var(--text);
+  font: 14px/1.45 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+button, select, input { font: inherit; color: inherit; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- top bar ---------- */
+header.top {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand img { width: 32px; height: 32px; }
+.brand h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .01em; }
+.brand .sub { color: var(--text-3); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spacer { flex: 1; }
+.live { display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 12.5px; white-space: nowrap; }
+.live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px var(--good-bg); }
+.live.stale .dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-bg); }
+.live.down .dot { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-bg); }
+.icon-btn {
+  border: 1px solid var(--line); background: var(--surface); border-radius: 8px;
+  padding: 5px 10px; cursor: pointer; font-size: 12.5px; color: var(--text-2);
+  white-space: nowrap;
+}
+.icon-btn:hover { background: var(--surface-2); }
+
+main { max-width: 1320px; margin: 0 auto; padding: 18px 24px 40px; }
+
+/* ---------- banner ---------- */
+.banner {
+  display: none; margin-bottom: 16px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--warn-bg); color: var(--warn);
+}
+.banner.show { display: block; }
+.banner.bad { background: var(--bad-bg); color: var(--bad); }
+
+/* ---------- filter row ---------- */
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 16px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 2px; }
+.seg button {
+  border: 0; background: transparent; padding: 5px 12px; border-radius: 7px; cursor: pointer;
+  color: var(--text-2); font-weight: 550; font-size: 13px;
+}
+.seg button[aria-pressed="true"] { background: var(--brand); color: var(--brand-ink); }
+.seg button:not([aria-pressed="true"]):hover { background: var(--surface-2); }
+.filters label { color: var(--text-3); font-size: 12.5px; display: inline-flex; align-items: center; gap: 8px; }
+select {
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  padding: 5px 8px; font-size: 13px;
+}
+
+/* ---------- tiles ---------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 16px; box-shadow: var(--shadow); min-width: 0;
+}
+.tile .k { color: var(--text-3); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+.tile .v { font-size: 26px; font-weight: 650; margin-top: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .d { color: var(--text-3); font-size: 12.5px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 8px;
+  border-radius: 999px; font-size: 13px; font-weight: 650; margin-top: 8px;
+}
+.pill svg { width: 14px; height: 14px; }
+.pill.good { background: var(--good-bg); color: var(--good); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.rx-tx { display: flex; gap: 14px; font-size: 18px; margin-top: 6px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.rx-tx span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.key { display: inline-block; width: 12px; height: 2px; border-radius: 1px; }
+
+/* ---------- cards ---------- */
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow); min-width: 0; display: flex; flex-direction: column;
+}
+.card > .hd { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px 6px; }
+.card > .hd h2 { font-size: 15px; margin: 0; font-weight: 650; }
+.card > .hd p { margin: 2px 0 0; color: var(--text-3); font-size: 12.5px; }
+.card > .bd { padding: 6px 16px 16px; min-width: 0; }
+.card .note { color: var(--text-3); font-size: 12.5px; margin: 8px 0 0; }
+.span2 { grid-column: 1 / -1; }
+
+/* ---------- charts ---------- */
+.legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 0 16px; color: var(--text-2); font-size: 12.5px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.chart { position: relative; height: 240px; transition: opacity .2s; }
+.chart.loading { opacity: .55; }
+.chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.chart .axis { fill: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .grid-line { stroke: var(--grid); stroke-width: 1; shape-rendering: crispEdges; }
+.chart .base-line { stroke: var(--line); stroke-width: 1; shape-rendering: crispEdges; }
+.chart .nodata { fill: var(--surface-2); }
+.chart .cross { stroke: var(--text-3); stroke-width: 1; shape-rendering: crispEdges; }
+.chart .dlabel { fill: var(--text-2); font-size: 11.5px; font-weight: 600; }
+.chart .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; color: var(--text-3); }
+.tip {
+  position: absolute; pointer-events: none; z-index: 3; min-width: 150px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; box-shadow: 0 6px 18px rgba(0, 0, 0, .12); font-size: 12.5px;
+  display: none;
+}
+.tip .t { color: var(--text-3); margin-bottom: 4px; }
+.tip .r { display: flex; align-items: center; gap: 8px; }
+.tip .r b { font-variant-numeric: tabular-nums; font-size: 13px; }
+.tip .r span { color: var(--text-3); }
+.tbl-toggle { margin-left: auto; }
+.chart-table { display: none; max-height: 240px; overflow: auto; }
+.chart-table.show { display: block; }
+
+/* ---------- tables ---------- */
+.tools { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.tools input {
+  flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  padding: 6px 10px; font-size: 13px;
+}
+.count { color: var(--text-3); font-size: 12.5px; white-space: nowrap; }
+.scroll { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th {
+  position: sticky; top: 0; background: var(--surface-2); color: var(--text-2); text-align: left;
+  font-weight: 600; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+td { padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.mono { font-family: var(--mono); font-size: 12px; }
+tr:last-child td { border-bottom: 0; }
+td.blocked { color: var(--bad); font-weight: 650; }
+td.allowed { color: var(--good); font-weight: 650; }
+.empty-row td { color: var(--text-3); text-align: center; padding: 18px; white-space: normal; }
+
+/* ---------- simulator ---------- */
+.sim { display: flex; gap: 8px; }
+.sim input {
+  flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  padding: 8px 12px; font-size: 14px;
+}
+.btn {
+  border: 0; background: var(--brand); color: var(--brand-ink); border-radius: 8px;
+  padding: 8px 16px; font-weight: 650; cursor: pointer;
+}
+.btn:hover { filter: brightness(1.08); }
+.examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.examples button {
+  border: 1px solid var(--line); background: var(--surface-2); border-radius: 999px;
+  padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--text-2);
+}
+.verdict { margin-top: 14px; display: none; }
+.verdict.show { display: block; }
+.verdict dl { display: grid; grid-template-columns: 90px 1fr; gap: 4px 12px; margin: 10px 0 0; font-size: 13px; }
+.verdict dt { color: var(--text-3); }
+.verdict dd { margin: 0; overflow-wrap: anywhere; }
+
+/* ---------- policy ---------- */
+.kind { margin-top: 10px; }
+.kind h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-3); margin: 0 0 4px; }
+.kind ul { list-style: none; margin: 0; padding: 0; }
+.kind li { padding: 4px 0; border-bottom: 1px solid var(--grid); font-size: 13px; display: flex; gap: 10px; }
+.kind li:last-child { border-bottom: 0; }
+.kind li .n { color: var(--text-3); width: 22px; text-align: right; flex: none; font-variant-numeric: tabular-nums; }
+.kind li .c { color: var(--text-3); }
+
+footer { color: var(--text-3); font-size: 12px; text-align: center; padding: 24px; }
+.muted { color: var(--text-3); }
+code {
+  font-family: var(--mono); font-size: .92em; padding: 1px 5px; border-radius: 5px;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+
+@media (max-width: 900px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  header.top { padding: 10px 16px; }
+  main { padding: 14px 16px 32px; }
+  .brand .sub { display: none; }
+}
+@media (max-width: 600px) {
+  .live .upd { display: none; }
+  header.top { gap: 10px; }
+}
+@media (prefers-reduced-motion: reduce) { .chart { transition: none; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="/logo.png" alt="">
+    <div>
+      <h1>StockFW</h1>
+      <div class="sub" id="subtitle">Connecting…</div>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <div class="live" id="live" role="status" aria-live="polite"><span class="dot"></span><span><span id="live-text">Connecting</span><span class="upd" id="live-upd"></span></span></div>
+  <button class="icon-btn" id="theme" type="button" aria-label="Colour theme">Theme: system</button>
+</header>
+
+<main>
+  <div class="banner" id="banner" role="alert"></div>
+
+  <div class="filters" role="group" aria-label="Filters">
+    <div class="seg" id="range" role="group" aria-label="Time range">
+      <button type="button" data-range="900" aria-pressed="false">15 min</button>
+      <button type="button" data-range="3600" aria-pressed="true">1 hour</button>
+      <button type="button" data-range="21600" aria-pressed="false">6 hours</button>
+      <button type="button" data-range="86400" aria-pressed="false">24 hours</button>
+    </div>
+    <label>Adapter
+      <select id="device"><option value="">All adapters</option></select>
+    </label>
+  </div>
+
+  <section class="tiles" aria-label="Summary">
+    <div class="tile">
+      <div class="k">Firewall</div>
+      <div id="t-state"></div>
+      <div class="d" id="t-state-d">&nbsp;</div>
+    </div>
+    <div class="tile">
+      <div class="k">Blocked · last hour</div>
+      <div class="v" id="t-blocked">–</div>
+      <div class="d" id="t-blocked-d">&nbsp;</div>
+    </div>
+    <div class="tile">
+      <div class="k">Throughput now</div>
+      <div class="rx-tx">
+        <span><i class="key" id="k-rx"></i><span class="sr-only">Received</span><span id="t-rx">–</span></span>
+        <span><i class="key" id="k-tx"></i><span class="sr-only">Sent</span><span id="t-tx">–</span></span>
+      </div>
+      <div class="d">received · sent</div>
+    </div>
+    <div class="tile">
+      <div class="k">Connections</div>
+      <div class="v" id="t-conns">–</div>
+      <div class="d">open TCP sockets</div>
+    </div>
+    <div class="tile">
+      <div class="k">Policy</div>
+      <div class="v" id="t-rules">–</div>
+      <div class="d" id="t-rules-d">&nbsp;</div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card" aria-labelledby="h-activity">
+      <div class="hd">
+        <div>
+          <h2 id="h-activity">Policy activity</h2>
+          <p id="activity-sub">Events per minute</p>
+        </div>
+        <button class="icon-btn tbl-toggle" type="button" data-table="activity" aria-expanded="false">Table</button>
+      </div>
+      <div class="legend" id="legend-activity"></div>
+      <div class="bd">
+        <div class="chart" id="chart-activity" tabindex="0" role="img" aria-label="Policy activity chart"></div>
+        <div class="chart-table" id="table-activity"></div>
+        <p class="note" id="activity-note"></p>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-net">
+      <div class="hd">
+        <div>
+          <h2 id="h-net">Network I/O</h2>
+          <p id="net-sub">Average throughput, all adapters</p>
+        </div>
+        <button class="icon-btn tbl-toggle" type="button" data-table="net" aria-expanded="false">Table</button>
+      </div>
+      <div class="legend" id="legend-net"></div>
+      <div class="bd">
+        <div class="chart" id="chart-net" tabindex="0" role="img" aria-label="Network I/O chart"></div>
+        <div class="chart-table" id="table-net"></div>
+        <p class="note">Measured since the dashboard started, from the adapters' byte counters.</p>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-events">
+      <div class="hd"><div><h2 id="h-events">Recent events</h2><p id="events-sub">Newest first</p></div></div>
+      <div class="bd">
+        <div class="tools">
+          <input id="filter" type="search" placeholder="Filter by address, port, service…" aria-label="Filter events">
+          <span class="count" id="events-count"></span>
+        </div>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Time</th><th>Verdict</th><th>Dir</th><th>Source</th><th>Destination</th><th>Port</th><th>Service</th></tr></thead>
+            <tbody id="events"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-conns">
+      <div class="hd"><div><h2 id="h-conns">Active connections</h2><p>Connected TCP sockets and their programs</p></div></div>
+      <div class="bd">
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Remote</th><th>Port</th><th>Service</th><th>Direction</th><th>Program</th></tr></thead>
+            <tbody id="conns"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-sim">
+      <div class="hd"><div><h2 id="h-sim">What-if simulator</h2><p>Ask whether traffic would pass the saved policy. Nothing is written.</p></div></div>
+      <div class="bd">
+        <form class="sim" id="sim-form">
+          <label class="sr-only" for="sim-q">Describe the traffic</label>
+          <input id="sim-q" maxlength="300" autocomplete="off" placeholder="allow ssh from 192.168.1.50 on port 22">
+          <button class="btn" type="submit">Simulate</button>
+        </form>
+        <div class="examples" id="examples">
+          <button type="button">inbound rdp</button>
+          <button type="button">ssh from 10.0.0.5</button>
+          <button type="button">outbound tcp to 203.0.113.9 port 443</button>
+          <button type="button">ping</button>
+        </div>
+        <div class="verdict" id="verdict" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-policy">
+      <div class="hd"><div><h2 id="h-policy">Policy</h2><p id="policy-sub">Saved rules</p></div></div>
+      <div class="bd" id="policy"></div>
+    </section>
+  </div>
+</main>
+
+<footer id="footer">Read-only · listening on 127.0.0.1 only · no data leaves this machine</footer>
+
+<script nonce="{{NONCE}}">
+"use strict";
+(function () {
+  /* ------------------------------------------------------------ token */
+  var token = null;
+  var m = /(?:^#|&)token=([0-9a-f]{32})/.exec(location.hash);
+  if (m) {
+    token = m[1];
+    try { sessionStorage.setItem("stockfw.token", token); } catch (e) {}
+    history.replaceState(null, "", location.pathname);
+  } else {
+    try { token = sessionStorage.getItem("stockfw.token"); } catch (e) {}
+  }
+
+  var state = { range: 3600, device: "", filter: "", events: [], failures: 0, lastOk: 0, summary: null };
+
+  /* ------------------------------------------------------- helpers */
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+  function svg(tag, attrs) {
+    var n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (var k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  function fmtBytes(b) {
+    var u = ["B", "kB", "MB", "GB", "TB"], i = 0;
+    b = Number(b) || 0;
+    while (b >= 1000 && i < u.length - 1) { b /= 1000; i++; }
+    return (i === 0 ? Math.round(b) : b.toFixed(b < 10 ? 1 : 0)) + " " + u[i];
+  }
+  function fmtRate(b) { return fmtBytes(b) + "/s"; }
+  function fmtNum(n) { return Number(n).toLocaleString(); }
+  function fmtPerMin(v) { return (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10).toLocaleString() + "/min"; }
+  function hhmm(sec) {
+    var d = new Date(sec * 1000);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  function hhmmss(sec) {
+    var d = new Date(sec * 1000);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+  function eventTime(iso) {
+    var d = new Date(iso);
+    if (isNaN(d)) return iso || "";
+    var today = new Date();
+    var t = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return d.toDateString() === today.toDateString() ? t : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + t;
+  }
+  var ICON_OK = "M3 8.5l3 3 7-7", ICON_X = "M4 4l8 8M12 4l-8 8", ICON_Q = "M8 3v6M8 12v1";
+  function pill(kind, text, path) {
+    var p = el("span", "pill " + kind);
+    var s = svg("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" });
+    s.appendChild(svg("path", { d: path, fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round" }));
+    p.appendChild(s);
+    p.appendChild(document.createTextNode(text));
+    return p;
+  }
+  function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+
+  /* ------------------------------------------------------------ API */
+  function api(path) {
+    if (!token) return Promise.reject({ status: 401 });
+    return fetch(path, { headers: { "X-StockFW-Token": token }, cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) return r.json().catch(function () { return {}; }).then(function (b) { throw { status: r.status, body: b }; });
+        return r.json();
+      });
+  }
+
+  function banner(text, bad) {
+    var b = $("banner");
+    if (!text) { b.className = "banner"; b.textContent = ""; return; }
+    b.className = "banner show" + (bad ? " bad" : "");
+    b.textContent = text;
+  }
+
+  function setLive(kind, text, detail) {
+    $("live").className = "live" + (kind ? " " + kind : "");
+    $("live-text").textContent = text;
+    $("live-upd").textContent = detail ? " · " + detail : "";
+  }
+
+  /* -------------------------------------------------------- theme */
+  var themes = ["system", "light", "dark"], themeIdx = 0;
+  try { themeIdx = Math.max(0, themes.indexOf(localStorage.getItem("stockfw.theme") || "system")); } catch (e) {}
+  function applyTheme() {
+    var t = themes[themeIdx];
+    if (t === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", t);
+    $("theme").textContent = "Theme: " + t;
+    try { localStorage.setItem("stockfw.theme", t); } catch (e) {}
+    if (state.activity) renderCharts();
+  }
+  $("theme").addEventListener("click", function () { themeIdx = (themeIdx + 1) % themes.length; applyTheme(); });
+  applyTheme();
+
+  /* -------------------------------------------------------- charts */
+  /* A round gridline step for four gridlines above zero, so every
+   * label is a round number (1, 2, 2.5 or 5 times a power of ten). */
+  function niceStep(v) {
+    if (!(v > 0)) return 1;
+    var p = Math.pow(10, Math.floor(Math.log10(v)));
+    var n = v / p;
+    var s = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
+    return s * p;
+  }
+  /* Round time steps; the smallest that suits the range and leaves
+   * room for a "08:10 AM" label between ticks at this width. */
+  function tickEvery(range, pxPerSecond) {
+    var steps = [60, 120, 180, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200];
+    var floor = range <= 900 ? 180 : range <= 3600 ? 600 : range <= 21600 ? 3600 : 10800;
+    for (var i = 0; i < steps.length; i++)
+      if (steps[i] >= floor && steps[i] * pxPerSecond >= 84) return steps[i];
+    return steps[steps.length - 1];
+  }
+
+  /* opts: { host, tip, series:[{label,color,values}], covered, start, step, fmt, perMinute, empty } */
+  function lineChart(opts) {
+    var host = opts.host;
+    clear(host);
+    var W = Math.max(280, host.clientWidth), H = host.clientHeight || 240;
+    var M = { l: 58, r: 70, t: 10, b: 26 };
+    var iw = W - M.l - M.r, ih = H - M.t - M.b;
+    var n = opts.covered ? opts.covered.length : 0;
+    var s = svg("svg", { viewBox: "0 0 " + W + " " + H, preserveAspectRatio: "none" });
+    host.appendChild(s);
+
+    if (!opts.covered) {
+      var e = el("div", "empty", opts.empty || "No data.");
+      host.appendChild(e);
+      return;
+    }
+
+    /* Rates: a point's sum over the seconds it actually covers. */
+    var rates = opts.series.map(function (ser) {
+      return ser.values.map(function (v, i) {
+        var c = opts.covered[i];
+        if (!c) return null;
+        return opts.perMinute ? v * 60 / c : v / c;
+      });
+    });
+    var max = 0;
+    rates.forEach(function (r) { r.forEach(function (v) { if (v !== null && v > max) max = v; }); });
+    var ymax = niceStep(max / 4) * 4;
+    var x = function (i) { return M.l + (n <= 1 ? iw : (i / (n - 1)) * iw); };
+    var y = function (v) { return M.t + ih - (v / ymax) * ih; };
+
+    /* No-data stretch: shaded, so it never reads as zero traffic. */
+    var firstData = -1;
+    for (var i = 0; i < n; i++) if (opts.covered[i]) { firstData = i; break; }
+    if (firstData > 0) {
+      s.appendChild(svg("rect", { class: "nodata", x: M.l, y: M.t, width: Math.max(0, x(firstData) - M.l), height: ih }));
+      var nd = svg("text", { class: "axis", x: M.l + 8, y: M.t + 16 });
+      nd.textContent = "no data";
+      if (x(firstData) - M.l > 60) s.appendChild(nd);
+    }
+
+    /* Grid and y labels. */
+    for (var g = 0; g <= 4; g++) {
+      var gv = ymax * g / 4, gy = y(gv);
+      s.appendChild(svg("line", { class: g === 0 ? "base-line" : "grid-line", x1: M.l, x2: M.l + iw, y1: gy, y2: gy }));
+      var t = svg("text", { class: "axis", x: M.l - 8, y: gy + 4, "text-anchor": "end" });
+      t.textContent = opts.fmt(gv);
+      s.appendChild(t);
+    }
+
+    /* x labels on round times. */
+    var every = tickEvery(opts.range, iw / Math.max(1, (n - 1) * opts.step)),
+        end = opts.start + n * opts.step;
+    for (var ts = Math.ceil(opts.start / every) * every; ts <= end; ts += every) {
+      var xi = (ts - opts.start) / opts.step;
+      if (xi < 0 || xi > n - 1) continue;
+      var tx = svg("text", { class: "axis", x: x(xi), y: H - 6, "text-anchor": "middle" });
+      tx.textContent = hhmm(ts);
+      s.appendChild(tx);
+    }
+
+    if (firstData < 0) {
+      host.appendChild(el("div", "empty", opts.emptyNow || "Waiting for the first measurement…"));
+      return;
+    }
+
+    /* Lines, broken at no-data points. */
+    var surface = css("--surface");
+    rates.forEach(function (r, si) {
+      var d = "", pen = false;
+      r.forEach(function (v, i) {
+        if (v === null) { pen = false; return; }
+        d += (pen ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1);
+        pen = true;
+      });
+      s.appendChild(svg("path", { d: d, fill: "none", stroke: opts.series[si].color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    });
+
+    /* End markers and direct labels (two series: label both). */
+    var last = n - 1;
+    var labelYs = [];
+    rates.forEach(function (r, si) {
+      if (r[last] === null) return;
+      var cy = y(r[last]);
+      s.appendChild(svg("circle", { cx: x(last), cy: cy, r: 4, fill: opts.series[si].color, stroke: surface, "stroke-width": 2 }));
+      var ly = cy;
+      labelYs.forEach(function (o) { if (Math.abs(o - ly) < 14) ly = o + (ly <= o ? -14 : 14); });
+      labelYs.push(ly);
+      var lt = svg("text", { class: "dlabel", x: x(last) + 9, y: Math.min(M.t + ih, Math.max(M.t + 10, ly + 4)) });
+      lt.textContent = opts.series[si].label;
+      s.appendChild(lt);
+    });
+
+    /* Crosshair + one tooltip for every series. */
+    var cross = svg("line", { class: "cross", y1: M.t, y2: M.t + ih, x1: -10, x2: -10, visibility: "hidden" });
+    s.appendChild(cross);
+    var dots = opts.series.map(function (ser) {
+      var c = svg("circle", { r: 4, fill: ser.color, stroke: surface, "stroke-width": 2, visibility: "hidden" });
+      s.appendChild(c);
+      return c;
+    });
+    var tip = el("div", "tip");
+    host.appendChild(tip);
+    var hit = svg("rect", { x: M.l, y: M.t, width: iw, height: ih, fill: "transparent" });
+    s.appendChild(hit);
+
+    function show(i) {
+      if (i < 0 || i >= n) return hide();
+      var px = x(i);
+      cross.setAttribute("x1", px); cross.setAttribute("x2", px);
+      cross.setAttribute("visibility", "visible");
+      clear(tip);
+      var from = opts.start + i * opts.step;
+      tip.appendChild(el("div", "t", hhmm(from) + "–" + hhmm(from + opts.step)));
+      rates.forEach(function (r, si) {
+        var row = el("div", "r");
+        var k = el("i", "key"); k.style.background = opts.series[si].color;
+        row.appendChild(k);
+        row.appendChild(el("b", null, r[i] === null ? "no data" : opts.fmt(r[i])));
+        row.appendChild(el("span", null, opts.series[si].label));
+        tip.appendChild(row);
+        if (r[i] === null) { dots[si].setAttribute("visibility", "hidden"); return; }
+        dots[si].setAttribute("cx", px); dots[si].setAttribute("cy", y(r[i]));
+        dots[si].setAttribute("visibility", "visible");
+      });
+      tip.style.display = "block";
+      var scale = host.clientWidth / W;
+      var left = px * scale + 14;
+      if (left + tip.offsetWidth > host.clientWidth) left = px * scale - tip.offsetWidth - 14;
+      tip.style.left = Math.max(0, left) + "px";
+      tip.style.top = (M.t + 6) + "px";
+      host.dataset.idx = i;
+    }
+    function hide() {
+      cross.setAttribute("visibility", "hidden");
+      dots.forEach(function (d) { d.setAttribute("visibility", "hidden"); });
+      tip.style.display = "none";
+      delete host.dataset.idx;
+    }
+    function idxAt(ev) {
+      var r = host.getBoundingClientRect();
+      var px = (ev.clientX - r.left) * (W / r.width);
+      return Math.round(((px - M.l) / iw) * (n - 1));
+    }
+    hit.addEventListener("pointermove", function (ev) { show(Math.max(0, Math.min(n - 1, idxAt(ev)))); });
+    hit.addEventListener("pointerleave", hide);
+    host.onkeydown = function (ev) {
+      var cur = host.dataset.idx !== undefined ? Number(host.dataset.idx) : n - 1;
+      if (ev.key === "ArrowLeft") { show(Math.max(0, cur - 1)); ev.preventDefault(); }
+      else if (ev.key === "ArrowRight") { show(Math.min(n - 1, cur + 1)); ev.preventDefault(); }
+      else if (ev.key === "Escape") hide();
+    };
+    host.onfocus = function () { show(n - 1); };
+    host.onblur = hide;
+  }
+
+  function legend(id, series) {
+    var lg = $(id);
+    clear(lg);
+    series.forEach(function (s) {
+      var sp = el("span");
+      var k = el("i", "key"); k.style.background = s.color;
+      sp.appendChild(k);
+      sp.appendChild(document.createTextNode(s.label));
+      lg.appendChild(sp);
+    });
+  }
+
+  function chartTable(id, start, step, covered, series, fmt) {
+    var host = $(id);
+    clear(host);
+    if (!covered) return;
+    var t = el("table"), hd = el("tr");
+    hd.appendChild(el("th", null, "From"));
+    series.forEach(function (s) { hd.appendChild(el("th", null, s.label)); });
+    var th = el("thead"); th.appendChild(hd); t.appendChild(th);
+    var tb = el("tbody");
+    for (var i = covered.length - 1; i >= 0; i--) {
+      if (!covered[i]) continue;
+      var tr = el("tr");
+      tr.appendChild(el("td", null, hhmm(start + i * step)));
+      series.forEach(function (s) { tr.appendChild(el("td", null, fmt(s.rates[i]))); });
+      tb.appendChild(tr);
+    }
+    t.appendChild(tb);
+    host.appendChild(t);
+  }
+
+  function renderCharts() {
+    var a = state.activity, sm = state.summary || {};
+    if (!a) return;
+    var allowedSeries = { label: "Allowed", color: css("--allowed"), values: a.events.allowed };
+    var blockedSeries = { label: "Blocked", color: css("--blocked"), values: a.events.blocked };
+    var evSeries = sm.logs_allowed === false ? [blockedSeries] : [allowedSeries, blockedSeries];
+    legend("legend-activity", evSeries);
+    lineChart({
+      host: $("chart-activity"), series: evSeries, covered: a.events.covered, start: a.start, step: a.step,
+      range: a.range, perMinute: true, fmt: fmtPerMin,
+      empty: sm.monitor_note ? "Event monitoring is off: " + sm.monitor_note : "Event monitoring is off."
+    });
+    var rxS = { label: "Received", color: css("--rx"), values: a.net.rx };
+    var txS = { label: "Sent", color: css("--tx"), values: a.net.tx };
+    legend("legend-net", [rxS, txS]);
+    lineChart({
+      host: $("chart-net"), series: [rxS, txS], covered: a.net.covered, start: a.start, step: a.step,
+      range: a.range, perMinute: false, fmt: fmtRate
+    });
+
+    function withRates(ser, covered, perMinute) {
+      ser.rates = ser.values.map(function (v, i) { return covered && covered[i] ? (perMinute ? v * 60 / covered[i] : v / covered[i]) : null; });
+      return ser;
+    }
+    chartTable("table-activity", a.start, a.step, a.events.covered,
+               evSeries.map(function (s) { return withRates(s, a.events.covered, true); }), fmtPerMin);
+    chartTable("table-net", a.start, a.step, a.net.covered,
+               [withRates(rxS, a.net.covered, false), withRates(txS, a.net.covered, false)], fmtRate);
+
+    $("activity-sub").textContent = sm.logs_allowed === false
+      ? "Blocked packets per minute" : "Events per minute, allowed and blocked";
+    $("activity-note").textContent = sm.logs_allowed === false
+      ? "On Linux StockFW logs only the packets it drops or rejects, so this graph shows blocked traffic; allowed traffic appears under Network I/O."
+      : "";
+    var dev = a.device ? a.device : "all adapters";
+    $("net-sub").textContent = "Average throughput, " + dev;
+  }
+
+  document.querySelectorAll(".tbl-toggle").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var t = $("table-" + b.dataset.table), c = $("chart-" + b.dataset.table);
+      var on = !t.classList.contains("show");
+      t.classList.toggle("show", on);
+      c.style.display = on ? "none" : "";
+      b.setAttribute("aria-expanded", on ? "true" : "false");
+      b.textContent = on ? "Chart" : "Table";
+      if (!on) renderCharts();
+    });
+  });
+
+  /* -------------------------------------------------------- tiles */
+  function renderSummary(sm) {
+    state.summary = sm;
+    $("subtitle").textContent = sm.host + " · " + sm.backend_name + " · v" + sm.version;
+    document.title = "StockFW · " + sm.host;
+
+    var st = $("t-state");
+    clear(st);
+    if (sm.state === "running") st.appendChild(pill("good", "Running", ICON_OK));
+    else if (sm.state === "stopped") st.appendChild(pill("bad", "Stopped", ICON_X));
+    else st.appendChild(pill("warn", "Unknown", ICON_Q));
+    $("t-state-d").textContent = sm.state === "unknown" && !sm.root ? "Reading the firewall needs root"
+      : sm.hold ? "Audit-only: applies are recorded, not made"
+      : sm.state === "running" ? "StockFW's rules are in force"
+      : sm.state === "stopped" ? "StockFW's rules are not loaded"
+      : "State could not be read";
+
+    $("t-blocked").textContent = sm.monitoring || sm.blocked_1h ? fmtNum(sm.blocked_1h) : "–";
+    $("t-blocked-d").textContent = sm.monitoring
+      ? fmtNum(sm.blocked_24h) + " in the last 24 h"
+      : "Monitoring off · run with sudo";
+    $("t-rx").textContent = fmtRate(sm.rx_per_s);
+    $("t-tx").textContent = fmtRate(sm.tx_per_s);
+    $("k-rx").style.background = css("--rx");
+    $("k-tx").style.background = css("--tx");
+    $("t-conns").textContent = fmtNum(sm.connections);
+    $("t-rules").textContent = sm.policy_saved ? fmtNum(sm.rules) + " rules" : "None";
+    $("t-rules-d").textContent = sm.rules_dir;
+    $("footer").textContent = "Read-only · listening on " + location.host + " only · no data leaves this machine · StockFW " + sm.version;
+  }
+
+  /* -------------------------------------------------------- events */
+  function renderEvents() {
+    var tb = $("events");
+    clear(tb);
+    var f = state.filter.toLowerCase(), shown = 0;
+    state.events.forEach(function (e) {
+      var hay = [e.source, e.destination, e.port, e.service, e.protocol, e.direction].join(" ").toLowerCase();
+      if (f && hay.indexOf(f) < 0) return;
+      shown++;
+      var tr = el("tr");
+      tr.appendChild(el("td", null, eventTime(e.time)));
+      tr.appendChild(el("td", e.blocked ? "blocked" : "allowed", e.blocked ? "Blocked" : "Allowed"));
+      tr.appendChild(el("td", null, (e.direction || "").toLowerCase() === "out" ? "out" : "in"));
+      tr.appendChild(el("td", "mono", e.source || "–"));
+      tr.appendChild(el("td", "mono", e.destination || "–"));
+      tr.appendChild(el("td", null, e.port || "–"));
+      tr.appendChild(el("td", null, (e.service || "") + (e.protocol ? " · " + e.protocol : "")));
+      tb.appendChild(tr);
+    });
+    if (shown === 0) {
+      var tr = el("tr", "empty-row"), td = el("td");
+      td.colSpan = 7;
+      var sm = state.summary || {};
+      td.textContent = state.events.length && f ? "No event matches “" + state.filter + "”."
+        : sm.monitoring ? "No events yet. StockFW lists packets its rules dropped or rejected."
+        : "Event monitoring is off. " + (sm.monitor_note || "");
+      tr.appendChild(td);
+      tb.appendChild(tr);
+    }
+    $("events-count").textContent = f ? shown + " of " + state.events.length : state.events.length + " shown";
+  }
+  $("filter").addEventListener("input", function (ev) { state.filter = ev.target.value; renderEvents(); });
+
+  function renderConns(list) {
+    var tb = $("conns");
+    clear(tb);
+    list.forEach(function (c) {
+      var tr = el("tr");
+      tr.appendChild(el("td", "mono", c.remote));
+      tr.appendChild(el("td", null, c.port));
+      tr.appendChild(el("td", null, c.service));
+      tr.appendChild(el("td", null, c.direction));
+      var prog = el("td", c.program === "?" ? "muted" : null, c.program === "?" ? "unknown" : c.program);
+      if (c.program === "?") prog.title = "The owning process could not be read. Run the dashboard with sudo to see every program.";
+      tr.appendChild(prog);
+      tb.appendChild(tr);
+    });
+    if (!list.length) {
+      var tr = el("tr", "empty-row"), td = el("td", null, "No connected TCP sockets.");
+      td.colSpan = 5; tr.appendChild(td); tb.appendChild(tr);
+    }
+  }
+
+  function renderPolicy(p) {
+    var host = $("policy");
+    clear(host);
+    $("policy-sub").textContent = p.saved ? p.rules.length + " saved rules in " + p.rules_dir : "No policy saved in " + p.rules_dir;
+    var groups = {};
+    p.rules.forEach(function (r) { (groups[r.kind] = groups[r.kind] || []).push(r); });
+    Object.keys(groups).forEach(function (k) {
+      var g = el("div", "kind");
+      g.appendChild(el("h3", null, k.replace(/-/g, " ")));
+      var ul = el("ul");
+      groups[k].forEach(function (r) {
+        var li = el("li");
+        li.appendChild(el("span", "n", r.number));
+        li.appendChild(el("span", "mono", r.summary));
+        if (r.comment) li.appendChild(el("span", "c", "# " + r.comment));
+        ul.appendChild(li);
+      });
+      g.appendChild(ul);
+      host.appendChild(g);
+    });
+    if (!p.rules.length) {
+      var note = el("p", "note");
+      note.appendChild(document.createTextNode("Add rules with "));
+      note.appendChild(el("code", null, "stockfw policy add"));
+      note.appendChild(document.createTextNode(" or on the desktop app's Policy page."));
+      host.appendChild(note);
+    }
+    if (p.hold)
+      host.appendChild(el("p", "note", "Audit-only mode is on: applies are recorded but the firewall is left untouched."));
+  }
+
+  function renderDevices(devs) {
+    var sel = $("device"), cur = state.device;
+    var have = Array.prototype.map.call(sel.options, function (o) { return o.value; }).join("|");
+    if (have === [""].concat(devs).join("|")) return;
+    clear(sel);
+    sel.appendChild(el("option", null, "All adapters")).value = "";
+    devs.forEach(function (d) { var o = el("option", null, d); o.value = d; sel.appendChild(o); });
+    sel.value = devs.indexOf(cur) >= 0 ? cur : "";
+  }
+
+  /* -------------------------------------------------------- simulator */
+  function simulate(q) {
+    var v = $("verdict");
+    api("/api/simulate?q=" + encodeURIComponent(q)).then(function (r) {
+      clear(v);
+      v.className = "verdict show";
+      v.appendChild(r.verdict === "BLOCKED" ? pill("bad", "Blocked", ICON_X) : pill("good", "Allowed", ICON_OK));
+      var dl = el("dl");
+      function row(k, val) { if (!val) return; dl.appendChild(el("dt", null, k)); dl.appendChild(el("dd", null, val)); }
+      row("Packet", r.direction + " " + (r.protocol || "TCP") + (r.port !== null ? " port " + r.port : "") + (r.remote ? (r.direction === "inbound" ? " from " : " to ") + r.remote : ""));
+      row("Rule", r.rule);
+      row("Why", r.reason);
+      row("To allow", r.suggestion);
+      v.appendChild(dl);
+    }).catch(function (e) {
+      clear(v);
+      v.className = "verdict show";
+      v.appendChild(el("p", "note", (e && e.body && e.body.error) || "The simulator could not answer."));
+    });
+  }
+  $("sim-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var q = $("sim-q").value.trim();
+    if (q) simulate(q);
+  });
+  $("examples").addEventListener("click", function (ev) {
+    if (ev.target.tagName !== "BUTTON") return;
+    $("sim-q").value = ev.target.textContent;
+    simulate(ev.target.textContent);
+  });
+
+  /* -------------------------------------------------------- filters */
+  $("range").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button");
+    if (!b) return;
+    state.range = Number(b.dataset.range);
+    this.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); });
+    refreshActivity();
+  });
+  $("device").addEventListener("change", function (ev) { state.device = ev.target.value; refreshActivity(); });
+
+  /* -------------------------------------------------------- refresh */
+  function onError(e) {
+    if (e && e.status === 401) {
+      setLive("down", "Not authorised");
+      banner("This page has no valid access token for the running dashboard. Open the exact address that stockfw dashboard printed in your terminal; it changes every run.", true);
+      return true;
+    }
+    state.failures++;
+    if (state.failures >= 2) {
+      setLive("down", "Disconnected");
+      banner("Lost contact with the dashboard server. It may have been stopped; the figures below are the last ones received.", true);
+    }
+    return false;
+  }
+
+  function refreshActivity() {
+    $("chart-activity").classList.add("loading");
+    $("chart-net").classList.add("loading");
+    var q = "/api/activity?range=" + state.range + (state.device ? "&device=" + encodeURIComponent(state.device) : "");
+    return api(q).then(function (a) {
+      state.activity = a;
+      renderDevices(a.devices || []);
+      renderCharts();
+    }).finally(function () {
+      $("chart-activity").classList.remove("loading");
+      $("chart-net").classList.remove("loading");
+    });
+  }
+
+  var ticks = 0;
+  function refresh() {
+    var jobs = [
+      api("/api/summary").then(renderSummary),
+      refreshActivity(),
+      api("/api/events?limit=300").then(function (ev) { state.events = ev; renderEvents(); }),
+      api("/api/connections").then(renderConns)
+    ];
+    if (ticks % 6 === 0) jobs.push(api("/api/policy").then(renderPolicy));
+    ticks++;
+    return Promise.all(jobs).then(function () {
+      state.failures = 0;
+      state.lastOk = Date.now();
+      setLive("", "Live", "updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      banner(null);
+    }).catch(function (e) { if (onError(e)) throw e; });
+  }
+
+  function loop() {
+    refresh().then(function () { setTimeout(loop, 5000); }, function () { /* 401: stop polling */ });
+  }
+
+  if (!token) {
+    onError({ status: 401 });
+  } else {
+    loop();
+  }
+
+  var resizeTimer = null;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(renderCharts, 120);
+  });
+})();
+</script>
+</body>
+</html>

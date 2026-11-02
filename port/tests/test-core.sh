@@ -37,6 +37,9 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-audit.h"
 #include "core/fs-trust.h"
 #include "core/fs-apply.h"
+#include "core/fs-netparse.h"
+#include "core/fs-activity.h"
+#include "core/fs-json.h"
 
 static int failures = 0;
 
@@ -4419,6 +4422,656 @@ static void test_settings_plan (void)
 	       "profile bits render as their netsh names");
 }
 
+/* ---- 1.0.6: Linux text parsers (fs-netparse) ---------------------- */
+
+/* Encode an address the way the kernel prints it into /proc/net/tcp:
+ * each 32-bit word of the network-order bytes as a native %08X.  Built
+ * here rather than pasted so the fixtures hold on either byte order. */
+static gchar *
+proc_hex_address (const guint8 *bytes, gsize len, guint port)
+{
+	GString *out = g_string_new (NULL);
+
+	for (gsize w = 0; w < len / 4; w++) {
+		guint32 word;
+
+		memcpy (&word, bytes + w * 4, 4);
+		g_string_append_printf (out, "%08X", word);
+	}
+
+	g_string_append_printf (out, ":%04X", port);
+	return g_string_free (out, FALSE);
+}
+
+static void
+clear_hit_fields (FsHit *h)
+{
+	g_free (h->time); g_free (h->direction); g_free (h->in);
+	g_free (h->out); g_free (h->port); g_free (h->source);
+	g_free (h->destination); g_free (h->length); g_free (h->tos);
+	g_free (h->protocol); g_free (h->service);
+	memset (h, 0, sizeof (*h));
+}
+
+static void test_netparse_log (void)
+{
+	FsHit hit = { 0 };
+	GTimeZone *utc = g_time_zone_new_utc ();
+	GDateTime *now = g_date_time_new (utc, 2026, 10, 11, 15, 0, 0);
+	gboolean ok;
+
+	/* The line the end-to-end test also uses: an inbound drop. */
+	ok = fs_netparse_log_line (
+		"Oct 11 14:30:00 kali kernel: [ 1234.567890] STOCKFW-DROP "
+		"IN=eth0 OUT= MAC=00:11:22:33:44:55 SRC=192.0.2.10 "
+		"DST=198.51.100.20 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=1 DF "
+		"PROTO=TCP SPT=54321 DPT=443 WINDOW=64240 RES=0x00 SYN URGP=0",
+		&hit, now);
+	CHECK (ok, "netparse: a STOCKFW-DROP line is ours");
+	CHECK (g_strcmp0 (hit.port, "443") == 0,
+	       "netparse: port is the DESTINATION port (DPT=443), not the "
+	       "ephemeral source port -- got %s", hit.port);
+	CHECK (g_strcmp0 (hit.out, "") == 0 && g_strcmp0 (hit.in, "eth0") == 0,
+	       "netparse: OUT stays the (empty) interface; DPT no longer "
+	       "overwrites it -- in=[%s] out=[%s]", hit.in, hit.out);
+	CHECK (g_strcmp0 (hit.source, "192.0.2.10") == 0 &&
+	       g_strcmp0 (hit.destination, "198.51.100.20") == 0 &&
+	       g_strcmp0 (hit.protocol, "TCP") == 0,
+	       "netparse: src, dst, proto");
+	CHECK (g_strcmp0 (hit.length, "60") == 0 &&
+	       g_strcmp0 (hit.tos, "0x00") == 0,
+	       "netparse: LEN and TOS fill the Length/ToS columns");
+	CHECK (g_strcmp0 (hit.direction, "in") == 0,
+	       "netparse: IN= set means inbound");
+	CHECK (g_strcmp0 (hit.time, "2026-10-11T14:30:00Z") == 0,
+	       "netparse: syslog stamp becomes the ISO UTC stamp the Events "
+	       "page localises -- got %s", hit.time);
+	CHECK (hit.service == NULL,
+	       "netparse: service is left for the backend to name and mark");
+	clear_hit_fields (&hit);
+
+	/* REJECT prefix, RFC 3339 stamp with an offset, outbound, UDP
+	 * with its second LEN= in the UDP header. */
+	ok = fs_netparse_log_line (
+		"2026-10-11T16:30:05.123456+02:00 kali kernel: STOCKFW-REJECT "
+		"IN= OUT=wlan0 SRC=192.0.2.5 DST=203.0.113.9 LEN=76 TOS=0x10 "
+		"PROTO=UDP SPT=40000 DPT=123 LEN=56",
+		&hit, now);
+	CHECK (ok, "netparse: a STOCKFW-REJECT line is ours too");
+	CHECK (g_strcmp0 (hit.direction, "out") == 0 &&
+	       g_strcmp0 (hit.out, "wlan0") == 0,
+	       "netparse: only OUT= set means outbound");
+	CHECK (g_strcmp0 (hit.time, "2026-10-11T14:30:05Z") == 0,
+	       "netparse: an RFC 3339 offset is honoured (16:30+02:00 is "
+	       "14:30 UTC) -- got %s", hit.time);
+	CHECK (g_strcmp0 (hit.length, "76") == 0,
+	       "netparse: the IP header's LEN wins over the UDP header's");
+	clear_hit_fields (&hit);
+
+	/* A December line read in early January belongs to last year. */
+	{
+		GDateTime *jan = g_date_time_new (utc, 2027, 1, 2, 9, 0, 0);
+
+		ok = fs_netparse_log_line (
+			"Dec 31 23:59:00 kali kernel: STOCKFW-DROP IN=eth0 OUT= "
+			"SRC=192.0.2.1 DST=192.0.2.2 PROTO=ICMP TYPE=8 CODE=0",
+			&hit, jan);
+		CHECK (ok && g_strcmp0 (hit.time, "2026-12-31T23:59:00Z") == 0,
+		       "netparse: syslog year rolls back across New Year -- "
+		       "got %s", hit.time);
+		CHECK (hit.port == NULL && g_strcmp0 (hit.protocol, "ICMP") == 0,
+		       "netparse: ICMP has no port");
+		clear_hit_fields (&hit);
+		g_date_time_unref (jan);
+	}
+
+	/* A single-digit day is space-padded. */
+	ok = fs_netparse_log_line (
+		"Oct  1 08:00:00 kali kernel: STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 DST=192.0.2.2 PROTO=TCP SPT=1 DPT=22", &hit, now);
+	CHECK (ok && g_strcmp0 (hit.time, "2026-10-01T08:00:00Z") == 0,
+	       "netparse: \"Oct  1\" parses -- got %s", hit.time);
+	clear_hit_fields (&hit);
+
+	/* No stamp at all: the arrival time, never the raw line. */
+	ok = fs_netparse_log_line (
+		"[ 99.1]STOCKFW-DROP IN=eth0 OUT= SRC=192.0.2.1 DST=192.0.2.2 "
+		"PROTO=TCP SPT=1 DPT=80", &hit, now);
+	CHECK (ok && g_strcmp0 (hit.time, "2026-10-11T15:00:00Z") == 0,
+	       "netparse: marker glued to the uptime still counts; no stamp "
+	       "means the arrival time -- got %s", hit.time);
+	clear_hit_fields (&hit);
+
+	/* Foreign kernel noise. */
+	memset (&hit, 0, sizeof (hit));
+	ok = fs_netparse_log_line (
+		"Oct 11 14:30:01 kali kernel: [UFW BLOCK] IN=eth0 OUT= "
+		"SRC=192.0.2.99 DST=198.51.100.99 PROTO=UDP SPT=1 DPT=2",
+		&hit, now);
+	CHECK (!ok && hit.source == NULL && hit.port == NULL,
+	       "netparse: a line without our marker is not an event and "
+	       "leaves the hit untouched");
+
+	/* A key repeated must not leak or keep the first value. */
+	ok = fs_netparse_log_line (
+		"Oct 11 14:30:00 h kernel: STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 SRC=192.0.2.7 DST=192.0.2.2 PROTO=TCP DPT=25",
+		&hit, now);
+	CHECK (ok && g_strcmp0 (hit.source, "192.0.2.7") == 0,
+	       "netparse: a repeated key keeps its last value");
+	clear_hit_fields (&hit);
+
+	/* Naming: the destination port's service plus the marker. */
+	ok = fs_netparse_log_line (
+		"Oct 11 14:30:00 h kernel: STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 DST=192.0.2.2 PROTO=TCP SPT=40000 DPT=22",
+		&hit, now);
+	fs_netparse_name_blocked (&hit);
+	CHECK (ok && g_strcmp0 (hit.service, "SSH [BLOCKED]") == 0 &&
+	       fs_hit_is_blocked (&hit),
+	       "netparse: a drop to port 22 is named \"SSH [BLOCKED]\" -- "
+	       "got %s", hit.service);
+	fs_netparse_clear_hit (&hit);
+	CHECK (hit.service == NULL && hit.port == NULL,
+	       "netparse: clear_hit frees and zeroes the fields");
+
+	ok = fs_netparse_log_line (
+		"Oct 11 14:30:00 h kernel: STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 DST=192.0.2.2 PROTO=ICMP TYPE=8", &hit, now);
+	fs_netparse_name_blocked (&hit);
+	CHECK (g_strcmp0 (hit.service, "ICMP [BLOCKED]") == 0,
+	       "netparse: ICMP is named ICMP");
+	fs_netparse_clear_hit (&hit);
+
+	/* Any line's stamp, ours or not. */
+	{
+		gchar *t1 = fs_netparse_line_time (
+			"Oct 11 14:29:00 kali kernel: usb 1-1: new device", now);
+		gchar *t2 = fs_netparse_line_time ("no stamp here", now);
+
+		CHECK (g_strcmp0 (t1, "2026-10-11T14:29:00Z") == 0 && t2 == NULL,
+		       "netparse: line_time reads a foreign line's stamp, NULL "
+		       "for none -- got %s", t1);
+		g_free (t1);
+		g_free (t2);
+	}
+
+	/* The shared marker test. */
+	{
+		FsHit a = { 0 }, b = { 0 };
+
+		a.service = (gchar *) "HTTPS [BLOCKED]";
+		b.service = (gchar *) "HTTPS";
+		{
+			gchar *na = fs_hit_service_name (&a);
+			gchar *nb = fs_hit_service_name (&b);
+			gchar *nn = fs_hit_service_name (NULL);
+
+			CHECK (fs_hit_is_blocked (&a) && !fs_hit_is_blocked (&b) &&
+			       g_strcmp0 (nb, b.service) == 0 &&
+			       g_strcmp0 (nn, "") == 0 &&
+			       strstr (na, "BLOCKED") == NULL &&
+			       g_str_has_prefix (a.service, na) && na[0] != '\0',
+			       "hit service name: the marker is cut, an allowed "
+			       "hit's name is kept -- got \"%s\"", na);
+			g_free (na); g_free (nb); g_free (nn);
+		}
+		CHECK (fs_hit_is_blocked (&a) && !fs_hit_is_blocked (&b) &&
+		       !fs_hit_is_blocked (NULL),
+		       "netparse: fs_hit_is_blocked keys on the shared marker");
+	}
+
+	g_date_time_unref (now);
+	g_time_zone_unref (utc);
+}
+
+static void test_netparse_proc (void)
+{
+	const gchar *dev =
+		"Inter-|   Receive                                                |  Transmit\n"
+		" face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+		"    lo:  269777     285    0    0    0     0          0         0   269777     285    0    0    0     0       0          0\n"
+		"  eth0: 298846211   26340    0    6    0     0          0         0  8649880   16780    0    0    0     0       0          0\n"
+		"wlan0:12 1 0 0 0 0 0 0 34 1 0 0 0 0 0 0\n"
+		"  bad0: 1 2 3\n";
+	GList *stats = fs_netparse_proc_dev (dev);
+	FsIfaceStat *eth0, *wlan0;
+
+	CHECK (g_list_length (stats) == 2,
+	       "proc dev: two adapters (loopback left out, short row "
+	       "rejected) -- got %u", g_list_length (stats));
+
+	eth0  = stats ? stats->data : NULL;
+	wlan0 = stats && stats->next ? stats->next->data : NULL;
+
+	CHECK (eth0 != NULL && g_strcmp0 (eth0->device, "eth0") == 0 &&
+	       eth0->received == G_GUINT64_CONSTANT (298846211) &&
+	       eth0->sent == G_GUINT64_CONSTANT (8649880),
+	       "proc dev: eth0 rx = column 1, tx = column 9");
+	CHECK (wlan0 != NULL && g_strcmp0 (wlan0->device, "wlan0") == 0 &&
+	       wlan0->received == 12 && wlan0->sent == 34,
+	       "proc dev: an old-style row with no space after ':' parses");
+	g_list_free_full (stats, (GDestroyNotify) fs_iface_stat_free);
+
+	CHECK (fs_netparse_proc_dev (NULL) == NULL &&
+	       fs_netparse_proc_dev ("") == NULL,
+	       "proc dev: no text, no adapters");
+
+	/* /proc/net/tcp: a LISTEN row, a real ESTABLISHED row taken from
+	 * a live machine, a TIME_WAIT, and a garbage row. */
+	{
+		const guint8 lo[4]     = { 127, 0, 0, 1 };
+		const guint8 any[4]    = { 0, 0, 0, 0 };
+		const guint8 me[4]     = { 192, 0, 2, 2 };
+		const guint8 peer[4]   = { 34, 149, 66, 165 };
+		const guint8 client[4] = { 198, 51, 100, 7 };
+		gchar *l_lo  = proc_hex_address (lo, 4, 631);
+		gchar *r_any = proc_hex_address (any, 4, 0);
+		gchar *l_me  = proc_hex_address (me, 4, 37054);
+		gchar *r_pe  = proc_hex_address (peer, 4, 443);
+		gchar *l_ssh = proc_hex_address (me, 4, 22);
+		gchar *r_cl  = proc_hex_address (client, 4, 51000);
+		gchar *text = g_strdup_printf (
+			"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+			"   0: %s %s 0A 00000000:00000000 00:00000000 00000000     0        0 1079 1 0 100 0 0 10 0\n"
+			"   1: %s %s 01 00000000:00000000 00:00000000 00000000  1000        0 10715 1 0 20 4 30 27 -1\n"
+			"   2: %s %s 06 00000000:00000000 03:00000000 00000000     0        0 0 3 0\n"
+			"   3: %s %s 01 00000000:00000000 00:00000000 00000000     0        0 22222 1 0\n"
+			"   4: zz:zz yy:yy 01 0 0 0 0 0 0 0\n",
+			l_lo, r_any, l_me, r_pe, l_me, r_pe, l_ssh, r_cl);
+		GList *socks = fs_netparse_proc_tcp (text, FALSE);
+		GList *conns;
+		GHashTable *owners = g_hash_table_new_full (g_int64_hash,
+		                                            g_int64_equal,
+		                                            g_free, g_free);
+		gint64 *key = g_new (gint64, 1);
+		FsNetSocket *s1;
+		FsConnection *c;
+
+		*key = 10715;
+		g_hash_table_insert (owners, key, g_strdup ("firefox"));
+
+		CHECK (g_list_length (socks) == 4,
+		       "proc tcp: four rows (header and garbage skipped) -- "
+		       "got %u", g_list_length (socks));
+
+		s1 = socks && socks->next ? socks->next->data : NULL;
+		CHECK (s1 != NULL &&
+		       g_strcmp0 (s1->local_addr, "192.0.2.2") == 0 &&
+		       s1->local_port == 37054 &&
+		       g_strcmp0 (s1->remote_addr, "34.149.66.165") == 0 &&
+		       s1->remote_port == 443 && s1->state == 1 &&
+		       s1->inode == 10715,
+		       "proc tcp: addresses decoded from the kernel's native "
+		       "words, ports from hex, state and inode");
+
+		conns = fs_netparse_connections (socks, owners);
+		CHECK (g_list_length (conns) == 2,
+		       "connections: LISTEN and TIME_WAIT rows are not "
+		       "connections -- got %u", g_list_length (conns));
+
+		c = conns ? conns->data : NULL;
+		CHECK (c != NULL && g_strcmp0 (c->destination, "34.149.66.165") == 0 &&
+		       g_strcmp0 (c->port, "443") == 0 &&
+		       g_strcmp0 (c->service, "HTTPS") == 0 &&
+		       g_strcmp0 (c->program, "firefox") == 0 &&
+		       g_strcmp0 (c->direction, "Outbound") == 0 &&
+		       g_strcmp0 (c->protocol, "TCP") == 0,
+		       "connections: remote port named, owner from the inode "
+		       "map, a high local port to 443 is outbound");
+
+		c = conns && conns->next ? conns->next->data : NULL;
+		CHECK (c != NULL && g_strcmp0 (c->program, "?") == 0 &&
+		       g_strcmp0 (c->direction, "Inbound") == 0 &&
+		       g_strcmp0 (c->port, "22") == 0 &&
+		       g_strcmp0 (c->service, "SSH") == 0,
+		       "connections: an unreadable owner is \"?\", a client on "
+		       "our port 22 is inbound and named by our port (SSH), "
+		       "not its own -- got %s %s", c ? c->port : "-",
+		       c ? c->service : "-");
+
+		g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
+		g_list_free_full (socks, (GDestroyNotify) fs_net_socket_free);
+		g_hash_table_unref (owners);
+		g_free (text);
+		g_free (l_lo); g_free (r_any); g_free (l_me); g_free (r_pe);
+		g_free (l_ssh); g_free (r_cl);
+	}
+
+	/* /proc/net/tcp6: a plain IPv6 peer and an IPv4-mapped one. */
+	{
+		const guint8 v6_me[16]   = { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+		                             0, 0, 0, 0, 0, 0, 0, 0x02 };
+		const guint8 v6_peer[16] = { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+		                             0, 0, 0, 0, 0, 0, 0, 0x01 };
+		const guint8 mapped[16]  = { 0, 0, 0, 0, 0, 0, 0, 0,
+		                             0, 0, 0xff, 0xff, 192, 0, 2, 5 };
+		gchar *a = proc_hex_address (v6_me, 16, 50000);
+		gchar *b = proc_hex_address (v6_peer, 16, 993);
+		gchar *m = proc_hex_address (mapped, 16, 8080);
+		gchar *text = g_strdup_printf (
+			"  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+			"   0: %s %s 01 00000000:00000000 00:00000000 00000000  1000        0 555 1 0\n"
+			"   1: %s %s 01 00000000:00000000 00:00000000 00000000  1000        0 556 1 0\n",
+			a, b, a, m);
+		GList *socks = fs_netparse_proc_tcp (text, TRUE);
+		FsNetSocket *s0 = socks ? socks->data : NULL;
+		FsNetSocket *s1 = socks && socks->next ? socks->next->data : NULL;
+
+		CHECK (s0 != NULL && g_strcmp0 (s0->remote_addr, "2001:db8::1") == 0 &&
+		       s0->remote_port == 993,
+		       "proc tcp6: IPv6 peer rendered in its short form -- got %s",
+		       s0 ? s0->remote_addr : "(none)");
+		CHECK (s1 != NULL && g_strcmp0 (s1->remote_addr, "192.0.2.5") == 0,
+		       "proc tcp6: an IPv4-mapped peer reads as IPv4 -- got %s",
+		       s1 ? s1->remote_addr : "(none)");
+		CHECK (fs_netparse_proc_tcp (text, FALSE) == NULL,
+		       "proc tcp: tcp6 rows are refused by the IPv4 parser, not "
+		       "misread");
+
+		g_list_free_full (socks, (GDestroyNotify) fs_net_socket_free);
+		g_free (text); g_free (a); g_free (b); g_free (m);
+	}
+
+	/* Two high ports either way: only the LISTEN row can tell which
+	 * end accepted.  A local server on 8765 (the dashboard) and a
+	 * client of it on the same machine. */
+	{
+		const guint8 lo[4] = { 127, 0, 0, 1 };
+		gchar *srv  = proc_hex_address (lo, 4, 8765);
+		gchar *cli  = proc_hex_address (lo, 4, 33262);
+		gchar *any  = g_strdup ("00000000:0000");
+		gchar *text = g_strdup_printf (
+			"  sl  local_address rem_address   st\n"
+			"   0: %s %s 0A 00000000:00000000 00:00000000 00000000 0 0 900 1 0\n"
+			"   1: %s %s 01 00000000:00000000 00:00000000 00000000 0 0 901 1 0\n"
+			"   2: %s %s 01 00000000:00000000 00:00000000 00000000 0 0 902 1 0\n",
+			srv, any, srv, cli, cli, srv);
+		GList *socks = fs_netparse_proc_tcp (text, FALSE);
+		GList *conns = fs_netparse_connections (socks, NULL);
+		FsConnection *accepted = conns ? conns->data : NULL;
+		FsConnection *client = conns && conns->next ? conns->next->data : NULL;
+
+		CHECK (g_list_length (conns) == 2 && accepted != NULL &&
+		       g_strcmp0 (accepted->direction, "Inbound") == 0 &&
+		       g_strcmp0 (accepted->port, "8765") == 0,
+		       "connections: the accepted end of a listening port is "
+		       "inbound on that port, though both ports are high -- "
+		       "got %s %s", accepted ? accepted->direction : "-",
+		       accepted ? accepted->port : "-");
+		CHECK (client != NULL &&
+		       g_strcmp0 (client->direction, "Outbound") == 0 &&
+		       g_strcmp0 (client->port, "8765") == 0,
+		       "connections: the client end of the same connection is "
+		       "outbound to 8765");
+
+		g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
+		g_list_free_full (socks, (GDestroyNotify) fs_net_socket_free);
+		g_free (srv); g_free (cli); g_free (any); g_free (text);
+	}
+
+	CHECK (g_strcmp0 (fs_netparse_guess_direction (51000, 443), "Outbound") == 0 &&
+	       g_strcmp0 (fs_netparse_guess_direction (22, 51000), "Inbound") == 0,
+	       "connections: direction guess matches the Windows backend's");
+}
+
+/* ---- 1.0.6: activity time series (fs-activity) -------------------- */
+
+static gint64 activity_test_now;
+
+static gint64
+activity_test_clock (gpointer data)
+{
+	(void) data;
+	return activity_test_now;
+}
+
+static void test_activity_series (void)
+{
+	FsActivity *a;
+	guint64 values[8];
+	guint covered[8];
+	gint64 start;
+	guint step;
+
+	/* Start mid-slot: 10:00:05 on an arbitrary day. */
+	activity_test_now = 1760000405;
+	a = fs_activity_new (activity_test_clock, NULL);
+
+	CHECK (fs_activity_started (a) == 1760000405,
+	       "activity: starts at the clock's now");
+
+	/* Nothing counted yet: the window has coverage only from the
+	 * start, and points before it are no-data (covered 0), never a
+	 * zero that reads as an idle firewall. */
+	step = fs_activity_window (a, FS_ACTIVITY_ALLOWED, 60, 4, values,
+	                           covered, &start);
+	CHECK (step == 60 && start == 1760000220,
+	       "activity: points align to the step (start %" G_GINT64_FORMAT
+	       ", step %u)", start, step);
+	CHECK (covered[0] == 0 && covered[1] == 0 && covered[2] == 0 &&
+	       covered[3] == 1 && values[3] == 0,
+	       "activity: before the start is no data; the current point "
+	       "covers only the elapsed second (got %u %u %u %u)",
+	       covered[0], covered[1], covered[2], covered[3]);
+
+	/* Count across two minutes. */
+	fs_activity_add (a, FS_ACTIVITY_ALLOWED, 3);
+	fs_activity_add (a, FS_ACTIVITY_BLOCKED, 1);
+	activity_test_now += 30;                      /* 10:00:35 */
+	fs_activity_add (a, FS_ACTIVITY_ALLOWED, 2);
+	activity_test_now += 60;                      /* 10:01:35 */
+	fs_activity_add (a, FS_ACTIVITY_ALLOWED, 7);
+
+	fs_activity_window (a, FS_ACTIVITY_ALLOWED, 60, 3, values, covered,
+	                    &start);
+	CHECK (values[1] == 5 && values[2] == 7,
+	       "activity: counts land in their minute (got %" G_GUINT64_FORMAT
+	       " %" G_GUINT64_FORMAT ")", values[1], values[2]);
+	CHECK (covered[1] == 55 && covered[2] == 36,
+	       "activity: the first minute is covered from the start (55 s), "
+	       "the current one up to now (36 s) -- got %u %u",
+	       covered[1], covered[2]);
+	CHECK (fs_activity_total (a, FS_ACTIVITY_ALLOWED, 3600) == 12 &&
+	       fs_activity_total (a, FS_ACTIVITY_BLOCKED, 3600) == 1,
+	       "activity: totals over the last hour");
+
+	/* Future times clamp to now; times before the start are dropped. */
+	CHECK (fs_activity_add_at (a, FS_ACTIVITY_BLOCKED,
+	                           activity_test_now + 500, 1) &&
+	       fs_activity_total (a, FS_ACTIVITY_BLOCKED, 10) == 1,
+	       "activity: a future stamp is counted now");
+	CHECK (!fs_activity_add_at (a, FS_ACTIVITY_BLOCKED,
+	                            fs_activity_started (a) - 1, 1),
+	       "activity: a stamp before the start is refused");
+
+	/* An unknown series reads as measured zeros, not as no data. */
+	fs_activity_window (a, "never.counted", 60, 3, values, covered, NULL);
+	CHECK (values[2] == 0 && covered[2] == 36,
+	       "activity: an unknown series is zeros with real coverage");
+
+	/* A day and a half later: the ring has wrapped.  Old counts are
+	 * gone, the slots passed over read zero, and coverage stops at
+	 * the ring's 24-hour floor. */
+	activity_test_now += 36 * 3600;
+	fs_activity_add (a, FS_ACTIVITY_ALLOWED, 4);
+	CHECK (fs_activity_total (a, FS_ACTIVITY_ALLOWED, FS_ACTIVITY_SPAN_S)
+	       == 4,
+	       "activity: after 36 h only what is inside the 24 h ring "
+	       "remains (got %" G_GUINT64_FORMAT ")",
+	       fs_activity_total (a, FS_ACTIVITY_ALLOWED, FS_ACTIVITY_SPAN_S));
+	fs_activity_window (a, FS_ACTIVITY_ALLOWED, 3600, 26, NULL, covered,
+	                    NULL);
+	CHECK (covered[0] == 0 && covered[1] < 3600 && covered[25] > 0,
+	       "activity: a point older than the ring is no data, the one "
+	       "the ring's floor cuts through is partial (got %u %u %u)",
+	       covered[0], covered[1], covered[25]);
+	CHECK (!fs_activity_add_at (a, FS_ACTIVITY_ALLOWED,
+	                            activity_test_now - FS_ACTIVITY_SPAN_S - 20,
+	                            1),
+	       "activity: a stamp older than the ring is refused");
+
+	/* The series cap: new names past it are refused, old ones count. */
+	{
+		guint accepted = 0;
+
+		for (guint i = 0; i < FS_ACTIVITY_MAX_SERIES + 5; i++) {
+			gchar *name = g_strdup_printf ("test.%u", i);
+
+			if (fs_activity_add (a, name, 1))
+				accepted++;
+			g_free (name);
+		}
+
+		CHECK (g_list_length (fs_activity_series_names (a)) ==
+		       FS_ACTIVITY_MAX_SERIES,
+		       "activity: never more than %d series",
+		       FS_ACTIVITY_MAX_SERIES);
+		CHECK (fs_activity_add (a, FS_ACTIVITY_ALLOWED, 1),
+		       "activity: an existing series still counts at the cap "
+		       "(%u new names accepted)", accepted);
+	}
+
+	/* A backfilled structure covers from the archive's start, but
+	 * never further back than the ring reaches. */
+	{
+		FsActivity *b = fs_activity_new_at (activity_test_clock, NULL,
+		                                    activity_test_now - 3600);
+		FsActivity *c = fs_activity_new_at (activity_test_clock, NULL,
+		                                    activity_test_now - 90000);
+
+		CHECK (fs_activity_started (b) == activity_test_now - 3600 &&
+		       fs_activity_add_at (b, FS_ACTIVITY_BLOCKED,
+		                           activity_test_now - 1800, 1) &&
+		       fs_activity_total (b, FS_ACTIVITY_BLOCKED, 3600) == 1,
+		       "activity: new_at backfills from an hour ago");
+		CHECK (fs_activity_started (c) > activity_test_now - 90000 &&
+		       fs_activity_started (c) >= activity_test_now -
+		                                  FS_ACTIVITY_SPAN_S,
+		       "activity: new_at is clamped to the ring's reach");
+		fs_activity_free (b);
+		fs_activity_free (c);
+	}
+
+	/* Steps for the four ranges the graphs offer. */
+	CHECK (fs_activity_step_for (15 * 60, 120) == 10 &&
+	       fs_activity_step_for (3600, 120) == 30 &&
+	       fs_activity_step_for (6 * 3600, 120) == 300 &&
+	       fs_activity_step_for (24 * 3600, 120) == 900,
+	       "activity: step choice 15 min/1 h/6 h/24 h -> 10 s/30 s/5 min/15 min");
+	CHECK (fs_activity_window (a, NULL, 25, 1, NULL, NULL, NULL) == 30,
+	       "activity: a step is rounded up to whole slots");
+
+	fs_activity_free (a);
+}
+
+static void test_activity_sampler (void)
+{
+	FsActivity *a;
+	FsActivitySampler *s;
+	FsIfaceStat eth = { 0 }, wlan = { 0 };
+	GList *stats = NULL;
+	gchar *eth_rx;
+
+	activity_test_now = 1760100000;
+	a = fs_activity_new (activity_test_clock, NULL);
+	s = fs_activity_sampler_new (a);
+
+	eth.device = (gchar *) "eth0";   eth.received = 1000; eth.sent = 500;
+	wlan.device = (gchar *) "wlan0"; wlan.received = 10;  wlan.sent = 10;
+	stats = g_list_append (stats, &eth);
+	stats = g_list_append (stats, &wlan);
+
+	CHECK (fs_activity_sampler_feed (s, stats) == 0 &&
+	       fs_activity_total (a, FS_ACTIVITY_NET_RX, 60) == 0,
+	       "sampler: the first sample is a baseline, not traffic");
+
+	activity_test_now += 2;
+	eth.received = 4000;  eth.sent = 700;
+	wlan.received = 110;  wlan.sent = 15;
+	CHECK (fs_activity_sampler_feed (s, stats) == 2,
+	       "sampler: the second sample yields a delta per device");
+	CHECK (fs_activity_total (a, FS_ACTIVITY_NET_RX, 60) == 3100 &&
+	       fs_activity_total (a, FS_ACTIVITY_NET_TX, 60) == 205,
+	       "sampler: totals are the sum of the device deltas");
+
+	eth_rx = fs_activity_device_series ("eth0", FALSE);
+	CHECK (g_strcmp0 (eth_rx, "net.eth0.rx") == 0 &&
+	       fs_activity_total (a, eth_rx, 60) == 3000,
+	       "sampler: per-device series");
+
+	/* Counter reset: eth0 went backwards.  That is a new baseline,
+	 * never 2^64 bytes of traffic. */
+	activity_test_now += 2;
+	eth.received = 50;  eth.sent = 20;
+	wlan.received = 110; wlan.sent = 15;
+	fs_activity_sampler_feed (s, stats);
+	CHECK (fs_activity_total (a, eth_rx, 60) == 3000,
+	       "sampler: a counter that went backwards adds nothing");
+
+	activity_test_now += 2;
+	eth.received = 150;
+	fs_activity_sampler_feed (s, stats);
+	CHECK (fs_activity_total (a, eth_rx, 60) == 3100,
+	       "sampler: counting resumes from the reset baseline");
+
+	/* A device that disappears and returns starts from a baseline. */
+	stats = g_list_remove (stats, &wlan);
+	activity_test_now += 2;
+	fs_activity_sampler_feed (s, stats);
+	stats = g_list_append (stats, &wlan);
+	wlan.received = 99999;
+	activity_test_now += 2;
+	fs_activity_sampler_feed (s, stats);
+	{
+		gchar *wl = fs_activity_device_series ("wlan0", FALSE);
+
+		CHECK (fs_activity_total (a, wl, 60) == 100,
+		       "sampler: a returning device is re-baselined (got %"
+		       G_GUINT64_FORMAT ")", fs_activity_total (a, wl, 60));
+		g_free (wl);
+	}
+
+	g_free (eth_rx);
+	g_list_free (stats);
+	fs_activity_sampler_free (s);
+	fs_activity_free (a);
+}
+
+static void test_json_writer (void)
+{
+	GString *out = g_string_new (NULL);
+
+	fs_json_string (out, "a\"b\\c\n\t\x01</script>&");
+	CHECK (strcmp (out->str,
+	               "\"a\\\"b\\\\c\\n\\t\\u0001\\u003c/script\\u003e\\u0026\"") == 0,
+	       "json: quotes, backslashes, control characters and <>& are "
+	       "escaped -- got %s", out->str);
+
+	g_string_truncate (out, 0);
+	fs_json_string (out, "caf\xc3\xa9 \xff");
+	CHECK (g_utf8_validate (out->str, -1, NULL) &&
+	       strstr (out->str, "caf\xc3\xa9") != NULL,
+	       "json: valid UTF-8 kept, an invalid byte repaired -- got %s",
+	       out->str);
+
+	g_string_truncate (out, 0);
+	g_string_append_c (out, '{');
+	fs_json_kv_str (out, "s", NULL);
+	g_string_append_c (out, ',');
+	fs_json_kv_int (out, "i", -5);
+	g_string_append_c (out, ',');
+	fs_json_kv_uint (out, "u", G_GUINT64_CONSTANT (18446744073709551615));
+	g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "b", TRUE);
+	g_string_append_c (out, '}');
+	CHECK (strcmp (out->str,
+	               "{\"s\":null,\"i\":-5,\"u\":18446744073709551615,\"b\":true}")
+	       == 0, "json: key/value helpers -- got %s", out->str);
+
+	g_string_free (out, TRUE);
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -4469,6 +5122,11 @@ int main (void)
 	test_apply_delta ();
 	test_apply_gate ();
 	test_settings_plan ();
+	test_netparse_log ();
+	test_netparse_proc ();
+	test_activity_series ();
+	test_activity_sampler ();
+	test_json_writer ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

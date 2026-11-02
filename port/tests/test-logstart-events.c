@@ -1,7 +1,7 @@
 /* End-to-end test of the Linux event monitor: a real kernel-log line
  * must travel the whole path -- fork, tail -F, pipe, 250ms poll,
- * parse_log_line, callback -- and arrive as a correctly populated
- * FsHit.  A foreign line with no STOCKFW-DROP marker must not.
+ * fs_netparse_log_line, callback -- and arrive as a correctly
+ * populated FsHit.  A foreign line with no STOCKFW-DROP marker must not.
  *
  * This is the gap test-logstart.c left open: that one proves the
  * monitor is either honestly running or honestly refused.  It never
@@ -49,7 +49,8 @@ static int failures = 0;
 
 /* The callback receives a pointer to on_log_poll's stack FsHit, freed
  * the moment it returns.  Deep-copy the fields under test or they
- * dangle before the assertions run.  Shape: "src|dst|proto|port|out|in|dir" */
+ * dangle before the assertions run.
+ * Shape: "src|dst|proto|port|out|in|dir|service" */
 static GPtrArray *seen;
 
 static void
@@ -58,14 +59,15 @@ on_hit (const FsHit *hit, gpointer user_data)
 	(void) user_data;
 
 	g_ptr_array_add (seen,
-		g_strdup_printf ("%s|%s|%s|%s|%s|%s|%s",
+		g_strdup_printf ("%s|%s|%s|%s|%s|%s|%s|%s",
 		                 hit->source ? hit->source : "-",
 		                 hit->destination ? hit->destination : "-",
 		                 hit->protocol ? hit->protocol : "-",
 		                 hit->port ? hit->port : "-",
 		                 hit->out ? hit->out : "-",
 		                 hit->in ? hit->in : "-",
-		                 hit->direction ? hit->direction : "-"));
+		                 hit->direction ? hit->direction : "-",
+		                 hit->service ? hit->service : "-"));
 }
 
 /* Iterate the default main context for up to timeout_ms, or until
@@ -199,12 +201,68 @@ main (void)
 	if (count_matching ("192.0.2.10|") >= 1) {
 		const gchar *s = first_matching ("192.0.2.10|");
 
+		/* The port is the DESTINATION port (443, the service being
+		 * reached) and OUT stays the empty interface it was.  This
+		 * line used to read "...|54321|443|eth0|in": SPT landed in
+		 * the Port column and DPT overwrote the OUT interface, so
+		 * every Linux event was named after its ephemeral source
+		 * port.  The service carries the blocked marker, because
+		 * every line the script logs is a drop. */
 		CHECK (strcmp (s,
-		               "192.0.2.10|198.51.100.20|TCP|54321|443|eth0|in")
-		       == 0,
-		       "every field parsed: src, dst, proto, sport, dport, "
-		       "in-interface, default direction -- got [%s]", s);
+		               "192.0.2.10|198.51.100.20|TCP|443||eth0|in|"
+		               "HTTPS [BLOCKED]") == 0,
+		       "every field parsed: src, dst, proto, destination port, "
+		       "empty OUT, in-interface, direction, service + blocked "
+		       "marker -- got [%s]", s);
 	}
+
+	/* REJECT mode logs with its own prefix.  Before, only
+	 * STOCKFW-DROP was recognised, so choosing "reject" in Advanced
+	 * Options silently emptied the Events page. */
+	line = g_strdup (
+		"2026-10-11T14:30:00.500000+02:00 kali kernel: [ 1234.6] "
+		"STOCKFW-REJECT IN=eth0 OUT= SRC=192.0.2.11 "
+		"DST=198.51.100.21 LEN=40 PROTO=TCP SPT=40000 DPT=22");
+	fs_util_append_to_file (logfile, line, TRUE);
+	g_free (line);
+
+	spin_until_match ("192.0.2.11|", 1, 5000);
+
+	CHECK (count_matching ("192.0.2.11|") == 1 &&
+	       g_str_has_suffix (first_matching ("192.0.2.11|"),
+	                         "|22||eth0|in|SSH [BLOCKED]"),
+	       "a STOCKFW-REJECT line is an event too, port 22 named SSH "
+	       "and marked blocked -- got [%s]",
+	       count_matching ("192.0.2.11|") ? first_matching ("192.0.2.11|")
+	                                       : "(nothing)");
+
+	/* One line written in two pieces, with a pause between them long
+	 * enough for several polls to drain the first half on its own.
+	 * The reader must wait for the newline instead of parsing two
+	 * broken halves (the old reader split each read() on '\n' and
+	 * dropped whatever straddled the boundary). */
+	{
+		FILE *fp = fopen (logfile, "a");
+
+		fputs ("Oct 11 14:30:02 kali kernel: STOCKFW-DROP IN=eth0 OUT= "
+		       "SRC=192.0.2.12 DST=19", fp);
+		fclose (fp);
+		spin_ms (700);
+
+		fp = fopen (logfile, "a");
+		fputs ("8.51.100.22 PROTO=UDP SPT=5000 DPT=53\n", fp);
+		fclose (fp);
+	}
+
+	spin_until_match ("192.0.2.12|", 1, 5000);
+
+	CHECK (count_matching ("192.0.2.12|") == 1 &&
+	       g_str_has_prefix (first_matching ("192.0.2.12|"),
+	                         "192.0.2.12|198.51.100.22|UDP|53|"),
+	       "a line split across two reads arrives once and whole -- "
+	       "got [%s]",
+	       count_matching ("192.0.2.12|") ? first_matching ("192.0.2.12|")
+	                                       : "(nothing)");
 
 	/* A foreign line: same shape, no marker.  Must not become an event
 	 * -- this is what keeps unrelated kernel noise off the Events page.

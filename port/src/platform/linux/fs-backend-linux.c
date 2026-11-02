@@ -21,6 +21,7 @@
 #include "core/fs-fwrule.h"
 #include "core/fs-util.h"
 #include "core/fs-service.h"
+#include "core/fs-netparse.h"
 #include "core/fs-i18n.h"
 
 #include <errno.h>
@@ -691,22 +692,297 @@ linux_list_interfaces (void)
 	return list;
 }
 
-/* [ linux_list_interface_stats ]
- * Not wired up yet.  Returning NULL hides the Status page's Network
- * panel rather than showing invented numbers. */
-static GList *
-linux_list_interface_stats (void)
+/* ------------------------------------------------------- traffic panels
+ *
+ * The Status page's Network and Active connections panels, and the
+ * Activity page's Network I/O graph.  Everything here reads files any
+ * user can read -- /proc/net/dev, /proc/net/tcp{,6}, /sys/class/net --
+ * so the panels work without root.  Only the owner of a socket is
+ * limited: another user's /proc/<pid>/fd cannot be listed unprivileged,
+ * and such rows say "?" rather than guess.
+ */
+
+/* [ read_sysfs_attr ]
+ * One line of /sys/class/net/<dev>/<attr>, stripped, or NULL. */
+static gchar *
+read_sysfs_attr (const gchar *device, const gchar *attr)
 {
+	gchar *path = g_build_filename ("/sys/class/net", device, attr, NULL);
+	gchar *text = NULL;
+
+	if (!g_file_get_contents (path, &text, NULL, NULL))
+		text = NULL;
+	else
+		g_strstrip (text);
+
+	g_free (path);
+	return text;
+}
+
+/* [ sysfs_has ] -- TRUE when /sys/class/net/<dev>/<entry> exists. */
+static gboolean
+sysfs_has (const gchar *device, const gchar *entry)
+{
+	gchar *path = g_build_filename ("/sys/class/net", device, entry, NULL);
+	gboolean exists = g_file_test (path, G_FILE_TEST_EXISTS);
+
+	g_free (path);
+	return exists;
+}
+
+/* [ interface_kind ]
+ * The Type column, in the words the Windows backend uses: a wireless
+ * extension or phy80211 link means Wireless, a backing bus device
+ * means a real adapter, anything else (bridges, veth, tun, docker0)
+ * is Virtual. */
+static const gchar *
+interface_kind (const gchar *device)
+{
+	if (sysfs_has (device, "wireless") || sysfs_has (device, "phy80211"))
+		return "Wireless";
+	if (sysfs_has (device, "device"))
+		return "Ethernet";
+
+	return "Virtual";
+}
+
+/* [ interface_is_up ]
+ * operstate "up", or "unknown" for drivers that never report one
+ * (tun devices, some virtual NICs) while the link is administratively
+ * up. */
+static gboolean
+interface_is_up (const gchar *device)
+{
+	gchar *state = read_sysfs_attr (device, "operstate");
+	gboolean up = FALSE;
+
+	if (state != NULL) {
+		if (strcmp (state, "up") == 0) {
+			up = TRUE;
+		} else if (strcmp (state, "unknown") == 0) {
+			gchar *flags = read_sysfs_attr (device, "flags");
+
+			up = flags != NULL &&
+			     (g_ascii_strtoull (flags, NULL, 16) & IFF_UP) != 0;
+			g_free (flags);
+		}
+	}
+
+	g_free (state);
+	return up;
+}
+
+/* [ interface_ipv4 ] -- first IPv4 address of a device, or NULL. */
+static gchar *
+interface_ipv4 (struct ifaddrs *ifaddr, const gchar *device)
+{
+	for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+		char addr[INET_ADDRSTRLEN];
+
+		if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET ||
+		    g_strcmp0 (ifa->ifa_name, device) != 0)
+			continue;
+
+		if (inet_ntop (AF_INET,
+		               &((struct sockaddr_in *) ifa->ifa_addr)->sin_addr,
+		               addr, sizeof (addr)) != NULL)
+			return g_strdup (addr);
+	}
+
 	return NULL;
 }
 
+/* [ linux_list_interface_stats ]
+ * Cumulative rx/tx octets per interface from /proc/net/dev.  The
+ * views sample twice and diff, exactly as on Windows.  Loopback is
+ * left out by the parser; an adapter that is down and has never
+ * carried a byte is still enumerating and is left out here -- the
+ * same two rules GetIfTable2's caller applies. */
+static GList *
+linux_list_interface_stats (void)
+{
+	gchar *text = NULL;
+	GList *stats, *l;
+	struct ifaddrs *ifaddr = NULL;
+
+	if (!g_file_get_contents ("/proc/net/dev", &text, NULL, NULL))
+		return NULL;
+
+	stats = fs_netparse_proc_dev (text);
+	g_free (text);
+
+	if (getifaddrs (&ifaddr) != 0)
+		ifaddr = NULL;
+
+	l = stats;
+	while (l != NULL) {
+		GList *next = l->next;
+		FsIfaceStat *stat = l->data;
+
+		stat->up = interface_is_up (stat->device);
+
+		if (!stat->up && stat->received == 0 && stat->sent == 0) {
+			fs_iface_stat_free (stat);
+			stats = g_list_delete_link (stats, l);
+		} else {
+			stat->kind = g_strdup (interface_kind (stat->device));
+			stat->ip   = interface_ipv4 (ifaddr, stat->device);
+		}
+
+		l = next;
+	}
+
+	if (ifaddr != NULL)
+		freeifaddrs (ifaddr);
+
+	return stats;
+}
+
+/* [ program_for_pid ]
+ * The executable's basename, as the Windows backend shows it; the
+ * kernel's 15-character comm name when the exe link cannot be read
+ * (another user's process, a kernel thread). */
+static gchar *
+program_for_pid (const gchar *pid)
+{
+	gchar *link = g_build_filename ("/proc", pid, "exe", NULL);
+	gchar *target = g_file_read_link (link, NULL);
+	gchar *name = NULL;
+
+	g_free (link);
+
+	if (target != NULL) {
+		/* A replaced binary reads "/usr/bin/foo (deleted)". */
+		if (g_str_has_suffix (target, " (deleted)"))
+			target[strlen (target) - strlen (" (deleted)")] = '\0';
+		name = g_path_get_basename (target);
+		g_free (target);
+		return name;
+	}
+
+	link = g_build_filename ("/proc", pid, "comm", NULL);
+	if (g_file_get_contents (link, &name, NULL, NULL))
+		g_strstrip (name);
+	else
+		name = NULL;
+	g_free (link);
+
+	return name;
+}
+
+/* [ socket_owners ]
+ * socket inode -> program name, for every process whose fd table this
+ * account may list.  Built only when there is a socket to look up, so
+ * an idle machine does not walk /proc every refresh for nothing. */
+static GHashTable *
+socket_owners (const GList *sockets)
+{
+	GHashTable *wanted, *owners;
+	GDir *proc;
+	const gchar *pid;
+
+	wanted = g_hash_table_new (g_int64_hash, g_int64_equal);
+	for (const GList *l = sockets; l != NULL; l = l->next) {
+		FsNetSocket *s = l->data;
+
+		if (s->inode != 0)
+			g_hash_table_add (wanted, &s->inode);
+	}
+
+	owners = g_hash_table_new_full (g_int64_hash, g_int64_equal,
+	                                g_free, g_free);
+
+	if (g_hash_table_size (wanted) == 0) {
+		g_hash_table_unref (wanted);
+		return owners;
+	}
+
+	proc = g_dir_open ("/proc", 0, NULL);
+
+	while (proc != NULL && (pid = g_dir_read_name (proc)) != NULL) {
+		gchar *fd_path;
+		GDir *fds;
+		const gchar *fd;
+		gchar *program = NULL;
+
+		if (!g_ascii_isdigit (*pid))
+			continue;
+
+		fd_path = g_build_filename ("/proc", pid, "fd", NULL);
+		fds = g_dir_open (fd_path, 0, NULL);
+
+		while (fds != NULL && (fd = g_dir_read_name (fds)) != NULL) {
+			gchar *link = g_build_filename (fd_path, fd, NULL);
+			gchar *target = g_file_read_link (link, NULL);
+			guint64 inode;
+
+			g_free (link);
+
+			if (target != NULL &&
+			    sscanf (target, "socket:[%" G_GUINT64_FORMAT "]",
+			            &inode) == 1 &&
+			    g_hash_table_contains (wanted, &inode) &&
+			    !g_hash_table_contains (owners, &inode)) {
+				gint64 *key = g_new (gint64, 1);
+
+				if (program == NULL)
+					program = program_for_pid (pid);
+
+				*key = (gint64) inode;
+				g_hash_table_insert (owners, key,
+				                     g_strdup (program != NULL
+				                               ? program : "?"));
+			}
+
+			g_free (target);
+		}
+
+		if (fds != NULL)
+			g_dir_close (fds);
+		g_free (fd_path);
+		g_free (program);
+
+		/* Every socket placed: the rest of /proc cannot add one. */
+		if (g_hash_table_size (owners) == g_hash_table_size (wanted))
+			break;
+	}
+
+	if (proc != NULL)
+		g_dir_close (proc);
+
+	g_hash_table_unref (wanted);
+
+	return owners;
+}
+
 /* [ linux_list_connections ]
- * Same: enumerating sockets means walking /proc/net/tcp and matching
- * inodes to processes, which is not written yet. */
+ * Connected TCP sockets, IPv4 and IPv6, with their owning program. */
 static GList *
 linux_list_connections (void)
 {
-	return NULL;
+	GList *sockets = NULL;
+	GList *list;
+	GHashTable *owners;
+	gchar *text = NULL;
+
+	if (g_file_get_contents ("/proc/net/tcp", &text, NULL, NULL)) {
+		sockets = fs_netparse_proc_tcp (text, FALSE);
+		g_free (text);
+	}
+
+	if (g_file_get_contents ("/proc/net/tcp6", &text, NULL, NULL)) {
+		sockets = g_list_concat (sockets,
+		                         fs_netparse_proc_tcp (text, TRUE));
+		g_free (text);
+	}
+
+	owners = socket_owners (sockets);
+	list = fs_netparse_connections (sockets, owners);
+
+	g_hash_table_unref (owners);
+	g_list_free_full (sockets, (GDestroyNotify) fs_net_socket_free);
+
+	return list;
 }
 
 /* ------------------------------------------------------------ syslog tail
@@ -715,65 +991,43 @@ linux_list_connections (void)
  * rules log to syslog, so we read from a dedicated file descriptor and
  * parse the kern prefix.  Keeping the child means we do not depend on
  * logrotate's handling of the file.
+ *
+ * The line parser itself is fs_netparse_log_line() in core, where the
+ * core suite pins every field.
  */
 
-/* [ parse_log_line ]
- * Turns one log line into a hit.
+/* Bytes after the last newline of the previous read: a line split
+ * across two reads is completed on the next poll instead of being
+ * parsed as two broken halves. */
+static GString *log_partial = NULL;
+
+/* The longest partial line kept.  A kernel log line is well under
+ * this; anything longer without a newline is not a log line. */
+#define LOG_PARTIAL_MAX 8192
+
+/* [ deliver_log_line ]
+ * One complete line: parse it, name it, mark it, hand it over.
  *
- * The generator's LOG target uses the prefix "STOCKFW-DROP ", so
- * that is what identifies our own drops.  Fields are pulled out of the
- * netfilter key=value pairs that follow it. */
-static gboolean
-parse_log_line (const gchar *line, FsHit *hit)
+ * Every line the generated script logs is a packet it is about to DROP
+ * or REJECT, so every Linux event is a blocked one -- marked exactly as
+ * the Windows backend marks its 5157s.  Without the marker no Linux row
+ * was ever painted red, the Status page's Serious column stayed at zero
+ * and Sentinel's blocked fan-out signal could not fire. */
+static void
+deliver_log_line (const gchar *line)
 {
-	gchar *copy;
-	gchar *saveptr = NULL;
-	gchar *token;
-	gboolean is_ours = FALSE;
+	FsHit hit = { 0 };
 
-	if (line == NULL || hit == NULL)
-		return FALSE;
+	if (*line == '\0' || !fs_netparse_log_line (line, &hit, NULL))
+		return;
 
-	copy = g_strdup (line);
+	fs_netparse_name_blocked (&hit);
 
-	for (token = strtok_r (copy, " ", &saveptr); token != NULL;
-	     token = strtok_r (NULL, " ", &saveptr)) {
-		gchar *eq;
+	if (log_callback != NULL)
+		log_callback (&hit, log_user_data);
 
-		/* The marker is a bare word, not a key=value pair: it
-		 * appears as ": STOCKFW-DROP " in the line. */
-		if (g_strcmp0 (token, "STOCKFW-DROP") == 0 ||
-		    g_str_has_suffix (token, "STOCKFW-DROP")) {
-			is_ours = TRUE;
-			continue;
-		}
-
-		eq = strchr (token, '=');
-
-		if (eq == NULL)
-			continue;
-
-		*eq = '\0';
-
-		if (g_strcmp0 (token, "SRC") == 0)
-			hit->source = g_strdup (eq + 1);
-		else if (g_strcmp0 (token, "DST") == 0)
-			hit->destination = g_strdup (eq + 1);
-		else if (g_strcmp0 (token, "PROTO") == 0)
-			hit->protocol = g_strdup (eq + 1);
-		else if (g_strcmp0 (token, "SPT") == 0)
-			hit->port = g_strdup (eq + 1);
-		else if (g_strcmp0 (token, "DPT") == 0)
-			hit->out = g_strdup (eq + 1);
-		else if (g_strcmp0 (token, "IN") == 0)
-			hit->in = g_strdup (eq + 1);
-		else if (g_strcmp0 (token, "OUT") == 0)
-			hit->out = g_strdup (eq + 1);
-	}
-
-	g_free (copy);
-
-	return is_ours;
+	/* "hit" is a stack local: free the fields, not the struct. */
+	fs_netparse_clear_hit (&hit);
 }
 
 /* [ on_log_poll ]
@@ -791,58 +1045,26 @@ on_log_poll (gpointer data)
 	if (log_pipe[0] < 0)
 		return G_SOURCE_REMOVE;
 
+	if (log_partial == NULL)
+		log_partial = g_string_new (NULL);
+
 	/* Read everything available; the fd is non-blocking. */
-	while ((got = read (log_pipe[0], buffer, sizeof (buffer) - 1)) > 0) {
-		gchar **lines;
-		gint i;
+	while ((got = read (log_pipe[0], buffer, sizeof (buffer))) > 0) {
+		gchar *start, *newline;
 
-		buffer[got] = '\0';
+		g_string_append_len (log_partial, buffer, got);
 
-		lines = g_strsplit (buffer, "\n", -1);
-
-		for (i = 0; lines[i] != NULL; i++) {
-			FsHit hit = { 0 };
-
-			if (*lines[i] == '\0')
-				continue;
-
-			if (!parse_log_line (lines[i], &hit))
-				continue;
-
-			/* Fill in what the log does not carry. */
-			if (hit.time == NULL)
-				hit.time = g_strdup (lines[i]);
-			if (hit.direction == NULL)
-				hit.direction = g_strdup ("in");
-			if (hit.service == NULL)
-				hit.service = g_strdup (_("Dropped"));
-
-			if (hit.port != NULL) {
-				gchar *name = fs_service_lookup_port (atoi (hit.port));
-
-				if (name != NULL) {
-					g_free (hit.service);
-					hit.service = name;
-				}
-			}
-
-			if (log_callback != NULL)
-				log_callback (&hit, log_user_data);
-
-			/* Free only the fields we allocated: "hit" is a stack
-			 * local, so fs_hit_free would try to g_free() it and
-			 * corrupt the heap. */
-			g_clear_pointer (&hit.time, g_free);
-			g_clear_pointer (&hit.in, g_free);
-			g_clear_pointer (&hit.out, g_free);
-			g_clear_pointer (&hit.source, g_free);
-			g_clear_pointer (&hit.destination, g_free);
-			g_clear_pointer (&hit.protocol, g_free);
-			g_clear_pointer (&hit.service, g_free);
-			g_clear_pointer (&hit.direction, g_free);
+		start = log_partial->str;
+		while ((newline = strchr (start, '\n')) != NULL) {
+			*newline = '\0';
+			deliver_log_line (start);
+			start = newline + 1;
 		}
 
-		g_strfreev (lines);
+		g_string_erase (log_partial, 0, start - log_partial->str);
+
+		if (log_partial->len > LOG_PARTIAL_MAX)
+			g_string_truncate (log_partial, 0);
 	}
 
 	return G_SOURCE_CONTINUE;
@@ -973,6 +1195,9 @@ linux_log_stop (void)
 		waitpid (log_pid, NULL, 0);
 		log_pid = 0;
 	}
+
+	if (log_partial != NULL)
+		g_string_truncate (log_partial, 0);
 
 	log_running = FALSE;
 	log_callback = NULL;

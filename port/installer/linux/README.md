@@ -2,17 +2,18 @@
 
 Firewall configuration tool for Linux, driving `iptables`.
 
-    StockFW 1.0.5 (Linux (iptables) backend)
+    StockFW 1.0.6 (Linux (iptables) backend)
 
 ## Install
 
-    tar xzf StockFW-1.0.5-linux-x86_64.tar.gz
-    cd StockFW-1.0.5-linux-x86_64
+    tar xzf StockFW-1.0.6-linux-x86_64.tar.gz
+    cd StockFW-1.0.6-linux-x86_64
     sudo ./install.sh
 
 This installs:
 
     /usr/local/bin/StockFW                              the application
+    /usr/local/bin/stockfw                              command line + dashboard
     /usr/local/share/applications/stockfw.desktop       menu entry
     /usr/local/share/icons/hicolor/128x128/apps/stockfw.png
     /usr/local/share/doc/stockfw/LICENSE.txt
@@ -58,6 +59,25 @@ installer deliberately ships no polkit policy or setuid wrapper: a GUI
 able to silently rewrite the entire firewall is a worse security posture
 than one that asks for root openly. Grant privilege by launching with
 `sudo`, or through your desktop environment's own mechanism.
+
+## Command line and dashboard
+
+`stockfw` drives the same policy files, simulator and apply gate as the
+desktop app, from a terminal or a script:
+
+    stockfw status                         state, policy, monitoring
+    stockfw policy add inbound-allow-service ssh
+    stockfw simulate "inbound ssh from 203.0.113.5"      # exit 5 if blocked
+    sudo /usr/local/bin/stockfw apply --dry-run          # impact preview
+    sudo /usr/local/bin/stockfw events -f                # follow live
+    stockfw dashboard                      local web dashboard
+
+Every command takes `--json`.  `stockfw help <command>` has the details.
+
+`stockfw dashboard` serves a read-only page on 127.0.0.1 only, behind a
+token that changes every run, and opens it in your browser (never as
+root: under `sudo` it prints the address instead).  The same `sudo`
+search-path note as above applies: use `sudo /usr/local/bin/stockfw`.
 
 ## Uninstall
 

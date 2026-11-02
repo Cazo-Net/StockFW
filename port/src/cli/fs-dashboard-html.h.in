@@ -1,0 +1,13 @@
+/*---[ fs-dashboard-html.h ]---------------------------------------------
+ * GENERATED at configure time from src/cli/dashboard.html -- edit that
+ * file, not this one.  The page is compiled into `stockfw' so the
+ * dashboard serves nothing from disk and fetches nothing from the
+ * network.
+ *--------------------------------------------------------------------*/
+#ifndef FS_DASHBOARD_HTML_H
+#define FS_DASHBOARD_HTML_H
+
+static const char fs_dashboard_html[] =
+"@FS_DASHBOARD_HTML@";
+
+#endif /* FS_DASHBOARD_HTML_H */

@@ -719,13 +719,17 @@ build_group (FsRuleKind kind, const gchar *title)
 		                    FALSE, FALSE, 0);
 	}
 
-	button = gtk_button_new_with_label (_("_Add"));
+	/* Plain labels, not mnemonics: every group has its own Add and
+	 * Remove, so one Alt+A could only ever cycle between nine of them
+	 * -- and as labels the underscores were printed literally
+	 * ("_Add"), which is how this was found. */
+	button = gtk_button_new_with_label (_("Add"));
 	gtk_style_context_add_class (gtk_widget_get_style_context (button),
 	                             "btn-subtle");
 	g_signal_connect (button, "clicked", G_CALLBACK (on_add_clicked), group);
 	gtk_box_pack_start (GTK_BOX (button_box), button, FALSE, FALSE, 0);
 
-	button = gtk_button_new_with_label (_("_Remove"));
+	button = gtk_button_new_with_label (_("Remove"));
 	gtk_style_context_add_class (gtk_widget_get_style_context (button),
 	                             "btn-subtle");
 	g_signal_connect (button, "clicked", G_CALLBACK (on_remove_clicked),

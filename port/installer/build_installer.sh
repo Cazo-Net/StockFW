@@ -122,7 +122,7 @@ done
 echo "[6/7] Creating license file..."
 cat > "$STAGE_DIR/LICENSE.txt" << 'EOF'
 StockFW Firewall Configuration Tool
-Version 1.0.5
+Version 1.0.6
 
 Copyright (C) 2024-2026 StockFW Project
 
@@ -177,6 +177,19 @@ cp "$PORT_DIR/README.md" "$STAGE_DIR/" 2>/dev/null || echo "# StockFW Firewall T
 if [ ! -f "$PORT_DIR/CHANGELOG.md" ]; then
     cat > "$STAGE_DIR/CHANGELOG.md" << 'EOF'
 # StockFW Changelog
+
+## Version 1.0.6 (2026)
+- Activity page: Policy activity (events per minute, allowed and
+  blocked) and Network I/O (throughput per adapter) graphs over
+  15 minutes to 24 hours, with a crosshair, a table view, and an
+  honest "no data" stretch before the app started
+- Linux: dropped packets are named and marked blocked like on
+  Windows, events carry their own time, port and direction, and
+  the Network and Connections panels show real data
+- Linux command-line tool `stockfw` and its local, read-only web
+  dashboard (Linux build only)
+- Desktop UI fixes: Policy buttons no longer print "_Add", frame
+  titles readable, an empty Events list says why, larger window
 
 ## Version 1.0.5 (2026)
 - Sentinel false-outage hardening: auto-block refuses whole
@@ -273,5 +286,5 @@ echo "Using NSIS: $NSIS_CMD"
 echo ""
 echo "=========================================="
 echo "Installer built successfully!"
-echo "Output: $INSTALLER_DIR/StockFW-1.0.5-Setup.exe"
+echo "Output: $INSTALLER_DIR/StockFW-1.0.6-Setup.exe"
 echo "=========================================="

@@ -5,7 +5,7 @@
 # self-contained payload directory, then tars it so the result is a
 # single file a user can download and run.
 #
-#   ./build_installer_linux.sh          -> installer/linux/dist/StockFW-1.0.5-linux-x86_64.tar.gz
+#   ./build_installer_linux.sh          -> installer/linux/dist/StockFW-<version>-linux-<machine>.tar.gz
 #
 # Unlike the Windows build, there is no GTK runtime to bundle: on Linux
 # GTK3 comes from the distribution's own packages and the dynamic linker
@@ -55,6 +55,24 @@ if [ "$MAGIC" != "7f454c46" ]; then
 fi
 cp "$BUILD_DIR/StockFW" "$STAGE/StockFW"
 echo "  ok: ELF confirmed"
+
+# The command-line tool and dashboard (1.0.6).  Staged in its own
+# directory: "stockfw" beside "StockFW" would be one file on a
+# case-insensitive filesystem, and a tarball can be unpacked anywhere.
+if [ -f "$BUILD_DIR/stockfw" ]; then
+    MAGIC="$(od -An -tx1 -N4 "$BUILD_DIR/stockfw" | tr -d ' \n')"
+    if [ "$MAGIC" != "7f454c46" ]; then
+        echo "ERROR: $BUILD_DIR/stockfw is not a Linux ELF (magic: $MAGIC)" >&2
+        exit 1
+    fi
+    mkdir -p "$STAGE/cli"
+    cp "$BUILD_DIR/stockfw" "$STAGE/cli/stockfw"
+    echo "  ok: command-line tool staged (cli/stockfw)"
+else
+    echo "ERROR: $BUILD_DIR/stockfw is missing -- build it first:" >&2
+    echo "       cmake -S . -B build-linux -G Ninja && ninja -C build-linux" >&2
+    exit 1
+fi
 
 # 2. desktop entry + icon + license + installer scripts
 echo "[2/5] Copying desktop integration..."

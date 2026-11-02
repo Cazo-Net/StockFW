@@ -687,8 +687,14 @@ build_page (void)
 	/* Row one: the path and the actions on it. */
 	top = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 	path_entry = gtk_entry_new ();
+	/* An example path in the platform's own shape. */
+#ifdef G_OS_WIN32
 	gtk_entry_set_placeholder_text (GTK_ENTRY (path_entry),
 	                                _("C:\\Path\\To\\program.exe"));
+#else
+	gtk_entry_set_placeholder_text (GTK_ENTRY (path_entry),
+	                                _("/usr/bin/program"));
+#endif
 	gtk_widget_set_hexpand (path_entry, TRUE);
 
 	inspect_button = gtk_button_new_with_mnemonic (_("_Inspect"));
