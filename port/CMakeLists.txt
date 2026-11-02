@@ -450,3 +450,16 @@ target_compile_definitions(fs-fetch-test PRIVATE FS_FETCH_TESTING=1
 # What must stay reachable: parsers over fixtures, and a live read.
 add_executable(fs-hostnet-test EXCLUDE_FROM_ALL tests/test-hostnet.c)
 target_link_libraries(fs-hostnet-test PRIVATE fs-core-nogui)
+# The Linux backend's threat-intel slots against a real nft, driven by
+# tests/test-intel-backend.sh in a private network namespace.  Its own
+# copy of the backend, compiled with FS_BACKEND_TESTING: the only build
+# in which $STOCKFW_TEST_NFT_TIMEOUT_MS shortens the nft timeouts.
+if(FS_PLATFORM STREQUAL "linux")
+  add_executable(fs-intel-backend-driver EXCLUDE_FROM_ALL
+    tests/intel-backend-driver.c
+    src/platform/linux/fs-backend-linux.c
+  )
+  target_link_libraries(fs-intel-backend-driver PRIVATE fs-core-nogui)
+  target_compile_definitions(fs-intel-backend-driver PRIVATE
+                             FS_BACKEND_TESTING=1)
+endif()
