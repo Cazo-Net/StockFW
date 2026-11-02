@@ -1410,6 +1410,42 @@ file_mentions (const gchar *path, const gchar *needle)
 
 static gchar *signin_entry = NULL;    /* <autostart dir>/stockfw.desktop */
 
+/* With STOCKFW_PREFS_SHOTS set: the page shown now, scrolled to its end
+ * (where the Background card is), as <name>.png. */
+static void
+snap_end (GtkWidget *win, const gchar *name)
+{
+	const gchar *dir = g_getenv ("STOCKFW_PREFS_SHOTS");
+	GtkWidget *scroll;
+	GtkAdjustment *adj;
+	GdkWindow *gw;
+	GdkPixbuf *pix;
+	gchar *file;
+
+	if (dir == NULL)
+		return;
+	scroll = gtk_stack_get_visible_child (
+		GTK_STACK (find_named (win, "prefs-pages")));
+	adj = GTK_IS_SCROLLED_WINDOW (scroll)
+		? gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (scroll))
+		: NULL;
+	pump ();
+	if (adj != NULL)
+		gtk_adjustment_set_value (adj, gtk_adjustment_get_upper (adj));
+	pump ();
+
+	gw = gtk_widget_get_window (win);
+	pix = gdk_pixbuf_get_from_window (gw, 0, 0, gdk_window_get_width (gw),
+	                                  gdk_window_get_height (gw));
+	file = g_strdup_printf ("%s/%s.png", dir, name);
+	if (pix != NULL) {
+		gdk_pixbuf_save (pix, file, "png", NULL, NULL);
+		g_object_unref (pix);
+		g_print ("shot: %s\n", file);
+	}
+	g_free (file);
+}
+
 static gboolean
 signin_entry_exists (void)
 {
@@ -1492,6 +1528,7 @@ drive_signin_off (GtkWidget *win)
 	               "puts the last policy applied with sudo back at every "
 	               "boot") != NULL,
 	       "sign-in: with the boot unit enabled the note says so");
+	snap_end (win, "linux-signin-on-boot-enabled");
 	set_switch (win, "prefs-signin", FALSE);
 	click (win, "prefs-save");
 }
@@ -1544,6 +1581,7 @@ signin_fail_after (GtkWidget *win)
 	       "saved (footer \"%s\")", footer (win));
 	CHECK (g_str_has_prefix (signin_atk (win), "StockFW could not"),
 	       "sign-in failed: a screen reader hears the failure first");
+	snap_end (win, "linux-signin-failed");
 
 	/* A new choice replaces the failed one. */
 	set_switch (win, "prefs-signin", TRUE);
@@ -1574,6 +1612,7 @@ drive_signin_denied (GtkWidget *win)
 	CHECK (g_str_has_prefix (signin_atk (win), "Only an administrator"),
 	       "sign-in, no right to change it: a screen reader hears the "
 	       "reason first");
+	snap_end (win, "signin-cannot-change");
 	set_switch (win, "prefs-signin", FALSE);
 	CHECK (g_strcmp0 (footer (win), "No changes") == 0,
 	       "sign-in, no right to change it: a switch this copy cannot "
