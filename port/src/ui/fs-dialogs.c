@@ -49,9 +49,8 @@ load_logo_pixbuf (void)
  * escaping the plain-text parts -- it only escapes text around links
  * (gtkaboutdialog.c, add_credits_section).  A bare '&' therefore
  * makes Pango fail to parse, and the label falls back to showing the
- * raw markup: the dialog printed "Created by: <span size=...>Qusai
- * Fethalrahman - Creator & Original Developer</span>" instead of the
- * name.  Escaping here is what makes it render.  Exported so
+ * raw markup: the dialog printed "Created by: <span size=...>[name]
+ * - Creator & Original Developer</span>" instead of the name.  Escaping here is what makes it render.  Exported so
  * ui-prefs-smoke can run pango_parse_markup() over every string --
  * the escape is the fix, the parse is the proof.
  */
@@ -59,7 +58,7 @@ const gchar **
 fs_dialogs_about_authors (void)
 {
 	static const gchar *raw[] = {
-		"Qusai Fethalrahman (Qusaifox2@gmail.com) - Creator & Original Developer",
+		"Stock team & Qusai - Creator & Original Developer",
 		"H3xCore - Developer",
 		"StockFW Project - GTK3 Port, Windows Backend, Copilot",
 		NULL
