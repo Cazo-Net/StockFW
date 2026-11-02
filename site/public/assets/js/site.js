@@ -1,45 +1,12 @@
-/* StockFW site: theme, menus, copy buttons, the app tour, search.
- * No libraries, no requests to other servers.  Every feature degrades
- * to plain links and visible text without JavaScript. */
+/* StockFW site: menus, copy buttons, the app tour, search.
+ * No libraries, no requests to other servers, nothing stored in the
+ * browser.  Every feature degrades to plain links and visible text
+ * without JavaScript. */
 (function () {
 	"use strict";
 
 	var root = document.documentElement;
 	var ROOT = root.getAttribute("data-root") || "./";
-
-	function store(key, value) {
-		try {
-			if (value === undefined) return window.localStorage.getItem(key);
-			if (value === null) window.localStorage.removeItem(key);
-			else window.localStorage.setItem(key, value);
-		} catch (e) { /* private window or blocked storage: no memory */ }
-		return null;
-	}
-
-	/* ---------------------------------------------------------- theme */
-	var THEMES = ["system", "light", "dark"];
-	var themeBtn = document.getElementById("theme-btn");
-
-	function applyTheme(t) {
-		if (t === "light" || t === "dark") root.setAttribute("data-theme", t);
-		else root.removeAttribute("data-theme");
-		if (themeBtn) {
-			var label = t === "system" ? "Theme: follows your system" : "Theme: " + t;
-			themeBtn.setAttribute("aria-label", label + ". Change theme");
-			themeBtn.setAttribute("title", label);
-			themeBtn.setAttribute("data-mode", t);
-		}
-	}
-	var current = store("sfw-theme") || "system";
-	if (THEMES.indexOf(current) < 0) current = "system";
-	applyTheme(current);
-	if (themeBtn) {
-		themeBtn.addEventListener("click", function () {
-			current = THEMES[(THEMES.indexOf(current) + 1) % THEMES.length];
-			store("sfw-theme", current === "system" ? null : current);
-			applyTheme(current);
-		});
-	}
 
 	/* ------------------------------------------------------- menus */
 	function toggler(btnId, panelId) {
