@@ -33,6 +33,7 @@ fail=0
 CORE_SRCS="
 fs-types fs-prefs fs-util fs-rules fs-script fs-settings-plan
 fs-service fs-fwrule fs-copilot fs-eventrule fs-audit fs-trust fs-apply
+fs-netparse fs-activity fs-json
 "
 for s in $CORE_SRCS; do
 	if ! gcc -c -o "$OUT/obj/$s.o" -I "$PORT/src" $CF \
@@ -73,7 +74,8 @@ fi
 # needs ifaddrs.h, which MSYS2 does not have.
 UI_SRCS="
 main ui/fs-app ui/fs-dialogs ui/fs-statusview ui/fs-policyview
-ui/fs-hitview ui/fs-copilot ui/fs-simviz ui/fs-trustview ui/fs-tray
+ui/fs-hitview ui/fs-activityview ui/fs-copilot ui/fs-simviz
+ui/fs-trustview ui/fs-tray
 "
 mkdir -p "$OUT/ui"
 
@@ -96,7 +98,7 @@ for u in $UI_SRCS; do
 	base="$(basename "$u")"
 	if gcc -c -o "$OUT/ui/$base.o" -I "$PORT/src" -I "$PORT/resources" \
 	        -I "$OUT" $CF \
-	        -DFS_VERSION='"1.0.5"' -DFS_PLATFORM_NAME='"linux"' \
+	        -DFS_VERSION='"1.0.6"' -DFS_PLATFORM_NAME='"linux"' \
 	        "$PORT/src/$u.c" 2>"$OUT/ui/$base.log"; then
 		echo "ok:   src/$u.c"
 	else

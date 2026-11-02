@@ -70,6 +70,22 @@ rules — without a shell prompt.
   and the reason in plain English, and offers **Create This Rule**,
   which prints the literal rule, asks, and only then stages it.
   **No network, no telemetry.**
+- **Activity** *(1.0.6)* — two graphs over 15 minutes to 24 hours:
+  **Policy activity** (events per minute, allowed and blocked; blocked
+  only on Linux, whose kernel log never carries accepts) and **Network
+  I/O** (throughput for all adapters or one). Events count at their own
+  time, the stretch before the app started is shaded *no data* rather
+  than drawn as a quiet zero, a crosshair reads any interval (mouse or
+  arrow keys), and every graph has a table view.
+- **Command line and local dashboard** *(Linux, 1.0.6)* — `stockfw`
+  drives the same policy files, what-if simulator and apply gate as the
+  desktop app: `status`, `policy list|add|remove`, `apply [--dry-run]`,
+  `simulate`, `events [-f]`, `connections`, `interfaces`, every one with
+  `--json` and stable exit codes (`simulate` exits 5 when the traffic
+  would be blocked). `stockfw dashboard` serves a read-only web
+  dashboard on **127.0.0.1 only**, behind a token that changes every
+  run, with the same graphs, live events, connections, the simulator
+  and the policy — see [below](#command-line-and-dashboard-linux).
 - **Preferences** — what you see is what you save: pages that do not
   apply to the current backend are not shown, so there are no dead
   settings that silently do nothing.
@@ -122,6 +138,29 @@ cmake --build build-linux
 ./build-linux/StockFW
 ```
 
+### Command line and dashboard (Linux)
+
+The Linux build also produces `build-linux/stockfw`:
+
+```sh
+./build-linux/stockfw status
+./build-linux/stockfw policy add inbound-allow-service ssh   # SSH, port 22, anyone
+./build-linux/stockfw simulate "inbound ssh from 203.0.113.5" # exit 5 if blocked
+sudo ./build-linux/stockfw apply --dry-run                    # impact preview only
+sudo ./build-linux/stockfw events -f --json                   # NDJSON, live
+./build-linux/stockfw dashboard                               # opens the browser
+```
+
+The dashboard's security model: it binds 127.0.0.1 and nothing else;
+each run makes a 128-bit token, passed in the URL fragment (never sent
+to the server or logged) and then as a request header compared in
+constant time; the `Host` header must name 127.0.0.1 or localhost on
+its port, so a DNS-rebinding page cannot reach it; GET and HEAD only,
+a 16 KB cap on request heads, a 10 s timeout and 32 connections at
+most; a per-run CSP nonce with `default-src 'none'`; and it never opens
+a browser as root. It is read-only: changes go through `stockfw policy`
+and `stockfw apply`, which use the same gate as the desktop app.
+
 ### Installer (Windows, NSIS)
 
 ```sh
@@ -147,10 +186,12 @@ bash tests/test-logstart.sh          # event stream start-up
 bash tests/test-installer-spawn.sh   # staged spawn helpers
 bash tests/test-state-windows.sh     # per-profile backend compile
 bash tests/test-uaf-analyze.sh       # analyzer proves the UAF fix
+bash tests/test-cli.sh               # Linux: stockfw CLI + dashboard security model
 
-ninja -C build fs-ui-smoke fs-hitview-smoke
+ninja -C build fs-ui-smoke fs-hitview-smoke fs-activity-smoke
 ./build/fs-ui-smoke                  # UI wiring smoke
 ./build/fs-hitview-smoke             # hit-view rendering + filter smoke
+./build/fs-activity-smoke            # Activity page: counting, no-data, drawing
 ```
 
 The suites include *teeth* tests: known bugs are re-injected to prove the

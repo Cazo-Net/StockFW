@@ -1,6 +1,6 @@
 # StockFW — Technical Architecture and Security Document
 
-**Version 1.0.5 · October 2026 · Classification: Internal / Distributable**
+**Version 1.0.6 · November 2026 · Classification: Internal / Distributable**
 
 *Prepared by the StockFW Project. StockFW is a GTK3 port and modernization of the firewall tool originally developed by Qusai Fethalrahman; the port and this document are authored by H3xCore / the StockFW Project.*
 
@@ -31,6 +31,8 @@
 **Chapter 11: 1.0.4 Addendum** — 11.1 Event → Rule, One Click · 11.2 Events Filter Bar · 11.3 Sentinel: Detection and Auto-Block · 11.4 F-1/F-3 Hygiene · 11.5 Repairs and Version
 
 **Chapter 12: 1.0.5 Addendum** — 12.1 AI Assistant Removed, What-If Developed · 12.2 Bi-Directional Direction Setting · 12.3 Runner and Version · 12.4 Application Trust Engine (Priority 1) · 12.5 Explainable Behavior Analysis (Priority 2) · 12.6 Safe Policy Enforcement (Priority 3) · 12.7 System Tray and Background Operation · 12.8 Preferences Settings Made Real on Windows · 12.9 Sentinel "No False Outages": the 2026-10-10 Incident and the P6 Hardening · 12.10 Detection Validation: the P4 Adversarial Suite · 12.11 Linux First-Run Defects: sudo's Search Path, a Leaking Probe, and a Ghost Profile Box
+
+**Chapter 13: 1.0.6 Addendum** — 13.1 The Linux Event Pipeline Made Truthful · 13.2 Real Network and Connection Panels on Linux · 13.3 Activity Time Series · 13.4 The Activity Page · 13.5 The `stockfw` Command-Line Tool · 13.6 The Local Dashboard: Threat Model and Controls · 13.7 Desktop UI Defects Fixed · 13.8 Tests and Version · 13.9 Open Observations
 
 ---
 
@@ -76,7 +78,7 @@ This document serves four readers. **Security reviewers and auditors**, who will
 
 ### 1.5 Scope, Conventions, and Evidence Grading
 
-Every architectural claim in this document describes the code as it exists in StockFW 1.0.5 (October 2026), not an aspirational design; Chapters 1–10 carry the 1.0.3 base text, Chapter 11 records the 1.0.4 additions, and Chapter 12 records the 1.0.5 additions — the addendum chapters are authoritative where they differ. Claims are graded: **[Verified]** marks behavior proven by source inspection or an automated test named in Chapter 8; **[Measured]** marks behavior with numbers from an executed experiment (e.g., the 150-second soak test in Chapter 9: 45.6 MB → 44.8 MB private bytes under a continuous 300-record event flood, clean exit); **[Roadmap]** marks intent only. Diagrams are Mermaid source blocks intended for rendering. Where the original design and StockFW differ, the difference is called out explicitly rather than silently. Security claims were re-verified against source for this edition: ten privilege-boundary properties were re-read line by line and are cited with file and line references in Chapter 5.
+Every architectural claim in this document describes the code as it exists in StockFW 1.0.6 (November 2026), not an aspirational design; Chapters 1–10 carry the 1.0.3 base text, Chapter 11 records the 1.0.4 additions, Chapter 12 the 1.0.5 additions, and Chapter 13 the 1.0.6 additions — the addendum chapters are authoritative where they differ. Claims are graded: **[Verified]** marks behavior proven by source inspection or an automated test named in Chapter 8; **[Measured]** marks behavior with numbers from an executed experiment (e.g., the 150-second soak test in Chapter 9: 45.6 MB → 44.8 MB private bytes under a continuous 300-record event flood, clean exit); **[Roadmap]** marks intent only. Diagrams are Mermaid source blocks intended for rendering. Where the original design and StockFW differ, the difference is called out explicitly rather than silently. Security claims were re-verified against source for this edition: ten privilege-boundary properties were re-read line by line and are cited with file and line references in Chapter 5.
 
 ### 1.6 The System at a Glance
 
@@ -1151,7 +1153,66 @@ The fix deliberately does **not** touch sudoers. Adding `/usr/local/bin` to `sec
 
 ---
 
-*End of document. StockFW 1.0.5 — Technical Architecture and Security Document. Claims marked [Verified] correspond to source in this repository; [Measured] values come from the executed experiments cited in Chapters 8 and 9; [Roadmap] items are intent, not current capability.*
+## Chapter 13: 1.0.6 Addendum
+
+1.0.6 delivers the graphs scoped in `docs/1.0.6-graph-research.md`, makes the Linux backend report what actually happened, and adds a second front end on Linux: a command-line tool with a local, read-only web dashboard. Where the research note proposed pktmon/ETW for throughput, the shipped design uses the adapters' own byte counters (`GetIfTable2` on Windows, `/proc/net/dev` on Linux): they need no elevation and no trace session, and they answer the question the graph asks — how much traffic crossed each adapter — without a kernel hook.
+
+### 13.1 The Linux Event Pipeline Made Truthful
+
+The Linux backend parsed `STOCKFW-DROP` kernel lines into rows whose fields were wrong in ways that compounded: the service was looked up from the wrong field (an HTTPS drop rendered as a trojan's name), dropped packets never carried the `[BLOCKED]` marker that every consumer keys on — red rows, the *Serious* counters, Sentinel's blocked fan-out and now the graphs — and the time column held the arrival time rather than the kernel's stamp. Parsing moved into a GTK-free core unit, `fs-netparse.c`, which reads `DPT`, `IN`/`OUT`, the first `LEN`, `TOS` and the direction, converts RFC 3339 and syslog stamps to ISO UTC, accepts `STOCKFW-DROP` and `STOCKFW-REJECT`, and ignores any field that appears before the marker (so a hostile hostname or message prefix cannot inject `SRC=`). `fs_netparse_name_blocked` names a drop the way the Windows backend does and appends the marker. Lines split across `read()` calls are carried over (bounded at 8 KB) instead of being parsed as two halves. **[Verified]** `test-core.sh` and `test-logstart-events.sh`; teeth: the old backend fails three of the new checks, including the HTTPS-as-trojan case.
+
+### 13.2 Real Network and Connection Panels on Linux
+
+The Status page's *Network* and *Active connections* panels were empty on Linux. They now read `/proc/net/dev` with adapter kind, link state and address from sysfs, and `/proc/net/tcp`/`tcp6` with each socket's owning program found through `/proc/<pid>/fd` (the executable's name, else `comm`; `?` when unreadable — never a guess). Direction was guessed from port numbers alone, the Windows backend's heuristic, which is wrong whenever both ends are high ports (a local web app, a database, the dashboard itself). It now comes first from the LISTEN rows in the same table: a connection on a port something here listens on was accepted, so it is **Inbound** and named by our port; only the rest fall back to the guess. **[Verified]** two checks fail on the old code (a client on our port 22 read "51000 Unknown"; the accepted end of a listener on 8765 read "Outbound 33262").
+
+### 13.3 Activity Time Series
+
+`fs-activity.c` keeps named counters in 10-second slots, 8,640 per series (24 hours), at most 24 series (about 1.6 MB at the cap), so a week in the tray costs the same memory as an hour. Two rules make a graph built on it honest. A point before the series could have observed anything reports `covered = 0` — *no data* — and readers shade it rather than drawing a zero that reads as an idle firewall. The newest point is partial, and `covered` says how many of its seconds have elapsed, so a rate divides by time that has happened. `fs_activity_new_at` lets a reader that backfills from an archive (the CLI dashboard, from the kernel log) claim coverage exactly as far back as that archive is complete. A sampler turns cumulative adapter counters into deltas; a counter that goes backwards (driver reload) is a new baseline, never negative traffic. The clock is injectable, and the core suite drives a day of traffic through it in microseconds. **[Verified]** `test-core.sh` (series, coverage, ring wrap, the cap, the sampler, backfill clamping).
+
+### 13.4 The Activity Page
+
+A sixth tab beside Events: a range picker (15 min, 1 h, 6 h, 24 h), an adapter picker, headline tiles, and two cairo graphs — **Policy activity** (events per minute) and **Network I/O** (bytes per second). It counts exactly what the Events list shows: the hook sits after the list's filters and its duplicate check. Each event counts at its own time, because the Windows reader delivers a batch of recent history at start; events older than the app are dropped into the shaded no-data stretch rather than piled into the current minute. On Linux the allowed series is not drawn at all — the kernel log carries drops and rejects, never accepts, so a flat allowed line would claim nothing was allowed — and the card says so. Drawing follows the validated dataviz rules shared with the dashboard: 2 px lines, one y axis per graph with round gridlines, time ticks spaced for their labels, legend plus direct end labels, one crosshair and tooltip (mouse, or focus and arrow keys), and a table view of every interval; colours pass the palette validator in light mode (allowed/received `#2a78d6`, blocked `#e34948`, sent `#eb6834`). **[Verified]** `fs-activity-smoke` (12 checks; reverting event-time counting to "now" fails two).
+
+### 13.5 The `stockfw` Command-Line Tool
+
+A second front end over the same engine — fs-core and the platform backend, linked without GTK — so a rule added in a terminal is the rule the Policy page shows, a what-if answered there is the Copilot page's verdict, and every apply passes the same gate (`fs_policy_apply_safe`, impact preview, journal, rollback) with the same audit line, tagged `cli`. Commands: `status`, `policy list|add|remove`, `apply [--dry-run]`, `start`, `stop`, `simulate`, `events [-n N] [-f] [--blocked]`, `connections`, `interfaces [--watch]`, `dashboard`. The output contract is fixed: results on stdout, diagnostics on stderr, `--json` on every command (NDJSON for `events -f`), colour only on a terminal and never with `NO_COLOR`, and stable exit codes — 0 success, 1 failure, 2 usage, 3 needs root, 5 *simulate: blocked* — so scripts can branch on a verdict. Edits fail closed: a comma or line break inside a field is refused (the policy files are unquoted CSV, where it would silently become a field boundary), a mistyped `--option` is an error rather than an extra field, and hosts and ports are validated by the same `fs_rule_fields_sane` as the UI. Kernel-log history comes from `$STOCKFW_LOG_FILE`, `/var/log/kern.log` or `journalctl -k` (argv, no shell). Linux only: on Windows the desktop app remains the front end.
+
+### 13.6 The Local Dashboard: Threat Model and Controls
+
+`stockfw dashboard` serves a single page and a read-only JSON API from the binary itself. A web server on a firewall host is attack surface, so the design starts from who can reach it and what they could do.
+
+| Threat | Control | Evidence |
+|---|---|---|
+| Another machine on the network | Binds `127.0.0.1` only; there is no option to bind elsewhere | `test-cli.sh`: listener is loopback-only |
+| Another local user or process | 128-bit token from `/dev/urandom` per run, required as the `X-StockFW-Token` header and compared in constant time; never accepted in the query string; the page itself carries no token and no data | 401 without, with a wrong, and with a query-string token |
+| A web page in the user's browser (CSRF) | Custom header requirement (a cross-origin page cannot set it without a CORS preflight, which is never granted); GET/HEAD only; the API changes nothing | 405 on POST |
+| DNS rebinding | `Host` must be `127.0.0.1:PORT` or `localhost:PORT` | 403 for a foreign Host even with the token |
+| Token leakage | Token travels in the URL **fragment**, which browsers never send to servers or put in `Referer`; the page moves it to `sessionStorage` and strips it from the address bar; `Referrer-Policy: no-referrer` | page HTML contains no token |
+| Script injection via log content | Every DOM node built with `textContent`; JSON escapes `<`, `>`, `&`; CSP `default-src 'none'` with a per-run nonce for the one script and style block; `frame-ancestors 'none'` | CSP and nonce checked |
+| Resource exhaustion | 16 KB request-head cap however the bytes are split (a bug where a head ending in the read that crossed the limit slipped through was found and fixed), 10 s socket timeout, 32 connections at most, simulator input capped at 300 characters | 431 test fails with the fix reverted |
+| Running a browser as root | Under `sudo` the dashboard prints the address instead of launching a browser | by construction |
+
+Changes are deliberately not possible from the browser: `stockfw policy` and `stockfw apply` remain the write path. The dashboard leaves its own sockets out of the connection list, since they exist only because someone is looking (**[Verified]** fails with the filter removed). **[Verified]** `test-cli.sh`, 52 checks, run against scratch rule and config directories and a fixture log; `apply` only ever runs with `--dry-run`.
+
+### 13.7 Desktop UI Defects Fixed
+
+A screenshot pass over every page fixed what read as broken: every Policy group's buttons printed their mnemonics literally (`_Add`, `_Remove`); the Trust page suggested `C:\Path\To\program.exe` on Linux; frame titles sat on their borders like struck-through text; an empty Events list was a blank box (it now says whether it is waiting, off, or filtered to nothing); and the window opened at 620×480, which clipped the new cards. All existing UI smokes still pass.
+
+### 13.8 Tests and Version
+
+Version 1.0.6 everywhere it is set (CMake, the fallback defines, the resource script, NSIS, the Linux installer). New and extended suites: `test-core.sh` 720 checks; `test-cli.sh` 52; `fs-activity-smoke` 12; `test-logstart-events.sh` extended. `tools/build-linux.sh`, the CMake-free Linux build, gained the new core units, and the Linux installer now ships and installs the CLI (staged as `cli/stockfw` so it cannot collide with `StockFW` on a case-insensitive filesystem) and removes it on uninstall.
+
+### 13.9 Open Observations
+
+Recorded, not fixed in 1.0.6:
+
+- The what-if parser treats `inbound rdp` (no source) as matched by a host-specific allow rule ("Allow inbound (10.0.0.5)") and answers ALLOWED. The verdict should be conditional on the source; this belongs to the Copilot's matching and needs its own tests.
+- The service table has no entry for 3389 (RDP), so those events and connections read *Unknown*.
+- Linux rule application drives `iptables`; on current distributions that is the `iptables-nft` shim, so rules land in nftables, but a native `nft` backend (atomic rule-set replacement, sets for large block lists) is [Roadmap].
+
+---
+
+*End of document. StockFW 1.0.6 — Technical Architecture and Security Document. Claims marked [Verified] correspond to source in this repository; [Measured] values come from the executed experiments cited in Chapters 8 and 9; [Roadmap] items are intent, not current capability.*
 
 
 

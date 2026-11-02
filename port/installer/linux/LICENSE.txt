@@ -1,5 +1,5 @@
 StockFW Firewall Configuration Tool
-Version 1.0.5
+Version 1.0.6
 
 Copyright (C) 2024-2026 StockFW Project
 

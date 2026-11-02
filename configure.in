@@ -8,7 +8,7 @@ AC_CONFIG_AUX_DIR(.)
 AC_PROG_INTLTOOL([0.30])
 
 dnl init automake
-AM_INIT_AUTOMAKE(stockfw, 1.0.5)
+AM_INIT_AUTOMAKE(stockfw, 1.0.6)
 AM_CONFIG_HEADER(config.h)
 AM_MAINTAINER_MODE
 

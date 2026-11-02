@@ -9,7 +9,7 @@
 !endif
 
 !define APP_NAME "StockFW"
-!define APP_VERSION "1.0.5"
+!define APP_VERSION "1.0.6"
 !define APP_PUBLISHER "StockFW Project"
 !define APP_WEBSITE "https://github.com/stockfw/stockfw"
 !define APP_EXE "StockFW.exe"
