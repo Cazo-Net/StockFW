@@ -469,6 +469,12 @@ store_exists (void)
 #endif
 }
 
+gboolean
+fs_intel_store_exists (void)
+{
+	return store_exists ();
+}
+
 static void
 store_close (Store *store)
 {
@@ -1627,6 +1633,30 @@ text_value (GKeyFile *kf, const gchar *key, gchar **out)
 	return TRUE;
 }
 
+/* "refused-override": which accept flag lets the refused copy in.
+ * Absent is 0 (a state written before the key existed, or a refusal
+ * nothing overrides); any other word is damage. */
+static gboolean
+override_value (GKeyFile *kf, guint *out)
+{
+	gchar *v = NULL;
+	gboolean ok = TRUE;
+
+	*out = 0;
+	if (!text_value (kf, "refused-override", &v))
+		return FALSE;
+	if (v == NULL)
+		return TRUE;
+	if (strcmp (v, "shrink") == 0)
+		*out = FS_INTEL_UPDATE_ACCEPT_SHRINK;
+	else if (strcmp (v, "coverage") == 0)
+		*out = FS_INTEL_UPDATE_ACCEPT_COVERAGE;
+	else
+		ok = FALSE;
+	g_free (v);
+	return ok;
+}
+
 /* Parse <id>.state.  NULL when it is damaged in any way; *list_digest
  * receives the digest of the list text it describes (NULL if none). */
 static FsIntelSourceState *
@@ -1656,6 +1686,7 @@ state_parse (const gchar *id, const gchar *text, gsize len,
 	     text_value (kf, "last-error", &s->last_error) &&
 	     text_value (kf, "refused", &s->refused) &&
 	     text_value (kf, "sha256", &sha) &&
+	     override_value (kf, &s->refused_override) &&
 	     text_value (kf, "list-digest", &ld);
 
 	if (ok && sha != NULL) {
@@ -1744,6 +1775,10 @@ state_serialize (const FsIntelSourceState *s, const gchar *list_digest,
 		g_key_file_set_string (kf, "state", "last-error", s->last_error);
 	if (s->refused != NULL)
 		g_key_file_set_string (kf, "state", "refused", s->refused);
+	if (s->refused != NULL && s->refused_override != 0)
+		g_key_file_set_string (kf, "state", "refused-override",
+			s->refused_override == FS_INTEL_UPDATE_ACCEPT_COVERAGE
+			? "coverage" : "shrink");
 	for (guint i = 0; i < n; i++) {
 		he[i] = g_strdup_printf ("%u", s->history.entries[i]);
 		hc[i] = g_strdup_printf ("%" G_GUINT64_FORMAT,
@@ -2316,7 +2351,7 @@ update_one (const Store *store, const FsIntelConfig *config,
 	GError *local = NULL;
 	gchar *list_digest = NULL, *message = NULL, *sha = NULL, *why = NULL;
 	gboolean damaged = FALSE;
-	guint entries;
+	guint entries, override = 0;
 
 	s = state_read (store, f->id, &list_digest, &damaged);
 	if (s == NULL) {
@@ -2404,8 +2439,15 @@ update_one (const Store *store, const FsIntelConfig *config,
 			jflags |= FS_FEED_ACCEPT_SHRINK;
 		if (flags & FS_INTEL_UPDATE_ACCEPT_COVERAGE)
 			jflags |= FS_FEED_ACCEPT_COVERAGE;
-		if (fs_feed_judge (&st, &history, jflags, &jwhy) !=
-		    FS_FEED_VERDICT_OK) {
+		FsFeedVerdict verdict = fs_feed_judge (&st, &history, jflags,
+		                                       &jwhy);
+
+		if (verdict != FS_FEED_VERDICT_OK) {
+			/* The page offers the one flag that lets this copy
+			 * in ("Accept smaller list"). */
+			override = verdict == FS_FEED_VERDICT_GREW
+			           ? FS_INTEL_UPDATE_ACCEPT_COVERAGE
+			           : FS_INTEL_UPDATE_ACCEPT_SHRINK;
 			outcome = FS_INTEL_REFUSED;
 			why = first_line (jwhy, AUDIT_TEXT_MAX);
 			g_free (jwhy);
@@ -2452,6 +2494,7 @@ record:
 	} else if (outcome == FS_INTEL_REFUSED) {
 		g_free (s->refused);
 		s->refused = g_strdup (why);
+		s->refused_override = override;
 		g_clear_pointer (&s->last_error, g_free);
 	}
 	g_clear_error (&local);

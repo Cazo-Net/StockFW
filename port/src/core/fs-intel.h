@@ -69,6 +69,12 @@ enum
  * (Round 3).  Caller frees. */
 gchar *fs_intel_dir (GError **error);
 
+/* Whether the store directory is there, without creating it (or
+ * checking it): FALSE means no list was ever turned on here.  Readers
+ * that must not create the store on their own (the Threat Intel page
+ * opening) ask this first.  Always FALSE off Linux. */
+gboolean fs_intel_store_exists (void);
+
 /* ---- configuration (design 6.2) ------------------------------------ */
 
 typedef struct
@@ -194,6 +200,14 @@ typedef struct
 	guint64       carried_packets;/* counters carried across re-applies   */
 	guint64       carried_bytes;
 	gint64        counted_since;  /* unix s the first counter was taken   */
+	guint         refused_override; /* with `refused': the
+	                               * FS_INTEL_UPDATE_ACCEPT_* flag that
+	                               * lets that copy in (SHRINK for a
+	                               * list that shrank, emptied or went
+	                               * back in time, COVERAGE for one that
+	                               * grew); 0 when nothing overrides the
+	                               * refusal (not a list, over a cap,
+	                               * dated in the future)                 */
 } FsIntelSourceState;
 
 /* NULL when the source was never stored. */

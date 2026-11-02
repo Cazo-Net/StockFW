@@ -6457,6 +6457,67 @@ static void test_netparse_verdicts (void)
 	fs_netparse_clear_hit (&hit);
 }
 
+/* 1.0.7 threat intel: the table logs "STOCKFW-TI <id> " (design 7).
+ * Only fs_netparse_intel_line takes those lines, and only with an id
+ * the engine could have written; the policy's parser never does, so a
+ * reader that knows nothing of the lists (the CLI's event list) cannot
+ * show one as a policy block. */
+static void test_netparse_intel_line (void)
+{
+	const gchar *ti =
+		"2026-11-02T10:00:00Z STOCKFW-TI spamhaus-drop IN=eth0 OUT= "
+		"SRC=203.0.113.7 DST=198.51.100.1 LEN=60 PROTO=TCP SPT=4444 "
+		"DPT=22";
+	const gchar *ti_out =
+		"Nov  2 10:00:00 host kernel: [99.1] STOCKFW-TI local-office IN= "
+		"OUT=eth0 SRC=10.0.0.2 DST=203.0.113.9 PROTO=TCP SPT=40000 "
+		"DPT=443";
+	const gchar *bad_id =
+		"2026-11-02T10:00:00Z STOCKFW-TI Bad;id IN=eth0 OUT= "
+		"SRC=203.0.113.7 DST=198.51.100.1 PROTO=TCP DPT=22";
+	const gchar *no_id =
+		"2026-11-02T10:00:00Z STOCKFW-TI";
+	const gchar *drop =
+		"2026-11-02T10:00:00Z STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 DST=198.51.100.1 PROTO=TCP SPT=1 DPT=443";
+	FsHit hit = { 0 };
+	gchar *id = NULL;
+
+	CHECK (fs_netparse_intel_line (ti, &hit, NULL, &id) &&
+	       g_strcmp0 (id, "spamhaus-drop") == 0 &&
+	       g_strcmp0 (hit.source, "203.0.113.7") == 0 &&
+	       g_strcmp0 (hit.port, "22") == 0 &&
+	       g_strcmp0 (hit.direction, "in") == 0 &&
+	       g_strcmp0 (hit.time, "2026-11-02T10:00:00Z") == 0,
+	       "intel line: the list's id and the packet's fields (id %s, "
+	       "src %s)", id ? id : "(null)",
+	       hit.source ? hit.source : "(null)");
+	fs_netparse_clear_hit (&hit);
+	g_clear_pointer (&id, g_free);
+
+	CHECK (fs_netparse_intel_line (ti_out, &hit, NULL, &id) &&
+	       g_strcmp0 (id, "local-office") == 0 &&
+	       g_strcmp0 (hit.direction, "out") == 0 &&
+	       g_strcmp0 (hit.destination, "203.0.113.9") == 0,
+	       "intel line: an outbound block in a classic syslog line");
+	fs_netparse_clear_hit (&hit);
+	g_clear_pointer (&id, g_free);
+
+	CHECK (!fs_netparse_intel_line (bad_id, &hit, NULL, &id) &&
+	       id == NULL && hit.source == NULL,
+	       "intel line: an id the engine could not have written is "
+	       "not an event");
+	CHECK (!fs_netparse_intel_line (no_id, &hit, NULL, &id) && id == NULL,
+	       "intel line: a marker with nothing after it is not an event");
+	CHECK (!fs_netparse_intel_line (drop, &hit, NULL, &id) && id == NULL,
+	       "intel line: a policy line is not an intel line");
+	CHECK (!fs_netparse_log_line (ti, &hit, NULL) && hit.source == NULL,
+	       "the policy parser never takes an intel line");
+	CHECK (fs_netparse_intel_line (ti, &hit, NULL, NULL),
+	       "intel line: the id is optional for the caller");
+	fs_netparse_clear_hit (&hit);
+}
+
 /* 1.0.7: allowed connections are logged (sampled) through ACCEPT_LOG,
  * and the Policy page's deny rows reach the kernel in permissive mode. */
 static void test_script_accept_log (void)
@@ -7114,6 +7175,7 @@ int main (void)
 	test_netparse_proc ();
 	test_netparse_kmsg ();
 	test_netparse_verdicts ();
+	test_netparse_intel_line ();
 	test_script_accept_log ();
 	test_target_families ();
 	test_restore_plan ();

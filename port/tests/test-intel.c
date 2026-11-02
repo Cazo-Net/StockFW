@@ -1528,6 +1528,10 @@ test_update_guards (void)
 	CHECK (g_strcmp0 (text, list_before) == 0 && s && s->refused != NULL &&
 	       s->entries == 10,
 	       "a refused copy keeps the previous list and records why");
+	CHECK (s && s->refused_override == FS_INTEL_UPDATE_ACCEPT_SHRINK,
+	       "a shrink refusal records that --accept-shrink lets it in "
+	       "(the page's \"Accept smaller list\"; got %u)",
+	       s ? s->refused_override : 99);
 	fs_intel_source_state_free (s);
 	g_free (text);
 	serve ("feodo", "# nothing listed today\n");
@@ -1540,6 +1544,11 @@ test_update_guards (void)
 	CHECK (update1 (c, "feodo", FS_INTEL_UPDATE_NOW, NOW0 + 7 * HOUR, &msg) ==
 	       FS_INTEL_REFUSED, "an HTML error page: REFUSED (%s)", msg);
 	g_free (msg);
+	s = fs_intel_source_state ("feodo");
+	CHECK (s && s->refused != NULL && s->refused_override == 0,
+	       "a body that is not a list: nothing overrides it (got %u)",
+	       s ? s->refused_override : 99);
+	fs_intel_source_state_free (s);
 	serve_error ("feodo", "Could not download: SSL certificate problem|x\n"
 	             "INJECTED 2026-01-01T00:00:00Z | forged | line");
 	CHECK (update1 (c, "feodo", FS_INTEL_UPDATE_NOW, NOW0 + 7 * HOUR, &msg) ==
@@ -1559,6 +1568,13 @@ test_update_guards (void)
 	                FS_INTEL_UPDATE_ACCEPT_SHRINK, NOW0 + 8 * HOUR, &msg) ==
 	       FS_INTEL_UPDATED, "--accept-shrink lets the shrink in (%s)", msg);
 	g_free (msg);
+	s = fs_intel_source_state ("feodo");
+	text = get_file ("feodo.state");
+	CHECK (s && s->refused == NULL && s->refused_override == 0 &&
+	       text && !strstr (text, "refused-override"),
+	       "an accepted copy clears the refusal and its override");
+	fs_intel_source_state_free (s);
+	g_free (text);
 
 	/* The audit: one line per attempted feed, escaped. */
 	a = audit_text ();
@@ -1574,6 +1590,41 @@ test_update_guards (void)
 	g_free (body10);
 	g_free (body1);
 	g_free (list_before);
+	fs_intel_config_free (c);
+}
+
+/* A list that suddenly covers far more is refused with the override
+ * that lets it in (the page's "Accept larger list"), and that flag, not
+ * the shrink one, does. */
+static void
+test_update_grew (void)
+{
+	FsIntelConfig *c = conf_with ("cins-army");
+	FsIntelSourceState *s;
+	gchar *msg = NULL;
+
+	fresh_store ();
+	net_reset ();
+	serve ("cins-army", "45.0.0.0/16\n");
+	CHECK (update1 (c, "cins-army", 0, NOW0, NULL) == FS_INTEL_UPDATED,
+	       "grew: a /16 is stored");
+	serve ("cins-army", "45.0.0.0/10\n46.0.0.0/10\n");
+	CHECK (update1 (c, "cins-army", FS_INTEL_UPDATE_NOW |
+	                FS_INTEL_UPDATE_ACCEPT_SHRINK, NOW0 + HOUR, &msg) ==
+	       FS_INTEL_REFUSED, "grew: two /10s after a /16: REFUSED, also "
+	       "with --accept-shrink (%s)", msg);
+	g_free (msg);
+	s = fs_intel_source_state ("cins-army");
+	CHECK (s && s->refused != NULL &&
+	       s->refused_override == FS_INTEL_UPDATE_ACCEPT_COVERAGE,
+	       "grew: the refusal records --accept-coverage as its override "
+	       "(got %u)", s ? s->refused_override : 99);
+	fs_intel_source_state_free (s);
+	CHECK (update1 (c, "cins-army", FS_INTEL_UPDATE_NOW |
+	                FS_INTEL_UPDATE_ACCEPT_COVERAGE, NOW0 + 2 * HOUR,
+	                &msg) == FS_INTEL_UPDATED,
+	       "grew: --accept-coverage lets it in (%s)", msg);
+	g_free (msg);
 	fs_intel_config_free (c);
 }
 
@@ -3240,6 +3291,7 @@ test_engine (const gchar *argv0)
 	test_update_consent_and_network ();
 	test_update_guards ();
 	test_update_dates ();
+	test_update_grew ();
 	test_update_isolation_and_crash ();
 	test_stored_lists ();
 	test_cover6_at_cap ();

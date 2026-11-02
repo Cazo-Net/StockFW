@@ -132,6 +132,7 @@ add_executable(StockFW
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
+  src/ui/fs-intelview.c
   src/ui/fs-tray.c
   src/ui/fs-icons.c
   ${FS_BACKEND_SOURCES}
@@ -241,6 +242,7 @@ set(FS_UI_ONLY_SOURCES
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
+  src/ui/fs-intelview.c
   src/ui/fs-tray.c
   src/ui/fs-icons.c
 )
@@ -478,4 +480,24 @@ if(FS_PLATFORM STREQUAL "linux")
   target_compile_definitions(fs-intel-e2e-driver PRIVATE
                              FS_FETCH_TESTING=1
                              FS_VERSION="${PROJECT_VERSION}")
+endif()
+
+# The Threat Intel page (1.0.7) and the Events page's blocklist
+# attribution, against a fake intel backend (fs_intelview_set_backend)
+# and a fake downloader: every state of the page, consent, refusals and
+# their override, the editors, lookup, Add exception, and that the
+# work runs off the main loop.  INTEL_SMOKE_SHOTS=<dir> writes a PNG of
+# each state.  Run under xvfb-run as root or with STOCKFW_TEST_SAFE_DIR.
+add_executable(fs-intelview-smoke EXCLUDE_FROM_ALL
+  tests/ui-intelview-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_include_directories(fs-intelview-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-intelview-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-intelview-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-intelview-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()

@@ -22,6 +22,7 @@
 #include "ui/fs-activityview.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-trustview.h"
+#include "ui/fs-intelview.h"
 #include "ui/fs-tray.h"
 #include "ui/fs-icons.h"
 #include "core/fs-backend.h"
@@ -434,6 +435,7 @@ build_sidebar (void)
 		{ FS_ICON_LIST,         N_("Events") },
 		{ FS_ICON_ACTIVITY,     N_("Activity") },
 		{ FS_ICON_SLIDERS,      N_("Policy") },
+		{ FS_ICON_SHIELD_X,     N_("Threat Intel") },
 		{ FS_ICON_CHAT,         N_("Copilot") },
 		{ FS_ICON_CHECK_CIRCLE, N_("Trust") },
 	};
@@ -597,6 +599,16 @@ app_trust_signature (const gchar *path, FsTrustSignature *sig,
 	return backend->trust_signature (path, sig, publisher);
 }
 
+/* What holds a blocklist apply besides audit-only mode: the Overview's
+ * Lock, as it holds the policy.  English, like fs_apply_hold_reason():
+ * the audit line records it verbatim. */
+static const gchar *
+app_intel_hold (void)
+{
+	return fs_statusview_policy_locked ()
+	       ? "the policy is locked on the Overview" : NULL;
+}
+
 void
 fs_app_activate (GtkApplication *app)
 {
@@ -699,6 +711,11 @@ fs_app_activate (GtkApplication *app)
 	          _("The rules StockFW enforces, and which addresses each "
 	            "one covers."),
 	          fs_policyview_page (policy), FALSE);
+
+	/* Threat Intel (1.0.7): the blocklists.  Its applies are held by
+	 * the Overview's Lock as well as by audit-only mode. */
+	fs_intelview_set_hold_func (app_intel_hold);
+	add_page (_("Threat Intel"), NULL, fs_intelview_page (), FALSE);
 
 	/* Smart Firewall Copilot tab */
 	copilot = fs_copilot_new ();

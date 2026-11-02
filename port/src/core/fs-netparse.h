@@ -69,6 +69,18 @@ FsLogVerdict fs_netparse_log_verdict (const gchar *line);
 gboolean fs_netparse_log_line (const gchar *line, FsHit *hit,
                                GDateTime *now);
 
+/* A line logged by the threat-intel table (design 7):
+ * "STOCKFW-TI <id> IN=... SRC=...", parsed into the same fields as
+ * fs_netparse_log_line().  *id (nullable) receives the list's id, which
+ * passed fs_intel_id_is_valid(); caller frees.  FALSE, with *hit
+ * untouched, for any other line -- the policy's lines included, and a
+ * marker followed by something that is not an id.  The caller still
+ * checks the id against the rule set it applied (fs_intel_applied_has)
+ * before showing the event [S17.3]; fs_netparse_log_line() never
+ * accepts these lines. */
+gboolean fs_netparse_intel_line (const gchar *line, FsHit *hit,
+                                 GDateTime *now, gchar **id);
+
 /* The time stamp of any kernel-log line, ours or not, as the same
  * ISO-8601 UTC text fs_netparse_log_line produces; NULL when the line
  * has no stamp.  A reader backfilling from the log uses the first
