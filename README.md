@@ -88,6 +88,13 @@ rules — without a shell prompt.
   dashboard on **127.0.0.1 only**, behind a token that changes every
   run, with the same graphs, live events, connections, the simulator
   and the policy — see [below](#command-line-and-dashboard-linux).
+- **Threat-intel blocklists** *(Linux, 1.0.7, opt-in)* — block
+  addresses that well-known public lists name as hijacked networks,
+  botnet servers or attackers, plus your own lists, in the kernel
+  before the policy sees a packet. Every feed is off until you turn it
+  on and accept its terms; with nothing on, StockFW makes no network
+  request. A **Threat Intel** page, `stockfw intel` and a read-only
+  dashboard card — see [below](#threat-intel-blocklists-linux-107).
 - **Preferences** — what you see is what you save: pages that do not
   apply to the current backend are not shown, so there are no dead
   settings that silently do nothing.
@@ -111,6 +118,129 @@ when you apply and written as its IPv4 and IPv6 addresses. Neighbour
 discovery, router adverts, path-MTU and DHCPv6 are always allowed, even
 in restrictive mode, because IPv6 does not work without them. Without
 `ip6tables` installed, the apply reports that IPv6 is not filtered.
+
+## Threat-intel blocklists (Linux, 1.0.7)
+
+StockFW can block the addresses on public threat-intel lists ("feeds")
+and on lists you make yourself. It is **Linux only for now**: on Windows
+the page says *Not supported on Windows yet* and nothing is downloaded
+or blocked there.
+
+**How it works.** Each list you turn on is downloaded from its own
+publisher over HTTPS, checked, stored under `/var/lib/stockfw/intel`
+(root only) and loaded into one nftables table of StockFW's own,
+`inet stockfw_intel`. That table is checked before the iptables policy,
+and a policy apply never touches it. Blocked packets are logged with the
+list's name, so on the Events page a block reads *Threat intel: <list>*.
+
+### Turning it on
+
+You need root, `nft` (the `nftables` package) and `curl`.
+
+In the desktop app, open **Threat Intel** in the sidebar and switch a
+feed on. A dialog first tells you which host it is downloaded from, how
+often, what that host learns (this computer's public address and
+"StockFW/<version>"), its licence and terms. Nothing is downloaded until
+you accept. While the app is open it checks every hour for feeds that
+are due. Changing a list needs the app to run as root; otherwise the
+page says *Needs administrator rights*.
+
+From the command line:
+
+```sh
+stockfw intel feeds                                   # every feed, its licence and credit
+stockfw intel terms spamhaus-drop                     # what turning it on means
+sudo stockfw intel enable spamhaus-drop --accept-terms
+sudo stockfw intel update                             # download the feeds that are due
+sudo stockfw intel apply                              # load the lists into the kernel
+sudo stockfw intel status                             # protected? which lists, how many blocks
+sudo stockfw intel lookup 203.0.113.7                 # which lists hold it; exit 5 if blocked
+sudo stockfw intel except 203.0.113.7                 # a mistake: never block this address
+sudo stockfw intel import mylist.txt --name "My list" # your own list, no network
+```
+
+`stockfw help intel` lists every action. Each one takes `--json`.
+`feeds` and `terms` work without root until something is turned on.
+After that the store is root-only, so every `stockfw intel` command
+needs sudo.
+
+`stockfw intel update` can run from cron or a systemd timer. It loads
+the new copies only while the firewall runs, the lists are already
+loaded and audit-only mode is off. Otherwise it stores them and says
+why it did not load them.
+
+**Direction.** *in* stops listed addresses connecting to you, *out*
+stops you connecting to them, *both* does both. Outbound blocks are
+rejected so programs fail at once instead of hanging.
+
+**After a reboot** nothing is loaded, policy or lists, until the
+firewall is started again (Status page, `stockfw start`, or
+start-on-open). Start loads the lists with the policy, and Stop removes
+both.
+
+### The feeds
+
+| Feed (`id`) | What it lists | Licence / terms | Commercial use | Credit |
+|---|---|---|---|---|
+| Spamhaus DROP, IPv4 (`spamhaus-drop`) *recommended* | Networks hijacked or run by spammers and cyber-criminals. Daily, both directions | free; [Spamhaus DROP terms](https://www.spamhaus.org/drop/terms/) (no licence named) | not restricted; credit Spamhaus | The Spamhaus Project, spamhaus.org (DROP) |
+| Spamhaus DROP, IPv6 (`spamhaus-dropv6`) *recommended* | The IPv6 part of DROP. Daily, both directions | as above | not restricted; credit Spamhaus | The Spamhaus Project, spamhaus.org (DROPv6) |
+| abuse.ch Feodo Tracker (`feodo`) *recommended* | Botnet command-and-control servers seen active recently. Every 6 h, both directions | CC0 ([abuse.ch terms](https://abuse.ch/terms-of-use/)) | allowed | abuse.ch Feodo Tracker, feodotracker.abuse.ch |
+| DShield top attackers (`dshield`) | The 20 /24 networks that attacked DShield sensors most over three days. Daily, inbound | CC BY-NC-SA 2.5 | **non-commercial only** | DShield.org, SANS Internet Storm Center |
+| FireHOL level 1 (`firehol-level1`) | An aggregate of Spamhaus DROP, DShield, Feodo Tracker and unroutable space. Daily, inbound; fetched from raw.githubusercontent.com | no licence of its own; [see the repository](https://github.com/firehol/blocklist-ipsets) | **non-commercial only** (it contains DShield's list) | FireHOL IP lists, iplists.firehol.org |
+| blocklist.de (`blocklist-de`) | Addresses that attacked servers reporting to blocklist.de (fail2ban and similar) in the last 48 hours. Daily, inbound | [blocklist.de terms](https://www.blocklist.de/en/terms.html) (no licence named) | see terms | blocklist.de |
+| Emerging Threats compromised hosts (`et-compromised`) | Hosts seen compromised and attacking others. Daily, inbound | no licence published ([community thread](https://community.emergingthreats.net/t/licensing-is-the-compromised-ips-list-also-open/676)) | see terms | Emerging Threats, emergingthreats.net |
+| CINS Army (`cins-army`) | Up to 15,000 addresses with the poorest reputation in the CINS network. Daily, inbound | no licence named ([cinsscore.com](https://cinsscore.com/)) | see terms | CINS Army list, cinsscore.com |
+| Tor exit relays (`tor-exits`) | The relays Tor traffic leaves from. This is a choice about Tor users, not protection from a threat. Every 6 h, inbound | no licence named ([bulk exit list](https://check.torproject.org/api/bulk)) | see terms | The Tor Project, check.torproject.org |
+
+The lists and their data belong to their publishers. StockFW only
+downloads them for you, from each publisher and from no mirror. The
+page, `stockfw intel feeds` and the dashboard show each list's licence
+(or "see terms"), whether it is non-commercial, and its credit line.
+Before turning on a non-commercial list on a business computer, get the
+publisher's permission. A licence is named only where the publisher
+names one. You can also add your own feed by URL (`stockfw intel
+add-feed`, HTTPS only).
+
+### What it does and does not do
+
+It does:
+
+- block every address on the lists you turn on, IPv4 and IPv6, in the
+  directions you choose, and count the blocks ("blocked N since
+  <date>");
+- never block what this computer needs: its own addresses and network,
+  gateways, DNS servers, your SSH session, the feed servers themselves,
+  special-purpose ranges and your allow list. `apply` says when a list
+  named any of these;
+- refuse an update that looks wrong, keeping the copy you had: a list
+  that suddenly shrinks or empties, one older than the copy you have,
+  one whose coverage jumps, entries wider than a /10 (IPv4) or /29
+  (IPv6), or a body that is not a list. The page offers *Accept smaller
+  list* or *Accept larger list*, and `stockfw intel update` prints the
+  flag to use;
+- show what the kernel is really doing: *Protected*, *Not loaded*
+  (after a reboot or a `flush ruleset`), *Paused* (the firewall was
+  stopped), or *Changed outside StockFW*, never only what is
+  configured.
+
+It does not:
+
+- filter domains or URLs, inspect traffic, or detect intrusions. It
+  blocks IP addresses that the lists name, and nothing else;
+- make the lists right. Lists contain mistakes and go stale, and a
+  blocked address may be a shared host you need. Use the allow list or
+  `stockfw intel except`;
+- verify signatures, because no feed publishes them. Integrity rests on
+  HTTPS to the publisher and the update checks above;
+- keep a key secret. curl gets the feed URL on its command line, which
+  other local users can read while a download runs. Do not put a
+  secret in a custom feed's URL. A proxy with a user name and password
+  in it is refused;
+- answer from What-If, Copilot or `stockfw simulate` yet: these still
+  judge the policy alone. Ask `stockfw intel lookup` or the page's
+  lookup box;
+- run on Windows yet, or block by country or network owner. Both are
+  later rounds.
 
 ## Privilege model (summary)
 
@@ -200,6 +330,7 @@ bash tests/test-installer-spawn.sh   # staged spawn helpers
 bash tests/test-state-windows.sh     # per-profile backend compile
 bash tests/test-uaf-analyze.sh       # analyzer proves the UAF fix
 bash tests/test-cli.sh               # Linux: stockfw CLI + dashboard security model
+bash tests/test-intel-cli.sh         # Linux, root: stockfw intel end to end (private namespaces)
 
 ninja -C build fs-ui-smoke fs-hitview-smoke fs-activity-smoke
 ./build/fs-ui-smoke                  # UI wiring smoke
@@ -235,3 +366,9 @@ the license ultimately declared for their portion.
   Developer
 - **H3xCore** — Developer
 - **StockFW Project** — GTK3 port, Windows backend, Copilot
+- **Threat-intel data** — the blocklists belong to their publishers:
+  The Spamhaus Project, abuse.ch, DShield.org (SANS Internet Storm
+  Center), FireHOL IP lists, blocklist.de, Emerging Threats, CINS Army
+  and The Tor Project. StockFW does not ship their data; it downloads
+  a list only after you turn it on (see
+  [Threat-intel blocklists](#threat-intel-blocklists-linux-107)).

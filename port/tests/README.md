@@ -1564,3 +1564,33 @@ Teeth (`teeth.py` in a scratch directory, the same procedure as above):
 | the policy parser takes intel lines | `the policy parser never takes an intel line` |
 | "Not loaded" shown as "Protected" | `table gone behind StockFW's back: "Not loaded", with Apply` |
 | the Events filter ignores the rule | `events: the filter finds the list's block by the list's name` |
+
+## Threat intel after the CLI and the page were merged (`intel-r3/integrated`)
+
+The CLI (`intel-r3/cli`) and the Threat Intel page (`intel-r3/ui`) were
+built side by side on the round 2 engine.  Once merged, three places
+where they disagreed were fixed, each with a check:
+
+| check | where | what it proves |
+|---|---|---|
+| `Spamhaus DROP: the credit names The Spamhaus Project` | `fs-intelview-smoke` | the page's credit link is the catalog's credit line (`FsFeedInfo.credit`), the words `stockfw intel feeds` and the dashboard print, not the download host |
+| `the consent text sends mistakes to this page's allow list` | `fs-intelview-smoke` | the consent text names the page's allow list (it said "Exceptions", a heading the page does not have) |
+| `... and it names the flag that takes it (the page's Accept smaller list)` | `test-intel-cli.sh` | a refused shrink prints `sudo stockfw intel update --feed ID --now --accept-shrink`, from the engine's `refused_override` |
+| `... the status says refused, accept_with --accept-shrink` | `test-intel-cli.sh` | `feeds --json` carries the same flag as `accept_with` |
+| `... update --json: refused, accept_with --accept-shrink` | `test-intel-cli.sh` | so does `update --json` |
+
+Teeth (each injected, rebuilt, run, restored with `cp`, checked with
+`cmp`):
+
+| injected bug | check that fails |
+|---|---|
+| the page's credit link shows `fi->host` again | `Spamhaus DROP: the credit names The Spamhaus Project` |
+| the consent text says "Exceptions on the Threat Intel page" again | `the consent text sends mistakes to this page's allow list` |
+| the CLI never reports an override (`accept_flag` returns NULL) | the three `test-intel-cli.sh` checks above |
+| the CLI maps a shrink to `--accept-coverage` | the same three checks |
+
+Every suite, module test and smoke was run on the merged tree (the
+smokes under `xvfb-run -a`; `fs-tray-smoke` fails headless as before).
+The sanitizer build (`build-asan`) runs `fs-intelview-smoke`,
+`fs-intel-test`, `test-cli.sh` and `test-intel-cli.sh` with no
+AddressSanitizer or UndefinedBehaviorSanitizer report.
