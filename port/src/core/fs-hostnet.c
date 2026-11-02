@@ -19,6 +19,19 @@
 #define _GNU_SOURCE
 #endif
 
+/* Windows: GetAdaptersAddresses() names each adapter's gateways and DNS
+ * servers.  The structures come from the headers; the function itself
+ * is looked up in iphlpapi.dll at run time, so nothing that links the
+ * core needs another import library. */
+#if defined(_WIN32)
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#endif
+
 #include "core/fs-hostnet.h"
 
 #include <string.h>
@@ -796,6 +809,69 @@ resolve_hosts (const gchar *const *hosts, FsRangeSet *into)
 
 #endif /* __linux__ */
 
+#if defined(_WIN32)
+typedef ULONG (WINAPI *GaaFunc) (ULONG, ULONG, PVOID,
+                                 PIP_ADAPTER_ADDRESSES, PULONG);
+
+/* One socket address into a set (IPv4 or IPv6, nothing else). */
+static void
+add_sockaddr_win32 (FsRangeSet *set, const SOCKET_ADDRESS *sa)
+{
+	if (sa->lpSockaddr == NULL)
+		return;
+	if (sa->lpSockaddr->sa_family == AF_INET) {
+		const struct sockaddr_in *in =
+			(const struct sockaddr_in *) sa->lpSockaddr;
+
+		add_address (set, (const guint8 *) &in->sin_addr, 4);
+	} else if (sa->lpSockaddr->sa_family == AF_INET6) {
+		const struct sockaddr_in6 *in6 =
+			(const struct sockaddr_in6 *) sa->lpSockaddr;
+
+		add_address (set, (const guint8 *) &in6->sin6_addr, 16);
+	}
+}
+
+/* [ read_adapters_win32 ] -- the gateways and DNS servers of every
+ * adapter that is up.  A failure at any step adds nothing. */
+static void
+read_adapters_win32 (FsRangeSet *gateways, FsRangeSet *resolvers)
+{
+	HMODULE dll = LoadLibraryW (L"iphlpapi.dll");
+	GaaFunc gaa;
+	IP_ADAPTER_ADDRESSES *list = NULL, *a;
+	ULONG size = 16384, status = ERROR_BUFFER_OVERFLOW;
+	const ULONG flags = GAA_FLAG_INCLUDE_GATEWAYS |
+	                    GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST;
+
+	if (dll == NULL)
+		return;
+	gaa = (GaaFunc) (void (*) (void)) GetProcAddress (
+		dll, "GetAdaptersAddresses");
+	for (gint tries = 0; gaa != NULL && tries < 3 &&
+	     status == ERROR_BUFFER_OVERFLOW; tries++) {
+		g_free (list);
+		list = g_malloc0 (size);
+		status = gaa (AF_UNSPEC, flags, NULL, list, &size);
+	}
+	if (gaa != NULL && status == NO_ERROR) {
+		for (a = list; a != NULL; a = a->Next) {
+			IP_ADAPTER_GATEWAY_ADDRESS_LH *g;
+			IP_ADAPTER_DNS_SERVER_ADDRESS *d;
+
+			if (a->OperStatus != IfOperStatusUp)
+				continue;
+			for (g = a->FirstGatewayAddress; g != NULL; g = g->Next)
+				add_sockaddr_win32 (gateways, &g->Address);
+			for (d = a->FirstDnsServerAddress; d != NULL; d = d->Next)
+				add_sockaddr_win32 (resolvers, &d->Address);
+		}
+	}
+	g_free (list);
+	FreeLibrary (dll);
+}
+#endif /* _WIN32 */
+
 FsHostNet *
 fs_hostnet_read (const gchar *const *hosts)
 {
@@ -841,11 +917,16 @@ fs_hostnet_read (const gchar *const *hosts)
 	fs_range_set_normalize (host->resolvers);
 	fs_range_set_normalize (host->sessions);
 	fs_range_set_normalize (host->update_hosts);
+#elif defined(_WIN32)
+	/* Windows: the gateways and DNS servers of every adapter that is
+	 * up (GetAdaptersAddresses), which the Copilot never blocks
+	 * automatically.  Its own addresses, prefixes and sessions come
+	 * with its blocklists in Round 3 (design section 2). */
+	(void) hosts;
+	read_adapters_win32 (host->gateways, host->resolvers);
+	fs_range_set_normalize (host->gateways);
+	fs_range_set_normalize (host->resolvers);
 #else
-	/* Windows: six empty sets for now.  Its addresses, gateways and
-	 * resolvers (GetAdaptersAddresses) come with its blocklists in
-	 * Round 3 (design section 2); nothing applies a list there
-	 * before then. */
 	(void) hosts;
 #endif
 	return host;

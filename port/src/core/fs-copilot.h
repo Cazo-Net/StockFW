@@ -141,9 +141,10 @@ typedef struct
 	gboolean            baseline_partial;
 
 	/* 1.0.7: first contacts with new destinations in the last 7 days
-	 * (unix seconds, in memory only).  20 or more marks the app as one
-	 * that meets new hosts all the time (a browser), and new-destination
-	 * findings stay quiet for it. */
+	 * (unix seconds, the newest 64, saved in behavior.csv as "newdest"
+	 * rows).  20 or more marks the app as one that meets new hosts all
+	 * the time (a browser), and new-destination findings stay quiet for
+	 * it, after a restart too. */
 	GArray             *new_dest_times;
 } FsAppProfile;
 
@@ -177,9 +178,26 @@ GList *fs_copilot_get_insights (FsCopilot *copilot);
 /* How many events have been fed since the copilot was made. */
 guint64 fs_copilot_events_seen (FsCopilot *copilot);
 
-/* The DNS resolvers this computer uses, from resolv.conf text: Sentinel
- * does not time DNS to them (it is periodic by nature).  fs_copilot_new
- * reads STOCKFW_RESOLV_CONF, or /etc/resolv.conf on Linux. */
+/* The DNS servers and default gateways this computer uses.  Sentinel
+ * does not time DNS (port 53) or DNS over TLS (853) to a resolver, and
+ * never blocks a resolver or a gateway automatically, on any port
+ * (fs_insight_is_auto_safe refuses them too).  When the only resolver
+ * is a local stub whose upstream is unknown, no DNS destination is
+ * blocked automatically.
+ *
+ * fs_copilot_new reads them from the system with fs_hostnet_read
+ * (resolv.conf and, behind a 127.0.0.53 stub, systemd-resolved's and
+ * NetworkManager's upstream lists, /proc/net/route; on Windows every
+ * adapter's DNS servers and gateways) and again at most once a minute.
+ * With STOCKFW_RESOLV_CONF set it reads that file instead, with
+ * STOCKFW_RESOLVED_CONF as the upstream list and STOCKFW_ROUTE_FILE as
+ * /proc/net/route, and never re-reads (tests).
+ *
+ * fs_copilot_set_network takes the texts (resolv.conf, the upstream
+ * list, /proc/net/route; any may be NULL) and fixes them; set_resolvers
+ * is set_network with resolv.conf only. */
+void fs_copilot_set_network (FsCopilot *copilot, const gchar *resolv_conf,
+                             const gchar *resolved, const gchar *route);
 void fs_copilot_set_resolvers (FsCopilot *copilot, const gchar *resolv_conf);
 
 /* "Unusual port", "Beacon", ... */
@@ -299,7 +317,9 @@ gboolean   fs_sentinel_dest_never_auto_block (const gchar *dest);
  * least FS_SENTINEL_BASELINE_DEST_MIN connections from `app' to
  * `dest': an established destination is normal traffic, and Sentinel
  * reports (but never automatically blocks) even metronomic traffic to
- * it. */
+ * it.  The beacon check also withholds when ANY other program's
+ * baseline holds the destination, because the block it stages applies
+ * to every program and every port. */
 gboolean   fs_copilot_baseline_dest_established (FsCopilot *copilot,
                                                  const gchar *app,
                                                  const gchar *dest);

@@ -19,6 +19,7 @@
 #include "core/fs-apply.h"
 #include "core/fs-netplace.h"
 #include "core/fs-iprange.h"
+#include "core/fs-hostnet.h"
 
 #include <gio/gio.h>
 #include <time.h>
@@ -43,16 +44,26 @@ struct _FsCopilot
 	/* Sentinel (1.0.4): covert-channel and fan-out state.  Arrival
 	 * times are bucketed to whole seconds, so a polled batch of
 	 * records counts as one moment instead of a fake burst. */
-	GHashTable *beacon_stamps;      /* "app|host:port" -> GArray<gint64> */
-	GHashTable *beacon_reported;    /* "app|host:port" -> stage 1 / 2   */
+	GHashTable *beacon_stamps;      /* "app|host:port/proto" ->
+	                                 * GArray<BeaconEv>                 */
+	GHashTable *beacon_reported;    /* same key -> stage 1 / 2          */
 	GHashTable *fanout;             /* app -> FanoutState*              */
 
 	/* 1.0.7: inbound checks and report memory. */
 	GHashTable *scan;               /* source -> ScanState*             */
-	GHashTable *brute;              /* "source|port" -> GArray<BruteEv> */
+	GHashTable *brute;              /* source -> GArray<BruteEv>        */
 	GHashTable *reported_at;        /* "check|subject" -> unix sec      */
-	FsRangeSet *resolvers;          /* DNS servers, not timed           */
 	guint64     events_seen;
+
+	/* The DNS servers and default gateways this computer uses.  DNS
+	 * (53, 853) to a resolver is never timed, and no automatic block
+	 * ever targets a resolver or a gateway, on any port.  Read from
+	 * the system (fs_hostnet_read) and again at most once a minute,
+	 * unless a caller or the environment fixed them. */
+	FsRangeSet *resolvers;
+	FsRangeSet *gateways;
+	gboolean    net_fixed;
+	gint64      net_read_at;        /* monotonic seconds                */
 };
 
 typedef struct
@@ -70,11 +81,14 @@ typedef struct
 	guint        port;
 	gboolean     blocked;
 	const gchar *proto;             /* static string                    */
+	const gchar *src;               /* an aggregate's member (a key of
+	                                 * its members table), else NULL    */
 } ScanEv;
 
 typedef struct
 {
-	GArray *ev;                     /* ScanEv, oldest first             */
+	GArray     *ev;                 /* ScanEv, oldest first             */
+	GHashTable *members;            /* IPv6 /64 only: its addresses     */
 } ScanState;
 
 typedef struct
@@ -82,7 +96,25 @@ typedef struct
 	gint64   sec;
 	gint64   unix_sec;
 	gboolean blocked;
+	guint    port;
 } BruteEv;
+
+/* One timed contact, as its own log line had it. */
+typedef struct
+{
+	gint64   sec;                   /* monotonic second                 */
+	gboolean blocked;
+	gchar   *rule;                  /* what blocked it, or NULL         */
+} BeaconEv;
+
+static void
+beacon_ev_clear (gpointer data)
+{
+	BeaconEv *b = data;
+
+	g_free (b->rule);
+	b->rule = NULL;
+}
 
 static void
 fanout_state_free (gpointer data)
@@ -100,10 +132,14 @@ scan_state_free (gpointer data)
 	ScanState *st = data;
 
 	g_array_unref (st->ev);
+	if (st->members != NULL)
+		g_hash_table_unref (st->members);
 	g_free (st);
 }
 
 /* Forward declarations. */
+static void copilot_read_network (FsCopilot *copilot);
+static gboolean hit_is_blocked_marker (const FsHit *hit);
 static FsAppProfile *app_profile_new (const gchar *name, const gchar *path,
                                       gint64 now_unix);
 static void app_profile_free (FsAppProfile *profile);
@@ -158,7 +194,8 @@ static FsInsight *sentinel_fanout_check (FsCopilot *copilot,
                                          const FsHit *hit,
                                          gint64 now_us, gint64 now_unix);
 static FsInsight *inbound_scan_check (FsCopilot *copilot, const FsHit *hit,
-                                      gint64 now_us, gint64 now_unix);
+                                      gint64 now_us, gint64 now_unix,
+                                      FsInsight **net_out);
 static FsInsight *brute_force_check (FsCopilot *copilot, const FsHit *hit,
                                      gint64 now_us, gint64 now_unix);
 static FsInsight *threat_intel_check (FsCopilot *copilot, const FsHit *hit,
@@ -170,7 +207,8 @@ static FsInsight *threat_intel_check (FsCopilot *copilot, const FsHit *hit,
 #define FS_SCAN_PORTS_10M              25   /* distinct local ports, 10 min */
 #define FS_SCAN_WINDOW_S               600
 #define FS_SCAN_MAX_EVENTS             512  /* per source                */
-#define FS_SCAN_MAX_SOURCES            1024
+#define FS_SCAN_MAX_SOURCES            1024 /* then the stalest goes     */
+#define FS_SCAN_MAX_MEMBERS            256  /* addresses named per /64   */
 #define FS_BRUTE_ATTEMPTS              10   /* attempts ...              */
 #define FS_BRUTE_WINDOW_S              300  /* ... inside 5 minutes      */
 #define FS_BRUTE_MAX_KEYS              1024
@@ -221,37 +259,164 @@ fs_copilot_new (void)
 	copilot->reported_at = g_hash_table_new_full (
 		g_str_hash, g_str_equal, g_free, g_free);
 
-	/* DNS to the configured resolvers is periodic by nature: it is
-	 * never timed as a beacon. */
-	{
-		const gchar *path = g_getenv ("STOCKFW_RESOLV_CONF");
-		gchar *text = NULL;
-
-#ifndef G_OS_WIN32
-		if (path == NULL || *path == '\0')
-			path = "/etc/resolv.conf";
-#endif
-		if (path != NULL && *path != '\0' &&
-		    g_file_get_contents (path, &text, NULL, NULL))
-			fs_copilot_set_resolvers (copilot, text);
-		g_free (text);
-	}
+	/* DNS to the resolvers is periodic by nature, and the resolvers
+	 * and gateways are what the computer cannot do without. */
+	copilot_read_network (copilot);
 
 	return copilot;
+}
+
+/* ---- the resolvers and gateways ---------------------------------- */
+
+/* The last copilot's resolvers and gateways, for fs_insight_is_auto_safe,
+ * which judges an insight on its own.  One copilot runs in the app. */
+G_LOCK_DEFINE_STATIC (infra);
+static FsRangeSet      *infra_set   = NULL;
+static const FsCopilot *infra_owner = NULL;
+
+static void
+copilot_publish_network (FsCopilot *copilot)
+{
+	FsRangeSet *all = fs_range_set_new ();
+
+	if (copilot->resolvers != NULL)
+		fs_range_set_union (all, copilot->resolvers);
+	if (copilot->gateways != NULL)
+		fs_range_set_union (all, copilot->gateways);
+	fs_range_set_normalize (all);
+
+	G_LOCK (infra);
+	if (infra_set != NULL)
+		fs_range_set_free (infra_set);
+	infra_set = all;
+	infra_owner = copilot;
+	G_UNLOCK (infra);
+}
+
+static void
+copilot_take_network (FsCopilot *copilot, FsRangeSet *resolvers,
+                      FsRangeSet *gateways)
+{
+	if (copilot->resolvers != NULL)
+		fs_range_set_free (copilot->resolvers);
+	if (copilot->gateways != NULL)
+		fs_range_set_free (copilot->gateways);
+	copilot->resolvers = resolvers;
+	copilot->gateways = gateways;
+	copilot_publish_network (copilot);
+}
+
+static gchar *
+read_env_file (const gchar *var)
+{
+	const gchar *path = g_getenv (var);
+	gchar *text = NULL;
+
+	if (path == NULL || *path == '\0' ||
+	    !g_file_get_contents (path, &text, NULL, NULL))
+		return NULL;
+	return text;
+}
+
+/* [ copilot_read_network ]
+ * STOCKFW_RESOLV_CONF set (tests): that file, STOCKFW_RESOLVED_CONF as
+ * systemd-resolved's upstream list and STOCKFW_ROUTE_FILE as
+ * /proc/net/route, and nothing else, ever again.  Otherwise the system
+ * (fs_hostnet_read): resolv.conf, and behind a local stub
+ * (127.0.0.53) the upstream servers systemd-resolved and
+ * NetworkManager list; the default gateways; on Windows, every
+ * adapter's DNS servers and gateways. */
+static void
+copilot_read_network (FsCopilot *copilot)
+{
+	gchar *rc = read_env_file ("STOCKFW_RESOLV_CONF");
+
+	copilot->net_read_at = g_get_monotonic_time () / G_USEC_PER_SEC;
+	if (rc != NULL || g_getenv ("STOCKFW_RESOLV_CONF") != NULL) {
+		gchar *resolved = read_env_file ("STOCKFW_RESOLVED_CONF");
+		gchar *route = read_env_file ("STOCKFW_ROUTE_FILE");
+
+		fs_copilot_set_network (copilot, rc, resolved, route);
+		g_free (resolved);
+		g_free (route);
+	} else {
+		FsHostNet *h = fs_hostnet_read (NULL);
+
+		copilot_take_network (copilot, fs_range_set_copy (h->resolvers),
+		                      fs_range_set_copy (h->gateways));
+		fs_hostnet_free (h);
+	}
+	g_free (rc);
+}
+
+/* Networks change (a laptop moves): the system's lists are read again
+ * at most once a minute. */
+static void
+copilot_network_fresh (FsCopilot *copilot)
+{
+	gint64 now = g_get_monotonic_time () / G_USEC_PER_SEC;
+
+	if (!copilot->net_fixed && now - copilot->net_read_at >= 60)
+		copilot_read_network (copilot);
+}
+
+/* [ fs_copilot_set_network ] */
+void
+fs_copilot_set_network (FsCopilot *copilot, const gchar *resolv_conf,
+                        const gchar *resolved, const gchar *route)
+{
+	if (copilot == NULL)
+		return;
+	copilot->net_fixed = TRUE;
+	copilot_take_network (copilot,
+	                      fs_hostnet_parse_resolvers (resolv_conf, resolved,
+	                                                  NULL),
+	                      route != NULL ? fs_hostnet_parse_route (route)
+	                                    : fs_range_set_new ());
 }
 
 /* [ fs_copilot_set_resolvers ] */
 void
 fs_copilot_set_resolvers (FsCopilot *copilot, const gchar *resolv_conf)
 {
-	if (copilot == NULL)
-		return;
-	if (copilot->resolvers != NULL)
-		fs_range_set_free (copilot->resolvers);
-	copilot->resolvers = resolv_conf != NULL
-		? fs_range_set_from_resolv_conf (resolv_conf) : NULL;
-	if (copilot->resolvers != NULL)
-		fs_range_set_normalize (copilot->resolvers);
+	fs_copilot_set_network (copilot, resolv_conf, NULL, NULL);
+}
+
+/* An address that is one of this computer's resolvers or gateways. */
+static gboolean
+copilot_is_infrastructure (FsCopilot *copilot, const gchar *addr)
+{
+	return (copilot->resolvers != NULL &&
+	        fs_range_set_contains_text (copilot->resolvers, addr)) ||
+	       (copilot->gateways != NULL &&
+	        fs_range_set_contains_text (copilot->gateways, addr));
+}
+
+/* TRUE when the resolver list names no server off this computer: only
+ * a local stub (127.0.0.53) whose upstream could not be read, or
+ * nothing at all.  DNS then goes to servers this computer does not
+ * know, and no DNS destination may be blocked automatically. */
+static gboolean
+copilot_dns_upstream_unknown (FsCopilot *copilot)
+{
+	const FsRangeSet *r = copilot->resolvers;
+
+	if (r == NULL)
+		return TRUE;
+	for (guint i = 0; i < r->v4->len; i++) {
+		const FsRange4 *x = &g_array_index (r->v4, FsRange4, i);
+
+		if ((x->start >> 24) != 127 || (x->end >> 24) != 127)
+			return FALSE;
+	}
+	for (guint i = 0; i < r->v6->len; i++) {
+		const FsRange6 *x = &g_array_index (r->v6, FsRange6, i);
+
+		if (x->start.hi != 0 || x->start.lo != 1 ||
+		    x->end.hi != 0 || x->end.lo != 1)
+			return FALSE;
+	}
+	return TRUE;
 }
 
 /* [ fs_copilot_events_seen ] */
@@ -297,6 +462,16 @@ fs_copilot_free (FsCopilot *copilot)
 	g_hash_table_unref (copilot->reported_at);
 	if (copilot->resolvers != NULL)
 		fs_range_set_free (copilot->resolvers);
+	if (copilot->gateways != NULL)
+		fs_range_set_free (copilot->gateways);
+	G_LOCK (infra);
+	if (infra_owner == copilot) {
+		if (infra_set != NULL)
+			fs_range_set_free (infra_set);
+		infra_set = NULL;
+		infra_owner = NULL;
+	}
+	G_UNLOCK (infra);
 	g_list_free_full (copilot->insights, (GDestroyNotify) fs_insight_free);
 	g_free (copilot);
 }
@@ -424,8 +599,16 @@ fs_copilot_feed_event_full (FsCopilot *copilot, const FsHit *hit,
 		                     profile);
 	}
 
-	app_profile_record_connection (profile, remote_ip, port, protocol,
-	                               inbound, 0, now_unix);
+	/* A refused inbound attempt is a stranger's choice of port and
+	 * address, not something the program did: it counts as activity,
+	 * but it teaches the profile no port and no destination (a scan
+	 * would otherwise fill both sets and mark the profile partial). */
+	if (inbound && hit_is_blocked_marker (hit))
+		app_profile_record_connection (profile, NULL, 0, protocol,
+		                               inbound, 0, now_unix);
+	else
+		app_profile_record_connection (profile, remote_ip, port,
+		                               protocol, inbound, 0, now_unix);
 
 	copilot->events_seen++;
 
@@ -434,11 +617,12 @@ fs_copilot_feed_event_full (FsCopilot *copilot, const FsHit *hit,
 	 * learning baseline has had its 10 samples.  The inbound checks
 	 * and the block-list check run on every event too. */
 	{
-		FsInsight *found[5];
+		FsInsight *found[6];
 
 		found[0] = sentinel_beacon_check (copilot, hit, now_us, now_unix);
 		found[1] = sentinel_fanout_check (copilot, hit, now_us, now_unix);
-		found[2] = inbound_scan_check (copilot, hit, now_us, now_unix);
+		found[2] = inbound_scan_check (copilot, hit, now_us, now_unix,
+		                               &found[5]);
 		found[3] = brute_force_check (copilot, hit, now_us, now_unix);
 		found[4] = threat_intel_check (copilot, hit, now_unix);
 
@@ -1010,6 +1194,19 @@ fs_copilot_baseline_save (FsCopilot *copilot, const gchar *path,
 				g_string_append_c (out, '\n');
 			}
 		}
+
+		/* first contacts with new hosts in the last 7 days, oldest
+		 * first: the "meets new hosts all the time" memory, so a
+		 * browser is still one after a restart */
+		for (guint i = 0; p->new_dest_times != NULL &&
+		     i < p->new_dest_times->len; i++) {
+			g_snprintf (num[0], sizeof num[0], "%" G_GINT64_FORMAT,
+			            g_array_index (p->new_dest_times, gint64, i));
+			fs_util_csv_append_field (out, app, TRUE);
+			fs_util_csv_append_field (out, "newdest", FALSE);
+			fs_util_csv_append_field (out, num[0], FALSE);
+			g_string_append_c (out, '\n');
+		}
 	}
 
 	g_list_free (names);
@@ -1083,7 +1280,8 @@ fs_copilot_baseline_load (FsCopilot *copilot, const gchar *path,
 		    g_strcmp0 (kind, "partial") != 0 &&
 		    g_strcmp0 (kind, "port") != 0 &&
 		    g_strcmp0 (kind, "dest") != 0 &&
-		    g_strcmp0 (kind, "hour") != 0) {
+		    g_strcmp0 (kind, "hour") != 0 &&
+		    g_strcmp0 (kind, "newdest") != 0) {
 			g_ptr_array_unref (fields);
 			continue;
 		}
@@ -1182,6 +1380,21 @@ fs_copilot_baseline_load (FsCopilot *copilot, const gchar *path,
 					                             (guint) a),
 					                     slot);
 				}
+			}
+		} else if (g_strcmp0 (kind, "newdest") == 0) {
+			if (fields->len >= 3 &&
+			    parse_u64 (g_ptr_array_index (fields, 2), &a) &&
+			    a <= (guint64) G_MAXINT64) {
+				gint64 t = (gint64) a;
+				guint at = p->new_dest_times->len;
+
+				/* kept sorted, at most 64, newest kept */
+				while (at > 0 && g_array_index (p->new_dest_times,
+				                                gint64, at - 1) > t)
+					at--;
+				g_array_insert_val (p->new_dest_times, at, t);
+				if (p->new_dest_times->len > 64)
+					g_array_remove_index (p->new_dest_times, 0);
 			}
 		}
 		/* Unknown kinds were skipped above: a newer format still
@@ -1310,7 +1523,9 @@ fs_insight_apply (const FsInsight *insight, FsPolicy *policy)
  * auto-blocked (multicast, loopback, link-local, the private LAN).
  * These are protocol infrastructure and the user's own machines --
  * the 2026-10-10 incident was exactly this: Windows' own LLMNR
- * multicast and two LAN hosts auto-blocked as "beacons". */
+ * multicast and two LAN hosts auto-blocked as "beacons".  The DNS
+ * servers and default gateways of the newest copilot are refused the
+ * same way, whatever their address class. */
 gboolean
 fs_insight_is_auto_safe (const FsInsight *insight)
 {
@@ -1330,6 +1545,16 @@ fs_insight_is_auto_safe (const FsInsight *insight)
 		return FALSE;
 
 	safe = !fs_sentinel_dest_never_auto_block (rule->target);
+
+	/* Nor this computer's own DNS servers and default gateways: a
+	 * block on them, on any port, cuts the computer off. */
+	if (safe) {
+		G_LOCK (infra);
+		if (infra_set != NULL &&
+		    fs_range_set_contains_text (infra_set, rule->target))
+			safe = FALSE;
+		G_UNLOCK (infra);
+	}
 	fs_rule_free (rule);
 
 	return safe;
@@ -1517,6 +1742,27 @@ hit_app_key (const FsHit *hit, gchar *buf, gsize size)
 		g_strlcpy (buf, "Unknown", size);
 }
 
+/* [ hit_key_is_program ]
+ * Whether the profile key names a program (the Windows log's
+ * Application Name, "brave.exe") rather than the port's service name
+ * ("https", "Unknown"), which is all a Linux log line carries and which
+ * every program on that port shares. */
+static gboolean
+hit_key_is_program (const FsHit *hit, const gchar *key)
+{
+	glong port = hit->port != NULL ? strtol (hit->port, NULL, 10) : 0;
+	gchar *svc;
+	gboolean program;
+
+	if (g_strcmp0 (key, "Unknown") == 0 || g_strcmp0 (key, _("Unknown")) == 0)
+		return FALSE;
+	svc = port > 0 && port <= 65535 ? fs_service_lookup_port ((gint) port)
+	                                : NULL;
+	program = svc == NULL || g_ascii_strcasecmp (svc, key) != 0;
+	g_free (svc);
+	return program;
+}
+
 /* [ sentinel_dest_auto_ok_before_run ]
  * The beacon's form of the verdict.  The baseline count includes the
  * metronomic run that is being flagged right now -- those samples are
@@ -1540,6 +1786,41 @@ sentinel_dest_auto_ok_before_run (FsCopilot *copilot, const gchar *app,
 	before = before > run_samples ? before - run_samples : 0;
 
 	return before < FS_SENTINEL_BASELINE_DEST_MIN;
+}
+
+/* [ sentinel_dest_established_elsewhere ]
+ * The block a beacon stages is "deny outbound to dest": every program,
+ * every port.  So a destination ANOTHER program's baseline holds as
+ * established (a browser's CDN, an update server) is never blocked
+ * automatically because a newer program polls it.  Returns that
+ * program and its count, or NULL. */
+static const gchar *
+sentinel_dest_established_elsewhere (FsCopilot *copilot, const gchar *app,
+                                     const gchar *dest, guint *count_out)
+{
+	GHashTableIter it;
+	gpointer k, v;
+	const gchar *best = NULL;
+	guint best_n = 0;
+
+	g_hash_table_iter_init (&it, copilot->profiles);
+	while (g_hash_table_iter_next (&it, &k, &v)) {
+		FsAppProfile *p = v;
+		guint *n;
+
+		if (g_strcmp0 (k, app) == 0)
+			continue;
+		n = g_hash_table_lookup (p->common_destinations, dest);
+		if (n != NULL && *n >= FS_SENTINEL_BASELINE_DEST_MIN &&
+		    (*n > best_n ||
+		     (*n == best_n && g_strcmp0 (k, best) < 0))) {
+			best = k;
+			best_n = *n;
+		}
+	}
+	if (count_out != NULL)
+		*count_out = best_n;
+	return best;
 }
 
 /* [ app_profile_new ] */
@@ -1944,7 +2225,11 @@ behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
 
 	(void) copilot;
 
-	sig_port = !profile->baseline_partial &&
+	/* Inbound, the remote host picks the local port: a stranger's
+	 * probe is not the program "using" a port (and a scan would be
+	 * hundreds of such findings), so the signal is outbound only, like
+	 * the new-destination one.  The scan check reports inbound ports. */
+	sig_port = !profile->baseline_partial && !inbound &&
 	           is_novel_port (profile, port);
 	sig_dest = !profile->baseline_partial && !inbound &&
 	           is_novel_destination (profile, remote_ip);
@@ -2235,12 +2520,25 @@ emit_insight (FsCopilot *copilot, FsInsight *insight)
 
 	copilot->insights = g_list_prepend (copilot->insights, insight);
 
+	/* The bound.  What falls off first is the oldest baseline finding
+	 * (new port, destination, hour, rate): those are Info-level and
+	 * there can be many.  A Sentinel, scan, login or block-list
+	 * finding goes only when nothing else is left, so a flood of
+	 * small findings can never push the one that matters out. */
 	while (g_list_length (copilot->insights) > FS_COPILOT_MAX_INSIGHTS) {
-		GList *oldest = g_list_last (copilot->insights);
+		GList *victim = NULL;
 
-		fs_insight_free (oldest->data);
+		for (l = g_list_last (copilot->insights); l != NULL; l = l->prev)
+			if (insight_family (((FsInsight *) l->data)->type) == -1) {
+				victim = l;
+				break;
+			}
+		if (victim == NULL)
+			victim = g_list_last (copilot->insights);
+
+		fs_insight_free (victim->data);
 		copilot->insights = g_list_delete_link (copilot->insights,
-		                                        oldest);
+		                                        victim);
 	}
 }
 
@@ -2396,10 +2694,16 @@ hit_rule_is_intel (const FsHit *hit)
  * near-fixed intervals.  Per application and destination:port, so two
  * programs polling one server are two series.  Arrival times are
  * bucketed to whole seconds (a polled batch is one moment), the series
- * is capped at 32.  Reported at 6 regular contacts; the automatic block
- * waits for 8 (the report is updated when they arrive).  NTP (port 123)
- * and DNS to the configured resolvers are periodic by nature and never
- * timed. */
+ * is capped at 32; each contact keeps its own refused flag and rule,
+ * and TCP and UDP are separate series.  Reported at 6 regular contacts;
+ * the automatic block waits for 8 (the report is updated when they
+ * arrive).  NTP (port 123) and DNS or DNS over TLS (53, 853) to this
+ * computer's resolvers are periodic by nature and never timed.  The
+ * automatic block is withheld for the LAN and infrastructure, for this
+ * computer's resolvers and gateways on any port, for DNS while the
+ * upstream resolvers are unknown, and for a destination this program
+ * or ANY other program already has a history with (the block applies
+ * to every program). */
 static FsInsight *
 sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
                        gint64 now_unix)
@@ -2413,6 +2717,9 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 	gdouble mean, var = 0.0, cv;
 	guint i, n_diff, portnum;
 	gint stage, want;
+	gboolean udp, dns_port;
+	const gchar *other;
+	guint other_n = 0;
 
 	if (sentinel_hit_is_inbound (hit))
 		return NULL;
@@ -2425,46 +2732,57 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 	portnum = (guint) strtoul (port, NULL, 10);
 	if (portnum == 123)
 		return NULL;                    /* time sync runs on a timer */
-	if (portnum == 53 && copilot->resolvers != NULL &&
+	copilot_network_fresh (copilot);
+	dns_port = portnum == 53 || portnum == 853;
+	if (dns_port && copilot->resolvers != NULL &&
 	    fs_range_set_contains_text (copilot->resolvers, dst))
-		return NULL;                    /* our own resolvers         */
+		return NULL;                    /* our own resolvers: DNS and
+	                                         * DNS over TLS            */
 
 	hit_app_key (hit, app_buf, sizeof app_buf);
 	sec = now_us / G_USEC_PER_SEC;
-	key = g_strdup_printf ("%s|%s:%s", app_buf, dst, port);
+	udp = hit->protocol != NULL &&
+	      g_ascii_strcasecmp (hit->protocol, "UDP") == 0;
+	key = g_strdup_printf ("%s|%s:%s/%s", app_buf, dst, port,
+	                       udp ? "udp" : "tcp");
 
 	stamps = g_hash_table_lookup (copilot->beacon_stamps, key);
 	if (stamps == NULL) {
-		stamps = g_array_new (FALSE, TRUE, sizeof (gint64));
+		stamps = g_array_new (FALSE, TRUE, sizeof (BeaconEv));
+		g_array_set_clear_func (stamps, beacon_ev_clear);
 		g_hash_table_insert (copilot->beacon_stamps, key, stamps);
 		key_owned = TRUE;
 	}
 
-	if (stamps->len == 0) {
-		g_array_append_val (stamps, sec);
-	} else {
-		last = g_array_index (stamps, gint64, stamps->len - 1);
+	last = stamps->len > 0
+	       ? g_array_index (stamps, BeaconEv, stamps->len - 1).sec : -1;
+	if (stamps->len == 0 || last < sec) {
+		BeaconEv b;
 
-		if (last < sec) {
-			g_array_append_val (stamps, sec);
-			if (stamps->len > FS_SENTINEL_BEACON_MAX_STAMPS)
-				g_array_remove_index (stamps, 0);
-		}
-		/* last == sec: same-second batch, no new information. */
+		/* Each contact keeps what its own log line said. */
+		b.sec = sec;
+		b.blocked = hit_is_blocked_marker (hit) ||
+		            (hit->rule != NULL && *hit->rule != '\0');
+		b.rule = hit->rule != NULL && *hit->rule != '\0'
+		         ? g_strdup (hit->rule) : NULL;
+		g_array_append_val (stamps, b);
+		if (stamps->len > FS_SENTINEL_BEACON_MAX_STAMPS)
+			g_array_remove_index (stamps, 0);
 	}
+	/* last == sec: same-second batch, no new information. */
 
 	if (stamps->len < FS_SENTINEL_BEACON_MIN_SAMPLES)
 		goto out;
 
 	n_diff = stamps->len - 1;
 	for (i = 0; i < n_diff; i++)
-		sum += g_array_index (stamps, gint64, i + 1) -
-		       g_array_index (stamps, gint64, i);
+		sum += g_array_index (stamps, BeaconEv, i + 1).sec -
+		       g_array_index (stamps, BeaconEv, i).sec;
 
 	mean = (gdouble) sum / n_diff;
 	for (i = 0; i < n_diff; i++) {
-		gdouble d = (gdouble) (g_array_index (stamps, gint64, i + 1) -
-		                       g_array_index (stamps, gint64, i));
+		gdouble d = (gdouble) (g_array_index (stamps, BeaconEv, i + 1).sec -
+		                       g_array_index (stamps, BeaconEv, i).sec);
 
 		var += (d - mean) * (d - mean);
 	}
@@ -2519,14 +2837,21 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 		insight->subject = g_strdup (dst);
 		insight->events_filter = g_strdup (dst);
 		insight->whatif_line = g_strdup_printf (
-			"outbound %s port %s to %s",
-			hit->protocol != NULL &&
-			g_ascii_strcasecmp (hit->protocol, "UDP") == 0
-			? "udp" : "tcp", port, dst);
+			"outbound %s port %s to %s", udp ? "udp" : "tcp", port, dst);
+		/* One row per contact, from that contact's own record: its
+		 * time, whether it was refused and by what. */
 		for (i = first; i < stamps->len; i++) {
-			FsEvidence *ev = evidence_from_hit (hit, FALSE, 0);
+			const BeaconEv *b = &g_array_index (stamps, BeaconEv, i);
+			FsEvidence *ev = g_new0 (FsEvidence, 1);
 
-			ev->when = now_unix - (sec - g_array_index (stamps, gint64, i));
+			/* the wall time, from the monotonic gap to now */
+			ev->when = now_unix - (sec - b->sec);
+			ev->inbound = FALSE;
+			ev->remote = g_strdup (dst);
+			ev->port = portnum <= 65535 ? portnum : 0;
+			ev->protocol = g_strdup (udp ? "UDP" : "TCP");
+			ev->blocked = b->blocked;
+			ev->rule = g_strdup (b->rule);
 			insight_add_evidence (insight, ev);
 		}
 
@@ -2553,6 +2878,18 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 				_("Report only: the destination is on the local network "
 				  "or is network infrastructure, which is never blocked "
 				  "automatically."));
+		} else if (copilot_is_infrastructure (copilot, dst)) {
+			insight->auto_applicable = FALSE;
+			insight->withheld = g_strdup (
+				_("Report only: this address is one of this computer's "
+				  "DNS servers or its default gateway, which are never "
+				  "blocked automatically."));
+		} else if (dns_port && copilot_dns_upstream_unknown (copilot)) {
+			insight->auto_applicable = FALSE;
+			insight->withheld = g_strdup (
+				_("Report only: DNS on this computer goes through a "
+				  "local resolver whose upstream servers could not be "
+				  "read, and this may be one of them."));
 		} else if (!sentinel_dest_auto_ok_before_run (copilot, app_buf,
 		                                              dst, stamps->len)) {
 			insight->auto_applicable = FALSE;
@@ -2560,6 +2897,13 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 				_("Report only: this program already talked to this "
 				  "destination before the run, so it is normal traffic "
 				  "for it."));
+		} else if ((other = sentinel_dest_established_elsewhere (
+		                    copilot, app_buf, dst, &other_n)) != NULL) {
+			insight->auto_applicable = FALSE;
+			insight->withheld = g_strdup_printf (
+				_("Report only: %s has %u recorded connections to this "
+				  "destination, and the block would apply to every "
+				  "program."), other, other_n);
 		} else {
 			insight->auto_applicable = TRUE;
 		}
@@ -2593,6 +2937,7 @@ sentinel_fanout_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 	gpointer k, v;
 	FanoutState *st;
 	FsInsight *insight;
+	gboolean program;
 
 	if (sentinel_hit_is_inbound (hit))
 		return NULL;
@@ -2650,9 +2995,14 @@ sentinel_fanout_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 
 	n_any     = g_hash_table_size (st->seen);
 	n_blocked = g_hash_table_size (st->blocked);
+	program   = hit_key_is_program (hit, app_buf);
 
+	/* A key that is a port's service name ("https", what Linux logs
+	 * carry) stands for every program using that port, so a busy page
+	 * in any browser reaches 60 hosts.  There only refused hosts
+	 * count; the any-host limit needs a real program name. */
 	if (n_blocked < FS_SENTINEL_FANOUT_BLOCKED &&
-	    n_any < FS_SENTINEL_FANOUT_LIMIT)
+	    (!program || n_any < FS_SENTINEL_FANOUT_LIMIT))
 		return NULL;
 
 	if (st->reported)
@@ -2675,11 +3025,18 @@ sentinel_fanout_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 			app_buf, NULL);
 		g_free (title);
 	}
-	insight->why = g_strdup_printf (
-		_("%u distinct hosts (the limit is %d) and %u refused hosts (the "
-		  "limit is %d) in %d seconds."),
-		n_any, FS_SENTINEL_FANOUT_LIMIT, n_blocked,
-		FS_SENTINEL_FANOUT_BLOCKED, FS_SENTINEL_FANOUT_WINDOW_S);
+	insight->why = program
+		? g_strdup_printf (
+			_("%u distinct hosts (the limit is %d) and %u refused hosts "
+			  "(the limit is %d) in %d seconds."),
+			n_any, FS_SENTINEL_FANOUT_LIMIT, n_blocked,
+			FS_SENTINEL_FANOUT_BLOCKED, FS_SENTINEL_FANOUT_WINDOW_S)
+		: g_strdup_printf (
+			_("%u refused hosts (the limit is %d) among %u distinct hosts "
+			  "in %d seconds. %s is a port's service name, which covers "
+			  "every program on that port, so only refused hosts count."),
+			n_blocked, FS_SENTINEL_FANOUT_BLOCKED, n_any,
+			FS_SENTINEL_FANOUT_WINDOW_S, app_buf);
 	insight->benign = g_strdup (
 		_("Browsers opening a busy page, peer-to-peer programs and "
 		  "network discovery reach many hosts quickly too."));
@@ -2703,62 +3060,124 @@ sentinel_fanout_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 
 /* ---- inbound checks ----------------------------------------------- */
 
-/* [ inbound_scan_check ]
- * One source reaching many distinct local ports: 12 in 60 seconds, or
- * 25 in 10 minutes.  Counts DISTINCT ports, never events, so a retry
- * storm on one port is not a scan.  ICMP, loopback, multicast and
- * link-local sources are ignored; a LAN source is Info.  One report per
- * source per hour.  The policy has no inbound deny, so this never
- * changes the policy: its action is the health check. */
-static FsInsight *
-inbound_scan_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
-                    gint64 now_unix)
+/* [ insight_open ] -- whether a finding with this key is on the list. */
+static gboolean
+insight_open (FsCopilot *copilot, const gchar *key)
 {
-	const gchar *src;
-	guint port;
-	gint64 sec = now_us / G_USEC_PER_SEC;
-	ScanState *st;
+	for (GList *l = copilot->insights; l != NULL; l = l->next)
+		if (g_strcmp0 (((FsInsight *) l->data)->key, key) == 0)
+			return TRUE;
+	return FALSE;
+}
+
+/* [ report_or_update ]
+ * The once-per-hour report memory says whether a NEW finding may be
+ * raised.  When it may not, a finding still open under the same key is
+ * updated instead (its count, ports and evidence grow with the run), so
+ * a 40-port scan never reads "12 ports" because the first report came
+ * at 12.  FALSE: nothing to emit. */
+static gboolean
+report_or_update (FsCopilot *copilot, const gchar *key, gint64 now_unix)
+{
+	if (report_take (copilot, key, now_unix))
+		return TRUE;
+	return insight_open (copilot, key);
+}
+
+/* [ scan_state_newest ] -- the newest event's second, or G_MININT64. */
+static gint64
+scan_state_newest (const ScanState *st)
+{
+	return st->ev->len > 0
+	       ? g_array_index (st->ev, ScanEv, st->ev->len - 1).sec
+	       : G_MININT64;
+}
+
+/* [ scan_state_get ]
+ * The state for one subject (a source address, or an IPv6 /64).  When
+ * the table is full, expired subjects go first and then the one heard
+ * from longest ago: a full table never makes the check deaf to a new
+ * scanner (it used to refuse every newcomer once 1024 sources sat in
+ * the window). */
+static ScanState *
+scan_state_get (FsCopilot *copilot, const gchar *subject, gint64 sec,
+                gboolean aggregate)
+{
+	ScanState *st = g_hash_table_lookup (copilot->scan, subject);
+
+	if (st != NULL)
+		return st;
+
+	if (g_hash_table_size (copilot->scan) >= FS_SCAN_MAX_SOURCES) {
+		GHashTableIter it;
+		gpointer k, v, oldest_k = NULL;
+		gint64 oldest = G_MAXINT64;
+
+		g_hash_table_iter_init (&it, copilot->scan);
+		while (g_hash_table_iter_next (&it, &k, &v))
+			if (scan_state_newest (v) < sec - FS_SCAN_WINDOW_S)
+				g_hash_table_iter_remove (&it);
+		if (g_hash_table_size (copilot->scan) >= FS_SCAN_MAX_SOURCES) {
+			g_hash_table_iter_init (&it, copilot->scan);
+			while (g_hash_table_iter_next (&it, &k, &v))
+				if (scan_state_newest (v) < oldest) {
+					oldest = scan_state_newest (v);
+					oldest_k = k;
+				}
+			if (oldest_k != NULL)
+				g_hash_table_remove (copilot->scan, oldest_k);
+		}
+	}
+	st = g_new0 (ScanState, 1);
+	st->ev = g_array_new (FALSE, FALSE, sizeof (ScanEv));
+	if (aggregate)
+		st->members = g_hash_table_new_full (g_str_hash, g_str_equal,
+		                                     g_free, NULL);
+	g_hash_table_insert (copilot->scan, g_strdup (subject), st);
+	return st;
+}
+
+/* [ v6_net64 ] -- "2001:db8:1:2::/64" for a public IPv6 source, else
+ * NULL.  A scanner that rotates its address inside one /64 (any IPv6
+ * host can) is one scanner. */
+static gchar *
+v6_net64 (const gchar *src)
+{
+	guint32 v4;
+	FsU128 v6;
+	guint8 b[16];
+	GInetAddress *a;
+	gchar *text, *out;
+
+	if (fs_addr_parse (src, &v4, &v6) != FS_AF_V6)
+		return NULL;
+	for (gint i = 0; i < 8; i++)
+		b[i] = (guint8) (v6.hi >> (56 - 8 * i));
+	memset (b + 8, 0, 8);
+	a = g_inet_address_new_from_bytes (b, G_SOCKET_FAMILY_IPV6);
+	text = g_inet_address_to_string (a);
+	out = g_strdup_printf ("%s/64", text);
+	g_free (text);
+	g_object_unref (a);
+	return out;
+}
+
+/* [ scan_judge ]
+ * One subject's run: record the event, trim the window, and build the
+ * finding when the run crosses a limit.  `display' is what the finding
+ * names; `members' counts the addresses of an aggregate. */
+static FsInsight *
+scan_judge (FsCopilot *copilot, const gchar *subject, gboolean aggregate,
+            const gchar *src, const FsHit *hit, guint port, AddrClass cls,
+            gint64 sec, gint64 now_unix)
+{
+	ScanState *st = scan_state_get (copilot, subject, sec, aggregate);
 	ScanEv ev;
 	GHashTable *d60, *d600;
-	GString *ports_list;
-	GString *allowed_list;
-	guint n_blocked = 0, n60, n600;
-	AddrClass cls;
+	GString *ports_list, *allowed_list;
+	guint n_blocked = 0, n60, n600, n_members = 0;
 	FsInsight *insight;
 	gchar *what;
-
-	if (!sentinel_hit_is_inbound (hit))
-		return NULL;
-	src = hit->source;
-	port = hit->port != NULL ? (guint) strtoul (hit->port, NULL, 10) : 0;
-	if (port == 0 || port > 65535)
-		return NULL;
-	cls = addr_class (src);
-	if (cls == ADDR_IGNORE || g_strcmp0 (src, hit->destination) == 0)
-		return NULL;
-
-	st = g_hash_table_lookup (copilot->scan, src);
-	if (st == NULL) {
-		if (g_hash_table_size (copilot->scan) >= FS_SCAN_MAX_SOURCES) {
-			GHashTableIter it;
-			gpointer k, v;
-
-			g_hash_table_iter_init (&it, copilot->scan);
-			while (g_hash_table_iter_next (&it, &k, &v)) {
-				ScanState *o = v;
-
-				if (o->ev->len == 0 ||
-				    g_array_index (o->ev, ScanEv, o->ev->len - 1).sec <
-				    sec - FS_SCAN_WINDOW_S)
-					g_hash_table_iter_remove (&it);
-			}
-			if (g_hash_table_size (copilot->scan) >= FS_SCAN_MAX_SOURCES)
-				return NULL;
-		}
-		st = g_new0 (ScanState, 1);
-		st->ev = g_array_new (FALSE, FALSE, sizeof (ScanEv));
-		g_hash_table_insert (copilot->scan, g_strdup (src), st);
-	}
 
 	ev.sec = sec;
 	ev.unix_sec = now_unix;
@@ -2766,6 +3185,18 @@ inbound_scan_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 	ev.blocked = hit_is_blocked_marker (hit);
 	ev.proto = hit->protocol != NULL &&
 	           g_ascii_strcasecmp (hit->protocol, "UDP") == 0 ? "UDP" : "TCP";
+	ev.src = NULL;
+	if (st->members != NULL) {
+		gpointer stored = NULL;
+
+		if (g_hash_table_lookup_extended (st->members, src, &stored, NULL))
+			ev.src = stored;
+		else if (g_hash_table_size (st->members) < FS_SCAN_MAX_MEMBERS) {
+			stored = g_strdup (src);
+			g_hash_table_add (st->members, stored);
+			ev.src = stored;
+		}
+	}
 	g_array_append_val (st->ev, ev);
 	while (st->ev->len > 0 &&
 	       (st->ev->len > FS_SCAN_MAX_EVENTS ||
@@ -2774,28 +3205,39 @@ inbound_scan_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 
 	d60 = g_hash_table_new (g_direct_hash, g_direct_equal);
 	d600 = g_hash_table_new (g_direct_hash, g_direct_equal);
-	for (guint i = 0; i < st->ev->len; i++) {
-		const ScanEv *e = &g_array_index (st->ev, ScanEv, i);
+	{
+		GHashTable *srcs = g_hash_table_new (g_direct_hash,
+		                                     g_direct_equal);
 
-		g_hash_table_add (d600, GUINT_TO_POINTER (e->port));
-		if (e->sec >= sec - 60)
-			g_hash_table_add (d60, GUINT_TO_POINTER (e->port));
+		for (guint i = 0; i < st->ev->len; i++) {
+			const ScanEv *e = &g_array_index (st->ev, ScanEv, i);
+
+			g_hash_table_add (d600, GUINT_TO_POINTER (e->port));
+			if (e->sec >= sec - 60)
+				g_hash_table_add (d60, GUINT_TO_POINTER (e->port));
+			if (e->src != NULL)
+				g_hash_table_add (srcs, (gpointer) e->src);
+		}
+		n_members = g_hash_table_size (srcs);
+		g_hash_table_unref (srcs);
 	}
 	n60 = g_hash_table_size (d60);
 	n600 = g_hash_table_size (d600);
 	g_hash_table_unref (d60);
+	g_hash_table_unref (d600);
 
-	if (n60 < FS_SCAN_PORTS_60S && n600 < FS_SCAN_PORTS_10M) {
-		g_hash_table_unref (d600);
+	if (n60 < FS_SCAN_PORTS_60S && n600 < FS_SCAN_PORTS_10M)
 		return NULL;
-	}
-	what = g_strdup_printf ("scan|%s", src);
-	if (!report_take (copilot, what, now_unix)) {
+	/* An aggregate stands for SEVERAL addresses; one address alone is
+	 * already its own subject. */
+	if (aggregate && n_members < 2)
+		return NULL;
+
+	what = g_strdup_printf ("scan|%s", subject);
+	if (!report_or_update (copilot, what, now_unix)) {
 		g_free (what);
-		g_hash_table_unref (d600);
 		return NULL;
 	}
-	g_free (what);
 
 	/* The ports, in the order first seen; the ones that got through. */
 	ports_list = g_string_new (NULL);
@@ -2831,11 +3273,13 @@ inbound_scan_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 		g_hash_table_unref (listed);
 		g_hash_table_unref (ok);
 	}
-	g_hash_table_unref (d600);
 
 	{
+		gchar *who = aggregate
+			? g_strdup_printf (_("%s (%u addresses)"), subject, n_members)
+			: g_strdup (subject);
 		gchar *title = g_strdup_printf (
-			_("%s probed %u ports on this computer"), src, n600);
+			_("%s probed %u ports on this computer"), who, n600);
 
 		insight = create_insight (
 			FS_INSIGHT_INBOUND_SCAN,
@@ -2845,29 +3289,31 @@ inbound_scan_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 			allowed_list->len == 0
 			? g_strdup_printf (
 				_("%s tried %u different local ports (%s). Every attempt "
-				  "the log shows was refused."), src, n600,
+				  "the log shows was refused."), who, n600,
 				ports_list->str)
 			: g_strdup_printf (
 				_("%s tried %u different local ports (%s). Some got "
 				  "through to ports your policy allows: %s. Check that "
-				  "those services are meant to be reachable."), src,
+				  "those services are meant to be reachable."), who,
 				n600, ports_list->str, allowed_list->str),
-			NULL, src);
+			NULL, subject);
 		g_free (title);
+		g_free (who);
 	}
 	insight->why = g_strdup_printf (
 		_("%u distinct ports in the last 60 seconds (the limit is %d) and "
-		  "%u in 10 minutes (the limit is %d), from one source; %u of %u "
+		  "%u in 10 minutes (the limit is %d), from %s; %u of %u "
 		  "attempts refused%s."),
-		n60, FS_SCAN_PORTS_60S, n600, FS_SCAN_PORTS_10M, n_blocked,
-		st->ev->len, cls == ADDR_LAN ? _("; the source is on the local "
-		                                 "network") : "");
+		n60, FS_SCAN_PORTS_60S, n600, FS_SCAN_PORTS_10M,
+		aggregate ? _("one IPv6 /64 network") : _("one source"),
+		n_blocked, st->ev->len,
+		cls == ADDR_LAN ? _("; the source is on the local network") : "");
 	insight->benign = g_strdup (
 		_("Network scanners you run yourself, monitoring tools, printers "
 		  "and some games probe many ports too."));
-	insight->key = g_strdup_printf ("scan|%s", src);
-	insight->subject = g_strdup (src);
-	insight->events_filter = g_strdup (src);
+	insight->key = what;
+	insight->subject = g_strdup (subject);
+	insight->events_filter = g_strdup (aggregate ? src : subject);
 	insight->whatif_line = g_strdup_printf ("inbound tcp port %u from %s",
 	                                        port, src);
 	insight->withheld = g_strdup (
@@ -2883,7 +3329,7 @@ inbound_scan_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 
 			row->when = e->unix_sec;
 			row->inbound = TRUE;
-			row->remote = g_strdup (src);
+			row->remote = g_strdup (e->src != NULL ? e->src : subject);
 			row->port = e->port;
 			row->protocol = g_strdup (e->proto);
 			row->blocked = e->blocked;
@@ -2896,25 +3342,141 @@ inbound_scan_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 	return insight;
 }
 
+/* [ inbound_scan_check ]
+ * One source reaching many distinct local ports: 12 in 60 seconds, or
+ * 25 in 10 minutes.  Counts DISTINCT ports, never events, so a retry
+ * storm on one port is not a scan.  ICMP, loopback, multicast and
+ * link-local sources are ignored; a LAN source is Info.  A public IPv6
+ * source is also counted with the rest of its /64, so a scanner that
+ * rotates addresses inside it is still one scanner (*net_out gets that
+ * finding; it needs two or more addresses).  One new report per subject
+ * per hour; later events update the open finding.  The policy has no
+ * inbound deny, so this never changes the policy: its action is the
+ * health check. */
+static FsInsight *
+inbound_scan_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
+                    gint64 now_unix, FsInsight **net_out)
+{
+	const gchar *src;
+	guint port;
+	gint64 sec = now_us / G_USEC_PER_SEC;
+	AddrClass cls;
+	FsInsight *own;
+	gchar *net64;
+
+	*net_out = NULL;
+	if (!sentinel_hit_is_inbound (hit))
+		return NULL;
+	src = hit->source;
+	port = hit->port != NULL ? (guint) strtoul (hit->port, NULL, 10) : 0;
+	if (port == 0 || port > 65535)
+		return NULL;
+	cls = addr_class (src);
+	if (cls == ADDR_IGNORE || g_strcmp0 (src, hit->destination) == 0)
+		return NULL;
+
+	own = scan_judge (copilot, src, FALSE, src, hit, port, cls, sec,
+	                  now_unix);
+
+	net64 = cls == ADDR_PUBLIC ? v6_net64 (src) : NULL;
+	if (net64 != NULL) {
+		*net_out = scan_judge (copilot, net64, TRUE, src, hit, port, cls,
+		                       sec, now_unix);
+		g_free (net64);
+	}
+	return own;
+}
+
 static const struct { guint port; const gchar *name; } login_ports[] = {
 	{ 22, "SSH" }, { 3389, "RDP" }, { 5900, "VNC" }, { 23, "Telnet" },
 	{ 21, "FTP" }, { 445, "SMB" },
 };
 
+/* The login service a policy row names, by its service name. */
+static const gchar *
+login_service_name (const gchar *service)
+{
+	static const struct { const gchar *word; const gchar *name; } names[] = {
+		{ "ssh", "SSH" }, { "rdp", "RDP" }, { "remote desktop", "RDP" },
+		{ "ms-wbt-server", "RDP" }, { "vnc", "VNC" },
+		{ "telnet", "Telnet" }, { "ftp", "FTP" }, { "smb", "SMB" },
+		{ "microsoft-ds", "SMB" },
+	};
+	gchar *low;
+	const gchar *found = NULL;
+
+	if (service == NULL)
+		return NULL;
+	low = g_ascii_strdown (service, -1);
+	g_strstrip (low);
+	for (guint i = 0; i < G_N_ELEMENTS (names) && found == NULL; i++)
+		if (g_strcmp0 (low, names[i].word) == 0)
+			found = names[i].name;
+	g_free (low);
+	return found;
+}
+
+/* [ login_port_name ]
+ * The login service on a local port: the fixed list, then the policy's
+ * inbound service rows that name SSH, RDP, VNC, Telnet, FTP or SMB on
+ * a port of their own ("SSH, 2222, Anyone"; a range of up to 16 ports
+ * counts too).  NULL when the port is no login port. */
+static const gchar *
+login_port_name (FsCopilot *copilot, guint port)
+{
+	for (guint i = 0; i < G_N_ELEMENTS (login_ports); i++)
+		if (login_ports[i].port == port)
+			return login_ports[i].name;
+	if (copilot->policy == NULL)
+		return NULL;
+	for (gint k = FS_RULE_INBOUND_ALLOW_SERVICE;
+	     k <= FS_RULE_INBOUND_FORWARD; k++) {
+		GPtrArray *rows = copilot->policy->kinds[k];
+
+		for (guint i = 0; rows != NULL && i < rows->len; i++) {
+			const FsRule *r = g_ptr_array_index (rows, i);
+			const gchar *name = login_service_name (r->service);
+			const gchar *ptext = r->port;
+			gchar *end = NULL;
+			gulong lo, hi;
+
+			if (name == NULL || ptext == NULL)
+				continue;
+			lo = strtoul (ptext, &end, 10);
+			hi = lo;
+			if (end != NULL && *end == '-')
+				hi = strtoul (end + 1, &end, 10);
+			if (end == NULL || *end != '\0' || lo == 0 || hi < lo ||
+			    hi - lo >= 16)
+				continue;
+			if (port >= lo && port <= hi)
+				return name;
+		}
+	}
+	return NULL;
+}
+
 /* [ brute_force_check ]
- * Repeated attempts on a login service: one source, 10 or more inbound
- * TCP attempts in 5 minutes to 22, 3389, 5900, 23, 21 or 445.  The
- * What-If engine says whether the policy lets that source in: if it
- * does, this is Critical (Warning from the LAN); if every attempt is
- * refused by the policy, it is Info.  Never carries a rule. */
+ * Repeated connections to login services: one source, 10 or more
+ * inbound TCP connections in 5 minutes, counted across every login
+ * port together (9 on SSH and 9 on RDP are 18), on 22, 3389, 5900, 23,
+ * 21, 445 or a port the policy gives SSH, RDP, VNC, Telnet, FTP or
+ * SMB.  The log cannot tell a failed login from a good one, so the
+ * severity rests on the refused attempts:
+ *   none refused       "connections", Info; Warning from the internet
+ *                      when the policy lets the source in;
+ *   some refused       Critical from the internet when the policy lets
+ *                      the source in (Warning from the LAN); Warning
+ *                      when some were allowed and some refused;
+ *   all refused        Info.
+ * Never carries a rule. */
 static FsInsight *
 brute_force_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
                    gint64 now_unix)
 {
-	const gchar *src, *name = NULL;
+	const gchar *src, *name;
 	guint port;
 	gint64 sec = now_us / G_USEC_PER_SEC;
-	gchar *key;
 	GArray *st;
 	BruteEv ev;
 	AddrClass cls;
@@ -2922,48 +3484,66 @@ brute_force_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 	FsWhatIfVerdict verdict = FS_WHATIF_ERROR;
 	FsCopilotSeverity sev;
 	FsInsight *insight;
+	GString *services, *ports;
+	gchar *what;
+	gboolean none_refused;
 
 	if (!sentinel_hit_is_inbound (hit))
 		return NULL;
 	if (hit->protocol != NULL && g_ascii_strcasecmp (hit->protocol, "TCP"))
 		return NULL;
 	port = hit->port != NULL ? (guint) strtoul (hit->port, NULL, 10) : 0;
-	for (guint i = 0; i < G_N_ELEMENTS (login_ports); i++)
-		if (login_ports[i].port == port)
-			name = login_ports[i].name;
+	if (port == 0 || port > 65535)
+		return NULL;
+	name = login_port_name (copilot, port);
 	src = hit->source;
 	cls = addr_class (src);
 	if (name == NULL || cls == ADDR_IGNORE)
 		return NULL;
 
-	key = g_strdup_printf ("%s|%u", src, port);
-	st = g_hash_table_lookup (copilot->brute, key);
+	st = g_hash_table_lookup (copilot->brute, src);
 	if (st == NULL) {
 		if (g_hash_table_size (copilot->brute) >= FS_BRUTE_MAX_KEYS) {
 			GHashTableIter it;
-			gpointer k, v;
+			gpointer k, v, oldest_k = NULL;
+			gint64 oldest = G_MAXINT64;
 
+			/* Expired sources first, then the one heard from
+			 * longest ago: never deaf to a newcomer. */
 			g_hash_table_iter_init (&it, copilot->brute);
 			while (g_hash_table_iter_next (&it, &k, &v)) {
 				GArray *o = v;
 
 				if (o->len == 0 ||
-				    g_array_index (o, BruteEv, o->len - 1).sec <
+				    g_array_index (o, BruteEv, o->len - 1).sec <=
 				    sec - FS_BRUTE_WINDOW_S)
 					g_hash_table_iter_remove (&it);
 			}
-			if (g_hash_table_size (copilot->brute) >= FS_BRUTE_MAX_KEYS) {
-				g_free (key);
-				return NULL;
+			g_hash_table_iter_init (&it, copilot->brute);
+			while (g_hash_table_size (copilot->brute) >=
+			       FS_BRUTE_MAX_KEYS &&
+			       g_hash_table_iter_next (&it, &k, &v)) {
+				GArray *o = v;
+				gint64 last = g_array_index (o, BruteEv,
+				                             o->len - 1).sec;
+
+				if (last < oldest) {
+					oldest = last;
+					oldest_k = k;
+				}
 			}
+			if (g_hash_table_size (copilot->brute) >=
+			    FS_BRUTE_MAX_KEYS && oldest_k != NULL)
+				g_hash_table_remove (copilot->brute, oldest_k);
 		}
 		st = g_array_new (FALSE, FALSE, sizeof (BruteEv));
-		g_hash_table_insert (copilot->brute, g_strdup (key), st);
+		g_hash_table_insert (copilot->brute, g_strdup (src), st);
 	}
 
 	ev.sec = sec;
 	ev.unix_sec = now_unix;
 	ev.blocked = hit_is_blocked_marker (hit);
+	ev.port = port;
 	g_array_append_val (st, ev);
 	/* The window: attempts older than five minutes no longer count. */
 	while (st->len > 0 &&
@@ -2971,87 +3551,154 @@ brute_force_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 	        g_array_index (st, BruteEv, 0).sec <= sec - FS_BRUTE_WINDOW_S))
 		g_array_remove_index (st, 0);
 
-	if (st->len < FS_BRUTE_ATTEMPTS) {
-		g_free (key);
+	if (st->len < FS_BRUTE_ATTEMPTS)
+		return NULL;
+	what = g_strdup_printf ("brute|%s", src);
+	if (!report_or_update (copilot, what, now_unix)) {
+		g_free (what);
 		return NULL;
 	}
-	{
-		gchar *what = g_strdup_printf ("brute|%s", key);
-		gboolean take = report_take (copilot, what, now_unix);
 
-		g_free (what);
-		if (!take) {
-			g_free (key);
-			return NULL;
+	/* The services and ports tried, in the order first seen. */
+	services = g_string_new (NULL);
+	ports = g_string_new (NULL);
+	{
+		GHashTable *seen_port = g_hash_table_new (g_direct_hash,
+		                                          g_direct_equal);
+		GHashTable *seen_name = g_hash_table_new (g_str_hash,
+		                                          g_str_equal);
+
+		for (guint i = 0; i < st->len; i++) {
+			const BruteEv *e = &g_array_index (st, BruteEv, i);
+			const gchar *n = login_port_name (copilot, e->port);
+
+			if (e->blocked)
+				n_blocked++;
+			if (n == NULL)
+				n = name;
+			if (!g_hash_table_contains (seen_name, n)) {
+				g_hash_table_add (seen_name, (gpointer) n);
+				g_string_append_printf (services, "%s%s",
+				                        services->len ? _(" and ") : "",
+				                        n);
+			}
+			if (!g_hash_table_contains (seen_port,
+			                            GUINT_TO_POINTER (e->port))) {
+				g_hash_table_add (seen_port,
+				                  GUINT_TO_POINTER (e->port));
+				g_string_append_printf (ports, "%s%u",
+				                        ports->len ? ", " : "", e->port);
+			}
 		}
+		g_hash_table_unref (seen_port);
+		g_hash_table_unref (seen_name);
 	}
 
-	for (guint i = 0; i < st->len; i++)
-		if (g_array_index (st, BruteEv, i).blocked)
-			n_blocked++;
-
-	/* Would the policy let this source in? */
+	/* Would the policy let this source in, on any of those ports? */
 	if (copilot->policy != NULL) {
-		FsWhatIfContext *ctx = fs_whatif_context_new (
-			fs_whatif_native_platform (), copilot->policy, NULL);
-		FsWhatIfQuery *q = fs_whatif_query_new ();
-		FsWhatIfResult *r;
+		GHashTable *asked = g_hash_table_new (g_direct_hash,
+		                                      g_direct_equal);
 
-		ctx->firewall = FS_WHATIF_FW_RUNNING;
-		q->direction = FS_WHATIF_DIR_INBOUND;
-		q->protocol = FS_WHATIF_PROTO_TCP;
-		q->port = port;
-		q->host = g_strdup (src);
-		q->text = g_strdup_printf ("inbound tcp port %u from %s", port,
-		                           src);
-		r = fs_whatif_simulate (ctx, q);
-		verdict = r->verdict;
-		fs_whatif_result_free (r);
-		fs_whatif_query_free (q);
-		fs_whatif_context_free (ctx);
+		for (guint i = 0; i < st->len; i++) {
+			guint p = g_array_index (st, BruteEv, i).port;
+			FsWhatIfContext *ctx;
+			FsWhatIfQuery *q;
+			FsWhatIfResult *r;
+
+			if (g_hash_table_contains (asked, GUINT_TO_POINTER (p)))
+				continue;
+			g_hash_table_add (asked, GUINT_TO_POINTER (p));
+			ctx = fs_whatif_context_new (fs_whatif_native_platform (),
+			                             copilot->policy, NULL);
+			q = fs_whatif_query_new ();
+			ctx->firewall = FS_WHATIF_FW_RUNNING;
+			q->direction = FS_WHATIF_DIR_INBOUND;
+			q->protocol = FS_WHATIF_PROTO_TCP;
+			q->port = p;
+			q->host = g_strdup (src);
+			q->text = g_strdup_printf ("inbound tcp port %u from %s", p,
+			                           src);
+			r = fs_whatif_simulate (ctx, q);
+			/* ALLOWED on any port wins; BLOCKED needs every
+			 * port; an unclear answer stays unclear. */
+			if (r->verdict == FS_WHATIF_ALLOWED)
+				verdict = FS_WHATIF_ALLOWED;
+			else if (verdict == FS_WHATIF_ERROR ||
+			         (verdict == FS_WHATIF_BLOCKED &&
+			          r->verdict != FS_WHATIF_BLOCKED))
+				verdict = r->verdict;
+			fs_whatif_result_free (r);
+			fs_whatif_query_free (q);
+			fs_whatif_context_free (ctx);
+		}
+		g_hash_table_unref (asked);
 	}
 
-	sev = verdict == FS_WHATIF_ALLOWED
-	      ? (cls == ADDR_LAN ? FS_COPILOT_WARNING : FS_COPILOT_CRITICAL)
-	      : (n_blocked < st->len && cls != ADDR_LAN ? FS_COPILOT_WARNING
-	                                                : FS_COPILOT_INFO);
+	none_refused = n_blocked == 0;
+	if (none_refused)
+		sev = verdict == FS_WHATIF_ALLOWED && cls != ADDR_LAN
+		      ? FS_COPILOT_WARNING : FS_COPILOT_INFO;
+	else if (verdict == FS_WHATIF_ALLOWED)
+		sev = cls == ADDR_LAN ? FS_COPILOT_WARNING : FS_COPILOT_CRITICAL;
+	else
+		sev = n_blocked < st->len && cls != ADDR_LAN ? FS_COPILOT_WARNING
+		                                             : FS_COPILOT_INFO;
 	{
-		gchar *title = g_strdup_printf (
-			verdict == FS_WHATIF_ALLOWED
-			? _("Repeated %s attempts from %s, and the policy lets it in")
-			: _("Repeated %s attempts from %s"), name, src);
+		gchar *title;
 		gint64 span = g_array_index (st, BruteEv, st->len - 1).sec -
 		              g_array_index (st, BruteEv, 0).sec;
+
+		if (none_refused)
+			title = g_strdup_printf (
+				verdict == FS_WHATIF_ALLOWED
+				? _("Repeated %s connections from %s, which the policy "
+				    "lets in")
+				: _("Repeated %s connections from %s"),
+				services->str, src);
+		else
+			title = g_strdup_printf (
+				verdict == FS_WHATIF_ALLOWED
+				? _("Repeated %s attempts from %s, and the policy lets "
+				    "it in")
+				: _("Repeated %s attempts from %s"),
+				services->str, src);
 
 		insight = create_insight (
 			FS_INSIGHT_BRUTE_FORCE, sev, title,
 			g_strdup_printf (
-				_("%s made %u connection attempts to %s (port %u) in %"
-				  G_GINT64_FORMAT " seconds. %s %s"),
-				src, st->len, name, port, span,
+				_("%s made %u connections to %s (%s %s) in %"
+				  G_GINT64_FORMAT " seconds, %u of them refused. %s %s"),
+				src, st->len, services->str,
+				strchr (ports->str, ',') != NULL ? _("ports") : _("port"),
+				ports->str, span, n_blocked,
 				verdict == FS_WHATIF_ALLOWED
 				? _("What-If says your policy allows this source on this "
-				    "port, so the attempts can reach the login prompt.")
+				    "port, so the connections can reach the login prompt.")
 				: verdict == FS_WHATIF_BLOCKED
 				? _("What-If says your policy blocks this source on this "
 				    "port.")
 				: _("What-If could not say whether your policy lets this "
 				    "source in."),
-				_("Allowed attempts appear only when allowed-event "
-				  "logging is on.")),
+				none_refused
+				? _("The log cannot tell a failed login from a good one, "
+				    "so this may be your own use, such as a deploy or a "
+				    "sync job.")
+				: _("Allowed attempts appear only when allowed-event "
+				    "logging is on.")),
 			NULL, src);
 		g_free (title);
 	}
 	insight->why = g_strdup_printf (
-		_("%u attempts in 5 minutes on a login port (the limit is %d); %u "
-		  "refused; What-If for this source: %s%s."),
-		st->len, FS_BRUTE_ATTEMPTS, n_blocked,
+		_("%u connections in 5 minutes to login ports (%s; the limit is "
+		  "%d, counted across all of them); %u refused; What-If for this "
+		  "source: %s%s."),
+		st->len, ports->str, FS_BRUTE_ATTEMPTS, n_blocked,
 		fs_whatif_verdict_name (verdict),
 		cls == ADDR_LAN ? _("; the source is on the local network") : "");
 	insight->benign = g_strdup (
-		_("A saved password that is out of date, a backup or sync job, or "
-		  "a monitoring check can retry a login many times."));
-	insight->key = g_strdup_printf ("brute|%s", key);
+		_("A saved password that is out of date, a backup or sync job, a "
+		  "deploy tool or a monitoring check can connect many times."));
+	insight->key = what;
 	insight->subject = g_strdup (src);
 	insight->events_filter = g_strdup (src);
 	insight->whatif_line = g_strdup_printf ("inbound tcp port %u from %s",
@@ -3066,14 +3713,20 @@ brute_force_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 
 		for (guint i = first; i < st->len; i++) {
 			const BruteEv *e = &g_array_index (st, BruteEv, i);
-			FsEvidence *row = evidence_from_hit (hit, TRUE, e->unix_sec);
+			FsEvidence *row = g_new0 (FsEvidence, 1);
 
+			row->when = e->unix_sec;
+			row->inbound = TRUE;
+			row->remote = g_strdup (src);
+			row->port = e->port;
+			row->protocol = g_strdup ("TCP");
 			row->blocked = e->blocked;
 			insight_add_evidence (insight, row);
 		}
 	}
 	insight->count = st->len;
-	g_free (key);
+	g_string_free (services, TRUE);
+	g_string_free (ports, TRUE);
 	return insight;
 }
 

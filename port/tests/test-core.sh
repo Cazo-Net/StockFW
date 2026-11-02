@@ -1864,7 +1864,10 @@ static void test_sentinel_fanout (void)
 	hit.source    = "192.168.1.7";
 	hit.port      = "443";
 	hit.protocol  = "TCP";
-	hit.service   = "HTTPS";
+	/* A program's name, as a Windows log carries it: a port's service
+	 * name ("HTTPS") stands for every program on the port, and only
+	 * refused hosts count for it (test_copilot_review_fixes, F10). */
+	hit.service   = "scanner.exe";
 
 	/* 60 distinct hosts inside 60 seconds: a scan. */
 	for (i = 0; i < 60; i++) {
@@ -1884,7 +1887,7 @@ static void test_sentinel_fanout (void)
 			       "the fan-out is a Warning");
 			CHECK (fo->why != NULL && strstr (fo->why, "60 distinct") &&
 			       fo->application != NULL &&
-			       strstr (fo->title, "HTTPS") != NULL,
+			       strstr (fo->title, "scanner.exe") != NULL,
 			       "it names the program and the numbers");
 			CHECK (fo->rule_csv == NULL && !fo->auto_applicable,
 			       "fan-out carries no guessed rule to auto-apply");
@@ -2839,9 +2842,10 @@ static void test_brute_force (void)
 	CHECK (ins != NULL && ins->rule_csv == NULL && !ins->auto_applicable,
 	       "brute: even then, never auto-applicable");
 
-	/* From the LAN, allowed: a Warning. */
+	/* From the LAN, allowed, one of them refused: a Warning.  (With
+	 * none refused it is Info: test_copilot_review_fixes, F5.) */
 	for (i = 0; i < 10; i++)
-		inbound_feed (c, "192.168.1.60", 3389, FALSE, 400 + i * 2);
+		inbound_feed (c, "192.168.1.60", 3389, i == 0, 400 + i * 2);
 	{
 		GList *all = fs_copilot_get_insights (c);
 		gboolean lan_warn = FALSE;
@@ -2955,6 +2959,458 @@ static void test_insight_dedup (void)
 	       strstr (b->why, "Also flagged") != NULL,
 	       "dedup: two different checks on one host within the hour are "
 	       "Critical, and say so");
+	fs_copilot_free (c);
+}
+
+/* ==== 1.0.7 Copilot review fixes ===================================
+ * Each block pins one reviewed failure: the scenario that broke and
+ * what it must give now. */
+
+static void
+out_feed (FsCopilot *c, const gchar *app, const gchar *dst,
+          const gchar *port, const gchar *proto, const gchar *rule,
+          gint64 sec)
+{
+	FsHit hit;
+
+	memset (&hit, 0, sizeof hit);
+	hit.direction = (gchar *) "Out";
+	hit.source = (gchar *) "192.168.1.7";
+	hit.destination = (gchar *) dst;
+	hit.port = (gchar *) port;
+	hit.protocol = (gchar *) proto;
+	hit.service = (gchar *) app;
+	hit.rule = (gchar *) rule;
+	fs_copilot_feed_event_full (c, &hit,
+	                            (gint64) (980000 + sec) * G_USEC_PER_SEC,
+	                            1700400000 + sec);
+}
+
+static const FsInsight *
+find_by_subject (FsCopilot *c, FsInsightType type, const gchar *subject)
+{
+	GList *all = fs_copilot_get_insights (c);
+	const FsInsight *found = NULL;
+
+	for (GList *l = all; l != NULL && found == NULL; l = l->next) {
+		FsInsight *x = l->data;
+
+		if (x->type == type && g_strcmp0 (x->subject, subject) == 0)
+			found = x;
+	}
+	g_list_free (all);
+	return found;
+}
+
+static gchar *
+write_tmp (const gchar *dir, const gchar *name, const gchar *text)
+{
+	gchar *path = g_build_filename (dir, name, NULL);
+
+	g_file_set_contents (path, text, -1, NULL);
+	return path;
+}
+
+static void test_copilot_review_fixes (void)
+{
+	FsCopilot *c;
+	const FsInsight *ins;
+	gint i;
+
+	/* F1: the machine's own DNS servers and gateway.
+	 * A systemd-resolved system: resolv.conf names only the stub,
+	 * the upstream list names 1.1.1.1, the default route goes via a
+	 * public gateway 203.0.113.1. */
+	{
+		gchar *dir = g_dir_make_tmp ("fs-cp-net-XXXXXX", NULL);
+		gchar *rc = write_tmp (dir, "resolv.conf",
+		                       "nameserver 127.0.0.53\noptions edns0\n");
+		gchar *rd = write_tmp (dir, "resolved.conf",
+		                       "nameserver 1.1.1.1\n");
+		gchar *rt = write_tmp (dir, "route",
+			"Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\t"
+			"Mask\t\tMTU\tWindow\tIRTT\n"
+			"eth0\t00000000\t017100CB\t0003\t0\t0\t0\t00000000\t0\t0\t0\n");
+		gchar *old = g_strdup (g_getenv ("STOCKFW_RESOLV_CONF"));
+		FsInsight probe;
+
+		g_setenv ("STOCKFW_RESOLV_CONF", rc, TRUE);
+		g_setenv ("STOCKFW_RESOLVED_CONF", rd, TRUE);
+		g_setenv ("STOCKFW_ROUTE_FILE", rt, TRUE);
+		c = fs_copilot_new ();
+		for (i = 0; i < 8; i++)
+			out_feed (c, "systemd-resolved", "1.1.1.1", "53", "UDP", NULL,
+			          i * 30);
+		for (i = 0; i < 8; i++)
+			out_feed (c, "systemd-resolved", "1.1.1.1", "853", "TCP", NULL,
+			          i * 60);
+		CHECK (count_insights (c, FS_INSIGHT_BEACON) == 0,
+		       "F1: DNS (53) and DNS over TLS (853) to the upstream behind "
+		       "a 127.0.0.53 stub are never timed");
+
+		for (i = 0; i < 8; i++)
+			out_feed (c, "agent.exe", "1.1.1.1", "443", "TCP", NULL,
+			          1000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (ins != NULL && !ins->auto_applicable &&
+		       ins->withheld != NULL &&
+		       strstr (ins->withheld, "DNS servers or its default "
+		                              "gateway") != NULL &&
+		       !fs_insight_is_auto_safe (ins),
+		       "F1: a resolver on any other port is reported, never "
+		       "auto-blocked, and the choke point refuses it too");
+		fs_copilot_clear_insights (c);
+
+		for (i = 0; i < 8; i++)
+			out_feed (c, "agent.exe", "203.0.113.1", "8443", "TCP", NULL,
+			          2000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (ins != NULL && !ins->auto_applicable &&
+		       !fs_insight_is_auto_safe (ins),
+		       "F1: the default gateway, though public, is never "
+		       "auto-blocked");
+
+		memset (&probe, 0, sizeof probe);
+		probe.rule_kind = FS_RULE_OUTBOUND_DENY_TO;
+		probe.rule_csv = (gchar *) "1.1.1.1, Sentinel: periodic beacon";
+		CHECK (!fs_insight_is_auto_safe (&probe),
+		       "F1: fs_insight_is_auto_safe refuses a deny to a resolver");
+		fs_copilot_free (c);
+		CHECK (fs_insight_is_auto_safe (&probe),
+		       "F1: and forgets them with the copilot that read them");
+
+		if (old != NULL)
+			g_setenv ("STOCKFW_RESOLV_CONF", old, TRUE);
+		else
+			g_unsetenv ("STOCKFW_RESOLV_CONF");
+		g_unsetenv ("STOCKFW_RESOLVED_CONF");
+		g_unsetenv ("STOCKFW_ROUTE_FILE");
+		g_remove (rc);
+		g_remove (rd);
+		g_remove (rt);
+		g_rmdir (dir);
+		g_free (rc);
+		g_free (rd);
+		g_free (rt);
+		g_free (dir);
+		g_free (old);
+	}
+
+	/* The stub alone, its upstream unreadable: DNS is still timed (a
+	 * DNS tunnel is a real thing) but never blocked automatically. */
+	c = fs_copilot_new ();
+	fs_copilot_set_resolvers (c, "nameserver 127.0.0.53\n");
+	for (i = 0; i < 8; i++)
+		out_feed (c, "domain", "1.1.1.1", "53", "UDP", NULL, i * 30);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (ins != NULL && !ins->auto_applicable &&
+	       strstr (ins->withheld, "upstream servers could not be read")
+	       != NULL,
+	       "F1: behind a stub with an unknown upstream, DNS is reported, "
+	       "never auto-blocked");
+	fs_copilot_free (c);
+
+	/* A configured resolver on 853. */
+	c = fs_copilot_new ();
+	fs_copilot_set_resolvers (c, "nameserver 8.8.8.8\n");
+	for (i = 0; i < 8; i++)
+		out_feed (c, "domain-s", "8.8.8.8", "853", "TCP", NULL, i * 60);
+	CHECK (count_insights (c, FS_INSIGHT_BEACON) == 0,
+	       "F1: DNS over TLS to a configured resolver is never timed");
+	fs_copilot_free (c);
+
+	/* F2: a host another program uses all the time. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 100; i++)
+		out_feed (c, "browser.exe", "93.184.216.34", "443", "TCP", NULL,
+		          i * 7);
+	for (i = 0; i < 8; i++)
+		out_feed (c, "updater.exe", "93.184.216.34", "443", "TCP", NULL,
+		          5000 + i * 60);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (ins != NULL && !ins->auto_applicable && ins->withheld != NULL &&
+	       strstr (ins->withheld, "browser.exe has 100 recorded") != NULL,
+	       "F2: a destination another program has a history with is never "
+	       "auto-blocked (the block would hit every program)");
+	fs_copilot_free (c);
+	c = fs_copilot_new ();
+	for (i = 0; i < 8; i++)
+		out_feed (c, "updater.exe", "93.184.216.34", "443", "TCP", NULL,
+		          5000 + i * 60);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (ins != NULL && ins->auto_applicable,
+	       "F2 control: the same run to a stranger is still auto-blocked");
+	fs_copilot_free (c);
+
+	/* F3: a 300-port scan is one finding, and small findings never
+	 * push it out of the list. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 300; i++)
+		inbound_feed (c, "45.33.32.156", 30000 + i, TRUE, i);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1 &&
+	       count_insights (c, FS_INSIGHT_UNUSUAL_PORT) == 0 &&
+	       total_insights (c) == 1,
+	       "F3: 300 refused probes leave exactly one scan finding and no "
+	       "\"used port N\" rows (got %u)", total_insights (c));
+	{
+		/* Probes the policy let through are the stranger's ports
+		 * too. */
+		FsCopilot *c2 = fs_copilot_new ();
+
+		for (i = 0; i < 40; i++)
+			inbound_feed (c2, "45.33.32.158", 40000 + i, FALSE, i);
+		CHECK (count_insights (c2, FS_INSIGHT_UNUSUAL_PORT) == 0 &&
+		       count_insights (c2, FS_INSIGHT_INBOUND_SCAN) == 1,
+		       "F3: allowed inbound probes are no \"used port N\" rows "
+		       "either");
+		fs_copilot_free (c2);
+	}
+	for (i = 0; i < 10; i++)
+		out_feed (c, "tool.exe", "203.0.113.80", "443", "TCP", NULL,
+		          400 + i);
+	for (i = 0; i < 260; i++) {
+		gchar p[8];
+
+		g_snprintf (p, sizeof p, "%d", 10000 + i);
+		out_feed (c, "tool.exe", "203.0.113.80", p, "TCP", NULL, 420 + i);
+	}
+	CHECK (total_insights (c) == 200 &&
+	       count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1,
+	       "F3: 260 new-port findings fill the list, and the scan finding "
+	       "is still on it");
+	fs_copilot_free (c);
+
+	/* F4: a full source table, then a real scan. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 1024; i++) {
+		gchar src[32];
+
+		g_snprintf (src, sizeof src, "198.51.%d.%d", i / 250, i % 250 + 1);
+		inbound_feed (c, src, 23, TRUE, i / 4);
+	}
+	for (i = 0; i < 40; i++)
+		inbound_feed (c, "45.33.32.156", 2000 + i, TRUE, 260 + i);
+	ins = find_by_subject (c, FS_INSIGHT_INBOUND_SCAN, "45.33.32.156");
+	CHECK (ins != NULL,
+	       "F4: with 1024 sources in the window, a new scanner is still "
+	       "seen");
+	{
+		const FsAppProfile *p = fs_copilot_get_profile (c, "Unknown");
+
+		CHECK (p != NULL && !p->baseline_partial &&
+		       g_hash_table_size (p->common_destinations) == 0,
+		       "F4: refused probes teach the profile no destinations, so "
+		       "they cannot fill it and silence it");
+	}
+	/* ... and the login table. */
+	for (i = 0; i < 1024; i++) {
+		gchar src[32];
+
+		g_snprintf (src, sizeof src, "198.18.%d.%d", i / 250, i % 250 + 1);
+		inbound_feed (c, src, 22, TRUE, 300 + i / 8);
+	}
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "45.33.32.157", 22, TRUE, 440 + i);
+	CHECK (find_by_subject (c, FS_INSIGHT_BRUTE_FORCE, "45.33.32.157")
+	       != NULL,
+	       "F4: with the login table full, a new source is still counted");
+	fs_copilot_free (c);
+
+	/* A scanner rotating its address inside one IPv6 /64. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 40; i++) {
+		gchar src[64];
+
+		g_snprintf (src, sizeof src, "2001:db8:1:2::%x", 0x100 + i);
+		inbound_feed (c, src, 1000 + i, TRUE, i);
+	}
+	ins = find_insight (c, FS_INSIGHT_INBOUND_SCAN);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1 && ins != NULL &&
+	       g_strcmp0 (ins->subject, "2001:db8:1:2::/64") == 0 &&
+	       strstr (ins->title, "40 addresses") != NULL &&
+	       strstr (ins->title, "probed 40 ports") != NULL,
+	       "F4: 40 addresses of one /64 are one scanner (\"%s\")",
+	       ins != NULL ? ins->title : "");
+	CHECK (ins != NULL && ins->evidence->len == 12 &&
+	       g_strcmp0 (((FsEvidence *) g_ptr_array_index (
+	                   ins->evidence, 11))->remote,
+	                  "2001:db8:1:2::127") == 0,
+	       "F4: its evidence names each address the log showed");
+	fs_copilot_free (c);
+
+	/* F5: an admin's own deploy over an allowed SSH port. */
+	{
+		FsPolicy *policy = fs_policy_new ();
+		FsRule *r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                              "SSH, 22, Anyone");
+
+		fs_policy_add (policy, r);
+		fs_rule_free (r);
+		c = fs_copilot_new ();
+		fs_copilot_set_policy (c, policy);
+		for (i = 0; i < 12; i++)
+			inbound_feed (c, "203.0.113.77", 22, FALSE, i * 10);
+		ins = find_insight (c, FS_INSIGHT_BRUTE_FORCE);
+		CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING &&
+		       strstr (ins->title, "connections") != NULL &&
+		       strstr (ins->title, "attempts") == NULL &&
+		       strstr (ins->description, "cannot tell a failed login")
+		       != NULL,
+		       "F5: allowed connections only are a Warning about "
+		       "\"connections\", not Critical \"attempts\"");
+		/* F8: the open finding follows the run. */
+		CHECK (ins != NULL && ins->count == 12 &&
+		       strstr (ins->description, "made 12 connections") != NULL,
+		       "F8: the 11th and 12th connection update the finding");
+		fs_copilot_free (c);
+
+		/* F6: SSH on a port the policy gives it. */
+		r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                      "SSH, 2222, Anyone");
+		fs_policy_add (policy, r);
+		fs_rule_free (r);
+		c = fs_copilot_new ();
+		fs_copilot_set_policy (c, policy);
+		for (i = 0; i < 30; i++)
+			inbound_feed (c, "45.33.32.157", 2222, TRUE, i * 5);
+		ins = find_insight (c, FS_INSIGHT_BRUTE_FORCE);
+		CHECK (ins != NULL && strstr (ins->title, "SSH") != NULL,
+		       "F6: SSH on 2222, as the policy names it, is a login port");
+		fs_copilot_free (c);
+		fs_policy_free (policy);
+	}
+	c = fs_copilot_new ();
+	for (i = 0; i < 30; i++)
+		inbound_feed (c, "45.33.32.157", 2222, TRUE, i * 5);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 0,
+	       "F6 control: without that policy row 2222 is no login port");
+	fs_copilot_free (c);
+
+	/* F6: split across services. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 9; i++) {
+		inbound_feed (c, "45.33.32.156", 22, TRUE, i * 10);
+		inbound_feed (c, "45.33.32.156", 3389, TRUE, i * 10 + 1);
+	}
+	ins = find_insight (c, FS_INSIGHT_BRUTE_FORCE);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 1 && ins != NULL &&
+	       strstr (ins->title, "SSH and RDP") != NULL && ins->count == 18,
+	       "F6: 9 on SSH and 9 on RDP from one host are 18 attempts");
+	fs_copilot_free (c);
+
+	/* F8: a 40-port scan reads 40, not the 12 it was first seen at. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 40; i++)
+		inbound_feed (c, "45.33.32.156", 2000 + i, TRUE, i);
+	ins = find_insight (c, FS_INSIGHT_INBOUND_SCAN);
+	CHECK (ins != NULL && strstr (ins->title, "probed 40 ports") != NULL &&
+	       ins->count == 40 && ins->evidence->len == 12 &&
+	       ((FsEvidence *) g_ptr_array_index (ins->evidence, 11))->port ==
+	       2039,
+	       "F8: the open scan finding follows the scan (\"%s\")",
+	       ins != NULL ? ins->title : "");
+	fs_copilot_free (c);
+
+	/* F7: the browser memory survives a restart. */
+	{
+		gchar *dir = g_dir_make_tmp ("fs-cp-nd-XXXXXX", NULL);
+		gchar *path = g_build_filename (dir, "behavior.csv", NULL);
+		gchar *text = NULL;
+		gint64 t1 = 8 * 86400;
+		gchar d[32];
+
+		c = fs_copilot_new ();
+		for (i = 0; i < 60; i++)
+			out_feed (c, "chrome.exe", "142.250.1.1", "443", "TCP", NULL, i);
+		for (i = 0; i < 30; i++) {
+			g_snprintf (d, sizeof d, "104.16.%d.1", i);
+			out_feed (c, "chrome.exe", d, "443", "TCP", NULL,
+			          t1 + i * 3600);
+		}
+		fs_copilot_clear_insights (c);
+		CHECK (fs_copilot_baseline_save (c, path, NULL),
+		       "F7: the baseline saves");
+		fs_copilot_free (c);
+		g_file_get_contents (path, &text, NULL, NULL);
+		CHECK (text != NULL && strstr (text, "chrome.exe,newdest,") != NULL,
+		       "F7: behavior.csv keeps the first contacts");
+		g_free (text);
+
+		c = fs_copilot_new ();
+		fs_copilot_baseline_load (c, path, NULL);
+		out_feed (c, "chrome.exe", "104.17.0.2", "443", "TCP", NULL,
+		          t1 + 32 * 3600);
+		CHECK (count_insights (c, FS_INSIGHT_UNUSUAL_DESTINATION) == 0,
+		       "F7: after a restart the browser is still browser-like");
+		fs_copilot_free (c);
+		g_remove (path);
+		g_rmdir (dir);
+		g_free (path);
+		g_free (dir);
+	}
+
+	/* F9: every evidence row is its own contact. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 8; i++)
+		out_feed (c, i < 7 ? "agent.exe" : "agent.exe [BLOCKED]",
+		          "203.0.113.70", "8443", "TCP",
+		          i < 7 ? NULL : "Threat intel: Spamhaus DROP", i * 60);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	{
+		gboolean rows_ok = ins != NULL && ins->evidence->len == 8;
+
+		for (i = 0; rows_ok && i < 8; i++) {
+			const FsEvidence *e = g_ptr_array_index (ins->evidence, i);
+
+			rows_ok = (i < 7) ? (!e->blocked && e->rule == NULL)
+			                  : (e->blocked &&
+			                     g_strcmp0 (e->rule, "Threat intel: "
+			                                "Spamhaus DROP") == 0);
+		}
+		CHECK (rows_ok,
+		       "F9: seven allowed contacts stay allowed in the evidence; "
+		       "only the eighth shows the block list");
+	}
+	fs_copilot_free (c);
+	c = fs_copilot_new ();
+	for (i = 0; i < 6; i++) {
+		out_feed (c, "agent.exe", "203.0.113.71", "4500", "TCP", NULL,
+		          i * 60);
+		out_feed (c, "agent.exe", "203.0.113.71", "4500", "UDP", NULL,
+		          i * 60 + 30);
+	}
+	CHECK (count_insights (c, FS_INSIGHT_BEACON) == 2,
+	       "F9: TCP and UDP to one port are two series, not one at 30 s");
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (ins != NULL &&
+	       g_strcmp0 (((FsEvidence *) g_ptr_array_index (ins->evidence, 0))
+	                  ->protocol,
+	                  ((FsEvidence *) g_ptr_array_index (ins->evidence, 5))
+	                  ->protocol) == 0,
+	       "F9: a series' rows share one protocol");
+	fs_copilot_free (c);
+
+	/* F10: a port's service name is every program on that port. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 70; i++) {
+		gchar d[32];
+
+		g_snprintf (d, sizeof d, "151.101.%d.%d", i / 50, i % 50 + 1);
+		out_feed (c, "https", d, "443", "TCP", NULL, i / 2);
+	}
+	CHECK (count_insights (c, FS_INSIGHT_FANOUT) == 0,
+	       "F10: one busy page on \"https\" (70 hosts, none refused) is "
+	       "no fan-out");
+	for (i = 0; i < 10; i++) {
+		gchar d[32];
+
+		g_snprintf (d, sizeof d, "198.51.100.%d", i + 1);
+		out_feed (c, "https [BLOCKED]", d, "443", "TCP", NULL, 40 + i);
+	}
+	ins = find_insight (c, FS_INSIGHT_FANOUT);
+	CHECK (ins != NULL && strstr (ins->why, "only refused hosts count")
+	       != NULL,
+	       "F10: ten refused hosts on \"https\" still are, and say why");
 	fs_copilot_free (c);
 }
 
@@ -8953,6 +9409,9 @@ int main (void)
 #else
 	g_setenv ("XDG_CONFIG_HOME", g_get_tmp_dir (), TRUE);
 #endif
+	/* The Copilot reads this computer's DNS servers and gateways; the
+	 * tests use none (the review-fix test sets its own). */
+	g_setenv ("STOCKFW_RESOLV_CONF", "/dev/null", TRUE);
 
 	test_ports ();
 	test_hosts ();
@@ -8983,6 +9442,7 @@ int main (void)
 	test_brute_force ();
 	test_threat_intel ();
 	test_insight_dedup ();
+	test_copilot_review_fixes ();
 	test_behavior_persistence ();
 	test_behavior_partial ();
 	test_behavior_app_cap ();
