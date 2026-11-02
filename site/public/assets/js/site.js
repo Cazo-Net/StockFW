@@ -8,6 +8,21 @@
 	var root = document.documentElement;
 	var ROOT = root.getAttribute("data-root") || "./";
 
+	/* ------------------------------------------- start at the top */
+	/* Every page opens at its top.  Browsers, and some embedded viewers,
+	 * put a page back at its last scroll position on reload, on Back and
+	 * when a frame is reloaded, which left a page opened from the docs
+	 * sidebar half-way down.  A link to a section (#anchor) still lands
+	 * on that section, and a page brought back live from the
+	 * back-forward cache keeps where the reader was. */
+	if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+	function startAtTop(e) {
+		if (e && e.persisted) return;
+		if (!location.hash) window.scrollTo(0, 0);
+	}
+	startAtTop();
+	window.addEventListener("pageshow", startAtTop);
+
 	/* ------------------------------------------------------- menus */
 	function toggler(btnId, panelId) {
 		var btn = document.getElementById(btnId);
