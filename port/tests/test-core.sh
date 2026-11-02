@@ -51,6 +51,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-i18n.h"
 #include "core/fs-intelset.h"
 #include "core/fs-intelwin.h"
+#include "core/fs-winstore.h"
 #include "core/fs-intel.h"
 #include "core/fs-hostnet.h"
 #include <stdlib.h>
@@ -8605,6 +8606,297 @@ iw_rule (const FsIntelWinPlan *plan, const gchar *name)
 	return NULL;
 }
 
+/* ---- the Windows store's security descriptors (fs-winstore, 11.5) --- */
+
+/* A reader for the SDDL subset the store uses and Windows shows for a
+ * folder (owner "O:", "D:" with "P", "(type;flags;rights;;;sid)"), as
+ * the judge's input.  `trusted' names the SIDs taken as trusted, as
+ * fs-winstore.c does: SY, BA, and the user when it is trusted. */
+typedef struct
+{
+	gchar         *owner;
+	gboolean       has_dacl;
+	gboolean       protected_dacl;
+	FsWinstoreAce  aces[16];
+	gchar         *sids[16];
+	guint          n;
+} SddlRead;
+
+static guint32
+sddl_rights (const gchar *r)
+{
+	if (g_str_has_prefix (r, "0x"))
+		return (guint32) g_ascii_strtoull (r + 2, NULL, 16);
+	if (strcmp (r, "FA") == 0)
+		return 0x1f01ffu;   /* FILE_ALL_ACCESS */
+	if (strcmp (r, "GA") == 0)
+		return 0x10000000u;
+	if (strcmp (r, "GR") == 0)
+		return 0x80000000u;
+	if (strcmp (r, "GW") == 0)
+		return 0x40000000u;
+	return 0xffffffffu;   /* unknown: make it fail loudly */
+}
+
+static guint8
+sddl_flags (const gchar *f)
+{
+	guint8 out = 0;
+
+	for (; f[0] != '\0' && f[1] != '\0'; f += 2) {
+		if (strncmp (f, "OI", 2) == 0)
+			out |= 0x01;
+		else if (strncmp (f, "CI", 2) == 0)
+			out |= 0x02;
+		else if (strncmp (f, "IO", 2) == 0)
+			out |= 0x08;
+		else if (strncmp (f, "ID", 2) == 0)
+			out |= 0x10;
+	}
+	return out;
+}
+
+static gboolean
+sddl_read (const gchar *sddl, SddlRead *out)
+{
+	const gchar *p = sddl;
+
+	memset (out, 0, sizeof *out);
+	if (g_str_has_prefix (p, "O:")) {
+		const gchar *d = strstr (p, "D:");
+
+		if (d == NULL)
+			d = p + strlen (p);   /* an owner and no access list */
+		out->owner = g_strndup (p + 2, (gsize) (d - p - 2));
+		p = d;
+	}
+	if (!g_str_has_prefix (p, "D:"))
+		return TRUE;
+	out->has_dacl = TRUE;
+	p += 2;
+	while (*p != '\0' && *p != '(') {
+		if (*p == 'P')
+			out->protected_dacl = TRUE;
+		p++;
+	}
+	while (*p == '(' && out->n < G_N_ELEMENTS (out->aces)) {
+		const gchar *end = strchr (p, ')');
+		gchar *body, **f;
+
+		if (end == NULL)
+			return FALSE;
+		body = g_strndup (p + 1, (gsize) (end - p - 1));
+		f = g_strsplit (body, ";", -1);
+		if (g_strv_length (f) != 6) {
+			g_strfreev (f);
+			g_free (body);
+			return FALSE;
+		}
+		out->aces[out->n].type =
+			strcmp (f[0], "A") == 0 ? FS_WINSTORE_ACE_ALLOWED :
+			strcmp (f[0], "D") == 0 ? FS_WINSTORE_ACE_DENIED :
+			strcmp (f[0], "AU") == 0 ? FS_WINSTORE_ACE_AUDIT :
+			strcmp (f[0], "OA") == 0 ? 0x05 : 0xff;
+		out->aces[out->n].flags = sddl_flags (f[1]);
+		out->aces[out->n].mask = sddl_rights (f[2]);
+		out->sids[out->n] = g_strdup (f[5]);
+		out->n++;
+		g_strfreev (f);
+		g_free (body);
+		p = end + 1;
+	}
+	return *p == '\0';
+}
+
+static void
+sddl_trust (SddlRead *r, const gchar *user)
+{
+	for (guint i = 0; i < r->n; i++)
+		r->aces[i].trusted = strcmp (r->sids[i], "SY") == 0 ||
+		                     strcmp (r->sids[i], "BA") == 0 ||
+		                     (user != NULL &&
+		                      strcmp (r->sids[i], user) == 0);
+}
+
+static gboolean
+sddl_owner_trusted (const SddlRead *r, const gchar *creator,
+                    const gchar *user)
+{
+	/* No "O:": Windows makes the creating account the owner. */
+	const gchar *o = r->owner != NULL ? r->owner : creator;
+
+	return strcmp (o, "SY") == 0 || strcmp (o, "BA") == 0 ||
+	       (user != NULL && strcmp (o, user) == 0);
+}
+
+static void
+sddl_clear (SddlRead *r)
+{
+	g_free (r->owner);
+	for (guint i = 0; i < r->n; i++)
+		g_free (r->sids[i]);
+}
+
+/* Judges `sddl' as a folder created by `creator', with `user' trusted
+ * (NULL: the default store, where only SY and BA are). */
+static FsWinstoreFault
+judge_sddl (const gchar *sddl, const gchar *creator, const gchar *user,
+            gboolean *readable)
+{
+	SddlRead r;
+	FsWinstoreFault f;
+
+	if (!sddl_read (sddl, &r)) {
+		sddl_clear (&r);
+		return (FsWinstoreFault) -1;
+	}
+	sddl_trust (&r, user);
+	f = fs_winstore_judge (sddl_owner_trusted (&r, creator, user),
+	                       r.has_dacl, r.aces, r.n, readable);
+	sddl_clear (&r);
+	return f;
+}
+
+#define WS_ADMIN_USER "S-1-5-21-111-222-333-500"   /* runneradmin, say */
+
+static void
+test_winstore_sddl (void)
+{
+	gchar *parent = fs_winstore_sddl (FS_WINSTORE_DIR_PARENT, TRUE, NULL);
+	gchar *store = fs_winstore_sddl (FS_WINSTORE_DIR_STORE, TRUE, NULL);
+	gchar *over = fs_winstore_sddl (FS_WINSTORE_DIR_STORE, TRUE,
+	                                WS_ADMIN_USER);
+	gchar *over_plain = fs_winstore_sddl (FS_WINSTORE_DIR_STORE, FALSE,
+	                                      WS_ADMIN_USER);
+	gchar *old_parent = g_strdup ("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                              "(A;OICI;0x1200a9;;;BU)");
+	gboolean readable = TRUE;
+	SddlRead r;
+
+	/* What StockFW creates, exactly. */
+	CHECK (strcmp (parent, "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                       "(A;OICI;0x1200a9;;;BU)") == 0,
+	       "winstore: %%ProgramData%%\\StockFW is created owned by "
+	       "Administrators, protected, SYSTEM and Administrators full, "
+	       "Users read (%s)", parent);
+	CHECK (strcmp (store, "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)") == 0,
+	       "winstore: intel is created owned by Administrators, "
+	       "protected, SYSTEM and Administrators only (%s)", store);
+	CHECK (strcmp (over, "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                     "(A;OICI;FA;;;" WS_ADMIN_USER ")") == 0 &&
+	       strcmp (over_plain, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                           "(A;OICI;FA;;;" WS_ADMIN_USER ")") == 0,
+	       "winstore: an override adds the current user; it names "
+	       "Administrators as owner only when elevated (%s | %s)", over,
+	       over_plain);
+	CHECK (sddl_read (parent, &r) && r.protected_dacl && r.owner != NULL &&
+	       strcmp (r.owner, "BA") == 0,
+	       "winstore: the reader sees the owner and the protection");
+	sddl_clear (&r);
+
+	/* Each passes the check it will meet, created by an elevated
+	 * administrator account that is neither SYSTEM nor
+	 * Administrators: the CI's runneradmin (round 3 on Windows). */
+	CHECK (judge_sddl (parent, WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_SAFE && readable,
+	       "winstore: StockFW's own %%ProgramData%%\\StockFW passes the "
+	       "default store's check (Users may read it)");
+	CHECK (judge_sddl (store, WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_SAFE && !readable,
+	       "winstore: StockFW's own intel passes, and nobody else may "
+	       "read it (so it is never tightened again)");
+	CHECK (judge_sddl (over, WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_SAFE &&
+	       judge_sddl (over_plain, WS_ADMIN_USER, WS_ADMIN_USER,
+	                   &readable) == FS_WINSTORE_SAFE,
+	       "winstore: an override passes the override's check, elevated "
+	       "or not");
+
+	/* The fault the CI found: without "O:BA" the creating account owns
+	 * the folder, and the default store trusts no user. */
+	CHECK (judge_sddl (old_parent, WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_OWNER,
+	       "winstore: a folder created without an owner belongs to the "
+	       "account that made it, and the default store refuses it "
+	       "(the CI failure: owned by runneradmin)");
+	CHECK (judge_sddl (old_parent, "SY", NULL, &readable) ==
+	       FS_WINSTORE_SAFE,
+	       "winstore: ... which only a creator that is SYSTEM avoided");
+
+	/* A folder another account made first is refused as foreign, even
+	 * with StockFW's access list on it. */
+	CHECK (judge_sddl ("O:BUD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_OWNER &&
+	       judge_sddl ("O:S-1-5-21-111-222-333-1001D:P(A;OICI;FA;;;SY)",
+	                   WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_FAULT_OWNER,
+	       "winstore: a folder owned by Users, or by another user under "
+	       "an override, is refused as foreign");
+
+	/* A folder that inherits a drive root's default access list (the
+	 * runner's D:\a\_temp\...): Users may add folders (CI;AD) and,
+	 * through the inherit-only entry for files, add files below;
+	 * CREATOR OWNER applies to what is created inside only. */
+	CHECK (judge_sddl ("O:" WS_ADMIN_USER "D:AI(A;OICIID;FA;;;SY)"
+	                   "(A;OICIID;FA;;;BA)(A;OICIID;0x1200a9;;;BU)"
+	                   "(A;CIID;0x4;;;BU)(A;CIIOID;0x2;;;BU)"
+	                   "(A;OICIIOID;GA;;;CO)",
+	                   WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE,
+	       "winstore: a temporary folder under a drive root (Users may "
+	       "add folders to it) is refused as an override's parent (the "
+	       "CI failure for the override and the engine checks)");
+	CHECK (judge_sddl ("O:" WS_ADMIN_USER "D:AI(A;OICIID;FA;;;SY)"
+	                   "(A;OICIID;FA;;;BA)(A;OICIID;0x1200a9;;;BU)"
+	                   "(A;CIIOID;0x2;;;BU)(A;OICIIOID;GA;;;CO)",
+	                   WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_SAFE && readable,
+	       "winstore: inherit-only entries (CREATOR OWNER, Users' "
+	       "add-file for what is inside) do not count against the "
+	       "folder itself; Users' read makes it readable");
+
+	/* The rest of the judge. */
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(D;;FA;;;WD)(AU;SA;FA;;;WD)",
+	                   WS_ADMIN_USER, NULL, &readable) == FS_WINSTORE_SAFE &&
+	       !readable,
+	       "winstore: deny and audit entries are not grants");
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;0x40000;;;WD)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE &&
+	       judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;0x40;;;AU)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE &&
+	       judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;GW;;;BU)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE,
+	       "winstore: write-DAC for Everyone, delete-child for "
+	       "Authenticated Users, generic write for Users: each refused");
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;FA;;;" WS_ADMIN_USER ")",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE,
+	       "winstore: the current user is trusted only under an "
+	       "override, never in the default store");
+	CHECK (judge_sddl ("O:BA", WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_NO_DACL,
+	       "winstore: no access list is refused");
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(OA;;FA;;;WD)", WS_ADMIN_USER,
+	                   NULL, &readable) == FS_WINSTORE_FAULT_UNKNOWN_ACE,
+	       "winstore: an entry the judge cannot read (an object ACE) is "
+	       "refused");
+	CHECK (fs_winstore_fault_text (FS_WINSTORE_SAFE) == NULL &&
+	       fs_winstore_fault_text (FS_WINSTORE_FAULT_OWNER) != NULL &&
+	       strstr (fs_winstore_fault_text (FS_WINSTORE_FAULT_CHANGE),
+	               "may change it") != NULL,
+	       "winstore: every fault has its sentence");
+
+	g_free (parent);
+	g_free (store);
+	g_free (over);
+	g_free (over_plain);
+	g_free (old_parent);
+}
+
 static void
 test_intelwin_gen (void)
 {
@@ -9568,6 +9860,7 @@ int main (void)
 	test_intelwin_force ();
 	test_intelwin_review ();
 	test_hostnet_onlink ();
+	test_winstore_sddl ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

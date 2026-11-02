@@ -2228,8 +2228,13 @@ apply repairs it; a foreign rule in the group reads PARTIAL; every
 profile off reads INACTIVE with a reason (the profiles are put back);
 clear leaves nothing in the group and every rule outside it exactly as
 before, including a decoy that has one of our rule names in another
-group; the store directory gets a protected DACL naming only SYSTEM,
-Administrators and the current user. It prints SKIP when the shell is
+group (checked for the decoy alone, the clear alone and the whole run;
+a failure prints the rules that differ, and `full-suite.sh` prints
+every indented detail line of this test); the store directory gets a
+protected DACL naming only SYSTEM, Administrators and the current user,
+and Administrators as owner; an override whose parent Users may change
+is refused and not created (its temporary parents are made with a
+protected DACL, as an override's parent must be). It prints SKIP when the shell is
 not elevated, the firewall service is stopped, or the computer already
 holds StockFW blocklist rules (they are the user's).
 
@@ -2304,6 +2309,9 @@ know the Windows states were fixed, each with a check (design 11.12):
 | `windows: the Blocked tile says n/a, never 0` | `fs-intelview-smoke` | the tile never shows a zero it cannot know |
 | `windows: rules not whole read "Changed outside StockFW"`, `windows: whole and enforced again: "Protected"` | `fs-intelview-smoke` | PARTIAL reads differs on the page, and the page comes back |
 | `engine lock: taken at once ...`, `engine lock: a second holder ... waits`, `engine lock: a symbolic link in its place is refused` | `fs-intel-windows-test` | `LockFileEx` on `engine.lock` (Windows only) |
+| `winstore: %ProgramData%\StockFW is created owned by Administrators ...`, `winstore: intel is created ...`, `winstore: an override adds the current user ...` | `test-core.sh` | W8: the exact SDDL each folder is created with (`fs_winstore_sddl`); removing `O:BA` fails these and the two "passes" checks below |
+| `winstore: StockFW's own ... passes ...`, `winstore: a folder created without an owner ... refuses it`, `winstore: a temporary folder under a drive root ... is refused`, the other `winstore: ...` checks | `test-core.sh` | `fs_winstore_judge`, the pure owner and access-list check the Windows store runs, against SDDL as Windows shows it |
+| `store: an elevated StockFW makes Administrators the directory's owner ...`, `store: an override whose parent Users may change is refused ...`, `clear: the decoy named like ours is exactly as it was ...`, `clear: the clear itself changed no rule outside the group` | `fs-intel-windows-test` | W8, on the CI's Windows runner only |
 
 The start gate from main refuses `stockfw start` when no policy is
 saved and none was applied. `test-intel-cli.sh` (section 8) and

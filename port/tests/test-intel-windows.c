@@ -19,7 +19,9 @@
  *     with one of our names in another group survives, and every rule
  *     outside the group is exactly as it was before the test;
  *   - the store directory (STOCKFW_INTEL_DIR override) gets a protected
- *     DACL naming only SYSTEM, Administrators and the current user;
+ *     DACL naming only SYSTEM, Administrators and the current user, and
+ *     Administrators as owner; an override whose parent others may
+ *     change is refused and not created;
  *   - the engine on Windows, through a fake backend in a temporary
  *     store (intel-engine-checks.h, review M1): Stop then Start returns
  *     within a deadline, a Stop during an apply waits, an apply that
@@ -213,6 +215,62 @@ others_snapshot (void)
 		const Rule *r = all->pdata[i];
 
 		if (!fs_intelwin_in_group (r->group))
+			g_ptr_array_add (lines, rule_line (r));
+	}
+	g_ptr_array_sort (lines, (GCompareFunc) g_strcmp0);
+	for (guint i = 0; i < lines->len; i++) {
+		g_string_append (out, lines->pdata[i]);
+		g_string_append_c (out, '\n');
+	}
+	g_ptr_array_unref (lines);
+	g_ptr_array_unref (all);
+	return g_string_free (out, FALSE);
+}
+
+/* Prints the lines only one of two snapshots has, so a failed
+ * comparison says which rule changed and how. */
+static void
+print_diff (const gchar *before, const gchar *after)
+{
+	gchar **a = g_strsplit (before != NULL ? before : "", "\n", -1);
+	gchar **b = g_strsplit (after != NULL ? after : "", "\n", -1);
+	GHashTable *in_a = g_hash_table_new (g_str_hash, g_str_equal);
+	GHashTable *in_b = g_hash_table_new (g_str_hash, g_str_equal);
+	guint shown = 0;
+
+	for (guint i = 0; a[i] != NULL; i++)
+		g_hash_table_add (in_a, a[i]);
+	for (guint i = 0; b[i] != NULL; i++)
+		g_hash_table_add (in_b, b[i]);
+	for (guint i = 0; a[i] != NULL && shown < 40; i++)
+		if (*a[i] != '\0' && !g_hash_table_contains (in_b, a[i])) {
+			printf ("      only before: %s\n", a[i]);
+			shown++;
+		}
+	for (guint i = 0; b[i] != NULL && shown < 40; i++)
+		if (*b[i] != '\0' && !g_hash_table_contains (in_a, b[i])) {
+			printf ("      only after:  %s\n", b[i]);
+			shown++;
+		}
+	g_hash_table_unref (in_a);
+	g_hash_table_unref (in_b);
+	g_strfreev (a);
+	g_strfreev (b);
+}
+
+/* The rules called `name' in `group', as rule_line texts, sorted. */
+static gchar *
+rule_lines_named (const gchar *name, const gchar *group)
+{
+	GPtrArray *all = list_rules ();
+	GPtrArray *lines = g_ptr_array_new_with_free_func (g_free);
+	GString *out = g_string_new (NULL);
+
+	for (guint i = 0; i < all->len; i++) {
+		const Rule *r = all->pdata[i];
+
+		if (g_strcmp0 (r->name, name) == 0 &&
+		    g_strcmp0 (r->group, group) == 0)
 			g_ptr_array_add (lines, rule_line (r));
 	}
 	g_ptr_array_sort (lines, (GCompareFunc) g_strcmp0);
@@ -456,22 +514,129 @@ live (gchar **digest)
 	return fs_backend ()->intel_live (digest);
 }
 
+/* The SID of this process's user as a string.  Caller frees. */
+static gchar *
+my_sid_text (void)
+{
+	HANDLE token = NULL;
+	BYTE ub[256];
+	DWORD ul = sizeof ub;
+	LPSTR text = NULL;
+	gchar *out = NULL;
+
+	if (OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token) &&
+	    GetTokenInformation (token, TokenUser, ub, ul, &ul) &&
+	    ConvertSidToStringSidA (((TOKEN_USER *) ub)->User.Sid, &text)) {
+		out = g_strdup (text);
+		LocalFree (text);
+	}
+	if (token != NULL)
+		CloseHandle (token);
+	return out;
+}
+
+/* A temporary directory with a protected DACL: SYSTEM, Administrators
+ * and this account full control, plus `extra_sddl' (may be NULL).
+ * $STOCKFW_INTEL_DIR's parent must be one only trusted accounts may
+ * change (design 11.5), and g_dir_make_tmp's own is not: it inherits
+ * %TEMP%'s access list, which on the CI runner (D:\a\_temp, under a
+ * drive root whose default ACL lets Users create folders and files in
+ * every folder below it) lets Users change it.  NULL when it cannot be
+ * made. */
+static gchar *
+safe_tmp (const gchar *tmpl, const gchar *extra_sddl)
+{
+	gchar *tmp = g_dir_make_tmp (tmpl, NULL);
+	gchar *me = my_sid_text ();
+	gchar *sddl;
+	gunichar2 *w;
+	PSECURITY_DESCRIPTOR sd = NULL;
+	PACL dacl = NULL;
+	BOOL present = FALSE, defaulted = FALSE;
+	gboolean ok = FALSE;
+
+	if (tmp == NULL || me == NULL) {
+		if (tmp != NULL)
+			g_rmdir (tmp);
+		g_free (tmp);
+		g_free (me);
+		return NULL;
+	}
+	sddl = g_strdup_printf ("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                        "(A;OICI;FA;;;%s)%s", me,
+	                        extra_sddl != NULL ? extra_sddl : "");
+	w = g_utf8_to_utf16 (tmp, -1, NULL, NULL, NULL);
+	if (ConvertStringSecurityDescriptorToSecurityDescriptorA (
+		    sddl, SDDL_REVISION_1, &sd, NULL) &&
+	    GetSecurityDescriptorDacl (sd, &present, &dacl, &defaulted) &&
+	    present &&
+	    SetNamedSecurityInfoW ((LPWSTR) w, SE_FILE_OBJECT,
+	                           DACL_SECURITY_INFORMATION |
+	                           PROTECTED_DACL_SECURITY_INFORMATION,
+	                           NULL, NULL, dacl, NULL) == ERROR_SUCCESS)
+		ok = TRUE;
+	if (sd != NULL)
+		LocalFree (sd);
+	g_free (w);
+	g_free (sddl);
+	g_free (me);
+	if (!ok) {
+		g_rmdir (tmp);
+		g_clear_pointer (&tmp, g_free);
+	}
+	return tmp;
+}
+
+/* An override whose parent others may change is refused, and nothing
+ * is created in it. */
+static void
+check_store_unsafe_parent (void)
+{
+	/* BUILTIN\Users with Modify (0x1301bf), as a folder that inherits
+	 * a drive root's "Users may create folders" has in effect. */
+	gchar *tmp = safe_tmp ("sfw-unsafe-XXXXXX", "(A;OICI;0x1301bf;;;BU)");
+	gchar *dir = tmp ? g_build_filename (tmp, "intel", NULL) : NULL;
+	gchar *got;
+	GError *e = NULL;
+
+	if (dir == NULL) {
+		CHECK (FALSE, "store: a temporary directory Users may change");
+		return;
+	}
+	g_setenv ("STOCKFW_INTEL_DIR", dir, TRUE);
+	got = fs_intel_dir (&e);
+	CHECK (got == NULL &&
+	       g_error_matches (e, FS_INTEL_ERROR, FS_INTEL_ERR_UNSAFE_DIR) &&
+	       !g_file_test (dir, G_FILE_TEST_EXISTS),
+	       "store: an override whose parent Users may change is refused, "
+	       "and not created (%s)", e ? e->message : "accepted");
+	g_clear_error (&e);
+	g_free (got);
+	g_rmdir (dir);
+	g_rmdir (tmp);
+	g_unsetenv ("STOCKFW_INTEL_DIR");
+	g_free (dir);
+	g_free (tmp);
+}
+
 static void
 check_store_dacl (void)
 {
-	gchar *tmp = g_dir_make_tmp ("sfw-intel-XXXXXX", NULL);
+	gchar *tmp = safe_tmp ("sfw-intel-XXXXXX", NULL);
 	gchar *dir = tmp ? g_build_filename (tmp, "intel", NULL) : NULL;
 	gchar *got;
 	GError *e = NULL;
 	PSECURITY_DESCRIPTOR sd = NULL;
 	PACL dacl = NULL;
+	PSID owner = NULL;
 	SECURITY_DESCRIPTOR_CONTROL ctl = 0;
 	DWORD rev = 0;
 	gboolean only_known = TRUE;
 	gunichar2 *w;
 
 	if (dir == NULL) {
-		CHECK (FALSE, "store: a temporary directory");
+		CHECK (FALSE, "store: a temporary directory with a protected "
+		       "access list");
 		return;
 	}
 	g_setenv ("STOCKFW_INTEL_DIR", dir, TRUE);
@@ -482,7 +647,8 @@ check_store_dacl (void)
 	w = g_utf8_to_utf16 (dir, -1, NULL, NULL, NULL);
 	if (got != NULL &&
 	    GetNamedSecurityInfoW ((LPWSTR) w, SE_FILE_OBJECT,
-	                           DACL_SECURITY_INFORMATION, NULL, NULL,
+	                           OWNER_SECURITY_INFORMATION |
+	                           DACL_SECURITY_INFORMATION, &owner, NULL,
 	                           &dacl, NULL, &sd) == ERROR_SUCCESS &&
 	    dacl != NULL) {
 		HANDLE token = NULL;
@@ -519,6 +685,13 @@ check_store_dacl (void)
 		       "store: the directory's DACL is protected (nothing "
 		       "inherited) and names only SYSTEM, Administrators and "
 		       "the current user");
+		/* This test runs elevated: StockFW names Administrators as
+		 * the owner when it creates the folder, whatever the
+		 * token's default owner is. */
+		CHECK (owner != NULL &&
+		       IsWellKnownSid (owner, WinBuiltinAdministratorsSid),
+		       "store: an elevated StockFW makes Administrators the "
+		       "directory's owner, not the account it runs as");
 	} else if (got != NULL) {
 		CHECK (FALSE, "store: the directory's DACL can be read");
 	}
@@ -531,6 +704,7 @@ check_store_dacl (void)
 	g_unsetenv ("STOCKFW_INTEL_DIR");
 	g_free (dir);
 	g_free (tmp);
+	check_store_unsafe_parent ();
 }
 
 /* The engine lock on Windows (fs_winstore_lock, design 11.12): a
@@ -630,11 +804,14 @@ check_engine_lock (void)
 static void
 check_engine_uses_lock (void)
 {
-	gchar *tmp = g_dir_make_tmp ("sfw-engine-XXXXXX", NULL);
+	/* The engine's store is $STOCKFW_INTEL_DIR below `tmp', so `tmp'
+	 * must be a parent only trusted accounts may change. */
+	gchar *tmp = safe_tmp ("sfw-engine-XXXXXX", NULL);
 	gchar *audit;
 
 	if (tmp == NULL) {
-		CHECK (FALSE, "engine: a temporary directory");
+		CHECK (FALSE, "engine: a temporary directory with a protected "
+		       "access list");
 		return;
 	}
 	audit = g_build_filename (tmp, "audit.log", NULL);
@@ -931,7 +1108,8 @@ check_store_squatted (void)
 		       "made first, owned by BUILTIN\\Users");
 		got = fs_intel_dir (&e);
 		asides = remove_asides (pd);
-		CHECK (got != NULL && store_is_ours (parent) && asides == 1,
+		CHECK (got != NULL && store_is_ours (parent) &&
+		       store_is_ours (got) && asides == 1,
 		       "store squatted: a folder another account made first is "
 		       "moved aside, and StockFW's own is made in its place "
 		       "(%u moved; %s)", asides, e ? e->message : "ok");
@@ -1013,8 +1191,9 @@ main (void)
 {
 	const FsBackend *b = fs_backend ();
 	FsIntelRuleset *rs1, *rs2;
-	gchar *before, *after, *digest = NULL, *gen1 = NULL, *gen2 = NULL,
-	      *gen = NULL, *why, *want1, *want2;
+	gchar *before, *after, *pre_clear, *digest = NULL, *gen1 = NULL,
+	      *gen2 = NULL, *gen = NULL, *why, *want1, *want2,
+	      *decoy_name = NULL, *decoy_before = NULL, *decoy_after = NULL;
 	gboolean saved[FS_PROFILE_COUNT] = { TRUE, TRUE, TRUE };
 	GError *e = NULL;
 	FsIntelLive l;
@@ -1092,18 +1271,15 @@ main (void)
 	       "digest (%d, %s)", (int) l, digest);
 	g_clear_pointer (&digest, g_free);
 
-	{
-		gchar *decoy = g_strdup_printf ("SFW-TI wintest in IPv4 1/1 %s",
-		                                gen1 ? gen1 : "g00000000");
-
-		CHECK (add_rule (decoy, DECOY_GROUP, NET_FW_RULE_DIR_IN,
-		                 NET_FW_ACTION_BLOCK, "192.0.2.250", FALSE),
-		       "setup: a disabled decoy rule named like ours, in "
-		       "another group");
-		g_free (decoy);
-		g_free (before);
-		before = others_snapshot ();
-	}
+	decoy_name = g_strdup_printf ("SFW-TI wintest in IPv4 1/1 %s",
+	                              gen1 ? gen1 : "g00000000");
+	CHECK (add_rule (decoy_name, DECOY_GROUP, NET_FW_RULE_DIR_IN,
+	                 NET_FW_ACTION_BLOCK, "192.0.2.250", FALSE),
+	       "setup: a disabled decoy rule named like ours, in another "
+	       "group");
+	g_free (before);
+	before = others_snapshot ();
+	decoy_before = rule_lines_named (decoy_name, DECOY_GROUP);
 
 	/* ---- the same rule set again: nothing changes -------------------- */
 	CHECK (b->intel_apply (rs1, &e), "re-apply: success (%s)",
@@ -1204,6 +1380,7 @@ main (void)
 	}
 
 	/* ---- clear ------------------------------------------------------- */
+	pre_clear = others_snapshot ();
 	CHECK (b->intel_clear (&e), "clear: success (%s)", e ? e->message : "ok");
 	g_clear_error (&e);
 	{
@@ -1216,23 +1393,33 @@ main (void)
 	CHECK (live (NULL) == FS_INTEL_LIVE_ABSENT, "clear: intel_live reads "
 	       "ABSENT");
 	after = others_snapshot ();
+	decoy_after = rule_lines_named (decoy_name, DECOY_GROUP);
+	/* Three comparisons, so a failure says where the change came from:
+	 * the decoy alone (the rule a removal by name could hit), the
+	 * clear alone, and everything from the first apply on.  Each
+	 * prints the lines that differ. */
+	CHECK (*decoy_before != '\0' && g_strcmp0 (decoy_before, decoy_after) == 0,
+	       "clear: the decoy named like ours is exactly as it was "
+	       "through every apply and the clear");
+	if (g_strcmp0 (decoy_before, decoy_after) != 0)
+		print_diff (decoy_before, decoy_after);
+	CHECK (g_strcmp0 (pre_clear, after) == 0,
+	       "clear: the clear itself changed no rule outside the group");
+	if (g_strcmp0 (pre_clear, after) != 0)
+		print_diff (pre_clear, after);
 	CHECK (g_strcmp0 (before, after) == 0,
 	       "clear: every rule outside the group, the decoy named like ours "
 	       "included, is exactly as it was");
+	if (g_strcmp0 (before, after) != 0)
+		print_diff (before, after);
 	CHECK (b->intel_clear (&e), "clear: clearing nothing succeeds");
 	g_clear_error (&e);
 
 	check_policy_beside_big_lists (b);
 
 	/* ---- leave the firewall as it was -------------------------------- */
-	{
-		gchar *decoy = g_strdup_printf ("SFW-TI wintest in IPv4 1/1 %s",
-		                                gen1 ? gen1 : "g00000000");
-
-		CHECK (remove_rules (decoy, DECOY_GROUP) == 1,
-		       "cleanup: the decoy is removed");
-		g_free (decoy);
-	}
+	CHECK (remove_rules (decoy_name, DECOY_GROUP) == 1,
+	       "cleanup: the decoy is removed");
 	remove_rules (FOREIGN_IN_GROUP, FS_INTELWIN_GROUP);
 
 	check_store_dacl ();
@@ -1242,6 +1429,10 @@ main (void)
 
 	g_free (before);
 	g_free (after);
+	g_free (pre_clear);
+	g_free (decoy_name);
+	g_free (decoy_before);
+	g_free (decoy_after);
 	g_free (gen1);
 	g_free (gen2);
 	g_free (want1);

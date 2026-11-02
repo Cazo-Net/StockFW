@@ -8,6 +8,92 @@
  * container itself.
  *--------------------------------------------------------------------*/
 
+#include "core/fs-winstore.h"
+#include "core/fs-i18n.h"
+
+#include <glib.h>
+
+/* ============================================ pure (every platform) */
+
+FsWinstoreFault
+fs_winstore_judge (gboolean owner_trusted, gboolean has_dacl,
+                   const FsWinstoreAce *aces, guint n_aces,
+                   gboolean *readable)
+{
+	gboolean seen = FALSE;
+
+	if (readable != NULL)
+		*readable = FALSE;
+	if (!owner_trusted)
+		return FS_WINSTORE_FAULT_OWNER;
+	if (!has_dacl)
+		return FS_WINSTORE_FAULT_NO_DACL;
+	for (guint i = 0; i < n_aces; i++) {
+		const FsWinstoreAce *a = &aces[i];
+
+		if (a->flags & FS_WINSTORE_ACE_INHERIT_ONLY)
+			continue;   /* applies to what is created inside only */
+		switch (a->type) {
+		case FS_WINSTORE_ACE_DENIED:
+		case FS_WINSTORE_ACE_DENIED_CALLBACK:
+		case FS_WINSTORE_ACE_AUDIT:
+		case FS_WINSTORE_ACE_MANDATORY_LABEL:
+			continue;
+		case FS_WINSTORE_ACE_ALLOWED:
+		case FS_WINSTORE_ACE_ALLOWED_CALLBACK:
+			break;
+		default:
+			return FS_WINSTORE_FAULT_UNKNOWN_ACE;
+		}
+		if (a->trusted)
+			continue;
+		if (a->mask & FS_WINSTORE_CHANGE_RIGHTS)
+			return FS_WINSTORE_FAULT_CHANGE;
+		if (a->mask & FS_WINSTORE_READ_RIGHTS)
+			seen = TRUE;
+	}
+	if (readable != NULL)
+		*readable = seen;
+	return FS_WINSTORE_SAFE;
+}
+
+const gchar *
+fs_winstore_fault_text (FsWinstoreFault fault)
+{
+	switch (fault) {
+	case FS_WINSTORE_SAFE:
+		return NULL;
+	case FS_WINSTORE_FAULT_OWNER:
+		return _("it is owned by an account other than Administrators "
+		         "or SYSTEM");
+	case FS_WINSTORE_FAULT_NO_DACL:
+		return _("it has no access list, so every account may change "
+		         "it");
+	case FS_WINSTORE_FAULT_CHANGE:
+		return _("accounts other than Administrators and SYSTEM may "
+		         "change it");
+	case FS_WINSTORE_FAULT_UNKNOWN_ACE:
+	default:
+		return _("its access list has entries StockFW cannot check");
+	}
+}
+
+gchar *
+fs_winstore_sddl (FsWinstoreDirKind kind, gboolean admin_owner,
+                  const gchar *user_sid)
+{
+	GString *s = g_string_new (NULL);
+
+	if (admin_owner)
+		g_string_append (s, "O:BA");
+	g_string_append (s, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+	if (kind == FS_WINSTORE_DIR_PARENT)
+		g_string_append (s, "(A;OICI;0x1200a9;;;BU)");
+	if (user_sid != NULL && *user_sid != '\0')
+		g_string_append_printf (s, "(A;OICI;FA;;;%s)", user_sid);
+	return g_string_free (s, FALSE);
+}
+
 #ifdef _WIN32
 
 #ifndef _WIN32_WINNT
@@ -19,28 +105,28 @@
 #include <sddl.h>
 #include <shlobj.h>
 
-#include "core/fs-winstore.h"
 #include "core/fs-intel.h"
-#include "core/fs-i18n.h"
 
 #include <string.h>
 
-/* Rights that let an account change what a directory holds or who
- * may: add or remove entries, delete or rename it, rewrite its access
- * list or take it over. */
-#define CHANGE_RIGHTS (FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | \
-                       FILE_DELETE_CHILD | DELETE | WRITE_DAC | \
-                       WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL | \
-                       MAXIMUM_ALLOWED)
-/* Rights that let an account see what a directory holds. */
-#define READ_RIGHTS   (FILE_LIST_DIRECTORY | GENERIC_READ | GENERIC_ALL | \
-                       MAXIMUM_ALLOWED)
-
-/* Protected access lists (nothing inherited from above): the store's
- * parent, readable by Users; the store, Administrators and SYSTEM
- * only.  OICI: files and folders inside take the same. */
-#define SDDL_PARENT L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
-#define SDDL_STORE  L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+/* The pure judge and the SDDL above use the Win32 values. */
+G_STATIC_ASSERT (FS_WINSTORE_CHANGE_RIGHTS ==
+                 (FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD |
+                  DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE |
+                  GENERIC_ALL | MAXIMUM_ALLOWED));
+G_STATIC_ASSERT (FS_WINSTORE_READ_RIGHTS ==
+                 (FILE_LIST_DIRECTORY | GENERIC_READ | GENERIC_ALL |
+                  MAXIMUM_ALLOWED));
+G_STATIC_ASSERT (FS_WINSTORE_ACE_ALLOWED == ACCESS_ALLOWED_ACE_TYPE);
+G_STATIC_ASSERT (FS_WINSTORE_ACE_DENIED == ACCESS_DENIED_ACE_TYPE);
+G_STATIC_ASSERT (FS_WINSTORE_ACE_AUDIT == SYSTEM_AUDIT_ACE_TYPE);
+G_STATIC_ASSERT (FS_WINSTORE_ACE_ALLOWED_CALLBACK ==
+                 ACCESS_ALLOWED_CALLBACK_ACE_TYPE);
+G_STATIC_ASSERT (FS_WINSTORE_ACE_DENIED_CALLBACK ==
+                 ACCESS_DENIED_CALLBACK_ACE_TYPE);
+G_STATIC_ASSERT (FS_WINSTORE_ACE_MANDATORY_LABEL ==
+                 SYSTEM_MANDATORY_LABEL_ACE_TYPE);
+G_STATIC_ASSERT (FS_WINSTORE_ACE_INHERIT_ONLY == INHERIT_ONLY_ACE);
 
 /* TrustedInstaller owns some system folders. */
 #define SID_TRUSTED_INSTALLER \
@@ -129,54 +215,50 @@ sid_is_trusted (PSID sid, PSID user)
 }
 
 /* What is wrong with a security descriptor's owner and access list for
- * a store directory, or NULL.  *readable is set when an untrusted
- * account may list it. */
+ * a store directory, or NULL (fs_winstore_judge).  *readable is set
+ * when an untrusted account may list it; *foreign when another account
+ * owns it. */
 static const gchar *
 security_fault (PSID owner, PACL dacl, PSID user, gboolean *readable,
                 gboolean *foreign)
 {
-	*readable = FALSE;
-	if (!sid_is_trusted (owner, user)) {
-		*foreign = TRUE;
-		return _("it is owned by an account other than Administrators "
-		         "or SYSTEM");
-	}
-	if (dacl == NULL)
-		return _("it has no access list, so every account may change "
-		         "it");
-	for (DWORD i = 0; i < dacl->AceCount; i++) {
-		ACE_HEADER *ace = NULL;
-		ACCESS_MASK mask;
-		PSID sid;
+	FsWinstoreAce *aces = NULL;
+	guint n = 0;
+	FsWinstoreFault fault;
 
-		if (!GetAce (dacl, i, (LPVOID *) &ace))
-			return _("its access list cannot be read");
-		if (ace->AceFlags & INHERIT_ONLY_ACE)
-			continue;   /* applies to what is created inside only */
-		switch (ace->AceType) {
-		case ACCESS_DENIED_ACE_TYPE:
-		case ACCESS_DENIED_CALLBACK_ACE_TYPE:
-		case SYSTEM_AUDIT_ACE_TYPE:
-		case SYSTEM_MANDATORY_LABEL_ACE_TYPE:
-			continue;
-		case ACCESS_ALLOWED_ACE_TYPE:
-		case ACCESS_ALLOWED_CALLBACK_ACE_TYPE:
-			mask = ((ACCESS_ALLOWED_ACE *) ace)->Mask;
-			sid = (PSID) &((ACCESS_ALLOWED_ACE *) ace)->SidStart;
-			break;
-		default:
-			return _("its access list has entries StockFW cannot "
-			         "check");
+	*readable = FALSE;
+	if (dacl != NULL) {
+		aces = g_new0 (FsWinstoreAce, dacl->AceCount + 1);
+		for (DWORD i = 0; i < dacl->AceCount; i++) {
+			ACE_HEADER *ace = NULL;
+
+			if (!GetAce (dacl, i, (LPVOID *) &ace)) {
+				g_free (aces);
+				return _("its access list cannot be read");
+			}
+			aces[n].type = ace->AceType;
+			aces[n].flags = ace->AceFlags;
+			/* Allowed and allowed-callback entries share the
+			 * layout of ACCESS_ALLOWED_ACE up to SidStart; the
+			 * judge reads the mask and account of no other
+			 * type. */
+			if (ace->AceType == ACCESS_ALLOWED_ACE_TYPE ||
+			    ace->AceType == ACCESS_ALLOWED_CALLBACK_ACE_TYPE) {
+				ACCESS_ALLOWED_ACE *a = (ACCESS_ALLOWED_ACE *) ace;
+
+				aces[n].mask = a->Mask;
+				aces[n].trusted = sid_is_trusted (
+					(PSID) &a->SidStart, user);
+			}
+			n++;
 		}
-		if (sid_is_trusted (sid, user))
-			continue;
-		if (mask & CHANGE_RIGHTS)
-			return _("accounts other than Administrators and SYSTEM "
-			         "may change it");
-		if (mask & READ_RIGHTS)
-			*readable = TRUE;
 	}
-	return NULL;
+	fault = fs_winstore_judge (sid_is_trusted (owner, user), dacl != NULL,
+	                           aces, n, readable);
+	g_free (aces);
+	if (fault == FS_WINSTORE_FAULT_OWNER)
+		*foreign = TRUE;
+	return fs_winstore_fault_text (fault);
 }
 
 /* "DOMAIN\name" of an account, or its SID string.  Caller frees. */
@@ -288,18 +370,18 @@ unsafe_dir (GError **error, const gchar *path, const gchar *why,
 	g_free (full);
 }
 
-/* Creates `path' with the access list `sddl', or checks the one that is
- * there.  `tighten': an existing directory others can read gets `sddl'
- * (protected) instead.  `extra_sddl' (may be NULL) is appended to the
- * new access list (the current user, for an override). */
+/* Creates `path' with the security descriptor `sddl' (owner and
+ * protected access list, fs_winstore_sddl) in one CreateDirectoryW, so
+ * it never exists with another owner or an inherited access list, or
+ * checks the one that is there.  `tighten': an existing directory
+ * others can read gets the access list of `sddl' (protected)
+ * instead. */
 static gboolean
-ensure_dir (const gchar *path, const wchar_t *sddl, const gchar *extra_sddl,
-            PSID user, gboolean tighten, gboolean *foreign_out,
-            GError **error)
+ensure_dir (const gchar *path, const gchar *sddl, PSID user,
+            gboolean tighten, gboolean *foreign_out, GError **error)
 {
 	gunichar2 *w = wide (path);
 	gunichar2 *full_sddl;
-	gchar *sddl8, *joined;
 	SECURITY_ATTRIBUTES sa;
 	PSECURITY_DESCRIPTOR sd = NULL;
 	gboolean readable = FALSE, ok = TRUE, foreign = FALSE;
@@ -312,14 +394,9 @@ ensure_dir (const gchar *path, const wchar_t *sddl, const gchar *extra_sddl,
 		unsafe (error, path, _("its name is not valid"));
 		return FALSE;
 	}
-	sddl8 = g_utf16_to_utf8 ((const gunichar2 *) sddl, -1, NULL, NULL,
-	                         NULL);
-	joined = g_strconcat (sddl8, extra_sddl != NULL ? extra_sddl : "",
-	                      NULL);
-	full_sddl = wide (joined);
-	g_free (joined);
-	g_free (sddl8);
-	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW (
+	full_sddl = wide (sddl);
+	if (full_sddl == NULL ||
+	    !ConvertStringSecurityDescriptorToSecurityDescriptorW (
 		    (LPCWSTR) full_sddl, SDDL_REVISION_1, &sd, NULL)) {
 		unsafe (error, path, _("its access list cannot be built"));
 		g_free (full_sddl);
@@ -466,7 +543,7 @@ fs_winstore_dir (GError **error)
 
 	if (override != NULL) {
 		PSID user = token_user ();
-		gchar *trimmed, *user_sddl = NULL;
+		gchar *trimmed, *user_sddl = NULL, *user_sid = NULL;
 		gboolean ok;
 
 		if (!g_path_is_absolute (override)) {
@@ -483,13 +560,19 @@ fs_winstore_dir (GError **error)
 			LPWSTR s = NULL;
 
 			if (ConvertSidToStringSidW (user, &s)) {
-				gchar *s8 = g_utf16_to_utf8 ((const gunichar2 *) s,
-				                             -1, NULL, NULL, NULL);
-
-				user_sddl = g_strdup_printf ("(A;OICI;FA;;;%s)", s8);
-				g_free (s8);
+				user_sid = g_utf16_to_utf8 ((const gunichar2 *) s,
+				                            -1, NULL, NULL, NULL);
 				LocalFree (s);
 			}
+			/* Owned by Administrators when elevated, like the
+			 * default store; by the current user (trusted for
+			 * an override) otherwise, the only owner a token
+			 * without Administrators may name. */
+			if (user_sid != NULL)
+				user_sddl = fs_winstore_sddl (
+					FS_WINSTORE_DIR_STORE,
+					fs_winstore_is_admin (), user_sid);
+			g_free (user_sid);
 		}
 		trimmed = g_strdup (override);
 		while (strlen (trimmed) > 3 &&
@@ -504,9 +587,20 @@ fs_winstore_dir (GError **error)
 			                              &foreign, &owner_name);
 
 			ok = why == NULL;
-			if (!ok)
-				unsafe_dir (error, override, why, foreign,
-				            owner_name);
+			/* Named as the folder it is in: the override itself
+			 * may not exist yet, and the fault is not in it. */
+			if (!ok) {
+				gchar *full = owner_name != NULL
+				              ? g_strdup_printf (
+					_("the folder it is in, %s, is not safe: "
+					  "%s (%s)"), parent, why, owner_name)
+				              : g_strdup_printf (
+					_("the folder it is in, %s, is not safe: "
+					  "%s"), parent, why);
+
+				unsafe (error, override, full);
+				g_free (full);
+			}
 			g_free (owner_name);
 		}
 		if (ok && user_sddl == NULL) {
@@ -514,8 +608,8 @@ fs_winstore_dir (GError **error)
 			        _("the current account cannot be read"));
 			ok = FALSE;
 		}
-		ok = ok && ensure_dir (trimmed, SDDL_STORE, user_sddl, user,
-		                       FALSE, NULL, error);
+		ok = ok && ensure_dir (trimmed, user_sddl, user, FALSE, NULL,
+		                       error);
 		g_free (parent);
 		g_free (user_sddl);
 		g_free (user);
@@ -541,29 +635,40 @@ fs_winstore_dir (GError **error)
 	{
 		GError *local = NULL;
 		gboolean foreign = FALSE;
+		gchar *sddl = fs_winstore_sddl (FS_WINSTORE_DIR_PARENT, TRUE,
+		                                NULL);
 
 		/* Something another account made first is moved aside, once,
 		 * and StockFW's own folder is made in its place (review W7);
-		 * anything else wrong with the folder is refused as before. */
-		if (!ensure_dir (parent, SDDL_PARENT, NULL, NULL, FALSE, &foreign,
-		                 &local) &&
+		 * anything else wrong with the folder is refused as before.
+		 * StockFW's own is created owned by Administrators
+		 * (fs_winstore_sddl), so the check after the move passes it,
+		 * and only it. */
+		if (!ensure_dir (parent, sddl, NULL, FALSE, &foreign, &local) &&
 		    (!foreign || !move_aside (parent, local->message, error) ||
-		     !ensure_dir (parent, SDDL_PARENT, NULL, NULL, FALSE, NULL,
-		                  error))) {
+		     !ensure_dir (parent, sddl, NULL, FALSE, NULL, error))) {
 			if (!foreign)
 				g_propagate_error (error, local);
 			else
 				g_clear_error (&local);
+			g_free (sddl);
 			g_free (parent);
 			return NULL;
 		}
 		g_clear_error (&local);
+		g_free (sddl);
 	}
 	full = g_build_filename (parent, "intel", NULL);
 	g_free (parent);
-	if (!ensure_dir (full, SDDL_STORE, NULL, NULL, TRUE, NULL, error)) {
-		g_free (full);
-		return NULL;
+	{
+		gchar *sddl = fs_winstore_sddl (FS_WINSTORE_DIR_STORE, TRUE, NULL);
+		gboolean ok = ensure_dir (full, sddl, NULL, TRUE, NULL, error);
+
+		g_free (sddl);
+		if (!ok) {
+			g_free (full);
+			return NULL;
+		}
 	}
 	return full;
 }
@@ -988,10 +1093,5 @@ fs_winstore_read_user_file (const gchar *path, gsize cap, gsize *len,
 	CloseHandle (h);
 	return out;
 }
-
-#else  /* !_WIN32 */
-
-/* Nothing on other platforms: fs-intel.c keeps its own Linux store. */
-typedef int fs_winstore_unused;
 
 #endif /* _WIN32 */

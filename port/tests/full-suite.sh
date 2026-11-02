@@ -74,7 +74,12 @@ if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
     ./build/fs-intel-windows-test > "$TMP/last-suite.txt" 2>&1 || rc=$?
     grep -E "PASSED|FAILED|SKIP" "$TMP/last-suite.txt" | tail -4
     echo "exit=$rc  (ok checks: $(grep -c '^ok:' "$TMP/last-suite.txt"))"
-    grep "^FAIL" "$TMP/last-suite.txt" | head -10
+    # Every FAIL and every detail line, in order: the test prints
+    # details (the rules that differ, an unexpected ACE, ...) indented
+    # by six spaces, only when something is wrong, next to the check
+    # they explain.  It runs only on the CI's Windows runner, so the
+    # log is all there is to read.
+    grep -E "^FAIL|^      " "$TMP/last-suite.txt" | head -200
   else
     echo "ninja exit=$rc"
     grep "error" "$TMP/last-ninja.txt" | head -5
