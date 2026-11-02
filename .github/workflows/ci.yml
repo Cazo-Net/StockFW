@@ -124,17 +124,40 @@ jobs:
             mingw-w64-ucrt-x86_64-nsis
 
       - name: Build
+        id: build
         run: |
           cd port
           cmake -S . -B build -G Ninja
           cmake --build build
+
+      - name: Diagnose SVG loading from the build directory (temporary)
+        continue-on-error: true
+        run: |
+          cd port
+          d=/ucrt64/lib/gdk-pixbuf-2.0/2.10.0
+          echo "== MSYS2 loaders"; ls "$d/loaders"
+          echo "== svg in MSYS2 loaders.cache"; grep -n -i -A2 'svg' "$d/loaders.cache" | head -8
+          echo "== GTK runtime DLLs staged next to the executables"; ls build/*.dll | head -5; ls build/*.dll | wc -l
+          echo "== does build/ hold a gdk-pixbuf tree?"; ls -d build/lib/gdk-pixbuf-2.0 build/share 2>&1
+          ninja -C build fs-activity-smoke > /dev/null
+          echo "== (a) as built, from build/"
+          ./build/fs-activity-smoke.exe 2>&1 | grep -E "WARNING|failure" | head -3
+          echo "== (b) from build/, GDK_PIXBUF_MODULE_FILE = MSYS2's cache"
+          GDK_PIXBUF_MODULE_FILE="$(cygpath -w "$d/loaders.cache")" ./build/fs-activity-smoke.exe 2>&1 | grep -E "WARNING|failure" | head -3
+          echo "== (c) the same executable alone in a directory, DLLs from PATH"
+          mkdir -p /tmp/alone && cp build/fs-activity-smoke.exe /tmp/alone/
+          /tmp/alone/fs-activity-smoke.exe 2>&1 | grep -E "WARNING|failure" | head -3
 
       - name: Every test suite (tests/full-suite.sh)
         run: |
           cd port
           bash tests/full-suite.sh
 
+      # The installer is built whenever the program built, even when a
+      # test failed: the run stays red, and the installer is there to
+      # look at the failure on a real machine.
       - name: Build the installer
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           cd port
           bash installer/build_installer.sh
@@ -143,6 +166,7 @@ jobs:
           bash tests/test-installer-spawn.sh
 
       - name: Keep the installer
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: StockFW-windows-installer
