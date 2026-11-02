@@ -48,12 +48,12 @@ run_sh "CLI + DASHBOARD (Linux)" tests/test-cli.sh
 
 section "UI SMOKE TARGETS"
 rc=0
-ninja -C build fs-ui-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
+ninja -C build fs-ui-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
 echo "ninja exit=$rc"
 grep "error:" "$TMP/last-ninja.txt" | head -5
 [ "$rc" -eq 0 ] || fails=$((fails+1))
 
-for exe in fs-ui-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke; do
+for exe in fs-ui-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke; do
   rc=0
   "./build/$exe" > "$TMP/last-suite.txt" 2>&1 || rc=$?
   echo "--- $exe exit=$rc"

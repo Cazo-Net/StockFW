@@ -116,6 +116,7 @@ add_executable(StockFW
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
+  src/ui/fs-activityview.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
@@ -223,6 +224,7 @@ set(FS_UI_SOURCES
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
+  src/ui/fs-activityview.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
@@ -256,6 +258,23 @@ target_compile_definitions(fs-hitview-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
   FS_PLATFORM_NAME="${FS_PLATFORM}"
 )
+
+# The Activity page (1.0.6): events counted at their own time, the
+# allowed series only where the backend logs it, the adapter sampler,
+# the range picker and the table view, drawn offscreen.
+add_executable(fs-activity-smoke EXCLUDE_FROM_ALL
+  tests/ui-activity-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_include_directories(fs-activity-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-activity-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-activity-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-activity-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
 
 # The Status page's profile frame.  Separate from fs-ui-smoke because
 # the regression it guards is about visibility after a page-wide

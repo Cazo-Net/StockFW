@@ -15,6 +15,7 @@
 #include "ui/fs-statusview.h"
 #include "ui/fs-policyview.h"
 #include "ui/fs-hitview.h"
+#include "ui/fs-activityview.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-trustview.h"
 #include "ui/fs-tray.h"
@@ -36,11 +37,11 @@ static FsApp fsapp = { NULL, NULL, NULL };
  * row is visible at a time. */
 static GtkWidget *toolbar_host = NULL;
 
-/* The five buttons of the custom tab band, index-aligned with the
+/* The six buttons of the custom tab band, index-aligned with the
  * notebook pages. */
-#define FS_TAB_COUNT 5
+#define FS_TAB_COUNT 6
 static GtkWidget *tab_buttons[FS_TAB_COUNT] = {
-	NULL, NULL, NULL, NULL, NULL
+	NULL, NULL, NULL, NULL, NULL, NULL
 };
 
 /* Set while the band is being re-synced to the notebook, so the
@@ -273,9 +274,10 @@ build_tab_band (void)
 
 	labels[0] = _("Status");
 	labels[1] = _("Events");
-	labels[2] = _("Policy");
-	labels[3] = _("Copilot");
-	labels[4] = _("Trust");
+	labels[2] = _("Activity");
+	labels[3] = _("Policy");
+	labels[4] = _("Copilot");
+	labels[5] = _("Trust");
 
 	for (guint i = 0; i < FS_TAB_COUNT; i++) {
 		GtkWidget *btn = gtk_toggle_button_new_with_label (labels[i]);
@@ -435,7 +437,7 @@ fs_app_activate (GtkApplication *app)
 		g_object_unref (loader);
 	}
 
-	/* Tab band, above the toolbar strip: five flat buttons standing
+	/* Tab band, above the toolbar strip: six flat buttons standing
 	 * in for the notebook's tab row (which is switched off below). */
 	gtk_box_pack_start (GTK_BOX (box), build_tab_band (),
 	                    FALSE, FALSE, 0);
@@ -445,7 +447,8 @@ fs_app_activate (GtkApplication *app)
 	gtk_box_pack_start (GTK_BOX (box), toolbar_host, FALSE, FALSE, 0);
 
 	/* Notebook pages.  Order matches the original: Status, Events,
-	 * Policy, with Copilot and Trust last. */
+	 * Policy, with Activity beside the Events it graphs and Copilot
+	 * and Trust last. */
 	fsapp.notebook = gtk_notebook_new ();
 	gtk_notebook_set_show_tabs (GTK_NOTEBOOK (fsapp.notebook), FALSE);
 	gtk_notebook_set_show_border (GTK_NOTEBOOK (fsapp.notebook), FALSE);
@@ -458,6 +461,9 @@ fs_app_activate (GtkApplication *app)
 	add_page (_("Status"), fs_statusview_page (),
 	          fs_statusview_toolbar ());
 	add_page (_("Events"), fs_hitview_page (), NULL);
+
+	/* Activity (1.0.6): the graphs, beside the list they count. */
+	add_page (_("Activity"), fs_activityview_page (), NULL);
 
 	policy = fs_policy_new ();
 

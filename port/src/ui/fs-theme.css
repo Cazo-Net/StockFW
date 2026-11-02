@@ -444,3 +444,62 @@ notebook {
 dialog {
 	background-color: #f0f2f5;
 }
+/* --- Activity page (1.0.6) ----------------------------------------- */
+/* Cards and stat tiles: the same white surface and hairline as the
+ * Status page's hero card. */
+.chart-card,
+.stat-tile {
+	background-color: #ffffff;
+	border: 1px solid #e0e0e0;
+	border-radius: 8px;
+	padding: 12px 14px;
+}
+.card-title {
+	font-weight: bold;
+	font-size: 14px;
+	color: #212121;
+}
+.stat-caption {
+	font-weight: bold;
+	font-size: 11px;
+	color: #6b7280;
+}
+.stat-value {
+	font-weight: bold;
+	font-size: 20px;
+	color: #212121;
+}
+.chart-legend {
+	color: #424242;
+	font-size: 12px;
+}
+
+/* Range picker: one segmented control, the selected range filled in
+ * the app's accent like the selected tab. */
+.segmented button.seg-button {
+	background-image: none;
+	background-color: #ffffff;
+	border: 1px solid #c8cdd4;
+	border-radius: 0;
+	color: #424242;
+	padding: 4px 12px;
+	font-size: 13px;
+}
+.segmented button.seg-button:first-child {
+	border-radius: 6px 0 0 6px;
+}
+.segmented button.seg-button:last-child {
+	border-radius: 0 6px 6px 0;
+}
+.segmented button.seg-button:not(:first-child) {
+	border-left-width: 0;
+}
+.segmented button.seg-button:hover {
+	background-color: #f4f6f8;
+}
+.segmented button.seg-button:checked {
+	background-color: #ae0000;
+	border-color: #ae0000;
+	color: #ffffff;
+	font-weight: bold;
+}

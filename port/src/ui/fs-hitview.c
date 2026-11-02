@@ -8,6 +8,7 @@
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-hitview.h"
+#include "ui/fs-activityview.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-statusview.h"
@@ -466,6 +467,9 @@ on_hit (const FsHit *hit, gpointer user_data)
 
 	blocked = hit_is_blocked (hit);
 	remember_hit (hit);
+
+	/* The Activity page counts exactly what this list shows. */
+	fs_activityview_note_hit (hit);
 
 	/* Feed to copilot for learning and anomaly detection. */
 	extern FsCopilot *copilot;
