@@ -62,7 +62,7 @@ check "...with X-GNOME-Autostart-enabled=true" \
 	grep -qx "X-GNOME-Autostart-enabled=true" "$ENTRY"
 check "the entry is readable by the desktop (mode 644)" \
 	[ "$(stat -c %a "$ENTRY")" = "644" ]
-grep -q "cannot change rules" "$SCRATCH/on.log" &&
+grep -q "without root, so it can neither" "$SCRATCH/on.log" &&
 	ok "it says plainly that the sign-in copy runs without root" ||
 	fail "it says plainly that the sign-in copy runs without root ($(cat "$SCRATCH/on.log"))"
 if command -v desktop-file-validate >/dev/null 2>&1; then

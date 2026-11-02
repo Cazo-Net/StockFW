@@ -17,6 +17,7 @@
 
 #include "core/fs-autostart.h"
 #include "core/fs-i18n.h"
+#include "core/fs-util.h"
 
 #include <glib/gstdio.h>
 #include <string.h>
@@ -40,7 +41,7 @@ G_DEFINE_QUARK (fs-autostart-error-quark, fs_autostart_error)
 
 /* [ fs_autostart_task_xml ] -- the task registered for `user'
  * ("DOMAIN\name") to run `exe' (a Windows path) at that user's logon,
- * elevated, hidden in the notification area.  Caller frees. */
+ * WITHOUT elevation, hidden in the notification area.  Caller frees. */
 gchar *
 fs_autostart_task_xml (const gchar *user, const gchar *exe)
 {
@@ -53,10 +54,19 @@ fs_autostart_task_xml (const gchar *user, const gchar *exe)
 	gchar *xml;
 
 	/* LogonTrigger with a UserId: this user's sign-in only, not
-	 * everyone's.  InteractiveToken + HighestAvailable: it runs in
-	 * the user's own desktop session, with the elevated half of
-	 * their token -- what the shortcut gets after a UAC prompt --
-	 * and needs no stored password.  The short delay lets Explorer
+	 * everyone's.  InteractiveToken + LeastPrivilege: it runs in the
+	 * user's own desktop session with their ordinary, unelevated
+	 * token, and needs no stored password.  Never HighestAvailable: a
+	 * task that comes up elevated with no prompt would run a GTK
+	 * program -- which loads modules, settings and loaders named by
+	 * the user's environment and profile, and DLLs from wherever the
+	 * exe sits -- with an administrator's rights, so anything running
+	 * unelevated as that user could get code in at the next sign-in
+	 * (a silent UAC bypass).  Windows Firewall keeps its own rules
+	 * across restarts; the sign-in copy only shows the state, and
+	 * starting StockFW as administrator takes over from it.  Not
+	 * startable on demand: it is a sign-in task, nothing else.  The
+	 * short delay lets Explorer
 	 * put up the notification area first (the app shows its window
 	 * if no icon docks within five seconds).  No time limit: the
 	 * default would stop it after three days.  Normal priority: the
@@ -81,7 +91,7 @@ fs_autostart_task_xml (const gchar *user, const gchar *exe)
 		"    <Principal id=\"Author\">\n"
 		"      <UserId>%s</UserId>\n"
 		"      <LogonType>InteractiveToken</LogonType>\n"
-		"      <RunLevel>HighestAvailable</RunLevel>\n"
+		"      <RunLevel>LeastPrivilege</RunLevel>\n"
 		"    </Principal>\n"
 		"  </Principals>\n"
 		"  <Settings>\n"
@@ -95,7 +105,7 @@ fs_autostart_task_xml (const gchar *user, const gchar *exe)
 		"      <StopOnIdleEnd>false</StopOnIdleEnd>\n"
 		"      <RestartOnIdle>false</RestartOnIdle>\n"
 		"    </IdleSettings>\n"
-		"    <AllowStartOnDemand>true</AllowStartOnDemand>\n"
+		"    <AllowStartOnDemand>false</AllowStartOnDemand>\n"
 		"    <Enabled>true</Enabled>\n"
 		"    <Hidden>false</Hidden>\n"
 		"    <RunOnlyIfIdle>false</RunOnlyIfIdle>\n"
@@ -283,12 +293,11 @@ get_folder (TaskSession *ts, const wchar_t *path, ITaskFolder **folder)
 	return hr;
 }
 
-/* [ current_user ] -- "DOMAIN\name" of this process's token user, the
- * form a task's UserId takes.  Caller frees. */
+/* [ token_user_name ] -- "DOMAIN\name" of `token's user, the form a
+ * task's UserId takes.  NULL when it cannot be read.  Caller frees. */
 static gchar *
-current_user (void)
+token_user_name (HANDLE token)
 {
-	HANDLE token = NULL;
 	BYTE buffer[256];
 	DWORD len = 0;
 	wchar_t name[256], domain[256];
@@ -296,8 +305,6 @@ current_user (void)
 	SID_NAME_USE use;
 	gchar *n, *d, *user = NULL;
 
-	if (!OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token))
-		return NULL;
 	if (GetTokenInformation (token, TokenUser, buffer, sizeof buffer,
 	                         &len) &&
 	    LookupAccountSidW (NULL, ((TOKEN_USER *) buffer)->User.Sid,
@@ -310,6 +317,52 @@ current_user (void)
 		g_free (n);
 		g_free (d);
 	}
+	return user;
+}
+
+/* [ shell_user ] -- the account that owns this desktop's shell
+ * (Explorer), i.e. the person who is signed in.  With over-the-shoulder
+ * elevation -- a standard user types an administrator's credentials --
+ * this process runs as that administrator, but "when I sign in" means
+ * the person at the desktop.  NULL when there is no shell to ask. */
+static gchar *
+shell_user (void)
+{
+	HWND shell = GetShellWindow ();
+	DWORD pid = 0;
+	HANDLE process, token = NULL;
+	gchar *user = NULL;
+
+	if (shell == NULL)
+		return NULL;
+	GetWindowThreadProcessId (shell, &pid);
+	if (pid == 0)
+		return NULL;
+	process = OpenProcess (PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+	if (process == NULL)
+		return NULL;
+	if (OpenProcessToken (process, TOKEN_QUERY, &token)) {
+		user = token_user_name (token);
+		CloseHandle (token);
+	}
+	CloseHandle (process);
+	return user;
+}
+
+/* [ current_user ] -- whose sign-in the task is for: the signed-in
+ * person (the shell's account), else this process's own token user.
+ * Caller frees. */
+static gchar *
+current_user (void)
+{
+	HANDLE token = NULL;
+	gchar *user = shell_user ();
+
+	if (user != NULL)
+		return user;
+	if (!OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token))
+		return NULL;
+	user = token_user_name (token);
 	CloseHandle (token);
 	return user;
 }
@@ -317,18 +370,7 @@ current_user (void)
 static gboolean
 token_elevated (void)
 {
-	HANDLE token = NULL;
-	TOKEN_ELEVATION elevation;
-	DWORD len = 0;
-	gboolean elevated = FALSE;
-
-	if (!OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token))
-		return FALSE;
-	if (GetTokenInformation (token, TokenElevation, &elevation,
-	                         sizeof elevation, &len))
-		elevated = elevation.TokenIsElevated != 0;
-	CloseHandle (token);
-	return elevated;
+	return fs_util_privileged ();
 }
 
 static gunichar2 *
@@ -647,10 +689,11 @@ const gchar *
 fs_autostart_description (void)
 {
 	return _("Starts StockFW in the notification area when you sign in, "
-	         "through a Task Scheduler task that runs it as administrator "
-	         "without a prompt. Windows Firewall keeps its rules across "
-	         "restarts by itself; this only brings back the window and "
-	         "the monitoring.");
+	         "through a Task Scheduler task, without administrator "
+	         "rights: it shows the firewall's state but cannot change it "
+	         "or watch blocked traffic. Windows Firewall keeps its rules "
+	         "across restarts by itself. For monitoring and changes, "
+	         "start StockFW (Elevated); it takes over from this copy.");
 }
 
 #else
@@ -946,9 +989,9 @@ const gchar *
 fs_autostart_description (void)
 {
 	return _("Starts StockFW in the notification area when you sign in "
-	         "to the desktop. It starts without root, so it shows the "
-	         "firewall's state but cannot change rules or watch blocked "
-	         "traffic. The rules themselves are loaded at boot by the "
-	         "stockfw service.");
+	         "to the desktop. It starts without root, so it can neither "
+	         "read nor change the rules nor watch blocked traffic. The "
+	         "rules themselves are loaded at boot by the stockfw "
+	         "service; start StockFW with sudo to manage them.");
 }
 #endif

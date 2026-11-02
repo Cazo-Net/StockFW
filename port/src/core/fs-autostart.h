@@ -1,17 +1,23 @@
 /*---[ fs-autostart.h ]--------------------------------------------------
  * "Start StockFW in the background when I sign in".
  *
- * Windows: a Task Scheduler task for the current user, run at logon
- * with the highest privileges, so the elevated front-end comes up in
- * the notification area without a UAC prompt at every sign-in.  It is
- * registered through the Task Scheduler COM API (no schtasks.exe, so
- * no console window flashes), in the task folder \StockFW, one task per
- * user.  Registering a task that runs elevated needs an administrator.
+ * Windows: a Task Scheduler task for the signed-in user, run at logon
+ * WITHOUT elevation (LeastPrivilege): the front-end comes up in the
+ * notification area showing the firewall's state, and starting StockFW
+ * as administrator takes over from it for monitoring and changes.  It
+ * never runs elevated without a prompt -- that would hand an
+ * administrator's rights to whatever the user's environment makes a GTK
+ * program load.  It is registered through the Task Scheduler COM API
+ * (no schtasks.exe, so no console window flashes), in the task folder
+ * \StockFW, one task per user, for the account that owns the desktop's
+ * shell (over-the-shoulder elevation runs this process as another
+ * account).  Changing it needs an administrator.
  *
  * Linux: an XDG autostart entry, ~/.config/autostart/stockfw.desktop,
  * running "StockFW --background".  The desktop starts it as the user,
- * without root: it shows the firewall's state in the notification area
- * but can neither change rules nor read the kernel log.  The rules
+ * without root: it sits in the notification area, showing the state as
+ * unknown (iptables cannot be read without root),
+ * and can neither change rules nor read the kernel log.  The rules
  * themselves are put back at boot by the stockfw service
  * (installer/linux/stockfw.service), not by this.  When StockFW runs as
  * root through sudo or pkexec, the entry is written into the invoking
@@ -64,7 +70,7 @@ const gchar *fs_autostart_description (void);
  * handed.  All return newly allocated strings. */
 
 /* The Task Scheduler XML for `user' ("DOMAIN\name") running `exe' (a
- * Windows path) with --background at that user's logon, elevated. */
+ * Windows path) with --background at that user's logon, unelevated. */
 gchar *fs_autostart_task_xml (const gchar *user, const gchar *exe);
 
 /* The task's name inside \StockFW for `user'. */

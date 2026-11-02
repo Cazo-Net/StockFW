@@ -94,6 +94,7 @@ ShowInstDetails show
 ; Variables
 ;------------------------------------------------------------------------------
 Var PreviousUninstall
+Var PreviousInstDir
 Var StartMenuFolder
 Var CreateDesktopShortcut
 Var RunAfterInstall
@@ -183,12 +184,13 @@ Section "Desktop Shortcut" SecDesktop
 SectionEnd
 
 ; Ticked by default.  StockFW.exe registers a Task Scheduler task for the
-; account running this installer (src/core/fs-autostart.c): at that
-; account's sign-in it starts "StockFW.exe --background" with the highest
-; privileges, so it comes up in the notification area without a UAC
-; prompt.  The installer already runs elevated, which registering an
-; elevated task needs.  A failure is reported and does not fail the
-; install: the option is also in StockFW's tray menu.
+; account signed in at this desktop (src/core/fs-autostart.c; with
+; over-the-shoulder elevation that is not the account running this
+; installer): at that account's sign-in it starts
+; "StockFW.exe --background" WITHOUT elevation, in the notification area,
+; showing the firewall's state.  The installer already runs elevated,
+; which changing the task folder needs.  A failure is reported and does
+; not fail the install: the option is also in StockFW's tray menu.
 Section "Start StockFW in the background when I sign in" SecAutostart
     DetailPrint "Setting ${APP_NAME} to start in the background at sign-in..."
     ClearErrors
@@ -222,9 +224,26 @@ Function .onInit
         IDYES UninstallPrevious IDNO NoPreviousInstall
 
     UninstallPrevious:
+    ; Run the old uninstaller TO THE END before anything is installed.
+    ; Started plainly, an NSIS uninstaller copies itself to %TEMP%,
+    ; relaunches and returns at once, so its steps (asking the running
+    ; StockFW to quit, removing the sign-in tasks, deleting files) would
+    ; race the new install and could delete what it just set up.  A copy
+    ; run with _?=<install dir> runs in place and ExecWait waits for it;
+    ; it is a copy so the original uninstall.exe can still be deleted.
+    ; _?= must be the last argument, unquoted.
+    ReadRegStr $PreviousInstDir HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "InstallLocation"
     ClearErrors
-    ExecWait '"$PreviousUninstall" /S'
-    IfErrors NoPreviousInstall
+    ${If} $PreviousInstDir != ""
+    ${AndIf} ${FileExists} "$PreviousInstDir\uninstall.exe"
+        InitPluginsDir
+        CopyFiles /SILENT "$PreviousInstDir\uninstall.exe" "$PLUGINSDIR\previous-uninstall.exe"
+        ExecWait '"$PLUGINSDIR\previous-uninstall.exe" /S _?=$PreviousInstDir'
+        Delete "$PLUGINSDIR\previous-uninstall.exe"
+    ${Else}
+        ; No install location recorded: the old way, which does not wait.
+        ExecWait '"$PreviousUninstall" /S'
+    ${EndIf}
     Goto NoPreviousInstall
 
     NoPreviousInstall:

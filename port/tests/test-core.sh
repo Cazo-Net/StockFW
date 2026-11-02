@@ -4755,9 +4755,13 @@ static void test_autostart (void)
 	                     "      <Delay>"),
 	       "autostart task: a logon trigger for this user only");
 	CHECK (xml_has (xml, "<LogonType>InteractiveToken</LogonType>") &&
-	       xml_has (xml, "<RunLevel>HighestAvailable</RunLevel>"),
-	       "autostart task: runs in the user's session, elevated "
-	       "(no UAC prompt at sign-in)");
+	       xml_has (xml, "<RunLevel>LeastPrivilege</RunLevel>") &&
+	       !xml_has (xml, "HighestAvailable"),
+	       "autostart task: runs in the user's session, NOT elevated "
+	       "(an elevated task with no prompt is a silent UAC bypass)");
+	CHECK (xml_has (xml, "<AllowStartOnDemand>false</AllowStartOnDemand>") &&
+	       !xml_has (xml, "<AllowStartOnDemand>true"),
+	       "autostart task: cannot be started on demand, only at sign-in");
 	CHECK (xml_has (xml, "<Command>C:\\Program Files\\StockFW\\StockFW.exe</Command>") &&
 	       xml_has (xml, "<Arguments>--background</Arguments>") &&
 	       xml_has (xml, "<WorkingDirectory>C:\\Program Files\\StockFW</WorkingDirectory>"),
