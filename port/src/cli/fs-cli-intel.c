@@ -269,6 +269,23 @@ src_status (const FsIntelConfig *config, const Src *s, gint64 now)
 	return "ok";
 }
 
+/* The `intel update' flag that takes a refused copy anyway (design 4.5),
+ * from the override the engine recorded with the refusal: the same one
+ * the Threat Intel page offers as "Accept smaller list" or "Accept
+ * larger list".  NULL when nothing overrides it (not a list, over a
+ * cap, dated in the future). */
+static const gchar *
+accept_flag (const FsIntelSourceState *st)
+{
+	if (st == NULL || st->refused == NULL)
+		return NULL;
+	switch (st->refused_override) {
+	case FS_INTEL_UPDATE_ACCEPT_SHRINK:   return "--accept-shrink";
+	case FS_INTEL_UPDATE_ACCEPT_COVERAGE: return "--accept-coverage";
+	default:                              return NULL;
+	}
+}
+
 /* The licence column: the verified name, or where the terms are. */
 static gchar *
 src_licence (const Src *s)
@@ -334,6 +351,7 @@ src_json (GString *out, const FsIntelConfig *config, const Src *s,
 	g_string_append_c (out, ',');
 	fs_json_kv_str (out, "last_error", st != NULL ? st->last_error : NULL); g_string_append_c (out, ',');
 	fs_json_kv_str (out, "refused", st != NULL ? st->refused : NULL); g_string_append_c (out, ',');
+	fs_json_kv_str (out, "accept_with", accept_flag (st));     g_string_append_c (out, ',');
 	fs_json_kv_uint (out, "blocked_packets", c != NULL ? c->packets : 0); g_string_append_c (out, ',');
 	fs_json_kv_uint (out, "blocked_bytes", c != NULL ? c->bytes : 0);    g_string_append_c (out, ',');
 	kv_time (out, "counted_since", st != NULL ? st->counted_since : 0);
@@ -982,6 +1000,7 @@ intel_update (gint argc, gchar **argv)
 	GPtrArray *results;
 	FsIntelOutcome *o = NULL;
 	const gchar *reapply = "none";
+	const gchar **accept;
 	gchar *reapply_why = NULL;
 	GError *apply_error = NULL;
 
@@ -1039,6 +1058,7 @@ intel_update (gint argc, gchar **argv)
 	 * engine checks, so nothing turned on means no request at all. */
 	results = fs_intel_update (config, only, flags,
 	                           g_get_real_time () / G_USEC_PER_SEC);
+	accept = g_new0 (const gchar *, results->len + 1);
 	for (guint i = 0; i < results->len; i++) {
 		const FsIntelUpdateResult *r = g_ptr_array_index (results, i);
 
@@ -1047,6 +1067,12 @@ intel_update (gint argc, gchar **argv)
 		if (r->outcome == FS_INTEL_FAILED || r->outcome == FS_INTEL_REFUSED ||
 		    r->outcome == FS_INTEL_NEEDS_CONSENT)
 			bad = TRUE;
+		if (r->outcome == FS_INTEL_REFUSED) {
+			FsIntelSourceState *st = fs_intel_source_state (r->id);
+
+			accept[i] = accept_flag (st);
+			fs_intel_source_state_free (st);
+		}
 	}
 
 	/* An unattended re-apply only where it keeps what the user already
@@ -1101,6 +1127,8 @@ intel_update (gint argc, gchar **argv)
 			fs_json_kv_str (out, "message", r->message);
 			g_string_append_c (out, ',');
 			fs_json_kv_uint (out, "entries", r->entries);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "accept_with", accept[i]);
 			g_string_append_c (out, '}');
 		}
 		g_string_append (out, "],\"reapply\":{");
@@ -1131,6 +1159,11 @@ intel_update (gint argc, gchar **argv)
 			printf ("  %-18s %s%-13s%s %10s entries  %s\n", r->id, color,
 			        outcome_word (r->outcome), fs_cli_reset (), n,
 			        r->message != NULL ? r->message : "");
+			if (accept[i] != NULL)
+				printf ("%s  To take this copy anyway: sudo stockfw "
+				        "intel update --feed %s --now %s%s\n",
+				        fs_cli_dim (), r->id, accept[i],
+				        fs_cli_reset ());
 			g_free (n);
 		}
 		if (strcmp (reapply, "applied") == 0) {
@@ -1151,6 +1184,7 @@ intel_update (gint argc, gchar **argv)
 	}
 
 	g_free (reapply_why);
+	g_free (accept);
 	g_clear_error (&apply_error);
 	fs_intel_outcome_free (o);
 	g_ptr_array_unref (results);

@@ -301,9 +301,14 @@ check '[ $rc -eq 0 ] && grep -q "^  $FEED  *unchanged " <<<"$out" && [ "$(reques
 serve "$W/small.txt"
 run intel update --now
 check '[ $rc -eq 1 ] && grep -q "^  $FEED  *refused " <<<"$out"' "a copy that shrank to 2 entries: refused, exit 1"
+check 'grep -q "To take this copy anyway: sudo stockfw intel update --feed $FEED --now --accept-shrink" <<<"$out"' \
+      "  ... and it names the flag that takes it (the page's Accept smaller list)"
 run --json intel feeds
-check '[ "$(jget "[(x[\"entries\"], x[\"status\"], bool(x[\"refused\"])) for x in d[\"feeds\"] if x[\"id\"] == \"$FEED\"][0]")" = "16 refused True" ]' \
-      "  ... the old copy (16 entries) is kept, the status says refused"
+check '[ "$(jget "[(x[\"entries\"], x[\"status\"], bool(x[\"refused\"]), x[\"accept_with\"]) for x in d[\"feeds\"] if x[\"id\"] == \"$FEED\"][0]")" = "16 refused True --accept-shrink" ]' \
+      "  ... the old copy (16 entries) is kept, the status says refused, accept_with --accept-shrink"
+run --json intel update --now --feed "$FEED"
+check '[ $rc -eq 1 ] && [ "$(jget "d[\"results\"][0][\"outcome\"], d[\"results\"][0][\"accept_with\"]")" = "refused --accept-shrink" ]' \
+      "  ... update --json: refused, accept_with --accept-shrink"
 run --json intel update --now --accept-shrink --feed "$FEED"
 check '[ $rc -eq 0 ] && [ "$(jget "d[\"results\"][0][\"outcome\"], d[\"results\"][0][\"entries\"]")" = "updated 2" ]' \
       "update --accept-shrink --feed: accepted, 2 entries"

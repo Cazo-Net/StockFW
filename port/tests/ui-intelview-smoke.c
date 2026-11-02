@@ -362,6 +362,33 @@ click (const gchar *name)
 	wait_idle ();
 }
 
+/* Every label under a widget, its markup joined by newlines. */
+static gchar *
+row_labels (GtkWidget *row)
+{
+	GString *all = g_string_new (NULL);
+	GQueue q = G_QUEUE_INIT;
+
+	if (row != NULL)
+		g_queue_push_tail (&q, row);
+	while (!g_queue_is_empty (&q)) {
+		GtkWidget *w = g_queue_pop_head (&q);
+
+		if (GTK_IS_LABEL (w)) {
+			g_string_append (all, gtk_label_get_label (GTK_LABEL (w)));
+			g_string_append_c (all, '\n');
+		}
+		if (GTK_IS_CONTAINER (w)) {
+			GList *kids = gtk_container_get_children (GTK_CONTAINER (w));
+
+			for (GList *l = kids; l != NULL; l = l->next)
+				g_queue_push_tail (&q, l->data);
+			g_list_free (kids);
+		}
+	}
+	return g_string_free (all, FALSE);
+}
+
 static gchar *
 feed_text (const gchar *what, const gchar *id)
 {
@@ -780,32 +807,25 @@ main (int argc, char **argv)
 	g_free (t);
 	{
 		GtkWidget *row = find (page, "feed-row-firehol-level1");
-		GList *kids = NULL;
-		gboolean nc = FALSE, credit = FALSE;
-		GQueue q = G_QUEUE_INIT;
+		gchar *labels = row_labels (row);
 
-		/* The row's labels, for the licence and credit. */
-		g_queue_push_tail (&q, row);
-		while (!g_queue_is_empty (&q)) {
-			GtkWidget *w = g_queue_pop_head (&q);
-
-			if (GTK_IS_LABEL (w)) {
-				const gchar *l = gtk_label_get_label (GTK_LABEL (w));
-
-				nc |= strstr (l, "Non-commercial use only") != NULL;
-				credit |= strstr (l, "href=\"https://iplists.firehol.org/")
-				          != NULL;
-			}
-			if (GTK_IS_CONTAINER (w)) {
-				kids = gtk_container_get_children (GTK_CONTAINER (w));
-				for (GList *l = kids; l != NULL; l = l->next)
-					g_queue_push_tail (&q, l->data);
-				g_list_free (kids);
-			}
-		}
-		CHECK (row != NULL && nc && credit,
+		CHECK (row != NULL &&
+		       strstr (labels, "Non-commercial use only") != NULL &&
+		       strstr (labels, "href=\"https://iplists.firehol.org/")
+		       != NULL,
 		       "FireHOL level 1: \"Non-commercial use only\" and a "
 		       "credit link to its publisher");
+		g_free (labels);
+		/* The credit is the catalog's line, the one the CLI and the
+		 * dashboard print: Spamhaus asks to be named. */
+		row = find (page, "feed-row-spamhaus-drop");
+		labels = row_labels (row);
+		CHECK (row != NULL &&
+		       strstr (labels, fs_feed_catalog_find ("spamhaus-drop")
+		                       ->credit) != NULL &&
+		       strstr (labels, "The Spamhaus Project") != NULL,
+		       "Spamhaus DROP: the credit names The Spamhaus Project");
+		g_free (labels);
 	}
 	shot ("01-off.png");
 
@@ -819,6 +839,10 @@ main (int argc, char **argv)
 	CHECK (g_strcmp0 (last_dialog, "intel-consent-dialog") == 0 &&
 	       strstr (last_dialog_text, "www.spamhaus.org") != NULL,
 	       "turning a feed on asks first, naming the host contacted");
+	CHECK (last_dialog_text != NULL &&
+	       strstr (last_dialog_text, "allow list on the Threat Intel "
+	                                 "page") != NULL,
+	       "the consent text sends mistakes to this page's allow list");
 	CHECK (fetches == 0 && kern.apply_calls == 0 && !fs_intel_store_exists (),
 	       "Cancel at the consent dialog: nothing downloaded, nothing "
 	       "applied, no store");

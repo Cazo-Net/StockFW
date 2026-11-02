@@ -1558,8 +1558,8 @@ fs_intel_consent_text (const FsIntelConfig *config, const gchar *id)
 	g_string_append (out, "\n\n");
 	g_string_append (out,
 		_("Blocklists contain mistakes. If a list blocks something you "
-		  "need, add an exception for that address (Exceptions on the "
-		  "Threat Intel page, or \"stockfw intel except <address>\")."));
+		  "need, add that address to the allow list on the Threat Intel "
+		  "page, or run \"sudo stockfw intel except <address>\"."));
 	g_free (often);
 	g_free (host);
 	return g_string_free (out, FALSE);

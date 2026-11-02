@@ -1384,7 +1384,8 @@ on_activate_link (GtkLabel *label, const gchar *uri, gpointer data)
 	return TRUE;
 }
 
-/* "Licence: CC0 . Terms . From feodotracker.abuse.ch" as links. */
+/* "Licence: CC0 . Data: abuse.ch Feodo Tracker, ..." with links to the
+ * terms and the publisher's page. */
 static GtkWidget *
 credit_label (const FsIntelFeedConf *f)
 {
@@ -1417,14 +1418,17 @@ credit_label (const FsIntelFeedConf *f)
 			g_string_append_printf (m, DOT "%s",
 			                        _("Non-commercial use only"));
 		{
+			/* The catalog's credit line, the same one `stockfw
+			 * intel feeds' and the dashboard print (Spamhaus asks
+			 * to be credited by name). */
 			gchar *u = g_markup_escape_text (fi->info_url, -1);
-			gchar *h = g_markup_escape_text (fi->host, -1);
+			gchar *c = g_markup_escape_text (fi->credit, -1);
 
 			g_string_append (m, DOT);
 			g_string_append_printf (m, _("Data: <a href=\"%s\">%s</a>"),
-			                        u, h);
+			                        u, c);
 			g_free (u);
-			g_free (h);
+			g_free (c);
 		}
 	}
 	label = label_new (NULL, "intel-meta", 0.0);
