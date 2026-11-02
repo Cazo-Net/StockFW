@@ -663,17 +663,38 @@ check_merged_107 (void)
 			gboolean says = b->text != NULL &&
 			                strstr (b->text, "1.0.7") != NULL;
 
+			/* Outside the callout, no sentence may say a feature
+			 * is missing or on its way, whatever its case. */
+			if (!soon && b->text != NULL) {
+				gchar *low = g_ascii_strdown (b->text, -1);
+
+				if (strstr (low, "in this build") != NULL ||
+				    strstr (low, "planned") != NULL ||
+				    strstr (low, "coming in") != NULL ||
+				    strstr (low, "coming soon") != NULL)
+					says = TRUE;
+				g_free (low);
+			}
+
 			if (soon && strcmp (t->id, "threat-intel") == 0)
 				soon_intel++;
 			else if (soon || says)
 				soon_elsewhere++;
 		}
-		if (strstr (t->summary, "Coming") != NULL)
-			soon_elsewhere++;
+		{
+			gchar *low = g_ascii_strdown (t->summary, -1);
+
+			if (strstr (low, "coming") != NULL ||
+			    strstr (low, "planned") != NULL ||
+			    strstr (low, "in this build") != NULL)
+				soon_elsewhere++;
+			g_free (low);
+		}
 	}
 	CHECK (soon_elsewhere == 0 && soon_intel == 1,
 	       "[H8] one \"Not in this build\" callout, on the threat-intel "
-	       "topic (%u callouts or mentions of 1.0.7 elsewhere, %u there)",
+	       "topic (%u callouts, or 1.0.7, planned or coming wording, "
+	       "elsewhere, %u there)",
 	       soon_elsewhere, soon_intel);
 	{
 		const FsHelpTopic *t = fs_help_topic_find ("threat-intel");
@@ -683,12 +704,25 @@ check_merged_107 (void)
 		     b++)
 			if (b->kind == FS_HELP_SOON)
 				soon = b;
-		CHECK (soon != NULL && strstr (soon->text, "country") != NULL
-		       && strstr (soon->text, "(ASN)") != NULL
-		       && strstr (soon->text, "blocklists") == NULL
-		       && strstr (soon->text, "Threat-intel") == NULL,
+		gchar *low = soon != NULL ? g_ascii_strdown (soon->text, -1)
+		                          : g_strdup ("");
+		const gchar *stop = strchr (low, '.');
+		gchar *first = g_strndup (low, stop != NULL
+		                               ? (gsize) (stop - low)
+		                               : strlen (low));
+
+		/* The sentence that says "not in this build" names country
+		 * and ASN blocking and nothing about threat intel; no part
+		 * of the callout names the blocklists. */
+		CHECK (soon != NULL && strstr (first, "country") != NULL
+		       && strstr (first, "(asn)") != NULL
+		       && strstr (first, "not in this build") != NULL
+		       && strstr (first, "intel") == NULL
+		       && strstr (low, "blocklist") == NULL,
 		       "[H8] that callout is about country and ASN blocking "
 		       "only, not threat intel");
+		g_free (first);
+		g_free (low);
 		CHECK (strstr (t->summary, "available") == NULL
 		       && strstr (t->summary, "build") == NULL,
 		       "[H8] the threat-intel summary describes it as present "

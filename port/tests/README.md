@@ -847,9 +847,12 @@ check that failed is in brackets):
   Windows, CLI and background topics name the table, the group,
   `stockfw intel lookup` and the hourly update check.  Exactly one
   FS_HELP_SOON callout is left, on the threat-intel topic; it is about
-  blocking by country or network owner (ASN) and does not mention the
-  blocklists; the topic's summary no longer says "not available in
-  this build"; no other block or summary mentions 1.0.7, and the
+  blocking by country or network owner (ASN): its first sentence names
+  country and ASN and says "not in this build" without the word
+  "intel", and no part of it says "blocklist", in any case; the
+  topic's summary no longer says "not available in this build"; no
+  other block or summary mentions 1.0.7 or says "in this build",
+  "planned" or "coming", in any case, and the
   callout's heading reads "Not in this build" (this build is 1.0.7, so
   "Coming in 1.0.7" was false).  (Re-injected: the pre-PR #18
   `fs-helpcontent.c`, which fails the fifteen threat-intel H8 checks,
