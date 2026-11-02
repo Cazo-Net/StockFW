@@ -51,6 +51,18 @@ add_library(fs-core STATIC
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
 
+# The same sources linked against GLib/GIO only, for the CLI: fs-core
+# never includes GTK, and a server without a display should not need
+# libgtk installed to run `stockfw'.
+pkg_check_modules(GLIBONLY REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0)
+get_target_property(FS_CORE_SOURCES fs-core SOURCES)
+add_library(fs-core-nogui STATIC EXCLUDE_FROM_ALL ${FS_CORE_SOURCES})
+target_include_directories(fs-core-nogui PUBLIC src resources)
+target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY)
+if(WIN32)
+  target_link_libraries(fs-core-nogui PUBLIC ws2_32)
+endif()
+
 # core/ uses getnameinfo()/inet_pton() for reverse lookups; Windows keeps
 # those in ws2_32, POSIX has them in libc.
 if(WIN32)
@@ -163,6 +175,39 @@ if(WIN32)
 endif()
 
 install(TARGETS StockFW RUNTIME DESTINATION bin)
+
+# -------------------------------------------------------------------- cli
+# `stockfw': the command-line front end and local dashboard.  Same
+# fs-core and platform backend as the app, no GTK at all, so it runs on
+# a server with no display.  Linux only for now: it is built on POSIX
+# (geteuid, signals, /proc) and the Windows app already has its UI.
+if(FS_PLATFORM STREQUAL "linux")
+  pkg_check_modules(GIO REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0 gio-unix-2.0)
+
+  # The dashboard page is compiled in, like the theme: the binary
+  # carries everything it serves and loads nothing from disk or the
+  # network.
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/cli/dashboard.html" FS_DASHBOARD_HTML)
+  string(REPLACE "\\" "\\\\" FS_DASHBOARD_HTML "${FS_DASHBOARD_HTML}")
+  string(REPLACE "\"" "\\\"" FS_DASHBOARD_HTML "${FS_DASHBOARD_HTML}")
+  string(REPLACE "\r" ""    FS_DASHBOARD_HTML "${FS_DASHBOARD_HTML}")
+  string(REPLACE "\n" "\\n\"\n\"" FS_DASHBOARD_HTML "${FS_DASHBOARD_HTML}")
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/cli/fs-dashboard-html.h.in"
+                 "${CMAKE_CURRENT_BINARY_DIR}/fs-dashboard-html.h" @ONLY)
+  set_property(DIRECTORY APPEND PROPERTY
+               CMAKE_CONFIGURE_DEPENDS src/cli/dashboard.html)
+
+  add_executable(stockfw
+    src/cli/fs-cli-main.c
+    src/cli/fs-cli-cmds.c
+    src/cli/fs-dashboard.c
+    ${FS_BACKEND_SOURCES}
+  )
+  target_include_directories(stockfw PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(stockfw PRIVATE fs-core-nogui PkgConfig::GIO)
+  target_compile_definitions(stockfw PRIVATE FS_VERSION="${PROJECT_VERSION}")
+  install(TARGETS stockfw RUNTIME DESTINATION bin)
+endif()
 
 # ------------------------------------------------------------------ smoke
 # UI smoke tests.  EXCLUDE_FROM_ALL so `ninja` alone never builds them

@@ -43,3 +43,25 @@ the Security log could be read, so a non-elevated Windows session and an
 unprivileged Linux session both showed an empty event list that read as a
 working firewall with nothing to report. Monitoring now has to be either
 honestly running or honestly explained.
+
+## Command line and dashboard (`tests/test-cli.sh`)
+
+```sh
+cd port
+bash tests/test-cli.sh
+```
+
+Linux only, no root needed.  Builds the `stockfw` target through CMake
+and drives the real binary against scratch rules and config directories
+and a fixture kernel log, so it never touches `/etc/stockfw` or the live
+firewall (`apply` only runs with `--dry-run`).
+
+It pins down the documented exit codes, policy editing (the service
+shorthand, refused commas, mistyped options and bad hosts), the
+simulator's verdicts, the kernel-log history, every `--json` document
+parsed back, and the dashboard's security model: loopback only, the
+per-run token (header only, never the query string or the page), the
+Host check against DNS rebinding, GET/HEAD only, the 16 KB request-head
+cap, the CSP nonce, and the dashboard leaving its own sockets out of the
+connection list.
+

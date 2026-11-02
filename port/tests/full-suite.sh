@@ -44,6 +44,7 @@ run_sh "WINLOG + SPAWN PROBE" tests/test-winlog.sh
 run_sh "INSTALLER SPAWN" tests/test-installer-spawn.sh
 run_sh "BACKEND COMPILE (state-windows)" tests/test-state-windows.sh "compiled|PASSED|FAILED|ok:"
 run_sh "UAF ANALYZE" tests/test-uaf-analyze.sh
+run_sh "CLI + DASHBOARD (Linux)" tests/test-cli.sh
 
 section "UI SMOKE TARGETS"
 rc=0
