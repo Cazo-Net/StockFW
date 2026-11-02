@@ -41,6 +41,13 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-netparse.h"
 #include "core/fs-activity.h"
 #include "core/fs-json.h"
+#include "core/fs-autoblock.h"
+#include "core/fs-autostart.h"
+#include "core/fs-blocktally.h"
+#include <glib/gstdio.h>
+#ifndef G_OS_WIN32
+#include <unistd.h>
+#endif
 #include "core/fs-i18n.h"
 
 static int failures = 0;
@@ -1328,6 +1335,23 @@ static void test_prefs_fallbacks (void)
 	CHECK (fs_prefs_get_int ("/apps/stockfw/client/int_sample",
 	                         99) == 7,
 	       "stored int beats the fallback");
+
+	/* 1.0.7 session safety: the running program's periodic save
+	 * writes the settings only when this says they changed. */
+	{
+		const gchar *path = fs_prefs_path ();
+		gboolean existed = g_file_test (path, G_FILE_TEST_EXISTS);
+
+		CHECK (fs_prefs_dirty (), "a setter marks the settings dirty");
+		CHECK (fs_prefs_save () && !fs_prefs_dirty (),
+		       "a save leaves them clean");
+		fs_prefs_set_string ("/apps/stockfw/client/str_sample", "x");
+		CHECK (fs_prefs_dirty (), "the next setter marks them again");
+		CHECK (fs_prefs_load () && !fs_prefs_dirty (),
+		       "a load leaves them clean");
+		if (!existed)
+			g_unlink (path);
+	}
 }
 
 /* Regression: fs_copilot_feed_event() re-inserted the profile on EVERY
@@ -4497,6 +4521,1396 @@ static void test_apply_gate (void)
 	g_free (dir);
 }
 
+/* --- the start gate (1.0.7) -------------------------------------------
+ * Every start -- at launch, Start/Resume, `stockfw start' at boot --
+ * goes through fs_firewall_start_safe.  A backend whose start installs
+ * the policy (Linux) must never start the policy FILE while changes
+ * are held; it starts the journal instead, or nothing at all. */
+
+static gint fake_starts, fake_stops;
+static gboolean fake_start_ok = TRUE;
+
+static gboolean
+fake_start (GError **error)
+{
+	fake_starts++;
+	if (!fake_start_ok)
+		g_set_error_literal (error,
+		                     g_quark_from_static_string ("fake-backend"),
+		                     1, "scripted start failure");
+	return fake_start_ok;
+}
+
+static gboolean
+fake_stop (GError **error)
+{
+	(void) error;
+	fake_stops++;
+	return TRUE;
+}
+
+static const FsBackend fake_backend_linux_start = {
+	.name = "fake-linux",
+	.display_name = "scripted fake, start installs the policy",
+	.start_applies_policy = TRUE,
+	.available = fake_available,
+	.start = fake_start,
+	.stop = fake_stop,
+	.apply_rules = fake_apply_rules,
+	.apply_notes = fake_notes,
+};
+
+static const FsBackend fake_backend_windows_start = {
+	.name = "fake-windows",
+	.display_name = "scripted fake, start switches profiles on",
+	.available = fake_available,
+	.start = fake_start,
+	.stop = fake_stop,
+	.apply_rules = fake_apply_rules,
+};
+
+static void test_start_gate (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-start-gate-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy, *live, *loaded;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	gchar *audit;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+
+	policy = gate_policy_two ();
+
+	/* 1. Linux-shaped, no hold, no journal: start() runs, the journal
+	 * now records the policy as live, notes ride along. */
+	fake_reset ();
+	fake_starts = fake_stops = 0;
+	fake_start_ok = TRUE;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       !outcome->held && fake_starts == 1 && fake_full_calls == 0,
+	       "start gate: no hold -> backend start, policy live");
+	CHECK (outcome->notes != NULL,
+	       "start gate: the backend's notes are kept on a start");
+	loaded = fs_policy_new ();
+	CHECK (fs_apply_journal_load (loaded, NULL) &&
+	       fs_policy_count (loaded, FS_RULE_OUTBOUND_ALLOW_SERVICE) ==
+	       fs_policy_count (policy, FS_RULE_OUTBOUND_ALLOW_SERVICE),
+	       "start gate: a start that installs the policy updates the "
+	       "journal");
+	fs_policy_free (loaded);
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 2. Held, journal present: start() is NOT called (it would
+	 * install the file); the journal policy is applied instead. */
+	live = fs_policy_new ();
+	fs_policy_add (live, gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE,
+	                                "SSH", "22", FS_TARGET_ANY));
+	fs_apply_journal_save (live, NULL);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", "audit-only testing mode",
+	                                  &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->held &&
+	       outcome->applied && fake_starts == 0 && fake_full_calls == 1,
+	       "start gate: held -> the journal is started, never the file "
+	       "(%d starts, %d applies)", fake_starts, fake_full_calls);
+	CHECK (fake_seen_len == 1 &&
+	       fs_policy_count (fake_seen[0], FS_RULE_OUTBOUND_ALLOW_SERVICE)
+	       == 1,
+	       "start gate: what was applied is exactly the journal");
+	loaded = fs_policy_new ();
+	fs_apply_journal_load (loaded, NULL);
+	CHECK (fs_policy_count (loaded, FS_RULE_OUTBOUND_ALLOW_SERVICE) == 1,
+	       "start gate: a held start leaves the journal alone");
+	fs_policy_free (loaded);
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	fs_policy_free (live);
+
+	/* 3. Held, no journal: nothing safe to start with. */
+	remove (file);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", "policy locked", &error);
+	CHECK (outcome->result == FS_APPLY_DRY_RUN && outcome->held &&
+	       !outcome->applied && fake_starts == 0 && fake_full_calls == 0,
+	       "start gate: held with no journal -> firewall untouched");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 4. Windows-shaped: start only switches profiles on, so a hold
+	 * has nothing to hold back, and the journal is not touched. */
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_windows_start,
+	                                  policy, "test",
+	                                  "audit-only testing mode", &error);
+	CHECK (outcome->result == FS_APPLY_OK && fake_starts == 1 &&
+	       !outcome->applied && fake_full_calls == 0,
+	       "start gate: a profiles-only start runs even when held, and "
+	       "never claims the policy went live");
+	CHECK (!g_file_test (file, G_FILE_TEST_EXISTS),
+	       "start gate: a profiles-only start writes no journal");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 5. A failing start reports it; an absent backend is refused. */
+	fake_reset ();
+	fake_start_ok = FALSE;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_FAILED && !outcome->applied &&
+	       error != NULL,
+	       "start gate: a failed start is a failure, with the reason");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	fake_start_ok = TRUE;
+
+	fake_reset ();
+	fake_available_flag = FALSE;
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_NO_IPTABLES && fake_starts == 0 &&
+	       error != NULL,
+	       "start gate: no backend available -> refused, not started");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	CHECK (!fs_firewall_stop_logged (&fake_backend_linux_start, "test",
+	                                 &error) && fake_stops == 0,
+	       "stop: no backend available -> refused");
+	g_clear_error (&error);
+	fake_available_flag = TRUE;
+
+	/* 6. Stop is never held, and is on the record. */
+	fake_stops = 0;
+	CHECK (fs_firewall_stop_logged (&fake_backend_linux_start, "test",
+	                                &error) && fake_stops == 1,
+	       "stop: the backend stops");
+	g_clear_error (&error);
+
+	audit = NULL;
+	g_file_get_contents (audit_file, &audit, NULL, NULL);
+	CHECK (audit != NULL && strstr (audit, "firewall started") &&
+	       strstr (audit, "firewall start held") &&
+	       strstr (audit, "firewall start failed") &&
+	       strstr (audit, "firewall start refused") &&
+	       strstr (audit, "firewall stopped"),
+	       "start gate: every start and stop outcome is audited");
+	g_free (audit);
+
+	fake_reset ();
+	fs_policy_free (policy);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
+/* --- a start installs what was APPLIED, never the file (1.0.7) ----------
+ * The boot unit runs `stockfw start' unattended at every boot.  A
+ * start that installed the policy FILE put live whatever had been
+ * saved but never applied (an allow nobody pushed), and with the rule
+ * files gone it started an empty policy over a working one.  A start
+ * on a backend whose start installs a policy now installs the journal,
+ * less the expired Sentinel rows it is handed, held or not; a journal
+ * that cannot be read refuses the start.  fs_firewall_lift_live takes
+ * expired rows off without applying anything else. */
+
+static void test_start_from_journal (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-start-journal-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *file_policy, *live, *lift, *loaded;
+	FsRule *allow, *block, *sentinel;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	gchar *audit;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+
+	allow = gate_rule (FS_RULE_INBOUND_ALLOW_SERVICE, "SSH", "22",
+	                   FS_TARGET_ANY);
+	block = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+	                   "203.0.113.9");
+	sentinel = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+	                      "198.51.100.77");
+
+	/* Applied: the block and a Sentinel block.  Saved since, never
+	 * applied: an SSH allow. */
+	live = fs_policy_new ();
+	fs_policy_add (live, block);
+	fs_policy_add (live, sentinel);
+	fs_apply_journal_save (live, NULL);
+	file_policy = fs_policy_new ();
+	fs_policy_add (file_policy, block);
+	fs_policy_add (file_policy, sentinel);
+	fs_policy_add (file_policy, allow);
+
+	/* 1. Unheld, journal present: the journal goes in, start() (which
+	 * would install the file) is never called. */
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start,
+	                                  file_policy, "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       fake_starts == 0 && fake_full_calls == 1,
+	       "start: with a journal, the journal is installed, not the "
+	       "file (%d starts, %d applies)", fake_starts, fake_full_calls);
+	CHECK (fake_seen_len == 1 && gate_policy_total (fake_seen[0]) == 2 &&
+	       !fs_policy_contains (fake_seen[0], allow),
+	       "start: the allow that was saved but never applied stays "
+	       "OFF the firewall");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 2. ...less what it is told to lift (expired Sentinel rows), and
+	 * the journal then records that as live. */
+	lift = fs_policy_new ();
+	fs_policy_add (lift, sentinel);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_lifting (&fake_backend_linux_start,
+	                                     file_policy, lift, "test", NULL,
+	                                     &error);
+	CHECK (outcome->result == FS_APPLY_OK && fake_starts == 0 &&
+	       fake_seen_len == 1 && gate_policy_total (fake_seen[0]) == 1 &&
+	       fs_policy_contains (fake_seen[0], block) &&
+	       !fs_policy_contains (fake_seen[0], sentinel),
+	       "start: the expired Sentinel block is left out, the user's "
+	       "block goes in");
+	loaded = fs_policy_new ();
+	CHECK (fs_apply_journal_load (loaded, NULL) &&
+	       gate_policy_total (loaded) == 1 &&
+	       !fs_policy_contains (loaded, sentinel),
+	       "start: the journal records what this start installed");
+	fs_policy_free (loaded);
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	audit = gate_audit_read ();
+	CHECK (audit != NULL &&
+	       strstr (audit, "started with the last applied policy") &&
+	       strstr (audit, "expired Sentinel block") &&
+	       strstr (audit, "not applied:"),
+	       "start: the audit line says the journal started, what was "
+	       "left out and what stays unapplied");
+	g_free (audit);
+
+	/* 3. The rule files are gone (empty policy) but the journal is
+	 * there: the start still installs what was applied. */
+	fs_apply_journal_save (live, NULL);
+	{
+		FsPolicy *empty = fs_policy_new ();
+
+		fake_reset ();
+		fake_starts = 0;
+		outcome = fs_firewall_start_safe (&fake_backend_linux_start,
+		                                  empty, "test", NULL, &error);
+		CHECK (outcome->result == FS_APPLY_OK && fake_starts == 0 &&
+		       fake_seen_len == 1 &&
+		       gate_policy_total (fake_seen[0]) == 2,
+		       "start: an empty policy file never replaces what was "
+		       "live (%d rules installed, want 2)",
+		       fake_seen_len == 1 ? (gint) gate_policy_total (
+		       fake_seen[0]) : -1);
+		fs_apply_outcome_free (outcome);
+		g_clear_error (&error);
+		fs_policy_free (empty);
+	}
+
+	/* 4. A journal that is there but cannot be read: refused, neither
+	 * it nor the file goes in. */
+	g_file_set_contents (file, "this is not a journal row\n", -1, NULL);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start,
+	                                  file_policy, "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_FAILED && !outcome->applied &&
+	       fake_starts == 0 && fake_full_calls == 0 && error != NULL,
+	       "start: an unreadable journal refuses the start, firewall "
+	       "untouched");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	audit = gate_audit_read ();
+	CHECK (audit != NULL &&
+	       strstr (audit, "journal could not be read") != NULL,
+	       "start: the refusal is audited");
+	g_free (audit);
+
+	/* 5. Lifting expired rows off a running firewall: only their
+	 * removal, never the file. */
+	fs_apply_journal_save (live, NULL);
+	fake_reset ();
+	outcome = fs_firewall_lift_live (&fake_backend_linux_start, lift,
+	                                 "test", NULL, &error);
+	CHECK (outcome != NULL && outcome->applied && fake_seen_len == 1 &&
+	       gate_policy_total (fake_seen[0]) == 1 &&
+	       fs_policy_contains (fake_seen[0], block) &&
+	       !fs_policy_contains (fake_seen[0], allow),
+	       "lift: the journal less the expired block is applied -- the "
+	       "unapplied allow does not ride along");
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	fake_reset ();
+	outcome = fs_firewall_lift_live (&fake_backend_linux_start, lift,
+	                                 "test", NULL, &error);
+	CHECK (outcome == NULL && fake_full_calls == 0,
+	       "lift: a row that is not live any more changes nothing");
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
+
+	remove (file);
+	fake_reset ();
+	outcome = fs_firewall_lift_live (&fake_backend_linux_start, lift,
+	                                 "test", NULL, &error);
+	CHECK (outcome == NULL && fake_full_calls == 0,
+	       "lift: no journal, nothing known to be live, nothing done");
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
+
+	fake_reset ();
+	fs_rule_free (allow);
+	fs_rule_free (block);
+	fs_rule_free (sentinel);
+	fs_policy_free (lift);
+	fs_policy_free (live);
+	fs_policy_free (file_policy);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_rmdir (dir);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
+/* --- Sentinel's persisted blocks at a start without the app ------------
+ * `stockfw start' at boot has no Sentinel running to lift a block whose
+ * ten minutes ran out while the machine was off; fs_autoblock_expire
+ * takes such rows out of the policy BEFORE the start can install them. */
+
+static void test_autoblock_expire (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-autoblock-test", NULL);
+	gchar *state = g_build_filename (dir, "autoblocks", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	const gchar *old_csv = "203.0.113.9, Sentinel: old beacon";
+	const gchar *new_csv = "203.0.113.10, Sentinel: fresh beacon";
+	const gchar *user_csv = "198.51.100.7, mine";
+	gint64 now = 1800000000;
+	FsPolicy *policy, *lifted;
+	FsRule *probe;
+	gchar *rows, *after = NULL;
+	guint dropped;
+
+	g_mkdir_with_parents (dir, 0700);
+	g_setenv ("STOCKFW_AUTOBLOCK_FILE", state, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+
+	policy = fs_policy_new ();
+	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	                                         old_csv));
+	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	                                         new_csv));
+	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	                                         user_csv));
+	fs_policy_save (policy);
+
+	rows = g_strdup_printf ("S,%" G_GINT64_FORMAT ",%d,%s\n"
+	                        "S,%" G_GINT64_FORMAT ",%d,%s\n"
+	                        "garbage row\n",
+	                        now - 3600, (int) FS_RULE_OUTBOUND_DENY_TO,
+	                        old_csv,
+	                        now - 60, (int) FS_RULE_OUTBOUND_DENY_TO,
+	                        new_csv);
+	g_file_set_contents (state, rows, -1, NULL);
+	g_free (rows);
+
+	{
+		/* A second stale row whose rule the user already deleted
+		 * from the file: the journal may still hold it. */
+		gchar *more = NULL, *both;
+
+		g_file_get_contents (state, &more, NULL, NULL);
+		both = g_strdup_printf ("%sS,%" G_GINT64_FORMAT ",%d,%s\n",
+		                        more, now - 7200,
+		                        (int) FS_RULE_OUTBOUND_DENY_TO,
+		                        "192.0.2.200, Sentinel: deleted");
+		g_file_set_contents (state, both, -1, NULL);
+		g_free (both);
+		g_free (more);
+	}
+	lifted = fs_policy_new ();
+	dropped = fs_autoblock_expire (policy, now, FALSE, lifted);
+	CHECK (dropped == 1, "autoblock expire: one stale block came out "
+	       "(got %u)", dropped);
+	probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, old_csv);
+	CHECK (fs_policy_contains (lifted, probe) &&
+	       fs_policy_count (lifted, FS_RULE_OUTBOUND_DENY_TO) == 2,
+	       "autoblock expire: every due row is handed back for the "
+	       "start to leave out, the one already gone from the file "
+	       "too (%u)", fs_policy_count (lifted, FS_RULE_OUTBOUND_DENY_TO));
+	fs_rule_free (probe);
+	fs_policy_free (lifted);
+	probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, old_csv);
+	CHECK (!fs_policy_contains (policy, probe),
+	       "autoblock expire: the stale block left the policy");
+	fs_rule_free (probe);
+	{
+		FsPolicy *disk = fs_policy_new ();
+
+		fs_policy_load (disk, NULL);
+		probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, old_csv);
+		CHECK (!fs_policy_contains (disk, probe),
+		       "autoblock expire: ...and the policy file");
+		fs_rule_free (probe);
+		probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, new_csv);
+		CHECK (fs_policy_contains (disk, probe),
+		       "autoblock expire: a block inside its ten minutes "
+		       "stays for the app to re-arm");
+		fs_rule_free (probe);
+		probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, user_csv);
+		CHECK (fs_policy_contains (disk, probe),
+		       "autoblock expire: the user's own rule is never touched");
+		fs_rule_free (probe);
+		fs_policy_free (disk);
+	}
+	g_file_get_contents (state, &after, NULL, NULL);
+	CHECK (after != NULL && strstr (after, new_csv) != NULL &&
+	       strstr (after, old_csv) == NULL &&
+	       strstr (after, "garbage") == NULL,
+	       "autoblock expire: the state file keeps only the live row");
+	g_free (after);
+
+	dropped = fs_autoblock_expire (policy, now, TRUE, NULL);
+	CHECK (dropped == 1, "autoblock expire: Sentinel out of auto mode "
+	       "lifts the rest (got %u)", dropped);
+	CHECK (fs_autoblock_expire (policy, now, FALSE, NULL) == 0,
+	       "autoblock expire: nothing left, nothing removed");
+
+	fs_policy_clear (policy);
+	fs_policy_save (policy);
+	fs_policy_free (policy);
+	g_unsetenv ("STOCKFW_AUTOBLOCK_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (state);
+	remove (audit_file);
+	g_rmdir (dir);
+	g_free (state);
+	g_free (audit_file);
+	g_free (dir);
+}
+
+/* Start at sign-in (core/fs-autostart.c).  The Windows half is the
+ * task XML -- what the Task Scheduler is handed decides whose sign-in
+ * starts it, whether it runs elevated and what it runs -- so it is
+ * pinned here, portably.  The Linux half is the XDG entry, written to
+ * a scratch directory through $STOCKFW_AUTOSTART_DIR. */
+static gboolean
+xml_has (const gchar *xml, const gchar *needle)
+{
+	return strstr (xml, needle) != NULL;
+}
+
+static void test_autostart (void)
+{
+	gchar *xml = fs_autostart_task_xml (
+		"PC\\Ann & Bob",
+		"C:\\Program Files\\StockFW\\StockFW.exe");
+	gchar *name, *exec;
+#ifndef G_OS_WIN32
+	gchar *dir, *entry, *contents = NULL;
+	GKeyFile *kf;
+#endif
+
+	CHECK (xml_has (xml, "<LogonTrigger>") &&
+	       xml_has (xml, "<UserId>PC\\Ann &amp; Bob</UserId>\n"
+	                     "      <Delay>"),
+	       "autostart task: a logon trigger for this user only");
+	CHECK (xml_has (xml, "<LogonType>InteractiveToken</LogonType>") &&
+	       xml_has (xml, "<RunLevel>LeastPrivilege</RunLevel>") &&
+	       !xml_has (xml, "HighestAvailable"),
+	       "autostart task: runs in the user's session, NOT elevated "
+	       "(an elevated task with no prompt is a silent UAC bypass)");
+	CHECK (xml_has (xml, "<AllowStartOnDemand>false</AllowStartOnDemand>") &&
+	       !xml_has (xml, "<AllowStartOnDemand>true"),
+	       "autostart task: cannot be started on demand, only at sign-in");
+	CHECK (xml_has (xml, "<Command>C:\\Program Files\\StockFW\\StockFW.exe</Command>") &&
+	       xml_has (xml, "<Arguments>--background</Arguments>") &&
+	       xml_has (xml, "<WorkingDirectory>C:\\Program Files\\StockFW</WorkingDirectory>"),
+	       "autostart task: runs <exe dir>\\StockFW.exe --background");
+	CHECK (xml_has (xml, "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") &&
+	       xml_has (xml, "<DisallowStartIfOnBatteries>false") &&
+	       xml_has (xml, "<StopIfGoingOnBatteries>false") &&
+	       xml_has (xml, "<MultipleInstancesPolicy>IgnoreNew"),
+	       "autostart task: no time limit, runs on battery, one copy");
+	CHECK (!xml_has (xml, "Ann & Bob<"),
+	       "autostart task: the user name is XML-escaped");
+	g_free (xml);
+
+	name = fs_autostart_task_name ("PC\\Ann");
+	CHECK (strcmp (name, "Start at sign-in (PC_Ann)") == 0,
+	       "autostart task name: no backslash (got \"%s\")", name);
+	g_free (name);
+
+	exec = fs_autostart_desktop_exec ("/usr/local/bin/StockFW", TRUE);
+	CHECK (strcmp (exec, "StockFW --background") == 0,
+	       "autostart Exec: bare name when PATH finds this binary");
+	g_free (exec);
+	exec = fs_autostart_desktop_exec ("/opt/StockFW/StockFW", FALSE);
+	CHECK (strcmp (exec, "/opt/StockFW/StockFW --background") == 0,
+	       "autostart Exec: absolute path otherwise (got \"%s\")", exec);
+	g_free (exec);
+	exec = fs_autostart_desktop_exec ("/home/a b/100%\"$x/StockFW", FALSE);
+	CHECK (strcmp (exec, "\"/home/a b/100%%\\\"\\$x/StockFW\" --background") == 0,
+	       "autostart Exec: reserved characters quoted per the Desktop "
+	       "Entry spec (got %s)", exec);
+	g_free (exec);
+
+#ifndef G_OS_WIN32
+	/* The Linux entry itself.  (On Windows the same calls would
+	 * register a real Task Scheduler task.) */
+	dir = g_build_filename (g_get_tmp_dir (), "stockfw-autostart-test", NULL);
+	entry = g_build_filename (dir, "stockfw.desktop", NULL);
+	g_setenv ("STOCKFW_AUTOSTART_DIR", dir, TRUE);
+	remove (entry);
+	g_rmdir (dir);
+
+	CHECK (fs_autostart_supported (), "autostart: supported on Linux");
+	CHECK (!fs_autostart_enabled (), "autostart: off with no entry");
+	CHECK (fs_autostart_set (TRUE, NULL), "autostart: turned on");
+	CHECK (fs_autostart_enabled (), "autostart: on after turning on");
+	kf = g_key_file_new ();
+	CHECK (g_key_file_load_from_file (kf, entry, G_KEY_FILE_NONE, NULL),
+	       "autostart: the entry is a valid key file");
+	exec = g_key_file_get_string (kf, "Desktop Entry", "Exec", NULL);
+	CHECK (exec != NULL && g_str_has_suffix (exec, " --background"),
+	       "autostart: Exec ends in --background (got %s)",
+	       exec != NULL ? exec : "(none)");
+	g_free (exec);
+	g_key_file_free (kf);
+
+	/* A desktop's "startup applications" switch turns it off by key. */
+	g_file_set_contents (entry,
+		"[Desktop Entry]\nType=Application\nName=StockFW\n"
+		"Exec=StockFW --background\nX-GNOME-Autostart-enabled=false\n",
+		-1, NULL);
+	CHECK (!fs_autostart_enabled (),
+	       "autostart: X-GNOME-Autostart-enabled=false reads as off");
+	g_file_set_contents (entry,
+		"[Desktop Entry]\nType=Application\nName=StockFW\n"
+		"Exec=StockFW --background\nHidden=true\n", -1, NULL);
+	CHECK (!fs_autostart_enabled (), "autostart: Hidden=true reads as off");
+	CHECK (fs_autostart_set (TRUE, NULL) && fs_autostart_enabled (),
+	       "autostart: turning on again rewrites a switched-off entry");
+	g_file_get_contents (entry, &contents, NULL, NULL);
+	CHECK (contents != NULL && strstr (contents, "Hidden") == NULL,
+	       "autostart: the rewrite drops Hidden=true");
+	g_free (contents);
+
+	CHECK (fs_autostart_set (FALSE, NULL) && !fs_autostart_enabled () &&
+	       !g_file_test (entry, G_FILE_TEST_EXISTS),
+	       "autostart: turned off, the entry is gone");
+	CHECK (fs_autostart_set (FALSE, NULL),
+	       "autostart: turning off what is off succeeds");
+
+	g_unsetenv ("STOCKFW_AUTOSTART_DIR");
+	g_rmdir (dir);
+	g_free (entry);
+	g_free (dir);
+
+	/* The boot unit Preferences reports beside it: read from where
+	 * install.sh puts it and where enabling it links it. */
+	{
+		gchar *sd = g_build_filename (g_get_tmp_dir (),
+		                              "stockfw-systemd-test", NULL);
+		gchar *wants = g_build_filename (sd, "multi-user.target.wants",
+		                                 NULL);
+		gchar *unit = g_build_filename (sd, "stockfw.service", NULL);
+		gchar *link = g_build_filename (wants, "stockfw.service", NULL);
+		gchar *gone = g_build_filename (sd, "gone.service", NULL);
+
+		remove (link);
+		remove (unit);
+		g_rmdir (wants);
+		g_rmdir (sd);
+		g_setenv ("STOCKFW_SYSTEMD_DIR", sd, TRUE);
+
+		CHECK (fs_autostart_boot_unit () == FS_BOOT_UNIT_ABSENT,
+		       "boot unit: none installed reads as absent");
+		g_mkdir_with_parents (wants, 0700);
+		g_file_set_contents (unit, "[Unit]\n", -1, NULL);
+		CHECK (fs_autostart_boot_unit () == FS_BOOT_UNIT_DISABLED,
+		       "boot unit: installed, not linked, reads as not enabled");
+		CHECK (symlink (unit, link) == 0 &&
+		       fs_autostart_boot_unit () == FS_BOOT_UNIT_ENABLED,
+		       "boot unit: linked into multi-user.target.wants reads "
+		       "as enabled");
+		remove (link);
+		CHECK (symlink (gone, link) == 0 &&
+		       fs_autostart_boot_unit () == FS_BOOT_UNIT_DISABLED,
+		       "boot unit: a link to nothing is not enabled");
+		remove (link);
+		remove (unit);
+		CHECK (symlink (unit, link) == 0 &&
+		       fs_autostart_boot_unit () == FS_BOOT_UNIT_ABSENT,
+		       "boot unit: a link left behind with the unit removed "
+		       "reads as absent");
+
+		remove (link);
+		g_rmdir (wants);
+		g_rmdir (sd);
+		g_unsetenv ("STOCKFW_SYSTEMD_DIR");
+		g_free (sd);
+		g_free (wants);
+		g_free (unit);
+		g_free (link);
+		g_free (gone);
+	}
+#endif
+}
+
+/* The tray's "Blocked today" and Recent blocks (core/fs-blocktally.c). */
+static void test_block_tally (void)
+{
+	GTimeZone *tz = g_time_zone_new_utc ();
+	GDateTime *morning = g_date_time_new (tz, 2026, 11, 2, 9, 5, 0);
+	GDateTime *night = g_date_time_new (tz, 2026, 11, 2, 23, 59, 0);
+	GDateTime *next = g_date_time_new (tz, 2026, 11, 3, 0, 1, 0);
+	GDateTime *year_on = g_date_time_new (tz, 2027, 11, 2, 9, 0, 0);
+	FsHit *in = fs_hit_new (), *out = fs_hit_new (), *bare = fs_hit_new ();
+	gchar *s, **rows;
+
+	in->direction = g_strdup ("In");
+	in->protocol = g_strdup ("tcp");
+	in->port = g_strdup ("445");
+	in->source = g_strdup ("203.0.113.5");
+	in->destination = g_strdup ("192.0.2.1");
+	out->direction = g_strdup ("Outbound");
+	out->protocol = g_strdup ("UDP");
+	out->port = g_strdup ("53");
+	out->source = g_strdup ("192.0.2.1");
+	out->destination = g_strdup ("198.51.100.53");
+
+	s = fs_block_tally_describe (in, "10:42");
+	CHECK (strcmp (s, "TCP 445 from 203.0.113.5 (10:42)") == 0,
+	       "block tally: inbound reads \"proto port from host (time)\" "
+	       "(got \"%s\")", s);
+	g_free (s);
+	s = fs_block_tally_describe (out, "10:43");
+	CHECK (strcmp (s, "UDP 53 to 198.51.100.53 (10:43)") == 0,
+	       "block tally: outbound names where it was going (got \"%s\")",
+	       s);
+	g_free (s);
+	s = fs_block_tally_describe (bare, NULL);
+	CHECK (strcmp (s, "Traffic to unknown") == 0,
+	       "block tally: an event with nothing in it still reads as a "
+	       "sentence (got \"%s\")", s);
+	g_free (s);
+
+	fs_block_tally_reset ();
+	CHECK (fs_block_tally_today (morning) == 0,
+	       "block tally: nothing counted yet");
+	for (gint i = 0; i < 7; i++)
+		fs_block_tally_note (i % 2 ? out : in, i < 6 ? morning : night);
+	CHECK (fs_block_tally_today (night) == 7,
+	       "block tally: seven blocks on one day count seven");
+	rows = fs_block_tally_recent ();
+	CHECK (g_strv_length (rows) == FS_BLOCK_TALLY_RECENT &&
+	       strcmp (rows[0], "TCP 445 from 203.0.113.5 (23:59)") == 0,
+	       "block tally: the last five are kept, newest first");
+	g_strfreev (rows);
+	CHECK (fs_block_tally_today (next) == 0,
+	       "block tally: the count is zero after midnight");
+	CHECK (fs_block_tally_today (year_on) == 0,
+	       "block tally: the same date a year on is another day");
+	fs_block_tally_note (out, next);
+	CHECK (fs_block_tally_today (next) == 1,
+	       "block tally: a new day starts again from one");
+	fs_block_tally_reset ();
+
+	fs_hit_free (in);
+	fs_hit_free (out);
+	fs_hit_free (bare);
+	g_date_time_unref (morning);
+	g_date_time_unref (night);
+	g_date_time_unref (next);
+	g_date_time_unref (year_on);
+	g_time_zone_unref (tz);
+}
+
+/* --- firewall settings through the apply gate (Preferences, D5) ------
+ * A settings change must reach the firewall even when the policy rows
+ * did not change -- which the policy gate's narrow path would call "no
+ * change" -- and a failed apply must be rolled back under the settings
+ * that were live. */
+
+static gboolean swap_previous_active = FALSE;
+static GString *swap_trace = NULL;
+static GString *apply_trace = NULL;
+
+static void
+settings_swap_probe (gboolean previous, gpointer data)
+{
+	(void) data;
+	swap_previous_active = previous;
+	g_string_append_c (swap_trace, previous ? 'P' : 'N');
+}
+
+/* Records under which settings each whole-set apply ran. */
+static FsApplyResult
+fake_apply_rules_traced (const FsPolicy *policy, GError **error)
+{
+	g_string_append_c (apply_trace, swap_previous_active ? 'p' : 'n');
+	return fake_apply_rules (policy, error);
+}
+
+static const FsBackend fake_backend_traced = {
+	.name = "fake-traced",
+	.display_name = "scripted fake backend, settings traced",
+	.available = fake_available,
+	.apply_rules = fake_apply_rules_traced,
+	.apply_delta = fake_apply_delta,
+};
+
+static void test_settings_apply_gate (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-settings-gate-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	gchar *contents;
+	gint before_full;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+	swap_trace = g_string_new (NULL);
+	apply_trace = g_string_new (NULL);
+
+	fake_reset ();
+	policy = gate_policy_two ();
+
+	/* Make the policy live, so the journal matches it exactly. */
+	outcome = fs_policy_apply_safe (&fake_backend_traced, policy,
+	                                "settings test", NULL, &error);
+	CHECK (outcome->applied && fake_full_calls == 1,
+	       "settings gate: the policy is live first");
+	fs_apply_outcome_free (outcome);
+
+	/* The policy gate sees nothing to do... */
+	before_full = fake_full_calls;
+	outcome = fs_policy_apply_safe (&fake_backend_traced, policy,
+	                                "settings test", NULL, &error);
+	CHECK (outcome->narrow && fake_full_calls == before_full &&
+	       fake_delta_calls == 0,
+	       "settings gate: the policy gate calls an unchanged policy "
+	       "\"no change\" and leaves the firewall alone");
+	fs_apply_outcome_free (outcome);
+
+	/* ...so a settings change goes the whole way. */
+	outcome = fs_settings_apply_safe (&fake_backend_traced, policy,
+	                                  "settings test", NULL,
+	                                  settings_swap_probe, NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       !outcome->narrow && fake_full_calls == before_full + 1 &&
+	       fake_delta_calls == 0,
+	       "settings gate: an unchanged policy is applied whole when the "
+	       "settings changed");
+	CHECK (swap_trace->len == 0,
+	       "settings gate: a successful apply never swaps settings");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| firewall settings applied |") != NULL,
+	       "settings gate: the audit line says \"firewall settings "
+	       "applied\"");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	/* A hold reaches nothing and swaps nothing. */
+	before_full = fake_full_calls;
+	outcome = fs_settings_apply_safe (&fake_backend_traced, policy,
+	                                  "settings test",
+	                                  "audit-only testing mode",
+	                                  settings_swap_probe, NULL, &error);
+	CHECK (outcome->held && outcome->result == FS_APPLY_DRY_RUN &&
+	       fake_full_calls == before_full && swap_trace->len == 0,
+	       "settings gate: a hold leaves the firewall and the settings "
+	       "context untouched");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents,
+	               "| firewall settings held, firewall untouched |") != NULL,
+	       "settings gate: the hold is audited as a settings hold");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	/* A failure is rolled back under the previous settings, and the
+	 * new ones go back into the context afterwards. */
+	g_string_truncate (apply_trace, 0);
+	fake_enqueue (FS_APPLY_FAILED);
+	fake_enqueue (FS_APPLY_OK);
+	outcome = fs_settings_apply_safe (&fake_backend_traced, policy,
+	                                  "settings test", NULL,
+	                                  settings_swap_probe, NULL, &error);
+	CHECK (outcome->result == FS_APPLY_FAILED && !outcome->applied &&
+	       outcome->rollback_attempted && outcome->rollback_verified,
+	       "settings gate: a failed apply is rolled back and verified");
+	CHECK (g_strcmp0 (apply_trace->str, "np") == 0 &&
+	       g_strcmp0 (swap_trace->str, "PN") == 0 &&
+	       !swap_previous_active,
+	       "settings gate: new settings first, the rollback under the "
+	       "previous ones, the new ones back after (applies %s, swaps %s)",
+	       apply_trace->str, swap_trace->str);
+	g_clear_error (&error);
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| firewall settings apply failed |") != NULL &&
+	       strstr (contents, "rollback verified") != NULL,
+	       "settings gate: the failure and the verified rollback are "
+	       "audited");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	/* No journal: nothing to restore, nothing swapped. */
+	remove (file);
+	g_string_truncate (swap_trace, 0);
+	fake_enqueue (FS_APPLY_FAILED);
+	outcome = fs_settings_apply_safe (&fake_backend_traced, policy,
+	                                  "settings test", NULL,
+	                                  settings_swap_probe, NULL, &error);
+	CHECK (!outcome->rollback_attempted && swap_trace->len == 0 &&
+	       outcome->rollback_detail != NULL &&
+	       strstr (outcome->rollback_detail, "no applied-policy journal")
+	       != NULL,
+	       "settings gate: with no journal there is honestly nothing "
+	       "to restore");
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	fake_reset ();
+	fs_policy_free (policy);
+	g_string_free (swap_trace, TRUE);
+	g_string_free (apply_trace, TRUE);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
+/* --- the settings table (Preferences, D3 D6 D8) ----------------------
+ * One key/type/default table in fs-prefs.c.  Pinned here: a fresh
+ * FsSettings, an unset key and the first-run defaults all agree with
+ * it; every reader in src/ that still passes a literal fallback for a
+ * table key passes the table's (the source is scanned, so a consumer
+ * that drifts fails here, not on a user's machine); an unreadable
+ * settings file is kept before defaults overwrite it; and the edit
+ * copy writes only what changed and may be written. */
+
+typedef struct
+{
+	const gchar *key;
+	gsize        offset;
+} SettingsField;
+
+#define SF(key, field) { key, G_STRUCT_OFFSET (FsSettings, field) }
+
+static const SettingsField settings_fields[] = {
+	SF (FS_PREFS_FW_NAT, nat),
+	SF (FS_PREFS_FW_FILTER_ICMP, filter_icmp),
+	SF (FS_PREFS_FW_DENY_PACKETS, deny_packets),
+	SF (FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST, block_external_broadcast),
+	SF (FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST, block_internal_broadcast),
+	SF (FS_PREFS_FW_BLOCK_NON_ROUTABLES, block_non_routables),
+	SF (FS_PREFS_FW_RESTRICTIVE_OUTBOUND, restrictive_outbound),
+	SF (FS_PREFS_FW_LOG_ALLOWED, log_allowed),
+	SF (FS_PREFS_FW_ICMP_ECHO_REQUEST, icmp_echo_request),
+	SF (FS_PREFS_FW_ICMP_ECHO_REPLY, icmp_echo_reply),
+	SF (FS_PREFS_FW_ICMP_TRACEROUTE, icmp_traceroute),
+	SF (FS_PREFS_FW_ICMP_MSTRACEROUTE, icmp_mstraceroute),
+	SF (FS_PREFS_FW_ICMP_UNREACHABLE, icmp_unreachable),
+	SF (FS_PREFS_FW_ICMP_TIMESTAMPING, icmp_timestamping),
+	SF (FS_PREFS_FW_ICMP_MASKING, icmp_masking),
+	SF (FS_PREFS_FW_ICMP_REDIRECTION, icmp_redirection),
+	SF (FS_PREFS_FW_ICMP_SOURCE_QUENCHES, icmp_source_quenches),
+};
+
+static gboolean
+settings_field (const FsSettings *s, gsize offset)
+{
+	return G_STRUCT_MEMBER (gboolean, s, offset);
+}
+
+/* Every .c under dir, recursively. */
+static void
+collect_sources (const gchar *dir, GPtrArray *out)
+{
+	GDir *d = g_dir_open (dir, 0, NULL);
+	const gchar *name;
+
+	if (d == NULL)
+		return;
+	while ((name = g_dir_read_name (d)) != NULL) {
+		gchar *path = g_build_filename (dir, name, NULL);
+
+		if (g_file_test (path, G_FILE_TEST_IS_DIR))
+			collect_sources (path, out);
+		else if (g_str_has_suffix (name, ".c"))
+			g_ptr_array_add (out, g_strdup (path));
+		g_free (path);
+	}
+	g_dir_close (d);
+}
+
+static void
+reset_prefs_file (const gchar *contents)
+{
+	g_file_set_contents (fs_prefs_path (), contents, -1, NULL);
+	fs_prefs_load ();
+}
+
+static void test_prefs_table (void)
+{
+	guint n = 0;
+	const FsPrefSpec *specs = fs_prefs_specs (&n);
+	FsSettings *fresh, *loaded;
+	guint mismatches = 0, literal_uses = 0, scanned = 0, unread = 0;
+	GPtrArray *files;
+	GRegex *literal;
+	gchar *backup, *text = NULL;
+
+	CHECK (n >= 25, "the settings table has every setting (%u rows)", n);
+
+	/* Dead keys are not settings any more. */
+	CHECK (fs_prefs_spec ("/apps/stockfw/firewall/tos/enable") == NULL &&
+	       fs_prefs_spec ("/apps/stockfw/firewall/dhcp/enable_server") == NULL &&
+	       fs_prefs_spec ("/apps/stockfw/client/start_firewall_on_dhcp") == NULL &&
+	       fs_prefs_spec ("/apps/stockfw/client/first_run") == NULL,
+	       "the table carries no ToS, DHCP, dial-out or first-run key");
+
+	/* fs_settings_new() and an unset store agree with the table. */
+	g_mkdir_with_parents (g_path_get_dirname (fs_prefs_path ()), 0700);
+	reset_prefs_file ("");
+	fresh = fs_settings_new ();
+	loaded = fs_settings_new ();
+	fs_settings_load_prefs (loaded);
+	for (guint i = 0; i < G_N_ELEMENTS (settings_fields); i++) {
+		const FsPrefSpec *spec = fs_prefs_spec (settings_fields[i].key);
+
+		if (spec == NULL ||
+		    settings_field (fresh, settings_fields[i].offset) !=
+		    spec->bool_default ||
+		    settings_field (loaded, settings_fields[i].offset) !=
+		    spec->bool_default) {
+			printf ("       mismatch: %s\n", settings_fields[i].key);
+			mismatches++;
+		}
+	}
+	CHECK (mismatches == 0 && fresh->ext_device == NULL &&
+	       loaded->int_device == NULL,
+	       "fs_settings_new() and unset keys give the table's defaults "
+	       "(%u mismatches)", mismatches);
+	fs_settings_free (fresh);
+	fs_settings_free (loaded);
+
+	/* D3: the one that drifted -- off unless set. */
+	CHECK (!fs_prefs_bool (FS_PREFS_APPLY_POLICY_INSTANTLY) &&
+	       !fs_prefs_spec (FS_PREFS_APPLY_POLICY_INSTANTLY)->bool_default,
+	       "D3: \"apply policy changes immediately\" is off unless set");
+
+	/* Every literal fallback for a table key in src/ matches. */
+	files = g_ptr_array_new_with_free_func (g_free);
+	collect_sources ("src", files);
+	literal = g_regex_new ("fs_prefs_get_(bool|string)\\s*\\(\\s*"
+	                       "(FS_PREFS_[A-Z0-9_]+)\\s*,\\s*([^)]*?)\\s*\\)",
+	                       G_REGEX_MULTILINE, 0, NULL);
+	for (guint f = 0; f < files->len; f++) {
+		gchar *src = NULL;
+		GMatchInfo *m = NULL;
+
+		if (!g_file_get_contents (files->pdata[f], &src, NULL, NULL))
+			continue;
+		scanned++;
+		g_regex_match (literal, src, 0, &m);
+		while (g_match_info_matches (m)) {
+			gchar *kind = g_match_info_fetch (m, 1);
+			gchar *macro = g_match_info_fetch (m, 2);
+			gchar *fallback = g_match_info_fetch (m, 3);
+
+			for (guint i = 0; i < n; i++) {
+				gboolean ok;
+
+				if (g_strcmp0 (specs[i].name, macro) != 0)
+					continue;
+				literal_uses++;
+				if (g_strcmp0 (kind, "bool") == 0)
+					ok = g_strcmp0 (fallback,
+					                specs[i].bool_default
+					                ? "TRUE" : "FALSE") == 0;
+				else
+					ok = FALSE;   /* use fs_prefs_string() */
+				if (!ok) {
+					printf ("       %s: %s falls back to %s, "
+					        "the table says %s\n",
+					        (gchar *) files->pdata[f], macro,
+					        fallback,
+					        specs[i].type == FS_PREF_BOOL
+					        ? (specs[i].bool_default
+					           ? "TRUE" : "FALSE")
+					        : specs[i].string_default);
+					mismatches++;
+				}
+			}
+			g_free (kind);
+			g_free (macro);
+			g_free (fallback);
+			g_match_info_next (m, NULL);
+		}
+		g_match_info_free (m);
+
+		g_free (src);
+	}
+	CHECK (scanned > 20 && mismatches == 0,
+	       "every consumer in src/ falls back to the table's default "
+	       "(%u files, %u literal reads of table keys, %u mismatches)",
+	       scanned, literal_uses, mismatches);
+	for (guint i = 0; i < n; i++) {
+		gboolean read = FALSE;
+
+		for (guint f = 0; f < files->len && !read; f++) {
+			gchar *src = NULL;
+
+			/* The table itself and the window that edits it
+			 * are not readers. */
+			if (g_str_has_suffix (files->pdata[f], "fs-prefs.c") ||
+			    g_str_has_suffix (files->pdata[f],
+			                      "fs-prefsdialog.c") ||
+			    !g_file_get_contents (files->pdata[f], &src, NULL,
+			                          NULL))
+				continue;
+			read = strstr (src, specs[i].name) != NULL;
+			g_free (src);
+		}
+		if (!read) {
+			printf ("       nothing reads %s\n", specs[i].name);
+			unread++;
+		}
+	}
+	CHECK (unread == 0, "every table setting is read by something "
+	       "outside the settings code and the Preferences window");
+	g_regex_unref (literal);
+	g_ptr_array_unref (files);
+
+	/* First-run defaults: every bool written, nothing dead. */
+	reset_prefs_file ("");
+	fs_prefs_set_defaults ();
+	fs_prefs_load ();
+	mismatches = 0;
+	for (guint i = 0; i < n; i++)
+		if (specs[i].type == FS_PREF_BOOL &&
+		    (!fs_prefs_has_key (specs[i].key) ||
+		     fs_prefs_get_bool (specs[i].key, !specs[i].bool_default) !=
+		     specs[i].bool_default))
+			mismatches++;
+	CHECK (mismatches == 0 &&
+	       !fs_prefs_has_key ("/apps/stockfw/firewall/tos/enable") &&
+	       !fs_prefs_has_key ("/apps/stockfw/client/first_run"),
+	       "first-run defaults are the table's, and no dead key is "
+	       "written");
+
+	/* ...and never overwrite what is there. */
+	reset_prefs_file ("[firewall]\ndeny_packets=false\n");
+	fs_prefs_set_defaults ();
+	CHECK (!fs_prefs_bool (FS_PREFS_FW_DENY_PACKETS),
+	       "defaults leave a stored value alone");
+
+	/* D6: an unreadable file is kept before anything replaces it. */
+	backup = fs_prefs_backup_path ();
+	remove (backup);
+	g_file_set_contents (fs_prefs_path (),
+	                     "[client\nenable_tray_icon=maybe\n", -1, NULL);
+	CHECK (!fs_prefs_load (), "D6: an unparsable settings file fails "
+	       "to load");
+	CHECK (g_file_get_contents (backup, &text, NULL, NULL) &&
+	       g_strcmp0 (text, "[client\nenable_tray_icon=maybe\n") == 0,
+	       "D6: and is kept, byte for byte, as %s", backup);
+	g_free (text);
+	text = NULL;
+	fs_prefs_set_defaults ();
+	CHECK (fs_prefs_load () &&
+	       g_file_get_contents (backup, &text, NULL, NULL) &&
+	       strstr (text, "maybe") != NULL,
+	       "D6: the defaults written after it leave the kept copy alone");
+	g_free (text);
+	remove (backup);
+	g_free (backup);
+
+	/* D8: the edit copy writes only changed, writable values. */
+	reset_prefs_file ("[firewall]\next_if=eth1\n");
+	{
+		FsPrefsEdit *edit = fs_prefs_edit_new ();
+		gboolean firewall = TRUE;
+		guint written;
+
+		CHECK (g_strcmp0 (fs_prefs_edit_get_string (edit,
+		                  FS_PREFS_FW_EXT_IF), "eth1") == 0 &&
+		       !fs_prefs_edit_get_bool (edit,
+		                                FS_PREFS_APPLY_POLICY_INSTANTLY),
+		       "edit: the copy starts from the stored values and the "
+		       "table's defaults");
+
+		fs_prefs_edit_set_bool (edit, FS_PREFS_SKIP_REDUNDANT, TRUE);
+		fs_prefs_edit_set_bool (edit, FS_PREFS_FW_DENY_PACKETS, FALSE);
+		fs_prefs_edit_set_bool (edit, FS_PREFS_FW_NAT, FALSE); /* same */
+		fs_prefs_edit_set_writable (edit, FS_PREFS_SKIP_REDUNDANT, TRUE);
+		fs_prefs_edit_set_writable (edit, FS_PREFS_FW_NAT, TRUE);
+		fs_prefs_edit_set_writable (edit, FS_PREFS_FW_EXT_IF, TRUE);
+		/* deny_packets changed but stays unwritable: its control is
+		 * not offered (Windows). */
+		CHECK (fs_prefs_edit_n_changed (edit) == 2,
+		       "edit: two values differ from the snapshot");
+		CHECK (fs_prefs_edit_n_pending (edit) == 1,
+		       "edit: one of them would be written (the footer's "
+		       "count is what Save writes)");
+
+		written = fs_prefs_edit_commit (edit, &firewall);
+		CHECK (written == 1 && !firewall &&
+		       fs_prefs_bool (FS_PREFS_SKIP_REDUNDANT) &&
+		       !fs_prefs_has_key (FS_PREFS_FW_DENY_PACKETS) &&
+		       !fs_prefs_has_key (FS_PREFS_FW_NAT) &&
+		       !fs_prefs_has_key (FS_PREFS_APPLY_POLICY_INSTANTLY),
+		       "D8: only the changed, writable value is written; an "
+		       "unchanged one and one with no control are not");
+		CHECK (fs_prefs_edit_commit (edit, NULL) == 0,
+		       "edit: committing again writes nothing");
+
+		fs_prefs_edit_set_writable (edit, FS_PREFS_FW_DENY_PACKETS, TRUE);
+		written = fs_prefs_edit_commit (edit, &firewall);
+		CHECK (written == 1 && firewall &&
+		       !fs_prefs_bool (FS_PREFS_FW_DENY_PACKETS),
+		       "edit: a firewall setting reports itself as one");
+		fs_prefs_edit_free (edit);
+	}
+
+	reset_prefs_file ("");
+}
+
+/* --- settings saved but not applied ("Later") -------------------------
+ * The journal records the firewall settings each successful apply went
+ * out with.  While the saved ones differ, the policy gate applies the
+ * whole set -- even for an unchanged policy, which it would otherwise
+ * call "no change", and never through the narrow delta, which carries
+ * no settings -- so "Later" really means "with the next policy
+ * apply", on every backend. */
+static void test_settings_pending (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-settings-pending-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	GHashTable *recorded;
+	gchar *contents = NULL;
+	gint before_full;
+	guint n = 0, firewall_rows = 0;
+	const FsPrefSpec *specs = fs_prefs_specs (&n);
+
+	for (guint i = 0; i < n; i++)
+		if (specs[i].firewall)
+			firewall_rows++;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+	g_mkdir_with_parents (g_path_get_dirname (fs_prefs_path ()), 0700);
+	reset_prefs_file ("");
+
+	fake_reset ();
+	policy = gate_policy_two ();
+
+	CHECK (!fs_apply_settings_pending () &&
+	       fs_apply_journal_settings () == NULL,
+	       "pending: with no journal nothing is pending (every apply is "
+	       "whole then)");
+
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	recorded = fs_apply_journal_settings ();
+	CHECK (outcome->applied && fake_full_calls == 1 &&
+	       !fs_apply_settings_pending () && recorded != NULL &&
+	       g_hash_table_size (recorded) == firewall_rows &&
+	       g_strcmp0 (g_hash_table_lookup (recorded,
+	                  FS_PREFS_FW_ICMP_ECHO_REQUEST), "true") == 0 &&
+	       g_strcmp0 (g_hash_table_lookup (recorded,
+	                  FS_PREFS_FW_EXT_IF), "") == 0,
+	       "pending: an apply records every firewall setting it went "
+	       "out with (%u of %u)",
+	       recorded != NULL ? g_hash_table_size (recorded) : 0,
+	       firewall_rows);
+	if (recorded != NULL)
+		g_hash_table_unref (recorded);
+	fs_apply_outcome_free (outcome);
+
+	/* Saved in Preferences, answered "Later". */
+	fs_prefs_set_bool (FS_PREFS_FW_ICMP_TIMESTAMPING, TRUE);
+	fs_prefs_set_string (FS_PREFS_FW_EXT_IF, "eth0");
+	CHECK (fs_apply_settings_pending (),
+	       "pending: settings saved after the apply are pending");
+
+	before_full = fake_full_calls;
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	CHECK (outcome->applied && outcome->settings && !outcome->narrow &&
+	       fake_full_calls == before_full + 1 && fake_delta_calls == 0 &&
+	       !fs_apply_settings_pending (),
+	       "pending: the next apply of an UNCHANGED policy is whole and "
+	       "brings them in");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| full, settings pending |") != NULL,
+	       "pending: the audit line says the settings went with it");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	before_full = fake_full_calls;
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	CHECK (outcome->narrow && !outcome->settings &&
+	       fake_full_calls == before_full && fake_delta_calls == 0,
+	       "pending: once applied, an unchanged policy is \"no change\" "
+	       "again");
+	fs_apply_outcome_free (outcome);
+
+	/* A changed policy while settings are pending: whole, never the
+	 * delta (which carries no settings). */
+	fs_prefs_set_bool (FS_PREFS_FW_ICMP_TIMESTAMPING, FALSE);
+	{
+		FsRule *rule = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+		                          "198.51.100.10");
+
+		fs_policy_add (policy, rule);
+		fs_rule_free (rule);
+	}
+	before_full = fake_full_calls;
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	CHECK (outcome->applied && outcome->settings &&
+	       fake_full_calls == before_full + 1 && fake_delta_calls == 0,
+	       "pending: a changed policy goes whole too, not as a delta");
+	fs_apply_outcome_free (outcome);
+
+	/* Without pending settings the same kind of edit is a delta. */
+	{
+		FsRule *rule = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+		                          "198.51.100.11");
+
+		fs_policy_add (policy, rule);
+		fs_rule_free (rule);
+	}
+	before_full = fake_full_calls;
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	CHECK (outcome->applied && !outcome->settings && outcome->narrow &&
+	       fake_full_calls == before_full && fake_delta_calls == 1,
+	       "pending: with nothing pending an edit still goes narrow");
+	fs_apply_outcome_free (outcome);
+
+	/* A value that needs escaping survives the record. */
+	fs_prefs_set_string (FS_PREFS_FW_INT_IF, "odd=name\\with\nlines");
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	recorded = fs_apply_journal_settings ();
+	CHECK (outcome->applied && !fs_apply_settings_pending () &&
+	       recorded != NULL &&
+	       g_strcmp0 (g_hash_table_lookup (recorded, FS_PREFS_FW_INT_IF),
+	                  "odd=name\\with\nlines") == 0,
+	       "pending: a value with '=', '\\' and a newline is recorded "
+	       "exactly");
+	fs_apply_outcome_free (outcome);
+
+	/* The record rebuilds the settings that were on the firewall. */
+	{
+		FsSettings *was = fs_settings_new ();
+
+		fs_settings_load_values (was, recorded);
+		CHECK (g_strcmp0 (was->ext_device, "eth0") == 0 &&
+		       !was->icmp_timestamping && was->icmp_echo_request,
+		       "pending: the record rebuilds the settings that went out");
+		fs_settings_free (was);
+	}
+	g_hash_table_unref (recorded);
+
+	/* A journal written before settings were recorded: unknown, so
+	 * the next apply gives the firewall the lot. */
+	{
+		GString *legacy = g_string_new (NULL);
+		gchar **lines;
+
+		g_file_get_contents (file, &contents, NULL, NULL);
+		lines = g_strsplit (contents, "\n", -1);
+		for (guint i = 0; lines[i] != NULL; i++)
+			if (!g_str_has_prefix (lines[i], "# setting "))
+				g_string_append_printf (legacy, "%s\n", lines[i]);
+		g_file_set_contents (file, legacy->str, -1, NULL);
+		g_strfreev (lines);
+		g_string_free (legacy, TRUE);
+		g_free (contents);
+		contents = NULL;
+	}
+	CHECK (fs_apply_journal_settings () == NULL &&
+	       fs_apply_settings_pending (),
+	       "pending: a journal with no settings record counts as pending");
+
+	g_clear_error (&error);
+	fake_reset ();
+	fs_policy_free (policy);
+	reset_prefs_file ("");
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
 /* --- the settings plan ------------------------------------------------
  * fs-settings-plan.c maps the Firewall preferences onto portable rules
  * that the Windows backend executes.  Each mapping is pinned here: the
@@ -5793,6 +7207,141 @@ activity_test_clock (gpointer data)
 	return activity_test_now;
 }
 
+/* --- connection sharing needs both devices ---------------------------
+ * The Preferences window says sharing needs the Internet AND the local
+ * device.  With either missing the generator must emit nothing of
+ * router mode: no masquerade, no forwarding, no accept for the
+ * internal device, no accept for everything leaving the Internet
+ * device (which would let this computer's own traffic past restrictive
+ * outbound), and no local-broadcast block that the window shows as
+ * having no effect. */
+static void test_sharing_needs_both_devices (void)
+{
+	static const struct
+	{
+		const gchar *ext, *intf;
+		gboolean     acts;
+	} cases[] = {
+		{ "eth0", "eth1", TRUE  },
+		{ "eth0", NULL,   FALSE },
+		{ NULL,   "eth1", FALSE },
+		{ NULL,   NULL,   FALSE },
+	};
+	FsPolicy *p = fs_policy_new ();
+
+	for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
+		FsSettings *s = fs_settings_new ();
+		FsRestorePlan *plan;
+		gchar *in, *out, *ctl;
+		gboolean masq, out_accept, in_accept, bcast, fwd;
+		GError *error = NULL;
+
+		s->ext_device = g_strdup (cases[i].ext);
+		s->int_device = g_strdup (cases[i].intf);
+		s->nat = TRUE;
+		s->restrictive_outbound = TRUE;
+		s->block_internal_broadcast = TRUE;
+
+		in = fs_script_generate_inbound (p, s);
+		out = fs_script_generate_outbound (p, s);
+		ctl = fs_script_generate_control (s);
+		plan = fs_script_restore_plan (p, s, &error);
+
+		masq = plan != NULL && plan->v4.nat != NULL &&
+		       strstr (plan->v4.nat, "MASQUERADE") != NULL;
+		out_accept = cases[i].ext != NULL &&
+		       strstr (out, "-A OUTBOUND -o eth0 -j ACCEPT") != NULL;
+		in_accept = cases[i].intf != NULL &&
+		       strstr (in, "-A INBOUND -i eth1 -j ACCEPT") != NULL;
+		bcast = strstr (in, "-d 255.255.255.255") != NULL;
+		fwd = strstr (ctl, "ip_forward") != NULL ||
+		      strstr (ctl, "MASQUERADE") != NULL;
+
+		CHECK (plan != NULL &&
+		       fs_settings_sharing (s) == cases[i].acts &&
+		       masq == cases[i].acts && out_accept == cases[i].acts &&
+		       in_accept == cases[i].acts && bcast == cases[i].acts &&
+		       fwd == cases[i].acts,
+		       "sharing with ext=%s int=%s %s (masquerade %d, outbound "
+		       "accept %d, internal accept %d, local broadcast block "
+		       "%d, control script %d)",
+		       cases[i].ext ? cases[i].ext : "-",
+		       cases[i].intf ? cases[i].intf : "-",
+		       cases[i].acts ? "acts" : "emits nothing of router mode",
+		       masq, out_accept, in_accept, bcast, fwd);
+
+		g_clear_error (&error);
+		fs_restore_plan_free (plan);
+		g_free (in);
+		g_free (out);
+		g_free (ctl);
+		fs_settings_free (s);
+	}
+	fs_policy_free (p);
+}
+
+/* --- "Start the firewall when StockFW opens" -------------------------
+ * On Linux, start applies a policy.  At launch the shared policy is
+ * created empty and only filled when the Policy page is built, and
+ * Sentinel's expired blocks come out of it after that; starting any
+ * earlier would take every block and forward down.  The window cannot
+ * be built here, so the order in fs_app_activate is read from the
+ * source: no direct backend start anywhere in fs-app.c, one start
+ * through the start gate, in start_at_launch, called once, after both.
+ * (tests/ui-startup-smoke.c drives the same start at runtime.) */
+static void test_start_on_open_order (void)
+{
+	gchar *src = NULL;
+	const gchar *body, *end, *page, *restore, *start, *gate, *call;
+	guint direct = 0, gates = 0, calls = 0;
+
+	CHECK (g_file_get_contents ("src/ui/fs-app.c", &src, NULL, NULL),
+	       "start on open: fs-app.c is readable");
+	if (src == NULL)
+		return;
+	/* A Windows checkout (core.autocrlf) has CRLF line ends; the
+	 * patterns below match LF, so read the source as LF. */
+	{
+		gchar *w = src;
+		for (const gchar *r = src; *r != '\0'; r++)
+			if (*r != '\r')
+				*w++ = *r;
+		*w = '\0';
+	}
+
+	for (const gchar *p = src; (p = strstr (p, "->start (")) != NULL; p++)
+		direct++;
+	for (const gchar *p = src;
+	     (p = strstr (p, "fs_firewall_start_")) != NULL; p++)
+		gates++;
+	for (const gchar *p = src;
+	     (p = strstr (p, "start_at_launch (due);")) != NULL; p++)
+		calls++;
+
+	body = strstr (src, "\nfs_app_activate (GtkApplication *app)\n{");
+	end = body != NULL ? strstr (body, "\n}\n") : NULL;
+	start = strstr (src, "\nstart_at_launch (const FsPolicy *due)\n{");
+	gate = start != NULL ? strstr (start, "fs_firewall_start_lifting (")
+	                     : NULL;
+	page = body != NULL ? strstr (body, "fs_policyview_page (policy)") : NULL;
+	restore = body != NULL
+		? strstr (body, "fs_copilot_autoblocks_restore (policy, due);")
+		: NULL;
+	call = body != NULL ? strstr (body, "start_at_launch (due);") : NULL;
+
+	CHECK (direct == 0 && gates == 1 && calls == 1 && start != NULL &&
+	       gate != NULL && gate < strstr (start + 1, "\n}\n"),
+	       "start on open: the app's only start goes through the start "
+	       "gate in start_at_launch, called once (%u direct start, "
+	       "%u gate, %u call)", direct, gates, calls);
+	CHECK (body != NULL && end != NULL && page != NULL &&
+	       restore != NULL && call != NULL && call < end &&
+	       page < call && restore < call,
+	       "start on open: it runs after the Policy page loads the policy "
+	       "and after Sentinel's expired blocks are restored out of it");
+	g_free (src);
+}
+
 static void test_activity_series (void)
 {
 	FsActivity *a;
@@ -6864,6 +8413,14 @@ int main (void)
 	test_apply_impact ();
 	test_apply_delta ();
 	test_apply_gate ();
+	test_start_gate ();
+	test_start_from_journal ();
+	test_autoblock_expire ();
+	test_autostart ();
+	test_block_tally ();
+	test_settings_apply_gate ();
+	test_prefs_table ();
+	test_settings_pending ();
 	test_apply_translation_upgrade ();
 	test_whatif_winrules ();
 	test_fwrule_review ();
@@ -6875,6 +8432,8 @@ int main (void)
 	test_script_accept_log ();
 	test_target_families ();
 	test_restore_plan ();
+	test_sharing_needs_both_devices ();
+	test_start_on_open_order ();
 	test_activity_series ();
 	test_activity_sampler ();
 	test_json_writer ();
@@ -6888,7 +8447,7 @@ EOF
 
 EXTRA_LIBS=""
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
-  EXTRA_LIBS="-lws2_32"
+  EXTRA_LIBS="-lws2_32 -lole32 -loleaut32"
 fi
 
 # STOCKFW_TEST_CFLAGS adds compiler flags, for the sanitizer run the

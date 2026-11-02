@@ -118,6 +118,57 @@ discovery, router adverts, path-MTU and DHCPv6 are always allowed, even
 in restrictive mode, because IPv6 does not work without them. Without
 `ip6tables` installed, the apply reports that IPv6 is not filtered.
 
+## Running in the background, and after a reboot (1.0.7)
+
+One StockFW runs per user (on Windows, per sign-in session): starting
+it again brings the running copy's window forward, wherever it is (on
+Linux a launch on a second display of the same user shows the first
+copy rather than opening another), and `StockFW --quit` asks it to quit
+cleanly (the firewall stays on). A launch with more rights than the
+running copy (`sudo StockFW`, or StockFW (Elevated) on Windows, while
+the sign-in copy runs) asks that copy to quit and takes its place, so
+the copy you started with rights is the one that runs. `StockFW --background` (or
+`--minimized`) starts it in the notification area with the window
+hidden; if no notification area takes the icon within five seconds the
+window is shown instead, so it is never running out of reach.
+
+**Start at sign-in** (tray menu, the Background card on Preferences >
+General, or `--enable-autostart` / `--disable-autostart`; the tray's
+tick and the Preferences switch always show the same thing):
+
+- Windows: a Task Scheduler task for the signed-in account, in the
+  `\StockFW` folder, runs `StockFW.exe --background` at sign-in WITHOUT
+  administrator rights, so it shows the firewall's state but cannot
+  change it or watch blocked traffic; start StockFW (Elevated) for that,
+  and it takes over from the sign-in copy. It never runs elevated
+  without a prompt: that would let anything running as you get
+  administrator rights at your next sign-in. Changing it needs StockFW
+  running as administrator. The installer offers it as a component
+  (ticked by default) and the uninstaller removes it. Windows Firewall
+  keeps its rules across reboots by itself.
+- Linux: `~/.config/autostart/stockfw.desktop`. The desktop starts it
+  without root, so it can neither read nor change the rules nor watch
+  blocked traffic: it shows the firewall's state as unknown (never as
+  Off), and greys what it cannot do. `sudo StockFW` takes over from it.
+
+**Linux rules vanish at reboot** unless something loads them again: the
+kernel keeps iptables rules in memory only. The Linux installer installs
+and enables `stockfw.service`, which runs `stockfw start` before the
+network comes up, using root's policy in `/etc/stockfw` (the one
+`sudo StockFW` edits; a policy in `~/.stockfw` is not used). It puts
+back the last policy that was applied, never changes saved since but
+not applied. It does nothing until a policy has been applied as root
+once, has no stop action, and leaves out blocks by host name until the next apply because
+names cannot be looked up before the network is up. Details:
+[`port/installer/linux/README.md`](port/installer/linux/README.md).
+
+**Signing out does not lose anything.** While it runs, StockFW writes
+its settings and what the Copilot has learned every five minutes when
+they have changed, and writes everything when the session is about to
+end (Windows sign-out or shutdown, a GNOME or Xfce logout) without
+holding the logout up. `kill`, Ctrl+C and closing its terminal quit it
+the same way as the tray's Quit. None of this turns the firewall off.
+
 ## Privilege model (summary)
 
 StockFW runs **asInvoker** — it never silently self-elevates. All

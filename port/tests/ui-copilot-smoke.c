@@ -943,7 +943,7 @@ main (int argc, char **argv)
 		g_free (path);
 	}
 
-	fs_copilot_autoblocks_restore (policy);
+	fs_copilot_autoblocks_restore (policy, NULL);
 
 	CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
 	                    "1.2.3.4, Sentinel: periodic beacon"),
