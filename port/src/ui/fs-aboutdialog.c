@@ -225,25 +225,53 @@ hide_copied (gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+/* The copy itself runs from a low-priority idle, never inside the
+ * click.  On Windows each new clipboard owner queues a TARGETS request
+ * to itself (gdk/win32/gdkselection-win32.c, send_targets_request) and
+ * marks it as the request it expects; a second owner change, or a
+ * gtk_clipboard_store, before that request is handled leaves it
+ * unmarked, and answering it warns "Setting selection property with
+ * ... NULL" (_gdk_win32_selection_property_change).  An idle runs only
+ * once the GDK event queue is empty, so the previous owner's request
+ * has been answered; and clicks queued together (a double click on a
+ * busy app) make one copy, not two. */
+static guint copy_idle_id = 0;
+
+static gboolean
+copy_info_now (gpointer data)
+{
+	GtkClipboard *clipboard = data;
+	gchar *info = fs_dialogs_system_info ();
+
+	copy_idle_id = 0;
+	gtk_clipboard_set_text (clipboard, info, -1);
+#ifndef G_OS_WIN32
+	/* Hand the text to the clipboard manager now, so it outlives
+	 * StockFW even if StockFW does not quit cleanly.  Not on Windows:
+	 * there a store renders every format at once
+	 * (gdk_win32_display_store_clipboard sends WM_RENDERALLFORMATS)
+	 * while the new owner's TARGETS request is still queued, which is
+	 * the warning above.  Nothing is lost on a normal quit: the
+	 * GtkApplication's shutdown stores the clipboard on every
+	 * platform (gtk_application_shutdown, _gtk_clipboard_store_all). */
+	gtk_clipboard_store (clipboard);
+#endif
+	g_free (info);
+	return G_SOURCE_REMOVE;
+}
+
 static void
 on_copy_info (GtkButton *button, gpointer data)
 {
 	GtkWidget *copied = data;
-	GtkClipboard *clipboard =
-		gtk_widget_get_clipboard (GTK_WIDGET (button),
-		                          GDK_SELECTION_CLIPBOARD);
-	gchar *info = fs_dialogs_system_info ();
 	guint id;
 
-	gtk_clipboard_set_text (clipboard, info, -1);
-#ifndef G_OS_WIN32
-	/* Keep the text after StockFW quits.  Not on Windows: GDK there
-	 * renders the clipboard on Windows' request when the owner goes
-	 * away, and a store renders formats it has no data for, warning
-	 * "Setting selection property with ... NULL" once for each. */
-	gtk_clipboard_store (clipboard);
-#endif
-	g_free (info);
+	if (copy_idle_id == 0)
+		copy_idle_id = g_idle_add_full (
+			G_PRIORITY_LOW, copy_info_now,
+			g_object_ref (gtk_widget_get_clipboard (
+				GTK_WIDGET (button), GDK_SELECTION_CLIPBOARD)),
+			g_object_unref);
 
 	gtk_widget_show (copied);
 	id = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (copied),

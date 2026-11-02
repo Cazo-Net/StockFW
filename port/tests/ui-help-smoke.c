@@ -86,13 +86,29 @@ static GtkApplication *app = NULL;
 	printf ("\n");                                            \
 } while (0)
 
+/* The step running now, named on stderr before it starts, so a GTK
+ * warning in the log sits under the step that caused it; [W] names the
+ * step of the first one. */
+static const gchar *step = "start";
+static const gchar *first_warning_step = NULL;
+
+static void
+begin_step (const gchar *name)
+{
+	step = name;
+	g_printerr ("== step: %s\n", name);
+}
+
 static GLogWriterOutput
 count_warnings (GLogLevelFlags level, const GLogField *fields,
                 gsize n_fields, gpointer data)
 {
 	(void) data;
-	if (level & (G_LOG_LEVEL_WARNING | G_LOG_LEVEL_CRITICAL))
+	if (level & (G_LOG_LEVEL_WARNING | G_LOG_LEVEL_CRITICAL)) {
 		warnings++;
+		if (first_warning_step == NULL)
+			first_warning_step = step;
+	}
 	return g_log_writer_default (level, fields, n_fields, NULL);
 }
 
@@ -1402,7 +1418,17 @@ check_about (void)
 			gtk_widget_get_display (about), GDK_SELECTION_CLIPBOARD);
 		gchar *got;
 
+		begin_step ("check_about: Copy system info");
+		/* Something else on the clipboard first, and the click
+		 * straight after, with no main-loop turn between: on
+		 * Windows the "before" owner's TARGETS request to itself
+		 * is still queued, and Copy must not change the owner
+		 * again until it is answered ([W] catches the warning). */
 		gtk_clipboard_set_text (cb, "before", -1);
+		got = gtk_clipboard_wait_for_text (cb);
+		CHECK (g_strcmp0 (got, "before") == 0,
+		       "[A2] the clipboard holds other text before the copy");
+		g_free (got);
 		click (about, "about-copy");
 		got = gtk_clipboard_wait_for_text (cb);
 		CHECK (g_strcmp0 (got, info) == 0
@@ -1852,23 +1878,27 @@ run_all (gpointer data)
 
 	pump ();
 	printf ("theme: %s\n", g_getenv ("GTK_THEME"));
-	check_table ();
-	check_claims ();
-	check_merged_107 ();
-	check_opening ();
-	check_every_topic ();
-	check_search ();
-	check_links ();
-	check_preferences ();
-	check_whatif_prefs ();
-	check_about ();
-	check_about_keys ();
-	check_help_keys ();
-	check_layout ();
-	check_theme ();
+#define STEP(fn) do { begin_step (#fn); fn (); } while (0)
+	STEP (check_table);
+	STEP (check_claims);
+	STEP (check_merged_107);
+	STEP (check_opening);
+	STEP (check_every_topic);
+	STEP (check_search);
+	STEP (check_links);
+	STEP (check_preferences);
+	STEP (check_whatif_prefs);
+	STEP (check_about);
+	STEP (check_about_keys);
+	STEP (check_help_keys);
+	STEP (check_layout);
+	STEP (check_theme);
+#undef STEP
+	begin_step ("quit");
 
-	CHECK (warnings == 0, "[W] no GTK warnings or criticals (%d)",
-	       warnings);
+	CHECK (warnings == 0, "[W] no GTK warnings or criticals (%d%s%s)",
+	       warnings, first_warning_step != NULL ? ", the first in " : "",
+	       first_warning_step != NULL ? first_warning_step : "");
 	close_help ();
 	g_application_quit (G_APPLICATION (app));
 	return G_SOURCE_REMOVE;
