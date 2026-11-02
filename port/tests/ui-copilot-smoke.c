@@ -273,6 +273,56 @@ find_beacon (FsCopilot *copilot)
 	return found;
 }
 
+/* The beacon finding about one destination. */
+static const FsInsight *
+find_beacon_to (FsCopilot *copilot, const gchar *dest)
+{
+	GList *insights = fs_copilot_get_insights (copilot);
+	const FsInsight *found = NULL;
+
+	for (GList *l = insights; l != NULL; l = l->next) {
+		FsInsight *ins = l->data;
+
+		if (ins->type == FS_INSIGHT_BEACON &&
+		    g_strcmp0 (ins->destination, dest) == 0) {
+			found = ins;
+			break;
+		}
+	}
+	g_list_free (insights);
+	return found;
+}
+
+/* Five irregular connections from another program to dest: an
+ * established destination for it (3 or more), and no beacon. */
+static void
+feed_other (FsCopilot *copilot, const gchar *app, const gchar *dest,
+            gint64 t0)
+{
+	FsHit hit;
+
+	memset (&hit, 0, sizeof hit);
+	hit.direction   = "Out";
+	hit.source      = "192.168.1.7";
+	hit.destination = (gchar *) dest;
+	hit.port        = "443";
+	hit.protocol    = "TCP";
+	hit.service     = (gchar *) app;
+	for (gint i = 0; i < 5; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+			t0 + (gint64) (i * i * 7 + 1) * G_USEC_PER_SEC);
+}
+
+/* Whether the finding's drawer text (withheld) says `needle'. */
+static gboolean
+withheld_says (FsCopilot *copilot, const gchar *dest, const gchar *needle)
+{
+	const FsInsight *b = find_beacon_to (copilot, dest);
+
+	return b != NULL && !b->auto_applicable && b->withheld != NULL &&
+	       strstr (b->withheld, needle) != NULL;
+}
+
 /* ---- 7. the What-If card --------------------------------------------- */
 
 /* Rows of the card, found by name: the page is the real one. */
@@ -1901,6 +1951,62 @@ main (int argc, char **argv)
 	CHECK (!fs_copilot_sentinel_auto_pass (),
 	       "after lift-all the cooldown keeps everything down");
 
+	/* ---- 5b. the gates are judged when the pass stages ------------- *
+	 * R1: paused from the tray, a stranger's beacon becomes
+	 * auto-blockable; then another program makes 5 connections to the
+	 * same host; then the pause ends and the pass "catches up".  The
+	 * host is now established elsewhere, so nothing may be staged. */
+
+	fs_copilot_sentinel_pause (3600);
+	feed_beacon (copilot, "5.6.7.9", t0 + (gint64) 2500 * G_USEC_PER_SEC);
+	{
+		const FsInsight *b = find_beacon_to (copilot, "5.6.7.9");
+
+		CHECK (b != NULL && b->auto_applicable,
+		       "R1 setup: the paused beacon asks to be auto-blocked");
+	}
+	feed_other (copilot, "brave.exe", "5.6.7.9",
+	            t0 + (gint64) 3000 * G_USEC_PER_SEC);
+	CHECK (!fs_copilot_sentinel_auto_pass (),
+	       "R1: nothing is staged while paused");
+	fs_copilot_sentinel_pause (0);
+	CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+	                    "5.6.7.9, Sentinel: periodic beacon"),
+	       "R1: resume does not block a host brave.exe now uses");
+	CHECK (!audit_mentions ("5.6.7.9, Sentinel"),
+	       "R1: no auto-block of that host is audited");
+	CHECK (withheld_says (copilot, "5.6.7.9", "brave.exe has 5 recorded"),
+	       "R1: the finding now says why the block was withheld");
+
+	/* R2: the user's own outbound allow for the host.  Made when the
+	 * finding exists (the Policy page), and before (a row from an
+	 * earlier session): neither may be overruled by a block. */
+	fs_copilot_sentinel_pause (3600);
+	feed_beacon (copilot, "9.8.7.6", t0 + (gint64) 4000 * G_USEC_PER_SEC);
+	{
+		const FsInsight *b = find_beacon_to (copilot, "9.8.7.6");
+
+		CHECK (b != NULL && b->auto_applicable,
+		       "R2 setup: the paused beacon asks to be auto-blocked");
+	}
+	policy_add (policy, FS_RULE_OUTBOUND_ALLOW_TO, "9.8.7.0/24, my allow");
+	CHECK (fs_policy_save (policy), "R2 setup: the user's allow saves");
+	fs_copilot_sentinel_pause (0);
+	CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+	                    "9.8.7.6, Sentinel: periodic beacon"),
+	       "R2: resume does not stage a deny over the user's allow");
+	CHECK (withheld_says (copilot, "9.8.7.6", "you allowed this destination"),
+	       "R2: the finding says the user's allow withholds the block");
+
+	feed_beacon (copilot, "9.8.7.5", t0 + (gint64) 5000 * G_USEC_PER_SEC);
+	CHECK (!fs_copilot_sentinel_auto_pass (),
+	       "R2: a new beacon to an allowed host stages nothing");
+	CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+	                    "9.8.7.5, Sentinel: periodic beacon"),
+	       "R2: the policy holds no Sentinel deny next to the allow");
+	CHECK (withheld_says (copilot, "9.8.7.5", "you allowed this destination"),
+	       "R2: the new finding is report only, and says why");
+
 	/* ---- 6. detect mode: auto_pass stages nothing ------------------ */
 
 	fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode", "detect");
@@ -1913,6 +2019,50 @@ main (int argc, char **argv)
 	CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
 	                    "7.7.7.7, Sentinel: periodic beacon"),
 	       "detect mode leaves the policy free of the block");
+
+	/* R1: Detect only, then another program uses the host, then the
+	 * user switches to auto-block, which runs the pass at once. */
+	feed_beacon (copilot, "7.7.7.8", t0 + (gint64) 6000 * G_USEC_PER_SEC);
+	{
+		const FsInsight *b = find_beacon_to (copilot, "7.7.7.8");
+
+		CHECK (b != NULL && b->auto_applicable,
+		       "R1 setup: the detect-mode beacon is auto-blockable");
+	}
+	feed_other (copilot, "brave.exe", "7.7.7.8",
+	            t0 + (gint64) 6600 * G_USEC_PER_SEC);
+	{
+		GtkWidget *to_auto = named (page, "sentinel-auto");
+		GtkWidget *to_detect = named (page, "sentinel-detect");
+
+		CHECK (to_auto != NULL && to_detect != NULL,
+		       "the Sentinel mode buttons are on the page");
+		if (to_auto != NULL)
+			gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (to_auto),
+			                              TRUE);
+		{
+			gchar *mode = fs_prefs_get_string (
+				"/apps/stockfw/client/sentinel/mode", "");
+
+			CHECK (g_strcmp0 (mode, "auto") == 0,
+			       "R1 setup: the switch to auto-block took");
+			g_free (mode);
+		}
+		CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+		                    "7.7.7.8, Sentinel: periodic beacon"),
+		       "R1: the switch to auto-block does not block a host "
+		       "brave.exe now uses");
+		CHECK (policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+		                   "7.7.7.7, Sentinel: periodic beacon"),
+		       "R1 control: the switch still stages the stranger "
+		       "nobody else uses");
+		if (to_detect != NULL)
+			gtk_toggle_button_set_active (
+				GTK_TOGGLE_BUTTON (to_detect), TRUE);
+		CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+		                    "7.7.7.7, Sentinel: periodic beacon"),
+		       "back in detect mode, the staged block is lifted");
+	}
 
 	test_whatif_card (policy, page);
 	test_page (policy, copilot);

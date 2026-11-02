@@ -324,6 +324,19 @@ gboolean   fs_copilot_baseline_dest_established (FsCopilot *copilot,
                                                  const gchar *app,
                                                  const gchar *dest);
 
+/* Sentinel's last word before it stages a finding's block, asked at
+ * that moment and not when the finding was made: a pass can run much
+ * later (when a tray pause ends, on a switch from Detect only, on the
+ * retry after a failed write), and by then another program may use
+ * the destination or the user may have allowed it.  For a beacon the
+ * finding's automatic-block gates are judged again with the current
+ * baseline, network and policy; when one now withholds, the finding is
+ * updated (auto_applicable FALSE, withheld says why) and FALSE is
+ * returned.  Other findings keep their flag.  FALSE for a finding not
+ * marked auto_applicable. */
+gboolean   fs_copilot_beacon_recheck (FsCopilot *copilot,
+                                      FsInsight *insight);
+
 G_END_DECLS
 
 #endif /* FS_COPILOT_H */

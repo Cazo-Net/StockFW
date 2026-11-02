@@ -1454,6 +1454,17 @@ with `cmp`):
 | drawer text not selectable | "page: the evidence cells are selectable text ...", "page: what Sentinel did can be selected and copied" |
 | Show rule without its ATK name | "page: Show rule's accessible name names the row" |
 | the tile note does not say the notes are below | "page: the tile's note says the notes are below" |
+| the auto pass does not judge the gates again (`fs-copilot.c`, UI) | "R1: resume does not block a host brave.exe now uses", "R1: the switch to auto-block does not block ...", "R2: resume does not stage a deny over the user's allow" and 3 more |
+| `fs_copilot_beacon_recheck` passes every beacon unjudged | "R1: another program's later use of the host withholds ...", "R2: an allow row added later ...", and the same 6 smoke checks |
+| the user's allow row not a gate | "R2: a beacon to a host the policy allows ...", "R2: an allow row added later ...", "R2: a new beacon to an allowed host stages nothing" and 4 more |
+| a Linux service key called a program in the withheld text | "R3: another service key is named as a port's traffic ...", "R3: a service key's own history ..." |
+| `test-core` writes its settings under the shared temp dir | "the settings, baseline and audit files go to a directory only this run owns ..."; run as a normal user next to a root-owned `/tmp/stockfw`, 86 checks fail and the program crashes |
+
+Since the review of 1.0.7, the staging pass asks `fs_copilot_beacon_recheck`
+before it writes, so a pass that runs late (a tray pause ending, a switch
+from Detect only, a retry) judges the beacon's gates with that moment's
+baseline, network and policy. `test-core.sh` makes its own temp dir for
+each run and removes it at the end.
 
 ## Threat-intel backend slots on Linux (`tests/test-intel-backend.sh`)
 

@@ -45,6 +45,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-autostart.h"
 #include "core/fs-blocktally.h"
 #include <glib/gstdio.h>
+#include <stdlib.h>
 #ifndef G_OS_WIN32
 #include <unistd.h>
 #endif
@@ -3140,7 +3141,119 @@ static void test_copilot_review_fixes (void)
 	ins = find_insight (c, FS_INSIGHT_BEACON);
 	CHECK (ins != NULL && ins->auto_applicable,
 	       "F2 control: the same run to a stranger is still auto-blocked");
+
+	/* R1: the staging pass judges the gates again.  The finding was
+	 * made auto-blockable; another program then makes 5 connections
+	 * to the host.  The re-check withholds and says why. */
+	CHECK (ins != NULL &&
+	       fs_copilot_beacon_recheck (c, (FsInsight *) ins),
+	       "R1 control: the re-check passes while nothing changed");
+	for (i = 0; i < 5; i++)
+		out_feed (c, "brave.exe", "93.184.216.34", "443", "TCP", NULL,
+		          9000 + i * i * 7 + 1);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (ins != NULL &&
+	       !fs_copilot_beacon_recheck (c, (FsInsight *) ins) &&
+	       !ins->auto_applicable && ins->withheld != NULL &&
+	       strstr (ins->withheld, "brave.exe has 5 recorded") != NULL,
+	       "R1: another program's later use of the host withholds the "
+	       "block at stage time, and the finding says so");
 	fs_copilot_free (c);
+
+	/* R2: the user's own outbound allow for the host (or a network
+	 * around it) withholds the block, when the finding is made and
+	 * when it is staged.  An "Anyone" allow does not count. */
+	{
+		FsPolicy *p = fs_policy_new ();
+		FsRule *allow = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_TO,
+		                                  "Anyone, open outbound");
+
+		c = fs_copilot_new ();
+		fs_policy_add (p, allow);
+		fs_rule_free (allow);
+		fs_copilot_set_policy (c, p);
+		for (i = 0; i < 8; i++)
+			out_feed (c, "updater.exe", "9.8.7.6", "443", "TCP", NULL,
+			          5000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (ins != NULL && ins->auto_applicable,
+		       "R2 control: an allow-to-Anyone row does not withhold");
+		allow = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_TO,
+		                          "9.8.7.0/24, my allow");
+		fs_policy_add (p, allow);
+		fs_rule_free (allow);
+		CHECK (ins != NULL &&
+		       !fs_copilot_beacon_recheck (c, (FsInsight *) ins) &&
+		       !ins->auto_applicable && ins->withheld != NULL &&
+		       strstr (ins->withheld, "you allowed this destination") != NULL,
+		       "R2: an allow row added later for a network around the "
+		       "host withholds the block at stage time");
+		fs_copilot_free (c);
+
+		c = fs_copilot_new ();
+		fs_copilot_set_policy (c, p);
+		for (i = 0; i < 8; i++)
+			out_feed (c, "updater.exe", "9.8.7.6", "443", "TCP", NULL,
+			          5000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (ins != NULL && !ins->auto_applicable &&
+		       ins->withheld != NULL &&
+		       strstr (ins->withheld, "you allowed this destination") != NULL,
+		       "R2: a beacon to a host the policy allows is reported, "
+		       "never made auto-blockable");
+		fs_copilot_free (c);
+		fs_policy_free (p);
+	}
+
+	/* R3: on Linux the profile key is the port's service name, and
+	 * the withheld text must not call it a program. */
+	{
+		gchar *s443 = fs_service_lookup_port (443);
+		gchar *s80  = fs_service_lookup_port (80);
+		gchar *want;
+
+		CHECK (s443 != NULL && s80 != NULL &&
+		       g_strcmp0 (s443, s80) != 0,
+		       "R3 setup: ports 443 and 80 have service names");
+		c = fs_copilot_new ();
+		for (i = 0; i < 5; i++)
+			out_feed (c, s443, "4.3.2.1", "443", "TCP", NULL,
+			          i * i * 7 + 1);
+		for (i = 0; i < 8; i++)
+			out_feed (c, s80, "4.3.2.1", "80", "TCP", NULL,
+			          1000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		want = g_strdup_printf ("traffic on the %s port (any program) "
+		                        "has 5 recorded", s443);
+		CHECK (ins != NULL && !ins->auto_applicable &&
+		       ins->withheld != NULL &&
+		       strstr (ins->withheld, want) != NULL,
+		       "R3: another service key is named as a port's traffic, "
+		       "not as a program");
+		g_free (want);
+		fs_copilot_free (c);
+
+		/* the key's own history, before the run, on another port */
+		c = fs_copilot_new ();
+		for (i = 0; i < 4; i++)
+			out_feed (c, "Unknown", "4.3.2.2", "40001", "TCP", NULL,
+			          i * i * 7 + 1);
+		for (i = 0; i < 8; i++)
+			out_feed (c, "Unknown", "4.3.2.2", "40000", "TCP", NULL,
+			          1000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (ins != NULL && !ins->auto_applicable &&
+		       ins->withheld != NULL &&
+		       strstr (ins->withheld, "traffic on this port already "
+		                              "reached") != NULL &&
+		       strstr (ins->withheld, "program") == NULL,
+		       "R3: a service key's own history is not called a "
+		       "program's");
+		fs_copilot_free (c);
+		g_free (s443);
+		g_free (s80);
+	}
+	c = NULL;
 
 	/* F3: a 300-port scan is one finding, and small findings never
 	 * push it out of the list. */
@@ -9400,15 +9513,98 @@ out:
 	fs_script_set_resolver (NULL);
 }
 
+/* [ rm_tree ] -- remove the run's private directory and everything
+ * under it.  Symbolic links are removed, never followed. */
+static void
+rm_tree (const gchar *path)
+{
+	GDir *dir;
+	const gchar *name;
+
+	if (!g_file_test (path, G_FILE_TEST_IS_SYMLINK) &&
+	    g_file_test (path, G_FILE_TEST_IS_DIR) &&
+	    (dir = g_dir_open (path, 0, NULL)) != NULL) {
+		while ((name = g_dir_read_name (dir)) != NULL) {
+			gchar *child = g_build_filename (path, name, NULL);
+
+			rm_tree (child);
+			g_free (child);
+		}
+		g_dir_close (dir);
+		g_rmdir (path);
+		return;
+	}
+	g_remove (path);
+}
+
+/* [ make_run_dir ]
+ * Every scratch path this program uses (the settings and audit files
+ * under the config dir, and the fixed-name test directories such as
+ * stockfw-behavior-test) lives under g_get_tmp_dir ().  A shared /tmp
+ * that a root run, or another session, filled with root-owned copies
+ * made a later normal-user run fail by the dozen and then crash.  So
+ * the temp dir is pointed at a fresh directory only this run owns,
+ * BEFORE GLib first reads and caches it, and removed at the end. */
+static gchar *
+make_run_dir (void)
+{
+#ifdef G_OS_WIN32
+	const gchar *base = g_getenv ("TEMP");
+
+	if (base == NULL || *base == '\0')
+		base = g_getenv ("TMP");
+	if (base == NULL || *base == '\0')
+		base = ".";
+#else
+	const gchar *base = g_getenv ("TMPDIR");
+
+	if (base == NULL || *base == '\0')
+		base = "/tmp";
+#endif
+	gchar *tmpl = g_build_filename (base, "stockfw-core-XXXXXX", NULL);
+
+	if (g_mkdtemp_full (tmpl, 0700) == NULL) {
+		fprintf (stderr, "cannot make a private test directory under "
+		         "%s\n", base);
+		exit (2);
+	}
+#ifdef G_OS_WIN32
+	g_setenv ("TEMP", tmpl, TRUE);
+	g_setenv ("TMP", tmpl, TRUE);
+#else
+	g_setenv ("TMPDIR", tmpl, TRUE);
+#endif
+	return tmpl;
+}
+
 int main (void)
 {
+	gchar *run_dir = make_run_dir ();
+
 	/* Point the preference file somewhere disposable before anything
-	 * reads it: the path is computed once, on first use. */
+	 * reads it: the path is computed once, on first use.  The temp
+	 * dir is this run's own (make_run_dir), never a shared /tmp. */
 #ifdef G_OS_WIN32
 	g_setenv ("APPDATA", g_get_tmp_dir (), TRUE);
 #else
 	g_setenv ("XDG_CONFIG_HOME", g_get_tmp_dir (), TRUE);
 #endif
+	{
+#ifdef G_OS_WIN32
+		const gchar *cfg = g_getenv ("APPDATA");
+#else
+		const gchar *cfg = g_getenv ("XDG_CONFIG_HOME");
+#endif
+		GStatBuf st;
+		gboolean own = cfg != NULL && g_strcmp0 (cfg, run_dir) == 0 &&
+		               g_stat (cfg, &st) == 0;
+
+#ifndef G_OS_WIN32
+		own = own && st.st_uid == getuid () && (st.st_mode & 0077) == 0;
+#endif
+		CHECK (own, "the settings, baseline and audit files go to a "
+		       "directory only this run owns, not a shared /tmp");
+	}
 	/* The Copilot reads this computer's DNS servers and gateways; the
 	 * tests use none (the review-fix test sets its own). */
 	g_setenv ("STOCKFW_RESOLV_CONF", "/dev/null", TRUE);
@@ -9488,6 +9684,8 @@ int main (void)
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);
 
+	rm_tree (run_dir);
+	g_free (run_dir);
 	return failures ? 1 : 0;
 }
 EOF

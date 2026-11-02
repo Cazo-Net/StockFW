@@ -47,6 +47,8 @@ struct _FsCopilot
 	GHashTable *beacon_stamps;      /* "app|host:port/proto" ->
 	                                 * GArray<BeaconEv>                 */
 	GHashTable *beacon_reported;    /* same key -> stage 1 / 2          */
+	GHashTable *beacon_total;       /* same key -> contacts ever timed
+	                                 * (the stamps keep the newest 32) */
 	GHashTable *fanout;             /* app -> FanoutState*              */
 
 	/* 1.0.7: inbound checks and report memory. */
@@ -248,6 +250,8 @@ fs_copilot_new (void)
 		g_str_hash, g_str_equal, g_free,
 		(GDestroyNotify) g_array_unref);
 	copilot->beacon_reported = g_hash_table_new_full (
+		g_str_hash, g_str_equal, g_free, NULL);
+	copilot->beacon_total = g_hash_table_new_full (
 		g_str_hash, g_str_equal, g_free, NULL);
 	copilot->fanout = g_hash_table_new_full (
 		g_str_hash, g_str_equal, g_free, fanout_state_free);
@@ -456,6 +460,7 @@ fs_copilot_free (FsCopilot *copilot)
 	g_hash_table_unref (copilot->profiles);
 	g_hash_table_unref (copilot->beacon_stamps);
 	g_hash_table_unref (copilot->beacon_reported);
+	g_hash_table_unref (copilot->beacon_total);
 	g_hash_table_unref (copilot->fanout);
 	g_hash_table_unref (copilot->scan);
 	g_hash_table_unref (copilot->brute);
@@ -1742,15 +1747,15 @@ hit_app_key (const FsHit *hit, gchar *buf, gsize size)
 		g_strlcpy (buf, "Unknown", size);
 }
 
-/* [ hit_key_is_program ]
+/* [ key_is_program_on_port ] / [ hit_key_is_program ]
  * Whether the profile key names a program (the Windows log's
  * Application Name, "brave.exe") rather than the port's service name
  * ("https", "Unknown"), which is all a Linux log line carries and which
  * every program on that port shares. */
 static gboolean
-hit_key_is_program (const FsHit *hit, const gchar *key)
+key_is_program_on_port (const gchar *port_text, const gchar *key)
 {
-	glong port = hit->port != NULL ? strtol (hit->port, NULL, 10) : 0;
+	glong port = port_text != NULL ? strtol (port_text, NULL, 10) : 0;
 	gchar *svc;
 	gboolean program;
 
@@ -1761,6 +1766,12 @@ hit_key_is_program (const FsHit *hit, const gchar *key)
 	program = svc == NULL || g_ascii_strcasecmp (svc, key) != 0;
 	g_free (svc);
 	return program;
+}
+
+static gboolean
+hit_key_is_program (const FsHit *hit, const gchar *key)
+{
+	return key_is_program_on_port (hit->port, key);
 }
 
 /* [ sentinel_dest_auto_ok_before_run ]
@@ -1821,6 +1832,188 @@ sentinel_dest_established_elsewhere (FsCopilot *copilot, const gchar *app,
 	if (count_out != NULL)
 		*count_out = best_n;
 	return best;
+}
+
+/* [ key_names_program ]
+ * A profile key seen without its port: a program unless it is one of
+ * the names a Linux log line can carry instead (a service name from
+ * the port table, ICMP, ICMPv6, "Unknown"). */
+static gboolean
+key_names_program (const gchar *key)
+{
+	if (key == NULL || g_strcmp0 (key, "Unknown") == 0 ||
+	    g_strcmp0 (key, _("Unknown")) == 0 ||
+	    g_ascii_strcasecmp (key, "ICMP") == 0 ||
+	    g_ascii_strcasecmp (key, "ICMPv6") == 0)
+		return FALSE;
+	return fs_service_find (key) == NULL;
+}
+
+/* [ policy_allows_dest ]
+ * TRUE when the policy holds an outbound "allow to host" row of the
+ * user's whose target names this destination: the same address, or a
+ * network or range around it.  "Anyone" rows do not count (they say
+ * nothing about this host).  A Sentinel block is "deny outbound to
+ * host", and on Windows a block outranks an allow, so staging one over
+ * such a row would silently overrule the user's own Allow. */
+static gboolean
+policy_allows_dest (const FsPolicy *policy, const gchar *dest)
+{
+	GPtrArray *rows;
+
+	if (policy == NULL || dest == NULL)
+		return FALSE;
+	rows = policy->kinds[FS_RULE_OUTBOUND_ALLOW_TO];
+	for (guint i = 0; rows != NULL && i < rows->len; i++) {
+		const FsRule *r = g_ptr_array_index (rows, i);
+		FsRangeSet *set;
+		gboolean hit;
+
+		if (r->target == NULL || *r->target == '\0' ||
+		    fs_util_target_is_anyone (r->target))
+			continue;
+		if (g_ascii_strcasecmp (r->target, dest) == 0)
+			return TRUE;
+		set = fs_range_set_new ();
+		hit = fs_range_set_add_text (set, r->target);
+		if (hit) {
+			fs_range_set_normalize (set);
+			hit = fs_range_set_contains_text (set, dest);
+		}
+		fs_range_set_free (set);
+		if (hit)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/* [ beacon_auto_withheld ]
+ * The beacon's automatic-block gates, in one place, so the finding
+ * when it is made and Sentinel's pass when it stages (which can be
+ * much later: after a tray pause, a switch from Detect only, a failed
+ * write's retry) judge with the same rules and the same, current,
+ * facts.  NULL when the automatic block may go ahead; otherwise why
+ * not, as the drawer shows it.  `run' is how many contacts the timed
+ * run holds in all (its samples are the suspicion, not history), and
+ * `stamps' how many the series holds now. */
+static gchar *
+beacon_auto_withheld (FsCopilot *copilot, const gchar *app,
+                      const gchar *dst, const gchar *port,
+                      guint run, guint stamps)
+{
+	guint portnum = port != NULL ? (guint) strtoul (port, NULL, 10) : 0;
+	gboolean dns_port = portnum == 53 || portnum == 853;
+	gboolean program = key_is_program_on_port (port, app);
+	const gchar *other;
+	guint other_n = 0;
+
+	if (stamps < FS_SENTINEL_BEACON_AUTO_MIN)
+		return g_strdup_printf (
+			_("Report only for now: an automatic block waits for %d "
+			  "contacts, and there are %u."),
+			FS_SENTINEL_BEACON_AUTO_MIN, stamps);
+	if (fs_sentinel_dest_never_auto_block (dst))
+		return g_strdup (
+			_("Report only: the destination is on the local network "
+			  "or is network infrastructure, which is never blocked "
+			  "automatically."));
+	if (copilot_is_infrastructure (copilot, dst))
+		return g_strdup (
+			_("Report only: this address is one of this computer's "
+			  "DNS servers or its default gateway, which are never "
+			  "blocked automatically."));
+	if (dns_port && copilot_dns_upstream_unknown (copilot))
+		return g_strdup (
+			_("Report only: DNS on this computer goes through a "
+			  "local resolver whose upstream servers could not be "
+			  "read, and this may be one of them."));
+	if (policy_allows_dest (copilot->policy, dst))
+		return g_strdup (
+			_("Report only: you allowed this destination in your "
+			  "policy, and an automatic block would overrule your "
+			  "allow."));
+	if (!sentinel_dest_auto_ok_before_run (copilot, app, dst, run))
+		return g_strdup (program
+			? _("Report only: this program already talked to this "
+			    "destination before the run, so it is normal traffic "
+			    "for it.")
+			: _("Report only: traffic on this port already reached "
+			    "this destination before the run, so it is normal "
+			    "traffic for it."));
+	other = sentinel_dest_established_elsewhere (copilot, app, dst,
+	                                             &other_n);
+	if (other != NULL)
+		return key_names_program (other)
+			? g_strdup_printf (
+				_("Report only: %s has %u recorded connections to "
+				  "this destination, and the block would apply to "
+				  "every program."), other, other_n)
+			: g_strdup_printf (
+				_("Report only: traffic on the %s port (any program) "
+				  "has %u recorded connections to this destination, "
+				  "and the block would apply to every program."),
+				other, other_n);
+	return NULL;
+}
+
+/* [ fs_copilot_beacon_recheck ] -- see fs-copilot.h. */
+gboolean
+fs_copilot_beacon_recheck (FsCopilot *copilot, FsInsight *insight)
+{
+	const gchar *series, *bar, *colon, *slash;
+	GArray *stamps;
+	gchar *app, *dst, *port, *why;
+	guint run, n;
+
+	if (copilot == NULL || insight == NULL)
+		return FALSE;
+	if (!insight->auto_applicable)
+		return FALSE;
+	if (insight->type != FS_INSIGHT_BEACON)
+		return TRUE;
+
+	/* "beacon|app|dst:port/proto": the series key after "beacon|". */
+	if (insight->key == NULL ||
+	    !g_str_has_prefix (insight->key, "beacon|"))
+		goto refuse;
+	series = insight->key + strlen ("beacon|");
+	bar    = strrchr (series, '|');
+	colon  = bar != NULL ? strrchr (bar, ':') : NULL;
+	slash  = colon != NULL ? strchr (colon, '/') : NULL;
+	if (bar == NULL || colon == NULL || slash == NULL)
+		goto refuse;
+
+	stamps = g_hash_table_lookup (copilot->beacon_stamps, series);
+	n   = stamps != NULL ? stamps->len : insight->count;
+	run = GPOINTER_TO_UINT (g_hash_table_lookup (copilot->beacon_total,
+	                                             series));
+	if (run < n)
+		run = n;
+
+	app  = g_strndup (series, (gsize) (bar - series));
+	dst  = g_strndup (bar + 1, (gsize) (colon - bar - 1));
+	port = g_strndup (colon + 1, (gsize) (slash - colon - 1));
+	copilot_network_fresh (copilot);
+	why  = beacon_auto_withheld (copilot, app, dst, port, run, n);
+	g_free (app);
+	g_free (dst);
+	g_free (port);
+	if (why == NULL)
+		return TRUE;
+
+	g_free (insight->withheld);
+	insight->withheld = why;
+	insight->auto_applicable = FALSE;
+	return FALSE;
+
+refuse:
+	/* A beacon whose series cannot be read back cannot be re-judged,
+	 * and what cannot be re-judged is not blocked automatically. */
+	g_free (insight->withheld);
+	insight->withheld = g_strdup (
+		_("Report only: the finding could not be checked again."));
+	insight->auto_applicable = FALSE;
+	return FALSE;
 }
 
 /* [ app_profile_new ] */
@@ -2701,9 +2894,11 @@ hit_rule_is_intel (const FsHit *hit)
  * computer's resolvers are periodic by nature and never timed.  The
  * automatic block is withheld for the LAN and infrastructure, for this
  * computer's resolvers and gateways on any port, for DNS while the
- * upstream resolvers are unknown, and for a destination this program
- * or ANY other program already has a history with (the block applies
- * to every program). */
+ * upstream resolvers are unknown, for a destination the user's policy
+ * allows outbound, and for a destination this program or ANY other
+ * program already has a history with (the block applies to every
+ * program).  The gates are in beacon_auto_withheld, which the staging
+ * pass asks again (fs_copilot_beacon_recheck). */
 static FsInsight *
 sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
                        gint64 now_unix)
@@ -2718,8 +2913,6 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 	guint i, n_diff, portnum;
 	gint stage, want;
 	gboolean udp, dns_port;
-	const gchar *other;
-	guint other_n = 0;
 
 	if (sentinel_hit_is_inbound (hit))
 		return NULL;
@@ -2768,6 +2961,9 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 		g_array_append_val (stamps, b);
 		if (stamps->len > FS_SENTINEL_BEACON_MAX_STAMPS)
 			g_array_remove_index (stamps, 0);
+		g_hash_table_insert (copilot->beacon_total, g_strdup (key),
+			GUINT_TO_POINTER (GPOINTER_TO_UINT (g_hash_table_lookup (
+				copilot->beacon_total, key)) + 1));
 	}
 	/* last == sec: same-second batch, no new information. */
 
@@ -2862,51 +3058,15 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 		insight->rule_kind = FS_RULE_OUTBOUND_DENY_TO;
 
 		/* P6: the finding is always reported; the automatic block is
-		 * withheld when the destination is protocol infrastructure
-		 * (multicast, loopback, the LAN), when the application's own
-		 * baseline -- beyond this very run -- already knows it, and
-		 * until the run has 8 contacts. */
-		if (stamps->len < FS_SENTINEL_BEACON_AUTO_MIN) {
-			insight->auto_applicable = FALSE;
-			insight->withheld = g_strdup_printf (
-				_("Report only for now: an automatic block waits for %d "
-				  "contacts, and there are %u."),
-				FS_SENTINEL_BEACON_AUTO_MIN, stamps->len);
-		} else if (fs_sentinel_dest_never_auto_block (dst)) {
-			insight->auto_applicable = FALSE;
-			insight->withheld = g_strdup (
-				_("Report only: the destination is on the local network "
-				  "or is network infrastructure, which is never blocked "
-				  "automatically."));
-		} else if (copilot_is_infrastructure (copilot, dst)) {
-			insight->auto_applicable = FALSE;
-			insight->withheld = g_strdup (
-				_("Report only: this address is one of this computer's "
-				  "DNS servers or its default gateway, which are never "
-				  "blocked automatically."));
-		} else if (dns_port && copilot_dns_upstream_unknown (copilot)) {
-			insight->auto_applicable = FALSE;
-			insight->withheld = g_strdup (
-				_("Report only: DNS on this computer goes through a "
-				  "local resolver whose upstream servers could not be "
-				  "read, and this may be one of them."));
-		} else if (!sentinel_dest_auto_ok_before_run (copilot, app_buf,
-		                                              dst, stamps->len)) {
-			insight->auto_applicable = FALSE;
-			insight->withheld = g_strdup (
-				_("Report only: this program already talked to this "
-				  "destination before the run, so it is normal traffic "
-				  "for it."));
-		} else if ((other = sentinel_dest_established_elsewhere (
-		                    copilot, app_buf, dst, &other_n)) != NULL) {
-			insight->auto_applicable = FALSE;
-			insight->withheld = g_strdup_printf (
-				_("Report only: %s has %u recorded connections to this "
-				  "destination, and the block would apply to every "
-				  "program."), other, other_n);
-		} else {
-			insight->auto_applicable = TRUE;
-		}
+		 * withheld for the reasons beacon_auto_withheld gives.  The
+		 * staging pass asks the same question again with the facts of
+		 * that moment (fs_copilot_beacon_recheck). */
+		insight->withheld = beacon_auto_withheld (
+			copilot, app_buf, dst, port,
+			MAX (stamps->len, GPOINTER_TO_UINT (g_hash_table_lookup (
+				copilot->beacon_total, key))),
+			stamps->len);
+		insight->auto_applicable = insight->withheld == NULL;
 
 		if (!key_owned)
 			g_free (key);

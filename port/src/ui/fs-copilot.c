@@ -1322,10 +1322,20 @@ static GtkWidget *
 checked_list_new (void)
 {
     static const gchar *checks[] = {
+#ifdef G_OS_WIN32
         N_("Contacts at a near-fixed interval: 6 or more, timing varying "
            "under 30 % (auto-block needs 8, to an unknown public address "
-           "no other program uses). DNS to this computer's own DNS servers "
-           "is not timed."),
+           "no other program uses and your policy does not allow). DNS to "
+           "this computer's own DNS servers is not timed."),
+#else
+        /* The Linux log names no programs: the gate compares the
+         * traffic of each port's service. */
+        N_("Contacts at a near-fixed interval: 6 or more, timing varying "
+           "under 30 % (auto-block needs 8, to an unknown public address "
+           "that traffic on other ports does not use and your policy does "
+           "not allow). DNS to this computer's own DNS servers is not "
+           "timed."),
+#endif
         N_("Fan-out: one program reaching 60 or more hosts in a minute, or "
            "10 refused hosts. When the log names a port's service instead "
            "of a program, only the refused hosts count."),
@@ -3058,6 +3068,7 @@ fs_copilot_sentinel_auto_pass (void)
 {
     GList *insights, *l;
     gboolean changed = FALSE;
+    gboolean rechecked_out = FALSE;
     gint64 now;
 
     if (global_copilot == NULL || copilot_policy == NULL ||
@@ -3078,6 +3089,11 @@ fs_copilot_sentinel_auto_pass (void)
         now - auto_block_last_fail < FS_AUTOBLOCK_RETRY_US)
         return FALSE;
 
+    /* The re-check reads the user's allow rows from the copilot's
+     * policy: it must be the one this pass writes to. */
+    if (fs_copilot_get_policy (global_copilot) != copilot_policy)
+        fs_copilot_set_policy (global_copilot, copilot_policy);
+
     insights = fs_copilot_get_insights (global_copilot);
 
     for (l = insights; l != NULL; l = l->next) {
@@ -3094,6 +3110,17 @@ fs_copilot_sentinel_auto_pass (void)
          * Apply button, and those are never staged here. */
         if (!fs_insight_is_auto_safe (ins))
             continue;
+
+        /* The finding's gates were judged when it was made; this pass
+         * may run much later (a pause ending, a switch from Detect
+         * only, the retry after a failed write).  Judge them again
+         * now: another program may use the host by now, or the user
+         * may have allowed it.  A gate that now withholds updates the
+         * finding's drawer text. */
+        if (!fs_copilot_beacon_recheck (global_copilot, ins)) {
+            rechecked_out = TRUE;
+            continue;
+        }
 
         if (auto_block_find (ins->rule_kind, ins->rule_csv) != NULL)
             continue;
@@ -3153,6 +3180,10 @@ fs_copilot_sentinel_auto_pass (void)
         fs_policyview_reload (copilot_policy);
         auto_block_push ();
     }
+
+    /* A finding that a gate now withholds says so in its drawer. */
+    if (rechecked_out && !changed)
+        refresh_insights ();
 
     return changed;
 }
