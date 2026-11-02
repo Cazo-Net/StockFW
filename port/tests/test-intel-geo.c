@@ -955,6 +955,65 @@ test_updates (void)
 		       "only_id \"location\" updates just the database");
 		g_ptr_array_unref (one);
 	}
+
+	/* Review GEO-ROLLBACK-1 / GEO-2: the floor is the newest copy ever
+	 * accepted (geodb.state), not whatever location.db is now.  A copy
+	 * in use that is damaged or gone is repaired only by a copy at
+	 * least that new; an older signed copy is still a rollback. */
+	{
+		const gint64 floor_t = now_s - 12 * 3600;
+		gchar *p = g_build_filename (dir, "location.db", NULL);
+		gchar *d = NULL, *state, *want;
+		gsize n = 0;
+
+		g_file_get_contents (p, &d, &n, NULL);
+		d[n - 1] ^= 0x01;
+		g_file_set_contents (p, d, (gssize) n, NULL);
+		g_chmod (p, 0600);
+		serve_geo (std_xz (now_s - 400 * DAY, FALSE, key));
+		CHECK (geo_update (c, FS_INTEL_UPDATE_NOW, now_s + DAY, &msg) ==
+		       FS_INTEL_REFUSED && strstr (msg, "older") != NULL,
+		       "rollback floor: one byte of the copy in use damaged, a "
+		       "signed copy 400 days old is still refused (%s)", msg);
+		g_free (msg);
+		db2 = read_file (dir, "location.db", &n2);
+		CHECK (db2 != NULL && n2 == n && memcmp (db2, d, n) == 0,
+		       "rollback floor: the damaged copy is left as it was (the "
+		       "build keeps failing closed)");
+		g_free (db2);
+		g_unlink (p);
+		CHECK (geo_update (c, FS_INTEL_UPDATE_NOW, now_s + DAY, &msg) ==
+		       FS_INTEL_REFUSED && strstr (msg, "older") != NULL &&
+		       !g_file_test (p, G_FILE_TEST_EXISTS),
+		       "rollback floor: the copy in use deleted, the old copy is "
+		       "still refused and nothing is installed (%s)", msg);
+		g_free (msg);
+		state = read_file (dir, "geodb.state", NULL);
+		want = g_strdup_printf ("created-at=%" G_GINT64_FORMAT "\n",
+		                        floor_t);
+		CHECK (state != NULL && strstr (state, want) != NULL,
+		       "rollback floor: geodb.state still records the newest copy "
+		       "accepted (%s)", want);
+		g_free (state);
+		g_free (want);
+		serve_geo (std_xz (now_s - DAY - 1, TRUE, key));
+		CHECK (geo_update (c, FS_INTEL_UPDATE_NOW, now_s + DAY, &msg) ==
+		       FS_INTEL_REFUSED,
+		       "rollback floor: a copy one day and a second older than "
+		       "the floor is refused too (%s)", msg);
+		g_free (msg);
+		serve_geo (std_xz (floor_t, TRUE, key));
+		CHECK (geo_update (c, FS_INTEL_UPDATE_NOW, now_s + DAY, &msg) ==
+		       FS_INTEL_UPDATED &&
+		       fs_intel_geo_status (&st, now_s + DAY, NULL) && st.present &&
+		       st.created_at == floor_t,
+		       "rollback floor: the copy last accepted (the same second) "
+		       "repairs it (%s)", msg);
+		fs_intel_geo_status_clear (&st);
+		g_free (msg);
+		g_free (d);
+		g_free (p);
+	}
 	{
 		gchar *audit = read_file (base, "audit.log", NULL);
 
@@ -1269,10 +1328,11 @@ expect_lookup (const FsIntelConfig *c, const FsHostNet *host,
 
 	fs_intel_lookup (c, host, addr, &r);
 	g_string_append_printf (got, "cc=%s(%s) asn=%u(%s) net=%s flags=%u "
-	                        "locations=", r.country,
+	                        "%slocations=", r.country,
 	                        r.country_name ? r.country_name : "-", r.asn,
 	                        r.as_name ? r.as_name : "-",
-	                        r.network ? r.network : "-", r.geo_flags);
+	                        r.network ? r.network : "-", r.geo_flags,
+	                        r.geo_via_nat64 ? "via=nat64 " : "");
 	for (guint i = 0; i < r.locations->len; i++)
 		g_string_append_printf (got, "%s%s", i ? "," : "",
 		                        (gchar *) r.locations->pdata[i]);
@@ -1313,14 +1373,25 @@ test_lookup (void)
 	               "net=198.51.100.128/25 flags=0 locations=asn-beta lists=0 "
 	               "dir=out blocked=1 exception=0 | Blocked by threat intel: "
 	               "Beta", "the nested network: XB, the AS rule (outbound)");
+	/* Review GEO-3: a NAT64 address is shown with the country, AS and
+	 * network of the IPv4 address it carries (via=nat64). */
 	expect_lookup (c, NULL, "64:ff9b::c633:6482",
-	               "cc=(-) asn=0(-) net=- flags=0 locations=asn-beta lists=0 "
-	               "dir=out blocked=1 exception=0 | Blocked by threat intel: "
-	               "Beta", "its NAT64 form: the outbound rule holds it");
+	               "cc=XB(Brigadoon) asn=64501(Beta Hosting) "
+	               "net=198.51.100.128/25 flags=0 via=nat64 "
+	               "locations=asn-beta lists=0 dir=out blocked=1 exception=0 "
+	               "| Blocked by threat intel: Beta",
+	               "its NAT64 form: the outbound rule holds it, and it is "
+	               "located by its IPv4 address");
 	expect_lookup (c, NULL, "64:ff9b::c633:6409",
+	               "cc=XA(Atlantis) asn=64500(Alpha Networks) "
+	               "net=198.51.100.0/24 flags=0 via=nat64 locations= lists=0 "
+	               "dir=- blocked=0 exception=0",
+	               "a NAT64 address in XA: located by its IPv4 address, yet "
+	               "no inbound rule holds it");
+	expect_lookup (c, NULL, "64:ff9b::6440:1",
 	               "cc=(-) asn=0(-) net=- flags=0 locations= lists=0 dir=- "
 	               "blocked=0 exception=0",
-	               "a NAT64 address in XA: no inbound rule holds it");
+	               "a NAT64 address whose IPv4 address is in no network");
 	expect_lookup (c, NULL, "198.51.100.7",
 	               "cc=XA(Atlantis) asn=64500(Alpha Networks) "
 	               "net=198.51.100.0/24 flags=0 locations=country-atlantis "
@@ -1496,6 +1567,86 @@ test_gate (void)
 	       "Start brings it back through the gate");
 	fs_intel_outcome_free (o);
 	g_clear_error (&e);
+
+	/* Review GEO-1: the copy in use stops verifying (or goes) after an
+	 * apply.  The kernel keeps the country set (the build fails
+	 * closed), so the lookup must not say "not blocked". */
+	{
+		gchar *p = g_build_filename (dir, "location.db", NULL);
+		gchar *d = NULL, *s;
+		gsize n = 0;
+		FsIntelLookup r;
+
+		g_file_get_contents (p, &d, &n, NULL);
+		d[n - 20] ^= 0x01;
+		g_file_set_contents (p, d, (gssize) n, NULL);
+		g_chmod (p, 0600);
+		fs_range_set_add_text (c->exceptions, "198.51.100.7");
+		fs_range_set_normalize (c->exceptions);
+		o = fs_intel_apply_safe (&fake_backend, c, host, "test", NULL, &e);
+		CHECK ((o == NULL || o->result != FS_APPLY_OK) && e != NULL &&
+		       e->code == FS_INTEL_ERR_TAMPERED &&
+		       strstr (kern.got_text, "[country-atlantis in]") != NULL,
+		       "a damaged copy: the apply is refused and the kernel keeps "
+		       "the country set (%s)", e ? e->message : "applied");
+		fs_intel_outcome_free (o);
+		g_clear_error (&e);
+		for (guint pass = 0; pass < 2; pass++) {
+			const gchar *how = pass == 0 ? "damaged" : "deleted";
+
+			fs_intel_lookup (c, host, "198.51.100.9", &r);
+			s = fs_intel_lookup_sentence (c, &r);
+			CHECK (s != NULL && strstr (s, "Atlantis") != NULL &&
+			       strstr (s, "cannot be read") != NULL &&
+			       r.locations_unknown != NULL &&
+			       r.locations_unknown->len == 1 &&
+			       strcmp (r.locations_unknown->pdata[0],
+			               "country-atlantis") == 0 &&
+			       r.geo_unknown && !r.blocked,
+			       "lookup with the copy in use %s while Atlantis is in "
+			       "the kernel: never \"not blocked\" (%s)", how,
+			       s ? s : "no sentence");
+			g_free (s);
+			fs_intel_lookup_clear (&r);
+			/* an exception and protected space still win, as in
+			 * the kernel */
+			for (guint k = 0; k < 2; k++) {
+				const gchar *a = k ? "10.1.2.3" : "198.51.100.7";
+
+				fs_intel_lookup (c, host, a, &r);
+				s = fs_intel_lookup_sentence (c, &r);
+				CHECK (s == NULL && !r.blocked,
+				       "lookup of %s with the copy %s: no sentence "
+				       "(%s)", a, how, s ? s : "none");
+				g_free (s);
+				fs_intel_lookup_clear (&r);
+			}
+			g_unlink (p);
+		}
+		/* suspended: nothing is in the kernel, nothing is claimed */
+		CHECK (fs_intel_suspend (&fake_backend, "test", &e), "Stop");
+		g_clear_error (&e);
+		fs_intel_lookup (c, host, "198.51.100.9", &r);
+		s = fs_intel_lookup_sentence (c, &r);
+		CHECK (s == NULL && r.locations_unknown->len == 0,
+		       "after Stop, a missing copy claims nothing (%s)",
+		       s ? s : "no sentence");
+		g_free (s);
+		fs_intel_lookup_clear (&r);
+		install_std (c, now_s - DAY, FALSE);
+		fs_intel_config_save (c, NULL);
+		o = fs_intel_resume (&fake_backend, "test", NULL, &e);
+		CHECK (o != NULL && o->result == FS_APPLY_OK,
+		       "the copy last accepted repairs it, and Start applies again");
+		fs_intel_outcome_free (o);
+		g_clear_error (&e);
+		fs_intel_lookup (c, host, "198.51.100.9", &r);
+		CHECK (r.blocked && !r.geo_unknown && r.locations_unknown->len == 0,
+		       "and the lookup is certain again");
+		fs_intel_lookup_clear (&r);
+		g_free (d);
+		g_free (p);
+	}
 
 	/* Only rules, the database off: off, and says why. */
 	{

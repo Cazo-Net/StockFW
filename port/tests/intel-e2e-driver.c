@@ -38,7 +38,10 @@
  *                             with a key made now, and DIR/key.pem, its
  *                             public half; N more networks of country
  *                             XL (11.0.0.0/8 and up, one /28 every /27,
- *                             so none merge) for the timing check
+ *                             so none merge) for the timing check; and
+ *                             DIR/older.db.xz, the same networks (no
+ *                             XL) created 400 days earlier and signed
+ *                             with the same key (a rollback)
  *   geo-enable | geo-disable  the location database on (accepting its
  *                             terms) or off
  *   geo-update [FILE]         fs_intel_update (only "location", NOW):
@@ -51,8 +54,12 @@
  *                             VALUES comma-separated): "added <id>"
  *   geo-lookup ADDR           the enrichment: "cc=<cc> asn=<n>
  *                             net=<network> anycast=<0|1>
- *                             locations=<ids> dir=<d> blocked=<0|1>",
- *                             then the sentence when there is one
+ *                             [nat64=1 ]locations=<ids> dir=<d>
+ *                             blocked=<0|1>[ maybe=<ids>]", then the
+ *                             sentence when there is one (nat64=1: the
+ *                             answer is the IPv4 address inside a NAT64
+ *                             address; maybe: rules in the kernel whose
+ *                             membership cannot be read)
  *
  * With $STOCKFW_TEST_GEODB_KEY naming a public key (PEM), the reader
  * trusts that key instead of IPFire's: this driver is built with its own
@@ -476,22 +483,18 @@ cmd_except (const gchar *addr, gboolean add)
 
 /* ---- Round 2 -------------------------------------------------------- */
 
-static int
-cmd_geo_make (const gchar *dir, guint extra)
+/* The test's addresses (tests/test-intel-e2e.sh): the peer's in
+ * 198.51.100.0/25 are XA (Atlantis), the ones in .128/25 XB
+ * (Brigadoon, AS64501), 203.0.113.0/24 XC (Cockaigne, anycast), this
+ * computer's own network XA too.  `extra' more networks of XL. */
+static GBytes *
+geo_make_one (gint64 created, guint extra, EVP_PKEY *key)
 {
-	gint64 now = g_get_real_time () / G_USEC_PER_SEC;
-	GeoWriter *w = geow_new (now - 3600);
-	EVP_PKEY *key = geow_key_new ();
-	gchar *pem, *kp, *dp;
+	GeoWriter *w = geow_new (created);
 	guint8 *db;
 	gsize len = 0;
 	GBytes *xz;
-	gboolean ok;
 
-	/* The test's addresses (tests/test-intel-e2e.sh): the peer's in
-	 * 198.51.100.0/25 are XA (Atlantis), the ones in .128/25 XB
-	 * (Brigadoon, AS64501), 203.0.113.0/24 XC (Cockaigne, anycast),
-	 * this computer's own network XA too. */
 	geow_net (w, "198.51.100.0/25", "XA", 64500, 0);
 	geow_net (w, "198.51.100.128/25", "XB", 64501, 0);
 	geow_net (w, "203.0.113.0/24", "XC", 64502, FS_GEODB_FLAG_ANYCAST);
@@ -517,19 +520,39 @@ cmd_geo_make (const gchar *dir, guint extra)
 	geow_free (w);
 	xz = db != NULL ? geow_xz (db, len) : NULL;
 	g_free (db);
+	return xz;
+}
+
+static int
+cmd_geo_make (const gchar *dir, guint extra)
+{
+	gint64 now = g_get_real_time () / G_USEC_PER_SEC;
+	EVP_PKEY *key = geow_key_new ();
+	GBytes *xz = geo_make_one (now - 3600, extra, key);
+	GBytes *old = geo_make_one (now - 400 * 86400, 0, key);
+	gchar *pem, *kp, *dp, *op;
+	gboolean ok;
+
 	pem = geow_key_pub_pem (key);
 	EVP_PKEY_free (key);
 	kp = g_build_filename (dir, "key.pem", NULL);
 	dp = g_build_filename (dir, "location.db.xz", NULL);
-	ok = xz != NULL && g_file_set_contents (kp, pem, -1, NULL) &&
+	op = g_build_filename (dir, "older.db.xz", NULL);
+	ok = xz != NULL && old != NULL &&
+	     g_file_set_contents (kp, pem, -1, NULL) &&
 	     g_file_set_contents (dp, g_bytes_get_data (xz, NULL),
-	                          (gssize) g_bytes_get_size (xz), NULL);
+	                          (gssize) g_bytes_get_size (xz), NULL) &&
+	     g_file_set_contents (op, g_bytes_get_data (old, NULL),
+	                          (gssize) g_bytes_get_size (old), NULL);
 	g_print ("%s\n", ok ? "made" : "could not write the database");
 	g_free (kp);
 	g_free (dp);
+	g_free (op);
 	g_free (pem);
 	if (xz != NULL)
 		g_bytes_unref (xz);
+	if (old != NULL)
+		g_bytes_unref (old);
 	return ok ? 0 : 1;
 }
 
@@ -650,13 +673,18 @@ cmd_geo_lookup (const gchar *addr)
 	for (guint i = 0; i < r.locations->len; i++)
 		g_string_append_printf (ids, "%s%s", i ? "," : "",
 		                        (const gchar *) r.locations->pdata[i]);
-	g_print ("cc=%s asn=%u net=%s anycast=%d locations=%s dir=%s "
-	         "blocked=%d\n", r.country[0] ? r.country : "-", r.asn,
+	g_print ("cc=%s asn=%u net=%s anycast=%d %slocations=%s dir=%s "
+	         "blocked=%d", r.country[0] ? r.country : "-", r.asn,
 	         r.network != NULL ? r.network : "-",
 	         (r.geo_flags & FS_GEODB_FLAG_ANYCAST) ? 1 : 0,
+	         r.geo_via_nat64 ? "nat64=1 " : "",
 	         ids->len ? ids->str : "-",
 	         r.dir != 0 ? fs_intel_dir_to_string (r.dir) : "-",
 	         r.blocked ? 1 : 0);
+	for (guint i = 0; i < r.locations_unknown->len; i++)
+		g_print ("%s%s", i ? "," : " maybe=",
+		         (const gchar *) r.locations_unknown->pdata[i]);
+	g_print ("\n");
 	sentence = fs_intel_lookup_sentence (config, &r);
 	if (sentence != NULL)
 		g_print ("%s\n", sentence);

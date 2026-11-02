@@ -42,6 +42,10 @@
 #else
 #include <unistd.h>
 #endif
+#ifdef __linux__
+#include <sys/file.h>
+#include <sys/wait.h>
+#endif
 
 #include "core/fs-geodb.h"
 #include "core/fs-iprange.h"
@@ -2964,6 +2968,9 @@ fake_fetcher (const gchar *url, const gchar *proxy, gpointer user_data,
 	return g_bytes_ref (f->body);
 }
 
+/* The caller's floor (min_created) for install_case. */
+static gint64 install_floor;
+
 static void
 install_case (const gchar *store, GBytes *xz, gint64 now,
               FsGeodbOutcome want, gint want_code, gint64 want_created,
@@ -2973,7 +2980,8 @@ install_case (const gchar *store, GBytes *xz, gint64 now,
 	                                "FAILED" };
 	GError *e = NULL;
 	gint64 created = -1;
-	FsGeodbOutcome o = fs_geodb_install_xz (store, xz, now, &created, &e);
+	FsGeodbOutcome o = fs_geodb_install_xz (store, xz, now, install_floor,
+	                                        &created, &e);
 	gboolean code_ok = want_code == 0
 		? e == NULL
 		: e != NULL && e->domain == FS_GEODB_ERROR && e->code == want_code;
@@ -3078,13 +3086,14 @@ test_install (void)
 		FsGeodbOutcome o;
 		gchar *link = g_build_filename (tmpdir, "store-link", NULL);
 
-		o = fs_geodb_install_xz ("relative/store", x_small, now, &c, &e);
+		o = fs_geodb_install_xz ("relative/store", x_small, now, 0, &c,
+		                         &e);
 		CHECK (o == FS_GEODB_FAILED && e != NULL &&
 		       e->code == FS_GEODB_ERR_INVALID,
 		       "install: a relative store path: FAILED, INVALID");
 		g_clear_error (&e);
 		CHECK (symlink (store, link) == 0, "a symbolic link to the store");
-		o = fs_geodb_install_xz (link, x_newer, now, &c, &e);
+		o = fs_geodb_install_xz (link, x_newer, now, 0, &c, &e);
 		CHECK (o == FS_GEODB_FAILED && e != NULL &&
 		       e->code == FS_GEODB_ERR_IO,
 		       "install: a store that is a symbolic link: FAILED (%s)",
@@ -3129,18 +3138,150 @@ test_install (void)
 		g_free (target);
 	}
 
-	/* a damaged copy in use does not count (the new copy is still
-	 * verified and checked) */
+	/* A damaged copy in use does not count (the new copy is still
+	 * verified and checked), but the floor does: the newest copy the
+	 * caller ever accepted (review GEO-ROLLBACK-1).  The store holds
+	 * the first copy (T0); the newest ever accepted was T0 + 1 day. */
 	{
 		guint8 *d = g_memdup2 (small, small_len);
+		guint8 *dn = g_memdup2 (newer, newer_len);
 
 		d[small_len - 1] ^= 1;
 		spit (dbpath, d, small_len);
+		install_floor = T0 + 86400;
+		install_case (store, x_older, now, FS_GEODB_REFUSED,
+		              FS_GEODB_ERR_ROLLBACK, 0, d, small_len,
+		              "floor: the copy in use damaged, an older good copy "
+		              "is still a rollback");
+		install_case (store, x_small, now, FS_GEODB_REFUSED,
+		              FS_GEODB_ERR_ROLLBACK, 0, d, small_len,
+		              "floor: the copy in use damaged, a good copy of the "
+		              "same day as it but older than the floor is refused");
+		g_unlink (dbpath);
+		install_case (store, x_older, now, FS_GEODB_REFUSED,
+		              FS_GEODB_ERR_ROLLBACK, 0, NULL, 0,
+		              "floor: the copy in use deleted, an older good copy "
+		              "is still a rollback (nothing installed)");
+		install_case (store, x_newer, now, FS_GEODB_UPDATED, 0, T0 + 86400,
+		              newer, newer_len,
+		              "floor: the copy accepted last (created at the "
+		              "floor) repairs a missing copy");
+		install_case (store, x_newer, now, FS_GEODB_UNCHANGED, 0,
+		              T0 + 86400, newer, newer_len,
+		              "floor: and is then the same copy again");
+		install_case (store, x_small, now, FS_GEODB_REFUSED,
+		              FS_GEODB_ERR_ROLLBACK, T0 + 86400, newer, newer_len,
+		              "floor: a good copy older than both is refused");
+		dn[newer_len - 1] ^= 1;
+		spit (dbpath, dn, newer_len);
+		install_case (store, x_newer, now, FS_GEODB_UPDATED, 0, T0 + 86400,
+		              newer, newer_len,
+		              "floor: the copy accepted last repairs a damaged copy");
+		install_floor = T0 + 86400 + 1;
+		install_case (store, x_newer, now, FS_GEODB_REFUSED,
+		              FS_GEODB_ERR_ROLLBACK, T0 + 86400, newer, newer_len,
+		              "floor: a floor one second past the good copy in use "
+		              "refuses that copy again");
+
+		/* With no floor given (0, a store never written), a damaged
+		 * copy counts as none: the reader alone cannot know more. */
+		install_floor = 0;
+		spit (dbpath, d, small_len);
 		install_case (store, x_older, now, FS_GEODB_UPDATED, 0, T0 - 1,
 		              older, older_len,
-		              "a damaged copy in use is replaced, even by an older "
-		              "good one");
+		              "no floor: a damaged copy in use is replaced, even by "
+		              "an older good one");
+		g_free (dn);
 		g_free (d);
+	}
+
+	/* Review GEO-TMP-LEAK-2: an install that was killed leaves its
+	 * temporary file; the next install removes every regular one,
+	 * and nothing else. */
+	{
+		gchar *stale = g_build_filename (store, ".location.db.deadbeef.tmp",
+		                                 NULL);
+		gchar *stale2 = g_build_filename (store, ".location.db.0.tmp",
+		                                  NULL);
+		gchar *lnk = g_build_filename (store, ".location.db.link.tmp", NULL);
+		gchar *other = g_build_filename (store, "notes-kept-in-the-store.tmp",
+		                                 NULL);
+		gchar *bare = g_build_filename (store, ".location.db..tmp", NULL);
+		gchar *target = g_build_filename (tmpdir, "keep-me.txt", NULL);
+		guint8 *junk = g_malloc0 (1 << 20);
+		gint64 c = -1;
+		FsGeodbOutcome o;
+
+		spit (stale, junk, 1 << 20);
+		spit (stale2, junk, 10);
+		spit (other, junk, 10);
+		spit (bare, junk, 10);
+		spit (target, (const guint8 *) "keep", 4);
+		CHECK (symlink (target, lnk) == 0, "a symbolic link named like a "
+		       "temporary file");
+		o = fs_geodb_install_xz (store, x_older, now, 0, &c, &e);
+		CHECK (o == FS_GEODB_UNCHANGED &&
+		       !g_file_test (stale, G_FILE_TEST_EXISTS) &&
+		       !g_file_test (stale2, G_FILE_TEST_EXISTS),
+		       "install: the temporary files of an install that was killed "
+		       "are removed (%s)", e ? e->message : "no error");
+		g_clear_error (&e);
+		CHECK (g_file_test (lnk, G_FILE_TEST_IS_SYMLINK) &&
+		       g_file_test (target, G_FILE_TEST_EXISTS) &&
+		       g_file_test (other, G_FILE_TEST_EXISTS) &&
+		       g_file_test (bare, G_FILE_TEST_EXISTS),
+		       "install: the sweep removes nothing else (a symbolic link, "
+		       "another name, the target of the link)");
+		g_unlink (lnk);
+		g_unlink (other);
+		g_unlink (bare);
+		g_unlink (target);
+		CHECK (store_has_only (store, FS_GEODB_FILE) &&
+		       store_is (store, older, older_len),
+		       "install: the store holds only the copy in use");
+
+		/* One install at a time (flock on the store), so the sweep
+		 * never takes the file of an install still running. */
+		{
+			int lk = open (store, O_RDONLY | O_DIRECTORY);
+			int status = -1;
+			gboolean waited = FALSE;
+			pid_t pid;
+
+			CHECK (lk >= 0 && flock (lk, LOCK_EX) == 0,
+			       "the test holds the store's lock");
+			fflush (stdout);
+			pid = fork ();
+			if (pid == 0) {
+				gint64 cc = 0;
+
+				_exit (fs_geodb_install_xz (store, x_older, now, 0, &cc,
+				                            NULL) == FS_GEODB_UNCHANGED
+				       ? 0 : 1);
+			}
+			if (pid > 0) {
+				g_usleep (300 * 1000);
+				waited = waitpid (pid, &status, WNOHANG) == 0;
+			}
+			if (lk >= 0) {
+				flock (lk, LOCK_UN);
+				close (lk);
+			}
+			if (pid > 0)
+				waitpid (pid, &status, 0);
+			CHECK (waited && WIFEXITED (status) &&
+			       WEXITSTATUS (status) == 0,
+			       "install: a second install waits for the store's lock, "
+			       "then runs (waited %d, exit %d)", waited,
+			       WIFEXITED (status) ? WEXITSTATUS (status) : -1);
+		}
+		g_free (junk);
+		g_free (stale);
+		g_free (stale2);
+		g_free (lnk);
+		g_free (other);
+		g_free (bare);
+		g_free (target);
 	}
 
 	/* a store we cannot write */
@@ -3163,7 +3304,8 @@ test_install (void)
 
 		f.body = NULL;
 		fs_geodb_set_fetcher (fake_fetcher, &f);
-		o = fs_geodb_update (store, "http://proxy.test:3128", now, &c, &e);
+		o = fs_geodb_update (store, "http://proxy.test:3128", now, 0, &c,
+		                     &e);
 		CHECK (o == FS_GEODB_FAILED && e != NULL && c == T0 - 1 &&
 		       store_is (store, older, older_len) &&
 		       store_has_only (store, FS_GEODB_FILE),
@@ -3171,7 +3313,8 @@ test_install (void)
 		       "is kept and reported", e ? e->message : "no error");
 		g_clear_error (&e);
 		f.body = x_newer;
-		o = fs_geodb_update (store, "http://proxy.test:3128", now, &c, &e);
+		o = fs_geodb_update (store, "http://proxy.test:3128", now, 0, &c,
+		                     &e);
 		CHECK (o == FS_GEODB_UPDATED && c == T0 + 86400 &&
 		       store_is (store, newer, newer_len) && f.calls == 2 &&
 		       g_strcmp0 (f.url, FS_GEODB_URL) == 0 &&
@@ -3181,7 +3324,7 @@ test_install (void)
 		       e ? e->message : "no error");
 		g_clear_error (&e);
 		f.body = x_older;
-		o = fs_geodb_update (store, NULL, now, &c, &e);
+		o = fs_geodb_update (store, NULL, now, 0, &c, &e);
 		CHECK (o == FS_GEODB_REFUSED && e != NULL &&
 		       e->code == FS_GEODB_ERR_ROLLBACK && c == T0 + 86400 &&
 		       f.proxy == NULL && store_is (store, newer, newer_len),
@@ -3214,7 +3357,8 @@ test_install (void)
 	gint64 c = -1;
 	GBytes *x = g_bytes_new_static ("", 0);
 
-	CHECK (fs_geodb_install_xz ("C:\\store", x, 0, &c, &e) == FS_GEODB_FAILED &&
+	CHECK (fs_geodb_install_xz ("C:\\store", x, 0, 0, &c, &e) ==
+	       FS_GEODB_FAILED &&
 	       e != NULL && e->code == FS_GEODB_ERR_UNSUPPORTED && c == 0,
 	       "install: not on this platform yet: FAILED, UNSUPPORTED");
 	g_clear_error (&e);
@@ -3406,7 +3550,7 @@ drive_update (const gchar *store, const gchar *pub, const gchar *proxy)
 	if (!driver_key (pub))
 		return 2;
 	o = fs_geodb_update (store, proxy, g_get_real_time () / G_USEC_PER_SEC,
-	                     &c, &e);
+	                     0, &c, &e);
 	printf ("%s\t%" G_GINT64_FORMAT "\t%d\t%s\n", names[o], c,
 	        e ? e->code : 0, e ? e->message : "");
 	g_clear_error (&e);

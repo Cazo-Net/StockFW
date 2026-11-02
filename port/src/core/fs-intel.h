@@ -468,6 +468,20 @@ typedef struct
 	gchar     *as_name;      /* NULL when unnamed                        */
 	guint      geo_flags;    /* FS_GEODB_FLAG_*                          */
 	gchar     *network;      /* the matching network, "a.b.c.0/24"       */
+	gboolean   geo_via_nat64; /* a NAT64 address the database does not
+	                           * name itself: country, AS, network and
+	                           * flags are those of the IPv4 address it
+	                           * carries                                 */
+	/* Review GEO-1: the copy in use is missing or no longer verifies,
+	 * yet applied.state says location sets are in the kernel (a build
+	 * fails closed and leaves them there).  Their membership cannot be
+	 * read, so the lookup says "may be blocked", never "not blocked". */
+	gboolean   geo_unknown;  /* the copy in use cannot be read           */
+	GPtrArray *locations_unknown; /* gchar* ids of enabled location
+	                          * rules in force in the kernel that may
+	                          * hold it; never NULL after a lookup; empty
+	                          * for an exception, protected space or
+	                          * this computer's addresses               */
 } FsIntelLookup;
 
 /* FALSE when `addr' is not a single address (v4, v6, v4-mapped v6).
@@ -475,15 +489,21 @@ typedef struct
  * database is on, the copy in use (cached as for fs_intel_geo_lookup):
  * the enabled location rules that hold the address -- for a NAT64
  * address, the IPv4 address inside it, for rules that block outbound,
- * as the build maps it -- and its country, AS and network.  host may
- * be NULL. */
+ * as the build maps it -- and its country, AS and network (for a NAT64
+ * address the database does not name, those of the IPv4 address it
+ * carries, with geo_via_nat64 set).  When the copy in use cannot be
+ * read while location sets are applied, `locations_unknown' names
+ * them (geo_unknown).  host may be NULL. */
 gboolean fs_intel_lookup (const FsIntelConfig *config,
                           const FsHostNet *host, const gchar *addr,
                           FsIntelLookup *result);
 void     fs_intel_lookup_clear (FsIntelLookup *result);
 
 /* "Blocked by threat intel: Spamhaus DROP (IPv4), Feodo Tracker" or
- * NULL when not blocked.  Caller frees. */
+ * NULL when not blocked.  With location rules whose membership cannot
+ * be read (locations_unknown), "May be blocked by threat intel: High-
+ * risk countries (the location database in use cannot be read)." on
+ * its own or after the sentence.  Caller frees. */
 gchar   *fs_intel_lookup_sentence (const FsIntelConfig *config,
                                    const FsIntelLookup *result);
 

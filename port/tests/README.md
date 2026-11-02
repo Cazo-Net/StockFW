@@ -1407,6 +1407,8 @@ No case uses the network: the download goes to a stand-in for curl
 | xz | round trip; `xz -9e`; a 64 MiB dictionary (fine) and a 128 MiB one (over the 96 MiB decoder limit); a 39 KB bomb that unpacks to 256 MiB + 1 (TOO_LARGE, never more than the cap written); exactly 256 MiB (fine); corrupt, cut, padded, concatenated and empty streams |
 | freshness | `fs_geodb_judge`: newer, the same second, one second older, from 1970, a day and a second ahead (checked first), the end of time; staleness at 30 days |
 | install | first copy, the same copy, a rollback by one second, a copy from the future, a non-database, a bomb, a download over 64 MB, a relative store, a store or copy in use that is a symbolic link, a damaged copy in use; after each, `location.db` is byte for byte as expected and nothing else is in the store |
+| floor (review GEO-ROLLBACK-1) | with `min_created` at the newest copy accepted: the copy in use damaged or deleted, an older good copy is still a rollback; the copy accepted last repairs a missing or damaged copy and is then "unchanged"; a floor one second past the copy in use refuses it; with no floor (0) a damaged copy counts as none |
+| stale temporary files (review GEO-TMP-LEAK-2) | `.location.db.<x>.tmp` files left by a killed install are removed by the next install; a symbolic link of that name, its target, another name and `.location.db..tmp` are not; a second install waits for the store's `flock`, then runs |
 | download | `fs_geodb_update` with a fake downloader, and with the real `fs_fetch` and a curl stand-in: one request for `FS_GEODB_URL`, `--max-filesize 67108864`, no proxy unless given |
 
 Teeth, each injected into the real `fs-geodb.c` by a scratch script
@@ -1442,6 +1444,12 @@ Every one made the suite fail:
 | install does not judge | `install: the same copy again`, `install: a copy one second older (rollback)`, `install: a newer copy more than a day ahead of the clock` and 8 more |
 | install renames before it verifies | 15, among them `install: a first copy`, `install: a copy one second older (rollback)` |
 | install leaves the temporary file | 13 `install: ...` checks (`nothing else is left in the store`) |
+| install ignores the floor (judges against the copy in use only) | `install: floor: the copy in use damaged, an older good copy is still a rollback` and 2 more; fs-intel-geo-test `rollback floor: ...` (4) |
+| the copy accepted last cannot repair a damaged or missing copy | `install: floor: the copy accepted last (created at the floor) repairs a missing copy` and 4 more |
+| no sweep of stale temporary files | `install: the temporary files of an install that was killed are removed` and 2 more |
+| the sweep removes any file type | `install: the sweep removes nothing else (a symbolic link, another name, the target of the link)` |
+| the sweep ignores the name prefix | the same check (found no check with a 9-byte name, so the other name is now longer than the pattern's minimum) |
+| no lock around an install | `install: a second install waits for the store's lock, then runs` |
 | no download size cap | `install: a download over 64 MB: REFUSED` |
 | lookup keeps the least specific network | `8.8.8.8 is in 8.8.8.0/24, registered in US, AS15169 ...` and every golden lookup set |
 | IPv4 looked up from the root of the trie | `edge6: ::/0 is an IPv6 network and never answers for an IPv4 address` and 3 more |
@@ -1484,10 +1492,10 @@ the downloads and the backend are fakes) checks:
 | config | `[geo]` and `[location <id>]` round trip; refusals for a key of the wrong kind, bad or missing values, a bad id or name, more than 1,000 values; codes and AS numbers are normalised, deduplicated and sorted |
 | consent | no rule and no enabling without the terms accepted; a config that says enabled but never accepted downloads nothing |
 | no network | the default configuration, the database off, no consent, the master switch off: no request at all; the database's host (and the proxy) is in `fs_intel_update_hosts` only while it is on |
-| updates | updated, unchanged, not due within a day, refused (rollback, another key, not xz, from the future), failed (first line only); after each refusal or failure the same copy is in use; the status keeps the last error and success; every attempt is an audit line |
+| updates | updated, unchanged, not due within a day, refused (rollback, another key, not xz, from the future), failed (first line only); after each refusal or failure the same copy is in use; the status keeps the last error and success; every attempt is an audit line; with the copy in use damaged or deleted, a signed copy 400 days old and one a day older than the floor are refused, `geodb.state` keeps the newest creation time accepted, and the copy accepted last repairs it (review GEO-ROLLBACK-1, GEO-2) |
 | build | each set is the enumeration minus the protected ranges, the exceptions and this computer's addresses (exceptions win; the notes say which rule named them); outbound sets also in 64:ff9b::/96 and inbound ones not; lists and rules in one rule set, lists first; rules that match nothing are enforced empty with a note; anycast is kept and counted after the subtractions, with its note; a missing database leaves every rule unenforced with a note; a copy that no longer verifies fails the build; a stale copy is still used, with a note |
 | limits | 300,001 intervals and 2^27 addresses of a country build (the lists' caps do not apply); above 500,000 entries in all, NAT64 copies included, the build fails and names the largest rules |
-| lookup | country, AS, network, anycast flag and the rules holding an address; NAT64 addresses only for outbound rules; exceptions, protected space and this computer's addresses located but not blocked; `fs_intel_geo_lookup`; the cache follows a new copy; nothing while the database is off; the picker's preview counts |
+| lookup | country, AS, network, anycast flag and the rules holding an address; NAT64 addresses only for outbound rules, located by the IPv4 address inside them (`via=nat64`, review GEO-3); exceptions, protected space and this computer's addresses located but not blocked; `fs_intel_geo_lookup`; the cache follows a new copy; nothing while the database is off; the picker's preview counts; with the copy in use damaged or deleted after an apply, "may be blocked" for the rules in the kernel, never "not blocked", except for an exception or protected space, and nothing after Stop (review GEO-1) |
 | gate | the apply loads lists and rules in one table; the state names both; a hold keeps the rules out; counters carry across a replace; Stop and Start take the rule sets out and back; rules on with the database off read "off", and say why; a platform without slots says blocklists and location blocking are not available |
 
 `tests/test-intel-e2e.sh` section 12 (root, `unshare -n -m`, real nft,
@@ -1497,7 +1505,13 @@ The copy is stored 0600.  A country rule (in), an AS rule (out) and a
 country rule (both) drop and refuse exactly their packets, while this
 computer, its gateway, the DNS server and the SSH peers inside those
 countries stay reachable.  An exception inside a country wins, the
-counters are per rule, and the lookup agrees.  A country of 400,000
+counters are per rule, and the lookup agrees (a NAT64 address is
+located by the IPv4 address inside it).  With one byte of the copy in
+use changed, the apply is refused, the kernel keeps the sets, and the
+lookup of an address the kernel drops says "may be blocked"; with the
+copy damaged or deleted, an older copy signed with the same key
+(`older.db.xz` from `geo-make`) is refused, and the copy accepted last
+repairs it.  A country of 400,000
 networks applies (about 3.6 s here) and its state is read in under
 3 s (about 30 ms here).  IPv6 is checked in the sets, and with packets
 when the kernel has IPv6 on the veth pair.  The machine these were
@@ -1529,11 +1543,23 @@ the named test fail:
 | anycast not counted | fs-intel-geo-test | `anycast is kept and counted after the exception ...: the note says so` |
 | inbound rules mapped into 64:ff9b::/96 too | fs-intel-geo-test | the country set check (inbound Atlantis gains NAT64 entries) |
 | the location limit four times higher | fs-intel-geo-test | `outbound, with its NAT64 copy, it passes 500,000: refused, naming the rule` |
-| lookup holds a NAT64 address for inbound rules | fs-intel-geo-test | `lookup 64:ff9b::c633:6409: a NAT64 address in XA: no inbound rule holds it` |
+| lookup holds a NAT64 address for inbound rules | fs-intel-geo-test | `lookup 64:ff9b::c633:6409: a NAT64 address in XA: no inbound rule holds it` (now `... located by its IPv4 address, yet no inbound rule holds it`) |
 | the database's host not kept reachable | fs-intel-geo-test | `the database's host and the proxy are kept reachable while it is on` |
 | rules built while the database is off | fs-intel-geo-test | `the database turned off: only the list is built` |
 | a copy that no longer verifies treated as missing (fail open) | fs-intel-geo-test | `a copy in use that no longer verifies fails the build` |
 | no rollback check (`fs-geodb.c`) | fs-intel-geo-test | `an older copy is refused, even with accept-shrink` |
+| the engine passes no floor (GEO-ROLLBACK-1) | fs-intel-geo-test | `rollback floor: one byte of the copy in use damaged, a signed copy 400 days old is still refused` and 3 more |
+| the same | test-intel-e2e.sh | `the copy in use damaged: an older signed copy is refused, the damaged copy is left as it was` and 2 more |
+| a refusal lowers the floor in `geodb.state` (GEO-2) | fs-intel-geo-test | `rollback floor: the copy in use deleted, the old copy is still refused and nothing is installed`, `rollback floor: geodb.state still records the newest copy accepted` and 1 more |
+| install ignores the floor (`fs-geodb.c`) | fs-intel-geo-test | `rollback floor: one byte of the copy in use damaged ...` and 3 more (and 3 in fs-geodb-test) |
+| the copy accepted last cannot repair (`fs-geodb.c`) | fs-intel-geo-test | `rollback floor: the copy last accepted (the same second) repairs it`, `and the lookup is certain again` |
+| lookup says nothing when the copy in use cannot be read (GEO-1) | fs-intel-geo-test | `lookup with the copy in use damaged while Atlantis is in the kernel: never "not blocked"`, `... deleted ...` |
+| the same | test-intel-e2e.sh | `lookup 198.51.100.10 with the copy damaged: may be blocked, and the kernel does drop it`, `... deleted ...` |
+| the sentence leaves out unreadable rules | fs-intel-geo-test | the same two checks |
+| unreadable rules named for an exception or protected space | fs-intel-geo-test | `lookup of 198.51.100.7 with the copy damaged: no sentence` and 3 more |
+| unreadable rules named after Stop | fs-intel-geo-test | `after Stop, a missing copy claims nothing` |
+| a NAT64 address not located by its IPv4 address (GEO-3) | fs-intel-geo-test | `lookup 64:ff9b::c633:6482: its NAT64 form: the outbound rule holds it, and it is located by its IPv4 address`, `lookup 64:ff9b::c633:6409: ...` |
+| the same | test-intel-e2e.sh | `lookup 64:ff9b::c633:6482: located by its IPv4 address, blocked outbound, as its set holds it` |
 | no digest comment on the chains | fs-intelset-test | `golden: an IN set, IPv4 only` and every golden |
 | the chain parser ignores the family | fs-intelset-test | `chains: only family ip -> absent` |
 | the digest taken from any chain | fs-intelset-test | `chains: the digest comes from input, not output` |

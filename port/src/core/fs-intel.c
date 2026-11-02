@@ -3225,7 +3225,10 @@ record:
 
 /* The location database (12.5): enabled, consented and due, or no
  * request at all [S14].  The copy in use is replaced only by a newer
- * copy that verifies and checks (fs_geodb_update). */
+ * copy that verifies and checks (fs_geodb_update).  "Newer" is judged
+ * against geodb.state's created-at too, the newest copy ever accepted,
+ * so a copy in use that is damaged or gone never lets an older one
+ * back in (review GEO-ROLLBACK-1); that floor is never lowered. */
 static FsIntelUpdateResult *
 geo_update_one (const FsIntelConfig *config, guint flags, gint64 now)
 {
@@ -3263,8 +3266,8 @@ geo_update_one (const FsIntelConfig *config, guint flags, gint64 now)
 
 	g.attempted_at = now;
 	dir = fs_intel_dir (&local);
-	got = dir != NULL ? fs_geodb_update (dir, config->proxy, now, &created,
-	                                     &local)
+	got = dir != NULL ? fs_geodb_update (dir, config->proxy, now,
+	                                     g.created_at, &created, &local)
 	                  : FS_GEODB_FAILED;
 	g_free (dir);
 	switch (got) {
@@ -3280,7 +3283,7 @@ geo_update_one (const FsIntelConfig *config, guint flags, gint64 now)
 		          : g_strdup (_("Unchanged since the last download."));
 		g_free (day);
 		g.fetched_at = now;
-		g.created_at = created;
+		g.created_at = MAX (g.created_at, created);
 		g_clear_pointer (&g.last_error, g_free);
 		g_clear_pointer (&g.refused, g_free);
 		break;
@@ -3293,8 +3296,7 @@ geo_update_one (const FsIntelConfig *config, guint flags, gint64 now)
 		g_free (g.refused);
 		g.refused = g_strdup (why);
 		g_clear_pointer (&g.last_error, g_free);
-		if (created > 0)
-			g.created_at = created;
+		g.created_at = MAX (g.created_at, created);
 		break;
 	case FS_GEODB_FAILED:
 	default:
@@ -3303,8 +3305,7 @@ geo_update_one (const FsIntelConfig *config, guint flags, gint64 now)
 		message = g_strdup_printf (_("Download failed: %s"), why);
 		g_free (g.last_error);
 		g.last_error = g_strdup (why);
-		if (created > 0)
-			g.created_at = created;
+		g.created_at = MAX (g.created_at, created);
 		break;
 	}
 	g_clear_error (&local);
@@ -5024,6 +5025,8 @@ fs_intel_lookup_clear (FsIntelLookup *result)
 		g_ptr_array_unref (result->sources);
 	if (result->locations != NULL)
 		g_ptr_array_unref (result->locations);
+	if (result->locations_unknown != NULL)
+		g_ptr_array_unref (result->locations_unknown);
 	g_free (result->country_name);
 	g_free (result->as_name);
 	g_free (result->network);
@@ -5048,6 +5051,56 @@ location_holds (const FsIntelLocationConf *l, const FsGeodbMatch *m)
 	return FALSE;
 }
 
+/* The answer the lookup shows for an address: its own network, or for
+ * a NAT64 address the database does not name, the IPv4 address it
+ * carries (design 12.8). */
+static void
+lookup_fill (const GeoHandle *geo, const FsGeodbMatch *m, gboolean via_nat64,
+             FsIntelLookup *result)
+{
+	FsGeodbCountry *c = m->country[0] != '\0'
+	                    ? fs_geodb_country (geo->db, m->country) : NULL;
+
+	result->geo_found = TRUE;
+	result->geo_via_nat64 = via_nat64;
+	memcpy (result->country, m->country, sizeof result->country);
+	result->country_name = c != NULL ? g_strdup (c->name) : NULL;
+	fs_geodb_country_free (c);
+	result->asn = m->asn;
+	result->as_name = g_strdup (m->as_name);
+	result->geo_flags = m->flags;
+	result->network = g_strdup (m->network);
+}
+
+/* Review GEO-1: no usable copy, but the kernel may still hold location
+ * sets (a build fails closed and keeps what was applied).  The enabled
+ * rules that applied.state says are in force are named as "may hold
+ * it": the lookup never says "not blocked" for what it cannot read. */
+static void
+lookup_locations_unknown (const Store *store, const FsIntelConfig *config,
+                          gboolean missing, FsIntelLookup *result)
+{
+	Applied a;
+
+	if (applied_read (store, &a) && !a.suspended) {
+		GPtrArray *in = a.ruled != NULL ? a.ruled : a.ids;
+
+		for (guint i = 0; i < config->locations->len; i++) {
+			const FsIntelLocationConf *l =
+				g_ptr_array_index (config->locations, i);
+
+			for (guint j = 0; l->enabled && j < in->len; j++)
+				if (strcmp (g_ptr_array_index (in, j), l->id) == 0) {
+					g_ptr_array_add (result->locations_unknown,
+					                 g_strdup (l->id));
+					break;
+				}
+		}
+	}
+	applied_clear (&a);
+	result->geo_unknown = !missing || result->locations_unknown->len > 0;
+}
+
 /* The location half of a lookup (12.8): the address's own answer, and
  * the enabled rules that hold it -- as the kernel sees it: a NAT64
  * address is in an outbound rule's set when the IPv4 address inside it
@@ -5062,22 +5115,12 @@ lookup_locations (const Store *store, const FsIntelConfig *config,
 	GeoHandle *geo = geo_acquire (store, &missing, NULL);
 
 	(void) fam;
-	if (geo == NULL)
+	if (geo == NULL) {
+		lookup_locations_unknown (store, config, missing, result);
 		return;
-	if (fs_geodb_lookup (geo->db, addr, &own, NULL) && own.found) {
-		FsGeodbCountry *c = own.country[0] != '\0'
-		                    ? fs_geodb_country (geo->db, own.country)
-		                    : NULL;
-
-		result->geo_found = TRUE;
-		memcpy (result->country, own.country, sizeof result->country);
-		result->country_name = c != NULL ? g_strdup (c->name) : NULL;
-		fs_geodb_country_free (c);
-		result->asn = own.asn;
-		result->as_name = g_strdup (own.as_name);
-		result->geo_flags = own.flags;
-		result->network = g_strdup (own.network);
 	}
+	if (fs_geodb_lookup (geo->db, addr, &own, NULL) && own.found)
+		lookup_fill (geo, &own, FALSE, result);
 	if (nat64) {
 		gchar *v4 = g_strdup_printf ("%u.%u.%u.%u", inner >> 24,
 		                             (inner >> 16) & 255, (inner >> 8) & 255,
@@ -5085,6 +5128,8 @@ lookup_locations (const Store *store, const FsIntelConfig *config,
 
 		have_mapped = fs_geodb_lookup (geo->db, v4, &mapped, NULL);
 		g_free (v4);
+		if (have_mapped && mapped.found && !own.found)
+			lookup_fill (geo, &mapped, TRUE, result);
 	}
 	for (guint i = 0; i < config->locations->len; i++) {
 		const FsIntelLocationConf *l = g_ptr_array_index (config->locations,
@@ -5149,6 +5194,7 @@ fs_intel_lookup (const FsIntelConfig *config, const FsHostNet *host,
 	memset (result, 0, sizeof *result);
 	result->sources = g_ptr_array_new_with_free_func (g_free);
 	result->locations = g_ptr_array_new_with_free_func (g_free);
+	result->locations_unknown = g_ptr_array_new_with_free_func (g_free);
 	if (config == NULL || addr == NULL)
 		return FALSE;
 	fam = fs_addr_parse (addr, &v4, &v6);
@@ -5211,6 +5257,9 @@ fs_intel_lookup (const FsIntelConfig *config, const FsHostNet *host,
 	                   result->locations->len > 0) &&
 	                  !result->is_protected && !result->is_exception &&
 	                  !result->is_host;
+	/* the build keeps these out of every set, whatever the database */
+	if (result->is_protected || result->is_exception || result->is_host)
+		g_ptr_array_set_size (result->locations_unknown, 0);
 	return TRUE;
 }
 
@@ -5219,28 +5268,49 @@ fs_intel_lookup_sentence (const FsIntelConfig *config,
                           const FsIntelLookup *result)
 {
 	GString *out;
-
 	guint n = 0;
 
-	if (result == NULL || !result->blocked || result->sources == NULL)
+	if (result == NULL || result->sources == NULL)
 		return NULL;
-	out = g_string_new (_("Blocked by threat intel: "));
-	for (guint i = 0; i < result->sources->len; i++, n++) {
-		const gchar *id = g_ptr_array_index (result->sources, i);
-		const gchar *label = fs_intel_config_label (config, id);
+	out = g_string_new (NULL);
+	if (result->blocked) {
+		g_string_append (out, _("Blocked by threat intel: "));
+		for (guint i = 0; i < result->sources->len; i++, n++) {
+			const gchar *id = g_ptr_array_index (result->sources, i);
+			const gchar *label = fs_intel_config_label (config, id);
 
-		g_string_append_printf (out, "%s%s", n ? ", " : "",
-		                        label ? label : id);
-	}
-	for (guint i = 0; result->locations != NULL &&
-	                  i < result->locations->len; i++, n++) {
-		const gchar *id = g_ptr_array_index (result->locations, i);
-		const gchar *label = fs_intel_config_label (config, id);
+			g_string_append_printf (out, "%s%s", n ? ", " : "",
+			                        label ? label : id);
+		}
+		for (guint i = 0; result->locations != NULL &&
+		                  i < result->locations->len; i++, n++) {
+			const gchar *id = g_ptr_array_index (result->locations, i);
+			const gchar *label = fs_intel_config_label (config, id);
 
-		g_string_append_printf (out, "%s%s", n ? ", " : "",
-		                        label ? label : id);
+			g_string_append_printf (out, "%s%s", n ? ", " : "",
+			                        label ? label : id);
+		}
+		if (n == 0)
+			g_string_truncate (out, 0);
 	}
-	if (n == 0) {
+	/* Review GEO-1: never "not blocked" for what cannot be read. */
+	if (result->locations_unknown != NULL &&
+	    result->locations_unknown->len > 0) {
+		if (out->len > 0)
+			g_string_append (out, ". ");
+		g_string_append (out, _("May be blocked by threat intel: "));
+		for (guint i = 0; i < result->locations_unknown->len; i++) {
+			const gchar *id = g_ptr_array_index (result->locations_unknown,
+			                                     i);
+			const gchar *label = fs_intel_config_label (config, id);
+
+			g_string_append_printf (out, "%s%s", i ? ", " : "",
+			                        label ? label : id);
+		}
+		g_string_append (out, _(" (the location database in use cannot "
+		                        "be read)."));
+	}
+	if (out->len == 0) {
 		g_string_free (out, TRUE);
 		return NULL;
 	}

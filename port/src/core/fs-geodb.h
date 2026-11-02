@@ -225,8 +225,8 @@ typedef enum
 } FsGeodbVerdict;
 
 /* Judge a new copy created at `offered' against the copy in use
- * (created at `current', 0 when there is none) at time `now' (unix
- * seconds).  The future check comes first.  *reason (nullable) gets one
+ * (created at `current', 0 when there is none; or the newest copy ever
+ * accepted, see fs_geodb_install_xz) at time `now' (unix seconds).  The future check comes first.  *reason (nullable) gets one
  * sentence for anything but FS_GEODB_NEWER, else NULL. */
 FsGeodbVerdict fs_geodb_judge (gint64 offered, gint64 current, gint64 now,
                                gchar **reason);
@@ -256,15 +256,27 @@ typedef enum
 /* Install a downloaded .xz into `store_dir' (an existing directory,
  * normally fs_intel_dir()): unpack it to a fresh temporary file there
  * (O_EXCL, 0600, no symlinks), open and verify that, judge it against
- * the copy in use, and only then rename it over FS_GEODB_FILE.  On any
+ * the floor, and only then rename it over FS_GEODB_FILE.  On any
  * failure the temporary file is removed and the copy in use is left
- * exactly as it was.  The error (set for REFUSED and FAILED) says why.
+ * exactly as it was.  Installs into one store are serialised (flock on
+ * the store), and each one first removes the temporary files of an
+ * install that was killed.  The error (set for REFUSED and FAILED)
+ * says why.
+ *
+ * The floor (review GEO-ROLLBACK-1) is the larger of the copy in use
+ * (when it verifies) and `min_created', the creation time of the newest
+ * copy the caller ever accepted (0: none), so that a copy in use that
+ * is damaged or gone does not let an older signed copy back in.  A
+ * copy older than the floor is a rollback; one created at the floor is
+ * UNCHANGED when it is the good copy in use, and otherwise repairs it
+ * (UPDATED).
+ *
  * *created_at (nullable) gets the creation time of the copy in use
  * afterwards (0 when there is none).  Linux only for now; elsewhere
  * FAILED with FS_GEODB_ERR_UNSUPPORTED. */
 FsGeodbOutcome fs_geodb_install_xz (const gchar *store_dir, GBytes *xz,
-                                    gint64 now, gint64 *created_at,
-                                    GError **error);
+                                    gint64 now, gint64 min_created,
+                                    gint64 *created_at, GError **error);
 
 /* Open the copy in use in `store_dir' (no symbolic link). */
 FsGeodb *fs_geodb_open_store (const gchar *store_dir, GError **error);
@@ -277,12 +289,12 @@ typedef GBytes *(*FsGeodbFetcher) (const gchar *url, const gchar *proxy,
                                    gpointer user_data, GError **error);
 void fs_geodb_set_fetcher (FsGeodbFetcher fetcher, gpointer user_data);
 
-/* Download FS_GEODB_URL and install it (fs_geodb_install_xz).  This is
- * a network request: callers make it only when the user turned country
- * or network-owner blocking on.  Nothing schedules it yet. */
+/* Download FS_GEODB_URL and install it (fs_geodb_install_xz, with the
+ * same `min_created').  This is a network request: callers make it
+ * only when the user turned country or network-owner blocking on. */
 FsGeodbOutcome fs_geodb_update (const gchar *store_dir, const gchar *proxy,
-                                gint64 now, gint64 *created_at,
-                                GError **error);
+                                gint64 now, gint64 min_created,
+                                gint64 *created_at, GError **error);
 
 /* ---- the pieces, for the tests -------------------------------------- */
 

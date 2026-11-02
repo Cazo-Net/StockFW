@@ -68,6 +68,10 @@
 #else
 #include <unistd.h>
 #endif
+#ifdef __linux__
+#include <dirent.h>
+#include <sys/file.h>
+#endif
 
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
@@ -1684,9 +1688,9 @@ fs_geodb_judge (gint64 offered, gint64 current, gint64 now, gchar **reason)
 	default:
 		*reason = current > 0
 			? g_strdup_printf (_("The location database was created "
-			                     "on %s, before the copy in use (%s): "
-			                     "an older copy never replaces a newer "
-			                     "one."), a, b)
+			                     "on %s, before the newest copy "
+			                     "already accepted (%s): an older copy "
+			                     "never replaces a newer one."), a, b)
 			: g_strdup (_("The location database has no creation "
 			              "time."));
 		break;
@@ -1896,6 +1900,40 @@ open_at (int dir, const gchar *name, GError **error)
 	}
 	return open_fd (fd, name, error);
 }
+
+/* Review GEO-TMP-LEAK-2: an install that was killed (SIGKILL, the OOM
+ * killer, power loss) leaves its ".location.db.<random>.tmp" behind,
+ * up to FS_GEODB_MAX_DB_BYTES each, and the next one picks a new name.
+ * Called with the store locked, so no other install is writing one:
+ * every regular file of that pattern is removed, never anything else
+ * (a symbolic link, a directory) and never through a link. */
+static void
+sweep_stale_tmp (int dir)
+{
+	static const gchar prefix[] = "." FS_GEODB_FILE ".";
+	int fd = dup (dir);
+	DIR *d;
+	struct dirent *ent;
+
+	if (fd < 0)
+		return;
+	if ((d = fdopendir (fd)) == NULL) {
+		close (fd);
+		return;
+	}
+	while ((ent = readdir (d)) != NULL) {
+		struct stat st;
+
+		if (!g_str_has_prefix (ent->d_name, prefix) ||
+		    !g_str_has_suffix (ent->d_name, ".tmp") ||
+		    strlen (ent->d_name) <= sizeof prefix - 1 + 4)
+			continue;
+		if (fstatat (dir, ent->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+		    S_ISREG (st.st_mode))
+			unlinkat (dir, ent->d_name, 0);
+	}
+	closedir (d);   /* closes fd, not dir */
+}
 #endif
 
 FsGeodb *
@@ -1920,12 +1958,12 @@ fs_geodb_open_store (const gchar *store_dir, GError **error)
 
 FsGeodbOutcome
 fs_geodb_install_xz (const gchar *store_dir, GBytes *xz, gint64 now,
-                     gint64 *created_at, GError **error)
+                     gint64 min_created, gint64 *created_at, GError **error)
 {
 #ifdef __linux__
 	int dir, fd = -1;
 	gchar *tmp = NULL, *reason = NULL;
-	gint64 current = 0, offered;
+	gint64 current = 0, floor_at, offered;
 	FsGeodb *db;
 	FsGeodbOutcome outcome = FS_GEODB_FAILED;
 	GError *local = NULL;
@@ -1934,6 +1972,18 @@ fs_geodb_install_xz (const gchar *store_dir, GBytes *xz, gint64 now,
 		*created_at = 0;
 	if ((dir = store_dir_open (store_dir, error)) < 0)
 		return FS_GEODB_FAILED;
+	/* One install at a time (the lock goes with the descriptor), so
+	 * the sweep below never takes another install's file. */
+	while (flock (dir, LOCK_EX) != 0) {
+		if (errno != EINTR) {
+			g_set_error (error, FS_GEODB_ERROR, FS_GEODB_ERR_IO,
+			             _("Could not lock the location database "
+			               "store: %s."), g_strerror (errno));
+			close (dir);
+			return FS_GEODB_FAILED;
+		}
+	}
+	sweep_stale_tmp (dir);
 
 	/* The copy in use, if there is a good one. */
 	if ((db = open_at (dir, FS_GEODB_FILE, NULL)) != NULL) {
@@ -1942,6 +1992,9 @@ fs_geodb_install_xz (const gchar *store_dir, GBytes *xz, gint64 now,
 	}
 	if (created_at != NULL)
 		*created_at = current;
+	/* The floor: never below the newest copy ever accepted, whether or
+	 * not the copy in use still verifies (GEO-ROLLBACK-1). */
+	floor_at = MAX (current, MAX (min_created, 0));
 
 	if (xz == NULL) {
 		g_set_error (error, FS_GEODB_ERROR, FS_GEODB_ERR_INVALID,
@@ -2001,11 +2054,18 @@ fs_geodb_install_xz (const gchar *store_dir, GBytes *xz, gint64 now,
 	offered = db->info.created_at;
 	fs_geodb_close (db);
 
-	/* 4. judge */
-	switch (fs_geodb_judge (offered, current, now, &reason)) {
+	/* 4. judge, against the floor */
+	switch (fs_geodb_judge (offered, floor_at, now, &reason)) {
 	case FS_GEODB_NEWER:
 		break;
 	case FS_GEODB_SAME:
+		if (offered != current) {
+			/* the copy last accepted, again: it repairs a copy in
+			 * use that is damaged or gone */
+			g_free (reason);
+			reason = NULL;
+			break;
+		}
 		outcome = FS_GEODB_UNCHANGED;
 		g_free (reason);
 		reason = NULL;
@@ -2059,7 +2119,7 @@ fail:
 
 FsGeodbOutcome
 fs_geodb_update (const gchar *store_dir, const gchar *proxy, gint64 now,
-                 gint64 *created_at, GError **error)
+                 gint64 min_created, gint64 *created_at, GError **error)
 {
 	FsGeodbFetcher fn;
 	gpointer data;
@@ -2090,7 +2150,8 @@ fs_geodb_update (const gchar *store_dir, const gchar *proxy, gint64 now,
 		}
 		return FS_GEODB_FAILED;
 	}
-	outcome = fs_geodb_install_xz (store_dir, body, now, created_at, error);
+	outcome = fs_geodb_install_xz (store_dir, body, now, min_created,
+	                               created_at, error);
 	g_bytes_unref (body);
 	return outcome;
 }

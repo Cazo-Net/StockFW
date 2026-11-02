@@ -72,7 +72,12 @@
 #     and directions, while this computer, its gateway, the DNS server
 #     and the SSH peers inside those countries stay reachable; an
 #     exception inside a country wins; the counters are per rule; the
-#     lookup gives country, AS, network, anycast and the rules; a
+#     lookup gives country, AS, network, anycast and the rules (a NAT64
+#     address by the IPv4 address inside it); with one byte of the copy
+#     in use changed, the apply is refused, the kernel keeps the sets
+#     and the lookup says "may be blocked", never "not blocked"; with
+#     the copy damaged or deleted, an older copy signed with the same
+#     key is still a rollback, and the copy accepted last repairs it; a
 #     country of GEO_LARGE (400,000) networks loads and its state is
 #     read in under 3 s; the database off stops the rules.
 # IPv6 is checked as rule text, and for the location rules also with
@@ -810,6 +815,46 @@ check 'grep -q "^cc=XC asn=64502 net=203.0.113.0/24 anycast=1 locations=country-
       "lookup 203.0.113.140: anycast, both ways ($(glk 203.0.113.140))"
 check 'grep -q "^cc=XA asn=64500 .* blocked=0" <<<"$(glk 198.51.100.100)" && grep -q "^cc=XC .* blocked=0" <<<"$(glk 203.0.113.53)"' \
       "lookup: the exception and the DNS server are located but not blocked"
+# Review GEO-3: a NAT64 address is located by the IPv4 address inside it.
+check '[ "$(glk 64:ff9b::c633:6482)" = "cc=XB asn=64501 net=198.51.100.128/25 anycast=0 nat64=1 locations=asn-beta dir=out blocked=1 Blocked by threat intel: Beta " ] && has_element s_asn_beta_6 64:ff9b::c633:6482' \
+      "lookup 64:ff9b::c633:6482: located by its IPv4 address, blocked outbound, as its set holds it ($(glk 64:ff9b::c633:6482))"
+
+# Review GEO-1: the copy in use stops verifying after an apply.  The
+# apply fails closed and the kernel keeps the country sets, so the
+# lookup must not say "not blocked" for an address the kernel drops.
+flip_byte() {  # FILE OFFSET-FROM-END
+  local sz off b
+  sz=$(stat -c %s "$1"); off=$((sz - $2))
+  b=$(dd if="$1" bs=1 skip=$off count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+  printf "$(printf '\\%03o' $((b ^ 1)))" | dd of="$1" bs=1 seek=$off conv=notrunc 2>/dev/null
+}
+MAYBE_ATL="cc=- asn=0 net=- anycast=0 locations=- dir=- blocked=0 maybe=country-atlantis,asn-beta,country-cockaigne May be blocked by threat intel: Atlantis, Beta, Cockaigne (the location database in use cannot be read). "
+flip_byte "$STORE/location.db" 20
+out="$(apply)"
+check 'grep -q "^error tampered: The location database in use cannot be trusted" <<<"$out" && [ "$(drv state)" = "enforced: 3 location rules are enforced: Atlantis, Beta, Cockaigne." ] && has_element s_country_atlantis_4 198.51.100.10' \
+      "one byte of the copy in use changed: the apply is refused and the kernel keeps the sets ($(head -1 <<<"$out" | cut -c1-90))"
+check '[ "$(glk 198.51.100.10)" = "$MAYBE_ATL" ] && [ "$(in_from 198.51.100.10 1)" = 0 ]' \
+      "lookup 198.51.100.10 with the copy damaged: may be blocked, and the kernel does drop it ($(glk 198.51.100.10))"
+check 'grep -q "blocked=0 $" <<<"$(glk 198.51.100.100)" && grep -q "blocked=0 $" <<<"$(glk 203.0.113.53)"' \
+      "lookup with the copy damaged: the exception and the DNS server are still not blocked, with no maybe"
+
+# Review GEO-ROLLBACK-1 / GEO-2: an older copy signed with the same key
+# is a rollback, whether the copy in use is damaged or gone.
+cp "$STORE/location.db" "$W/damaged.db"
+out="$(drv geo-update "$G/older.db.xz")"
+check 'grep -q "^location refused 0 Refused: .*an older copy never replaces a newer one\.$" <<<"$out" && cmp -s "$STORE/location.db" "$W/damaged.db"' \
+      "the copy in use damaged: an older signed copy is refused, the damaged copy is left as it was ($out)"
+rm -f "$STORE/location.db"
+out="$(drv geo-update "$G/older.db.xz")"
+check 'grep -q "^location refused 0 Refused: .*an older copy never replaces a newer one\.$" <<<"$out" && [ ! -e "$STORE/location.db" ]' \
+      "the copy in use deleted: an older signed copy is still refused ($out)"
+check '[ "$(glk 198.51.100.10)" = "$MAYBE_ATL" ] && [ "$(in_from 198.51.100.10 1)" = 0 ]' \
+      "lookup 198.51.100.10 with the copy deleted: may be blocked, and the kernel does drop it"
+out="$(drv geo-update "$G/location.db.xz")"
+check 'grep -q "^location updated 0 " <<<"$out" && grep -q "^result ok " <<<"$(apply)"' \
+      "the copy accepted last repairs it, and the apply goes through again ($out)"
+check '[ "$(glk 198.51.100.10)" = "cc=XA asn=64500 net=198.51.100.0/25 anycast=0 locations=country-atlantis dir=in blocked=1 Blocked by threat intel: Atlantis " ]' \
+      "and the lookup is certain again ($(glk 198.51.100.10))"
 
 # IPv6: in the sets (and outbound also in 64:ff9b::/96); packets when
 # this kernel has IPv6.
