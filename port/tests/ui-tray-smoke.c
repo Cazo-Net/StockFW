@@ -258,11 +258,11 @@ main (int argc, char **argv)
 	menu = fs_tray_menu ();
 	check (GTK_IS_MENU (menu), "the tray popup is a GtkMenu");
 	items = gtk_container_get_children (GTK_CONTAINER (menu));
-	check (g_list_length (items) == 15,
-	       "the tray menu has fifteen rows");
+	check (g_list_length (items) == 16,
+	       "the tray menu has sixteen rows (1.0.7: Help added)");
 
-	if (g_list_length (items) == 15) {
-		GtkWidget *row[15];
+	if (g_list_length (items) == 16) {
+		GtkWidget *row[16];
 		GList *walk;
 		guint i;
 
@@ -292,13 +292,13 @@ main (int argc, char **argv)
 			       "the first row carries the state the backend "
 			       "reports when the menu opens");
 		}
-		check (GTK_IS_SEPARATOR_MENU_ITEM (row[13]),
+		check (GTK_IS_SEPARATOR_MENU_ITEM (row[14]),
 		       "Quit is fenced off behind its own separator");
 		check (g_strcmp0 (gtk_menu_item_get_label (
-		                      GTK_MENU_ITEM (row[14])),
+		                      GTK_MENU_ITEM (row[15])),
 		                  _("_Quit (firewall stays on)")) == 0,
 		       "Quit is the last row and says the firewall stays on");
-		quit_item = GTK_MENU_ITEM (row[14]);
+		quit_item = GTK_MENU_ITEM (row[15]);
 	}
 	g_list_free (items);
 

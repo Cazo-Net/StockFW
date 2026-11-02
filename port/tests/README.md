@@ -735,6 +735,181 @@ green again):
 Re-verified from the table above: route gateway read big-endian,
 ESTABLISHED filter dropped, loopback addresses in own.
 
+The footer's Help button is checked to be there on both platforms'
+page sets; what it opens is checked in `fs-help-smoke` below.  The
+About credits are checked here too: the creator line reads exactly
+"Stock Team & Qusai - Creator & Original Developer", and no credit
+carries an e-mail address.
+
+## Help and About (`fs-help-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-help-smoke
+xvfb-run -a ./build-linux/fs-help-smoke                     # Adwaita:dark
+GTK_THEME=Adwaita xvfb-run -a ./build-linux/fs-help-smoke   # light
+STOCKFW_HELP_SHOTS=/some/dir xvfb-run -a ./build-linux/fs-help-smoke
+```
+
+Builds the real main window (`fs_app_activate` in a `GtkApplication`),
+with every file it reads or writes (settings, rules, journal, audit
+log, behaviour baseline, trust store) moved to a scratch directory.
+It runs under `GTK_THEME=Adwaita:dark` unless `GTK_THEME` is set, and
+fails on any GTK warning or critical.  With `STOCKFW_HELP_SHOTS` it
+saves three Help topics, Help opened from Preferences and About, named
+after the theme.
+
+What it pins down, each seen failing when its bug is put back (the
+check that failed is in brackets):
+
+- H1: `app.help` and F1 on the main window open Help at the topic for
+  the page shown; so does the sidebar's Help item.  Ctrl+W closes it.
+  (Re-injected: the action not registered; the accelerator on F2.)
+- H2: every topic in `fs-helpcontent.c` renders, with its title and
+  every block on screen; every string parses as GtkLabel markup, every
+  `help:` link and related topic names a real topic, and there is no em
+  dash.  (Re-injected: callouts not rendered; an unclosed `<b>`; a
+  link to `help:troubleshoot`.)
+- H3: search filters the topic list ("SSH locked" lists Troubleshooting
+  and leaves Activity out), finds subtopics, says when nothing
+  matches, opens the first match on Enter and is cleared by Escape.
+  (Re-injected: every topic matching.)
+- H4: links, related-topic chips, Next, the breadcrumb, the sidebar,
+  Back, Forward, Alt+Left and Alt+Right all navigate.  (Re-injected:
+  `help:` links not followed; the topic left not put on the Back
+  list.)
+- H5: Preferences' Help button opens `prefs-<page>` for every page it
+  shows, and F1 there does too.  Help lives in its own window group, so
+  a key on it acts while Preferences holds its modal grab, and closing
+  Preferences leaves Help open.  (Re-injected: Help always opening
+  "preferences"; F1 not handled; Help left in the default window group,
+  where the key went to Preferences instead.)
+- H6: one Help window; asking again moves and raises it.  (Re-injected:
+  a new window each time.)
+- A1: About is a dialog transient for the main window and not modal,
+  one at a time; the first credit reads exactly "Stock Team & Qusai -
+  Creator & Original Developer", the three credits on this base are
+  shown, nothing in it has an `@`; the licence summary names both
+  texts the source carries (GPL v2 in `COPYING`, Apache 2.0 in
+  `LICENSE`) and claims no GPL 3; "View licence texts" shows both
+  files, compiled in at configure time, form feeds dropped.
+  (Re-injected: the credit reworded; an address in a credit; "version
+  3" in the summary; About opening twice.)
+- A2: "Copy system info" copies the StockFW, GTK and GLib versions, the
+  operating system and the firewall backend, and nothing with the user
+  name, host name, home directory, an `@` or a `/` in it; the clipboard
+  then holds exactly that.  (Re-injected: the user name added; the
+  clipboard given something else.)
+- T1: every label drawn in Help (six topics, and the sidebar's "nothing
+  found" line), About and the licence window is at 4.5:1 or more
+  against the colour painted behind it, measured from the style GTK
+  computes under the theme.  (Re-injected: the article text's colour
+  rules removed, which leaves Adwaita:dark's light text on the light
+  page.)
+
+- H7: claims the code does not back are gone from the help, and the
+  true statement is there instead: on Linux only the inbound default
+  and "Block outgoing unless allowed" log their drops (deny rules,
+  Sentinel and the Protection blocks do not); the Windows broadcast
+  blocks are not offered, since a rule can only match 255.255.255.255
+  as the sender; on a Public network the Windows reserved-address
+  block outranks your own allow rules; What-If (1.0.7, as merged from
+  main) takes the broadcast and reserved-address blocks into account;
+  a Sentinel block whose ten minutes ran out while StockFW was closed
+  is taken off when StockFW starts again with the rights to (as
+  `start_at_launch` in `fs-app.c` does); StockFW's Windows rules start
+  with `StockFW`; threat intel is planned for Windows too; StockFW
+  also turns profiles on and off; the ported code is GPL 2 or later.
+  (Re-injected: the old `fs-helpcontent.c`, which fails all ten.)
+- H8: the help matches 1.0.7 as merged.  What-If answers DEPENDS, asks
+  both ways when the line names no direction, takes the firewall's
+  state into account and names its fixes as the window does ("Create
+  allow rule"); the background topic describes the tray menu as it is,
+  with its Help item, one StockFW per user and `--background`; Sentinel
+  describes the tray's pause; Preferences > General describes the
+  sign-in switch; the Linux notes describe `stockfw.service`; the CLI
+  topic gives exit status 6 for DEPENDS.  Only the threat-intel topic
+  carries a FS_HELP_SOON callout, it says threat intel and country/ASN
+  blocking are not available in this build, no other block or summary
+  mentions 1.0.7, and the callout's heading reads "Not in this build"
+  (this build is 1.0.7, so "Coming in 1.0.7" was false).
+  (Re-injected: the branch's pre-merge `fs-helpcontent.c` and the old
+  heading, which fail all fourteen H8 checks and both changed H7
+  ones.)
+- H9: What-If's settings fixes.  `fs_dialogs_preferences_at` opens
+  Preferences at `icmp` and at `protection`, and each is the page
+  shown; every switch label and page title `fs_whatif_setting_nth`
+  lists (the ones a fix's text names) is in the dialog as written; the
+  What-If topic says a fix opens the ICMP or Protection page.
+  (Re-injected: the old engine labels and pages "Enable ICMP
+  filtering" on "Preferences > Firewall > ICMP Filtering"; the dialog
+  always opening on General.)  `fs-copilot-smoke` presses Open ICMP
+  settings in the What-If window and checks that Preferences opens at
+  ICMP (re-injected: `fs-copilot.c` calling `fs_dialogs_preferences`).
+- K1: keyboard.  Tab and Shift+Tab in About walk View licence texts,
+  the website, Copy system info and Close; About asks for the keyboard
+  when it opens (`gtk_window_present`), since a dialog that never gets
+  it keeps every Tab on Close.  Help opens with focus on the topic
+  shown, not in the search field (GTK hides a focused entry's
+  placeholder).  The topic list is one Tab stop: 30 Tabs land on a
+  topic at most once and open nothing; Down moves along the list
+  without opening, Enter opens.  Every button, row and entry in Help
+  and About has a name for a screen reader (Back and Forward are
+  icon-only).  (Re-injected: About not presented; the list's focus
+  handler removed; selection following focus; the history buttons
+  and the rows left unnamed; focus put in the search field.)
+- L1: layout.  Key caps are one height beside text that wraps, and
+  the shortcut descriptions start in one column; no topic makes Help
+  wider than 640 pixels (the caps wrap between keys); on a wide window
+  the page is a centred column of at most 700 pixels; related-topic
+  chips sit 6 pixels apart (a GtkFlowBox spread them, so they are laid
+  out by a small wrapping container); the sidebar is `FS_SIDE_WIDTH`,
+  as in Preferences.  At Help's own size (980 by 680) no topic title
+  in the sidebar is ellipsized: a long one wraps.  (Re-injected: caps
+  filling the row; caps that never wrap; the descriptions' width left
+  free; no column limit; chips 60 apart; a 250-pixel sidebar; the
+  topic labels ellipsized at the end, which cuts "Running in the
+  background" and "Command line and dashboard".)
+
+The prefs smoke's Help-button check was seen failing with the button
+left out of the footer.
+
+The Preferences redesign is checked in the prefs smokes, on both
+platforms' page sets: the sidebar is `FS_SIDE_WIDTH` wide, as Help's,
+and groups its pages under "StockFW" and "Firewall"; every page opens
+with its icon tile; every sidebar item is named for a screen reader;
+on a wide window the settings column stops at 720 pixels and is
+centred; a change marks its row, its page's dot in the sidebar (no
+other page's) and the footer, and changing it back clears all three.
+On Windows the broadcast blocks are not offered, and the
+reserved-address row says it outranks your own allow rules on public
+networks.  (Re-injected: no group headings; no page icon; no column
+limit; changes not marked; a 200-pixel sidebar; the broadcast rows
+offered on Windows; the old Windows reserved-address line.)
+
+After the merge with main's Preferences (PR #17), start at sign-in is
+marked the same way although it is not a `stockfw.conf` row: moving
+its switch marks its row and General's dot, and moving it back clears
+both and the footer ("sign-in: the moved switch marks its row and
+General in the sidebar", in the `signin-cancel` scenario of
+`fs-prefs-fake-smoke`).  (Re-injected: the sign-in row never marked;
+the check failed, restored with cp, cmp clean.)
+
+## Installer licence texts (`tests/test-licence-texts.sh`)
+
+```sh
+cd port
+bash tests/test-licence-texts.sh
+```
+
+Runs the licence step of each installer build (`build_installer.sh`
+for NSIS, `linux/build_installer_linux.sh`) into a scratch directory
+and checks the `LICENSE.txt` it stages: no claim of GPL 3, the About
+window's licence summary sentence for sentence (read from
+`fs-aboutdialog.c`), then `COPYING` and `LICENSE` in full.  The NSIS
+licence page shows that file.  (Re-injected: the GPL 3 paragraph put
+back; the Linux step without the licence texts.)
+
 ## The Windows build directory on its own (`tests/test-staged-runtime.sh`)
 
 ```sh
@@ -947,7 +1122,7 @@ change the firewall; a firewall stopped or started outside StockFW
 shows as such the moment the menu opens, and on the slow timer
 (`STOCKFW_TRAY_REFRESH_S=1`) with no menu open; Start at sign-in writes and
 removes the entry, and a failure is reported with the tick left
-showing the truth; Preferences and About open; Quit (firewall stays
+showing the truth; Preferences, Help and About open; Quit (firewall stays
 on) leaves the firewall running.  Preferences... from a hidden window
 brings the window up and opens over it, and asked for again while it
 is open it gives no second window.  The tray's Start at sign-in and
@@ -977,6 +1152,17 @@ window opened inside the first); leave the open Preferences out when
 the tray changes the setting and "the open Preferences switch follows"
 fails; leave the tray out when Preferences saves it and "the tray's
 tick follows at once" fails.
+
+Help (1.0.7, with the Help window): the menu has Help between
+Preferences and About; with the main window hidden it opens the Help
+window at "Running in the background" and leaves the main window
+hidden.  About is no longer modal, so the About check waits (up to two
+seconds) for the dialog answerer to see "[About StockFW]" instead of
+expecting it before the click returns.  `fs-tray-smoke` counts sixteen
+rows.  (Re-injected: Help opening Getting started, which fails "Help
+opens the Help window at Running in the background"; the Help row left
+out, which fails both Help checks.  Each restored with cp, cmp
+clean.)
 
 
 ## Session safety (`fs-session-smoke`)

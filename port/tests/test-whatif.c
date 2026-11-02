@@ -1847,6 +1847,15 @@ test_review (void)
 	r = ask (L, NULL, NULL, NULL, "inbound ssh from 198.51.100.4");
 	CHECK (notes_have (r, "other programs"),
 	       "review: Linux answers say other programs' rules are not seen");
+	/* Threat intel is not in this build (Help says so): no note may
+	 * speak of threat lists or blocklists as if Sentinel had them. */
+	CHECK (!notes_have (r, "threat") && !notes_have (r, "blocklist"),
+	       "review: no What-If note mentions threat lists (not in this "
+	       "build)");
+	fs_whatif_result_free (r);
+	r = ask (W, NULL, NULL, "all-defaults", "inbound ssh from 198.51.100.4");
+	CHECK (!notes_have (r, "threat") && !notes_have (r, "blocklist"),
+	       "review: no Windows What-If note mentions threat lists");
 	fs_whatif_result_free (r);
 
 	/* The trace caption is plain words. */
