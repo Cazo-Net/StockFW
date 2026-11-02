@@ -2086,6 +2086,27 @@ fs_cli_cmd_interfaces (gint argc, gchar **argv)
 
 /* ------------------------------------------------------------- copilot */
 
+/* "checks":[{probe, before, after}, ...]: a fix's What-If checks. */
+static void
+health_checks_json (GString *out, const GPtrArray *checks)
+{
+	g_string_append (out, "\"checks\":[");
+	for (guint k = 0; checks != NULL && k < checks->len; k++) {
+		const FsHealthCheck *c = g_ptr_array_index (checks, k);
+
+		if (k > 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "probe", c->probe);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "before", fs_whatif_verdict_name (c->before));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "after", fs_whatif_verdict_name (c->after));
+		g_string_append_c (out, '}');
+	}
+	g_string_append_c (out, ']');
+}
+
 /* [ health_json ] -- one schema, shared with the dashboard if it ever
  * serves it: version, the rule count, the platform model, findings. */
 static void
@@ -2139,6 +2160,18 @@ health_json (GString *out, const GPtrArray *findings, guint rules,
 		if (f->fix == FS_HEALTH_FIX_NONE) {
 			g_string_append (out, "null,");
 			fs_json_kv_str (out, "no_fix_reason", f->no_fix_reason);
+			/* A fix that was tried and failed its checks: what it
+			 * would have changed and the checks, which the reason
+			 * points to. */
+			if (f->checks != NULL && f->checks->len > 0) {
+				g_string_append (out, ",\"tried\":{");
+				fs_json_kv_str (out, "before", f->fix_before);
+				g_string_append_c (out, ',');
+				fs_json_kv_str (out, "after", f->fix_after);
+				g_string_append_c (out, ',');
+				health_checks_json (out, f->checks);
+				g_string_append_c (out, '}');
+			}
 		} else {
 			g_string_append_c (out, '{');
 			fs_json_kv_str (out, "label", f->fix_label);
@@ -2148,23 +2181,9 @@ health_json (GString *out, const GPtrArray *findings, guint rules,
 			fs_json_kv_str (out, "after", f->fix_after);
 			g_string_append_c (out, ',');
 			fs_json_kv_bool (out, "verified", f->verified);
-			g_string_append (out, ",\"checks\":[");
-			for (guint k = 0; f->checks != NULL && k < f->checks->len; k++) {
-				const FsHealthCheck *c = g_ptr_array_index (f->checks, k);
-
-				if (k > 0)
-					g_string_append_c (out, ',');
-				g_string_append_c (out, '{');
-				fs_json_kv_str (out, "probe", c->probe);
-				g_string_append_c (out, ',');
-				fs_json_kv_str (out, "before",
-				                fs_whatif_verdict_name (c->before));
-				g_string_append_c (out, ',');
-				fs_json_kv_str (out, "after",
-				                fs_whatif_verdict_name (c->after));
-				g_string_append_c (out, '}');
-			}
-			g_string_append (out, "]}");
+			g_string_append_c (out, ',');
+			health_checks_json (out, f->checks);
+			g_string_append_c (out, '}');
 		}
 		g_string_append_c (out, '}');
 	}
@@ -2248,6 +2267,19 @@ copilot_health (void)
 			} else if (f->no_fix_reason != NULL) {
 				printf ("  %sno fix offered: %s%s\n", fs_cli_dim (),
 				        f->no_fix_reason, fs_cli_reset ());
+				if (f->checks != NULL && f->checks->len > 0)
+					printf ("  tried: %s -> %s\n", f->fix_before,
+					        f->fix_after != NULL ? f->fix_after
+					                             : "(removed)");
+				for (guint k = 0; f->checks != NULL &&
+				                  k < f->checks->len; k++) {
+					const FsHealthCheck *c =
+						g_ptr_array_index (f->checks, k);
+
+					printf ("         checked: %s: %s -> %s\n", c->probe,
+					        fs_whatif_verdict_name (c->before),
+					        fs_whatif_verdict_name (c->after));
+				}
 			}
 		}
 		if (findings->len == 0)

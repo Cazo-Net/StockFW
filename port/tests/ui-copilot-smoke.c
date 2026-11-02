@@ -31,7 +31,10 @@
  *      drawer; the keyboard focus kept across refreshes; undone changes
  *      kept and marked; a dark-theme run in a child process, where the
  *      page stays light like the rest of the app.  FS_SHOT_DIR gets
- *      the screenshots.
+ *      the screenshots.  Like section 7 it asks a known firewall (the
+ *      network namespace, or the Windows stand-in on a Private
+ *      network), with the local network and this computer's addresses
+ *      fixed (STOCKFW_LAN_PREFIX, STOCKFW_LOCAL_ADDRESSES).
  *   7. What-If card  -- the entry keeps its line, the chips say how it
  *      was read, the answer row and Recent (five, newest first) fill
  *      in, Details opens a window beside the page (never modal), and
@@ -139,9 +142,14 @@ isolate (void)
 	 * Linux): the Sentinel mode switch below writes there. */
 	g_setenv ("APPDATA", scratch, TRUE);
 	g_setenv ("XDG_CONFIG_HOME", scratch, TRUE);
-	/* The local network a health fix narrows to: fixed, so the checks
-	 * do not depend on this machine's adapters. */
+	/* The local network a health fix narrows to, and this computer's
+	 * own addresses (none known, as in the root run's network namespace
+	 * and behind the Windows stand-in): fixed, so the checks do not
+	 * depend on this machine's adapters.  A private address of the
+	 * machine's own (a CI runner's 10.1.0.x) is a LAN the fix must keep
+	 * reachable, and would refuse the narrowing section 8 expects. */
 	g_setenv ("STOCKFW_LAN_PREFIX", "192.168.1.0/24", TRUE);
+	g_setenv ("STOCKFW_LOCAL_ADDRESSES", "", TRUE);
 
 	g_free (rules);
 	g_free (audit);
@@ -667,6 +675,18 @@ whatif_isolate (void)
 {
 	static gboolean done = FALSE;
 
+#ifdef G_OS_WIN32
+	/* Every caller (sections 7, 8 and the dark run), not only the
+	 * first: section 7 hands the real backend back when it ends, and
+	 * section 8's health checks would otherwise read the runner's own
+	 * network profile (Public, where StockFW's reserved-source block
+	 * decides a 192.168.x.x probe) and its adapters. */
+	whatif_fake_on = TRUE;
+	whatif_profile = FS_PROFILE_PRIVATE;
+	CHECK (g_strcmp0 (fs_backend ()->name, "whatif-windows") == 0,
+	       "what-if: the section asks a known Windows firewall, not the "
+	       "machine's");
+#endif
 	if (done)
 		return;
 	done = TRUE;
@@ -678,13 +698,6 @@ whatif_isolate (void)
 		                           &status, NULL);
 		(void) status;
 	}
-#endif
-#ifdef G_OS_WIN32
-	whatif_fake_on = TRUE;
-	whatif_profile = FS_PROFILE_PRIVATE;
-	CHECK (g_strcmp0 (fs_backend ()->name, "whatif-windows") == 0,
-	       "what-if: the section asks a known Windows firewall, not the "
-	       "machine's");
 #endif
 	fs_apply_set_audit_only (TRUE);
 }

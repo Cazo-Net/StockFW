@@ -236,7 +236,9 @@ FsSimulationResult *fs_copilot_simulate_text (FsCopilot *copilot,
  * "stopped" cannot be trusted (on Linux without root every chain reads
  * as missing): a stopped reading then stays unknown, because answering
  * "allowed, the firewall is off" for a firewall that runs would be
- * wrong in the dangerous direction. */
+ * wrong in the dangerous direction.  With STOCKFW_LOCAL_ADDRESSES set
+ * (tests; comma separated, empty for none) those are this computer's
+ * addresses and no adapter is read. */
 void fs_copilot_whatif_observe (FsWhatIfContext *ctx,
                                 const FsBackend *backend,
                                 gboolean state_reliable);

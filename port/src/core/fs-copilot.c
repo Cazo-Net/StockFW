@@ -872,7 +872,22 @@ fs_copilot_whatif_observe (FsWhatIfContext *ctx, const FsBackend *backend,
 		}
 	}
 
-	if (backend->list_interfaces != NULL) {
+	/* STOCKFW_LOCAL_ADDRESSES (tests): this computer's addresses, comma
+	 * separated, instead of its adapters'; set and empty means none.
+	 * Each private one is a LAN the health check probes, so a suite
+	 * that fixes STOCKFW_LAN_PREFIX fixes these too, or the machine
+	 * running it would decide whether a narrowing is verified. */
+	if (g_getenv ("STOCKFW_LOCAL_ADDRESSES") != NULL) {
+		gchar **addrs = g_strsplit (g_getenv ("STOCKFW_LOCAL_ADDRESSES"),
+		                            ",", -1);
+
+		for (gint i = 0; addrs[i] != NULL; i++) {
+			g_strstrip (addrs[i]);
+			if (*addrs[i] != '\0')
+				fs_whatif_context_add_local_address (ctx, addrs[i]);
+		}
+		g_strfreev (addrs);
+	} else if (backend->list_interfaces != NULL) {
 		GList *ifaces = backend->list_interfaces ();
 
 		for (GList *l = ifaces; l != NULL; l = l->next) {
@@ -3629,6 +3644,12 @@ login_port_name (FsCopilot *copilot, guint port)
  *                      the source in (Warning from the LAN); Warning
  *                      when some were allowed and some refused;
  *   all refused        Info.
+ * "Lets the source in" is What-If's ALLOWED, or its DEPENDS when the
+ * log shows connections this computer let in: the Copilot asks What-If
+ * without the network in use, and on Windows an inbound from a private
+ * address depends on it (StockFW blocks reserved sources on Public
+ * networks), while an allowed connection in the log is the answer for
+ * the network this computer was on.
  * Never carries a rule. */
 static FsInsight *
 brute_force_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
@@ -3646,7 +3667,7 @@ brute_force_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 	FsInsight *insight;
 	GString *services, *ports;
 	gchar *what;
-	gboolean none_refused;
+	gboolean none_refused, lets_in;
 
 	if (!sentinel_hit_is_inbound (hit))
 		return NULL;
@@ -3795,10 +3816,14 @@ brute_force_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 	}
 
 	none_refused = n_blocked == 0;
+	/* Some connections were let in, and What-If says "it depends":
+	 * the log answers it for the network in use. */
+	lets_in = verdict == FS_WHATIF_ALLOWED ||
+	          (verdict == FS_WHATIF_DEPENDS && n_blocked < st->len);
 	if (none_refused)
-		sev = verdict == FS_WHATIF_ALLOWED && cls != ADDR_LAN
+		sev = lets_in && cls != ADDR_LAN
 		      ? FS_COPILOT_WARNING : FS_COPILOT_INFO;
-	else if (verdict == FS_WHATIF_ALLOWED)
+	else if (lets_in)
 		sev = cls == ADDR_LAN ? FS_COPILOT_WARNING : FS_COPILOT_CRITICAL;
 	else
 		sev = n_blocked < st->len && cls != ADDR_LAN ? FS_COPILOT_WARNING
@@ -3810,14 +3835,14 @@ brute_force_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 
 		if (none_refused)
 			title = g_strdup_printf (
-				verdict == FS_WHATIF_ALLOWED
+				lets_in
 				? _("Repeated %s connections from %s, which the policy "
 				    "lets in")
 				: _("Repeated %s connections from %s"),
 				services->str, src);
 		else
 			title = g_strdup_printf (
-				verdict == FS_WHATIF_ALLOWED
+				lets_in
 				? _("Repeated %s attempts from %s, and the policy lets "
 				    "it in")
 				: _("Repeated %s attempts from %s"),
@@ -3837,6 +3862,10 @@ brute_force_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 				: verdict == FS_WHATIF_BLOCKED
 				? _("What-If says your policy blocks this source on this "
 				    "port.")
+				: lets_in
+				? _("What-If says the answer depends, for example on the "
+				    "network in use, and the log shows this computer let "
+				    "some of these connections in.")
 				: _("What-If could not say whether your policy lets this "
 				    "source in."),
 				none_refused

@@ -2863,6 +2863,71 @@ static void test_brute_force (void)
 	}
 	fs_copilot_free (c);
 	fs_policy_free (policy);
+
+	/* What-If says DEPENDS, and the log shows connections let in: the
+	 * log answers it for the network this computer was on.  The case
+	 * on each platform model: on Linux a row for a host name; on
+	 * Windows a private source, which StockFW's reserved-source block
+	 * stops on Public networks only (the Copilot asks without the
+	 * network in use).  All refused stays Info. */
+	policy = fs_policy_new ();
+	{
+		FsRule *r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+#ifdef G_OS_WIN32
+		                              "RDP, 3389, Anyone"
+#else
+		                              "RDP, 3389, lan.example"
+#endif
+		                              );
+		FsWhatIfContext *ctx;
+		FsWhatIfResult *res;
+
+		fs_policy_add (policy, r);
+		fs_rule_free (r);
+		ctx = fs_whatif_context_new (fs_whatif_native_platform (), policy,
+		                             NULL);
+		ctx->firewall = FS_WHATIF_FW_RUNNING;
+		res = fs_whatif_simulate_text (ctx,
+		                               "inbound tcp port 3389 from 192.168.1.61");
+		CHECK (res->verdict == FS_WHATIF_DEPENDS,
+		       "brute: the probe for this case depends (got %s)",
+		       fs_whatif_verdict_name (res->verdict));
+		fs_whatif_result_free (res);
+		fs_whatif_context_free (ctx);
+	}
+	c = fs_copilot_new ();
+	fs_copilot_set_policy (c, policy);
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "192.168.1.61", 3389, i == 0, i * 2);
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "192.168.1.62", 3389, TRUE, 100 + i * 2);
+	{
+		const FsInsight *let = NULL, *refused = NULL;
+		GList *all = fs_copilot_get_insights (c);
+
+		for (GList *l = all; l != NULL; l = l->next) {
+			const FsInsight *x = l->data;
+
+			if (x->type != FS_INSIGHT_BRUTE_FORCE)
+				continue;
+			if (g_strcmp0 (x->subject, "192.168.1.61") == 0)
+				let = x;
+			if (g_strcmp0 (x->subject, "192.168.1.62") == 0)
+				refused = x;
+		}
+		CHECK (let != NULL && let->severity == FS_COPILOT_WARNING &&
+		       strstr (let->title, "lets it in") != NULL &&
+		       strstr (let->description, "answer depends") != NULL &&
+		       strstr (let->why, "DEPENDS") != NULL,
+		       "brute: DEPENDS with connections let in is a LAN Warning "
+		       "(\"%s\")", let != NULL ? let->title : "none");
+		CHECK (refused != NULL && refused->severity == FS_COPILOT_INFO &&
+		       strstr (refused->title, "lets") == NULL,
+		       "brute: DEPENDS with every attempt refused stays Info");
+		g_list_free (all);
+	}
+	fs_copilot_free (c);
+	fs_policy_free (policy);
 }
 
 static void

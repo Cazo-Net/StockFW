@@ -1371,8 +1371,11 @@ README fails the suite, except the one sentence that says there is no
 AI model.
 
 `fs-copilot-smoke` section 8 drives the page with applies on hold
-(and, as root, in a network namespace of its own; `STOCKFW_LAN_PREFIX`
-fixes the LAN): the tiles follow the data (no constant), each finding
+(as root, in a network namespace of its own; on Windows against the
+section 7 stand-in, a known firewall on a Private network, for every
+section that calls `whatif_isolate`; `STOCKFW_LAN_PREFIX` fixes the
+LAN and `STOCKFW_LOCAL_ADDRESSES` this computer's addresses, so a
+runner's own 10.1.0.x or Public profile cannot decide the checks): the tiles follow the data (no constant), each finding
 row has a pill with a word and an ATK name "Severity: title", the
 drawer opens by click and by a real Enter key event and shows evidence
 rows, an unverified fix has no button and says why, Fix asks first (No
@@ -1402,7 +1405,16 @@ shows 1 row.
 `test-cli.sh` checks `stockfw copilot health`: usage errors exit 2, a
 clean policy exits 0, RDP open to anyone exits 7 with a verified
 narrowing in `--json`, and the rules directory (files and times) is
-unchanged afterwards.
+unchanged afterwards.  The local network (`STOCKFW_LAN_PREFIX`) and
+this computer's addresses (`STOCKFW_LOCAL_ADDRESSES`) are fixed: with
+the real adapters, a CI runner's 10.1.0.x is a second private network
+the narrowing would cut off, so no fix was offered and the check read
+`fix: null` (seen on GitHub's Ubuntu runner, and reproduced as a
+normal user in a network namespace with 10.1.0.42/16 and 172.17.0.1/16).
+That case is now a check of its own: with 192.168.1.5 and 10.1.0.42
+no narrowing is offered, `tried` holds the failed 10.1.0.20 check, and
+the text prints it under the reason.  A failed check prints the JSON
+it read.
 
 Teeth, each re-injected, seen failing, and restored with `cp` (proved
 with `cmp`):
