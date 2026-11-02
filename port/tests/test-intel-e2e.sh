@@ -46,14 +46,22 @@
 #     page, an HTTP error, a replayed older copy (rollback), a list that
 #     shrank to almost nothing, one dated a year ahead; a transaction
 #     the kernel rejects leaves the previous table, its digest and its
-#     counters (never counted twice); a stored list tampered with on
+#     counters (never counted twice), and so does one that would have
+#     loaded the very same table -- a failure, never "applied", nothing
+#     carried; a stored list tampered with on
 #     disk is refused before nft runs, and the next update repairs it;
 #   - an exception lets an address through; removing it gives the same
 #     digest as before;
-#   - a hold reaches no nft; a table removed or replaced by someone else
-#     reads not-loaded / differs, and an apply repairs it;
+#   - a hold reaches no nft; a table removed or replaced by someone else,
+#     or whose chains were flushed (its digest still on it), reads
+#     not-loaded / differs, and an apply repairs it;
 #   - user Stop and Start: suspend removes the table and keeps the
-#     count, resume restores the same digest;
+#     count, resume restores the same digest; `stockfw stop' and
+#     `stockfw start' do the same (plain and --json), with iptables;
+#   - without nft: a Stop where StockFW never loaded a table is not an
+#     error and the state reads off; where its record says it left one,
+#     the Stop fails and the state is unknown, never off; with no store
+#     at all, a Stop creates none;
 #   - the master switch off clears the table, no request is made, the
 #     carried counts stay; one audit line per attempt.
 # IPv6 is checked as rule text only: no IPv6 packet is sent here.
@@ -429,7 +437,7 @@ for want in \
   "Kept reachable: 192.0.2.2 (a default gateway), although E2E feed lists it." \
   "Kept reachable: 203.0.113.53 (a DNS server in use), although E2E feed lists it." \
   "Kept reachable: 198.51.100.22, 198.51.100.33 (an SSH session to this computer), although E2E feed lists it." \
-  "Kept reachable: 203.0.113.80 (a feed's download server), although E2E feed lists it."; do
+  "Kept reachable: 203.0.113.80 (a feed's download server or proxy), although E2E feed lists it."; do
   check 'grep -q -x -F "note: $want" <<<"$out"' "note: $want"
 done
 check 'has_element s_custom_e2e_feed_4 198.51.100.10 && ! has_element s_custom_e2e_feed_4 198.51.100.22 && ! has_element s_custom_e2e_feed_4 198.51.100.33 && ! has_element s_custom_e2e_feed_4 203.0.113.53 && ! has_element s_custom_e2e_feed_4 203.0.113.80 && ! has_element s_custom_e2e_feed_4 192.0.2.2' \
@@ -543,6 +551,19 @@ out="$(apply)"
 check '[ "$(field digest <<<"$out")" = "$D2G" ] && [ "$(live)" = "$D2G" ]' \
       "removing the exception gives the same digest as before it"
 
+# The same rule set refused (the hourly re-apply of an unchanged one):
+# the kernel then holds the digest asked for, but only because it held
+# it before.  The table still counts, so nothing may be carried, and the
+# attempt is a failure, not "applied".
+in_from 198.51.100.100 1 >/dev/null
+c_before="$(drv counters | tr '\n' ' ')"
+carried="$(drv source $FEED | sed -n 's/.* \(carried=[^ ]*\) .*/\1/p')"
+out="$(counted drv_with reject apply)"; rc=$?
+check '[ $rc -eq 1 ] && grep -q "^result failed digest=$D2G " <<<"$out" && grep -q -x -F "note: The same rules were already in force, and still are." <<<"$out" && grep -q "The same blocklists (fingerprint $D2G) were already loaded and are still in force" <<<"$out"' \
+      "the same rule set refused: a failure that says the same lists are still in force ($(grep ^error <<<"$out" | cut -c1-200))"
+check '[ "$(live)" = "$D2G" ] && grep -q "^enforced: " <<<"$(drv state)" && [ "$(drv counters | tr "\n" " ")" = "$c_before" ] && grep -q " $carried " <<<"$(drv source $FEED)"' \
+      "... the table, the state and the counters as they were, nothing carried ($c_before, $carried)"
+
 # A stored list tampered with on disk: refused before nft runs; the next
 # update stores the good copy again.
 printf '0.0.0.0/0\n' > "$STORE/$FEED.list"
@@ -583,6 +604,15 @@ out="$(drv state)"
 check 'grep -q "^differs: " <<<"$out"' "a table someone else loaded: differs ($out)"
 apply >/dev/null
 check 'grep -q "^enforced: " <<<"$(drv state)" && [ "$(live)" = "$D2G" ]' "an apply replaces it"
+# The chains flushed: the table and its comment (the digest) stay, the
+# rules are gone, nothing is blocked.
+"$REAL_NFT" flush table inet stockfw_intel
+out="$(drv state)"
+check 'grep -q -x -F "differs: The blocklist table is loaded, but the rules of E2E feed, E2E local are gone (removed by another program); apply to restore them." <<<"$out" && [ "$(live)" = "$D2G" ] && [ "$(in_from 198.51.100.100 1)" = 1 ]' \
+      "a table whose chains someone flushed (its digest still on it): differs, and the address really passes ($out)"
+apply >/dev/null
+check 'grep -q "^enforced: " <<<"$(drv state)" && [ "$(live)" = "$D2G" ] && [ "$(in_from 198.51.100.100 1)" = 0 ]' \
+      "an apply restores the rules"
 
 # -------------------------------------------------- 9. user Stop, Start
 in_from 198.51.100.100 2 >/dev/null
@@ -601,6 +631,52 @@ check '[ "$(in_from 198.51.100.100 1)" = 0 ] && [ "$(out_to 198.51.100.130 1)" =
 read -r p b <<<"$(total $FEED)"
 read -r p0 b0 <<<"$(awk -v id=$FEED '{ for (i = 1; i < NF; i += 3) if ($i == id) print $(i + 1), $(i + 2) }' <<<"$c_before")"
 check '[ "$p" = $((p0 + 1)) ] && [ "$b" = $((b0 + 38)) ]' "the count goes on from where it was ($p0 -> $p)"
+
+# The same through the command line, which stops and starts the
+# firewall itself (iptables, in this namespace) and the lists with it.
+CLI="${STOCKFW_CLI:-$PORT/build-linux/stockfw}"
+CLI_RAN=0
+if [ -x "$CLI" ] && command -v iptables >/dev/null; then
+  CLI_RAN=1
+  mkdir -p "$W/config"
+  cli() { PATH="$W/log:$PATH" XDG_CONFIG_HOME="$W/config" "$CLI" "$@"; }
+  out="$(cli stop)"; rc=$?
+  check '[ $rc -eq 0 ] && grep -q -x "Firewall stopped." <<<"$out" && [ "$(live)" = absent ] && grep -q "^suspended: " <<<"$(drv state)"' \
+        "stockfw stop: the firewall stops, the lists are removed and suspended ($out)"
+  out="$(counted cli start)"; rc=$?
+  check '[ $rc -eq 0 ] && grep -q -x "Blocklists applied (2 lists)." <<<"$out" && [ "$(live)" = "$D2G" ] && grep -q "^enforced: " <<<"$(drv state)"' \
+        "stockfw start: the firewall starts and the same digest is enforced again ($(tr '\n' ' ' <<<"$out"))"
+  out="$(cli --json stop)"; rc=$?
+  check '[ $rc -eq 0 ] && grep -q "\"intel\":{\"ok\":true,\"result\":\"suspended\"" <<<"$out" && [ "$(live)" = absent ]' \
+        "stockfw --json stop: the JSON says the lists were suspended ($out)"
+  out="$(counted cli --json start)"; rc=$?
+  check '[ $rc -eq 0 ] && grep -q "\"intel\":{\"ok\":true,\"result\":\"applied\"" <<<"$out" && [ "$(live)" = "$D2G" ]' \
+        "stockfw --json start: the JSON says the lists were applied ($(cut -c1-160 <<<"$out"))"
+  cli -q stop >/dev/null
+  out="$(counted drv resume)"
+  check 'grep -q "^result ok digest=$D2G " <<<"$out" && ! iptables -S | grep -qi stockfw' \
+        "(the firewall stopped again, the lists back for what follows)"
+else
+  echo "skip: stockfw stop and start (no $CLI, or no iptables)"
+fi
+
+# Without nft.  A record that says a table was left (this one): the
+# Stop cannot remove it, cannot tell it is gone, and says so; the state
+# is unknown, never off.
+mkdir -p "$W/empty"
+nonft() { env PATH="$W/empty" "$DRV" "$@"; }
+out="$(nonft suspend)"; rc=$?
+check '[ $rc -eq 1 ] && grep -q "nft was not found on PATH" <<<"$out" && [ "$(live)" = "$D2G" ] && grep -q "^unknown: " <<<"$(nonft state)"' \
+      "without nft, after a load: Stop fails, saying why; the state is unknown ($out)"
+# A store where nothing was ever loaded: not an error, and off.
+mkdir -m 700 /var/lib/nonft
+out="$(STOCKFW_INTEL_DIR=/var/lib/nonft nonft suspend)"; rc=$?
+check '[ $rc -eq 0 ] && [ "$out" = suspended ]' "without nft, nothing ever loaded: Stop is not an error ($out)"
+out="$(STOCKFW_INTEL_DIR=/var/lib/nonft nonft state)"
+check '[ "$out" = "off: No blocklist is turned on." ]' "... and the state is off, not unknown ($out)"
+# No store at all: nothing to do, and none is made.
+out="$(STOCKFW_INTEL_DIR=/var/lib/never nonft suspend)"; rc=$?
+check '[ $rc -eq 0 ] && [ ! -e /var/lib/never ]' "no store at all: Stop does nothing and creates none ($out)"
 
 # --------------------------------------------- 10. the master switch off
 c_before="$(drv counters | tr '\n' ' ')"
@@ -622,10 +698,12 @@ n_apply=$(grep -c " | intel-apply | " "$W/audit.log")
 n_held=$(grep -c " | intel-apply | source=e2e-test result=held " "$W/audit.log")
 n_failed=$(grep -c " | intel-apply | source=e2e-test result=failed " "$W/audit.log")
 APPLIES=$(wc -l < "$W/applies")
-check '[ "$n_apply" = "$APPLIES" ] && [ "$n_held" = 1 ] && [ "$n_failed" = 2 ]' \
+check '[ "$n_apply" = "$APPLIES" ] && [ "$n_held" = 1 ] && [ "$n_failed" = 3 ]' \
       "one audit line per apply attempt ($n_apply of $APPLIES; held $n_held, failed $n_failed)"
-check '[ "$(grep -c " | intel-suspend | source=e2e-test result=ok" "$W/audit.log")" = 1 ] && [ "$(grep -c " | intel-update | " "$W/audit.log")" = 9 ] && [ "$(grep -c " | intel-import | " "$W/audit.log")" = 1 ]' \
+check '[ "$(grep -c " | intel-suspend | source=e2e-test result=ok" "$W/audit.log")" = 2 ] && [ "$(grep -c " | intel-suspend | source=e2e-test result=failed" "$W/audit.log")" = 1 ] && [ "$(grep -c " | intel-update | " "$W/audit.log")" = 9 ] && [ "$(grep -c " | intel-import | " "$W/audit.log")" = 1 ]' \
       "and one per suspend, feed update attempt and import"
+check '[ $CLI_RAN = 0 ] || { [ "$(grep -c " | intel-suspend | source=cli result=ok" "$W/audit.log")" = 3 ] && [ "$(grep -c " | intel-apply | source=cli result=ok" "$W/audit.log")" = 2 ]; }' \
+      "the command line's stops and starts are audited as source=cli"
 
 echo
 if [ $fails -eq 0 ]; then echo "PASSED: 0 failure(s)"; else echo "FAILED: $fails failure(s)"; fi

@@ -235,10 +235,18 @@ typedef struct
 	/* 1.0.7 threat intel: replace every blocklist/location rule this
 	 * application owns with `ruleset' (an empty ruleset removes them),
 	 * all or nothing where the platform allows it.  NULL slots mean the
-	 * platform cannot enforce threat intel; the UI says so. */
+	 * platform cannot enforce threat intel; the UI says so.  TRUE when
+	 * the kernel holds the new rules afterwards, whatever the tool
+	 * said -- except when the tool failed and the kernel holds the
+	 * very rules it held before: nothing then shows the change went
+	 * through, so FALSE, with an error that says the same rules are
+	 * still in force.  The engine reads the kernel back either way. */
 	gboolean (*intel_apply) (const FsIntelRuleset *ruleset,
 	                         GError **error);
-	/* Remove them all.  Not an error when there is nothing to remove. */
+	/* Remove them all.  Not an error when there is nothing to remove,
+	 * as long as the platform's tool can say so: without it (Linux
+	 * without nft) the slot fails with G_IO_ERROR_NOT_FOUND, and the
+	 * engine decides from its own record whether that matters. */
 	gboolean (*intel_clear) (GError **error);
 	/* Packets and bytes blocked per set id since the rules were loaded:
 	 * gchar* -> FsIntelCounter* (core/fs-intelset.h), both owned by the

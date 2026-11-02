@@ -47,6 +47,7 @@
 #include "core/fs-fetch.h"
 #include "core/fs-i18n.h"
 
+#include <gio/gio.h>   /* G_IO_ERROR: the backends' error domain */
 #include <string.h>
 
 #ifdef __linux__
@@ -292,10 +293,33 @@ chain_is_safe (const gchar *canon, uid_t me, GError **error)
 	return ok;
 }
 
+/* The store is 0700 (design 6.1): its files are 0600, but a directory
+ * others can read still lists them, and so the feeds and local lists in
+ * use.  An existing store that group or others can read or enter is
+ * set to 0700 through a descriptor opened without following a link
+ * (the chain above it is already known safe).  FALSE when that is not
+ * possible: a store owned by root while we are not root. */
+static gboolean
+tighten_dir (const gchar *full)
+{
+	struct stat st;
+	gboolean ok;
+	int fd = open (full, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+
+	if (fd < 0)
+		return FALSE;
+	ok = fstat (fd, &st) == 0 && S_ISDIR (st.st_mode) &&
+	     ((st.st_mode & (S_IRWXG | S_IRWXO)) == 0 ||
+	      fchmod (fd, 0700) == 0);
+	close (fd);
+	return ok;
+}
+
 /* `path' (absolute) as a safe directory: its parent is resolved to a
  * canonical path whose every component is checked, and the directory
- * itself must not be a symbolic link.  Created (0700) when missing.
- * Returns the canonical path. */
+ * itself must not be a symbolic link.  Created (0700) when missing, set
+ * to 0700 when group or others may read it.  Returns the canonical
+ * path. */
 static gchar *
 checked_dir (const gchar *path, uid_t me, GError **error)
 {
@@ -339,6 +363,12 @@ checked_dir (const gchar *path, uid_t me, GError **error)
 		unsafe (error, path,
 		        _("it is not a directory, is owned by another user, "
 		          "or is writable by others"));
+		g_clear_pointer (&full, g_free);
+	} else if ((st.st_mode & (S_IRWXG | S_IRWXO)) != 0 &&
+	           !tighten_dir (full)) {
+		unsafe (error, path,
+		        _("other users can read it, and its mode could not be "
+		          "changed to 0700"));
 		g_clear_pointer (&full, g_free);
 	}
 out:
@@ -415,6 +445,27 @@ store_open (Store *store, GError **error)
 #else
 	store->fd = -1;
 	return fs_intel_dir (error) != NULL;  /* always FALSE here */
+#endif
+}
+
+/* Whether a store directory is there at all, found without creating
+ * it: a computer where no list was ever turned on has none, and a Stop
+ * or a Start there must not make one.  An error other than "no such
+ * file" counts as there (store_open then says what is wrong). */
+static gboolean
+store_exists (void)
+{
+#ifdef __linux__
+	const gchar *override = g_getenv ("STOCKFW_INTEL_DIR");
+	struct stat st;
+
+	if (lstat (override != NULL && *override != '\0' ? override
+	                                                : STORE_DEFAULT,
+	           &st) == 0)
+		return TRUE;
+	return errno != ENOENT;
+#else
+	return FALSE;
 #endif
 }
 
@@ -780,17 +831,29 @@ slug_id (const gchar *prefix, const gchar *name)
 	return id;
 }
 
-/* The host a URL contacts (for consent text and for keeping a feed's
- * own server reachable).  NULL when there is none. */
+/* The host an https:// URL contacts -- or, with http_too, an http://
+ * one (a proxy) -- for consent text and for keeping a download's
+ * server reachable.  The scheme is matched in any case, as the URL
+ * rule and curl match it (a feed typed as "HTTPS://..." must keep its
+ * server reachable too), and a "user@" part is skipped.  NULL when
+ * there is none. */
 static gchar *
-url_host (const gchar *url)
+host_of (const gchar *url, gboolean http_too)
 {
-	const gchar *p, *end;
+	const gchar *p, *end, *at;
 
-	if (url == NULL || !g_str_has_prefix (url, "https://"))
+	if (url == NULL)
 		return NULL;
-	p = url + strlen ("https://");
+	if (g_ascii_strncasecmp (url, "https://", 8) == 0)
+		p = url + 8;
+	else if (http_too && g_ascii_strncasecmp (url, "http://", 7) == 0)
+		p = url + 7;
+	else
+		return NULL;
 	end = p + strcspn (p, "/?#");
+	for (at = end; at > p && at[-1] != '@'; at--)
+		;
+	p = at;
 	if (end == p)
 		return NULL;
 	if (*p == '[') {
@@ -901,11 +964,46 @@ kf_dir (GKeyFile *kf, const gchar *group, FsIntelDir *out, GError **error)
 	return ok;
 }
 
-static gchar *
-kf_string (GKeyFile *kf, const gchar *group, const gchar *key)
+/* A key's string value; *out is NULL when the key is absent.  FALSE
+ * when the key is there but GKeyFile cannot decode its value (a bad
+ * escape such as "\q"): such a value is invalid, never "absent" -- a
+ * proxy or an exception list read as absent would be dropped without
+ * a word. */
+static gboolean
+kf_string (GKeyFile *kf, const gchar *group, const gchar *key, gchar **out)
 {
-	return g_key_file_has_key (kf, group, key, NULL)
-	       ? g_key_file_get_string (kf, group, key, NULL) : NULL;
+	*out = NULL;
+	if (!g_key_file_has_key (kf, group, key, NULL))
+		return TRUE;
+	*out = g_key_file_get_string (kf, group, key, NULL);
+	return *out != NULL;
+}
+
+/* The same for a list (an empty value is an empty list, not NULL). */
+static gboolean
+kf_list (GKeyFile *kf, const gchar *group, const gchar *key, gchar ***out,
+         gsize *n)
+{
+	*out = NULL;
+	*n = 0;
+	if (!g_key_file_has_key (kf, group, key, NULL))
+		return TRUE;
+	*out = g_key_file_get_string_list (kf, group, key, n, NULL);
+	return *out != NULL;
+}
+
+/* kf_string for intel.conf: an undecodable value fails the load naming
+ * the group and key. */
+static gboolean
+kf_text (GKeyFile *kf, const gchar *group, const gchar *key, gchar **out,
+         GError **error)
+{
+	if (kf_string (kf, group, key, out))
+		return TRUE;
+	config_error (error, group, key,
+	              _("the value cannot be read (an invalid escape "
+	                "sequence)"));
+	return FALSE;
 }
 
 static gboolean
@@ -922,13 +1020,17 @@ config_feed_group (FsIntelConfig *config, GKeyFile *kf, const gchar *group,
 	if (custom && !g_str_has_prefix (id, "custom-"))
 		return TRUE;   /* a feed this version does not know: ignored */
 	if (custom) {
-		gchar *name = kf_string (kf, group, "name");
-		gchar *url = kf_string (kf, group, "url");
-		gchar *fmt = kf_string (kf, group, "format");
+		gchar *name = NULL, *url = NULL, *fmt = NULL;
 		FsFeedFormat format = FS_FEED_FMT_PLAIN;
 		gboolean ok = FALSE;
 
-		if (!name_is_acceptable (name))
+		gboolean read = kf_text (kf, group, "name", &name, error) &&
+		                kf_text (kf, group, "url", &url, error) &&
+		                kf_text (kf, group, "format", &fmt, error);
+
+		if (!read)
+			ok = FALSE;   /* error set, naming the key */
+		else if (!name_is_acceptable (name))
 			config_error (error, group, "name", _("missing or invalid"));
 		else if (url == NULL || !fs_feed_url_is_acceptable (url, NULL))
 			config_error (error, group, "url",
@@ -972,7 +1074,8 @@ config_list_group (FsIntelConfig *config, GKeyFile *kf, const gchar *group,
 	}
 	if (fs_intel_config_list (config, id) != NULL)
 		return TRUE;
-	name = kf_string (kf, group, "name");
+	if (!kf_text (kf, group, "name", &name, error))
+		return FALSE;
 	if (!name_is_acceptable (name)) {
 		g_free (name);
 		config_error (error, group, "name", _("missing or invalid"));
@@ -1008,10 +1111,10 @@ config_parse (const gchar *text, gsize len, GError **error)
 	}
 
 	if (g_key_file_has_group (kf, "intel")) {
-		gchar *proxy;
+		gchar *proxy = NULL;
 
-		ok = kf_bool (kf, "intel", "enabled", &config->enabled, error);
-		proxy = ok ? kf_string (kf, "intel", "proxy") : NULL;
+		ok = kf_bool (kf, "intel", "enabled", &config->enabled, error) &&
+		     kf_text (kf, "intel", "proxy", &proxy, error);
 		if (proxy != NULL && *proxy != '\0') {
 			if (!proxy_is_acceptable (proxy)) {
 				config_error (error, "intel", "proxy",
@@ -1037,9 +1140,16 @@ config_parse (const gchar *text, gsize len, GError **error)
 
 	if (ok && g_key_file_has_key (kf, "exceptions", "ranges", NULL)) {
 		gsize n = 0;
-		gchar **ranges = g_key_file_get_string_list (kf, "exceptions",
-		                                             "ranges", &n, NULL);
+		gchar **ranges = NULL;
 
+		/* One bad escape must not drop every exception: an address
+		 * the user excepted would be blocked without a word. */
+		if (!kf_list (kf, "exceptions", "ranges", &ranges, &n)) {
+			config_error (error, "exceptions", "ranges",
+			              _("the value cannot be read (an invalid "
+			                "escape sequence)"));
+			ok = FALSE;
+		}
 		for (gsize i = 0; ok && ranges != NULL && i < n; i++) {
 			gchar *r = g_strstrip (g_strdup (ranges[i]));
 
@@ -1396,7 +1506,7 @@ fs_intel_consent_text (const FsIntelConfig *config, const gchar *id)
 	fi = f->custom ? NULL : fs_feed_catalog_find (id);
 	if (!f->custom && fi == NULL)
 		return NULL;
-	host = fi != NULL ? g_strdup (fi->host) : url_host (f->url);
+	host = fi != NULL ? g_strdup (fi->host) : host_of (f->url, FALSE);
 	hours = fi != NULL ? fi->interval_hours : CUSTOM_INTERVAL_H;
 	if (hours == 24)
 		often = g_strdup (_("once a day"));
@@ -1502,8 +1612,10 @@ num_uint (GKeyFile *kf, const gchar *key, guint *out)
 static gboolean
 text_value (GKeyFile *kf, const gchar *key, gchar **out)
 {
-	gchar *v = kf_string (kf, "state", key);
+	gchar *v = NULL;
 
+	if (!kf_string (kf, "state", key, &v))
+		return FALSE;   /* there, but undecodable: damaged */
 	if (v == NULL)
 		return TRUE;
 	if (!g_utf8_validate (v, -1, NULL) || strlen (v) > AUDIT_TEXT_MAX ||
@@ -1555,14 +1667,11 @@ state_parse (const gchar *id, const gchar *text, gsize len,
 	/* History: two lists of the same length, at most FS_FEED_HISTORY. */
 	if (ok) {
 		gsize ne = 0, nc = 0;
-		gchar **he = g_key_file_get_string_list (kf, "state",
-		                                         "history-entries", &ne,
-		                                         NULL);
-		gchar **hc = g_key_file_get_string_list (kf, "state",
-		                                         "history-cover4", &nc,
-		                                         NULL);
+		gchar **he = NULL, **hc = NULL;
 
-		if (ne != nc || ne > FS_FEED_HISTORY)
+		if (!kf_list (kf, "state", "history-entries", &he, &ne) ||
+		    !kf_list (kf, "state", "history-cover4", &hc, &nc) ||
+		    ne != nc || ne > FS_FEED_HISTORY)
 			ok = FALSE;
 		for (gsize i = 0; ok && i < ne; i++) {
 			guint64 e, c;
@@ -1720,29 +1829,19 @@ tampered (GError **error, const gchar *id, const gchar *why)
 	               "or import it again."), id, why);
 }
 
-static guint64
-cover6_64 (const FsRangeSet *set)
-{
-	guint64 total = 0;
-
-	for (guint i = 0; i < set->v6->len; i++) {
-		const FsRange6 *r = &g_array_index (set->v6, FsRange6, i);
-		guint64 n = r->end.hi - r->start.hi;
-
-		n = (n == G_MAXUINT64) ? n : n + 1;
-		total = (total > G_MAXUINT64 - n) ? G_MAXUINT64 : total + n;
-	}
-	return total;
-}
-
 /* Check a list read back from the store [S2.7, S4.4]: strict syntax
  * (fs_range_set_from_text), the entry count and the coverage caps.
- * The span floor of the parser cannot be applied again here: a stored
- * list is normalized, so neighbouring entries that each passed it are
- * merged (two adjacent /10s read back as one /9).  The coverage caps
- * bound what a tampered list can block to what an accepted feed may.
- * Protected space (which a later version may widen) is taken out
- * quietly rather than called tampering. */
+ * The caps are measured exactly as the parser measured them
+ * (fs_feed_cover6_64, fs_range_set_addresses4), so a list the parser
+ * accepted always loads again: a count of its own that came out one
+ * higher for every unaligned IPv6 interval once made an accepted list
+ * "tampered" and failed every build.  The span floor of the parser
+ * cannot be applied again here: a stored list is normalized, so
+ * neighbouring entries that each passed it are merged (two adjacent
+ * /10s read back as one /9).  The coverage caps bound what a tampered
+ * list can block to what an accepted feed may.  Protected space (which
+ * a later version may widen) is taken out quietly rather than called
+ * tampering. */
 static FsRangeSet *
 list_check (const gchar *id, FsRangeSet *set, GError **error)
 {
@@ -1753,7 +1852,7 @@ list_check (const gchar *id, FsRangeSet *set, GError **error)
 	    LIST_MAX_INTERVALS)
 		why = _("too many entries");
 	else if (fs_range_set_addresses4 (set) > FS_FEED_MAX_COVER4 ||
-	         cover6_64 (set) > FS_FEED_MAX_COVER6_64)
+	         fs_feed_cover6_64 (set) > FS_FEED_MAX_COVER6_64)
 		why = _("it covers too many addresses");
 	if (why != NULL) {
 		tampered (error, id, why);
@@ -1906,6 +2005,43 @@ fs_intel_source_is_stale (const FsIntelConfig *config, const gchar *id,
 
 /* ============================================================= import */
 
+/* A name as the user means it: compatibility-normalized, case-folded,
+ * every run of white space one space, trimmed. */
+static gchar *
+name_key (const gchar *name)
+{
+	gchar *norm = g_utf8_normalize (name, -1, G_NORMALIZE_ALL);
+	gchar *fold = g_utf8_casefold (norm != NULL ? norm : name, -1);
+	GString *out = g_string_new (NULL);
+
+	for (const gchar *p = fold; *p; p = g_utf8_next_char (p)) {
+		gunichar c = g_utf8_get_char (p);
+
+		if (g_unichar_isspace (c)) {
+			if (out->len > 0 && out->str[out->len - 1] != ' ')
+				g_string_append_c (out, ' ');
+		} else
+			g_string_append_unichar (out, c);
+	}
+	if (out->len > 0 && out->str[out->len - 1] == ' ')
+		g_string_truncate (out, out->len - 1);
+	g_free (norm);
+	g_free (fold);
+	return g_string_free (out, FALSE);
+}
+
+/* Whether two list names are the same name, in any case or spacing. */
+static gboolean
+same_name (const gchar *a, const gchar *b)
+{
+	gchar *ka = name_key (a), *kb = name_key (b);
+	gboolean same = strcmp (ka, kb) == 0;
+
+	g_free (ka);
+	g_free (kb);
+	return same;
+}
+
 static gchar *
 read_user_file (const gchar *path, gsize *len, GError **error)
 {
@@ -1991,8 +2127,25 @@ fs_intel_import_list (FsIntelConfig *config, const gchar *path,
 	}
 	if (!dir_arg_ok (dir, FALSE, error))
 		return FALSE;
-	if (!store_open (&store, error))
+	/* The id is a slug of the name, so different names can share it
+	 * ("Office VPN" and "office-vpn", or two long names that differ
+	 * after 34 characters).  Only the same name replaces a list;
+	 * another one that would take its id is refused before anything
+	 * is written, or it would silently overwrite that list. */
+	id = slug_id ("local-", name);
+	l = fs_intel_config_list (config, id);
+	if (l != NULL && !same_name (l->name, name)) {
+		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+		             _("The list \"%s\" already uses the id %s; choose "
+		               "another name, or remove that list first."),
+		             l->name, id);
+		g_free (id);
 		return FALSE;
+	}
+	if (!store_open (&store, error)) {
+		g_free (id);
+		return FALSE;
+	}
 	data = read_user_file (path, &len, error);
 	if (data == NULL)
 		goto out;
@@ -2012,7 +2165,6 @@ fs_intel_import_list (FsIntelConfig *config, const gchar *path,
 		             path);
 		goto out;
 	}
-	id = slug_id ("local-", name);
 	digest = list_write (&store, id, set, error);
 	if (digest == NULL)
 		goto out;
@@ -2597,7 +2749,7 @@ build_in (const Store *store, const FsIntelConfig *config,
 		kinds[nkinds++] = (KeepKind) { host->sessions,
 			_("an SSH session to this computer") };
 		kinds[nkinds++] = (KeepKind) { host->update_hosts,
-			_("a feed's download server") };
+			_("a feed's download server or proxy") };
 	}
 	for (guint k = 0; k < nkinds; k++) {
 		FsRangeSet *n = normalized_copy (kinds[k].set);
@@ -2796,6 +2948,10 @@ typedef struct
 	gint64     applied_at;
 	gboolean   suspended;
 	GPtrArray *ids;        /* gchar*                                 */
+	GPtrArray *ruled;      /* gchar*: the ids whose set has addresses,
+	                        * and so rules in the kernel (a set whose
+	                        * every address was kept reachable has
+	                        * none); NULL when the record predates it */
 	guint      count4, count6;
 } Applied;
 
@@ -2805,7 +2961,33 @@ applied_clear (Applied *a)
 	g_free (a->digest);
 	if (a->ids != NULL)
 		g_ptr_array_unref (a->ids);
+	if (a->ruled != NULL)
+		g_ptr_array_unref (a->ruled);
 	memset (a, 0, sizeof *a);
+}
+
+/* A record of nothing loaded (the empty rule set's digest, no sets). */
+static void
+applied_empty (Applied *a, gboolean suspended)
+{
+	FsIntelRuleset *empty = fs_intel_ruleset_new ();
+
+	memset (a, 0, sizeof *a);
+	a->digest = fs_intel_ruleset_digest (empty);
+	a->applied_at = g_get_real_time () / G_USEC_PER_SEC;
+	a->suspended = suspended;
+	a->ids = g_ptr_array_new_with_free_func (g_free);
+	a->ruled = g_ptr_array_new_with_free_func (g_free);
+	fs_intel_ruleset_free (empty);
+}
+
+/* Whether the record says StockFW left a table with rules in the
+ * kernel: not suspended, and some set had addresses. */
+static gboolean
+applied_loaded (const Applied *a)
+{
+	return a->digest != NULL && !a->suspended &&
+	       (a->ruled != NULL ? a->ruled->len : a->ids->len) > 0;
 }
 
 /* FALSE when there is no record or it cannot be trusted; *a is then
@@ -2829,12 +3011,13 @@ applied_read (const Store *store, Applied *a)
 		gchar *at = kf_raw (kf, "applied", "applied-at");
 		gchar *c4 = kf_raw (kf, "applied", "count4");
 		gchar *c6 = kf_raw (kf, "applied", "count6");
-		gsize n = 0;
-		gchar **ids = g_key_file_get_string_list (kf, "applied", "sets",
-		                                          &n, NULL);
+		gsize n = 0, nr = 0;
+		gchar **ids = NULL, **ruled = NULL;
+		gboolean lists = kf_list (kf, "applied", "sets", &ids, &n) &&
+		                 kf_list (kf, "applied", "ruled", &ruled, &nr);
 		guint64 v4 = 0, v6 = 0, t = 0;
 
-		ok = digest != NULL && strlen (digest) == 32 &&
+		ok = lists && digest != NULL && strlen (digest) == 32 &&
 		     strspn (digest, "0123456789abcdef") == 32 &&
 		     susp != NULL && (strcmp (susp, "true") == 0 ||
 		                      strcmp (susp, "false") == 0) &&
@@ -2846,6 +3029,8 @@ applied_read (const Store *store, Applied *a)
 		                                              G_MAXUINT, &v6, NULL);
 		for (gsize i = 0; ok && i < n; i++)
 			ok = fs_intel_id_is_valid (ids[i]);
+		for (gsize i = 0; ok && i < nr; i++)
+			ok = fs_intel_id_is_valid (ruled[i]);
 		if (ok) {
 			a->digest = digest;
 			digest = NULL;
@@ -2855,6 +3040,12 @@ applied_read (const Store *store, Applied *a)
 			a->count6 = (guint) v6;
 			for (gsize i = 0; i < n; i++)
 				g_ptr_array_add (a->ids, g_strdup (ids[i]));
+			if (ruled != NULL) {
+				a->ruled = g_ptr_array_new_with_free_func (g_free);
+				for (gsize i = 0; i < nr; i++)
+					g_ptr_array_add (a->ruled,
+					                 g_strdup (ruled[i]));
+			}
 		}
 		g_free (digest);
 		g_free (susp);
@@ -2862,6 +3053,7 @@ applied_read (const Store *store, Applied *a)
 		g_free (c4);
 		g_free (c6);
 		g_strfreev (ids);
+		g_strfreev (ruled);
 	}
 	g_key_file_free (kf);
 	g_free (text);
@@ -2893,6 +3085,13 @@ applied_write (const Store *store, const Applied *a, GError **error)
 	                            (const gchar *const *) a->ids->pdata,
 	                            a->ids->len - 1);
 	g_ptr_array_remove_index (a->ids, a->ids->len - 1);
+	if (a->ruled != NULL) {
+		g_ptr_array_add (a->ruled, NULL);
+		g_key_file_set_string_list (kf, "applied", "ruled",
+		                            (const gchar *const *) a->ruled->pdata,
+		                            a->ruled->len - 1);
+		g_ptr_array_remove_index (a->ruled, a->ruled->len - 1);
+	}
 	data = g_key_file_to_data (kf, &len, NULL);
 	g_key_file_free (kf);
 	ok = store_write (store, APPLIED_NAME, data, len, error);
@@ -2989,22 +3188,87 @@ kernel_matches (const FsBackend *backend, const FsIntelRuleset *rs,
 	return match;
 }
 
-static void
-hosts_of_enabled_feeds (const FsIntelConfig *config, GPtrArray *hosts)
+/* Whether anything was counted in a snapshot of the counters. */
+static gboolean
+counted_anything (GHashTable *snapshot)
 {
-	for (guint i = 0; i < config->feeds->len; i++) {
+	GHashTableIter it;
+	gpointer key, value;
+
+	if (snapshot == NULL)
+		return FALSE;
+	g_hash_table_iter_init (&it, snapshot);
+	while (g_hash_table_iter_next (&it, &key, &value)) {
+		const FsIntelCounter *c = value;
+
+		if (c->packets != 0 || c->bytes != 0)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/* Whether some counter read before an apply (`before') is lower in the
+ * table read after it (`after'): a counter only grows while its table
+ * lives, so a lower one proves the table was replaced.  An id missing
+ * from a readable `after' counts as zero.  FALSE when `after' could
+ * not be read. */
+static gboolean
+counters_went_down (GHashTable *before, GHashTable *after)
+{
+	GHashTableIter it;
+	gpointer key, value;
+
+	if (before == NULL || after == NULL)
+		return FALSE;
+	g_hash_table_iter_init (&it, before);
+	while (g_hash_table_iter_next (&it, &key, &value)) {
+		const FsIntelCounter *b = value;
+		const FsIntelCounter *a = g_hash_table_lookup (after, key);
+
+		if ((a != NULL ? a->packets : 0) < b->packets ||
+		    (a != NULL ? a->bytes : 0) < b->bytes)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static void
+add_host (GPtrArray *hosts, gchar *h)
+{
+	if (h == NULL)
+		return;
+	for (guint i = 0; i < hosts->len; i++)
+		if (g_ascii_strcasecmp (g_ptr_array_index (hosts, i), h) == 0) {
+			g_free (h);
+			return;
+		}
+	g_ptr_array_add (hosts, h);
+}
+
+gchar **
+fs_intel_update_hosts (const FsIntelConfig *config)
+{
+	GPtrArray *hosts = g_ptr_array_new ();
+	gboolean any = FALSE;
+
+	for (guint i = 0; config != NULL && i < config->feeds->len; i++) {
 		FsIntelFeedConf *f = g_ptr_array_index (config->feeds, i);
 		const FsFeedInfo *fi;
-		gchar *h = NULL;
 
 		if (!f->enabled)
 			continue;
+		any = TRUE;
 		fi = f->custom ? NULL : fs_feed_catalog_find (f->id);
-		h = fi != NULL ? g_strdup (fi->host) : url_host (f->url);
-		if (h != NULL)
-			g_ptr_array_add (hosts, h);
+		add_host (hosts, fi != NULL ? g_strdup (fi->host)
+		                            : host_of (f->url, FALSE));
 	}
+	/* Every download connects to the proxy, not to the feed's host: a
+	 * list naming the proxy would stop every update, the one that
+	 * would fix the list included [S7.2]. */
+	if (any && config->proxy != NULL)
+		add_host (hosts, host_of (config->proxy, TRUE));
 	g_ptr_array_add (hosts, NULL);
+	return (gchar **) g_ptr_array_free (hosts, FALSE);
 }
 
 FsIntelOutcome *
@@ -3018,12 +3282,12 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 	GPtrArray *notes = g_ptr_array_new_with_free_func (g_free);
 	Store store = { -1 };
 	GError *local = NULL;
-	GHashTable *snapshot = NULL;
-	gchar *detail;
+	GHashTable *snapshot = NULL, *after = NULL;
+	gchar *detail, *before_digest = NULL;
 	const gchar *src = (source != NULL && *source) ? source : "-";
 	gint64 now = g_get_real_time () / G_USEC_PER_SEC;
-	FsIntelLive live;
-	gboolean ok;
+	FsIntelLive live, before;
+	gboolean ok, said_ok, matches, replaced = FALSE;
 
 	g_return_val_if_fail (backend != NULL && config != NULL, NULL);
 
@@ -3041,11 +3305,10 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 	}
 
 	if (host == NULL && want_any (config)) {
-		GPtrArray *hosts = g_ptr_array_new_with_free_func (g_free);
+		gchar **hosts = fs_intel_update_hosts (config);
 
-		hosts_of_enabled_feeds (config, hosts);
-		own_host = fs_hostnet_read ((const gchar *const *) hosts->pdata);
-		g_ptr_array_unref (hosts);
+		own_host = fs_hostnet_read ((const gchar *const *) hosts);
+		g_strfreev (hosts);
 		host = own_host;
 	}
 	rs = want_any (config) ? build_in (&store, config, host, notes, &local)
@@ -3091,29 +3354,23 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 		goto done;
 	}
 
-	/* The live counters, read before the table is replaced; they are
-	 * carried only once the replacement is known to have happened,
-	 * so a failed apply (old table still counting) never counts twice
-	 * [N8, P8]. */
+	/* What the kernel holds and has counted, read before the table is
+	 * replaced.  The counters are carried only once the replacement is
+	 * proven, so an apply that changed nothing (the old table still
+	 * counting) never counts them twice [N8, P8]. */
+	before = backend->intel_live != NULL
+	         ? backend->intel_live (&before_digest) : FS_INTEL_LIVE_UNKNOWN;
 	snapshot = backend->intel_counters != NULL ? backend->intel_counters ()
 	                                           : NULL;
-	ok = backend->intel_apply (rs, &local);
+	said_ok = ok = backend->intel_apply (rs, &local);
 
 	/* Never trust the verdict alone: nft can commit and still time
 	 * out, or fail after a partial read.  What the kernel holds now
 	 * decides [S10]. */
-	if (kernel_matches (backend, rs, o->digest, &live)) {
-		if (!ok) {
-			gchar *why = error_text (local);
-
-			g_ptr_array_add (o->notes, g_strdup_printf (
-				_("The kernel reported an error (%s), but holds the "
-				  "new rules."), why));
-			g_free (why);
-			g_clear_error (&local);
-		}
+	matches = kernel_matches (backend, rs, o->digest, &live);
+	if (matches)
 		ok = TRUE;
-	} else if (ok && live != FS_INTEL_LIVE_UNKNOWN) {
+	else if (ok && live != FS_INTEL_LIVE_UNKNOWN) {
 		ok = FALSE;
 		g_set_error (&local, FS_INTEL_ERROR, FS_INTEL_ERR_STORE,
 		             _("The rules were applied, but the kernel holds "
@@ -3121,6 +3378,47 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 	}
 	/* live UNKNOWN after a reported success: cannot tell, the
 	 * backend's verdict stands. */
+
+	/* Was the old table replaced?  The new digest where another one,
+	 * or none, was before proves it.  The same digest proves nothing:
+	 * it is also exactly what a transaction the kernel refused leaves
+	 * behind (a re-apply of an unchanged rule set, as the hourly check
+	 * makes) -- then only counters that went down prove it, read again
+	 * now.  For the empty rule set, no table now where one was. */
+	if (ok) {
+		if (matches && rs->sets->len > 0)
+			replaced = before == FS_INTEL_LIVE_ABSENT ||
+			           (before == FS_INTEL_LIVE_PRESENT &&
+			            g_strcmp0 (before_digest, o->digest) != 0);
+		else if (matches)
+			replaced = before == FS_INTEL_LIVE_PRESENT ||
+			           snapshot != NULL;
+		if (!replaced && counted_anything (snapshot)) {
+			after = backend->intel_counters != NULL
+			        ? backend->intel_counters () : NULL;
+			replaced = counters_went_down (snapshot, after);
+		}
+	}
+	if (ok && !said_ok && !replaced && rs->sets->len > 0 &&
+	    before == FS_INTEL_LIVE_PRESENT &&
+	    g_strcmp0 (before_digest, o->digest) == 0) {
+		/* The tool failed, and the kernel holds the rules it held
+		 * before -- the same ones.  Nothing shows the transaction
+		 * went through, so it is not reported as applied, and the
+		 * counters are not carried: the old table still counts. */
+		ok = FALSE;
+		g_ptr_array_add (o->notes, g_strdup (
+			_("The same rules were already in force, and still "
+			  "are.")));
+	} else if (ok && !said_ok) {
+		gchar *why = error_text (local);
+
+		g_ptr_array_add (o->notes, g_strdup_printf (
+			_("The kernel reported an error (%s), but holds the "
+			  "new rules."), why));
+		g_free (why);
+		g_clear_error (&local);
+	}
 
 	if (!ok) {
 		gchar *why;
@@ -3140,7 +3438,8 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 	}
 
 	o->result = FS_APPLY_OK;
-	carry_counters (&store, snapshot, now);
+	if (replaced)
+		carry_counters (&store, snapshot, now);
 	mark_counted_since (&store, rs, now);
 	{
 		Applied a = { 0 };
@@ -3151,9 +3450,14 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 		a.count4 = o->count4;
 		a.count6 = o->count6;
 		a.ids = g_ptr_array_new ();
-		for (guint i = 0; i < rs->sets->len; i++)
-			g_ptr_array_add (a.ids, ((FsIntelSet *)
-			                 g_ptr_array_index (rs->sets, i))->id);
+		a.ruled = g_ptr_array_new ();
+		for (guint i = 0; i < rs->sets->len; i++) {
+			const FsIntelSet *set = g_ptr_array_index (rs->sets, i);
+
+			g_ptr_array_add (a.ids, set->id);
+			if (!fs_range_set_is_empty (set->ranges))
+				g_ptr_array_add (a.ruled, set->id);
+		}
 		if (!applied_write (&store, &a, &local)) {
 			gchar *why = error_text (local);
 
@@ -3165,6 +3469,7 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 			g_clear_error (&local);
 		}
 		g_ptr_array_free (a.ids, TRUE);
+		g_ptr_array_free (a.ruled, TRUE);
 	}
 	detail = g_strdup_printf ("source=%s result=ok digest=%s sets=%u "
 	                          "v4=%u v6=%u", src, o->digest, o->sets,
@@ -3174,6 +3479,9 @@ done:
 	g_free (detail);
 	if (snapshot != NULL)
 		g_hash_table_unref (snapshot);
+	if (after != NULL)
+		g_hash_table_unref (after);
+	g_free (before_digest);
 	fs_intel_ruleset_free (rs);
 	store_close (&store);
 	return o;
@@ -3185,49 +3493,86 @@ fs_intel_suspend (const FsBackend *backend, const gchar *source,
 {
 	Store store = { -1 };
 	GError *local = NULL, *store_err = NULL;
-	GHashTable *snapshot;
+	GHashTable *snapshot = NULL;
+	Applied a = { 0 };
 	const gchar *src = (source != NULL && *source) ? source : "-";
 	gint64 now = g_get_real_time () / G_USEC_PER_SEC;
-	gboolean ok, have_store;
+	gboolean ok = TRUE, have_store, have_record;
+	FsIntelLive live;
 	gchar *detail;
 
 	g_return_val_if_fail (backend != NULL, FALSE);
 	if (backend->intel_clear == NULL)
 		return TRUE;
 
+	/* No store: no list was ever turned on here, and nothing applied
+	 * (an apply needs the store).  A table left behind anyway (the
+	 * store removed by hand) is still removed, but no store is made
+	 * just to record a Stop. */
+	if (!store_exists ()) {
+		live = backend->intel_live != NULL ? backend->intel_live (NULL)
+		                                   : FS_INTEL_LIVE_UNKNOWN;
+		if (live != FS_INTEL_LIVE_PRESENT)
+			return TRUE;
+		ok = backend->intel_clear (&local);
+		if (ok) {
+			detail = g_strdup_printf ("source=%s result=ok no-store",
+			                          src);
+		} else {
+			gchar *why = error_text (local);
+
+			detail = g_strdup_printf ("source=%s result=failed "
+			                          "no-store error=%s", src, why);
+			g_free (why);
+		}
+		audit ("intel-suspend", detail);
+		g_free (detail);
+		if (!ok)
+			g_propagate_error (error, local);
+		return ok;
+	}
+
 	have_store = store_open (&store, &store_err);
-	snapshot = backend->intel_counters != NULL ? backend->intel_counters ()
-	                                           : NULL;
-	ok = backend->intel_clear (&local);
+	have_record = have_store && applied_read (&store, &a);
+
+	/* No table: nothing to remove and nothing counted -- a Stop on a
+	 * computer that never used a list runs one listing, no load. */
+	live = backend->intel_live != NULL ? backend->intel_live (NULL)
+	                                   : FS_INTEL_LIVE_UNKNOWN;
+	if (live != FS_INTEL_LIVE_ABSENT) {
+		snapshot = backend->intel_counters != NULL
+		           ? backend->intel_counters () : NULL;
+		ok = backend->intel_clear (&local);
+	}
 	if (!ok) {
-		FsIntelLive live = backend->intel_live != NULL
-		                   ? backend->intel_live (NULL)
-		                   : FS_INTEL_LIVE_UNKNOWN;
+		live = backend->intel_live != NULL ? backend->intel_live (NULL)
+		                                   : FS_INTEL_LIVE_UNKNOWN;
 
 		/* The table may be gone although the tool complained. */
 		if (live == FS_INTEL_LIVE_ABSENT) {
 			ok = TRUE;
 			g_clear_error (&local);
+		} else if (g_error_matches (local, G_IO_ERROR,
+		                            G_IO_ERROR_NOT_FOUND) &&
+		           have_store &&
+		           (!have_record || !applied_loaded (&a))) {
+			/* The tool is not even installed (Linux without nft),
+			 * and StockFW's record says it never left a table there
+			 * (or there is no record at all): nothing to remove,
+			 * and a Stop is not an error. */
+			ok = TRUE;
+			g_clear_error (&local);
 		}
 	}
 	if (ok && have_store) {
-		Applied a;
-
 		carry_counters (&store, snapshot, now);
-		if (!applied_read (&store, &a)) {
+		if (!have_record) {
 			applied_clear (&a);
-			a.ids = g_ptr_array_new_with_free_func (g_free);
+			applied_empty (&a, TRUE);
 		}
 		a.suspended = TRUE;
-		if (a.digest == NULL) {
-			FsIntelRuleset *empty = fs_intel_ruleset_new ();
-
-			a.digest = fs_intel_ruleset_digest (empty);
-			fs_intel_ruleset_free (empty);
-		}
 		if (!applied_write (&store, &a, &local))
 			ok = FALSE;
-		applied_clear (&a);
 	}
 	if (ok && !have_store) {
 		/* The table is gone; only the record is missing. */
@@ -3252,6 +3597,7 @@ fs_intel_suspend (const FsBackend *backend, const gchar *source,
 	g_clear_error (&store_err);
 	if (snapshot != NULL)
 		g_hash_table_unref (snapshot);
+	applied_clear (&a);
 	if (have_store)
 		store_close (&store);
 	return ok;
@@ -3263,28 +3609,37 @@ fs_intel_resume (const FsBackend *backend, const gchar *source,
 {
 	FsIntelConfig *config;
 	FsIntelOutcome *o = NULL;
+	Store store;
 
 	g_return_val_if_fail (backend != NULL, NULL);
+	/* Nothing to resume where nothing could be suspended, or where no
+	 * list was ever turned on (no store). */
+	if (backend->intel_apply == NULL || !store_exists ())
+		return NULL;
 	config = fs_intel_config_load (error);
 	if (config == NULL)
 		return NULL;
+
+	/* The user started the firewall: from here on the lists are not
+	 * off on purpose, whatever the apply below does.  A Start whose
+	 * apply is held, refused (a tampered list, a limit) or fails reads
+	 * "not-loaded", which says to apply, never "suspended", which says
+	 * the firewall is stopped; the record says nothing is loaded,
+	 * which is the truth until an apply succeeds. */
+	if (store_open (&store, NULL)) {
+		Applied a;
+
+		if (applied_read (&store, &a) && a.suspended) {
+			applied_clear (&a);
+			applied_empty (&a, FALSE);
+			applied_write (&store, &a, NULL);
+		}
+		applied_clear (&a);
+		store_close (&store);
+	}
 	if (want_any (config))
 		o = fs_intel_apply_safe (backend, config, NULL, source, hold,
 		                         error);
-	else {
-		/* Nothing to enforce: the lists are off, not suspended. */
-		Store store;
-		Applied a;
-
-		if (store_open (&store, NULL)) {
-			if (applied_read (&store, &a) && a.suspended) {
-				a.suspended = FALSE;
-				applied_write (&store, &a, NULL);
-			}
-			applied_clear (&a);
-			store_close (&store);
-		}
-	}
 	fs_intel_config_free (config);
 	return o;
 }
@@ -3314,6 +3669,44 @@ set_detail (gchar **detail, gchar *text)
 		*detail = text;
 	else
 		g_free (text);
+}
+
+/* The table carries the right digest, but the comment is all the
+ * digest checks: a table whose chains were flushed (`nft flush table')
+ * still carries it and blocks nothing.  Every set that had addresses
+ * has its counter rules in the chains, which intel_counters lists
+ * cheaply (never the sets' elements [S8.3]); the names of the lists
+ * whose rules are gone, or NULL when none is (or when the chains cannot
+ * be read: the digest is then all there is).  What this cannot see:
+ * elements removed from a set, or some of a list's rules removed while
+ * others remain. */
+static gchar *
+rules_missing (const FsBackend *backend, const FsIntelConfig *config,
+               const Applied *a)
+{
+	GHashTable *counters;
+	GString *names = NULL;
+
+	if (a->ruled == NULL || a->ruled->len == 0 ||
+	    backend->intel_counters == NULL)
+		return NULL;
+	counters = backend->intel_counters ();
+	if (counters == NULL)
+		return NULL;
+	for (guint i = 0; i < a->ruled->len; i++) {
+		const gchar *id = g_ptr_array_index (a->ruled, i);
+		const gchar *label;
+
+		if (g_hash_table_contains (counters, id))
+			continue;
+		label = fs_intel_config_label (config, id);
+		if (names == NULL)
+			names = g_string_new (NULL);
+		g_string_append_printf (names, "%s%s", names->len ? ", " : "",
+		                        label != NULL ? label : id);
+	}
+	g_hash_table_unref (counters);
+	return names != NULL ? g_string_free (names, FALSE) : NULL;
 }
 
 FsIntelState
@@ -3360,6 +3753,18 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 	want = want_any (config);
 
 	live = backend->intel_live (&digest);
+	if (live == FS_INTEL_LIVE_UNKNOWN && !want &&
+	    !(have_record && applied_loaded (&a))) {
+		/* Off is "nothing turned on" (design 6.6), and StockFW's
+		 * record says it left nothing in the kernel: a kernel that
+		 * cannot be read -- Linux without nft -- does not make that
+		 * unknown. */
+		state = FS_INTEL_STATE_OFF;
+		set_detail (detail, g_strdup (config->enabled
+			? _("No blocklist is turned on.")
+			: _("Threat intel is switched off.")));
+		goto out;
+	}
 	if (live == FS_INTEL_LIVE_UNKNOWN) {
 		state = running_as_root () ? FS_INTEL_STATE_UNKNOWN
 		                           : FS_INTEL_STATE_NEEDS_ROOT;
@@ -3400,21 +3805,35 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 	}
 	if (live == FS_INTEL_LIVE_PRESENT && have_record && digest != NULL &&
 	    strcmp (digest, a.digest) == 0 && a.ids->len > 0) {
-		GString *names = g_string_new (NULL);
+		gchar *missing = rules_missing (backend, config, &a);
 
-		state = FS_INTEL_STATE_ENFORCED;
-		for (guint i = 0; i < a.ids->len; i++) {
-			const gchar *id = g_ptr_array_index (a.ids, i);
-			const gchar *label = fs_intel_config_label (config, id);
+		if (missing != NULL) {
+			state = FS_INTEL_STATE_DIFFERS;
+			set_detail (detail, g_strdup_printf (
+				_("The blocklist table is loaded, but the rules of "
+				  "%s are gone (removed by another program); apply "
+				  "to restore them."), missing));
+			g_free (missing);
+		} else {
+			GString *names = g_string_new (NULL);
 
-			g_string_append_printf (names, "%s%s", i ? ", " : "",
-			                        label ? label : id);
+			state = FS_INTEL_STATE_ENFORCED;
+			for (guint i = 0; i < a.ids->len; i++) {
+				const gchar *id = g_ptr_array_index (a.ids, i);
+				const gchar *label = fs_intel_config_label (config,
+				                                            id);
+
+				g_string_append_printf (names, "%s%s",
+				                        i ? ", " : "",
+				                        label ? label : id);
+			}
+			set_detail (detail, a.ids->len == 1
+				? g_strdup_printf (_("1 list is enforced: %s."),
+				                   names->str)
+				: g_strdup_printf (_("%u lists are enforced: %s."),
+				                   a.ids->len, names->str));
+			g_string_free (names, TRUE);
 		}
-		set_detail (detail, a.ids->len == 1
-			? g_strdup_printf (_("1 list is enforced: %s."), names->str)
-			: g_strdup_printf (_("%u lists are enforced: %s."),
-			                   a.ids->len, names->str));
-		g_string_free (names, TRUE);
 	} else if (live == FS_INTEL_LIVE_PRESENT) {
 		state = FS_INTEL_STATE_DIFFERS;
 		set_detail (detail, g_strdup (

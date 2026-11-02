@@ -58,7 +58,9 @@ enum
 /* ---- store directory (design 6.1) ---------------------------------- */
 
 /* The directory, created on first use (0700; on Linux as root the
- * parent /var/lib/stockfw is created 0755).  Linux as root:
+ * parent /var/lib/stockfw is created 0755); an existing one that group
+ * or others can read is set to 0700, and one whose mode cannot be
+ * changed is FS_INTEL_ERR_UNSAFE_DIR.  Linux as root:
  * /var/lib/stockfw/intel.  $STOCKFW_INTEL_DIR overrides it, for root
  * and non-root alike, only when that directory and every parent are
  * owned by the current user or by root and not writable by group or
@@ -163,8 +165,11 @@ gchar *fs_intel_consent_text (const FsIntelConfig *config,
 /* Read the file at `path' (at most FS_FEED_MAX_BYTES, a regular file),
  * parse it with fs_feed_parse_csv(), and store it as source
  * "local-<slug of name>", added to the config (enabled, `dir') or
- * replacing the list of that name.  The config is NOT saved: the
- * caller saves it.  *id_out (nullable) receives the id. */
+ * replacing the list of that name (the same name in any case or
+ * spacing).  A different name whose slug is already another list's id
+ * ("Office VPN" and "office-vpn") is refused with FS_INTEL_ERR_INVALID
+ * before anything is written.  The config is NOT saved: the caller
+ * saves it.  *id_out (nullable) receives the id. */
 gboolean fs_intel_import_list (FsIntelConfig *config, const gchar *path,
                                const gchar *name, FsIntelDir dir,
                                FsFeedParseStats *stats, gchar **id_out,
@@ -194,9 +199,15 @@ typedef struct
 /* NULL when the source was never stored. */
 FsIntelSourceState *fs_intel_source_state (const gchar *id);
 void                fs_intel_source_state_free (FsIntelSourceState *s);
-/* The stored list, re-checked with the parse guards (span floor and
- * coverage caps); a list that fails them is FS_INTEL_ERR_TAMPERED.  A
- * missing list is FS_INTEL_ERR_STORE. */
+/* The stored list, re-checked: strict syntax, the entry count and the
+ * coverage caps, counted exactly as fs_feed_parse() counts them (so
+ * whatever the parser accepted loads again); a list that fails them is
+ * FS_INTEL_ERR_TAMPERED.  The parser's per-entry span floor is not
+ * re-applied: a stored list is normalized, and adjacent entries that
+ * each passed it are merged into wider intervals (eight adjacent /10s
+ * are stored as one /7), so the caps are what bounds a tampered list.
+ * Protected space in it is taken out, never blocked.  A missing list
+ * is FS_INTEL_ERR_STORE. */
 FsRangeSet *fs_intel_source_load (const gchar *id, GError **error);
 
 /* Due for an update: never fetched, or the last attempt is older than
@@ -290,14 +301,30 @@ typedef struct
 
 void fs_intel_outcome_free (FsIntelOutcome *outcome);
 
+/* Every host a download contacts, to keep reachable (design 6.4,
+ * [S7.2]): each enabled feed's host (a catalog feed's, or the host of a
+ * custom feed's URL), and -- when some feed is enabled and a proxy is
+ * configured -- the proxy's host, since every download connects to the
+ * proxy rather than to the feed.  Duplicates once.  NULL-terminated,
+ * never NULL; g_strfreev(). */
+gchar **fs_intel_update_hosts (const FsIntelConfig *config);
+
 /* Build and enforce.  hold non-empty => nothing reaches the backend,
  * the result is FS_APPLY_DRY_RUN.  A backend without intel_apply =>
- * FS_APPLY_FAILED with FS_INTEL_ERR_UNSUPPORTED.  Before intel_apply,
- * the live counters are added to each source's carried totals.  On
- * success applied.state records the digest, the set ids and counts,
- * and suspended = FALSE.  `host' NULL means fs_hostnet_read() with the
- * enabled feeds' hosts.  One audit line ("intel-apply") per call.
- * Returns NULL only when the build failed (error set). */
+ * FS_APPLY_FAILED with FS_INTEL_ERR_UNSUPPORTED.  What the kernel holds
+ * after intel_apply decides, not its verdict [S10].  The live counters,
+ * read before intel_apply, are added to each source's carried totals
+ * only when the replacement is proven [N8, P8]: a new digest where
+ * another (or no table) was, or -- when the digest is the one already
+ * loaded, which a refused transaction also leaves -- counters that went
+ * down.  So a re-apply of an unchanged rule set that the tool fails
+ * never counts the same packets twice, and is FS_APPLY_FAILED, with a
+ * note that the same rules are still in force.  On success
+ * applied.state records the digest, the set ids, the ids whose set has
+ * rules (some addresses), the counts, and suspended = FALSE.  `host'
+ * NULL means fs_hostnet_read (fs_intel_update_hosts ()).  One audit
+ * line ("intel-apply") per call.  Returns NULL only when the build
+ * failed (error set). */
 FsIntelOutcome *fs_intel_apply_safe (const FsBackend *backend,
                                      const FsIntelConfig *config,
                                      const FsHostNet *host,
@@ -305,14 +332,25 @@ FsIntelOutcome *fs_intel_apply_safe (const FsBackend *backend,
                                      const gchar *hold, GError **error);
 
 /* The user stopped the firewall: carry the counters, remove the table
- * (intel_clear), mark applied.state suspended.  A no-op (TRUE) when the
- * backend has no intel slots.  One audit line. */
+ * (intel_clear), mark applied.state suspended.  With no table in the
+ * kernel nothing is cleared.  A tool that is not there
+ * (G_IO_ERROR_NOT_FOUND: Linux without nft) is not an error when
+ * applied.state says StockFW left no table.  A no-op (TRUE) when the
+ * backend has no intel slots.  With no store directory at all (no list
+ * was ever turned on) nothing is created: a table found anyway is
+ * removed, otherwise nothing happens.  One audit line when anything
+ * was done. */
 gboolean fs_intel_suspend (const FsBackend *backend, const gchar *source,
                            GError **error);
 
-/* The user started the firewall: when the master switch is on and some
- * source is enabled, fs_intel_apply_safe(); otherwise nothing (NULL
- * outcome, no error). */
+/* The user started the firewall.  First applied.state stops saying
+ * "suspended" (it then records nothing loaded), so a Start whose apply
+ * is held, refused or fails reads "not-loaded", never "suspended";
+ * then, when the master switch is on and some source is enabled,
+ * fs_intel_apply_safe() with host NULL; otherwise nothing (NULL
+ * outcome, no error).  A no-op (NULL, no error) when the backend has
+ * no intel slots, like fs_intel_suspend, or when there is no store
+ * directory (no list was ever turned on; none is created). */
 FsIntelOutcome *fs_intel_resume (const FsBackend *backend,
                                  const gchar *source, const gchar *hold,
                                  GError **error);
@@ -338,7 +376,14 @@ const gchar *fs_intel_state_to_string (FsIntelState state);
 /* Compare the kernel (backend->intel_live) with applied.state and the
  * config.  detail (nullable) receives one translated sentence for the
  * UI ("2 lists are enforced: Spamhaus DROP (IPv4), Feodo Tracker.").
- * config NULL => loaded from the store. */
+ * config NULL => loaded from the store.  Enforced needs the live
+ * digest to be the applied one and every applied set that has
+ * addresses to still have its counter rules (backend->intel_counters,
+ * which lists the chains, never the sets): a table whose chains were
+ * flushed is "differs".  Not seen: elements taken out of a set, or
+ * some of a list's rules removed while others remain.  Nothing turned
+ * on is "off" even when the kernel cannot be read, unless applied.state
+ * says StockFW left a table there. */
 FsIntelState fs_intel_state (const FsBackend *backend,
                              const FsIntelConfig *config,
                              gchar **detail);

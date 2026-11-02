@@ -267,13 +267,17 @@ static const CommandDef commands[] = {
 	{ "start", fs_cli_cmd_start,
 "Usage: stockfw start\n"
 "\n"
-"Builds the firewall from the saved policy and starts it.  Needs root.\n" },
+"Builds the firewall from the saved policy and starts it.  Threat-intel\n"
+"blocklists that are turned on are applied again, through the same gate\n"
+"(audit-only mode holds them too); if they cannot be, the firewall still\n"
+"runs and the exit status is non-zero.  Needs root.\n" },
 
 	{ "stop", fs_cli_cmd_stop,
 "Usage: stockfw stop\n"
 "\n"
-"Removes StockFW's own chains.  Rules owned by Docker, libvirt or\n"
-"anything else are left alone.  Needs root.\n" },
+"Removes StockFW's own chains, and its threat-intel blocklists until\n"
+"the next start.  Rules owned by Docker, libvirt or anything else are\n"
+"left alone.  Needs root.\n" },
 
 	{ "simulate", fs_cli_cmd_simulate,
 "Usage: stockfw simulate \"<traffic>\" [--json]\n"

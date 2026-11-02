@@ -16,6 +16,9 @@
  *                  sorted, or "none" when the slot returns NULL
  *   policy-apply   apply_rules with a one-rule policy (ext device lo)
  *   policy-stop    stop
+ *   policy-reload  reload (stop, then start: what `stockfw reload',
+ *                  the GUI's Reload and a policy change through the
+ *                  service do)
  *   policy-clear   clear_rules
  *
  * A failing slot prints "error <kind>: <message>" (kind: permission,
@@ -260,6 +263,11 @@ cmd_policy (const FsBackend *b, const gchar *what)
 			rc = fail (error);
 		else
 			g_print ("policy stopped\n");
+	} else if (strcmp (what, "policy-reload") == 0) {
+		if (b->reload == NULL || !b->reload (&error))
+			rc = fail (error);
+		else
+			g_print ("policy reloaded\n");
 	} else {
 		if (b->clear_rules (&error) != FS_APPLY_OK)
 			rc = fail (error);
@@ -278,7 +286,7 @@ usage (void)
 {
 	g_printerr ("usage: fs-intel-backend-driver slots | apply SPEC | "
 	            "digest SPEC | clear | live | counters | policy-apply | "
-	            "policy-stop | policy-clear\n");
+	            "policy-stop | policy-reload | policy-clear\n");
 	return 2;
 }
 
@@ -307,6 +315,7 @@ main (int argc, char **argv)
 	if (argc == 2 && g_str_has_prefix (argv[1], "policy-") &&
 	    (strcmp (argv[1], "policy-apply") == 0 ||
 	     strcmp (argv[1], "policy-stop") == 0 ||
+	     strcmp (argv[1], "policy-reload") == 0 ||
 	     strcmp (argv[1], "policy-clear") == 0))
 		return cmd_policy (b, argv[1]);
 	return usage ();

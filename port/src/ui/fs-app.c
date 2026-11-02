@@ -691,6 +691,8 @@ fs_app_activate (GtkApplication *app)
 
 		if (!fs_backend ()->start (&error))
 			g_clear_error (&error);
+		else
+			fs_statusview_intel_follow (TRUE, "start on open");
 	}
 
 	add_page (_("Policy"),

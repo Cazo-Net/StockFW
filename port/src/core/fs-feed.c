@@ -774,8 +774,8 @@ take_entry (Parser *ps, const Entry *e, GError **error)
 
 /* IPv6 coverage in /64 networks: an interval of d + 1 addresses counts
  * as ceil ((d + 1) / 2^64) = d.hi + 1 of them; saturating. */
-static guint64
-cover6_64 (const FsRangeSet *set)
+guint64
+fs_feed_cover6_64 (const FsRangeSet *set)
 {
 	guint64 total = 0;
 
@@ -949,7 +949,7 @@ parse_body (const gchar *data, gsize len, Classify classify,
 		stats->v4 = fs_range_set_count4 (ps.set);
 		stats->v6 = fs_range_set_count6 (ps.set);
 		stats->cover4 = fs_range_set_addresses4 (ps.set);
-		stats->cover6_64 = cover6_64 (ps.set);
+		stats->cover6_64 = fs_feed_cover6_64 (ps.set);
 		ok = judge_list (stats, error);
 	}
 	if (!ok) {

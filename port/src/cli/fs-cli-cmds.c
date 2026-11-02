@@ -4,6 +4,7 @@
 #include "cli/fs-cli.h"
 #include "core/fs-apply.h"
 #include "core/fs-copilot.h"
+#include "core/fs-intel.h"
 #include "core/fs-service.h"
 #include "core/fs-json.h"
 #include "core/fs-netparse.h"
@@ -981,14 +982,89 @@ fs_cli_cmd_apply (gint argc, gchar **argv)
 
 /* --------------------------------------------------------- start / stop */
 
+/* [ intel_follow ]
+ * The threat-intel blocklists follow the user's Stop and Start (design
+ * 6.5): after the firewall stopped they are removed and recorded as
+ * suspended (fs_intel_suspend); after it started they are applied again
+ * through the gate, under the same hold as any apply (fs_intel_resume).
+ * Nothing happens where no list was ever turned on.  Appends an "intel"
+ * member to `json' when given, else prints; FALSE when the blocklists
+ * did not follow. */
+static gboolean
+intel_follow (gboolean start, GString *json)
+{
+	const FsBackend *backend = fs_backend ();
+	FsIntelOutcome *o = NULL;
+	GError *error = NULL;
+	GString *notes = g_string_new (NULL);
+	const gchar *result;
+	gboolean ok;
+
+	if (start) {
+		o = fs_intel_resume (backend, "cli", fs_apply_hold_reason (),
+		                     &error);
+		ok = error == NULL && (o == NULL || o->result != FS_APPLY_FAILED);
+		if (o == NULL)
+			result = error != NULL ? "failed" : "none";
+		else if (o->held)
+			result = "held";
+		else
+			result = o->result == FS_APPLY_OK ? "applied" : "failed";
+	} else {
+		ok = fs_intel_suspend (backend, "cli", &error);
+		result = ok ? "suspended" : "failed";
+	}
+	for (guint i = 0; o != NULL && o->notes != NULL && i < o->notes->len;
+	     i++)
+		g_string_append_printf (notes, "%s\n",
+		                        (gchar *) g_ptr_array_index (o->notes, i));
+
+	if (json != NULL) {
+		g_string_append_c (json, ',');
+		fs_json_key (json, "intel");
+		g_string_append_c (json, '{');
+		fs_json_kv_bool (json, "ok", ok);
+		g_string_append_c (json, ',');
+		fs_json_kv_str (json, "result", result);
+		g_string_append_c (json, ',');
+		fs_json_kv_str (json, "hold", o != NULL ? o->hold_reason : NULL);
+		g_string_append_c (json, ',');
+		fs_json_kv_str (json, "error", error ? error->message : NULL);
+		g_string_append_c (json, ',');
+		fs_json_key (json, "notes");
+		append_lines_json (json, notes->str);
+		g_string_append_c (json, '}');
+	} else if (!ok) {
+		fs_cli_error ("the blocklists could not be %s: %s",
+		              start ? "applied" : "removed",
+		              error != NULL ? error->message
+		                            : "the kernel does not hold them");
+		print_notes (notes->str);
+	} else if (o != NULL && o->held) {
+		printf ("%snote:%s blocklists not applied: %s\n", fs_cli_amber (),
+		        fs_cli_reset (), o->hold_reason);
+	} else if (o != NULL) {
+		if (!fs_cli.quiet)
+			printf ("Blocklists applied (%u list%s).\n", o->sets,
+			        o->sets == 1 ? "" : "s");
+		print_notes (notes->str);
+	}
+
+	g_string_free (notes, TRUE);
+	g_clear_error (&error);
+	fs_intel_outcome_free (o);
+	return ok;
+}
+
 static gint
 start_or_stop (gint argc, gboolean start)
 {
 	FsPolicy *policy;
 	FsSettings *settings;
 	GError *error = NULL;
-	gboolean ok;
+	gboolean ok, intel_ok = TRUE;
 	gchar *notes;
+	GString *out = NULL;
 
 	if (argc > 1) {
 		fs_cli_error ("%s takes no arguments", start ? "start" : "stop");
@@ -1006,16 +1082,12 @@ start_or_stop (gint argc, gboolean start)
 	        ? fs_backend ()->apply_notes () : NULL;
 
 	if (fs_cli.json) {
-		GString *out = g_string_new ("{");
-
+		out = g_string_new ("{");
 		fs_json_kv_bool (out, "ok", ok);  g_string_append_c (out, ',');
 		fs_json_kv_str (out, "error", error ? error->message : NULL);
 		g_string_append_c (out, ',');
 		fs_json_key (out, "notes");
 		append_lines_json (out, notes);
-		g_string_append_c (out, '}');
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
 	} else if (ok) {
 		if (!fs_cli.quiet)
 			printf ("Firewall %s.\n", start ? "started" : "stopped");
@@ -1026,12 +1098,23 @@ start_or_stop (gint argc, gboolean start)
 		              error ? error->message : "unknown error");
 	}
 
+	/* Only once the firewall itself did what was asked: a Start that
+	 * failed applies no blocklist, a Stop that failed removes none. */
+	if (ok)
+		intel_ok = intel_follow (start, out);
+
+	if (out != NULL) {
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	}
+
 	g_clear_error (&error);
 	g_free (notes);
 	fs_settings_free (settings);
 	fs_policy_free (policy);
 
-	return ok ? FS_EXIT_OK : FS_EXIT_FAILURE;
+	return ok && intel_ok ? FS_EXIT_OK : FS_EXIT_FAILURE;
 }
 
 gint fs_cli_cmd_start (gint argc, gchar **argv) { return start_or_stop (argc, TRUE); }

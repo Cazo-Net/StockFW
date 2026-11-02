@@ -8,6 +8,7 @@
  * root.  The live half, the script applied by a real nft in a network
  * namespace, is test-nftset.sh / test-intelset.sh.
  *--------------------------------------------------------------------*/
+#include <gio/gio.h>   /* G_IO_ERROR, as the Linux backend reports */
 #include <glib.h>
 #include <glib/gstdio.h>
 #include <string.h>
@@ -578,6 +579,10 @@ typedef struct
 	ApplyMode   mode;
 	gboolean    clear_ok;
 	gboolean    live_unknown;   /* intel_live reads UNKNOWN          */
+	gboolean    no_tool;        /* Linux without nft: every slot
+	                             * fails G_IO_ERROR_NOT_FOUND, live
+	                             * UNKNOWN, counters NULL            */
+	gboolean    counters_unreadable; /* the chains cannot be listed  */
 	FsIntelLive live;           /* what the kernel holds             */
 	gchar      *live_digest;
 	GHashTable *counters;       /* of the live table: id -> counter  */
@@ -629,6 +634,12 @@ fake_apply (const FsIntelRuleset *rs, GError **error)
 	gchar *digest = fs_intel_ruleset_digest (rs);
 
 	kern.apply_calls++;
+	if (kern.no_tool) {
+		g_free (digest);
+		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+		                     "nft was not found on PATH.");
+		return FALSE;
+	}
 	g_free (kern.got_digest);
 	g_free (kern.got_text);
 	kern.got_digest = g_strdup (digest);
@@ -640,7 +651,16 @@ fake_apply (const FsIntelRuleset *rs, GError **error)
 		                          : FS_INTEL_LIVE_ABSENT;
 		g_free (kern.live_digest);
 		kern.live_digest = rs->sets->len ? g_strdup (digest) : NULL;
+		/* A new table: every set with addresses has its counter
+		 * rules, at zero, as `nft list chain' shows them; a set
+		 * with none has no rule (fs_intelset_nft_script). */
 		g_hash_table_remove_all (kern.counters);
+		for (guint i = 0; i < rs->sets->len; i++) {
+			const FsIntelSet *s = g_ptr_array_index (rs->sets, i);
+
+			if (!fs_range_set_is_empty (s->ranges))
+				counter_set (kern.counters, s->id, 0, 0);
+		}
 	}
 	g_free (digest);
 	if (kern.mode == APPLY_FAIL) {
@@ -660,6 +680,11 @@ static gboolean
 fake_clear (GError **error)
 {
 	kern.clear_calls++;
+	if (kern.no_tool) {
+		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+		                     "nft was not found on PATH.");
+		return FALSE;
+	}
 	if (!kern.clear_ok) {
 		g_set_error (error, g_quark_from_static_string ("fake"), 5,
 		             "nft: cannot clear");
@@ -679,7 +704,8 @@ fake_counters (void)
 	gpointer k, v;
 
 	kern.counter_calls++;
-	if (kern.live != FS_INTEL_LIVE_PRESENT)
+	if (kern.no_tool || kern.counters_unreadable ||
+	    kern.live != FS_INTEL_LIVE_PRESENT)
 		return NULL;
 	t = counters_new ();
 	g_hash_table_iter_init (&it, kern.counters);
@@ -696,7 +722,7 @@ fake_live (gchar **digest)
 {
 	if (digest != NULL)
 		*digest = NULL;
-	if (kern.live_unknown)
+	if (kern.live_unknown || kern.no_tool)
 		return FS_INTEL_LIVE_UNKNOWN;
 	if (digest != NULL && kern.live == FS_INTEL_LIVE_PRESENT)
 		*digest = g_strdup (kern.live_digest);
@@ -715,6 +741,8 @@ kern_reset (void)
 	kern.mode = APPLY_OK;
 	kern.clear_ok = TRUE;
 	kern.live_unknown = FALSE;
+	kern.no_tool = FALSE;
+	kern.counters_unreadable = FALSE;
 	kern.live = FS_INTEL_LIVE_ABSENT;
 	g_clear_pointer (&kern.live_digest, g_free);
 	g_clear_pointer (&kern.got_digest, g_free);
@@ -906,6 +934,42 @@ test_store_dir (void)
 		g_free (expect);
 		g_free (got);
 		g_clear_error (&e);
+	}
+
+	/* An existing store others can read (or enter) lists the feeds and
+	 * local lists in use, though its files are 0600: it is tightened
+	 * to 0700 (design 6.1), never used as it is. */
+	{
+		static const guint modes[] = { 0755, 0750, 0711, 0705 };
+		gchar *open_dir = g_build_filename (eng_base, "readable", NULL);
+
+		for (guint i = 0; i < G_N_ELEMENTS (modes); i++) {
+			g_rmdir (open_dir);
+			g_mkdir (open_dir, 0700);
+			g_chmod (open_dir, modes[i]);
+			g_setenv ("STOCKFW_INTEL_DIR", open_dir, TRUE);
+			got = fs_intel_dir (&e);
+			CHECK (got != NULL && stat (open_dir, &st) == 0 &&
+			       (st.st_mode & 0777) == 0700,
+			       "store: an existing %04o store is set to 0700 "
+			       "(mode now %04o; %s)", modes[i],
+			       (guint) (st.st_mode & 0777),
+			       e ? e->message : "ok");
+			g_free (got);
+			g_clear_error (&e);
+		}
+		/* And through every store operation, not only fs_intel_dir. */
+		g_chmod (open_dir, 0755);
+		{
+			FsIntelConfig *c = fs_intel_config_new ();
+
+			fs_intel_config_save (c, NULL);
+			fs_intel_config_free (c);
+		}
+		CHECK (stat (open_dir, &st) == 0 && (st.st_mode & 0777) == 0700,
+		       "store: saving the configuration into a 0755 store "
+		       "leaves it 0700");
+		g_free (open_dir);
 	}
 
 	if (geteuid () == 0) {
@@ -1163,6 +1227,39 @@ test_config (void)
 	                   "a broken group line");
 	expect_conf_error ("\xff\xfe[intel]\n", "not a valid",
 	                   "bytes that are not UTF-8");
+	/* A value GKeyFile cannot decode (a bad escape) is invalid, never
+	 * "absent": the proxy would be dropped (downloads going direct)
+	 * and every exception with it (the excepted addresses blocked). */
+	expect_conf_error ("[intel]\nproxy=http://proxy.example:3128/\\q\n",
+	                   "[intel] proxy",
+	                   "a proxy with an invalid escape (\\q)");
+	expect_conf_error ("[exceptions]\nranges=45.0.0.1;45.0.0.2\\q;\n",
+	                   "[exceptions] ranges",
+	                   "exceptions with one invalid escape");
+	expect_conf_error ("[feed custom-x]\nname=X\\q\nurl=https://e.com/\n"
+	                   "format=plain\n", "[feed custom-x] name",
+	                   "a custom feed name with an invalid escape");
+	expect_conf_error ("[list local-x]\nname=a\\q\n", "[list local-x] name",
+	                   "a list name with an invalid escape");
+	{
+		/* The same file without the bad escape loads both. */
+		GError *e = NULL;
+		FsIntelConfig *ok;
+
+		fresh_store ();
+		g_free (fs_intel_dir (NULL));
+		put_file ("intel.conf", "[intel]\nproxy=http://proxy.example:3128/\n"
+		          "[exceptions]\nranges=45.0.0.1;45.0.0.2;\n");
+		ok = fs_intel_config_load (&e);
+		CHECK (ok != NULL &&
+		       g_strcmp0 (ok->proxy, "http://proxy.example:3128/") == 0 &&
+		       fs_range_set_contains_text (ok->exceptions, "45.0.0.1") &&
+		       fs_range_set_contains_text (ok->exceptions, "45.0.0.2"),
+		       "intel.conf: ... and without it, the proxy and both "
+		       "exceptions load (%s)", e ? e->message : "ok");
+		fs_intel_config_free (ok);
+		g_clear_error (&e);
+	}
 
 	/* Hostile files */
 	fresh_store ();
@@ -1770,6 +1867,76 @@ test_stored_lists (void)
 	       "import: the same name again replaces the list");
 	fs_range_set_free (set);
 	g_free (id);
+	/* A different name with the same slug never overwrites the list. */
+	{
+		static const gchar *const others[] = {
+			"office-blocks", "Office: blocks!", "OFFICE_BLOCKS"
+		};
+
+		for (guint i = 0; i < G_N_ELEMENTS (others); i++) {
+			id = import_text (c, others[i], "46.0.0.1\n",
+			                  FS_INTEL_DIR_BOTH, &e);
+			set = fs_intel_source_load ("local-office-blocks", NULL);
+			CHECK (id == NULL &&
+			       g_error_matches (e, FS_INTEL_ERROR,
+			                        FS_INTEL_ERR_INVALID) &&
+			       strstr (e->message, "office  BLOCKS") != NULL &&
+			       c->lists->len == 1 && set != NULL &&
+			       fs_range_set_contains_text (set, "45.7.0.1") &&
+			       !fs_range_set_contains_text (set, "46.0.0.1") &&
+			       g_strcmp0 (fs_intel_config_list (c,
+			                  "local-office-blocks")->name,
+			                  "office  BLOCKS") == 0 &&
+			       fs_intel_config_list (c, "local-office-blocks")->dir ==
+			       FS_INTEL_DIR_IN,
+			       "import: \"%s\" (the same slug, another name) is "
+			       "refused and the list is untouched (%s)", others[i],
+			       e ? e->message : "imported");
+			fs_range_set_free (set);
+			g_clear_error (&e);
+			g_free (id);
+		}
+	}
+	{
+		/* Two long names that differ only after the slug's 34
+		 * characters. */
+		FsIntelConfig *c2 = fs_intel_config_new ();
+		gchar *id2;
+
+		id = import_text (c2, "Customer blocklist from the SOC team 2025",
+		                  "45.0.0.1\n", FS_INTEL_DIR_IN, NULL);
+		id2 = import_text (c2, "Customer blocklist from the SOC team 2026",
+		                   "46.0.0.1\n", FS_INTEL_DIR_IN, &e);
+		set = id ? fs_intel_source_load (id, NULL) : NULL;
+		CHECK (id != NULL && id2 == NULL && e != NULL &&
+		       c2->lists->len == 1 && set != NULL &&
+		       fs_range_set_contains_text (set, "45.0.0.1") &&
+		       !fs_range_set_contains_text (set, "46.0.0.1") &&
+		       g_strcmp0 (fs_intel_config_list (c2, id)->name,
+		                  "Customer blocklist from the SOC team 2025") == 0,
+		       "import: two long names cut to the same id: the second is "
+		       "refused, the first list keeps its name and addresses "
+		       "(%s)", id ? id : "?");
+		g_clear_error (&e);
+		fs_range_set_free (set);
+		if (id != NULL)
+			fs_intel_config_remove (c2, id, NULL);
+		g_free (id);
+		g_free (id2);
+		fs_intel_config_free (c2);
+	}
+	/* The same name in another case or spacing still replaces it. */
+	id = import_text (c, "  Office Blocks ", "45.7.0.2\n", FS_INTEL_DIR_IN,
+	                  &e);
+	set = fs_intel_source_load ("local-office-blocks", NULL);
+	CHECK (g_strcmp0 (id, "local-office-blocks") == 0 && e == NULL &&
+	       set != NULL && fs_range_set_contains_text (set, "45.7.0.2") &&
+	       c->lists->len == 1,
+	       "import: the same name in another case and spacing replaces it "
+	       "(%s)", e ? e->message : "ok");
+	g_clear_error (&e);
+	fs_range_set_free (set);
+	g_free (id);
 	id = import_text (c, "Empty", "ip\n# nothing\n", FS_INTEL_DIR_IN, &e);
 	CHECK (id == NULL && e != NULL && c->lists->len == 1,
 	       "import: a file with no address is refused");
@@ -1800,6 +1967,106 @@ test_stored_lists (void)
 	       !has_file ("local-office-blocks.list") &&
 	       !has_file ("local-office-blocks.state") && c->lists->len == 0,
 	       "remove: the list and its state are deleted");
+	fs_intel_config_free (c);
+}
+
+/* "h:l" as eight groups of an IPv6 address. */
+static void
+append_v6 (GString *s, guint64 hi, guint64 lo)
+{
+	g_string_append_printf (s, "%x:%x:%x:%x:%x:%x:%x:%x",
+	                        (guint) (hi >> 48) & 0xffff,
+	                        (guint) (hi >> 32) & 0xffff,
+	                        (guint) (hi >> 16) & 0xffff, (guint) hi & 0xffff,
+	                        (guint) (lo >> 48) & 0xffff,
+	                        (guint) (lo >> 32) & 0xffff,
+	                        (guint) (lo >> 16) & 0xffff, (guint) lo & 0xffff);
+}
+
+/* What the parser accepts at a coverage cap must load again: the
+ * engine re-checks a stored list with the parser's own count.  128
+ * IPv6 ranges, none aligned on a /64, each 2^35 /64s as the parser
+ * counts them -- 2^42 in all, the cap exactly.  A count of the
+ * engine's own (end.hi - start.hi + 1) made each one 2^35 + 1, so the
+ * stored copy read as "tampered" and every build failed, healthy lists
+ * included, while every update reported "Updated". */
+static void
+test_cover6_at_cap (void)
+{
+	FsIntelConfig *c = fs_intel_config_new ();
+	const gchar *url = "https://feed.example/wide-v6.txt";
+	FsFeedParseStats st = { 0 };
+	FsIntelRuleset *rs;
+	FsRangeSet *set;
+	GString *body = g_string_new ("# 128 unaligned IPv6 ranges\n");
+	GError *e = NULL;
+	gchar *id = NULL, *msg = NULL;
+
+	fresh_store ();
+	net_reset ();
+	for (guint i = 0; i < 128; i++) {
+		guint64 h = G_GUINT64_CONSTANT (0x2400000000000000) +
+		            ((guint64) i << 36);
+
+		append_v6 (body, h, G_GUINT64_CONSTANT (0x8000000000000000));
+		g_string_append_c (body, '-');
+		append_v6 (body, h + (G_GUINT64_CONSTANT (1) << 35),
+		           G_GUINT64_CONSTANT (0x7fffffffffffffff));
+		g_string_append_c (body, '\n');
+	}
+	set = fs_feed_parse (body->str, body->len, FS_FEED_FMT_PLAIN, &st, &e);
+	CHECK (set != NULL && st.cover6_64 == FS_FEED_MAX_COVER6_64 &&
+	       fs_feed_cover6_64 (set) == FS_FEED_MAX_COVER6_64,
+	       "cover6 cap: the parser accepts 128 unaligned ranges at the "
+	       "cap exactly (%" G_GUINT64_FORMAT ")", st.cover6_64);
+	fs_range_set_free (set);
+	g_clear_error (&e);
+
+	fs_intel_config_add_custom (c, "Wide v6", url, FS_FEED_FMT_PLAIN,
+	                            FS_INTEL_DIR_IN, &id, NULL);
+	g_hash_table_replace (net.bodies, g_strdup (url), g_strdup (body->str));
+	CHECK (update1 (c, id, 0, NOW0, &msg) == FS_INTEL_UPDATED,
+	       "cover6 cap: the update stores it (%s)", msg);
+	g_free (msg);
+	set = fs_intel_source_load (id, &e);
+	CHECK (set != NULL && fs_range_set_count6 (set) == 128,
+	       "cover6 cap: the stored copy loads again, not TAMPERED (%s)",
+	       e ? e->message : "ok");
+	fs_range_set_free (set);
+	g_clear_error (&e);
+	g_free (import_text (c, "Healthy", "45.0.0.1\n", FS_INTEL_DIR_IN, NULL));
+	rs = fs_intel_build (c, NULL, NULL, &e);
+	CHECK (rs != NULL && rs->sets->len == 2 &&
+	       fs_intel_ruleset_count6 (rs) == 128,
+	       "cover6 cap: the build holds it and the healthy list (%s)",
+	       e ? e->message : "ok");
+	fs_intel_ruleset_free (rs);
+	g_clear_error (&e);
+	/* One /64 more is over the cap, in the parser and on load alike. */
+	g_string_append (body, "2600::/64\n");
+	set = fs_feed_parse (body->str, body->len, FS_FEED_FMT_PLAIN, &st, &e);
+	CHECK (set == NULL && e != NULL,
+	       "cover6 cap: one /64 more is refused by the parser");
+	g_clear_error (&e);
+	{
+		gchar *name = g_strconcat (id, ".list", NULL);
+		gchar *text = get_file (name);
+		gchar *more = g_strconcat (text, "2600::/64\n", NULL);
+
+		put_file (name, more);
+		set = fs_intel_source_load (id, &e);
+		CHECK (set == NULL && g_error_matches (e, FS_INTEL_ERROR,
+		                                       FS_INTEL_ERR_TAMPERED),
+		       "cover6 cap: ... and a stored copy one /64 over it is "
+		       "TAMPERED");
+		fs_range_set_free (set);
+		g_clear_error (&e);
+		g_free (more);
+		g_free (text);
+		g_free (name);
+	}
+	g_string_free (body, TRUE);
+	g_free (id);
 	fs_intel_config_free (c);
 }
 
@@ -1854,7 +2121,7 @@ test_build (void)
 	                          "(this computer's own address)") &&
 	       notes_have (notes, "(a DNS server in use)") &&
 	       notes_have (notes, "192.0.2.22 (an SSH session to this computer)") &&
-	       notes_have (notes, "(a feed's download server)") &&
+	       notes_have (notes, "(a feed's download server or proxy)") &&
 	       notes_have (notes, "203.0.113.1 (a default gateway), although "
 	                          "Mine lists it") &&
 	       notes_have (notes, "Not blocked, by exception: 45.0.0.7"),
@@ -2184,12 +2451,19 @@ test_gate (void)
 	       "state: suspended, but a table is back: differs");
 	kern.live = FS_INTEL_LIVE_ABSENT;
 
-	/* Start: resume re-applies through the gate (hold respected). */
+	/* Start: resume re-applies through the gate (hold respected).  The
+	 * user did start the firewall, so a held Start is not "suspended"
+	 * (the firewall stopped): the lists are not loaded, and the held
+	 * outcome says why. */
+	kern.apply_calls = 0;
 	o = fs_intel_resume (&fake_backend, "test", "audit-only testing mode",
 	                     &e);
-	CHECK (o && o->result == FS_APPLY_DRY_RUN &&
-	       state_of (c, NULL) == FS_INTEL_STATE_SUSPENDED,
-	       "resume under a hold: nothing applied, still suspended");
+	CHECK (o && o->result == FS_APPLY_DRY_RUN && o->held &&
+	       kern.apply_calls == 0 &&
+	       state_of (c, &detail) == FS_INTEL_STATE_NOT_LOADED,
+	       "resume under a hold: nothing applied, not-loaded, never "
+	       "suspended (%s)", detail);
+	g_free (detail);
 	fs_intel_outcome_free (o);
 	o = fs_intel_resume (&fake_backend, "test", NULL, &e);
 	CHECK (o && o->result == FS_APPLY_OK &&
@@ -2345,6 +2619,485 @@ test_gate_hostile (void)
 	fs_intel_config_free (c);
 }
 
+/* ---- update hosts, same-digest re-applies, Stop/Start, rules gone ----- */
+
+static gchar *
+hosts_text (const FsIntelConfig *c)
+{
+	gchar **v = fs_intel_update_hosts (c);
+	gchar *s = g_strjoinv (" ", v);
+
+	g_strfreev (v);
+	return s;
+}
+
+/* Every address the fake kernel received, all sets together. */
+static FsRangeSet *
+got_ranges (void)
+{
+	GString *t = g_string_new (NULL);
+	gchar **lines = g_strsplit (kern.got_text ? kern.got_text : "", "\n",
+	                            -1);
+	FsRangeSet *set;
+
+	for (guint i = 0; lines[i] != NULL; i++)
+		if (lines[i][0] != '[')
+			g_string_append_printf (t, "%s\n", lines[i]);
+	set = fs_range_set_from_text (t->str, NULL);
+	g_strfreev (lines);
+	g_string_free (t, TRUE);
+	return set != NULL ? set : fs_range_set_new ();
+}
+
+static void
+test_update_hosts (void)
+{
+	FsIntelConfig *c = fs_intel_config_new ();
+	FsIntelOutcome *o;
+	FsRangeSet *got;
+	GError *e = NULL;
+	gchar *s, *id = NULL;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+
+	c->proxy = g_strdup ("http://198.51.100.200:3128");
+	s = hosts_text (c);
+	CHECK (g_strcmp0 (s, "") == 0,
+	       "update hosts: no feed on: none, not even the proxy (\"%s\")", s);
+	g_free (s);
+
+	fs_intel_config_enable_feed (c, "feodo", 0, TRUE, NULL);
+	CHECK (fs_intel_config_add_custom (c, "Shouting",
+	                                   "HTTPS://198.51.100.201:8443/l.txt",
+	                                   FS_FEED_FMT_PLAIN, FS_INTEL_DIR_IN,
+	                                   &id, &e),
+	       "update hosts: an upper-case HTTPS:// custom feed is accepted "
+	       "(%s)", e ? e->message : "ok");
+	g_clear_error (&e);
+	s = hosts_text (c);
+	CHECK (g_strcmp0 (s, "feodotracker.abuse.ch 198.51.100.201 "
+	                     "198.51.100.200") == 0,
+	       "update hosts: each enabled feed's host (an upper-case scheme "
+	       "too), then the proxy's (\"%s\")", s);
+	g_free (s);
+	g_free (c->proxy);
+	c->proxy = g_strdup ("HTTPS://[2001:db8::3]:8443/");
+	s = hosts_text (c);
+	CHECK (g_strcmp0 (s, "feodotracker.abuse.ch 198.51.100.201 "
+	                     "2001:db8::3") == 0,
+	       "update hosts: an IPv6 proxy, brackets and port dropped "
+	       "(\"%s\")", s);
+	g_free (s);
+	g_free (c->proxy);
+	c->proxy = g_strdup ("http://FeodoTracker.abuse.ch:3128");
+	s = hosts_text (c);
+	CHECK (g_strcmp0 (s, "feodotracker.abuse.ch 198.51.100.201") == 0,
+	       "update hosts: a host named twice is listed once, whatever "
+	       "its case (\"%s\")", s);
+	g_free (s);
+
+	/* The apply reads this computer's addresses itself (host NULL).
+	 * Catalog feeds off: no name to resolve here. */
+	fs_intel_config_disable_feed (c, "feodo", NULL);
+	g_free (c->proxy);
+	c->proxy = g_strdup ("http://198.51.100.200:3128");
+	g_free (import_text (c, "Outbound", "198.51.100.200\n198.51.100.201\n"
+	                     "203.0.113.9\n", FS_INTEL_DIR_OUT, NULL));
+	fs_intel_config_save (c, NULL);
+	o = fs_intel_apply_safe (&fake_backend, c, NULL, "test", NULL, &e);
+	got = got_ranges ();
+	CHECK (o && o->result == FS_APPLY_OK &&
+	       fs_range_set_contains_text (got, "203.0.113.9") &&
+	       fs_range_set_contains_text (got, "64:ff9b::cb00:7109") &&
+	       !fs_range_set_contains_text (got, "198.51.100.200") &&
+	       !fs_range_set_contains_text (got, "64:ff9b::c633:64c8") &&
+	       !fs_range_set_contains_text (got, "198.51.100.201") &&
+	       !fs_range_set_contains_text (got, "64:ff9b::c633:64c9"),
+	       "apply: a list naming the proxy and a feed's server keeps both "
+	       "reachable, their NAT64 forms too (%s)",
+	       e ? e->message : "ok");
+	CHECK (o && notes_have (o->notes, "198.51.100.200") &&
+	       notes_have (o->notes, "(a feed's download server or proxy), "
+	                             "although Outbound lists it"),
+	       "... and a note says so");
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+	fs_range_set_free (got);
+
+	/* No feed on: nothing is downloaded, so nothing needs the proxy. */
+	fs_intel_config_set_enabled (c, id, FALSE, NULL);
+	o = fs_intel_apply_safe (&fake_backend, c, NULL, "test", NULL, &e);
+	got = got_ranges ();
+	CHECK (o && o->result == FS_APPLY_OK &&
+	       fs_range_set_contains_text (got, "198.51.100.200"),
+	       "apply with no feed on: the proxy is not kept (%s)",
+	       e ? e->message : "ok");
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+	fs_range_set_free (got);
+	g_free (id);
+	fs_intel_config_free (c);
+}
+
+static guint64
+total_packets (const gchar *id)
+{
+	GHashTable *t = fs_intel_counters (&fake_backend);
+	const FsIntelCounter *k = t ? g_hash_table_lookup (t, id) : NULL;
+	guint64 p = k ? k->packets : G_MAXUINT64;
+
+	if (t != NULL)
+		g_hash_table_unref (t);
+	return p;
+}
+
+static guint64
+carried_packets (const gchar *id)
+{
+	FsIntelSourceState *s = fs_intel_source_state (id);
+	guint64 p = s ? s->carried_packets : G_MAXUINT64;
+
+	fs_intel_source_state_free (s);
+	return p;
+}
+
+static void
+test_gate_same_digest (void)
+{
+	FsIntelConfig *c = fs_intel_config_new ();
+	FsHostNet *h = host_fixture ();
+	FsIntelOutcome *o;
+	GError *e = NULL;
+	gchar *a, *digest;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+	audit_reset ();
+	g_free (import_text (c, "Same", "45.0.1.1\n", FS_INTEL_DIR_BOTH, NULL));
+	fs_intel_config_save (c, NULL);
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, NULL);
+	digest = g_strdup (o ? o->digest : "");
+	fs_intel_outcome_free (o);
+	counter_set (kern.counters, "local-same", 5, 500);
+
+	/* nft refuses the transaction of an unchanged rule set (the hourly
+	 * re-apply): the old table, identical, is still in force and still
+	 * counting. */
+	kern.mode = APPLY_FAIL;
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_FAILED && e != NULL &&
+	       strstr (e->message, "syntax error") != NULL &&
+	       notes_have (o->notes, "The same rules were already in force") &&
+	       g_strcmp0 (kern.live_digest, digest) == 0,
+	       "same digest, nft refuses: FAILED with nft's error, and a note "
+	       "that the same rules are still in force (%s)",
+	       e ? e->message : "no error");
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+	CHECK (carried_packets ("local-same") == 0 &&
+	       total_packets ("local-same") == 5,
+	       "... nothing carried: the counters read 5, not 10 (%"
+	       G_GUINT64_FORMAT ")", total_packets ("local-same"));
+	CHECK (state_of (c, NULL) == FS_INTEL_STATE_ENFORCED,
+	       "... and the lists are still enforced");
+	a = audit_text ();
+	CHECK (a && count_substr (a, "result=failed digest=") == 1 &&
+	       strstr (a, "syntax error") != NULL,
+	       "... and the audit records the failure");
+	g_free (a);
+
+	/* nft commits the same table, then times out: the counters went
+	 * down, so the table is new and they are carried, once. */
+	kern.mode = APPLY_COMMITTED;
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_OK && e == NULL &&
+	       notes_have (o->notes, "timed out") &&
+	       carried_packets ("local-same") == 5 &&
+	       total_packets ("local-same") == 5,
+	       "same digest, committed then timed out: OK, counters carried "
+	       "once (%" G_GUINT64_FORMAT ")", total_packets ("local-same"));
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+	counter_set (kern.counters, "local-same", 1, 100);
+
+	/* The backend says yes and changes nothing: the right rules are in
+	 * force, but the old table still counts -- nothing is carried. */
+	kern.mode = APPLY_LIE;
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_OK &&
+	       carried_packets ("local-same") == 5 &&
+	       total_packets ("local-same") == 6,
+	       "same digest, the table untouched: OK, nothing carried (6, "
+	       "not 7: %" G_GUINT64_FORMAT ")", total_packets ("local-same"));
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+
+	kern.mode = APPLY_OK;
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_OK &&
+	       carried_packets ("local-same") == 6 &&
+	       total_packets ("local-same") == 6,
+	       "same digest, replaced: carried once (6: %" G_GUINT64_FORMAT
+	       ")", total_packets ("local-same"));
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+
+	/* Nothing counted yet: nothing tells a refused transaction from a
+	 * committed one, so a refusal is never reported as applied. */
+	kern.mode = APPLY_FAIL;
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_FAILED &&
+	       carried_packets ("local-same") == 6,
+	       "same digest, nothing counted, nft refuses: FAILED");
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+
+	/* Another rule set refused: FAILED, the old one in force, which is
+	 * not "the same rules". */
+	fs_intel_config_set_dir (c, "local-same", FS_INTEL_DIR_IN, NULL);
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_FAILED &&
+	       !notes_have (o->notes, "The same rules") &&
+	       g_strcmp0 (kern.live_digest, digest) == 0,
+	       "another rule set refused: FAILED, no same-rules note");
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+
+	g_free (digest);
+	fs_hostnet_free (h);
+	fs_intel_config_free (c);
+}
+
+static void
+test_gate_start_stop (void)
+{
+	FsIntelConfig *c = fs_intel_config_new ();
+	FsHostNet *h = host_fixture ();
+	FsIntelOutcome *o;
+	FsIntelState st;
+	GError *e = NULL;
+	gchar *detail = NULL;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+	g_free (import_text (c, "Start", "45.0.5.1\n", FS_INTEL_DIR_BOTH, NULL));
+	fs_intel_config_save (c, NULL);
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, NULL);
+	fs_intel_outcome_free (o);
+
+	/* Stop, then a Start whose apply fails: the firewall runs again,
+	 * so not "suspended" but not-loaded, which says to apply. */
+	CHECK (fs_intel_suspend (&fake_backend, "test", &e) &&
+	       kern.clear_calls == 1 &&
+	       state_of (c, NULL) == FS_INTEL_STATE_SUSPENDED,
+	       "stop: the table removed, suspended (%s)",
+	       e ? e->message : "ok");
+	g_clear_error (&e);
+	kern.mode = APPLY_FAIL;
+	o = fs_intel_resume (&fake_backend, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_FAILED && e != NULL &&
+	       kern.live == FS_INTEL_LIVE_ABSENT &&
+	       state_of (c, &detail) == FS_INTEL_STATE_NOT_LOADED,
+	       "start, the apply fails: FAILED, then not-loaded, never "
+	       "suspended (%s)", detail);
+	g_free (detail);
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+	kern.mode = APPLY_OK;
+
+	/* Stop with no table: nothing to clear.  Then a Start whose build
+	 * is refused. */
+	CHECK (fs_intel_suspend (&fake_backend, "test", &e) &&
+	       kern.clear_calls == 1 &&
+	       state_of (c, NULL) == FS_INTEL_STATE_SUSPENDED,
+	       "stop with no table loaded: nothing cleared, suspended");
+	g_clear_error (&e);
+	put_file ("local-start.list", "0.0.0.0/1\n");
+	o = fs_intel_resume (&fake_backend, "test", NULL, &e);
+	CHECK (o == NULL && g_error_matches (e, FS_INTEL_ERROR,
+	                                     FS_INTEL_ERR_TAMPERED) &&
+	       state_of (c, NULL) == FS_INTEL_STATE_NOT_LOADED,
+	       "start, the build refused: TAMPERED, then not-loaded");
+	g_clear_error (&e);
+	g_free (import_text (c, "Start", "45.0.5.1\n", FS_INTEL_DIR_BOTH,
+	                     NULL));
+	o = fs_intel_resume (&fake_backend, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_OK &&
+	       state_of (c, NULL) == FS_INTEL_STATE_ENFORCED,
+	       "start: applied, enforced (%s)", e ? e->message : "ok");
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+	o = fs_intel_resume (&bare_backend, "test", NULL, &e);
+	CHECK (o == NULL && e == NULL,
+	       "start without intel slots: a no-op, no error");
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+
+	/* Linux without nft, no list ever applied. */
+	fresh_store ();
+	kern_reset ();
+	{
+		FsIntelConfig *none = fs_intel_config_new ();
+
+		fs_intel_config_save (none, NULL);
+		kern.no_tool = TRUE;
+		CHECK (fs_intel_suspend (&fake_backend, "test", &e) && e == NULL,
+		       "no nft, nothing ever applied: stop is not an error (%s)",
+		       e ? e->message : "ok");
+		g_clear_error (&e);
+		CHECK (fs_intel_state (&fake_backend, none, &detail) ==
+		       FS_INTEL_STATE_OFF,
+		       "no nft, nothing on: off, not unknown (%s)", detail);
+		g_free (detail);
+		fs_intel_config_free (none);
+	}
+
+	/* Linux without nft, after StockFW left a table (nft removed
+	 * since): the table may still block, so never off. */
+	fresh_store ();
+	kern_reset ();
+	g_free (import_text (c, "Start", "45.0.5.1\n", FS_INTEL_DIR_BOTH, NULL));
+	fs_intel_config_save (c, NULL);
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, NULL);
+	fs_intel_outcome_free (o);
+	kern.no_tool = TRUE;
+	CHECK (!fs_intel_suspend (&fake_backend, "test", &e) &&
+	       g_error_matches (e, G_IO_ERROR, G_IO_ERROR_NOT_FOUND),
+	       "no nft, a table left: stop fails, saying why");
+	g_clear_error (&e);
+	st = state_of (c, NULL);
+	CHECK (st == FS_INTEL_STATE_UNKNOWN || st == FS_INTEL_STATE_NEEDS_ROOT,
+	       "... the state is not off (%s)", fs_intel_state_to_string (st));
+	fs_intel_config_set_enabled (c, "local-start", FALSE, NULL);
+	st = state_of (c, NULL);
+	CHECK (st == FS_INTEL_STATE_UNKNOWN || st == FS_INTEL_STATE_NEEDS_ROOT,
+	       "... nor once the list is turned off, while the record says a "
+	       "table was left (%s)", fs_intel_state_to_string (st));
+	kern.no_tool = FALSE;
+
+	/* No store at all (no list ever turned on): Stop and Start create
+	 * nothing; a table left behind is still removed. */
+	{
+		gchar *never = g_build_filename (eng_base, "never-used", NULL);
+
+		kern_reset ();
+		g_setenv ("STOCKFW_INTEL_DIR", never, TRUE);
+		o = fs_intel_resume (&fake_backend, "test", NULL, &e);
+		CHECK (fs_intel_suspend (&fake_backend, "test", NULL) &&
+		       kern.clear_calls == 0 && o == NULL && e == NULL &&
+		       kern.apply_calls == 0 &&
+		       !g_file_test (never, G_FILE_TEST_EXISTS),
+		       "no store: stop and start do nothing, create nothing");
+		fs_intel_outcome_free (o);
+		g_clear_error (&e);
+		kern.live = FS_INTEL_LIVE_PRESENT;
+		kern.live_digest = g_strdup ("0123456789abcdef0123456789abcdef");
+		CHECK (fs_intel_suspend (&fake_backend, "test", &e) &&
+		       kern.clear_calls == 1 &&
+		       kern.live == FS_INTEL_LIVE_ABSENT &&
+		       !g_file_test (never, G_FILE_TEST_EXISTS),
+		       "no store, a table left behind: stop removes it, creates "
+		       "nothing");
+		g_clear_error (&e);
+		g_free (never);
+		fresh_store ();
+	}
+
+	fs_hostnet_free (h);
+	fs_intel_config_free (c);
+}
+
+static gchar *
+without_line (const gchar *text, const gchar *prefix)
+{
+	gchar **lines = g_strsplit (text != NULL ? text : "", "\n", -1);
+	GString *out = g_string_new (NULL);
+
+	for (guint i = 0; lines[i] != NULL; i++)
+		if (!g_str_has_prefix (lines[i], prefix))
+			g_string_append_printf (out, "%s\n", lines[i]);
+	g_strfreev (lines);
+	return g_string_free (out, FALSE);
+}
+
+static void
+test_state_rules (void)
+{
+	FsIntelConfig *c = fs_intel_config_new ();
+	FsHostNet *h = host_fixture ();
+	FsIntelOutcome *o;
+	GKeyFile *kf = g_key_file_new ();
+	gchar *detail = NULL, *rec, *old, **ruled = NULL;
+	gsize n = 0;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+	g_free (import_text (c, "Kept", "45.0.7.1\n", FS_INTEL_DIR_BOTH, NULL));
+	g_free (import_text (c, "Flush", "45.0.8.1\n", FS_INTEL_DIR_IN, NULL));
+	g_free (import_text (c, "Excepted", "45.0.9.1\n", FS_INTEL_DIR_IN,
+	                     NULL));
+	fs_range_set_add_text (c->exceptions, "45.0.9.1");
+	fs_range_set_normalize (c->exceptions);
+	fs_intel_config_save (c, NULL);
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, NULL);
+	fs_intel_outcome_free (o);
+	rec = get_file ("applied.state");
+	if (rec != NULL && g_key_file_load_from_data (kf, rec, -1, 0, NULL))
+		ruled = g_key_file_get_string_list (kf, "applied", "ruled", &n,
+		                                    NULL);
+	CHECK (n == 2 && ruled != NULL &&
+	       g_strv_contains ((const gchar *const *) ruled, "local-kept") &&
+	       g_strv_contains ((const gchar *const *) ruled, "local-flush"),
+	       "applied.state: \"ruled\" names the lists whose sets have "
+	       "addresses, not an emptied one (%s)", rec);
+	g_strfreev (ruled);
+	g_key_file_free (kf);
+
+	CHECK (state_of (c, &detail) == FS_INTEL_STATE_ENFORCED,
+	       "rules: every list's counter rules are there: enforced (%s)",
+	       detail);
+	g_free (detail);
+	g_hash_table_remove (kern.counters, "local-flush");
+	CHECK (state_of (c, &detail) == FS_INTEL_STATE_DIFFERS &&
+	       strstr (detail, "Flush") != NULL &&
+	       strstr (detail, "Kept") == NULL,
+	       "rules: one list's rules gone: differs, naming it (%s)", detail);
+	g_free (detail);
+	/* nft flush table: the table and its comment stay, the chains are
+	 * empty. */
+	g_hash_table_remove_all (kern.counters);
+	CHECK (state_of (c, &detail) == FS_INTEL_STATE_DIFFERS &&
+	       strstr (detail, "Flush") != NULL &&
+	       strstr (detail, "Kept") != NULL,
+	       "rules: the chains flushed: differs, never enforced (%s)",
+	       detail);
+	g_free (detail);
+	kern.counters_unreadable = TRUE;
+	CHECK (state_of (c, NULL) == FS_INTEL_STATE_ENFORCED,
+	       "rules: the chains cannot be listed: the digest decides");
+	kern.counters_unreadable = FALSE;
+	old = without_line (rec, "ruled=");
+	put_file ("applied.state", old);
+	CHECK (state_of (c, NULL) == FS_INTEL_STATE_ENFORCED,
+	       "rules: a record from before \"ruled\": the digest decides");
+	g_free (old);
+	put_file ("applied.state", rec);
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, NULL);
+	CHECK (o && o->result == FS_APPLY_OK &&
+	       state_of (c, NULL) == FS_INTEL_STATE_ENFORCED,
+	       "rules: an apply restores them: enforced");
+	fs_intel_outcome_free (o);
+
+	g_free (rec);
+	fs_hostnet_free (h);
+	fs_intel_config_free (c);
+}
+
 /* ---- lookup ----------------------------------------------------------- */
 
 typedef struct
@@ -2489,10 +3242,15 @@ test_engine (const gchar *argv0)
 	test_update_dates ();
 	test_update_isolation_and_crash ();
 	test_stored_lists ();
+	test_cover6_at_cap ();
 	test_build ();
 	test_build_limits ();
 	test_gate ();
 	test_gate_hostile ();
+	test_update_hosts ();
+	test_gate_same_digest ();
+	test_gate_start_stop ();
+	test_state_rules ();
 	test_lookup ();
 
 	fs_intel_set_fetcher (NULL, NULL);

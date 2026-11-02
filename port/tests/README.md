@@ -1235,3 +1235,125 @@ test seen green again:
 | "unchanged" without checking the stored list against its state | `the next update stores the good copy again`, and every apply after it (the tampered list stays) |
 | no rollback guard | `the older copy replayed (a rollback)`, and the checks that need the newer copy |
 | the hold ignored | `a hold reaches no nft`, the audit count of held attempts |
+
+## Threat intel, second review (`fs-intel-test`, `tests/test-intel-backend.sh`, `tests/test-intel-e2e.sh`)
+
+What the second review of the engine found, and the checks that now
+hold each answer.
+
+`fs-intel-test` (fake backend, fake downloader):
+
+- **coverage counted as the parser counts it**: `test_cover6_at_cap`
+  builds a feed of 128 IPv6 ranges that are not /64-aligned and cover
+  exactly the cap (2^42 /64 networks). The parser accepts it, the update
+  stores it, the stored copy loads again (not TAMPERED) and builds;
+  one more /64 is refused by the parser, and a stored copy holding it is
+  TAMPERED. Both now use `fs_feed_cover6_64`.
+- **the proxy kept reachable** (`test_update_hosts`):
+  `fs_intel_update_hosts` lists each enabled feed's host (an upper-case
+  `HTTPS://` custom feed too), then the proxy's host while any feed is
+  on (IPv4, bracketed IPv6 with a port, a name already listed in
+  another case listed once); an apply with host NULL keeps a proxy and
+  a feed server that a list names, their NAT64 forms too, and says so
+  in a note ("a feed's download server or proxy"); with no feed on, the
+  proxy is not kept.
+- **a re-apply of the same digest that the tool fails**
+  (`test_gate_same_digest`): FAILED with the tool's error and the note
+  "The same rules were already in force, and still are.", nothing
+  carried (the counters read 5, not 10), still enforced, audited as
+  failed; committed then timed out: OK, carried once; the backend says
+  yes and changes nothing: OK, nothing carried (6, not 7); a real
+  replace: carried; nothing counted and refused: FAILED; another rule
+  set refused: FAILED without the same-rules note.
+- **Stop and Start** (`test_gate_start_stop`): a Start whose apply
+  fails, or whose build is refused (TAMPERED), reads not-loaded, never
+  suspended; a Stop with no table clears nothing; Start without intel
+  slots is a no-op; without nft (fake `G_IO_ERROR_NOT_FOUND`) a Stop
+  where nothing was ever applied is not an error and the state reads
+  off, while after a load the Stop fails NOT_FOUND and the state is
+  unknown or needs-root, never off, even with the list turned off; with
+  no store directory at all, Stop and Start create nothing, and a table
+  found anyway is still removed.
+- **flushed chains** (`test_state_rules`): `applied.state` records in
+  `ruled` the lists whose sets have addresses (not one an exception
+  emptied); one list's counter rules gone reads differs naming that
+  list only; all gone (`nft flush table`) reads differs naming both;
+  chains that cannot be listed, or a record from before `ruled`, leave
+  the digest to decide (enforced); an apply restores them.
+- **a list name that collides with another list's id** (in
+  `test_stored_lists`): "office-blocks", "Office: blocks!" and
+  "OFFICE_BLOCKS" are refused (INVALID, naming the list that has the
+  id) while "office  BLOCKS" stays untouched; the same name in another
+  case or spacing replaces it.
+- **values GKeyFile cannot decode** (in `test_config`): a bad escape in
+  the proxy, the exceptions, a custom feed's name or a list's name
+  fails the load naming the group and key; the same file without it
+  loads.
+- **a store others can read** (in `test_store_dir`): an existing store
+  of mode 0755, 0750, 0711 or 0705 is set to 0700, by `fs_intel_dir`
+  and by every store operation.
+
+`tests/test-intel-backend.sh` (real nft, private namespace):
+
+- the same rule set loaded under the wrapper that makes the kernel
+  refuse every load with elements: the slot fails, naming nft's error
+  and "The same blocklists (fingerprint ...) were already loaded and
+  are still in force"; the table was not replaced (its counters still
+  run);
+- `policy-reload` (the driver's new command: the backend's `reload`)
+  joins apply, stop and clear: the table and its counters are untouched.
+
+`tests/test-intel-e2e.sh` (everything real):
+
+- the same rule set refused by the kernel: `result failed`, the
+  same-rules note, the backend's error, the table, the state, the
+  counters and the carried totals as they were;
+- `nft flush table inet stockfw_intel`: differs, naming both lists, and
+  the address really passes; an apply restores the rules;
+- `stockfw stop` and `stockfw start` (the CLI, with iptables in the
+  namespace and its own `XDG_CONFIG_HOME`): stop removes the table and
+  the state reads suspended; start enforces the same digest again and
+  prints "Blocklists applied (2 lists)."; `--json` adds an `intel`
+  object (`result` suspended / applied); the audit records them as
+  `source=cli`. Skipped when the CLI is not built or iptables is
+  missing;
+- without nft (an empty `PATH`): after a load, a Stop fails saying nft
+  is missing and the state reads unknown; in a store where nothing was
+  ever loaded a Stop is not an error and the state reads off; with no
+  store at all a Stop creates none;
+- the driver's lookup now keeps the hosts `fs_intel_update_hosts`
+  gives, not a copy of that logic.
+
+Not covered: the Status page's Stop and Start and start-on-open call
+the same engine functions in a worker thread; they are built, not run
+here (no GUI test drives them). The `stockfw intel` commands, the
+Threat Intel page and Events attribution do not exist yet (design
+section 9).
+
+Teeth, each injected into the real source by
+`teeth.py` in a scratch directory, which asserts the exact old text
+occurs once, rebuilds, runs the test, looks for the named checks among
+the failures, then restores the file with `cp` and checks it with
+`cmp`:
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| the stored-list check counts IPv6 coverage as `end.hi - start.hi + 1` (the old count) | `cover6 cap: the stored copy loads again, not TAMPERED`, `cover6 cap: the build holds it and the healthy list` |
+| the proxy left out of `fs_intel_update_hosts` | `update hosts: each enabled feed's host ... then the proxy's`, `update hosts: an IPv6 proxy ...`, `apply: a list naming the proxy and a feed's server keeps both reachable ...`, `... and a note says so` |
+| resume leaves `suspended` in applied.state | `resume under a hold: ... never suspended`, `start, the apply fails: FAILED, then not-loaded, never suspended`, `start, the build refused: TAMPERED, then not-loaded` |
+| the state never checks the counter rules | `rules: one list's rules gone: differs, naming it`, `rules: the chains flushed: differs, never enforced` |
+| a same-digest re-apply the tool failed reported OK | `same digest, nft refuses: FAILED ...`, `... and the audit records the failure`, `same digest, nothing counted, nft refuses: FAILED` |
+| counters carried without proof the table was replaced | `same digest, the table untouched: OK, nothing carried (6, not 7)`, `same digest, replaced: carried once` |
+| the Linux backend calls an identical table after a refusal a success | `the same rule set refused: a failure that says the same lists are still in force` (test-intel-backend.sh) |
+| without nft, a Stop with nothing to remove is an error | `no nft, nothing ever applied: stop is not an error` |
+| without nft, the state reads unknown with nothing on | `no nft, nothing on: off, not unknown` |
+| a colliding import name replaces the other list | the three `import: "..." (the same slug, another name) is refused ...`, `import: two long names cut to the same id ...` |
+| undecodable intel.conf values read as absent | `intel.conf: a proxy with an invalid escape (\q) fails, naming [intel] proxy` |
+| an existing 0755 store accepted as it is | the four `store: an existing 0NNN store is set to 0700`, `store: saving the configuration into a 0755 store leaves it 0700` |
+| Stop creates a store where none was | `no store: stop and start do nothing, create nothing`, `no store, a table left behind: ...` |
+| the policy reload clears the intel table | `the lists and their counters are untouched by all of it`, and every later check that needs the table (test-intel-backend.sh) |
+| `stockfw stop` does not suspend the lists | `stockfw stop: the firewall stops, the lists are removed and suspended`, `stockfw --json stop: ...`, `the command line's stops and starts are audited as source=cli` (test-intel-e2e.sh) |
+| the old note wording ("a feed's download server") | `notes: every kind of address kept, and the list that named it`, `... and a note says so` |
+
+The sanitizer build (`build-asan`, Debug, `-fsanitize=address,undefined`)
+runs `fs-intel-test` clean.

@@ -26,15 +26,17 @@
 #   - after any nft failure the kernel is read back and trusted: an nft
 #     killed, or timed out, after it committed is a success; one killed
 #     or hung before is a failure that says which lists are in force;
-#     a rejected transaction leaves the previous table; after an nft
+#     a rejected transaction leaves the previous table, and one that
+#     would have loaded the very same table is still a failure (the
+#     counters were never reset, so nothing may be carried); after an nft
 #     success the table must carry the digest asked for (not one put
 #     there by someone else, and not an unreadable listing);
 #   - a hanging nft is stopped at the timeout (shortened by the test
 #     build's $STOCKFW_TEST_NFT_TIMEOUT_MS), for loads and listings;
 #   - an unreadable listing is unknown, never absent;
 #   - nft missing, not root: clear errors, live unknown, counters NULL;
-#   - coexistence: the policy's apply, stop and clear leave the table and
-#     its counters alone [N6]; the policy's iptables rules, Docker- and
+#   - coexistence: the policy's apply, stop, reload and clear leave the
+#     table and its counters alone [N6]; the policy's iptables rules, Docker- and
 #     libvirt-style iptables chains, firewalld- and libvirt-style nft
 #     tables and the standalone helper's inet stockfw_blocklist are
 #     byte for byte the same after everything above.
@@ -274,9 +276,9 @@ check '! "$REAL_NFT" list set inet stockfw_intel s_feed_a_4 >/dev/null 2>&1 && [
 send_from "$PEER" 192.0.2.1 4 >/dev/null
 c_before="$(counters)"
 o1="$(drv policy-apply)"; o2="$(drv policy-apply)"; o3="$(drv policy-stop)"
-o4="$(drv policy-clear)"; o5="$(drv policy-apply)"
-check '[ "$o1$o2$o3$o4$o5" = "policy appliedpolicy appliedpolicy stoppedpolicy clearedpolicy applied" ]' \
-      "the policy applies twice, stops, clears and applies again"
+o4="$(drv policy-clear)"; o5="$(drv policy-apply)"; o6="$(drv policy-reload)"
+check '[ "$o1$o2$o3$o4$o5$o6" = "policy appliedpolicy appliedpolicy stoppedpolicy clearedpolicy appliedpolicy reloaded" ]' \
+      "the policy applies twice, stops, clears, applies again and reloads ($o6)"
 check '[ "$(drv live)" = "present $D_B" ] && [ "$(counters)" = "$c_before" ] && [ "${c_before#feed-c 4 }" != "$c_before" ]' \
       "the lists and their counters are untouched by all of it ($c_before)"
 
@@ -300,6 +302,18 @@ check '[ $rc -eq 1 ] && grep -q "^error failed: nft refused the change" <<<"$out
       "a rejected transaction is a failure that names the lists still in force (${out:0:150})"
 check '[ "$(drv live)" = "present $D_B" ] && "$REAL_NFT" list set inet stockfw_intel s_feed_c_4 | grep -q 192.0.2.2' \
       "the previous table, its digest and its set are still in force"
+
+# The same rule set refused (the hourly re-apply of an unchanged one):
+# the kernel then holds the digest asked for, but only because it held
+# it before.  Never a success: nothing shows the table was replaced,
+# and its counters (still counting) must not be carried and counted
+# again.
+c_before="$(counters)"
+out="$(drv_with reject apply "$F_B")"; rc=$?
+check '[ $rc -eq 1 ] && grep -q "nft refused the change" <<<"$out" && grep -q "The same blocklists (fingerprint $D_B) were already loaded and are still in force" <<<"$out"' \
+      "the same rule set refused: a failure that says the same lists are still in force (${out:0:220})"
+check '[ "$(drv live)" = "present $D_B" ] && [ "$(counters)" = "$c_before" ] && [ "${c_before#feed-c 4 }" != "$c_before" ]' \
+      "... the table was not replaced: its counters still run ($c_before)"
 
 # ------------------------------------------------- 7. nft killed mid-apply
 mkdir -p "$W/killed-before" "$W/killed-after"

@@ -108,53 +108,16 @@ save_and_free (FsIntelConfig *config)
 	return 0;
 }
 
-/* The host of an https:// URL, as the engine keeps it reachable. */
-static gchar *
-url_host (const gchar *url)
-{
-	const gchar *p, *end;
-
-	if (url == NULL || !g_str_has_prefix (url, "https://"))
-		return NULL;
-	p = url + strlen ("https://");
-	end = p + strcspn (p, "/?#");
-	if (*p == '[') {
-		const gchar *close = memchr (p, ']', (gsize) (end - p));
-
-		return close != NULL ? g_strndup (p + 1, (gsize) (close - p - 1))
-		                     : NULL;
-	}
-	{
-		const gchar *colon = memchr (p, ':', (gsize) (end - p));
-
-		if (colon != NULL)
-			end = colon;
-	}
-	return end > p ? g_strndup (p, (gsize) (end - p)) : NULL;
-}
-
-/* This computer as fs_intel_apply_safe(host NULL) reads it. */
+/* This computer as fs_intel_apply_safe(host NULL) reads it: the hosts
+ * kept reachable are the engine's own list (the feeds' servers and the
+ * proxy), never a copy of its logic here. */
 static FsHostNet *
 read_host (const FsIntelConfig *config)
 {
-	GPtrArray *hosts = g_ptr_array_new_with_free_func (g_free);
-	FsHostNet *host;
+	gchar **hosts = fs_intel_update_hosts (config);
+	FsHostNet *host = fs_hostnet_read ((const gchar *const *) hosts);
 
-	for (guint i = 0; i < config->feeds->len; i++) {
-		const FsIntelFeedConf *f = g_ptr_array_index (config->feeds, i);
-		const FsFeedInfo *fi;
-		gchar *h;
-
-		if (!f->enabled)
-			continue;
-		fi = f->custom ? NULL : fs_feed_catalog_find (f->id);
-		h = fi != NULL ? g_strdup (fi->host) : url_host (f->url);
-		if (h != NULL)
-			g_ptr_array_add (hosts, h);
-	}
-	g_ptr_array_add (hosts, NULL);
-	host = fs_hostnet_read ((const gchar *const *) hosts->pdata);
-	g_ptr_array_unref (hosts);
+	g_strfreev (hosts);
 	return host;
 }
 

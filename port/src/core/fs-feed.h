@@ -146,6 +146,14 @@ FsRangeSet *fs_feed_parse (const gchar *data, gsize len, FsFeedFormat fmt,
 FsRangeSet *fs_feed_parse_csv (const gchar *data, gsize len,
                                FsFeedParseStats *stats, GError **error);
 
+/* IPv6 coverage of `set' in /64 networks, as the coverage cap counts
+ * it (FsFeedParseStats.cover6_64): an interval of d + 1 addresses
+ * counts ceil ((d + 1) / 2^64) = d.hi + 1, the counts are added, and
+ * the sum saturates.  The engine re-checks a stored list with this
+ * same count, so a list the parser accepted can always be loaded
+ * again. */
+guint64 fs_feed_cover6_64 (const FsRangeSet *set);
+
 /* The design's URL rule (4.4): https:// only, <= 2048 bytes, printable
  * ASCII with no spaces, no "user@" part, a non-empty host, not starting
  * with '-'.  The host must be a DNS name (letters, digits, '-', '.',

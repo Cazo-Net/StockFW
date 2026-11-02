@@ -28,7 +28,9 @@
 #include "ui/fs-dialogs.h"
 #include "ui/fs-icons.h"
 #include "ui/fs-tray.h"
+#include "core/fs-apply.h"
 #include "core/fs-backend.h"
+#include "core/fs-intel.h"
 #include "core/fs-netplace.h"
 #include "core/fs-util.h"
 #include "core/fs-i18n.h"
@@ -1329,6 +1331,106 @@ on_place_timeout (gpointer data)
 
 /* --------------------------------------------------------------- actions */
 
+/* [ the blocklists follow Start and Stop ]
+ * Design 6.5: a Stop removes the threat-intel blocklists and records
+ * them as suspended, a Start applies them again through the gate,
+ * under the same hold as any apply.  The work (reading this computer's
+ * addresses, resolving the feeds' hosts, loading up to hundreds of
+ * thousands of addresses) runs off the main loop, one job at a time and
+ * in order, so a Stop followed at once by a Start never races; a
+ * failure is shown once it is known.  Nothing happens where no list
+ * was ever turned on. */
+typedef struct
+{
+	gboolean start;
+	gchar   *source;
+	gchar   *hold;
+	gchar   *error;   /* set by the worker; NULL when they followed */
+	gchar   *notes;
+} IntelJob;
+
+static GThreadPool *intel_pool;
+
+static void
+intel_job_free (IntelJob *job)
+{
+	g_free (job->source);
+	g_free (job->hold);
+	g_free (job->error);
+	g_free (job->notes);
+	g_free (job);
+}
+
+static gboolean
+intel_job_done (gpointer data)
+{
+	IntelJob *job = data;
+
+	if (job->error != NULL) {
+		gchar *text = job->notes != NULL
+		              ? g_strdup_printf ("%s\n\n%s", job->error,
+		                                 job->notes)
+		              : g_strdup (job->error);
+
+		fs_dialogs_error (NULL, job->start
+			? _("The firewall started, but its blocklists could not "
+			    "be applied")
+			: _("The firewall stopped, but its blocklists could not "
+			    "be removed"), text);
+		g_free (text);
+	}
+	intel_job_free (job);
+	return G_SOURCE_REMOVE;
+}
+
+static void
+intel_job_run (gpointer data, gpointer user_data)
+{
+	IntelJob *job = data;
+	const FsBackend *backend = fs_backend ();
+	GError *error = NULL;
+
+	(void) user_data;
+	if (job->start) {
+		FsIntelOutcome *o = fs_intel_resume (backend, job->source,
+		                                     job->hold, &error);
+
+		if (o != NULL && o->result == FS_APPLY_FAILED && error == NULL)
+			job->error = g_strdup (_("The kernel does not hold them."));
+		if (o != NULL && o->notes != NULL && o->notes->len > 0) {
+			GString *notes = g_string_new (NULL);
+
+			for (guint i = 0; i < o->notes->len; i++)
+				g_string_append_printf (notes, "%s%s",
+				                        i ? "\n" : "",
+				                        (gchar *) o->notes->pdata[i]);
+			job->notes = g_string_free (notes, FALSE);
+		}
+		fs_intel_outcome_free (o);
+	} else {
+		fs_intel_suspend (backend, job->source, &error);
+	}
+	if (error != NULL && job->error == NULL)
+		job->error = g_strdup (error->message);
+	g_clear_error (&error);
+	g_idle_add (intel_job_done, job);
+}
+
+void
+fs_statusview_intel_follow (gboolean start, const gchar *source)
+{
+	IntelJob *job = g_new0 (IntelJob, 1);
+
+	job->start = start;
+	job->source = g_strdup (source);
+	job->hold = g_strdup (fs_apply_hold_reason ());
+	/* One thread at most: the jobs run in the order pushed. */
+	if (intel_pool == NULL)
+		intel_pool = g_thread_pool_new (intel_job_run, NULL, 1, FALSE,
+		                                NULL);
+	g_thread_pool_push (intel_pool, job, NULL);
+}
+
 static void
 do_start (void)
 {
@@ -1342,6 +1444,7 @@ do_start (void)
 	}
 
 	fs_statusview_set_state (fs_backend ()->get_state ());
+	fs_statusview_intel_follow (TRUE, "status page");
 
 	/* Started, with notes: what the policy in force does not cover
 	 * (a block whose name could not be looked up, IPv6 without
@@ -1369,6 +1472,7 @@ do_stop (void)
 	}
 
 	fs_statusview_set_state (fs_backend ()->get_state ());
+	fs_statusview_intel_follow (FALSE, "status page");
 }
 
 static void
