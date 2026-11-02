@@ -34,8 +34,8 @@ description: A guided first session with StockFW: check that you are protected, 
 </li>
 <li>
 <strong>Ask the simulator</strong>
-<p>Open <strong>Copilot</strong> and type a question into the What-if box the way you would say it: <code>inbound rdp from 203.0.113.50</code>. The verdict plays in a small window, the packet travelling from the source to the wall, and the text underneath names the rule that decided it, or says that no rule matched and the default applied. Simulating writes nothing. If the verdict is BLOCKED and you want it allowed, <strong>Create This Rule</strong> prints the rule and asks.</p>
-[[shot:whatif-blocked|The What-If Simulation window: a packet from 203.0.113.50 bounced back by the wall, a red BLOCKED badge, and the explanation that no rule matched and the default is to deny inbound.|A question, not a change: nothing is written by simulating.]]
+<p>Open <strong>Copilot</strong> and type a question into the What-If card the way you would say it: <code>inbound rdp from 203.0.113.50</code>. <em>Read as</em> shows how the line was understood, and the answer appears in one row: ALLOWED or BLOCKED, and the rule that decides it, or that no rule matched and the default applied. <strong>Details</strong> opens the window beside the page: the packet travelling from the source to the wall, every rule that was checked, and, under <em>What you can do</em>, the fixes StockFW has verified, such as the one allow rule that would let this in, printed exactly as it would be written. Asking writes nothing; a fix runs only when you press its button and confirm.</p>
+[[shot:whatif-blocked|The What-If window for a blocked inbound connection: a red BLOCKED badge, the packet bounced back by the wall, a “What you can do” card offering “Create allow rule” with the exact row it would add, and a “Why” card in which the default drop decides.|A question, not a change: nothing is written by asking, and the offered fix shows its row before you decide.]]
 </li>
 <li>
 <strong>Set up the tray</strong>

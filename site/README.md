@@ -54,6 +54,13 @@ outside and services on the inside, under Xvfb at `GDK_SCALE=2`, then
 converted to WebP.  Retake them when a page changes; the captions say
 what the traffic was.
 
+The What-If pictures (`whatif-*.webp`) are rendered by the app's own
+smoke tests rather than photographed: `port/tests/ui-simviz-smoke.c`
+and `ui-copilot-smoke.c` write every window they check as a PNG when
+`FS_SHOT_DIR` is set (run them under Xvfb with `GTK_THEME=Adwaita`).
+They show the tests' own fixture policy, not the staged network above,
+and the captions describe exactly what each one shows.
+
 ## Releasing
 
 Bump `CONFIG["release"]` (the newest GitHub release), `CONFIG["version"]`

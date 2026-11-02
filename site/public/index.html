@@ -92,10 +92,11 @@
 				<text class="nsub r-sub" x="410" y="138" text-anchor="middle">local port 22</text>
 				<g class="packet" style="transform:translate(326px,74px)"><rect width="54" height="24" rx="4"/><text x="27" y="16" text-anchor="middle">TCP 22</text></g>
 			</svg>
-			<div class="wi-verdict"><span class="wi-pill ok">ALLOWED</span><span class="wi-scn">Inbound TCP connection from 192.168.1.50 to local port 22 (ssh)</span></div>
+			<div class="wi-verdict"><span class="wi-pill ok">ALLOWED</span><span class="wi-scn">Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer</span></div>
 			<dl class="wi-detail">
-				<dt>Rule</dt><dd class="d-rule">StockFW: Allow SSH (inbound, 192.168.1.0/24)</dd>
-				<dt>Why</dt><dd class="d-why">Matched rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24)' on port 22, which allows inbound traffic.</dd>
+				<dt>Rule</dt><dd class="d-rule">StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)</dd>
+				<dt>Why</dt><dd class="d-why">You asked to allow this. It is already ALLOWED. Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.</dd>
+				<dt>Fix</dt><dd class="d-fix">Nothing to change: this is already allowed, as you asked.</dd>
 				<dt>Exit</dt><dd class="d-exit exit-ok">0  (success)</dd>
 			</dl>
 			<div class="wi-chips" role="group" aria-label="Replay another line"></div>
@@ -108,7 +109,7 @@
 <span class="k">outbound/deny-to</span>        198.51.100.66, known bad host
 <span class="k">outbound/deny-service</span>   Telnet, 23, Anyone, no cleartext logins</pre>
 			</details>
-			<p class="wi-note">Every verdict in this card is the real output of <code>stockfw simulate</code> against that policy, copied word for word. The page replays it; it does not judge anything itself.</p>
+			<p class="wi-note">Every verdict, reason and fix in this card is the real output of <code>stockfw simulate</code> against that policy, copied word for word. The page replays it; it does not judge anything itself.</p>
 		</div>
 	</div>
 </section>
@@ -284,11 +285,15 @@ StockFW 1.0.7  Linux (iptables)
   Connections  3 active
 
 <span class="p">$ </span><span class="cmd">stockfw simulate "outbound telnet to 203.0.113.7"</span>
-<span class="hi">BLOCKED</span>  Outbound TCP connection from local to 203.0.113.7 port 23 (telnet)
-  Packet     outbound TCP port 23 to 203.0.113.7
-  Rule       StockFW: Block Telnet (outbound)
-  Why        Matched rule 'StockFW: Block Telnet (outbound)' on port 23, which blocks outbound traffic.
-  To allow   Allow outbound TCP port 23 to 203.0.113.7.
+<span class="hi">BLOCKED</span>. Rule 'StockFW: Block Telnet (outbound) (TCP)' blocks it.
+Read as: host 203.0.113.7; service Telnet: TCP port 23; outbound (confidence 90%)
+
+Outbound TCP port 23 (Telnet) from this computer to 203.0.113.7: BLOCKED
+  Rule 'StockFW: Block Telnet (outbound) (TCP)' blocks it.
+  How it was decided:
+    - StockFW: Block outbound (198.51.100.66): 203.0.113.7 is not 198.51.100.66
+    =&gt; StockFW: Block Telnet (outbound) (TCP): matches: drops it
+  [open-rule] Open rule 'StockFW: Block Telnet (outbound)': Rule 'StockFW: Block Telnet (outbound)' (Outbound: deny service, row 1) blocks it. Edit or remove it on the Policy page. Without it, this is allowed.
 A simulation only: nothing was written.
 <span class="p">$ </span><span class="cmd">echo $?</span>
 5

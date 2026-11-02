@@ -34,6 +34,7 @@ Global options:
 Exit status:
   0  success          2  usage error           5  simulate: BLOCKED
   1  failure          3  needs root privileges
+                                               6  simulate: DEPENDS
 
 Policy files live in ~/.stockfw (or /etc/stockfw when run as root) --
 the same files the desktop app edits.  Nothing here talks to the
@@ -127,24 +128,50 @@ Nothing to change: the policy already matches the firewall.</pre>
 
 <h2 id="simulate">simulate</h2>
 <pre data-lang="sh">$ stockfw simulate "allow ssh from 192.168.1.50 on port 22"
-ALLOWED  Inbound TCP connection from 192.168.1.50 to local port 22 (ssh)
-  Packet     inbound TCP port 22 from 192.168.1.50
-  Rule       StockFW: Allow SSH (inbound, 192.168.1.0/24)
-  Why        Matched rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24)' on port 22, which allows inbound traffic.
+You asked to allow this. It is already ALLOWED. Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.
+Read as: you want it allowed; host 192.168.1.50; port 22; service SSH: TCP port 22; inbound (confidence 100%)
+
+Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer: ALLOWED
+  Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.
+  How it was decided:
+    - StockFW: Allow inbound (192.168.1.1): 192.168.1.50 is not 192.168.1.1
+    - StockFW: Allow inbound (192.0.2.10): 192.168.1.50 is not 192.0.2.10
+    =&gt; StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP): matches: allows it
+
+Good to know:
+  - No valid internet-facing interface is set, so the reserved-address and broadcast blocks are not in force.
 A simulation only: nothing was written.
 $ echo $?
 0
 
-$ stockfw simulate "outbound tcp to 198.51.100.66 port 443" --json
+$ stockfw simulate "outbound tcp port 443"
+DEPENDS. Allowed for most hosts; blocked to 198.51.100.66 by rule 'StockFW: Block outbound (198.51.100.66)'.
+Read as: port 443; TCP; outbound (confidence 90%)
+…
+$ echo $?
+6
+
+$ stockfw --json simulate "outbound tcp to 198.51.100.66 port 443"
 {"input":"outbound tcp to 198.51.100.66 port 443","verdict":"BLOCKED",
- "scenario":"Outbound TCP connection from local to 198.51.100.66 port 443 (unnamed application)",
+ "summary":"BLOCKED. Rule 'StockFW: Block outbound (198.51.100.66)' blocks it.",
+ "scenario":"Outbound TCP port 443 from this computer to 198.51.100.66",
  "direction":"outbound","protocol":"TCP","port":443,"remote":"198.51.100.66",
  "rule":"StockFW: Block outbound (198.51.100.66)",
- "reason":"Matched rule 'StockFW: Block outbound (198.51.100.66)', which blocks outbound traffic.",
- "suggestion":"Allow outbound TCP port 443 to 198.51.100.66."}
+ "reason":"Rule 'StockFW: Block outbound (198.51.100.66)' blocks it.",
+ "suggestion":"Open rule 'StockFW: Block outbound (198.51.100.66)': … Without it, this is allowed.",
+ "confidence":0.90,
+ "read_as":[{"text":"198.51.100.66","meaning":"host 198.51.100.66"},{"text":"443","meaning":"port 443"},
+            {"text":"tcp","meaning":"TCP"},{"text":"outbound","meaning":"outbound"}],
+ "answers":[{"direction":"outbound","verdict":"BLOCKED",
+             "probe":"Outbound TCP port 443 from this computer to 198.51.100.66",
+             "rule":"StockFW: Block outbound (198.51.100.66)","origin":"policy","policy_kind":6,"policy_row":0,
+             "cases":[],
+             "trace":[{"step":"skipped","decides":false,"rule":"Return traffic for connections already open", …},
+                      {"step":"matched","decides":true,"rule":"StockFW: Block outbound (198.51.100.66)","allows":false, …}],
+             "actions":[{"kind":"open-rule","label":"Open rule 'StockFW: Block outbound (198.51.100.66)'","verified":true, …}]}]}
 $ echo $?
 5</pre>
-<p>Exit 0 means ALLOWED, 5 means BLOCKED, so a script can branch without parsing. The sentence grammar is on the <a href="{{root}}docs/simulator.html">simulator page</a>. Simulating reads the saved policy and needs no root.</p>
+<p>Exit 0 means ALLOWED, 5 BLOCKED and 6 DEPENDS, so a script can branch without parsing; 2 means the line could not be read. The plain output is the window in text: the verdict in a sentence, how the line was read with a confidence, then for each direction the trace (<code>-</code> skipped, <code>*</code> a note, <code>=&gt;</code> the deciding step) and the checked fixes in brackets. The JSON carries the same, with <code>read_as</code>, and under <code>answers</code> every direction’s <code>trace</code>, <code>cases</code> and <code>actions</code>, each action with the exact policy <code>row</code> it would write. The sentence grammar is on the <a href="{{root}}docs/simulator.html">simulator page</a>. Simulating reads the saved policy and needs no root; reading whether the firewall is running does, so <code>--assume-running</code> answers for the firewall as it would run.</p>
 <pre data-lang="sh" data-title="In a deployment script">if ! stockfw simulate "inbound https from 0.0.0.0/0" >/dev/null; then
     echo "port 443 would be closed; refusing to deploy" >&amp;2
     exit 1
