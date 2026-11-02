@@ -122,7 +122,9 @@ gchar *fs_intelset_nft_set_name (const gchar *id, FsAddrFamily family);
  *
  * A family with no ranges in a set has neither set nor rules.  The
  * empty rule set yields just the first two lines: the table is removed.
- * NULL only when a set's id is invalid.  Caller frees. */
+ * NULL only when a set is one fs_intel_ruleset_add() would have
+ * refused -- an invalid id or direction, or an id used twice -- which
+ * only a struct filled in by hand can hold.  Caller frees. */
 gchar *fs_intelset_nft_script (const FsIntelRuleset *ruleset);
 
 /* The script that removes the table, and only it; harmless when it is
