@@ -158,6 +158,81 @@ The settings apply itself (`fs_settings_apply_safe`) is covered in
 settings, a failure is rolled back under the previous ones and
 verified, and the audit log names it.
 
+The footer's Help button is checked to be there on both platforms'
+page sets; what it opens is checked in `fs-help-smoke` below.  The
+About credits are checked here too: the creator line reads exactly
+"Stock Team & Qusai - Creator & Original Developer", and no credit
+carries an e-mail address.
+
+## Help and About (`fs-help-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-help-smoke
+xvfb-run -a ./build-linux/fs-help-smoke                     # Adwaita:dark
+GTK_THEME=Adwaita xvfb-run -a ./build-linux/fs-help-smoke   # light
+STOCKFW_HELP_SHOTS=/some/dir xvfb-run -a ./build-linux/fs-help-smoke
+```
+
+Builds the real main window (`fs_app_activate` in a `GtkApplication`),
+with every file it reads or writes (settings, rules, journal, audit
+log, behaviour baseline, trust store) moved to a scratch directory.
+It runs under `GTK_THEME=Adwaita:dark` unless `GTK_THEME` is set, and
+fails on any GTK warning or critical.  With `STOCKFW_HELP_SHOTS` it
+saves three Help topics, Help opened from Preferences and About, named
+after the theme.
+
+What it pins down, each seen failing when its bug is put back (the
+check that failed is in brackets):
+
+- H1: `app.help` and F1 on the main window open Help at the topic for
+  the page shown; so does the sidebar's Help item.  Ctrl+W closes it.
+  (Re-injected: the action not registered; the accelerator on F2.)
+- H2: every topic in `fs-helpcontent.c` renders, with its title and
+  every block on screen; every string parses as GtkLabel markup, every
+  `help:` link and related topic names a real topic, and there is no em
+  dash.  (Re-injected: callouts not rendered; an unclosed `<b>`; a
+  link to `help:troubleshoot`.)
+- H3: search filters the topic list ("SSH locked" lists Troubleshooting
+  and leaves Activity out), finds subtopics, says when nothing
+  matches, opens the first match on Enter and is cleared by Escape.
+  (Re-injected: every topic matching.)
+- H4: links, related-topic chips, Next, the breadcrumb, the sidebar,
+  Back, Forward, Alt+Left and Alt+Right all navigate.  (Re-injected:
+  `help:` links not followed; the topic left not put on the Back
+  list.)
+- H5: Preferences' Help button opens `prefs-<page>` for every page it
+  shows, and F1 there does too.  Help lives in its own window group, so
+  a key on it acts while Preferences holds its modal grab, and closing
+  Preferences leaves Help open.  (Re-injected: Help always opening
+  "preferences"; F1 not handled; Help left in the default window group,
+  where the key went to Preferences instead.)
+- H6: one Help window; asking again moves and raises it.  (Re-injected:
+  a new window each time.)
+- A1: About is a dialog transient for the main window and not modal,
+  one at a time; the first credit reads exactly "Stock Team & Qusai -
+  Creator & Original Developer", the three credits on this base are
+  shown, nothing in it has an `@`; the licence summary names both
+  texts the source carries (GPL v2 in `COPYING`, Apache 2.0 in
+  `LICENSE`) and claims no GPL 3; "View licence texts" shows both
+  files, compiled in at configure time, form feeds dropped.
+  (Re-injected: the credit reworded; an address in a credit; "version
+  3" in the summary; About opening twice.)
+- A2: "Copy system info" copies the StockFW, GTK and GLib versions, the
+  operating system and the firewall backend, and nothing with the user
+  name, host name, home directory, an `@` or a `/` in it; the clipboard
+  then holds exactly that.  (Re-injected: the user name added; the
+  clipboard given something else.)
+- T1: every label drawn in Help (six topics, and the sidebar's "nothing
+  found" line), About and the licence window is at 4.5:1 or more
+  against the colour painted behind it, measured from the style GTK
+  computes under the theme.  (Re-injected: the article text's colour
+  rules removed, which leaves Adwaita:dark's light text on the light
+  page.)
+
+The prefs smoke's Help-button check was seen failing with the button
+left out of the footer.
+
 ## The Windows build directory on its own (`tests/test-staged-runtime.sh`)
 
 ```sh

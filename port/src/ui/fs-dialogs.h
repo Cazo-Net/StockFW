@@ -5,12 +5,18 @@
 
 G_BEGIN_DECLS
 
+/* The About window (fs-aboutdialog.c): a dialog transient for parent,
+ * not modal; a second call raises the open one. */
 void fs_dialogs_about   (GtkWidget *parent);
 
-/* About credits, escaped for GtkAboutDialog's markup rendering (it
- * parses authors as markup WITHOUT escaping them; see fs-dialogs.c).
- * ui-prefs-smoke asserts pango_parse_markup() accepts every string. */
-const gchar **fs_dialogs_about_authors (void);
+/* The About credits, plain text, one per line, NULL-terminated. */
+const gchar * const *fs_dialogs_about_credits (void);
+
+/* What About's "Copy system info" copies (free it): the StockFW, GTK
+ * and GLib versions, the operating system and the firewall backend.
+ * Never a user name, host name, path or address. */
+gchar *fs_dialogs_system_info (void);
+
 void fs_dialogs_error   (GtkWidget *parent,
                          const gchar *header,
                          const gchar *message);

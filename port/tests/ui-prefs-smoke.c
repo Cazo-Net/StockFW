@@ -434,7 +434,9 @@ check_navigation (GtkWidget *win, const gchar *pages, const gchar *shots,
 	g_strfreev (ids);
 }
 
-/* Nothing the port does not do may be on offer anywhere. */
+/* Nothing the port does not do may be on offer anywhere.  "_Help" is
+ * the legacy dialog's Help button, which did nothing; the footer's Help
+ * (1.0.7) opens the Help window and is checked in check_pages. */
 static void
 check_no_dead_controls (GtkWidget *win, const gchar *tag)
 {
@@ -452,7 +454,8 @@ check_no_dead_controls (GtkWidget *win, const gchar *tag)
 			g_print ("       dead text found: %s\n", dead[i]);
 			hits++;
 		}
-	CHECK (hits == 0, "[%s] no dead control or Help button on any page",
+	CHECK (hits == 0, "[%s] no dead control (nor the old dead Help) on "
+	       "any page",
 	       tag);
 	g_string_free (text, TRUE);
 }
@@ -771,6 +774,16 @@ check_pages (GtkWidget *win, const gchar *tag)
 		CHECK (bg != NULL && !gtk_widget_get_visible (bg),
 		       "[%s] the Background card is in place and hidden until "
 		       "it has a setting", tag);
+	}
+	{
+		/* 1.0.7: the footer has a Help button (it opens the topic
+		 * for the page shown; fs-help-smoke follows it there). */
+		GtkWidget *help = find_named (win, "prefs-help");
+
+		CHECK (help != NULL && GTK_IS_BUTTON (help)
+		       && gtk_widget_get_visible (help)
+		       && gtk_widget_is_sensitive (help),
+		       "[%s] the footer has a Help button", tag);
 	}
 	g_free (want);
 	g_free (have);
@@ -1401,7 +1414,7 @@ check_switch_focus_ring (void)
 static void
 check_about_and_theme (void)
 {
-	const gchar **authors = fs_dialogs_about_authors ();
+	const gchar * const *credits = fs_dialogs_about_credits ();
 	static const gchar *const tokens[] = {
 		"#f4f5f7", "#14161b", "#16181d", "#2a2f39", "#eaf0fb",
 		"#ffebee", "#b71c1c", "#f9f9f9",
@@ -1410,22 +1423,17 @@ check_about_and_theme (void)
 	GtkCssProvider *provider = gtk_css_provider_new ();
 	GError *error = NULL;
 
-	/* GtkAboutDialog parses authors as markup without escaping them,
-	 * so each must parse -- and the creator line must read as written. */
-	CHECK (authors != NULL && authors[0] != NULL, "About has authors");
-	for (guint i = 0; authors != NULL && authors[i] != NULL; i++) {
-		gchar *plain = NULL;
-		gboolean ok = pango_parse_markup (authors[i], -1, '\0', NULL,
-		                                  &plain, NULL, NULL);
-
-		CHECK (ok, "about author %u is valid markup", i);
-		if (i == 0)
-			CHECK (g_strcmp0 (plain,
-			                  "Qusai Fethalrahman (Qusaifox2@gmail.com)"
-			                  " - Creator & Original Developer") == 0,
-			       "the creator line renders as written");
-		g_free (plain);
-	}
+	/* The About credits are plain text now (the window sets them on
+	 * labels, not as GtkAboutDialog markup): the creator line reads
+	 * exactly as written, and no line carries an e-mail address.  The
+	 * About window itself is covered by fs-help-smoke. */
+	CHECK (credits != NULL && credits[0] != NULL, "About has credits");
+	CHECK (credits != NULL && g_strcmp0 (credits[0],
+	       "Stock Team & Qusai - Creator & Original Developer") == 0,
+	       "the creator line reads as written");
+	for (guint i = 0; credits != NULL && credits[i] != NULL; i++)
+		CHECK (strchr (credits[i], '@') == NULL,
+		       "about credit %u carries no e-mail address", i);
 
 	CHECK (gtk_css_provider_load_from_data (provider, fs_theme_css, -1,
 	                                        &error) && error == NULL,

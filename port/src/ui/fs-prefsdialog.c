@@ -5,8 +5,10 @@
  * one page per subject on the right, each page a title, a line on what
  * it is for, and white cards of settings.  Every setting is one row --
  * its name in bold, one line on what it does, and the switch or choice
- * on the right -- so the window explains itself and needs no Help
- * button.  Cancel and Save sit in a footer under the pages.
+ * on the right -- so the window explains itself.  The footer under
+ * the pages has Help on the left (it and F1 open the Help topic for
+ * the page shown; Help lives in its own window group, so it takes
+ * input while this modal window is open), and Cancel and Save.
  *
  * Honesty rule: a setting is offered only where this platform acts on
  * it.  Whole pages follow the backend's FS_FWSEC_* bits, rows inside a
@@ -36,6 +38,7 @@
 
 #include "ui/fs-dialogs.h"
 #include "ui/fs-app.h"
+#include "ui/fs-helpwindow.h"
 #include "ui/fs-icons.h"
 #include "ui/fs-policyview.h"
 #include "ui/fs-statusview.h"
@@ -1005,11 +1008,28 @@ on_delete (GtkWidget *widget, GdkEvent *event, gpointer data)
 	return TRUE;   /* destroyed by fs_dialogs_preferences */
 }
 
+/* Help, and F1: the Help topic for the page shown. */
+static void
+on_help (GtkButton *button, gpointer data)
+{
+	PrefsWin *win = data;
+	const gchar *page =
+		gtk_stack_get_visible_child_name (GTK_STACK (win->stack));
+
+	(void) button;
+	fs_help_show (win->window, fs_help_topic_for_prefs_page (page));
+}
+
 static gboolean
 on_key (GtkWidget *widget, GdkEventKey *event, gpointer data)
 {
 	(void) widget;
 
+	if (event->keyval == GDK_KEY_F1
+	    && (event->state & gtk_accelerator_get_default_mod_mask ()) == 0) {
+		on_help (NULL, data);
+		return TRUE;
+	}
 	if (event->keyval == GDK_KEY_Escape) {
 		on_cancel (NULL, data);
 		return TRUE;
@@ -1052,7 +1072,7 @@ clamp_size (GtkWindow *window, GtkWidget *parent)
 static GtkWidget *
 build_window (PrefsWin *win, GtkWidget *parent)
 {
-	GtkWidget *outer, *nav, *head, *right, *footer, *cancel, *save;
+	GtkWidget *outer, *nav, *head, *right, *footer, *cancel, *save, *help;
 	const FsBackend *backend = fs_backend ();
 
 	win->window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
@@ -1106,10 +1126,26 @@ build_window (PrefsWin *win, GtkWidget *parent)
 	gtk_widget_set_vexpand (win->stack, TRUE);
 	gtk_box_pack_start (GTK_BOX (right), win->stack, TRUE, TRUE, 0);
 
-	/* Footer: what is pending on the left, the two answers on the
-	 * right. */
+	/* Footer: Help and what is pending on the left, the two answers
+	 * on the right. */
 	footer = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
 	add_class (footer, "prefs-footer");
+	help = gtk_button_new ();
+	{
+		GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+
+		gtk_box_pack_start (GTK_BOX (row), fs_icon_new (FS_ICON_HELP, 16),
+		                    FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (row),
+		                    gtk_label_new_with_mnemonic (_("_Help")),
+		                    FALSE, FALSE, 0);
+		gtk_container_add (GTK_CONTAINER (help), row);
+	}
+	gtk_widget_set_name (help, "prefs-help");
+	gtk_widget_set_tooltip_text (help, _("Help for this page (F1)"));
+	add_class (help, "btn-subtle");
+	g_signal_connect (help, "clicked", G_CALLBACK (on_help), win);
+	gtk_box_pack_start (GTK_BOX (footer), help, FALSE, FALSE, 0);
 	win->status = label_new ("", "muted", FALSE);
 	gtk_widget_set_name (win->status, "prefs-status");
 	gtk_label_set_ellipsize (GTK_LABEL (win->status), PANGO_ELLIPSIZE_END);

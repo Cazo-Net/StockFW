@@ -907,3 +907,419 @@ button.fs-link label {
 	border-top: 1px solid #e3e6eb;
 	padding: 12px 24px;
 }
+
+/* =====================================================================
+ * 1.0.7: Help (src/ui/fs-helpwindow.c) and About (fs-aboutdialog.c)
+ * The Preferences window's sidebar and page.  Every label, link, entry
+ * and surface below names its colour, so a dark desktop theme
+ * (Adwaita:dark) cannot put its light text on these light pages; the
+ * help smoke measures the contrast of every label under it.
+ *   body text #2B303A on white    links #1D4ED8
+ *   note #1E3A8A on #EEF4FF    warning #6B3F00 on #FFF8EB
+ *   coming in 1.0.7 #3A4250 on white, dashed border
+ * ===================================================================== */
+.help-nav {
+	padding: 20px 10px 12px 10px;
+}
+.help-nav .fs-brand {
+	padding: 0 10px 12px 10px;
+}
+.help-nav scrolledwindow,
+.help-nav viewport {
+	background-color: #14161b;
+	border: none;
+}
+entry.help-search {
+	background-color: #1f232b;
+	background-image: none;
+	color: #ffffff;
+	caret-color: #ffffff;
+	border: 1px solid #343a46;
+	border-radius: 8px;
+	box-shadow: none;
+	margin: 0 4px 8px 4px;
+	min-height: 30px;
+}
+entry.help-search:focus {
+	border-color: #8b93a1;
+}
+entry.help-search image {
+	color: #a9b0bc;
+}
+entry.help-search selection {
+	background-color: #3b4a6b;
+	color: #ffffff;
+}
+list.help-topics {
+	background-color: #14161b;
+	color: #c9ced6;
+}
+list.help-topics row {
+	background-color: transparent;
+	background-image: none;
+	border-radius: 8px;
+	padding: 7px 10px;
+	margin: 1px 4px;
+	color: #c9ced6;
+	outline-color: #8b93a1;
+}
+list.help-topics row label {
+	color: #c9ced6;
+	font-size: 13px;
+}
+list.help-topics row.help-subtopic {
+	padding-left: 24px;
+}
+list.help-topics row.help-subtopic label {
+	font-size: 12px;
+}
+list.help-topics row:hover {
+	background-color: #1f232b;
+}
+list.help-topics row:hover label {
+	color: #ffffff;
+}
+list.help-topics row:selected,
+list.help-topics row:selected:hover,
+list.help-topics row:selected:focus {
+	background-color: #2a2f39;
+}
+list.help-topics row:selected label {
+	color: #ffffff;
+	font-weight: bold;
+}
+label.help-section {
+	color: #a9b0bc;
+	font-size: 11px;
+	font-weight: bold;
+	padding: 14px 14px 4px 14px;
+}
+label.help-empty {
+	color: #a9b0bc;
+	font-size: 12px;
+	padding: 8px 14px;
+}
+
+/* --- the page --- */
+.help-content {
+	background-color: #f4f5f7;
+}
+.help-toolbar {
+	padding: 12px 24px 0 24px;
+}
+button.help-history {
+	padding: 4px 8px;
+	min-height: 0;
+	min-width: 0;
+}
+label.help-crumb-sep {
+	font-size: 13px;
+	color: #5b6472;
+}
+.help-content scrolledwindow,
+.help-content viewport {
+	background-color: #f4f5f7;
+	border: none;
+}
+.help-page {
+	padding: 8px 40px 40px 40px;
+}
+.help-head {
+	padding-bottom: 14px;
+	margin-bottom: 18px;
+	border-bottom: 1px solid #e3e6eb;
+}
+label.help-title {
+	font-size: 24px;
+	font-weight: bold;
+	color: #16181d;
+}
+label.help-summary {
+	font-size: 14px;
+	color: #5b6472;
+}
+.help-article label {
+	color: #2b303a;
+}
+label.help-para {
+	font-size: 14px;
+	color: #2b303a;
+}
+label.help-h2 {
+	font-size: 16px;
+	font-weight: bold;
+	color: #16181d;
+	margin-top: 14px;
+}
+.help-article label.help-h3 {
+	font-size: 12px;
+	font-weight: bold;
+	color: #5b6472;
+}
+.help-content label link:link {
+	color: #1d4ed8;
+}
+.help-content label link:visited {
+	color: #5b21b6;
+}
+.help-content label link:hover {
+	color: #1e3a8a;
+}
+.help-content label selection {
+	background-color: #cfdcf7;
+	color: #16181d;
+}
+.help-article label.help-step-num {
+	background-color: #16181d;
+	color: #ffffff;
+	border-radius: 11px;
+	min-width: 22px;
+	min-height: 22px;
+	font-size: 12px;
+	font-weight: bold;
+	padding: 0;
+	margin-top: 1px;
+}
+.help-article label.help-bullet {
+	color: #5b6472;
+	font-size: 14px;
+	min-width: 12px;
+	padding-left: 6px;
+}
+.help-callout {
+	border-radius: 10px;
+	border: 1px solid #c7d7fe;
+	background-color: #eef4ff;
+	padding: 12px 14px;
+}
+.help-callout label.help-callout-title {
+	font-size: 12px;
+	font-weight: bold;
+}
+.help-callout label.help-callout-text {
+	font-size: 13px;
+}
+.help-article .help-note label,
+.help-note .help-callout-icon {
+	color: #1e3a8a;
+}
+.help-warn {
+	background-color: #fff8eb;
+	border-color: #f3d9a4;
+}
+.help-article .help-warn label,
+.help-warn .help-callout-icon,
+.help-content .help-warn label link:link {
+	color: #6b3f00;
+}
+.help-soon {
+	background-color: #ffffff;
+	border-color: #b8c0cc;
+	border-style: dashed;
+}
+.help-article .help-soon label,
+.help-soon .help-callout-icon {
+	color: #3a4250;
+}
+.help-keys-row {
+	padding: 2px 0;
+}
+.help-article label.help-key {
+	background-color: #ffffff;
+	color: #16181d;
+	border: 1px solid #cfd4dc;
+	border-bottom-width: 2px;
+	border-radius: 6px;
+	padding: 1px 8px;
+	font-family: "JetBrains Mono", "Cascadia Mono", "DejaVu Sans Mono", monospace;
+	font-size: 12px;
+}
+.help-article label.help-key-plus {
+	color: #5b6472;
+	font-size: 12px;
+}
+.help-code {
+	background-color: #16181d;
+	border-radius: 8px;
+	padding: 10px 14px;
+}
+.help-article label.help-code-text {
+	color: #e8ebf0;
+	font-family: "JetBrains Mono", "Cascadia Mono", "DejaVu Sans Mono", monospace;
+	font-size: 12px;
+}
+.help-article label.help-code-text selection {
+	background-color: #3b4a6b;
+	color: #ffffff;
+}
+.help-related {
+	margin-top: 16px;
+	padding-top: 14px;
+	border-top: 1px solid #e3e6eb;
+}
+flowbox.help-chips,
+flowbox.help-chips flowboxchild {
+	background-color: transparent;
+	padding: 0;
+}
+button.help-chip {
+	background-color: #ffffff;
+	background-image: none;
+	border: 1px solid #dadfe6;
+	border-radius: 14px;
+	box-shadow: none;
+	color: #16181d;
+	padding: 3px 12px;
+	min-height: 0;
+	font-size: 12px;
+}
+.help-article button.help-chip label {
+	color: #16181d;
+}
+button.help-chip:hover {
+	background-color: #eaf0fb;
+	border-color: #c7d7fe;
+}
+.help-children {
+	background-color: #ffffff;
+	border: 1px solid #e3e6eb;
+	border-radius: 12px;
+	padding: 14px 16px 6px 16px;
+}
+.help-child {
+	padding: 8px 0;
+	border-top: 1px solid #eef0f3;
+}
+.help-children > .help-child:nth-child(2) {
+	border-top-width: 0;
+}
+button.help-child-link {
+	background-image: none;
+	background-color: transparent;
+	border: none;
+	box-shadow: none;
+	padding: 0;
+	min-height: 0;
+}
+.help-article button.help-child-link label {
+	color: #1d4ed8;
+	font-weight: bold;
+	font-size: 14px;
+}
+.help-article label.help-child-summary {
+	color: #5b6472;
+	font-size: 13px;
+}
+button.help-next {
+	margin-top: 18px;
+}
+.help-article button.help-next label {
+	color: #1d4ed8;
+	font-size: 14px;
+	font-weight: bold;
+}
+.help-content button.fs-link label {
+	color: #1d4ed8;
+}
+
+/* --- About --- */
+dialog.about-window,
+dialog.about-window > box {
+	background-color: #f4f5f7;
+}
+.about-body {
+	padding: 24px 24px 16px 24px;
+}
+.about-logo-tile {
+	background-color: #ffffff;
+	border: 1px solid #e3e6eb;
+	border-radius: 18px;
+	padding: 10px;
+}
+label.about-name {
+	font-size: 24px;
+	font-weight: bold;
+	color: #16181d;
+}
+label.about-version {
+	font-size: 13px;
+	color: #5b6472;
+}
+label.about-desc {
+	font-size: 14px;
+	color: #2b303a;
+}
+.about-card {
+	padding: 14px 16px;
+}
+label.about-credit,
+label.about-text {
+	font-size: 13px;
+	color: #2b303a;
+}
+button.about-link {
+	background-image: none;
+	background-color: transparent;
+	border: none;
+	box-shadow: none;
+	padding: 0 2px;
+}
+button.about-link label {
+	color: #1d4ed8;
+	font-size: 13px;
+}
+.about-footer {
+	background-color: #ffffff;
+	border-top: 1px solid #e3e6eb;
+	padding: 12px 24px;
+}
+label.about-copied {
+	color: #1e7f4f;
+	font-size: 12px;
+	font-weight: bold;
+}
+.about-window button.btn-subtle label,
+.prefs-footer button.btn-subtle label {
+	color: inherit;
+}
+window#fs-licence,
+.licence-body {
+	background-color: #f4f5f7;
+}
+.licence-body {
+	padding: 16px;
+}
+textview.licence-text,
+textview.licence-text text {
+	background-color: #ffffff;
+	color: #16181d;
+}
+textview.licence-text text selection {
+	background-color: #cfdcf7;
+	color: #16181d;
+}
+.licence-scroll {
+	border: 1px solid #e3e6eb;
+	background-color: #ffffff;
+}
+.licence-body label.about-text {
+	color: #2b303a;
+}
+.licence-switcher button {
+	background-color: #ffffff;
+	background-image: none;
+	border: 1px solid #dadfe6;
+	box-shadow: none;
+	color: #16181d;
+	padding: 4px 14px;
+}
+.licence-switcher button label {
+	color: #16181d;
+}
+.licence-switcher button:checked {
+	background-color: #16181d;
+	border-color: #16181d;
+}
+.licence-switcher button:checked label {
+	color: #ffffff;
+}

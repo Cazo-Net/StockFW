@@ -238,6 +238,45 @@ fs_icon_draw (cairo_t *cr, FsIconKind kind, gdouble size)
 		fill_dots = TRUE;
 		break;
 
+	case FS_ICON_HELP:
+		circle (cr, 12, 12, 9);
+		/* The hook: an arc over the top, then down to the stem. */
+		cairo_new_sub_path (cr);
+		cairo_arc (cr, 12, 9.5, 2.6, G_PI, 2 * G_PI + 0.35);
+		cairo_curve_to (cr, 14.4, 11.4, 12, 11.6, 12, 13.6);
+		cairo_stroke (cr);
+		circle (cr, 12, 16.8, 1.2);
+		fill_dots = TRUE;
+		break;
+
+	case FS_ICON_BACK:
+		cairo_move_to (cr, 19, 12);
+		cairo_line_to (cr, 5, 12);
+		cairo_move_to (cr, 11, 6);
+		cairo_line_to (cr, 5, 12);
+		cairo_line_to (cr, 11, 18);
+		break;
+
+	case FS_ICON_FORWARD:
+		cairo_move_to (cr, 5, 12);
+		cairo_line_to (cr, 19, 12);
+		cairo_move_to (cr, 13, 6);
+		cairo_line_to (cr, 19, 12);
+		cairo_line_to (cr, 13, 18);
+		break;
+
+	case FS_ICON_COPY:
+		rounded_rect (cr, 9, 9, 11, 11, 2);
+		cairo_move_to (cr, 15, 9);
+		cairo_line_to (cr, 15, 6);
+		cairo_curve_to (cr, 15, 4.9, 14.1, 4, 13, 4);
+		cairo_line_to (cr, 6, 4);
+		cairo_curve_to (cr, 4.9, 4, 4, 4.9, 4, 6);
+		cairo_line_to (cr, 4, 13);
+		cairo_curve_to (cr, 4, 14.1, 4.9, 15, 6, 15);
+		cairo_line_to (cr, 9, 15);
+		break;
+
 	case FS_ICON_N_KINDS:
 	default:
 		break;
