@@ -12,6 +12,8 @@
 #include "core/fs-i18n.h"
 #include "core/fs-fwrule.h"
 #include "core/fs-rules.h"
+#include "core/fs-apply.h"
+#include "core/fs-netplace.h"
 
 #include <gio/gio.h>
 #include <time.h>
@@ -100,10 +102,6 @@ static FsInsight *sentinel_beacon_check (FsCopilot *copilot,
 static FsInsight *sentinel_fanout_check (FsCopilot *copilot,
                                          const FsHit *hit,
                                          gint64 now_us);
-/* Note: simulate_against_rules() was declared here once but never
- * written or called.  fs_copilot_simulate() says in its own comment
- * that it still uses heuristics rather than the rule engine, which is
- * what the declaration used to imply and was not true. */
 
 /* ---- Behavior analysis bounds (P2) -------------------------------
  * Every structure here is bounded (Chapter 9):256 applications,
@@ -352,685 +350,51 @@ fs_copilot_clear_insights (FsCopilot *copilot)
 	copilot->insights = NULL;
 }
 
-/* ---- What-If scenario grammar --------------------------------------
- * The simulator takes one line of plain text, e.g.
- *   allow SSH from 192.168.1.50 on port 22
- *   block DNS to 8.8.8.8 on port 53 udp
- *   ssh is open at 22 port          (the number may precede "port")
- *   allow anything to :22           (a port on this machine, no host)
- * The grammar is closed on purpose: direction keywords (inbound,
- * outbound, ingress, egress, from, to), a numeric host or CIDR block,
- * a "port N" / "N port" clause, a bare ":N" or "local:N" port, or a
- * known service name (ssh=22, http=80, https=443, dns=53, rdp=3389,
- * ftp=21, smtp=25, ...), and a protocol keyword.  Everything the
- * parser reads out lands in FsScenario, so the verdict is never based
- * on a reading the user cannot see. */
+/* ---- What-If ---------------------------------------------------------
+ * The simulator is fs-whatif.c.  These two entry points keep the
+ * copilot's older calls answering with it: the model of the platform
+ * this build runs on, the attached policy, and Firewall preferences as
+ * a fresh install has them.  Callers that know more -- the real
+ * preferences, whether the firewall runs, Sentinel's blocks -- build
+ * an FsWhatIfContext and call fs_whatif_simulate() themselves, as the
+ * Copilot page and the command line do. */
 
-/* [ find_word_ci ]
- * Case-insensitive whole-word occurrence of needle (already lowercase)
- * in hay.  Word boundaries keep "port" out of "important" and "to"
- * out of "tomorrow". */
-static const gchar *
-find_word_ci (const gchar *hay, const gchar *needle)
+/* [ result_from_whatif ] -- takes ownership of w. */
+static FsSimulationResult *
+result_from_whatif (FsWhatIfResult *w)
 {
-	gsize nlen;
+	FsSimulationResult *r = g_new0 (FsSimulationResult, 1);
+	const FsWhatIfAnswer *a = (w->answers->len > 0)
+	                          ? g_ptr_array_index (w->answers, 0) : NULL;
 
-	if (hay == NULL || needle == NULL || *needle == '\0')
-		return NULL;
+	r->whatif = w;
+	r->verdict = w->verdict;
+	r->would_block = (w->verdict == FS_WHATIF_BLOCKED);
+	r->affected_connections = 1;
 
-	nlen = strlen (needle);
-
-	for (const gchar *p = hay; *p != '\0'; p++) {
-		gsize i = 0;
-
-		while (i < nlen && p[i] != '\0' &&
-		       g_ascii_tolower (p[i]) == needle[i])
-			i++;
-
-		if (i != nlen)
-			continue;
-
-		if ((p == hay || !g_ascii_isalnum (p[-1])) &&
-		    (p[nlen] == '\0' || !g_ascii_isalnum (p[nlen])))
-			return p;
+	if (w->verdict == FS_WHATIF_ERROR || a == NULL) {
+		r->scenario = g_strdup (w->query != NULL ? w->query->text : "");
+		r->reason = g_strdup (w->error != NULL ? w->error : w->summary);
+		r->explanation = g_strdup (r->reason);
+		return r;
 	}
 
-	return NULL;
-}
-
-/* [ looks_ipv4 ]
- * A strict dotted quad: four octets of digits, each 0-255.  Hostnames
- * deliberately do not pass -- "open.code.exe" must never be read as
- * the host of a scenario. */
-static gboolean
-looks_ipv4 (const gchar *s)
-{
-	gchar **parts;
-	gboolean ok = TRUE;
-
-	if (s == NULL || *s == '\0')
-		return FALSE;
-
-	parts = g_strsplit (s, ".", -1);
-
-	if (g_strv_length (parts) != 4) {
-		g_strfreev (parts);
-		return FALSE;
-	}
-
-	for (guint i = 0; parts[i] != NULL; i++) {
-		const gchar *octet = parts[i];
-
-		if (*octet == '\0' || strlen (octet) > 3) {
-			ok = FALSE;
-			break;
-		}
-
-		for (const gchar *p = octet; *p != '\0'; p++) {
-			if (!g_ascii_isdigit (*p)) {
-				ok = FALSE;
-				break;
-			}
-		}
-
-		if (!ok)
-			break;
-
-		if (g_ascii_strtoll (octet, NULL, 10) > 255) {
-			ok = FALSE;
-			break;
-		}
-	}
-
-	g_strfreev (parts);
-
-	return ok;
-}
-
-/* [ looks_like_address ]
- * Numeric shapes only: an address with a prefix length, a dotted quad,
- * or an IPv6 address (strict, via the validator's inet_pton path). */
-static gboolean
-looks_like_address (const gchar *s)
-{
-	if (s == NULL || *s == '\0')
-		return FALSE;
-
-	if (strchr (s, '/') != NULL)
-		return fs_util_is_valid_host (s);
-
-	if (strchr (s, '.') != NULL)
-		return looks_ipv4 (s);
-
-	if (strchr (s, ':') != NULL)
-		return fs_util_is_valid_host (s);
-
-	return FALSE;
-}
-
-/* [ first_port_of ]
- * The first port of a service's "ports" string ("80", "67-68",
- * "137-139 445"), or 0 for none. */
-static guint
-first_port_of (const gchar *ports)
-{
-	if (ports == NULL || *ports == '\0')
-		return 0;
-
-	return (guint) g_ascii_strtoll (ports, NULL, 10);
-}
-
-/* [ addr_covers ]
- * TRUE when a compiled rule address covers the probed address.  NULL
- * is the compiled form of "Anyone" and covers everything; a CIDR rule
- * covers hosts inside its block; anything else needs an equal name. */
-static gboolean
-addr_covers (const gchar *rule_addr, const gchar *probe)
-{
-	if (rule_addr == NULL)
-		return TRUE;
-
-	if (probe == NULL || *probe == '\0')
-		return TRUE;
-
-	if (g_ascii_strcasecmp (rule_addr, probe) == 0)
-		return TRUE;
-
-	return fs_util_addr_in_cidr (rule_addr, probe);
-}
-
-/* [ scenario_line ]
- * The one place a scenario sentence is built, so the result log, the
- * dialog text and the tests all read the same words. */
-static gchar *
-scenario_line (gboolean inbound, const gchar *protocol,
-               const gchar *remote_ip, guint port, const gchar *app)
-{
-	gchar *src;
-	gchar *dst;
-	gchar *port_txt;
-	gchar *line;
-	gboolean known = (remote_ip != NULL && *remote_ip != '\0');
-
-	if (inbound) {
-		src = g_strdup (known ? remote_ip : _("anywhere"));
-		dst = g_strdup (_("local"));
-	} else {
-		src = g_strdup (_("local"));
-		dst = g_strdup (known ? remote_ip : _("anywhere"));
-	}
-
-	port_txt = (port > 0) ? g_strdup_printf ("%u", port)
-	                      : g_strdup (_("any port"));
-
-	line = g_strdup_printf (_("%s %s connection from %s to %s port %s (%s)"),
-	                        inbound ? _("Inbound") : _("Outbound"),
-	                        (protocol != NULL && *protocol != '\0')
-	                        ? protocol : "TCP",
-	                        src, dst, port_txt,
-	                        (app != NULL && *app != '\0') ? app
-	                                                      : _("unnamed application"));
-
-	g_free (src);
-	g_free (dst);
-	g_free (port_txt);
-
-	return line;
-}
-
-/* [ fs_copilot_parse_scenario ] */
-FsScenario *
-fs_copilot_parse_scenario (const gchar *text)
-{
-	FsScenario *sc;
-	gchar *lower;
-	const gchar *hit;
-
-	if (text == NULL || *text == '\0')
-		return NULL;
-
-	sc = g_new0 (FsScenario, 1);
-	sc->protocol = g_strdup ("TCP");
-	lower = g_ascii_strdown (text, -1);
-
-	/* Direction: explicit keywords win, then from/to, then the
-	 * documented default -- outbound, the common rule to test.
-	 * g_ascii_strdown never changes the byte length of ASCII, so
-	 * offsets into `lower` stay valid for slicing `text`. */
-	if (find_word_ci (lower, "inbound") != NULL ||
-	    find_word_ci (lower, "ingress") != NULL)
-		sc->inbound = TRUE;
-	else if (find_word_ci (lower, "outbound") != NULL ||
-	         find_word_ci (lower, "outgoing") != NULL ||
-	         find_word_ci (lower, "egress") != NULL)
-		sc->inbound = FALSE;
-	else if (find_word_ci (lower, "from") != NULL)
-		sc->inbound = TRUE;
-	else if (find_word_ci (lower, "to") != NULL)
-		sc->inbound = FALSE;
-
-	/* Protocol keyword.  TCP is already the default, so only the
-	 * overrides need branches. */
-	if (find_word_ci (lower, "udp") != NULL) {
-		g_free (sc->protocol);
-		sc->protocol = g_strdup ("UDP");
-	} else if (find_word_ci (lower, "icmp") != NULL ||
-	           find_word_ci (lower, "ping") != NULL) {
-		g_free (sc->protocol);
-		sc->protocol = g_strdup ("ICMP");
-	}
-
-	/* "port N" -- the explicit clause wins over a service name.  The
-	 * number may follow the word ("port 22") or precede it ("ssh is
-	 * open at 22 port", "scan at 8080 port"): both shapes were typed
-	 * by real users and one of them used to read as no port at all. */
-	hit = find_word_ci (lower, "port");
-	if (hit != NULL) {
-		const gchar *d = hit + 4;
-
-		while (*d == ' ' || *d == '\t')
-			d++;
-
-		if (g_ascii_isdigit (*d)) {
-			glong v = g_ascii_strtoll (d, NULL, 10);
-
-			if (v >= 0 && v <= 65535) {
-				sc->port = (guint) v;
-				sc->had_port = TRUE;
-			}
-		} else {
-			/* "22 port": the digits directly before the word. */
-			const gchar *last = hit;
-			const gchar *first;
-
-			while (last > lower && (last[-1] == ' ' ||
-			                       last[-1] == '\t'))
-				last--;
-
-			first = last;
-
-			while (first > lower && g_ascii_isdigit (first[-1]))
-				first--;
-
-			if (first < last && g_ascii_isdigit (*first)) {
-				glong v = g_ascii_strtoll (first, NULL, 10);
-
-				if (v >= 1 && v <= 65535) {
-					sc->port = (guint) v;
-					sc->had_port = TRUE;
-				}
-			}
-		}
-	}
-
-	/* The application/service: the token after "allow" or "allowing",
-	 * minus the articles. */
-	{
-		const gchar *a = find_word_ci (lower, "allowing");
-		gsize alen = 8;
-
-		if (a == NULL) {
-			a = find_word_ci (lower, "allow");
-			alen = 5;
-		}
-
-		if (a != NULL) {
-			static const gchar *articles[] = {
-				"the", "a", "an", "my", "me", "any", "all", "new", NULL
-			};
-			const gchar *p = a + alen;
-			gboolean skipped = TRUE;
-
-			while (skipped) {
-				while (*p == ' ' || *p == '\t')
-					p++;
-
-				skipped = FALSE;
-
-				for (guint i = 0; articles[i] != NULL; i++) {
-					gsize len = strlen (articles[i]);
-
-					if (g_ascii_strncasecmp (p, articles[i], len) == 0 &&
-					    (p[len] == '\0' || !g_ascii_isalnum (p[len]))) {
-						p += len;
-						skipped = TRUE;
-						break;
-					}
-				}
-			}
-
-			{
-				const gchar *start = p;
-
-				while (*p != '\0' && !g_ascii_isspace (*p) &&
-				       *p != ',' && *p != '"' && *p != '\'' &&
-				       *p != '(' && *p != ')' && *p != ';')
-					p++;
-
-				if (p > start)
-					sc->app = g_strndup (text + (start - lower),
-					                      (gsize) (p - start));
-			}
-		}
-	}
-
-	/* The small well-known map, asked before the big service table
-	 * below: these answer exactly as documented.  FTP means the
-	 * control port 21 (the table's first port is 20, the data
-	 * channel) and RDP lives here because the table predates it. */
-	{
-		static const struct {
-			const gchar *name;
-			guint        port;
-		} known[] = {
-			{ "ssh",    22   },
-			{ "http",   80   },
-			{ "https",  443  },
-			{ "dns",    53   },
-			{ "rdp",    3389 },
-			{ "ftp",    21   },
-			{ "smtp",   25   },
-			{ "telnet", 23   }
-		};
-
-		for (guint i = 0; i < G_N_ELEMENTS (known); i++) {
-			const gchar *m = find_word_ci (lower, known[i].name);
-
-			if (m == NULL)
-				continue;
-
-			if (!sc->had_port) {
-				sc->port = known[i].port;
-				sc->had_port = TRUE;
-			}
-
-			if (sc->app == NULL)
-				sc->app = g_strndup (text + (m - lower),
-				                      strlen (known[i].name));
-			break;
-		}
-	}
-
-	/* A known service name supplies the port when the line has no
-	 * "port N" clause ("allow SSH to 10.0.0.1") and the app name when
-	 * the line had no "allow" token ("block DNS to 8.8.8.8"). */
-	{
-		guint n_user = 0;
-		guint n_misc = 0;
-		const FsService *lists[2];
-		guint counts[2];
-
-		lists[0] = fs_service_user_list (&n_user);
-		counts[0] = n_user;
-		lists[1] = fs_service_misc_list (&n_misc);
-		counts[1] = n_misc;
-
-		for (guint pass = 0; pass < 2; pass++) {
-			for (guint i = 0; i < counts[pass]; i++) {
-				gchar *needle = g_ascii_strdown (lists[pass][i].name, -1);
-				const gchar *m = find_word_ci (lower, needle);
-
-				if (m != NULL && !sc->had_port) {
-					guint port = first_port_of (lists[pass][i].ports);
-
-					if (port >= 1 && port <= 65535) {
-						sc->port = port;
-						sc->had_port = TRUE;
-					}
-				}
-
-				if (m != NULL && sc->app == NULL)
-					sc->app = g_strndup (text + (m - lower),
-					                      strlen (lists[pass][i].name));
-
-				g_free (needle);
-			}
-		}
-	}
-
-	/* The host: the first token that is a numeric address or block.
-	 * The "10.0.0.1:22" shorthand supplies the port as well. */
-	{
-		const gchar *t = text;
-
-		while (*t != '\0' && sc->remote_ip == NULL) {
-			const gchar *start;
-			const gchar *end;
-			gchar *tok;
-
-			while (*t != '\0' && (g_ascii_isspace (*t) || *t == ',' ||
-			                      *t == '(' || *t == ')' || *t == '"' ||
-			                      *t == '\'' || *t == ';'))
-				t++;
-
-			start = t;
-
-			while (*t != '\0' && !g_ascii_isspace (*t) && *t != ',' &&
-			       *t != '(' && *t != ')' && *t != '"' && *t != '\'' &&
-			       *t != ';')
-				t++;
-
-			end = t;
-
-			/* Sentence punctuation is not part of the address. */
-			while (end > start && (end[-1] == '.' || end[-1] == ',' ||
-			                       end[-1] == ';'))
-				end--;
-
-			if (end <= start)
-				continue;
-
-			tok = g_strndup (start, (gsize) (end - start));
-
-			if (looks_like_address (tok)) {
-				sc->remote_ip = tok;
-				sc->had_addr = TRUE;
-			} else {
-				const gchar *colon = strchr (tok, ':');
-
-				if (colon != NULL && colon == strrchr (tok, ':')) {
-					gchar *head = g_strndup (tok,
-					                          (gsize) (colon - tok));
-
-					if (colon > tok && looks_ipv4 (head)) {
-						if (!sc->had_port &&
-						    g_ascii_isdigit (colon[1])) {
-							glong v = g_ascii_strtoll (
-								colon + 1, NULL, 10);
-
-							if (v >= 1 && v <= 65535) {
-								sc->port = (guint) v;
-								sc->had_port = TRUE;
-							}
-						}
-
-						sc->remote_ip = head;
-						sc->had_addr = TRUE;
-						head = NULL;
-					} else if (!sc->had_port &&
-					           g_ascii_isdigit (colon[1])) {
-						/* ":22" or "local:22": a port on this
-						 * machine, not a host.  Only the empty
-						 * head and the names for "us" count --
-						 * "example.com:22" is a hostname-shaped
-						 * token and stays rejected. */
-						static const gchar *local_heads[] = {
-							"", "local", "localhost", "me",
-							"myself", "self", "this", NULL
-						};
-						const gchar *e = colon + 1;
-						gboolean all_digits = TRUE;
-
-						while (*e != '\0') {
-							if (!g_ascii_isdigit (*e)) {
-								all_digits = FALSE;
-								break;
-							}
-							e++;
-						}
-
-						if (all_digits &&
-						    e - (colon + 1) <= 5) {
-							gboolean ours = FALSE;
-
-							for (guint i = 0;
-							     local_heads[i] != NULL;
-							     i++) {
-								if (g_ascii_strcasecmp (
-								    head,
-								    local_heads[i]) == 0) {
-									ours = TRUE;
-									break;
-								}
-							}
-
-							if (ours) {
-								glong v = g_ascii_strtoll (
-								colon + 1, NULL, 10);
-
-								if (v >= 1 && v <= 65535) {
-									sc->port = (guint) v;
-									sc->had_port = TRUE;
-								}
-							}
-						}
-					}
-
-					g_free (head);
-				}
-
-				g_free (tok);
-			}
-		}
-	}
-
-	g_free (lower);
-
-	return sc;
-}
-
-/* [ fs_scenario_free ] */
-void
-fs_scenario_free (FsScenario *scenario)
-{
-	if (scenario == NULL)
-		return;
-
-	g_free (scenario->protocol);
-	g_free (scenario->remote_ip);
-	g_free (scenario->app);
-	g_free (scenario);
-}
-
-/* [ fs_copilot_simulate_text ] */
-FsSimulationResult *
-fs_copilot_simulate_text (FsCopilot *copilot, const gchar *text,
-                          FsScenario **parsed_out)
-{
-	FsScenario *sc = fs_copilot_parse_scenario (text);
-	FsSimulationResult *result;
-
-	if (sc == NULL)
-		return NULL;
-
-	result = fs_copilot_simulate (copilot, sc->app, sc->remote_ip,
-	                              sc->port, sc->protocol, sc->inbound);
-
-	if (parsed_out != NULL)
-		*parsed_out = sc;
-	else
-		fs_scenario_free (sc);
-
-	return result;
-}
-
-/* [ rule_port_covers ]
- * Port matching mirrors address matching: a port either side left
- * unnamed constrains nothing.  A rule with no port governs every
- * probe, and a line that named no port still meets the rule that
- * opens a specific one -- the same "every port" reading the panel's
- * no-port note promises and the no-host note gets from
- * addr_covers().  ICMP has no ports at all, so a ported rule cannot
- * govern ICMP traffic however the line phrased it.  A rule's ports
- * are a spec ("67-68", "139,445"): the probe's port is covered when
- * it lies in one of its ranges. */
-static gboolean
-rule_port_covers (guint probe_port, gboolean icmp, const gchar *rule_ports)
-{
-	if (rule_ports == NULL)
-		return TRUE;
-
-	if (icmp)
-		return FALSE;
-
-	if (probe_port == 0)
-		return TRUE;
-
-	return fs_fwrule_port_spec_covers (rule_ports, probe_port);
-}
-
-/* [ service_ports ]
- * The port a probe names is the service port: the local port of an
- * inbound connection (it arrives AT it) and the remote port of an
- * outbound one (it goes TO it).  The rule's ports on that side are
- * the ones the probe is matched against. */
-static const gchar *
-service_ports (const FsFwRule *rule, gboolean inbound)
-{
-	return inbound ? rule->local_ports : rule->remote_ports;
-}
-
-/* [ ephemeral_ports ]
- * The other end of the probe's connection is an ephemeral port the
- * line never names and no service rule is written for, so a rule
- * that pins ports on that side does not decide this traffic -- the
- * way an outbound rule on local port 25 never meets real mail. */
-static const gchar *
-ephemeral_ports (const FsFwRule *rule, gboolean inbound)
-{
-	return inbound ? rule->remote_ports : rule->local_ports;
-}
-
-/* [ port_score ]
- * How precisely a rule's port answers the probe: the exact port
- * asked is the sharpest answer, a rule naming no port covers every
- * port, and a rule on some port a portless line never named is the
- * weakest cover of all.  A spec that covers the asked port counts as
- * the exact answer: it is the rule written for that port. */
-static gint
-port_score (guint probe_port, const gchar *rule_ports)
-{
-	if (rule_ports == NULL)
-		return 1;
-
-	if (probe_port != 0 &&
-	    fs_fwrule_port_spec_covers (rule_ports, probe_port))
-		return 2;
-
-	return 0;
-}
-
-/* [ match_score ]
- * The rule the verdict names should be the rule that actually
- * decided this traffic, not merely the first one that fits.  Every
- * matching rule on each side is scored -- port precision first,
- * then address precision -- and the higher score wins; ties keep
- * the policy's own order.  A line that named no port or no host is
- * scored the same way: the widest answer (any-port, anyone) beats a
- * rule covering only a slice of what the line left open. */
-static gint
-match_score (guint probe_port, const gchar *probe_addr,
-             const FsFwRule *rule)
-{
-	gint port = MAX (port_score (probe_port, rule->local_ports),
-	                 port_score (probe_port, rule->remote_ports));
-	gint addr;
-
-	if (probe_addr == NULL || *probe_addr == '\0')
-		addr = (rule->remote_address == NULL) ? 3 : 1;
-	else if (rule->remote_address == NULL)
-		addr = 2;
-	else if (g_ascii_strcasecmp (rule->remote_address, probe_addr) == 0)
-		addr = 3;
-	else
-		addr = 2;   /* CIDR containment: the subnet covers it. */
-
-	return (port * 10) + addr;
-}
-
-/* [ match_where ]
- * The " on port N (forwarded to X)" tail a verdict appends when the
- * rule that decided it pinned a port or redirects the traffic.  The
- * panel's no-port/no-host notes point the reader at exactly this:
- * without it, a verdict reached through a specific port would read
- * like a verdict for every port. */
-static gchar *
-match_where (const FsFwRule *rule)
-{
-	GString *s = g_string_new (NULL);
-	const gchar *ports = (rule->local_ports != NULL) ? rule->local_ports
-	                                                 : rule->remote_ports;
-
-	/* One port reads as before; a range or a list is named whole. */
-	if (ports != NULL && strpbrk (ports, "-,") == NULL)
-		g_string_append_printf (s, _(" on port %s"), ports);
-	else if (ports != NULL)
-		g_string_append_printf (s, _(" on ports %s"), ports);
-
-	if (rule->forward && rule->forward_address != NULL &&
-	    *rule->forward_address != '\0')
-		g_string_append_printf (s, _(" (forwarded to %s)"),
-		                        rule->forward_address);
-
-	return g_string_free (s, FALSE);
+	r->scenario = g_strdup (w->answers->len == 1 ? a->probe
+	                                             : w->query->text);
+	r->matching_rule = g_strdup (a->rule);
+	r->reason = g_strdup (w->answers->len == 1 ? a->reason : w->summary);
+	r->explanation = g_strdup_printf (_("Simulation: %s would be %s. "
+	                                    "Reason: %s"),
+	                                  r->scenario,
+	                                  fs_whatif_verdict_name (w->verdict),
+	                                  r->reason);
+	return r;
 }
 
 /* [ fs_copilot_simulate ]
- * Runs a what-if simulation against the attached policy: the first
- * allow and the first block that cover the probe are collected, and a
- * block wins -- the same precedence Windows Firewall applies.  If no
- * policy is attached, falls back to heuristic defaults (deny inbound,
- * allow outbound) and says so in the explanation. */
+ * One probe given field by field.  A host that is not an address or a
+ * block is an error: answering for "any host" instead would be a
+ * guess the caller cannot see. */
 FsSimulationResult *
 fs_copilot_simulate (FsCopilot *copilot,
                      const gchar *app_name,
@@ -1039,259 +403,205 @@ fs_copilot_simulate (FsCopilot *copilot,
                      const gchar *protocol,
                      gboolean inbound)
 {
-	FsSimulationResult *result = g_new0 (FsSimulationResult, 1);
-	gchar *reason = NULL;
+	FsWhatIfContext *ctx;
+	FsWhatIfQuery *q = fs_whatif_query_new ();
+	FsWhatIfResult *w;
 
-	result->scenario = scenario_line (inbound, protocol, remote_ip, port,
-	                                  app_name);
+	q->direction = inbound ? FS_WHATIF_DIR_INBOUND : FS_WHATIF_DIR_OUTBOUND;
+	q->port = (port <= 65535) ? port : 0;
+	q->service = (app_name != NULL && *app_name != '\0')
+	             ? g_strdup (app_name) : NULL;
 
-	/* If no policy is attached, fall back to heuristic defaults. */
-	if (copilot == NULL || copilot->policy == NULL)
-	{
-		result->would_block = inbound;
-		result->matching_rule = g_strdup (inbound
-		                                  ? _("Default deny (no policy loaded)")
-		                                  : _("Default allow (no policy loaded)"));
-		reason = g_strdup (_("No firewall policy is loaded in the copilot, "
-		                     "so the platform defaults were used: deny "
-		                     "inbound, allow outbound.  Load a policy in "
-		                     "the Policy tab for an answer against your "
-		                     "real rules."));
+	if (g_strcmp0 (protocol, "TCP") == 0 || g_strcmp0 (protocol, "tcp") == 0)
+		q->protocol = FS_WHATIF_PROTO_TCP;
+	else if (g_strcmp0 (protocol, "UDP") == 0 ||
+	         g_strcmp0 (protocol, "udp") == 0)
+		q->protocol = FS_WHATIF_PROTO_UDP;
+	else if (protocol != NULL && g_ascii_strcasecmp (protocol, "ICMP") == 0) {
+		q->protocol = FS_WHATIF_PROTO_ICMP;
+		q->port = 0;
 	}
+
+	{
+		GString *t = g_string_new (inbound ? "inbound" : "outbound");
+
+		if (protocol != NULL && *protocol != '\0')
+			g_string_append_printf (t, " %s", protocol);
+		if (q->port > 0)
+			g_string_append_printf (t, " port %u", q->port);
+		if (remote_ip != NULL && *remote_ip != '\0')
+			g_string_append_printf (t, inbound ? " from %s" : " to %s",
+			                        remote_ip);
+		q->text = g_string_free (t, FALSE);
+	}
+
+	if (remote_ip != NULL && *remote_ip != '\0') {
+		FsFamily fam = fs_util_target_families (remote_ip);
+
+		if (fs_util_target_is_anyone (remote_ip)) {
+			/* any host: left open */
+		} else if (fam != FS_FAMILY_IPV4 && fam != FS_FAMILY_IPV6) {
+			FsWhatIfResult *bad;
+			FsSimulationResult *r;
+
+			fs_whatif_query_free (q);
+			bad = fs_whatif_simulate (NULL, NULL);
+			g_free (bad->error);
+			bad->error = g_strdup_printf (_("\"%s\" is not an address or "
+			                                "a block of addresses."),
+			                              remote_ip);
+			r = result_from_whatif (bad);
+			return r;
+		} else {
+			q->host = g_strdup (remote_ip);
+		}
+	}
+
+	ctx = fs_whatif_context_new (fs_whatif_native_platform (),
+	                             copilot != NULL ? copilot->policy : NULL,
+	                             NULL);
+	w = fs_whatif_simulate (ctx, q);
+	fs_whatif_context_free (ctx);
+	fs_whatif_query_free (q);
+	return result_from_whatif (w);
+}
+
+/* [ fs_copilot_simulate_text ] */
+FsSimulationResult *
+fs_copilot_simulate_text (FsCopilot *copilot, const gchar *text,
+                          FsWhatIfQuery **parsed_out)
+{
+	FsWhatIfContext *ctx;
+	FsWhatIfResult *w;
+	gchar *trimmed;
+
+	if (parsed_out != NULL)
+		*parsed_out = NULL;
+
+	trimmed = g_strstrip (g_strdup (text != NULL ? text : ""));
+	if (*trimmed == '\0') {
+		g_free (trimmed);
+		return NULL;
+	}
+	g_free (trimmed);
+
+	ctx = fs_whatif_context_new (fs_whatif_native_platform (),
+	                             copilot != NULL ? copilot->policy : NULL,
+	                             NULL);
+	w = fs_whatif_simulate_text (ctx, text);
+	fs_whatif_context_free (ctx);
+
+	if (parsed_out != NULL && w->query != NULL)
+		*parsed_out = fs_whatif_query_copy (w->query);
+
+	return result_from_whatif (w);
+}
+
+/* [ fs_copilot_whatif_observe ] */
+void
+fs_copilot_whatif_observe (FsWhatIfContext *ctx, const FsBackend *backend,
+                           gboolean state_reliable)
+{
+	if (ctx == NULL || backend == NULL)
+		return;
+
+	if (backend->get_state != NULL &&
+	    (backend->available == NULL || backend->available ())) {
+		switch (backend->get_state ()) {
+		case FS_FW_RUNNING:
+		case FS_FW_LOCKED:     /* the Policy Lock: still filtering */
+		case FS_FW_HIT:
+			ctx->firewall = FS_WHATIF_FW_RUNNING;
+			break;
+		case FS_FW_STOPPED:
+			ctx->firewall = state_reliable ? FS_WHATIF_FW_STOPPED
+			                               : FS_WHATIF_FW_UNKNOWN;
+			break;
+		case FS_FW_NONE:
+		default:
+			ctx->firewall = FS_WHATIF_FW_UNKNOWN;
+			break;
+		}
+	}
+
+	if (ctx->platform == FS_WHATIF_WINDOWS_BLOCK_WINS) {
+		if (backend->network_place != NULL) {
+			FsNetworkPlace *place = backend->network_place ();
+
+			if (place != NULL) {
+				ctx->profiles_in_use = place->in_use;
+				fs_network_place_free (place);
+			}
+		}
+
+		for (gint p = 0; p < 3; p++) {
+			gboolean on = FALSE, in_block = TRUE, out_block = FALSE;
+
+			if (backend->get_profile_enabled != NULL &&
+			    backend->get_profile_enabled (p, &on))
+				ctx->profile_enabled[p] = on ? 1 : 0;
+
+			if (backend->get_profile_defaults != NULL &&
+			    backend->get_profile_defaults (p, &in_block,
+			                                   &out_block)) {
+				ctx->default_inbound[p] = in_block
+					? FS_WHATIF_DEFAULT_BLOCK : FS_WHATIF_DEFAULT_ALLOW;
+				ctx->default_outbound[p] = out_block
+					? FS_WHATIF_DEFAULT_BLOCK : FS_WHATIF_DEFAULT_ALLOW;
+			}
+
+			if (backend->get_profile_block_all_inbound != NULL &&
+			    backend->get_profile_block_all_inbound (p, &on))
+				ctx->block_all_inbound[p] = on ? 1 : 0;
+		}
+	}
+
+	if (backend->list_interfaces != NULL) {
+		GList *ifaces = backend->list_interfaces ();
+
+		for (GList *l = ifaces; l != NULL; l = l->next) {
+			FsInterface *iface = l->data;
+
+			if (iface->ip != NULL && *iface->ip != '\0')
+				fs_whatif_context_add_local_address (ctx, iface->ip);
+			fs_interface_free (iface);
+		}
+		g_list_free (ifaces);
+	}
+}
+
+/* [ fs_copilot_whatif_live ] */
+void
+fs_copilot_whatif_live (FsWhatIfContext *ctx, const FsPolicy *saved,
+                        const gchar *hold_reason)
+{
+	FsPolicy *applied;
+	GError *error = NULL;
+
+	if (ctx == NULL)
+		return;
+
+	g_clear_pointer (&ctx->live_detail, g_free);
+
+	if (hold_reason != NULL && *hold_reason != '\0') {
+		ctx->live = FS_WHATIF_LIVE_HELD;
+		ctx->live_detail = g_strdup (hold_reason);
+		return;
+	}
+
+	if (saved == NULL) {
+		ctx->live = FS_WHATIF_LIVE_UNKNOWN;
+		return;
+	}
+
+	applied = fs_policy_new ();
+	if (fs_apply_journal_load (applied, &error))
+		ctx->live = fs_whatif_policy_same (saved, applied)
+		            ? FS_WHATIF_LIVE_YES : FS_WHATIF_LIVE_STALE;
 	else
-	{
-		/* Expand the policy into concrete rules. */
-		GList *rules = fs_fwrule_from_policy (copilot->policy);
-
-		if (rules == NULL)
-		{
-			/* No rules in policy -- use defaults. */
-			result->would_block = inbound;
-			result->matching_rule = g_strdup (inbound
-			                                  ? _("Default deny (empty policy)")
-			                                  : _("Default allow (empty policy)"));
-			reason = g_strdup (_("The loaded policy contains no rules, so "
-			                     "the platform defaults were used: deny "
-			                     "inbound, allow outbound."));
-		}
-		else
-		{
-			/* Collect the best allow and the best block that fit the
-			 * probe.  A block wins over an allow matching the same
-			 * traffic -- Windows Firewall gives block rules precedence
-			 * whatever order they were written in -- so reporting the
-			 * allow as if it applied would be the quiet lie this port
-			 * exists to remove.  Within each side every candidate is
-			 * scored (match_score) so the rule the verdict names is
-			 * the one that actually decided this traffic: the exact
-			 * port and host beat an any-port or anyone rule, and the
-			 * policy's own order breaks ties. */
-			FsRuleProtocol proto = FS_PROTO_ANY;
-			const gchar *remote_addr = (remote_ip && *remote_ip)
-			                           ? remote_ip : NULL;
-			FsFwRule *allow_match = NULL;
-			FsFwRule *block_match = NULL;
-			gint allow_score = -1;
-			gint block_score = -1;
-			gboolean icmp = (protocol != NULL &&
-			                 g_ascii_strcasecmp (protocol, "ICMP") == 0);
-
-			if (protocol != NULL)
-			{
-				if (g_strcmp0 (protocol, "TCP") == 0)
-					proto = FS_PROTO_TCP;
-				else if (g_strcmp0 (protocol, "UDP") == 0)
-					proto = FS_PROTO_UDP;
-			}
-
-			for (GList *l = rules; l != NULL; l = l->next)
-			{
-				FsFwRule *rule = l->data;
-				gboolean is_block = (rule->action == FS_ACTION_BLOCK);
-				gint score;
-
-				/* Direction must match. */
-				if (rule->direction != (inbound ? FS_DIR_INBOUND
-				                                 : FS_DIR_OUTBOUND))
-					continue;
-
-				/* Protocol must match (ANY matches TCP/UDP/ICMP). */
-				if (rule->protocol != FS_PROTO_ANY && rule->protocol != proto)
-					continue;
-
-				/* Ports: the probe's port is matched on the side
-				 * its direction makes the service port (local
-				 * inbound, remote outbound), where an unnamed port
-				 * constrains nothing; ICMP meets only portless
-				 * rules.  A rule pinning the other, ephemeral end
-				 * does not meet the probe at all. */
-				if (!rule_port_covers (port, icmp,
-				                       service_ports (rule, inbound)))
-					continue;
-				if (ephemeral_ports (rule, inbound) != NULL)
-					continue;
-
-				/* Address: the compiled rule must cover the probe, as an
-				 * equal name or as a block containing it.  The probe
-				 * carries no local address, so a rule's local-address
-				 * condition cannot exclude it. */
-				if (!addr_covers (rule->remote_address, remote_addr))
-					continue;
-
-				score = match_score (port, remote_addr, rule);
-
-				if (is_block) {
-					if (score > block_score) {
-						block_match = rule;
-						block_score = score;
-					}
-				} else {
-					if (score > allow_score) {
-						allow_match = rule;
-						allow_score = score;
-					}
-				}
-			}
-
-			if (block_match != NULL)
-			{
-				gchar *where = match_where (block_match);
-
-				result->would_block = TRUE;
-				result->matching_rule = g_strdup (block_match->name);
-
-				if (allow_match != NULL)
-					reason = g_strdup_printf (
-						_("Rule '%s'%s blocks it. The allow rule '%s' "
-						  "also matches, but block rules take "
-						  "precedence, so that allow is shadowed."),
-						block_match->name, where, allow_match->name);
-				else
-					reason = g_strdup_printf (
-						_("Matched rule '%s'%s, which %s %s traffic."),
-						block_match->name, where, _("blocks"),
-						inbound ? _("inbound") : _("outbound"));
-				g_free (where);
-			}
-			else if (allow_match != NULL)
-			{
-				gchar *where = match_where (allow_match);
-
-				result->would_block = FALSE;
-				result->matching_rule = g_strdup (allow_match->name);
-				reason = g_strdup_printf (
-					_("Matched rule '%s'%s, which %s %s traffic."),
-					allow_match->name, where, _("allows"),
-					inbound ? _("inbound") : _("outbound"));
-				g_free (where);
-			}
-			else
-			{
-				/* No rule matched -- apply default policy. */
-				result->would_block = inbound;
-				result->matching_rule = g_strdup (
-					inbound ? _("Default deny (no matching rule)")
-					        : _("Default allow (no matching rule)"));
-				reason = g_strdup_printf (
-					_("No rule in the loaded policy matches this "
-					  "connection.  Default policy: %s."),
-					inbound ? _("deny inbound") : _("allow outbound"));
-			}
-
-			fs_fwrule_list_free (rules);
-		}
-	}
-
-	result->affected_connections = 1;
-	result->reason = g_strdup (reason);
-	result->explanation = g_strdup_printf (_("Simulation: %s would be %s. "
-	                                         "Reason: %s"),
-	                                       result->scenario,
-	                                       result->would_block ? _("BLOCKED")
-	                                                          : _("ALLOWED"),
-	                                       reason);
-	g_free (reason);
-
-	return result;
-}
-
-/* [ fs_copilot_allow_suggestion ]
- * The "how to allow this" sentence a blocked verdict shows.  Built in
- * core so the panel, the visualizer and the tests read the same
- * words. */
-gchar *
-fs_copilot_allow_suggestion (const FsScenario *scenario)
-{
-	GString *s;
-	gboolean icmp;
-
-	if (scenario == NULL)
-		return NULL;
-
-	icmp = (g_strcmp0 (scenario->protocol, "ICMP") == 0);
-
-	s = g_string_new ("Allow ");
-	g_string_append (s, scenario->inbound ? _("inbound") : _("outbound"));
-	g_string_append_c (s, ' ');
-	g_string_append (s, (scenario->protocol != NULL &&
-	                     *scenario->protocol != '\0')
-	                  ? scenario->protocol : "TCP");
-
-	/* ICMP has no ports; saying "port 0" or "any port" for it would
-	 * be a question the line never asked. */
-	if (scenario->had_port)
-		g_string_append_printf (s, " %s %u", _("port"), scenario->port);
-	else if (!icmp)
-		g_string_append (s, _(" traffic"));
-
-	if (scenario->remote_ip != NULL && *scenario->remote_ip != '\0')
-		g_string_append_printf (s, " %s %s",
-		                        scenario->inbound ? _("from") : _("to"),
-		                        scenario->remote_ip);
-
-	g_string_append_c (s, '.');
-
-	return g_string_free (s, FALSE);
-}
-
-/* [ fs_copilot_allow_rule_for ]
- * The rule that would let the scenario through: the service-allow kind
- * of its direction, its port, its host.  The service column carries
- * the well-known name when the port has one ("SSH" for 22) and the
- * protocol word when it does not ("TCP" for 8443), so the Policy page
- * shows something a person can recognize either way. */
-FsRule *
-fs_copilot_allow_rule_for (const FsScenario *scenario)
-{
-	FsRule *rule;
-	gchar *service = NULL;
-
-	if (scenario == NULL)
-		return NULL;
-
-	rule = fs_rule_new (scenario->inbound
-	                    ? FS_RULE_INBOUND_ALLOW_SERVICE
-	                    : FS_RULE_OUTBOUND_ALLOW_SERVICE);
-
-	if (scenario->port > 0)
-		service = fs_service_lookup_port ((gint) scenario->port);
-
-	if (service == NULL)
-		service = g_strdup ((scenario->protocol != NULL &&
-		                     *scenario->protocol != '\0')
-		                    ? scenario->protocol : "TCP");
-
-	rule->service = service;
-	rule->port = (scenario->port > 0)
-	             ? g_strdup_printf ("%u", scenario->port)
-	             : g_strdup ("");
-	rule->target = (scenario->remote_ip != NULL &&
-	                *scenario->remote_ip != '\0')
-	               ? g_strdup (scenario->remote_ip)
-	               : g_strdup (FS_TARGET_ANY);
-	rule->comment = g_strdup ("What-If Simulator suggestion");
-
-	return rule;
+		ctx->live = FS_WHATIF_LIVE_UNKNOWN;
+	g_clear_error (&error);
+	fs_policy_free (applied);
 }
 
 /* [ fs_copilot_get_profile ] */
@@ -1784,6 +1094,7 @@ fs_simulation_result_free (FsSimulationResult *result)
 	g_free (result->matching_rule);
 	g_free (result->explanation);
 	g_free (result->reason);
+	fs_whatif_result_free (result->whatif);
 	g_free (result);
 }
 

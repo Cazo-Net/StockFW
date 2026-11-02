@@ -7,11 +7,6 @@ description: Every setting in the Preferences dialog, page by page, what each on
 <h1>Preferences</h1>
 <p class="lede">Open it from the bottom of the sidebar or with <kbd>Ctrl</kbd>+<kbd>,</kbd>. The dialog has two groups, <em>Interface</em> for how the program behaves and <em>Firewall</em> for what the engine does. A control that cannot work on your platform is shown disabled with a sentence saying why, so you never flip a switch that does nothing.</p>
 
-<div class="callout soon">
-<span class="label">Being redesigned for 1.0.7</span>
-<p>The dialog is being rebuilt in the look of the new Overview, on both platforms. Every setting below stays; the layout changes.</p>
-</div>
-
 <h2>Interface</h2>
 [[shot:prefs-interface|The Preferences dialog on the Interface page: Show a tray icon and Minimize to the tray, both on, with a note that closing the window keeps StockFW running.|The Interface page. The sidebar lists Interface, Events, Policy, Firewall, Network Settings, ICMP Filtering, ToS Filtering and Advanced Options.]]
 <dl>
@@ -42,7 +37,7 @@ description: Every setting in the Preferences dialog, page by page, what each on
 <h2>Firewall</h2>
 <dl>
 <dt>Start/restart firewall on program startup</dt>
-<dd>Off by default. When the app starts, it loads the saved policy and starts the firewall. In 1.0.7 this reads the policy first and goes through the apply gate; earlier Linux versions briefly loaded an empty policy before the saved one. [[soon]]</dd>
+<dd>Off by default. When the app starts, it reads the saved policy and starts the firewall through the apply gate, so an empty policy is never applied on the way.</dd>
 <dt>Start/restart firewall on dial-out, on DHCP lease renewal</dt>
 <dd>Shown disabled: not implemented in this version. Windows starts its own firewall before any program runs, so there is nothing to restore at boot there; on Linux, see <a href="{{root}}docs/faq.html#reboot">what happens at reboot</a>.</dd>
 </dl>
@@ -78,7 +73,7 @@ description: Every setting in the Preferences dialog, page by page, what each on
 </tbody>
 </table>
 </div>
-<p>Two things are never filtered while ICMP filtering is on, because the network stops working without them: time-exceeded and parameter-problem on IPv4, and on IPv6 the whole of neighbour discovery, router advertisements, packet-too-big, multicast listener reports and DHCPv6 replies. The page says so under the list. [[built]]</p>
+<p>Two things are never filtered while ICMP filtering is on, because the network stops working without them: time-exceeded and parameter-problem on IPv4, and on IPv6 the whole of neighbour discovery, router advertisements, packet-too-big, multicast listener reports and DHCPv6 replies. The page says so under the list.</p>
 <p>[[win]] Windows Firewall applies the same choices as rules without the rate limits the Linux backend adds. [[verified:test-core.sh]]</p>
 
 <h3>Firewall › ToS Filtering</h3>
@@ -94,7 +89,7 @@ description: Every setting in the Preferences dialog, page by page, what each on
 <dt>Block traffic from reserved addresses on public interfaces</dt>
 <dd>Anti-spoofing: drop packets that arrive on the external interface claiming a private or reserved source address. Needs an external interface on the Network Settings page (Linux) or applies to the Public profile (Windows).</dd>
 <dt>Log allowed connections</dt>
-<dd>[[linux]] 1.0.7. Logs the first packet of each newly allowed connection, at most ten a second, so the Events page and the Activity graph can show allowed traffic and not only blocks. Windows logs allowed connections through its own audit policy and has no switch here. [[built]]</dd>
+<dd>[[linux]] Logs the first packet of each newly allowed connection, at most ten a second, so the Events page and the Activity graph can show allowed traffic and not only blocks. Windows logs allowed connections through its own audit policy and has no switch here.</dd>
 </dl>
 
 <h2>How settings reach the firewall</h2>

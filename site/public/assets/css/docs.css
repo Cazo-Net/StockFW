@@ -16,17 +16,17 @@
 	top: calc(var(--head-h) + 3px + env(safe-area-inset-top, 0px));
 	height: calc(100vh - var(--head-h) - 3px - env(safe-area-inset-top, 0px));
 	overflow-y: auto;
-	background: #16181d;
+	background: var(--night);
 	color: #c3c9d4;
 	padding: 22px 14px 40px max(14px, env(safe-area-inset-left, 0px));
 	scrollbar-width: thin;
 	scrollbar-color: #3a414e transparent;
 }
 .docs-rail h2 {
-	font: 500 0.7rem var(--mono);
-	letter-spacing: 0.1em;
+	font: 600 0.7rem var(--sans);
+	letter-spacing: 0.08em;
 	text-transform: uppercase;
-	color: #8c95a5;
+	color: var(--on-night-muted);
 	padding: 0 10px;
 	margin: 22px 0 6px;
 }
@@ -44,8 +44,8 @@
 	font-size: 0.93rem;
 	line-height: 1.3;
 }
-.docs-rail a:hover { background: #20242c; color: #fff; }
-.docs-rail a[aria-current="page"] { background: #2a2f39; color: #fff; box-shadow: inset 3px 0 0 var(--wall); font-weight: 600; }
+.docs-rail a:hover { background: var(--night-2); color: #fff; }
+.docs-rail a[aria-current="page"] { background: var(--night-3); color: #fff; box-shadow: inset 3px 0 0 var(--wall); font-weight: 600; }
 .docs-rail .tag {
 	font: 500 0.62rem var(--mono);
 	letter-spacing: 0.06em;
@@ -62,8 +62,8 @@
 	padding: 40px 48px 0;
 }
 .crumbs {
-	font: 500 0.72rem var(--mono);
-	letter-spacing: 0.08em;
+	font: 600 0.72rem var(--sans);
+	letter-spacing: 0.07em;
 	text-transform: uppercase;
 	color: var(--muted);
 	margin-bottom: 14px;
@@ -91,7 +91,7 @@
 	min-width: 0;
 }
 .pager a:hover { border-color: var(--wall); }
-.pager span { font: 500 0.7rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.pager span { font: 600 0.7rem var(--sans); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
 .pager strong { font-weight: 650; }
 .pager .next { text-align: right; grid-column: 2; }
 .edit-line { color: var(--muted); font-size: var(--fs-sm); display: flex; flex-wrap: wrap; gap: 6px 18px; }
@@ -104,7 +104,7 @@
 	padding: 40px 16px 40px 0;
 	font-size: 0.85rem;
 }
-.toc h2 { font: 500 0.7rem var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+.toc h2 { font: 600 0.7rem var(--sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
 .toc ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; border-left: 1px solid var(--line); }
 .toc a { display: block; padding: 4px 0 4px 12px; color: var(--muted); text-decoration: none; margin-left: -1px; border-left: 2px solid transparent; line-height: 1.35; }
 .toc a:hover { color: var(--ink); }
@@ -139,7 +139,7 @@
 		margin-bottom: 18px;
 		padding: 10px 12px;
 		border: 1px solid var(--line);
-		border-radius: 8px;
+		border-radius: 6px;
 		background: var(--surface);
 		color: var(--ink);
 		font: 600 0.9rem var(--sans);

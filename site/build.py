@@ -32,9 +32,9 @@ LAYOUTS = SRC / "layouts"
 PAGES = SRC / "pages"
 
 CONFIG = {
-    "version": "1.0.6",          # what the docs describe (main)
-    "next": "1.0.7",             # what is being built
-    "release": "1.0.5",          # the newest published GitHub release
+    "version": "1.0.7",          # the release these pages describe
+    "next": "1.0.7",             # unused since the site became the 1.0.7 site; kept for old pages
+    "release": "1.0.7",          # the GitHub release the download page points at
     "repo": "https://github.com/Cazo-Net/StockFW",
     "site_name": "StockFW",
 }
@@ -106,9 +106,6 @@ EV_LABELS = {
 EV_TITLES = {
     "verified": "An automated test in the StockFW repository proves this claim.",
     "measured": "A number from an experiment that was actually run.",
-    "built": "Done in the 1.0.7 development code on main; ships with 1.0.7.",
-    "soon": "Being built for 1.0.7; details may still change.",
-    "planned": "Intended, not built yet.",
     "gap": "A limit StockFW has today, stated so it is not mistaken for a feature.",
 }
 PLATFORMS = {"win": "Windows", "linux": "Linux", "both": "Windows and Linux"}
@@ -211,6 +208,42 @@ def code_blocks(text):
     return PRE.sub(sub, text)
 
 
+# ----------------------------------------------- paths in tables
+
+TABLE = re.compile(r'<table class="tbl">.*?</table>', re.S)
+TABLE_CODE = re.compile(r"<code>([^<]*)</code>")
+
+
+def table_code_breaks(text):
+    """Let a path or file name in a table cell wrap after each slash,
+    backslash or comma.  Without a break opportunity the browser gives
+    the whole path its own line and squeezes the other columns to one
+    word per line."""
+    def code(m):
+        return "<code>" + re.sub(r"(?<=.)([/\\,])(?=.)", r"\1<wbr>", m.group(1)) + "</code>"
+    return TABLE.sub(lambda t: TABLE_CODE.sub(code, t.group(0)), text)
+
+
+# -------------------------------------------------- definition lists
+
+DL = re.compile(r"<dl>(.*?)</dl>", re.S)
+DT = re.compile(r"<dt>(.*?)</dt>", re.S)
+SHORT_TERM = 28
+
+
+def dl_layout(text):
+    """A definition list whose terms are all short (a platform, a file,
+    a setting name) is shown as two columns, term beside definition.
+    One with a long term anywhere (a question, an error message) stacks
+    each definition under its term, so a long term never squeezes the
+    text beside it into a thin column."""
+    def sub(m):
+        terms = [TAG.sub("", t) for t in DT.findall(m.group(1))]
+        cols = terms and max(len(t) for t in terms) <= SHORT_TERM
+        return ('<dl class="cols">' if cols else "<dl>") + m.group(1) + "</dl>"
+    return DL.sub(sub, text)
+
+
 # --------------------------------------------------------- headings
 
 HEADING = re.compile(r"<h([23])(\s[^>]*)?>(.*?)</h\1>", re.S)
@@ -308,6 +341,8 @@ def render(page, docs_order):
 
     body = shortcodes(page["body"], where)
     body = code_blocks(body)
+    body = table_code_breaks(body)
+    body = dl_layout(body)
     found = []
     if meta["layout"] in ("docs", "page"):
         body, found = headings(body, where)

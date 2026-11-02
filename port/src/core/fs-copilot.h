@@ -13,6 +13,8 @@
 #include "core/fs-types.h"
 #include "core/fs-rules.h"
 #include "core/fs-fwrule.h"
+#include "core/fs-whatif.h"
+#include "core/fs-backend.h"
 
 G_BEGIN_DECLS
 
@@ -57,11 +59,15 @@ typedef struct
 	gboolean             auto_applicable; /* Can be applied without review */
 } FsInsight;
 
-/* A "what-if" simulation result. */
+/* A "what-if" simulation result: the What-If engine's answer
+ * (fs-whatif.h) with the fields older callers read. */
 typedef struct
 {
 	gchar               *scenario;        /* Human-readable scenario */
-	gboolean             would_block;     /* Would traffic be blocked? */
+	FsWhatIfVerdict      verdict;         /* ALLOWED / BLOCKED / DEPENDS /
+	                                       * ERROR (a line that could
+	                                       * not be read)             */
+	gboolean             would_block;     /* verdict == BLOCKED       */
 	gchar               *matching_rule;   /* Which rule would match */
 	gchar               *explanation;     /* Why, as one log sentence */
 	gchar               *reason;          /* Why, without the
@@ -70,22 +76,10 @@ typedef struct
 	                                       * visualizer shows under
 	                                       * "Explanation"            */
 	guint                affected_connections; /* Est. connections affected */
+	FsWhatIfResult      *whatif;          /* the whole answer: both
+	                                       * directions, trace, cases,
+	                                       * verified actions (owned)  */
 } FsSimulationResult;
-
-/* A parsed What-If Simulator line: the grammar is deliberately small
- * (direction keywords, a host, a port or service name, a protocol) so
- * that what the simulator evaluates is always what the user typed --
- * plain data, freed with fs_scenario_free. */
-typedef struct
-{
-	gboolean inbound;    /* TRUE when the traffic arrives at us         */
-	guint    port;       /* service port; 0 when the line named none   */
-	gchar   *protocol;   /* "TCP", "UDP" or "ICMP"                      */
-	gchar   *remote_ip;  /* address or CIDR the line named, or NULL     */
-	gchar   *app;        /* application/service the line named, or NULL */
-	gboolean had_port;   /* the line actually carried a port            */
-	gboolean had_addr;   /* the line actually carried an address        */
-} FsScenario;
 
 /* Application behavior profile learned over time. */
 typedef struct
@@ -146,8 +140,12 @@ GList *fs_copilot_get_insights (FsCopilot *copilot);
 /* Clear all insights. */
 void fs_copilot_clear_insights (FsCopilot *copilot);
 
-/* Run a "what-if" simulation: given current rules + a hypothetical packet,
- * would it be allowed or blocked? */
+/* Run a "what-if" simulation for one probe given field by field
+ * (protocol "TCP" / "UDP" / "ICMP" or NULL for either, port 0 for any,
+ * remote_ip an address, a block or NULL for any host) with the What-If
+ * engine: the native platform's model, the attached policy and
+ * fresh-install Firewall preferences.  A remote_ip that is not an
+ * address gives an ERROR verdict.  Never NULL. */
 FsSimulationResult *fs_copilot_simulate (FsCopilot *copilot,
                                          const gchar *app_name,
                                          const gchar *remote_ip,
@@ -155,31 +153,34 @@ FsSimulationResult *fs_copilot_simulate (FsCopilot *copilot,
                                          const gchar *protocol,
                                          gboolean inbound);
 
-/* Parse one What-If line into its scenario fields.  Returns NULL only
- * for NULL/empty input; a line that names nothing still parses, with
- * the had_port/had_addr flags clear and the documented defaults
- * (outbound, any host, any port).  Caller frees with fs_scenario_free. */
-FsScenario *fs_copilot_parse_scenario (const gchar *text);
-void        fs_scenario_free (FsScenario *scenario);
-
-/* Parse a What-If line and run it against the policy in one step.
- * Returns NULL when the line is empty.  When parsed_out is non-NULL it
- * receives the scenario for the caller to free; otherwise the scenario
- * is freed here. */
+/* Parse a What-If line and run it, as above.  NULL only for an empty
+ * line; a line that cannot be read gives an ERROR verdict carrying the
+ * parser's message.  parsed_out, when not NULL, receives a copy of the
+ * query the line was read as (NULL on an error) for the caller to free
+ * with fs_whatif_query_free. */
 FsSimulationResult *fs_copilot_simulate_text (FsCopilot *copilot,
                                               const gchar *text,
-                                              FsScenario **parsed_out);
+                                              FsWhatIfQuery **parsed_out);
 
-/* The "how to allow this" sentence for a parsed scenario: "Allow
- * inbound TCP port 22 from 192.168.1.5."  Returns a newly allocated
- * string, NULL only for NULL input.  Presentation reads this so the
- * suggestion and the tests speak the same words. */
-gchar *fs_copilot_allow_suggestion (const FsScenario *scenario);
+/* Fills in what a What-If context can learn from the backend: whether
+ * the firewall runs, this computer's addresses, and on Windows the
+ * network profiles in force, which of them are on and their default
+ * actions.  Slots the backend lacks leave their part unknown, and the
+ * answer says what it assumed.  state_reliable FALSE when the backend's
+ * "stopped" cannot be trusted (on Linux without root every chain reads
+ * as missing): a stopped reading then stays unknown, because answering
+ * "allowed, the firewall is off" for a firewall that runs would be
+ * wrong in the dangerous direction. */
+void fs_copilot_whatif_observe (FsWhatIfContext *ctx,
+                                const FsBackend *backend,
+                                gboolean state_reliable);
 
-/* The policy rule that would let a parsed scenario through: the
- * service-allow kind of the scenario's direction, the scenario's port
- * and host.  Caller frees with fs_rule_free; NULL for NULL input. */
-FsRule *fs_copilot_allow_rule_for (const FsScenario *scenario);
+/* Whether `saved' is the policy the firewall has loaded: held when
+ * hold_reason is set (audit-only mode, the Policy Lock), otherwise the
+ * apply journal compared row by row (live, or changed since), unknown
+ * without a journal. */
+void fs_copilot_whatif_live (FsWhatIfContext *ctx, const FsPolicy *saved,
+                             const gchar *hold_reason);
 
 /* Get learned profile for an application (or NULL if unknown). */
 const FsAppProfile *fs_copilot_get_profile (FsCopilot *copilot,

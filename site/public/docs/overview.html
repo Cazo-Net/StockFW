@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Overview · StockFW</title>
 <meta name="description" content="The Overview page: the protection card, IPv4 and IPv6 status, event counters, open connections and their programs, adapters, recent blocks, and Lock policy.">
-<meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#16181d">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Overview · StockFW">
 <meta property="og:description" content="The Overview page: the protection card, IPv4 and IPv6 status, event counters, open connections and their programs, adapters, recent blocks, and Lock policy.">
 <meta property="og:type" content="website">
@@ -15,7 +15,6 @@
 <link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../assets/css/site.css">
 <link rel="stylesheet" href="../assets/css/docs.css">
-<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
 </head>
 <body class="layout-docs">
 <a class="skip" href="#main">Skip to content</a>
@@ -24,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -37,9 +36,6 @@
 			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
 				<span>Search docs</span><kbd>/</kbd>
-			</button>
-			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
 			</button>
 			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
@@ -97,25 +93,22 @@
 		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
 		<article class="prose">
 <h1>Overview</h1>
-<p class="lede">The first page answers one question, “is this computer protected?”, in one sentence, and then shows the four things you would check next. It is the 1.0.7 design; the 1.0.5 release has a Status page with the same facts laid out as a strip. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></p>
+<p class="lede">The first page answers one question, “is this computer protected?”, in one sentence, and then shows the four things you would check next.</p>
 
 <figure class="shot"><img src="../assets/screens/overview.webp" alt="The Overview page: a green protection card with Stop firewall and View events buttons and four tiles, a row of counters, the open connections table, the network adapters card and the recent blocks list." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Protected, both families filtered, nine rules, one adapter, live connections with their programs.</figcaption></figure>
 
 <h2 id="the-protection-card">The protection card<a class="anchor" href="#the-protection-card" aria-label="Link to this section">#</a></h2>
 <p>Green with a shield when the firewall is running and your policy is in force; red when it is stopped. The sentence under the heading says what that means for traffic, and the four tiles break it down:</p>
-<dl>
+<dl class="cols">
 <dt>IPv4 traffic, IPv6 traffic</dt>
-<dd>“Filtered” or “Not filtered”, separately. On Linux the IPv6 tile reads the real state of the kernel: if <code>ip6tables</code> is not installed, the IPv6 chains are not loaded, or they are loaded but not hooked, it says “Not filtered” and the sidebar shows the reason, rather than inferring IPv6 from IPv4. On Windows both read “Filtered” when the firewall is on, because Windows Firewall rules cover both families. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></dd>
+<dd>“Filtered” or “Not filtered”, separately. On Linux the IPv6 tile reads the real state of the kernel: if <code>ip6tables</code> is not installed, the IPv6 chains are not loaded, or they are loaded but not hooked, it says “Not filtered” and the sidebar shows the reason, rather than inferring IPv6 from IPv4. On Windows both read “Filtered” when the firewall is on, because Windows Firewall rules cover both families.</dd>
 <dt>Policy</dt>
 <dd>How many rules are saved. Saved is not the same as applied; the Policy page says which rules are live.</dd>
 <dt>Engine</dt>
-<dd>What is doing the filtering: <em>Linux (iptables)</em> or <em>Windows Firewall</em>. On Windows the card also shows the profile in force (Domain, Private or Public) and the network the computer is on, read through the firewall’s own interfaces. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span> Compile-tested in CI; not yet run by hand on Windows.</dd>
+<dd>What is doing the filtering: <em>Linux (iptables)</em> or <em>Windows Firewall</em>. On Windows the card also shows the profile in force (Domain, Private or Public) and the network the computer is on, read through the firewall’s own interfaces.</dd>
 </dl>
 <p><strong>Start firewall</strong> puts your saved policy in force: on Linux it loads the rules, on Windows it switches the firewall profiles on. <strong>Stop firewall</strong> takes StockFW’s rules out again (Linux) or switches the profiles off (Windows), and the card turns red, because that is what it means. <strong>View events</strong> jumps to the Events page.</p>
-<div class="callout soon">
-<span class="label">Being fixed for 1.0.7</span>
-<p>On Linux, <em>Start firewall</em> and the “start on program startup” preference used to load the firewall before the saved policy had been read, briefly applying an empty policy. 1.0.7 makes Start read the policy first and go through the same gate as Apply.</p>
-</div>
+<p>On Linux, <strong>Start firewall</strong> and the <em>start on program startup</em> preference read the saved policy first and go through the same gate as Apply, so the firewall never briefly runs an empty policy.</p>
 
 <h2 id="the-counters">The counters<a class="anchor" href="#the-counters" aria-label="Link to this section">#</a></h2>
 <p>Four tiles count since the app opened: inbound events (with how many were blocked), outbound events, open connections (with how many programs own them), and traffic right now across your adapters. “Idle” means no bytes in the last second. These are the same numbers the Events and Activity pages show in detail.</p>
@@ -140,7 +133,7 @@
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/first-steps.html"><span>Previous</span><strong>Your first ten minutes</strong></a><a class="next" href="../docs/events.html"><span>Next</span><strong>Events</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/overview.html">Edit this page on GitHub</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/overview.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -174,7 +167,7 @@
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>
@@ -198,12 +191,15 @@
 			</div>
 		</div>
 		<div class="foot-note">
-			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span>Made by Stock Team.</span>
 			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
 		</div>
 	</div>
 </footer>
 
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
 <dialog class="search-dialog" id="search" aria-label="Search the documentation">
 	<div class="search-box">
 		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>

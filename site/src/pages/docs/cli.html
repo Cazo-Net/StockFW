@@ -5,7 +5,7 @@ order: 30
 description: The stockfw command on Linux: every command with its real output, the global options, exit codes you can branch on, JSON for scripts, and the environment variables that redirect its files.
 ---
 <h1>Command line</h1>
-<p class="lede"><code>stockfw</code> is the desktop app without the display: the same policy files, the same simulator, the same apply gate. A rule added here is the rule the Policy page shows, and an apply here writes the same audit line. [[linux]] only in 1.0.6; a Windows build is intended. [[planned]]</p>
+<p class="lede"><code>stockfw</code> is the desktop app without the display: the same policy files, the same simulator, the same apply gate. A rule added here is the rule the Policy page shows, and an apply here writes the same audit line. [[linux]] There is no Windows command line; on Windows, use the app.</p>
 
 <pre data-lang="sh" data-title="stockfw --help">Usage: stockfw [--json] [--no-color] [-q] &lt;command&gt; [arguments]
 
@@ -34,6 +34,7 @@ Global options:
 Exit status:
   0  success          2  usage error           5  simulate: BLOCKED
   1  failure          3  needs root privileges
+                                               6  simulate: DEPENDS
 
 Policy files live in ~/.stockfw (or /etc/stockfw when run as root) --
 the same files the desktop app edits.  Nothing here talks to the
@@ -44,7 +45,7 @@ network: the dashboard listens on 127.0.0.1 only.</pre>
 
 <h2 id="status">status</h2>
 <pre data-lang="sh">$ sudo stockfw status
-StockFW 1.0.6  Linux (iptables)
+StockFW 1.0.7  Linux (iptables)
 
   Firewall     ● running
   IPv6         filtered
@@ -60,7 +61,7 @@ StockFW 1.0.6  Linux (iptables)
   Adapters     eth0       192.168.1.20    ↓ 84.5 MB  ↑ 270.4 MB
   Connections  16 active</pre>
 <p>Reading the firewall state needs root; without it the state is reported as <em>unknown</em> rather than guessed. <em>Apply mode</em> reads <em>audit-only</em> or <em>locked</em> when a hold is on. With <code>--json</code>:</p>
-<pre data-lang="json">{"version":"1.0.6","backend":"linux","state":"running",
+<pre data-lang="json">{"version":"1.0.7","backend":"linux","state":"running",
  "ipv6":{"state":"filtered","detail":"IPv4 and IPv6 are filtered by the same policy."},
  "root":true,"rules_dir":"/etc/stockfw","policy_saved":true,"malformed_rules":0,
  "rules":{"inbound-allow-from":3,"inbound-allow-service":2,"inbound-forward":1,
@@ -127,24 +128,50 @@ Nothing to change: the policy already matches the firewall.</pre>
 
 <h2 id="simulate">simulate</h2>
 <pre data-lang="sh">$ stockfw simulate "allow ssh from 192.168.1.50 on port 22"
-ALLOWED  Inbound TCP connection from 192.168.1.50 to local port 22 (ssh)
-  Packet     inbound TCP port 22 from 192.168.1.50
-  Rule       StockFW: Allow SSH (inbound, 192.168.1.0/24)
-  Why        Matched rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24)' on port 22, which allows inbound traffic.
+You asked to allow this. It is already ALLOWED. Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.
+Read as: you want it allowed; host 192.168.1.50; port 22; service SSH: TCP port 22; inbound (confidence 100%)
+
+Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer: ALLOWED
+  Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.
+  How it was decided:
+    - StockFW: Allow inbound (192.168.1.1): 192.168.1.50 is not 192.168.1.1
+    - StockFW: Allow inbound (192.0.2.10): 192.168.1.50 is not 192.0.2.10
+    =&gt; StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP): matches: allows it
+
+Good to know:
+  - No valid internet-facing interface is set, so the reserved-address and broadcast blocks are not in force.
 A simulation only: nothing was written.
 $ echo $?
 0
 
-$ stockfw simulate "outbound tcp to 198.51.100.66 port 443" --json
+$ stockfw simulate "outbound tcp port 443"
+DEPENDS. Allowed for most hosts; blocked to 198.51.100.66 by rule 'StockFW: Block outbound (198.51.100.66)'.
+Read as: port 443; TCP; outbound (confidence 90%)
+…
+$ echo $?
+6
+
+$ stockfw --json simulate "outbound tcp to 198.51.100.66 port 443"
 {"input":"outbound tcp to 198.51.100.66 port 443","verdict":"BLOCKED",
- "scenario":"Outbound TCP connection from local to 198.51.100.66 port 443 (unnamed application)",
+ "summary":"BLOCKED. Rule 'StockFW: Block outbound (198.51.100.66)' blocks it.",
+ "scenario":"Outbound TCP port 443 from this computer to 198.51.100.66",
  "direction":"outbound","protocol":"TCP","port":443,"remote":"198.51.100.66",
  "rule":"StockFW: Block outbound (198.51.100.66)",
- "reason":"Matched rule 'StockFW: Block outbound (198.51.100.66)', which blocks outbound traffic.",
- "suggestion":"Allow outbound TCP port 443 to 198.51.100.66."}
+ "reason":"Rule 'StockFW: Block outbound (198.51.100.66)' blocks it.",
+ "suggestion":"Open rule 'StockFW: Block outbound (198.51.100.66)': … Without it, this is allowed.",
+ "confidence":0.90,
+ "read_as":[{"text":"198.51.100.66","meaning":"host 198.51.100.66"},{"text":"443","meaning":"port 443"},
+            {"text":"tcp","meaning":"TCP"},{"text":"outbound","meaning":"outbound"}],
+ "answers":[{"direction":"outbound","verdict":"BLOCKED",
+             "probe":"Outbound TCP port 443 from this computer to 198.51.100.66",
+             "rule":"StockFW: Block outbound (198.51.100.66)","origin":"policy","policy_kind":6,"policy_row":0,
+             "cases":[],
+             "trace":[{"step":"skipped","decides":false,"rule":"Return traffic for connections already open", …},
+                      {"step":"matched","decides":true,"rule":"StockFW: Block outbound (198.51.100.66)","allows":false, …}],
+             "actions":[{"kind":"open-rule","label":"Open rule 'StockFW: Block outbound (198.51.100.66)'","verified":true, …}]}]}
 $ echo $?
 5</pre>
-<p>Exit 0 means ALLOWED, 5 means BLOCKED, so a script can branch without parsing. The sentence grammar is on the <a href="{{root}}docs/simulator.html">simulator page</a>. Simulating reads the saved policy and needs no root.</p>
+<p>Exit 0 means ALLOWED, 5 BLOCKED and 6 DEPENDS, so a script can branch without parsing; 2 means the line could not be read. The plain output is the window in text: the verdict in a sentence, how the line was read with a confidence, then for each direction the trace (<code>-</code> skipped, <code>*</code> a note, <code>=&gt;</code> the deciding step) and the checked fixes in brackets. The JSON carries the same, with <code>read_as</code>, and under <code>answers</code> every direction’s <code>trace</code>, <code>cases</code> and <code>actions</code>, each action with the exact policy <code>row</code> it would write. The sentence grammar is on the <a href="{{root}}docs/simulator.html">simulator page</a>. Simulating reads the saved policy and needs no root; reading whether the firewall is running does, so <code>--assume-running</code> answers for the firewall as it would run.</p>
 <pre data-lang="sh" data-title="In a deployment script">if ! stockfw simulate "inbound https from 0.0.0.0/0" >/dev/null; then
     echo "port 443 would be closed; refusing to deploy" >&amp;2
     exit 1
@@ -160,7 +187,7 @@ Nov 02 16:41:09  BLOCKED  out  192.168.1.20  203.0.113.7   23    Telnet       TC
 
 $ sudo stockfw events -n 1 --json
 [{"time":"2026-11-02T16:41:09Z","direction":"out","source":"192.168.1.20","destination":"203.0.113.7","port":"23","protocol":"TCP","service":"Telnet","in":"","out":"eth0","blocked":true}]</pre>
-<p>The last N events (default 20) that StockFW’s rules logged, read from the kernel log, which remains the archive. <code>-f</code> follows until Ctrl-C and, with <code>--json</code>, prints one object per line. <code>--blocked</code> shows only blocks. Reading the kernel log needs root or the <code>adm</code> group. Allowed rows appear from 1.0.7, when the policy logs the first packet of each new allowed connection. [[built]]</p>
+<p>The last N events (default 20) that StockFW’s rules logged, read from the kernel log, which remains the archive. <code>-f</code> follows until Ctrl-C and, with <code>--json</code>, prints one object per line. <code>--blocked</code> shows only blocks. Reading the kernel log needs root or the <code>adm</code> group. Allowed rows appear when the policy logs the first packet of each new allowed connection, which <em>Log allowed connections</em> in Preferences turns on.</p>
 
 <h2 id="connections">connections, interfaces</h2>
 <pre data-lang="sh">$ stockfw connections
@@ -201,8 +228,8 @@ eth0     Ethernet  192.168.1.20  84.5 MB   270.4 MB  237 B/s   198 B/s</pre>
 </table>
 </div>
 
-<h2>Coming in 1.0.7</h2>
-<p><code>stockfw intel</code> for <a href="{{root}}docs/threat-intel.html">blocklists</a>: <code>status</code>, <code>feeds</code>, <code>enable</code>, <code>disable</code>, <code>update</code>, <code>apply</code>, <code>clear</code>, <code>import</code>, <code>remove</code>, <code>except</code>, <code>unexcept</code>, <code>exceptions</code>, <code>lookup</code>, <code>on</code>, <code>off</code>, each with <code>--json</code>; an <code>intel</code> object in <code>status</code>; <code>simulate</code> answering “Blocked by threat intel”. [[soon]]</p>
+<h2 id="intel">intel</h2>
+<p><code>stockfw intel</code> manages <a href="{{root}}docs/threat-intel.html">threat-intel blocklists</a> and <a href="{{root}}docs/country-blocking.html">country and network-owner sets</a>: <code>status</code>, <code>feeds</code>, <code>enable</code>, <code>disable</code>, <code>update</code>, <code>apply</code>, <code>clear</code>, <code>import</code>, <code>remove</code>, <code>except</code>, <code>unexcept</code>, <code>exceptions</code>, <code>lookup</code>, <code>on</code> and <code>off</code>, each with <code>--json</code>. <code>enable</code> shows the feed’s terms and records your consent before anything is downloaded. <code>status</code> gains an <code>intel</code> object, and <code>simulate</code> answers “Blocked by threat intel: <em>list</em>” for an address a list covers. Changing the sets needs root, like every other change to the kernel.</p>
 
 <h2>Tests</h2>
 <p><code>tests/test-cli.sh</code> drives every command above against a scratch policy, checks the exit codes and the JSON, starts a dashboard and exercises its token and Host checks. [[verified:test-cli.sh]]</p>

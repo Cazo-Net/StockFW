@@ -130,17 +130,49 @@ kinds = sorted(r['kind'] for r in rules)
 assert kinds == ['inbound-allow-service', 'outbound-deny-to'], kinds"
 
 # --------------------------------------------------------- simulate
+# --assume-running: these ask about the policy, whatever state the
+# firewall of the machine running the suite is in.
 check "simulate: SSH from anywhere is ALLOWED (exit 0)" \
-  rc_is 0 "$S" simulate inbound ssh from 198.51.100.4
+  rc_is 0 "$S" simulate --assume-running inbound ssh from 198.51.100.4
 check "simulate: the denied host is BLOCKED (exit 5)" \
-  rc_is 5 "$S" simulate outbound tcp to 203.0.113.9 port 443
+  rc_is 5 "$S" simulate --assume-running outbound tcp to 203.0.113.9 port 443
+check "simulate: a question the policy splits is DEPENDS (exit 6), never 0" \
+  rc_is 6 "$S" simulate --assume-running outbound tcp port 443
 check "simulate --json names the verdict and the matching rule" py "
 import json, subprocess
-out = subprocess.run(['$S', '--json', 'simulate', 'outbound tcp to 203.0.113.9 port 443'],
+out = subprocess.run(['$S', '--json', 'simulate', '--assume-running',
+                      'outbound tcp to 203.0.113.9 port 443'],
                      capture_output=True, text=True).stdout
 d = json.loads(out)
-assert d['verdict'] == 'BLOCKED' and '203.0.113.9' in d['rule'], d"
+assert d['verdict'] == 'BLOCKED' and '203.0.113.9' in d['rule'], d
+a = d['answers'][0]
+assert a['origin'] == 'policy' and a['policy_kind'] is not None, a
+assert [t for t in a['trace'] if t['decides']][0]['rule'] == d['rule'], a"
+check "simulate --json spells out the split of a DEPENDS answer" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'simulate', '--assume-running',
+                               'outbound tcp port 443'],
+                              capture_output=True, text=True).stdout)
+c = d['answers'][0]['cases']
+assert d['verdict'] == 'DEPENDS' and len(c) == 2, d
+assert c[0]['verdict'] == 'ALLOWED' and c[1]['verdict'] == 'BLOCKED', c
+assert '203.0.113.9' in c[1]['condition'], c"
+check "simulate: a line with nothing recognisable is a usage error, not a guess" \
+  bash -c "! '$S' simulate hello there 2> '$TMP/err' && grep -q 'could not find' '$TMP/err'"
+check "simulate: port 0 is refused" rc_is 2 "$S" simulate inbound tcp port 0
 check "simulate with no description is a usage error" rc_is 2 "$S" simulate
+if [ "$(id -u)" = 0 ] && command -v iptables > /dev/null 2>&1 &&
+   unshare -n true 2> /dev/null; then
+  # A network namespace of its own: no StockFW chains, so the firewall
+  # reads as stopped -- and the answer must say what that means.
+  check "simulate with the firewall stopped: ALLOWED, and what it is once running" py "
+import json, subprocess
+d = json.loads(subprocess.run(['unshare', '-n', '$S', '--json', 'simulate',
+                               'outbound tcp to 203.0.113.9 port 443'],
+                              capture_output=True, text=True).stdout)
+assert d['verdict'] == 'ALLOWED' and d['answers'][0]['origin'] == 'stopped', d
+assert d['notes'][0].startswith('Once the firewall runs: BLOCKED'), d['notes']"
+fi
 
 # --------------------------------------------------------- apply (dry run only)
 check "apply --dry-run previews and changes nothing" \
@@ -419,9 +451,19 @@ assert ev[3]['service'] == 'SSH' and all(e['blocked'] for e in ev)"
 check "simulate over the API answers BLOCKED for the denied host" py "
 import json, subprocess, urllib.parse
 q = urllib.parse.quote('outbound tcp to 203.0.113.9 port 443')
-d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/simulate?q=' + q],
+d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN',
+                               '$B/api/simulate?assume_running=1&q=' + q],
                               capture_output=True, text=True).stdout)
 assert d['verdict'] == 'BLOCKED', d"
+check "simulate over the API answers DEPENDS for a split question" py "
+import json, subprocess, urllib.parse
+q = urllib.parse.quote('outbound tcp port 443')
+d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN',
+                               '$B/api/simulate?assume_running=1&q=' + q],
+                              capture_output=True, text=True).stdout)
+assert d['verdict'] == 'DEPENDS', d"
+check "simulate over the API refuses an unreadable line (400)" \
+  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Token: $TOKEN' '$B/api/simulate?q=hello') = 400 ]"
 check "simulate refuses an over-long question (400)" \
   bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Token: $TOKEN' '$B/api/simulate?q=$(printf 'a%.0s' $(seq 1 400))') = 400 ]"
 if [ -n "$INTEL_BASE" ]; then

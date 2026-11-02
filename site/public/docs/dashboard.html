@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Dashboard · StockFW</title>
 <meta name="description" content="The local web dashboard served by stockfw dashboard: what it shows, how to open it, why it binds 127.0.0.1 only with a per-run token, the read-only API, and the backfill from the kernel log.">
-<meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#16181d">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Dashboard · StockFW">
 <meta property="og:description" content="The local web dashboard served by stockfw dashboard: what it shows, how to open it, why it binds 127.0.0.1 only with a per-run token, the read-only API, and the backfill from the kernel log.">
 <meta property="og:type" content="website">
@@ -15,7 +15,6 @@
 <link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../assets/css/site.css">
 <link rel="stylesheet" href="../assets/css/docs.css">
-<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
 </head>
 <body class="layout-docs">
 <a class="skip" href="#main">Skip to content</a>
@@ -24,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -37,9 +36,6 @@
 			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
 				<span>Search docs</span><kbd>/</kbd>
-			</button>
-			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
 			</button>
 			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
@@ -128,7 +124,7 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 
 <h2 id="why-it-is-safe-to-run">Why it is safe to run<a class="anchor" href="#why-it-is-safe-to-run" aria-label="Link to this section">#</a></h2>
 <p>A page that shows your firewall is a page an attacker would like to read, or to use as a lever. The dashboard is designed so that neither works, and a test exercises each point. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
-<dl>
+<dl class="cols">
 <dt>Loopback only</dt>
 <dd>It binds <code>127.0.0.1</code>. There is no option to listen anywhere else; <code>--bind</code> does not exist, and asking for it prints why. Someone on your network cannot reach it. To use it from another machine, forward the port over SSH.</dd>
 <dt>A token for this run</dt>
@@ -149,26 +145,26 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 <table class="tbl">
 <thead><tr><th>Path</th><th>Returns</th></tr></thead>
 <tbody>
-<tr><td><code>/api/summary</code></td><td>Firewall state, IPv6 state, rule counts, totals.</td></tr>
-<tr><td><code>/api/activity</code></td><td>The per-interval series for both graphs, for the requested range.</td></tr>
-<tr><td><code>/api/events</code></td><td>Recent events.</td></tr>
-<tr><td><code>/api/connections</code></td><td>Established connections with programs.</td></tr>
-<tr><td><code>/api/interfaces</code></td><td>Adapters with counters and rates.</td></tr>
-<tr><td><code>/api/policy</code></td><td>The saved policy, as <code>stockfw policy list --json</code> prints it.</td></tr>
-<tr><td><code>/api/simulate?q=…</code></td><td>A what-if verdict, as <code>stockfw simulate --json</code> prints it.</td></tr>
+<tr><td><code>/api/<wbr>summary</code></td><td>Firewall state, IPv6 state, rule counts, totals.</td></tr>
+<tr><td><code>/api/<wbr>activity</code></td><td>The per-interval series for both graphs, for the requested range.</td></tr>
+<tr><td><code>/api/<wbr>events</code></td><td>Recent events.</td></tr>
+<tr><td><code>/api/<wbr>connections</code></td><td>Established connections with programs.</td></tr>
+<tr><td><code>/api/<wbr>interfaces</code></td><td>Adapters with counters and rates.</td></tr>
+<tr><td><code>/api/<wbr>policy</code></td><td>The saved policy, as <code>stockfw policy list --json</code> prints it.</td></tr>
+<tr><td><code>/api/<wbr>simulate?q=…</code></td><td>A what-if verdict, as <code>stockfw simulate --json</code> prints it.</td></tr>
 </tbody>
 </table>
 </div>
 <div class="code" data-copy="commands"><div class="code-head"><span>From a script on the same machine</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">curl -s -H "X-StockFW-Token: $TOKEN" http://127.0.0.1:43977/api/summary</span></code></pre></div>
 <p>A request without the token, or with a wrong one, gets <code>401 Unauthorized</code> and no body worth reading.</p>
 
-<h2 id="coming-in-1-0-7">Coming in 1.0.7<a class="anchor" href="#coming-in-1-0-7" aria-label="Link to this section">#</a></h2>
-<p>The threat-intel state and the enforced lists, read-only like everything else. <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></p>
+<h2 id="threat-intel">Threat intel<a class="anchor" href="#threat-intel" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Linux</span> The threat-intel state and the enforced lists are shown too, read-only like everything else: whether enforcement is on, each enabled feed with its last update, and how many ranges the kernel holds.</p>
 
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/cli.html"><span>Previous</span><strong>Command line</strong></a><a class="next" href="../docs/files.html"><span>Next</span><strong>Files and formats</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/dashboard.html">Edit this page on GitHub</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/dashboard.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -179,7 +175,7 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 			<li class="lvl2"><a href="#backfill">Backfill</a></li>
 			<li class="lvl2"><a href="#why-it-is-safe-to-run">Why it is safe to run</a></li>
 			<li class="lvl2"><a href="#the-api">The API</a></li>
-			<li class="lvl2"><a href="#coming-in-1-0-7">Coming in 1.0.7</a></li>
+			<li class="lvl2"><a href="#threat-intel">Threat intel</a></li>
 		</ul>
 	</aside>
 </div>
@@ -201,7 +197,7 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>
@@ -225,12 +221,15 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 			</div>
 		</div>
 		<div class="foot-note">
-			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span>Made by Stock Team.</span>
 			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
 		</div>
 	</div>
 </footer>
 
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
 <dialog class="search-dialog" id="search" aria-label="Search the documentation">
 	<div class="search-box">
 		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>

@@ -4,18 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Threat-intel blocklists · StockFW</title>
-<meta name="description" content="Blocking known-bad address ranges from published feeds, coming in 1.0.7: which feeds, what is built, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.">
-<meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#16181d">
+<meta name="description" content="Blocking known-bad address ranges from published feeds: which feeds, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Threat-intel blocklists · StockFW">
-<meta property="og:description" content="Blocking known-bad address ranges from published feeds, coming in 1.0.7: which feeds, what is built, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.">
+<meta property="og:description" content="Blocking known-bad address ranges from published feeds: which feeds, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.">
 <meta property="og:type" content="website">
 <link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
 <link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../assets/css/site.css">
 <link rel="stylesheet" href="../assets/css/docs.css">
-<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
 </head>
 <body class="layout-docs">
 <a class="skip" href="#main">Skip to content</a>
@@ -24,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -37,9 +36,6 @@
 			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
 				<span>Search docs</span><kbd>/</kbd>
-			</button>
-			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
 			</button>
 			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
@@ -97,12 +93,9 @@
 		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Protection</p>
 		<article class="prose">
 <h1>Threat-intel blocklists</h1>
-<p class="lede">A policy says what <em>you</em> allow. A blocklist says what the wider community has seen attacking, hosting botnet controllers or spraying brute-force logins, as address ranges that are refused on sight. 1.0.7 brings well-known feeds into StockFW, off until you turn each one on, with the same discipline as the rest of the app: nothing silent, nothing that cannot be undone, and the kernel’s real state shown rather than the configuration.</p>
+<p class="lede">A policy says what <em>you</em> allow. A blocklist says what the wider community has seen attacking, hosting botnet controllers or spraying brute-force logins, as address ranges that are refused on sight. StockFW brings well-known feeds in, off until you turn each one on, with the same discipline as the rest of the app: nothing silent, nothing that cannot be undone, and the kernel’s real state shown rather than the configuration.</p>
 
-<div class="callout soon">
-<span class="label">Where this stands</span>
-<p>On <code>main</code> today: the address-range engine, the feed catalogue with its parsers and guards, the downloader, the discovery of this computer’s own addresses and DNS servers, the engine that builds and stores the sets, the nftables table and its transaction, and the Linux backend’s enforcement slots, each with its tests <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span>. Being written: the Threat Intel page, <code>stockfw intel</code>, events that name the list, and the What-if answer <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span>. Windows enforcement follows once the Windows build has been checked on a real machine <span class="ev ev-planned" title="Intended, not built yet."><b>Planned</b></span>; until then every Windows surface says blocklists are not available there yet. The design, with its review findings, is <code>docs/1.0.7-threat-intel-design.md</code> in the repository.</p>
-</div>
+<p><span class="plat">Linux</span> Blocklists are enforced on Linux, through nftables. On Windows the Threat Intel page says blocklists are not available there, and the policy alone is in force. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span> The design, with its review findings, is <code>docs/1.0.7-threat-intel-design.md</code> in the repository.</p>
 
 <h2 id="the-feeds">The feeds<a class="anchor" href="#the-feeds" aria-label="Link to this section">#</a></h2>
 <p>Every feed is off until you switch it on and accept its terms. A feed is fetched from its own publisher or not at all: no mirrors, no aggregator of StockFW’s own. Each entry carries the host it contacts, its information and terms pages, the licence <em>where it has been verified</em> (otherwise “See the provider’s terms”), whether it is for non-commercial use only, its format, its default direction and how often it updates.</p>
@@ -179,7 +172,7 @@
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/ipv6.html"><span>Previous</span><strong>IPv6</strong></a><a class="next" href="../docs/country-blocking.html"><span>Next</span><strong>Country and network-owner blocking</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/threat-intel.html">Edit this page on GitHub</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/threat-intel.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -214,7 +207,7 @@
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>
@@ -238,12 +231,15 @@
 			</div>
 		</div>
 		<div class="foot-note">
-			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span>Made by Stock Team.</span>
 			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
 		</div>
 	</div>
 </footer>
 
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
 <dialog class="search-dialog" id="search" aria-label="Search the documentation">
 	<div class="search-box">
 		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
