@@ -4,7 +4,10 @@
  * Implements the FsBackend vtable against the Windows Firewall with
  * Advanced Security COM API (HNetCfg.FwPolicy2):
  *
- *   INetFwPolicy2    profile enumeration and global state
+ *   INetFwPolicy2    profile enumeration and global state, and the
+ *                    profiles in force (CurrentProfileTypes)
+ *   INetworkListManager  the connected networks, their names and
+ *                    categories, for the Overview (1.0.7)
  *   INetFwRules      rule listing
  *   INetFwRule       creating / editing allow and block rules
  *
@@ -39,11 +42,13 @@
 #include <netioapi.h>
 #include <iphlpapi.h>
 #include <netfw.h>
+#include <netlistmgr.h> /* INetworkListManager: the connected networks */
 #include <tlhelp32.h>   /* CreateToolhelp32Snapshot: process enumeration */
 
 #include <stdio.h>   /* _snwprintf */
 
 #include "core/fs-backend.h"
+#include "core/fs-netplace.h"
 #include "core/fs-fwrule.h"
 #include "core/fs-settings-plan.h"
 #include "core/fs-service.h"
@@ -2536,6 +2541,216 @@ firewalled_set_profile_enabled (gint profile, gboolean enabled,
 	return TRUE;
 }
 
+/* ---------------------------------------------------------------------
+ * Where this computer is connected (1.0.7): the Overview's subtitle,
+ * the "In use" marks and the "profile in use is off" verdict.
+ *
+ * Two in-process COM reads, no child process:
+ *
+ *   INetFwPolicy2::get_CurrentProfileTypes   the profiles in force, as
+ *       the firewall itself decides them (a bit per profile: two
+ *       adapters on networks of different kinds give two bits);
+ *   INetworkListManager::GetNetworks         the connected networks:
+ *       name, category (Public / Private / DomainAuthenticated, which
+ *       is what picks the profile), connectivity, and through each
+ *       connection's adapter GUID, the medium.
+ *
+ * The same facts are what PowerShell's Get-NetFirewallSetting
+ * -PolicyStore ActiveStore (ActiveProfile) and Get-NetConnectionProfile
+ * print, but asking COM costs milliseconds and opens no window, where
+ * powershell.exe costs a process start per poll and, through GLib's
+ * spawn, a console window (see spawn_capture() above for that history).
+ *
+ * The network's name is the network *profile* name.  Windows names a
+ * Wi-Fi profile after its SSID, so this is the SSID unless the user
+ * renamed it.  The SSID proper would come from the Native Wifi API
+ * (WlanQueryInterface, wlan_intf_opcode_current_connection), which on
+ * current Windows 11 needs the user's location consent and answers
+ * ERROR_ACCESS_DENIED without it; the network list has no such gate.
+ * ------------------------------------------------------------------ */
+
+/* Documented values (netlistmgr.h declares them only with INITGUID;
+ * defined locally for the reason netfw-compat.h gives for NetFwPolicy2). */
+static const GUID FS_CLSID_NetworkListManager =
+	{ 0xdcb00c01, 0x570f, 0x4a9b,
+	  { 0x8d, 0x69, 0x19, 0x9f, 0xdb, 0xa5, 0x72, 0x3b } };
+
+static const GUID FS_IID_INetworkListManager =
+	{ 0xdcb00000, 0x570f, 0x4a9b,
+	  { 0x8d, 0x69, 0x19, 0x9f, 0xdb, 0xa5, 0x72, 0x3b } };
+
+/* [ profile_from_category ]
+ * A network's category is what selects its firewall profile. */
+static gint
+profile_from_category (NLM_NETWORK_CATEGORY category)
+{
+	switch (category) {
+	case NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED: return FS_PROFILE_DOMAIN;
+	case NLM_NETWORK_CATEGORY_PRIVATE:              return FS_PROFILE_PRIVATE;
+	case NLM_NETWORK_CATEGORY_PUBLIC:               return FS_PROFILE_PUBLIC;
+	default:                                        return -1;
+	}
+}
+
+/* [ profiles_from_types ]
+ * CurrentProfileTypes' NET_FW_PROFILE2_* bits as FS_PROFILE_BIT()s. */
+static guint
+profiles_from_types (LONG types)
+{
+	guint in_use = 0;
+
+	if (types & NET_FW_PROFILE2_DOMAIN)
+		in_use |= FS_PROFILE_BIT (FS_PROFILE_DOMAIN);
+	if (types & NET_FW_PROFILE2_PRIVATE)
+		in_use |= FS_PROFILE_BIT (FS_PROFILE_PRIVATE);
+	if (types & NET_FW_PROFILE2_PUBLIC)
+		in_use |= FS_PROFILE_BIT (FS_PROFILE_PUBLIC);
+	return in_use;
+}
+
+/* [ medium_of_adapter ]
+ * "Wi-Fi", "Ethernet", "Virtual", ... for one adapter GUID, by the same
+ * rule as the adapters panel; NULL when the adapter cannot be read. */
+static const gchar *
+medium_of_adapter (const GUID *adapter)
+{
+	MIB_IF_ROW2 row;
+	NET_LUID luid;
+
+	if (ConvertInterfaceGuidToLuid (adapter, &luid) != NO_ERROR)
+		return NULL;
+
+	memset (&row, 0, sizeof row);
+	row.InterfaceLuid = luid;
+	if (GetIfEntry2 (&row) != NO_ERROR)
+		return NULL;
+
+	/* Windows' own word for IEEE 802.11, physical or not. */
+	if (row.Type == 71)
+		return "Wi-Fi";
+	return adapter_kind (&row);
+}
+
+/* [ add_network ]
+ * One INetwork into the place.  Every read may fail on its own; what
+ * failed is left unknown rather than guessed. */
+static void
+add_network (FsNetworkPlace *place, INetwork *net)
+{
+	BSTR name = NULL;
+	gchar *utf8 = NULL;
+	NLM_NETWORK_CATEGORY category;
+	NLM_CONNECTIVITY connectivity = NLM_CONNECTIVITY_DISCONNECTED;
+	IEnumNetworkConnections *conns = NULL;
+	const gchar *medium = NULL;
+	gint profile = -1;
+
+	if (SUCCEEDED (net->lpVtbl->GetName (net, &name)) && name != NULL) {
+		utf8 = g_utf16_to_utf8 ((const gunichar2 *) name, -1,
+		                        NULL, NULL, NULL);
+		SysFreeString (name);
+	}
+	if (SUCCEEDED (net->lpVtbl->GetCategory (net, &category)))
+		profile = profile_from_category (category);
+	if (FAILED (net->lpVtbl->GetConnectivity (net, &connectivity)))
+		connectivity = NLM_CONNECTIVITY_DISCONNECTED;
+
+	/* The medium of the first connection whose adapter answers. */
+	if (SUCCEEDED (net->lpVtbl->GetNetworkConnections (net, &conns)) &&
+	    conns != NULL) {
+		INetworkConnection *conn = NULL;
+		ULONG got = 0;
+
+		while (medium == NULL &&
+		       conns->lpVtbl->Next (conns, 1, &conn, &got) == S_OK &&
+		       got == 1 && conn != NULL) {
+			GUID adapter;
+
+			if (SUCCEEDED (conn->lpVtbl->GetAdapterId (conn, &adapter)))
+				medium = medium_of_adapter (&adapter);
+			conn->lpVtbl->Release (conn);
+			conn = NULL;
+		}
+		conns->lpVtbl->Release (conns);
+	}
+
+	fs_network_place_add (place, utf8, profile, medium,
+	                      (connectivity & (NLM_CONNECTIVITY_IPV4_INTERNET |
+	                                       NLM_CONNECTIVITY_IPV6_INTERNET))
+	                      != 0);
+	g_free (utf8);
+}
+
+/* [ firewalled_network_place ]
+ * See FsBackend.network_place.  NULL when neither COM read answered. */
+static FsNetworkPlace *
+firewalled_network_place (void)
+{
+	HRESULT init = CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
+	INetFwPolicy2 *policy = NULL;
+	INetworkListManager *nlm = NULL;
+	FsNetworkPlace *place = NULL;
+	gboolean have_types = FALSE;
+	LONG types = 0;
+
+	if (SUCCEEDED (CoCreateInstance (&FS_CLSID_NetFwPolicy2, NULL,
+	                                 CLSCTX_ALL, &FS_IID_INetFwPolicy2,
+	                                 (void **) &policy)) &&
+	    policy != NULL) {
+		have_types = SUCCEEDED (policy->lpVtbl->get_CurrentProfileTypes (
+		                        policy, &types));
+		policy->lpVtbl->Release (policy);
+	}
+
+	if (SUCCEEDED (CoCreateInstance (&FS_CLSID_NetworkListManager, NULL,
+	                                 CLSCTX_ALL, &FS_IID_INetworkListManager,
+	                                 (void **) &nlm)) &&
+	    nlm != NULL) {
+		IEnumNetworks *nets = NULL;
+
+		if (SUCCEEDED (nlm->lpVtbl->GetNetworks (nlm,
+		                                         NLM_ENUM_NETWORK_CONNECTED,
+		                                         &nets)) &&
+		    nets != NULL) {
+			INetwork *net = NULL;
+			ULONG got = 0;
+
+			place = fs_network_place_new ();
+			while (nets->lpVtbl->Next (nets, 1, &net, &got) == S_OK &&
+			       got == 1 && net != NULL) {
+				add_network (place, net);
+				net->lpVtbl->Release (net);
+				net = NULL;
+			}
+			nets->lpVtbl->Release (nets);
+		}
+		nlm->lpVtbl->Release (nlm);
+	}
+
+	if (have_types) {
+		if (place == NULL)
+			place = fs_network_place_new ();
+		place->in_use = profiles_from_types (types);
+	} else if (place != NULL) {
+		/* The firewall did not say; the networks' categories are
+		 * what it would have said. */
+		for (guint i = 0; i < place->networks->len; i++) {
+			const FsNetwork *n = g_ptr_array_index (place->networks, i);
+
+			if (n->profile >= 0)
+				place->in_use |= FS_PROFILE_BIT (n->profile);
+		}
+	}
+
+	/* S_FALSE (already initialised on this thread, as GTK's OLE setup
+	 * does) still needs its matching CoUninitialize; RPC_E_CHANGED_MODE
+	 * does not. */
+	if (SUCCEEDED (init))
+		CoUninitialize ();
+
+	return place;
+}
+
 /* Designated initialisers, not positional: adding a field to FsBackend
  * then leaves every backend correct instead of silently shifting every
  * entry after the insertion point. */
@@ -2570,6 +2785,7 @@ static const FsBackend windows_backend = {
 	.dhcp_set_enabled      = firewalled_dhcp_set_enabled,
 	.get_profile_enabled   = firewalled_get_profile_enabled,
 	.set_profile_enabled   = firewalled_set_profile_enabled,
+	.network_place         = firewalled_network_place,
 	.trust_signature       = fs_trust_win_signature
 };
 

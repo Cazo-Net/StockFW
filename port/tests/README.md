@@ -65,3 +65,31 @@ Host check against DNS rebinding, GET/HEAD only, the 16 KB request-head
 cap, the CSP nonce, and the dashboard leaving its own sockets out of the
 connection list.
 
+
+## Where the computer is connected (`fs-netplace-test`, `fs-overview-place-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-netplace-test fs-overview-place-smoke
+./build-linux/fs-netplace-test
+DISPLAY=:99 ./build-linux/fs-overview-place-smoke   # needs a display
+```
+
+Windows applies one of three firewall profiles to each network, by the
+network's category.  The Overview names the network and its kind in the
+subtitle, marks the profiles in force "In use", and turns the verdict
+red when the profile in use is switched off: the firewall service still
+reports running, but nothing on that network is filtered.
+
+`fs-netplace-test` pins down the wording and that judgement in
+`src/core/fs-netplace.c`.  `fs-overview-place-smoke` builds the real
+Overview page against a fake backend that answers the way
+`fs-backend-windows.c` does, so the Windows half of the page runs on any
+platform.  The COM reads themselves (`INetFwPolicy2::CurrentProfileTypes`,
+`INetworkListManager`) need a Windows machine.
+
+Teeth, each seen failing when re-injected: `fs_network_place_unguarded`
+ignoring which profile states were readable; networks not sorted
+internet-first; the verdict ignoring the profile in use; the "In use"
+marks never shown; switching a profile on from the card not re-judging
+until the next poll.

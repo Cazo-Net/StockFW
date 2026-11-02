@@ -54,6 +54,10 @@ const gchar *fs_ipv6_state_to_string (FsIpv6State state);
  * vtable can name it without this header pulling the intel engine in. */
 typedef struct _FsIntelRuleset FsIntelRuleset;
 
+/* Where this computer is connected and which firewall profiles are in
+ * force (core/fs-netplace.h). */
+typedef struct _FsNetworkPlace FsNetworkPlace;
+
 /* Callback invoked for each event reported by the platform's firewall. */
 typedef void (*FsLogFunc) (const FsHit *hit, gpointer user_data);
 
@@ -186,6 +190,16 @@ typedef struct
 	gboolean (*get_profile_enabled) (gint profile, gboolean *enabled);
 	gboolean (*set_profile_enabled) (gint profile, gboolean enabled,
 	                                GError **error);
+
+	/* 1.0.7: the profiles in force right now and the networks that put
+	 * them there (core/fs-netplace.h), for the Overview's subtitle, the
+	 * "In use" marks on the profiles card, and the verdict: a computer
+	 * whose profile in use is switched off is not protected on that
+	 * network, however many other profiles are on.  Read in-process;
+	 * cheap enough for a timer.  Caller frees with
+	 * fs_network_place_free().  NULL when it cannot tell; a NULL slot
+	 * means the platform has no such notion (Linux). */
+	FsNetworkPlace *(*network_place) (void);
 
 	/* Authenticode status for one executable -- the platform half of
 	 * the trust engine.  Returns TRUE with the verdict (and a

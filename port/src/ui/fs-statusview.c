@@ -7,7 +7,8 @@
  *                this computer is protected, with the one button that
  *                changes that (Start or Stop) and four facts beside it:
  *                IPv4, IPv6, the policy, the engine
- *   profiles     Windows only: the three firewall profiles
+ *   profiles     Windows only: the three firewall profiles, the ones
+ *                in force marked "In use"
  *   totals       events in and out (and how many were blocked), open
  *                connections, traffic now
  *   connections  open connections with a filter box; connections
@@ -28,6 +29,7 @@
 #include "ui/fs-icons.h"
 #include "ui/fs-tray.h"
 #include "core/fs-backend.h"
+#include "core/fs-netplace.h"
 #include "core/fs-util.h"
 #include "core/fs-i18n.h"
 
@@ -37,6 +39,9 @@
  * cheap; enumerating sockets is dearer, so it runs less often. */
 #define NET_REFRESH_MS    2000
 #define CONN_REFRESH_MS   3000
+/* The network place and the profile switches (Windows).  Moving from
+ * home to a cafe is the change this catches, so seconds are plenty. */
+#define PLACE_REFRESH_MS  5000
 
 /* How many blocked events the Recent blocks card keeps. */
 #define RECENT_MAX        5
@@ -68,8 +73,17 @@ static gboolean    ipv6_known = FALSE;
 static FsIpv6State ipv6_st = FS_IPV6_UNKNOWN;
 static gchar      *ipv6_detail = NULL;
 
+/* Where this computer is connected and which profiles are in force
+ * (Windows; NULL elsewhere), and which profile states could be read
+ * (prof_known) and are on (prof_on), as FS_PROFILE_BIT masks.  A
+ * profile in use that is off is a network with no firewall on it. */
+static FsNetworkPlace *net_place = NULL;
+static guint           prof_known = 0;
+static guint           prof_on = 0;
+
 /* ---- widgets ---- */
 static GtkWidget *subtitle_label;
+static gchar     *primary_where = NULL;   /* "eth0 . 192.168.1.20" */
 static GtkWidget *lock_button, *lock_icon, *lock_label;
 
 static GtkWidget *hero, *hero_icon, *hero_title, *hero_body;
@@ -80,6 +94,7 @@ static GtkWidget *tile_value[N_TILES];
 
 /* Per-profile switches, used only when the backend supports them. */
 static GtkWidget *profile_switches[FS_PROFILE_COUNT];
+static GtkWidget *profile_in_use[FS_PROFILE_COUNT];
 static GtkWidget *profiles_frame;
 
 /* Events counters: [direction][total=0 serious=1]. */
@@ -362,9 +377,43 @@ update_overview (void)
 	FsIconKind icon;
 	FsVerdict level;
 	const gchar *word;
+	/* Profiles in force that are switched off.  primary_open: one of
+	 * them covers the network the computer is mainly on (or the
+	 * backend named no network, so "this network" is all it can be). */
+	guint unguarded = fs_network_place_unguarded (net_place, prof_known,
+	                                              prof_on);
+	const FsNetwork *primary = fs_network_place_primary (net_place);
+	gboolean primary_open = unguarded != 0 &&
+		(primary == NULL || primary->profile < 0 ||
+		 (unguarded & FS_PROFILE_BIT (primary->profile)) != 0);
+
+	if (!running) {
+		unguarded = 0;
+		primary_open = FALSE;
+	}
 
 	if (running) {
-		if (ipv6_known && ipv6_st == FS_IPV6_UNFILTERED) {
+		if (unguarded != 0) {
+			gchar *why = fs_network_place_unguarded_sentence (
+				net_place, unguarded, backend->display_name);
+
+			/* "Running" is true of the service and false of this
+			 * network: Windows keeps the profiles apart, and the
+			 * one in force here filters nothing. */
+			if (primary_open) {
+				level = FS_VERDICT_BAD;
+				icon = FS_ICON_SHIELD_X;
+				title = _("This network is not protected");
+				word = _("Not protected");
+			} else {
+				level = FS_VERDICT_WARN;
+				icon = FS_ICON_SHIELD_ALERT;
+				title = _("Some networks are not protected");
+				word = _("Partly protected");
+			}
+			g_string_append (body, why);
+			g_free (why);
+		} else if (ipv6_known && ipv6_st == FS_IPV6_UNFILTERED) {
 			level = FS_VERDICT_WARN;
 			icon = FS_ICON_SHIELD_ALERT;
 			title = _("IPv6 is not protected");
@@ -399,6 +448,20 @@ update_overview (void)
 			word = _("Protected");
 			g_string_append (body, _("Your policy is in force for "
 			                         "IPv4 and IPv6."));
+		}
+
+		/* Which profile is doing the protecting, where there are
+		 * profiles: "Windows Defender Firewall is applying the
+		 * Private profile." */
+		if (unguarded == 0) {
+			gchar *using = fs_network_place_in_use_sentence (
+				net_place, backend->display_name);
+
+			if (using != NULL) {
+				g_string_append_c (body, ' ');
+				g_string_append (body, using);
+				g_free (using);
+			}
 		}
 
 		if (current_state == FS_FW_LOCKED || policy_locked)
@@ -452,7 +515,11 @@ update_overview (void)
 	}
 
 	/* The four facts. */
-	if (running)
+	if (primary_open)
+		set_tile (TILE_IPV4, _("Not filtered here"), "bad");
+	else if (unguarded != 0)
+		set_tile (TILE_IPV4, _("Partly filtered"), "warn");
+	else if (running)
 		set_tile (TILE_IPV4, _("Filtered"), "good");
 	else if (current_state == FS_FW_STOPPED)
 		set_tile (TILE_IPV4, _("Not filtered"), "bad");
@@ -461,6 +528,10 @@ update_overview (void)
 
 	if (ipv6_known && ipv6_st == FS_IPV6_ABSENT)
 		set_tile (TILE_IPV6, _("None on this system"), NULL);
+	else if (primary_open)
+		set_tile (TILE_IPV6, _("Not filtered here"), "bad");
+	else if (unguarded != 0)
+		set_tile (TILE_IPV6, _("Partly filtered"), "warn");
 	else if (current_state == FS_FW_STOPPED)
 		set_tile (TILE_IPV6, _("Not filtered"), "bad");
 	else if (!running)
@@ -483,6 +554,9 @@ update_overview (void)
 }
 
 /* ------------------------------------------------------------ profiles */
+
+static void refresh_place (gboolean rejudge);
+static void update_subtitle (void);
 
 /* [ on_profile_toggled ]
  * Fired when the user flips a profile switch.  We read which profile
@@ -508,7 +582,12 @@ on_profile_toggled (GtkSwitch *sw, GParamSpec *pspec, gpointer data)
 		g_signal_handlers_block_by_func (sw, on_profile_toggled, NULL);
 		gtk_switch_set_active (sw, !active);
 		g_signal_handlers_unblock_by_func (sw, on_profile_toggled, NULL);
+		return;
 	}
+
+	/* Switching on the profile in use is the fix the verdict card
+	 * asks for, so the card answers at once, not at the next poll. */
+	refresh_place (TRUE);
 }
 
 static void
@@ -518,12 +597,22 @@ refresh_profiles (void)
 
 	/* Reflect the real profile states whenever the main state
 	 * changes.  Done with the signal blocked so the refresh itself
-	 * does not read as a user toggle. */
+	 * does not read as a user toggle.  The states are kept too: the
+	 * verdict needs to know whether the profile in use is on. */
+	prof_known = 0;
+	prof_on = 0;
 	for (gint i = 0; i < FS_PROFILE_COUNT; i++) {
 		gboolean enabled = FALSE;
 
+		if (!backend->get_profile_enabled (i, &enabled))
+			continue;
+		prof_known |= FS_PROFILE_BIT (i);
+		if (enabled)
+			prof_on |= FS_PROFILE_BIT (i);
+
 		if (profile_switches[i] != NULL &&
-		    backend->get_profile_enabled (i, &enabled)) {
+		    gtk_switch_get_active (GTK_SWITCH (profile_switches[i])) !=
+		    enabled) {
 			g_signal_handlers_block_by_func (profile_switches[i],
 			                                 on_profile_toggled, NULL);
 			gtk_switch_set_active (GTK_SWITCH (profile_switches[i]),
@@ -532,6 +621,45 @@ refresh_profiles (void)
 			                                   on_profile_toggled, NULL);
 		}
 	}
+}
+
+/* [ refresh_place ]
+ * Re-reads where the computer is connected and the profile switches,
+ * marks the profiles in force "In use", and -- when `rejudge' and
+ * anything changed -- re-judges the verdict card.  Moving from a
+ * Private network at home to a Public one at a cafe changes which
+ * profile protects the machine without touching the firewall's state,
+ * so this runs on its own timer, not only on state changes. */
+static void
+refresh_place (gboolean rejudge)
+{
+	const FsBackend *backend = fs_backend ();
+	FsNetworkPlace *now;
+	guint known_before = prof_known, on_before = prof_on;
+	gboolean changed;
+
+	if (backend->network_place == NULL)
+		return;
+
+	now = backend->network_place ();
+	refresh_profiles ();
+
+	changed = !fs_network_place_equal (now, net_place) ||
+	          prof_known != known_before || prof_on != on_before;
+	fs_network_place_free (net_place);
+	net_place = now;
+	update_subtitle ();
+
+	for (gint i = 0; i < FS_PROFILE_COUNT; i++) {
+		if (profile_in_use[i] == NULL)
+			continue;
+		gtk_widget_set_visible (profile_in_use[i], net_place != NULL &&
+		                        (net_place->in_use &
+		                         FS_PROFILE_BIT (i)) != 0);
+	}
+
+	if (rejudge && changed)
+		update_overview ();
 }
 
 /* -------------------------------------------------------------- totals */
@@ -818,6 +946,8 @@ refresh_network (void)
 		gtk_widget_hide (adapters_card);
 		g_hash_table_remove_all (net_samples);
 		set_total (TOTAL_TRAFFIC, "-", _("No adapter counters"));
+		g_clear_pointer (&primary_where, g_free);
+		update_subtitle ();
 		return;
 	}
 	gtk_widget_set_no_show_all (adapters_card, FALSE);
@@ -920,21 +1050,39 @@ refresh_network (void)
 		g_free (note);
 	}
 
-	/* "This computer . eth0 . 192.168.1.20" */
-	if (subtitle_label != NULL) {
-		gchar *text = primary != NULL
-			? g_strdup_printf ("%s" DOT "%s" DOT "%s",
-			                   _("This computer"), primary->device,
-			                   primary->ip)
-			: g_strdup (_("This computer"));
-
-		gtk_label_set_text (GTK_LABEL (subtitle_label), text);
-		g_free (text);
-	}
+	/* "eth0 . 192.168.1.20", for the subtitle. */
+	g_free (primary_where);
+	primary_where = primary != NULL
+		? g_strdup_printf ("%s" DOT "%s", primary->device, primary->ip)
+		: NULL;
+	update_subtitle ();
 
 	/* The backend documents the lists as caller-owned; freeing them
 	 * here is what keeps a 2 second timer from leaking every sample. */
 	g_list_free_full (stats, (GDestroyNotify) fs_iface_stat_free);
+}
+
+/* [ update_subtitle ]
+ * "This computer . HomeNet (Wi-Fi) . Private network" where the backend
+ * knows the network (Windows), else "This computer . eth0 .
+ * 192.168.1.20", else "This computer".  Called by both refreshers: the
+ * network place does not depend on adapter counters being readable. */
+static void
+update_subtitle (void)
+{
+	if (subtitle_label != NULL) {
+		gchar *where = fs_network_place_subtitle (net_place);
+		const gchar *tail = where != NULL ? where : primary_where;
+		gchar *text = tail != NULL
+			? g_strdup_printf ("%s" DOT "%s", _("This computer"),
+			                   tail)
+			: g_strdup (_("This computer"));
+
+		g_free (where);
+
+		gtk_label_set_text (GTK_LABEL (subtitle_label), text);
+		g_free (text);
+	}
 }
 
 static void
@@ -1171,6 +1319,14 @@ on_conn_timeout (gpointer data)
 	return TRUE;
 }
 
+static gboolean
+on_place_timeout (gpointer data)
+{
+	(void) data;
+	refresh_place (TRUE);
+	return TRUE;
+}
+
 /* --------------------------------------------------------------- actions */
 
 static void
@@ -1305,6 +1461,9 @@ fs_statusview_set_state (FsFirewallState state)
 
 	sync_lock_button ();
 	refresh_profiles ();
+	/* Re-read the place without judging: refresh_ipv6 judges next,
+	 * with everything fresh. */
+	refresh_place (FALSE);
 	fs_statusview_refresh_ipv6 ();
 }
 
@@ -1473,6 +1632,15 @@ build_profiles (void)
 		                    label_new (_(about[i]), "muted", 0.0),
 		                    FALSE, FALSE, 0);
 		gtk_box_pack_start (GTK_BOX (row), text, TRUE, TRUE, 0);
+
+		/* "In use": the profile protecting a connected network now.
+		 * Shown by refresh_place(); no-show-all so the page-wide
+		 * show_all() cannot claim a profile is in use. */
+		profile_in_use[i] = label_new (_("In use"), "in-use", 0.5);
+		gtk_widget_set_valign (profile_in_use[i], GTK_ALIGN_CENTER);
+		gtk_widget_set_no_show_all (profile_in_use[i], TRUE);
+		gtk_box_pack_start (GTK_BOX (row), profile_in_use[i],
+		                    FALSE, FALSE, 0);
 
 		g_object_set_data (G_OBJECT (toggle), "user-data",
 		                   GINT_TO_POINTER (i));
@@ -1739,6 +1907,8 @@ fs_statusview_page (void)
 
 	g_timeout_add (NET_REFRESH_MS,  on_net_timeout,  NULL);
 	g_timeout_add (CONN_REFRESH_MS, on_conn_timeout, NULL);
+	if (fs_backend ()->network_place != NULL)
+		g_timeout_add (PLACE_REFRESH_MS, on_place_timeout, NULL);
 
 	/* First sample immediately so the panels are not empty for two
 	 * seconds after startup. */

@@ -49,6 +49,7 @@ add_library(fs-core STATIC
   src/core/fs-json.c
   src/core/fs-iprange.c
   src/core/fs-nftset.c
+  src/core/fs-netplace.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
@@ -221,7 +222,7 @@ endif()
 # is built -- that is precisely the class of bug fs-core cannot see.
 # Shared by every UI test target: fs-hitview.c calls out to the
 # dialogs, and the page wiring in fs-app.c pulls in the rest.
-set(FS_UI_SOURCES
+set(FS_UI_ONLY_SOURCES
   src/ui/fs-app.c
   src/ui/fs-dialogs.c
   src/ui/fs-statusview.c
@@ -233,8 +234,8 @@ set(FS_UI_SOURCES
   src/ui/fs-trustview.c
   src/ui/fs-tray.c
   src/ui/fs-icons.c
-  ${FS_BACKEND_SOURCES}
 )
+set(FS_UI_SOURCES ${FS_UI_ONLY_SOURCES} ${FS_BACKEND_SOURCES})
 add_executable(fs-ui-smoke EXCLUDE_FROM_ALL
   tests/ui-prefs-smoke.c
   ${FS_UI_SOURCES}
@@ -392,3 +393,22 @@ target_link_libraries(fs-intel-test PRIVATE fs-core-nogui)
 # Driver for tests/test-nftset.sh (real nft in a network namespace).
 add_executable(fs-nftset-load EXCLUDE_FROM_ALL tests/nftset-load.c)
 target_link_libraries(fs-nftset-load PRIVATE fs-core-nogui)
+# Where this computer is connected: the Overview's words for it and the
+# "profile in use is off" judgement (test-netplace.c).  GLib only.
+add_executable(fs-netplace-test EXCLUDE_FROM_ALL tests/test-netplace.c)
+target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)
+# The Overview against a fake backend that answers the way Windows does
+# (profiles, the profile in use, the network's name), so the Windows
+# half of the page is exercised on any platform.  The test supplies
+# fs_backend() itself, hence the UI sources without a backend.
+add_executable(fs-overview-place-smoke EXCLUDE_FROM_ALL
+  tests/ui-overview-place-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-overview-place-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-overview-place-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-overview-place-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
