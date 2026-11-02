@@ -12,8 +12,9 @@
 #
 # It does nothing until a policy has been applied as root at least once
 # (/etc/stockfw/applied.csv), so installing StockFW never firewalls a
-# machine nobody has set up yet.  Audit-only mode is honoured: the last
-# applied policy is started and later changes stay held.
+# machine nobody has set up yet.  It starts the last APPLIED policy,
+# never changes saved but not applied (held by audit-only mode or the
+# Policy Lock, or never applied): those wait for the next apply.
 #
 # There is deliberately no ExecStop: stopping this unit, or shutting
 # down, never takes the rules away.  Stop the firewall with

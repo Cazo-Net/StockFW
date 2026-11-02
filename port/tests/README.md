@@ -140,7 +140,9 @@ records what it is handed.  One process per scenario:
 | start | "Start the firewall on program startup" starts once, with every rule from the policy files and without the Sentinel block whose ten minutes ran out while StockFW was closed; the start is audited and the journal records it |
 | held | audit-only mode: `start()` is never called (it would install the file with its held changes); the last applied policy goes in instead |
 | heldnone | audit-only mode and nothing ever applied: the firewall is not touched |
-| push | no start at launch, firewall running: the expired Sentinel block is pushed off the firewall through the apply gate |
+| startjournal | something was applied before: the start installs the last APPLIED policy (the journal) less the expired Sentinel block, and an allow saved since but never applied stays off |
+| push | no start at launch, firewall running: only the expired Sentinel block's removal goes out (the journal less that block, through the apply gate, audited "sentinel auto-block expired"); the allow saved but never applied does not ride along |
+| pushnone | the expired block was never live: nothing is pushed at all |
 | stopped | no start at launch, firewall stopped: nothing is applied, so a stopped firewall is never started behind the user's back |
 
 Up to 1.0.7 the start ran before the Policy page loaded the policy, so
@@ -149,12 +151,13 @@ blocks out of the file without ever pushing that change.
 
 Teeth: put the start back above the Policy page in `fs-app.c` and
 "start" fails with 0 rules at start; drop the push in
-`start_at_launch()` and "push" fails.  `tests/test-core.sh` pins the
+`start_at_launch()` and "push" fails; push the whole policy file
+instead of `fs_firewall_lift_live()` and "push" and "pushnone" fail.  `tests/test-core.sh` pins the
 start gate itself (`fs_firewall_start_safe`) and the boot-time expiry
 of Sentinel rows (`fs_autoblock_expire`).
 
 
-## One StockFW per session (`tests/test-instance.sh`)
+## One StockFW per user (`tests/test-instance.sh`)
 
 ```sh
 cd port
@@ -189,6 +192,18 @@ handlers SIGTERM and SIGHUP kill it (exit 143 and 129, nothing
 written) and SIGINT is ignored altogether, as it is for any background
 job of a script.
 
+Under `nohup` SIGHUP stays ignored and the copy keeps running.  As
+root (with `setpriv` and `python3`): 48 connections that never speak,
+half from uid 65534 and half from root, do not hold up a show or a
+`--quit` right behind them; and with a uid-65534 copy running, a root
+launch with `SUDO_UID=65534` makes it quit cleanly and takes its place,
+after which the user launching again only raises root's window.
+
+Teeth: read from a connection before checking who it is (as 1.0.7
+did) and five "silent" checks fail; skip the takeover in `main()`
+and five "takeover" checks fail; install the SIGHUP handler over
+nohup's SIG_IGN and the nohup check fails.
+
 Teeth: let `main()` ignore the "another copy runs" answer and the
 second launch stays up (killed by the test's timeout, rc 124); let the
 socket accept `quit` from anyone and the other user's `--quit` closes
@@ -215,8 +230,10 @@ refused rather than written by root.
 
 `test-core.sh` pins what Windows is handed (portably, as text): the
 Task Scheduler XML runs `<exe dir>\StockFW.exe --background` at THIS
-user's logon, in their session (`InteractiveToken`), elevated
-(`HighestAvailable`), with no time limit and on battery.  It also pins
+user's logon, in their session (`InteractiveToken`), NOT elevated
+(`LeastPrivilege`, never `HighestAvailable`: a prompt-free elevated GTK
+program would be a silent UAC bypass), not startable on demand, with no
+time limit and on battery.  It also pins
 the Desktop Entry quoting and which keys switch an entry off
 (`Hidden=true`, `X-GNOME-Autostart-enabled=false`).  Registering the
 task through COM needs a Windows machine.
@@ -244,7 +261,12 @@ the user's block is in the kernel, a Sentinel block whose ten minutes
 ran out is neither installed nor left in the files, a block by a host
 name that cannot be looked up is named in the output without stopping
 the start, and in audit-only mode the last applied policy goes in, not
-the held change.
+the held change.  It also checks that a start puts back what was
+APPLIED, never what was only saved: an SSH allow saved but never
+applied stays out of the kernel; with the rule files gone the journal
+still goes in, never an empty policy; with nothing ever applied, a
+missing policy or one with a malformed line is refused; an expired
+Sentinel row already gone from the file is left out of the journal.
 
 `test-linux-install.sh` runs `install.sh` and the `stockfw-uninstall`
 it writes for real, in a private mount namespace with a scratch PREFIX
@@ -253,7 +275,8 @@ at the installed `stockfw` and enabled, and the uninstaller disables
 and removes it.
 
 Teeth: drop the Sentinel expiry from `stockfw start` and three checks
-fail; start without the hold and the audit-only checks fail; leave the
+fail; install the policy file instead of the journal and the
+"unapplied", "no rule files" and audit-only checks fail; start without the hold and the audit-only checks fail; leave the
 `systemctl disable` out of the uninstaller and "disabled" fails (a
 dangling enable link counts as still enabled).
 
@@ -279,7 +302,10 @@ Cancel as the default, stops only on "Pause protection", is audited,
 and turns into Resume protection, which starts the firewall again;
 without the rights to change the firewall it is greyed with a reason;
 Pause Sentinel auto-block pauses and resumes (both audited) and is
-greyed in detect mode (scenario "detect"); Start at sign-in writes and
+greyed in detect mode (scenario "detect") and in a copy that cannot
+change the firewall; a firewall stopped or started outside StockFW
+shows as such the moment the menu opens, and on the slow timer
+(`STOCKFW_TRAY_REFRESH_S=1`) with no menu open; Start at sign-in writes and
 removes the entry, and a failure is reported with the tick left
 showing the truth; Preferences and About open; Quit (firewall stays
 on) leaves the firewall running.  `test-core.sh` pins the block tally
@@ -298,7 +324,8 @@ Teeth: have the tray stop the firewall without the confirmation and
 counting blocks and the count, Recent blocks and tooltip checks fail;
 refresh the tick from the request instead of from the system and the
 failed Start at sign-in check fails (this one was a real bug the smoke
-caught while it was written).
+caught while it was written); stop asking the backend again when the
+menu opens, or on the timer, and the "outside StockFW" checks fail.
 
 
 ## Session safety (`fs-session-smoke`)
@@ -339,4 +366,6 @@ under the dialog fails "nothing is freed" and then crashes the
 scenario (the use-after-free this prevents); no retry of the staged
 list fails the three recovery checks; a dirty flag that is always set
 fails "nothing changed: nothing written" and two core checks; no save
-on the Stop path fails its check.
+on the Stop path fails its check; freeing the state in the quit
+instead of in shutdown fails "sametick" (a timer due in the same loop
+pass as the quit found freed memory).

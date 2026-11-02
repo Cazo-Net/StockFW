@@ -78,9 +78,10 @@ unfiltered until someone starts StockFW with `sudo` again.
 - It does nothing until a policy has been applied as root at least once
   (`/etc/stockfw/applied.csv` exists), so installing StockFW never
   firewalls a machine nobody has set up yet.
-- Audit-only mode is honoured: the last applied policy is started and
-  later changes stay held. Sentinel blocks whose ten minutes ran out
-  while the machine was off are not put back.
+- It starts the last policy that was **applied**, never changes saved
+  but not applied (held by audit-only mode or the Policy Lock, or simply
+  never applied): those wait for the next apply. Sentinel blocks whose
+  ten minutes ran out while the machine was off are not put back.
 - It has no stop action. `systemctl stop stockfw` and shutting down
   never take the rules away; `sudo stockfw stop` does.
 - A block by host name cannot be looked up before the network is up, so
@@ -101,7 +102,9 @@ from your init system's boot scripts.
 --enable-autostart`) adds `~/.config/autostart/stockfw.desktop`, which
 starts `StockFW --background` in the notification area when you sign in
 to the desktop. The desktop starts it as you, **without root**: it shows
-the firewall's state but cannot change rules or watch blocked traffic.
+the firewall's state as unknown, because iptables cannot be read
+without root, and cannot change rules or watch blocked traffic.
+`sudo StockFW` takes over from it (the copy without root quits).
 The rules themselves come from the boot service above, not from this.
 When StockFW runs with `sudo`, the entry is still written into your own
 home, as you. `StockFW --disable-autostart` removes it.
