@@ -371,6 +371,7 @@ add_executable(fs-simviz-smoke EXCLUDE_FROM_ALL
   tests/ui-simviz-smoke.c
   src/ui/fs-simviz.c
 )
+target_include_directories(fs-simviz-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-simviz-smoke PRIVATE fs-core PkgConfig::GTK3)
 
 # The light theme's teeth: src/ui/fs-theme.css compiled to

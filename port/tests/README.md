@@ -299,6 +299,26 @@ differ) and offers only fixes it re-simulated.  The design is
   3 settings x 2 platforms is one TCP or UDP port, both in the rules
   Windows compiles for it and in every line it adds to the Linux script.
 
+The card and the window are driven by two UI smokes (run under
+`xvfb-run -a`; set `FS_SHOT_DIR` to a directory to save screenshots):
+
+- `fs-simviz-smoke` builds the What-If window from real engine results:
+  ALLOWED by a policy row, BLOCKED by the default (Create allow rule
+  with its exact row), a user's block rule on both platforms (Open rule,
+  never Create), a Sentinel block (Lift), DEPENDS, a line answered both
+  ways (one tab per direction), the error state, a stopped firewall and
+  held applies.  It checks the badge, the facts, the highlighted step,
+  that an unverified row gets no Create, that the window is not modal,
+  that Close is the sensitive default with a dark face (light in a dark
+  theme), Esc and Enter, a still final frame without animations, and a
+  dark-theme run in a child process.
+- `fs-copilot-smoke` section 7 drives the real card: the entry keeps
+  its line, the chips, the answer row, Recent (five, newest first),
+  the example chips, Details opening a transient non-modal window that
+  a new question updates in place, and Create: No writes nothing, Yes
+  writes exactly the row shown, audited and held.  It runs with applies
+  on hold and, as root, in a network namespace of its own.
+
 `test-whatif-live.sh` runs in a private network namespace with a veth
 peer that plays every remote host.  It loads three policy/settings
 rounds through the real Linux backend, then sends 36 real TCP, UDP and
@@ -319,3 +339,15 @@ Teeth, each re-injected into `fs-whatif.c`, seen failing, and restored
 | created rows not re-simulated | the re-check, the Linux ICMP block, the Windows partial fix promising DEPENDS |
 | the Linux model reads an outbound service row's host as the destination (b6) | 53 pin checks; live: round 2's DNS probe |
 | the matcher ignores an outbound row's source address (the pin cannot see it) | live: round 2's DNS probe; the golden local-address row |
+| "from the internet" not read as a direction | "read: \"block RDP from the internet\"", "read: \"allow https to anywhere\"" |
+
+And in the UI (`fs-simviz.c`, `fs-copilot.c`):
+
+| Bug re-injected | Checks that caught it |
+|---|---|
+| a Create button for a row the engine did not verify | "an unverified row gets no Create button, only the reason" |
+| the window modal | "what-if: the window is not modal and holds no grab" |
+| Close without the primary style | "Close is the dialog's sensitive default action, primary style" (and the dark run's face check) |
+| the animation played with animations off | "reduced motion: the final frame at once, nothing to replay" |
+| the card's line without the saved-policy caveat | "what-if: with applies on hold the one line says it describes the saved policy" |
+| Create written without asking | "Create asks first", "answering No writes nothing" |

@@ -1108,6 +1108,11 @@ read_direction (FsWhatIfQuery *q, GArray *toks, gint host_tok,
 		"to", "into", "towards", "reach", "reaching", "access",
 		"contact", NULL
 	};
+	/* Somewhere that is not this computer, with no host named. */
+	static const gchar *remote_words[] = {
+		"internet", "outside", "anywhere", "anyone", "everyone",
+		"world", "wan", NULL
+	};
 	gboolean in = FALSE, out = FALSE;
 	gboolean keyword;
 
@@ -1136,6 +1141,7 @@ read_direction (FsWhatIfQuery *q, GArray *toks, gint host_tok,
 		gboolean is_to = tok_is_any (toks, (gint) i, to_w);
 		gint next = (gint) i + 1;
 		FsWhatIfDirection implied = FS_WHATIF_DIR_BOTH;
+		gboolean remote = FALSE;
 
 		if (!is_from && !is_to)
 			continue;
@@ -1152,6 +1158,14 @@ read_direction (FsWhatIfQuery *q, GArray *toks, gint host_tok,
 		else if (tok_is_any (toks, next, self_words))
 			implied = is_from ? FS_WHATIF_DIR_OUTBOUND
 			                  : FS_WHATIF_DIR_INBOUND;
+		else if (host_tok < 0 && tok_is_any (toks, next, remote_words)) {
+			/* "from the internet", "to anywhere": the far end is
+			 * somewhere else, and which host stays open. */
+			implied = is_from ? FS_WHATIF_DIR_INBOUND
+			                  : FS_WHATIF_DIR_OUTBOUND;
+			TOK (toks, next)->used = TRUE;
+			remote = TRUE;
+		}
 
 		if (implied == FS_WHATIF_DIR_BOTH)
 			continue;
@@ -1163,7 +1177,18 @@ read_direction (FsWhatIfQuery *q, GArray *toks, gint host_tok,
 			continue;
 		}
 
-		if (q->direction == FS_WHATIF_DIR_BOTH)
+		if (q->direction == FS_WHATIF_DIR_BOTH && remote) {
+			gchar *words = g_strdup_printf ("%s %s%s",
+				TOK (toks, i)->text,
+				next > (gint) i + 1 ? "the " : "",
+				TOK (toks, next)->text);
+
+			piece_add (q, FS_WHATIF_PIECE_DIRECTION, words,
+			           g_strdup (implied == FS_WHATIF_DIR_INBOUND
+			                     ? _("inbound, from any host")
+			                     : _("outbound, to any host")));
+			g_free (words);
+		} else if (q->direction == FS_WHATIF_DIR_BOTH)
 			piece_add (q, FS_WHATIF_PIECE_DIRECTION, TOK (toks, i)->text,
 			           g_strdup (implied == FS_WHATIF_DIR_INBOUND
 			                     ? _("inbound") : _("outbound")));

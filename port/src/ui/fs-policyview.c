@@ -928,3 +928,29 @@ fs_policyview_save (FsPolicy *policy)
 
 	return TRUE;
 }
+/* [ fs_policyview_select ]
+ * Selects row `index' of the group showing `kind' and scrolls it into
+ * view, so the What-If can say "this rule" and show it.  FALSE when
+ * the page shows no group for that kind or the row is gone. */
+gboolean
+fs_policyview_select (FsRuleKind kind, gint index)
+{
+	FsPolicyGroup *group = group_for_kind (kind);
+	GtkTreeIter iter;
+	GtkTreePath *path;
+
+	if (group == NULL || index < 0 ||
+	    !gtk_tree_model_iter_nth_child (GTK_TREE_MODEL (group->store),
+	                                    &iter, NULL, index))
+		return FALSE;
+
+	select_row (group, index);
+	path = gtk_tree_model_get_path (GTK_TREE_MODEL (group->store), &iter);
+	gtk_tree_view_scroll_to_cell (GTK_TREE_VIEW (group->view), path, NULL,
+	                              FALSE, 0.0, 0.0);
+	gtk_tree_view_set_cursor (GTK_TREE_VIEW (group->view), path, NULL,
+	                          FALSE);
+	gtk_tree_path_free (path);
+	gtk_widget_grab_focus (group->view);
+	return TRUE;
+}

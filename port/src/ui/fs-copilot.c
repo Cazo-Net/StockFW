@@ -21,6 +21,8 @@
 #include "ui/fs-icons.h"
 #include "ui/fs-policyview.h"
 #include "ui/fs-simviz.h"
+#include "ui/fs-dialogs.h"
+#include "ui/fs-statusview.h"
 #include "core/fs-apply.h"
 #include "core/fs-i18n.h"
 #include <gtk/gtk.h>
@@ -111,7 +113,7 @@ static void refresh_insights (void);
 static void update_stats (void);
 static void run_policy_analysis (void);
 static void on_simulate_clicked (GtkButton *btn, gpointer data);
-static void run_whatif_action (const FsWhatIfResult *result);
+static GtkWidget *whatif_card_new (void);
 static void on_apply_suggestion_clicked (GtkButton *btn, gpointer data);
 static void on_analyze_clicked (GtkButton *btn, gpointer data);
 static void on_clear_clicked (GtkButton *btn, gpointer data);
@@ -476,44 +478,9 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         gtk_box_pack_start (GTK_BOX (copilot_vbox), card, TRUE, TRUE, 0);
     }
 
-    /* ===== What-if simulator ===== */
-    {
-        GtkWidget *frame = gtk_frame_new (_("What-if simulator"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (frame),
-                                     "card-frame");
-        gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_NONE);
-        GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
-        gtk_container_set_border_width (GTK_CONTAINER (box), 6);
-
-        GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-
-        scenario_entry = gtk_entry_new ();
-        gtk_entry_set_placeholder_text (GTK_ENTRY (scenario_entry),
-            _("e.g. allow SSH from 192.168.1.50 on port 22"));
-        gtk_widget_set_hexpand (scenario_entry, TRUE);
-        gtk_box_pack_start (GTK_BOX (row), scenario_entry, TRUE, TRUE, 0);
-
-        GtkWidget *sim_btn = button_with_icon (FS_ICON_PLAY, _("Simulate"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (sim_btn),
-                                     "btn-primary");
-        g_signal_connect (sim_btn, "clicked",
-                          G_CALLBACK (on_simulate_clicked), NULL);
-        gtk_box_pack_start (GTK_BOX (row), sim_btn, FALSE, FALSE, 0);
-
-        g_signal_connect (scenario_entry, "activate",
-                          G_CALLBACK (on_simulate_clicked), NULL);
-
-        gtk_box_pack_start (GTK_BOX (box), row, FALSE, FALSE, 0);
-
-        /* The parsed reading and the verdict, in the panel itself:
-         * iterating on a scenario must not cost a dialog per try. */
-        sim_output = make_output_view ();
-        gtk_widget_set_size_request (sim_output, -1, 90);
-        gtk_box_pack_start (GTK_BOX (box), sim_output, TRUE, TRUE, 0);
-
-        gtk_container_add (GTK_CONTAINER (frame), box);
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), frame, FALSE, FALSE, 0);
-    }
+    /* ===== What-If simulator ===== */
+    gtk_box_pack_start (GTK_BOX (copilot_vbox), whatif_card_new (),
+                        FALSE, FALSE, 0);
 
     /* ===== Policy Analysis ===== */
     {
@@ -1483,28 +1450,11 @@ on_analyze_clicked (GtkButton *btn, gpointer data)
 }
 
 /* =====================================================================
- * on_simulate_clicked - What-if simulation
+ * The What-If context
  *
- * The line is read and answered by the What-If engine (fs-whatif.h)
- * with everything this window can learn about the firewall: the
- * native platform's model, the attached policy, the saved Firewall
- * preferences, whether the firewall runs (and, on Windows, which
- * network profiles are in force and their default actions), whether
- * the saved policy is the applied one, and Sentinel's auto-blocks with
- * their expiry.  The result lands in two places:
- *
- *   - the panel below the entry, as the scrollback: the verdict, what
- *     the line was read as, the trace and every fix the engine
- *     verified.  Iterating on a line stays one glance at text.
- *   - the Simulation Visualizer window (fs-simviz), which plays the
- *     verdict.  Same result, different presentation -- the component
- *     never re-judges anything.
- *
- * Nothing is written to the policy by simulating -- that stays a
- * question, not a change.  The visualizer's action button only
- * returns a response; the change is made here, in run_whatif_action(),
- * after the user asked for it, and only after the engine checked it
- * again against the policy as it is by then.
+ * Everything this page can learn about the firewall for one
+ * question; the card and its fixes are further down, after the
+ * apply helpers they share with the suggestion path.
  * ===================================================================== */
 
 /* [ whatif_state_reliable ]
@@ -1557,86 +1507,6 @@ whatif_context_build (FsSettings *settings)
     }
 
     return ctx;
-}
-
-/* [ whatif_verdict_tag ] -- the scrollback colour of a verdict. */
-static const gchar *
-whatif_verdict_tag (FsWhatIfVerdict verdict)
-{
-    switch (verdict) {
-    case FS_WHATIF_ALLOWED: return "green";
-    case FS_WHATIF_BLOCKED: return "red";
-    case FS_WHATIF_DEPENDS: return "orange";
-    case FS_WHATIF_ERROR:
-    default:                return "dim";
-    }
-}
-
-/* [ whatif_print ]
- * The whole answer into the scrollback: the summary in the verdict's
- * colour, then what the line was read as, the trace, the fixes and the
- * assumptions. */
-static void
-whatif_print (const FsWhatIfResult *result)
-{
-    gchar *text = fs_whatif_result_describe (result);
-    gchar *rest = strchr (text, '\n');
-
-    text_view_append (sim_output, "\n  ", NULL);
-    if (rest != NULL)
-        *rest++ = '\0';
-    text_view_append (sim_output, text, whatif_verdict_tag (result->verdict));
-    text_view_append (sim_output, "\n", NULL);
-    if (rest != NULL && *rest != '\0')
-        text_view_append (sim_output, rest, "dim");
-    g_free (text);
-}
-
-static void
-on_simulate_clicked (GtkButton *btn, gpointer data)
-{
-    const gchar *text;
-    gchar *line;
-    FsSettings *settings;
-    FsWhatIfContext *ctx;
-    FsWhatIfResult *result;
-    GtkWidget *parent;
-
-    (void)btn; (void)data;
-
-    text = gtk_entry_get_text (GTK_ENTRY (scenario_entry));
-    if (!text || !*text) return;
-
-    line = g_strdup (text);
-    parent = gtk_widget_get_toplevel (scenario_entry);
-
-    settings = fs_settings_new ();
-    ctx = whatif_context_build (settings);
-    result = fs_whatif_simulate_text (ctx, line);
-    fs_whatif_context_free (ctx);
-
-    text_view_append (sim_output, "\n> ", "bold");
-    text_view_append (sim_output, line, "blue");
-
-    if (result->verdict == FS_WHATIF_ERROR) {
-        /* An honest refusal: no verdict at all beats a verdict for a
-         * line nobody could read.  The visualizer shows the same
-         * refusal in its neutral state. */
-        text_view_append (sim_output, "\n  ", NULL);
-        text_view_append (sim_output, result->error, "orange");
-        text_view_append (sim_output, "\n  Nothing was evaluated.\n", "dim");
-    } else {
-        whatif_print (result);
-    }
-
-    /* The window: same verdict, played.  Returns only when closed. */
-    if (fs_simviz_run (parent, result, line) == FS_SIMVIZ_CREATE_RULE)
-        run_whatif_action (result);
-
-    fs_whatif_result_free (result);
-    fs_settings_free (settings);
-    g_free (line);
-    gtk_entry_set_text (GTK_ENTRY (scenario_entry), "");
 }
 
 /* =====================================================================
@@ -1857,11 +1727,837 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
 }
 
 /* =====================================================================
- * run_whatif_action - the visualizer's action button
+ * The What-If card (1.0.7)
  *
- * The visualizer only returns a response; everything that changes
- * state happens here, after the user pressed the button, on the same
- * shared policy the Policy page edits.  Two kinds of action can run:
+ * One line of plain text in, an answer out, on the page itself:
+ *
+ *   - the entry keeps what was typed, so a question is refined, not
+ *     retyped;
+ *   - "Read as" shows, as small chips, how the line was read: the
+ *     direction, protocol, port or service and host -- and, dashed,
+ *     what the line left open, which is what a DEPENDS answer splits
+ *     on;
+ *   - three example questions as chips, one click each;
+ *   - the answer as one row: the verdict badge, one line, and Details,
+ *     which opens the What-If window (fs-simviz) beside the page -- it
+ *     is not modal, and asking again refreshes it in place;
+ *   - the last five questions, each one click from being asked again.
+ *
+ * The line is answered by the What-If engine (fs-whatif.h) with
+ * everything this page can learn about the firewall: the native
+ * platform's model, the shared policy, the saved Firewall preferences,
+ * whether the firewall runs (and on Windows which network profiles are
+ * in force with their default actions), whether the saved policy is
+ * the applied one, and Sentinel's auto-blocks with their expiry.
+ *
+ * Asking changes nothing.  A fix runs only from the window's buttons,
+ * in whatif_window_action(), after the user asked for it -- and a rule
+ * is written only after the engine checked it once more against the
+ * policy as it is by then.  What a fix did is reported in the window
+ * and in the card's "What changed" log, because "the row exists" and
+ * "the firewall enforces it" are two different claims.
+ * ===================================================================== */
+
+#define WHATIF_HISTORY_MAX 5
+
+typedef struct
+{
+    gchar          *line;
+    FsWhatIfVerdict verdict;
+} WhatIfPast;
+
+static GtkWidget     *whatif_readas      = NULL;  /* "Read as" + chips   */
+static GtkWidget     *whatif_chips       = NULL;
+static GtkWidget     *whatif_result      = NULL;  /* the answer row      */
+static GtkWidget     *whatif_badge_slot  = NULL;
+static GtkWidget     *whatif_summary     = NULL;
+static GtkWidget     *whatif_history     = NULL;  /* "Recent" + rows     */
+static GtkWidget     *whatif_history_rows = NULL;
+static GtkWidget     *whatif_log_box     = NULL;  /* "What changed"      */
+static GtkWidget     *whatif_window      = NULL;  /* Details, while open */
+static gchar         *whatif_line        = NULL;  /* the line last asked */
+static GQueue         whatif_past        = G_QUEUE_INIT;
+static GString       *whatif_report      = NULL;  /* what a fix did      */
+static FsSimvizStatus whatif_report_level = FS_SIMVIZ_STATUS_OK;
+
+static void whatif_reveal (GtkWidget *w, gboolean on);
+static void whatif_flow_queue_refit (GtkWidget *flow);
+static void whatif_window_action (GtkWidget *window,
+                                  const FsWhatIfResult *result,
+                                  const FsWhatIfAction *act,
+                                  gpointer data);
+
+/* [ whatif_log ]
+ * One line of what a fix did: into the card's log (shown from the
+ * first entry on) and into the report the window shows when the fix
+ * is done.  The tag is the scrollback colour; red and orange also set
+ * how the window's report reads. */
+static void
+whatif_log (const gchar *text, const gchar *tag)
+{
+    if (whatif_log_box != NULL)
+        whatif_reveal (whatif_log_box, TRUE);
+    if (sim_output != NULL)
+        text_view_append (sim_output, text, tag);
+
+    if (whatif_report != NULL) {
+        g_string_append (whatif_report, text);
+        if (g_strcmp0 (tag, "red") == 0)
+            whatif_report_level = FS_SIMVIZ_STATUS_BAD;
+        else if (g_strcmp0 (tag, "orange") == 0 &&
+                 whatif_report_level == FS_SIMVIZ_STATUS_OK)
+            whatif_report_level = FS_SIMVIZ_STATUS_WARN;
+    }
+}
+
+static void
+whatif_report_begin (void)
+{
+    if (whatif_report != NULL)
+        g_string_free (whatif_report, TRUE);
+    whatif_report = g_string_new (NULL);
+    whatif_report_level = FS_SIMVIZ_STATUS_OK;
+}
+
+/* The report, tidied (the log's markers and indents dropped), onto
+ * the window. */
+static void
+whatif_report_end (void)
+{
+    gchar **lines;
+    GString *out;
+
+    if (whatif_report == NULL)
+        return;
+
+    lines = g_strsplit (whatif_report->str, "\n", -1);
+    out = g_string_new (NULL);
+    for (guint i = 0; lines[i] != NULL; i++) {
+        gchar *l = g_strstrip (lines[i]);
+
+        if (g_str_has_prefix (l, "[OK]") || g_str_has_prefix (l, "[!]") ||
+            g_str_has_prefix (l, "[=]"))
+            l = g_strstrip (strchr (l, ']') + 1);
+        if (*l == '\0')
+            continue;
+        if (out->len > 0)
+            g_string_append_c (out, (g_str_has_suffix (out->str, ":"))
+                                    ? ' ' : '\n');
+        g_string_append (out, l);
+    }
+    g_strfreev (lines);
+
+    if (whatif_window != NULL)
+        fs_simviz_window_set_status (whatif_window, whatif_report_level,
+                                     out->str);
+    g_string_free (out, TRUE);
+    g_string_free (whatif_report, TRUE);
+    whatif_report = NULL;
+}
+
+/* ---- the card's pieces -------------------------------------------- */
+
+/* Shows or hides one of the card's optional rows.  They are kept out
+ * of the page's show_all (no_show_all) while empty; gtk_widget_show_all
+ * does nothing on such a widget, so the flag is lifted to show it. */
+static void
+whatif_reveal (GtkWidget *w, gboolean on)
+{
+    gtk_widget_set_no_show_all (w, !on);
+    if (on)
+        gtk_widget_show_all (w);
+    else
+        gtk_widget_hide (w);
+}
+
+/* The words the line was read from, for a chip's tooltip. */
+static gchar *
+whatif_piece_tip (const FsWhatIfQuery *q, FsWhatIfPieceKind kind,
+                  FsWhatIfPieceKind also)
+{
+    for (guint i = 0; i < q->pieces->len; i++) {
+        const FsWhatIfPiece *p = g_ptr_array_index (q->pieces, i);
+
+        if (p->kind == kind || p->kind == also)
+            return g_strdup_printf (_("Read from “%s”: %s"),
+                                    p->text, p->meaning);
+    }
+    return NULL;
+}
+
+static void
+whatif_chip (const gchar *text, const gchar *cls, gchar *tip /* owned */)
+{
+    GtkWidget *chip = gtk_label_new (text);
+
+    gtk_style_context_add_class (gtk_widget_get_style_context (chip),
+                                 "fs-wi-chip");
+    if (cls != NULL)
+        gtk_style_context_add_class (gtk_widget_get_style_context (chip),
+                                     cls);
+    if (tip != NULL)
+        gtk_widget_set_tooltip_text (chip, tip);
+    gtk_widget_set_valign (chip, GTK_ALIGN_CENTER);
+    gtk_container_add (GTK_CONTAINER (whatif_chips), chip);
+    gtk_widget_show (chip);
+    g_free (tip);
+}
+
+/* [ whatif_show_chips ] -- how the line was read, piece by piece. */
+static void
+whatif_show_chips (const FsWhatIfQuery *q)
+{
+    GList *old;
+    gchar *t;
+    gboolean icmp;
+
+    if (whatif_chips == NULL)
+        return;
+
+    old = gtk_container_get_children (GTK_CONTAINER (whatif_chips));
+    for (GList *l = old; l != NULL; l = l->next)
+        gtk_widget_destroy (l->data);
+    g_list_free (old);
+
+    if (q == NULL) {
+        whatif_reveal (whatif_readas, FALSE);
+        return;
+    }
+    icmp = (q->protocol == FS_WHATIF_PROTO_ICMP || q->icmp_type != NULL);
+
+    if (q->verb != FS_WHATIF_VERB_NONE)
+        whatif_chip (q->verb == FS_WHATIF_VERB_ALLOW ? _("You want it allowed")
+                                                     : _("You want it blocked"),
+                     "verb",
+                     whatif_piece_tip (q, FS_WHATIF_PIECE_VERB,
+                                       FS_WHATIF_PIECE_VERB));
+
+    if (q->direction == FS_WHATIF_DIR_BOTH)
+        whatif_chip (_("Both directions"), "open",
+                     g_strdup (_("The line names no direction, so it is "
+                                 "answered both ways.")));
+    else
+        whatif_chip (q->direction == FS_WHATIF_DIR_INBOUND ? _("Inbound")
+                                                           : _("Outbound"),
+                     NULL,
+                     whatif_piece_tip (q, FS_WHATIF_PIECE_DIRECTION,
+                                       FS_WHATIF_PIECE_DIRECTION));
+
+    if (q->icmp_type != NULL)
+        whatif_chip (g_str_equal (q->icmp_type, "echo-request")
+                     ? _("ICMP ping") : q->icmp_type, NULL,
+                     whatif_piece_tip (q, FS_WHATIF_PIECE_ICMP,
+                                       FS_WHATIF_PIECE_PROTOCOL));
+    else if (q->protocol != FS_WHATIF_PROTO_ANY)
+        whatif_chip (q->protocol == FS_WHATIF_PROTO_TCP ? "TCP"
+                     : q->protocol == FS_WHATIF_PROTO_UDP ? "UDP" : "ICMP",
+                     NULL,
+                     whatif_piece_tip (q, FS_WHATIF_PIECE_PROTOCOL,
+                                       FS_WHATIF_PIECE_SERVICE));
+    else
+        whatif_chip (q->port != 0 ? _("TCP or UDP") : _("Any protocol"),
+                     "open",
+                     g_strdup (_("The line names no single protocol, so "
+                                 "each one is checked.")));
+
+    if (!icmp) {
+        if (q->port == 0)
+            whatif_chip (_("Any port"), "open",
+                         g_strdup (_("The line names no port, so every "
+                                     "port is checked.")));
+        else {
+            t = q->service != NULL
+                ? g_strdup_printf (_("%s · port %u"), q->service, q->port)
+                : g_strdup_printf (_("Port %u"), q->port);
+            whatif_chip (t, NULL,
+                         whatif_piece_tip (q, FS_WHATIF_PIECE_SERVICE,
+                                           FS_WHATIF_PIECE_PORT));
+            g_free (t);
+        }
+    }
+
+    if (q->host != NULL) {
+        t = g_strdup_printf (
+            q->direction == FS_WHATIF_DIR_INBOUND ? _("From %s (%s)")
+            : q->direction == FS_WHATIF_DIR_OUTBOUND ? _("To %s (%s)")
+            : _("Host %s (%s)"),
+            q->host, fs_simviz_zone_title (q->host));
+        whatif_chip (t, NULL,
+                     whatif_piece_tip (q, FS_WHATIF_PIECE_HOST,
+                                       FS_WHATIF_PIECE_HOST));
+        g_free (t);
+    } else {
+        whatif_chip (_("Any host"), "open",
+                     g_strdup (_("The line names no host, so every "
+                                 "address is checked.")));
+    }
+
+    /* What was seen and deliberately not used: a host name, an ICMP
+     * port.  Shown, so the line is never silently half-read. */
+    for (guint i = 0; i < q->pieces->len; i++) {
+        const FsWhatIfPiece *p = g_ptr_array_index (q->pieces, i);
+
+        if (p->kind == FS_WHATIF_PIECE_IGNORED) {
+            t = g_strdup_printf (_("Not used: %s"), p->text);
+            whatif_chip (t, "ignored", g_strdup (p->meaning));
+            g_free (t);
+        }
+    }
+
+    whatif_reveal (whatif_readas, TRUE);
+    whatif_flow_queue_refit (whatif_chips);
+}
+
+/* The answer in one line: the engine's summary, or for a line asked
+ * both ways each direction's verdict. */
+static gchar *
+whatif_one_line (const FsWhatIfResult *r)
+{
+    if (r->verdict == FS_WHATIF_ERROR || r->answers->len == 0)
+        return g_strdup (r->error != NULL ? r->error : r->summary);
+
+    if (r->answers->len > 1) {
+        const FsWhatIfAnswer *a = g_ptr_array_index (r->answers, 0);
+        const FsWhatIfAnswer *b = g_ptr_array_index (r->answers, 1);
+
+        return g_strdup_printf (
+            _("%s%s: %s. %s: %s. Details shows each direction."),
+            r->query->verb == FS_WHATIF_VERB_ALLOW
+            ? _("You asked to allow this. ")
+            : r->query->verb == FS_WHATIF_VERB_BLOCK
+            ? _("You asked to block this. ") : "",
+            a->inbound ? _("Inbound") : _("Outbound"),
+            fs_whatif_verdict_name (a->verdict),
+            b->inbound ? _("Inbound") : _("Outbound"),
+            fs_whatif_verdict_name (b->verdict));
+    }
+
+    return g_strdup (r->summary);
+}
+
+/* [ whatif_show_result ] -- the verdict row under the entry.  When
+ * the answer describes a saved policy the firewall is not running, the
+ * line says so first: a bare ALLOWED there would be read as what the
+ * firewall does now. */
+static void
+whatif_show_result (const FsWhatIfResult *r, FsWhatIfLive live)
+{
+    GtkStyleContext *style;
+    GList *old;
+    gchar *line;
+    gchar *a11y;
+    const gchar *caveat = NULL;
+
+    if (whatif_result == NULL)
+        return;
+
+    old = gtk_container_get_children (GTK_CONTAINER (whatif_badge_slot));
+    for (GList *l = old; l != NULL; l = l->next)
+        gtk_widget_destroy (l->data);
+    g_list_free (old);
+    gtk_container_add (GTK_CONTAINER (whatif_badge_slot),
+                       fs_simviz_badge_new (r->verdict));
+
+    line = whatif_one_line (r);
+    if (r->verdict != FS_WHATIF_ERROR)
+        caveat = live == FS_WHATIF_LIVE_HELD
+                 ? _("Saved policy, applies on hold: ")
+                 : live == FS_WHATIF_LIVE_FAILED
+                 ? _("Saved policy, the last apply failed: ")
+                 : live == FS_WHATIF_LIVE_STALE
+                 ? _("Saved policy, not applied since it changed: ")
+                 : NULL;
+    if (caveat != NULL) {
+        gchar *with = g_strconcat (caveat, line, NULL);
+
+        g_free (line);
+        line = with;
+    }
+    gtk_label_set_text (GTK_LABEL (whatif_summary), line);
+    gtk_widget_set_tooltip_text (whatif_summary, line);
+    a11y = g_strdup_printf ("%s: %s", fs_whatif_verdict_name (r->verdict),
+                            line);
+    atk_object_set_name (gtk_widget_get_accessible (whatif_result), a11y);
+    g_free (a11y);
+    g_free (line);
+
+    style = gtk_widget_get_style_context (whatif_result);
+    gtk_style_context_remove_class (style, "ok");
+    gtk_style_context_remove_class (style, "bad");
+    gtk_style_context_remove_class (style, "warn");
+    gtk_style_context_add_class (style,
+        r->verdict == FS_WHATIF_ALLOWED ? "ok"
+        : r->verdict == FS_WHATIF_BLOCKED ? "bad"
+        : r->verdict == FS_WHATIF_DEPENDS ? "warn" : "err");
+
+    whatif_reveal (whatif_result, TRUE);
+}
+
+static void
+whatif_past_free (gpointer data)
+{
+    WhatIfPast *p = data;
+
+    g_free (p->line);
+    g_free (p);
+}
+
+static void
+on_whatif_history_clicked (GtkButton *btn, gpointer data)
+{
+    const gchar *line = g_object_get_data (G_OBJECT (btn), "fs-wi-line");
+
+    (void) data;
+    if (line == NULL || scenario_entry == NULL)
+        return;
+    gtk_entry_set_text (GTK_ENTRY (scenario_entry), line);
+    on_simulate_clicked (NULL, NULL);
+}
+
+/* [ whatif_history_render ] -- the last five questions, newest first. */
+static void
+whatif_history_render (void)
+{
+    GList *old;
+
+    if (whatif_history_rows == NULL)
+        return;
+
+    old = gtk_container_get_children (GTK_CONTAINER (whatif_history_rows));
+    for (GList *l = old; l != NULL; l = l->next)
+        gtk_widget_destroy (l->data);
+    g_list_free (old);
+
+    for (GList *l = whatif_past.head; l != NULL; l = l->next) {
+        WhatIfPast *p = l->data;
+        GtkWidget *btn = gtk_button_new ();
+        GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *dot = gtk_label_new ("●");
+        GtkWidget *text = gtk_label_new (p->line);
+        GtkWidget *verdict = gtk_label_new (fs_whatif_verdict_name (p->verdict));
+        gchar *a11y = g_strdup_printf (_("Ask again: %s (was %s)"), p->line,
+                                       fs_whatif_verdict_name (p->verdict));
+
+        gtk_style_context_add_class (gtk_widget_get_style_context (btn),
+                                     "fs-wi-history");
+        gtk_style_context_add_class (gtk_widget_get_style_context (dot),
+                                     "fs-wi-dot");
+        gtk_style_context_add_class (gtk_widget_get_style_context (dot),
+            p->verdict == FS_WHATIF_ALLOWED ? "ok"
+            : p->verdict == FS_WHATIF_BLOCKED ? "bad"
+            : p->verdict == FS_WHATIF_DEPENDS ? "warn" : "err");
+        gtk_label_set_xalign (GTK_LABEL (text), 0.0);
+        gtk_label_set_ellipsize (GTK_LABEL (text), PANGO_ELLIPSIZE_END);
+        gtk_style_context_add_class (gtk_widget_get_style_context (verdict),
+                                     "stat-note");
+
+        gtk_box_pack_start (GTK_BOX (row), dot, FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (row), text, TRUE, TRUE, 0);
+        gtk_box_pack_end (GTK_BOX (row), verdict, FALSE, FALSE, 0);
+        gtk_container_add (GTK_CONTAINER (btn), row);
+        gtk_widget_set_tooltip_text (btn, _("Ask this again"));
+        atk_object_set_name (gtk_widget_get_accessible (btn), a11y);
+        g_object_set_data_full (G_OBJECT (btn), "fs-wi-line",
+                                g_strdup (p->line), g_free);
+        g_signal_connect (btn, "clicked",
+                          G_CALLBACK (on_whatif_history_clicked), NULL);
+        gtk_box_pack_start (GTK_BOX (whatif_history_rows), btn,
+                            FALSE, FALSE, 0);
+        g_free (a11y);
+    }
+
+    whatif_reveal (whatif_history, whatif_past.length > 0);
+}
+
+/* Newest first, one entry per line, five at most. */
+static void
+whatif_history_push (const gchar *line, FsWhatIfVerdict verdict)
+{
+    WhatIfPast *p;
+
+    for (GList *l = whatif_past.head; l != NULL; l = l->next) {
+        WhatIfPast *old = l->data;
+
+        if (g_strcmp0 (old->line, line) == 0) {
+            g_queue_delete_link (&whatif_past, l);
+            whatif_past_free (old);
+            break;
+        }
+    }
+
+    p = g_new0 (WhatIfPast, 1);
+    p->line = g_strdup (line);
+    p->verdict = verdict;
+    g_queue_push_head (&whatif_past, p);
+
+    while (whatif_past.length > WHATIF_HISTORY_MAX)
+        whatif_past_free (g_queue_pop_tail (&whatif_past));
+
+    whatif_history_render ();
+}
+
+/* [ whatif_present ]
+ * An answer to the line last asked, wherever it shows: the chips, the
+ * row, the newest history entry, and the window if it is open (which
+ * then owns `result').  Frees `result' otherwise. */
+static void
+whatif_present (FsWhatIfResult *result, const FsWhatIfContext *ctx)
+{
+    whatif_show_chips (result->query);
+    whatif_show_result (result, ctx != NULL ? ctx->live
+                                            : FS_WHATIF_LIVE_UNKNOWN);
+    if (whatif_line != NULL)
+        whatif_history_push (whatif_line, result->verdict);
+
+    if (whatif_window != NULL)
+        fs_simviz_window_set_result (whatif_window, result, ctx, whatif_line);
+    else
+        fs_whatif_result_free (result);
+}
+
+/* [ whatif_ask ] -- answers `line' and shows the answer. */
+static void
+whatif_ask (const gchar *line)
+{
+    FsSettings *settings = fs_settings_new ();
+    FsWhatIfContext *ctx = whatif_context_build (settings);
+    FsWhatIfResult *result = fs_whatif_simulate_text (ctx, line);
+
+    g_free (whatif_line);
+    whatif_line = g_strdup (line);
+    whatif_present (result, ctx);
+
+    fs_whatif_context_free (ctx);
+    fs_settings_free (settings);
+}
+
+static void
+on_simulate_clicked (GtkButton *btn, gpointer data)
+{
+    const gchar *text;
+    gchar *line;
+
+    (void) btn; (void) data;
+
+    if (scenario_entry == NULL)
+        return;
+    text = gtk_entry_get_text (GTK_ENTRY (scenario_entry));
+    line = g_strstrip (g_strdup (text != NULL ? text : ""));
+    if (*line == '\0') {
+        g_free (line);
+        return;
+    }
+
+    /* The entry keeps the line: a question is refined, not retyped. */
+    whatif_ask (line);
+    g_free (line);
+}
+
+static void
+on_whatif_example_clicked (GtkButton *btn, gpointer data)
+{
+    (void) data;
+    gtk_entry_set_text (GTK_ENTRY (scenario_entry),
+                        gtk_button_get_label (btn));
+    on_simulate_clicked (NULL, NULL);
+}
+
+/* [ on_whatif_details_clicked ] -- the What-If window, beside the page. */
+static void
+on_whatif_details_clicked (GtkButton *btn, gpointer data)
+{
+    FsSettings *settings;
+    FsWhatIfContext *ctx;
+    FsWhatIfResult *result;
+
+    (void) btn; (void) data;
+
+    if (whatif_line == NULL)
+        return;
+
+    settings = fs_settings_new ();
+    ctx = whatif_context_build (settings);
+    result = fs_whatif_simulate_text (ctx, whatif_line);
+
+    if (whatif_window != NULL) {
+        fs_simviz_window_set_result (whatif_window, result, ctx, whatif_line);
+        gtk_window_present (GTK_WINDOW (whatif_window));
+    } else {
+        whatif_window = fs_simviz_window_new (result, ctx, whatif_line);
+        fs_simviz_window_set_action_func (whatif_window,
+                                          whatif_window_action, NULL);
+        g_signal_connect (whatif_window, "destroy",
+                          G_CALLBACK (gtk_widget_destroyed), &whatif_window);
+        fs_simviz_window_present (whatif_window, copilot_vbox);
+    }
+
+    fs_whatif_context_free (ctx);
+    fs_settings_free (settings);
+}
+
+/* [ whatif_flow_fit ]
+ * Chips as wide as their words, wrapping only when the row is full.
+ * A GtkFlowBox either spreads spare width over its children or, kept
+ * to its natural width, stacks them one per line; so the row works out
+ * how many fit and asks for that many on the first line. */
+static gboolean
+whatif_flow_refit (gpointer data)
+{
+    GtkWidget *flow = data;
+    GtkWidget *row = gtk_widget_get_parent (flow);
+    GList *kids;
+    gint avail, used = 0, fit = 0;
+    guint spacing;
+
+    g_object_set_data (G_OBJECT (flow), "fs-wi-refit", NULL);
+    if (row == NULL)
+        return G_SOURCE_REMOVE;
+
+    avail = gtk_widget_get_allocated_width (row);
+    kids = gtk_container_get_children (GTK_CONTAINER (row));
+    for (GList *l = kids; l != NULL; l = l->next)
+        if (l->data != flow && gtk_widget_get_visible (l->data))
+            avail -= gtk_widget_get_allocated_width (l->data) +
+                     gtk_box_get_spacing (GTK_BOX (row));
+    g_list_free (kids);
+
+    spacing = gtk_flow_box_get_column_spacing (GTK_FLOW_BOX (flow));
+    kids = gtk_container_get_children (GTK_CONTAINER (flow));
+    for (GList *l = kids; l != NULL; l = l->next) {
+        gint nat = 0;
+
+        if (!gtk_widget_get_visible (l->data))
+            continue;
+        gtk_widget_get_preferred_width (l->data, NULL, &nat);
+        if (fit > 0 && used + (gint) spacing + nat > avail)
+            break;
+        used += (fit > 0 ? (gint) spacing : 0) + nat;
+        fit++;
+    }
+    g_list_free (kids);
+
+    if (fit < 1)
+        fit = 1;
+    if ((guint) fit != gtk_flow_box_get_min_children_per_line (
+                           GTK_FLOW_BOX (flow)))
+        gtk_flow_box_set_min_children_per_line (GTK_FLOW_BOX (flow),
+                                                (guint) fit);
+    return G_SOURCE_REMOVE;
+}
+
+static void
+whatif_flow_queue_refit (GtkWidget *flow)
+{
+    if (g_object_get_data (G_OBJECT (flow), "fs-wi-refit") != NULL)
+        return;
+    g_object_set_data (G_OBJECT (flow), "fs-wi-refit", GINT_TO_POINTER (1));
+    g_idle_add_full (G_PRIORITY_HIGH_IDLE, whatif_flow_refit,
+                     g_object_ref (flow), g_object_unref);
+}
+
+static void
+on_whatif_row_allocated (GtkWidget *row, GdkRectangle *a, gpointer flow)
+{
+    gint last = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (row),
+                                                    "fs-wi-width"));
+
+    (void) a;
+    if (last == gtk_widget_get_allocated_width (row))
+        return;
+    g_object_set_data (G_OBJECT (row), "fs-wi-width",
+                       GINT_TO_POINTER (gtk_widget_get_allocated_width (row)));
+    whatif_flow_queue_refit (flow);
+}
+
+/* A flow box of chips in `row', fitted as above. */
+static GtkWidget *
+whatif_flow_new (GtkWidget *row)
+{
+    GtkWidget *flow = gtk_flow_box_new ();
+
+    gtk_flow_box_set_selection_mode (GTK_FLOW_BOX (flow), GTK_SELECTION_NONE);
+    gtk_flow_box_set_column_spacing (GTK_FLOW_BOX (flow), 6);
+    gtk_flow_box_set_row_spacing (GTK_FLOW_BOX (flow), 6);
+    gtk_flow_box_set_max_children_per_line (GTK_FLOW_BOX (flow), 12);
+    gtk_widget_set_halign (flow, GTK_ALIGN_START);
+    gtk_widget_set_valign (flow, GTK_ALIGN_START);
+    g_signal_connect (row, "size-allocate",
+                      G_CALLBACK (on_whatif_row_allocated), flow);
+    return flow;
+}
+
+/* [ whatif_card_new ] -- the card on the Copilot page. */
+static GtkWidget *
+whatif_card_new (void)
+{
+    /* Typed as a person would type them: the parser reads English. */
+    static const gchar *examples[] = {
+        "Can 192.168.1.50 reach my SSH?",
+        "Is outbound DNS to 8.8.8.8 allowed?",
+        "block RDP from the internet",
+    };
+    GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *head = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
+    GtkWidget *row, *lbl, *flow, *btn;
+
+    fs_simviz_install_css ();
+    gtk_style_context_add_class (gtk_widget_get_style_context (card), "card");
+    gtk_widget_set_name (card, "whatif-card");
+
+    /* Heading. */
+    gtk_style_context_add_class (gtk_widget_get_style_context (head),
+                                 "card-head");
+    lbl = gtk_label_new (_("What-If simulator"));
+    gtk_style_context_add_class (gtk_widget_get_style_context (lbl),
+                                 "card-heading");
+    gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
+    gtk_box_pack_start (GTK_BOX (head), lbl, FALSE, FALSE, 0);
+    lbl = gtk_label_new (_("Ask whether a connection would get through "
+                           "the firewall, in plain words. Asking changes "
+                           "nothing."));
+    gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "muted");
+    gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
+    gtk_label_set_line_wrap (GTK_LABEL (lbl), TRUE);
+    gtk_box_pack_start (GTK_BOX (head), lbl, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (card), head, FALSE, FALSE, 0);
+
+    gtk_widget_set_margin_start (body, 16);
+    gtk_widget_set_margin_end (body, 16);
+    gtk_widget_set_margin_bottom (body, 16);
+    gtk_box_pack_start (GTK_BOX (card), body, FALSE, FALSE, 0);
+
+    /* The question. */
+    row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    scenario_entry = gtk_entry_new ();
+    gtk_widget_set_name (scenario_entry, "whatif-entry");
+    gtk_entry_set_placeholder_text (GTK_ENTRY (scenario_entry),
+        _("e.g. allow SSH from 192.168.1.50"));
+    atk_object_set_name (gtk_widget_get_accessible (scenario_entry),
+                         _("What-If question"));
+    gtk_widget_set_hexpand (scenario_entry, TRUE);
+    g_signal_connect (scenario_entry, "activate",
+                      G_CALLBACK (on_simulate_clicked), NULL);
+    gtk_box_pack_start (GTK_BOX (row), scenario_entry, TRUE, TRUE, 0);
+
+    btn = button_with_icon (FS_ICON_PLAY, _("Simulate"));
+    gtk_widget_set_name (btn, "whatif-simulate");
+    gtk_style_context_add_class (gtk_widget_get_style_context (btn),
+                                 "btn-primary");
+    atk_object_set_name (gtk_widget_get_accessible (btn),
+                         _("Simulate this question"));
+    g_signal_connect (btn, "clicked", G_CALLBACK (on_simulate_clicked), NULL);
+    gtk_box_pack_start (GTK_BOX (row), btn, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (body), row, FALSE, FALSE, 0);
+
+    /* Examples. */
+    row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    lbl = gtk_label_new (_("Try"));
+    gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "muted");
+    gtk_widget_set_valign (lbl, GTK_ALIGN_CENTER);
+    gtk_box_pack_start (GTK_BOX (row), lbl, FALSE, FALSE, 0);
+    flow = whatif_flow_new (row);
+    gtk_widget_set_name (flow, "whatif-examples");
+    for (guint i = 0; i < G_N_ELEMENTS (examples); i++) {
+        gchar *a11y = g_strdup_printf (_("Try the example: %s"), examples[i]);
+
+        btn = gtk_button_new_with_label (examples[i]);
+        gtk_style_context_add_class (gtk_widget_get_style_context (btn),
+                                     "fs-wi-example");
+        atk_object_set_name (gtk_widget_get_accessible (btn), a11y);
+        g_signal_connect (btn, "clicked",
+                          G_CALLBACK (on_whatif_example_clicked), NULL);
+        gtk_container_add (GTK_CONTAINER (flow), btn);
+        g_free (a11y);
+    }
+    gtk_box_pack_start (GTK_BOX (row), flow, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (body), row, FALSE, FALSE, 0);
+
+    /* How the line was read. */
+    whatif_readas = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_name (whatif_readas, "whatif-readas");
+    lbl = gtk_label_new (_("Read as"));
+    gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "muted");
+    gtk_widget_set_valign (lbl, GTK_ALIGN_START);
+    gtk_widget_set_margin_top (lbl, 2);
+    gtk_box_pack_start (GTK_BOX (whatif_readas), lbl, FALSE, FALSE, 0);
+    whatif_chips = whatif_flow_new (whatif_readas);
+    gtk_widget_set_name (whatif_chips, "whatif-chips");
+    gtk_box_pack_start (GTK_BOX (whatif_readas), whatif_chips, FALSE, FALSE,
+                        0);
+    gtk_widget_set_no_show_all (whatif_readas, TRUE);
+    gtk_box_pack_start (GTK_BOX (body), whatif_readas, FALSE, FALSE, 0);
+
+    /* The answer: badge, one line, Details. */
+    whatif_result = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_widget_set_name (whatif_result, "whatif-result");
+    gtk_style_context_add_class (gtk_widget_get_style_context (whatif_result),
+                                 "fs-wi-result");
+    whatif_badge_slot = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_name (whatif_badge_slot, "whatif-verdict");
+    gtk_widget_set_valign (whatif_badge_slot, GTK_ALIGN_CENTER);
+    gtk_box_pack_start (GTK_BOX (whatif_result), whatif_badge_slot,
+                        FALSE, FALSE, 0);
+    whatif_summary = gtk_label_new (NULL);
+    gtk_widget_set_name (whatif_summary, "whatif-summary");
+    gtk_label_set_xalign (GTK_LABEL (whatif_summary), 0.0);
+    gtk_label_set_line_wrap (GTK_LABEL (whatif_summary), TRUE);
+    gtk_label_set_line_wrap_mode (GTK_LABEL (whatif_summary),
+                                  PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_lines (GTK_LABEL (whatif_summary), 2);
+    gtk_label_set_ellipsize (GTK_LABEL (whatif_summary), PANGO_ELLIPSIZE_END);
+    gtk_label_set_max_width_chars (GTK_LABEL (whatif_summary), 90);
+    gtk_box_pack_start (GTK_BOX (whatif_result), whatif_summary,
+                        TRUE, TRUE, 0);
+    btn = gtk_button_new_with_label (_("Details"));
+    gtk_widget_set_name (btn, "whatif-details");
+    gtk_style_context_add_class (gtk_widget_get_style_context (btn),
+                                 "btn-subtle");
+    gtk_widget_set_valign (btn, GTK_ALIGN_CENTER);
+    atk_object_set_name (gtk_widget_get_accessible (btn),
+                         _("Show the details of this answer"));
+    g_signal_connect (btn, "clicked",
+                      G_CALLBACK (on_whatif_details_clicked), NULL);
+    gtk_box_pack_end (GTK_BOX (whatif_result), btn, FALSE, FALSE, 0);
+    gtk_widget_set_no_show_all (whatif_result, TRUE);
+    gtk_box_pack_start (GTK_BOX (body), whatif_result, FALSE, FALSE, 0);
+
+    /* Recent questions. */
+    whatif_history = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_name (whatif_history, "whatif-history");
+    lbl = gtk_label_new (_("Recent"));
+    gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "muted");
+    gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
+    gtk_box_pack_start (GTK_BOX (whatif_history), lbl, FALSE, FALSE, 2);
+    whatif_history_rows = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start (GTK_BOX (whatif_history), whatif_history_rows,
+                        FALSE, FALSE, 0);
+    gtk_widget_set_no_show_all (whatif_history, TRUE);
+    gtk_box_pack_start (GTK_BOX (body), whatif_history, FALSE, FALSE, 0);
+
+    /* What a fix did, kept as a log. */
+    whatif_log_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_name (whatif_log_box, "whatif-log");
+    lbl = gtk_label_new (_("What changed"));
+    gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "muted");
+    gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
+    gtk_box_pack_start (GTK_BOX (whatif_log_box), lbl, FALSE, FALSE, 0);
+    sim_output = make_output_view ();
+    gtk_widget_set_size_request (sim_output, -1, 90);
+    gtk_box_pack_start (GTK_BOX (whatif_log_box), sim_output, TRUE, TRUE, 0);
+    gtk_widget_set_no_show_all (whatif_log_box, TRUE);
+    gtk_box_pack_start (GTK_BOX (body), whatif_log_box, FALSE, FALSE, 0);
+
+    whatif_history_render ();
+    return card;
+}
+
+/* =====================================================================
+ * The What-If window's fixes
+ *
+ * The window only presents; everything that changes state happens
+ * here, after the user pressed a button, on the same shared policy the
+ * Policy page edits:
  *
  *   CREATE_ALLOW / CREATE_BLOCK  one row the engine built for exactly
  *       the question asked.  It is written only when the engine
@@ -1871,17 +2567,20 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
  *       the window was open -- the engine checks it once more against
  *       the policy as it is now.  Then the user confirms the literal
  *       row, it is saved with the usual rollback, pushed through the
- *       apply gate, and the question is asked again so the scrollback
- *       says whether the verdict really changed.
+ *       apply gate, and the question is asked again so the window says
+ *       whether the verdict really changed.
  *   LIFT_SENTINEL  Sentinel's own auto-block for the destination is
  *       lifted the way an Allow from the Events page lifts it (the
  *       user's rules are never touched), after a confirmation.
- *
- * Each step is reported honestly, because "the row exists" and "the
- * firewall enforces it" are two different claims.
+ *   OPEN_RULE  the Policy page, at that row.
+ *   OPEN_ICMP_SETTINGS / OPEN_SETTINGS  the Preferences; the question
+ *       is asked again when they close.
+ *   START_FIREWALL  the firewall is started, after a confirmation.
+ *   APPLY_POLICY  the saved policy goes through the apply gate, after
+ *       a confirmation.
  * ===================================================================== */
 
-/* [ whatif_push ] -- the apply gate, reported in the scrollback. */
+/* [ whatif_push ] -- the apply gate, reported. */
 static void
 whatif_push (const gchar *why)
 {
@@ -1891,43 +2590,36 @@ whatif_push (const gchar *why)
         fs_policyview_hold_reason (), &error);
 
     if (outcome->applied) {
-        text_view_append (sim_output, "     ", NULL);
-        text_view_append (sim_output, apply_result_text (outcome->result),
-                          outcome->result == FS_APPLY_OK ? "green" : "orange");
-        text_view_append (sim_output, "\n", NULL);
+        whatif_log ("     ", NULL);
+        whatif_log (apply_result_text (outcome->result),
+                    outcome->result == FS_APPLY_OK ? "green" : "orange");
+        whatif_log (".\n", NULL);
     } else if (outcome->held) {
-        text_view_append (sim_output, "     held back on purpose (",
-                          "orange");
-        text_view_append (sim_output, outcome->hold_reason, "orange");
-        text_view_append (sim_output,
-                          ") -- saved, not applied\n", "orange");
+        whatif_log ("     Held back on purpose (", "orange");
+        whatif_log (outcome->hold_reason, "orange");
+        whatif_log ("): saved, not applied.\n", "orange");
     } else {
         /* The change really is in the policy -- say so rather than
          * implying the whole thing failed. */
-        text_view_append (sim_output,
-            "     Saved, but it is NOT live yet: ", "orange");
-        text_view_append (sim_output, apply_result_text (outcome->result),
-                          "orange");
+        whatif_log ("     Saved, but it is NOT live yet: ", "orange");
+        whatif_log (apply_result_text (outcome->result), "orange");
         if (error != NULL) {
-            text_view_append (sim_output, " - ", NULL);
-            text_view_append (sim_output, error->message, "dim");
+            whatif_log (" - ", NULL);
+            whatif_log (error->message, "dim");
         }
-        text_view_append (sim_output, "\n     ", NULL);
+        whatif_log (".\n     ", NULL);
         if (outcome->rollback_attempted && outcome->rollback_verified)
-            text_view_append (sim_output,
-                "The previous policy was restored to the firewall and "
-                "that restore was verified.", "dim");
+            whatif_log ("The previous policy was restored to the firewall "
+                        "and that restore was verified.", "dim");
         else if (outcome->rollback_attempted)
-            text_view_append (sim_output,
-                "The rollback ALSO failed -- the firewall may be in an "
-                "inconsistent state; check the Status page.", "dim");
+            whatif_log ("The rollback ALSO failed -- the firewall may be in "
+                        "an inconsistent state; check the Status page.",
+                        "red");
         else
-            text_view_append (sim_output,
-                "No previously applied policy is recorded, so nothing "
-                "could be restored.", "dim");
-        text_view_append (sim_output,
-            "\n     Re-run StockFW as administrator and apply the "
-            "policy to activate it.\n", "dim");
+            whatif_log ("No previously applied policy is recorded, so "
+                        "nothing could be restored.", "dim");
+        whatif_log ("\n     Re-run StockFW as administrator and apply the "
+                    "policy to activate it.\n", "dim");
     }
     fs_apply_outcome_free (outcome);
     g_clear_error (&error);
@@ -1935,7 +2627,8 @@ whatif_push (const gchar *why)
 
 /* [ whatif_ask_again ]
  * The question once more, against the policy as it is now: did the
- * change give the verdict it promised? */
+ * change give the verdict it promised?  The new answer replaces the
+ * old one on the card and in the window. */
 static void
 whatif_ask_again (const FsWhatIfResult *before, FsWhatIfVerdict promised)
 {
@@ -1957,35 +2650,44 @@ whatif_ask_again (const FsWhatIfResult *before, FsWhatIfVerdict promised)
             : ctx->live == FS_WHATIF_LIVE_UNKNOWN
               ? "there is no record that it was applied"
               : "the apply did not go through");
-        text_view_append (sim_output, line, "orange");
+        whatif_log (line, "orange");
     } else if (after->verdict == promised) {
         line = g_strdup_printf (
             "     Asked again: \"%s\" is now %s (it was %s).\n",
             before->query->text, fs_whatif_verdict_name (after->verdict),
             fs_whatif_verdict_name (before->verdict));
-        text_view_append (sim_output, line, "green");
+        whatif_log (line, "green");
     } else {
         line = g_strdup_printf (
             "     Asked again: \"%s\" is %s, not %s as checked: %s\n",
             before->query->text, fs_whatif_verdict_name (after->verdict),
             fs_whatif_verdict_name (promised), after->summary);
-        text_view_append (sim_output, line, "orange");
+        whatif_log (line, "orange");
     }
-
     g_free (line);
-    fs_whatif_result_free (after);
+
+    /* The card and the window show the new answer. */
+    if (before->query->text != NULL &&
+        g_strcmp0 (whatif_line, before->query->text) != 0) {
+        g_free (whatif_line);
+        whatif_line = g_strdup (before->query->text);
+    }
+    whatif_present (after, ctx);
+
     fs_whatif_context_free (ctx);
     fs_settings_free (settings);
 }
 
-/* [ whatif_confirm ] -- Yes / No over the Copilot page. */
+/* [ whatif_confirm ] -- Yes / No over the What-If window, or the page. */
 static gboolean
 whatif_confirm (const gchar *title, const gchar *text)
 {
+    GtkWidget *parent = whatif_window != NULL
+                        ? whatif_window : gtk_widget_get_toplevel (sim_output);
     GtkWidget *confirm = gtk_message_dialog_new (
-        GTK_WINDOW (gtk_widget_get_toplevel (sim_output)),
-        GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
-        "%s", text);
+        GTK_IS_WINDOW (parent) ? GTK_WINDOW (parent) : NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO, "%s", text);
     gint response;
 
     gtk_window_set_title (GTK_WINDOW (confirm), title);
@@ -2009,9 +2711,8 @@ create_rule_from_whatif (const FsWhatIfResult *result,
     gboolean still;
 
     if (copilot_policy == NULL) {
-        text_view_append (sim_output,
-            "\n[!] No traffic policy is loaded, so no rule was created.\n",
-            "orange");
+        whatif_log ("\n[!] No traffic policy is loaded, so no rule was "
+                    "created.\n", "orange");
         return;
     }
 
@@ -2020,11 +2721,9 @@ create_rule_from_whatif (const FsWhatIfResult *result,
          act->kind != FS_WHATIF_ACT_CREATE_BLOCK) ||
         !act->verified || act->row == NULL ||
         !fs_whatif_row_is_safe (act, &why)) {
-        text_view_append (sim_output,
-            "\n[!] That rule was not written: ", "orange");
-        text_view_append (sim_output,
-                          why != NULL ? why : "it was not checked", "orange");
-        text_view_append (sim_output, ".\n", NULL);
+        whatif_log ("\n[!] That rule was not written: ", "orange");
+        whatif_log (why != NULL ? why : "it was not checked", "orange");
+        whatif_log (".\n", NULL);
         g_free (why);
         return;
     }
@@ -2038,12 +2737,11 @@ create_rule_from_whatif (const FsWhatIfResult *result,
     fs_settings_free (settings);
 
     if (!still) {
-        text_view_append (sim_output,
-            "\n[!] The policy changed since this was checked, and the rule "
-            "no longer does only what was asked (", "orange");
-        text_view_append (sim_output, why != NULL ? why : "", "orange");
-        text_view_append (sim_output,
-            "). Nothing was written; simulate the line again.\n", "orange");
+        whatif_log ("\n[!] The policy changed since this was checked, and "
+                    "the rule no longer does only what was asked (", "orange");
+        whatif_log (why != NULL ? why : "", "orange");
+        whatif_log ("). Nothing was written; simulate the line again.\n",
+                    "orange");
         g_free (why);
         return;
     }
@@ -2052,10 +2750,10 @@ create_rule_from_whatif (const FsWhatIfResult *result,
     csv = fs_rule_to_csv (rule);
 
     if (fs_policy_contains (copilot_policy, rule)) {
-        text_view_append (sim_output,
-            "\n[=] Already in your policy, not added again:\n  ", "dim");
-        text_view_append (sim_output, csv, "bold");
-        text_view_append (sim_output, "\n", NULL);
+        whatif_log ("\n[=] Already in your policy, not added again:\n  ",
+                    "dim");
+        whatif_log (csv, "bold");
+        whatif_log ("\n", NULL);
         fs_rule_free (rule);
         g_free (csv);
         return;
@@ -2074,9 +2772,8 @@ create_rule_from_whatif (const FsWhatIfResult *result,
         act->label, csv, act->explanation);
 
     if (!whatif_confirm (_("Create This Rule"), question)) {
-        text_view_append (sim_output,
-            "\n[=] Rule creation cancelled; nothing was written.\n",
-            "dim");
+        whatif_log ("\n[=] Rule creation cancelled; nothing was written.\n",
+                    "dim");
         g_free (question);
         fs_rule_free (rule);
         g_free (csv);
@@ -2087,11 +2784,10 @@ create_rule_from_whatif (const FsWhatIfResult *result,
     /* Persist.  A failed write must leave no row behind, so the
      * store and the disk never disagree -- add_persist rolls back. */
     if (!fs_policy_add_persist (copilot_policy, rule)) {
-        text_view_append (sim_output,
-            "\n[!] Could not save the new rule to disk, "
-            "nothing was added:\n  ", "red");
-        text_view_append (sim_output, csv, "bold");
-        text_view_append (sim_output, "\n", NULL);
+        whatif_log ("\n[!] Could not save the new rule to disk, nothing "
+                    "was added:\n  ", "red");
+        whatif_log (csv, "bold");
+        whatif_log ("\n", NULL);
         fs_rule_free (rule);
         g_free (csv);
         return;
@@ -2103,11 +2799,10 @@ create_rule_from_whatif (const FsWhatIfResult *result,
     fs_policyview_reload (copilot_policy);
     update_stats ();
 
-    text_view_append (sim_output,
-        "\n[OK] Rule created from the simulation and saved "
-        "to your policy:\n  ", "green");
-    text_view_append (sim_output, csv, "bold");
-    text_view_append (sim_output, "\n", NULL);
+    whatif_log ("\n[OK] Rule created and saved to your policy:\n  ",
+                "green");
+    whatif_log (csv, "bold");
+    whatif_log ("\n", NULL);
 
     /* And put it in front of the actual firewall. */
     whatif_push ("what-if create");
@@ -2126,7 +2821,7 @@ lift_sentinel_from_whatif (const FsWhatIfResult *result,
 {
     gchar *question;
 
-    if (act->target == NULL || *act->target == '\0')
+    if (act->target == NULL || *act->target == '\0' || !act->verified)
         return;
 
     question = g_strdup_printf (
@@ -2137,48 +2832,140 @@ lift_sentinel_from_whatif (const FsWhatIfResult *result,
         act->explanation != NULL ? act->explanation : "", act->target);
 
     if (!whatif_confirm (_("Lift Sentinel's Block"), question)) {
-        text_view_append (sim_output,
-            "\n[=] Sentinel's block left in place; nothing changed.\n",
-            "dim");
+        whatif_log ("\n[=] Sentinel's block left in place; nothing "
+                    "changed.\n", "dim");
         g_free (question);
         return;
     }
     g_free (question);
 
     if (!fs_copilot_lift_auto_blocks_for_dest (act->target)) {
-        text_view_append (sim_output,
-            "\n[!] No Sentinel block for ", "orange");
-        text_view_append (sim_output, act->target, "bold");
-        text_view_append (sim_output,
-            " could be lifted (it may have expired already, or could not "
-            "be removed from the policy file).\n", "orange");
+        whatif_log ("\n[!] No Sentinel block for ", "orange");
+        whatif_log (act->target, "bold");
+        whatif_log (" could be lifted (it may have expired already, or "
+                    "could not be removed from the policy file).\n",
+                    "orange");
         whatif_ask_again (result, act->gives);
         return;
     }
 
     update_stats ();
     refresh_insights ();
-    text_view_append (sim_output, "\n[OK] Sentinel's block of ", "green");
-    text_view_append (sim_output, act->target, "bold");
-    text_view_append (sim_output, " was lifted.\n", "green");
+    whatif_log ("\n[OK] Sentinel's block of ", "green");
+    whatif_log (act->target, "bold");
+    whatif_log (" was lifted.\n", "green");
 
     whatif_push ("what-if lift sentinel");
     whatif_ask_again (result, act->gives);
 }
 
-/* [ run_whatif_action ] */
+/* [ whatif_open_rule ] -- the Policy page, at the row that decided. */
 static void
-run_whatif_action (const FsWhatIfResult *result)
+whatif_open_rule (const FsWhatIfAction *act)
 {
-    const FsWhatIfAction *act = fs_whatif_result_primary_action (result);
+    fs_app_show_page (FS_PAGE_POLICY);
+    if (act->policy_kind < 0 || act->policy_kind >= FS_RULE_N_KINDS ||
+        !fs_policyview_select ((FsRuleKind) act->policy_kind,
+                               act->policy_index)) {
+        whatif_log ("\n[=] The Policy page is open; that rule is not shown "
+                    "there as a row of its own.\n", "dim");
+        return;
+    }
+    whatif_log ("\n[=] The rule is selected on the Policy page.\n", "dim");
+}
 
-    if (act == NULL || result->query == NULL)
+/* [ whatif_start_firewall ] */
+static void
+whatif_start_firewall (const FsWhatIfResult *result,
+                       const FsWhatIfAction *act)
+{
+    GError *error = NULL;
+
+    if (!act->verified)
+        return;
+    if (!whatif_confirm (act->label, _("Start the firewall now?\n\n"
+                                       "It loads the saved policy and "
+                                       "starts filtering."))) {
+        whatif_log ("\n[=] The firewall was not started.\n", "dim");
+        return;
+    }
+
+    if (!fs_backend ()->start (&error)) {
+        whatif_log ("\n[!] The firewall did not start: ", "red");
+        whatif_log (error != NULL ? error->message : "no reason given",
+                    "red");
+        whatif_log ("\n", NULL);
+        g_clear_error (&error);
+        return;
+    }
+
+    fs_statusview_set_state (fs_backend ()->get_state ());
+    whatif_log ("\n[OK] The firewall was started.\n", "green");
+    whatif_ask_again (result, act->gives);
+}
+
+/* [ whatif_apply_policy ] */
+static void
+whatif_apply_policy (const FsWhatIfResult *result,
+                     const FsWhatIfAction *act)
+{
+    if (copilot_policy == NULL)
+        return;
+    if (!whatif_confirm (_("Apply the policy"),
+                         _("Apply the saved policy to the firewall now?\n\n"
+                           "The firewall then runs exactly the rules on the "
+                           "Policy page."))) {
+        whatif_log ("\n[=] The policy was not applied.\n", "dim");
+        return;
+    }
+
+    whatif_log ("\n[=] Applying the saved policy:\n", NULL);
+    whatif_push ("what-if apply");
+    whatif_ask_again (result, act->gives);
+}
+
+/* [ whatif_window_action ] -- a button in the What-If window. */
+static void
+whatif_window_action (GtkWidget *window, const FsWhatIfResult *result,
+                      const FsWhatIfAction *act, gpointer data)
+{
+    (void) data;
+
+    if (act == NULL || result == NULL || result->query == NULL)
         return;
 
-    if (act->kind == FS_WHATIF_ACT_LIFT_SENTINEL)
-        lift_sentinel_from_whatif (result, act);
-    else
+    whatif_report_begin ();
+
+    switch (act->kind) {
+    case FS_WHATIF_ACT_CREATE_ALLOW:
+    case FS_WHATIF_ACT_CREATE_BLOCK:
         create_rule_from_whatif (result, act);
+        break;
+    case FS_WHATIF_ACT_LIFT_SENTINEL:
+        lift_sentinel_from_whatif (result, act);
+        break;
+    case FS_WHATIF_ACT_OPEN_RULE:
+        whatif_open_rule (act);
+        break;
+    case FS_WHATIF_ACT_OPEN_ICMP_SETTINGS:
+    case FS_WHATIF_ACT_OPEN_SETTINGS:
+        fs_dialogs_preferences (window);
+        /* Whatever was changed there, the answer is asked again. */
+        whatif_log ("\n[=] Asked again with the Preferences as saved now:\n",
+                    NULL);
+        whatif_ask_again (result, act->gives);
+        break;
+    case FS_WHATIF_ACT_START_FIREWALL:
+        whatif_start_firewall (result, act);
+        break;
+    case FS_WHATIF_ACT_APPLY_POLICY:
+        whatif_apply_policy (result, act);
+        break;
+    default:
+        break;
+    }
+
+    whatif_report_end ();
 }
 
 /* =====================================================================

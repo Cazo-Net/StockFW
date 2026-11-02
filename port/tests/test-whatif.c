@@ -348,6 +348,20 @@ test_reading (void)
 		  FS_WHATIF_PROTO_TCP, 22, NULL, NULL },
 		{ "block 8.8.8.8", 0, FS_WHATIF_VERB_BLOCK, FS_WHATIF_DIR_BOTH,
 		  FS_WHATIF_PROTO_ANY, 0, "8.8.8.8", NULL },
+		/* the What-If card's examples, read as the card shows them */
+		{ "Can 192.168.1.50 reach my SSH?", 0, FS_WHATIF_VERB_NONE,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 22, "192.168.1.50",
+		  NULL },
+		{ "Is outbound DNS to 8.8.8.8 allowed?", 0, FS_WHATIF_VERB_NONE,
+		  FS_WHATIF_DIR_OUTBOUND, FS_WHATIF_PROTO_ANY, 53, "8.8.8.8", NULL },
+		/* "the internet" names the far side, not a host: inbound
+		 * from any host, never both ways */
+		{ "block RDP from the internet", 0, FS_WHATIF_VERB_BLOCK,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 3389, NULL, NULL },
+		{ "allow https to anywhere", 0, FS_WHATIF_VERB_ALLOW,
+		  FS_WHATIF_DIR_OUTBOUND, FS_WHATIF_PROTO_TCP, 443, NULL, NULL },
+		{ "inbound ssh to the internet", 0, FS_WHATIF_VERB_NONE,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 22, NULL, NULL },
 		/* refusals, never guesses */
 		{ "", FS_WHATIF_ERR_EMPTY, 0, 0, 0, 0, NULL, NULL },
 		{ "   ", FS_WHATIF_ERR_EMPTY, 0, 0, 0, 0, NULL, NULL },
