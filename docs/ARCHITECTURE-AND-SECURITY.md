@@ -1208,6 +1208,7 @@ Recorded, not fixed in 1.0.6:
 
 - The what-if parser treats `inbound rdp` (no source) as matched by a host-specific allow rule ("Allow inbound (10.0.0.5)") and answers ALLOWED. The verdict should be conditional on the source; this belongs to the Copilot's matching and needs its own tests.
 - The service table has no entry for 3389 (RDP), so those events and connections read *Unknown*.
+- **Linux does not filter IPv6.** Every rule, flush and hook in `fs-backend-linux.c` is an `iptables` argv; there is no `ip6tables` call and no nftables `inet` table, so IPv6 traffic bypasses the policy while `/proc/net/tcp6` connections are still listed. This is a WYSIWYG gap (Chapter 1.3) and is the first item for 1.0.7: mirror rules to `ip6tables` with ICMPv6 neighbour discovery always allowed, and show the IPv6 state on the Firewall page and in `stockfw status`. [Verified] gap, [Roadmap] fix.
 - Linux rule application drives `iptables`; on current distributions that is the `iptables-nft` shim, so rules land in nftables, but a native `nft` backend (atomic rule-set replacement, sets for large block lists) is [Roadmap].
 
 ---

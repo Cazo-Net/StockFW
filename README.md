@@ -98,6 +98,13 @@ rules — without a shell prompt.
 | Event source | Security log 5156/5157 | kernel log |
 | Profiles | Domain / Private / Public per-profile state | filter table |
 | Build | MSYS2 (UCRT64) | CMake + Ninja (Debian/Kali/WSL2) |
+| IPv6 | Filtered (Windows Firewall covers both families) | **Not filtered yet.** Rules are written for IPv4 only; see below |
+
+**Known limit (Linux, IPv6).** The Linux backend writes `iptables` rules,
+which apply to IPv4 only. IPv6 traffic is not filtered by StockFW, even
+though IPv6 connections appear in the Connections panel. On a host with a
+global IPv6 address, keep the distribution's own `ip6tables`/nftables
+policy in place, or disable IPv6, until IPv6 rules ship (planned for 1.0.7).
 
 ## Privilege model (summary)
 
