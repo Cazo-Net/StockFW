@@ -54,6 +54,14 @@ const gchar *fs_ipv6_state_to_string (FsIpv6State state);
  * vtable can name it without this header pulling the intel engine in. */
 typedef struct _FsIntelRuleset FsIntelRuleset;
 
+/* Whether the threat-intel rules are in the kernel (1.0.7). */
+typedef enum
+{
+	FS_INTEL_LIVE_UNKNOWN = 0,   /* cannot tell (not root, no nft)       */
+	FS_INTEL_LIVE_ABSENT,
+	FS_INTEL_LIVE_PRESENT
+} FsIntelLive;
+
 /* Where this computer is connected and which firewall profiles are in
  * force (core/fs-netplace.h). */
 typedef struct _FsNetworkPlace FsNetworkPlace;
@@ -232,10 +240,17 @@ typedef struct
 	                         GError **error);
 	/* Remove them all.  Not an error when there is nothing to remove. */
 	gboolean (*intel_clear) (GError **error);
-	/* Packets dropped per set id since the rules were loaded: a table of
-	 * gchar* -> guint64* (both owned by the table).  NULL when the
-	 * platform cannot count or nothing is loaded. */
+	/* Packets and bytes blocked per set id since the rules were loaded:
+	 * gchar* -> FsIntelCounter* (core/fs-intelset.h), both owned by the
+	 * table.  NULL when the platform cannot count or nothing is
+	 * loaded.  Must be cheap: it never lists set elements [S8.3]. */
 	GHashTable *(*intel_counters) (void);
+	/* Whether the rules are in the kernel right now, and the digest
+	 * they were loaded with (caller frees; NULL when absent or not
+	 * recorded).  The core compares it with what it last applied, so
+	 * a table removed behind StockFW's back (a reboot, `nft flush
+	 * ruleset') is reported, never assumed [S10]. */
+	FsIntelLive (*intel_live) (gchar **digest);
 } FsBackend;
 
 /* Profile identifiers, matching Windows' own numbering. */
