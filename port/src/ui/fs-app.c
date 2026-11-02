@@ -5,9 +5,13 @@
  * and the gnome_program_init()/gnome_master_client() startup dance in
  * the original stockfw.c with a plain GtkApplication.
  *
- * Layout (light theme): menubar (GtkApplication) -> custom tab band
- * (the notebook's own tabs are hidden; the band carries the four page
- * buttons) -> per-page toolbar strip -> notebook content.
+ * Layout (1.0.7 redesign): a dark sidebar on the left -- the logo on a
+ * light tile, one item per page, Preferences and About, and the
+ * firewall's verdict at the bottom -- and the selected page on the
+ * right.  The pages live in a GtkNotebook whose own tabs are hidden;
+ * the sidebar items stand in for them.  There is no menubar: its three
+ * entries (Preferences, About, Quit) are the sidebar's footer items and
+ * the Ctrl+, / Ctrl+Q shortcuts.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-app.h"
@@ -19,6 +23,7 @@
 #include "ui/fs-copilot.h"
 #include "ui/fs-trustview.h"
 #include "ui/fs-tray.h"
+#include "ui/fs-icons.h"
 #include "core/fs-backend.h"
 #include "core/fs-prefs.h"
 #include "core/fs-rules.h"
@@ -80,20 +85,18 @@ logo_icon_list (void)
 	return list;
 }
 
-/* Holds one toolbar row per notebook page; only the selected page's
- * row is visible at a time. */
-static GtkWidget *toolbar_host = NULL;
+/* The sidebar's page items, index-aligned with the notebook pages
+ * (FsAppPage order). */
+static GtkWidget *nav_items[FS_PAGE_COUNT];
 
-/* The six buttons of the custom tab band, index-aligned with the
- * notebook pages. */
-#define FS_TAB_COUNT 6
-static GtkWidget *tab_buttons[FS_TAB_COUNT] = {
-	NULL, NULL, NULL, NULL, NULL, NULL
-};
+/* Set while the sidebar is being re-synced to the notebook, so the
+ * items' own handlers do not fire back into the notebook. */
+static gboolean nav_syncing = FALSE;
 
-/* Set while the band is being re-synced to the notebook, so the
- * band's own handlers do not fire back into the notebook. */
-static gboolean tabs_syncing = FALSE;
+/* The sidebar footer: verdict dot, verdict, and who enforces it. */
+static GtkWidget *side_dot = NULL;
+static GtkWidget *side_state = NULL;
+static GtkWidget *side_backend = NULL;
 
 /* The traffic policy, shared by the Policy page and Apply. */
 static FsPolicy *policy = NULL;
@@ -154,37 +157,6 @@ on_window_state_event (GtkWidget *widget, GdkEventWindowState *event,
 	return FALSE;
 }
 
-/* [ build_menubar ]
- * GtkApplication takes a GMenuModel, not a GtkMenuBar.  The action names
- * must match the ones registered below. */
-static GMenuModel *
-build_menubar (void)
-{
-	GMenu *bar = g_menu_new ();
-	GMenu *menu, *section;
-
-	/* File */
-	menu = g_menu_new ();
-	section = g_menu_new ();
-	g_menu_append (section, _("_Preferences"), "app.preferences");
-	g_menu_append (section, _("_Quit"), "app.quit");
-	g_menu_append_section (menu, NULL, G_MENU_MODEL (section));
-	g_object_unref (section);
-	g_menu_append_submenu (bar, _("_File"), G_MENU_MODEL (menu));
-	g_object_unref (menu);
-
-	/* Help */
-	menu = g_menu_new ();
-	section = g_menu_new ();
-	g_menu_append (section, _("_About"), "app.about");
-	g_menu_append_section (menu, NULL, G_MENU_MODEL (section));
-	g_object_unref (section);
-	g_menu_append_submenu (bar, _("_Help"), G_MENU_MODEL (menu));
-	g_object_unref (menu);
-
-	return G_MENU_MODEL (bar);
-}
-
 /* [ on_action_quit ]
  * "app.quit" */
 static void
@@ -229,69 +201,66 @@ register_actions (void)
 	g_signal_connect (preferences, "activate", G_CALLBACK (on_action_preferences), NULL);
 	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (preferences));
 	g_object_unref (preferences);
+
+	/* The menubar these used to live in is gone; the shortcuts stay. */
+	{
+		const gchar *quit_keys[] = { "<Primary>q", NULL };
+		const gchar *pref_keys[] = { "<Primary>comma", NULL };
+
+		gtk_application_set_accels_for_action (fsapp.app, "app.quit",
+		                                       quit_keys);
+		gtk_application_set_accels_for_action (fsapp.app,
+		                                       "app.preferences",
+		                                       pref_keys);
+	}
 }
 
 /* [ add_page ]
- * Appends a notebook page and pairs it with a row in the toolbar strip
- * above the notebook.  Every page contributes a row -- even an empty
- * one -- so the strip and the notebook stay index-aligned. */
+ * Appends a notebook page.  The sidebar item for it already exists:
+ * the two are index-aligned by FsAppPage. */
 static void
-add_page (const gchar *title, GtkWidget *content, GtkWidget *toolbar)
+add_page (const gchar *title, GtkWidget *content)
 {
-	GtkWidget *label = gtk_label_new (title);
-
 	gtk_widget_show_all (content);
-	gtk_notebook_append_page (GTK_NOTEBOOK (fsapp.notebook), content, label);
-
-	if (toolbar == NULL)
-		toolbar = gtk_toolbar_new ();
-
-	gtk_box_pack_start (GTK_BOX (toolbar_host), toolbar, FALSE, FALSE, 0);
-	gtk_widget_set_no_show_all (toolbar, TRUE);
-	gtk_widget_hide (toolbar);
+	gtk_notebook_append_page (GTK_NOTEBOOK (fsapp.notebook), content,
+	                          gtk_label_new (title));
 }
 
-/* [ sync_tab_band ]
- * Push the notebook's current page into the band: active button gets
- * the "tab-active" class (the one deterministic way to colour the
- * selected tab), the rest lose it. */
+/* [ sync_nav ]
+ * Push the notebook's current page into the sidebar: the selected item
+ * is checked and carries "nav-active", the rest lose both. */
 static void
-sync_tab_band (guint page_num)
+sync_nav (guint page_num)
 {
-	tabs_syncing = TRUE;
+	nav_syncing = TRUE;
 
-	for (guint i = 0; i < FS_TAB_COUNT; i++) {
+	for (guint i = 0; i < FS_PAGE_COUNT; i++) {
 		GtkStyleContext *ctx;
 
-		if (tab_buttons[i] == NULL)
+		if (nav_items[i] == NULL)
 			continue;
 
-		ctx = gtk_widget_get_style_context (tab_buttons[i]);
-
-		if (i == page_num) {
-			gtk_toggle_button_set_active (
-				GTK_TOGGLE_BUTTON (tab_buttons[i]), TRUE);
-			gtk_style_context_add_class (ctx, "tab-active");
-		} else {
-			gtk_toggle_button_set_active (
-				GTK_TOGGLE_BUTTON (tab_buttons[i]), FALSE);
-			gtk_style_context_remove_class (ctx, "tab-active");
-		}
+		ctx = gtk_widget_get_style_context (nav_items[i]);
+		gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (nav_items[i]),
+		                              i == page_num);
+		if (i == page_num)
+			gtk_style_context_add_class (ctx, "nav-active");
+		else
+			gtk_style_context_remove_class (ctx, "nav-active");
 	}
 
-	tabs_syncing = FALSE;
+	nav_syncing = FALSE;
 }
 
-/* [ on_tab_clicked ]
- * A band button was pressed.  A press on the already-active tab
- * toggles the button off; tabs are not optional, so put it straight
- * back instead of leaving the band with no selection. */
+/* [ on_nav_toggled ]
+ * A sidebar item was pressed.  A press on the selected item would
+ * un-check it; pages are not optional, so put it straight back. */
 static void
-on_tab_clicked (GtkToggleButton *button, gpointer data)
+on_nav_toggled (GtkToggleButton *button, gpointer data)
 {
 	guint page = GPOINTER_TO_UINT (data);
 
-	if (tabs_syncing)
+	if (nav_syncing)
 		return;
 
 	if (!gtk_toggle_button_get_active (button)) {
@@ -303,76 +272,226 @@ on_tab_clicked (GtkToggleButton *button, gpointer data)
 	                               (gint) page);
 }
 
-/* [ build_tab_band ]
- * The full-width light-slate band that replaces the notebook's own
- * tab row: flat buttons, rounded corners, the selected one filled
- * classic blue with white text. */
-static GtkWidget *
-build_tab_band (void)
+void
+fs_app_show_page (FsAppPage page)
 {
-	static const gchar *labels[FS_TAB_COUNT];
-	GtkWidget *band;
-	GtkWidget *spacer;
+	if (fsapp.notebook == NULL || page >= FS_PAGE_COUNT)
+		return;
 
-	band = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
-	gtk_widget_set_hexpand (band, TRUE);
-	gtk_style_context_add_class (gtk_widget_get_style_context (band),
-	                             "tab-band");
-
-	labels[0] = _("Status");
-	labels[1] = _("Events");
-	labels[2] = _("Activity");
-	labels[3] = _("Policy");
-	labels[4] = _("Copilot");
-	labels[5] = _("Trust");
-
-	for (guint i = 0; i < FS_TAB_COUNT; i++) {
-		GtkWidget *btn = gtk_toggle_button_new_with_label (labels[i]);
-
-		gtk_style_context_add_class (gtk_widget_get_style_context (btn),
-		                             "tab-button");
-		gtk_button_set_relief (GTK_BUTTON (btn), GTK_RELIEF_NONE);
-		g_signal_connect (btn, "toggled",
-		                  G_CALLBACK (on_tab_clicked),
-		                  GUINT_TO_POINTER (i));
-		gtk_box_pack_start (GTK_BOX (band), btn, FALSE, FALSE, 0);
-		tab_buttons[i] = btn;
-	}
-
-	/* Keep the tabs left-aligned when the band is wider than they are. */
-	spacer = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-	gtk_widget_set_hexpand (spacer, TRUE);
-	gtk_box_pack_start (GTK_BOX (band), spacer, TRUE, TRUE, 0);
-
-	return band;
+	gtk_notebook_set_current_page (GTK_NOTEBOOK (fsapp.notebook),
+	                               (gint) page);
 }
 
-/* [ on_page_switched ]
- * Show only the toolbar row that belongs to the selected page, and
- * keep the tab band in step with the notebook. */
+/* [ on_page_switched ] -- keep the sidebar in step with the notebook. */
 static void
 on_page_switched (GtkNotebook *notebook, GtkWidget *page, guint page_num,
                   gpointer data)
 {
-	GList *children;
-	guint i = 0;
-
 	(void) notebook;
 	(void) page;
 	(void) data;
 
-	children = gtk_container_get_children (GTK_CONTAINER (toolbar_host));
+	sync_nav (page_num);
+}
 
-	for (GList *l = children; l != NULL; l = l->next, i++) {
-		if (i == page_num)
-			gtk_widget_show (l->data);
-		else
-			gtk_widget_hide (l->data);
+/* [ nav_button ]
+ * One sidebar item: a drawn icon and a label in a flat button.  The
+ * icon is drawn in the button's CSS colour, so hover and selection
+ * recolour it along with the text. */
+static GtkWidget *
+nav_button (GtkWidget *button, FsIconKind icon, const gchar *text)
+{
+	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+	GtkWidget *label = gtk_label_new (text);
+
+	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	gtk_box_pack_start (GTK_BOX (row), fs_icon_new (icon, 18),
+	                    FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (row), label, TRUE, TRUE, 0);
+	gtk_container_add (GTK_CONTAINER (button), row);
+
+	gtk_button_set_relief (GTK_BUTTON (button), GTK_RELIEF_NONE);
+	gtk_widget_set_can_focus (button, TRUE);
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "nav-item");
+	return button;
+}
+
+static void
+on_nav_preferences (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+	fs_dialogs_preferences (fsapp.window);
+}
+
+static void
+on_nav_about (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+	fs_dialogs_about (fsapp.window);
+}
+
+/* [ sync_sidebar_state ]
+ * The footer's verdict follows the Overview page's, word for word, so
+ * the two can never disagree. */
+static void
+sync_sidebar_state (gpointer data)
+{
+	static const gchar *const dot_classes[] = {
+		"dot-unknown", "dot-ok", "dot-warn", "dot-bad"
+	};
+	FsVerdict level = FS_VERDICT_UNKNOWN;
+	const gchar *text = fs_statusview_verdict (&level);
+	const gchar *backend_name = fs_backend ()->display_name;
+	GtkStyleContext *ctx;
+
+	(void) data;
+
+	if (side_state == NULL)
+		return;
+
+	gtk_label_set_text (GTK_LABEL (side_state), text);
+	gtk_label_set_text (GTK_LABEL (side_backend),
+	                    backend_name != NULL ? backend_name : "");
+
+	ctx = gtk_widget_get_style_context (side_dot);
+	for (guint i = 0; i < G_N_ELEMENTS (dot_classes); i++)
+		gtk_style_context_remove_class (ctx, dot_classes[i]);
+	if ((guint) level < G_N_ELEMENTS (dot_classes))
+		gtk_style_context_add_class (ctx, dot_classes[level]);
+}
+
+/* [ build_sidebar ]
+ * Logo on a light tile (the logo's dark lower half disappears on the
+ * dark sidebar otherwise), the page items, then Preferences and About,
+ * then the verdict. */
+static GtkWidget *
+build_sidebar (void)
+{
+	static const struct {
+		FsIconKind icon;
+		const gchar *label;
+	} pages[FS_PAGE_COUNT] = {
+		{ FS_ICON_SHIELD,       N_("Overview") },
+		{ FS_ICON_LIST,         N_("Events") },
+		{ FS_ICON_ACTIVITY,     N_("Activity") },
+		{ FS_ICON_SLIDERS,      N_("Policy") },
+		{ FS_ICON_CHAT,         N_("Copilot") },
+		{ FS_ICON_CHECK_CIRCLE, N_("Trust") },
+	};
+	GtkWidget *bar, *brand, *tile, *names, *label, *spacer, *footer, *row;
+
+	bar = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+	gtk_widget_set_size_request (bar, 220, -1);
+	gtk_style_context_add_class (gtk_widget_get_style_context (bar),
+	                             "fs-sidebar");
+
+	/* ---- brand ---- */
+	brand = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+	gtk_style_context_add_class (gtk_widget_get_style_context (brand),
+	                             "fs-brand");
+
+	tile = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_widget_set_size_request (tile, 40, 40);
+	gtk_widget_set_valign (tile, GTK_ALIGN_CENTER);
+	gtk_style_context_add_class (gtk_widget_get_style_context (tile),
+	                             "fs-brand-tile");
+	{
+		GdkPixbuf *logo = logo_pixbuf (stockfw_logo_32_png,
+		                               stockfw_logo_32_png_len);
+
+		if (logo != NULL) {
+			GtkWidget *image = gtk_image_new_from_pixbuf (logo);
+
+			gtk_widget_set_halign (image, GTK_ALIGN_CENTER);
+			gtk_widget_set_valign (image, GTK_ALIGN_CENTER);
+			gtk_box_pack_start (GTK_BOX (tile), image, TRUE, TRUE, 0);
+			g_object_unref (logo);
+		}
+	}
+	gtk_box_pack_start (GTK_BOX (brand), tile, FALSE, FALSE, 0);
+
+	names = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	gtk_widget_set_valign (names, GTK_ALIGN_CENTER);
+	label = gtk_label_new ("StockFW");
+	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	gtk_style_context_add_class (gtk_widget_get_style_context (label),
+	                             "fs-brand-name");
+	gtk_box_pack_start (GTK_BOX (names), label, FALSE, FALSE, 0);
+#ifdef FS_VERSION
+	label = gtk_label_new (FS_VERSION);
+#else
+	label = gtk_label_new ("");
+#endif
+	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	gtk_style_context_add_class (gtk_widget_get_style_context (label),
+	                             "fs-brand-version");
+	gtk_box_pack_start (GTK_BOX (names), label, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (brand), names, FALSE, FALSE, 0);
+
+	gtk_box_pack_start (GTK_BOX (bar), brand, FALSE, FALSE, 0);
+
+	/* ---- pages ---- */
+	for (guint i = 0; i < FS_PAGE_COUNT; i++) {
+		GtkWidget *item = nav_button (gtk_toggle_button_new (),
+		                              pages[i].icon, _(pages[i].label));
+
+		g_signal_connect (item, "toggled", G_CALLBACK (on_nav_toggled),
+		                  GUINT_TO_POINTER (i));
+		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
+		nav_items[i] = item;
 	}
 
-	g_list_free (children);
+	spacer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	gtk_box_pack_start (GTK_BOX (bar), spacer, TRUE, TRUE, 0);
 
-	sync_tab_band (page_num);
+	/* ---- Preferences, About ---- */
+	{
+		GtkWidget *item;
+
+		item = nav_button (gtk_button_new (), FS_ICON_SETTINGS,
+		                   _("Preferences"));
+		gtk_widget_set_tooltip_text (item, _("Preferences (Ctrl+,)"));
+		g_signal_connect (item, "clicked",
+		                  G_CALLBACK (on_nav_preferences), NULL);
+		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
+
+		item = nav_button (gtk_button_new (), FS_ICON_INFO,
+		                   _("About StockFW"));
+		g_signal_connect (item, "clicked", G_CALLBACK (on_nav_about),
+		                  NULL);
+		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
+	}
+
+	/* ---- verdict ---- */
+	footer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+	gtk_style_context_add_class (gtk_widget_get_style_context (footer),
+	                             "fs-sidebar-footer");
+
+	row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+	side_dot = fs_icon_new (FS_ICON_DOT, 8);
+	gtk_style_context_add_class (gtk_widget_get_style_context (side_dot),
+	                             "fs-side-dot");
+	gtk_box_pack_start (GTK_BOX (row), side_dot, FALSE, FALSE, 0);
+	side_state = gtk_label_new (NULL);
+	gtk_label_set_xalign (GTK_LABEL (side_state), 0.0);
+	gtk_style_context_add_class (gtk_widget_get_style_context (side_state),
+	                             "fs-side-state");
+	gtk_box_pack_start (GTK_BOX (row), side_state, TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (footer), row, FALSE, FALSE, 0);
+
+	side_backend = gtk_label_new (NULL);
+	gtk_label_set_xalign (GTK_LABEL (side_backend), 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (side_backend), TRUE);
+	gtk_style_context_add_class (gtk_widget_get_style_context (side_backend),
+	                             "fs-side-backend");
+	gtk_box_pack_start (GTK_BOX (footer), side_backend, FALSE, FALSE, 0);
+
+	gtk_box_pack_start (GTK_BOX (bar), footer, FALSE, FALSE, 0);
+
+	return bar;
 }
 
 /* [ install_theme ]
@@ -434,10 +553,10 @@ fs_app_activate (GtkApplication *app)
 	/* Window */
 	fsapp.window = gtk_application_window_new (app);
 	gtk_window_set_title (GTK_WINDOW (fsapp.window), "StockFW");
-	/* Six pages, two of them side-by-side graphs: 620x480 (the old
-	 * size) clipped the Activity cards and the Policy groups' buttons.
-	 * 1000x700 still fits a 1366x768 laptop screen with its panel. */
-	gtk_window_set_default_size (GTK_WINDOW (fsapp.window), 1000, 700);
+	/* Sidebar (220) plus an Overview that shows its connections and
+	 * adapters side by side.  1180x780 still fits a 1366x768 laptop
+	 * screen once the window manager has had its say. */
+	gtk_window_set_default_size (GTK_WINDOW (fsapp.window), 1180, 780);
 
 	/* Window icon from the embedded logo, in several sizes. */
 	{
@@ -456,11 +575,10 @@ fs_app_activate (GtkApplication *app)
 	/* Theme first: everything built below picks up the classes. */
 	install_theme ();
 
-	box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 	gtk_container_add (GTK_CONTAINER (fsapp.window), box);
 
 	register_actions ();
-	gtk_application_set_menubar (fsapp.app, build_menubar ());
 
 	/* The default icon for ALL windows (main, dialogs, about). */
 	{
@@ -471,40 +589,32 @@ fs_app_activate (GtkApplication *app)
 		g_list_free_full (icons, g_object_unref);
 	}
 
-	/* Tab band, above the toolbar strip: six flat buttons standing
-	 * in for the notebook's tab row (which is switched off below). */
-	gtk_box_pack_start (GTK_BOX (box), build_tab_band (),
-	                    FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (box), build_sidebar (), FALSE, FALSE, 0);
 
-	/* Toolbar strip, above the notebook, one row per page. */
-	toolbar_host = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-	gtk_box_pack_start (GTK_BOX (box), toolbar_host, FALSE, FALSE, 0);
-
-	/* Notebook pages.  Order matches the original: Status, Events,
-	 * Policy, with Activity beside the Events it graphs and Copilot
-	 * and Trust last. */
+	/* The pages, in sidebar order (FsAppPage). */
 	fsapp.notebook = gtk_notebook_new ();
 	gtk_notebook_set_show_tabs (GTK_NOTEBOOK (fsapp.notebook), FALSE);
 	gtk_notebook_set_show_border (GTK_NOTEBOOK (fsapp.notebook), FALSE);
+	gtk_widget_set_hexpand (fsapp.notebook, TRUE);
 	gtk_widget_set_vexpand (fsapp.notebook, TRUE);
 	gtk_box_pack_start (GTK_BOX (box), fsapp.notebook, TRUE, TRUE, 0);
 
 	g_signal_connect (fsapp.notebook, "switch-page",
 	                  G_CALLBACK (on_page_switched), NULL);
 
-	add_page (_("Status"), fs_statusview_page (),
-	          fs_statusview_toolbar ());
-	add_page (_("Events"), fs_hitview_page (), NULL);
+	add_page (_("Overview"), fs_statusview_page ());
+	add_page (_("Events"), fs_hitview_page ());
 
 	/* Activity (1.0.6): the graphs, beside the list they count. */
-	add_page (_("Activity"), fs_activityview_page (), NULL);
+	add_page (_("Activity"), fs_activityview_page ());
 
 	policy = fs_policy_new ();
 
 	/* The Events page was built above (before there was a policy to
 	 * give it); its right-click Event -> Rule actions need the
-	 * pointer now that it exists. */
+	 * pointer now that it exists.  The Overview counts its rules. */
 	fs_hitview_set_policy (policy);
+	fs_statusview_set_policy (policy);
 
 	settings = fs_settings_new ();
 	fs_settings_load_prefs (settings);
@@ -521,7 +631,7 @@ fs_app_activate (GtkApplication *app)
 			g_clear_error (&error);
 	}
 
-	add_page (_("Policy"), fs_policyview_page (policy), NULL);
+	add_page (_("Policy"), fs_policyview_page (policy));
 
 	/* Smart Firewall Copilot tab */
 	copilot = fs_copilot_new ();
@@ -540,7 +650,7 @@ fs_app_activate (GtkApplication *app)
 		g_free (baseline);
 	}
 
-	add_page (_("Copilot"), fs_copilot_page (copilot, policy), NULL);
+	add_page (_("Copilot"), fs_copilot_page (copilot, policy));
 
 	/* P6 (false-outage hardening): the Sentinel staged-block list is
 	 * persisted, so a restart must reconcile it -- rows whose ten
@@ -552,15 +662,14 @@ fs_app_activate (GtkApplication *app)
 	fs_copilot_autoblocks_restore (policy);
 
 	/* Trust tab: the application trust engine's surface. */
-	add_page (_("Trust"), fs_trustview_page (), NULL);
+	add_page (_("Trust"), fs_trustview_page ());
 
 	gtk_widget_show_all (fsapp.window);
+	sync_nav ((guint) gtk_notebook_get_current_page (
+		GTK_NOTEBOOK (fsapp.notebook)));
 
-	/* show_all() would reveal every toolbar row at once; reapply the
-	 * selection so only the current page's row is left visible. */
-	on_page_switched (NULL, NULL,
-	                  (guint) gtk_notebook_get_current_page (
-	                  GTK_NOTEBOOK (fsapp.notebook)), NULL);
+	/* The sidebar's verdict follows the Overview's. */
+	fs_statusview_set_changed_cb (sync_sidebar_state, NULL);
 
 	/* Reflect the real firewall state, if the backend knows it. */
 	fs_statusview_set_state (fs_backend ()->get_state ());

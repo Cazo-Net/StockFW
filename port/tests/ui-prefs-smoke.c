@@ -57,7 +57,7 @@ static gboolean failed = FALSE;
  *     exactly what the first themed spawn reported);
  *   - a sheet that parses fine but lost a design colour is invisible
  *     to GTK altogether -- the pinned palette tokens are asserted
- *     present (demonstrated: removing #ae0000 fails this check).
+ *     present (demonstrated: removing #14161b fails this check).
  *
  * No log handler is installed: every CSS defect class found so far
  * is either a hard load failure or one of the two substrings above. */
@@ -638,10 +638,11 @@ main (int argc, char **argv)
 	 * pseudo-classes -- see the file comment for each one's teeth. */
 	{
 		static const gchar *const tokens[] = {
-			"#f0f2f5",   /* canvas                        */
-			"#f0f0f0",   /* tab band                      */
-			"#ae0000",   /* accent: tab, buttons, select  */
-			"#8b0000",   /* accent hover / button border  */
+			"#f4f5f7",   /* canvas (1.0.7 palette)        */
+			"#14161b",   /* sidebar                       */
+			"#16181d",   /* ink, primary button           */
+			"#2a2f39",   /* selected nav item, hover      */
+			"#eaf0fb",   /* selected row (neutral)        */
 			"#ffebee",   /* blocked row background        */
 			"#b71c1c",   /* blocked row text              */
 			"#f9f9f9",   /* alternating status rows       */

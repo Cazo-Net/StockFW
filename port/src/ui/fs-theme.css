@@ -1,12 +1,15 @@
 /* =====================================================================
  * StockFW Light Theme (GTK3)
  *
- * Palette:
- *   canvas #F0F2F5   surfaces #FFFFFF   tab band #F0F0F0
- *   active tab #AE0000 (white text)     grid lines #E0E0E0
- *   selected row #AE0000 (white text)   alert row #FFEBEE / #B71C1C
- *   success #2E7D32   danger #C62828    warning #B26A00 / #E65100
- *   primary button #AE0000 (white text; hover #8B0000, active #6F0000)
+ * Palette (1.0.7 redesign):
+ *   canvas #F4F5F7     cards #FFFFFF, hairline #E3E6EB, radius 12
+ *   sidebar #14161B    nav text #C9CED6, hover #1F232B, selected #2A2F39
+ *   ink #16181D        muted #5B6472 (4.5:1 on white and on the canvas)
+ *   primary button #16181D (white text)    links #1D4ED8
+ *   selected row #EAF0FB (ink text): neutral, so it never reads as an
+ *   alert -- red is kept for what is actually blocked or broken
+ *   verdict: ok #1E7F4F on #F4FBF7, warn #8A5300 on #FFF8EB,
+ *            bad #B42318 on #FEF4F3, unknown #3A4250 on #F6F7F9
  *
  * Only GTK3 properties are used; this file is compiled into the
  * binary at configure time (see fs-theme-css.h.in / CMakeLists.txt).
@@ -14,81 +17,7 @@
 
 /* --- window & canvas ------------------------------------------------ */
 window {
-	background-color: #f0f2f5;
-}
-
-/* --- menubar -------------------------------------------------------- */
-menubar {
-	background-color: #f0f2f5;
-	border-bottom: 1px solid #e0e0e0;
-}
-menubar menuitem {
-	color: #424242;
-	padding: 2px 8px;
-}
-menubar menuitem:hover {
-	background-color: #e0e0e0;
-	color: #212121;
-}
-
-/* --- tab band (replaces the notebook's tab row) --------------------- */
-.tab-band {
-	background-color: #f0f0f0;
-	border-bottom: 1px solid #dcdcdc;
-	padding: 4px 8px;
-}
-/* Every tab-button state shares ONE set of size metrics (padding,
- * border, radius, font).  Only colours differ below.  This matters
- * for layout, not looks: GTK paints a switch in several passes, and
- * the just-checked button briefly matches only Adwaita's default
- * button rules (border + different padding = +2px) before the
- * .tab-active class lands.  With per-state metrics the band itself
- * changed height on every page switch, shoving the toolbar strip
- * and the whole page down 2px and back -- the visible "shake" on
- * tab switching, and the one-way window growth on the first
- * switch (the toplevel never shrinks back). */
-.tab-button {
-	padding: 7px 18px;
-	margin: 0 3px;
-	border: none;
-	border-radius: 6px;
-	font-weight: bold;
-	font-size: 13px;
-	min-height: 20px;
-	background-image: none;
-}
-.tab-button:not(.tab-active) {
-	background-color: transparent;
-	color: #424242;
-}
-.tab-button:not(.tab-active):hover {
-	background-color: #e4e4e4;
-	color: #212121;
-}
-.tab-button:not(.tab-active):active {
-	background-color: #d8d8d8;
-}
-/* The active tab.  Two GTK3 traps kept this from painting the accent
- * colour at first: (1) equal-specificity rules resolve in first-match
- * order, so `.tab-button:hover` used to win -- the rules above carry
- * `:not(.tab-active)` so the active tab matches only this block;
- * and (2) Adwaita paints buttons with `background-image`, which
- * draws OVER background-color, so without `background-image: none`
- * this block rendered theme-grey no matter what colour was set
- * (the red/green diagnostic on the inactive tabs proved it).
- *
- * `:checked` is listed alongside .tab-active because the checked
- * flag flips a beat before the class does; styling both alike
- * makes that beat render the final red pill (same size, same
- * colour) instead of Adwaita's pale default. */
-.tab-button:checked,
-.tab-button:checked:hover,
-.tab-button:checked:active,
-.tab-active,
-.tab-active:hover,
-.tab-active:active {
-	background-color: #ae0000;
-	color: #ffffff;
+	background-color: #f4f5f7;
 }
 
 /* --- generic surfaces ----------------------------------------------- */
@@ -98,56 +27,60 @@ menubar menuitem:hover {
 	border-radius: 8px;
 }
 .content-area {
-	background-color: #f0f2f5;
+	background-color: #f4f5f7;
 }
 
 /* --- buttons -------------------------------------------------------- */
-/* White face, fine grey border: the spec's control buttons. */
+/* White face, fine grey border: secondary actions. */
 .btn-subtle {
-	background-image: linear-gradient(to bottom, #ffffff, #f4f6f8);
+	background-image: none;
 	background-color: #ffffff;
-	border: 1px solid #c8cdd4;
-	border-radius: 4px;
-	color: #212121;
-	padding: 6px 16px;
-	font-weight: bold;
+	border: 1px solid #cdd2da;
+	border-radius: 8px;
+	color: #16181d;
+	padding: 8px 16px;
+	font-weight: 600;
 	font-size: 13px;
 }
 .btn-subtle:hover {
-	background-image: linear-gradient(to bottom, #fdeeee, #fbe9e7);
-	border-color: #ae0000;
-	color: #ae0000;
+	background-color: #f4f5f7;
+	border-color: #aeb5c0;
+}
+.btn-subtle:checked {
+	background-color: #eef2f7;
+	border-color: #aeb5c0;
 }
 .btn-subtle:disabled {
-	background-image: none;
-	background-color: #f0f0f0;
-	color: #9e9e9e;
-	border-color: #dcdcdc;
+	background-color: #f4f5f7;
+	color: #8b93a1;
+	border-color: #e3e6eb;
 }
 
+/* The one main action on a screen. */
 .btn-primary {
-	background-color: #ae0000;
+	background-color: #16181d;
 	background-image: none;
-	border: 1px solid #8b0000;
-	border-radius: 4px;
+	border: 1px solid #16181d;
+	border-radius: 8px;
 	color: #ffffff;
-	padding: 6px 16px;
-	font-weight: bold;
+	padding: 8px 16px;
+	font-weight: 600;
 	font-size: 13px;
 	box-shadow: none;
 }
 .btn-primary:hover {
-	background-color: #8b0000;
+	background-color: #2a2f39;
+	border-color: #2a2f39;
 	box-shadow: none;
 }
 .btn-primary:active {
-	background-color: #6f0000;
+	background-color: #000000;
 	box-shadow: none;
 }
 .btn-primary:disabled {
-	background-color: #b0bec5;
-	border-color: #b0bec5;
-	color: #eeeeee;
+	background-color: #c9ced6;
+	border-color: #c9ced6;
+	color: #f4f5f7;
 	box-shadow: none;
 }
 
@@ -192,16 +125,16 @@ entry,
 .entry,
 GtkSearchEntry {
 	background-color: #ffffff;
-	border: 1px solid #d5d9de;
-	border-radius: 4px;
-	color: #212121;
+	border: 1px solid #cdd2da;
+	border-radius: 8px;
+	color: #16181d;
 	padding: 6px 10px;
 	font-size: 13px;
 }
 entry:focus,
 .entry:focus,
 GtkSearchEntry:focus {
-	border-color: #ae0000;
+	border-color: #1d4ed8;
 	background-color: #ffffff;
 }
 
@@ -221,8 +154,8 @@ switch {
 	min-height: 22px;
 }
 switch:checked {
-	background-color: #ae0000;
-	border-color: #8b0000;
+	background-color: #1e7f4f;
+	border-color: #17643e;
 }
 switch slider {
 	background-color: #ffffff;
@@ -274,13 +207,15 @@ treeview row {
 treeview row.row-alt {
 	background-color: #f9f9f9;
 }
-/* Selection: solid accent red, text inverted. */
+/* Selection: a pale neutral blue with ink text.  It used to be the
+ * accent red with white text, which made an ordinary selected row look
+ * exactly like an alert. */
 .data-grid:selected,
 treeview:selected,
 .data-grid row:selected,
 treeview row:selected {
-	background-color: #ae0000;
-	color: #ffffff;
+	background-color: #eaf0fb;
+	color: #16181d;
 }
 /* Blocked rows: soft pastel alert tint, dark red text.  Painted by
  * the cell renderer (background + foreground columns), not by CSS,
@@ -292,8 +227,8 @@ treeview row.alert {
 }
 .data-grid row.alert:selected,
 treeview row.alert:selected {
-	background-color: #c62828;
-	color: #ffffff;
+	background-color: #f9d7d3;
+	color: #8a1c12;
 }
 .data-grid row:selected,
 treeview row:selected {
@@ -436,13 +371,13 @@ treeview cell {
 
 /* --- notebook (tabs are hidden; content on the canvas) --------------- */
 notebook {
-	background-color: #f0f2f5;
+	background-color: #f4f5f7;
 	border: none;
 }
 
 /* --- dialogs --------------------------------------------------------- */
 dialog {
-	background-color: #f0f2f5;
+	background-color: #f4f5f7;
 }
 /* --- Activity page (1.0.6) ----------------------------------------- */
 /* Cards and stat tiles: the same white surface and hairline as the
@@ -498,8 +433,8 @@ dialog {
 	background-color: #f4f6f8;
 }
 .segmented button.seg-button:checked {
-	background-color: #ae0000;
-	border-color: #ae0000;
+	background-color: #16181d;
+	border-color: #16181d;
 	color: #ffffff;
 	font-weight: bold;
 }
@@ -520,4 +455,280 @@ frame > label {
 .empty-state {
 	color: #757575;
 	font-size: 13px;
+}
+
+/* =====================================================================
+ * 1.0.7 redesign: sidebar and Overview
+ * ===================================================================== */
+
+/* --- sidebar --------------------------------------------------------- */
+.fs-sidebar {
+	background-color: #14161b;
+	padding: 20px 12px 16px 12px;
+}
+.fs-brand {
+	padding: 0 8px 18px 8px;
+}
+/* The logo's dark lower half disappears on the sidebar; a light tile
+ * gives it the background it was drawn for. */
+.fs-brand-tile {
+	background-color: #f4f5f7;
+	border-radius: 10px;
+}
+.fs-brand-name {
+	color: #ffffff;
+	font-weight: bold;
+	font-size: 15px;
+}
+.fs-brand-version {
+	color: #8b93a1;
+	font-size: 12px;
+}
+/* Every nav-item state shares one set of metrics; only colours change,
+ * so selecting an item never moves anything (see the theme test). */
+button.nav-item {
+	background-image: none;
+	background-color: transparent;
+	border: none;
+	border-radius: 8px;
+	box-shadow: none;
+	text-shadow: none;
+	color: #c9ced6;
+	padding: 9px 10px;
+	min-height: 22px;
+	font-size: 14px;
+	font-weight: 500;
+	outline-color: #8b93a1;
+}
+button.nav-item:hover {
+	background-color: #1f232b;
+	color: #ffffff;
+}
+button.nav-item:active {
+	background-color: #262a33;
+	color: #ffffff;
+}
+button.nav-item:checked,
+button.nav-item:checked:hover,
+button.nav-item:checked:active,
+button.nav-item.nav-active,
+button.nav-item.nav-active:hover {
+	background-color: #2a2f39;
+	color: #ffffff;
+}
+button.nav-item label {
+	color: inherit;
+}
+.fs-sidebar-footer {
+	border-top: 1px solid #262a33;
+	margin-top: 10px;
+	padding: 14px 10px 0 10px;
+}
+.fs-side-state {
+	color: #ffffff;
+	font-weight: bold;
+	font-size: 13px;
+}
+.fs-side-backend {
+	color: #8b93a1;
+	font-size: 12px;
+}
+/* Status dots: drawn in their CSS colour. */
+.dot-ok      { color: #4ade80; }
+.dot-warn    { color: #fbbf24; }
+.dot-bad     { color: #e34948; }
+.dot-unknown { color: #8b93a1; }
+.recent-row .dot-bad { color: #e34948; }
+
+/* --- Overview: page ---------------------------------------------------- */
+.overview {
+	padding: 28px 32px 36px 32px;
+}
+.page-title {
+	font-size: 22px;
+	font-weight: bold;
+	color: #16181d;
+}
+.page-subtitle,
+.muted {
+	color: #5b6472;
+	font-size: 13px;
+}
+.mono {
+	font-family: "JetBrains Mono", "Cascadia Mono", "DejaVu Sans Mono", monospace;
+	font-size: 12px;
+}
+.card {
+	background-color: #ffffff;
+	border: 1px solid #e3e6eb;
+	border-radius: 12px;
+}
+.padded-card {
+	padding: 16px;
+}
+.card-heading {
+	font-size: 13px;
+	font-weight: bold;
+	color: #16181d;
+}
+.card-head {
+	padding: 14px 16px 12px 16px;
+}
+.card-foot {
+	padding: 10px 16px 12px 16px;
+	border-top: 1px solid #eef0f3;
+}
+/* A flat button that reads as a link. */
+button.fs-link {
+	background-image: none;
+	background-color: transparent;
+	border: none;
+	box-shadow: none;
+	padding: 0 4px;
+	min-height: 0;
+	color: #1d4ed8;
+	font-size: 13px;
+}
+button.fs-link:hover {
+	color: #1e3a8a;
+	background-color: transparent;
+}
+button.fs-link label {
+	color: inherit;
+}
+
+/* --- Overview: verdict card ------------------------------------------- */
+.hero {
+	border: 1px solid #dadfe6;
+	border-radius: 12px;
+	padding: 24px;
+	background-color: #f6f7f9;
+}
+.hero-icon-tile {
+	border-radius: 14px;
+	background-color: #e8ebf0;
+}
+.hero-icon {
+	color: #5b6472;
+}
+.hero-title {
+	font-size: 20px;
+	font-weight: bold;
+	color: #16181d;
+}
+.hero-body {
+	font-size: 14px;
+	color: #3a4250;
+}
+.hero-tile {
+	background-color: #ffffff;
+	border: 1px solid #e1e5ea;
+	border-radius: 10px;
+	padding: 12px 14px;
+}
+.tile-caption {
+	color: #5b6472;
+	font-size: 12px;
+}
+.tile-value {
+	color: #16181d;
+	font-size: 14px;
+	font-weight: bold;
+}
+.tile-value.good { color: #1e7f4f; }
+.tile-value.warn { color: #8a5300; }
+.tile-value.bad  { color: #b42318; }
+
+.hero.level-ok {
+	background-color: #f4fbf7;
+	border-color: #bfe3cf;
+}
+.hero.level-ok .hero-icon-tile { background-color: #ddf2e6; }
+.hero.level-ok .hero-icon      { color: #1e7f4f; }
+.hero.level-ok .hero-title     { color: #145a38; }
+.hero.level-ok .hero-body      { color: #2f4f3e; }
+.hero.level-ok .hero-tile      { border-color: #cfe8da; }
+
+.hero.level-warn {
+	background-color: #fff8eb;
+	border-color: #f3d9a4;
+}
+.hero.level-warn .hero-icon-tile { background-color: #fcebc8; }
+.hero.level-warn .hero-icon      { color: #a15c00; }
+.hero.level-warn .hero-title     { color: #6b3f00; }
+.hero.level-warn .hero-body      { color: #4f3a12; }
+.hero.level-warn .hero-tile      { border-color: #f1ddb0; }
+
+.hero.level-bad {
+	background-color: #fef4f3;
+	border-color: #f4c7c3;
+}
+.hero.level-bad .hero-icon-tile { background-color: #fbe1de; }
+.hero.level-bad .hero-icon      { color: #b42318; }
+.hero.level-bad .hero-title     { color: #8a1c12; }
+.hero.level-bad .hero-body      { color: #5f2a26; }
+.hero.level-bad .hero-tile      { border-color: #f2d0cc; }
+
+/* --- Overview: totals, lists ------------------------------------------- */
+.stat-card {
+	padding: 16px 18px;
+}
+.stat-big {
+	font-size: 26px;
+	font-weight: bold;
+	color: #16181d;
+}
+.stat-note {
+	color: #5b6472;
+	font-size: 12px;
+}
+.overview-grid {
+	font-family: inherit;
+	font-size: 13px;
+}
+.overview-grid header button {
+	background-color: #ffffff;
+	border: none;
+	border-bottom: 1px solid #e3e6eb;
+	color: #5b6472;
+	font-size: 12px;
+	padding: 8px 10px;
+}
+.adapter-tile {
+	background-color: #eef2f7;
+	border-radius: 9px;
+	color: #334155;
+}
+.adapter-name {
+	font-size: 14px;
+	color: #16181d;
+}
+.adapter-num {
+	font-size: 12px;
+	color: #16181d;
+}
+.adapter-num-muted {
+	font-size: 12px;
+	color: #5b6472;
+}
+.recent-row {
+	padding: 10px 0;
+	border-bottom: 1px solid #eef0f3;
+}
+.recent-title {
+	font-size: 13px;
+	font-weight: bold;
+	color: #16181d;
+}
+.recent-detail {
+	font-size: 12px;
+	color: #5b6472;
+}
+.card-frame .profile-row {
+	padding: 10px 14px;
+}
+.card-head entry {
+	min-height: 28px;
+	padding-top: 2px;
+	padding-bottom: 2px;
 }

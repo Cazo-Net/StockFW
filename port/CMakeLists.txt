@@ -121,6 +121,7 @@ add_executable(StockFW
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
   src/ui/fs-tray.c
+  src/ui/fs-icons.c
   ${FS_BACKEND_SOURCES}
 )
 target_include_directories(StockFW PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
@@ -229,6 +230,7 @@ set(FS_UI_SOURCES
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
   src/ui/fs-tray.c
+  src/ui/fs-icons.c
   ${FS_BACKEND_SOURCES}
 )
 add_executable(fs-ui-smoke EXCLUDE_FROM_ALL

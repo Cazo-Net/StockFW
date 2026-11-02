@@ -94,6 +94,13 @@ gboolean fs_util_filter_match (const gchar *needle,
                                const gchar *const *fields,
                                gint n_fields);
 
+/* TRUE when addr is a loopback address: 127.0.0.0/8, ::1, an
+ * IPv4-mapped 127.x (::ffff:127.0.0.1), "localhost", or one of those
+ * in brackets ("[::1]").  The Overview hides connections between two
+ * loopback ends: programs on this computer talking to each other, which
+ * no firewall rule ever sees. */
+gboolean fs_util_is_loopback_address (const gchar *addr);
+
 /* Returns a copy of text with control characters (C0 and DEL)
  * removed, or NULL for NULL.  Rule names go through this before they
  * appear in any textual output (F-3). */

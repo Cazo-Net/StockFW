@@ -3,20 +3,21 @@
  * Two promises the eyes made during review, both of which have
  * visibly regressed once already:
  *
- *   1. GEOMETRY -- a tab button allocates the SAME height in every
- *      state (checked, prelight, active, and both class variants:
- *      with and without .tab-active).  The original page-switch
- *      "shake" was the active/transient tab carrying Adwaita's
- *      default button metrics (+2px border + different padding),
- *      which resized the tab band -- and with it the whole page --
- *      on every switch, plus one-way window growth the toplevel
- *      never shrank back from.  Any per-state or per-class metric
- *      difference fails here before a user ever sees the jitter.
+ *   1. GEOMETRY -- a sidebar item (1.0.7; the tab buttons before it)
+ *      allocates the SAME height in every state (checked, prelight,
+ *      active, and both class variants: with and without
+ *      .nav-active).  The original page-switch "shake" was the
+ *      active/transient tab carrying Adwaita's default button
+ *      metrics (+2px border + different padding), which resized the
+ *      band -- and with it the whole page -- on every switch.  Any
+ *      per-state or per-class metric difference fails here before a
+ *      user ever sees the jitter.
  *
- *   2. COLOUR -- primary actions and the active tab pill paint the
- *      accent red #AE0000 (hover #8B0000), the pill paints red even
- *      in the checked-before-class beat, and no state shows
- *      Adwaita's 1px white inset highlight above the face (the
+ *   2. COLOUR -- primary actions paint the ink #16181D (hover
+ *      #2A2F39), the selected sidebar item paints #2A2F39 even in the
+ *      checked-before-class beat, a selected list row is the neutral
+ *      #EAF0FB rather than the alert red it used to be, and no state
+ *      shows Adwaita's 1px white inset highlight above the face (the
  *      "bit of white above any button").
  *
  * The checks read the stylesheet the way the app applies it: install
@@ -103,14 +104,14 @@ state_name (GtkStateFlags st)
 }
 
 static void
-check_tab_heights (void)
+check_nav_heights (void)
 {
-	static const gchar *with_class[]    = { "tab-button", "tab-active" };
-	static const gchar *without_class[] = { "tab-button" };
+	static const gchar *with_class[]    = { "nav-item", "nav-active" };
+	static const gchar *without_class[] = { "nav-item" };
 	const gchar **combos[] = { without_class, with_class };
 	const gchar *combo_names[] = {
-		"tab-button only (the checked-before-class beat)",
-		"tab-button + tab-active"
+		"nav-item only (the checked-before-class beat)",
+		"nav-item + nav-active"
 	};
 	gint base_min = -1, base_nat = -1;
 	guint ci, si;
@@ -150,7 +151,7 @@ check_tab_heights (void)
 	}
 
 	CHECK (base_min > 0 && base_nat > 0,
-	       "tab button reports a real size request (%d min / %d nat)",
+	       "sidebar item reports a real size request (%d min / %d nat)",
 	       base_min, base_nat);
 }
 
@@ -249,26 +250,49 @@ check_no_white_sliver (const gchar *label, const gchar *klass,
 static void
 check_colours (void)
 {
-	/* Primary actions: #AE0000 face, #8B0000 hover, never white. */
+	/* Primary actions: #16181D face, #2A2F39 hover, never white. */
 	check_fill ("btn-primary rest face", "btn-primary", NULL, 0,
-	            0xae, 0x00, 0x00);
+	            0x16, 0x18, 0x1d);
 	check_fill ("btn-primary hover face", "btn-primary", NULL,
-	            GTK_STATE_FLAG_PRELIGHT, 0x8b, 0x00, 0x00);
+	            GTK_STATE_FLAG_PRELIGHT, 0x2a, 0x2f, 0x39);
 	check_no_white_sliver ("btn-primary hover", "btn-primary",
 	                       GTK_STATE_FLAG_PRELIGHT);
 	check_no_white_sliver ("btn-primary focused", "btn-primary",
 	                       GTK_STATE_FLAG_FOCUSED);
 
-	/* Active tab pill: red with the class, AND in the transient
-	 * checked-before-class beat that used to fall back to the theme. */
-	check_fill ("active tab (checked + tab-active)",
-	            "tab-button", "tab-active",
-	            GTK_STATE_FLAG_CHECKED, 0xae, 0x00, 0x00);
-	check_fill ("checked beat without tab-active class",
-	            "tab-button", NULL,
-	            GTK_STATE_FLAG_CHECKED, 0xae, 0x00, 0x00);
-	check_fill ("active tab at rest", "tab-button", "tab-active",
-	            0, 0xae, 0x00, 0x00);
+	/* Selected sidebar item: filled with the class, AND in the
+	 * transient checked-before-class beat that used to fall back to
+	 * the theme. */
+	check_fill ("selected item (checked + nav-active)",
+	            "nav-item", "nav-active",
+	            GTK_STATE_FLAG_CHECKED, 0x2a, 0x2f, 0x39);
+	check_fill ("checked beat without nav-active class",
+	            "nav-item", NULL,
+	            GTK_STATE_FLAG_CHECKED, 0x2a, 0x2f, 0x39);
+	check_fill ("selected item at rest", "nav-item", "nav-active",
+	            0, 0x2a, 0x2f, 0x39);
+
+	/* A selected row is a neutral highlight, not an alarm. */
+	{
+		GtkWidget *view = gtk_tree_view_new ();
+		GtkStyleContext *ctx = gtk_widget_get_style_context (view);
+		GdkRGBA *bg = NULL;
+
+		gtk_style_context_set_state (ctx, GTK_STATE_FLAG_SELECTED);
+		gtk_style_context_get (ctx, GTK_STATE_FLAG_SELECTED,
+		                       "background-color", &bg, NULL);
+		CHECK (bg != NULL &&
+		       near ((gint) (bg->red * 255 + 0.5), 0xea, 2) &&
+		       near ((gint) (bg->green * 255 + 0.5), 0xf0, 2) &&
+		       near ((gint) (bg->blue * 255 + 0.5), 0xfb, 2),
+		       "a selected list row is the neutral #EAF0FB "
+		       "(got %.0f,%.0f,%.0f)",
+		       bg ? bg->red * 255 : -1, bg ? bg->green * 255 : -1,
+		       bg ? bg->blue * 255 : -1);
+		if (bg != NULL)
+			gdk_rgba_free (bg);
+		gtk_widget_destroy (view);
+	}
 
 	/* The sliver killer must actually be in the stylesheet -- a
 	 * render pipeline that skips box-shadows would otherwise hide
@@ -283,7 +307,7 @@ main (int argc, char **argv)
 	gtk_init (&argc, &argv);
 
 	if (install_theme ()) {
-		check_tab_heights ();
+		check_nav_heights ();
 		check_colours ();
 	}
 

@@ -1492,6 +1492,27 @@ iface_type_name (ULONG type)
 	}
 }
 
+/* [ adapter_kind ]
+ * The Type column for one row.  IANA type 6 covers every adapter that
+ * speaks Ethernet framing, which includes Hyper-V's vEthernet, the
+ * VirtualBox and VMware host-only NICs and most VPN clients' TAP
+ * adapters.  Windows marks which of those has a physical device behind
+ * it (HardwareInterface), and that is what Linux's interface_kind()
+ * asks of sysfs too, so a software adapter reads "Virtual" on both and
+ * the Overview can tuck it away by the same rule.  Tunnel and loopback
+ * keep their own names. */
+static const gchar *
+adapter_kind (const MIB_IF_ROW2 *row)
+{
+	const gchar *name = iface_type_name (row->Type);
+
+	if (row->Type == 24 || row->Type == 131)
+		return name;
+	if (!row->InterfaceAndOperStatusFlags.HardwareInterface)
+		return "Virtual";
+	return name;
+}
+
 /* [ firewalled_list_interface_stats ]
  * Cumulative rx/tx octets per interface.  The view samples twice and
  * diffs these, which is where the "Activity" column comes from. */
@@ -1513,6 +1534,14 @@ firewalled_list_interface_stats (void)
 		if (row->Type == 24)
 			continue;
 
+		/* NDIS filter modules (the WFP and QoS lightweight filters)
+		 * are listed as interfaces of their own, stacked on a real
+		 * adapter and counting the same octets.  Listing them would
+		 * show "Ethernet-WFP Native MAC Layer LightWeight Filter-0000"
+		 * beside "Ethernet" and add that adapter's traffic twice. */
+		if (row->InterfaceAndOperStatusFlags.FilterInterface)
+			continue;
+
 		/* Skip adapters that are down and have never carried
 		 * anything: they are still enumerating. */
 		if (row->OperStatus != IfOperStatusUp &&
@@ -1530,7 +1559,7 @@ firewalled_list_interface_stats (void)
 		if (stat->device == NULL)
 			stat->device = g_strdup ("?");
 
-		stat->kind     = g_strdup (iface_type_name (row->Type));
+		stat->kind     = g_strdup (adapter_kind (row));
 		stat->received = row->InOctets;
 		stat->sent     = row->OutOctets;
 		stat->up       = (row->OperStatus == IfOperStatusUp);

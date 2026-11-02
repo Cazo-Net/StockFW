@@ -545,6 +545,10 @@ on_hit (const FsHit *hit, gpointer user_data)
 		fs_statusview_event_in (blocked);
 	else
 		fs_statusview_event_out (blocked);
+
+	/* And the Overview's Recent blocks card. */
+	if (blocked)
+		fs_statusview_note_block (hit);
 }
 
 /* [ row_key_new ] / [ row_shown ] / [ remember_row ] /

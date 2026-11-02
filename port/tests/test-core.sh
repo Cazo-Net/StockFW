@@ -2052,6 +2052,29 @@ static void test_audit_log (void)
 	g_free (dir);
 }
 
+/* The Overview hides loopback-to-loopback connections; this decides
+ * which ones those are.  A wrong TRUE would hide a real connection. */
+static void test_loopback_address (void)
+{
+	CHECK (fs_util_is_loopback_address ("127.0.0.1"), "127.0.0.1 is loopback");
+	CHECK (fs_util_is_loopback_address ("127.8.9.10"), "all of 127/8 is loopback");
+	CHECK (fs_util_is_loopback_address ("::1"), "::1 is loopback");
+	CHECK (fs_util_is_loopback_address ("[::1]"), "[::1] (bracketed) is loopback");
+	CHECK (fs_util_is_loopback_address ("::ffff:127.0.0.1"),
+	       "IPv4-mapped 127.0.0.1 is loopback");
+	CHECK (fs_util_is_loopback_address ("localhost"), "localhost is loopback");
+	CHECK (!fs_util_is_loopback_address ("128.0.0.1"), "128.0.0.1 is not");
+	CHECK (!fs_util_is_loopback_address ("::ffff:10.0.0.1"),
+	       "IPv4-mapped 10.0.0.1 is not");
+	CHECK (!fs_util_is_loopback_address ("::2"), "::2 is not");
+	CHECK (!fs_util_is_loopback_address ("0.0.0.0"), "0.0.0.0 is not");
+	CHECK (!fs_util_is_loopback_address ("localhost.example"),
+	       "a name that starts with localhost is not");
+	CHECK (!fs_util_is_loopback_address ("[::1"), "an unclosed bracket is not");
+	CHECK (!fs_util_is_loopback_address (""), "empty is not");
+	CHECK (!fs_util_is_loopback_address (NULL), "NULL is not");
+}
+
 /* The Events filter bar's matcher, kept in core for exactly this. */
 static void test_filter_match (void)
 {
@@ -5922,6 +5945,7 @@ int main (void)
 	test_behavior_app_cap ();
 	test_audit_log ();
 	test_filter_match ();
+	test_loopback_address ();
 	test_insight_apply ();
 	test_policy_load_validation_f1 ();
 	test_name_hygiene_f3 ();

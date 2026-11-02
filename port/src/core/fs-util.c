@@ -673,6 +673,54 @@ ascii_case_contains (const gchar *haystack, const gchar *needle)
 	return FALSE;
 }
 
+/* [ fs_util_is_loopback_address ] -- see fs-util.h. */
+gboolean
+fs_util_is_loopback_address (const gchar *addr)
+{
+	GInetAddress *inet;
+	gchar *copy;
+	gboolean loop = FALSE;
+
+	if (addr == NULL || *addr == '\0')
+		return FALSE;
+
+	if (g_ascii_strcasecmp (addr, "localhost") == 0)
+		return TRUE;
+
+	copy = g_strdup (addr);
+	if (copy[0] == '[') {
+		gchar *end = strchr (copy, ']');
+
+		if (end == NULL) {
+			g_free (copy);
+			return FALSE;
+		}
+		*end = '\0';
+		memmove (copy, copy + 1, strlen (copy + 1) + 1);
+	}
+
+	inet = g_inet_address_new_from_string (copy);
+	if (inet != NULL) {
+		loop = g_inet_address_get_is_loopback (inet);
+
+		/* ::ffff:127.0.0.1 is IPv4 loopback reached over an IPv6
+		 * socket; GLib only calls ::1 loopback for IPv6. */
+		if (!loop && g_inet_address_get_family (inet) ==
+		             G_SOCKET_FAMILY_IPV6) {
+			const guint8 *b = g_inet_address_to_bytes (inet);
+			static const guint8 mapped[12] = {
+				0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff
+			};
+
+			loop = memcmp (b, mapped, 12) == 0 && b[12] == 127;
+		}
+		g_object_unref (inet);
+	}
+
+	g_free (copy);
+	return loop;
+}
+
 gboolean
 fs_util_filter_match (const gchar *needle,
                       const gchar *const *fields,

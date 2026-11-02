@@ -1,87 +1,134 @@
 /*---[ fs-statusview.c ]------------------------------------------------
- * The Status page.
+ * The Overview page (1.0.7 redesign; the Status page before it).
  *
- * Laid out the way the original StockFW laid it out: a status line
- * with its emblem on the left and the Events counters (Total / Serious,
- * across Inbound / Outbound) on the right, then the profile switches,
- * then the two live tables -- "Network" and "Active connections".
+ * Top to bottom:
+ *   header       "Overview", which machine and address, Lock policy
+ *   verdict      one coloured card that says, in a sentence, whether
+ *                this computer is protected, with the one button that
+ *                changes that (Start or Stop) and four facts beside it:
+ *                IPv4, IPv6, the policy, the engine
+ *   profiles     Windows only: the three firewall profiles
+ *   totals       events in and out (and how many were blocked), open
+ *                connections, traffic now
+ *   connections  open connections with a filter box; connections
+ *                between two programs on this computer are hidden
+ *                behind a "Show them" link, because no rule sees them
+ *   adapters     real adapters; virtual ones (Docker bridges, Hyper-V,
+ *                VPN tunnels) behind a "Show them" link
+ *   recent       the last few blocked events
  *
- * Both tables are polled.  Interface octet counters come from the
- * backend's list_interface_stats() and open sockets from
- * list_connections(); a backend that has neither leaves the panels
- * hidden rather than showing invented numbers.
+ * Every number on the page is one the backend reported.  A backend
+ * that cannot list connections or adapters gets no card for them, and
+ * "Threat intel" is not shown until it exists.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-statusview.h"
+#include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-icons.h"
 #include "ui/fs-tray.h"
 #include "core/fs-backend.h"
+#include "core/fs-util.h"
 #include "core/fs-i18n.h"
-#include "stockfw-logo-96.h"
 
-#include <gdk-pixbuf/gdk-pixbuf.h>
+#include <string.h>
 
 /* How often the live panels are resampled.  Interface counters are
  * cheap; enumerating sockets is dearer, so it runs less often. */
 #define NET_REFRESH_MS    2000
 #define CONN_REFRESH_MS   3000
 
+/* How many blocked events the Recent blocks card keeps. */
+#define RECENT_MAX        5
+
+/* UTF-8 spelled out, so the source stays ASCII. */
+#define DOT   " \xc2\xb7 "     /* " . " middle dot */
+#define DOWN  "\xe2\x86\x93 "  /* down arrow       */
+#define UP    "\xe2\x86\x91 "  /* up arrow         */
+
 static FsFirewallState current_state = FS_FW_NONE;
 
-/* Set by the toolbar's Lock button.  While TRUE the Policy page
- * refuses to write rules -- the lock is a real gate, not a label. */
+/* Set by the Lock toggle.  While TRUE the Policy page refuses to write
+ * rules -- the lock is a real gate, not a label. */
 static gboolean policy_locked = FALSE;
 
-static GtkWidget *state_label;
-static GtkWidget *ipv6_label;    /* "IPv4 + IPv6 filtered", or why not */
-static GtkWidget *state_icon;
-static GtkWidget *state_badge;   /* circle behind the state icon */
-static GtkWidget *logo_image;
+static FsPolicy *shared_policy = NULL;
 
-/* Toolbar buttons, kept so the state change can enable/disable them. */
-static GtkWidget *tool_start;
-static GtkWidget *tool_stop;
-static GtkWidget *tool_lock;
+static FsStatusChanged changed_cb = NULL;
+static gpointer        changed_user = NULL;
 
-/* The in-page pair mirrors the toolbar so the controls still work when
- * the toolbar is collapsed on a narrow window. */
-static GtkWidget *button_start;
-static GtkWidget *button_stop;
+/* The verdict, as last judged. */
+static FsVerdict verdict_level = FS_VERDICT_UNKNOWN;
+static gchar    *verdict_text = NULL;
+
+/* IPv6, as last read from the backend.  ipv6_known is FALSE where the
+ * backend has no ipv6_state slot (Windows Firewall applies every rule
+ * to both families, so there is nothing to ask). */
+static gboolean    ipv6_known = FALSE;
+static FsIpv6State ipv6_st = FS_IPV6_UNKNOWN;
+static gchar      *ipv6_detail = NULL;
+
+/* ---- widgets ---- */
+static GtkWidget *subtitle_label;
+static GtkWidget *lock_button, *lock_icon, *lock_label;
+
+static GtkWidget *hero, *hero_icon, *hero_title, *hero_body;
+static GtkWidget *power_button, *power_icon, *power_label;
+
+enum { TILE_IPV4, TILE_IPV6, TILE_POLICY, TILE_ENGINE, N_TILES };
+static GtkWidget *tile_value[N_TILES];
 
 /* Per-profile switches, used only when the backend supports them. */
 static GtkWidget *profile_switches[FS_PROFILE_COUNT];
 static GtkWidget *profiles_frame;
 
 /* Events counters: [direction][total=0 serious=1]. */
-static guint    events[2][2];
-static GtkWidget *counter[2][2];
+static guint events[2][2];
 
-/* The two live panels. */
+enum { TOTAL_IN, TOTAL_OUT, TOTAL_CONN, TOTAL_TRAFFIC, N_TOTALS };
+static GtkWidget *total_value[N_TOTALS];
+static GtkWidget *total_note[N_TOTALS];
+
+/* Open connections. */
 enum
 {
-	NET_COL_DEVICE,
-	NET_COL_TYPE,
-	NET_COL_RECV,
-	NET_COL_SENT,
-	NET_COL_ACTIVITY,
-	NET_N_COLS
-};
-
-enum
-{
-	CONN_COL_SOURCE,
-	CONN_COL_DEST,
+	CONN_COL_PROGRAM,
+	CONN_COL_REMOTE,
 	CONN_COL_PORT,
 	CONN_COL_SERVICE,
-	CONN_COL_PROGRAM,
 	CONN_COL_DIRECTION,
+	CONN_COL_LOCAL,        /* gboolean: both ends are this computer */
 	CONN_N_COLS
 };
 
-static GtkListStore *net_store;
 static GtkListStore *conn_store;
-static GtkWidget     *network_frame;
-static GtkWidget     *connections_frame;
+static GtkTreeModel *conn_filter;
+static GtkWidget    *connections_card;
+static GtkWidget    *conn_search;
+static GtkWidget    *conn_note;
+static GtkWidget    *conn_toggle;
+static gboolean      show_local = FALSE;
+static guint         conn_total = 0;   /* rows in the last sample  */
+static guint         conn_local = 0;   /* of which loopback-only   */
+
+/* Adapters. */
+static GtkWidget  *adapters_card;
+static GtkWidget  *adapters_list;
+static GtkWidget  *adapters_note;
+static GtkWidget  *adapters_toggle;
+static gboolean    show_virtual = FALSE;
+static GHashTable *net_samples = NULL;
+
+/* Recent blocks: newest at the head. */
+typedef struct
+{
+	gchar *title;
+	gchar *detail;
+} RecentBlock;
+
+static GQueue     recent = G_QUEUE_INIT;
+static GtkWidget *recent_list;
+static GtkWidget *recent_empty;
 
 /* Previous interface sample, so consecutive polls yield a rate. */
 typedef struct
@@ -91,121 +138,351 @@ typedef struct
 	gint64  stamp;   /* monotonic microseconds */
 } NetSample;
 
-static GHashTable *net_samples = NULL;
+static void update_overview (void);
 
-/* Load the embedded StockFW logo. */
-static GdkPixbuf *
-load_status_logo (void)
-{
-	GError *error = NULL;
-	GdkPixbufLoader *loader;
-	GdkPixbuf *pixbuf = NULL;
+/* ------------------------------------------------------------ helpers */
 
-	loader = gdk_pixbuf_loader_new ();
-	if (gdk_pixbuf_loader_write (loader, stockfw_logo_96_png,
-	                             stockfw_logo_96_png_len, &error)) {
-		gdk_pixbuf_loader_close (loader, NULL);
-		pixbuf = gdk_pixbuf_loader_get_pixbuf (loader);
-		if (pixbuf)
-			g_object_ref (pixbuf);
-	} else {
-		g_clear_error (&error);
-	}
-	g_object_unref (loader);
-
-	return pixbuf;
-}
-
-/* [ state_to_text ] */
-static const gchar *
-state_to_text (FsFirewallState state)
-{
-	switch (state) {
-	case FS_FW_STOPPED: return _("The firewall is stopped");
-	case FS_FW_RUNNING: return _("The firewall is running");
-	case FS_FW_LOCKED:  return _("The firewall is locked");
-	case FS_FW_HIT:     return _("The firewall has been hit");
-	case FS_FW_NONE:
-	default:            return _("Firewall state is unknown");
-	}
-}
-
-/* [ state_to_icon ] -- themed emblem inside the status badge.  The
- * symbolic variants are drawn in the badge's colour (white), which is
- * what makes the circle read as one shape; all five are shipped by the
- * Adwaita theme the runtime stages. */
-static const gchar *
-state_to_icon (FsFirewallState state)
-{
-	switch (state) {
-	case FS_FW_STOPPED: return "media-playback-stop-symbolic";
-	case FS_FW_RUNNING: return "media-playback-start-symbolic";
-	case FS_FW_LOCKED:  return "changes-prevent-symbolic";
-	case FS_FW_HIT:     return "dialog-warning-symbolic";
-	case FS_FW_NONE:
-	default:            return "dialog-question-symbolic";
-	}
-}
-
-/* [ state_to_class ] -- CSS class giving the status line its colour. */
-static const gchar *
-state_to_class (FsFirewallState state)
-{
-	switch (state) {
-	case FS_FW_STOPPED: return "fs-state-stopped";
-	case FS_FW_LOCKED:  return "fs-state-locked";
-	case FS_FW_RUNNING:
-	case FS_FW_HIT:     return "fs-state-active";
-	case FS_FW_NONE:
-	default:            return "";
-	}
-}
-
-/* [ badge_to_class ] -- colour of the circular badge around the icon. */
-static const gchar *
-badge_to_class (FsFirewallState state)
-{
-	switch (state) {
-	case FS_FW_STOPPED: return "badge-stopped";
-	case FS_FW_LOCKED:  return "badge-locked";
-	case FS_FW_RUNNING:
-	case FS_FW_HIT:     return "badge-active";
-	case FS_FW_NONE:
-	default:            return "badge-unknown";
-	}
-}
-
-/* [ install_css ]
- * Status colours live here rather than in gtk_widget_override_color,
- * which is deprecated and had no bold-face equivalent anyway. */
 static void
-install_css (GtkWidget *for_widget)
+add_class (GtkWidget *widget, const gchar *klass)
 {
-	static const gchar *css =
-		".fs-state-active  { font-weight: bold; font-size: 15px; color: #2e7d32; }\n"
-		".fs-state-stopped { font-weight: bold; font-size: 15px; color: #c62828; }\n"
-		".fs-state-locked  { font-weight: bold; font-size: 15px; color: #b26a00; }\n"
-		".fs-ipv6-warn     { color: #b26a00; }\n"
-		".fs-counter       { font-weight: bold; }\n"
-		".fs-counter-head  { font-weight: bold; }\n";
-	GError *error = NULL;
-	GtkCssProvider *provider;
+	gtk_style_context_add_class (gtk_widget_get_style_context (widget),
+	                             klass);
+}
 
-	provider = gtk_css_provider_new ();
+static void
+swap_class (GtkWidget *widget, const gchar *const *all, const gchar *on)
+{
+	GtkStyleContext *ctx = gtk_widget_get_style_context (widget);
 
-	if (!gtk_css_provider_load_from_data (provider, css, -1, &error)) {
-		g_clear_error (&error);
-		g_object_unref (provider);
+	for (guint i = 0; all[i] != NULL; i++)
+		gtk_style_context_remove_class (ctx, all[i]);
+	if (on != NULL)
+		gtk_style_context_add_class (ctx, on);
+}
+
+static GtkWidget *
+label_new (const gchar *text, const gchar *klass, gfloat xalign)
+{
+	GtkWidget *label = gtk_label_new (text);
+
+	gtk_label_set_xalign (GTK_LABEL (label), xalign);
+	if (klass != NULL)
+		add_class (label, klass);
+	return label;
+}
+
+/* A white card: rounded, one hairline border. */
+static GtkWidget *
+card_new (GtkOrientation orientation, gint spacing)
+{
+	GtkWidget *box = gtk_box_new (orientation, spacing);
+
+	add_class (box, "card");
+	return box;
+}
+
+/* A flat button that reads as a link ("Show them"). */
+static GtkWidget *
+link_button_new (const gchar *text)
+{
+	GtkWidget *button = gtk_button_new_with_label (text);
+
+	gtk_button_set_relief (GTK_BUTTON (button), GTK_RELIEF_NONE);
+	add_class (button, "fs-link");
+	gtk_widget_set_valign (button, GTK_ALIGN_CENTER);
+	return button;
+}
+
+/* A button with a drawn icon and a label. */
+static GtkWidget *
+icon_button_new (FsIconKind icon, const gchar *text, GtkWidget **icon_out,
+                 GtkWidget **label_out, gboolean toggle)
+{
+	GtkWidget *button = toggle ? gtk_toggle_button_new ()
+	                           : gtk_button_new ();
+	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+	GtkWidget *image = fs_icon_new (icon, 16);
+	GtkWidget *label = gtk_label_new (text);
+
+	gtk_box_pack_start (GTK_BOX (row), image, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (row), label, FALSE, FALSE, 0);
+	gtk_widget_set_halign (row, GTK_ALIGN_CENTER);
+	gtk_container_add (GTK_CONTAINER (button), row);
+
+	if (icon_out != NULL)
+		*icon_out = image;
+	if (label_out != NULL)
+		*label_out = label;
+	return button;
+}
+
+/* [ format_bytes ]
+ * Binary units, one decimal above kilobytes: the original printed
+ * "1.4 GB", not "1503238553". */
+static gchar *
+format_bytes (guint64 bytes)
+{
+	const guint64 kib = 1024;
+	const guint64 mib = kib * 1024;
+	const guint64 gib = mib * 1024;
+
+	if (bytes >= gib)
+		return g_strdup_printf ("%.1f GiB", (gdouble) bytes / (gdouble) gib);
+	if (bytes >= mib)
+		return g_strdup_printf ("%.1f MiB", (gdouble) bytes / (gdouble) mib);
+	if (bytes >= kib)
+		return g_strdup_printf ("%.1f KiB", (gdouble) bytes / (gdouble) kib);
+
+	return g_strdup_printf ("%u B", (guint) bytes);
+}
+
+static gchar *
+format_rate (guint64 bytes_per_second)
+{
+	gchar *amount, *text;
+
+	if (bytes_per_second == 0)
+		return g_strdup (_("Idle"));
+
+	amount = format_bytes (bytes_per_second);
+	text = g_strdup_printf ("%s/s", amount);
+	g_free (amount);
+	return text;
+}
+
+/* Adapters that are not hardware: Docker and libvirt bridges, veth
+ * pairs, Hyper-V switches, VPN tunnels.  Real, but noise on a page
+ * that answers "is this computer protected". */
+static gboolean
+adapter_is_virtual (const FsIfaceStat *stat)
+{
+	return stat->kind != NULL &&
+	       (strcmp (stat->kind, "Virtual") == 0 ||
+	        strcmp (stat->kind, "Tunnel") == 0 ||
+	        strcmp (stat->kind, "Loopback") == 0);
+}
+
+static gboolean
+state_is_running (FsFirewallState state)
+{
+	return state == FS_FW_RUNNING || state == FS_FW_LOCKED ||
+	       state == FS_FW_HIT;
+}
+
+/* ------------------------------------------------------------ verdict */
+
+const gchar *
+fs_statusview_verdict (FsVerdict *level)
+{
+	if (level != NULL)
+		*level = verdict_level;
+	return verdict_text != NULL ? verdict_text : _("State unknown");
+}
+
+void
+fs_statusview_set_changed_cb (FsStatusChanged cb, gpointer user)
+{
+	changed_cb = cb;
+	changed_user = user;
+
+	if (cb != NULL)
+		cb (user);
+}
+
+void
+fs_statusview_set_policy (FsPolicy *policy)
+{
+	shared_policy = policy;
+	update_overview ();
+}
+
+static guint
+policy_rule_count (void)
+{
+	guint n = 0;
+
+	if (shared_policy == NULL)
+		return 0;
+
+	for (gint kind = 0; kind < FS_RULE_N_KINDS; kind++)
+		n += fs_policy_count (shared_policy, (FsRuleKind) kind);
+	return n;
+}
+
+static void
+set_tile (gint tile, const gchar *text, const gchar *tone)
+{
+	static const gchar *const tones[] = { "good", "warn", "bad", NULL };
+
+	if (tile_value[tile] == NULL)
 		return;
+
+	gtk_label_set_text (GTK_LABEL (tile_value[tile]), text);
+	swap_class (tile_value[tile], tones, tone);
+}
+
+static void
+update_policy_tile (void)
+{
+	guint n = policy_rule_count ();
+	gchar *text;
+
+	if (n == 0)
+		text = g_strdup (_("No rules yet"));
+	else
+		text = g_strdup_printf (g_dngettext (NULL, "%u rule", "%u rules",
+		                                     n), n);
+
+	if (policy_locked) {
+		gchar *locked = g_strconcat (text, DOT, _("locked"), NULL);
+
+		g_free (text);
+		text = locked;
 	}
 
-	gtk_style_context_add_provider_for_screen (
-		gtk_widget_get_screen (for_widget),
-		GTK_STYLE_PROVIDER (provider),
-		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-
-	g_object_unref (provider);
+	set_tile (TILE_POLICY, text, NULL);
+	g_free (text);
 }
+
+/* [ update_overview ]
+ * Judges the machine from the firewall state and the IPv6 answer, and
+ * writes that one judgement into the verdict card, its four facts, the
+ * power button and the sidebar (through changed_cb). */
+static void
+update_overview (void)
+{
+	static const gchar *const levels[] = {
+		"level-unknown", "level-ok", "level-warn", "level-bad", NULL
+	};
+	const FsBackend *backend = fs_backend ();
+	gboolean running = state_is_running (current_state);
+	gboolean usable = backend->available ();
+	const gchar *title;
+	GString *body = g_string_new (NULL);
+	FsIconKind icon;
+	FsVerdict level;
+	const gchar *word;
+
+	if (running) {
+		if (ipv6_known && ipv6_st == FS_IPV6_UNFILTERED) {
+			level = FS_VERDICT_WARN;
+			icon = FS_ICON_SHIELD_ALERT;
+			title = _("IPv6 is not protected");
+			word = _("IPv6 not protected");
+			g_string_append (body, _("IPv4 is filtered, but IPv6 "
+			                         "traffic passes unfiltered."));
+			if (ipv6_detail != NULL && *ipv6_detail != '\0') {
+				g_string_append_c (body, ' ');
+				g_string_append (body, _(ipv6_detail));
+			}
+		} else if (ipv6_known && ipv6_st == FS_IPV6_UNKNOWN) {
+			level = FS_VERDICT_OK;
+			icon = FS_ICON_SHIELD_CHECK;
+			title = _("The firewall is running");
+			word = _("Running");
+			g_string_append (body, ipv6_detail != NULL && *ipv6_detail
+			                       ? _(ipv6_detail)
+			                       : _("StockFW could not check "
+			                           "whether IPv6 is filtered."));
+		} else if (ipv6_known && ipv6_st == FS_IPV6_ABSENT) {
+			level = FS_VERDICT_OK;
+			icon = FS_ICON_SHIELD_CHECK;
+			title = _("This computer is protected");
+			word = _("Protected");
+			g_string_append (body, _("Your policy is in force. This "
+			                         "system has no IPv6, so IPv4 is "
+			                         "all there is to filter."));
+		} else {
+			level = FS_VERDICT_OK;
+			icon = FS_ICON_SHIELD_CHECK;
+			title = _("This computer is protected");
+			word = _("Protected");
+			g_string_append (body, _("Your policy is in force for "
+			                         "IPv4 and IPv6."));
+		}
+
+		if (current_state == FS_FW_LOCKED || policy_locked)
+			g_string_append (body, _(" Policy changes are locked."));
+	} else if (current_state == FS_FW_STOPPED) {
+		level = FS_VERDICT_BAD;
+		icon = FS_ICON_SHIELD_X;
+		title = _("This computer is not protected");
+		word = _("Not protected");
+		g_string_append (body, _("The firewall is stopped, so no "
+		                         "traffic is filtered. Start it to put "
+		                         "your policy in force."));
+	} else {
+		level = FS_VERDICT_UNKNOWN;
+		icon = FS_ICON_SHIELD_QUESTION;
+		title = _("The firewall's state is unknown");
+		word = _("State unknown");
+		g_string_append (body, _("StockFW could not read the "
+		                         "firewall's state."));
+		if (!usable)
+			g_string_append (body, _(" The firewall tools are not "
+			                         "available to this account."));
+	}
+
+	verdict_level = level;
+	g_free (verdict_text);
+	verdict_text = g_strdup (word);
+
+	if (hero != NULL) {
+		swap_class (hero, levels, levels[level]);
+		fs_icon_set_kind (hero_icon, icon);
+		gtk_label_set_text (GTK_LABEL (hero_title), title);
+		gtk_label_set_text (GTK_LABEL (hero_body), body->str);
+	}
+
+	/* The power button: Stop while running, Start otherwise.  Start is
+	 * the primary action of a stopped firewall, so it is filled. */
+	if (power_button != NULL) {
+		static const gchar *const looks[] = {
+			"btn-primary", "btn-subtle", NULL
+		};
+
+		gtk_label_set_text (GTK_LABEL (power_label),
+		                    running ? _("Stop firewall")
+		                            : _("Start firewall"));
+		fs_icon_set_kind (power_icon, running ? FS_ICON_STOP
+		                                      : FS_ICON_PLAY);
+		swap_class (power_button, looks,
+		            running ? "btn-subtle" : "btn-primary");
+		gtk_widget_set_sensitive (power_button, usable);
+	}
+
+	/* The four facts. */
+	if (running)
+		set_tile (TILE_IPV4, _("Filtered"), "good");
+	else if (current_state == FS_FW_STOPPED)
+		set_tile (TILE_IPV4, _("Not filtered"), "bad");
+	else
+		set_tile (TILE_IPV4, _("Unknown"), NULL);
+
+	if (ipv6_known && ipv6_st == FS_IPV6_ABSENT)
+		set_tile (TILE_IPV6, _("None on this system"), NULL);
+	else if (current_state == FS_FW_STOPPED)
+		set_tile (TILE_IPV6, _("Not filtered"), "bad");
+	else if (!running)
+		set_tile (TILE_IPV6, _("Unknown"), NULL);
+	else if (!ipv6_known || ipv6_st == FS_IPV6_FILTERED)
+		set_tile (TILE_IPV6, _("Filtered"), "good");
+	else if (ipv6_st == FS_IPV6_UNFILTERED)
+		set_tile (TILE_IPV6, _("Not filtered"), "warn");
+	else
+		set_tile (TILE_IPV6, _("Unknown"), NULL);
+
+	update_policy_tile ();
+	set_tile (TILE_ENGINE, backend->display_name != NULL
+	                       ? backend->display_name : _("Unknown"), NULL);
+
+	g_string_free (body, TRUE);
+
+	if (changed_cb != NULL)
+		changed_cb (changed_user);
+}
+
+/* ------------------------------------------------------------ profiles */
 
 /* [ on_profile_toggled ]
  * Fired when the user flips a profile switch.  We read which profile
@@ -235,28 +512,13 @@ on_profile_toggled (GtkSwitch *sw, GParamSpec *pspec, gpointer data)
 }
 
 static void
-refresh_controls (void)
+refresh_profiles (void)
 {
 	const FsBackend *backend = fs_backend ();
-	gboolean running = (current_state == FS_FW_RUNNING ||
-	                    current_state == FS_FW_LOCKED  ||
-	                    current_state == FS_FW_HIT);
-	gboolean usable = backend->available ();
-
-	/* The toolbar is built after the page, so on the very first call
-	 * its buttons do not exist yet. */
-	if (tool_start != NULL)
-		gtk_widget_set_sensitive (tool_start, usable && !running);
-	if (tool_stop != NULL)
-		gtk_widget_set_sensitive (tool_stop, usable && running);
-	if (button_start != NULL)
-		gtk_widget_set_sensitive (button_start, usable && !running);
-	if (button_stop != NULL)
-		gtk_widget_set_sensitive (button_stop, usable && running);
 
 	/* Reflect the real profile states whenever the main state
-	 * changes.  Done with the signal blocked so the refresh
-	 * itself does not read as a user toggle. */
+	 * changes.  Done with the signal blocked so the refresh itself
+	 * does not read as a user toggle. */
 	for (gint i = 0; i < FS_PROFILE_COUNT; i++) {
 		gboolean enabled = FALSE;
 
@@ -272,26 +534,28 @@ refresh_controls (void)
 	}
 }
 
-/* ------------------------------------------------------------------ events
- *
- * Four numbers: Inbound/Outbound, each split into Total and Serious
- * (blocked), matching the original's counter table.
- */
+/* -------------------------------------------------------------- totals */
+
+static void
+set_total (gint which, const gchar *value, const gchar *note)
+{
+	if (total_value[which] == NULL)
+		return;
+
+	gtk_label_set_text (GTK_LABEL (total_value[which]), value);
+	gtk_label_set_text (GTK_LABEL (total_note[which]), note);
+}
 
 static void
 update_counters (void)
 {
 	for (gint dir = 0; dir < 2; dir++) {
-		for (gint kind = 0; kind < 2; kind++) {
-			gchar *text;
+		gchar *value = g_strdup_printf ("%u", events[dir][0]);
+		gchar *note = g_strdup_printf (_("%u blocked"), events[dir][1]);
 
-			if (counter[dir][kind] == NULL)
-				continue;
-
-			text = g_strdup_printf ("%u", events[dir][kind]);
-			gtk_label_set_text (GTK_LABEL (counter[dir][kind]), text);
-			g_free (text);
-		}
+		set_total (dir == 0 ? TOTAL_IN : TOTAL_OUT, value, note);
+		g_free (value);
+		g_free (note);
 	}
 }
 
@@ -324,123 +588,252 @@ fs_statusview_events_reset (void)
 	update_counters ();
 }
 
-/* ------------------------------------------------------------ formatting */
+/* ------------------------------------------------------- recent blocks */
 
-/* [ format_bytes ]
- * Binary units, one decimal above kilobytes: the original printed
- * "1.4 GB", not "1503238553". */
-static gchar *
-format_bytes (guint64 bytes)
-{
-	const guint64 kib = 1024;
-	const guint64 mib = kib * 1024;
-	const guint64 gib = mib * 1024;
-
-	if (bytes >= gib)
-		return g_strdup_printf ("%.1f GiB", (gdouble) bytes / (gdouble) gib);
-	if (bytes >= mib)
-		return g_strdup_printf ("%.1f MiB", (gdouble) bytes / (gdouble) mib);
-	if (bytes >= kib)
-		return g_strdup_printf ("%.1f KiB", (gdouble) bytes / (gdouble) kib);
-
-	return g_strdup_printf ("%u B", (guint) bytes);
-}
-
-static gchar *
-format_rate (guint64 bytes_per_second)
-{
-	gchar *amount;
-	gchar *text;
-
-	if (bytes_per_second == 0)
-		return g_strdup (_("Idle"));
-
-	amount = format_bytes (bytes_per_second);
-	text = g_strdup_printf ("%s/s", amount);
-	g_free (amount);
-
-	return text;
-}
-
-/* [ store_set_nth ]
- * Sets row N, appending it when the store has not reached N yet.  Going
- * row by row like this keeps the scroll position and selection stable
- * across refreshes, which clear-and-refill would throw away every
- * couple of seconds. */
 static void
-store_set_nth (GtkListStore *store, gint n, const gchar *const *values,
-               gint n_cols)
+recent_block_free (gpointer data)
 {
-	GtkTreeIter iter;
-	gboolean have = gtk_tree_model_iter_nth_child (GTK_TREE_MODEL (store),
-	                                               &iter, NULL, n);
+	RecentBlock *b = data;
 
-	/* Rows are written in order, so a miss means the store is one
-	 * short and this row is the append. */
-	if (!have)
-		gtk_list_store_append (store, &iter);
-
-	for (gint i = 0; i < n_cols; i++)
-		gtk_list_store_set (store, &iter, i, values[i], -1);
+	g_free (b->title);
+	g_free (b->detail);
+	g_free (b);
 }
 
-/* [ store_trim ]
- * Drop rows past the ones just written. */
-static void
-store_trim (GtkListStore *store, gint keep)
+/* The service column carries the parser's "[BLOCKED]" marker; the card
+ * says "Blocked" in words instead. */
+static gchar *
+clean_service (const FsHit *hit)
 {
-	while (gtk_tree_model_iter_n_children (GTK_TREE_MODEL (store), NULL) > keep) {
-		GtkTreeIter iter;
+	gchar *service = g_strdup (hit->service != NULL ? hit->service : "");
+	gchar *mark = strstr (service, "[BLOCKED]");
 
-		if (!gtk_tree_model_iter_nth_child (GTK_TREE_MODEL (store), &iter,
-		                                    NULL, keep))
-			break;
+	if (mark != NULL)
+		memmove (mark, mark + 9, strlen (mark + 9) + 1);
+	g_strstrip (service);
 
-		gtk_list_store_remove (store, &iter);
+	if (*service == '\0') {
+		g_free (service);
+		if (hit->port != NULL && *hit->port != '\0')
+			service = g_strdup_printf (_("port %s"), hit->port);
+		else if (hit->protocol != NULL && *hit->protocol != '\0')
+			service = g_strdup (hit->protocol);
+		else
+			service = g_strdup (_("traffic"));
 	}
+	return service;
 }
 
-/* ------------------------------------------------------------- network */
+static void
+rebuild_recent (void)
+{
+	GList *children, *l;
+
+	if (recent_list == NULL)
+		return;
+
+	children = gtk_container_get_children (GTK_CONTAINER (recent_list));
+	for (l = children; l != NULL; l = l->next)
+		gtk_widget_destroy (GTK_WIDGET (l->data));
+	g_list_free (children);
+
+	for (l = recent.head; l != NULL; l = l->next) {
+		RecentBlock *b = l->data;
+		GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+		GtkWidget *dot = fs_icon_new (FS_ICON_DOT, 8);
+		GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+		GtkWidget *title = label_new (b->title, "recent-title", 0.0);
+		GtkWidget *detail = label_new (b->detail, "recent-detail", 0.0);
+
+		add_class (row, "recent-row");
+		add_class (dot, "dot-bad");
+		gtk_widget_set_valign (dot, GTK_ALIGN_START);
+		gtk_widget_set_margin_top (dot, 5);
+		gtk_label_set_ellipsize (GTK_LABEL (detail), PANGO_ELLIPSIZE_END);
+		gtk_box_pack_start (GTK_BOX (text), title, FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (text), detail, FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (row), dot, FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (row), text, TRUE, TRUE, 0);
+		gtk_box_pack_start (GTK_BOX (recent_list), row, FALSE, FALSE, 0);
+		gtk_widget_show_all (row);
+	}
+
+	gtk_widget_set_visible (recent_empty, recent.length == 0);
+}
+
+void
+fs_statusview_note_block (const FsHit *hit)
+{
+	gboolean inbound;
+	const gchar *remote;
+	const gchar *when;
+	gchar *service;
+	RecentBlock *b;
+
+	if (hit == NULL)
+		return;
+
+	inbound = hit->direction != NULL &&
+	          (g_ascii_strcasecmp (hit->direction, "In") == 0 ||
+	           g_ascii_strcasecmp (hit->direction, "Inbound") == 0);
+	remote = inbound ? hit->source : hit->destination;
+	service = clean_service (hit);
+
+	/* "Nov  2 10:42:01" and "2026-11-02 10:42:01" both end in the
+	 * time of day, which is all a card about the last few minutes
+	 * needs. */
+	when = hit->time != NULL ? strrchr (hit->time, ' ') : NULL;
+	when = when != NULL ? when + 1 : (hit->time != NULL ? hit->time : "");
+
+	b = g_new0 (RecentBlock, 1);
+	b->title = g_strdup_printf (inbound ? _("Blocked inbound %s")
+	                                    : _("Blocked outbound %s"),
+	                            service);
+	b->detail = g_strdup_printf ("%s" DOT "%s" DOT "%s",
+	                             remote != NULL && *remote ? remote
+	                                                       : _("unknown"),
+	                             hit->rule != NULL && *hit->rule
+	                             ? hit->rule : _("Policy"),
+	                             when);
+	g_free (service);
+
+	g_queue_push_head (&recent, b);
+	while (recent.length > RECENT_MAX)
+		recent_block_free (g_queue_pop_tail (&recent));
+
+	rebuild_recent ();
+}
+
+gchar **
+fs_statusview_recent_blocks (void)
+{
+	gchar **out = g_new0 (gchar *, recent.length + 1);
+	guint i = 0;
+
+	for (GList *l = recent.head; l != NULL; l = l->next, i++) {
+		RecentBlock *b = l->data;
+
+		out[i] = g_strconcat (b->title, "\n", b->detail, NULL);
+	}
+	return out;
+}
+
+/* ------------------------------------------------------------ adapters */
+
+static GtkWidget *
+adapter_row (const FsIfaceStat *stat, guint64 rate)
+{
+	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+	GtkWidget *tile = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+	GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+	GtkWidget *nums = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+	gboolean wireless = g_strcmp0 (stat->kind, "Wireless") == 0;
+	gchar *name, *rx, *tx, *down, *up, *speed;
+	GtkWidget *label;
+
+	gtk_widget_set_size_request (tile, 36, 36);
+	gtk_widget_set_valign (tile, GTK_ALIGN_CENTER);
+	add_class (tile, "adapter-tile");
+	gtk_box_pack_start (GTK_BOX (tile),
+	                    fs_icon_new (wireless ? FS_ICON_WIFI
+	                                          : FS_ICON_ADAPTER, 18),
+	                    TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (row), tile, FALSE, FALSE, 0);
+
+	if (stat->kind != NULL && *stat->kind != '\0')
+		name = g_markup_printf_escaped ("<b>%s</b><span foreground=\"#5B6472\">"
+		                                DOT "%s%s</span>",
+		                                stat->device, stat->kind,
+		                                stat->up ? "" : _(" (down)"));
+	else
+		name = g_markup_printf_escaped ("<b>%s</b>", stat->device);
+	label = label_new (NULL, "adapter-name", 0.0);
+	gtk_label_set_markup (GTK_LABEL (label), name);
+	gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
+	gtk_box_pack_start (GTK_BOX (text), label, FALSE, FALSE, 0);
+	g_free (name);
+
+	label = label_new (stat->ip != NULL ? stat->ip : _("No IPv4 address"),
+	                   stat->ip != NULL ? "mono" : "muted", 0.0);
+	add_class (label, "adapter-ip");
+	gtk_box_pack_start (GTK_BOX (text), label, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (row), text, TRUE, TRUE, 0);
+
+	rx = format_bytes (stat->received);
+	tx = format_bytes (stat->sent);
+	speed = format_rate (rate);
+	down = g_strconcat (DOWN, rx, NULL);
+	up = g_strconcat (UP, tx, NULL);
+
+	label = label_new (down, "adapter-num", 1.0);
+	gtk_widget_set_tooltip_text (label, _("Received since the adapter "
+	                                      "came up"));
+	gtk_box_pack_start (GTK_BOX (nums), label, FALSE, FALSE, 0);
+	label = label_new (up, "adapter-num-muted", 1.0);
+	gtk_widget_set_tooltip_text (label, _("Sent since the adapter came up"));
+	gtk_box_pack_start (GTK_BOX (nums), label, FALSE, FALSE, 0);
+	label = label_new (speed, "adapter-num-muted", 1.0);
+	gtk_widget_set_tooltip_text (label, _("Traffic right now"));
+	gtk_box_pack_start (GTK_BOX (nums), label, FALSE, FALSE, 0);
+	gtk_widget_set_valign (nums, GTK_ALIGN_CENTER);
+	gtk_box_pack_start (GTK_BOX (row), nums, FALSE, FALSE, 0);
+
+	g_free (rx);
+	g_free (tx);
+	g_free (down);
+	g_free (up);
+	g_free (speed);
+
+	add_class (row, "adapter-row");
+	return row;
+}
 
 /* [ refresh_network ]
- * Sample the interface counters and turn two consecutive samples into
- * the Activity column. */
+ * Sample the interface counters, turn two consecutive samples into a
+ * rate, and rebuild the adapters card, the Traffic total and the
+ * header's "which machine" line. */
 static void
 refresh_network (void)
 {
 	const FsBackend *backend = fs_backend ();
-	GList *stats, *l;
+	GList *stats, *l, *children;
 	gint64 now;
-	gint row = 0;
+	guint hidden = 0, shown = 0;
+	guint64 total_rate = 0, total_rx = 0, total_tx = 0;
+	const FsIfaceStat *primary = NULL;
+	guint64 primary_bytes = 0;
 
-	if (net_store == NULL || network_frame == NULL)
+	if (adapters_card == NULL)
 		return;
 
-	if (backend->list_interface_stats == NULL)
-		return;
+	update_policy_tile ();
 
-	stats = backend->list_interface_stats ();
-
+	stats = backend->list_interface_stats != NULL
+	        ? backend->list_interface_stats () : NULL;
 	if (stats == NULL) {
-		/* Nothing to show.  Hide the panel rather than present an
-		 * empty table as if it were live. */
-		gtk_widget_hide (network_frame);
+		/* Nothing to show.  Hide the card rather than present an
+		 * empty one as if it were live; no-show-all keeps the
+		 * window-wide show_all from bringing it back. */
+		gtk_widget_set_no_show_all (adapters_card, TRUE);
+		gtk_widget_hide (adapters_card);
 		g_hash_table_remove_all (net_samples);
+		set_total (TOTAL_TRAFFIC, "-", _("No adapter counters"));
 		return;
 	}
+	gtk_widget_set_no_show_all (adapters_card, FALSE);
+	gtk_widget_show (adapters_card);
 
-	gtk_widget_show (network_frame);
+	children = gtk_container_get_children (GTK_CONTAINER (adapters_list));
+	for (l = children; l != NULL; l = l->next)
+		gtk_widget_destroy (GTK_WIDGET (l->data));
+	g_list_free (children);
 
 	now = g_get_monotonic_time ();
 
 	for (l = stats; l != NULL; l = l->next) {
 		FsIfaceStat *stat = l->data;
-		NetSample *prev;
+		NetSample *prev = g_hash_table_lookup (net_samples, stat->device);
 		guint64 rate = 0;
-		gchar *recv, *sent, *activity;
-		const gchar *values[NET_N_COLS];
-
-		prev = g_hash_table_lookup (net_samples, stat->device);
 
 		if (prev != NULL && now > prev->stamp) {
 			gdouble elapsed = (gdouble) (now - prev->stamp) / 1000000.0;
@@ -458,82 +851,298 @@ refresh_network (void)
 		prev->received = stat->received;
 		prev->sent     = stat->sent;
 		prev->stamp    = now;
-
-		/* Replacing by device name means an adapter that vanishes
-		 * takes its old sample with it. */
 		g_hash_table_insert (net_samples, g_strdup (stat->device), prev);
 
-		recv     = format_bytes (stat->received);
-		sent     = format_bytes (stat->sent);
-		activity = format_rate (rate);
+		if (adapter_is_virtual (stat)) {
+			hidden++;
+			if (!show_virtual)
+				continue;
+		} else {
+			/* Totals are the real adapters' only: bridged
+			 * container traffic also crosses a real one, and
+			 * counting both would count it twice. */
+			total_rate += rate;
+			total_rx += stat->received;
+			total_tx += stat->sent;
 
-		values[NET_COL_DEVICE]  = stat->device;
-		values[NET_COL_TYPE]    = stat->kind != NULL ? stat->kind : "";
-		values[NET_COL_RECV]    = recv;
-		values[NET_COL_SENT]    = sent;
-		values[NET_COL_ACTIVITY] = activity;
+			if (stat->ip != NULL && stat->up &&
+			    stat->received + stat->sent >= primary_bytes) {
+				primary = stat;
+				primary_bytes = stat->received + stat->sent;
+			}
+		}
 
-		store_set_nth (net_store, row, values, NET_N_COLS);
+		gtk_box_pack_start (GTK_BOX (adapters_list),
+		                    adapter_row (stat, rate), FALSE, FALSE, 0);
+		shown++;
+	}
 
-		g_free (recv);
-		g_free (sent);
-		g_free (activity);
+	gtk_widget_show_all (adapters_list);
 
-		row++;
+	if (hidden > 0) {
+		gchar *text = show_virtual
+			? g_strdup_printf (g_dngettext (NULL,
+				"%u virtual adapter is shown.",
+				"%u virtual adapters are shown.", hidden), hidden)
+			: g_strdup_printf (g_dngettext (NULL,
+				"%u virtual adapter (containers, VMs, VPN) is hidden.",
+				"%u virtual adapters (containers, VMs, VPN) are hidden.",
+				hidden), hidden);
+
+		gtk_label_set_text (GTK_LABEL (adapters_note), text);
+		gtk_button_set_label (GTK_BUTTON (adapters_toggle),
+		                      show_virtual ? _("Hide them")
+		                                   : _("Show them"));
+		gtk_widget_show (adapters_note);
+		gtk_widget_show (adapters_toggle);
+		g_free (text);
+	} else if (shown == 0) {
+		gtk_label_set_text (GTK_LABEL (adapters_note),
+		                    _("No adapter is up."));
+		gtk_widget_show (adapters_note);
+		gtk_widget_hide (adapters_toggle);
+	} else {
+		gtk_widget_hide (adapters_note);
+		gtk_widget_hide (adapters_toggle);
+	}
+
+	/* Traffic now. */
+	{
+		gchar *rate = format_rate (total_rate);
+		gchar *rx = format_bytes (total_rx);
+		gchar *tx = format_bytes (total_tx);
+		gchar *note = g_strdup_printf (DOWN "%s" DOT UP "%s", rx, tx);
+
+		set_total (TOTAL_TRAFFIC, rate, note);
+		g_free (rate);
+		g_free (rx);
+		g_free (tx);
+		g_free (note);
+	}
+
+	/* "This computer . eth0 . 192.168.1.20" */
+	if (subtitle_label != NULL) {
+		gchar *text = primary != NULL
+			? g_strdup_printf ("%s" DOT "%s" DOT "%s",
+			                   _("This computer"), primary->device,
+			                   primary->ip)
+			: g_strdup (_("This computer"));
+
+		gtk_label_set_text (GTK_LABEL (subtitle_label), text);
+		g_free (text);
 	}
 
 	/* The backend documents the lists as caller-owned; freeing them
 	 * here is what keeps a 2 second timer from leaking every sample. */
 	g_list_free_full (stats, (GDestroyNotify) fs_iface_stat_free);
+}
 
-	store_trim (net_store, row);
+static void
+on_adapters_toggle (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+
+	show_virtual = !show_virtual;
+	refresh_network ();
 }
 
 /* --------------------------------------------------------- connections */
+
+/* [ store_set_nth ]
+ * Sets row N, appending it when the store has not reached N yet.  Going
+ * row by row like this keeps the scroll position and selection stable
+ * across refreshes, which clear-and-refill would throw away every
+ * couple of seconds. */
+static void
+conn_set_nth (gint n, const gchar *program, const gchar *remote,
+              const gchar *port, const gchar *service,
+              const gchar *direction, gboolean local)
+{
+	GtkTreeIter iter;
+
+	if (!gtk_tree_model_iter_nth_child (GTK_TREE_MODEL (conn_store),
+	                                    &iter, NULL, n))
+		gtk_list_store_append (conn_store, &iter);
+
+	gtk_list_store_set (conn_store, &iter,
+	                    CONN_COL_PROGRAM, program,
+	                    CONN_COL_REMOTE, remote,
+	                    CONN_COL_PORT, port,
+	                    CONN_COL_SERVICE, service,
+	                    CONN_COL_DIRECTION, direction,
+	                    CONN_COL_LOCAL, local,
+	                    -1);
+}
+
+static void
+conn_trim (gint keep)
+{
+	GtkTreeIter iter;
+
+	while (gtk_tree_model_iter_n_children (GTK_TREE_MODEL (conn_store),
+	                                       NULL) > keep &&
+	       gtk_tree_model_iter_nth_child (GTK_TREE_MODEL (conn_store),
+	                                      &iter, NULL, keep))
+		gtk_list_store_remove (conn_store, &iter);
+}
+
+static gboolean
+conn_visible (GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+{
+	const gchar *needle;
+	gchar *fields[5] = { NULL };
+	gboolean local = FALSE, visible;
+
+	(void) data;
+
+	gtk_tree_model_get (model, iter,
+	                    CONN_COL_PROGRAM, &fields[0],
+	                    CONN_COL_REMOTE, &fields[1],
+	                    CONN_COL_PORT, &fields[2],
+	                    CONN_COL_SERVICE, &fields[3],
+	                    CONN_COL_DIRECTION, &fields[4],
+	                    CONN_COL_LOCAL, &local, -1);
+
+	needle = conn_search != NULL
+	         ? gtk_entry_get_text (GTK_ENTRY (conn_search)) : NULL;
+	visible = (show_local || !local) &&
+	          fs_util_filter_match (needle, (const gchar *const *) fields, 5);
+
+	for (gint i = 0; i < 5; i++)
+		g_free (fields[i]);
+	return visible;
+}
+
+static void
+update_conn_note (guint total, guint local)
+{
+	guint visible = (guint) gtk_tree_model_iter_n_children (conn_filter,
+	                                                        NULL);
+	const gchar *needle = gtk_entry_get_text (GTK_ENTRY (conn_search));
+	gchar *text = NULL;
+
+	if (total == 0)
+		text = g_strdup (_("No open connections right now."));
+	else if (visible == 0 && needle != NULL && *needle != '\0')
+		text = g_strdup_printf (_("No connection matches \"%s\"."),
+		                        needle);
+	else if (local > 0)
+		text = show_local
+			? g_strdup_printf (g_dngettext (NULL,
+				"Showing %u local connection (between programs "
+				"on this computer).",
+				"Showing %u local connections (between programs "
+				"on this computer).", local), local)
+			: g_strdup_printf (g_dngettext (NULL,
+				"%u local connection (between programs on this "
+				"computer) is hidden.",
+				"%u local connections (between programs on this "
+				"computer) are hidden.", local), local);
+
+	gtk_widget_set_visible (conn_note, text != NULL);
+	if (text != NULL)
+		gtk_label_set_text (GTK_LABEL (conn_note), text);
+	gtk_widget_set_visible (conn_toggle, local > 0 && total > 0);
+	gtk_button_set_label (GTK_BUTTON (conn_toggle),
+	                      show_local ? _("Hide them") : _("Show them"));
+	g_free (text);
+}
 
 static void
 refresh_connections (void)
 {
 	const FsBackend *backend = fs_backend ();
 	GList *conns, *l;
-	gint row = 0;
+	GHashTable *programs;
+	guint row = 0, local = 0, remote_count = 0;
 
-	if (conn_store == NULL || connections_frame == NULL)
+	if (conn_store == NULL || connections_card == NULL)
 		return;
 
-	if (backend->list_connections == NULL)
-		return;
-
-	conns = backend->list_connections ();
-
-	if (conns == NULL) {
-		/* An empty list is a legitimate answer (nothing open), so
-		 * this empties the table rather than hiding the panel. */
-		store_trim (conn_store, 0);
+	if (backend->list_connections == NULL) {
+		gtk_widget_set_no_show_all (connections_card, TRUE);
+		gtk_widget_hide (connections_card);
+		set_total (TOTAL_CONN, "-", _("Not reported here"));
 		return;
 	}
 
-	gtk_widget_show (connections_frame);
+	conns = backend->list_connections ();
+	programs = g_hash_table_new (g_str_hash, g_str_equal);
 
 	for (l = conns; l != NULL; l = l->next) {
 		FsConnection *c = l->data;
-		const gchar *values[CONN_N_COLS];
+		gboolean inbound = g_strcmp0 (c->direction, "Inbound") == 0;
+		const gchar *remote = inbound ? c->source : c->destination;
+		gboolean is_local = fs_util_is_loopback_address (c->source) &&
+		                    fs_util_is_loopback_address (c->destination);
 
-		values[CONN_COL_SOURCE]    = c->source      ? c->source      : "";
-		values[CONN_COL_DEST]      = c->destination ? c->destination : "";
-		values[CONN_COL_PORT]      = c->port        ? c->port        : "";
-		values[CONN_COL_SERVICE]   = c->service     ? c->service     : "";
-		values[CONN_COL_PROGRAM]   = c->program     ? c->program     : "";
-		values[CONN_COL_DIRECTION] = c->direction   ? c->direction   : "";
-
-		store_set_nth (conn_store, row, values, CONN_N_COLS);
+		conn_set_nth ((gint) row,
+		              c->program != NULL ? c->program : "",
+		              remote != NULL ? remote : "",
+		              c->port != NULL ? c->port : "",
+		              c->service != NULL ? c->service : "",
+		              c->direction != NULL ? c->direction : "",
+		              is_local);
 		row++;
+
+		if (is_local) {
+			local++;
+		} else {
+			remote_count++;
+			if (c->program != NULL && *c->program != '\0')
+				g_hash_table_add (programs, c->program);
+		}
 	}
 
-	/* Caller-owned list, as documented in fs-backend.h. */
-	g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
+	conn_trim ((gint) row);
+	conn_total = row;
+	conn_local = local;
+	gtk_tree_model_filter_refilter (GTK_TREE_MODEL_FILTER (conn_filter));
+	update_conn_note (row, local);
 
-	store_trim (conn_store, row);
+	{
+		gchar *value = g_strdup_printf ("%u", remote_count);
+		guint n = g_hash_table_size (programs);
+		gchar *note = g_strdup_printf (g_dngettext (NULL, "%u program",
+		                                            "%u programs", n), n);
+
+		set_total (TOTAL_CONN, value, note);
+		g_free (value);
+		g_free (note);
+	}
+
+	/* The program names are borrowed from the list: drop the set
+	 * before the list it points into. */
+	g_hash_table_destroy (programs);
+	g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
+}
+
+/* Typing and Show/Hide re-filter the last sample; they do not ask the
+ * backend to enumerate every socket again. */
+static void
+refilter_connections (void)
+{
+	gtk_tree_model_filter_refilter (GTK_TREE_MODEL_FILTER (conn_filter));
+	update_conn_note (conn_total, conn_local);
+}
+
+static void
+on_conn_search_changed (GtkSearchEntry *entry, gpointer data)
+{
+	(void) entry;
+	(void) data;
+	refilter_connections ();
+}
+
+static void
+on_conn_toggle (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+
+	show_local = !show_local;
+	refilter_connections ();
 }
 
 void
@@ -565,12 +1174,9 @@ on_conn_timeout (gpointer data)
 /* --------------------------------------------------------------- actions */
 
 static void
-on_start_clicked (GtkButton *button, gpointer data)
+do_start (void)
 {
 	GError *error = NULL;
-
-	(void) button;
-	(void) data;
 
 	if (!fs_backend ()->start (&error)) {
 		fs_dialogs_error (NULL, _("Failed to start the firewall"),
@@ -595,12 +1201,9 @@ on_start_clicked (GtkButton *button, gpointer data)
 }
 
 static void
-on_stop_clicked (GtkButton *button, gpointer data)
+do_stop (void)
 {
 	GError *error = NULL;
-
-	(void) button;
-	(void) data;
 
 	if (!fs_backend ()->stop (&error)) {
 		fs_dialogs_error (NULL, _("Failed to stop the firewall"),
@@ -612,16 +1215,43 @@ on_stop_clicked (GtkButton *button, gpointer data)
 	fs_statusview_set_state (fs_backend ()->get_state ());
 }
 
-/* [ on_preferences_clicked ]
- * The dialog saves the keys itself and then calls
- * fs_app_reload_settings(), so the new settings reach the rules
- * before the dialog is even gone. */
 static void
-on_preferences_clicked (GtkToolButton *button, gpointer data)
+on_power_clicked (GtkButton *button, gpointer data)
 {
+	(void) button;
 	(void) data;
 
-	fs_dialogs_preferences (gtk_widget_get_toplevel (GTK_WIDGET (button)));
+	if (state_is_running (current_state))
+		do_stop ();
+	else
+		do_start ();
+}
+
+static void
+on_view_events (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+	fs_app_show_page (FS_PAGE_EVENTS);
+}
+
+static void
+sync_lock_button (void)
+{
+	if (lock_button == NULL)
+		return;
+
+	g_signal_handlers_block_matched (lock_button, G_SIGNAL_MATCH_DATA,
+	                                 0, 0, NULL, NULL, &lock_button);
+	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (lock_button),
+	                              policy_locked);
+	g_signal_handlers_unblock_matched (lock_button, G_SIGNAL_MATCH_DATA,
+	                                   0, 0, NULL, NULL, &lock_button);
+	gtk_label_set_text (GTK_LABEL (lock_label),
+	                    policy_locked ? _("Policy locked")
+	                                  : _("Lock policy"));
+	fs_icon_set_kind (lock_icon, policy_locked ? FS_ICON_LOCK
+	                                           : FS_ICON_UNLOCK);
 }
 
 /* [ on_lock_toggled ]
@@ -629,12 +1259,11 @@ on_preferences_clicked (GtkToolButton *button, gpointer data)
  * at the OS level is touched, so this is undoable and never leaves the
  * machine with a rule set the user cannot see. */
 static void
-on_lock_toggled (GtkToolButton *button, gpointer data)
+on_lock_toggled (GtkToggleButton *button, gpointer data)
 {
-	(void) button;
 	(void) data;
 
-	policy_locked = !policy_locked;
+	policy_locked = gtk_toggle_button_get_active (button);
 
 	if (policy_locked && current_state == FS_FW_RUNNING)
 		current_state = FS_FW_LOCKED;
@@ -650,142 +1279,51 @@ fs_statusview_policy_locked (void)
 	return policy_locked;
 }
 
+/* [ state_to_text ] -- the tray tooltip's sentence. */
+static const gchar *
+state_to_text (FsFirewallState state)
+{
+	switch (state) {
+	case FS_FW_STOPPED: return _("The firewall is stopped");
+	case FS_FW_RUNNING: return _("The firewall is running");
+	case FS_FW_LOCKED:  return _("The firewall is locked");
+	case FS_FW_HIT:     return _("The firewall has been hit");
+	case FS_FW_NONE:
+	default:            return _("Firewall state is unknown");
+	}
+}
+
 void
 fs_statusview_set_state (FsFirewallState state)
 {
-	GtkStyleContext *ctx;
-	const gchar *klass;
-	const gchar *backend_name;
-
 	current_state = state;
-
-	/* One line, as the spec reads it: the state, then who reports it
-	 * ("The firewall is running - Windows Defender Firewall"). */
-	if (state_label != NULL) {
-		backend_name = fs_backend ()->display_name;
-
-		if (backend_name != NULL && *backend_name != '\0') {
-			gchar *combined = g_strdup_printf (
-				"%s - %s", state_to_text (state), backend_name);
-
-			gtk_label_set_text (GTK_LABEL (state_label), combined);
-			g_free (combined);
-		} else {
-			gtk_label_set_text (GTK_LABEL (state_label),
-			                    state_to_text (state));
-		}
-	}
-
-	if (state_icon != NULL)
-		gtk_image_set_from_icon_name (GTK_IMAGE (state_icon),
-		                              state_to_icon (state),
-		                              GTK_ICON_SIZE_DIALOG);
 
 	/* The tray tooltip carries the same sentence, so the background
 	 * app answers a glance even while the window is hidden.  No icon
 	 * up: fs-tray.c keeps the text for the next one. */
 	fs_tray_set_state (state_to_text (state));
 
-	/* The badge takes the state's colour too, so the circle itself
-	 * carries the verdict even before the text is read. */
-	if (state_badge != NULL) {
-		GtkStyleContext *bctx =
-			gtk_widget_get_style_context (state_badge);
-
-		gtk_style_context_remove_class (bctx, "badge-active");
-		gtk_style_context_remove_class (bctx, "badge-stopped");
-		gtk_style_context_remove_class (bctx, "badge-locked");
-		gtk_style_context_remove_class (bctx, "badge-unknown");
-		gtk_style_context_add_class (bctx, badge_to_class (state));
-	}
-
-	/* Swap the colour class rather than stacking them. */
-	klass = state_to_class (state);
-
-	ctx = gtk_widget_get_style_context (state_label);
-	gtk_style_context_remove_class (ctx, "fs-state-active");
-	gtk_style_context_remove_class (ctx, "fs-state-stopped");
-	gtk_style_context_remove_class (ctx, "fs-state-locked");
-
-	if (*klass != '\0')
-		gtk_style_context_add_class (ctx, klass);
-
-	if (tool_lock != NULL)
-		gtk_toggle_tool_button_set_active (GTK_TOGGLE_TOOL_BUTTON (tool_lock),
-		                                   policy_locked);
-
-	refresh_controls ();
+	sync_lock_button ();
+	refresh_profiles ();
 	fs_statusview_refresh_ipv6 ();
 }
 
 /* [ fs_statusview_refresh_ipv6 ] -- see fs-statusview.h.
- * One line under the state.  Filtered and "no IPv6 here" are quiet;
- * not filtered is amber and says why, because a firewall that reads
- * "running" while half the traffic passes unfiltered is exactly the
- * gap 1.0.7 closed.  Hidden where the backend has no answer (Windows
- * Firewall applies every rule to both families). */
+ * Re-reads the backend's IPv6 answer and re-judges the machine.  A
+ * firewall that reads "running" while half the traffic passes
+ * unfiltered is exactly the gap 1.0.7 closed, so a not-filtered IPv6
+ * turns the whole verdict amber, not a footnote. */
 void
 fs_statusview_refresh_ipv6 (void)
 {
 	const FsBackend *backend = fs_backend ();
-	GtkStyleContext *ctx;
-	gchar *detail = NULL;
-	gchar *text;
-	FsIpv6State st;
 
-	if (ipv6_label == NULL)
-		return;
+	g_clear_pointer (&ipv6_detail, g_free);
+	ipv6_known = backend->ipv6_state != NULL;
+	ipv6_st = ipv6_known ? backend->ipv6_state (&ipv6_detail)
+	                     : FS_IPV6_UNKNOWN;
 
-	if (backend->ipv6_state == NULL) {
-		gtk_widget_set_no_show_all (ipv6_label, TRUE);
-		gtk_widget_hide (ipv6_label);
-		return;
-	}
-
-	st = backend->ipv6_state (&detail);
-	ctx = gtk_widget_get_style_context (ipv6_label);
-	gtk_style_context_remove_class (ctx, "fs-ipv6-warn");
-	gtk_style_context_remove_class (ctx, "dim-label");
-
-	switch (st) {
-	case FS_IPV6_FILTERED:
-		text = g_strdup (_("IPv4 and IPv6 are filtered by the same "
-		                   "policy."));
-		gtk_style_context_add_class (ctx, "dim-label");
-		break;
-	case FS_IPV6_ABSENT:
-		text = g_strdup (_("IPv4 is filtered. This system has no IPv6."));
-		gtk_style_context_add_class (ctx, "dim-label");
-		break;
-	case FS_IPV6_UNFILTERED:
-		/* A stopped firewall filters neither family; the state line
-		 * above already says so in red. */
-		if (current_state == FS_FW_STOPPED) {
-			text = NULL;
-			break;
-		}
-		text = g_strdup_printf (_("IPv6 is not filtered. %s"),
-		                        detail != NULL ? _(detail) : "");
-		gtk_style_context_add_class (ctx, "fs-ipv6-warn");
-		break;
-	case FS_IPV6_UNKNOWN:
-	default:
-		text = g_strdup (detail != NULL ? _(detail) : "");
-		gtk_style_context_add_class (ctx, "dim-label");
-		break;
-	}
-
-	if (text != NULL && *text != '\0') {
-		gtk_label_set_text (GTK_LABEL (ipv6_label), text);
-		gtk_widget_set_no_show_all (ipv6_label, FALSE);
-		gtk_widget_show (ipv6_label);
-	} else {
-		gtk_widget_set_no_show_all (ipv6_label, TRUE);
-		gtk_widget_hide (ipv6_label);
-	}
-
-	g_free (text);
-	g_free (detail);
+	update_overview ();
 }
 
 FsFirewallState
@@ -796,429 +1334,407 @@ fs_statusview_get_state (void)
 
 /* ------------------------------------------------------------------ page */
 
-/* [ make_table ]
- * A scrolled tree view inside a labelled frame, both sized so the page
- * scrolls as a whole instead of each table claiming the window. */
-/* [ stripe_cell_data ]
- * Alternating row tint for the Status tables, by visible position
- * (the refresh path rebuilds the store, so position, not append
- * order, is what the user sees).  A selected row is left alone so
- * the theme's selection highlight is not painted over. */
-static void
-stripe_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
-                  GtkTreeModel *model, GtkTreeIter *iter, gpointer data)
+static GtkWidget *
+build_header (void)
 {
-	GtkWidget *view = data;
-	const gchar *background = NULL;
-	GtkTreePath *path;
+	GtkWidget *header = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+	GtkWidget *titles = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
 
-	(void) column;
+	gtk_box_pack_start (GTK_BOX (titles),
+	                    label_new (_("Overview"), "page-title", 0.0),
+	                    FALSE, FALSE, 0);
+	subtitle_label = label_new (_("This computer"), "page-subtitle", 0.0);
+	gtk_box_pack_start (GTK_BOX (titles), subtitle_label, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (header), titles, TRUE, TRUE, 0);
 
-	if (view != NULL) {
-		GtkTreeSelection *sel =
-			gtk_tree_view_get_selection (GTK_TREE_VIEW (view));
+	lock_button = icon_button_new (FS_ICON_UNLOCK, _("Lock policy"),
+	                               &lock_icon, &lock_label, TRUE);
+	add_class (lock_button, "btn-subtle");
+	gtk_widget_set_valign (lock_button, GTK_ALIGN_CENTER);
+	gtk_widget_set_tooltip_text (lock_button,
+		_("While locked, the Policy page refuses to apply changes."));
+	g_signal_connect_data (lock_button, "toggled",
+	                       G_CALLBACK (on_lock_toggled), &lock_button,
+	                       NULL, 0);
+	gtk_box_pack_start (GTK_BOX (header), lock_button, FALSE, FALSE, 0);
 
-		if (gtk_tree_selection_iter_is_selected (sel, iter))
-			background = NULL;
-		else {
-			path = gtk_tree_model_get_path (model, iter);
-
-			if (path != NULL) {
-				gint *indices = gtk_tree_path_get_indices (path);
-
-				if (indices != NULL && indices[0] % 2 == 1)
-					background = "#f9f9f9";
-
-				gtk_tree_path_free (path);
-			}
-		}
-	}
-
-	g_object_set (renderer, "background", background, NULL);
+	return header;
 }
 
 static GtkWidget *
-make_table (const gchar *title, GtkListStore **store_out,
-            const gchar *const *labels, gint n_cols)
+build_hero (void)
 {
-	GtkWidget *frame, *scroll, *view;
-	GtkCellRenderer *renderer;
+	static const gchar *captions[N_TILES] = {
+		N_("IPv4 traffic"), N_("IPv6 traffic"), N_("Policy"),
+		N_("Engine")
+	};
+	GtkWidget *left, *tile, *text, *buttons, *grid, *events_button;
+
+	hero = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 24);
+	add_class (hero, "hero");
+	add_class (hero, "level-unknown");
+
+	left = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 18);
+
+	tile = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_widget_set_size_request (tile, 56, 56);
+	gtk_widget_set_valign (tile, GTK_ALIGN_START);
+	add_class (tile, "hero-icon-tile");
+	hero_icon = fs_icon_new (FS_ICON_SHIELD_QUESTION, 30);
+	add_class (hero_icon, "hero-icon");
+	gtk_box_pack_start (GTK_BOX (tile), hero_icon, TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (left), tile, FALSE, FALSE, 0);
+
+	text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+	hero_title = label_new (NULL, "hero-title", 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (hero_title), TRUE);
+	gtk_box_pack_start (GTK_BOX (text), hero_title, FALSE, FALSE, 0);
+	hero_body = label_new (NULL, "hero-body", 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (hero_body), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (hero_body), 60);
+	gtk_box_pack_start (GTK_BOX (text), hero_body, FALSE, FALSE, 0);
+
+	buttons = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+	gtk_widget_set_margin_top (buttons, 10);
+	power_button = icon_button_new (FS_ICON_PLAY, _("Start firewall"),
+	                                &power_icon, &power_label, FALSE);
+	add_class (power_button, "btn-primary");
+	g_signal_connect (power_button, "clicked",
+	                  G_CALLBACK (on_power_clicked), NULL);
+	gtk_box_pack_start (GTK_BOX (buttons), power_button, FALSE, FALSE, 0);
+
+	events_button = gtk_button_new_with_label (_("View events"));
+	add_class (events_button, "btn-subtle");
+	g_signal_connect (events_button, "clicked",
+	                  G_CALLBACK (on_view_events), NULL);
+	gtk_box_pack_start (GTK_BOX (buttons), events_button, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (text), buttons, FALSE, FALSE, 0);
+
+	gtk_box_pack_start (GTK_BOX (left), text, TRUE, TRUE, 0);
+	gtk_box_pack_start (GTK_BOX (hero), left, TRUE, TRUE, 0);
+
+	/* Four facts, two by two. */
+	grid = gtk_grid_new ();
+	gtk_grid_set_row_spacing (GTK_GRID (grid), 10);
+	gtk_grid_set_column_spacing (GTK_GRID (grid), 10);
+	gtk_grid_set_column_homogeneous (GTK_GRID (grid), TRUE);
+	gtk_widget_set_size_request (grid, 360, -1);
+	gtk_widget_set_valign (grid, GTK_ALIGN_CENTER);
+
+	for (gint i = 0; i < N_TILES; i++) {
+		GtkWidget *fact = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+
+		add_class (fact, "hero-tile");
+		gtk_box_pack_start (GTK_BOX (fact),
+		                    label_new (_(captions[i]), "tile-caption", 0.0),
+		                    FALSE, FALSE, 0);
+		tile_value[i] = label_new ("", "tile-value", 0.0);
+		gtk_label_set_ellipsize (GTK_LABEL (tile_value[i]),
+		                         PANGO_ELLIPSIZE_END);
+		gtk_box_pack_start (GTK_BOX (fact), tile_value[i], FALSE, FALSE, 0);
+		gtk_grid_attach (GTK_GRID (grid), fact, i % 2, i / 2, 1, 1);
+	}
+	gtk_box_pack_start (GTK_BOX (hero), grid, FALSE, FALSE, 0);
+
+	return hero;
+}
+
+static GtkWidget *
+build_profiles (void)
+{
+	static const gchar *names[FS_PROFILE_COUNT] = {
+		N_("Domain"), N_("Private"), N_("Public")
+	};
+	static const gchar *about[FS_PROFILE_COUNT] = {
+		N_("Work networks with a domain controller"),
+		N_("Home and other trusted networks"),
+		N_("Cafes, airports, hotels and other public places")
+	};
+	GtkWidget *inner = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	gboolean any = FALSE;
+
+	/* A GtkFrame titled "Firewall profiles": the visibility test finds
+	 * it by that title. */
+	profiles_frame = gtk_frame_new (_("Firewall profiles"));
+	add_class (profiles_frame, "card-frame");
+	gtk_container_add (GTK_CONTAINER (profiles_frame), inner);
+
+	for (gint i = 0; i < FS_PROFILE_COUNT; i++) {
+		GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+		GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+		GtkWidget *toggle = gtk_switch_new ();
+		gboolean enabled = FALSE;
+
+		add_class (row, "profile-row");
+		gtk_box_pack_start (GTK_BOX (text),
+		                    label_new (_(names[i]), "profile-label", 0.0),
+		                    FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (text),
+		                    label_new (_(about[i]), "muted", 0.0),
+		                    FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (row), text, TRUE, TRUE, 0);
+
+		g_object_set_data (G_OBJECT (toggle), "user-data",
+		                   GINT_TO_POINTER (i));
+		gtk_widget_set_valign (toggle, GTK_ALIGN_CENTER);
+		atk_object_set_name (gtk_widget_get_accessible (toggle),
+		                     _(names[i]));
+		if (fs_backend ()->get_profile_enabled (i, &enabled)) {
+			gtk_switch_set_active (GTK_SWITCH (toggle), enabled);
+			any = TRUE;
+		}
+		g_signal_connect (toggle, "notify::active",
+		                  G_CALLBACK (on_profile_toggled), NULL);
+		gtk_box_pack_start (GTK_BOX (row), toggle, FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (inner), row, FALSE, FALSE, 0);
+
+		profile_switches[i] = toggle;
+	}
+
+	/* The backend decides whether to show this: Windows has three
+	 * profiles, Linux has one global state and hides the card.  It is
+	 * marked no-show-all before hiding, because fs-app.c calls
+	 * gtk_widget_show_all() on the whole window after this page is
+	 * built -- without the flag that walk re-shows the frame and
+	 * presents Linux with three switches that can only ever answer
+	 * "Linux has a single firewall state". */
+	if (!any) {
+		gtk_widget_set_no_show_all (profiles_frame, TRUE);
+		gtk_widget_hide (profiles_frame);
+	}
+
+	return profiles_frame;
+}
+
+static GtkWidget *
+build_totals (void)
+{
+	static const gchar *captions[N_TOTALS] = {
+		N_("Inbound events"), N_("Outbound events"),
+		N_("Open connections"), N_("Traffic now")
+	};
+	GtkWidget *grid = gtk_grid_new ();
+
+	gtk_grid_set_column_spacing (GTK_GRID (grid), 14);
+	gtk_grid_set_column_homogeneous (GTK_GRID (grid), TRUE);
+
+	for (gint i = 0; i < N_TOTALS; i++) {
+		GtkWidget *card = card_new (GTK_ORIENTATION_VERTICAL, 4);
+
+		add_class (card, "stat-card");
+		gtk_box_pack_start (GTK_BOX (card),
+		                    label_new (_(captions[i]), "tile-caption", 0.0),
+		                    FALSE, FALSE, 0);
+		total_value[i] = label_new ("0", "stat-big", 0.0);
+		gtk_box_pack_start (GTK_BOX (card), total_value[i], FALSE, FALSE, 0);
+		total_note[i] = label_new ("", "stat-note", 0.0);
+		gtk_label_set_ellipsize (GTK_LABEL (total_note[i]),
+		                         PANGO_ELLIPSIZE_END);
+		gtk_box_pack_start (GTK_BOX (card), total_note[i], FALSE, FALSE, 0);
+		gtk_grid_attach (GTK_GRID (grid), card, i, 0, 1, 1);
+	}
+
+	gtk_widget_set_tooltip_text (gtk_widget_get_parent (total_value[TOTAL_IN]),
+		_("Events logged since StockFW opened."));
+	gtk_widget_set_tooltip_text (gtk_widget_get_parent (total_value[TOTAL_OUT]),
+		_("Events logged since StockFW opened."));
+	gtk_widget_set_tooltip_text (gtk_widget_get_parent (total_value[TOTAL_CONN]),
+		_("Connections to other computers. Local ones are not counted."));
+	gtk_widget_set_tooltip_text (gtk_widget_get_parent (total_value[TOTAL_TRAFFIC]),
+		_("Right now, and received / sent in total, over the real "
+		  "adapters (virtual ones are left out so bridged traffic is "
+		  "not counted twice)."));
+	return grid;
+}
+
+static GtkTreeViewColumn *
+conn_column (GtkWidget *view, const gchar *title, gint col,
+             const gchar *klass)
+{
+	GtkCellRenderer *renderer = gtk_cell_renderer_text_new ();
 	GtkTreeViewColumn *column;
 
-	*store_out = gtk_list_store_new (n_cols, G_TYPE_STRING, G_TYPE_STRING,
+	g_object_set (renderer, "ypad", 6, "xpad", 10, NULL);
+	if (g_strcmp0 (klass, "mono") == 0)
+		g_object_set (renderer, "family", "monospace", NULL);
+	else if (g_strcmp0 (klass, "bold") == 0)
+		g_object_set (renderer, "weight", PANGO_WEIGHT_SEMIBOLD, NULL);
+	else if (g_strcmp0 (klass, "muted") == 0)
+		g_object_set (renderer, "foreground", "#5B6472", NULL);
+
+	column = gtk_tree_view_column_new_with_attributes (title, renderer,
+	                                                   "text", col, NULL);
+	gtk_tree_view_column_set_resizable (column, TRUE);
+	gtk_tree_view_column_set_sort_column_id (column, col);
+	gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
+	return column;
+}
+
+static GtkWidget *
+build_connections (void)
+{
+	GtkWidget *head, *view, *scroll, *foot;
+	GtkTreeModel *sorted;
+
+	connections_card = card_new (GTK_ORIENTATION_VERTICAL, 0);
+	add_class (connections_card, "list-card");
+
+	head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+	add_class (head, "card-head");
+	gtk_box_pack_start (GTK_BOX (head),
+	                    label_new (_("Open connections"), "card-heading", 0.0),
+	                    TRUE, TRUE, 0);
+	conn_search = gtk_search_entry_new ();
+	gtk_entry_set_placeholder_text (GTK_ENTRY (conn_search),
+	                                _("Filter by program, address or service"));
+	gtk_entry_set_width_chars (GTK_ENTRY (conn_search), 30);
+	gtk_widget_set_valign (conn_search, GTK_ALIGN_CENTER);
+	g_signal_connect (conn_search, "search-changed",
+	                  G_CALLBACK (on_conn_search_changed), NULL);
+	gtk_box_pack_start (GTK_BOX (head), conn_search, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (connections_card), head, FALSE, FALSE, 0);
+
+	conn_store = gtk_list_store_new (CONN_N_COLS, G_TYPE_STRING,
 	                                 G_TYPE_STRING, G_TYPE_STRING,
 	                                 G_TYPE_STRING, G_TYPE_STRING,
-	                                 G_TYPE_STRING, G_TYPE_STRING);
+	                                 G_TYPE_BOOLEAN);
+	conn_filter = gtk_tree_model_filter_new (GTK_TREE_MODEL (conn_store),
+	                                         NULL);
+	gtk_tree_model_filter_set_visible_func (GTK_TREE_MODEL_FILTER (conn_filter),
+	                                        conn_visible, NULL, NULL);
+	sorted = gtk_tree_model_sort_new_with_model (conn_filter);
 
-	view = gtk_tree_view_new_with_model (GTK_TREE_MODEL (*store_out));
-	gtk_tree_view_set_headers_visible (GTK_TREE_VIEW (view), TRUE);
-	/* Thin light-grey rules between cells, as the spec's data grids. */
-	gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (view),
-	                              GTK_TREE_VIEW_GRID_LINES_BOTH);
-	gtk_style_context_add_class (gtk_widget_get_style_context (view),
-	                             "data-grid");
-
-	for (gint i = 0; i < n_cols; i++) {
-		renderer = gtk_cell_renderer_text_new ();
-		column = gtk_tree_view_column_new_with_attributes (
-			_(labels[i]), renderer, "text", i, NULL);
-		gtk_tree_view_column_set_resizable (column, TRUE);
-		/* The alternating rows the spec asks for on Status. */
-		gtk_tree_view_column_set_cell_data_func (column, renderer,
-		                                         stripe_cell_data,
-		                                         view, NULL);
-		gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
-	}
+	view = gtk_tree_view_new_with_model (sorted);
+	g_object_unref (sorted);
+	add_class (view, "overview-grid");
+	gtk_tree_view_set_enable_search (GTK_TREE_VIEW (view), FALSE);
+	conn_column (view, _("Program"), CONN_COL_PROGRAM, "bold");
+	conn_column (view, _("Remote address"), CONN_COL_REMOTE, "mono");
+	conn_column (view, _("Port"), CONN_COL_PORT, "mono");
+	conn_column (view, _("Service"), CONN_COL_SERVICE, NULL);
+	conn_column (view, _("Direction"), CONN_COL_DIRECTION, "muted");
 
 	scroll = gtk_scrolled_window_new (NULL, NULL);
 	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
 	                                GTK_POLICY_AUTOMATIC,
 	                                GTK_POLICY_AUTOMATIC);
-	/* The card frame draws the border; an etched scroll shadow
-	 * inside it would be a second border. */
 	gtk_scrolled_window_set_shadow_type (GTK_SCROLLED_WINDOW (scroll),
 	                                     GTK_SHADOW_NONE);
-	gtk_widget_set_size_request (scroll, -1, 140);
+	gtk_widget_set_size_request (scroll, -1, 200);
 	gtk_container_add (GTK_CONTAINER (scroll), view);
+	gtk_box_pack_start (GTK_BOX (connections_card), scroll, TRUE, TRUE, 0);
 
-	frame = gtk_frame_new (_(title));
-	gtk_style_context_add_class (gtk_widget_get_style_context (frame),
-	                             "card-frame");
-	gtk_container_add (GTK_CONTAINER (frame), scroll);
+	foot = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	add_class (foot, "card-foot");
+	conn_note = label_new ("", "muted", 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (conn_note), TRUE);
+	gtk_widget_set_no_show_all (conn_note, TRUE);
+	gtk_box_pack_start (GTK_BOX (foot), conn_note, FALSE, FALSE, 0);
+	conn_toggle = link_button_new (_("Show them"));
+	gtk_widget_set_no_show_all (conn_toggle, TRUE);
+	g_signal_connect (conn_toggle, "clicked", G_CALLBACK (on_conn_toggle),
+	                  NULL);
+	gtk_box_pack_start (GTK_BOX (foot), conn_toggle, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (connections_card), foot, FALSE, FALSE, 0);
 
-	return frame;
+	return connections_card;
 }
 
-/* [ build_events_box ] -- the Total / Serious counter table. */
 static GtkWidget *
-build_events_box (void)
+build_adapters (void)
 {
-	GtkWidget *frame, *grid;
-	const gchar *heads[] = { "", N_("Total"), N_("Serious") };
-	const gchar *dirs[]  = { N_("Inbound"), N_("Outbound") };
+	GtkWidget *foot;
 
-	grid = gtk_grid_new ();
-	gtk_grid_set_row_spacing (GTK_GRID (grid), 4);
-	gtk_grid_set_column_spacing (GTK_GRID (grid), 14);
-	gtk_container_set_border_width (GTK_CONTAINER (grid), 6);
+	adapters_card = card_new (GTK_ORIENTATION_VERTICAL, 10);
+	add_class (adapters_card, "padded-card");
+	gtk_box_pack_start (GTK_BOX (adapters_card),
+	                    label_new (_("Network adapters"), "card-heading", 0.0),
+	                    FALSE, FALSE, 0);
 
-	for (gint col = 0; col < 3; col++) {
-		GtkWidget *label = gtk_label_new (heads[col][0] != '\0'
-		                                  ? _(heads[col]) : "");
-		gtk_widget_set_halign (label, col == 0 ? GTK_ALIGN_START
-		                                       : GTK_ALIGN_END);
-		gtk_style_context_add_class (gtk_widget_get_style_context (label),
-		                             "fs-counter-head");
-		gtk_grid_attach (GTK_GRID (grid), label, col, 0, 1, 1);
-	}
+	adapters_list = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+	gtk_box_pack_start (GTK_BOX (adapters_card), adapters_list,
+	                    FALSE, FALSE, 0);
 
-	for (gint dir = 0; dir < 2; dir++) {
-		GtkWidget *label = gtk_label_new (_(dirs[dir]));
+	foot = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	adapters_note = label_new ("", "muted", 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (adapters_note), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (adapters_note), 30);
+	gtk_widget_set_no_show_all (adapters_note, TRUE);
+	gtk_box_pack_start (GTK_BOX (foot), adapters_note, FALSE, FALSE, 0);
+	adapters_toggle = link_button_new (_("Show them"));
+	gtk_widget_set_no_show_all (adapters_toggle, TRUE);
+	g_signal_connect (adapters_toggle, "clicked",
+	                  G_CALLBACK (on_adapters_toggle), NULL);
+	gtk_box_pack_start (GTK_BOX (foot), adapters_toggle, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (adapters_card), foot, FALSE, FALSE, 0);
 
-		gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-		gtk_grid_attach (GTK_GRID (grid), label, 0, dir + 1, 1, 1);
-
-		for (gint kind = 0; kind < 2; kind++) {
-			GtkWidget *value = gtk_label_new ("0");
-
-			gtk_widget_set_halign (value, GTK_ALIGN_END);
-			gtk_style_context_add_class (
-				gtk_widget_get_style_context (value), "fs-counter");
-
-			gtk_grid_attach (GTK_GRID (grid), value, kind + 1,
-			                 dir + 1, 1, 1);
-
-			counter[dir][kind] = value;
-		}
-	}
-
-	frame = gtk_frame_new (_("Events"));
-	gtk_style_context_add_class (gtk_widget_get_style_context (frame),
-	                             "events-summary");
-	gtk_container_add (GTK_CONTAINER (frame), grid);
-
-	return frame;
+	return adapters_card;
 }
 
-/* [ fs_statusview_toolbar ]
- * The Status page's icon row: Preferences, Lock, Start, Stop.
- *
- * The items are handed to the toolbar and not unreffed afterwards:
- * gtk_toolbar_insert() takes over the floating reference they were
- * created with, so unreffing would free them while the toolbar still
- * held them, and every later use of tool_start/tool_stop/tool_lock
- * would be a use-after-free. */
-GtkWidget *
-fs_statusview_toolbar (void)
+static GtkWidget *
+build_recent (void)
 {
-	GtkWidget *toolbar;
-	GtkToolItem *item;
+	GtkWidget *card = card_new (GTK_ORIENTATION_VERTICAL, 10);
+	GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+	GtkWidget *all = link_button_new (_("All events"));
 
-	toolbar = gtk_toolbar_new ();
-	gtk_toolbar_set_style (GTK_TOOLBAR (toolbar), GTK_TOOLBAR_BOTH_HORIZ);
+	add_class (card, "padded-card");
+	gtk_box_pack_start (GTK_BOX (head),
+	                    label_new (_("Recent blocks"), "card-heading", 0.0),
+	                    TRUE, TRUE, 0);
+	g_signal_connect (all, "clicked", G_CALLBACK (on_view_events), NULL);
+	gtk_box_pack_start (GTK_BOX (head), all, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (card), head, FALSE, FALSE, 0);
 
-	item = gtk_tool_button_new (NULL, _("Preferences"));
-	gtk_tool_button_set_icon_name (GTK_TOOL_BUTTON (item),
-	                               "preferences-system");
-	gtk_tool_item_set_tooltip_text (item, _("Open the preferences dialog"));
-	g_signal_connect (item, "clicked",
-	                  G_CALLBACK (on_preferences_clicked), NULL);
-	gtk_toolbar_insert (GTK_TOOLBAR (toolbar), item, -1);
+	recent_list = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	gtk_box_pack_start (GTK_BOX (card), recent_list, FALSE, FALSE, 0);
 
-	item = gtk_separator_tool_item_new ();
-	gtk_toolbar_insert (GTK_TOOLBAR (toolbar), item, -1);
+	recent_empty = label_new (_("Nothing has been blocked since StockFW "
+	                            "opened."), "muted", 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (recent_empty), TRUE);
+	gtk_label_set_max_width_chars (GTK_LABEL (recent_empty), 30);
+	gtk_widget_set_no_show_all (recent_empty, TRUE);
+	gtk_widget_show (recent_empty);
+	gtk_box_pack_start (GTK_BOX (card), recent_empty, FALSE, FALSE, 0);
 
-	item = gtk_toggle_tool_button_new ();
-	gtk_tool_button_set_label (GTK_TOOL_BUTTON (item), _("Lock Firewall"));
-	gtk_tool_button_set_icon_name (GTK_TOOL_BUTTON (item), "changes-prevent");
-	gtk_tool_item_set_tooltip_text (item,
-		_("Lock policy editing until unlocked again"));
-	g_signal_connect (item, "toggled", G_CALLBACK (on_lock_toggled), NULL);
-	gtk_toolbar_insert (GTK_TOOLBAR (toolbar), item, -1);
-	tool_lock = GTK_WIDGET (item);
-
-	item = gtk_tool_button_new (NULL, _("Start"));
-	gtk_tool_button_set_icon_name (GTK_TOOL_BUTTON (item),
-	                               "media-playback-start");
-	gtk_tool_item_set_tooltip_text (item, _("Start the firewall"));
-	g_signal_connect (item, "clicked", G_CALLBACK (on_start_clicked), NULL);
-	gtk_toolbar_insert (GTK_TOOLBAR (toolbar), item, -1);
-	tool_start = GTK_WIDGET (item);
-
-	item = gtk_tool_button_new (NULL, _("Stop"));
-	gtk_tool_button_set_icon_name (GTK_TOOL_BUTTON (item),
-	                               "media-playback-stop");
-	gtk_tool_item_set_tooltip_text (item, _("Stop the firewall"));
-	g_signal_connect (item, "clicked", G_CALLBACK (on_stop_clicked), NULL);
-	gtk_toolbar_insert (GTK_TOOLBAR (toolbar), item, -1);
-	tool_stop = GTK_WIDGET (item);
-
-	return toolbar;
+	rebuild_recent ();
+	return card;
 }
 
 /* [ fs_statusview_page ] */
 GtkWidget *
 fs_statusview_page (void)
 {
-	GtkWidget *page, *header, *top, *left, *hero, *button_box;
-	static const gchar *net_labels[NET_N_COLS] = {
-		"Device", "Type", "Received", "Sent", "Activity"
-	};
-	static const gchar *conn_labels[CONN_N_COLS] = {
-		"Source", "Destination", "Port", "Service", "Program", "Direction"
-	};
+	GtkWidget *scroll, *page, *lower, *side;
 
-	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
-	gtk_container_set_border_width (GTK_CONTAINER (page), 10);
+	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 20);
+	add_class (page, "overview");
 
-	/* ---- logo banner ---- */
-	header = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
-	{
-		GdkPixbuf *logo = load_status_logo ();
+	gtk_box_pack_start (GTK_BOX (page), build_header (), FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (page), build_hero (), FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (page), build_profiles (), FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (page), build_totals (), FALSE, FALSE, 0);
 
-		if (logo != NULL) {
-			/* Scale the 96x96 source to the 89x89 the design asks
-			 * for: the header logo must read bigger than the
-			 * run/stop badge in the hero card. */
-			GdkPixbuf *scaled = gdk_pixbuf_scale_simple (logo, 89, 89,
-			                                             GDK_INTERP_BILINEAR);
-			logo_image = gtk_image_new_from_pixbuf (scaled);
-			g_object_unref (scaled);
-			g_object_unref (logo);
-			gtk_box_pack_start (GTK_BOX (header), logo_image,
-			                    FALSE, FALSE, 0);
-		}
+	lower = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 20);
+	gtk_box_pack_start (GTK_BOX (lower), build_connections (),
+	                    TRUE, TRUE, 0);
+	side = gtk_box_new (GTK_ORIENTATION_VERTICAL, 20);
+	gtk_widget_set_size_request (side, 300, -1);
+	gtk_box_pack_start (GTK_BOX (side), build_adapters (), FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (side), build_recent (), FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (lower), side, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (page), lower, TRUE, TRUE, 0);
 
-		{
-			GtkWidget *title_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
-			GtkWidget *title = gtk_label_new ("StockFW");
-			GtkWidget *subtitle = gtk_label_new (
-				_("Smart Firewall Configuration Tool"));
+	scroll = gtk_scrolled_window_new (NULL, NULL);
+	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+	                                GTK_POLICY_AUTOMATIC,
+	                                GTK_POLICY_AUTOMATIC);
+	gtk_container_add (GTK_CONTAINER (scroll), page);
 
-			gtk_label_set_xalign (GTK_LABEL (title), 0.0);
-			gtk_label_set_xalign (GTK_LABEL (subtitle), 0.0);
-			gtk_style_context_add_class (
-				gtk_widget_get_style_context (title), "title");
-			gtk_style_context_add_class (
-				gtk_widget_get_style_context (subtitle), "dim-label");
-
-			gtk_box_pack_start (GTK_BOX (title_box), title, FALSE, FALSE, 0);
-			gtk_box_pack_start (GTK_BOX (title_box), subtitle, FALSE, FALSE, 0);
-			gtk_box_pack_start (GTK_BOX (header), title_box, TRUE, TRUE, 0);
-		}
-	}
-	gtk_box_pack_start (GTK_BOX (page), header, FALSE, FALSE, 0);
-
-	/* ---- status line + events counters, on one white hero card ---- */
-	top = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
-
-	/* The left area holds the badge + status text as ONE group,
-	 * centred both ways in the space the Events counters leave: two
-	 * equal expanding spacers do the horizontal centre, the children's
-	 * valign does the vertical one.  (The group used to park itself in
-	 * the top-left corner, which read as a layout bug next to the
-	 * centred counters.) */
-	left = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
-	{
-		GtkWidget *spacer = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-
-		gtk_box_pack_start (GTK_BOX (left), spacer, TRUE, TRUE, 0);
-	}
-
-	/* The circular badge: state colour behind a symbolic glyph, so
-	 * the verdict is readable before the text is. */
-	state_badge = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-	gtk_style_context_add_class (
-		gtk_widget_get_style_context (state_badge), "hero-badge");
-	gtk_style_context_add_class (
-		gtk_widget_get_style_context (state_badge),
-		badge_to_class (FS_FW_NONE));
-
-	state_icon = gtk_image_new_from_icon_name (state_to_icon (FS_FW_NONE),
-	                                           GTK_ICON_SIZE_DIALOG);
-	gtk_box_pack_start (GTK_BOX (state_badge), state_icon, FALSE, FALSE, 0);
-	gtk_widget_set_valign (state_badge, GTK_ALIGN_CENTER);
-	gtk_box_pack_start (GTK_BOX (left), state_badge, FALSE, FALSE, 0);
-
-	{
-		GtkWidget *col = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
-		GtkWidget *spacer = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
-
-		state_label = gtk_label_new (state_to_text (FS_FW_NONE));
-		gtk_label_set_xalign (GTK_LABEL (state_label), 0.0);
-		install_css (state_label);
-		gtk_style_context_add_class (gtk_widget_get_style_context (state_label),
-		                             state_to_class (FS_FW_NONE));
-
-		gtk_box_pack_start (GTK_BOX (col), state_label, FALSE, FALSE, 0);
-
-		/* Starts hidden and no-show-all, so fs-app's show_all walk
-		 * cannot reveal an empty line; refresh_ipv6 shows it once it
-		 * has something true to say. */
-		ipv6_label = gtk_label_new (NULL);
-		gtk_label_set_xalign (GTK_LABEL (ipv6_label), 0.0);
-		gtk_label_set_line_wrap (GTK_LABEL (ipv6_label), TRUE);
-		gtk_label_set_max_width_chars (GTK_LABEL (ipv6_label), 52);
-		gtk_widget_set_no_show_all (ipv6_label, TRUE);
-		gtk_box_pack_start (GTK_BOX (col), ipv6_label, FALSE, FALSE, 0);
-
-		gtk_widget_set_valign (col, GTK_ALIGN_CENTER);
-		gtk_box_pack_start (GTK_BOX (left), col, FALSE, FALSE, 0);
-		gtk_box_pack_start (GTK_BOX (left), spacer, TRUE, TRUE, 0);
-	}
-
-	gtk_box_pack_start (GTK_BOX (top), left, TRUE, TRUE, 0);
-	gtk_box_pack_start (GTK_BOX (top), build_events_box (), FALSE, FALSE, 0);
-
-	hero = gtk_frame_new (NULL);
-	gtk_style_context_add_class (gtk_widget_get_style_context (hero),
-	                             "hero-status");
-	gtk_container_add (GTK_CONTAINER (hero), top);
-	gtk_box_pack_start (GTK_BOX (page), hero, FALSE, FALSE, 0);
-
-	/* ---- start/stop, for when the toolbar is collapsed ---- */
-	button_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-	gtk_widget_set_halign (button_box, GTK_ALIGN_START);
-
-	button_start = gtk_button_new_with_label (_("Start firewall"));
-	button_stop  = gtk_button_new_with_label (_("Stop firewall"));
-	gtk_style_context_add_class (gtk_widget_get_style_context (button_start),
-	                             "btn-subtle");
-	gtk_style_context_add_class (gtk_widget_get_style_context (button_stop),
-	                             "btn-subtle");
-
-	g_signal_connect (button_start, "clicked",
-	                  G_CALLBACK (on_start_clicked), NULL);
-	g_signal_connect (button_stop, "clicked",
-	                  G_CALLBACK (on_stop_clicked), NULL);
-
-	gtk_box_pack_start (GTK_BOX (button_box), button_start, FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (button_box), button_stop,  FALSE, FALSE, 0);
-
-	gtk_box_pack_start (GTK_BOX (page), button_box, FALSE, FALSE, 0);
-
-	/* ---- profile switches ---- */
-	profiles_frame = gtk_frame_new (_("Firewall profiles"));
-	gtk_style_context_add_class (gtk_widget_get_style_context (profiles_frame),
-	                             "card-frame");
-	{
-		GtkWidget *inner = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
-		const gchar *names[] = { _("Domain"), _("Private"), _("Public") };
-
-		gtk_container_set_border_width (GTK_CONTAINER (inner), 6);
-		gtk_container_add (GTK_CONTAINER (profiles_frame), inner);
-
-		for (gint i = 0; i < FS_PROFILE_COUNT; i++) {
-			GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-			GtkWidget *label = gtk_label_new (names[i]);
-			GtkWidget *toggle = gtk_switch_new ();
-			gboolean enabled = FALSE;
-
-			gtk_style_context_add_class (
-				gtk_widget_get_style_context (row), "profile-row");
-			gtk_style_context_add_class (
-				gtk_widget_get_style_context (label), "profile-label");
-			gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-			gtk_widget_set_hexpand (label, TRUE);
-			g_object_set_data (G_OBJECT (toggle), "user-data",
-			                   GINT_TO_POINTER (i));
-
-			if (fs_backend ()->get_profile_enabled (i, &enabled))
-				gtk_switch_set_active (GTK_SWITCH (toggle), enabled);
-
-			g_signal_connect (toggle, "notify::active",
-			                  G_CALLBACK (on_profile_toggled), NULL);
-
-			gtk_box_pack_start (GTK_BOX (row), label, TRUE, TRUE, 0);
-			gtk_box_pack_start (GTK_BOX (row), toggle, FALSE, FALSE, 0);
-			gtk_box_pack_start (GTK_BOX (inner), row, FALSE, FALSE, 0);
-
-			profile_switches[i] = toggle;
-		}
-	}
-
-	/* The backend decides whether to show this: Windows has three
-	 * profiles, Linux has one global state and hides the box.  The
-	 * frame is marked no-show-all before hiding, because fs-app.c
-	 * calls gtk_widget_show_all() on the whole window after this page
-	 * is built -- without the flag that walk re-shows the frame and
-	 * presents Linux with three switches that can only ever answer
-	 * "Linux has a single firewall state".  Same trap, same remedy as
-	 * the monitor strip in fs-hitview.c. */
-	{
-		gboolean any = FALSE;
-
-		for (gint i = 0; i < FS_PROFILE_COUNT; i++) {
-			if (fs_backend ()->get_profile_enabled (i, NULL))
-				any = TRUE;
-		}
-
-		if (any) {
-			gtk_widget_show_all (profiles_frame);
-		} else {
-			gtk_widget_set_no_show_all (profiles_frame, TRUE);
-			gtk_widget_hide (profiles_frame);
-		}
-	}
-
-	gtk_box_pack_start (GTK_BOX (page), profiles_frame, FALSE, FALSE, 0);
-
-	/* ---- the two live tables ---- */
 	net_samples = g_hash_table_new_full (g_str_hash, g_str_equal,
 	                                     g_free, g_free);
 
-	network_frame = make_table (_("Network"), &net_store,
-	                            net_labels, NET_N_COLS);
-	gtk_box_pack_start (GTK_BOX (page), network_frame, FALSE, FALSE, 0);
-
-	connections_frame = make_table (_("Active connections"), &conn_store,
-	                                conn_labels, CONN_N_COLS);
-	gtk_box_pack_start (GTK_BOX (page), connections_frame, FALSE, FALSE, 0);
-
-	/* Hidden until the first sample proves there is data. */
-	gtk_widget_hide (network_frame);
-
-	refresh_controls ();
+	update_counters ();
 	fs_statusview_set_state (FS_FW_NONE);
 
 	g_timeout_add (NET_REFRESH_MS,  on_net_timeout,  NULL);
@@ -1228,5 +1744,5 @@ fs_statusview_page (void)
 	 * seconds after startup. */
 	fs_statusview_refresh ();
 
-	return page;
+	return scroll;
 }
