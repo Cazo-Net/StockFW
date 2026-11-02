@@ -25,8 +25,10 @@ enum
 {
 	FS_FEED_ERR_TOO_LARGE = 1,  /* over FS_FEED_MAX_BYTES or a NUL byte */
 	FS_FEED_ERR_TOO_MANY,       /* over FS_FEED_MAX_ENTRIES entries     */
-	FS_FEED_ERR_NOT_A_LIST,     /* mostly not addresses (HTML ...)      */
-	FS_FEED_ERR_COVERAGE        /* over a coverage cap                  */
+	FS_FEED_ERR_NOT_A_LIST,     /* mostly not addresses (HTML ...), or
+	                             * poisoned (too broad >= kept)         */
+	FS_FEED_ERR_COVERAGE,       /* over a coverage cap                  */
+	FS_FEED_ERR_URL             /* fs_feed_url_is_acceptable() refused  */
 };
 
 typedef enum
@@ -42,7 +44,8 @@ typedef enum
 	                             * '#' comments, a "Start" header row   */
 } FsFeedFormat;
 
-/* "plain" / "spamhaus-json" / "dshield" <-> enum (exact, lower case). */
+/* "plain" / "spamhaus-json" / "dshield" <-> enum (exact, lower case).
+ * to_string returns NULL for a value that is none of the three. */
 const gchar *fs_feed_format_to_string   (FsFeedFormat fmt);
 gboolean     fs_feed_format_from_string (const gchar *text,
                                          FsFeedFormat *fmt);
@@ -98,11 +101,14 @@ typedef struct
 {
 	guint   lines;            /* physical lines                         */
 	guint   comments;         /* blank, comment and header lines        */
-	guint   entries;          /* data lines that gave a usable entry    */
+	guint   entries;          /* data lines that gave a usable entry:
+	                           * kept, even when all of it was
+	                           * protected space                        */
 	guint   invalid;          /* data lines that did not parse          */
 	guint   first_invalid;    /* 1-based line number; 0 when none       */
-	guint   too_broad;        /* entries dropped by the span floor      */
-	guint   protected_hits;   /* entries that overlapped protected
+	guint   too_broad;        /* entries dropped by the span floor (not
+	                           * counted in entries)                    */
+	guint   protected_hits;   /* kept entries that overlapped protected
 	                           * ranges (that part was taken out)      */
 	guint   host_bits;        /* CIDRs with host bits set (kept,
 	                           * masked)                                */
@@ -120,11 +126,17 @@ typedef struct
  * ranges (fs_range_protected) are already subtracted.  Refuses (NULL +
  * FS_FEED_ERROR) a body that is too large or holds a NUL byte, has more
  * than FS_FEED_MAX_ENTRIES entries, is not a list (nothing parsed while
- * lines were invalid, or more invalid data lines than entries), or is
- * over a coverage cap.  A well-formed list with no entries is not an
- * error: it returns an empty set (fs_feed_judge decides about that).
- * A UTF-8 BOM and CRLF are accepted.  stats may be NULL; when given it
- * is filled on success and on failure alike. */
+ * lines were invalid, or more invalid data lines than entries), is
+ * poisoned, or is over a coverage cap.  Poisoned (NOT_A_LIST): at least
+ * as many entries were too broad as were kept (too_broad > 0 and
+ * too_broad >= entries), so 221 /8s, 1,000 /9s or 82 IPv6 /16s are
+ * refused, while an aggregate whose wide entries are all protected
+ * space (FireHOL's 224.0.0.0/3) loses nothing and is accepted.  A
+ * well-formed list with no entries is not an error: it returns an empty
+ * set (fs_feed_judge decides about that).  A UTF-8 BOM and CRLF are
+ * accepted.  stats may be NULL; when given it is filled on success and
+ * on failure alike (up to the line that hit the entry cap, for
+ * TOO_MANY). */
 FsRangeSet *fs_feed_parse (const gchar *data, gsize len, FsFeedFormat fmt,
                            FsFeedParseStats *stats, GError **error);
 
@@ -136,12 +148,16 @@ FsRangeSet *fs_feed_parse_csv (const gchar *data, gsize len,
 
 /* The design's URL rule (4.4): https:// only, <= 2048 bytes, printable
  * ASCII with no spaces, no "user@" part, a non-empty host, not starting
- * with '-'.  On FALSE, error (FS_FEED_ERROR, FS_FEED_ERR_NOT_A_LIST is
- * not used; any code) says why in one sentence. */
+ * with '-'.  The host must be a DNS name (letters, digits, '-', '.',
+ * '_') or a bracketed IPv6 literal, with an optional port 1-65535.  On
+ * FALSE, error (FS_FEED_ERROR, FS_FEED_ERR_URL) says why in one
+ * sentence. */
 gboolean fs_feed_url_is_acceptable (const gchar *url, GError **error);
 
 /* The URL as every surface but the feed editor shows it: a query
- * string becomes "?…" [S18].  Caller frees. */
+ * string becomes "?…" [S18], and a "user:password@" part (which the
+ * URL rule refuses, but a refusal may still show) becomes "…@".
+ * NULL for NULL.  Caller frees. */
 gchar *fs_feed_url_redacted (const gchar *url);
 
 /* ---- may a new copy replace the old one? (design 4.5) ------------- */
@@ -172,11 +188,19 @@ typedef enum
 } FsFeedVerdict;
 
 /* Judge a parsed copy against the history.  An empty history accepts
- * anything that parsed.  EMPTY, SHRANK and ROLLBACK are overridden by
- * FS_FEED_ACCEPT_SHRINK, GREW by FS_FEED_ACCEPT_COVERAGE.  why, when not
- * NULL, receives one sentence for the UI and the audit line when the
- * verdict is not OK ("The new copy has 3 entries; recent copies had up
- * to 1,614.").  Caller frees *why. */
+ * anything that parsed.  EMPTY: the new copy has no intervals while the
+ * copy in use (the newest) had entries.  SHRANK: entries, or IPv4
+ * coverage, below a quarter of the largest of the recent copies (when
+ * that was 8 or more, or 2^16 or more).  GREW: IPv4 coverage more than
+ * twice the largest recent coverage and more than 2^22 above it.
+ * ROLLBACK: both copies dated and the new one older.  Checked in the
+ * order EMPTY, ROLLBACK, SHRANK, GREW; the first that applies and is
+ * not overridden is the verdict.  EMPTY, SHRANK and ROLLBACK are
+ * overridden by FS_FEED_ACCEPT_SHRINK, GREW by FS_FEED_ACCEPT_COVERAGE.
+ * why, when not NULL, receives one sentence for the UI and the audit
+ * line when the verdict is not OK ("The new copy has 3 entries; recent
+ * copies had up to 1,614."), and NULL when it is OK.  Caller frees
+ * *why. */
 FsFeedVerdict fs_feed_judge (const FsFeedParseStats *now,
                              const FsFeedHistory *history,
                              guint flags, gchar **why);
