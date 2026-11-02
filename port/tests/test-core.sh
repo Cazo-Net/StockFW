@@ -8447,7 +8447,7 @@ EOF
 
 EXTRA_LIBS=""
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
-  EXTRA_LIBS="-lws2_32 -lole32 -loleaut32"
+  EXTRA_LIBS="-lws2_32 -lole32 -loleaut32 -liphlpapi -ladvapi32 -lshell32"
 fi
 
 # STOCKFW_TEST_CFLAGS adds compiler flags, for the sanitizer run the

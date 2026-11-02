@@ -13,6 +13,9 @@
 #include <sys/stat.h>
 #ifdef G_OS_WIN32
 #include <sys/utime.h>
+#include <windows.h>
+#include <aclapi.h>
+#include <sddl.h>
 #else
 #include <signal.h>
 #include <sys/wait.h>
@@ -39,6 +42,11 @@ static int failures = 0;
 		printf ("\n");                                     \
 	}                                                         \
 } while (0)
+
+#ifdef G_OS_WIN32
+static gboolean win_private (const gchar *path, gboolean own_dacl,
+                             gchar *why, gsize why_len);
+#endif
 
 /* A synthetic event: n picks the fields, so the same n is the same
  * event.  Time: 2026-11-02T10:00:00 + n/10 s, wevtutil-style. */
@@ -714,6 +722,12 @@ test_csv (const gchar *tmp)
 	       (unsigned) (st.st_mode & 0777));
 #else
 	(void) st;
+	{
+		gchar why[96];
+
+		CHECK (win_private (path, TRUE, why, sizeof why),
+		       "the export has an owner-only DACL (%s)", why);
+	}
 #endif
 	g_free (text);
 	g_free (path);
@@ -756,6 +770,87 @@ test_csv (const gchar *tmp)
 }
 
 /* ---------------------------------------------------------- history */
+
+#ifdef G_OS_WIN32
+/* [ win_private ]
+ * What owner-only means on Windows (fs_util_make_private): the DACL
+ * holds one entry, allowing this process's user, and with own_dacl it
+ * is protected (nothing inherited from the parent); without, the one
+ * entry may be inherited from a private folder.  Writes what it found
+ * into why. */
+static gboolean
+win_private (const gchar *path, gboolean own_dacl, gchar *why,
+             gsize why_len)
+{
+	gunichar2 *wide = g_utf8_to_utf16 (path, -1, NULL, NULL, NULL);
+	PSECURITY_DESCRIPTOR sd = NULL;
+	PACL dacl = NULL;
+	SECURITY_DESCRIPTOR_CONTROL control = 0;
+	DWORD revision = 0, rc;
+	HANDLE token = NULL;
+	union { TOKEN_USER user; BYTE raw[256]; } me;
+	DWORD len = 0;
+	ACCESS_ALLOWED_ACE *ace = NULL;
+	gboolean ok = FALSE;
+
+	g_snprintf (why, why_len, "no DACL");
+	rc = GetNamedSecurityInfoW ((LPWSTR) wide, SE_FILE_OBJECT,
+	                            DACL_SECURITY_INFORMATION, NULL, NULL,
+	                            &dacl, NULL, &sd);
+	g_free (wide);
+	if (rc != ERROR_SUCCESS || sd == NULL) {
+		g_snprintf (why, why_len, "GetNamedSecurityInfo: %lu",
+		            (unsigned long) rc);
+		return FALSE;
+	}
+	if (!OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token) ||
+	    !GetTokenInformation (token, TokenUser, &me, sizeof me, &len)) {
+		g_snprintf (why, why_len, "no token");
+		goto out;
+	}
+	GetSecurityDescriptorControl (sd, &control, &revision);
+	if (dacl == NULL || dacl->AceCount != 1 ||
+	    !GetAce (dacl, 0, (LPVOID *) &ace)) {
+		g_snprintf (why, why_len, "%u entries, protected %d",
+		            dacl != NULL ? dacl->AceCount : 0,
+		            (control & SE_DACL_PROTECTED) != 0);
+		goto out;
+	}
+	ok = (!own_dacl || (control & SE_DACL_PROTECTED) != 0) &&
+	     ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
+	     EqualSid ((PSID) &ace->SidStart, me.user.User.Sid);
+	g_snprintf (why, why_len, "1 entry, protected %d, own %d",
+	            (control & SE_DACL_PROTECTED) != 0,
+	            EqualSid ((PSID) &ace->SidStart, me.user.User.Sid) != 0);
+out:
+	if (token != NULL)
+		CloseHandle (token);
+	LocalFree (sd);
+	return ok;
+}
+
+/* Loosen path's DACL by hand: Everyone, full control, inheritable
+ * from the parent again. */
+static void
+win_loosen (const gchar *path)
+{
+	gunichar2 *wide = g_utf8_to_utf16 (path, -1, NULL, NULL, NULL);
+	PSECURITY_DESCRIPTOR sd = NULL;
+	PACL dacl = NULL;
+	BOOL present = FALSE, defaulted = FALSE;
+
+	if (ConvertStringSecurityDescriptorToSecurityDescriptorA (
+	            "D:(A;;FA;;;WD)", SDDL_REVISION_1, &sd, NULL) &&
+	    GetSecurityDescriptorDacl (sd, &present, &dacl, &defaulted))
+		SetNamedSecurityInfoW ((LPWSTR) wide, SE_FILE_OBJECT,
+		                       DACL_SECURITY_INFORMATION |
+		                       UNPROTECTED_DACL_SECURITY_INFORMATION,
+		                       NULL, NULL, dacl, NULL);
+	if (sd != NULL)
+		LocalFree (sd);
+	g_free (wide);
+}
+#endif
 
 static void
 write_raw (const gchar *path, const gchar *text, gboolean append)
@@ -933,6 +1028,19 @@ test_log_partial_and_perms (const gchar *tmp)
 		/* Loosened by hand: the next open puts it back. */
 		g_chmod (file, 0644);
 	}
+#else
+	{
+		gchar why[96];
+
+		CHECK (win_private (dir, TRUE, why, sizeof why),
+		       "the folder has an owner-only DACL (%s)", why);
+		CHECK (win_private (file, TRUE, why, sizeof why),
+		       "the file has an owner-only DACL (%s)", why);
+		/* Loosened by hand: the next open puts it back. */
+		win_loosen (file);
+		CHECK (!win_private (file, TRUE, why, sizeof why),
+		       "(the file's DACL was loosened: %s)", why);
+	}
 #endif
 
 	/* A crash in the middle of a line. */
@@ -962,6 +1070,14 @@ test_log_partial_and_perms (const gchar *tmp)
 		CHECK (g_stat (file, &sb) == 0 && (sb.st_mode & 0777) == 0600,
 		       "a loosened file is owner-only again once written (%o)",
 		       (unsigned) (sb.st_mode & 0777));
+	}
+#else
+	{
+		gchar why[96];
+
+		CHECK (win_private (file, TRUE, why, sizeof why),
+		       "a loosened file is owner-only again once written (%s)",
+		       why);
 	}
 #endif
 
@@ -1825,6 +1941,19 @@ test_log_one_writer (const gchar *tmp)
 		g_free (lock);
 	}
 	fs_eventlog_close (a);
+#ifdef G_OS_WIN32
+	{
+		/* Read once the writer let go: its handle shares nothing,
+		 * not even reading the security descriptor. */
+		gchar *lock = g_build_filename (dir, ".lock", NULL);
+		gchar why[96];
+
+		CHECK (win_private (lock, FALSE, why, sizeof why),
+		       "the lock file is owner-only, inherited from the "
+		       "folder (%s)", why);
+		g_free (lock);
+	}
+#endif
 
 #ifndef G_OS_WIN32
 	/* Another process: a child holds it, then is killed without
@@ -1960,7 +2089,13 @@ test_log_deleted_under (const gchar *tmp)
 int
 main (int argc, char **argv)
 {
-	gchar *tmp = g_dir_make_tmp ("fs-eventstore-XXXXXX", NULL);
+	gchar *tmp;
+
+	/* Unbuffered: on Windows a redirected stdout is fully buffered,
+	 * and a test that crashed or hung there printed nothing at all
+	 * ("0 ok checks"), not even the checks it passed. */
+	setvbuf (stdout, NULL, _IONBF, 0);
+	tmp = g_dir_make_tmp ("fs-eventstore-XXXXXX", NULL);
 
 	if (argc == 3 && strcmp (argv[1], "bench") == 0) {
 		bench ((guint) g_ascii_strtoull (argv[2], NULL, 10), tmp);

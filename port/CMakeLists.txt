@@ -80,14 +80,16 @@ target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY)
 target_compile_definitions(fs-core-nogui PRIVATE
                            FS_VERSION="${PROJECT_VERSION}")
 if(WIN32)
-  target_link_libraries(fs-core-nogui PUBLIC ws2_32 ole32 oleaut32)
+  target_link_libraries(fs-core-nogui PUBLIC ws2_32 ole32 oleaut32 advapi32)
 endif()
 
 # core/ uses getnameinfo()/inet_pton() for reverse lookups; Windows keeps
 # those in ws2_32, POSIX has them in libc.  fs-autostart.c registers the
 # sign-in task through the Task Scheduler's COM API: ole32 + oleaut32.
+# fs-util.c gives the event history and its exports an owner-only DACL:
+# advapi32.
 if(WIN32)
-  target_link_libraries(fs-core PUBLIC ws2_32 ole32 oleaut32)
+  target_link_libraries(fs-core PUBLIC ws2_32 ole32 oleaut32 advapi32)
 endif()
 
 # -------------------------------------------------------------- platform

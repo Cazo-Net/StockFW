@@ -4,6 +4,7 @@
 
 #include "core/fs-eventstore.h"
 #include "core/fs-iprange.h"
+#include "core/fs-util.h"
 
 #include <glib/gstdio.h>
 #include <errno.h>
@@ -1475,6 +1476,12 @@ fs_eventstore_write_csv (const FsEventStore *s, const guint64 *seqs,
 	ok = g_file_set_contents_full (path, out->str, (gssize) out->len,
 	                               G_FILE_SET_CONTENTS_CONSISTENT, 0600,
 	                               error);
+#ifdef G_OS_WIN32
+	/* The mode means nothing to Windows: the export gets an
+	 * owner-only DACL instead.  The rows are written either way. */
+	if (ok)
+		fs_util_make_private (path, FALSE);
+#endif
 	g_string_free (out, TRUE);
 
 	if (written != NULL)

@@ -37,7 +37,17 @@ winevt_fixture_is_logon (unsigned long long n)
 static int
 winevt_fixture_event (char *buf, size_t size, unsigned long long n)
 {
-	unsigned sec = (unsigned) (n % 60), min = (unsigned) ((n / 60) % 60);
+	/* Record n was written n seconds after 2026-11-02T10:00:00Z, so
+	 * the times rise with the record number across hours and days
+	 * (until the end of November, past any log a test asks for).  They
+	 * used to be "10:mm:ss" with mm = n / 60 % 60, which wrapped back
+	 * to 10:00:00 at record 3600, and the end-to-end "oldest first"
+	 * check of test-winlog, which reads the times, failed on a reader
+	 * that delivered every record in order. */
+	unsigned long long t = 36000ULL + n;
+	unsigned day = (unsigned) (2 + t / 86400);
+	unsigned hour = (unsigned) (t / 3600 % 24);
+	unsigned min = (unsigned) (t / 60 % 60), sec = (unsigned) (t % 60);
 
 	if (winevt_fixture_is_logon (n))
 		return snprintf (buf, size,
@@ -47,14 +57,14 @@ winevt_fixture_event (char *buf, size_t size, unsigned long long n)
 			"<EventID>4624</EventID><Version>2</Version><Level>0</Level>"
 			"<Task>12544</Task><Opcode>0</Opcode>"
 			"<Keywords>0x8020000000000000</Keywords>"
-			"<TimeCreated SystemTime='2026-11-02T10:%02u:%02u.0000000Z'/>"
+			"<TimeCreated SystemTime='2026-11-%02uT%02u:%02u:%02u.0000000Z'/>"
 			"<EventRecordID>%llu</EventRecordID><Correlation/>"
 			"<Execution ProcessID='4' ThreadID='5028'/>"
 			"<Channel>Security</Channel><Computer>DESKTOP-TEST</Computer>"
 			"<Security/></System><EventData>"
 			"<Data Name='TargetUserName'>someone</Data>"
 			"<Data Name='LogonType'>2</Data></EventData></Event>\r\n",
-			min, sec, n);
+			day, hour, min, sec, n);
 
 	if (n % 2 == 1)
 		return snprintf (buf, size,
@@ -64,7 +74,7 @@ winevt_fixture_event (char *buf, size_t size, unsigned long long n)
 			"<EventID>5156</EventID><Version>1</Version><Level>0</Level>"
 			"<Task>12810</Task><Opcode>0</Opcode>"
 			"<Keywords>0x8020000000000000</Keywords>"
-			"<TimeCreated SystemTime='2026-11-02T10:%02u:%02u.1000000Z'/>"
+			"<TimeCreated SystemTime='2026-11-%02uT%02u:%02u:%02u.1000000Z'/>"
 			"<EventRecordID>%llu</EventRecordID><Correlation/>"
 			"<Execution ProcessID='4' ThreadID='5028'/>"
 			"<Channel>Security</Channel><Computer>DESKTOP-TEST</Computer>"
@@ -83,7 +93,7 @@ winevt_fixture_event (char *buf, size_t size, unsigned long long n)
 			"<Data Name='RemoteUserID'>S-1-0-0</Data>"
 			"<Data Name='RemoteMachineID'>S-1-0-0</Data>"
 			"</EventData></Event>\r\n",
-			min, sec, n, 40000 + n % 20000);
+			day, hour, min, sec, n, 40000 + n % 20000);
 
 	return snprintf (buf, size,
 		"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
@@ -92,7 +102,7 @@ winevt_fixture_event (char *buf, size_t size, unsigned long long n)
 		"<EventID>5157</EventID><Version>1</Version><Level>0</Level>"
 		"<Task>12810</Task><Opcode>0</Opcode>"
 		"<Keywords>0x8010000000000000</Keywords>"
-		"<TimeCreated SystemTime='2026-11-02T10:%02u:%02u.2000000Z'/>"
+		"<TimeCreated SystemTime='2026-11-%02uT%02u:%02u:%02u.2000000Z'/>"
 		"<EventRecordID>%llu</EventRecordID><Correlation/>"
 		"<Execution ProcessID='4' ThreadID='5028'/>"
 		"<Channel>Security</Channel><Computer>DESKTOP-TEST</Computer>"
@@ -111,7 +121,7 @@ winevt_fixture_event (char *buf, size_t size, unsigned long long n)
 		"<Data Name='RemoteUserID'>S-1-0-0</Data>"
 		"<Data Name='RemoteMachineID'>S-1-0-0</Data>"
 		"</EventData></Event>\r\n",
-		min, sec, n, 40000 + n % 20000);
+		day, hour, min, sec, n, 40000 + n % 20000);
 }
 
 typedef void (*WinevtFixtureWrite) (const char *bytes, size_t len,

@@ -3,6 +3,7 @@
  *--------------------------------------------------------------------*/
 
 #include "core/fs-eventlog.h"
+#include "core/fs-util.h"
 
 #include <glib/gstdio.h>
 #include <errno.h>
@@ -449,11 +450,12 @@ make_dir (const gchar *dir, GError **error)
 		             "cannot create %s: %s", dir, g_strerror (err));
 		return FALSE;
 	}
-#ifndef G_OS_WIN32
 	/* An existing folder keeps whatever it had; history is the
-	 * account's own. */
-	g_chmod (dir, 0700);
-#endif
+	 * account's own: 0700, or on Windows a protected DACL that admits
+	 * this account only and is inherited by the files and the lock
+	 * created inside.  Failing that is not fatal here: each file is
+	 * made private again as it is opened (open_current). */
+	fs_util_make_private (dir, TRUE);
 	return TRUE;
 }
 
@@ -718,8 +720,15 @@ open_current (FsEventLog *log)
 		return FALSE;
 	}
 
+	/* Owner-only, also a file loosened by hand or written before the
+	 * folder was made private.  On Windows that is the file's own
+	 * protected DACL (chmod only sets the read-only flag there), set
+	 * by name: this descriptor has no WRITE_DAC. */
 #ifndef G_OS_WIN32
 	if (fchmod (fd, 0600) != 0) {
+#else
+	if (!fs_util_make_private (path, FALSE)) {
+#endif
 		int err = errno;
 
 		close (fd);
@@ -727,7 +736,6 @@ open_current (FsEventLog *log)
 		g_free (path);
 		return FALSE;
 	}
-#endif
 
 	log->fd = fd;
 	log->cur_size = 0;

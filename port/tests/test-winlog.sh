@@ -38,7 +38,7 @@ cc "$HERE/test-winlog.c" \
    -o "$BUILD_DIR/test-winlog" \
    src/core/*.c \
    src/platform/windows/fs-trust-win.c \
-   $(pkg-config --libs glib-2.0 gio-2.0) -lws2_32 -lole32 -loleaut32 -liphlpapi -lwintrust -lcrypt32
+   $(pkg-config --libs glib-2.0 gio-2.0) -lws2_32 -lole32 -loleaut32 -liphlpapi -lwintrust -lcrypt32 -ladvapi32 -lshell32
 
 # The end-to-end test needs a fake wevtutil.exe beside the test
 # binary: CreateProcess searches the process's own directory before

@@ -34,7 +34,17 @@ run_sh () {   # run_sh <label> <script> [pattern]
   grep -E "$pattern" "$TMP/last-suite.txt" | tail -6
   echo "exit=$rc  (ok checks: $(grep -c '^ok:' "$TMP/last-suite.txt"))"
   grep "^FAIL" "$TMP/last-suite.txt" | head -10
-  [ "$rc" -eq 0 ] || fails=$((fails+1))
+  if [ "$rc" -ne 0 ]; then
+    fails=$((fails+1))
+    # The tail above is too short to diagnose a failure on a runner we
+    # cannot log in to: print the suite's whole output (every FAIL line,
+    # compiler errors, the command that died) in a foldable block.
+    echo "----- full output of $script (exit $rc) -----"
+    [ -n "${GITHUB_ACTIONS:-}" ] && echo "::group::$label full output"
+    cat "$TMP/last-suite.txt"
+    [ -n "${GITHUB_ACTIONS:-}" ] && echo "::endgroup::"
+    echo "----- end of $script -----"
+  fi
 }
 
 run_sh "CORE"        tests/test-core.sh

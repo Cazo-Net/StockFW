@@ -298,6 +298,7 @@ static gchar  *e2e_in = NULL;
 static gchar  *e2e_out = NULL;
 static gchar  *e2e_last_time = NULL;
 static gboolean e2e_ordered = TRUE;
+static gchar  *e2e_disorder = NULL;   /* the first pair out of order */
 
 static void
 on_e2e_hit (const FsHit *hit, gpointer user_data)
@@ -311,11 +312,16 @@ on_e2e_hit (const FsHit *hit, gpointer user_data)
 		e2e_in = g_strdup (hit->in);
 		e2e_out = g_strdup (hit->out);
 	}
-	/* Oldest first: the fixture's times rise with the record number
-	 * (within an hour, which every batch here stays in). */
+	/* Oldest first: the fixture's times rise with the record number,
+	 * a second a record, across hours and days
+	 * (tests/winevt-fixture.h). */
 	if (e2e_last_time != NULL && hit->time != NULL &&
-	    strcmp (hit->time, e2e_last_time) < 0)
+	    strcmp (hit->time, e2e_last_time) < 0 && e2e_ordered) {
 		e2e_ordered = FALSE;
+		e2e_disorder = g_strdup_printf ("hit %u at %s came after %s",
+		                                e2e_hits, hit->time,
+		                                e2e_last_time);
+	}
 	g_free (e2e_last_time);
 	e2e_last_time = g_strdup (hit->time);
 }
@@ -384,6 +390,7 @@ test_e2e_delivery (void)
 
 	e2e_hits = 0;
 	e2e_ordered = TRUE;
+	g_clear_pointer (&e2e_disorder, g_free);
 	g_clear_pointer (&e2e_port, g_free);
 	g_clear_pointer (&e2e_direction, g_free);
 	g_clear_pointer (&e2e_in, g_free);
@@ -416,7 +423,9 @@ test_e2e_delivery (void)
 	e2e_poll ("1 4006");
 	CHECK (e2e_hits == 4000,
 	       "a burst of 4,000 arrives whole end-to-end (got %u)", e2e_hits);
-	CHECK (e2e_ordered, "oldest first");
+	CHECK (e2e_ordered, "oldest first%s%s",
+	       e2e_disorder != NULL ? ": " : "",
+	       e2e_disorder != NULL ? e2e_disorder : "");
 	CHECK (g_strcmp0 (e2e_port, "22") == 0 &&
 	       g_strcmp0 (e2e_direction, "in") == 0,
 	       "the first hit is record 3: inbound, port 22 (got %s %s)",
@@ -511,6 +520,7 @@ test_e2e_delivery (void)
 	g_clear_pointer (&e2e_in, g_free);
 	g_clear_pointer (&e2e_out, g_free);
 	g_clear_pointer (&e2e_last_time, g_free);
+	g_clear_pointer (&e2e_disorder, g_free);
 }
 
 /* [ run_spawn_probe ]

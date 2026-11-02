@@ -18,9 +18,13 @@ cd "$PORT"
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
+# src/core/*.c is every core source, so the link needs every Windows
+# library any of them calls (fs-autostart: COM; fs-hostnet: IP Helper;
+# fs-eventlog: the security API for the history's owner-only DACL),
+# not only the ones this test reaches.
 EXTRA_LIBS=""
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
-  EXTRA_LIBS="-lws2_32"
+  EXTRA_LIBS="-lws2_32 -lole32 -loleaut32 -liphlpapi -ladvapi32 -lshell32"
 fi
 
 cc -O2 -Wall -Wextra -Wno-unused-parameter tests/test-eventstore.c \

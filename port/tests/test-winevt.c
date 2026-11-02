@@ -635,6 +635,9 @@ test_loop (void)
 int
 main (void)
 {
+	/* Unbuffered: a redirected stdout is fully buffered on Windows,
+	 * and a crash would take every line printed so far with it. */
+	setvbuf (stdout, NULL, _IONBF, 0);
 	test_parse ();
 	test_argv ();
 	test_loop ();
