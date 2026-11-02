@@ -31,6 +31,7 @@
 #include "ui/fs-policyview.h"
 #include "core/fs-apply.h"
 #include "core/fs-backend.h"
+#include "core/fs-blocktally.h"
 #include "core/fs-netplace.h"
 #include "core/fs-util.h"
 #include "core/fs-i18n.h"
@@ -660,6 +661,9 @@ refresh_place (gboolean rejudge)
 		                         FS_PROFILE_BIT (i)) != 0);
 	}
 
+	if (changed)
+		fs_tray_set_firewall (current_state,
+		                      fs_network_place_kind (net_place));
 	if (rejudge && changed)
 		update_overview ();
 }
@@ -832,6 +836,15 @@ fs_statusview_note_block (const FsHit *hit)
 		recent_block_free (g_queue_pop_tail (&recent));
 
 	rebuild_recent ();
+
+	/* The tray's "Blocked today" and its Recent blocks. */
+	{
+		GDateTime *now = g_date_time_new_now_local ();
+
+		fs_block_tally_note (hit, now);
+		g_date_time_unref (now);
+	}
+	fs_tray_refresh ();
 }
 
 gchar **
@@ -1541,35 +1554,21 @@ fs_statusview_policy_locked (void)
 	return policy_locked;
 }
 
-/* [ state_to_text ] -- the tray tooltip's sentence. */
-static const gchar *
-state_to_text (FsFirewallState state)
-{
-	switch (state) {
-	case FS_FW_STOPPED: return _("The firewall is stopped");
-	case FS_FW_RUNNING: return _("The firewall is running");
-	case FS_FW_LOCKED:  return _("The firewall is locked");
-	case FS_FW_HIT:     return _("The firewall has been hit");
-	case FS_FW_NONE:
-	default:            return _("Firewall state is unknown");
-	}
-}
-
 void
 fs_statusview_set_state (FsFirewallState state)
 {
 	current_state = state;
-
-	/* The tray tooltip carries the same sentence, so the background
-	 * app answers a glance even while the window is hidden.  No icon
-	 * up: fs-tray.c keeps the text for the next one. */
-	fs_tray_set_state (state_to_text (state));
 
 	sync_lock_button ();
 	refresh_profiles ();
 	/* Re-read the place without judging: refresh_ipv6 judges next,
 	 * with everything fresh. */
 	refresh_place (FALSE);
+
+	/* The tray's header and tooltip carry the same state, so the
+	 * background app answers a glance while the window is hidden.  No
+	 * icon up: fs-tray.c keeps it for the next one. */
+	fs_tray_set_firewall (state, fs_network_place_kind (net_place));
 	fs_statusview_refresh_ipv6 ();
 }
 

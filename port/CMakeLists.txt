@@ -53,6 +53,7 @@ add_library(fs-core STATIC
   src/core/fs-autoblock.c
   src/core/fs-instance.c
   src/core/fs-autostart.c
+  src/core/fs-blocktally.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
@@ -435,4 +436,23 @@ target_compile_definitions(fs-startup-smoke PRIVATE
 )
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-startup-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
+# The tray menu (1.0.7) against the real app: every row worked the way
+# a click would, with a fake backend that records starts and stops and
+# hands back the app's event callback, so a blocked event runs through
+# the whole pipeline into "Blocked today" and Recent blocks.  Supplies
+# fs_backend() itself.
+add_executable(fs-traymenu-smoke EXCLUDE_FROM_ALL
+  tests/ui-traymenu-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-traymenu-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-traymenu-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-traymenu-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-traymenu-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()

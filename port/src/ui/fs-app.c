@@ -339,6 +339,18 @@ fs_app_show_page (FsAppPage page)
 	                               (gint) page);
 }
 
+FsAppPage
+fs_app_current_page (void)
+{
+	gint page;
+
+	if (fsapp.notebook == NULL)
+		return FS_PAGE_COUNT;
+	page = gtk_notebook_get_current_page (GTK_NOTEBOOK (fsapp.notebook));
+	return page >= 0 && page < FS_PAGE_COUNT ? (FsAppPage) page
+	                                         : FS_PAGE_COUNT;
+}
+
 /* [ on_page_switched ] -- keep the sidebar in step with the notebook. */
 static void
 on_page_switched (GtkNotebook *notebook, GtkWidget *page, guint page_num,

@@ -91,6 +91,12 @@ typedef struct
 
 static GPtrArray *auto_blocks       = NULL;  /* AutoBlock*, free_func set */
 static guint      auto_block_expiry_id = 0;
+/* Tray "Pause Sentinel auto-block for 1 hour": while this monotonic
+ * time is in the future, the auto pass stages nothing.  Blocks already
+ * staged keep their own ten minutes.  Not persisted: a restart
+ * resumes auto-block. */
+static gint64     sentinel_paused_until = 0;
+static guint      sentinel_resume_id = 0;
 static gint64     auto_block_last_fail = 0;
 static gboolean   auto_block_failed_once = FALSE;
 
@@ -866,6 +872,9 @@ fs_copilot_sentinel_auto_pass (void)
         g_strcmp0 (sentinel_mode, "auto") != 0)
         return FALSE;
 
+    if (fs_copilot_sentinel_paused (NULL))
+        return FALSE;
+
     if (auto_blocks == NULL)
         auto_blocks = g_ptr_array_new_with_free_func (auto_block_free);
 
@@ -1288,6 +1297,84 @@ void
 fs_copilot_autoblocks_push (void)
 {
     auto_block_push ();
+}
+
+/* ===== Sentinel pause (tray menu) ================================ */
+
+gboolean
+fs_copilot_sentinel_can_pause (void)
+{
+    return global_copilot != NULL && copilot_policy != NULL &&
+           g_strcmp0 (sentinel_mode, "auto") == 0;
+}
+
+gboolean
+fs_copilot_sentinel_paused (gint64 *seconds_left)
+{
+    gint64 now = g_get_monotonic_time ();
+
+    if (sentinel_paused_until <= now) {
+        if (seconds_left != NULL)
+            *seconds_left = 0;
+        return FALSE;
+    }
+    if (seconds_left != NULL)
+        *seconds_left = (sentinel_paused_until - now + G_USEC_PER_SEC - 1) /
+                        G_USEC_PER_SEC;
+    return TRUE;
+}
+
+static gboolean
+sentinel_resume_cb (gpointer data)
+{
+    (void) data;
+
+    sentinel_resume_id = 0;
+    fs_copilot_sentinel_pause (0);
+    return G_SOURCE_REMOVE;
+}
+
+void
+fs_copilot_sentinel_pause (guint seconds)
+{
+    gboolean was_paused = fs_copilot_sentinel_paused (NULL);
+
+    if (sentinel_resume_id != 0) {
+        g_source_remove (sentinel_resume_id);
+        sentinel_resume_id = 0;
+    }
+
+    if (seconds == 0) {
+        sentinel_paused_until = 0;
+        if (!was_paused)
+            return;
+        fs_audit_log ("sentinel auto-block resumed",
+                      "tray | auto-block stages critical insights again");
+        if (analysis_output != NULL)
+            text_view_append (analysis_output,
+                "\n[Sentinel] auto-block resumed.\n", "dim");
+        /* Catch up on what arrived while paused. */
+        if (fs_copilot_sentinel_auto_pass ())
+            refresh_insights ();
+        return;
+    }
+
+    sentinel_paused_until = g_get_monotonic_time () +
+                            (gint64) seconds * G_USEC_PER_SEC;
+    sentinel_resume_id = g_timeout_add_seconds (seconds,
+                                                sentinel_resume_cb, NULL);
+    {
+        gchar *detail = g_strdup_printf (
+            "tray | nothing new is staged for %u minutes; blocks already "
+            "staged keep their own ten minutes", seconds / 60);
+
+        fs_audit_log ("sentinel auto-block paused", detail);
+        g_free (detail);
+    }
+    if (analysis_output != NULL)
+        text_view_append (analysis_output,
+            "\n[Sentinel] auto-block paused from the tray menu: insights "
+            "are still reported, nothing new is staged.\n", "dim");
 }
 
 /* [ on_sentinel_mode_changed ] */

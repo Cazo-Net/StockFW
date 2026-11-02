@@ -45,6 +45,10 @@ void fs_app_set_start_hidden (gboolean hidden);
 /* Selects a page, as a click on its sidebar item would.  Does nothing
  * before the window is built. */
 void fs_app_show_page (FsAppPage page);
+
+/* The page on show; FS_PAGE_COUNT before the window is built. */
+FsAppPage fs_app_current_page (void);
+
 void fs_app_quit    (void);
 
 /* Re-reads the preferences into the shared FsSettings and hands the

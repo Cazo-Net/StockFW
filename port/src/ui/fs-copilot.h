@@ -27,6 +27,16 @@ void fs_copilot_note_event (void);
  * the insights list needs rebuilding. */
 gboolean fs_copilot_sentinel_auto_pass (void);
 
+/* Tray: "Pause Sentinel auto-block for 1 hour".  Pausing only makes
+ * sense while Sentinel is in auto mode (can_pause).  While paused the
+ * auto pass stages nothing; insights are still reported and blocks
+ * already staged keep their own ten minutes.  pause (0) resumes at
+ * once (and catches up); otherwise it resumes by itself after
+ * `seconds'.  Both are audited.  Not persisted across a restart. */
+gboolean fs_copilot_sentinel_can_pause (void);
+gboolean fs_copilot_sentinel_paused    (gint64 *seconds_left);
+void     fs_copilot_sentinel_pause     (guint seconds);
+
 /* P6 (false-outage hardening).  Boot restore: take the staged
  * auto-blocks whose ten minutes ran out while StockFW was not
  * running out of the policy, re-arm the rest with their ORIGINAL

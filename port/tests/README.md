@@ -250,3 +250,46 @@ Teeth: drop the Sentinel expiry from `stockfw start` and three checks
 fail; start without the hold and the audit-only checks fail; leave the
 `systemctl disable` out of the uninstaller and "disabled" fails (a
 dangling enable link counts as still enabled).
+
+
+## The tray menu (`fs-traymenu-smoke`, `fs-tray-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-traymenu-smoke
+xvfb-run -a ./build-linux/fs-traymenu-smoke     # needs a display
+```
+
+Runs the real `fs_app_activate()` against a fake backend that records
+starts and stops, reports a Private network and hands the app's own
+event callback back to the test, then works every row of the tray menu
+the way a click does and answers the dialogs that come up:
+"Firewall: On - Private network" and "Blocked today: N" are greyed
+information rows; a blocked event fed through the monitor callback
+shows up as "Blocked today: 1", as "TCP 445 to 203.0.113.5 (hh:mm)"
+under Recent blocks (a click opens the window on Events) and in the
+tooltip; Go to opens all six pages; Pause protection asks first with
+Cancel as the default, stops only on "Pause protection", is audited,
+and turns into Resume protection, which starts the firewall again;
+without the rights to change the firewall it is greyed with a reason;
+Pause Sentinel auto-block pauses and resumes (both audited) and is
+greyed in detect mode (scenario "detect"); Start at sign-in writes and
+removes the entry, and a failure is reported with the tick left
+showing the truth; Preferences and About open; Quit (firewall stays
+on) leaves the firewall running.  `test-core.sh` pins the block tally
+itself (wording, five kept, midnight).
+
+`STOCKFW_TRAYMENU_SHOT=menu.png ./build-linux/fs-traymenu-smoke main`
+pops the menu up with Recent blocks open and saves a screenshot
+instead of running the checks.
+
+`fs-tray-smoke` keeps pinning the icon, the hide gate and the menu's
+layout (information rows first, Quit last behind a separator) against
+whatever notification area there is (the real Windows shell on CI).
+
+Teeth: have the tray stop the firewall without the confirmation and
+"it asks first" and "Cancel leaves the firewall running" fail; stop
+counting blocks and the count, Recent blocks and tooltip checks fail;
+refresh the tick from the request instead of from the system and the
+failed Start at sign-in check fails (this one was a real bug the smoke
+caught while it was written).

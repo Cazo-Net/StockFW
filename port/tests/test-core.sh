@@ -43,6 +43,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-json.h"
 #include "core/fs-autoblock.h"
 #include "core/fs-autostart.h"
+#include "core/fs-blocktally.h"
 #include <glib/gstdio.h>
 
 static int failures = 0;
@@ -4617,6 +4618,75 @@ static void test_autostart (void)
 #endif
 }
 
+/* The tray's "Blocked today" and Recent blocks (core/fs-blocktally.c). */
+static void test_block_tally (void)
+{
+	GTimeZone *tz = g_time_zone_new_utc ();
+	GDateTime *morning = g_date_time_new (tz, 2026, 11, 2, 9, 5, 0);
+	GDateTime *night = g_date_time_new (tz, 2026, 11, 2, 23, 59, 0);
+	GDateTime *next = g_date_time_new (tz, 2026, 11, 3, 0, 1, 0);
+	GDateTime *year_on = g_date_time_new (tz, 2027, 11, 2, 9, 0, 0);
+	FsHit *in = fs_hit_new (), *out = fs_hit_new (), *bare = fs_hit_new ();
+	gchar *s, **rows;
+
+	in->direction = g_strdup ("In");
+	in->protocol = g_strdup ("tcp");
+	in->port = g_strdup ("445");
+	in->source = g_strdup ("203.0.113.5");
+	in->destination = g_strdup ("192.0.2.1");
+	out->direction = g_strdup ("Outbound");
+	out->protocol = g_strdup ("UDP");
+	out->port = g_strdup ("53");
+	out->source = g_strdup ("192.0.2.1");
+	out->destination = g_strdup ("198.51.100.53");
+
+	s = fs_block_tally_describe (in, "10:42");
+	CHECK (strcmp (s, "TCP 445 from 203.0.113.5 (10:42)") == 0,
+	       "block tally: inbound reads \"proto port from host (time)\" "
+	       "(got \"%s\")", s);
+	g_free (s);
+	s = fs_block_tally_describe (out, "10:43");
+	CHECK (strcmp (s, "UDP 53 to 198.51.100.53 (10:43)") == 0,
+	       "block tally: outbound names where it was going (got \"%s\")",
+	       s);
+	g_free (s);
+	s = fs_block_tally_describe (bare, NULL);
+	CHECK (strcmp (s, "Traffic to unknown") == 0,
+	       "block tally: an event with nothing in it still reads as a "
+	       "sentence (got \"%s\")", s);
+	g_free (s);
+
+	fs_block_tally_reset ();
+	CHECK (fs_block_tally_today (morning) == 0,
+	       "block tally: nothing counted yet");
+	for (gint i = 0; i < 7; i++)
+		fs_block_tally_note (i % 2 ? out : in, i < 6 ? morning : night);
+	CHECK (fs_block_tally_today (night) == 7,
+	       "block tally: seven blocks on one day count seven");
+	rows = fs_block_tally_recent ();
+	CHECK (g_strv_length (rows) == FS_BLOCK_TALLY_RECENT &&
+	       strcmp (rows[0], "TCP 445 from 203.0.113.5 (23:59)") == 0,
+	       "block tally: the last five are kept, newest first");
+	g_strfreev (rows);
+	CHECK (fs_block_tally_today (next) == 0,
+	       "block tally: the count is zero after midnight");
+	CHECK (fs_block_tally_today (year_on) == 0,
+	       "block tally: the same date a year on is another day");
+	fs_block_tally_note (out, next);
+	CHECK (fs_block_tally_today (next) == 1,
+	       "block tally: a new day starts again from one");
+	fs_block_tally_reset ();
+
+	fs_hit_free (in);
+	fs_hit_free (out);
+	fs_hit_free (bare);
+	g_date_time_unref (morning);
+	g_date_time_unref (night);
+	g_date_time_unref (next);
+	g_date_time_unref (year_on);
+	g_time_zone_unref (tz);
+}
+
 /* --- the settings plan ------------------------------------------------
  * fs-settings-plan.c maps the Firewall preferences onto portable rules
  * that the Windows backend executes.  Each mapping is pinned here: the
@@ -6376,6 +6446,7 @@ int main (void)
 	test_start_gate ();
 	test_autoblock_expire ();
 	test_autostart ();
+	test_block_tally ();
 	test_settings_plan ();
 	test_netparse_log ();
 	test_netparse_proc ();
