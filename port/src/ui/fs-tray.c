@@ -28,14 +28,16 @@
  * uses instead of the window: the state and today's blocks at a glance,
  * the last few blocks, every page, pausing protection (through the
  * same confirmed path as the Overview's switch), pausing Sentinel,
- * start at sign-in, Preferences, About and Quit.  Every row that cannot
- * act right now is greyed with a one-line reason as its tooltip.
+ * start at sign-in, Preferences, Help, About and Quit.  Every row that
+ * cannot act right now is greyed with a one-line reason as its
+ * tooltip.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-tray.h"
 #include "ui/fs-app.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-helpwindow.h"
 #include "ui/fs-statusview.h"
 #include "core/fs-autostart.h"
 #include "core/fs-backend.h"
@@ -268,6 +270,19 @@ menu_preferences_activated (GtkMenuItem *item, gpointer data)
 		return;
 	fs_tray_show_window ();
 	fs_dialogs_preferences (GTK_WIDGET (tray_window));
+}
+
+/* Help opens the Help window at "Running in the background", the
+ * topic about this icon and this menu.  It is not transient for the
+ * main window and needs no window shown, so in background mode it
+ * opens on its own and the main window stays hidden. */
+static void
+menu_help_activated (GtkMenuItem *item, gpointer data)
+{
+	(void) item;
+	(void) data;
+
+	fs_help_show (dialog_parent (), "background");
 }
 
 /* The same dialog Help > About opens, parented the same way. */
@@ -575,6 +590,8 @@ build_menu (void)
 
 	append_item (tray_menu, _("Pr_eferences..."),
 	             G_CALLBACK (menu_preferences_activated), NULL);
+	append_item (tray_menu, _("_Help"),
+	             G_CALLBACK (menu_help_activated), NULL);
 	append_item (tray_menu, _("_About StockFW"),
 	             G_CALLBACK (menu_about_activated), NULL);
 

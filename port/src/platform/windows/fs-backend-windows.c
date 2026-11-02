@@ -1193,7 +1193,7 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 	fs_fwrule_list_free (rules);
 
 	/* P5: the Preferences settings this backend honors (the ICMP
-	 * allow-list, broadcast blocks, reserved-source blocks) become
+	 * allow-list, the reserved-source block) become
 	 * rules of their own.  firewalled_clear_rules() above already
 	 * retired the previous copies -- they carry the same "StockFW"
 	 * prefix the rule lifecycle owns -- and the apply gate is still

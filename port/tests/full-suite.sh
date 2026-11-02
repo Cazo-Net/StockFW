@@ -26,6 +26,18 @@ section () {
   echo "############ $1 ############"
 }
 
+# The tail a section prints is too short to diagnose a failure on a
+# runner no one can log in to: a failing suite also prints its whole
+# output (every FAIL line, compiler and linker errors, the command that
+# died), in a foldable group on GitHub Actions.
+full_output () {   # full_output <label> <what> <exit code> <file>
+  echo "----- full output of $2 (exit $3) -----"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$1: full output"; fi
+  cat "$4"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::endgroup::"; fi
+  echo "----- end of $2 -----"
+}
+
 run_sh () {   # run_sh <label> <script> [pattern]
   local label="$1" script="$2" pattern="${3:-PASSED|FAILED|PASSED:|tests run|failure}"
   local rc=0
@@ -36,14 +48,7 @@ run_sh () {   # run_sh <label> <script> [pattern]
   grep "^FAIL" "$TMP/last-suite.txt" | head -10
   if [ "$rc" -ne 0 ]; then
     fails=$((fails+1))
-    # The tail above is too short to diagnose a failure on a runner we
-    # cannot log in to: print the suite's whole output (every FAIL line,
-    # compiler errors, the command that died) in a foldable block.
-    echo "----- full output of $script (exit $rc) -----"
-    [ -n "${GITHUB_ACTIONS:-}" ] && echo "::group::$label full output"
-    cat "$TMP/last-suite.txt"
-    [ -n "${GITHUB_ACTIONS:-}" ] && echo "::endgroup::"
-    echo "----- end of $script -----"
+    full_output "$label" "$script" "$rc" "$TMP/last-suite.txt"
   fi
 }
 
@@ -56,6 +61,7 @@ run_sh "LOG EVENTS (file)" tests/test-logstart-events.sh
 run_sh "LOG EVENTS (/dev/kmsg)" tests/test-logstart-kmsg.sh
 run_sh "WINLOG + SPAWN PROBE" tests/test-winlog.sh
 run_sh "INSTALLER SPAWN" tests/test-installer-spawn.sh
+run_sh "LICENCE TEXTS (installers match About)" tests/test-licence-texts.sh
 run_sh "STAGED RUNTIME (build/ on its own)" tests/test-staged-runtime.sh "PASSED|FAILED|SKIP"
 run_sh "BACKEND COMPILE (state-windows)" tests/test-state-windows.sh "compiled|PASSED|FAILED|ok:"
 run_sh "UAF ANALYZE" tests/test-uaf-analyze.sh
@@ -75,12 +81,15 @@ run_sh "LINUX INSTALLER (boot unit, private mount ns)" tests/test-linux-install.
 
 section "UI SMOKE TARGETS"
 rc=0
-ninja -C build fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
+ninja -C build fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
 echo "ninja exit=$rc"
 grep "error:" "$TMP/last-ninja.txt" | head -5
-[ "$rc" -eq 0 ] || fails=$((fails+1))
+if [ "$rc" -ne 0 ]; then
+  fails=$((fails+1))
+  full_output "UI SMOKE TARGETS" "ninja" "$rc" "$TMP/last-ninja.txt"
+fi
 
-for exe in fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke; do
+for exe in fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke; do
   rc=0
   "./build/$exe" > "$TMP/last-suite.txt" 2>&1 || rc=$?
   echo "--- $exe exit=$rc"
@@ -88,7 +97,10 @@ for exe in fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-t
   # A smoke that fails on a GLib or GTK warning only reports how many it
   # saw; the warnings themselves are in its output, so show them.
   [ "$rc" -eq 0 ] || grep -E -A1 "(WARNING|CRITICAL) \*\*" "$TMP/last-suite.txt" | head -12
-  [ "$rc" -eq 0 ] || fails=$((fails+1))
+  if [ "$rc" -ne 0 ]; then
+    fails=$((fails+1))
+    full_output "$exe" "$exe" "$rc" "$TMP/last-suite.txt"
+  fi
 done
 
 section "SUMMARY"

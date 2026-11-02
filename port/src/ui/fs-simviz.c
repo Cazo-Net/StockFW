@@ -2262,7 +2262,7 @@ action_button (Win *win, const FsWhatIfAction *act)
 		label = g_strdup (_("Open ICMP settings"));
 		break;
 	case FS_WHATIF_ACT_OPEN_SETTINGS:
-		label = g_strdup (_("Open Advanced Options"));
+		label = g_strdup (_("Open Protection settings"));
 		break;
 	case FS_WHATIF_ACT_START_FIREWALL:
 		if (!act->verified)

@@ -38,6 +38,14 @@ typedef enum
 	FS_ICON_WIFI,
 	FS_ICON_SEARCH,
 	FS_ICON_DOT,          /* a filled circle: status dots */
+	FS_ICON_HELP,         /* a question mark in a circle */
+	FS_ICON_BACK,         /* an arrow pointing left */
+	FS_ICON_FORWARD,      /* an arrow pointing right */
+	FS_ICON_COPY,         /* two overlapping sheets */
+	FS_ICON_TERMINAL,     /* a window with a prompt: command line */
+	FS_ICON_KEYBOARD,     /* a keyboard: shortcuts */
+	FS_ICON_MONITOR,      /* a screen on a stand: platforms */
+	FS_ICON_CLOCK,        /* a clock face: running in the background */
 	FS_ICON_N_KINDS
 } FsIconKind;
 

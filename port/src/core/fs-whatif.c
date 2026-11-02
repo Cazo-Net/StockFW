@@ -5333,7 +5333,9 @@ settings_dup (const FsSettings *s)
 	return out;
 }
 
-/* The Preferences checkboxes a fix may name, as the dialog labels them. */
+/* The Preferences switches a fix may name, as the dialog labels them
+ * (fs-prefsdialog.c), with the page that holds each: `page' is that
+ * page's id in the dialog, which the fix button opens. */
 typedef struct
 {
 	const gchar *key;
@@ -5343,6 +5345,10 @@ typedef struct
 	const gchar *page;
 	gboolean     icmp;
 	const gchar *scope;     /* what else it changes, in words */
+	/* Linux only: a block a device scopes.  Preferences offers it only
+	 * where it can match (fs-prefsdialog.c, the Protection page), and
+	 * the Windows model has no such rule, so no fix may name it there. */
+	gboolean     linux_only;
 } Flip;
 
 #define SCOPE_ICMP_TYPE N_("It applies to this kind of ICMP from every " \
@@ -5351,55 +5357,87 @@ typedef struct
 #define SCOPE_EVERYONE  N_("It applies to every host and every port, not " \
                            "only this question.")
 
-#define ICMP_PAGE N_("Preferences > Firewall > ICMP Filtering")
-#define ADV_PAGE  N_("Preferences > Firewall > Advanced Options")
+#define ICMP_PAGE N_("Preferences > ICMP")
+#define ADV_PAGE  N_("Preferences > Protection")
 
 static const Flip flips[] = {
 	{ "icmp_echo_request", G_STRUCT_OFFSET (FsSettings, icmp_echo_request),
 	  N_("Echo request (ping)"), ICMP_PAGE, "icmp", TRUE,
-	  SCOPE_ICMP_TYPE },
+	  SCOPE_ICMP_TYPE, FALSE },
 	{ "icmp_echo_reply", G_STRUCT_OFFSET (FsSettings, icmp_echo_reply),
-	  N_("Echo reply (pong)"), ICMP_PAGE, "icmp", TRUE,
-	  SCOPE_ICMP_TYPE },
+	  N_("Echo reply"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE, FALSE },
 	{ "icmp_traceroute", G_STRUCT_OFFSET (FsSettings, icmp_traceroute),
 	  N_("Traceroute"), ICMP_PAGE, "icmp", TRUE,
-	  SCOPE_ICMP_TYPE },
+	  SCOPE_ICMP_TYPE, FALSE },
 	{ "icmp_mstraceroute", G_STRUCT_OFFSET (FsSettings, icmp_mstraceroute),
-	  N_("MS Traceroute"), ICMP_PAGE, "icmp", TRUE,
-	  SCOPE_ICMP_TYPE },
+	  N_("Windows traceroute"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE, FALSE },
 	{ "icmp_unreachable", G_STRUCT_OFFSET (FsSettings, icmp_unreachable),
-	  N_("Unreachable"), ICMP_PAGE, "icmp", TRUE,
-	  SCOPE_ICMP_TYPE },
+	  N_("Host unreachable"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE, FALSE },
 	{ "icmp_timestamping", G_STRUCT_OFFSET (FsSettings, icmp_timestamping),
 	  N_("Timestamping (IPv4 only)"), ICMP_PAGE, "icmp", TRUE,
-	  SCOPE_ICMP_TYPE },
+	  SCOPE_ICMP_TYPE, FALSE },
 	{ "icmp_masking", G_STRUCT_OFFSET (FsSettings, icmp_masking),
-	  N_("Address Masking (IPv4 only)"), ICMP_PAGE, "icmp", TRUE,
-	  SCOPE_ICMP_TYPE },
+	  N_("Address masking (IPv4 only)"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE, FALSE },
 	{ "icmp_redirection", G_STRUCT_OFFSET (FsSettings, icmp_redirection),
 	  N_("Redirection"), ICMP_PAGE, "icmp", TRUE,
-	  SCOPE_ICMP_TYPE },
+	  SCOPE_ICMP_TYPE, FALSE },
 	{ "icmp_source_quenches",
 	  G_STRUCT_OFFSET (FsSettings, icmp_source_quenches),
-	  N_("Source Quenching (IPv4 only)"), ICMP_PAGE, "icmp", TRUE,
-	  SCOPE_ICMP_TYPE },
+	  N_("Source quenching (IPv4 only)"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ICMP_TYPE, FALSE },
 	{ "filter_icmp", G_STRUCT_OFFSET (FsSettings, filter_icmp),
-	  N_("Enable ICMP filtering"), ICMP_PAGE, "icmp", TRUE,
-	  SCOPE_ALL_ICMP },
+	  N_("Filter ICMP messages"), ICMP_PAGE, "icmp", TRUE,
+	  SCOPE_ALL_ICMP, FALSE },
 	{ "block_external_broadcast",
 	  G_STRUCT_OFFSET (FsSettings, block_external_broadcast),
-	  N_("Block broadcasts from external network"), ADV_PAGE, "advanced",
-	  FALSE, SCOPE_EVERYONE },
+	  N_("Block broadcasts from the Internet side"), ADV_PAGE, "protection",
+	  FALSE, SCOPE_EVERYONE, TRUE },
 	{ "block_internal_broadcast",
 	  G_STRUCT_OFFSET (FsSettings, block_internal_broadcast),
-	  N_("Block broadcasts from internal network"), ADV_PAGE, "advanced",
-	  FALSE, SCOPE_EVERYONE },
+	  N_("Block broadcasts from the local network"), ADV_PAGE, "protection",
+	  FALSE, SCOPE_EVERYONE, TRUE },
 	{ "block_non_routables",
 	  G_STRUCT_OFFSET (FsSettings, block_non_routables),
-	  N_("Block traffic from reserved addresses on public interfaces"),
-	  ADV_PAGE, "advanced", FALSE,
-	  SCOPE_EVERYONE }
+	  N_("Block reserved source addresses"),
+	  ADV_PAGE, "protection", FALSE,
+	  SCOPE_EVERYONE, FALSE }
 };
+
+static gboolean
+flip_offered (const Flip *f, FsWhatIfPlatform platform)
+{
+	return !f->linux_only || platform == FS_WHATIF_LINUX_FIRST_MATCH;
+}
+
+/* [ fs_whatif_setting_nth ]
+ * The i-th Preferences switch a fix may name on this platform (NULL past
+ * the last), so a test can hold each label and page to the dialog this
+ * build shows. */
+const gchar *
+fs_whatif_setting_nth (guint i, const gchar **label, const gchar **where,
+                       const gchar **page)
+{
+	FsWhatIfPlatform native = fs_whatif_native_platform ();
+
+	for (guint j = 0; j < G_N_ELEMENTS (flips); j++) {
+		if (!flip_offered (&flips[j], native))
+			continue;
+		if (i-- > 0)
+			continue;
+		if (label != NULL)
+			*label = _(flips[j].label);
+		if (where != NULL)
+			*where = _(flips[j].where);
+		if (page != NULL)
+			*page = flips[j].page;
+		return flips[j].key;
+	}
+	return NULL;
+}
 
 static const Flip *
 flip_find (const gchar *key)
@@ -6675,7 +6713,8 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 				FsWhatIfAction *a;
 				const gchar *scope;
 
-				if (f->icmp != icmp)
+				if (f->icmp != icmp ||
+				    !flip_offered (f, ctx->platform))
 					continue;
 
 				a = action_new (f->icmp ? FS_WHATIF_ACT_OPEN_ICMP_SETTINGS
@@ -6701,7 +6740,7 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 					: _(f->scope);
 				found = TRUE;
 				a->label = g_strdup (f->icmp ? _("Open ICMP settings")
-				                             : _("Open Advanced Options"));
+				                             : _("Open Protection settings"));
 				a->explanation = g_strdup_printf (
 					_("Turn %s '%s' on %s. %s Checked: then this "
 					  "question is %s."),
@@ -7123,8 +7162,7 @@ context_notes (const FsWhatIfContext *ctx, const Model *m,
 		note_add (res->notes, g_strdup (
 			_("Only StockFW's own rules are known here: rules other "
 			  "programs (container or VM tools, fail2ban) put ahead of "
-			  "StockFW's can also allow or block this, and Sentinel's "
-			  "threat lists are not checked.")));
+			  "StockFW's can also allow or block this.")));
 
 	if (ctx->platform == FS_WHATIF_WINDOWS_BLOCK_WINS) {
 		note_add (res->notes, g_strdup (
