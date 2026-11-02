@@ -1,0 +1,22 @@
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+{{docs_nav}}
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: {{section}}
+		</button>
+		<p class="crumbs"><a href="{{root}}docs/index.html">Docs</a> / {{section}}</p>
+		<article class="prose">
+{{content}}
+		</article>
+		<footer class="doc-foot">
+{{pager}}
+			<p class="edit-line"><span>Describes StockFW {{version}}, with 1.0.7 work marked where it applies.</span><a href="{{edit_url}}">Edit this page on GitHub</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+{{toc}}
+	</aside>
+</div>

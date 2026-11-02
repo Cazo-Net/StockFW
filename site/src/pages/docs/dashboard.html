@@ -1,0 +1,74 @@
+---
+title: Dashboard
+section: Command line
+order: 31
+description: The local web dashboard served by stockfw dashboard: what it shows, how to open it, why it binds 127.0.0.1 only with a per-run token, the read-only API, and the backfill from the kernel log.
+---
+<h1>Dashboard</h1>
+<p class="lede">A single web page, served by the <code>stockfw</code> binary itself, that shows the firewall’s state, the two Activity graphs, live events, connections, the policy and the what-if simulator in a browser. It is a window onto the firewall, not a way to change it. [[linux]]</p>
+
+[[shot:dashboard|The dashboard in a browser: a Firewall tile reading Running, blocked and throughput tiles, the Policy activity and Network I/O graphs, recent events, active connections, the what-if simulator and the policy.|Light theme. The page is one HTML file compiled into the binary; nothing is loaded from anywhere else.]]
+
+<h2>Start it</h2>
+<pre data-lang="sh">$ sudo stockfw dashboard
+StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd13
+
+  Listening   127.0.0.1:43977 only, read-only, this run's token
+  Events      Live, with history from the kernel log
+
+  Ctrl-C stops the dashboard.</pre>
+<p>Without <code>--port</code> the system picks a free port. The URL carries the token for this run in its fragment; the page moves it into session storage and strips it from the address bar, then sends it with every API call. Under <code>sudo</code> the browser is not started as root, so you open the printed URL yourself. <code>--no-open</code> never tries. Ctrl-C stops it; nothing is left behind.</p>
+
+<h2>What is on the page</h2>
+<ul>
+<li><strong>Tiles:</strong> firewall state (and whether IPv6 is in force), blocked and allowed counts for the chosen range, throughput now.</li>
+<li><strong>Range</strong> picker, 15 minutes to 24 hours, and <strong>Policy activity</strong> and <strong>Network I/O</strong> graphs drawn by the same code as the <a href="{{root}}docs/activity.html">Activity page</a>, with the same no-data band, crosshair and keyboard navigation.</li>
+<li><strong>Recent events</strong>, newest first, with a filter box, and <strong>Active connections</strong> with their programs. The dashboard hides its own sockets: they exist only because someone is looking.</li>
+<li><strong>What-if simulator:</strong> the same grammar and verdicts as the app and the command line. Nothing is written.</li>
+<li><strong>Policy:</strong> the saved rules, grouped by kind, with their Covers.</li>
+<li>A <strong>theme</strong> button: system, light or dark.</li>
+</ul>
+
+[[shot:dashboard-dark|The dashboard in the dark theme, the same tiles, graphs and tables.|Dark theme. The graph colours were checked for contrast in both.]]
+
+<h2>Backfill</h2>
+<p>The app’s Activity graphs start when the app starts. The dashboard can read the kernel log for the events StockFW’s rules logged before it was started, so its history begins before the browser was opened, and the no-data band is shorter or absent. The log stays the archive; the dashboard only reads it.</p>
+
+<h2>Why it is safe to run</h2>
+<p>A page that shows your firewall is a page an attacker would like to read, or to use as a lever. The dashboard is designed so that neither works, and a test exercises each point. [[verified:test-cli.sh]]</p>
+<dl>
+<dt>Loopback only</dt>
+<dd>It binds <code>127.0.0.1</code>. There is no option to listen anywhere else; <code>--bind</code> does not exist, and asking for it prints why. Someone on your network cannot reach it. To use it from another machine, forward the port over SSH.</dd>
+<dt>A token for this run</dt>
+<dd>128 bits from the kernel’s random source, new every start. Every <code>/api/</code> call must carry it in an <code>X-StockFW-Token</code> header, compared in constant time. The token arrives in the URL fragment, which browsers never send to a server; the page moves it into session storage and strips it from the address bar. A custom header cannot be sent cross-origin without a CORS preflight, which this server never answers, so another site open in the same browser cannot read the API or ride the token.</dd>
+<dt>Host check</dt>
+<dd>Only <code>127.0.0.1:<em>port</em></code> and <code>localhost:<em>port</em></code> are accepted as the <code>Host</code> header. A hostile name re-pointed at 127.0.0.1, the DNS-rebinding trick, is refused before any path is looked at.</dd>
+<dt>Read-only</dt>
+<dd>The API has no write endpoint. Changing the firewall stays with <code>stockfw apply</code> and the desktop app, which need root; the dashboard can be left running without that worry.</dd>
+<dt>Nothing from elsewhere</dt>
+<dd>The page is compiled into the binary and carries a strict Content-Security-Policy with a per-run nonce, so no external script, style, font or image can load. It works offline and sets no cookies.</dd>
+<dt>Small on purpose</dt>
+<dd>GET and HEAD only, a 16 KB cap on the request head, a ten-second socket timeout and at most 32 connections at once. There is nothing to overflow and nothing to keep busy.</dd>
+</dl>
+
+<h2>The API</h2>
+<p>Every endpoint is <code>GET</code>, needs the token, and returns JSON:</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Path</th><th>Returns</th></tr></thead>
+<tbody>
+<tr><td><code>/api/summary</code></td><td>Firewall state, IPv6 state, rule counts, totals.</td></tr>
+<tr><td><code>/api/activity</code></td><td>The per-interval series for both graphs, for the requested range.</td></tr>
+<tr><td><code>/api/events</code></td><td>Recent events.</td></tr>
+<tr><td><code>/api/connections</code></td><td>Established connections with programs.</td></tr>
+<tr><td><code>/api/interfaces</code></td><td>Adapters with counters and rates.</td></tr>
+<tr><td><code>/api/policy</code></td><td>The saved policy, as <code>stockfw policy list --json</code> prints it.</td></tr>
+<tr><td><code>/api/simulate?q=…</code></td><td>A what-if verdict, as <code>stockfw simulate --json</code> prints it.</td></tr>
+</tbody>
+</table>
+</div>
+<pre data-lang="sh" data-title="From a script on the same machine">$ curl -s -H "X-StockFW-Token: $TOKEN" http://127.0.0.1:43977/api/summary</pre>
+<p>A request without the token, or with a wrong one, gets <code>401 Unauthorized</code> and no body worth reading.</p>
+
+<h2>Coming in 1.0.7</h2>
+<p>The threat-intel state and the enforced lists, read-only like everything else. [[soon]]</p>

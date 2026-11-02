@@ -24,6 +24,8 @@
 #include "core/fs-netparse.h"
 #include "core/fs-i18n.h"
 #include "core/fs-script.h"
+#include "core/fs-intelset.h"
+#include "core/fs-nftset.h"
 
 #include <gio/gio.h>
 
@@ -141,14 +143,18 @@ have_iptables (GError **error)
 {
 	gchar *argv[] = { (gchar *) "iptables", (gchar *) "--version", NULL };
 	GError *local = NULL;
+	/* The lookup returns the path it found, which is ours to free:
+	 * testing it inline leaked one string per apply. */
+	gchar *found = g_find_program_in_path ("iptables");
 
-	if (!g_find_program_in_path ("iptables")) {
+	if (found == NULL) {
 		g_set_error_literal (error,
 		                     g_quark_from_static_string ("fs-backend-linux"),
 		                     0,
 		                     "iptables was not found on PATH.");
 		return FALSE;
 	}
+	g_free (found);
 
 	/* A present but unusable binary (missing kernel support, broken
 	 * alternatives link) still deserves a message.  The probe's own
@@ -766,6 +772,11 @@ linux_stop (GError **error)
 	if (!have_iptables (error))
 		return FALSE;
 
+	/* The threat-intel table is not touched here either: the policy
+	 * apply, reload and clear all come through here, and a policy
+	 * change must never drop the blocklists or their counters [N6].
+	 * Only the user's Stop removes them, through the engine
+	 * (fs_intel_suspend after this). */
 	teardown_filter (&FAMILY4);
 	teardown_nat (&FAMILY4);
 
@@ -1009,6 +1020,356 @@ linux_clear_rules (GError **error)
 		return FS_APPLY_FAILED;
 
 	return (linux_stop (NULL) ? FS_APPLY_OK : FS_APPLY_FAILED);
+}
+
+/* ==================================================================
+ * Threat intel (1.0.7, design section 7)
+ *
+ * The blocklists live in one nftables table of their own, inet
+ * stockfw_intel, and these four slots are the only code here that
+ * runs nft.  The policy above runs iptables only, so applying,
+ * reloading, stopping or clearing the policy never touches the lists
+ * [N6, S10.2]; and these slots name no table but theirs, so Docker's,
+ * libvirt's, firewalld's, the iptables-nft tables holding the policy
+ * and the standalone helper's inet stockfw_blocklist are left alone.
+ *
+ * The kernel, not nft's exit status, is the answer.  An apply or a
+ * clear always ends by reading the live table back: a timeout can fire
+ * after nft committed, an nft killed by a signal may have been killed
+ * after, and a success is still only "applied" when the table in the
+ * kernel carries the digest that was asked for [S10].
+ *
+ * Errors are G_IO_ERROR: PERMISSION_DENIED (not root), NOT_FOUND (no
+ * nft), TIMED_OUT, INVALID_ARGUMENT (a rule set that cannot be
+ * rendered), FAILED (everything else).
+ * ================================================================== */
+
+/* Listings are small and the status pages read them on a timer, so
+ * they get less time than a load (FS_NFT_TIMEOUT_MS, design 7). */
+#define INTEL_LIST_TIMEOUT_MS 10000u
+
+static const gchar *const INTEL_CHAINS[] = { "input", "output", "forward",
+                                             NULL };
+
+/* [ intel_timeout ]
+ * Test builds only (FS_BACKEND_TESTING): $STOCKFW_TEST_NFT_TIMEOUT_MS
+ * replaces every nft timeout, so the tests' hanging nft is stopped in
+ * a second rather than a minute. */
+static guint
+intel_timeout (guint normal)
+{
+#ifdef FS_BACKEND_TESTING
+	const gchar *text = g_getenv ("STOCKFW_TEST_NFT_TIMEOUT_MS");
+
+	if (text != NULL) {
+		guint64 value = g_ascii_strtoull (text, NULL, 10);
+
+		if (value > 0 && value <= G_MAXUINT)
+			return (guint) value;
+	}
+#endif
+	return normal;
+}
+
+/* [ intel_ready ]
+ * Root and an nft to run, checked before anything is spawned: an nft
+ * that is not there, or a kernel that will not answer an ordinary
+ * user, gives a sentence the user can act on instead of nft's own
+ * complaint. */
+static gboolean
+intel_ready (GError **error)
+{
+	gchar *nft;
+
+	if (geteuid () != 0) {
+		g_set_error_literal (error, G_IO_ERROR,
+		                     G_IO_ERROR_PERMISSION_DENIED,
+		                     "Loading or reading the threat-intel "
+		                     "blocklists requires root privileges. Run "
+		                     "StockFW with sudo.");
+		return FALSE;
+	}
+
+	nft = g_find_program_in_path ("nft");
+	if (nft == NULL) {
+		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+		                     "nft was not found on PATH. Install the "
+		                     "nftables package to use blocklists.");
+		return FALSE;
+	}
+	g_free (nft);
+	return TRUE;
+}
+
+/* [ intel_read_live ]
+ * The table in the kernel now: `nft -j list tables', which names the
+ * tables and their comments and never lists an element.  UNKNOWN, with
+ * error, when it cannot be read -- never ABSENT: a listing nobody could
+ * read says nothing about the kernel.  *digest (caller frees) is set
+ * only for PRESENT, and may still be NULL then. */
+static FsIntelLive
+intel_read_live (gchar **digest, GError **error)
+{
+	static const gchar *const args[] = { "-j", "list", "tables", NULL };
+	FsIntelLive live;
+	gchar *json;
+
+	*digest = NULL;
+	if (!intel_ready (error))
+		return FS_INTEL_LIVE_UNKNOWN;
+
+	json = fs_nft_capture (args, intel_timeout (INTEL_LIST_TIMEOUT_MS),
+	                       error);
+	if (json == NULL)
+		return FS_INTEL_LIVE_UNKNOWN;
+
+	live = fs_intelset_nft_parse_live_state (json, digest);
+	if (live == FS_INTEL_LIVE_UNKNOWN)
+		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+		                     "nft printed a table listing that could not "
+		                     "be read");
+	g_free (json);
+	return live;
+}
+
+/* [ full_stop ]
+ * "." unless `text' already ends a sentence: nft's own messages
+ * sometimes do, and a message is often followed by another sentence. */
+static const gchar *
+full_stop (const gchar *text)
+{
+	gsize len = strlen (text);
+
+	return len > 0 && text[len - 1] == '.' ? "" : ".";
+}
+
+/* [ intel_in_force ]
+ * One sentence on what the kernel holds after a load or a removal that
+ * did not do what it was asked: the user must know whether the old
+ * lists still block, or nothing does.  Caller frees. */
+static gchar *
+intel_in_force (FsIntelLive live, const gchar *have, const GError *why)
+{
+	switch (live) {
+	case FS_INTEL_LIVE_PRESENT:
+		if (have == NULL)
+			return g_strdup ("A stockfw_intel table that StockFW did "
+			                 "not write is loaded.");
+		return g_strdup_printf ("The blocklists loaded before "
+		                        "(fingerprint %s) are still in force.",
+		                        have);
+	case FS_INTEL_LIVE_ABSENT:
+		return g_strdup ("No blocklists are loaded now.");
+	default:
+		return g_strdup_printf ("Whether any blocklists are loaded now "
+		                        "could not be read: %s%s",
+		                        why != NULL ? why->message
+		                                    : "no reason given",
+		                        why != NULL ? full_stop (why->message)
+		                                    : ".");
+	}
+}
+
+/* [ intel_settle ]
+ * The shared end of an apply and a clear: nft has run (`ran', with
+ * run_error when it did not end well) and the kernel was read back
+ * (`live', `have', read_error).  TRUE when the kernel holds what was
+ * asked for -- `want' as the digest, or no table when want is NULL --
+ * whatever nft said; otherwise FALSE with an error that says what went
+ * wrong and what is in force instead. */
+static gboolean
+intel_settle (const gchar *what, const gchar *want, gboolean ran,
+              const GError *run_error, FsIntelLive live, const gchar *have,
+              const GError *read_error, GError **error)
+{
+	const gchar *said = run_error != NULL ? run_error->message
+	                                      : "nft failed without saying why";
+	gchar *now;
+
+	if (want == NULL ? live == FS_INTEL_LIVE_ABSENT
+	                 : live == FS_INTEL_LIVE_PRESENT &&
+	                   g_strcmp0 (have, want) == 0) {
+		if (!ran)
+			g_debug ("threat intel: the %s took effect although nft "
+			         "reported: %s", what, said);
+		return TRUE;
+	}
+
+	if (!ran) {
+		now = intel_in_force (live, have, read_error);
+		g_set_error (error,
+		             run_error != NULL ? run_error->domain : G_IO_ERROR,
+		             run_error != NULL ? run_error->code
+		                               : G_IO_ERROR_FAILED,
+		             "%s%s %s", said, full_stop (said), now);
+		g_free (now);
+		return FALSE;
+	}
+
+	/* nft said yes, and the kernel says otherwise -- or says
+	 * nothing.  Reporting the lists as loaded would claim a
+	 * protection nobody saw [S10]. */
+	if (live == FS_INTEL_LIVE_UNKNOWN)
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "nft accepted the %s, but the blocklist table "
+		             "could not be read back to confirm it: %s%s", what,
+		             read_error != NULL ? read_error->message
+		                                : "no reason given",
+		             read_error != NULL ? full_stop (read_error->message)
+		                                : ".");
+	else if (live == FS_INTEL_LIVE_ABSENT)
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "nft accepted the %s, but no blocklist table is "
+		             "loaded now: something removed it.", what);
+	else if (want == NULL)
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "nft accepted the %s, but a blocklist table "
+		             "(fingerprint %s) is still loaded.", what,
+		             have != NULL ? have : "none");
+	else
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "nft accepted the %s, but the blocklist table "
+		             "loaded now is not the one applied (fingerprint "
+		             "%s, not %s): something replaced it.", what,
+		             have != NULL ? have : "none", want);
+	return FALSE;
+}
+
+/* [ linux_intel_apply ] -- see FsBackend.intel_apply. */
+static gboolean
+linux_intel_apply (const FsIntelRuleset *ruleset, GError **error)
+{
+	GError *run_error = NULL, *read_error = NULL;
+	gchar *script, *want = NULL, *have = NULL;
+	FsIntelLive live;
+	gboolean ran, ok;
+
+	g_return_val_if_fail (ruleset != NULL, FALSE);
+
+	if (!intel_ready (error))
+		return FALSE;
+
+	script = fs_intelset_nft_script (ruleset);
+	if (script == NULL) {
+		g_set_error_literal (error, G_IO_ERROR,
+		                     G_IO_ERROR_INVALID_ARGUMENT,
+		                     "The blocklist rule set cannot be loaded: a "
+		                     "list id is invalid or repeated. Nothing was "
+		                     "changed.");
+		return FALSE;
+	}
+
+	/* The empty rule set renders no table at all, so what must be
+	 * live afterwards is no table -- not a table with the empty rule
+	 * set's digest. */
+	if (ruleset->sets->len > 0)
+		want = fs_intel_ruleset_digest (ruleset);
+
+	/* One nft call, one transaction: the script creates the table if
+	 * it is missing, deletes it and builds the new one, so the old
+	 * lists stay in force unless the new ones load whole.  Deleting
+	 * first in a call of its own would leave the computer without
+	 * any blocklist whenever the new ones are refused.  A re-apply of
+	 * the same digest replaces the table too: it repairs a table
+	 * edited behind StockFW's back, and it resets the counters, which
+	 * the engine carries over just before this call -- skipping it
+	 * would make the engine count the same packets again next time. */
+	ran = fs_nft_run_script_full (script, FALSE,
+	                              intel_timeout (FS_NFT_TIMEOUT_MS),
+	                              &run_error);
+	g_free (script);
+
+	live = intel_read_live (&have, &read_error);
+	ok = intel_settle ("blocklists", want, ran, run_error, live, have,
+	                   read_error, error);
+
+	g_clear_error (&run_error);
+	g_clear_error (&read_error);
+	g_free (have);
+	g_free (want);
+	return ok;
+}
+
+/* [ linux_intel_clear ] -- see FsBackend.intel_clear. */
+static gboolean
+linux_intel_clear (GError **error)
+{
+	GError *run_error = NULL, *read_error = NULL;
+	gchar *script, *have = NULL;
+	FsIntelLive live;
+	gboolean ran, ok;
+
+	if (!intel_ready (error))
+		return FALSE;
+
+	/* Declares the table first, so removing a table that is not
+	 * there is not an error; names nothing else. */
+	script = fs_intelset_nft_clear_script ();
+	ran = fs_nft_run_script_full (script, FALSE,
+	                              intel_timeout (FS_NFT_TIMEOUT_MS),
+	                              &run_error);
+	g_free (script);
+
+	live = intel_read_live (&have, &read_error);
+	ok = intel_settle ("removal", NULL, ran, run_error, live, have,
+	                   read_error, error);
+
+	g_clear_error (&run_error);
+	g_clear_error (&read_error);
+	g_free (have);
+	return ok;
+}
+
+/* [ linux_intel_counters ] -- see FsBackend.intel_counters.
+ * One `nft list chain' per base chain, never the table or a set: those
+ * would print every element, hundreds of thousands of lines on a timer
+ * [S8.3].  A chain that cannot be listed (no table, not root, no nft,
+ * a timeout) makes the whole answer NULL: a partial count would read
+ * as fewer blocks. */
+static GHashTable *
+linux_intel_counters (void)
+{
+	GString *listing;
+	GHashTable *counters;
+
+	if (!intel_ready (NULL))
+		return NULL;
+
+	listing = g_string_new (NULL);
+	for (guint c = 0; INTEL_CHAINS[c] != NULL; c++) {
+		const gchar *args[] = { "list", "chain", "inet",
+		                        FS_INTEL_NFT_TABLE, INTEL_CHAINS[c],
+		                        NULL };
+		gchar *text = fs_nft_capture (args,
+		                              intel_timeout (INTEL_LIST_TIMEOUT_MS),
+		                              NULL);
+
+		if (text == NULL) {
+			g_string_free (listing, TRUE);
+			return NULL;
+		}
+		g_string_append (listing, text);
+		g_string_append_c (listing, '\n');
+		g_free (text);
+	}
+
+	counters = fs_intelset_nft_parse_counters (listing->str);
+	g_string_free (listing, TRUE);
+	return counters;
+}
+
+/* [ linux_intel_live ] -- see FsBackend.intel_live. */
+static FsIntelLive
+linux_intel_live (gchar **digest)
+{
+	gchar *have = NULL;
+	FsIntelLive live = intel_read_live (&have, NULL);
+
+	if (digest != NULL)
+		*digest = have;
+	else
+		g_free (have);
+	return live;
 }
 
 static GList *
@@ -1859,7 +2220,11 @@ static const FsBackend linux_backend = {
 	.get_profile_enabled   = linux_get_profile_enabled,
 	.set_profile_enabled   = linux_set_profile_enabled,
 	.ipv6_state            = linux_ipv6_state,
-	.apply_notes           = linux_apply_notes
+	.apply_notes           = linux_apply_notes,
+	.intel_apply           = linux_intel_apply,
+	.intel_clear           = linux_intel_clear,
+	.intel_counters        = linux_intel_counters,
+	.intel_live            = linux_intel_live
 };
 
 const FsBackend *

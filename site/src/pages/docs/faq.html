@@ -1,0 +1,66 @@
+---
+title: Questions and answers
+section: Reference
+order: 42
+description: Short answers to the questions people ask first: whether StockFW replaces the system firewall, what happens at reboot, what it sends anywhere, whether the Copilot is an AI, nftables, Docker, licences and versions.
+---
+<h1>Questions and answers</h1>
+
+<h2>About the product</h2>
+<dl>
+<dt>Does StockFW replace Windows Firewall or iptables?</dt>
+<dd>No. It configures them. The engine your system already has keeps doing the filtering, which is why StockFW has no driver, needs no reboot, and leaves the firewall exactly as it was when it is closed, crashes or is uninstalled.</dd>
+<dt>Does anything leave my computer?</dt>
+<dd>Nothing. There is no telemetry, no update check, no account and no network client. The dashboard listens on 127.0.0.1 only. In 1.0.7 the threat-intel feature downloads lists, each only after you turn it on and accept its publisher’s terms. <a href="{{root}}docs/security.html">The security model</a> spells this out.</dd>
+<dt>Is the Copilot an AI?</dt>
+<dd>Not in the sense of a language model. It is a deterministic parser for what-if questions and a set of per-program counters with explained thresholds. It works offline and cannot be prompt-injected because there is no prompt. An older About dialog says “AI-powered”; that wording is being corrected.</dd>
+<dt>Why is there no “deny inbound” rule kind?</dt>
+<dd>Because inbound is denied by default. Every inbound rule is an exception that allows something; to block a source again you remove the allow. Outbound is the mirror image: allowed by default, with deny rules as the exceptions, and an optional restrictive mode that flips it.</dd>
+<dt>Where is the Windows command line?</dt>
+<dd>Not built yet. <code>stockfw</code> ships on Linux in 1.0.6; the core it links against is portable, and a Windows build is intended. [[planned]]</dd>
+<dt>Which licence?</dt>
+<dd>The repository carries two texts: the inherited GPLv2 in <code>COPYING</code> for the original code, and Apache-2.0 in <code>LICENSE</code>. The README says which applies to what, and the question of a single licence for the whole is open. [[gap]]</dd>
+</dl>
+
+<h2 id="reboot">Reboot and persistence</h2>
+<dl>
+<dt>What happens to my rules at reboot?</dt>
+<dd>[[win]] Windows Firewall rules persist; StockFW’s rules are ordinary rules in it, so they are in force from boot, before any program runs. [[linux]] iptables rules live in the kernel and are gone at boot. StockFW does not install a boot service, so the policy is in force again when you press <strong>Start firewall</strong>, run <code>sudo stockfw start</code>, or turn on <em>Start firewall on program startup</em> and start the app. To have it at boot without StockFW running, add <code>stockfw start</code> to a systemd unit or <code>rc.local</code>; a shipped unit is on the roadmap. [[planned]]</dd>
+<dt>If StockFW crashes, am I unprotected?</dt>
+<dd>No. The engine keeps the last applied rules. What you lose is monitoring, learning and Sentinel until you start it again.</dd>
+</dl>
+
+<h2>Linux</h2>
+<dl>
+<dt>iptables or nftables?</dt>
+<dd>StockFW drives <code>iptables</code> and <code>ip6tables</code>, which on every current distribution are the nftables-backed versions, so its rules land in nftables and <code>nft list ruleset</code> shows them. The 1.0.7 threat-intel sets use <code>nft</code> directly. A native nftables backend for the policy is planned for a later release. [[planned]]</dd>
+<dt>Does it fight with ufw, firewalld, Docker or libvirt?</dt>
+<dd>StockFW owns its own chains (<code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code>, <code>STOCKFW-SNAT</code>) and replaces only those; rules other tools keep in the same tables are not touched, and the loads use <code>--noflush</code>. [[built]] Two tools both setting a default policy on <code>INPUT</code> will still disagree about what the default is, so run one host firewall manager at a time; ufw and firewalld are alternatives to StockFW, Docker and libvirt coexist with it.</dd>
+<dt>Why root, and not polkit or a setuid helper?</dt>
+<dd>Because a desktop program that can silently rewrite the firewall is a worse posture than one that asks for root openly. StockFW never raises its own rights. <a href="{{root}}docs/install-linux.html#why-there-is-no-polkit-policy-or-setuid-helper">More</a>.</dd>
+<dt>Which distributions?</dt>
+<dd>Tested on Debian, Kali, Ubuntu and WSL2. Anything with GTK 3 and iptables should work; the installer checks libraries by soname, not by package name, so renamed packages do not fail it.</dd>
+</dl>
+
+<h2>Windows</h2>
+<dl>
+<dt>Why two shortcuts?</dt>
+<dd>The ordinary one runs with your rights and can read, edit and simulate; the elevated one asks for administrator rights once and can change the firewall. Keeping them separate means a program running as you cannot borrow the elevated window. <a href="{{root}}docs/install-windows.html">Install on Windows</a>.</dd>
+<dt>Why is the installer not signed?</dt>
+<dd>A code-signing certificate is a cost the project has not taken on yet. Check the SHA-256 on the download page instead; it tells you the same thing a signature would. [[gap]]</dd>
+<dt>Does it work with a third-party antivirus firewall?</dt>
+<dd>StockFW manages the Windows engine. If another product has replaced Windows Firewall as the active firewall, StockFW’s rules exist but that product decides.</dd>
+</dl>
+
+<h2>Versions</h2>
+<dl>
+<dt>Which version can I download?</dt>
+<dd>{{release}}. 1.0.6 was merged into <code>main</code> without a package, and {{next}} is being developed on <code>main</code> on top of it. The <a href="{{root}}download.html">download page</a> explains how to build it.</dd>
+<dt>The app says 1.0.6 but I built the 1.0.7 branch</dt>
+<dd>The version string is bumped at release time, so a development build reports the last version until then.</dd>
+<dt>Why do these pages mark some things “Built” or “In progress”?</dt>
+<dd>So you can tell what is in the release you can download from what is on the way. <a href="{{root}}docs/index.html">The welcome page</a> explains each stamp.</dd>
+</dl>
+
+<h2>Something else?</h2>
+<p>If the <a href="{{root}}docs/troubleshooting.html">troubleshooting page</a> does not have it, <a href="{{repo}}/issues">open an issue</a>. Questions are welcome there too; they become documentation.</p>

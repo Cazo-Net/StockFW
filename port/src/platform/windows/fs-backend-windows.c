@@ -239,39 +239,17 @@ firewalled_reload (GError **error)
  * show the user.
  * ------------------------------------------------------------------ */
 
-/* [ run_netsh ]
- * netsh rejects rule names containing ':' , parentheses and slashes,
- * which the display names generated for the UI do contain.  Replace the
- * characters it dislikes so the same name can be used for both the
- * dialog and the command line. */
 /* [ netsh_safe_name ]
  * netsh rejects rule names containing ':' , parentheses and slashes,
- * which the display names generated for the UI do contain.  Replace the
- * characters it dislikes so one name can serve both the dialog and the
- * command line.
+ * which the display names generated for the UI do contain.  The
+ * spelling lives in core (fs_fwrule_netsh_name), so the argv the
+ * tests check and the names this file creates, lists and deletes can
+ * never drift apart.
  */
 static gchar *
 netsh_safe_name (const gchar *name)
 {
-	GString *out = g_string_new (NULL);
-
-	for (const gchar *p = (name != NULL) ? name : "StockFW rule";
-	     *p != '\0'; p++) {
-		switch (*p) {
-		case ':':
-		case '(':
-		case ')':
-		case '/':
-		case ',':
-			g_string_append_c (out, '-');
-			break;
-		default:
-			g_string_append_c (out, *p);
-			break;
-		}
-	}
-
-	return g_string_free (out, FALSE);
+	return fs_fwrule_netsh_name (name);
 }
 
 /* ---------------------------------------------------------------------
@@ -747,69 +725,39 @@ netsh_needs_elevation (const gchar *output)
 }
 
 /* [ netsh_add_rule ]
- * Creates one rule.  Returns FALSE and sets error on failure. */
+ * Creates one rule.  Returns FALSE and sets error on failure.
+ *
+ * The argv comes from core (fs_fwrule_netsh_args), where the tests
+ * check it on every platform.  spawn_capture() passes it straight to
+ * CreateProcess with no shell parsing, which is why no argument
+ * carries quote characters.  1.0.6 built it here and, because netsh
+ * refuses ports with protocol=any, dropped the port of every rule
+ * whose protocol was "any" -- most services -- so the rule matched
+ * all traffic in its direction.  core now refuses to build such an
+ * argv at all, and a refused rule is a failed rule, never a wider
+ * one. */
 static gboolean
 netsh_add_rule (const FsFwRule *rule, GError **error)
 {
-	GPtrArray *args;
-	gchar *name;
-	gchar *port;
-	gchar *protocol;
-	const gchar *direction;
-	const gchar *action;
+	gchar **args;
 	gchar *output = NULL;
 	gint status = 0;
 	gboolean ok = FALSE;
 
-	args = g_ptr_array_new_with_free_func (g_free);
-	g_ptr_array_add (args, g_strdup ("netsh.exe"));
-	g_ptr_array_add (args, g_strdup ("advfirewall"));
-	g_ptr_array_add (args, g_strdup ("firewall"));
-	g_ptr_array_add (args, g_strdup ("add"));
-	g_ptr_array_add (args, g_strdup ("rule"));
+	args = fs_fwrule_netsh_args (rule);
 
-	/* spawn_capture() passes argv straight to CreateProcess with no
-	 * shell parsing, so arguments must not carry quote characters: the whole
-	 * "name=..." pair goes across as one element.  Adding quotes here
-	 * makes netsh mis-parse the value and then complain about the
-	 * profiles argument. */
-	name = netsh_safe_name (rule->name);
-	g_ptr_array_add (args, g_strdup_printf ("name=%s", name));
-	g_free (name);
-
-	/* Every profile, so the rule applies wherever the firewall is on. */
-	g_ptr_array_add (args, g_strdup ("profile=any"));
-
-	direction = (rule->direction == FS_DIR_INBOUND) ? "in" : "out";
-	action = (rule->action == FS_ACTION_ALLOW) ? "allow" : "block";
-	protocol = (rule->protocol == FS_PROTO_TCP) ? "TCP"
-	           : (rule->protocol == FS_PROTO_UDP) ? "UDP" : "any";
-
-	g_ptr_array_add (args, g_strdup_printf ("dir=%s", direction));
-	g_ptr_array_add (args, g_strdup_printf ("action=%s", action));
-	g_ptr_array_add (args, g_strdup_printf ("protocol=%s", protocol));
-	g_ptr_array_add (args, g_strdup ("enable=yes"));
-
-	/* netsh rejects any port specification when the protocol is
-	 * "any": "Ports can only be specified if the protocol is TCP or
-	 * UDP."  Omit localport in that case. */
-	if (rule->protocol != FS_PROTO_ANY) {
-		if (rule->local_port > 0) {
-			port = g_strdup_printf ("localport=%d", rule->local_port);
-			g_ptr_array_add (args, port);
-		} else {
-			g_ptr_array_add (args, g_strdup ("localport=any"));
-		}
+	if (args == NULL) {
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-windows"),
+		             0, "The rule \"%s\" was not created: a rule "
+		             "with ports has to be TCP or UDP, with a valid "
+		             "port list.",
+		             (rule != NULL && rule->name != NULL)
+		             ? rule->name : "(unnamed)");
+		return FALSE;
 	}
 
-	if (rule->remote_address != NULL && *rule->remote_address != '\0')
-		g_ptr_array_add (args,
-		                 g_strdup_printf ("remoteip=%s",
-		                                  rule->remote_address));
-
-	g_ptr_array_add (args, NULL);
-
-	if (!run_netsh ((gchar **) args->pdata, error, &status, &output))
+	if (!run_netsh (args, error, &status, &output))
 		goto out;
 
 	if (status == 0) {
@@ -839,7 +787,7 @@ out:
 		         output ? g_strstrip (output) : "(no output)");
 
 	g_free (output);
-	g_ptr_array_unref (args);
+	g_strfreev (args);
 
 	return ok;
 }
@@ -1143,11 +1091,53 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 	guint failed = 0;
 	GError *first_error = NULL;
 	FsApplyResult clear_result;
+	GPtrArray *refused = NULL;
+	gchar *refusal = NULL;
 
 	if (policy == NULL)
 		return FS_APPLY_FAILED;
 
-	rules = fs_fwrule_from_policy (policy);
+	/* A refused BLOCK row stops the apply before anything is
+	 * cleared.  This function replaces the whole set, so carrying on
+	 * would delete the block that is in force now and put nothing in
+	 * its place: fail-open, with only the rollback (when there is a
+	 * journal at all) to close the hole again.  The Linux generator
+	 * refuses the whole script for a deny it cannot write in the same
+	 * way.  A refused allow is different -- leaving it out keeps a
+	 * hole closed -- so those are reported below and the rest
+	 * applies. */
+	refusal = fs_fwrule_block_refusals (policy);
+	if (refusal != NULL) {
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-windows"),
+		             0, "The firewall was not changed: a block rule "
+		             "could not be applied as written, and applying "
+		             "the rest would have removed it.\n%s", refusal);
+		g_free (refusal);
+		return FS_APPLY_FAILED;
+	}
+
+	rules = fs_fwrule_from_policy_checked (policy, &refused);
+
+	/* Rows the translation refused (a port that does not parse) have
+	 * no rule to create.  Each one counts as a failed rule, so the
+	 * verdict can never be "Rules applied" for a policy that is not
+	 * all in force, and their reasons are what the dialog shows:
+	 * the user can fix those, unlike a netsh exit code. */
+	if (refused->len > 0) {
+		GString *why = g_string_new (NULL);
+
+		for (guint i = 0; i < refused->len; i++) {
+			if (why->len > 0)
+				g_string_append_c (why, '\n');
+			g_string_append (why, g_ptr_array_index (refused, i));
+		}
+
+		failed += refused->len;
+		refusal = g_string_free (why, FALSE);
+	}
+
+	g_ptr_array_unref (refused);
 
 	/* Drop the previous set first so applying twice does not
 	 * accumulate duplicates.  P6: the clear verifies its own work by
@@ -1214,7 +1204,18 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 			netsh_needs_elevation (first_error != NULL
 			                       ? first_error->message : NULL);
 
-		if (error != NULL && first_error != NULL)
+		if (refusal != NULL) {
+			/* The refused rows first: they are why nothing
+			 * could be created as written. */
+			g_set_error (error,
+			             g_quark_from_static_string (
+				             "fs-backend-windows"),
+			             0, "%s%s%s", refusal,
+			             first_error != NULL ? "\n" : "",
+			             first_error != NULL
+			             ? first_error->message : "");
+			g_clear_error (&first_error);
+		} else if (error != NULL && first_error != NULL)
 			g_propagate_error (error, first_error);
 		else {
 			if (error != NULL)
@@ -1229,18 +1230,24 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 			g_clear_error (&first_error);
 		}
 
+		g_free (refusal);
 		return needs_elevation ? FS_APPLY_NO_PRIVILEGE : FS_APPLY_FAILED;
 	}
 
 	if (failed > 0) {
 		g_set_error (error, g_quark_from_static_string ("fs-backend-windows"),
-		             (int) failed, "%u of %u rules could not be created",
-		             failed, applied + failed);
+		             (int) failed, "%u of %u rules could not be created%s%s",
+		             failed, applied + failed,
+		             refusal != NULL ? ":\n" : "",
+		             refusal != NULL ? refusal : "");
 		/* The dialog gets the count; the first concrete reason is
 		 * still owned here and must not leak. */
 		g_clear_error (&first_error);
+		g_free (refusal);
 		return FS_APPLY_PARTIAL;
 	}
+
+	g_free (refusal);
 
 	/* P6: nothing to add failed, but the clear could not verify that
 	 * the previous set is gone -- the verdict must still say so, with
@@ -1310,10 +1317,17 @@ firewalled_apply_delta (const GList *remove, const GList *add,
 			GList *leftover = NULL;
 			const GList *r;
 
+			/* netsh lists the netsh spelling of each name
+			 * ("StockFW- Allow SSH -inbound-"), so that is the
+			 * spelling to look up; comparing the display name
+			 * never found a survivor. */
 			for (r = remove; r != NULL; r = r->next) {
-				if (g_hash_table_contains (ours, r->data))
+				gchar *listed = netsh_safe_name (r->data);
+
+				if (g_hash_table_contains (ours, listed))
 					leftover = g_list_prepend (leftover,
 					                            (gpointer) r->data);
+				g_free (listed);
 			}
 
 			for (r = leftover; r != NULL; r = r->next) {
@@ -1398,6 +1412,7 @@ firewalled_apply_delta (const GList *remove, const GList *add,
 		g_set_error (error, g_quark_from_static_string ("fs-backend-windows"),
 		             (int) failed, "%u of %u rule changes failed",
 		             failed, created + failed);
+		g_clear_error (&first_error);
 		return FS_APPLY_PARTIAL;
 	}
 
@@ -2787,6 +2802,14 @@ static const FsBackend windows_backend = {
 	.set_profile_enabled   = firewalled_set_profile_enabled,
 	.network_place         = firewalled_network_place,
 	.trust_signature       = fs_trust_win_signature
+	/* intel_apply, intel_clear, intel_counters and intel_live stay
+	 * NULL until Round 3 of threat intel (design section 2): a NULL
+	 * slot is how the engine and every surface learn that blocklists
+	 * are not available on Windows yet -- the state reads
+	 * "unsupported", an apply fails with FS_INTEL_ERR_UNSUPPORTED,
+	 * and the user's Stop has no lists to suspend.  A slot that
+	 * existed only to fail would turn "unsupported" into "cannot
+	 * tell" and make every Stop report an error. */
 };
 
 const FsBackend *

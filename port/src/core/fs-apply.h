@@ -75,13 +75,21 @@ FsPolicyImpact *fs_policy_impact_preview (const FsPolicy *after);
  *             (deleting by name would take them too; the backend
  *             re-creates them right after the delete).
  * empty means there is nothing to do at all.  before == NULL means
- * the whole set is an add. */
+ * the whole set is an add.
+ *
+ * refused counts the rows of `after' the translation refused
+ * (fs_fwrule_expand_checked: a port that does not parse).  They have
+ * no rule in any list, so a delta that carried on without them would
+ * report success for a row it dropped; a delta with refusals is never
+ * empty, and the gate takes the full apply, whose verdict reports
+ * them. */
 typedef struct
 {
 	GList   *remove;   /* gchar*, owned by the delta    */
 	GList   *add;      /* FsFwRule*, owned              */
 	GList   *repair;   /* FsFwRule*, owned              */
 	gboolean empty;
+	guint    refused;
 } FsPolicyDelta;
 
 FsPolicyDelta *fs_policy_delta      (const FsPolicy *before,
@@ -230,7 +238,15 @@ void         fs_apply_set_audit_only (gboolean on);
  * on the firewall successfully.  One CSV of <kind>,<rule-csv> rows in
  * the shared dialect.  $STOCKFW_APPLIED_FILE overrides the location
  * (tests point it somewhere disposable), otherwise applied.csv in the
- * rules directory. */
+ * rules directory.
+ *
+ * The journal also records which rule translation wrote the live
+ * rules (FS_FWRULE_TRANSLATION, a "# rules translation N" line; a
+ * journal without one is translation 1).  fs_policy_apply_safe uses
+ * the narrow path only when that matches the running code: rules
+ * written by an older translation are not what this code would
+ * compute from the journal, so a delta against them would leave them
+ * in place, and the gate replaces the whole set instead. */
 gchar    *fs_apply_journal_path   (void);
 gboolean  fs_apply_journal_save   (const FsPolicy *policy, GError **error);
 /* FALSE with FS_APPLY_ERR_NO_JOURNAL when there is simply no journal
