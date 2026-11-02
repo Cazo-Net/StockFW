@@ -37,6 +37,11 @@
 #include <windows.h>
 #endif
 
+/* CMake defines FS_VERSION for every target; tests/test-core.sh compiles
+ * every file of src/core by hand without it. */
+#ifndef FS_VERSION
+#define FS_VERSION "dev"
+#endif
 #define DEFAULT_USER_AGENT  "StockFW/" FS_VERSION
 #define CONNECT_TIMEOUT_S   "20"
 #define URL_MAX             2048
