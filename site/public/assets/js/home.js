@@ -148,6 +148,37 @@
 		dExit.className = "d-exit " + (s.ok ? "exit-ok" : "exit-no");
 	}
 
+	/* The verdict row and the detail list change height with their text,
+	 * and while a scenario resets they are nearly empty.  Left alone,
+	 * that moved everything under the card and resized the hero band on
+	 * every replay.  Measure the tallest scenario at the current width
+	 * and hold both parts at that height, so nothing outside the text
+	 * itself ever moves. */
+	var verdictBox = $(".wi-verdict"), detailBox = $(".wi-detail");
+	function lockHeights() {
+		var keep = [pill.className, pill.textContent, scn.textContent,
+			dRule.textContent, dWhy.textContent, dExit.textContent, dExit.className];
+		verdictBox.style.minHeight = "";
+		detailBox.style.minHeight = "";
+		var v = 0, d = 0;
+		SCENARIOS.forEach(function (s) {
+			verdict(s);
+			v = Math.max(v, verdictBox.getBoundingClientRect().height);
+			d = Math.max(d, detailBox.getBoundingClientRect().height);
+		});
+		pill.className = keep[0]; pill.textContent = keep[1]; scn.textContent = keep[2];
+		dRule.textContent = keep[3]; dWhy.textContent = keep[4];
+		dExit.textContent = keep[5]; dExit.className = keep[6];
+		verdictBox.style.minHeight = Math.ceil(v) + "px";
+		detailBox.style.minHeight = Math.ceil(d) + "px";
+	}
+	var resizeTimer = null;
+	window.addEventListener("resize", function () {
+		clearTimeout(resizeTimer);
+		resizeTimer = setTimeout(lockHeights, 150);
+	});
+	if (document.fonts && document.fonts.ready) document.fonts.ready.then(lockHeights);
+
 	function finalState(s) {
 		if (s.ok) {
 			wall.classList.add("ok");
@@ -234,6 +265,7 @@
 		qEl.textContent = s.q;
 		finalState(s);
 		verdict(s);
+		lockHeights();
 		if (!reduce) later(function () { if (auto) play(1); }, 4500);
 	})();
 })();
