@@ -1317,7 +1317,27 @@ policy admits the source; never auto-applicable), block-list hits
 hour), dedup by key, beacons per app (two apps polling one host are two
 series; port 123 is never reported; auto-block needs 8 contacts),
 fan-out per app, and that on a mixed corpus only the beacon's deny is
-auto-applicable and no anomaly offers an allow.  Its last step is the
+auto-applicable and no anomaly offers an allow.
+`test_copilot_review_fixes` (F1 to F10) adds: DNS on 53 and 853 to a
+configured resolver is not timed, and a resolver on another port, the
+default gateway and a stub resolver with an unknown upstream are never
+auto-blocked, also at `fs_insight_is_auto_safe` (the resolver, route
+and stub files come from `STOCKFW_RESOLV_CONF`, `STOCKFW_RESOLVED_CONF`
+and `STOCKFW_ROUTE_FILE`; main sets `STOCKFW_RESOLV_CONF=/dev/null` so
+the host's own network never decides a result); a destination another
+program has recorded connections to is withheld; allowed inbound probes
+and refused probes teach the profile nothing; 260 new-port findings
+evict behavior findings first; with 1024 sources tracked a new scanner
+and a new login source are still seen; 40 addresses of one /64 make one
+aggregate finding naming them; allowed-only login attempts from a
+public source the policy admits are a Warning; SSH on a port the policy
+names, and 9 attempts on SSH plus 9 on RDP from one source, report;
+the new-destination times survive a restart; later probes update the
+open scan and login findings; each beacon evidence row has its own
+verdict, and TCP and UDP to one port are two series; a busy service
+name ("https") does not trip fan-out without refused hosts.  The
+mixed-corpus and fan-out tests feed program names (`scanner.exe`).
+Its last step is the
 wording guard: `\bAI\b` or `AI-` anywhere in `src`, `docs` or the
 README fails the suite, except the one sentence that says there is no
 AI model.
@@ -1331,9 +1351,21 @@ rows, an unverified fix has no button and says why, Fix asks first (No
 writes nothing; Yes writes exactly the after row, audited), Undo puts
 the rules files back byte for byte, the block offered from a finding is
 checked by What-If first, and the empty states (no events, all clear
-with "This is not a guarantee", monitoring off with its reason).  A
+with "This is not a guarantee", monitoring off with its reason).  It
+also checks: the Policy health tile counts the rows but not the "no
+effect in this mode" notes (found by their own words, not a flag the
+page sets) and says the notes are below; Needs attention counts the
+Critical and Warning health rows; Show rule's ATK name names its row;
+an undone change stays in Changes marked "Undone at" with no Undo; the
+evidence cells are selectable and out of the Tab order; a click
+delivered inside the open drawer (through `gtk_propagate_event`, so
+the list box's own click gesture sees it) leaves it open, and the same
+click on the head closes it; a refresh with nothing new keeps every
+row widget and the focused button; a row that shows a new event is
+rebuilt, stays open, and gets the focus back on the same button.  A
 child process repeats the page under `GTK_THEME=Adwaita:dark` and
-checks the dark classes.  Set `FS_SHOT_DIR` to save screenshots.
+checks that it stays light (no dark class, dark title text, light
+card).  Set `FS_SHOT_DIR` to save screenshots.
 
 `fs-hitview-smoke` checks the feed order as root: with "skip repeats"
 on, 10 identical log lines give the Copilot 10 events while the list
@@ -1362,7 +1394,38 @@ with `cmp`):
 | anomaly findings carry an auto-applicable allow row | "a mixed corpus: only the beacon's deny is auto-applicable", and 31 "offers no rule" checks |
 | "AI-powered" put back in the About dialog | the wording guard |
 | the Copilot fed after the skip-repeats filter (`fs-hitview.c`) | "feed order: ... 10 identical events still reach the Copilot as 10 (got 1)" |
-| a constant in the Policy health tile (`fs-copilot.c`) | "page: the Policy health tile is the number of findings", "page: the tile follows the check" |
+| a constant in the Policy health tile (`fs-copilot.c`) | "page: the Policy health tile counts the findings but not the ... notes", "page: the tile follows the check" |
+| DNS over TLS (853) timed like any port | "F1: DNS (53) and DNS over TLS ...", "F1: DNS over TLS to a configured ..." |
+| resolvers and the gateway not withheld | "F1: a resolver on any other port ...", "F1: the default gateway ..." |
+| `fs_insight_is_auto_safe` ignores the resolvers and gateway | "F1: fs_insight_is_auto_safe refuses ..." |
+| systemd-resolved's upstream list not read | "F1: DNS (53) and DNS over TLS ..." |
+| a stub with an unknown upstream auto-blocked | "F1: behind a stub with an unknown upstream ..." |
+| only the program's own history checked | "F2: a destination another program ..." |
+| new-port signal on inbound events | "F3: allowed inbound probes ..." |
+| refused probes recorded in the profile | "F4: refused probes teach the profile no destinations" |
+| the 200 cap evicts the oldest finding of any kind | "F3: 260 new-port findings ..." |
+| the scan table refuses new sources when full | "F4: with 1024 sources ..." |
+| no IPv6 /64 aggregate | "F4: 40 addresses of one /64 ...", "F4: its evidence names ..." |
+| the login table refuses new sources when full | "F4: with the login table full ..." |
+| allowed-only attempts always Info | "F5: allowed connections only ..." |
+| login ports from the policy ignored | "F6: SSH on 2222 ..." |
+| login attempts counted per port | "F6: 9 on SSH and 9 on RDP ..." |
+| new-destination times not saved | "F7: behavior.csv keeps ...", "F7: after a restart ..." |
+| an open finding not updated within the hour | "F8: the 11th and 12th ...", "F8: the open scan finding ..." |
+| every beacon evidence row copies the latest verdict | "F9: seven allowed contacts ..." |
+| the protocol left out of the beacon key | "F9: TCP and UDP to one port ..." |
+| a service-name key counts any host for fan-out | "F10: one busy page ..." |
+| the findings list rebuilt on every refresh (`fs-copilot.c`) | "page: a refresh with nothing new keeps the row and its focused button", "page: the row that did not change is the same widget" |
+| the focus not put back after a row is rebuilt | "page: when the focused row changes, the focus goes to the same button in its new row" |
+| the page given the dark class again | "dark: the page stays light like the rest of the app" |
+| the evidence cells' colour rule removed (`fs-theme.css`) | "dark: the evidence cells are dark text on the light card (48 of 54 light)" |
+| Undo removes the change from the list | "page: the undone change stays in Changes ..." |
+| Needs attention skips the health rows | "page: Needs attention counts the policy's Critical rows", "page: Needs attention counts the Warning finding ..." |
+| the health tile counts the "no effect" notes | "page: the Policy health tile counts the findings but not the ... notes" and 3 more |
+| the drawer guard lets the click through | "page: a click inside the open drawer leaves it open" |
+| drawer text not selectable | "page: the evidence cells are selectable text ...", "page: what Sentinel did can be selected and copied" |
+| Show rule without its ATK name | "page: Show rule's accessible name names the row" |
+| the tile note does not say the notes are below | "page: the tile's note says the notes are below" |
 
 ## Threat-intel backend slots on Linux (`tests/test-intel-backend.sh`)
 

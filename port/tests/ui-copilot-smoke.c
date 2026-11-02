@@ -27,7 +27,10 @@
  *      with a severity word and an evidence drawer Enter opens, policy
  *      health fixes that are offered only when verified, asked before
  *      writing, written exactly, and undone byte for byte; the empty
- *      states; a dark-theme run in a child process.  FS_SHOT_DIR gets
+ *      states; drawer text that can be selected without closing the
+ *      drawer; the keyboard focus kept across refreshes; undone changes
+ *      kept and marked; a dark-theme run in a child process, where the
+ *      page stays light like the rest of the app.  FS_SHOT_DIR gets
  *      the screenshots.
  *   7. What-If card  -- the entry keeps its line, the chips say how it
  *      was read, the answer row and Recent (five, newest first) fill
@@ -972,6 +975,62 @@ tile_value (GtkWidget *page, const gchar *tile)
 	return v;
 }
 
+/* Health rows the tile should count: every row but the "no effect in
+ * this mode" notes, found by their own words. */
+static guint
+health_counted (GtkWidget *page, guint *notes)
+{
+	guint n = 0, skip = 0;
+
+	for (guint i = 0; i < list_rows (page, "health-list"); i++) {
+		GtkWidget *row = list_row (page, "health-list", i);
+
+		if (fs_simviz_find_label (row, "no effect in") != NULL ||
+		    fs_simviz_find_label (row, "have no effect") != NULL)
+			skip++;
+		else
+			n++;
+	}
+	if (notes != NULL)
+		*notes = skip;
+	return n;
+}
+
+/* A left click (press, then release) on `w', delivered as GTK delivers a
+ * pointer event: to `w' first, then up through its parents until one
+ * handles it.  The list box's own click gesture is among them. */
+static void
+click_on (GtkWidget *list, GtkWidget *w)
+{
+	GdkSeat *seat = gdk_display_get_default_seat (gdk_display_get_default ());
+	gint x = 0, y = 0;
+
+	gtk_widget_translate_coordinates (w, list, 4, 4, &x, &y);
+	for (gint i = 0; i < 2; i++) {
+		GdkEvent *ev = gdk_event_new (i == 0 ? GDK_BUTTON_PRESS
+		                                     : GDK_BUTTON_RELEASE);
+
+		ev->button.window = g_object_ref (gtk_widget_get_window (list));
+		ev->button.send_event = TRUE;
+		ev->button.time = GDK_CURRENT_TIME;
+		ev->button.x = x;
+		ev->button.y = y;
+		ev->button.button = 1;
+		gdk_event_set_device (ev, gdk_seat_get_pointer (seat));
+		gtk_propagate_event (w, ev);
+		gdk_event_free (ev);
+		pump (20);
+	}
+	pump (60);
+}
+
+/* The widget that has the keyboard focus in `top'. */
+static GtkWidget *
+focus_of (GtkWidget *top)
+{
+	return gtk_window_get_focus (GTK_WINDOW (top));
+}
+
 static gint
 path_cmp (gconstpointer a, gconstpointer b)
 {
@@ -1204,16 +1263,46 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 	/* ---- policy health ---- */
 	policy_add (policy, FS_RULE_INBOUND_ALLOW_SERVICE, "RDP, 3389, Anyone");
 	policy_add (policy, FS_RULE_INBOUND_ALLOW_SERVICE, "TCP, 3389, Anyone");
+	/* An outbound allow while outbound is open: an expected Info note. */
+	policy_add (policy, FS_RULE_OUTBOUND_ALLOW_TO, "203.0.113.80, smoke note");
 	CHECK (fs_policy_save (policy), "page: the risky rows save");
 
 	page = fs_copilot_page (copilot, policy);
 	top = page_window (page, NULL);
 	click (page, "health-again");
 
-	n = list_rows (page, "health-list");
-	CHECK (n >= 2 && tile_value (page, "tile-health") == n,
-	       "page: the Policy health tile is the number of findings "
-	       "(tile %u, rows %u)", tile_value (page, "tile-health"), n);
+	{
+		guint notes = 0;
+
+		n = health_counted (page, &notes);
+		CHECK (notes >= 1 && n >= 2 &&
+		       tile_value (page, "tile-health") == n,
+		       "page: the Policy health tile counts the findings but "
+		       "not the \"no effect in this mode\" notes (tile %u, "
+		       "counted rows %u, notes %u)",
+		       tile_value (page, "tile-health"), n, notes);
+		CHECK (notes == 0 ||
+		       strstr (text_of (page, "tile-health-note"), "below") != NULL,
+		       "page: the tile's note says the notes are below (\"%s\")",
+		       text_of (page, "tile-health-note"));
+	}
+	/* Needs attention counts the Critical health rows too: a Critical
+	 * "RDP open to the internet" must not sit under a 0. */
+	CHECK (tile_value (page, "tile-attention") >= 1,
+	       "page: Needs attention counts the policy's Critical rows "
+	       "(got %u)", tile_value (page, "tile-attention"));
+	/* Each health button names its row for a screen reader. */
+	row = row_with (page, "health-list", "open to the internet");
+	{
+		GtkWidget *sr = row != NULL ? named (row, "cp-health-rule") : NULL;
+		const gchar *acc = sr != NULL
+			? atk_object_get_name (gtk_widget_get_accessible (sr)) : NULL;
+
+		CHECK (acc != NULL && g_str_has_prefix (acc, "Show rule: ") &&
+		       strstr (acc, " rule ") != NULL,
+		       "page: Show rule's accessible name names the row (\"%s\")",
+		       acc != NULL ? acc : "");
+	}
 	row = row_with (page, "health-list", "open to the internet");
 	CHECK (row != NULL && named (row, "cp-health-fix") == NULL &&
 	       named (row, "cp-health-nofix") != NULL &&
@@ -1233,7 +1322,7 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 		CHECK (fs_policy_save (policy), "page: the second row is gone");
 	}
 	click (page, "health-again");
-	n = list_rows (page, "health-list");
+	n = health_counted (page, NULL);
 	CHECK (tile_value (page, "tile-health") == n,
 	       "page: the tile follows the check (tile %u, rows %u)",
 	       tile_value (page, "tile-health"), n);
@@ -1293,7 +1382,7 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 	       text_of (page, "cp-health-card-strip"));
 	CHECK (row_with (page, "health-list", "RDP (3389)") == NULL &&
 	       tile_value (page, "tile-health") ==
-	       list_rows (page, "health-list"),
+	       health_counted (page, NULL),
 	       "page: checked again, the finding is gone and the tile follows");
 	CHECK (row_with (page, "changes-list", "Policy fix") != NULL,
 	       "page: the fix is listed under Changes with an Undo");
@@ -1310,8 +1399,12 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 		printf ("--- before\n%s\n--- after\n%s\n", before, after);
 	CHECK (audit_mentions ("copilot health fix undone"),
 	       "page: the undo is audited");
-	CHECK (row_with (page, "changes-list", "Policy fix") == NULL,
-	       "page: the undone change leaves the Changes card");
+	row = row_with (page, "changes-list", "Policy fix");
+	CHECK (row != NULL && named (row, "cp-change-undo") == NULL &&
+	       g_str_has_prefix (text_of (row, "cp-change-ended"), "Undone at "),
+	       "page: the undone change stays in Changes, marked \"Undone at\" "
+	       "with no Undo button (\"%s\")",
+	       row != NULL ? text_of (row, "cp-change-ended") : "");
 	g_free (after);
 	g_free (before);
 
@@ -1340,9 +1433,24 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 		       "page: row %u's accessible name is \"severity: title\" "
 		       "(\"%s\")", i, acc != NULL ? acc : "");
 	}
-	CHECK (tile_value (page, "tile-attention") == 1,
-	       "page: Needs attention counts the Warning, not the Info "
-	       "(got %u)", tile_value (page, "tile-attention"));
+	{
+		/* The health rows still listed count too, by their pills. */
+		guint health = 0;
+
+		for (guint i = 0; i < list_rows (page, "health-list"); i++) {
+			GtkWidget *hr = list_row (page, "health-list", i);
+			GtkWidget *pill = named (hr, "cp-pill");
+
+			if (pill != NULL &&
+			    (fs_simviz_find_label (pill, "Critical") != NULL ||
+			     fs_simviz_find_label (pill, "Warning") != NULL))
+				health++;
+		}
+		CHECK (tile_value (page, "tile-attention") == 1 + health,
+		       "page: Needs attention counts the Warning finding, not "
+		       "the Info, plus %u Critical or Warning health rows (got "
+		       "%u)", health, tile_value (page, "tile-attention"));
+	}
 
 	row = row_with (page, "findings-list", "near-fixed interval");
 	rev = row != NULL ? named (row, "cp-drawer") : NULL;
@@ -1363,6 +1471,98 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 	       != NULL,
 	       "page: why, could be harmless, and what Sentinel did (\"%s\")",
 	       row != NULL ? text_of (row, "cp-autoblock-status") : "");
+
+	/* The drawer's text is for reading and copying: selectable, and a
+	 * click inside it does not close the drawer. */
+	{
+		GtkWidget *ev = row != NULL ? named (row, "cp-evidence") : NULL;
+		GList *cells = ev != NULL
+			? gtk_container_get_children (GTK_CONTAINER (ev)) : NULL;
+		gboolean sel = cells != NULL, tab = FALSE;
+
+		for (GList *c = cells; c != NULL; c = c->next) {
+			/* The column heads are captions, not data. */
+			if (gtk_style_context_has_class (
+				    gtk_widget_get_style_context (c->data),
+				    "cp-caption"))
+				continue;
+			if (!GTK_IS_LABEL (c->data) ||
+			    !gtk_label_get_selectable (GTK_LABEL (c->data)))
+				sel = FALSE;
+			if (gtk_widget_get_can_focus (c->data))
+				tab = TRUE;
+		}
+		g_list_free (cells);
+		CHECK (sel && !tab,
+		       "page: the evidence cells are selectable text, out of the "
+		       "Tab order");
+		CHECK (row != NULL && named (row, "cp-autoblock-status") != NULL &&
+		       gtk_label_get_selectable (GTK_LABEL (named (row,
+		                                 "cp-autoblock-status"))),
+		       "page: what Sentinel did can be selected and copied");
+	}
+	if (row != NULL && named (row, "cp-drawer-guard") != NULL)
+		click_on (named (page, "findings-list"),
+		          gtk_bin_get_child (GTK_BIN (named (row,
+		                                              "cp-drawer-guard"))));
+	CHECK (rev != NULL && gtk_revealer_get_reveal_child (GTK_REVEALER (rev)),
+	       "page: a click inside the open drawer leaves it open");
+	/* The same click on the row's head still closes it, so the click
+	 * above did reach the list. */
+	if (row != NULL && named (row, "cp-finding-title") != NULL)
+		click_on (named (page, "findings-list"),
+		          named (row, "cp-finding-title"));
+	CHECK (rev != NULL && !gtk_revealer_get_reveal_child (GTK_REVEALER (rev)),
+	       "page: a click on the row's head closes the drawer");
+	if (row != NULL)
+		press_enter (top, row);
+
+
+	/* A refresh keeps the keyboard focus: the list follows the events
+	 * every second, and the focused row must not be thrown away.  The
+	 * threat-intel row adds each new event, so a second event changes
+	 * what it shows. */
+	{
+		GtkWidget *intel = row_with (page, "findings-list", "smoke list");
+		GtkWidget *dis = NULL, *f, *nrow;
+
+		if (intel != NULL) {
+			press_enter (top, intel);
+			dis = named (intel, "cp-dismiss");
+		}
+		if (dis != NULL)
+			gtk_widget_grab_focus (dis);
+		pump (30);
+		fs_copilot_view_refresh ();
+		pump (60);
+		CHECK (dis != NULL && focus_of (top) == dis &&
+		       row_with (page, "findings-list", "smoke list") == intel,
+		       "page: a refresh with nothing new keeps the row and its "
+		       "focused button");
+
+		feed_intel_inbound (copilot, t0 + 20 * G_USEC_PER_SEC);
+		fs_copilot_view_refresh ();
+		pump (60);
+		nrow = row_with (page, "findings-list", "smoke list");
+		f = focus_of (top);
+		CHECK (nrow != NULL && nrow != intel,
+		       "page: a row that shows a new event is rebuilt");
+		CHECK (nrow != NULL && f != NULL &&
+		       g_strcmp0 (gtk_widget_get_name (f), "cp-dismiss") == 0 &&
+		       gtk_widget_is_ancestor (f, nrow),
+		       "page: when the focused row changes, the focus goes to the "
+		       "same button in its new row (focus on \"%s\")",
+		       f != NULL ? gtk_widget_get_name (f) : "nothing");
+		CHECK (nrow != NULL && gtk_revealer_get_reveal_child (
+		           GTK_REVEALER (named (nrow, "cp-drawer"))),
+		       "page: the rebuilt row stays open");
+		CHECK (row != NULL &&
+		       row_with (page, "findings-list", "near-fixed interval") == row,
+		       "page: the row that did not change is the same widget");
+		/* Looked up again: a broken build may have replaced it. */
+		row = row_with (page, "findings-list", "near-fixed interval");
+		rev = row != NULL ? named (row, "cp-drawer") : NULL;
+	}
 	b = row != NULL ? named (row, "cp-add-block") : NULL;
 	CHECK (b != NULL,
 	       "page: a block rule verified with What-If is offered");
@@ -1425,9 +1625,9 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 	fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode", "auto");
 }
 
-/* Dark theme: the page takes its dark classes from the desktop theme;
- * run in a child with Adwaita's dark variant, as fs-simviz-smoke
- * does. */
+/* Dark theme: the page stays light like the rest of the app (it used
+ * to turn dark on its own).  Run in a child with Adwaita's dark
+ * variant, as fs-simviz-smoke does. */
 static void
 test_dark (void)
 {
@@ -1448,9 +1648,13 @@ test_dark (void)
 	fs_copilot_view_refresh ();
 	pump (60);
 
-	CHECK (gtk_style_context_has_class (gtk_widget_get_style_context (page),
-	                                    "cp-dark"),
-	       "dark: a dark desktop theme gets the page's dark classes");
+	/* The rest of the app keeps its light cards under a dark desktop
+	 * theme; the Copilot page did not, and was the one dark page. */
+	CHECK (!gtk_style_context_has_class (gtk_widget_get_style_context (page),
+	                                     "cp-dark") &&
+	       !gtk_style_context_has_class (gtk_widget_get_style_context (page),
+	                                     "fs-wi-dark"),
+	       "dark: the page stays light like the rest of the app");
 	row = list_row (page, "findings-list", 0);
 	if (row != NULL) {
 		g_signal_emit_by_name (named (page, "findings-list"), "row-activated",
@@ -1465,8 +1669,49 @@ test_dark (void)
 		                             &fg);
 	}
 	CHECK (title != NULL &&
-	       0.2126 * fg.red + 0.7152 * fg.green + 0.0722 * fg.blue > 0.6,
-	       "dark: a finding's title is light text on the dark page");
+	       0.2126 * fg.red + 0.7152 * fg.green + 0.0722 * fg.blue < 0.4,
+	       "dark: a finding's title is dark text on the light card");
+	{
+		/* Every evidence cell too: a label with no colour of its own
+		 * takes the dark theme's white text. */
+		GtkWidget *ev = row != NULL ? named (row, "cp-evidence") : NULL;
+		GList *cells = ev != NULL
+			? gtk_container_get_children (GTK_CONTAINER (ev)) : NULL;
+		guint light = 0, n = 0;
+
+		for (GList *c = cells; c != NULL; c = c->next) {
+			GtkStyleContext *sc = gtk_widget_get_style_context (c->data);
+			GdkRGBA cf;
+
+			gtk_style_context_get_color (sc,
+				gtk_style_context_get_state (sc), &cf);
+			n++;
+			if (0.2126 * cf.red + 0.7152 * cf.green + 0.0722 * cf.blue
+			    > 0.6)
+				light++;
+		}
+		g_list_free (cells);
+		CHECK (n > 6 && light == 0,
+		       "dark: the evidence cells are dark text on the light card "
+		       "(%u of %u light)", light, n);
+	}
+	{
+		GtkWidget *card = named (page, "tile-health");
+		GdkRGBA *bg = NULL;
+
+		if (card != NULL) {
+			GtkStyleContext *sc = gtk_widget_get_style_context (card);
+
+			gtk_style_context_get (sc, gtk_style_context_get_state (sc),
+			                       "background-color", &bg, NULL);
+		}
+		CHECK (bg != NULL &&
+		       0.2126 * bg->red + 0.7152 * bg->green + 0.0722 * bg->blue
+		       > 0.8,
+		       "dark: the cards keep their light background");
+		if (bg != NULL)
+			gdk_rgba_free (bg);
+	}
 	CHECK (row != NULL && named (row, "cp-pill") != NULL &&
 	       gtk_revealer_get_reveal_child (GTK_REVEALER (named (row,
 	                                                         "cp-drawer"))),

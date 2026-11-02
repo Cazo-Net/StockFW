@@ -1165,8 +1165,8 @@ fs_health_check (const FsWhatIfContext *ctx, const gchar *lan_prefix)
 				  "turned on. This is expected for the default policy."));
 			h->evidence = g_strdup_printf (_("First one: %s"), first->csv);
 			h->no_fix_reason = g_strdup (
-				_("Nothing to fix: the rows take effect when restrictive "
-				  "outbound is turned on."));
+				_("the rows are right as they are, and take effect when "
+				  "restrictive outbound is turned on."));
 			g_ptr_array_add (out, h);
 		}
 	}

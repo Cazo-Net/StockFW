@@ -150,11 +150,15 @@ static gboolean   auto_block_failed_once = FALSE;
 static GHashTable *auto_block_cooldown = NULL;  /* "kind|csv" -> TRUE */
 
 /* Changes made from this page (block rules added, health fixes), for
- * the Changes card.  Auto-blocks are listed from auto_blocks. */
+ * the Changes card.  Live auto-blocks are listed from auto_blocks; one
+ * that ends is kept here (AUTO_BLOCK) so the card, the audit view the
+ * user sees, never forgets a change was made.  An undone change stays
+ * too, marked with when and how it ended. */
 typedef enum
 {
     CP_CHANGE_BLOCK_RULE,
-    CP_CHANGE_HEALTH_FIX
+    CP_CHANGE_HEALTH_FIX,
+    CP_CHANGE_AUTO_BLOCK
 } CpChangeKind;
 
 typedef struct
@@ -165,7 +169,11 @@ typedef struct
     FsRuleKind    rule_kind;       /* BLOCK_RULE                   */
     gchar        *csv;             /* BLOCK_RULE                   */
     FsHealthUndo *undo;            /* HEALTH_FIX                   */
+    gint64        ended_at;        /* undone or lifted, 0 = live   */
+    gchar        *ended_how;       /* "Undone", "Lifted after ..." */
 } CpChange;
+
+#define CP_CHANGES_MAX 100
 
 static GPtrArray *changes = NULL;    /* CpChange*, oldest first */
 
@@ -405,24 +413,6 @@ rule_kind_words (gint kind)
     }
 }
 
-/* Dark when the theme writes light text, as the What-If window
- * decides it. */
-static gboolean
-theme_is_dark (void)
-{
-    /* A window, not a bare label: an unparented label inherits no
-     * theme colour (CSS initial is white), a window gets the theme's. */
-    GtkWidget *probe = gtk_window_new (GTK_WINDOW_TOPLEVEL);
-    GtkStyleContext *sc = gtk_widget_get_style_context (probe);
-    GdkRGBA fg;
-    gboolean dark;
-
-    gtk_style_context_get_color (sc, gtk_style_context_get_state (sc), &fg);
-    dark = (0.2126 * fg.red + 0.7152 * fg.green + 0.0722 * fg.blue) > 0.6;
-    gtk_widget_destroy (probe);
-    return dark;
-}
-
 /* =====================================================================
  * Helper: create a styled text view for output (the What-If log)
  * ===================================================================== */
@@ -650,7 +640,7 @@ auto_block_words (const FsInsight *ins)
                        "contacts to unknown public addresses are."));
 }
 
-/* Is "Add block rule" honest for this finding?  The What-If engine
+/* Is "Block outbound to this address" honest for this finding?  The What-If engine
  * answers the finding's line against the policy as it is and with the
  * rule added: offered only when that turns ALLOWED into BLOCKED.  The
  * answer is about the saved policy, so the firewall is taken as
@@ -778,6 +768,7 @@ change_free (gpointer data)
 
     g_free (c->label);
     g_free (c->csv);
+    g_free (c->ended_how);
     if (c->undo != NULL)
         fs_health_undo_free (c->undo);
     g_free (c);
@@ -788,11 +779,34 @@ change_add (CpChange *c)
 {
     if (changes == NULL)
         changes = g_ptr_array_new_with_free_func (change_free);
-    c->at = g_get_real_time () / G_USEC_PER_SEC;
+    if (c->at == 0)
+        c->at = g_get_real_time () / G_USEC_PER_SEC;
     g_ptr_array_add (changes, c);
+    /* Bounded: the oldest ended entries go first. */
+    for (guint i = 0; changes->len > CP_CHANGES_MAX && i < changes->len; ) {
+        CpChange *o = g_ptr_array_index (changes, i);
+
+        if (o->ended_at != 0)
+            g_ptr_array_remove_index (changes, i);
+        else
+            i++;
+    }
 }
 
-/* "Add block rule": checked again, confirmed, saved, pushed. */
+/* [ change_end ] -- an undone change stays on the card, marked. */
+static void
+change_end (CpChange *c, const gchar *how)
+{
+    c->ended_at = g_get_real_time () / G_USEC_PER_SEC;
+    g_free (c->ended_how);
+    c->ended_how = g_strdup (how);
+    if (c->undo != NULL) {
+        fs_health_undo_free (c->undo);
+        c->undo = NULL;
+    }
+}
+
+/* "Block outbound to this address": checked again, confirmed, saved, pushed. */
 static void
 on_add_block_clicked (GtkButton *btn, gpointer data)
 {
@@ -953,6 +967,9 @@ on_dismiss_clicked (GtkButton *btn, gpointer data)
     refresh_insights ();
 }
 
+static GtkWidget *drawer_text_new (const gchar *text, const gchar *cls,
+                                   gboolean wrap, gboolean focusable);
+
 /* The evidence table: one mono row per event. */
 static GtkWidget *
 evidence_table (const FsInsight *ins)
@@ -993,7 +1010,7 @@ evidence_table (const FsInsight *ins)
         cells[5] = verdict;
         for (guint c = 0; c < 6; c++)
             gtk_grid_attach (GTK_GRID (grid),
-                             text_new (cells[c], "mono", FALSE),
+                             drawer_text_new (cells[c], "mono", FALSE, FALSE),
                              (gint) c, (gint) i + 1, 1, 1);
         g_date_time_unref (dt);
         g_free (when);
@@ -1035,7 +1052,8 @@ drawer_fill_actions (GtkWidget *row)
 
     verdict = block_rule_verdict (ins, key);
     if (verdict != NULL && *verdict == '\0') {
-        b = button_new (_("Add block rule"), "btn-primary", "cp-add-block");
+        b = button_new (_("Block outbound to this address"), "btn-primary",
+                        "cp-add-block");
         g_object_set_data_full (G_OBJECT (b), "cp-key", g_strdup (key),
                                 g_free);
         g_signal_connect (b, "clicked", G_CALLBACK (on_add_block_clicked),
@@ -1085,6 +1103,33 @@ row_set_open (GtkWidget *row, gboolean open, gboolean animate)
                                               : _("Press Enter for the "
                                                   "details"));
     }
+}
+
+/* A click inside the open drawer is for reading and copying (the text
+ * is selectable), not for the row: stopped here, it never reaches the
+ * list, which would take it as "activate" and close the drawer.  The
+ * head still toggles it, and Enter on the row. */
+static gboolean
+on_drawer_button (GtkWidget *w, GdkEventButton *ev, gpointer data)
+{
+    (void) w;
+    (void) ev;
+    (void) data;
+    return TRUE;
+}
+
+/* Drawer text: selectable, so an address or a rule can be copied.  A
+ * table cell stays out of the Tab order (twelve rows of six would be
+ * 72 stops; its right-click menu still copies). */
+static GtkWidget *
+drawer_text_new (const gchar *text, const gchar *cls, gboolean wrap,
+                 gboolean focusable)
+{
+    GtkWidget *l = text_new (text, cls, wrap);
+
+    gtk_label_set_selectable (GTK_LABEL (l), TRUE);
+    gtk_widget_set_can_focus (l, focusable);
+    return l;
 }
 
 static void
@@ -1187,15 +1232,15 @@ finding_row_new (const FsInsight *ins)
     }
     if (ins->description != NULL)
         drawer_part (drawer, _("In full"),
-                     text_new (ins->description, "cp-body", TRUE));
+                     drawer_text_new (ins->description, "cp-body", TRUE, TRUE));
     if (ins->why != NULL)
         drawer_part (drawer, _("Why flagged"),
-                     text_new (ins->why, "cp-body", TRUE));
+                     drawer_text_new (ins->why, "cp-body", TRUE, TRUE));
     if (ins->benign != NULL)
         drawer_part (drawer, _("Could be harmless"),
-                     text_new (ins->benign, "cp-body", TRUE));
+                     drawer_text_new (ins->benign, "cp-body", TRUE, TRUE));
     aw = auto_block_words (ins);
-    l = text_new (aw, "cp-body", TRUE);
+    l = drawer_text_new (aw, "cp-body", TRUE, TRUE);
     gtk_widget_set_name (l, "cp-autoblock-status");
     drawer_part (drawer, _("Auto-block"), l);
     g_free (aw);
@@ -1238,7 +1283,18 @@ finding_row_new (const FsInsight *ins)
 
     gtk_revealer_set_transition_type (GTK_REVEALER (rev),
                                       GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
-    gtk_container_add (GTK_CONTAINER (rev), drawer);
+    {
+        GtkWidget *guard = gtk_event_box_new ();
+
+        gtk_event_box_set_visible_window (GTK_EVENT_BOX (guard), FALSE);
+        gtk_widget_set_name (guard, "cp-drawer-guard");
+        g_signal_connect (guard, "button-press-event",
+                          G_CALLBACK (on_drawer_button), NULL);
+        g_signal_connect (guard, "button-release-event",
+                          G_CALLBACK (on_drawer_button), NULL);
+        gtk_container_add (GTK_CONTAINER (guard), drawer);
+        gtk_container_add (GTK_CONTAINER (rev), guard);
+    }
     gtk_widget_set_name (rev, "cp-drawer");
     gtk_box_pack_start (GTK_BOX (outer), rev, FALSE, FALSE, 0);
 
@@ -1267,12 +1323,18 @@ checked_list_new (void)
 {
     static const gchar *checks[] = {
         N_("Contacts at a near-fixed interval: 6 or more, timing varying "
-           "under 30 % (auto-block needs 8, to an unknown public address)."),
-        N_("Fan-out: one app reaching 60 or more hosts in a minute."),
+           "under 30 % (auto-block needs 8, to an unknown public address "
+           "no other program uses). DNS to this computer's own DNS servers "
+           "is not timed."),
+        N_("Fan-out: one program reaching 60 or more hosts in a minute, or "
+           "10 refused hosts. When the log names a port's service instead "
+           "of a program, only the refused hosts count."),
         N_("Inbound scan: one source trying 12 ports in 60 s, or 25 in "
-           "10 min."),
-        N_("Login attempts: 10 in 5 min to SSH, RDP, VNC, Telnet, FTP or "
-           "SMB, and whether your policy lets that source in."),
+           "10 min. Addresses of one IPv6 /64 are also counted together."),
+        N_("Login attempts: 10 in 5 min from one source to SSH, RDP, VNC, "
+           "Telnet, FTP or SMB, on their usual ports or the ports your "
+           "policy names for them, and whether your policy lets that "
+           "source in."),
         N_("Block list or country rule hits, outbound and inbound."),
         N_("A known app using a new port, a new public destination (after "
            "7 days and 50 connections), a new hour, or a rate spike."),
@@ -1315,17 +1377,105 @@ learned_count (gint64 *since)
     return n;
 }
 
+/* ---- the findings list, updated in place ---------------------------
+ * The list follows the events about once a second.  Rebuilding every
+ * row each time destroyed the row that had the keyboard focus, so a
+ * keyboard or screen-reader user was thrown out of the list every
+ * second.  Rows are kept by their insight key; a row is rebuilt only
+ * when what it shows changed (its signature), and the focus goes back
+ * to the same place in the new row. */
+static GHashTable *finding_rows = NULL;   /* key -> row (borrowed) */
+
+static gchar *
+finding_signature (const FsInsight *ins)
+{
+    AutoBlock *ab = insight_auto_block (ins);
+    gchar *ago = ago_text ((gint64) ins->timestamp);
+    gchar *aw = auto_block_words (ins);
+    const FsEvidence *last = ins->evidence != NULL && ins->evidence->len > 0
+        ? g_ptr_array_index (ins->evidence, ins->evidence->len - 1) : NULL;
+    gint64 left = ab != NULL ? (ab->at_epoch + FS_AUTOBLOCK_TTL_S -
+                                g_get_real_time () / G_USEC_PER_SEC + 59) / 60
+                             : -1;
+    gchar *sig = g_strdup_printf (
+        "%d|%d|%s|%s|%s|%s|%s|%u|%u|%" G_GINT64_FORMAT "|%s|%s|%"
+        G_GINT64_FORMAT "|%d",
+        ins->type, ins->severity, ins->title, ins->description, ins->why,
+        ins->benign, ins->whatif_line, ins->count,
+        ins->evidence != NULL ? ins->evidence->len : 0,
+        last != NULL ? last->when : 0, ago, aw, left, ins->rule_csv != NULL);
+
+    g_free (ago);
+    g_free (aw);
+    return sig;
+}
+
+static gint
+finding_order_cmp (GtkListBoxRow *a, GtkListBoxRow *b, gpointer data)
+{
+    (void) data;
+    return GPOINTER_TO_INT (g_object_get_data (G_OBJECT (a), "cp-order")) -
+           GPOINTER_TO_INT (g_object_get_data (G_OBJECT (b), "cp-order"));
+}
+
+static void
+on_finding_row_destroy (GtkWidget *row, gpointer data)
+{
+    const gchar *key = g_object_get_data (G_OBJECT (row), "cp-key");
+
+    (void) data;
+    if (finding_rows != NULL && key != NULL &&
+        g_hash_table_lookup (finding_rows, key) == row)
+        g_hash_table_remove (finding_rows, key);
+}
+
+/* The focus widget when it is `row' or inside it, else NULL. */
+static GtkWidget *
+focus_inside (GtkWidget *row)
+{
+    GtkWidget *top = gtk_widget_get_toplevel (row);
+    GtkWidget *f = GTK_IS_WINDOW (top)
+                   ? gtk_window_get_focus (GTK_WINDOW (top)) : NULL;
+
+    if (f != NULL && (f == row || gtk_widget_is_ancestor (f, row)))
+        return f;
+    return NULL;
+}
+
+static GtkWidget *
+find_named (GtkWidget *w, const gchar *name)
+{
+    GtkWidget *found = NULL;
+
+    if (g_strcmp0 (gtk_widget_get_name (w), name) == 0)
+        return w;
+    if (GTK_IS_CONTAINER (w)) {
+        GList *kids = gtk_container_get_children (GTK_CONTAINER (w));
+
+        for (GList *l = kids; l != NULL && found == NULL; l = l->next)
+            found = find_named (l->data, name);
+        g_list_free (kids);
+    }
+    return found;
+}
+
 static void
 findings_render (void)
 {
     GList *all, *l;
     GList *shown = NULL;
+    GHashTable *keep;
+    GtkWidget *refocus = NULL;
+    gchar *refocus_name = NULL;
+    gint lost_at = -1;
     guint n = 0;
 
     if (findings_list == NULL)
         return;
+    if (finding_rows == NULL)
+        finding_rows = g_hash_table_new_full (g_str_hash, g_str_equal,
+                                              g_free, NULL);
 
-    clear_container (findings_list);
     all = global_copilot != NULL ? fs_copilot_get_insights (global_copilot)
                                  : NULL;
     for (l = all; l != NULL; l = l->next) {
@@ -1340,18 +1490,86 @@ findings_render (void)
     shown = g_list_reverse (shown);
     shown = g_list_sort (shown, severity_rank_cmp)  /* a stable merge sort */;
 
+    keep = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
     for (l = shown; l != NULL; l = l->next) {
         FsInsight *ins = l->data;
-        GtkWidget *row = finding_row_new (ins);
-        const gchar *key = g_object_get_data (G_OBJECT (row), "cp-key");
+        gchar *key = insight_key (ins);
+        gchar *sig = finding_signature (ins);
+        GtkWidget *row = g_hash_table_lookup (finding_rows, key);
 
-        gtk_container_add (GTK_CONTAINER (findings_list), row);
-        gtk_widget_show_all (row);
-        if (expanded != NULL && g_hash_table_contains (expanded, key))
-            row_set_open (row, TRUE, FALSE);
+        if (row != NULL &&
+            g_strcmp0 (g_object_get_data (G_OBJECT (row), "cp-sig"), sig) != 0) {
+            GtkWidget *f = focus_inside (row);
+
+            if (f != NULL) {
+                const gchar *nm = gtk_widget_get_name (f);
+
+                g_free (refocus_name);
+                refocus_name = f != row && nm != NULL && *nm != '\0' &&
+                               !g_str_has_prefix (nm, "Gtk")
+                               ? g_strdup (nm) : NULL;
+                refocus = NULL;
+            }
+            gtk_widget_destroy (row);   /* drops it from finding_rows */
+            row = NULL;
+            if (f != NULL) {
+                row = finding_row_new (ins);
+                refocus = row;
+            }
+        }
+        if (row == NULL || g_hash_table_lookup (finding_rows, key) == NULL) {
+            if (row == NULL)
+                row = finding_row_new (ins);
+            g_object_set_data_full (G_OBJECT (row), "cp-sig", g_strdup (sig),
+                                    g_free);
+            g_signal_connect (row, "destroy",
+                              G_CALLBACK (on_finding_row_destroy), NULL);
+            g_hash_table_replace (finding_rows, g_strdup (key), row);
+            gtk_container_add (GTK_CONTAINER (findings_list), row);
+            gtk_widget_show_all (row);
+            if (expanded != NULL && g_hash_table_contains (expanded, key))
+                row_set_open (row, TRUE, FALSE);
+        }
+        g_object_set_data (G_OBJECT (row), "cp-order", GINT_TO_POINTER (n));
+        g_hash_table_add (keep, key);
+        g_free (sig);
         n++;
     }
     g_list_free (shown);
+
+    /* Rows whose finding went away (dismissed, or evicted by the cap). */
+    {
+        GList *kids = gtk_container_get_children (GTK_CONTAINER (findings_list));
+
+        for (l = kids; l != NULL; l = l->next) {
+            const gchar *key = g_object_get_data (G_OBJECT (l->data), "cp-key");
+
+            if (key != NULL && g_hash_table_contains (keep, key))
+                continue;
+            if (focus_inside (l->data) != NULL)
+                lost_at = gtk_list_box_row_get_index (l->data);
+            gtk_widget_destroy (l->data);
+        }
+        g_list_free (kids);
+    }
+    g_hash_table_destroy (keep);
+    gtk_list_box_invalidate_sort (GTK_LIST_BOX (findings_list));
+
+    /* Put the focus back where it was. */
+    if (refocus != NULL) {
+        GtkWidget *target = refocus_name != NULL
+                            ? find_named (refocus, refocus_name) : NULL;
+
+        gtk_widget_grab_focus (target != NULL && gtk_widget_get_visible (target)
+                               ? target : refocus);
+    } else if (lost_at >= 0 && n > 0) {
+        GtkListBoxRow *r = gtk_list_box_get_row_at_index (
+            GTK_LIST_BOX (findings_list), MIN ((guint) lost_at, n - 1));
+
+        if (r != NULL)
+            gtk_widget_grab_focus (GTK_WIDGET (r));
+    }
+    g_free (refocus_name);
 
     {
         gchar *t = g_strdup_printf (n == 1 ? _("%u finding")
@@ -1625,6 +1843,13 @@ health_row_new (const FsHealthFinding *f, gint index)
                        GINT_TO_POINTER (f->policy_index));
     g_signal_connect (b, "clicked", G_CALLBACK (on_health_rule_clicked),
                       NULL);
+    /* Each button names its row: a screen reader otherwise hears the
+     * same "Show rule" for every finding. */
+    t = g_strdup_printf (_("Show rule: %s rule %d"),
+                         rule_kind_words (f->policy_kind),
+                         f->policy_index + 1);
+    atk_object_set_name (gtk_widget_get_accessible (b), t);
+    g_free (t);
     gtk_box_pack_start (GTK_BOX (buttons), b, FALSE, FALSE, 0);
     if (f->whatif_line != NULL) {
         b = button_new (_("Ask What-If"), "btn-subtle", "cp-ask-whatif");
@@ -1632,6 +1857,9 @@ health_row_new (const FsHealthFinding *f, gint index)
                                 g_strdup (f->whatif_line), g_free);
         g_signal_connect (b, "clicked", G_CALLBACK (on_ask_whatif_clicked),
                           NULL);
+        t = g_strdup_printf (_("Ask What-If: %s"), f->title);
+        atk_object_set_name (gtk_widget_get_accessible (b), t);
+        g_free (t);
         gtk_box_pack_start (GTK_BOX (buttons), b, FALSE, FALSE, 0);
     }
     gtk_box_pack_end (GTK_BOX (head), buttons, FALSE, FALSE, 0);
@@ -1756,7 +1984,8 @@ on_change_undo_clicked (GtkButton *btn, gpointer data)
     } else {
         CpChange *c = ref;
 
-        if (changes == NULL || !g_ptr_array_find (changes, c, NULL))
+        if (changes == NULL || !g_ptr_array_find (changes, c, NULL) ||
+            c->ended_at != 0 || c->kind == CP_CHANGE_AUTO_BLOCK)
             return;
         if (c->kind == CP_CHANGE_BLOCK_RULE) {
             FsRule *rule = fs_rule_from_csv (c->rule_kind, c->csv);
@@ -1785,7 +2014,7 @@ on_change_undo_clicked (GtkButton *btn, gpointer data)
             }
             done = g_strdup_printf (_("Undone: %s."), c->label);
         }
-        g_ptr_array_remove (changes, c);
+        change_end (c, _("Undone"));
         /* What the other cards said about it is old news now. */
         strip_set (health_strip, NULL, NULL);
         strip_set (findings_strip, NULL, NULL);
@@ -1804,7 +2033,10 @@ typedef struct
     gchar       *text;
     gint         kind;      /* 0 auto-block, 1 page change */
     gpointer     ref;
+    gchar       *ended;     /* "Undone at 14:02", or NULL  */
 } ChangeLine;
+
+static gchar *changes_sig = NULL;   /* what the card shows now */
 
 static gint
 change_line_cmp (gconstpointer a, gconstpointer b)
@@ -1821,6 +2053,7 @@ change_line_free (gpointer data)
     ChangeLine *l = data;
 
     g_free (l->text);
+    g_free (l->ended);
     g_free (l);
 }
 
@@ -1828,10 +2061,10 @@ static void
 changes_render (void)
 {
     GPtrArray *lines;
+    GString *sig;
 
     if (changes_list == NULL)
         return;
-    clear_container (changes_list);
     lines = g_ptr_array_new_with_free_func (change_line_free);
 
     for (guint i = 0; auto_blocks != NULL && i < auto_blocks->len; i++) {
@@ -1858,9 +2091,34 @@ changes_render (void)
         l->kind = 1;
         l->ref = c;
         l->text = g_strdup (c->label);
+        if (c->ended_at != 0) {
+            gchar *end = clock_text (c->ended_at);
+
+            l->ended = g_strdup_printf (_("%s at %s"), c->ended_how, end);
+            g_free (end);
+        }
         g_ptr_array_add (lines, l);
     }
     g_ptr_array_sort (lines, change_line_cmp);
+
+    /* The card is redrawn only when what it says changed: a refresh
+     * every second must not take the keyboard focus off an Undo. */
+    sig = g_string_new (NULL);
+    for (guint i = 0; i < lines->len; i++) {
+        ChangeLine *l = g_ptr_array_index (lines, i);
+
+        g_string_append_printf (sig, "%" G_GINT64_FORMAT "|%d|%p|%s|%s\n",
+                                l->at, l->kind, l->ref, l->text,
+                                l->ended != NULL ? l->ended : "");
+    }
+    if (changes_sig != NULL && strcmp (changes_sig, sig->str) == 0) {
+        g_string_free (sig, TRUE);
+        g_ptr_array_unref (lines);
+        return;
+    }
+    g_free (changes_sig);
+    changes_sig = g_string_free (sig, FALSE);
+    clear_container (changes_list);
 
     for (guint i = 0; i < lines->len; i++) {
         ChangeLine *l = g_ptr_array_index (lines, i);
@@ -1878,14 +2136,20 @@ changes_render (void)
         gtk_box_pack_start (GTK_BOX (box), text_new (l->text, "cp-body",
                                                      TRUE),
                             TRUE, TRUE, 0);
-        b = button_new (_("Undo"), "btn-subtle", "cp-change-undo");
-        g_object_set_data (G_OBJECT (b), "cp-kind", GINT_TO_POINTER (l->kind));
-        g_object_set_data (G_OBJECT (b), "cp-ref", l->ref);
-        g_signal_connect (b, "clicked", G_CALLBACK (on_change_undo_clicked),
-                          NULL);
-        {
+        if (l->ended != NULL) {
+            /* Ended: kept for the record, nothing left to undo. */
+            b = text_new (l->ended, "cp-meta", FALSE);
+            gtk_widget_set_name (b, "cp-change-ended");
+            gtk_widget_set_valign (b, GTK_ALIGN_CENTER);
+        } else {
             gchar *a11y = g_strdup_printf (_("Undo: %s"), l->text);
 
+            b = button_new (_("Undo"), "btn-subtle", "cp-change-undo");
+            g_object_set_data (G_OBJECT (b), "cp-kind",
+                               GINT_TO_POINTER (l->kind));
+            g_object_set_data (G_OBJECT (b), "cp-ref", l->ref);
+            g_signal_connect (b, "clicked",
+                              G_CALLBACK (on_change_undo_clicked), NULL);
             atk_object_set_name (gtk_widget_get_accessible (b), a11y);
             g_free (a11y);
         }
@@ -1941,16 +2205,48 @@ update_stats (void)
         g_free (key);
     }
     g_list_free (all);
+    /* The policy health findings count here too: a Critical "RDP open
+     * to the internet" below must not sit under a 0. */
+    for (guint i = 0; health_findings != NULL && i < health_findings->len;
+         i++) {
+        const FsHealthFinding *f = g_ptr_array_index (health_findings, i);
+
+        if (f->severity >= FS_COPILOT_WARNING) {
+            attention++;
+            if (f->severity == FS_COPILOT_CRITICAL)
+                critical++;
+        }
+    }
     t = critical > 0 ? g_strdup_printf (_("%u critical"), critical)
-                     : g_strdup (_("Critical and warning findings"));
+                     : g_strdup (_("Critical and warning findings, events "
+                                   "and policy"));
     tile_set (tile_attention, tile_attention_note, attention, t);
     g_free (t);
 
     {
-        guint n = health_findings != NULL ? health_findings->len : 0;
+        /* A note that is expected in the mode the firewall runs in
+         * (outbound allows while outbound is open, as on a fresh
+         * install) is listed below but not counted: a tile that never
+         * reaches 0 teaches people to ignore it. */
+        guint n = 0, notes = 0;
 
-        t = g_strdup_printf (_("%u %s checked"), health_rules,
-                             health_rules == 1 ? _("rule") : _("rules"));
+        for (guint i = 0; health_findings != NULL &&
+             i < health_findings->len; i++) {
+            const FsHealthFinding *f = g_ptr_array_index (health_findings,
+                                                          i);
+
+            if (f->kind == FS_HEALTH_NO_EFFECT)
+                notes++;
+            else
+                n++;
+        }
+        t = notes == 0
+            ? g_strdup_printf (_("%u %s checked"), health_rules,
+                               health_rules == 1 ? _("rule") : _("rules"))
+            : g_strdup_printf (_("%u %s checked, %u %s below"),
+                               health_rules,
+                               health_rules == 1 ? _("rule") : _("rules"),
+                               notes, notes == 1 ? _("note") : _("notes"));
         tile_set (tile_health, tile_health_note, n, t);
         g_free (t);
     }
@@ -2018,6 +2314,12 @@ tile_new (const gchar *caption, const gchar *name, GtkWidget **value,
     gtk_widget_set_name (v, vn);
     gtk_box_pack_start (GTK_BOX (card), v, FALSE, FALSE, 0);
     *note = text_new ("", "stat-note", TRUE);
+    {
+        gchar *nn = g_strdup_printf ("%s-note", name);
+
+        gtk_widget_set_name (*note, nn);
+        g_free (nn);
+    }
     gtk_box_pack_start (GTK_BOX (card), *note, FALSE, FALSE, 0);
     *value = v;
     g_free (vn);
@@ -2133,6 +2435,8 @@ on_page_destroy (GtkWidget *w, gpointer data)
     health_list = health_frame = health_summary = NULL;
     health_empty = health_strip = NULL;
     changes_list = changes_frame = changes_empty = changes_strip = NULL;
+    g_clear_pointer (&changes_sig, g_free);
+    g_clear_pointer (&finding_rows, g_hash_table_destroy);
     if (refresh_id != 0) {
         g_source_remove (refresh_id);
         refresh_id = 0;
@@ -2235,23 +2539,16 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 
     fs_simviz_install_css ();
 
-    /* The window's page frame supplies the title and the margins. */
+    /* The window's page frame supplies the title, the one subtitle
+     * (with the "nothing is sent anywhere" line) and the margins.  The
+     * page follows the app's own light theme, as every other page
+     * does, whatever the desktop theme is. */
     copilot_vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 14);
     gtk_widget_set_name (copilot_vbox, "copilot-page");
     add_class (copilot_vbox, "cp-page");
-    if (theme_is_dark ()) {
-        add_class (copilot_vbox, "cp-dark");
-        add_class (copilot_vbox, "fs-wi-dark");
-    }
     g_signal_connect (copilot_vbox, "map", G_CALLBACK (on_page_map), NULL);
     g_signal_connect (copilot_vbox, "destroy", G_CALLBACK (on_page_destroy),
                       NULL);
-
-    gtk_box_pack_start (GTK_BOX (copilot_vbox), text_new (
-        _("Rule-based checks of your event log and policy, run on this "
-          "computer. Nothing is sent anywhere, and every finding shows "
-          "the events and the rule behind it."), "muted", TRUE),
-        FALSE, FALSE, 0);
 
     /* ===== Sentinel ===== */
     card = section_card (_("Sentinel"), "cp-sentinel", &right,
@@ -2318,6 +2615,8 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
     gtk_widget_set_name (findings_count, "findings-count");
     gtk_box_pack_start (GTK_BOX (right), findings_count, FALSE, FALSE, 0);
     findings_list = list_new ("findings-list", &findings_frame);
+    gtk_list_box_set_sort_func (GTK_LIST_BOX (findings_list),
+                                finding_order_cmp, NULL, NULL);
     g_signal_connect (findings_list, "row-activated",
                       G_CALLBACK (on_finding_activated), NULL);
     gtk_box_pack_start (GTK_BOX (body), findings_frame, FALSE, FALSE, 0);
@@ -2661,6 +2960,31 @@ auto_block_retire (AutoBlock *ab, const gchar *why)
 
     auto_block_drop (ab, why);
     auto_block_cooldown_add (ab->kind, ab->csv);
+
+    /* The Changes card keeps it, with how it ended. */
+    {
+        CpChange *c = g_new0 (CpChange, 1);
+        FsRule *r = fs_rule_from_csv (ab->kind, ab->csv);
+        const gchar *how =
+            g_strcmp0 (why, "expired after 10 minutes") == 0
+            ? _("Lifted after 10 minutes")
+            : g_strcmp0 (why, "user allowed this destination") == 0
+            ? _("Lifted when you allowed this destination")
+            : g_str_has_prefix (why != NULL ? why : "", "undone") ||
+              g_str_has_prefix (why != NULL ? why : "", "lifted by user")
+            ? _("Undone") : _("Lifted");
+
+        c->kind = CP_CHANGE_AUTO_BLOCK;
+        c->at = ab->at_epoch;
+        c->rule_kind = ab->kind;
+        c->csv = g_strdup (ab->csv);
+        c->label = g_strdup_printf (_("Auto-block %s"),
+                                    r != NULL && r->target != NULL
+                                    ? r->target : ab->csv);
+        fs_rule_free (r);
+        change_add (c);
+        change_end (c, how);
+    }
 
     if (auto_blocks != NULL && g_ptr_array_remove (auto_blocks, ab))
         auto_block_state_save ();
