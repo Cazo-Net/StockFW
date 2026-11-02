@@ -44,6 +44,7 @@ run_sh "LOG EVENTS (file)" tests/test-logstart-events.sh
 run_sh "LOG EVENTS (/dev/kmsg)" tests/test-logstart-kmsg.sh
 run_sh "WINLOG + SPAWN PROBE" tests/test-winlog.sh
 run_sh "INSTALLER SPAWN" tests/test-installer-spawn.sh
+run_sh "STAGED RUNTIME (build/ on its own)" tests/test-staged-runtime.sh "PASSED|FAILED|SKIP"
 run_sh "BACKEND COMPILE (state-windows)" tests/test-state-windows.sh "compiled|PASSED|FAILED|ok:"
 run_sh "UAF ANALYZE" tests/test-uaf-analyze.sh
 run_sh "CLI + DASHBOARD (Linux)" tests/test-cli.sh

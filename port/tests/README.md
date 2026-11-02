@@ -93,3 +93,31 @@ ignoring which profile states were readable; networks not sorted
 internet-first; the verdict ignoring the profile in use; the "In use"
 marks never shown; switching a profile on from the card not re-judging
 until the next poll.
+
+
+## The Windows build directory on its own (`tests/test-staged-runtime.sh`)
+
+```sh
+cd port
+bash tests/test-staged-runtime.sh    # Windows (MSYS2); SKIP elsewhere
+```
+
+After every build, `tools/stage-runtime-dlls.sh` copies the GTK DLLs
+next to `build/StockFW.exe`, so it starts from Explorer as well as from
+the MSYS2 shell.  Windows then loads those copies first, even inside
+the shell, and GTK and gdk-pixbuf take `build/` as their prefix: they
+look for their module trees under `build/lib` and their data under
+`build/share`, the layout the installer gives `$INSTDIR`.
+
+The script used to copy the trees to `build/<name>` instead.  gdk-pixbuf
+then found no loader cache, every SVG image failed, and GTK warned about
+Adwaita's own radio-button bullet; the first Windows CI runs caught it
+through `fs-activity-smoke`, which counts GTK warnings as failures.
+
+The test checks that the loader cache and the SVG loader are under
+`build/lib`, that nothing is left at the old place, that every DLL the
+SVG loader imports from the toolchain is staged beside the exe (the
+script follows the loaders' imports with `objdump -p`), and then runs
+`fs-activity-smoke` from `build/` with nothing but Windows' own
+directories on PATH, as if started from Explorer: it must pass, with no
+GTK warning.  It is also part of `tests/full-suite.sh`.
