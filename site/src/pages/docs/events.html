@@ -1,0 +1,47 @@
+---
+title: Events
+section: Using the app
+order: 11
+description: The Events page: where events come from on Windows and Linux, the columns, the filter, repeated-event suppression, and turning an event into a rule with a right-click.
+---
+<h1>Events</h1>
+<p class="lede">Every connection the firewall allowed or blocked, as it happens. StockFW does not capture packets; it reads the verdicts your operating system already records and shows them unchanged, so each row can be checked against the system’s own log.</p>
+
+[[shot:events|The Events page: a count of 211 events, a filter box, the Monitor switch, Clear and Refresh, and a table of time, direction, interface, port, source, destination, protocol and service with blocked rows in red.|Blocked rows are red and carry the [BLOCKED] marker that every other part of the app keys on.]]
+
+<h2>Where the events come from</h2>
+<dl>
+<dt>[[win]]</dt>
+<dd>The Security event log, events <strong>5156</strong> (the Windows Filtering Platform permitted a connection) and <strong>5157</strong> (it blocked one). StockFW runs <code>wevtutil</code> every five seconds, asking for at most ten new records in text form, splits and de-duplicates them, and hands them on. Each record carries the program path, both addresses, the ports, the protocol and the direction, so the Events page on Windows names the program. The audit policy that makes Windows write these events is switched on the first time the elevated app runs; see <a href="{{root}}docs/install-windows.html#enable-monitoring">Enable monitoring</a>.</dd>
+<dt>[[linux]]</dt>
+<dd>The kernel log. StockFW’s own rules log what they drop and reject with the prefixes <code>STOCKFW-DROP</code> and <code>STOCKFW-REJECT</code>, and, since 1.0.7, the first packet of each newly allowed connection with <code>STOCKFW-ALLOW</code>, rate-limited to ten a second. [[built]] The page reads those lines from the kernel ring buffer (<code>/dev/kmsg</code>) directly, which needs root and works on WSL, in containers and on minimal systems; lines without the prefix are ignored, so unrelated kernel messages never appear. The kernel log carries no program name, so the Program column is empty on Linux; the Overview’s connection table names programs instead. [[gap]]</dd>
+</dl>
+<p>Only the ten-record cap on Windows is a sampling limit: under a flood of thousands of connections a second, the page shows a steady sample rather than every row, by design, so the app cannot be made to freeze. The system log remains the complete archive.</p>
+
+<h2>The columns</h2>
+<p>Time (the event’s own time, in local <code>HH:MM:SS</code>), direction (<code>in</code> or <code>out</code>), the interfaces in and out, the local port, source and destination addresses, protocol, and the service name looked up from the port, with <code>[BLOCKED]</code> appended on a blocked row. On Windows there is also the program. Rows are inserted newest first by their time stamp, so an event that arrives late still lands in the right place. [[verified:ui-hitview-smoke]]</p>
+
+<h2>Filter, Monitor, Clear, Refresh</h2>
+<ul>
+<li><strong>Filter</strong> narrows the list as you type: a case-insensitive match against any column. The count reads “3 of 1200 events” while a filter is active, so an empty result is never mistaken for an idle firewall. [[verified:test_filter_match]]</li>
+<li><strong>Monitor</strong> starts and stops reading the log. When it cannot start, because you are not root on Linux or the audit policy is off on Windows, the page says so and how to fix it instead of showing nothing.</li>
+<li><strong>Clear</strong> empties the list and forgets which rows it has seen; <strong>Refresh</strong> reads again now.</li>
+</ul>
+<p>An empty list always explains itself: waiting for the first event, monitoring off, or nothing matches the filter.</p>
+
+<h2>Repeated events and noise</h2>
+<p>Two preferences on the <em>Interface › Events</em> page shape the list. <em>Hide repeated events</em> drops a row when the same source, port and verdict arrived a moment ago, so a port scan becomes a few rows rather than thousands. <em>Skip events that are not for the firewall</em> filters records the firewall subsystem did not produce. Beyond that, the list keeps the newest 2,000 rows and drops the oldest; it is a window, not an archive.</p>
+<p>De-duplication happens three times for three reasons: the reader refuses to deliver the same record twice, the list refuses to insert the same row twice (so a monitor that is stopped and restarted does not repeat itself), and the preference above hides visually identical connections. [[verified:ui-hitview-smoke]]</p>
+
+<h2>Right-click: from an event to a rule</h2>
+<p>The menu offers only what that row can express, so it can never promise a rule the policy cannot hold:</p>
+<ul>
+<li><strong>Outbound rows:</strong> <em>Block destination (all traffic)</em>, <em>Allow destination (all traffic)</em>, and <em>Block this service to the destination</em>, where the service is taken from the row’s port.</li>
+<li><strong>Inbound rows:</strong> <em>Trust source (inbound allow)</em>, or <em>Remove trust for this source</em> when a trust rule for it already exists. There is no inbound-deny rule kind, because inbound is denied by default; removing the trust is what blocks the source again.</li>
+</ul>
+[[shot:events-menu|The Events page with the right-click menu open on a blocked inbound row from 203.0.113.50, offering “Trust 203.0.113.50 (inbound allow)”.|On an inbound row the only offer is to trust the source. Blocking it is already the default.]]
+<p>Choosing an entry opens a dialog that prints the exact rule, as it will be written to the policy file. Where the rule kind has an opposite-direction twin, the dialog also carries the <em>Direction</em> setting: one direction by default, or <em>Bi-directional</em>, which stages the twin as part of the same change. After Yes, the rule is saved (and taken back out if the save fails), the Policy page reloads, and the change is pushed through the apply gate. The result dialog distinguishes <em>live</em> from <em>staged, not live yet: administrator privileges are required</em>. [[verified:test_eventrule_builders]]</p>
+<p>Allowing a destination also lifts any block Sentinel staged for it, before the allow is pushed, so the two reach the firewall together; on Windows a block rule outranks an allow, so without this your Allow would have changed nothing on the wire. [[verified:fs-copilot-smoke]]</p>
+
+<h2>What else reads the events</h2>
+<p>The Activity page counts exactly the rows this page lists, after its filters and duplicate check, each at its own time. The Copilot feeds every row into its per-program baselines and Sentinel’s detectors. The Overview’s counters and recent-blocks card are the same stream, summarised.</p>

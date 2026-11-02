@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Documentation · StockFW</title>
+<meta name="description" content="What StockFW is, how its four parts fit together, and how to read these pages.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#16181d">
+<meta property="og:title" content="Documentation · StockFW">
+<meta property="og:description" content="What StockFW is, how its four parts fit together, and how to read these pages.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.6</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html" aria-current="page"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Get started
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Get started</p>
+		<article class="prose">
+<h1>StockFW documentation</h1>
+<p class="lede">StockFW is a desktop firewall manager for Windows and Linux. It does not filter packets itself. It configures the firewall engine your operating system already has, shows you every connection that engine allowed or blocked, keeps your policy as plain text, and lets you try a change before you make it.</p>
+
+<h2 id="start-here">Start here<a class="anchor" href="#start-here" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><a href="../docs/install-windows.html">Install on Windows</a>: the installer, the elevated shortcut, and enabling monitoring.</li>
+<li><a href="../docs/install-linux.html">Install on Linux</a>: the tarball, <code>sudo</code> and its search path, and the command line.</li>
+<li><a href="../docs/first-steps.html">Your first ten minutes</a>: check protection, watch events, add a rule, apply it, ask the simulator a question.</li>
+</ul>
+
+<h2 id="how-stockfw-is-put-together">How StockFW is put together<a class="anchor" href="#how-stockfw-is-put-together" aria-label="Link to this section">#</a></h2>
+<p>Four parts, and knowing them makes every page of the app predictable.</p>
+<dl>
+<dt>The engine</dt>
+<dd>Your operating system’s firewall: the Windows Filtering Platform behind Windows Defender Firewall, or netfilter behind <code>iptables</code> on Linux. StockFW adds and removes rules in it through supported tools and never replaces it. If StockFW is closed or crashes, the engine keeps enforcing whatever was last applied.</dd>
+<dt>The policy</dt>
+<dd>What you want the engine to do, stored as one small comma-separated file per rule kind in your profile. The Policy page, the Copilot and the command line all edit the same files. Saving a rule does not change the firewall; <strong>Apply</strong> does.</dd>
+<dt>The events</dt>
+<dd>What the engine decided, read from the log it already writes: Security events 5156 and 5157 on Windows, the kernel ring buffer on Linux. StockFW never sees packets, only verdicts, and it shows them as they are.</dd>
+<dt>The gate</dt>
+<dd>Every path that could change the firewall, the Apply button, an event’s right-click menu, a Copilot suggestion, Sentinel’s auto-block, <code>stockfw apply</code>, goes through one function. It measures the change against what is live, records what it applied, rolls back if the engine refuses, and writes one audit line. There is no second door.</dd>
+</dl>
+
+<h2 id="how-to-read-these-pages">How to read these pages<a class="anchor" href="#how-to-read-these-pages" aria-label="Link to this section">#</a></h2>
+<p>Claims about behaviour carry a stamp. A stamp is a promise about evidence, not decoration:</p>
+<ul>
+<li><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test name</span> An automated test in the repository proves it. The name is the test, so you can run it: most live in <code>port/tests/</code> and in <code>tests/test-core.sh</code>.</li>
+<li><span class="ev ev-measured" title="A number from an experiment that was actually run."><b>Measured</b> a number</span> A number from an experiment that was run, such as the 150-second memory soak.</li>
+<li><span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span> Done in the 1.0.7 development code on <code>main</code> and covered by its tests; not in the 1.0.5 release you can download today.</li>
+<li><span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span> Being written for 1.0.7. The shape is decided; details may still move.</li>
+<li><span class="ev ev-planned" title="Intended, not built yet."><b>Planned</b></span> Intended. Not built, not promised for a date.</li>
+<li><span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span> A limit StockFW has today, written down so it is not mistaken for a feature.</li>
+</ul>
+<p>Where the two platforms differ, a badge says which one a sentence is about: <span class="plat">Windows</span> <span class="plat">Linux</span>. Everything without a badge applies to both.</p>
+
+<h2 id="versions">Versions<a class="anchor" href="#versions" aria-label="Link to this section">#</a></h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Version</th><th>Where</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>1.0.5</td><td><a href="../download.html">Download</a></td><td>The current release, 11 October 2026.</td></tr>
+<tr><td>1.0.6</td><td>merged into <code>main</code></td><td>Not packaged. Activity graphs, the command line, the dashboard. The 1.0.7 work now sits on top of it.</td></tr>
+<tr><td>1.0.7</td><td>branch <code>main</code></td><td>In development. These pages describe it, with the stamps above marking what is finished.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="the-longer-document">The longer document<a class="anchor" href="#the-longer-document" aria-label="Link to this section">#</a></h2>
+<p>These pages explain how to use StockFW. The reasoning behind it, the threat model with file-and-line evidence, every defect found and how it was fixed, and the measurements, are in <a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">the architecture and security document</a> in the repository, one chapter per release. When these pages and that document disagree, the document is right and this site has a bug; please <a href="https://github.com/Cazo-Net/StockFW/issues">report it</a>.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="next" href="../docs/install-windows.html"><span>Next</span><strong>Install on Windows</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/index.html">Edit this page on GitHub</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#start-here">Start here</a></li>
+			<li class="lvl2"><a href="#how-stockfw-is-put-together">How StockFW is put together</a></li>
+			<li class="lvl2"><a href="#how-to-read-these-pages">How to read these pages</a></li>
+			<li class="lvl2"><a href="#versions">Versions</a></li>
+			<li class="lvl2"><a href="#the-longer-document">The longer document</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

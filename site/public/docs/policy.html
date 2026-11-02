@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Policy · StockFW</title>
+<meta name="description" content="The Policy page: the nine rule kinds, what each one means, the Covers column, bi-directional rules, how Apply works step by step, Audit-only and Lock, and what is validated.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#16181d">
+<meta property="og:title" content="Policy · StockFW">
+<meta property="og:description" content="The Policy page: the nine rule kinds, what each one means, the Covers column, bi-directional rules, how Apply works step by step, Audit-only and Lock, and what is validated.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.6</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html" aria-current="page"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Using the app
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
+		<article class="prose">
+<h1>Policy</h1>
+<p class="lede">Your rules, grouped by kind, each one a row you can read. Saving a rule changes a file in your profile; pressing <strong>Apply</strong> changes the firewall, after showing you what will change.</p>
+
+<figure class="shot"><img src="../assets/screens/policy.webp" alt="The Policy page with Apply policy and Audit-only buttons and three rule groups as cards: Allow connections from host, Allow inbound service and Forward service, each with a Covers column." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Rules are grouped by kind. Point at a Covers cell and the tooltip says why a rule reaches the families it does.</figcaption></figure>
+
+<h2 id="how-to-think-about-it">How to think about it<a class="anchor" href="#how-to-think-about-it" aria-label="Link to this section">#</a></h2>
+<p>The engine’s defaults do most of the work: new inbound connections are denied unless a rule allows them, new outbound connections are allowed unless a rule denies them, and replies to connections that are already open always pass. StockFW rules are exceptions to those defaults, which is why the kinds are named the way they are: <em>allow inbound</em>, <em>deny outbound</em>. There is no inbound-deny kind because inbound is already denied; to stop trusting a host you remove its allow.</p>
+
+<h2 id="the-rule-kinds">The rule kinds<a class="anchor" href="#the-rule-kinds" aria-label="Link to this section">#</a></h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>On the page</th><th>Command-line name</th><th>Fields</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>Allow connections from host</td><td><code>inbound-allow-from</code></td><td>host</td><td>Everything from this address, network or host name may come in.</td></tr>
+<tr><td>Allow inbound service</td><td><code>inbound-allow-service</code></td><td>service, port, for</td><td>This port may be reached from <em>for</em>: a host, a network such as <code>192.168.1.0/24</code>, or <code>Anyone</code>.</td></tr>
+<tr><td>Forward service</td><td><code>inbound-forward</code></td><td>service, firewall port, to, port</td><td>Traffic arriving on the firewall port is sent to another host and port. Router mode only; needs an external interface in Preferences, and the destination must be an address.</td></tr>
+<tr><td>Allow connections to host</td><td><code>outbound-allow-to</code></td><td>host</td><td>Everything to this host may go out, even in restrictive outbound mode.</td></tr>
+<tr><td>Allow outbound service</td><td><code>outbound-allow-service</code></td><td>service, port, for</td><td>This port may be reached outbound, for the given host or anyone.</td></tr>
+<tr><td>Deny connections to host</td><td><code>outbound-deny-to</code></td><td>host</td><td>Nothing may go out to this host.</td></tr>
+<tr><td>Deny outbound service</td><td><code>outbound-deny-service</code></td><td>service, port, for</td><td>This port may not be reached outbound, for the given host or anyone.</td></tr>
+<tr><td>Allow / deny connections from (router mode)</td><td><code>outbound-allow-from</code>, <code>outbound-deny-from</code></td><td>host</td><td>For a LAN host behind this machine: what it may or may not send out through it.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Every rule can carry a comment, which is kept in the file and shown in its own column. The “service” field is a name for your benefit; the port is what the engine sees. Common names (SSH, HTTP, HTTPS, DNS, RDP and so on) are known, so the simulator and the Events page can use them.</p>
+
+<h2 id="covers">Covers<a class="anchor" href="#covers" aria-label="Link to this section">#</a></h2>
+<p>A rule reaches the address families its target can reach, and the <em>Covers</em> column says which, with the reason as a tooltip. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Target</th><th>Covers</th></tr></thead>
+<tbody>
+<tr><td>An IPv4 address or network</td><td>IPv4 only</td></tr>
+<tr><td>An IPv6 address or network</td><td>IPv6 only</td></tr>
+<tr><td><code>Anyone</code>, or an empty field</td><td>IPv4 + IPv6</td></tr>
+<tr><td>A host name</td><td>IPv4 + IPv6 on Linux, where the name is looked up once at apply and written as each family’s addresses. Nothing on Windows, whose firewall takes addresses only.</td></tr>
+<tr><td>A forward</td><td>Its destination’s family. Nothing when the destination is a name or a range, which the generator leaves out.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The same answer appears as <code>[IPv4 only]</code> in <code>stockfw policy list</code> and as <code>covers</code> and <code>covers_why</code> in its JSON, and a test checks that, for each kind of target, “Covers” names a family exactly when that family’s generated rules contain the rule. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
+
+<h2 id="one-direction-or-both">One direction or both<a class="anchor" href="#one-direction-or-both" aria-label="Link to this section">#</a></h2>
+<p>Inbound and outbound are separate rule spaces, so allowing a peer both ways would normally take two rules. On the groups where a rule has an opposite-direction twin, the Add row carries a <em>Direction</em> control: <em>Inbound only</em> (or <em>Outbound only</em>) by default, or <em>Bi-directional</em>, which stages the twin as part of the same change. The pairs are exact: allow-from pairs with allow-to, and inbound allow-service pairs with outbound allow-service. Deny kinds and forwards have no twin, so the control is absent there rather than disabled. The pair is saved as one change: if the write fails, both rules come back out. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_direction_pairing</span></p>
+<p>This is about <em>new</em> connections in the other direction. Replies to an open connection never need a rule; the engine is stateful.</p>
+
+<h2 id="apply-step-by-step">Apply, step by step<a class="anchor" href="#apply-step-by-step" aria-label="Link to this section">#</a></h2>
+<ol>
+<li><strong>Save first.</strong> Adding, editing or removing a rule writes the policy file immediately, and if the write fails the change is taken back out of memory, so what you see is always what is on disk.</li>
+<li><strong>Measure.</strong> Pressing <strong>Apply policy</strong> compares the saved policy with the journal of what the engine last accepted (<code>applied.csv</code>) and shows the counts: “+1 added (1 allow, 0 block), −0 removed, =8 unchanged”. Nothing has happened yet; you can say No.</li>
+<li><strong>Push.</strong> On Linux the whole policy is rendered into an <code>iptables-restore</code> payload and an <code>ip6tables-restore</code> payload and loaded with <code>--noflush</code>, so only StockFW’s own chains are replaced, each family in one atomic step; if the IPv6 load is refused, the IPv4 load is undone. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span> On Windows each rule is one <code>netsh advfirewall</code> command, and only the rules that changed are touched. Preferences that compile to rules (ICMP, broadcasts, reserved sources) are pushed in the same step.</li>
+<li><strong>Record.</strong> On success the journal is updated to what is now live, so the next Apply measures against reality.</li>
+<li><strong>Report.</strong> The dialog says what the engine said. On Linux a successful apply can carry notes (“ip6tables is not installed”, “the forward to 192.168.1.30 was left out: no external interface is set”); on Windows a rule the engine refused makes the apply partial, and the gate restores the last good policy and reports whether the restore worked.</li>
+<li><strong>Audit.</strong> One line in <code>audit.log</code>: the source (Policy page, Events page, Copilot, Sentinel or <code>cli</code>), the mode, the counts, and any notes. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></li>
+</ol>
+<p><em>Apply policy changes immediately</em>, on the <em>Interface › Policy</em> preference page, skips the button: each edit is pushed as soon as it is saved, through the same gate and with the same audit line.</p>
+
+<h2 id="audit-only-and-lock">Audit-only and Lock<a class="anchor" href="#audit-only-and-lock" aria-label="Link to this section">#</a></h2>
+<p><strong>Audit-only</strong> on this page and <strong>Lock policy</strong> on the Overview both hold the firewall still. While either is on, Apply measures and records the change, writes an audit line reading “policy held, firewall untouched”, and leaves the engine alone. Turn it off and press Apply when you are ready. Rehearsing a policy this way is the intended use. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></p>
+
+<h2 id="what-is-checked-before-anything-is-saved">What is checked before anything is saved<a class="anchor" href="#what-is-checked-before-anything-is-saved" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>Ports are digits only (so <code>80abc</code> and <code>0x50</code> are refused), 0 to 65535, and a range’s first port is not above its last.</li>
+<li>Hosts are an IPv4 or IPv6 address, a network in CIDR form (<code>192.168.1.0/24</code>, <code>2001:db8::/32</code>), or a host name; a host name may not start with a hyphen.</li>
+<li>A comma or line break inside a field is refused, because the files are plain comma-separated text and it would become a second field. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_policy_load_validation_f1</span></li>
+</ul>
+<p>When a policy file is loaded and a row does not parse, that row is skipped and counted (“2 malformed policy rules were skipped”), never guessed at or rewritten, and saving does not silently drop or change it. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
+
+<h2 id="in-the-engine">In the engine<a class="anchor" href="#in-the-engine" aria-label="Link to this section">#</a></h2>
+<p>On Windows every rule StockFW creates is named <code>StockFW-…</code>, with the same canonical name used to add and to delete it, so a change never leaves a stale copy behind; a verified clear re-enumerates and retries until none remain. On Linux the rules live in chains StockFW owns (<code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code>, <code>STOCKFW-SNAT</code>) and nothing else in the tables is touched. In both cases <code>wf.msc</code> or <code>nft list ruleset</code> can confirm what StockFW says. The files behind the page are described in <a href="../docs/files.html">Files and formats</a>.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/activity.html"><span>Previous</span><strong>Activity</strong></a><a class="next" href="../docs/copilot.html"><span>Next</span><strong>Copilot</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/policy.html">Edit this page on GitHub</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#how-to-think-about-it">How to think about it</a></li>
+			<li class="lvl2"><a href="#the-rule-kinds">The rule kinds</a></li>
+			<li class="lvl2"><a href="#covers">Covers</a></li>
+			<li class="lvl2"><a href="#one-direction-or-both">One direction or both</a></li>
+			<li class="lvl2"><a href="#apply-step-by-step">Apply, step by step</a></li>
+			<li class="lvl2"><a href="#audit-only-and-lock">Audit-only and Lock</a></li>
+			<li class="lvl2"><a href="#what-is-checked-before-anything-is-saved">What is checked before anything is saved</a></li>
+			<li class="lvl2"><a href="#in-the-engine">In the engine</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

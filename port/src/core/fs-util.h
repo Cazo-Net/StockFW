@@ -79,6 +79,13 @@ gboolean fs_util_ensure_parent_dir (const gchar *path);
  * unprivileged for development. */
 const gchar *fs_util_rules_dir (void);
 
+/* TRUE when this process may change the firewall itself: root on
+ * Linux, an elevated (administrator) token on Windows.  A copy without
+ * it can still read and show a great deal; it cannot apply, start or
+ * stop, and the UI greys what needs it rather than letting it fail
+ * after a confirmation. */
+gboolean fs_util_privileged (void);
+
 /* Convenience: build a path below the rules directory. */
 gchar *fs_util_rules_path (const gchar *relative);
 

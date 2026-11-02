@@ -269,7 +269,12 @@ static const CommandDef commands[] = {
 	{ "start", fs_cli_cmd_start,
 "Usage: stockfw start\n"
 "\n"
-"Builds the firewall from the saved policy and starts it.  Threat-intel\n"
+"Starts the firewall with the last APPLIED policy -- what `stockfw\n"
+"apply' last put live -- so saved changes that were never applied stay\n"
+"off, and Sentinel blocks whose ten minutes ran out are left out.  The\n"
+"boot unit (stockfw.service) runs this at every boot.  When nothing was\n"
+"ever applied, the saved policy is started instead, and the start is\n"
+"refused if there is none or a line of it is malformed.  Threat-intel\n"
 "blocklists that are turned on are applied again, through the same gate\n"
 "(audit-only mode holds them too); if they cannot be, the firewall still\n"
 "runs and the exit status is non-zero.  Needs root.\n" },

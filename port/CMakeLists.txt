@@ -50,6 +50,10 @@ add_library(fs-core STATIC
   src/core/fs-iprange.c
   src/core/fs-nftset.c
   src/core/fs-netplace.c
+  src/core/fs-autoblock.c
+  src/core/fs-instance.c
+  src/core/fs-autostart.c
+  src/core/fs-blocktally.c
   src/core/fs-intelset.c
   src/core/fs-feed.c
   src/core/fs-fetch.c
@@ -74,16 +78,19 @@ target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY)
 target_compile_definitions(fs-core-nogui PRIVATE
                            FS_VERSION="${PROJECT_VERSION}")
 if(WIN32)
-  target_link_libraries(fs-core-nogui PUBLIC ws2_32 iphlpapi advapi32 shell32)
+  target_link_libraries(fs-core-nogui PUBLIC ws2_32 iphlpapi advapi32 shell32
+                        ole32 oleaut32)
 endif()
 
 # core/ uses getnameinfo()/inet_pton() for reverse lookups; Windows keeps
 # those in ws2_32, POSIX has them in libc.  iphlpapi (the adapter and TCP
 # tables fs-hostnet reads), advapi32 (the threat-intel store's ACLs) and
 # shell32 (its %ProgramData% lookup) are Windows system libraries: no
-# package to install, nothing to stage.
+# package to install, nothing to stage.  fs-autostart.c registers the
+# sign-in task through the Task Scheduler's COM API: ole32 + oleaut32.
 if(WIN32)
-  target_link_libraries(fs-core PUBLIC ws2_32 iphlpapi advapi32 shell32)
+  target_link_libraries(fs-core PUBLIC ws2_32 iphlpapi advapi32 shell32
+                        ole32 oleaut32)
 endif()
 
 # -------------------------------------------------------------- platform
@@ -130,6 +137,7 @@ add_executable(StockFW
   src/main.c
   src/ui/fs-app.c
   src/ui/fs-dialogs.c
+  src/ui/fs-prefsdialog.c
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
@@ -241,6 +249,7 @@ endif()
 set(FS_UI_ONLY_SOURCES
   src/ui/fs-app.c
   src/ui/fs-dialogs.c
+  src/ui/fs-prefsdialog.c
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
@@ -266,6 +275,23 @@ target_compile_definitions(fs-ui-smoke PRIVATE
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-ui-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+
+# The Preferences window against a fake backend that answers once as
+# the Linux backend and once as the Windows one, so both platforms'
+# page sets, the honest hiding, the device choosers and the
+# changed-only save are exercised on any machine.  The test supplies
+# fs_backend() itself, hence the UI sources without a backend.
+add_executable(fs-prefs-fake-smoke EXCLUDE_FROM_ALL
+  tests/ui-prefs-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-prefs-fake-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-prefs-fake-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-prefs-fake-smoke PRIVATE
+  FS_PREFS_FAKE_BACKEND
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
 
 # The Events page and its reason strip.  Separate from fs-ui-smoke
 # because building the page starts the platform event source, which
@@ -440,6 +466,65 @@ target_compile_definitions(fs-overview-place-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
   FS_PLATFORM_NAME="${FS_PLATFORM}"
 )
+# Startup safety (1.0.7): the real fs_app_activate() against a fake
+# Linux-shaped backend that records the policy it is handed at start,
+# so "start on program startup" can never again install the empty
+# policy it was handed before the Policy page loaded the real one, and
+# Sentinel's expired blocks really come off the firewall at launch.
+# Runs one process per scenario; supplies fs_backend() itself.
+add_executable(fs-startup-smoke EXCLUDE_FROM_ALL
+  tests/ui-startup-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-startup-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-startup-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-startup-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-startup-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
+# The tray menu (1.0.7) against the real app: every row worked the way
+# a click would, with a fake backend that records starts and stops and
+# hands back the app's event callback, so a blocked event runs through
+# the whole pipeline into "Blocked today" and Recent blocks.  Supplies
+# fs_backend() itself.
+add_executable(fs-traymenu-smoke EXCLUDE_FROM_ALL
+  tests/ui-traymenu-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-traymenu-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-traymenu-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-traymenu-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-traymenu-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
+
+# Session safety (1.0.7) against the real app: the periodic save writes
+# only what changed and retries a failed Sentinel list write, query-end
+# writes everything without holding up the logout, and a quit that
+# arrives under a running dialog frees nothing under it.  Supplies
+# fs_backend() itself.
+add_executable(fs-session-smoke EXCLUDE_FROM_ALL
+  tests/ui-session-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-session-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-session-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-session-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-session-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
 
 # ---------------------------------------- 1.0.7 threat intel, round 1
 # Design: docs/1.0.7-threat-intel-design.md (revision 2).  Every target

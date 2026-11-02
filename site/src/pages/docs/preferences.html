@@ -1,0 +1,104 @@
+---
+title: Preferences
+section: Using the app
+order: 17
+description: Every setting in the Preferences dialog, page by page, what each one does on Windows and on Linux, and why some controls are shown disabled instead of being removed.
+---
+<h1>Preferences</h1>
+<p class="lede">Open it from the bottom of the sidebar or with <kbd>Ctrl</kbd>+<kbd>,</kbd>. The dialog has two groups, <em>Interface</em> for how the program behaves and <em>Firewall</em> for what the engine does. A control that cannot work on your platform is shown disabled with a sentence saying why, so you never flip a switch that does nothing.</p>
+
+<div class="callout soon">
+<span class="label">Being redesigned for 1.0.7</span>
+<p>The dialog is being rebuilt in the look of the new Overview, on both platforms. Every setting below stays; the layout changes.</p>
+</div>
+
+<h2>Interface</h2>
+[[shot:prefs-interface|The Preferences dialog on the Interface page: Show a tray icon and Minimize to the tray, both on, with a note that closing the window keeps StockFW running.|The Interface page. The sidebar lists Interface, Events, Policy, Firewall, Network Settings, ICMP Filtering, ToS Filtering and Advanced Options.]]
+<dl>
+<dt>Show a tray icon</dt>
+<dd>On by default. Puts StockFW in the notification area with the firewall state in its tooltip.</dd>
+<dt>Minimize to the tray</dt>
+<dd>On by default. With the icon shown, closing or minimising the window keeps StockFW running in the background; the tray menu opens it again or quits. See <a href="{{root}}docs/background.html">Background and the tray</a>.</dd>
+</dl>
+
+<h3>Interface › Events</h3>
+[[shot:prefs-events|The Events preference page: Hide repeated events off, Skip events that are not for the firewall on, and the disabled Ignored hosts and Ignored ports lists with a note.|The two filters that shape the Events list, and two lists that are honestly disabled.]]
+<dl>
+<dt>Hide repeated events</dt>
+<dd>Off by default. Drops a row when the same source, port and verdict arrived a moment ago, so a scan does not flood the list.</dd>
+<dt>Skip events that are not for the firewall</dt>
+<dd>On by default. Leaves out records the firewall subsystem did not produce.</dd>
+<dt>Ignored hosts, Ignored ports</dt>
+<dd>Shown disabled. The original program had these lists; this version has not wired them up yet, and says so instead of showing an empty box that would accept entries and ignore them. [[gap]]</dd>
+</dl>
+
+<h3>Interface › Policy</h3>
+[[shot:prefs-policy|The Policy preference page with one switch, Apply policy changes immediately, and its explanation.|One switch, with its consequence spelled out.]]
+<dl>
+<dt>Apply policy changes immediately</dt>
+<dd>On by default. Each rule you add, edit or remove is pushed to the firewall as soon as it is saved, through the same gate and with the same audit line as the Apply button. Off, every change waits for <strong>Apply policy</strong>, and the Policy page shows what is staged.</dd>
+</dl>
+
+<h2>Firewall</h2>
+<dl>
+<dt>Start/restart firewall on program startup</dt>
+<dd>Off by default. When the app starts, it loads the saved policy and starts the firewall. In 1.0.7 this reads the policy first and goes through the apply gate; earlier Linux versions briefly loaded an empty policy before the saved one. [[soon]]</dd>
+<dt>Start/restart firewall on dial-out, on DHCP lease renewal</dt>
+<dd>Shown disabled: not implemented in this version. Windows starts its own firewall before any program runs, so there is nothing to restore at boot there; on Linux, see <a href="{{root}}docs/faq.html#reboot">what happens at reboot</a>.</dd>
+</dl>
+
+<h3>Firewall › Network Settings</h3>
+<p>[[linux]] This page is offered on Linux only. Windows has no equivalent that the app can drive honestly, so it is not shown there rather than shown inert.</p>
+[[shot:prefs-network|The Network Settings page: two device pickers, Internet connected network device and Local network connected device, each listing the real adapters with their addresses, and switches for connection sharing and DHCP.|The pickers list what is really attached. eth0 here is the staged network’s only adapter.]]
+<dl>
+<dt>Internet connected network device</dt>
+<dd>The external interface, or <em>Any device</em>. Needed for port forwards and for the “reserved addresses on public interfaces” block. The list is read from the system, so only real adapters appear.</dd>
+<dt>Local network connected device</dt>
+<dd>The internal interface in router mode. Traffic arriving on it is accepted.</dd>
+<dt>Enable Internet connection sharing</dt>
+<dd>Router mode: forwarding between the two interfaces with masquerading (IPv4 only). Port forwards need this.</dd>
+<dt>Enable DHCP for the local network</dt>
+<dd>Shown disabled: the built-in DHCP server of the original is not carried over.</dd>
+</dl>
+
+<h3>Firewall › ICMP Filtering</h3>
+[[shot:prefs-icmp|The ICMP Filtering page: Enable ICMP filtering on, and a list of nine ICMP packet types with check boxes, three of them marked IPv4 only.|Each type says whether it exists in ICMPv6. The note under the list says what IPv6 always allows.]]
+<p><em>Enable ICMP filtering</em> turns the page on. With it off, ICMP is left to the engine’s defaults. With it on, only the ticked types may arrive:</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Echo request (ping)</td><td>on</td><td>Lets others ping you. Linux rate-limits it to one a second.</td></tr>
+<tr><td>Echo reply (pong)</td><td>on</td><td>Answers to your own pings.</td></tr>
+<tr><td>Traceroute</td><td>on</td><td>UDP port 33434, which Unix traceroute uses; not ICMP at all, kept here because the original kept it here.</td></tr>
+<tr><td>MS Traceroute</td><td>on</td><td>Destination-unreachable, which Windows <code>tracert</code> needs.</td></tr>
+<tr><td>Unreachable</td><td>on</td><td>Destination-unreachable in general. On IPv6, address-unreachable.</td></tr>
+<tr><td>Redirection</td><td>off</td><td>Router redirects, rate-limited. Leave off unless you know your network uses them.</td></tr>
+<tr><td>Timestamping, Address Masking, Source Quenching</td><td>off</td><td>IPv4 only; ICMPv6 has no such messages, and the labels say so.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Two things are never filtered while ICMP filtering is on, because the network stops working without them: time-exceeded and parameter-problem on IPv4, and on IPv6 the whole of neighbour discovery, router advertisements, packet-too-big, multicast listener reports and DHCPv6 replies. The page says so under the list. [[built]]</p>
+<p>[[win]] Windows Firewall applies the same choices as rules without the rate limits the Linux backend adds. [[verified:test-core.sh]]</p>
+
+<h3>Firewall › ToS Filtering</h3>
+<p>[[linux]] Type-of-service marking is not wired into the rule generator in this version, so every control on this page is disabled and the page says so at the top. It is kept so the layout matches the original; nothing you set here has an effect. [[gap]]</p>
+
+<h3>Firewall › Advanced Options</h3>
+[[shot:prefs-advanced|The Advanced Options page: Preferred packet rejection method (Reject with error packet or Drop silently), Block broadcasts from external and internal network, Block traffic from reserved addresses on public interfaces, and Log allowed connections.|The Linux page. On Windows the rejection method is fixed and the logging switch is absent, with a note for each.]]
+<dl>
+<dt>Preferred packet rejection method</dt>
+<dd><em>Reject with error packet</em> tells the sender at once that the connection is refused; <em>Drop silently</em> lets it time out. [[linux]] only: Windows Firewall always drops silently and has no per-rule reject, and the page says so.</dd>
+<dt>Block broadcasts from external network, from internal network</dt>
+<dd>Drop broadcast traffic arriving on the external or the internal interface.</dd>
+<dt>Block traffic from reserved addresses on public interfaces</dt>
+<dd>Anti-spoofing: drop packets that arrive on the external interface claiming a private or reserved source address. Needs an external interface on the Network Settings page (Linux) or applies to the Public profile (Windows).</dd>
+<dt>Log allowed connections</dt>
+<dd>[[linux]] 1.0.7. Logs the first packet of each newly allowed connection, at most ten a second, so the Events page and the Activity graph can show allowed traffic and not only blocks. Windows logs allowed connections through its own audit policy and has no switch here. [[built]]</dd>
+</dl>
+
+<h2>How settings reach the firewall</h2>
+<p>Interface settings take effect when you press <strong>Accept</strong>. Firewall settings compile into rules, so they are pushed with the next Apply, through the same gate as the policy; on Windows they become rules named <code>StockFW …</code> (with a space, where policy rules have a hyphen) so the two sets can never collide. [[verified:test-core.sh]]</p>
+
+<h2>Where they are stored</h2>
+<p>A plain ini file, <code>stockfw.conf</code>, with a <code>[client]</code> and a <code>[firewall]</code> group: <code>%APPDATA%\stockfw\stockfw.conf</code> on Windows, <code>~/.config/stockfw/stockfw.conf</code> on Linux (<code>/root/.config/stockfw/</code> when run as root). You can edit it with the app closed; a missing key takes its default. See <a href="{{root}}docs/files.html#stockfw-conf">Files and formats</a>.</p>

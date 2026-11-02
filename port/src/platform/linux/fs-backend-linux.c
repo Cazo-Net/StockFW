@@ -277,6 +277,12 @@ linux_available (void)
 static FsFirewallState
 linux_get_state (void)
 {
+	/* Without root iptables cannot be read at all.  That is "unknown",
+	 * not "stopped": the boot unit may well have the rules in force
+	 * while a copy without root (the one started at sign-in) looks. */
+	if (geteuid () != 0)
+		return FS_FW_NONE;
+
 	if (!chain_exists ())
 		return FS_FW_STOPPED;
 
@@ -727,7 +733,7 @@ load_family (const Family *f, const FsRestorePart *part, FamilySnap *snap,
 	 * unconditionally would send container and VM traffic, which their
 	 * own runtimes accept in other tables, into INBOUND's default drop
 	 * -- traffic that worked while IPv6 was not filtered at all. */
-	if (f->family == FS_FAMILY_IPV4 || (s != NULL && s->nat)) {
+	if (f->family == FS_FAMILY_IPV4 || fs_settings_sharing (s)) {
 		if (!ensure_jump (f, "filter", "FORWARD", "INBOUND")) {
 			*why = g_strdup ("could not hook INBOUND into FORWARD");
 			return FALSE;
@@ -881,7 +887,7 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 	if (result == FS_APPLY_OK) {
 		legacy_cleanup ();
 
-		if (current_settings->nat) {
+		if (fs_settings_sharing (current_settings)) {
 			linux_sysctl_forwarding ();
 			if (do6 && plan->v6.nat != NULL)
 				linux_sysctl_forwarding6 (current_settings->ext_device);
@@ -2265,16 +2271,21 @@ fs_backend_set_context (FsPolicy *policy, FsSettings *settings)
 static const FsBackend linux_backend = {
 	.name                  = "linux",
 	.display_name          = "Linux (iptables)",
-	/* Every Firewall sub-page: the generator reads all four (ToS is
-	 * offered as an admitted-dead page, matching the original's
-	 * layout).  REJECT vs DROP is a real iptables choice, and the
-	 * ICMP rules carry -m limit. */
+	/* Every settings page: the generator reads all three.  REJECT vs
+	 * DROP is a real iptables choice, the ICMP rules carry -m limit,
+	 * the outbound default is ours to set, and the ICMP choices are
+	 * the whole story for both families.  linux_start applies the
+	 * whole policy, so Start brings saved settings in too. */
 	.fw_sections           = FS_FWSEC_NETWORK | FS_FWSEC_ICMP |
-	                         FS_FWSEC_TOS | FS_FWSEC_ADVANCED,
+	                         FS_FWSEC_ADVANCED,
 	.fw_honors             = FS_FWHON_REJECT_METHOD |
 	                         FS_FWHON_RATE_LIMIT |
 	                         FS_FWHON_LOG_ALLOWED |
-	                         FS_FWHON_HOST_NAMES,
+	                         FS_FWHON_HOST_NAMES |
+	                         FS_FWHON_OUTBOUND_MODE |
+	                         FS_FWHON_ICMP_EXACT,
+	/* linux_start is linux_apply_rules (current_policy). */
+	.start_applies_policy  = TRUE,
 	.available             = linux_available,
 	.get_state             = linux_get_state,
 	.start                 = linux_start,
