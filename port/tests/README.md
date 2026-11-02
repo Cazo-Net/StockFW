@@ -1357,3 +1357,96 @@ the failures, then restores the file with `cp` and checks it with
 
 The sanitizer build (`build-asan`, Debug, `-fsanitize=address,undefined`)
 runs `fs-intel-test` clean.
+
+## The location database reader (`fs-geodb-test`, `tests/test-geodb.sh`)
+
+```sh
+cd port
+ninja -C build-linux fs-geodb-test
+./build-linux/fs-geodb-test tests/geodb      # the suite (also run by tests/test-core.sh)
+bash tests/test-geodb.sh                     # libloc, IPFire's file, xz, curl, libFuzzer
+STOCKFW_GEODB_REQUIRE=1 FUZZ_SECONDS=300 bash tests/test-geodb.sh   # CI: no SKIP allowed
+bash tests/test-geodb.sh --regen             # rewrite tests/geodb with new test keys
+```
+
+`src/core/fs-geodb.c` reads IPFire's location database (1.0.7 design,
+section 11).  `fs-geodb-test` is built from it with `FS_GEODB_TESTING`,
+the only build that can verify with a test key
+(`fs_geodb_testing_set_key`) or check a buffer without its signature
+(`fs_geodb_testing_open_unverified`, for the mutation loop and the
+fuzzer).  `tests/test-geodb.sh` proves that the release objects
+(fs-core, fs-core-nogui) define neither.
+
+The fixtures in `tests/geodb` are written by libloc's own writer
+(`tests/geodb-fixtures.py`, python3-location, with
+`tests/geodb-faketime.c` to fix the creation time), signed with two
+P-521 test keys whose private halves were thrown away (`k1.pub`,
+`k2.pub`).  Next to each `.db` are the answers libloc's reader gives
+(`.lookup.tsv`, `.enum.txt`, `.meta.txt`).  The malformed files are
+made by the suite from those fixtures and re-signed with a key made at
+run time, so that each one gets past the signature and reaches the
+structural check it is aimed at.  The shell test regenerates every
+fixture with fresh keys and checks that the committed ones are what
+the generator writes.
+
+Needs: liblzma and libcrypto (both linked); for the shell test
+python3-location and `location`, libloc-database (IPFire's file of
+2022-10-29), xz, openssl, and clang with libFuzzer (libclang-rt-dev).
+Each part SKIPs without its tool, unless `STOCKFW_GEODB_REQUIRE=1`.
+No case uses the network: the download goes to a stand-in for curl
+(`STOCKFW_TEST_CURL`, honoured only by the `FS_FETCH_TESTING` build).
+
+| Area | What it pins down |
+|---|---|
+| golden | every lookup and every enumeration of the generated databases (IPv4 and IPv6, nested networks, adjacent halves, a /32 and a /128, the last address of each family, flags, unnamed ASes, AS 2^31-1, an IPv6 `::/8` and `::/0` covering the IPv4 subtree, an empty database, 300 random networks) is libloc's answer; enumeration agrees with lookup address by address |
+| IPFire's file | the 2022-10-29 copy verifies with the pinned key (slot 2 only) and agrees with libloc on 8,000 lookups and 12 flattened searches; `location lookup` agrees on 8.8.8.8, 1.1.1.1, 2a00:1450::1 and 2606:4700::1 |
+| signature | either slot; a wrong key, a key made now, a P-256 key; a bit flipped in the magic, every header field, each signature field and the body; appended and cut bytes; the zeroing rule (lengths and full slots zeroed, the 32 reserved bytes signed); no usable slot is "not signed"; libloc's `location verify` accepts what the test signer signs and refuses it with another key or one byte changed |
+| malformed | truncation at 484 places; every section offset and length pushed outside the file, onto the header or onto another section; offsets and lengths near 2^32; trie loops and shared subtrees; children and networks out of range; chains 128 deep (fine), 129 and 4,000 deep (refused); strings at the 4,096-byte limit, one past it, and unterminated; unsorted and duplicate tables; bad codes; creation time 0 and 2^63; all FORMAT, never a crash |
+| enumeration edge | `::/8` in a database with no IPv4 subtree: the IPv6 set is `::/8` without `::ffff:0:0/96`, and the IPv4 set is empty |
+| mutation and fuzzing | a deterministic mutation loop (seed 1077, 4,000 cases by default, `STOCKFW_GEODB_MUTATIONS` to change it; 1,000 in the shell test on fresh fixtures) where whatever opens must give sane answers, and libFuzzer (`tests/fuzz-geodb.c`) with ASan and UBSan from every fixture; the suite itself runs clean under ASan and UBSan (4,000 mutations) |
+| xz | round trip; `xz -9e`; a 64 MiB dictionary (fine) and a 128 MiB one (over the 96 MiB decoder limit); a 39 KB bomb that unpacks to 256 MiB + 1 (TOO_LARGE, never more than the cap written); exactly 256 MiB (fine); corrupt, cut, padded, concatenated and empty streams |
+| freshness | `fs_geodb_judge`: newer, the same second, one second older, from 1970, a day and a second ahead (checked first), the end of time; staleness at 30 days |
+| install | first copy, the same copy, a rollback by one second, a copy from the future, a non-database, a bomb, a download over 64 MB, a relative store, a store or copy in use that is a symbolic link, a damaged copy in use; after each, `location.db` is byte for byte as expected and nothing else is in the store |
+| download | `fs_geodb_update` with a fake downloader, and with the real `fs_fetch` and a curl stand-in: one request for `FS_GEODB_URL`, `--max-filesize 67108864`, no proxy unless given |
+
+Teeth, each injected into the real `fs-geodb.c` by a scratch script
+that checks the old text occurs once, rebuilds `fs-geodb-test`, runs
+the suite, then restores the file with `cp` and proves it with `cmp`.
+Every one made the suite fail:
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| open skips the signature step | 52, among them `small.db (libloc's writer, key 1) verifies with key 1, slot 1`, `the 2022-10-29 copy is signed in slot 2 only, and that is enough` |
+| the 32 reserved bytes zeroed too | `zeroing: a bit flipped in reserved byte 0: SIGNATURE`, `... byte 31: SIGNATURE` |
+| only the signature's own bytes zeroed, not the whole slot | `zeroing: bytes after the signature inside its slot are not signed`, `zeroing: garbage in slot 2 with a length of 137 does not stop slot 1` |
+| the signature lengths not zeroed | 143, among them `IPFire's own database verifies with the pinned key and passes every check`, and every fixture fails to open |
+| no usable slot accepted as unsigned | `both slots empty: SIGNATURE, "not signed"`, `both lengths past the slot: SIGNATURE` |
+| only slot 1 tried | `small-two.db verifies with key 2 in slot 2`, `zeroing: slot 1 removed, slot 2 alone verifies`, IPFire's own file |
+| any EC curve accepted as the key | `a file signed with a P-256 key, checked with that key: SIGNATURE, the key is not P-521` |
+| sections may overlap | `the pool starting inside the countries: FORMAT` |
+| sections may overlap the header | `the network section starts on the header's last byte`, `the pool section starts at 0 (the magic)`, `the pool section starts in the header` |
+| a section's end computed in 32 bits (it wraps) | the suite dies with SIGSEGV right after `the AS section length 0xffffffff: FORMAT` |
+| depth limit 129 | `a chain 129 nodes deep: FORMAT` |
+| no visited set in the tree check | `a node whose two children are the same node (a shared branch): FORMAT`, the mutation loop |
+| strings need no NUL | `the pool's last string without its NUL ...: FORMAT`, `a vendor of 4,097 bytes: FORMAT` |
+| string limit off by one | `a vendor of 4,096 bytes: opens` |
+| AS order unchecked | `two ASes swapped (not ascending): FORMAT`, `an AS number twice: FORMAT` |
+| country order unchecked | `two countries swapped: FORMAT`, `a country code twice: FORMAT` |
+| creation time unchecked | `created_at 0: FORMAT`, `created_at 2^63: FORMAT` |
+| the same second judged older | `judge: the same second`, `install: the same copy again` |
+| no rollback check | `judge: one second older`, `judge: from 1970`, `install: a copy one second older (rollback)` and 9 more |
+| no future check | `judge: a day and a second ahead ...`, `judge: the end of time` and 2 more |
+| the xz cap checked after the write | `xz: 39184 bytes that unpack to 256 MiB + 1: TOO_LARGE, ... never more than the cap`, `xz: a 1 MiB cap and 1 MiB + 1 of data` |
+| no xz memory limit | `xz: a 128 MiB dictionary is over the decoder's memory limit (96 MiB): XZ` and one more |
+| data after the xz stream accepted | `xz: data after the stream: XZ`, `xz: stream padding after the stream`, `xz: two streams back to back` |
+| install does not judge | `install: the same copy again`, `install: a copy one second older (rollback)`, `install: a newer copy more than a day ahead of the clock` and 8 more |
+| install renames before it verifies | 15, among them `install: a first copy`, `install: a copy one second older (rollback)` |
+| install leaves the temporary file | 13 `install: ...` checks (`nothing else is left in the store`) |
+| no download size cap | `install: a download over 64 MB: REFUSED` |
+| lookup keeps the least specific network | `8.8.8.8 is in 8.8.8.0/24, registered in US, AS15169 ...` and every golden lookup set |
+| IPv4 looked up from the root of the trie | `edge6: ::/0 is an IPv6 network and never answers for an IPv4 address` and 3 more |
+| enumeration not flattened (a nested network of another country counted) | `small.db: 22 enumerations ... are exactly libloc's flattened search, merged` and 6 more |
+| IPv4-mapped space left in the IPv6 set | `::/8 and no IPv4 subtree: enumerate gives ::/8 without ::ffff:0:0/96, and no IPv4` (added after this tooth found no check) |
+| control and format characters kept in names | `small: 192.0.2.77 -> ... (a BEL in the AS name is shown as ?)`, `... (a bidi override in the name is shown as ?)` and 5 more |
+| symbolic links followed | `a symbolic link to a good database: IO, not followed` |
+| the size cap exclusive | `exactly 256 MiB is read (and is no database: FORMAT)` |
