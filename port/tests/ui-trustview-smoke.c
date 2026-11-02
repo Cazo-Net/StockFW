@@ -75,24 +75,45 @@ confirm_responder (gpointer data)
 	return G_SOURCE_CONTINUE;
 }
 
-/* Pump the main loop until the page's worker tasks are done (or the
- * cap says the page wedged). */
+/* How long a task may take before the page counts as wedged, in wall
+ * time.  Generous on purpose: the process scan hashes and checks the
+ * signature of every distinct image running, and on a cold Windows
+ * runner (Defender reading each file for the first time) that took
+ * longer than the old cap, which was 5000 turns of a 2 ms sleep --
+ * 10 s, or whatever Windows' 15.6 ms timer made of it. */
+#define SETTLE_SECONDS 300
+
+static gboolean
+wake_up (gpointer data)
+{
+	(void) data;
+	return G_SOURCE_CONTINUE;
+}
+
+/* Run the main loop until the page's worker task has reported back
+ * (its completion is an event on this loop, so the loop blocks until
+ * it comes, no polling sleep), or until the deadline says the page
+ * wedged.  Says how long it took, so a slow runner shows in the log. */
 static gboolean
 pump_until_idle (void)
 {
-	guint i;
+	gint64 start = g_get_monotonic_time ();
+	gint64 deadline = start + (gint64) SETTLE_SECONDS * G_USEC_PER_SEC;
+	/* Bounds each blocking turn, so the deadline is looked at. */
+	guint tick = g_timeout_add (250, wake_up, NULL);
+	gboolean settled;
 
-	for (i = 0; i < 5000; i++) {
-		while (gtk_events_pending ())
-			gtk_main_iteration ();
+	while (fs_trustview_busy () && g_get_monotonic_time () < deadline)
+		g_main_context_iteration (NULL, TRUE);
+	while (gtk_events_pending ())
+		gtk_main_iteration ();
+	g_source_remove (tick);
 
-		if (!fs_trustview_busy ())
-			return TRUE;
-
-		g_usleep (2000);
-	}
-
-	return FALSE;
+	settled = !fs_trustview_busy ();
+	printf ("       (%s after %.1f s)\n",
+	        settled ? "settled" : "still busy",
+	        (g_get_monotonic_time () - start) / (gdouble) G_USEC_PER_SEC);
+	return settled;
 }
 
 static GtkWidget *
@@ -282,7 +303,8 @@ main (int argc, char **argv)
 	gtk_button_clicked (GTK_BUTTON (scan));
 	CHECK (pump_until_idle (), "the process scan settles");
 	CHECK (fs_trustview_list_count () >= 1,
-	       "the scan finds at least this process");
+	       "the scan finds at least this process (%u images)",
+	       fs_trustview_list_count ());
 #endif
 
 	g_unsetenv ("STOCKFW_TRUST_FILE");

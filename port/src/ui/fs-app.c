@@ -6,16 +6,18 @@
  * the original stockfw.c with a plain GtkApplication.
  *
  * Layout (1.0.7 redesign): a dark sidebar on the left -- the logo on a
- * light tile, one item per page, Preferences and About, and the
+ * light tile, one item per page, Preferences, Help and About, and the
  * firewall's verdict at the bottom -- and the selected page on the
  * right.  The pages live in a GtkNotebook whose own tabs are hidden;
- * the sidebar items stand in for them.  There is no menubar: its three
- * entries (Preferences, About, Quit) are the sidebar's footer items and
- * the Ctrl+, / Ctrl+Q shortcuts.
+ * the sidebar items stand in for them.  There is no menubar: its
+ * entries (Preferences, Help, About, Quit) are the sidebar's footer
+ * items and the Ctrl+, / F1 / Ctrl+Q shortcuts.  F1 opens the Help
+ * topic for the page shown.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-helpwindow.h"
 #include "ui/fs-statusview.h"
 #include "ui/fs-policyview.h"
 #include "ui/fs-hitview.h"
@@ -189,11 +191,34 @@ on_action_preferences (GSimpleAction *action, GVariant *parameter, gpointer data
 	fs_dialogs_preferences (fsapp.window);
 }
 
+/* [ show_help ]
+ * The Help window, at the topic for the page shown. */
+static void
+show_help (void)
+{
+	gint page = fsapp.notebook != NULL
+	          ? gtk_notebook_get_current_page (GTK_NOTEBOOK (fsapp.notebook))
+	          : -1;
+
+	fs_help_show (fsapp.window, fs_help_topic_for_page (page));
+}
+
+/* [ on_action_help ]
+ * "app.help" (F1) */
+static void
+on_action_help (GSimpleAction *action, GVariant *parameter, gpointer data)
+{
+	(void) action;
+	(void) parameter;
+	(void) data;
+	show_help ();
+}
+
 /* [ register_actions ] */
 static void
 register_actions (void)
 {
-	GSimpleAction *quit, *about, *preferences;
+	GSimpleAction *quit, *about, *preferences, *help;
 
 	quit = g_simple_action_new ("quit", NULL);
 	g_signal_connect (quit, "activate", G_CALLBACK (on_action_quit), NULL);
@@ -210,16 +235,24 @@ register_actions (void)
 	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (preferences));
 	g_object_unref (preferences);
 
+	help = g_simple_action_new ("help", NULL);
+	g_signal_connect (help, "activate", G_CALLBACK (on_action_help), NULL);
+	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (help));
+	g_object_unref (help);
+
 	/* The menubar these used to live in is gone; the shortcuts stay. */
 	{
 		const gchar *quit_keys[] = { "<Primary>q", NULL };
 		const gchar *pref_keys[] = { "<Primary>comma", NULL };
+		const gchar *help_keys[] = { "F1", NULL };
 
 		gtk_application_set_accels_for_action (fsapp.app, "app.quit",
 		                                       quit_keys);
 		gtk_application_set_accels_for_action (fsapp.app,
 		                                       "app.preferences",
 		                                       pref_keys);
+		gtk_application_set_accels_for_action (fsapp.app, "app.help",
+		                                       help_keys);
 	}
 }
 
@@ -402,6 +435,14 @@ on_nav_preferences (GtkButton *button, gpointer data)
 }
 
 static void
+on_nav_help (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+	show_help ();
+}
+
+static void
 on_nav_about (GtkButton *button, gpointer data)
 {
 	(void) button;
@@ -524,7 +565,7 @@ build_sidebar (void)
 	spacer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 	gtk_box_pack_start (GTK_BOX (bar), spacer, TRUE, TRUE, 0);
 
-	/* ---- Preferences, About ---- */
+	/* ---- Preferences, Help, About ---- */
 	{
 		GtkWidget *item;
 
@@ -533,6 +574,13 @@ build_sidebar (void)
 		gtk_widget_set_tooltip_text (item, _("Preferences (Ctrl+,)"));
 		g_signal_connect (item, "clicked",
 		                  G_CALLBACK (on_nav_preferences), NULL);
+		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
+
+		item = nav_button (gtk_button_new (), FS_ICON_HELP, _("Help"));
+		gtk_widget_set_name (item, "nav-help");
+		gtk_widget_set_tooltip_text (item, _("Help (F1)"));
+		g_signal_connect (item, "clicked", G_CALLBACK (on_nav_help),
+		                  NULL);
 		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
 
 		item = nav_button (gtk_button_new (), FS_ICON_INFO,

@@ -133,12 +133,38 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/ui/fs-theme-css.h.in"
 set_property(DIRECTORY APPEND PROPERTY
              CMAKE_CONFIGURE_DEPENDS src/ui/fs-theme.css)
 
+# The two licence texts at the top of the repository, compiled into
+# fs-licence-text.h (build tree) for the About window's "View licence".
+# COPYING has form feeds between its pages; they are dropped.
+string(ASCII 12 FS_FORM_FEED)
+foreach(FS_LIC COPYING LICENSE)
+  set(FS_LIC_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../${FS_LIC}")
+  if(EXISTS "${FS_LIC_PATH}")
+    file(READ "${FS_LIC_PATH}" FS_LIC_TEXT)
+    set_property(DIRECTORY APPEND PROPERTY
+                 CMAKE_CONFIGURE_DEPENDS "${FS_LIC_PATH}")
+  else()
+    set(FS_LIC_TEXT "${FS_LIC} was not found when this copy was built. It is at the top of the StockFW source.")
+  endif()
+  string(REPLACE "\\" "\\\\" FS_LIC_TEXT "${FS_LIC_TEXT}")
+  string(REPLACE "\"" "\\\"" FS_LIC_TEXT "${FS_LIC_TEXT}")
+  string(REPLACE "\r" ""    FS_LIC_TEXT "${FS_LIC_TEXT}")
+  string(REPLACE "${FS_FORM_FEED}" "" FS_LIC_TEXT "${FS_LIC_TEXT}")
+  string(REPLACE "\n" "\\n" FS_LIC_TEXT "${FS_LIC_TEXT}")
+  set(FS_LICENCE_${FS_LIC} "${FS_LIC_TEXT}")
+endforeach()
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/ui/fs-licence-text.h.in"
+               "${CMAKE_CURRENT_BINARY_DIR}/fs-licence-text.h" @ONLY)
+
 # -------------------------------------------------------------------- app
 add_executable(StockFW
   src/main.c
   src/ui/fs-app.c
   src/ui/fs-dialogs.c
+  src/ui/fs-aboutdialog.c
   src/ui/fs-prefsdialog.c
+  src/ui/fs-helpwindow.c
+  src/ui/fs-helpcontent.c
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
@@ -250,7 +276,10 @@ endif()
 set(FS_UI_ONLY_SOURCES
   src/ui/fs-app.c
   src/ui/fs-dialogs.c
+  src/ui/fs-aboutdialog.c
   src/ui/fs-prefsdialog.c
+  src/ui/fs-helpwindow.c
+  src/ui/fs-helpcontent.c
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
@@ -360,6 +389,24 @@ target_compile_definitions(fs-trustview-smoke PRIVATE
 )
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-trustview-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
+
+# The Help window and the About window (1.0.7), on the real main window
+# with its files in a scratch directory: F1 and app.help, every topic,
+# search, links, Preferences' Help, one instance, the About credits and
+# licence, Copy system info, and contrast under a dark theme.
+add_executable(fs-help-smoke EXCLUDE_FROM_ALL
+  tests/ui-help-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_include_directories(fs-help-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-help-smoke PRIVATE fs-core PkgConfig::GTK3 m)
+target_compile_definitions(fs-help-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-help-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-hitview-smoke PRIVATE ${FS_BACKEND_LIBS})

@@ -26,7 +26,9 @@
  *     firewall;
  *   - Start at sign-in writes and removes the autostart entry, and a
  *     failure shows an error and leaves the tick showing the truth;
- *   - Preferences and About open their dialogs;
+ *   - Preferences and About open their dialogs; Help opens the Help
+ *     window at "Running in the background" with the main window left
+ *     hidden;
  *   - Quit (firewall stays on) quits without stopping the firewall.
  *
  * Needs a display (xvfb-run).  Everything the app writes goes to a
@@ -46,6 +48,7 @@
 #include "core/fs-rules.h"
 #include "ui/fs-app.h"
 #include "ui/fs-copilot.h"
+#include "ui/fs-helpwindow.h"
 #include "ui/fs-tray.h"
 
 static int failures = 0;
@@ -848,10 +851,54 @@ check_main (void)
 		g_free (entry_path);
 	}
 #endif
+	/* About (1.0.7) is not modal: click returns with it open, and the
+	 * dialog answerer sees it on its next tick.  Wait for that, up to
+	 * two seconds. */
 	g_string_truncate (dialogs_seen, 0);
 	click (item_labelled (fs_tray_menu (), "_About StockFW"));
-	CHECK (dialogs_seen->len > 0, "About StockFW opens About (%s)",
-	       dialogs_seen->str);
+	{
+		gint64 until = g_get_monotonic_time () + 2 * G_USEC_PER_SEC;
+
+		while (strstr (dialogs_seen->str, "[About StockFW]") == NULL &&
+		       g_get_monotonic_time () < until)
+			g_main_context_iteration (NULL, TRUE);
+	}
+	CHECK (strstr (dialogs_seen->str, "[About StockFW]") != NULL,
+	       "About StockFW opens About (%s)", dialogs_seen->str);
+
+	/* Help (1.0.7): the Help window, at the topic about this menu,
+	 * placed between Preferences and About; in background mode it
+	 * opens on its own and does not bring the main window back. */
+	{
+		GtkWidget *help = item_labelled (fs_tray_menu (), "_Help");
+		GList *items = gtk_container_get_children (
+			GTK_CONTAINER (fs_tray_menu ()));
+		gint at_help = g_list_index (items, help);
+		gint at_prefs = g_list_index (items,
+			item_labelled (fs_tray_menu (), "Pr_eferences..."));
+		gint at_about = g_list_index (items,
+			item_labelled (fs_tray_menu (), "_About StockFW"));
+
+		g_list_free (items);
+		CHECK (help != NULL && gtk_widget_get_sensitive (help) &&
+		       at_help == at_prefs + 1 && at_about == at_help + 1,
+		       "the menu has Help, between Preferences and About "
+		       "(%d %d %d)", at_prefs, at_help, at_about);
+		gtk_widget_hide (GTK_WIDGET (main_window ()));
+		click (help);
+		CHECK (fs_help_window () != NULL &&
+		       gtk_widget_get_visible (fs_help_window ()) &&
+		       g_strcmp0 (fs_help_current_topic (), "background") == 0,
+		       "Help opens the Help window at \"Running in the "
+		       "background\" (topic %s)",
+		       fs_help_current_topic () != NULL
+		       ? fs_help_current_topic () : "(none)");
+		CHECK (!gtk_widget_get_visible (GTK_WIDGET (main_window ())),
+		       "Help from the tray leaves the main window hidden");
+		if (fs_help_window () != NULL)
+			gtk_widget_destroy (fs_help_window ());
+		pump ();
+	}
 }
 
 static gboolean

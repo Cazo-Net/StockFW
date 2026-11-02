@@ -6691,29 +6691,30 @@ static void test_settings_plan (void)
 	s->icmp_source_quenches = FALSE;
 
 	/* --- the Advanced Options blocks ------------------------- */
+	/* ACC-2: a Windows rule's remote address is the sender of an
+	 * inbound packet, and nothing is sent from 255.255.255.255, so a
+	 * broadcast "block" there blocked nothing.  Neither switch plans
+	 * a rule, and no planned rule names the broadcast address. */
 	s->block_external_broadcast = TRUE;
-	plan = fs_settings_plan_new (s);
-	r = plan_find (plan,
-	               "StockFW block broadcasts from the external "
-	               "network");
-	CHECK (r != NULL && !r->allow &&
-	       g_strcmp0 (r->remote, "255.255.255.255") == 0 &&
-	       r->profiles == FS_FWP_PROFILE_PUBLIC,
-	       "external broadcasts: blocked to limited broadcast, "
-	       "public profile (the ext-interface scoping)");
-	fs_settings_plan_free (plan);
-	s->block_external_broadcast = FALSE;
-
 	s->block_internal_broadcast = TRUE;
 	plan = fs_settings_plan_new (s);
-	r = plan_find (plan,
-	               "StockFW block broadcasts from the internal "
-	               "network");
-	CHECK (r != NULL && !r->allow &&
-	       r->profiles == FS_FWP_PROFILE_PRIVATE,
-	       "internal broadcasts: private profile (the int-interface "
-	       "scoping)");
+	{
+		gboolean bcast = FALSE;
+
+		for (guint i = 0; i < plan->rules->len; i++) {
+			const FsSettingRule *sr =
+				g_ptr_array_index (plan->rules, i);
+
+			if (sr->remote != NULL
+			    && strstr (sr->remote, "255.255.255.255") != NULL)
+				bcast = TRUE;
+		}
+		CHECK (!bcast,
+		       "broadcast switches plan no rule: a remote of "
+		       "255.255.255.255 matches no sender (ACC-2)");
+	}
 	fs_settings_plan_free (plan);
+	s->block_external_broadcast = FALSE;
 	s->block_internal_broadcast = FALSE;
 
 	s->block_non_routables = TRUE;
@@ -6747,9 +6748,10 @@ static void test_settings_plan (void)
 	plan = fs_settings_plan_new (s);
 	/* 2 unconditional + echo req + echo reply + traceroute +
 	 * mstraceroute (3,1 skipped as a subset) + 2 timestamping +
-	 * 2 masking + redirect + quench = 12 ICMP/UDP, plus 3 blocks. */
-	CHECK (plan->rules->len == 15,
-	       "everything ticked plans 15 rules (%u)", plan->rules->len);
+	 * 2 masking + redirect + quench = 12 ICMP/UDP, plus the
+	 * reserved-source block (the broadcast switches plan nothing). */
+	CHECK (plan->rules->len == 13,
+	       "everything ticked plans 13 rules (%u)", plan->rules->len);
 
 	/* Naming contract: the rule lifecycle owns everything starting
 	 * with "StockFW", and policy rules always arrive as "StockFW-"
