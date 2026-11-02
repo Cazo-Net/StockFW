@@ -2501,6 +2501,55 @@ firewalled_get_profile_enabled (gint profile, gboolean *enabled)
 	return TRUE;
 }
 
+/* [ firewalled_get_profile_defaults ]
+ * One profile's default inbound and outbound actions, for the What-If:
+ * what Windows Firewall does with traffic no rule matches.  FALSE when
+ * the profile id is unknown or either COM call fails, so the What-If
+ * says it assumed Windows' own default instead of guessing quietly. */
+static gboolean
+firewalled_get_profile_defaults (gint profile, gboolean *inbound_block,
+                                 gboolean *outbound_block)
+{
+	INetFwPolicy2 *policy = NULL;
+	HRESULT hr;
+	NET_FW_ACTION in_action = NET_FW_ACTION_BLOCK;
+	NET_FW_ACTION out_action = NET_FW_ACTION_ALLOW;
+	NET_FW_PROFILE_TYPE2 type;
+
+	if (profile < 0 || profile >= FS_PROFILE_COUNT)
+		return FALSE;
+
+	type = profile_from_index (profile);
+
+	CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
+
+	hr = CoCreateInstance (&FS_CLSID_NetFwPolicy2, NULL, CLSCTX_ALL,
+	                       &FS_IID_INetFwPolicy2, (void **) &policy);
+
+	if (FAILED (hr) || policy == NULL) {
+		CoUninitialize ();
+		return FALSE;
+	}
+
+	hr = policy->lpVtbl->get_DefaultInboundAction (policy, type, &in_action);
+	if (SUCCEEDED (hr))
+		hr = policy->lpVtbl->get_DefaultOutboundAction (policy, type,
+		                                                &out_action);
+
+	policy->lpVtbl->Release (policy);
+	CoUninitialize ();
+
+	if (FAILED (hr))
+		return FALSE;
+
+	if (inbound_block != NULL)
+		*inbound_block = (in_action == NET_FW_ACTION_BLOCK);
+	if (outbound_block != NULL)
+		*outbound_block = (out_action == NET_FW_ACTION_BLOCK);
+
+	return TRUE;
+}
+
 /* [ firewalled_set_profile_enabled ]
  * Switches one profile.  Changing the firewall state needs elevation,
  * so a plain session gets a clear error rather than a silent failure. */
@@ -2801,7 +2850,8 @@ static const FsBackend windows_backend = {
 	.get_profile_enabled   = firewalled_get_profile_enabled,
 	.set_profile_enabled   = firewalled_set_profile_enabled,
 	.network_place         = firewalled_network_place,
-	.trust_signature       = fs_trust_win_signature
+	.trust_signature       = fs_trust_win_signature,
+	.get_profile_defaults  = firewalled_get_profile_defaults
 };
 
 const FsBackend *

@@ -7,13 +7,17 @@
  *
  * The diagram is flat and vector-drawn with cairo -- a PC, a brick
  * wall with a flame, a globe or a server, dotted green lines, and an
- * envelope that travels.  It plays one of three scripts:
+ * envelope that travels.  It plays one of four scripts:
  *
  *   allowed  the packet reaches the firewall, the wall flashes green,
  *            a check pops, the packet continues, the far node glows;
  *   blocked  the packet reaches the wall, the wall shakes red, an X
  *            pops, the packet bounces back and fades, the far line
  *            turns gray;
+ *   depends  the answer differs by case (host, port, protocol, or
+ *            direction the line left open): the packet waits at the
+ *            wall, the wall turns amber and a "?" pops -- the cases
+ *            are spelled out below the diagram;
  *   error    no verdict at all: the scene dims and shows a "?" --
  *            an unreadable line must not look like a firewall
  *            decision.
@@ -37,12 +41,18 @@
  * ===================================================================== */
 
 FsSimvizOutcome
-fs_simviz_outcome_of (const FsSimulationResult *result)
+fs_simviz_outcome_of (const FsWhatIfResult *result)
 {
 	if (result == NULL)
 		return FS_SIMVIZ_ERROR;
 
-	return result->would_block ? FS_SIMVIZ_BLOCKED : FS_SIMVIZ_ALLOWED;
+	switch (result->verdict) {
+	case FS_WHATIF_ALLOWED: return FS_SIMVIZ_ALLOWED;
+	case FS_WHATIF_BLOCKED: return FS_SIMVIZ_BLOCKED;
+	case FS_WHATIF_DEPENDS: return FS_SIMVIZ_DEPENDS;
+	case FS_WHATIF_ERROR:
+	default:                return FS_SIMVIZ_ERROR;
+	}
 }
 
 /* Phase marks, seconds from play start. */
@@ -91,6 +101,23 @@ fs_simviz_state_at (FsSimvizOutcome outcome, gdouble t)
 	 * packetless, badgeless frame however long you look at it. */
 	if (outcome == FS_SIMVIZ_ERROR) {
 		s.done = TRUE;
+		return s;
+	}
+
+	/* It depends: the packet goes to the wall and waits there.  No
+	 * flash either way and nothing past the wall -- the cases are a
+	 * list under the diagram, not a pass or a bounce. */
+	if (outcome == FS_SIMVIZ_DEPENDS) {
+		s.packet = (t < T_REACH) ? 0.5 * ease (t / T_REACH) : 0.5;
+		s.packet_alpha = 1.0;
+		s.fw_amber = ramp (t, T_REACH, 0.30);
+		s.show_question = (t >= T_VERDICT);
+		if (t >= FS_SIMVIZ_DURATION) {
+			s.done = TRUE;
+			s.packet = 0.5;
+			s.fw_amber = 1.0;
+			s.show_question = TRUE;
+		}
 		return s;
 	}
 
@@ -166,6 +193,7 @@ static const Color C_ACCENT   = RGB (59, 130, 246);
 static const Color C_ACCENT_L = RGB (219, 234, 254);
 static const Color C_GREEN    = RGB (34, 197, 94);
 static const Color C_RED      = RGB (239, 68, 68);
+static const Color C_AMBER    = RGB (245, 158, 11);
 static const Color C_LINE_G   = RGB (156, 163, 175);
 static const Color C_BRICK    = RGB (254, 215, 170);
 static const Color C_BRICK_L  = RGB (253, 186, 116);
@@ -202,11 +230,16 @@ install_css (void)
 		"                       color: #dc2626; border-radius: 6px;\n"
 		"                       padding: 6px 18px; font-weight: bold;\n"
 		"                       font-size: 1.15em; }\n"
+		".fs-simviz-badge-warn { background-color: #fef3c7;\n"
+		"                       color: #b45309; border-radius: 6px;\n"
+		"                       padding: 6px 18px; font-weight: bold;\n"
+		"                       font-size: 1.15em; }\n"
 		".fs-simviz-panel     { background-color: #f9fafb;\n"
 		"                       border-radius: 8px; padding: 8px 10px; }\n"
 		".fs-simviz-caption   { color: #6b7280; font-size: 0.8em; }\n"
 		".fs-simviz-value     { font-weight: bold; color: #111827; }\n"
 		".fs-simviz-suggest   { color: #6b7280; }\n"
+		".fs-simviz-notes     { color: #6b7280; font-size: 0.9em; }\n"
 		".fs-simviz-examples  { color: #6b7280;\n"
 		"                       font-family: monospace; }\n"
 		"button.fs-simviz-primary { background-color: #3b82f6;\n"
@@ -250,8 +283,11 @@ typedef struct
 	gchar *origin_label;
 	gchar *dest_label;
 	gchar *query;
-	gchar *explanation;   /* bare reason, or NULL in the error state */
-	gchar *suggestion;    /* "To allow this, ..." or NULL           */
+	gchar *explanation;   /* the engine's summary, or in the error
+	                       * state the parser's message        */
+	gchar *suggestion;    /* the action offered, in words, or NULL */
+	gchar *notes;         /* what the answer assumed, or NULL     */
+	gchar *action_label;  /* the action button, or NULL           */
 	gchar *details[5];    /* protocol, source, dest, port, direction */
 
 	gint64 t0_us;
@@ -386,10 +422,12 @@ draw_globe (cairo_t *cr, gdouble cx, gdouble cy)
 }
 
 /* The firewall: a brick wall with a flame on top.  `wash_red` /
- * `wash_green` tint the wall with the verdict; `t` drives the shake. */
+ * `wash_green` / `wash_amber` tint the wall with the verdict; `t`
+ * drives the shake. */
 static void
 draw_firewall (cairo_t *cr, gdouble cx, gdouble cy, gdouble wash_red,
-               gdouble wash_green, gdouble shake, gdouble t)
+               gdouble wash_green, gdouble wash_amber, gdouble shake,
+               gdouble t)
 {
 	gdouble wall_x = cx - 32;
 	gdouble wall_y = cy - 8;
@@ -457,6 +495,11 @@ draw_firewall (cairo_t *cr, gdouble cx, gdouble cy, gdouble wash_red,
 		set_color (cr, &C_GREEN, 0.35 * wash_green);
 		cairo_fill (cr);
 	}
+	if (wash_amber > 0.0) {
+		rounded_rect (cr, wall_x, wall_y, wall_w, wall_h, 3);
+		set_color (cr, &C_AMBER, 0.35 * wash_amber);
+		cairo_fill (cr);
+	}
 
 	cairo_restore (cr);
 }
@@ -487,9 +530,12 @@ draw_packet (cairo_t *cr, gdouble x, gdouble y, gdouble alpha)
 	cairo_restore (cr);
 }
 
-/* The verdict medallion above the wall. */
+/* The verdict medallion above the wall: a green check, a red X or
+ * an amber question mark. */
+typedef enum { MEDAL_CHECK, MEDAL_X, MEDAL_QUESTION } Medal;
+
 static void
-draw_medallion (cairo_t *cr, gdouble x, gdouble y, gboolean green,
+draw_medallion (cairo_t *cr, gdouble x, gdouble y, Medal medal,
                 gdouble pop)
 {
 	if (pop <= 0.0)
@@ -500,17 +546,27 @@ draw_medallion (cairo_t *cr, gdouble x, gdouble y, gboolean green,
 	cairo_scale (cr, 0.5 + 0.5 * pop, 0.5 + 0.5 * pop);
 
 	cairo_arc (cr, 0.0, 0.0, 15.0, 0.0, 6.2831853);
-	set_color (cr, green ? &C_GREEN : &C_RED, pop);
+	set_color (cr, medal == MEDAL_CHECK ? &C_GREEN
+	               : medal == MEDAL_X ? &C_RED : &C_AMBER, pop);
 	cairo_fill (cr);
 
 	set_color (cr, &C_WHITE, pop);
 	cairo_set_line_width (cr, 2.6);
 	cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
 
-	if (green) {
+	if (medal == MEDAL_CHECK) {
 		cairo_move_to (cr, -6.5, 0.5);
 		cairo_line_to (cr, -2.0, 5.5);
 		cairo_line_to (cr, 7.0, -5.5);
+	} else if (medal == MEDAL_QUESTION) {
+		/* The hook, the stem, then the dot. */
+		cairo_arc (cr, 0.0, -3.5, 4.2, 3.4, 6.2831853 + 0.9);
+		cairo_line_to (cr, 0.0, 2.2);
+		cairo_stroke (cr);
+		cairo_arc (cr, 0.0, 6.6, 1.5, 0.0, 6.2831853);
+		cairo_fill (cr);
+		cairo_restore (cr);
+		return;
 	} else {
 		cairo_move_to (cr, -5.0, -5.0);
 		cairo_line_to (cr, 5.0, 5.0);
@@ -616,7 +672,8 @@ on_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 
 	/* The firewall card: a wide card with the wall drawn over it. */
 	draw_node_card (cr, x2, cy, 88, 54, 0.0);
-	draw_firewall (cr, x2, cy, s->fw_red, s->fw_green, s->shake, s->t);
+	draw_firewall (cr, x2, cy, s->fw_red, s->fw_green, s->fw_amber,
+	               s->shake, s->t);
 
 	/* The packet. */
 	if (s->packet >= 0.0) {
@@ -629,9 +686,11 @@ on_draw (GtkWidget *widget, cairo_t *cr, gpointer data)
 
 	/* The verdict medallion. */
 	if (ctx->outcome == FS_SIMVIZ_ALLOWED)
-		draw_medallion (cr, x2, badge_y, TRUE, s->fw_green);
+		draw_medallion (cr, x2, badge_y, MEDAL_CHECK, s->fw_green);
 	else if (ctx->outcome == FS_SIMVIZ_BLOCKED)
-		draw_medallion (cr, x2, badge_y, FALSE, s->fw_red);
+		draw_medallion (cr, x2, badge_y, MEDAL_X, s->fw_red);
+	else if (ctx->outcome == FS_SIMVIZ_DEPENDS && s->show_question)
+		draw_medallion (cr, x2, badge_y, MEDAL_QUESTION, s->fw_amber);
 
 	/* Labels under the cards. */
 	draw_label (cr, widget, ctx->origin_label, x1, cy + 36.0,
@@ -712,6 +771,8 @@ ctx_free (gpointer data)
 	g_free (ctx->query);
 	g_free (ctx->explanation);
 	g_free (ctx->suggestion);
+	g_free (ctx->notes);
+	g_free (ctx->action_label);
 	for (guint i = 0; i < G_N_ELEMENTS (ctx->details); i++)
 		g_free (ctx->details[i]);
 	g_free (ctx);
@@ -863,25 +924,47 @@ on_key_press (GtkWidget *widget, GdkEventKey *event, gpointer data)
 	return FALSE;
 }
 
-/* The display strings the diagram and the banner read. */
+/* The display strings the diagram and the banner read.  A line asked
+ * without a direction is answered both ways; the diagram then shows
+ * this computer and the far end, and the details say "Both ways" --
+ * the summary under it gives each direction its own answer. */
 static void
-fill_labels (SimvizCtx *ctx, const FsSimulationResult *result,
-             const FsScenario *sc, const gchar *query)
+fill_labels (SimvizCtx *ctx, const FsWhatIfResult *result,
+             const gchar *query)
 {
-	gboolean inbound = (sc != NULL && sc->inbound);
-	gboolean have_addr = (sc != NULL && sc->had_addr &&
-	                      sc->remote_ip != NULL);
-	gboolean icmp = (sc != NULL &&
-	                 g_strcmp0 (sc->protocol, "ICMP") == 0);
-	guint port = (sc != NULL) ? sc->port : 0;
-	gboolean had_port = (sc != NULL && sc->had_port);
+	const FsWhatIfQuery *q = (result != NULL) ? result->query : NULL;
+	const FsWhatIfAnswer *first;
+	const FsWhatIfAction *primary;
+	gboolean both, inbound, icmp;
+	const gchar *host;
+	GString *more;
 
-	ctx->query = g_strdup (query != NULL ? query : "");
+	ctx->query = g_strdup (query != NULL ? query
+	                       : (q != NULL && q->text != NULL) ? q->text : "");
 
-	/* The left card is where the packet starts: our machine for an
-	 * outbound line, the remote one for an inbound line. */
+	if (fs_simviz_outcome_of (result) == FS_SIMVIZ_ERROR || q == NULL ||
+	    result->answers->len == 0) {
+		/* No verdict: no packet details either, only the reason. */
+		if (result != NULL)
+			ctx->explanation = g_strdup (result->error != NULL
+			                             ? result->error
+			                             : result->summary);
+		ctx->origin_label = g_strdup (_("local"));
+		ctx->dest_label = g_strdup (_("WWW"));
+		ctx->dest_is_globe = TRUE;
+		return;
+	}
+
+	first = g_ptr_array_index (result->answers, 0);
+	both = (result->answers->len > 1);
+	inbound = !both && first->inbound;
+	host = q->host;
+	icmp = (q->protocol == FS_WHATIF_PROTO_ICMP || q->icmp_type != NULL);
+
+	/* The left card is where the packet starts: the remote end for an
+	 * inbound line, our machine otherwise. */
 	ctx->origin_label = g_strdup (inbound
-	                              ? (have_addr ? sc->remote_ip : _("any"))
+	                              ? (host != NULL ? host : _("any"))
 	                              : _("local"));
 
 	/* The right card is where it is going.  Inbound ends at our
@@ -890,46 +973,86 @@ fill_labels (SimvizCtx *ctx, const FsSimulationResult *result,
 	ctx->dest_is_local = inbound;
 
 	if (inbound)
-		ctx->dest_label = had_port
-			? g_strdup_printf (_("local:%u"), port)
+		ctx->dest_label = q->port > 0
+			? g_strdup_printf (_("local:%u"), q->port)
 			: g_strdup (_("local"));
 	else
-		ctx->dest_label = g_strdup (have_addr ? sc->remote_ip
-		                                      : _("WWW"));
+		ctx->dest_label = g_strdup (host != NULL ? host
+		                            : both ? _("any") : _("WWW"));
 
-	if (result != NULL && result->reason != NULL)
-		ctx->explanation = g_strdup (result->reason);
+	ctx->explanation = g_strdup (result->summary);
 
-	/* Only a blocked verdict offers a way out -- and only when the
-	 * line parsed, because the rule comes from the scenario. */
-	if (sc != NULL && result != NULL && result->would_block) {
-		gchar *sentence = fs_copilot_allow_suggestion (sc);
+	/* The action button: only the kinds the window can run in place,
+	 * and a CREATE_* only once the engine verified it. */
+	primary = fs_whatif_result_primary_action (result);
+	if (primary != NULL)
+		ctx->action_label = g_strdup (
+			primary->kind == FS_WHATIF_ACT_LIFT_SENTINEL
+			? _("Lift Sentinel's Block") : _("Create This Rule"));
 
-		if (sentence != NULL) {
-			ctx->suggestion = g_strdup_printf (
-				_("To allow this, add a rule: %s"), sentence);
-			g_free (sentence);
+	/* Every fix the engine offers, in words: the button's first. */
+	more = g_string_new (NULL);
+	if (primary != NULL)
+		g_string_append_printf (more, "%s: %s", primary->label,
+		                        primary->explanation);
+	for (guint i = 0; i < result->answers->len; i++) {
+		const FsWhatIfAnswer *a = g_ptr_array_index (result->answers, i);
+
+		for (guint k = 0; k < a->actions->len; k++) {
+			const FsWhatIfAction *act = g_ptr_array_index (a->actions, k);
+
+			if (act == primary || act->label == NULL ||
+			    act->explanation == NULL)
+				continue;
+			if (strstr (more->str, act->label) != NULL)
+				continue;   /* the same fix for the other direction */
+			if (more->len > 0)
+				g_string_append_c (more, '\n');
+			g_string_append_printf (more, "%s: %s", act->label,
+			                        act->explanation);
 		}
+	}
+	if (more->len > 0)
+		ctx->suggestion = g_string_free (more, FALSE);
+	else
+		g_string_free (more, TRUE);
+
+	/* What the answer assumed, said where it is read. */
+	if (result->notes != NULL && result->notes->len > 0) {
+		GString *n = g_string_new (_("Good to know:"));
+
+		for (guint i = 0; i < result->notes->len; i++)
+			g_string_append_printf (n, "\n- %s",
+			                        (const gchar *)
+			                        g_ptr_array_index (result->notes, i));
+		ctx->notes = g_string_free (n, FALSE);
 	}
 
 	/* Details row: the five facts, each honest about "not named". */
-	ctx->details[0] = g_strdup (sc != NULL ? sc->protocol : _("n/a"));
-	ctx->details[1] = inbound
-		? g_strdup (have_addr ? sc->remote_ip : _("any"))
-		: g_strdup (_("local"));
-	ctx->details[2] = inbound
-		? g_strdup (_("local"))
-		: g_strdup (have_addr ? sc->remote_ip : _("anywhere"));
-	ctx->details[3] = had_port
-		? g_strdup_printf ("%u", port)
+	ctx->details[0] = g_strdup (q->protocol == FS_WHATIF_PROTO_TCP ? "TCP"
+	                            : q->protocol == FS_WHATIF_PROTO_UDP ? "UDP"
+	                            : icmp ? "ICMP" : _("any"));
+	if (both) {
+		ctx->details[1] = g_strdup_printf (_("local or %s"),
+		                                   host != NULL ? host : _("any"));
+		ctx->details[2] = g_strdup_printf (_("%s or local"),
+		                                   host != NULL ? host : _("any"));
+	} else if (inbound) {
+		ctx->details[1] = g_strdup (host != NULL ? host : _("any"));
+		ctx->details[2] = g_strdup (_("local"));
+	} else {
+		ctx->details[1] = g_strdup (_("local"));
+		ctx->details[2] = g_strdup (host != NULL ? host : _("anywhere"));
+	}
+	ctx->details[3] = q->port > 0
+		? g_strdup_printf ("%u", q->port)
 		: g_strdup (icmp ? _("n/a") : _("any"));
-	ctx->details[4] = inbound ? g_strdup (_("Inbound"))
-	                          : g_strdup (_("Outbound"));
+	ctx->details[4] = g_strdup (both ? _("Both ways")
+	                            : inbound ? _("Inbound") : _("Outbound"));
 }
 
 GtkWidget *
-fs_simviz_dialog_new (const FsSimulationResult *result,
-                      const FsScenario *scenario,
+fs_simviz_dialog_new (const FsWhatIfResult *result,
                       const gchar *query)
 {
 	SimvizCtx *ctx;
@@ -940,7 +1063,7 @@ fs_simviz_dialog_new (const FsSimulationResult *result,
 	GtkWidget *area;
 	GtkWidget *footer;
 	GtkWidget *replay_btn = NULL;
-	GtkWidget *create_btn = NULL;
+	GtkWidget *action_btn = NULL;
 	GtkWidget *close_btn;
 	GtkWidget *spacer;
 	FsSimvizOutcome outcome = fs_simviz_outcome_of (result);
@@ -950,7 +1073,7 @@ fs_simviz_dialog_new (const FsSimulationResult *result,
 	ctx = g_new0 (SimvizCtx, 1);
 	ctx->outcome = outcome;
 	ctx->state = fs_simviz_state_at (outcome, 0.0);
-	fill_labels (ctx, result, scenario, query);
+	fill_labels (ctx, result, query);
 
 	dialog = gtk_dialog_new ();
 	ctx->dialog = dialog;
@@ -1009,11 +1132,14 @@ fs_simviz_dialog_new (const FsSimulationResult *result,
 		gtk_container_set_border_width (GTK_CONTAINER (banner), 6);
 
 		badge = gtk_label_new (outcome == FS_SIMVIZ_ALLOWED
-		                       ? _("ALLOWED") : _("BLOCKED"));
+		                       ? _("ALLOWED")
+		                       : outcome == FS_SIMVIZ_BLOCKED
+		                       ? _("BLOCKED") : _("DEPENDS"));
 		gtk_style_context_add_class (
 			gtk_widget_get_style_context (badge),
 			outcome == FS_SIMVIZ_ALLOWED ? "fs-simviz-badge-ok"
-			                             : "fs-simviz-badge-bad");
+			: outcome == FS_SIMVIZ_BLOCKED ? "fs-simviz-badge-bad"
+			                               : "fs-simviz-badge-warn");
 		gtk_box_pack_start (GTK_BOX (banner), badge, FALSE, FALSE, 4);
 
 		details = gtk_grid_new ();
@@ -1043,6 +1169,17 @@ fs_simviz_dialog_new (const FsSimulationResult *result,
 		gtk_box_pack_start (GTK_BOX (warn), icon, FALSE, FALSE, 0);
 		gtk_box_pack_start (GTK_BOX (warn), msg, FALSE, FALSE, 0);
 		gtk_box_pack_start (GTK_BOX (vbox), warn, FALSE, FALSE, 4);
+
+		/* The parser's own words: what it could not find, or the
+		 * port or address that is not one. */
+		if (ctx->explanation != NULL && *ctx->explanation != '\0') {
+			GtkWidget *why = gtk_label_new (ctx->explanation);
+
+			gtk_label_set_line_wrap (GTK_LABEL (why), TRUE);
+			gtk_label_set_max_width_chars (GTK_LABEL (why), 72);
+			gtk_label_set_xalign (GTK_LABEL (why), 0.0);
+			gtk_box_pack_start (GTK_BOX (vbox), why, FALSE, FALSE, 0);
+		}
 
 		examples = gtk_label_new (
 			_("e.g.  allow SSH from 192.168.1.50 on port 22\n"
@@ -1075,6 +1212,19 @@ fs_simviz_dialog_new (const FsSimulationResult *result,
 			gtk_box_pack_start (GTK_BOX (vbox), sug, FALSE, FALSE,
 			                    0);
 		}
+
+		if (ctx->notes != NULL) {
+			GtkWidget *notes = gtk_label_new (ctx->notes);
+
+			gtk_style_context_add_class (
+				gtk_widget_get_style_context (notes),
+				"fs-simviz-notes");
+			gtk_label_set_line_wrap (GTK_LABEL (notes), TRUE);
+			gtk_label_set_max_width_chars (GTK_LABEL (notes), 72);
+			gtk_label_set_xalign (GTK_LABEL (notes), 0.0);
+			gtk_box_pack_start (GTK_BOX (vbox), notes, FALSE, FALSE,
+			                    0);
+		}
 	}
 
 	/* 5. The footer. */
@@ -1090,12 +1240,12 @@ fs_simviz_dialog_new (const FsSimulationResult *result,
 		                    FALSE, 0);
 	}
 
-	if (outcome == FS_SIMVIZ_BLOCKED && scenario != NULL) {
-		/* Present only when it can do something real: the rule is
-		 * built from the very scenario the verdict answered. */
-		create_btn = button_with_icon ("list-add",
-		                               _("Create This Rule"));
-		g_signal_connect (create_btn, "clicked",
+	if (outcome != FS_SIMVIZ_ERROR && ctx->action_label != NULL) {
+		/* Present only when it can do something real: a row the
+		 * engine re-simulated and found to give exactly the asked
+		 * verdict, or a Sentinel block it can lift. */
+		action_btn = button_with_icon ("list-add", ctx->action_label);
+		g_signal_connect (action_btn, "clicked",
 		                  G_CALLBACK (on_create_clicked), dialog);
 	}
 
@@ -1103,8 +1253,8 @@ fs_simviz_dialog_new (const FsSimulationResult *result,
 	gtk_widget_set_hexpand (spacer, TRUE);
 	gtk_box_pack_start (GTK_BOX (footer), spacer, TRUE, TRUE, 0);
 
-	if (create_btn != NULL)
-		gtk_box_pack_start (GTK_BOX (footer), create_btn, FALSE,
+	if (action_btn != NULL)
+		gtk_box_pack_start (GTK_BOX (footer), action_btn, FALSE,
 		                    FALSE, 0);
 
 	close_btn = gtk_button_new_with_label (_("Close"));
@@ -1122,15 +1272,14 @@ fs_simviz_dialog_new (const FsSimulationResult *result,
 
 FsSimvizResponse
 fs_simviz_run (GtkWidget *parent,
-               const FsSimulationResult *result,
-               const FsScenario *scenario,
+               const FsWhatIfResult *result,
                const gchar *query)
 {
 	GtkWidget *dialog;
 	SimvizCtx *ctx;
 	gint response;
 
-	dialog = fs_simviz_dialog_new (result, scenario, query);
+	dialog = fs_simviz_dialog_new (result, query);
 
 	if (parent != NULL && GTK_IS_WINDOW (parent)) {
 		gtk_window_set_transient_for (GTK_WINDOW (dialog),

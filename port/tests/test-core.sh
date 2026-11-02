@@ -2854,167 +2854,157 @@ static void test_name_hygiene_f3 (void)
 	}
 }
 
-/* The What-If simulator: the closed grammar in core/fs-copilot.c and
- * the verdict it produces against a real policy.  The teeth here are
- * for the lies a simulator can tell -- a verdict based on a wrong
- * reading of the line; a verdict that ignores block precedence or
- * pretends a subnet block does not cover its hosts; and a verdict
- * reached through the wrong rule: the portless line that misses the
- * rule opening a port, ICMP joined to a ported rule, an any-port
- * rule named where the exact-port rule decided, a forward hiding
- * where the traffic goes, or a deciding port/host left out of the
- * reason the panel's notes point at. */
+/* The What-If simulator through the copilot's wrappers: what the older
+ * callers (the Copilot page's log, the CLI) read from the engine in
+ * core/fs-whatif.c.  The engine's own golden table is
+ * tests/test-whatif.c, run after this program; what is pinned here is
+ * that the wrappers carry the engine's reading and verdicts through
+ * unchanged on whichever platform this runs, and refuse rather than
+ * guess. */
+
+/* [ whatif_ask ] -- one line against a policy, on a named platform,
+ * with the firewall running and the policy in force. */
+static FsWhatIfResult *
+whatif_ask (FsWhatIfPlatform platform, const FsPolicy *policy,
+            const gchar *line)
+{
+	FsSettings *settings = fs_settings_new ();
+	FsWhatIfContext *ctx = fs_whatif_context_new (platform, policy, settings);
+	FsWhatIfResult *r;
+
+	ctx->firewall = FS_WHATIF_FW_RUNNING;
+	ctx->live = FS_WHATIF_LIVE_YES;
+	r = fs_whatif_simulate_text (ctx, line);
+	fs_whatif_context_free (ctx);
+	fs_settings_free (settings);
+	return r;
+}
+
+static const FsWhatIfAnswer *
+whatif_answer (const FsWhatIfResult *r)
+{
+	return (r != NULL && r->answers->len > 0)
+	       ? g_ptr_array_index (r->answers, 0) : NULL;
+}
+
 static void test_whatif_simulate (void)
 {
-	FsScenario *sc;
 	FsSimulationResult *r;
+	FsWhatIfQuery *q = NULL;
 	FsCopilot *copilot;
 	FsPolicy *policy;
 	FsRule *rule;
 
-	sc = fs_copilot_parse_scenario ("allow SSH from 192.168.1.50 on port 22");
-	CHECK (sc != NULL, "a full scenario line parses");
-	if (sc != NULL) {
-		CHECK (sc->inbound, "'from' reads as inbound");
-		CHECK (sc->had_port && sc->port == 22, "port 22 is read");
-		CHECK (sc->had_addr &&
-		       g_strcmp0 (sc->remote_ip, "192.168.1.50") == 0,
-		       "the host is read");
-		CHECK (g_strcmp0 (sc->protocol, "TCP") == 0,
-		       "TCP is the default protocol");
-		CHECK (g_strcmp0 (sc->app, "SSH") == 0,
-		       "the token after 'allow' is the application");
-		fs_scenario_free (sc);
+	/* The reading comes back with the answer. */
+	copilot = fs_copilot_new ();
+	r = fs_copilot_simulate_text (copilot,
+	                              "allow SSH from 192.168.1.50 on port 22", &q);
+	CHECK (r != NULL && q != NULL, "a full line is read and answered");
+	if (q != NULL) {
+		CHECK (q->direction == FS_WHATIF_DIR_INBOUND,
+		       "'from' reads as inbound");
+		CHECK (q->port == 22 && q->protocol == FS_WHATIF_PROTO_TCP,
+		       "port 22, TCP");
+		CHECK (g_strcmp0 (q->host, "192.168.1.50") == 0, "the host is read");
+		CHECK (q->verb == FS_WHATIF_VERB_ALLOW, "the verb is read");
+		CHECK (q->confidence >= 0.8 && q->pieces->len >= 3,
+		       "and the reading says what it recognised (%.0f%%)",
+		       q->confidence * 100);
+		fs_whatif_query_free (q);
+		q = NULL;
+	}
+	if (r != NULL) {
+		CHECK (r->verdict == FS_WHATIF_BLOCKED && r->would_block,
+		       "no rule: the default blocks it");
+		CHECK (r->whatif != NULL && r->whatif->answers->len == 1,
+		       "the whole answer rides along");
+		CHECK (strstr (r->explanation, "Simulation:") != NULL &&
+		       r->reason != NULL && *r->reason != '\0' &&
+		       strstr (r->reason, "Simulation:") == NULL,
+		       "the log sentence keeps its wrapper; the reason does not");
+		fs_simulation_result_free (r);
 	}
 
-	sc = fs_copilot_parse_scenario ("block DNS to 8.8.8.8 on port 53 udp");
-	CHECK (sc != NULL, "a deny-style line parses");
-	if (sc != NULL) {
-		CHECK (!sc->inbound, "'to' reads as outbound");
-		CHECK (sc->had_port && sc->port == 53, "port 53 is read");
-		CHECK (g_strcmp0 (sc->remote_ip, "8.8.8.8") == 0,
-		       "the host is read");
-		CHECK (g_strcmp0 (sc->protocol, "UDP") == 0,
-		       "the udp keyword is read");
-		CHECK (g_strcmp0 (sc->app, "DNS") == 0,
-		       "a service name supplies the application");
-		fs_scenario_free (sc);
+	/* A line with no direction is asked both ways. */
+	r = fs_copilot_simulate_text (copilot, "ssh is open at 22 port", &q);
+	CHECK (r != NULL && q != NULL && q->direction == FS_WHATIF_DIR_BOTH &&
+	       q->port == 22 && r->whatif->answers->len == 2,
+	       "a line that names no direction is answered both ways");
+	fs_whatif_query_free (q);
+	q = NULL;
+	fs_simulation_result_free (r);
+
+	/* Refusals, never guesses. */
+	CHECK (fs_copilot_simulate_text (copilot, "", NULL) == NULL &&
+	       fs_copilot_simulate_text (copilot, "   ", NULL) == NULL &&
+	       fs_copilot_simulate_text (copilot, NULL, NULL) == NULL,
+	       "an empty line is no question");
+	{
+		static const gchar *bad[] = {
+			"hello there", "allow port 0 from 10.0.0.1",
+			"inbound tcp port 65536", "outbound to 203.0.113.9:70000",
+			"inbound from 999.1.1.1 port 22",
+		};
+
+		for (guint i = 0; i < G_N_ELEMENTS (bad); i++) {
+			r = fs_copilot_simulate_text (copilot, bad[i], &q);
+			CHECK (r != NULL && r->verdict == FS_WHATIF_ERROR &&
+			       !r->would_block && q == NULL &&
+			       r->reason != NULL && *r->reason != '\0',
+			       "\"%s\" is refused with a reason (%s)", bad[i],
+			       r != NULL && r->reason ? r->reason : "-");
+			fs_simulation_result_free (r);
+		}
 	}
+	r = fs_copilot_simulate (copilot, NULL, "example.com", 22, "TCP", TRUE);
+	CHECK (r != NULL && r->verdict == FS_WHATIF_ERROR,
+	       "the field-by-field call refuses a host that is not an address");
+	fs_simulation_result_free (r);
+	fs_copilot_free (copilot);
 
-	/* No port clause: a known service name supplies the port, and
-	 * with no direction words the documented default is outbound. */
-	sc = fs_copilot_parse_scenario ("allow HTTPS to 10.0.0.1");
-	CHECK (sc != NULL, "a service-only line parses");
-	if (sc != NULL) {
-		CHECK (!sc->inbound, "the default direction is outbound");
-		CHECK (sc->had_port && sc->port == 443,
-		       "HTTPS supplies port 443");
-		CHECK (g_strcmp0 (sc->remote_ip, "10.0.0.1") == 0,
-		       "the host is read");
-		fs_scenario_free (sc);
-	}
-
-	/* The host:port shorthand. */
-	sc = fs_copilot_parse_scenario ("outbound to 203.0.113.9:8443");
-	CHECK (sc != NULL, "a host:port line parses");
-	if (sc != NULL) {
-		CHECK (!sc->inbound, "the outbound keyword is read");
-		CHECK (sc->had_addr &&
-		       g_strcmp0 (sc->remote_ip, "203.0.113.9") == 0,
-		       "the host survives the colon shorthand");
-		CHECK (sc->had_port && sc->port == 8443,
-		       "the port is read from the colon shorthand");
-		fs_scenario_free (sc);
-	}
-
-	/* No port, no host: the line still parses, with the flags clear
-	 * so the panel can say what was left out. */
-	sc = fs_copilot_parse_scenario ("allow anything outbound");
-	CHECK (sc != NULL, "a line with no port and no host parses");
-	if (sc != NULL) {
-		CHECK (!sc->had_port, "a missing port leaves had_port clear");
-		CHECK (!sc->had_addr, "a missing host leaves had_addr clear");
-		fs_scenario_free (sc);
-	}
-
-	CHECK (fs_copilot_parse_scenario ("") == NULL,
-	       "an empty line parses to nothing");
-	CHECK (fs_copilot_parse_scenario (NULL) == NULL,
-	       "a NULL line parses to nothing");
-
-	/* --- Verdicts against a real policy --- */
+	/* --- Verdicts against a real policy, on this platform --- */
 	policy = fs_policy_new ();
 	copilot = fs_copilot_new ();
 	fs_copilot_set_policy (copilot, policy);
 
-	/* The same host allowed and blocked: Windows Firewall gives the
-	 * block precedence, and so must the answer. */
+	/* The same host allowed and blocked: blocked on both platforms
+	 * (Windows: the block wins; Linux: deny rows come first). */
 	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
 	rule->target = g_strdup ("203.0.113.5");
 	fs_policy_add (policy, rule);
 	fs_rule_free (rule);
-
 	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
 	rule->target = g_strdup ("203.0.113.5");
 	fs_policy_add (policy, rule);
 	fs_rule_free (rule);
 
-	r = fs_copilot_simulate_text (copilot,
-	                              "allow SSH to 203.0.113.5 on port 22",
+	r = fs_copilot_simulate_text (copilot, "outbound tcp to 203.0.113.5 port 22",
 	                              NULL);
-	CHECK (r != NULL, "simulate_text answers");
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "a block rule beats an allow rule on the same host");
-		CHECK (r->matching_rule != NULL,
-		       "the verdict names the rule that decided it");
-		CHECK (strstr (r->explanation, "shadowed") != NULL,
-		       "the dead allow is reported as shadowed");
-		fs_simulation_result_free (r);
-	}
+	CHECK (r != NULL && r->would_block && r->matching_rule != NULL &&
+	       strstr (r->matching_rule, "Block outbound") != NULL,
+	       "a block rule beats an allow rule on the same host, and is named "
+	       "(%s)", r != NULL && r->matching_rule ? r->matching_rule : "-");
+	fs_simulation_result_free (r);
 
-	/* A block written as a subnet still covers a host inside it. */
+	/* A block written as a subnet covers a host inside it. */
 	fs_policy_clear (policy);
 	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
 	rule->target = g_strdup ("203.0.113.0/24");
 	fs_policy_add (policy, rule);
 	fs_rule_free (rule);
+	r = fs_copilot_simulate (copilot, NULL, "203.0.113.77", 80, "TCP", FALSE);
+	CHECK (r != NULL && r->would_block, "a /24 block covers a host inside it");
+	fs_simulation_result_free (r);
+	r = fs_copilot_simulate (copilot, NULL, "203.0.112.0/23", 80, "TCP", FALSE);
+	CHECK (r != NULL && r->verdict == FS_WHATIF_DEPENDS &&
+	       strstr (r->reason, "203.0.113.0/24") != NULL,
+	       "a wider block of hosts is only partly blocked, and says where "
+	       "(%s)", r != NULL ? r->reason : "-");
+	fs_simulation_result_free (r);
 
-	r = fs_copilot_simulate_text (copilot,
-	                              "outbound ping to 203.0.113.77", NULL);
-	CHECK (r != NULL, "simulate_text answers for the subnet probe");
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "a /24 block covers a host inside the block");
-		fs_simulation_result_free (r);
-	}
-
-	/* An allow with no block: the probe is allowed, and says by what. */
-	fs_policy_clear (policy);
-	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
-	rule->target = g_strdup ("198.51.100.10");
-	fs_policy_add (policy, rule);
-	fs_rule_free (rule);
-
-	r = fs_copilot_simulate_text (copilot,
-	                              "allow HTTPS to 198.51.100.10", NULL);
-	CHECK (r != NULL, "simulate_text answers for the allow probe");
-	if (r != NULL) {
-		CHECK (!r->would_block,
-		       "a covering allow lets the traffic through");
-		CHECK (r->matching_rule != NULL,
-		       "the allow verdict names its rule too");
-		fs_simulation_result_free (r);
-	}
-
-	/* --- Precision: symmetric ports, ICMP, best match, forwards ---
-	 *
-	 * A port constrains the same way a host does: a port either side
-	 * left unnamed is unconstrained.  So a line with no port must
-	 * still find the rule that opens one (and say which port), ICMP
-	 * must never meet a ported rule, the rule the verdict names must
-	 * be the exact-port one rather than an earlier any-port rule, and
-	 * a forward must say where the traffic goes after it is let in. */
+	/* b1, inverted: a line with no port used to be answered "allowed"
+	 * because one rule opened one port.  It is DEPENDS now, with the
+	 * port that is open and the rest that is not. */
 	fs_policy_clear (policy);
 	rule = fs_rule_new (FS_RULE_INBOUND_ALLOW_SERVICE);
 	rule->service = g_strdup ("mystery");
@@ -3023,349 +3013,58 @@ static void test_whatif_simulate (void)
 	fs_policy_add (policy, rule);
 	fs_rule_free (rule);
 
-	r = fs_copilot_simulate_text (copilot, "allow from 192.168.1.50",
+	r = fs_copilot_simulate_text (copilot, "inbound from 192.168.1.50", NULL);
+	CHECK (r != NULL && r->verdict == FS_WHATIF_DEPENDS && !r->would_block,
+	       "b1: a portless line meets a one-port rule: DEPENDS, not ALLOWED "
+	       "(%s)", r != NULL ? r->reason : "-");
+	if (r != NULL && r->verdict == FS_WHATIF_DEPENDS) {
+		const FsWhatIfAnswer *a = whatif_answer (r->whatif);
+		gboolean open22 = FALSE, closed = FALSE;
+
+		for (guint i = 0; a != NULL && i < a->cases->len; i++) {
+			const FsWhatIfCase *c = g_ptr_array_index (a->cases, i);
+
+			if (c->verdict == FS_WHATIF_ALLOWED &&
+			    strstr (c->condition, "port 22") != NULL &&
+			    c->rule != NULL && strstr (c->rule, "mystery") != NULL)
+				open22 = TRUE;
+			if (c->verdict == FS_WHATIF_BLOCKED)
+				closed = TRUE;
+		}
+		CHECK (open22 && closed,
+		       "b1: the split names port 22 and its rule, and the blocked "
+		       "rest");
+	}
+	fs_simulation_result_free (r);
+
+	r = fs_copilot_simulate_text (copilot,
+	                              "inbound tcp port 80 from 192.168.1.50", NULL);
+	CHECK (r != NULL && r->would_block,
+	       "a port the rule does not open stays blocked");
+	fs_simulation_result_free (r);
+	r = fs_copilot_simulate_text (copilot, "inbound ping from 192.168.1.50",
 	                              NULL);
-	CHECK (r != NULL, "the portless probe answers");
-	if (r != NULL) {
-		CHECK (!r->would_block,
-		       "a line with no port finds the rule that opens one");
-		CHECK (strstr (r->explanation, "on port 22") != NULL,
-		       "and the verdict names the port that decided it");
-		fs_simulation_result_free (r);
-	}
-
-	r = fs_copilot_simulate_text (copilot,
-	                              "allow ping from 192.168.1.50", NULL);
-	CHECK (r != NULL, "the ICMP probe answers");
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "ICMP meets no ported rule, portless line or not");
-		fs_simulation_result_free (r);
-	}
-
-	r = fs_copilot_simulate_text (
-		copilot, "allow ping from 192.168.1.50 port 22", NULL);
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "not even a typed port joins ICMP to a ported rule");
-		fs_simulation_result_free (r);
-	}
-
-	r = fs_copilot_simulate_text (copilot,
-	                              "allow from 192.168.1.50 port 80", NULL);
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "a port the rule does not open stays blocked");
-		fs_simulation_result_free (r);
-	}
-
-	/* The exact-port rule decides port-443 traffic even when an
-	 * any-port rule is listed before it (host rows expand first). */
-	fs_policy_clear (policy);
-	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
-	rule->target = g_strdup ("203.0.113.9");
-	fs_policy_add (policy, rule);
-	fs_rule_free (rule);
-
-	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
-	rule->service = g_strdup ("HTTPS");
-	rule->port = g_strdup ("443");
-	rule->target = g_strdup ("203.0.113.9");
-	fs_policy_add (policy, rule);
-	fs_rule_free (rule);
-
-	r = fs_copilot_simulate_text (copilot,
-	                              "allow HTTPS to 203.0.113.9", NULL);
-	CHECK (r != NULL, "the exact-port probe answers");
-	if (r != NULL) {
-		CHECK (!r->would_block,
-		       "the host allow covers it as well");
-		CHECK (r->matching_rule != NULL &&
-		       strstr (r->matching_rule, "HTTPS") != NULL,
-		       "the exact-port rule, not the earlier any-port "
-		       "rule, is the one named");
-		CHECK (strstr (r->explanation, "on port 443") != NULL,
-		       "the deciding port is in the reason");
-		fs_simulation_result_free (r);
-	}
-
-	/* A forward is a real allow; the verdict says where the traffic
-	 * is sent after it is let in. */
-	fs_policy_clear (policy);
-	rule = fs_rule_new (FS_RULE_INBOUND_FORWARD);
-	rule->service = g_strdup ("HTTP");
-	rule->port = g_strdup ("8080");
-	rule->to = g_strdup ("10.0.0.5");
-	rule->to_port = g_strdup ("80");
-	fs_policy_add (policy, rule);
-	fs_rule_free (rule);
-
-	r = fs_copilot_simulate_text (copilot, "inbound port 8080", NULL);
-	CHECK (r != NULL, "the forward probe answers");
-	if (r != NULL) {
-		CHECK (!r->would_block, "a forward opens its port");
-		CHECK (strstr (r->explanation, "on port 8080") != NULL,
-		       "the forward's port is in the reason");
-		CHECK (strstr (r->explanation, "10.0.0.5") != NULL,
-		       "the verdict says where the traffic is forwarded");
-		fs_simulation_result_free (r);
-	}
-
-	/* A line that named no host meets the host-scoped block, and the
-	 * block's own host is in the reason the panel's note points at. */
-	fs_policy_clear (policy);
-	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
-	rule->target = g_strdup ("203.0.113.5");
-	fs_policy_add (policy, rule);
-	fs_rule_free (rule);
-
-	r = fs_copilot_simulate_text (copilot, "block outbound", NULL);
-	CHECK (r != NULL, "the no-host probe answers");
-	if (r != NULL) {
-		CHECK (r->would_block,
-		       "a line with no host meets the host-scoped block");
-		CHECK (strstr (r->explanation, "203.0.113.5") != NULL,
-		       "the block's host is named in the reason");
-		fs_simulation_result_free (r);
-	}
+	CHECK (r != NULL && (r->whatif->answers->len == 1) &&
+	       (r->matching_rule == NULL ||
+	        strstr (r->matching_rule, "mystery") == NULL),
+	       "ICMP never meets a ported rule (%s)",
+	       r != NULL && r->matching_rule ? r->matching_rule : "-");
+	fs_simulation_result_free (r);
 
 	fs_copilot_free (copilot);
 	fs_policy_free (policy);
 
-	/* No policy attached: the fallback says so instead of pretending
-	 * to have read rules it does not have. */
+	/* No policy attached: an empty policy, said plainly. */
 	{
 		FsCopilot *bare = fs_copilot_new ();
 
-		r = fs_copilot_simulate_text (
-			bare, "allow SSH from 10.0.0.2 on port 22", NULL);
-		CHECK (r != NULL, "simulate_text answers without a policy");
-		if (r != NULL) {
-			CHECK (r->would_block,
-			       "inbound falls back to the deny default");
-			CHECK (strstr (r->explanation,
-			              "No firewall policy") != NULL,
-			       "the fallback is labelled honestly");
-			fs_simulation_result_free (r);
-		}
+		r = fs_copilot_simulate_text (bare,
+		                              "inbound ssh from 10.0.0.2", NULL);
+		CHECK (r != NULL && r->would_block,
+		       "inbound with no rules falls to the deny default");
+		fs_simulation_result_free (r);
 		fs_copilot_free (bare);
 	}
-}
-
-/* The reading itself: the shapes people actually type.  Each one
- * here once read as port 0 -- "local:0" in the verdict -- or as
- * the wrong port entirely, which is how a simulation can be
- * honest about the wrong question. */
-static void test_whatif_reading (void)
-{
-	FsScenario *sc;
-	FsSimulationResult *r;
-	FsCopilot *bare;
-	FsRule *rule;
-	gchar *s;
-
-	sc = fs_copilot_parse_scenario ("ssh is open at 22 port");
-	CHECK (sc != NULL, "the 'N port' shape parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 22,
-		       "the number before 'port' is the port");
-		CHECK (g_strcmp0 (sc->protocol, "TCP") == 0,
-		       "ssh reads as TCP");
-		CHECK (!sc->inbound,
-		       "with no direction word the default is outbound");
-		CHECK (g_strcmp0 (sc->app, "ssh") == 0,
-		       "the service name is the application");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("scan at 8080 port");
-	CHECK (sc != NULL, "an unknown service with 'N port' parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 8080,
-		       "8080 is read without any service name to help");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("allow anything to :22");
-	CHECK (sc != NULL, "a bare ':N' port parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 22,
-		       "the bare colon port is read");
-		CHECK (!sc->had_addr,
-		       "':22' is a local port, not a host");
-		CHECK (!sc->inbound, "'to' still reads as outbound");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("block local:22 inbound");
-	CHECK (sc != NULL, "the 'local:N' shorthand parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 22,
-		       "the local shorthand port is read");
-		CHECK (sc->inbound, "the inbound keyword is read");
-		CHECK (!sc->had_addr, "and it names no remote host");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("allow RDP to 10.0.0.9");
-	CHECK (sc != NULL, "an RDP line parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 3389,
-		       "RDP supplies port 3389");
-		CHECK (g_strcmp0 (sc->remote_ip, "10.0.0.9") == 0,
-		       "the host is still read");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("block ftp to 1.2.3.4");
-	CHECK (sc != NULL, "an FTP line parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 21,
-		       "FTP is the control port 21, not the table's 20");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("block port 80 outbound");
-	CHECK (sc != NULL, "the plain 'port N' shape parses");
-	if (sc != NULL) {
-		CHECK (sc->had_port && sc->port == 80, "port 80 is read");
-		CHECK (!sc->inbound, "the outbound keyword is read");
-		fs_scenario_free (sc);
-	}
-
-	sc = fs_copilot_parse_scenario ("allow ping from 192.168.1.5");
-	CHECK (sc != NULL, "a ping line parses");
-	if (sc != NULL) {
-		CHECK (g_strcmp0 (sc->protocol, "ICMP") == 0,
-		       "ping reads as ICMP");
-		CHECK (sc->inbound && sc->had_addr,
-		       "the source host and direction are read");
-		CHECK (!sc->had_port,
-		       "ICMP asks for no port, so had_port stays clear");
-		fs_scenario_free (sc);
-	}
-
-	/* The honesty boundary: a hostname-shaped token is not a host,
-	 * and "example.com:22" must not smuggle a port past that rule
-	 * either. */
-	sc = fs_copilot_parse_scenario ("block example.com:22");
-	CHECK (sc != NULL, "a hostname-shaped line still parses");
-	if (sc != NULL) {
-		CHECK (!sc->had_addr, "a hostname is not read as a host");
-		CHECK (!sc->had_port,
-		       "and its ':22' is not read as a port");
-		fs_scenario_free (sc);
-	}
-
-	/* The suggestion sentence and the rule behind it. */
-	sc = fs_copilot_parse_scenario ("allow ssh from 192.168.1.50 on port 22");
-	if (sc != NULL) {
-		s = fs_copilot_allow_suggestion (sc);
-		CHECK (s != NULL, "a blocked scenario gets a suggestion");
-		if (s != NULL) {
-			CHECK (strstr (s,
-			              "Allow inbound TCP port 22 from 192.168.1.50.")
-			       != NULL,
-			       "the suggestion names direction, protocol, "
-			       "port and host (got \"%s\")", s);
-			g_free (s);
-		}
-
-		rule = fs_copilot_allow_rule_for (sc);
-		CHECK (rule != NULL, "a blocked scenario gets a rule");
-		if (rule != NULL) {
-			CHECK (rule->kind == FS_RULE_INBOUND_ALLOW_SERVICE,
-			       "inbound maps to the inbound service-allow kind");
-			CHECK (g_strcmp0 (rule->service, "SSH") == 0,
-			       "port 22 carries its well-known name");
-			CHECK (g_strcmp0 (rule->port, "22") == 0,
-			       "the rule carries the port as text");
-			CHECK (g_strcmp0 (rule->target, "192.168.1.50") == 0,
-			       "the rule carries the host");
-			CHECK (rule->comment != NULL,
-			       "the rule says where it came from");
-			fs_rule_free (rule);
-		}
-		fs_scenario_free (sc);
-	} else {
-		CHECK (FALSE, "the suggestion scenario parses");
-	}
-
-	sc = fs_copilot_parse_scenario ("allow anything outbound");
-	if (sc != NULL) {
-		s = fs_copilot_allow_suggestion (sc);
-		CHECK (s != NULL && strstr (s, "Allow outbound TCP traffic.")
-		       != NULL,
-		       "a line that named no port suggests 'traffic' "
-		       "(got \"%s\")", s ? s : "(null)");
-		g_free (s);
-		fs_scenario_free (sc);
-	} else {
-		CHECK (FALSE, "the no-port scenario parses");
-	}
-
-	sc = fs_copilot_parse_scenario ("allow ping from 192.168.1.5");
-	if (sc != NULL) {
-		s = fs_copilot_allow_suggestion (sc);
-		CHECK (s != NULL, "the ICMP scenario gets a suggestion");
-		if (s != NULL) {
-			CHECK (strstr (s, "port") == NULL,
-			       "ICMP is not offered a port (got \"%s\")", s);
-			g_free (s);
-		}
-
-		rule = fs_copilot_allow_rule_for (sc);
-		CHECK (rule != NULL, "the ICMP scenario gets a rule");
-		if (rule != NULL) {
-			CHECK (g_strcmp0 (rule->service, "ICMP") == 0 &&
-			       g_strcmp0 (rule->port, "") == 0,
-			       "the ICMP rule names ICMP and no port");
-			fs_rule_free (rule);
-		}
-		fs_scenario_free (sc);
-	} else {
-		CHECK (FALSE, "the ICMP scenario parses");
-	}
-
-	sc = fs_copilot_parse_scenario ("outbound to 203.0.113.9:8443");
-	if (sc != NULL) {
-		rule = fs_copilot_allow_rule_for (sc);
-		CHECK (rule != NULL, "the odd-port scenario gets a rule");
-		if (rule != NULL) {
-			CHECK (g_strcmp0 (rule->port, "8443") == 0 &&
-			       g_strcmp0 (rule->target, "203.0.113.9") == 0,
-			       "the rule carries the odd port and the host");
-			CHECK (g_strcmp0 (rule->service, "TCP") == 0,
-			       "a port with no well-known name falls back "
-			       "to the protocol word");
-			fs_rule_free (rule);
-		}
-		fs_scenario_free (sc);
-	} else {
-		CHECK (FALSE, "the odd-port scenario parses");
-	}
-
-	CHECK (fs_copilot_allow_suggestion (NULL) == NULL &&
-	       fs_copilot_allow_rule_for (NULL) == NULL,
-	       "NULL scenarios suggest nothing");
-
-	/* The result now carries the reason twice: as the log sentence
-	 * and on its own for the visualizer's Explanation section. */
-	bare = fs_copilot_new ();
-	r = fs_copilot_simulate_text (bare, "allow ssh from 10.0.0.2 on port 22",
-	                              NULL);
-	CHECK (r != NULL, "the reason probe answers");
-	if (r != NULL) {
-		CHECK (r->reason != NULL && *r->reason != '\0',
-		       "the result carries a bare reason");
-		CHECK (strstr (r->explanation, "Simulation:") != NULL,
-		       "the log sentence keeps its wrapper");
-		CHECK (r->reason != NULL &&
-		       strstr (r->reason, "Simulation:") == NULL,
-		       "the bare reason drops the wrapper");
-		fs_simulation_result_free (r);
-	}
-	fs_copilot_free (bare);
 }
 
 /* The bi-directional Direction setting: the pairing map, the labels,
@@ -4987,49 +4686,49 @@ static void test_apply_translation_upgrade (void)
 
 /* --- 1.0.7: the simulator reads the new rules --------------------------
  *
- * The What-If Simulator answers from the same compiled rules netsh
- * gets, so the translation fixes show here too: DHCP is UDP to remote
- * ports 67-68, not "any outbound traffic", and an outbound block sits
- * on the remote port the traffic goes to. */
+ * The What-If engine's Windows model answers from the same compiled
+ * rules netsh gets, so the translation fixes show here too: DHCP is UDP
+ * to remote ports 67-68, not "any outbound traffic", and an outbound
+ * block sits on the remote port the traffic goes to.  The platform is
+ * named, so this runs the same on either build. */
 
 static void test_whatif_winrules (void)
 {
-	FsCopilot *copilot = fs_copilot_new ();
+	const FsWhatIfPlatform W = FS_WHATIF_WINDOWS_BLOCK_WINS;
 	FsPolicy *policy = fs_policy_new ();
-	FsSimulationResult *r;
+	FsWhatIfResult *r;
+	const FsWhatIfAnswer *a;
 	FsRule *rule;
-
-	fs_copilot_set_policy (copilot, policy);
 
 	rule = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE, "DHCP", "67-68",
 	                  FS_TARGET_ANY);
 	fs_policy_add (policy, rule);
 	fs_rule_free (rule);
 
-	r = fs_copilot_simulate (copilot, NULL, "203.0.113.5", 22, "TCP",
-	                         FALSE);
-	CHECK (r != NULL && r->matching_rule != NULL &&
-	       strstr (r->matching_rule, "DHCP") == NULL,
-	       "\"Allow DHCP (outbound)\" does not match outbound TCP 22 "
-	       "(matched: %s)", r != NULL ? r->matching_rule : "(none)");
-	fs_simulation_result_free (r);
+	r = whatif_ask (W, policy, "outbound tcp to 203.0.113.5 port 22");
+	a = whatif_answer (r);
+	CHECK (a != NULL && (a->rule == NULL || strstr (a->rule, "DHCP") == NULL),
+	       "\"Allow DHCP (outbound)\" does not decide outbound TCP 22 "
+	       "(decided by: %s)", a != NULL && a->rule ? a->rule : "(default)");
+	fs_whatif_result_free (r);
 
-	r = fs_copilot_simulate (copilot, NULL, "203.0.113.5", 67, "TCP",
-	                         FALSE);
-	CHECK (r != NULL && r->matching_rule != NULL &&
-	       strstr (r->matching_rule, "DHCP") == NULL,
-	       "nor outbound TCP 67: DHCP is UDP (matched: %s)",
-	       r != NULL ? r->matching_rule : "(none)");
-	fs_simulation_result_free (r);
+	r = whatif_ask (W, policy, "outbound tcp to 203.0.113.5 port 67");
+	a = whatif_answer (r);
+	CHECK (a != NULL && (a->rule == NULL || strstr (a->rule, "DHCP") == NULL),
+	       "nor outbound TCP 67: DHCP is UDP (decided by: %s)",
+	       a != NULL && a->rule ? a->rule : "(default)");
+	fs_whatif_result_free (r);
 
-	r = fs_copilot_simulate (copilot, NULL, "203.0.113.5", 68, "UDP",
-	                         FALSE);
-	CHECK (r != NULL && r->matching_rule != NULL &&
-	       strstr (r->matching_rule, "DHCP") != NULL &&
-	       strstr (r->explanation, "on ports 67-68") != NULL,
-	       "but outbound UDP 68 is the DHCP rule, on ports 67-68 (%s)",
-	       r != NULL ? r->explanation : "(none)");
-	fs_simulation_result_free (r);
+	r = whatif_ask (W, policy, "outbound udp to 203.0.113.5 port 68");
+	a = whatif_answer (r);
+	CHECK (r->verdict == FS_WHATIF_ALLOWED && a != NULL && a->rule != NULL &&
+	       strstr (a->rule, "DHCP") != NULL &&
+	       a->origin == FS_WHATIF_ORIGIN_POLICY &&
+	       a->policy_kind == FS_RULE_OUTBOUND_ALLOW_SERVICE &&
+	       a->policy_index == 0,
+	       "but outbound UDP 68 is the DHCP rule, row 0 (%s)",
+	       a != NULL ? a->reason : "(none)");
+	fs_whatif_result_free (r);
 
 	/* An outbound block on SMTP: the traffic goes TO port 25. */
 	rule = gate_rule (FS_RULE_OUTBOUND_DENY_SERVICE, "SMTP", "25",
@@ -5037,20 +4736,18 @@ static void test_whatif_winrules (void)
 	fs_policy_add (policy, rule);
 	fs_rule_free (rule);
 
-	r = fs_copilot_simulate (copilot, NULL, "198.51.100.25", 25, "TCP",
-	                         FALSE);
-	CHECK (r != NULL && r->would_block && r->matching_rule != NULL &&
-	       strstr (r->matching_rule, "SMTP") != NULL &&
-	       strstr (r->explanation, "on port 25") != NULL,
+	r = whatif_ask (W, policy, "outbound tcp to 198.51.100.25 port 25");
+	a = whatif_answer (r);
+	CHECK (r->verdict == FS_WHATIF_BLOCKED && a != NULL && a->rule != NULL &&
+	       strstr (a->rule, "SMTP") != NULL,
 	       "an outbound SMTP block matches remote port 25 (%s)",
-	       r != NULL ? r->explanation : "(none)");
-	fs_simulation_result_free (r);
+	       a != NULL ? a->reason : "(none)");
+	fs_whatif_result_free (r);
 
-	r = fs_copilot_simulate (copilot, NULL, "198.51.100.25", 587, "TCP",
-	                         FALSE);
-	CHECK (r != NULL && !r->would_block,
+	r = whatif_ask (W, policy, "outbound tcp to 198.51.100.25 port 587");
+	CHECK (r->verdict == FS_WHATIF_ALLOWED,
 	       "and it does not block another port");
-	fs_simulation_result_free (r);
+	fs_whatif_result_free (r);
 
 	/* "Allow DNS (inbound)" opens DNS, not every inbound port. */
 	fs_policy_clear (policy);
@@ -5059,21 +4756,19 @@ static void test_whatif_winrules (void)
 	fs_policy_add (policy, rule);
 	fs_rule_free (rule);
 
-	r = fs_copilot_simulate (copilot, NULL, "203.0.113.5", 3389, "TCP",
-	                         TRUE);
-	CHECK (r != NULL && r->would_block,
+	r = whatif_ask (W, policy, "inbound tcp port 3389 from 203.0.113.5");
+	CHECK (r->verdict == FS_WHATIF_BLOCKED,
 	       "\"Allow DNS (inbound)\" does not allow inbound TCP 3389");
-	fs_simulation_result_free (r);
+	fs_whatif_result_free (r);
 
-	r = fs_copilot_simulate (copilot, NULL, "203.0.113.5", 53, "UDP",
-	                         TRUE);
-	CHECK (r != NULL && !r->would_block && r->matching_rule != NULL &&
-	       strstr (r->matching_rule, "(UDP)") != NULL,
+	r = whatif_ask (W, policy, "inbound udp port 53 from 203.0.113.5");
+	a = whatif_answer (r);
+	CHECK (r->verdict == FS_WHATIF_ALLOWED && a != NULL && a->rule != NULL &&
+	       strstr (a->rule, "(UDP)") != NULL,
 	       "but it allows inbound UDP 53, by its UDP rule (%s)",
-	       r != NULL ? r->matching_rule : "(none)");
-	fs_simulation_result_free (r);
+	       a != NULL && a->rule ? a->rule : "(none)");
+	fs_whatif_result_free (r);
 
-	fs_copilot_free (copilot);
 	fs_policy_free (policy);
 }
 
@@ -5171,27 +4866,58 @@ static void test_fwrule_review (void)
 	fw_golden (DENY, "TCP", "", NULL, 0);
 	fw_golden (FS_RULE_INBOUND_FORWARD, "UDP", "", NULL, 0);
 
-	/* What-If "Create This Rule" for a probe with no port. */
+	/* What-If "Create This Rule" for a probe with no port: the engine
+	 * offers no row at all, on either platform, and the safety check
+	 * the Create button runs refuses the portless row the old
+	 * simulator used to write -- which Windows would refuse too, rather
+	 * than open every inbound TCP port. */
 	{
-		FsScenario sc;
+		FsPolicy *empty = fs_policy_new ();
+		FsWhatIfAction act;
 		FsRule *rule;
 		FsPolicy *policy = fs_policy_new ();
 		GPtrArray *refused = NULL;
 		GList *rules;
+		gchar *why = NULL;
 
-		memset (&sc, 0, sizeof sc);
-		sc.inbound = TRUE;
-		sc.port = 0;
-		sc.protocol = (gchar *) "TCP";
-		rule = fs_copilot_allow_rule_for (&sc);
-		CHECK (rule != NULL && g_strcmp0 (rule->service, "TCP") == 0 &&
-		       (rule->port == NULL || *rule->port == '\0'),
-		       "review: the What-If writes a portless probe as \"TCP\" "
-		       "with no port");
-		if (rule != NULL) {
-			fs_policy_add (policy, rule);
-			fs_rule_free (rule);
+		for (gint plat = 0; plat < 2; plat++) {
+			FsWhatIfResult *r = whatif_ask (
+				plat ? FS_WHATIF_WINDOWS_BLOCK_WINS
+				     : FS_WHATIF_LINUX_FIRST_MATCH,
+				empty, "allow inbound tcp");
+			gboolean any_create = FALSE;
+
+			for (guint i = 0; i < r->answers->len; i++) {
+				const FsWhatIfAnswer *a = g_ptr_array_index (r->answers, i);
+
+				for (guint k = 0; k < a->actions->len; k++) {
+					const FsWhatIfAction *x =
+						g_ptr_array_index (a->actions, k);
+
+					if (x->kind == FS_WHATIF_ACT_CREATE_ALLOW)
+						any_create = TRUE;
+				}
+			}
+			CHECK (r->verdict == FS_WHATIF_BLOCKED && !any_create,
+			       "review: the What-If offers no row for a portless "
+			       "probe (%s)", plat ? "Windows" : "Linux");
+			fs_whatif_result_free (r);
 		}
+
+		rule = fs_rule_new (FS_RULE_INBOUND_ALLOW_SERVICE);
+		rule->service = g_strdup ("TCP");
+		rule->port = g_strdup ("");
+		rule->target = g_strdup (FS_TARGET_ANY);
+		memset (&act, 0, sizeof act);
+		act.kind = FS_WHATIF_ACT_CREATE_ALLOW;
+		act.row = rule;
+		CHECK (!fs_whatif_row_is_safe (&act, &why) && why != NULL,
+		       "review: the Create check refuses a portless TCP row (%s)",
+		       why != NULL ? why : "accepted");
+		g_free (why);
+
+		fs_policy_add (policy, rule);
+		fs_rule_free (rule);
 		rules = fs_fwrule_from_policy_checked (policy, &refused);
 		CHECK (rules == NULL && refused->len == 1,
 		       "review: and that row opens nothing on Windows -- not "
@@ -5200,6 +4926,7 @@ static void test_fwrule_review (void)
 		fs_fwrule_list_free (rules);
 		g_ptr_array_unref (refused);
 		fs_policy_free (policy);
+		fs_policy_free (empty);
 	}
 
 	/* Samba's own ports in any order or spelling keep the split. */
@@ -5361,30 +5088,31 @@ static void test_fwrule_review (void)
 		fs_policy_free (after);
 	}
 
-	/* The simulator on lists and ranges: inside any element is
-	 * covered, the gaps between them are not. */
+	/* The simulator's Windows model on lists and ranges: inside any
+	 * element is covered, the gaps between them are not. */
 	{
-		FsCopilot *copilot = fs_copilot_new ();
 		FsPolicy *policy = review_policy (IN, "Game",
 		                                  "7000-7010 7100,7200");
-		FsSimulationResult *r;
 		static const struct { guint port; gboolean open; } probe[] = {
 			{ 7000, TRUE }, { 7005, TRUE }, { 7010, TRUE },
 			{ 7011, FALSE }, { 7099, FALSE }, { 7100, TRUE },
 			{ 7150, FALSE }, { 7200, TRUE }, { 7201, FALSE },
 		};
 
-		fs_copilot_set_policy (copilot, policy);
 		for (guint i = 0; i < G_N_ELEMENTS (probe); i++) {
-			r = fs_copilot_simulate (copilot, NULL, "203.0.113.5",
-			                         probe[i].port, "UDP", TRUE);
-			CHECK (r != NULL && r->would_block == !probe[i].open,
+			gchar *line = g_strdup_printf ("inbound udp port %u from "
+			                               "203.0.113.5", probe[i].port);
+			FsWhatIfResult *r = whatif_ask (FS_WHATIF_WINDOWS_BLOCK_WINS,
+			                                policy, line);
+
+			CHECK (r->verdict == (probe[i].open ? FS_WHATIF_ALLOWED
+			                                    : FS_WHATIF_BLOCKED),
 			       "review: inbound UDP %u on \"7000-7010 7100,7200\" "
 			       "is %s", probe[i].port,
 			       probe[i].open ? "allowed" : "blocked");
-			fs_simulation_result_free (r);
+			fs_whatif_result_free (r);
+			g_free (line);
 		}
-		fs_copilot_free (copilot);
 		fs_policy_free (policy);
 	}
 }
@@ -7098,7 +6826,6 @@ int main (void)
 	test_policy_load_validation_f1 ();
 	test_name_hygiene_f3 ();
 	test_whatif_simulate ();
-	test_whatif_reading ();
 	test_direction_pairing ();
 	test_trust_engine ();
 	test_fwrule_equal ();
@@ -7148,3 +6875,16 @@ export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
 rm -rf "$STOCKFW_RULES_DIR"
 
 "$BUILD_DIR/test-core"
+
+# The What-If engine's golden table (tests/test-whatif.c): the reading of
+# a line, both firewall models, the Linux model pinned to the generator,
+# and the fixes it offers.  Same compiler flags as above.
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} tests/test-whatif.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0) \
+   -o "$BUILD_DIR/test-whatif" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
+
+"$BUILD_DIR/test-whatif"

@@ -51,6 +51,7 @@ run_sh "CLI + DASHBOARD (Linux)" tests/test-cli.sh
 # Linux only, and only as root; both print SKIP elsewhere.
 run_sh "APPLY (Linux, live iptables)" tests/test-apply-linux.sh "PASSED|FAILED|SKIP"
 run_sh "APPLY DUAL-STACK (Linux, IPv4 + IPv6, private netns)" tests/test-apply-dual.sh "PASSED|FAILED|SKIP"
+run_sh "WHAT-IF vs KERNEL (Linux, private netns)" tests/test-whatif-live.sh "PASSED|FAILED|SKIP"
 
 section "UI SMOKE TARGETS"
 rc=0

@@ -27,6 +27,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#ifndef G_OS_WIN32
+#include <unistd.h>
+#endif
 
 /* =====================================================================
  * Column indices for the insights tree
@@ -108,7 +111,7 @@ static void refresh_insights (void);
 static void update_stats (void);
 static void run_policy_analysis (void);
 static void on_simulate_clicked (GtkButton *btn, gpointer data);
-static void create_rule_from_scenario (const FsScenario *sc);
+static void run_whatif_action (const FsWhatIfResult *result);
 static void on_apply_suggestion_clicked (GtkButton *btn, gpointer data);
 static void on_analyze_clicked (GtkButton *btn, gpointer data);
 static void on_clear_clicked (GtkButton *btn, gpointer data);
@@ -1482,29 +1485,121 @@ on_analyze_clicked (GtkButton *btn, gpointer data)
 /* =====================================================================
  * on_simulate_clicked - What-if simulation
  *
- * The line is parsed and simulated in core (fs_copilot_simulate_text),
- * and the result lands in two places:
+ * The line is read and answered by the What-If engine (fs-whatif.h)
+ * with everything this window can learn about the firewall: the
+ * native platform's model, the attached policy, the saved Firewall
+ * preferences, whether the firewall runs (and, on Windows, which
+ * network profiles are in force and their default actions), whether
+ * the saved policy is the applied one, and Sentinel's auto-blocks with
+ * their expiry.  The result lands in two places:
  *
- *   - the panel below the entry, as the scrollback: the parsed
- *     reading first, so a grammar misreading is visible instead of
- *     hiding behind the verdict.  Iterating on a line stays one
- *     glance at text.
+ *   - the panel below the entry, as the scrollback: the verdict, what
+ *     the line was read as, the trace and every fix the engine
+ *     verified.  Iterating on a line stays one glance at text.
  *   - the Simulation Visualizer window (fs-simviz), which plays the
- *     verdict: source, firewall, destination, the packet, and the
- *     wall's answer.  Same result, different presentation -- the
- *     component never re-judges anything.
+ *     verdict.  Same result, different presentation -- the component
+ *     never re-judges anything.
  *
  * Nothing is written to the policy by simulating -- that stays a
- * question, not a change.  The visualizer's "Create This Rule"
- * button only returns a response; the rule is built and persisted
- * here, in create_rule_from_scenario(), after the user asked for it.
+ * question, not a change.  The visualizer's action button only
+ * returns a response; the change is made here, in run_whatif_action(),
+ * after the user asked for it, and only after the engine checked it
+ * again against the policy as it is by then.
  * ===================================================================== */
+
+/* [ whatif_state_reliable ]
+ * Linux reads "stopped" for a running firewall when it may not list
+ * the chains (no root); that reading must not become "allowed, the
+ * firewall is off". */
+static gboolean
+whatif_state_reliable (void)
+{
+#ifdef G_OS_WIN32
+    return TRUE;
+#else
+    return geteuid () == 0;
+#endif
+}
+
+/* [ whatif_context_build ]
+ * The context for one question, against the policy as it is now.
+ * settings is filled from the saved preferences and must outlive the
+ * context; the caller frees both. */
+static FsWhatIfContext *
+whatif_context_build (FsSettings *settings)
+{
+    FsWhatIfContext *ctx;
+
+    fs_settings_load_prefs (settings);
+
+    ctx = fs_whatif_context_new (fs_whatif_native_platform (),
+                                 copilot_policy, settings);
+    fs_copilot_whatif_observe (ctx, fs_backend (), whatif_state_reliable ());
+    fs_copilot_whatif_live (ctx, copilot_policy,
+                            fs_policyview_hold_reason ());
+
+    /* Sentinel's staged blocks, with the time each one lifts. */
+    if (auto_blocks != NULL) {
+        for (guint i = 0; i < auto_blocks->len; i++) {
+            AutoBlock *ab = g_ptr_array_index (auto_blocks, i);
+            FsRule *rule;
+
+            if (ab->kind != FS_RULE_OUTBOUND_DENY_TO)
+                continue;
+            rule = fs_rule_from_csv (ab->kind, ab->csv);
+            if (rule != NULL && rule->target != NULL)
+                fs_whatif_context_add_auto_block (
+                    ctx, rule->target,
+                    ab->at_epoch > 0 ? ab->at_epoch + FS_AUTOBLOCK_TTL_S
+                                     : 0);
+            fs_rule_free (rule);
+        }
+    }
+
+    return ctx;
+}
+
+/* [ whatif_verdict_tag ] -- the scrollback colour of a verdict. */
+static const gchar *
+whatif_verdict_tag (FsWhatIfVerdict verdict)
+{
+    switch (verdict) {
+    case FS_WHATIF_ALLOWED: return "green";
+    case FS_WHATIF_BLOCKED: return "red";
+    case FS_WHATIF_DEPENDS: return "orange";
+    case FS_WHATIF_ERROR:
+    default:                return "dim";
+    }
+}
+
+/* [ whatif_print ]
+ * The whole answer into the scrollback: the summary in the verdict's
+ * colour, then what the line was read as, the trace, the fixes and the
+ * assumptions. */
+static void
+whatif_print (const FsWhatIfResult *result)
+{
+    gchar *text = fs_whatif_result_describe (result);
+    gchar *rest = strchr (text, '\n');
+
+    text_view_append (sim_output, "\n  ", NULL);
+    if (rest != NULL)
+        *rest++ = '\0';
+    text_view_append (sim_output, text, whatif_verdict_tag (result->verdict));
+    text_view_append (sim_output, "\n", NULL);
+    if (rest != NULL && *rest != '\0')
+        text_view_append (sim_output, rest, "dim");
+    g_free (text);
+}
+
 static void
 on_simulate_clicked (GtkButton *btn, gpointer data)
 {
     const gchar *text;
-    FsScenario *sc = NULL;
-    FsSimulationResult *result;
+    gchar *line;
+    FsSettings *settings;
+    FsWhatIfContext *ctx;
+    FsWhatIfResult *result;
     GtkWidget *parent;
 
     (void)btn; (void)data;
@@ -1512,55 +1607,35 @@ on_simulate_clicked (GtkButton *btn, gpointer data)
     text = gtk_entry_get_text (GTK_ENTRY (scenario_entry));
     if (!text || !*text) return;
 
+    line = g_strdup (text);
     parent = gtk_widget_get_toplevel (scenario_entry);
 
-    result = fs_copilot_simulate_text (global_copilot, text, &sc);
-    if (result == NULL) {
-        /* An honest refusal: no verdict at all beats a verdict for a
-         * line nobody could read.  The visualizer shows the same
-         * refusal in its neutral state -- examples instead of an
-         * animation, because there is nothing to animate. */
-        text_view_append (sim_output, "\n> ", "bold");
-        text_view_append (sim_output, text, "blue");
-        text_view_append (sim_output, "\n  ", NULL);
-        text_view_append (sim_output,
-            "Nothing could be read from that line: no direction, host, "
-            "port or service was recognized. Nothing was evaluated.\n",
-            "dim");
-        fs_simviz_run (parent, NULL, NULL, text);
-        gtk_entry_set_text (GTK_ENTRY (scenario_entry), "");
-        return;
-    }
+    settings = fs_settings_new ();
+    ctx = whatif_context_build (settings);
+    result = fs_whatif_simulate_text (ctx, line);
+    fs_whatif_context_free (ctx);
 
     text_view_append (sim_output, "\n> ", "bold");
-    text_view_append (sim_output, text, "blue");
-    text_view_append (sim_output, "\n  ", NULL);
-    text_view_append (sim_output, result->explanation,
-                      result->would_block ? "red" : "green");
-    text_view_append (sim_output, "\n", NULL);
+    text_view_append (sim_output, line, "blue");
 
-    /* Say out loud what the line did not say, and point at where the
-     * answer to the omission lives: the verdict names any port or
-     * host that decided it.  ICMP has no ports at all, so the port
-     * note would be a question the line never asked. */
-    if (sc != NULL && !sc->had_port &&
-        g_strcmp0 (sc->protocol, "ICMP") != 0)
-        text_view_append (sim_output,
-            "  Note: the line named no port; the verdict names any "
-            "port that decided it.\n",
-            "dim");
-    if (sc != NULL && !sc->had_addr)
-        text_view_append (sim_output,
-            "  Note: the line named no host; the verdict names any "
-            "host that decided it.\n",
-            "dim");
+    if (result->verdict == FS_WHATIF_ERROR) {
+        /* An honest refusal: no verdict at all beats a verdict for a
+         * line nobody could read.  The visualizer shows the same
+         * refusal in its neutral state. */
+        text_view_append (sim_output, "\n  ", NULL);
+        text_view_append (sim_output, result->error, "orange");
+        text_view_append (sim_output, "\n  Nothing was evaluated.\n", "dim");
+    } else {
+        whatif_print (result);
+    }
 
     /* The window: same verdict, played.  Returns only when closed. */
-    if (fs_simviz_run (parent, result, sc, text) == FS_SIMVIZ_CREATE_RULE)
-        create_rule_from_scenario (sc);
+    if (fs_simviz_run (parent, result, line) == FS_SIMVIZ_CREATE_RULE)
+        run_whatif_action (result);
 
-    fs_simulation_result_free (result);
-    fs_scenario_free (sc);
+    fs_whatif_result_free (result);
+    fs_settings_free (settings);
+    g_free (line);
     gtk_entry_set_text (GTK_ENTRY (scenario_entry), "");
 }
 
@@ -1782,24 +1857,156 @@ on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
 }
 
 /* =====================================================================
- * create_rule_from_scenario - the "Create This Rule" response
+ * run_whatif_action - the visualizer's action button
  *
  * The visualizer only returns a response; everything that changes
  * state happens here, after the user pressed the button, on the same
- * shared policy the Policy page edits: build the rule from the very
- * scenario the verdict answered, refuse duplicates, persist with the
- * usual rollback, refresh the Policy page, then push the policy to
- * the live firewall -- reporting each step honestly, because "the row
- * exists" and "the firewall enforces it" are two different claims.
+ * shared policy the Policy page edits.  Two kinds of action can run:
+ *
+ *   CREATE_ALLOW / CREATE_BLOCK  one row the engine built for exactly
+ *       the question asked.  It is written only when the engine
+ *       verified it, the row passes fs_whatif_row_is_safe() (one port,
+ *       one protocol, a literal host, nothing that widens on either
+ *       platform), and -- because the policy may have changed while
+ *       the window was open -- the engine checks it once more against
+ *       the policy as it is now.  Then the user confirms the literal
+ *       row, it is saved with the usual rollback, pushed through the
+ *       apply gate, and the question is asked again so the scrollback
+ *       says whether the verdict really changed.
+ *   LIFT_SENTINEL  Sentinel's own auto-block for the destination is
+ *       lifted the way an Allow from the Events page lifts it (the
+ *       user's rules are never touched), after a confirmation.
+ *
+ * Each step is reported honestly, because "the row exists" and "the
+ * firewall enforces it" are two different claims.
  * ===================================================================== */
+
+/* [ whatif_push ] -- the apply gate, reported in the scrollback. */
 static void
-create_rule_from_scenario (const FsScenario *sc)
+whatif_push (const gchar *why)
 {
+    GError *error = NULL;
+    FsApplyOutcome *outcome = fs_policy_apply_safe (
+        fs_backend (), copilot_policy, why,
+        fs_policyview_hold_reason (), &error);
+
+    if (outcome->applied) {
+        text_view_append (sim_output, "     ", NULL);
+        text_view_append (sim_output, apply_result_text (outcome->result),
+                          outcome->result == FS_APPLY_OK ? "green" : "orange");
+        text_view_append (sim_output, "\n", NULL);
+    } else if (outcome->held) {
+        text_view_append (sim_output, "     held back on purpose (",
+                          "orange");
+        text_view_append (sim_output, outcome->hold_reason, "orange");
+        text_view_append (sim_output,
+                          ") -- saved, not applied\n", "orange");
+    } else {
+        /* The change really is in the policy -- say so rather than
+         * implying the whole thing failed. */
+        text_view_append (sim_output,
+            "     Saved, but it is NOT live yet: ", "orange");
+        text_view_append (sim_output, apply_result_text (outcome->result),
+                          "orange");
+        if (error != NULL) {
+            text_view_append (sim_output, " - ", NULL);
+            text_view_append (sim_output, error->message, "dim");
+        }
+        text_view_append (sim_output, "\n     ", NULL);
+        if (outcome->rollback_attempted && outcome->rollback_verified)
+            text_view_append (sim_output,
+                "The previous policy was restored to the firewall and "
+                "that restore was verified.", "dim");
+        else if (outcome->rollback_attempted)
+            text_view_append (sim_output,
+                "The rollback ALSO failed -- the firewall may be in an "
+                "inconsistent state; check the Status page.", "dim");
+        else
+            text_view_append (sim_output,
+                "No previously applied policy is recorded, so nothing "
+                "could be restored.", "dim");
+        text_view_append (sim_output,
+            "\n     Re-run StockFW as administrator and apply the "
+            "policy to activate it.\n", "dim");
+    }
+    fs_apply_outcome_free (outcome);
+    g_clear_error (&error);
+}
+
+/* [ whatif_ask_again ]
+ * The question once more, against the policy as it is now: did the
+ * change give the verdict it promised? */
+static void
+whatif_ask_again (const FsWhatIfResult *before, FsWhatIfVerdict promised)
+{
+    FsSettings *settings = fs_settings_new ();
+    FsWhatIfContext *ctx = whatif_context_build (settings);
+    FsWhatIfResult *after = fs_whatif_simulate (ctx, before->query);
+    gchar *line;
+
+    /* The answer describes the saved policy.  Unless the apply journal
+     * shows the firewall loaded exactly that policy, the new verdict is
+     * not what the firewall does yet, and a green line would say it
+     * is. */
+    if (ctx->live != FS_WHATIF_LIVE_YES) {
+        line = g_strdup_printf (
+            "     Asked again: with the saved policy \"%s\" would be %s, "
+            "but the firewall is not running that policy yet (%s).\n",
+            before->query->text, fs_whatif_verdict_name (after->verdict),
+            ctx->live == FS_WHATIF_LIVE_HELD ? "applies are on hold"
+            : ctx->live == FS_WHATIF_LIVE_UNKNOWN
+              ? "there is no record that it was applied"
+              : "the apply did not go through");
+        text_view_append (sim_output, line, "orange");
+    } else if (after->verdict == promised) {
+        line = g_strdup_printf (
+            "     Asked again: \"%s\" is now %s (it was %s).\n",
+            before->query->text, fs_whatif_verdict_name (after->verdict),
+            fs_whatif_verdict_name (before->verdict));
+        text_view_append (sim_output, line, "green");
+    } else {
+        line = g_strdup_printf (
+            "     Asked again: \"%s\" is %s, not %s as checked: %s\n",
+            before->query->text, fs_whatif_verdict_name (after->verdict),
+            fs_whatif_verdict_name (promised), after->summary);
+        text_view_append (sim_output, line, "orange");
+    }
+
+    g_free (line);
+    fs_whatif_result_free (after);
+    fs_whatif_context_free (ctx);
+    fs_settings_free (settings);
+}
+
+/* [ whatif_confirm ] -- Yes / No over the Copilot page. */
+static gboolean
+whatif_confirm (const gchar *title, const gchar *text)
+{
+    GtkWidget *confirm = gtk_message_dialog_new (
+        GTK_WINDOW (gtk_widget_get_toplevel (sim_output)),
+        GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
+        "%s", text);
+    gint response;
+
+    gtk_window_set_title (GTK_WINDOW (confirm), title);
+    response = gtk_dialog_run (GTK_DIALOG (confirm));
+    gtk_widget_destroy (confirm);
+
+    return response == GTK_RESPONSE_YES;
+}
+
+/* [ create_rule_from_whatif ] */
+static void
+create_rule_from_whatif (const FsWhatIfResult *result,
+                         const FsWhatIfAction *act)
+{
+    FsSettings *settings;
+    FsWhatIfContext *ctx;
     FsRule *rule;
     gchar *csv;
-
-    if (sc == NULL)
-        return;
+    gchar *why = NULL;
+    gchar *question;
+    gboolean still;
 
     if (copilot_policy == NULL) {
         text_view_append (sim_output,
@@ -1808,14 +2015,40 @@ create_rule_from_scenario (const FsScenario *sc)
         return;
     }
 
-    rule = fs_copilot_allow_rule_for (sc);
-    if (rule == NULL) {
+    /* Only a verified row, and only one that is safe to write. */
+    if ((act->kind != FS_WHATIF_ACT_CREATE_ALLOW &&
+         act->kind != FS_WHATIF_ACT_CREATE_BLOCK) ||
+        !act->verified || act->row == NULL ||
+        !fs_whatif_row_is_safe (act, &why)) {
         text_view_append (sim_output,
-            "\n[!] The scenario could not be turned into a rule; "
-            "nothing was created.\n", "orange");
+            "\n[!] That rule was not written: ", "orange");
+        text_view_append (sim_output,
+                          why != NULL ? why : "it was not checked", "orange");
+        text_view_append (sim_output, ".\n", NULL);
+        g_free (why);
         return;
     }
 
+    /* The policy may have changed while the window was open: check the
+     * row once more against the policy as it is now. */
+    settings = fs_settings_new ();
+    ctx = whatif_context_build (settings);
+    still = fs_whatif_action_verify (ctx, result->query, act, &why);
+    fs_whatif_context_free (ctx);
+    fs_settings_free (settings);
+
+    if (!still) {
+        text_view_append (sim_output,
+            "\n[!] The policy changed since this was checked, and the rule "
+            "no longer does only what was asked (", "orange");
+        text_view_append (sim_output, why != NULL ? why : "", "orange");
+        text_view_append (sim_output,
+            "). Nothing was written; simulate the line again.\n", "orange");
+        g_free (why);
+        return;
+    }
+
+    rule = fs_rule_copy (act->row);
     csv = fs_rule_to_csv (rule);
 
     if (fs_policy_contains (copilot_policy, rule)) {
@@ -1829,33 +2062,27 @@ create_rule_from_scenario (const FsScenario *sc)
     }
 
     /* The same guardrail the suggestion path uses (Ch. 4.4): a dialog
-     * that prints the literal rule, and nothing is written until a
-     * human answers Yes to that exact CSV row. */
-    {
-        GtkWidget *confirm = gtk_message_dialog_new (
-            GTK_WINDOW (gtk_widget_get_toplevel (sim_output)),
-            GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
-            _("Create this rule?\n\n"
-              "Rule: %s\n\n"
-              "This will add the rule to your policy, save it to disk and\n"
-              "push it to the firewall."),
-            csv);
-        gint response;
+     * that prints the literal rule and what it does, and nothing is
+     * written until a human answers Yes to that exact row. */
+    question = g_strdup_printf (
+        _("Create this rule?\n\n"
+          "%s\n"
+          "Rule: %s\n\n"
+          "%s\n\n"
+          "This will add the rule to your policy, save it to disk and\n"
+          "push it to the firewall."),
+        act->label, csv, act->explanation);
 
-        gtk_window_set_title (GTK_WINDOW (confirm),
-                              _("Create This Rule"));
-        response = gtk_dialog_run (GTK_DIALOG (confirm));
-        gtk_widget_destroy (confirm);
-
-        if (response != GTK_RESPONSE_YES) {
-            text_view_append (sim_output,
-                "\n[=] Rule creation cancelled; nothing was written.\n",
-                "dim");
-            fs_rule_free (rule);
-            g_free (csv);
-            return;
-        }
+    if (!whatif_confirm (_("Create This Rule"), question)) {
+        text_view_append (sim_output,
+            "\n[=] Rule creation cancelled; nothing was written.\n",
+            "dim");
+        g_free (question);
+        fs_rule_free (rule);
+        g_free (csv);
+        return;
     }
+    g_free (question);
 
     /* Persist.  A failed write must leave no row behind, so the
      * store and the disk never disagree -- add_persist rolls back. */
@@ -1870,6 +2097,8 @@ create_rule_from_scenario (const FsScenario *sc)
         return;
     }
 
+    fs_audit_log ("what-if rule created", csv);
+
     /* Show it on the Policy page straight away. */
     fs_policyview_reload (copilot_policy);
     update_stats ();
@@ -1881,57 +2110,75 @@ create_rule_from_scenario (const FsScenario *sc)
     text_view_append (sim_output, "\n", NULL);
 
     /* And put it in front of the actual firewall. */
-    {
-        GError *error = NULL;
-        FsApplyOutcome *outcome = fs_policy_apply_safe (
-            fs_backend (), copilot_policy, "what-if create",
-            fs_policyview_hold_reason (), &error);
+    whatif_push ("what-if create");
 
-        if (outcome->applied) {
-            text_view_append (sim_output, "     ", NULL);
-            text_view_append (sim_output, apply_result_text (outcome->result),
-                              outcome->result == FS_APPLY_OK ? "green" : "orange");
-            text_view_append (sim_output, "\n", NULL);
-        } else if (outcome->held) {
-            text_view_append (sim_output, "     held back on purpose (",
-                              "orange");
-            text_view_append (sim_output, outcome->hold_reason, "orange");
-            text_view_append (sim_output,
-                              ") -- saved, not applied\n", "orange");
-        } else {
-            /* The row really is in the policy -- say so rather than
-             * implying the whole thing failed. */
-            text_view_append (sim_output,
-                "     Saved, but it is NOT live yet: ", "orange");
-            text_view_append (sim_output, apply_result_text (outcome->result),
-                              "orange");
-            if (error != NULL) {
-                text_view_append (sim_output, " - ", NULL);
-                text_view_append (sim_output, error->message, "dim");
-            }
-            text_view_append (sim_output, "\n     ", NULL);
-            if (outcome->rollback_attempted && outcome->rollback_verified)
-                text_view_append (sim_output,
-                    "The previous policy was restored to the firewall and "
-                    "that restore was verified.", "dim");
-            else if (outcome->rollback_attempted)
-                text_view_append (sim_output,
-                    "The rollback ALSO failed -- the firewall may be in an "
-                    "inconsistent state; check the Status page.", "dim");
-            else
-                text_view_append (sim_output,
-                    "No previously applied policy is recorded, so nothing "
-                    "could be restored.", "dim");
-            text_view_append (sim_output,
-                "\n     Re-run StockFW as administrator and apply the "
-                "policy to activate it.\n", "dim");
-        }
-        fs_apply_outcome_free (outcome);
-        g_clear_error (&error);
-    }
+    /* Did it do what was promised? */
+    whatif_ask_again (result, act->gives);
 
     fs_rule_free (rule);
     g_free (csv);
+}
+
+/* [ lift_sentinel_from_whatif ] */
+static void
+lift_sentinel_from_whatif (const FsWhatIfResult *result,
+                           const FsWhatIfAction *act)
+{
+    gchar *question;
+
+    if (act->target == NULL || *act->target == '\0')
+        return;
+
+    question = g_strdup_printf (
+        _("Lift Sentinel's block?\n\n%s\n\n"
+          "Sentinel blocked %s automatically. Lifting it removes only "
+          "Sentinel's own block (your rules are not touched) and keeps "
+          "Sentinel from blocking it again this session."),
+        act->explanation != NULL ? act->explanation : "", act->target);
+
+    if (!whatif_confirm (_("Lift Sentinel's Block"), question)) {
+        text_view_append (sim_output,
+            "\n[=] Sentinel's block left in place; nothing changed.\n",
+            "dim");
+        g_free (question);
+        return;
+    }
+    g_free (question);
+
+    if (!fs_copilot_lift_auto_blocks_for_dest (act->target)) {
+        text_view_append (sim_output,
+            "\n[!] No Sentinel block for ", "orange");
+        text_view_append (sim_output, act->target, "bold");
+        text_view_append (sim_output,
+            " could be lifted (it may have expired already, or could not "
+            "be removed from the policy file).\n", "orange");
+        whatif_ask_again (result, act->gives);
+        return;
+    }
+
+    update_stats ();
+    refresh_insights ();
+    text_view_append (sim_output, "\n[OK] Sentinel's block of ", "green");
+    text_view_append (sim_output, act->target, "bold");
+    text_view_append (sim_output, " was lifted.\n", "green");
+
+    whatif_push ("what-if lift sentinel");
+    whatif_ask_again (result, act->gives);
+}
+
+/* [ run_whatif_action ] */
+static void
+run_whatif_action (const FsWhatIfResult *result)
+{
+    const FsWhatIfAction *act = fs_whatif_result_primary_action (result);
+
+    if (act == NULL || result->query == NULL)
+        return;
+
+    if (act->kind == FS_WHATIF_ACT_LIFT_SENTINEL)
+        lift_sentinel_from_whatif (result, act);
+    else
+        create_rule_from_whatif (result, act);
 }
 
 /* =====================================================================

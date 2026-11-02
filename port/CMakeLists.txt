@@ -39,6 +39,7 @@ add_library(fs-core STATIC
   src/core/fs-settings-plan.c
   src/core/fs-service.c
   src/core/fs-fwrule.c
+  src/core/fs-whatif.c
   src/core/fs-copilot.c
   src/core/fs-eventrule.c
   src/core/fs-audit.c
@@ -397,6 +398,11 @@ target_link_libraries(fs-nftset-load PRIVATE fs-core-nogui)
 # "profile in use is off" judgement (test-netplace.c).  GLib only.
 add_executable(fs-netplace-test EXCLUDE_FROM_ALL tests/test-netplace.c)
 target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)
+# The What-If engine's golden table: the reading of a line, both firewall
+# models, the Linux model pinned to the generator's chains, and the
+# fixes it offers (test-whatif.c; test-core.sh runs it too).  GLib only.
+add_executable(fs-whatif-test EXCLUDE_FROM_ALL tests/test-whatif.c)
+target_link_libraries(fs-whatif-test PRIVATE fs-core-nogui)
 # The Overview against a fake backend that answers the way Windows does
 # (profiles, the profile in use, the network's name), so the Windows
 # half of the page is exercised on any platform.  The test supplies

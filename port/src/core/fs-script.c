@@ -543,7 +543,11 @@ append_host_rules (Gen *g, GString *out, GPtrArray *rules,
 }
 
 /* [ append_service_rules ]
- * The tcp/udp pair for each service rule, per address of its target. */
+ * The tcp/udp pair for each service rule, per address of its target.
+ * The pseudo-services "TCP" and "UDP" (what the What-If's "Create This
+ * Rule" writes, and what fs-fwrule.c already reads as one protocol)
+ * get their own protocol's line only: a row that says TCP must not
+ * open UDP on Linux when it does not on Windows. */
 static void
 append_service_rules (Gen *g, GString *out, GPtrArray *rules,
                       const gchar *chain, const gchar *jump, gboolean deny)
@@ -552,6 +556,14 @@ append_service_rules (Gen *g, GString *out, GPtrArray *rules,
 		FsRule *rule = g_ptr_array_index (rules, i);
 		gchar *port;
 		GPtrArray *addrs;
+		gboolean tcp = TRUE, udp = TRUE;
+
+		if (rule->service != NULL &&
+		    g_ascii_strcasecmp (rule->service, "TCP") == 0)
+			udp = FALSE;
+		else if (rule->service != NULL &&
+		         g_ascii_strcasecmp (rule->service, "UDP") == 0)
+			tcp = FALSE;
 
 		if (rule->port == NULL || *rule->port == '\0')
 			continue;
@@ -576,10 +588,14 @@ append_service_rules (Gen *g, GString *out, GPtrArray *rules,
 			gchar *src = addr != NULL ? g_strdup_printf ("-s %s ", addr)
 			                          : g_strdup ("");
 
-			g_string_append_printf (out,
-				"$IPT -A %s %s-p tcp --dport %s -j %s\n"
-				"$IPT -A %s %s-p udp --dport %s -j %s\n",
-				chain, src, port, jump, chain, src, port, jump);
+			if (tcp)
+				g_string_append_printf (out,
+					"$IPT -A %s %s-p tcp --dport %s -j %s\n",
+					chain, src, port, jump);
+			if (udp)
+				g_string_append_printf (out,
+					"$IPT -A %s %s-p udp --dport %s -j %s\n",
+					chain, src, port, jump);
 			g_free (src);
 		}
 

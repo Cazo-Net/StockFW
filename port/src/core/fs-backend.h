@@ -236,6 +236,16 @@ typedef struct
 	 * gchar* -> guint64* (both owned by the table).  NULL when the
 	 * platform cannot count or nothing is loaded. */
 	GHashTable *(*intel_counters) (void);
+
+	/* 1.0.7 What-If: one profile's default actions -- what Windows
+	 * Firewall does with traffic no rule matches.  *inbound_block /
+	 * *outbound_block are TRUE for "block".  FALSE when they cannot be
+	 * read; the What-If then assumes Windows' own default (block
+	 * inbound, allow outbound) and says so.  NULL slot: the platform
+	 * has no per-profile default (Linux: the generated chains end in
+	 * their own default). */
+	gboolean (*get_profile_defaults) (gint profile, gboolean *inbound_block,
+	                                  gboolean *outbound_block);
 } FsBackend;
 
 /* Profile identifiers, matching Windows' own numbering. */
