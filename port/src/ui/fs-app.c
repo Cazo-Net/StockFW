@@ -387,7 +387,10 @@ fs_app_activate (GtkApplication *app)
 	/* Window */
 	fsapp.window = gtk_application_window_new (app);
 	gtk_window_set_title (GTK_WINDOW (fsapp.window), "StockFW");
-	gtk_window_set_default_size (GTK_WINDOW (fsapp.window), 620, 480);
+	/* Six pages, two of them side-by-side graphs: 620x480 (the old
+	 * size) clipped the Activity cards and the Policy groups' buttons.
+	 * 1000x700 still fits a 1366x768 laptop screen with its panel. */
+	gtk_window_set_default_size (GTK_WINDOW (fsapp.window), 1000, 700);
 
 	/* Set window icon from embedded logo */
 	{

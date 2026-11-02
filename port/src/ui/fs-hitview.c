@@ -29,6 +29,11 @@
 static GtkWidget    *view;
 static GtkListStore *store;
 static GtkWidget    *count_label;
+
+/* Shown over the empty list, so an empty list says what it is waiting
+ * for (or that the filter hides everything) instead of being a blank
+ * white box. */
+static GtkWidget    *empty_label;
 static GtkWidget    *monitor_warning;        /* strip; hidden unless needed */
 static GtkWidget    *monitor_warning_label;
 
@@ -248,6 +253,25 @@ update_count_label (void)
 
 	gtk_label_set_text (GTK_LABEL (count_label), text);
 	g_free (text);
+
+	if (empty_label != NULL) {
+		gboolean filtering = filter_text != NULL && *filter_text != '\0';
+		guint shown = row_count;
+
+		if (filtering && filter_model != NULL)
+			shown = (guint) gtk_tree_model_iter_n_children (filter_model,
+			                                                NULL);
+
+		gtk_label_set_text (GTK_LABEL (empty_label),
+			row_count > 0
+			? _("No event matches the filter.")
+			: fs_hitview_active ()
+			? _("No events yet.\nStockFW lists traffic here as its rules "
+			    "allow or block it.")
+			: _("Event monitoring is off.\nTurn on Monitor to list "
+			    "traffic here."));
+		gtk_widget_set_visible (empty_label, shown == 0);
+	}
 }
 
 /* [ filter_visible ]
@@ -737,10 +761,14 @@ fs_hitview_start (GError **error)
 {
 	const FsBackend *backend = fs_backend ();
 
+	gboolean ok;
+
 	if (fs_hitview_active ())
 		return TRUE;
 
-	return backend->log_start (on_hit, NULL, error);
+	ok = backend->log_start (on_hit, NULL, error);
+	update_count_label ();     /* the empty list's wording follows */
+	return ok;
 }
 
 void
@@ -748,6 +776,7 @@ fs_hitview_stop (void)
 {
 	if (fs_hitview_active ())
 		fs_backend ()->log_stop ();
+	update_count_label ();
 }
 
 gboolean
@@ -1480,7 +1509,26 @@ fs_hitview_page (void)
 	                                     GTK_SHADOW_IN);
 	gtk_widget_set_vexpand (scroll, TRUE);
 	gtk_container_add (GTK_CONTAINER (scroll), view);
-	gtk_box_pack_start (GTK_BOX (page), scroll, TRUE, TRUE, 0);
+	{
+		GtkWidget *overlay = gtk_overlay_new ();
+
+		empty_label = gtk_label_new (NULL);
+		gtk_label_set_justify (GTK_LABEL (empty_label), GTK_JUSTIFY_CENTER);
+		gtk_widget_set_halign (empty_label, GTK_ALIGN_CENTER);
+		gtk_widget_set_valign (empty_label, GTK_ALIGN_CENTER);
+		gtk_style_context_add_class (
+			gtk_widget_get_style_context (empty_label), "empty-state");
+		/* Its visibility is the row count's to decide, not the
+		 * window's show_all. */
+		gtk_widget_set_no_show_all (empty_label, TRUE);
+
+		gtk_container_add (GTK_CONTAINER (overlay), scroll);
+		gtk_overlay_add_overlay (GTK_OVERLAY (overlay), empty_label);
+		gtk_overlay_set_overlay_pass_through (GTK_OVERLAY (overlay),
+		                                      empty_label, TRUE);
+		gtk_widget_set_vexpand (overlay, TRUE);
+		gtk_box_pack_start (GTK_BOX (page), overlay, TRUE, TRUE, 0);
+	}
 
 	/* Start monitoring straight away: the whole point of the page is
 	 * watching events, and the original did this too.  A failure here

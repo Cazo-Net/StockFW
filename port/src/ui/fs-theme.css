@@ -503,3 +503,21 @@ dialog {
 	color: #ffffff;
 	font-weight: bold;
 }
+
+/* --- frame titles ---------------------------------------------------- */
+/* A frame's title sat flush on its border with no air on either side
+ * ("Network", "Active connections", "Selected file", every Policy
+ * group), reading as text struck through by the line.  A little
+ * padding lifts it off the rule; weight and colour make it a heading. */
+frame > label {
+	margin-left: 8px;
+	padding: 0 4px;
+	font-weight: bold;
+	color: #424242;
+}
+
+/* Empty-state text over an empty list. */
+.empty-state {
+	color: #757575;
+	font-size: 13px;
+}
