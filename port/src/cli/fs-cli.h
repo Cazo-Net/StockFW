@@ -38,9 +38,10 @@ enum
 	FS_EXIT_USAGE     = 2,
 	FS_EXIT_NEED_ROOT = 3,
 	FS_EXIT_BLOCKED   = 5,   /* simulate: the traffic would be blocked */
-	FS_EXIT_DEPENDS   = 6    /* simulate: allowed in some cases, blocked
+	FS_EXIT_DEPENDS   = 6,   /* simulate: allowed in some cases, blocked
 	                          * in others (never 0: scripts that branch
 	                          * on "allowed" must not take it as yes) */
+	FS_EXIT_FINDINGS  = 7    /* copilot health: the check found something */
 };
 
 /* Global output switches, set once by main. */
@@ -126,6 +127,7 @@ gint fs_cli_cmd_apply       (gint argc, gchar **argv);
 gint fs_cli_cmd_start       (gint argc, gchar **argv);
 gint fs_cli_cmd_stop        (gint argc, gchar **argv);
 gint fs_cli_cmd_simulate    (gint argc, gchar **argv);
+gint fs_cli_cmd_copilot     (gint argc, gchar **argv);
 gint fs_cli_cmd_events      (gint argc, gchar **argv);
 gint fs_cli_cmd_connections (gint argc, gchar **argv);
 gint fs_cli_cmd_interfaces  (gint argc, gchar **argv);
