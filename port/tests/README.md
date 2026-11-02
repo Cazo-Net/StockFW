@@ -416,3 +416,129 @@ Three of the implementer's teeth were re-proven the same way: the floor
 measured before the protected ranges come out (4 checks failed,
 FireHOL's 224.0.0.0/3 among them), no rollback check (4 failed), no
 poisoned-list rule (16 failed).
+
+## Downloads (`tests/test-fetch.sh`, `fs-fetch-test`)
+
+```sh
+cd port
+ninja -C build-linux fs-fetch-test
+./build-linux/fs-fetch-test golden    # the pure pieces, no root needed
+sudo bash tests/test-fetch.sh         # everything
+```
+
+`src/core/fs-fetch.c` is how StockFW downloads (1.0.7 design, section
+5): one https:// URL, through `curl` started with an argv and an
+environment of its own, the body read from a pipe and counted here, not
+by curl alone.  `fs-fetch-test` is built from the same file with
+`FS_FETCH_TESTING`, the only build that honours `STOCKFW_TEST_CURL` (a
+stand-in for curl) and `STOCKFW_TEST_CACERT` (the throwaway CA, passed
+as `--cacert`); built without it, fs-fetch reads no environment at all.
+
+The shell test needs root (curl has to be made `nobody`), curl,
+openssl, python3, unshare, mount and ip, and SKIPs without them
+(`setpriv`, when present, adds the not-root case and a control).  It re-runs
+itself under `unshare -n`: an HTTPS server with a throwaway CA, a plain
+HTTP server, a server that accepts and never answers and a proxy that
+records connections all listen on the namespace's own 127.0.0.1, so no
+case reaches the host or the internet.  Cases that change `/etc/passwd`
+or hide `/usr/bin/curl` bind-mount over them in a nested `unshare -m`.
+Stand-ins for curl (shell scripts in the test's temporary directory)
+report what they were given, exit 60, hang past their own `--max-time`,
+drop `--max-filesize` before running the real curl, flood stderr (200
+KB, and 64 MiB), print an escape sequence, or only leave a flag saying
+they ran.
+`FS_FETCH_TEST=build-asan/fs-fetch-test` runs the whole test with
+another build of the driver, an ASan one for instance; with UBSan in
+it too, set `UBSAN_OPTIONS=halt_on_error=1` so that a report fails the
+case instead of only being printed.
+
+| Area | What it pins down |
+|---|---|
+| pure pieces | the argv golden with `-q` first; exactly `PATH` and `LC_ALL`; the URL and proxy rules; curl's exit table; bad requests refused before anything starts |
+| trust | with the test CA a download works, on a main context of its own, and four at once from four threads; without it no curlrc saying `insecure` (under `HOME`, `CURL_HOME`, `XDG_CONFIG_HOME`, or in nobody's passwd home), no `CURL_CA_BUNDLE`, `SSL_CERT_FILE`/`SSL_CERT_DIR`, `SSLKEYLOGFILE` or `*_proxy` gets through: a TLS error, no proxy connection, no key log, while controls show plain curl obeying each of them |
+| size | exactly the cap passes, one byte over is TOO_LARGE; an endless or stalled chunked body is cut at the cap within 3 s, also when curl ignores `--max-filesize` (as curl before 8.4 did for a chunked body), and no curl is left running; the edges hold at a cap of 1 byte and of exactly one 64 KiB read |
+| time | a server that never answers is TIMEOUT within budget; a curl that hangs past its own `--max-time` is killed by fs_fetch's timer |
+| where | a redirect to http:// and a chain of 5 redirects are URL errors, and the http server behind the redirect never sees a request; 3 redirects pass; `{..}` and `[..]` in a URL make one request, not a curl glob; a 404 is HTTP; a proxy the caller passes is used |
+| who | as root, curl runs as nobody (every uid and gid, no groups, no capabilities, no_new_privs) with the golden argv, stdin `/dev/null`, cwd `/` and none of the caller's descriptors, while the caller stays root with its own groups; no `nobody`, a `nobody` with uid 0 or group 0, or one the child cannot become: PRIVILEGE, and nothing runs; a caller that is not root downloads as itself |
+| words | a curl exiting 60 is TLS with curl's own text, without its `curl: (60)` prefix; a missing curl is NO_CURL (also the real lookup, with `/usr/bin/curl` hidden); a curl flooding stderr still gives one short line, and 64 MiB of it raises the caller's peak memory by less than 32 MiB (keeping it all costs over 64); every message is printable ASCII: an escape sequence, a tab or DEL in curl's text becomes `?` |
+| leftovers | 2 to 4 fetches in a row of each outcome (a body, the cap, TLS, HTTP, the timer's kill, no curl, PRIVILEGE) leave the caller with no more descriptors than after the first, and no curl running |
+| release | the release objects of `fs-fetch.c` (fs-core, fs-core-nogui) name neither `STOCKFW_TEST_CURL` nor `STOCKFW_TEST_CACERT`; the test object does (the control) |
+
+Teeth, each re-injected into `fs-fetch.c` and seen failing, then
+restored (checked with `cmp`) and green again.  After the dash, the
+checks that caught it:
+
+- `-q` dropped -- "nobody's own curlrc says insecure: TLS", both argv
+  goldens, "-q is the first argument", the report's "-q is curl's first
+  argument";
+- the caller's environment inherited (no `set_environ`) -- "the hostile
+  environment, no test CA: TLS", "no TLS key log was written", the
+  report's "curl's environment is exactly ...";
+- no privilege drop (no child setup) -- the report's uid, gid and
+  no_new_privs checks, "root, a nobody the child cannot become:
+  PRIVILEGE", "and the stand-in never ran";
+- only curl's `--max-filesize` for the cap (fs_fetch's count disabled)
+  -- "one byte over, chunked, curl without --max-filesize: TOO_LARGE",
+  and the endless and stalled bodies "returned within 3 s";
+- the whole-transfer timer no longer kills -- "a curl that hangs past
+  its own --max-time: fs_fetch did not return within 25 s";
+- http allowed (`--proto` and `--proto-redir` `=http,https`) -- "a
+  redirect to http://: URL", "the http:// server behind the redirect saw
+  no request", both argv goldens;
+- `--globoff` dropped -- "a URL with {1,2} in it: the body has 47 bytes"
+  (it had 94), "the server saw one request", "a query with [..] in it:
+  ok", both argv goldens;
+- the caller's descriptors inherited (`INHERIT_FDS`) -- the report's "no
+  descriptor of the caller reached curl (the held marker file
+  included)";
+- the cap off by one (`>=`) -- "exactly the cap (Content-Length): ok"
+  and "exactly the cap, chunked, ...: ok";
+- at the cap, reading stops but curl is not killed -- the endless and
+  stalled bodies "returned within 3 s";
+- no `PR_SET_NO_NEW_PRIVS` in the child -- the report's "no_new_privs
+  set";
+- curl given the caller's stdin -- the report's "curl's stdin is
+  /dev/null";
+- failing open without a `nobody` (downloading as root) -- "root, no
+  account nobody: PRIVILEGE", "and nothing was started";
+- the caller's default main context iterated -- "a small file with the
+  test CA: fs_fetch ran on its own main context";
+- curl's `curl: (60) ` prefix kept in the message -- "curl exits 60: the
+  message is "Could not download: SSL certificate problem: ..."".
+
+Review.  Four of the teeth above were re-injected again and seen
+failing as listed (`-q` dropped: 7 FAIL; only curl's `--max-filesize`
+for the cap: the 6 listed, and 10 more of the checks below; failing
+open without a `nobody`: 3 FAIL; the timer no longer kills: the hang
+case and "the timer's kill, twice").  The review added the checks
+marked in the table (capabilities, the caller staying root, group 0,
+not root, control bytes, the 64 MiB flood, leftovers, the cap edges,
+release objects, and in `golden` the user-agent bound of 256 bytes,
+DEL in a user agent, a CR LF user agent refused by fs_fetch, and
+max_bytes G_MAXUINT refused while G_MAXUINT - 1 reaches the spawn).
+Their teeth; "(gap)" marks a bug the suite before the review let
+through, run against the same re-injected source:
+
+- control bytes kept in curl's text (no `?` for them) -- "curl prints
+  an escape sequence, a tab and DEL: the message is printable ASCII
+  only" and its exact message (gap);
+- the subprocess never released (both pipes leak) -- "4 fetches in a
+  row leave no descriptor open (8 after the first, 14 after the last)"
+  for each outcome, 6 FAIL (gap);
+- the account change made in this process before the spawn, failures
+  handled, curl still nobody -- "the caller is still root with its own
+  groups (uid 65534 ...)", twice; before the review only the four-thread
+  case noticed, by a race (other threads' setgroups failing);
+- the test hooks compiled into every build (`#ifdef FS_FETCH_TESTING`
+  made `#if 1`) -- "the release fs-fetch.c.o (fs-core-nogui) names
+  neither hook" and the same for fs-core (gap);
+- all of curl's stderr kept -- "curl prints 64 MiB on stderr: peak
+  memory grew by at most 32768 KiB (66972 KiB)" (gap);
+- a `nobody` with group 0 accepted -- "root, nobody's group is 0:
+  PRIVILEGE (got ok)", its message, "and nothing was started" (gap);
+- the child setup installed whatever the caller's account -- "started
+  by nobody, not root: ok (got FAILED)" and its body checks (gap);
+- the user-agent bound off by one (`>`) -- "argv refuses a user agent
+  of 257 bytes" (gap);
+- no guard for a cap a GByteArray cannot count to -- "max_bytes
+  G_MAXUINT is refused before spawning -> FAILED (got NO_CURL)" (gap).
