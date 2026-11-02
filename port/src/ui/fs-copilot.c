@@ -22,6 +22,7 @@
 #include "ui/fs-policyview.h"
 #include "ui/fs-simviz.h"
 #include "core/fs-apply.h"
+#include "core/fs-autoblock.h"
 #include "core/fs-i18n.h"
 #include <gtk/gtk.h>
 #include <string.h>
@@ -75,7 +76,8 @@ static guint          total_events     = 0;
 static GtkWidget     *sentinel_combo   = NULL;
 static gchar          sentinel_mode[16] = "auto";
 
-#define FS_AUTOBLOCK_TTL_S 600     /* auto-blocks lift after 10 min */
+/* FS_AUTOBLOCK_TTL_S (core/fs-autoblock.h): auto-blocks lift after
+ * 10 min. */
 #define FS_AUTOBLOCK_RETRY_US (60 * G_USEC_PER_SEC)
 
 typedef struct
@@ -89,6 +91,12 @@ typedef struct
 
 static GPtrArray *auto_blocks       = NULL;  /* AutoBlock*, free_func set */
 static guint      auto_block_expiry_id = 0;
+/* Tray "Pause Sentinel auto-block for 1 hour": while this monotonic
+ * time is in the future, the auto pass stages nothing.  Blocks already
+ * staged keep their own ten minutes.  Not persisted: a restart
+ * resumes auto-block. */
+static gint64     sentinel_paused_until = 0;
+static guint      sentinel_resume_id = 0;
 static gint64     auto_block_last_fail = 0;
 static gboolean   auto_block_failed_once = FALSE;
 
@@ -634,27 +642,15 @@ auto_block_cooldown_contains (FsRuleKind kind, const gchar *csv)
 static gchar *
 auto_block_state_path (void)
 {
-    const gchar *env = g_getenv ("STOCKFW_AUTOBLOCK_FILE");
-
-    if (env != NULL && *env != '\0')
-        return g_strdup (env);
-
-#ifdef G_OS_WIN32
-    {
-        const gchar *appdata = g_getenv ("APPDATA");
-
-        if (appdata != NULL && *appdata != '\0')
-            return g_build_filename (appdata, "stockfw", "autoblocks",
-                                     NULL);
-
-        return g_build_filename (g_get_home_dir (), "AppData", "Roaming",
-                                 "stockfw", "autoblocks", NULL);
-    }
-#else
-    return g_build_filename (g_get_user_config_dir (), "stockfw",
-                             "autoblocks", NULL);
-#endif
+    /* One definition, shared with `stockfw start' (core). */
+    return fs_autoblock_state_path ();
 }
+
+/* TRUE while the file is behind the array: the last write failed.
+ * fs_copilot_autoblocks_flush() retries it (the periodic save and the
+ * end of the session call it), so one failed write is not left until
+ * the next stage or retire happens to come along. */
+static gboolean auto_block_state_unsaved = FALSE;
 
 /* [ auto_block_state_save ]
  * Rewrite the staged list from the array: one row per block this
@@ -662,7 +658,9 @@ auto_block_state_path (void)
  * survive the split.  Called on every stage and every retire, so the
  * file mirrors the session's OWN blocks and never a user's manual
  * rule.  A failed write is audited, not swallowed: without this file
- * a restart turns managed blocks into orphans nobody expires. */
+ * a restart turns managed blocks into orphans nobody expires.  Once
+ * per run of failures, so a retry every few minutes against a full
+ * disk does not fill the audit log; the recovery is audited too. */
 static void
 auto_block_state_save (void)
 {
@@ -689,13 +687,28 @@ auto_block_state_save (void)
     g_free (dir);
 
     if (!g_file_set_contents (path, out->str, -1, &error)) {
-        fs_audit_log ("sentinel auto-block state save failed",
-                      error != NULL ? error->message : path);
+        if (!auto_block_state_unsaved)
+            fs_audit_log ("sentinel auto-block state save failed",
+                          error != NULL ? error->message : path);
+        auto_block_state_unsaved = TRUE;
         g_clear_error (&error);
+    } else if (auto_block_state_unsaved) {
+        fs_audit_log ("sentinel auto-block state saved after a failed "
+                      "write", path);
+        auto_block_state_unsaved = FALSE;
     }
 
     g_string_free (out, TRUE);
     g_free (path);
+}
+
+gboolean
+fs_copilot_autoblocks_flush (void)
+{
+    if (auto_block_state_unsaved)
+        auto_block_state_save ();
+
+    return !auto_block_state_unsaved;
 }
 
 /* [ auto_block_push ]
@@ -880,6 +893,9 @@ fs_copilot_sentinel_auto_pass (void)
 
     if (global_copilot == NULL || copilot_policy == NULL ||
         g_strcmp0 (sentinel_mode, "auto") != 0)
+        return FALSE;
+
+    if (fs_copilot_sentinel_paused (NULL))
         return FALSE;
 
     if (auto_blocks == NULL)
@@ -1149,8 +1165,8 @@ fs_copilot_lift_auto_blocks_for_dest (const gchar *dest)
  * rewritten to mirror what survived, and any row whose removal
  * failed stays tracked so the expiry timer retries it instead of
  * leaving a block nobody manages. */
-void
-fs_copilot_autoblocks_restore (FsPolicy *policy)
+gboolean
+fs_copilot_autoblocks_restore (FsPolicy *policy, FsPolicy *due)
 {
     gchar *path;
     gchar *contents = NULL;
@@ -1160,7 +1176,7 @@ fs_copilot_autoblocks_restore (FsPolicy *policy)
     guint stale = 0, lifted = 0, armed = 0, gone = 0, retried = 0;
 
     if (policy == NULL)
-        return;
+        return FALSE;
 
     /* The shared policy, even if the Copilot page is not built yet:
      * the drop helper works through this pointer. */
@@ -1170,7 +1186,7 @@ fs_copilot_autoblocks_restore (FsPolicy *policy)
 
     if (!g_file_get_contents (path, &contents, NULL, NULL)) {
         g_free (path);
-        return;                    /* nothing was staged last session */
+        return FALSE;              /* nothing was staged last session */
     }
 
     now_epoch = g_get_real_time () / G_USEC_PER_SEC;
@@ -1222,6 +1238,17 @@ fs_copilot_autoblocks_restore (FsPolicy *policy)
                 now_epoch - epoch >= FS_AUTOBLOCK_TTL_S
                 ? "expired while StockFW was not running"
                 : "Sentinel is not in auto mode";
+
+            /* Due, whether or not the policy still holds it: the
+             * firewall may (the journal says), and the caller takes
+             * it off there. */
+            if (due != NULL) {
+                FsRule *rule = fs_rule_from_csv (ab->kind, ab->csv);
+
+                if (rule != NULL && !fs_policy_contains (due, rule))
+                    fs_policy_add (due, rule);     /* stores a copy */
+                fs_rule_free (rule);
+            }
 
             if (auto_block_rule_in_policy (ab))
                 auto_block_drop (ab, why);
@@ -1293,6 +1320,88 @@ fs_copilot_autoblocks_restore (FsPolicy *policy)
 
     g_free (contents);
     g_free (path);
+
+    /* Rows are due: the firewall may still hold them until a start or
+     * a lift.  The caller decides which (fs-app.c), from `due'. */
+    return stale > 0 || lifted > 0 || retried > 0;
+}
+
+/* ===== Sentinel pause (tray menu) ================================ */
+
+gboolean
+fs_copilot_sentinel_can_pause (void)
+{
+    return global_copilot != NULL && copilot_policy != NULL &&
+           g_strcmp0 (sentinel_mode, "auto") == 0;
+}
+
+gboolean
+fs_copilot_sentinel_paused (gint64 *seconds_left)
+{
+    gint64 now = g_get_monotonic_time ();
+
+    if (sentinel_paused_until <= now) {
+        if (seconds_left != NULL)
+            *seconds_left = 0;
+        return FALSE;
+    }
+    if (seconds_left != NULL)
+        *seconds_left = (sentinel_paused_until - now + G_USEC_PER_SEC - 1) /
+                        G_USEC_PER_SEC;
+    return TRUE;
+}
+
+static gboolean
+sentinel_resume_cb (gpointer data)
+{
+    (void) data;
+
+    sentinel_resume_id = 0;
+    fs_copilot_sentinel_pause (0);
+    return G_SOURCE_REMOVE;
+}
+
+void
+fs_copilot_sentinel_pause (guint seconds)
+{
+    gboolean was_paused = fs_copilot_sentinel_paused (NULL);
+
+    if (sentinel_resume_id != 0) {
+        g_source_remove (sentinel_resume_id);
+        sentinel_resume_id = 0;
+    }
+
+    if (seconds == 0) {
+        sentinel_paused_until = 0;
+        if (!was_paused)
+            return;
+        fs_audit_log ("sentinel auto-block resumed",
+                      "tray | auto-block stages critical insights again");
+        if (analysis_output != NULL)
+            text_view_append (analysis_output,
+                "\n[Sentinel] auto-block resumed.\n", "dim");
+        /* Catch up on what arrived while paused. */
+        if (fs_copilot_sentinel_auto_pass ())
+            refresh_insights ();
+        return;
+    }
+
+    sentinel_paused_until = g_get_monotonic_time () +
+                            (gint64) seconds * G_USEC_PER_SEC;
+    sentinel_resume_id = g_timeout_add_seconds (seconds,
+                                                sentinel_resume_cb, NULL);
+    {
+        gchar *detail = g_strdup_printf (
+            "tray | nothing new is staged for %u minutes; blocks already "
+            "staged keep their own ten minutes", seconds / 60);
+
+        fs_audit_log ("sentinel auto-block paused", detail);
+        g_free (detail);
+    }
+    if (analysis_output != NULL)
+        text_view_append (analysis_output,
+            "\n[Sentinel] auto-block paused from the tray menu: insights "
+            "are still reported, nothing new is staged.\n", "dim");
 }
 
 /* [ on_sentinel_mode_changed ] */

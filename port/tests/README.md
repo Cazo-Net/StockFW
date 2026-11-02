@@ -26,6 +26,11 @@ the tests never touches a real `/etc/stockfw`.
 | policy | save/load round trip, defaults, add and remove by content |
 | services | port to name lookup, back-door ports, ICMP types, range expansion |
 | scripts | inbound/outbound rules, NAT, permissive vs restrictive defaults |
+| settings table | one key, type and default per setting; every reader falls back to the table; a broken file kept as `.bad`; Preferences writes only what changed |
+| settings gate | a settings change is applied whole, through the gate, and rolled back under the previous settings |
+| settings pending | each apply records the settings it went out with; settings saved later ("Later") make the next policy apply whole, even for an unchanged policy, never a delta |
+| sharing | router mode (forwarding, masquerade, the accepts for both devices, the local-broadcast block) only with both devices chosen |
+| start on open | the app's one start goes through the start gate (`fs_firewall_start_lifting` in `start_at_launch`), only after the policy is loaded and Sentinel's expired blocks are out of it; no direct backend start (read from `fs-app.c`) |
 | Windows rules | policy rows to netsh rules and argv, refusals, the upgrade apply (see below) |
 
 ## Event source (`tests/test-logstart.sh`)
@@ -96,6 +101,87 @@ marks never shown; switching a profile on from the card not re-judging
 until the next poll.
 
 
+## Preferences (`fs-ui-smoke`, `fs-prefs-fake-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-ui-smoke fs-prefs-fake-smoke
+xvfb-run -a ./build-linux/fs-ui-smoke
+xvfb-run -a ./build-linux/fs-prefs-fake-smoke
+STOCKFW_PREFS_SHOTS=/some/dir xvfb-run -a ./build-linux/fs-prefs-fake-smoke
+```
+
+Both build `tests/ui-prefs-smoke.c` and keep the settings file in a
+scratch directory.  `fs-ui-smoke` opens the window against the real
+backend and checks that saving with nothing changed writes nothing.
+`fs-prefs-fake-smoke` supplies its own backend, which answers once as
+the Linux backend and once as the Windows one, so both platforms' page
+sets run on any machine: a page or row is shown only where the backend
+says it acts, and a row that cannot act right now says why.  It also
+answers the "Apply the new firewall settings now?" question both ways.
+With `STOCKFW_PREFS_SHOTS` it saves a PNG of every page.
+
+What it pins down, each seen failing when the old bug is put back:
+
+- D1: the device choosers select the stored device by name, never by
+  position (re-injected: `gtk_combo_box_set_active (combo, 1)` showed
+  `eth0` for a stored `eth1`).
+- D2: the local-network chooser lists every device once, plus a stored
+  device that is not attached as "name (not present)", kept selected.
+- D3: "Apply policy changes immediately" is off unless set, in the
+  table, in the window and in every reader.  `test-core.sh` scans
+  `src/` for any `fs_prefs_get_bool/_string` of a table key with its
+  own literal fallback, so a reader cannot drift from the table again.
+- D8: Save writes only values that changed, and only for rows the
+  window offers; a setting the platform does not offer keeps its stored
+  value.  A row disabled right now still saves a change made to it:
+  connection sharing turned off with a device missing is saved, so is
+  a block switched on before its device was cleared, and the footer
+  counts exactly what Save writes.
+- Every Protection and sharing row is live exactly when the rule
+  generator emits its rule, for every device and sharing combination.
+- "Apply now" reaches the apply gate with the policy that is live (the
+  journal's): Policy-page edits that were never applied stay out, and
+  the question says so.  With nothing on record the question names the
+  policy that goes out with the settings.  On Windows it is asked with
+  the firewall off too (Start does not re-apply rules there), and the
+  report then says the firewall is still off; on Linux it is not asked
+  (Start applies the whole policy).
+- After "Later", the next apply of an unchanged policy is a whole one
+  and brings the settings in.
+- Screen readers get each row's line, and the reason first while a row
+  cannot act.
+- A switch with keyboard focus is ringed solid, at least 2px, at 3:1 or
+  more against its slider, as the theme computes it.
+- Start at sign-in (General, Background card; scenarios `signin-*`,
+  with `STOCKFW_AUTOSTART_DIR` and `STOCKFW_SYSTEMD_DIR` in the
+  scratch directory; Linux only, since on Windows they would register
+  a real Task Scheduler task on the machine): the switch shows what the system has; moving it
+  is one unsaved change and writes nothing; Cancel writes nothing; Save
+  writes or removes the entry and nothing else, and applies nothing.
+  When the entry cannot be written, Save saves nothing at all and the
+  window stays open on General with the reason under the switch, the
+  switch back to what is really set and the other change still
+  pending.  A copy that may not change it (unelevated Windows) shows it
+  greyed with the reason and never counts it as a change.  Changed
+  from outside while the window is open, an unmoved switch follows and
+  a moved one stays.  The note under it says whether the Linux boot
+  unit is enabled, installed but not enabled (with the command), or
+  missing.
+
+Teeth for the sign-in row: let Save go on after the entry failed and
+"the window stays open after Save" and "nothing was saved" fail; count
+a switch the copy cannot act on and the "never a change to save" check
+fails; leave it out of the footer's count and the three count checks
+fail.  `test-core.sh` reads the boot unit from a scratch
+`STOCKFW_SYSTEMD_DIR` (absent, installed, linked, a link to nothing, a
+link left behind); trust a link without following it and "a link to
+nothing is not enabled" fails.
+
+The settings apply itself (`fs_settings_apply_safe`) is covered in
+`test-core.sh`: an unchanged policy is applied whole under the new
+settings, a failure is rolled back under the previous ones and
+verified, and the audit log names it.
 ## Threat-intel rule set in nftables (`fs-intelset-test`, `tests/test-intelset.sh`)
 
 ```sh
@@ -677,6 +763,270 @@ directories on PATH, as if started from Explorer: it must pass, with no
 GTK warning.  It is also part of `tests/full-suite.sh`.
 
 
+## What the firewall is handed at launch (`fs-startup-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-startup-smoke
+xvfb-run -a ./build-linux/fs-startup-smoke    # needs a display
+```
+
+Runs the real `fs_app_activate()` against a fake, Linux-shaped backend
+(one where starting the firewall installs the whole policy) that
+records what it is handed.  One process per scenario:
+
+| Scenario | What must happen |
+|---|---|
+| start | "Start the firewall on program startup" starts once, with every rule from the policy files and without the Sentinel block whose ten minutes ran out while StockFW was closed; the start is audited and the journal records it |
+| held | audit-only mode: `start()` is never called (it would install the file with its held changes); the last applied policy goes in instead |
+| heldnone | audit-only mode and nothing ever applied: the firewall is not touched |
+| startjournal | something was applied before: the start installs the last APPLIED policy (the journal) less the expired Sentinel block, and an allow saved since but never applied stays off |
+| push | no start at launch, firewall running: only the expired Sentinel block's removal goes out (the journal less that block, through the apply gate, audited "sentinel auto-block expired"); the allow saved but never applied does not ride along |
+| pushnone | the expired block was never live: nothing is pushed at all |
+| stopped | no start at launch, firewall stopped: nothing is applied, so a stopped firewall is never started behind the user's back |
+
+Up to 1.0.7 the start ran before the Policy page loaded the policy, so
+on Linux it installed an empty one, and Sentinel's restore took expired
+blocks out of the file without ever pushing that change.
+
+Teeth: put the start back above the Policy page in `fs-app.c` and
+"start" fails with 0 rules at start; drop the push in
+`start_at_launch()` and "push" fails; push the whole policy file
+instead of `fs_firewall_lift_live()` and "push" and "pushnone" fail.  `tests/test-core.sh` pins the
+start gate itself (`fs_firewall_start_safe`) and the boot-time expiry
+of Sentinel rows (`fs_autoblock_expire`).
+
+
+## One StockFW per user (`tests/test-instance.sh`)
+
+```sh
+cd port
+ninja -C build-linux StockFW
+xvfb-run -a bash tests/test-instance.sh   # needs xdotool; stalonetray optional
+```
+
+Drives the real `StockFW` binary.  As root the whole test re-runs
+itself in a private network namespace, every file the app writes goes
+to a scratch directory, the firewall is never started, and the instance
+name is private to the run (`STOCKFW_INSTANCE_NAME`), so a StockFW you
+are using is not disturbed.
+
+It checks that a second launch exits at once and the first copy brings
+its window back; that there is still one window and one instance;
+that another user's `--quit` is refused (root only, through `setpriv`)
+and says why; that `--quit` returns only once the copy is gone, which
+must exit 0 with its settings saved; and that `--quit` with nothing
+running succeeds and says so.
+
+`--background` is checked the same way: with stalonetray standing in
+for the notification area the window stays hidden past the five-second
+embed timeout (the docked 24-pixel tray icon carries the same window
+name, so the test only counts windows wider than 100 pixels), a second
+`--minimized` launch leaves it hidden, a normal launch brings it up;
+with no notification area the window is shown and the reason goes to
+stderr, so a hidden start never leaves a copy nobody can reach.
+
+Last, SIGTERM, SIGINT and SIGHUP each make a running copy exit 0 with
+its settings and Copilot baseline written.  Teeth: without the signal
+handlers SIGTERM and SIGHUP kill it (exit 143 and 129, nothing
+written) and SIGINT is ignored altogether, as it is for any background
+job of a script.
+
+Under `nohup` SIGHUP stays ignored and the copy keeps running.  As
+root (with `setpriv` and `python3`): 48 connections that never speak,
+half from uid 65534 and half from root, do not hold up a show or a
+`--quit` right behind them; and with a uid-65534 copy running, a root
+launch with `SUDO_UID=65534` makes it quit cleanly and takes its place,
+after which the user launching again only raises root's window.
+
+Teeth: read from a connection before checking who it is (as 1.0.7
+did) and five "silent" checks fail; skip the takeover in `main()`
+and five "takeover" checks fail; install the SIGHUP handler over
+nohup's SIG_IGN and the nohup check fails.
+
+Teeth: let `main()` ignore the "another copy runs" answer and the
+second launch stays up (killed by the test's timeout, rc 124); let the
+socket accept `quit` from anyone and the other user's `--quit` closes
+the app; drop the fallback show and the no-tray check fails; ignore
+`--background` and the hidden checks fail.
+
+
+## Start at sign-in (`tests/test-autostart.sh`, `test_autostart` in `test-core.sh`)
+
+```sh
+cd port
+ninja -C build-linux StockFW
+bash tests/test-autostart.sh          # the sudo half needs root
+```
+
+`StockFW --enable-autostart` must write
+`$XDG_CONFIG_HOME/autostart/stockfw.desktop` running this very binary
+with `--background` (by name when PATH finds it, by a quoted absolute
+path when not; `desktop-file-validate` must accept it), and
+`--disable-autostart` must remove it.  As root on behalf of a user
+(`SUDO_UID`), the entry is written with that user's file permissions:
+it ends up owned by the user, and a directory only root may write is
+refused rather than written by root.
+
+`test-core.sh` pins what Windows is handed (portably, as text): the
+Task Scheduler XML runs `<exe dir>\StockFW.exe --background` at THIS
+user's logon, in their session (`InteractiveToken`), NOT elevated
+(`LeastPrivilege`, never `HighestAvailable`: a prompt-free elevated GTK
+program would be a silent UAC bypass), not startable on demand, with no
+time limit and on battery.  It also pins
+the Desktop Entry quoting and which keys switch an entry off
+(`Hidden=true`, `X-GNOME-Autostart-enabled=false`).  Registering the
+task through COM needs a Windows machine.
+
+Teeth: skip the per-user file permissions and the root checks fail
+(the entry is root's, the read-only directory is written); skip the
+quoting and both the core check and the "path with a space" check fail.
+
+
+## The boot service (`tests/test-boot-start.sh`, `tests/test-linux-install.sh`)
+
+```sh
+cd port
+ninja -C build-linux stockfw StockFW
+sudo bash tests/test-boot-start.sh
+sudo bash tests/test-linux-install.sh
+```
+
+Linux keeps iptables rules in the kernel only; `stockfw.service` puts
+them back at boot.  `test-boot-start.sh` checks the unit (oneshot,
+`RemainAfterExit`, before `network-pre.target`, no `ExecStop`, a no-op
+until a policy was applied, `systemd-analyze verify` clean) and then,
+in a private network namespace, runs `stockfw start` as the unit does:
+the user's block is in the kernel, a Sentinel block whose ten minutes
+ran out is neither installed nor left in the files, a block by a host
+name that cannot be looked up is named in the output without stopping
+the start, and in audit-only mode the last applied policy goes in, not
+the held change.  It also checks that a start puts back what was
+APPLIED, never what was only saved: an SSH allow saved but never
+applied stays out of the kernel; with the rule files gone the journal
+still goes in, never an empty policy; with nothing ever applied, a
+missing policy or one with a malformed line is refused; an expired
+Sentinel row already gone from the file is left out of the journal.
+
+`test-linux-install.sh` runs `install.sh` and the `stockfw-uninstall`
+it writes for real, in a private mount namespace with a scratch PREFIX
+and a tmpfs over `/etc/systemd/system`: the unit is installed pointing
+at the installed `stockfw` and enabled, and the uninstaller disables
+and removes it.
+
+Teeth: drop the Sentinel expiry from `stockfw start` and three checks
+fail; install the policy file instead of the journal and the
+"unapplied", "no rule files" and audit-only checks fail; start without the hold and the audit-only checks fail; leave the
+`systemctl disable` out of the uninstaller and "disabled" fails (a
+dangling enable link counts as still enabled).
+
+
+## The tray menu (`fs-traymenu-smoke`, `fs-tray-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-traymenu-smoke
+xvfb-run -a ./build-linux/fs-traymenu-smoke     # needs a display
+```
+
+Runs the real `fs_app_activate()` against a fake backend that records
+starts and stops, reports a Private network and hands the app's own
+event callback back to the test, then works every row of the tray menu
+the way a click does and answers the dialogs that come up:
+"Firewall: On - Private network" and "Blocked today: N" are greyed
+information rows; a blocked event fed through the monitor callback
+shows up as "Blocked today: 1", as "TCP 445 to 203.0.113.5 (hh:mm)"
+under Recent blocks (a click opens the window on Events) and in the
+tooltip; Go to opens all six pages; Pause protection asks first with
+Cancel as the default, stops only on "Pause protection", is audited,
+and turns into Resume protection, which starts the firewall again;
+without the rights to change the firewall it is greyed with a reason;
+Pause Sentinel auto-block pauses and resumes (both audited) and is
+greyed in detect mode (scenario "detect") and in a copy that cannot
+change the firewall; a firewall stopped or started outside StockFW
+shows as such the moment the menu opens, and on the slow timer
+(`STOCKFW_TRAY_REFRESH_S=1`) with no menu open; Start at sign-in writes and
+removes the entry, and a failure is reported with the tick left
+showing the truth; Preferences and About open; Quit (firewall stays
+on) leaves the firewall running.  Preferences... from a hidden window
+brings the window up and opens over it, and asked for again while it
+is open it gives no second window.  The tray's Start at sign-in and
+the Preferences switch agree: ticked in the tray, the open switch
+follows with nothing to save; moved in Preferences, nothing changes
+until Save, and then the tick follows at once (read without opening
+the menu again, which would re-read it anyway).  `test-core.sh` pins
+the block tally itself (wording, five kept, midnight).
+
+`STOCKFW_TRAYMENU_SHOT=menu.png ./build-linux/fs-traymenu-smoke main`
+pops the menu up with Recent blocks open and saves a screenshot
+instead of running the checks.
+
+`fs-tray-smoke` keeps pinning the icon, the hide gate and the menu's
+layout (information rows first, Quit last behind a separator) against
+whatever notification area there is (the real Windows shell on CI).
+
+Teeth: have the tray stop the firewall without the confirmation and
+"it asks first" and "Cancel leaves the firewall running" fail; stop
+counting blocks and the count, Recent blocks and tooltip checks fail;
+refresh the tick from the request instead of from the system and the
+failed Start at sign-in check fails (this one was a real bug the smoke
+caught while it was written); stop asking the backend again when the
+menu opens, or on the timer, and the "outside StockFW" checks fail.
+Drop the one-window guard and "still one window" fails (a second
+window opened inside the first); leave the open Preferences out when
+the tray changes the setting and "the open Preferences switch follows"
+fails; leave the tray out when Preferences saves it and "the tray's
+tick follows at once" fails.
+
+
+## Session safety (`fs-session-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-session-smoke
+xvfb-run -a ./build-linux/fs-session-smoke      # needs a display
+```
+
+Runs the real `fs_app_activate()` against a fake backend, one scenario
+per process:
+
+- `autosave` (`STOCKFW_AUTOSAVE_S=1` in place of five minutes): with
+  nothing changed nothing is written; a changed setting, and what the
+  Copilot learned from an event fed through the app's monitor
+  callback, are written while the app keeps running; a Sentinel
+  staged-list write that fails is audited once, retries do not repeat
+  the line, and once the file can be written the periodic save brings
+  it up to date and audits that.
+- `queryend`: emitting GtkApplication's `query-end` writes the settings
+  and the baseline at once, inhibits nothing and quits nothing; a
+  session manager's Stop (`g_application_quit` without
+  `fs_app_quit()`) still writes what changed after it.
+- `dialog`: `fs_app_quit()` dispatched inside a running
+  `gtk_dialog_run()` writes everything and takes the icon down at once,
+  frees nothing while the dialog's caller still runs, closes the dialog
+  as its close button would, and finishes the quit once it has
+  returned.
+- `prefs`: the same with the Preferences window open and a setting
+  moved in it.  That window is no GtkDialog but runs a loop of its
+  own; the quit closes it as Cancel would (the moved setting is not
+  saved) instead of waiting for it, and the Copilot's state is still
+  intact.
+
+No scenario stops the firewall.  `test-core.sh` pins
+`fs_prefs_dirty()`.
+
+Teeth: a periodic save that does nothing fails the three "written
+within the period" checks; a `query-end` handler that does nothing
+fails both "at once" checks; a quit that frees everything at once
+under the dialog fails "nothing is freed" and then crashes the
+scenario (the use-after-free this prevents); no retry of the staged
+list fails the three recovery checks; a dirty flag that is always set
+fails "nothing changed: nothing written" and two core checks; no save
+on the Stop path fails its check; freeing the state in the quit
+instead of in shutdown fails "sametick" (a timer due in the same loop
+pass as the quit found freed memory); leave the Preferences window out
+of the quit and "the quit closes the Preferences window" and
+"promptly" fail.
 ## Windows rule translation (`tests/test-core.sh`)
 
 ```sh

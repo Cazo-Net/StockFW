@@ -147,7 +147,7 @@ logs_allowed (void)
 	 * when "Log allowed connections" is on: the policy's accepts go
 	 * through a chain that logs each new connection (sampled). */
 	if ((fs_backend ()->fw_honors & FS_FWHON_LOG_ALLOWED) != 0)
-		return fs_prefs_get_bool (FS_PREFS_FW_LOG_ALLOWED, TRUE);
+		return fs_prefs_bool (FS_PREFS_FW_LOG_ALLOWED);
 
 	return g_strcmp0 (fs_backend ()->name, "linux") != 0;
 }

@@ -154,6 +154,14 @@ append_profiles (GString *out, guint mask)
 	return n;
 }
 
+const gchar *
+fs_network_place_kind (const FsNetworkPlace *place)
+{
+	const FsNetwork *n = fs_network_place_primary (place);
+
+	return n != NULL ? network_kind (n->profile) : NULL;
+}
+
 gchar *
 fs_network_place_subtitle (const FsNetworkPlace *place)
 {

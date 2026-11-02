@@ -14,137 +14,178 @@
 #include <stdarg.h>
 #include <string.h>
 
+/* [ settings_fill ]
+ * Every field from one reader: the table default (defaults_only), a
+ * recorded set of values (the apply journal's), or the stored value --
+ * each with the table default behind it.  One function for all three,
+ * so a fresh FsSettings, an unset key and a key a record lacks can
+ * never mean different things -- the defaults live in fs-prefs.c. */
+typedef struct
+{
+	gboolean    defaults_only;
+	GHashTable *values;          /* key -> text, or NULL: the prefs */
+} SettingsSource;
+
+static gboolean
+settings_bool (const gchar *key, const SettingsSource *src)
+{
+	const FsPrefSpec *spec = fs_prefs_spec (key);
+
+	g_return_val_if_fail (spec != NULL, FALSE);
+
+	if (src->defaults_only)
+		return spec->bool_default;
+
+	if (src->values != NULL) {
+		const gchar *text = g_hash_table_lookup (src->values, key);
+
+		if (text == NULL)
+			return spec->bool_default;
+		return g_ascii_strcasecmp (text, "true") == 0 ||
+		       g_strcmp0 (text, "1") == 0;
+	}
+
+	return fs_prefs_bool (key);
+}
+
+static gchar *
+settings_device (const gchar *key, const SettingsSource *src)
+{
+	const FsPrefSpec *spec = fs_prefs_spec (key);
+	gchar *text;
+
+	if (src->defaults_only) {
+		text = g_strdup (spec != NULL ? spec->string_default : NULL);
+	} else if (src->values != NULL) {
+		const gchar *recorded = g_hash_table_lookup (src->values, key);
+
+		text = g_strdup (recorded != NULL ? recorded
+		                 : spec != NULL ? spec->string_default : NULL);
+	} else {
+		text = fs_prefs_string (key);
+	}
+
+	/* "" is "no device chosen", the same as unset. */
+	if (text != NULL && *text == '\0') {
+		g_free (text);
+		text = NULL;
+	}
+
+	return text;
+}
+
+static void
+settings_fill (FsSettings *settings, const SettingsSource *src)
+{
+	g_free (settings->ext_device);
+	g_free (settings->int_device);
+	settings->ext_device = settings_device (FS_PREFS_FW_EXT_IF, src);
+	settings->int_device = settings_device (FS_PREFS_FW_INT_IF, src);
+
+	settings->nat          = settings_bool (FS_PREFS_FW_NAT, src);
+	settings->filter_icmp  = settings_bool (FS_PREFS_FW_FILTER_ICMP, src);
+	settings->deny_packets = settings_bool (FS_PREFS_FW_DENY_PACKETS, src);
+	settings->block_external_broadcast =
+		settings_bool (FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST, src);
+	settings->block_internal_broadcast =
+		settings_bool (FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST, src);
+	settings->block_non_routables =
+		settings_bool (FS_PREFS_FW_BLOCK_NON_ROUTABLES, src);
+	settings->restrictive_outbound =
+		settings_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND, src);
+	settings->log_allowed =
+		settings_bool (FS_PREFS_FW_LOG_ALLOWED, src);
+
+	settings->icmp_echo_request =
+		settings_bool (FS_PREFS_FW_ICMP_ECHO_REQUEST, src);
+	settings->icmp_echo_reply =
+		settings_bool (FS_PREFS_FW_ICMP_ECHO_REPLY, src);
+	settings->icmp_traceroute =
+		settings_bool (FS_PREFS_FW_ICMP_TRACEROUTE, src);
+	settings->icmp_mstraceroute =
+		settings_bool (FS_PREFS_FW_ICMP_MSTRACEROUTE, src);
+	settings->icmp_unreachable =
+		settings_bool (FS_PREFS_FW_ICMP_UNREACHABLE, src);
+	settings->icmp_timestamping =
+		settings_bool (FS_PREFS_FW_ICMP_TIMESTAMPING, src);
+	settings->icmp_masking =
+		settings_bool (FS_PREFS_FW_ICMP_MASKING, src);
+	settings->icmp_redirection =
+		settings_bool (FS_PREFS_FW_ICMP_REDIRECTION, src);
+	settings->icmp_source_quenches =
+		settings_bool (FS_PREFS_FW_ICMP_SOURCE_QUENCHES, src);
+}
+
+/* [ fs_settings_new ]
+ * The defaults of a fresh install, from the settings table, whether or
+ * not the preferences have been read yet. */
 FsSettings *
 fs_settings_new (void)
 {
 	FsSettings *settings = g_new0 (FsSettings, 1);
+	const SettingsSource src = { TRUE, NULL };
 
-	settings->filter_icmp  = TRUE;
-	settings->filter_tos   = TRUE;
-	settings->deny_packets = TRUE;
-
-	/* The original shipped no schema default for the per-type keys,
-	 * so these are the ones that keep a normal machine working on
-	 * first run: ping, traceroute and the unreachable reports.  The
-	 * privacy-questionable ones start off. */
-	settings->icmp_echo_request    = TRUE;
-	settings->icmp_echo_reply      = TRUE;
-	settings->icmp_traceroute      = TRUE;
-	settings->icmp_mstraceroute    = TRUE;
-	settings->icmp_unreachable     = TRUE;
-	settings->icmp_timestamping    = FALSE;
-	settings->icmp_masking         = FALSE;
-	settings->icmp_redirection     = FALSE;
-	settings->icmp_source_quenches = FALSE;
-
-	/* Must agree with the fallbacks in fs_settings_load_prefs(), so a
-	 * freshly constructed settings object behaves like a fresh install
-	 * whether or not prefs have been read yet. */
-	settings->block_non_routables = TRUE;
-	settings->log_allowed         = TRUE;
+	settings_fill (settings, &src);
 
 	return settings;
 }
 
 /* [ fs_settings_load_prefs ]
- * The Firewall pages of the Preferences dialog set these keys; reading
+ * The Firewall pages of the Preferences window set these keys; reading
  * them here is what makes those pages mean something. */
 void
 fs_settings_load_prefs (FsSettings *settings)
 {
-	gchar *text;
+	const SettingsSource src = { FALSE, NULL };
 
 	if (settings == NULL)
 		return;
 
-	g_free (settings->ext_device);
-	g_free (settings->int_device);
-
-	text = fs_prefs_get_string (FS_PREFS_FW_EXT_IF, NULL);
-	settings->ext_device = text;
-
-	text = fs_prefs_get_string (FS_PREFS_FW_INT_IF, NULL);
-	settings->int_device = text;
-
-	settings->nat                   = fs_prefs_get_bool (FS_PREFS_FW_NAT, FALSE);
-	settings->filter_icmp           = fs_prefs_get_bool (FS_PREFS_FW_FILTER_ICMP, TRUE);
-	settings->filter_tos            = fs_prefs_get_bool (FS_PREFS_FW_FILTER_TOS, TRUE);
-	settings->deny_packets          = fs_prefs_get_bool (FS_PREFS_FW_DENY_PACKETS, TRUE);
-	settings->block_external_broadcast =
-		fs_prefs_get_bool (FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST, FALSE);
-	settings->block_internal_broadcast =
-		fs_prefs_get_bool (FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST, FALSE);
-	settings->block_non_routables   =
-		fs_prefs_get_bool (FS_PREFS_FW_BLOCK_NON_ROUTABLES, TRUE);
-	settings->restrictive_outbound  =
-		fs_prefs_get_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND, FALSE);
-	settings->log_allowed           =
-		fs_prefs_get_bool (FS_PREFS_FW_LOG_ALLOWED, TRUE);
-
-	/* ICMP types.  The fallbacks match fs_settings_new() so an unset
-	 * key behaves like a fresh install. */
-	settings->icmp_echo_request =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_ECHO_REQUEST, TRUE);
-	settings->icmp_echo_reply =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_ECHO_REPLY, TRUE);
-	settings->icmp_traceroute =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_TRACEROUTE, TRUE);
-	settings->icmp_mstraceroute =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_MSTRACEROUTE, TRUE);
-	settings->icmp_unreachable =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_UNREACHABLE, TRUE);
-	settings->icmp_timestamping =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_TIMESTAMPING, FALSE);
-	settings->icmp_masking =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_MASKING, FALSE);
-	settings->icmp_redirection =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_REDIRECTION, FALSE);
-	settings->icmp_source_quenches =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_SOURCE_QUENCHES, FALSE);
+	settings_fill (settings, &src);
 }
 
+/* [ fs_settings_load_values ]
+ * The settings a record describes (fs_apply_journal_settings): what
+ * was on the firewall, for putting it back. */
 void
-fs_settings_save_prefs (const FsSettings *settings)
+fs_settings_load_values (FsSettings *settings, GHashTable *values)
 {
-	if (settings == NULL)
+	const SettingsSource src = { FALSE, values };
+
+	if (settings == NULL || values == NULL)
 		return;
 
-	fs_prefs_set_string (FS_PREFS_FW_EXT_IF,
-	                     settings->ext_device ? settings->ext_device : "");
-	fs_prefs_set_string (FS_PREFS_FW_INT_IF,
-	                     settings->int_device ? settings->int_device : "");
-	fs_prefs_set_bool (FS_PREFS_FW_NAT, settings->nat);
-	fs_prefs_set_bool (FS_PREFS_FW_FILTER_ICMP, settings->filter_icmp);
-	fs_prefs_set_bool (FS_PREFS_FW_FILTER_TOS, settings->filter_tos);
-	fs_prefs_set_bool (FS_PREFS_FW_DENY_PACKETS, settings->deny_packets);
-	fs_prefs_set_bool (FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST,
-	                   settings->block_external_broadcast);
-	fs_prefs_set_bool (FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST,
-	                   settings->block_internal_broadcast);
-	fs_prefs_set_bool (FS_PREFS_FW_BLOCK_NON_ROUTABLES,
-	                   settings->block_non_routables);
-	fs_prefs_set_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND,
-	                   settings->restrictive_outbound);
-	fs_prefs_set_bool (FS_PREFS_FW_LOG_ALLOWED, settings->log_allowed);
+	settings_fill (settings, &src);
+}
 
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_ECHO_REQUEST,
-	                   settings->icmp_echo_request);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_ECHO_REPLY,
-	                   settings->icmp_echo_reply);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_TRACEROUTE,
-	                   settings->icmp_traceroute);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_MSTRACEROUTE,
-	                   settings->icmp_mstraceroute);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_UNREACHABLE,
-	                   settings->icmp_unreachable);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_TIMESTAMPING,
-	                   settings->icmp_timestamping);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_MASKING,
-	                   settings->icmp_masking);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_REDIRECTION,
-	                   settings->icmp_redirection);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_SOURCE_QUENCHES,
-	                   settings->icmp_source_quenches);
+/* [ fs_settings_sharing ]
+ * Connection sharing joins two devices, so it acts only when both are
+ * chosen.  With either missing, nothing of router mode is emitted --
+ * no forwarding, no masquerade, no accept for the Internet device that
+ * would let this computer's own traffic past restrictive outbound --
+ * which is what the Preferences window tells the user. */
+gboolean
+fs_settings_sharing (const FsSettings *settings)
+{
+	return settings != NULL && settings->nat &&
+	       fs_util_is_valid_ifname (settings->ext_device) &&
+	       fs_util_is_valid_ifname (settings->int_device);
+}
+
+FsSettings *
+fs_settings_copy (const FsSettings *settings)
+{
+	FsSettings *copy;
+
+	if (settings == NULL)
+		return NULL;
+
+	copy = g_new (FsSettings, 1);
+	*copy = *settings;
+	copy->ext_device = g_strdup (settings->ext_device);
+	copy->int_device = g_strdup (settings->int_device);
+
+	return copy;
 }
 
 void
@@ -827,7 +868,7 @@ generate_inbound (Gen *g, const FsPolicy *policy)
 		"# Trust loopback\n"
 		"$IPT -A INBOUND -i lo -j ACCEPT\n\n");
 
-	if (settings->nat && intf != NULL) {
+	if (settings->nat && ext != NULL && intf != NULL) {
 		g_string_append (out,
 			"# Accept traffic arriving on the internal interface\n");
 		g_string_append_printf (out,
@@ -904,7 +945,7 @@ generate_inbound (Gen *g, const FsPolicy *policy)
 			"$IPT -A INBOUND -i %s -d 255.255.255.255 -j DROP\n", ext);
 
 	if (settings->block_internal_broadcast && settings->nat &&
-	    intf != NULL && !GEN_V6 (g))
+	    ext != NULL && intf != NULL && !GEN_V6 (g))
 		g_string_append_printf (out,
 			"# Block broadcasts arriving on the local network\n"
 			"$IPT -A INBOUND -i %s -d 255.255.255.255 -j DROP\n", intf);
@@ -958,6 +999,7 @@ generate_outbound (Gen *g, const FsPolicy *policy)
 {
 	const FsSettings *settings = g->settings;
 	const gchar *ext = gen_ifname (g, settings->ext_device, _("external"));
+	const gchar *intf = gen_ifname (g, settings->int_device, _("internal"));
 	GString *out;
 
 	out = script_preamble ("OUTBOUND");
@@ -1016,8 +1058,11 @@ generate_outbound (Gen *g, const FsPolicy *policy)
 
 	/* Router mode lets what leaves on the external interface go --
 	 * after the blocks, which it used to come before, so in router
-	 * mode no "deny" row reached the traffic it named. */
-	if (settings->nat && ext != NULL)
+	 * mode no "deny" row reached the traffic it named.  Router mode
+	 * needs both devices (fs_settings_sharing): with one of them
+	 * missing nothing is shared, and this accept would only let this
+	 * computer's own traffic past restrictive mode. */
+	if (settings->nat && ext != NULL && intf != NULL)
 		g_string_append_printf (out,
 			"$IPT -A OUTBOUND -o %s -j ACCEPT\n", ext);
 
@@ -1054,6 +1099,7 @@ generate_nat (Gen *g, const FsPolicy *policy)
 {
 	const FsSettings *settings = g->settings;
 	const gchar *ext = gen_ifname (g, settings->ext_device, _("external"));
+	const gchar *intf = gen_ifname (g, settings->int_device, _("internal"));
 	GString *out = g_string_new (NULL);
 
 	for (guint i = 0; i < policy->kinds[FS_RULE_INBOUND_FORWARD]->len; i++) {
@@ -1086,7 +1132,7 @@ generate_nat (Gen *g, const FsPolicy *policy)
 		g_free (to);
 	}
 
-	if (settings->nat && ext != NULL && !GEN_V6 (g))
+	if (settings->nat && ext != NULL && intf != NULL && !GEN_V6 (g))
 		g_string_append_printf (out,
 			"# Router mode: masquerade what leaves on %s\n"
 			"$IPT -t nat -A " FS_SCRIPT_SNAT_CHAIN " -o %s -j MASQUERADE\n",
@@ -1455,22 +1501,16 @@ fs_script_generate_control (const FsSettings *settings)
 			"$IPT -A OUTPUT -m conntrack --ctstate INVALID -j DROP\n\n");
 	}
 
-	if (settings != NULL && settings->nat) {
+	if (fs_settings_sharing (settings)) {
 		g_string_append (out,
 			"# Enable forwarding and masquerading\n"
 			"sysctl -w net.ipv4.ip_forward=1 > /dev/null\n");
-
-		if (settings->ext_device != NULL) {
-			g_string_append_printf (out,
-				"$IPT -t nat -A POSTROUTING -o %s -j MASQUERADE\n",
-				settings->ext_device);
-			g_string_append_printf (out,
-				"$IPT -A FORWARD -i %s -o %s -j ACCEPT\n",
-				settings->int_device ? settings->int_device : "eth0",
-				settings->ext_device);
-		}
-
-		g_string_append_c (out, '\n');
+		g_string_append_printf (out,
+			"$IPT -t nat -A POSTROUTING -o %s -j MASQUERADE\n",
+			settings->ext_device);
+		g_string_append_printf (out,
+			"$IPT -A FORWARD -i %s -o %s -j ACCEPT\n\n",
+			settings->int_device, settings->ext_device);
 	}
 
 	g_string_append (out,
