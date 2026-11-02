@@ -1680,14 +1680,24 @@ below_quarter (guint64 now, guint64 max)
 	return now < max / 4 || (now == max / 4 && max % 4 != 0);
 }
 
+/* The shrink rule for one copy against the largest before it. */
+static gboolean
+shrank (guint64 entries, guint64 cover4, guint64 max_entries,
+        guint64 max_cover4)
+{
+	return (max_entries >= SHRINK_MIN_ENTRIES &&
+	        below_quarter (entries, max_entries)) ||
+	       (max_cover4 >= SHRINK_MIN_COVER4 &&
+	        below_quarter (cover4, max_cover4));
+}
 FsFeedVerdict
 fs_feed_judge (const FsFeedParseStats *now, const FsFeedHistory *history,
                guint flags, gchar **why)
 {
 	gboolean shrink_ok = (flags & FS_FEED_ACCEPT_SHRINK) != 0;
 	gboolean cover_ok = (flags & FS_FEED_ACCEPT_COVERAGE) != 0;
-	guint n, max_entries = 0;
-	guint64 max_cover4 = 0;
+	guint n, base_entries = 0;
+	guint64 max_cover4 = 0, base_cover4 = 0;
 	gchar *a, *b;
 
 	if (why != NULL)
@@ -1698,16 +1708,35 @@ fs_feed_judge (const FsFeedParseStats *now, const FsFeedHistory *history,
 	n = history != NULL ? MIN (history->n, FS_FEED_HISTORY) : 0;
 	if (n == 0)
 		return FS_FEED_VERDICT_OK;
-	for (guint i = 0; i < n; i++) {
-		max_entries = MAX (max_entries, history->entries[i]);
+	for (guint i = 0; i < n; i++)
 		max_cover4 = MAX (max_cover4, history->cover4[i]);
+
+	/* The shrink baseline, oldest copy first.  A copy that was itself
+	 * below a quarter of the baseline before it can only have been let
+	 * in by an accepted shrink: the user said that size is right, so
+	 * the baseline starts again from it.  Without this, one accepted
+	 * shrink would be refused again on each of the next six updates.
+	 * A walk down a quarter at a time never resets it [S15.1]. */
+	for (guint j = n; j-- > 0;) {
+		if (shrank (history->entries[j], history->cover4[j],
+		            base_entries, base_cover4)) {
+			base_entries = history->entries[j];
+			base_cover4 = history->cover4[j];
+		} else {
+			base_entries = MAX (base_entries, history->entries[j]);
+			base_cover4 = MAX (base_cover4, history->cover4[j]);
+		}
 	}
 
-	/* A list that blocks nothing replaces one that listed something
+	/* A list that blocks nothing replaces one that blocked something
 	 * only on request: a broken export must not turn into "block
-	 * nothing" [S15.3]. */
+	 * nothing" [S15.3].  The copy in use blocked something when it
+	 * covered IPv4 addresses or had more entries than this one; an
+	 * unchanged list of protected space only (it blocked nothing
+	 * either) is not refused on every update. */
 	if (!shrink_ok && now->v4 == 0 && now->v6 == 0 &&
-	    history->entries[0] > 0) {
+	    history->entries[0] > 0 &&
+	    (now->entries < history->entries[0] || history->cover4[0] > 0)) {
 		if (why != NULL) {
 			a = grouped (history->entries[0]);
 			*why = g_strdup_printf (_("The new copy blocks no address; "
@@ -1735,13 +1764,14 @@ fs_feed_judge (const FsFeedParseStats *now, const FsFeedHistory *history,
 		return FS_FEED_VERDICT_ROLLBACK;
 	}
 
-	/* Against the largest of the recent copies, so the list cannot be
-	 * walked down a quarter at a time [S15.1]. */
-	if (!shrink_ok && max_entries >= SHRINK_MIN_ENTRIES &&
-	    below_quarter (now->entries, max_entries)) {
+	/* Against the largest of the recent copies (since the last accepted
+	 * shrink), so the list cannot be walked down a quarter at a time
+	 * [S15.1]. */
+	if (!shrink_ok && base_entries >= SHRINK_MIN_ENTRIES &&
+	    below_quarter (now->entries, base_entries)) {
 		if (why != NULL) {
 			a = grouped (now->entries);
-			b = grouped (max_entries);
+			b = grouped (base_entries);
 			*why = g_strdup_printf (_("The new copy has %s %s; recent "
 			                          "copies had up to %s."), a,
 			                        entries_word (now->entries), b);
@@ -1750,11 +1780,11 @@ fs_feed_judge (const FsFeedParseStats *now, const FsFeedHistory *history,
 		}
 		return FS_FEED_VERDICT_SHRANK;
 	}
-	if (!shrink_ok && max_cover4 >= SHRINK_MIN_COVER4 &&
-	    below_quarter (now->cover4, max_cover4)) {
+	if (!shrink_ok && base_cover4 >= SHRINK_MIN_COVER4 &&
+	    below_quarter (now->cover4, base_cover4)) {
 		if (why != NULL) {
 			a = grouped (now->cover4);
-			b = grouped (max_cover4);
+			b = grouped (base_cover4);
 			*why = g_strdup_printf (_("The new copy covers %s IPv4 "
 			                          "addresses; recent copies "
 			                          "covered up to %s."), a, b);

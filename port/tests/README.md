@@ -217,3 +217,49 @@ passed again):
 - no query-string redaction: the five redaction checks with a query;
 - a JSON `\u0000` escape accepted: `a cidr with \u0000 inside is an
   invalid line`.
+
+### Review of the feed judge (`test_judge_after_override` and others)
+
+An adversarial review of `fs-feed.c` found two defects in `fs_feed_judge`,
+both fixed and pinned down by `test_judge_after_override`:
+
+- **An accepted shrink was asked again on each of the next six
+  updates.**  SHRANK compared with the largest of the last seven copies,
+  and the history keeps the larger copies after `--accept-shrink`, so
+  the next copy of the accepted size (1,614 -> 100, then 100 again) was
+  refused as SHRANK until the old copies aged out; the same after an
+  accepted empty copy or an accepted coverage shrink.  The judge now
+  reads the history oldest first and restarts the shrink baseline at a
+  copy that was itself below a quarter of the baseline before it (only
+  an accepted shrink lets such a copy in).  A walk down a quarter at a
+  time still never resets it, and GREW still compares with every recent
+  copy, so a list coming back to its size of before an accepted shrink
+  is not "sudden growth".
+- **An unchanged list of protected space only was EMPTY on every
+  update.**  EMPTY fired whenever the new copy blocked nothing and the
+  copy in use had entries, even when that copy blocked nothing either.
+  It now needs the copy in use to have covered IPv4 addresses or to have
+  had more entries than the new copy.
+
+The review also added hostile checks: two JSON objects on one line, a
+null `cidr`, a Spamhaus copy with only its metadata (an empty, dated
+list), and the floor on what is left of an entry (a /9 half CGNAT keeps
+its /10; `::ffff:0.0.0.0/95` stays IPv6).
+
+Teeth of the fixes (injected into a copy of `fs-feed.c` by a script that
+checks the exact old text; each restored with `cp`, checked with `cmp`
+and run green again):
+
+- EMPTY back to "the copy in use had entries": `an unchanged list of
+  protected space only is not EMPTY on its next update`;
+- EMPTY without the IPv4 coverage of the copy in use: `one blocked
+  address replaced by one protected entry: EMPTY`;
+- no baseline restart after an accepted shrink: `after an accepted
+  shrink to 100, the next copy of 100 is not SHRANK again`, `after an
+  accepted empty copy, the next empty copy is not SHRANK`, `after an
+  accepted coverage shrink to 2^16, the next copy of 2^16 is accepted`.
+
+Three of the implementer's teeth were re-proven the same way: the floor
+measured before the protected ranges come out (4 checks failed,
+FireHOL's 224.0.0.0/3 among them), no rollback check (4 failed), no
+poisoned-list rule (16 failed).

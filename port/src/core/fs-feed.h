@@ -189,11 +189,16 @@ typedef enum
 
 /* Judge a parsed copy against the history.  An empty history accepts
  * anything that parsed.  EMPTY: the new copy has no intervals while the
- * copy in use (the newest) had entries.  SHRANK: entries, or IPv4
+ * copy in use (the newest) blocked something: it covered IPv4
+ * addresses, or had more entries than the new copy (an unchanged list
+ * of protected space only is not EMPTY).  SHRANK: entries, or IPv4
  * coverage, below a quarter of the largest of the recent copies (when
- * that was 8 or more, or 2^16 or more).  GREW: IPv4 coverage more than
- * twice the largest recent coverage and more than 2^22 above it.
- * ROLLBACK: both copies dated and the new one older.  Checked in the
+ * that was 8 or more, or 2^16 or more); a recent copy that was itself
+ * below a quarter of the copies before it was let in by an accepted
+ * shrink, so the copies older than it no longer count.  GREW: IPv4
+ * coverage more than twice the largest recent coverage (all recent
+ * copies) and more than 2^22 above it.  ROLLBACK: both copies dated
+ * and the new one older.  Checked in the
  * order EMPTY, ROLLBACK, SHRANK, GREW; the first that applies and is
  * not overridden is the verdict.  EMPTY, SHRANK and ROLLBACK are
  * overridden by FS_FEED_ACCEPT_SHRINK, GREW by FS_FEED_ACCEPT_COVERAGE.

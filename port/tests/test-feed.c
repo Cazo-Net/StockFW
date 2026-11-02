@@ -568,6 +568,21 @@ test_spamhaus (void)
 	       "spamhaus-json: nesting 15 deep and a surrogate pair are read");
 	fs_range_set_free (set);
 
+	expect_json_line_invalid ("{\"cidr\":\"203.0.113.1\"}"
+	                          "{\"cidr\":\"203.0.113.2\"}",
+	                          "two objects on one line");
+	expect_json_line_invalid ("{\"cidr\":null}", "a null cidr");
+
+	/* A copy with only its metadata is a well-formed empty list, dated;
+	 * the judge decides about it (EMPTY). */
+	set = parse ("{\"type\":\"metadata\",\"timestamp\":1793468642,"
+	             "\"records\":0}\n", FS_FEED_FMT_SPAMHAUS_JSON, &st, &err);
+	CHECK (set != NULL && fs_range_set_is_empty (set) && st.entries == 0 &&
+	       st.content_date == 1793468642 && err == NULL,
+	       "spamhaus-json: metadata alone is an empty, dated list");
+	fs_range_set_free (set);
+	g_clear_error (&err);
+
 	CHECK (refused_as ("{\"error\":\"Too many requests\"}\n",
 	                   strlen ("{\"error\":\"Too many requests\"}\n"),
 	                   FS_FEED_FMT_SPAMHAUS_JSON, FS_FEED_ERR_NOT_A_LIST,
@@ -926,6 +941,24 @@ test_protected (void)
 	       fs_range_set_contains_text (set, "192.0.2.1"),
 	       "the unprotected part of a straddling range is kept, the "
 	       "rest (RFC 1918, special-purpose, NAT64) taken out");
+	fs_range_set_free (set);
+	g_clear_error (&err);
+
+	/* The floor is on what is left: a /9 whose upper half is CGNAT
+	 * leaves one /10, which is allowed; ::ffff:0:0/95 is half the
+	 * mapped block (protected) and half ::fffe:0:0/96 (2^32, kept as
+	 * IPv6, never folded into IPv4). */
+	set = parse ("100.0.0.0-100.127.255.255\n::ffff:0.0.0.0/95\n"
+	             "192.0.2.1\n", FS_FEED_FMT_PLAIN, &st, &err);
+	CHECK (set != NULL && st.too_broad == 0 && st.protected_hits == 2 &&
+	       st.cover4 == POW2 (22) + 1 && st.v6 == 1 &&
+	       fs_range_set_contains_text (set, "100.63.255.255") &&
+	       !fs_range_set_contains_text (set, "100.64.0.1") &&
+	       !fs_range_set_contains_text (set, "1.2.3.4") &&
+	       fs_range_set_contains_text (set, "::fffe:1.2.3.4"),
+	       "the floor measures the pieces left: a /9 half CGNAT keeps its "
+	       "/10; a /95 next to the mapped block stays IPv6 %s",
+	       err ? err->message : "");
 	fs_range_set_free (set);
 	g_clear_error (&err);
 }
@@ -1420,6 +1453,85 @@ test_judge (void)
 	                "before SHRANK");
 }
 
+/* Review findings: an override is accepted once, not re-asked on each of
+ * the next six updates; a list of protected space only is not EMPTY just
+ * because it did not change. */
+static void
+test_judge_after_override (void)
+{
+	FsFeedHistory h;
+	FsFeedParseStats now, s;
+
+	/* EMPTY looks at what the copy in use blocked. */
+	h = history_of (3, 0, 0);
+	now = copy_of (3, 0, 0);
+	now.v4 = 0;   /* the same three entries, all protected space */
+	expect_verdict (&now, &h, 0, FS_FEED_VERDICT_OK,
+	                "an unchanged list of protected space only is not "
+	                "EMPTY on its next update");
+	now = copy_of (2, 0, 0);
+	now.v4 = 0;
+	expect_verdict (&now, &h, 0, FS_FEED_VERDICT_EMPTY,
+	                "fewer entries than the copy in use, none blocking: "
+	                "EMPTY");
+	h = history_of (1, 1, 0);
+	now = copy_of (1, 0, 0);
+	now.v4 = 0;   /* one real address became one protected one */
+	expect_verdict (&now, &h, 0, FS_FEED_VERDICT_EMPTY,
+	                "one blocked address replaced by one protected entry: "
+	                "EMPTY");
+
+	/* An accepted shrink is the new baseline. */
+	h = history_of (1614, 0, 0);
+	now = copy_of (100, 0, 0);
+	expect_verdict (&now, &h, 0, FS_FEED_VERDICT_SHRANK,
+	                "1,614 -> 100 is SHRANK");
+	fs_feed_history_push (&h, &now);   /* accepted with --accept-shrink */
+	expect_verdict (&now, &h, 0, FS_FEED_VERDICT_OK,
+	                "after an accepted shrink to 100, the next copy of 100 "
+	                "is not SHRANK again");
+	now = copy_of (24, 0, 0);
+	expect_verdict (&now, &h, 0, FS_FEED_VERDICT_SHRANK,
+	                "after an accepted shrink, 100 -> 24 is SHRANK");
+
+	/* The baseline after an override keeps every copy since. */
+	h = history_of (1614, 0, 0);
+	s = copy_of (50, 0, 0);
+	fs_feed_history_push (&h, &s);     /* accepted with --accept-shrink */
+	s = copy_of (30, 0, 0);
+	fs_feed_history_push (&h, &s);
+	now = copy_of (12, 0, 0);
+	expect_verdict (&now, &h, 0, FS_FEED_VERDICT_SHRANK,
+	                "1,614, 50 (accepted), 30 -> 12 is SHRANK against the "
+	                "50, not the 30");
+
+	/* An accepted empty copy: the next empty copy is accepted. */
+	h = history_of (1614, 0, 0);
+	s = copy_of (0, 0, 0);
+	fs_feed_history_push (&h, &s);     /* accepted with --accept-shrink */
+	expect_verdict (&s, &h, 0, FS_FEED_VERDICT_OK,
+	                "after an accepted empty copy, the next empty copy is "
+	                "not SHRANK");
+
+	/* The same for IPv4 coverage. */
+	h = history_of (10, POW2 (20), 0);
+	s = copy_of (10, POW2 (16), 0);
+	fs_feed_history_push (&h, &s);     /* accepted with --accept-shrink */
+	expect_verdict (&s, &h, 0, FS_FEED_VERDICT_OK,
+	                "after an accepted coverage shrink to 2^16, the next "
+	                "copy of 2^16 is accepted");
+
+	/* GREW still looks at every recent copy: the list coming back to
+	 * its old size after an accepted shrink is not sudden growth. */
+	h = history_of (1614, 14917120, 0);
+	s = copy_of (10, 1000, 0);
+	fs_feed_history_push (&h, &s);     /* accepted with --accept-shrink */
+	now = copy_of (1614, 14917120, 0);
+	expect_verdict (&now, &h, 0, FS_FEED_VERDICT_OK,
+	                "the list back at its size of before an accepted "
+	                "shrink is not GREW");
+}
+
 static void
 test_history (void)
 {
@@ -1606,6 +1718,7 @@ main (void)
 	test_not_a_list ();
 	test_csv ();
 	test_judge ();
+	test_judge_after_override ();
 	test_history ();
 	test_url ();
 	test_redaction ();
