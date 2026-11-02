@@ -37,6 +37,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-audit.h"
 #include "core/fs-trust.h"
 #include "core/fs-apply.h"
+#include "core/fs-netparse.h"
 
 static int failures = 0;
 
@@ -4419,6 +4420,309 @@ static void test_settings_plan (void)
 	       "profile bits render as their netsh names");
 }
 
+/* ---- 1.0.6: Linux text parsers (fs-netparse) ---------------------- */
+
+/* Encode an address the way the kernel prints it into /proc/net/tcp:
+ * each 32-bit word of the network-order bytes as a native %08X.  Built
+ * here rather than pasted so the fixtures hold on either byte order. */
+static gchar *
+proc_hex_address (const guint8 *bytes, gsize len, guint port)
+{
+	GString *out = g_string_new (NULL);
+
+	for (gsize w = 0; w < len / 4; w++) {
+		guint32 word;
+
+		memcpy (&word, bytes + w * 4, 4);
+		g_string_append_printf (out, "%08X", word);
+	}
+
+	g_string_append_printf (out, ":%04X", port);
+	return g_string_free (out, FALSE);
+}
+
+static void
+clear_hit_fields (FsHit *h)
+{
+	g_free (h->time); g_free (h->direction); g_free (h->in);
+	g_free (h->out); g_free (h->port); g_free (h->source);
+	g_free (h->destination); g_free (h->length); g_free (h->tos);
+	g_free (h->protocol); g_free (h->service);
+	memset (h, 0, sizeof (*h));
+}
+
+static void test_netparse_log (void)
+{
+	FsHit hit = { 0 };
+	GTimeZone *utc = g_time_zone_new_utc ();
+	GDateTime *now = g_date_time_new (utc, 2026, 10, 11, 15, 0, 0);
+	gboolean ok;
+
+	/* The line the end-to-end test also uses: an inbound drop. */
+	ok = fs_netparse_log_line (
+		"Oct 11 14:30:00 kali kernel: [ 1234.567890] STOCKFW-DROP "
+		"IN=eth0 OUT= MAC=00:11:22:33:44:55 SRC=192.0.2.10 "
+		"DST=198.51.100.20 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=1 DF "
+		"PROTO=TCP SPT=54321 DPT=443 WINDOW=64240 RES=0x00 SYN URGP=0",
+		&hit, now);
+	CHECK (ok, "netparse: a STOCKFW-DROP line is ours");
+	CHECK (g_strcmp0 (hit.port, "443") == 0,
+	       "netparse: port is the DESTINATION port (DPT=443), not the "
+	       "ephemeral source port -- got %s", hit.port);
+	CHECK (g_strcmp0 (hit.out, "") == 0 && g_strcmp0 (hit.in, "eth0") == 0,
+	       "netparse: OUT stays the (empty) interface; DPT no longer "
+	       "overwrites it -- in=[%s] out=[%s]", hit.in, hit.out);
+	CHECK (g_strcmp0 (hit.source, "192.0.2.10") == 0 &&
+	       g_strcmp0 (hit.destination, "198.51.100.20") == 0 &&
+	       g_strcmp0 (hit.protocol, "TCP") == 0,
+	       "netparse: src, dst, proto");
+	CHECK (g_strcmp0 (hit.length, "60") == 0 &&
+	       g_strcmp0 (hit.tos, "0x00") == 0,
+	       "netparse: LEN and TOS fill the Length/ToS columns");
+	CHECK (g_strcmp0 (hit.direction, "in") == 0,
+	       "netparse: IN= set means inbound");
+	CHECK (g_strcmp0 (hit.time, "2026-10-11T14:30:00Z") == 0,
+	       "netparse: syslog stamp becomes the ISO UTC stamp the Events "
+	       "page localises -- got %s", hit.time);
+	CHECK (hit.service == NULL,
+	       "netparse: service is left for the backend to name and mark");
+	clear_hit_fields (&hit);
+
+	/* REJECT prefix, RFC 3339 stamp with an offset, outbound, UDP
+	 * with its second LEN= in the UDP header. */
+	ok = fs_netparse_log_line (
+		"2026-10-11T16:30:05.123456+02:00 kali kernel: STOCKFW-REJECT "
+		"IN= OUT=wlan0 SRC=192.0.2.5 DST=203.0.113.9 LEN=76 TOS=0x10 "
+		"PROTO=UDP SPT=40000 DPT=123 LEN=56",
+		&hit, now);
+	CHECK (ok, "netparse: a STOCKFW-REJECT line is ours too");
+	CHECK (g_strcmp0 (hit.direction, "out") == 0 &&
+	       g_strcmp0 (hit.out, "wlan0") == 0,
+	       "netparse: only OUT= set means outbound");
+	CHECK (g_strcmp0 (hit.time, "2026-10-11T14:30:05Z") == 0,
+	       "netparse: an RFC 3339 offset is honoured (16:30+02:00 is "
+	       "14:30 UTC) -- got %s", hit.time);
+	CHECK (g_strcmp0 (hit.length, "76") == 0,
+	       "netparse: the IP header's LEN wins over the UDP header's");
+	clear_hit_fields (&hit);
+
+	/* A December line read in early January belongs to last year. */
+	{
+		GDateTime *jan = g_date_time_new (utc, 2027, 1, 2, 9, 0, 0);
+
+		ok = fs_netparse_log_line (
+			"Dec 31 23:59:00 kali kernel: STOCKFW-DROP IN=eth0 OUT= "
+			"SRC=192.0.2.1 DST=192.0.2.2 PROTO=ICMP TYPE=8 CODE=0",
+			&hit, jan);
+		CHECK (ok && g_strcmp0 (hit.time, "2026-12-31T23:59:00Z") == 0,
+		       "netparse: syslog year rolls back across New Year -- "
+		       "got %s", hit.time);
+		CHECK (hit.port == NULL && g_strcmp0 (hit.protocol, "ICMP") == 0,
+		       "netparse: ICMP has no port");
+		clear_hit_fields (&hit);
+		g_date_time_unref (jan);
+	}
+
+	/* A single-digit day is space-padded. */
+	ok = fs_netparse_log_line (
+		"Oct  1 08:00:00 kali kernel: STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 DST=192.0.2.2 PROTO=TCP SPT=1 DPT=22", &hit, now);
+	CHECK (ok && g_strcmp0 (hit.time, "2026-10-01T08:00:00Z") == 0,
+	       "netparse: \"Oct  1\" parses -- got %s", hit.time);
+	clear_hit_fields (&hit);
+
+	/* No stamp at all: the arrival time, never the raw line. */
+	ok = fs_netparse_log_line (
+		"[ 99.1]STOCKFW-DROP IN=eth0 OUT= SRC=192.0.2.1 DST=192.0.2.2 "
+		"PROTO=TCP SPT=1 DPT=80", &hit, now);
+	CHECK (ok && g_strcmp0 (hit.time, "2026-10-11T15:00:00Z") == 0,
+	       "netparse: marker glued to the uptime still counts; no stamp "
+	       "means the arrival time -- got %s", hit.time);
+	clear_hit_fields (&hit);
+
+	/* Foreign kernel noise. */
+	memset (&hit, 0, sizeof (hit));
+	ok = fs_netparse_log_line (
+		"Oct 11 14:30:01 kali kernel: [UFW BLOCK] IN=eth0 OUT= "
+		"SRC=192.0.2.99 DST=198.51.100.99 PROTO=UDP SPT=1 DPT=2",
+		&hit, now);
+	CHECK (!ok && hit.source == NULL && hit.port == NULL,
+	       "netparse: a line without our marker is not an event and "
+	       "leaves the hit untouched");
+
+	/* A key repeated must not leak or keep the first value. */
+	ok = fs_netparse_log_line (
+		"Oct 11 14:30:00 h kernel: STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 SRC=192.0.2.7 DST=192.0.2.2 PROTO=TCP DPT=25",
+		&hit, now);
+	CHECK (ok && g_strcmp0 (hit.source, "192.0.2.7") == 0,
+	       "netparse: a repeated key keeps its last value");
+	clear_hit_fields (&hit);
+
+	/* The shared marker test. */
+	{
+		FsHit a = { 0 }, b = { 0 };
+
+		a.service = (gchar *) "HTTPS [BLOCKED]";
+		b.service = (gchar *) "HTTPS";
+		CHECK (fs_hit_is_blocked (&a) && !fs_hit_is_blocked (&b) &&
+		       !fs_hit_is_blocked (NULL),
+		       "netparse: fs_hit_is_blocked keys on the shared marker");
+	}
+
+	g_date_time_unref (now);
+	g_time_zone_unref (utc);
+}
+
+static void test_netparse_proc (void)
+{
+	const gchar *dev =
+		"Inter-|   Receive                                                |  Transmit\n"
+		" face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+		"    lo:  269777     285    0    0    0     0          0         0   269777     285    0    0    0     0       0          0\n"
+		"  eth0: 298846211   26340    0    6    0     0          0         0  8649880   16780    0    0    0     0       0          0\n"
+		"wlan0:12 1 0 0 0 0 0 0 34 1 0 0 0 0 0 0\n"
+		"  bad0: 1 2 3\n";
+	GList *stats = fs_netparse_proc_dev (dev);
+	FsIfaceStat *eth0, *wlan0;
+
+	CHECK (g_list_length (stats) == 2,
+	       "proc dev: two adapters (loopback left out, short row "
+	       "rejected) -- got %u", g_list_length (stats));
+
+	eth0  = stats ? stats->data : NULL;
+	wlan0 = stats && stats->next ? stats->next->data : NULL;
+
+	CHECK (eth0 != NULL && g_strcmp0 (eth0->device, "eth0") == 0 &&
+	       eth0->received == G_GUINT64_CONSTANT (298846211) &&
+	       eth0->sent == G_GUINT64_CONSTANT (8649880),
+	       "proc dev: eth0 rx = column 1, tx = column 9");
+	CHECK (wlan0 != NULL && g_strcmp0 (wlan0->device, "wlan0") == 0 &&
+	       wlan0->received == 12 && wlan0->sent == 34,
+	       "proc dev: an old-style row with no space after ':' parses");
+	g_list_free_full (stats, (GDestroyNotify) fs_iface_stat_free);
+
+	CHECK (fs_netparse_proc_dev (NULL) == NULL &&
+	       fs_netparse_proc_dev ("") == NULL,
+	       "proc dev: no text, no adapters");
+
+	/* /proc/net/tcp: a LISTEN row, a real ESTABLISHED row taken from
+	 * a live machine, a TIME_WAIT, and a garbage row. */
+	{
+		const guint8 lo[4]     = { 127, 0, 0, 1 };
+		const guint8 any[4]    = { 0, 0, 0, 0 };
+		const guint8 me[4]     = { 192, 0, 2, 2 };
+		const guint8 peer[4]   = { 34, 149, 66, 165 };
+		const guint8 client[4] = { 198, 51, 100, 7 };
+		gchar *l_lo  = proc_hex_address (lo, 4, 631);
+		gchar *r_any = proc_hex_address (any, 4, 0);
+		gchar *l_me  = proc_hex_address (me, 4, 37054);
+		gchar *r_pe  = proc_hex_address (peer, 4, 443);
+		gchar *l_ssh = proc_hex_address (me, 4, 22);
+		gchar *r_cl  = proc_hex_address (client, 4, 51000);
+		gchar *text = g_strdup_printf (
+			"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+			"   0: %s %s 0A 00000000:00000000 00:00000000 00000000     0        0 1079 1 0 100 0 0 10 0\n"
+			"   1: %s %s 01 00000000:00000000 00:00000000 00000000  1000        0 10715 1 0 20 4 30 27 -1\n"
+			"   2: %s %s 06 00000000:00000000 03:00000000 00000000     0        0 0 3 0\n"
+			"   3: %s %s 01 00000000:00000000 00:00000000 00000000     0        0 22222 1 0\n"
+			"   4: zz:zz yy:yy 01 0 0 0 0 0 0 0\n",
+			l_lo, r_any, l_me, r_pe, l_me, r_pe, l_ssh, r_cl);
+		GList *socks = fs_netparse_proc_tcp (text, FALSE);
+		GList *conns;
+		GHashTable *owners = g_hash_table_new_full (g_int64_hash,
+		                                            g_int64_equal,
+		                                            g_free, g_free);
+		gint64 *key = g_new (gint64, 1);
+		FsNetSocket *s1;
+		FsConnection *c;
+
+		*key = 10715;
+		g_hash_table_insert (owners, key, g_strdup ("firefox"));
+
+		CHECK (g_list_length (socks) == 4,
+		       "proc tcp: four rows (header and garbage skipped) -- "
+		       "got %u", g_list_length (socks));
+
+		s1 = socks && socks->next ? socks->next->data : NULL;
+		CHECK (s1 != NULL &&
+		       g_strcmp0 (s1->local_addr, "192.0.2.2") == 0 &&
+		       s1->local_port == 37054 &&
+		       g_strcmp0 (s1->remote_addr, "34.149.66.165") == 0 &&
+		       s1->remote_port == 443 && s1->state == 1 &&
+		       s1->inode == 10715,
+		       "proc tcp: addresses decoded from the kernel's native "
+		       "words, ports from hex, state and inode");
+
+		conns = fs_netparse_connections (socks, owners);
+		CHECK (g_list_length (conns) == 2,
+		       "connections: LISTEN and TIME_WAIT rows are not "
+		       "connections -- got %u", g_list_length (conns));
+
+		c = conns ? conns->data : NULL;
+		CHECK (c != NULL && g_strcmp0 (c->destination, "34.149.66.165") == 0 &&
+		       g_strcmp0 (c->port, "443") == 0 &&
+		       g_strcmp0 (c->service, "HTTPS") == 0 &&
+		       g_strcmp0 (c->program, "firefox") == 0 &&
+		       g_strcmp0 (c->direction, "Outbound") == 0 &&
+		       g_strcmp0 (c->protocol, "TCP") == 0,
+		       "connections: remote port named, owner from the inode "
+		       "map, a high local port to 443 is outbound");
+
+		c = conns && conns->next ? conns->next->data : NULL;
+		CHECK (c != NULL && g_strcmp0 (c->program, "?") == 0 &&
+		       g_strcmp0 (c->direction, "Inbound") == 0,
+		       "connections: an unreadable owner is \"?\", a client on "
+		       "our port 22 is inbound");
+
+		g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
+		g_list_free_full (socks, (GDestroyNotify) fs_net_socket_free);
+		g_hash_table_unref (owners);
+		g_free (text);
+		g_free (l_lo); g_free (r_any); g_free (l_me); g_free (r_pe);
+		g_free (l_ssh); g_free (r_cl);
+	}
+
+	/* /proc/net/tcp6: a plain IPv6 peer and an IPv4-mapped one. */
+	{
+		const guint8 v6_me[16]   = { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+		                             0, 0, 0, 0, 0, 0, 0, 0x02 };
+		const guint8 v6_peer[16] = { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+		                             0, 0, 0, 0, 0, 0, 0, 0x01 };
+		const guint8 mapped[16]  = { 0, 0, 0, 0, 0, 0, 0, 0,
+		                             0, 0, 0xff, 0xff, 192, 0, 2, 5 };
+		gchar *a = proc_hex_address (v6_me, 16, 50000);
+		gchar *b = proc_hex_address (v6_peer, 16, 993);
+		gchar *m = proc_hex_address (mapped, 16, 8080);
+		gchar *text = g_strdup_printf (
+			"  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+			"   0: %s %s 01 00000000:00000000 00:00000000 00000000  1000        0 555 1 0\n"
+			"   1: %s %s 01 00000000:00000000 00:00000000 00000000  1000        0 556 1 0\n",
+			a, b, a, m);
+		GList *socks = fs_netparse_proc_tcp (text, TRUE);
+		FsNetSocket *s0 = socks ? socks->data : NULL;
+		FsNetSocket *s1 = socks && socks->next ? socks->next->data : NULL;
+
+		CHECK (s0 != NULL && g_strcmp0 (s0->remote_addr, "2001:db8::1") == 0 &&
+		       s0->remote_port == 993,
+		       "proc tcp6: IPv6 peer rendered in its short form -- got %s",
+		       s0 ? s0->remote_addr : "(none)");
+		CHECK (s1 != NULL && g_strcmp0 (s1->remote_addr, "192.0.2.5") == 0,
+		       "proc tcp6: an IPv4-mapped peer reads as IPv4 -- got %s",
+		       s1 ? s1->remote_addr : "(none)");
+		CHECK (fs_netparse_proc_tcp (text, FALSE) == NULL,
+		       "proc tcp: tcp6 rows are refused by the IPv4 parser, not "
+		       "misread");
+
+		g_list_free_full (socks, (GDestroyNotify) fs_net_socket_free);
+		g_free (text); g_free (a); g_free (b); g_free (m);
+	}
+
+	CHECK (g_strcmp0 (fs_netparse_guess_direction (51000, 443), "Outbound") == 0 &&
+	       g_strcmp0 (fs_netparse_guess_direction (22, 51000), "Inbound") == 0,
+	       "connections: direction guess matches the Windows backend's");
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -4469,6 +4773,8 @@ int main (void)
 	test_apply_delta ();
 	test_apply_gate ();
 	test_settings_plan ();
+	test_netparse_log ();
+	test_netparse_proc ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);
