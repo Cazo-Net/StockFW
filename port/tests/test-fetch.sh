@@ -40,15 +40,26 @@
 #     3 redirects are fine; a URL with {..} or [..] is one request, not a
 #     curl glob; a 404 is HTTP; a proxy the caller passes is used (the
 #     recorder's positive control);
-#   - curl runs as nobody (uid, gid, saved ids, no groups, no_new_privs)
-#     with exactly PATH and LC_ALL, the golden argv, stdin /dev/null,
-#     cwd /, and none of the caller's descriptors;
-#   - root without an account `nobody', or with one that is uid 0,
-#     starts nothing (PRIVILEGE); a `nobody' the child cannot become
-#     stops in the child before exec (PRIVILEGE);
+#   - curl runs as nobody (uid, gid, saved ids, no groups, no
+#     capabilities, no_new_privs) with exactly PATH and LC_ALL, the
+#     golden argv, stdin /dev/null, cwd /, and none of the caller's
+#     descriptors, while the caller itself stays root with its groups;
+#   - root without an account `nobody', or with one that is uid 0 or
+#     group 0, starts nothing (PRIVILEGE); a `nobody' the child cannot
+#     become stops in the child before exec (PRIVILEGE); a caller that
+#     is not root downloads as itself, no account change tried;
 #   - a curl exiting 60 is TLS with its text; a missing curl is NO_CURL
 #     (the test path, and the real lookup with /usr/bin/curl hidden); a
-#     curl flooding stderr still gives a short one-line message.
+#     curl flooding stderr still gives a short one-line message, and 64
+#     MiB of it costs the caller no more than its 64 KiB bound; escape
+#     sequences and other control bytes in curl's text never reach the
+#     message;
+#   - nothing is left behind: repeated fetches of every outcome (body,
+#     cap, TLS, HTTP, timer kill, no curl, PRIVILEGE) leave no
+#     descriptor open and no curl running;
+#   - the edges of the count: caps of 1 byte and of one 64 KiB read;
+#   - release builds carry no test hook: the release objects of
+#     fs-fetch.c name neither STOCKFW_TEST_CURL nor STOCKFW_TEST_CACERT.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -60,7 +71,7 @@ if [ "${STOCKFW_IN_NETNS:-}" != 1 ]; then
     echo "SKIP: needs root (curl is run as nobody, in private namespaces)"
     exit 0
   fi
-  for tool in unshare mount openssl python3 timeout awk sha256sum; do
+  for tool in unshare mount ip openssl python3 timeout awk sha256sum; do
     if ! command -v "$tool" >/dev/null; then
       echo "SKIP: needs $tool"
       exit 0
@@ -284,7 +295,7 @@ chmod 1777 "$W/flags"   # writable by nobody: a leak must be able to show
 # (find), so the listing itself opens nothing in the shell it lists.
 cat > "$W/bin/report" <<'EOF'
 #!/bin/sh
-grep -E '^(Uid|Gid|Groups|NoNewPrivs):' /proc/$$/status | tr '\t' ' '
+grep -E '^(Uid|Gid|Groups|NoNewPrivs|CapPrm|CapEff|CapAmb):' /proc/$$/status | tr '\t' ' '
 printf 'argv0 %s\n' "$0"
 for a in "$@"; do printf 'arg %s\n' "$a"; done
 tr '\0' '\n' < /proc/$$/environ | sed 's/^/env /'
@@ -327,6 +338,23 @@ cat > "$W/bin/noisy" <<'EOF'
 head -c 200000 /dev/zero | tr '\0' e >&2
 echo >&2
 exit 3
+EOF
+
+# 64 MiB on stderr in one line: fs_fetch must drain it all (or curl
+# would block on a full pipe) yet keep only its first 64 KiB.
+cat > "$W/bin/flood" <<'EOF'
+#!/bin/sh
+head -c 67108864 /dev/zero | tr '\0' e >&2
+echo >&2
+exit 3
+EOF
+
+# An error line carrying a terminal escape, a tab and DEL, as a hostile
+# host name could make curl print: none of it may reach a log or the UI.
+cat > "$W/bin/escapes" <<'EOF'
+#!/bin/sh
+printf 'curl: (6) Could not resolve host: a\033[2Jb\tc\177d\n' >&2
+exit 6
 EOF
 
 # Proves it was started at all.
@@ -420,6 +448,21 @@ drive "${NOCAP[@]}" "$DRV" fetch \
   --what "a body that stalls past the cap, curl without --max-filesize" \
   --max 262144 --timeout 20 --expect TOO_LARGE --within 3 --gone "$t" \
   "https://127.0.0.1:8443/stall/400000?$t"
+# The edges of the count: the real curl's own guard at exactly the cap
+# of a chunked body, a cap of one byte, and a cap of exactly one read
+# (64 KiB), where fs_fetch asks for the one byte over in a read of its
+# own.
+drive "${CACERT[@]}" "$DRV" fetch \
+  --what "exactly the cap, chunked, with curl's own guard too" \
+  --max 1000 --expect ok --len 1000 https://127.0.0.1:8443/chunked/1000
+drive "${NOCAP[@]}" "$DRV" fetch --what "a cap of 1 byte, a 1-byte body" \
+  --max 1 --expect ok --len 1 https://127.0.0.1:8443/chunked/1
+drive "${NOCAP[@]}" "$DRV" fetch --what "a cap of 1 byte, a 2-byte body" \
+  --max 1 --expect TOO_LARGE https://127.0.0.1:8443/chunked/2
+drive "${NOCAP[@]}" "$DRV" fetch --what "a cap of one read, 65536 bytes" \
+  --max 65536 --expect ok --len 65536 https://127.0.0.1:8443/chunked/65536
+drive "${NOCAP[@]}" "$DRV" fetch --what "a cap of one read, 65537 bytes" \
+  --max 65536 --expect TOO_LARGE https://127.0.0.1:8443/chunked/65537
 
 echo "== time"
 silent_before="$(lines "$W/silent.log")"
@@ -480,6 +523,15 @@ drive env STOCKFW_TEST_CURL="$W/bin/tls60" "$DRV" fetch \
 drive env STOCKFW_TEST_CURL="$W/bin/noisy" "$DRV" fetch \
   --what "curl floods stderr" --expect FAILED --msg-max 400 --within 10 \
   https://127.0.0.1:8443/small
+# 32 MiB: keeping all of it costs over 64 MiB; the drained run grows by
+# ~2 MiB, ~15 MiB under ASan, whose allocator and thread stacks count too.
+drive env STOCKFW_TEST_CURL="$W/bin/flood" "$DRV" fetch \
+  --what "curl prints 64 MiB on stderr" --expect FAILED --msg-max 400 \
+  --within 20 --peak-growth 32768 https://127.0.0.1:8443/small
+drive env STOCKFW_TEST_CURL="$W/bin/escapes" "$DRV" fetch \
+  --what "curl prints an escape sequence, a tab and DEL" --expect NETWORK \
+  --msg-is "Could not download: Could not resolve host: a?[2Jb?c?d" \
+  https://127.0.0.1:8443/small
 drive env STOCKFW_TEST_CURL="$W/no-such-curl" "$DRV" fetch \
   --what "the test curl path does not exist" --expect NO_CURL \
   https://127.0.0.1:8443/small
@@ -493,9 +545,45 @@ drive unshare -m bash -c "$MNT" _ "${HIDE[@]}" -- \
   "$DRV" fetch --what "no curl in /usr/bin or /bin (the release lookup)" \
   --expect NO_CURL --msg "/usr/bin/curl" https://127.0.0.1:8443/small
 
+echo "== nothing left behind: descriptors and processes, every outcome"
+# The driver counts its own descriptors after the first fetch and after
+# the last: a pipe, a wakeup or a cancellable left open on any path
+# shows as a difference.
+drive "${CACERT[@]}" "$DRV" fetch --what "a download, again and again" \
+  --repeat 4 --expect ok --len "$SMALL_LEN" https://127.0.0.1:8443/small
+t="$(token)"
+drive "${NOCAP[@]}" "$DRV" fetch \
+  --what "an endless body cut at the cap, again and again" --repeat 4 \
+  --max 65536 --timeout 8 --expect TOO_LARGE --within 3 --gone "$t" \
+  "https://127.0.0.1:8443/endless?$t"
+drive "$DRV" fetch --what "a TLS failure, again and again" --repeat 4 \
+  --expect TLS https://127.0.0.1:8443/small
+drive "${CACERT[@]}" "$DRV" fetch --what "a 404, again and again" \
+  --repeat 4 --expect HTTP https://127.0.0.1:8443/404
+drive env STOCKFW_TEST_CURL="$W/no-such-curl" "$DRV" fetch \
+  --what "a curl that cannot be started, again and again" --repeat 4 \
+  --expect NO_CURL https://127.0.0.1:8443/small
+t="$(token)"
+GUARD=30 drive env STOCKFW_TEST_CURL="$W/bin/hang" "$DRV" fetch \
+  --what "the timer's kill, twice" --repeat 2 --timeout 1 \
+  --expect TIMEOUT --within 9 --gone "$t" "https://127.0.0.1:8443/small?$t"
+
+echo "== not root: no account change is tried, and the download works"
+if command -v setpriv >/dev/null; then
+  # A copy nobody can surely run, whatever the build directory's modes.
+  cp "$DRV" "$W/bin/fs-fetch-test" && chmod 755 "$W/bin/fs-fetch-test"
+  drive setpriv --reuid=nobody --regid="$(id -g nobody)" --clear-groups \
+    env STOCKFW_TEST_CACERT="$CA" "$W/bin/fs-fetch-test" fetch \
+    --what "started by nobody, not root" --expect ok --len "$SMALL_LEN" \
+    --sha256 "$SMALL_SHA" https://127.0.0.1:8443/small
+else
+  echo "      (no setpriv here: the not-root case did not run)"
+fi
+
 echo "== root without a usable nobody downloads nothing"
 awk -F: '$1 != "nobody"' /etc/passwd > "$W/passwd-none"
 awk -F: -v OFS=: '$1 == "nobody" { $3 = 0 } 1' /etc/passwd > "$W/passwd-root"
+awk -F: -v OFS=: '$1 == "nobody" { $4 = 0 } 1' /etc/passwd > "$W/passwd-gid0"
 awk -F: -v OFS=: '$1 == "nobody" { $3 = 4294967295 } 1' /etc/passwd > "$W/passwd-bad"
 unshare -m bash -c "$MNT" _ "$W/passwd-none" /etc/passwd -- \
   getent passwd nobody >/dev/null
@@ -517,7 +605,13 @@ rm -f "$W/flags/spawned"   # each case its own flag: a failure names its case
 drive unshare -m bash -c "$MNT" _ "$W/passwd-root" /etc/passwd -- \
   env STOCKFW_TEST_CURL="$W/bin/spawned" "$DRV" fetch \
   --what "root, nobody has uid 0" --expect PRIVILEGE \
-  https://127.0.0.1:8443/small
+  --msg "root's user or group id" https://127.0.0.1:8443/small
+check '[ ! -e "$W/flags/spawned" ]' "  and nothing was started"
+rm -f "$W/flags/spawned"
+drive unshare -m bash -c "$MNT" _ "$W/passwd-gid0" /etc/passwd -- \
+  env STOCKFW_TEST_CURL="$W/bin/spawned" "$DRV" fetch \
+  --what "root, nobody's group is 0" --expect PRIVILEGE \
+  --msg "root's user or group id" https://127.0.0.1:8443/small
 check '[ ! -e "$W/flags/spawned" ]' "  and nothing was started"
 rm -f "$W/flags/spawned"
 drive unshare -m bash -c "$MNT" _ "$W/passwd-bad" /etc/passwd -- \
@@ -526,6 +620,29 @@ drive unshare -m bash -c "$MNT" _ "$W/passwd-bad" /etc/passwd -- \
   --msg "could not be started as" https://127.0.0.1:8443/small
 check '[ ! -e "$W/flags/spawned" ]' \
   "  and the stand-in never ran: the child stopped before exec"
+drive unshare -m bash -c "$MNT" _ "$W/passwd-bad" /etc/passwd -- \
+  "$DRV" fetch --what "root, a nobody the child cannot become, again" \
+  --repeat 3 --expect PRIVILEGE https://127.0.0.1:8443/small
+
+echo "== release builds have no test hook"
+# STOCKFW_TEST_CURL and STOCKFW_TEST_CACERT exist only in a build with
+# FS_FETCH_TESTING.  The release objects of fs-fetch.c sit next to the
+# driver (fs-core-nogui is built with it, fs-core with the app); the
+# driver's own object is the control that the names would show.
+B="$(dirname "$DRV")/CMakeFiles"
+hook() { grep -a -q -e STOCKFW_TEST_CURL -e STOCKFW_TEST_CACERT "$1"; }
+if [ -f "$B/fs-fetch-test.dir/src/core/fs-fetch.c.o" ]; then
+  check 'hook "$B/fs-fetch-test.dir/src/core/fs-fetch.c.o"' \
+    "control: the test build's fs-fetch.c.o does name the hooks"
+  check '[ -f "$B/fs-core-nogui.dir/src/core/fs-fetch.c.o" ] && ! hook "$B/fs-core-nogui.dir/src/core/fs-fetch.c.o"' \
+    "the release fs-fetch.c.o (fs-core-nogui) names neither hook"
+  if [ -f "$B/fs-core.dir/src/core/fs-fetch.c.o" ]; then
+    check '! hook "$B/fs-core.dir/src/core/fs-fetch.c.o"' \
+      "the release fs-fetch.c.o (fs-core, the app's) names neither hook"
+  fi
+else
+  echo "      ($DRV is not in a CMake build tree: the objects were not checked)"
+fi
 
 echo
 if [ $fails -eq 0 ]; then echo "PASSED: 0 failure(s)"; else echo "FAILED: $fails failure(s)"; fi

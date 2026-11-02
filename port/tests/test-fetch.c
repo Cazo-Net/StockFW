@@ -28,14 +28,23 @@
  *                         waited for, not left behind
  *         --threads N     N fetches at once, one per thread (1-8);
  *                         each must meet the expectations
+ *         --repeat N      N fetches one after the other (2-50), each
+ *                         meeting the expectations, and this process
+ *                         holds no more descriptors after the last
+ *                         than after the first: no path leaks a pipe
+ *         --peak-growth K this process's peak memory (VmHWM) grew by
+ *                         at most K KiB during the fetch: what curl
+ *                         prints is held only up to its bounds
  *         --isolated      a source ready on the caller's default main
  *                         context must not run during the call: the
  *                         fetch iterates a context of its own
  *   fs-fetch-test report [--what TEXT] [--marker FILE] URL
  *       fs_fetch() through the reporting stand-in curl named by
  *       STOCKFW_TEST_CURL, then checks what that stand-in was given:
- *       its account, groups, no_new_privs, environment, argv, stdin,
- *       working directory and descriptors.  FILE is held open, not
+ *       its account, groups, capabilities, no_new_privs, environment,
+ *       argv, stdin, working directory and descriptors, and that the
+ *       caller itself is still root with its own groups (the drop
+ *       happened in the child only).  FILE is held open, not
  *       close-on-exec, during the call: curl must not get it.  Run as
  *       root (curl must have been made `nobody').
  *
@@ -43,6 +52,7 @@
  * the PASSED/FAILED line, `fetch' and `report' leave the total to the
  * script.  The exit status is 1 when anything failed.
  *--------------------------------------------------------------------*/
+#define _GNU_SOURCE   /* getresuid, getresgid */
 #include <glib.h>
 #include <glib/gstdio.h>
 #include <fcntl.h>
@@ -283,6 +293,26 @@ test_argv_refusals (void)
 	                "a user agent with CR LF (header injection)");
 	req.user_agent = "";
 	expect_refused (&req, "/usr/bin/curl", "an empty user agent");
+	req.user_agent = "StockFW\x7f";
+	expect_refused (&req, "/usr/bin/curl", "a user agent with DEL");
+
+	/* 256 bytes of user agent is the limit, 257 is over it. */
+	{
+		gchar *ua = g_strnfill (256, 'u');
+		gchar **argv;
+
+		req.user_agent = ua;
+		argv = fs_fetch_argv (&req, "/usr/bin/curl");
+		CHECK (argv != NULL, "argv takes a user agent of exactly 256 "
+		       "bytes");
+		g_strfreev (argv);
+		g_free (ua);
+		ua = g_strnfill (257, 'u');
+		req.user_agent = ua;
+		expect_refused (&req, "/usr/bin/curl",
+		                "a user agent of 257 bytes");
+		g_free (ua);
+	}
 }
 
 static void
@@ -478,6 +508,23 @@ test_fetch_refusals (void)
 	req.timeout_s = 0;
 	expect_fetch_refused (&req, FS_FETCH_ERR_FAILED,
 	                      "timeout_s 0 is refused before spawning");
+	req = BASE;
+	req.user_agent = "StockFW\r\nX-Injected: 1";
+	expect_fetch_refused (&req, FS_FETCH_ERR_FAILED,
+	                      "a user agent with CR LF is refused before "
+	                      "spawning");
+
+	/* The body is held in a GByteArray, whose length is a guint: a
+	 * cap it could not count up to (+1) is refused, the largest one
+	 * it can is not. */
+	req = BASE;
+	req.max_bytes = (gsize) G_MAXUINT;
+	expect_fetch_refused (&req, FS_FETCH_ERR_FAILED,
+	                      "max_bytes G_MAXUINT is refused before "
+	                      "spawning");
+	req.max_bytes = (gsize) G_MAXUINT - 1;
+	expect_fetch_refused (&req, FS_FETCH_ERR_NO_CURL,
+	                      "max_bytes G_MAXUINT - 1 reaches the spawn");
 
 	/* The control: the same override with a good request does get
 	 * as far as spawning, and says curl is missing. */
@@ -595,6 +642,66 @@ mark_dispatched (gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+static gboolean
+is_printable_ascii (const gchar *s)
+{
+	for (; *s != '\0'; s++)
+		if ((guchar) *s < 0x20 || (guchar) *s > 0x7e)
+			return FALSE;
+	return TRUE;
+}
+
+/* This process's peak resident memory so far (VmHWM), in KiB. */
+static guint64
+peak_kib (void)
+{
+	gchar *status = NULL, *line;
+	guint64 kib = 0;
+
+	if (!g_file_get_contents ("/proc/self/status", &status, NULL, NULL))
+		return 0;
+	line = strstr (status, "\nVmHWM:");
+	if (line != NULL)
+		kib = g_ascii_strtoull (line + 7, NULL, 10);
+	g_free (status);
+	return kib;
+}
+
+/* The descriptors this process holds now (the listing's own one
+ * included, the same every time). */
+static guint
+open_fds (void)
+{
+	GDir *dir = g_dir_open ("/proc/self/fd", 0, NULL);
+	guint n = 0;
+
+	if (dir == NULL)
+		return 0;
+	while (g_dir_read_name (dir) != NULL)
+		n++;
+	g_dir_close (dir);
+	return n;
+}
+
+/* The same once it holds still.  GLib's worker thread closes the
+ * child's pidfd just after it has reported the exit, so for a moment
+ * after fs_fetch() returns one more descriptor may still be open; a
+ * real leak never goes away. */
+static guint
+settled_fds (void)
+{
+	guint n = open_fds (), prev;
+
+	for (guint i = 0; i < 20; i++) {
+		g_usleep (G_USEC_PER_SEC / 50);
+		prev = n;
+		n = open_fds ();
+		if (n == prev)
+			break;
+	}
+	return n;
+}
+
 static void
 check_run (const Run *r, const Expect *x, const gchar *what)
 {
@@ -626,12 +733,18 @@ check_run (const Run *r, const Expect *x, const gchar *what)
 		       "%s: the body is the file the server sent", what);
 		g_free (hex);
 	}
-	if (r->error != NULL)
+	if (r->error != NULL) {
 		CHECK (strchr (r->error->message, '\n') == NULL &&
 		       strchr (r->error->message, '\r') == NULL &&
 		       g_str_has_prefix (r->error->message,
 		                         "Could not download: "),
 		       "%s: the message is one line for the UI", what);
+		/* What curl printed comes from a remote host's doing: no
+		 * escape sequence, tab or other control byte may reach a
+		 * terminal, a log line or the UI through it. */
+		CHECK (is_printable_ascii (r->error->message),
+		       "%s: the message is printable ASCII only", what);
+	}
 	if (x->msg != NULL)
 		CHECK (r->error != NULL &&
 		       strstr (r->error->message, x->msg) != NULL,
@@ -659,8 +772,10 @@ cmd_fetch (gint argc, gchar **argv)
 	Run runs[MAX_THREADS];
 	const gchar *what = "fetch", *gone = NULL;
 	gboolean isolated = FALSE, dispatched = FALSE;
-	guint threads = 1, idle = 0;
+	guint threads = 1, idle = 0, repeat = 1, fds_first = 0;
 	gint alive = 0;
+	gint64 peak_growth = -1;
+	guint64 peak_before = 0;
 
 	memset (runs, 0, sizeof runs);
 	for (gint i = 2; i < argc; i++) {
@@ -685,6 +800,8 @@ cmd_fetch (gint argc, gchar **argv)
 		else if (strcmp (a, "--timeout") == 0)  req.timeout_s = (guint) g_ascii_strtoull (v, NULL, 10);
 		else if (strcmp (a, "--proxy") == 0)    req.proxy = v;
 		else if (strcmp (a, "--threads") == 0)  threads = (guint) g_ascii_strtoull (v, NULL, 10);
+		else if (strcmp (a, "--repeat") == 0)   repeat = (guint) g_ascii_strtoull (v, NULL, 10);
+		else if (strcmp (a, "--peak-growth") == 0) peak_growth = g_ascii_strtoll (v, NULL, 10);
 		else if (strcmp (a, "--expect") == 0)   x.expect = v;
 		else if (strcmp (a, "--len") == 0)      x.len = g_ascii_strtoll (v, NULL, 10);
 		else if (strcmp (a, "--sha256") == 0)   x.sha = v;
@@ -698,12 +815,50 @@ cmd_fetch (gint argc, gchar **argv)
 			return 2;
 		}
 	}
-	if (req.url == NULL || threads < 1 || threads > MAX_THREADS) {
-		g_printerr ("fetch: no URL, or --threads not 1-%d\n",
-		            MAX_THREADS);
+	if (req.url == NULL || threads < 1 || threads > MAX_THREADS ||
+	    repeat < 1 || repeat > 50 || (repeat > 1 && threads > 1) ||
+	    (peak_growth >= 0 && (threads > 1 || repeat > 1))) {
+		g_printerr ("fetch: no URL, --threads not 1-%d, --repeat not "
+		            "1-50, or --threads, --repeat or --peak-growth "
+		            "together\n", MAX_THREADS);
 		return 2;
 	}
 	(void) code_from_name (x.expect);   /* a typo is a usage error */
+
+	/* One after the other, every outcome checked.  The first fetch
+	 * also starts what GLib keeps for good (its worker thread and
+	 * wakeup descriptors), so the count is taken after it: every
+	 * later one must hand back all it opened, pipes included. */
+	if (repeat > 1) {
+		for (guint i = 0; i < repeat; i++) {
+			gchar *label = g_strdup_printf ("%s [%u of %u]", what,
+			                                i + 1, repeat);
+
+			memset (&runs[0], 0, sizeof runs[0]);
+			runs[0].req = &req;
+			run_fetch (&runs[0]);
+			check_run (&runs[0], &x, label);
+			g_free (label);
+			g_clear_error (&runs[0].error);
+			if (runs[0].body != NULL)
+				g_bytes_unref (runs[0].body);
+			if (i == 0)
+				fds_first = settled_fds ();
+		}
+		{
+			guint fds_last = settled_fds ();
+
+			CHECK (fds_last == fds_first,
+			       "%s: %u fetches in a row leave no descriptor "
+			       "open (%u after the first, %u after the last)",
+			       what, repeat, fds_first, fds_last);
+		}
+		if (gone != NULL)
+			CHECK (process_with_token (gone) == 0,
+			       "%s: no curl is left running after %u fetches",
+			       what, repeat);
+		return failures ? 1 : 0;
+	}
 
 	/* A source of the caller's own (global default) context, ready at
 	 * once: a fs_fetch() that iterated that context instead of its own
@@ -714,6 +869,7 @@ cmd_fetch (gint argc, gchar **argv)
 	for (guint i = 0; i < threads; i++)
 		runs[i].req = &req;
 	if (threads == 1) {
+		peak_before = peak_kib ();
 		run_fetch (&runs[0]);
 	} else {
 		GThread *th[MAX_THREADS];
@@ -747,10 +903,56 @@ cmd_fetch (gint argc, gchar **argv)
 		CHECK (alive == 0, "%s: curl is gone when fs_fetch returns "
 		       "(%s)", what, alive != 0 ? "a process is still running"
 		                                : "nothing left running");
+	if (peak_growth >= 0) {
+		guint64 grown = peak_kib () - peak_before;
+
+		CHECK (peak_before > 0 && grown <= (guint64) peak_growth,
+		       "%s: peak memory grew by at most %" G_GINT64_FORMAT
+		       " KiB (%" G_GUINT64_FORMAT " KiB)", what, peak_growth,
+		       grown);
+	}
 	return failures ? 1 : 0;
 }
 
 /* ============================================================= report */
+
+/* "CapEff: 0000000000000000" -> no capability in that set. */
+static gboolean
+caps_none (const gchar *value)
+{
+	gchar *v;
+	gboolean none;
+
+	if (value == NULL)
+		return FALSE;
+	v = g_strstrip (g_strdup (value));
+	none = *v != '\0' && strspn (v, "0") == strlen (v);
+	g_free (v);
+	return none;
+}
+
+/* This process's real, effective and saved ids and its groups, as one
+ * line to compare before and after a fetch. */
+static gchar *
+own_credentials (void)
+{
+	uid_t ru, eu, su;
+	gid_t rg, eg, sg;
+	gid_t groups[256];
+	gint n = getgroups (G_N_ELEMENTS (groups), groups);
+	GString *out = g_string_new (NULL);
+
+	if (getresuid (&ru, &eu, &su) != 0 || getresgid (&rg, &eg, &sg) != 0)
+		g_string_append (out, "?");
+	else
+		g_string_append_printf (out, "uid %u %u %u gid %u %u %u",
+		                        (guint) ru, (guint) eu, (guint) su,
+		                        (guint) rg, (guint) eg, (guint) sg);
+	g_string_append (out, " groups");
+	for (gint i = 0; i < n; i++)
+		g_string_append_printf (out, " %u", (guint) groups[i]);
+	return g_string_free (out, FALSE);
+}
 
 /* "Uid: 65534 65534 65534 65534" -> every id equals want. */
 static gboolean
@@ -832,7 +1034,7 @@ cmd_report (gint argc, gchar **argv)
 	GBytes *body;
 	GPtrArray *lines;
 	gchar **want_argv, **got_argv, **want_env, **got_env, **fds;
-	gchar *text, *a, *b;
+	gchar *text, *a, *b, *creds_before, *creds_after;
 	const gchar *groups, *nnp;
 	gint held = -1;
 	guint leaked = 0;
@@ -857,9 +1059,20 @@ cmd_report (gint argc, gchar **argv)
 	if (marker != NULL)
 		held = open (marker, O_RDONLY);
 
+	creds_before = own_credentials ();
 	body = fs_fetch (&req, &error);
+	creds_after = own_credentials ();
 	if (held >= 0)
 		close (held);
+	/* The account change belongs in the child alone: a drop done in
+	 * this process, or in a child that shares its memory, would leave
+	 * the firewall itself without root. */
+	CHECK (strcmp (creds_before, creds_after) == 0 &&
+	       g_str_has_prefix (creds_after, "uid 0 0 0 gid 0 0 0 "),
+	       "%s: the caller is still root with its own groups (%s)", what,
+	       creds_after);
+	g_free (creds_before);
+	g_free (creds_after);
 	CHECK (body != NULL, "%s: the stand-in curl ran and reported (%s)",
 	       what, error != NULL ? error->message : "ok");
 	if (body == NULL) {
@@ -900,6 +1113,20 @@ cmd_report (gint argc, gchar **argv)
 	       "%s: and no_new_privs set: no set-uid program can give root "
 	       "back (%s)", what, text != NULL ? text : "?");
 	g_free (text);
+	/* Leaving uid 0 clears the permitted, effective and ambient sets;
+	 * a capability kept through the change (a securebit, an ambient
+	 * set) would be root's power under nobody's name. */
+	{
+		const gchar *prm = field (lines, "CapPrm: ");
+		const gchar *eff = field (lines, "CapEff: ");
+		const gchar *amb = field (lines, "CapAmb: ");
+
+		CHECK (caps_none (prm) && caps_none (eff) && caps_none (amb),
+		       "%s: and holds no capability: permitted, effective "
+		       "and ambient sets empty (%s / %s / %s)", what,
+		       prm != NULL ? prm : "?", eff != NULL ? eff : "?",
+		       amb != NULL ? amb : "?");
+	}
 
 	/* ---- the environment.  On a mismatch only the names are shown:
 	 * the values would be the caller's, tokens included. */
