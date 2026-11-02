@@ -602,7 +602,7 @@ policy_add (gint argc, gchar **argv)
 	FsRule *rule, *twin = NULL;
 	FsPolicy *policy;
 	gchar *csv, *summary;
-	gboolean ok;
+	gboolean ok, paired;
 
 	if (argc < 1 || !fs_cli_kind_parse (argv[0], &kind)) {
 		fs_cli_error (argc < 1 ? "policy add needs a rule kind"
@@ -729,12 +729,15 @@ policy_add (gint argc, gchar **argv)
 		return FS_EXIT_OK;
 	}
 
-	/* Ownership passes to the policy on success; on failure the store
-	 * is put back and the rules are ours to free. */
-	if (twin != NULL)
+	/* The policy stores copies (fs_policy_add), so the rules stay ours
+	 * to free whether the save works or not. */
+	paired = twin != NULL;
+	if (paired)
 		ok = fs_policy_add_persist_pair (policy, rule, twin);
 	else
 		ok = fs_policy_add_persist (policy, rule);
+	fs_rule_free (rule);
+	fs_rule_free (twin);
 
 	if (!ok) {
 		fs_cli_error ("could not save the policy in %s",
@@ -753,7 +756,7 @@ policy_add (gint argc, gchar **argv)
 
 		fs_json_kv_bool (out, "added", TRUE);           g_string_append_c (out, ',');
 		fs_json_kv_str (out, "kind", fs_cli_kind_name (kind)); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "both_directions", twin != NULL); g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "both_directions", paired); g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "applied", FALSE);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
@@ -761,7 +764,7 @@ policy_add (gint argc, gchar **argv)
 	} else if (!fs_cli.quiet) {
 		printf ("%s+%s %s %s%s\n", fs_cli_green (), fs_cli_reset (),
 		        fs_cli_kind_name (kind), summary,
-		        twin != NULL ? "  (and its opposite direction)" : "");
+		        paired ? "  (and its opposite direction)" : "");
 		printf ("%sSaved in %s.  Not live yet: run `sudo stockfw apply'.%s\n",
 		        fs_cli_dim (), fs_util_rules_dir (), fs_cli_reset ());
 	}

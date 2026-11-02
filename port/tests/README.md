@@ -1593,6 +1593,10 @@ Teeth (each injected, rebuilt, run, restored with `cp`, checked with
 
 Every suite, module test and smoke was run on the merged tree (the
 smokes under `xvfb-run -a`; `fs-tray-smoke` fails headless as before).
-The sanitizer build (`build-asan`) runs `fs-intelview-smoke`,
-`fs-intel-test`, `test-cli.sh` and `test-intel-cli.sh` with no
-AddressSanitizer or UndefinedBehaviorSanitizer report.
+The sanitizer build (`build-asan`) runs `fs-feed-test`, `fs-intel-test`,
+`test-cli.sh` and `test-intel-cli.sh` with leak checking on, and
+`fs-intelview-smoke` and `fs-hitview-smoke` with it off (GTK keeps its
+caches until exit), with no AddressSanitizer, LeakSanitizer or
+UndefinedBehaviorSanitizer report.  With leak checking on, `test-cli.sh`
+first found that `stockfw policy add` never freed the rule it parsed
+(the policy stores copies), five reports, one per add; that is fixed.
