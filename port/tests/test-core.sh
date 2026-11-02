@@ -540,7 +540,7 @@ static void test_fwrule_services_golden (void)
 	}
 
 	/* The pseudo-services the simulator writes: exactly that
-	 * protocol, and with no port, every port of that protocol only. */
+	 * protocol.  With no port they are refused (test_fwrule_review). */
 	{
 		FwExpect e[] = { { FS_PROTO_TCP, "8443", NULL, NULL } };
 		fw_golden (IN, "TCP", "8443", e, 1);
@@ -548,10 +548,6 @@ static void test_fwrule_services_golden (void)
 	{
 		FwExpect e[] = { { FS_PROTO_UDP, NULL, "5000-5010", NULL } };
 		fw_golden (OUT, "UDP", "5000-5010", e, 1);
-	}
-	{
-		FwExpect e[] = { { FS_PROTO_TCP, NULL, NULL, NULL } };
-		fw_golden (IN, "TCP", "", e, 1);
 	}
 
 	/* Port forwards: inbound, on the exposed local port. */
@@ -913,10 +909,10 @@ static void test_fwrule_netsh_golden (void)
 		  "name=StockFW- Allow HTTP -inbound-|profile=any|dir=in|"
 		  "action=allow|protocol=TCP|enable=yes|localport=8080",
 		  "port forward on the exposed port" },
-		{ FS_RULE_INBOUND_ALLOW_SERVICE, "TCP", "", FS_TARGET_ANY, 0,
+		{ FS_RULE_INBOUND_ALLOW_SERVICE, "TCP", "8443", FS_TARGET_ANY, 0,
 		  "name=StockFW- Allow TCP -inbound-|profile=any|dir=in|"
-		  "action=allow|protocol=TCP|enable=yes",
-		  "TCP pseudo-service with no port: TCP only, netsh's any port" },
+		  "action=allow|protocol=TCP|enable=yes|localport=8443",
+		  "TCP pseudo-service: TCP only, on its port" },
 	};
 
 	for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
@@ -2956,10 +2952,12 @@ static void test_whatif_simulate (void)
 	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
 	rule->target = g_strdup ("203.0.113.5");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
 	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
 	rule->target = g_strdup ("203.0.113.5");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
 	r = fs_copilot_simulate_text (copilot,
 	                              "allow SSH to 203.0.113.5 on port 22",
@@ -2980,6 +2978,7 @@ static void test_whatif_simulate (void)
 	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
 	rule->target = g_strdup ("203.0.113.0/24");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
 	r = fs_copilot_simulate_text (copilot,
 	                              "outbound ping to 203.0.113.77", NULL);
@@ -2995,6 +2994,7 @@ static void test_whatif_simulate (void)
 	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
 	rule->target = g_strdup ("198.51.100.10");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
 	r = fs_copilot_simulate_text (copilot,
 	                              "allow HTTPS to 198.51.100.10", NULL);
@@ -3021,6 +3021,7 @@ static void test_whatif_simulate (void)
 	rule->port = g_strdup ("22");
 	rule->target = g_strdup ("192.168.1.50");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
 	r = fs_copilot_simulate_text (copilot, "allow from 192.168.1.50",
 	                              NULL);
@@ -3064,12 +3065,14 @@ static void test_whatif_simulate (void)
 	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_TO);
 	rule->target = g_strdup ("203.0.113.9");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
 	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
 	rule->service = g_strdup ("HTTPS");
 	rule->port = g_strdup ("443");
 	rule->target = g_strdup ("203.0.113.9");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
 	r = fs_copilot_simulate_text (copilot,
 	                              "allow HTTPS to 203.0.113.9", NULL);
@@ -3095,6 +3098,7 @@ static void test_whatif_simulate (void)
 	rule->to = g_strdup ("10.0.0.5");
 	rule->to_port = g_strdup ("80");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
 	r = fs_copilot_simulate_text (copilot, "inbound port 8080", NULL);
 	CHECK (r != NULL, "the forward probe answers");
@@ -3113,6 +3117,7 @@ static void test_whatif_simulate (void)
 	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
 	rule->target = g_strdup ("203.0.113.5");
 	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
 
 	r = fs_copilot_simulate_text (copilot, "block outbound", NULL);
 	CHECK (r != NULL, "the no-host probe answers");
@@ -3769,6 +3774,7 @@ static void test_trust_engine (void)
 	       "forgetting twice is refused, not invented");
 	CHECK (fs_trust_store_count (store) == 0,
 	       "the forgotten row is gone");
+	fs_trust_store_free (store);
 
 	/* Paths and publishers may hold commas and quotes; the CSV
 	 * quotes them and the round trip must not lose either. */
@@ -5071,6 +5077,318 @@ static void test_whatif_winrules (void)
 	fs_policy_free (policy);
 }
 
+/* --- 1.0.7 review: hostile input to the Windows translation ------------
+ *
+ * What a second pair of eyes found by attacking the translation: port
+ * texts a fuzzer would try, a bare "TCP" with no port (the What-If's
+ * "Create This Rule" for a portless probe), Samba's own ports written
+ * in another order, a quote in a service name, and a block row that
+ * cannot be compiled -- which must stop a whole-set apply before it
+ * removes the block that is in force. */
+
+/* [ review_policy ] -- one row, the way the Policy page stores it. */
+static FsPolicy *
+review_policy (FsRuleKind kind, const gchar *service, const gchar *port)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *rule = gate_rule (kind, service, port, FS_TARGET_ANY);
+
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+	return policy;
+}
+
+static void test_fwrule_review (void)
+{
+	const FsRuleKind IN = FS_RULE_INBOUND_ALLOW_SERVICE;
+	const FsRuleKind OUT = FS_RULE_OUTBOUND_ALLOW_SERVICE;
+	const FsRuleKind DENY = FS_RULE_OUTBOUND_DENY_SERVICE;
+	static const struct { const gchar *text; const gchar *spec; } cases[] = {
+		{ " ", NULL },
+		{ "   ,  , ", NULL },
+		{ "80-", NULL },
+		{ "-80", NULL },
+		{ "80--90", NULL },
+		{ "80::90", NULL },
+		{ "80:70", NULL },
+		{ "1:2:3", NULL },
+		{ "65536", NULL },
+		{ "0", NULL },
+		{ "00000", NULL },
+		{ "4294967376", NULL },          /* 2^32 + 80: no wrap to 80 */
+		{ "8\xd9\xa0", NULL },           /* Arabic-Indic zero        */
+		{ "\xef\xbc\x98\xef\xbc\x90", NULL }, /* fullwidth "80"       */
+		{ "\xc2\xa0" "80", NULL },       /* no-break space is no sep */
+		{ "80\n443", NULL },
+		{ "1,,2", "1,2" },
+		{ "80 , 443", "80,443" },
+		{ "00080", "80" },
+		{ "1-65535", "1-65535" },
+		{ "65535:65535", "65535" },
+	};
+	FwExpect e_smb[] = { { FS_PROTO_TCP, "139,445", NULL, " (TCP)" },
+	                     { FS_PROTO_UDP, "137-138", NULL, " (UDP)" } };
+
+	for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
+		gchar *spec = fs_fwrule_port_spec (cases[i].text);
+
+		CHECK (g_strcmp0 (spec, cases[i].spec) == 0,
+		       "review: hostile port text #%u -> %s (got %s)", i,
+		       cases[i].spec != NULL ? cases[i].spec : "refused",
+		       spec != NULL ? spec : "refused");
+		g_free (spec);
+	}
+
+	/* Every port, listed one by one and then again: one spec, each
+	 * port once, in the order written. */
+	{
+		GString *text = g_string_new (NULL);
+		gchar *spec;
+
+		for (guint pass = 0; pass < 2; pass++)
+			for (guint p = 1; p <= 65535; p++)
+				g_string_append_printf (text, "%u ", p);
+
+		spec = fs_fwrule_port_spec (text->str);
+		CHECK (spec != NULL && g_str_has_prefix (spec, "1,2,3,") &&
+		       g_str_has_suffix (spec, ",65534,65535") &&
+		       strstr (spec, ",1,") == NULL,
+		       "review: a list of all 65535 ports twice compiles once "
+		       "each (%" G_GSIZE_FORMAT " bytes)",
+		       spec != NULL ? strlen (spec) : 0);
+		CHECK (fs_fwrule_port_spec_covers (spec, 40000) &&
+		       !fs_fwrule_port_spec_covers (spec, 0),
+		       "review: and the simulator reads it whole");
+		g_free (spec);
+		g_string_free (text, TRUE);
+	}
+
+	/* A bare protocol is no service: with no port it is refused, as
+	 * Linux writes no rule for it, never "every TCP port". */
+	fw_golden (IN, "TCP", "", NULL, 0);
+	fw_golden (OUT, "UDP", "", NULL, 0);
+	fw_golden (IN, "tcp", "  ", NULL, 0);
+	fw_golden (DENY, "TCP", "", NULL, 0);
+	fw_golden (FS_RULE_INBOUND_FORWARD, "UDP", "", NULL, 0);
+
+	/* What-If "Create This Rule" for a probe with no port. */
+	{
+		FsScenario sc;
+		FsRule *rule;
+		FsPolicy *policy = fs_policy_new ();
+		GPtrArray *refused = NULL;
+		GList *rules;
+
+		memset (&sc, 0, sizeof sc);
+		sc.inbound = TRUE;
+		sc.port = 0;
+		sc.protocol = (gchar *) "TCP";
+		rule = fs_copilot_allow_rule_for (&sc);
+		CHECK (rule != NULL && g_strcmp0 (rule->service, "TCP") == 0 &&
+		       (rule->port == NULL || *rule->port == '\0'),
+		       "review: the What-If writes a portless probe as \"TCP\" "
+		       "with no port");
+		if (rule != NULL) {
+			fs_policy_add (policy, rule);
+			fs_rule_free (rule);
+		}
+		rules = fs_fwrule_from_policy_checked (policy, &refused);
+		CHECK (rules == NULL && refused->len == 1,
+		       "review: and that row opens nothing on Windows -- not "
+		       "every inbound TCP port (%u rules)",
+		       g_list_length (rules));
+		fs_fwrule_list_free (rules);
+		g_ptr_array_unref (refused);
+		fs_policy_free (policy);
+	}
+
+	/* Samba's own ports in any order or spelling keep the split. */
+	fw_golden (IN, "Samba (SMB)", "445 137-139", e_smb, 2);
+	fw_golden (IN, "Samba (SMB)", "137:138,139 445", e_smb, 2);
+	fw_golden (IN, "Samba (SMB)", "445,139,138,137", e_smb, 2);
+	{
+		/* A real change of ports still applies to both protocols. */
+		FwExpect e[] = { { FS_PROTO_TCP, "137-139", NULL, " (TCP)" },
+		                 { FS_PROTO_UDP, "137-139", NULL, " (UDP)" } };
+		fw_golden (IN, "Samba (SMB)", "137-139", e, 2);
+	}
+
+	/* A quote in a service name must not reach netsh's command line,
+	 * where it would end the name and start new arguments. */
+	{
+		FsPolicy *policy = review_policy (IN,
+			"x\" dir=in action=allow protocol=any \"y", "80");
+		GList *rules = fs_fwrule_from_policy (policy);
+		gboolean clean = (rules != NULL);
+
+		for (GList *l = rules; l != NULL; l = l->next) {
+			gchar **argv = fs_fwrule_netsh_args (l->data);
+
+			for (guint i = 0; argv != NULL && argv[i] != NULL; i++)
+				if (strchr (argv[i], '"') != NULL)
+					clean = FALSE;
+			if (argv == NULL || g_strv_length (argv) != 12)
+				clean = FALSE;
+			g_strfreev (argv);
+		}
+		CHECK (clean,
+		       "review: a quote in a service name never reaches netsh");
+		fs_fwrule_list_free (rules);
+		fs_policy_free (policy);
+	}
+	{
+		gchar *name = fs_fwrule_netsh_name ("StockFW: Allow a\"b (inbound)");
+
+		CHECK (g_strcmp0 (name, "StockFW- Allow a'b -inbound-") == 0,
+		       "review: the netsh spelling of a quote is ' (got %s)",
+		       name);
+		g_free (name);
+	}
+
+	/* Block rows the translation refuses stop a whole-set apply;
+	 * refused allows do not. */
+	{
+		FsPolicy *policy = review_policy (DENY, "SMTP", "25x");
+		gchar *why = fs_fwrule_block_refusals (policy);
+
+		CHECK (why != NULL && strstr (why, "SMTP") != NULL &&
+		       strstr (why, "25x") != NULL,
+		       "review: a block with a bad port is a block refusal "
+		       "(%s)", why != NULL ? why : "none");
+		g_free (why);
+		fs_policy_free (policy);
+
+		policy = review_policy (DENY, "Mystery", "");
+		why = fs_fwrule_block_refusals (policy);
+		CHECK (why != NULL,
+		       "review: so is a block that names nothing to block");
+		g_free (why);
+		fs_policy_free (policy);
+
+		policy = review_policy (IN, "SSH", "0");
+		why = fs_fwrule_block_refusals (policy);
+		CHECK (why == NULL,
+		       "review: a refused allow is not a block refusal");
+		g_free (why);
+		fs_policy_free (policy);
+
+		policy = review_policy (DENY, "SMTP", "25");
+		why = fs_fwrule_block_refusals (policy);
+		CHECK (why == NULL,
+		       "review: a block that compiles is no refusal");
+		g_free (why);
+		fs_policy_free (policy);
+
+		CHECK (fs_fwrule_block_refusals (NULL) == NULL,
+		       "review: no policy, no refusal");
+	}
+
+	/* The narrow apply deletes by name, and netsh decides which names
+	 * are the same: its spelling folds "a/b" and "a-b" together and
+	 * ignores case.  A rule that shares a netsh name with a removed
+	 * one has to be re-created, and the shared name deleted once. */
+	{
+		FsPolicy *before = fs_policy_new ();
+		FsPolicy *after = fs_policy_new ();
+		FsPolicyDelta *delta;
+		FsRule *rule;
+
+		rule = gate_rule (DENY, "a/b", "25", FS_TARGET_ANY);
+		fs_policy_add (before, rule);
+		fs_rule_free (rule);
+		rule = gate_rule (DENY, "a-b", "26", FS_TARGET_ANY);
+		fs_policy_add (before, rule);
+		fs_policy_add (after, rule);
+		fs_rule_free (rule);
+
+		delta = fs_policy_delta (before, after);
+		CHECK (g_list_length (delta->remove) == 2 &&
+		       g_list_length (delta->repair) == 2 &&
+		       delta->add == NULL,
+		       "review: removing \"a/b\" re-creates \"a-b\", which netsh "
+		       "deletes with it (remove %u, repair %u, add %u)",
+		       g_list_length (delta->remove),
+		       g_list_length (delta->repair),
+		       g_list_length (delta->add));
+		fs_policy_delta_free (delta);
+
+		fs_policy_clear (after);
+		delta = fs_policy_delta (before, after);
+		CHECK (g_list_length (delta->remove) == 2,
+		       "review: and removing both deletes each netsh name once "
+		       "(%u deletes for 4 rules under 2 netsh names)",
+		       g_list_length (delta->remove));
+		fs_policy_delta_free (delta);
+
+		/* Case: "SSH" and "ssh" are one name to netsh. */
+		fs_policy_clear (before);
+		fs_policy_clear (after);
+		rule = gate_rule (IN, "SSH", "22", FS_TARGET_ANY);
+		fs_policy_add (before, rule);
+		fs_policy_add (after, rule);
+		fs_rule_free (rule);
+		rule = gate_rule (IN, "ssh", "2222", FS_TARGET_ANY);
+		fs_policy_add (before, rule);
+		fs_rule_free (rule);
+
+		delta = fs_policy_delta (before, after);
+		CHECK (g_list_length (delta->remove) == 1 &&
+		       g_list_length (delta->repair) == 1,
+		       "review: removing \"ssh\" re-creates \"SSH\" (remove %u, "
+		       "repair %u)", g_list_length (delta->remove),
+		       g_list_length (delta->repair));
+		fs_policy_delta_free (delta);
+
+		/* A both-protocol row that moves: both halves go, both come
+		 * back, nothing else is touched. */
+		fs_policy_clear (before);
+		fs_policy_clear (after);
+		rule = gate_rule (IN, "DNS", "53", FS_TARGET_ANY);
+		fs_policy_add (before, rule);
+		fs_rule_free (rule);
+		rule = gate_rule (IN, "DNS", "5353", FS_TARGET_ANY);
+		fs_policy_add (after, rule);
+		fs_rule_free (rule);
+
+		delta = fs_policy_delta (before, after);
+		CHECK (g_list_length (delta->remove) == 2 &&
+		       g_list_length (delta->add) == 2 &&
+		       delta->repair == NULL,
+		       "review: DNS moved to 5353 is two deletes and two adds");
+		fs_policy_delta_free (delta);
+
+		fs_policy_free (before);
+		fs_policy_free (after);
+	}
+
+	/* The simulator on lists and ranges: inside any element is
+	 * covered, the gaps between them are not. */
+	{
+		FsCopilot *copilot = fs_copilot_new ();
+		FsPolicy *policy = review_policy (IN, "Game",
+		                                  "7000-7010 7100,7200");
+		FsSimulationResult *r;
+		static const struct { guint port; gboolean open; } probe[] = {
+			{ 7000, TRUE }, { 7005, TRUE }, { 7010, TRUE },
+			{ 7011, FALSE }, { 7099, FALSE }, { 7100, TRUE },
+			{ 7150, FALSE }, { 7200, TRUE }, { 7201, FALSE },
+		};
+
+		fs_copilot_set_policy (copilot, policy);
+		for (guint i = 0; i < G_N_ELEMENTS (probe); i++) {
+			r = fs_copilot_simulate (copilot, NULL, "203.0.113.5",
+			                         probe[i].port, "UDP", TRUE);
+			CHECK (r != NULL && r->would_block == !probe[i].open,
+			       "review: inbound UDP %u on \"7000-7010 7100,7200\" "
+			       "is %s", probe[i].port,
+			       probe[i].open ? "allowed" : "blocked");
+			fs_simulation_result_free (r);
+		}
+		fs_copilot_free (copilot);
+		fs_policy_free (policy);
+	}
+}
+
 static void test_settings_plan (void)
 {
 	FsSettings *s;
@@ -5231,6 +5549,7 @@ static void test_settings_plan (void)
 	                  "127.0.0.0/8") == 0,
 	       "reserved sources: the same four ranges, public profile");
 	fs_settings_plan_free (plan);
+	fs_settings_free (s);
 
 	/* --- the everything-on snapshot -------------------------- */
 	s = plan_settings_with (TRUE);
@@ -5718,8 +6037,9 @@ activity_test_clock (gpointer data)
 static void test_activity_series (void)
 {
 	FsActivity *a;
-	guint64 values[8];
-	guint covered[8];
+	/* Room for the widest window asked below (26 points). */
+	guint64 values[32];
+	guint covered[32];
 	gint64 start;
 	guint step;
 
@@ -5803,6 +6123,7 @@ static void test_activity_series (void)
 	/* The series cap: new names past it are refused, old ones count. */
 	{
 		guint accepted = 0;
+		GList *names;
 
 		for (guint i = 0; i < FS_ACTIVITY_MAX_SERIES + 5; i++) {
 			gchar *name = g_strdup_printf ("test.%u", i);
@@ -5812,10 +6133,12 @@ static void test_activity_series (void)
 			g_free (name);
 		}
 
-		CHECK (g_list_length (fs_activity_series_names (a)) ==
-		       FS_ACTIVITY_MAX_SERIES,
+		names = fs_activity_series_names (a);
+
+		CHECK (g_list_length (names) == FS_ACTIVITY_MAX_SERIES,
 		       "activity: never more than %d series",
 		       FS_ACTIVITY_MAX_SERIES);
+		g_list_free (names);
 		CHECK (fs_activity_add (a, FS_ACTIVITY_ALLOWED, 1),
 		       "activity: an existing series still counts at the cap "
 		       "(%u new names accepted)", accepted);
@@ -6785,6 +7108,7 @@ int main (void)
 	test_apply_gate ();
 	test_apply_translation_upgrade ();
 	test_whatif_winrules ();
+	test_fwrule_review ();
 	test_settings_plan ();
 	test_netparse_log ();
 	test_netparse_proc ();
@@ -6809,7 +7133,10 @@ if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
   EXTRA_LIBS="-lws2_32"
 fi
 
-cc "$BUILD_DIR/test-core.c" \
+# STOCKFW_TEST_CFLAGS adds compiler flags, for the sanitizer run the
+# README describes (-fsanitize=address,undefined ...).
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} "$BUILD_DIR/test-core.c" \
    -I src \
    $(pkg-config --cflags glib-2.0 gio-2.0) \
    -o "$BUILD_DIR/test-core" \

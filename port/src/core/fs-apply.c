@@ -354,15 +354,43 @@ list_has_rule (const GList *rules, const FsFwRule *needle)
 	return FALSE;
 }
 
+/* [ delete_key ]
+ * What a delete by name actually removes: netsh deletes by the netsh
+ * spelling of a name (fs_fwrule_netsh_name), which folds ':', '(',
+ * ')', '/', ',' and '"' into other characters.  So "Allow a/b
+ * (inbound)" and "Allow a-b (inbound)" are one name to netsh, and
+ * deleting either takes both.  Case is folded too, on the assumption
+ * that Windows matches rule names without regard to it.  The delta
+ * keys removals and repairs on this, never on the display name: a key
+ * that is too wide only re-creates a rule that did not need it, one
+ * that is too narrow loses a rule the journal says is live.  Caller
+ * frees. */
+static gchar *
+delete_key (const gchar *name)
+{
+	gchar *netsh = fs_fwrule_netsh_name (name);
+	gchar *key = g_ascii_strdown (netsh, -1);
+
+	g_free (netsh);
+	return key;
+}
+
 static gboolean
 name_is_removed (const GList *remove, const gchar *name)
 {
-	for (const GList *iter = remove; iter != NULL; iter = iter->next) {
-		if (g_strcmp0 (iter->data, name) == 0)
-			return TRUE;
+	gchar *key = delete_key (name);
+	gboolean removed = FALSE;
+
+	for (const GList *iter = remove; iter != NULL && !removed;
+	     iter = iter->next) {
+		gchar *other = delete_key (iter->data);
+
+		removed = (strcmp (other, key) == 0);
+		g_free (other);
 	}
 
-	return FALSE;
+	g_free (key);
+	return removed;
 }
 
 /* [ fs_policy_delta ]
@@ -397,7 +425,9 @@ fs_policy_delta (const FsPolicy *before, const FsPolicy *after)
 
 	old_rules = fs_fwrule_from_policy (before);
 
-	/* Remove: in old, not in new -- as unique names. */
+	/* Remove: in old, not in new -- one delete per name netsh tells
+	 * apart (a second delete of the same name finds nothing and
+	 * fails). */
 	{
 		GHashTable *seen = g_hash_table_new_full (g_str_hash, g_str_equal,
 		                                          g_free, NULL);
@@ -408,7 +438,7 @@ fs_policy_delta (const FsPolicy *before, const FsPolicy *after)
 			if (list_has_rule (new_rules, rule))
 				continue;
 
-			if (g_hash_table_add (seen, g_strdup (rule->name))) {
+			if (g_hash_table_add (seen, delete_key (rule->name))) {
 				delta->remove = g_list_prepend (
 					delta->remove, g_strdup (rule->name));
 			}

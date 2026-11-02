@@ -2087,12 +2087,17 @@ app_profile_new (const gchar *name, const gchar *path, gint64 now_unix)
 	FsAppProfile *profile = g_new0 (FsAppProfile, 1);
 	profile->app_name = g_strdup (name);
 	profile->app_path = path ? g_strdup (path) : NULL;
+	/* Every value is a g_new'd counter (record_connection and the
+	 * profile loader), so the tables own and free them: without a
+	 * value destructor each counter outlived its profile, and a
+	 * long monitoring session leaked one per port, destination and
+	 * hour of every application the LRU cap evicted. */
 	profile->common_ports = g_hash_table_new_full (g_direct_hash, g_direct_equal,
-	                                               NULL, NULL);
+	                                               NULL, g_free);
 	profile->common_destinations = g_hash_table_new_full (g_str_hash, g_str_equal,
-	                                                      g_free, NULL);
+	                                                      g_free, g_free);
 	profile->hourly_activity = g_hash_table_new_full (g_direct_hash, g_direct_equal,
-                                                      NULL, NULL);
+                                                      NULL, g_free);
 	profile->first_seen = (guint64) now_unix;
 	return profile;
 }

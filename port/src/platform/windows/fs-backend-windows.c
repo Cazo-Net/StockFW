@@ -1097,6 +1097,26 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 	if (policy == NULL)
 		return FS_APPLY_FAILED;
 
+	/* A refused BLOCK row stops the apply before anything is
+	 * cleared.  This function replaces the whole set, so carrying on
+	 * would delete the block that is in force now and put nothing in
+	 * its place: fail-open, with only the rollback (when there is a
+	 * journal at all) to close the hole again.  The Linux generator
+	 * refuses the whole script for a deny it cannot write in the same
+	 * way.  A refused allow is different -- leaving it out keeps a
+	 * hole closed -- so those are reported below and the rest
+	 * applies. */
+	refusal = fs_fwrule_block_refusals (policy);
+	if (refusal != NULL) {
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-windows"),
+		             0, "The firewall was not changed: a block rule "
+		             "could not be applied as written, and applying "
+		             "the rest would have removed it.\n%s", refusal);
+		g_free (refusal);
+		return FS_APPLY_FAILED;
+	}
+
 	rules = fs_fwrule_from_policy_checked (policy, &refused);
 
 	/* Rows the translation refused (a port that does not parse) have

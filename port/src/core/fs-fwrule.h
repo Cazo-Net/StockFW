@@ -115,12 +115,21 @@ gboolean fs_fwrule_is_sound (const FsFwRule *rule);
  * protocol.  When a row yields both, the names end in " (TCP)" and
  * " (UDP)" so each rule can be deleted on its own.  A row whose port
  * text is empty takes the service's own ports; a row whose port text
- * does not parse, or an unknown service with no port, is REFUSED,
- * never widened to "any port": no rule is appended, and when refused
- * is not NULL one sentence saying why is added to it (gchar*, owned
- * by the array, which must free its elements with g_free). */
+ * does not parse, or an unknown service or a bare "TCP"/"UDP" with no
+ * port, is REFUSED, never widened to "any port": no rule is appended,
+ * and when refused is not NULL one sentence saying why is added to it
+ * (gchar*, owned by the array, which must free its elements with
+ * g_free). */
 guint fs_fwrule_expand_checked (const FsPolicy *policy, GList **out,
                                 GPtrArray *refused);
+
+/* The refusals of the policy's BLOCK rows alone, joined by newlines,
+ * or NULL when every block row compiles.  A refused allow only leaves
+ * a hole closed; a refused block is a block missing, so a backend
+ * that replaces its whole rule set must not start when this is not
+ * NULL -- the Linux generator refuses the whole script for a deny
+ * with a bad port in the same way (fs-script.c).  Caller frees. */
+gchar *fs_fwrule_block_refusals (const FsPolicy *policy);
 
 /* fs_fwrule_expand_checked() without the refusals. */
 guint fs_fwrule_expand (const FsPolicy *policy, GList **out);
@@ -150,8 +159,10 @@ gchar *fs_fwrule_default_name (FsRuleDirection direction,
 
 /* A rule name as netsh is given it: netsh rejects ':', parentheses,
  * '/' and ',' in names, so each becomes '-' ("StockFW: Allow SSH
- * (inbound)" -> "StockFW- Allow SSH -inbound-").  The backend creates,
- * lists and deletes rules under this spelling.  Caller frees. */
+ * (inbound)" -> "StockFW- Allow SSH -inbound-"), and a double quote,
+ * which would end the name on netsh's command line, becomes '\''.
+ * The backend creates, lists and deletes rules under this spelling.
+ * Caller frees. */
 gchar *fs_fwrule_netsh_name (const gchar *name);
 
 /* The argv that creates one rule with "netsh advfirewall firewall add

@@ -105,7 +105,7 @@ fs_fwrule_port_spec (const gchar *text)
 {
 	gchar **tokens;
 	GString *out;
-	GPtrArray *seen;
+	GHashTable *seen;
 	gboolean ok = TRUE;
 
 	if (text == NULL || *text == '\0')
@@ -116,12 +116,15 @@ fs_fwrule_port_spec (const gchar *text)
 	 * "80, 443". */
 	tokens = g_strsplit_set (text, " ,", -1);
 	out = g_string_new (NULL);
-	seen = g_ptr_array_new_with_free_func (g_free);
+	/* A set, not a list scanned per element: port text may list
+	 * thousands of ports, and a scan per element made that seconds of
+	 * quadratic work in every compile (apply, simulator, Policy
+	 * page).  The set owns the element strings it holds. */
+	seen = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
 
 	for (guint i = 0; tokens[i] != NULL && ok; i++) {
 		guint first = 0, last = 0;
 		gchar *element;
-		gboolean dup = FALSE;
 
 		if (*tokens[i] == '\0')
 			continue;
@@ -135,12 +138,7 @@ fs_fwrule_port_spec (const gchar *text)
 			? g_strdup_printf ("%u", first)
 			: g_strdup_printf ("%u-%u", first, last);
 
-		for (guint s = 0; s < seen->len; s++) {
-			if (strcmp (g_ptr_array_index (seen, s), element) == 0)
-				dup = TRUE;
-		}
-
-		if (dup) {
+		if (g_hash_table_contains (seen, element)) {
 			g_free (element);
 			continue;
 		}
@@ -148,11 +146,11 @@ fs_fwrule_port_spec (const gchar *text)
 		if (out->len > 0)
 			g_string_append_c (out, ',');
 		g_string_append (out, element);
-		g_ptr_array_add (seen, element);
+		g_hash_table_add (seen, element);
 	}
 
 	g_strfreev (tokens);
-	g_ptr_array_unref (seen);
+	g_hash_table_unref (seen);
 
 	/* Separators alone (",", "  ") name no port at all. */
 	if (!ok || out->len == 0) {
@@ -160,6 +158,69 @@ fs_fwrule_port_spec (const gchar *text)
 		return NULL;
 	}
 
+	return g_string_free (out, FALSE);
+}
+
+/* [ port_range_compare ] -- ascending by first port, then last. */
+static gint
+port_range_compare (gconstpointer a, gconstpointer b)
+{
+	const guint *x = a, *y = b;
+
+	if (x[0] != y[0])
+		return x[0] < y[0] ? -1 : 1;
+	if (x[1] != y[1])
+		return x[1] < y[1] ? -1 : 1;
+	return 0;
+}
+
+/* [ spec_port_set ]
+ * The set of ports a normalised spec names, written one way only:
+ * ranges sorted, overlapping and touching ones merged.  "445,137-139"
+ * and "137-139,445" are the same set, and so are "137-138,139,445"
+ * and "137-139 445".  Used only to compare specs; rules keep the spec
+ * the row was written with.  NULL when spec is NULL. */
+static gchar *
+spec_port_set (const gchar *spec)
+{
+	gchar **elements;
+	GArray *ranges;
+	GString *out;
+
+	if (spec == NULL)
+		return NULL;
+
+	elements = g_strsplit (spec, ",", -1);
+	ranges = g_array_new (FALSE, FALSE, sizeof (guint) * 2);
+
+	for (guint i = 0; elements[i] != NULL; i++) {
+		guint pair[2];
+
+		if (parse_port_element (elements[i], &pair[0], &pair[1]))
+			g_array_append_val (ranges, pair);
+	}
+
+	g_strfreev (elements);
+	g_array_sort (ranges, port_range_compare);
+	out = g_string_new (NULL);
+
+	for (guint i = 0; i < ranges->len; ) {
+		const guint *r = &g_array_index (ranges, guint, i * 2);
+		guint first = r[0], last = r[1];
+
+		for (i++; i < ranges->len; i++) {
+			const guint *n = &g_array_index (ranges, guint, i * 2);
+
+			if (n[0] > last + 1)
+				break;
+			last = MAX (last, n[1]);
+		}
+
+		g_string_append_printf (out, "%s%u-%u", out->len > 0 ? "," : "",
+		                        first, last);
+	}
+
+	g_array_unref (ranges);
 	return g_string_free (out, FALSE);
 }
 
@@ -277,8 +338,8 @@ address_or_null (const gchar *target)
 }
 
 /* What one service row asks for: a spec per protocol, set when the
- * protocol is used (a NULL spec on a used protocol is "any port",
- * which only the bare "TCP"/"UDP" pseudo-services can ask for). */
+ * protocol is used.  A used protocol always has a spec: a planned
+ * service row never means "any port". */
 typedef struct
 {
 	gboolean tcp;
@@ -301,11 +362,17 @@ port_plan_clear (PortPlan *plan)
  *
  *   - "TCP" / "UDP" (what the What-If Simulator's "Create This Rule"
  *     writes for a port with no service name): exactly that
- *     protocol, on the row's ports, or on every port when it names
- *     none -- the user asked for "inbound TCP" and gets just that.
+ *     protocol, on the row's ports.  With no port they are refused
+ *     like any name with nothing to fall back on: "every TCP port"
+ *     is not a service, the What-If writes such a row for a probe
+ *     that named no port at all ("allow from 10.0.0.5"), and Linux
+ *     writes no rule for a portless service row (fs-script.c skips
+ *     it) -- Windows opening every TCP port for it would make the
+ *     same policy far wider on one platform.
  *   - A well-known service: its own protocols.  With no port text,
- *     or port text equal to its default, each protocol gets its own
- *     default ports (Samba: UDP 137-138 and TCP 139,445).  With other
+ *     or port text naming the same ports as its default in any order
+ *     ("445 137-139"), each protocol gets its own default ports
+ *     (Samba: UDP 137-138 and TCP 139,445).  With other
  *     port text (SSH moved to 2222) the row's ports apply to every
  *     protocol the service uses.
  *   - Any other name, user-defined or a back door: a TCP and a UDP
@@ -344,6 +411,15 @@ plan_service_ports (const gchar *service, const gchar *port_text,
 
 	if (service != NULL && (g_ascii_strcasecmp (service, "TCP") == 0 ||
 	                        g_ascii_strcasecmp (service, "UDP") == 0)) {
+		if (spec == NULL) {
+			*why = g_strdup_printf (
+				_("%s was not applied: it names no port, and "
+				  "\"%s\" alone would mean every %s port.  Name "
+				  "the ports, or use a host rule for every port "
+				  "of one host."), label, service, service);
+			return FALSE;
+		}
+
 		if (g_ascii_strcasecmp (service, "TCP") == 0) {
 			plan->tcp = TRUE;
 			plan->tcp_ports = spec;
@@ -358,10 +434,18 @@ plan_service_ports (const gchar *service, const gchar *port_text,
 
 	if (known != NULL &&
 	    (known->tcp_ports != NULL || known->udp_ports != NULL)) {
+		/* The same ports in another order or spelling ("445
+		 * 137-139" for Samba) are still the defaults, so each
+		 * protocol keeps its own: comparing the text would put
+		 * TCP on Samba's UDP ports and UDP on its TCP ones. */
 		gchar *defaults = fs_fwrule_port_spec (known->ports);
+		gchar *want_set = spec_port_set (spec);
+		gchar *default_set = spec_port_set (defaults);
 		gboolean use_defaults =
-			(spec == NULL || g_strcmp0 (spec, defaults) == 0);
+			(spec == NULL || g_strcmp0 (want_set, default_set) == 0);
 
+		g_free (want_set);
+		g_free (default_set);
 		g_free (defaults);
 
 		if (known->tcp_ports != NULL) {
@@ -620,6 +704,34 @@ fs_fwrule_expand_checked (const FsPolicy *policy, GList **out,
 	return count;
 }
 
+/* [ fs_fwrule_block_refusals ] -- see fs-fwrule.h.  Only service
+ * rows can be refused (host rows have no port), so the outbound deny
+ * service kind is the only block kind to look at. */
+gchar *
+fs_fwrule_block_refusals (const FsPolicy *policy)
+{
+	GList *rules = NULL;
+	GPtrArray *refused;
+	gchar *out = NULL;
+
+	if (policy == NULL)
+		return NULL;
+
+	refused = g_ptr_array_new_with_free_func (g_free);
+	append_service_rows (&rules, refused,
+	                     policy->kinds[FS_RULE_OUTBOUND_DENY_SERVICE],
+	                     FS_DIR_OUTBOUND, FS_ACTION_BLOCK);
+	fs_fwrule_list_free (rules);
+
+	if (refused->len > 0) {
+		g_ptr_array_add (refused, NULL);
+		out = g_strjoinv ("\n", (gchar **) refused->pdata);
+	}
+
+	g_ptr_array_unref (refused);
+	return out;
+}
+
 guint
 fs_fwrule_expand (const FsPolicy *policy, GList **out)
 {
@@ -691,6 +803,14 @@ fs_fwrule_netsh_name (const gchar *name)
 		case '/':
 		case ',':
 			g_string_append_c (out, '-');
+			break;
+		case '"':
+			/* The argv crosses to netsh with no shell, but
+			 * CreateProcess still hands netsh one command line
+			 * that it splits on quotes: a quote in a service
+			 * name ("a\" dir=in \"b") could end the name there
+			 * and let the rest read as netsh arguments. */
+			g_string_append_c (out, '\'');
 			break;
 		default:
 			g_string_append_c (out, *p);
