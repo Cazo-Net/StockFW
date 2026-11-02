@@ -1798,7 +1798,16 @@ test_log_one_writer (const gchar *tmp)
 	CHECK (fs_eventlog_flush (a, NULL), "the first one still writes");
 	fs_eventlog_usage (dir, &bytes, &files);
 	CHECK (files == 1, "the lock file is not counted as history (%u)", files);
-	CHECK (fs_eventlog_clear_dir (dir, NULL) == 1,
+	CHECK (fs_eventlog_clear_dir (dir, &error) == 0 &&
+	       g_error_matches (error, FS_EVENTLOG_ERROR,
+	                        FS_EVENTLOG_ERROR_IN_USE),
+	       "Delete history from a copy that is not the writer is refused "
+	       "while the writer has it open (%s)",
+	       error != NULL ? error->message : "no error");
+	g_clear_error (&error);
+	fs_eventlog_usage (dir, &bytes, &files);
+	CHECK (files == 1, "...and deletes nothing (%u file left)", files);
+	CHECK (fs_eventlog_clear (a, NULL) == 1,
 	       "Delete history deletes the history, not the lock");
 	{
 		gchar *lock = g_build_filename (dir, ".lock", NULL);
@@ -1827,8 +1836,15 @@ test_log_one_writer (const gchar *tmp)
 
 		if (pipe (ready) == 0 && (child = fork ()) == 0) {
 			FsEventLog *held = fs_eventlog_open (dir, 30, 0, NULL);
+			gboolean ok = held != NULL;
 
-			if (write (ready[1], held != NULL ? "y" : "n", 1) != 1)
+			for (guint i = 0; ok && i < 100; i++) {
+				ev_make (&e, i);
+				fs_eventlog_append (held, &e.hit,
+				                    g_get_real_time () * 10);
+			}
+			ok = ok && fs_eventlog_flush (held, NULL);
+			if (write (ready[1], ok ? "y" : "n", 1) != 1)
 				_exit (2);
 			sleep (30);
 			_exit (0);
@@ -1841,6 +1857,19 @@ test_log_one_writer (const gchar *tmp)
 			g_clear_error (&error);
 			if (b != NULL)
 				fs_eventlog_close (b);
+			/* The other copy's Delete history: refused, so the file
+			 * the writer has open is not unlinked under it (its
+			 * later events went into a file no one could see). */
+			CHECK (fs_eventlog_clear_dir (dir, &error) == 0 &&
+			       g_error_matches (error, FS_EVENTLOG_ERROR,
+			                        FS_EVENTLOG_ERROR_IN_USE) &&
+			       strstr (error->message, "nothing was deleted") != NULL,
+			       "Delete history in another process is refused while "
+			       "the writer has the history open (%s)",
+			       error != NULL ? error->message : "no error");
+			g_clear_error (&error);
+			CHECK (disk_logs (dir, NULL) == 1,
+			       "...and the writer's file is still there");
 			kill (child, SIGKILL);
 			waitpid (child, NULL, 0);
 			b = fs_eventlog_open (dir, 30, 0, &error);
@@ -1849,6 +1878,8 @@ test_log_one_writer (const gchar *tmp)
 			if (b != NULL)
 				fs_eventlog_close (b);
 			g_clear_error (&error);
+			CHECK (fs_eventlog_clear_dir (dir, NULL) == 1,
+			       "...and then Delete history from any copy works");
 		} else {
 			CHECK (FALSE, "the child could not open the log");
 			if (child > 0) {
@@ -1868,6 +1899,63 @@ test_log_one_writer (const gchar *tmp)
 	g_clear_error (&error);
 	g_free (dir);
 }
+
+#ifndef G_OS_WIN32
+/* [ test_log_deleted_under ]
+ * The file being written deleted from outside the lock (by hand, or an
+ * older copy's Delete history): the writer used to go on appending to
+ * the deleted file, flush said all was well, and every later event was
+ * lost.  The next flush now sees the file is gone and starts a new
+ * one. */
+static void
+test_log_deleted_under (const gchar *tmp)
+{
+	gchar *dir = g_build_filename (tmp, "deletedunder", NULL);
+	FsEventLog *a;
+	GDir *d;
+	const gchar *name;
+	gint64 t0 = (g_get_real_time () / 1000000) * 10000000LL;
+	guint n = 0;
+	gboolean ok = TRUE;
+	Ev e;
+
+	printf ("\n# the file being written deleted from outside\n");
+
+	a = fs_eventlog_open (dir, 30, 0, NULL);
+	for (guint i = 0; i < 100; i++) {
+		ev_make (&e, i);
+		fs_eventlog_append (a, &e.hit, t0 + i);
+	}
+	CHECK (fs_eventlog_flush (a, NULL) && disk_logs (dir, NULL) == 1,
+	       "100 events written to one file");
+
+	d = g_dir_open (dir, 0, NULL);
+	while (d != NULL && (name = g_dir_read_name (d)) != NULL) {
+		gchar *path = g_build_filename (dir, name, NULL);
+
+		if (g_str_has_prefix (name, "events-"))
+			g_remove (path);
+		g_free (path);
+	}
+	if (d != NULL)
+		g_dir_close (d);
+
+	for (guint i = 100; i < 600; i++) {
+		ev_make (&e, i);
+		ok = fs_eventlog_append (a, &e.hit, t0 + i) && ok;
+	}
+	CHECK (fs_eventlog_flush (a, NULL) && ok, "the writer goes on");
+	fs_eventlog_foreach (dir, 0, 0, count_cb, &n, NULL);
+	CHECK (n == 500, "the 500 events after the delete are on disk, in a "
+	       "new file (%u found)", n);
+	fs_eventlog_close (a);
+	n = 0;
+	fs_eventlog_foreach (dir, 0, 0, count_cb, &n, NULL);
+	CHECK (n == 500, "...and still there after close (%u)", n);
+	fs_eventlog_clear_dir (dir, NULL);
+	g_free (dir);
+}
+#endif
 
 int
 main (int argc, char **argv)
@@ -1902,6 +1990,9 @@ main (int argc, char **argv)
 #endif
 	test_log_big_cap (tmp);
 	test_log_one_writer (tmp);
+#ifndef G_OS_WIN32
+	test_log_deleted_under (tmp);
+#endif
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

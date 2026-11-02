@@ -115,6 +115,9 @@ guint64     fs_eventlog_dropped    (const FsEventLog *log);
 /* Deletes every history file in the folder (the log stays open and
  * starts a new file).  Returns how many files went. */
 guint       fs_eventlog_clear      (FsEventLog *log, GError **error);
+/* The same from a process that is not the writer: it holds the lock
+ * while it deletes, and deletes nothing (FS_EVENTLOG_ERROR_IN_USE)
+ * while a log is open on dir, in another process or in this one. */
 guint       fs_eventlog_clear_dir  (const gchar *dir, GError **error);
 
 /* What the folder holds now. */

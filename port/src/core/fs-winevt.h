@@ -26,7 +26,8 @@
  *                   is above the last one delivered, whatever the
  *                   query returned, and the batch is delivered oldest
  *                   first.
- *   Skips counted   when a poll comes back full (CAP events) or cut
+ *   Skips counted   when a poll comes back full (as many as it asked
+ *                   for: CAP, or fewer after a slow read) or cut
  *                   short, the events between the last one delivered
  *                   and the oldest one read were not read.  Their
  *                   number is not known exactly (the record numbers
@@ -37,12 +38,14 @@
  *                   (no query, /c:1) and starts after it, so events
  *                   from before StockFW started are not delivered
  *                   again on top of the saved history.
- *   Clear/rollover  a poll that finds nothing also reads the newest
- *                   record of any kind.  Below the last one delivered,
- *                   the log was cleared (numbers start again at 1):
- *                   the next poll reads from the start of the log.  A
- *                   log that rolls over keeps numbering, so rollover
- *                   needs nothing.
+ *   Clear/rollover  a poll that finds nothing above the cursor (no
+ *                   events, or in the fallback only old ones) also
+ *                   reads the newest record of any kind.  Below the
+ *                   last one delivered, the log was cleared (numbers
+ *                   start again at 1): the cursor goes back to 0 and
+ *                   the batch in hand is read from the start.  A log
+ *                   that rolls over keeps numbering, so rollover needs
+ *                   nothing.
  *   No condition    an event log service that refuses the record
  *                   condition (an error other than access denied or the
  *                   timeout) gets the query without it, at most
@@ -53,6 +56,9 @@
  *                   killed; the next poll asks for half as many
  *                   (never fewer than FS_WINEVT_POLL_MIN), and each
  *                   poll that works doubles it back towards the cap.
+ *                   That poll still reads the newest first, so a
+ *                   backlog larger than it is skipped in its older
+ *                   part, and counted.
  *--------------------------------------------------------------------*/
 #ifndef FS_WINEVT_H
 #define FS_WINEVT_H
@@ -122,7 +128,14 @@ void        fs_winevt_cursor_init (FsWinEvtCursor *cursor, guint64 newest);
 GPtrArray  *fs_winevt_take        (FsWinEvtCursor *cursor, GPtrArray *events,
                                    guint asked, gboolean cut);
 
-/* After a poll that found nothing: the newest record of any kind in
+/* Whether a poll's output (as captured, NULL for none) calls for the
+ * probe: TRUE when the cursor is past 0 and no record in it is above
+ * `after'.  With the record condition that is an empty poll; without
+ * it (the fallback) it is also a batch of records all at or below the
+ * cursor, which is what a cleared and refilled log answers. */
+gboolean    fs_winevt_needs_probe (const gchar *xml, guint64 after);
+
+/* After a poll that found nothing new: the newest record of any kind in
  * the log now.  Below the cursor, the log was cleared: the cursor goes
  * back to 0 and TRUE is returned. */
 gboolean    fs_winevt_check_newest (FsWinEvtCursor *cursor, guint64 newest);

@@ -775,6 +775,22 @@ fs_eventlog_flush (FsEventLog *log, GError **error)
 	if (log->buf->len == 0)
 		return TRUE;
 
+#ifndef G_OS_WIN32
+	/* The file deleted from outside while open (by hand, or a tool
+	 * that ignored the lock): writing on would fill a file no one can
+	 * see, and lose every event in it.  Start a new one instead.
+	 * Windows does not delete a file this log has open. */
+	if (log->fd >= 0) {
+		struct stat st;
+
+		if (fstat (log->fd, &st) == 0 && st.st_nlink == 0) {
+			close_current (log);
+			log->part_known = FALSE;
+			fs_eventlog_usage (log->dir, &log->total_bytes, NULL);
+		}
+	}
+#endif
+
 	if (!open_current (log)) {
 		g_set_error_literal (error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
 		                     log->problem);
@@ -918,8 +934,8 @@ fs_eventlog_close (FsEventLog *log)
 	g_free (log);
 }
 
-guint
-fs_eventlog_clear_dir (const gchar *dir, GError **error)
+static guint
+delete_logs (const gchar *dir, GError **error)
 {
 	GPtrArray *list = list_logs (dir);
 	guint removed = 0;
@@ -942,6 +958,36 @@ fs_eventlog_clear_dir (const gchar *dir, GError **error)
 	return removed;
 }
 
+/* [ fs_eventlog_clear_dir ]
+ * Delete history from a copy that is not the writer.  It takes the
+ * writer's lock for as long as it deletes, so it deletes nothing while
+ * another copy has the history open: on Linux that copy would go on
+ * appending to the file it has open after the name was gone, and every
+ * event it saved after the delete was lost without a word, until it
+ * moved to a new part or a new day. */
+guint
+fs_eventlog_clear_dir (const gchar *dir, GError **error)
+{
+	FsEventLog probe = { 0 };
+	guint removed;
+
+	g_return_val_if_fail (dir != NULL, 0);
+
+	probe.dir = (gchar *) dir;
+	if (!g_file_test (dir, G_FILE_TEST_IS_DIR))
+		return 0;
+	if (!take_lock (&probe, NULL)) {
+		g_set_error (error, FS_EVENTLOG_ERROR, FS_EVENTLOG_ERROR_IN_USE,
+		             "another copy of StockFW is saving the history in "
+		             "%s; nothing was deleted (delete it from that copy, "
+		             "or quit it first)", dir);
+		return 0;
+	}
+	removed = delete_logs (dir, error);
+	drop_lock (&probe);
+	return removed;
+}
+
 guint
 fs_eventlog_clear (FsEventLog *log, GError **error)
 {
@@ -960,7 +1006,7 @@ fs_eventlog_clear (FsEventLog *log, GError **error)
 	log->retry_s = 0;
 	log->retry_at = 0;
 
-	removed = fs_eventlog_clear_dir (log->dir, error);
+	removed = delete_logs (log->dir, error);
 	fs_eventlog_usage (log->dir, &log->total_bytes, NULL);
 
 	return removed;

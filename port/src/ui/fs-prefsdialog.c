@@ -1003,7 +1003,13 @@ on_clear_history (GtkButton *button, gpointer data)
 
 	fs_hitview_clear_history (&error);
 	if (error != NULL) {
-		fs_dialogs_error (win->window, _("Some history was not deleted"),
+		/* Another copy is the writer: it refuses as a whole, so the
+		 * file that copy has open is not deleted under it. */
+		fs_dialogs_error (win->window,
+		                  g_error_matches (error, FS_EVENTLOG_ERROR,
+		                                   FS_EVENTLOG_ERROR_IN_USE)
+		                  ? _("The history was not deleted")
+		                  : _("Some history was not deleted"),
 		                  error->message);
 		g_error_free (error);
 	}

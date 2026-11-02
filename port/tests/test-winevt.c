@@ -114,7 +114,7 @@ run_poll (FsWinEvtCursor *cursor, guint64 first, guint64 last, Poll *p)
 	p->ascending = TRUE;
 
 	fs_winevt_poll_done (cursor, FALSE);
-	if (after > 0 && strstr (output, "<Event") == NULL)
+	if (fs_winevt_needs_probe (output, after))
 		fs_winevt_check_newest (cursor, fake_newest (first, last));
 
 	events = fs_winevt_parse_xml (output, &cut);
@@ -523,6 +523,88 @@ test_loop (void)
 		       c6.skipped);
 		g_ptr_array_unref (fresh);
 		g_ptr_array_unref (events);
+		g_string_free (s, TRUE);
+	}
+
+	/* The fallback over a cleared log: the event log refuses the
+	 * record condition, so every poll is the newest
+	 * FS_WINEVT_FALLBACK_CAP firewall records whatever the cursor.
+	 * The log was cleared and filled again with records 1..300, all
+	 * below the cursor (50000).  The probe used to run only when the
+	 * output held no <Event, so it never ran here: nothing was
+	 * delivered and nothing counted, poll after poll.  Now a batch
+	 * with nothing above the cursor runs the probe, the clear is seen,
+	 * and the batch in hand is delivered, as in poll_worker and
+	 * poll_deliver. */
+	{
+		FsWinEvtCursor c7;
+		guint got = 0;
+
+		fs_winevt_cursor_init (&c7, 50000);
+		for (guint round = 0; round < 3; round++) {
+			GString *s = g_string_new (NULL);
+			GPtrArray *events, *fresh;
+			guint64 after = c7.last_id;
+
+			winevt_fixture_query (1, 300, TRUE, 0,
+			                      FS_WINEVT_FALLBACK_CAP, TRUE, FALSE,
+			                      to_gstring, s);
+			if (fs_winevt_needs_probe (s->str, after))
+				fs_winevt_check_newest (&c7, fake_newest (1, 300));
+			events = fs_winevt_parse_xml (s->str, NULL);
+			fresh = fs_winevt_take (&c7, events,
+			                        FS_WINEVT_FALLBACK_CAP, FALSE);
+			got += fresh->len;
+			g_ptr_array_unref (fresh);
+			g_ptr_array_unref (events);
+			g_string_free (s, TRUE);
+		}
+		CHECK (got == firewall_in (1, 300) && c7.clears == 1 &&
+		       c7.skipped == 0 && c7.last_id == 300,
+		       "no record condition (fallback), log cleared and filled "
+		       "again below the cursor: the clear is seen and the %"
+		       G_GUINT64_FORMAT " firewall records are delivered once "
+		       "(got %u, clears %u, skipped %" G_GUINT64_FORMAT
+		       ", last %" G_GUINT64_FORMAT ")", firewall_in (1, 300),
+		       got, c7.clears, c7.skipped, c7.last_id);
+	}
+
+	/* A timed-out read moves nothing, but the next, halved request
+	 * reads the newest records first: a backlog larger than it loses
+	 * its older part, and that part is counted (the documentation
+	 * used to say nothing is lost). */
+	{
+		FsWinEvtCursor c8;
+		Poll p8 = { 0 };
+
+		fs_winevt_cursor_init (&c8, 100);
+		fs_winevt_poll_done (&c8, TRUE);
+		run_poll (&c8, 1, 8100, &p8);
+		CHECK (p8.delivered == FS_WINEVT_POLL_CAP / 2 &&
+		       p8.last_id == 8100 && p8.ascending &&
+		       c8.skipped > 0 &&
+		       c8.skipped <= 8100 - 100 - FS_WINEVT_POLL_CAP / 2,
+		       "after a slow read: the newest %u of a backlog of ~8,000 "
+		       "are delivered and the older part is counted as skipped "
+		       "(got %u, skipped %" G_GUINT64_FORMAT ")",
+		       FS_WINEVT_POLL_CAP / 2, p8.delivered, c8.skipped);
+	}
+
+	/* What decides it: a record above the cursor means no probe, in
+	 * either mode; only old records, or none, mean the probe. */
+	{
+		GString *s = g_string_new (NULL);
+
+		winevt_fixture_query (1, 310, TRUE, 0, FS_WINEVT_FALLBACK_CAP,
+		                      TRUE, FALSE, to_gstring, s);
+		CHECK (!fs_winevt_needs_probe (s->str, 300) &&
+		       fs_winevt_needs_probe (s->str, 310) &&
+		       fs_winevt_needs_probe (s->str, 50000) &&
+		       fs_winevt_needs_probe ("", 300) &&
+		       fs_winevt_needs_probe (NULL, 300) &&
+		       !fs_winevt_needs_probe ("", 0),
+		       "the probe runs when nothing in the batch is above the "
+		       "cursor, and not on the first poll from an empty log");
 		g_string_free (s, TRUE);
 	}
 

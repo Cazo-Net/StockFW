@@ -483,6 +483,42 @@ fs_winevt_take (FsWinEvtCursor *cursor, GPtrArray *events, guint asked,
 	return out;
 }
 
+/* [ fs_winevt_needs_probe ]
+ * With the record condition, any event in the output is above the
+ * cursor, so "no <Event" was enough.  Without it (the fallback), the
+ * newest firewall records come back whatever the cursor, and a log
+ * cleared and filled again answered with records that were all below
+ * the cursor: the probe never ran, the clear was never noticed and
+ * nothing was delivered until the numbers climbed back past the old
+ * cursor.  So the test is on the record numbers, not on the text. */
+gboolean
+fs_winevt_needs_probe (const gchar *xml, guint64 after)
+{
+	const gchar *p, *end;
+
+	if (after == 0)
+		return FALSE;
+	if (xml == NULL)
+		return TRUE;
+
+	end = xml + strlen (xml);
+	for (p = xml; p < end;) {
+		const gchar *tag = find_tag (p, end, "EventRecordID");
+		gchar *text;
+		guint64 id;
+
+		if (tag == NULL)
+			break;
+		text = element_text (tag, end, "EventRecordID");
+		id = parse_u64 (text);
+		g_free (text);
+		if (id > after)
+			return FALSE;
+		p = tag + 1;
+	}
+	return TRUE;
+}
+
 gboolean
 fs_winevt_check_newest (FsWinEvtCursor *cursor, guint64 newest)
 {

@@ -322,9 +322,10 @@ update_count_label (void)
 		text = g_strdup_printf (total == 1 ? _("%s event") : _("%s events"),
 		                        b);
 
-	/* Events the source could not read (Windows: more than 10,000 in
-	 * one five-second read).  Said where the count is, so the count
-	 * is never read as everything that happened. */
+	/* Events the source could not read (Windows: more than one
+	 * five-second read takes, up to 10,000 and fewer after a slow
+	 * read or without the record condition).  Said where the count
+	 * is, so the count is never read as everything that happened. */
 	skipped_shown = monitor_skipped ();
 	if (skipped_shown > 0) {
 		gchar *n = grouped64 (skipped_shown);
@@ -336,10 +337,12 @@ update_count_label (void)
 	}
 	gtk_widget_set_tooltip_text (count_label, skipped_shown > 0
 		? _("More events arrived at once than one read of the event "
-		    "log takes (10,000 every five seconds). The newest were "
-		    "listed; the older ones of that burst were skipped. The "
-		    "number is an upper bound: the log numbers every security "
-		    "event, not only firewall events.")
+		    "log takes (up to 10,000 every five seconds; fewer after "
+		    "a slow read, or when the event log refuses the record "
+		    "condition). The newest were listed; the older ones of "
+		    "that burst were skipped. The number is an upper bound: "
+		    "the log numbers every security event, not only firewall "
+		    "events.")
 		: NULL);
 	gtk_label_set_text (GTK_LABEL (count_label), text);
 	g_free (text);
@@ -1048,6 +1051,9 @@ fs_hitview_clear_history (GError **error)
 	if (elog != NULL)
 		return fs_eventlog_clear (elog, error);
 
+	/* Not the writer.  fs_eventlog_clear_dir deletes nothing (and says
+	 * FS_EVENTLOG_ERROR_IN_USE) while another copy holds the history:
+	 * that copy would go on writing into the file deleted under it. */
 	dir = fs_eventlog_default_dir ();
 	removed = fs_eventlog_clear_dir (dir, error);
 	g_free (dir);

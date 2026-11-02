@@ -1945,8 +1945,10 @@ poll_deliver (gpointer data)
 	if (result->generation != log_generation)
 		goto out;
 
-	/* Killed at the budget: ask for fewer next time.  Nothing is
-	 * lost: the cursor did not move, so the next poll reads them. */
+	/* Killed at the budget: ask for fewer next time.  The cursor did
+	 * not move, but the next poll still reads the newest first: a
+	 * backlog larger than the halved request loses its older part,
+	 * and that part is counted as skipped (fs_winevt_take). */
 	if (result->exit_code == ERROR_TIMEOUT) {
 		fs_winevt_poll_done (&log_cursor, TRUE);
 		goto out;
@@ -1963,9 +1965,10 @@ poll_deliver (gpointer data)
 
 	fs_winevt_poll_done (&log_cursor, FALSE);
 
-	/* An empty poll brought the newest record of any kind: below the
-	 * cursor, the log was cleared, and the next poll reads it from
-	 * the start. */
+	/* A poll with nothing above the cursor brought the newest record
+	 * of any kind: below the cursor, the log was cleared, and the
+	 * batch in hand (all of it after the clear) is read from the
+	 * start. */
 	if (result->newest_output != NULL)
 		fs_winevt_check_newest (&log_cursor,
 		                        newest_record (result->newest_output));
@@ -2032,9 +2035,11 @@ poll_worker (gpointer data)
 		g_strfreev (args);
 	}
 
-	if (result->exit_code == 0 && result->after > 0 &&
-	    (result->output == NULL ||
-	     strstr (result->output, "<Event") == NULL)) {
+	/* Nothing above the cursor: an empty poll, or in the fallback a
+	 * batch of only old records, which is also what a log cleared and
+	 * filled again answers.  The probe tells which. */
+	if (result->exit_code == 0 &&
+	    fs_winevt_needs_probe (result->output, result->after)) {
 		gchar *err_text = NULL;
 		gint code = -1;
 

@@ -465,6 +465,20 @@ test_e2e_delivery (void)
 		       "a refused record condition: the 4 new records still "
 		       "arrive, once, nothing counted as skipped (got %u)",
 		       e2e_hits - before);
+
+		/* Still refused, and the log is cleared and gets 3 new
+		 * records, all below the cursor (9).  The fallback answers
+		 * them whatever the cursor; the probe used to run only on
+		 * an answer without <Event, so the clear was never seen
+		 * and nothing arrived. */
+		before = e2e_hits;
+		g_setenv ("STOCKFW_FAKE_WEVTUTIL_NO_RECORDID", "1", TRUE);
+		e2e_poll ("1 3");
+		g_unsetenv ("STOCKFW_FAKE_WEVTUTIL_NO_RECORDID");
+		CHECK (e2e_hits - before == 3 && log_cursor.clears == 2,
+		       "a refused record condition and a cleared log: the "
+		       "clear is seen and the 3 new records arrive (got %u)",
+		       e2e_hits - before);
 	}
 
 	/* What the fake was run with, one line per run, each argument in
