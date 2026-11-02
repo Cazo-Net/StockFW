@@ -21,7 +21,10 @@ void fs_dialogs_confirm (GtkWidget *parent,
                          const gchar *question,
                          gboolean *confirmed);
 
-/* Preferences.  Every setting it exposes takes effect; see fs-dialogs.c. */
+/* The Preferences window (fs-prefsdialog.c): modal, transient for
+ * parent.  It offers only settings this platform acts on, saves only
+ * what the user changed, and offers to apply changed firewall settings
+ * to a running firewall through the apply gate. */
 void fs_dialogs_preferences (GtkWidget *parent);
 
 G_END_DECLS

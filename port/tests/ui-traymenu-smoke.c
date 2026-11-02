@@ -188,6 +188,26 @@ static gint     answer = GTK_RESPONSE_CANCEL;
 static GString *dialogs_seen = NULL;
 static gboolean saw_cancel_default = FALSE;
 
+/* The widget called `name' inside `root', or NULL. */
+static GtkWidget *
+find_named (GtkWidget *root, const gchar *name)
+{
+	GtkWidget *found = NULL;
+
+	if (root == NULL)
+		return NULL;
+	if (g_strcmp0 (gtk_widget_get_name (root), name) == 0)
+		return root;
+	if (GTK_IS_CONTAINER (root)) {
+		GList *kids = gtk_container_get_children (GTK_CONTAINER (root));
+
+		for (GList *l = kids; l != NULL && found == NULL; l = l->next)
+			found = find_named (l->data, name);
+		g_list_free (kids);
+	}
+	return found;
+}
+
 static gboolean
 answer_dialogs (gpointer data)
 {
@@ -199,6 +219,19 @@ answer_dialogs (gpointer data)
 		GtkWidget *w = l->data;
 		const gchar *title;
 
+		/* The Preferences window (fs-prefsdialog.c) is a window with
+		 * its own loop, not a GtkDialog: closed with its Cancel. */
+		if (g_strcmp0 (gtk_widget_get_name (w), "fs-preferences") == 0 &&
+		    gtk_widget_get_visible (w)) {
+			GtkWidget *cancel = find_named (w, "prefs-cancel");
+
+			title = gtk_window_get_title (GTK_WINDOW (w));
+			g_string_append_printf (dialogs_seen, "[%s]",
+			                        title != NULL ? title : "");
+			if (cancel != NULL)
+				gtk_button_clicked (GTK_BUTTON (cancel));
+			continue;
+		}
 		if (!GTK_IS_DIALOG (w) || !gtk_widget_get_visible (w))
 			continue;
 		title = gtk_window_get_title (GTK_WINDOW (w));

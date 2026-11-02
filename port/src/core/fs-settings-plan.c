@@ -189,14 +189,14 @@ fs_settings_plan_new (const FsSettings *settings)
 
 	/* Not planned here, and why:
 	 * - deny_packets: Windows Firewall drops silently and has no
-	 *   per-rule reject, so there is nothing to plan; the UI keeps
-	 *   the control disabled with that admission.
-	 * - filter_tos: no Windows Firewall field marks Type of Service;
-	 *   the page stays unoffered on Windows.
+	 *   per-rule reject, so there is nothing to plan; Preferences
+	 *   does not offer the choice on Windows.
+	 * - restrictive_outbound: the outbound default is the profile's
+	 *   own setting, which StockFW does not change; not offered.
 	 * - nat / ext_device / int_device: Internet Connection Sharing
 	 *   needs the HNetCfg COM API, which the port does not carry
-	 *   yet; the Network Settings page stays unoffered on Windows
-	 *   rather than showing inert switches. */
+	 *   yet; the Network page stays unoffered on Windows rather
+	 *   than showing inert switches. */
 
 	return plan;
 }

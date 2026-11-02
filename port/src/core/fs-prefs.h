@@ -17,10 +17,9 @@
 
 G_BEGIN_DECLS
 
-/* Original GConf keys, unchanged. */
-#define FS_PREFS_FIRST_RUN       "/apps/stockfw/client/first_run"
-#define FS_PREFS_SYSLOG_FILE     "/apps/stockfw/client/system_log"
-
+/* Original GConf keys, unchanged.  Every key the application reads is
+ * also in the settings table below (fs_prefs_specs), which holds its
+ * type and its one default. */
 #define FS_PREFS_ENABLE_TRAY_ICON "/apps/stockfw/client/enable_tray_icon"
 #define FS_PREFS_MINIMIZE_TO_TRAY "/apps/stockfw/client/minimize_to_tray"
 
@@ -31,19 +30,14 @@ G_BEGIN_DECLS
  * audit log but never the firewall, until the user turns it off. */
 #define FS_PREFS_AUDIT_ONLY              "/apps/stockfw/client/policy_audit_only"
 
+/* Reserved for starting StockFW with the session; not read yet, and
+ * not in the table until something acts on it. */
 #define FS_PREFS_START_ON_BOOT    "/apps/stockfw/client/start_firewall_on_boot"
 #define FS_PREFS_START_ON_GUI     "/apps/stockfw/client/start_firewall_on_gui"
-#define FS_PREFS_START_ON_DIAL_OUT "/apps/stockfw/client/start_firewall_on_dial_out"
-#define FS_PREFS_START_ON_DHCP    "/apps/stockfw/client/start_firewall_on_dhcp"
 
 #define FS_PREFS_FW_EXT_IF "/apps/stockfw/firewall/ext_if"
 #define FS_PREFS_FW_INT_IF "/apps/stockfw/firewall/int_if"
 #define FS_PREFS_FW_NAT    "/apps/stockfw/firewall/nat"
-
-#define FS_PREFS_FW_DHCP_ENABLE     "/apps/stockfw/firewall/dhcp/enable_server"
-#define FS_PREFS_FW_DHCP_LOWEST_IP  "/apps/stockfw/firewall/dhcp/lowest_ip"
-#define FS_PREFS_FW_DHCP_HIGHEST_IP "/apps/stockfw/firewall/dhcp/highest_ip"
-#define FS_PREFS_FW_DHCP_NAMESERVER "/apps/stockfw/firewall/dhcp/nameserver"
 
 #define FS_PREFS_FW_FILTER_ICMP "/apps/stockfw/firewall/icmp/enable"
 #define FS_PREFS_FW_ICMP_ECHO_REQUEST  "/apps/stockfw/firewall/icmp/echo_request"
@@ -56,14 +50,6 @@ G_BEGIN_DECLS
 #define FS_PREFS_FW_ICMP_REDIRECTION   "/apps/stockfw/firewall/icmp/redirection"
 #define FS_PREFS_FW_ICMP_SOURCE_QUENCHES "/apps/stockfw/firewall/icmp/source_quenches"
 
-#define FS_PREFS_FW_FILTER_TOS  "/apps/stockfw/firewall/tos/enable"
-#define FS_PREFS_FW_TOS_CLIENT  "/apps/stockfw/firewall/tos/client"
-#define FS_PREFS_FW_TOS_SERVER  "/apps/stockfw/firewall/tos/server"
-#define FS_PREFS_FW_TOS_X       "/apps/stockfw/firewall/tos/x"
-#define FS_PREFS_FW_TOS_OPT_TROUGHPUT  "/apps/stockfw/firewall/tos/optimize_troughput"
-#define FS_PREFS_FW_TOS_OPT_RELIABILITY "/apps/stockfw/firewall/tos/optimize_reliability"
-#define FS_PREFS_FW_TOS_OPT_DELAY       "/apps/stockfw/firewall/tos/optimize_delay"
-
 #define FS_PREFS_FW_DENY_PACKETS            "/apps/stockfw/firewall/deny_packets"
 #define FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST "/apps/stockfw/firewall/block_external_broadcast"
 #define FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST "/apps/stockfw/firewall/block_internal_broadcast"
@@ -73,11 +59,92 @@ G_BEGIN_DECLS
  * its own audit policy). */
 #define FS_PREFS_FW_LOG_ALLOWED              "/apps/stockfw/firewall/log_allowed"
 
-/* Load / save.  fs_prefs_load is safe to call more than once. */
+/* ---- the settings table (1.0.7) ------------------------------------
+ *
+ * One row per setting: its key, its type and its default.  Every
+ * reader asks fs_prefs_bool() / fs_prefs_string(), which fall back to
+ * this default, so the Preferences window, the rule generator and the
+ * pages that act on a setting can no longer disagree about what an
+ * unset key means (they once did: the window showed "Apply policy
+ * changes immediately" ticked while the Policy page treated it as
+ * off).  tests/test-core.sh checks every consumer against it. */
+typedef enum
+{
+	FS_PREF_BOOL = 0,
+	FS_PREF_STRING
+} FsPrefType;
+
+typedef struct
+{
+	const gchar *key;
+	const gchar *name;        /* the FS_PREFS_* macro's name, for tests */
+	FsPrefType   type;
+	gboolean     bool_default;
+	const gchar *string_default;
+	gboolean     firewall;    /* changes the rules the firewall gets */
+} FsPrefSpec;
+
+/* The whole table, n_specs rows. */
+const FsPrefSpec *fs_prefs_specs (guint *n_specs);
+/* The row for key, or NULL when key is not a table setting. */
+const FsPrefSpec *fs_prefs_spec  (const gchar *key);
+
+/* Table-backed readers: the stored value, or the table's default. */
+gboolean  fs_prefs_bool   (const gchar *key);
+gchar    *fs_prefs_string (const gchar *key);
+
+/* TRUE when the settings file holds key at all. */
+gboolean  fs_prefs_has_key (const gchar *key);
+
+/* Every firewall setting (the table rows marked firewall) as it reads
+ * now: key (static) -> value text, "true"/"false" for switches and
+ * the string itself otherwise ("" for no device).  Caller unrefs. */
+GHashTable *fs_prefs_firewall_values (void);
+
+/* ---- editing a copy (the Preferences window) -----------------------
+ *
+ * A snapshot of every table setting.  The window changes the copy;
+ * commit writes back only the keys whose value differs from the
+ * snapshot AND that were marked writable (a control that is shown and
+ * able to act).  A key nobody touched, or one whose control cannot
+ * work here, is never written -- so saving never rewrites a value the
+ * user did not change. */
+typedef struct _FsPrefsEdit FsPrefsEdit;
+
+FsPrefsEdit *fs_prefs_edit_new          (void);
+void         fs_prefs_edit_free         (FsPrefsEdit *edit);
+gboolean     fs_prefs_edit_get_bool     (FsPrefsEdit *edit, const gchar *key);
+void         fs_prefs_edit_set_bool     (FsPrefsEdit *edit, const gchar *key,
+                                         gboolean value);
+const gchar *fs_prefs_edit_get_string   (FsPrefsEdit *edit, const gchar *key);
+void         fs_prefs_edit_set_string   (FsPrefsEdit *edit, const gchar *key,
+                                         const gchar *value);
+/* The value the snapshot started from. */
+gboolean     fs_prefs_edit_orig_bool    (FsPrefsEdit *edit, const gchar *key);
+const gchar *fs_prefs_edit_orig_string  (FsPrefsEdit *edit, const gchar *key);
+void         fs_prefs_edit_set_writable (FsPrefsEdit *edit, const gchar *key,
+                                         gboolean writable);
+gboolean     fs_prefs_edit_changed      (FsPrefsEdit *edit, const gchar *key);
+/* Changed keys, writable or not. */
+guint        fs_prefs_edit_n_changed    (FsPrefsEdit *edit);
+/* Changed AND writable keys: exactly what commit would write now. */
+guint        fs_prefs_edit_n_pending    (FsPrefsEdit *edit);
+/* Writes the changed, writable keys into the store (not to disk: call
+ * fs_prefs_save after).  Returns how many were written; firewall_changed
+ * says whether any of them was a firewall setting. */
+guint        fs_prefs_edit_commit       (FsPrefsEdit *edit,
+                                         gboolean *firewall_changed);
+
+/* Load / save.  fs_prefs_load is safe to call more than once.  A file
+ * that exists but cannot be parsed is copied to fs_prefs_backup_path()
+ * before FALSE is returned, so the defaults written after it never
+ * destroy the only copy of the user's settings. */
 void fs_prefs_init  (void);
 gboolean fs_prefs_load (void);
 gboolean fs_prefs_save (void);
 const gchar *fs_prefs_path (void);
+/* Where an unreadable settings file is kept: "<path>.bad".  Caller frees. */
+gchar       *fs_prefs_backup_path (void);
 
 /* TRUE when a setter changed something since the last load or save:
  * what the running program's periodic save checks (1.0.7). */
@@ -90,7 +157,8 @@ void      fs_prefs_set_string (const gchar *key, const gchar *value);
 gint      fs_prefs_get_int    (const gchar *key, gint fallback);
 void      fs_prefs_set_int    (const gchar *key, gint value);
 
-/* Applies defaults for every setting the application expects. */
+/* Writes the table default of every setting the file does not hold
+ * yet, then saves.  Keys the file already holds are left alone. */
 void fs_prefs_set_defaults (void);
 
 G_END_DECLS

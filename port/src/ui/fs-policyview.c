@@ -572,7 +572,22 @@ apply_policy_now (gboolean announce)
 				: g_strdup ("");
 
 			if (outcome->impact->added == 0 &&
-			    outcome->impact->removed == 0) {
+			    outcome->impact->removed == 0 &&
+			    outcome->settings) {
+				/* Settings saved in Preferences and not yet
+				 * applied went out with this apply. */
+				gchar *msg = g_strdup_printf (
+					_("The policy already matched what is "
+					  "live, and the firewall settings saved "
+					  "in Preferences are now applied with "
+					  "it.%s"), notes);
+
+				fs_dialogs_info (NULL,
+				                 _("Firewall settings applied"),
+				                 msg);
+				g_free (msg);
+			} else if (outcome->impact->added == 0 &&
+			           outcome->impact->removed == 0) {
 				gchar *msg = g_strdup_printf (
 					_("The policy already matches what is "
 					  "live on the firewall.%s"), notes);
@@ -677,11 +692,11 @@ on_apply_clicked (GtkButton *button, gpointer data)
 static void
 maybe_apply_instantly (void)
 {
-	/* Default to FALSE: the original StockFW required an explicit
-	 * Apply click.  Auto-apply on every edit was noisy and showed
-	 * "Administrator required" dialogs when not elevated.  The user
-	 * can enable it in Preferences → Interface if they run elevated. */
-	if (!fs_prefs_get_bool (FS_PREFS_APPLY_POLICY_INSTANTLY, FALSE))
+	/* Off unless set: the original StockFW required an explicit
+	 * Apply click.  The default lives in the settings table
+	 * (core/fs-prefs.c); the user turns it on in Preferences >
+	 * Policy. */
+	if (!fs_prefs_bool (FS_PREFS_APPLY_POLICY_INSTANTLY))
 		return;
 
 	apply_policy_now (FALSE);
