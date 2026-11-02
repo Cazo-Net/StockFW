@@ -93,3 +93,79 @@ ignoring which profile states were readable; networks not sorted
 internet-first; the verdict ignoring the profile in use; the "In use"
 marks never shown; switching a profile on from the card not re-judging
 until the next poll.
+
+## What a blocklist must never cut (`fs-hostnet-test`)
+
+```sh
+cd port
+ninja -C build-linux fs-hostnet-test
+./build-linux/fs-hostnet-test        # as root for the live part
+```
+
+`src/core/fs-hostnet.c` gathers what the threat-intel engine subtracts
+from every list (design 6.4): this computer's addresses, its connected
+prefixes, its default gateways, the DNS servers in use, the SSH sessions
+to keep and the feed hosts.
+
+- **Parsers, on fixtures modelled on the real files** (any platform, no
+  root).  `/proc/net/route` with its header: only defaults with
+  RTF_GATEWAY and RTF_UP, the gateway read little-endian; not the
+  connected route, a route via a gateway that is not a default, a
+  default without the gateway flag (with and without a gateway column),
+  one that is down, the "unreachable" default, damaged rows; a block of
+  rows without the header (the reader hands tables over in blocks).
+  `/proc/net/ipv6_route`: ::/0 with a next hop, not without one, not
+  ::/3, not other prefixes.  Resolvers: only 127.0.0.53 means
+  systemd-resolved's upstreams (1.1.1.1 and 2606:4700:4700::1111 both
+  kept), a real server in resolv.conf means the upstream files are not
+  used, NetworkManager's dnsmasq and its no-stub file, commented-out
+  servers, zone suffixes, ::1, no nameserver, no resolv.conf.  SSH
+  variables: IPv4, IPv6, zone, IPv4-mapped, garbage, a name (never
+  looked up), empty, only SSH_CLIENT, garbage falling back to
+  SSH_CLIENT.  `/proc/net/tcp` and `tcp6`: ESTABLISHED rows on the local
+  port only (not LISTEN, TIME_WAIT, port 0x1600, or our own client to a
+  remote port 22), the port as plain hex, an IPv4-mapped peer as IPv4.
+- **fs_hostnet_new/free/all**: six empty normalized sets; all six merged.
+- **This machine** (no root): normalized sets, no loopback in own or
+  onlink, `$SSH_CONNECTION`'s client kept.
+- **Live, as root**: the test re-executes itself under
+  `unshare -n -m --propagation private`.  The child refuses to touch
+  anything unless /proc shows network and mount namespaces other than
+  its parent's (and init's, where readable) and a network namespace
+  with every interface still down.  There it makes lo with a service
+  address, a veth with three addresses, a veth left down, a tun with a
+  peer, a default route, sshd's port with one session up and one in
+  TIME_WAIT, a tmpfs over /run with systemd-resolved's file (a symlink)
+  and NetworkManager's, and fixtures bound over /etc/resolv.conf and
+  /etc/hosts; then checks own, onlink, gateways, sessions, resolvers and
+  update hosts exactly, loopback absent, the down interface absent, the
+  tun's peer on-link, an IPv6 feed address kept without IPv6 configured,
+  a resolver file read only up to its 1 MiB cap, and a FIFO at a
+  resolver path skipped (an alarm turns a hang into a FAIL).  Everything
+  vanishes with the namespaces.  IPv6 is checked live only on a kernel
+  that has it; elsewhere the test says so and the fixtures cover it.
+
+Without root, unshare or ip the live part prints SKIP.  Teeth, each
+re-injected into `src/core/fs-hostnet.c` and seen failing, then
+restored (cmp) and green again:
+
+| bug | check that caught it |
+|---|---|
+| route gateway read big-endian | "/proc/net/route: the up defaults ..." (got 1.100.51.198 254.2.0.192); live "gateways" from the kernel's own table |
+| upstream resolver files always read | "resolvers: a real server in resolv.conf -> the upstream files are not used", and live |
+| upstream resolver files never read | "resolvers: only 127.0.0.53 -> resolved's upstreams", nine more |
+| ESTABLISHED filter dropped | "tcp: ESTABLISHED rows on local port 22" (got LISTEN's 0.0.0.0 and the TIME_WAIT peer); live "sessions" |
+| hex port read with its bytes swapped | "tcp: ESTABLISHED rows on local port 22" (got only the 0x1600 row); live "sessions" |
+| loopback addresses in own | live "loopback is not in own (nor in onlink)"; "read here: loopback ..." |
+| interfaces that are down counted | live "an interface that is down adds nothing" |
+| point-to-point link given its local prefix | live "a point-to-point link: the peer is on-link" |
+| AI_ADDRCONFIG in the host lookup | live "update hosts: an IPv6 address is kept although ..." |
+| no cap on resolver files | live "a resolver file is read up to its cap, no further" |
+| resolver files opened without O_NONBLOCK | live "a FIFO at a resolver path is skipped, not waited on" |
+| IPv4-mapped peer left IPv6 | "tcp6: ... the IPv4-mapped peer comes out as IPv4" |
+| RTF_UP ignored | "/proc/net/route: the up defaults ..." (the down route came in) |
+| RTF_GATEWAY ignored | the same check (0.0.0.0 and the flagless gateway came in) |
+| IPv6 default without the prefix-length test | "/proc/net/ipv6_route: ::/0 rows with a next hop" (::/3 came in) |
+| SSH zone suffix kept | "SSH_CONNECTION, a zone suffix is dropped" |
+| fs_hostnet_all forgets update_hosts | "fs_hostnet_all: every set, merged" |
+| the remote port taken for the local one | "tcp: ESTABLISHED rows on local port 22"; live "sessions" |
