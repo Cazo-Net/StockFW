@@ -463,4 +463,19 @@ if(FS_PLATFORM STREQUAL "linux")
   target_link_libraries(fs-intel-backend-driver PRIVATE fs-core-nogui)
   target_compile_definitions(fs-intel-backend-driver PRIVATE
                              FS_BACKEND_TESTING=1)
+  # The engine end to end (tests/test-intel-e2e.sh): the default
+  # downloader, the real store, this computer read live and the release
+  # backend.  Its own copy of fs-fetch.c is compiled with
+  # FS_FETCH_TESTING only so $STOCKFW_TEST_CACERT can name the test
+  # server's CA (the fs-fetch-test arrangement); the backend copy has no
+  # test hook.
+  add_executable(fs-intel-e2e-driver EXCLUDE_FROM_ALL
+    tests/intel-e2e-driver.c
+    src/core/fs-fetch.c
+    src/platform/linux/fs-backend-linux.c
+  )
+  target_link_libraries(fs-intel-e2e-driver PRIVATE fs-core-nogui)
+  target_compile_definitions(fs-intel-e2e-driver PRIVATE
+                             FS_FETCH_TESTING=1
+                             FS_VERSION="${PROJECT_VERSION}")
 endif()

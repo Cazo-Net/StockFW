@@ -1117,3 +1117,121 @@ The upfront `nft` lookup has no tooth: without it the runner's own
 The split-delete tooth of the rule-set section above stood in for this
 backend with `fs-intelset-driver apply`; here it is injected into the
 real `intel_apply` and caught by the same kind of rejected transaction.
+
+## Threat intel end to end on Linux (`tests/test-intel-e2e.sh`)
+
+```sh
+cd port
+ninja -C build-linux fs-intel-e2e-driver
+sudo bash tests/test-intel-e2e.sh   # needs root, nft, curl, openssl, python3; SKIPs otherwise
+```
+
+The engine (`fs-intel.c`) and the Linux slots (`fs-backend-linux.c`)
+were each tested against stand-ins: the engine through a fake backend
+and a fake downloader, the slots through a driver that builds rule sets
+by hand.  This test runs them together with nothing replaced.
+`fs-intel-e2e-driver` calls the engine the way a `stockfw intel` command
+would: `fs_intel_config_load`/`save`, `fs_intel_import_list`,
+`fs_intel_update` with the default downloader (`fs_fetch`, curl as
+nobody, 120 s), `fs_intel_apply_safe` with host NULL (so the engine
+reads this computer with `fs_hostnet_read()`), `fs_intel_suspend`,
+`fs_intel_resume`, `fs_intel_state`, `fs_intel_counters`,
+`fs_intel_lookup` and `fs_intel_applied_has`, all with `fs_backend()`.
+Its copy of `fs-fetch.c` is compiled with `FS_FETCH_TESTING` only so
+`$STOCKFW_TEST_CACERT` can name the test server's CA (the
+`fs-fetch-test` arrangement); its copy of the backend has no test hook.
+
+The test re-executes itself under `unshare -n -m`.  In there, a tmpfs
+over `/var/lib` holds the default store (`/var/lib/stockfw/intel`,
+created by the engine), a `resolv.conf` bound over `/etc/resolv.conf`
+names the DNS server, and a veth pair joins this computer
+(192.0.2.1/24, default gateway 192.0.2.2) to a peer namespace that
+plays the internet: the HTTPS feed server at 203.0.113.80 (a throwaway
+CA), the DNS server 203.0.113.53, the SSH client in `$SSH_CONNECTION`
+(198.51.100.22), an established connection to this computer's port 22
+from 198.51.100.33, and the listed and unlisted addresses.  The feed
+(custom, both directions) lists all of those plus this computer's own
+/24; a local CSV list (outbound only) holds 198.51.100.128/26 and
+203.0.113.128/25.  Packets are UDP datagrams with receivers on both
+sides; a send the kernel refuses (the outbound reject) is counted by the
+sender.  It proves:
+
+- with nothing turned on: state off, no table, and an update makes no
+  request at all; the store is created 0700 under a 0755 parent, and
+  `intel.conf` and every list are 0600;
+- the feed is downloaded by the default downloader as
+  `StockFW/<version>`, with its entries and content date recorded;
+- one apply builds both sets and loads them in one nft transaction,
+  the table carries the digest, the state is enforced, and a note names
+  each kind of address kept: this computer's own, its network, the
+  gateway, the DNS server, both SSH peers, the feed's server; the
+  kernel's set holds the listed address and none of the kept ones, and
+  the outbound entries are also in 64:ff9b::/96 (rule text only);
+- real packets: in from a listed address, dropped; in from an address
+  only the outbound list holds, delivered; in from every kept address,
+  delivered; out to a listed address, refused at once; out to unlisted
+  and kept addresses, delivered; the counters are exactly the packets
+  the lists stopped (12 and 4), and `fs_intel_lookup` agrees with every
+  packet, the NAT64 form included;
+- the next update reaches the feed's server although the enforced list
+  names it in both directions;
+- an update with a changed list: the address it dropped passes, the one
+  it added is dropped, and the counters carry across the replace;
+- bad copies change nothing in the store or the kernel: an HTML page,
+  an HTTP 503, the older copy replayed (rollback), a copy that shrank
+  from 16 entries to 2, and one dated a year ahead; an apply afterwards
+  enforces the last good copy with the same digest;
+- a transaction the kernel rejects fails naming the lists in force; the
+  previous table and its digest stay, the state still reads enforced,
+  the counters are not carried, and the change (an exception) is not in
+  force; with the real nft the exception lets its address through and
+  is noted, and the counters come out counted once; removing it gives
+  the previous digest again;
+- a stored list tampered with on disk (`0.0.0.0/0`) is refused before
+  any nft load, the kernel keeps the last good list, and the next update
+  stores the good copy again although the download is byte for byte the
+  one already recorded;
+- a hold reaches no nft (dry-run);
+- a table someone removed reads not-loaded (and the address really
+  passes), one someone else loaded reads differs, and an apply repairs
+  both;
+- user Stop and Start: suspend removes the table, the state reads
+  suspended, the log parser would accept no list line, the count
+  survives and the addresses pass; resume brings back the same digest
+  and the count goes on;
+- the master switch off: the apply removes the table, the state reads
+  off, nothing is blocked (and the lookup says so), an update makes no
+  request, and the carried counts stay;
+- one audit line per apply attempt (held and failed ones included), per
+  suspend, per feed update attempt and per import.
+
+The sanitizer build (`build-asan`, `-fsanitize=address,undefined`,
+Debug, LeakSanitizer on) of `fs-intel-e2e-driver` runs the whole test
+clean (`STOCKFW_INTEL_E2E_DRIVER` points the test at it).
+
+Not covered here: IPv6 packets (none are sent; the IPv6 sets are
+checked as rule text), `STOCKFW-TI` kernel log lines (nft's log
+statement is silent in a network namespace by default), catalog feeds
+and their real hosts (no internet; a custom feed stands in, and its
+host is an address, so no DNS lookup is made for it), and Windows.
+
+Teeth, each injected into the real source by a script that asserts the
+exact old text once; the driver was rebuilt, the named checks seen
+failing, the file restored with `cp` and checked with `cmp`, and the
+test seen green again:
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| a custom feed's host not kept reachable | `the next update reaches the feed's server although the enforced list names it`, `in from the feed's server`, its note, the kernel-set and NAT64 checks (31 in all) |
+| established connections to port 22 not read | `in from the peer of the established SSH connection`, its note, the kernel-set check, the lookup, the counters |
+| the DNS servers not read | `in from the DNS server`, `out to the DNS server`, its note, the kernel-set check, the lookup, the counters |
+| exceptions not subtracted | `with the real nft the exception is applied and noted`, `the exception lets 198.51.100.10 through` |
+| no NAT64 mapping for outbound lists | `IPv6 (rule text): outbound entries are also blocked in 64:ff9b::/96`, the interval count (v6=0) |
+| an outbound list also matched inbound | `in from an address only the outbound list holds`, and the counters |
+| counters carried when the apply failed | `the counters are not carried by a failed apply`, `... counted once` (21, not 20) |
+| the backend skips a re-apply of the digest already live | `... counted once` (24, not 20: the engine carried counts the kernel kept) |
+| suspend leaves the table | `Stop: suspend removes the table`, `state: suspended`, `while suspended the listed addresses really pass` |
+| suspend does not carry the counters | `the count survives the suspend`, `the count goes on from where it was` (23 -> 22) |
+| "unchanged" without checking the stored list against its state | `the next update stores the good copy again`, and every apply after it (the tampered list stays) |
+| no rollback guard | `the older copy replayed (a rollback)`, and the checks that need the newer copy |
+| the hold ignored | `a hold reaches no nft`, the audit count of held attempts |
