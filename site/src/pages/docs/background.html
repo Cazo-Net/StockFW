@@ -1,0 +1,39 @@
+---
+title: Background and the tray
+section: Using the app
+order: 18
+description: Keeping StockFW running after the window closes: the tray icon and its menu, what the tooltip tells you, what Quit does and does not do, and where tray icons do not work.
+---
+<h1>Background and the tray</h1>
+<p class="lede">The firewall engine runs whether StockFW is open or not; StockFW in the background is what keeps watching events, learning behaviour and, in auto mode, letting Sentinel act. The tray icon is how you know it is there and how you get it back.</p>
+
+<h2>Turning it on</h2>
+<p>Two settings on the <a href="{{root}}docs/preferences.html">Interface preference page</a>, both on by default: <em>Show a tray icon</em> and <em>Minimize to the tray</em>. With both on, closing or minimising the window hides it and StockFW keeps running. With the icon off, closing the window quits the program; StockFW will not hide a window it cannot give back, because a background process with no way to reopen it would be a zombie with root rights. [[verified:ui-tray-smoke]]</p>
+
+<h2>The icon and its tooltip</h2>
+<p>The tooltip reads <em>StockFW, Protected</em> or <em>StockFW, Not protected</em>, with the engine’s name, from the same state the Overview shows; when the state cannot be read it says <em>Firewall state is unknown</em> rather than guessing. The icon follows the state too, so the answer to “is my firewall running?” is one glance.</p>
+
+<h2>The menu</h2>
+<ul>
+<li><strong>Open StockFW</strong> brings the window back.</li>
+<li><strong>About StockFW</strong> shows the version and credits.</li>
+<li><strong>Quit StockFW</strong> ends the program. It does <em>not</em> stop the firewall: the engine keeps enforcing whatever was last applied, exactly as it would if StockFW crashed. To stop filtering, open the window and press <strong>Stop firewall</strong>, or run <code>sudo stockfw stop</code>.</li>
+</ul>
+<div class="callout soon">
+<span class="label">Coming in 1.0.7</span>
+<p>A richer tray menu: the state, the last few blocks, Start and Stop, and the Sentinel mode, without opening the window. Quit stays a plain quit.</p>
+</div>
+
+<h2>What runs in the background</h2>
+<ul>
+<li>Event monitoring, and everything fed by it: the Activity counters, the Copilot’s baseline, Sentinel’s detectors.</li>
+<li>Sentinel’s ten-minute expiry timer for auto-blocks.</li>
+<li>In 1.0.7, the hourly check for threat-intel feed updates. [[soon]]</li>
+</ul>
+<p>Memory stays flat: the Activity series are fixed-size rings, the Events list keeps 2,000 rows, the Copilot keeps 200 insights, and a 150-second soak at full event rate found no growth. [[measured:150-second soak, docs chapter 9]]</p>
+
+<h2>Where the icon cannot appear</h2>
+<p>A tray needs a tray host. GNOME has not shipped one since 3.26; the <em>AppIndicator</em> extension restores it, and KDE, XFCE, MATE, Cinnamon and Windows have one built in. Without a host the icon simply does not show, the window keeps working, and closing it quits, so nothing is lost. The project’s own tray test fails on a headless machine for this reason, and is expected to. [[gap]]</p>
+
+<h2>Starting at login</h2>
+<p>StockFW does not install itself as a login item or a service. On Windows the elevated shortcut needs a UAC prompt, which a silent start cannot give, so an autostart entry would start the unprivileged copy. On Linux a desktop autostart entry under <code>~/.config/autostart/</code> runs as you, not as root, with the same limits. If you want the firewall itself in force at boot, see <a href="{{root}}docs/faq.html#reboot">what happens at reboot</a>.</p>

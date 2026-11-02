@@ -1,0 +1,85 @@
+---
+title: Threat-intel blocklists
+section: Protection
+order: 22
+description: Blocking known-bad address ranges from published feeds, coming in 1.0.7: which feeds, what is built, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.
+---
+<h1>Threat-intel blocklists</h1>
+<p class="lede">A policy says what <em>you</em> allow. A blocklist says what the wider community has seen attacking, hosting botnet controllers or spraying brute-force logins, as address ranges that are refused on sight. 1.0.7 brings well-known feeds into StockFW, off until you turn each one on, with the same discipline as the rest of the app: nothing silent, nothing that cannot be undone, and the kernel’s real state shown rather than the configuration.</p>
+
+<div class="callout soon">
+<span class="label">Where this stands</span>
+<p>The address-range engine and the path from a list file to an nftables set are built and tested [[built]]. Feeds, downloads, consent, the Threat Intel page, <code>stockfw intel</code> and list-attributed events are being written for the Linux release of 1.0.7 [[soon]]. Windows enforcement follows once the Windows build has been checked on a real machine [[planned]]. Until then every Windows surface says blocklists are not available there yet. The design, with its review findings, is <code>docs/1.0.7-threat-intel-design.md</code> in the repository.</p>
+</div>
+
+<h2>The feeds</h2>
+<p>Every feed is off until you switch it on and accept its terms. A feed is fetched from its own publisher or not at all: no mirrors, no aggregator of StockFW’s own. Each entry carries the host it contacts, its information and terms pages, the licence <em>where it has been verified</em> (otherwise “See the provider’s terms”), whether it is for non-commercial use only, its format, its default direction and how often it updates.</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Feed</th><th>What it lists</th><th>Default direction</th><th>Updates</th></tr></thead>
+<tbody>
+<tr><td>Spamhaus DROP, IPv4 and IPv6</td><td>Networks hijacked or leased by professional spam and malware operations. Recommended.</td><td>both</td><td>12 h</td></tr>
+<tr><td>abuse.ch Feodo Tracker</td><td>Botnet command-and-control servers. Recommended.</td><td>both</td><td>6 h</td></tr>
+<tr><td>DShield</td><td>The top attacking networks seen by the Internet Storm Center. Non-commercial terms.</td><td>in</td><td>24 h</td></tr>
+<tr><td>FireHOL level 1</td><td>An aggregate that already contains the three above and DShield. Turning it on next to them adds a note.</td><td>in</td><td>24 h</td></tr>
+<tr><td>blocklist.de</td><td>Addresses reported by fail2ban installations.</td><td>in</td><td>24 h</td></tr>
+<tr><td>Emerging Threats compromised hosts</td><td>Hosts known to be compromised.</td><td>in</td><td>24 h</td></tr>
+<tr><td>CINS Army</td><td>Poor-reputation addresses from the CINS sensor network.</td><td>in</td><td>24 h</td></tr>
+<tr><td>Tor exit relays</td><td>A policy choice, not a threat list; labelled as such.</td><td>in</td><td>6 h</td></tr>
+</tbody>
+</table>
+</div>
+<p>A custom feed is any URL that passes the URL rule, with a name, a format and a direction; typing the URL is your consent for that host. A local list is a CSV or plain file you import yourself, with no network involved.</p>
+<p><strong>Direction</strong> means what it means for Windows’ stateful rules: <em>in</em> stops them connecting to you, <em>out</em> stops you connecting to them, <em>both</em> does both. Replies to connections you opened are never affected by an <em>in</em> list.</p>
+
+<h2>Consent</h2>
+<p>The first time you turn a feed on, a dialog says which host will be contacted and how often, what that host learns (your public address and the string <code>StockFW/<em>version</em></code>), the licence and a link to the terms, and that lists contain mistakes and how to make an exception. Only after Accept does anything download. Updates run hourly in the desktop app and from <code>stockfw intel update</code> for cron or a timer; a failed or refused update never removes the previous copy.</p>
+
+<h2>What a feed is checked for</h2>
+<p>A downloaded file is text from the internet and is treated as hostile until it has passed every guard: a 64 MB size cap before it is read; strict parsing (addresses, CIDRs and <code>a-b</code> ranges, never names); no single IPv4 interval wider than a /8 and no IPv6 interval wider than a /16; no more than an eighth of the IPv4 space in one list; a list that is empty or mostly unparseable is refused and the set keeps what it had; and a sudden shrink is judged against the previous size. Content dates are read where a format has one, and a list older than seven update intervals is marked stale. [[verified:test-intel.c]]</p>
+
+<h2>What can never be blocked</h2>
+<p>Before anything reaches the kernel, the engine subtracts from every set, and lists in its notes what it subtracted:</p>
+<ul>
+<li>loopback, link-local, multicast, the private ranges, carrier NAT, the reserved and documentation ranges, and the NAT64 prefixes;</li>
+<li>your own exceptions;</li>
+<li>this computer’s own addresses, its connected prefixes and its default gateways;</li>
+<li>the DNS servers in use, read from <code>/etc/resolv.conf</code> and, when those are loopback stubs, from systemd-resolved’s and NetworkManager’s real lists;</li>
+<li>the peer of your SSH session and every established inbound SSH connection, so a list cannot lock you out of the machine you are configuring it on;</li>
+<li>the feeds’ own hosts, so a list cannot block its own updates.</li>
+</ul>
+<p>Then, for sets that block outbound, each IPv4 interval is also added to the IPv6 set inside <code>64:ff9b::/96</code>, so NAT64 does not bypass the list. Over all sets there are at most 300,000 intervals; above that the build fails and names the largest sets.</p>
+
+<h2>How it reaches the kernel</h2>
+<p>[[linux]] One nftables table, <code>inet stockfw_intel</code>, owned by StockFW and replaced in a single <code>nft -f -</code> transaction, so it applies whole or not at all and a failed apply leaves the previous table in force. The script goes to <code>nft</code> on standard input through <code>GSubprocess</code>; no shell ever sees an address. Three base chains at priority <code>filter - 10</code> run <em>before</em> the iptables policy, so a listed address is refused even if a policy rule would have allowed it. Inbound drops are silent to the outside; outbound blocks reject with <em>administratively prohibited</em>, so a local program fails at once instead of hanging. Each blocking rule logs with the prefix <code>STOCKFW-TI <em>list</em></code>, rate-limited, and carries a counter. [[verified:test-nftset.sh]]</p>
+<p>The policy and the lists never touch each other’s tables. Applying, reloading or clearing the policy leaves the threat-intel table alone. The user-facing <strong>Stop firewall</strong> suspends the lists as well, and <strong>Start</strong> resumes them, because “stop the firewall” should mean what it says. On Linux nothing survives a reboot, policy or lists, until Start is pressed; the page and <a href="{{root}}docs/faq.html#reboot">the FAQ</a> say so.</p>
+
+<h2>What the kernel is really doing</h2>
+<p>The table carries a digest of the rule set that produced it. Every surface compares the live table with what StockFW last applied and shows one of these states, never just the configuration:</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>State</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>off</td><td>The master switch is off, or no list is enabled.</td></tr>
+<tr><td>enforced</td><td>The live table is the one StockFW last applied.</td></tr>
+<tr><td>not loaded</td><td>Something should be enforced but the table is missing: a reboot, or someone ran <code>nft flush ruleset</code>.</td></tr>
+<tr><td>differs</td><td>A table is there, but not the one StockFW applied.</td></tr>
+<tr><td>suspended</td><td>You stopped the firewall, so the lists are off on purpose.</td></tr>
+<tr><td>unsupported, needs root, unknown</td><td>Cannot enforce here, cannot read the kernel, cannot tell.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Counters survive updates: before a set is replaced, its live count is added to the list’s carried total, so “blocked 1,204 since 3 November” stays true.</p>
+
+<h2>Where it shows up</h2>
+<ul>
+<li><strong>Threat Intel page:</strong> the state in words, the master switch, each feed with its licence, direction, entry count, content age, status and blocks; Update now and Apply; local lists; exceptions; a lookup box; the notes from the last build.</li>
+<li><strong>Events:</strong> a block by a list shows the list’s name as its rule. For such an address the right-click <em>Allow</em> becomes <em>Add exception</em>, because an allow rule would not beat the list.</li>
+<li><strong>Overview:</strong> one line with the state and how many lists are enforced.</li>
+<li><strong>What-if:</strong> an address the policy allows but a list blocks is answered “Blocked by threat intel: <em>list</em>”.</li>
+<li><strong>Command line:</strong> <code>stockfw intel status | feeds | enable | disable | update | apply | clear | import | remove | except | unexcept | exceptions | lookup | on | off</code>, each with <code>--json</code>; <code>stockfw status</code> gains an <code>intel</code> object.</li>
+<li><strong>Audit log:</strong> every apply, update, consent, exception and suspend is a line.</li>
+</ul>
+
+<h2>Files</h2>
+<p>[[linux]] <code>/var/lib/stockfw/intel/</code>, owned by root, mode 0700: <code>intel.conf</code> (switches, feeds, custom feeds, local lists, exceptions), one <code>.list</code> and one <code>.state</code> per list, and <code>applied.state</code> for what the kernel was last given. Files are opened without following symlinks, read with a size cap, and written to a fresh name then renamed. A stored list is re-checked against the guards when loaded, so a tampered file is an error, not a block.</p>

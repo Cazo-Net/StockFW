@@ -1,0 +1,74 @@
+---
+title: What-if simulator
+section: Using the app
+order: 15
+description: Asking the simulator a question in plain words: the grammar it understands, how a verdict is reached, what the window shows, Create This Rule, and the stockfw simulate command.
+---
+<h1>What-if simulator</h1>
+<p class="lede">Type a sentence about a connection and the simulator tells you whether your saved policy would allow or block it, which rule decided, and why. It is a question, not a change: simulating writes nothing.</p>
+
+[[shot:whatif-allowed|The What-If Simulation window: a packet travelling from 192.168.1.50 through the wall to the local SSH port, a green ALLOWED badge, and the matched rule “StockFW: Allow SSH (inbound, 192.168.1.0/24)”.|Allowed by a rule. The rule’s name is the same one the Policy page and the engine use.]]
+
+<h2>Where it lives</h2>
+<p>In the box at the bottom of the <a href="{{root}}docs/copilot.html">Copilot</a> page, in the <a href="{{root}}docs/dashboard.html">dashboard</a>, and as <code>stockfw simulate</code> on the <a href="{{root}}docs/cli.html">command line</a>. All three run the same code against the same policy files, and a test asserts that the window, the command line and the dashboard give the same verdict for the same sentence. [[verified:test-cli.sh]]</p>
+
+<h2>How to phrase a question</h2>
+<p>The grammar is deliberately small, so what gets evaluated is always what you typed and nothing the simulator guessed. Words can come in any order.</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>You write</th><th>It means</th></tr></thead>
+<tbody>
+<tr><td><code>inbound</code>, <code>incoming</code>, or <code>from</code> an address</td><td>Traffic arriving at this computer. With neither word, <code>from</code> means inbound.</td></tr>
+<tr><td><code>outbound</code>, <code>outgoing</code>, or <code>to</code> an address</td><td>Traffic leaving this computer.</td></tr>
+<tr><td>an address or network: <code>203.0.113.50</code>, <code>192.168.1.0/24</code>, <code>2001:db8::5</code></td><td>The remote end.</td></tr>
+<tr><td><code>port 22</code>, <code>22 port</code>, or a service name: <code>ssh</code>, <code>rdp</code>, <code>https</code>, <code>dns</code>, <code>telnet</code></td><td>The local port for inbound, the remote port for outbound. A service name is looked up to its port; a number wins over a name when both appear.</td></tr>
+<tr><td><code>udp</code>, <code>icmp</code>, <code>ping</code></td><td>The protocol. Without one of these, TCP.</td></tr>
+<tr><td><code>allow ssh …</code>, <code>block dns …</code></td><td>The word after <em>allow</em> names the service; the verb itself is not part of the question (the simulator answers what the policy does, not what you want).</td></tr>
+</tbody>
+</table>
+</div>
+<pre data-lang="text" data-title="Sentences that work">allow ssh from 192.168.1.50 on port 22
+inbound rdp from 203.0.113.50
+outbound tcp to 198.51.100.66 port 443
+outbound telnet to 203.0.113.7
+inbound udp port 53
+ping from 10.0.0.9</pre>
+<p>A sentence with no direction, no port and no address cannot be answered; the window says “Couldn’t understand this query” and shows examples instead of guessing.</p>
+
+<h2>How a verdict is reached</h2>
+<ol>
+<li>The sentence is parsed into a scenario: direction, protocol, port, remote address, and the service or program named.</li>
+<li>The saved policy is compiled into the same firewall rules Apply would create, with the same names.</li>
+<li>The scenario is matched against those rules in the engine’s order: a matching block wins over a matching allow, a matching allow over the default, and the default is <em>deny inbound, allow outbound</em>.</li>
+<li>The answer names the deciding rule, or says that no rule matched and the default applied, and when the verdict is BLOCKED it suggests the exact rule that would allow it.</li>
+</ol>
+<p>The policy it reads is the <em>saved</em> one, so the simulator can rehearse a change before Apply: add a rule, simulate, and only then push. With <em>Audit-only</em> on, you can even press Apply and watch the counts without the engine changing. [[verified:test_apply_gate]]</p>
+
+[[shot:whatif-blocked|The What-If Simulation window: a packet from 203.0.113.50 bounced back by the wall, a red BLOCKED badge, and the explanation that no rule matched and the default is to deny inbound.|Blocked by the default. The text offers the rule that would allow it.]]
+
+<h2>The window</h2>
+<p>The verdict plays as a short animation: the packet leaves its source, reaches the wall, and either passes through to its destination or is turned back. Under it, the badge reads <em>ALLOWED</em> or <em>BLOCKED</em>, then the question as you typed it, the scenario as the simulator understood it (protocol, from, to, port, direction), the rule that decided, and the explanation. <em>Replay</em> runs the animation again. The window is a GTK drawing with no images, so it renders the same on every theme. [[verified:ui-simviz-smoke]]</p>
+
+[[shot:whatif-outbound-blocked|The What-If Simulation window for an outbound connection to 198.51.100.66 on port 443, turned back at the wall by the rule “StockFW: Block outbound (198.51.100.66)”.|An outbound block. Replies to an open connection would not be asked about; this is a new connection.]]
+
+<h2>Create This Rule</h2>
+<p>When the verdict is BLOCKED and the simulator can express the rule that would allow it, <strong>Create This Rule</strong> appears. It prints the rule in a Yes/No dialog, exactly as it will be written to the policy file. After Yes the rule is saved and pushed through the same apply gate as the Policy page, and the result says whether it is live or staged for a later Apply. The simulator never creates a rule on its own, and never a block: blocking is a decision you make on the Policy or Events page.</p>
+
+<h2>From a script</h2>
+<pre data-lang="sh">$ stockfw simulate "inbound rdp from 203.0.113.50"
+BLOCKED  Inbound TCP connection from 203.0.113.50 to local port 3389 (rdp)
+  Packet     inbound TCP port 3389 from 203.0.113.50
+  Rule       Default deny (no matching rule)
+  Why        No rule in the loaded policy matches this connection.  Default policy: deny inbound.
+  To allow   Allow inbound TCP port 3389 from 203.0.113.50.
+A simulation only: nothing was written.
+$ echo $?
+5</pre>
+<p>The exit status is 0 for ALLOWED and 5 for BLOCKED, so a deployment script can refuse to continue when a port it needs would be closed. <code>--json</code> gives the verdict, scenario, rule, reason and suggestion as one object. See <a href="{{root}}docs/cli.html#simulate">the command line reference</a>.</p>
+
+<h2>What it does not know</h2>
+<ul>
+<li>It answers from the policy, not from the engine. If someone added a rule directly in <code>wf.msc</code> or with <code>iptables</code>, the simulator does not see it. [[gap]]</li>
+<li>It reasons about new connections. Replies to an already open connection always pass, and the simulator does not model them.</li>
+<li>Threat-intel lists are not consulted yet. When they land, an address the policy allows but a list blocks will be answered “Blocked by threat intel: <em>list</em>”. [[soon]]</li>
+</ul>

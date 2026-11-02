@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Overview · StockFW</title>
+<meta name="description" content="The Overview page: the protection card, IPv4 and IPv6 status, event counters, open connections and their programs, adapters, recent blocks, and Lock policy.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#16181d">
+<meta property="og:title" content="Overview · StockFW">
+<meta property="og:description" content="The Overview page: the protection card, IPv4 and IPv6 status, event counters, open connections and their programs, adapters, recent blocks, and Lock policy.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.6</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html" aria-current="page"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Using the app
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
+		<article class="prose">
+<h1>Overview</h1>
+<p class="lede">The first page answers one question, “is this computer protected?”, in one sentence, and then shows the four things you would check next. It is the 1.0.7 design; the 1.0.5 release has a Status page with the same facts laid out as a strip. <span class="ev ev-built" title="Done on the 1.0.7 development branch; ships with 1.0.7."><b>Built</b> for 1.0.7</span></p>
+
+<figure class="shot"><img src="../assets/screens/overview.webp" alt="The Overview page: a green protection card with Stop firewall and View events buttons and four tiles, a row of counters, the open connections table, the network adapters card and the recent blocks list." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Protected, both families filtered, nine rules, one adapter, live connections with their programs.</figcaption></figure>
+
+<h2 id="the-protection-card">The protection card<a class="anchor" href="#the-protection-card" aria-label="Link to this section">#</a></h2>
+<p>Green with a shield when the firewall is running and your policy is in force; red when it is stopped. The sentence under the heading says what that means for traffic, and the four tiles break it down:</p>
+<dl>
+<dt>IPv4 traffic, IPv6 traffic</dt>
+<dd>“Filtered” or “Not filtered”, separately. On Linux the IPv6 tile reads the real state of the kernel: if <code>ip6tables</code> is not installed, the IPv6 chains are not loaded, or they are loaded but not hooked, it says “Not filtered” and the sidebar shows the reason, rather than inferring IPv6 from IPv4. On Windows both read “Filtered” when the firewall is on, because Windows Firewall rules cover both families. <span class="ev ev-built" title="Done on the 1.0.7 development branch; ships with 1.0.7."><b>Built</b> for 1.0.7</span></dd>
+<dt>Policy</dt>
+<dd>How many rules are saved. Saved is not the same as applied; the Policy page says which rules are live.</dd>
+<dt>Engine</dt>
+<dd>What is doing the filtering: <em>Linux (iptables)</em> or <em>Windows Firewall</em>. On Windows the card also shows the profile in force (Domain, Private or Public) and the network the computer is on, read through the firewall’s own interfaces. <span class="ev ev-built" title="Done on the 1.0.7 development branch; ships with 1.0.7."><b>Built</b> for 1.0.7</span> Compile-tested in CI; not yet run by hand on Windows.</dd>
+</dl>
+<p><strong>Start firewall</strong> puts your saved policy in force: on Linux it loads the rules, on Windows it switches the firewall profiles on. <strong>Stop firewall</strong> takes StockFW’s rules out again (Linux) or switches the profiles off (Windows), and the card turns red, because that is what it means. <strong>View events</strong> jumps to the Events page.</p>
+<div class="callout soon">
+<span class="label">Being fixed for 1.0.7</span>
+<p>On Linux, <em>Start firewall</em> and the “start on program startup” preference used to load the firewall before the saved policy had been read, briefly applying an empty policy. 1.0.7 makes Start read the policy first and go through the same gate as Apply.</p>
+</div>
+
+<h2 id="the-counters">The counters<a class="anchor" href="#the-counters" aria-label="Link to this section">#</a></h2>
+<p>Four tiles count since the app opened: inbound events (with how many were blocked), outbound events, open connections (with how many programs own them), and traffic right now across your adapters. “Idle” means no bytes in the last second. These are the same numbers the Events and Activity pages show in detail.</p>
+
+<h2 id="open-connections">Open connections<a class="anchor" href="#open-connections" aria-label="Link to this section">#</a></h2>
+<p>Every established TCP connection, with the program that owns it, the remote address, the port, the service name and the direction. On Linux the program is found through <code>/proc/&lt;pid&gt;/fd</code>; on Windows through the TCP table. When the owner cannot be read the cell shows <code>?</code>, never a guess.</p>
+<p>Direction is decided by what is listening: a connection on a port that something on this computer listens on was accepted, so it is <em>Inbound</em> and named by that port. Only connections nobody listens for fall back to guessing from port numbers, which is what older versions did for everything and got wrong whenever both ends were high ports. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
+<p>Connections between two programs on this computer are hidden by default and counted at the bottom of the table (“2 local connections are hidden · Show them”), and so are the dashboard’s own sockets, which exist only because someone is looking.</p>
+
+<h2 id="network-adapters">Network adapters<a class="anchor" href="#network-adapters" aria-label="Link to this section">#</a></h2>
+<p>Each adapter with its type (Ethernet, Wireless, Virtual), address, totals and current rate. Virtual adapters, which is what Docker bridges, VM networks and VPN tunnels create, are hidden by default and counted, with <em>Show them</em> to list them. On Linux the type comes from sysfs: a wireless extension means Wireless, a backing bus device means Ethernet, anything else is Virtual.</p>
+
+<h2 id="recent-blocks">Recent blocks<a class="anchor" href="#recent-blocks" aria-label="Link to this section">#</a></h2>
+<p>The last few blocked connections, each with the remote address, what blocked it (your policy, or Sentinel) and the time. <em>All events</em> opens the Events page. When nothing has been blocked since the app opened, the card says so instead of showing an empty list.</p>
+
+<h2 id="lock-policy">Lock policy<a class="anchor" href="#lock-policy" aria-label="Link to this section">#</a></h2>
+<p>The button in the top corner. While the policy is locked, every Apply, from any page or from the command line, becomes a dry run: the change is measured and saved, an audit line reads “policy held, firewall untouched”, and the engine is left exactly as it is. Use it when you are editing a policy you do not want to apply piecemeal. Audit-only mode on the Policy page does the same thing from the other side. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></p>
+
+<h2 id="the-sidebar">The sidebar<a class="anchor" href="#the-sidebar" aria-label="Link to this section">#</a></h2>
+<p>The bottom of the sidebar repeats the verdict, <em>Protected</em> or <em>Not protected</em>, with the engine’s name, so it is visible from every page. <em>Preferences</em> and <em>About StockFW</em> sit above it.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/first-steps.html"><span>Previous</span><strong>Your first ten minutes</strong></a><a class="next" href="../docs/events.html"><span>Next</span><strong>Events</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/overview.html">Edit this page on GitHub</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#the-protection-card">The protection card</a></li>
+			<li class="lvl2"><a href="#the-counters">The counters</a></li>
+			<li class="lvl2"><a href="#open-connections">Open connections</a></li>
+			<li class="lvl2"><a href="#network-adapters">Network adapters</a></li>
+			<li class="lvl2"><a href="#recent-blocks">Recent blocks</a></li>
+			<li class="lvl2"><a href="#lock-policy">Lock policy</a></li>
+			<li class="lvl2"><a href="#the-sidebar">The sidebar</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

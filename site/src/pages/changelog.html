@@ -1,0 +1,68 @@
+---
+title: Changelog
+eyebrow: Changelog
+description: What changed in each StockFW version, from the 1.0.3 GTK3 port to the 1.0.7 work in progress.
+---
+<div class="prose">
+<p class="lede">Each release also adds a chapter to <a href="{{repo}}/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">the architecture and security document</a>, which records the evidence behind every claim below. This page is the short version.</p>
+
+<h2 id="v1-0-7">{{next}} · in development</h2>
+<p>On branch <code>claude/stockfw-1.0.7</code>. Items marked [[built]] are committed and tested; items marked [[soon]] are being written.</p>
+<h3 id="v1-0-7-built">Built</h3>
+<ul>
+<li><strong>IPv6 is filtered on Linux.</strong> The whole policy is rendered before the kernel is touched, loaded with <code>iptables-restore</code> and <code>ip6tables-restore</code>, and if the IPv6 half is refused the IPv4 half is put back, so the kernel never runs half a policy. Neighbour discovery, router adverts, path-MTU and DHCPv6 replies are always allowed. Each address goes to its own family; a host name is looked up once and written as both. [[verified:test-apply-dual.sh]]</li>
+<li><strong>What each rule covers.</strong> A <em>Covers</em> column on the Policy page (IPv4 only, IPv6 only, IPv4 + IPv6) with the reason as a tooltip; an IPv6 line on the Overview; <code>covers</code> and <code>covers_why</code> in <code>stockfw policy list --json</code>; the dashboard’s firewall tile says “In force for IPv4 and IPv6” or warns “IPv4 only”.</li>
+<li><strong>Router mode fixed.</strong> Port forwards and masquerading moved into their own chains, replaced atomically on each apply; 1.0.6 appended to PREROUTING and POSTROUTING every time and never removed anything.</li>
+<li><strong>Generator bugs fixed on the way:</strong> outbound host rules were never rules at all (missing <code>-A OUTBOUND</code>); hyphen port ranges were refused by iptables; router-mode denies were bypassed; forwards were dropped after DNAT.</li>
+<li><strong>Linux events read the kernel ring buffer</strong> (<code>/dev/kmsg</code>) instead of depending on rsyslog or journald, so Events works on WSL, in containers and on minimal installs. Allowed new connections are logged too (<code>STOCKFW-ALLOW</code>, rate-limited), so the Activity graph’s allowed line is drawn on Linux. An empty list says why it is empty.</li>
+<li><strong>The redesigned desktop app.</strong> A dark sidebar replaces the tab band; a new Overview page answers “is this computer protected?” in one sentence with IPv4 and IPv6 status, counters, open connections with their programs, adapters and recent blocks; every other page is rebuilt as cards. Virtual adapters are hidden by default and counted.</li>
+<li><strong>Windows Overview</strong> shows the firewall profile in force and the network the computer is on, through <code>INetFwPolicy2</code> and <code>INetworkListManager</code>. Compile-tested in CI; not yet run by hand on Windows.</li>
+<li><strong>Threat-intel core:</strong> address-range arithmetic (<code>fs-iprange</code>) and loading a blocklist into nftables sets in a table of StockFW’s own through one <code>nft -f</code> call, with protected ranges that can never be blocked. [[verified:test-nftset.sh]]</li>
+<li><strong>A new logo</strong> (flame, gear and SF shield), generated into every size the app, installer and dashboard use from one master file.</li>
+<li><strong>Continuous integration:</strong> Linux and Windows builds and test suites on every pull request, with the Windows installer kept as a run artifact.</li>
+</ul>
+<h3 id="v1-0-7-progress">In progress</h3>
+<ul>
+<li>Threat-intel feeds (Spamhaus DROP, abuse.ch Feodo Tracker, DShield, FireHOL, blocklist.de, Emerging Threats, CINS Army, Tor exits): opt-in per feed with its terms shown, strict parsing with size and coverage caps, a Threat Intel page, <code>stockfw intel</code>, and events that say which list blocked a connection.</li>
+<li>Country and network-owner (ASN) blocking from the IPFire location database, verified by its signature, with an anycast warning in the picker.</li>
+<li>Background mode and a richer tray menu; the Preferences dialog and the What-if window redesigned to match the new look; a smarter What-if parser.</li>
+<li>A Windows rule-translation fix: service rules for protocols other than TCP no longer open all ports.</li>
+<li>Chapter 14 of the architecture document, and the version bump.</li>
+</ul>
+
+<h2 id="v1-0-6">1.0.6 · on <code>main</code>, unreleased</h2>
+<ul>
+<li><strong>Activity page</strong> with two graphs over 15 minutes to 24 hours: events per minute (allowed and blocked) and adapter throughput, a crosshair, a table view, and a shaded “no data” band for time before the app started. Series are kept in 10-second slots for 24 hours at a fixed memory cost. [[verified:fs-activity-smoke]]</li>
+<li><strong>The <code>stockfw</code> command line</strong> on Linux: <code>status</code>, <code>policy list|add|remove</code>, <code>apply [--dry-run]</code>, <code>start</code>, <code>stop</code>, <code>simulate</code>, <code>events [-n N] [-f] [--blocked]</code>, <code>connections</code>, <code>interfaces [--watch]</code>, <code>dashboard</code>; <code>--json</code> everywhere; exit codes 0, 1, 2, 3 and 5. [[verified:test-cli.sh]]</li>
+<li><strong>The local dashboard:</strong> a read-only page served from the binary on 127.0.0.1 only, behind a per-run token carried in the URL fragment and a custom header, with a Host check against DNS rebinding, GET and HEAD only, request-size and connection caps, and a per-run CSP nonce. Never opens a browser as root.</li>
+<li><strong>Linux events made truthful:</strong> the right fields in the right columns, the <code>[BLOCKED]</code> marker every consumer keys on, the kernel’s own time stamp, lines split across reads carried over.</li>
+<li><strong>Real network and connection panels on Linux</strong> from <code>/proc/net/dev</code>, sysfs and <code>/proc/net/tcp</code>, with the owning program found through <code>/proc/&lt;pid&gt;/fd</code>, and direction decided by the LISTEN table rather than guessed from port numbers.</li>
+<li>Desktop fixes: literal mnemonics on buttons, a Windows path suggested on Linux, frame titles striking through their borders, a blank Events list that now says whether it is waiting, off or filtered to nothing, and a window that opened too small.</li>
+<li>The Linux installer ships and installs the command line.</li>
+</ul>
+
+<h2 id="v1-0-5">1.0.5 · 11 October 2026 · the hardening release</h2>
+<ul>
+<li><strong>Sentinel “no false outages”.</strong> After a 2026-10-10 incident in which auto-block locked the machine out of legitimate sites, six fixes: destination gates (never your own network, multicast, loopback, link-local or a destination the program already used regularly), a session cooldown so an expired block is not re-staged a second later, persisted staging reconciled at start-up with the remaining time honoured, the user’s Allow lifting Sentinel’s block, a text-format <code>netsh</code> parser with verified clearing (the old one deleted nothing and stacked 479 rules), and detect mode lifting every staged block. [[verified:test_sentinel_auto_gates]]</li>
+<li><strong>Application trust engine</strong> (the Trust page): streamed SHA-256, Authenticode verdict and signer on Windows, a baseline with five honest outcomes (new, unchanged, changed, gone, unreadable), attest and forget with audit lines, and a scan of running processes.</li>
+<li><strong>Explainable behaviour analysis:</strong> per-program baselines of ports, destinations, hours and rate, persisted across restarts; one finding per event listing every signal with its numbers; bounded tables that go quiet rather than cry wolf when full.</li>
+<li><strong>Safe policy enforcement:</strong> one apply gate for every path, an applied-policy journal, impact measured against what is live, a narrow delta path, audit-only testing mode, the Lock honoured at every apply site, verified rollback, and one audit line per attempt.</li>
+<li><strong>What-if simulator</strong> developed from a stub into the Copilot’s centrepiece, with verdicts that follow Windows Firewall precedence (block beats allow, shadowed allows reported), CIDR containment, and the Simulation Visualizer window. The conversational “AI Assistant” box was removed.</li>
+<li><strong>Bi-directional rules:</strong> a Direction setting on pairable rule kinds that stages the opposite-direction twin as one all-or-nothing save.</li>
+<li><strong>System tray</strong> with close-to-tray behind a gate that fails closed, and the two Preferences switches made real. [[verified:fs-tray-smoke]] [[win]]</li>
+<li><strong>Preferences made real on Windows:</strong> ICMP Filtering and Advanced Options compile to profile-scoped firewall rules through a portable settings plan; pages Windows cannot honour stay hidden rather than inert.</li>
+<li><strong>The P4 adversarial suite:</strong> 49 checks over seven named scenarios (blocked port scan, single-host sweep, C2 beacon, the incident replay, benign developer tools, exfil burst, rule rollback). [[verified:test-adversarial.sh]]</li>
+<li>Linux first-run fixes: <code>sudo</code>’s search path explained instead of patched, a leaking <code>iptables</code> probe silenced, a profile box Linux could never honour hidden for good.</li>
+</ul>
+
+<h2 id="v1-0-4">1.0.4 · October 2026</h2>
+<ul>
+<li><strong>Event → Rule in one click:</strong> right-click an event to block or allow its destination, block that service to it, or trust an inbound source, with the exact rule printed first and an honest “live” or “staged, needs administrator” result.</li>
+<li><strong>Events filter bar</strong> with “3 of 1200 events” counts.</li>
+<li><strong>Sentinel:</strong> beacon detection (metronomic egress to one host and port) and fan-out detection (60 distinct destinations, or 10 distinct blocked ones, in 60 seconds), with auto-block time-boxed to ten minutes and one-click undo, every action in an append-only <code>audit.log</code>.</li>
+<li>Policy rows validated at load (hosts, ports, ranges, IPv6, CIDR) before <code>netsh</code> ever sees them; control characters stripped from rule names.</li>
+</ul>
+
+<h2 id="v1-0-3">1.0.3 · the GTK3 port</h2>
+<p>The baseline described in chapters 1 to 10 of the architecture document: the GTK3 port of the original Linux firewall tool to Windows and Linux, the Windows backend over <code>netsh advfirewall</code>, <code>INetFwPolicy2</code> and the Security log, the Linux backend over <code>iptables</code>, round-trip CSV policy storage, the deterministic Copilot, the WYSIWYG Preferences rule, the NSIS installer, the teeth testing method and the 150-second memory soak. [[measured:45.6 MB → 44.8 MB private bytes under a continuous event flood]]</p>
+</div>
