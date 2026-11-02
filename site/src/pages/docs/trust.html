@@ -1,0 +1,47 @@
+---
+title: Trust
+section: Using the app
+order: 16
+description: The Trust page: inspecting a program’s hash and signature, scanning running processes, attesting a baseline, noticing when an attested file changes, and what differs between Windows and Linux.
+---
+<h1>Trust</h1>
+<p class="lede">A firewall decides by address and port, but the question behind most of its events is “do I trust the program that made this connection?”. The Trust page answers that for one file at a time: who signed it, what its hash is, and whether it is still the file you approved.</p>
+
+[[shot:trust|The Trust page: a path box with Inspect, Refresh list and Scan processes buttons, a report for /usr/bin/nc.openbsd with its SHA-256 and “Matches the attested baseline”, and a baseline list of three programs marked in sync.|Three attested programs, all in sync with their baseline. On Linux the signature line reads “not checked” rather than guessing.]]
+
+<h2>Inspect a file</h2>
+<p>Type or paste a path and press <strong>Inspect</strong>. The report shows the file, its publisher, its signature state, the SHA-256 of its bytes, size, modification time, and how it compares with the baseline. Hashing a large executable takes a moment and runs off the main thread; the page says “Hashing and checking the signature…” and refuses a second task until the first finishes, so two reports can never be mixed up. [[verified:ui-trustview-smoke]]</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Signature line</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>Signed and verified</td><td>An Authenticode signature whose digest matches the file and whose chain stands.</td></tr>
+<tr><td>Signed but invalid</td><td>There is a signature, but it does not hold: the file was edited after signing, the certificate expired or is distrusted. This is the interesting negative.</td></tr>
+<tr><td>Not signed</td><td>A Windows executable with no signature.</td></tr>
+<tr><td>Not an executable</td><td>No <code>MZ</code> header. Hashing it still makes sense; signing does not apply.</td></tr>
+<tr><td>Signature not checked</td><td>No signature provider on this platform. This is what Linux shows, honestly, instead of “unsigned”.</td></tr>
+</tbody>
+</table>
+</div>
+<p>[[win]] The check uses <code>WinVerifyTrust</code> and <code>CryptQueryObject</code> with revocation lookups turned off, so it never touches the network and never hangs on a machine without one. The publisher is the signer’s display name. [[verified:test_trust_engine]]</p>
+<p>[[linux]] There is no platform signature to read, so the page offers the hash, the file facts and the baseline. Package-manager signatures (dpkg, rpm) are not consulted. [[gap]]</p>
+
+<h2>Scan running processes</h2>
+<p><strong>Scan processes</strong> lists the executable behind every process this account can see and assesses each against the baseline, so a new or changed program shows up without you knowing its path. On Linux the paths come from <code>/proc/&lt;pid&gt;/exe</code>; processes owned by other users are readable only as root, and the status line says so when the list is empty for that reason.</p>
+
+<h2>Attest and forget</h2>
+<p><strong>Attest</strong> records the inspected file, its hash, its publisher and the time in the baseline, after a dialog that shows the path and the hash and says that the attestation goes to the audit log. From then on the file’s row reads one of:</p>
+<ul>
+<li><strong>in sync</strong>: the bytes on disk match the attested hash;</li>
+<li><strong>CHANGED</strong>: same path, different bytes. The report says which hash the baseline remembers. An update you installed produces this too, which is the point: you look, and attest again if it was you;</li>
+<li><strong>missing</strong>: attested earlier, now gone;</li>
+<li><strong>unreadable</strong>: the file could not be read at all;</li>
+<li><strong>new</strong>: never attested.</li>
+</ul>
+<p><strong>Forget</strong> removes a path from the baseline, with the same kind of confirmation. <strong>Refresh list</strong> reassesses every row. Both attest and forget append a line to <code>audit.log</code> (<code>trust-attest</code>, <code>trust-forget</code>). If the baseline cannot be written, the page says “Attested in memory, but not saved to disk” rather than pretending.</p>
+
+<h2>The baseline file</h2>
+<p><code>trust.csv</code> in your profile folder, one quoted row per path: path, SHA-256, size, modification time, signature state, publisher, first seen, last seen. Paths compare without regard to letter case, because Windows paths do. A row that does not parse is skipped, never the whole file; a missing file is an empty baseline. <code>STOCKFW_TRUST_FILE</code> points the app and the tests at another file. See <a href="{{root}}docs/files.html#trust-csv">Files and formats</a>. [[verified:test_trust_engine]]</p>
+
+<h2>What it is for</h2>
+<p>Trust does not change the firewall. It gives you a second kind of evidence next to the Events page: when the Copilot reports a program doing something new, Inspect tells you whether the program itself is still what it was. The two together are how you tell an update from a replacement.</p>

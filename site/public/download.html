@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en" data-root="./">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Download · StockFW</title>
+<meta name="description" content="StockFW 1.0.5 for Windows and Linux, with checksums, and how to build the newer 1.0.6 and 1.0.7 code from source.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#16181d">
+<meta property="og:title" content="Download · StockFW">
+<meta property="og:description" content="StockFW 1.0.5 for Windows and Linux, with checksums, and how to build the newer 1.0.6 and 1.0.7 code from source.">
+<meta property="og:type" content="website">
+<link rel="icon" href="./assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="./assets/img/apple-touch-icon.png">
+<link rel="preload" href="./assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="./assets/css/site.css">
+
+<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
+</head>
+<body class="layout-page">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="./index.html">
+			<img src="./assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.6</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="./index.html#tour">Features</a>
+			<a href="./docs/index.html">Docs</a>
+			<a href="./download.html" aria-current="page">Download</a>
+			<a href="./changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<section class="page-head">
+	<div class="lanes" aria-hidden="true"></div>
+	<div class="wrap">
+		<p class="label">Download</p>
+		<h1>Download</h1>
+		<p>StockFW 1.0.5 for Windows and Linux, with checksums, and how to build the newer 1.0.6 and 1.0.7 code from source.</p>
+	</div>
+</section>
+<div class="page-body">
+	<div class="wrap">
+<div class="prose">
+<h2 id="release">Current release: StockFW 1.0.5<a class="anchor" href="#release" aria-label="Link to this section">#</a></h2>
+<p class="lede">Released 11 October 2026, “the hardening release”. Both downloads come from the project’s GitHub Releases page; this site does not host files.</p>
+
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Platform</th><th>File</th><th class="num">Size</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Windows 10 and 11, 64-bit</td><td><a href="https://github.com/Cazo-Net/StockFW/releases/download/v1.0.5/StockFW-1.0.5-Setup.exe">StockFW-1.0.5-Setup.exe</a></td><td class="num">44.6 MB</td><td>NSIS installer. Bundles the GTK3 runtime, so nothing else needs installing.</td></tr>
+<tr><td>Linux x86-64</td><td><a href="https://github.com/Cazo-Net/StockFW/releases/download/v1.0.5/StockFW-1.0.5-linux-x86_64.tar.gz">StockFW-1.0.5-linux-x86_64.tar.gz</a></td><td class="num">194 KB</td><td>Tarball with <code>install.sh</code>. Needs GTK3 and <code>iptables</code> from your distribution.</td></tr>
+<tr><td>Checksums</td><td><a href="https://github.com/Cazo-Net/StockFW/releases/download/v1.0.5/SHA256SUMS.txt">SHA256SUMS.txt</a></td><td class="num">192 B</td><td>SHA-256 of both files.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout note">
+<span class="label">Not signed yet</span>
+<p>The Windows installer is not code-signed, so SmartScreen will show “Windows protected your PC”. Choose <em>More info</em>, then <em>Run anyway</em>, after you have checked the checksum below. Code signing is on the roadmap; until then the checksum is your verification.</p>
+</div>
+
+<h3 id="verify">Check the download<a class="anchor" href="#verify" aria-label="Link to this section">#</a></h3>
+<p>Compare the output with the matching line in <code>SHA256SUMS.txt</code>.</p>
+<div class="code" data-copy="commands"><div class="code-head"><span>PowerShell (Windows)</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">PS> </span><span class="cmd">Get-FileHash .\StockFW-1.0.5-Setup.exe -Algorithm SHA256</span></code></pre></div>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal (Linux)</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sha256sum -c SHA256SUMS.txt --ignore-missing</span>
+StockFW-1.0.5-linux-x86_64.tar.gz: OK</code></pre></div>
+
+<h3 id="requirements">Requirements<a class="anchor" href="#requirements" aria-label="Link to this section">#</a></h3>
+<dl>
+<dt>Windows</dt><dd>Windows 10 or 11, 64-bit. Windows Defender Firewall must be present (it always is). To change rules, run the <em>StockFW (Elevated)</em> shortcut; everything else works without administrator rights.</dd>
+<dt>Linux</dt><dd>An x86-64 distribution with GTK 3 (<code>libgtk-3-0</code>) and <code>iptables</code>. For IPv6 filtering in 1.0.7, <code>ip6tables</code> as well. Tested on Debian, Kali, Ubuntu and WSL2. Reading events and applying rules need root; <code>sudo /usr/local/bin/StockFW</code> is the full tool.</dd>
+</dl>
+<p>Step-by-step instructions: <a href="./docs/install-windows.html">Install on Windows</a>, <a href="./docs/install-linux.html">Install on Linux</a>.</p>
+
+<h2 id="newer">Newer than the release<a class="anchor" href="#newer" aria-label="Link to this section">#</a></h2>
+<p>Two versions sit ahead of 1.0.5 on GitHub. Neither has an installer yet; both build from source in a few commands.</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Version</th><th>Where</th><th>What it adds</th></tr></thead>
+<tbody>
+<tr><td>1.0.6</td><td>merged into <code>main</code>, no package</td><td>The Activity page with its graphs, the <code>stockfw</code> command line and local dashboard on Linux, truthful Linux events, real network and connection panels on Linux. See the <a href="./changelog.html#v1-0-6">changelog</a>.</td></tr>
+<tr><td>1.0.7 (in development)</td><td>branch <code>main</code></td><td>IPv6 on Linux, the redesigned app, the Covers column, events from the kernel ring buffer, the new logo. Threat-intel blocklists and country blocking are being built. See <a href="./index.html#next">what is coming</a>.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3 id="build-windows">Build on Windows (MSYS2)<a class="anchor" href="#build-windows" aria-label="Link to this section">#</a></h3>
+<p>Install <a href="https://www.msys2.org/">MSYS2</a>, open the <strong>UCRT64</strong> shell (as administrator if you want to apply rules from the build), then:</p>
+<div class="code" data-copy="commands"><div class="code-head"><span>MSYS2 UCRT64 shell</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">pacman -S --needed base-devel git mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake}</span>
+<span class="p">$ </span><span class="cmd">git clone https://github.com/Cazo-Net/StockFW.git        </span>  <span class="c"># main: the 1.0.7 development code</span>
+<span class="p">$ </span><span class="cmd">cd StockFW/port</span>
+<span class="p">$ </span><span class="cmd">cmake -S . -B build -G Ninja</span>
+<span class="p">$ </span><span class="cmd">cmake --build build</span>
+<span class="p">$ </span><span class="cmd">./build/StockFW.exe</span></code></pre></div>
+<p>To make an installer from the build, run <code>installer/build_installer.sh</code>; it stages the GTK runtime beside the executable and fails if any launcher still carries old branding.</p>
+
+<h3 id="build-linux">Build on Linux<a class="anchor" href="#build-linux" aria-label="Link to this section">#</a></h3>
+<div class="code" data-copy="commands"><div class="code-head"><span>Debian, Kali, Ubuntu, WSL2</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo apt install build-essential cmake ninja-build git libgtk-3-dev iptables</span>
+<span class="p">$ </span><span class="cmd">git clone https://github.com/Cazo-Net/StockFW.git        </span>  <span class="c"># main: the 1.0.7 development code</span>
+<span class="p">$ </span><span class="cmd">cd StockFW/port</span>
+<span class="p">$ </span><span class="cmd">cmake -S . -B build-linux -G Ninja</span>
+<span class="p">$ </span><span class="cmd">cmake --build build-linux</span>
+<span class="p">$ </span><span class="cmd">sudo ./build-linux/StockFW                    </span>  <span class="c"># the desktop app</span>
+<span class="p">$ </span><span class="cmd">./build-linux/stockfw status                  </span>  <span class="c"># the command line</span></code></pre></div>
+<p>To make the same tarball the release ships, run <code>installer/linux/build_installer_linux.sh</code> after building.</p>
+
+<div class="callout">
+<span class="label">Version strings</span>
+<p>A build from the 1.0.7 branch still reports <code>1.0.6</code> in About and <code>--version</code> until the release bump, which is the last commit before a release. The features are there; the number lags.</p>
+</div>
+
+<h2 id="uninstall">Uninstall<a class="anchor" href="#uninstall" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>Windows</dt><dd><em>Settings → Apps</em>, or the <em>Uninstall</em> shortcut in the StockFW Start menu folder. Firewall rules StockFW created stay in Windows Firewall; remove them with <em>Stop firewall</em> in the app first, or in <code>wf.msc</code> (they are all named <code>StockFW-…</code>).</dd>
+<dt>Linux</dt><dd><code>sudo /usr/local/bin/stockfw-uninstall</code> removes the binaries, the menu entry and the icons. Your policy in <code>~/.stockfw</code> or <code>/etc/stockfw</code> is kept; delete it yourself if you want it gone.</dd>
+</dl>
+
+<h2 id="older">Older versions<a class="anchor" href="#older" aria-label="Link to this section">#</a></h2>
+<p>Every tagged release, with its notes, is on the <a href="https://github.com/Cazo-Net/StockFW/releases">GitHub Releases page</a>. The <a href="./changelog.html">changelog</a> describes what changed in each.</p>
+</div>
+
+	</div>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="./index.html">
+					<img src="./assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="./index.html#tour">Features</a></li>
+					<li><a href="./download.html">Download</a></li>
+					<li><a href="./changelog.html">Changelog</a></li>
+					<li><a href="./index.html#next">Coming in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="./docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="./docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="./docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="./docs/cli.html">Command line</a></li>
+					<li><a href="./docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="./docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="./assets/js/site.js" defer></script>
+
+</body>
+</html>
