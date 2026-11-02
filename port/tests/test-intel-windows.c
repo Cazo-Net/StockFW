@@ -55,6 +55,7 @@
 #include "core/fs-intelwin.h"
 #include "core/fs-iprange.h"
 #include "core/fs-util.h"
+#include "core/fs-winstore.h"
 #include "platform/windows/netfw-compat.h"
 
 static int failures = 0;
@@ -524,6 +525,95 @@ check_store_dacl (void)
 	g_rmdir (tmp);
 	g_unsetenv ("STOCKFW_INTEL_DIR");
 	g_free (dir);
+	g_free (tmp);
+}
+
+/* The engine lock on Windows (fs_winstore_lock, design 11.12): a
+ * second holder, even a thread of this process with its own handle,
+ * waits until the first lets go, and says it waited. */
+static void skip_part (const gchar *why);
+
+typedef struct
+{
+	const gchar *dir;
+	gpointer     handle;
+	gboolean     waited;
+	volatile gint done;
+} LockWaiter;
+
+static gpointer
+lock_waiter (gpointer data)
+{
+	LockWaiter *w = data;
+
+	w->handle = fs_winstore_lock (w->dir, "engine.lock", &w->waited);
+	g_atomic_int_set (&w->done, 1);
+	return NULL;
+}
+
+static void
+check_engine_lock (void)
+{
+	gchar *tmp = g_dir_make_tmp ("sfw-lock-XXXXXX", NULL);
+	gchar *link_path, *target;
+	gpointer first;
+	gboolean waited = TRUE;
+	LockWaiter w = { 0 };
+	GThread *t;
+
+	if (tmp == NULL) {
+		CHECK (FALSE, "engine lock: a temporary directory");
+		return;
+	}
+	first = fs_winstore_lock (tmp, "engine.lock", &waited);
+	CHECK (first != NULL && !waited,
+	       "engine lock: taken at once when nobody holds it");
+	w.dir = tmp;
+	t = g_thread_new ("lock-waiter", lock_waiter, &w);
+	g_usleep (300 * 1000);
+	CHECK (g_atomic_int_get (&w.done) == 0,
+	       "engine lock: a second holder (another handle, another "
+	       "thread) waits while the first holds it");
+	fs_winstore_unlock (first);
+	g_thread_join (t);
+	CHECK (w.handle != NULL && w.waited,
+	       "engine lock: ... and gets it once the first lets go, "
+	       "saying it waited");
+	fs_winstore_unlock (w.handle);
+
+	/* A link where the lock file goes is refused, never followed. */
+	link_path = g_build_filename (tmp, "linked.lock", NULL);
+	target = g_build_filename (tmp, "elsewhere", NULL);
+	g_file_set_contents (target, "x", 1, NULL);
+	{
+		gunichar2 *wl = g_utf8_to_utf16 (link_path, -1, NULL, NULL, NULL);
+		gunichar2 *wt = g_utf8_to_utf16 (target, -1, NULL, NULL, NULL);
+
+		if (CreateSymbolicLinkW ((LPCWSTR) wl, (LPCWSTR) wt, 0)) {
+			gpointer h = fs_winstore_lock (tmp, "linked.lock", NULL);
+
+			CHECK (h == NULL, "engine lock: a symbolic link in its "
+			       "place is refused");
+			fs_winstore_unlock (h);
+			DeleteFileW ((LPCWSTR) wl);
+		} else {
+			skip_part ("engine lock: cannot make a symbolic link "
+			           "here");
+		}
+		g_free (wl);
+		g_free (wt);
+	}
+	g_remove (target);
+	g_remove (link_path);
+	{
+		gchar *f = g_build_filename (tmp, "engine.lock", NULL);
+
+		g_remove (f);
+		g_free (f);
+	}
+	g_rmdir (tmp);
+	g_free (target);
+	g_free (link_path);
 	g_free (tmp);
 }
 
@@ -1117,6 +1207,7 @@ main (void)
 
 	check_store_dacl ();
 	check_store_squatted ();
+	check_engine_lock ();
 
 	g_free (before);
 	g_free (after);

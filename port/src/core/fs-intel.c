@@ -77,6 +77,23 @@
 #define STORE_DEFAULT     "/var/lib/stockfw/intel"
 #define CONF_NAME         "intel.conf"
 #define APPLIED_NAME      "applied.state"
+
+/* Where the rules live, in the platform's words, for the sentences the
+ * state and the outcomes give: nftables in the kernel on Linux, Windows
+ * Firewall rules on Windows (which keeps them across a restart, so a
+ * restart is no reason they are gone there).  The CLI that the consent
+ * text names is built on Linux only. */
+#ifdef G_OS_WIN32
+#define FS_INTEL_WHERE       "Windows Firewall"
+#define FS_INTEL_WHERE_CAP   "Windows Firewall"
+#define FS_INTEL_GONE_WHY    "removed by another program or by hand"
+#define FS_INTEL_EXCEPT_CLI  ""
+#else
+#define FS_INTEL_WHERE       "the kernel"
+#define FS_INTEL_WHERE_CAP   "The kernel"
+#define FS_INTEL_GONE_WHY    "after a restart, or removed by another program"
+#define FS_INTEL_EXCEPT_CLI  ", or run \"sudo stockfw intel except <address>\""
+#endif
 #define LOCK_NAME         "engine.lock"
 
 /* Read caps per file kind: our own files are small, and a file that
@@ -1723,8 +1740,7 @@ fs_intel_consent_text (const FsIntelConfig *config, const gchar *id)
 	g_string_append (out,
 		_("Blocklists contain mistakes. If a list blocks something you "
 		  "need, add an exception for that address: put it on the allow "
-		  "list on the Threat Intel page, or run \"sudo stockfw intel "
-		  "except <address>\"."));
+		  "list on the Threat Intel page" FS_INTEL_EXCEPT_CLI "."));
 	g_free (often);
 	g_free (host);
 	return g_string_free (out, FALSE);
@@ -3739,7 +3755,7 @@ apply_in (const FsBackend *backend, const FsIntelConfig *config,
 	else if (ok && live != FS_INTEL_LIVE_UNKNOWN) {
 		ok = FALSE;
 		g_set_error (&local, FS_INTEL_ERROR, FS_INTEL_ERR_STORE,
-		             _("The rules were applied, but the kernel holds "
+		             _("The rules were applied, but " FS_INTEL_WHERE " holds "
 		               "something else."));
 	}
 	/* live UNKNOWN after a reported success: cannot tell, the
@@ -3779,7 +3795,7 @@ apply_in (const FsBackend *backend, const FsIntelConfig *config,
 		gchar *why = error_text (local);
 
 		g_ptr_array_add (o->notes, g_strdup_printf (
-			_("The kernel reported an error (%s), but holds the "
+			_(FS_INTEL_WHERE_CAP " reported an error (%s), but holds the "
 			  "new rules."), why));
 		g_free (why);
 		g_clear_error (&local);
@@ -4159,7 +4175,7 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 		live = backend->intel_live (NULL);
 		if (live_holds (live)) {
 			set_detail (detail, g_strdup (
-				_("Blocklists are turned off, but the kernel still "
+				_("Blocklists are turned off, but " FS_INTEL_WHERE " still "
 				  "holds blocklist rules; apply to remove them.")));
 			return FS_INTEL_STATE_DIFFERS;
 		}
@@ -4242,14 +4258,14 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 		 * timeout): "could not be read" alone gives nothing to do. */
 		if (state == FS_INTEL_STATE_NEEDS_ROOT)
 			set_detail (detail, g_strdup (
-				_("Reading the kernel's rules needs administrator "
+				_("Reading " FS_INTEL_WHERE "'s rules needs administrator "
 				  "rights.")));
 		else if (why != NULL && *why != '\0')
 			set_detail (detail, g_strdup_printf (
-				_("The kernel's rules could not be read: %s"), why));
+				_(FS_INTEL_WHERE_CAP "'s rules could not be read: %s"), why));
 		else
 			set_detail (detail, g_strdup (
-				_("The kernel's rules could not be read.")));
+				_(FS_INTEL_WHERE_CAP "'s rules could not be read.")));
 		g_free (why);
 		goto out;
 	}
@@ -4263,7 +4279,7 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 		} else {
 			state = FS_INTEL_STATE_DIFFERS;
 			set_detail (detail, g_strdup (
-				_("Blocklists are turned off, but the kernel still "
+				_("Blocklists are turned off, but " FS_INTEL_WHERE " still "
 				  "holds blocklist rules; apply to remove them.")));
 		}
 		goto out;
@@ -4277,7 +4293,7 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 		} else {
 			state = FS_INTEL_STATE_DIFFERS;
 			set_detail (detail, g_strdup (
-				_("The blocklists were suspended, but the kernel "
+				_("The blocklists were suspended, but " FS_INTEL_WHERE " "
 				  "holds blocklist rules StockFW did not apply.")));
 		}
 		goto out;
@@ -4335,7 +4351,7 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 	} else if (live == FS_INTEL_LIVE_PRESENT) {
 		state = FS_INTEL_STATE_DIFFERS;
 		set_detail (detail, g_strdup (
-			_("The kernel holds blocklist rules, but not the ones "
+			_(FS_INTEL_WHERE_CAP " holds blocklist rules, but not the ones "
 			  "StockFW last applied; apply to replace them.")));
 	} else if (live == FS_INTEL_LIVE_PARTIAL) {
 		state = FS_INTEL_STATE_DIFFERS;
@@ -4346,9 +4362,9 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 		state = FS_INTEL_STATE_NOT_LOADED;
 		if (have_record && a.ids->len == 0 && have_copy)
 			set_detail (detail, g_strdup (
-				_("The lists that are turned on are not in the "
-				  "kernel: the last Start or apply was held or did "
-				  "not finish; apply to load them.")));
+				_("The lists that are turned on are not in "
+				  FS_INTEL_WHERE ": the last Start or apply was held "
+				  "or did not finish; apply to load them.")));
 		else if (have_record && a.ids->len == 0)
 			set_detail (detail, g_strdup (
 				_("The lists that are turned on have not been "
@@ -4356,9 +4372,8 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 				  "apply.")));
 		else
 			set_detail (detail, g_strdup (
-				_("The blocklists are not in the kernel (after a "
-				  "restart, or removed by another program); apply "
-				  "to load them.")));
+				_("The blocklists are not in " FS_INTEL_WHERE " ("
+				  FS_INTEL_GONE_WHY "); apply to load them.")));
 	}
 out:
 	g_free (digest);
@@ -4793,6 +4808,22 @@ fs_intel_applied_has (const gchar *id)
 		has = g_hash_table_contains (cache_ids, id);
 	}
 	G_UNLOCK (applied_cache);
+	store_close (&store);
+	return has;
+#elif defined G_OS_WIN32
+	/* Windows: no log reader asks this per line; the Threat Intel page
+	 * asks once per list per refresh, so applied.state is read each
+	 * time (no cache keyed on the file's identity). */
+	Store store = STORE_INIT;
+	Applied a;
+	gboolean has = FALSE;
+
+	if (!fs_intel_id_is_valid (id) || !store_exists () ||
+	    !store_open (&store, NULL))
+		return FALSE;
+	if (applied_read (&store, &a) && !a.suspended)
+		has = str_array_has (a.ids, id);
+	applied_clear (&a);
 	store_close (&store);
 	return has;
 #else

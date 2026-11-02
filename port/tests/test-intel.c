@@ -3568,6 +3568,108 @@ apply_ok (const FsIntelConfig *c, const FsHostNet *h)
 	fs_intel_outcome_free (o);
 }
 
+/* fs_intel_lookup_live on the Windows live values (merge of Round 3
+ * and the Windows enforcement): "in force" only when the rules are
+ * PRESENT with the digest last applied.  Rules the firewall does not
+ * enforce (INACTIVE), rules not whole (PARTIAL) and someone else's
+ * rules never are, and the state detail is the backend's sentence. */
+static void
+test_lookup_live_windows (void)
+{
+	FsIntelConfig *c = conf_with ("feodo");
+	FsHostNet *h = host_fixture ();
+	FsIntelLookup r = { 0 };
+	FsIntelState st;
+	gchar *detail = NULL, *good;
+	Live l;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+	/* Like the Windows backend: no counters slot, a not-in-force one. */
+	fake_backend.intel_counters = NULL;
+	fake_backend.intel_not_in_force = fake_not_in_force;
+	serve ("feodo", "45.0.0.1\n46.0.0.0/24\n");
+	g_ptr_array_unref (fs_intel_update (c, NULL, 0, NOW0));
+	fs_intel_config_save (c, NULL);
+	apply_ok (c, h);
+	good = g_strdup (kern.live_digest);
+
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, TRUE, FALSE, FS_INTEL_STATE_ENFORCED,
+	            "windows: PRESENT with the digest is in force (no counters "
+	            "slot needed)");
+	g_free (l.kernel);
+
+	kern.live = FS_INTEL_LIVE_INACTIVE;
+	kern.not_in_force = g_strdup ("Windows Firewall is off for the Public "
+	                              "profile, which the network in use has.");
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, FALSE, FS_INTEL_STATE_NOT_IN_FORCE,
+	            "windows: INACTIVE with the same digest is never in force");
+	g_free (l.kernel);
+	fs_intel_lookup (c, h, "45.0.0.1", &r);
+	fs_intel_lookup_live (&fake_backend, c, "45.0.0.1", &r);
+	CHECK (!r.in_force && r.kernel_sources->len == 0 &&
+	       g_strcmp0 (r.state_detail, kern.not_in_force) == 0,
+	       "windows: ... no list named in force, and the detail is the "
+	       "backend's sentence (%s)", r.state_detail);
+	fs_intel_lookup_clear (&r);
+
+	kern.live = FS_INTEL_LIVE_PARTIAL;
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, FALSE, FS_INTEL_STATE_DIFFERS,
+	            "windows: PARTIAL rules are never in force");
+	g_free (l.kernel);
+
+	kern.live = FS_INTEL_LIVE_PRESENT;
+	g_free (kern.live_digest);
+	kern.live_digest = g_strdup ("0123456789abcdef0123456789abcdef");
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, FALSE, FS_INTEL_STATE_DIFFERS,
+	            "windows: PRESENT with another digest is not in force");
+	g_free (l.kernel);
+
+	g_free (kern.live_digest);
+	kern.live_digest = good;
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, TRUE, FALSE, FS_INTEL_STATE_ENFORCED,
+	            "windows: back to PRESENT with the digest: in force again");
+	g_free (l.kernel);
+
+	/* No store at all (nothing ever turned on here), and rules of ours
+	 * on the firewall anyway: never "off". */
+	fresh_store ();
+	{
+		FsIntelConfig *none = fs_intel_config_new ();
+
+		kern.live = FS_INTEL_LIVE_PARTIAL;
+		st = fs_intel_state (&fake_backend, NULL, &detail);
+		CHECK (st == FS_INTEL_STATE_DIFFERS,
+		       "windows: no store, PARTIAL rules there: differs (%s)",
+		       detail);
+		g_clear_pointer (&detail, g_free);
+		kern.live = FS_INTEL_LIVE_INACTIVE;
+		st = fs_intel_state (&fake_backend, none, &detail);
+		CHECK (st == FS_INTEL_STATE_DIFFERS,
+		       "windows: no store, INACTIVE rules there: differs (%s)",
+		       detail);
+		g_clear_pointer (&detail, g_free);
+		CHECK (!fs_intel_store_exists (),
+		       "windows: ... and asking created no store");
+		fs_intel_config_free (none);
+	}
+
+	CHECK (fs_intel_counts_unavailable (&fake_backend) != NULL,
+	       "windows: a backend without counters says counts are "
+	       "unavailable");
+	kern_reset ();
+	CHECK (fs_intel_counts_unavailable (&fake_backend) == NULL,
+	       "windows: ... and one with counters does not");
+	fs_hostnet_free (h);
+	fs_intel_config_free (c);
+}
+
 static void
 test_lookup_live (void)
 {
@@ -3949,6 +4051,7 @@ test_engine (const gchar *argv0)
 	test_state_windows ();
 	test_lookup ();
 	test_lookup_live ();
+	test_lookup_live_windows ();
 	test_engine_lock ();
 	test_update_keeps_carried ();
 	test_engine_misc ();

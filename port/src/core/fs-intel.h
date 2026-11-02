@@ -516,8 +516,10 @@ gchar   *fs_intel_lookup_sentence (const FsIntelConfig *config,
 
 /* Whether `id' is a set in the rule set last applied (and not
  * suspended): the kernel log parser accepts a "STOCKFW-TI <id>" line
- * only then [S17.3].  Cheap: cached by applied.state's mtime.  FALSE
- * without creating anything where there is no store. */
+ * only then [S17.3], and the Threat Intel page marks a list "in force"
+ * only then.  Linux: cached by applied.state's mtime.  Windows: read
+ * each time.  FALSE without creating anything where there is no store,
+ * and always FALSE on other platforms. */
 gboolean fs_intel_applied_has (const gchar *id);
 
 /* An event's rule for a "STOCKFW-TI <id>" line: "Threat intel: <the
