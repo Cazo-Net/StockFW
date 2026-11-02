@@ -1063,8 +1063,8 @@ The roadmap's Preferences item ships as two halves: the half Windows can honor b
 | MS Traceroute | destination-unreachable `3,any`; the narrower `3,1` (Unreachable) is emitted only when the broader rule is not, since it is a subset |
 | Timestamping / masking | `13,any`+`14,any` / `17,any`+`18,any` |
 | Redirection / source quench | `5,any` / `4,any` |
-| Block external broadcasts | block to `255.255.255.255`, `profile=public` |
-| Block internal broadcasts | block to `255.255.255.255`, `profile=private` |
+| Block external broadcasts | nothing (1.0.7): a `remoteip=255.255.255.255` block matches the sender, and no packet is sent from that address, so it blocked nothing; the switch is not offered on Windows |
+| Block internal broadcasts | nothing (1.0.7), for the same reason |
 | Block reserved sources | block from `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8`, `profile=public` |
 
 The profile scoping is the honest translation of the iptables rules' `-i ext_device`/`-i int_device` interface scoping: `ext ≈ public profile`, `int ≈ private profile`. The domain profile is covered by neither, and nothing pretends otherwise. The netsh grammar itself was verified unelevally by probe before a line was written — `icmpv4:8,any` parses (the wildcard is the literal `any`, not `*`, which netsh rejects with "A specified protocol value is not valid"), and the multi-range `remoteip` list and profile-scoped broadcast blocks parse as well; an unelevated attempt can only fail with "requires elevation", which is what distinguishes a parse failure from a policy one.

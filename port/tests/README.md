@@ -230,8 +230,70 @@ check that failed is in brackets):
   rules removed, which leaves Adwaita:dark's light text on the light
   page.)
 
+- H7: claims the code does not back are gone from the help, and the
+  true statement is there instead: on Linux only the inbound default
+  and "Block outgoing unless allowed" log their drops (deny rules,
+  Sentinel and the Protection blocks do not); the Windows broadcast
+  blocks are not offered, since a rule can only match 255.255.255.255
+  as the sender; on a Public network the Windows reserved-address
+  block outranks your own allow rules, and What-If does not look at
+  it; an expired Sentinel block stays on the firewall until the next
+  apply; StockFW's Windows rules start with `StockFW`; threat intel is
+  planned for Windows too; StockFW also turns profiles on and off;
+  the ported code is GPL 2 or later.  (Re-injected: the old
+  `fs-helpcontent.c`, which fails all ten.)
+- K1: keyboard.  Tab and Shift+Tab in About walk View licence texts,
+  the website, Copy system info and Close; About asks for the keyboard
+  when it opens (`gtk_window_present`), since a dialog that never gets
+  it keeps every Tab on Close.  Help opens with focus on the topic
+  shown, not in the search field (GTK hides a focused entry's
+  placeholder).  The topic list is one Tab stop: 30 Tabs land on a
+  topic at most once and open nothing; Down moves along the list
+  without opening, Enter opens.  Every button, row and entry in Help
+  and About has a name for a screen reader (Back and Forward are
+  icon-only).  (Re-injected: About not presented; the list's focus
+  handler removed; selection following focus; the history buttons
+  and the rows left unnamed; focus put in the search field.)
+- L1: layout.  Key caps are one height beside text that wraps, and
+  the shortcut descriptions start in one column; no topic makes Help
+  wider than 640 pixels (the caps wrap between keys); on a wide window
+  the page is a centred column of at most 700 pixels; related-topic
+  chips sit 6 pixels apart (a GtkFlowBox spread them, so they are laid
+  out by a small wrapping container); the sidebar is `FS_SIDE_WIDTH`,
+  as in Preferences.  (Re-injected: caps filling the row; caps that
+  never wrap; the descriptions' width left free; no column limit;
+  chips 60 apart; a 250-pixel sidebar.)
+
 The prefs smoke's Help-button check was seen failing with the button
 left out of the footer.
+
+The Preferences redesign is checked in the prefs smokes, on both
+platforms' page sets: the sidebar is `FS_SIDE_WIDTH` wide, as Help's,
+and groups its pages under "StockFW" and "Firewall"; every page opens
+with its icon tile; every sidebar item is named for a screen reader;
+on a wide window the settings column stops at 720 pixels and is
+centred; a change marks its row, its page's dot in the sidebar (no
+other page's) and the footer, and changing it back clears all three.
+On Windows the broadcast blocks are not offered, and the
+reserved-address row says it outranks your own allow rules on public
+networks.  (Re-injected: no group headings; no page icon; no column
+limit; changes not marked; a 200-pixel sidebar; the broadcast rows
+offered on Windows; the old Windows reserved-address line.)
+
+## Installer licence texts (`tests/test-licence-texts.sh`)
+
+```sh
+cd port
+bash tests/test-licence-texts.sh
+```
+
+Runs the licence step of each installer build (`build_installer.sh`
+for NSIS, `linux/build_installer_linux.sh`) into a scratch directory
+and checks the `LICENSE.txt` it stages: no claim of GPL 3, the About
+window's licence summary sentence for sentence (read from
+`fs-aboutdialog.c`), then `COPYING` and `LICENSE` in full.  The NSIS
+licence page shows that file.  (Re-injected: the GPL 3 paragraph put
+back; the Linux step without the licence texts.)
 
 ## The Windows build directory on its own (`tests/test-staged-runtime.sh`)
 

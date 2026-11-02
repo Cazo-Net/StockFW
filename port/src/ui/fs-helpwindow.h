@@ -28,6 +28,17 @@ const gchar *fs_help_topic_for_page (gint page);
 /* The topic for a Preferences page id ("general", "icmp", ...). */
 const gchar *fs_help_topic_for_prefs_page (const gchar *page);
 
+/* The sidebar width Help and Preferences share, so the two windows
+ * match side by side. */
+#define FS_SIDE_WIDTH 240
+
+/* A container for one child that gives it at most `max_width' pixels
+ * and centres it in any width beyond that: a readable column on a wide
+ * window (Help's article, Preferences' pages).  Below `max_width' the
+ * child gets the whole width, and its height is asked for that width,
+ * so wrapping text keeps working. */
+GtkWidget   *fs_clamp_new           (gint max_width);
+
 /* The open Help window, or NULL; and the topic it shows, or NULL. */
 GtkWidget   *fs_help_window         (void);
 const gchar *fs_help_current_topic  (void);

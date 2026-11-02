@@ -840,29 +840,74 @@ button.fs-link label {
 }
 
 /* =====================================================================
- * 1.0.7: the Preferences window (src/ui/fs-prefsdialog.c)
- * The main window's sidebar and cards; each setting a row with its
- * name, one line on what it does and the control on the right.
+ * 1.0.7: the sidebar Help and Preferences share
+ * One width (FS_SIDE_WIDTH), the same group headings, and items of the
+ * same size, icon and inset, so the two windows match side by side.
+ * Help's items are list rows, Preferences' toggle buttons; the rules
+ * below give both the same box.
  * ===================================================================== */
-.prefs-nav {
-	padding: 20px 10px 16px 10px;
+.side-nav {
+	padding: 18px 10px 12px 10px;
 }
-.prefs-nav .fs-brand {
-	padding: 0 10px 16px 10px;
+.side-nav .fs-brand {
+	padding: 0 14px 12px 14px;
+}
+label.side-section {
+	color: #a9b0bc;
+	font-size: 11px;
+	font-weight: bold;
+	padding: 14px 14px 4px 14px;
+}
+button.nav-item.side-item {
+	margin: 1px 4px;
+	padding: 7px 10px;
+	min-height: 0;
+	font-size: 13px;
+}
+/* The dot beside a Preferences page with unsaved changes. */
+.nav-changed-dot {
+	color: #fbbf24;
+}
+
+/* =====================================================================
+ * 1.0.7: the Preferences window (src/ui/fs-prefsdialog.c)
+ * A centred column: each page its icon, title and a line on what it is
+ * for, then groups of settings, a small heading over a white card.
+ * Each setting a row with its name, one line on what it does and the
+ * control on the right; a changed row carries a blue bar on its left.
+ * ===================================================================== */
+.pref-page-head {
+	margin-bottom: 14px;
+}
+.pref-page-icon {
+	background-color: #ffffff;
+	border: 1px solid #e3e6eb;
+	border-radius: 12px;
+	padding: 10px;
+	color: #16181d;
+}
+.pref-group {
+	margin-top: 10px;
+}
+label.pref-group-title {
+	font-size: 12px;
+	font-weight: bold;
+	color: #5b6472;
+	padding: 0 4px 8px 4px;
 }
 .pref-card {
-	padding-bottom: 4px;
-}
-.pref-card .card-heading.card-head {
-	padding: 14px 18px 4px 18px;
+	padding: 2px 0;
 }
 .pref-row {
 	padding: 12px 18px;
 	border-top: 1px solid #eef0f3;
 }
-/* No rule between a card's heading and its first row. */
-.pref-card > .pref-row:nth-child(2) {
+/* No rule above a card's first row. */
+.pref-card > .pref-row:first-child {
 	border-top-width: 0;
+}
+.pref-row.pref-changed {
+	box-shadow: inset 3px 0 0 #1d4ed8;
 }
 .pref-label {
 	font-size: 13px;
@@ -907,6 +952,19 @@ button.fs-link label {
 	border-top: 1px solid #e3e6eb;
 	padding: 12px 24px;
 }
+/* What Save will write: grey with nothing to save, amber with. */
+label.prefs-status {
+	font-size: 12px;
+	font-weight: bold;
+	color: #3a4250;
+	background-color: #eef2f7;
+	border-radius: 10px;
+	padding: 3px 12px;
+}
+label.prefs-status.pending {
+	color: #6b3f00;
+	background-color: #fff8eb;
+}
 
 /* =====================================================================
  * 1.0.7: Help (src/ui/fs-helpwindow.c) and About (fs-aboutdialog.c)
@@ -918,12 +976,6 @@ button.fs-link label {
  *   note #1E3A8A on #EEF4FF    warning #6B3F00 on #FFF8EB
  *   coming in 1.0.7 #3A4250 on white, dashed border
  * ===================================================================== */
-.help-nav {
-	padding: 20px 10px 12px 10px;
-}
-.help-nav .fs-brand {
-	padding: 0 10px 12px 10px;
-}
 .help-nav scrolledwindow,
 .help-nav viewport {
 	background-color: #14161b;
@@ -960,6 +1012,7 @@ list.help-topics row {
 	border-radius: 8px;
 	padding: 7px 10px;
 	margin: 1px 4px;
+	min-height: 0;
 	color: #c9ced6;
 	outline-color: #8b93a1;
 }
@@ -967,8 +1020,9 @@ list.help-topics row label {
 	color: #c9ced6;
 	font-size: 13px;
 }
+/* A subtopic's words line up with its parent's, after the icon. */
 list.help-topics row.help-subtopic {
-	padding-left: 24px;
+	padding-left: 36px;
 }
 list.help-topics row.help-subtopic label {
 	font-size: 12px;
@@ -979,20 +1033,15 @@ list.help-topics row:hover {
 list.help-topics row:hover label {
 	color: #ffffff;
 }
-list.help-topics row:selected,
-list.help-topics row:selected:hover,
-list.help-topics row:selected:focus {
+/* The topic shown: marked, not selected (the list has no selection,
+ * so moving keyboard focus along it opens nothing). */
+list.help-topics row.help-current,
+list.help-topics row.help-current:hover {
 	background-color: #2a2f39;
 }
-list.help-topics row:selected label {
+list.help-topics row.help-current label {
 	color: #ffffff;
 	font-weight: bold;
-}
-label.help-section {
-	color: #a9b0bc;
-	font-size: 11px;
-	font-weight: bold;
-	padding: 14px 14px 4px 14px;
 }
 label.help-empty {
 	color: #a9b0bc;
@@ -1156,11 +1205,6 @@ label.help-h2 {
 	margin-top: 16px;
 	padding-top: 14px;
 	border-top: 1px solid #e3e6eb;
-}
-flowbox.help-chips,
-flowbox.help-chips flowboxchild {
-	background-color: transparent;
-	padding: 0;
 }
 button.help-chip {
 	background-color: #ffffff;

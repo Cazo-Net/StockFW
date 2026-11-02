@@ -153,10 +153,16 @@ static const FsHelpBlock events[] = {
 	  "seconds. Windows writes them only while connection auditing is "
 	  "on, and StockFW turns it on when it runs as administrator.") },
 	{ FS_HELP_PARA, N_("On Linux, StockFW reads the kernel log and lists "
-	  "only the packets its own rules logged. Packets your rules block "
-	  "are logged. Allowed connections are logged while <b>Log allowed "
+	  "only the packets its own rules logged. Packets dropped by the "
+	  "inbound default, and by <b>Block outgoing unless allowed</b>, are "
+	  "logged. Allowed connections are logged while <b>Log allowed "
 	  "connections</b> is on in Preferences: the first packet of each, "
 	  "at most 10 a second.") },
+	{ FS_HELP_NOTE, N_("On Linux your outbound deny rules, "
+	  "<a href=\"help:sentinel\">Sentinel</a>'s blocks and the "
+	  "<a href=\"help:prefs-protection\">Protection</a> blocks drop "
+	  "packets without logging them, so they do not appear on "
+	  "Events.") },
 	{ FS_HELP_SEE, "prefs-events activity sentinel troubleshooting" },
 	{ FS_HELP_END, NULL }
 };
@@ -318,8 +324,11 @@ static const FsHelpBlock whatif[] = {
 	  "answer at all, and the window shows examples instead.") },
 	{ FS_HELP_WARN, N_("The answer is about your StockFW policy as "
 	  "written. It does not look at whether the firewall is running, at "
-	  "<b>Block outgoing unless allowed</b>, or at rules that other "
-	  "programs or Windows itself added.") },
+	  "<b>Block outgoing unless allowed</b>, at the ICMP and Protection "
+	  "settings in Preferences, or at rules that other programs or "
+	  "Windows itself added. On Windows, for example, the reserved-address "
+	  "block can stop a connection from a private address that the answer "
+	  "calls ALLOWED.") },
 	{ FS_HELP_HEAD, N_("Creating a rule") },
 	{ FS_HELP_PARA, N_("The answer window offers <b>Create This Rule</b>. "
 	  "It shows the allow rule it would add and asks first. Once you say "
@@ -421,9 +430,10 @@ static const FsHelpBlock preferences[] = {
 	  "would do nothing here is left out, and a row that cannot act "
 	  "right now is greyed, with the reason under it.") },
 	{ FS_HELP_PARA, N_("Changes stay in the window until you press "
-	  "<b>Save</b>; <b>Cancel</b> or Escape drops them. The footer counts "
-	  "the unsaved changes, and Save writes only the settings you "
-	  "changed.") },
+	  "<b>Save</b>; <b>Cancel</b> or Escape drops them. A setting you "
+	  "changed is marked with a blue bar on its left, and its page with a "
+	  "dot in the sidebar. The footer counts the unsaved changes, and "
+	  "Save writes only the settings you changed.") },
 	{ FS_HELP_PARA, N_("When you save a firewall setting, StockFW offers "
 	  "to apply it now. The settings go out with the policy that is "
 	  "already in force, not with Policy page edits you have not applied. "
@@ -448,7 +458,7 @@ static const FsHelpBlock preferences[] = {
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-icmp\">ICMP</a>: which "
 	  "network control messages may reach this computer.") },
 	{ FS_HELP_ITEM, N_("<a href=\"help:prefs-protection\">Protection</a>: "
-	  "blocks for broadcasts and spoofed addresses.") },
+	  "blocks for broadcasts (Linux) and spoofed addresses.") },
 	{ FS_HELP_NOTE, N_("Settings are kept in stockfw.conf: in "
 	  "~/.config/stockfw for the account StockFW runs as on Linux, and in "
 	  "%APPDATA%\\stockfw on Windows.") },
@@ -585,25 +595,42 @@ static const FsHelpBlock prefs_icmp[] = {
 };
 
 static const FsHelpBlock prefs_protection[] = {
-	{ FS_HELP_PARA, N_("Three switches, each a block that is off or on. "
-	  "On Linux each one applies to a device chosen on the Network page; "
-	  "on Windows to the network profiles.") },
+	{ FS_HELP_PARA, N_("Blocks that are off or on. On Linux each one "
+	  "applies to a device chosen on the Network page. On Windows only "
+	  "the reserved-address block is offered, and it applies to networks "
+	  "Windows treats as public.") },
+	{ FS_HELP_HEAD, N_("On Linux") },
 	{ FS_HELP_ITEM, N_("<b>Block broadcasts from the Internet side</b> "
 	  "(off by default): drops broadcast packets that arrive on the "
-	  "Internet device on Linux, or on networks Windows treats as "
-	  "public.") },
+	  "Internet device.") },
 	{ FS_HELP_ITEM, N_("<b>Block broadcasts from the local network</b> "
-	  "(off by default): on Linux, drops broadcasts on the local network "
-	  "device while the connection is shared; on Windows, on networks "
-	  "treated as private. Some printers and media players find each "
-	  "other this way.") },
+	  "(off by default): drops broadcasts on the local network device "
+	  "while the connection is shared. Some printers and media players "
+	  "find each other this way.") },
 	{ FS_HELP_ITEM, N_("<b>Block reserved source addresses</b> (on by "
-	  "default): drops packets that claim to come from private or "
-	  "loopback ranges (10/8, 172.16/12, 192.168/16, 127/8) where they "
-	  "cannot be genuine: on the Internet device on Linux, on public "
-	  "networks on Windows.") },
-	{ FS_HELP_NOTE, N_("On Linux a block that needs a device has no effect "
-	  "until that device is chosen, and the row says so.") },
+	  "default): drops packets on the Internet device that claim to come "
+	  "from private or loopback ranges (10/8, 172.16/12, 192.168/16, "
+	  "127/8). They cannot be genuine on a device that faces the "
+	  "Internet directly.") },
+	{ FS_HELP_NOTE, N_("A block that needs a device has no effect until "
+	  "that device is chosen, and the row says so.") },
+	{ FS_HELP_HEAD, N_("On Windows") },
+	{ FS_HELP_ITEM, N_("<b>Block reserved source addresses</b> (on by "
+	  "default): on a network Windows treats as public, blocks every "
+	  "inbound connection from the private and loopback ranges (10/8, "
+	  "172.16/12, 192.168/16, 127/8), including connections your own "
+	  "allow rules let in, because a Windows block rule wins over an "
+	  "allow.") },
+	{ FS_HELP_WARN, N_("Windows uses the public profile for new networks "
+	  "and for most cafe and hotel Wi-Fi, where every other device has "
+	  "a private address. On such a network this block stops other "
+	  "devices there from reaching this computer, even through a rule "
+	  "you added, such as an SSH allow for your own network. Turn it off "
+	  "if you need them to reach you there.") },
+	{ FS_HELP_ITEM, N_("The two broadcast blocks are not offered on "
+	  "Windows. A Windows Firewall rule can only match a broadcast "
+	  "address as the sender, which no real packet uses, so they would "
+	  "block nothing.") },
 	{ FS_HELP_SEE, "prefs-network prefs-icmp preferences" },
 	{ FS_HELP_END, NULL }
 };
@@ -625,9 +652,10 @@ static const FsHelpBlock threat_intel[] = {
 	  "larger or smaller than the last one is refused, and the Events "
 	  "page names the list behind each block, with a way to add an "
 	  "exception.") },
-	{ FS_HELP_PARA, N_("The first release covers Linux, where the lists "
-	  "are loaded as nftables sets. Windows, and blocking by country or "
-	  "network owner (ASN), come later.") },
+	{ FS_HELP_PARA, N_("The lists are planned for both platforms: loaded "
+	  "as nftables sets on Linux and as Windows Firewall rules on "
+	  "Windows. Blocking by country or network owner (ASN) comes "
+	  "later.") },
 	{ FS_HELP_NOTE, N_("Until then, to block an address you know is bad, "
 	  "add it under <b>Deny connections to host</b> on the "
 	  "<a href=\"help:policy\">Policy</a> page.") },
@@ -650,8 +678,8 @@ static const FsHelpBlock background[] = {
 	{ FS_HELP_NOTE, N_("Quitting StockFW does not turn the firewall off. "
 	  "The rules stay in force; event monitoring, Sentinel and the "
 	  "graphs stop until StockFW runs again. A Sentinel block that is "
-	  "live when you quit stays until StockFW starts again and lifts "
-	  "it.") },
+	  "live when you quit stays on the firewall until the policy is next "
+	  "applied after StockFW starts again.") },
 	{ FS_HELP_WARN, N_("On Linux the kernel forgets the rules at a "
 	  "reboot. After each reboot, start the firewall from StockFW running "
 	  "as root, or run <tt>sudo stockfw start</tt>. <b>Start the firewall "
@@ -768,8 +796,8 @@ static const FsHelpBlock linux_notes[] = {
 
 static const FsHelpBlock windows_notes[] = {
 	{ FS_HELP_PARA, N_("On Windows, StockFW drives Windows Defender "
-	  "Firewall. It adds its own rules, named <tt>StockFW-</tt> followed "
-	  "by the service or host, which you can also see in Windows Security "
+	  "Firewall. It adds its own rules, whose names start with "
+	  "<tt>StockFW</tt>, which you can also see in Windows Security "
 	  "under Firewall and network protection, Advanced settings. Rules "
 	  "you or other programs made are left alone.") },
 	{ FS_HELP_HEAD, N_("Administrator rights") },
@@ -803,18 +831,18 @@ static const FsHelpBlock windows_notes[] = {
 	  "covers nothing.") },
 	{ FS_HELP_ITEM, N_("There is no port forwarding: a Forward service row "
 	  "only opens the port.") },
-	{ FS_HELP_ITEM, N_("The ICMP and Protection settings become extra "
-	  "rules, scoped to the Public or Private profile where that applies; "
-	  "Windows' own rules still apply beside them.") },
+	{ FS_HELP_ITEM, N_("The ICMP settings, and the reserved-address "
+	  "block on the Public profile, become extra rules. Windows' own "
+	  "rules still apply beside them.") },
 	{ FS_HELP_PARA, N_("Windows keeps the rules across reboots by "
 	  "itself.") },
 	{ FS_HELP_HEAD, N_("Events") },
 	{ FS_HELP_PARA, N_("Events come from the Security log, events 5156 "
 	  "(allowed) and 5157 (blocked), read every five seconds. Windows "
 	  "writes them only while auditing of filtering platform connections "
-	  "is on. StockFW turns that on when it runs as administrator; it is "
-	  "the one system setting StockFW changes besides firewall "
-	  "rules.") },
+	  "is on. StockFW turns that on when it runs as administrator. Besides "
+	  "firewall rules and turning profiles on or off, it is the only "
+	  "system setting StockFW changes.") },
 	{ FS_HELP_SEE, "overview troubleshooting prefs-icmp prefs-protection" },
 	{ FS_HELP_END, NULL }
 };
@@ -841,8 +869,11 @@ static const FsHelpBlock troubleshooting[] = {
 	  "logs nothing.") },
 	{ FS_HELP_ITEM, N_("On Linux only what StockFW's rules log is listed. "
 	  "Allowed traffic appears only while <b>Log allowed "
-	  "connections</b> is on, and blocked traffic only once something is "
-	  "blocked.") },
+	  "connections</b> is on. Blocked traffic appears when the inbound "
+	  "default, or <b>Block outgoing unless allowed</b>, drops it. Your "
+	  "outbound deny rules, Sentinel's blocks and the Protection blocks "
+	  "are not logged, so a quiet list does not mean they blocked "
+	  "nothing.") },
 	{ FS_HELP_ITEM, N_("Clear the filter box, and check <b>Hide repeated "
 	  "events</b> and <b>Skip events not addressed to this computer</b> "
 	  "in <a href=\"help:prefs-events\">Preferences</a>.") },
@@ -930,11 +961,12 @@ static const FsHelpBlock about[] = {
 	  "Copilot") },
 	{ FS_HELP_HEAD, N_("Licence") },
 	{ FS_HELP_PARA, N_("The source carries two licence texts: the GNU "
-	  "General Public License, version 2 (COPYING), under which the code "
-	  "StockFW was ported from was released, and the Apache License 2.0 "
-	  "(LICENSE). Which licence covers which part of the port is still "
-	  "being reviewed. Both texts are in <b>About StockFW</b>, under "
-	  "<b>View licence texts</b>. StockFW comes with no warranty.") },
+	  "General Public License version 2 (COPYING) and the Apache License "
+	  "2.0 (LICENSE). The code StockFW was ported from was released under "
+	  "the GNU GPL, version 2 or any later version. Which licence covers "
+	  "which part of the port is still being reviewed. Both texts are in "
+	  "<b>About StockFW</b>, under <b>View licence texts</b>, and the "
+	  "installers show the same. StockFW comes with no warranty.") },
 	{ FS_HELP_HEAD, N_("Your data") },
 	{ FS_HELP_PARA, N_("StockFW works offline and has no telemetry: it "
 	  "sends nothing about you or your traffic anywhere. Its files stay "

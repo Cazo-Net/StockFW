@@ -65,6 +65,7 @@
 #include "core/fs-apply.h"
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-helpwindow.h"
 #include "fs-theme-css.h"   /* generated from src/ui/fs-theme.css */
 
 #define SMOKE_STEP_MS  100
@@ -755,6 +756,137 @@ seed (const gchar *contents)
 	CHECK (fs_prefs_load (), "seeded settings load");
 }
 
+static gboolean
+has_class (GtkWidget *w, const gchar *klass)
+{
+	return w != NULL && gtk_style_context_has_class (
+		gtk_widget_get_style_context (w), klass);
+}
+
+static void
+section_texts (GtkWidget *root, GString *out)
+{
+	GList *children;
+
+	if (GTK_IS_LABEL (root) && has_class (root, "side-section")) {
+		if (out->len > 0)
+			g_string_append_c (out, ',');
+		g_string_append (out, gtk_label_get_text (GTK_LABEL (root)));
+	}
+	if (!GTK_IS_CONTAINER (root))
+		return;
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (GList *l = children; l != NULL; l = l->next)
+		section_texts (l->data, out);
+	g_list_free (children);
+}
+
+static guint
+count_class (GtkWidget *root, const gchar *klass)
+{
+	GList *children;
+	guint n = has_class (root, klass) ? 1 : 0;
+
+	if (!GTK_IS_CONTAINER (root))
+		return n;
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (GList *l = children; l != NULL; l = l->next)
+		n += count_class (l->data, klass);
+	g_list_free (children);
+	return n;
+}
+
+/* UX1: the redesign, as the user sees it.  The sidebar Help has too,
+ * grouped; every page its icon and a column that stops at 720 on a
+ * wide window; a change shown on its row, its page and the footer. */
+static void
+check_design (GtkWidget *win, const gchar *pages, const gchar *tag)
+{
+	GtkWidget *side = find_named (win, "prefs-sidebar");
+	GString *sections = g_string_new (NULL);
+	gchar **ids = g_strsplit (pages, ",", -1);
+	guint icons = 0, named = 0, n = 0;
+	GtkAllocation a;
+
+	gtk_widget_get_allocation (side, &a);
+	CHECK (side != NULL && a.width == FS_SIDE_WIDTH,
+	       "[%s] the sidebar is %d pixels wide, as Help's (%d)",
+	       tag, a.width, FS_SIDE_WIDTH);
+	section_texts (side, sections);
+	CHECK (g_strcmp0 (sections->str, "StockFW,Firewall") == 0,
+	       "[%s] the sidebar groups its pages under StockFW and "
+	       "Firewall (%s)", tag, sections->str);
+	for (guint i = 0; ids[i] != NULL; i++) {
+		gchar *page = g_strconcat ("page:", ids[i], NULL);
+		gchar *nav = g_strconcat ("nav:", ids[i], NULL);
+		GtkWidget *item = find_named (win, nav);
+		const gchar *atk = item != NULL ? atk_object_get_name (
+			gtk_widget_get_accessible (item)) : NULL;
+
+		n++;
+		if (count_class (find_named (win, page), "pref-page-icon") == 1)
+			icons++;
+		if (has_class (item, "side-item") && atk != NULL && *atk != '\0')
+			named++;
+		g_free (page);
+		g_free (nav);
+	}
+	CHECK (icons == n && named == n,
+	       "[%s] every page opens with its icon (%u/%u), and every "
+	       "sidebar item is Help's and named for a screen reader "
+	       "(%u/%u)", tag, icons, n, named, n);
+	g_strfreev (ids);
+	g_string_free (sections, TRUE);
+
+	/* The column on a wide window. */
+	click (win, "nav:general");
+	gtk_window_resize (GTK_WINDOW (win), 1500, 700);
+	pump ();
+	pump ();
+	{
+		GtkWidget *page = find_named (win, "page:general");
+		GtkAllocation col, area;
+
+		gtk_widget_get_allocation (page, &col);
+		gtk_widget_get_allocation (gtk_widget_get_parent (page), &area);
+		CHECK (area.width > 1000 && col.width <= 720
+		       && ABS ((col.x - area.x)
+		               - (area.x + area.width - col.x - col.width)) <= 2,
+		       "[%s] on a %d-pixel area the settings column is %d wide "
+		       "and centred", tag, area.width, col.width);
+	}
+	gtk_window_resize (GTK_WINDOW (win), 900, 600);
+	pump ();
+
+	/* A change, where it is. */
+	{
+		gchar *row_name = g_strconcat ("row:", FS_PREFS_SKIP_REDUNDANT,
+		                               NULL);
+		GtkWidget *sw = find_named (win, FS_PREFS_SKIP_REDUNDANT);
+		GtkWidget *row = find_named (win, row_name);
+		GtkWidget *dot = find_named (win, "nav-dot:events");
+		GtkWidget *status = find_named (win, "prefs-status");
+		gboolean was = sw != NULL && gtk_switch_get_active (GTK_SWITCH (sw));
+
+		set_switch (win, FS_PREFS_SKIP_REDUNDANT, !was);
+		pump ();
+		CHECK (has_class (row, "pref-changed")
+		       && dot != NULL && gtk_widget_get_visible (dot)
+		       && !gtk_widget_get_visible (find_named (win,
+		                                    "nav-dot:general"))
+		       && has_class (status, "pending"),
+		       "[%s] a change marks its row, its page in the sidebar "
+		       "(and no other) and the footer", tag);
+		set_switch (win, FS_PREFS_SKIP_REDUNDANT, was);
+		pump ();
+		CHECK (!has_class (row, "pref-changed")
+		       && !gtk_widget_get_visible (dot)
+		       && !has_class (status, "pending"),
+		       "[%s] changed back, the marks go", tag);
+		g_free (row_name);
+	}
+}
+
 static void
 check_pages (GtkWidget *win, const gchar *tag)
 {
@@ -767,6 +899,7 @@ check_pages (GtkWidget *win, const gchar *tag)
 	       tag, have, want);
 	check_navigation (win, have, g_getenv ("STOCKFW_PREFS_SHOTS"), tag);
 	check_no_dead_controls (win, tag);
+	check_design (win, have, tag);
 
 	{
 		GtkWidget *bg = find_named (win, "prefs-background");
@@ -1060,13 +1193,23 @@ drive_windows (GtkWidget *win)
 		       mentions (pages, "from anywhere, asked for or not"),
 		       "Windows ICMP rows claim no more than the allow rules "
 		       "they are");
-		CHECK (mentions (pages, "Windows treats as public"),
-		       "Windows protection rows describe the profile scoping");
+		CHECK (mentions (pages, "Windows treats as public")
+		       && mentions (pages, "even ones your own allow rules "
+		                           "let in")
+		       && !mentions (pages, "cannot be genuine"),
+		       "Windows protection rows describe the profile scoping, "
+		       "and that the block outranks your own allow rules "
+		       "(ACC-3)");
 	}
-	CHECK (sensitive (win, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST) &&
-	       sensitive (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST) &&
-	       sensitive (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES),
-	       "Windows protection switches are live (no device needed)");
+	/* ACC-2: a Windows rule matches the sender's address, and no
+	 * packet comes from 255.255.255.255: a broadcast block there would
+	 * block nothing, so the switches are not offered. */
+	CHECK (find_named (win, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST) == NULL &&
+	       find_named (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST) == NULL,
+	       "Windows: no broadcast switches, which could block nothing "
+	       "there (ACC-2)");
+	CHECK (sensitive (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES),
+	       "Windows reserved-source switch is live (no device needed)");
 
 	set_switch (win, FS_PREFS_FW_FILTER_ICMP, FALSE);
 	click (win, "prefs-save");

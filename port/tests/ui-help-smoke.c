@@ -8,6 +8,10 @@
  *       the topic for the page shown; the sidebar's Help item too
  *   H2  every topic renders, and shows every block it has; all markup
  *       parses, every help: link and related id resolves, no em dash
+ *   H7  claims the code does not back are gone, and what it really
+ *       does is said: what is logged on Linux, the Windows broadcast
+ *       and reserved-address blocks, when an expired Sentinel block
+ *       leaves the firewall, rule names, what the licence is
  *   H3  search filters the topic list (and says when nothing matches);
  *       Enter opens the first topic found
  *   H4  links, related chips, Next, Back and Forward navigate
@@ -19,6 +23,16 @@
  *       window, transient for the main window, not modal
  *   A2  "Copy system info": versions, platform, backend; no user name,
  *       host name or home path; the clipboard gets exactly that
+ *   K1  keyboard: Tab in About reaches every control; the Help topic
+ *       list is one Tab stop and moving focus along it opens nothing
+ *       (Enter does); Help opens with focus on the topic, not in the
+ *       search field; every focusable control has a name for a
+ *       screen reader
+ *   L1  layout: key caps keep their height beside wrapped text; Help
+ *       fits a 640-pixel window on every topic; the page column stops
+ *       at about 80 characters on a wide window; related-topic chips
+ *       sit 6 pixels apart; Help and Preferences share one sidebar
+ *       width
  *   T1  under the theme in GTK_THEME (Adwaita:dark when unset) every
  *       label in Help and About is 4.5:1 or more against what is
  *       painted behind it
@@ -432,6 +446,90 @@ links_ok (const gchar *markup)
 	return ok;
 }
 
+/* One topic's text, every block's markup, joined. */
+static gchar *
+topic_text (const gchar *id)
+{
+	const FsHelpTopic *t = fs_help_topic_find (id);
+	GString *all = g_string_new (NULL);
+
+	if (t != NULL)
+		for (const FsHelpBlock *b = t->blocks; b->kind != FS_HELP_END;
+		     b++) {
+			g_string_append (all, b->text);
+			g_string_append_c (all, '\n');
+		}
+	/* The C source wraps strings; compare with single spaces. */
+	for (gchar *c = all->str; *c != '\0'; c++)
+		if (*c == '\n')
+			*c = ' ';
+	return g_string_free (all, FALSE);
+}
+
+/* H7: each claim the review found the code does not back (ACC-1 to
+ * ACC-9) must be gone, and the true statement there instead. */
+static void
+check_claims (void)
+{
+	static const struct
+	{
+		const gchar *id, *gone, *said, *what;
+	} claims[] = {
+		{ "events", "Packets your rules block are logged",
+		  "your outbound deny rules",
+		  "ACC-1: Linux logs only the default drops; deny rules, "
+		  "Sentinel and Protection drops are not logged" },
+		{ "troubleshooting", "blocked traffic only once something is "
+		  "blocked", "a quiet list does not mean they blocked nothing",
+		  "ACC-1: a quiet Events list is no proof nothing was blocked" },
+		{ "prefs-protection", "Internet device on Linux, or on networks "
+		  "Windows treats as public",
+		  "The two broadcast blocks are not offered on Windows",
+		  "ACC-2: the Windows broadcast blocks block nothing" },
+		{ "prefs-protection", "public networks on Windows",
+		  "including connections your own allow rules let in",
+		  "ACC-3: on Windows the reserved block outranks your allows "
+		  "on public networks" },
+		{ "whatif", "<b>Block outgoing unless allowed</b>, or at rules",
+		  "the ICMP and Protection settings",
+		  "ACC-3: What-If says it ignores the Protection settings" },
+		{ "background", "starts again and lifts it",
+		  "until the policy is next applied",
+		  "ACC-4: an expired Sentinel block stays until the next "
+		  "apply" },
+		{ "windows", "<tt>StockFW-</tt> followed", "names start with",
+		  "ACC-6: rule names start with StockFW" },
+		{ "threat-intel", "Windows, and blocking by country",
+		  "Windows Firewall rules on Windows",
+		  "ACC-7: threat intel is planned for Windows too" },
+		{ "windows", "the one system setting StockFW changes besides",
+		  "turning profiles on or off",
+		  "ACC-8: StockFW also turns profiles on and off" },
+		{ "about", "version 2 (COPYING), under which",
+		  "version 2 or any later version",
+		  "ACC-9: the ported code is GPL 2 or later" },
+	};
+
+	for (guint i = 0; i < G_N_ELEMENTS (claims); i++) {
+		gchar *text = topic_text (claims[i].id);
+		gchar *flat = g_strdup (text);
+		GString *squeezed = g_string_new (NULL);
+
+		/* Adjacent C strings run together with no space between;
+		 * the needles are written as they read. */
+		for (const gchar *c = flat; *c != '\0'; c++)
+			if (!(*c == ' ' && squeezed->len > 0
+			      && squeezed->str[squeezed->len - 1] == ' '))
+				g_string_append_c (squeezed, *c);
+		CHECK (strstr (squeezed->str, claims[i].gone) == NULL
+		       && strstr (squeezed->str, claims[i].said) != NULL,
+		       "[H7] %s (%s)", claims[i].what, claims[i].id);
+		g_string_free (squeezed, TRUE);
+		g_free (flat);
+		g_free (text);
+	}
+}
+
 static void
 check_table (void)
 {
@@ -755,10 +853,9 @@ check_links (void)
 	{
 		GtkWidget *row = find_named (win, "topic:trust");
 
+		/* Enter or a click: the row's "activate". */
 		if (row != NULL)
-			gtk_list_box_select_row (GTK_LIST_BOX (
-				find_named (win, "help-topics")),
-				GTK_LIST_BOX_ROW (row));
+			gtk_widget_activate (row);
 		pump ();
 		CHECK (g_strcmp0 (fs_help_current_topic (), "trust") == 0,
 		       "[H4] choosing a topic in the sidebar opens it");
@@ -1137,6 +1234,351 @@ check_theme (void)
 	close_help ();
 }
 
+/* ======================================= K1, L1: keyboard and layout */
+
+/* Every focusable, drawn widget under root that a screen reader would
+ * announce with no name: buttons, rows, entries.  Labels name
+ * themselves by their text. */
+static void
+unnamed_controls (GtkWidget *root, GString *out)
+{
+	GList *children;
+
+	if (gtk_widget_get_can_focus (root) && gtk_widget_is_drawable (root)
+	    && (GTK_IS_BUTTON (root) || GTK_IS_LIST_BOX_ROW (root)
+	        || GTK_IS_ENTRY (root))) {
+		const gchar *name = atk_object_get_name (
+			gtk_widget_get_accessible (root));
+
+		if (name == NULL || *name == '\0')
+			g_string_append_printf (out, " %s(%s)",
+			                        G_OBJECT_TYPE_NAME (root),
+			                        gtk_widget_get_name (root));
+	}
+	if (!GTK_IS_CONTAINER (root))
+		return;
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (GList *l = children; l != NULL; l = l->next)
+		unnamed_controls (l->data, out);
+	g_list_free (children);
+}
+
+static const gchar *
+focus_name (GtkWidget *window)
+{
+	GtkWidget *focus = gtk_window_get_focus (GTK_WINDOW (window));
+
+	return focus != NULL ? gtk_widget_get_name (focus) : "(none)";
+}
+
+/* The widest a window can be made narrow to, as GTK asks it. */
+static gint
+min_width (GtkWidget *window)
+{
+	gint min = 0, nat = 0;
+
+	gtk_widget_get_preferred_width (window, &min, &nat);
+	return min;
+}
+
+/* K1: Tab in About walks every control and comes back. */
+static void
+check_about_keys (void)
+{
+	GtkWidget *main_window =
+		GTK_WIDGET (gtk_application_get_active_window (app));
+	GtkWidget *about;
+	GString *seen = g_string_new (NULL);
+
+	/* The main window holds the keyboard when About is asked for, as
+	 * when it is chosen from the sidebar.  About must take it: a
+	 * dialog that never gets keyboard focus keeps every Tab on Close
+	 * (GTK re-grabs the focused button). */
+	gtk_window_present (GTK_WINDOW (main_window));
+	pump ();
+	fs_dialogs_about (main_window);
+	pump ();
+	about = find_toplevel ("fs-about");
+	if (about == NULL) {
+		CHECK (FALSE, "[K1] About opens");
+		g_string_free (seen, TRUE);
+		return;
+	}
+	for (gint i = 0; i < 4; i++) {
+		send_key (about, GDK_KEY_Tab, 0);
+		g_string_append_printf (seen, "%s ", focus_name (about));
+	}
+	CHECK (strstr (seen->str, "about-view-licence") != NULL
+	       && strstr (seen->str, "about-website") != NULL
+	       && strstr (seen->str, "about-copy") != NULL
+	       && strstr (seen->str, "about-close") != NULL,
+	       "[K1] Tab in About reaches View licence texts, the website, "
+	       "Copy system info and Close (%s)", seen->str);
+	g_string_truncate (seen, 0);
+	for (gint i = 0; i < 4; i++) {
+		send_key (about, GDK_KEY_ISO_Left_Tab, GDK_SHIFT_MASK);
+		g_string_append_printf (seen, "%s ", focus_name (about));
+	}
+	CHECK (strstr (seen->str, "about-view-licence") != NULL
+	       && strstr (seen->str, "about-copy") != NULL,
+	       "[K1] Shift+Tab in About walks back through them (%s)",
+	       seen->str);
+	g_string_truncate (seen, 0);
+	unnamed_controls (about, seen);
+	CHECK (seen->len == 0,
+	       "[K1] every control in About has a screen-reader name (%s)",
+	       seen->str);
+	gtk_widget_destroy (about);
+	pump ();
+	g_string_free (seen, TRUE);
+}
+
+/* K1: the Help window and the keyboard. */
+static void
+check_help_keys (void)
+{
+	GtkWidget *main_window =
+		GTK_WIDGET (gtk_application_get_active_window (app));
+	GtkWidget *win, *search;
+	GString *seen = g_string_new (NULL);
+	guint rows = 0;
+
+	close_help ();
+	fs_help_show (main_window, "getting-started");
+	pump ();
+	win = fs_help_window ();
+	search = find_named (win, "help-search");
+
+	/* UX8: the search field shows what it is for. */
+	CHECK (gtk_window_get_focus (GTK_WINDOW (win)) != search
+	       && g_strcmp0 (focus_name (win), "topic:getting-started") == 0,
+	       "[K1] Help opens with focus on the topic shown, not in the "
+	       "search field, so its placeholder shows (%s)",
+	       focus_name (win));
+
+	/* UX3: 30 Tabs pass the topic list once at most, and open
+	 * nothing on the way. */
+	for (gint i = 0; i < 30; i++) {
+		send_key (win, GDK_KEY_Tab, 0);
+		if (g_str_has_prefix (focus_name (win), "topic:"))
+			rows++;
+		g_string_append_printf (seen, "%s ", focus_name (win));
+	}
+	CHECK (g_strcmp0 (fs_help_current_topic (), "getting-started") == 0,
+	       "[K1] Tab through Help opens no topic (now %s)",
+	       fs_help_current_topic ());
+	CHECK (rows <= 3 && strstr (seen->str, "topic:overview") == NULL,
+	       "[K1] the topic list is one Tab stop: %u of 30 Tabs landed "
+	       "on a topic, never a second one", rows);
+	CHECK (strstr (seen->str, "help-search") != NULL,
+	       "[K1] Tab still reaches the search field");
+
+	/* Arrows move along the list; Enter opens. */
+	gtk_widget_grab_focus (find_named (win, "topic:getting-started"));
+	pump ();
+	send_key (win, GDK_KEY_Down, 0);
+	CHECK (g_strcmp0 (focus_name (win), "topic:overview") == 0
+	       && g_strcmp0 (fs_help_current_topic (), "getting-started") == 0,
+	       "[K1] Down moves to the next topic without opening it (%s, "
+	       "showing %s)", focus_name (win), fs_help_current_topic ());
+	send_key (win, GDK_KEY_Return, 0);
+	CHECK (g_strcmp0 (fs_help_current_topic (), "overview") == 0,
+	       "[K1] Enter opens the topic (%s)", fs_help_current_topic ());
+
+	/* UX4: names for a screen reader. */
+	g_string_truncate (seen, 0);
+	unnamed_controls (win, seen);
+	CHECK (seen->len == 0,
+	       "[K1] every control in Help has a screen-reader name (%s)",
+	       seen->str);
+	{
+		AtkObject *back = gtk_widget_get_accessible (
+			find_named (win, "help-back"));
+		AtkObject *row = gtk_widget_get_accessible (
+			find_named (win, "topic:cli"));
+
+		CHECK (g_strcmp0 (atk_object_get_name (back), "Back") == 0
+		       && g_strcmp0 (atk_object_get_name (row),
+		                     "Command line and dashboard") == 0,
+		       "[K1] the Back button and a topic row are named (%s, %s)",
+		       atk_object_get_name (back), atk_object_get_name (row));
+	}
+	g_string_free (seen, TRUE);
+}
+
+/* The allocations of the buttons named prefix* under root, in order. */
+static void
+collect_named (GtkWidget *root, const gchar *prefix, GPtrArray *out)
+{
+	GList *children;
+
+	if (g_str_has_prefix (gtk_widget_get_name (root), prefix))
+		g_ptr_array_add (out, root);
+	if (!GTK_IS_CONTAINER (root))
+		return;
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (GList *l = children; l != NULL; l = l->next)
+		collect_named (l->data, prefix, out);
+	g_list_free (children);
+}
+
+static void
+collect_class (GtkWidget *root, const gchar *klass, GPtrArray *out)
+{
+	GList *children;
+
+	if (gtk_style_context_has_class (gtk_widget_get_style_context (root),
+	                                 klass))
+		g_ptr_array_add (out, root);
+	if (!GTK_IS_CONTAINER (root))
+		return;
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (GList *l = children; l != NULL; l = l->next)
+		collect_class (l->data, klass, out);
+	g_list_free (children);
+}
+
+/* L1: what the window looks like at its edges. */
+static void
+check_layout (void)
+{
+	GtkWidget *main_window =
+		GTK_WIDGET (gtk_application_get_active_window (app));
+	GtkWidget *win;
+	gint widest = 0;
+	const gchar *widest_topic = "";
+	GtkAllocation a;
+
+	close_help ();
+	fs_help_show (main_window, "getting-started");
+	pump ();
+	win = fs_help_window ();
+
+	/* UX9: the sidebar Preferences has too. */
+	gtk_widget_get_allocation (find_named (win, "help-sidebar"), &a);
+	CHECK (a.width == FS_SIDE_WIDTH,
+	       "[L1] the Help sidebar is %d pixels wide, as Preferences' "
+	       "(%d)", a.width, FS_SIDE_WIDTH);
+
+	/* UX5, UX9: no topic makes the window wider than 640. */
+	for (guint i = 0; i < fs_help_topic_count (); i++) {
+		gint w;
+
+		fs_help_show (NULL, fs_help_topic_nth (i)->id);
+		pump ();
+		w = min_width (win);
+		if (w > widest) {
+			widest = w;
+			widest_topic = fs_help_topic_nth (i)->id;
+		}
+	}
+	CHECK (widest <= 640,
+	       "[L1] Help fits a 640-pixel window on every topic (widest "
+	       "minimum %d, on %s)", widest, widest_topic);
+
+	/* UX5: the caps keep their own height beside text that wraps. */
+	gtk_window_resize (GTK_WINDOW (win), 640, 680);
+	fs_help_show (NULL, "shortcuts");
+	pump ();
+	pump ();
+	{
+		GPtrArray *caps = g_ptr_array_new ();
+		gint lo = G_MAXINT, hi = 0;
+
+		collect_class (find_named (win, "help-article"), "help-key",
+		               caps);
+		for (guint i = 0; i < caps->len; i++) {
+			gint h = gtk_widget_get_allocated_height (
+				g_ptr_array_index (caps, i));
+
+			lo = MIN (lo, h);
+			hi = MAX (hi, h);
+		}
+		CHECK (caps->len > 10 && hi - lo <= 2 && hi < 32,
+		       "[L1] every key cap is one height (%d to %d pixels, %u "
+		       "caps) at 640 wide", lo, hi, caps->len);
+		gtk_widget_get_allocation (win, &a);
+		CHECK (a.width <= 650,
+		       "[L1] the Shortcuts topic does not widen the window "
+		       "(%d)", a.width);
+		g_ptr_array_unref (caps);
+
+		/* The descriptions start in one column. */
+		caps = g_ptr_array_new ();
+		collect_class (find_named (win, "help-article"),
+		               "help-keys-row", caps);
+		lo = G_MAXINT;
+		hi = 0;
+		for (guint i = 0; i < caps->len; i++) {
+			GList *kids = gtk_container_get_children (
+				g_ptr_array_index (caps, i));
+			gint x = 0, y = 0;
+
+			gtk_widget_translate_coordinates (
+				g_list_last (kids)->data, win, 0, 0, &x, &y);
+			lo = MIN (lo, x);
+			hi = MAX (hi, x);
+			g_list_free (kids);
+		}
+		CHECK (caps->len > 10 && hi == lo,
+		       "[L1] the shortcut descriptions line up (x %d to %d)",
+		       lo, hi);
+		g_ptr_array_unref (caps);
+	}
+
+	/* UX6: the column on a wide window. */
+	gtk_window_resize (GTK_WINDOW (win), 1600, 900);
+	fs_help_show (NULL, "getting-started");
+	pump ();
+	pump ();
+	{
+		GtkWidget *page = find_named (win, "help-page");
+		GtkAllocation content;
+
+		gtk_widget_get_allocation (page, &a);
+		gtk_widget_get_allocation (gtk_widget_get_parent (page),
+		                           &content);
+		CHECK (a.width <= 700 && content.width > 1000,
+		       "[L1] on a %d-pixel content area the page column is %d "
+		       "wide (at most 700)", content.width, a.width);
+		CHECK (ABS ((a.x - content.x)
+		            - (content.x + content.width - a.x - a.width)) <= 2,
+		       "[L1] and centred");
+	}
+
+	/* UX7: the chips 6 pixels apart, whatever the width. */
+	{
+		GPtrArray *chips = g_ptr_array_new ();
+		gint worst = 0;
+
+		collect_named (find_named (win, "help-article"), "see:", chips);
+		guint pairs = 0;
+
+		for (guint i = 1; i < chips->len; i++) {
+			GtkWidget *p = g_ptr_array_index (chips, i - 1);
+			GtkWidget *c = g_ptr_array_index (chips, i);
+			gint px = 0, py = 0, cx = 0, cy = 0;
+
+			/* In window coordinates: a flow box child may sit in
+			 * a window of its own. */
+			gtk_widget_translate_coordinates (p, win, 0, 0, &px, &py);
+			gtk_widget_translate_coordinates (c, win, 0, 0, &cx, &cy);
+			if (cy == py) {
+				pairs++;
+				worst = MAX (worst, cx - (px +
+					gtk_widget_get_allocated_width (p)));
+			}
+		}
+		CHECK (chips->len >= 3 && pairs >= 2 && worst <= 8,
+		       "[L1] related-topic chips sit side by side, the widest "
+		       "gap %d pixels (%u chips, %u side by side)", worst,
+		       chips->len, pairs);
+		g_ptr_array_unref (chips);
+	}
+	gtk_window_resize (GTK_WINDOW (win), 980, 680);
+	close_help ();
+}
+
 /* ============================================================ main */
 
 static gboolean
@@ -1147,12 +1589,16 @@ run_all (gpointer data)
 	pump ();
 	printf ("theme: %s\n", g_getenv ("GTK_THEME"));
 	check_table ();
+	check_claims ();
 	check_opening ();
 	check_every_topic ();
 	check_search ();
 	check_links ();
 	check_preferences ();
 	check_about ();
+	check_about_keys ();
+	check_help_keys ();
+	check_layout ();
 	check_theme ();
 
 	CHECK (warnings == 0, "[W] no GTK warnings or criticals (%d)",

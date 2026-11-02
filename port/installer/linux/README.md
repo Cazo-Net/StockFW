@@ -110,6 +110,10 @@ exec time with a bare "Exec format error".
 
 ## Licence
 
-GPL-3.0-or-later. See `LICENSE.txt`. GTK3, GLib, Cairo, Pango, HarfBuzz
+The source carries two licence texts: the GNU GPL version 2 (`COPYING`)
+and the Apache License 2.0 (`LICENSE`). The code StockFW was ported from
+was released under the GNU GPL, version 2 or any later version. Which
+licence covers which part is still being reviewed. `LICENSE.txt` holds
+this summary and both texts in full. GTK3, GLib, Cairo, Pango, HarfBuzz
 and gdk-pixbuf are linked dynamically and provided by your distribution;
 they are not bundled.

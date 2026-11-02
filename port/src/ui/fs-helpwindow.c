@@ -7,6 +7,9 @@
  * article is GtkLabels with Pango markup, one per paragraph, step or
  * callout, so links work and nothing needs a web view.
  *
+ *   the topic list          one Tab stop: arrows move along it, Enter
+ *                           or a click opens a topic (focus moving
+ *                           does not, so Tab never opens topics)
  *   help:ID links           go to another topic (activate-link)
  *   other links             open in the browser (GTK's default)
  *   Back, Forward           Alt+Left, Alt+Right, and the two buttons
@@ -32,8 +35,9 @@
 
 #define HELP_WIDTH   980
 #define HELP_HEIGHT  680
-#define NAV_WIDTH    250
+#define NAV_WIDTH    FS_SIDE_WIDTH
 #define TEXT_CHARS    74    /* a readable line, in characters */
+#define COLUMN_WIDTH 700    /* the page's widest: about 80 characters */
 
 typedef struct
 {
@@ -72,6 +76,351 @@ add_class (GtkWidget *widget, const gchar *klass)
 {
 	gtk_style_context_add_class (gtk_widget_get_style_context (widget),
 	                             klass);
+}
+
+/* ------------------------------------------------------------- clamp */
+
+typedef struct
+{
+	GtkBin parent;
+	gint   max;
+} FsClamp;
+
+typedef struct
+{
+	GtkBinClass parent_class;
+} FsClampClass;
+
+static GType fs_clamp_get_type (void);
+G_DEFINE_TYPE (FsClamp, fs_clamp, GTK_TYPE_BIN)
+
+/* The width the child gets out of `width'. */
+static gint
+clamp_child_width (FsClamp *clamp, GtkWidget *child, gint width)
+{
+	gint min = 0, nat = 0;
+
+	gtk_widget_get_preferred_width (child, &min, &nat);
+	return MAX (min, MIN (width, clamp->max));
+}
+
+static GtkSizeRequestMode
+fs_clamp_request_mode (GtkWidget *widget)
+{
+	(void) widget;
+	return GTK_SIZE_REQUEST_HEIGHT_FOR_WIDTH;
+}
+
+static void
+fs_clamp_width (GtkWidget *widget, gint *min, gint *nat)
+{
+	GtkWidget *child = gtk_bin_get_child (GTK_BIN (widget));
+
+	*min = *nat = 0;
+	if (child != NULL && gtk_widget_get_visible (child)) {
+		gtk_widget_get_preferred_width (child, min, nat);
+		*nat = MAX (*min, MIN (*nat, ((FsClamp *) widget)->max));
+	}
+}
+
+static void
+fs_clamp_height_for_width (GtkWidget *widget, gint width, gint *min,
+                           gint *nat)
+{
+	GtkWidget *child = gtk_bin_get_child (GTK_BIN (widget));
+
+	*min = *nat = 0;
+	if (child != NULL && gtk_widget_get_visible (child))
+		gtk_widget_get_preferred_height_for_width (child,
+			clamp_child_width ((FsClamp *) widget, child, width),
+			min, nat);
+}
+
+static void
+fs_clamp_height (GtkWidget *widget, gint *min, gint *nat)
+{
+	GtkWidget *child = gtk_bin_get_child (GTK_BIN (widget));
+
+	*min = *nat = 0;
+	if (child != NULL && gtk_widget_get_visible (child))
+		gtk_widget_get_preferred_height (child, min, nat);
+}
+
+static void
+fs_clamp_width_for_height (GtkWidget *widget, gint height, gint *min,
+                           gint *nat)
+{
+	(void) height;
+	fs_clamp_width (widget, min, nat);
+}
+
+static void
+fs_clamp_allocate (GtkWidget *widget, GtkAllocation *allocation)
+{
+	GtkWidget *child = gtk_bin_get_child (GTK_BIN (widget));
+
+	gtk_widget_set_allocation (widget, allocation);
+	if (child != NULL && gtk_widget_get_visible (child)) {
+		GtkAllocation box = *allocation;
+
+		box.width = clamp_child_width ((FsClamp *) widget, child,
+		                               allocation->width);
+		box.x += MAX (0, (allocation->width - box.width) / 2);
+		gtk_widget_size_allocate (child, &box);
+	}
+}
+
+static void
+fs_clamp_class_init (FsClampClass *klass)
+{
+	GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (klass);
+
+	widget_class->get_request_mode = fs_clamp_request_mode;
+	widget_class->get_preferred_width = fs_clamp_width;
+	widget_class->get_preferred_height = fs_clamp_height;
+	widget_class->get_preferred_height_for_width =
+		fs_clamp_height_for_width;
+	widget_class->get_preferred_width_for_height =
+		fs_clamp_width_for_height;
+	widget_class->size_allocate = fs_clamp_allocate;
+}
+
+static void
+fs_clamp_init (FsClamp *clamp)
+{
+	gtk_widget_set_has_window (GTK_WIDGET (clamp), FALSE);
+	clamp->max = G_MAXINT;
+}
+
+GtkWidget *
+fs_clamp_new (gint max_width)
+{
+	FsClamp *clamp = g_object_new (fs_clamp_get_type (), NULL);
+
+	clamp->max = max_width > 0 ? max_width : G_MAXINT;
+	return GTK_WIDGET (clamp);
+}
+
+/* -------------------------------------------------------------- wrap */
+
+/* [ FsWrap ]
+ * Children side by side at their natural width, `spacing' apart,
+ * wrapping onto a new line when the next one does not fit.  A
+ * GtkFlowBox would not do: in GTK 3 its natural width is one child
+ * per line, and on a wider line it spreads the spare width between its
+ * children, which put 50 to 130 pixels between the related-topic
+ * chips. */
+typedef struct
+{
+	GtkContainer parent;
+	GList       *children;
+	gint         spacing;
+} FsWrap;
+
+typedef struct
+{
+	GtkContainerClass parent_class;
+} FsWrapClass;
+
+static GType fs_wrap_get_type (void);
+G_DEFINE_TYPE (FsWrap, fs_wrap, GTK_TYPE_CONTAINER)
+
+/* Lays the children out in `width'; places them when `at' is given.
+ * Returns the height used. */
+static gint
+fs_wrap_layout (FsWrap *wrap, gint width, const GtkAllocation *at)
+{
+	gint x = 0, y = 0, line = 0;
+
+	for (GList *l = wrap->children; l != NULL; l = l->next) {
+		GtkWidget *child = l->data;
+		gint min_w, nat_w, min_h, nat_h, w;
+
+		if (!gtk_widget_get_visible (child))
+			continue;
+		gtk_widget_get_preferred_width (child, &min_w, &nat_w);
+		w = MAX (min_w, MIN (nat_w, width));
+		if (x > 0 && x + w > width) {
+			x = 0;
+			y += line + wrap->spacing;
+			line = 0;
+		}
+		gtk_widget_get_preferred_height_for_width (child, w, &min_h,
+		                                           &nat_h);
+		if (at != NULL) {
+			GtkAllocation box = { at->x + x, at->y + y, w, nat_h };
+
+			gtk_widget_size_allocate (child, &box);
+		}
+		x += w + wrap->spacing;
+		line = MAX (line, nat_h);
+	}
+	return y + line;
+}
+
+static GtkSizeRequestMode
+fs_wrap_request_mode (GtkWidget *widget)
+{
+	(void) widget;
+	return GTK_SIZE_REQUEST_HEIGHT_FOR_WIDTH;
+}
+
+static void
+fs_wrap_width (GtkWidget *widget, gint *min, gint *nat)
+{
+	FsWrap *wrap = (FsWrap *) widget;
+	gint n = 0;
+
+	*min = *nat = 0;
+	for (GList *l = wrap->children; l != NULL; l = l->next) {
+		gint cmin, cnat;
+
+		if (!gtk_widget_get_visible (l->data))
+			continue;
+		gtk_widget_get_preferred_width (l->data, &cmin, &cnat);
+		*min = MAX (*min, cmin);
+		*nat += cnat;
+		n++;
+	}
+	if (n > 1)
+		*nat += (n - 1) * wrap->spacing;
+}
+
+static void
+fs_wrap_height_for_width (GtkWidget *widget, gint width, gint *min,
+                          gint *nat)
+{
+	*min = *nat = fs_wrap_layout ((FsWrap *) widget, width, NULL);
+}
+
+static void
+fs_wrap_height (GtkWidget *widget, gint *min, gint *nat)
+{
+	gint wmin, wnat;
+
+	fs_wrap_width (widget, &wmin, &wnat);
+	fs_wrap_height_for_width (widget, wmin, min, nat);
+}
+
+static void
+fs_wrap_width_for_height (GtkWidget *widget, gint height, gint *min,
+                          gint *nat)
+{
+	(void) height;
+	fs_wrap_width (widget, min, nat);
+}
+
+static void
+fs_wrap_allocate (GtkWidget *widget, GtkAllocation *allocation)
+{
+	gtk_widget_set_allocation (widget, allocation);
+	fs_wrap_layout ((FsWrap *) widget, allocation->width, allocation);
+}
+
+static void
+fs_wrap_add (GtkContainer *container, GtkWidget *child)
+{
+	FsWrap *wrap = (FsWrap *) container;
+
+	wrap->children = g_list_append (wrap->children, child);
+	gtk_widget_set_parent (child, GTK_WIDGET (container));
+}
+
+static void
+fs_wrap_remove (GtkContainer *container, GtkWidget *child)
+{
+	FsWrap *wrap = (FsWrap *) container;
+	gboolean was_visible = gtk_widget_get_visible (child);
+
+	if (g_list_find (wrap->children, child) == NULL)
+		return;
+	gtk_widget_unparent (child);
+	wrap->children = g_list_remove (wrap->children, child);
+	if (was_visible && gtk_widget_get_visible (GTK_WIDGET (container)))
+		gtk_widget_queue_resize (GTK_WIDGET (container));
+}
+
+static void
+fs_wrap_forall (GtkContainer *container, gboolean internals,
+                GtkCallback callback, gpointer data)
+{
+	GList *l = ((FsWrap *) container)->children;
+
+	(void) internals;
+	while (l != NULL) {
+		GtkWidget *child = l->data;
+
+		l = l->next;   /* the callback may remove the child */
+		callback (child, data);
+	}
+}
+
+static void
+fs_wrap_class_init (FsWrapClass *klass)
+{
+	GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (klass);
+	GtkContainerClass *container_class = GTK_CONTAINER_CLASS (klass);
+
+	widget_class->get_request_mode = fs_wrap_request_mode;
+	widget_class->get_preferred_width = fs_wrap_width;
+	widget_class->get_preferred_height = fs_wrap_height;
+	widget_class->get_preferred_height_for_width = fs_wrap_height_for_width;
+	widget_class->get_preferred_width_for_height = fs_wrap_width_for_height;
+	widget_class->size_allocate = fs_wrap_allocate;
+	container_class->add = fs_wrap_add;
+	container_class->remove = fs_wrap_remove;
+	container_class->forall = fs_wrap_forall;
+}
+
+static void
+fs_wrap_init (FsWrap *wrap)
+{
+	gtk_widget_set_has_window (GTK_WIDGET (wrap), FALSE);
+}
+
+static GtkWidget *
+fs_wrap_new (gint spacing)
+{
+	FsWrap *wrap = g_object_new (fs_wrap_get_type (), NULL);
+
+	wrap->spacing = spacing;
+	return GTK_WIDGET (wrap);
+}
+
+/* ------------------------------------------------------------- topics */
+
+/* The sidebar icon of a top-level topic; subtopics have none. */
+static FsIconKind
+topic_icon (const gchar *id)
+{
+	static const struct
+	{
+		const gchar *id;
+		FsIconKind   icon;
+	} icons[] = {
+		{ "getting-started", FS_ICON_PLAY },
+		{ "overview",        FS_ICON_SHIELD },
+		{ "events",          FS_ICON_LIST },
+		{ "activity",        FS_ICON_ACTIVITY },
+		{ "policy",          FS_ICON_SLIDERS },
+		{ "copilot",         FS_ICON_CHAT },
+		{ "whatif",          FS_ICON_SHIELD_QUESTION },
+		{ "sentinel",        FS_ICON_SHIELD_ALERT },
+		{ "trust",           FS_ICON_CHECK_CIRCLE },
+		{ "preferences",     FS_ICON_SETTINGS },
+		{ "threat-intel",    FS_ICON_SHIELD_X },
+		{ "background",      FS_ICON_CLOCK },
+		{ "cli",             FS_ICON_TERMINAL },
+		{ "linux",           FS_ICON_MONITOR },
+		{ "windows",         FS_ICON_MONITOR },
+		{ "troubleshooting", FS_ICON_HELP },
+		{ "shortcuts",       FS_ICON_KEYBOARD },
+	};
+
+	for (guint i = 0; i < G_N_ELEMENTS (icons); i++)
+		if (g_strcmp0 (icons[i].id, id) == 0)
+			return icons[i].icon;
+	return FS_ICON_INFO;
 }
 
 static gint
@@ -288,6 +637,7 @@ header_row (GtkListBoxRow *row, GtkListBoxRow *before, gpointer data)
 	header = gtk_list_box_row_get_header (row);
 	if (header == NULL) {
 		header = plain_label (_(section), "help-section");
+		add_class (header, "side-section");
 		gtk_list_box_row_set_header (row, header);
 	} else {
 		gtk_label_set_text (GTK_LABEL (header), _(section));
@@ -319,13 +669,23 @@ sync_sidebar (void)
 	GtkListBoxRow *row = row_for (help->current);
 	guint listed = 0;
 
+	GList *rows;
+
 	help->syncing = TRUE;
 	gtk_list_box_invalidate_filter (GTK_LIST_BOX (help->list));
 	gtk_list_box_invalidate_headers (GTK_LIST_BOX (help->list));
-	if (row != NULL && topic_listed (row_topic (row)))
-		gtk_list_box_select_row (GTK_LIST_BOX (help->list), row);
-	else
-		gtk_list_box_unselect_all (GTK_LIST_BOX (help->list));
+	/* The topic shown is marked, not selected: the list has no
+	 * selection, so keyboard focus moving along it opens nothing. */
+	rows = gtk_container_get_children (GTK_CONTAINER (help->list));
+	for (GList *l = rows; l != NULL; l = l->next) {
+		GtkStyleContext *ctx = gtk_widget_get_style_context (l->data);
+
+		if (l->data == (gpointer) row)
+			gtk_style_context_add_class (ctx, "help-current");
+		else
+			gtk_style_context_remove_class (ctx, "help-current");
+	}
+	g_list_free (rows);
 	help->syncing = FALSE;
 
 	/* Keep the topic shown in sight in the sidebar. */
@@ -390,8 +750,9 @@ on_search_stop (GtkSearchEntry *entry, gpointer data)
 	gtk_entry_set_text (GTK_ENTRY (entry), "");
 }
 
+/* Enter or a click on a topic in the sidebar. */
 static void
-on_row_selected (GtkListBox *box, GtkListBoxRow *row, gpointer data)
+on_row_activated (GtkListBox *box, GtkListBoxRow *row, gpointer data)
 {
 	const FsHelpTopic *t = row_topic (row);
 
@@ -400,6 +761,38 @@ on_row_selected (GtkListBox *box, GtkListBoxRow *row, gpointer data)
 	if (help->syncing || t == NULL)
 		return;
 	go_to (t->id, TRUE);
+}
+
+/* [ on_list_focus ]
+ * The topic list is one Tab stop.  Tab into it lands on the topic
+ * shown (or the first one listed); Tab inside it leaves it, instead of
+ * stepping through 25 rows.  The arrow keys still move along it. */
+static gboolean
+on_list_focus (GtkWidget *list, GtkDirectionType direction, gpointer data)
+{
+	GtkListBoxRow *row;
+
+	(void) data;
+	if (direction != GTK_DIR_TAB_FORWARD
+	    && direction != GTK_DIR_TAB_BACKWARD)
+		return FALSE;
+
+	if (gtk_container_get_focus_child (GTK_CONTAINER (list)) != NULL) {
+		g_signal_stop_emission_by_name (list, "focus");
+		return FALSE;
+	}
+
+	row = row_for (help->current);
+	if (row == NULL || !topic_listed (row_topic (row))) {
+		row = NULL;
+		for (guint i = 0; i < fs_help_topic_count () && row == NULL; i++)
+			if (topic_listed (fs_help_topic_nth (i)))
+				row = row_for (fs_help_topic_nth (i)->id);
+	}
+	if (row == NULL)
+		return FALSE;
+	gtk_widget_grab_focus (GTK_WIDGET (row));
+	return TRUE;
 }
 
 /* ------------------------------------------------------------ article */
@@ -493,42 +886,65 @@ callout (FsHelpKind kind, const gchar *markup)
 	return box;
 }
 
-/* "Ctrl+F|Search the help": key caps on the left, the text after. */
+/* "Ctrl+F|Search the help": key caps on the left, the text after.
+ * The caps sit at the top of the row at their own height, however many
+ * lines the text takes, and wrap between keys ("Left Right Home End")
+ * when the window is narrow, so one topic cannot widen the window. */
 static GtkWidget *
 keys_row (const gchar *spec)
 {
 	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
-	GtkWidget *caps = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+	GtkWidget *caps = fs_wrap_new (4);
 	const gchar *bar = strchr (spec, '|');
 	gchar *keys = bar != NULL ? g_strndup (spec, bar - spec) : g_strdup (spec);
 	gchar **tokens = g_strsplit (keys, " ", -1);
 
 	add_class (row, "help-keys-row");
+	add_class (caps, "help-key-caps");
+	gtk_widget_set_name (caps, "help-key-caps");
+	gtk_widget_set_valign (caps, GTK_ALIGN_START);
+	gtk_widget_set_halign (caps, GTK_ALIGN_START);
 	for (gchar **t = tokens; *t != NULL; t++) {
+		GtkWidget *combo;
 		gchar **parts;
 
 		if (**t == '\0')
 			continue;
+		/* One key combination per piece that can wrap: "Ctrl+F"
+		 * never breaks inside. */
+		combo = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+		gtk_widget_set_valign (combo, GTK_ALIGN_START);
 		/* "Ctrl+," is two keys; a lone "+" is the key itself. */
 		parts = strlen (*t) > 1 ? g_strsplit (*t, "+", -1)
 		                        : g_strsplit (*t, "\x01", -1);
 		for (gchar **p = parts; *p != NULL; p++) {
+			GtkWidget *cap;
+
 			if (p != parts)
-				gtk_box_pack_start (GTK_BOX (caps),
+				gtk_box_pack_start (GTK_BOX (combo),
 				                    plain_label ("+", "help-key-plus"),
 				                    FALSE, FALSE, 0);
-			gtk_box_pack_start (GTK_BOX (caps),
-			                    plain_label (**p != '\0' ? *p : "+",
-			                                 "help-key"),
-			                    FALSE, FALSE, 0);
+			cap = plain_label (**p != '\0' ? *p : "+", "help-key");
+			gtk_widget_set_valign (cap, GTK_ALIGN_START);
+			gtk_box_pack_start (GTK_BOX (combo), cap, FALSE, FALSE, 0);
 		}
 		g_strfreev (parts);
+		gtk_container_add (GTK_CONTAINER (caps), combo);
 	}
 	gtk_size_group_add_widget (help->keys_column, caps);
 	gtk_box_pack_start (GTK_BOX (row), caps, FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (row),
-	                    text_label (bar != NULL ? bar + 1 : "", "help-para"),
-	                    TRUE, TRUE, 0);
+	{
+		GtkWidget *what = text_label (bar != NULL ? bar + 1 : "",
+		                              "help-para");
+
+		/* One width for every row's text, minimum and natural
+		 * alike: the caps get their width first, the same on every
+		 * row, so the texts line up, and the text takes (and wraps
+		 * in) the rest of the line. */
+		gtk_label_set_width_chars (GTK_LABEL (what), 20);
+		gtk_label_set_max_width_chars (GTK_LABEL (what), 20);
+		gtk_box_pack_start (GTK_BOX (row), what, TRUE, TRUE, 0);
+	}
 	g_strfreev (tokens);
 	g_free (keys);
 	return row;
@@ -557,18 +973,13 @@ static GtkWidget *
 chips (const gchar *heading, const gchar *ids)
 {
 	GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-	GtkWidget *flow = gtk_flow_box_new ();
+	GtkWidget *flow = fs_wrap_new (6);
 	gchar **list = g_strsplit (ids, " ", -1);
 
 	add_class (box, "help-related");
 	gtk_box_pack_start (GTK_BOX (box), plain_label (heading, "help-h3"),
 	                    FALSE, FALSE, 0);
-	gtk_flow_box_set_selection_mode (GTK_FLOW_BOX (flow), GTK_SELECTION_NONE);
-	gtk_flow_box_set_homogeneous (GTK_FLOW_BOX (flow), FALSE);
-	gtk_flow_box_set_max_children_per_line (GTK_FLOW_BOX (flow), 8);
-	gtk_flow_box_set_column_spacing (GTK_FLOW_BOX (flow), 6);
-	gtk_flow_box_set_row_spacing (GTK_FLOW_BOX (flow), 6);
-	gtk_widget_set_hexpand (flow, TRUE);
+	gtk_widget_set_name (flow, "help-chips");
 	add_class (flow, "help-chips");
 	for (gchar **id = list; *id != NULL; id++) {
 		const FsHelpTopic *t = fs_help_topic_find (*id);
@@ -578,8 +989,6 @@ chips (const gchar *heading, const gchar *ids)
 			continue;
 		chip = topic_button (t, "see:", _(t->title), "help-chip");
 		gtk_container_add (GTK_CONTAINER (flow), chip);
-		/* The flow box's own child need not take focus too. */
-		gtk_widget_set_can_focus (gtk_widget_get_parent (chip), FALSE);
 	}
 	gtk_box_pack_start (GTK_BOX (box), flow, FALSE, FALSE, 0);
 	g_strfreev (list);
@@ -887,7 +1296,9 @@ build_nav (void)
 	gchar *version = g_strdup_printf (_("StockFW %s"), FS_VERSION);
 
 	gtk_widget_set_size_request (nav, NAV_WIDTH, -1);
+	gtk_widget_set_name (nav, "help-sidebar");
 	add_class (nav, "fs-sidebar");
+	add_class (nav, "side-nav");
 	add_class (nav, "help-nav");
 
 	add_class (head, "fs-brand");
@@ -917,7 +1328,9 @@ build_nav (void)
 	gtk_widget_set_name (help->list, "help-topics");
 	add_class (help->list, "help-topics");
 	gtk_list_box_set_selection_mode (GTK_LIST_BOX (help->list),
-	                                 GTK_SELECTION_SINGLE);
+	                                 GTK_SELECTION_NONE);
+	gtk_list_box_set_activate_on_single_click (GTK_LIST_BOX (help->list),
+	                                           TRUE);
 	gtk_list_box_set_filter_func (GTK_LIST_BOX (help->list), filter_row,
 	                              NULL, NULL);
 	gtk_list_box_set_header_func (GTK_LIST_BOX (help->list), header_row,
@@ -925,6 +1338,7 @@ build_nav (void)
 	for (guint i = 0; i < fs_help_topic_count (); i++) {
 		const FsHelpTopic *t = fs_help_topic_nth (i);
 		GtkWidget *row = gtk_list_box_row_new ();
+		GtkWidget *line = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
 		GtkWidget *label = plain_label (_(t->title), "help-topic-label");
 		gchar *name = g_strconcat ("topic:", t->id, NULL);
 
@@ -933,14 +1347,24 @@ build_nav (void)
 		gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
 		gtk_widget_set_tooltip_text (row, _(t->summary));
 		add_class (row, "help-topic");
+		add_class (row, "side-item");
+		/* A screen reader names the row by its topic. */
+		atk_object_set_name (gtk_widget_get_accessible (row), _(t->title));
 		if (t->parent != NULL)
 			add_class (row, "help-subtopic");
+		else
+			gtk_box_pack_start (GTK_BOX (line),
+			                    fs_icon_new (topic_icon (t->id), 16),
+			                    FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (line), label, TRUE, TRUE, 0);
 		g_object_set_data (G_OBJECT (row), "topic", (gpointer) t);
-		gtk_container_add (GTK_CONTAINER (row), label);
+		gtk_container_add (GTK_CONTAINER (row), line);
 		gtk_container_add (GTK_CONTAINER (help->list), row);
 	}
-	g_signal_connect (help->list, "row-selected",
-	                  G_CALLBACK (on_row_selected), NULL);
+	g_signal_connect (help->list, "row-activated",
+	                  G_CALLBACK (on_row_activated), NULL);
+	g_signal_connect (help->list, "focus",
+	                  G_CALLBACK (on_list_focus), NULL);
 
 	help->empty = gtk_label_new (_("No topic matches that. Try fewer or "
 	                               "other words."));
@@ -967,14 +1391,17 @@ build_nav (void)
 }
 
 static GtkWidget *
-history_button (FsIconKind icon, const gchar *name, const gchar *tip,
-                GCallback cb)
+history_button (FsIconKind icon, const gchar *name, const gchar *label,
+                const gchar *tip, GCallback cb)
 {
 	GtkWidget *button = gtk_button_new ();
 
 	gtk_container_add (GTK_CONTAINER (button), fs_icon_new (icon, 16));
 	gtk_widget_set_name (button, name);
 	gtk_widget_set_tooltip_text (button, tip);
+	/* Icon only: the name a screen reader says is set here, since a
+	 * tooltip only becomes the description. */
+	atk_object_set_name (gtk_widget_get_accessible (button), label);
 	add_class (button, "btn-subtle");
 	add_class (button, "help-history");
 	g_signal_connect (button, "clicked", cb, NULL);
@@ -991,11 +1418,11 @@ build_page (void)
 
 	add_class (right, "help-content");
 	add_class (bar, "help-toolbar");
-	help->back = history_button (FS_ICON_BACK, "help-back",
+	help->back = history_button (FS_ICON_BACK, "help-back", _("Back"),
 	                             _("Back (Alt+Left)"),
 	                             G_CALLBACK (on_back));
 	help->forward = history_button (FS_ICON_FORWARD, "help-forward",
-	                                _("Forward (Alt+Right)"),
+	                                _("Forward"), _("Forward (Alt+Right)"),
 	                                G_CALLBACK (on_forward));
 	gtk_box_pack_start (GTK_BOX (bar), help->back, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (bar), help->forward, FALSE, FALSE, 0);
@@ -1014,7 +1441,13 @@ build_page (void)
 	gtk_widget_set_no_show_all (help->crumb_sep, TRUE);
 	gtk_box_pack_start (GTK_BOX (bar), help->crumb_sep, FALSE, FALSE, 10);
 	gtk_box_pack_start (GTK_BOX (bar), help->crumb, FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (right), bar, FALSE, FALSE, 0);
+	/* The toolbar lines up with the page column under it. */
+	{
+		GtkWidget *clamp = fs_clamp_new (COLUMN_WIDTH);
+
+		gtk_container_add (GTK_CONTAINER (clamp), bar);
+		gtk_box_pack_start (GTK_BOX (right), clamp, FALSE, FALSE, 0);
+	}
 
 	add_class (page, "help-page");
 	add_class (head, "help-head");
@@ -1034,7 +1467,15 @@ build_page (void)
 	help->scroll = gtk_scrolled_window_new (NULL, NULL);
 	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (help->scroll),
 	                                GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-	gtk_container_add (GTK_CONTAINER (help->scroll), page);
+	/* A column of about 80 characters, centred on a wide window: lines
+	 * of 150 characters are hard to read. */
+	{
+		GtkWidget *clamp = fs_clamp_new (COLUMN_WIDTH);
+
+		gtk_widget_set_name (page, "help-page");
+		gtk_container_add (GTK_CONTAINER (clamp), page);
+		gtk_container_add (GTK_CONTAINER (help->scroll), clamp);
+	}
 	gtk_widget_set_vexpand (help->scroll, TRUE);
 	gtk_box_pack_start (GTK_BOX (right), help->scroll, TRUE, TRUE, 0);
 	return right;
@@ -1083,12 +1524,24 @@ build_window (GtkWidget *parent)
 void
 fs_help_show (GtkWidget *parent, const gchar *topic)
 {
-	if (help == NULL)
+	gboolean fresh = help == NULL;
+
+	if (fresh)
 		build_window (parent);
 
 	go_to (topic != NULL ? topic : FS_HELP_TOPIC_START,
 	       help->current != NULL);
 	sync_history_buttons ();
+	/* A new window starts on the topic in the sidebar, not in the
+	 * search field: GTK hides a focused entry's placeholder, and an
+	 * empty dark box does not say what it is for.  Ctrl+F gets
+	 * there. */
+	if (fresh) {
+		GtkListBoxRow *row = row_for (help->current);
+
+		if (row != NULL)
+			gtk_widget_grab_focus (GTK_WIDGET (row));
+	}
 	gtk_window_present (GTK_WINDOW (help->window));
 }
 

@@ -277,6 +277,41 @@ fs_icon_draw (cairo_t *cr, FsIconKind kind, gdouble size)
 		cairo_line_to (cr, 9, 15);
 		break;
 
+	case FS_ICON_TERMINAL:
+		rounded_rect (cr, 3, 5, 18, 14, 2);
+		cairo_move_to (cr, 7, 10);
+		cairo_line_to (cr, 10, 12.5);
+		cairo_line_to (cr, 7, 15);
+		cairo_move_to (cr, 12, 15);
+		cairo_line_to (cr, 16, 15);
+		break;
+
+	case FS_ICON_KEYBOARD:
+		rounded_rect (cr, 2.5, 6, 19, 12, 2);
+		/* Round caps make each zero-length stroke a key. */
+		for (gint k = 0; k < 5; k++) {
+			cairo_move_to (cr, 6 + 3 * k, 10);
+			cairo_line_to (cr, 6 + 3 * k, 10);
+		}
+		cairo_move_to (cr, 8, 14);
+		cairo_line_to (cr, 16, 14);
+		break;
+
+	case FS_ICON_MONITOR:
+		rounded_rect (cr, 3, 4, 18, 12, 2);
+		cairo_move_to (cr, 12, 16);
+		cairo_line_to (cr, 12, 20);
+		cairo_move_to (cr, 8, 20);
+		cairo_line_to (cr, 16, 20);
+		break;
+
+	case FS_ICON_CLOCK:
+		circle (cr, 12, 12, 9);
+		cairo_move_to (cr, 12, 7);
+		cairo_line_to (cr, 12, 12);
+		cairo_line_to (cr, 15.5, 14);
+		break;
+
 	case FS_ICON_N_KINDS:
 	default:
 		break;

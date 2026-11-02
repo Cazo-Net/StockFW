@@ -412,12 +412,13 @@ fs_dialogs_about (GtkWidget *parent)
 	                    label_new (_("StockFW is free software and comes "
 	                                 "with no warranty. Its source carries "
 	                                 "two licence texts: the GNU General "
-	                                 "Public License version 2 (COPYING), "
-	                                 "under which the code it was ported "
-	                                 "from was released, and the Apache "
-	                                 "License 2.0 (LICENSE). Which licence "
-	                                 "covers which part is still being "
-	                                 "reviewed."),
+	                                 "Public License version 2 (COPYING) "
+	                                 "and the Apache License 2.0 "
+	                                 "(LICENSE). The code it was ported "
+	                                 "from was released under the GNU GPL, "
+	                                 "version 2 or any later version. Which "
+	                                 "licence covers which part is still "
+	                                 "being reviewed."),
 	                               "about-text", TRUE),
 	                    FALSE, FALSE, 0);
 	button = gtk_button_new_with_mnemonic (_("_View licence texts"));
@@ -474,4 +475,10 @@ fs_dialogs_about (GtkWidget *parent)
 	gtk_widget_show_all (dialog);
 	gtk_window_set_default (GTK_WINDOW (dialog), button);
 	gtk_widget_grab_focus (button);
+	/* Ask for the keyboard too.  Shown but never activated (no window
+	 * manager to hand it focus, or a desktop that holds focus on the
+	 * window it came from), a dialog takes no keyboard focus, and GTK
+	 * then re-grabs the focused button on every Tab, so Tab never
+	 * left Close.  Presenting it gets it focus where it is opened. */
+	gtk_window_present (GTK_WINDOW (dialog));
 }
