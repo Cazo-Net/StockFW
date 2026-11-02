@@ -1011,3 +1011,109 @@ checked with `cmp`:
 
 The run is also clean under AddressSanitizer and UBSan (LeakSanitizer
 on), and passes as root and as an ordinary user.
+
+## Threat-intel backend slots on Linux (`tests/test-intel-backend.sh`)
+
+```sh
+cd port
+ninja -C build-linux fs-intel-backend-driver fs-nftset-load
+sudo bash tests/test-intel-backend.sh   # needs root, nft, iptables; SKIPs otherwise
+```
+
+`src/platform/linux/fs-backend-linux.c` fills the four threat-intel
+slots of the backend (design section 7): `intel_apply` loads
+`fs_intelset_nft_script()` with the nft runner of `fs-nftset.c` (60 s),
+`intel_clear` loads `fs_intelset_nft_clear_script()`, `intel_counters`
+parses `nft list chain` of the three base chains with
+`fs_intelset_nft_parse_counters()`, and `intel_live` reads `nft -j list
+tables` with `fs_intelset_nft_parse_live_state()` (listings get 10 s).
+An apply is the module's one transaction -- create if missing, delete,
+re-create, in a single `nft -f -` -- never a delete of its own first.
+After every apply and clear, whatever nft said, the backend reads the
+live table back and trusts it: an nft that timed out or was killed
+after it committed is a success; after an nft success the table must
+carry the digest asked for (the empty rule set: no table at all), or
+the apply fails saying so.  A failure says which lists are in force
+now.  Errors are `G_IO_ERROR`: `PERMISSION_DENIED` (not root),
+`NOT_FOUND` (no nft), `TIMED_OUT`, `INVALID_ARGUMENT`, `FAILED`.  The
+Windows backend leaves the four slots NULL until Round 3: that is how
+the engine knows to say "unsupported" rather than "cannot tell".
+
+`fs-intel-backend-driver` calls the slots through `fs_backend()` the way
+the engine does, plus the policy's `apply_rules`, `stop` and
+`clear_rules`.  It is built with its own copy of the backend compiled
+with `FS_BACKEND_TESTING`, the only build in which
+`$STOCKFW_TEST_NFT_TIMEOUT_MS` shortens the nft timeouts.  The test runs
+under `unshare -n` with a peer namespace on a veth pair, and every nft
+the slots run goes through a wrapper that logs its arguments and the
+scripts it loads.  It proves:
+
+- the four slots are set; with nothing loaded live is absent and the
+  counters are NULL;
+- an apply is live with its digest, in exactly one nft load; the IPv6
+  rules are loaded (as rule text: no IPv6 packet is sent here);
+- counters move by exactly what hit a listed address -- 5 datagrams
+  from the listed peer, 3 sent to an out-listed address (refused by the
+  send itself) -- and equal nft's own listing;
+- re-applying the same digest is an idempotent replace: same live
+  digest, one load, counters back at zero (the engine carries them just
+  before an apply, so a skipped re-apply would count them twice);
+- a change replaces the old sets and rules, not merges;
+- applying the policy twice, stopping it, clearing it and applying it
+  again leaves the table and its counters untouched [N6];
+- a transaction the kernel rejects is an error naming the lists still
+  in force, and they are;
+- nft killed before it loads: an error, the old lists in force; killed
+  after it committed: a success, the new lists live;
+- nft hanging before it loads: a timeout at 800 ms (not the hung nft's
+  30 s), the old lists in force and named; a timeout after the commit:
+  a success, for an apply, a clear, and the empty rule set; nft hanging
+  on everything: live unknown, counters NULL, the apply times out and
+  says the lists in force could not be read;
+- an unreadable listing is unknown, never absent; nft accepting a load
+  whose table then cannot be read back, or that someone replaced at
+  once, is not reported as applied;
+- the empty rule set leaves no table and that is a success (live
+  absent), also when no table was there;
+- clear removes the table; twice is fine;
+- no nft: apply and clear are `not-found` errors naming the nftables
+  package, live unknown, counters NULL; not root: `permission` errors,
+  live unknown, counters NULL; neither changes the kernel;
+- the slots list only `-j list tables` and our three chains, never a
+  table, a set or the ruleset [S8.3];
+- every script the slots loaded names no table but `inet
+  stockfw_intel`, and the policy's iptables rules, Docker-style chains
+  (`DOCKER-USER`, nat `DOCKER`), a libvirt-style `ip libvirt_network`, a
+  firewalld-style `inet firewalld` (holding an address our lists hold
+  too) and the standalone helper's `inet stockfw_blocklist` are byte for
+  byte the same after all of it (`iptables-save` without counters,
+  `nft -s list table`).
+
+The sanitizer build (`build-asan`, `-fsanitize=address,undefined`,
+Debug) of `fs-intel-backend-driver` and `fs-nftset-load` runs the whole
+test clean (`STOCKFW_INTEL_BACKEND_DRIVER`, `STOCKFW_NFTSET_LOAD` point
+the test at it).
+
+Teeth, each injected into the backend by a script that asserts the
+exact old text once, seen failing, restored with `cp`, checked with
+`cmp`, and seen green again:
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| after an nft error, the error is trusted and the live table not read | `nft killed after it committed`, `a timeout that fires after nft committed`, `a clear whose nft times out after committing`, `the empty rule set with a timeout after the commit`, and the four checks whose error must name the lists in force (8 in all) |
+| after an nft success, "applied" without reading the table back | `nft accepted the load but the table cannot be read back`, `... but another table is there now` |
+| the boolean `parse_live()`, so an unreadable listing reads as absent | `a listing that cannot be read is unknown, not absent`; `... cannot be read back: not reported as applied` (it said "something removed it") |
+| the empty rule set expected as a table with its digest | `the empty rule set is applied by removing the table`, `applying it again`, `the empty rule set with a timeout after the commit` |
+| a re-apply of the digest already live skipped as a no-op | `re-applying the same digest ... in one load`; `and the counters start again from zero` (got 5 and 3) |
+| the old table deleted in an nft call of its own before the load | `the apply was one nft load`, `a rejected transaction ... names the lists still in force` ("No blocklists are loaded now"), `the previous table ... still in force`, `nft killed before it loaded anything`, and the hang checks (30 s, not 800 ms: the separate delete hung) -- 8 in all |
+| counters read from `nft list table` | `the slots list only the tables and our three chains` (the counts themselves stayed right) |
+| the policy's stop also removes the intel table | `the lists and their counters are untouched by all of it`, and the three checks that need the previous lists in force |
+| no root check before running nft | `not root: the apply says it needs root` (nft's own complaint instead), `not root: clear is an error` |
+
+The upfront `nft` lookup has no tooth: without it the runner's own
+"Could not run nft (is the nftables package installed?)" is also a
+`not-found` error and reads the same in every check.
+
+The split-delete tooth of the rule-set section above stood in for this
+backend with `fs-intelset-driver apply`; here it is injected into the
+real `intel_apply` and caught by the same kind of rejected transaction.
