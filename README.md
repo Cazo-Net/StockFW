@@ -231,7 +231,6 @@ the license ultimately declared for their portion.
 
 ## Credits
 
-- **Qusai** Qusaifox2@gmail.com — Creator & Original
-  Developer
+- **Stock Team** — Creator & Original Developer
 - **H3xCore** — Developer
 - **StockFW Project** — GTK3 port, Windows backend, Copilot
