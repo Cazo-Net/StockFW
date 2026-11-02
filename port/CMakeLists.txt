@@ -357,9 +357,21 @@ endif()
 # directly against scratch files -- the incident class (expiry loops,
 # orphaned rows, an Allow a block outranks) lives exactly there and
 # fs-core cannot see any of it.
+# On Windows the smoke supplies fs_backend() itself: the real backend
+# is compiled under another name (tests/ui-copilot-backend-win.c) and
+# the What-If section swaps in a Windows-shaped stand-in with a known
+# state, since Windows has no network namespace to isolate it in.
+if(FS_PLATFORM STREQUAL "windows")
+  set(FS_COPILOT_SMOKE_BACKEND
+      tests/ui-copilot-backend-win.c
+      src/platform/windows/fs-trust-win.c)
+else()
+  set(FS_COPILOT_SMOKE_BACKEND ${FS_BACKEND_SOURCES})
+endif()
 add_executable(fs-copilot-smoke EXCLUDE_FROM_ALL
   tests/ui-copilot-smoke.c
-  ${FS_UI_SOURCES}
+  ${FS_UI_ONLY_SOURCES}
+  ${FS_COPILOT_SMOKE_BACKEND}
 )
 target_include_directories(fs-copilot-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-copilot-smoke PRIVATE fs-core PkgConfig::GTK3)

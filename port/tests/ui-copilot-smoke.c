@@ -28,7 +28,10 @@
  *      in, Details opens a window beside the page (never modal), and
  *      Create writes only the verified row the user saw and said Yes
  *      to -- held by audit-only, in a network namespace of its own when
- *      run as root, so nothing reaches the host's firewall.
+ *      run as root on Linux, and on Windows against a stand-in backend
+ *      with a known state that refuses every write (the machine's own
+ *      network profile would otherwise decide the answers), so nothing
+ *      reaches the host's firewall.
  *
  * Everything runs against a mkdtemp scratch tree (rules dir, audit,
  * journal, autoblocks, APPDATA) set before the first path is
@@ -63,6 +66,11 @@
 #ifdef __linux__
 #include <sched.h>
 #include <unistd.h>
+#endif
+
+#ifdef G_OS_WIN32
+#include "core/fs-backend.h"
+#include "core/fs-netplace.h"
 #endif
 
 static int failures = 0;
@@ -419,10 +427,179 @@ shoot (GtkWidget *w, const gchar *name)
 	g_free (path);
 }
 
+#ifdef G_OS_WIN32
+/* ---- Windows: the What-If section's own firewall ---------------------
+ *
+ * Windows has no network namespace, and the section must not answer
+ * for whatever firewall the machine running it has: a CI runner sits
+ * on a Public network, where StockFW's own "block reserved source
+ * addresses on public networks" rule decides an inbound from
+ * 192.168.x.x -- and on Windows a block wins over any allow, so the
+ * engine rightly offers no allow row there.  The section asks its
+ * questions of a known Windows firewall instead: running, every
+ * profile on, inbound blocked and outbound allowed by default, "block
+ * all incoming" off, and the network in use the one whatif_profile
+ * names (Private, a home network, unless a check says otherwise).
+ *
+ * The stand-in is the real backend's table with these readings and
+ * with every slot that could change the firewall replaced by one that
+ * refuses and is counted; sections 1 to 6 keep the real backend
+ * (ui-copilot-backend-win.c compiles it as fs_backend_real). */
+const FsBackend *fs_backend_real (void);
+
+static gboolean     whatif_fake_on = FALSE;
+static gint         whatif_profile = FS_PROFILE_PRIVATE;
+static guint        whatif_writes = 0;
+static FsBackend    whatif_backend;
+
+static gboolean
+wf_available (void)
+{
+	return TRUE;
+}
+
+static FsFirewallState
+wf_get_state (void)
+{
+	return FS_FW_RUNNING;
+}
+
+static gboolean
+wf_profile_enabled (gint profile, gboolean *on)
+{
+	if (profile < 0 || profile >= FS_PROFILE_COUNT)
+		return FALSE;
+	if (on != NULL)
+		*on = TRUE;
+	return TRUE;
+}
+
+static gboolean
+wf_profile_defaults (gint profile, gboolean *in_block, gboolean *out_block)
+{
+	if (profile < 0 || profile >= FS_PROFILE_COUNT)
+		return FALSE;
+	if (in_block != NULL)
+		*in_block = TRUE;
+	if (out_block != NULL)
+		*out_block = FALSE;
+	return TRUE;
+}
+
+static gboolean
+wf_block_all_inbound (gint profile, gboolean *on)
+{
+	if (profile < 0 || profile >= FS_PROFILE_COUNT)
+		return FALSE;
+	if (on != NULL)
+		*on = FALSE;
+	return TRUE;
+}
+
+static FsNetworkPlace *
+wf_network_place (void)
+{
+	FsNetworkPlace *place = fs_network_place_new ();
+
+	fs_network_place_add (place,
+	                      whatif_profile == FS_PROFILE_PUBLIC ? "CafeNet"
+	                                                          : "HomeNet",
+	                      whatif_profile, "Ethernet", TRUE);
+	place->in_use |= FS_PROFILE_BIT (whatif_profile);
+	return place;
+}
+
+static GList *
+wf_no_interfaces (void)
+{
+	return NULL;
+}
+
+/* Every slot that could change the firewall: refused, and counted. */
+static gboolean
+wf_refuse (GError **error)
+{
+	whatif_writes++;
+	g_set_error_literal (error, g_quark_from_static_string ("whatif-fake"),
+	                     1, "the What-If section never changes a firewall");
+	return FALSE;
+}
+
+static FsApplyResult
+wf_refuse_apply (const FsPolicy *policy, GError **error)
+{
+	(void) policy;
+	wf_refuse (error);
+	return FS_APPLY_FAILED;
+}
+
+static FsApplyResult
+wf_refuse_delta (const GList *remove, const GList *add, const GList *repair,
+                 GError **error)
+{
+	(void) remove; (void) add; (void) repair;
+	wf_refuse (error);
+	return FS_APPLY_FAILED;
+}
+
+static FsApplyResult
+wf_refuse_clear (GError **error)
+{
+	wf_refuse (error);
+	return FS_APPLY_FAILED;
+}
+
+static gboolean
+wf_refuse_bool (gboolean on, GError **error)
+{
+	(void) on;
+	return wf_refuse (error);
+}
+
+static gboolean
+wf_refuse_profile (gint profile, gboolean on, GError **error)
+{
+	(void) profile; (void) on;
+	return wf_refuse (error);
+}
+
+const FsBackend *
+fs_backend (void)
+{
+	if (!whatif_fake_on)
+		return fs_backend_real ();
+
+	if (whatif_backend.name == NULL) {
+		whatif_backend = *fs_backend_real ();
+		whatif_backend.name = "whatif-windows";
+		whatif_backend.available = wf_available;
+		whatif_backend.get_state = wf_get_state;
+		whatif_backend.get_profile_enabled = wf_profile_enabled;
+		whatif_backend.get_profile_defaults = wf_profile_defaults;
+		whatif_backend.get_profile_block_all_inbound = wf_block_all_inbound;
+		whatif_backend.network_place = wf_network_place;
+		whatif_backend.list_interfaces = wf_no_interfaces;
+		whatif_backend.start = wf_refuse;
+		whatif_backend.stop = wf_refuse;
+		whatif_backend.reload = wf_refuse;
+		whatif_backend.apply_rules = wf_refuse_apply;
+		whatif_backend.apply_delta = wf_refuse_delta;
+		whatif_backend.clear_rules = wf_refuse_clear;
+		whatif_backend.dhcp_set_enabled = wf_refuse_bool;
+		whatif_backend.set_profile_enabled = wf_refuse_profile;
+		/* Blocklists: not on Windows yet (NULL in the real table). */
+		whatif_backend.intel_apply = NULL;
+		whatif_backend.intel_clear = NULL;
+	}
+	return &whatif_backend;
+}
+#endif /* G_OS_WIN32 */
+
 /* Linux, as root: a network namespace of its own with an empty
  * INBOUND chain, so the backend reads "running" and nothing this test
- * does can reach the host's firewall.  Applies are on hold (audit-only)
- * on top of that, so every push is held, never sent. */
+ * does can reach the host's firewall.  Windows: the stand-in above, a
+ * known firewall that refuses every write.  Applies are on hold
+ * (audit-only) on top of that, so every push is held, never sent. */
 static void
 whatif_isolate (void)
 {
@@ -434,6 +611,13 @@ whatif_isolate (void)
 		                           &status, NULL);
 		(void) status;
 	}
+#endif
+#ifdef G_OS_WIN32
+	whatif_fake_on = TRUE;
+	whatif_profile = FS_PROFILE_PRIVATE;
+	CHECK (g_strcmp0 (fs_backend ()->name, "whatif-windows") == 0,
+	       "what-if: the section asks a known Windows firewall, not the "
+	       "machine's");
 #endif
 	fs_apply_set_audit_only (TRUE);
 }
@@ -665,6 +849,36 @@ test_whatif_card (FsPolicy *policy, GtkWidget *page)
 	pump (40);
 	CHECK (whatif_window_open () == NULL, "what-if: Close goes away");
 	shoot (top, "card-history");
+
+#ifdef G_OS_WIN32
+	/* The network a CI runner is on: Public.  There StockFW's own
+	 * reserved-source block decides an inbound from 192.168.x.x, and a
+	 * Windows block wins over any allow -- so no allow row is offered,
+	 * not even the one just written. */
+	whatif_profile = FS_PROFILE_PUBLIC;
+	ask (card, "allow tcp port 8443 inbound from 192.168.1.40");
+	CHECK (card_verdict_is (card, "BLOCKED") &&
+	       strstr (card_summary (card), "reserved source addresses") != NULL,
+	       "what-if: on a Public network the reserved-source block decides "
+	       "(got \"%s\")", card_summary (card));
+	gtk_button_clicked (GTK_BUTTON (named (card, "whatif-details")));
+	pump (120);
+	win = whatif_window_open ();
+	CHECK (win != NULL &&
+	       fs_simviz_find_button (win, "Create allow rule") == NULL &&
+	       fs_simviz_find_button (win, "Create allow rule for everyone")
+	       == NULL,
+	       "what-if: on Windows no allow row is offered against a block "
+	       "that wins");
+	if (win != NULL)
+		gtk_widget_destroy (win);
+	pump (40);
+	whatif_profile = FS_PROFILE_PRIVATE;
+	CHECK (whatif_writes == 0,
+	       "what-if: nothing in the section tried to change the firewall "
+	       "(%u writes refused)", whatif_writes);
+	whatif_fake_on = FALSE;
+#endif
 
 	gtk_container_remove (GTK_CONTAINER (top), page);
 	gtk_widget_destroy (top);
