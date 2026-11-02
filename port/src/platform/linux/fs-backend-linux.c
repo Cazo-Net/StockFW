@@ -23,6 +23,9 @@
 #include "core/fs-service.h"
 #include "core/fs-netparse.h"
 #include "core/fs-i18n.h"
+#include "core/fs-script.h"
+
+#include <gio/gio.h>
 
 #include <errno.h>
 #include <stdio.h>
@@ -61,33 +64,11 @@ static FsPolicy    *current_policy = NULL;
 
 /* -------------------------------------------------------------- helpers */
 
-/* [ run_command ]
- * Runs argv and returns its exit status, or -1 if it could not be
- * started.  Output is discarded; callers report their own errors. */
-static gint
-run_command (gchar **argv)
-{
-	GError *error = NULL;
-	gint status = 0;
-
-	if (!g_spawn_sync (NULL, argv, NULL,
-	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL,
-	                   NULL, NULL, NULL, NULL, &status, &error)) {
-		g_clear_error (&error);
-		return -1;
-	}
-
-	/* g_spawn_sync reports the raw wait status. */
-	if (WIFEXITED (status))
-		return WEXITSTATUS (status);
-
-	return -1;
-}
-
 /* [ run_command_quiet ]
- * Same as run_command but discards stderr too.  Used by the delete-until
- * it-fails probes, where the final failure is the expected answer and
- * would otherwise bury real errors in noise. */
+ * Runs argv with stdout and stderr discarded; its exit status, or -1 if
+ * it could not be started.  Used by the probes and the delete-until-it-
+ * fails loops, where a failure is often the expected answer and would
+ * otherwise bury real errors in noise. */
 static gint
 run_command_quiet (gchar **argv)
 {
@@ -273,8 +254,6 @@ interface_is_nat_capable (const gchar *name)
 static FsApplyResult linux_apply_rules (const FsPolicy *policy,
                                         GError **error);
 static void linux_sysctl_forwarding (void);
-static gboolean apply_lines (gchar *script);
-static gboolean apply_nat (const FsSettings *settings);
 static void linux_log_stop (void);
 
 static gboolean
@@ -312,21 +291,454 @@ linux_start (GError **error)
 	return (result == FS_APPLY_OK || result == FS_APPLY_PARTIAL);
 }
 
-/* [ detach_chain ]
- * Removes every "-j <our_chain>" jump from a built-in chain.  iptables
- * cannot delete all matches in one go, so delete in a loop until one
- * fails (i.e. none are left). */
-static void
-detach_chain (const gchar *builtin, const gchar *our_chain)
-{
-	for (gint i = 0; i < 64; i++) {
-		gchar *args[] = { (gchar *) "iptables", (gchar *) "-w",
-		                  (gchar *) "-D", (gchar *) builtin,
-		                  (gchar *) "-j", (gchar *) our_chain, NULL };
+/* ==================================================================
+ * Applying the policy (1.0.7): both address families, one
+ * transaction per table, rolled back as a whole on any failure.
+ *
+ * Before 1.0.7 an apply first stopped the firewall (removing every
+ * rule) and then ran one iptables process per rule: for a few hundred
+ * milliseconds the machine was unfiltered, a failure halfway left half
+ * a policy, and IPv6 was never filtered at all.  Now fs-script renders
+ * the policy as iptables-restore input per family, and each table is
+ * replaced with `<tool>-restore --noflush', which swaps StockFW's own
+ * chains in one kernel transaction and touches nothing else.  The
+ * chains stay hooked throughout, so there is no unfiltered moment.
+ *
+ * filter and nat commit separately, and IPv4 and IPv6 are separate
+ * tools, so before anything changes the current contents of our
+ * chains are saved; if any later step fails, everything already
+ * replaced is put back and the apply reports failure: the kernel ends
+ * up with the old policy or the new one, never a mix.
+ * ================================================================== */
 
-		if (run_command_quiet (args) != 0)
-			break;
+typedef struct
+{
+	FsFamily     family;
+	const gchar *tool;
+	const gchar *restore;
+	const gchar *save;
+	const gchar *label;
+} Family;
+
+static const Family FAMILY4 = { FS_FAMILY_IPV4, "iptables",
+                                "iptables-restore", "iptables-save",
+                                "IPv4" };
+static const Family FAMILY6 = { FS_FAMILY_IPV6, "ip6tables",
+                                "ip6tables-restore", "ip6tables-save",
+                                "IPv6" };
+
+static const gchar *const FILTER_CHAINS[] = { "INBOUND", "OUTBOUND",
+                                              FS_SCRIPT_ACCEPT_CHAIN, NULL };
+static const gchar *const NAT_CHAINS[] = { FS_SCRIPT_DNAT_CHAIN,
+                                           FS_SCRIPT_SNAT_CHAIN, NULL };
+
+/* [ kernel_has_ipv6 ]
+ * /proc/net/if_inet6 exists exactly when the kernel has an IPv6 stack
+ * (ipv6.disable=1 or a kernel built without it: nothing to filter).
+ * STOCKFW_ASSUME_IPV6=1 lets the test suites drive the IPv6 path on a
+ * machine without IPv6; ip6tables can still load rules there. */
+static gboolean
+kernel_has_ipv6 (void)
+{
+	if (g_strcmp0 (g_getenv ("STOCKFW_ASSUME_IPV6"), "1") == 0)
+		return TRUE;
+
+	return g_file_test ("/proc/net/if_inet6", G_FILE_TEST_EXISTS);
+}
+
+static gboolean
+have_ip6tables (void)
+{
+	gchar *a = g_find_program_in_path ("ip6tables");
+	gchar *b = g_find_program_in_path ("ip6tables-restore");
+	gboolean ok = (a != NULL && b != NULL);
+
+	g_free (a);
+	g_free (b);
+	return ok;
+}
+
+/* [ run_restore ]
+ * Feeds `payload' to <tool>-restore --noflush.  On failure *why gets
+ * the tool's first error line. */
+static gboolean
+run_restore (const Family *f, const gchar *payload, gchar **why)
+{
+	const gchar *argv[] = { f->restore, "-w", "--noflush", NULL };
+	GSubprocess *proc;
+	GError *error = NULL;
+	gchar *err = NULL;
+	gboolean ok;
+
+	proc = g_subprocess_newv (argv,
+	                          G_SUBPROCESS_FLAGS_STDIN_PIPE |
+	                          G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
+	                          G_SUBPROCESS_FLAGS_STDERR_PIPE, &error);
+	if (proc == NULL) {
+		*why = g_strdup (error->message);
+		g_error_free (error);
+		return FALSE;
 	}
+
+	ok = g_subprocess_communicate_utf8 (proc, payload, NULL, NULL, &err,
+	                                    &error) &&
+	     g_subprocess_get_if_exited (proc) &&
+	     g_subprocess_get_exit_status (proc) == 0;
+
+	if (!ok) {
+		if (error != NULL)
+			*why = g_strdup (error->message);
+		else if (err != NULL && *err != '\0') {
+			gchar *nl = strchr (err, '\n');
+
+			*why = nl != NULL ? g_strndup (err, (gsize) (nl - err))
+			                  : g_strdup (err);
+		} else
+			*why = g_strdup_printf ("%s failed", f->restore);
+	}
+
+	g_clear_error (&error);
+	g_free (err);
+	g_object_unref (proc);
+	return ok;
+}
+
+/* [ tool_quiet ] -- one quiet <tool> invocation; its exit status. */
+static gint
+tool_quiet (const Family *f, const gchar *table, const gchar *const *args)
+{
+	GPtrArray *argv = g_ptr_array_new ();
+	gint status;
+
+	g_ptr_array_add (argv, (gpointer) f->tool);
+	g_ptr_array_add (argv, (gpointer) "-w");
+	g_ptr_array_add (argv, (gpointer) "-t");
+	g_ptr_array_add (argv, (gpointer) table);
+	for (gint i = 0; args[i] != NULL; i++)
+		g_ptr_array_add (argv, (gpointer) args[i]);
+	g_ptr_array_add (argv, NULL);
+
+	status = run_command_quiet ((gchar **) argv->pdata);
+	g_ptr_array_free (argv, TRUE);
+	return status;
+}
+
+/* [ ensure_jump ] -- exactly one "-j chain" in builtin, appended. */
+static gboolean
+ensure_jump (const Family *f, const gchar *table, const gchar *builtin,
+             const gchar *chain)
+{
+	const gchar *check[] = { "-C", builtin, "-j", chain, NULL };
+	const gchar *add[]   = { "-A", builtin, "-j", chain, NULL };
+
+	if (tool_quiet (f, table, check) == 0)
+		return TRUE;
+
+	return tool_quiet (f, table, add) == 0;
+}
+
+/* [ remove_jump ] -- every "-j chain" in builtin (iptables deletes one
+ * match at a time, so until one fails). */
+static void
+remove_jump (const Family *f, const gchar *table, const gchar *builtin,
+             const gchar *chain)
+{
+	const gchar *del[] = { "-D", builtin, "-j", chain, NULL };
+
+	for (gint i = 0; i < 64; i++)
+		if (tool_quiet (f, table, del) != 0)
+			break;
+}
+
+static void
+drop_chains (const Family *f, const gchar *table,
+             const gchar *const *chains)
+{
+	for (gint i = 0; chains[i] != NULL; i++) {
+		const gchar *flush[] = { "-F", chains[i], NULL };
+
+		tool_quiet (f, table, flush);
+	}
+	for (gint i = 0; chains[i] != NULL; i++) {
+		const gchar *del[] = { "-X", chains[i], NULL };
+
+		tool_quiet (f, table, del);
+	}
+}
+
+static void
+teardown_filter (const Family *f)
+{
+	remove_jump (f, "filter", "INPUT", "INBOUND");
+	remove_jump (f, "filter", "FORWARD", "INBOUND");
+	remove_jump (f, "filter", "OUTPUT", "OUTBOUND");
+	drop_chains (f, "filter", FILTER_CHAINS);
+}
+
+static void
+teardown_nat (const Family *f)
+{
+	remove_jump (f, "nat", "PREROUTING", FS_SCRIPT_DNAT_CHAIN);
+	remove_jump (f, "nat", "POSTROUTING", FS_SCRIPT_SNAT_CHAIN);
+	drop_chains (f, "nat", NAT_CHAINS);
+}
+
+/* [ legacy_cleanup ]
+ * Rules 1.0.6 and earlier wrote straight into the built-in chains,
+ * where nothing ever removed them: MASQUERADE in POSTROUTING, DNAT for
+ * each forward in PREROUTING, and a FORWARD accept per apply.  They
+ * now live in StockFW's own chains; these loops drain the old copies.
+ * Only exact matches of what StockFW wrote are deleted. */
+static void
+legacy_cleanup (void)
+{
+	const FsSettings *s = current_settings;
+
+	if (s == NULL || !fs_util_is_valid_ifname (s->ext_device))
+		return;
+
+	{
+		const gchar *masq[] = { "-D", "POSTROUTING", "-o", s->ext_device,
+		                        "-j", "MASQUERADE", NULL };
+
+		for (gint i = 0; i < 64; i++)
+			if (tool_quiet (&FAMILY4, "nat", masq) != 0)
+				break;
+	}
+
+	if (fs_util_is_valid_ifname (s->int_device)) {
+		const gchar *fwd[] = { "-D", "FORWARD", "-i", s->int_device,
+		                       "-o", s->ext_device, "-j", "ACCEPT", NULL };
+
+		for (gint i = 0; i < 64; i++)
+			if (tool_quiet (&FAMILY4, "filter", fwd) != 0)
+				break;
+	}
+
+	if (current_policy != NULL) {
+		GPtrArray *fw = current_policy->kinds[FS_RULE_INBOUND_FORWARD];
+
+		for (guint r = 0; r < fw->len; r++) {
+			FsRule *rule = g_ptr_array_index (fw, r);
+			gchar *to;
+
+			if (rule->port == NULL || rule->to == NULL ||
+			    rule->to_port == NULL ||
+			    fs_util_target_families (rule->to) != FS_FAMILY_IPV4 ||
+			    !fs_util_is_valid_port (rule->port) ||
+			    !fs_util_is_valid_port (rule->to_port))
+				continue;
+
+			to = g_strdup_printf ("%s:%s", rule->to, rule->to_port);
+			{
+				const gchar *dnat[] = { "-D", "PREROUTING", "-i",
+				                        s->ext_device, "-p", "tcp",
+				                        "--dport", rule->port, "-j",
+				                        "DNAT", "--to-destination", to,
+				                        NULL };
+
+				for (gint i = 0; i < 64; i++)
+					if (tool_quiet (&FAMILY4, "nat", dnat) != 0)
+						break;
+			}
+			g_free (to);
+		}
+	}
+}
+
+/* ---- snapshots, for rollback ---------------------------------------- */
+
+typedef struct
+{
+	gboolean ok;          /* the save tool answered                     */
+	gboolean present;     /* chains[0] existed                          */
+	gchar   *payload;     /* restore input that puts our chains back    */
+} TableSnap;
+
+typedef struct
+{
+	TableSnap filter;
+	TableSnap nat;
+	gboolean  forward_hooked;  /* FORWARD jumped to INBOUND before    */
+	gboolean  touched_filter;  /* set only once the table has changed */
+	gboolean  touched_nat;
+} FamilySnap;
+
+static void
+take_snapshot (const Family *f, const gchar *table,
+               const gchar *const *chains, TableSnap *snap)
+{
+	gchar *argv[] = { (gchar *) f->save, (gchar *) "-t", (gchar *) table,
+	                  NULL };
+	gchar *text = NULL;
+	gint status = 0;
+	gchar **lines;
+	GString *decl, *rules;
+	gboolean seen[8] = { FALSE };
+
+	memset (snap, 0, sizeof (*snap));
+
+	if (!g_spawn_sync (NULL, argv, NULL,
+	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDERR_TO_DEV_NULL,
+	                   NULL, NULL, &text, NULL, &status, NULL) ||
+	    !g_spawn_check_wait_status (status, NULL)) {
+		g_free (text);
+		return;
+	}
+
+	decl = g_string_new (NULL);
+	rules = g_string_new (NULL);
+	lines = g_strsplit (text, "\n", -1);
+
+	for (gint i = 0; lines[i] != NULL; i++)
+		for (gint c = 0; chains[c] != NULL && c < 8; c++) {
+			gchar *head = g_strdup_printf (":%s ", chains[c]);
+			gchar *rule = g_strdup_printf ("-A %s ", chains[c]);
+
+			if (g_str_has_prefix (lines[i], head)) {
+				g_string_append_printf (decl, ":%s - [0:0]\n",
+				                        chains[c]);
+				seen[c] = TRUE;
+			} else if (g_str_has_prefix (lines[i], rule)) {
+				g_string_append_printf (rules, "%s\n", lines[i]);
+			}
+			g_free (head);
+			g_free (rule);
+		}
+
+	/* Chains the failed apply may have created are created-and-deleted,
+	 * so putting the old state back also removes them. */
+	for (gint c = 0; chains[c] != NULL && c < 8; c++)
+		if (!seen[c])
+			g_string_append_printf (decl, ":%s - [0:0]\n", chains[c]);
+	for (gint c = 0; chains[c] != NULL && c < 8; c++)
+		if (!seen[c])
+			g_string_append_printf (rules, "-X %s\n", chains[c]);
+
+	snap->ok = TRUE;
+	snap->present = seen[0];
+	snap->payload = g_strdup_printf ("*%s\n%s%sCOMMIT\n", table, decl->str,
+	                                 rules->str);
+
+	g_strfreev (lines);
+	g_string_free (decl, TRUE);
+	g_string_free (rules, TRUE);
+	g_free (text);
+}
+
+static void
+family_snap_clear (FamilySnap *s)
+{
+	g_free (s->filter.payload);
+	g_free (s->nat.payload);
+	memset (s, 0, sizeof (*s));
+}
+
+/* [ jump_present ] -- whether builtin already jumps to chain. */
+static gboolean
+jump_present (const Family *f, const gchar *table, const gchar *builtin,
+              const gchar *chain)
+{
+	const gchar *check[] = { "-C", builtin, "-j", chain, NULL };
+
+	return tool_quiet (f, table, check) == 0;
+}
+
+/* [ roll_back ]
+ * Puts one family's touched tables back.  Only tables that actually
+ * changed are touched: a refused restore changes nothing, so rolling
+ * it back would only run the refusing tool a second time.  Restored
+ * chains are hooked in again, because the failed apply may have
+ * unhooked them (leaving router mode, for example). */
+static gboolean
+roll_back (const Family *f, FamilySnap *s)
+{
+	gboolean ok = TRUE;
+	gchar *why = NULL;
+
+	if (s->touched_nat) {
+		if (s->nat.ok && s->nat.present) {
+			ok = run_restore (f, s->nat.payload, &why) && ok;
+			ok = ensure_jump (f, "nat", "PREROUTING",
+			                  FS_SCRIPT_DNAT_CHAIN) && ok;
+			ok = ensure_jump (f, "nat", "POSTROUTING",
+			                  FS_SCRIPT_SNAT_CHAIN) && ok;
+		} else {
+			teardown_nat (f);
+		}
+		g_clear_pointer (&why, g_free);
+	}
+
+	if (s->touched_filter) {
+		if (s->filter.ok && s->filter.present) {
+			ok = run_restore (f, s->filter.payload, &why) && ok;
+			ok = ensure_jump (f, "filter", "INPUT", "INBOUND") && ok;
+			ok = ensure_jump (f, "filter", "OUTPUT", "OUTBOUND") && ok;
+			if (s->forward_hooked)
+				ok = ensure_jump (f, "filter", "FORWARD",
+				                  "INBOUND") && ok;
+			else
+				remove_jump (f, "filter", "FORWARD", "INBOUND");
+		} else {
+			teardown_filter (f);
+		}
+		g_clear_pointer (&why, g_free);
+	}
+
+	return ok;
+}
+
+/* [ load_family ]
+ * Replaces one family's chains with `part' and makes sure they are
+ * hooked in.  FALSE with *why on the first failure; the caller rolls
+ * back. */
+static gboolean
+load_family (const Family *f, const FsRestorePart *part, FamilySnap *snap,
+             gchar **why)
+{
+	const FsSettings *s = current_settings;
+
+	/* A refused restore is atomic and changed nothing, so the table
+	 * only counts as touched once it has been accepted. */
+	if (!run_restore (f, part->filter, why))
+		return FALSE;
+	snap->touched_filter = TRUE;
+
+	if (!ensure_jump (f, "filter", "INPUT", "INBOUND") ||
+	    !ensure_jump (f, "filter", "OUTPUT", "OUTBOUND")) {
+		*why = g_strdup ("could not hook the chains into INPUT/OUTPUT");
+		return FALSE;
+	}
+
+	/* Forwarded IPv4 goes through INBOUND, as it always has.  IPv6
+	 * forwarding is only filtered in router mode: hooking it
+	 * unconditionally would send container and VM traffic, which their
+	 * own runtimes accept in other tables, into INBOUND's default drop
+	 * -- traffic that worked while IPv6 was not filtered at all. */
+	if (f->family == FS_FAMILY_IPV4 || (s != NULL && s->nat)) {
+		if (!ensure_jump (f, "filter", "FORWARD", "INBOUND")) {
+			*why = g_strdup ("could not hook INBOUND into FORWARD");
+			return FALSE;
+		}
+	} else {
+		remove_jump (f, "filter", "FORWARD", "INBOUND");
+	}
+
+	if (part->nat != NULL) {
+		if (!run_restore (f, part->nat, why))
+			return FALSE;
+		snap->touched_nat = TRUE;
+		if (!ensure_jump (f, "nat", "PREROUTING", FS_SCRIPT_DNAT_CHAIN) ||
+		    !ensure_jump (f, "nat", "POSTROUTING", FS_SCRIPT_SNAT_CHAIN)) {
+			*why = g_strdup ("could not hook the nat chains");
+			return FALSE;
+		}
+	} else {
+		snap->touched_nat = TRUE;
+		teardown_nat (f);
+	}
+
+	return TRUE;
 }
 
 static gboolean
@@ -334,65 +746,24 @@ linux_stop (GError **error)
 {
 	/* Only our own chains are touched.  A blanket -F/-X on the filter
 	 * and nat tables would delete rules belonging to Docker, libvirt,
-	 * ufw and anything else sharing the machine. */
-	gchar *flush_in[]  = { (gchar *) "iptables", (gchar *) "-w",
-	                       (gchar *) "-F", (gchar *) "INBOUND", NULL };
-	gchar *flush_out[] = { (gchar *) "iptables", (gchar *) "-w",
-	                       (gchar *) "-F", (gchar *) "OUTBOUND", NULL };
-	gchar *del_in[]    = { (gchar *) "iptables", (gchar *) "-w",
-	                       (gchar *) "-X", (gchar *) "INBOUND", NULL };
-	gchar *del_out[]   = { (gchar *) "iptables", (gchar *) "-w",
-	                       (gchar *) "-X", (gchar *) "OUTBOUND", NULL };
-
+	 * ufw and anything else sharing the machine.  Every step is quiet:
+	 * on a first run there is nothing there yet, and "no such chain" is
+	 * the expected answer rather than an error worth showing. */
 	if (!require_root (error))
 		return FALSE;
 
 	if (!have_iptables (error))
 		return FALSE;
 
-	/* Detach first: -X refuses to remove a chain that is still the
-	 * target of a jump.  All four steps are quiet because on a first
-	 * run there is nothing there yet, and "no such chain" is the
-	 * expected answer rather than an error worth showing the user. */
-	detach_chain ("INPUT", "INBOUND");
-	detach_chain ("FORWARD", "INBOUND");
-	detach_chain ("OUTPUT", "OUTBOUND");
+	teardown_filter (&FAMILY4);
+	teardown_nat (&FAMILY4);
 
-	run_command_quiet (flush_in);
-	run_command_quiet (flush_out);
-	run_command_quiet (del_in);
-	run_command_quiet (del_out);
-
-	/* The logging accept chain is referenced from INBOUND/OUTBOUND, so
-	 * it can only go once they are gone. */
-	{
-		gchar *flush_acc[] = { (gchar *) "iptables", (gchar *) "-w",
-		                       (gchar *) "-F",
-		                       (gchar *) FS_SCRIPT_ACCEPT_CHAIN, NULL };
-		gchar *del_acc[]   = { (gchar *) "iptables", (gchar *) "-w",
-		                       (gchar *) "-X",
-		                       (gchar *) FS_SCRIPT_ACCEPT_CHAIN, NULL };
-
-		run_command_quiet (flush_acc);
-		run_command_quiet (del_acc);
+	if (have_ip6tables ()) {
+		teardown_filter (&FAMILY6);
+		teardown_nat (&FAMILY6);
 	}
 
-	/* Undo our own NAT rules only.  Deleting a rule that is not there
-	 * fails harmlessly, and the loop drains duplicates from earlier
-	 * applies. */
-	if (current_settings != NULL && current_settings->ext_device != NULL) {
-		for (gint i = 0; i < 64; i++) {
-			gchar *args[] = { (gchar *) "iptables", (gchar *) "-w",
-			                  (gchar *) "-t", (gchar *) "nat",
-			                  (gchar *) "-D", (gchar *) "POSTROUTING",
-			                  (gchar *) "-o", current_settings->ext_device,
-			                  (gchar *) "-j", (gchar *) "MASQUERADE", NULL };
-
-			if (run_command_quiet (args) != 0)
-				break;
-		}
-	}
-
+	legacy_cleanup ();
 	return TRUE;
 }
 
@@ -405,162 +776,16 @@ linux_reload (GError **error)
 	return linux_start (error);
 }
 
-/* [ apply_lines ]
- * Executes the iptables invocations in a generated script.
- *
- * -N fails harmlessly when the chain already exists, which a repeat
- * apply always hits, so that one status is not treated as an error. */
-static gboolean
-apply_lines (gchar *script)
-{
-	gchar **lines;
-	gboolean ok = TRUE;
-
-	if (script == NULL)
-		return FALSE;
-
-	lines = g_strsplit (script, "\n", -1);
-
-	for (gint i = 0; lines[i] != NULL && ok; i++) {
-		GPtrArray *argv;
-		gboolean is_new_chain = FALSE;
-
-		if (lines[i] == NULL)
-			break;
-
-		g_strstrip (lines[i]);
-
-		if (*lines[i] == '\0' || *lines[i] == '#')
-			continue;
-
-		argv = g_ptr_array_new_with_free_func (g_free);
-
-		/* Tokenise, treating a double-quoted run as one word so
-		 * --log-prefix "STOCKFW-DROP " survives. */
-		{
-			GString *word = g_string_new (NULL);
-			gboolean in_quotes = FALSE;
-
-			for (const gchar *c = lines[i]; *c != '\0'; c++) {
-				if (*c == '"') {
-					in_quotes = !in_quotes;
-					continue;
-				}
-
-				if (!in_quotes && (*c == ' ' || *c == '\t')) {
-					if (word->len > 0) {
-						if (g_strcmp0 (word->str,
-						               "$IPT") == 0)
-							g_ptr_array_add (argv,
-							                 g_strdup ("iptables"));
-						else
-							g_ptr_array_add (argv,
-							                 g_strdup (word->str));
-
-						g_string_truncate (word, 0);
-					}
-
-					continue;
-				}
-
-				g_string_append_c (word, *c);
-			}
-
-			if (word->len > 0) {
-				if (g_strcmp0 (word->str, "$IPT") == 0)
-					g_ptr_array_add (argv,
-					                 g_strdup ("iptables"));
-				else
-					g_ptr_array_add (argv, g_strdup (word->str));
-			}
-
-			g_string_free (word, TRUE);
-		}
-
-		g_ptr_array_add (argv, NULL);
-
-		if (argv->len < 2 ||
-		    g_strcmp0 (argv->pdata[0], "iptables") != 0) {
-			g_ptr_array_unref (argv);
-			continue;
-		}
-
-		for (gint a = 1; a + 1 < (gint) argv->len; a++) {
-			if (g_strcmp0 (argv->pdata[a], "-N") == 0)
-				is_new_chain = TRUE;
-		}
-
-		{
-			gint status = run_command ((gchar **) argv->pdata);
-
-			if (status != 0 && !is_new_chain) {
-				g_printerr ("iptables failed (%d): %s\n",
-				            status, lines[i]);
-				ok = FALSE;
-			}
-		}
-
-		g_ptr_array_unref (argv);
-	}
-
-	g_strfreev (lines);
-
-	return ok;
-}
-
-/* [ apply_nat ]
- * Masquerading and forwarding.
- *
- * -i <internal> -o <external> on FORWARD is what permits traffic to be
- * routed; without it MASQUERADE rewrites addresses that nothing is
- * allowed to pass.  Both interfaces have to exist, and a WSL-style
- * single-interface host has no internal one, so that case is reported
- * rather than silently half-applied. */
-static gboolean
-apply_nat (const FsSettings *settings)
-{
-	gchar *masq_args[] = {
-		(gchar *) "iptables", (gchar *) "-w",
-		(gchar *) "-t", (gchar *) "nat",
-		(gchar *) "-A", (gchar *) "POSTROUTING",
-		(gchar *) "-o", settings->ext_device,
-		(gchar *) "-j", (gchar *) "MASQUERADE", NULL
-	};
-	gchar *fwd_args[] = {
-		(gchar *) "iptables", (gchar *) "-w",
-		(gchar *) "-A", (gchar *) "FORWARD",
-		(gchar *) "-i", settings->int_device,
-		(gchar *) "-o", settings->ext_device,
-		(gchar *) "-j", (gchar *) "ACCEPT", NULL
-	};
-	gboolean ok = TRUE;
-
-	if (run_command (masq_args) != 0) {
-		g_printerr ("MASQUERADE on %s failed\n", settings->ext_device);
-		ok = FALSE;
-	}
-
-	if (settings->int_device != NULL && *settings->int_device != '\0') {
-		if (run_command (fwd_args) != 0) {
-			g_printerr ("FORWARD %s -> %s failed\n",
-			            settings->int_device,
-			            settings->ext_device);
-			ok = FALSE;
-		}
-	} else {
-		g_printerr ("NAT is enabled but no internal interface is set; "
-		            "forwarding rules were skipped\n");
-	}
-
-	return ok;
-}
-
 static FsApplyResult
 linux_apply_rules (const FsPolicy *policy, GError **error)
 {
-	gchar *script;
-	gboolean ok = TRUE;
+	FsRestorePlan *plan;
+	GError *local = NULL;
+	FamilySnap snap4, snap6;
+	gboolean do6, ok;
+	gchar *why = NULL;
 	FsApplyResult result = FS_APPLY_OK;
+	GString *partial = NULL;
 
 	if (!require_root (error))
 		return FS_APPLY_FAILED;
@@ -568,61 +793,135 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 	if (!have_iptables (error))
 		return FS_APPLY_NO_IPTABLES;
 
-	/* Start from a clean slate so applying twice is idempotent. */
-	linux_stop (NULL);
-
-	script = fs_script_generate_inbound (policy, current_settings);
-	ok = apply_lines (script);
-	g_free (script);
-
-	if (ok) {
-		script = fs_script_generate_outbound (policy, current_settings);
-		ok = apply_lines (script);
-		g_free (script);
-	}
-
-	/* Hook the chains into the built-in ones.  Without this the
-	 * INBOUND/OUTBOUND chains are created and filled but never
-	 * consulted by the kernel, so nothing would actually be filtered
-	 * while the UI claimed the policy was applied. */
-	if (ok) {
-		gchar *hook_input[] = { (gchar *) "iptables", (gchar *) "-w",
-		                        (gchar *) "-A", (gchar *) "INPUT",
-		                        (gchar *) "-j", (gchar *) "INBOUND", NULL };
-		gchar *hook_output[] = { (gchar *) "iptables", (gchar *) "-w",
-		                         (gchar *) "-A", (gchar *) "OUTPUT",
-		                         (gchar *) "-j", (gchar *) "OUTBOUND", NULL };
-		gchar *hook_forward[] = { (gchar *) "iptables", (gchar *) "-w",
-		                          (gchar *) "-A", (gchar *) "FORWARD",
-		                          (gchar *) "-j", (gchar *) "INBOUND", NULL };
-
-		ok = (run_command (hook_input) == 0 &&
-		      run_command (hook_output) == 0 &&
-		      run_command (hook_forward) == 0);
-	}
-
-	/* NAT lives in the nat table, not the filter table, so the filter
-	 * script never touches it.  This is the part that makes the box a
-	 * router: masquerade outbound traffic and allow the forward. */
-	if (ok && current_settings != NULL && current_settings->nat &&
-	    current_settings->ext_device != NULL) {
-		ok = apply_nat (current_settings);
-	}
-
-	if (ok && current_settings != NULL && current_settings->nat)
-		linux_sysctl_forwarding ();
-
-	if (!ok) {
+	if (current_settings == NULL) {
 		g_set_error_literal (error,
 		                     g_quark_from_static_string ("fs-backend-linux"),
-		                     0,
-		                     "One or more iptables commands failed. "
-		                     "Check that iptables is installed and that "
-		                     "the interface names in the policy exist.");
+		                     0, "No firewall settings have been loaded.");
+		return FS_APPLY_FAILED;
+	}
+
+	/* Everything is rendered (and every host name looked up) before
+	 * anything in the kernel changes. */
+	plan = fs_script_restore_plan (policy, current_settings, &local);
+	if (plan == NULL) {
+		g_propagate_error (error, local);
+		return FS_APPLY_FAILED;
+	}
+
+	do6 = kernel_has_ipv6 () && have_ip6tables ();
+
+	memset (&snap4, 0, sizeof (snap4));
+	memset (&snap6, 0, sizeof (snap6));
+	take_snapshot (&FAMILY4, "filter", FILTER_CHAINS, &snap4.filter);
+	take_snapshot (&FAMILY4, "nat", NAT_CHAINS, &snap4.nat);
+	snap4.forward_hooked = jump_present (&FAMILY4, "filter", "FORWARD",
+	                                     "INBOUND");
+	if (do6) {
+		take_snapshot (&FAMILY6, "filter", FILTER_CHAINS, &snap6.filter);
+		take_snapshot (&FAMILY6, "nat", NAT_CHAINS, &snap6.nat);
+		snap6.forward_hooked = jump_present (&FAMILY6, "filter",
+		                                     "FORWARD", "INBOUND");
+	}
+
+	ok = load_family (&FAMILY4, &plan->v4, &snap4, &why);
+	if (!ok) {
+		gboolean back = roll_back (&FAMILY4, &snap4);
+
+		g_set_error (error, g_quark_from_static_string ("fs-backend-linux"),
+		             0, "The IPv4 rules were refused (%s). %s", why,
+		             back ? "Nothing was changed."
+		                  : "Putting the previous rules back also failed; "
+		                    "stop and start the firewall.");
+		result = FS_APPLY_FAILED;
+	} else if (do6 && !load_family (&FAMILY6, &plan->v6, &snap6, &why)) {
+		/* Both families, always: && would skip IPv4 whenever the
+		 * IPv6 side could not be put back, leaving IPv4 on the new
+		 * policy while the error says nothing changed. */
+		gboolean back6 = roll_back (&FAMILY6, &snap6);
+		gboolean back4 = roll_back (&FAMILY4, &snap4);
+		gboolean back = back6 && back4;
+
+		g_set_error (error, g_quark_from_static_string ("fs-backend-linux"),
+		             0, "The IPv6 rules were refused (%s). %s", why,
+		             back ? "IPv4 was put back as it was, so nothing "
+		                    "changed."
+		                  : "Putting the previous rules back also failed; "
+		                    "stop and start the firewall.");
 		result = FS_APPLY_FAILED;
 	}
 
+	if (result == FS_APPLY_OK) {
+		legacy_cleanup ();
+
+		if (current_settings->nat)
+			linux_sysctl_forwarding ();
+
+		if (!do6 && kernel_has_ipv6 ()) {
+			partial = g_string_new ("IPv6 is not filtered: ip6tables "
+			                        "is not installed.");
+		}
+
+		for (guint i = 0; i < plan->skipped->len; i++) {
+			if (partial == NULL)
+				partial = g_string_new (NULL);
+			else
+				g_string_append_c (partial, '\n');
+			g_string_append (partial,
+			                 g_ptr_array_index (plan->skipped, i));
+		}
+
+		if (partial != NULL) {
+			g_set_error_literal (error,
+			                     g_quark_from_static_string ("fs-backend-linux"),
+			                     0, partial->str);
+			g_string_free (partial, TRUE);
+			result = FS_APPLY_PARTIAL;
+		}
+	}
+
+	g_free (why);
+	family_snap_clear (&snap4);
+	family_snap_clear (&snap6);
+	fs_restore_plan_free (plan);
 	return result;
+}
+
+/* [ linux_ipv6_state ] -- see FsBackend.ipv6_state. */
+static FsIpv6State
+linux_ipv6_state (gchar **detail)
+{
+	FsIpv6State state;
+	const gchar *text;
+	const gchar *hook[] = { "-C", "INPUT", "-j", "INBOUND", NULL };
+	const gchar *list[] = { "-n", "-L", "INBOUND", NULL };
+
+	if (!kernel_has_ipv6 ()) {
+		state = FS_IPV6_ABSENT;
+		text = "This system has no IPv6, so there is nothing to filter.";
+	} else if (geteuid () != 0) {
+		state = FS_IPV6_UNKNOWN;
+		text = "Run StockFW as root to see whether IPv6 is filtered.";
+	} else if (!have_ip6tables ()) {
+		state = FS_IPV6_UNFILTERED;
+		text = "ip6tables is not installed, so IPv6 traffic is not "
+		       "filtered.";
+	} else if (tool_quiet (&FAMILY6, "filter", list) != 0) {
+		state = FS_IPV6_UNFILTERED;
+		text = chain_exists ()
+			? "The IPv6 rules are not loaded. Apply the policy again."
+			: "The firewall is stopped.";
+	} else if (tool_quiet (&FAMILY6, "filter", hook) != 0) {
+		state = FS_IPV6_UNFILTERED;
+		text = "The IPv6 rules are loaded but not in use. Apply the "
+		       "policy again.";
+	} else {
+		state = FS_IPV6_FILTERED;
+		text = "IPv4 and IPv6 are filtered by the same policy.";
+	}
+
+	if (detail != NULL)
+		*detail = g_strdup (text);
+	return state;
 }
 
 /* [ linux_sysctl_forwarding ] */
@@ -1487,7 +1786,8 @@ static const FsBackend linux_backend = {
 	.log_problem           = linux_log_problem,
 	.dhcp_set_enabled      = linux_dhcp_set_enabled,
 	.get_profile_enabled   = linux_get_profile_enabled,
-	.set_profile_enabled   = linux_set_profile_enabled
+	.set_profile_enabled   = linux_set_profile_enabled,
+	.ipv6_state            = linux_ipv6_state
 };
 
 const FsBackend *

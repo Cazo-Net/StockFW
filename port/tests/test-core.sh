@@ -23,6 +23,7 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 
 cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include <glib.h>
+#include <gio/gio.h>
 #include <stdio.h>
 #include <string.h>
 #include "core/fs-rules.h"
@@ -1430,7 +1431,7 @@ static void test_sentinel_auto_gates (void)
 		for (i = 0; i < 6; i++)
 			fs_copilot_feed_event_at (
 				c, &hit,
-				t0 + 3 * 3600 * G_USEC_PER_SEC +
+				t0 + (gint64) 3 * 3600 * G_USEC_PER_SEC +
 				(gint64) i * 60 * G_USEC_PER_SEC);
 		b = find_insight (c, FS_INSIGHT_BEACON);
 		CHECK (b != NULL,
@@ -5335,6 +5336,404 @@ static void test_script_accept_log (void)
 	fs_policy_free (policy);
 }
 
+/* ---- 1.0.7: dual-stack restore plans -------------------------------- */
+
+static gint fake_lookups = 0;
+
+/* Stands in for DNS: example.test has both families, v4only.test only
+ * IPv4, and anything else fails the way an outage does. */
+static gboolean
+fake_resolve (const gchar *host, GPtrArray *v4, GPtrArray *v6, GError **error)
+{
+	fake_lookups++;
+	if (strcmp (host, "example.test") == 0) {
+		g_ptr_array_add (v4, g_strdup ("192.0.2.66"));
+		g_ptr_array_add (v6, g_strdup ("2001:db8::66"));
+		return TRUE;
+	}
+	if (strcmp (host, "v4only.test") == 0) {
+		g_ptr_array_add (v4, g_strdup ("192.0.2.9"));
+		return TRUE;
+	}
+	if (strcmp (host, "liar.test") == 0) {
+		/* A resolver that answers with something that is not an
+		 * address must not get it into a rule. */
+		g_ptr_array_add (v4, g_strdup ("1.2.3.4 -j ACCEPT"));
+		return TRUE;
+	}
+	g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+	                     "Temporary failure in name resolution");
+	return FALSE;
+}
+
+static void
+plan_add (FsPolicy *p, FsRuleKind kind, const gchar *port,
+          const gchar *target, const gchar *to, const gchar *to_port)
+{
+	FsRule *r = fs_rule_new (kind);
+
+	r->service = g_strdup ("Test");
+	r->port = g_strdup (port);
+	r->target = g_strdup (target);
+	r->to = g_strdup (to);
+	r->to_port = g_strdup (to_port);
+	fs_policy_add (p, r);
+	fs_rule_free (r);
+}
+
+/* Every line of a restore payload is a table header, a chain
+ * declaration, a rule in one of StockFW's chains, a chain removal, or
+ * COMMIT -- nothing else may reach iptables-restore. */
+static gboolean
+plan_lines_are_ours (const gchar *payload)
+{
+	gchar **lines = g_strsplit (payload, "\n", -1);
+	gboolean ok = TRUE;
+
+	for (gint i = 0; lines[i] != NULL; i++) {
+		const gchar *l = lines[i];
+
+		if (*l == '\0' || g_str_has_prefix (l, "*") ||
+		    g_str_has_prefix (l, ":") || strcmp (l, "COMMIT") == 0 ||
+		    g_str_has_prefix (l, "-X "))
+			continue;
+		if (g_str_has_prefix (l, "-A INBOUND ") ||
+		    g_str_has_prefix (l, "-A OUTBOUND ") ||
+		    g_str_has_prefix (l, "-A ACCEPT_LOG ") ||
+		    g_str_has_prefix (l, "-A STOCKFW-DNAT ") ||
+		    g_str_has_prefix (l, "-A STOCKFW-SNAT "))
+			continue;
+		ok = FALSE;
+	}
+	g_strfreev (lines);
+	return ok;
+}
+
+/* Position of needle in hay, or G_MAXSIZE when absent (so "absent"
+ * never passes an ordering check). */
+static gsize
+pos_of (const gchar *hay, const gchar *needle)
+{
+	const gchar *p = hay != NULL ? strstr (hay, needle) : NULL;
+
+	return p != NULL ? (gsize) (p - hay) : G_MAXSIZE;
+}
+
+static void test_target_families (void)
+{
+	struct { const gchar *t; FsFamily want; } cases[] = {
+		{ "Anyone",          FS_FAMILY_BOTH },
+		{ "10.0.0.1",        FS_FAMILY_IPV4 },
+		{ "10.0.0.0/8",      FS_FAMILY_IPV4 },
+		{ "2001:db8::1",     FS_FAMILY_IPV6 },
+		{ "2001:db8::/32",   FS_FAMILY_IPV6 },
+		{ "::ffff:1.2.3.4",  FS_FAMILY_IPV6 },
+		{ "example.org",     FS_FAMILY_BOTH },
+		{ "example.org/24",  FS_FAMILY_NONE },
+		{ "10.0.0.0/33",     FS_FAMILY_NONE },
+		{ "2001:db8::/129",  FS_FAMILY_NONE },
+		{ "-evil.example",   FS_FAMILY_NONE },
+		{ "a.-b.example",    FS_FAMILY_NONE },
+		{ "1.2.3.4\n-A INPUT -j ACCEPT", FS_FAMILY_NONE },
+		{ "1.2.3.4 -j ACCEPT", FS_FAMILY_NONE },
+		{ "",                FS_FAMILY_BOTH },  /* empty = anyone */
+	};
+
+	for (gsize i = 0; i < G_N_ELEMENTS (cases); i++) {
+		FsFamily got = fs_util_target_families (cases[i].t);
+		gchar *shown = g_strescape (cases[i].t, NULL);
+
+		CHECK (got == cases[i].want,
+		       "target \"%s\" covers %s (got %s)", shown,
+		       cases[i].want == FS_FAMILY_NONE ? "nothing"
+		         : fs_util_families_label (cases[i].want),
+		       got == FS_FAMILY_NONE ? "nothing"
+		         : fs_util_families_label (got));
+		g_free (shown);
+	}
+
+	CHECK (fs_util_target_families (NULL) == FS_FAMILY_BOTH,
+	       "no target means anyone: both families");
+	CHECK (strcmp (fs_util_families_label (FS_FAMILY_BOTH), "IPv4 + IPv6") == 0 &&
+	       strcmp (fs_util_families_label (FS_FAMILY_IPV4), "IPv4 only") == 0 &&
+	       strcmp (fs_util_families_label (FS_FAMILY_IPV6), "IPv6 only") == 0 &&
+	       strcmp (fs_util_families_label (FS_FAMILY_NONE), "") == 0,
+	       "family labels read as the Policy page shows them");
+
+	CHECK (fs_util_is_valid_ifname ("eth0") &&
+	       fs_util_is_valid_ifname ("wlp2s0") &&
+	       fs_util_is_valid_ifname ("br-1a2b3c4d5e6f") &&
+	       fs_util_is_valid_ifname ("veth1@if3") &&
+	       fs_util_is_valid_ifname ("enp0s31f6.100"),
+	       "real interface names are valid");
+	CHECK (!fs_util_is_valid_ifname ("") &&
+	       !fs_util_is_valid_ifname (NULL) &&
+	       !fs_util_is_valid_ifname ("-j") &&
+	       !fs_util_is_valid_ifname ("abcdefghijklmnop") &&
+	       !fs_util_is_valid_ifname ("eth0\n-A INPUT -j ACCEPT") &&
+	       !fs_util_is_valid_ifname ("eth 0") &&
+	       !fs_util_is_valid_ifname ("eth0\""),
+	       "empty, option-like, too long (16), newline, space and quote "
+	       "are not interface names");
+	CHECK (!fs_util_is_valid_host ("-evil.example") &&
+	       !fs_util_is_valid_host ("ok.-evil.example") &&
+	       fs_util_is_valid_host ("ok-fine.example"),
+	       "a host label may not start with '-' (it would read as an "
+	       "option)");
+}
+
+static void test_restore_plan (void)
+{
+	FsPolicy *p = fs_policy_new ();
+	FsSettings *s = fs_settings_new ();
+	FsRestorePlan *plan;
+	GError *error = NULL;
+	gchar *text;
+
+	s->ext_device = g_strdup ("eth0");
+	s->int_device = g_strdup ("eth1");
+	s->filter_icmp = FALSE;     /* essentials must not depend on it */
+
+	plan_add (p, FS_RULE_INBOUND_ALLOW_SERVICE, "22", "192.168.1.0/24",
+	          NULL, NULL);
+	plan_add (p, FS_RULE_INBOUND_ALLOW_SERVICE, "67-68", "Anyone",
+	          NULL, NULL);
+	plan_add (p, FS_RULE_INBOUND_ALLOW_FROM, NULL, "2001:db8:1::/48",
+	          NULL, NULL);
+	plan_add (p, FS_RULE_INBOUND_ALLOW_FROM, NULL, "v4only.test",
+	          NULL, NULL);
+	plan_add (p, FS_RULE_INBOUND_ALLOW_FROM, NULL, "down.test",
+	          NULL, NULL);
+	plan_add (p, FS_RULE_OUTBOUND_DENY_TO, NULL, "example.test",
+	          NULL, NULL);
+	plan_add (p, FS_RULE_OUTBOUND_DENY_FROM, NULL, "example.test",
+	          NULL, NULL);
+
+	fs_script_set_resolver (fake_resolve);
+	fake_lookups = 0;
+	plan = fs_script_restore_plan (p, s, &error);
+	CHECK (plan != NULL, "a mixed IPv4/IPv6/name policy plans (%s)",
+	       error != NULL ? error->message : "ok");
+	g_clear_error (&error);
+	if (plan == NULL)
+		goto out;
+
+	/* Family separation. */
+	CHECK (strstr (plan->v4.filter, "-s 192.168.1.0/24 -p tcp --dport 22 ") &&
+	       !strstr (plan->v6.filter, "192.168.1.0"),
+	       "an IPv4 range goes to IPv4 only");
+	CHECK (strstr (plan->v6.filter, "-A INBOUND -s 2001:db8:1::/48 -j ") &&
+	       !strstr (plan->v4.filter, "2001:db8:1::"),
+	       "an IPv6 range goes to IPv6 only");
+	CHECK (strstr (plan->v4.filter, "-p tcp --dport 67:68 ") &&
+	       strstr (plan->v6.filter, "-p udp --dport 67:68 "),
+	       "\"Anyone\" covers both families, and a 67-68 range is "
+	       "written 67:68 (iptables refuses the hyphen)");
+	CHECK (!strstr (plan->v4.filter, "67-68") && !strstr (plan->v6.filter, "67-68"),
+	       "no hyphen range is left anywhere");
+
+	/* Names: resolved once, each family gets its own addresses. */
+	CHECK (strstr (plan->v4.filter, "-A OUTBOUND -d 192.0.2.66 -j DROP") &&
+	       strstr (plan->v6.filter, "-A OUTBOUND -d 2001:db8::66 -j DROP"),
+	       "a blocked name becomes each family's own address");
+	CHECK (strstr (plan->v4.filter, "-A OUTBOUND -s 192.0.2.66 -j DROP") &&
+	       strstr (plan->v6.filter, "-A OUTBOUND -s 2001:db8::66 -j DROP"),
+	       "and so does a blocked source");
+	CHECK (!strstr (plan->v4.filter, "example.test") &&
+	       !strstr (plan->v6.filter, "example.test"),
+	       "no name is left for iptables to resolve at load time");
+	CHECK (fake_lookups == 3,
+	       "each name is looked up once for both families and every "
+	       "rule using it (%d lookups for 3 names)", fake_lookups);
+	CHECK (strstr (plan->v4.filter, "-s 192.0.2.9 ") &&
+	       !strstr (plan->v6.filter, "192.0.2.9"),
+	       "a name with only an IPv4 address is an IPv4-only rule");
+	{
+		gboolean noted = FALSE;
+
+		for (guint i = 0; i < plan->notes->len; i++)
+			noted |= strstr (g_ptr_array_index (plan->notes, i),
+			                 "v4only.test has no IPv6 address") != NULL;
+		CHECK (noted, "and the plan says so");
+	}
+	{
+		gboolean skipped = FALSE;
+
+		for (guint i = 0; i < plan->skipped->len; i++)
+			skipped |= strstr (g_ptr_array_index (plan->skipped, i),
+			                   "down.test") != NULL;
+		CHECK (skipped && !strstr (plan->v4.filter, "down.test"),
+		       "an allow whose name cannot be looked up is left out and "
+		       "reported (fails closed)");
+	}
+
+	/* What IPv6 needs to work, whatever the ICMP preferences say. */
+	CHECK (strstr (plan->v6.filter, "-A INBOUND -p ipv6-icmp --icmpv6-type "
+	                                "neighbour-solicitation -m hl --hl-eq 255 -j ACCEPT\n") &&
+	       strstr (plan->v6.filter, "-A INBOUND -p ipv6-icmp --icmpv6-type "
+	                                "neighbour-advertisement -m hl --hl-eq 255 -j ACCEPT\n") &&
+	       strstr (plan->v6.filter, "-A INBOUND -s fe80::/10 -p ipv6-icmp "
+	                                "--icmpv6-type router-advertisement -m hl --hl-eq 255 -j ACCEPT\n") &&
+	       strstr (plan->v6.filter, "-A INBOUND -p ipv6-icmp --icmpv6-type "
+	                                "packet-too-big -j ACCEPT\n"),
+	       "IPv6 inbound always accepts neighbour discovery, router "
+	       "adverts and packet-too-big, unlimited");
+	CHECK (strstr (plan->v6.filter, "-A OUTBOUND -p ipv6-icmp --icmpv6-type "
+	                                "neighbour-solicitation -m hl --hl-eq 255 -j ACCEPT\n") &&
+	       strstr (plan->v6.filter, "-A OUTBOUND -p ipv6-icmp --icmpv6-type "
+	                                "router-solicitation -m hl --hl-eq 255 -j ACCEPT\n"),
+	       "and lets its own solicitations out");
+	CHECK (!strstr (plan->v6.filter, "-p icmp "),
+	       "no IPv4 ICMP rule in IPv6 (ip6tables takes it as protocol 1 "
+	       "and it never matches)");
+	CHECK (!strstr (plan->v4.filter, "ipv6-icmp"),
+	       "and no ICMPv6 in IPv4");
+	CHECK (pos_of (plan->v6.filter, "neighbour-solicitation") <
+	       pos_of (plan->v6.filter, "-A INBOUND -m limit"),
+	       "neighbour discovery comes before any rate-limited ICMP rule");
+
+	/* Loopback and ordering. */
+	CHECK (strstr (plan->v4.filter, "-A OUTBOUND -o lo -j ACCEPT\n") &&
+	       strstr (plan->v6.filter, "-A OUTBOUND -o lo -j ACCEPT\n") &&
+	       !strstr (plan->v4.filter, "-A OUTBOUND -i lo"),
+	       "OUTBOUND accepts loopback with -o lo (-i lo never matches "
+	       "in OUTPUT)");
+	CHECK (pos_of (plan->v4.filter, "-A OUTBOUND -m conntrack --ctstate "
+	                                "ESTABLISHED,RELATED -j ACCEPT") <
+	       pos_of (plan->v4.filter, "-A OUTBOUND -d 192.0.2.66 -j DROP"),
+	       "a block on connections out comes after the reply accept, so "
+	       "it never cuts replies to connections that host opened to us");
+	CHECK (strstr (plan->v6.filter, "-A INBOUND -i eth0 -s ::1/128 -j DROP") &&
+	       strstr (plan->v6.filter, "-A INBOUND -i eth0 -s ::ffff:0:0/96 -j DROP"),
+	       "IPv6 drops spoofed loopback and IPv4-mapped sources on the "
+	       "outside interface");
+	CHECK (plan->v4.nat == NULL && plan->v6.nat == NULL,
+	       "without router mode there is no nat table in the plan");
+	CHECK (plan_lines_are_ours (plan->v4.filter) &&
+	       plan_lines_are_ours (plan->v6.filter),
+	       "every line written is a rule in StockFW's own chains");
+	fs_restore_plan_free (plan);
+
+	/* Restrictive outbound must not cut IPv6 off its own network. */
+	s->restrictive_outbound = TRUE;
+	plan = fs_script_restore_plan (p, s, NULL);
+	CHECK (plan != NULL &&
+	       pos_of (plan->v6.filter, "-A OUTBOUND -p ipv6-icmp --icmpv6-type "
+	                                "neighbour-solicitation") <
+	       pos_of (plan->v6.filter, "-A OUTBOUND -j DROP") &&
+	       pos_of (plan->v6.filter, "-A OUTBOUND -p udp --sport 546 --dport 547 -j ACCEPT") <
+	       pos_of (plan->v6.filter, "-A OUTBOUND -j DROP"),
+	       "restrictive outbound still lets neighbour discovery and "
+	       "DHCPv6 out, ahead of its default drop");
+	fs_restore_plan_free (plan);
+	s->restrictive_outbound = FALSE;
+
+	/* Router mode. */
+	s->nat = TRUE;
+	plan_add (p, FS_RULE_INBOUND_FORWARD, "8080", NULL, "2001:db8::5", "80");
+	plan_add (p, FS_RULE_INBOUND_FORWARD, "8081", NULL, "192.168.1.5", "80");
+	plan_add (p, FS_RULE_INBOUND_FORWARD, "8082", NULL, "example.test", "80");
+	plan = fs_script_restore_plan (p, s, NULL);
+	CHECK (plan != NULL && plan->v4.nat != NULL && plan->v6.nat != NULL,
+	       "router mode adds a nat table to both families");
+	if (plan != NULL && plan->v4.nat != NULL && plan->v6.nat != NULL) {
+		CHECK (strstr (plan->v6.nat, "-A STOCKFW-DNAT -i eth0 -p tcp --dport 8080 "
+		                             "-j DNAT --to-destination [2001:db8::5]:80\n") != NULL,
+		       "an IPv6 forward is written [address]:port");
+		CHECK (strstr (plan->v4.nat, "--to-destination 192.168.1.5:80\n") &&
+		       !strstr (plan->v4.nat, "2001:db8::5") &&
+		       !strstr (plan->v6.nat, "192.168.1.5"),
+		       "each forward is in its own family's nat table");
+		CHECK (strstr (plan->v4.nat, "-A STOCKFW-SNAT -o eth0 -j MASQUERADE") &&
+		       !strstr (plan->v6.nat, "MASQUERADE"),
+		       "masquerading is IPv4 only, in STOCKFW-SNAT");
+		CHECK (!strstr (plan->v4.nat, "example.test") &&
+		       !strstr (plan->v4.nat, "192.0.2.66"),
+		       "a forward to a name is left out, not resolved");
+		CHECK (strstr (plan->v6.filter, "-A INBOUND -d 2001:db8::5 -p tcp --dport 80 "
+		                                "-m conntrack --ctstate DNAT -j ") != NULL,
+		       "what a forward lets in is accepted after the DNAT");
+		CHECK (pos_of (plan->v4.filter, "-A OUTBOUND -d 192.0.2.66 -j DROP") <
+		       pos_of (plan->v4.filter, "-A OUTBOUND -o eth0 -j ACCEPT"),
+		       "in router mode a block comes before the accept for "
+		       "everything leaving the outside interface");
+		CHECK (plan_lines_are_ours (plan->v4.nat) &&
+		       plan_lines_are_ours (plan->v6.nat),
+		       "nat lines are in StockFW's own chains only");
+	}
+	fs_restore_plan_free (plan);
+	s->nat = FALSE;
+
+	/* A block that cannot be looked up fails the whole plan. */
+	plan_add (p, FS_RULE_OUTBOUND_DENY_TO, NULL, "down.test", NULL, NULL);
+	plan = fs_script_restore_plan (p, s, &error);
+	CHECK (plan == NULL && g_error_matches (error, FS_SCRIPT_ERROR,
+	                                        FS_SCRIPT_ERR_RESOLVE),
+	       "a block whose name cannot be looked up fails the plan (it "
+	       "must not fail open)");
+	g_clear_error (&error);
+	fs_restore_plan_free (plan);
+
+out:
+	fs_policy_free (p);
+	fs_settings_free (s);
+
+	/* Hostile input never reaches a rule. */
+	p = fs_policy_new ();
+	s = fs_settings_new ();
+	s->ext_device = g_strdup ("eth0\n-A INPUT -j ACCEPT");
+	plan = fs_script_restore_plan (p, s, &error);
+	CHECK (plan == NULL && g_error_matches (error, FS_SCRIPT_ERROR,
+	                                        FS_SCRIPT_ERR_INVALID),
+	       "an interface name carrying a second rule is refused");
+	g_clear_error (&error);
+	fs_restore_plan_free (plan);
+
+	g_free (s->ext_device);
+	s->ext_device = g_strdup ("eth0");
+	plan_add (p, FS_RULE_INBOUND_ALLOW_SERVICE, "22\n-A INPUT -j ACCEPT",
+	          "Anyone", NULL, NULL);
+	plan_add (p, FS_RULE_INBOUND_ALLOW_FROM, NULL,
+	          "1.2.3.4\n-A INPUT -j ACCEPT", NULL, NULL);
+	plan_add (p, FS_RULE_INBOUND_ALLOW_FROM, NULL, "liar.test", NULL, NULL);
+	plan = fs_script_restore_plan (p, s, &error);
+	CHECK (plan == NULL ||
+	       (plan_lines_are_ours (plan->v4.filter) &&
+	        plan_lines_are_ours (plan->v6.filter) &&
+	        !strstr (plan->v4.filter, "INPUT") &&
+	        !strstr (plan->v4.filter, "1.2.3.4")),
+	       "a port, a target or a resolver answer carrying a rule never "
+	       "becomes one");
+	g_clear_error (&error);
+	fs_restore_plan_free (plan);
+
+	plan_add (p, FS_RULE_OUTBOUND_DENY_TO, NULL, "1.2.3.4\" -j ACCEPT", NULL,
+	          NULL);
+	plan = fs_script_restore_plan (p, s, &error);
+	CHECK (plan == NULL && error != NULL,
+	       "a block on something that is not an address fails the plan "
+	       "rather than being dropped silently");
+	g_clear_error (&error);
+	fs_restore_plan_free (plan);
+
+	fs_policy_free (p);
+	fs_settings_free (s);
+
+	/* The text form (scripts, What-If) keeps a name for iptables. */
+	p = fs_policy_new ();
+	s = fs_settings_new ();
+	plan_add (p, FS_RULE_OUTBOUND_DENY_TO, NULL, "203.0.113.50", NULL, NULL);
+	text = fs_script_generate_outbound (p, s);
+	CHECK (strstr (text, "$IPT -A OUTBOUND -d 203.0.113.50 -j DROP\n") != NULL,
+	       "the text form writes host blocks into OUTBOUND (\"-A OUTBOUND\" "
+	       "was missing, so the line was not a rule at all)");
+	g_free (text);
+	fs_policy_free (p);
+	fs_settings_free (s);
+
+	fs_script_set_resolver (NULL);
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -5390,6 +5789,8 @@ int main (void)
 	test_netparse_kmsg ();
 	test_netparse_verdicts ();
 	test_script_accept_log ();
+	test_target_families ();
+	test_restore_plan ();
 	test_activity_series ();
 	test_activity_sampler ();
 	test_json_writer ();
@@ -5408,7 +5809,7 @@ fi
 
 cc "$BUILD_DIR/test-core.c" \
    -I src \
-   $(pkg-config --cflags glib-2.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0) \
    -o "$BUILD_DIR/test-core" \
    src/core/*.c \
    $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS

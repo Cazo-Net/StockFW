@@ -165,6 +165,12 @@ fs_util_is_valid_host (const gchar *host)
 			if (!g_ascii_isalnum (*p) && *p != '.' &&
 			    *p != '-' && *p != '_')
 				return FALSE;
+
+			/* No label may start with '-' (RFC 1123).  A name
+			 * like "-j" would otherwise read as an option to
+			 * whatever tool the name is handed to. */
+			if (*p == '-' && (p == host || *(p - 1) == '.'))
+				return FALSE;
 		}
 
 		return TRUE;
@@ -215,6 +221,70 @@ fs_util_target_is_anyone (const gchar *target)
 	        g_strcmp0 (target, "*") == 0 ||
 	        g_ascii_strcasecmp (target, "any") == 0 ||
 	        g_ascii_strcasecmp (target, "all") == 0);
+}
+
+/* [ fs_util_target_families ] -- see fs-util.h. */
+FsFamily
+fs_util_target_families (const gchar *target)
+{
+	const gchar *slash;
+	gchar *addr;
+	FsFamily fam;
+	struct in6_addr v6;
+	struct in_addr v4;
+
+	if (fs_util_target_is_anyone (target))
+		return FS_FAMILY_BOTH;
+
+	if (!fs_util_is_valid_host (target))
+		return FS_FAMILY_NONE;
+
+	slash = strchr (target, '/');
+	addr = slash != NULL ? g_strndup (target, (gsize) (slash - target))
+	                     : g_strdup (target);
+
+	if (inet_pton (AF_INET6, addr, &v6) == 1)
+		fam = FS_FAMILY_IPV6;
+	else if (inet_pton (AF_INET, addr, &v4) == 1)
+		fam = FS_FAMILY_IPV4;
+	else if (slash != NULL)
+		fam = FS_FAMILY_NONE;      /* a prefix on a name */
+	else
+		fam = FS_FAMILY_BOTH;      /* a host name */
+
+	g_free (addr);
+	return fam;
+}
+
+const gchar *
+fs_util_families_label (FsFamily families)
+{
+	switch (families & FS_FAMILY_BOTH) {
+	case FS_FAMILY_BOTH: return "IPv4 + IPv6";
+	case FS_FAMILY_IPV4: return "IPv4 only";
+	case FS_FAMILY_IPV6: return "IPv6 only";
+	default:             return "";
+	}
+}
+
+gboolean
+fs_util_is_valid_ifname (const gchar *name)
+{
+	gsize len;
+
+	if (name == NULL || *name == '\0' || *name == '-')
+		return FALSE;
+
+	len = strlen (name);
+	if (len > 15)
+		return FALSE;
+
+	for (const gchar *p = name; *p != '\0'; p++)
+		if (!g_ascii_isalnum (*p) && *p != '.' && *p != '_' &&
+		    *p != '-' && *p != '@')
+			return FALSE;
+
+	return TRUE;
 }
 
 /* [ fs_util_addr_in_cidr ]

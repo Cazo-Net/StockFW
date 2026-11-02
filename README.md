@@ -100,13 +100,17 @@ rules — without a shell prompt.
 | Event source | Security log 5156/5157 | kernel log |
 | Profiles | Domain / Private / Public per-profile state | filter table |
 | Build | MSYS2 (UCRT64) | CMake + Ninja (Debian/Kali/WSL2) |
-| IPv6 | Filtered (Windows Firewall covers both families) | **Not filtered yet.** Rules are written for IPv4 only; see below |
+| IPv6 | Filtered (Windows Firewall covers both families) | Filtered (1.0.7): the same policy is loaded into `iptables` and `ip6tables` |
 
-**Known limit (Linux, IPv6).** The Linux backend writes `iptables` rules,
-which apply to IPv4 only. IPv6 traffic is not filtered by StockFW, even
-though IPv6 connections appear in the Connections panel. On a host with a
-global IPv6 address, keep the distribution's own `ip6tables`/nftables
-policy in place, or disable IPv6, until IPv6 rules ship (planned for 1.0.7).
+**IPv6 on Linux (1.0.7).** One apply loads the policy into both families
+with `iptables-restore` and `ip6tables-restore`, each replacing only
+StockFW's own chains in one atomic step. If the IPv6 half is refused, the
+IPv4 half is put back, so the kernel never runs half of a new policy.
+Each address goes only to its own family; a host name is looked up once
+when you apply and written as its IPv4 and IPv6 addresses. Neighbour
+discovery, router adverts, path-MTU and DHCPv6 are always allowed, even
+in restrictive mode, because IPv6 does not work without them. Without
+`ip6tables` installed, the apply reports that IPv6 is not filtered.
 
 ## Privilege model (summary)
 

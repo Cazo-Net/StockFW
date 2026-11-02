@@ -15,6 +15,7 @@
 #include <glib.h>
 #include "core/fs-types.h"
 #include "core/fs-rules.h"
+#include "core/fs-util.h"
 
 G_BEGIN_DECLS
 
@@ -78,11 +79,90 @@ void        fs_settings_save_prefs (const FsSettings *settings);
  * dispatches to the per-direction setup scripts. */
 gchar *fs_script_generate_control (const FsSettings *settings);
 
-/* Per-direction setup.  "inbound" / "outbound". */
+/* Per-direction setup.  "inbound" / "outbound".  IPv4. */
 gchar *fs_script_generate_inbound  (const FsPolicy *policy,
                                     const FsSettings *settings);
 gchar *fs_script_generate_outbound (const FsPolicy *policy,
                                     const FsSettings *settings);
+
+/* The same for one family (FS_FAMILY_IPV4 or FS_FAMILY_IPV6), as
+ * "$IPT ..." text.  For IPv6, $IPT stands for ip6tables.  Host names
+ * are kept as written for IPv4 and left out for IPv6 (only the restore
+ * form below resolves them). */
+gchar *fs_script_generate_inbound_family  (const FsPolicy *policy,
+                                           const FsSettings *settings,
+                                           FsFamily family);
+gchar *fs_script_generate_outbound_family (const FsPolicy *policy,
+                                           const FsSettings *settings,
+                                           FsFamily family);
+
+/* ---- iptables-restore form (1.0.7) ---------------------------------
+ *
+ * What the Linux backend loads: per family, one iptables-restore input
+ * for the filter table and, when needed, one for the nat table.  Each
+ * is applied with `<tool>-restore --noflush', so it replaces StockFW's
+ * own chains in one transaction and touches nothing else:
+ *
+ *   filter   INBOUND, OUTBOUND, ACCEPT_LOG (declared, so flushed and
+ *            refilled; ACCEPT_LOG is declared and deleted when logging
+ *            of allowed connections is off)
+ *   nat      STOCKFW-DNAT (port forwards), STOCKFW-SNAT (router-mode
+ *            masquerading, IPv4 only)
+ *
+ * The jumps from INPUT/OUTPUT/FORWARD and PREROUTING/POSTROUTING into
+ * these chains are the backend's business.
+ *
+ * Host names are looked up here, once per plan, through the resolver
+ * (fs_script_set_resolver), and written as addresses: each family gets
+ * the addresses of its own kind.  A name with no address of one family
+ * is noted (notes) and its rules cover the other family only.  A name
+ * that cannot be looked up costs an allow rule (left out, listed in
+ * skipped: the firewall fails closed) but fails the whole plan for a
+ * block, because leaving a block out would let through what the user
+ * blocked. */
+
+#define FS_SCRIPT_DNAT_CHAIN "STOCKFW-DNAT"
+#define FS_SCRIPT_SNAT_CHAIN "STOCKFW-SNAT"
+
+GQuark fs_script_error_quark (void);
+#define FS_SCRIPT_ERROR (fs_script_error_quark ())
+
+enum
+{
+	FS_SCRIPT_ERR_RESOLVE = 1,  /* a blocked host could not be looked up */
+	FS_SCRIPT_ERR_INVALID       /* a value cannot be written safely      */
+};
+
+/* Fills v4 and v6 (GPtrArray of gchar*, with free functions) with the
+ * addresses `host' resolves to.  FALSE with error when the lookup
+ * failed.  Results are validated again before use. */
+typedef gboolean (*FsScriptResolveFunc) (const gchar *host,
+                                         GPtrArray *v4, GPtrArray *v6,
+                                         GError **error);
+
+/* Tests replace the resolver; NULL restores the system's (GResolver). */
+void fs_script_set_resolver (FsScriptResolveFunc func);
+
+typedef struct
+{
+	gchar *filter;   /* iptables-restore input, "*filter ... COMMIT"   */
+	gchar *nat;      /* "*nat ... COMMIT", or NULL: nothing in nat     */
+} FsRestorePart;
+
+typedef struct
+{
+	FsRestorePart v4;
+	FsRestorePart v6;
+	GPtrArray *notes;    /* gchar*: things worth knowing, no harm done */
+	GPtrArray *skipped;  /* gchar*: rules that are not enforced         */
+} FsRestorePlan;
+
+/* NULL with error when the policy cannot be applied safely as a whole
+ * (a block that cannot be resolved, an invalid interface name). */
+FsRestorePlan *fs_script_restore_plan (const FsPolicy *policy,
+                                       const FsSettings *settings,
+                                       GError **error);
+void           fs_restore_plan_free   (FsRestorePlan *plan);
 
 /* Everything a start needs, as one script. */
 gchar *fs_script_generate_full (const FsPolicy *policy,
