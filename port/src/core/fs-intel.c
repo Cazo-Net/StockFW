@@ -16,10 +16,12 @@
  *   honest state fs_intel_state, counters (6.6)
  *   lookup       one address (6.8)
  *
- * The store is Linux-only in Round 1; on any other platform every call
- * that needs it fails with FS_INTEL_ERR_UNSUPPORTED (Round 3 brings the
- * Windows store), while the in-memory parts (the config structure, the
- * build from a given host, lookups' sentence) still compile and work.
+ * The store is Linux's /var/lib/stockfw/intel and, since Round 3,
+ * Windows' %ProgramData%\StockFW\intel (core/fs-winstore.c, which does
+ * the file operations there); on any other platform every call that
+ * needs it fails with FS_INTEL_ERR_UNSUPPORTED, while the in-memory
+ * parts (the config structure, the build from a given host, lookups'
+ * sentence) still compile and work.
  *
  * Order of writes, so a crash between two steps never leaves a state
  * that lies: a new copy's <id>.list is written before its <id>.state,
@@ -46,6 +48,9 @@
 #include "core/fs-audit.h"
 #include "core/fs-fetch.h"
 #include "core/fs-i18n.h"
+#ifdef G_OS_WIN32
+#include "core/fs-winstore.h"
+#endif
 
 #include <gio/gio.h>   /* G_IO_ERROR: the backends' error domain */
 #include <string.h>
@@ -405,19 +410,33 @@ fs_intel_dir (GError **error)
 		return NULL;
 	}
 	return checked_dir (STORE_DEFAULT, me, error);
+#elif defined G_OS_WIN32
+	return fs_winstore_dir (error);
 #else
 	g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNSUPPORTED,
-	             _("Blocklists are not available on this platform yet."));
+	             _("Blocklists are not available on this platform."));
 	return NULL;
 #endif
 }
 
 /* An open store: a directory descriptor every file operation goes
- * through (openat, renameat, unlinkat) [S2.3]. */
+ * through (openat, renameat, unlinkat) [S2.3].  On Windows, the
+ * directory pinned (fs_winstore_pin) and its path, which then keeps
+ * naming it. */
 typedef struct
 {
 	int fd;
+#ifdef G_OS_WIN32
+	gpointer pin;
+	gchar   *path;
+#endif
 } Store;
+
+#ifdef G_OS_WIN32
+#define STORE_INIT { -1, NULL, NULL }
+#else
+#define STORE_INIT { -1 }
+#endif
 
 static gboolean
 store_open (Store *store, GError **error)
@@ -442,6 +461,18 @@ store_open (Store *store, GError **error)
 	}
 	g_free (path);
 	return TRUE;
+#elif defined G_OS_WIN32
+	store->fd = -1;
+	store->pin = NULL;
+	store->path = fs_intel_dir (error);
+	if (store->path == NULL)
+		return FALSE;
+	store->pin = fs_winstore_pin (store->path, error);
+	if (store->pin == NULL) {
+		g_clear_pointer (&store->path, g_free);
+		return FALSE;
+	}
+	return TRUE;
 #else
 	store->fd = -1;
 	return fs_intel_dir (error) != NULL;  /* always FALSE here */
@@ -464,6 +495,8 @@ store_exists (void)
 	           &st) == 0)
 		return TRUE;
 	return errno != ENOENT;
+#elif defined G_OS_WIN32
+	return fs_winstore_exists ();
 #else
 	return FALSE;
 #endif
@@ -475,16 +508,22 @@ store_close (Store *store)
 #ifdef __linux__
 	if (store->fd >= 0)
 		close (store->fd);
+#elif defined G_OS_WIN32
+	fs_winstore_unpin (store->pin);
+	store->pin = NULL;
+	g_clear_pointer (&store->path, g_free);
 #endif
 	store->fd = -1;
 }
 
+#ifndef G_OS_WIN32
 static void
 store_error (GError **error, const gchar *name, const gchar *why)
 {
 	g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_STORE,
 	             _("Threat-intel file %s: %s."), name, why);
 }
+#endif
 
 #ifdef __linux__
 /* A file name inside the store: never a path.  Names are built from
@@ -563,6 +602,8 @@ store_read (const Store *store, const gchar *name, gsize cap, gsize *len,
 		*len = buf->len;
 	g_byte_array_append (buf, (const guint8 *) "", 1);
 	return (gchar *) g_byte_array_free (buf, FALSE);
+#elif defined G_OS_WIN32
+	return fs_winstore_read (store->path, name, cap, len, missing, error);
 #else
 	if (missing != NULL)
 		*missing = FALSE;
@@ -628,6 +669,8 @@ fail:
 	unlinkat (store->fd, tmp, 0);
 	g_free (tmp);
 	return FALSE;
+#elif defined G_OS_WIN32
+	return fs_winstore_write (store->path, name, data, len, error);
 #else
 	store_error (error, name, _("not supported on this platform"));
 	return FALSE;
@@ -646,6 +689,8 @@ store_unlink (const Store *store, const gchar *name, GError **error)
 		return FALSE;
 	}
 	return TRUE;
+#elif defined G_OS_WIN32
+	return fs_winstore_unlink (store->path, name, error);
 #else
 	store_error (error, name, _("not supported on this platform"));
 	return FALSE;
@@ -657,6 +702,8 @@ running_as_root (void)
 {
 #ifdef __linux__
 	return geteuid () == 0;
+#elif defined G_OS_WIN32
+	return fs_winstore_is_admin ();
 #else
 	return FALSE;
 #endif
@@ -2093,9 +2140,11 @@ read_user_file (const gchar *path, gsize *len, GError **error)
 	*len = buf->len;
 	g_byte_array_append (buf, (const guint8 *) "", 1);
 	return (gchar *) g_byte_array_free (buf, FALSE);
+#elif defined G_OS_WIN32
+	return fs_winstore_read_user_file (path, FS_FEED_MAX_BYTES, len, error);
 #else
 	g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNSUPPORTED,
-	             _("Blocklists are not available on this platform yet."));
+	             _("Blocklists are not available on this platform."));
 	return NULL;
 #endif
 }
@@ -2110,7 +2159,7 @@ fs_intel_import_list (FsIntelConfig *config, const gchar *path,
 	FsIntelSourceState *s = NULL, *old;
 	FsIntelListConf *l;
 	FsRangeSet *set = NULL;
-	Store store = { -1 };
+	Store store = STORE_INIT;
 	GError *local = NULL;
 	gchar *data = NULL, *id = NULL, *digest = NULL;
 	gboolean damaged = FALSE, ok = FALSE;
@@ -2490,7 +2539,7 @@ fs_intel_update (const FsIntelConfig *config, const gchar *only_id,
 {
 	GPtrArray *out = g_ptr_array_new_with_free_func (
 		(GDestroyNotify) fs_intel_update_result_free);
-	Store store = { -1 };
+	Store store = STORE_INIT;
 	GError *local = NULL;
 	gboolean opened = FALSE;
 
@@ -2920,7 +2969,7 @@ fs_intel_build (const FsIntelConfig *config, const FsHostNet *host,
 {
 	GPtrArray *n = g_ptr_array_new_with_free_func (g_free);
 	FsIntelRuleset *rs;
-	Store store = { -1 };
+	Store store = STORE_INIT;
 
 	g_return_val_if_fail (config != NULL, NULL);
 	if (notes != NULL)
@@ -3167,9 +3216,43 @@ mark_counted_since (const Store *store, const FsIntelRuleset *rs, gint64 now)
 	}
 }
 
+/* Whether some of StockFW's rules are there: whole (PRESENT), not
+ * whole (PARTIAL), or there but not enforced (INACTIVE; Round 3). */
+static gboolean
+live_holds (FsIntelLive live)
+{
+	return live == FS_INTEL_LIVE_PRESENT || live == FS_INTEL_LIVE_PARTIAL ||
+	       live == FS_INTEL_LIVE_INACTIVE;
+}
+
+/* Whether the rules there are whole, with a digest to compare: PRESENT,
+ * or INACTIVE when the backend could read them whole. */
+static gboolean
+live_whole (FsIntelLive live)
+{
+	return live == FS_INTEL_LIVE_PRESENT || live == FS_INTEL_LIVE_INACTIVE;
+}
+
+/* Why the platform's firewall does not enforce the rules (the backend's
+ * sentence), or a general one.  Caller frees. */
+static gchar *
+not_in_force_text (const FsBackend *backend)
+{
+	gchar *why = backend->intel_not_in_force != NULL
+	             ? backend->intel_not_in_force () : NULL;
+
+	return why != NULL ? why
+	                   : g_strdup (_("The firewall is not enforcing the "
+	                                 "blocklist rules on the network in "
+	                                 "use."));
+}
+
 /* Whether the kernel holds what `rs' should leave there: its table with
  * its digest, or (the empty rule set renders no table) none at all.
- * *live receives what was read. */
+ * Rules that are whole but not enforced (INACTIVE: Windows Firewall off
+ * for the profile in use) are what was asked for; the outcome notes
+ * that they block nothing yet, and the state says so.  *live receives
+ * what was read. */
 static gboolean
 kernel_matches (const FsBackend *backend, const FsIntelRuleset *rs,
                 const gchar *digest, FsIntelLive *live)
@@ -3182,7 +3265,7 @@ kernel_matches (const FsBackend *backend, const FsIntelRuleset *rs,
 	if (rs->sets->len == 0)
 		match = (*live == FS_INTEL_LIVE_ABSENT);
 	else
-		match = (*live == FS_INTEL_LIVE_PRESENT && got != NULL &&
+		match = (live_whole (*live) && got != NULL &&
 		         strcmp (got, digest) == 0);
 	g_free (got);
 	return match;
@@ -3280,7 +3363,7 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 	FsIntelRuleset *rs;
 	FsHostNet *own_host = NULL;
 	GPtrArray *notes = g_ptr_array_new_with_free_func (g_free);
-	Store store = { -1 };
+	Store store = STORE_INIT;
 	GError *local = NULL;
 	GHashTable *snapshot = NULL, *after = NULL;
 	gchar *detail, *before_digest = NULL;
@@ -3388,11 +3471,10 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 	if (ok) {
 		if (matches && rs->sets->len > 0)
 			replaced = before == FS_INTEL_LIVE_ABSENT ||
-			           (before == FS_INTEL_LIVE_PRESENT &&
+			           (live_holds (before) &&
 			            g_strcmp0 (before_digest, o->digest) != 0);
 		else if (matches)
-			replaced = before == FS_INTEL_LIVE_PRESENT ||
-			           snapshot != NULL;
+			replaced = live_holds (before) || snapshot != NULL;
 		if (!replaced && counted_anything (snapshot)) {
 			after = backend->intel_counters != NULL
 			        ? backend->intel_counters () : NULL;
@@ -3400,7 +3482,7 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 		}
 	}
 	if (ok && !said_ok && !replaced && rs->sets->len > 0 &&
-	    before == FS_INTEL_LIVE_PRESENT &&
+	    live_whole (before) &&
 	    g_strcmp0 (before_digest, o->digest) == 0) {
 		/* The tool failed, and the kernel holds the rules it held
 		 * before -- the same ones.  Nothing shows the transaction
@@ -3438,6 +3520,15 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 	}
 
 	o->result = FS_APPLY_OK;
+	if (live == FS_INTEL_LIVE_INACTIVE && rs->sets->len > 0) {
+		/* Written as asked, and not blocking yet: never let "applied"
+		 * read as "protected" [S10]. */
+		gchar *why = not_in_force_text (backend);
+
+		g_ptr_array_add (o->notes, g_strdup_printf (
+			_("The rules are in place, but not in force: %s"), why));
+		g_free (why);
+	}
 	if (replaced)
 		carry_counters (&store, snapshot, now);
 	mark_counted_since (&store, rs, now);
@@ -3491,7 +3582,7 @@ gboolean
 fs_intel_suspend (const FsBackend *backend, const gchar *source,
                   GError **error)
 {
-	Store store = { -1 };
+	Store store = STORE_INIT;
 	GError *local = NULL, *store_err = NULL;
 	GHashTable *snapshot = NULL;
 	Applied a = { 0 };
@@ -3512,7 +3603,7 @@ fs_intel_suspend (const FsBackend *backend, const gchar *source,
 	if (!store_exists ()) {
 		live = backend->intel_live != NULL ? backend->intel_live (NULL)
 		                                   : FS_INTEL_LIVE_UNKNOWN;
-		if (live != FS_INTEL_LIVE_PRESENT)
+		if (!live_holds (live))
 			return TRUE;
 		ok = backend->intel_clear (&local);
 		if (ok) {
@@ -3657,6 +3748,7 @@ fs_intel_state_to_string (FsIntelState state)
 	case FS_INTEL_STATE_SUSPENDED:   return "suspended";
 	case FS_INTEL_STATE_UNSUPPORTED: return "unsupported";
 	case FS_INTEL_STATE_NEEDS_ROOT:  return "needs-root";
+	case FS_INTEL_STATE_NOT_IN_FORCE: return "not-in-force";
 	case FS_INTEL_STATE_UNKNOWN:
 	default:                         return "unknown";
 	}
@@ -3717,7 +3809,7 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 	FsIntelState state;
 	FsIntelLive live;
 	Applied a = { 0 };
-	Store store = { -1 };
+	Store store = STORE_INIT;
 	GError *local = NULL;
 	gchar *digest = NULL;
 	gboolean have_record = FALSE, want;
@@ -3765,6 +3857,19 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 			: _("Threat intel is switched off.")));
 		goto out;
 	}
+	if (live == FS_INTEL_LIVE_UNKNOWN &&
+	    backend->intel_not_in_force != NULL) {
+		/* The rules cannot be read, but the platform can say that
+		 * nothing is enforced (Windows: the firewall service is
+		 * stopped): that is the answer, whatever rules are there. */
+		gchar *why = backend->intel_not_in_force ();
+
+		if (why != NULL) {
+			state = FS_INTEL_STATE_NOT_IN_FORCE;
+			set_detail (detail, why);
+			goto out;
+		}
+	}
 	if (live == FS_INTEL_LIVE_UNKNOWN) {
 		state = running_as_root () ? FS_INTEL_STATE_UNKNOWN
 		                           : FS_INTEL_STATE_NEEDS_ROOT;
@@ -3800,6 +3905,25 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 			set_detail (detail, g_strdup (
 				_("The blocklists were suspended, but the kernel "
 				  "holds blocklist rules StockFW did not apply.")));
+		}
+		goto out;
+	}
+	if (live == FS_INTEL_LIVE_INACTIVE) {
+		/* Rules on the firewall that it does not enforce (Windows:
+		 * off for the profile in use): whatever they are, they block
+		 * nothing, and that comes first [S10]. */
+		gchar *why = not_in_force_text (backend);
+
+		state = FS_INTEL_STATE_NOT_IN_FORCE;
+		if (have_record && digest != NULL &&
+		    strcmp (digest, a.digest) == 0) {
+			set_detail (detail, why);
+		} else {
+			set_detail (detail, g_strdup_printf (
+				_("%s The rules there are not the ones StockFW "
+				  "last applied either; apply once the firewall "
+				  "is on."), why));
+			g_free (why);
 		}
 		goto out;
 	}
@@ -3839,6 +3963,11 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 		set_detail (detail, g_strdup (
 			_("The kernel holds blocklist rules, but not the ones "
 			  "StockFW last applied; apply to replace them.")));
+	} else if (live == FS_INTEL_LIVE_PARTIAL) {
+		state = FS_INTEL_STATE_DIFFERS;
+		set_detail (detail, g_strdup (
+			_("Some of the blocklist rules are missing or were "
+			  "changed outside StockFW; apply to restore them.")));
 	} else {
 		state = FS_INTEL_STATE_NOT_LOADED;
 		if (have_record && a.ids->len == 0)
@@ -3922,6 +4051,16 @@ fs_intel_counters (const FsBackend *backend)
 		g_hash_table_unref (live);
 	}
 	return out;
+}
+
+const gchar *
+fs_intel_counts_unavailable (const FsBackend *backend)
+{
+	if (backend == NULL || backend->intel_apply == NULL ||
+	    backend->intel_counters != NULL)
+		return NULL;
+	return _("Windows Firewall does not count what each rule blocks, so "
+	         "StockFW cannot show blocked counts here.");
 }
 
 /* ============================================================== lookup */

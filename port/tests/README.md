@@ -27,6 +27,7 @@ the tests never touches a real `/etc/stockfw`.
 | services | port to name lookup, back-door ports, ICMP types, range expansion |
 | scripts | inbound/outbound rules, NAT, permissive vs restrictive defaults |
 | Windows rules | policy rows to netsh rules and argv, refusals, the upgrade apply (see below) |
+| threat intel on Windows | blocklist rules: plan, chunking, read-back verdicts, in force, on-link prefixes (see below) |
 
 ## Event source (`tests/test-logstart.sh`)
 
@@ -1035,9 +1036,13 @@ after it committed is a success; after an nft success the table must
 carry the digest asked for (the empty rule set: no table at all), or
 the apply fails saying so.  A failure says which lists are in force
 now.  Errors are `G_IO_ERROR`: `PERMISSION_DENIED` (not root),
-`NOT_FOUND` (no nft), `TIMED_OUT`, `INVALID_ARGUMENT`, `FAILED`.  The
-Windows backend leaves the four slots NULL until Round 3: that is how
-the engine knows to say "unsupported" rather than "cannot tell".
+`NOT_FOUND` (no nft), `TIMED_OUT`, `INVALID_ARGUMENT`, `FAILED`.  A
+backend that leaves the slots NULL is how the engine knows to say
+"unsupported" rather than "cannot tell".  Since Round 3 the Windows
+backend fills intel_apply, intel_clear, intel_live and
+intel_not_in_force; it leaves intel_counters NULL, because Windows
+Firewall keeps no count per rule (see "Threat intel on Windows"
+below).
 
 `fs-intel-backend-driver` calls the slots through `fs_backend()` the way
 the engine does, plus the policy's `apply_rules`, `stop` and
@@ -1357,3 +1362,106 @@ the failures, then restores the file with `cp` and checks it with
 
 The sanitizer build (`build-asan`, Debug, `-fsanitize=address,undefined`)
 runs `fs-intel-test` clean.
+
+## Threat intel on Windows (`tests/test-core.sh`, `fs-intel-test`, `fs-intel-windows-test`)
+
+Round 3 (design section 11) enforces blocklists with Windows Firewall
+rules in the group `StockFW Threat Intel`. What the rules are and what
+a read-back means is pure code (`core/fs-intelwin.c`), so most of it is
+checked on Linux.
+
+`tests/test-core.sh` (pure):
+
+- **generations** (`test_intelwin_gen`): `g` and 8 lower-case hex
+  digits only; a new one is never one already on the firewall.
+- **the plan** (`test_intelwin_plan`): two lists, one both ways, at 2
+  tokens a rule: the exact names in order (inbound before outbound,
+  IPv4 before IPv6, chunk i/n, the generation, the manifest last); every
+  address rule enabled, with its direction, never named `StockFW-`, no
+  `|` or line break in a description; per list and direction the
+  chunks hold exactly the list's addresses; the manifest is disabled,
+  names only 192.0.2.1 and ends `sfw:<digest> plan:<hash> rules:9`;
+  another generation changes the plan hash, not the digest; invalid
+  generations, zero limits, an invalid or repeated id plan nothing; the
+  empty rule set has no rule; a list emptied by subtraction leaves the
+  manifest, which reads back PRESENT.
+- **the real limits** (`test_intelwin_limits`): 2500 IPv4 addresses
+  take 3 rules (1000, 1000, 500); 1500 long IPv6 ranges split by the
+  32,000-character cap; a token longer than the cap gets a rule of its
+  own, never cut.
+- **`RemoteAddresses` read back** (`test_intelwin_parse_remote`): dotted
+  masks, ranges, IPv6, spaces after commas; `*`, keywords, empty
+  tokens, masks with holes, prefixes over 32 and names are refused and
+  leave the set as it was.
+- **the verdict** (`test_intelwin_read`): no rule is ABSENT; rules
+  outside the group (even named like ours) are not counted; the rules
+  as written, and as Windows writes them back (dotted masks, tokens and
+  rules reordered, other rules around) read PRESENT with the digest;
+  23 tamperings each read PARTIAL with a reason and no digest (a chunk
+  deleted, disabled, allow, direction, profile, protocol, local port,
+  local address, program, interface type, named interfaces, an
+  `INetFwRule3` condition, an address taken out, `*`, an IPv6 address
+  in an IPv4 rule, addresses moved between chunks, a rule added with a
+  name like ours, a foreign rule in the group, a rule of an earlier
+  apply, the manifest deleted, the manifest's count edited to hide a
+  deleted rule, a rule renamed, a rule moved out of the group).
+- **in force** (`test_intelwin_force`): service stopped, Group Policy
+  override, off for the only profile in use, for one of two, for two,
+  excluded adapters each give their sentence; a profile no network has,
+  and settings that could not be read, give none.
+- **on-link prefixes** (`test_hostnet_onlink`): an address and
+  `OnLinkPrefixLength` give its block (a /24, a /64, a /30 inside a
+  byte); a prefix of 0 or wider than the family keeps the address
+  alone; a bad address length adds nothing.
+
+`fs-intel-test` (fake backend, `test_state_windows` and `test_build`):
+PARTIAL reads differs and an apply rewrites it; INACTIVE reads
+not-in-force with the backend's sentence (also when the rules are not
+the ones last applied, and with no sentence at all); unreadable rules
+with the service stopped read not-in-force, and with nothing known
+never read not-in-force or enforced; an apply that leaves the rules
+not enforced is OK with the note "in place, but not in force"; Stop
+removes PARTIAL and INACTIVE rules; a backend with no counters slot
+gets `fs_intel_counts_unavailable` and no count of 0; the build's
+exceptions and kept addresses reach no rule the Windows plan writes.
+
+`fs-intel-windows-test` (`tests/test-intel-windows.c`, Windows only,
+elevated only, run by `tests/full-suite.sh`): applies a two-list rule
+set through the real backend (one list at 2500 addresses, so three
+rules at the 1000 limit), reads every rule back through `INetFwRules`
+itself and compares names, group, direction, action, profiles,
+protocol, description and addresses with the plan; `intel_live` reads
+the digest; the same rule set again keeps the generation; a changed one
+replaces every old rule; a rule disabled by hand reads PARTIAL and an
+apply repairs it; a foreign rule in the group reads PARTIAL; every
+profile off reads INACTIVE with a reason (the profiles are put back);
+clear leaves nothing in the group and every rule outside it exactly as
+before, including a decoy that has one of our rule names in another
+group; the store directory gets a protected DACL naming only SYSTEM,
+Administrators and the current user. It prints SKIP when the shell is
+not elevated, the firewall service is stopped, or the computer already
+holds StockFW blocklist rules (they are the user's). It was compiled
+and linked with mingw against the Windows headers in the development
+container, not run there.
+
+Teeth, each injected into the real source by `teeth.py` in a scratch
+directory, which asserts the exact old text occurs once, runs the
+test, looks for the named check among the failures, then restores the
+file with `cp` and checks it with `cmp`:
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| the read-back ignores a rule narrowed to fewer profiles | `intelwin read: a rule narrowed to the Public profile is PARTIAL` |
+| the plan hash covers names and directions, not addresses | `intelwin read: addresses moved between two chunks is PARTIAL` |
+| chunks are cut by token count only, no character cap | `intelwin limits: 1500 long IPv6 ranges are split by characters ...` |
+| a dotted mask with holes is accepted | `intelwin remote: "*", keywords, empty tokens, a mask with holes ...` |
+| a profile no network has counts as "off" | `intelwin force: a profile no network has does not matter` |
+| an on-link prefix of 0 keeps everything | `hostnet onlink: a zero or too-wide prefix keeps the address alone ...` |
+| PARTIAL rules read enforced | `windows states: rules missing or edited outside StockFW read "differs" ...` |
+| an apply into rules that are not enforced says nothing | `windows states: an apply whose rules are not enforced is OK and says ...` |
+| unreadable rules ignore the backend's "service stopped" | `windows states: rules that cannot be read with the service stopped ...` |
+| the read-back ignores a rule's direction | `intelwin read: a rule's direction flipped is PARTIAL` |
+
+The Windows backend's COM code itself has no tooth here: the container
+cannot run it. `fs-intel-windows-test` is its check on the CI's Windows
+runner.

@@ -55,6 +55,8 @@ add_library(fs-core STATIC
   src/core/fs-fetch.c
   src/core/fs-hostnet.c
   src/core/fs-intel.c
+  src/core/fs-intelwin.c
+  src/core/fs-winstore.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
@@ -72,13 +74,16 @@ target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY)
 target_compile_definitions(fs-core-nogui PRIVATE
                            FS_VERSION="${PROJECT_VERSION}")
 if(WIN32)
-  target_link_libraries(fs-core-nogui PUBLIC ws2_32)
+  target_link_libraries(fs-core-nogui PUBLIC ws2_32 iphlpapi advapi32 shell32)
 endif()
 
 # core/ uses getnameinfo()/inet_pton() for reverse lookups; Windows keeps
-# those in ws2_32, POSIX has them in libc.
+# those in ws2_32, POSIX has them in libc.  iphlpapi (the adapter and TCP
+# tables fs-hostnet reads), advapi32 (the threat-intel store's ACLs) and
+# shell32 (its %ProgramData% lookup) are Windows system libraries: no
+# package to install, nothing to stage.
 if(WIN32)
-  target_link_libraries(fs-core PUBLIC ws2_32)
+  target_link_libraries(fs-core PUBLIC ws2_32 iphlpapi advapi32 shell32)
 endif()
 
 # -------------------------------------------------------------- platform
@@ -400,6 +405,16 @@ target_link_libraries(fs-theme-smoke PRIVATE PkgConfig::GTK3)
 # anywhere the core builds.  `ninja fs-intel-test'.
 add_executable(fs-intel-test EXCLUDE_FROM_ALL tests/test-intel.c)
 target_link_libraries(fs-intel-test PRIVATE fs-core-nogui)
+# Threat intel on the real Windows Firewall (Round 3, design 11): the
+# Windows backend's intel slots, every rule read back through
+# INetFwRules.  Needs an elevated shell (prints SKIP otherwise).
+# `ninja fs-intel-windows-test'; tests/full-suite.sh runs it on Windows.
+if(WIN32)
+  add_executable(fs-intel-windows-test EXCLUDE_FROM_ALL
+    tests/test-intel-windows.c ${FS_BACKEND_SOURCES})
+  target_link_libraries(fs-intel-windows-test PRIVATE fs-core-nogui
+                        ${FS_BACKEND_LIBS})
+endif()
 # Driver for tests/test-nftset.sh (real nft in a network namespace).
 add_executable(fs-nftset-load EXCLUDE_FROM_ALL tests/nftset-load.c)
 target_link_libraries(fs-nftset-load PRIVATE fs-core-nogui)

@@ -591,7 +591,7 @@ test_read_here (void)
 
 	CHECK (h != NULL && all_normalized (h),
 	       "read here: six sets, all normalized");
-#ifdef __linux__
+#if defined __linux__ || defined G_OS_WIN32
 	CHECK (!fs_range_set_contains_text (h->own, "127.0.0.1") &&
 	       !fs_range_set_contains_text (h->own, "::1") &&
 	       !fs_range_set_contains_text (h->onlink, "127.0.0.1"),
@@ -603,7 +603,7 @@ test_read_here (void)
 #else
 	CHECK (fs_range_set_is_empty (h->own) &&
 	       fs_range_set_is_empty (h->sessions),
-	       "read here: empty sets outside Linux until Round 3");
+	       "read here: empty sets outside Linux and Windows");
 #endif
 	fs_hostnet_free (h);
 }

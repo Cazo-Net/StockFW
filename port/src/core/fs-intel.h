@@ -65,8 +65,11 @@ enum
  * and non-root alike, only when that directory and every parent are
  * owned by the current user or by root and not writable by group or
  * others; otherwise FS_INTEL_ERR_UNSAFE_DIR.  Linux non-root with no
- * override: FS_INTEL_ERR_NEEDS_ROOT.  Windows: FS_INTEL_ERR_UNSUPPORTED
- * (Round 3).  Caller frees. */
+ * override: FS_INTEL_ERR_NEEDS_ROOT.  Windows (Round 3):
+ * %ProgramData%\StockFW\intel, Administrators and SYSTEM only, for an
+ * elevated process (FS_INTEL_ERR_NEEDS_ROOT otherwise), or
+ * $STOCKFW_INTEL_DIR under the checks of fs_winstore_dir().  Other
+ * platforms: FS_INTEL_ERR_UNSUPPORTED.  Caller frees. */
 gchar *fs_intel_dir (GError **error);
 
 /* ---- configuration (design 6.2) ------------------------------------ */
@@ -366,11 +369,18 @@ typedef enum
 	FS_INTEL_STATE_DIFFERS,      /* a table, but not the applied one    */
 	FS_INTEL_STATE_SUSPENDED,    /* the user stopped the firewall       */
 	FS_INTEL_STATE_UNSUPPORTED,  /* no intel slots on this platform     */
-	FS_INTEL_STATE_NEEDS_ROOT    /* cannot read the kernel or the store */
+	FS_INTEL_STATE_NEEDS_ROOT,   /* cannot read the kernel or the store */
+	FS_INTEL_STATE_NOT_IN_FORCE  /* Round 3: rules there, or unreadable,
+	                              * and the platform's firewall does not
+	                              * enforce them on a network in use
+	                              * (Windows Firewall off for that
+	                              * profile, its service stopped, Group
+	                              * Policy ignoring local rules)        */
 } FsIntelState;
 
 /* "unknown" "off" "enforced" "not-loaded" "differs" "suspended"
- * "unsupported" "needs-root": the stable words for JSON and audit. */
+ * "unsupported" "needs-root" "not-in-force": the stable words for JSON
+ * and audit. */
 const gchar *fs_intel_state_to_string (FsIntelState state);
 
 /* Compare the kernel (backend->intel_live) with applied.state and the
@@ -383,7 +393,11 @@ const gchar *fs_intel_state_to_string (FsIntelState state);
  * flushed is "differs".  Not seen: elements taken out of a set, or
  * some of a list's rules removed while others remain.  Nothing turned
  * on is "off" even when the kernel cannot be read, unless applied.state
- * says StockFW left a table there. */
+ * says StockFW left a table there.  Round 3 (Windows): rules that are
+ * not whole (FS_INTEL_LIVE_PARTIAL: one removed, edited or added) are
+ * "differs"; rules the firewall does not enforce on a network in use,
+ * or a firewall service that is stopped, are "not-in-force", with the
+ * backend's sentence (intel_not_in_force) as the detail. */
 FsIntelState fs_intel_state (const FsBackend *backend,
                              const FsIntelConfig *config,
                              gchar **detail);
@@ -392,6 +406,13 @@ FsIntelState fs_intel_state (const FsBackend *backend,
  * counters.  gchar* -> FsIntelCounter* (owned by the table); never
  * NULL. */
 GHashTable *fs_intel_counters (const FsBackend *backend);
+
+/* Round 3: NULL when `backend' counts what its rules block; otherwise
+ * the sentence a surface shows instead of a count ("Windows Firewall
+ * does not count what each rule blocks, ..."), so a platform that
+ * cannot count never reads as "blocked 0".  NULL also for a backend
+ * without threat intel (the state already says unsupported). */
+const gchar *fs_intel_counts_unavailable (const FsBackend *backend);
 
 /* ---- lookup (design 6.8) -------------------------------------------- */
 
