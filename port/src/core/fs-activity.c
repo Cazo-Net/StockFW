@@ -53,6 +53,19 @@ fs_activity_new (FsActivityClock clock, gpointer user_data)
 	return activity;
 }
 
+FsActivity *
+fs_activity_new_at (FsActivityClock clock, gpointer user_data,
+                    gint64 started)
+{
+	FsActivity *activity = fs_activity_new (clock, user_data);
+	gint64 now = activity->started;
+	gint64 ring_floor = (floor_div (now, FS_ACTIVITY_SLOT_S) -
+	                FS_ACTIVITY_SLOTS + 1) * FS_ACTIVITY_SLOT_S;
+
+	activity->started = CLAMP (started, ring_floor, now);
+	return activity;
+}
+
 void
 fs_activity_free (FsActivity *activity)
 {

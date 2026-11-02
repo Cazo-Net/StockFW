@@ -4561,12 +4561,61 @@ static void test_netparse_log (void)
 	       "netparse: a repeated key keeps its last value");
 	clear_hit_fields (&hit);
 
+	/* Naming: the destination port's service plus the marker. */
+	ok = fs_netparse_log_line (
+		"Oct 11 14:30:00 h kernel: STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 DST=192.0.2.2 PROTO=TCP SPT=40000 DPT=22",
+		&hit, now);
+	fs_netparse_name_blocked (&hit);
+	CHECK (ok && g_strcmp0 (hit.service, "SSH [BLOCKED]") == 0 &&
+	       fs_hit_is_blocked (&hit),
+	       "netparse: a drop to port 22 is named \"SSH [BLOCKED]\" -- "
+	       "got %s", hit.service);
+	fs_netparse_clear_hit (&hit);
+	CHECK (hit.service == NULL && hit.port == NULL,
+	       "netparse: clear_hit frees and zeroes the fields");
+
+	ok = fs_netparse_log_line (
+		"Oct 11 14:30:00 h kernel: STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 DST=192.0.2.2 PROTO=ICMP TYPE=8", &hit, now);
+	fs_netparse_name_blocked (&hit);
+	CHECK (g_strcmp0 (hit.service, "ICMP [BLOCKED]") == 0,
+	       "netparse: ICMP is named ICMP");
+	fs_netparse_clear_hit (&hit);
+
+	/* Any line's stamp, ours or not. */
+	{
+		gchar *t1 = fs_netparse_line_time (
+			"Oct 11 14:29:00 kali kernel: usb 1-1: new device", now);
+		gchar *t2 = fs_netparse_line_time ("no stamp here", now);
+
+		CHECK (g_strcmp0 (t1, "2026-10-11T14:29:00Z") == 0 && t2 == NULL,
+		       "netparse: line_time reads a foreign line's stamp, NULL "
+		       "for none -- got %s", t1);
+		g_free (t1);
+		g_free (t2);
+	}
+
 	/* The shared marker test. */
 	{
 		FsHit a = { 0 }, b = { 0 };
 
 		a.service = (gchar *) "HTTPS [BLOCKED]";
 		b.service = (gchar *) "HTTPS";
+		{
+			gchar *na = fs_hit_service_name (&a);
+			gchar *nb = fs_hit_service_name (&b);
+			gchar *nn = fs_hit_service_name (NULL);
+
+			CHECK (fs_hit_is_blocked (&a) && !fs_hit_is_blocked (&b) &&
+			       g_strcmp0 (nb, b.service) == 0 &&
+			       g_strcmp0 (nn, "") == 0 &&
+			       strstr (na, "BLOCKED") == NULL &&
+			       g_str_has_prefix (a.service, na) && na[0] != '\0',
+			       "hit service name: the marker is cut, an allowed "
+			       "hit's name is kept -- got \"%s\"", na);
+			g_free (na); g_free (nb); g_free (nn);
+		}
 		CHECK (fs_hit_is_blocked (&a) && !fs_hit_is_blocked (&b) &&
 		       !fs_hit_is_blocked (NULL),
 		       "netparse: fs_hit_is_blocked keys on the shared marker");
@@ -4673,9 +4722,13 @@ static void test_netparse_proc (void)
 
 		c = conns && conns->next ? conns->next->data : NULL;
 		CHECK (c != NULL && g_strcmp0 (c->program, "?") == 0 &&
-		       g_strcmp0 (c->direction, "Inbound") == 0,
+		       g_strcmp0 (c->direction, "Inbound") == 0 &&
+		       g_strcmp0 (c->port, "22") == 0 &&
+		       g_strcmp0 (c->service, "SSH") == 0,
 		       "connections: an unreadable owner is \"?\", a client on "
-		       "our port 22 is inbound");
+		       "our port 22 is inbound and named by our port (SSH), "
+		       "not its own -- got %s %s", c ? c->port : "-",
+		       c ? c->service : "-");
 
 		g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
 		g_list_free_full (socks, (GDestroyNotify) fs_net_socket_free);
@@ -4718,6 +4771,43 @@ static void test_netparse_proc (void)
 
 		g_list_free_full (socks, (GDestroyNotify) fs_net_socket_free);
 		g_free (text); g_free (a); g_free (b); g_free (m);
+	}
+
+	/* Two high ports either way: only the LISTEN row can tell which
+	 * end accepted.  A local server on 8765 (the dashboard) and a
+	 * client of it on the same machine. */
+	{
+		const guint8 lo[4] = { 127, 0, 0, 1 };
+		gchar *srv  = proc_hex_address (lo, 4, 8765);
+		gchar *cli  = proc_hex_address (lo, 4, 33262);
+		gchar *any  = g_strdup ("00000000:0000");
+		gchar *text = g_strdup_printf (
+			"  sl  local_address rem_address   st\n"
+			"   0: %s %s 0A 00000000:00000000 00:00000000 00000000 0 0 900 1 0\n"
+			"   1: %s %s 01 00000000:00000000 00:00000000 00000000 0 0 901 1 0\n"
+			"   2: %s %s 01 00000000:00000000 00:00000000 00000000 0 0 902 1 0\n",
+			srv, any, srv, cli, cli, srv);
+		GList *socks = fs_netparse_proc_tcp (text, FALSE);
+		GList *conns = fs_netparse_connections (socks, NULL);
+		FsConnection *accepted = conns ? conns->data : NULL;
+		FsConnection *client = conns && conns->next ? conns->next->data : NULL;
+
+		CHECK (g_list_length (conns) == 2 && accepted != NULL &&
+		       g_strcmp0 (accepted->direction, "Inbound") == 0 &&
+		       g_strcmp0 (accepted->port, "8765") == 0,
+		       "connections: the accepted end of a listening port is "
+		       "inbound on that port, though both ports are high -- "
+		       "got %s %s", accepted ? accepted->direction : "-",
+		       accepted ? accepted->port : "-");
+		CHECK (client != NULL &&
+		       g_strcmp0 (client->direction, "Outbound") == 0 &&
+		       g_strcmp0 (client->port, "8765") == 0,
+		       "connections: the client end of the same connection is "
+		       "outbound to 8765");
+
+		g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
+		g_list_free_full (socks, (GDestroyNotify) fs_net_socket_free);
+		g_free (srv); g_free (cli); g_free (any); g_free (text);
 	}
 
 	CHECK (g_strcmp0 (fs_netparse_guess_direction (51000, 443), "Outbound") == 0 &&
@@ -4840,6 +4930,27 @@ static void test_activity_series (void)
 		CHECK (fs_activity_add (a, FS_ACTIVITY_ALLOWED, 1),
 		       "activity: an existing series still counts at the cap "
 		       "(%u new names accepted)", accepted);
+	}
+
+	/* A backfilled structure covers from the archive's start, but
+	 * never further back than the ring reaches. */
+	{
+		FsActivity *b = fs_activity_new_at (activity_test_clock, NULL,
+		                                    activity_test_now - 3600);
+		FsActivity *c = fs_activity_new_at (activity_test_clock, NULL,
+		                                    activity_test_now - 90000);
+
+		CHECK (fs_activity_started (b) == activity_test_now - 3600 &&
+		       fs_activity_add_at (b, FS_ACTIVITY_BLOCKED,
+		                           activity_test_now - 1800, 1) &&
+		       fs_activity_total (b, FS_ACTIVITY_BLOCKED, 3600) == 1,
+		       "activity: new_at backfills from an hour ago");
+		CHECK (fs_activity_started (c) > activity_test_now - 90000 &&
+		       fs_activity_started (c) >= activity_test_now -
+		                                  FS_ACTIVITY_SPAN_S,
+		       "activity: new_at is clamped to the ring's reach");
+		fs_activity_free (b);
+		fs_activity_free (c);
 	}
 
 	/* Steps for the four ranges the graphs offer. */

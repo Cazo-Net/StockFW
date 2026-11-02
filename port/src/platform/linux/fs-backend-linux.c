@@ -1006,49 +1006,28 @@ static GString *log_partial = NULL;
 #define LOG_PARTIAL_MAX 8192
 
 /* [ deliver_log_line ]
- * One complete line: parse it, name it, mark it, hand it over. */
+ * One complete line: parse it, name it, mark it, hand it over.
+ *
+ * Every line the generated script logs is a packet it is about to DROP
+ * or REJECT, so every Linux event is a blocked one -- marked exactly as
+ * the Windows backend marks its 5157s.  Without the marker no Linux row
+ * was ever painted red, the Status page's Serious column stayed at zero
+ * and Sentinel's blocked fan-out signal could not fire. */
 static void
 deliver_log_line (const gchar *line)
 {
 	FsHit hit = { 0 };
-	gchar *name = NULL;
 
 	if (*line == '\0' || !fs_netparse_log_line (line, &hit, NULL))
 		return;
 
-	if (hit.port != NULL)
-		name = fs_service_lookup_port (atoi (hit.port));
-	if (name == NULL && hit.protocol != NULL &&
-	    g_ascii_strcasecmp (hit.protocol, "ICMP") == 0)
-		name = g_strdup ("ICMP");
-	if (name == NULL)
-		name = g_strdup (_("Unknown"));
-
-	/* Every line the generated script logs is a packet it is about to
-	 * DROP or REJECT, so every Linux event is a blocked one -- marked
-	 * exactly as the Windows backend marks its 5157s.  Without the
-	 * marker no Linux row was ever painted red, the Status page's
-	 * Serious column stayed at zero and Sentinel's blocked fan-out
-	 * signal could not fire. */
-	hit.service = g_strconcat (name, FS_HIT_BLOCKED_MARKER, NULL);
-	g_free (name);
+	fs_netparse_name_blocked (&hit);
 
 	if (log_callback != NULL)
 		log_callback (&hit, log_user_data);
 
-	/* Free only the fields: "hit" is a stack local, so fs_hit_free
-	 * would try to g_free() it and corrupt the heap. */
-	g_free (hit.time);
-	g_free (hit.direction);
-	g_free (hit.in);
-	g_free (hit.out);
-	g_free (hit.port);
-	g_free (hit.source);
-	g_free (hit.destination);
-	g_free (hit.length);
-	g_free (hit.tos);
-	g_free (hit.protocol);
-	g_free (hit.service);
+	/* "hit" is a stack local: free the fields, not the struct. */
+	fs_netparse_clear_hit (&hit);
 }
 
 /* [ on_log_poll ]

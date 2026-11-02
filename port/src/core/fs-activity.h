@@ -48,6 +48,13 @@ typedef struct _FsActivity FsActivity;
 typedef gint64 (*FsActivityClock) (gpointer user_data);
 
 FsActivity *fs_activity_new  (FsActivityClock clock, gpointer user_data);
+
+/* The same, covering from `started' instead of now -- for a reader
+ * that has an archive to backfill from (the kernel log): it may claim
+ * coverage only as far back as that archive is complete.  Clamped to
+ * the ring's reach and to now. */
+FsActivity *fs_activity_new_at (FsActivityClock clock, gpointer user_data,
+                                gint64 started);
 void        fs_activity_free (FsActivity *activity);
 
 /* The structure's notion of now, and the first second it covers. */

@@ -28,6 +28,11 @@ G_BEGIN_DECLS
 /* TRUE when the service field carries FS_HIT_BLOCKED_MARKER. */
 gboolean fs_hit_is_blocked (const FsHit *hit);
 
+/* The service name without the marker ("SSH [BLOCKED]" -> "SSH"), for
+ * a reader that shows the verdict in its own column.  "" for a hit
+ * with no service.  Caller frees. */
+gchar *fs_hit_service_name (const FsHit *hit);
+
 /* Parse one kernel-log line written by the generated script's LOG
  * target ("STOCKFW-DROP " or "STOCKFW-REJECT ").  Returns FALSE, and
  * leaves *hit untouched, for any other line.
@@ -48,6 +53,23 @@ gboolean fs_hit_is_blocked (const FsHit *hit);
  * `now' may be NULL for the real clock; tests pass a fixed one. */
 gboolean fs_netparse_log_line (const gchar *line, FsHit *hit,
                                GDateTime *now);
+
+/* The time stamp of any kernel-log line, ours or not, as the same
+ * ISO-8601 UTC text fs_netparse_log_line produces; NULL when the line
+ * has no stamp.  A reader backfilling from the log uses the first
+ * line's stamp as the point from which its record is complete. */
+gchar *fs_netparse_line_time (const gchar *line, GDateTime *now);
+
+/* Name a parsed log hit the way the Events page shows it: the
+ * destination port's service ("HTTPS"), "ICMP" for ICMP, otherwise
+ * "Unknown" -- followed by FS_HIT_BLOCKED_MARKER, because every line
+ * the generated script logs is a packet it is about to drop or reject.
+ * Replaces hit->service. */
+void fs_netparse_name_blocked (FsHit *hit);
+
+/* Free the fields of a stack FsHit filled by fs_netparse_log_line and
+ * zero it (fs_hit_free would also free the struct itself). */
+void fs_netparse_clear_hit (FsHit *hit);
 
 /* Parse /proc/net/dev.  Returns a list of FsIfaceStat* with device,
  * received and sent filled in (kind, ip and up are the backend's to
@@ -76,11 +98,14 @@ GList *fs_netparse_proc_tcp (const gchar *text, gboolean ipv6);
 
 /* The Status page's "Active connections" rows from parsed sockets:
  * connected sockets only (not LISTEN, TIME_WAIT or CLOSE, and never a
- * 0.0.0.0:0 peer), the remote port's service name, the direction
- * guessed from the ports the way the Windows backend guesses it, and
- * the owning program from `programs' (inode as guint64* -> name), or
- * "?" when the socket's owner could not be read.  Returns a list of
- * FsConnection*, caller frees with fs_connection_free. */
+ * 0.0.0.0:0 peer); inbound when the local port is one a LISTEN row in
+ * the same list holds, otherwise the direction guessed from the ports
+ * the way the Windows backend guesses it; the port and service named
+ * from our end for an inbound connection and the peer's end for an
+ * outbound one; and the owning program from `programs' (inode as
+ * guint64* -> name), or "?" when the socket's owner could not be read.
+ * Returns a list of FsConnection*, caller frees with
+ * fs_connection_free. */
 GList *fs_netparse_connections (const GList *sockets,
                                 GHashTable *programs);
 

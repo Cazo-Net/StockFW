@@ -22,6 +22,19 @@ fs_hit_is_blocked (const FsHit *hit)
 	       strstr (hit->service, FS_HIT_BLOCKED_MARKER) != NULL;
 }
 
+gchar *
+fs_hit_service_name (const FsHit *hit)
+{
+	const gchar *mark;
+
+	if (hit == NULL || hit->service == NULL)
+		return g_strdup ("");
+
+	mark = strstr (hit->service, FS_HIT_BLOCKED_MARKER);
+	return mark != NULL ? g_strndup (hit->service, (gsize) (mark - hit->service))
+	                    : g_strdup (hit->service);
+}
+
 /* ------------------------------------------------------------ log lines */
 
 /* [ set_field ]
@@ -258,6 +271,68 @@ fs_netparse_log_line (const gchar *line, FsHit *hit, GDateTime *now)
 	return TRUE;
 }
 
+gchar *
+fs_netparse_line_time (const gchar *line, GDateTime *now)
+{
+	GDateTime *clock;
+	gchar *stamp;
+
+	if (line == NULL)
+		return NULL;
+
+	stamp = parse_rfc3339_stamp (line);
+	if (stamp != NULL)
+		return stamp;
+
+	clock = now != NULL ? g_date_time_ref (now)
+	                    : g_date_time_new_now_local ();
+	stamp = parse_syslog_stamp (line, clock);
+	g_date_time_unref (clock);
+
+	return stamp;
+}
+
+void
+fs_netparse_name_blocked (FsHit *hit)
+{
+	gchar *name = NULL;
+
+	if (hit == NULL)
+		return;
+
+	if (hit->port != NULL)
+		name = fs_service_lookup_port (atoi (hit->port));
+	if (name == NULL && hit->protocol != NULL &&
+	    g_ascii_strcasecmp (hit->protocol, "ICMP") == 0)
+		name = g_strdup ("ICMP");
+	if (name == NULL)
+		name = g_strdup ("Unknown");
+
+	g_free (hit->service);
+	hit->service = g_strconcat (name, FS_HIT_BLOCKED_MARKER, NULL);
+	g_free (name);
+}
+
+void
+fs_netparse_clear_hit (FsHit *hit)
+{
+	if (hit == NULL)
+		return;
+
+	g_free (hit->time);
+	g_free (hit->direction);
+	g_free (hit->in);
+	g_free (hit->out);
+	g_free (hit->port);
+	g_free (hit->source);
+	g_free (hit->destination);
+	g_free (hit->length);
+	g_free (hit->tos);
+	g_free (hit->protocol);
+	g_free (hit->service);
+	memset (hit, 0, sizeof (*hit));
+}
+
 /* ------------------------------------------------------------ /proc/net */
 
 GList *
@@ -483,12 +558,27 @@ GList *
 fs_netparse_connections (const GList *sockets, GHashTable *programs)
 {
 	GList *list = NULL;
+	GHashTable *listening = g_hash_table_new (g_direct_hash, g_direct_equal);
+
+	/* The ports something here listens on.  A connection whose local
+	 * end is one of them was accepted, so it is inbound whatever its
+	 * port numbers look like (a dashboard on 8765, a database on
+	 * 5432); only the rest fall back to the port-number guess. */
+	for (const GList *l = sockets; l != NULL; l = l->next) {
+		const FsNetSocket *s = l->data;
+
+		if (s->state == TCP_STATE_LISTEN)
+			g_hash_table_add (listening,
+			                  GUINT_TO_POINTER (s->local_port));
+	}
 
 	for (const GList *l = sockets; l != NULL; l = l->next) {
 		const FsNetSocket *s = l->data;
 		FsConnection *conn;
 		const gchar *program = NULL;
 		gchar *service;
+		gboolean inbound;
+		guint port;
 
 		if (s->state == TCP_STATE_LISTEN ||
 		    s->state == TCP_STATE_TIME_WAIT ||
@@ -502,20 +592,34 @@ fs_netparse_connections (const GList *sockets, GHashTable *programs)
 		if (programs != NULL && s->inode != 0)
 			program = g_hash_table_lookup (programs, &s->inode);
 
+		if (g_hash_table_contains (listening,
+		                           GUINT_TO_POINTER (s->local_port)))
+			inbound = TRUE;
+		else
+			inbound = g_strcmp0 (fs_netparse_guess_direction (
+			                         s->local_port, s->remote_port),
+			                     "Inbound") == 0;
+
+		/* The port that names the service: ours for an inbound
+		 * connection (someone reached our SSH), theirs for an
+		 * outbound one (we reached their HTTPS). */
+		port = inbound ? s->local_port : s->remote_port;
+
 		conn = g_new0 (FsConnection, 1);
 		conn->source      = g_strdup (s->local_addr);
 		conn->destination = g_strdup (s->remote_addr);
-		conn->port        = g_strdup_printf ("%u", s->remote_port);
+		conn->port        = g_strdup_printf ("%u", port);
 		conn->protocol    = g_strdup ("TCP");
-		conn->direction   = g_strdup (fs_netparse_guess_direction (
-		                                  s->local_port, s->remote_port));
+		conn->direction   = g_strdup (inbound ? "Inbound" : "Outbound");
 		conn->program     = g_strdup (program != NULL ? program : "?");
 
-		service = fs_service_lookup_port ((gint) s->remote_port);
+		service = fs_service_lookup_port ((gint) port);
 		conn->service = service != NULL ? service : g_strdup ("Unknown");
 
 		list = g_list_prepend (list, conn);
 	}
+
+	g_hash_table_unref (listening);
 
 	return g_list_reverse (list);
 }
