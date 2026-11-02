@@ -26,6 +26,7 @@ the tests never touches a real `/etc/stockfw`.
 | policy | save/load round trip, defaults, add and remove by content |
 | services | port to name lookup, back-door ports, ICMP types, range expansion |
 | scripts | inbound/outbound rules, NAT, permissive vs restrictive defaults |
+| Windows rules | policy rows to netsh rules and argv, refusals, the upgrade apply (see below) |
 
 ## Event source (`tests/test-logstart.sh`)
 
@@ -121,3 +122,134 @@ script follows the loaders' imports with `objdump -p`), and then runs
 `fs-activity-smoke` from `build/` with nothing but Windows' own
 directories on PATH, as if started from Explorer: it must pass, with no
 GTK warning.  It is also part of `tests/full-suite.sh`.
+
+
+## Windows rule translation (`tests/test-core.sh`)
+
+```sh
+cd port
+bash tests/test-core.sh
+```
+
+Part of the core suite, so it runs on Linux with no Windows anywhere.
+On Windows every policy row is compiled by `src/core/fs-fwrule.c` into
+concrete rules, and each rule becomes one `netsh advfirewall firewall
+add rule` call.  Up to 1.0.6 most services compiled to protocol "any"
+with the port dropped (a rule matching every connection in its
+direction), `-` ranges and port lists became "any port", outbound
+service ports sat on the local side, and NTP was TCP.  The tests pin
+the translation down as golden data:
+
+- `test_fwrule_ports`: port text to netsh spec (`67:68` -> `67-68`,
+  `137-139 445` -> `137-139,445`), and every malformed text refused
+  (0, 65536, inverted, half ranges, `1-2-3`, hex, signs, `;`, tabs,
+  separators alone, empty); `fs_fwrule_port_spec_covers`.
+- `test_fwrule_services_golden`: one row per known service, inbound
+  and outbound, to its exact rules: protocol, side (local inbound,
+  remote outbound, local for a forward), port spec and name suffix.
+  Also SSDP and a back door, hand-edited case, a moved service (SSH on
+  2222, Samba on 445), a row with no port, custom names, the "TCP"
+  and "UDP" pseudo-services, ranges and lists in both notations, and
+  invalid port texts refused with a reason instead of widened.
+- `test_fwrule_default_policy`: the default policy (DHCP, DNS) compiles
+  to UDP and TCP+UDP rules on remote ports, and the soundness rule: a
+  ported rule with protocol ANY, a spec not in netsh form, or port 0
+  is not sound and gets no netsh argv.
+- `test_fwrule_netsh_golden`: the exact argv for an inbound service,
+  one from a network, an outbound block, outbound DHCP, both halves of
+  a TCP+UDP service, a port list, a host rule, a port forward and the
+  TCP pseudo-service on its port; no argument carries a quote; netsh names
+  keep the `StockFW-` prefix the clear relies on.
+- `test_apply_translation_upgrade`: a journal as 1.0.6 wrote it (no
+  `# rules translation` line) makes the next apply a full one even
+  though the rows have not changed, the journal then records the
+  translation, and the apply after that is "no change" again; an
+  unreadable translation line also means a full apply.  A refused row
+  makes the delta non-empty and sends the apply the full way, whose
+  verdict reports it.
+- `test_whatif_winrules`: the simulator reads the new rules: "Allow
+  DHCP (outbound)" does not match outbound TCP 22 or 67 but matches UDP
+  68 "on ports 67-68"; an outbound SMTP block matches remote port 25
+  and not 587; "Allow DNS (inbound)" does not allow inbound TCP 3389.
+
+What Linux cannot check: that netsh accepts these argvs and that the
+backend's error reaches the dialog.  `fs-backend-windows.c` only runs
+the argv `fs_fwrule_netsh_args` returns; the Windows CI build compiles
+it.
+
+Teeth, each re-injected into a copy of the source, seen failing, and
+restored (`cmp`) to green:
+
+| Bug re-injected | Checks that caught it |
+|---|---|
+| `fs_fwrule_is_sound` accepts protocol ANY with a port | "protocol ANY with a port is not sound", "and netsh is never given it" |
+| a TCP+UDP service compiles to protocol ANY (the 1.0.6 shape) | 64 checks: every both-protocol golden, "is sound", both DNS netsh argvs, the default policy's DNS rules, the simulator's inbound UDP 53 |
+| `-` ranges unparsed (only `a:b` known) | 20 checks: port texts `67-68`, `137-139 445`, DHCP/FTP/Samba/Xwindows goldens, the default policy, two netsh argvs, the simulator's DHCP UDP 68 |
+| outbound service ports back on the local side | 23 checks: every outbound golden, the default policy, the SMTP and DHCP netsh argvs, "an outbound SMTP block matches remote port 25" |
+| NTP back to TCP | the three NTP goldens (inbound, outbound, NTP on 5353) |
+| invalid port text widened to every port | the seven "is refused, not widened" checks and the three refused-row gate checks |
+| the gate trusts a 1.0.6 journal (no upgrade apply) | "an unchanged policy over a 1.0.6 journal is NOT \"no change\"", "the whole set is replaced", the audit line, "an unreadable translation line also means a full apply" |
+| refused rows dropped from the delta | "a refused row makes the delta non-empty", "the same with no previous state", "goes the full way" |
+| Samba on its default ports loses its UDP 137-138 / TCP 139,445 split | both Samba golden rules and the port-list netsh argv |
+
+## Windows rule translation, second review (`test_fwrule_review`)
+
+```sh
+cd port
+bash tests/test-core.sh
+# The same suite under AddressSanitizer and UBSan:
+STOCKFW_TEST_CFLAGS="-g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
+  bash tests/test-core.sh
+```
+
+An adversarial pass over the translation above, as part of the core
+suite.  What it proves:
+
+- Hostile port text is refused, never widened or wrapped: blanks and
+  separators alone, `80-`, `-80`, `80--90`, `80::90`, `80:70`, `1:2:3`,
+  `65536`, `0`, `00000`, `4294967376` (2^32 + 80), Arabic-Indic and
+  fullwidth digits, a no-break space, a newline.  `1,,2`, `80 , 443`
+  and `00080` normalise.  A list of all 65535 ports written twice
+  compiles to each port once, and the simulator reads it.
+- A bare "TCP" or "UDP" with no port is refused in every kind (inbound,
+  outbound, block, forward), and so is the row the What-If "Create This
+  Rule" writes for a probe that named no port: Linux writes no rule for
+  a portless service row, and Windows used to open every TCP port.
+- Samba's default ports in another order or spelling (`445 137-139`,
+  `137:138,139 445`, `445,139,138,137`) keep the TCP 139,445 / UDP
+  137-138 split; a real change (`137-139`) still applies to both.
+- A double quote in a service name never reaches netsh's command line
+  (it is spelled `'`): every argument is quote-free and the argv keeps
+  its 12 elements.
+- `fs_fwrule_block_refusals` reports a block row that cannot be
+  compiled (a bad port, or nothing named to block) and nothing for a
+  refused allow or a block that compiles.  The Windows whole-set apply
+  stops on it before clearing anything, so a typo cannot remove a
+  block that is in force (that call itself is compiled, not run, here).
+- The narrow apply's delta keys removals and repairs on what netsh
+  deletes (its spelling, case-insensitive): removing "a/b" re-creates
+  "a-b", removing "ssh" re-creates "SSH", one delete per netsh name,
+  and DNS moved to 5353 is exactly two deletes and two adds.
+- The simulator on a list with ranges (`7000-7010 7100,7200`): every
+  port inside an element is allowed, every gap blocked.
+
+The sanitizer run is clean.  It used to report a stack overflow in
+`test_activity_series` (an 8-slot buffer for a 26-point window),
+leaked template rules, settings, a trust store and a name list in
+older tests, and a real leak in `fs-copilot.c`: the per-application
+port, destination and hour counters were never freed with their
+profile, so every profile the LRU cap evicted leaked them.
+
+Teeth, each re-injected into a copy of the source, seen failing, and
+restored (`cmp`) to green:
+
+| Bug re-injected | Checks that caught it |
+|---|---|
+| a bare "TCP"/"UDP" with no port opens every port of it again | the five "is refused, not widened" pseudo-service goldens and "that row opens nothing on Windows" |
+| the default-port test compares text, not port sets | the six reordered Samba golden rules |
+| a quote in a name goes to netsh as it is | "a quote in a service name never reaches netsh", "the netsh spelling of a quote is '" |
+| `fs_fwrule_block_refusals` never reports | "a block with a bad port is a block refusal", "so is a block that names nothing to block" |
+| port lists keep duplicates | `80,80` -> `80` and the all-ports-twice check |
+| the delta compares display names, not netsh names | "removing \"a/b\" re-creates \"a-b\"", "deletes each netsh name once", "removing \"ssh\" re-creates \"SSH\"" |
+| profile counters not freed with their profile | the sanitizer run: LeakSanitizer reports the counters from `app_profile_record_connection` |
+| `test_activity_series` buffers back to 8 slots | the sanitizer run: stack-buffer-overflow in `fs_activity_window` |

@@ -15,7 +15,17 @@ G_BEGIN_DECLS
 typedef struct
 {
 	const gchar *name;
-	const gchar *ports;   /* "80", "137-139 445", "1234,1243" */
+	const gchar *ports;      /* "80", "137-139 445", "1234,1243" */
+
+	/* The ports each protocol carries by default, for the Windows
+	 * rule translation (fs-fwrule.c), which has to name a protocol
+	 * for every rule that names a port.  NULL means the service does
+	 * not use that protocol.  An entry with both NULL has no
+	 * protocol data and is treated like any unknown name: both
+	 * protocols on `ports' (the back-door table, whose entries exist
+	 * to be blocked). */
+	const gchar *tcp_ports;
+	const gchar *udp_ports;
 } FsService;
 
 /* Services a normal user wants to open. */
@@ -23,6 +33,14 @@ const FsService *fs_service_user_list  (guint *count);
 
 /* Known back doors and other things worth blocking. */
 const FsService *fs_service_misc_list  (guint *count);
+
+/* The table entry for a service name as a policy row stores it:
+ * compared case-insensitively (a hand-edited policy may say "ssh",
+ * and the command line matches the same way) and against the
+ * translated name too, since the default policy stores _("DHCP").
+ * The user table is searched before the back-door table.  NULL when
+ * the name is not a known service. */
+const FsService *fs_service_find (const gchar *name);
 
 /* Name for a port, e.g. 22 -> "SSH".  Returns a new string, or NULL
  * when nothing matches.  Caller frees. */
