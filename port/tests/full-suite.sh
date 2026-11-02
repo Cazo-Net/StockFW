@@ -44,6 +44,7 @@ run_sh "LOG EVENTS (file)" tests/test-logstart-events.sh
 run_sh "LOG EVENTS (/dev/kmsg)" tests/test-logstart-kmsg.sh
 run_sh "WINLOG + SPAWN PROBE" tests/test-winlog.sh
 run_sh "INSTALLER SPAWN" tests/test-installer-spawn.sh
+run_sh "LICENCE TEXTS (installers match About)" tests/test-licence-texts.sh
 run_sh "STAGED RUNTIME (build/ on its own)" tests/test-staged-runtime.sh "PASSED|FAILED|SKIP"
 run_sh "BACKEND COMPILE (state-windows)" tests/test-state-windows.sh "compiled|PASSED|FAILED|ok:"
 run_sh "UAF ANALYZE" tests/test-uaf-analyze.sh
@@ -63,12 +64,12 @@ run_sh "LINUX INSTALLER (boot unit, private mount ns)" tests/test-linux-install.
 
 section "UI SMOKE TARGETS"
 rc=0
-ninja -C build fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
+ninja -C build fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
 echo "ninja exit=$rc"
 grep "error:" "$TMP/last-ninja.txt" | head -5
 [ "$rc" -eq 0 ] || fails=$((fails+1))
 
-for exe in fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke; do
+for exe in fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke; do
   rc=0
   "./build/$exe" > "$TMP/last-suite.txt" 2>&1 || rc=$?
   echo "--- $exe exit=$rc"

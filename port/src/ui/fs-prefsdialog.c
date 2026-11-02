@@ -1,12 +1,21 @@
 /*---[ fs-prefsdialog.c ]------------------------------------------------
  * The Preferences window (1.0.7).
  *
- * Built like the main window: a dark navigation column on the left,
- * one page per subject on the right, each page a title, a line on what
- * it is for, and white cards of settings.  Every setting is one row --
- * its name in bold, one line on what it does, and the switch or choice
- * on the right -- so the window explains itself and needs no Help
- * button.  Cancel and Save sit in a footer under the pages.
+ * One design with the Help window (1.0.7 redesign): the same dark
+ * sidebar (FS_SIDE_WIDTH wide, its pages grouped under "StockFW" and
+ * "Firewall", an icon for each), and on the right a column of at most
+ * PAGE_COLUMN pixels, centred on a wide window.  Each page opens with
+ * its icon, title and a line on what it is for; its settings come in
+ * groups, a small heading over a white card.  Every setting is one row
+ * -- its name in bold, one line on what it does, and the switch or
+ * choice on the right -- so the window explains itself.
+ *
+ * What is about to change is shown where it is: a changed row is
+ * marked with a bar on its left, its page in the sidebar with a dot,
+ * and the footer counts the changes Save will write.  The footer has
+ * Help on the left (it and F1 open the Help topic for the page shown;
+ * Help lives in its own window group, so it takes input while this
+ * modal window is open), and Cancel and Save.
  *
  * Honesty rule: a setting is offered only where this platform acts on
  * it.  Whole pages follow the backend's FS_FWSEC_* bits, rows inside a
@@ -26,7 +35,8 @@
  *   ICMP        the allow-list (FS_FWSEC_ICMP: both)
  *   Protection  broadcast and reserved-source blocks
  *               (FS_FWSEC_ADVANCED: both; scoped to the devices on
- *               Linux, to the network profiles on Windows)
+ *               Linux, to the Public profile on Windows, where the
+ *               broadcast blocks are not offered: they cannot match)
  *
  * The window edits a copy (FsPrefsEdit, core/fs-prefs.h).  Save writes
  * only the values the user changed whose control it offers, then reloads
@@ -47,6 +57,7 @@
 
 #include "ui/fs-dialogs.h"
 #include "ui/fs-app.h"
+#include "ui/fs-helpwindow.h"
 #include "ui/fs-icons.h"
 #include "ui/fs-policyview.h"
 #include "ui/fs-statusview.h"
@@ -61,9 +72,10 @@
 
 #include <string.h>
 
-#define PREFS_WIDTH   860
+#define PREFS_WIDTH   900
 #define PREFS_HEIGHT  600
-#define NAV_WIDTH     200
+#define NAV_WIDTH     FS_SIDE_WIDTH
+#define PAGE_COLUMN   720   /* the widest the settings column gets */
 
 typedef enum
 {
@@ -93,6 +105,7 @@ struct _Row
 	const gchar *about;     /* the line on what it does, or NULL    */
 	const gchar *true_id;   /* ROW_CHOICE: the id meaning TRUE      */
 	Row         *master;    /* a switch this row needs on, or NULL  */
+	GtkWidget   *nav_dot;   /* its page's "changed" dot, sidebar    */
 	gboolean     blocked;   /* cannot act now: disabled, reason
 	                         * shown.  A change made before it was
 	                         * blocked is still saved: the switch
@@ -117,11 +130,15 @@ struct _PrefsWin
 	const gchar *signin_about;
 	gboolean     signin_can;    /* this copy may change it          */
 	gboolean     signin_orig;   /* what the system says is set      */
+	GtkWidget   *signin_box;    /* its row, for the "changed" bar   */
+	GtkWidget   *signin_dot;    /* its page's "changed" dot         */
 	GMainLoop   *loop;
 	PrefsResponse response;
 	gboolean     syncing;
 	guint32      sections;
 	guint32      honors;
+	const gchar *last_section;  /* building: the sidebar group open */
+	GtkWidget   *page_dot;      /* building: the page's nav dot      */
 };
 
 /* ------------------------------------------------------------ helpers */
@@ -314,10 +331,52 @@ refresh (PrefsWin *win)
 		signin_describe (win);
 	}
 
+	/* Where the changes are: a bar on each changed row, a dot on its
+	 * page in the sidebar.  Dots first off, then on for any page that
+	 * holds a changed row (start at sign-in included: it is not a Row,
+	 * but a move of its switch is a change like any other). */
+	for (guint i = 0; i < win->rows->len; i++) {
+		Row *row = g_ptr_array_index (win->rows, i);
+
+		if (row->nav_dot != NULL)
+			gtk_widget_hide (row->nav_dot);
+	}
+	if (win->signin_dot != NULL)
+		gtk_widget_hide (win->signin_dot);
+	for (guint i = 0; i < win->rows->len; i++) {
+		Row *row = g_ptr_array_index (win->rows, i);
+		GtkStyleContext *ctx = gtk_widget_get_style_context (row->box);
+
+		if (fs_prefs_edit_changed (win->edit, row->key)) {
+			gtk_style_context_add_class (ctx, "pref-changed");
+			if (row->nav_dot != NULL)
+				gtk_widget_show (row->nav_dot);
+		} else {
+			gtk_style_context_remove_class (ctx, "pref-changed");
+		}
+	}
+	if (win->signin_box != NULL) {
+		GtkStyleContext *ctx =
+			gtk_widget_get_style_context (win->signin_box);
+
+		if (signin_pending (win)) {
+			gtk_style_context_add_class (ctx, "pref-changed");
+			if (win->signin_dot != NULL)
+				gtk_widget_show (win->signin_dot);
+		} else {
+			gtk_style_context_remove_class (ctx, "pref-changed");
+		}
+	}
+
 	/* What Save will write, exactly: changed keys this window offers,
 	 * and start at sign-in if it was moved. */
 	changed = fs_prefs_edit_n_pending (win->edit) +
 	          (signin_pending (win) ? 1 : 0);
+	if (changed == 0)
+		gtk_style_context_remove_class (
+			gtk_widget_get_style_context (win->status), "pending");
+	else
+		add_class (win->status, "pending");
 	if (changed == 0) {
 		gtk_label_set_text (GTK_LABEL (win->status), _("No changes"));
 	} else {
@@ -435,6 +494,7 @@ row_new (PrefsWin *win, GtkWidget *card, const gchar *key, RowKind kind,
 	row->kind = kind;
 	row->control = control;
 	row->about = about;
+	row->nav_dot = win->page_dot;
 
 	/* A setting is written only when this window offers its control:
 	 * one the platform does not act on has no row, so it is never
@@ -601,43 +661,84 @@ on_page_shown (GObject *stack, GParamSpec *pspec, gpointer data)
 }
 
 /* [ page_new ]
- * A page and its navigation item.  Returns the box the cards go in.
- * The whole page scrolls, so a short or narrow window loses nothing. */
+ * A page and its navigation item, under the sidebar group `section'
+ * (a heading is added when the group changes).  Returns the box the
+ * groups go in.  The whole page scrolls, so a short or narrow window
+ * loses nothing, and its column stops at PAGE_COLUMN on a wide one. */
 static GtkWidget *
-page_new (PrefsWin *win, GtkWidget *nav_box, const gchar *id,
-          FsIconKind icon, const gchar *title, const gchar *subtitle)
+page_new (PrefsWin *win, GtkWidget *nav_box, const gchar *section,
+          const gchar *id, FsIconKind icon, const gchar *title,
+          const gchar *subtitle)
 {
 	GtkWidget *scroll = gtk_scrolled_window_new (NULL, NULL);
+	GtkWidget *clamp = fs_clamp_new (PAGE_COLUMN);
 	GtkWidget *page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-	GtkWidget *head = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
-	GtkWidget *cards = gtk_box_new (GTK_ORIENTATION_VERTICAL, 16);
+	GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 14);
+	GtkWidget *words = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+	GtkWidget *tile = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	GtkWidget *cards = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
 	GtkWidget *item = gtk_toggle_button_new ();
-	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+	GtkWidget *dot;
 	gchar *name;
 
+	if (section != NULL && g_strcmp0 (section, win->last_section) != 0) {
+		GtkWidget *heading = label_new (section, "side-section", FALSE);
+
+		gtk_box_pack_start (GTK_BOX (nav_box), heading, FALSE, FALSE, 0);
+		win->last_section = section;
+	}
+
 	add_class (page, "page");
+	add_class (page, "pref-page");
 	add_class (head, "page-head");
-	gtk_box_pack_start (GTK_BOX (head), label_new (title, "page-title", FALSE),
+	add_class (head, "pref-page-head");
+	add_class (tile, "pref-page-icon");
+	gtk_widget_set_valign (tile, GTK_ALIGN_START);
+	gtk_box_pack_start (GTK_BOX (tile), fs_icon_new (icon, 22),
 	                    FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (head),
+	gtk_box_pack_start (GTK_BOX (head), tile, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (words),
+	                    label_new (title, "page-title", FALSE),
+	                    FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (words),
 	                    label_new (subtitle, "page-subtitle", TRUE),
 	                    FALSE, FALSE, 0);
+	gtk_widget_set_valign (words, GTK_ALIGN_CENTER);
+	gtk_box_pack_start (GTK_BOX (head), words, TRUE, TRUE, 0);
 	gtk_box_pack_start (GTK_BOX (page), head, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (page), cards, FALSE, FALSE, 0);
 
 	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
 	                                GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-	gtk_container_add (GTK_CONTAINER (scroll), page);
+	name = g_strconcat ("page:", id, NULL);
+	gtk_widget_set_name (page, name);
+	g_free (name);
+	gtk_container_add (GTK_CONTAINER (clamp), page);
+	gtk_container_add (GTK_CONTAINER (scroll), clamp);
 	gtk_stack_add_titled (GTK_STACK (win->stack), scroll, id, title);
 
-	/* The navigation item, drawn like the main window's. */
-	gtk_box_pack_start (GTK_BOX (row), fs_icon_new (icon, 18),
+	/* The navigation item: Help's sidebar item, with a dot that shows
+	 * while the page holds an unsaved change. */
+	gtk_box_pack_start (GTK_BOX (row), fs_icon_new (icon, 16),
 	                    FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (row), label_new (title, NULL, FALSE),
 	                    TRUE, TRUE, 0);
+	dot = fs_icon_new (FS_ICON_DOT, 7);
+	add_class (dot, "nav-changed-dot");
+	gtk_widget_set_valign (dot, GTK_ALIGN_CENTER);
+	name = g_strconcat ("nav-dot:", id, NULL);
+	gtk_widget_set_name (dot, name);
+	g_free (name);
+	gtk_widget_set_tooltip_text (dot, _("Unsaved changes on this page"));
+	gtk_widget_set_no_show_all (dot, TRUE);
+	gtk_box_pack_start (GTK_BOX (row), dot, FALSE, FALSE, 0);
+	win->page_dot = dot;
 	gtk_container_add (GTK_CONTAINER (item), row);
 	gtk_button_set_relief (GTK_BUTTON (item), GTK_RELIEF_NONE);
+	atk_object_set_name (gtk_widget_get_accessible (item), title);
 	add_class (item, "nav-item");
+	add_class (item, "side-item");
 	name = g_strconcat ("nav:", id, NULL);
 	gtk_widget_set_name (item, name);
 	g_free (name);
@@ -649,18 +750,24 @@ page_new (PrefsWin *win, GtkWidget *nav_box, const gchar *id,
 	return cards;
 }
 
-/* [ card_new ] -- a white card with a heading; returns the card. */
+/* [ card_new ]
+ * A group of settings: a small heading over a white card.  Returns the
+ * card; the group (heading and card) is its "fs-pref-group" data, for
+ * hiding the two together. */
 static GtkWidget *
 card_new (GtkWidget *cards, const gchar *heading)
 {
+	GtkWidget *group = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 	GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-	GtkWidget *label = label_new (heading, "card-heading", FALSE);
+	GtkWidget *label = label_new (heading, "pref-group-title", FALSE);
 
+	add_class (group, "pref-group");
 	add_class (card, "card");
 	add_class (card, "pref-card");
-	add_class (label, "card-head");
-	gtk_box_pack_start (GTK_BOX (card), label, FALSE, FALSE, 0);
-	gtk_box_pack_start (GTK_BOX (cards), card, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (group), label, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (group), card, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (cards), group, FALSE, FALSE, 0);
+	g_object_set_data (G_OBJECT (card), "fs-pref-group", group);
 	return card;
 }
 
@@ -831,11 +938,12 @@ add_background_rows (PrefsWin *win, GtkWidget *card)
 	                      "as unknown.");
 #endif
 
-	row_shell (card, "prefs-signin",
-	           _("Start StockFW in the background when I sign in"),
-	           win->signin_about,
-	           why != NULL ? why : _("Not available on this system."),
-	           win->signin, &win->signin_reason);
+	win->signin_dot = win->page_dot;
+	win->signin_box = row_shell (card, "prefs-signin",
+	                             _("Start StockFW in the background when I sign in"),
+	                             win->signin_about,
+	                             why != NULL ? why : _("Not available on this system."),
+	                             win->signin, &win->signin_reason);
 	gtk_widget_set_visible (win->signin_reason, !win->signin_can);
 	g_free (why);
 
@@ -855,7 +963,7 @@ add_background_rows (PrefsWin *win, GtkWidget *card)
 static void
 build_general (PrefsWin *win, GtkWidget *nav)
 {
-	GtkWidget *cards = page_new (win, nav, "general", FS_ICON_SETTINGS,
+	GtkWidget *cards = page_new (win, nav, _("StockFW"), "general", FS_ICON_SETTINGS,
 		_("General"),
 		_("How the StockFW window behaves, and what happens when it "
 		  "opens."));
@@ -881,15 +989,20 @@ build_general (PrefsWin *win, GtkWidget *nav)
 		  "firewall is left as it was."), NULL);
 
 	card = card_new (cards, _("Background"));
-	gtk_widget_set_name (card, "prefs-background");
-	if (!add_background_rows (win, card))
-		gtk_widget_set_no_show_all (card, TRUE);
+	{
+		GtkWidget *group = g_object_get_data (G_OBJECT (card),
+		                                      "fs-pref-group");
+
+		gtk_widget_set_name (group, "prefs-background");
+		if (!add_background_rows (win, card))
+			gtk_widget_set_no_show_all (group, TRUE);
+	}
 }
 
 static void
 build_events (PrefsWin *win, GtkWidget *nav)
 {
-	GtkWidget *cards = page_new (win, nav, "events", FS_ICON_LIST,
+	GtkWidget *cards = page_new (win, nav, _("StockFW"), "events", FS_ICON_LIST,
 		_("Events"), _("What the Events list shows."));
 	GtkWidget *card = card_new (cards, _("Event list"));
 
@@ -921,7 +1034,7 @@ on_open_policy (GtkButton *button, gpointer data)
 static void
 build_policy (PrefsWin *win, GtkWidget *nav)
 {
-	GtkWidget *cards = page_new (win, nav, "policy", FS_ICON_SLIDERS,
+	GtkWidget *cards = page_new (win, nav, _("StockFW"), "policy", FS_ICON_SLIDERS,
 		_("Policy"), _("When changes to your rules reach the firewall."));
 	GtkWidget *card, *row, *text, *pill;
 	gboolean audit = fs_apply_audit_only ();
@@ -991,7 +1104,7 @@ build_firewall (PrefsWin *win, GtkWidget *nav)
 	if ((win->honors & mine) == 0)
 		return;
 
-	cards = page_new (win, nav, "firewall", FS_ICON_SHIELD,
+	cards = page_new (win, nav, _("Firewall"), "firewall", FS_ICON_SHIELD,
 		_("Firewall"),
 		_("How blocked connections are answered, and what may leave "
 		  "this computer."));
@@ -1047,7 +1160,7 @@ build_network (PrefsWin *win, GtkWidget *nav)
 	if ((win->sections & FS_FWSEC_NETWORK) == 0)
 		return;
 
-	cards = page_new (win, nav, "network", FS_ICON_ADAPTER,
+	cards = page_new (win, nav, _("Firewall"), "network", FS_ICON_ADAPTER,
 		_("Network"),
 		_("Which adapters face the Internet and your own network."));
 	ifaces = fs_backend ()->list_interfaces != NULL
@@ -1134,7 +1247,7 @@ build_icmp (PrefsWin *win, GtkWidget *nav)
 	if ((win->sections & FS_FWSEC_ICMP) == 0)
 		return;
 
-	cards = page_new (win, nav, "icmp", FS_ICON_ACTIVITY, _("ICMP"),
+	cards = page_new (win, nav, _("Firewall"), "icmp", FS_ICON_ACTIVITY, _("ICMP"),
 		_("Which network control messages may reach this computer."));
 
 	card = card_new (cards, _("ICMP filtering"));
@@ -1179,35 +1292,33 @@ build_protection (PrefsWin *win, GtkWidget *nav)
 	if ((win->sections & FS_FWSEC_ADVANCED) == 0)
 		return;
 
-	cards = page_new (win, nav, "protection", FS_ICON_SHIELD_CHECK,
+	cards = page_new (win, nav, _("Firewall"), "protection", FS_ICON_SHIELD_CHECK,
 		_("Protection"),
 		_("Extra blocks for traffic that should never arrive."));
 
 	/* Linux scopes each block to a device, Windows to the network
-	 * profiles: the same switch, said the way it actually works. */
-	card = card_new (cards, _("Broadcasts"));
-	add_switch (win, card, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST,
-		_("Block broadcasts from the Internet side"),
-		devices
-		? _("Drops broadcast packets arriving on the Internet device.")
-		: _("Drops broadcast packets on networks Windows treats as "
-		    "public."),
-		devices
-		? _("Has no effect until you choose an Internet device on the "
-		    "Network page.")
-		: NULL);
-	add_switch (win, card, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST,
-		_("Block broadcasts from the local network"),
-		devices
-		? _("Drops broadcast packets arriving on the local network "
-		    "device while the connection is shared.")
-		: _("Drops broadcast packets on networks Windows treats as "
-		    "private. Some printers and media players find each "
-		    "other this way."),
-		devices
-		? _("Has no effect unless connection sharing is on and both "
-		    "devices are chosen on the Network page.")
-		: NULL);
+	 * profiles: the same switch, said the way it actually works.
+	 *
+	 * The broadcast blocks only where a device scopes them (Linux).
+	 * A Windows Firewall rule matches a remote address, the packet's
+	 * sender, and no packet is sent from 255.255.255.255, so there
+	 * they would block nothing; fs-settings-plan.c plans no rule for
+	 * them either. */
+	if (devices) {
+		card = card_new (cards, _("Broadcasts"));
+		add_switch (win, card, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST,
+			_("Block broadcasts from the Internet side"),
+			_("Drops broadcast packets arriving on the Internet "
+			  "device."),
+			_("Has no effect until you choose an Internet device on "
+			  "the Network page."));
+		add_switch (win, card, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST,
+			_("Block broadcasts from the local network"),
+			_("Drops broadcast packets arriving on the local network "
+			  "device while the connection is shared."),
+			_("Has no effect unless connection sharing is on and both "
+			  "devices are chosen on the Network page."));
+	}
 
 	card = card_new (cards, _("Spoofed addresses"));
 	add_switch (win, card, FS_PREFS_FW_BLOCK_NON_ROUTABLES,
@@ -1216,9 +1327,12 @@ build_protection (PrefsWin *win, GtkWidget *nav)
 		? _("Drops packets on the Internet device that claim to come "
 		    "from private or loopback ranges (10/8, 172.16/12, "
 		    "192.168/16, 127/8); they cannot be genuine there.")
-		: _("Drops packets from private and loopback ranges (10/8, "
-		    "172.16/12, 192.168/16, 127/8) on networks Windows "
-		    "treats as public."),
+		: _("On networks Windows treats as public, blocks every inbound "
+		    "connection from private and loopback ranges (10/8, "
+		    "172.16/12, 192.168/16, 127/8), even ones your own allow "
+		    "rules let in. Windows uses public for new networks and "
+		    "most cafe and hotel Wi-Fi, where other devices have such "
+		    "addresses."),
 		devices
 		? _("Has no effect until you choose an Internet device on the "
 		    "Network page.")
@@ -1266,11 +1380,28 @@ on_delete (GtkWidget *widget, GdkEvent *event, gpointer data)
 	return TRUE;   /* destroyed by fs_dialogs_preferences */
 }
 
+/* Help, and F1: the Help topic for the page shown. */
+static void
+on_help (GtkButton *button, gpointer data)
+{
+	PrefsWin *win = data;
+	const gchar *page =
+		gtk_stack_get_visible_child_name (GTK_STACK (win->stack));
+
+	(void) button;
+	fs_help_show (win->window, fs_help_topic_for_prefs_page (page));
+}
+
 static gboolean
 on_key (GtkWidget *widget, GdkEventKey *event, gpointer data)
 {
 	(void) widget;
 
+	if (event->keyval == GDK_KEY_F1
+	    && (event->state & gtk_accelerator_get_default_mod_mask ()) == 0) {
+		on_help (NULL, data);
+		return TRUE;
+	}
 	if (event->keyval == GDK_KEY_Escape) {
 		on_cancel (NULL, data);
 		return TRUE;
@@ -1313,7 +1444,7 @@ clamp_size (GtkWindow *window, GtkWidget *parent)
 static GtkWidget *
 build_window (PrefsWin *win, GtkWidget *parent)
 {
-	GtkWidget *outer, *nav, *head, *right, *footer, *cancel, *save;
+	GtkWidget *outer, *nav, *head, *right, *footer, *cancel, *save, *help;
 	const FsBackend *backend = fs_backend ();
 
 	win->window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
@@ -1341,9 +1472,11 @@ build_window (PrefsWin *win, GtkWidget *parent)
 	gtk_container_add (GTK_CONTAINER (win->window), outer);
 
 	/* Navigation: the main window's sidebar, smaller. */
-	nav = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+	nav = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
 	gtk_widget_set_size_request (nav, NAV_WIDTH, -1);
+	gtk_widget_set_name (nav, "prefs-sidebar");
 	add_class (nav, "fs-sidebar");
+	add_class (nav, "side-nav");
 	add_class (nav, "prefs-nav");
 	head = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
 	add_class (head, "fs-brand");
@@ -1367,12 +1500,30 @@ build_window (PrefsWin *win, GtkWidget *parent)
 	gtk_widget_set_vexpand (win->stack, TRUE);
 	gtk_box_pack_start (GTK_BOX (right), win->stack, TRUE, TRUE, 0);
 
-	/* Footer: what is pending on the left, the two answers on the
-	 * right. */
+	/* Footer: Help and what is pending on the left, the two answers
+	 * on the right. */
 	footer = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
 	add_class (footer, "prefs-footer");
-	win->status = label_new ("", "muted", FALSE);
+	help = gtk_button_new ();
+	{
+		GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+
+		gtk_box_pack_start (GTK_BOX (row), fs_icon_new (FS_ICON_HELP, 16),
+		                    FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (row),
+		                    gtk_label_new_with_mnemonic (_("_Help")),
+		                    FALSE, FALSE, 0);
+		gtk_container_add (GTK_CONTAINER (help), row);
+	}
+	gtk_widget_set_name (help, "prefs-help");
+	gtk_widget_set_tooltip_text (help, _("Help for this page (F1)"));
+	add_class (help, "btn-subtle");
+	g_signal_connect (help, "clicked", G_CALLBACK (on_help), win);
+	gtk_box_pack_start (GTK_BOX (footer), help, FALSE, FALSE, 0);
+	win->status = label_new ("", "prefs-status", FALSE);
 	gtk_widget_set_name (win->status, "prefs-status");
+	gtk_widget_set_valign (win->status, GTK_ALIGN_CENTER);
+	gtk_widget_set_halign (win->status, GTK_ALIGN_START);
 	gtk_label_set_ellipsize (GTK_LABEL (win->status), PANGO_ELLIPSIZE_END);
 	gtk_box_pack_start (GTK_BOX (footer), win->status, TRUE, TRUE, 0);
 
@@ -1693,7 +1844,14 @@ fs_dialogs_preferences_cancel (void)
 void
 fs_dialogs_preferences (GtkWidget *parent)
 {
+	fs_dialogs_preferences_at (parent, NULL);
+}
+
+void
+fs_dialogs_preferences_at (GtkWidget *parent, const gchar *page)
+{
 	PrefsWin win;
+	GtkWidget *first;
 	GtkWidget *save;
 
 	if (open_prefs != NULL) {
@@ -1716,7 +1874,12 @@ fs_dialogs_preferences (GtkWidget *parent)
 	open_prefs = &win;
 
 	gtk_widget_show_all (win.window);
-	gtk_stack_set_visible_child_name (GTK_STACK (win.stack), "general");
+	/* The page asked for if this platform offers it, else General. */
+	first = page != NULL
+		? gtk_stack_get_child_by_name (GTK_STACK (win.stack), page) : NULL;
+	gtk_stack_set_visible_child_name (GTK_STACK (win.stack),
+	                                  first != NULL && gtk_widget_get_visible (first)
+	                                  ? page : "general");
 	on_page_shown (G_OBJECT (win.stack), NULL, &win);
 	gtk_widget_grab_focus (save);
 

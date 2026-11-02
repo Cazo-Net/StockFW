@@ -1,110 +1,13 @@
 /*---[ fs-dialogs.c ]---------------------------------------------------
- * About / error / info / confirm dialogs.
+ * Error / info / confirm dialogs.
  *
- * Replaces gnome_about_new() and the hand-rolled error window in
- * util.c with stock GTK3 dialogs.
+ * Replaces the hand-rolled error window in util.c with stock GTK3
+ * dialogs.  The About window is in fs-aboutdialog.c, Preferences in
+ * fs-prefsdialog.c.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-dialogs.h"
 #include "core/fs-i18n.h"
-#include "stockfw-logo-128.h"
-
-#include <gdk-pixbuf/gdk-pixbuf.h>
-
-#ifndef FS_VERSION
-#define FS_VERSION "1.0.6"
-#endif
-
-/* Load the embedded StockFW logo as a GdkPixbuf. */
-static GdkPixbuf *
-load_logo_pixbuf (void)
-{
-	GError *error = NULL;
-	GdkPixbufLoader *loader;
-	GdkPixbuf *pixbuf = NULL;
-
-	loader = gdk_pixbuf_loader_new ();
-	if (gdk_pixbuf_loader_write (loader, stockfw_logo_128_png,
-	                             stockfw_logo_128_png_len, &error)) {
-		gdk_pixbuf_loader_close (loader, NULL);
-		pixbuf = gdk_pixbuf_loader_get_pixbuf (loader);
-		if (pixbuf)
-			g_object_ref (pixbuf);
-	} else {
-		g_clear_error (&error);
-	}
-	g_object_unref (loader);
-
-	return pixbuf;
-}
-
-/* [ fs_dialogs_about_authors ]
- * The About credits, pre-escaped for Pango markup.
- *
- * GtkAboutDialog's credits view wraps every author in
- * <span size="small">... and parses the result as markup WITHOUT
- * escaping the plain-text parts -- it only escapes text around links
- * (gtkaboutdialog.c, add_credits_section).  A bare '&' therefore
- * makes Pango fail to parse, and the label falls back to showing the
- * raw markup: the dialog printed "Created by: <span size=...>Qusai
- * Fethalrahman - Creator & Original Developer</span>" instead of the
- * name.  Escaping here is what makes it render.  Exported so
- * ui-prefs-smoke can run pango_parse_markup() over every string --
- * the escape is the fix, the parse is the proof.
- */
-const gchar **
-fs_dialogs_about_authors (void)
-{
-	static const gchar *raw[] = {
-		"Qusai Fethalrahman (Qusaifox2@gmail.com) - Creator & Original Developer",
-		"H3xCore - Developer",
-		"StockFW Project - GTK3 Port, Windows Backend, Copilot",
-		NULL
-	};
-	static gchar *safe[G_N_ELEMENTS (raw)] = { NULL };
-	static gboolean done = FALSE;
-
-	if (!done) {
-		for (guint i = 0; raw[i] != NULL; i++)
-			safe[i] = g_markup_escape_text (raw[i], -1);
-		done = TRUE;
-	}
-
-	return (const gchar **) safe;
-}
-
-void
-fs_dialogs_about (GtkWidget *parent)
-{
-	GtkWidget *dialog = gtk_about_dialog_new ();
-	GdkPixbuf *logo = load_logo_pixbuf ();
-
-	gtk_about_dialog_set_program_name (GTK_ABOUT_DIALOG (dialog), "StockFW");
-	gtk_about_dialog_set_version (GTK_ABOUT_DIALOG (dialog), FS_VERSION);
-	gtk_about_dialog_set_copyright (GTK_ABOUT_DIALOG (dialog),
-	                                "(C) 04-10-2026 StockFW Project");
-	gtk_about_dialog_set_comments (GTK_ABOUT_DIALOG (dialog),
-	                               "Smart Firewall Configuration Tool\n"
-	                               "with local, rule-based traffic analysis.");
-	gtk_about_dialog_set_authors (GTK_ABOUT_DIALOG (dialog),
-	                              fs_dialogs_about_authors ());
-	gtk_about_dialog_set_license_type (GTK_ABOUT_DIALOG (dialog),
-	                                    GTK_LICENSE_GPL_3_0);
-	gtk_about_dialog_set_wrap_license (GTK_ABOUT_DIALOG (dialog), TRUE);
-	gtk_about_dialog_set_website (GTK_ABOUT_DIALOG (dialog),
-	                              "https://github.com/Cazo-Net/StockFW");
-	gtk_about_dialog_set_website_label (GTK_ABOUT_DIALOG (dialog),
-	                                    "StockFW on GitHub");
-
-	if (logo != NULL) {
-		gtk_about_dialog_set_logo (GTK_ABOUT_DIALOG (dialog), logo);
-		g_object_unref (logo);
-	}
-
-	gtk_window_set_transient_for (GTK_WINDOW (dialog), GTK_WINDOW (parent));
-	gtk_dialog_run (GTK_DIALOG (dialog));
-	gtk_widget_destroy (dialog);
-}
 
 static GtkWidget *
 make_message_dialog (GtkWidget *parent,

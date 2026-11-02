@@ -92,21 +92,6 @@ static const FsSettingRule rule_icmp_source_quench = {
 	.icmp = "4,any", .port = 0, .remote = NULL, .profiles = 0
 };
 
-/* Limited broadcast, the only broadcast the iptables rules blocked. */
-static const FsSettingRule rule_block_broadcast_external = {
-	.name = "StockFW block broadcasts from the external network",
-	.allow = FALSE, .proto = FS_SETPLAN_PROTO_ANY,
-	.icmp = NULL, .port = 0, .remote = "255.255.255.255",
-	.profiles = FS_FWP_PROFILE_PUBLIC
-};
-
-static const FsSettingRule rule_block_broadcast_internal = {
-	.name = "StockFW block broadcasts from the internal network",
-	.allow = FALSE, .proto = FS_SETPLAN_PROTO_ANY,
-	.icmp = NULL, .port = 0, .remote = "255.255.255.255",
-	.profiles = FS_FWP_PROFILE_PRIVATE
-};
-
 /* The same four reserved ranges the iptables script refused on the
  * external interface: private space, and loopback arriving from
  * outside, cannot be genuine sources. */
@@ -178,16 +163,17 @@ fs_settings_plan_new (const FsSettings *settings)
 			plan_add (plan, &rule_icmp_source_quench);
 	}
 
-	if (settings->block_external_broadcast)
-		plan_add (plan, &rule_block_broadcast_external);
-
-	if (settings->block_internal_broadcast)
-		plan_add (plan, &rule_block_broadcast_internal);
-
 	if (settings->block_non_routables)
 		plan_add (plan, &rule_block_reserved_sources);
 
 	/* Not planned here, and why:
+	 * - block_external_broadcast / block_internal_broadcast: Linux
+	 *   drops packets whose destination is 255.255.255.255.  A rule
+	 *   here can only name the remote address, which on an inbound
+	 *   rule is the sender, and no packet is sent from
+	 *   255.255.255.255: such a rule blocked nothing while Preferences
+	 *   said it dropped broadcasts.  Preferences does not offer the
+	 *   switches on Windows, and a stored "on" plans nothing.
 	 * - deny_packets: Windows Firewall drops silently and has no
 	 *   per-rule reject, so there is nothing to plan; Preferences
 	 *   does not offer the choice on Windows.

@@ -4988,7 +4988,8 @@ whatif_window_action (GtkWidget *window, const FsWhatIfResult *result,
         break;
     case FS_WHATIF_ACT_OPEN_ICMP_SETTINGS:
     case FS_WHATIF_ACT_OPEN_SETTINGS:
-        fs_dialogs_preferences (window);
+        /* At the page that holds the switch the fix names. */
+        fs_dialogs_preferences_at (window, act->page);
         /* Whatever was changed there, the answer is asked again. */
         whatif_log ("\n[=] Asked again with the Preferences as saved now:\n",
                     NULL);

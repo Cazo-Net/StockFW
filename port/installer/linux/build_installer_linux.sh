@@ -81,6 +81,16 @@ cp "$LINUX_DIR/stockfw-icon.png" "$STAGE/"
 cp "$LINUX_DIR/stockfw-icon-48.png"  "$STAGE/"
 cp "$LINUX_DIR/stockfw-icon-256.png" "$STAGE/"
 cp "$LINUX_DIR/LICENSE.txt"      "$STAGE/"
+# The summary, then both licence texts the source carries, in full
+# (tests/test-licence-texts.sh).
+for text in COPYING LICENSE; do
+    if [ ! -s "$PORT_DIR_ROOT/$text" ]; then
+        echo "ERROR: $text is missing from the source tree" >&2
+        exit 1
+    fi
+    printf '\n---\n\n%s\n\n' "$text" >> "$STAGE/LICENSE.txt"
+    cat "$PORT_DIR_ROOT/$text" >> "$STAGE/LICENSE.txt"
+done
 
 # 3. docs
 # The Linux-specific README is the one the user reads after extracting;

@@ -401,6 +401,37 @@ answer_confirm (gpointer data)
 	return G_SOURCE_CONTINUE;
 }
 
+/* Preferences, opened by a What-If fix: which page it shows, then
+ * Cancel, the way a user would close it unchanged. */
+static gchar *prefs_page_seen = NULL;
+
+static gboolean
+read_prefs_page (gpointer data)
+{
+	GList *tops = gtk_window_list_toplevels ();
+
+	(void) data;
+	for (GList *l = tops; l != NULL; l = l->next) {
+		GtkWidget *w = l->data;
+		GtkWidget *stack, *cancel;
+
+		if (g_strcmp0 (gtk_widget_get_name (w), "fs-preferences") != 0 ||
+		    !gtk_widget_get_mapped (w))
+			continue;
+		stack = named (w, "prefs-pages");
+		cancel = named (w, "prefs-cancel");
+		if (stack == NULL || cancel == NULL)
+			continue;
+		g_free (prefs_page_seen);
+		prefs_page_seen = g_strdup (gtk_stack_get_visible_child_name (
+			GTK_STACK (stack)));
+		gtk_button_clicked (GTK_BUTTON (cancel));
+		break;
+	}
+	g_list_free (tops);
+	return G_SOURCE_CONTINUE;
+}
+
 static void
 ask (GtkWidget *card, const gchar *line)
 {
@@ -914,6 +945,28 @@ test_whatif_card (FsPolicy *policy, GtkWidget *page)
 	       fs_simviz_find_button (win, "Create allow rule") == NULL &&
 	       fs_simviz_find_button (win, "Create block rule") == NULL,
 	       "what-if: a block rule decided: Open rule, no Create");
+
+	/* A Preferences switch decides: the fix opens Preferences at the
+	 * page that holds it (HELP-WI-PREFS), not at General. */
+	ask (card, "allow inbound icmp redirect from 203.0.113.5");
+	btn = fs_simviz_find_button (win, "Open ICMP settings");
+	CHECK (btn != NULL,
+	       "what-if: an ICMP setting decides: Open ICMP settings is offered");
+	g_source_remove (timer);
+	if (btn != NULL) {
+		prefs_page_seen = NULL;
+		timer = g_timeout_add (40, read_prefs_page, NULL);
+		gtk_button_clicked (GTK_BUTTON (btn));
+		g_source_remove (timer);
+		pump (60);
+		CHECK (g_strcmp0 (prefs_page_seen, "icmp") == 0,
+		       "what-if: Open ICMP settings opens Preferences at ICMP "
+		       "(opened at %s)", prefs_page_seen != NULL
+		       ? prefs_page_seen : "nothing");
+		g_free (prefs_page_seen);
+		prefs_page_seen = NULL;
+	}
+	timer = g_timeout_add (40, answer_confirm, NULL);
 
 	/* What the parser cannot read. */
 	ask (card, "zqxv");
