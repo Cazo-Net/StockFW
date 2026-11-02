@@ -63,6 +63,9 @@ for exe in fs-ui-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustv
   "./build/$exe" > "$TMP/last-suite.txt" 2>&1 || rc=$?
   echo "--- $exe exit=$rc"
   grep -E "PASSED|FAILED|^[0-9]+ ?failure|^FAIL" "$TMP/last-suite.txt" | tail -8
+  # A smoke that fails on a GLib or GTK warning only reports how many it
+  # saw; the warnings themselves are in its output, so show them.
+  [ "$rc" -eq 0 ] || grep -E -A1 "(WARNING|CRITICAL) \*\*" "$TMP/last-suite.txt" | head -12
   [ "$rc" -eq 0 ] || fails=$((fails+1))
 done
 
