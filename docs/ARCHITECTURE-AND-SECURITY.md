@@ -14,7 +14,7 @@
 
 **Chapter 3: The Core Engine (How it Works)** — 3.1 User-Mode by Design · 3.2 Rule Compilation to `netsh advfirewall` · 3.3 Event Acquisition: 5156/5157 and `wevtutil` · 3.4 Record Splitting, Deduplication, and the Seen-Set · 3.5 Monitoring Bootstrap: `auditpol` · 3.6 The Linux Backend · 3.7 Spawn Mechanics and Failure Modes *(Mermaid: sequence diagram)*
 
-**Chapter 4: The AI Copilot & NLP Engine** — 4.1 Deterministic Local Parsing, No Cloud Model · 4.2 The Scenario Pipeline *(Mermaid: flowchart)* · 4.3 What-If Simulator and Anomaly Detection · 4.4 Guardrails: Allow-Only, Confirm, Rollback · 4.5 Prompt-Injection Threat Surface Analyzed · 4.6 Mapping Natural Language to Rule Grammar · 4.7 Simulation Visualizer: One Verdict, Two Surfaces
+**Chapter 4: The Copilot and What-If Parser** — 4.1 Deterministic Local Parsing, No Cloud Model · 4.2 The Scenario Pipeline *(Mermaid: flowchart)* · 4.3 What-If Simulator and Anomaly Detection · 4.4 Guardrails: Allow-Only, Confirm, Rollback · 4.5 Prompt-Injection Threat Surface Analyzed · 4.6 Mapping Natural Language to Rule Grammar · 4.7 Simulation Visualizer: One Verdict, Two Surfaces
 
 **Chapter 5: Security Model & Threat Analysis** — 5.1 Trust Boundaries and Attacker Profiles · 5.2 Privilege-Escalation Analysis *(verified evidence table)* · 5.3 Injection Surfaces: netsh, CSV, Event Log · 5.4 Tamper Resistance of the Policy Store · 5.5 Data Privacy of Logs · 5.6 STRIDE Summary
 
@@ -30,7 +30,7 @@
 
 **Chapter 11: 1.0.4 Addendum** — 11.1 Event → Rule, One Click · 11.2 Events Filter Bar · 11.3 Sentinel: Detection and Auto-Block · 11.4 F-1/F-3 Hygiene · 11.5 Repairs and Version
 
-**Chapter 12: 1.0.5 Addendum** — 12.1 AI Assistant Removed, What-If Developed · 12.2 Bi-Directional Direction Setting · 12.3 Runner and Version · 12.4 Application Trust Engine (Priority 1) · 12.5 Explainable Behavior Analysis (Priority 2) · 12.6 Safe Policy Enforcement (Priority 3) · 12.7 System Tray and Background Operation · 12.8 Preferences Settings Made Real on Windows · 12.9 Sentinel "No False Outages": the 2026-10-10 Incident and the P6 Hardening · 12.10 Detection Validation: the P4 Adversarial Suite · 12.11 Linux First-Run Defects: sudo's Search Path, a Leaking Probe, and a Ghost Profile Box
+**Chapter 12: 1.0.5 Addendum** — 12.1 Assistant Removed, What-If Developed · 12.2 Bi-Directional Direction Setting · 12.3 Runner and Version · 12.4 Application Trust Engine (Priority 1) · 12.5 Explainable Behavior Analysis (Priority 2) · 12.6 Safe Policy Enforcement (Priority 3) · 12.7 System Tray and Background Operation · 12.8 Preferences Settings Made Real on Windows · 12.9 Sentinel "No False Outages": the 2026-10-10 Incident and the P6 Hardening · 12.10 Detection Validation: the P4 Adversarial Suite · 12.11 Linux First-Run Defects: sudo's Search Path, a Leaking Probe, and a Ghost Profile Box
 
 **Chapter 13: 1.0.6 Addendum** — 13.1 The Linux Event Pipeline Made Truthful · 13.2 Real Network and Connection Panels on Linux · 13.3 Activity Time Series · 13.4 The Activity Page · 13.5 The `stockfw` Command-Line Tool · 13.6 The Local Dashboard: Threat Model and Controls · 13.7 Desktop UI Defects Fixed · 13.8 Tests and Version · 13.9 Open Observations
 
@@ -40,7 +40,7 @@
 
 ### 1.1 Executive Summary
 
-StockFW is a Windows-first, cross-platform **smart firewall configuration and monitoring tool**: a modern GTK3 desktop application that acts as a management plane over the operating system's native packet-filtering engine — the **Windows Filtering Platform (WFP)**, driven exclusively through Microsoft-supported interfaces — and an equivalent `iptables`-based backend on Linux. It provides four integrated surfaces: a **Status** dashboard with live traffic counters and per-profile toggles (Domain, Private, Public); an **Events** monitor that classifies inbound and outbound connections in real time with process identification and allow/block verdicts; a **Policy** manager for granular rule authoring over CSV storage with verified round-trip fidelity; and an **AI Copilot** that translates natural-language requests into structured firewall rules, explains anomalies observed in the event stream, and simulates the effect of a proposed rule before it is applied.
+StockFW is a Windows-first, cross-platform **smart firewall configuration and monitoring tool**: a modern GTK3 desktop application that acts as a management plane over the operating system's native packet-filtering engine — the **Windows Filtering Platform (WFP)**, driven exclusively through Microsoft-supported interfaces — and an equivalent `iptables`-based backend on Linux. It provides four integrated surfaces: a **Status** dashboard with live traffic counters and per-profile toggles (Domain, Private, Public); an **Events** monitor that classifies inbound and outbound connections in real time with process identification and allow/block verdicts; a **Policy** manager for granular rule authoring over CSV storage with verified round-trip fidelity; and a rule-based **Copilot** that checks the event stream and the policy with fixed rules, shows the evidence for each finding, and simulates the effect of a proposed rule before it is applied.
 
 The product's defining architectural decision is what it **refuses** to be. StockFW contains **no kernel driver, no packet-interception shim, and no cloud dependency**. Every firewall mutation flows through documented, supported Windows mechanisms (`netsh advfirewall` for rule CRUD, the `INetFwPolicy2` COM interface for profile state); every observation flows out of the Windows Security event log. The consequence of this conservatism is a specific and defensible security posture: the application has no driver attack surface, no custom binary parsing of untrusted network packets, and no remote component to compromise. Privilege escalation is handled by an **asInvoker** manifest plus explicit, user-initiated UAC launchers; unelevated operations fail loudly rather than silently. This posture is not aspirational — it is the subject of an auditable verification table in Chapter 5, where each security claim is tied to source-file evidence.
 
@@ -68,7 +68,7 @@ The security problem statement is equally sharp. A firewall configuration tool i
 
 - **No kernel component.** StockFW does not filter packets itself; it configures and observes the OS engine. "Driver vulnerabilities" are therefore out of scope by construction — the attack surface of a third-party NDIS/WFP callout simply does not exist here.
 - **No replacement of the OS firewall.** StockFW never uninstalls, disables, or shadows Windows Defender Firewall; if the application crashes, existing WFP rules remain in force and connectivity is unaffected.
-- **No cloud AI.** The Copilot is a deterministic local parser (Chapter 4); no telemetry, no rule data, and no event content leaves the machine.
+- **No cloud model.** There is no AI model in StockFW: the Copilot is a deterministic local parser and a set of fixed rules (Chapter 4, 14.4); no telemetry, no rule data, and no event content leaves the machine.
 - **No database server.** Storage is a CSV policy file plus keyfile preferences — trivially backed up, diffable, and auditable.
 - **No cross-user policy store.** The policy lives in the invoking user's profile; multi-user enterprise distribution is roadmap (Chapter 10), not present.
 
@@ -91,7 +91,7 @@ Every architectural claim in this document describes the code as it exists in St
 | Event acquisition | Windows Security log **5156/5157** via `wevtutil /f:text` (5 s poll, 10 records/call cap) |
 | Packet interception | **None** — user-mode management plane over WFP |
 | Policy storage | CSV (round-trip tested) in user profile; GLib keyfile preferences in `%APPDATA%` |
-| AI layer | Local deterministic NLP parser + heuristics; **no network calls** |
+| Copilot layer | Local deterministic parser and fixed rules; **no network calls** |
 | Privilege model | `asInvoker` manifest; UAC only via user-launched elevated wrappers; fail-loud unelevated errors |
 | Installer | NSIS, bundling the complete GTK3 runtime beside `StockFW.exe` |
 | Test suites | Core 653, P4 adversarial 49, Winlog 56, Installer-spawn 9, Logstart 5, UI smokes, teeth-verified regressions |
@@ -108,7 +108,7 @@ flowchart LR
         UI["Status · Events · Policy · Copilot"]
         CORE["Rule / Policy Core<br/>(CSV round-trip, validation)"]
         BACK["Platform Backends<br/>Windows | Linux"]
-        COPILOT["AI Copilot<br/>local deterministic parser"]
+        COPILOT["Copilot<br/>local fixed rules"]
     end
 
     subgraph OS["Operating System (authoritative engine)"]
@@ -366,11 +366,11 @@ The failure modes are enumerated deliberately:
 
 ---
 
-## Chapter 4: The AI Copilot & NLP Engine
+## Chapter 4: The Copilot and What-If Parser
 
 ### 4.1 Deterministic Local Parsing, No Cloud Model
 
-StockFW's Copilot is advertised as "AI," and this document's job is to say precisely what that means. The Copilot is a **local, deterministic understanding layer**: a tokenizer, a synonym/alias table, a **closed-grammar scenario parser** (direction keywords, hosts recognized by shape, port phrases, protocol words), and on the suggestion path a rule synthesizer that emits one fixed CSV dialect. There is **no LLM, no cloud API, no model weights, and no network call anywhere in the Copilot path**.
+This document's job is to say precisely what StockFW's Copilot is. The Copilot is a **local, deterministic understanding layer**: a tokenizer, a synonym/alias table, a **closed-grammar scenario parser** (direction keywords, hosts recognized by shape, port phrases, protocol words), and on the suggestion path a rule synthesizer that emits one fixed CSV dialect. There is **no LLM, no cloud API, no model weights, and no network call anywhere in the Copilot path**.
 
 This is an architectural position, not a shortcut. A firewall configuration assistant that ships its users' rule requests, observed traffic patterns, and anomaly context to a third-party endpoint would violate the privacy expectation of exactly the audience that installs a firewall. A probabilistic model that can hallucinate an argument list is the wrong tool for generating firewall rules where a typo is a real misconfiguration. And an offline-by-construction assistant keeps working on an air-gapped machine, which firewall users plausibly are. The costs are equally real and are stated plainly: the parser handles a bounded grammar rather than arbitrary conversation, and its comprehension ceiling is the size of its alias table. Chapter 10 discusses model-assisted parsing as a future, opt-in, on-device option — not part of 1.0.5.
 
@@ -982,9 +982,9 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 
 *This chapter records what shipped in StockFW 1.0.5 (October 2026). Chapters 1–10 carry the 1.0.3 base text and Chapter 11 the 1.0.4 additions; where this chapter restates an earlier claim, it is authoritative. Every feature below is teeth-tested by the suites named in Chapter 8.*
 
-### 12.1 AI Assistant Removed, What-If Developed
+### 12.1 Assistant Removed, What-If Developed
 
-The Copilot page's AI Assistant frame — input entry, Ask button, output pane, welcome message — is **gone**; no conversational surface exists anywhere in the application (4.1). What remains of the assistant's grammar now serves the **What-If Simulator**, which was developed from a stub into the page's centerpiece:
+The Copilot page's assistant frame — input entry, Ask button, output pane, welcome message — is **gone**; no conversational surface exists anywhere in the application (4.1). What remains of the assistant's grammar now serves the **What-If Simulator**, which was developed from a stub into the page's centerpiece:
 
 - **Parsing in core** (`fs_copilot_parse_scenario` → `FsScenario`): direction keywords (default **outbound**), hosts by shape only — IPv4/IPv6/CIDR, hostnames deliberately rejected so `open.code.exe` never parses as an address — a `host:port` shorthand, port clauses that beat service-name aliases, protocol keywords (`tcp`/`udp`/`icmp`/`ping`, default TCP), and the application token after "allow"/"allowing". **[Verified]** `test_whatif_simulate` (including NULL/empty → NULL).
 - **Verdicts that match the OS** (`fs_copilot_simulate`): block rules win over covering allows (Windows Firewall precedence), a shadowed allow is reported *shadowed*, CIDR containment through `fs_util_addr_in_cidr` (a `/24` block covers the hosts inside it), ports mirror addresses (either side unnamed = unconstrained — a no-port line meets the rule that opens one; ICMP never meets a ported rule), the best-scoring rule is named (exact port beats any-port, policy order breaks ties), the reason carries the deciding port and a forward's destination, and with no policy loaded the verdict says so instead of inventing rules. **[Verified]** `test_whatif_simulate` (653-check suite) — teeth demonstrated: disabling block precedence fails 3 of those checks; reverting the precision round fails 7 of them (portless line missing the ported rule, ICMP joined to a port, any-port rule named instead of the exact-port one, forward hiding its destination).
@@ -1437,3 +1437,59 @@ Lift Sentinel's Block confirms, lifts, applies and asks again in the same way. T
 - The Windows model has not been checked against a running Windows Firewall. It is built from the same compiled rules netsh receives, but Windows' own and other programs' rules are unknown to it, and the answer says so.
 - IPv6 is pinned as rule text but not probed live, because the test kernel has no IPv6 stack.
 - Forwards and threat-intel sets are not probed live.
+
+### 14.4 The Copilot: Fixed Rules, Shown Evidence, Verified Fixes
+
+**What it is.** There is no AI model in StockFW: the Copilot is a set of fixed rules that run on this computer, over the event log and the saved policy. It sends nothing anywhere and keeps no telemetry. Every finding names the rule that raised it, the numbers it measured next to the limits, and the events behind it. The 1.0.6 code comments, About box and a confirm dialog claimed more than that; that wording is gone, and `tests/test-core.sh` now fails if it comes back (the wording guard below).
+
+**Why it was reworked.** A review of the 1.0.6 page found:
+
+- The "Policy rules" tile always read 0, and the "Events analyzed" tile repeated the Events page.
+- The Copilot was fed after the Events page's display filters, so "skip repeats" hid repeated events from the detections as well as from the list.
+- Anomaly rows offered "Allow brave.exe on port 443 for 203.0.113.7". Rules are not tied to a program, so that row opened the port to that host for every program. Allow rows were also marked as automatic.
+- Beacons and fan-out were counted per destination or per host, not per app, so two apps polling one server looked like one beacon, and a browser tripped the fan-out limit.
+- The text styling used fixed light-theme colours, Details was a modal dialog with no evidence, and Undo covered Sentinel's blocks only.
+
+**Detections** (`core/fs-copilot.c`). Each finding carries up to 12 evidence rows (time, direction, remote address, port, protocol, verdict, the rule text the log gave), a "why flagged" sentence with the measured numbers and the limits, a "could be harmless" sentence, and a dedup key (`type|app|subject`): a new event for an open finding updates its count and evidence instead of adding a row.
+
+| Detection | Trigger | Severity | Sentinel |
+|---|---|---|---|
+| Inbound port scan | one source hits 12 distinct local ports in 60 s, or 25 in 10 min; ICMP, protected ranges and this computer's own addresses are ignored; one report per source per hour | Info if every probe was blocked, Warning if any reached an allowed port | never: there is no inbound deny kind, and the probes were dropped |
+| Repeated attempts on a login port | one source, 10 inbound attempts in 5 min to TCP 21, 22, 23, 445, 3389 or 5900 | Info if all were blocked or the source is on the LAN; Critical when a What-If probe says the policy admits the source | never; the health check's "narrow to the LAN" fix is linked |
+| New destination for a known app | the app has at least 50 connections over at least 7 days, and the address is public and new; one finding per app per hour listing the new hosts | Info | never by itself |
+| Contacts at a near-fixed interval (beacon) | at least 6 contacts to one destination and port, keyed by app, mean interval 10 to 600 s, variation at most 0.30; UDP 123 and DNS to the system's resolvers are never reported | Warning; Critical only if the destination is also on a block list | outbound deny for 10 minutes, as in 1.0.4, and only after 8 contacts; withheld for protected classes and destinations the baseline knows, and the row says why |
+| Block list or country rule hit | events whose rule text starts with "Threat intel:" or "Location block" | Warning for outbound (an app tried to reach a listed host); inbound hits roll up to one Info finding per hour | not needed: the set already blocks it |
+| Fan-out | per app: 60 distinct hosts, or 10 distinct blocked hosts, in 60 s | Warning | never |
+| Connection rate spike | the open 10-minute bucket is over 3 times the usual rate plus 5, and at least 10 | Info | never |
+
+Only outbound deny rows that pass `fs_insight_is_auto_safe` and the 1.0.4 P6 gates can ever be applied automatically; the "more than 20 ports" and "more than 50 hosts" profile lines and every "Allow X" suggestion on an anomaly were removed. The baseline is now saved every 15 minutes as well as on exit, so a crash loses at most 15 minutes of learning.
+
+**Policy health check** (`core/fs-health.[ch]`). Pure core. It reads the saved policy and reports:
+
+| Check | Rule | Severity | Fix offered |
+|---|---|---|---|
+| Duplicate | the same kind, with equal fields after normalising (case of the service, the port spec, the address) | Info | remove the later copy |
+| Shadowed | an earlier row in the same chain with the same action covers this one (Linux: first match; Windows: any covering row) | Info | remove the shadowed row |
+| Unreachable | an allow covered by a deny | Warning | none: the owner meant one of the two, so both rows are shown |
+| No effect | outbound allows while outbound traffic is allowed by default | Info | none |
+| Broad | an inbound allow from anyone over more than 100 ports | Warning | narrow to the local network |
+| Risky service open | an inbound allow from anyone on 21, 23, 135, 139, 445, 1433, 2375, 3306, 3389, 5432, 5900, 6379, 9200 or 27017 (22 is Info); a forward to one of them is a Warning | Critical | narrow to the local network |
+| Reaches no family | `fs_rule_coverage()` is none: a host name on Windows, a forward to a name or a range | Warning for a deny (it silently blocks nothing) | none |
+
+Coverage is exact: ports through `fs_fwrule_port_spec`, addresses through `fs_range_parse`. "A covers B" means the same direction, every protocol and port of B inside A, and every address of B inside A. A row that names a host by name never covers anything and is never covered.
+
+Every fix is checked by the What-If engine (14.3) before it is offered. The engine answers a set of probes (the row's lowest and highest port, its first and last address, or 203.0.113.10 and a LAN address for anyone, TCP and UDP where the row allows either) against the policy as it is and with the fix made. A removal is offered only if no verdict changes. A narrowing is offered only if every LAN probe keeps its answer and the outside probe goes from ALLOWED to BLOCKED. Otherwise the finding says "not offered" and why. The local network comes from the first adapter with a private IPv4 address (`fs_health_lan_prefix_auto`); `STOCKFW_LAN_PREFIX` overrides it, for tests. The check does not judge whether a host should be reachable: it reports rules that overlap, cancel each other, or are wider than a risky service needs.
+
+**The page.** A segmented Sentinel control (Detect only, Detect + auto-block) with one sentence on what auto-block can do; four tiles (Needs attention, Policy health, Auto-blocks active, Apps learned, or Services learned on Linux, where the log names no program); a findings list where each row has a severity pill with an icon and a word, and opens an evidence drawer (What we saw, In full, Why flagged, Could be harmless, Auto-block) with its actions: Block outbound to the address (offered only when What-If says the block changes ALLOWED to BLOCKED, and checked again before writing), Ask What-If, Show in Events, Dismiss; the Policy health card with Fix, which re-runs the check, shows the before and after rows and the checks, and goes through `fs_policy_apply_safe`; the What-If card, unchanged; and "Changes made by the Copilot", newest first, where Undo removes a block by its content (not its index) or puts the health fix's row back, applies, and writes an audit line. Empty states say why: no events yet, monitoring off (with the reason the Events page gives), or "No findings from N events ... This is not a guarantee that nothing is wrong." with the list of what is checked. Every colour comes from theme classes with dark variants; there are no hex colours in the page's code.
+
+**Command line.** `stockfw copilot health [--json]` runs the same check on the saved policy and writes nothing. It exits 0 with no findings, 7 with findings and 2 when the policy cannot be read in full. The JSON has `version`, `policy_rules`, `platform` and `findings`, each with `kind`, `severity`, `title`, `rule` (`kind`, `index` from 0, `csv`), `other`, `why`, `evidence`, `whatif`, and `fix` (`label`, `before`, `after`, `verified`, `checks`) or `null` with `no_fix_reason`.
+
+**Known limits.**
+
+- The Linux kernel log names no program, so "per app" means per service on Linux, and the tile says "Services learned".
+- Allowed traffic is seen only when allowed-event logging is on (Linux "log allowed", Windows auditing). Without it, the brute-force check sees only blocked attempts.
+- The detections see only what the firewall logs, and Linux logging is rate-limited to 20 events a second, so a slow or low-volume pattern can stay below every threshold.
+- No finding means none of the checks matched, not that the computer is safe. The page says so.
+- Not done in this version: listening-socket exposure, per-rule hit counters, the IPv4/IPv6 gap check, a `copilot findings` replay, a dashboard endpoint, persisted dismissals and byte-volume spikes.
+
+**Verified.** `tests/test-health.c` (built by `test-core.sh`, and as `fs-health-test`): exact coverage, a golden table on both platform models, the fix verifications and refusals, and apply and undo proved on the rules file's bytes. `test-core.sh` adds the detection checks (scan, brute force, threat intel, dedup, beacon per app, NTP, fan-out per app, auto-safe gates) and the wording guard. `fs-copilot-smoke` section 8 drives the page (tiles, pills, drawer by click and by Enter, an unverified fix with no button, Fix then Undo with `cmp` of the rules files, the empty states, a dark-theme run). `fs-hitview-smoke` checks the feed order: with skip-repeats on, 10 identical log lines give the Copilot 10 events and the list 1 row. `test-cli.sh` checks `copilot health`. The teeth are listed in `port/tests/README.md`.

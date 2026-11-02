@@ -27,6 +27,7 @@ the tests never touches a real `/etc/stockfw`.
 | services | port to name lookup, back-door ports, ICMP types, range expansion |
 | scripts | inbound/outbound rules, NAT, permissive vs restrictive defaults |
 | Windows rules | policy rows to netsh rules and argv, refusals, the upgrade apply (see below) |
+| Copilot | detections with evidence, the policy health check and its verified fixes, the wording guard (see below) |
 
 ## Event source (`tests/test-logstart.sh`)
 
@@ -351,3 +352,90 @@ And in the UI (`fs-simviz.c`, `fs-copilot.c`):
 | the animation played with animations off | "reduced motion: the final frame at once, nothing to replay" |
 | the card's line without the saved-policy caveat | "what-if: with applies on hold the one line says it describes the saved policy" |
 | Create written without asking | "Create asks first", "answering No writes nothing" |
+
+## The Copilot (`tests/test-health.c`, `test-core.sh`, `fs-copilot-smoke`)
+
+```sh
+cd port
+bash tests/test-core.sh                     # detections, then test-health.c, then the wording guard
+ninja -C build-linux fs-health-test         # test-health.c through CMake
+ninja -C build-linux fs-copilot-smoke fs-hitview-smoke
+xvfb-run -a ./build-linux/fs-copilot-smoke  # section 8: the page; a dark run in a child
+xvfb-run -a ./build-linux/fs-hitview-smoke  # feed order (as root)
+bash tests/test-cli.sh                      # stockfw copilot health
+```
+
+The Copilot is a set of fixed rules; the design is
+`docs/ARCHITECTURE-AND-SECURITY.md` section 14.4.
+
+`test-health.c` (pure GLib) pins the policy health check
+(`core/fs-health.c`):
+
+- exact coverage: a port range covers a port inside it, a network an
+  address inside it, TCP never covers UDP, a host name never covers or
+  is covered;
+- a golden table, one small policy per check, on both platform models:
+  duplicate, shadowed, unreachable, no effect, broad (101 ports is,
+  100 is not), risky open (RDP Critical, SSH Info), a forward to a risky
+  port, a deny by host name on Windows;
+- every fix verified by the What-If engine, with its probes and their
+  verdicts before and after, and the refusals: a narrowing that would
+  also block a LAN host, a narrowing another row undoes, no known LAN,
+  a removal that would change a verdict;
+- apply and undo, by content, proved with the rules file's bytes,
+  including an undo after the user removed another row in between.
+
+`test-core.sh` adds the detections: the inbound scan (12 distinct ports
+in 60 s reports; 11 ports tried twice do not), repeated login attempts
+(10 in 5 minutes report; 10 over 6 minutes do not; Critical when the
+policy admits the source; never auto-applicable), block-list hits
+(outbound Warning naming the list; inbound rolled up per list per
+hour), dedup by key, beacons per app (two apps polling one host are two
+series; port 123 is never reported; auto-block needs 8 contacts),
+fan-out per app, and that on a mixed corpus only the beacon's deny is
+auto-applicable and no anomaly offers an allow.  Its last step is the
+wording guard: `\bAI\b` or `AI-` anywhere in `src`, `docs` or the
+README fails the suite, except the one sentence that says there is no
+AI model.
+
+`fs-copilot-smoke` section 8 drives the page with applies on hold
+(and, as root, in a network namespace of its own; `STOCKFW_LAN_PREFIX`
+fixes the LAN): the tiles follow the data (no constant), each finding
+row has a pill with a word and an ATK name "Severity: title", the
+drawer opens by click and by a real Enter key event and shows evidence
+rows, an unverified fix has no button and says why, Fix asks first (No
+writes nothing; Yes writes exactly the after row, audited), Undo puts
+the rules files back byte for byte, the block offered from a finding is
+checked by What-If first, and the empty states (no events, all clear
+with "This is not a guarantee", monitoring off with its reason).  A
+child process repeats the page under `GTK_THEME=Adwaita:dark` and
+checks the dark classes.  Set `FS_SHOT_DIR` to save screenshots.
+
+`fs-hitview-smoke` checks the feed order as root: with "skip repeats"
+on, 10 identical log lines give the Copilot 10 events while the list
+shows 1 row.
+
+`test-cli.sh` checks `stockfw copilot health`: usage errors exit 2, a
+clean policy exits 0, RDP open to anyone exits 7 with a verified
+narrowing in `--json`, and the rules directory (files and times) is
+unchanged afterwards.
+
+Teeth, each re-injected, seen failing, and restored with `cp` (proved
+with `cmp`):
+
+| Bug re-injected | Checks that caught it |
+|---|---|
+| coverage ignores the protocol (`fs-health.c`) | "TCP 8080 and UDP 8080 are not the same rule", both models |
+| fix verification skipped: `verified` forced TRUE | "a narrowing that also blocks a LAN host gets no fix", "no narrowing while another row still opens the port", both models |
+| the narrowing writes `0.0.0.0/0` | 18 checks, among them "the fix narrows the row to the LAN, verified" and "checked: 203.0.113.10:3389 ALLOWED -> BLOCKED" |
+| a host-name deny not flagged on Windows (the design's "Windows model treated as first match" row is replaced by this one: the unreachable golden rows already run on both models) | "windows: a deny by host name blocks nothing on Windows" |
+| Undo finds the row by index, not by content | "undo: by content, the right row is restored (not row 2)" |
+| the scan counts events, not distinct ports | "scan: 11 distinct ports do not (22 events ...)" |
+| the brute-force window never expires | "brute: 10 attempts over 6 minutes do not (the window expires)" |
+| the beacon keyed without the app | "two apps polling one destination are two series" |
+| the NTP guard removed | "NTP (port 123) is never reported as a beacon" |
+| inbound block-list hits not rolled up | 5 intel checks, among them "three inbound drops in an hour roll up into one finding" |
+| anomaly findings carry an auto-applicable allow row | "a mixed corpus: only the beacon's deny is auto-applicable", and 31 "offers no rule" checks |
+| "AI-powered" put back in the About dialog | the wording guard |
+| the Copilot fed after the skip-repeats filter (`fs-hitview.c`) | "feed order: ... 10 identical events still reach the Copilot as 10 (got 1)" |
+| a constant in the Policy health tile (`fs-copilot.c`) | "page: the Policy health tile is the number of findings", "page: the tile follows the check" |

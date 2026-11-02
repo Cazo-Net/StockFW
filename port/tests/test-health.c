@@ -464,12 +464,13 @@ test_refusals (void)
 		run_free (&r);
 	}
 
-	CHECK (g_strcmp0 (fs_health_lan_prefix ("192.168.1.5", "255.255.255.0"),
-	                  "192.168.1.0/24") == 0,
-	       "the LAN prefix of 192.168.1.5/255.255.255.0");
 	{
-		gchar *p = fs_health_lan_prefix ("10.20.30.40", "255.255.0.0");
+		gchar *p = fs_health_lan_prefix ("192.168.1.5", "255.255.255.0");
 
+		CHECK (g_strcmp0 (p, "192.168.1.0/24") == 0,
+		       "the LAN prefix of 192.168.1.5/255.255.255.0");
+		g_free (p);
+		p = fs_health_lan_prefix ("10.20.30.40", "255.255.0.0");
 		CHECK (g_strcmp0 (p, "10.20.0.0/16") == 0, "a /16 LAN (%s)", p);
 		g_free (p);
 		p = fs_health_lan_prefix ("8.8.8.8", "255.255.255.0");
