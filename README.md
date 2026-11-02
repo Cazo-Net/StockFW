@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.png" alt="StockFW logo" width="140"></p>
+
 # StockFW
 
 **Smart firewall configuration tool with a local AI copilot.**

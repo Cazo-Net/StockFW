@@ -26,12 +26,59 @@
 #include "core/fs-copilot.h"
 #include "core/fs-trust.h"
 #include "core/fs-i18n.h"
+#include "stockfw-logo-32.h"
 #include "stockfw-logo-64.h"
+#include "stockfw-logo-128.h"
 #include "fs-theme-css.h"        /* generated from src/ui/fs-theme.css */
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
 static FsApp fsapp = { NULL, NULL, NULL };
+
+/* [ logo_pixbuf ] -- one embedded logo size, or NULL. */
+static GdkPixbuf *
+logo_pixbuf (const guchar *data, gsize len)
+{
+	GdkPixbufLoader *loader = gdk_pixbuf_loader_new ();
+	GdkPixbuf *pixbuf = NULL;
+
+	if (gdk_pixbuf_loader_write (loader, data, len, NULL) &&
+	    gdk_pixbuf_loader_close (loader, NULL)) {
+		pixbuf = gdk_pixbuf_loader_get_pixbuf (loader);
+		if (pixbuf != NULL)
+			g_object_ref (pixbuf);
+	} else {
+		gdk_pixbuf_loader_close (loader, NULL);
+	}
+	g_object_unref (loader);
+
+	return pixbuf;
+}
+
+/* [ logo_icon_list ]
+ * The window icon in three sizes, so the title bar, the task bar and
+ * the window switcher each pick a sharp one instead of scaling a
+ * single 64 px image.  64 comes first: gtk_window_get_icon() returns
+ * the first entry, and the tray icon reuses it.  Free with
+ * g_list_free_full (list, g_object_unref). */
+static GList *
+logo_icon_list (void)
+{
+	GList *list = NULL;
+	GdkPixbuf *p;
+
+	if ((p = logo_pixbuf (stockfw_logo_128_png,
+	                      stockfw_logo_128_png_len)) != NULL)
+		list = g_list_prepend (list, p);
+	if ((p = logo_pixbuf (stockfw_logo_32_png,
+	                      stockfw_logo_32_png_len)) != NULL)
+		list = g_list_prepend (list, p);
+	if ((p = logo_pixbuf (stockfw_logo_64_png,
+	                      stockfw_logo_64_png_len)) != NULL)
+		list = g_list_prepend (list, p);
+
+	return list;
+}
 
 /* Holds one toolbar row per notebook page; only the selected page's
  * row is visible at a time. */
@@ -392,21 +439,13 @@ fs_app_activate (GtkApplication *app)
 	 * 1000x700 still fits a 1366x768 laptop screen with its panel. */
 	gtk_window_set_default_size (GTK_WINDOW (fsapp.window), 1000, 700);
 
-	/* Set window icon from embedded logo */
+	/* Window icon from the embedded logo, in several sizes. */
 	{
-		GError *error = NULL;
-		GdkPixbufLoader *loader = gdk_pixbuf_loader_new ();
+		GList *icons = logo_icon_list ();
 
-		if (gdk_pixbuf_loader_write (loader, stockfw_logo_64_png,
-		                             stockfw_logo_64_png_len, &error)) {
-			gdk_pixbuf_loader_close (loader, NULL);
-			GdkPixbuf *icon = gdk_pixbuf_loader_get_pixbuf (loader);
-			if (icon != NULL)
-				gtk_window_set_icon (GTK_WINDOW (fsapp.window), icon);
-		} else {
-			g_clear_error (&error);
-		}
-		g_object_unref (loader);
+		if (icons != NULL)
+			gtk_window_set_icon_list (GTK_WINDOW (fsapp.window), icons);
+		g_list_free_full (icons, g_object_unref);
 	}
 
 	g_signal_connect (fsapp.window, "delete-event",
@@ -423,21 +462,13 @@ fs_app_activate (GtkApplication *app)
 	register_actions ();
 	gtk_application_set_menubar (fsapp.app, build_menubar ());
 
-	/* Set the default icon for ALL windows (main, dialogs, about) */
+	/* The default icon for ALL windows (main, dialogs, about). */
 	{
-		GError *error = NULL;
-		GdkPixbufLoader *loader = gdk_pixbuf_loader_new ();
+		GList *icons = logo_icon_list ();
 
-		if (gdk_pixbuf_loader_write (loader, stockfw_logo_64_png,
-		                             stockfw_logo_64_png_len, &error)) {
-			gdk_pixbuf_loader_close (loader, NULL);
-			GdkPixbuf *icon = gdk_pixbuf_loader_get_pixbuf (loader);
-			if (icon != NULL)
-				gtk_window_set_default_icon (icon);
-		} else {
-			g_clear_error (&error);
-		}
-		g_object_unref (loader);
+		if (icons != NULL)
+			gtk_window_set_default_icon_list (icons);
+		g_list_free_full (icons, g_object_unref);
 	}
 
 	/* Tab band, above the toolbar strip: six flat buttons standing

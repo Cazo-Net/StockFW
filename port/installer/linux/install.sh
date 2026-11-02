@@ -142,8 +142,18 @@ fi
 install -Dm644 "$HERE/stockfw.desktop" "$DATADIR/applications/$APPID.desktop"
 ok "$DATADIR/applications/$APPID.desktop"
 
+# The icon in three theme sizes (menus, docks, app grids each pick the
+# nearest).  The 48 and 256 files are optional: an older payload with
+# only the 128 one still installs.
 install -Dm644 "$HERE/stockfw-icon.png" "$DATADIR/icons/hicolor/128x128/apps/$APPID.png"
 ok "$DATADIR/icons/hicolor/128x128/apps/$APPID.png"
+for size in 48 256; do
+    if [ -f "$HERE/stockfw-icon-$size.png" ]; then
+        install -Dm644 "$HERE/stockfw-icon-$size.png" \
+            "$DATADIR/icons/hicolor/${size}x${size}/apps/$APPID.png"
+        ok "$DATADIR/icons/hicolor/${size}x${size}/apps/$APPID.png"
+    fi
+done
 
 install -Dm644 "$HERE/LICENSE.txt" "$DATADIR/doc/stockfw/LICENSE.txt"
 ok "$DATADIR/doc/stockfw/LICENSE.txt"
@@ -169,7 +179,9 @@ fi
 rm -f "\$PREFIX/bin/StockFW"
 rm -f "\$PREFIX/bin/stockfw"
 rm -f "\$PREFIX/share/applications/stockfw.desktop"
+rm -f "\$PREFIX/share/icons/hicolor/48x48/apps/stockfw.png"
 rm -f "\$PREFIX/share/icons/hicolor/128x128/apps/stockfw.png"
+rm -f "\$PREFIX/share/icons/hicolor/256x256/apps/stockfw.png"
 rm -f "\$PREFIX/share/doc/stockfw/LICENSE.txt"
 rm -f "\$PREFIX/bin/stockfw-uninstall"
 command -v update-desktop-database >/dev/null 2>&1 \\

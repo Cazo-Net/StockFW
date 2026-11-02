@@ -15,7 +15,7 @@ This installs:
     /usr/local/bin/StockFW                              the application
     /usr/local/bin/stockfw                              command line + dashboard
     /usr/local/share/applications/stockfw.desktop       menu entry
-    /usr/local/share/icons/hicolor/128x128/apps/stockfw.png
+    /usr/local/share/icons/hicolor/{48x48,128x128,256x256}/apps/stockfw.png
     /usr/local/share/doc/stockfw/LICENSE.txt
     /usr/local/bin/stockfw-uninstall                    removal script
 

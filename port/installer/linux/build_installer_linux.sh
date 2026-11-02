@@ -78,6 +78,8 @@ fi
 echo "[2/5] Copying desktop integration..."
 cp "$LINUX_DIR/stockfw.desktop"  "$STAGE/"
 cp "$LINUX_DIR/stockfw-icon.png" "$STAGE/"
+cp "$LINUX_DIR/stockfw-icon-48.png"  "$STAGE/"
+cp "$LINUX_DIR/stockfw-icon-256.png" "$STAGE/"
 cp "$LINUX_DIR/LICENSE.txt"      "$STAGE/"
 
 # 3. docs
