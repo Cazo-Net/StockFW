@@ -6,10 +6,14 @@
  * management.  Both are gone from modern GNOME; GLib's GOptionContext
  * and GtkApplication cover what is actually needed.
  *
- * One StockFW per desktop session (core/fs-instance.h): a second
- * launch asks the first to show its window and exits, and --quit asks
- * it to quit cleanly -- the uninstaller's way to stop it with its
- * settings saved.  Neither needs a display, so they run before GTK.
+ * One StockFW per user (core/fs-instance.h): a second launch asks the
+ * first to show its window and exits, and --quit asks it to quit
+ * cleanly -- the uninstaller's way to stop it with its settings saved.
+ * A launch with MORE privileges than the running copy (`sudo StockFW',
+ * "StockFW (Elevated)") asks it to quit and takes its place instead:
+ * the copy started at sign-in runs without them, and raising its
+ * window would not give the user what they elevated for.  None of
+ * this needs a display, so it runs before GTK.
  *
  * --enable-autostart / --disable-autostart switch "start at sign-in"
  * for the current user and exit (core/fs-autostart.h); the Windows
@@ -94,7 +98,8 @@ on_instance_command (FsInstanceCommand command, gpointer data)
  * tray's Quit does: settings and what the Copilot learned are written
  * and the firewall stays on.  They used to end the process on the
  * spot.  The source stays: a second signal while quitting is a no-op
- * rather than the default action. */
+ * rather than the default action.  A SIGHUP that was ignored when we
+ * started (nohup) stays ignored. */
 static gboolean
 on_quit_signal (gpointer data)
 {
@@ -132,6 +137,42 @@ quit_running (void)
 		g_printerr ("StockFW is running but could not be reached.\n");
 		return 1;
 	}
+}
+
+/* [ take_over ] -- the running copy has fewer privileges than this
+ * one: ask it to quit (root and administrators may), wait for it to be
+ * gone, and claim the name.  If it will not make way, run beside it
+ * -- as every copy did before 1.0.7 -- rather than leave the user
+ * without a copy that can change the firewall. */
+static FsInstanceRole
+take_over (void)
+{
+#ifdef G_OS_WIN32
+	const gchar *what = "administrator rights";
+#else
+	const gchar *what = "root";
+#endif
+	FsInstanceRole role;
+
+	switch (fs_instance_send (FS_INSTANCE_QUIT, 3000)) {
+	case FS_INSTANCE_SENT:
+		if (!fs_instance_wait_gone (15000))
+			break;
+		/* fall through */
+	case FS_INSTANCE_NONE_RUNNING:
+		role = fs_instance_acquire ();
+		if (role != FS_INSTANCE_SECONDARY) {
+			g_message ("StockFW: the copy running without %s quit "
+			           "to make way for this one", what);
+			return role;
+		}
+		break;
+	default:
+		break;
+	}
+	g_message ("StockFW: the copy running without %s could not be "
+	           "replaced; starting beside it", what);
+	return FS_INSTANCE_UNGUARDED;
 }
 
 /* [ autostart_command ] -- the three autostart switches: change it,
@@ -232,8 +273,11 @@ main (int argc, char *argv[])
 	if (opt_quit)
 		return quit_running ();
 
-	/* One copy per session.  A second launch hands over and exits. */
+	/* One copy per user.  A second launch hands over and exits --
+	 * unless it is the more privileged one. */
 	role = fs_instance_acquire ();
+	if (role == FS_INSTANCE_SECONDARY && fs_instance_holder_weaker ())
+		role = take_over ();
 
 	/* A background start (sign-in) finding StockFW already up has
 	 * nothing to do: the user did not ask to see a window. */
@@ -277,7 +321,15 @@ main (int argc, char *argv[])
 #ifndef G_OS_WIN32
 	g_unix_signal_add (SIGTERM, on_quit_signal, NULL);
 	g_unix_signal_add (SIGINT, on_quit_signal, NULL);
-	g_unix_signal_add (SIGHUP, on_quit_signal, NULL);
+	{
+		/* `nohup StockFW &' asked for the terminal closing to be
+		 * ignored: an inherited SIG_IGN for SIGHUP is kept. */
+		struct sigaction hup;
+
+		if (sigaction (SIGHUP, NULL, &hup) != 0 ||
+		    hup.sa_handler != SIG_IGN)
+			g_unix_signal_add (SIGHUP, on_quit_signal, NULL);
+	}
 #endif
 
 	if (role == FS_INSTANCE_PRIMARY)

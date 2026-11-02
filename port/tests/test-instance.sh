@@ -1,5 +1,5 @@
 #!/bin/bash
-# One StockFW per desktop session, driven through the real binary
+# One StockFW per user, driven through the real binary
 # (src/core/fs-instance.c, src/main.c, src/ui/fs-app.c).
 #
 # What it proves:
@@ -16,7 +16,12 @@
 #     so there is never an unreachable copy; a second --background
 #     launch leaves a running copy alone;
 #   - SIGTERM, SIGINT and SIGHUP quit cleanly: exit 0, settings and
-#     the Copilot baseline written.
+#     the Copilot baseline written; under nohup SIGHUP stays ignored;
+#   - connections that never speak, from another account or from root,
+#     do not hold up a show or a --quit behind them;
+#   - root's copy (sudo StockFW) takes over from the user's copy without
+#     root: that one quits cleanly, and a later launch by the user only
+#     shows root's.
 #
 # Needs a display (xvfb-run -a bash tests/test-instance.sh) and
 # xdotool; stalonetray provides the notification area (those checks
@@ -241,6 +246,152 @@ for sig in TERM INT HUP; do
 	check "SIG$sig: the name is free again" \
 		wait_for 5 bash -c "! grep -q '@$STOCKFW_INSTANCE_NAME\$' /proc/net/unix"
 done
+
+ms () { echo $(( $(date +%s%N) / 1000000 )); }
+# reap <pid>: collect a copy that should be gone; one that is not (the
+# check above has already failed) is killed, so a failure never hangs
+# the test.  Its exit status, 137 when it had to be killed.
+reap () {
+	if dead "$1"; then
+		wait "$1" 2>/dev/null
+		return $?
+	fi
+	kill -9 "$1" 2>/dev/null
+	wait "$1" 2>/dev/null
+	return 137
+}
+
+# ---------------------------------------------------------------- 7. nohup
+# `nohup StockFW &' asks for SIGHUP to be ignored; StockFW must keep
+# that rather than quit when the terminal closes.
+nohup "$BIN" > "$SCRATCH/nohup.log" 2>&1 &
+A=$!
+check "nohup: the copy starts" wait_for 30 is_visible
+kill -s HUP "$A"
+sleep 2
+check "nohup: SIGHUP, which nohup asked to ignore, leaves it running" alive "$A"
+timeout 30 "$BIN" --quit > /dev/null 2>&1
+check "nohup: --quit still ends it" wait_for 10 dead "$A"
+reap "$A"
+
+if [ "$(id -u)" -eq 0 ] && command -v setpriv >/dev/null 2>&1 &&
+   command -v python3 >/dev/null 2>&1; then
+	# A directory another account can read: the silent client, the
+	# user copy's files, and a readable copy of the X cookie.
+	PUB="$(mktemp -d)"
+	chmod 755 "$PUB"
+	trap 'cleanup; rm -rf "$PUB"' EXIT
+	cat > "$PUB/silent.py" <<'EOF'
+# Open N connections to the instance socket and never say a word.
+import socket, sys, time
+name, n, secs = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+held = []
+for _ in range(n):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect("\0" + name)
+        held.append(s)
+    except OSError:
+        s.close()
+print(len(held), flush=True)
+time.sleep(secs)
+EOF
+	chmod 644 "$PUB/silent.py"
+	XA=""
+	if [ -n "${XAUTHORITY:-}" ] && [ -r "$XAUTHORITY" ]; then
+		cp "$XAUTHORITY" "$PUB/xauth"
+		chmod 644 "$PUB/xauth"
+		XA="$PUB/xauth"
+	fi
+	U="$PUB/user"
+	mkdir -p "$U/home" "$U/config/stockfw" "$U/cache" "$U/data" "$U/rules"
+	cp "$XDG_CONFIG_HOME/stockfw/stockfw.conf" "$U/config/stockfw/"
+	chown -R 65534:65534 "$U"
+	as_nobody () {
+		setpriv --reuid=65534 --regid=65534 --clear-groups \
+			env HOME="$U/home" XDG_CONFIG_HOME="$U/config" \
+			XDG_CACHE_HOME="$U/cache" XDG_DATA_HOME="$U/data" \
+			STOCKFW_RULES_DIR="$U/rules" \
+			STOCKFW_AUDIT_FILE="$U/audit.log" \
+			STOCKFW_APPLIED_FILE="$U/applied.csv" \
+			STOCKFW_AUTOBLOCK_FILE="$U/autoblocks" \
+			STOCKFW_BEHAVIOR_FILE="$U/behavior.csv" \
+			STOCKFW_TRUST_FILE="$U/trust.csv" \
+			${XA:+XAUTHORITY="$XA"} "$@"
+	}
+
+	# ------------------------------------------------------------ 8. silent connections
+	# Connections that connect and never speak -- from another account,
+	# and from root -- must not freeze the copy: a show and a --quit
+	# right behind them still get through at once.  (The credentials
+	# used to be checked only after a blocking one-second read, so a
+	# handful of mute connections locked the main loop and --quit out.)
+	"$BIN" > "$SCRATCH/dos.log" 2>&1 &
+	A=$!
+	check "silent: the copy starts" wait_for 30 is_visible
+	as_nobody python3 -I "$PUB/silent.py" "$STOCKFW_INSTANCE_NAME" 24 20 \
+		> "$PUB/silent-nobody.log" 2>&1 &
+	P1=$!
+	python3 -I "$PUB/silent.py" "$STOCKFW_INSTANCE_NAME" 24 20 \
+		> "$PUB/silent-root.log" 2>&1 &
+	P2=$!
+	sleep 2
+	check "silent: another account's mute connections were made" \
+		[ "$(head -1 "$PUB/silent-nobody.log")" -ge 1 ]
+	WIN="$(any_window)"
+	xdotool windowunmap --sync "$WIN" 2>/dev/null
+	t0=$(ms)
+	timeout 15 "$BIN" > "$SCRATCH/dos-show.log" 2>&1
+	rc=$?
+	took=$(( $(ms) - t0 ))
+	check "silent: a show behind 48 mute connections answers at once (rc=$rc, ${took} ms)" \
+		[ "$rc" -eq 0 -a "$took" -le 2500 ]
+	check "silent: ...and the window comes up" wait_for 5 is_visible
+	t0=$(ms)
+	timeout 30 "$BIN" --quit > "$SCRATCH/dos-quit.log" 2>&1
+	rc=$?
+	took=$(( $(ms) - t0 ))
+	check "silent: --quit gets through at once (rc=$rc, ${took} ms)" \
+		[ "$rc" -eq 0 -a "$took" -le 5000 ]
+	check "silent: ...and the copy is gone" wait_for 5 dead "$A"
+	reap "$A"
+	kill "$P1" "$P2" 2>/dev/null
+	wait "$P1" "$P2" 2>/dev/null
+
+	# ------------------------------------------------------------ 9. root takes over
+	# The user's sign-in copy runs without root; `sudo StockFW' must
+	# not just raise that powerless window and exit (as it did), but
+	# replace it: the user copy quits cleanly and root's runs.
+	as_nobody "$BIN" --background > "$PUB/user.log" 2>&1 &
+	UP=$!
+	check "takeover: the user's copy (uid 65534) starts" wait_for 30 listening
+	sleep 2
+	SUDO_UID=65534 SUDO_GID=65534 "$BIN" > "$SCRATCH/root.log" 2>&1 &
+	R=$!
+	check "takeover: sudo StockFW makes the user's copy quit" wait_for 25 dead "$UP"
+	reap "$UP"
+	rc=$?
+	check "takeover: ...cleanly (exit $rc)" [ "$rc" -eq 0 ]
+	check "takeover: root's copy is the one running" alive "$R"
+	check "takeover: ...and holds the name" wait_for 10 listening
+	check "takeover: ...with its window up" wait_for 15 is_visible
+	grep -q "quit to make way" "$SCRATCH/root.log" &&
+		ok "takeover: it says what it did" ||
+		fail "takeover: it says what it did ($(cat "$SCRATCH/root.log"))"
+	WIN="$(any_window)"
+	xdotool windowunmap --sync "$WIN" 2>/dev/null
+	as_nobody timeout 15 "$BIN" > "$PUB/user2.log" 2>&1
+	rc=$?
+	check "takeover: the user launching again only shows root's copy (rc=$rc)" \
+		[ "$rc" -eq 0 ]
+	check "takeover: ...whose window comes up" wait_for 10 is_visible
+	check "takeover: ...and root's copy is still the one running" alive "$R"
+	timeout 30 "$BIN" --quit > /dev/null 2>&1
+	check "takeover: --quit ends root's copy" wait_for 10 dead "$R"
+	reap "$R"
+else
+	echo "SKIP: silent connections and takeover need root, setpriv and python3"
+fi
 
 echo
 if [ "$failures" -eq 0 ]; then

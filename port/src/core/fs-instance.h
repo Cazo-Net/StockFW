@@ -1,6 +1,8 @@
 /*---[ fs-instance.h ]---------------------------------------------------
- * One StockFW per desktop session, and the channel a second launch (or
- * the uninstaller) uses to reach it.
+ * One StockFW per user (Linux) or per sign-in session (Windows), and the
+ * channel a second launch (or the uninstaller) uses to reach it.  On
+ * Linux that is per uid, not per display: a launch on a second display
+ * of the same user brings the first copy's window forward where it is.
  *
  * Two copies of the app each ran their own event monitor, Sentinel,
  * auto-block file, tray icon and quit-time saves (last writer won).  A
@@ -73,6 +75,15 @@ typedef void (*FsInstanceHandler) (FsInstanceCommand command,
 /* Claim the instance name.  Call once, early; the claim lasts until
  * fs_instance_release() or process exit. */
 FsInstanceRole  fs_instance_acquire (void);
+
+/* After fs_instance_acquire() said SECONDARY: TRUE when the running
+ * copy has fewer privileges than this one -- Linux: it is not root and
+ * this process is (`sudo StockFW' while the sign-in copy runs);
+ * Windows: it is not elevated and this process is ("StockFW
+ * (Elevated)" while the sign-in copy runs).  Such a launch takes the
+ * running copy's place (main.c) instead of raising a window that
+ * cannot do what the user elevated for. */
+gboolean        fs_instance_holder_weaker (void);
 
 /* Primary only: deliver commands to `handler' on the default main
  * context from now on. */

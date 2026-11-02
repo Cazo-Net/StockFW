@@ -7,6 +7,7 @@
 #define _WIN32_WINNT 0x0601      /* CreateMutexExW: Vista and later */
 #endif
 #include <windows.h>
+#include <aclapi.h>              /* GetSecurityInfo */
 #include <sddl.h>                /* ConvertStringSecurityDescriptor... */
 #include <stdio.h>               /* _snwprintf */
 #else
@@ -41,6 +42,7 @@ static gpointer          instance_user = NULL;
 
 static gint   listen_fd = -1;
 static guint  listen_source = 0;
+static gboolean holder_weaker = FALSE;
 
 /* The one-line requests on the socket. */
 static const gchar *
@@ -143,8 +145,10 @@ connect_instance (void)
 	return fd;
 }
 
-/* [ read_line ] -- at most `size'-1 bytes up to a newline, waiting no
- * longer than timeout_ms overall.  FALSE on timeout or EOF first. */
+/* [ read_line ] -- the SENDING side's wait for the answer: at most
+ * `size'-1 bytes up to a newline, no longer than timeout_ms overall.
+ * FALSE on timeout or EOF first.  Never used by the running instance,
+ * whose main loop must not wait on a client (on_client_io). */
 static gboolean
 read_line (gint fd, gchar *buf, gsize size, gint timeout_ms)
 {
@@ -169,13 +173,15 @@ read_line (gint fd, gchar *buf, gsize size, gint timeout_ms)
 	return TRUE;
 }
 
+/* [ send_text ] -- best effort, never blocking, never SIGPIPE: the
+ * other side may have gone, and neither end must die of it. */
 static void
-write_all (gint fd, const gchar *text)
+send_text (gint fd, const gchar *text)
 {
 	gsize len = strlen (text);
 
 	while (len > 0) {
-		ssize_t n = write (fd, text, len);
+		ssize_t n = send (fd, text, len, MSG_NOSIGNAL | MSG_DONTWAIT);
 
 		if (n <= 0)
 			return;
@@ -184,50 +190,169 @@ write_all (gint fd, const gchar *text)
 	}
 }
 
-/* [ on_client ] -- one request: "show" or "quit", one answer. */
-static gboolean
-on_client (gint fd, GIOCondition condition, gpointer data)
+/* ---------------------------------------------------------- the server
+ *
+ * Everything below runs on the GTK main loop, which also carries the
+ * event monitor, Sentinel and the UI, so nothing here may wait on a
+ * client.  Each connection is judged by its credentials the moment it
+ * is accepted -- a uid that is not this desktop's StockFW gets
+ * "denied" and is closed without a byte read -- and a trusted one gets
+ * a watch of its own and CLIENT_DEADLINE_MS to say its line. */
+
+#define CLIENT_DEADLINE_MS 1000
+#define MAX_CLIENTS        8
+#define ACCEPTS_PER_WAKEUP 64
+
+typedef struct
 {
-	gint client;
-	uid_t uid = (uid_t) -1;
-	gchar line[32];
+	gint   fd;
+	uid_t  uid;
+	gchar  buf[32];
+	gsize  len;
+	guint  watch;
+	guint  deadline;
+} Client;
+
+static GPtrArray *clients = NULL;
+
+static void
+client_free (Client *c)
+{
+	if (c->watch != 0)
+		g_source_remove (c->watch);
+	if (c->deadline != 0)
+		g_source_remove (c->deadline);
+	close (c->fd);
+	g_free (c);
+}
+
+/* [ client_done ] -- from one of the client's own callbacks, which
+ * removes its own source by returning G_SOURCE_REMOVE. */
+static void
+client_done (Client *c)
+{
+	g_ptr_array_remove_fast (clients, c);
+	client_free (c);
+}
+
+/* [ client_answer ] -- the request is complete: answer, close, act. */
+static void
+client_answer (Client *c)
+{
 	FsInstanceCommand command = 0;
 	gboolean allowed = FALSE;
+	uid_t uid = c->uid;
 
-	(void) condition;
-	(void) data;
-
-	client = accept4 (fd, NULL, NULL, SOCK_CLOEXEC);
-	if (client < 0)
-		return G_SOURCE_CONTINUE;
-
-	/* A client that connects and says nothing gets one second. */
-	if (!peer_uid (client, &uid) ||
-	    !read_line (client, line, sizeof line, 1000)) {
-		close (client);
-		return G_SOURCE_CONTINUE;
-	}
-
-	if (strcmp (line, "show") == 0) {
+	if (strcmp (c->buf, "show") == 0) {
 		command = FS_INSTANCE_SHOW;
-		allowed = trusted_uid (uid);
-	} else if (strcmp (line, "quit") == 0) {
+		allowed = TRUE;              /* trusted at accept */
+	} else if (strcmp (c->buf, "quit") == 0) {
 		/* Not the desktop user when we run as root: they could not
 		 * kill this process either, so they cannot quit it. */
 		command = FS_INSTANCE_QUIT;
 		allowed = uid == 0 || uid == geteuid ();
 	}
 
-	write_all (client, command == 0 ? "bad\n"
+	send_text (c->fd, command == 0 ? "bad\n"
 	                  : allowed ? "ok\n" : "denied\n");
-	close (client);
 
 	if (command != 0 && !allowed)
-		g_message ("StockFW: refused \"%s\" from uid %u", line,
+		g_message ("StockFW: refused \"%s\" from uid %u", c->buf,
 		           (guint) uid);
 
+	client_done (c);
+
+	/* Last: the handler may quit, and nothing of the client is left
+	 * to touch by then. */
 	if (command != 0 && allowed && instance_handler != NULL)
 		instance_handler (command, instance_user);
+}
+
+static gboolean
+on_client_deadline (gpointer data)
+{
+	Client *c = data;
+
+	c->deadline = 0;
+	client_done (c);
+	return G_SOURCE_REMOVE;
+}
+
+/* [ on_client_io ] -- read what has arrived, never more. */
+static gboolean
+on_client_io (gint fd, GIOCondition condition, gpointer data)
+{
+	Client *c = data;
+	gchar *nl;
+	ssize_t n;
+
+	(void) condition;
+
+	n = recv (fd, c->buf + c->len, sizeof c->buf - 1 - c->len,
+	          MSG_DONTWAIT);
+	if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK ||
+	              errno == EINTR))
+		return G_SOURCE_CONTINUE;
+	if (n <= 0) {
+		c->watch = 0;
+		client_done (c);
+		return G_SOURCE_REMOVE;
+	}
+	c->len += (gsize) n;
+	c->buf[c->len] = '\0';
+
+	nl = strchr (c->buf, '\n');
+	if (nl == NULL) {
+		if (c->len + 1 < sizeof c->buf)
+			return G_SOURCE_CONTINUE;
+		/* A line this long is no request of ours. */
+		c->watch = 0;
+		client_done (c);
+		return G_SOURCE_REMOVE;
+	}
+	*nl = '\0';
+	c->watch = 0;
+	client_answer (c);
+	return G_SOURCE_REMOVE;
+}
+
+/* [ on_listen ] -- accept what is waiting, judge each by its uid. */
+static gboolean
+on_listen (gint fd, GIOCondition condition, gpointer data)
+{
+	(void) condition;
+	(void) data;
+
+	for (gint i = 0; i < ACCEPTS_PER_WAKEUP; i++) {
+		gint client = accept4 (fd, NULL, NULL,
+		                       SOCK_CLOEXEC | SOCK_NONBLOCK);
+		uid_t uid = (uid_t) -1;
+		Client *c;
+
+		if (client < 0)
+			break;
+
+		if (!peer_uid (client, &uid) || !trusted_uid (uid)) {
+			/* Not this desktop's StockFW: said so, not read, not
+			 * waited for. */
+			send_text (client, "denied\n");
+			close (client);
+			continue;
+		}
+		if (clients->len >= MAX_CLIENTS) {
+			close (client);
+			continue;
+		}
+
+		c = g_new0 (Client, 1);
+		c->fd = client;
+		c->uid = uid;
+		c->watch = g_unix_fd_add (client, G_IO_IN | G_IO_HUP | G_IO_ERR,
+		                          on_client_io, c);
+		c->deadline = g_timeout_add (CLIENT_DEADLINE_MS,
+		                             on_client_deadline, c);
+		g_ptr_array_add (clients, c);
+	}
 
 	return G_SOURCE_CONTINUE;
 }
@@ -238,6 +363,7 @@ fs_instance_acquire (void)
 	struct sockaddr_un addr;
 	socklen_t len;
 
+	holder_weaker = FALSE;
 	if (listen_fd >= 0)
 		return FS_INSTANCE_PRIMARY;
 
@@ -252,7 +378,7 @@ fs_instance_acquire (void)
 			return FS_INSTANCE_UNGUARDED;
 
 		if (bind (fd, (struct sockaddr *) &addr, len) == 0 &&
-		    listen (fd, 4) == 0) {
+		    listen (fd, 16) == 0) {
 			g_unix_set_fd_nonblocking (fd, TRUE, NULL);
 			listen_fd = fd;
 			return FS_INSTANCE_PRIMARY;
@@ -276,10 +402,20 @@ fs_instance_acquire (void)
 			return FS_INSTANCE_UNGUARDED;
 		}
 		close (fd);
+		/* Root finding the desktop user's own copy (the one started
+		 * at sign-in, which can neither apply rules nor read the
+		 * kernel log): that copy should make way. */
+		holder_weaker = geteuid () == 0 && holder != 0;
 		return FS_INSTANCE_SECONDARY;
 	}
 
 	return FS_INSTANCE_UNGUARDED;
+}
+
+gboolean
+fs_instance_holder_weaker (void)
+{
+	return holder_weaker;
 }
 
 void
@@ -288,8 +424,10 @@ fs_instance_listen (FsInstanceHandler handler, gpointer user_data)
 	instance_handler = handler;
 	instance_user = user_data;
 
+	if (clients == NULL)
+		clients = g_ptr_array_new ();
 	if (listen_fd >= 0 && listen_source == 0)
-		listen_source = g_unix_fd_add (listen_fd, G_IO_IN, on_client,
+		listen_source = g_unix_fd_add (listen_fd, G_IO_IN, on_listen,
 		                               NULL);
 }
 
@@ -299,6 +437,14 @@ fs_instance_release (void)
 	if (listen_source != 0) {
 		g_source_remove (listen_source);
 		listen_source = 0;
+	}
+	if (clients != NULL) {
+		while (clients->len > 0) {
+			Client *c = g_ptr_array_index (clients, 0);
+
+			g_ptr_array_remove_index_fast (clients, 0);
+			client_free (c);
+		}
 	}
 	if (listen_fd >= 0) {
 		close (listen_fd);
@@ -325,8 +471,10 @@ fs_instance_send (FsInstanceCommand command, guint timeout_ms)
 		return FS_INSTANCE_UNREACHABLE;
 	}
 
+	/* A holder that judged us untrusted has already answered and
+	 * closed: the send may fail, the answer is still there to read. */
 	request = g_strdup_printf ("%s\n", command_word (command));
-	write_all (fd, request);
+	send_text (fd, request);
 	g_free (request);
 
 	if (!read_line (fd, reply, sizeof reply, (gint) timeout_ms))
@@ -394,10 +542,11 @@ object_name (const gchar *suffix)
 	return wide;
 }
 
-/* [ token_facts ] -- our own SID as a string (LocalFree) and whether
- * this process runs elevated. */
+/* [ token_facts ] -- our own SID, as a string (LocalFree) and as a
+ * copy in `self' (SECURITY_MAX_SID_SIZE bytes), and whether this
+ * process runs elevated. */
 static gboolean
-token_facts (wchar_t **sid_string, gboolean *elevated)
+token_facts (wchar_t **sid_string, BYTE *self, gboolean *elevated)
 {
 	HANDLE token = NULL;
 	BYTE buffer[256];
@@ -407,12 +556,15 @@ token_facts (wchar_t **sid_string, gboolean *elevated)
 
 	*sid_string = NULL;
 	*elevated = FALSE;
+	memset (self, 0, SECURITY_MAX_SID_SIZE);
 
 	if (!OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token))
 		return FALSE;
 
 	if (GetTokenInformation (token, TokenUser, buffer, sizeof buffer,
 	                         &len) &&
+	    CopySid (SECURITY_MAX_SID_SIZE, (PSID) self,
+	             ((TOKEN_USER *) buffer)->User.Sid) &&
 	    ConvertSidToStringSidW (((TOKEN_USER *) buffer)->User.Sid,
 	                            sid_string))
 		ok = TRUE;
@@ -445,7 +597,9 @@ make_sa (SECURITY_ATTRIBUTES *sa, const wchar_t *sddl)
  *   mutex  -- SYNCHRONIZE for everyone signed in interactively (IU),
  *             so a second launch can see that it exists;
  *   show   -- EVENT_MODIFY_STATE | SYNCHRONIZE for IU;
- *   quit   -- for the instance's own user only when NOT elevated. */
+ *   quit   -- for the instance's own user only when NOT elevated.
+ * No owner in the SDDL: the creator's token supplies it, and that is
+ * what tells a second launch who created the objects (owner_kind). */
 #define SDDL_ADMIN  L"D:(A;;GA;;;SY)(A;;GA;;;BA)"
 
 static HANDLE
@@ -466,9 +620,13 @@ create_object (gboolean mutex, const gchar *suffix, const wchar_t *extra,
 	sddl[G_N_ELEMENTS (sddl) - 1] = L'\0';
 
 	if (make_sa (&sa, sddl)) {
+		/* READ_CONTROL on the mutex: a second launch reads its
+		 * owner.  An administrator always gets it (SDDL_ADMIN), the
+		 * creating user as owner; anyone else is denied it, which
+		 * says as much. */
 		handle = mutex
 		       ? CreateMutexExW (&sa, (wchar_t *) name, 0,
-		                         SYNCHRONIZE)
+		                         SYNCHRONIZE | READ_CONTROL)
 		       : CreateEventW (&sa, FALSE, FALSE, (wchar_t *) name);
 		LocalFree (sa.lpSecurityDescriptor);
 	}
@@ -476,17 +634,85 @@ create_object (gboolean mutex, const gchar *suffix, const wchar_t *extra,
 	return handle;
 }
 
+/* [ create_own_event ] -- an event of ours, made by us.  We created
+ * the mutex a moment ago, so no copy of ours can have made this event
+ * already: if it exists, something else put it there first (any
+ * process in the session may create objects in Local\), with its own
+ * DACL, to signal us at will.  Then we run without that channel
+ * rather than take orders from it. */
+static HANDLE
+create_own_event (const gchar *suffix, const wchar_t *extra,
+                  const wchar_t *user_ace_sid, const wchar_t *user_rights)
+{
+	HANDLE event;
+	DWORD err;
+
+	SetLastError (0);
+	event = create_object (FALSE, suffix, extra, user_ace_sid,
+	                       user_rights);
+	err = GetLastError ();
+	if (event != NULL && err == ERROR_ALREADY_EXISTS) {
+		CloseHandle (event);
+		event = NULL;
+	}
+	if (event == NULL)
+		g_warning ("StockFW: the %s.%s event already belongs to "
+		           "another process; running without it",
+		           fs_instance_name (), suffix);
+	return event;
+}
+
+typedef enum
+{
+	OWNER_UNKNOWN,
+	OWNER_ADMIN,     /* an elevated copy (or SYSTEM)            */
+	OWNER_SELF,      /* this user's copy, NOT elevated          */
+	OWNER_OTHER      /* nobody StockFW would be running as      */
+} OwnerKind;
+
+/* [ owner_kind ] -- who created the object behind `handle' (opened
+ * with READ_CONTROL).  An elevated administrator's token makes the
+ * Administrators group the owner of what it creates; a filtered
+ * (unelevated) or standard token makes the user the owner. */
+static OwnerKind
+owner_kind (HANDLE handle, PSID self)
+{
+	PSID owner = NULL;
+	PSECURITY_DESCRIPTOR sd = NULL;
+	OwnerKind kind;
+
+	if (GetSecurityInfo (handle, SE_KERNEL_OBJECT,
+	                     OWNER_SECURITY_INFORMATION, &owner, NULL, NULL,
+	                     NULL, &sd) != ERROR_SUCCESS || owner == NULL)
+		return OWNER_UNKNOWN;
+
+	if (IsWellKnownSid (owner, WinBuiltinAdministratorsSid) ||
+	    IsWellKnownSid (owner, WinLocalSystemSid))
+		kind = OWNER_ADMIN;
+	else if (IsValidSid (self) && EqualSid (owner, self))
+		kind = OWNER_SELF;
+	else
+		kind = OWNER_OTHER;
+
+	LocalFree (sd);
+	return kind;
+}
+
+static gboolean holder_weaker = FALSE;
+
 FsInstanceRole
 fs_instance_acquire (void)
 {
 	wchar_t *sid = NULL;
+	BYTE self[SECURITY_MAX_SID_SIZE];
 	gboolean elevated = FALSE;
 	DWORD err;
 
+	holder_weaker = FALSE;
 	if (instance_mutex != NULL)
 		return FS_INSTANCE_PRIMARY;
 
-	token_facts (&sid, &elevated);
+	token_facts (&sid, self, &elevated);
 
 	SetLastError (0);
 	instance_mutex = create_object (TRUE, "Lock",
@@ -497,26 +723,62 @@ fs_instance_acquire (void)
 	if (instance_mutex == NULL) {
 		if (sid != NULL)
 			LocalFree (sid);
-		/* No access to an existing mutex is still an existing one. */
-		return err == ERROR_ACCESS_DENIED ? FS_INSTANCE_SECONDARY
-		                                  : FS_INSTANCE_UNGUARDED;
+		if (err != ERROR_ACCESS_DENIED)
+			return FS_INSTANCE_UNGUARDED;
+		/* A copy of ours always lets administrators in: an
+		 * elevated launch shut out of the name faces something
+		 * else holding it, and is not locked out by it. */
+		if (elevated) {
+			g_warning ("StockFW: the instance name %s is held by "
+			           "something else; starting without the "
+			           "single-instance guard", fs_instance_name ());
+			return FS_INSTANCE_UNGUARDED;
+		}
+		/* No READ_CONTROL for an unelevated launch: an elevated
+		 * copy holds the name. */
+		return FS_INSTANCE_SECONDARY;
 	}
+
 	if (err == ERROR_ALREADY_EXISTS) {
+		OwnerKind owner = owner_kind (instance_mutex, (PSID) self);
+
 		CloseHandle (instance_mutex);
 		instance_mutex = NULL;
 		if (sid != NULL)
 			LocalFree (sid);
-		return FS_INSTANCE_SECONDARY;
+
+		switch (owner) {
+		case OWNER_SELF:
+			/* Our user's unelevated copy (the one started at
+			 * sign-in): an elevated launch takes its place. */
+			holder_weaker = elevated;
+			return FS_INSTANCE_SECONDARY;
+		case OWNER_OTHER:
+			g_warning ("StockFW: the instance name %s is held by "
+			           "another account; starting without the "
+			           "single-instance guard", fs_instance_name ());
+			return FS_INSTANCE_UNGUARDED;
+		case OWNER_ADMIN:
+		case OWNER_UNKNOWN:
+		default:
+			return FS_INSTANCE_SECONDARY;
+		}
 	}
 
-	show_event = create_object (FALSE, "Show", L"(A;;0x00100002;;;IU)",
-	                            NULL, NULL);
-	quit_event = create_object (FALSE, "Quit", L"",
-	                            elevated ? NULL : sid, L"0x00100002");
+	show_event = create_own_event ("Show", L"(A;;0x00100002;;;IU)",
+	                               NULL, NULL);
+	quit_event = create_own_event ("Quit", L"",
+	                               elevated ? NULL : sid, L"0x00100002");
 
 	if (sid != NULL)
 		LocalFree (sid);
 	return FS_INSTANCE_PRIMARY;
+}
+
+gboolean
+fs_instance_holder_weaker (void)
+{
+	return holder_weaker;
 }
 
 /* [ poll_events ] -- four times a second: cheaper to reason about than
