@@ -104,13 +104,19 @@ fs_cli_load_policy (gboolean *on_disk, gint *malformed)
 	return policy;
 }
 
-/* [ need_root ] -- the uniform refusal for privileged commands. */
-static gint
-need_root (const gchar *what)
+gint
+fs_cli_need_root (const gchar *what)
 {
 	fs_cli_error ("%s needs root privileges", what);
 	fs_cli_hint ("run it with sudo, e.g. `sudo stockfw %s'", what);
 	return FS_EXIT_NEED_ROOT;
+}
+
+/* [ need_root ] -- the uniform refusal for privileged commands. */
+static gint
+need_root (const gchar *what)
+{
+	return fs_cli_need_root (what);
 }
 
 /* [ backend_context ]
@@ -297,6 +303,11 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 		fs_json_kv_str (out, "apply_hold", hold);         g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "monitoring_available", root); g_string_append_c (out, ',');
 		fs_json_kv_uint (out, "connections", g_list_length (conns));
+		g_string_append_c (out, ',');
+		/* Threat intel: the state the kernel is in, never just the
+		 * configuration (design 6.6). */
+		fs_json_key (out, "intel");
+		fs_cli_intel_json (out, FALSE);
 		g_string_append (out, ",\"interfaces\":[");
 		for (GList *l = stats; l != NULL; l = l->next) {
 			FsIfaceStat *s = l->data;
@@ -378,6 +389,8 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 			printf ("  %-12s %s%d malformed rule%s skipped%s\n", "",
 			        fs_cli_amber (), malformed, malformed == 1 ? "" : "s",
 			        fs_cli_reset ());
+
+		fs_cli_intel_status_line ();
 
 		printf ("  %-12s %s\n", "Apply mode",
 		        hold != NULL ? "audit-only: applies are recorded, the "

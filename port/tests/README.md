@@ -1357,3 +1357,127 @@ the failures, then restores the file with `cp` and checks it with
 
 The sanitizer build (`build-asan`, Debug, `-fsanitize=address,undefined`)
 runs `fs-intel-test` clean.
+
+## `stockfw intel`: the threat-intel command line and dashboard panel (`tests/test-intel-cli.sh`, `tests/test-cli.sh`)
+
+```
+ninja -C build-linux stockfw stockfw-intel-test
+sudo bash tests/test-intel-cli.sh   # root, nft, curl, openssl, unshare, setpriv; SKIPs otherwise
+bash tests/test-cli.sh              # no kernel; the intel part needs a store base that passes
+                                    # the ownership check ($HOME or the build directory)
+```
+
+`stockfw intel` (design section 8) is `src/cli/fs-cli-intel.c`, a front end
+over the engine: status, feeds, terms, enable, disable, on, off, add-feed,
+update, apply, clear, import, lists, `list show|add|remove`, remove,
+except, unexcept, exceptions and lookup, each with `--json`.
+`stockfw status` gains an `intel` object and a "Threat intel" line; the
+dashboard gains `GET /api/intel` and a read-only "Threat-intel
+blocklists" card.  Exit codes follow the CLI: 0 done, 1 failed, 2 usage
+(unknown id, bad value, terms not accepted), 3 needs root, 5 `lookup`:
+a list blocks the address.  The engine gained `fs_intel_store_exists`
+and `fs_intel_clear`; `fs_intel_state` and `fs_intel_counters` no longer
+create the store; the catalog gained a `credit` line per feed.
+
+`tests/test-intel-cli.sh` re-executes itself under `unshare -n -m`: the
+store is the default `/var/lib/stockfw/intel` on a tmpfs over
+`/var/lib`, the feed server is a local HTTPS server on 127.0.0.1 with a
+throwaway CA, and the binary is `stockfw-intel-test` -- the real CLI
+sources and Linux backend with a copy of `fs-fetch.c` compiled with
+`FS_FETCH_TESTING` (the only build that reads `STOCKFW_TEST_CACERT`; the
+`stockfw` that ships has no hook).  A failing check prints the last
+command's exit status, stdout and stderr.  It checks:
+
+- nothing turned on: status, `--json status`, feeds (every catalog feed
+  with its licence or none, the non-commercial flag, credit, terms page,
+  interval), lookup, update and `stockfw --json status` exit 0, create
+  no store and make no request; `terms` names the host, how often and
+  the terms page;
+- consent: `enable` without `--accept-terms` exits 2, prints the terms,
+  names the flag and leaves the feed off (plain, and `--json` with
+  `needs_consent`); with it the feed is on, accepted now, in the
+  direction asked; turned off and on again it needs no flag; unknown
+  ids, directions, options and actions exit 2; an `http://` custom feed
+  is refused;
+- a custom feed whose URL has `?key=SECRETKEY`: the key never appears in
+  the output (JSON or table); the first change makes the store 0700 with
+  0600 files; update downloads it as `StockFW/<version>` (updated, 16
+  entries, not applied: the firewall is not running), then not due (no
+  request), `--now` unchanged; a copy that shrank to 2 entries is
+  refused (exit 1) and the 16-entry copy kept, status "refused";
+  `--accept-shrink --feed` takes it; an HTTP 404 fails (exit 1); `--feed`
+  of an unknown or turned-off feed exits 2;
+- local lists: import (4 entries, out; the unparsable line and the
+  private part named), `lists --json`, `list show ID` with its ranges
+  (10.1.2.3 left out), `list add` (a new list blocks both ways), the
+  same name in another case replaces, `list remove` deletes the files;
+  a missing `--name`, a missing file, removing a built-in feed and
+  showing an unknown list are errors;
+- exceptions: one bad value saves nothing (exit 2); two addresses
+  merge; `unexcept` takes one out;
+- apply: the dry run names three sets and loads nothing; apply loads
+  the digest the dry run named, the state is enforced, one
+  `intel-apply` audit line with `source=cli`, the kernel's sets hold the
+  lists minus the exception; `intel status` and `stockfw status` say
+  enforced; lookup exits 5 for listed addresses (naming the list and the
+  direction), 0 for the exception and an unlisted address, 2 for a
+  network;
+- audit-only mode (`[client] policy_audit_only=true`): apply is held,
+  exit 0, the kernel's table unchanged although the config changed;
+- clear: the table is gone, the state not-loaded, the three lists still
+  on, one `intel-clear` audit line; a second clear is not an error;
+  apply restores the same digest;
+- as nobody: apply and clear exit 3 and touch nothing; status with
+  root's store exits 3 and says needs-root;
+- with iptables: after `stockfw stop`, an update stores the new copy and
+  does not apply it; `stockfw start` applies it; with the firewall
+  running but the lists cleared, an update applies nothing;
+  `--no-apply` applies nothing; running and enforced, an update applies
+  the new copy at once;
+- the master switch off: the kernel untouched until apply, apply removes
+  the table (state off), update makes no request; removing the custom
+  feed deletes its files.
+
+`tests/test-cli.sh` (no kernel; the store in a directory under `$HOME`
+or the build directory, which passes the ownership check that `/tmp`
+never does): help lists `intel`; feeds without a store (and creating
+none) with LICENCE and CREDIT columns; consent refused and accepted;
+import, except, lookup exit 5 / 0 / 2; `status --json` carries `intel`;
+as nobody (or as the user, when not root) apply and clear exit 3;
+`apply --dry-run`; the dashboard's `/api/intel` needs the token, lists
+the two sources with licence and credit, refuses POST (405), and the
+page has the panel and asks for `/api/intel`; every JSON endpoint parses
+(intel included).  `fs-feed-test` checks that every catalog feed has a
+credit line and that Spamhaus's names Spamhaus.
+
+Not covered: the desktop Threat Intel page, the consent dialog and
+Events attribution (not built); IPv6 lookups against a live kernel
+(no IPv6 here); catalog feeds' real hosts (no internet: only a custom
+feed on 127.0.0.1 is downloaded).
+
+Teeth (`teeth.py` in a scratch directory: asserts the old text occurs
+once, rebuilds, runs the test, looks for the named checks among the
+failures, restores with `cp`, checks with `cmp`):
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| `enable` passes `TRUE` for the terms instead of `--accept-terms` | `enable without --accept-terms: exit 2, the terms shown, the flag named`, `... and the feed is still off`, `... as JSON: needs_consent ...`, `enable --accept-terms --direction in: on, accepted now` |
+| the CLI loads the config through the store even for read-only commands | `intel (status): off, exit 0, and no store is created`, `intel --json feeds: ... no store`, `intel lookup: ... no store`, `intel update with nothing on: ... no store`, `status --json: intel.state off, no store` |
+| `fs_intel_counters` opens the store without checking it exists | `intel --json feeds: ... no store`, `intel lookup: ... no store`, `intel update with nothing on: ...`, `status --json: ...` |
+| `fs_intel_state` without its no-store branch | `intel (status): off, exit 0, and no store is created` and the four other no-store checks |
+| `lookup` always exits 0 | `lookup of a listed address: blocked, exit 5, names the list`, `lookup of a local-list address: blocked out, exit 5` |
+| `update` exits 0 for a refused copy | `a copy that shrank to 2 entries: refused, exit 1` |
+| `update` re-applies without checking the firewall runs | `... and not applied: the firewall is not running` |
+| `update` re-applies without checking the lists are enforced | `update while running but the lists cleared: stored, not applied` |
+| `clear` records the lists as suspended | `clear: removed from the kernel, state not-loaded`, `... the three lists are still turned on`, `update while running but the lists cleared: ...` |
+| `intel apply` passes no hold | `audit-only mode: the apply is held, exit 0, the kernel untouched`, `... and says so` |
+| the feeds table prints a custom feed's URL unredacted | `... feeds shows it with the query string hidden` |
+| the dashboard without its `/api/intel` route | `intel: the state and the lists turned on, with licence and credit` (test-cli.sh) |
+| `intel apply`/`clear` without their root check | `intel apply and clear need root (exit 3)` (test-cli.sh) |
+| Spamhaus DROP's credit without "Spamhaus" | `every feed has a credit line; Spamhaus's names Spamhaus` (fs-feed-test) |
+| `stockfw status --json` without its `intel` object | `status --json carries an intel object` (test-cli.sh) |
+| `update --feed` of a feed that is turned off goes ahead | `update --feed of a feed that is off: exit 2` |
+
+The sanitizer build (`build-asan`) runs `test-cli.sh` and
+`test-intel-cli.sh` (with `STOCKFW_BUILD` / `STOCKFW_INTEL_CLI` naming
+it) with no AddressSanitizer or UndefinedBehaviorSanitizer report.

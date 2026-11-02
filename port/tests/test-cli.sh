@@ -7,7 +7,12 @@
 # kernel-log history, every --json document parsed back, and the
 # dashboard's security model -- 127.0.0.1 only, a per-run token,
 # DNS-rebinding defence, GET/HEAD only, a capped request head and a
-# nonce-locked CSP.
+# nonce-locked CSP.  `stockfw intel' too, as far as it goes without the
+# kernel: feeds with licence and credit, consent, local lists,
+# exceptions, lookups and their exit codes, the `intel' object of
+# `status', and the dashboard's read-only blocklist panel
+# (tests/test-intel-cli.sh does apply, clear and update in a private
+# namespace).
 #
 # Everything runs against scratch directories (STOCKFW_RULES_DIR,
 # XDG_CONFIG_HOME) and a fixture log (STOCKFW_LOG_FILE): the test never
@@ -36,9 +41,11 @@ S="$BUILD/stockfw"
 
 TMP="$(mktemp -d)"
 DASH_PID=""
+INTEL_BASE=""
 cleanup () {
   [ -n "$DASH_PID" ] && kill "$DASH_PID" 2>/dev/null
   rm -rf "$TMP"
+  [ -n "$INTEL_BASE" ] && rm -rf "$INTEL_BASE"
 }
 trap cleanup EXIT
 
@@ -199,6 +206,99 @@ assert by[('inbound-allow-service', 'Anyone')]['covers'] == ['ipv4', 'ipv6']"
 "$S" policy remove inbound-allow-service 2 > /dev/null
 "$S" policy remove inbound-allow-from 1 > /dev/null
 
+# --------------------------------------------------------- threat intel
+# The store must pass the engine's ownership check (no parent writable
+# by others), which /tmp never does: try the home directory, then the
+# build directory.
+export STOCKFW_AUDIT_FILE="$TMP/audit.log"
+for base in "$HOME" "$BUILD"; do
+  [ -d "$base" ] || continue
+  cand="$(mktemp -d "$base/sfw-cli-intel-XXXXXX" 2>/dev/null)" || continue
+  chmod 700 "$cand"
+  if STOCKFW_INTEL_DIR="$cand/probe" "$S" -q intel on > /dev/null 2>&1; then
+    INTEL_BASE="$cand"
+    break
+  fi
+  rm -rf "$cand"
+done
+
+check "help lists intel, and intel has its own help" \
+  bash -c "'$S' help | grep -q '^  intel ' && '$S' help intel | grep -q 'accept-terms'"
+if [ -n "$INTEL_BASE" ]; then
+  export STOCKFW_INTEL_DIR="$INTEL_BASE/intel"
+  icode () { "$S" "$@" > "$TMP/iout" 2> "$TMP/ierr"; echo $?; }
+  export S TMP; export -f icode
+
+  check "intel feeds lists the catalog without creating the store" py "
+import json, os, subprocess
+r = subprocess.run(['$S', '--json', 'intel', 'feeds'], capture_output=True, text=True)
+d = json.loads(r.stdout)
+f = {x['id']: x for x in d['feeds']}
+assert r.returncode == 0 and len(f) == 9, (r.returncode, list(f))
+assert all(x['credit'] and x['terms_url'] for x in f.values())
+assert f['dshield']['noncommercial'] and f['dshield']['licence'] == 'CC BY-NC-SA 2.5'
+assert f['spamhaus-drop']['licence'] is None and 'Spamhaus' in f['spamhaus-drop']['credit']
+assert not os.path.exists('$STOCKFW_INTEL_DIR'), 'store created'"
+  check "  ...and as a table, with LICENCE and CREDIT columns" \
+    bash -c "'$S' intel feeds | head -1 | grep -q 'LICENCE *CREDIT\$'"
+  check "intel status --json without a store: off" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'intel', 'status'], capture_output=True, text=True).stdout)
+assert d['state'] == 'off' and d['lists'] == [], d"
+  check "enable without --accept-terms is refused (exit 2) and shows the terms" \
+    bash -c "[ \$(icode intel enable feodo) = 2 ] && grep -q 'feodotracker.abuse.ch' '$TMP/iout' && grep -q -- '--accept-terms' '$TMP/ierr'"
+  check "  ...and leaves the feed off" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'intel', 'feeds'], capture_output=True, text=True).stdout)
+assert not [x for x in d['feeds'] if x['id'] == 'feodo'][0]['enabled']"
+  check "enable with --accept-terms turns it on (exit 0)" \
+    bash -c "[ \$(icode intel enable feodo --accept-terms) = 0 ] && grep -q 'Feodo Tracker turned on (both' '$TMP/iout'"
+  check "an unknown feed is a usage error (exit 2)" \
+    bash -c "[ \$(icode intel enable no-such-feed --accept-terms) = 2 ]"
+  printf '203.0.113.50\n198.51.100.0/28\n' > "$TMP/mine.txt"
+  check "import a local list" \
+    bash -c "[ \$(icode intel import '$TMP/mine.txt' --name 'CLI list') = 0 ] && grep -q 'CLI list (local-cli-list): 2 entries, both' '$TMP/iout'"
+  check "except: an address the list holds" \
+    bash -c "[ \$(icode intel except 198.51.100.5) = 0 ]"
+  check "lookup: a listed address exits 5 and names the list" py "
+import json, subprocess
+r = subprocess.run(['$S', '--json', 'intel', 'lookup', '203.0.113.50'], capture_output=True, text=True)
+d = json.loads(r.stdout)
+assert r.returncode == 5 and d['blocked'] and d['lists'] == [{'id': 'local-cli-list', 'name': 'CLI list'}], (r.returncode, d)"
+  check "lookup: the exception is listed but not blocked (exit 0)" py "
+import json, subprocess
+r = subprocess.run(['$S', '--json', 'intel', 'lookup', '198.51.100.5'], capture_output=True, text=True)
+d = json.loads(r.stdout)
+assert r.returncode == 0 and not d['blocked'] and d['exception'] and len(d['lists']) == 1, (r.returncode, d)"
+  check "lookup: not an address is a usage error (exit 2)" \
+    bash -c "[ \$(icode intel lookup nonsense) = 2 ]"
+  check "status --json carries an intel object" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'status'], capture_output=True, text=True).stdout)
+i = d['intel']
+assert i['state'] in ('not-loaded', 'needs-root', 'unknown', 'differs') and i['detail'], i"
+  check "status has a Threat intel line" \
+    bash -c "'$S' status | grep -qE '^  Threat intel +[a-z-]+'"
+  # Changing the kernel needs root; as root, ask as nobody.
+  if [ "$(id -u)" = 0 ]; then
+    as_user () { setpriv --reuid=65534 --regid=65534 --clear-groups "$@"; }
+  else
+    as_user () { "$@"; }
+  fi
+  if [ "$(id -u)" != 0 ] || command -v setpriv > /dev/null; then
+    needs_root () {
+      as_user "$S" intel apply > /dev/null 2>&1; local a=$?
+      as_user "$S" intel clear > /dev/null 2>&1; local c=$?
+      [ "$a" = 3 ] && [ "$c" = 3 ]
+    }
+    check "intel apply and clear need root (exit 3)" needs_root
+  fi
+  check "intel apply --dry-run names the sets and changes nothing" \
+    bash -c "'$S' intel apply --dry-run > '$TMP/dry.txt' && grep -q '^  local-cli-list  *both' '$TMP/dry.txt' && grep -q 'Nothing was changed' '$TMP/dry.txt'"
+else
+  echo "skip: threat intel (no directory here passes the store's ownership check)"
+fi
+
 # --------------------------------------------------------- dashboard
 DPORT=$(py 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
 "$S" dashboard --no-open --port "$DPORT" > "$TMP/dash.txt" 2>&1 &
@@ -281,6 +381,23 @@ d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '
 assert d['verdict'] == 'BLOCKED', d"
 check "simulate refuses an over-long question (400)" \
   bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Token: $TOKEN' '$B/api/simulate?q=$(printf 'a%.0s' $(seq 1 400))') = 400 ]"
+if [ -n "$INTEL_BASE" ]; then
+  check "intel: the API needs the token (401)" \
+    bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' '$B/api/intel') = 401 ]"
+  check "intel: the state and the lists turned on, with licence and credit" py "
+import json, subprocess
+d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/intel'],
+                              capture_output=True, text=True).stdout)
+assert d['state'] in ('not-loaded', 'needs-root', 'unknown', 'differs') and d['detail'], d
+by = {l['id']: l for l in d['lists']}
+assert set(by) == {'feodo', 'local-cli-list'}, by.keys()
+assert by['feodo']['licence'] == 'CC0' and 'abuse.ch' in by['feodo']['credit']
+assert by['local-cli-list']['name'] == 'CLI list' and by['local-cli-list']['entries'] == 2"
+  check "intel: POST is refused (405): the panel is read-only" \
+    bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'X-StockFW-Token: $TOKEN' '$B/api/intel') = 405 ]"
+  check "the page has the blocklist panel and asks for /api/intel" \
+    bash -c "grep -q 'id=\"h-intel\"' '$TMP/page.html' && grep -q '/api/intel' '$TMP/page.html'"
+fi
 check "the dashboard's own sockets are not listed as connections" py "
 import json, subprocess
 c = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/connections'],
@@ -288,7 +405,7 @@ c = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '
 assert not [x for x in c if x['port'] == '$DPORT' and x['remote'].startswith('127.')], c"
 check "every JSON endpoint parses" py "
 import json, subprocess
-for p in ('summary', 'activity?range=900', 'activity?range=86400', 'events', 'connections', 'interfaces', 'policy'):
+for p in ('summary', 'activity?range=900', 'activity?range=86400', 'events', 'connections', 'interfaces', 'policy', 'intel'):
     out = subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/' + p], capture_output=True, text=True).stdout
     json.loads(out)"
 
