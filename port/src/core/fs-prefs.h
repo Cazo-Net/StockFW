@@ -96,6 +96,11 @@ gchar    *fs_prefs_string (const gchar *key);
 /* TRUE when the settings file holds key at all. */
 gboolean  fs_prefs_has_key (const gchar *key);
 
+/* Every firewall setting (the table rows marked firewall) as it reads
+ * now: key (static) -> value text, "true"/"false" for switches and
+ * the string itself otherwise ("" for no device).  Caller unrefs. */
+GHashTable *fs_prefs_firewall_values (void);
+
 /* ---- editing a copy (the Preferences window) -----------------------
  *
  * A snapshot of every table setting.  The window changes the copy;
@@ -122,6 +127,8 @@ void         fs_prefs_edit_set_writable (FsPrefsEdit *edit, const gchar *key,
 gboolean     fs_prefs_edit_changed      (FsPrefsEdit *edit, const gchar *key);
 /* Changed keys, writable or not. */
 guint        fs_prefs_edit_n_changed    (FsPrefsEdit *edit);
+/* Changed AND writable keys: exactly what commit would write now. */
+guint        fs_prefs_edit_n_pending    (FsPrefsEdit *edit);
 /* Writes the changed, writable keys into the store (not to disk: call
  * fs_prefs_save after).  Returns how many were written; firewall_changed
  * says whether any of them was a firewall setting. */

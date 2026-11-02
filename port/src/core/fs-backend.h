@@ -105,6 +105,14 @@ typedef void (*FsLogFunc) (const FsHit *hit, gpointer user_data);
 	                                  * (Linux).  Without it they are
 	                                  * IPv4 allow rules beside the
 	                                  * system's own (Windows)      */
+#define FS_FWHON_START_APPLIES (1u << 6) /* Start loads the whole policy
+	                                  * under the saved settings
+	                                  * (Linux).  Without it Start
+	                                  * only switches filtering on
+	                                  * and the rules stay as last
+	                                  * applied (Windows: the
+	                                  * profiles), so new settings
+	                                  * need an apply even then    */
 
 typedef struct
 {

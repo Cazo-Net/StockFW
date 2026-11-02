@@ -720,7 +720,7 @@ load_family (const Family *f, const FsRestorePart *part, FamilySnap *snap,
 	 * unconditionally would send container and VM traffic, which their
 	 * own runtimes accept in other tables, into INBOUND's default drop
 	 * -- traffic that worked while IPv6 was not filtered at all. */
-	if (f->family == FS_FAMILY_IPV4 || (s != NULL && s->nat)) {
+	if (f->family == FS_FAMILY_IPV4 || fs_settings_sharing (s)) {
 		if (!ensure_jump (f, "filter", "FORWARD", "INBOUND")) {
 			*why = g_strdup ("could not hook INBOUND into FORWARD");
 			return FALSE;
@@ -868,7 +868,7 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 	if (result == FS_APPLY_OK) {
 		legacy_cleanup ();
 
-		if (current_settings->nat) {
+		if (fs_settings_sharing (current_settings)) {
 			linux_sysctl_forwarding ();
 			if (do6 && plan->v6.nat != NULL)
 				linux_sysctl_forwarding6 (current_settings->ext_device);
@@ -1822,7 +1822,8 @@ static const FsBackend linux_backend = {
 	/* Every settings page: the generator reads all three.  REJECT vs
 	 * DROP is a real iptables choice, the ICMP rules carry -m limit,
 	 * the outbound default is ours to set, and the ICMP choices are
-	 * the whole story for both families. */
+	 * the whole story for both families.  linux_start applies the
+	 * whole policy, so Start brings saved settings in too. */
 	.fw_sections           = FS_FWSEC_NETWORK | FS_FWSEC_ICMP |
 	                         FS_FWSEC_ADVANCED,
 	.fw_honors             = FS_FWHON_REJECT_METHOD |
@@ -1830,7 +1831,8 @@ static const FsBackend linux_backend = {
 	                         FS_FWHON_LOG_ALLOWED |
 	                         FS_FWHON_HOST_NAMES |
 	                         FS_FWHON_OUTBOUND_MODE |
-	                         FS_FWHON_ICMP_EXACT,
+	                         FS_FWHON_ICMP_EXACT |
+	                         FS_FWHON_START_APPLIES,
 	.available             = linux_available,
 	.get_state             = linux_get_state,
 	.start                 = linux_start,

@@ -207,6 +207,16 @@ switch slider {
 	min-width: 18px;
 	min-height: 18px;
 }
+/* Keyboard focus: GTK rings the slider, by default in a light grey
+ * dash that all but vanishes on white.  The theme's focus blue,
+ * solid, instead.  An outline is only drawn while focus is visible
+ * (keyboard use), so a click shows nothing extra. */
+switch:focus slider {
+	outline-color: #1d4ed8;
+	outline-style: solid;
+	outline-width: 2px;
+	outline-offset: -4px;
+}
 /* A switch that cannot act right now (Preferences: a block that needs
  * a device nobody chose) reads as faded, on or off. */
 switch:disabled {

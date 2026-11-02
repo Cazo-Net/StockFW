@@ -4640,6 +4640,9 @@ static void test_prefs_table (void)
 		 * not offered (Windows). */
 		CHECK (fs_prefs_edit_n_changed (edit) == 2,
 		       "edit: two values differ from the snapshot");
+		CHECK (fs_prefs_edit_n_pending (edit) == 1,
+		       "edit: one of them would be written (the footer's "
+		       "count is what Save writes)");
 
 		written = fs_prefs_edit_commit (edit, &firewall);
 		CHECK (written == 1 && !firewall &&
@@ -4661,6 +4664,189 @@ static void test_prefs_table (void)
 	}
 
 	reset_prefs_file ("");
+}
+
+/* --- settings saved but not applied ("Later") -------------------------
+ * The journal records the firewall settings each successful apply went
+ * out with.  While the saved ones differ, the policy gate applies the
+ * whole set -- even for an unchanged policy, which it would otherwise
+ * call "no change", and never through the narrow delta, which carries
+ * no settings -- so "Later" really means "with the next policy
+ * apply", on every backend. */
+static void test_settings_pending (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-settings-pending-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	GHashTable *recorded;
+	gchar *contents = NULL;
+	gint before_full;
+	guint n = 0, firewall_rows = 0;
+	const FsPrefSpec *specs = fs_prefs_specs (&n);
+
+	for (guint i = 0; i < n; i++)
+		if (specs[i].firewall)
+			firewall_rows++;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+	g_mkdir_with_parents (g_path_get_dirname (fs_prefs_path ()), 0700);
+	reset_prefs_file ("");
+
+	fake_reset ();
+	policy = gate_policy_two ();
+
+	CHECK (!fs_apply_settings_pending () &&
+	       fs_apply_journal_settings () == NULL,
+	       "pending: with no journal nothing is pending (every apply is "
+	       "whole then)");
+
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	recorded = fs_apply_journal_settings ();
+	CHECK (outcome->applied && fake_full_calls == 1 &&
+	       !fs_apply_settings_pending () && recorded != NULL &&
+	       g_hash_table_size (recorded) == firewall_rows &&
+	       g_strcmp0 (g_hash_table_lookup (recorded,
+	                  FS_PREFS_FW_ICMP_ECHO_REQUEST), "true") == 0 &&
+	       g_strcmp0 (g_hash_table_lookup (recorded,
+	                  FS_PREFS_FW_EXT_IF), "") == 0,
+	       "pending: an apply records every firewall setting it went "
+	       "out with (%u of %u)",
+	       recorded != NULL ? g_hash_table_size (recorded) : 0,
+	       firewall_rows);
+	if (recorded != NULL)
+		g_hash_table_unref (recorded);
+	fs_apply_outcome_free (outcome);
+
+	/* Saved in Preferences, answered "Later". */
+	fs_prefs_set_bool (FS_PREFS_FW_ICMP_TIMESTAMPING, TRUE);
+	fs_prefs_set_string (FS_PREFS_FW_EXT_IF, "eth0");
+	CHECK (fs_apply_settings_pending (),
+	       "pending: settings saved after the apply are pending");
+
+	before_full = fake_full_calls;
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	CHECK (outcome->applied && outcome->settings && !outcome->narrow &&
+	       fake_full_calls == before_full + 1 && fake_delta_calls == 0 &&
+	       !fs_apply_settings_pending (),
+	       "pending: the next apply of an UNCHANGED policy is whole and "
+	       "brings them in");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| full, settings pending |") != NULL,
+	       "pending: the audit line says the settings went with it");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	before_full = fake_full_calls;
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	CHECK (outcome->narrow && !outcome->settings &&
+	       fake_full_calls == before_full && fake_delta_calls == 0,
+	       "pending: once applied, an unchanged policy is \"no change\" "
+	       "again");
+	fs_apply_outcome_free (outcome);
+
+	/* A changed policy while settings are pending: whole, never the
+	 * delta (which carries no settings). */
+	fs_prefs_set_bool (FS_PREFS_FW_ICMP_TIMESTAMPING, FALSE);
+	{
+		FsRule *rule = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+		                          "198.51.100.10");
+
+		fs_policy_add (policy, rule);
+		fs_rule_free (rule);
+	}
+	before_full = fake_full_calls;
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	CHECK (outcome->applied && outcome->settings &&
+	       fake_full_calls == before_full + 1 && fake_delta_calls == 0,
+	       "pending: a changed policy goes whole too, not as a delta");
+	fs_apply_outcome_free (outcome);
+
+	/* Without pending settings the same kind of edit is a delta. */
+	{
+		FsRule *rule = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+		                          "198.51.100.11");
+
+		fs_policy_add (policy, rule);
+		fs_rule_free (rule);
+	}
+	before_full = fake_full_calls;
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	CHECK (outcome->applied && !outcome->settings && outcome->narrow &&
+	       fake_full_calls == before_full && fake_delta_calls == 1,
+	       "pending: with nothing pending an edit still goes narrow");
+	fs_apply_outcome_free (outcome);
+
+	/* A value that needs escaping survives the record. */
+	fs_prefs_set_string (FS_PREFS_FW_INT_IF, "odd=name\\with\nlines");
+	outcome = fs_policy_apply_safe (&fake_backend, policy, "pending test",
+	                                NULL, &error);
+	recorded = fs_apply_journal_settings ();
+	CHECK (outcome->applied && !fs_apply_settings_pending () &&
+	       recorded != NULL &&
+	       g_strcmp0 (g_hash_table_lookup (recorded, FS_PREFS_FW_INT_IF),
+	                  "odd=name\\with\nlines") == 0,
+	       "pending: a value with '=', '\\' and a newline is recorded "
+	       "exactly");
+	fs_apply_outcome_free (outcome);
+
+	/* The record rebuilds the settings that were on the firewall. */
+	{
+		FsSettings *was = fs_settings_new ();
+
+		fs_settings_load_values (was, recorded);
+		CHECK (g_strcmp0 (was->ext_device, "eth0") == 0 &&
+		       !was->icmp_timestamping && was->icmp_echo_request,
+		       "pending: the record rebuilds the settings that went out");
+		fs_settings_free (was);
+	}
+	g_hash_table_unref (recorded);
+
+	/* A journal written before settings were recorded: unknown, so
+	 * the next apply gives the firewall the lot. */
+	{
+		GString *legacy = g_string_new (NULL);
+		gchar **lines;
+
+		g_file_get_contents (file, &contents, NULL, NULL);
+		lines = g_strsplit (contents, "\n", -1);
+		for (guint i = 0; lines[i] != NULL; i++)
+			if (!g_str_has_prefix (lines[i], "# setting "))
+				g_string_append_printf (legacy, "%s\n", lines[i]);
+		g_file_set_contents (file, legacy->str, -1, NULL);
+		g_strfreev (lines);
+		g_string_free (legacy, TRUE);
+		g_free (contents);
+		contents = NULL;
+	}
+	CHECK (fs_apply_journal_settings () == NULL &&
+	       fs_apply_settings_pending (),
+	       "pending: a journal with no settings record counts as pending");
+
+	g_clear_error (&error);
+	fake_reset ();
+	fs_policy_free (policy);
+	reset_prefs_file ("");
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
 }
 
 /* --- the settings plan ------------------------------------------------
@@ -5352,6 +5538,125 @@ activity_test_clock (gpointer data)
 {
 	(void) data;
 	return activity_test_now;
+}
+
+/* --- connection sharing needs both devices ---------------------------
+ * The Preferences window says sharing needs the Internet AND the local
+ * device.  With either missing the generator must emit nothing of
+ * router mode: no masquerade, no forwarding, no accept for the
+ * internal device, no accept for everything leaving the Internet
+ * device (which would let this computer's own traffic past restrictive
+ * outbound), and no local-broadcast block that the window shows as
+ * having no effect. */
+static void test_sharing_needs_both_devices (void)
+{
+	static const struct
+	{
+		const gchar *ext, *intf;
+		gboolean     acts;
+	} cases[] = {
+		{ "eth0", "eth1", TRUE  },
+		{ "eth0", NULL,   FALSE },
+		{ NULL,   "eth1", FALSE },
+		{ NULL,   NULL,   FALSE },
+	};
+	FsPolicy *p = fs_policy_new ();
+
+	for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
+		FsSettings *s = fs_settings_new ();
+		FsRestorePlan *plan;
+		gchar *in, *out, *ctl;
+		gboolean masq, out_accept, in_accept, bcast, fwd;
+		GError *error = NULL;
+
+		s->ext_device = g_strdup (cases[i].ext);
+		s->int_device = g_strdup (cases[i].intf);
+		s->nat = TRUE;
+		s->restrictive_outbound = TRUE;
+		s->block_internal_broadcast = TRUE;
+
+		in = fs_script_generate_inbound (p, s);
+		out = fs_script_generate_outbound (p, s);
+		ctl = fs_script_generate_control (s);
+		plan = fs_script_restore_plan (p, s, &error);
+
+		masq = plan != NULL && plan->v4.nat != NULL &&
+		       strstr (plan->v4.nat, "MASQUERADE") != NULL;
+		out_accept = cases[i].ext != NULL &&
+		       strstr (out, "-A OUTBOUND -o eth0 -j ACCEPT") != NULL;
+		in_accept = cases[i].intf != NULL &&
+		       strstr (in, "-A INBOUND -i eth1 -j ACCEPT") != NULL;
+		bcast = strstr (in, "-d 255.255.255.255") != NULL;
+		fwd = strstr (ctl, "ip_forward") != NULL ||
+		      strstr (ctl, "MASQUERADE") != NULL;
+
+		CHECK (plan != NULL &&
+		       fs_settings_sharing (s) == cases[i].acts &&
+		       masq == cases[i].acts && out_accept == cases[i].acts &&
+		       in_accept == cases[i].acts && bcast == cases[i].acts &&
+		       fwd == cases[i].acts,
+		       "sharing with ext=%s int=%s %s (masquerade %d, outbound "
+		       "accept %d, internal accept %d, local broadcast block "
+		       "%d, control script %d)",
+		       cases[i].ext ? cases[i].ext : "-",
+		       cases[i].intf ? cases[i].intf : "-",
+		       cases[i].acts ? "acts" : "emits nothing of router mode",
+		       masq, out_accept, in_accept, bcast, fwd);
+
+		g_clear_error (&error);
+		fs_restore_plan_free (plan);
+		g_free (in);
+		g_free (out);
+		g_free (ctl);
+		fs_settings_free (s);
+	}
+	fs_policy_free (p);
+}
+
+/* --- "Start the firewall when StockFW opens" -------------------------
+ * On Linux, start applies the policy in the backend's context.  At
+ * launch that policy is created empty and only filled when the Policy
+ * page is built, and Sentinel's expired blocks come out of it after
+ * that; starting any earlier would take every block and forward down.
+ * The window cannot be built here, so the order in fs_app_activate is
+ * read from the source: one start, in start_on_open, called once,
+ * after both. */
+static void test_start_on_open_order (void)
+{
+	gchar *src = NULL;
+	const gchar *body, *end, *page, *restore, *start, *call;
+	guint starts = 0, calls = 0;
+
+	CHECK (g_file_get_contents ("src/ui/fs-app.c", &src, NULL, NULL),
+	       "start on open: fs-app.c is readable");
+	if (src == NULL)
+		return;
+
+	for (const gchar *p = src; (p = strstr (p, "->start (")) != NULL; p++)
+		starts++;
+	for (const gchar *p = src; (p = strstr (p, "start_on_open ();")) != NULL;
+	     p++)
+		calls++;
+
+	body = strstr (src, "\nfs_app_activate (GtkApplication *app)\n{");
+	end = body != NULL ? strstr (body, "\n}\n") : NULL;
+	start = strstr (src, "\nstart_on_open (void)\n{");
+	page = body != NULL ? strstr (body, "fs_policyview_page (policy)") : NULL;
+	restore = body != NULL
+		? strstr (body, "fs_copilot_autoblocks_restore (policy);") : NULL;
+	call = body != NULL ? strstr (body, "start_on_open ();") : NULL;
+
+	CHECK (starts == 1 && calls == 1 && start != NULL &&
+	       strstr (start, "->start (") != NULL &&
+	       strstr (start, "->start (") < strstr (start + 1, "\n}\n"),
+	       "start on open: the app's only start is in start_on_open, "
+	       "called once (%u start, %u call)", starts, calls);
+	CHECK (body != NULL && end != NULL && page != NULL &&
+	       restore != NULL && call != NULL && call < end &&
+	       page < call && restore < call,
+	       "start on open: it runs after the Policy page loads the policy "
+	       "and after Sentinel's expired blocks are restored out of it");
+	g_free (src);
 }
 
 static void test_activity_series (void)
@@ -6421,6 +6726,7 @@ int main (void)
 	test_apply_gate ();
 	test_settings_apply_gate ();
 	test_prefs_table ();
+	test_settings_pending ();
 	test_settings_plan ();
 	test_netparse_log ();
 	test_netparse_proc ();
@@ -6429,6 +6735,8 @@ int main (void)
 	test_script_accept_log ();
 	test_target_families ();
 	test_restore_plan ();
+	test_sharing_needs_both_devices ();
+	test_start_on_open_order ();
 	test_activity_series ();
 	test_activity_sampler ();
 	test_json_writer ();

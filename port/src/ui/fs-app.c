@@ -598,6 +598,22 @@ app_trust_signature (const gchar *path, FsTrustSignature *sig,
 	return backend->trust_signature (path, sig, publisher);
 }
 
+/* [ start_on_open ]
+ * The "Start the firewall when StockFW opens" preference.  Called from
+ * fs_app_activate once the policy is loaded, never before. */
+static void
+start_on_open (void)
+{
+	GError *error = NULL;
+
+	if (!fs_prefs_bool (FS_PREFS_START_ON_GUI) ||
+	    !fs_backend ()->available ())
+		return;
+
+	if (!fs_backend ()->start (&error))
+		g_clear_error (&error);
+}
+
 void
 fs_app_activate (GtkApplication *app)
 {
@@ -683,17 +699,10 @@ fs_app_activate (GtkApplication *app)
 	fs_settings_load_prefs (settings);
 	fs_backend_set_context (policy, settings);
 
-	/* "Start the firewall on program startup".  A failure here is not
-	 * fatal: the window still opens and the state line reports what
-	 * actually happened. */
-	if (fs_prefs_bool (FS_PREFS_START_ON_GUI) &&
-	    fs_backend ()->available ()) {
-		GError *error = NULL;
-
-		if (!fs_backend ()->start (&error))
-			g_clear_error (&error);
-	}
-
+	/* Building the Policy page loads the policy from disk (or seeds
+	 * the defaults on a first run).  Nothing may start the firewall
+	 * before that: on Linux, start applies the policy in the context,
+	 * and an empty one would take every block and forward down. */
 	add_page (_("Policy"),
 	          _("The rules StockFW enforces, and which addresses each "
 	            "one covers."),
@@ -729,6 +738,13 @@ fs_app_activate (GtkApplication *app)
 	 * "auto" lifts the lot.  The page above owns the shared policy
 	 * and the mode cache this reads. */
 	fs_copilot_autoblocks_restore (policy);
+
+	/* "Start the firewall when StockFW opens" -- only now: the policy
+	 * is loaded, and Sentinel blocks that ran out while StockFW was
+	 * closed are already out of it.  A failure here is not fatal: the
+	 * window still opens and the state line reports what actually
+	 * happened. */
+	start_on_open ();
 
 	/* Trust tab: the application trust engine's surface. */
 	add_page (_("Trust"),
@@ -776,27 +792,42 @@ settings_swap (gboolean previous, gpointer data)
 	                                         : settings);
 }
 
+FsPolicy *
+fs_app_policy (void)
+{
+	return policy;
+}
+
 FsApplyOutcome *
-fs_app_apply_settings (const FsSettings *previous, const gchar *hold,
-                       GError **error)
+fs_app_apply_settings (FsPolicy *under, const FsSettings *previous,
+                       const gchar *hold, GError **error)
 {
 	FsSettings *before;
 	FsApplyOutcome *outcome;
 
 	/* No window, no loaded policy: nothing to apply them with, and an
 	 * empty policy is never pushed in its place. */
-	if (policy == NULL || settings == NULL)
+	if (under == NULL || policy == NULL || settings == NULL)
 		return NULL;
 
 	before = previous != NULL ? fs_settings_copy (previous)
 	                          : fs_settings_new ();
-	outcome = fs_settings_apply_safe (fs_backend (), policy,
+	outcome = fs_settings_apply_safe (fs_backend (), under,
 	                                  "preferences", hold,
 	                                  settings_swap, before, error);
 	fs_settings_free (before);
 
 	return outcome;
 }
+
+#ifdef FS_PREFS_FAKE_BACKEND
+void
+fs_app_test_set_context (FsPolicy *test_policy, FsSettings *test_settings)
+{
+	policy = test_policy;
+	settings = test_settings;
+}
+#endif
 
 void
 fs_app_quit (void)

@@ -442,6 +442,35 @@ fs_prefs_has_key (const gchar *key)
 	return has;
 }
 
+/* [ fs_prefs_firewall_values ]
+ * What the rule generator would read now, as text: the apply journal
+ * records it beside the policy it applied, so a later apply can tell
+ * whether the settings on the firewall are still the saved ones. */
+GHashTable *
+fs_prefs_firewall_values (void)
+{
+	GHashTable *values = g_hash_table_new_full (g_str_hash, g_str_equal,
+	                                            NULL, g_free);
+
+	for (guint i = 0; i < G_N_ELEMENTS (prefs_table); i++) {
+		const FsPrefSpec *spec = &prefs_table[i];
+		gchar *value;
+
+		if (!spec->firewall)
+			continue;
+
+		if (spec->type == FS_PREF_BOOL)
+			value = g_strdup (fs_prefs_bool (spec->key)
+			                  ? "true" : "false");
+		else
+			value = fs_prefs_string (spec->key);
+		g_hash_table_insert (values, (gpointer) spec->key,
+		                     value != NULL ? value : g_strdup (""));
+	}
+
+	return values;
+}
+
 void
 fs_prefs_set_defaults (void)
 {
@@ -617,6 +646,21 @@ fs_prefs_edit_n_changed (FsPrefsEdit *edit)
 
 	for (guint i = 0; i < G_N_ELEMENTS (prefs_table); i++)
 		if (value_changed (&prefs_table[i], &edit->values[i]))
+			n++;
+
+	return n;
+}
+
+guint
+fs_prefs_edit_n_pending (FsPrefsEdit *edit)
+{
+	guint n = 0;
+
+	g_return_val_if_fail (edit != NULL, 0);
+
+	for (guint i = 0; i < G_N_ELEMENTS (prefs_table); i++)
+		if (edit->values[i].writable &&
+		    value_changed (&prefs_table[i], &edit->values[i]))
 			n++;
 
 	return n;

@@ -72,8 +72,19 @@ void        fs_settings_free (FsSettings *settings);
  * fs_prefs_load() and again whenever the window is saved. */
 void        fs_settings_load_prefs (FsSettings *settings);
 
+/* The same from a map of key -> value text, as fs_prefs_firewall_values
+ * gives and the apply journal records it.  A key the map lacks takes
+ * the table's default. */
+void        fs_settings_load_values (FsSettings *settings,
+                                     GHashTable *values);
+
 /* A deep copy; NULL for NULL. */
 FsSettings *fs_settings_copy (const FsSettings *settings);
+
+/* TRUE when connection sharing (router mode) acts: nat is on AND both
+ * the Internet and the local device are chosen.  The rule generator
+ * and the backend emit nothing of router mode otherwise. */
+gboolean    fs_settings_sharing (const FsSettings *settings);
 
 /* The control script: detects iptables, loads the policy modules and
  * dispatches to the per-direction setup scripts. */

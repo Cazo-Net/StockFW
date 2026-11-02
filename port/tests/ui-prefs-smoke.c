@@ -31,10 +31,20 @@
  *                             device are disabled, with the reason, until
  *                             one is chosen;
  *                           - D8: Save writes only what changed, never a
- *                             setting the window does not offer;
- *                           - D5: a firewall change with the firewall
- *                             running asks before applying, never applies
- *                             an empty policy, and Cancel writes nothing.
+ *                             setting the window does not offer, and
+ *                             never drops a change to a row that is
+ *                             disabled now (sharing turned off with a
+ *                             device missing);
+ *                           - the Protection and sharing rows are live
+ *                             exactly when the generator emits them;
+ *                           - D5: a firewall change asks before applying
+ *                             (with the firewall running, or off where
+ *                             Start does not re-apply), applies under
+ *                             the policy that is live -- never unapplied
+ *                             Policy-page edits, never an empty policy --
+ *                             and after "Later" the next policy apply
+ *                             brings the settings in; Cancel writes
+ *                             nothing.
  *                         With STOCKFW_PREFS_SHOTS=<dir> it also saves a
  *                         PNG of every page (and a narrow window).
  *
@@ -50,6 +60,10 @@
 #include "core/fs-prefs.h"
 #include "core/fs-backend.h"
 #include "core/fs-i18n.h"
+#include "core/fs-rules.h"
+#include "core/fs-script.h"
+#include "core/fs-apply.h"
+#include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
 #include "fs-theme-css.h"   /* generated from src/ui/fs-theme.css */
 
@@ -83,7 +97,8 @@ count_warnings (GLogLevelFlags level, const GLogField *fields,
 #define LINUX_SECTIONS (FS_FWSEC_NETWORK | FS_FWSEC_ICMP | FS_FWSEC_ADVANCED)
 #define LINUX_HONORS   (FS_FWHON_REJECT_METHOD | FS_FWHON_RATE_LIMIT | \
                         FS_FWHON_LOG_ALLOWED | FS_FWHON_HOST_NAMES |   \
-                        FS_FWHON_OUTBOUND_MODE | FS_FWHON_ICMP_EXACT)
+                        FS_FWHON_OUTBOUND_MODE | FS_FWHON_ICMP_EXACT | \
+                        FS_FWHON_START_APPLIES)
 #define WINDOWS_SECTIONS (FS_FWSEC_ICMP | FS_FWSEC_ADVANCED)
 #define WINDOWS_HONORS   0u
 
@@ -92,6 +107,8 @@ count_warnings (GLogLevelFlags level, const GLogField *fields,
 
 static FsFirewallState fake_state = FS_FW_RUNNING;
 static guint fake_apply_calls = 0;
+static guint fake_last_rows = 0;         /* policy rows of the last apply */
+static gboolean fake_last_has_deny = FALSE;
 static guint fake_list_calls = 0;
 
 static gboolean fake_available (void) { return TRUE; }
@@ -100,9 +117,12 @@ static FsFirewallState fake_get_state (void) { return fake_state; }
 static FsApplyResult
 fake_apply_rules (const FsPolicy *policy, GError **error)
 {
-	(void) policy;
 	(void) error;
 	fake_apply_calls++;
+	fake_last_rows = 0;
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		fake_last_rows += policy->kinds[k]->len;
+	fake_last_has_deny = policy->kinds[FS_RULE_OUTBOUND_DENY_TO]->len > 0;
 	return FS_APPLY_OK;
 }
 
@@ -633,6 +653,7 @@ typedef struct
 } Scenario;
 
 static Scenario *current = NULL;
+static gchar *last_question = NULL;   /* the apply question's text */
 static guint runs = 0;
 static gboolean scenario_done = FALSE;
 
@@ -658,6 +679,12 @@ tick (gpointer data)
 		const gchar *name = gtk_widget_get_name (msg);
 
 		if (g_strcmp0 (name, "prefs-apply-question") == 0) {
+			GString *text = g_string_new (NULL);
+
+			gather_text (msg, text);
+			g_free (last_question);
+			last_question = g_string_free (text, FALSE);
+			g_print ("       question: %s\n", last_question);
 			current->asked = TRUE;
 			gtk_dialog_response (GTK_DIALOG (msg),
 			                     current->answer == ANSWER_APPLY_NOW
@@ -670,6 +697,7 @@ tick (gpointer data)
 			current->reported = TRUE;
 			g_free (current->report_text);
 			current->report_text = g_string_free (text, FALSE);
+			g_print ("       report: %s\n", current->report_text);
 			gtk_dialog_response (GTK_DIALOG (msg), GTK_RESPONSE_OK);
 		}
 		return G_SOURCE_CONTINUE;
@@ -712,8 +740,8 @@ run_scenario (Scenario *scenario)
 		       scenario->tag);
 	else
 		CHECK (scenario->asked,
-		       "[%s] a firewall change with the firewall running asks "
-		       "\"Apply the new firewall settings now?\"", scenario->tag);
+		       "[%s] the firewall change asks \"Apply the new firewall "
+		       "settings now?\"", scenario->tag);
 }
 
 /* Writes the start state straight into a fresh settings file. */
@@ -865,6 +893,19 @@ drive_linux (GtkWidget *win)
 	CHECK (!sensitive (win, FS_PREFS_FW_NAT) &&
 	       reason_shown (win, FS_PREFS_FW_NAT),
 	       "connection sharing needs both devices, and says so");
+	{
+		GtkWidget *w = find_named (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES);
+		const gchar *desc = w != NULL
+			? atk_object_get_description (gtk_widget_get_accessible (w))
+			: NULL;
+
+		CHECK (desc != NULL &&
+		       g_str_has_prefix (desc, "Has no effect until you choose "
+		                               "an Internet device") &&
+		       strstr (desc, "Drops packets") != NULL,
+		       "a disabled row tells a screen reader why, then what it "
+		       "does (%s)", desc != NULL ? desc : "(none)");
+	}
 	snap (win, "protection", "linux-protection-no-device");
 	snap (win, "network", "linux-network-no-device");
 	set_combo (win, FS_PREFS_FW_EXT_IF, "eth1");
@@ -888,8 +929,30 @@ drive_linux (GtkWidget *win)
 
 		CHECK (mentions (icmp, "IPv6 uses the same choices") &&
 		       !mentions (icmp, "Windows' own rules") &&
-		       !mentions (icmp, "rate limits"),
+		       !mentions (icmp, "rate-limit"),
 		       "Linux ICMP notes: IPv6 yes, Windows caveats no");
+		CHECK (mentions (icmp, "Replies to your own pings get through "
+		                       "either way") &&
+		       mentions (icmp, "Reports about your own connections get "
+		                       "through either way") &&
+		       mentions (icmp, "tracert do not need it"),
+		       "Linux ICMP rows say what the switches add: the "
+		       "connection-state accept lets this computer's own "
+		       "replies and errors in whatever they say");
+	}
+
+	/* Screen readers get the line on what a setting does, and the
+	 * reason first while the row cannot act. */
+	{
+		GtkWidget *w = find_named (win, FS_PREFS_SKIP_REDUNDANT);
+		const gchar *desc = w != NULL
+			? atk_object_get_description (gtk_widget_get_accessible (w))
+			: NULL;
+
+		CHECK (desc != NULL &&
+		       g_str_has_prefix (desc, "Leaves out a hit that repeats"),
+		       "a switch's accessible description is its line (%s)",
+		       desc != NULL ? desc : "(none)");
 	}
 
 	/* The policy link works only with nothing pending. */
@@ -975,10 +1038,15 @@ drive_windows (GtkWidget *win)
 
 		CHECK (mentions (pages, "IPv4 only") &&
 		       mentions (pages, "Windows' own rules") &&
-		       mentions (pages, "rate limits") &&
+		       mentions (pages, "does not rate-limit these messages") &&
+		       !mentions (pages, "Linux") &&
 		       !mentions (pages, "IPv6 uses the same choices"),
 		       "Windows ICMP notes: IPv4 allow rules beside Windows' "
-		       "own, no rate limits");
+		       "own, no rate limits, said without naming Linux");
+		CHECK (!mentions (pages, "either way") &&
+		       mentions (pages, "from anywhere, asked for or not"),
+		       "Windows ICMP rows claim no more than the allow rules "
+		       "they are");
 		CHECK (mentions (pages, "Windows treats as public"),
 		       "Windows protection rows describe the profile scoping");
 	}
@@ -1008,9 +1076,327 @@ drive_no_change (GtkWidget *win)
 	click (win, "prefs-save");
 }
 
+static const gchar *
+footer (GtkWidget *win)
+{
+	GtkWidget *status = find_named (win, "prefs-status");
+
+	return status != NULL ? gtk_label_get_text (GTK_LABEL (status)) : "";
+}
+
+/* Sharing stored on with only the Internet device: the switch must
+ * stay movable both ways, and turning it off must be saved. */
+static void
+drive_nat_off_one_device (GtkWidget *win)
+{
+	CHECK (sensitive (win, FS_PREFS_FW_NAT) &&
+	       reason_shown (win, FS_PREFS_FW_NAT),
+	       "sharing stored on with one device: the switch can be moved, "
+	       "and says it needs both devices");
+	set_switch (win, FS_PREFS_FW_NAT, FALSE);
+	CHECK (sensitive (win, FS_PREFS_FW_NAT) &&
+	       g_strcmp0 (footer (win), "1 unsaved change") == 0,
+	       "turned off, it stays movable and is counted (\"%s\")",
+	       footer (win));
+	set_switch (win, FS_PREFS_FW_NAT, TRUE);
+	CHECK (g_strcmp0 (footer (win), "No changes") == 0,
+	       "...and can be turned back on before saving (\"%s\")",
+	       footer (win));
+	set_switch (win, FS_PREFS_FW_NAT, FALSE);
+	click (win, "prefs-save");
+}
+
+/* Both devices and sharing stored.  The local-broadcast block is
+ * turned on while it can act, then the local device is cleared (which
+ * disables that row) and sharing turned off: all three are saved. */
+static void
+drive_clear_int_and_nat_off (GtkWidget *win)
+{
+	CHECK (sensitive (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST),
+	       "with both devices and sharing, the local-broadcast block is "
+	       "live");
+	set_switch (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST, TRUE);
+	set_combo (win, FS_PREFS_FW_INT_IF, "");
+	set_switch (win, FS_PREFS_FW_NAT, FALSE);
+	CHECK (!sensitive (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST) &&
+	       reason_shown (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST) &&
+	       g_strcmp0 (footer (win), "3 unsaved changes") == 0,
+	       "the block is disabled now, with its reason, and its change "
+	       "still counts: three changes (\"%s\")", footer (win));
+	click (win, "prefs-save");
+}
+
+/* What the generator emits with settings s: the Linux rules a
+ * Protection or sharing row stands for. */
+typedef struct
+{
+	gboolean ext_bcast, int_bcast, reserved, sharing;
+} Emitted;
+
+static gboolean
+inbound_has (FsSettings *s, const gchar *needle)
+{
+	FsPolicy *p = fs_policy_new ();
+	gchar *in = fs_script_generate_inbound (p, s);
+	gboolean has = strstr (in, needle) != NULL;
+
+	g_free (in);
+	fs_policy_free (p);
+	return has;
+}
+
+static Emitted
+emitted (const gchar *ext, const gchar *intf, gboolean nat)
+{
+	FsSettings *s = fs_settings_new ();
+	FsPolicy *p = fs_policy_new ();
+	Emitted e;
+	gchar *out, *in;
+
+	s->ext_device = *ext != '\0' ? g_strdup (ext) : NULL;
+	s->int_device = *intf != '\0' ? g_strdup (intf) : NULL;
+	s->block_external_broadcast = FALSE;
+	s->block_internal_broadcast = FALSE;
+	s->block_non_routables = FALSE;
+
+	/* One block at a time, so each line is told apart. */
+	s->nat = nat;
+	s->block_external_broadcast = TRUE;
+	e.ext_bcast = inbound_has (s, "-d 255.255.255.255");
+	s->block_external_broadcast = FALSE;
+	s->block_internal_broadcast = TRUE;
+	e.int_bcast = inbound_has (s, "-d 255.255.255.255");
+	s->block_internal_broadcast = FALSE;
+	s->block_non_routables = TRUE;
+	e.reserved = inbound_has (s, "-s 10.0.0.0/8");
+	s->block_non_routables = FALSE;
+
+	/* Sharing as the switch would make it: on.  Router mode accepts
+	 * what arrives on the local device and what leaves on the
+	 * Internet one; either line means sharing acts. */
+	s->nat = TRUE;
+	in = fs_script_generate_inbound (p, s);
+	out = fs_script_generate_outbound (p, s);
+	{
+		gchar *in_line = g_strdup_printf ("-A INBOUND -i %s -j ACCEPT",
+		                                  intf);
+		gchar *out_line = g_strdup_printf ("-A OUTBOUND -o %s -j ACCEPT",
+		                                   ext);
+
+		e.sharing = (*intf != '\0' && strstr (in, in_line) != NULL) ||
+		            (*ext != '\0' && strstr (out, out_line) != NULL);
+		g_free (in_line);
+		g_free (out_line);
+	}
+	g_free (in);
+	g_free (out);
+
+	fs_policy_free (p);
+	fs_settings_free (s);
+	return e;
+}
+
+/* Every device and sharing combination: a row is live exactly when the
+ * generator emits its rule, and disabled (with its reason) exactly when
+ * it does not. */
+static void
+drive_dependencies (GtkWidget *win)
+{
+	static const gchar *exts[] = { "", "eth1" };
+	static const gchar *ints[] = { "", "eth0" };
+	guint agree = 0, n = 0;
+
+	for (guint e = 0; e < G_N_ELEMENTS (exts); e++)
+	for (guint i = 0; i < G_N_ELEMENTS (ints); i++)
+	for (guint nat = 0; nat < 2; nat++) {
+		Emitted gen = emitted (exts[e], ints[i], nat);
+		gboolean ok;
+
+		set_combo (win, FS_PREFS_FW_EXT_IF, exts[e]);
+		set_combo (win, FS_PREFS_FW_INT_IF, ints[i]);
+		set_switch (win, FS_PREFS_FW_NAT, nat);
+
+		ok = sensitive (win, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST) ==
+		     gen.ext_bcast &&
+		     reason_shown (win, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST) ==
+		     !gen.ext_bcast &&
+		     sensitive (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES) ==
+		     gen.reserved &&
+		     reason_shown (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES) ==
+		     !gen.reserved &&
+		     sensitive (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST) ==
+		     gen.int_bcast &&
+		     reason_shown (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST) ==
+		     !gen.int_bcast &&
+		     reason_shown (win, FS_PREFS_FW_NAT) == !gen.sharing;
+		n++;
+		if (ok)
+			agree++;
+		else
+			g_print ("       ext=%s int=%s nat=%u: generator "
+			         "ext-bcast %d int-bcast %d reserved %d "
+			         "sharing %d; window live %d %d %d, sharing "
+			         "reason %d\n",
+			         exts[e], ints[i], nat, gen.ext_bcast,
+			         gen.int_bcast, gen.reserved, gen.sharing,
+			         sensitive (win,
+			                    FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST),
+			         sensitive (win,
+			                    FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST),
+			         sensitive (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES),
+			         reason_shown (win, FS_PREFS_FW_NAT));
+	}
+	CHECK (agree == n && n == 8,
+	       "every Protection and sharing row is live exactly when the "
+	       "rule generator emits its rule (%u/%u combinations)", agree, n);
+	click (win, "prefs-cancel");
+}
+
+/* One firewall setting flipped and saved. */
+static void
+drive_flip_echo (GtkWidget *win)
+{
+	GtkWidget *w = find_named (win, FS_PREFS_FW_ICMP_ECHO_REQUEST);
+
+	set_switch (win, FS_PREFS_FW_ICMP_ECHO_REQUEST,
+	            w != NULL && !gtk_switch_get_active (GTK_SWITCH (w)));
+	click (win, "prefs-save");
+}
+
+static void
+drive_flip_timestamps (GtkWidget *win)
+{
+	GtkWidget *w = find_named (win, FS_PREFS_FW_ICMP_TIMESTAMPING);
+
+	set_switch (win, FS_PREFS_FW_ICMP_TIMESTAMPING,
+	            w != NULL && !gtk_switch_get_active (GTK_SWITCH (w)));
+	click (win, "prefs-save");
+}
+
+static FsPolicy *
+policy_with_deny (void)
+{
+	FsPolicy *p = fs_policy_new ();
+	FsRule *rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
+
+	rule->target = g_strdup ("192.0.2.66");
+	fs_policy_add (p, rule);
+	fs_rule_free (rule);
+	return p;
+}
+
+static FsPolicy *
+policy_with_allow (void)
+{
+	FsPolicy *p = fs_policy_new ();
+	FsRule *rule = fs_rule_new (FS_RULE_INBOUND_ALLOW_SERVICE);
+
+	rule->service = g_strdup ("HTTP");
+	rule->port = g_strdup ("80");
+	rule->target = g_strdup ("Anyone");
+	fs_policy_add (p, rule);
+	fs_rule_free (rule);
+	return p;
+}
+
+static gchar *
+journal_setting (const gchar *key)
+{
+	GHashTable *recorded = fs_apply_journal_settings ();
+	gchar *value = recorded != NULL
+		? g_strdup (g_hash_table_lookup (recorded, key)) : NULL;
+
+	if (recorded != NULL)
+		g_hash_table_unref (recorded);
+	return value;
+}
+
+static gboolean
+file_mentions (const gchar *path, const gchar *needle)
+{
+	gchar *text = NULL;
+	gboolean found = g_file_get_contents (path, &text, NULL, NULL) &&
+	                 strstr (text, needle) != NULL;
+
+	g_free (text);
+	return found;
+}
+
 #endif
 
 /* ============================================================== main */
+
+/* sRGB to linear light, WCAG's formula, without libm: the 2.4 power
+ * is a square times the square of a fifth root (Newton, from 1.0). */
+static gdouble
+linear (gdouble v)
+{
+	gdouble a, y = 1.0;
+
+	if (v <= 0.03928)
+		return v / 12.92;
+	a = (v + 0.055) / 1.055;
+	for (guint i = 0; i < 60; i++)
+		y -= (y * y * y * y * y - a) / (5 * y * y * y * y);
+	return a * a * y * y;
+}
+
+static gdouble
+luminance (const GdkRGBA *c)
+{
+	return 0.2126 * linear (c->red) + 0.7152 * linear (c->green) +
+	       0.0722 * linear (c->blue);
+}
+
+/* The keyboard focus ring on a switch, as the theme computes it: the
+ * ring is drawn on the slider, so it must be solid, at least 2px, and
+ * stand out from the slider by 3:1 (WCAG non-text contrast).  GTK's
+ * own default is a 1px dash in a faded grey.  The slider is a CSS
+ * node, not a widget, so it is reached through a widget path:
+ * window > switch:focus > slider. */
+static void
+check_switch_focus_ring (void)
+{
+	GtkWidgetPath *path = gtk_widget_path_new ();
+	GtkStyleContext *ctx = gtk_style_context_new ();
+	GdkRGBA *ring = NULL, *slider = NULL;
+	GtkBorderStyle style = GTK_BORDER_STYLE_NONE;
+	gint width = 0;
+	gdouble l1, l2, ratio = 0;
+
+	gtk_widget_path_append_type (path, GTK_TYPE_WINDOW);
+	gtk_widget_path_iter_set_object_name (path, -1, "window");
+	gtk_widget_path_append_type (path, GTK_TYPE_SWITCH);
+	gtk_widget_path_iter_set_object_name (path, -1, "switch");
+	gtk_widget_path_iter_set_state (path, -1, GTK_STATE_FLAG_FOCUSED);
+	gtk_widget_path_append_type (path, GTK_TYPE_WIDGET);
+	gtk_widget_path_iter_set_object_name (path, -1, "slider");
+	gtk_style_context_set_path (ctx, path);
+	gtk_style_context_set_screen (ctx, gdk_screen_get_default ());
+
+	gtk_style_context_get (ctx, gtk_style_context_get_state (ctx),
+	                       "outline-color", &ring,
+	                       "outline-style", &style,
+	                       "outline-width", &width,
+	                       "background-color", &slider, NULL);
+
+	if (ring != NULL && slider != NULL) {
+		l1 = luminance (ring);
+		l2 = luminance (slider);
+		ratio = (MAX (l1, l2) + 0.05) / (MIN (l1, l2) + 0.05);
+	}
+	CHECK (style == GTK_BORDER_STYLE_SOLID && width >= 2 && ratio >= 3.0 &&
+	       ring != NULL && ring->alpha == 1.0,
+	       "a focused switch is ringed solid, %dpx, %.2f:1 against its "
+	       "slider", width, ratio);
+
+	if (ring != NULL)
+		gdk_rgba_free (ring);
+	if (slider != NULL)
+		gdk_rgba_free (slider);
+	g_object_unref (ctx);
+	gtk_widget_path_unref (path);
+}
 
 static void
 check_about_and_theme (void)
@@ -1058,6 +1444,8 @@ check_about_and_theme (void)
 		gdk_screen_get_default (), GTK_STYLE_PROVIDER (provider),
 		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 	g_object_unref (provider);
+
+	check_switch_focus_ring ();
 }
 
 int
@@ -1097,7 +1485,7 @@ main (int argc, char **argv)
 		static Scenario linux_run = { "linux", drive_linux, ANSWER_LATER,
 		                              FALSE, FALSE, FALSE, NULL };
 		static Scenario windows_run = { "windows", drive_windows,
-		                                ANSWER_APPLY_NOW,
+		                                ANSWER_NONE,
 		                                FALSE, FALSE, FALSE, NULL };
 		static Scenario cancel_run = { "cancel", drive_cancel,
 		                               ANSWER_NONE,
@@ -1105,7 +1493,68 @@ main (int argc, char **argv)
 		static Scenario same_run = { "no-change", drive_no_change,
 		                             ANSWER_NONE,
 		                             FALSE, FALSE, FALSE, NULL };
+		static Scenario nat_off_run = { "nat-off-one-device",
+		                                drive_nat_off_one_device,
+		                                ANSWER_NONE,
+		                                FALSE, FALSE, FALSE, NULL };
+		static Scenario clear_int_run = { "clear-local-device-and-nat",
+		                                  drive_clear_int_and_nat_off,
+		                                  ANSWER_NONE,
+		                                  FALSE, FALSE, FALSE, NULL };
+		static Scenario deps_run = { "dependencies", drive_dependencies,
+		                             ANSWER_NONE,
+		                             FALSE, FALSE, FALSE, NULL };
+		static Scenario live_run = { "apply-under-live-policy",
+		                             drive_flip_echo, ANSWER_APPLY_NOW,
+		                             FALSE, FALSE, FALSE, NULL };
+		static Scenario later_run = { "later-then-policy-apply",
+		                              drive_flip_timestamps, ANSWER_LATER,
+		                              FALSE, FALSE, FALSE, NULL };
+		static Scenario fresh_run = { "windows-off-no-journal",
+		                              drive_flip_echo, ANSWER_APPLY_NOW,
+		                              FALSE, FALSE, FALSE, NULL };
 		gchar *keys, *value = NULL;
+		gchar *journal = g_build_filename (dir, "applied.csv", NULL);
+		gchar *audit = g_build_filename (dir, "audit.log", NULL);
+		FsPolicy *loaded, *live;
+		FsSettings *loaded_settings;
+		FsApplyOutcome *outcome;
+		guint calls;
+
+		/* The apply gate's journal and audit log, in the scratch
+		 * directory too. */
+		g_setenv ("STOCKFW_APPLIED_FILE", journal, TRUE);
+		g_setenv ("STOCKFW_AUDIT_FILE", audit, TRUE);
+
+		/* ---- Windows, before any policy is loaded ---- */
+		fake_as_windows ();
+		fake_state = FS_FW_RUNNING;
+		seed ("[firewall]\ndeny_packets=false\n"
+		      "restrictive_outbound=true\next_if=eth1\n");
+		run_scenario (&windows_run);
+		keys = disk_table_keys ();
+		CHECK (g_strcmp0 (keys,
+		                  "firewall/ext_if=eth1;"
+		                  "firewall/icmp/enable=false;"
+		                  "firewall/deny_packets=false;"
+		                  "firewall/restrictive_outbound=true;") == 0,
+		       "D8: on Windows only the ICMP switch was written; the "
+		       "settings Windows does not offer kept their values (%s)",
+		       keys);
+		g_free (keys);
+		CHECK (windows_run.reported && windows_run.report_text != NULL &&
+		       strstr (windows_run.report_text, "no policy loaded") != NULL,
+		       "with no policy loaded the window says so instead of "
+		       "asking to apply");
+		CHECK (fake_apply_calls == 0,
+		       "an empty policy is never applied in place of the real "
+		       "one");
+
+		/* From here on the app has a loaded policy, as it does once
+		 * the main window is built: one inbound allow. */
+		loaded = policy_with_allow ();
+		loaded_settings = fs_settings_new ();
+		fs_app_test_set_context (loaded, loaded_settings);
 
 		/* ---- Linux ---- */
 		fake_as_linux ();
@@ -1125,6 +1574,14 @@ main (int argc, char **argv)
 		       "D3: Save did not turn \"apply immediately\" on");
 		CHECK (fake_apply_calls == 0,
 		       "\"Later\" left the firewall alone");
+		CHECK (last_question != NULL &&
+		       strstr (last_question, "No applied policy is on record")
+		       != NULL &&
+		       strstr (last_question, "+1 added") != NULL &&
+		       strstr (last_question, "or the firewall is started") != NULL,
+		       "with nothing applied yet, the question says the policy "
+		       "goes out too and what it changes; Linux's Start brings "
+		       "the settings in");
 
 		/* ---- Cancel writes nothing ---- */
 		keys = disk_table_keys ();
@@ -1149,29 +1606,140 @@ main (int argc, char **argv)
 		}
 		g_free (keys);
 
-		/* ---- Windows ---- */
-		fake_as_windows ();
-		fake_state = FS_FW_RUNNING;
-		seed ("[firewall]\ndeny_packets=false\n"
-		      "restrictive_outbound=true\next_if=eth1\n");
-		run_scenario (&windows_run);
+		/* ---- Sharing turned off with a device missing ---- */
+		fake_state = FS_FW_STOPPED;
+		seed ("[firewall]\next_if=eth1\nnat=true\n");
+		run_scenario (&nat_off_run);
+		CHECK (disk_has (FS_PREFS_FW_NAT, &value) &&
+		       g_strcmp0 (value, "false") == 0,
+		       "sharing turned off with only the Internet device is "
+		       "saved (nat=%s)", value != NULL ? value : "(unset)");
+		g_clear_pointer (&value, g_free);
+		CHECK (!nat_off_run.asked && fake_apply_calls == 0,
+		       "Linux with the firewall off: nothing asked, nothing "
+		       "applied (Start applies the saved settings)");
+
+		seed ("[firewall]\next_if=eth1\nint_if=eth0\nnat=true\n");
+		run_scenario (&clear_int_run);
 		keys = disk_table_keys ();
-		CHECK (g_strcmp0 (keys,
-		                  "firewall/ext_if=eth1;"
-		                  "firewall/icmp/enable=false;"
-		                  "firewall/deny_packets=false;"
-		                  "firewall/restrictive_outbound=true;") == 0,
-		       "D8: on Windows only the ICMP switch was written; the "
-		       "settings Windows does not offer kept their values (%s)",
-		       keys);
+		CHECK (g_strcmp0 (keys, "firewall/ext_if=eth1;firewall/int_if=;"
+		                        "firewall/nat=false;"
+		                        "firewall/block_internal_broadcast=true;")
+		       == 0,
+		       "the change to a row disabled before Save is saved with "
+		       "the rest, as the footer counted (%s)", keys);
 		g_free (keys);
-		CHECK (windows_run.reported && windows_run.report_text != NULL &&
-		       strstr (windows_run.report_text, "no policy loaded") != NULL,
-		       "\"Apply now\" with no policy loaded says so instead of "
-		       "applying");
-		CHECK (fake_apply_calls == 0,
-		       "an empty policy is never applied in place of the real "
-		       "one");
+
+		/* ---- The window's dependencies are the generator's ---- */
+		seed ("");
+		run_scenario (&deps_run);
+
+		/* ---- Apply now: under the policy that is live ----
+		 * The journal says one outbound block is live; the loaded
+		 * policy (the Policy page's) has it removed and an allow
+		 * added, never applied.  Applying a settings change must
+		 * push the live policy, not those edits. */
+		fake_as_linux ();
+		fake_state = FS_FW_RUNNING;
+		seed ("");
+		live = policy_with_deny ();
+		CHECK (fs_apply_journal_save (live, NULL) &&
+		       !fs_apply_settings_pending (),
+		       "the live policy is on record with the saved settings");
+		calls = fake_apply_calls;
+		run_scenario (&live_run);
+		CHECK (fake_apply_calls == calls + 1 && fake_last_has_deny &&
+		       fake_last_rows == 1,
+		       "\"Apply now\" reached the apply gate once, with the "
+		       "live policy (the block kept, the unapplied allow left "
+		       "out: %u row(s))", fake_last_rows);
+		CHECK (last_question != NULL &&
+		       strstr (last_question, "stay pending") != NULL &&
+		       strstr (last_question, "-1 removed (0 allow, 1 block)")
+		       != NULL,
+		       "the question says the Policy page's unapplied changes "
+		       "stay pending, and what they are");
+		CHECK (live_run.reported && live_run.report_text != NULL &&
+		       strstr (live_run.report_text, "new settings") != NULL &&
+		       strstr (live_run.report_text, "left out") != NULL,
+		       "the report says the settings are live and the policy "
+		       "changes were left out");
+		{
+			FsPolicy *after = fs_policy_new ();
+			gchar *echo = journal_setting (FS_PREFS_FW_ICMP_ECHO_REQUEST);
+
+			CHECK (fs_apply_journal_load (after, NULL) &&
+			       after->kinds[FS_RULE_OUTBOUND_DENY_TO]->len == 1 &&
+			       after->kinds[FS_RULE_INBOUND_ALLOW_SERVICE]->len == 0 &&
+			       g_strcmp0 (echo, "false") == 0 &&
+			       !fs_apply_settings_pending (),
+			       "the journal still holds the live policy and now "
+			       "records the new settings (echo_request=%s)",
+			       echo != NULL ? echo : "(none)");
+			g_free (echo);
+			fs_policy_free (after);
+		}
+		CHECK (file_mentions (audit, "| firewall settings applied |"),
+		       "the apply is audited as a settings apply");
+
+		/* ---- Later, then the next policy apply brings them in ----
+		 * Even with the policy unchanged, which the gate otherwise
+		 * calls "no change" and leaves alone. */
+		run_scenario (&later_run);
+		CHECK (fs_apply_settings_pending (),
+		       "after \"Later\" the saved settings are pending");
+		calls = fake_apply_calls;
+		outcome = fs_policy_apply_safe (fs_backend (), live, "smoke",
+		                                NULL, NULL);
+		CHECK (outcome != NULL && outcome->applied && outcome->settings &&
+		       !outcome->narrow && fake_apply_calls == calls + 1 &&
+		       !fs_apply_settings_pending (),
+		       "the next apply of the unchanged policy is a whole one "
+		       "and brings the pending settings in");
+		fs_apply_outcome_free (outcome);
+		calls = fake_apply_calls;
+		outcome = fs_policy_apply_safe (fs_backend (), live, "smoke",
+		                                NULL, NULL);
+		CHECK (outcome != NULL && outcome->narrow && !outcome->settings &&
+		       fake_apply_calls == calls,
+		       "...and the one after it is \"no change\" again");
+		fs_apply_outcome_free (outcome);
+
+		/* ---- Windows, firewall off, nothing on record ----
+		 * Start only turns the profiles on there, so a change is
+		 * offered even with the firewall off; with no journal it can
+		 * only go out with the loaded policy, and the question says
+		 * so. */
+		fake_as_windows ();
+		fake_state = FS_FW_STOPPED;
+		g_remove (journal);
+		calls = fake_apply_calls;
+		run_scenario (&fresh_run);
+		CHECK (last_question != NULL &&
+		       strstr (last_question, "The firewall is off") != NULL &&
+		       strstr (last_question, "No applied policy is on record")
+		       != NULL &&
+		       strstr (last_question, "or the firewall is started") == NULL,
+		       "Windows, firewall off: asked anyway, the policy named, "
+		       "and no promise that Start applies the settings");
+		CHECK (fake_apply_calls == calls + 1 && !fake_last_has_deny &&
+		       fake_last_rows == 1 && fresh_run.report_text != NULL &&
+		       strstr (fresh_run.report_text,
+		               "Your policy was applied with them") != NULL,
+		       "with nothing on record, the loaded policy went out with "
+		       "the settings, as the question said");
+		CHECK (fresh_run.report_text != NULL &&
+		       strstr (fresh_run.report_text, "still off") != NULL &&
+		       strstr (fresh_run.report_text, "now uses") == NULL,
+		       "firewall off: the report says the settings wait for it "
+		       "to be turned on, not that it uses them now");
+
+		fs_app_test_set_context (NULL, NULL);
+		fs_policy_free (loaded);
+		fs_policy_free (live);
+		fs_settings_free (loaded_settings);
+		g_free (journal);
+		g_free (audit);
 		(void) value;
 		CHECK (fake_list_calls > 0, "Linux asked for its devices");
 	}

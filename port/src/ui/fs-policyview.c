@@ -572,7 +572,22 @@ apply_policy_now (gboolean announce)
 				: g_strdup ("");
 
 			if (outcome->impact->added == 0 &&
-			    outcome->impact->removed == 0) {
+			    outcome->impact->removed == 0 &&
+			    outcome->settings) {
+				/* Settings saved in Preferences and not yet
+				 * applied went out with this apply. */
+				gchar *msg = g_strdup_printf (
+					_("The policy already matched what is "
+					  "live, and the firewall settings saved "
+					  "in Preferences are now applied with "
+					  "it.%s"), notes);
+
+				fs_dialogs_info (NULL,
+				                 _("Firewall settings applied"),
+				                 msg);
+				g_free (msg);
+			} else if (outcome->impact->added == 0 &&
+			           outcome->impact->removed == 0) {
 				gchar *msg = g_strdup_printf (
 					_("The policy already matches what is "
 					  "live on the firewall.%s"), notes);

@@ -28,6 +28,9 @@ the tests never touches a real `/etc/stockfw`.
 | scripts | inbound/outbound rules, NAT, permissive vs restrictive defaults |
 | settings table | one key, type and default per setting; every reader falls back to the table; a broken file kept as `.bad`; Preferences writes only what changed |
 | settings gate | a settings change is applied whole, through the gate, and rolled back under the previous settings |
+| settings pending | each apply records the settings it went out with; settings saved later ("Later") make the next policy apply whole, even for an unchanged policy, never a delta |
+| sharing | router mode (forwarding, masquerade, the accepts for both devices, the local-broadcast block) only with both devices chosen |
+| start on open | the app starts the firewall only after the policy is loaded and Sentinel's expired blocks are out of it (read from `fs-app.c`) |
 
 ## Event source (`tests/test-logstart.sh`)
 
@@ -128,8 +131,27 @@ What it pins down, each seen failing when the old bug is put back:
   table, in the window and in every reader.  `test-core.sh` scans
   `src/` for any `fs_prefs_get_bool/_string` of a table key with its
   own literal fallback, so a reader cannot drift from the table again.
-- D8: Save writes only values that changed, and only for rows that can
-  act; a setting the platform does not offer keeps its stored value.
+- D8: Save writes only values that changed, and only for rows the
+  window offers; a setting the platform does not offer keeps its stored
+  value.  A row disabled right now still saves a change made to it:
+  connection sharing turned off with a device missing is saved, so is
+  a block switched on before its device was cleared, and the footer
+  counts exactly what Save writes.
+- Every Protection and sharing row is live exactly when the rule
+  generator emits its rule, for every device and sharing combination.
+- "Apply now" reaches the apply gate with the policy that is live (the
+  journal's): Policy-page edits that were never applied stay out, and
+  the question says so.  With nothing on record the question names the
+  policy that goes out with the settings.  On Windows it is asked with
+  the firewall off too (Start does not re-apply rules there), and the
+  report then says the firewall is still off; on Linux it is not asked
+  (Start applies the whole policy).
+- After "Later", the next apply of an unchanged policy is a whole one
+  and brings the settings in.
+- Screen readers get each row's line, and the reason first while a row
+  cannot act.
+- A switch with keyboard focus is ringed solid, at least 2px, at 3:1 or
+  more against its slider, as the theme computes it.
 
 The settings apply itself (`fs_settings_apply_safe`) is covered in
 `test-core.sh`: an unchanged policy is applied whole under the new

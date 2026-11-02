@@ -15,32 +15,52 @@
 #include <string.h>
 
 /* [ settings_fill ]
- * Every field from one reader: the table default (defaults_only) or the
- * stored value with the table default behind it.  One function for
- * both, so a fresh FsSettings and an unset key can never mean two
- * different things -- the defaults themselves live in fs-prefs.c. */
-static gboolean
-settings_bool (const gchar *key, gboolean defaults_only)
+ * Every field from one reader: the table default (defaults_only), a
+ * recorded set of values (the apply journal's), or the stored value --
+ * each with the table default behind it.  One function for all three,
+ * so a fresh FsSettings, an unset key and a key a record lacks can
+ * never mean different things -- the defaults live in fs-prefs.c. */
+typedef struct
 {
-	if (defaults_only) {
-		const FsPrefSpec *spec = fs_prefs_spec (key);
+	gboolean    defaults_only;
+	GHashTable *values;          /* key -> text, or NULL: the prefs */
+} SettingsSource;
 
-		g_return_val_if_fail (spec != NULL, FALSE);
+static gboolean
+settings_bool (const gchar *key, const SettingsSource *src)
+{
+	const FsPrefSpec *spec = fs_prefs_spec (key);
+
+	g_return_val_if_fail (spec != NULL, FALSE);
+
+	if (src->defaults_only)
 		return spec->bool_default;
+
+	if (src->values != NULL) {
+		const gchar *text = g_hash_table_lookup (src->values, key);
+
+		if (text == NULL)
+			return spec->bool_default;
+		return g_ascii_strcasecmp (text, "true") == 0 ||
+		       g_strcmp0 (text, "1") == 0;
 	}
 
 	return fs_prefs_bool (key);
 }
 
 static gchar *
-settings_device (const gchar *key, gboolean defaults_only)
+settings_device (const gchar *key, const SettingsSource *src)
 {
+	const FsPrefSpec *spec = fs_prefs_spec (key);
 	gchar *text;
 
-	if (defaults_only) {
-		const FsPrefSpec *spec = fs_prefs_spec (key);
-
+	if (src->defaults_only) {
 		text = g_strdup (spec != NULL ? spec->string_default : NULL);
+	} else if (src->values != NULL) {
+		const gchar *recorded = g_hash_table_lookup (src->values, key);
+
+		text = g_strdup (recorded != NULL ? recorded
+		                 : spec != NULL ? spec->string_default : NULL);
 	} else {
 		text = fs_prefs_string (key);
 	}
@@ -55,45 +75,45 @@ settings_device (const gchar *key, gboolean defaults_only)
 }
 
 static void
-settings_fill (FsSettings *settings, gboolean defaults_only)
+settings_fill (FsSettings *settings, const SettingsSource *src)
 {
 	g_free (settings->ext_device);
 	g_free (settings->int_device);
-	settings->ext_device = settings_device (FS_PREFS_FW_EXT_IF, defaults_only);
-	settings->int_device = settings_device (FS_PREFS_FW_INT_IF, defaults_only);
+	settings->ext_device = settings_device (FS_PREFS_FW_EXT_IF, src);
+	settings->int_device = settings_device (FS_PREFS_FW_INT_IF, src);
 
-	settings->nat          = settings_bool (FS_PREFS_FW_NAT, defaults_only);
-	settings->filter_icmp  = settings_bool (FS_PREFS_FW_FILTER_ICMP, defaults_only);
-	settings->deny_packets = settings_bool (FS_PREFS_FW_DENY_PACKETS, defaults_only);
+	settings->nat          = settings_bool (FS_PREFS_FW_NAT, src);
+	settings->filter_icmp  = settings_bool (FS_PREFS_FW_FILTER_ICMP, src);
+	settings->deny_packets = settings_bool (FS_PREFS_FW_DENY_PACKETS, src);
 	settings->block_external_broadcast =
-		settings_bool (FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST, defaults_only);
+		settings_bool (FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST, src);
 	settings->block_internal_broadcast =
-		settings_bool (FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST, defaults_only);
+		settings_bool (FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST, src);
 	settings->block_non_routables =
-		settings_bool (FS_PREFS_FW_BLOCK_NON_ROUTABLES, defaults_only);
+		settings_bool (FS_PREFS_FW_BLOCK_NON_ROUTABLES, src);
 	settings->restrictive_outbound =
-		settings_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND, defaults_only);
+		settings_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND, src);
 	settings->log_allowed =
-		settings_bool (FS_PREFS_FW_LOG_ALLOWED, defaults_only);
+		settings_bool (FS_PREFS_FW_LOG_ALLOWED, src);
 
 	settings->icmp_echo_request =
-		settings_bool (FS_PREFS_FW_ICMP_ECHO_REQUEST, defaults_only);
+		settings_bool (FS_PREFS_FW_ICMP_ECHO_REQUEST, src);
 	settings->icmp_echo_reply =
-		settings_bool (FS_PREFS_FW_ICMP_ECHO_REPLY, defaults_only);
+		settings_bool (FS_PREFS_FW_ICMP_ECHO_REPLY, src);
 	settings->icmp_traceroute =
-		settings_bool (FS_PREFS_FW_ICMP_TRACEROUTE, defaults_only);
+		settings_bool (FS_PREFS_FW_ICMP_TRACEROUTE, src);
 	settings->icmp_mstraceroute =
-		settings_bool (FS_PREFS_FW_ICMP_MSTRACEROUTE, defaults_only);
+		settings_bool (FS_PREFS_FW_ICMP_MSTRACEROUTE, src);
 	settings->icmp_unreachable =
-		settings_bool (FS_PREFS_FW_ICMP_UNREACHABLE, defaults_only);
+		settings_bool (FS_PREFS_FW_ICMP_UNREACHABLE, src);
 	settings->icmp_timestamping =
-		settings_bool (FS_PREFS_FW_ICMP_TIMESTAMPING, defaults_only);
+		settings_bool (FS_PREFS_FW_ICMP_TIMESTAMPING, src);
 	settings->icmp_masking =
-		settings_bool (FS_PREFS_FW_ICMP_MASKING, defaults_only);
+		settings_bool (FS_PREFS_FW_ICMP_MASKING, src);
 	settings->icmp_redirection =
-		settings_bool (FS_PREFS_FW_ICMP_REDIRECTION, defaults_only);
+		settings_bool (FS_PREFS_FW_ICMP_REDIRECTION, src);
 	settings->icmp_source_quenches =
-		settings_bool (FS_PREFS_FW_ICMP_SOURCE_QUENCHES, defaults_only);
+		settings_bool (FS_PREFS_FW_ICMP_SOURCE_QUENCHES, src);
 }
 
 /* [ fs_settings_new ]
@@ -103,8 +123,9 @@ FsSettings *
 fs_settings_new (void)
 {
 	FsSettings *settings = g_new0 (FsSettings, 1);
+	const SettingsSource src = { TRUE, NULL };
 
-	settings_fill (settings, TRUE);
+	settings_fill (settings, &src);
 
 	return settings;
 }
@@ -115,10 +136,40 @@ fs_settings_new (void)
 void
 fs_settings_load_prefs (FsSettings *settings)
 {
+	const SettingsSource src = { FALSE, NULL };
+
 	if (settings == NULL)
 		return;
 
-	settings_fill (settings, FALSE);
+	settings_fill (settings, &src);
+}
+
+/* [ fs_settings_load_values ]
+ * The settings a record describes (fs_apply_journal_settings): what
+ * was on the firewall, for putting it back. */
+void
+fs_settings_load_values (FsSettings *settings, GHashTable *values)
+{
+	const SettingsSource src = { FALSE, values };
+
+	if (settings == NULL || values == NULL)
+		return;
+
+	settings_fill (settings, &src);
+}
+
+/* [ fs_settings_sharing ]
+ * Connection sharing joins two devices, so it acts only when both are
+ * chosen.  With either missing, nothing of router mode is emitted --
+ * no forwarding, no masquerade, no accept for the Internet device that
+ * would let this computer's own traffic past restrictive outbound --
+ * which is what the Preferences window tells the user. */
+gboolean
+fs_settings_sharing (const FsSettings *settings)
+{
+	return settings != NULL && settings->nat &&
+	       fs_util_is_valid_ifname (settings->ext_device) &&
+	       fs_util_is_valid_ifname (settings->int_device);
 }
 
 FsSettings *
@@ -817,7 +868,7 @@ generate_inbound (Gen *g, const FsPolicy *policy)
 		"# Trust loopback\n"
 		"$IPT -A INBOUND -i lo -j ACCEPT\n\n");
 
-	if (settings->nat && intf != NULL) {
+	if (settings->nat && ext != NULL && intf != NULL) {
 		g_string_append (out,
 			"# Accept traffic arriving on the internal interface\n");
 		g_string_append_printf (out,
@@ -894,7 +945,7 @@ generate_inbound (Gen *g, const FsPolicy *policy)
 			"$IPT -A INBOUND -i %s -d 255.255.255.255 -j DROP\n", ext);
 
 	if (settings->block_internal_broadcast && settings->nat &&
-	    intf != NULL && !GEN_V6 (g))
+	    ext != NULL && intf != NULL && !GEN_V6 (g))
 		g_string_append_printf (out,
 			"# Block broadcasts arriving on the local network\n"
 			"$IPT -A INBOUND -i %s -d 255.255.255.255 -j DROP\n", intf);
@@ -948,6 +999,7 @@ generate_outbound (Gen *g, const FsPolicy *policy)
 {
 	const FsSettings *settings = g->settings;
 	const gchar *ext = gen_ifname (g, settings->ext_device, _("external"));
+	const gchar *intf = gen_ifname (g, settings->int_device, _("internal"));
 	GString *out;
 
 	out = script_preamble ("OUTBOUND");
@@ -1006,8 +1058,11 @@ generate_outbound (Gen *g, const FsPolicy *policy)
 
 	/* Router mode lets what leaves on the external interface go --
 	 * after the blocks, which it used to come before, so in router
-	 * mode no "deny" row reached the traffic it named. */
-	if (settings->nat && ext != NULL)
+	 * mode no "deny" row reached the traffic it named.  Router mode
+	 * needs both devices (fs_settings_sharing): with one of them
+	 * missing nothing is shared, and this accept would only let this
+	 * computer's own traffic past restrictive mode. */
+	if (settings->nat && ext != NULL && intf != NULL)
 		g_string_append_printf (out,
 			"$IPT -A OUTBOUND -o %s -j ACCEPT\n", ext);
 
@@ -1044,6 +1099,7 @@ generate_nat (Gen *g, const FsPolicy *policy)
 {
 	const FsSettings *settings = g->settings;
 	const gchar *ext = gen_ifname (g, settings->ext_device, _("external"));
+	const gchar *intf = gen_ifname (g, settings->int_device, _("internal"));
 	GString *out = g_string_new (NULL);
 
 	for (guint i = 0; i < policy->kinds[FS_RULE_INBOUND_FORWARD]->len; i++) {
@@ -1076,7 +1132,7 @@ generate_nat (Gen *g, const FsPolicy *policy)
 		g_free (to);
 	}
 
-	if (settings->nat && ext != NULL && !GEN_V6 (g))
+	if (settings->nat && ext != NULL && intf != NULL && !GEN_V6 (g))
 		g_string_append_printf (out,
 			"# Router mode: masquerade what leaves on %s\n"
 			"$IPT -t nat -A " FS_SCRIPT_SNAT_CHAIN " -o %s -j MASQUERADE\n",
@@ -1445,22 +1501,16 @@ fs_script_generate_control (const FsSettings *settings)
 			"$IPT -A OUTPUT -m conntrack --ctstate INVALID -j DROP\n\n");
 	}
 
-	if (settings != NULL && settings->nat) {
+	if (fs_settings_sharing (settings)) {
 		g_string_append (out,
 			"# Enable forwarding and masquerading\n"
 			"sysctl -w net.ipv4.ip_forward=1 > /dev/null\n");
-
-		if (settings->ext_device != NULL) {
-			g_string_append_printf (out,
-				"$IPT -t nat -A POSTROUTING -o %s -j MASQUERADE\n",
-				settings->ext_device);
-			g_string_append_printf (out,
-				"$IPT -A FORWARD -i %s -o %s -j ACCEPT\n",
-				settings->int_device ? settings->int_device : "eth0",
-				settings->ext_device);
-		}
-
-		g_string_append_c (out, '\n');
+		g_string_append_printf (out,
+			"$IPT -t nat -A POSTROUTING -o %s -j MASQUERADE\n",
+			settings->ext_device);
+		g_string_append_printf (out,
+			"$IPT -A FORWARD -i %s -o %s -j ACCEPT\n\n",
+			settings->int_device, settings->ext_device);
 	}
 
 	g_string_append (out,

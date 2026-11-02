@@ -28,7 +28,7 @@
  *               Linux, to the network profiles on Windows)
  *
  * The window edits a copy (FsPrefsEdit, core/fs-prefs.h).  Save writes
- * only the values the user changed whose control can act, then reloads
+ * only the values the user changed whose control it offers, then reloads
  * the settings; when a firewall setting changed and the firewall is
  * running it offers to apply them now, through the apply gate
  * (fs_settings_apply_safe), and reports what the gate did.
@@ -77,9 +77,13 @@ struct _Row
 	GtkWidget   *box;       /* the .pref-row                        */
 	GtkWidget   *control;   /* GtkSwitch or GtkComboBoxText         */
 	GtkWidget   *reason;    /* why it is disabled, shown when it is */
+	const gchar *about;     /* the line on what it does, or NULL    */
 	const gchar *true_id;   /* ROW_CHOICE: the id meaning TRUE      */
 	Row         *master;    /* a switch this row needs on, or NULL  */
-	gboolean     blocked;   /* cannot act now: never written        */
+	gboolean     blocked;   /* cannot act now: disabled, reason
+	                         * shown.  A change made before it was
+	                         * blocked is still saved: the switch
+	                         * shows it, so Save must not drop it. */
 };
 
 struct _PrefsWin
@@ -157,6 +161,30 @@ edit_has_string (PrefsWin *win, const gchar *key)
 
 /* ------------------------------------------------------------ refresh */
 
+/* [ row_describe ]
+ * What a screen reader says after the setting's name: the line on what
+ * it does, and first, while it shows, the reason it cannot act -- a
+ * disabled control is otherwise just "unavailable", with no why. */
+static void
+row_describe (Row *row)
+{
+	AtkObject *atk = gtk_widget_get_accessible (row->control);
+	gboolean why = row->reason != NULL &&
+	               gtk_widget_get_visible (row->reason);
+	gchar *text;
+
+	if (atk == NULL)
+		return;
+
+	text = g_strjoin (" ",
+	                  why ? gtk_label_get_text (GTK_LABEL (row->reason))
+	                      : "",
+	                  row->about != NULL ? row->about : "", NULL);
+	g_strstrip (text);
+	atk_object_set_description (atk, text);
+	g_free (text);
+}
+
 static void
 set_blocked (Row *row, gboolean blocked)
 {
@@ -178,7 +206,10 @@ refresh (PrefsWin *win)
 	guint changed;
 
 	/* Linux scopes the Protection blocks and connection sharing to the
-	 * chosen devices; the generator leaves them out without one. */
+	 * chosen devices; the generator leaves them out without one.  The
+	 * conditions are the generator's own (fs-script.c, and
+	 * fs_settings_sharing for router mode); the fake smoke checks the
+	 * two against each other. */
 	if (win->sections & FS_FWSEC_NETWORK) {
 		gboolean ext = edit_has_string (win, FS_PREFS_FW_EXT_IF);
 		gboolean intf = edit_has_string (win, FS_PREFS_FW_INT_IF);
@@ -192,12 +223,13 @@ refresh (PrefsWin *win)
 		set_blocked (row_for_key (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST),
 		             !(nat && ext && intf));
 
-		/* Sharing needs both devices to be turned on -- but a switch
-		 * that is already on stays movable, so it can be turned off. */
+		/* Sharing needs both devices to be turned on.  A switch that
+		 * is stored on stays movable whatever the devices are, so it
+		 * can always be turned off -- and back on before saving. */
 		if (nat_row != NULL) {
 			set_blocked (nat_row, !(ext && intf) &&
-			             !fs_prefs_edit_get_bool (win->edit,
-			                                      FS_PREFS_FW_NAT));
+			             !fs_prefs_edit_orig_bool (win->edit,
+			                                       FS_PREFS_FW_NAT));
 			if (nat_row->reason != NULL)
 				gtk_widget_set_visible (nat_row->reason,
 				                        !(ext && intf));
@@ -212,6 +244,7 @@ refresh (PrefsWin *win)
 			on = on && edit_bool (win, row->master->key);
 
 		gtk_widget_set_sensitive (row->control, on);
+		row_describe (row);
 	}
 
 	if (win->outbound_warning != NULL)
@@ -219,7 +252,8 @@ refresh (PrefsWin *win)
 		                        edit_bool (win,
 		                                   FS_PREFS_FW_RESTRICTIVE_OUTBOUND));
 
-	changed = fs_prefs_edit_n_changed (win->edit);
+	/* What Save will write, exactly: changed keys this window offers. */
+	changed = fs_prefs_edit_n_pending (win->edit);
 	if (changed == 0) {
 		gtk_label_set_text (GTK_LABEL (win->status), _("No changes"));
 	} else {
@@ -292,6 +326,12 @@ row_new (PrefsWin *win, GtkWidget *card, const gchar *key, RowKind kind,
 	row->key = key;
 	row->kind = kind;
 	row->control = control;
+	row->about = about;
+
+	/* A setting is written only when this window offers its control:
+	 * one the platform does not act on has no row, so it is never
+	 * written, whatever the copy holds (D8). */
+	fs_prefs_edit_set_writable (win->edit, key, TRUE);
 
 	row->box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);
 	add_class (row->box, "pref-row");
@@ -598,10 +638,13 @@ build_events (PrefsWin *win, GtkWidget *nav)
 		_("Events"), _("What the Events list shows."));
 	GtkWidget *card = card_new (cards, _("Event list"));
 
+	/* fs-hitview.c hit_is_redundant: the hit just before, nothing
+	 * older, and the action is not compared. */
 	add_switch (win, card, FS_PREFS_SKIP_REDUNDANT,
 		_("Hide repeated events"),
-		_("Leaves out a hit when the same source, port and action "
-		  "arrived a moment ago, so a scan does not flood the list."),
+		_("Leaves out a hit that repeats the one just before it (same "
+		  "source, destination, port and protocol), so one program "
+		  "retrying does not fill the list."),
 		NULL);
 	add_switch (win, card, FS_PREFS_SKIP_NOT_FOR_FIREWALL,
 		_("Skip events not addressed to this computer"),
@@ -785,37 +828,51 @@ build_network (PrefsWin *win, GtkWidget *nav)
 static void
 build_icmp (PrefsWin *win, GtkWidget *nav)
 {
+	/* What each switch adds.  On Linux (FS_FWHON_ICMP_EXACT) the
+	 * accepts come before the connection-state accept in INBOUND
+	 * (fs-script.c), so replies and errors that belong to this
+	 * computer's own traffic get in whatever these say: the switches
+	 * only decide about unsolicited ones, and `exact' says so.
+	 * Elsewhere they are plain allow rules (fs-settings-plan.c), and
+	 * `about' says no more than that. */
 	static const struct
 	{
 		const gchar *key;
 		const gchar *title;
 		const gchar *about;
+		const gchar *exact;   /* Linux wording, or NULL: as about */
 	} types[] = {
 		{ FS_PREFS_FW_ICMP_ECHO_REQUEST, N_("Echo request (ping)"),
-		  N_("Lets other computers ping this one.") },
+		  N_("Lets other computers ping this one."), NULL },
 		{ FS_PREFS_FW_ICMP_ECHO_REPLY, N_("Echo reply"),
-		  N_("Lets the answers to your own pings in.") },
+		  N_("Lets in echo replies from anywhere, asked for or not."),
+		  N_("Lets in echo replies this computer did not ask for. "
+		     "Replies to your own pings get through either way.") },
 		{ FS_PREFS_FW_ICMP_UNREACHABLE, N_("Host unreachable"),
-		  N_("Lets failed connections end at once instead of timing "
-		     "out.") },
+		  N_("Lets in \"host unreachable\" reports from anywhere."),
+		  N_("Lets in \"host unreachable\" reports that are not about "
+		     "a connection this computer made. Reports about your own "
+		     "connections get through either way.") },
 		{ FS_PREFS_FW_ICMP_TRACEROUTE, N_("Traceroute"),
 		  N_("Opens UDP port 33434, where Unix-style traceroute "
-		     "probes arrive.") },
+		     "probes arrive."), NULL },
 		{ FS_PREFS_FW_ICMP_MSTRACEROUTE, N_("Windows traceroute"),
-		  N_("Lets in every \"destination unreachable\" message, which "
-		     "tracert relies on.") },
+		  N_("Lets in every \"destination unreachable\" report (the "
+		     "original's \"MS traceroute\" option). Traceroute and "
+		     "tracert do not need it."), NULL },
 		{ FS_PREFS_FW_ICMP_REDIRECTION, N_("Redirection"),
 		  N_("Lets routers send traffic another way. Seldom needed, "
-		     "and open to abuse.") },
+		     "and open to abuse."), NULL },
 		{ FS_PREFS_FW_ICMP_TIMESTAMPING, N_("Timestamping (IPv4 only)"),
 		  N_("Answers time queries. Rarely needed, and it gives away "
-		     "the clock.") },
+		     "the clock."), NULL },
 		{ FS_PREFS_FW_ICMP_MASKING, N_("Address masking (IPv4 only)"),
-		  N_("Answers netmask queries. Obsolete.") },
+		  N_("Answers netmask queries. Obsolete."), NULL },
 		{ FS_PREFS_FW_ICMP_SOURCE_QUENCHES,
 		  N_("Source quenching (IPv4 only)"),
-		  N_("Obsolete congestion messages.") },
+		  N_("Obsolete congestion messages."), NULL },
 	};
+	gboolean exact = (win->honors & FS_FWHON_ICMP_EXACT) != 0;
 	GtkWidget *cards, *card;
 	Row *master;
 
@@ -841,8 +898,8 @@ build_icmp (PrefsWin *win, GtkWidget *nav)
 			  "Windows."));
 	if ((win->honors & FS_FWHON_RATE_LIMIT) == 0)
 		add_note (card,
-			_("Windows Firewall applies these rules without the rate "
-			  "limits the Linux backend puts on its ICMP accepts."));
+			_("Windows Firewall does not rate-limit these messages, so "
+			  "a flood of an allowed type is not slowed down."));
 	if ((win->honors & FS_FWHON_ICMP_EXACT) != 0 &&
 	    fs_backend ()->ipv6_state != NULL)
 		add_note (card,
@@ -853,7 +910,9 @@ build_icmp (PrefsWin *win, GtkWidget *nav)
 	card = card_new (cards, _("Allowed message types"));
 	for (guint i = 0; i < G_N_ELEMENTS (types); i++)
 		add_switch (win, card, types[i].key, _(types[i].title),
-		            _(types[i].about), NULL)->master = master;
+		            exact && types[i].exact != NULL
+		            ? _(types[i].exact) : _(types[i].about),
+		            NULL)->master = master;
 }
 
 static void
@@ -1100,18 +1159,38 @@ report (GtkWidget *parent, gboolean error, const gchar *header,
 
 /* [ offer_apply ]
  * A firewall setting changed: settings reach the firewall only with an
- * apply, so a running firewall is still on the old ones.  Ask, and
- * apply through the gate -- the same holds, rollback and audit line as
- * Apply policy -- reporting exactly what it did. */
+ * apply.  Ask, and apply through the gate -- the same holds, rollback
+ * and audit line as Apply policy -- reporting exactly what it did.
+ *
+ * Asked when the firewall is running, and also when it is off on a
+ * backend whose Start does not re-apply the rules (Windows: Start only
+ * turns the profiles on, so the old settings would come back with
+ * them).  On Linux with the firewall off nothing is asked: Start loads
+ * the whole policy under the saved settings.
+ *
+ * The settings go out under the policy that is live -- the last one
+ * applied, from the journal -- so Policy-page edits nobody has applied
+ * yet (auto-apply is off by default) are not pushed past the Policy
+ * page's own preview.  With no applied policy on record they can only
+ * go out together with the loaded policy, and the question says so,
+ * with what that apply changes. */
 static void
-offer_apply (GtkWidget *parent, const FsSettings *previous)
+offer_apply (GtkWidget *parent, const FsSettings *saved_before)
 {
 	const FsBackend *backend = fs_backend ();
+	FsPolicy *loaded = fs_app_policy ();
+	FsPolicy *live, *under;
+	FsPolicyImpact *pending;
+	FsSettings *previous;
+	GHashTable *recorded;
 	FsFirewallState state;
 	GtkWidget *dialog;
 	FsApplyOutcome *outcome;
 	GError *error = NULL;
+	GString *body;
 	const gchar *hold;
+	gboolean running, start_applies, journal, unapplied;
+	gchar *desc;
 	gint answer;
 
 	if (backend->available == NULL || !backend->available () ||
@@ -1119,9 +1198,59 @@ offer_apply (GtkWidget *parent, const FsSettings *previous)
 		return;
 
 	state = backend->get_state ();
-	if (state != FS_FW_RUNNING && state != FS_FW_HIT &&
-	    state != FS_FW_LOCKED)
-		return;   /* the next start uses the saved settings */
+	running = (state == FS_FW_RUNNING || state == FS_FW_HIT ||
+	           state == FS_FW_LOCKED);
+	start_applies = (backend->fw_honors & FS_FWHON_START_APPLIES) != 0;
+	if (!running && (start_applies || state != FS_FW_STOPPED))
+		return;   /* Start applies the whole policy, saved settings
+		           * included; or the firewall cannot be reached */
+
+	if (loaded == NULL) {
+		report (parent, FALSE, _("Settings saved, not applied"),
+			_("StockFW has no policy loaded to apply them with, so "
+			  "the firewall was left as it was. They take effect the "
+			  "next time the policy is applied."));
+		return;
+	}
+
+	live = fs_policy_new ();
+	journal = fs_apply_journal_load (live, NULL);
+	under = journal ? live : loaded;
+	pending = fs_policy_impact (journal ? live : NULL, loaded);
+	unapplied = pending->added > 0 || pending->removed > 0;
+	desc = fs_policy_impact_describe (pending);
+
+	body = g_string_new (running
+		? _("The firewall is running with the previous settings.")
+		: _("The firewall is off. Turning it on does not apply "
+		    "settings: it brings back the rules as they were last "
+		    "applied."));
+	g_string_append_c (body, ' ');
+	if (journal) {
+		g_string_append (body,
+			_("Apply now puts the new settings in place under the "
+			  "policy that is live, with the same checks as Apply "
+			  "policy."));
+		if (unapplied) {
+			g_string_append (body, "\n\n");
+			g_string_append_printf (body,
+				_("Changes on the Policy page that are not applied "
+				  "yet (%s) are left out and stay pending: apply "
+				  "them on the Policy page."), desc);
+		}
+	} else {
+		g_string_append_printf (body,
+			_("No applied policy is on record, so the settings can "
+			  "only reach the firewall together with your policy. "
+			  "Apply now applies both, with the same checks as "
+			  "Apply policy: %s."), desc);
+	}
+	g_string_append (body, "\n\n");
+	g_string_append (body, start_applies
+		? _("Later keeps the previous settings until the policy is "
+		    "next applied or the firewall is started.")
+		: _("Later keeps the previous settings until the policy is "
+		    "next applied."));
 
 	dialog = gtk_message_dialog_new (parent != NULL ? GTK_WINDOW (parent)
 	                                                : NULL,
@@ -1132,22 +1261,35 @@ offer_apply (GtkWidget *parent, const FsSettings *previous)
 	                                   "now?"));
 	gtk_widget_set_name (dialog, "prefs-apply-question");
 	gtk_message_dialog_format_secondary_text (GTK_MESSAGE_DIALOG (dialog),
-		"%s", _("The firewall is running with the previous settings. "
-		        "Apply now updates it, with the same checks as Apply "
-		        "policy. Later keeps the previous settings until the "
-		        "policy is next applied or the firewall is started."));
+	                                          "%s", body->str);
 	gtk_dialog_add_buttons (GTK_DIALOG (dialog),
 	                        _("_Later"), GTK_RESPONSE_CANCEL,
 	                        _("_Apply now"), GTK_RESPONSE_OK, NULL);
 	gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
 	answer = gtk_dialog_run (GTK_DIALOG (dialog));
 	gtk_widget_destroy (dialog);
+	g_string_free (body, TRUE);
 
-	if (answer != GTK_RESPONSE_OK)
+	if (answer != GTK_RESPONSE_OK) {
+		fs_policy_impact_free (pending);
+		fs_policy_free (live);
+		g_free (desc);
 		return;
+	}
+
+	/* What to roll back to: the settings the journal says went out
+	 * with the live policy, or -- with no record -- the ones saved
+	 * before this change. */
+	recorded = journal ? fs_apply_journal_settings () : NULL;
+	if (recorded != NULL) {
+		previous = fs_settings_new ();
+		fs_settings_load_values (previous, recorded);
+	} else {
+		previous = fs_settings_copy (saved_before);
+	}
 
 	hold = fs_policyview_hold_reason ();
-	outcome = fs_app_apply_settings (previous, hold, &error);
+	outcome = fs_app_apply_settings (under, previous, hold, &error);
 
 	if (outcome == NULL) {
 		report (parent, FALSE, _("Settings saved, not applied"),
@@ -1165,13 +1307,33 @@ offer_apply (GtkWidget *parent, const FsSettings *previous)
 		report (parent, FALSE, _("Settings saved, not applied"), msg);
 		g_free (msg);
 	} else if (outcome->result == FS_APPLY_OK) {
-		gchar *msg = g_strdup_printf ("%s%s%s",
-			_("The firewall now uses the new settings."),
-			outcome->notes != NULL ? _("\n\nPlease note:\n") : "",
-			outcome->notes != NULL ? outcome->notes : "");
+		/* Applying does not turn a stopped firewall on (Windows
+		 * keeps the profiles as they are), so say where it stands. */
+		GString *msg = g_string_new (running
+			? _("The firewall now uses the new settings.")
+			: _("The new settings are in place. The firewall is still "
+			    "off: they take effect when it is turned on."));
 
-		report (parent, FALSE, _("Firewall settings applied"), msg);
-		g_free (msg);
+		if (!journal) {
+			g_string_append (msg, "\n\n");
+			g_string_append_printf (msg,
+				_("Your policy was applied with them: %s."),
+				desc);
+		} else if (unapplied) {
+			g_string_append (msg, "\n\n");
+			g_string_append (msg,
+				_("Changes on the Policy page that are not "
+				  "applied yet were left out: apply them on the "
+				  "Policy page."));
+		}
+		if (outcome->notes != NULL) {
+			g_string_append (msg, _("\n\nPlease note:\n"));
+			g_string_append (msg, outcome->notes);
+		}
+
+		report (parent, FALSE, _("Firewall settings applied"),
+		        msg->str);
+		g_string_free (msg, TRUE);
 	} else {
 		const gchar *why = error != NULL
 			? error->message
@@ -1180,9 +1342,14 @@ offer_apply (GtkWidget *parent, const FsSettings *previous)
 		gchar *msg;
 
 		if (outcome->rollback_attempted && outcome->rollback_verified)
-			rollback = _("The firewall was put back to the last "
-			             "applied policy and settings, and that "
-			             "restore was verified.");
+			rollback = recorded != NULL
+				? _("The firewall was put back to the last "
+				    "applied policy and the settings it ran with, "
+				    "and that restore was verified.")
+				: _("The firewall was put back to the last "
+				    "applied policy, under the settings saved "
+				    "before this change, and that restore was "
+				    "verified.");
 		else if (outcome->rollback_attempted)
 			rollback = _("Putting the previous rules back ALSO failed: "
 			             "the firewall may be in an inconsistent state. "
@@ -1205,24 +1372,26 @@ offer_apply (GtkWidget *parent, const FsSettings *previous)
 
 	fs_apply_outcome_free (outcome);
 	g_clear_error (&error);
+	if (recorded != NULL)
+		g_hash_table_unref (recorded);
+	fs_settings_free (previous);
+	fs_policy_impact_free (pending);
+	fs_policy_free (live);
+	g_free (desc);
 }
 
 /* [ commit ]
- * Marks what may be written -- a row that exists here and is not
- * blocked; a row disabled only because its master switch is off still
- * counts, so turning ICMP filtering off does not lose the type choices
- * made a moment before -- then writes the changed values.  Returns
- * TRUE when a firewall setting was among them. */
+ * Writes the changed values of the rows this window offers (row_new
+ * marked them writable).  A row that is disabled right now still
+ * counts: the ICMP types while filtering is off, a block whose device
+ * was just cleared, the sharing switch turned off with a device
+ * missing.  Its switch shows the change, and the footer counted it, so
+ * dropping it on Save would be a quiet lie.  Returns TRUE when a
+ * firewall setting was among them. */
 static gboolean
 commit (PrefsWin *win, guint *written)
 {
 	gboolean firewall = FALSE;
-
-	for (guint i = 0; i < win->rows->len; i++) {
-		Row *row = g_ptr_array_index (win->rows, i);
-
-		fs_prefs_edit_set_writable (win->edit, row->key, !row->blocked);
-	}
 
 	*written = fs_prefs_edit_commit (win->edit, &firewall);
 	return firewall;
