@@ -764,8 +764,13 @@ What it pins down, each seen failing when its bug is put back (the
 check that failed is in brackets):
 
 - H1: `app.help` and F1 on the main window open Help at the topic for
-  the page shown; so does the sidebar's Help item.  Ctrl+W closes it.
-  (Re-injected: the action not registered; the accelerator on F2.)
+  the page shown; so does the sidebar's Help item.  Every page of the
+  main window maps to its own topic (`fs_help_topic_for_page`), and F1
+  on the Threat Intel page opens `threat-intel`.  Ctrl+W closes it.
+  (Re-injected: the action not registered; the accelerator on F2; the
+  page table without Threat Intel, as it was after the merge of PR
+  #18, which opened Copilot's topic on Threat Intel, Trust's on Copilot
+  and Getting started on Trust.)
 - H2: every topic in `fs-helpcontent.c` renders, with its title and
   every block on screen; every string parses as GtkLabel markup, every
   `help:` link and related topic names a real topic, and there is no em
@@ -773,9 +778,11 @@ check that failed is in brackets):
   link to `help:troubleshoot`.)
 - H3: search filters the topic list ("SSH locked" lists Troubleshooting
   and leaves Activity out), finds subtopics, says when nothing
-  matches, opens the first match on Enter and is cleared by Escape.
+  matches, opens the first match on Enter ("feodo" opens Threat intel)
+  and is cleared by Escape.
   (Re-injected: every topic matching.)
-- H4: links, related-topic chips, Next, the breadcrumb, the sidebar,
+- H4: links, related-topic chips, Next (after Policy comes Threat
+  intel, in the main window's sidebar order), the breadcrumb, the sidebar,
   Back, Forward, Alt+Left and Alt+Right all navigate.  (Re-injected:
   `help:` links not followed; the topic left not put on the Back
   list.)
@@ -819,7 +826,8 @@ check that failed is in brackets):
   a Sentinel block whose ten minutes ran out while StockFW was closed
   is taken off when StockFW starts again with the rights to (as
   `start_at_launch` in `fs-app.c` does); StockFW's Windows rules start
-  with `StockFW`; threat intel is planned for Windows too; StockFW
+  with `StockFW`; threat intel works on Windows too, as rules in their
+  own group; StockFW
   also turns profiles on and off; the ported code is GPL 2 or later.
   (Re-injected: the old `fs-helpcontent.c`, which fails all ten.)
 - H8: the help matches 1.0.7 as merged.  What-If answers DEPENDS, asks
@@ -829,14 +837,25 @@ check that failed is in brackets):
   with its Help item, one StockFW per user and `--background`; Sentinel
   describes the tray's pause; Preferences > General describes the
   sign-in switch; the Linux notes describe `stockfw.service`; the CLI
-  topic gives exit status 6 for DEPENDS.  Only the threat-intel topic
-  carries a FS_HELP_SOON callout, it says threat intel and country/ASN
-  blocking are not available in this build, no other block or summary
-  mentions 1.0.7, and the callout's heading reads "Not in this build"
-  (this build is 1.0.7, so "Coming in 1.0.7" was false).
-  (Re-injected: the branch's pre-merge `fs-helpcontent.c` and the old
-  heading, which fail all fourteen H8 checks and both changed H7
-  ones.)
+  topic gives exit status 6 for DEPENDS.  Threat intel (PR #18) is
+  described as present: the terms dialog's "Accept and turn on", a
+  lookup that says "would be blocked once in force" unless it is, the
+  Linux table `inet stockfw_intel` and the Windows rule group "StockFW
+  Threat Intel", no per-rule counts on Windows, the update judge's
+  "Accept smaller list", and `/api/intel`; Events offers "Add
+  exception"; What-If says it does not consult the lists; the Linux,
+  Windows, CLI and background topics name the table, the group,
+  `stockfw intel lookup` and the hourly update check.  Exactly one
+  FS_HELP_SOON callout is left, on the threat-intel topic; it is about
+  blocking by country or network owner (ASN) and does not mention the
+  blocklists; the topic's summary no longer says "not available in
+  this build"; no other block or summary mentions 1.0.7, and the
+  callout's heading reads "Not in this build" (this build is 1.0.7, so
+  "Coming in 1.0.7" was false).  (Re-injected: the pre-PR #18
+  `fs-helpcontent.c`, which fails the fifteen threat-intel H8 checks,
+  the changed H7 one and H4's Next; before that, the branch's pre-merge
+  `fs-helpcontent.c` and the old heading, which failed the fourteen
+  older H8 checks.)
 - H9: What-If's settings fixes.  `fs_dialogs_preferences_at` opens
   Preferences at `icmp` and at `protection`, and each is the page
   shown; every switch label and page title `fs_whatif_setting_nth`
