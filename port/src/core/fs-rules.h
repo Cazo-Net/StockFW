@@ -12,6 +12,7 @@
 
 #include <glib.h>
 #include "core/fs-types.h"
+#include "core/fs-util.h"
 
 G_BEGIN_DECLS
 
@@ -66,6 +67,23 @@ FsRule *fs_rule_counterpart (const FsRule *rule);
  * and the setting has nothing to choose.  The second entry of the
  * setting is always "Bi-directional". */
 const gchar *fs_rule_direction_label (FsRuleKind kind);
+
+/* [ fs_rule_coverage ]
+ * Which address families a rule reaches when applied, and why, for the
+ * Policy page's "Covers" column, its tooltip and the CLI.  The answer
+ * follows what the generator does (fs-script.c), so the page cannot
+ * claim a reach the firewall does not have:
+ *   - an address or range: its own family only;
+ *   - Anyone: both;
+ *   - a host name: both, when names_resolved (Linux looks the name up
+ *     at apply time and writes each family's addresses); otherwise
+ *     FS_FAMILY_NONE, because Windows Firewall takes addresses only;
+ *   - a forward: the family of its destination address; a name or a
+ *     range there is left out by the generator, so NONE;
+ *   - anything invalid: NONE.
+ * *detail (optional) receives one sentence saying why; free it. */
+FsFamily fs_rule_coverage (const FsRule *rule, gboolean names_resolved,
+                           gchar **detail);
 
 /* Column labels for a kind, in CSV order.  num_columns is an in/out:
  * on entry the capacity, on return the number written. */

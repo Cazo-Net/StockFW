@@ -69,6 +69,9 @@ G_BEGIN_DECLS
 #define FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST "/apps/stockfw/firewall/block_internal_broadcast"
 #define FS_PREFS_FW_BLOCK_NON_ROUTABLES      "/apps/stockfw/firewall/block_non_routables"
 #define FS_PREFS_FW_RESTRICTIVE_OUTBOUND     "/apps/stockfw/firewall/restrictive_outbound"
+/* 1.0.7: log accepted new connections (Linux; Windows logs them via
+ * its own audit policy). */
+#define FS_PREFS_FW_LOG_ALLOWED              "/apps/stockfw/firewall/log_allowed"
 
 /* Load / save.  fs_prefs_load is safe to call more than once. */
 void fs_prefs_init  (void);

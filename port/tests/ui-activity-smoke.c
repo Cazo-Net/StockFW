@@ -24,6 +24,7 @@
 #include "core/fs-backend.h"
 #include "core/fs-netparse.h"
 #include "core/fs-types.h"
+#include "core/fs-prefs.h"
 #include "ui/fs-activityview.h"
 
 static int failures = 0;
@@ -127,10 +128,18 @@ main (int argc, char **argv)
 
 	CHECK (fs_activityview_get_range () == 3600,
 	       "the page opens on the last hour");
-	CHECK (fs_activityview_shows_allowed () ==
-	       (g_strcmp0 (fs_backend ()->name, "linux") != 0),
-	       "the allowed series is drawn only where the backend logs "
-	       "allowed traffic (backend: %s)", fs_backend ()->name);
+	/* Linux logs accepted connections since 1.0.7 when "Log allowed
+	 * connections" is on (the default); with it off the series must
+	 * go, never draw a flat "nothing was allowed". */
+	CHECK (fs_activityview_shows_allowed (),
+	       "the allowed series is drawn where the backend logs allowed "
+	       "traffic (backend: %s)", fs_backend ()->name);
+	if ((fs_backend ()->fw_honors & FS_FWHON_LOG_ALLOWED) != 0) {
+		fs_prefs_set_bool (FS_PREFS_FW_LOG_ALLOWED, FALSE);
+		CHECK (!fs_activityview_shows_allowed (),
+		       "with allowed logging off, Linux draws no allowed series");
+		fs_prefs_set_bool (FS_PREFS_FW_LOG_ALLOWED, TRUE);
+	}
 
 	/* ---- events at their own time ---- */
 	now_iso = stamp (0, "%Y-%m-%dT%H:%M:%SZ");

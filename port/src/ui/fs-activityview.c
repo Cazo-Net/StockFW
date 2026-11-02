@@ -13,6 +13,7 @@
 #include "ui/fs-activityview.h"
 #include "ui/fs-hitview.h"
 #include "core/fs-backend.h"
+#include "core/fs-prefs.h"
 #include "core/fs-netparse.h"
 #include "core/fs-i18n.h"
 
@@ -142,6 +143,12 @@ ensure_series (void)
 static gboolean
 logs_allowed (void)
 {
+	/* Windows logs accepted connections (5156).  Linux does since 1.0.7
+	 * when "Log allowed connections" is on: the policy's accepts go
+	 * through a chain that logs each new connection (sampled). */
+	if ((fs_backend ()->fw_honors & FS_FWHON_LOG_ALLOWED) != 0)
+		return fs_prefs_get_bool (FS_PREFS_FW_LOG_ALLOWED, TRUE);
+
 	return g_strcmp0 (fs_backend ()->name, "linux") != 0;
 }
 
@@ -1297,7 +1304,7 @@ static GtkWidget *
 build_net_tile (void)
 {
 	GtkWidget *tile = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
-	GtkWidget *cap = gtk_label_new (_("THROUGHPUT NOW"));
+	GtkWidget *cap = gtk_label_new (_("Throughput now"));
 	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 	GtkWidget *sw;
 
@@ -1354,7 +1361,7 @@ fs_activityview_page (void)
 	ensure_series ();
 
 	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
-	gtk_container_set_border_width (GTK_CONTAINER (page), 14);
+	/* The window's page frame supplies the margins. */
 
 	/* ---- filters: one row above everything they affect ---- */
 	bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
@@ -1405,9 +1412,9 @@ fs_activityview_page (void)
 	tiles = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
 	gtk_box_set_homogeneous (GTK_BOX (tiles), TRUE);
 	gtk_box_pack_start (GTK_BOX (tiles),
-		build_tile (_("BLOCKED · LAST HOUR"), &tile_blocked, &tile_blocked_sub),
+		build_tile (_("Blocked · last hour"), &tile_blocked, &tile_blocked_sub),
 		TRUE, TRUE, 0);
-	tile_allowed_card = build_tile (_("ALLOWED · LAST HOUR"), &tile_allowed,
+	tile_allowed_card = build_tile (_("Allowed · last hour"), &tile_allowed,
 	                                &tile_allowed_sub);
 	/* Its children shown now; the tile itself is the backend's to
 	 * show or hide (refresh_tiles), so the page's show_all skips it. */

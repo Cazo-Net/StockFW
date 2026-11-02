@@ -159,11 +159,42 @@ parse_syslog_stamp (const gchar *line, GDateTime *now)
 /* [ token_is_marker ]
  * The LOG target's prefix appears as its own word, or glued to the
  * kernel's "[ 1234.5678]" uptime when the kernel prints no space. */
+static FsLogVerdict
+token_verdict (const gchar *token)
+{
+	if (g_str_has_suffix (token, "STOCKFW-DROP"))
+		return FS_LOG_VERDICT_DROP;
+	if (g_str_has_suffix (token, "STOCKFW-REJECT"))
+		return FS_LOG_VERDICT_REJECT;
+	if (g_str_has_suffix (token, "STOCKFW-ALLOW"))
+		return FS_LOG_VERDICT_ALLOW;
+	return FS_LOG_VERDICT_NONE;
+}
+
 static gboolean
 token_is_marker (const gchar *token)
 {
-	return g_str_has_suffix (token, "STOCKFW-DROP") ||
-	       g_str_has_suffix (token, "STOCKFW-REJECT");
+	return token_verdict (token) != FS_LOG_VERDICT_NONE;
+}
+
+FsLogVerdict
+fs_netparse_log_verdict (const gchar *line)
+{
+	gchar **tokens;
+	FsLogVerdict verdict = FS_LOG_VERDICT_NONE;
+
+	if (line == NULL)
+		return FS_LOG_VERDICT_NONE;
+
+	/* The first marker wins, exactly as fs_netparse_log_line takes the
+	 * first one as the start of the packet fields. */
+	tokens = g_strsplit (line, " ", -1);
+	for (gint i = 0; tokens[i] != NULL && verdict == FS_LOG_VERDICT_NONE;
+	     i++)
+		verdict = token_verdict (tokens[i]);
+	g_strfreev (tokens);
+
+	return verdict;
 }
 
 gboolean
@@ -292,8 +323,9 @@ fs_netparse_line_time (const gchar *line, GDateTime *now)
 	return stamp;
 }
 
-void
-fs_netparse_name_blocked (FsHit *hit)
+/* [ name_hit ] -- the service name for a parsed hit, marked or not. */
+static void
+name_hit (FsHit *hit, gboolean blocked)
 {
 	gchar *name = NULL;
 
@@ -305,12 +337,122 @@ fs_netparse_name_blocked (FsHit *hit)
 	if (name == NULL && hit->protocol != NULL &&
 	    g_ascii_strcasecmp (hit->protocol, "ICMP") == 0)
 		name = g_strdup ("ICMP");
+	if (name == NULL && hit->protocol != NULL &&
+	    g_ascii_strcasecmp (hit->protocol, "ICMPv6") == 0)
+		name = g_strdup ("ICMPv6");
 	if (name == NULL)
 		name = g_strdup ("Unknown");
 
 	g_free (hit->service);
-	hit->service = g_strconcat (name, FS_HIT_BLOCKED_MARKER, NULL);
+	hit->service = blocked ? g_strconcat (name, FS_HIT_BLOCKED_MARKER, NULL)
+	                       : g_strdup (name);
 	g_free (name);
+}
+
+void
+fs_netparse_name_blocked (FsHit *hit)
+{
+	name_hit (hit, TRUE);
+}
+
+void
+fs_netparse_name_allowed (FsHit *hit)
+{
+	name_hit (hit, FALSE);
+}
+
+void
+fs_netparse_name_by_verdict (FsHit *hit, FsLogVerdict verdict)
+{
+	name_hit (hit, verdict != FS_LOG_VERDICT_ALLOW);
+}
+
+gchar *
+fs_netparse_kmsg_line (const gchar *record, gsize len,
+                       gint64 now_real_us, gint64 now_mono_us)
+{
+	const gchar *p = record;
+	const gchar *end;
+	const gchar *semi;
+	const gchar *nl;
+	guint64 prio = 0, seq = 0, usec = 0;
+	gchar *endp = NULL;
+	gchar *message, *stamp, *line;
+	GDateTime *when;
+	gint64 age_us;
+
+	if (record == NULL || len == 0)
+		return NULL;
+
+	end = record + len;
+	semi = memchr (record, ';', len);
+	if (semi == NULL)
+		return NULL;
+
+	/* "<prio>,<seq>,<usec>,<flags>": three decimal fields, then flags
+	 * up to the ';'.  Parsed on a bounded copy: the record is not
+	 * NUL-terminated where the header ends. */
+	{
+		gchar *head = g_strndup (record, (gsize) (semi - record));
+		gchar **f = g_strsplit (head, ",", 5);
+		gboolean ok = g_strv_length (f) >= 4;
+
+		for (gint i = 0; ok && i < 3; i++) {
+			guint64 v;
+
+			if (*f[i] == '\0' || !g_ascii_isdigit (*f[i])) {
+				ok = FALSE;
+				break;
+			}
+			v = g_ascii_strtoull (f[i], &endp, 10);
+			if (endp == NULL || *endp != '\0') {
+				ok = FALSE;
+				break;
+			}
+			if (i == 0) prio = v;
+			else if (i == 1) seq = v;
+			else usec = v;
+		}
+
+		g_strfreev (f);
+		g_free (head);
+
+		if (!ok)
+			return NULL;
+	}
+	(void) seq;
+
+	/* Facility 0 is the kernel.  Everything else came from userspace. */
+	if ((prio >> 3) != 0)
+		return NULL;
+
+	p = semi + 1;
+	nl = memchr (p, '\n', (gsize) (end - p));
+	message = g_strndup (p, (gsize) ((nl != NULL ? nl : end) - p));
+
+	/* A message with an embedded NUL was cut by g_strndup; one that is
+	 * empty is not a log line. */
+	if (*message == '\0') {
+		g_free (message);
+		return NULL;
+	}
+
+	age_us = now_mono_us - (gint64) usec;
+	if (age_us < 0)
+		age_us = 0;
+	when = g_date_time_new_from_unix_utc ((now_real_us - age_us) /
+	                                      G_USEC_PER_SEC);
+	stamp = when != NULL ? g_date_time_format (when, "%Y-%m-%dT%H:%M:%SZ")
+	                     : NULL;
+	if (when != NULL)
+		g_date_time_unref (when);
+
+	line = stamp != NULL ? g_strconcat (stamp, " ", message, NULL)
+	                     : g_strdup (message);
+	g_free (stamp);
+	g_free (message);
+
+	return line;
 }
 
 void
@@ -330,6 +472,7 @@ fs_netparse_clear_hit (FsHit *hit)
 	g_free (hit->tos);
 	g_free (hit->protocol);
 	g_free (hit->service);
+	g_free (hit->rule);
 	memset (hit, 0, sizeof (*hit));
 }
 

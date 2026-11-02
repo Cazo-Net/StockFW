@@ -911,11 +911,13 @@ fs_copilot_simulate_text (FsCopilot *copilot, const gchar *text,
  * opens a specific one -- the same "every port" reading the panel's
  * no-port note promises and the no-host note gets from
  * addr_covers().  ICMP has no ports at all, so a ported rule cannot
- * govern ICMP traffic however the line phrased it. */
+ * govern ICMP traffic however the line phrased it.  A rule's ports
+ * are a spec ("67-68", "139,445"): the probe's port is covered when
+ * it lies in one of its ranges. */
 static gboolean
-rule_port_covers (guint probe_port, gboolean icmp, gint rule_port)
+rule_port_covers (guint probe_port, gboolean icmp, const gchar *rule_ports)
 {
-	if (rule_port == 0)
+	if (rule_ports == NULL)
 		return TRUE;
 
 	if (icmp)
@@ -924,21 +926,45 @@ rule_port_covers (guint probe_port, gboolean icmp, gint rule_port)
 	if (probe_port == 0)
 		return TRUE;
 
-	return rule_port == (gint) probe_port;
+	return fs_fwrule_port_spec_covers (rule_ports, probe_port);
+}
+
+/* [ service_ports ]
+ * The port a probe names is the service port: the local port of an
+ * inbound connection (it arrives AT it) and the remote port of an
+ * outbound one (it goes TO it).  The rule's ports on that side are
+ * the ones the probe is matched against. */
+static const gchar *
+service_ports (const FsFwRule *rule, gboolean inbound)
+{
+	return inbound ? rule->local_ports : rule->remote_ports;
+}
+
+/* [ ephemeral_ports ]
+ * The other end of the probe's connection is an ephemeral port the
+ * line never names and no service rule is written for, so a rule
+ * that pins ports on that side does not decide this traffic -- the
+ * way an outbound rule on local port 25 never meets real mail. */
+static const gchar *
+ephemeral_ports (const FsFwRule *rule, gboolean inbound)
+{
+	return inbound ? rule->remote_ports : rule->local_ports;
 }
 
 /* [ port_score ]
  * How precisely a rule's port answers the probe: the exact port
  * asked is the sharpest answer, a rule naming no port covers every
  * port, and a rule on some port a portless line never named is the
- * weakest cover of all. */
+ * weakest cover of all.  A spec that covers the asked port counts as
+ * the exact answer: it is the rule written for that port. */
 static gint
-port_score (guint probe_port, gint rule_port)
+port_score (guint probe_port, const gchar *rule_ports)
 {
-	if (rule_port == 0)
+	if (rule_ports == NULL)
 		return 1;
 
-	if (probe_port == (guint) rule_port)
+	if (probe_port != 0 &&
+	    fs_fwrule_port_spec_covers (rule_ports, probe_port))
 		return 2;
 
 	return 0;
@@ -956,8 +982,8 @@ static gint
 match_score (guint probe_port, const gchar *probe_addr,
              const FsFwRule *rule)
 {
-	gint port = MAX (port_score (probe_port, rule->local_port),
-	                 port_score (probe_port, rule->remote_port));
+	gint port = MAX (port_score (probe_port, rule->local_ports),
+	                 port_score (probe_port, rule->remote_ports));
 	gint addr;
 
 	if (probe_addr == NULL || *probe_addr == '\0')
@@ -982,11 +1008,14 @@ static gchar *
 match_where (const FsFwRule *rule)
 {
 	GString *s = g_string_new (NULL);
-	gint port = (rule->local_port != 0) ? rule->local_port
-	                                    : rule->remote_port;
+	const gchar *ports = (rule->local_ports != NULL) ? rule->local_ports
+	                                                 : rule->remote_ports;
 
-	if (port != 0)
-		g_string_append_printf (s, _(" on port %d"), port);
+	/* One port reads as before; a range or a list is named whole. */
+	if (ports != NULL && strpbrk (ports, "-,") == NULL)
+		g_string_append_printf (s, _(" on port %s"), ports);
+	else if (ports != NULL)
+		g_string_append_printf (s, _(" on ports %s"), ports);
 
 	if (rule->forward && rule->forward_address != NULL &&
 	    *rule->forward_address != '\0')
@@ -1090,11 +1119,16 @@ fs_copilot_simulate (FsCopilot *copilot,
 				if (rule->protocol != FS_PROTO_ANY && rule->protocol != proto)
 					continue;
 
-				/* Ports: a port either side left unnamed constrains
-				 * nothing; ICMP meets only portless rules. */
-				if (!rule_port_covers (port, icmp, rule->local_port))
+				/* Ports: the probe's port is matched on the side
+				 * its direction makes the service port (local
+				 * inbound, remote outbound), where an unnamed port
+				 * constrains nothing; ICMP meets only portless
+				 * rules.  A rule pinning the other, ephemeral end
+				 * does not meet the probe at all. */
+				if (!rule_port_covers (port, icmp,
+				                       service_ports (rule, inbound)))
 					continue;
-				if (!rule_port_covers (port, icmp, rule->remote_port))
+				if (ephemeral_ports (rule, inbound) != NULL)
 					continue;
 
 				/* Address: the compiled rule must cover the probe, as an
@@ -2053,12 +2087,17 @@ app_profile_new (const gchar *name, const gchar *path, gint64 now_unix)
 	FsAppProfile *profile = g_new0 (FsAppProfile, 1);
 	profile->app_name = g_strdup (name);
 	profile->app_path = path ? g_strdup (path) : NULL;
+	/* Every value is a g_new'd counter (record_connection and the
+	 * profile loader), so the tables own and free them: without a
+	 * value destructor each counter outlived its profile, and a
+	 * long monitoring session leaked one per port, destination and
+	 * hour of every application the LRU cap evicted. */
 	profile->common_ports = g_hash_table_new_full (g_direct_hash, g_direct_equal,
-	                                               NULL, NULL);
+	                                               NULL, g_free);
 	profile->common_destinations = g_hash_table_new_full (g_str_hash, g_str_equal,
-	                                                      g_free, NULL);
+	                                                      g_free, g_free);
 	profile->hourly_activity = g_hash_table_new_full (g_direct_hash, g_direct_equal,
-                                                      NULL, NULL);
+                                                      NULL, g_free);
 	profile->first_seen = (guint64) now_unix;
 	return profile;
 }

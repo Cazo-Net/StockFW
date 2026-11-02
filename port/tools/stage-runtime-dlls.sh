@@ -127,14 +127,65 @@ echo "stage-runtime-dlls: $helpers spawn helper(s) staged"
 # starts but paints blank toolbar buttons.  The installer stages the
 # same set for $INSTDIR.
 #
+# Where "relative to the DLLs" lands: each library takes the directory
+# it was loaded from, minus a trailing bin/ or lib/, as its prefix.  The
+# DLLs above sit directly in $BUILD, so the prefix is $BUILD itself and
+# the module trees belong in $BUILD/lib -- the layout the installer
+# gives $INSTDIR (DLLs beside the exe, then lib\ and share\).  This
+# script used to copy them to $BUILD/<name>, where nothing looks:
+# gdk-pixbuf then found no loader cache, every SVG image failed to load
+# (Adwaita's radio-button bullet among them) and GTK said so on stderr.
+#
 # These directories are several MB, so they are copied only when the
 # destination is missing -- this script runs after every build.
+mkdir -p "$BUILD/lib"
 for mod in gdk-pixbuf-2.0 pango gtk-3.0; do
   src="$TOOL_ROOT/lib/$mod"
-  if [ -d "$src" ] && [ ! -d "$BUILD/$mod" ]; then
-    cp -r "$src" "$BUILD/"
+  # The copy an older version of this script left at the wrong place.
+  if [ -d "$BUILD/$mod" ]; then
+    rm -rf "$BUILD/$mod"
+  fi
+  if [ -d "$src" ] && [ ! -d "$BUILD/lib/$mod" ]; then
+    cp -r "$src" "$BUILD/lib/"
   fi
 done
+
+# The image loaders are DLLs as well, loaded on demand, and the SVG one
+# needs librsvg and its own dependencies, which StockFW.exe does not
+# import, so ldd's closure above misses them.  Inside an MSYS2 shell
+# PATH finds them anyway; started from Explorer it does not, and SVG
+# images fail again.  Follow the loaders' imports (objdump -p lists a
+# PE file's "DLL Name:" entries) and stage every one the toolchain owns;
+# the rest are Windows system DLLs.
+imports_of () {
+  objdump -p "$1" 2>/dev/null | sed -n 's/^[[:space:]]*DLL Name: //p' | tr -d '\r'
+}
+queue=""
+for loader in "$BUILD"/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.dll; do
+  if [ -f "$loader" ]; then
+    queue="$queue $(imports_of "$loader")"
+  fi
+done
+seen=" "
+loader_deps=0
+while :; do
+  set -- $queue
+  [ "$#" -gt 0 ] || break
+  name=$1
+  shift
+  queue="$*"
+  case "$seen" in *" $name "*) continue ;; esac
+  seen="$seen$name "
+  [ -f "$TOOL_BIN/$name" ] || continue
+  if [ ! -f "$BUILD/$name" ]; then
+    cp -f "$TOOL_BIN/$name" "$BUILD/"
+    loader_deps=$((loader_deps + 1))
+  fi
+  queue="$queue $(imports_of "$TOOL_BIN/$name")"
+done
+if [ "$loader_deps" -gt 0 ]; then
+  echo "stage-runtime-dlls: $loader_deps more DLL(s) for the image loaders"
+fi
 
 if [ -d "$TOOL_ROOT/share" ]; then
   mkdir -p "$BUILD/share"

@@ -4,7 +4,10 @@
  * Implements the FsBackend vtable against the Windows Firewall with
  * Advanced Security COM API (HNetCfg.FwPolicy2):
  *
- *   INetFwPolicy2    profile enumeration and global state
+ *   INetFwPolicy2    profile enumeration and global state, and the
+ *                    profiles in force (CurrentProfileTypes)
+ *   INetworkListManager  the connected networks, their names and
+ *                    categories, for the Overview (1.0.7)
  *   INetFwRules      rule listing
  *   INetFwRule       creating / editing allow and block rules
  *
@@ -39,11 +42,13 @@
 #include <netioapi.h>
 #include <iphlpapi.h>
 #include <netfw.h>
+#include <netlistmgr.h> /* INetworkListManager: the connected networks */
 #include <tlhelp32.h>   /* CreateToolhelp32Snapshot: process enumeration */
 
 #include <stdio.h>   /* _snwprintf */
 
 #include "core/fs-backend.h"
+#include "core/fs-netplace.h"
 #include "core/fs-fwrule.h"
 #include "core/fs-settings-plan.h"
 #include "core/fs-service.h"
@@ -234,39 +239,17 @@ firewalled_reload (GError **error)
  * show the user.
  * ------------------------------------------------------------------ */
 
-/* [ run_netsh ]
- * netsh rejects rule names containing ':' , parentheses and slashes,
- * which the display names generated for the UI do contain.  Replace the
- * characters it dislikes so the same name can be used for both the
- * dialog and the command line. */
 /* [ netsh_safe_name ]
  * netsh rejects rule names containing ':' , parentheses and slashes,
- * which the display names generated for the UI do contain.  Replace the
- * characters it dislikes so one name can serve both the dialog and the
- * command line.
+ * which the display names generated for the UI do contain.  The
+ * spelling lives in core (fs_fwrule_netsh_name), so the argv the
+ * tests check and the names this file creates, lists and deletes can
+ * never drift apart.
  */
 static gchar *
 netsh_safe_name (const gchar *name)
 {
-	GString *out = g_string_new (NULL);
-
-	for (const gchar *p = (name != NULL) ? name : "StockFW rule";
-	     *p != '\0'; p++) {
-		switch (*p) {
-		case ':':
-		case '(':
-		case ')':
-		case '/':
-		case ',':
-			g_string_append_c (out, '-');
-			break;
-		default:
-			g_string_append_c (out, *p);
-			break;
-		}
-	}
-
-	return g_string_free (out, FALSE);
+	return fs_fwrule_netsh_name (name);
 }
 
 /* ---------------------------------------------------------------------
@@ -742,69 +725,39 @@ netsh_needs_elevation (const gchar *output)
 }
 
 /* [ netsh_add_rule ]
- * Creates one rule.  Returns FALSE and sets error on failure. */
+ * Creates one rule.  Returns FALSE and sets error on failure.
+ *
+ * The argv comes from core (fs_fwrule_netsh_args), where the tests
+ * check it on every platform.  spawn_capture() passes it straight to
+ * CreateProcess with no shell parsing, which is why no argument
+ * carries quote characters.  1.0.6 built it here and, because netsh
+ * refuses ports with protocol=any, dropped the port of every rule
+ * whose protocol was "any" -- most services -- so the rule matched
+ * all traffic in its direction.  core now refuses to build such an
+ * argv at all, and a refused rule is a failed rule, never a wider
+ * one. */
 static gboolean
 netsh_add_rule (const FsFwRule *rule, GError **error)
 {
-	GPtrArray *args;
-	gchar *name;
-	gchar *port;
-	gchar *protocol;
-	const gchar *direction;
-	const gchar *action;
+	gchar **args;
 	gchar *output = NULL;
 	gint status = 0;
 	gboolean ok = FALSE;
 
-	args = g_ptr_array_new_with_free_func (g_free);
-	g_ptr_array_add (args, g_strdup ("netsh.exe"));
-	g_ptr_array_add (args, g_strdup ("advfirewall"));
-	g_ptr_array_add (args, g_strdup ("firewall"));
-	g_ptr_array_add (args, g_strdup ("add"));
-	g_ptr_array_add (args, g_strdup ("rule"));
+	args = fs_fwrule_netsh_args (rule);
 
-	/* spawn_capture() passes argv straight to CreateProcess with no
-	 * shell parsing, so arguments must not carry quote characters: the whole
-	 * "name=..." pair goes across as one element.  Adding quotes here
-	 * makes netsh mis-parse the value and then complain about the
-	 * profiles argument. */
-	name = netsh_safe_name (rule->name);
-	g_ptr_array_add (args, g_strdup_printf ("name=%s", name));
-	g_free (name);
-
-	/* Every profile, so the rule applies wherever the firewall is on. */
-	g_ptr_array_add (args, g_strdup ("profile=any"));
-
-	direction = (rule->direction == FS_DIR_INBOUND) ? "in" : "out";
-	action = (rule->action == FS_ACTION_ALLOW) ? "allow" : "block";
-	protocol = (rule->protocol == FS_PROTO_TCP) ? "TCP"
-	           : (rule->protocol == FS_PROTO_UDP) ? "UDP" : "any";
-
-	g_ptr_array_add (args, g_strdup_printf ("dir=%s", direction));
-	g_ptr_array_add (args, g_strdup_printf ("action=%s", action));
-	g_ptr_array_add (args, g_strdup_printf ("protocol=%s", protocol));
-	g_ptr_array_add (args, g_strdup ("enable=yes"));
-
-	/* netsh rejects any port specification when the protocol is
-	 * "any": "Ports can only be specified if the protocol is TCP or
-	 * UDP."  Omit localport in that case. */
-	if (rule->protocol != FS_PROTO_ANY) {
-		if (rule->local_port > 0) {
-			port = g_strdup_printf ("localport=%d", rule->local_port);
-			g_ptr_array_add (args, port);
-		} else {
-			g_ptr_array_add (args, g_strdup ("localport=any"));
-		}
+	if (args == NULL) {
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-windows"),
+		             0, "The rule \"%s\" was not created: a rule "
+		             "with ports has to be TCP or UDP, with a valid "
+		             "port list.",
+		             (rule != NULL && rule->name != NULL)
+		             ? rule->name : "(unnamed)");
+		return FALSE;
 	}
 
-	if (rule->remote_address != NULL && *rule->remote_address != '\0')
-		g_ptr_array_add (args,
-		                 g_strdup_printf ("remoteip=%s",
-		                                  rule->remote_address));
-
-	g_ptr_array_add (args, NULL);
-
-	if (!run_netsh ((gchar **) args->pdata, error, &status, &output))
+	if (!run_netsh (args, error, &status, &output))
 		goto out;
 
 	if (status == 0) {
@@ -834,7 +787,7 @@ out:
 		         output ? g_strstrip (output) : "(no output)");
 
 	g_free (output);
-	g_ptr_array_unref (args);
+	g_strfreev (args);
 
 	return ok;
 }
@@ -1138,11 +1091,53 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 	guint failed = 0;
 	GError *first_error = NULL;
 	FsApplyResult clear_result;
+	GPtrArray *refused = NULL;
+	gchar *refusal = NULL;
 
 	if (policy == NULL)
 		return FS_APPLY_FAILED;
 
-	rules = fs_fwrule_from_policy (policy);
+	/* A refused BLOCK row stops the apply before anything is
+	 * cleared.  This function replaces the whole set, so carrying on
+	 * would delete the block that is in force now and put nothing in
+	 * its place: fail-open, with only the rollback (when there is a
+	 * journal at all) to close the hole again.  The Linux generator
+	 * refuses the whole script for a deny it cannot write in the same
+	 * way.  A refused allow is different -- leaving it out keeps a
+	 * hole closed -- so those are reported below and the rest
+	 * applies. */
+	refusal = fs_fwrule_block_refusals (policy);
+	if (refusal != NULL) {
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-windows"),
+		             0, "The firewall was not changed: a block rule "
+		             "could not be applied as written, and applying "
+		             "the rest would have removed it.\n%s", refusal);
+		g_free (refusal);
+		return FS_APPLY_FAILED;
+	}
+
+	rules = fs_fwrule_from_policy_checked (policy, &refused);
+
+	/* Rows the translation refused (a port that does not parse) have
+	 * no rule to create.  Each one counts as a failed rule, so the
+	 * verdict can never be "Rules applied" for a policy that is not
+	 * all in force, and their reasons are what the dialog shows:
+	 * the user can fix those, unlike a netsh exit code. */
+	if (refused->len > 0) {
+		GString *why = g_string_new (NULL);
+
+		for (guint i = 0; i < refused->len; i++) {
+			if (why->len > 0)
+				g_string_append_c (why, '\n');
+			g_string_append (why, g_ptr_array_index (refused, i));
+		}
+
+		failed += refused->len;
+		refusal = g_string_free (why, FALSE);
+	}
+
+	g_ptr_array_unref (refused);
 
 	/* Drop the previous set first so applying twice does not
 	 * accumulate duplicates.  P6: the clear verifies its own work by
@@ -1209,7 +1204,18 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 			netsh_needs_elevation (first_error != NULL
 			                       ? first_error->message : NULL);
 
-		if (error != NULL && first_error != NULL)
+		if (refusal != NULL) {
+			/* The refused rows first: they are why nothing
+			 * could be created as written. */
+			g_set_error (error,
+			             g_quark_from_static_string (
+				             "fs-backend-windows"),
+			             0, "%s%s%s", refusal,
+			             first_error != NULL ? "\n" : "",
+			             first_error != NULL
+			             ? first_error->message : "");
+			g_clear_error (&first_error);
+		} else if (error != NULL && first_error != NULL)
 			g_propagate_error (error, first_error);
 		else {
 			if (error != NULL)
@@ -1224,18 +1230,24 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 			g_clear_error (&first_error);
 		}
 
+		g_free (refusal);
 		return needs_elevation ? FS_APPLY_NO_PRIVILEGE : FS_APPLY_FAILED;
 	}
 
 	if (failed > 0) {
 		g_set_error (error, g_quark_from_static_string ("fs-backend-windows"),
-		             (int) failed, "%u of %u rules could not be created",
-		             failed, applied + failed);
+		             (int) failed, "%u of %u rules could not be created%s%s",
+		             failed, applied + failed,
+		             refusal != NULL ? ":\n" : "",
+		             refusal != NULL ? refusal : "");
 		/* The dialog gets the count; the first concrete reason is
 		 * still owned here and must not leak. */
 		g_clear_error (&first_error);
+		g_free (refusal);
 		return FS_APPLY_PARTIAL;
 	}
+
+	g_free (refusal);
 
 	/* P6: nothing to add failed, but the clear could not verify that
 	 * the previous set is gone -- the verdict must still say so, with
@@ -1305,10 +1317,17 @@ firewalled_apply_delta (const GList *remove, const GList *add,
 			GList *leftover = NULL;
 			const GList *r;
 
+			/* netsh lists the netsh spelling of each name
+			 * ("StockFW- Allow SSH -inbound-"), so that is the
+			 * spelling to look up; comparing the display name
+			 * never found a survivor. */
 			for (r = remove; r != NULL; r = r->next) {
-				if (g_hash_table_contains (ours, r->data))
+				gchar *listed = netsh_safe_name (r->data);
+
+				if (g_hash_table_contains (ours, listed))
 					leftover = g_list_prepend (leftover,
 					                            (gpointer) r->data);
+				g_free (listed);
 			}
 
 			for (r = leftover; r != NULL; r = r->next) {
@@ -1393,6 +1412,7 @@ firewalled_apply_delta (const GList *remove, const GList *add,
 		g_set_error (error, g_quark_from_static_string ("fs-backend-windows"),
 		             (int) failed, "%u of %u rule changes failed",
 		             failed, created + failed);
+		g_clear_error (&first_error);
 		return FS_APPLY_PARTIAL;
 	}
 
@@ -1492,6 +1512,27 @@ iface_type_name (ULONG type)
 	}
 }
 
+/* [ adapter_kind ]
+ * The Type column for one row.  IANA type 6 covers every adapter that
+ * speaks Ethernet framing, which includes Hyper-V's vEthernet, the
+ * VirtualBox and VMware host-only NICs and most VPN clients' TAP
+ * adapters.  Windows marks which of those has a physical device behind
+ * it (HardwareInterface), and that is what Linux's interface_kind()
+ * asks of sysfs too, so a software adapter reads "Virtual" on both and
+ * the Overview can tuck it away by the same rule.  Tunnel and loopback
+ * keep their own names. */
+static const gchar *
+adapter_kind (const MIB_IF_ROW2 *row)
+{
+	const gchar *name = iface_type_name (row->Type);
+
+	if (row->Type == 24 || row->Type == 131)
+		return name;
+	if (!row->InterfaceAndOperStatusFlags.HardwareInterface)
+		return "Virtual";
+	return name;
+}
+
 /* [ firewalled_list_interface_stats ]
  * Cumulative rx/tx octets per interface.  The view samples twice and
  * diffs these, which is where the "Activity" column comes from. */
@@ -1513,6 +1554,14 @@ firewalled_list_interface_stats (void)
 		if (row->Type == 24)
 			continue;
 
+		/* NDIS filter modules (the WFP and QoS lightweight filters)
+		 * are listed as interfaces of their own, stacked on a real
+		 * adapter and counting the same octets.  Listing them would
+		 * show "Ethernet-WFP Native MAC Layer LightWeight Filter-0000"
+		 * beside "Ethernet" and add that adapter's traffic twice. */
+		if (row->InterfaceAndOperStatusFlags.FilterInterface)
+			continue;
+
 		/* Skip adapters that are down and have never carried
 		 * anything: they are still enumerating. */
 		if (row->OperStatus != IfOperStatusUp &&
@@ -1530,7 +1579,7 @@ firewalled_list_interface_stats (void)
 		if (stat->device == NULL)
 			stat->device = g_strdup ("?");
 
-		stat->kind     = g_strdup (iface_type_name (row->Type));
+		stat->kind     = g_strdup (adapter_kind (row));
 		stat->received = row->InOctets;
 		stat->sent     = row->OutOctets;
 		stat->up       = (row->OperStatus == IfOperStatusUp);
@@ -2507,6 +2556,216 @@ firewalled_set_profile_enabled (gint profile, gboolean enabled,
 	return TRUE;
 }
 
+/* ---------------------------------------------------------------------
+ * Where this computer is connected (1.0.7): the Overview's subtitle,
+ * the "In use" marks and the "profile in use is off" verdict.
+ *
+ * Two in-process COM reads, no child process:
+ *
+ *   INetFwPolicy2::get_CurrentProfileTypes   the profiles in force, as
+ *       the firewall itself decides them (a bit per profile: two
+ *       adapters on networks of different kinds give two bits);
+ *   INetworkListManager::GetNetworks         the connected networks:
+ *       name, category (Public / Private / DomainAuthenticated, which
+ *       is what picks the profile), connectivity, and through each
+ *       connection's adapter GUID, the medium.
+ *
+ * The same facts are what PowerShell's Get-NetFirewallSetting
+ * -PolicyStore ActiveStore (ActiveProfile) and Get-NetConnectionProfile
+ * print, but asking COM costs milliseconds and opens no window, where
+ * powershell.exe costs a process start per poll and, through GLib's
+ * spawn, a console window (see spawn_capture() above for that history).
+ *
+ * The network's name is the network *profile* name.  Windows names a
+ * Wi-Fi profile after its SSID, so this is the SSID unless the user
+ * renamed it.  The SSID proper would come from the Native Wifi API
+ * (WlanQueryInterface, wlan_intf_opcode_current_connection), which on
+ * current Windows 11 needs the user's location consent and answers
+ * ERROR_ACCESS_DENIED without it; the network list has no such gate.
+ * ------------------------------------------------------------------ */
+
+/* Documented values (netlistmgr.h declares them only with INITGUID;
+ * defined locally for the reason netfw-compat.h gives for NetFwPolicy2). */
+static const GUID FS_CLSID_NetworkListManager =
+	{ 0xdcb00c01, 0x570f, 0x4a9b,
+	  { 0x8d, 0x69, 0x19, 0x9f, 0xdb, 0xa5, 0x72, 0x3b } };
+
+static const GUID FS_IID_INetworkListManager =
+	{ 0xdcb00000, 0x570f, 0x4a9b,
+	  { 0x8d, 0x69, 0x19, 0x9f, 0xdb, 0xa5, 0x72, 0x3b } };
+
+/* [ profile_from_category ]
+ * A network's category is what selects its firewall profile. */
+static gint
+profile_from_category (NLM_NETWORK_CATEGORY category)
+{
+	switch (category) {
+	case NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED: return FS_PROFILE_DOMAIN;
+	case NLM_NETWORK_CATEGORY_PRIVATE:              return FS_PROFILE_PRIVATE;
+	case NLM_NETWORK_CATEGORY_PUBLIC:               return FS_PROFILE_PUBLIC;
+	default:                                        return -1;
+	}
+}
+
+/* [ profiles_from_types ]
+ * CurrentProfileTypes' NET_FW_PROFILE2_* bits as FS_PROFILE_BIT()s. */
+static guint
+profiles_from_types (LONG types)
+{
+	guint in_use = 0;
+
+	if (types & NET_FW_PROFILE2_DOMAIN)
+		in_use |= FS_PROFILE_BIT (FS_PROFILE_DOMAIN);
+	if (types & NET_FW_PROFILE2_PRIVATE)
+		in_use |= FS_PROFILE_BIT (FS_PROFILE_PRIVATE);
+	if (types & NET_FW_PROFILE2_PUBLIC)
+		in_use |= FS_PROFILE_BIT (FS_PROFILE_PUBLIC);
+	return in_use;
+}
+
+/* [ medium_of_adapter ]
+ * "Wi-Fi", "Ethernet", "Virtual", ... for one adapter GUID, by the same
+ * rule as the adapters panel; NULL when the adapter cannot be read. */
+static const gchar *
+medium_of_adapter (const GUID *adapter)
+{
+	MIB_IF_ROW2 row;
+	NET_LUID luid;
+
+	if (ConvertInterfaceGuidToLuid (adapter, &luid) != NO_ERROR)
+		return NULL;
+
+	memset (&row, 0, sizeof row);
+	row.InterfaceLuid = luid;
+	if (GetIfEntry2 (&row) != NO_ERROR)
+		return NULL;
+
+	/* Windows' own word for IEEE 802.11, physical or not. */
+	if (row.Type == 71)
+		return "Wi-Fi";
+	return adapter_kind (&row);
+}
+
+/* [ add_network ]
+ * One INetwork into the place.  Every read may fail on its own; what
+ * failed is left unknown rather than guessed. */
+static void
+add_network (FsNetworkPlace *place, INetwork *net)
+{
+	BSTR name = NULL;
+	gchar *utf8 = NULL;
+	NLM_NETWORK_CATEGORY category;
+	NLM_CONNECTIVITY connectivity = NLM_CONNECTIVITY_DISCONNECTED;
+	IEnumNetworkConnections *conns = NULL;
+	const gchar *medium = NULL;
+	gint profile = -1;
+
+	if (SUCCEEDED (net->lpVtbl->GetName (net, &name)) && name != NULL) {
+		utf8 = g_utf16_to_utf8 ((const gunichar2 *) name, -1,
+		                        NULL, NULL, NULL);
+		SysFreeString (name);
+	}
+	if (SUCCEEDED (net->lpVtbl->GetCategory (net, &category)))
+		profile = profile_from_category (category);
+	if (FAILED (net->lpVtbl->GetConnectivity (net, &connectivity)))
+		connectivity = NLM_CONNECTIVITY_DISCONNECTED;
+
+	/* The medium of the first connection whose adapter answers. */
+	if (SUCCEEDED (net->lpVtbl->GetNetworkConnections (net, &conns)) &&
+	    conns != NULL) {
+		INetworkConnection *conn = NULL;
+		ULONG got = 0;
+
+		while (medium == NULL &&
+		       conns->lpVtbl->Next (conns, 1, &conn, &got) == S_OK &&
+		       got == 1 && conn != NULL) {
+			GUID adapter;
+
+			if (SUCCEEDED (conn->lpVtbl->GetAdapterId (conn, &adapter)))
+				medium = medium_of_adapter (&adapter);
+			conn->lpVtbl->Release (conn);
+			conn = NULL;
+		}
+		conns->lpVtbl->Release (conns);
+	}
+
+	fs_network_place_add (place, utf8, profile, medium,
+	                      (connectivity & (NLM_CONNECTIVITY_IPV4_INTERNET |
+	                                       NLM_CONNECTIVITY_IPV6_INTERNET))
+	                      != 0);
+	g_free (utf8);
+}
+
+/* [ firewalled_network_place ]
+ * See FsBackend.network_place.  NULL when neither COM read answered. */
+static FsNetworkPlace *
+firewalled_network_place (void)
+{
+	HRESULT init = CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
+	INetFwPolicy2 *policy = NULL;
+	INetworkListManager *nlm = NULL;
+	FsNetworkPlace *place = NULL;
+	gboolean have_types = FALSE;
+	LONG types = 0;
+
+	if (SUCCEEDED (CoCreateInstance (&FS_CLSID_NetFwPolicy2, NULL,
+	                                 CLSCTX_ALL, &FS_IID_INetFwPolicy2,
+	                                 (void **) &policy)) &&
+	    policy != NULL) {
+		have_types = SUCCEEDED (policy->lpVtbl->get_CurrentProfileTypes (
+		                        policy, &types));
+		policy->lpVtbl->Release (policy);
+	}
+
+	if (SUCCEEDED (CoCreateInstance (&FS_CLSID_NetworkListManager, NULL,
+	                                 CLSCTX_ALL, &FS_IID_INetworkListManager,
+	                                 (void **) &nlm)) &&
+	    nlm != NULL) {
+		IEnumNetworks *nets = NULL;
+
+		if (SUCCEEDED (nlm->lpVtbl->GetNetworks (nlm,
+		                                         NLM_ENUM_NETWORK_CONNECTED,
+		                                         &nets)) &&
+		    nets != NULL) {
+			INetwork *net = NULL;
+			ULONG got = 0;
+
+			place = fs_network_place_new ();
+			while (nets->lpVtbl->Next (nets, 1, &net, &got) == S_OK &&
+			       got == 1 && net != NULL) {
+				add_network (place, net);
+				net->lpVtbl->Release (net);
+				net = NULL;
+			}
+			nets->lpVtbl->Release (nets);
+		}
+		nlm->lpVtbl->Release (nlm);
+	}
+
+	if (have_types) {
+		if (place == NULL)
+			place = fs_network_place_new ();
+		place->in_use = profiles_from_types (types);
+	} else if (place != NULL) {
+		/* The firewall did not say; the networks' categories are
+		 * what it would have said. */
+		for (guint i = 0; i < place->networks->len; i++) {
+			const FsNetwork *n = g_ptr_array_index (place->networks, i);
+
+			if (n->profile >= 0)
+				place->in_use |= FS_PROFILE_BIT (n->profile);
+		}
+	}
+
+	/* S_FALSE (already initialised on this thread, as GTK's OLE setup
+	 * does) still needs its matching CoUninitialize; RPC_E_CHANGED_MODE
+	 * does not. */
+	if (SUCCEEDED (init))
+		CoUninitialize ();
+
+	return place;
+}
+
 /* Designated initialisers, not positional: adding a field to FsBackend
  * then leaves every backend correct instead of silently shifting every
  * entry after the insertion point. */
@@ -2541,7 +2800,16 @@ static const FsBackend windows_backend = {
 	.dhcp_set_enabled      = firewalled_dhcp_set_enabled,
 	.get_profile_enabled   = firewalled_get_profile_enabled,
 	.set_profile_enabled   = firewalled_set_profile_enabled,
+	.network_place         = firewalled_network_place,
 	.trust_signature       = fs_trust_win_signature
+	/* intel_apply, intel_clear, intel_counters and intel_live stay
+	 * NULL until Round 3 of threat intel (design section 2): a NULL
+	 * slot is how the engine and every surface learn that blocklists
+	 * are not available on Windows yet -- the state reads
+	 * "unsupported", an apply fails with FS_INTEL_ERR_UNSUPPORTED,
+	 * and the user's Stop has no lists to suspend.  A slot that
+	 * existed only to fail would turn "unsupported" into "cannot
+	 * tell" and make every Stop report an error. */
 };
 
 const FsBackend *

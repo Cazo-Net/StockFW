@@ -65,7 +65,9 @@ column_count (FsRuleKind kind)
 }
 
 /* [ store_for_kind ]
- * A list store with one string column per CSV field. */
+ * A list store with one string column per CSV field, then two that are
+ * never saved: what the rule covers ("IPv4 + IPv6") and the sentence
+ * saying why, shown as the row's tooltip. */
 static GtkListStore *
 store_for_kind (FsRuleKind kind)
 {
@@ -73,15 +75,37 @@ store_for_kind (FsRuleKind kind)
 	GtkListStore *store;
 	gint n = column_count (kind);
 
-	types = g_new0 (GType, n ? n : 1);
+	types = g_new0 (GType, n + 2);
 
-	for (gint i = 0; i < n; i++)
+	for (gint i = 0; i < n + 2; i++)
 		types[i] = G_TYPE_STRING;
 
-	store = gtk_list_store_newv (n, types);
+	store = gtk_list_store_newv (n + 2, types);
 	g_free (types);
 
 	return store;
+}
+
+/* [ set_coverage ]
+ * Fills the two display-only columns of one row from its rule.  The
+ * answer comes from core (fs_rule_coverage), which follows what the
+ * generator writes, so the column cannot claim more than the firewall
+ * does. */
+static void
+set_coverage (FsPolicyGroup *group, GtkTreeIter *iter, const FsRule *rule)
+{
+	gboolean names = (fs_backend ()->fw_honors & FS_FWHON_HOST_NAMES) != 0;
+	gchar *detail = NULL;
+	FsFamily fam = fs_rule_coverage (rule, names, &detail);
+	gchar *tip = g_markup_escape_text (detail != NULL ? detail : "", -1);
+	gint n = group->num_columns;
+
+	gtk_list_store_set (group->store, iter,
+	                    n, fam == FS_FAMILY_NONE ? _("Nothing")
+	                                             : _(fs_util_families_label (fam)),
+	                    n + 1, tip, -1);
+	g_free (tip);
+	g_free (detail);
 }
 
 /* [ rule_fields ]
@@ -248,6 +272,7 @@ refresh_group (FsPolicyGroup *group, const FsPolicy *policy)
 			gtk_list_store_set (group->store, &iter, col,
 			                    fields[col] ? fields[col] : "", -1);
 		}
+		set_coverage (group, &iter, rule);
 
 		g_ptr_array_add (group->rules, fs_rule_copy (rule));
 	}
@@ -413,6 +438,13 @@ on_cell_edited (GtkCellRendererText *renderer, gchar *path_string,
 
 	fs_rule_free (old_rule);
 	group->rules->pdata[row] = fs_rule_copy (new_rule);
+	{
+		GtkTreeIter iter;
+
+		if (gtk_tree_model_iter_nth_child (GTK_TREE_MODEL (group->store),
+		                                   &iter, NULL, row))
+			set_coverage (group, &iter, new_rule);
+	}
 	fs_rule_free (new_rule);
 
 	fs_policyview_save (current_policy);
@@ -531,24 +563,35 @@ apply_policy_now (gboolean announce)
 		}
 	} else if (outcome->result == FS_APPLY_OK) {
 		if (announce) {
+			/* The backend's notes (Linux: a rule left out, IPv6
+			 * not filtered) ride on the success: the policy is
+			 * in force, and this is what it does not cover. */
+			gchar *notes = outcome->notes != NULL
+				? g_strdup_printf (_("\n\nPlease note:\n%s"),
+				                   outcome->notes)
+				: g_strdup ("");
+
 			if (outcome->impact->added == 0 &&
 			    outcome->impact->removed == 0) {
-				fs_dialogs_info (
-					NULL, _("Nothing to change"),
+				gchar *msg = g_strdup_printf (
 					_("The policy already matches what is "
-					  "live on the firewall."));
+					  "live on the firewall.%s"), notes);
+
+				fs_dialogs_info (NULL, _("Nothing to change"), msg);
+				g_free (msg);
 			} else {
 				gchar *desc =
 					fs_policy_impact_describe (outcome->impact);
 				gchar *msg = g_strdup_printf (
 					_("%u rule(s) were applied to the "
-					  "firewall.\n\n%s"),
-					count, desc);
+					  "firewall.\n\n%s%s"),
+					count, desc, notes);
 
 				fs_dialogs_info (NULL, _("Policy applied"), msg);
 				g_free (msg);
 				g_free (desc);
 			}
+			g_free (notes);
 		}
 	} else {
 		/* Every failure tells the rollback truth next to the
@@ -612,6 +655,10 @@ apply_policy_now (gboolean announce)
 
 	fs_apply_outcome_free (outcome);
 	g_clear_error (&error);
+
+	/* An apply can change what the Status page says about IPv6
+	 * (loaded, unhooked, not installed). */
+	fs_statusview_refresh_ipv6 ();
 }
 
 static void
@@ -659,6 +706,9 @@ build_group (FsRuleKind kind, const gchar *title)
 	frame = gtk_frame_new (title);
 	gtk_style_context_add_class (gtk_widget_get_style_context (frame),
 	                             "card-frame");
+	/* The card's own border is the frame; a second, etched one inside
+	 * it read as a box in a box. */
+	gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_NONE);
 	box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
 	gtk_container_set_border_width (GTK_CONTAINER (box), 6);
 	gtk_container_add (GTK_CONTAINER (frame), box);
@@ -668,7 +718,7 @@ build_group (FsRuleKind kind, const gchar *title)
 	gtk_style_context_add_class (gtk_widget_get_style_context (group->view),
 	                             "data-grid");
 	gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (group->view),
-	                              GTK_TREE_VIEW_GRID_LINES_BOTH);
+	                              GTK_TREE_VIEW_GRID_LINES_HORIZONTAL);
 
 	columns = fs_rule_columns (kind, &n);
 
@@ -686,6 +736,23 @@ build_group (FsRuleKind kind, const gchar *title)
 		                                                    NULL);
 		gtk_tree_view_column_set_resizable (column, TRUE);
 		gtk_tree_view_append_column (GTK_TREE_VIEW (group->view), column);
+	}
+
+	/* What the rule reaches: read-only, recomputed on every edit.  The
+	 * tooltip says why ("an IPv4 address, so IPv4 only"). */
+	{
+		GtkCellRenderer *renderer = gtk_cell_renderer_text_new ();
+		GtkTreeViewColumn *column;
+
+		g_object_set (renderer, "editable", FALSE, NULL);
+		column = gtk_tree_view_column_new_with_attributes (_("Covers"),
+		                                                    renderer,
+		                                                    "text", n,
+		                                                    NULL);
+		gtk_tree_view_column_set_resizable (column, TRUE);
+		gtk_tree_view_append_column (GTK_TREE_VIEW (group->view), column);
+		gtk_tree_view_set_tooltip_column (GTK_TREE_VIEW (group->view),
+		                                  n + 1);
 	}
 
 	scroll = gtk_scrolled_window_new (NULL, NULL);
@@ -756,7 +823,7 @@ fs_policyview_page (FsPolicy *policy)
 	/* Toolbar: Apply lives here rather than in a menu because it is the
 	 * one action a user comes to this page for. */
 	bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-	gtk_container_set_border_width (GTK_CONTAINER (bar), 6);
+	gtk_widget_set_margin_bottom (bar, 14);
 
 	button = gtk_button_new_with_mnemonic (_("_Apply policy"));
 	gtk_style_context_add_class (gtk_widget_get_style_context (button),
@@ -769,6 +836,8 @@ fs_policyview_page (FsPolicy *policy)
 	 * guards.  Its state is the honest signal that Apply will stage
 	 * and audit without touching the firewall. */
 	button = gtk_toggle_button_new_with_label (_("Audit-only"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
 	gtk_widget_set_tooltip_text (button,
 	                             _("Stage changes and write audit "
 	                               "lines without touching the "
@@ -780,10 +849,24 @@ fs_policyview_page (FsPolicy *policy)
 	                  G_CALLBACK (on_audit_only_toggled), NULL);
 	gtk_box_pack_start (GTK_BOX (bar), button, FALSE, FALSE, 0);
 
+	/* What the new column means, once, where the tables start. */
+	{
+		GtkWidget *hint = gtk_label_new (
+			_("Covers: whether each rule reaches IPv4, IPv6 or both. "
+			  "Point at a row to see why."));
+
+		gtk_style_context_add_class (gtk_widget_get_style_context (hint),
+		                             "dim-label");
+		gtk_label_set_xalign (GTK_LABEL (hint), 1.0);
+		gtk_label_set_ellipsize (GTK_LABEL (hint), PANGO_ELLIPSIZE_END);
+		gtk_box_pack_end (GTK_BOX (bar), hint, TRUE, TRUE, 0);
+	}
+
 	gtk_box_pack_start (GTK_BOX (outer), bar, FALSE, FALSE, 0);
 
-	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
-	gtk_container_set_border_width (GTK_CONTAINER (page), 12);
+	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 14);
+	/* Room for an overlay scrollbar beside the cards. */
+	gtk_widget_set_margin_end (page, 6);
 
 	/* An empty policy would leave the user with nothing, so seed the
 	 * documented defaults on a first run. */

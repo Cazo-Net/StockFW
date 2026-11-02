@@ -82,6 +82,7 @@ fs_hit_copy (const FsHit *h)
 	copy->tos         = g_strdup (h->tos);
 	copy->protocol    = g_strdup (h->protocol);
 	copy->service     = g_strdup (h->service);
+	copy->rule        = g_strdup (h->rule);
 
 	return copy;
 }
@@ -103,6 +104,7 @@ fs_hit_free (FsHit *h)
 	g_free (h->tos);
 	g_free (h->protocol);
 	g_free (h->service);
+	g_free (h->rule);
 
 	g_free (h);
 }

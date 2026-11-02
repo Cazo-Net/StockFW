@@ -34,6 +34,38 @@ typedef enum
 	FS_APPLY_FAILED
 } FsApplyResult;
 
+/* Whether IPv6 traffic is filtered (1.0.7).  The Linux backend writes
+ * IPv4 and IPv6 rules separately, so the two can disagree; the UI shows
+ * this state next to the firewall state rather than letting "Running"
+ * imply both. */
+typedef enum
+{
+	FS_IPV6_UNKNOWN = 0,   /* cannot tell (not root, no backend)        */
+	FS_IPV6_FILTERED,      /* the policy is enforced for IPv6 too       */
+	FS_IPV6_UNFILTERED,    /* IPv4 is filtered, IPv6 is not             */
+	FS_IPV6_ABSENT         /* the kernel has no IPv6: nothing to filter */
+} FsIpv6State;
+
+/* "unknown" / "filtered" / "not-filtered" / "absent": the stable words
+ * used in JSON and audit lines. */
+const gchar *fs_ipv6_state_to_string (FsIpv6State state);
+
+/* The threat-intel rule set (core/fs-intelset.h).  Declared here so the
+ * vtable can name it without this header pulling the intel engine in. */
+typedef struct _FsIntelRuleset FsIntelRuleset;
+
+/* Whether the threat-intel rules are in the kernel (1.0.7). */
+typedef enum
+{
+	FS_INTEL_LIVE_UNKNOWN = 0,   /* cannot tell (not root, no nft)       */
+	FS_INTEL_LIVE_ABSENT,
+	FS_INTEL_LIVE_PRESENT
+} FsIntelLive;
+
+/* Where this computer is connected and which firewall profiles are in
+ * force (core/fs-netplace.h). */
+typedef struct _FsNetworkPlace FsNetworkPlace;
+
 /* Callback invoked for each event reported by the platform's firewall. */
 typedef void (*FsLogFunc) (const FsHit *hit, gpointer user_data);
 
@@ -59,6 +91,16 @@ typedef void (*FsLogFunc) (const FsHit *hit, gpointer user_data);
 	                                  * DROP is a real choice       */
 #define FS_FWHON_RATE_LIMIT    (1u << 1) /* ICMP rules are emitted
 	                                  * with rate limits           */
+#define FS_FWHON_LOG_ALLOWED   (1u << 2) /* 1.0.7: "Log allowed
+	                                  * connections" is a real switch
+	                                  * (Linux); Windows logs them
+	                                  * through its audit policy     */
+#define FS_FWHON_HOST_NAMES    (1u << 3) /* 1.0.7: a host name in a
+	                                  * rule is looked up at apply
+	                                  * time and written as each
+	                                  * family's addresses (Linux);
+	                                  * Windows Firewall takes
+	                                  * addresses only              */
 
 typedef struct
 {
@@ -139,6 +181,12 @@ typedef struct
 	gboolean (*log_start) (FsLogFunc callback, gpointer user_data, GError **error);
 	void     (*log_stop)  (void);
 	gboolean (*log_active) (void);
+	/* 1.0.7: where the monitor reads ("the kernel ring buffer
+	 * (/dev/kmsg)"), and -- when it stopped on its own, with
+	 * log_active() now FALSE -- why.  Borrowed strings; NULL when
+	 * there is nothing to say.  NULL slots: not reported. */
+	const gchar *(*log_source)  (void);
+	const gchar *(*log_problem) (void);
 
 	/* DHCP server control (meaningful for a router build). */
 	gboolean (*dhcp_set_enabled) (gboolean enabled, GError **error);
@@ -151,6 +199,16 @@ typedef struct
 	gboolean (*set_profile_enabled) (gint profile, gboolean enabled,
 	                                GError **error);
 
+	/* 1.0.7: the profiles in force right now and the networks that put
+	 * them there (core/fs-netplace.h), for the Overview's subtitle, the
+	 * "In use" marks on the profiles card, and the verdict: a computer
+	 * whose profile in use is switched off is not protected on that
+	 * network, however many other profiles are on.  Read in-process;
+	 * cheap enough for a timer.  Caller frees with
+	 * fs_network_place_free().  NULL when it cannot tell; a NULL slot
+	 * means the platform has no such notion (Linux). */
+	FsNetworkPlace *(*network_place) (void);
+
 	/* Authenticode status for one executable -- the platform half of
 	 * the trust engine.  Returns TRUE with the verdict (and a
 	 * signer's name when there is one), FALSE when the platform
@@ -159,6 +217,40 @@ typedef struct
 	gboolean (*trust_signature) (const gchar *path,
 	                             FsTrustSignature *sig,
 	                             gchar **publisher);
+
+	/* 1.0.7: IPv6 enforcement state.  detail, when not NULL, receives
+	 * a caller-owned sentence for the UI (may be set to NULL).  NULL
+	 * slot means FS_IPV6_UNKNOWN. */
+	FsIpv6State (*ipv6_state) (gchar **detail);
+
+	/* 1.0.7: what the last successful apply_rules left out or could
+	 * not cover, one sentence per line ("IPv6 is not filtered:
+	 * ip6tables is not installed."), or NULL when nothing.  These are
+	 * notes on an apply that succeeded -- the policy is in force --
+	 * so they are not a PARTIAL result, which the apply gate rightly
+	 * treats as a failure and rolls back.  Caller frees.  NULL slot:
+	 * the backend has none. */
+	gchar *(*apply_notes) (void);
+
+	/* 1.0.7 threat intel: replace every blocklist/location rule this
+	 * application owns with `ruleset' (an empty ruleset removes them),
+	 * all or nothing where the platform allows it.  NULL slots mean the
+	 * platform cannot enforce threat intel; the UI says so. */
+	gboolean (*intel_apply) (const FsIntelRuleset *ruleset,
+	                         GError **error);
+	/* Remove them all.  Not an error when there is nothing to remove. */
+	gboolean (*intel_clear) (GError **error);
+	/* Packets and bytes blocked per set id since the rules were loaded:
+	 * gchar* -> FsIntelCounter* (core/fs-intelset.h), both owned by the
+	 * table.  NULL when the platform cannot count or nothing is
+	 * loaded.  Must be cheap: it never lists set elements [S8.3]. */
+	GHashTable *(*intel_counters) (void);
+	/* Whether the rules are in the kernel right now, and the digest
+	 * they were loaded with (caller frees; NULL when absent or not
+	 * recorded).  The core compares it with what it last applied, so
+	 * a table removed behind StockFW's back (a reboot, `nft flush
+	 * ruleset') is reported, never assumed [S10]. */
+	FsIntelLive (*intel_live) (gchar **digest);
 } FsBackend;
 
 /* Profile identifiers, matching Windows' own numbering. */

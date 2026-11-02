@@ -25,6 +25,34 @@ gboolean fs_util_addr_in_cidr (const gchar *cidr, const gchar *addr);
  * translator. */
 gboolean fs_util_target_is_anyone (const gchar *target);
 
+/* Address families (1.0.7).  A bit set: a rule can cover both. */
+typedef enum
+{
+	FS_FAMILY_NONE = 0,
+	FS_FAMILY_IPV4 = 1 << 0,
+	FS_FAMILY_IPV6 = 1 << 1,
+	FS_FAMILY_BOTH = (1 << 0) | (1 << 1)
+} FsFamily;
+
+/* Which families a policy target can match:
+ *   "Anyone" (and its spellings)     both
+ *   an IPv4 address or CIDR block    IPv4
+ *   an IPv6 address or prefix        IPv6
+ *   a host name                      both (each family gets the
+ *                                    addresses the name resolves to)
+ *   anything invalid                 none */
+FsFamily fs_util_target_families (const gchar *target);
+
+/* "IPv4 + IPv6", "IPv4 only", "IPv6 only", or "" for none: the words
+ * the Policy page and the rule dialog show next to a rule. */
+const gchar *fs_util_families_label (FsFamily families);
+
+/* TRUE for a usable Linux interface name: 1-15 characters of letters,
+ * digits and . _ - @, not starting with '-'.  Interface names are
+ * written into iptables-restore input, so nothing else may get
+ * through. */
+gboolean fs_util_is_valid_ifname (const gchar *name);
+
 /* Returns the text between the first marker1 and the following marker2,
  * newly allocated, or NULL.  Free with g_free. */
 gchar *fs_util_get_text_between (const gchar *string,
@@ -65,6 +93,13 @@ const gchar *fs_util_apply_result_to_string (int result);
 gboolean fs_util_filter_match (const gchar *needle,
                                const gchar *const *fields,
                                gint n_fields);
+
+/* TRUE when addr is a loopback address: 127.0.0.0/8, ::1, an
+ * IPv4-mapped 127.x (::ffff:127.0.0.1), "localhost", or one of those
+ * in brackets ("[::1]").  The Overview hides connections between two
+ * loopback ends: programs on this computer talking to each other, which
+ * no firewall rule ever sees. */
+gboolean fs_util_is_loopback_address (const gchar *addr);
 
 /* Returns a copy of text with control characters (C0 and DEL)
  * removed, or NULL for NULL.  Rule names go through this before they

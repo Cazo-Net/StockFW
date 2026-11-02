@@ -617,16 +617,17 @@ build_icmp_page (PrefBinding *bind)
 		const gchar *key;
 		const gchar *label;
 		gboolean     fallback;   /* matches fs_settings_load_prefs() */
+		gboolean     v4_only;    /* no ICMPv6 counterpart (fs-script.c) */
 	} types[] = {
-		{ FS_PREFS_FW_ICMP_ECHO_REQUEST,    N_("Echo request (ping)"),   TRUE  },
-		{ FS_PREFS_FW_ICMP_MSTRACEROUTE,    N_("MS Traceroute"),         TRUE  },
-		{ FS_PREFS_FW_ICMP_MASKING,         N_("Address Masking"),       FALSE },
-		{ FS_PREFS_FW_ICMP_ECHO_REPLY,      N_("Echo reply (pong)"),     TRUE  },
-		{ FS_PREFS_FW_ICMP_TRACEROUTE,      N_("Traceroute"),            TRUE  },
-		{ FS_PREFS_FW_ICMP_REDIRECTION,     N_("Redirection"),           FALSE },
-		{ FS_PREFS_FW_ICMP_TIMESTAMPING,    N_("Timestamping"),          FALSE },
-		{ FS_PREFS_FW_ICMP_UNREACHABLE,     N_("Unreachable"),           TRUE  },
-		{ FS_PREFS_FW_ICMP_SOURCE_QUENCHES, N_("Source Quenching"),      FALSE }
+		{ FS_PREFS_FW_ICMP_ECHO_REQUEST,    N_("Echo request (ping)"),   TRUE,  FALSE },
+		{ FS_PREFS_FW_ICMP_MSTRACEROUTE,    N_("MS Traceroute"),         TRUE,  FALSE },
+		{ FS_PREFS_FW_ICMP_MASKING,         N_("Address Masking (IPv4 only)"), FALSE, TRUE },
+		{ FS_PREFS_FW_ICMP_ECHO_REPLY,      N_("Echo reply (pong)"),     TRUE,  FALSE },
+		{ FS_PREFS_FW_ICMP_TRACEROUTE,      N_("Traceroute"),            TRUE,  FALSE },
+		{ FS_PREFS_FW_ICMP_REDIRECTION,     N_("Redirection"),           FALSE, FALSE },
+		{ FS_PREFS_FW_ICMP_TIMESTAMPING,    N_("Timestamping (IPv4 only)"), FALSE, TRUE },
+		{ FS_PREFS_FW_ICMP_UNREACHABLE,     N_("Unreachable"),           TRUE,  FALSE },
+		{ FS_PREFS_FW_ICMP_SOURCE_QUENCHES, N_("Source Quenching (IPv4 only)"), FALSE, TRUE }
 	};
 	GtkWidget *page = page_new (_("ICMP Filtering"));
 	GtkWidget *grid;
@@ -661,6 +662,10 @@ build_icmp_page (PrefBinding *bind)
 		                   (gpointer) "bool");
 		g_object_set_data (G_OBJECT (check), "can-work",
 		                   GINT_TO_POINTER (1));
+		if (types[i].v4_only)
+			gtk_widget_set_tooltip_text (check,
+				_("ICMPv6 has no such message, so this only "
+				  "affects IPv4."));
 
 		bind->widgets = g_list_append (bind->widgets, check);
 		bind->icmp_types = g_list_append (bind->icmp_types, check);
@@ -679,6 +684,15 @@ build_icmp_page (PrefBinding *bind)
 		add_note (page,
 			_("Windows Firewall applies these rules without the rate "
 			  "limits the Linux backend puts on its ICMP accepts."));
+
+	/* Linux filters IPv6 too (1.0.7), and IPv6 finds its neighbours
+	 * and router with ICMPv6: those types are allowed whatever is
+	 * ticked here.  Windows keeps its own core-networking rules. */
+	if (fs_backend ()->ipv6_state != NULL)
+		add_note (page,
+			_("IPv6 uses the same choices. Neighbour discovery, router "
+			  "advertisements, \"packet too big\" and DHCPv6 replies "
+			  "are always allowed: IPv6 stops working without them."));
 
 	return page;
 }
@@ -776,6 +790,16 @@ build_advanced_page (PrefBinding *bind)
 	add_check (page, bind, FS_PREFS_FW_BLOCK_NON_ROUTABLES,
 	           _("Block traffic from reserved addresses on public interfaces"),
 	           TRUE, TRUE);
+
+	/* 1.0.7: only where the switch changes the generated rules.  Windows
+	 * logs accepted connections through its audit policy instead. */
+	if ((fs_backend ()->fw_honors & FS_FWHON_LOG_ALLOWED) != 0) {
+		add_section (page, _("Event logging"));
+		add_check (page, bind, FS_PREFS_FW_LOG_ALLOWED,
+		           _("Log allowed connections (the first packet of each "
+		             "new connection, at most 10 per second)"),
+		           TRUE, TRUE);
+	}
 
 	return page;
 }

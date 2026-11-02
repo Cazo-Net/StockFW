@@ -48,6 +48,11 @@ ${UnStrStr}
 !define MUI_HEADERIMAGE
 !define MUI_HEADERIMAGE_BITMAP "${PROJECT_DIR}\installer\nsis\resources\stockfw_header.bmp"
 !define MUI_HEADERIMAGE_UNBITMAP "${PROJECT_DIR}\installer\nsis\resources\stockfw_header.bmp"
+; Left-hand panel of the Welcome and Finish pages (164x314).  Without
+; these MUI falls back to its stock orange "wizard" picture.  Both
+; bitmaps come from tools/make-logo-assets.sh -- regenerate, don't edit.
+!define MUI_WELCOMEFINISHPAGE_BITMAP "${PROJECT_DIR}\installer\nsis\resources\stockfw_welcome.bmp"
+!define MUI_UNWELCOMEFINISHPAGE_BITMAP "${PROJECT_DIR}\installer\nsis\resources\stockfw_welcome.bmp"
 
 ;------------------------------------------------------------------------------
 ; Modern UI Pages
@@ -57,6 +62,12 @@ ${UnStrStr}
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
+; Finish-page settings belong to the page macro that follows them: MUI
+; reads and then clears them inside MUI_PAGE_FINISH.  They used to sit
+; at the end of this file, after the page was already built, so the
+; "Launch StockFW" box never appeared.
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
+!define MUI_FINISHPAGE_RUN_TEXT "Launch ${APP_NAME}"
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_WELCOME
@@ -372,19 +383,6 @@ Function guiInit
     ; Enable visual styles (Windows XP+)
     System::Call 'comctl32::InitCommonControlsEx(i)i'
 FunctionEnd
-
-;------------------------------------------------------------------------------
-; Modern UI Customizations
-;------------------------------------------------------------------------------
-; Custom bitmap for welcome page (optional)
-; !define MUI_WELCOMEFINISHPAGE_BITMAP "${NSISDIR}\resources\stockfw_welcome.bmp"
-
-; Custom finish page text
-!define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
-!define MUI_FINISHPAGE_RUN_TEXT "Launch ${APP_NAME}"
-!define MUI_FINISHPAGE_SHOWREADME ""
-!define MUI_FINISHPAGE_LINK "Visit ${APP_NAME} website"
-!define MUI_FINISHPAGE_LINK_LOCATION "${APP_WEBSITE}"
 
 ;------------------------------------------------------------------------------
 ; End

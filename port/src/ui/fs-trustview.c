@@ -661,7 +661,17 @@ add_report_row (GtkGrid *grid, gint row, const gchar *title,
 	gtk_label_set_selectable (GTK_LABEL (label), TRUE);
 	gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
 
-	gtk_grid_attach (grid, gtk_label_new (title), 0, row, 1, 1);
+	{
+		GtkWidget *name = gtk_label_new (title);
+
+		/* Field names read as quiet labels in a column of their
+		 * own, flush left like the values beside them. */
+		gtk_label_set_xalign (GTK_LABEL (name), 0.0);
+		gtk_widget_set_valign (name, GTK_ALIGN_START);
+		gtk_style_context_add_class (
+			gtk_widget_get_style_context (name), "muted");
+		gtk_grid_attach (grid, name, 0, row, 1, 1);
+	}
 	gtk_grid_attach (grid, label, 1, row, 1, 1);
 
 	*label_slot = label;
@@ -678,11 +688,8 @@ build_page (void)
 
 	trust_store = fs_trust_store_load (fs_trust_store_path ());
 
-	page_widget = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-	gtk_widget_set_margin_start (page_widget, 8);
-	gtk_widget_set_margin_end (page_widget, 8);
-	gtk_widget_set_margin_top (page_widget, 8);
-	gtk_widget_set_margin_bottom (page_widget, 8);
+	/* The window's page frame supplies the margins. */
+	page_widget = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
 
 	/* Row one: the path and the actions on it. */
 	top = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
@@ -700,6 +707,12 @@ build_page (void)
 	inspect_button = gtk_button_new_with_mnemonic (_("_Inspect"));
 	refresh_button = gtk_button_new_with_mnemonic (_("_Refresh list"));
 	scan_button = gtk_button_new_with_mnemonic (_("Scan _processes"));
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (inspect_button), "btn-primary");
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (refresh_button), "btn-subtle");
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (scan_button), "btn-subtle");
 
 	gtk_box_pack_start (GTK_BOX (top), path_entry, TRUE, TRUE, 0);
 	gtk_box_pack_start (GTK_BOX (top), inspect_button, FALSE, FALSE, 0);
@@ -716,6 +729,9 @@ build_page (void)
 
 	/* Row two: the report on the inspected file. */
 	report_frame = gtk_frame_new (_("Selected file"));
+	gtk_frame_set_shadow_type (GTK_FRAME (report_frame), GTK_SHADOW_NONE);
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (report_frame), "card-frame");
 	report_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
 	gtk_widget_set_margin_start (report_box, 8);
 	gtk_widget_set_margin_end (report_box, 8);
@@ -747,6 +763,10 @@ build_page (void)
 	write_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
 	attest_button = gtk_button_new_with_mnemonic (_("_Attest"));
 	forget_button = gtk_button_new_with_mnemonic (_("_Forget"));
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (attest_button), "btn-subtle");
+	gtk_style_context_add_class (
+		gtk_widget_get_style_context (forget_button), "btn-subtle");
 	gtk_box_pack_start (GTK_BOX (write_box), attest_button, FALSE,
 	                    FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (write_box), forget_button, FALSE,
@@ -782,6 +802,7 @@ build_page (void)
 	gtk_tree_view_append_column (GTK_TREE_VIEW (tree), column);
 
 	renderer = gtk_cell_renderer_text_new ();
+	g_object_set (renderer, "family", "monospace", NULL);
 	column = gtk_tree_view_column_new_with_attributes (
 		_("SHA-256"), renderer, "text", COL_DIGEST, NULL);
 	gtk_tree_view_column_set_resizable (column, TRUE);
@@ -801,7 +822,17 @@ build_page (void)
 	                                GTK_POLICY_AUTOMATIC);
 	gtk_container_add (GTK_CONTAINER (scroller), tree);
 	gtk_widget_set_vexpand (scroller, TRUE);
-	gtk_box_pack_start (GTK_BOX (page_widget), scroller, TRUE, TRUE, 0);
+	{
+		/* The attested programs, in a card like every other list. */
+		GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+
+		gtk_style_context_add_class (
+			gtk_widget_get_style_context (card), "card");
+		gtk_style_context_add_class (
+			gtk_widget_get_style_context (card), "list-card");
+		gtk_box_pack_start (GTK_BOX (card), scroller, TRUE, TRUE, 0);
+		gtk_box_pack_start (GTK_BOX (page_widget), card, TRUE, TRUE, 0);
+	}
 
 	/* Wiring. */
 	g_signal_connect (inspect_button, "clicked",

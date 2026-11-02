@@ -14,7 +14,23 @@ struct _FsApp
 	GtkWidget      *notebook;
 };
 
+/* The pages, in sidebar order. */
+typedef enum
+{
+	FS_PAGE_OVERVIEW = 0,
+	FS_PAGE_EVENTS,
+	FS_PAGE_ACTIVITY,
+	FS_PAGE_POLICY,
+	FS_PAGE_COPILOT,
+	FS_PAGE_TRUST,
+	FS_PAGE_COUNT
+} FsAppPage;
+
 void fs_app_activate (GtkApplication *app);
+
+/* Selects a page, as a click on its sidebar item would.  Does nothing
+ * before the window is built. */
+void fs_app_show_page (FsAppPage page);
 void fs_app_quit    (void);
 
 /* Re-reads the preferences into the shared FsSettings and hands the

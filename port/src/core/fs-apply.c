@@ -14,6 +14,8 @@
 #include "core/fs-prefs.h"
 #include "core/fs-util.h"
 
+#include <string.h>
+
 GQuark
 fs_apply_error_quark (void)
 {
@@ -23,6 +25,9 @@ fs_apply_error_quark (void)
 /* =====================================================================
  * Journal: what is actually live
  * ===================================================================== */
+
+/* The comment line naming the rule translation behind the journal. */
+#define JOURNAL_TRANSLATION_TAG "# rules translation "
 
 /* [ fs_apply_journal_path ] */
 gchar *
@@ -55,6 +60,13 @@ fs_apply_journal_save (const FsPolicy *policy, GError **error)
 
 	path = fs_apply_journal_path ();
 	out = g_string_new ("# StockFW applied policy journal v1\n");
+
+	/* Which translation wrote the rules now live: a later version
+	 * reading this journal knows whether a delta computed from it
+	 * describes the firewall (see fs-apply.h).  A comment line, so
+	 * the row format and older readers are unchanged. */
+	g_string_append_printf (out, JOURNAL_TRANSLATION_TAG "%d\n",
+	                        FS_FWRULE_TRANSLATION);
 
 	for (gint kind = 0; kind < FS_RULE_N_KINDS; kind++) {
 		for (guint i = 0; i < policy->kinds[kind]->len; i++) {
@@ -97,19 +109,26 @@ fs_apply_journal_save (const FsPolicy *policy, GError **error)
 	return ok;
 }
 
-/* [ fs_apply_journal_load ]
+/* [ journal_load ]
  * Strict by design: policy files may skip a malformed line and carry
  * on, a rollback target may not.  One bad row and the whole journal
  * is refused -- an honest "nothing to restore" beats a half-truth
- * pushed at the firewall in an emergency. */
-gboolean
-fs_apply_journal_load (FsPolicy *policy, GError **error)
+ * pushed at the firewall in an emergency.
+ *
+ * *translation (optional) receives the rule translation the journal
+ * names, 1 when it names none: every journal written before the line
+ * existed came from translation 1. */
+static gboolean
+journal_load (FsPolicy *policy, guint *translation, GError **error)
 {
 	gchar *path;
 	gchar *contents = NULL;
 	gchar **lines;
 	GError *inner = NULL;
 	gint row = 0;
+
+	if (translation != NULL)
+		*translation = 1;
 
 	if (policy == NULL) {
 		g_set_error_literal (error, FS_APPLY_ERROR,
@@ -145,6 +164,21 @@ fs_apply_journal_load (FsPolicy *policy, GError **error)
 		gint64 kind;
 
 		row = i + 1;
+
+		if (g_str_has_prefix (line, JOURNAL_TRANSLATION_TAG)) {
+			guint64 value = 0;
+
+			/* An unreadable number counts as "not this
+			 * translation": the full apply is the safe answer. */
+			if (!g_ascii_string_to_unsigned (
+				    line + strlen (JOURNAL_TRANSLATION_TAG),
+				    10, 0, G_MAXUINT, &value, NULL))
+				value = 0;
+
+			if (translation != NULL)
+				*translation = (guint) value;
+			continue;
+		}
 
 		if (*line == '\0' || *line == '#')
 			continue;
@@ -194,6 +228,13 @@ malformed:
 	g_free (path);
 	fs_policy_clear (policy);
 	return FALSE;
+}
+
+/* [ fs_apply_journal_load ] */
+gboolean
+fs_apply_journal_load (FsPolicy *policy, GError **error)
+{
+	return journal_load (policy, NULL, error);
 }
 
 /* =====================================================================
@@ -313,15 +354,43 @@ list_has_rule (const GList *rules, const FsFwRule *needle)
 	return FALSE;
 }
 
+/* [ delete_key ]
+ * What a delete by name actually removes: netsh deletes by the netsh
+ * spelling of a name (fs_fwrule_netsh_name), which folds ':', '(',
+ * ')', '/', ',' and '"' into other characters.  So "Allow a/b
+ * (inbound)" and "Allow a-b (inbound)" are one name to netsh, and
+ * deleting either takes both.  Case is folded too, on the assumption
+ * that Windows matches rule names without regard to it.  The delta
+ * keys removals and repairs on this, never on the display name: a key
+ * that is too wide only re-creates a rule that did not need it, one
+ * that is too narrow loses a rule the journal says is live.  Caller
+ * frees. */
+static gchar *
+delete_key (const gchar *name)
+{
+	gchar *netsh = fs_fwrule_netsh_name (name);
+	gchar *key = g_ascii_strdown (netsh, -1);
+
+	g_free (netsh);
+	return key;
+}
+
 static gboolean
 name_is_removed (const GList *remove, const gchar *name)
 {
-	for (const GList *iter = remove; iter != NULL; iter = iter->next) {
-		if (g_strcmp0 (iter->data, name) == 0)
-			return TRUE;
+	gchar *key = delete_key (name);
+	gboolean removed = FALSE;
+
+	for (const GList *iter = remove; iter != NULL && !removed;
+	     iter = iter->next) {
+		gchar *other = delete_key (iter->data);
+
+		removed = (strcmp (other, key) == 0);
+		g_free (other);
 	}
 
-	return FALSE;
+	g_free (key);
+	return removed;
 }
 
 /* [ fs_policy_delta ]
@@ -336,24 +405,29 @@ fs_policy_delta (const FsPolicy *before, const FsPolicy *after)
 	GList *old_rules;
 	GList *new_rules;
 	GList *iter;
+	GPtrArray *refused = NULL;
 
 	if (after == NULL) {
 		delta->empty = TRUE;
 		return delta;
 	}
 
-	new_rules = fs_fwrule_from_policy (after);
+	new_rules = fs_fwrule_from_policy_checked (after, &refused);
+	delta->refused = refused->len;
+	g_ptr_array_unref (refused);
 
 	if (before == NULL) {
 		/* Nothing known to be live: the whole set is an add. */
 		delta->add = new_rules;
-		delta->empty = (new_rules == NULL);
+		delta->empty = (new_rules == NULL && delta->refused == 0);
 		return delta;
 	}
 
 	old_rules = fs_fwrule_from_policy (before);
 
-	/* Remove: in old, not in new -- as unique names. */
+	/* Remove: in old, not in new -- one delete per name netsh tells
+	 * apart (a second delete of the same name finds nothing and
+	 * fails). */
 	{
 		GHashTable *seen = g_hash_table_new_full (g_str_hash, g_str_equal,
 		                                          g_free, NULL);
@@ -364,7 +438,7 @@ fs_policy_delta (const FsPolicy *before, const FsPolicy *after)
 			if (list_has_rule (new_rules, rule))
 				continue;
 
-			if (g_hash_table_add (seen, g_strdup (rule->name))) {
+			if (g_hash_table_add (seen, delete_key (rule->name))) {
 				delta->remove = g_list_prepend (
 					delta->remove, g_strdup (rule->name));
 			}
@@ -393,9 +467,11 @@ fs_policy_delta (const FsPolicy *before, const FsPolicy *after)
 	g_list_free (new_rules);          /* nodes only; data handled above */
 	fs_fwrule_list_free (old_rules);  /* nodes + data                   */
 
+	/* A refused row is work nobody did: never "nothing to change". */
 	delta->empty = (delta->remove == NULL &&
 	                delta->add == NULL &&
-	                delta->repair == NULL);
+	                delta->repair == NULL &&
+	                delta->refused == 0);
 
 	return delta;
 }
@@ -469,6 +545,7 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 	GError *journal_error = NULL;
 	FsPolicyDelta *delta = NULL;
 	gboolean have_before;
+	guint translation = 0;
 	gchar *desc;
 	const gchar *mode = "full";
 
@@ -478,7 +555,7 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 	outcome->result = FS_APPLY_FAILED;
 
 	before = fs_policy_new ();
-	have_before = fs_apply_journal_load (before, &journal_error);
+	have_before = journal_load (before, &translation, &journal_error);
 
 	outcome->impact = fs_policy_impact (have_before ? before : NULL, policy);
 	desc = fs_policy_impact_describe (outcome->impact);
@@ -514,8 +591,18 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 	}
 
 	/* Narrow path -- including the best case of all: nothing changed,
-	 * so the firewall is not touched at all. */
-	if (have_before) {
+	 * so the firewall is not touched at all.  Only when the live rules
+	 * came from this translation: after an upgrade the journal's rows
+	 * are the same but the rules on the firewall are the old
+	 * translation's (1.0.6: "allow DNS" as allow-everything), and a
+	 * delta computed from the rows would find nothing to change and
+	 * leave them in force.  The full apply clears every StockFW rule
+	 * and writes the set again.  The rollback target stays the
+	 * journal's rows either way. */
+	if (have_before && translation != FS_FWRULE_TRANSLATION)
+		mode = "full (rule translation upgrade)";
+
+	if (have_before && translation == FS_FWRULE_TRANSLATION) {
 		delta = fs_policy_delta (before, policy);
 
 		if (delta->empty) {
@@ -546,7 +633,11 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 		}
 	}
 
-	if (delta != NULL && backend->apply_delta != NULL) {
+	/* Refused rows go the full way: the backend's whole-set apply is
+	 * what reports them (Windows: PARTIAL with the reason), while a
+	 * delta has no rule to carry them in. */
+	if (delta != NULL && delta->refused == 0 &&
+	    backend->apply_delta != NULL) {
 		outcome->narrow = TRUE;
 		mode = "narrow";
 		outcome->result = backend->apply_delta (delta->remove,
@@ -561,6 +652,8 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 		gchar *detail;
 
 		outcome->applied = TRUE;
+		if (backend->apply_notes != NULL)
+			outcome->notes = backend->apply_notes ();
 
 		if (!fs_apply_journal_save (policy, &save_error)) {
 			detail = apply_detail (
@@ -571,8 +664,11 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 			g_free (detail);
 			g_clear_error (&save_error);
 		} else {
-			detail = apply_detail (source, mode, desc, NULL, NULL);
-			fs_audit_log ("policy applied", detail);
+			detail = apply_detail (source, mode, desc, outcome->notes,
+			                       NULL);
+			fs_audit_log (outcome->notes != NULL
+			              ? "policy applied, with notes"
+			              : "policy applied", detail);
 			g_free (detail);
 		}
 	} else {
@@ -644,5 +740,6 @@ fs_apply_outcome_free (FsApplyOutcome *outcome)
 
 	fs_policy_impact_free (outcome->impact);
 	g_free (outcome->rollback_detail);
+	g_free (outcome->notes);
 	g_free (outcome);
 }
