@@ -99,7 +99,8 @@ gchar *fs_intelset_nft_set_name (const gchar *id, FsAddrFamily family);
  *   	set <name> { type ipv4_addr; flags interval; }   one per family
  *   	...                                              that has ranges
  *   	chain input   { type filter hook input priority filter - 10;
- *   	                policy accept;  iif "lo" accept  <rules> }
+ *   	                policy accept;  comment "sfw:<digest>"
+ *   	                iif "lo" accept  <rules> }
  *   	chain output  { ... oif "lo" accept <rules> }
  *   	chain forward { ... <rules> }
  *   }
@@ -163,6 +164,17 @@ gboolean fs_intelset_nft_parse_live (const gchar *json, gchar **digest);
  * as a missing table. */
 FsIntelLive fs_intelset_nft_parse_live_state (const gchar *json,
                                               gchar **digest);
+
+/* The same answer from `nft -j list chains', which nft 1.0.9 prints
+ * without fetching a single set element (`list tables' fetches them
+ * all: seconds for a large country, design 12.7).  PRESENT when some
+ * chain of table inet stockfw_intel is listed, with *digest from the
+ * comment of its chain "input" (NULL when that chain or its comment is
+ * missing); ABSENT when a whole listing holds no chain of it -- which a
+ * table without chains also gives, so a caller that must tell those
+ * apart asks `list tables' then; UNKNOWN as above. */
+FsIntelLive fs_intelset_nft_parse_chains_live (const gchar *json,
+                                               gchar **digest);
 
 G_END_DECLS
 

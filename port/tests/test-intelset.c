@@ -85,16 +85,19 @@ static const gchar GOLDEN_IN4[] =
 	"\tset s_feed_in_4 { type ipv4_addr; flags interval; }\n"
 	"\tchain input {\n"
 	"\t\ttype filter hook input priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:7322e67f7b093a917d49cd417dd976d7\"\n"
 	"\t\tiif \"lo\" accept\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-in \" level info\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original counter drop comment \"feed-in\"\n"
 	"\t}\n"
 	"\tchain output {\n"
 	"\t\ttype filter hook output priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:7322e67f7b093a917d49cd417dd976d7\"\n"
 	"\t\toif \"lo\" accept\n"
 	"\t}\n"
 	"\tchain forward {\n"
 	"\t\ttype filter hook forward priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:7322e67f7b093a917d49cd417dd976d7\"\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-in \" level info\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original counter drop comment \"feed-in\"\n"
 	"\t}\n"
@@ -109,16 +112,19 @@ static const gchar GOLDEN_OUT6[] =
 	"\tset s_feed_out_6 { type ipv6_addr; flags interval; }\n"
 	"\tchain input {\n"
 	"\t\ttype filter hook input priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:3606c7af9889afedfedb2e3c37deb3b7\"\n"
 	"\t\tiif \"lo\" accept\n"
 	"\t}\n"
 	"\tchain output {\n"
 	"\t\ttype filter hook output priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:3606c7af9889afedfedb2e3c37deb3b7\"\n"
 	"\t\toif \"lo\" accept\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-out \" level info\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original counter reject with icmpx type admin-prohibited comment \"feed-out\"\n"
 	"\t}\n"
 	"\tchain forward {\n"
 	"\t\ttype filter hook forward priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:3606c7af9889afedfedb2e3c37deb3b7\"\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-out \" level info\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original counter reject with icmpx type admin-prohibited comment \"feed-out\"\n"
 	"\t}\n"
@@ -134,6 +140,7 @@ static const gchar GOLDEN_BOTH[] =
 	"\tset s_feed_both_6 { type ipv6_addr; flags interval; }\n"
 	"\tchain input {\n"
 	"\t\ttype filter hook input priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:68ca2f1469cc978f02dd154b67c0c887\"\n"
 	"\t\tiif \"lo\" accept\n"
 	"\t\tip saddr @s_feed_both_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-both \" level info\n"
 	"\t\tip saddr @s_feed_both_4 counter drop comment \"feed-both\"\n"
@@ -142,6 +149,7 @@ static const gchar GOLDEN_BOTH[] =
 	"\t}\n"
 	"\tchain output {\n"
 	"\t\ttype filter hook output priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:68ca2f1469cc978f02dd154b67c0c887\"\n"
 	"\t\toif \"lo\" accept\n"
 	"\t\tip daddr @s_feed_both_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-both \" level info\n"
 	"\t\tip daddr @s_feed_both_4 counter reject with icmpx type admin-prohibited comment \"feed-both\"\n"
@@ -150,6 +158,7 @@ static const gchar GOLDEN_BOTH[] =
 	"\t}\n"
 	"\tchain forward {\n"
 	"\t\ttype filter hook forward priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:68ca2f1469cc978f02dd154b67c0c887\"\n"
 	"\t\tip saddr @s_feed_both_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-both \" level info\n"
 	"\t\tip saddr @s_feed_both_4 counter drop comment \"feed-both\"\n"
 	"\t\tip daddr @s_feed_both_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-both \" level info\n"
@@ -175,6 +184,7 @@ static const gchar GOLDEN_SEVERAL[] =
 	"\tset s_feed_both_6 { type ipv6_addr; flags interval; }\n"
 	"\tchain input {\n"
 	"\t\ttype filter hook input priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\tiif \"lo\" accept\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-in \" level info\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original counter drop comment \"feed-in\"\n"
@@ -185,6 +195,7 @@ static const gchar GOLDEN_SEVERAL[] =
 	"\t}\n"
 	"\tchain output {\n"
 	"\t\ttype filter hook output priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\toif \"lo\" accept\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-out \" level info\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original counter reject with icmpx type admin-prohibited comment \"feed-out\"\n"
@@ -195,6 +206,7 @@ static const gchar GOLDEN_SEVERAL[] =
 	"\t}\n"
 	"\tchain forward {\n"
 	"\t\ttype filter hook forward priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-in \" level info\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original counter drop comment \"feed-in\"\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-out \" level info\n"
@@ -777,6 +789,7 @@ static const gchar LISTING[] =
 	"table inet stockfw_intel {\n"
 	"\tchain input {\n"
 	"\t\ttype filter hook input priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\tiif \"lo\" accept\n"
 	"\t\tip saddr @s_alpha_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI alpha \" level info\n"
 	"\t\tip saddr @s_alpha_4 counter packets 2 bytes 120 drop comment \"alpha\"\n"
@@ -792,6 +805,7 @@ static const gchar LISTING[] =
 	"table inet stockfw_intel {\n"
 	"\tchain output {\n"
 	"\t\ttype filter hook output priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\toif \"lo\" accept\n"
 	"\t\tip daddr @s_alpha_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI alpha \" level info\n"
 	"\t\tip daddr @s_alpha_4 counter packets 2 bytes 120 reject with icmpx admin-prohibited comment \"alpha\"\n"
@@ -802,6 +816,7 @@ static const gchar LISTING[] =
 	"table inet stockfw_intel {\n"
 	"\tchain forward {\n"
 	"\t\ttype filter hook forward priority filter - 10; policy accept;\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\tip saddr @s_alpha_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI alpha \" level info\n"
 	"\t\tip saddr @s_alpha_4 counter packets 0 bytes 0 drop comment \"alpha\"\n"
 	"\t\tip daddr @s_alpha_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI alpha \" level info\n"
@@ -1070,6 +1085,104 @@ test_live (void)
 	       "live: the digest pointer may be NULL");
 }
 
+/* The chains reader (design 12.7): `nft -j list chains', which nft
+ * prints without fetching a set element. */
+static void
+expect_chains (const gchar *what, const gchar *json, FsIntelLive want,
+               const gchar *want_digest)
+{
+	static gchar untouched[] = "untouched";
+	gchar *digest = untouched;
+	FsIntelLive got = fs_intelset_nft_parse_chains_live (json, &digest);
+
+	CHECK (got == want && g_strcmp0 (digest, want_digest) == 0,
+	       "chains: %s -> %s, digest %s (got %s, %s)", what,
+	       live_name (want), want_digest != NULL ? want_digest : "none",
+	       live_name (got), digest != NULL ? digest : "none");
+	if (digest != untouched)
+		g_free (digest);
+}
+
+#define D32 "0123456789abcdef0123456789abcdef"
+#define CHAIN(fam, tab, name, extra) \
+	"{\"chain\": {\"family\": \"" fam "\", \"table\": \"" tab "\", " \
+	"\"name\": \"" name "\", \"handle\": 1" extra "}}"
+#define HOOKED ", \"type\": \"filter\", \"hook\": \"input\", " \
+	"\"prio\": -10, \"policy\": \"accept\""
+
+static void
+test_chains_live (void)
+{
+	/* What nft 1.0.9 prints for our table beside the system's own. */
+	expect_chains ("ours, with the digest on input",
+	               "{\"nftables\": [{\"metainfo\": {\"version\": \"1.0.9\", "
+	               "\"json_schema_version\": 1}}, "
+	               CHAIN ("inet", "stockfw", "input", HOOKED) ", "
+	               CHAIN ("inet", "stockfw_intel", "input",
+	                      ", \"comment\": \"sfw:" D32 "\"" HOOKED) ", "
+	               CHAIN ("inet", "stockfw_intel", "output",
+	                      ", \"comment\": \"sfw:" D32 "\"" HOOKED) "]}",
+	               PRESENT, D32);
+	expect_chains ("the digest comes from input, not output",
+	               "{\"nftables\": ["
+	               CHAIN ("inet", "stockfw_intel", "output",
+	                      ", \"comment\": \"sfw:ffffffffffffffffffffffffffffffff\"")
+	               ", "
+	               CHAIN ("inet", "stockfw_intel", "input",
+	                      ", \"comment\": \"sfw:" D32 "\"") "]}",
+	               PRESENT, D32);
+	expect_chains ("ours, input without a comment (an older StockFW)",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw_intel", "input",
+	                                         HOOKED) "]}", PRESENT, NULL);
+	expect_chains ("ours, but no input chain",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw_intel", "output",
+	               ", \"comment\": \"sfw:" D32 "\"") "]}", PRESENT, NULL);
+	expect_chains ("a comment that is not a digest",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw_intel", "input",
+	               ", \"comment\": \"made by hand\"") "]}", PRESENT, NULL);
+	expect_chains ("a comment that is not a string",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw_intel", "input",
+	               ", \"comment\": 7") "]}", PRESENT, NULL);
+
+	/* Not ours. */
+	expect_chains ("no chains at all", "{\"nftables\": []}", ABSENT, NULL);
+	expect_chains ("only family ip",
+	               "{\"nftables\": [" CHAIN ("ip", "stockfw_intel", "input",
+	               ", \"comment\": \"sfw:" D32 "\"") "]}", ABSENT, NULL);
+	expect_chains ("only table stockfw_intel2",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw_intel2", "input",
+	               ", \"comment\": \"sfw:" D32 "\"") "]}", ABSENT, NULL);
+	expect_chains ("a chain object without its table",
+	               "{\"nftables\": [{\"chain\": {\"family\": \"inet\", "
+	               "\"name\": \"input\", \"comment\": \"sfw:" D32 "\"}}]}",
+	               ABSENT, NULL);
+	expect_chains ("a table object, not a chain",
+	               "{\"nftables\": [{\"table\": {\"family\": \"inet\", "
+	               "\"name\": \"stockfw_intel\", \"comment\": \"sfw:" D32
+	               "\"}}]}", ABSENT, NULL);
+	expect_chains ("an escaped table name is not ours",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw\\u005fintel",
+	               "input", ", \"comment\": \"sfw:" D32 "\"") "]}",
+	               ABSENT, NULL);
+
+	/* Unreadable says nothing about the kernel. */
+	expect_chains ("NULL", NULL, UNKNOWN, NULL);
+	expect_chains ("empty text", "", UNKNOWN, NULL);
+	expect_chains ("no nftables list", "{}", UNKNOWN, NULL);
+	expect_chains ("truncated", "{\"nftables\": ["
+	               CHAIN ("inet", "stockfw_intel", "input", ""), UNKNOWN, NULL);
+	expect_chains ("trailing garbage", "{\"nftables\": []} x", UNKNOWN, NULL);
+	expect_chains ("a warning line first", "Warning\n{\"nftables\": []}",
+	               UNKNOWN, NULL);
+	CHECK (fs_intelset_nft_parse_chains_live ("{\"nftables\": ["
+	       CHAIN ("inet", "stockfw_intel", "input", "") "]}", NULL) ==
+	       FS_INTEL_LIVE_PRESENT, "chains: the digest pointer may be NULL");
+}
+
+#undef HOOKED
+#undef CHAIN
+#undef D32
+
 int
 main (void)
 {
@@ -1081,6 +1194,7 @@ main (void)
 	test_digest ();
 	test_counters ();
 	test_live ();
+	test_chains_live ();
 
 	g_print ("\n%s: %u failure(s)\n", failures ? "FAILED" : "PASSED",
 	         failures);

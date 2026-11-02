@@ -158,6 +158,20 @@ first_line (const gchar *text, gsize max)
 	return g_strndup (text, n);
 }
 
+/* Every surface that reaches a platform without the threat-intel slots
+ * says this (design 12.10): blocklists and location rules alike. */
+static const gchar *
+unsupported_text (void)
+{
+#ifdef G_OS_WIN32
+	return _("Blocklists and country or network-owner blocking are not "
+	         "available on Windows yet.");
+#else
+	return _("Blocklists and country or network-owner blocking are not "
+	         "available on this platform yet.");
+#endif
+}
+
 /* ---- NAT64 -------------------------------------------------------- */
 
 /* 64:ff9b::/96, the NAT64 well-known prefix [N9, S7.3]. */
@@ -406,8 +420,8 @@ fs_intel_dir (GError **error)
 	}
 	return checked_dir (STORE_DEFAULT, me, error);
 #else
-	g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNSUPPORTED,
-	             _("Blocklists are not available on this platform yet."));
+	g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNSUPPORTED,
+	                     unsupported_text ());
 	return NULL;
 #endif
 }
@@ -689,6 +703,21 @@ list_conf_free (gpointer p)
 	g_free (l);
 }
 
+static void
+location_conf_free (gpointer p)
+{
+	FsIntelLocationConf *l = p;
+
+	if (l == NULL)
+		return;
+	g_free (l->id);
+	g_free (l->name);
+	g_strfreev (l->countries);
+	if (l->asns != NULL)
+		g_array_unref (l->asns);
+	g_free (l);
+}
+
 FsIntelConfig *
 fs_intel_config_new (void)
 {
@@ -700,6 +729,7 @@ fs_intel_config_new (void)
 	config->feeds = g_ptr_array_new_with_free_func (feed_conf_free);
 	config->lists = g_ptr_array_new_with_free_func (list_conf_free);
 	config->exceptions = fs_range_set_new ();
+	config->locations = g_ptr_array_new_with_free_func (location_conf_free);
 
 	cat = fs_feed_catalog (&n);
 	for (guint i = 0; i < n; i++) {
@@ -721,6 +751,8 @@ fs_intel_config_free (FsIntelConfig *config)
 	g_free (config->proxy);
 	g_ptr_array_unref (config->feeds);
 	g_ptr_array_unref (config->lists);
+	if (config->locations != NULL)
+		g_ptr_array_unref (config->locations);
 	fs_range_set_free (config->exceptions);
 	g_free (config);
 }
@@ -753,11 +785,26 @@ fs_intel_config_list (const FsIntelConfig *config, const gchar *id)
 	return NULL;
 }
 
+FsIntelLocationConf *
+fs_intel_config_location (const FsIntelConfig *config, const gchar *id)
+{
+	if (config == NULL || id == NULL || config->locations == NULL)
+		return NULL;
+	for (guint i = 0; i < config->locations->len; i++) {
+		FsIntelLocationConf *l = g_ptr_array_index (config->locations, i);
+
+		if (strcmp (l->id, id) == 0)
+			return l;
+	}
+	return NULL;
+}
+
 const gchar *
 fs_intel_config_label (const FsIntelConfig *config, const gchar *id)
 {
 	FsIntelFeedConf *f = fs_intel_config_feed (config, id);
 	FsIntelListConf *l;
+	FsIntelLocationConf *g;
 
 	if (f != NULL) {
 		const FsFeedInfo *fi;
@@ -768,7 +815,14 @@ fs_intel_config_label (const FsIntelConfig *config, const gchar *id)
 		return fi != NULL ? _(fi->name) : f->id;
 	}
 	l = fs_intel_config_list (config, id);
-	return l != NULL ? l->name : NULL;
+	if (l != NULL)
+		return l->name;
+	g = fs_intel_config_location (config, id);
+	if (g != NULL)
+		return g->name;
+	if (g_strcmp0 (id, FS_INTEL_GEO_ID) == 0)
+		return _("Location database");
+	return NULL;
 }
 
 /* A name the user typed: valid UTF-8, 1-128 bytes, no control
@@ -887,6 +941,153 @@ proxy_is_acceptable (const gchar *proxy)
 	auth += 3;
 	end = auth + strcspn (auth, "/?#");
 	return memchr (auth, '@', (gsize) (end - auth)) == NULL;
+}
+
+/* ---- location rule values (design 12.3) ----------------------------- */
+
+static FsIntelLocationKind
+location_kind_of_id (const gchar *id)
+{
+	if (id == NULL)
+		return 0;
+	if (g_str_has_prefix (id, "country-"))
+		return FS_INTEL_LOCATION_COUNTRY;
+	if (g_str_has_prefix (id, "asn-"))
+		return FS_INTEL_LOCATION_ASN;
+	return 0;
+}
+
+static gint
+cmp_str (gconstpointer a, gconstpointer b)
+{
+	return strcmp (*(const gchar *const *) a, *(const gchar *const *) b);
+}
+
+static gint
+cmp_u32 (gconstpointer a, gconstpointer b)
+{
+	guint32 x = *(const guint32 *) a, y = *(const guint32 *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* "DE", "de" -> "DE"; NULL for anything but two ASCII letters. */
+static gchar *
+country_code (const gchar *text)
+{
+	gchar *t = g_strstrip (g_strdup (text != NULL ? text : ""));
+	gchar *out = NULL;
+
+	if (strlen (t) == 2 && g_ascii_isalpha (t[0]) && g_ascii_isalpha (t[1]))
+		out = g_ascii_strup (t, 2);
+	g_free (t);
+	return out;
+}
+
+/* "13335", "AS13335", "as13335" -> 13335; FALSE for anything else,
+ * AS 0 included (it means "no AS"). */
+static gboolean
+as_number (const gchar *text, guint32 *asn)
+{
+	gchar *t = g_strstrip (g_strdup (text != NULL ? text : ""));
+	const gchar *d = t;
+	guint64 v = 0;
+	gboolean ok;
+
+	if (g_ascii_strncasecmp (d, "AS", 2) == 0)
+		d += 2;
+	ok = *d != '\0' && strspn (d, "0123456789") == strlen (d) &&
+	     strlen (d) <= 10 &&
+	     g_ascii_string_to_unsigned (d, 10, 1, G_MAXUINT32, &v, NULL);
+	g_free (t);
+	if (ok)
+		*asn = (guint32) v;
+	return ok;
+}
+
+/* The values of a rule of `kind', normalized: country codes upper case
+ * and sorted, or AS numbers sorted; duplicates dropped; 1 to
+ * FS_INTEL_LOCATION_MAX_VALUES.  On failure *why gets one sentence. */
+static gboolean
+location_values (FsIntelLocationKind kind, const gchar *const *values,
+                 gchar ***codes, GArray **asns, gchar **why)
+{
+	GPtrArray *c = g_ptr_array_new_with_free_func (g_free);
+	GArray *a = g_array_new (FALSE, FALSE, sizeof (guint32));
+	gboolean ok = TRUE;
+
+	*codes = NULL;
+	*asns = NULL;
+	*why = NULL;
+	for (guint i = 0; ok && values != NULL && values[i] != NULL; i++) {
+		gchar *t = g_strstrip (g_strdup (values[i]));
+
+		if (*t == '\0') {
+			g_free (t);
+			continue;   /* "CN;;HK" and a trailing ';' */
+		}
+		if (kind == FS_INTEL_LOCATION_COUNTRY) {
+			gchar *code = country_code (t);
+
+			if (code == NULL) {
+				*why = g_strdup_printf (_("\"%s\" is not a country "
+				                          "code (two letters)"), t);
+				ok = FALSE;
+			} else
+				g_ptr_array_add (c, code);
+		} else if (kind == FS_INTEL_LOCATION_ASN) {
+			guint32 n = 0;
+
+			if (!as_number (t, &n)) {
+				*why = g_strdup_printf (_("\"%s\" is not an AS number "
+				                          "(1 to 4294967295)"), t);
+				ok = FALSE;
+			} else
+				g_array_append_val (a, n);
+		} else {
+			*why = g_strdup (_("not a kind of location rule"));
+			ok = FALSE;
+		}
+		g_free (t);
+	}
+	if (ok && kind == FS_INTEL_LOCATION_COUNTRY) {
+		g_ptr_array_sort (c, cmp_str);
+		for (guint i = 1; i < c->len; )
+			if (strcmp (g_ptr_array_index (c, i),
+			            g_ptr_array_index (c, i - 1)) == 0)
+				g_ptr_array_remove_index (c, i);
+			else
+				i++;
+	} else if (ok) {
+		g_array_sort (a, cmp_u32);
+		for (guint i = 1; i < a->len; )
+			if (g_array_index (a, guint32, i) ==
+			    g_array_index (a, guint32, i - 1))
+				g_array_remove_index (a, i);
+			else
+				i++;
+	}
+	if (ok) {
+		guint n = kind == FS_INTEL_LOCATION_COUNTRY ? c->len : a->len;
+
+		if (n == 0 || n > FS_INTEL_LOCATION_MAX_VALUES) {
+			*why = g_strdup_printf (_("a rule holds 1 to %u values"),
+			                        FS_INTEL_LOCATION_MAX_VALUES);
+			ok = FALSE;
+		}
+	}
+	if (ok && kind == FS_INTEL_LOCATION_COUNTRY) {
+		g_ptr_array_add (c, NULL);
+		*codes = (gchar **) g_ptr_array_free (c, FALSE);
+		g_array_unref (a);
+	} else if (ok) {
+		*asns = a;
+		g_ptr_array_unref (c);
+	} else {
+		g_ptr_array_unref (c);
+		g_array_unref (a);
+	}
+	return ok;
 }
 
 /* ---- intel.conf ---------------------------------------------------- */
@@ -1091,6 +1292,70 @@ config_list_group (FsIntelConfig *config, GKeyFile *kf, const gchar *group,
 	       kf_time (kf, group, "imported-at", &l->imported_at, error);
 }
 
+static gboolean
+config_location_group (FsIntelConfig *config, GKeyFile *kf,
+                       const gchar *group, const gchar *id, GError **error)
+{
+	FsIntelLocationKind kind = location_kind_of_id (id);
+	const gchar *key = kind == FS_INTEL_LOCATION_COUNTRY ? "countries"
+	                                                     : "asns";
+	const gchar *other = kind == FS_INTEL_LOCATION_COUNTRY ? "asns"
+	                                                       : "countries";
+	FsIntelLocationConf *l;
+	gchar *name = NULL, *why = NULL;
+	gchar **values = NULL;
+	gsize n = 0;
+
+	if (!fs_intel_id_is_valid (id) || kind == 0) {
+		config_error (error, group, "id",
+		              _("not a valid location rule id (country-... or "
+		                "asn-...)"));
+		return FALSE;
+	}
+	if (fs_intel_config_location (config, id) != NULL)
+		return TRUE;
+	if (!kf_text (kf, group, "name", &name, error))
+		return FALSE;
+	if (!name_is_acceptable (name)) {
+		g_free (name);
+		config_error (error, group, "name", _("missing or invalid"));
+		return FALSE;
+	}
+	if (g_key_file_has_key (kf, group, other, NULL)) {
+		g_free (name);
+		config_error (error, group, other,
+		              kind == FS_INTEL_LOCATION_COUNTRY
+		              ? _("a country rule holds no AS numbers")
+		              : _("an AS rule holds no countries"));
+		return FALSE;
+	}
+	if (!kf_list (kf, group, key, &values, &n) || values == NULL) {
+		g_free (name);
+		config_error (error, group, key, values == NULL &&
+		              !g_key_file_has_key (kf, group, key, NULL)
+		              ? _("missing") : _("the value cannot be read"));
+		g_strfreev (values);
+		return FALSE;
+	}
+	l = g_new0 (FsIntelLocationConf, 1);
+	l->id = g_strdup (id);
+	l->name = name;
+	l->kind = kind;
+	l->dir = FS_INTEL_DIR_IN;
+	if (!location_values (kind, (const gchar *const *) values,
+	                      &l->countries, &l->asns, &why)) {
+		config_error (error, group, key, why);
+		g_free (why);
+		g_strfreev (values);
+		location_conf_free (l);
+		return FALSE;
+	}
+	g_strfreev (values);
+	g_ptr_array_add (config->locations, l);
+	return kf_bool (kf, group, "enabled", &l->enabled, error) &&
+	       kf_dir (kf, group, &l->dir, error);
+}
+
 static FsIntelConfig *
 config_parse (const gchar *text, gsize len, GError **error)
 {
@@ -1136,7 +1401,13 @@ config_parse (const gchar *text, gsize len, GError **error)
 			ok = config_feed_group (config, kf, g, g + 5, error);
 		else if (g_str_has_prefix (g, "list "))
 			ok = config_list_group (config, kf, g, g + 5, error);
+		else if (g_str_has_prefix (g, "location "))
+			ok = config_location_group (config, kf, g, g + 9, error);
 	}
+	if (ok && g_key_file_has_group (kf, "geo"))
+		ok = kf_bool (kf, "geo", "enabled", &config->geo_enabled, error) &&
+		     kf_time (kf, "geo", "accepted-at", &config->geo_accepted_at,
+		              error);
 
 	if (ok && g_key_file_has_key (kf, "exceptions", "ranges", NULL)) {
 		gsize n = 0;
@@ -1215,6 +1486,34 @@ config_serialize (const FsIntelConfig *config, gsize *len)
 		g_key_file_set_string (kf, g, "direction",
 		                       fs_intel_dir_to_string (l->dir));
 		g_key_file_set_int64 (kf, g, "imported-at", l->imported_at);
+		g_free (g);
+	}
+	g_key_file_set_boolean (kf, "geo", "enabled", config->geo_enabled);
+	g_key_file_set_int64 (kf, "geo", "accepted-at", config->geo_accepted_at);
+	for (guint i = 0; i < config->locations->len; i++) {
+		const FsIntelLocationConf *l = g_ptr_array_index (config->locations,
+		                                                  i);
+		gchar *g = g_strconcat ("location ", l->id, NULL);
+
+		g_key_file_set_string (kf, g, "name", l->name);
+		if (l->kind == FS_INTEL_LOCATION_COUNTRY)
+			g_key_file_set_string_list (kf, g, "countries",
+			                            (const gchar *const *) l->countries,
+			                            g_strv_length (l->countries));
+		else {
+			gchar **v = g_new0 (gchar *, l->asns->len + 1);
+
+			for (guint j = 0; j < l->asns->len; j++)
+				v[j] = g_strdup_printf ("%u", g_array_index (l->asns,
+				                                             guint32, j));
+			g_key_file_set_string_list (kf, g, "asns",
+			                            (const gchar *const *) v,
+			                            l->asns->len);
+			g_strfreev (v);
+		}
+		g_key_file_set_string (kf, g, "direction",
+		                       fs_intel_dir_to_string (l->dir));
+		g_key_file_set_boolean (kf, g, "enabled", l->enabled);
 		g_free (g);
 	}
 	if (!fs_range_set_is_empty (config->exceptions)) {
@@ -1430,8 +1729,17 @@ fs_intel_config_remove (FsIntelConfig *config, const gchar *id,
 	g_return_val_if_fail (config != NULL, FALSE);
 	f = fs_intel_config_feed (config, id);
 	l = fs_intel_config_list (config, id);
-	if (f == NULL && l == NULL)
-		return unknown_source (error, id);
+	if (f == NULL && l == NULL) {
+		FsIntelLocationConf *g = fs_intel_config_location (config, id);
+
+		if (g == NULL)
+			return unknown_source (error, id);
+		/* Its counters' state; it has no stored list. */
+		if (!store_remove_source (id, error))
+			return FALSE;
+		g_ptr_array_remove (config->locations, g);
+		return TRUE;
+	}
 	if (f != NULL && !f->custom) {
 		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
 		             _("Built-in feeds cannot be removed; turn %s off "
@@ -1456,16 +1764,19 @@ fs_intel_config_set_dir (FsIntelConfig *config, const gchar *id,
 {
 	FsIntelFeedConf *f = fs_intel_config_feed (config, id);
 	FsIntelListConf *l = fs_intel_config_list (config, id);
+	FsIntelLocationConf *g = fs_intel_config_location (config, id);
 
 	g_return_val_if_fail (config != NULL, FALSE);
-	if (f == NULL && l == NULL)
+	if (f == NULL && l == NULL && g == NULL)
 		return unknown_source (error, id);
 	if (!dir_arg_ok (dir, FALSE, error))
 		return FALSE;
 	if (f != NULL)
 		f->dir = dir;
-	else
+	else if (l != NULL)
 		l->dir = dir;
+	else
+		g->dir = dir;
 	return TRUE;
 }
 
@@ -1475,10 +1786,22 @@ fs_intel_config_set_enabled (FsIntelConfig *config, const gchar *id,
 {
 	FsIntelFeedConf *f = fs_intel_config_feed (config, id);
 	FsIntelListConf *l = fs_intel_config_list (config, id);
+	FsIntelLocationConf *g = fs_intel_config_location (config, id);
 
 	g_return_val_if_fail (config != NULL, FALSE);
-	if (f == NULL && l == NULL)
+	if (f == NULL && l == NULL && g == NULL)
 		return unknown_source (error, id);
+	if (g != NULL) {
+		/* Never a way around the database's consent [S14.1]. */
+		if (enabled && config->geo_accepted_at <= 0) {
+			g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_CONSENT,
+			             _("Turning on %s needs the location database's "
+			               "terms accepted first."), g->name);
+			return FALSE;
+		}
+		g->enabled = enabled;
+		return TRUE;
+	}
 	if (f != NULL) {
 		/* Never a way around the consent [S14.1]. */
 		if (enabled)
@@ -1556,6 +1879,221 @@ fs_intel_consent_text (const FsIntelConfig *config, const gchar *id)
 		  "Threat Intel page, or \"stockfw intel except <address>\")."));
 	g_free (often);
 	g_free (host);
+	return g_string_free (out, FALSE);
+}
+
+/* ---- Round 2: the location database's switch and rules (12.2, 12.3) */
+
+/* The host the database is downloaded from, for consent and for
+ * keeping it reachable. */
+#define GEO_HOST "location.ipfire.org"
+#define GEO_TERMS_URL "https://location.ipfire.org/"
+/* The database is due once a day. */
+#define GEO_INTERVAL_S (24 * 3600)
+
+gboolean
+fs_intel_geo_supported (void)
+{
+#ifdef __linux__
+	return TRUE;
+#else
+	return FALSE;
+#endif
+}
+
+FsIntelSourceKind
+fs_intel_source_kind (const gchar *id)
+{
+	if (!fs_intel_id_is_valid (id))
+		return FS_INTEL_KIND_UNKNOWN;
+	if (g_str_has_prefix (id, "custom-"))
+		return FS_INTEL_KIND_CUSTOM;
+	if (g_str_has_prefix (id, "local-"))
+		return FS_INTEL_KIND_LIST;
+	if (g_str_has_prefix (id, "country-"))
+		return FS_INTEL_KIND_COUNTRY;
+	if (g_str_has_prefix (id, "asn-"))
+		return FS_INTEL_KIND_ASN;
+	if (fs_feed_catalog_find (id) != NULL)
+		return FS_INTEL_KIND_FEED;
+	return FS_INTEL_KIND_UNKNOWN;
+}
+
+/* The location database is in use: on, its terms accepted, and the
+ * master switch on. */
+static gboolean
+geo_usable (const FsIntelConfig *config)
+{
+	return config->enabled && config->geo_enabled &&
+	       config->geo_accepted_at > 0 && fs_intel_geo_supported ();
+}
+
+gboolean
+fs_intel_config_enable_geo (FsIntelConfig *config, gboolean accept_terms,
+                            GError **error)
+{
+	g_return_val_if_fail (config != NULL, FALSE);
+	if (!fs_intel_geo_supported ()) {
+		g_set_error_literal (error, FS_INTEL_ERROR,
+		                     FS_INTEL_ERR_UNSUPPORTED, unsupported_text ());
+		return FALSE;
+	}
+	if (config->geo_accepted_at <= 0 && !accept_terms) {
+		g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_CONSENT,
+		                     _("Turning on the location database needs its "
+		                       "terms accepted first."));
+		return FALSE;
+	}
+	if (config->geo_accepted_at <= 0)
+		config->geo_accepted_at = g_get_real_time () / G_USEC_PER_SEC;
+	config->geo_enabled = TRUE;
+	return TRUE;
+}
+
+void
+fs_intel_config_disable_geo (FsIntelConfig *config)
+{
+	g_return_if_fail (config != NULL);
+	config->geo_enabled = FALSE;
+}
+
+gboolean
+fs_intel_config_add_location (FsIntelConfig *config, const gchar *name,
+                              FsIntelLocationKind kind,
+                              const gchar *const *values, FsIntelDir dir,
+                              gchar **id_out, GError **error)
+{
+	FsIntelLocationConf *l;
+	gchar **codes = NULL, *why = NULL, *id;
+	GArray *asns = NULL;
+
+	g_return_val_if_fail (config != NULL, FALSE);
+	if (id_out != NULL)
+		*id_out = NULL;
+	if (!fs_intel_geo_supported ()) {
+		g_set_error_literal (error, FS_INTEL_ERROR,
+		                     FS_INTEL_ERR_UNSUPPORTED, unsupported_text ());
+		return FALSE;
+	}
+	if (config->geo_accepted_at <= 0) {
+		g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_CONSENT,
+		                     _("A location rule needs the location "
+		                       "database's terms accepted first."));
+		return FALSE;
+	}
+	if (kind != FS_INTEL_LOCATION_COUNTRY && kind != FS_INTEL_LOCATION_ASN) {
+		g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+		                     _("A location rule holds countries or AS "
+		                       "numbers."));
+		return FALSE;
+	}
+	if (!name_is_acceptable (name)) {
+		g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+		                     _("A rule needs a name of 1 to 128 "
+		                       "characters."));
+		return FALSE;
+	}
+	if (!dir_arg_ok (dir, FALSE, error))
+		return FALSE;
+	if (!location_values (kind, values, &codes, &asns, &why)) {
+		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+		             _("Not a location rule: %s."), why);
+		g_free (why);
+		return FALSE;
+	}
+	id = slug_id (kind == FS_INTEL_LOCATION_COUNTRY ? "country-" : "asn-",
+	              name);
+	if (fs_intel_config_location (config, id) != NULL) {
+		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+		             _("A rule called \"%s\" already exists."), name);
+		g_free (id);
+		g_strfreev (codes);
+		if (asns != NULL)
+			g_array_unref (asns);
+		return FALSE;
+	}
+	l = g_new0 (FsIntelLocationConf, 1);
+	l->id = id;
+	l->name = g_strdup (name);
+	l->kind = kind;
+	l->countries = codes;
+	l->asns = asns;
+	l->dir = dir;
+	l->enabled = TRUE;
+	g_ptr_array_add (config->locations, l);
+	if (id_out != NULL)
+		*id_out = g_strdup (id);
+	return TRUE;
+}
+
+gboolean
+fs_intel_config_set_location_values (FsIntelConfig *config, const gchar *id,
+                                     const gchar *const *values,
+                                     GError **error)
+{
+	FsIntelLocationConf *l = fs_intel_config_location (config, id);
+	gchar **codes = NULL, *why = NULL;
+	GArray *asns = NULL;
+
+	g_return_val_if_fail (config != NULL, FALSE);
+	if (l == NULL)
+		return unknown_source (error, id);
+	if (!location_values (l->kind, values, &codes, &asns, &why)) {
+		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+		             _("Not a location rule: %s."), why);
+		g_free (why);
+		return FALSE;
+	}
+	g_strfreev (l->countries);
+	if (l->asns != NULL)
+		g_array_unref (l->asns);
+	l->countries = codes;
+	l->asns = asns;
+	return TRUE;
+}
+
+gchar *
+fs_intel_geo_attribution (void)
+{
+	return g_strdup_printf (
+		_("Location data: IPFire location database (%s). The file "
+		  "declares the licence CC BY-SA 4.0; StockFW has not confirmed "
+		  "it, so commercial use may need IPFire's permission."),
+		GEO_TERMS_URL);
+}
+
+gchar *
+fs_intel_geo_consent_text (const FsIntelConfig *config)
+{
+	GString *out = g_string_new (NULL);
+	gchar *attribution = fs_intel_geo_attribution ();
+
+	(void) config;
+	g_string_append_printf (out,
+		_("Turning on the location database makes StockFW download it "
+		  "from %s once a day (about 6 MB)."), GEO_HOST);
+	g_string_append (out, "\n\n");
+	g_string_append_printf (out,
+		_("Each download shows %s this computer's public IP address and "
+		  "that it runs \"StockFW/%s\". Nothing else is sent. The file "
+		  "is signed by IPFire; StockFW refuses any copy whose signature "
+		  "does not verify, and never goes back to an older copy."),
+		GEO_HOST, FS_VERSION);
+	g_string_append (out, "\n\n");
+	g_string_append (out, attribution);
+	g_string_append_printf (out, _(" Terms: %s"), GEO_TERMS_URL);
+	g_string_append (out, "\n\n");
+	g_string_append (out,
+		_("A country here is where an address range is registered, not "
+		  "where a computer is. Some networks are anycast: the same "
+		  "addresses answer from many places, so a country or network "
+		  "rule can also block services elsewhere. StockFW keeps them in "
+		  "the rule and tells you how many there are."));
+	g_string_append (out, "\n\n");
+	g_string_append (out,
+		_("If a rule blocks something you need, add an exception for that "
+		  "address; exceptions always win."));
+	g_free (attribution);
 	return g_string_free (out, FALSE);
 }
 
@@ -2094,8 +2632,8 @@ read_user_file (const gchar *path, gsize *len, GError **error)
 	g_byte_array_append (buf, (const guint8 *) "", 1);
 	return (gchar *) g_byte_array_free (buf, FALSE);
 #else
-	g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNSUPPORTED,
-	             _("Blocklists are not available on this platform yet."));
+	g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNSUPPORTED,
+	                     unsupported_text ());
 	return NULL;
 #endif
 }
@@ -2259,6 +2797,207 @@ fetch (const gchar *url, const gchar *proxy, GError **error)
 	data = fetcher_data;
 	G_UNLOCK (fetcher);
 	return fn (url, proxy, data, error);
+}
+
+/* ---- the location database in the store (design 12.4, 12.8) ------- */
+
+/* The copy in use, opened once (verified and checked) and shared until
+ * location.db changes: verifying 55 MB for every lookup would make a
+ * busy event list crawl.  An FsGeodb is read-only, so one copy serves
+ * every thread. */
+typedef struct
+{
+	gint     ref;
+	FsGeodb *db;
+	guint64  dev, ino;
+	gint64   size, mtime_ns;
+} GeoHandle;
+
+#ifdef __linux__
+G_LOCK_DEFINE_STATIC (geo_cache);
+static GeoHandle *geo_cached;
+#endif
+
+static void
+geo_handle_unref (GeoHandle *h)
+{
+	if (h != NULL && g_atomic_int_dec_and_test (&h->ref)) {
+		fs_geodb_close (h->db);
+		g_free (h);
+	}
+}
+
+#ifdef __linux__
+static void
+geo_untrusted (GError **error, const gchar *why)
+{
+	g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_TAMPERED,
+	             _("The location database in use cannot be trusted (%s); "
+	               "update it again."), why);
+}
+#endif
+
+/* The copy in use.  NULL with *missing set (and no error) when there is
+ * none; NULL with an error when it is there but does not open: a copy
+ * that no longer verifies or checks is FS_INTEL_ERR_TAMPERED. */
+static GeoHandle *
+geo_acquire (const Store *store, gboolean *missing, GError **error)
+{
+#ifdef __linux__
+	struct stat st;
+	GeoHandle *h = NULL, *old;
+	GError *local = NULL;
+	gchar *dir, *why;
+	FsGeodb *db;
+	gint64 mtime;
+
+	*missing = FALSE;
+	if (fstatat (store->fd, FS_GEODB_FILE, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+		if (errno == ENOENT) {
+			*missing = TRUE;
+			return NULL;
+		}
+		store_error (error, FS_GEODB_FILE, g_strerror (errno));
+		return NULL;
+	}
+	mtime = (gint64) st.st_mtim.tv_sec * 1000000000 + st.st_mtim.tv_nsec;
+	G_LOCK (geo_cache);
+	if (geo_cached != NULL && S_ISREG (st.st_mode) &&
+	    geo_cached->dev == (guint64) st.st_dev &&
+	    geo_cached->ino == (guint64) st.st_ino &&
+	    geo_cached->size == (gint64) st.st_size &&
+	    geo_cached->mtime_ns == mtime) {
+		h = geo_cached;
+		g_atomic_int_inc (&h->ref);
+	}
+	G_UNLOCK (geo_cache);
+	if (h != NULL)
+		return h;
+
+	dir = fs_intel_dir (error);
+	if (dir == NULL)
+		return NULL;
+	db = fs_geodb_open_store (dir, &local);
+	g_free (dir);
+	if (db == NULL) {
+		why = error_text (local);
+		geo_untrusted (error, why);
+		g_free (why);
+		g_clear_error (&local);
+		return NULL;
+	}
+	h = g_new0 (GeoHandle, 1);
+	h->ref = 2;   /* the cache's and the caller's */
+	h->db = db;
+	h->dev = (guint64) st.st_dev;
+	h->ino = (guint64) st.st_ino;
+	h->size = (gint64) st.st_size;
+	h->mtime_ns = mtime;
+	G_LOCK (geo_cache);
+	old = geo_cached;
+	geo_cached = h;
+	G_UNLOCK (geo_cache);
+	geo_handle_unref (old);
+	return h;
+#else
+	(void) store;
+	*missing = FALSE;
+	g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNSUPPORTED,
+	                     unsupported_text ());
+	return NULL;
+#endif
+}
+
+/* geodb.state: the update's own record (12.4). */
+#define GEO_STATE_NAME "geodb.state"
+
+typedef struct
+{
+	gint64 attempted_at, fetched_at, created_at;
+	gchar *last_error, *refused;
+} GeoState;
+
+static void
+geo_state_clear (GeoState *g)
+{
+	g_free (g->last_error);
+	g_free (g->refused);
+	memset (g, 0, sizeof *g);
+}
+
+/* A missing or damaged record reads as "never attempted". */
+static void
+geo_state_read (const Store *store, GeoState *g)
+{
+	gsize len = 0;
+	gchar *text = store_read (store, GEO_STATE_NAME, STATE_MAX, &len, NULL,
+	                          NULL);
+	GKeyFile *kf = g_key_file_new ();
+
+	memset (g, 0, sizeof *g);
+	if (text != NULL && g_utf8_validate (text, (gssize) len, NULL) &&
+	    g_key_file_load_from_data (kf, text, len, G_KEY_FILE_NONE, NULL) &&
+	    g_key_file_has_group (kf, "geodb")) {
+		static const gchar *const keys[3] = {
+			"attempted-at", "fetched-at", "created-at"
+		};
+		gint64 *slots[3] = { &g->attempted_at, &g->fetched_at,
+		                     &g->created_at };
+		gboolean ok = TRUE;
+
+		for (guint i = 0; i < 3 && ok; i++) {
+			gchar *raw = kf_raw (kf, "geodb", keys[i]);
+			guint64 v = 0;
+
+			if (raw != NULL)
+				ok = g_ascii_string_to_unsigned (raw, 10, 0, G_MAXINT64,
+				                                 &v, NULL);
+			*slots[i] = (gint64) v;
+			g_free (raw);
+		}
+		if (ok) {
+			kf_string (kf, "geodb", "last-error", &g->last_error);
+			kf_string (kf, "geodb", "refused", &g->refused);
+		} else
+			geo_state_clear (g);
+	}
+	g_key_file_free (kf);
+	g_free (text);
+}
+
+static gboolean
+geo_state_write (const Store *store, const GeoState *g, GError **error)
+{
+	GKeyFile *kf = g_key_file_new ();
+	gchar *data;
+	gsize len = 0;
+	gboolean ok;
+
+	g_key_file_set_int64 (kf, "geodb", "attempted-at", MAX (g->attempted_at, 0));
+	g_key_file_set_int64 (kf, "geodb", "fetched-at", MAX (g->fetched_at, 0));
+	g_key_file_set_int64 (kf, "geodb", "created-at", MAX (g->created_at, 0));
+	if (g->last_error != NULL)
+		g_key_file_set_string (kf, "geodb", "last-error", g->last_error);
+	if (g->refused != NULL)
+		g_key_file_set_string (kf, "geodb", "refused", g->refused);
+	data = g_key_file_to_data (kf, &len, NULL);
+	g_key_file_free (kf);
+	ok = store_write (store, GEO_STATE_NAME, data, len, error);
+	g_free (data);
+	return ok;
+}
+
+/* "2026-11-02" */
+static gchar *
+day_text (gint64 t)
+{
+	GDateTime *dt = g_date_time_new_from_unix_utc (t);
+	gchar *out = dt != NULL ? g_date_time_format (dt, "%Y-%m-%d")
+	                        : g_strdup ("?");
+
+	if (dt != NULL)
+		g_date_time_unref (dt);
+	return out;
 }
 
 void
@@ -2484,6 +3223,102 @@ record:
 	return result_new (f->id, outcome, entries, message);
 }
 
+/* The location database (12.5): enabled, consented and due, or no
+ * request at all [S14].  The copy in use is replaced only by a newer
+ * copy that verifies and checks (fs_geodb_update). */
+static FsIntelUpdateResult *
+geo_update_one (const FsIntelConfig *config, guint flags, gint64 now)
+{
+	FsIntelUpdateOutcome outcome;
+	FsGeodbOutcome got;
+	GeoState g;
+	Store store;
+	GError *local = NULL;
+	gchar *dir, *why = NULL, *message, *detail;
+	gint64 created = 0;
+
+	if (!config->enabled)
+		return result_new (FS_INTEL_GEO_ID, FS_INTEL_NOT_DUE, 0,
+		                   g_strdup (_("Threat intel is switched off.")));
+	if (!fs_intel_geo_supported ())
+		return result_new (FS_INTEL_GEO_ID, FS_INTEL_FAILED, 0,
+		                   g_strdup (unsupported_text ()));
+	if (config->geo_accepted_at <= 0)
+		return result_new (FS_INTEL_GEO_ID, FS_INTEL_NEEDS_CONSENT, 0,
+		                   g_strdup (_("Its terms have not been "
+		                               "accepted.")));
+	if (!store_open (&store, &local)) {
+		why = error_text (local);
+		g_clear_error (&local);
+		return result_new (FS_INTEL_GEO_ID, FS_INTEL_FAILED, 0, why);
+	}
+	geo_state_read (&store, &g);
+	if (!(flags & FS_INTEL_UPDATE_NOW) && g.attempted_at > 0 &&
+	    g.attempted_at <= now && now - g.attempted_at < GEO_INTERVAL_S) {
+		geo_state_clear (&g);
+		store_close (&store);
+		return result_new (FS_INTEL_GEO_ID, FS_INTEL_NOT_DUE, 0,
+		                   g_strdup (_("Not due yet.")));
+	}
+
+	g.attempted_at = now;
+	dir = fs_intel_dir (&local);
+	got = dir != NULL ? fs_geodb_update (dir, config->proxy, now, &created,
+	                                     &local)
+	                  : FS_GEODB_FAILED;
+	g_free (dir);
+	switch (got) {
+	case FS_GEODB_UPDATED:
+	case FS_GEODB_UNCHANGED: {
+		gchar *day = day_text (created);
+
+		outcome = got == FS_GEODB_UPDATED ? FS_INTEL_UPDATED
+		                                  : FS_INTEL_UNCHANGED;
+		message = got == FS_GEODB_UPDATED
+		          ? g_strdup_printf (_("Updated: the copy of %s is in "
+		                               "use."), day)
+		          : g_strdup (_("Unchanged since the last download."));
+		g_free (day);
+		g.fetched_at = now;
+		g.created_at = created;
+		g_clear_pointer (&g.last_error, g_free);
+		g_clear_pointer (&g.refused, g_free);
+		break;
+	}
+	case FS_GEODB_REFUSED:
+		outcome = FS_INTEL_REFUSED;
+		why = first_line (local != NULL ? local->message : "?",
+		                  AUDIT_TEXT_MAX);
+		message = g_strdup_printf (_("Refused: %s"), why);
+		g_free (g.refused);
+		g.refused = g_strdup (why);
+		g_clear_pointer (&g.last_error, g_free);
+		if (created > 0)
+			g.created_at = created;
+		break;
+	case FS_GEODB_FAILED:
+	default:
+		outcome = FS_INTEL_FAILED;
+		why = error_text (local);
+		message = g_strdup_printf (_("Download failed: %s"), why);
+		g_free (g.last_error);
+		g.last_error = g_strdup (why);
+		if (created > 0)
+			g.created_at = created;
+		break;
+	}
+	g_clear_error (&local);
+	geo_state_write (&store, &g, NULL);
+	detail = g_strdup_printf ("%s: %s: %s", FS_INTEL_GEO_ID,
+	                          outcome_word (outcome), message);
+	audit ("intel-update", detail);
+	g_free (detail);
+	geo_state_clear (&g);
+	g_free (why);
+	store_close (&store);
+	return result_new (FS_INTEL_GEO_ID, outcome, 0, message);
+}
+
 GPtrArray *
 fs_intel_update (const FsIntelConfig *config, const gchar *only_id,
                  guint flags, gint64 now)
@@ -2496,6 +3331,14 @@ fs_intel_update (const FsIntelConfig *config, const gchar *only_id,
 
 	g_return_val_if_fail (config != NULL, out);
 
+	if (g_strcmp0 (only_id, FS_INTEL_GEO_ID) == 0) {
+		g_ptr_array_add (out, config->geo_enabled
+			? geo_update_one (config, flags, now)
+			: result_new (only_id, FS_INTEL_FAILED, 0,
+			              g_strdup (_("The location database is "
+			                          "turned off."))));
+		return out;
+	}
 	if (only_id != NULL) {
 		FsIntelFeedConf *f = fs_intel_config_feed (config, only_id);
 
@@ -2560,6 +3403,9 @@ fs_intel_update (const FsIntelConfig *config, const gchar *only_id,
 	}
 	if (opened)
 		store_close (&store);
+	/* The location database, after the feeds, while it is on. */
+	if (only_id == NULL && config->geo_enabled)
+		g_ptr_array_add (out, geo_update_one (config, flags, now));
 	return out;
 }
 
@@ -2651,6 +3497,22 @@ want_any (const FsIntelConfig *config)
 	for (guint i = 0; i < config->lists->len; i++)
 		if (((FsIntelListConf *) g_ptr_array_index (config->lists, i))->enabled)
 			return TRUE;
+	/* A location rule counts only while the database is in use. */
+	for (guint i = 0; geo_usable (config) && i < config->locations->len; i++)
+		if (((FsIntelLocationConf *)
+		     g_ptr_array_index (config->locations, i))->enabled)
+			return TRUE;
+	return FALSE;
+}
+
+/* Some location rule is turned on (whether or not the database is). */
+static gboolean
+any_location_enabled (const FsIntelConfig *config)
+{
+	for (guint i = 0; i < config->locations->len; i++)
+		if (((FsIntelLocationConf *)
+		     g_ptr_array_index (config->locations, i))->enabled)
+			return TRUE;
 	return FALSE;
 }
 
@@ -2677,15 +3539,22 @@ enabled_sources (const FsIntelConfig *config, GPtrArray *ids, GArray *dirs)
 	}
 }
 
-/* The largest sets, for a limit's error: "A (12,345), B (9,000)". */
+/* The largest sets of one kind, for a limit's error: "A (12,345), B
+ * (9,000)".  locations: location sets only, else every other set. */
 static gchar *
-largest_sets (const FsIntelRuleset *rs, gboolean by_cover)
+largest_sets (const FsIntelRuleset *rs, gboolean by_cover, gboolean locations)
 {
 	GPtrArray *order = g_ptr_array_new ();
 	GString *out = g_string_new (NULL);
 
-	for (guint i = 0; i < rs->sets->len; i++)
-		g_ptr_array_add (order, g_ptr_array_index (rs->sets, i));
+	for (guint i = 0; i < rs->sets->len; i++) {
+		FsIntelSet *s = g_ptr_array_index (rs->sets, i);
+		FsIntelSourceKind k = fs_intel_source_kind (s->id);
+		gboolean loc = (k == FS_INTEL_KIND_COUNTRY || k == FS_INTEL_KIND_ASN);
+
+		if (loc == locations)
+			g_ptr_array_add (order, s);
+	}
 	for (guint i = 0; i < order->len; i++)
 		for (guint j = i + 1; j < order->len; j++) {
 			FsIntelSet *a = g_ptr_array_index (order, i);
@@ -2717,6 +3586,193 @@ largest_sets (const FsIntelRuleset *rs, gboolean by_cover)
 	return g_string_free (out, FALSE);
 }
 
+/* Everything one build keeps reachable (design 6.4), kind by kind, and
+ * which sets named each kind, for the notes. */
+typedef struct
+{
+	KeepKind    kinds[7];
+	guint       nkinds;
+	FsRangeSet *all;
+	FsRangeSet *hits[7];
+	GPtrArray  *labels[7];
+} Keep;
+
+/* Take everything `keep' holds out of `set' (normalized; owned), map
+ * an outbound set into 64:ff9b::/96, and add it to the rule set.
+ * anycast (nullable): the anycast networks of the database; the part
+ * of the set inside them, after the subtractions, is counted into
+ * *stats.  *intervals grows by the set's size. */
+static gboolean
+add_set (FsIntelRuleset *rs, Keep *keep, const gchar *id,
+         const gchar *label, FsIntelDir dir, FsRangeSet *set,
+         FsRangeSet *union4, const FsRangeSet *anycast,
+         FsIntelLocationStats *stats, guint64 *intervals, GError **error)
+{
+	/* What each kind keeps reachable from this set. */
+	for (guint k = 0; k < keep->nkinds; k++) {
+		FsRangeSet *h = intersect (set, keep->kinds[k].set);
+
+		if (!fs_range_set_is_empty (h)) {
+			fs_range_set_union (keep->hits[k], h);
+			g_ptr_array_add (keep->labels[k], (gpointer) label);
+		}
+		fs_range_set_free (h);
+	}
+	fs_range_set_subtract (set, keep->all);
+
+	if (anycast != NULL && stats != NULL) {
+		FsRangeSet *a = intersect (set, anycast);
+		GPtrArray *p = fs_geodb_set_prefixes (a);
+
+		stats->anycast_prefixes = p->len;
+		stats->anycast_addresses4 = fs_range_set_addresses4 (a);
+		stats->anycast_addresses6 = fs_range_set_addresses6 (a);
+		g_ptr_array_unref (p);
+		fs_range_set_free (a);
+	}
+
+	/* NAT64: an outbound set also stops 64:ff9b::<its v4>, or a NAT64
+	 * network would reach the address anyway. */
+	if (dir & FS_INTEL_DIR_OUT) {
+		FsRangeSet *mapped = fs_range_set_new ();
+
+		for (guint j = 0; j < set->v4->len; j++) {
+			const FsRange4 *r = &g_array_index (set->v4, FsRange4, j);
+			FsU128 a = { NAT64_HI, r->start };
+			FsU128 b = { NAT64_HI, r->end };
+
+			fs_range_set_add6 (mapped, a, b);
+		}
+		fs_range_set_normalize (mapped);
+		/* Exceptions and kept addresses written in their NAT64 form
+		 * stay reachable too. */
+		fs_range_set_subtract (mapped, keep->all);
+		fs_range_set_union (set, mapped);
+		fs_range_set_free (mapped);
+	}
+	if (union4 != NULL)
+		fs_range_set_union (union4, set);
+	*intervals += fs_range_set_count4 (set) + fs_range_set_count6 (set);
+	if (!fs_intel_ruleset_add (rs, id, label, dir, set)) {
+		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+		             _("%s cannot be enforced: its id is not valid."), id);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* The location rules' sets (design 12.6), after the lists'. */
+static gboolean
+build_locations (const Store *store, const FsIntelConfig *config,
+                 FsIntelRuleset *rs, Keep *keep, GPtrArray *notes,
+                 guint64 *intervals, GError **error)
+{
+	GeoHandle *geo;
+	FsRangeSet *anycast = NULL;
+	gboolean missing = FALSE, ok = TRUE;
+	gint64 now = g_get_real_time () / G_USEC_PER_SEC;
+
+	if (!any_location_enabled (config))
+		return TRUE;
+	geo = geo_acquire (store, &missing, error);
+	if (geo == NULL && !missing)
+		return FALSE;   /* fail closed: the kernel keeps what it had */
+	if (geo == NULL) {
+		for (guint i = 0; i < config->locations->len; i++) {
+			FsIntelLocationConf *l = g_ptr_array_index (config->locations,
+			                                            i);
+
+			if (l->enabled)
+				g_ptr_array_add (notes, g_strdup_printf (
+					_("%s is not enforced: the location database "
+					  "has not been downloaded yet."), l->name));
+		}
+		return TRUE;
+	}
+	{
+		const FsGeodbInfo *info = fs_geodb_info (geo->db);
+
+		if (fs_geodb_is_stale (info->created_at, now)) {
+			gchar *day = day_text (info->created_at);
+
+			g_ptr_array_add (notes, g_strdup_printf (
+				_("The location database in use was made on %s, "
+				  "more than 30 days ago; the location rules use it "
+				  "until a newer copy is downloaded."), day));
+			g_free (day);
+		}
+	}
+	{
+		FsGeodbFilter af = { NULL, NULL, 0, FS_GEODB_FLAG_ANYCAST };
+
+		anycast = fs_geodb_enumerate (geo->db, &af, NULL);
+		if (anycast == NULL)
+			anycast = fs_range_set_new ();
+	}
+
+	for (guint i = 0; ok && i < config->locations->len; i++) {
+		FsIntelLocationConf *l = g_ptr_array_index (config->locations, i);
+		FsGeodbFilter f = { NULL, NULL, 0, 0 };
+		FsIntelLocationStats st = { 0 };
+		GError *local = NULL;
+		FsRangeSet *set;
+
+		if (!l->enabled)
+			continue;
+		if (l->kind == FS_INTEL_LOCATION_COUNTRY) {
+			f.countries = (const gchar *const *) l->countries;
+			for (guint j = 0; l->countries[j] != NULL; j++) {
+				FsGeodbCountry *c = fs_geodb_country (geo->db,
+				                                      l->countries[j]);
+
+				if (c == NULL)
+					g_ptr_array_add (notes, g_strdup_printf (
+						_("%s: the location database names no "
+						  "country %s."), l->name,
+						l->countries[j]));
+				fs_geodb_country_free (c);
+			}
+		} else {
+			f.asns = (const guint32 *) (gpointer) l->asns->data;
+			f.n_asns = l->asns->len;
+		}
+		set = fs_geodb_enumerate (geo->db, &f, &local);
+		if (set == NULL) {
+			gchar *why = error_text (local);
+
+			g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+			             _("%s cannot be enforced: %s"), l->name, why);
+			g_free (why);
+			g_clear_error (&local);
+			ok = FALSE;
+			break;
+		}
+		fs_range_set_subtract (set, fs_range_protected ());
+		if (fs_range_set_is_empty (set))
+			g_ptr_array_add (notes, g_strdup_printf (
+				_("%s matches no address in the location "
+				  "database."), l->name));
+		ok = add_set (rs, keep, l->id, l->name, l->dir, set, NULL,
+		              anycast, &st, intervals, error);
+		if (ok && st.anycast_prefixes > 0) {
+			gchar *n4 = grouped (st.anycast_addresses4);
+
+			g_ptr_array_add (notes, g_strdup_printf (
+				_("%s includes %u anycast prefix%s (%s IPv4 "
+				  "address%s): anycast addresses are answered from "
+				  "many places, so this may also block services "
+				  "outside what you chose."), l->name,
+				st.anycast_prefixes,
+				st.anycast_prefixes == 1 ? "" : "es", n4,
+				st.anycast_addresses4 == 1 ? "" : "es"));
+			g_free (n4);
+		}
+	}
+	fs_range_set_free (anycast);
+	geo_handle_unref (geo);
+	return ok;
+}
+
 static FsIntelRuleset *
 build_in (const Store *store, const FsIntelConfig *config,
           const FsHostNet *host, GPtrArray *notes, GError **error)
@@ -2724,40 +3780,39 @@ build_in (const Store *store, const FsIntelConfig *config,
 	FsIntelRuleset *rs = fs_intel_ruleset_new ();
 	GPtrArray *ids = g_ptr_array_new ();
 	GArray *dirs = g_array_new (FALSE, FALSE, sizeof (FsIntelDir));
-	KeepKind kinds[7];
-	FsRangeSet *keep_all = fs_range_set_new ();
-	FsRangeSet *hits[7] = { NULL };
-	GPtrArray *hit_labels[7] = { NULL };
+	Keep keep;
 	FsRangeSet *union4 = fs_range_set_new ();
-	guint nkinds = 0;
-	guint64 intervals = 0;
+	guint64 intervals = 0, loc_intervals = 0;
 	gboolean ok = TRUE;
 
+	memset (&keep, 0, sizeof keep);
+	keep.all = fs_range_set_new ();
 	if (!want_any (config))
 		goto out;
 
-	kinds[nkinds++] = (KeepKind) { config->exceptions, _("an exception") };
+	keep.kinds[keep.nkinds++] = (KeepKind) { config->exceptions,
+		_("an exception") };
 	if (host != NULL) {
-		kinds[nkinds++] = (KeepKind) { host->own,
+		keep.kinds[keep.nkinds++] = (KeepKind) { host->own,
 			_("this computer's own address") };
-		kinds[nkinds++] = (KeepKind) { host->onlink,
+		keep.kinds[keep.nkinds++] = (KeepKind) { host->onlink,
 			_("a network this computer is connected to") };
-		kinds[nkinds++] = (KeepKind) { host->gateways,
+		keep.kinds[keep.nkinds++] = (KeepKind) { host->gateways,
 			_("a default gateway") };
-		kinds[nkinds++] = (KeepKind) { host->resolvers,
+		keep.kinds[keep.nkinds++] = (KeepKind) { host->resolvers,
 			_("a DNS server in use") };
-		kinds[nkinds++] = (KeepKind) { host->sessions,
+		keep.kinds[keep.nkinds++] = (KeepKind) { host->sessions,
 			_("an SSH session to this computer") };
-		kinds[nkinds++] = (KeepKind) { host->update_hosts,
+		keep.kinds[keep.nkinds++] = (KeepKind) { host->update_hosts,
 			_("a feed's download server or proxy") };
 	}
-	for (guint k = 0; k < nkinds; k++) {
-		FsRangeSet *n = normalized_copy (kinds[k].set);
+	for (guint k = 0; k < keep.nkinds; k++) {
+		FsRangeSet *n = normalized_copy (keep.kinds[k].set);
 
-		kinds[k].set = n;
-		fs_range_set_union (keep_all, n);
-		hits[k] = fs_range_set_new ();
-		hit_labels[k] = g_ptr_array_new ();
+		keep.kinds[k].set = n;
+		fs_range_set_union (keep.all, n);
+		keep.hits[k] = fs_range_set_new ();
+		keep.labels[k] = g_ptr_array_new ();
 	}
 
 	enabled_sources (config, ids, dirs);
@@ -2782,51 +3837,17 @@ build_in (const Store *store, const FsIntelConfig *config,
 			ok = FALSE;
 			break;
 		}
-
-		/* What each kind keeps reachable from this set. */
-		for (guint k = 0; k < nkinds; k++) {
-			FsRangeSet *h = intersect (set, kinds[k].set);
-
-			if (!fs_range_set_is_empty (h)) {
-				fs_range_set_union (hits[k], h);
-				g_ptr_array_add (hit_labels[k], (gpointer) label);
-			}
-			fs_range_set_free (h);
-		}
-		fs_range_set_subtract (set, keep_all);
-
-		/* NAT64: an outbound list also stops 64:ff9b::<listed v4>,
-		 * or a NAT64 network would reach the address anyway. */
-		if (dir & FS_INTEL_DIR_OUT) {
-			FsRangeSet *mapped = fs_range_set_new ();
-
-			for (guint j = 0; j < set->v4->len; j++) {
-				const FsRange4 *r = &g_array_index (set->v4,
-				                                    FsRange4, j);
-				FsU128 a = { NAT64_HI, r->start };
-				FsU128 b = { NAT64_HI, r->end };
-
-				fs_range_set_add6 (mapped, a, b);
-			}
-			fs_range_set_normalize (mapped);
-			/* Exceptions and kept addresses written in their
-			 * NAT64 form stay reachable too. */
-			fs_range_set_subtract (mapped, keep_all);
-			fs_range_set_union (set, mapped);
-			fs_range_set_free (mapped);
-		}
-		fs_range_set_union (union4, set);
-		intervals += fs_range_set_count4 (set) + fs_range_set_count6 (set);
-		if (!fs_intel_ruleset_add (rs, id, label, dir, set)) {
-			g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
-			             _("%s cannot be enforced: its id is not "
-			               "valid."), id);
-			ok = FALSE;
-		}
+		ok = add_set (rs, &keep, id, label, dir, set, union4, NULL, NULL,
+		              &intervals, error);
 	}
 
+	/* Location rules: their own limit, never the lists' (12.6). */
+	if (ok && geo_usable (config))
+		ok = build_locations (store, config, rs, &keep, notes,
+		                      &loc_intervals, error);
+
 	if (ok && intervals > FS_INTEL_MAX_INTERVALS) {
-		gchar *big = largest_sets (rs, FALSE);
+		gchar *big = largest_sets (rs, FALSE, FALSE);
 		gchar *n = grouped (intervals);
 
 		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_TOO_BIG,
@@ -2837,38 +3858,49 @@ build_in (const Store *store, const FsIntelConfig *config,
 		g_free (big);
 		ok = FALSE;
 	} else if (ok && fs_range_set_addresses4 (union4) > FS_INTEL_MAX_UNION4) {
-		gchar *big = largest_sets (rs, TRUE);
+		gchar *big = largest_sets (rs, TRUE, FALSE);
 
 		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_TOO_BIG,
 		             _("The lists together cover more than 2^26 IPv4 "
 		               "addresses; the largest are %s."), big);
 		g_free (big);
 		ok = FALSE;
+	} else if (ok && loc_intervals > FS_INTEL_MAX_LOCATION_INTERVALS) {
+		gchar *big = largest_sets (rs, FALSE, TRUE);
+		gchar *n = grouped (loc_intervals);
+
+		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_TOO_BIG,
+		             _("The location rules together have %s entries, "
+		               "more than the 500,000 StockFW enforces; the "
+		               "largest are %s."), n, big);
+		g_free (n);
+		g_free (big);
+		ok = FALSE;
 	}
 
 	if (ok) {
-		for (guint k = 0; k < nkinds; k++) {
+		for (guint k = 0; k < keep.nkinds; k++) {
 			if (k == 0) {
 				/* Exceptions: their own sentence. */
-				if (!fs_range_set_is_empty (hits[0])) {
-					gchar *a = addrs_text (hits[0]);
+				if (!fs_range_set_is_empty (keep.hits[0])) {
+					gchar *a = addrs_text (keep.hits[0]);
+					gchar *names;
 
-					g_ptr_array_add (hit_labels[0], NULL);
-					{
-						gchar *names = g_strjoinv (", ",
-							(gchar **) hit_labels[0]->pdata);
-						g_ptr_array_add (notes, g_strdup_printf (
-							_("Not blocked, by exception: %s "
-							  "(listed by %s)."), a, names));
-						g_free (names);
-					}
-					g_ptr_array_remove_index (hit_labels[0],
-						hit_labels[0]->len - 1);
+					g_ptr_array_add (keep.labels[0], NULL);
+					names = g_strjoinv (", ",
+						(gchar **) keep.labels[0]->pdata);
+					g_ptr_array_add (notes, g_strdup_printf (
+						_("Not blocked, by exception: %s "
+						  "(listed by %s)."), a, names));
+					g_free (names);
+					g_ptr_array_remove_index (keep.labels[0],
+						keep.labels[0]->len - 1);
 					g_free (a);
 				}
 				continue;
 			}
-			note_kept (notes, kinds[k].what, hits[k], hit_labels[k]);
+			note_kept (notes, keep.kinds[k].what, keep.hits[k],
+			           keep.labels[k]);
 		}
 		/* Lists that already contain another enabled one. */
 		for (guint i = 0; i < config->feeds->len; i++) {
@@ -2898,12 +3930,12 @@ build_in (const Store *store, const FsIntelConfig *config,
 	}
 
 out:
-	for (guint k = 0; k < nkinds; k++) {
-		fs_range_set_free ((FsRangeSet *) kinds[k].set);
-		fs_range_set_free (hits[k]);
-		g_ptr_array_free (hit_labels[k], TRUE);
+	for (guint k = 0; k < keep.nkinds; k++) {
+		fs_range_set_free ((FsRangeSet *) keep.kinds[k].set);
+		fs_range_set_free (keep.hits[k]);
+		g_ptr_array_free (keep.labels[k], TRUE);
 	}
-	fs_range_set_free (keep_all);
+	fs_range_set_free (keep.all);
 	fs_range_set_free (union4);
 	g_ptr_array_free (ids, TRUE);
 	g_array_free (dirs, TRUE);
@@ -3157,7 +4189,15 @@ mark_counted_since (const Store *store, const FsIntelRuleset *rs, gint64 now)
 		gchar *ld = NULL;
 		gboolean damaged = FALSE;
 		FsIntelSourceState *s = state_read (store, set->id, &ld, &damaged);
+		FsIntelSourceKind kind = fs_intel_source_kind (set->id);
 
+		/* A location rule has no download, so its state (the carried
+		 * counters) is made here, the first time it is enforced. */
+		if (s == NULL && (kind == FS_INTEL_KIND_COUNTRY ||
+		                  kind == FS_INTEL_KIND_ASN)) {
+			s = g_new0 (FsIntelSourceState, 1);
+			s->id = g_strdup (set->id);
+		}
 		if (s != NULL && s->counted_since == 0) {
 			s->counted_since = now;
 			state_write (store, s, ld, NULL);
@@ -3262,6 +4302,13 @@ fs_intel_update_hosts (const FsIntelConfig *config)
 		add_host (hosts, fi != NULL ? g_strdup (fi->host)
 		                            : host_of (f->url, FALSE));
 	}
+	/* The location database is downloaded while it is on (12.5): a
+	 * country rule must not block its own updates. */
+	if (config != NULL && config->geo_enabled &&
+	    config->geo_accepted_at > 0) {
+		any = TRUE;
+		add_host (hosts, g_strdup (GEO_HOST));
+	}
 	/* Every download connects to the proxy, not to the feed's host: a
 	 * list naming the proxy would stop every update, the one that
 	 * would fix the list included [S7.2]. */
@@ -3346,9 +4393,8 @@ fs_intel_apply_safe (const FsBackend *backend, const FsIntelConfig *config,
 	}
 	if (backend->intel_apply == NULL) {
 		o->result = FS_APPLY_FAILED;
-		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNSUPPORTED,
-		             _("Blocklists are not available on this platform "
-		               "yet."));
+		g_set_error_literal (error, FS_INTEL_ERROR,
+		                     FS_INTEL_ERR_UNSUPPORTED, unsupported_text ());
 		detail = g_strdup_printf ("source=%s result=failed "
 		                          "error=unsupported", src);
 		goto done;
@@ -3662,6 +4708,66 @@ fs_intel_state_to_string (FsIntelState state)
 	}
 }
 
+/* Why nothing is enforced, when nothing is (the "off" sentence). */
+static gchar *
+off_text (const FsIntelConfig *config)
+{
+	if (!config->enabled)
+		return g_strdup (_("Threat intel is switched off."));
+	if (any_location_enabled (config) && !geo_usable (config))
+		return g_strdup (_("No blocklist is turned on; the location rules "
+		                   "are not enforced because the location database "
+		                   "is off."));
+	return g_strdup (_("No blocklist is turned on."));
+}
+
+/* "2 lists are enforced: A, B." -- naming location rules as rules
+ * (12.9). */
+static gchar *
+enforced_text (const FsIntelConfig *config, GPtrArray *ids)
+{
+	GString *names = g_string_new (NULL);
+	guint lists = 0, rules = 0;
+	gchar *out;
+
+	for (guint i = 0; i < ids->len; i++) {
+		const gchar *id = g_ptr_array_index (ids, i);
+		const gchar *label = fs_intel_config_label (config, id);
+		FsIntelSourceKind k = fs_intel_source_kind (id);
+
+		if (k == FS_INTEL_KIND_COUNTRY || k == FS_INTEL_KIND_ASN)
+			rules++;
+		else
+			lists++;
+		g_string_append_printf (names, "%s%s", i ? ", " : "",
+		                        label ? label : id);
+	}
+	if (rules == 0)
+		out = lists == 1
+		      ? g_strdup_printf (_("1 list is enforced: %s."), names->str)
+		      : g_strdup_printf (_("%u lists are enforced: %s."), lists,
+		                         names->str);
+	else if (lists == 0)
+		out = rules == 1
+		      ? g_strdup_printf (_("1 location rule is enforced: %s."),
+		                         names->str)
+		      : g_strdup_printf (_("%u location rules are enforced: %s."),
+		                         rules, names->str);
+	else {
+		gchar *l = lists == 1 ? g_strdup (_("1 list"))
+		           : g_strdup_printf (_("%u lists"), lists);
+		gchar *r = rules == 1 ? g_strdup (_("1 location rule"))
+		           : g_strdup_printf (_("%u location rules"), rules);
+
+		out = g_strdup_printf (_("%s and %s are enforced: %s."), l, r,
+		                       names->str);
+		g_free (l);
+		g_free (r);
+	}
+	g_string_free (names, TRUE);
+	return out;
+}
+
 static void
 set_detail (gchar **detail, gchar *text)
 {
@@ -3726,8 +4832,7 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 		*detail = NULL;
 	if (backend == NULL || backend->intel_live == NULL ||
 	    backend->intel_apply == NULL) {
-		set_detail (detail, g_strdup (_("Blocklists are not available "
-		                                "on this platform yet.")));
+		set_detail (detail, g_strdup (unsupported_text ()));
 		return FS_INTEL_STATE_UNSUPPORTED;
 	}
 	if (!store_open (&store, &local)) {
@@ -3760,9 +4865,7 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 		 * cannot be read -- Linux without nft -- does not make that
 		 * unknown. */
 		state = FS_INTEL_STATE_OFF;
-		set_detail (detail, g_strdup (config->enabled
-			? _("No blocklist is turned on.")
-			: _("Threat intel is switched off.")));
+		set_detail (detail, off_text (config));
 		goto out;
 	}
 	if (live == FS_INTEL_LIVE_UNKNOWN) {
@@ -3778,9 +4881,7 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 	if (!want) {
 		if (live == FS_INTEL_LIVE_ABSENT) {
 			state = FS_INTEL_STATE_OFF;
-			set_detail (detail, g_strdup (config->enabled
-				? _("No blocklist is turned on.")
-				: _("Threat intel is switched off.")));
+			set_detail (detail, off_text (config));
 		} else {
 			state = FS_INTEL_STATE_DIFFERS;
 			set_detail (detail, g_strdup (
@@ -3815,24 +4916,8 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 				  "to restore them."), missing));
 			g_free (missing);
 		} else {
-			GString *names = g_string_new (NULL);
-
 			state = FS_INTEL_STATE_ENFORCED;
-			for (guint i = 0; i < a.ids->len; i++) {
-				const gchar *id = g_ptr_array_index (a.ids, i);
-				const gchar *label = fs_intel_config_label (config,
-				                                            id);
-
-				g_string_append_printf (names, "%s%s",
-				                        i ? ", " : "",
-				                        label ? label : id);
-			}
-			set_detail (detail, a.ids->len == 1
-				? g_strdup_printf (_("1 list is enforced: %s."),
-				                   names->str)
-				: g_strdup_printf (_("%u lists are enforced: %s."),
-				                   a.ids->len, names->str));
-			g_string_free (names, TRUE);
+			set_detail (detail, enforced_text (config, a.ids));
 		}
 	} else if (live == FS_INTEL_LIVE_PRESENT) {
 		state = FS_INTEL_STATE_DIFFERS;
@@ -3878,6 +4963,10 @@ fs_intel_counters (const FsBackend *backend)
 			for (guint i = 0; i < config->lists->len; i++)
 				g_ptr_array_add (ids, ((FsIntelListConf *)
 				                 g_ptr_array_index (config->lists, i))->id);
+			for (guint i = 0; i < config->locations->len; i++)
+				g_ptr_array_add (ids, ((FsIntelLocationConf *)
+				                 g_ptr_array_index (config->locations,
+				                                    i))->id);
 		}
 		for (guint i = 0; i < ids->len; i++) {
 			gboolean damaged = FALSE;
@@ -3933,7 +5022,86 @@ fs_intel_lookup_clear (FsIntelLookup *result)
 		return;
 	if (result->sources != NULL)
 		g_ptr_array_unref (result->sources);
+	if (result->locations != NULL)
+		g_ptr_array_unref (result->locations);
+	g_free (result->country_name);
+	g_free (result->as_name);
+	g_free (result->network);
 	memset (result, 0, sizeof *result);
+}
+
+/* Whether a location rule holds a database answer. */
+static gboolean
+location_holds (const FsIntelLocationConf *l, const FsGeodbMatch *m)
+{
+	if (!m->found)
+		return FALSE;
+	if (l->kind == FS_INTEL_LOCATION_COUNTRY) {
+		for (guint i = 0; m->country[0] != '\0' && l->countries[i]; i++)
+			if (strcmp (l->countries[i], m->country) == 0)
+				return TRUE;
+		return FALSE;
+	}
+	for (guint i = 0; m->asn != 0 && i < l->asns->len; i++)
+		if (g_array_index (l->asns, guint32, i) == m->asn)
+			return TRUE;
+	return FALSE;
+}
+
+/* The location half of a lookup (12.8): the address's own answer, and
+ * the enabled rules that hold it -- as the kernel sees it: a NAT64
+ * address is in an outbound rule's set when the IPv4 address inside it
+ * is, and in no inbound one (unless the address itself is). */
+static void
+lookup_locations (const Store *store, const FsIntelConfig *config,
+                  const gchar *addr, FsAddrFamily fam, gboolean nat64,
+                  guint32 inner, FsIntelLookup *result)
+{
+	FsGeodbMatch own = { 0 }, mapped = { 0 };
+	gboolean missing = FALSE, have_mapped = FALSE;
+	GeoHandle *geo = geo_acquire (store, &missing, NULL);
+
+	(void) fam;
+	if (geo == NULL)
+		return;
+	if (fs_geodb_lookup (geo->db, addr, &own, NULL) && own.found) {
+		FsGeodbCountry *c = own.country[0] != '\0'
+		                    ? fs_geodb_country (geo->db, own.country)
+		                    : NULL;
+
+		result->geo_found = TRUE;
+		memcpy (result->country, own.country, sizeof result->country);
+		result->country_name = c != NULL ? g_strdup (c->name) : NULL;
+		fs_geodb_country_free (c);
+		result->asn = own.asn;
+		result->as_name = g_strdup (own.as_name);
+		result->geo_flags = own.flags;
+		result->network = g_strdup (own.network);
+	}
+	if (nat64) {
+		gchar *v4 = g_strdup_printf ("%u.%u.%u.%u", inner >> 24,
+		                             (inner >> 16) & 255, (inner >> 8) & 255,
+		                             inner & 255);
+
+		have_mapped = fs_geodb_lookup (geo->db, v4, &mapped, NULL);
+		g_free (v4);
+	}
+	for (guint i = 0; i < config->locations->len; i++) {
+		const FsIntelLocationConf *l = g_ptr_array_index (config->locations,
+		                                                  i);
+
+		if (!l->enabled)
+			continue;
+		if (location_holds (l, &own) ||
+		    (have_mapped && (l->dir & FS_INTEL_DIR_OUT) &&
+		     location_holds (l, &mapped))) {
+			g_ptr_array_add (result->locations, g_strdup (l->id));
+			result->dir |= l->dir;
+		}
+	}
+	fs_geodb_match_clear (&own);
+	fs_geodb_match_clear (&mapped);
+	geo_handle_unref (geo);
 }
 
 /* Membership as the kernel sees it: the address itself, or -- for a
@@ -3980,6 +5148,7 @@ fs_intel_lookup (const FsIntelConfig *config, const FsHostNet *host,
 	g_return_val_if_fail (result != NULL, FALSE);
 	memset (result, 0, sizeof *result);
 	result->sources = g_ptr_array_new_with_free_func (g_free);
+	result->locations = g_ptr_array_new_with_free_func (g_free);
 	if (config == NULL || addr == NULL)
 		return FALSE;
 	fam = fs_addr_parse (addr, &v4, &v6);
@@ -4032,8 +5201,16 @@ fs_intel_lookup (const FsIntelConfig *config, const FsHostNet *host,
 		g_array_free (dirs, TRUE);
 		store_close (&store);
 	}
-	result->blocked = result->sources->len > 0 && !result->is_protected &&
-	                  !result->is_exception && !result->is_host;
+	/* The location database answers for any address while it is on,
+	 * also when no rule is: that is the enrichment events use. */
+	if (geo_usable (config) && store_open (&store, NULL)) {
+		lookup_locations (&store, config, addr, fam, nat64, inner, result);
+		store_close (&store);
+	}
+	result->blocked = (result->sources->len > 0 ||
+	                   result->locations->len > 0) &&
+	                  !result->is_protected && !result->is_exception &&
+	                  !result->is_host;
 	return TRUE;
 }
 
@@ -4043,18 +5220,224 @@ fs_intel_lookup_sentence (const FsIntelConfig *config,
 {
 	GString *out;
 
-	if (result == NULL || !result->blocked || result->sources == NULL ||
-	    result->sources->len == 0)
+	guint n = 0;
+
+	if (result == NULL || !result->blocked || result->sources == NULL)
 		return NULL;
 	out = g_string_new (_("Blocked by threat intel: "));
-	for (guint i = 0; i < result->sources->len; i++) {
+	for (guint i = 0; i < result->sources->len; i++, n++) {
 		const gchar *id = g_ptr_array_index (result->sources, i);
 		const gchar *label = fs_intel_config_label (config, id);
 
-		g_string_append_printf (out, "%s%s", i ? ", " : "",
+		g_string_append_printf (out, "%s%s", n ? ", " : "",
 		                        label ? label : id);
 	}
+	for (guint i = 0; result->locations != NULL &&
+	                  i < result->locations->len; i++, n++) {
+		const gchar *id = g_ptr_array_index (result->locations, i);
+		const gchar *label = fs_intel_config_label (config, id);
+
+		g_string_append_printf (out, "%s%s", n ? ", " : "",
+		                        label ? label : id);
+	}
+	if (n == 0) {
+		g_string_free (out, TRUE);
+		return NULL;
+	}
 	return g_string_free (out, FALSE);
+}
+
+/* ================================== the location database (12.8, 12.11) */
+
+void
+fs_intel_geo_status_clear (FsIntelGeoStatus *status)
+{
+	if (status == NULL)
+		return;
+	g_free (status->last_error);
+	g_free (status->refused);
+	g_free (status->damaged);
+	g_free (status->license);
+	memset (status, 0, sizeof *status);
+}
+
+gboolean
+fs_intel_geo_status (FsIntelGeoStatus *status, gint64 now, GError **error)
+{
+	Store store;
+	GeoState g;
+	GeoHandle *geo;
+	GError *local = NULL;
+	gboolean missing = FALSE;
+
+	g_return_val_if_fail (status != NULL, FALSE);
+	memset (status, 0, sizeof *status);
+	if (!store_open (&store, error))
+		return FALSE;
+	geo_state_read (&store, &g);
+	status->attempted_at = g.attempted_at;
+	status->fetched_at = g.fetched_at;
+	status->last_error = g_strdup (g.last_error);
+	status->refused = g_strdup (g.refused);
+	geo_state_clear (&g);
+	geo = geo_acquire (&store, &missing, &local);
+	if (geo != NULL) {
+		const FsGeodbInfo *info = fs_geodb_info (geo->db);
+
+		status->present = TRUE;
+		status->created_at = info->created_at;
+		status->stale = fs_geodb_is_stale (info->created_at, now);
+		status->license = g_strdup (info->license);
+		status->networks = info->networks;
+		status->countries = info->countries;
+		status->ases = info->ases;
+		geo_handle_unref (geo);
+	} else if (!missing) {
+		status->damaged = error_text (local);
+	}
+	g_clear_error (&local);
+	store_close (&store);
+	return TRUE;
+}
+
+/* The copy in use, or an error that says why there is none. */
+static GeoHandle *
+geo_open_for_use (GError **error)
+{
+	Store store;
+	GeoHandle *geo;
+	gboolean missing = FALSE;
+
+	if (!store_open (&store, error))
+		return NULL;
+	geo = geo_acquire (&store, &missing, error);
+	store_close (&store);
+	if (geo == NULL && missing)
+		g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_STORE,
+		                     _("The location database has not been "
+		                       "downloaded yet."));
+	return geo;
+}
+
+GPtrArray *
+fs_intel_geo_countries (GError **error)
+{
+	GeoHandle *geo = geo_open_for_use (error);
+	GPtrArray *out;
+
+	if (geo == NULL)
+		return NULL;
+	out = fs_geodb_countries (geo->db);
+	geo_handle_unref (geo);
+	return out;
+}
+
+GPtrArray *
+fs_intel_geo_search_as (const gchar *query, guint max, GError **error)
+{
+	GeoHandle *geo = geo_open_for_use (error);
+	GPtrArray *out;
+
+	if (geo == NULL)
+		return NULL;
+	out = fs_geodb_search_as (geo->db, query, max);
+	geo_handle_unref (geo);
+	return out;
+}
+
+gboolean
+fs_intel_location_stats (const FsIntelConfig *config,
+                         FsIntelLocationKind kind,
+                         const gchar *const *values,
+                         FsIntelLocationStats *stats, GError **error)
+{
+	FsGeodbFilter f = { NULL, NULL, 0, 0 };
+	FsGeodbFilter af = { NULL, NULL, 0, FS_GEODB_FLAG_ANYCAST };
+	FsRangeSet *set, *anycast, *a;
+	GPtrArray *prefixes;
+	GeoHandle *geo;
+	gchar **codes = NULL, *why = NULL;
+	GArray *asns = NULL;
+
+	g_return_val_if_fail (stats != NULL, FALSE);
+	memset (stats, 0, sizeof *stats);
+	if (!location_values (kind, values, &codes, &asns, &why)) {
+		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+		             _("Not a location rule: %s."), why);
+		g_free (why);
+		return FALSE;
+	}
+	geo = geo_open_for_use (error);
+	if (geo == NULL) {
+		g_strfreev (codes);
+		if (asns != NULL)
+			g_array_unref (asns);
+		return FALSE;
+	}
+	f.countries = (const gchar *const *) codes;
+	if (asns != NULL) {
+		f.asns = (const guint32 *) (gpointer) asns->data;
+		f.n_asns = asns->len;
+	}
+	set = fs_geodb_enumerate (geo->db, &f, NULL);
+	anycast = fs_geodb_enumerate (geo->db, &af, NULL);
+	if (set == NULL)
+		set = fs_range_set_new ();
+	if (anycast == NULL)
+		anycast = fs_range_set_new ();
+	fs_range_set_subtract (set, fs_range_protected ());
+	if (config != NULL) {
+		FsRangeSet *ex = normalized_copy (config->exceptions);
+
+		fs_range_set_subtract (set, ex);
+		fs_range_set_free (ex);
+	}
+	prefixes = fs_geodb_set_prefixes (set);
+	for (guint i = 0; i < prefixes->len; i++) {
+		if (strchr (g_ptr_array_index (prefixes, i), ':') != NULL)
+			stats->prefixes6++;
+		else
+			stats->prefixes4++;
+	}
+	g_ptr_array_unref (prefixes);
+	stats->addresses4 = fs_range_set_addresses4 (set);
+	stats->addresses6 = fs_range_set_addresses6 (set);
+	a = intersect (set, anycast);
+	prefixes = fs_geodb_set_prefixes (a);
+	stats->anycast_prefixes = prefixes->len;
+	stats->anycast_addresses4 = fs_range_set_addresses4 (a);
+	stats->anycast_addresses6 = fs_range_set_addresses6 (a);
+	g_ptr_array_unref (prefixes);
+	fs_range_set_free (a);
+	fs_range_set_free (set);
+	fs_range_set_free (anycast);
+	g_strfreev (codes);
+	if (asns != NULL)
+		g_array_unref (asns);
+	geo_handle_unref (geo);
+	return TRUE;
+}
+
+gboolean
+fs_intel_geo_lookup (const FsIntelConfig *config, const gchar *addr,
+                     FsGeodbMatch *match, GError **error)
+{
+	GeoHandle *geo;
+	gboolean ok;
+
+	g_return_val_if_fail (match != NULL, FALSE);
+	memset (match, 0, sizeof *match);
+	if (config == NULL || !geo_usable (config)) {
+		g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+		                     _("The location database is turned off."));
+		return FALSE;
+	}
+	geo = geo_open_for_use (error);
+	if (geo == NULL)
+		return FALSE;
+	ok = fs_geodb_lookup (geo->db, addr, match, error);
+	geo_handle_unref (geo);
+	return ok;
 }
 
 /* ===================================================== applied journal */

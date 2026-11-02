@@ -1450,3 +1450,92 @@ Every one made the suite fail:
 | control and format characters kept in names | `small: 192.0.2.77 -> ... (a BEL in the AS name is shown as ?)`, `... (a bidi override in the name is shown as ?)` and 5 more |
 | symbolic links followed | `a symbolic link to a good database: IO, not followed` |
 | the size cap exclusive | `exactly 256 MiB is read (and is no database: FORMAT)` |
+
+## Country and network-owner rules (`fs-intel-geo-test`, `tests/test-intel-e2e.sh` section 12)
+
+```sh
+cd port
+ninja -C build-linux fs-intel-geo-test
+./build-linux/fs-intel-geo-test              # also run by tests/test-core.sh
+ninja -C build-linux fs-intel-e2e-driver fs-intel-backend-driver fs-intelset-test
+sudo bash tests/test-intel-e2e.sh            # section 12 is the location rules
+sudo bash tests/test-intel-backend.sh
+./build-linux/fs-intelset-test
+STOCKFW_E2E_GEO_LARGE=100000 sudo bash tests/test-intel-e2e.sh   # a smaller "large country"
+```
+
+The engine half of round 2 (1.0.7 design, section 12): location rules
+in `intel.conf`, the database's consent, download and state, the sets
+built from it, their enforcement through the Linux slots, and the
+lookup.  The tests write their own location databases with
+`tests/geodb-writer.h` (a header-only writer of IPFire's format v1,
+signed with a P-521 key made at run time, and xz-packed), so they need
+no fixture and no network.  Both `fs-intel-geo-test` and
+`fs-intel-e2e-driver` are built with their own copy of `fs-geodb.c`
+compiled with `FS_GEODB_TESTING`, the only build that can be told to
+trust a test key.
+
+`fs-intel-geo-test` (GLib, liblzma, libcrypto; no root, no network;
+the downloads and the backend are fakes) checks:
+
+| Area | What it pins down |
+|---|---|
+| wording | the attribution names IPFire and the declared licence and says it is not confirmed; the consent text names the host, how often, what the server learns, "registered", anycast and exceptions; the defaults are off and never consented; source kinds and set names by id; on Windows, "not available on Windows yet" |
+| config | `[geo]` and `[location <id>]` round trip; refusals for a key of the wrong kind, bad or missing values, a bad id or name, more than 1,000 values; codes and AS numbers are normalised, deduplicated and sorted |
+| consent | no rule and no enabling without the terms accepted; a config that says enabled but never accepted downloads nothing |
+| no network | the default configuration, the database off, no consent, the master switch off: no request at all; the database's host (and the proxy) is in `fs_intel_update_hosts` only while it is on |
+| updates | updated, unchanged, not due within a day, refused (rollback, another key, not xz, from the future), failed (first line only); after each refusal or failure the same copy is in use; the status keeps the last error and success; every attempt is an audit line |
+| build | each set is the enumeration minus the protected ranges, the exceptions and this computer's addresses (exceptions win; the notes say which rule named them); outbound sets also in 64:ff9b::/96 and inbound ones not; lists and rules in one rule set, lists first; rules that match nothing are enforced empty with a note; anycast is kept and counted after the subtractions, with its note; a missing database leaves every rule unenforced with a note; a copy that no longer verifies fails the build; a stale copy is still used, with a note |
+| limits | 300,001 intervals and 2^27 addresses of a country build (the lists' caps do not apply); above 500,000 entries in all, NAT64 copies included, the build fails and names the largest rules |
+| lookup | country, AS, network, anycast flag and the rules holding an address; NAT64 addresses only for outbound rules; exceptions, protected space and this computer's addresses located but not blocked; `fs_intel_geo_lookup`; the cache follows a new copy; nothing while the database is off; the picker's preview counts |
+| gate | the apply loads lists and rules in one table; the state names both; a hold keeps the rules out; counters carry across a replace; Stop and Start take the rule sets out and back; rules on with the database off read "off", and say why; a platform without slots says blocklists and location blocking are not available |
+
+`tests/test-intel-e2e.sh` section 12 (root, `unshare -n -m`, real nft,
+real packets) adds what only the kernel can show.  Rules are refused
+without consent, and nothing is downloaded while the database is off.
+The copy is stored 0600.  A country rule (in), an AS rule (out) and a
+country rule (both) drop and refuse exactly their packets, while this
+computer, its gateway, the DNS server and the SSH peers inside those
+countries stay reachable.  An exception inside a country wins, the
+counters are per rule, and the lookup agrees.  A country of 400,000
+networks applies (about 3.6 s here) and its state is read in under
+3 s (about 30 ms here).  IPv6 is checked in the sets, and with packets
+when the kernel has IPv6 on the veth pair.  The machine these were
+written on has none, so the IPv6 packet checks did not run there; the
+test prints a note when it leaves them out.
+
+`fs-intelset-test` adds the chain listing parser: our table present
+with the digest on its input chain, the digest taken from input and
+not from output, no input chain or no comment (present without a
+digest), other families and tables, a chain object without its table,
+a table object, an escaped name (absent), and unreadable text
+(unknown).  `tests/test-intel-backend.sh` checks that the slots list
+chains, and that a table carrying the applied digest but no chains is
+not taken for the applied one.
+
+Teeth, each injected into the real file by a scratch script that checks
+the old text occurs once, rebuilds the target, runs the test, then
+restores the file with `cp` and proves it with `cmp`.  Every one made
+the named test fail:
+
+| Bug re-injected | Test | First check that failed |
+|---|---|---|
+| location sets skip the exceptions and kept addresses (`add_set`) | fs-intel-geo-test | `the country set is the enumeration minus the protected ranges, the exceptions and this computer's addresses` |
+| protected ranges not taken out of location sets | fs-intel-geo-test | the same check (10/8 is in the set) |
+| a rule added without consent | fs-intel-geo-test | `a location rule before the database's terms were accepted: CONSENT, nothing added` |
+| a download without consent | fs-intel-geo-test | `on without consent: needs consent, no request` |
+| `fs_intel_update (only "location")` while the database is off | fs-intel-geo-test | `asking for the database while it is off: failed, no request` |
+| a full update downloads the database while it is off | fs-intel-geo-test | `the default configuration: no result, no request at all` |
+| anycast not counted | fs-intel-geo-test | `anycast is kept and counted after the exception ...: the note says so` |
+| inbound rules mapped into 64:ff9b::/96 too | fs-intel-geo-test | the country set check (inbound Atlantis gains NAT64 entries) |
+| the location limit four times higher | fs-intel-geo-test | `outbound, with its NAT64 copy, it passes 500,000: refused, naming the rule` |
+| lookup holds a NAT64 address for inbound rules | fs-intel-geo-test | `lookup 64:ff9b::c633:6409: a NAT64 address in XA: no inbound rule holds it` |
+| the database's host not kept reachable | fs-intel-geo-test | `the database's host and the proxy are kept reachable while it is on` |
+| rules built while the database is off | fs-intel-geo-test | `the database turned off: only the list is built` |
+| a copy that no longer verifies treated as missing (fail open) | fs-intel-geo-test | `a copy in use that no longer verifies fails the build` |
+| no rollback check (`fs-geodb.c`) | fs-intel-geo-test | `an older copy is refused, even with accept-shrink` |
+| no digest comment on the chains | fs-intelset-test | `golden: an IN set, IPv4 only` and every golden |
+| the chain parser ignores the family | fs-intelset-test | `chains: only family ip -> absent` |
+| the digest taken from any chain | fs-intelset-test | `chains: the digest comes from input, not output` |
+| a table without chains read with its table digest | test-intel-backend.sh | `a table with the applied digest but no chains: not applied, and live reads it without a digest` |
+| the live check reads `list tables` again | test-intel-e2e.sh | `the state of a table with 400000 elements is read in 6409 ms, without listing them` |

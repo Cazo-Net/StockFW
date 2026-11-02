@@ -31,6 +31,34 @@
  *   enable ID | disable ID    a feed or list on / off
  *   except ADDR | unexcept ADDR
  *
+ * Round 2, country and network-owner rules (design section 12):
+ *
+ *   geo-make DIR [N]          writes DIR/location.db.xz, a location
+ *                             database for the test's addresses signed
+ *                             with a key made now, and DIR/key.pem, its
+ *                             public half; N more networks of country
+ *                             XL (11.0.0.0/8 and up, one /28 every /27,
+ *                             so none merge) for the timing check
+ *   geo-enable | geo-disable  the location database on (accepting its
+ *                             terms) or off
+ *   geo-update [FILE]         fs_intel_update (only "location", NOW):
+ *                             "<id> <outcome> <entries> <message>"; with
+ *                             FILE the download of FS_GEODB_URL answers
+ *                             FILE's bytes, without it the release
+ *                             download runs
+ *   geo-rule NAME KIND VALUES DIR
+ *                             a location rule (KIND country or asn,
+ *                             VALUES comma-separated): "added <id>"
+ *   geo-lookup ADDR           the enrichment: "cc=<cc> asn=<n>
+ *                             net=<network> anycast=<0|1>
+ *                             locations=<ids> dir=<d> blocked=<0|1>",
+ *                             then the sentence when there is one
+ *
+ * With $STOCKFW_TEST_GEODB_KEY naming a public key (PEM), the reader
+ * trusts that key instead of IPFire's: this driver is built with its own
+ * copy of fs-geodb.c compiled with FS_GEODB_TESTING, the only build that
+ * can.
+ *
  * apply and resume print "result <ok|dry-run|failed> digest=<d> sets=<n>
  * v4=<n> v6=<n>", then "note: <text>" per note, then "error <kind>:
  * <message>" when there was one.  Any other failure prints "error
@@ -43,6 +71,7 @@
  * backend (no FS_BACKEND_TESTING).
  *--------------------------------------------------------------------*/
 #include <glib.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -52,6 +81,8 @@
 #include "core/fs-intel.h"
 #include "core/fs-intelset.h"
 #include "core/fs-iprange.h"
+#include "core/fs-geodb.h"
+#include "geodb-writer.h"
 
 #define SOURCE "e2e-test"
 
@@ -443,6 +474,200 @@ cmd_except (const gchar *addr, gboolean add)
 	return save_and_free (config);
 }
 
+/* ---- Round 2 -------------------------------------------------------- */
+
+static int
+cmd_geo_make (const gchar *dir, guint extra)
+{
+	gint64 now = g_get_real_time () / G_USEC_PER_SEC;
+	GeoWriter *w = geow_new (now - 3600);
+	EVP_PKEY *key = geow_key_new ();
+	gchar *pem, *kp, *dp;
+	guint8 *db;
+	gsize len = 0;
+	GBytes *xz;
+	gboolean ok;
+
+	/* The test's addresses (tests/test-intel-e2e.sh): the peer's in
+	 * 198.51.100.0/25 are XA (Atlantis), the ones in .128/25 XB
+	 * (Brigadoon, AS64501), 203.0.113.0/24 XC (Cockaigne, anycast),
+	 * this computer's own network XA too. */
+	geow_net (w, "198.51.100.0/25", "XA", 64500, 0);
+	geow_net (w, "198.51.100.128/25", "XB", 64501, 0);
+	geow_net (w, "203.0.113.0/24", "XC", 64502, FS_GEODB_FLAG_ANYCAST);
+	geow_net (w, "192.0.2.0/24", "XA", 64500, 0);
+	geow_net (w, "2001:db8:a::/48", "XA", 64500, 0);
+	geow_net (w, "2001:db8:b::/48", "XB", 64501, 0);
+	for (guint i = 0; i < extra; i++) {
+		guint32 a = (11u << 24) + i * 32u;
+		gchar cidr[32];
+
+		g_snprintf (cidr, sizeof cidr, "%u.%u.%u.%u/28", a >> 24,
+		            (a >> 16) & 255, (a >> 8) & 255, a & 255);
+		geow_net (w, cidr, "XL", 0, 0);
+	}
+	geow_as (w, 64500, "Alpha Networks");
+	geow_as (w, 64501, "Beta Hosting");
+	geow_as (w, 64502, "Anycast CDN");
+	geow_country (w, "XA", "EU", "Atlantis");
+	geow_country (w, "XB", "EU", "Brigadoon");
+	geow_country (w, "XC", "AS", "Cockaigne");
+	geow_country (w, "XL", "NA", "Large");
+	db = geow_build (w, key, &len);
+	geow_free (w);
+	xz = db != NULL ? geow_xz (db, len) : NULL;
+	g_free (db);
+	pem = geow_key_pub_pem (key);
+	EVP_PKEY_free (key);
+	kp = g_build_filename (dir, "key.pem", NULL);
+	dp = g_build_filename (dir, "location.db.xz", NULL);
+	ok = xz != NULL && g_file_set_contents (kp, pem, -1, NULL) &&
+	     g_file_set_contents (dp, g_bytes_get_data (xz, NULL),
+	                          (gssize) g_bytes_get_size (xz), NULL);
+	g_print ("%s\n", ok ? "made" : "could not write the database");
+	g_free (kp);
+	g_free (dp);
+	g_free (pem);
+	if (xz != NULL)
+		g_bytes_unref (xz);
+	return ok ? 0 : 1;
+}
+
+static int
+cmd_geo_enable (gboolean on)
+{
+	FsIntelConfig *config = load ();
+	GError *error = NULL;
+
+	if (config == NULL)
+		return 1;
+	if (!on) {
+		fs_intel_config_disable_geo (config);
+	} else if (!fs_intel_config_enable_geo (config, TRUE, &error)) {
+		fs_intel_config_free (config);
+		return fail (error);
+	}
+	return save_and_free (config);
+}
+
+/* The download of FS_GEODB_URL, answered from a file. */
+static GBytes *
+file_fetch (const gchar *url, const gchar *proxy, gpointer data,
+            GError **error)
+{
+	gchar *body = NULL;
+	gsize len = 0;
+
+	(void) proxy;
+	if (g_strcmp0 (url, FS_GEODB_URL) != 0) {
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "unexpected URL %s", url);
+		return NULL;
+	}
+	if (!g_file_get_contents (data, &body, &len, error))
+		return NULL;
+	return g_bytes_new_take (body, len);
+}
+
+static int
+cmd_geo_update (const gchar *file)
+{
+	FsIntelConfig *config = load ();
+	GPtrArray *results;
+
+	if (config == NULL)
+		return 1;
+	if (file != NULL)
+		fs_geodb_set_fetcher (file_fetch, (gpointer) file);
+	results = fs_intel_update (config, FS_INTEL_GEO_ID, FS_INTEL_UPDATE_NOW,
+	                           g_get_real_time () / G_USEC_PER_SEC);
+	for (guint i = 0; i < results->len; i++) {
+		const FsIntelUpdateResult *r = g_ptr_array_index (results, i);
+
+		g_print ("%s %s %u %s\n", r->id, outcome_word (r->outcome),
+		         r->entries, r->message);
+	}
+	g_ptr_array_unref (results);
+	fs_intel_config_free (config);
+	return 0;
+}
+
+static int
+cmd_geo_rule (const gchar *name, const gchar *kind_text,
+              const gchar *values_text, const gchar *dir_text)
+{
+	FsIntelConfig *config;
+	FsIntelLocationKind kind;
+	FsIntelDir dir;
+	GError *error = NULL;
+	gchar *id = NULL, **values;
+	gboolean ok;
+
+	if (strcmp (kind_text, "country") == 0)
+		kind = FS_INTEL_LOCATION_COUNTRY;
+	else if (strcmp (kind_text, "asn") == 0)
+		kind = FS_INTEL_LOCATION_ASN;
+	else
+		return 2;
+	if (!dir_arg (dir_text, &dir))
+		return 2;
+	if ((config = load ()) == NULL)
+		return 1;
+	values = g_strsplit (values_text, ",", -1);
+	ok = fs_intel_config_add_location (config, name, kind,
+	                                   (const gchar *const *) values, dir,
+	                                   &id, &error);
+	g_strfreev (values);
+	if (!ok) {
+		fs_intel_config_free (config);
+		return fail (error);
+	}
+	g_print ("added %s\n", id);
+	g_free (id);
+	return save_and_free (config);
+}
+
+static int
+cmd_geo_lookup (const gchar *addr)
+{
+	FsIntelConfig *config = load ();
+	FsHostNet *host;
+	FsIntelLookup r;
+	GString *ids;
+	gchar *sentence;
+
+	if (config == NULL)
+		return 1;
+	host = read_host (config);
+	if (!fs_intel_lookup (config, host, addr, &r)) {
+		g_print ("not an address\n");
+		fs_intel_lookup_clear (&r);
+		fs_hostnet_free (host);
+		fs_intel_config_free (config);
+		return 1;
+	}
+	ids = g_string_new (NULL);
+	for (guint i = 0; i < r.locations->len; i++)
+		g_string_append_printf (ids, "%s%s", i ? "," : "",
+		                        (const gchar *) r.locations->pdata[i]);
+	g_print ("cc=%s asn=%u net=%s anycast=%d locations=%s dir=%s "
+	         "blocked=%d\n", r.country[0] ? r.country : "-", r.asn,
+	         r.network != NULL ? r.network : "-",
+	         (r.geo_flags & FS_GEODB_FLAG_ANYCAST) ? 1 : 0,
+	         ids->len ? ids->str : "-",
+	         r.dir != 0 ? fs_intel_dir_to_string (r.dir) : "-",
+	         r.blocked ? 1 : 0);
+	sentence = fs_intel_lookup_sentence (config, &r);
+	if (sentence != NULL)
+		g_print ("%s\n", sentence);
+	g_free (sentence);
+	g_string_free (ids, TRUE);
+	fs_intel_lookup_clear (&r);
+	fs_hostnet_free (host);
+	fs_intel_config_free (config);
+	return 0;
+}
+
 static int
 usage (void)
 {
@@ -450,7 +675,9 @@ usage (void)
 	            "DIR | import FILE NAME DIR | update [shrink] | apply "
 	            "[HOLD] | resume | suspend | state | counters | lookup "
 	            "ADDR | source ID | applied-has ID | master on|off | "
-	            "enable ID | disable ID | except ADDR | unexcept ADDR\n");
+	            "enable ID | disable ID | except ADDR | unexcept ADDR | "
+	            "geo-make DIR [N] | geo-enable | geo-disable | geo-update "
+	            "[FILE] | geo-rule NAME KIND VALUES DIR | geo-lookup ADDR\n");
 	return 2;
 }
 
@@ -458,6 +685,32 @@ int
 main (int argc, char **argv)
 {
 	const gchar *cmd = argc > 1 ? argv[1] : "";
+	const gchar *key = g_getenv ("STOCKFW_TEST_GEODB_KEY");
+
+	if (key != NULL && *key != '\0') {
+		gchar *pem = NULL;
+
+		if (!g_file_get_contents (key, &pem, NULL, NULL)) {
+			g_printerr ("cannot read %s\n", key);
+			return 2;
+		}
+		fs_geodb_testing_set_key (pem);
+		g_free (pem);
+	}
+	if ((argc == 3 || argc == 4) && strcmp (cmd, "geo-make") == 0)
+		return cmd_geo_make (argv[2], argc == 4
+		                     ? (guint) g_ascii_strtoull (argv[3], NULL, 10)
+		                     : 0);
+	if (argc == 2 && strcmp (cmd, "geo-enable") == 0)
+		return cmd_geo_enable (TRUE);
+	if (argc == 2 && strcmp (cmd, "geo-disable") == 0)
+		return cmd_geo_enable (FALSE);
+	if ((argc == 2 || argc == 3) && strcmp (cmd, "geo-update") == 0)
+		return cmd_geo_update (argc == 3 ? argv[2] : NULL);
+	if (argc == 6 && strcmp (cmd, "geo-rule") == 0)
+		return cmd_geo_rule (argv[2], argv[3], argv[4], argv[5]);
+	if (argc == 3 && strcmp (cmd, "geo-lookup") == 0)
+		return cmd_geo_lookup (argv[2]);
 
 	if (argc == 2 && strcmp (cmd, "dir") == 0)
 		return cmd_dir ();

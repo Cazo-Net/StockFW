@@ -475,14 +475,19 @@ if(FS_PLATFORM STREQUAL "linux")
   # FS_FETCH_TESTING only so $STOCKFW_TEST_CACERT can name the test
   # server's CA (the fs-fetch-test arrangement); the backend copy has no
   # test hook.
+  # Its own fs-geodb.c too, with FS_GEODB_TESTING: the location
+  # database the test writes is signed with a key made at run time.
   add_executable(fs-intel-e2e-driver EXCLUDE_FROM_ALL
     tests/intel-e2e-driver.c
     src/core/fs-fetch.c
+    src/core/fs-geodb.c
     src/platform/linux/fs-backend-linux.c
   )
+  target_include_directories(fs-intel-e2e-driver PRIVATE tests)
   target_link_libraries(fs-intel-e2e-driver PRIVATE fs-core-nogui)
   target_compile_definitions(fs-intel-e2e-driver PRIVATE
                              FS_FETCH_TESTING=1
+                             FS_GEODB_TESTING=1
                              FS_VERSION="${PROJECT_VERSION}")
 endif()
 
@@ -503,3 +508,15 @@ target_link_libraries(fs-geodb-test PRIVATE fs-core-nogui)
 target_compile_definitions(fs-geodb-test PRIVATE FS_GEODB_TESTING=1
                            FS_FETCH_TESTING=1
                            FS_VERSION="${PROJECT_VERSION}")
+# Country and network-owner rules in the engine (tests/test-intel-geo.c,
+# design section 12): databases written and signed by the test
+# (tests/geodb-writer.h), a fake backend and fake downloaders.  Its own
+# copy of fs-geodb.c, compiled with FS_GEODB_TESTING so the reader
+# trusts the key the test makes.  `ninja fs-intel-geo-test'.
+add_executable(fs-intel-geo-test EXCLUDE_FROM_ALL
+  tests/test-intel-geo.c
+  src/core/fs-geodb.c
+)
+target_include_directories(fs-intel-geo-test PRIVATE tests)
+target_link_libraries(fs-intel-geo-test PRIVATE fs-core-nogui)
+target_compile_definitions(fs-intel-geo-test PRIVATE FS_GEODB_TESTING=1)
