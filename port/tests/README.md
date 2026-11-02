@@ -806,3 +806,208 @@ restored (`cmp`) to green:
 | the delta compares display names, not netsh names | "removing \"a/b\" re-creates \"a-b\"", "deletes each netsh name once", "removing \"ssh\" re-creates \"SSH\"" |
 | profile counters not freed with their profile | the sanitizer run: LeakSanitizer reports the counters from `app_profile_record_connection` |
 | `test_activity_series` buffers back to 8 slots | the sanitizer run: stack-buffer-overflow in `fs_activity_window` |
+
+## Threat-intel engine (`fs-intel-test`)
+
+```sh
+cd port
+ninja -C build-linux fs-intel-test && ./build-linux/fs-intel-test
+# Sanitizers: a separate Debug build with -fsanitize=address,undefined.
+# ASan's strstr interceptor makes g_strsplit quadratic on the 160,000-
+# line lists, so turn that one interceptor off:
+ASAN_OPTIONS=detect_leaks=1:intercept_strstr=0 ./build-asan/fs-intel-test
+```
+
+`src/core/fs-intel.c` (design section 6) driven through a fake backend
+and a fake downloader (`fs_intel_set_fetcher`).  The fake backend plays
+the kernel: it records the rule set `intel_apply` received (digest and
+every set's text) and can commit and return TRUE, fail and change
+nothing, commit and then "time out" (return FALSE), claim success and
+change nothing, or make `intel_live` read UNKNOWN.  No network, no nft;
+root is not needed (two store checks that chown a directory run only as
+root and say SKIP otherwise).  Each test gets a fresh store under a
+base directory whose every parent passes the store's own ownership
+check: `$STOCKFW_TEST_SAFE_DIR`, else `$HOME`, else the directory of
+the test binary; when none passes, the engine tests print SKIP.
+`$STOCKFW_AUDIT_FILE` points the audit at that base, and the checks
+read it back.
+
+What it proves:
+
+- **Store directory** [S2]: a safe override is created 0700; refused
+  (FS_INTEL_ERR_UNSAFE_DIR): a relative path, a directory under `/tmp`
+  (and nothing is created there), a directory writable by others or by
+  its group, a 0700 store inside a 0777 parent, the store itself a
+  symlink, and as root a directory owned by another user or a root store
+  inside a user's directory (`sudo -E`).  A symlinked parent is followed
+  and its target chain is what is checked.  Not root and no override:
+  NEEDS_ROOT.
+- **intel.conf**: a missing file is the defaults (every catalog feed in
+  catalog order, off, its default direction, terms not accepted); the
+  golden layout (`[feed <id>]`, `[list <id>]`, `[exceptions]`), 0600,
+  and a full round trip including a custom feed, a list name with `;`,
+  quotes and brackets, exceptions of both families and a proxy.  Unknown
+  keys, groups and feeds are ignored; each invalid value fails naming
+  `[group] key`: a bad direction, `enabled=yes`, a negative time, a time
+  with junk, a custom feed over http://, an unknown format, no name, an
+  id nft must never see (`Bad;Id`), a list name with a line break, a
+  list id without `local-`, a proxy with a password (it would be in
+  curl's argv), a socks proxy, an exception that is a host name, a
+  broken group line, bytes that are not UTF-8.  Hostile files: over
+  1 MiB, a symlink, a FIFO (refused without waiting), a stray temporary
+  from a crashed save (never read; saving next to it works).
+- **Consent** [S14]: enabling without accepting the terms changes
+  nothing (CONSENT), and `set_enabled` is no way around it; accepting
+  records when.  Custom feeds: http:// and `user@` refused, the slug id,
+  typed URL = consent, the same slug twice refused; catalog feeds cannot
+  be removed.  The consent text names the host, how often ("every 6
+  hours", "once a day"), what the host learns ("StockFW/<version>", the
+  public address), the licence or "see the provider's terms" with the
+  terms URL, the non-commercial warning (FireHOL level 1, DShield) and
+  how to make an exception.
+- **No network unless consented**: the default configuration makes no
+  request; every feed enabled without accepted terms gives
+  NEEDS_CONSENT and no request; the master switch off fetches nothing;
+  a URL the design's rule refuses (`fs_feed_url_is_acceptable`, stricter
+  than fs-fetch's own check) is never fetched; a custom feed goes
+  through the configured proxy; local lists and feeds that are off are
+  never fetched.
+- **Updates, guards and scheduling** (injected clock): first download
+  stored (0600, state recorded); 5 h later not due; due exactly one
+  interval after the last attempt; a clock that went back makes it due
+  at once; same bytes are UNCHANGED; `--now`; stale after 7 intervals
+  from the download, or from the content date when the list has one.
+  A shrink (10 to 1), an empty list, an HTML page and a failed download
+  are refused/failed and keep the previous list byte for byte (with
+  `refused` / `last_error` recorded, the tool's first line only);
+  `--accept-shrink` lets the shrink in.  A content date a year ahead is
+  refused even with `--accept-shrink` (it would make every honest copy
+  after it a ROLLBACK); an hour of skew is not "the future"; an older
+  content date is ROLLBACK; a stored content date in 2033 (clock put
+  back, or an edited state) is forgotten rather than refusing every
+  copy forever.  One audit line per attempted download, `|` escaped,
+  a forged second line never written.
+- **Per-feed isolation and crashes**: three feeds, three results in
+  config order; one failing, one garbage and one good side by side, the
+  first two keeping their lists.  A crash between writing the list and
+  its state (the old state put back over the new list): fetching the
+  old bytes again stores them again instead of reporting "unchanged"
+  over a list that is not theirs.  A damaged state is rebuilt with a
+  fresh history; a state with an out-of-range number is not trusted; a
+  stray temporary list is never loaded.  An id that is a path (a
+  hand-filled struct) neither writes nor deletes anything outside the
+  store.
+- **Stored lists** [S2.7, S4.4]: missing is STORE; tampered is TAMPERED:
+  a line that is not an entry, junk after an entry, 0.0.0.0/0, ::/0,
+  2000::/3, a /6, a NUL byte, 200,300 intervals; a symlink is refused.
+  What the parser let in loads again (eight adjacent /10s stored as one
+  /7, at the coverage cap exactly), and protected space in a stored
+  list is taken out, never blocked.  The parser's per-entry span floor
+  is not re-applied on load: a stored list is normalized, so adjacent
+  accepted entries merge into wider intervals; the coverage caps bound
+  what a tampered list can block.  Import: a CSV becomes
+  `local-<slug>`, enabled, in its direction, protected space left out;
+  the same name again replaces it; a file with no address, too-broad
+  entries, a FIFO and a directory are refused; removing a list deletes
+  its files.
+- **Build (golden)**: one exact rule set with the own address, on-link
+  network, gateway, resolver, SSH session, a feed's server and two
+  exceptions subtracted, IPv4 of out/both sets mapped into
+  64:ff9b::/96 (and an exception written in its NAT64 form honoured), a
+  list never downloaded left out with a note; a note per kind of address
+  kept, naming the list that had it; host NULL subtracts only
+  exceptions; master off is the empty rule set; FireHOL level 1 with
+  Feodo on gets the "already contains" note; a tampered list fails the
+  build.  Limits: 2 x 160,000 intervals is TOO_BIG naming both sets;
+  160,000 outbound intervals plus their NAT64 copies is TOO_BIG; 2^26
+  IPv4 addresses build, one /10 more is TOO_BIG naming the largest.
+- **Gate, lifecycle, state** [S10, N8, P4]: a hold is DRY_RUN with
+  nothing reaching the backend; a backend without intel slots is FAILED
+  "not available" and its state "unsupported"; the backend gets exactly
+  the built rule set; applied.state records digest, sets, not
+  suspended; `fs_intel_applied_has` answers for applied sets only.
+  A failed apply keeps applied.state and does not carry the counters
+  (the old table still counts them: 5, not 10); nft timing out after it
+  committed is OK because the live digest is the new one, and the
+  counters are carried once (5 + 2 live = 7); a backend that claims
+  success while the kernel holds the old table is FAILED and carries
+  nothing; an error with an unreadable kernel is FAILED, a success with
+  an unreadable kernel stands.  State: not-loaded before the first
+  apply and after a flush, enforced (naming the lists), differs for
+  another digest or none, unknown (needs-root when not root) for an
+  unreadable listing, never not-loaded; suspend removes the table,
+  carries the counters and reads "suspended" (and "differs" when a
+  table comes back); resume under a hold applies nothing, resume applies
+  again; a suspend whose tool fails is FALSE while the table is there
+  and fine when it is gone; lists off with the table still loaded is
+  "differs", not "off"; the empty rule set is expected ABSENT (also
+  after a timeout).  One audit line per attempt (13), tool output
+  escaped and cut to its first line.
+- **Hostile gate**: a tampered list never reaches the backend and the
+  old table stays enforced; a corrupt intel.conf makes the state
+  "unknown" naming the key and resume applies nothing; a damaged or
+  empty applied.state is never "enforced" on its word and attributes no
+  log line, and a re-apply heals it; an unsafe store applies nothing.
+- **Lookup** (26 addresses, each also compared with the built rule
+  set): CIDR edges (first, last, one before, one after) for IPv4 and an
+  IPv6 /48, upper-case IPv6, IPv4-mapped IPv6, the union of directions,
+  NAT64 addresses for an out list (and not for an in list), protected
+  space including the NAT64 form of an RFC 1918 address, exceptions,
+  kept host addresses; refused as not single addresses: a CIDR, a
+  range, a zone, a leading blank, a name, empty, `/128`.  The sentence
+  names the lists; NULL for an excepted address; host NULL keeps
+  nothing; master off lists nothing.
+
+Not checked here: the real kernel (`intel_apply` and the other slots
+are the Linux backend's, tested by `tests/test-intelset.sh`), real
+downloads (`tests/test-fetch.sh`), and `fs_hostnet_read` on a live
+system (`fs-hostnet-test`).  A custom feed URL may carry a key in its
+query string; while curl runs that key is visible in
+`/proc/<pid>/cmdline` to local users (intel.conf refuses proxy
+passwords for the same reason).
+
+Teeth, each re-injected into a copy of `src/core/fs-intel.c` (the old
+text asserted to occur once), seen failing, restored with `cp` and
+checked with `cmp`:
+
+| bug re-injected | checks that caught it |
+|---|---|
+| update fetches without accepted terms | "enabled without accepted terms: NEEDS_CONSENT, no request" (9 calls), "master switch off: not fetched" |
+| no URL rule before the download | "a URL the design's rule refuses is never fetched" |
+| `set_enabled` turns a feed on without consent | "set_enabled is no way around the consent" |
+| the master switch ignored by updates | "master switch off: not fetched" |
+| the master switch ignored by the build | "master switch off: empty rule set", "master switch off: nothing is listed" |
+| a future content date accepted | "a content date a year ahead: REFUSED" |
+| a stored future date never forgotten | "a stored content date in 2033 does not refuse an honest copy forever" (ROLLBACK) |
+| the shrink guard overridden | "10 -> 1 entries", "an empty list after 10 entries", "an older content date than ours", the list-kept checks |
+| a refused copy written over the list anyway | "a refused copy keeps the previous list", "after all of them the 10-entry list is still the one stored" |
+| "unchanged" without checking the list matches its state | "crash between list and state ...", "and the list on disk is the copy the state describes" |
+| a clock that went back waits for itself | "the clock went back: due again" |
+| tool output kept whole | "a failed download: ... the tool's first line only", the audit checks |
+| audit details not escaped | "audit: '\|' escaped ...", "one intel-apply line per attempt" |
+| a proxy with a password accepted | "intel.conf: a proxy with a password ... fails" |
+| store files followed through symlinks | "intel.conf as a symlink is refused" (it read /etc/passwd), "a list that is a symlink is refused" |
+| store files opened blocking | the run hangs at "intel.conf as a FIFO" (killed by a 60 s timeout) |
+| a store name may be a path | "an id that is a path: remove deletes nothing outside the store" (then a crash) |
+| a group-writable store accepted | "a directory writable by its group (0720) is refused" |
+| the store itself may be a symlink (stat for lstat) | "a symbolic link as the store itself is refused" |
+| parents of the store not checked | "/tmp", "and nothing was created there", "0700 store inside a 0777 parent", "a root-owned store inside a user's directory" |
+| no coverage caps on a stored list | the 0.0.0.0/0, ::/0, 2000::/3 and /6 tampered checks, "a tampered stored list: the build fails", "the backend is never called" |
+| what the host needs not subtracted | the build golden, and 10 gate checks downstream |
+| exceptions not subtracted | the build golden, and 8 gate checks downstream |
+| no NAT64 mapping for outbound sets | the build golden, "160,000 outbound intervals + their NAT64 copies", "lookup 64:ff9b::2d00:1 agrees with the built rule set" |
+| no interval limit | "320,000 intervals: TOO_BIG", "160,000 outbound ... TOO_BIG" |
+| no IPv4 union limit | "one /10 more: over 2^26 IPv4 addresses" |
+| the hold ignored | "hold: DRY_RUN, nothing reaches the backend", "resume under a hold", the audit count |
+| the error trusted over the live digest (nft timed out after committing) | "a timeout after nft committed: OK", "... and the state is enforced", the counter checks, "empty rule set, a timeout, the table absent: OK" |
+| the backend's success trusted over the live digest | "the backend reports success but the kernel holds the old table: FAILED", "... and nothing is carried" |
+| counters carried before the apply is known to have happened | "a failed apply: ... counters not carried", "counters after the failed apply: still 5, not 10", four more |
+| counters never carried on apply | "a timeout after nft committed ... counters carried once", "carried 5 + live 2 = 7" |
+| the empty rule set expected as a present table | "apply with nothing on: ... expected ABSENT, OK", "empty rule set, a timeout ..." |
+| suspended ignored by the state | "state: suspended", "resume under a hold: ... still suspended", "the tool complains but the table is gone: suspended" |
+| an unreadable listing read as absent | "state: an unreadable listing is unknown, never not-loaded" |
+| `fs_intel_applied_has` ignores suspended | "applied_has: nothing while suspended" |
+| lookup ignores the NAT64 form | "lookup 64:ff9b::2d00:1", "... agrees with the built rule set" |
+
+The run is also clean under AddressSanitizer and UBSan (LeakSanitizer
+on), and passes as root and as an ordinary user.

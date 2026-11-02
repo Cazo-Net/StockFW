@@ -394,7 +394,8 @@ add_executable(fs-theme-smoke EXCLUDE_FROM_ALL
 target_include_directories(fs-theme-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-theme-smoke PRIVATE PkgConfig::GTK3)
 # ------------------------------------------------------- 1.0.7 core tests
-# Threat intel: address ranges and the blocklist-to-nftables script
+# Threat intel: address ranges, the blocklist-to-nftables script and the
+# engine (fs-intel.c) through a fake backend and downloader
 # (test-intel.c).  GLib only, no display, no network, no root: runs
 # anywhere the core builds.  `ninja fs-intel-test'.
 add_executable(fs-intel-test EXCLUDE_FROM_ALL tests/test-intel.c)
