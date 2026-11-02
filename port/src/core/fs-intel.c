@@ -3406,6 +3406,7 @@ fs_intel_outcome_free (FsIntelOutcome *outcome)
 		return;
 	g_free (outcome->hold_reason);
 	g_free (outcome->digest);
+	g_free (outcome->not_in_force);
 	if (outcome->notes != NULL)
 		g_ptr_array_unref (outcome->notes);
 	g_free (outcome);
@@ -3826,7 +3827,7 @@ apply_in (const FsBackend *backend, const FsIntelConfig *config,
 
 		g_ptr_array_add (o->notes, g_strdup_printf (
 			_("The rules are in place, but not in force: %s"), why));
-		g_free (why);
+		o->not_in_force = why;
 	}
 	if (replaced)
 		carry_counters (&store, snapshot, now);

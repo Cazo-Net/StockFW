@@ -7526,6 +7526,63 @@ static void test_sharing_needs_both_devices (void)
 	fs_policy_free (p);
 }
 
+/* Review T5: the CLI's blocklist text names the platform's firewall
+ * and its way to get rights (fs-cli.h's FS_CLI_LIVE, FS_CLI_SUDO,
+ * FS_CLI_RIGHTS) in fs-cli-cmds.c too, not only in fs-cli-intel.c.  The
+ * CLI is built on Linux only, so the Windows words are read from the
+ * source: no Linux-only literal where the macros belong. */
+static gchar *
+read_lf (const gchar *path)
+{
+	gchar *src = NULL;
+
+	if (!g_file_get_contents (path, &src, NULL, NULL))
+		return NULL;
+	{
+		gchar *w = src;
+		for (const gchar *r = src; *r != '\0'; r++)
+			if (*r != '\r')
+				*w++ = *r;
+		*w = '\0';
+	}
+	return src;
+}
+
+static void test_cli_platform_words (void)
+{
+	gchar *cmds = read_lf ("src/cli/fs-cli-cmds.c");
+	gchar *intel = read_lf ("src/cli/fs-cli-intel.c");
+	gchar *hdr = read_lf ("src/cli/fs-cli.h");
+	const gchar *win;
+
+	CHECK (cmds != NULL && intel != NULL && hdr != NULL,
+	       "cli words: the CLI sources are readable");
+	if (cmds == NULL || intel == NULL || hdr == NULL)
+		goto out;
+	win = strstr (hdr, "#elif defined G_OS_WIN32");
+	CHECK (win != NULL &&
+	       strstr (win, "#define FS_CLI_LIVE      \"Windows Firewall\"")
+	       != NULL &&
+	       strstr (win, "#define FS_CLI_SUDO      \"\"") != NULL &&
+	       strstr (win, "opened as administrator") != NULL,
+	       "cli words: fs-cli.h names Windows Firewall and an "
+	       "administrator prompt for Windows");
+	CHECK (strstr (cmds, "\"the kernel does not hold them\"") == NULL &&
+	       strstr (cmds, "FS_CLI_LIVE \" does not hold \"") != NULL,
+	       "cli words: Stop and Start's blocklist error in fs-cli-cmds.c "
+	       "names the platform's firewall (FS_CLI_LIVE)");
+	CHECK (strstr (cmds, "\"run it with sudo, e.g.") == NULL &&
+	       strstr (cmds, "FS_CLI_RIGHTS \", e.g. `\" FS_CLI_SUDO") != NULL,
+	       "cli words: the root hint in fs-cli-cmds.c is the platform's "
+	       "(FS_CLI_RIGHTS, FS_CLI_SUDO)");
+	CHECK (strstr (intel, "#define FS_CLI_LIVE") == NULL,
+	       "cli words: one definition, in fs-cli.h");
+out:
+	g_free (cmds);
+	g_free (intel);
+	g_free (hdr);
+}
+
 /* --- "Start the firewall when StockFW opens" -------------------------
  * On Linux, start applies a policy.  At launch the shared policy is
  * created empty and only filled when the Policy page is built, and
@@ -9677,6 +9734,7 @@ int main (void)
 #endif
 
 	test_ports ();
+	test_cli_platform_words ();
 	test_hosts ();
 	test_rule_csv ();
 	test_policy_persist ();

@@ -1381,6 +1381,9 @@ typedef struct
 	gchar   *hold;
 	gchar   *error;   /* set by the worker; NULL when they followed */
 	gchar   *notes;
+	gchar   *not_in_force; /* applied, but the firewall does not
+	                        * enforce them (Windows: off for the
+	                        * profile in use): why */
 } IntelJob;
 
 static GThreadPool *intel_pool;
@@ -1392,6 +1395,7 @@ intel_job_free (IntelJob *job)
 	g_free (job->hold);
 	g_free (job->error);
 	g_free (job->notes);
+	g_free (job->not_in_force);
 	g_free (job);
 }
 
@@ -1412,8 +1416,18 @@ intel_job_done (gpointer data)
 			: _("The firewall stopped, but its blocklists could not "
 			    "be removed"), text);
 		g_free (text);
+	} else if (job->not_in_force != NULL) {
+		/* Applied, and blocking nothing: said as plainly as a
+		 * failure, never left to read as "in force" [S10]. */
+		fs_dialogs_error (NULL, _("The firewall started, but its "
+		                          "blocklists are not in force"),
+		                  job->not_in_force);
 	}
 	intel_job_free (job);
+	/* The engine's state changed (Stop took the lists down, Start put
+	 * them back): the Overview and the tray read it again now, not at
+	 * the Threat Intel page's next tick (review T1). */
+	fs_intelview_refresh ();
 	return G_SOURCE_REMOVE;
 }
 
@@ -1436,6 +1450,9 @@ intel_job_run (gpointer data, gpointer user_data)
 #else
 			job->error = g_strdup (_("The kernel does not hold them."));
 #endif
+		if (o != NULL && o->result == FS_APPLY_OK &&
+		    o->not_in_force != NULL)
+			job->not_in_force = g_strdup (o->not_in_force);
 		if (o != NULL && o->notes != NULL && o->notes->len > 0) {
 			GString *notes = g_string_new (NULL);
 

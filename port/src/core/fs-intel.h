@@ -328,6 +328,9 @@ typedef struct
 	guint         sets;
 	guint         count4, count6;
 	GPtrArray    *notes;      /* gchar*, from the build; never NULL     */
+	gchar        *not_in_force; /* OK, but the firewall does not enforce
+	                            * the rules (Windows: off for the
+	                            * profile in use): why; else NULL      */
 } FsIntelOutcome;
 
 void fs_intel_outcome_free (FsIntelOutcome *outcome);

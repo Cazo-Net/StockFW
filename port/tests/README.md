@@ -2221,8 +2221,51 @@ Not covered:
   Windows runner.
 - The Overview's verdict and the tray's tooltip are not read back by a
   smoke; the smoke checks `fs_intelview_summary`, which both show.
+  (The tray's tooltip is read back since the review below.)
 
 Every suite, module test and smoke was run on the merged tree (the
 smokes under `xvfb-run -a`; `fs-tray-smoke` fails headless as before).
 The Windows sources compile (`wincheck.sh`) and `StockFW.exe` links
 (`winlink.sh`) with mingw.
+
+## Threat intel, review of the merge (design 11.13)
+
+| check | where | what it proves |
+|---|---|---|
+| `engine: after an apply the list is applied`, `engine: after a Stop the list is not applied`, `engine: a Start after a Stop returns and the list is applied again`, `engine: a Stop during an apply waits for it`, `engine: an apply that waited for a Stop is held`, `engine: after a clear the list is not applied` | `fs-intel-test` and `fs-intel-windows-test` (`tests/intel-engine-checks.h`) | M1: the engine's lock and `fs_intel_applied_has` through a fake backend, each call on a worker thread with a 30 s deadline (a self-deadlock prints `engine: ... returns within 30 s` as a FAIL and ends the run). On Linux the Linux branches run; on the Windows runner the G_OS_WIN32 ones (`engine_held`, `fs_winstore_lock` in every operation, `applied.state` read each time) |
+| `windows states: ... and the outcome carries why` | `fs-intel-test` | T2: an apply whose rules read INACTIVE is OK and carries `not_in_force` |
+| `windows: Apply with the firewall off for the profile says the rules are in place but not in force` | `fs-intelview-smoke` | T2: the page never says "The lists are in force." then |
+| `tray: after Stop, before the next read, the tooltip claims no blocklist in force`, `after Stop, once read: no summary` | `fs-intelview-smoke` | T1: the tray's tooltip, read back through `gtk_status_icon_get_tooltip_text` |
+| `held under the Lock: the summary names the list that is on but not in force` | `fs-intelview-smoke` | T3 |
+| `master switch off under the Lock: "Off, but rules still in place" ...` | `fs-intelview-smoke` | T4: the user's own switch is never "changed outside StockFW", and the summary says the rules still block |
+| `cli words: Stop and Start's blocklist error in fs-cli-cmds.c names the platform's firewall`, `cli words: the root hint in fs-cli-cmds.c is the platform's`, `cli words: fs-cli.h names Windows Firewall ...` | `tests/test-core.sh` | T5: read from the source (CR stripped), since the CLI is built on Linux only |
+
+`fs-intel-test` runs the engine checks first among its engine tests:
+an older check that calls Start directly would otherwise hang, not
+fail, on the same bug.
+
+Teeth (each injected into the real file, the named check seen failing,
+the file restored with `cp` and proved with `cmp`):
+
+| injected bug | check that fails |
+|---|---|
+| `engine_held` answers FALSE (the Linux branch; the reviewer's Windows bug made the Windows branch do the same) | `engine: a Start (fs_intel_resume) returns within 30 s`, and the run stops with exit 1 in about 30 s |
+| `fs_intel_applied_has` never finds the id (the Linux branch) | `engine: after an apply the list is applied`, `engine: a Start after a Stop returns and the list is applied again` |
+| the apply does not set `not_in_force` | `windows states: ... and the outcome carries why` |
+| the page's Apply ignores `not_in_force` | `windows: Apply with the firewall off for the profile ...` |
+| the tray adds the summary whatever the firewall's state | `tray: after Stop, before the next read, ...` |
+| the summary ignores lists not applied | `held under the Lock: the summary names the list ...` |
+| differs back to "changed outside StockFW" in the summary and the title | `master switch off under the Lock: ...` |
+| `fs-cli-cmds.c` says "the kernel does not hold them" again | `cli words: Stop and Start's blocklist error ...` |
+
+Not covered:
+
+- The engine checks run the G_OS_WIN32 branches only on the CI's
+  Windows runner; here they are compiled and linked with mingw and not
+  run, so their teeth against the Windows branches themselves (the
+  reviewer's two injections) were not seen failing.
+- `fs_intel_update` under the engine lock on Windows (it needs the
+  downloader on Windows); the Linux run covers the lock's use there.
+- The Status page's Stop and Start worker (`intel_job_done` reading the
+  state again, the not-in-force dialog after Start) runs on the real
+  backend and is built, not run; the smoke checks what it calls.

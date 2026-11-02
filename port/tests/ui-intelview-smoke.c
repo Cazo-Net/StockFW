@@ -38,8 +38,10 @@
 #include "core/fs-intel.h"
 #include "core/fs-intelset.h"
 #include "core/fs-netparse.h"
+#include "core/fs-prefs.h"
 #include "ui/fs-hitview.h"
 #include "ui/fs-intelview.h"
+#include "ui/fs-tray.h"
 #include "fs-theme-css.h"
 
 static int failures = 0;
@@ -65,6 +67,8 @@ static struct
 	guint           apply_calls;
 	guint           clear_calls;
 	gchar          *last_sets;    /* "id id ..." of the last apply   */
+	gboolean        apply_inactive; /* rules written, not enforced
+	                              * (Windows: off for the profile)   */
 } kern;
 
 static void
@@ -86,7 +90,9 @@ fake_apply (const FsIntelRuleset *rs, GError **error)
 	kern.apply_calls++;
 	g_free (kern.digest);
 	kern.digest = rs->sets->len ? fs_intel_ruleset_digest (rs) : NULL;
-	kern.live = rs->sets->len ? FS_INTEL_LIVE_PRESENT : FS_INTEL_LIVE_ABSENT;
+	kern.live = !rs->sets->len ? FS_INTEL_LIVE_ABSENT
+	            : kern.apply_inactive ? FS_INTEL_LIVE_INACTIVE
+	            : FS_INTEL_LIVE_PRESENT;
 	g_hash_table_remove_all (kern.counters);
 	for (guint i = 0; i < rs->sets->len; i++) {
 		const FsIntelSet *s = g_ptr_array_index (rs->sets, i);
@@ -1083,6 +1089,44 @@ main (int argc, char **argv)
 	       "not in force, and why (\"%s\")", t);
 	g_free (t);
 	shot ("06c-held-feodo-on.png");
+	{
+		/* Review T3: the Overview and the tray do not claim every
+		 * list is in force while feodo is on and blocks nothing. */
+		gchar *sum = fs_intelview_summary ();
+
+		CHECK (sum != NULL && strstr (sum, "except 1 list") != NULL &&
+		       strstr (sum, "not applied yet") != NULL,
+		       "held under the Lock: the summary names the list that is "
+		       "on but not in force (\"%s\")", sum);
+		g_free (sum);
+	}
+	{
+		/* Review T4: the master switch turned off here, under the
+		 * Lock, leaves the rules blocking.  That is the user's own
+		 * change, not one made outside StockFW, and the rules still
+		 * block. */
+		GtkWidget *master = find (page, "intel-master");
+		gchar *sum;
+
+		CHECK (master != NULL, "the master switch is there");
+		if (master != NULL)
+			gtk_switch_set_active (GTK_SWITCH (master), FALSE);
+		wait_idle ();
+		refresh ();
+		sum = fs_intelview_summary ();
+		CHECK (strcmp (text_of ("intel-state-title"),
+		               "Off, but rules still in place") == 0 &&
+		       sum != NULL && strstr (sum, "outside StockFW") == NULL &&
+		       strstr (sum, "still holds blocklist rules") != NULL,
+		       "master switch off under the Lock: \"%s\", and the summary "
+		       "says the rules still block, never \"changed outside "
+		       "StockFW\" (\"%s\")", text_of ("intel-state-title"), sum);
+		g_free (sum);
+		if (master != NULL)
+			gtk_switch_set_active (GTK_SWITCH (master), TRUE);
+		wait_idle ();
+		refresh ();
+	}
 	test_hold = NULL;
 	CHECK (fs_intelview_hold_reason () == NULL,
 	       "fs_intelview_hold_reason: NULL without a hold");
@@ -1209,6 +1253,23 @@ main (int argc, char **argv)
 	       "windows: the Blocked tile says n/a, never 0 (\"%s\")",
 	       text_of ("intel-tile-2"));
 	shot ("09b-not-in-force.png");
+	/* Review T2: Apply while the firewall does not enforce the rules
+	 * (Windows Firewall off for the profile in use) must not say they
+	 * are in force. */
+	kern.apply_inactive = TRUE;
+	click ("intel-apply");
+	CHECK (strstr (text_of ("intel-message"), "The lists are in force") ==
+	       NULL &&
+	       strstr (text_of ("intel-message"), "not in force") != NULL &&
+	       strstr (text_of ("intel-message"), WIN_NOT_IN_FORCE) != NULL &&
+	       gtk_style_context_has_class (gtk_widget_get_style_context (
+	               find (page, "intel-message")), "intel-warn") &&
+	       strcmp (text_of ("intel-state-title"), "Not in force") == 0,
+	       "windows: Apply with the firewall off for the profile says the "
+	       "rules are in place but not in force, as a warning (\"%s\")",
+	       text_of ("intel-message"));
+	kern.apply_inactive = FALSE;
+	kern.live = FS_INTEL_LIVE_INACTIVE;
 	kern.live = FS_INTEL_LIVE_PARTIAL;
 	refresh ();
 	CHECK (strcmp (text_of ("intel-state-title"),
@@ -1233,6 +1294,48 @@ main (int argc, char **argv)
 		CHECK (sum != NULL && strstr (sum, "are in force") != NULL,
 		       "windows: ... summary: in force (\"%s\")", sum);
 		g_free (sum);
+	}
+	{
+		/* Review T1: after Stop the tray says the firewall is off and
+		 * claims no blocklist in force, even before the page reads
+		 * the state again. */
+		GtkStatusIcon *icon;
+		const gchar *tip = NULL;
+		gchar *sum;
+
+		fs_prefs_set_bool (FS_PREFS_ENABLE_TRAY_ICON, TRUE);
+		fs_tray_set_window (GTK_WINDOW (window));
+		fs_tray_sync ();
+		fs_tray_set_firewall (FS_FW_RUNNING, NULL);
+		icon = fs_tray_icon ();
+		G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+		tip = icon != NULL ? gtk_status_icon_get_tooltip_text (icon) : NULL;
+		G_GNUC_END_IGNORE_DEPRECATIONS
+		CHECK (tip != NULL && strstr (tip, "are in force") != NULL,
+		       "tray: running, the tooltip carries the summary (\"%s\")",
+		       tip ? tip : "(no icon)");
+		CHECK (fs_intel_suspend (&win_backend, "smoke", NULL), "(Stop)");
+		kern.fw = FS_FW_STOPPED;
+		fs_tray_set_firewall (FS_FW_STOPPED, NULL);
+		G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+		tip = icon != NULL ? gtk_status_icon_get_tooltip_text (icon) : NULL;
+		G_GNUC_END_IGNORE_DEPRECATIONS
+		CHECK (tip != NULL && strstr (tip, "Firewall OFF") != NULL &&
+		       strstr (tip, "in force") == NULL,
+		       "tray: after Stop, before the next read, the tooltip "
+		       "claims no blocklist in force (\"%s\")",
+		       tip ? tip : "(no icon)");
+		refresh ();
+		sum = fs_intelview_summary ();
+		CHECK (sum == NULL, "after Stop, once read: no summary (\"%s\")",
+		       sum ? sum : "none");
+		g_free (sum);
+		kern.fw = FS_FW_RUNNING;
+		fs_intel_outcome_free (fs_intel_resume (&win_backend, "smoke",
+		                                        NULL, NULL));
+		fs_tray_set_firewall (FS_FW_RUNNING, NULL);
+		fs_tray_uninstall ();
+		refresh ();
 	}
 	fs_intelview_set_backend (&fake_backend);
 	refresh ();

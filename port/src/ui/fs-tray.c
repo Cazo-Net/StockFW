@@ -159,8 +159,12 @@ update_tooltip (void)
 		                        state);
 	{
 		/* The blocklists, as the Threat Intel page last read them
-		 * (not in force: with the reason). */
-		gchar *intel = fs_intelview_summary ();
+		 * (not in force: with the reason).  Only while the firewall
+		 * runs, as on the Overview: a Stop takes them down, and the
+		 * page's last read may still be from before it (review
+		 * T1). */
+		gchar *intel = firewall_on (tray_fw) ? fs_intelview_summary ()
+		                                     : NULL;
 
 		if (intel != NULL) {
 			gchar *both = g_strdup_printf ("%s\n%s", text, intel);

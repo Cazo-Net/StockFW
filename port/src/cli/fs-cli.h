@@ -29,6 +29,29 @@ G_BEGIN_DECLS
 #define FS_VERSION "1.0.6"
 #endif
 
+/* Where the blocklists are enforced, and how a command gets the rights
+ * to change them, in the words of the platform this is built for (every
+ * command's text, fs-cli-cmds.c and fs-cli-intel.c; review T5).  The
+ * CLI is built on Linux only (CMakeLists.txt), but its text must stay
+ * true if it is built elsewhere: on Windows the rules are Windows
+ * Firewall rules and there is no sudo (an elevated prompt instead). */
+#ifdef __linux__
+#define FS_CLI_LIVE      "the kernel"
+#define FS_CLI_LIVE_CAP  "The kernel"
+#define FS_CLI_SUDO      "sudo "
+#define FS_CLI_RIGHTS    "run it with sudo"
+#elif defined G_OS_WIN32
+#define FS_CLI_LIVE      "Windows Firewall"
+#define FS_CLI_LIVE_CAP  "Windows Firewall"
+#define FS_CLI_SUDO      ""
+#define FS_CLI_RIGHTS    "run it from a prompt opened as administrator"
+#else
+#define FS_CLI_LIVE      "the firewall"
+#define FS_CLI_LIVE_CAP  "The firewall"
+#define FS_CLI_SUDO      ""
+#define FS_CLI_RIGHTS    "run it with administrator rights"
+#endif
+
 /* Exit codes. */
 enum
 {

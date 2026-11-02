@@ -19,7 +19,11 @@
  *     with one of our names in another group survives, and every rule
  *     outside the group is exactly as it was before the test;
  *   - the store directory (STOCKFW_INTEL_DIR override) gets a protected
- *     DACL naming only SYSTEM, Administrators and the current user.
+ *     DACL naming only SYSTEM, Administrators and the current user;
+ *   - the engine on Windows, through a fake backend in a temporary
+ *     store (intel-engine-checks.h, review M1): Stop then Start returns
+ *     within a deadline, a Stop during an apply waits, an apply that
+ *     waited for a Stop is held, fs_intel_applied_has after each.
  *
  * Windows only, elevated only: a plain shell prints SKIP and exits 0,
  * as does a computer whose firewall service is stopped or that already
@@ -57,6 +61,7 @@
 #include "core/fs-util.h"
 #include "core/fs-winstore.h"
 #include "platform/windows/netfw-compat.h"
+#include "intel-engine-checks.h"
 
 static int failures = 0;
 
@@ -614,6 +619,31 @@ check_engine_lock (void)
 	g_rmdir (tmp);
 	g_free (target);
 	g_free (link_path);
+	g_free (tmp);
+}
+
+/* The engine on Windows (review M1): Stop, Start, apply, clear and
+ * fs_intel_applied_has through a fake backend in a temporary store, so
+ * the G_OS_WIN32 branches of fs-intel.c run (engine_held, the engine
+ * lock in every operation, applied_has reading applied.state).  The
+ * same checks run on Linux in fs-intel-test (intel-engine-checks.h). */
+static void
+check_engine_uses_lock (void)
+{
+	gchar *tmp = g_dir_make_tmp ("sfw-engine-XXXXXX", NULL);
+	gchar *audit;
+
+	if (tmp == NULL) {
+		CHECK (FALSE, "engine: a temporary directory");
+		return;
+	}
+	audit = g_build_filename (tmp, "audit.log", NULL);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit, TRUE);
+	failures += (int) intel_engine_checks (tmp);
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	g_remove (audit);
+	g_rmdir (tmp);
+	g_free (audit);
 	g_free (tmp);
 }
 
@@ -1208,6 +1238,7 @@ main (void)
 	check_store_dacl ();
 	check_store_squatted ();
 	check_engine_lock ();
+	check_engine_uses_lock ();
 
 	g_free (before);
 	g_free (after);

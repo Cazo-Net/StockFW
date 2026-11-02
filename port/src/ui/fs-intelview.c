@@ -120,6 +120,9 @@ typedef struct
 	GHashTable    *sources;      /* id -> FsIntelSourceState*           */
 	GHashTable    *counters;     /* id -> FsIntelCounter*               */
 	GHashTable    *in_force;     /* ids in the applied rule set         */
+	guint          not_applied;  /* sources on, with a copy, that the
+	                              * firewall was not given (held, or
+	                              * not applied yet; review T3)       */
 	const gchar   *counts_unavailable; /* fs_intel_counts_unavailable:
 	                              * the platform counts nothing per
 	                              * rule, so no count is shown        */
@@ -239,6 +242,8 @@ static Snapshot *shown = NULL;     /* the snapshot on screen           */
 static gboolean     summary_known = FALSE;
 static FsIntelState summary_state = FS_INTEL_STATE_UNKNOWN;
 static gchar       *summary_detail = NULL;
+static guint        summary_not_applied = 0;
+static gboolean     summary_wants = FALSE;
 static gboolean  syncing = FALSE;  /* switches set from a snapshot     */
 static guint     pulse_id = 0;
 
@@ -530,6 +535,25 @@ is_root (void)
 #endif
 }
 
+/* Whether the config asks for any list (the engine's want_any): with
+ * none, rules still there are the user's own "off" not yet applied,
+ * or someone else's, never a change to lists that are on. */
+static gboolean
+config_wants (const FsIntelConfig *config)
+{
+	if (config == NULL || !config->enabled)
+		return FALSE;
+	for (guint i = 0; i < config->feeds->len; i++)
+		if (((FsIntelFeedConf *) g_ptr_array_index (config->feeds,
+		                                            i))->enabled)
+			return TRUE;
+	for (guint i = 0; i < config->lists->len; i++)
+		if (((FsIntelListConf *) g_ptr_array_index (config->lists,
+		                                            i))->enabled)
+			return TRUE;
+	return FALSE;
+}
+
 /* The snapshot `s' is now the one shown: if what the Overview and the
  * tray would say about the blocklists changed, they say it again. */
 static void
@@ -538,10 +562,14 @@ summary_update (const Snapshot *s)
 	if (s == NULL)
 		return;
 	if (summary_known && summary_state == s->state &&
-	    g_strcmp0 (summary_detail, s->detail) == 0)
+	    g_strcmp0 (summary_detail, s->detail) == 0 &&
+	    summary_not_applied == s->not_applied &&
+	    summary_wants == config_wants (s->config))
 		return;
 	summary_known = TRUE;
 	summary_state = s->state;
+	summary_not_applied = s->not_applied;
+	summary_wants = config_wants (s->config);
 	g_free (summary_detail);
 	summary_detail = g_strdup (s->detail);
 	fs_statusview_intel_changed ();
@@ -555,6 +583,18 @@ fs_intelview_summary (void)
 		return NULL;
 	switch (summary_state) {
 	case FS_INTEL_STATE_ENFORCED:
+		/* A list turned on but held (the Lock, audit-only mode) or
+		 * not applied yet blocks nothing: never folded into "in
+		 * force" (review T3). */
+		if (summary_not_applied > 0)
+			return g_strdup_printf (g_dngettext (NULL,
+				"Threat-intel blocklists are in force, except %u "
+				"list that is turned on but not applied yet: see "
+				"the Threat Intel page.",
+				"Threat-intel blocklists are in force, except %u "
+				"lists that are turned on but not applied yet: see "
+				"the Threat Intel page.", summary_not_applied),
+				summary_not_applied);
 		return g_strdup (_("Threat-intel blocklists are in force."));
 	case FS_INTEL_STATE_NOT_IN_FORCE:
 		/* The backend's sentence: which profile is off, the service
@@ -565,9 +605,20 @@ fs_intelview_summary (void)
 		       : g_strdup (_("Threat-intel blocklists are not in "
 		                     "force."));
 	case FS_INTEL_STATE_DIFFERS:
-		return g_strdup (_("Threat-intel blocklists were changed "
-		                   "outside StockFW: see the Threat Intel "
-		                   "page."));
+		/* The engine's sentence says which: rules changed by another
+		 * program, or the lists turned off here while rules still
+		 * block (review T4).  Never "changed outside StockFW" for the
+		 * user's own switch. */
+		if (summary_detail != NULL)
+			return g_strdup_printf (_("Threat intel: %s"),
+			                        summary_detail);
+		return g_strdup (summary_wants
+		                 ? _("Threat-intel blocklists were changed "
+		                     "outside StockFW: see the Threat Intel "
+		                     "page.")
+		                 : _("Threat-intel blocklists are turned off, "
+		                     "but rules are still in place: see the "
+		                     "Threat Intel page."));
 	case FS_INTEL_STATE_NOT_LOADED:
 		return g_strdup (_("Threat-intel blocklists are turned on but "
 		                   "not loaded: see the Threat Intel page."));
@@ -645,19 +696,24 @@ take_snapshot (const FsBackend *b)
 		FsIntelFeedConf *f = g_ptr_array_index (s->config->feeds, i);
 		FsIntelSourceState *st = fs_intel_source_state (f->id);
 
-		if (st != NULL)
-			g_hash_table_replace (s->sources, g_strdup (f->id), st);
 		if (fs_intel_applied_has (f->id))
 			g_hash_table_add (s->in_force, g_strdup (f->id));
+		else if (f->enabled && (f->custom || f->accepted_at > 0) &&
+		         st != NULL && st->fetched_at > 0)
+			s->not_applied++;
+		if (st != NULL)
+			g_hash_table_replace (s->sources, g_strdup (f->id), st);
 	}
 	for (guint i = 0; i < s->config->lists->len; i++) {
 		FsIntelListConf *l = g_ptr_array_index (s->config->lists, i);
 		FsIntelSourceState *st = fs_intel_source_state (l->id);
 
-		if (st != NULL)
-			g_hash_table_replace (s->sources, g_strdup (l->id), st);
 		if (fs_intel_applied_has (l->id))
 			g_hash_table_add (s->in_force, g_strdup (l->id));
+		else if (l->enabled && st != NULL)
+			s->not_applied++;
+		if (st != NULL)
+			g_hash_table_replace (s->sources, g_strdup (l->id), st);
 	}
 
 	s->exceptions = fs_range_set_to_text (s->config->exceptions);
@@ -762,6 +818,16 @@ apply_now (Job *job, const FsIntelConfig *config, gboolean unattended)
 		                            o->hold_reason != NULL
 		                            ? o->hold_reason : job->hold);
 
+		say (job, t);
+		g_free (t);
+	} else if (o->result == FS_APPLY_OK && o->not_in_force != NULL) {
+		/* Written as asked, and the firewall does not enforce them
+		 * (Windows: off for the profile in use): never "in force"
+		 * under a state card that says it is not [S10]. */
+		gchar *t = g_strdup_printf (_("The rules are in place, but not "
+		                              "in force: %s"), o->not_in_force);
+
+		job->warned = TRUE;
 		say (job, t);
 		g_free (t);
 	} else if (o->result == FS_APPLY_OK) {
@@ -2006,7 +2072,11 @@ show_state (const Snapshot *s)
 		icon = FS_ICON_SHIELD_ALERT;
 		break;
 	case FS_INTEL_STATE_DIFFERS:
-		title = _("Changed outside StockFW");
+		/* Lists turned off here while rules still block is the
+		 * user's own change, not yet applied (review T4). */
+		title = config_wants (s->config)
+		        ? _("Changed outside StockFW")
+		        : _("Off, but rules still in place");
 		level = 2;
 		icon = FS_ICON_SHIELD_X;
 		break;

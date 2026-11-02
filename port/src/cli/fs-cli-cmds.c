@@ -111,7 +111,8 @@ gint
 fs_cli_need_root (const gchar *what)
 {
 	fs_cli_error ("%s needs root privileges", what);
-	fs_cli_hint ("run it with sudo, e.g. `sudo stockfw %s'", what);
+	fs_cli_hint (FS_CLI_RIGHTS ", e.g. `" FS_CLI_SUDO "stockfw %s'",
+	             what);
 	return FS_EXIT_NEED_ROOT;
 }
 
@@ -1058,7 +1059,8 @@ intel_follow (gboolean start, GString *json)
 		fs_cli_error ("the blocklists could not be %s: %s",
 		              start ? "applied" : "removed",
 		              error != NULL ? error->message
-		                            : "the kernel does not hold them");
+		                            : FS_CLI_LIVE " does not hold "
+		                              "them");
 		print_notes (notes->str);
 	} else if (o != NULL && o->held) {
 		printf ("%snote:%s blocklists not applied: %s\n", fs_cli_amber (),

@@ -20,6 +20,7 @@
 #include "core/fs-feed.h"
 #include "core/fs-hostnet.h"
 #include "core/fs-intelwin.h"
+#include "intel-engine-checks.h"
 
 #ifdef G_OS_UNIX
 #include <fcntl.h>
@@ -3355,6 +3356,13 @@ test_state_windows (void)
 		       "windows states: an apply whose rules are not enforced "
 		       "is OK and says, in its notes, that they are not in "
 		       "force");
+		/* Review T2: the page and the Status page's Start read this
+		 * field, not the notes, to never say "in force". */
+		CHECK (o && o->not_in_force != NULL &&
+		       strstr (o->not_in_force, "Public profile") != NULL,
+		       "windows states: ... and the outcome carries why "
+		       "(not_in_force: %s)", o && o->not_in_force
+		       ? o->not_in_force : "NULL");
 	}
 	fs_intel_outcome_free (o);
 	g_clear_error (&e);
@@ -4032,6 +4040,10 @@ test_engine (const gchar *argv0)
 	kern_reset ();
 	net_reset ();
 	test_store_dir ();
+	/* The same checks fs-intel-windows-test runs on Windows, first:
+	 * an engine stuck on its own lock fails here, within a deadline,
+	 * before a later check that calls Start directly hangs. */
+	failures += intel_engine_checks (eng_base);
 	test_config ();
 	test_update_consent_and_network ();
 	test_update_guards ();
