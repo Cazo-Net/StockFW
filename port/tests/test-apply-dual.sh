@@ -177,7 +177,7 @@ main (int argc, char **argv)
 CEOF
 
 CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0)"
-LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0)"
+LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
 gcc -o "$BUILD_DIR/dual" -I "$PORT/src" $CF "$BUILD_DIR/dual.c" \
 	"$PORT/src/platform/linux/fs-backend-linux.c" \
 	"$PORT/build-linux/libfs-core.a" $LF 2> "$BUILD_DIR/cc.log"

@@ -49,6 +49,17 @@ fi
 cp "$MSYS_ROOT"/bin/*.dll "$STAGE_DIR/gtk-runtime/bin/" 2>/dev/null
 echo "  Copied $(ls "$STAGE_DIR/gtk-runtime/bin/"*.dll | wc -l) DLLs"
 
+# The location database reader needs liblzma (xz) and OpenSSL's
+# libcrypto; an installer without them would install a program that
+# cannot read the database, so their absence stops the build.
+for pattern in 'liblzma-*.dll' 'libcrypto-*-x64.dll'; do
+    if ! ls "$STAGE_DIR/gtk-runtime/bin/"$pattern >/dev/null 2>&1; then
+        echo "ERROR: $pattern is not in $MSYS_ROOT/bin" >&2
+        echo "  pacman -S mingw-w64-ucrt-x86_64-xz mingw-w64-ucrt-x86_64-openssl" >&2
+        exit 1
+    fi
+done
+
 # GLib does not call CreateProcess itself: it starts child processes
 # through gspawn-win64-helper.exe, resolved like any other program --
 # $INSTDIR first, then PATH.  Nothing above pulls it in, because it is

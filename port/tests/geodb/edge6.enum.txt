@@ -1,0 +1,10 @@
+filter cc=US asn=- flags=0 ref-error
+filter cc=- asn=1 flags=0 ref-error
+filter cc=- asn=5 flags=0
+1.0.0.0/8
+filter cc=- asn=- flags=1
+filter cc=- asn=- flags=2
+filter cc=- asn=- flags=4
+filter cc=- asn=- flags=8
+filter cc=US asn=- flags=0 ref-error
+filter cc=- asn=- flags=0

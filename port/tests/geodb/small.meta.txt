@@ -1,0 +1,18 @@
+created_at	1700000000
+vendor	StockFW test vendor
+description	Reference database for the StockFW tests.\nWritten by libloc's writer.
+license	CC0-1.0
+country	DE	EU	Germany
+country	FR	EU	France
+country	GB	EU	United Kingdom
+country	IT	EU	Italy
+country	JP	AS	Japan
+country	NL	EU	Netherlands
+country	US	NA	United States
+as	64500	Example One
+as	64501	Example Two GmbH
+as	64502	Tést Ünïcode
+as	64504	Sat?Net
+as	64505	?Evil Corp
+as	64506	Adjacent Halves
+as	2147483647	Largest the binding takes

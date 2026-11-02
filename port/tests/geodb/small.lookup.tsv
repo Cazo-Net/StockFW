@@ -1,0 +1,123 @@
+10.0.0.0	found	10.0.0.0/8	DE	64500	0	Example One
+10.255.255.255	found	10.0.0.0/8	DE	64500	0	Example One
+9.255.255.255	none			0	0	
+11.0.0.0	none			0	0	
+10.127.255.255	found	10.0.0.0/8	DE	64500	0	Example One
+::ffff:10.0.0.0	found	10.0.0.0/8	DE	64500	0	Example One
+10.1.0.0	found	10.1.0.0/16	US	64501	4	Example Two GmbH
+10.1.255.255	found	10.1.0.0/16	US	64501	4	Example Two GmbH
+10.0.255.255	found	10.0.0.0/8	DE	64500	0	Example One
+10.2.0.0	found	10.0.0.0/8	DE	64500	0	Example One
+10.1.127.255	found	10.1.0.0/16	US	64501	4	Example Two GmbH
+::ffff:10.1.0.0	found	10.1.0.0/16	US	64501	4	Example Two GmbH
+10.1.2.0	found	10.1.2.0/24	FR	64502	9	Tést Ünïcode
+10.1.2.255	found	10.1.2.128/25		64503	0	
+10.1.1.255	found	10.1.0.0/16	US	64501	4	Example Two GmbH
+10.1.3.0	found	10.1.0.0/16	US	64501	4	Example Two GmbH
+10.1.2.127	found	10.1.2.0/24	FR	64502	9	Tést Ünïcode
+::ffff:10.1.2.0	found	10.1.2.0/24	FR	64502	9	Tést Ünïcode
+10.1.2.128	found	10.1.2.128/25		64503	0	
+10.1.2.191	found	10.1.2.128/25		64503	0	
+::ffff:10.1.2.128	found	10.1.2.128/25		64503	0	
+10.200.0.0	found	10.200.0.0/14	DE	64500	0	Example One
+10.203.255.255	found	10.200.0.0/14	DE	64500	0	Example One
+10.199.255.255	found	10.0.0.0/8	DE	64500	0	Example One
+10.204.0.0	found	10.0.0.0/8	DE	64500	0	Example One
+10.201.255.255	found	10.200.0.0/14	DE	64500	0	Example One
+::ffff:10.200.0.0	found	10.200.0.0/14	DE	64500	0	Example One
+192.0.2.0	found	192.0.2.0/24	NL	64504	2	Sat?Net
+192.0.2.255	found	192.0.2.0/24	NL	64504	2	Sat?Net
+192.0.1.255	none			0	0	
+192.0.3.0	none			0	0	
+192.0.2.127	found	192.0.2.0/24	NL	64504	2	Sat?Net
+::ffff:192.0.2.0	found	192.0.2.0/24	NL	64504	2	Sat?Net
+198.51.100.7	found	198.51.100.7/32	GB	64505	0	?Evil Corp
+198.51.100.6	none			0	0	
+198.51.100.8	none			0	0	
+::ffff:198.51.100.7	found	198.51.100.7/32	GB	64505	0	?Evil Corp
+203.0.113.0	found	203.0.113.0/25	IT	64506	0	Adjacent Halves
+203.0.113.127	found	203.0.113.0/25	IT	64506	0	Adjacent Halves
+203.0.112.255	none			0	0	
+203.0.113.128	found	203.0.113.128/25	IT	64506	0	Adjacent Halves
+203.0.113.63	found	203.0.113.0/25	IT	64506	0	Adjacent Halves
+::ffff:203.0.113.0	found	203.0.113.0/25	IT	64506	0	Adjacent Halves
+203.0.113.255	found	203.0.113.128/25	IT	64506	0	Adjacent Halves
+203.0.114.0	none			0	0	
+203.0.113.191	found	203.0.113.128/25	IT	64506	0	Adjacent Halves
+::ffff:203.0.113.128	found	203.0.113.128/25	IT	64506	0	Adjacent Halves
+255.255.255.255	found	255.255.255.255/32	JP	2147483647	0	Largest the binding takes
+255.255.255.254	none			0	0	
+::ffff:255.255.255.255	found	255.255.255.255/32	JP	2147483647	0	Largest the binding takes
+2001:db8::	found	2001:db8::/32	US	64501	0	Example Two GmbH
+2001:db8:ffff:ffff:ffff:ffff:ffff:ffff	found	2001:db8:ffff::/48	US	64501	0	Example Two GmbH
+2001:db7:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+2001:db9::	none			0	0	
+2001:db8:7fff:ffff:ffff:ffff:ffff:ffff	found	2001:db8::/32	US	64501	0	Example Two GmbH
+2001:db8:1::	found	2001:db8:1::/48	DE	64500	8	Example One
+2001:db8:1:ffff:ffff:ffff:ffff:ffff	found	2001:db8:1::/48	DE	64500	8	Example One
+2001:db8:0:ffff:ffff:ffff:ffff:ffff	found	2001:db8::/32	US	64501	0	Example Two GmbH
+2001:db8:2::	found	2001:db8::/32	US	64501	0	Example Two GmbH
+2001:db8:1:7fff:ffff:ffff:ffff:ffff	found	2001:db8:1::/48	DE	64500	8	Example One
+2001:db8:1:2::	found	2001:db8:1:2::/64	FR	64502	0	Tést Ünïcode
+2001:db8:1:2:ffff:ffff:ffff:ffff	found	2001:db8:1:2::/64	FR	64502	0	Tést Ünïcode
+2001:db8:1:1:ffff:ffff:ffff:ffff	found	2001:db8:1::/48	DE	64500	8	Example One
+2001:db8:1:3::	found	2001:db8:1::/48	DE	64500	8	Example One
+2001:db8:1:2:7fff:ffff:ffff:ffff	found	2001:db8:1:2::/64	FR	64502	0	Tést Ünïcode
+2001:db8:1:2::1	found	2001:db8:1:2::1/128	GB	64505	0	?Evil Corp
+2001:db8:1:2::2	found	2001:db8:1:2::/64	FR	64502	0	Tést Ünïcode
+2001:db8:ffff::	found	2001:db8:ffff::/48	US	64501	0	Example Two GmbH
+2001:db8:fffe:ffff:ffff:ffff:ffff:ffff	found	2001:db8::/32	US	64501	0	Example Two GmbH
+2001:db8:ffff:7fff:ffff:ffff:ffff:ffff	found	2001:db8:ffff::/48	US	64501	0	Example Two GmbH
+2c0f:f000::	found	2c0f:f000::/20	NL	0	4	
+2c0f:ffff:ffff:ffff:ffff:ffff:ffff:ffff	found	2c0f:f000::/20	NL	0	4	
+2c0f:efff:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+2c10::	none			0	0	
+2c0f:f7ff:ffff:ffff:ffff:ffff:ffff:ffff	found	2c0f:f000::/20	NL	0	4	
+ffff:ffff:ffff:ffff::	found	ffff:ffff:ffff:ffff::/64	IT	64506	0	Adjacent Halves
+ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff	found	ffff:ffff:ffff:ffff::/64	IT	64506	0	Adjacent Halves
+ffff:ffff:ffff:fffe:ffff:ffff:ffff:ffff	none			0	0	
+ffff:ffff:ffff:ffff:7fff:ffff:ffff:ffff	found	ffff:ffff:ffff:ffff::/64	IT	64506	0	Adjacent Halves
+3709:21e6:3841:6fd4:7248:27cc:dec5:6fe1	none			0	0	
+125.80.216.17	none			0	0	
+152.247.157.207	none			0	0	
+3594:b436:dbc8:fc15:c6de:e918:b8fa:d48b	none			0	0	
+37.32.60.239	none			0	0	
+19.245.12.41	none			0	0	
+7.93.62.96	none			0	0	
+132.44.164.243	none			0	0	
+84.186.197.104	none			0	0	
+2db4:22e7:6938:a01a:55a:ab49:c0ad:655d	none			0	0	
+38ac:2645:83e1:8abf:fc6d:8d88:760d:54af	none			0	0	
+3a35:9b24:ab02:2a95:e832:25ff:8d9:36ed	none			0	0	
+209.2.126.45	none			0	0	
+242.15.96.83	none			0	0	
+330d:d796:60be:9a00:8c13:bb39:a93e:fa8f	none			0	0	
+2d2e:a056:dfd:5ae4:925b:71b3:ebc5:4830	none			0	0	
+62.142.136.213	none			0	0	
+135.211.166.9	none			0	0	
+29e5:be48:36f2:5de0:5611:f07e:f185:a887	none			0	0	
+3001:fdff:fb89:7178:d406:4092:f83c:8094	none			0	0	
+21db:d8b7:169e:c297:645c:b8de:60b1:b97a	none			0	0	
+3624:49b1:f2fd:35bd:6f2c:eedb:a30d:a809	none			0	0	
+324a:d376:f431:3017:ae8f:ce56:bc40:b588	none			0	0	
+238.94.186.9	none			0	0	
+3791:1e0d:479f:86d1:ce4f:7503:5cf2:541a	none			0	0	
+3de5:6349:9f29:a207:b81f:d746:7fad:5214	none			0	0	
+77.195.6.25	none			0	0	
+358f:2857:a7cc:ab95:5d4c:e7e1:a216:b20f	none			0	0	
+3914:1c0:7976:1a64:4f99:1c0b:843b:5e9f	none			0	0	
+2a6f:ccce:7ec9:11ed:3525:15b5:9c06:2115	none			0	0	
+66.49.26.70	none			0	0	
+13.88.115.188	none			0	0	
+2e57:bb55:44a1:783d:7470:3fa7:af7b:3fd5	none			0	0	
+3f8c:1dd:17b4:1190:c16:46c9:e978:5d04	none			0	0	
+217.87.134.24	none			0	0	
+96.177.108.62	none			0	0	
+28c7:171b:571:2ad9:3c3c:1465:37d4:acb0	none			0	0	
+255.96.238.2	none			0	0	
+59.104.247.56	none			0	0	
+3a42:aee0:abe7:2fb6:31c7:7361:9ab3:a08e	none			0	0	
+0.0.0.0	none			0	0	
+::	none			0	0	
+::1	none			0	0	
+::ffff:0.0.0.0	none			0	0	

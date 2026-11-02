@@ -7138,13 +7138,29 @@ fi
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} "$BUILD_DIR/test-core.c" \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-core" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 
 # Keep rule files out of the real rules directory.
 export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
 rm -rf "$STOCKFW_RULES_DIR"
 
-"$BUILD_DIR/test-core"
+core_rc=0
+"$BUILD_DIR/test-core" || core_rc=$?
+
+# The location database reader (tests/test-geodb.c), a test build of
+# src/core: FS_GEODB_TESTING lets it verify with the fixtures' test key.
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} -DFS_GEODB_TESTING=1 tests/test-geodb.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   -o "$BUILD_DIR/test-geodb" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+geodb_rc=0
+"$BUILD_DIR/test-geodb" tests/geodb > "$BUILD_DIR/geodb.log" 2>&1 || geodb_rc=$?
+grep -E '^(FAIL|SKIP)|checks,|test-geodb:' "$BUILD_DIR/geodb.log" || true
+
+[ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ]

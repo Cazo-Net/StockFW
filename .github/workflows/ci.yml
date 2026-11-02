@@ -43,7 +43,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config libgtk-3-dev \
             librsvg2-common shared-mime-info \
-            iptables nftables xvfb xauth
+            iptables nftables xvfb xauth \
+            liblzma-dev libssl-dev xz-utils \
+            python3-location location libloc-database clang libclang-rt-dev
 
       - name: Build
         run: |
@@ -60,6 +62,15 @@ jobs:
           ninja -C build-linux fs-intel-test fs-netplace-test fs-nftset-load
           ./build-linux/fs-intel-test
           ./build-linux/fs-netplace-test
+
+      - name: Location database reader (libloc, IPFire's file, fuzzer)
+        working-directory: port
+        run: |
+          # Every part runs here: STOCKFW_GEODB_REQUIRE makes a missing
+          # tool a failure instead of a skip.
+          ninja -C build-linux fs-geodb-test
+          ./build-linux/fs-geodb-test tests/geodb
+          STOCKFW_GEODB_REQUIRE=1 FUZZ_SECONDS=120 bash tests/test-geodb.sh
 
       - name: UI smoke tests on a virtual display
         working-directory: port
@@ -122,6 +133,8 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-nsis
+            mingw-w64-ucrt-x86_64-xz
+            mingw-w64-ucrt-x86_64-openssl
 
       - name: Build
         id: build

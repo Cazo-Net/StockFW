@@ -1,0 +1,44 @@
+created_at	1700000000
+vendor	StockFW random 1077
+description	Random reference database (seed 1077).
+license	CC0-1.0
+country	AT	EU	Country AT
+country	BE	EU	Country BE
+country	CH	EU	Country CH
+country	DE	EU	Country DE
+country	ES	EU	Country ES
+country	FR	EU	Country FR
+country	GB	EU	Country GB
+country	IT	EU	Country IT
+country	NL	EU	Country NL
+country	US	NA	Country US
+as	65000	Random AS 65000
+as	65001	Random AS 65001
+as	65002	Random AS 65002
+as	65003	Random AS 65003
+as	65004	Random AS 65004
+as	65005	Random AS 65005
+as	65006	Random AS 65006
+as	65007	Random AS 65007
+as	65008	Random AS 65008
+as	65009	Random AS 65009
+as	65010	Random AS 65010
+as	65011	Random AS 65011
+as	65012	Random AS 65012
+as	65013	Random AS 65013
+as	65014	Random AS 65014
+as	65015	Random AS 65015
+as	65016	Random AS 65016
+as	65017	Random AS 65017
+as	65018	Random AS 65018
+as	65019	Random AS 65019
+as	65020	Random AS 65020
+as	65021	Random AS 65021
+as	65022	Random AS 65022
+as	65023	Random AS 65023
+as	65024	Random AS 65024
+as	65025	Random AS 65025
+as	65026	Random AS 65026
+as	65027	Random AS 65027
+as	65028	Random AS 65028
+as	65029	Random AS 65029
