@@ -7540,6 +7540,15 @@ static void test_start_on_open_order (void)
 	       "start on open: fs-app.c is readable");
 	if (src == NULL)
 		return;
+	/* A Windows checkout (core.autocrlf) has CRLF line ends; the
+	 * patterns below match LF, so read the source as LF. */
+	{
+		gchar *w = src;
+		for (const gchar *r = src; *r != '\0'; r++)
+			if (*r != '\r')
+				*w++ = *r;
+		*w = '\0';
+	}
 
 	for (const gchar *p = src; (p = strstr (p, "->start (")) != NULL; p++)
 		direct++;

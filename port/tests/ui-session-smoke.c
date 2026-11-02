@@ -414,6 +414,12 @@ check_queryend (void)
 	g_application_quit (G_APPLICATION (the_app));
 }
 
+/* When the dialog or Preferences scenario made its quit.  "Promptly"
+ * is measured from here: what came before it (building the window, and
+ * on Windows asking the Task Scheduler for the sign-in switch) is not
+ * the quit's time. */
+static gint64 quit_at = 0;
+
 static gint dialog_response = 0;
 
 static gboolean
@@ -436,6 +442,7 @@ quit_from_nested (gpointer data)
 	g_unlink (baseline_file);
 	fs_prefs_set_string (PROBE_KEY, "dialog");
 
+	quit_at = g_get_monotonic_time ();
 	fs_app_quit ();     /* what SIGTERM and --quit do */
 
 	CHECK (file_has (prefs_file, "session_probe=dialog") &&
@@ -545,6 +552,7 @@ quit_from_prefs (gpointer data)
 	if (sw != NULL)
 		gtk_switch_set_active (GTK_SWITCH (sw), !prefs_redundant_before);
 
+	quit_at = g_get_monotonic_time ();
 	fs_app_quit ();     /* what SIGTERM and --quit do */
 
 	CHECK (fs_tray_icon () == NULL, "the icon is taken down at once");
@@ -750,12 +758,20 @@ main (int argc, char **argv)
 	}
 	if (g_strcmp0 (scenario, "dialog") == 0 ||
 	    g_strcmp0 (scenario, "prefs") == 0) {
+		gint64 now = g_get_monotonic_time ();
+
 		CHECK (copilot == NULL,
 		       "the quit finished once the %s had returned",
 		       g_strcmp0 (scenario, "prefs") == 0
 		       ? "Preferences window" : "dialog");
-		CHECK (g_get_monotonic_time () - started < 3 * G_USEC_PER_SEC,
-		       "...promptly");
+		/* Left to its 4 s fallback, the window would close >= 3.7 s
+		 * after the quit. */
+		CHECK (quit_at != 0 && now - quit_at < 2 * G_USEC_PER_SEC,
+		       "...promptly (%.2f s after the quit, %.2f s after "
+		       "the start)",
+		       quit_at != 0 ? (now - quit_at) / (gdouble) G_USEC_PER_SEC
+		                    : -1.0,
+		       (now - started) / (gdouble) G_USEC_PER_SEC);
 	}
 	CHECK (stops == 0, "%s: no path here stopped the firewall",
 	       scenario);
