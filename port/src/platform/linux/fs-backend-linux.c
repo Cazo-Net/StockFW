@@ -40,12 +40,17 @@
 #include <sys/stat.h>
 #include <syslog.h>
 #include <signal.h>
+#include <fcntl.h>
 
 /* ------------------------------------------------------------------ state
  * Netfilter is stateless from our point of view: we decide the firewall
  * is "running" when our INBOUND chain exists. */
 static gboolean log_running = FALSE;
 static int      log_pipe[2] = { -1, -1 };
+/* 1.0.7: /dev/kmsg read directly (no child) when it can be opened. */
+static int      log_kmsg = -1;
+static const gchar *log_source_text = NULL;   /* static strings only */
+static gchar   *log_problem_text = NULL;
 static GPid     log_pid = 0;
 static guint    log_watch = 0;
 static FsLogFunc log_callback = NULL;
@@ -270,6 +275,7 @@ static FsApplyResult linux_apply_rules (const FsPolicy *policy,
 static void linux_sysctl_forwarding (void);
 static gboolean apply_lines (gchar *script);
 static gboolean apply_nat (const FsSettings *settings);
+static void linux_log_stop (void);
 
 static gboolean
 linux_available (void)
@@ -356,6 +362,20 @@ linux_stop (GError **error)
 	run_command_quiet (flush_out);
 	run_command_quiet (del_in);
 	run_command_quiet (del_out);
+
+	/* The logging accept chain is referenced from INBOUND/OUTBOUND, so
+	 * it can only go once they are gone. */
+	{
+		gchar *flush_acc[] = { (gchar *) "iptables", (gchar *) "-w",
+		                       (gchar *) "-F",
+		                       (gchar *) FS_SCRIPT_ACCEPT_CHAIN, NULL };
+		gchar *del_acc[]   = { (gchar *) "iptables", (gchar *) "-w",
+		                       (gchar *) "-X",
+		                       (gchar *) FS_SCRIPT_ACCEPT_CHAIN, NULL };
+
+		run_command_quiet (flush_acc);
+		run_command_quiet (del_acc);
+	}
 
 	/* Undo our own NAT rules only.  Deleting a rule that is not there
 	 * fails harmlessly, and the loop drains duplicates from earlier
@@ -1008,11 +1028,12 @@ static GString *log_partial = NULL;
 /* [ deliver_log_line ]
  * One complete line: parse it, name it, mark it, hand it over.
  *
- * Every line the generated script logs is a packet it is about to DROP
- * or REJECT, so every Linux event is a blocked one -- marked exactly as
- * the Windows backend marks its 5157s.  Without the marker no Linux row
- * was ever painted red, the Status page's Serious column stayed at zero
- * and Sentinel's blocked fan-out signal could not fire. */
+ * A DROP or REJECT line is a packet the script is about to refuse, and
+ * is marked blocked exactly as the Windows backend marks its 5157s
+ * (without the marker no Linux row was ever painted red, the Status
+ * page's Serious column stayed at zero and Sentinel's blocked fan-out
+ * signal could not fire).  An ALLOW line (1.0.7) is the first packet
+ * of a connection the policy accepted, and stays unmarked. */
 static void
 deliver_log_line (const gchar *line)
 {
@@ -1021,7 +1042,9 @@ deliver_log_line (const gchar *line)
 	if (*line == '\0' || !fs_netparse_log_line (line, &hit, NULL))
 		return;
 
-	fs_netparse_name_blocked (&hit);
+	/* DROP/REJECT lines are blocked packets; since 1.0.7 the policy's
+	 * accept chain also logs new connections it lets through. */
+	fs_netparse_name_by_verdict (&hit, fs_netparse_log_verdict (line));
 
 	if (log_callback != NULL)
 		log_callback (&hit, log_user_data);
@@ -1030,13 +1053,110 @@ deliver_log_line (const gchar *line)
 	fs_netparse_clear_hit (&hit);
 }
 
+/* [ set_log_problem ] -- remember why the monitor stopped on its own. */
+static void
+set_log_problem (gchar *text)
+{
+	g_free (log_problem_text);
+	log_problem_text = text;
+}
+
+/* [ reader_exited ]
+ * The tail/journalctl child closed its end: reap it and say why, so the
+ * Events page can show the reason instead of an empty list that looks
+ * like a quiet network.  journalctl on a machine with no journal
+ * (WSL, containers, minimal installs) waits forever printing nothing,
+ * which is why /dev/kmsg is preferred; this path catches the rest. */
+static void
+reader_exited (void)
+{
+	gint status = 0;
+	gchar *why;
+
+	if (log_pid > 0 && waitpid (log_pid, &status, WNOHANG) == log_pid) {
+		log_pid = 0;
+		if (WIFEXITED (status) && WEXITSTATUS (status) == 127)
+			why = g_strdup_printf (
+				_("The event reader could not start %s."),
+				log_source_text != NULL ? log_source_text
+				                        : "its log source");
+		else if (WIFEXITED (status))
+			why = g_strdup_printf (
+				_("The event reader stopped: %s exited with "
+				  "status %d."),
+				log_source_text != NULL ? log_source_text
+				                        : "its log source",
+				WEXITSTATUS (status));
+		else
+			why = g_strdup (_("The event reader stopped unexpectedly."));
+	} else {
+		why = g_strdup (_("The event reader stopped unexpectedly."));
+	}
+
+	set_log_problem (why);
+	linux_log_stop ();
+}
+
+/* [ drain_kmsg ]
+ * /dev/kmsg hands out one record per read().  EAGAIN: nothing more for
+ * now.  EPIPE: the ring wrapped and records were overwritten before we
+ * read them -- the next read continues with the oldest one left, so it
+ * is not an error.  Any other error ends the monitor with a reason. */
+static void
+drain_kmsg (void)
+{
+	gchar record[8192];
+
+	for (;;) {
+		gssize got = read (log_kmsg, record, sizeof (record) - 1);
+		gchar *line;
+
+		if (got < 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				return;
+			if (errno == EPIPE || errno == EINTR)
+				continue;
+
+			set_log_problem (g_strdup_printf (
+				_("Reading the kernel log failed: %s"),
+				g_strerror (errno)));
+			linux_log_stop ();
+			return;
+		}
+
+		if (got == 0)
+			return;
+
+		record[got] = '\0';
+		line = fs_netparse_kmsg_line (record, (gsize) got,
+		                              g_get_real_time (),
+		                              g_get_monotonic_time ());
+		if (line != NULL) {
+			deliver_log_line (line);
+			g_free (line);
+		}
+
+		/* deliver_log_line may have run a callback that stopped the
+		 * monitor. */
+		if (log_kmsg < 0)
+			return;
+	}
+}
+
 /* [ on_log_poll ]
- * Drains whatever the tailer has produced since the last tick. */
+ * Drains whatever the source has produced since the last tick. */
 static gboolean
 on_log_poll (gpointer data)
 {
 	gchar buffer[4096];
 	gssize got;
+
+	(void) data;
+
+	if (log_kmsg >= 0) {
+		drain_kmsg ();
+		return log_running ? G_SOURCE_CONTINUE : G_SOURCE_REMOVE;
+	}
 
 	/* log_pipe[0] is the READ end -- pipe() order is [0] read, [1]
 	 * write, and the child put [1] on stdout.  Reading [1] here read a
@@ -1065,19 +1185,52 @@ on_log_poll (gpointer data)
 
 		if (log_partial->len > LOG_PARTIAL_MAX)
 			g_string_truncate (log_partial, 0);
+
+		if (log_pipe[0] < 0)
+			return G_SOURCE_REMOVE;
+	}
+
+	/* 0 is end of file: the child is gone.  It used to be read as "no
+	 * data yet", forever, while log_active() kept saying TRUE. */
+	if (got == 0) {
+		log_watch = 0;          /* returning REMOVE drops the source */
+		reader_exited ();
+		return G_SOURCE_REMOVE;
 	}
 
 	return G_SOURCE_CONTINUE;
 }
 
+/* [ open_kmsg ]
+ * The kernel's own ring buffer, positioned at its end so only new
+ * records are read.  Needs root (or CAP_SYSLOG); -1 when unavailable. */
+static int
+open_kmsg (void)
+{
+	int fd = open ("/dev/kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+
+	if (fd < 0)
+		return -1;
+
+	if (lseek (fd, 0, SEEK_END) < 0) {
+		close (fd);
+		return -1;
+	}
+
+	return fd;
+}
+
 static gboolean
 linux_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 {
+	const gchar *override;
+
 	if (log_running)
 		return TRUE;
 
 	log_callback = callback;
 	log_user_data = user_data;
+	set_log_problem (NULL);
 
 	/* Reporting failure does not fail the app -- fs_hitview_start()
 	 * hands the message to the page.  Returning TRUE from here instead
@@ -1093,6 +1246,29 @@ linux_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 		return FALSE;
 	}
 
+	/* Sources, in order:
+	 *
+	 *   STOCKFW_LOG_FILE   an explicit file (tests, relocated logs)
+	 *   /dev/kmsg          the kernel ring buffer itself: no daemon in
+	 *                      between, so it works on WSL, in containers
+	 *                      and on minimal installs where there is no
+	 *                      journald and no rsyslog -- the case that left
+	 *                      the Events page empty with no error (1.0.7)
+	 *   /var/log/kern.log  rsyslog's copy
+	 *   journalctl -k -f   systemd's copy */
+	override = g_getenv ("STOCKFW_LOG_FILE");
+
+	if (override == NULL || *override == '\0') {
+		log_kmsg = open_kmsg ();
+
+		if (log_kmsg >= 0) {
+			log_source_text = "the kernel ring buffer (/dev/kmsg)";
+			log_watch = g_timeout_add (250, on_log_poll, NULL);
+			log_running = TRUE;
+			return TRUE;
+		}
+	}
+
 	if (pipe (log_pipe) != 0) {
 		g_set_error (error,
 		             g_quark_from_static_string ("fs-backend-linux"),
@@ -1100,6 +1276,13 @@ linux_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 		             g_strerror (errno));
 		return FALSE;
 	}
+
+	if (override != NULL && *override != '\0')
+		log_source_text = "the log file named by STOCKFW_LOG_FILE";
+	else if (g_file_test ("/var/log/kern.log", G_FILE_TEST_EXISTS))
+		log_source_text = "/var/log/kern.log";
+	else
+		log_source_text = "journalctl";
 
 	log_pid = fork ();
 
@@ -1125,30 +1308,17 @@ linux_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 		close (log_pipe[0]);
 		close (log_pipe[1]);
 
-		/* Two possible sources.  /var/log/kern.log only exists when
-		 * rsyslog is installed, which is no longer the default on a
-		 * systemd system -- hardcoding it meant the monitor silently
-		 * produced nothing forever.  Prefer the journal when the
-		 * traditional file is absent.
-		 *
-		 * STOCKFW_LOG_FILE overrides both, which is what makes
-		 * this testable and also lets someone point at a remote or
-		 * relocated log. */
-		{
-			const gchar *override = g_getenv ("STOCKFW_LOG_FILE");
-
-			if (override != NULL && *override != '\0') {
-				execlp ("tail", "tail", "-n", "0", "-F",
-				        override, (char *) NULL);
-			} else if (g_file_test ("/var/log/kern.log",
-			                        G_FILE_TEST_EXISTS)) {
-				execlp ("tail", "tail", "-n", "0", "-F",
-				        "/var/log/kern.log", (char *) NULL);
-			} else {
-				execlp ("journalctl", "journalctl",
-				        "-k", "-f", "-n", "0", "-o", "short",
-				        (char *) NULL);
-			}
+		if (override != NULL && *override != '\0') {
+			execlp ("tail", "tail", "-n", "0", "-F",
+			        override, (char *) NULL);
+		} else if (g_file_test ("/var/log/kern.log",
+		                        G_FILE_TEST_EXISTS)) {
+			execlp ("tail", "tail", "-n", "0", "-F",
+			        "/var/log/kern.log", (char *) NULL);
+		} else {
+			execlp ("journalctl", "journalctl",
+			        "-k", "-f", "-n", "0", "-o", "short",
+			        (char *) NULL);
 		}
 
 		_exit (127);
@@ -1185,6 +1355,11 @@ linux_log_stop (void)
 		log_watch = 0;
 	}
 
+	if (log_kmsg >= 0) {
+		close (log_kmsg);
+		log_kmsg = -1;
+	}
+
 	if (log_pipe[0] >= 0) {
 		close (log_pipe[0]);
 		log_pipe[0] = -1;
@@ -1208,6 +1383,18 @@ static gboolean
 linux_log_active (void)
 {
 	return log_running;
+}
+
+static const gchar *
+linux_log_source (void)
+{
+	return log_running ? log_source_text : NULL;
+}
+
+static const gchar *
+linux_log_problem (void)
+{
+	return log_problem_text;
 }
 
 /* Linux has a single global firewall state, not three profiles, so
@@ -1281,7 +1468,8 @@ static const FsBackend linux_backend = {
 	.fw_sections           = FS_FWSEC_NETWORK | FS_FWSEC_ICMP |
 	                         FS_FWSEC_TOS | FS_FWSEC_ADVANCED,
 	.fw_honors             = FS_FWHON_REJECT_METHOD |
-	                         FS_FWHON_RATE_LIMIT,
+	                         FS_FWHON_RATE_LIMIT |
+	                         FS_FWHON_LOG_ALLOWED,
 	.available             = linux_available,
 	.get_state             = linux_get_state,
 	.start                 = linux_start,
@@ -1295,6 +1483,8 @@ static const FsBackend linux_backend = {
 	.log_start             = linux_log_start,
 	.log_stop              = linux_log_stop,
 	.log_active            = linux_log_active,
+	.log_source            = linux_log_source,
+	.log_problem           = linux_log_problem,
 	.dhcp_set_enabled      = linux_dhcp_set_enabled,
 	.get_profile_enabled   = linux_get_profile_enabled,
 	.set_profile_enabled   = linux_set_profile_enabled

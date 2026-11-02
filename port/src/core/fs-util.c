@@ -739,3 +739,15 @@ fs_util_csv_split_line (const gchar *line)
 
 	return fields;
 }
+/* [ fs_ipv6_state_to_string ] -- see fs-backend.h. */
+const gchar *
+fs_ipv6_state_to_string (FsIpv6State state)
+{
+	switch (state) {
+	case FS_IPV6_FILTERED:   return "filtered";
+	case FS_IPV6_UNFILTERED: return "not-filtered";
+	case FS_IPV6_ABSENT:     return "absent";
+	case FS_IPV6_UNKNOWN:
+	default:                 return "unknown";
+	}
+}

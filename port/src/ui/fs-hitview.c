@@ -36,6 +36,8 @@ static GtkWidget    *count_label;
 static GtkWidget    *empty_label;
 static GtkWidget    *monitor_warning;        /* strip; hidden unless needed */
 static GtkWidget    *monitor_warning_label;
+static GtkWidget    *monitor_toggle = NULL;   /* the Monitor switch     */
+static guint         monitor_watchdog = 0;
 
 /* Filter bar state.  The matcher lives in core (fs_util_filter_match)
  * so the test suite can cover it without GTK. */
@@ -232,6 +234,8 @@ time_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
 /* [ update_count_label ]
  * With a filter typed in the label reports both numbers, so an empty
  * list under a filter cannot be mistaken for an idle firewall. */
+static const gchar *empty_text (void);
+
 static void
 update_count_label (void)
 {
@@ -262,16 +266,41 @@ update_count_label (void)
 			shown = (guint) gtk_tree_model_iter_n_children (filter_model,
 			                                                NULL);
 
-		gtk_label_set_text (GTK_LABEL (empty_label),
-			row_count > 0
-			? _("No event matches the filter.")
-			: fs_hitview_active ()
-			? _("No events yet.\nStockFW lists traffic here as its rules "
-			    "allow or block it.")
-			: _("Event monitoring is off.\nTurn on Monitor to list "
-			    "traffic here."));
+		gtk_label_set_text (GTK_LABEL (empty_label), empty_text ());
 		gtk_widget_set_visible (empty_label, shown == 0);
 	}
+}
+
+/* [ empty_text ]
+ * What an empty list means, said plainly.  "No events yet" while the
+ * firewall is stopped read as a quiet network; with no rules loaded
+ * nothing is logged at all, and the page now says so (1.0.7). */
+static const gchar *
+empty_text (void)
+{
+	const FsBackend *backend = fs_backend ();
+
+	if (row_count > 0)
+		return _("No event matches the filter.");
+
+	if (!fs_hitview_active ())
+		return _("Event monitoring is off.\nTurn on Monitor to list "
+		         "traffic here.");
+
+	if (backend->get_state != NULL &&
+	    backend->get_state () != FS_FW_RUNNING &&
+	    backend->get_state () != FS_FW_HIT)
+		return _("The firewall is stopped, so nothing is being logged.\n"
+		         "Start it on the Status page to see traffic here.");
+
+	if ((backend->fw_honors & FS_FWHON_LOG_ALLOWED) != 0 &&
+	    !fs_prefs_get_bool (FS_PREFS_FW_LOG_ALLOWED, TRUE))
+		return _("Nothing has been blocked yet.\nOnly blocked traffic is "
+		         "logged.  Turn on \"Log allowed connections\" in "
+		         "Preferences to see the rest.");
+
+	return _("No events yet.\nStockFW lists new connections here as its "
+	         "rules allow or block them.");
 }
 
 /* [ filter_visible ]
@@ -1303,6 +1332,42 @@ on_reload_clicked (GtkButton *button, gpointer data)
 	fs_hitview_reload ();
 }
 
+/* [ on_monitor_watchdog ]
+ * The source can stop on its own (a log reader that exits, a kernel
+ * log that becomes unreadable).  Every two seconds: if the switch says
+ * "on" but nothing is reading, say why and turn the switch off, rather
+ * than leaving an empty list that looks like a quiet network.  While
+ * the list is empty the empty-state wording also follows the firewall
+ * state (started or stopped elsewhere). */
+static gboolean
+on_monitor_watchdog (gpointer data)
+{
+	const FsBackend *backend = fs_backend ();
+
+	(void) data;
+
+	if (monitor_toggle == NULL) {
+		monitor_watchdog = 0;
+		return G_SOURCE_REMOVE;
+	}
+
+	if (gtk_switch_get_active (GTK_SWITCH (monitor_toggle)) &&
+	    !fs_hitview_active ()) {
+		const gchar *why = backend->log_problem != NULL
+		                   ? backend->log_problem () : NULL;
+
+		set_monitor_warning (why != NULL
+		                     ? why
+		                     : _("Event monitoring stopped."));
+		gtk_switch_set_active (GTK_SWITCH (monitor_toggle), FALSE);
+	}
+
+	if (row_count == 0 && gtk_widget_get_mapped (monitor_toggle))
+		update_count_label ();
+
+	return G_SOURCE_CONTINUE;
+}
+
 /* [ on_start_toggled ]
  * Starts or stops the event source.  The control is a GtkSwitch now
  * (the spec's "toggle switch for Monitor"), so it reports through
@@ -1550,6 +1615,15 @@ fs_hitview_page (void)
 			gtk_switch_set_active (GTK_SWITCH (toggle), TRUE);
 		}
 	}
+
+	monitor_toggle = toggle;
+	if (toggle != NULL)
+		g_signal_connect (toggle, "destroy",
+		                  G_CALLBACK (gtk_widget_destroyed),
+		                  &monitor_toggle);
+	if (toggle != NULL && monitor_watchdog == 0)
+		monitor_watchdog = g_timeout_add_seconds (2, on_monitor_watchdog,
+		                                          NULL);
 
 	(void) box;
 

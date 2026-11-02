@@ -5072,6 +5072,269 @@ static void test_json_writer (void)
 	g_string_free (out, TRUE);
 }
 
+/* 1.0.7 event capture: the /dev/kmsg record converter.  The ring buffer
+ * is the only kernel log on hosts without rsyslog or journald (WSL,
+ * containers), so this is the line every Linux event there goes
+ * through. */
+static void test_netparse_kmsg (void)
+{
+	/* Clocks: real 2026-11-02T10:00:00Z, monotonic 1000 s since boot. */
+	const gint64 real = (gint64) 1793613600 * G_USEC_PER_SEC;
+	const gint64 mono = (gint64) 1000 * G_USEC_PER_SEC;
+	const gchar *rec;
+	gchar *line;
+	FsHit hit = { 0 };
+
+	/* A kernel record stamped 400 s after boot: 600 s before "now". */
+	rec = "4,1234,400000000,-;STOCKFW-DROP IN=eth0 OUT= SRC=192.0.2.5 "
+	      "DST=198.51.100.7 LEN=60 PROTO=TCP SPT=40000 DPT=22\n"
+	      " SUBSYSTEM=net\n DEVICE=n2\n";
+	line = fs_netparse_kmsg_line (rec, strlen (rec), real, mono);
+	CHECK (line != NULL &&
+	       g_str_has_prefix (line, "2026-11-02T09:50:00Z STOCKFW-DROP "),
+	       "kmsg record becomes \"<its own UTC time> <message>\" "
+	       "(boot offset 400 s, now 1000 s -> 10 minutes ago) -- got [%s]",
+	       line ? line : "(null)");
+	CHECK (line != NULL && strstr (line, "SUBSYSTEM") == NULL &&
+	       strchr (line, '\n') == NULL,
+	       "continuation lines are not part of the message");
+	CHECK (line != NULL && fs_netparse_log_line (line, &hit, NULL) &&
+	       g_strcmp0 (hit.time, "2026-11-02T09:50:00Z") == 0 &&
+	       g_strcmp0 (hit.source, "192.0.2.5") == 0 &&
+	       g_strcmp0 (hit.port, "22") == 0,
+	       "and the event parser reads it with the record's time");
+	fs_netparse_clear_hit (&hit);
+	g_free (line);
+
+	/* Teeth: user space can write to /dev/kmsg.  The kernel gives such
+	 * records the user facility (prio >> 3 == 1), whatever "<N>" the
+	 * writer asked for, so the facility is what proves a line came
+	 * from the kernel's LOG target. */
+	rec = "12,1235,400000001,-;STOCKFW-DROP IN=eth0 OUT= SRC=203.0.113.9 "
+	      "DST=198.51.100.7 PROTO=TCP SPT=1 DPT=22\n";
+	line = fs_netparse_kmsg_line (rec, strlen (rec), real, mono);
+	CHECK (line == NULL,
+	       "a user-facility record (prio 12 = user.warning) is refused: "
+	       "a local program cannot forge a firewall event");
+	g_free (line);
+
+	rec = "30,1236,400000002,-;STOCKFW-ALLOW something\n";
+	line = fs_netparse_kmsg_line (rec, strlen (rec), real, mono);
+	CHECK (line == NULL, "so is a daemon-facility record (prio 30)");
+	g_free (line);
+
+	/* Malformed records: never read past the buffer, never guess. */
+	{
+		const gchar *bad[] = {
+			"",                                  /* empty            */
+			"4,1,2",                             /* no ';'           */
+			"x,1,2,-;STOCKFW-DROP SRC=1.2.3.4",  /* prio not digits  */
+			"4,,2,-;STOCKFW-DROP SRC=1.2.3.4",   /* empty seq        */
+			"4,1,2x,-;STOCKFW-DROP SRC=1.2.3.4", /* junk in usec     */
+			"4,1,2,-;",                          /* empty message    */
+			"4,1,2,-;\n SUBSYSTEM=net",          /* empty, then more */
+			"-4,1,2,-;STOCKFW-DROP SRC=1.2.3.4", /* negative prio    */
+		};
+		guint refused = 0;
+
+		for (guint i = 0; i < G_N_ELEMENTS (bad); i++) {
+			line = fs_netparse_kmsg_line (bad[i], strlen (bad[i]),
+			                              real, mono);
+			if (line == NULL)
+				refused++;
+			g_free (line);
+		}
+		CHECK (refused == G_N_ELEMENTS (bad),
+		       "every malformed record is refused (%u of %u)",
+		       refused, (guint) G_N_ELEMENTS (bad));
+	}
+
+	/* Length is honoured: a record handed with a shorter length than
+	 * its text ends where the length says. */
+	rec = "6,9,1000000000,-;STOCKFW-DROP IN=eth0 OUT= SRC=192.0.2.8 "
+	      "DST=198.51.100.7 PROTO=UDP SPT=1 DPT=53 TRAILING-JUNK";
+	line = fs_netparse_kmsg_line (rec, strlen (rec) - strlen (" TRAILING-JUNK"),
+	                              real, mono);
+	CHECK (line != NULL && strstr (line, "TRAILING") == NULL &&
+	       g_str_has_prefix (line, "2026-11-02T10:00:00Z "),
+	       "the record length is honoured (no read past it), and a "
+	       "record stamped now is stamped now");
+	g_free (line);
+
+	/* A record from "the future" (clocks raced) is stamped now, not
+	 * after now. */
+	rec = "6,10,1000500000,-;STOCKFW-DROP SRC=192.0.2.8 DST=1.1.1.1 "
+	      "PROTO=UDP SPT=1 DPT=53";
+	line = fs_netparse_kmsg_line (rec, strlen (rec), real, mono);
+	CHECK (line != NULL && g_str_has_prefix (line, "2026-11-02T10:00:00Z "),
+	       "a record newer than the monotonic clock is stamped now");
+	g_free (line);
+}
+
+/* 1.0.7: which marker a line carries decides the verdict the Events
+ * page shows.  Before, every Linux event was named blocked, so an
+ * allowed connection would have been reported as a block. */
+static void test_netparse_verdicts (void)
+{
+	const gchar *drop =
+		"2026-11-02T10:00:00Z STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 DST=198.51.100.1 PROTO=TCP SPT=1 DPT=443";
+	const gchar *rej =
+		"Nov  2 10:00:00 host kernel: [12.3] STOCKFW-REJECT IN=eth0 "
+		"OUT= SRC=192.0.2.1 DST=198.51.100.1 PROTO=TCP SPT=1 DPT=22";
+	const gchar *allow =
+		"2026-11-02T10:00:00Z STOCKFW-ALLOW IN= OUT=eth0 "
+		"SRC=10.0.0.2 DST=198.51.100.1 PROTO=TCP SPT=40000 DPT=443";
+	const gchar *foreign =
+		"2026-11-02T10:00:00Z IN=eth0 OUT= SRC=192.0.2.1 "
+		"DST=198.51.100.1 PROTO=TCP SPT=1 DPT=443";
+	/* Two markers: the first one decides, the same one
+	 * fs_netparse_log_line starts the packet fields from, so the
+	 * verdict and the fields always describe the same log entry. */
+	const gchar *twice =
+		"2026-11-02T10:00:00Z STOCKFW-DROP IN=eth0 OUT= SRC=192.0.2.1 "
+		"STOCKFW-ALLOW DST=198.51.100.1 PROTO=TCP SPT=1 DPT=443";
+	FsHit hit = { 0 };
+
+	CHECK (fs_netparse_log_verdict (drop) == FS_LOG_VERDICT_DROP,
+	       "STOCKFW-DROP -> drop");
+	CHECK (fs_netparse_log_verdict (rej) == FS_LOG_VERDICT_REJECT,
+	       "STOCKFW-REJECT -> reject");
+	CHECK (fs_netparse_log_verdict (allow) == FS_LOG_VERDICT_ALLOW,
+	       "STOCKFW-ALLOW -> allow");
+	CHECK (fs_netparse_log_verdict (foreign) == FS_LOG_VERDICT_NONE,
+	       "no marker -> none");
+	CHECK (fs_netparse_log_verdict (twice) == FS_LOG_VERDICT_DROP,
+	       "with two markers the first one decides");
+	CHECK (fs_netparse_log_verdict ("2026-11-02T10:00:00Z "
+	                                "XSTOCKFW-ALLOWX SRC=1.2.3.4") ==
+	       FS_LOG_VERDICT_NONE,
+	       "a marker must end its word (no match inside other text)");
+
+	CHECK (fs_netparse_log_line (allow, &hit, NULL),
+	       "an STOCKFW-ALLOW line is an event");
+	fs_netparse_name_by_verdict (&hit, fs_netparse_log_verdict (allow));
+	CHECK (g_strcmp0 (hit.service, "HTTPS") == 0 && !fs_hit_is_blocked (&hit),
+	       "an allowed line is named without the blocked marker (got %s)",
+	       hit.service ? hit.service : "(null)");
+	CHECK (g_strcmp0 (hit.direction, "out") == 0,
+	       "and keeps its direction");
+	fs_netparse_clear_hit (&hit);
+
+	CHECK (fs_netparse_log_line (drop, &hit, NULL), "a drop line parses");
+	fs_netparse_name_by_verdict (&hit, fs_netparse_log_verdict (drop));
+	CHECK (g_strcmp0 (hit.service, "HTTPS" FS_HIT_BLOCKED_MARKER) == 0 &&
+	       fs_hit_is_blocked (&hit),
+	       "a drop line is named blocked (got %s)",
+	       hit.service ? hit.service : "(null)");
+	fs_netparse_clear_hit (&hit);
+
+	CHECK (fs_netparse_log_line (rej, &hit, NULL), "a reject line parses");
+	fs_netparse_name_by_verdict (&hit, fs_netparse_log_verdict (rej));
+	CHECK (fs_hit_is_blocked (&hit) &&
+	       g_strcmp0 (hit.service, "SSH" FS_HIT_BLOCKED_MARKER) == 0,
+	       "a reject line is named blocked too");
+	fs_netparse_clear_hit (&hit);
+
+	/* NONE (a caller that could not tell) errs to blocked: a block
+	 * shown as a block is never a lie about the firewall letting
+	 * something through. */
+	CHECK (fs_netparse_log_line (drop, &hit, NULL), "parse again");
+	fs_netparse_name_by_verdict (&hit, FS_LOG_VERDICT_NONE);
+	CHECK (fs_hit_is_blocked (&hit), "an unknown verdict is named blocked");
+	fs_netparse_clear_hit (&hit);
+}
+
+/* 1.0.7: allowed connections are logged (sampled) through ACCEPT_LOG,
+ * and the Policy page's deny rows reach the kernel in permissive mode. */
+static void test_script_accept_log (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsSettings *settings = fs_settings_new ();
+	FsRule *rule;
+	gchar *in, *out;
+
+	CHECK (settings->log_allowed,
+	       "a fresh install logs allowed connections");
+
+	rule = fs_rule_new (FS_RULE_INBOUND_ALLOW_SERVICE);
+	rule->service = g_strdup ("SSH");
+	rule->port = g_strdup ("22");
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	rule = fs_rule_new (FS_RULE_OUTBOUND_DENY_TO);
+	rule->target = g_strdup ("203.0.113.50");
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+
+	in = fs_script_generate_inbound (policy, settings);
+	out = fs_script_generate_outbound (policy, settings);
+
+	CHECK (strstr (in, "$IPT -N ACCEPT_LOG\n") != NULL &&
+	       strstr (out, "$IPT -N ACCEPT_LOG\n") != NULL,
+	       "both directions declare the logging chain (each can be "
+	       "applied alone)");
+	CHECK (strstr (in, "-A ACCEPT_LOG -m conntrack --ctstate NEW -m limit "
+	                   "--limit 10/s --limit-burst 20 -j LOG --log-prefix "
+	                   "\"STOCKFW-ALLOW \"") != NULL,
+	       "it logs only NEW connections, rate-limited, with the "
+	       "STOCKFW-ALLOW prefix");
+	CHECK (strstr (in, "-A ACCEPT_LOG -j ACCEPT\n") != NULL,
+	       "and then accepts");
+	CHECK (strstr (in, "-p tcp --dport 22 -j ACCEPT_LOG\n") != NULL,
+	       "a policy allow jumps to the logging chain");
+	CHECK (strstr (in, "--ctstate ESTABLISHED,RELATED -j ACCEPT\n") != NULL,
+	       "return traffic is accepted directly, never logged");
+	CHECK (strstr (in, "-A INBOUND -i lo -j ACCEPT\n") != NULL,
+	       "loopback is accepted directly, never logged");
+	CHECK (strstr (out, "\n$IPT -A OUTBOUND -j ACCEPT_LOG\n") != NULL,
+	       "the permissive outbound default is logged too");
+
+	/* Teeth: the deny row must come out in permissive mode, and before
+	 * the default accept, or it is decoration. */
+	{
+		const gchar *deny = strstr (out, "-d 203.0.113.50 -j DROP");
+		const gchar *dflt = strstr (out, "\n$IPT -A OUTBOUND -j ACCEPT_LOG\n");
+
+		CHECK (!settings->restrictive_outbound && deny != NULL,
+		       "permissive mode emits the \"deny connections to host\" "
+		       "rule");
+		CHECK (deny != NULL && dflt != NULL && deny < dflt,
+		       "before the default accept");
+	}
+	g_free (in);
+	g_free (out);
+
+	/* Restrictive mode logs what its default drops (rate-limited). */
+	settings->restrictive_outbound = TRUE;
+	out = fs_script_generate_outbound (policy, settings);
+	CHECK (strstr (out, "-A OUTBOUND -m limit --limit 20/s --limit-burst 40 "
+	                    "-j LOG --log-prefix \"STOCKFW-DROP \"") != NULL &&
+	       strstr (out, "-A OUTBOUND -j DROP\n") != NULL,
+	       "restrictive outbound logs its default drop, then drops");
+	g_free (out);
+	settings->restrictive_outbound = FALSE;
+
+	/* Off switch: no chain, plain ACCEPT everywhere. */
+	settings->log_allowed = FALSE;
+	in = fs_script_generate_inbound (policy, settings);
+	out = fs_script_generate_outbound (policy, settings);
+	CHECK (strstr (in, "ACCEPT_LOG") == NULL &&
+	       strstr (out, "ACCEPT_LOG") == NULL &&
+	       strstr (in, "STOCKFW-ALLOW") == NULL,
+	       "with logging of allowed connections off, no chain and no "
+	       "allow log line");
+	CHECK (strstr (in, "-p tcp --dport 22 -j ACCEPT\n") != NULL &&
+	       strstr (out, "\n$IPT -A OUTBOUND -j ACCEPT\n") != NULL,
+	       "and allows go straight to ACCEPT");
+	g_free (in);
+	g_free (out);
+
+	fs_settings_free (settings);
+	fs_policy_free (policy);
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -5124,6 +5387,9 @@ int main (void)
 	test_settings_plan ();
 	test_netparse_log ();
 	test_netparse_proc ();
+	test_netparse_kmsg ();
+	test_netparse_verdicts ();
+	test_script_accept_log ();
 	test_activity_series ();
 	test_activity_sampler ();
 	test_json_writer ();

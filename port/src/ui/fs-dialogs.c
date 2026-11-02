@@ -777,6 +777,16 @@ build_advanced_page (PrefBinding *bind)
 	           _("Block traffic from reserved addresses on public interfaces"),
 	           TRUE, TRUE);
 
+	/* 1.0.7: only where the switch changes the generated rules.  Windows
+	 * logs accepted connections through its audit policy instead. */
+	if ((fs_backend ()->fw_honors & FS_FWHON_LOG_ALLOWED) != 0) {
+		add_section (page, _("Event logging"));
+		add_check (page, bind, FS_PREFS_FW_LOG_ALLOWED,
+		           _("Log allowed connections (the first packet of each "
+		             "new connection, at most 10 per second)"),
+		           TRUE, TRUE);
+	}
+
 	return page;
 }
 

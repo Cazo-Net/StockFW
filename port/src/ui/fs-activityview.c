@@ -13,6 +13,7 @@
 #include "ui/fs-activityview.h"
 #include "ui/fs-hitview.h"
 #include "core/fs-backend.h"
+#include "core/fs-prefs.h"
 #include "core/fs-netparse.h"
 #include "core/fs-i18n.h"
 
@@ -142,6 +143,12 @@ ensure_series (void)
 static gboolean
 logs_allowed (void)
 {
+	/* Windows logs accepted connections (5156).  Linux does since 1.0.7
+	 * when "Log allowed connections" is on: the policy's accepts go
+	 * through a chain that logs each new connection (sampled). */
+	if ((fs_backend ()->fw_honors & FS_FWHON_LOG_ALLOWED) != 0)
+		return fs_prefs_get_bool (FS_PREFS_FW_LOG_ALLOWED, TRUE);
+
 	return g_strcmp0 (fs_backend ()->name, "linux") != 0;
 }
 

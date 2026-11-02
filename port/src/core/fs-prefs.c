@@ -321,6 +321,7 @@ fs_prefs_set_defaults (void)
 	fs_prefs_set_bool (FS_PREFS_FW_DENY_PACKETS, TRUE);
 	fs_prefs_set_bool (FS_PREFS_FW_BLOCK_NON_ROUTABLES, TRUE);
 	fs_prefs_set_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND, FALSE);
+	fs_prefs_set_bool (FS_PREFS_FW_LOG_ALLOWED, TRUE);
 
 	fs_prefs_save ();
 }

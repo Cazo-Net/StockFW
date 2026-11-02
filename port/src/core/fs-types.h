@@ -78,6 +78,10 @@ typedef struct
 	gchar *tos;
 	gchar *protocol;
 	gchar *service;
+	/* 1.0.7: what blocked it, when the log line says so
+	 * ("Threat intel: Spamhaus DROP", "Location block").  NULL
+	 * for policy events and on platforms whose log cannot tell. */
+	gchar *rule;
 } FsHit;
 
 FsHit *fs_hit_new  (void);

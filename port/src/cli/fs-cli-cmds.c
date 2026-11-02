@@ -11,6 +11,8 @@
 #include "core/fs-util.h"
 
 #include <glib-unix.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -1041,6 +1043,52 @@ read_tail_lines (const gchar *text, guint max_lines)
 	return lines;
 }
 
+/* [ read_kmsg_history ]
+ * Every record still in the kernel ring buffer (/dev/kmsg, opened at
+ * its start), converted to stamped log lines; NULL when it cannot be
+ * opened.  The fallback when neither rsyslog nor journald keeps a copy
+ * -- WSL, containers, minimal installs -- where the ring is the only
+ * kernel log there is. */
+static gchar *
+read_kmsg_history (void)
+{
+	int fd = open ("/dev/kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+	GString *out;
+	gchar record[8192];
+	gint64 now_real = g_get_real_time ();
+	gint64 now_mono = g_get_monotonic_time ();
+
+	if (fd < 0)
+		return NULL;
+
+	out = g_string_new (NULL);
+
+	for (;;) {
+		gssize got = read (fd, record, sizeof (record) - 1);
+		gchar *line;
+
+		if (got < 0) {
+			if (errno == EPIPE || errno == EINTR)
+				continue;     /* overwritten records: go on */
+			break;            /* EAGAIN: the end of the ring */
+		}
+		if (got == 0)
+			break;
+
+		record[got] = '\0';
+		line = fs_netparse_kmsg_line (record, (gsize) got,
+		                              now_real, now_mono);
+		if (line != NULL) {
+			g_string_append (out, line);
+			g_string_append_c (out, '\n');
+			g_free (line);
+		}
+	}
+
+	close (fd);
+	return g_string_free (out, FALSE);
+}
+
 GPtrArray *
 fs_cli_log_history (guint max_lines, gint64 *complete_from, GError **error)
 {
@@ -1071,37 +1119,54 @@ fs_cli_log_history (guint max_lines, gint64 *complete_from, GError **error)
 		                  NULL };
 		gchar *err = NULL;
 		gint wait = 0;
+		gboolean spawned, journal_ok;
 
-		if (!g_spawn_sync (NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
-		                   NULL, NULL, &text, &err, &wait, &local)) {
-			g_set_error (error, local->domain, local->code,
-			             "no kernel log to read: no /var/log/kern.log "
-			             "and journalctl failed (%s)", local->message);
-			g_error_free (local);
-			g_free (n);
-			return NULL;
-		}
+		spawned = g_spawn_sync (NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
+		                        NULL, NULL, &text, &err, &wait, &local);
 		g_free (n);
+		journal_ok = spawned && g_spawn_check_wait_status (wait, NULL) &&
+		             (err == NULL ||
+		              strstr (err, "No journal files") == NULL);
 
-		if (!g_spawn_check_wait_status (wait, NULL) ||
-		    (err != NULL && strstr (err, "No journal files") != NULL)) {
-			if (geteuid () == 0)
+		if (!journal_ok) {
+			/* No usable journal (no journald, as in WSL and most
+			 * containers, or no journalctl at all): the kernel's own
+			 * ring buffer is then the only copy of the log. */
+			gchar *ring = read_kmsg_history ();
+
+			if (ring != NULL) {
+				g_free (text);
+				text = ring;
+				journal_ok = TRUE;
+			}
+		}
+
+		if (!journal_ok) {
+			if (!spawned)
+				g_set_error (error, local->domain, local->code,
+				             "no kernel log to read: no "
+				             "/var/log/kern.log, /dev/kmsg is not "
+				             "readable, and journalctl failed (%s)",
+				             local->message);
+			else if (geteuid () == 0)
 				g_set_error (error, G_SPAWN_ERROR,
 				             G_SPAWN_ERROR_FAILED,
 				             "no kernel log found: there is no "
-				             "/var/log/kern.log and the journal holds "
-				             "no kernel messages (is rsyslog or "
-				             "systemd-journald running?)");
+				             "/var/log/kern.log, /dev/kmsg cannot be "
+				             "read, and the journal holds no kernel "
+				             "messages");
 			else
 				g_set_error (error, G_SPAWN_ERROR,
 				             G_SPAWN_ERROR_FAILED,
-				             "the kernel journal is not readable by "
-				             "this account (root, or the adm / "
+				             "the kernel log is not readable by this "
+				             "account (root, or the adm / "
 				             "systemd-journal group, can read it)");
+			g_clear_error (&local);
 			g_free (text);
 			g_free (err);
 			return NULL;
 		}
+		g_clear_error (&local);
 		g_free (err);
 	}
 
@@ -1135,7 +1200,8 @@ fs_cli_log_history (guint max_lines, gint64 *complete_from, GError **error)
 		if (!fs_netparse_log_line (lines[i], &parsed, NULL))
 			continue;
 
-		fs_netparse_name_blocked (&parsed);
+		fs_netparse_name_by_verdict (&parsed,
+		                             fs_netparse_log_verdict (lines[i]));
 		hit = fs_hit_new ();
 		*hit = parsed;          /* the fields move into the heap hit */
 		g_ptr_array_add (hits, hit);

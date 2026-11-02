@@ -144,8 +144,17 @@ iptables -C FORWARD -j INBOUND >/dev/null 2>&1
 CHECK $? "FORWARD is hooked to INBOUND (forwarded traffic filtered)"
 
 # ------------------------------------------------ the policy is present
-iptables -C INBOUND -s 192.168.1.0/24 -p tcp --dport 22 -j ACCEPT >/dev/null 2>&1
-CHECK $? "allow-SSH rule for 192.168.1.0/24 is installed"
+# Allowed connections are logged (1.0.7, on by default): a policy allow
+# jumps to ACCEPT_LOG, which logs the first packet of a new connection
+# (rate-limited) and accepts.
+iptables -C INBOUND -s 192.168.1.0/24 -p tcp --dport 22 -j ACCEPT_LOG >/dev/null 2>&1
+CHECK $? "allow-SSH rule for 192.168.1.0/24 is installed (via ACCEPT_LOG)"
+
+iptables -S ACCEPT_LOG 2>/dev/null | grep -q -- '--log-prefix "STOCKFW-ALLOW "'
+CHECK $? "ACCEPT_LOG logs with the STOCKFW-ALLOW prefix"
+
+iptables -S ACCEPT_LOG 2>/dev/null | tail -n 1 | grep -q -- '-A ACCEPT_LOG -j ACCEPT$'
+CHECK $? "ACCEPT_LOG ends by accepting"
 
 # Default action must still drop everything else.
 iptables -S INBOUND | grep -q '\-j DROP'
@@ -198,6 +207,9 @@ CHECK $([ $? -ne 0 ]; echo $?) "INBOUND chain removed on stop"
 
 iptables -n -L OUTBOUND >/dev/null 2>&1
 CHECK $([ $? -ne 0 ]; echo $?) "OUTBOUND chain removed on stop"
+
+iptables -n -L ACCEPT_LOG >/dev/null 2>&1
+CHECK $([ $? -ne 0 ]; echo $?) "ACCEPT_LOG chain removed on stop"
 
 iptables -C INPUT -j INBOUND >/dev/null 2>&1
 CHECK $([ $? -ne 0 ]; echo $?) "INPUT jump removed on stop"

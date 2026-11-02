@@ -39,6 +39,7 @@ fs_settings_new (void)
 	 * freshly constructed settings object behaves like a fresh install
 	 * whether or not prefs have been read yet. */
 	settings->block_non_routables = TRUE;
+	settings->log_allowed         = TRUE;
 
 	return settings;
 }
@@ -75,6 +76,8 @@ fs_settings_load_prefs (FsSettings *settings)
 		fs_prefs_get_bool (FS_PREFS_FW_BLOCK_NON_ROUTABLES, TRUE);
 	settings->restrictive_outbound  =
 		fs_prefs_get_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND, FALSE);
+	settings->log_allowed           =
+		fs_prefs_get_bool (FS_PREFS_FW_LOG_ALLOWED, TRUE);
 
 	/* ICMP types.  The fallbacks match fs_settings_new() so an unset
 	 * key behaves like a fresh install. */
@@ -120,6 +123,7 @@ fs_settings_save_prefs (const FsSettings *settings)
 	                   settings->block_non_routables);
 	fs_prefs_set_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND,
 	                   settings->restrictive_outbound);
+	fs_prefs_set_bool (FS_PREFS_FW_LOG_ALLOWED, settings->log_allowed);
 
 	fs_prefs_set_bool (FS_PREFS_FW_ICMP_ECHO_REQUEST,
 	                   settings->icmp_echo_request);
@@ -227,6 +231,38 @@ append_service_rules (GString *out, GPtrArray *rules, const gchar *chain,
 
 		g_string_free (pair, TRUE);
 	}
+}
+
+/* [ accept_target ]
+ * Where a policy ACCEPT jumps: the logging chain, or plain ACCEPT. */
+static const gchar *
+accept_target (const FsSettings *settings)
+{
+	return (settings != NULL && settings->log_allowed)
+	       ? FS_SCRIPT_ACCEPT_CHAIN : "ACCEPT";
+}
+
+/* [ append_accept_chain ]
+ * The logging accept chain.  Both directions' scripts declare it (each
+ * may be applied alone); -N on an existing chain fails harmlessly and
+ * -F makes the second declaration a no-op. */
+static void
+append_accept_chain (GString *out, const FsSettings *settings)
+{
+	if (settings == NULL || !settings->log_allowed)
+		return;
+
+	g_string_append_printf (out,
+		"# Log the first packet of each accepted new connection "
+		"(sampled), then accept\n"
+		"$IPT -N %1$s\n"
+		"$IPT -F %1$s\n"
+		"$IPT -A %1$s -m conntrack --ctstate NEW -m limit --limit %2$s "
+		"--limit-burst %3$s -j LOG --log-prefix \"STOCKFW-ALLOW \" "
+		"--log-level 6\n"
+		"$IPT -A %1$s -j ACCEPT\n\n",
+		FS_SCRIPT_ACCEPT_CHAIN, FS_SCRIPT_ALLOW_LOG_RATE,
+		FS_SCRIPT_ALLOW_LOG_BURST);
 }
 
 /* [ script_preamble ]
@@ -343,6 +379,7 @@ fs_script_generate_inbound (const FsPolicy *policy,
 
 	out = script_preamble ("INBOUND");
 
+	append_accept_chain (out, settings);
 	append_icmp_rules (out, settings);
 
 	/* Connection state.  The original opened with -m state which lets
@@ -378,11 +415,13 @@ fs_script_generate_inbound (const FsPolicy *policy,
 
 		if (rule->target != NULL && *rule->target != '\0')
 			g_string_append_printf (out,
-				"$IPT -A INBOUND -s %s -j ACCEPT\n", rule->target);
+				"$IPT -A INBOUND -s %s -j %s\n", rule->target,
+				accept_target (settings));
 	}
 
 	append_service_rules (out,
-		policy->kinds[FS_RULE_INBOUND_ALLOW_SERVICE], "INBOUND", "ACCEPT");
+		policy->kinds[FS_RULE_INBOUND_ALLOW_SERVICE], "INBOUND",
+		accept_target (settings));
 
 	/* Port forwarding needs NAT PREROUTING. */
 	for (guint i = 0; i < policy->kinds[FS_RULE_INBOUND_FORWARD]->len; i++) {
@@ -461,6 +500,8 @@ fs_script_generate_outbound (const FsPolicy *policy,
 
 	out = script_preamble ("OUTBOUND");
 
+	append_accept_chain (out, settings);
+
 	g_string_append (out,
 		"# Accept return traffic\n"
 		"$IPT -A OUTBOUND -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n"
@@ -475,31 +516,41 @@ fs_script_generate_outbound (const FsPolicy *policy,
 
 	g_string_append (out, "\n# Outbound policy\n");
 
-	if (settings->restrictive_outbound) {
-		g_string_append (out, "# Deny rules are applied first\n");
+	/* Deny rules come first, in BOTH modes.  They used to be emitted
+	 * in restrictive mode only -- where the default already drops --
+	 * so in the default permissive mode the Policy page's "Deny
+	 * connections to host" rows were shown, saved, and never reached
+	 * the kernel. */
+	g_string_append (out, "# Deny rules are applied first\n");
 
-		append_host_rules (out,
-			policy->kinds[FS_RULE_OUTBOUND_DENY_TO], "DROP", "-d");
-		append_host_rules (out,
-			policy->kinds[FS_RULE_OUTBOUND_DENY_FROM], "DROP", "-s");
+	append_host_rules (out,
+		policy->kinds[FS_RULE_OUTBOUND_DENY_TO], "DROP", "-d");
+	append_host_rules (out,
+		policy->kinds[FS_RULE_OUTBOUND_DENY_FROM], "DROP", "-s");
 
-		append_service_rules (out,
-			policy->kinds[FS_RULE_OUTBOUND_DENY_SERVICE], "OUTBOUND", "DROP");
-	}
+	append_service_rules (out,
+		policy->kinds[FS_RULE_OUTBOUND_DENY_SERVICE], "OUTBOUND", "DROP");
 
 	/* Allow rules. */
 	append_host_rules (out, policy->kinds[FS_RULE_OUTBOUND_ALLOW_TO],
-	                   "ACCEPT", "-d");
+	                   accept_target (settings), "-d");
 	append_host_rules (out, policy->kinds[FS_RULE_OUTBOUND_ALLOW_FROM],
-	                   "ACCEPT", "-s");
+	                   accept_target (settings), "-s");
 
 	append_service_rules (out,
-		policy->kinds[FS_RULE_OUTBOUND_ALLOW_SERVICE], "OUTBOUND", "ACCEPT");
+		policy->kinds[FS_RULE_OUTBOUND_ALLOW_SERVICE], "OUTBOUND",
+		accept_target (settings));
 
-	g_string_append (out,
-		settings->restrictive_outbound
-		? "\n# Restrictive mode: default deny\n$IPT -A OUTBOUND -j DROP\n"
-		: "\n# Permissive mode: default accept\n$IPT -A OUTBOUND -j ACCEPT\n");
+	if (settings->restrictive_outbound)
+		g_string_append (out,
+			"\n# Restrictive mode: default deny\n"
+			"$IPT -A OUTBOUND -m limit --limit 20/s --limit-burst 40 "
+			"-j LOG --log-prefix \"STOCKFW-DROP \" --log-level 6\n"
+			"$IPT -A OUTBOUND -j DROP\n");
+	else
+		g_string_append_printf (out,
+			"\n# Permissive mode: default accept\n"
+			"$IPT -A OUTBOUND -j %s\n", accept_target (settings));
 
 	return g_string_free (out, FALSE);
 }

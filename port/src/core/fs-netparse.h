@@ -33,8 +33,23 @@ gboolean fs_hit_is_blocked (const FsHit *hit);
  * with no service.  Caller frees. */
 gchar *fs_hit_service_name (const FsHit *hit);
 
+/* What a StockFW kernel-log line says happened to the packet. */
+typedef enum
+{
+	FS_LOG_VERDICT_NONE = 0,   /* not one of our lines                  */
+	FS_LOG_VERDICT_ALLOW,      /* "STOCKFW-ALLOW ": a new connection the
+	                            * policy accepted (1.0.7, sampled)      */
+	FS_LOG_VERDICT_DROP,       /* "STOCKFW-DROP "                       */
+	FS_LOG_VERDICT_REJECT      /* "STOCKFW-REJECT "                     */
+} FsLogVerdict;
+
+/* Which of our markers the line carries (only the packet fields after
+ * the syslog header are looked at, as in fs_netparse_log_line). */
+FsLogVerdict fs_netparse_log_verdict (const gchar *line);
+
 /* Parse one kernel-log line written by the generated script's LOG
- * target ("STOCKFW-DROP " or "STOCKFW-REJECT ").  Returns FALSE, and
+ * target ("STOCKFW-DROP ", "STOCKFW-REJECT " or, since 1.0.7,
+ * "STOCKFW-ALLOW ").  Returns FALSE, and
  * leaves *hit untouched, for any other line.
  *
  * On TRUE the fields are newly allocated (caller clears them):
@@ -66,6 +81,27 @@ gchar *fs_netparse_line_time (const gchar *line, GDateTime *now);
  * the generated script logs is a packet it is about to drop or reject.
  * Replaces hit->service. */
 void fs_netparse_name_blocked (FsHit *hit);
+
+/* The same naming without the marker: an accepted connection. */
+void fs_netparse_name_allowed (FsHit *hit);
+
+/* Name a parsed hit by the verdict its line carries: allowed for
+ * FS_LOG_VERDICT_ALLOW, blocked otherwise. */
+void fs_netparse_name_by_verdict (FsHit *hit, FsLogVerdict verdict);
+
+/* One /dev/kmsg record ("<prio>,<seq>,<usec>,<flags>;<message>\n" with
+ * optional " KEY=value" continuation lines) as a log line the parser
+ * above reads: "<RFC 3339 UTC stamp> <message>".  The stamp is the
+ * record's own time, from its microseconds-since-boot and the two
+ * clocks the caller passes (g_get_real_time(), g_get_monotonic_time()).
+ *
+ * Only kernel-facility records are returned: anything userspace wrote
+ * into the ring (journald forwards, `echo > /dev/kmsg') has a non-zero
+ * facility and yields NULL, so a local process cannot forge a firewall
+ * event by writing one.  NULL too for a malformed record.  `len' is the
+ * record length as read() returned it.  Caller frees. */
+gchar *fs_netparse_kmsg_line (const gchar *record, gsize len,
+                              gint64 now_real_us, gint64 now_mono_us);
 
 /* Free the fields of a stack FsHit filled by fs_netparse_log_line and
  * zero it (fs_hit_free would also free the struct itself). */

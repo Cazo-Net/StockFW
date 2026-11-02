@@ -34,6 +34,26 @@ typedef enum
 	FS_APPLY_FAILED
 } FsApplyResult;
 
+/* Whether IPv6 traffic is filtered (1.0.7).  The Linux backend writes
+ * IPv4 and IPv6 rules separately, so the two can disagree; the UI shows
+ * this state next to the firewall state rather than letting "Running"
+ * imply both. */
+typedef enum
+{
+	FS_IPV6_UNKNOWN = 0,   /* cannot tell (not root, no backend)        */
+	FS_IPV6_FILTERED,      /* the policy is enforced for IPv6 too       */
+	FS_IPV6_UNFILTERED,    /* IPv4 is filtered, IPv6 is not             */
+	FS_IPV6_ABSENT         /* the kernel has no IPv6: nothing to filter */
+} FsIpv6State;
+
+/* "unknown" / "filtered" / "not-filtered" / "absent": the stable words
+ * used in JSON and audit lines. */
+const gchar *fs_ipv6_state_to_string (FsIpv6State state);
+
+/* The threat-intel rule set (core/fs-intelset.h).  Declared here so the
+ * vtable can name it without this header pulling the intel engine in. */
+typedef struct _FsIntelRuleset FsIntelRuleset;
+
 /* Callback invoked for each event reported by the platform's firewall. */
 typedef void (*FsLogFunc) (const FsHit *hit, gpointer user_data);
 
@@ -59,6 +79,10 @@ typedef void (*FsLogFunc) (const FsHit *hit, gpointer user_data);
 	                                  * DROP is a real choice       */
 #define FS_FWHON_RATE_LIMIT    (1u << 1) /* ICMP rules are emitted
 	                                  * with rate limits           */
+#define FS_FWHON_LOG_ALLOWED   (1u << 2) /* 1.0.7: "Log allowed
+	                                  * connections" is a real switch
+	                                  * (Linux); Windows logs them
+	                                  * through its audit policy     */
 
 typedef struct
 {
@@ -139,6 +163,12 @@ typedef struct
 	gboolean (*log_start) (FsLogFunc callback, gpointer user_data, GError **error);
 	void     (*log_stop)  (void);
 	gboolean (*log_active) (void);
+	/* 1.0.7: where the monitor reads ("the kernel ring buffer
+	 * (/dev/kmsg)"), and -- when it stopped on its own, with
+	 * log_active() now FALSE -- why.  Borrowed strings; NULL when
+	 * there is nothing to say.  NULL slots: not reported. */
+	const gchar *(*log_source)  (void);
+	const gchar *(*log_problem) (void);
 
 	/* DHCP server control (meaningful for a router build). */
 	gboolean (*dhcp_set_enabled) (gboolean enabled, GError **error);
@@ -159,6 +189,24 @@ typedef struct
 	gboolean (*trust_signature) (const gchar *path,
 	                             FsTrustSignature *sig,
 	                             gchar **publisher);
+
+	/* 1.0.7: IPv6 enforcement state.  detail, when not NULL, receives
+	 * a caller-owned sentence for the UI (may be set to NULL).  NULL
+	 * slot means FS_IPV6_UNKNOWN. */
+	FsIpv6State (*ipv6_state) (gchar **detail);
+
+	/* 1.0.7 threat intel: replace every blocklist/location rule this
+	 * application owns with `ruleset' (an empty ruleset removes them),
+	 * all or nothing where the platform allows it.  NULL slots mean the
+	 * platform cannot enforce threat intel; the UI says so. */
+	gboolean (*intel_apply) (const FsIntelRuleset *ruleset,
+	                         GError **error);
+	/* Remove them all.  Not an error when there is nothing to remove. */
+	gboolean (*intel_clear) (GError **error);
+	/* Packets dropped per set id since the rules were loaded: a table of
+	 * gchar* -> guint64* (both owned by the table).  NULL when the
+	 * platform cannot count or nothing is loaded. */
+	GHashTable *(*intel_counters) (void);
 } FsBackend;
 
 /* Profile identifiers, matching Windows' own numbering. */

@@ -32,6 +32,12 @@ typedef struct
 	gboolean  deny_packets;
 	gboolean  restrictive_outbound;
 
+	/* 1.0.7: log the NEW connections the policy accepts, sampled to at
+	 * most FS_SCRIPT_ALLOW_LOG_RATE per second, so the Events page and
+	 * the Activity graph show allowed traffic on Linux too.  Every
+	 * policy ACCEPT then goes through FS_SCRIPT_ACCEPT_CHAIN. */
+	gboolean  log_allowed;
+
 	/* Which ICMP types the ICMP Filtering page lets through.  These
 	 * follow the original exactly, including the one that is not ICMP
 	 * at all: "Traceroute" opened UDP 33434, and "MS Traceroute"
@@ -47,6 +53,14 @@ typedef struct
 	gboolean  icmp_redirection;
 	gboolean  icmp_source_quenches;
 } FsSettings;
+
+/* The chain every policy ACCEPT jumps to when log_allowed is set: it
+ * LOGs the first packet of a new connection ("STOCKFW-ALLOW ", rate
+ * limited) and accepts.  Return traffic, loopback and ICMP keep their
+ * plain ACCEPT: they are not connections anyone asked about. */
+#define FS_SCRIPT_ACCEPT_CHAIN   "ACCEPT_LOG"
+#define FS_SCRIPT_ALLOW_LOG_RATE "10/s"
+#define FS_SCRIPT_ALLOW_LOG_BURST "20"
 
 FsSettings *fs_settings_new  (void);
 void        fs_settings_free (FsSettings *settings);

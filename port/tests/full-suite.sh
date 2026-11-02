@@ -40,6 +40,8 @@ run_sh () {   # run_sh <label> <script> [pattern]
 run_sh "CORE"        tests/test-core.sh
 run_sh "P4 ADVERSARIAL" tests/test-adversarial.sh
 run_sh "LOG START"   tests/test-logstart.sh
+run_sh "LOG EVENTS (file)" tests/test-logstart-events.sh
+run_sh "LOG EVENTS (/dev/kmsg)" tests/test-logstart-kmsg.sh
 run_sh "WINLOG + SPAWN PROBE" tests/test-winlog.sh
 run_sh "INSTALLER SPAWN" tests/test-installer-spawn.sh
 run_sh "BACKEND COMPILE (state-windows)" tests/test-state-windows.sh "compiled|PASSED|FAILED|ok:"
