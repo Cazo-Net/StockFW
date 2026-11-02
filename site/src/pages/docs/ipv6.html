@@ -2,19 +2,16 @@
 title: IPv6
 section: Protection
 order: 21
-description: How StockFW filters IPv6: natively on Windows, and on Linux since 1.0.7 with one policy rendered for both families, one rollback, honest status, and the Covers column that says what each rule reaches.
+description: How StockFW filters IPv6: natively on Windows, and on Linux with one policy rendered for both families, one rollback, honest status, and the Covers column that says what each rule reaches.
 ---
 <h1>IPv6</h1>
-<p class="lede">A rule that only exists for IPv4 is a door left open on every network that also speaks IPv6, which today is most of them. StockFW tells you, per rule and on the Overview, exactly which families are filtered, and on Linux since 1.0.7 it filters both from the same policy.</p>
+<p class="lede">A rule that only exists for IPv4 is a door left open on every network that also speaks IPv6, which today is most of them. StockFW tells you, per rule and on the Overview, exactly which families are filtered, and on Linux it filters both from the same policy.</p>
 
 <h2>Windows</h2>
 <p>[[win]] Windows Firewall rules apply to both families unless an address scopes them, so a rule for <em>Anyone</em> covers IPv4 and IPv6, and a rule for <code>2001:db8::5</code> covers IPv6 only. The Overview’s two tiles both read “Filtered” whenever the firewall is on. One limit: the Windows engine takes addresses, not names, so a rule whose target is a host name covers nothing there, and the Covers column says so. [[gap]]</p>
 
-<h2>Linux before 1.0.7</h2>
-<p>[[linux]] The 1.0.5 and 1.0.6 releases drive <code>iptables</code> only. Their IPv4 policy is complete, and IPv6 traffic is <em>not filtered</em> by StockFW at all: whatever the kernel’s default is, that is what happens. Both releases say so in the README and the architecture document; neither pretends otherwise in the app. [[gap]] If you run one of them on a network with IPv6, you are relying on your router or on another firewall for that family.</p>
-
-<h2>Linux since 1.0.7</h2>
-<p>[[linux]] [[built]] The whole policy is rendered <em>before</em> the kernel is touched into two payloads, one for <code>iptables-restore</code> and one for <code>ip6tables-restore</code>, each with a filter part and, in router mode, a nat part. The backend snapshots StockFW’s chains in both families, loads IPv4, then IPv6, and on any failure puts back every table it changed. Each payload is loaded with <code>--noflush</code> and declares only StockFW’s own chains, so rules that Docker, libvirt or ufw keep in the same tables are never seen, and the hook from <code>INPUT</code> into <code>INBOUND</code> is not removed and re-added during a re-apply. [[verified:test-apply-dual.sh]]</p>
+<h2>Linux</h2>
+<p>[[linux]] The whole policy is rendered <em>before</em> the kernel is touched into two payloads, one for <code>iptables-restore</code> and one for <code>ip6tables-restore</code>, each with a filter part and, in router mode, a nat part. The backend snapshots StockFW’s chains in both families, loads IPv4, then IPv6, and on any failure puts back every table it changed. Each payload is loaded with <code>--noflush</code> and declares only StockFW’s own chains, so rules that Docker, libvirt or ufw keep in the same tables are never seen, and the hook from <code>INPUT</code> into <code>INBOUND</code> is not removed and re-added during a re-apply. [[verified:test-apply-dual.sh]]</p>
 <p>The rollback covers both families, always. The first version rolled IPv6 back and skipped IPv4 whenever the IPv6 restore itself failed, which would have left IPv4 on the new policy while the dialog said nothing changed; four “teeth” runs now pin it, each removing one part of the rollback and watching a specific check go red.</p>
 
 <h3>Which family a rule reaches</h3>

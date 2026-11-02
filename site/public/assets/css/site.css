@@ -1,9 +1,10 @@
 /* StockFW website and documentation.
  *
- * Layout concept: the firewall as a wall.  Dark bands are the outside
- * (the network), light pages are the inside (your computer), and the
- * brand red is the wall between them.  Every claim the site makes can
- * carry an evidence stamp naming the test that proves it.
+ * One theme.  Dark charcoal bands are the outside (the network), light
+ * pages are the inside (your computer), and the logo's red is the wall
+ * between them.  There is no dark mode: the page always renders this
+ * way.  Every claim the site makes can carry an evidence stamp naming
+ * the test that proves it.
  *
  * Fonts are served from this site (assets/fonts); nothing is loaded
  * from any other server.
@@ -93,82 +94,15 @@
 	--fs-md: 1.125rem;
 	--fs-lg: 1.375rem;
 	--fs-xl: 1.75rem;
-	--fs-2xl: clamp(1.9rem, 2.2vw + 1.2rem, 2.6rem);
-	--fs-3xl: clamp(2.5rem, 4.6vw + 1rem, 4.4rem);
+	--fs-2xl: clamp(1.75rem, 1.4vw + 1.2rem, 2.25rem);
+	--fs-3xl: clamp(2rem, 2.2vw + 1.2rem, 2.9rem);
 
-	--radius: 10px;
+	--radius: 8px;
 	--radius-sm: 6px;
 	--head-h: 64px;
-	--wrap: 1200px;
+	--wrap: 1180px;
 	--gutter-l: max(16px, env(safe-area-inset-left, 0px));
 	--gutter-r: max(16px, env(safe-area-inset-right, 0px));
-}
-
-@media (prefers-color-scheme: dark) {
-	:root:not([data-theme="light"]) {
-		--bg: #0f1115;
-		--surface: #171a20;
-		--surface-2: #1d2128;
-		--ink: #eceef2;
-		--ink-2: #c5cad3;
-		--muted: #949dab;
-		--line: #2a2f39;
-		--line-strong: #3a414e;
-		--wall: #e5484d;
-		--wall-hover: #f06a6e;
-		--wall-deep: #7d1a22;
-		--wall-tint: #2c1518;
-		--on-wall: #ffffff;
-		--allow: #4cc38a;
-		--allow-bg: #12291d;
-		--allow-line: #23583b;
-		--block: #ff7b72;
-		--block-bg: #2d1517;
-		--block-line: #6a2a2a;
-		--soon: #f0c060;
-		--soon-bg: #2a2212;
-		--soon-line: #5c4a1f;
-		--link: #7aa7ff;
-		--night: #0a0b0e;
-		--night-2: #13161b;
-		--night-3: #1c2027;
-		--night-line: #2a2f39;
-		--code-bg: #0a0b0e;
-		--shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 10px 30px -14px rgb(0 0 0 / 70%);
-		color-scheme: dark;
-	}
-}
-:root[data-theme="dark"] {
-	--bg: #0f1115;
-	--surface: #171a20;
-	--surface-2: #1d2128;
-	--ink: #eceef2;
-	--ink-2: #c5cad3;
-	--muted: #949dab;
-	--line: #2a2f39;
-	--line-strong: #3a414e;
-	--wall: #e5484d;
-	--wall-hover: #f06a6e;
-	--wall-deep: #7d1a22;
-	--wall-tint: #2c1518;
-	--on-wall: #ffffff;
-	--allow: #4cc38a;
-	--allow-bg: #12291d;
-	--allow-line: #23583b;
-	--block: #ff7b72;
-	--block-bg: #2d1517;
-	--block-line: #6a2a2a;
-	--soon: #f0c060;
-	--soon-bg: #2a2212;
-	--soon-line: #5c4a1f;
-	--link: #7aa7ff;
-	--night: #0a0b0e;
-	--night-2: #13161b;
-	--night-3: #1c2027;
-	--night-line: #2a2f39;
-	--code-bg: #0a0b0e;
-	--shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 10px 30px -14px rgb(0 0 0 / 70%);
-	color-scheme: dark;
 }
 
 /* ------------------------------------------------------------- base */
@@ -177,6 +111,7 @@
 html {
 	-webkit-text-size-adjust: 100%;
 	scroll-padding-top: calc(var(--head-h) + 16px + env(safe-area-inset-top, 0px));
+	color-scheme: light;
 }
 body {
 	margin: 0;
@@ -202,7 +137,7 @@ img { max-width: 100%; height: auto; }
 a { color: var(--link); text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
 a:hover { text-decoration-thickness: 2px; }
 :focus-visible { outline: 2px solid var(--wall); outline-offset: 2px; border-radius: 3px; }
-h1, h2, h3, h4 { line-height: 1.15; text-wrap: balance; margin: 0; }
+h1, h2, h3, h4 { line-height: 1.2; text-wrap: balance; margin: 0; }
 p { margin: 0; }
 code, kbd, pre, samp { font-family: var(--mono); }
 :not(pre) > code {
@@ -239,13 +174,25 @@ kbd {
 .skip:focus { left: 12px; }
 .mono { font-family: var(--mono); }
 .label {
-	font-family: var(--mono);
+	font-family: var(--sans);
 	font-size: var(--fs-xs);
-	font-weight: 500;
-	letter-spacing: 0.08em;
+	font-weight: 600;
+	letter-spacing: 0.07em;
 	text-transform: uppercase;
+	color: var(--muted);
 }
 .tnum { font-variant-numeric: tabular-nums; }
+
+/* Packet-trace texture for the dark bands: thin lanes, pure CSS. */
+.hero::before, .page-head::before, .refuse::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background: repeating-linear-gradient(0deg, transparent 0 39px, rgb(255 255 255 / 4%) 39px 40px);
+	mask-image: linear-gradient(90deg, transparent, #000 30%, #000 70%, transparent);
+	-webkit-mask-image: linear-gradient(90deg, transparent, #000 30%, #000 70%, transparent);
+}
 
 /* ------------------------------------------------------------ header */
 
@@ -273,9 +220,8 @@ kbd {
 }
 .brand img { width: 34px; height: 34px; }
 .brand-name {
-	font-weight: 800;
-	font-stretch: 118%;
-	font-size: 1.2rem;
+	font-weight: 700;
+	font-size: 1.15rem;
 	letter-spacing: -0.01em;
 }
 .brand-ver {
@@ -306,7 +252,7 @@ kbd {
 	height: 36px;
 	min-width: 36px;
 	padding: 0 10px;
-	border-radius: 8px;
+	border-radius: 6px;
 	border: 1px solid var(--night-line);
 	background: var(--night-2);
 	color: var(--on-night-2);
@@ -348,18 +294,17 @@ kbd {
 	display: inline-flex;
 	align-items: center;
 	gap: 10px;
-	padding: 12px 20px;
-	border-radius: 8px;
-	font: 650 1rem var(--sans);
-	font-stretch: 108%;
+	padding: 11px 18px;
+	border-radius: 6px;
+	font: 600 0.95rem var(--sans);
 	text-decoration: none;
 	border: 1px solid transparent;
 	cursor: pointer;
 	line-height: 1.2;
 }
 .btn svg { width: 18px; height: 18px; flex: none; }
-.btn-wall { background: var(--wall); color: var(--on-wall); }
-.btn-wall:hover { background: var(--wall-hover); }
+.btn-wall { background: var(--wall); color: var(--on-wall); border-color: var(--wall); }
+.btn-wall:hover { background: var(--wall-hover); border-color: var(--wall-hover); }
 .btn-line { color: inherit; border-color: currentColor; background: transparent; }
 .btn-line:hover { background: rgb(127 127 127 / 12%); }
 .btn-small { padding: 8px 14px; font-size: 0.9rem; }
@@ -428,7 +373,7 @@ kbd {
 }
 .site-foot .wrap { padding-block: 48px 40px; display: grid; gap: 32px; }
 .foot-grid { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 32px; }
-.foot-grid h2 { font-size: var(--fs-sm); color: var(--on-night); margin-bottom: 10px; font-stretch: 110%; }
+.foot-grid h2 { font-size: var(--fs-sm); color: var(--on-night); margin-bottom: 10px; font-weight: 650; }
 .foot-grid ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .foot-grid a { color: var(--on-night-2); text-decoration: none; }
 .foot-grid a:hover { color: var(--on-night); text-decoration: underline; }
@@ -455,25 +400,22 @@ kbd {
 .prose > * + * { margin-top: 1.05em; }
 .prose h1 {
 	font-size: var(--fs-2xl);
-	font-weight: 800;
-	font-stretch: 116%;
+	font-weight: 700;
 	letter-spacing: -0.02em;
 }
 .prose h2 {
 	font-size: var(--fs-xl);
-	font-weight: 750;
-	font-stretch: 112%;
+	font-weight: 650;
 	letter-spacing: -0.01em;
 	margin-top: 2.1em;
 	padding-top: 0.2em;
 }
 .prose h3 {
 	font-size: var(--fs-lg);
-	font-weight: 700;
-	font-stretch: 106%;
+	font-weight: 650;
 	margin-top: 1.7em;
 }
-.prose h4 { font-size: var(--fs-md); font-weight: 700; margin-top: 1.4em; }
+.prose h4 { font-size: var(--fs-md); font-weight: 650; margin-top: 1.4em; }
 .prose h2 + *, .prose h3 + *, .prose h4 + * { margin-top: 0.6em; }
 .prose .lede { font-size: var(--fs-md); color: var(--ink-2); }
 .prose ul, .prose ol { padding-left: 1.4em; }
@@ -481,12 +423,18 @@ kbd {
 .prose li > ul, .prose li > ol { margin-top: 0.35em; }
 .prose hr { border: 0; border-top: 1px solid var(--line); margin-block: 2.4em; }
 .prose strong { font-weight: 650; }
-.prose dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 20px; }
-.prose dt { font-weight: 650; }
-.prose dd { margin: 0; min-width: 0; }
+/* Definition lists: each definition under its term.  The build adds
+ * class "cols" when every term is short, and those lists put the term
+ * beside the definition instead. */
+.prose dl { margin: 0; }
+.prose dt { font-weight: 650; margin-top: 1.1em; }
+.prose dt:first-child { margin-top: 0; }
+.prose dd { margin: 0.3em 0 0; min-width: 0; }
+.prose dl.cols { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 20px; }
+.prose dl.cols dt, .prose dl.cols dd { margin: 0; }
 @media (max-width: 560px) {
-	.prose dl { grid-template-columns: 1fr; gap: 2px; }
-	.prose dd { margin-bottom: 10px; }
+	.prose dl.cols { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+	.prose dl.cols dd { margin-bottom: 10px; }
 }
 .anchor {
 	margin-left: 0.35em;
@@ -566,7 +514,11 @@ h2:hover .anchor, h3:hover .anchor, .anchor:focus { opacity: 1; }
 .tbl th, .tbl td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .tbl th { font-weight: 650; background: var(--surface-2); white-space: nowrap; }
 .tbl tr:last-child td { border-bottom: 0; }
-.tbl td code { white-space: nowrap; }
+/* Paths and file names in tables break after each slash, comma or
+ * backslash (the build inserts <wbr> there), so a long path never
+ * forces the other columns into a single word per line. */
+.tbl td code { white-space: normal; overflow-wrap: anywhere; }
+.tbl td { min-width: 8.5em; }
 .tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Screenshots */
@@ -600,7 +552,7 @@ h2:hover .anchor, h3:hover .anchor, .anchor:focus { opacity: 1; }
 	place-items: center;
 	border-radius: 50%;
 	background: var(--ink);
-	color: var(--bg);
+	color: #fff;
 	font: 600 0.9rem var(--mono);
 }
 .steps > li > * + * { margin-top: 0.6em; }
@@ -614,28 +566,40 @@ h2:hover .anchor, h3:hover .anchor, .anchor:focus { opacity: 1; }
 	position: relative;
 	overflow: hidden;
 }
-.page-head .wrap { padding-block: 56px 48px; position: relative; display: grid; gap: 14px; }
+.page-head .wrap { padding-block: 52px 44px; position: relative; display: grid; gap: 12px; }
 .page-head h1 {
 	font-size: var(--fs-3xl);
-	font-weight: 820;
-	font-stretch: 122%;
-	letter-spacing: -0.03em;
-	line-height: 0.98;
+	font-weight: 700;
+	letter-spacing: -0.02em;
+	line-height: 1.1;
 }
-.page-head p { color: var(--on-night-2); font-size: var(--fs-md); max-width: 60ch; }
+.page-head p { color: var(--on-night-2); font-size: var(--fs-md); max-width: 64ch; }
 .page-head .label { color: var(--on-night-muted); }
 .page-body { padding-block: 48px 0; }
 
-/* Packet-trace texture for the dark bands: thin lanes with a few
- * packets.  Pure CSS so it costs nothing. */
-.lanes {
-	position: absolute;
-	inset: 0;
-	pointer-events: none;
-	background:
-		repeating-linear-gradient(0deg, transparent 0 39px, rgb(255 255 255 / 4%) 39px 40px);
-	mask-image: linear-gradient(90deg, transparent, #000 30%, #000 70%, transparent);
+/* ------------------------------------------------------- back to top */
+
+.top-btn {
+	position: fixed;
+	right: max(18px, env(safe-area-inset-right, 0px));
+	bottom: max(18px, env(safe-area-inset-bottom, 0px));
+	z-index: 45;
+	width: 42px;
+	height: 42px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 50%;
+	background: var(--night);
+	color: var(--on-night);
+	border: 1px solid var(--night-line);
+	box-shadow: 0 6px 20px -8px rgb(0 0 0 / 50%);
+	text-decoration: none;
 }
+.top-btn:hover { background: var(--night-3); border-color: var(--on-night-muted); }
+.top-btn svg { width: 20px; height: 20px; }
+.to-top { white-space: nowrap; }
+#main:focus { outline: none; }
 
 /* ------------------------------------------------------------ search */
 
@@ -673,7 +637,7 @@ h2:hover .anchor, h3:hover .anchor, .anchor:focus { opacity: 1; }
 	color: var(--ink);
 }
 .search-results a:hover, .search-results a.sel { background: var(--surface-2); }
-.search-results .r-sec { font: 500 0.7rem var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.search-results .r-sec { font: 600 0.7rem var(--sans); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .search-results .r-title { font-weight: 650; }
 .search-results .r-snip { color: var(--muted); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-results mark { background: var(--wall-tint); color: inherit; border-radius: 2px; }

@@ -2,15 +2,12 @@
 title: Threat-intel blocklists
 section: Protection
 order: 22
-description: Blocking known-bad address ranges from published feeds, coming in 1.0.7: which feeds, what is built, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.
+description: Blocking known-bad address ranges from published feeds: which feeds, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.
 ---
 <h1>Threat-intel blocklists</h1>
-<p class="lede">A policy says what <em>you</em> allow. A blocklist says what the wider community has seen attacking, hosting botnet controllers or spraying brute-force logins, as address ranges that are refused on sight. 1.0.7 brings well-known feeds into StockFW, off until you turn each one on, with the same discipline as the rest of the app: nothing silent, nothing that cannot be undone, and the kernel’s real state shown rather than the configuration.</p>
+<p class="lede">A policy says what <em>you</em> allow. A blocklist says what the wider community has seen attacking, hosting botnet controllers or spraying brute-force logins, as address ranges that are refused on sight. StockFW brings well-known feeds in, off until you turn each one on, with the same discipline as the rest of the app: nothing silent, nothing that cannot be undone, and the kernel’s real state shown rather than the configuration.</p>
 
-<div class="callout soon">
-<span class="label">Where this stands</span>
-<p>On <code>main</code> today: the address-range engine, the feed catalogue with its parsers and guards, the downloader, the discovery of this computer’s own addresses and DNS servers, the engine that builds and stores the sets, the nftables table and its transaction, and the Linux backend’s enforcement slots, each with its tests [[built]]. Being written: the Threat Intel page, <code>stockfw intel</code>, events that name the list, and the What-if answer [[soon]]. Windows enforcement follows once the Windows build has been checked on a real machine [[planned]]; until then every Windows surface says blocklists are not available there yet. The design, with its review findings, is <code>docs/1.0.7-threat-intel-design.md</code> in the repository.</p>
-</div>
+<p>[[linux]] Blocklists are enforced on Linux, through nftables. On Windows the Threat Intel page says blocklists are not available there, and the policy alone is in force. [[gap]] The design, with its review findings, is <code>docs/1.0.7-threat-intel-design.md</code> in the repository.</p>
 
 <h2>The feeds</h2>
 <p>Every feed is off until you switch it on and accept its terms. A feed is fetched from its own publisher or not at all: no mirrors, no aggregator of StockFW’s own. Each entry carries the host it contacts, its information and terms pages, the licence <em>where it has been verified</em> (otherwise “See the provider’s terms”), whether it is for non-commercial use only, its format, its default direction and how often it updates.</p>

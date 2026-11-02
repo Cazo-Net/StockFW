@@ -27,16 +27,18 @@ The HTML is plain.  A few shortcodes expand at build time:
 |---|---|
 | `[[verified:test name]]` | A green "Verified" stamp naming the test that proves the claim. |
 | `[[measured:what]]` | A "Measured" stamp for a number from an experiment. |
-| `[[built]]` | "Built for 1.0.7": done on the development branch, not in the current release. |
-| `[[soon]]` | "In progress for 1.0.7". |
-| `[[planned]]` | Intended, not built. |
 | `[[gap]]` | A known limit, stated so it is not mistaken for a feature. |
 | `[[win]]`, `[[linux]]`, `[[both]]` | A platform badge. |
 | `[[shot:name\|alt text\|caption]]` | A screenshot from `public/assets/screens/name.webp`, with its real dimensions. |
 
 Code blocks are `<pre data-lang="sh" data-title="optional title">`.
+A `<dl>` whose terms are all short (28 characters or fewer) is shown in
+two columns, term beside definition; a list with a longer term stacks
+each definition under its term.  A path in a table's `<code>` gets a
+soft break after each slash, backslash and comma, so it wraps instead of
+squeezing the other columns.
 `{{root}}` is the relative path to the site root (so links work from
-`docs/`), and `{{release}}`, `{{version}}`, `{{next}}` and `{{repo}}`
+`docs/`), and `{{release}}`, `{{version}}` and `{{repo}}`
 come from `CONFIG` at the top of `build.py`.
 
 The build fails, and writes nothing, when a page links to a file or an
@@ -51,6 +53,13 @@ The screenshots in `public/assets/screens/` were taken from the real
 outside and services on the inside, under Xvfb at `GDK_SCALE=2`, then
 converted to WebP.  Retake them when a page changes; the captions say
 what the traffic was.
+
+The What-If pictures (`whatif-*.webp`) are rendered by the app's own
+smoke tests rather than photographed: `port/tests/ui-simviz-smoke.c`
+and `ui-copilot-smoke.c` write every window they check as a PNG when
+`FS_SHOT_DIR` is set (run them under Xvfb with `GTK_THEME=Adwaita`).
+They show the tests' own fixture policy, not the staged network above,
+and the captions describe exactly what each one shows.
 
 ## Releasing
 

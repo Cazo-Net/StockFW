@@ -1,9 +1,9 @@
 /* The hero's what-if replay.
  *
  * Every line below is real output: `stockfw simulate` was run against
- * the example policy shown under the card (StockFW 1.0.7 development
- * build, Linux), and the verdict, rule, reason and exit code were
- * copied verbatim.  The page replays them; it does not parse anything
+ * the example policy shown under the card (StockFW 1.0.7, Linux), and
+ * the verdict, the connection as read, the deciding rule, the reason,
+ * the checked fix and the exit code were copied verbatim.  The page replays them; it does not parse anything
  * itself, so it can never disagree with the program. */
 (function () {
 	"use strict";
@@ -13,45 +13,50 @@
 			q: "allow ssh from 192.168.1.50 on port 22",
 			dir: "in", remote: "192.168.1.50", port: "22", proto: "TCP",
 			ok: true,
-			scn: "Inbound TCP connection from 192.168.1.50 to local port 22 (ssh)",
-			rule: "StockFW: Allow SSH (inbound, 192.168.1.0/24)",
-			why: "Matched rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24)' on port 22, which allows inbound traffic.",
+			scn: "Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer",
+			rule: "StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)",
+			why: "You asked to allow this. It is already ALLOWED. Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.",
+			fix: "Nothing to change: this is already allowed, as you asked.",
 			exit: 0
 		},
 		{
 			q: "inbound rdp from 203.0.113.50",
 			dir: "in", remote: "203.0.113.50", port: "3389", proto: "TCP",
 			ok: false,
-			scn: "Inbound TCP connection from 203.0.113.50 to local port 3389 (rdp)",
-			rule: "Default deny (no matching rule)",
-			why: "No rule in the loaded policy matches this connection.  Default policy: deny inbound.",
+			scn: "Inbound TCP port 3389 (Remote Desktop) from 203.0.113.50 to this computer",
+			rule: "Default: drop silently",
+			why: "No rule lets it in, so the default drops it.",
+			fix: "Create allow rule: Allow inbound TCP port 3389 from 203.0.113.50. Checked: with it this question is allowed, and nothing else changes.",
 			exit: 5
 		},
 		{
 			q: "outbound tcp to 198.51.100.66 port 443",
 			dir: "out", remote: "198.51.100.66", port: "443", proto: "TCP",
 			ok: false,
-			scn: "Outbound TCP connection from local to 198.51.100.66 port 443",
+			scn: "Outbound TCP port 443 from this computer to 198.51.100.66",
 			rule: "StockFW: Block outbound (198.51.100.66)",
-			why: "Matched rule 'StockFW: Block outbound (198.51.100.66)', which blocks outbound traffic.",
+			why: "Rule 'StockFW: Block outbound (198.51.100.66)' blocks it.",
+			fix: "Open rule 'StockFW: Block outbound (198.51.100.66)' in Policy. Without it, this is allowed.",
 			exit: 5
 		},
 		{
 			q: "inbound https from 203.0.113.9",
 			dir: "in", remote: "203.0.113.9", port: "443", proto: "TCP",
 			ok: true,
-			scn: "Inbound TCP connection from 203.0.113.9 to local port 443 (https)",
-			rule: "StockFW: Allow HTTPS (inbound)",
-			why: "Matched rule 'StockFW: Allow HTTPS (inbound)' on port 443, which allows inbound traffic.",
+			scn: "Inbound TCP port 443 (HTTPS) from 203.0.113.9 to this computer",
+			rule: "StockFW: Allow HTTPS (inbound) (TCP)",
+			why: "Rule 'StockFW: Allow HTTPS (inbound) (TCP)' allows it.",
+			fix: "Nothing to change: this is already allowed.",
 			exit: 0
 		},
 		{
 			q: "outbound telnet to 203.0.113.7",
 			dir: "out", remote: "203.0.113.7", port: "23", proto: "TCP",
 			ok: false,
-			scn: "Outbound TCP connection from local to 203.0.113.7 port 23 (telnet)",
-			rule: "StockFW: Block Telnet (outbound)",
-			why: "Matched rule 'StockFW: Block Telnet (outbound)' on port 23, which blocks outbound traffic.",
+			scn: "Outbound TCP port 23 (Telnet) from this computer to 203.0.113.7",
+			rule: "StockFW: Block Telnet (outbound) (TCP)",
+			why: "Rule 'StockFW: Block Telnet (outbound) (TCP)' blocks it.",
+			fix: "Open rule 'StockFW: Block Telnet (outbound)' in Policy. Without it, this is allowed.",
 			exit: 5
 		}
 	];
@@ -73,6 +78,7 @@
 	var dRule = $(".d-rule");
 	var dWhy = $(".d-why");
 	var dExit = $(".d-exit");
+	var dFix = $(".d-fix");
 	var chipsBox = $(".wi-chips");
 	var nodes = {
 		lPc: $(".n-l-pc"), lGlobe: $(".n-l-globe"),
@@ -136,6 +142,7 @@
 		dWhy.textContent = "";
 		dExit.textContent = "";
 		dExit.className = "d-exit";
+		dFix.textContent = "";
 	}
 
 	function verdict(s) {
@@ -146,7 +153,41 @@
 		dWhy.textContent = s.why;
 		dExit.textContent = s.exit + (s.exit === 5 ? "  (simulate: blocked)" : "  (success)");
 		dExit.className = "d-exit " + (s.ok ? "exit-ok" : "exit-no");
+		dFix.textContent = s.fix;
 	}
+
+	/* The verdict row and the detail list change height with their text,
+	 * and while a scenario resets they are nearly empty.  Left alone,
+	 * that moved everything under the card and resized the hero band on
+	 * every replay.  Measure the tallest scenario at the current width
+	 * and hold both parts at that height, so nothing outside the text
+	 * itself ever moves. */
+	var verdictBox = $(".wi-verdict"), detailBox = $(".wi-detail");
+	function lockHeights() {
+		var keep = [pill.className, pill.textContent, scn.textContent,
+			dRule.textContent, dWhy.textContent, dExit.textContent, dExit.className,
+			dFix.textContent];
+		verdictBox.style.minHeight = "";
+		detailBox.style.minHeight = "";
+		var v = 0, d = 0;
+		SCENARIOS.forEach(function (s) {
+			verdict(s);
+			v = Math.max(v, verdictBox.getBoundingClientRect().height);
+			d = Math.max(d, detailBox.getBoundingClientRect().height);
+		});
+		pill.className = keep[0]; pill.textContent = keep[1]; scn.textContent = keep[2];
+		dRule.textContent = keep[3]; dWhy.textContent = keep[4];
+		dExit.textContent = keep[5]; dExit.className = keep[6];
+		dFix.textContent = keep[7];
+		verdictBox.style.minHeight = Math.ceil(v) + "px";
+		detailBox.style.minHeight = Math.ceil(d) + "px";
+	}
+	var resizeTimer = null;
+	window.addEventListener("resize", function () {
+		clearTimeout(resizeTimer);
+		resizeTimer = setTimeout(lockHeights, 150);
+	});
+	if (document.fonts && document.fonts.ready) document.fonts.ready.then(lockHeights);
 
 	function finalState(s) {
 		if (s.ok) {
@@ -234,6 +275,7 @@
 		qEl.textContent = s.q;
 		finalState(s);
 		verdict(s);
+		lockHeights();
 		if (!reduce) later(function () { if (auto) play(1); }, 4500);
 	})();
 })();
