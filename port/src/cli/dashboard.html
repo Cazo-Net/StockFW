@@ -931,6 +931,7 @@ code {
     "differs": ["bad", "Differs", ICON_X],
     "unsupported": ["warn", "Not available", ICON_Q],
     "needs-root": ["warn", "Needs root", ICON_Q],
+    "not-in-force": ["bad", "Not in force", ICON_X],
     "unknown": ["warn", "Unknown", ICON_Q]
   };
   var DIR_WORDS = { "in": "In: stops them connecting", "out": "Out: stops you connecting", "both": "Both directions" };
@@ -953,8 +954,10 @@ code {
       tr.appendChild(el("td", null, DIR_WORDS[l.direction] || l.direction));
       tr.appendChild(el("td", null, fmtNum(l.entries)));
       tr.appendChild(el("td", l.updated_at ? null : "muted", l.updated_at ? new Date(l.updated_at * 1000).toLocaleString() : "never"));
-      var b = el("td", null, fmtNum(l.blocked_packets));
-      if (l.counted_since) b.title = "since " + new Date(l.counted_since * 1000).toLocaleString();
+      var counted = l.blocked_packets !== null && l.blocked_packets !== undefined;
+      var b = el("td", counted ? null : "muted", counted ? fmtNum(l.blocked_packets) : "n/a");
+      if (!counted && t.counts_unavailable) b.title = t.counts_unavailable;
+      else if (l.counted_since) b.title = "since " + new Date(l.counted_since * 1000).toLocaleString();
       tr.appendChild(b);
       tr.appendChild(el("td", l.status === "ok" ? null : "muted", l.status.replace(/-/g, " ")));
       tb.appendChild(tr);

@@ -471,6 +471,19 @@ update_overview (void)
 
 		if (current_state == FS_FW_LOCKED || policy_locked)
 			g_string_append (body, _(" Policy changes are locked."));
+
+		/* The blocklists, as the Threat Intel page last read them:
+		 * "not in force" with the platform's reason, never folded
+		 * into "protected" [S10]. */
+		{
+			gchar *intel = fs_intelview_summary ();
+
+			if (intel != NULL) {
+				g_string_append_c (body, ' ');
+				g_string_append (body, intel);
+				g_free (intel);
+			}
+		}
 	} else if (current_state == FS_FW_STOPPED) {
 		level = FS_VERDICT_BAD;
 		icon = FS_ICON_SHIELD_X;
@@ -1311,6 +1324,12 @@ on_conn_toggle (GtkButton *button, gpointer data)
 }
 
 void
+fs_statusview_intel_changed (void)
+{
+	update_overview ();
+}
+
+void
 fs_statusview_refresh (void)
 {
 	refresh_network ();
@@ -1411,7 +1430,12 @@ intel_job_run (gpointer data, gpointer user_data)
 		                                     job->hold, &error);
 
 		if (o != NULL && o->result == FS_APPLY_FAILED && error == NULL)
+#ifdef G_OS_WIN32
+			job->error = g_strdup (_("Windows Firewall does not hold "
+			                         "them."));
+#else
 			job->error = g_strdup (_("The kernel does not hold them."));
+#endif
 		if (o != NULL && o->notes != NULL && o->notes->len > 0) {
 			GString *notes = g_string_new (NULL);
 

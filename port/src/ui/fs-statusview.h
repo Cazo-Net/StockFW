@@ -94,6 +94,10 @@ void fs_statusview_note_block    (const FsHit *hit);
  * For tests.  Free with g_strfreev. */
 gchar **fs_statusview_recent_blocks (void);
 
+/* The Threat Intel page read a new blocklist state: the verdict card
+ * says it again (fs_intelview_summary). */
+void fs_statusview_intel_changed (void);
+
 G_END_DECLS
 
 #endif /* FS_STATUSVIEW_H */

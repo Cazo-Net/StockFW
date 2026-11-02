@@ -36,6 +36,15 @@ void fs_intelview_set_hold_func (FsIntelHoldFunc func);
  * Start -- is held by this one answer (design 6.5).  Main thread. */
 const gchar *fs_intelview_hold_reason (void);
 
+/* One sentence on the blocklists for the Overview and the tray, from
+ * the page's last snapshot (taken in the worker every 30 s): in force,
+ * not in force with the platform's reason (Windows Firewall off for the
+ * network in use, its service stopped), changed outside StockFW, or
+ * not loaded.  NULL when there is nothing to claim (off, paused,
+ * unsupported, no rights, before the first snapshot).  Caller frees.
+ * Main thread. */
+gchar *fs_intelview_summary (void);
+
 /* The Events page: whether an event's rule text ("Threat intel:
  * Spamhaus DROP (IPv4)", FsHit.rule) names a blocklist. */
 gboolean fs_intelview_rule_is_intel (const gchar *rule);

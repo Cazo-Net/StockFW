@@ -134,9 +134,22 @@ fake_live (gchar **digest)
 		*digest = NULL;
 	if (kern.unknown)
 		return FS_INTEL_LIVE_UNKNOWN;
-	if (digest != NULL && kern.live == FS_INTEL_LIVE_PRESENT)
+	if (digest != NULL && (kern.live == FS_INTEL_LIVE_PRESENT ||
+	                       kern.live == FS_INTEL_LIVE_INACTIVE))
 		*digest = g_strdup (kern.digest);
 	return kern.live;
+}
+
+/* The Windows backend's sentence when the rules are there and not
+ * enforced (fs-intelwin.c words it per profile). */
+#define WIN_NOT_IN_FORCE "Windows Firewall is off for the Public profile, " \
+                         "which the network in use has."
+
+static gchar *
+fake_not_in_force (void)
+{
+	return kern.live == FS_INTEL_LIVE_INACTIVE
+	       ? g_strdup (WIN_NOT_IN_FORCE) : NULL;
 }
 
 static FsFirewallState
@@ -146,7 +159,9 @@ fake_get_state (void)
 }
 
 static FsBackend fake_backend;
-static FsBackend bare_backend;     /* no intel slots: Windows today   */
+static FsBackend bare_backend;     /* no intel slots: another platform */
+static FsBackend win_backend;      /* like Windows: no counters slot,
+                                    * a not-in-force sentence          */
 
 /* --------------------------------------------------------- fake net */
 
@@ -780,6 +795,10 @@ main (int argc, char **argv)
 	fake_backend.intel_live = fake_live;
 	bare_backend.name = "bare";
 	bare_backend.get_state = fake_get_state;
+	win_backend = fake_backend;
+	win_backend.name = "win";
+	win_backend.intel_counters = NULL;
+	win_backend.intel_not_in_force = fake_not_in_force;
 	bodies = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
 	errors = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
 	fs_intel_set_fetcher (fake_fetch, NULL);
@@ -1162,7 +1181,63 @@ main (int argc, char **argv)
 	shot ("09-unknown.png");
 	kern.unknown = FALSE;
 
-	/* ---- unsupported (Windows today) ---- */
+	/* ---- Windows: rules there but not enforced, nothing counted ---- */
+	fs_intelview_set_backend (&win_backend);
+	kern.live = FS_INTEL_LIVE_INACTIVE;
+	refresh ();
+	CHECK (strcmp (text_of ("intel-state-title"), "Not in force") == 0 &&
+	       strstr (text_of ("intel-state-body"), WIN_NOT_IN_FORCE) != NULL,
+	       "windows: rules the firewall does not enforce: \"Not in "
+	       "force\" with the platform's reason (\"%s\": \"%s\")",
+	       text_of ("intel-state-title"), text_of ("intel-state-body"));
+	{
+		gchar *sum = fs_intelview_summary ();
+
+		CHECK (sum != NULL && strstr (sum, "not in force") != NULL &&
+		       strstr (sum, WIN_NOT_IN_FORCE) != NULL,
+		       "windows: the Overview and tray summary says not in "
+		       "force, with the reason (\"%s\")", sum);
+		g_free (sum);
+	}
+	t = feed_text ("facts", "spamhaus-drop");
+	CHECK (strstr (t, fs_intel_counts_unavailable (&win_backend)) != NULL &&
+	       strstr (t, "Nothing blocked") == NULL &&
+	       strstr (t, "Blocked ") == NULL,
+	       "windows: no count per feed, the reason instead (\"%s\")", t);
+	g_free (t);
+	CHECK (strcmp (text_of ("intel-tile-2"), "n/a") == 0,
+	       "windows: the Blocked tile says n/a, never 0 (\"%s\")",
+	       text_of ("intel-tile-2"));
+	shot ("09b-not-in-force.png");
+	kern.live = FS_INTEL_LIVE_PARTIAL;
+	refresh ();
+	CHECK (strcmp (text_of ("intel-state-title"),
+	               "Changed outside StockFW") == 0,
+	       "windows: rules not whole read \"Changed outside StockFW\" "
+	       "(got \"%s\")", text_of ("intel-state-title"));
+	{
+		gchar *sum = fs_intelview_summary ();
+
+		CHECK (sum != NULL && strstr (sum, "changed outside") != NULL,
+		       "windows: ... and the summary says so (\"%s\")", sum);
+		g_free (sum);
+	}
+	kern.live = FS_INTEL_LIVE_PRESENT;
+	refresh ();
+	CHECK (strcmp (text_of ("intel-state-title"), "Protected") == 0,
+	       "windows: whole and enforced again: \"Protected\" (got "
+	       "\"%s\")", text_of ("intel-state-title"));
+	{
+		gchar *sum = fs_intelview_summary ();
+
+		CHECK (sum != NULL && strstr (sum, "are in force") != NULL,
+		       "windows: ... summary: in force (\"%s\")", sum);
+		g_free (sum);
+	}
+	fs_intelview_set_backend (&fake_backend);
+	refresh ();
+
+	/* ---- unsupported (no intel slots) ---- */
 	fs_intelview_set_backend (&bare_backend);
 	refresh ();
 	CHECK (g_str_has_prefix (text_of ("intel-state-title"), "Not supported"),

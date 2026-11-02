@@ -26,6 +26,28 @@
 
 #define SOURCE "cli"
 
+/* Where the blocklists are enforced, and how a command gets the rights
+ * to change them, in the words of the platform this is built for.  The
+ * CLI is built on Linux only (CMakeLists.txt), but its text must stay
+ * true if it is built elsewhere: on Windows the rules are Windows
+ * Firewall rules and there is no sudo (an elevated prompt instead). */
+#ifdef __linux__
+#define FS_CLI_LIVE      "the kernel"
+#define FS_CLI_LIVE_CAP  "The kernel"
+#define FS_CLI_SUDO      "sudo "
+#define FS_CLI_RIGHTS    "run it with sudo"
+#elif defined G_OS_WIN32
+#define FS_CLI_LIVE      "Windows Firewall"
+#define FS_CLI_LIVE_CAP  "Windows Firewall"
+#define FS_CLI_SUDO      ""
+#define FS_CLI_RIGHTS    "run it from a prompt opened as administrator"
+#else
+#define FS_CLI_LIVE      "the firewall"
+#define FS_CLI_LIVE_CAP  "The firewall"
+#define FS_CLI_SUDO      ""
+#define FS_CLI_RIGHTS    "run it with administrator rights"
+#endif
+
 /* ------------------------------------------------------------- helpers */
 
 /* The exit status for an engine error: a bad argument (unknown id,
@@ -54,8 +76,8 @@ fail (GError *error, const gchar *what)
 
 	fs_cli_error ("%s", error != NULL ? error->message : what);
 	if (status == FS_EXIT_NEED_ROOT)
-		fs_cli_hint ("run it with sudo, e.g. `sudo stockfw intel %s'",
-		             what);
+		fs_cli_hint (FS_CLI_RIGHTS ", e.g. `" FS_CLI_SUDO
+		             "stockfw intel %s'", what);
 	else if (g_error_matches (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNKNOWN))
 		fs_cli_hint ("`stockfw intel feeds' and `stockfw intel lists' "
 		             "show the ids");
@@ -300,6 +322,26 @@ src_licence (const Src *s)
 	                                               : "");
 }
 
+/* The BLOCKED column: the count, or "n/a" where the platform counts
+ * nothing per rule (Windows Firewall), so no list reads "blocked 0". */
+static gchar *
+blocked_text (const FsIntelCounter *c)
+{
+	if (fs_intel_counts_unavailable (fs_backend ()) != NULL)
+		return g_strdup ("n/a");
+	return grouped (c != NULL ? c->packets : 0);
+}
+
+/* Under a table with a BLOCKED column: why it says "n/a". */
+static void
+counts_note (void)
+{
+	const gchar *why = fs_intel_counts_unavailable (fs_backend ());
+
+	if (why != NULL)
+		printf ("%s%s%s\n", fs_cli_dim (), why, fs_cli_reset ());
+}
+
 static void
 src_json (GString *out, const FsIntelConfig *config, const Src *s,
           GHashTable *counters, gint64 now)
@@ -352,8 +394,15 @@ src_json (GString *out, const FsIntelConfig *config, const Src *s,
 	fs_json_kv_str (out, "last_error", st != NULL ? st->last_error : NULL); g_string_append_c (out, ',');
 	fs_json_kv_str (out, "refused", st != NULL ? st->refused : NULL); g_string_append_c (out, ',');
 	fs_json_kv_str (out, "accept_with", accept_flag (st));     g_string_append_c (out, ',');
-	fs_json_kv_uint (out, "blocked_packets", c != NULL ? c->packets : 0); g_string_append_c (out, ',');
-	fs_json_kv_uint (out, "blocked_bytes", c != NULL ? c->bytes : 0);    g_string_append_c (out, ',');
+	if (fs_intel_counts_unavailable (fs_backend ()) != NULL) {
+		/* Windows Firewall counts nothing per rule: null, never a
+		 * 0 that reads as "blocked nothing" [S10]. */
+		g_string_append (out, "\"blocked_packets\":null,"
+		                      "\"blocked_bytes\":null,");
+	} else {
+		fs_json_kv_uint (out, "blocked_packets", c != NULL ? c->packets : 0); g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "blocked_bytes", c != NULL ? c->bytes : 0);    g_string_append_c (out, ',');
+	}
 	kv_time (out, "counted_since", st != NULL ? st->counted_since : 0);
 	g_string_append_c (out, '}');
 }
@@ -405,6 +454,9 @@ fs_cli_intel_json (GString *out, gboolean with_sources)
 	fs_json_kv_bool (out, "master", config->enabled); g_string_append_c (out, ',');
 	fs_json_kv_str (out, "proxy", config->proxy);     g_string_append_c (out, ',');
 	fs_json_kv_str (out, "hold", fs_apply_hold_reason ());
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "counts_unavailable",
+	                fs_intel_counts_unavailable (backend));
 	g_string_append_c (out, ',');
 	fs_json_key (out, "lists");
 	g_string_append_c (out, '[');
@@ -488,14 +540,14 @@ intel_status (gint argc, gchar **argv)
 	printf ("  %-12s %s\n", "Proxy", config->proxy != NULL ? config->proxy
 	        : "none (`stockfw intel proxy URL' sets one)");
 	if (hold != NULL)
-		printf ("  %-12s %saudit-only: applies are recorded, the kernel "
+		printf ("  %-12s %saudit-only: applies are recorded, " FS_CLI_LIVE " "
 		        "is left untouched%s\n", "Apply mode", fs_cli_amber (),
 		        fs_cli_reset ());
 
 	srcs = sources_of (config, TRUE);
 	if (srcs->len == 0) {
 		printf ("\nNo blocklist is turned on.  `stockfw intel feeds' "
-		        "lists them; `sudo stockfw intel enable ID' turns one "
+		        "lists them; `" FS_CLI_SUDO "stockfw intel enable ID' turns one "
 		        "on.\n");
 	} else {
 		static const gchar *headers[] = {
@@ -515,12 +567,13 @@ intel_status (gint argc, gchar **argv)
 			row[3] = grouped (s->state != NULL ? s->state->entries : 0);
 			row[4] = time_text (s->state != NULL ? s->state->fetched_at
 			                                     : 0);
-			row[5] = grouped (c != NULL ? c->packets : 0);
+			row[5] = blocked_text (c);
 			row[6] = g_strdup (src_status (config, s, now));
 			g_ptr_array_add (rows, row);
 		}
 		printf ("\n");
 		fs_cli_table (headers, 7, rows, 40);
+		counts_note ();
 		g_ptr_array_unref (rows);
 		g_hash_table_unref (counters);
 	}
@@ -610,11 +663,11 @@ intel_feeds (gint argc, gchar **argv)
 		fs_cli_table (headers, 8, rows, 60);
 		g_ptr_array_unref (rows);
 		if (!config->enabled)
-			printf ("\n%sThreat intel is switched off: `sudo stockfw "
+			printf ("\n%sThreat intel is switched off: `" FS_CLI_SUDO "stockfw "
 			        "intel on' switches it on.%s\n", fs_cli_amber (),
 			        fs_cli_reset ());
 		printf ("\n%sTurning a feed on needs its terms accepted: `stockfw "
-		        "intel terms ID' shows them, `sudo stockfw intel enable ID "
+		        "intel terms ID' shows them, `" FS_CLI_SUDO "stockfw intel enable ID "
 		        "--accept-terms' turns it on.  Lists contain mistakes: "
 		        "`stockfw intel except ADDRESS' lets one through.%s\n",
 		        fs_cli_dim (), fs_cli_reset ());
@@ -787,7 +840,7 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 		}
 		fs_cli_error ("%s", error->message);
 		fs_cli_hint ("read the terms above; to accept them: "
-		             "sudo stockfw intel enable %s --accept-terms", id);
+		             FS_CLI_SUDO "stockfw intel enable %s --accept-terms", id);
 		g_free (text);
 		g_clear_error (&error);
 		fs_intel_config_free (config);
@@ -838,11 +891,11 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 			        "them again.\n", id);
 		notes_print (notes);
 		if (enable && f != NULL)
-			printf ("%sNot live yet: run `sudo stockfw intel update', "
-			        "then `sudo stockfw intel apply'.%s\n", fs_cli_dim (),
+			printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel update', "
+			        "then `" FS_CLI_SUDO "stockfw intel apply'.%s\n", fs_cli_dim (),
 			        fs_cli_reset ());
 		else
-			printf ("%sNot live yet: run `sudo stockfw intel apply'.%s\n",
+			printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
 			        fs_cli_dim (), fs_cli_reset ());
 	}
 
@@ -882,7 +935,7 @@ intel_switch (gint argc, gboolean on)
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else if (!fs_cli.quiet) {
-		printf ("Threat intel switched %s.  %sNot live yet: run `sudo "
+		printf ("Threat intel switched %s.  %sNot live yet: run `" FS_CLI_SUDO
 		        "stockfw intel apply'.%s\n", on ? "on" : "off",
 		        fs_cli_dim (), fs_cli_reset ());
 	}
@@ -1024,8 +1077,8 @@ intel_add_feed (gint argc, gchar **argv)
 		        fs_cli_reset (), name, id, shown, dir_word (dir),
 		        dir_prose (dir));
 		printf ("%sYou typed the address, which is the consent to contact "
-		        "that host.  Not live yet: run `sudo stockfw intel update "
-		        "--feed %s', then `sudo stockfw intel apply'.%s\n",
+		        "that host.  Not live yet: run `" FS_CLI_SUDO "stockfw intel update "
+		        "--feed %s', then `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
 		        fs_cli_dim (), id, fs_cli_reset ());
 	}
 	g_free (shown);
@@ -1110,7 +1163,7 @@ intel_update (gint argc, gchar **argv)
 		if (!f->enabled) {
 			fs_intel_config_free (config);
 			fs_cli_error ("%s is turned off", only);
-			fs_cli_hint ("turn it on first: sudo stockfw intel enable %s",
+			fs_cli_hint ("turn it on first: " FS_CLI_SUDO "stockfw intel enable %s",
 			             only);
 			return FS_EXIT_USAGE;
 		}
@@ -1222,7 +1275,7 @@ intel_update (gint argc, gchar **argv)
 			        outcome_word (r->outcome), fs_cli_reset (), n,
 			        r->message != NULL ? r->message : "");
 			if (accept[i] != NULL)
-				printf ("%s  To take this copy anyway: sudo stockfw "
+				printf ("%s  To take this copy anyway: " FS_CLI_SUDO "stockfw "
 				        "intel update --feed %s --now %s%s\n",
 				        fs_cli_dim (), r->id, accept[i],
 				        fs_cli_reset ());
@@ -1235,11 +1288,11 @@ intel_update (gint argc, gchar **argv)
 		} else if (strcmp (reapply, "failed") == 0) {
 			fs_cli_error ("the new copies could not be applied: %s",
 			              apply_error != NULL ? apply_error->message
-			                                  : "the kernel refused them");
+			                                  : FS_CLI_LIVE " refused them");
 			if (o != NULL)
 				notes_print (o->notes);
 		} else if (strcmp (reapply, "skipped") == 0) {
-			printf ("%sNot applied (%s): run `sudo stockfw intel apply' "
+			printf ("%sNot applied (%s): run `" FS_CLI_SUDO "stockfw intel apply' "
 			        "to enforce the new copies.%s\n", fs_cli_dim (),
 			        reapply_why, fs_cli_reset ());
 		}
@@ -1401,7 +1454,7 @@ intel_apply (gint argc, gchar **argv)
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else if (o->held) {
-		printf ("%sHeld:%s %s.  The kernel was left untouched.\n",
+		printf ("%sHeld:%s %s.  " FS_CLI_LIVE_CAP " was left untouched.\n",
 		        fs_cli_amber (), fs_cli_reset (), o->hold_reason);
 		notes_print (o->notes);
 	} else if (o->result == FS_APPLY_OK) {
@@ -1421,7 +1474,7 @@ intel_apply (gint argc, gchar **argv)
 		fs_cli_error ("%s", error != NULL ? error->message
 		              : "the blocklists could not be applied");
 		notes_print (o->notes);
-		fs_cli_hint ("the kernel keeps what it held before; "
+		fs_cli_hint (FS_CLI_LIVE " keeps what it held before; "
 		             "`stockfw intel status' shows what that is");
 	}
 
@@ -1465,8 +1518,8 @@ intel_clear (gint argc, gchar **argv)
 		g_string_free (out, TRUE);
 	} else if (ok) {
 		if (!fs_cli.quiet)
-			printf ("The blocklists were removed from the kernel.  They "
-			        "stay configured: `sudo stockfw intel apply' loads them "
+			printf ("The blocklists were removed from " FS_CLI_LIVE ".  They "
+			        "stay configured: `" FS_CLI_SUDO "stockfw intel apply' loads them "
 			        "again.\n");
 	} else {
 		fs_cli_error ("the blocklists could not be removed: %s",
@@ -1575,7 +1628,7 @@ intel_import (gint argc, gchar **argv)
 			        "that part was left out.\n", fs_cli_amber (),
 			        fs_cli_reset (), stats.protected_hits,
 			        stats.protected_hits == 1 ? "y" : "ies");
-		printf ("%sNot live yet: run `sudo stockfw intel apply'.%s\n",
+		printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
 		        fs_cli_dim (), fs_cli_reset ());
 		g_free (n);
 	}
@@ -1624,7 +1677,7 @@ intel_remove (gint argc, gchar **argv)
 	} else if (!fs_cli.quiet) {
 		printf ("%s-%s %s (%s) removed, with its stored copy.\n",
 		        fs_cli_red (), fs_cli_reset (), label, argv[0]);
-		printf ("%sNot live yet: run `sudo stockfw intel apply'.%s\n",
+		printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
 		        fs_cli_dim (), fs_cli_reset ());
 	}
 	g_free (label);
@@ -1728,14 +1781,15 @@ intel_lists (gint argc, gchar **argv)
 			row[2] = g_strdup (dir_word (s->dir));
 			row[3] = grouped (s->state != NULL ? s->state->entries : 0);
 			row[4] = time_text (s->list->imported_at);
-			row[5] = grouped (c != NULL ? c->packets : 0);
+			row[5] = blocked_text (c);
 			row[6] = g_strdup (s->name);
 			g_ptr_array_add (rows, row);
 		}
-		if (found)
+		if (found) {
 			fs_cli_table (headers, 7, rows, 48);
-		else
-			printf ("No local list yet.  `sudo stockfw intel import FILE "
+			counts_note ();
+		} else
+			printf ("No local list yet.  `" FS_CLI_SUDO "stockfw intel import FILE "
 			        "--name NAME' adds one (a CSV or plain file of "
 			        "addresses, networks or ranges).\n");
 		g_ptr_array_unref (rows);
@@ -1815,7 +1869,7 @@ intel_exceptions (gint argc, gchar **argv)
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else if (fs_range_set_is_empty (config->exceptions)) {
-		printf ("No exception.  `sudo stockfw intel except ADDRESS' lets "
+		printf ("No exception.  `" FS_CLI_SUDO "stockfw intel except ADDRESS' lets "
 		        "an address through every list.\n");
 	} else {
 		gchar *text = fs_range_set_to_text (config->exceptions);
@@ -1884,7 +1938,7 @@ intel_except (gint argc, gchar **argv, gboolean add)
 		for (gint i = 0; i < argc; i++)
 			printf ("%s%s%s %s\n", add ? fs_cli_green () : fs_cli_red (),
 			        add ? "+" : "-", fs_cli_reset (), argv[i]);
-		printf ("%sSaved.  Not live yet: run `sudo stockfw intel "
+		printf ("%sSaved.  Not live yet: run `" FS_CLI_SUDO "stockfw intel "
 		        "apply'.%s\n", fs_cli_dim (), fs_cli_reset ());
 	}
 	fs_intel_config_free (config);
@@ -1987,27 +2041,27 @@ intel_lookup (gint argc, gchar **argv)
 				g_string_append_printf (names, "%s%s", i ? ", " : "",
 				                        l != NULL ? l : id);
 			}
-			printf ("%sBLOCKED%s  the kernel still blocks %s (%s): the "
+			printf ("%sBLOCKED%s  " FS_CLI_LIVE " still blocks %s (%s): the "
 			        "change that lets it through is not applied yet; "
-			        "`sudo stockfw intel apply' puts it in force.\n",
+			        "`" FS_CLI_SUDO "stockfw intel apply' puts it in force.\n",
 			        fs_cli_red (), fs_cli_reset (), argv[0], names->str);
 			g_string_free (names, TRUE);
 		} else if (r.blocked && r.uncertain) {
 			printf ("%sMAYBE BLOCKED%s  %s (%s), but a list changed "
-			        "since the last apply, so whether the kernel blocks "
-			        "it now cannot be told; `sudo stockfw intel apply' "
+			        "since the last apply, so whether " FS_CLI_LIVE " blocks "
+			        "it now cannot be told; `" FS_CLI_SUDO "stockfw intel apply' "
 			        "puts the new copy in force.\n", fs_cli_amber (),
 			        fs_cli_reset (), sentence, dir_word (r.dir));
 		} else if (r.blocked) {
 			const gchar *why =
 				r.state == FS_INTEL_STATE_ENFORCED
 				? "the lists have changes that are not applied yet; "
-				  "`sudo stockfw intel apply' puts them in force"
+				  "`" FS_CLI_SUDO "stockfw intel apply' puts them in force"
 				: r.state_detail != NULL ? r.state_detail
 				: "the lists are not in force";
 
 			printf ("%sLISTED, NOT BLOCKED NOW%s  %s once in force "
-			        "(%s), but the kernel does not block it: %s "
+			        "(%s), but " FS_CLI_LIVE " does not block it: %s "
 			        "(threat intel %s).\n", fs_cli_amber (),
 			        fs_cli_reset (), sentence, dir_word (r.dir), why,
 			        fs_intel_state_to_string (r.state));
@@ -2036,7 +2090,7 @@ intel_lookup (gint argc, gchar **argv)
 			g_string_free (names, TRUE);
 		}
 		if (r.blocked || r.in_force)
-			printf ("%sA mistake?  `sudo stockfw intel except %s' lets it "
+			printf ("%sA mistake?  `" FS_CLI_SUDO "stockfw intel except %s' lets it "
 			        "through.%s\n", fs_cli_dim (), argv[0], fs_cli_reset ());
 	}
 

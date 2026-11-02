@@ -26,12 +26,15 @@
 
 #include "ui/fs-intelview.h"
 #include "ui/fs-icons.h"
+#include "ui/fs-statusview.h"
+#include "ui/fs-tray.h"
 #include "core/fs-apply.h"
 #include "core/fs-feed.h"
 #include "core/fs-hostnet.h"
 #include "core/fs-intel.h"
 #include "core/fs-iprange.h"
 #include "core/fs-i18n.h"
+#include "core/fs-util.h"
 
 #include <glib/gstdio.h>
 #include <string.h>
@@ -117,6 +120,9 @@ typedef struct
 	GHashTable    *sources;      /* id -> FsIntelSourceState*           */
 	GHashTable    *counters;     /* id -> FsIntelCounter*               */
 	GHashTable    *in_force;     /* ids in the applied rule set         */
+	const gchar   *counts_unavailable; /* fs_intel_counts_unavailable:
+	                              * the platform counts nothing per
+	                              * rule, so no count is shown        */
 	gchar         *exceptions;   /* text form                           */
 	gchar         *deny;         /* the "My blocklist" text form        */
 	gint64         now;
@@ -226,6 +232,13 @@ static GtkWidget *notes_card, *notes_label;
 static GtkWidget *edit_cards[2];
 
 static Snapshot *shown = NULL;     /* the snapshot on screen           */
+
+/* What the Overview and the tray say about the blocklists: the state
+ * of the last snapshot, so neither asks the firewall on the main loop.
+ * Unknown until the first snapshot. */
+static gboolean     summary_known = FALSE;
+static FsIntelState summary_state = FS_INTEL_STATE_UNKNOWN;
+static gchar       *summary_detail = NULL;
 static gboolean  syncing = FALSE;  /* switches set from a snapshot     */
 static guint     pulse_id = 0;
 
@@ -508,9 +521,61 @@ is_root (void)
 {
 #ifdef G_OS_UNIX
 	return geteuid () == 0;
+#elif defined G_OS_WIN32
+	/* The store is %ProgramData%\StockFW\intel, for an elevated
+	 * StockFW only (fs-winstore.h). */
+	return fs_util_privileged ();
 #else
 	return FALSE;
 #endif
+}
+
+/* The snapshot `s' is now the one shown: if what the Overview and the
+ * tray would say about the blocklists changed, they say it again. */
+static void
+summary_update (const Snapshot *s)
+{
+	if (s == NULL)
+		return;
+	if (summary_known && summary_state == s->state &&
+	    g_strcmp0 (summary_detail, s->detail) == 0)
+		return;
+	summary_known = TRUE;
+	summary_state = s->state;
+	g_free (summary_detail);
+	summary_detail = g_strdup (s->detail);
+	fs_statusview_intel_changed ();
+	fs_tray_refresh ();
+}
+
+gchar *
+fs_intelview_summary (void)
+{
+	if (!summary_known)
+		return NULL;
+	switch (summary_state) {
+	case FS_INTEL_STATE_ENFORCED:
+		return g_strdup (_("Threat-intel blocklists are in force."));
+	case FS_INTEL_STATE_NOT_IN_FORCE:
+		/* The backend's sentence: which profile is off, the service
+		 * stopped, Group Policy ([S10]). */
+		return summary_detail != NULL
+		       ? g_strdup_printf (_("Threat-intel blocklists are not in "
+		                            "force: %s"), summary_detail)
+		       : g_strdup (_("Threat-intel blocklists are not in "
+		                     "force."));
+	case FS_INTEL_STATE_DIFFERS:
+		return g_strdup (_("Threat-intel blocklists were changed "
+		                   "outside StockFW: see the Threat Intel "
+		                   "page."));
+	case FS_INTEL_STATE_NOT_LOADED:
+		return g_strdup (_("Threat-intel blocklists are turned on but "
+		                   "not loaded: see the Threat Intel page."));
+	default:
+		/* Off, paused with the firewall, unsupported, needs rights,
+		 * unknown: nothing the Overview should claim. */
+		return NULL;
+	}
 }
 
 static Snapshot *
@@ -527,6 +592,7 @@ take_snapshot (const FsBackend *b)
 	s->in_force = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
 	                                     NULL);
 	s->fw_running = s->supported && firewall_running (b);
+	s->counts_unavailable = fs_intel_counts_unavailable (b);
 
 	if (!s->supported) {
 		s->state = FS_INTEL_STATE_UNSUPPORTED;
@@ -1206,6 +1272,7 @@ job_done (GObject *source, GAsyncResult *result, gpointer data)
 		snapshot_free (shown);
 		shown = job->snap;
 		job->snap = NULL;
+		summary_update (shown);
 	}
 	if (job->notes != NULL && notes_label != NULL) {
 		GString *t = g_string_new (NULL);
@@ -1404,6 +1471,10 @@ blocked_text (const Snapshot *s, const gchar *id,
 	const FsIntelCounter *c = g_hash_table_lookup (s->counters, id);
 	gchar *n, *since, *out;
 
+	/* Windows Firewall counts nothing per rule: say so rather than
+	 * "Nothing blocked yet", which would be a claim [S10]. */
+	if (s->counts_unavailable != NULL)
+		return g_strdup (s->counts_unavailable);
 	if (c == NULL || c->packets == 0)
 		return g_strdup (_("Nothing blocked yet"));
 	n = grouped (c->packets);
@@ -1939,17 +2010,25 @@ show_state (const Snapshot *s)
 		level = 2;
 		icon = FS_ICON_SHIELD_X;
 		break;
+	case FS_INTEL_STATE_NOT_IN_FORCE:
+		/* The rules are there (or cannot be read) and block nothing:
+		 * Windows Firewall off for the network in use, overridden by
+		 * Group Policy, or its service stopped.  The detail is the
+		 * backend's sentence saying which [S10]. */
+		title = _("Not in force");
+		level = 2;
+		icon = FS_ICON_SHIELD_X;
+		if (s->detail == NULL)
+			g_string_assign (body, _("The firewall is not enforcing "
+			                         "the blocklist rules on the "
+			                         "network in use."));
+		break;
 	case FS_INTEL_STATE_UNSUPPORTED:
-#ifdef G_OS_WIN32
-		title = _("Not supported on Windows yet");
-#else
 		title = _("Not supported on this platform");
-#endif
 		level = 3;
 		icon = FS_ICON_SHIELD_QUESTION;
-		g_string_assign (body, _("Blocklists are not available here "
-		                         "yet. Nothing on this page is "
-		                         "enforced."));
+		g_string_assign (body, _("Blocklists are not available here. "
+		                         "Nothing on this page is enforced."));
 		break;
 	case FS_INTEL_STATE_NEEDS_ROOT:
 		title = _("Needs administrator rights");
@@ -2014,7 +2093,12 @@ show_state (const Snapshot *s)
 
 		v[0] = g_strdup_printf ("%u", on);
 		v[1] = grouped (entries);
-		v[2] = grouped (blocked);
+		/* No count where the platform keeps none: "n/a", with the
+		 * reason on hover, never a 0 [S10]. */
+		v[2] = s->counts_unavailable != NULL ? g_strdup (_("n/a"))
+		                                     : grouped (blocked);
+		gtk_widget_set_tooltip_text (tile_value[2],
+		                             s->counts_unavailable);
 		v[3] = newest > 0 ? ago_text (s->now, newest) : g_strdup (_("never"));
 		for (guint i = 0; i < 4; i++) {
 			gtk_label_set_text (GTK_LABEL (tile_value[i]), v[i]);
@@ -2238,8 +2322,9 @@ static gboolean
 on_counters_tick (gpointer data)
 {
 	(void) data;
-	if (page_root != NULL && gtk_widget_get_mapped (page_root) &&
-	    jobs_pending == 0)
+	/* Hidden too: the Overview and the tray show the blocklists'
+	 * state from the last snapshot (fs_intelview_summary). */
+	if (page_root != NULL && jobs_pending == 0)
 		fs_intelview_refresh ();
 	return G_SOURCE_CONTINUE;
 }
@@ -2310,10 +2395,18 @@ build_header (void)
 	                    label_new (_("Threat Intel"), "page-title", 0.0),
 	                    FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (titles),
-	                    wrap_label (_("Blocklists of addresses known for "
+	                    wrap_label (
+#ifdef G_OS_WIN32
+	                                _("Blocklists of addresses known for "
+	                                  "attacks, botnets and hijacked "
+	                                  "networks, kept up to date and "
+	                                  "blocked by Windows Firewall."),
+#else
+	                                _("Blocklists of addresses known for "
 	                                  "attacks, botnets and hijacked "
 	                                  "networks, kept up to date and "
 	                                  "blocked in the kernel."),
+#endif
 	                                "page-subtitle"),
 	                    TRUE, TRUE, 0);
 	gtk_box_pack_start (GTK_BOX (header), titles, TRUE, TRUE, 0);
@@ -2388,9 +2481,18 @@ build_hero (void)
 	gtk_box_pack_end (GTK_BOX (row), apply_button, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (text), row, FALSE, FALSE, 0);
 
+#ifdef G_OS_WIN32
+	/* Windows Firewall keeps its rules across a restart; Stop takes
+	 * the lists' rules out, Start puts them back. */
+	hero_note = wrap_label (_("Windows Firewall keeps the lists' rules "
+	                          "across a restart. Pausing protection "
+	                          "takes them out until it is resumed."),
+	                        "stat-note");
+#else
 	hero_note = wrap_label (_("After a restart the lists, like the "
 	                          "firewall's rules, stay off until the "
 	                          "firewall is started."), "stat-note");
+#endif
 	gtk_widget_set_no_show_all (hero_note, TRUE);
 	gtk_box_pack_start (GTK_BOX (text), hero_note, FALSE, FALSE, 0);
 
