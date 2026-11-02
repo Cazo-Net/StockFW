@@ -32,8 +32,16 @@ cp "$BUILD_DIR/StockFW.exe" "$STAGE_DIR/StockFW.exe"
 # 2. Copy GTK3 runtime dependencies - copy ALL DLLs (no whitelist)
 echo "[2/7] Copying GTK3 runtime (ALL DLLs)..."
 
-# Find and copy required DLLs from MSYS2
-MSYS_ROOT="/c/msys64/ucrt64"
+# Find and copy required DLLs from MSYS2.  Inside an MSYS2 shell
+# /ucrt64 is the UCRT64 tree wherever MSYS2 was installed; C:\msys64 is
+# only the installer's default, and a second drive or a CI runner puts
+# it somewhere else.  The fixed path stays as the fallback for a shell
+# that has no /ucrt64 mount (Git Bash).
+if [ -d /ucrt64/bin ]; then
+    MSYS_ROOT="/ucrt64"
+else
+    MSYS_ROOT="/c/msys64/ucrt64"
+fi
 
 # Copy ALL DLLs from MSYS2 ucrt64/bin
 # This ensures nothing is missing - Windows only needs DLLs that are
