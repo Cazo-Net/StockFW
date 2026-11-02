@@ -210,6 +210,11 @@ printf '    %-20s %s\n' "StockFW" \
         "(read-only: status, events, policy, simulate)"
 printf '    sudo %s\n' "$SUDO_CMD"
 printf '    %-20s %s\n' "" "(apply rules: the backend needs root)"
+if [ -x "$BINDIR/stockfw" ]; then
+    printf '\nFrom a terminal:\n'
+    printf '    %-20s %s\n' "stockfw help" "(status, policy, simulate, events, ...)"
+    printf '    %-20s %s\n' "stockfw dashboard" "(local web dashboard, 127.0.0.1 only)"
+fi
 
 if ! sudo_path_has_bindir; then
     printf '\n'
