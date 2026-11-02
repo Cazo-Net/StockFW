@@ -13,6 +13,7 @@
 #include "ui/fs-copilot.h"
 #include "ui/fs-statusview.h"
 #include "ui/fs-policyview.h"
+#include "ui/fs-app.h"
 #include "core/fs-backend.h"
 #include "core/fs-service.h"
 #include "core/fs-prefs.h"
@@ -294,7 +295,7 @@ empty_text (void)
 		         "Start it on the Status page to see traffic here.");
 
 	if ((backend->fw_honors & FS_FWHON_LOG_ALLOWED) != 0 &&
-	    !fs_prefs_get_bool (FS_PREFS_FW_LOG_ALLOWED, TRUE))
+	    !fs_prefs_bool (FS_PREFS_FW_LOG_ALLOWED))
 		return _("Nothing has been blocked yet.\nOnly blocked traffic is "
 		         "logged.  Turn on \"Log allowed connections\" in "
 		         "Preferences to see the rest.");
@@ -511,8 +512,11 @@ on_hit (const FsHit *hit, gpointer user_data)
 	 * attempts is exactly the shape of a login storm or a timed
 	 * check-in.  Hiding the repeats from the checks would let them
 	 * reach the Copilot as one event. */
-	if (copilot != NULL)
+	if (copilot != NULL) {
 		fs_copilot_feed_event (copilot, hit);
+		/* The baseline changed: the next periodic save writes it. */
+		fs_app_note_learning ();
+	}
 
 	/* Sentinel auto-block: in auto mode a fresh beacon finding is
 	 * staged into the policy right here, for the event that completed
@@ -527,11 +531,11 @@ on_hit (const FsHit *hit, gpointer user_data)
 
 	/* Both filters run before anything is counted, as they did in the
 	 * original. */
-	if (fs_prefs_get_bool (FS_PREFS_SKIP_REDUNDANT, FALSE) &&
+	if (fs_prefs_bool (FS_PREFS_SKIP_REDUNDANT) &&
 	    hit_is_redundant (hit))
 		return;
 
-	if (fs_prefs_get_bool (FS_PREFS_SKIP_NOT_FOR_FIREWALL, TRUE) &&
+	if (fs_prefs_bool (FS_PREFS_SKIP_NOT_FOR_FIREWALL) &&
 	    !hit_is_for_me (hit) && !hit_is_outbound (hit))
 		return;
 

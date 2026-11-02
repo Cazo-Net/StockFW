@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Threat-intel blocklists · StockFW</title>
+<meta name="description" content="Blocking known-bad address ranges from published feeds, coming in 1.0.7: which feeds, what is built, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#16181d">
+<meta property="og:title" content="Threat-intel blocklists · StockFW">
+<meta property="og:description" content="Blocking known-bad address ranges from published feeds, coming in 1.0.7: which feeds, what is built, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.6</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html" aria-current="page"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Protection
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Protection</p>
+		<article class="prose">
+<h1>Threat-intel blocklists</h1>
+<p class="lede">A policy says what <em>you</em> allow. A blocklist says what the wider community has seen attacking, hosting botnet controllers or spraying brute-force logins, as address ranges that are refused on sight. 1.0.7 brings well-known feeds into StockFW, off until you turn each one on, with the same discipline as the rest of the app: nothing silent, nothing that cannot be undone, and the kernel’s real state shown rather than the configuration.</p>
+
+<div class="callout soon">
+<span class="label">Where this stands</span>
+<p>On <code>main</code> today: the address-range engine, the feed catalogue with its parsers and guards, the downloader, the discovery of this computer’s own addresses and DNS servers, the engine that builds and stores the sets, the nftables table and its transaction, and the Linux backend’s enforcement slots, each with its tests <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span>. Being written: the Threat Intel page, <code>stockfw intel</code>, events that name the list, and the What-if answer <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span>. Windows enforcement follows once the Windows build has been checked on a real machine <span class="ev ev-planned" title="Intended, not built yet."><b>Planned</b></span>; until then every Windows surface says blocklists are not available there yet. The design, with its review findings, is <code>docs/1.0.7-threat-intel-design.md</code> in the repository.</p>
+</div>
+
+<h2 id="the-feeds">The feeds<a class="anchor" href="#the-feeds" aria-label="Link to this section">#</a></h2>
+<p>Every feed is off until you switch it on and accept its terms. A feed is fetched from its own publisher or not at all: no mirrors, no aggregator of StockFW’s own. Each entry carries the host it contacts, its information and terms pages, the licence <em>where it has been verified</em> (otherwise “See the provider’s terms”), whether it is for non-commercial use only, its format, its default direction and how often it updates.</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Feed</th><th>What it lists</th><th>Default direction</th><th>Updates</th></tr></thead>
+<tbody>
+<tr><td>Spamhaus DROP, IPv4 and IPv6</td><td>Networks hijacked or leased by professional spam and malware operations. Recommended.</td><td>both</td><td>12 h</td></tr>
+<tr><td>abuse.ch Feodo Tracker</td><td>Botnet command-and-control servers. Recommended.</td><td>both</td><td>6 h</td></tr>
+<tr><td>DShield</td><td>The top attacking networks seen by the Internet Storm Center. Non-commercial terms.</td><td>in</td><td>24 h</td></tr>
+<tr><td>FireHOL level 1</td><td>An aggregate that already contains the three above and DShield. Turning it on next to them adds a note.</td><td>in</td><td>24 h</td></tr>
+<tr><td>blocklist.de</td><td>Addresses reported by fail2ban installations.</td><td>in</td><td>24 h</td></tr>
+<tr><td>Emerging Threats compromised hosts</td><td>Hosts known to be compromised.</td><td>in</td><td>24 h</td></tr>
+<tr><td>CINS Army</td><td>Poor-reputation addresses from the CINS sensor network.</td><td>in</td><td>24 h</td></tr>
+<tr><td>Tor exit relays</td><td>A policy choice, not a threat list; labelled as such.</td><td>in</td><td>6 h</td></tr>
+</tbody>
+</table>
+</div>
+<p>A custom feed is any URL that passes the URL rule, with a name, a format and a direction; typing the URL is your consent for that host. A local list is a CSV or plain file you import yourself, with no network involved.</p>
+<p><strong>Direction</strong> means what it means for Windows’ stateful rules: <em>in</em> stops them connecting to you, <em>out</em> stops you connecting to them, <em>both</em> does both. Replies to connections you opened are never affected by an <em>in</em> list.</p>
+
+<h2 id="consent">Consent<a class="anchor" href="#consent" aria-label="Link to this section">#</a></h2>
+<p>The first time you turn a feed on, a dialog says which host will be contacted and how often, what that host learns (your public address and the string <code>StockFW/<em>version</em></code>), the licence and a link to the terms, and that lists contain mistakes and how to make an exception. Only after Accept does anything download. Updates run hourly in the desktop app and from <code>stockfw intel update</code> for cron or a timer; a failed or refused update never removes the previous copy.</p>
+
+<h2 id="what-a-feed-is-checked-for">What a feed is checked for<a class="anchor" href="#what-a-feed-is-checked-for" aria-label="Link to this section">#</a></h2>
+<p>A downloaded file is text from the internet and is treated as hostile until it has passed every guard: a 64 MB size cap before it is read; strict parsing (addresses, CIDRs and <code>a-b</code> ranges, never names); no single IPv4 interval wider than a /8 and no IPv6 interval wider than a /16; no more than an eighth of the IPv4 space in one list; a list that is empty or mostly unparseable is refused and the set keeps what it had; and a sudden shrink is judged against the previous size. Content dates are read where a format has one, and a list older than seven update intervals is marked stale. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-feed.c</span></p>
+
+<h2 id="what-can-never-be-blocked">What can never be blocked<a class="anchor" href="#what-can-never-be-blocked" aria-label="Link to this section">#</a></h2>
+<p>Before anything reaches the kernel, the engine subtracts from every set, and lists in its notes what it subtracted:</p>
+<ul>
+<li>loopback, link-local, multicast, the private ranges, carrier NAT, the reserved and documentation ranges, and the NAT64 prefixes;</li>
+<li>your own exceptions;</li>
+<li>this computer’s own addresses, its connected prefixes and its default gateways;</li>
+<li>the DNS servers in use, read from <code>/etc/resolv.conf</code> and, when those are loopback stubs, from systemd-resolved’s and NetworkManager’s real lists;</li>
+<li>the peer of your SSH session and every established inbound SSH connection, so a list cannot lock you out of the machine you are configuring it on;</li>
+<li>the feeds’ own hosts, so a list cannot block its own updates.</li>
+</ul>
+<p>Then, for sets that block outbound, each IPv4 interval is also added to the IPv6 set inside <code>64:ff9b::/96</code>, so NAT64 does not bypass the list. Over all sets there are at most 300,000 intervals; above that the build fails and names the largest sets.</p>
+
+<h2 id="how-it-reaches-the-kernel">How it reaches the kernel<a class="anchor" href="#how-it-reaches-the-kernel" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Linux</span> One nftables table, <code>inet stockfw_intel</code>, owned by StockFW and replaced in a single <code>nft -f -</code> transaction, so it applies whole or not at all and a failed apply leaves the previous table in force. The script goes to <code>nft</code> on standard input through <code>GSubprocess</code>; no shell ever sees an address. Three base chains at priority <code>filter - 10</code> run <em>before</em> the iptables policy, so a listed address is refused even if a policy rule would have allowed it. Inbound drops are silent to the outside; outbound blocks reject with <em>administratively prohibited</em>, so a local program fails at once instead of hanging. Each blocking rule logs with the prefix <code>STOCKFW-TI <em>list</em></code>, rate-limited, and carries a counter. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-intelset.sh</span></p>
+<p>The policy and the lists never touch each other’s tables. Applying, reloading or clearing the policy leaves the threat-intel table alone. The user-facing <strong>Stop firewall</strong> suspends the lists as well, and <strong>Start</strong> resumes them, because “stop the firewall” should mean what it says. On Linux nothing survives a reboot, policy or lists, until Start is pressed; the page and <a href="../docs/faq.html#reboot">the FAQ</a> say so.</p>
+
+<h2 id="what-the-kernel-is-really-doing">What the kernel is really doing<a class="anchor" href="#what-the-kernel-is-really-doing" aria-label="Link to this section">#</a></h2>
+<p>The table carries a digest of the rule set that produced it. Every surface compares the live table with what StockFW last applied and shows one of these states, never just the configuration:</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>State</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>off</td><td>The master switch is off, or no list is enabled.</td></tr>
+<tr><td>enforced</td><td>The live table is the one StockFW last applied.</td></tr>
+<tr><td>not loaded</td><td>Something should be enforced but the table is missing: a reboot, or someone ran <code>nft flush ruleset</code>.</td></tr>
+<tr><td>differs</td><td>A table is there, but not the one StockFW applied.</td></tr>
+<tr><td>suspended</td><td>You stopped the firewall, so the lists are off on purpose.</td></tr>
+<tr><td>unsupported, needs root, unknown</td><td>Cannot enforce here, cannot read the kernel, cannot tell.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Counters survive updates: before a set is replaced, its live count is added to the list’s carried total, so “blocked 1,204 since 3 November” stays true.</p>
+
+<h2 id="where-it-shows-up">Where it shows up<a class="anchor" href="#where-it-shows-up" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Threat Intel page:</strong> the state in words, the master switch, each feed with its licence, direction, entry count, content age, status and blocks; Update now and Apply; local lists; exceptions; a lookup box; the notes from the last build.</li>
+<li><strong>Events:</strong> a block by a list shows the list’s name as its rule. For such an address the right-click <em>Allow</em> becomes <em>Add exception</em>, because an allow rule would not beat the list.</li>
+<li><strong>Overview:</strong> one line with the state and how many lists are enforced.</li>
+<li><strong>What-if:</strong> an address the policy allows but a list blocks is answered “Blocked by threat intel: <em>list</em>”.</li>
+<li><strong>Command line:</strong> <code>stockfw intel status | feeds | enable | disable | update | apply | clear | import | remove | except | unexcept | exceptions | lookup | on | off</code>, each with <code>--json</code>; <code>stockfw status</code> gains an <code>intel</code> object.</li>
+<li><strong>Audit log:</strong> every apply, update, consent, exception and suspend is a line.</li>
+</ul>
+
+<h2 id="files">Files<a class="anchor" href="#files" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Linux</span> <code>/var/lib/stockfw/intel/</code>, owned by root, mode 0700: <code>intel.conf</code> (switches, feeds, custom feeds, local lists, exceptions), one <code>.list</code> and one <code>.state</code> per list, and <code>applied.state</code> for what the kernel was last given. Files are opened without following symlinks, read with a size cap, and written to a fresh name then renamed. A stored list is re-checked against the guards when loaded, so a tampered file is an error, not a block.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/ipv6.html"><span>Previous</span><strong>IPv6</strong></a><a class="next" href="../docs/country-blocking.html"><span>Next</span><strong>Country and network-owner blocking</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/threat-intel.html">Edit this page on GitHub</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#the-feeds">The feeds</a></li>
+			<li class="lvl2"><a href="#consent">Consent</a></li>
+			<li class="lvl2"><a href="#what-a-feed-is-checked-for">What a feed is checked for</a></li>
+			<li class="lvl2"><a href="#what-can-never-be-blocked">What can never be blocked</a></li>
+			<li class="lvl2"><a href="#how-it-reaches-the-kernel">How it reaches the kernel</a></li>
+			<li class="lvl2"><a href="#what-the-kernel-is-really-doing">What the kernel is really doing</a></li>
+			<li class="lvl2"><a href="#where-it-shows-up">Where it shows up</a></li>
+			<li class="lvl2"><a href="#files">Files</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

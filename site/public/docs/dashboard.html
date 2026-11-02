@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dashboard · StockFW</title>
+<meta name="description" content="The local web dashboard served by stockfw dashboard: what it shows, how to open it, why it binds 127.0.0.1 only with a per-run token, the read-only API, and the backfill from the kernel log.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#16181d">
+<meta property="og:title" content="Dashboard · StockFW">
+<meta property="og:description" content="The local web dashboard served by stockfw dashboard: what it shows, how to open it, why it binds 127.0.0.1 only with a per-run token, the read-only API, and the backfill from the kernel log.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.6</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html" aria-current="page"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Command line
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Command line</p>
+		<article class="prose">
+<h1>Dashboard</h1>
+<p class="lede">A single web page, served by the <code>stockfw</code> binary itself, that shows the firewall’s state, the two Activity graphs, live events, connections, the policy and the what-if simulator in a browser. It is a window onto the firewall, not a way to change it. <span class="plat">Linux</span></p>
+
+<figure class="shot"><img src="../assets/screens/dashboard.webp" alt="The dashboard in a browser: a Firewall tile reading Running, blocked and throughput tiles, the Policy activity and Network I/O graphs, recent events, active connections, the what-if simulator and the policy." width="1280" height="1150" loading="lazy" decoding="async"><figcaption>Light theme. The page is one HTML file compiled into the binary; nothing is loaded from anywhere else.</figcaption></figure>
+
+<h2 id="start-it">Start it<a class="anchor" href="#start-it" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw dashboard</span>
+StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd13
+
+  Listening   127.0.0.1:43977 only, read-only, this run's token
+  Events      Live, with history from the kernel log
+
+  Ctrl-C stops the dashboard.</code></pre></div>
+<p>Without <code>--port</code> the system picks a free port. The URL carries the token for this run in its fragment; the page moves it into session storage and strips it from the address bar, then sends it with every API call. Under <code>sudo</code> the browser is not started as root, so you open the printed URL yourself. <code>--no-open</code> never tries. Ctrl-C stops it; nothing is left behind.</p>
+
+<h2 id="what-is-on-the-page">What is on the page<a class="anchor" href="#what-is-on-the-page" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Tiles:</strong> firewall state (and whether IPv6 is in force), blocked and allowed counts for the chosen range, throughput now.</li>
+<li><strong>Range</strong> picker, 15 minutes to 24 hours, and <strong>Policy activity</strong> and <strong>Network I/O</strong> graphs drawn by the same code as the <a href="../docs/activity.html">Activity page</a>, with the same no-data band, crosshair and keyboard navigation.</li>
+<li><strong>Recent events</strong>, newest first, with a filter box, and <strong>Active connections</strong> with their programs. The dashboard hides its own sockets: they exist only because someone is looking.</li>
+<li><strong>What-if simulator:</strong> the same grammar and verdicts as the app and the command line. Nothing is written.</li>
+<li><strong>Policy:</strong> the saved rules, grouped by kind, with their Covers.</li>
+<li>A <strong>theme</strong> button: system, light or dark.</li>
+</ul>
+
+<figure class="shot"><img src="../assets/screens/dashboard-dark.webp" alt="The dashboard in the dark theme, the same tiles, graphs and tables." width="1280" height="1150" loading="lazy" decoding="async"><figcaption>Dark theme. The graph colours were checked for contrast in both.</figcaption></figure>
+
+<h2 id="backfill">Backfill<a class="anchor" href="#backfill" aria-label="Link to this section">#</a></h2>
+<p>The app’s Activity graphs start when the app starts. The dashboard can read the kernel log for the events StockFW’s rules logged before it was started, so its history begins before the browser was opened, and the no-data band is shorter or absent. The log stays the archive; the dashboard only reads it.</p>
+
+<h2 id="why-it-is-safe-to-run">Why it is safe to run<a class="anchor" href="#why-it-is-safe-to-run" aria-label="Link to this section">#</a></h2>
+<p>A page that shows your firewall is a page an attacker would like to read, or to use as a lever. The dashboard is designed so that neither works, and a test exercises each point. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
+<dl>
+<dt>Loopback only</dt>
+<dd>It binds <code>127.0.0.1</code>. There is no option to listen anywhere else; <code>--bind</code> does not exist, and asking for it prints why. Someone on your network cannot reach it. To use it from another machine, forward the port over SSH.</dd>
+<dt>A token for this run</dt>
+<dd>128 bits from the kernel’s random source, new every start. Every <code>/api/</code> call must carry it in an <code>X-StockFW-Token</code> header, compared in constant time. The token arrives in the URL fragment, which browsers never send to a server; the page moves it into session storage and strips it from the address bar. A custom header cannot be sent cross-origin without a CORS preflight, which this server never answers, so another site open in the same browser cannot read the API or ride the token.</dd>
+<dt>Host check</dt>
+<dd>Only <code>127.0.0.1:<em>port</em></code> and <code>localhost:<em>port</em></code> are accepted as the <code>Host</code> header. A hostile name re-pointed at 127.0.0.1, the DNS-rebinding trick, is refused before any path is looked at.</dd>
+<dt>Read-only</dt>
+<dd>The API has no write endpoint. Changing the firewall stays with <code>stockfw apply</code> and the desktop app, which need root; the dashboard can be left running without that worry.</dd>
+<dt>Nothing from elsewhere</dt>
+<dd>The page is compiled into the binary and carries a strict Content-Security-Policy with a per-run nonce, so no external script, style, font or image can load. It works offline and sets no cookies.</dd>
+<dt>Small on purpose</dt>
+<dd>GET and HEAD only, a 16 KB cap on the request head, a ten-second socket timeout and at most 32 connections at once. There is nothing to overflow and nothing to keep busy.</dd>
+</dl>
+
+<h2 id="the-api">The API<a class="anchor" href="#the-api" aria-label="Link to this section">#</a></h2>
+<p>Every endpoint is <code>GET</code>, needs the token, and returns JSON:</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Path</th><th>Returns</th></tr></thead>
+<tbody>
+<tr><td><code>/api/summary</code></td><td>Firewall state, IPv6 state, rule counts, totals.</td></tr>
+<tr><td><code>/api/activity</code></td><td>The per-interval series for both graphs, for the requested range.</td></tr>
+<tr><td><code>/api/events</code></td><td>Recent events.</td></tr>
+<tr><td><code>/api/connections</code></td><td>Established connections with programs.</td></tr>
+<tr><td><code>/api/interfaces</code></td><td>Adapters with counters and rates.</td></tr>
+<tr><td><code>/api/policy</code></td><td>The saved policy, as <code>stockfw policy list --json</code> prints it.</td></tr>
+<tr><td><code>/api/simulate?q=…</code></td><td>A what-if verdict, as <code>stockfw simulate --json</code> prints it.</td></tr>
+</tbody>
+</table>
+</div>
+<div class="code" data-copy="commands"><div class="code-head"><span>From a script on the same machine</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">curl -s -H "X-StockFW-Token: $TOKEN" http://127.0.0.1:43977/api/summary</span></code></pre></div>
+<p>A request without the token, or with a wrong one, gets <code>401 Unauthorized</code> and no body worth reading.</p>
+
+<h2 id="coming-in-1-0-7">Coming in 1.0.7<a class="anchor" href="#coming-in-1-0-7" aria-label="Link to this section">#</a></h2>
+<p>The threat-intel state and the enforced lists, read-only like everything else. <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/cli.html"><span>Previous</span><strong>Command line</strong></a><a class="next" href="../docs/files.html"><span>Next</span><strong>Files and formats</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/dashboard.html">Edit this page on GitHub</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#start-it">Start it</a></li>
+			<li class="lvl2"><a href="#what-is-on-the-page">What is on the page</a></li>
+			<li class="lvl2"><a href="#backfill">Backfill</a></li>
+			<li class="lvl2"><a href="#why-it-is-safe-to-run">Why it is safe to run</a></li>
+			<li class="lvl2"><a href="#the-api">The API</a></li>
+			<li class="lvl2"><a href="#coming-in-1-0-7">Coming in 1.0.7</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

@@ -212,6 +212,8 @@ env_new (FsWhatIfPlatform plat, const gchar *rows, const gchar *settings,
 			e.ctx->profiles_in_use |= FS_PROFILE_BIT (FS_PROFILE_DOMAIN);
 		else if (strcmp (w, "public-off") == 0)
 			e.ctx->profile_enabled[FS_PROFILE_PUBLIC] = 0;
+		else if (strcmp (w, "shields") == 0)
+			e.ctx->block_all_inbound[FS_PROFILE_PUBLIC] = 1;
 		else if (strcmp (w, "all-defaults") == 0 ||
 		         strcmp (w, "public-in-allow") == 0 ||
 		         strcmp (w, "out-block") == 0) {
@@ -375,6 +377,67 @@ test_reading (void)
 		  NULL, NULL },
 		{ "inbound from 999.1.1.1", FS_WHATIF_ERR_BAD_HOST, 0, 0, 0, 0, NULL,
 		  NULL },
+		/* More than one port or host, or a host that cannot be read
+		 * as one: refused, never answered for part of it. */
+		{ "allow tcp 22-25 from 198.51.100.4", FS_WHATIF_ERR_BAD_PORT, 0, 0,
+		  0, 0, NULL, NULL },
+		{ "allow tcp 80 and 443 from 198.51.100.4", FS_WHATIF_ERR_BAD_PORT,
+		  0, 0, 0, 0, NULL, NULL },
+		{ "allow tcp 80,443 from 10.0.0.5", FS_WHATIF_ERR_BAD_PORT, 0, 0, 0,
+		  0, NULL, NULL },
+		{ "allow tcp 8080 from 10.0.0.5 and 10.0.0.6", FS_WHATIF_ERR_BAD_HOST,
+		  0, 0, 0, 0, NULL, NULL },
+		{ "allow ssh from 192.168.1.*", FS_WHATIF_ERR_BAD_HOST, 0, 0, 0, 0,
+		  NULL, NULL },
+		{ "allow ssh from fe80::1%eth0", FS_WHATIF_ERR_BAD_HOST, 0, 0, 0, 0,
+		  NULL, NULL },
+		{ "allow ssh from 10.0.0.0/abc", FS_WHATIF_ERR_BAD_HOST, 0, 0, 0, 0,
+		  NULL, NULL },
+		{ "allow tcp 443 from caf\xc3\xa9.example", FS_WHATIF_ERR_BAD_HOST,
+		  0, 0, 0, 0, NULL, NULL },
+		/* A request turned around is not guessed at; a question with
+		 * "not" in it is still a question. */
+		{ "don't allow ssh from 198.51.100.4", FS_WHATIF_ERR_UNREADABLE, 0,
+		  0, 0, 0, NULL, NULL },
+		{ "let nobody in on port 22", FS_WHATIF_ERR_UNREADABLE, 0, 0, 0, 0,
+		  NULL, NULL },
+		{ "block outbound to 198.51.100.4 except port 53",
+		  FS_WHATIF_ERR_UNREADABLE, 0, 0, 0, 0, NULL, NULL },
+		{ "block ssh from everyone but 10.0.0.5", FS_WHATIF_ERR_UNREADABLE,
+		  0, 0, 0, 0, NULL, NULL },
+		{ "is ssh from 198.51.100.4 not allowed?", 0, FS_WHATIF_VERB_NONE,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 22, "198.51.100.4",
+		  NULL },
+		/* Host names: not looked up, but still the far end -- the
+		 * direction is read, and the service's name inside one is not
+		 * a service. */
+		{ "allow ssh from server.example.com", 0, FS_WHATIF_VERB_ALLOW,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 22, NULL, NULL },
+		{ "allow tcp 8080 from ssh-gateway", 0, FS_WHATIF_VERB_ALLOW,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 8080, NULL, NULL },
+		{ "allow sshd-host port 80", 0, FS_WHATIF_VERB_ALLOW,
+		  FS_WHATIF_DIR_BOTH, FS_WHATIF_PROTO_ANY, 80, NULL, NULL },
+		/* Numbers that are not ports: durations and counts. */
+		{ "allow ssh from 192.168.1.20 for 10 minutes", 0,
+		  FS_WHATIF_VERB_ALLOW, FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP,
+		  22, "192.168.1.20", NULL },
+		{ "allow ssh from 10.0.0.5 3 times", 0, FS_WHATIF_VERB_ALLOW,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 22, "10.0.0.5", NULL },
+		{ "is port 022 open", 0, FS_WHATIF_VERB_NONE, FS_WHATIF_DIR_BOTH,
+		  FS_WHATIF_PROTO_ANY, 22, NULL, NULL },
+		/* Exposure and "my <service>" put this computer at the near
+		 * end. */
+		{ "expose tcp 8080 to the internet", 0, FS_WHATIF_VERB_ALLOW,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 8080, NULL, NULL },
+		{ "open tcp port 22 to the local network", 0, FS_WHATIF_VERB_ALLOW,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 22, NULL, NULL },
+		{ "can the internet reach my ssh", 0, FS_WHATIF_VERB_NONE,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 22, NULL, NULL },
+		{ "allow ssh from this computer to 10.0.0.9", 0,
+		  FS_WHATIF_VERB_ALLOW, FS_WHATIF_DIR_OUTBOUND, FS_WHATIF_PROTO_TCP,
+		  22, "10.0.0.9", NULL },
+		{ "let's allow ssh from 10.0.0.5", 0, FS_WHATIF_VERB_ALLOW,
+		  FS_WHATIF_DIR_INBOUND, FS_WHATIF_PROTO_TCP, 22, "10.0.0.5", NULL },
 	};
 
 	for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
@@ -439,6 +502,36 @@ test_reading (void)
 		       bare ? bare->confidence : 0.0);
 		fs_whatif_query_free (full);
 		fs_whatif_query_free (bare);
+	}
+
+	/* A host name is kept aside as unread, never as "any host". */
+	{
+		FsWhatIfQuery *q = fs_whatif_parse ("allow ssh from server.example.com",
+		                                    NULL);
+
+		CHECK (q != NULL && q->host == NULL &&
+		       g_strcmp0 (q->host_unread, "server.example.com") == 0,
+		       "read: a host name is set aside as unread");
+		fs_whatif_query_free (q);
+		q = fs_whatif_parse ("allow tcp port 443 from anyone", NULL);
+		CHECK (q != NULL && q->host_any_said && q->host_unread == NULL,
+		       "read: \"from anyone\" is said, not left open");
+		fs_whatif_query_free (q);
+		q = fs_whatif_parse ("allow tcp port 443", NULL);
+		CHECK (q != NULL && !q->host_any_said,
+		       "read: a line naming no host did not say \"anyone\"");
+		fs_whatif_query_free (q);
+	}
+
+	/* "don't": the refusal quotes the word as typed. */
+	{
+		GError *error = NULL;
+
+		fs_whatif_parse ("don't allow ssh from 198.51.100.4", &error);
+		CHECK (error != NULL && strstr (error->message, "\"don't\"") != NULL,
+		       "read: the refusal quotes \"don't\" whole (%s)",
+		       error != NULL ? error->message : "no error");
+		g_clear_error (&error);
 	}
 
 	/* An unreadable line answers ERROR, never a verdict. */
@@ -609,9 +702,14 @@ static const Golden golden[] = {
 	  FS_WHATIF_ALLOWED, NULL, NONE, NONE },
 	/* A forward lets its port in and says where it goes -- through the
 	 * external device's DNAT; with no external device it reaches
-	 * nothing. */
+	 * nothing.  Outside router mode StockFW never turns IP forwarding
+	 * on, so a forward to another computer depends on whether something
+	 * else did. */
+	{ L, P_FWD, "ext int nat", NULL,
+	  "inbound tcp port 8080 from 198.51.100.4",
+	  FS_WHATIF_DEPENDS, "forwards it to 10.0.0.5", NONE, NONE },
 	{ L, P_FWD, "ext", NULL, "inbound tcp port 8080 from 198.51.100.4",
-	  FS_WHATIF_ALLOWED, "10.0.0.5", NONE, NONE },
+	  FS_WHATIF_DEPENDS, "IP forwarding is off", NONE, NONE },
 	{ L, P_FWD, "ext", NULL, "inbound tcp port 8081 from 198.51.100.4",
 	  FS_WHATIF_BLOCKED, NULL, NONE, NONE },
 	{ L, P_FWD, NULL, NULL, "inbound tcp port 8080 from 198.51.100.4",
@@ -691,8 +789,8 @@ static const Golden golden[] = {
 	{ L, P_DENY, NULL, "stopped", "outbound tcp to 203.0.113.9 port 443",
 	  FS_WHATIF_ALLOWED, "not running", NONE, NONE },
 	{ L, NULL, NULL, "stopped", "block ssh from 198.51.100.4",
-	  FS_WHATIF_ALLOWED, "currently ALLOWED", FS_WHATIF_ACT_START_FIREWALL,
-	  NONE },
+	  FS_WHATIF_ALLOWED, "With the firewall off it is ALLOWED",
+	  FS_WHATIF_ACT_START_FIREWALL, NONE },
 	{ W, NULL, NULL, "all-defaults public public-off",
 	  "inbound tcp port 3389 from 198.51.100.4",
 	  FS_WHATIF_ALLOWED, NULL, NONE, NONE },
@@ -723,7 +821,10 @@ static const Golden golden[] = {
 	{ L, P_HTTPS_OUT, "restrictive", NULL,
 	  "outbound tcp to 198.51.100.4 port 443",
 	  FS_WHATIF_ALLOWED, "HTTPS", NONE, NONE },
+	/* No host named: no row for every host unless the line says so. */
 	{ L, NULL, "restrictive", NULL, "allow outbound tcp port 443",
+	  FS_WHATIF_BLOCKED, NULL, NONE, FS_WHATIF_ACT_CREATE_ALLOW },
+	{ L, NULL, "restrictive", NULL, "allow outbound tcp port 443 to anywhere",
 	  FS_WHATIF_BLOCKED, NULL, FS_WHATIF_ACT_CREATE_ALLOW, NONE },
 	/* b6: Linux reads an outbound service row's host as the source */
 	{ L, NULL, "restrictive", NULL,
@@ -751,12 +852,64 @@ static const Golden golden[] = {
 	  FS_WHATIF_BLOCKED, NULL, NONE, NONE },
 
 	/* --- the saved policy is not what is in force ---------------- */
+	/* On hold is a choice (audit-only, a dry run): applying is not
+	 * offered over it. */
 	{ L, NULL, NULL, "held", "inbound ssh from 198.51.100.4",
-	  FS_WHATIF_BLOCKED, NULL, FS_WHATIF_ACT_APPLY_POLICY, NONE },
+	  FS_WHATIF_BLOCKED, NULL, NONE, FS_WHATIF_ACT_APPLY_POLICY },
+	{ L, NULL, NULL, "failed", "inbound ssh from 198.51.100.4",
+	  FS_WHATIF_BLOCKED, NULL,
+	  FS_WHATIF_ACT_APPLY_POLICY, NONE },
 	{ L, NULL, NULL, "stale", "inbound ssh from 198.51.100.4",
 	  FS_WHATIF_BLOCKED, NULL, FS_WHATIF_ACT_APPLY_POLICY, NONE },
 	{ L, NULL, NULL, NULL, "inbound ssh from 198.51.100.4",
 	  FS_WHATIF_BLOCKED, NULL, NONE, FS_WHATIF_ACT_APPLY_POLICY },
+
+	/* --- an allow never opens more than the line named ------------ */
+	{ L, NULL, NULL, NULL, "allow ssh from server.example.com",
+	  FS_WHATIF_BLOCKED, NULL, NONE, FS_WHATIF_ACT_CREATE_ALLOW },
+	{ L, NULL, NULL, NULL, "allow tcp 8080 from ssh-gateway",
+	  FS_WHATIF_BLOCKED, NULL, NONE, FS_WHATIF_ACT_CREATE_ALLOW },
+	{ L, NULL, NULL, NULL, "allow ssh from the local network",
+	  FS_WHATIF_BLOCKED, NULL, NONE, FS_WHATIF_ACT_CREATE_ALLOW },
+	{ L, NULL, NULL, NULL, "allow inbound ssh",
+	  FS_WHATIF_BLOCKED, NULL, NONE, FS_WHATIF_ACT_CREATE_ALLOW },
+	{ L, NULL, NULL, NULL, "expose tcp 8080 to the internet",
+	  FS_WHATIF_BLOCKED, NULL, FS_WHATIF_ACT_CREATE_ALLOW, NONE },
+	{ L, NULL, NULL, NULL, "allow ssh from anyone",
+	  FS_WHATIF_BLOCKED, NULL, FS_WHATIF_ACT_CREATE_ALLOW, NONE },
+	/* a forward that goes nowhere is not fixed by an allow row */
+	{ L, P_FWD, "ext", NULL, "allow tcp port 8080 from 198.51.100.4",
+	  FS_WHATIF_DEPENDS, NULL, NONE, FS_WHATIF_ACT_CREATE_ALLOW },
+
+	/* --- connection state, loopback, interfaces ------------------- */
+	{ L, NULL, "noreply", NULL, "inbound echo-reply from 198.51.100.4",
+	  FS_WHATIF_DEPENDS, "answers a connection already open", NONE, NONE },
+	{ L, NULL, "restrictive", NULL, "outbound tcp to 127.0.0.1 port 5432",
+	  FS_WHATIF_ALLOWED, "Loopback", NONE, NONE },
+	{ L, P_SSH_LAN, "ext int nat", NULL, "inbound ssh from 10.1.2.3",
+	  FS_WHATIF_ALLOWED, "eth1", NONE, NONE },
+	{ L, NULL, "ext int nat", NULL, "inbound tcp port 9000 from 10.1.2.3",
+	  FS_WHATIF_DEPENDS, "arrives on eth1", NONE, NONE },
+
+	/* --- Windows: no forwarding, "Block all incoming" -------------- */
+	{ W, P_FWD, NULL, "all-defaults public",
+	  "inbound tcp port 8080 from 198.51.100.4",
+	  FS_WHATIF_ALLOWED, "not forwarded to 10.0.0.5", NONE, NONE },
+	{ W, "1:SSH,22,Anyone,ssh", NULL, "all-defaults public shields",
+	  "inbound ssh from 198.51.100.4",
+	  FS_WHATIF_BLOCKED, "Block all incoming connections", NONE, NONE },
+	{ W, NULL, NULL, "all-defaults public shields",
+	  "allow ssh from 198.51.100.4",
+	  FS_WHATIF_BLOCKED, NULL, NONE, FS_WHATIF_ACT_CREATE_ALLOW },
+	{ W, NULL, NULL, "all-defaults public shields",
+	  "outbound ssh to 198.51.100.4",
+	  FS_WHATIF_ALLOWED, NULL, NONE, NONE },
+
+	/* --- the summary claims "already" only of what is in force ----- */
+	{ L, NULL, NULL, "stale", "block ssh from 198.51.100.4",
+	  FS_WHATIF_BLOCKED, "The saved policy has it BLOCKED", NONE, NONE },
+	{ L, NULL, NULL, "held", "block ssh from 198.51.100.4",
+	  FS_WHATIF_BLOCKED, "The saved policy has it BLOCKED", NONE, NONE },
 };
 
 static void
@@ -1573,6 +1726,147 @@ test_no_wide_allow (void)
 }
 
 /* The compatibility wrappers in fs-copilot.c still answer. */
+/* ================================================================
+ * The second review: what a reader is told and offered
+ * ================================================================ */
+
+static void
+test_review (void)
+{
+	FsWhatIfResult *r;
+	const FsWhatIfAction *act;
+
+	/* A stopped firewall: the result says so in fields the window
+	 * reads, and the verdict once it runs. */
+	r = ask (L, NULL, NULL, "stopped", "inbound ssh from 198.51.100.4");
+	CHECK (r->verdict == FS_WHATIF_ALLOWED && r->stopped_decides &&
+	       r->verdict_running == FS_WHATIF_BLOCKED,
+	       "review: stopped -- ALLOWED now, BLOCKED once it runs");
+	act = find_action (r, FS_WHATIF_ACT_START_FIREWALL);
+	CHECK (act != NULL && act->verified && act->gives == FS_WHATIF_BLOCKED,
+	       "review: a plain question offers starting it, and says what "
+	       "that gives");
+	fs_whatif_result_free (r);
+
+	r = ask (L, NULL, NULL, NULL, "inbound ssh from 198.51.100.4");
+	CHECK (!r->stopped_decides && r->verdict_running == r->verdict,
+	       "review: running -- the running verdict is the verdict");
+	fs_whatif_result_free (r);
+
+	r = ask (W, NULL, NULL, "all-defaults public public-off",
+	         "inbound tcp port 3389 from 198.51.100.4");
+	CHECK (r->stopped_decides && r->verdict_running == FS_WHATIF_BLOCKED,
+	       "review: a profile switched off counts as stopped");
+	fs_whatif_result_free (r);
+
+	/* With the firewall off, an allow is still judged by the rules. */
+	r = ask (L, NULL, NULL, "stopped", "allow ssh from 198.51.100.4");
+	act = find_action (r, FS_WHATIF_ACT_CREATE_ALLOW);
+	CHECK (act != NULL && act->verified &&
+	       strstr (act->explanation, "once the firewall runs") != NULL,
+	       "review: stopped -- the allow row is offered for when it runs");
+	fs_whatif_result_free (r);
+
+	/* An unread host: no row, and the notes say why and what was
+	 * answered instead. */
+	r = ask (L, NULL, NULL, NULL, "allow ssh from server.example.com");
+	CHECK (notes_have (r, "not looked up") &&
+	       notes_have (r, "not an address StockFW can read"),
+	       "review: an unread host is named in the notes");
+	fs_whatif_result_free (r);
+
+	/* "Anyone" and a name in one line: the name wins, and no row for
+	 * every host is offered in its place. */
+	{
+		FsWhatIfQuery *q = fs_whatif_parse (
+			"allow ssh from anyone at nas.example.com", NULL);
+
+		CHECK (q != NULL && q->host_any_said && q->host_unread != NULL,
+		       "review: \"anyone at <name>\" reads both");
+		fs_whatif_query_free (q);
+	}
+	r = ask (L, NULL, NULL, NULL, "allow ssh from anyone at nas.example.com");
+	CHECK (find_action (r, FS_WHATIF_ACT_CREATE_ALLOW) == NULL &&
+	       notes_have (r, "nas.example.com"),
+	       "review: an unread name is never widened to anyone");
+	fs_whatif_result_free (r);
+
+	/* No host named: the note says how to ask for anyone. */
+	r = ask (L, NULL, NULL, NULL, "allow inbound ssh");
+	CHECK (notes_have (r, "names no host") && notes_have (r, "from anyone"),
+	       "review: a hostless allow says how to name a host or anyone");
+	fs_whatif_result_free (r);
+
+	/* "From anyone": offered, and labelled for what it is. */
+	r = ask (L, NULL, NULL, NULL, "allow ssh from anyone");
+	act = find_action (r, FS_WHATIF_ACT_CREATE_ALLOW);
+	CHECK (act != NULL && act->verified &&
+	       strstr (act->label, "every address") != NULL &&
+	       strstr (act->explanation, "Careful") != NULL &&
+	       strstr (act->explanation, "forwards") != NULL,
+	       "review: an allow for anyone says so in its label and warns");
+	fs_whatif_result_free (r);
+
+	/* A forward outside router mode: the note names router mode. */
+	r = ask (L, P_FWD, "ext", NULL, "allow tcp port 8080 from 198.51.100.4");
+	CHECK (notes_have (r, "router mode") &&
+	       notes_have (r, "Enable Internet connection sharing"),
+	       "review: a forward that goes nowhere names the switch");
+	fs_whatif_result_free (r);
+
+	/* "Block all incoming": the note says where to turn it off. */
+	r = ask (W, NULL, NULL, "all-defaults public shields",
+	         "allow ssh from 198.51.100.4");
+	CHECK (notes_have (r, "Block all incoming connections"),
+	       "review: Block all incoming is named as the reason");
+	fs_whatif_result_free (r);
+
+	/* A settings checkbox says how far it reaches. */
+	r = ask (L, NULL, "noecho", NULL, "allow ping from 198.51.100.4");
+	act = find_action (r, FS_WHATIF_ACT_OPEN_ICMP_SETTINGS);
+	CHECK (act != NULL && strstr (act->explanation, "every host") != NULL,
+	       "review: a settings fix says it applies to every host (%s)",
+	       act != NULL ? act->explanation : "no action");
+	fs_whatif_result_free (r);
+
+	/* A reply type: no setting is offered for the unsolicited half. */
+	r = ask (L, NULL, "noreply", NULL, "allow echo-reply from 198.51.100.4");
+	CHECK (find_action (r, FS_WHATIF_ACT_CREATE_ALLOW) == NULL,
+	       "review: no allow row for an ICMP reply type");
+	fs_whatif_result_free (r);
+
+	/* Blocking a host: ICMP answers to open connections are said to
+	 * pass, and the row is still offered. */
+	r = ask (W, NULL, NULL, "all-defaults", "block outbound to 198.51.100.4");
+	CHECK (find_action (r, FS_WHATIF_ACT_CREATE_BLOCK) != NULL &&
+	       notes_have (r, "still pass"),
+	       "review: a block of a host notes that ICMP answers still pass");
+	fs_whatif_result_free (r);
+
+	/* Linux: the note about other programs' rules. */
+	r = ask (L, NULL, NULL, NULL, "inbound ssh from 198.51.100.4");
+	CHECK (notes_have (r, "other programs"),
+	       "review: Linux answers say other programs' rules are not seen");
+	fs_whatif_result_free (r);
+
+	/* The trace caption is plain words. */
+	r = ask (L, NULL, NULL, NULL, "inbound ssh");
+	{
+		const FsWhatIfAnswer *a = answer (r, 0);
+		gboolean found = FALSE;
+
+		for (guint i = 0; a != NULL && i < a->steps->len; i++) {
+			const FsWhatIfStep *st = g_ptr_array_index (a->steps, i);
+
+			if (st->detail != NULL &&
+			    strstr (st->detail, "Shown for one example") != NULL)
+				found = TRUE;
+		}
+		CHECK (found, "review: the trace says it is one example");
+	}
+	fs_whatif_result_free (r);
+}
+
 static void
 test_query_api (void)
 {
@@ -1630,6 +1924,7 @@ main (void)
 	test_pin_to_generator ();
 	test_fixes ();
 	test_no_wide_allow ();
+	test_review ();
 	test_query_api ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",

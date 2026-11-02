@@ -110,6 +110,10 @@ typedef struct
 	FsPolicyImpact *impact;            /* owned; never NULL               */
 	gchar          *notes;             /* owned; the backend's notes on a
 	                                    * successful apply, or NULL     */
+	gboolean        settings;          /* the whole set went out because
+	                                    * firewall settings changed: a
+	                                    * settings apply, or a policy
+	                                    * apply with settings pending   */
 } FsApplyOutcome;
 
 /* The single safe path from a policy to the firewall.  The policy
@@ -125,6 +129,102 @@ FsApplyOutcome *fs_policy_apply_safe (const FsBackend *backend,
                                       const gchar *hold,
                                       GError **error);
 void fs_apply_outcome_free (FsApplyOutcome *outcome);
+
+/* Start the firewall through the gate (1.0.7).  Every start -- the
+ * app's "start on program startup", the Start/Resume buttons, `stockfw
+ * start' at boot -- comes through here, so a start is held, refused
+ * and audited exactly like an apply.  A start brings back what was
+ * live; it never puts live a change nobody applied:
+ *
+ *   - no backend available: refused (FS_APPLY_NO_IPTABLES), nothing
+ *     touched;
+ *   - a backend whose start only switches enforcement on (Windows
+ *     profiles): started, held or not -- the rules in the firewall's
+ *     own store do not change, so there is nothing to hold back and
+ *     the journal is already right;
+ *   - a backend whose start installs a policy (start_applies_policy,
+ *     Linux) installs the JOURNAL -- the last policy that was really
+ *     live -- less the rules in `lift' (Sentinel blocks whose ten
+ *     minutes ran out), held or not.  The policy file may carry
+ *     changes not applied yet (held by audit-only mode or the Policy
+ *     Lock, or simply never applied); those stay off the firewall, and
+ *     the audit line says what they are;
+ *   - such a backend with a journal that exists but cannot be read:
+ *     refused (FS_APPLY_FAILED), firewall untouched -- neither the
+ *     journal nor the file is known to be safe;
+ *   - such a backend with no journal at all (nothing ever applied):
+ *     held -> FS_APPLY_DRY_RUN, firewall untouched; unheld ->
+ *     backend->start(), which installs `policy' (the first apply), and
+ *     the journal records it.  The caller must have checked that the
+ *     policy really loaded (`stockfw start' refuses a missing or
+ *     malformed policy file first).
+ *
+ * `policy' must be the policy already handed to the backend with
+ * fs_backend_set_context(), loaded from disk: the caller loads first,
+ * this never does.  `lift' may be NULL.  Returns a caller-owned
+ * outcome (result FS_APPLY_OK means the firewall is now running);
+ * NULL only if policy was NULL. */
+FsApplyOutcome *fs_firewall_start_lifting (const FsBackend *backend,
+                                           FsPolicy *policy,
+                                           const FsPolicy *lift,
+                                           const gchar *source,
+                                           const gchar *hold,
+                                           GError **error);
+
+/* fs_firewall_start_lifting() with nothing to lift. */
+FsApplyOutcome *fs_firewall_start_safe (const FsBackend *backend,
+                                        FsPolicy *policy,
+                                        const gchar *source,
+                                        const gchar *hold,
+                                        GError **error);
+
+/* Take the rules in `lift' (Sentinel blocks whose time ran out) off
+ * the firewall and nothing else: the journal -- what is live -- less
+ * those rules goes through fs_policy_apply_safe(), so the only change
+ * the firewall sees is their removal.  The policy FILE is never
+ * applied here: it may hold changes nobody applied.  NULL (nothing
+ * touched, nothing audited) when there is no journal or none of the
+ * rules is in it; otherwise the apply's outcome, caller-owned. */
+FsApplyOutcome *fs_firewall_lift_live (const FsBackend *backend,
+                                       const FsPolicy *lift,
+                                       const gchar *source,
+                                       const gchar *hold,
+                                       GError **error);
+
+/* Stop the firewall, on the record.  Never held: a hold keeps policy
+ * CHANGES off the firewall, while stopping is the user's own way out
+ * of a ruleset that broke something, and must always work.  The audit
+ * line says who stopped it and whether it worked. */
+gboolean fs_firewall_stop_logged (const FsBackend *backend,
+                                  const gchar *source,
+                                  GError **error);
+
+/* The same gate for a change of firewall settings (Preferences: ICMP,
+ * rejection method, devices ...).  The caller has already put the new
+ * settings in the backend's context.  Differences from the policy
+ * gate:
+ *   - always the whole-set apply_rules, never the narrow path and
+ *     never the "no change" shortcut: the policy may be unchanged
+ *     while every rule the settings produce is not;
+ *   - a rollback runs under the settings that were live: swap (TRUE)
+ *     must put the previous settings in the context and swap (FALSE)
+ *     the new ones back; the gate calls them around the rollback
+ *     only.  The new settings stay in the context afterwards: they
+ *     are saved, and the next apply tries them again;
+ *   - audit lines say "firewall settings" instead of "policy".
+ * Holds, refusals, verdicts and the journal work exactly as in
+ * fs_policy_apply_safe.  policy is the one to apply the settings
+ * with: Preferences passes the last applied one (the journal's), so
+ * Policy-page edits nobody has applied yet do not go out with them. */
+typedef void (*FsSettingsSwapFunc) (gboolean previous, gpointer data);
+
+FsApplyOutcome *fs_settings_apply_safe (const FsBackend *backend,
+                                        FsPolicy *policy,
+                                        const gchar *source,
+                                        const gchar *hold,
+                                        FsSettingsSwapFunc swap,
+                                        gpointer swap_data,
+                                        GError **error);
 
 /* Audit-only testing mode: the preference, the hold reason it
  * produces (or NULL when off), and the setter for the Policy page's
@@ -154,6 +254,20 @@ gboolean  fs_apply_journal_save   (const FsPolicy *policy, GError **error);
  * *policy is cleared first, so on failure it is empty, never
  * half-loaded. */
 gboolean  fs_apply_journal_load   (FsPolicy *policy, GError **error);
+
+/* The firewall settings recorded with the journal (each successful
+ * apply records the saved preferences it went out with): key ->
+ * value text, as fs_prefs_firewall_values gives it.  NULL when there
+ * is no journal, or it predates the record.  Caller unrefs. */
+GHashTable *fs_apply_journal_settings (void);
+
+/* TRUE when the firewall settings saved now are not the ones recorded
+ * with the journal -- saved in Preferences, not applied yet -- or the
+ * journal does not record any.  FALSE with no journal at all (every
+ * apply is whole then).  While TRUE, fs_policy_apply_safe applies the
+ * whole set even for an unchanged policy, so the settings go out with
+ * the next policy apply on every backend. */
+gboolean    fs_apply_settings_pending (void);
 
 G_END_DECLS
 

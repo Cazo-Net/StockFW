@@ -207,6 +207,29 @@ switch slider {
 	min-width: 18px;
 	min-height: 18px;
 }
+/* Keyboard focus: GTK rings the slider, by default in a light grey
+ * dash that all but vanishes on white.  The theme's focus blue,
+ * solid, instead.  An outline is only drawn while focus is visible
+ * (keyboard use), so a click shows nothing extra. */
+switch:focus slider {
+	outline-color: #1d4ed8;
+	outline-style: solid;
+	outline-width: 2px;
+	outline-offset: -4px;
+}
+/* A switch that cannot act right now (Preferences: a block that needs
+ * a device nobody chose) reads as faded, on or off. */
+switch:disabled {
+	background-color: #e3e6eb;
+	border-color: #d5d9df;
+}
+switch:checked:disabled {
+	background-color: #9cc7b0;
+	border-color: #8ab79f;
+}
+switch:disabled slider {
+	border-color: #d5d9df;
+}
 
 /* --- data grids ------------------------------------------------------ *
  * Thin light-grey rules, grey header band with bold dark text, and a
@@ -1000,3 +1023,83 @@ list.cp-list row.cp-row:focus {
 .cp-dark .output-view textview.tone-warn { color: #fcd34d; }
 .cp-dark .output-view textview.tone-info { color: #93b4f5; }
 .cp-dark .output-view textview.tone-dim  { color: #a0a8b6; }
+
+/* =====================================================================
+ * 1.0.7: the Preferences window (src/ui/fs-prefsdialog.c)
+ * The main window's sidebar and cards; each setting a row with its
+ * name, one line on what it does and the control on the right.
+ * ===================================================================== */
+.prefs-nav {
+	padding: 20px 10px 16px 10px;
+}
+.prefs-nav .fs-brand {
+	padding: 0 10px 16px 10px;
+}
+.pref-card {
+	padding-bottom: 4px;
+}
+.pref-card .card-heading.card-head {
+	padding: 14px 18px 4px 18px;
+}
+.pref-row {
+	padding: 12px 18px;
+	border-top: 1px solid #eef0f3;
+}
+/* No rule between a card's heading and its first row. */
+.pref-card > .pref-row:nth-child(2) {
+	border-top-width: 0;
+}
+.pref-label {
+	font-size: 13px;
+	font-weight: bold;
+	color: #16181d;
+}
+/* Why a row cannot act right now: amber text, readable on white. */
+.pref-reason {
+	font-size: 12px;
+	color: #8a5300;
+}
+/* A consequence worth stopping for (restrictive outbound). */
+.pref-warning {
+	background-color: #fff8eb;
+	border: 1px solid #f3d9a4;
+	border-radius: 8px;
+	color: #6b3f00;
+	font-size: 12px;
+	padding: 10px 12px;
+	margin: 2px 18px 12px 18px;
+}
+/* A Save that the system refused (start at sign-in): a deep red on a
+ * pale red, 5.8:1. */
+.pref-error {
+	background-color: #fdeeee;
+	border: 1px solid #f2c4c4;
+	border-radius: 8px;
+	color: #b3261e;
+	font-size: 12px;
+	padding: 10px 12px;
+	margin: 2px 18px 12px 18px;
+}
+.pref-note {
+	color: #5b6472;
+	font-size: 12px;
+	padding: 8px 18px 10px 18px;
+	border-top: 1px solid #eef0f3;
+}
+.state-pill {
+	font-size: 12px;
+	font-weight: bold;
+	color: #3a4250;
+	background-color: #eef2f7;
+	border-radius: 10px;
+	padding: 2px 12px;
+}
+.state-pill.on {
+	color: #8a5300;
+	background-color: #fff8eb;
+}
+.prefs-footer {
+	background-color: #ffffff;
+	border-top: 1px solid #e3e6eb;
+	padding: 12px 24px;
+}

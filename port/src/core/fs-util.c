@@ -555,6 +555,28 @@ fs_util_rules_dir (void)
 	return cached;
 }
 
+/* [ fs_util_privileged ] -- see fs-util.h. */
+gboolean
+fs_util_privileged (void)
+{
+#ifdef G_OS_WIN32
+	HANDLE token = NULL;
+	TOKEN_ELEVATION elevation;
+	DWORD len = 0;
+	gboolean elevated = FALSE;
+
+	if (!OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token))
+		return FALSE;
+	if (GetTokenInformation (token, TokenElevation, &elevation,
+	                         sizeof elevation, &len))
+		elevated = elevation.TokenIsElevated != 0;
+	CloseHandle (token);
+	return elevated;
+#else
+	return geteuid () == 0;
+#endif
+}
+
 gchar *
 fs_util_rules_path (const gchar *relative)
 {

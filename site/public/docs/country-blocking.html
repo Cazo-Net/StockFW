@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Country and network-owner blocking · StockFW</title>
+<meta name="description" content="Blocking traffic by the country an address is registered in or by the network that announces it, planned for 1.0.7: where the data comes from, how it is verified, what “country” honestly means for an address, and the anycast warning.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#16181d">
+<meta property="og:title" content="Country and network-owner blocking · StockFW">
+<meta property="og:description" content="Blocking traffic by the country an address is registered in or by the network that announces it, planned for 1.0.7: where the data comes from, how it is verified, what “country” honestly means for an address, and the anycast warning.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.6</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html" aria-current="page"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Protection
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Protection</p>
+		<article class="prose">
+<h1>Country and network-owner blocking</h1>
+<p class="lede">Some servers have no business talking to any country but their own, and some attacks come from a handful of networks. 1.0.7 adds two more kinds of threat-intel set, built from an offline database rather than a feed: every address registered to a country, and every address announced by a network owner (an autonomous system).</p>
+
+<div class="callout soon">
+<span class="label">Where this stands</span>
+<p>This is round two of the 1.0.7 threat-intel work, after <a href="../docs/threat-intel.html">blocklists</a>. The data source is decided and its reader is being written <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span>; the picker and the sets follow. The database’s licence terms are being confirmed with its publisher before release, and a fallback source is chosen in case they cannot be.</p>
+</div>
+
+<h2 id="where-the-data-comes-from">Where the data comes from<a class="anchor" href="#where-the-data-comes-from" aria-label="Link to this section">#</a></h2>
+<p>The <a href="https://location.ipfire.org/">IPFire Location database</a>: one file, about 6 MB compressed, published daily, no account needed, with IPv4 and IPv6 in one structure. For every range it gives the country of registration, the announcing network (AS number and name), and flags for anonymous proxies, satellite providers and <em>anycast</em> networks. It is the same database the IPFire firewall uses for its own country blocking.</p>
+<p>The file is signed inside its header with ECDSA over a SHA-256 of its contents, and StockFW verifies that signature against a pinned public key before reading a single record. A version check uses a DNS record the publisher maintains, and a downloaded file older than the one already on disk is refused, so a replayed old database cannot roll the data back. The reader unpacks with a strict size cap and bounds-checks every offset in the header before it trusts it.</p>
+<p>If the licence cannot be confirmed in time, the fallback is DB-IP’s free country database with the iptoasn network-owner table, both unsigned, in which case StockFW relies on HTTPS, strict structure checks and keeping the last good copy.</p>
+
+<h2 id="what-country-means">What “country” means<a class="anchor" href="#what-country-means" aria-label="Link to this section">#</a></h2>
+<p>The country is where the address block is <em>registered</em>, from the regional registries, geofeeds and the publisher’s corrections. It is not a measurement of where a packet came from, and for a content network that announces one address from forty cities it cannot be. StockFW therefore says “registered in”, never “located in”, and the picker warns when a chosen country’s ranges include anycast networks: blocking such a country can block a service everyone uses, from everywhere. The same honesty applies to network owners: the AS name is the owner on record.</p>
+
+<h2 id="how-it-will-work">How it will work<a class="anchor" href="#how-it-will-work" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>On the Threat Intel page, a picker with autocompletion over countries and network owners, each with its flag and the number of ranges it would add. A chosen entry becomes a set with a direction, like a feed.</li>
+<li>The sets are built, subtracted, loaded and reported exactly like blocklists: the same protected ranges, the same exceptions, the same transaction into <code>inet stockfw_intel</code>, the same state table, the same events and audit lines. A country block that would include your own network, your DNS servers or your SSH peer loses those addresses and says so in the notes.</li>
+<li>The lookup box, the What-if simulator and the Events page name the country or owner that blocked an address.</li>
+<li><code>stockfw intel</code> gains the country and owner commands, with <code>--json</code>.</li>
+<li>The database updates on the same hourly check as the feeds, from the publisher only, after the same consent dialog.</li>
+</ul>
+
+<h2 id="what-it-is-not">What it is not<a class="anchor" href="#what-it-is-not" aria-label="Link to this section">#</a></h2>
+<p>Not a geofence for a laptop that travels, and not a substitute for authentication: an attacker who wants to reach you from a blocked country rents a server in an allowed one. It removes background noise and narrows the field, which is worth having, and the app will describe it that way.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/threat-intel.html"><span>Previous</span><strong>Threat-intel blocklists</strong></a><a class="next" href="../docs/cli.html"><span>Next</span><strong>Command line</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/country-blocking.html">Edit this page on GitHub</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#where-the-data-comes-from">Where the data comes from</a></li>
+			<li class="lvl2"><a href="#what-country-means">What “country” means</a></li>
+			<li class="lvl2"><a href="#how-it-will-work">How it will work</a></li>
+			<li class="lvl2"><a href="#what-it-is-not">What it is not</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

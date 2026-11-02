@@ -28,8 +28,11 @@
 
 G_BEGIN_DECLS
 
-/* The table StockFW's threat-intel sets live in (design doc, s6). */
-#define FS_NFT_INTEL_TABLE "stockfw_intel"
+/* The table this standalone helper writes by default.  StockFW's own
+ * threat-intel engine owns inet stockfw_intel and replaces it whole
+ * (core/fs-intelset.h), so the helper keeps out of it (1.0.7 design,
+ * section 7). */
+#define FS_NFT_BLOCKLIST_TABLE "stockfw_blocklist"
 
 /* Per-file limits.  A blocklist file over this size is refused before
  * it is read. */
@@ -78,9 +81,26 @@ gchar *fs_nftset_script (const gchar *table, const gchar *set,
 
 /* Runs `nft -f -' (or `nft -c -f -' with check_only) with `script' on
  * stdin.  On failure the error carries nft's first error line.  `nft'
- * is found on PATH, as the backend finds iptables-restore. */
+ * is found on PATH, as the backend finds iptables-restore.  Gives nft
+ * FS_NFT_TIMEOUT_MS. */
 gboolean fs_nft_run_script (const gchar *script, gboolean check_only,
                             GError **error);
+
+/* nft is killed after this long [S8.4]. */
+#define FS_NFT_TIMEOUT_MS 60000u
+
+/* The same with an explicit timeout (milliseconds, > 0): nft is killed
+ * when it runs longer and the error says it timed out. */
+gboolean fs_nft_run_script_full (const gchar *script, gboolean check_only,
+                                 guint timeout_ms, GError **error);
+
+/* Runs `nft <args...>' (args NULL-terminated, without "nft") and
+ * returns its stdout, for listings: `nft -j list tables', `nft list
+ * chain inet stockfw_intel input'.  NULL with error (nft's first error
+ * line) on a non-zero exit, a timeout, or output that is not UTF-8.
+ * Caller frees. */
+gchar *fs_nft_capture (const gchar *const *args, guint timeout_ms,
+                       GError **error);
 
 /* Read `path', guard it, subtract protected ranges, and replace the
  * contents of `set'/`set'6 in table `table' in one transaction.  On any

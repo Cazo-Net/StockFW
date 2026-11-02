@@ -1,0 +1,97 @@
+/*---[ fs-hostnet.h ]----------------------------------------------------
+ * What a blocklist must never cut on this computer (1.0.7 threat
+ * intel; design section 6.4): its own addresses, the networks it is
+ * directly connected to, its default gateways, the DNS servers it uses,
+ * the sessions it must keep (the SSH client running the command, and
+ * every established inbound SSH connection), and the hosts the enabled
+ * feeds are downloaded from.
+ *
+ * fs_hostnet_read() gathers it all from the running system (Linux:
+ * getifaddrs, /proc/net, resolver files; elsewhere: empty).  The
+ * parsers it uses are pure and public, so the tests feed them fixtures.
+ *--------------------------------------------------------------------*/
+#ifndef FS_HOSTNET_H
+#define FS_HOSTNET_H
+
+#include <glib.h>
+#include "core/fs-iprange.h"
+
+G_BEGIN_DECLS
+
+typedef struct
+{
+	FsRangeSet *own;          /* this computer's addresses, one each    */
+	FsRangeSet *onlink;       /* connected prefixes (address & mask),
+	                           * both families; loopback left out       */
+	FsRangeSet *gateways;     /* default gateways, both families        */
+	FsRangeSet *resolvers;    /* DNS servers in use                     */
+	FsRangeSet *sessions;     /* peers to keep reachable                */
+	FsRangeSet *update_hosts; /* addresses of the feeds' hosts          */
+} FsHostNet;
+
+/* An FsHostNet with six empty, normalized sets (tests fill it). */
+FsHostNet  *fs_hostnet_new  (void);
+void        fs_hostnet_free (FsHostNet *host);
+
+/* The running system (all sets normalized):
+ *   own, onlink  getifaddrs(); addresses of every interface that is up,
+ *                except loopback ones; prefixes from their netmasks,
+ *                link-local IPv6 included;
+ *   gateways     /proc/net/route and /proc/net/ipv6_route;
+ *   resolvers    fs_hostnet_parse_resolvers() over /etc/resolv.conf,
+ *                /run/systemd/resolve/resolv.conf and
+ *                /run/NetworkManager/no-stub-resolv.conf;
+ *   sessions     fs_hostnet_parse_ssh_env() over $SSH_CONNECTION and
+ *                $SSH_CLIENT, plus fs_hostnet_parse_tcp_peers() over
+ *                /proc/net/tcp and /proc/net/tcp6 for local port 22;
+ *   update_hosts every host in `hosts' (NULL-terminated, may be NULL)
+ *                looked up with getaddrinfo (AF_UNSPEC); a host that
+ *                does not resolve adds nothing.
+ * Never NULL.  A source that cannot be read adds nothing. */
+FsHostNet  *fs_hostnet_read (const gchar *const *hosts);
+
+/* Everything above as one normalized set.  Caller frees. */
+FsRangeSet *fs_hostnet_all (const FsHostNet *host);
+
+/* ---- pure parsers -------------------------------------------------- */
+
+/* Default IPv4 gateways from /proc/net/route text: rows whose
+ * Destination is 00000000, whose Flags have RTF_GATEWAY (0x2) and
+ * RTF_UP (0x1), with the Gateway column read as a little-endian hex
+ * address.  The header row is skipped. */
+FsRangeSet *fs_hostnet_parse_route (const gchar *text);
+
+/* Default IPv6 gateways from /proc/net/ipv6_route text: rows whose
+ * destination is 32 zero digits with prefix length 00 and whose next
+ * hop is not all zeros. */
+FsRangeSet *fs_hostnet_parse_ipv6_route (const gchar *text);
+
+/* The DNS servers in use.  `resolv_conf' is /etc/resolv.conf; when every
+ * nameserver in it is loopback (systemd-resolved's 127.0.0.53,
+ * NetworkManager's dnsmasq at 127.0.1.1, ::1) or it has none, the
+ * upstream files are read too: `resolved' (systemd-resolved's
+ * /run/systemd/resolve/resolv.conf) and `nm' (NetworkManager's
+ * /run/NetworkManager/no-stub-resolv.conf).  Any argument may be NULL.
+ * Loopback servers are kept in the result (they are protected anyway). */
+FsRangeSet *fs_hostnet_parse_resolvers (const gchar *resolv_conf,
+                                        const gchar *resolved,
+                                        const gchar *nm);
+
+/* The client address of an SSH session: the first word of
+ * $SSH_CONNECTION ("client port server port"), else of $SSH_CLIENT
+ * ("client port lport").  Either may be NULL.  Zone suffixes (%eth0)
+ * are dropped. */
+FsRangeSet *fs_hostnet_parse_ssh_env (const gchar *ssh_connection,
+                                      const gchar *ssh_client);
+
+/* Remote addresses of ESTABLISHED (st 01) rows whose local port is
+ * `local_port', from /proc/net/tcp (v6 FALSE) or /proc/net/tcp6 (v6
+ * TRUE) text.  Addresses are in the kernel's hex form: IPv4 as one
+ * little-endian 32-bit word, IPv6 as four such words; an IPv4-mapped
+ * IPv6 address comes out as IPv4. */
+FsRangeSet *fs_hostnet_parse_tcp_peers (const gchar *text, gboolean v6,
+                                        guint local_port);
+
+G_END_DECLS
+
+#endif /* FS_HOSTNET_H */

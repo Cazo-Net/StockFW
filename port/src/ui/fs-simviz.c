@@ -532,7 +532,11 @@ static const gchar *simviz_css =
 	"button.fs-wi-history { background-image: none;\n"
 	"  background-color: transparent; border: none; border-radius: 6px;\n"
 	"  padding: 3px 6px; min-height: 0; box-shadow: none; }\n"
-	"button.fs-wi-history:hover { background-color: #f4f5f7; }\n"
+	"button.fs-wi-history:hover {\n"
+	"  background-color: alpha(currentColor, 0.08); }\n"
+	/* The answer row has a light surface of its own whatever the
+	 * theme: its text is the light palette's ink, never the theme's. */
+	".fs-wi-result label { color: #16181d; }\n"
 	".fs-wi-dot { font-size: 10px; }\n"
 	".fs-wi-dot.ok { color: #1e7f4f; } .fs-wi-dot.bad { color: #b42318; }\n"
 	".fs-wi-dot.warn { color: #c47800; } .fs-wi-dot.err { color: #8b93a1; }\n"
@@ -1712,16 +1716,27 @@ build_header (Win *win)
 	if (fs_simviz_outcome_of (r) != FS_SIMVIZ_ERROR) {
 		GString *warn = g_string_new (NULL);
 
-		if (win->firewall == FS_WHATIF_FW_STOPPED)
-			g_string_append (warn,
-				_("The firewall is not running: right now nothing is "
-				  "filtered, so this connection is not stopped. Start "
-				  "the firewall to have the rules decide."));
-		if (win->live == FS_WHATIF_LIVE_HELD ||
-		    win->live == FS_WHATIF_LIVE_FAILED ||
-		    win->live == FS_WHATIF_LIVE_STALE) {
-			if (warn->len > 0)
-				g_string_append_c (warn, ' ');
+		if (r->stopped_decides) {
+			/* Right now nothing is filtered; what the saved policy
+			 * says is only what happens once it runs. */
+			g_string_append_printf (warn,
+				_("Firewall off: %s right now, because nothing is "
+				  "filtered. With the saved policy, once it runs: %s."),
+				fs_whatif_verdict_name (r->verdict),
+				fs_whatif_verdict_name (r->verdict_running));
+			if (win->live == FS_WHATIF_LIVE_HELD ||
+			    win->live == FS_WHATIF_LIVE_FAILED ||
+			    win->live == FS_WHATIF_LIVE_STALE)
+				g_string_append_printf (warn,
+					_(" Starting it may not load that policy: %s."),
+					win->live == FS_WHATIF_LIVE_HELD
+					? _("applies are on hold")
+					: win->live == FS_WHATIF_LIVE_FAILED
+					? _("the last apply failed")
+					: _("it changed after it was last applied"));
+		} else if (win->live == FS_WHATIF_LIVE_HELD ||
+		           win->live == FS_WHATIF_LIVE_FAILED ||
+		           win->live == FS_WHATIF_LIVE_STALE) {
 			g_string_append_printf (warn,
 				_("This answer describes the saved policy, and the "
 				  "firewall is not running it yet: %s."),
@@ -1928,7 +1943,11 @@ build_facts (Win *win, Page *pg)
 	           : win->firewall == FS_WHATIF_FW_RUNNING ? _("Running")
 	           : _("Not known (assumed running)"));
 	grid_fact (grid, 1, row++, _("Saved policy"),
-	           win->have_ctx ? live_words (win->live) : _("Not known"));
+	           !win->have_ctx ? _("Not known")
+	           : (win->live == FS_WHATIF_LIVE_YES &&
+	              win->firewall == FS_WHATIF_FW_STOPPED)
+	           ? _("Last applied, but the firewall is stopped")
+	           : live_words (win->live));
 	if (win->platform == FS_WHATIF_WINDOWS_BLOCK_WINS)
 		grid_fact (grid, 0, row++, _("Firewall"),
 		           win->firewall == FS_WHATIF_FW_STOPPED ? _("Not running")
@@ -1941,6 +1960,39 @@ build_facts (Win *win, Page *pg)
 	g_free (port);
 	g_free (profile);
 	return card;
+}
+
+/* A folded run of rules: while folded, its rows are hidden outright,
+ * so Tab does not walk through rows nobody can see. */
+static void
+on_fold_expanded (GObject *exp, GParamSpec *pspec, gpointer data)
+{
+	GtkWidget *inner = data;
+
+	(void) pspec;
+	if (gtk_expander_get_expanded (GTK_EXPANDER (exp))) {
+		gtk_widget_set_no_show_all (inner, FALSE);
+		gtk_widget_show_all (inner);
+	} else {
+		gtk_widget_hide (inner);
+		gtk_widget_set_no_show_all (inner, TRUE);
+	}
+}
+
+/* The scroller the window's body sits in, scrolled to the top: a new
+ * answer, or a status line (which is the body's first row), is read
+ * from there. */
+static void
+scroll_to_top (Win *win)
+{
+	GtkWidget *sw = gtk_widget_get_ancestor (win->body,
+	                                         GTK_TYPE_SCROLLED_WINDOW);
+	GtkAdjustment *adj;
+
+	if (sw == NULL)
+		return;
+	adj = gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (sw));
+	gtk_adjustment_set_value (adj, gtk_adjustment_get_lower (adj));
 }
 
 /* One step of the trace, numbered as the user counts them. */
@@ -2128,6 +2180,10 @@ build_why (Win *win, Page *pg)
 					                    FALSE, FALSE, 0);
 				}
 				gtk_widget_set_margin_top (inner, 4);
+				gtk_widget_set_no_show_all (inner, TRUE);
+				gtk_widget_set_name (inner, "whatif-skipped-rows");
+				g_signal_connect (exp, "notify::expanded",
+				                  G_CALLBACK (on_fold_expanded), inner);
 				gtk_container_add (GTK_CONTAINER (exp), inner);
 				gtk_box_pack_start (GTK_BOX (list), exp, FALSE, FALSE, 2);
 				g_free (t);
@@ -2161,8 +2217,15 @@ action_button (Win *win, const FsWhatIfAction *act)
 	case FS_WHATIF_ACT_CREATE_ALLOW:
 		if (!act->verified || act->row == NULL)
 			return NULL;
-		label = g_strdup (_("Create allow rule"));
-		cls = "btn-primary";
+		/* Opening a port to every address is offered, never
+		 * suggested: no primary style, and the button says so. */
+		if (fs_util_target_is_anyone (act->row->target)) {
+			label = g_strdup (_("Create allow rule for everyone"));
+			cls = "btn-subtle";
+		} else {
+			label = g_strdup (_("Create allow rule"));
+			cls = "btn-primary";
+		}
 		break;
 	case FS_WHATIF_ACT_CREATE_BLOCK:
 		if (!act->verified || act->row == NULL)
@@ -2178,12 +2241,18 @@ action_button (Win *win, const FsWhatIfAction *act)
 			return NULL;
 		if (act->expires_unix > 0) {
 			gint64 now = g_get_real_time () / G_USEC_PER_SEC;
-			gint64 min = (act->expires_unix - now + 59) / 60;
+			GDateTime *at = g_date_time_new_from_unix_local (
+				act->expires_unix);
+			gchar *hhmm = at != NULL ? g_date_time_format (at, "%H:%M")
+			                         : NULL;
 
-			label = (min > 0)
-				? g_strdup_printf (_("Lift Sentinel block "
-				                     "(expires in %d min)"), (gint) min)
-				: g_strdup (_("Lift Sentinel block (expiring now)"));
+			label = (act->expires_unix > now && hhmm != NULL)
+				? g_strdup_printf (_("Lift Sentinel block (it ends by "
+				                     "itself at %s)"), hhmm)
+				: g_strdup (_("Lift Sentinel block (ending now)"));
+			g_free (hhmm);
+			if (at != NULL)
+				g_date_time_unref (at);
 		} else {
 			label = g_strdup (_("Lift Sentinel block"));
 		}
@@ -2227,6 +2296,12 @@ no_action_words (Win *win, const Page *pg)
 	const FsWhatIfQuery *q = win->result->query;
 	FsWhatIfVerdict want = (q->verb == FS_WHATIF_VERB_BLOCK)
 	                       ? FS_WHATIF_BLOCKED : FS_WHATIF_ALLOWED;
+
+	if (a->origin == FS_WHATIF_ORIGIN_STOPPED && want == FS_WHATIF_ALLOWED)
+		return g_strdup_printf (
+			_("Allowed only because the firewall is off. Once it runs, "
+			  "the saved policy makes this %s."),
+			fs_whatif_verdict_name (win->result->verdict_running));
 
 	if (a->verdict == want)
 		return g_strdup_printf (
@@ -2742,8 +2817,20 @@ fs_simviz_window_set_result (GtkWidget *window, FsWhatIfResult *result,
 	copy_typed (win, result, typed);
 	fs_simviz_window_set_status (window, FS_SIMVIZ_STATUS_OK, NULL);
 	build_content (win);
-	if (gtk_widget_get_mapped (window))
+	scroll_to_top (win);
+	if (gtk_widget_get_mapped (window)) {
+		GtkWidget *close = gtk_dialog_get_widget_for_response (
+			GTK_DIALOG (window), GTK_RESPONSE_CLOSE);
+		GtkWidget *focus = gtk_window_get_focus (GTK_WINDOW (window));
+
+		/* The button pressed went with the old content: keep the
+		 * keyboard somewhere real. */
+		if (close != NULL && (focus == NULL ||
+		                      !gtk_widget_get_mapped (focus) ||
+		                      gtk_widget_is_ancestor (focus, win->body)))
+			gtk_widget_grab_focus (close);
 		start_play (win);
+	}
 
 	/* An action handler may be running on the old result: let it
 	 * finish before the result goes. */
@@ -2800,6 +2887,22 @@ fs_simviz_window_present (GtkWidget *window, GtkWidget *parent)
 		GtkWidget *top = gtk_widget_get_toplevel (parent);
 
 		if (GTK_IS_WINDOW (top)) {
+			gboolean dark = theme_is_dark (top);
+
+			/* The window it opens from says which palette reads:
+			 * the main window may be styled apart from the theme
+			 * a new dialog would get. */
+			if (dark != win->dark) {
+				GtkStyleContext *sc =
+					gtk_widget_get_style_context (window);
+
+				win->dark = dark;
+				if (dark)
+					gtk_style_context_add_class (sc, "fs-wi-dark");
+				else
+					gtk_style_context_remove_class (sc, "fs-wi-dark");
+				gtk_widget_queue_draw (window);
+			}
 			gtk_window_set_transient_for (GTK_WINDOW (window),
 			                              GTK_WINDOW (top));
 			gtk_window_set_destroy_with_parent (GTK_WINDOW (window),
@@ -2884,4 +2987,6 @@ fs_simviz_window_set_status (GtkWidget *window, FsSimvizStatus level,
 		gtk_style_context_add_class (style, "bad");
 	gtk_label_set_text (GTK_LABEL (win->status), text);
 	gtk_widget_show (win->status);
+	/* What an action did is said at the top: show it. */
+	scroll_to_top (win);
 }

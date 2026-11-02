@@ -1,0 +1,97 @@
+---
+title: Troubleshooting
+section: Reference
+order: 41
+description: What a message means and what to do: privileges, monitoring, sudo’s search path, the two policy homes, IPv6 not filtered, malformed rules, a refused apply, a Sentinel block you did not want, the tray, the dashboard, and WSL and containers.
+---
+<h1>Troubleshooting</h1>
+<p class="lede">StockFW tries to say what is wrong in the place where it is wrong. This page collects those messages, says what each one means, and what fixes it.</p>
+
+<h2>Privileges</h2>
+<dl>
+<dt>“Administrator privileges required”, “Not live yet: run `sudo stockfw apply’”, exit status 3</dt>
+<dd>You are changing the firewall without the rights to do it. The change is saved and will be applied the next time Apply runs with rights. On Windows use the <em>StockFW (Elevated)</em> shortcut; on Linux run <code>sudo /usr/local/bin/StockFW</code> or <code>sudo stockfw apply</code>. Nothing was half-applied.</dd>
+<dt>“sudo: StockFW: command not found”</dt>
+<dd>[[linux]] <code>sudo</code> does not search <code>/usr/local/bin</code> on Debian, Kali and Ubuntu. Type the full path: <code>sudo /usr/local/bin/StockFW</code>. The installer warns about this and deliberately does not edit <code>sudoers</code>; see <a href="{{root}}docs/install-linux.html#why-the-full-path-after-sudo">why</a>.</dd>
+<dt>“Windows protected your PC” when running the installer</dt>
+<dd>The installer is not code-signed yet. Check the SHA-256 against the download page, then <em>More info</em>, <em>Run anyway</em>.</dd>
+</dl>
+
+<h2>Events</h2>
+<dl>
+<dt>“Monitoring is not available” on Windows</dt>
+<dd>The audit policy that makes Windows write firewall events is off. Open the elevated app once; it enables it. Or run <code>auditpol /set /subcategory:"Filtering Platform Connection" /success:enable /failure:enable</code> in an administrator PowerShell. See <a href="{{root}}docs/install-windows.html#enable-monitoring">Enable monitoring</a>. If a domain policy forces auditing off, StockFW cannot override it and says so.</dd>
+<dt>“Monitoring is not available” on Linux</dt>
+<dd>The kernel log needs root. Start the app with <code>sudo</code>, or add yourself to the <code>adm</code> group for the command line’s <code>events</code>.</dd>
+<dt>The list stays empty although the firewall is running</dt>
+<dd>Read the sentence under the empty list. “Waiting for the first event” means nothing has been blocked or logged yet; try an inbound connection from another machine to a closed port. On Linux, allowed connections are logged only from 1.0.7 and only with <em>Log allowed connections</em> on; before that, the page shows drops and rejects only.</dd>
+<dt>No events in WSL2, a container or a network namespace</dt>
+<dd>[[linux]] The kernel delivers firewall log lines from a non-initial network namespace only when <code>net.netfilter.nf_log_all_netns=1</code>. Set it on the host: <code>sudo sysctl -w net.netfilter.nf_log_all_netns=1</code>. WSL2’s kernel also needs the netfilter log modules; a stock Ubuntu WSL image has them.</dd>
+<dt>The Program column is empty</dt>
+<dd>[[linux]] The kernel log carries no program name. The Overview’s connection table names programs for connections that are open; the Events page cannot for ones that are not. [[gap]]</dd>
+</dl>
+
+<h2>Policy and Apply</h2>
+<dl>
+<dt>A rule I added is not applied</dt>
+<dd>[[linux]] Check which policy you edited. As yourself the policy is <code>~/.stockfw</code>; as root it is <code>/etc/stockfw</code>. <code>stockfw status</code> prints the directory in use. Pick one identity for policy work; see <a href="{{root}}docs/install-linux.html#two-homes-yours-and-root-s">Two homes</a>.</dd>
+<dt>“N malformed policy rules were skipped”</dt>
+<dd>A line in a policy file did not parse: a non-numeric port, a host name starting with a hyphen, a stray comma. The line was skipped, not guessed at. Open the file named in the message, fix or delete the line, reload. Saving from the app writes only the rules that parsed. <a href="{{root}}docs/files.html#policy-files">The format</a>.</dd>
+<dt>Apply says “policy held, firewall untouched”</dt>
+<dd><em>Audit-only</em> on the Policy page or <em>Lock policy</em> on the Overview is on. The change was measured and recorded; the engine was left alone. Turn the hold off and Apply again.</dd>
+<dt>Apply failed and “the last good policy was restored”</dt>
+<dd>The engine refused a rule. The dialog carries the tool’s own message; on Windows it is often a target netsh cannot parse, on Linux a rule the kernel lacks a module for. The policy on the wire is what it was before you pressed Apply. The audit log has the line.</dd>
+<dt>“The forward to 192.168.1.30 was left out: no external interface is set”</dt>
+<dd>Port forwards need router mode: set the <em>Internet connected network device</em> and <em>Enable Internet connection sharing</em> on the Network Settings preference page.</dd>
+<dt>“NOT BLOCKED: <em>name</em> could not be looked up”</dt>
+<dd>A deny rule’s target is a host name that did not resolve while the firewall was being started, so it was left out rather than refuse to start at all. Fix the name or use the address, then Apply again; while the firewall is running, the same failure refuses the apply and keeps the old addresses blocked instead.</dd>
+<dt>A host-name rule covers nothing on Windows</dt>
+<dd>[[win]] Windows Firewall takes addresses only. Use the address, or one rule per address. The Covers column warns.</dd>
+</dl>
+
+<h2>IPv6</h2>
+<dl>
+<dt>The IPv6 tile reads “Not filtered: ip6tables is not installed”</dt>
+<dd>[[linux]] <code>sudo apt install iptables</code> brings <code>ip6tables</code> on Debian-family systems; <code>dnf install iptables-nft</code> on Fedora. Then Apply again. Until then only IPv4 is filtered, and the app says so rather than pretending. 1.0.5 and 1.0.6 never filter IPv6 on Linux. [[gap]]</dd>
+<dt>“None on this system”</dt>
+<dd>The kernel has no IPv6 stack. Nothing to filter, nothing wrong.</dd>
+</dl>
+
+<h2>Copilot and Sentinel</h2>
+<dl>
+<dt>Sentinel blocked something I use</dt>
+<dd>Select the finding and press <strong>Undo auto-block</strong>, or right-click the destination on the Events page and <em>Allow destination</em>: your Allow lifts the block and the two reach the firewall together. The block would have expired by itself in ten minutes; it cannot come back in this session. If it happens often, set Sentinel to <em>Detect only</em>, which takes every staged block down at once. Sentinel never blocks loopback, your LAN, multicast or a destination the program has used before; if it did, that is a bug worth <a href="{{repo}}/issues">reporting</a> with the audit lines.</dd>
+<dt>No insights appear</dt>
+<dd>The baseline needs history: four distinct hours before it judges hours, eight ten-minute windows before it judges rate. Novelty findings go quiet for a program whose profile is marked partial. <strong>Run analysis</strong> only reports what the policy and the events so far support.</dd>
+</dl>
+
+<h2>Tray and window</h2>
+<dl>
+<dt>No tray icon</dt>
+<dd>Your desktop has no tray host (GNOME without the AppIndicator extension, or a headless session). The window works as usual and closing it quits. See <a href="{{root}}docs/background.html">Background and the tray</a>.</dd>
+<dt>I closed the window and the app is still running</dt>
+<dd>That is <em>Minimize to the tray</em>. Open it from the tray icon, or quit from the tray menu. Quitting does not stop the firewall.</dd>
+</dl>
+
+<h2>Command line and dashboard</h2>
+<dl>
+<dt>“cannot listen on 127.0.0.1:8080”</dt>
+<dd>The port is taken. Leave out <code>--port</code> and the system picks a free one.</dd>
+<dt>The dashboard did not open a browser</dt>
+<dd>Under <code>sudo</code> StockFW will not start a browser as root. Copy the printed URL into your own browser. The token is in it.</dd>
+<dt>The dashboard page shows “Unauthorized”</dt>
+<dd>The browser tab lost the token: the <code>#token=…</code> fragment was cut from the URL before the page loaded, the tab was reopened in a new session, or the URL is from an earlier run. Start again and open the freshly printed URL.</dd>
+<dt><code>stockfw: error: unknown command: intel</code></dt>
+<dd>You have 1.0.6. <code>stockfw intel</code> arrives with 1.0.7. [[soon]]</dd>
+</dl>
+
+<h2>Uninstalling and starting over</h2>
+<dl>
+<dt>Rules are still in the firewall after uninstalling</dt>
+<dd>By design the uninstaller leaves the engine as it is. Press <strong>Stop firewall</strong> before uninstalling, or afterwards: on Linux <code>sudo iptables -D INPUT -j INBOUND; sudo iptables -F INBOUND; sudo iptables -X INBOUND</code> and the same for <code>OUTBOUND</code> and the nat chains; on Windows delete the <code>StockFW-</code> rules in <code>wf.msc</code>.</dd>
+<dt>Start from scratch</dt>
+<dd>Stop the firewall, close the app, delete the two directories listed in <a href="{{root}}docs/files.html">Files and formats</a>. The next start is a first run.</dd>
+</dl>
+
+<h2>Reporting a problem</h2>
+<p>Open an issue on <a href="{{repo}}/issues">GitHub</a> with the version (<em>About StockFW</em> or <code>stockfw version</code>), the platform, what you did, what the app said, and the relevant lines of <code>audit.log</code>. Nothing in the audit log is secret, but read it before pasting; it names your rules’ targets.</p>

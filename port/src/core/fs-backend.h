@@ -54,6 +54,14 @@ const gchar *fs_ipv6_state_to_string (FsIpv6State state);
  * vtable can name it without this header pulling the intel engine in. */
 typedef struct _FsIntelRuleset FsIntelRuleset;
 
+/* Whether the threat-intel rules are in the kernel (1.0.7). */
+typedef enum
+{
+	FS_INTEL_LIVE_UNKNOWN = 0,   /* cannot tell (not root, no nft)       */
+	FS_INTEL_LIVE_ABSENT,
+	FS_INTEL_LIVE_PRESENT
+} FsIntelLive;
+
 /* Where this computer is connected and which firewall profiles are in
  * force (core/fs-netplace.h). */
 typedef struct _FsNetworkPlace FsNetworkPlace;
@@ -61,20 +69,22 @@ typedef struct _FsNetworkPlace FsNetworkPlace;
 /* Callback invoked for each event reported by the platform's firewall. */
 typedef void (*FsLogFunc) (const FsHit *hit, gpointer user_data);
 
-/* Which Firewall sub-pages of the Preferences dialog this backend
+/* Which settings pages of the Preferences window this backend
  * actually reads, one bit per page.  WYSIWYG: a page is offered only
  * when its bit is set -- showing a page the backend ignores asks the
- * user to configure a firewall that is not listening.  "uses_settings"
- * was the single all-or-nothing version of this; per-page bits let a
- * backend honor some pages (Windows: ICMP and Advanced Options) while
- * honestly hiding the rest (Network Settings needs ICS, ToS cannot be
- * marked at all). */
+ * user to configure a firewall that is not listening.  Per-page bits
+ * let a backend honor some pages (Windows: ICMP and Protection) while
+ * honestly hiding the rest (Network needs Internet Connection Sharing).
+ * Bit 2 was the Type-of-Service page, which no backend ever acted on;
+ * it is gone and the bit is left unused. */
 #define FS_FWSEC_NETWORK  (1u << 0)  /* ext/int devices, NAT          */
 #define FS_FWSEC_ICMP     (1u << 1)  /* the ICMP allow-list           */
-#define FS_FWSEC_TOS      (1u << 2)  /* ToS page (offered as an
-	                                  * admitted-dead page)          */
-#define FS_FWSEC_ADVANCED (1u << 3)  /* rejection method, broadcasts,
-	                                  * reserved source addresses    */
+#define FS_FWSEC_ADVANCED (1u << 3)  /* Protection: broadcasts and
+	                                  * reserved source addresses.
+	                                  * With FS_FWSEC_NETWORK they are
+	                                  * scoped to the chosen devices,
+	                                  * without it to the network
+	                                  * profiles                     */
 
 /* Finer-grained effects on offered pages.  A control whose effect the
  * backend cannot reproduce stays disabled with a note that says why,
@@ -93,19 +103,41 @@ typedef void (*FsLogFunc) (const FsHit *hit, gpointer user_data);
 	                                  * family's addresses (Linux);
 	                                  * Windows Firewall takes
 	                                  * addresses only              */
+#define FS_FWHON_OUTBOUND_MODE (1u << 4) /* "Block outgoing unless
+	                                  * allowed" sets the outbound
+	                                  * default (Linux); Windows
+	                                  * leaves it to the profile    */
+#define FS_FWHON_ICMP_EXACT    (1u << 5) /* the ICMP choices are the
+	                                  * whole story: a type left off
+	                                  * is dropped, IPv4 and IPv6
+	                                  * (Linux).  Without it they are
+	                                  * IPv4 allow rules beside the
+	                                  * system's own (Windows)      */
 
 typedef struct
 {
 	const gchar *name;          /* "linux" / "windows" */
 	const gchar *display_name;  /* human readable, for the About box */
 
-	/* FS_FWSEC_* bits: which Firewall sub-pages the backend honors.
-	 * The dialog offers exactly these pages, and fs_ui smoke asserts
-	 * the count against them. */
+	/* FS_FWSEC_* bits: which settings pages the backend honors.
+	 * The Preferences window offers exactly these pages, and
+	 * tests/ui-prefs-smoke.c asserts them. */
 	guint32 fw_sections;
 
 	/* FS_FWHON_* bits: per-control effects inside offered pages. */
 	guint32 fw_honors;
+
+	/* 1.0.7: TRUE when start() installs the policy handed to
+	 * fs_backend_set_context() -- Linux, where starting IS a whole-set
+	 * apply.  FALSE when start() only switches enforcement on and the
+	 * rules live in the firewall's own store (Windows: the profiles
+	 * go on, the netsh rules are already there).  The start gate
+	 * (fs_firewall_start_safe) reads it to know whether a start
+	 * changes which policy is live, and Preferences to know whether
+	 * a start brings saved firewall settings in (it does here: the
+	 * whole set goes in under the saved settings) or new settings
+	 * need an apply even then. */
+	gboolean start_applies_policy;
 
 	/* TRUE when the backend can actually manage a firewall here. */
 	gboolean (*available) (void);
@@ -232,10 +264,17 @@ typedef struct
 	                         GError **error);
 	/* Remove them all.  Not an error when there is nothing to remove. */
 	gboolean (*intel_clear) (GError **error);
-	/* Packets dropped per set id since the rules were loaded: a table of
-	 * gchar* -> guint64* (both owned by the table).  NULL when the
-	 * platform cannot count or nothing is loaded. */
+	/* Packets and bytes blocked per set id since the rules were loaded:
+	 * gchar* -> FsIntelCounter* (core/fs-intelset.h), both owned by the
+	 * table.  NULL when the platform cannot count or nothing is
+	 * loaded.  Must be cheap: it never lists set elements [S8.3]. */
 	GHashTable *(*intel_counters) (void);
+	/* Whether the rules are in the kernel right now, and the digest
+	 * they were loaded with (caller frees; NULL when absent or not
+	 * recorded).  The core compares it with what it last applied, so
+	 * a table removed behind StockFW's back (a reboot, `nft flush
+	 * ruleset') is reported, never assumed [S10]. */
+	FsIntelLive (*intel_live) (gchar **digest);
 
 	/* 1.0.7 What-If: one profile's default actions -- what Windows
 	 * Firewall does with traffic no rule matches.  *inbound_block /
@@ -246,6 +285,13 @@ typedef struct
 	 * their own default). */
 	gboolean (*get_profile_defaults) (gint profile, gboolean *inbound_block,
 	                                  gboolean *outbound_block);
+
+	/* 1.0.7 What-If: whether one profile has "Block all incoming
+	 * connections, including those in the list of allowed apps"
+	 * switched on, which refuses inbound traffic whatever the allow
+	 * rules say.  FALSE when it cannot be read; the What-If then judges
+	 * by the rules alone.  NULL slot: the platform has no such switch. */
+	gboolean (*get_profile_block_all_inbound) (gint profile, gboolean *on);
 } FsBackend;
 
 /* Profile identifiers, matching Windows' own numbering. */

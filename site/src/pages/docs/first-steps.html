@@ -1,0 +1,51 @@
+---
+title: Your first ten minutes
+section: Get started
+order: 4
+description: A guided first session with StockFW: check that you are protected, watch events arrive, add a rule, apply it with an impact preview, and ask the simulator a question.
+---
+<h1>Your first ten minutes</h1>
+<p class="lede">This walk-through uses the real app on a small network, so what you see here is what you will see on your own computer. Start the app with the rights to change the firewall: <em>StockFW (Elevated)</em> on Windows, <code>sudo /usr/local/bin/StockFW</code> on Linux.</p>
+
+<ol class="steps">
+<li>
+<strong>Read the Overview</strong>
+<p>The green or red card at the top answers the question you opened the app for. On a fresh install it says the firewall is stopped; press <strong>Start firewall</strong>. The card turns green, and the two small tiles say whether IPv4 and IPv6 traffic are filtered. On Linux, if <code>ip6tables</code> is missing, the IPv6 tile tells you instead of pretending.</p>
+[[shot:overview|The Overview page with a green “This computer is protected” card, event counters, open connections and recent blocks.|After Start: protected, both families filtered, nine rules in force.]]
+</li>
+<li>
+<strong>Watch the Events page for a minute</strong>
+<p>Every connection the firewall decided appears as it happens. Red rows were blocked. Type part of an address, a port or a program name into the filter and the list narrows while you type; the count reads “3 of 1200 events” so an empty filter result cannot be mistaken for a quiet firewall. If the list stays empty, it tells you why: monitoring is off, or nothing matched.</p>
+</li>
+<li>
+<strong>Turn an event into a rule</strong>
+<p>Right-click a row. For an outbound connection you can block or allow the destination, or block just that service to it; for an inbound one you can trust the source. A dialog prints the exact rule it is about to write, you answer Yes or No, and the result says plainly whether the rule is live or only saved for the next Apply.</p>
+[[shot:events-menu|The Events page with a right-click menu open on a blocked inbound row, offering to trust the source.|The right-click menu offers only what that row can express.]]
+</li>
+<li>
+<strong>Add a rule by hand</strong>
+<p>Open <strong>Policy</strong>. Rules are grouped by kind. In <em>Allow inbound service</em>, press <strong>Add</strong>, choose SSH on port 22 and type your LAN, for example <code>192.168.1.0/24</code>, as who it is for. The row appears with its <em>Covers</em> column reading “IPv4 only”, because that network is an IPv4 network. A rule for “Anyone” covers both families.</p>
+[[shot:policy|The Policy page with rule groups as cards, each a table with a Covers column.|Each rule says what it reaches, and why on hover.]]
+</li>
+<li>
+<strong>Apply, and read the impact first</strong>
+<p>Press <strong>Apply policy</strong>. Before anything happens, a dialog counts what will change against what is actually live: “+1 added (1 allow, 0 block), −0 removed, =8 unchanged”. Say Yes and the rule reaches the firewall; the result dialog reports what the engine said. If the engine refuses, the last good policy is put back and the dialog says whether that worked. Every attempt is one line in <code>audit.log</code>.</p>
+<p>Not ready to change anything? Press <strong>Audit-only</strong> first. Apply then stages the change and writes the audit line while the firewall stays exactly as it is.</p>
+</li>
+<li>
+<strong>Ask the simulator</strong>
+<p>Open <strong>Copilot</strong> and type a question into the What-if box the way you would say it: <code>inbound rdp from 203.0.113.50</code>. The verdict plays in a small window, the packet travelling from the source to the wall, and the text underneath names the rule that decided it, or says that no rule matched and the default applied. Simulating writes nothing. If the verdict is BLOCKED and you want it allowed, <strong>Create This Rule</strong> prints the rule and asks.</p>
+[[shot:whatif-blocked|The What-If Simulation window: a packet from 203.0.113.50 bounced back by the wall, a red BLOCKED badge, and the explanation that no rule matched and the default is to deny inbound.|A question, not a change: nothing is written by simulating.]]
+</li>
+<li>
+<strong>Set up the tray</strong>
+<p>Open <strong>Preferences</strong> from the bottom of the sidebar. On the Interface page, <em>Show a tray icon</em> and <em>Minimize to the tray</em> keep StockFW running when you close the window. The tray icon’s tooltip carries the firewall state, so a glance answers the question the app exists for.</p>
+</li>
+</ol>
+
+<h2>Where to go next</h2>
+<ul>
+<li><a href="{{root}}docs/policy.html">Policy</a> explains every rule kind, what “Covers” means, and what Apply does step by step.</li>
+<li><a href="{{root}}docs/copilot.html">Copilot</a> explains insights, Sentinel and auto-block, and why none of it can open a port without you.</li>
+<li>On Linux, <a href="{{root}}docs/cli.html">the command line</a> does everything above from a terminal or a script, and <a href="{{root}}docs/dashboard.html">the dashboard</a> shows it in a browser.</li>
+</ul>
