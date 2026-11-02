@@ -24,6 +24,7 @@
 #include "ui/fs-trustview.h"
 #include "ui/fs-tray.h"
 #include "ui/fs-icons.h"
+#include "core/fs-apply.h"
 #include "core/fs-backend.h"
 #include "core/fs-prefs.h"
 #include "core/fs-rules.h"
@@ -597,10 +598,53 @@ app_trust_signature (const gchar *path, FsTrustSignature *sig,
 	return backend->trust_signature (path, sig, publisher);
 }
 
+/* [ start_at_launch ]
+ * "Start the firewall on program startup", once the policy is really
+ * loaded and Sentinel's restore has taken its expired rows out.  The
+ * start goes through the start gate, so audit-only mode and the Policy
+ * Lock hold it exactly as they hold an apply, and it is audited.  A
+ * failure is not fatal: the window still opens and the state line
+ * reports what actually happened.
+ *
+ * `restore_dropped': Sentinel's boot restore took rows out of the
+ * policy (blocks whose ten minutes ran out while StockFW was closed).
+ * Those blocks are still on the firewall until something pushes; a
+ * start that installed the restored policy already did, otherwise
+ * they are pushed through the apply gate here -- but on Linux only
+ * while the firewall runs, because there an apply IS a start, and a
+ * firewall the user left stopped must not start behind their back. */
+static void
+start_at_launch (gboolean restore_dropped)
+{
+	const FsBackend *backend = fs_backend ();
+	gboolean installed = FALSE;
+
+	if (fs_prefs_get_bool (FS_PREFS_START_ON_GUI, FALSE) &&
+	    backend->available ()) {
+		GError *error = NULL;
+		FsApplyOutcome *outcome;
+
+		outcome = fs_firewall_start_safe (backend, policy,
+		                                  "start on program startup",
+		                                  fs_policyview_hold_reason (),
+		                                  &error);
+		installed = outcome->applied && !outcome->held;
+		g_clear_error (&error);
+		fs_apply_outcome_free (outcome);
+	}
+
+	if (restore_dropped && !installed &&
+	    (!backend->start_applies_policy ||
+	     (backend->get_state != NULL &&
+	      backend->get_state () == FS_FW_RUNNING)))
+		fs_copilot_autoblocks_push ();
+}
+
 void
 fs_app_activate (GtkApplication *app)
 {
 	GtkWidget *box;
+	gboolean restore_dropped;
 
 	fsapp.app = GTK_APPLICATION (app);
 
@@ -682,17 +726,10 @@ fs_app_activate (GtkApplication *app)
 	fs_settings_load_prefs (settings);
 	fs_backend_set_context (policy, settings);
 
-	/* "Start the firewall on program startup".  A failure here is not
-	 * fatal: the window still opens and the state line reports what
-	 * actually happened. */
-	if (fs_prefs_get_bool (FS_PREFS_START_ON_GUI, FALSE) &&
-	    fs_backend ()->available ()) {
-		GError *error = NULL;
-
-		if (!fs_backend ()->start (&error))
-			g_clear_error (&error);
-	}
-
+	/* No start here: the policy above is still EMPTY.  The Policy page
+	 * below loads it from disk, Sentinel's restore then reconciles its
+	 * own rows, and only then does start_at_launch() run.  Starting
+	 * here installed a zero-rule policy on Linux (1.0.7 fix). */
 	add_page (_("Policy"),
 	          _("The rules StockFW enforces, and which addresses each "
 	            "one covers."),
@@ -723,17 +760,21 @@ fs_app_activate (GtkApplication *app)
 	/* P6 (false-outage hardening): the Sentinel staged-block list is
 	 * persisted, so a restart must reconcile it -- rows whose ten
 	 * minutes ran out while StockFW was not running come out of the
-	 * policy BEFORE any apply can push them, the rest are re-armed
-	 * with their original clock, and a Sentinel mode that is not
-	 * "auto" lifts the lot.  The page above owns the shared policy
-	 * and the mode cache this reads. */
-	fs_copilot_autoblocks_restore (policy);
+	 * policy BEFORE the start below can install them, the rest are
+	 * re-armed with their original clock, and a Sentinel mode that is
+	 * not "auto" lifts the lot.  The page above owns the shared policy
+	 * and the mode cache this reads; start_at_launch() takes what came
+	 * out to the firewall. */
+	restore_dropped = fs_copilot_autoblocks_restore (policy);
 
 	/* Trust tab: the application trust engine's surface. */
 	add_page (_("Trust"),
 	          _("Who published a program, whether it is signed, and "
 	            "whether it has changed since you attested it."),
 	          fs_trustview_page (), FALSE);
+
+	/* Policy loaded, Sentinel reconciled: now the firewall may start. */
+	start_at_launch (restore_dropped);
 
 	gtk_widget_show_all (fsapp.window);
 	sync_nav ((guint) gtk_notebook_get_current_page (

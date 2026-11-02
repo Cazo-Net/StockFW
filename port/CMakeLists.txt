@@ -50,6 +50,7 @@ add_library(fs-core STATIC
   src/core/fs-iprange.c
   src/core/fs-nftset.c
   src/core/fs-netplace.c
+  src/core/fs-autoblock.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
@@ -412,3 +413,23 @@ target_compile_definitions(fs-overview-place-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
   FS_PLATFORM_NAME="${FS_PLATFORM}"
 )
+# Startup safety (1.0.7): the real fs_app_activate() against a fake
+# Linux-shaped backend that records the policy it is handed at start,
+# so "start on program startup" can never again install the empty
+# policy it was handed before the Policy page loaded the real one, and
+# Sentinel's expired blocks really come off the firewall at launch.
+# Runs one process per scenario; supplies fs_backend() itself.
+add_executable(fs-startup-smoke EXCLUDE_FROM_ALL
+  tests/ui-startup-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-startup-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-startup-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-startup-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-startup-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()

@@ -121,3 +121,34 @@ script follows the loaders' imports with `objdump -p`), and then runs
 `fs-activity-smoke` from `build/` with nothing but Windows' own
 directories on PATH, as if started from Explorer: it must pass, with no
 GTK warning.  It is also part of `tests/full-suite.sh`.
+
+
+## What the firewall is handed at launch (`fs-startup-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-startup-smoke
+xvfb-run -a ./build-linux/fs-startup-smoke    # needs a display
+```
+
+Runs the real `fs_app_activate()` against a fake, Linux-shaped backend
+(one where starting the firewall installs the whole policy) that
+records what it is handed.  One process per scenario:
+
+| Scenario | What must happen |
+|---|---|
+| start | "Start the firewall on program startup" starts once, with every rule from the policy files and without the Sentinel block whose ten minutes ran out while StockFW was closed; the start is audited and the journal records it |
+| held | audit-only mode: `start()` is never called (it would install the file with its held changes); the last applied policy goes in instead |
+| heldnone | audit-only mode and nothing ever applied: the firewall is not touched |
+| push | no start at launch, firewall running: the expired Sentinel block is pushed off the firewall through the apply gate |
+| stopped | no start at launch, firewall stopped: nothing is applied, so a stopped firewall is never started behind the user's back |
+
+Up to 1.0.7 the start ran before the Policy page loaded the policy, so
+on Linux it installed an empty one, and Sentinel's restore took expired
+blocks out of the file without ever pushing that change.
+
+Teeth: put the start back above the Policy page in `fs-app.c` and
+"start" fails with 0 rules at start; drop the push in
+`start_at_launch()` and "push" fails.  `tests/test-core.sh` pins the
+start gate itself (`fs_firewall_start_safe`) and the boot-time expiry
+of Sentinel rows (`fs_autoblock_expire`).

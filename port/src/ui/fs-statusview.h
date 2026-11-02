@@ -29,6 +29,23 @@ FsFirewallState fs_statusview_get_state (void);
 /* The policy whose rules the Overview counts.  Not owned. */
 void           fs_statusview_set_policy (FsPolicy *policy);
 
+/* Start the firewall through the start gate (core/fs-apply.h), as the
+ * Overview's power button and the tray's "Resume protection" both do.
+ * Reports the outcome in a dialog over `parent' when there is one to
+ * report (held, failed, notes) and refreshes the state.  `source' names
+ * the control in the audit line.  TRUE when the firewall now runs. */
+gboolean       fs_statusview_firewall_start (GtkWidget *parent,
+                                             const gchar *source);
+
+/* Stop ("pause") the firewall: ALWAYS asks first, in a dialog that
+ * says what stopping does on this platform, with Cancel as the
+ * default.  TRUE only when the user agreed and the stop worked. */
+gboolean       fs_statusview_firewall_stop  (GtkWidget *parent,
+                                             const gchar *source);
+
+/* The confirmation's explanation for this platform (borrowed). */
+const gchar   *fs_statusview_stop_consequence (void);
+
 /* How the Overview judges the machine right now, for anything that
  * shows the same verdict elsewhere (the sidebar).  One judgement, so
  * the two can never disagree. */

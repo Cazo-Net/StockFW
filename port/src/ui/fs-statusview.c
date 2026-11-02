@@ -28,6 +28,8 @@
 #include "ui/fs-dialogs.h"
 #include "ui/fs-icons.h"
 #include "ui/fs-tray.h"
+#include "ui/fs-policyview.h"
+#include "core/fs-apply.h"
 #include "core/fs-backend.h"
 #include "core/fs-netplace.h"
 #include "core/fs-util.h"
@@ -1329,46 +1331,146 @@ on_place_timeout (gpointer data)
 
 /* --------------------------------------------------------------- actions */
 
-static void
-do_start (void)
+/* [ fs_statusview_firewall_start ] -- see fs-statusview.h.  Through
+ * the start gate, so the Start button, the tray's Resume and the start
+ * on launch are held, refused and audited the same way. */
+gboolean
+fs_statusview_firewall_start (GtkWidget *parent, const gchar *source)
 {
+	const FsBackend *backend = fs_backend ();
+	FsApplyOutcome *outcome;
 	GError *error = NULL;
+	gboolean started;
 
-	if (!fs_backend ()->start (&error)) {
-		fs_dialogs_error (NULL, _("Failed to start the firewall"),
-		                  error ? error->message : NULL);
-		g_clear_error (&error);
-		return;
+	if (shared_policy == NULL) {
+		/* Never start on a policy nobody loaded: on Linux that
+		 * would install an empty ruleset over the real one. */
+		fs_dialogs_error (parent, _("Failed to start the firewall"),
+		                  _("The policy has not been loaded yet."));
+		return FALSE;
 	}
 
-	fs_statusview_set_state (fs_backend ()->get_state ());
+	outcome = fs_firewall_start_safe (backend, shared_policy,
+	                                  source != NULL ? source : "window",
+	                                  fs_policyview_hold_reason (),
+	                                  &error);
+	started = (outcome->result == FS_APPLY_OK);
 
-	/* Started, with notes: what the policy in force does not cover
-	 * (a block whose name could not be looked up, IPv6 without
-	 * ip6tables).  The user pressed Start, so this is the moment. */
-	if (fs_backend ()->apply_notes != NULL) {
-		gchar *notes = fs_backend ()->apply_notes ();
+	if (outcome->result == FS_APPLY_DRY_RUN) {
+		gchar *why = g_strdup_printf (
+			_("Changes are being held (%s) and no policy has been "
+			  "applied before, so there is nothing safe to start "
+			  "with.  Turn the hold off on the Policy page, then "
+			  "start the firewall."),
+			outcome->hold_reason != NULL ? outcome->hold_reason
+			                             : "");
 
-		if (notes != NULL)
-			fs_dialogs_info (NULL, _("Firewall started, with notes"),
-			                 notes);
-		g_free (notes);
+		fs_dialogs_info (parent, _("The firewall was not started"),
+		                 why);
+		g_free (why);
+	} else if (!started) {
+		fs_dialogs_error (parent, _("Failed to start the firewall"),
+		                  error != NULL ? error->message
+		                  : fs_util_apply_result_to_string (
+		                        (int) outcome->result));
+	} else {
+		fs_statusview_set_state (backend->get_state != NULL
+		                         ? backend->get_state () : FS_FW_NONE);
+
+		if (outcome->held && backend->start_applies_policy) {
+			gchar *why = g_strdup_printf (
+				_("The firewall is running the last policy that "
+				  "was applied.  Changes made since then stay "
+				  "held (%s)."),
+				outcome->hold_reason != NULL
+				? outcome->hold_reason : "");
+
+			fs_dialogs_info (parent,
+			                 _("Firewall started with the last "
+			                   "applied policy"), why);
+			g_free (why);
+		} else if (outcome->notes != NULL) {
+			/* Started, with notes: what the policy in force does
+			 * not cover (a block whose name could not be looked
+			 * up, IPv6 without ip6tables).  The user pressed
+			 * Start, so this is the moment. */
+			fs_dialogs_info (parent,
+			                 _("Firewall started, with notes"),
+			                 outcome->notes);
+		}
 	}
+
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+	return started;
 }
 
-static void
-do_stop (void)
+/* [ fs_statusview_stop_consequence ] -- see fs-statusview.h. */
+const gchar *
+fs_statusview_stop_consequence (void)
 {
-	GError *error = NULL;
+	if (fs_backend ()->start_applies_policy)
+		return _("StockFW takes its rules out of the firewall.  Until "
+		         "you resume, the ports and addresses your policy "
+		         "blocks are no longer blocked.\n\nEvent monitoring "
+		         "keeps running.  Resume protection puts the policy "
+		         "back.");
 
-	if (!fs_backend ()->stop (&error)) {
-		fs_dialogs_error (NULL, _("Failed to stop the firewall"),
+	return _("Windows Defender Firewall is switched off for every "
+	         "network profile (Domain, Private and Public).  Until you "
+	         "resume, nothing is filtered.\n\nYour rules are kept.  "
+	         "Resume protection switches the profiles back on.");
+}
+
+/* [ fs_statusview_firewall_stop ] -- see fs-statusview.h. */
+gboolean
+fs_statusview_firewall_stop (GtkWidget *parent, const gchar *source)
+{
+	const FsBackend *backend = fs_backend ();
+	GtkWidget *dialog, *button;
+	GError *error = NULL;
+	gint response;
+
+	dialog = gtk_message_dialog_new (parent != NULL
+	                                 ? GTK_WINDOW (parent) : NULL,
+	                                 GTK_DIALOG_MODAL,
+	                                 GTK_MESSAGE_WARNING,
+	                                 GTK_BUTTONS_NONE,
+	                                 "%s", _("Pause protection?"));
+	gtk_window_set_title (GTK_WINDOW (dialog), _("Pause protection"));
+	gtk_message_dialog_format_secondary_text (
+		GTK_MESSAGE_DIALOG (dialog), "%s",
+		fs_statusview_stop_consequence ());
+	gtk_dialog_add_button (GTK_DIALOG (dialog), _("_Cancel"),
+	                       GTK_RESPONSE_CANCEL);
+	button = gtk_dialog_add_button (GTK_DIALOG (dialog),
+	                                _("_Pause protection"),
+	                                GTK_RESPONSE_ACCEPT);
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "destructive-action");
+	/* Enter must not switch a firewall off: Cancel is the default. */
+	gtk_dialog_set_default_response (GTK_DIALOG (dialog),
+	                                 GTK_RESPONSE_CANCEL);
+	gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+
+	response = gtk_dialog_run (GTK_DIALOG (dialog));
+	gtk_widget_destroy (dialog);
+
+	if (response != GTK_RESPONSE_ACCEPT)
+		return FALSE;
+
+	if (!fs_firewall_stop_logged (backend,
+	                              source != NULL ? source : "window",
+	                              &error)) {
+		fs_dialogs_error (parent, _("Failed to stop the firewall"),
 		                  error ? error->message : NULL);
 		g_clear_error (&error);
-		return;
+		return FALSE;
 	}
 
-	fs_statusview_set_state (fs_backend ()->get_state ());
+	fs_statusview_set_state (backend->get_state != NULL
+	                         ? backend->get_state () : FS_FW_NONE);
+	return TRUE;
 }
 
 static void
@@ -1378,9 +1480,13 @@ on_power_clicked (GtkButton *button, gpointer data)
 	(void) data;
 
 	if (state_is_running (current_state))
-		do_stop ();
+		fs_statusview_firewall_stop (gtk_widget_get_toplevel (
+		                                 GTK_WIDGET (button)),
+		                             "window");
 	else
-		do_start ();
+		fs_statusview_firewall_start (gtk_widget_get_toplevel (
+		                                  GTK_WIDGET (button)),
+		                              "window");
 }
 
 static void

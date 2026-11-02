@@ -41,6 +41,8 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-netparse.h"
 #include "core/fs-activity.h"
 #include "core/fs-json.h"
+#include "core/fs-autoblock.h"
+#include <glib/gstdio.h>
 
 static int failures = 0;
 
@@ -4202,6 +4204,302 @@ static void test_apply_gate (void)
 	g_free (dir);
 }
 
+/* --- the start gate (1.0.7) -------------------------------------------
+ * Every start -- at launch, Start/Resume, `stockfw start' at boot --
+ * goes through fs_firewall_start_safe.  A backend whose start installs
+ * the policy (Linux) must never start the policy FILE while changes
+ * are held; it starts the journal instead, or nothing at all. */
+
+static gint fake_starts, fake_stops;
+static gboolean fake_start_ok = TRUE;
+
+static gboolean
+fake_start (GError **error)
+{
+	fake_starts++;
+	if (!fake_start_ok)
+		g_set_error_literal (error,
+		                     g_quark_from_static_string ("fake-backend"),
+		                     1, "scripted start failure");
+	return fake_start_ok;
+}
+
+static gboolean
+fake_stop (GError **error)
+{
+	(void) error;
+	fake_stops++;
+	return TRUE;
+}
+
+static const FsBackend fake_backend_linux_start = {
+	.name = "fake-linux",
+	.display_name = "scripted fake, start installs the policy",
+	.start_applies_policy = TRUE,
+	.available = fake_available,
+	.start = fake_start,
+	.stop = fake_stop,
+	.apply_rules = fake_apply_rules,
+	.apply_notes = fake_notes,
+};
+
+static const FsBackend fake_backend_windows_start = {
+	.name = "fake-windows",
+	.display_name = "scripted fake, start switches profiles on",
+	.available = fake_available,
+	.start = fake_start,
+	.stop = fake_stop,
+	.apply_rules = fake_apply_rules,
+};
+
+static void test_start_gate (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-start-gate-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy, *live, *loaded;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	gchar *audit;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+
+	policy = gate_policy_two ();
+
+	/* 1. Linux-shaped, no hold, no journal: start() runs, the journal
+	 * now records the policy as live, notes ride along. */
+	fake_reset ();
+	fake_starts = fake_stops = 0;
+	fake_start_ok = TRUE;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       !outcome->held && fake_starts == 1 && fake_full_calls == 0,
+	       "start gate: no hold -> backend start, policy live");
+	CHECK (outcome->notes != NULL,
+	       "start gate: the backend's notes are kept on a start");
+	loaded = fs_policy_new ();
+	CHECK (fs_apply_journal_load (loaded, NULL) &&
+	       fs_policy_count (loaded, FS_RULE_OUTBOUND_ALLOW_SERVICE) ==
+	       fs_policy_count (policy, FS_RULE_OUTBOUND_ALLOW_SERVICE),
+	       "start gate: a start that installs the policy updates the "
+	       "journal");
+	fs_policy_free (loaded);
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 2. Held, journal present: start() is NOT called (it would
+	 * install the file); the journal policy is applied instead. */
+	live = fs_policy_new ();
+	fs_policy_add (live, gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE,
+	                                "SSH", "22", FS_TARGET_ANY));
+	fs_apply_journal_save (live, NULL);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", "audit-only testing mode",
+	                                  &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->held &&
+	       outcome->applied && fake_starts == 0 && fake_full_calls == 1,
+	       "start gate: held -> the journal is started, never the file "
+	       "(%d starts, %d applies)", fake_starts, fake_full_calls);
+	CHECK (fake_seen_len == 1 &&
+	       fs_policy_count (fake_seen[0], FS_RULE_OUTBOUND_ALLOW_SERVICE)
+	       == 1,
+	       "start gate: what was applied is exactly the journal");
+	loaded = fs_policy_new ();
+	fs_apply_journal_load (loaded, NULL);
+	CHECK (fs_policy_count (loaded, FS_RULE_OUTBOUND_ALLOW_SERVICE) == 1,
+	       "start gate: a held start leaves the journal alone");
+	fs_policy_free (loaded);
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	fs_policy_free (live);
+
+	/* 3. Held, no journal: nothing safe to start with. */
+	remove (file);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", "policy locked", &error);
+	CHECK (outcome->result == FS_APPLY_DRY_RUN && outcome->held &&
+	       !outcome->applied && fake_starts == 0 && fake_full_calls == 0,
+	       "start gate: held with no journal -> firewall untouched");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 4. Windows-shaped: start only switches profiles on, so a hold
+	 * has nothing to hold back, and the journal is not touched. */
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_windows_start,
+	                                  policy, "test",
+	                                  "audit-only testing mode", &error);
+	CHECK (outcome->result == FS_APPLY_OK && fake_starts == 1 &&
+	       !outcome->applied && fake_full_calls == 0,
+	       "start gate: a profiles-only start runs even when held, and "
+	       "never claims the policy went live");
+	CHECK (!g_file_test (file, G_FILE_TEST_EXISTS),
+	       "start gate: a profiles-only start writes no journal");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 5. A failing start reports it; an absent backend is refused. */
+	fake_reset ();
+	fake_start_ok = FALSE;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_FAILED && !outcome->applied &&
+	       error != NULL,
+	       "start gate: a failed start is a failure, with the reason");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	fake_start_ok = TRUE;
+
+	fake_reset ();
+	fake_available_flag = FALSE;
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start, policy,
+	                                  "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_NO_IPTABLES && fake_starts == 0 &&
+	       error != NULL,
+	       "start gate: no backend available -> refused, not started");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	CHECK (!fs_firewall_stop_logged (&fake_backend_linux_start, "test",
+	                                 &error) && fake_stops == 0,
+	       "stop: no backend available -> refused");
+	g_clear_error (&error);
+	fake_available_flag = TRUE;
+
+	/* 6. Stop is never held, and is on the record. */
+	fake_stops = 0;
+	CHECK (fs_firewall_stop_logged (&fake_backend_linux_start, "test",
+	                                &error) && fake_stops == 1,
+	       "stop: the backend stops");
+	g_clear_error (&error);
+
+	audit = NULL;
+	g_file_get_contents (audit_file, &audit, NULL, NULL);
+	CHECK (audit != NULL && strstr (audit, "firewall started") &&
+	       strstr (audit, "firewall start held") &&
+	       strstr (audit, "firewall start failed") &&
+	       strstr (audit, "firewall start refused") &&
+	       strstr (audit, "firewall stopped"),
+	       "start gate: every start and stop outcome is audited");
+	g_free (audit);
+
+	fake_reset ();
+	fs_policy_free (policy);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
+/* --- Sentinel's persisted blocks at a start without the app ------------
+ * `stockfw start' at boot has no Sentinel running to lift a block whose
+ * ten minutes ran out while the machine was off; fs_autoblock_expire
+ * takes such rows out of the policy BEFORE the start can install them. */
+
+static void test_autoblock_expire (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-autoblock-test", NULL);
+	gchar *state = g_build_filename (dir, "autoblocks", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	const gchar *old_csv = "203.0.113.9, Sentinel: old beacon";
+	const gchar *new_csv = "203.0.113.10, Sentinel: fresh beacon";
+	const gchar *user_csv = "198.51.100.7, mine";
+	gint64 now = 1800000000;
+	FsPolicy *policy;
+	FsRule *probe;
+	gchar *rows, *after = NULL;
+	guint dropped;
+
+	g_mkdir_with_parents (dir, 0700);
+	g_setenv ("STOCKFW_AUTOBLOCK_FILE", state, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+
+	policy = fs_policy_new ();
+	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	                                         old_csv));
+	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	                                         new_csv));
+	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	                                         user_csv));
+	fs_policy_save (policy);
+
+	rows = g_strdup_printf ("S,%" G_GINT64_FORMAT ",%d,%s\n"
+	                        "S,%" G_GINT64_FORMAT ",%d,%s\n"
+	                        "garbage row\n",
+	                        now - 3600, (int) FS_RULE_OUTBOUND_DENY_TO,
+	                        old_csv,
+	                        now - 60, (int) FS_RULE_OUTBOUND_DENY_TO,
+	                        new_csv);
+	g_file_set_contents (state, rows, -1, NULL);
+	g_free (rows);
+
+	dropped = fs_autoblock_expire (policy, now, FALSE);
+	CHECK (dropped == 1, "autoblock expire: one stale block came out "
+	       "(got %u)", dropped);
+	probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, old_csv);
+	CHECK (!fs_policy_contains (policy, probe),
+	       "autoblock expire: the stale block left the policy");
+	fs_rule_free (probe);
+	{
+		FsPolicy *disk = fs_policy_new ();
+
+		fs_policy_load (disk, NULL);
+		probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, old_csv);
+		CHECK (!fs_policy_contains (disk, probe),
+		       "autoblock expire: ...and the policy file");
+		fs_rule_free (probe);
+		probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, new_csv);
+		CHECK (fs_policy_contains (disk, probe),
+		       "autoblock expire: a block inside its ten minutes "
+		       "stays for the app to re-arm");
+		fs_rule_free (probe);
+		probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, user_csv);
+		CHECK (fs_policy_contains (disk, probe),
+		       "autoblock expire: the user's own rule is never touched");
+		fs_rule_free (probe);
+		fs_policy_free (disk);
+	}
+	g_file_get_contents (state, &after, NULL, NULL);
+	CHECK (after != NULL && strstr (after, new_csv) != NULL &&
+	       strstr (after, old_csv) == NULL &&
+	       strstr (after, "garbage") == NULL,
+	       "autoblock expire: the state file keeps only the live row");
+	g_free (after);
+
+	dropped = fs_autoblock_expire (policy, now, TRUE);
+	CHECK (dropped == 1, "autoblock expire: Sentinel out of auto mode "
+	       "lifts the rest (got %u)", dropped);
+	CHECK (fs_autoblock_expire (policy, now, FALSE) == 0,
+	       "autoblock expire: nothing left, nothing removed");
+
+	fs_policy_clear (policy);
+	fs_policy_save (policy);
+	fs_policy_free (policy);
+	g_unsetenv ("STOCKFW_AUTOBLOCK_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (state);
+	remove (audit_file);
+	g_rmdir (dir);
+	g_free (state);
+	g_free (audit_file);
+	g_free (dir);
+}
+
 /* --- the settings plan ------------------------------------------------
  * fs-settings-plan.c maps the Firewall preferences onto portable rules
  * that the Windows backend executes.  Each mapping is pinned here: the
@@ -5958,6 +6256,8 @@ int main (void)
 	test_apply_impact ();
 	test_apply_delta ();
 	test_apply_gate ();
+	test_start_gate ();
+	test_autoblock_expire ();
 	test_settings_plan ();
 	test_netparse_log ();
 	test_netparse_proc ();

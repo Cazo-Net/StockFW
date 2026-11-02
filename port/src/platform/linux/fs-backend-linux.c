@@ -1829,6 +1829,8 @@ static const FsBackend linux_backend = {
 	                         FS_FWHON_RATE_LIMIT |
 	                         FS_FWHON_LOG_ALLOWED |
 	                         FS_FWHON_HOST_NAMES,
+	/* linux_start is linux_apply_rules (current_policy). */
+	.start_applies_policy  = TRUE,
 	.available             = linux_available,
 	.get_state             = linux_get_state,
 	.start                 = linux_start,

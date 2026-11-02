@@ -107,6 +107,15 @@ typedef struct
 	/* FS_FWHON_* bits: per-control effects inside offered pages. */
 	guint32 fw_honors;
 
+	/* 1.0.7: TRUE when start() installs the policy handed to
+	 * fs_backend_set_context() -- Linux, where starting IS a whole-set
+	 * apply.  FALSE when start() only switches enforcement on and the
+	 * rules live in the firewall's own store (Windows: the profiles
+	 * go on, the netsh rules are already there).  The start gate
+	 * (fs_firewall_start_safe) reads it to know whether a start
+	 * changes which policy is live. */
+	gboolean start_applies_policy;
+
 	/* TRUE when the backend can actually manage a firewall here. */
 	gboolean (*available) (void);
 

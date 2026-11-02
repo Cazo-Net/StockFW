@@ -3,6 +3,8 @@
  *--------------------------------------------------------------------*/
 #include "cli/fs-cli.h"
 #include "core/fs-apply.h"
+#include "core/fs-autoblock.h"
+#include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
 #include "core/fs-service.h"
 #include "core/fs-json.h"
@@ -998,12 +1000,50 @@ start_or_stop (gint argc, gboolean start)
 	if (geteuid () != 0)
 		return need_root (start ? "start" : "stop");
 
+	/* Load first, always: the backend starts from the policy it was
+	 * handed, and an unloaded one is an empty one. */
 	policy = fs_cli_load_policy (NULL, NULL);
 	settings = backend_context (policy);
 
-	ok = start ? fs_backend ()->start (&error) : fs_backend ()->stop (&error);
-	notes = (ok && start && fs_backend ()->apply_notes != NULL)
-	        ? fs_backend ()->apply_notes () : NULL;
+	if (start) {
+		FsApplyOutcome *outcome;
+		gchar *mode = fs_prefs_get_string (FS_PREFS_SENTINEL_MODE,
+		                                   "auto");
+
+		/* Sentinel's blocks whose ten minutes ran out while nothing
+		 * was running to lift them (a reboot) come out before the
+		 * start can install them again. */
+		fs_autoblock_expire (policy, g_get_real_time () / G_USEC_PER_SEC,
+		                     g_strcmp0 (mode, "auto") != 0);
+		g_free (mode);
+
+		/* Through the start gate: audit-only mode is honoured (the
+		 * last applied policy is started, the held changes stay
+		 * held) and the start is on the audit record. */
+		outcome = fs_firewall_start_safe (fs_backend (), policy, "cli",
+		                                  fs_apply_hold_reason (),
+		                                  &error);
+		ok = (outcome->result == FS_APPLY_OK);
+		if (outcome->result == FS_APPLY_DRY_RUN && error == NULL)
+			g_set_error (&error, FS_APPLY_ERROR, 0,
+			             "held (%s) and no policy was ever applied, "
+			             "so there is nothing safe to start with",
+			             outcome->hold_reason);
+		else if (!ok && error == NULL)
+			g_set_error_literal (&error, FS_APPLY_ERROR, 0,
+				fs_util_apply_result_to_string (
+					(int) outcome->result));
+		notes = ok ? g_strdup (outcome->notes) : NULL;
+		if (ok && outcome->held && !fs_cli.json && !fs_cli.quiet)
+			printf ("%sHeld:%s %s.  Started with the last applied "
+			        "policy; later changes stay held.\n",
+			        fs_cli_amber (), fs_cli_reset (),
+			        outcome->hold_reason);
+		fs_apply_outcome_free (outcome);
+	} else {
+		ok = fs_firewall_stop_logged (fs_backend (), "cli", &error);
+		notes = NULL;
+	}
 
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{");

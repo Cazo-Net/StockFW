@@ -118,6 +118,45 @@ FsApplyOutcome *fs_policy_apply_safe (const FsBackend *backend,
                                       GError **error);
 void fs_apply_outcome_free (FsApplyOutcome *outcome);
 
+/* Start the firewall through the gate (1.0.7).  Every start -- the
+ * app's "start on program startup", the Start/Resume buttons, `stockfw
+ * start' at boot -- comes through here, so a start is held, refused
+ * and audited exactly like an apply:
+ *
+ *   - no backend available: refused (FS_APPLY_NO_IPTABLES), nothing
+ *     touched;
+ *   - no hold: backend->start().  Where the backend's start installs
+ *     the policy (start_applies_policy, Linux) the journal records it
+ *     as live, and the backend's notes are kept;
+ *   - a hold (audit-only mode, the Policy Lock) on a backend whose
+ *     start installs the policy: the policy FILE may carry changes the
+ *     hold is keeping off the firewall, so the start installs the
+ *     journal -- the last policy that was really live -- instead.
+ *     Protection comes back, the held changes stay held.  With no
+ *     journal there is nothing safe to start with: FS_APPLY_DRY_RUN,
+ *     firewall untouched;
+ *   - a hold on a backend whose start only switches enforcement on
+ *     (Windows profiles): started; the rules were never going to
+ *     change, so there is nothing to hold back.
+ *
+ * `policy' must be the policy already handed to the backend with
+ * fs_backend_set_context(), loaded from disk: the caller loads first,
+ * this never does.  Returns a caller-owned outcome (result FS_APPLY_OK
+ * means the firewall is now running); NULL only if policy was NULL. */
+FsApplyOutcome *fs_firewall_start_safe (const FsBackend *backend,
+                                        FsPolicy *policy,
+                                        const gchar *source,
+                                        const gchar *hold,
+                                        GError **error);
+
+/* Stop the firewall, on the record.  Never held: a hold keeps policy
+ * CHANGES off the firewall, while stopping is the user's own way out
+ * of a ruleset that broke something, and must always work.  The audit
+ * line says who stopped it and whether it worked. */
+gboolean fs_firewall_stop_logged (const FsBackend *backend,
+                                  const gchar *source,
+                                  GError **error);
+
 /* Audit-only testing mode: the preference, the hold reason it
  * produces (or NULL when off), and the setter for the Policy page's
  * toggle.  The Status page's Lock is UI state on top of this;

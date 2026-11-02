@@ -22,6 +22,7 @@
 #include "ui/fs-policyview.h"
 #include "ui/fs-simviz.h"
 #include "core/fs-apply.h"
+#include "core/fs-autoblock.h"
 #include "core/fs-i18n.h"
 #include <gtk/gtk.h>
 #include <string.h>
@@ -75,7 +76,8 @@ static guint          total_events     = 0;
 static GtkWidget     *sentinel_combo   = NULL;
 static gchar          sentinel_mode[16] = "auto";
 
-#define FS_AUTOBLOCK_TTL_S 600     /* auto-blocks lift after 10 min */
+/* FS_AUTOBLOCK_TTL_S (core/fs-autoblock.h): auto-blocks lift after
+ * 10 min. */
 #define FS_AUTOBLOCK_RETRY_US (60 * G_USEC_PER_SEC)
 
 typedef struct
@@ -634,26 +636,8 @@ auto_block_cooldown_contains (FsRuleKind kind, const gchar *csv)
 static gchar *
 auto_block_state_path (void)
 {
-    const gchar *env = g_getenv ("STOCKFW_AUTOBLOCK_FILE");
-
-    if (env != NULL && *env != '\0')
-        return g_strdup (env);
-
-#ifdef G_OS_WIN32
-    {
-        const gchar *appdata = g_getenv ("APPDATA");
-
-        if (appdata != NULL && *appdata != '\0')
-            return g_build_filename (appdata, "stockfw", "autoblocks",
-                                     NULL);
-
-        return g_build_filename (g_get_home_dir (), "AppData", "Roaming",
-                                 "stockfw", "autoblocks", NULL);
-    }
-#else
-    return g_build_filename (g_get_user_config_dir (), "stockfw",
-                             "autoblocks", NULL);
-#endif
+    /* One definition, shared with `stockfw start' (core). */
+    return fs_autoblock_state_path ();
 }
 
 /* [ auto_block_state_save ]
@@ -1149,7 +1133,7 @@ fs_copilot_lift_auto_blocks_for_dest (const gchar *dest)
  * rewritten to mirror what survived, and any row whose removal
  * failed stays tracked so the expiry timer retries it instead of
  * leaving a block nobody manages. */
-void
+gboolean
 fs_copilot_autoblocks_restore (FsPolicy *policy)
 {
     gchar *path;
@@ -1160,7 +1144,7 @@ fs_copilot_autoblocks_restore (FsPolicy *policy)
     guint stale = 0, lifted = 0, armed = 0, gone = 0, retried = 0;
 
     if (policy == NULL)
-        return;
+        return FALSE;
 
     /* The shared policy, even if the Copilot page is not built yet:
      * the drop helper works through this pointer. */
@@ -1170,7 +1154,7 @@ fs_copilot_autoblocks_restore (FsPolicy *policy)
 
     if (!g_file_get_contents (path, &contents, NULL, NULL)) {
         g_free (path);
-        return;                    /* nothing was staged last session */
+        return FALSE;              /* nothing was staged last session */
     }
 
     now_epoch = g_get_real_time () / G_USEC_PER_SEC;
@@ -1293,6 +1277,17 @@ fs_copilot_autoblocks_restore (FsPolicy *policy)
 
     g_free (contents);
     g_free (path);
+
+    /* Rows came out of the policy: the firewall still holds them until
+     * a push or a start.  The caller decides which (fs-app.c). */
+    return stale > 0 || lifted > 0;
+}
+
+/* [ fs_copilot_autoblocks_push ] -- see fs-copilot.h. */
+void
+fs_copilot_autoblocks_push (void)
+{
+    auto_block_push ();
 }
 
 /* [ on_sentinel_mode_changed ] */

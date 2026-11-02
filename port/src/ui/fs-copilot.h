@@ -33,7 +33,14 @@ gboolean fs_copilot_sentinel_auto_pass (void);
  * wall-clock time (a restart grants no fresh ten minutes), and lift
  * everything when Sentinel is not in auto mode.  Call once, after
  * the Copilot page has been built with `policy'. */
-void fs_copilot_autoblocks_restore (FsPolicy *policy);
+gboolean fs_copilot_autoblocks_restore (FsPolicy *policy);
+
+/* The restore only edits the policy and its file.  Returns TRUE when
+ * it took rows OUT of the policy (expired, or Sentinel left auto
+ * mode): those blocks are still on the firewall until something
+ * pushes, so the caller either starts the firewall with the restored
+ * policy or calls this to push it through the apply gate. */
+void fs_copilot_autoblocks_push (void);
 
 /* Lift every staged auto-block in one go (leaving auto mode does
  * this).  Each retirement enters the session cooldown, so the next

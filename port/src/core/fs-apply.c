@@ -652,3 +652,200 @@ fs_apply_outcome_free (FsApplyOutcome *outcome)
 	g_free (outcome->notes);
 	g_free (outcome);
 }
+
+/* =====================================================================
+ * Start and stop through the gate (1.0.7)
+ * ===================================================================== */
+
+/* [ start_record_live ]
+ * A start that installed `policy' (Linux): the journal now says so,
+ * and the audit line carries the backend's notes. */
+static void
+start_record_live (const FsBackend *backend, FsApplyOutcome *outcome,
+                   const FsPolicy *policy, const gchar *source,
+                   const gchar *mode, const gchar *what,
+                   const gchar *extra)
+{
+	GError *save_error = NULL;
+	gchar *detail;
+
+	outcome->applied = TRUE;
+	if (backend->apply_notes != NULL)
+		outcome->notes = backend->apply_notes ();
+
+	if (!fs_apply_journal_save (policy, &save_error)) {
+		detail = apply_detail (source, mode, what,
+		                       "started but the journal could not be "
+		                       "saved",
+		                       save_error != NULL ? save_error->message
+		                                          : NULL);
+		fs_audit_log ("firewall started, journal NOT saved", detail);
+		g_clear_error (&save_error);
+	} else {
+		detail = apply_detail (source, mode, what, extra,
+		                       outcome->notes);
+		fs_audit_log ("firewall started", detail);
+	}
+	g_free (detail);
+}
+
+/* [ fs_firewall_start_safe ] */
+FsApplyOutcome *
+fs_firewall_start_safe (const FsBackend *backend, FsPolicy *policy,
+                        const gchar *source, const gchar *hold,
+                        GError **error)
+{
+	FsApplyOutcome *outcome;
+	FsPolicy *before;
+	gboolean have_before, held;
+	gchar *desc;
+
+	g_return_val_if_fail (policy != NULL, NULL);
+
+	outcome = g_new0 (FsApplyOutcome, 1);
+	outcome->result = FS_APPLY_FAILED;
+
+	before = fs_policy_new ();
+	have_before = fs_apply_journal_load (before, NULL);
+	outcome->impact = fs_policy_impact (have_before ? before : NULL,
+	                                    policy);
+	desc = fs_policy_impact_describe (outcome->impact);
+	held = (hold != NULL && *hold != '\0');
+
+	if (backend == NULL || backend->available == NULL ||
+	    backend->start == NULL || !backend->available ()) {
+		gchar *detail = apply_detail (source, "refused",
+		                              "no firewall backend available",
+		                              desc, NULL);
+
+		outcome->result = FS_APPLY_NO_IPTABLES;
+		g_set_error_literal (error, FS_APPLY_ERROR,
+		                     FS_APPLY_ERR_NO_BACKEND,
+		                     "No firewall backend is available on "
+		                     "this system.");
+		fs_audit_log ("firewall start refused", detail);
+		g_free (detail);
+		goto out;
+	}
+
+	if (held && backend->start_applies_policy) {
+		outcome->held = TRUE;
+		outcome->hold_reason = hold;
+
+		if (!have_before) {
+			gchar *detail = apply_detail (
+				source, "held", hold,
+				"no applied-policy journal to start from", desc);
+
+			outcome->result = FS_APPLY_DRY_RUN;
+			fs_audit_log ("firewall start held, firewall untouched",
+			              detail);
+			g_free (detail);
+			goto out;
+		}
+
+		/* The last policy that was really live, not the file: the
+		 * file may hold exactly the changes the hold exists for. */
+		outcome->result = backend->apply_rules != NULL
+		                ? backend->apply_rules (before, error)
+		                : FS_APPLY_FAILED;
+		if (outcome->result == FS_APPLY_OK ||
+		    outcome->result == FS_APPLY_PARTIAL) {
+			outcome->result = FS_APPLY_OK;
+			outcome->applied = TRUE;
+			if (backend->apply_notes != NULL)
+				outcome->notes = backend->apply_notes ();
+			{
+				gchar *detail = apply_detail (
+					source, "held", hold,
+					"started with the last applied policy; "
+					"policy changes stay held", desc);
+
+				fs_audit_log ("firewall started", detail);
+				g_free (detail);
+			}
+		} else {
+			gchar *detail = apply_detail (
+				source, "held",
+				fs_util_apply_result_to_string (
+					(int) outcome->result),
+				(error != NULL && *error != NULL)
+				? (*error)->message : NULL, desc);
+
+			fs_audit_log ("firewall start failed", detail);
+			g_free (detail);
+		}
+		goto out;
+	}
+
+	if (!backend->start (error)) {
+		gchar *detail = apply_detail (
+			source, "start", "FAILED",
+			(error != NULL && *error != NULL) ? (*error)->message
+			                                  : NULL, desc);
+
+		outcome->result = FS_APPLY_FAILED;
+		fs_audit_log ("firewall start failed", detail);
+		g_free (detail);
+		goto out;
+	}
+
+	outcome->result = FS_APPLY_OK;
+	outcome->held = held;
+	outcome->hold_reason = held ? hold : NULL;
+
+	if (backend->start_applies_policy) {
+		start_record_live (backend, outcome, policy, source, "start",
+		                   desc, NULL);
+	} else {
+		/* Enforcement switched on; the rules in the firewall's own
+		 * store are whatever the last apply left, so the journal is
+		 * already right. */
+		gchar *detail = apply_detail (source, "start",
+		                              "enforcement switched on, rules "
+		                              "unchanged",
+		                              held ? hold : NULL, NULL);
+
+		fs_audit_log ("firewall started", detail);
+		g_free (detail);
+	}
+
+out:
+	fs_policy_free (before);
+	g_free (desc);
+
+	return outcome;
+}
+
+/* [ fs_firewall_stop_logged ] */
+gboolean
+fs_firewall_stop_logged (const FsBackend *backend, const gchar *source,
+                         GError **error)
+{
+	gboolean ok;
+	gchar *detail;
+
+	if (backend == NULL || backend->available == NULL ||
+	    backend->stop == NULL || !backend->available ()) {
+		g_set_error_literal (error, FS_APPLY_ERROR,
+		                     FS_APPLY_ERR_NO_BACKEND,
+		                     "No firewall backend is available on "
+		                     "this system.");
+		detail = apply_detail (source, "refused",
+		                       "no firewall backend available", NULL,
+		                       NULL);
+		fs_audit_log ("firewall stop refused", detail);
+		g_free (detail);
+		return FALSE;
+	}
+
+	ok = backend->stop (error);
+	detail = apply_detail (source, "stop", ok ? "stopped" : "FAILED",
+	                       (!ok && error != NULL && *error != NULL)
+	                       ? (*error)->message : NULL, NULL);
+	fs_audit_log (ok ? "firewall stopped" : "firewall stop failed",
+	              detail);
+	g_free (detail);
+
+	return ok;
+}
