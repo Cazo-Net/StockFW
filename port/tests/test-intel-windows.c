@@ -24,6 +24,13 @@
  * Windows only, elevated only: a plain shell prints SKIP and exits 0,
  * as does a computer whose firewall service is stopped or that already
  * holds StockFW blocklist rules (they are the user's; never touched).
+ * With STOCKFW_REQUIRE_WINDOWS_INTEL=1 (the CI's Windows job) every
+ * skip is a failure, and rules that cannot be read always are.
+ *
+ * Review additions: an apply over a foreign rule in the group repairs
+ * it; the policy's own clear works beside blocklists of more than
+ * 16 MiB of addresses and leaves them whole; a %ProgramData%\StockFW
+ * another account made first (a folder, a link) is moved aside.
  * Built by `ninja -C build fs-intel-windows-test'; tests/full-suite.sh
  * runs it on Windows.
  *--------------------------------------------------------------------*/
@@ -35,6 +42,7 @@
 #include <aclapi.h>
 #include <sddl.h>
 #include <netfw.h>
+#include <shlobj.h>
 
 #include <glib.h>
 #include <glib/gstdio.h>
@@ -46,6 +54,7 @@
 #include "core/fs-intelset.h"
 #include "core/fs-intelwin.h"
 #include "core/fs-iprange.h"
+#include "core/fs-util.h"
 #include "platform/windows/netfw-compat.h"
 
 static int failures = 0;
@@ -520,6 +529,349 @@ check_store_dacl (void)
 
 /* ------------------------------------------------------------- main */
 
+/* A test that could not run.  On a developer's computer that is a SKIP
+ * and exit 0; with STOCKFW_REQUIRE_WINDOWS_INTEL=1 (set by the CI's
+ * Windows job, where everything is in place) it is a failure, so a
+ * skip can never pass the job silently (review W1). */
+static gboolean
+required (void)
+{
+	return g_strcmp0 (g_getenv ("STOCKFW_REQUIRE_WINDOWS_INTEL"), "1") == 0;
+}
+
+static int
+skip (const gchar *why)
+{
+	if (required ()) {
+		printf ("FAIL: the test could not run, and "
+		        "STOCKFW_REQUIRE_WINDOWS_INTEL=1 requires it: %s\n", why);
+		return 1;
+	}
+	printf ("SKIP: %s\n", why);
+	return 0;
+}
+
+/* Inside a run: a part that cannot be checked here is a failure when
+ * the run is required, and a note otherwise. */
+static void
+skip_part (const gchar *why)
+{
+	if (required ())
+		CHECK (FALSE, "%s (STOCKFW_REQUIRE_WINDOWS_INTEL=1)", why);
+	else
+		printf ("SKIP: %s\n", why);
+}
+
+/* ---------------------------------------- the policy beside big lists */
+
+/* One of the policy's names ("StockFW-"), outside every group. */
+#define POLICY_DECOY "StockFW- wintel test policy rule"
+
+static gboolean
+rule_named (const gchar *name)
+{
+	GPtrArray *all = list_rules ();
+	gboolean found = FALSE;
+
+	for (guint i = 0; i < all->len; i++)
+		if (strcmp (((Rule *) all->pdata[i])->name, name) == 0)
+			found = TRUE;
+	g_ptr_array_unref (all);
+	return found;
+}
+
+/* Review W3: the policy's own clear listed its rules through
+ * `netsh show rule name=all', whose output prints every address of
+ * every blocklist rule and was cut at 16 MiB (and 30 s).  With lists
+ * this long a policy rule enumerated after them was never seen, and
+ * the clear "verified" zero.  Here: blocklists whose addresses alone
+ * are past 16 MiB of text, then a policy rule, then the policy's clear,
+ * which must remove that rule and leave every blocklist rule alone. */
+static void
+check_policy_beside_big_lists (const FsBackend *b)
+{
+	GPtrArray *all = list_rules ();
+	gboolean theirs = FALSE;
+	FsIntelRuleset *big;
+	FsRangeSet *v6;
+	gchar *want, *digest = NULL;
+	GError *e = NULL;
+	FsApplyResult res;
+	FsIntelLive l;
+	gint64 t0;
+	const guint n = 140000;
+
+	for (guint i = 0; i < all->len; i++)
+		if (fs_netsh_rule_name_is_ours (((Rule *) all->pdata[i])->name))
+			theirs = TRUE;
+	g_ptr_array_unref (all);
+	if (theirs) {
+		skip_part ("policy beside big lists: this computer holds StockFW "
+		           "policy rules, and clearing them is not the test's to "
+		           "do");
+		return;
+	}
+
+	/* Long "a-b" IPv6 ranges inside 2001:db8::/32 (documentation). */
+	big = fs_intel_ruleset_new ();
+	v6 = fs_range_set_new ();
+	for (guint i = 0; i < n; i++) {
+		FsU128 lo = { G_GUINT64_CONSTANT (0x20010db8a0000001) + i * 2,
+		              G_GUINT64_CONSTANT (0x123456789abcdef1) };
+		FsU128 hi = { lo.hi, G_GUINT64_CONSTANT (0xfedcba9876543210) };
+
+		fs_range_set_add6 (v6, lo, hi);
+	}
+	fs_range_set_normalize (v6);
+	fs_intel_ruleset_add (big, "wintest-huge", "StockFW Windows test, huge",
+	                      FS_INTEL_DIR_BOTH, v6);
+	want = fs_intel_ruleset_digest (big);
+
+	t0 = g_get_monotonic_time ();
+	CHECK (b->intel_apply (big, &e),
+	       "policy beside big lists: %u long IPv6 ranges both ways are "
+	       "applied (%.0f s; %s)", n,
+	       (g_get_monotonic_time () - t0) / 1e6, e ? e->message : "ok");
+	g_clear_error (&e);
+	CHECK (add_rule (POLICY_DECOY, "", NET_FW_RULE_DIR_IN,
+	                 NET_FW_ACTION_BLOCK, "192.0.2.252", FALSE),
+	       "policy beside big lists: setup: a rule with a policy name, "
+	       "added after the blocklists");
+
+	t0 = g_get_monotonic_time ();
+	res = b->clear_rules (&e);
+	CHECK (res == FS_APPLY_OK,
+	       "policy beside big lists: the policy's clear succeeds (%d, "
+	       "%.0f s; %s)", (int) res, (g_get_monotonic_time () - t0) / 1e6,
+	       e ? e->message : "ok");
+	g_clear_error (&e);
+	CHECK (!rule_named (POLICY_DECOY),
+	       "policy beside big lists: the policy's clear removed its rule, "
+	       "listed after more than 16 MiB of blocklist addresses");
+	l = live (&digest);
+	CHECK (l == FS_INTEL_LIVE_PRESENT && g_strcmp0 (digest, want) == 0,
+	       "policy beside big lists: every blocklist rule is still there, "
+	       "whole (%d)", (int) l);
+	g_clear_pointer (&digest, g_free);
+
+	CHECK (b->intel_clear (&e), "policy beside big lists: the blocklists "
+	       "are cleared (%s)", e ? e->message : "ok");
+	g_clear_error (&e);
+	CHECK (live (NULL) == FS_INTEL_LIVE_ABSENT,
+	       "policy beside big lists: intel_live reads ABSENT");
+	remove_rules (POLICY_DECOY, "");
+	g_free (want);
+	fs_intel_ruleset_free (big);
+}
+
+/* ------------------------------------------- a store another made first */
+
+static gboolean
+enable_privilege (const wchar_t *name)
+{
+	HANDLE token = NULL;
+	TOKEN_PRIVILEGES tp = { 0 };
+	gboolean ok = FALSE;
+
+	if (!OpenProcessToken (GetCurrentProcess (),
+	                       TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+		return FALSE;
+	tp.PrivilegeCount = 1;
+	tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+	if (LookupPrivilegeValueW (NULL, name, &tp.Privileges[0].Luid) &&
+	    AdjustTokenPrivileges (token, FALSE, &tp, 0, NULL, NULL) &&
+	    GetLastError () == ERROR_SUCCESS)
+		ok = TRUE;
+	CloseHandle (token);
+	return ok;
+}
+
+static DWORD
+attrs_of (const gchar *path)
+{
+	gunichar2 *w = g_utf8_to_utf16 (path, -1, NULL, NULL, NULL);
+	DWORD a = w != NULL ? GetFileAttributesW ((LPCWSTR) w)
+	                    : INVALID_FILE_ATTRIBUTES;
+
+	g_free (w);
+	return a;
+}
+
+static gboolean
+remove_dir (const gchar *path)
+{
+	gunichar2 *w = g_utf8_to_utf16 (path, -1, NULL, NULL, NULL);
+	gboolean ok = w != NULL && RemoveDirectoryW ((LPCWSTR) w);
+
+	g_free (w);
+	return ok;
+}
+
+/* A real directory (no link), owned by Administrators or SYSTEM, with
+ * a protected access list. */
+static gboolean
+store_is_ours (const gchar *path)
+{
+	DWORD a = attrs_of (path);
+	gunichar2 *w;
+	PSID owner = NULL;
+	PSECURITY_DESCRIPTOR sd = NULL;
+	SECURITY_DESCRIPTOR_CONTROL ctl = 0;
+	DWORD rev = 0;
+	gboolean ok = FALSE;
+
+	if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY) ||
+	    (a & FILE_ATTRIBUTE_REPARSE_POINT))
+		return FALSE;
+	w = g_utf8_to_utf16 (path, -1, NULL, NULL, NULL);
+	if (GetNamedSecurityInfoW ((LPWSTR) w, SE_FILE_OBJECT,
+	                           OWNER_SECURITY_INFORMATION |
+	                           DACL_SECURITY_INFORMATION, &owner, NULL,
+	                           NULL, NULL, &sd) == ERROR_SUCCESS) {
+		GetSecurityDescriptorControl (sd, &ctl, &rev);
+		ok = (IsWellKnownSid (owner, WinBuiltinAdministratorsSid) ||
+		      IsWellKnownSid (owner, WinLocalSystemSid)) &&
+		     (ctl & SE_DACL_PROTECTED) != 0;
+		LocalFree (sd);
+	}
+	g_free (w);
+	return ok;
+}
+
+/* Removes every "StockFW.untrusted-*" in `pd' (a link is removed as a
+ * link); returns how many there were. */
+static guint
+remove_asides (const gchar *pd)
+{
+	GDir *d = g_dir_open (pd, 0, NULL);
+	const gchar *name;
+	guint n = 0;
+
+	while (d != NULL && (name = g_dir_read_name (d)) != NULL) {
+		if (g_str_has_prefix (name, "StockFW.untrusted-")) {
+			gchar *p = g_build_filename (pd, name, NULL);
+
+			n++;
+			if (!remove_dir (p))
+				printf ("      could not remove %s\n", p);
+			g_free (p);
+		}
+	}
+	if (d != NULL)
+		g_dir_close (d);
+	return n;
+}
+
+/* Review W7: %ProgramData% lets every user create a folder, so a
+ * standard user could make %ProgramData%\StockFW first and switch
+ * threat intel off for good.  An elevated StockFW now moves such a
+ * folder (or a link) aside and makes its own.  Run only when the
+ * computer has no StockFW store yet. */
+static void
+check_store_squatted (void)
+{
+	wchar_t buf[MAX_PATH + 1];
+	gchar *pd, *parent, *got;
+	gunichar2 *w;
+	GError *e = NULL;
+	guint asides;
+
+	if (SHGetFolderPathW (NULL, CSIDL_COMMON_APPDATA, NULL,
+	                      SHGFP_TYPE_CURRENT, buf) != S_OK) {
+		CHECK (FALSE, "store squatted: %%ProgramData%% is found");
+		return;
+	}
+	pd = g_utf16_to_utf8 ((const gunichar2 *) buf, -1, NULL, NULL, NULL);
+	parent = g_build_filename (pd, "StockFW", NULL);
+	if (attrs_of (parent) != INVALID_FILE_ATTRIBUTES) {
+		skip_part ("store squatted: %ProgramData%\\StockFW already exists "
+		           "on this computer; it is the user's and is left alone");
+		g_free (parent);
+		g_free (pd);
+		return;
+	}
+	g_unsetenv ("STOCKFW_INTEL_DIR");
+	remove_asides (pd);
+	w = g_utf8_to_utf16 (parent, -1, NULL, NULL, NULL);
+
+	/* 1. A folder another account owns (BUILTIN\Users stands in for
+	 *    the standard user who made it). */
+	{
+		BYTE sid[SECURITY_MAX_SID_SIZE];
+		DWORD len = sizeof sid;
+		gboolean made;
+
+		made = CreateDirectoryW ((LPCWSTR) w, NULL) &&
+		       enable_privilege (L"SeRestorePrivilege") &&
+		       CreateWellKnownSid (WinBuiltinUsersSid, NULL, sid, &len) &&
+		       SetNamedSecurityInfoW ((LPWSTR) w, SE_FILE_OBJECT,
+		                              OWNER_SECURITY_INFORMATION, sid,
+		                              NULL, NULL, NULL) == ERROR_SUCCESS;
+		CHECK (made, "store squatted: setup: %%ProgramData%%\\StockFW "
+		       "made first, owned by BUILTIN\\Users");
+		got = fs_intel_dir (&e);
+		asides = remove_asides (pd);
+		CHECK (got != NULL && store_is_ours (parent) && asides == 1,
+		       "store squatted: a folder another account made first is "
+		       "moved aside, and StockFW's own is made in its place "
+		       "(%u moved; %s)", asides, e ? e->message : "ok");
+		g_clear_error (&e);
+		if (got != NULL)
+			remove_dir (got);
+		g_free (got);
+		remove_dir (parent);
+	}
+
+	/* 2. A link to a folder elsewhere: moved aside as a link, never
+	 *    followed, and the folder it points to is not touched. */
+	{
+		gchar *target = g_dir_make_tmp ("sfw-squat-XXXXXX", NULL);
+		gchar *marker = target ? g_build_filename (target, "marker", NULL)
+		                       : NULL;
+		gchar *inside = target ? g_build_filename (target, "intel", NULL)
+		                       : NULL;
+		gunichar2 *wt = target ? g_utf8_to_utf16 (target, -1, NULL, NULL,
+		                                          NULL)
+		                       : NULL;
+		gboolean made;
+
+		made = wt != NULL &&
+		       g_file_set_contents (marker, "x", 1, NULL) &&
+		       CreateSymbolicLinkW ((LPCWSTR) w, (LPCWSTR) wt,
+		                            SYMBOLIC_LINK_FLAG_DIRECTORY);
+		CHECK (made, "store squatted: setup: %%ProgramData%%\\StockFW is a "
+		       "link to another folder");
+		got = fs_intel_dir (&e);
+		asides = remove_asides (pd);
+		CHECK (got != NULL && store_is_ours (parent) && asides == 1 &&
+		       g_file_test (marker, G_FILE_TEST_EXISTS) &&
+		       attrs_of (inside) == INVALID_FILE_ATTRIBUTES,
+		       "store squatted: a link is moved aside as a link, never "
+		       "followed, and StockFW's own folder is made in its place "
+		       "(%u moved; %s)", asides, e ? e->message : "ok");
+		g_clear_error (&e);
+		if (got != NULL)
+			remove_dir (got);
+		g_free (got);
+		remove_dir (parent);
+		if (marker != NULL)
+			g_remove (marker);
+		if (inside != NULL)
+			remove_dir (inside);
+		if (target != NULL)
+			remove_dir (target);
+		g_free (wt);
+		g_free (inside);
+		g_free (marker);
+		g_free (target);
+	}
+	CHECK (attrs_of (parent) == INVALID_FILE_ATTRIBUTES,
+	       "store squatted: cleanup: %%ProgramData%%\\StockFW is gone again");
+	g_free (w);
+	g_free (parent);
+	g_free (pd);
+}
+
 static gboolean
 elevated (void)
 {
@@ -548,11 +900,9 @@ main (void)
 	FsIntelLive l;
 	HRESULT hr;
 
-	if (!elevated ()) {
-		printf ("SKIP: not elevated; the Windows Firewall rules cannot be "
-		        "changed. Re-run from an elevated shell.\n");
-		return 0;
-	}
+	if (!elevated ())
+		return skip ("not elevated; the Windows Firewall rules cannot be "
+		             "changed. Re-run from an elevated shell.");
 	if (b->intel_apply == NULL || b->intel_clear == NULL ||
 	    b->intel_live == NULL) {
 		printf ("FAIL: the Windows backend has no threat-intel slots\n");
@@ -560,17 +910,30 @@ main (void)
 	}
 	why = b->intel_not_in_force != NULL ? b->intel_not_in_force () : NULL;
 	if (why != NULL && strstr (why, "MpsSvc") != NULL) {
-		printf ("SKIP: %s\n", why);
+		int rc = skip (why);
+
 		g_free (why);
-		return 0;
+		return rc;
 	}
 	g_free (why);
 	l = live (NULL);
+	/* Rules that cannot be read are the backend failing, not a reason
+	 * to skip: a broken reader must never pass (review W1). */
+	if (l == FS_INTEL_LIVE_UNKNOWN) {
+		printf ("FAIL: intel_live cannot read the Windows Firewall rules "
+		        "(UNKNOWN) in an elevated shell with the firewall "
+		        "service running\n");
+		return 1;
+	}
 	if (l != FS_INTEL_LIVE_ABSENT) {
-		printf ("SKIP: this computer already holds StockFW blocklist rules "
-		        "(or they cannot be read: %d); they are left alone.\n",
-		        (int) l);
-		return 0;
+		gchar *msg = g_strdup_printf ("this computer already holds StockFW "
+		                              "blocklist rules (%d); they are the "
+		                              "user's and are left alone.",
+		                              (int) l);
+		int rc = skip (msg);
+
+		g_free (msg);
+		return rc;
 	}
 
 	hr = CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
@@ -672,22 +1035,51 @@ main (void)
 	       "tamper: a foreign rule in the group reads PARTIAL (%d)", (int) l);
 
 	/* ---- not in force ------------------------------------------------ */
-	for (gint i = 0; i < FS_PROFILE_COUNT; i++)
-		b->get_profile_enabled (i, &saved[i]);
-	if (b->intel_apply (rs2, NULL)) {
-		gboolean off_ok = TRUE;
+	/* The apply over the foreign rule is checked, never just used as a
+	 * condition: it is the only check that an apply takes a foreign
+	 * rule out of the group, and the not-in-force checks below must
+	 * run whatever it returns (review W2). */
+	CHECK (b->intel_apply (rs2, &e),
+	       "tamper: an apply over a foreign rule in the group succeeds (%s)",
+	       e ? e->message : "ok");
+	g_clear_error (&e);
+	l = live (&digest);
+	CHECK (l == FS_INTEL_LIVE_PRESENT && g_strcmp0 (digest, want2) == 0,
+	       "tamper: after that apply the group reads PRESENT with the "
+	       "digest, so the foreign rule was taken out (%d)", (int) l);
+	g_clear_pointer (&digest, g_free);
+	{
+		GPtrArray *left = ours ();
+		gboolean foreign = FALSE;
+
+		for (guint i = 0; i < left->len; i++)
+			if (strcmp (((Rule *) left->pdata[i])->name,
+			            FOREIGN_IN_GROUP) == 0)
+				foreign = TRUE;
+		CHECK (!foreign, "tamper: the foreign rule is no longer in the "
+		       "group");
+		g_ptr_array_unref (left);
+	}
+
+	/* ---- not in force ------------------------------------------------ */
+	{
+		gboolean off_ok = TRUE, got_ok = TRUE;
 
 		for (gint i = 0; i < FS_PROFILE_COUNT; i++)
+			got_ok &= b->get_profile_enabled (i, &saved[i]);
+		CHECK (got_ok, "not in force: every profile's state is read, so "
+		       "it can be put back");
+		for (gint i = 0; got_ok && i < FS_PROFILE_COUNT; i++)
 			off_ok &= b->set_profile_enabled (i, FALSE, NULL);
 		l = live (&digest);
 		why = b->intel_not_in_force ();
-		CHECK (off_ok && l == FS_INTEL_LIVE_INACTIVE &&
+		CHECK (got_ok && off_ok && l == FS_INTEL_LIVE_INACTIVE &&
 		       g_strcmp0 (digest, want2) == 0 && why != NULL,
 		       "not in force: every profile off reads INACTIVE with the "
 		       "digest, and says why (%s)", why ? why : "nothing");
 		g_free (why);
 		g_clear_pointer (&digest, g_free);
-		for (gint i = 0; i < FS_PROFILE_COUNT; i++)
+		for (gint i = 0; got_ok && i < FS_PROFILE_COUNT; i++)
 			b->set_profile_enabled (i, saved[i], NULL);
 	}
 
@@ -710,6 +1102,8 @@ main (void)
 	CHECK (b->intel_clear (&e), "clear: clearing nothing succeeds");
 	g_clear_error (&e);
 
+	check_policy_beside_big_lists (b);
+
 	/* ---- leave the firewall as it was -------------------------------- */
 	{
 		gchar *decoy = g_strdup_printf ("SFW-TI wintest in IPv4 1/1 %s",
@@ -722,6 +1116,7 @@ main (void)
 	remove_rules (FOREIGN_IN_GROUP, FS_INTELWIN_GROUP);
 
 	check_store_dacl ();
+	check_store_squatted ();
 
 	g_free (before);
 	g_free (after);

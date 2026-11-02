@@ -161,6 +161,21 @@ const gchar *fs_intelwin_name_gen (const gchar *name);
 /* Whether a rule's group is ours (exact). */
 gboolean fs_intelwin_in_group (const gchar *grouping);
 
+/* The key two rule names share when Windows may take them for the same
+ * name: case folded, since the documentation does not say whether
+ * INetFwRules::Remove matches names case-insensitively.  Counting
+ * names by this key errs towards "shared", so a rule is renamed before
+ * its removal whenever another rule's name differs only in case
+ * (review W6).  NULL for NULL.  Caller frees. */
+gchar *fs_intelwin_name_key (const gchar *name);
+
+/* How many rules in `seen' (FsIntelWinSeen*) are in our group and
+ * carry generation `gen', whatever else is there (a foreign rule in the
+ * group does not hide them).  The backend reads this back after taking
+ * a failed apply's rules out again, instead of trusting Remove, which
+ * succeeds for a name it does not find (review W6). */
+guint fs_intelwin_count_gen (const GPtrArray *seen, const gchar *gen);
+
 typedef struct
 {
 	FsIntelLive live;     /* ABSENT, PRESENT or PARTIAL               */
@@ -205,16 +220,18 @@ typedef struct
 	gint     enabled[3];      /* domain, private, public: 1 on, 0 off,
 	                           * -1 could not be read                 */
 	guint    excluded[3];     /* interfaces excluded from each profile */
+	gboolean gp_read;         /* LocalPolicyModifyState could be read */
 	gboolean gp_override;     /* LocalPolicyModifyState is
 	                           * NET_FW_MODIFY_STATE_GP_OVERRIDE: rules
 	                           * added on this computer do not apply  */
 } FsIntelWinForce;
 
-/* NULL when the rules are in force on every network in use (or when
- * nothing says otherwise); else one sentence saying where they are not
- * and why: the service is stopped; Group Policy does not apply local
- * rules; the firewall is off for a profile in use; adapters are
- * excluded from a profile in use.  Caller frees. */
+/* NULL when the rules are in force on every network in use; else one
+ * sentence saying where they are not and why: the service is stopped;
+ * the settings, Group Policy's state or a profile in use cannot be
+ * read (never taken as "on"); Group Policy does not apply local rules;
+ * the firewall is off for a profile in use; adapters are excluded from
+ * a profile in use.  Caller frees. */
 gchar *fs_intelwin_not_in_force (const FsIntelWinForce *force);
 
 G_END_DECLS

@@ -398,9 +398,13 @@ build_command_line (gchar **argv)
 /* [ read_handle_output ]
  * Whatever the child wrote to the temp file.  The file object (and
  * its write offset) is shared with the child through inheritance, so
- * the offset sits at the end after the wait -- rewind first. */
+ * the offset sits at the end after the wait -- rewind first.
+ * *truncated is set when the output was longer than the cap and was
+ * cut: a caller must never take a cut-off output as complete. */
+#define READ_OUTPUT_CAP (16 * 1024 * 1024)
+
 static gchar *
-read_handle_output (HANDLE handle)
+read_handle_output (HANDLE handle, gboolean *truncated)
 {
 	LARGE_INTEGER size;
 	LARGE_INTEGER zero;
@@ -418,9 +422,14 @@ read_handle_output (HANDLE handle)
 		return NULL;
 
 	/* A ten-record text query is a few kilobytes; a child gone wrong
-	 * must not get to allocate gigabytes of heap for us. */
-	if (size.QuadPart > 16 * 1024 * 1024)
-		size.QuadPart = 16 * 1024 * 1024;
+	 * must not get to allocate gigabytes of heap for us.  What is cut
+	 * is reported, never passed off as the whole output (review W3:
+	 * `netsh show rule name=all' printed every address of every
+	 * blocklist rule and could run past the cap). */
+	if (size.QuadPart > READ_OUTPUT_CAP) {
+		size.QuadPart = READ_OUTPUT_CAP;
+		*truncated = TRUE;
+	}
 
 	text = g_malloc ((gsize) size.QuadPart + 1);
 
@@ -508,6 +517,7 @@ spawn_capture (gchar **argv, gint timeout_ms,
 	gboolean use_attrs = FALSE;
 	DWORD wait_result = WAIT_FAILED;   /* early exits must return FALSE */
 	DWORD code = 0;
+	gboolean cut = FALSE;
 
 	if (standard_output != NULL)
 		*standard_output = NULL;
@@ -641,8 +651,18 @@ spawn_capture (gchar **argv, gint timeout_ms,
 
 	CloseHandle (pi.hProcess);
 
-	out_text = read_handle_output (out_handle);
-	err_text = read_handle_output (err_handle);
+	out_text = read_handle_output (out_handle, &cut);
+	err_text = read_handle_output (err_handle, &cut);
+	if (cut) {
+		/* The child ran, but what it said cannot be used whole. */
+		if (error != NULL)
+			g_set_error (error, quark, 0,
+			             "The output of %s was longer than %d MiB and "
+			             "was cut off, so it was not used",
+			             argv[0], READ_OUTPUT_CAP / (1024 * 1024));
+		wait_result = WAIT_FAILED;
+		goto out;
+	}
 
 	if (out_text == NULL)
 		out_text = g_strdup ("");
@@ -982,11 +1002,21 @@ netsh_delete_one (const gchar *rule_name, GError **error)
 	return ok;
 }
 
+static gboolean com_list_our_names (GHashTable **sink, GError **error);
+
 /* [ netsh_list_our_names ]
- * One enumeration pass: ask netsh for every rule and parse out the
- * names that are ours.  Returns FS_APPLY_OK with *sink set (an empty
- * table is a valid result: none of ours exist), or a failure verdict
- * with *sink NULL. */
+ * One enumeration pass over every rule, keeping the names that are
+ * ours.  Returns FS_APPLY_OK with *sink set (an empty table is a valid
+ * result: none of ours exist), or a failure verdict with *sink NULL.
+ *
+ * The list comes from INetFwRules in this process (names only), not
+ * from `netsh advfirewall firewall show rule name=all' (review W3):
+ * netsh prints every address of every rule, and the threat-intel rules
+ * can hold some 300,000 of them, which ran past the 16 MiB output cap
+ * and the 30 s netsh budget, so names printed after the cut were never
+ * seen and the clear "verified" zero with stale rules still active.
+ * netsh is only the fallback when COM itself cannot be used, and a
+ * cut-off output is now an error there (spawn_capture). */
 static FsApplyResult
 netsh_list_our_names (GHashTable **sink, GError **error)
 {
@@ -994,6 +1024,9 @@ netsh_list_our_names (GHashTable **sink, GError **error)
 	gint status = 0;
 
 	*sink = NULL;
+
+	if (com_list_our_names (sink, NULL))
+		return FS_APPLY_OK;
 
 	{
 		gchar *args[] = {
@@ -1076,8 +1109,18 @@ firewalled_clear_rules (GError **error)
 			GError *local = NULL;
 
 			/* A name netsh cannot find is a clean no-op; the next
-			 * enumeration is what decides whether it worked. */
+			 * enumeration is what decides whether it worked.  Only
+			 * a missing elevation ends the clear at once: the list
+			 * now comes from COM, which a standard user may read,
+			 * so the delete is where that shows (review W3). */
 			netsh_delete_one ((const gchar *) iter->data, &local);
+			if (local != NULL &&
+			    netsh_needs_elevation (local->message)) {
+				g_propagate_error (error, local);
+				g_list_free (names);
+				g_hash_table_destroy (ours);
+				return FS_APPLY_NO_PRIVILEGE;
+			}
 			g_clear_error (&local);
 		}
 
@@ -3038,16 +3081,30 @@ rule_release (gpointer p)
 		r->lpVtbl->Release (r);
 }
 
+/* Counts a name under its case-folded key (fs_intelwin_name_key), so
+ * names that differ only in case count as one (review W6). */
 static void
 name_count (GHashTable *names, const gchar *name)
 {
 	gpointer n;
+	gchar *key;
 
 	if (names == NULL || name == NULL)
 		return;
-	n = g_hash_table_lookup (names, name);
-	g_hash_table_replace (names, g_strdup (name),
+	key = fs_intelwin_name_key (name);
+	n = g_hash_table_lookup (names, key);
+	g_hash_table_replace (names, key,
 	                      GUINT_TO_POINTER (GPOINTER_TO_UINT (n) + 1));
+}
+
+static guint
+name_lookup (GHashTable *names, const gchar *name)
+{
+	gchar *key = fs_intelwin_name_key (name);
+	guint n = GPOINTER_TO_UINT (g_hash_table_lookup (names, key));
+
+	g_free (key);
+	return n;
 }
 
 /* One pass over every rule on the firewall.  Ours (the group) are read
@@ -3129,6 +3186,85 @@ fw_intel_list (FwIntel *fw, GPtrArray *ours, GPtrArray *objs,
 	}
 	en->lpVtbl->Release (en);
 	return ok;
+}
+
+/* [ com_list_our_names ]
+ * The names of the policy's own rules (fs_netsh_rule_name_is_ours),
+ * read through INetFwRules: one name per rule, no addresses, so the
+ * size of the blocklist rules cannot cut the list short.  Rules in the
+ * threat-intel group are skipped unread.  TRUE with *sink set, or
+ * FALSE with *sink NULL when the rules cannot be listed. */
+static gboolean
+com_list_our_names (GHashTable **sink, GError **error)
+{
+	FwIntel fw;
+	IUnknown *unk = NULL;
+	IEnumVARIANT *en = NULL;
+	GHashTable *names;
+	HRESULT hr;
+	gboolean ok = TRUE;
+
+	*sink = NULL;
+	if (!fw_intel_open (&fw, TRUE, error))
+		return FALSE;
+	hr = fw.rules->lpVtbl->get__NewEnum (fw.rules, &unk);
+	if (SUCCEEDED (hr) && unk != NULL) {
+		hr = unk->lpVtbl->QueryInterface (unk, &FS_IID_IEnumVARIANT,
+		                                  (void **) &en);
+		unk->lpVtbl->Release (unk);
+	}
+	if (FAILED (hr) || en == NULL) {
+		intel_hr_error (error, FAILED (hr) ? hr : E_FAIL,
+		                "The Windows Firewall rules could not be listed");
+		fw_intel_close (&fw);
+		return FALSE;
+	}
+	names = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+	for (;;) {
+		VARIANT v;
+		ULONG got = 0;
+		INetFwRule *r = NULL;
+
+		VariantInit (&v);
+		hr = en->lpVtbl->Next (en, 1, &v, &got);
+		if (FAILED (hr)) {
+			intel_hr_error (error, hr, "The Windows Firewall rules "
+			                "could not be listed");
+			ok = FALSE;
+			break;
+		}
+		if (hr != S_OK || got == 0)
+			break;
+		if (v.vt == VT_DISPATCH && v.pdispVal != NULL &&
+		    SUCCEEDED (v.pdispVal->lpVtbl->QueryInterface (
+			    v.pdispVal, &FS_IID_INetFwRule, (void **) &r)) &&
+		    r != NULL) {
+			BSTR bg = NULL, bn = NULL;
+			gchar *group, *name = NULL;
+
+			r->lpVtbl->get_Grouping (r, &bg);
+			group = bstr_take (bg);
+			if (!fs_intelwin_in_group (group)) {
+				r->lpVtbl->get_Name (r, &bn);
+				name = bstr_take (bn);
+			}
+			if (name != NULL && fs_netsh_rule_name_is_ours (name))
+				g_hash_table_add (names, name);
+			else
+				g_free (name);
+			g_free (group);
+			r->lpVtbl->Release (r);
+		}
+		VariantClear (&v);
+	}
+	en->lpVtbl->Release (en);
+	fw_intel_close (&fw);
+	if (!ok) {
+		g_hash_table_destroy (names);
+		return FALSE;
+	}
+	*sink = names;
+	return TRUE;
 }
 
 /* Reads our rules back and judges them (fs_intelwin_read). */
@@ -3244,8 +3380,7 @@ fw_intel_remove (FwIntel *fw, FwIntelPick pick, const gchar *gen,
 
 		if (!pick (s, gen))
 			continue;
-		if (name == NULL ||
-		    GPOINTER_TO_UINT (g_hash_table_lookup (names, name)) != 1) {
+		if (name == NULL || name_lookup (names, name) != 1) {
 			unique = g_strdup_printf ("%sremoving %08x%08x",
 			                          FS_INTELWIN_PREFIX,
 			                          g_random_int (), g_random_int ());
@@ -3279,8 +3414,8 @@ out:
 
 /* Whether Windows Firewall enforces rules now (core/fs-intelwin.h).
  * The service through the service manager (a standard user may ask),
- * the rest through the policy; what cannot be read stays "unknown" and
- * is never reported as off. */
+ * the rest through the policy; what cannot be read stays "unknown",
+ * and fs_intelwin_not_in_force never reports an unknown as in force. */
 static void
 fw_intel_force (FsIntelWinForce *f)
 {
@@ -3332,8 +3467,10 @@ fw_intel_force (FsIntelWinForce *f)
 			VariantClear (&ex);
 		}
 		if (SUCCEEDED (fw.policy->lpVtbl->get_LocalPolicyModifyState (
-			    fw.policy, &ms)))
+			    fw.policy, &ms))) {
+			f->gp_read = TRUE;
 			f->gp_override = ms == NET_FW_MODIFY_STATE_GP_OVERRIDE;
+		}
 	}
 	fw_intel_close (&fw);
 }
@@ -3457,14 +3594,32 @@ firewalled_intel_apply (const FsIntelRuleset *ruleset, GError **error)
 		}
 		if (add_error != NULL) {
 			/* Take the new rules out again.  The old ones were never
-			 * touched, so what was in force still is. */
+			 * touched, so what was in force still is.  Remove
+			 * succeeds for a name it does not find, so the firewall
+			 * is listed again and only no rule of the new
+			 * generation left is "nothing was changed" (review W6). */
+			GPtrArray *rb = g_ptr_array_new_with_free_func (
+				fs_intelwin_seen_free);
 			guint left = fw_intel_remove (&fw, pick_gen, gen, NULL);
+			gboolean listed = fw_intel_list (&fw, rb, NULL, NULL, NULL);
 
-			if (left == 0)
+			if (listed)
+				left = fs_intelwin_count_gen (rb, gen);
+			g_ptr_array_unref (rb);
+			if (listed && left == 0)
 				g_set_error (error, add_error->domain,
 				             add_error->code,
 				             "%s. Nothing was changed: the blocklists "
 				             "loaded before are still in force.",
+				             add_error->message);
+			else if (!listed)
+				g_set_error (error, add_error->domain,
+				             add_error->code,
+				             "%s. The blocklists loaded before were not "
+				             "touched, but StockFW could not read the "
+				             "firewall back to check that the new rules "
+				             "were taken out again; apply again to tidy "
+				             "them.",
 				             add_error->message);
 			else
 				g_set_error (error, add_error->domain,

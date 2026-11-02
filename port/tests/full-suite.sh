@@ -54,7 +54,9 @@ run_sh "APPLY DUAL-STACK (Linux, IPv4 + IPv6, private netns)" tests/test-apply-d
 
 # Threat intel on the real Windows Firewall (Round 3): the backend's
 # blocklist rules applied, read back through INetFwRules, cleared.
-# Windows only; prints SKIP in a shell that is not elevated.
+# Windows only; prints SKIP in a shell that is not elevated, which
+# fails instead when STOCKFW_REQUIRE_WINDOWS_INTEL=1 (the CI sets it).
+# Rules that cannot be read always fail.
 section "THREAT INTEL (Windows Firewall rules)"
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
   rc=0

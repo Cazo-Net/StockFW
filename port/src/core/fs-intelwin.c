@@ -510,6 +510,27 @@ fs_intelwin_name_gen (const gchar *name)
 	return space + 1;
 }
 
+gchar *
+fs_intelwin_name_key (const gchar *name)
+{
+	return name != NULL ? g_utf8_casefold (name, -1) : NULL;
+}
+
+guint
+fs_intelwin_count_gen (const GPtrArray *seen, const gchar *gen)
+{
+	guint n = 0;
+
+	for (guint i = 0; seen != NULL && gen != NULL && i < seen->len; i++) {
+		const FsIntelWinSeen *s = g_ptr_array_index (seen, i);
+
+		if (fs_intelwin_in_group (s->grouping) &&
+		    g_strcmp0 (fs_intelwin_name_gen (s->name), gen) == 0)
+			n++;
+	}
+	return n;
+}
+
 /* An address rule's name: "SFW-TI <id> <in|out> IPv<4|6> <i>/<n> <gen>".
  * Fills the direction and family it claims. */
 static gboolean
@@ -793,7 +814,8 @@ fs_intelwin_not_in_force (const FsIntelWinForce *f)
 {
 	gboolean off[3] = { FALSE, FALSE, FALSE };
 	gboolean excluded[3] = { FALSE, FALSE, FALSE };
-	guint in_use = 0, n_off = 0, n_excluded = 0;
+	gboolean unread[3] = { FALSE, FALSE, FALSE };
+	guint in_use = 0, n_off = 0, n_excluded = 0, n_unread = 0;
 	gchar *names, *out;
 
 	g_return_val_if_fail (f != NULL, NULL);
@@ -802,8 +824,12 @@ fs_intelwin_not_in_force (const FsIntelWinForce *f)
 		return g_strdup (_("The Windows Firewall service (MpsSvc) is "
 		                   "not running, so no firewall rule is in "
 		                   "force, the blocklists included."));
-	if (!f->policy_read)
-		return NULL;   /* cannot tell: never claim either way */
+	/* What cannot be read is never taken as "on": the engine would
+	 * then report the blocklists as enforced (design 11.6, review W5). */
+	if (!f->policy_read || !f->gp_read)
+		return g_strdup (_("StockFW cannot read whether Windows Firewall "
+		                   "is on for the network in use, so it does not "
+		                   "report the blocklists as in force."));
 	if (f->gp_override)
 		return g_strdup (_("Group Policy manages Windows Firewall on "
 		                   "this computer and does not apply rules "
@@ -817,6 +843,9 @@ fs_intelwin_not_in_force (const FsIntelWinForce *f)
 		if (f->enabled[i] == 0) {
 			off[i] = TRUE;
 			n_off++;
+		} else if (f->enabled[i] != 1) {
+			unread[i] = TRUE;
+			n_unread++;
 		} else if (f->enabled[i] == 1 && f->excluded[i] > 0) {
 			excluded[i] = TRUE;
 			n_excluded++;
@@ -842,6 +871,20 @@ fs_intelwin_not_in_force (const FsIntelWinForce *f)
 				: _("Windows Firewall is off for the %s profiles, "
 				    "which networks in use have, so the blocklists "
 				    "block nothing on those networks."), names);
+		g_free (names);
+		return out;
+	}
+	if (n_unread > 0) {
+		names = profile_list (unread);
+		out = g_strdup_printf (
+			n_unread == 1
+			? _("StockFW cannot read whether Windows Firewall is on "
+			    "for the %s profile, which a network in use has, so "
+			    "it does not report the blocklists as in force there.")
+			: _("StockFW cannot read whether Windows Firewall is on "
+			    "for the %s profiles, which networks in use have, so "
+			    "it does not report the blocklists as in force there."),
+			names);
 		g_free (names);
 		return out;
 	}

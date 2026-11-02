@@ -1397,9 +1397,10 @@ checked on Linux.
   outside the group (even named like ours) are not counted; the rules
   as written, and as Windows writes them back (dotted masks, tokens and
   rules reordered, other rules around) read PRESENT with the digest;
-  23 tamperings each read PARTIAL with a reason and no digest (a chunk
+  25 tamperings each read PARTIAL with a reason and no digest (a chunk
   deleted, disabled, allow, direction, profile, protocol, local port,
-  local address, program, interface type, named interfaces, an
+  local address, program, remote port 443, one service (`Dnscache`),
+  interface type, named interfaces, an
   `INetFwRule3` condition, an address taken out, `*`, an IPv6 address
   in an IPv4 rule, addresses moved between chunks, a rule added with a
   name like ours, a foreign rule in the group, a rule of an earlier
@@ -1407,8 +1408,20 @@ checked on Linux.
   deleted rule, a rule renamed, a rule moved out of the group).
 - **in force** (`test_intelwin_force`): service stopped, Group Policy
   override, off for the only profile in use, for one of two, for two,
-  excluded adapters each give their sentence; a profile no network has,
-  and settings that could not be read, give none.
+  excluded adapters each give their sentence; a profile no network has
+  gives none. Settings, Group Policy's state or a profile in use that
+  could not be read give "StockFW cannot read whether ...", never
+  nothing (review W5); a profile known to be off is named first, and an
+  unreadable profile no network has does not matter.
+- **review** (`test_intelwin_review`): `fs_intelwin_count_gen` counts
+  every rule of a generation, past a foreign rule in the group and an
+  earlier apply's rule, and never one outside the group (W6);
+  `fs_intelwin_name_key` gives names that differ only in case one key
+  (W6); `fs_netsh_rule_name_is_ours` tells the policy's names from the
+  blocklist rules' (W3); a rule set of 150,000 long IPv6 ranges both
+  ways holds about 24 million characters of addresses, past the 16 MiB
+  a netsh listing may hold (W3, the reason the policy lists through
+  COM).
 - **on-link prefixes** (`test_hostnet_onlink`): an address and
   `OnLinkPrefixLength` give its block (a /24, a /64, a /30 inside a
   byte); a prefix of 0 or wider than the family keeps the address
@@ -1440,9 +1453,26 @@ before, including a decoy that has one of our rule names in another
 group; the store directory gets a protected DACL naming only SYSTEM,
 Administrators and the current user. It prints SKIP when the shell is
 not elevated, the firewall service is stopped, or the computer already
-holds StockFW blocklist rules (they are the user's). It was compiled
-and linked with mingw against the Windows headers in the development
-container, not run there.
+holds StockFW blocklist rules (they are the user's).
+
+Review additions: rules that cannot be read (`intel_live` UNKNOWN)
+fail, never skip (W1); with `STOCKFW_REQUIRE_WINDOWS_INTEL=1`, which
+the CI's Windows job sets, every skip fails, the whole-run ones and the
+parts below alike (W1). The apply over a foreign rule in the group is
+checked, the group then reads PRESENT with the digest and the foreign
+rule is gone, and the profile-off checks run whatever it returned (W2).
+"Policy beside big lists" applies 140,000 long IPv6 ranges both ways
+(more than 16 MiB of addresses), adds a rule with a policy name after
+them, runs the policy's clear and checks that the rule is gone and
+every blocklist rule is still there, whole (W3; it runs only when the
+computer holds no StockFW policy rules). "Store squatted" makes
+`%ProgramData%\StockFW` first, once as a folder owned by
+BUILTIN\Users and once as a link to another folder, and checks that
+`fs_intel_dir` moves it aside (the link as a link: the folder it points
+to keeps its file and gets no `intel`) and makes its own protected
+folder (W7; it runs only when the computer has no StockFW store). It
+was compiled and linked with mingw against the Windows headers in the
+development container, not run there.
 
 Teeth, each injected into the real source by `teeth.py` in a scratch
 directory, which asserts the exact old text occurs once, runs the
@@ -1461,7 +1491,17 @@ file with `cp` and checks it with `cmp`:
 | an apply into rules that are not enforced says nothing | `windows states: an apply whose rules are not enforced is OK and says ...` |
 | unreadable rules ignore the backend's "service stopped" | `windows states: rules that cannot be read with the service stopped ...` |
 | the read-back ignores a rule's direction | `intelwin read: a rule's direction flipped is PARTIAL` |
+| (W4) the read-back ignores remote ports | `intelwin read: a rule narrowed to remote port 443 is PARTIAL ...` |
+| (W4) the read-back ignores the service | `intelwin read: a rule narrowed to one service is PARTIAL ...` |
+| (W5) unreadable settings claim nothing (the old `return NULL`) | `intelwin force: profiles in use that could not be read are never in force` |
+| (W5) a profile in use that cannot be read counts as on | `intelwin force: a profile in use whose firewall switch could not be read ...` |
+| (W5) Group Policy's state is not required to be read | `intelwin force: a Group Policy state that could not be read ...` |
+| (W6) the name key is not case-folded | `intelwin review: rule names that differ only in case share one key` |
+| (W6) the generation count ignores the group | `intelwin review: rules outside the group are never counted` |
+| (W3) blocklist names pass as the policy's | `intelwin review: the policy's rule names are told apart ...` |
 
 The Windows backend's COM code itself has no tooth here: the container
-cannot run it. `fs-intel-windows-test` is its check on the CI's Windows
+cannot run it (that covers W1, W2, W7 and the COM halves of W3 and W6:
+the policy's name listing through `INetFwRules`, the cut-off netsh
+output as an error, the rollback's read-back). `fs-intel-windows-test` is its check on the CI's Windows
 runner.

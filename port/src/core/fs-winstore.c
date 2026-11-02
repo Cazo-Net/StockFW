@@ -132,12 +132,15 @@ sid_is_trusted (PSID sid, PSID user)
  * a store directory, or NULL.  *readable is set when an untrusted
  * account may list it. */
 static const gchar *
-security_fault (PSID owner, PACL dacl, PSID user, gboolean *readable)
+security_fault (PSID owner, PACL dacl, PSID user, gboolean *readable,
+                gboolean *foreign)
 {
 	*readable = FALSE;
-	if (!sid_is_trusted (owner, user))
+	if (!sid_is_trusted (owner, user)) {
+		*foreign = TRUE;
 		return _("it is owned by an account other than Administrators "
 		         "or SYSTEM");
+	}
 	if (dacl == NULL)
 		return _("it has no access list, so every account may change "
 		         "it");
@@ -176,9 +179,47 @@ security_fault (PSID owner, PACL dacl, PSID user, gboolean *readable)
 	return NULL;
 }
 
-/* Checks one existing directory by path. */
+/* "DOMAIN\name" of an account, or its SID string.  Caller frees. */
+static gchar *
+account_text (PSID sid)
+{
+	wchar_t name[256], domain[256];
+	DWORD nlen = G_N_ELEMENTS (name), dlen = G_N_ELEMENTS (domain);
+	SID_NAME_USE use;
+	LPWSTR str = NULL;
+	gchar *out = NULL;
+
+	if (sid == NULL || !IsValidSid (sid))
+		return g_strdup ("?");
+	if (LookupAccountSidW (NULL, sid, name, &nlen, domain, &dlen, &use)) {
+		gchar *n = g_utf16_to_utf8 ((const gunichar2 *) name, -1, NULL,
+		                            NULL, NULL);
+		gchar *d = g_utf16_to_utf8 ((const gunichar2 *) domain, -1, NULL,
+		                            NULL, NULL);
+
+		if (n != NULL)
+			out = d != NULL && *d != '\0'
+			      ? g_strdup_printf ("%s\\%s", d, n)
+			      : g_strdup (n);
+		g_free (n);
+		g_free (d);
+	}
+	if (out == NULL && ConvertSidToStringSidW (sid, &str)) {
+		out = g_utf16_to_utf8 ((const gunichar2 *) str, -1, NULL, NULL,
+		                       NULL);
+		LocalFree (str);
+	}
+	return out != NULL ? out : g_strdup ("?");
+}
+
+/* Checks one existing directory by path.  *foreign is set when the
+ * fault means another account put something there (a link, a file,
+ * a folder it owns; review W7), and then *owner (when not NULL)
+ * receives the owning account's name for the message, if it could be
+ * read. */
 static const gchar *
-dir_fault (const gchar *path, PSID user, gboolean *readable)
+dir_fault (const gchar *path, PSID user, gboolean *readable,
+           gboolean *foreign, gchar **owner_name)
 {
 	gunichar2 *w = wide (path);
 	DWORD attrs;
@@ -188,6 +229,9 @@ dir_fault (const gchar *path, PSID user, gboolean *readable)
 	const gchar *why;
 
 	*readable = FALSE;
+	*foreign = FALSE;
+	if (owner_name != NULL)
+		*owner_name = NULL;
 	if (w == NULL)
 		return _("its name is not valid");
 	attrs = GetFileAttributesW ((LPCWSTR) w);
@@ -197,10 +241,12 @@ dir_fault (const gchar *path, PSID user, gboolean *readable)
 	}
 	if ((attrs & FILE_ATTRIBUTE_DIRECTORY) == 0) {
 		g_free (w);
+		*foreign = TRUE;
 		return _("it is not a directory");
 	}
 	if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) {
 		g_free (w);
+		*foreign = TRUE;
 		return _("it is a link (a junction or symbolic link)");
 	}
 	if (GetNamedSecurityInfoW ((LPWSTR) w, SE_FILE_OBJECT,
@@ -211,10 +257,35 @@ dir_fault (const gchar *path, PSID user, gboolean *readable)
 		g_free (w);
 		return _("its owner and access list cannot be read");
 	}
-	why = security_fault (owner, dacl, user, readable);
+	why = security_fault (owner, dacl, user, readable, foreign);
+	if (why != NULL && *foreign && owner_name != NULL)
+		*owner_name = account_text (owner);
 	LocalFree (sd);
 	g_free (w);
 	return why;
+}
+
+/* The refusal of a directory, with who owns it and how an
+ * administrator gets threat intel working again (review W7). */
+static void
+unsafe_dir (GError **error, const gchar *path, const gchar *why,
+            gboolean foreign, const gchar *owner_name)
+{
+	gchar *full;
+
+	if (!foreign) {
+		unsafe (error, path, why);
+		return;
+	}
+	full = owner_name != NULL
+	       ? g_strdup_printf (_("%s (%s). An administrator can delete or "
+	                            "rename the folder; StockFW then creates "
+	                            "it again"), why, owner_name)
+	       : g_strdup_printf (_("%s. An administrator can delete or "
+	                            "rename it; StockFW then creates the "
+	                            "folder again"), why);
+	unsafe (error, path, full);
+	g_free (full);
 }
 
 /* Creates `path' with the access list `sddl', or checks the one that is
@@ -223,16 +294,20 @@ dir_fault (const gchar *path, PSID user, gboolean *readable)
  * new access list (the current user, for an override). */
 static gboolean
 ensure_dir (const gchar *path, const wchar_t *sddl, const gchar *extra_sddl,
-            PSID user, gboolean tighten, GError **error)
+            PSID user, gboolean tighten, gboolean *foreign_out,
+            GError **error)
 {
 	gunichar2 *w = wide (path);
 	gunichar2 *full_sddl;
 	gchar *sddl8, *joined;
 	SECURITY_ATTRIBUTES sa;
 	PSECURITY_DESCRIPTOR sd = NULL;
-	gboolean readable = FALSE, ok = TRUE;
+	gboolean readable = FALSE, ok = TRUE, foreign = FALSE;
+	gchar *owner_name = NULL;
 	const gchar *why;
 
+	if (foreign_out != NULL)
+		*foreign_out = FALSE;
 	if (w == NULL) {
 		unsafe (error, path, _("its name is not valid"));
 		return FALSE;
@@ -263,9 +338,11 @@ ensure_dir (const gchar *path, const wchar_t *sddl, const gchar *extra_sddl,
 		ok = FALSE;
 	}
 	if (ok) {
-		why = dir_fault (path, user, &readable);
+		why = dir_fault (path, user, &readable, &foreign, &owner_name);
 		if (why != NULL) {
-			unsafe (error, path, why);
+			unsafe_dir (error, path, why, foreign, owner_name);
+			if (foreign_out != NULL)
+				*foreign_out = foreign;
 			ok = FALSE;
 		} else if (readable && tighten) {
 			BOOL present = FALSE, defaulted = FALSE;
@@ -288,8 +365,49 @@ ensure_dir (const gchar *path, const wchar_t *sddl, const gchar *extra_sddl,
 		}
 	}
 	LocalFree (sd);
+	g_free (owner_name);
 	g_free (full_sddl);
 	g_free (w);
+	return ok;
+}
+
+/* Moves whatever another account put at `path' (a folder it owns, a
+ * link, a file) aside to "<path>.untrusted-<random>", within the same
+ * parent, so StockFW can create its own in its place (review W7).
+ * %ProgramData% lets every user create a folder there, and one made
+ * before StockFW's own used to switch threat intel off for good.
+ * Only an administrator gets here: renaming a child of %ProgramData%
+ * needs the delete-child right Administrators hold on it.  A rename
+ * moves a link itself, never what it points to, and nothing is
+ * deleted, so an administrator can look at what was there.  FALSE,
+ * with *error set, when it cannot be moved (another program holds a
+ * file in it open, for one). */
+static gboolean
+move_aside (const gchar *path, const gchar *why, GError **error)
+{
+	gchar *aside = g_strdup_printf ("%s.untrusted-%08x", path,
+	                                g_random_int ());
+	gunichar2 *from = wide (path), *to = wide (aside);
+	gboolean ok = from != NULL && to != NULL &&
+	              MoveFileExW ((LPCWSTR) from, (LPCWSTR) to, 0);
+
+	if (!ok) {
+		gchar *msg = win_error (GetLastError ());
+
+		/* `why' is the whole refusal, which already says how an
+		 * administrator gets out of it. */
+		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNSAFE_DIR,
+		             _("%s StockFW could not move it aside: %s."), why,
+		             msg != NULL ? msg : "");
+		g_free (msg);
+	} else {
+		g_message ("StockFW: %s was not made by StockFW (%s); it was "
+		           "moved to %s and a new one is created", path, why,
+		           aside);
+	}
+	g_free (from);
+	g_free (to);
+	g_free (aside);
 	return ok;
 }
 
@@ -380,12 +498,16 @@ fs_winstore_dir (GError **error)
 			trimmed[strlen (trimmed) - 1] = '\0';
 		parent = g_path_get_dirname (trimmed);
 		{
-			gboolean readable;
-			const gchar *why = dir_fault (parent, user, &readable);
+			gboolean readable, foreign;
+			gchar *owner_name = NULL;
+			const gchar *why = dir_fault (parent, user, &readable,
+			                              &foreign, &owner_name);
 
 			ok = why == NULL;
 			if (!ok)
-				unsafe (error, override, why);
+				unsafe_dir (error, override, why, foreign,
+				            owner_name);
+			g_free (owner_name);
 		}
 		if (ok && user_sddl == NULL) {
 			unsafe (error, override,
@@ -393,7 +515,7 @@ fs_winstore_dir (GError **error)
 			ok = FALSE;
 		}
 		ok = ok && ensure_dir (trimmed, SDDL_STORE, user_sddl, user,
-		                       FALSE, error);
+		                       FALSE, NULL, error);
 		g_free (parent);
 		g_free (user_sddl);
 		g_free (user);
@@ -416,13 +538,30 @@ fs_winstore_dir (GError **error)
 		        _("the ProgramData folder cannot be found"));
 		return NULL;
 	}
-	if (!ensure_dir (parent, SDDL_PARENT, NULL, NULL, FALSE, error)) {
-		g_free (parent);
-		return NULL;
+	{
+		GError *local = NULL;
+		gboolean foreign = FALSE;
+
+		/* Something another account made first is moved aside, once,
+		 * and StockFW's own folder is made in its place (review W7);
+		 * anything else wrong with the folder is refused as before. */
+		if (!ensure_dir (parent, SDDL_PARENT, NULL, NULL, FALSE, &foreign,
+		                 &local) &&
+		    (!foreign || !move_aside (parent, local->message, error) ||
+		     !ensure_dir (parent, SDDL_PARENT, NULL, NULL, FALSE, NULL,
+		                  error))) {
+			if (!foreign)
+				g_propagate_error (error, local);
+			else
+				g_clear_error (&local);
+			g_free (parent);
+			return NULL;
+		}
+		g_clear_error (&local);
 	}
 	full = g_build_filename (parent, "intel", NULL);
 	g_free (parent);
-	if (!ensure_dir (full, SDDL_STORE, NULL, NULL, TRUE, error)) {
+	if (!ensure_dir (full, SDDL_STORE, NULL, NULL, TRUE, NULL, error)) {
 		g_free (full);
 		return NULL;
 	}
@@ -506,7 +645,9 @@ fs_winstore_pin (const gchar *dir, GError **error)
 	else {
 		if (override_dir () != NULL)
 			user = token_user ();
-		why = security_fault (owner, dacl, user, &readable);
+		gboolean foreign = FALSE;
+
+		why = security_fault (owner, dacl, user, &readable, &foreign);
 		LocalFree (sd);
 		g_free (user);
 	}

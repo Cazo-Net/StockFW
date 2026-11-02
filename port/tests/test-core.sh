@@ -44,6 +44,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-i18n.h"
 #include "core/fs-intelset.h"
 #include "core/fs-intelwin.h"
+#include "core/fs-intel.h"
 #include "core/fs-hostnet.h"
 #include <stdlib.h>
 
@@ -7533,6 +7534,18 @@ static void iw_t_program (GPtrArray *s)
 	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv4 3/3 " IW_GEN);
 	x->application = g_strdup ("C:\\nothing.exe");
 }
+static void iw_t_remote_port (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	g_free (x->remote_ports);
+	x->remote_ports = g_strdup ("443");
+}
+static void iw_t_service (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	g_free (x->service);
+	x->service = g_strdup ("Dnscache");
+}
 static void iw_t_iftype (GPtrArray *s)
 {
 	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv4 3/3 " IW_GEN);
@@ -7653,6 +7666,8 @@ test_intelwin_read (void)
 		{ iw_t_local_port,     "a rule narrowed to local port 443" },
 		{ iw_t_local_addr,     "a rule narrowed to one local address" },
 		{ iw_t_program,        "a rule narrowed to one program" },
+		{ iw_t_remote_port,    "a rule narrowed to remote port 443" },
+		{ iw_t_service,        "a rule narrowed to one service" },
 		{ iw_t_iftype,         "a rule narrowed to wireless adapters" },
 		{ iw_t_ifaces,         "a rule narrowed to named adapters" },
 		{ iw_t_conditions,     "a rule given a user/app/IPsec condition" },
@@ -7775,7 +7790,8 @@ test_intelwin_force (void)
 #define IW_FORCE_OK() do { \
 	memset (&f, 0, sizeof f); \
 	f.service_known = TRUE; f.service_running = TRUE; \
-	f.policy_read = TRUE; f.current = FS_INTELWIN_PROFILE_PUBLIC; \
+	f.policy_read = TRUE; f.gp_read = TRUE; \
+	f.current = FS_INTELWIN_PROFILE_PUBLIC; \
 	f.enabled[0] = f.enabled[1] = f.enabled[2] = 1; \
 } while (0)
 
@@ -7841,14 +7857,160 @@ test_intelwin_force (void)
 	       "(%s)", s);
 	g_free (s);
 
+	/* Review W5: what cannot be read is never "in force". */
 	IW_FORCE_OK ();
 	f.policy_read = FALSE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read") &&
+	       strstr (s, "does not report the blocklists as in force"),
+	       "intelwin force: profiles in use that could not be read are "
+	       "never in force (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.enabled[2] = -1;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read") && strstr (s, "Public profile"),
+	       "intelwin force: a profile in use whose firewall switch could "
+	       "not be read is never in force (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.enabled[0] = -1;   /* Domain unreadable, but only Public in use */
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s == NULL, "intelwin force: an unreadable profile no network "
+	       "has does not matter");
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.current = FS_INTELWIN_PROFILE_PRIVATE | FS_INTELWIN_PROFILE_PUBLIC;
+	f.enabled[1] = -1;
 	f.enabled[2] = 0;
 	s = fs_intelwin_not_in_force (&f);
-	CHECK (s == NULL, "intelwin force: settings that could not be read "
-	       "claim nothing either way");
+	CHECK (s && strstr (s, "off for the Public profile"),
+	       "intelwin force: a profile known to be off is named before one "
+	       "that could not be read (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.gp_read = FALSE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read"),
+	       "intelwin force: a Group Policy state that could not be read is "
+	       "never in force (%s)", s);
 	g_free (s);
 #undef IW_FORCE_OK
+}
+
+/* Review of Round 3 on Windows (W3, W6): the pure pieces the backend's
+ * fixes rest on. */
+static void
+test_intelwin_review (void)
+{
+	FsIntelRuleset *rs = iw_ruleset ();
+	FsIntelWinPlan *plan = fs_intelwin_plan (rs, IW_GEN, 2, 1000);
+	GPtrArray *seen;
+	gchar *a, *b;
+
+	g_return_if_fail (plan != NULL);
+
+	/* W6: after taking a failed apply's rules out again, the backend
+	 * counts what of that generation is still there. */
+	seen = iw_seen_from_plan (plan, FALSE);
+	CHECK (fs_intelwin_count_gen (seen, IW_GEN) == plan->rules->len &&
+	       fs_intelwin_count_gen (seen, IW_GEN2) == 0,
+	       "intelwin review: every rule of a generation is counted, none "
+	       "of another");
+	/* A foreign rule first in the group, and an earlier apply's rule:
+	 * neither hides the new generation, nor counts as it. */
+	{
+		FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+		x->name = g_strdup ("Someone's rule");
+		x->grouping = g_strdup (FS_INTELWIN_GROUP);
+		g_ptr_array_insert (seen, 0, x);
+	}
+	iw_t_old_gen (seen);
+	CHECK (fs_intelwin_count_gen (seen, IW_GEN) == plan->rules->len &&
+	       fs_intelwin_count_gen (seen, IW_GEN2) == 1,
+	       "intelwin review: rules of a generation are counted past a "
+	       "foreign rule in the group and an earlier apply's rule");
+	g_ptr_array_unref (seen);
+	seen = iw_seen_from_plan (plan, FALSE);
+	for (guint i = 0; i < seen->len; i++) {
+		FsIntelWinSeen *x = g_ptr_array_index (seen, i);
+
+		g_free (x->grouping);
+		x->grouping = g_strdup ("Other");
+	}
+	CHECK (fs_intelwin_count_gen (seen, IW_GEN) == 0 &&
+	       fs_intelwin_count_gen (NULL, IW_GEN) == 0 &&
+	       fs_intelwin_count_gen (seen, NULL) == 0,
+	       "intelwin review: rules outside the group are never counted");
+	g_ptr_array_unref (seen);
+
+	/* W6: names that differ only in case share a key, so a removal
+	 * renames the rule first instead of trusting Remove's matching. */
+	a = fs_intelwin_name_key ("SFW-TI alpha in IPv4 1/1 " IW_GEN);
+	b = fs_intelwin_name_key ("sfw-ti ALPHA in ipv4 1/1 G0123ABCD");
+	CHECK (a != NULL && g_strcmp0 (a, b) == 0,
+	       "intelwin review: rule names that differ only in case share "
+	       "one key");
+	g_free (b);
+	b = fs_intelwin_name_key ("SFW-TI alpha in IPv4 2/2 " IW_GEN);
+	CHECK (g_strcmp0 (a, b) != 0 && fs_intelwin_name_key (NULL) == NULL,
+	       "intelwin review: different names keep different keys");
+	g_free (a);
+	g_free (b);
+
+	/* W3: the policy lists its own rules by name; a blocklist rule is
+	 * never one of them. */
+	CHECK (fs_netsh_rule_name_is_ours ("StockFW- Allow SSH -inbound-") &&
+	       fs_netsh_rule_name_is_ours ("StockFW Allow SSH") &&
+	       !fs_netsh_rule_name_is_ours ("SFW-TI alpha in IPv4 1/1 "
+	                                     IW_GEN) &&
+	       !fs_netsh_rule_name_is_ours ("SFW-TI manifest " IW_GEN) &&
+	       !fs_netsh_rule_name_is_ours ("Core Networking - DNS") &&
+	       !fs_netsh_rule_name_is_ours (NULL),
+	       "intelwin review: the policy's rule names are told apart from "
+	       "the blocklist rules'");
+
+	/* W3: why the policy no longer lists through netsh's printout.  A
+	 * rule set at the interval limit written as Windows rules: netsh
+	 * `show rule name=all' prints every RemoteIP, and this much text
+	 * alone is past the 16 MiB the backend reads of a child's output. */
+	{
+		FsIntelRuleset *big = fs_intel_ruleset_new ();
+		FsRangeSet *v6 = fs_range_set_new ();
+		FsIntelWinPlan *bp;
+		guint64 chars = 0;
+		guint n = FS_INTEL_MAX_INTERVALS / 2;
+
+		for (guint i = 0; i < n; i++) {
+			FsU128 lo = { G_GUINT64_CONSTANT (0x2001db8abcdef012) + i * 2,
+			              G_GUINT64_CONSTANT (0x123456789abcdef1) };
+			FsU128 hi = { lo.hi, G_GUINT64_CONSTANT (0xfedcba9876543210) };
+
+			fs_range_set_add6 (v6, lo, hi);
+		}
+		fs_range_set_normalize (v6);
+		fs_intel_ruleset_add (big, "huge", "Huge", FS_INTEL_DIR_BOTH, v6);
+		bp = fs_intelwin_plan (big, IW_GEN, FS_INTELWIN_MAX_TOKENS,
+		                       FS_INTELWIN_MAX_CHARS);
+		for (guint i = 0; bp != NULL && i < bp->rules->len; i++)
+			chars += strlen (((FsIntelWinRule *)
+			                  g_ptr_array_index (bp->rules, i))->remote);
+		CHECK (bp != NULL && chars > 16u * 1024 * 1024,
+		       "intelwin review: %u long IPv6 ranges both ways print %"
+		       G_GUINT64_FORMAT " characters of addresses in %u rules, "
+		       "more than the 16 MiB a netsh listing may hold", n, chars,
+		       bp ? bp->rules->len : 0);
+		fs_intelwin_plan_free (bp);
+		fs_intel_ruleset_free (big);
+	}
+
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_free (rs);
 }
 
 static void
@@ -7967,6 +8129,7 @@ int main (void)
 	test_intelwin_parse_remote ();
 	test_intelwin_read ();
 	test_intelwin_force ();
+	test_intelwin_review ();
 	test_hostnet_onlink ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
