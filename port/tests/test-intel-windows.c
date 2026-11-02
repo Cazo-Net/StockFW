@@ -203,6 +203,17 @@ rule_line (const Rule *r)
 	                        r->app, r->svc, r->iftypes);
 }
 
+/* g_ptr_array_sort hands its comparator pointers to the elements, not
+ * the elements: casting g_strcmp0 to GCompareFunc compared the bytes of
+ * the gchar* values themselves (heap addresses) as text, so two
+ * snapshots of the same rules came out in different orders and never
+ * compared equal (the CI's Windows runner, twice). */
+static gint
+line_cmp (gconstpointer a, gconstpointer b)
+{
+	return g_strcmp0 (*(const gchar *const *) a, *(const gchar *const *) b);
+}
+
 /* Every rule outside our group, sorted, as one text. */
 static gchar *
 others_snapshot (void)
@@ -217,7 +228,7 @@ others_snapshot (void)
 		if (!fs_intelwin_in_group (r->group))
 			g_ptr_array_add (lines, rule_line (r));
 	}
-	g_ptr_array_sort (lines, (GCompareFunc) g_strcmp0);
+	g_ptr_array_sort (lines, line_cmp);
 	for (guint i = 0; i < lines->len; i++) {
 		g_string_append (out, lines->pdata[i]);
 		g_string_append_c (out, '\n');
@@ -227,33 +238,48 @@ others_snapshot (void)
 	return g_string_free (out, FALSE);
 }
 
-/* Prints the lines only one of two snapshots has, so a failed
- * comparison says which rule changed and how. */
+/* Prints every rule line whose count differs between two snapshots
+ * (a rule can appear more than once), so a failed comparison says
+ * which rule changed and how; and says so when the counts all agree
+ * and only the order differs. */
 static void
 print_diff (const gchar *before, const gchar *after)
 {
 	gchar **a = g_strsplit (before != NULL ? before : "", "\n", -1);
 	gchar **b = g_strsplit (after != NULL ? after : "", "\n", -1);
-	GHashTable *in_a = g_hash_table_new (g_str_hash, g_str_equal);
-	GHashTable *in_b = g_hash_table_new (g_str_hash, g_str_equal);
+	GHashTable *count = g_hash_table_new (g_str_hash, g_str_equal);
+	GHashTableIter it;
+	gpointer key, value;
 	guint shown = 0;
 
+	/* before adds one, after takes one away: what is left differs. */
 	for (guint i = 0; a[i] != NULL; i++)
-		g_hash_table_add (in_a, a[i]);
+		if (*a[i] != '\0')
+			g_hash_table_insert (count, a[i], GINT_TO_POINTER (
+				GPOINTER_TO_INT (g_hash_table_lookup (count,
+				                                      a[i])) + 1));
 	for (guint i = 0; b[i] != NULL; i++)
-		g_hash_table_add (in_b, b[i]);
-	for (guint i = 0; a[i] != NULL && shown < 40; i++)
-		if (*a[i] != '\0' && !g_hash_table_contains (in_b, a[i])) {
-			printf ("      only before: %s\n", a[i]);
-			shown++;
-		}
-	for (guint i = 0; b[i] != NULL && shown < 40; i++)
-		if (*b[i] != '\0' && !g_hash_table_contains (in_a, b[i])) {
-			printf ("      only after:  %s\n", b[i]);
-			shown++;
-		}
-	g_hash_table_unref (in_a);
-	g_hash_table_unref (in_b);
+		if (*b[i] != '\0')
+			g_hash_table_insert (count, b[i], GINT_TO_POINTER (
+				GPOINTER_TO_INT (g_hash_table_lookup (count,
+				                                      b[i])) - 1));
+	g_hash_table_iter_init (&it, count);
+	while (g_hash_table_iter_next (&it, &key, &value)) {
+		gint n = GPOINTER_TO_INT (value);
+
+		if (n == 0)
+			continue;
+		if (shown++ < 40)
+			printf ("      %s %d: %s\n",
+			        n > 0 ? "only before, times" : "only after, times",
+			        ABS (n), (const gchar *) key);
+	}
+	if (shown == 0)
+		printf ("      the same rules, in a different order\n");
+	else if (shown > 40)
+		printf ("      ... and %u more\n", shown - 40);
+	fflush (stdout);
+	g_hash_table_unref (count);
 	g_strfreev (a);
 	g_strfreev (b);
 }
@@ -273,7 +299,7 @@ rule_lines_named (const gchar *name, const gchar *group)
 		    g_strcmp0 (r->group, group) == 0)
 			g_ptr_array_add (lines, rule_line (r));
 	}
-	g_ptr_array_sort (lines, (GCompareFunc) g_strcmp0);
+	g_ptr_array_sort (lines, line_cmp);
 	for (guint i = 0; i < lines->len; i++) {
 		g_string_append (out, lines->pdata[i]);
 		g_string_append_c (out, '\n');

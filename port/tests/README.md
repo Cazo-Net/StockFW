@@ -2228,9 +2228,10 @@ apply repairs it; a foreign rule in the group reads PARTIAL; every
 profile off reads INACTIVE with a reason (the profiles are put back);
 clear leaves nothing in the group and every rule outside it exactly as
 before, including a decoy that has one of our rule names in another
-group (checked for the decoy alone, the clear alone and the whole run;
-a failure prints the rules that differ, and `full-suite.sh` prints
-every indented detail line of this test); the store directory gets a
+group (checked for the decoy alone, the clear alone and the whole run,
+as multisets of whole rule lines sorted by text; a failure prints each
+line whose count differs, and `full-suite.sh` prints the whole output
+of this test when it fails); the store directory gets a
 protected DACL naming only SYSTEM, Administrators and the current user,
 and Administrators as owner; an override whose parent Users may change
 is refused and not created (its temporary parents are made with a
