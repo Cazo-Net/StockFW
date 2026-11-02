@@ -23,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -119,7 +119,7 @@
 <p>Every rule can carry a comment, which is kept in the file and shown in its own column. The “service” field is a name for your benefit; the port is what the engine sees. Common names (SSH, HTTP, HTTPS, DNS, RDP and so on) are known, so the simulator and the Events page can use them.</p>
 
 <h2 id="covers">Covers<a class="anchor" href="#covers" aria-label="Link to this section">#</a></h2>
-<p>A rule reaches the address families its target can reach, and the <em>Covers</em> column says which, with the reason as a tooltip. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></p>
+<p>A rule reaches the address families its target can reach, and the <em>Covers</em> column says which, with the reason as a tooltip.</p>
 <div class="tbl-wrap">
 <table class="tbl">
 <thead><tr><th>Target</th><th>Covers</th></tr></thead>
@@ -142,7 +142,7 @@
 <ol>
 <li><strong>Save first.</strong> Adding, editing or removing a rule writes the policy file immediately, and if the write fails the change is taken back out of memory, so what you see is always what is on disk.</li>
 <li><strong>Measure.</strong> Pressing <strong>Apply policy</strong> compares the saved policy with the journal of what the engine last accepted (<code>applied.csv</code>) and shows the counts: “+1 added (1 allow, 0 block), −0 removed, =8 unchanged”. Nothing has happened yet; you can say No.</li>
-<li><strong>Push.</strong> On Linux the whole policy is rendered into an <code>iptables-restore</code> payload and an <code>ip6tables-restore</code> payload and loaded with <code>--noflush</code>, so only StockFW’s own chains are replaced, each family in one atomic step; if the IPv6 load is refused, the IPv4 load is undone. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span> On Windows each rule is one <code>netsh advfirewall</code> command, and only the rules that changed are touched. Preferences that compile to rules (ICMP, broadcasts, reserved sources) are pushed in the same step.</li>
+<li><strong>Push.</strong> On Linux the whole policy is rendered into an <code>iptables-restore</code> payload and an <code>ip6tables-restore</code> payload and loaded with <code>--noflush</code>, so only StockFW’s own chains are replaced, each family in one atomic step; if the IPv6 load is refused, the IPv4 load is undone. On Windows each rule is one <code>netsh advfirewall</code> command, and only the rules that changed are touched. Preferences that compile to rules (ICMP, broadcasts, reserved sources) are pushed in the same step.</li>
 <li><strong>Record.</strong> On success the journal is updated to what is now live, so the next Apply measures against reality.</li>
 <li><strong>Report.</strong> The dialog says what the engine said. On Linux a successful apply can carry notes (“ip6tables is not installed”, “the forward to 192.168.1.30 was left out: no external interface is set”); on Windows a rule the engine refused makes the apply partial, and the gate restores the last good policy and reports whether the restore worked.</li>
 <li><strong>Audit.</strong> One line in <code>audit.log</code>: the source (Policy page, Events page, Copilot, Sentinel or <code>cli</code>), the mode, the counts, and any notes. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></li>
@@ -166,7 +166,7 @@
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/activity.html"><span>Previous</span><strong>Activity</strong></a><a class="next" href="../docs/copilot.html"><span>Next</span><strong>Copilot</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/policy.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/policy.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -201,7 +201,7 @@
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>

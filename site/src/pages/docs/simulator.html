@@ -70,5 +70,5 @@ $ echo $?
 <ul>
 <li>It answers from the policy, not from the engine. If someone added a rule directly in <code>wf.msc</code> or with <code>iptables</code>, the simulator does not see it. [[gap]]</li>
 <li>It reasons about new connections. Replies to an already open connection always pass, and the simulator does not model them.</li>
-<li>Threat-intel lists are not consulted yet. When they land, an address the policy allows but a list blocks will be answered “Blocked by threat intel: <em>list</em>”. [[soon]]</li>
+<li>[[linux]] An address the policy allows but a threat-intel list blocks is answered “Blocked by threat intel: <em>list</em>”, because the list is checked before the policy in the kernel too.</li>
 </ul>

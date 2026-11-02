@@ -23,7 +23,7 @@
 		<a class="brand" href="./index.html">
 			<img src="./assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="./index.html#tour">Features</a>
@@ -52,7 +52,7 @@
 			<h1>Know what your firewall will do <em>before it does it.</em></h1>
 			<p class="hero-sub">StockFW drives the firewall your system already has. It shows every connection that was allowed or blocked, keeps your policy as files you can read and diff, and answers “what would happen if?” before you change a thing.</p>
 			<div class="btn-row">
-				<a class="btn btn-wall" href="./download.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0 5-5m-5 5-5-5M4 19h16"/></svg>Download 1.0.5</a>
+				<a class="btn btn-wall" href="./download.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0 5-5m-5 5-5-5M4 19h16"/></svg>Download 1.0.7</a>
 				<a class="btn btn-line" href="./docs/index.html">Read the documentation</a>
 			</div>
 			<ul class="hero-facts" aria-label="What StockFW never contains">
@@ -116,7 +116,7 @@
 <section class="strip" aria-label="How StockFW connects to your system">
 	<div class="wrap">
 		<div class="strip-item"><span class="label">Engine on Windows</span><strong>Windows Filtering Platform</strong><span>through <code>netsh advfirewall</code> and the <code>INetFwPolicy2</code> interface, both supported by Microsoft</span></div>
-		<div class="strip-item"><span class="label">Engine on Linux</span><strong>netfilter</strong><span>through <code>iptables</code> and, in 1.0.7, <code>ip6tables</code>; threat-intel sets go to nftables</span></div>
+		<div class="strip-item"><span class="label">Engine on Linux</span><strong>netfilter</strong><span>through <code>iptables</code> and <code>ip6tables</code>; threat-intel sets go to nftables</span></div>
 		<div class="strip-item"><span class="label">Where events come from</span><strong>The system’s own log</strong><span>Security events 5156 and 5157 on Windows; the kernel ring buffer on Linux</span></div>
 		<div class="strip-item"><span class="label">Where your policy lives</span><strong>Plain text files</strong><span>one comma-separated file per rule kind, in your profile. Back it up by copying it.</span></div>
 	</div>
@@ -127,12 +127,12 @@
 		<div class="sec-head">
 			<p class="label">The desktop app</p>
 			<h2>Six pages. Each one answers a question you actually have.</h2>
-			<p>Every page below is a screenshot of the 1.0.7 development build, taken on Linux in a test network that was really sending the traffic you see. Claims carry a stamp naming the automated test that proves them.</p>
+			<p>Every page below is a screenshot of StockFW 1.0.7 on Linux, in a test network that was really sending the traffic you see. Claims carry a stamp naming the automated test that proves them.</p>
 		</div>
 
 		<div class="shell">
 			<nav class="shell-rail" role="tablist" aria-label="App pages">
-				<div class="shell-brand"><img src="./assets/img/logo-64.png" alt="" width="30" height="30"><span>StockFW<small>1.0.7 dev</small></span></div>
+				<div class="shell-brand"><img src="./assets/img/logo-64.png" alt="" width="30" height="30"><span>StockFW<small>1.0.7</small></span></div>
 				<a class="shell-tab" role="tab" href="#tour-overview" aria-controls="tour-overview" aria-selected="true" id="tab-overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.5 6v6c0 4.5 3.2 7.6 7.5 9 4.3-1.4 7.5-4.5 7.5-9V6L12 3Z"/></svg>Overview<small>Am I protected?</small></a>
 				<a class="shell-tab" role="tab" href="#tour-events" aria-controls="tour-events" aria-selected="false" id="tab-events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>Events<small>What just happened?</small></a>
 				<a class="shell-tab" role="tab" href="#tour-activity" aria-controls="tour-activity" aria-selected="false" id="tab-activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l5-7 4 4 5-8 4 5"/></svg>Activity<small>How much, over time?</small></a>
@@ -150,12 +150,12 @@
 						<a class="more" href="./docs/overview.html">How the Overview page works</a>
 					</div>
 					<ul class="claims">
-						<li><p>IPv4 and IPv6 are reported separately. On Linux, if <code>ip6tables</code> is missing the page says “IPv6 is not filtered” and why, instead of a reassuring green.</p><span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></li>
+						<li><p>IPv4 and IPv6 are reported separately. On Linux, if <code>ip6tables</code> is missing the page says “IPv6 is not filtered” and why, instead of a reassuring green.</p></li>
 						<li><p>Open connections show the owning program, read from <code>/proc</code> on Linux and the TCP table on Windows. A connection on a port something here listens on is marked inbound, not guessed from port numbers.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></li>
-						<li><p>Virtual adapters (containers, VMs, VPN) are hidden by default and counted, so a laptop with Docker does not read like a server farm.</p><span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></li>
+						<li><p>Virtual adapters (containers, VMs, VPN) are hidden by default and counted, so a laptop with Docker does not read like a server farm.</p></li>
 					</ul>
 				</div>
-				<figure class="shot"><img src="./assets/screens/overview.webp" alt="The Overview page: a green card reading “This computer is protected”, counters for inbound and outbound events, a table of open connections with their programs, the network adapters and the recent blocks." width="1180" height="780" loading="lazy" decoding="async"><figcaption>The Overview page in the 1.0.7 development build. The traffic is real: a staged network with a scanner on the outside and two services on the inside.</figcaption></figure>
+				<figure class="shot"><img src="./assets/screens/overview.webp" alt="The Overview page: a green card reading “This computer is protected”, counters for inbound and outbound events, a table of open connections with their programs, the network adapters and the recent blocks." width="1180" height="780" loading="lazy" decoding="async"><figcaption>The Overview page in StockFW 1.0.7. The traffic is real: a staged network with a scanner on the outside and two services on the inside.</figcaption></figure>
 			</div>
 
 			<div class="shell-panel" id="tour-events" role="tabpanel" aria-labelledby="tab-events">
@@ -169,7 +169,7 @@
 					<ul class="claims">
 						<li><p>Right-click a row to block or allow that destination, block that service to it, or trust an inbound source. The dialog prints the exact rule before anything is written.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_eventrule_builders</span></li>
 						<li><p>Rows land newest first by their own time stamp, duplicates are refused, and the list keeps 2,000 rows. The system log stays the archive.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-hitview-smoke</span></li>
-						<li><p>On Linux the list is read straight from the kernel ring buffer, so it works on WSL, in containers and on systems without a syslog daemon.</p><span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></li>
+						<li><p>On Linux the list is read straight from the kernel ring buffer, so it works on WSL, in containers and on systems without a syslog daemon.</p></li>
 					</ul>
 				</div>
 				<figure class="shot"><img src="./assets/screens/events.webp" alt="The Events page: 211 events in a table of time, direction, interface, port, source, destination, protocol and service; blocked rows are highlighted red." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Blocked rows in red. The filter box, the monitor switch, Clear and Refresh sit above the list.</figcaption></figure>
@@ -323,14 +323,14 @@ Nothing was changed (dry run).</code></pre></div>
 			<table class="tbl plat-tbl">
 				<thead><tr><th></th><th>Windows</th><th>Linux</th></tr></thead>
 				<tbody>
-					<tr><td>Rules are applied through</td><td><code>netsh advfirewall</code>, one argument list per rule</td><td><code>iptables-restore</code> and <code>ip6tables-restore</code>, one atomic load per family <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></td></tr>
-					<tr><td>Events come from</td><td>Security log events 5156 (allowed) and 5157 (blocked)</td><td>The kernel ring buffer, <code>/dev/kmsg</code>, with the policy’s own LOG rules <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></td></tr>
-					<tr><td>IPv6</td><td>Filtered; Windows Firewall covers both families</td><td>Filtered with the same policy, neighbour discovery always allowed <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></td></tr>
+					<tr><td>Rules are applied through</td><td><code>netsh advfirewall</code>, one argument list per rule</td><td><code>iptables-restore</code> and <code>ip6tables-restore</code>, one atomic load per family</td></tr>
+					<tr><td>Events come from</td><td>Security log events 5156 (allowed) and 5157 (blocked)</td><td>The kernel ring buffer, <code>/dev/kmsg</code>, with the policy’s own LOG rules</td></tr>
+					<tr><td>IPv6</td><td>Filtered; Windows Firewall covers both families</td><td>Filtered with the same policy, neighbour discovery always allowed</td></tr>
 					<tr><td>Firewall profiles</td><td>Domain, Private and Public, switched from the Overview</td><td>One firewall state</td></tr>
 					<tr><td>Preferences pages offered</td><td>ICMP Filtering, Advanced Options</td><td>Network, ICMP, ToS, Advanced</td></tr>
 					<tr><td>Program signatures (Trust)</td><td>Authenticode, offline</td><td>Hash and baseline only; signature reads “not checked”</td></tr>
 					<tr><td>Command line and dashboard</td><td>Not yet; the desktop app is the front end</td><td><code>stockfw</code> with every command and <code>--json</code></td></tr>
-					<tr><td>Threat-intel blocklists</td><td>Round 3 of 1.0.7 <span class="ev ev-planned" title="Intended, not built yet."><b>Planned</b></span></td><td>nftables sets, user-enabled feeds <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></td></tr>
+					<tr><td>Threat-intel blocklists and country blocking</td><td>Not on Windows; the Threat Intel page says so</td><td>nftables sets built from the feeds and countries you enable</td></tr>
 					<tr><td>Install</td><td>NSIS installer with the GTK runtime bundled</td><td>Tarball with <code>install.sh</code>; GTK from your distribution</td></tr>
 				</tbody>
 			</table>
@@ -341,17 +341,17 @@ Nothing was changed (dry run).</code></pre></div>
 <section class="sec" id="next">
 	<div class="wrap">
 		<div class="sec-head">
-			<p class="label">Coming in 1.0.7</p>
-			<h2>What is being built right now.</h2>
-			<p>1.0.7 is in development on GitHub. “Built” means the code is committed and tested on the 1.0.7 branch; “In progress” means it is being written and details may still move.</p>
+			<p class="label">New in 1.0.7</p>
+			<h2>What 1.0.7 adds.</h2>
+			<p>The biggest changes in this release. The <a href="./changelog.html">changelog</a> has the full list, and the documentation covers each in depth.</p>
 		</div>
 		<div class="next-grid">
-			<div class="next-card"><h3>IPv6 on Linux</h3><p>One policy loaded into both families in one step, rolled back together if either half is refused. Neighbour discovery, router adverts and DHCPv6 replies always pass.</p><span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></div>
-			<div class="next-card"><h3>The redesigned desktop app</h3><p>A sidebar, an Overview that answers “am I protected?” in one sentence, and every page rebuilt as cards. The screenshots on this site are of it.</p><span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></div>
-			<div class="next-card"><h3>What each rule covers</h3><p>A Covers column on the Policy page, an IPv6 line on the Overview, and <code>covers</code> in the CLI’s JSON, so a rule can never silently apply to fewer addresses than you think.</p><span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></div>
-			<div class="next-card"><h3>Threat-intel blocklists</h3><p>Opt in to well-known feeds such as Spamhaus DROP and abuse.ch Feodo Tracker. StockFW downloads, checks and loads them into nftables sets; events say which list blocked a connection. Off until you turn it on.</p><span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></div>
-			<div class="next-card"><h3>Country and network-owner blocking</h3><p>Block by registered country or by the network that announces an address, from an offline, signed location database. The picker warns about anycast networks.</p><span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></div>
-			<div class="next-card"><h3>Background mode and the tray</h3><p>Keep protecting after the window closes, with a tray menu that shows state and recent blocks. The Preferences dialog and the What-if window are being redesigned to match the new look.</p><span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></div>
+			<div class="next-card"><h3>IPv6 on Linux</h3><p>One policy loaded into both families in one step, rolled back together if either half is refused. Neighbour discovery, router adverts and DHCPv6 replies always pass.</p></div>
+			<div class="next-card"><h3>The redesigned desktop app</h3><p>A sidebar, an Overview that answers “am I protected?” in one sentence, and every page rebuilt as cards. The screenshots on this site are of it.</p></div>
+			<div class="next-card"><h3>What each rule covers</h3><p>A Covers column on the Policy page, an IPv6 line on the Overview, and <code>covers</code> in the CLI’s JSON, so a rule can never silently apply to fewer addresses than you think.</p></div>
+			<div class="next-card"><h3>Threat-intel blocklists</h3><p>Opt in to well-known feeds such as Spamhaus DROP and abuse.ch Feodo Tracker. StockFW downloads, checks and loads them into nftables sets; events say which list blocked a connection. Off until you turn it on.</p></div>
+			<div class="next-card"><h3>Country and network-owner blocking</h3><p>Block by registered country or by the network that announces an address, from an offline, signed location database. The picker warns about anycast networks.</p></div>
+			<div class="next-card"><h3>Background mode and the tray</h3><p>Keep protecting after the window closes, with a tray menu that shows state and recent blocks. The Preferences dialog and the What-if window match the new look.</p></div>
 		</div>
 	</div>
 </section>
@@ -361,10 +361,10 @@ Nothing was changed (dry run).</code></pre></div>
 		<div class="dl-card">
 			<div>
 				<h2>Install it in a minute.</h2>
-				<p>Version 1.0.5 is the current release for Windows and Linux. Newer work, including everything marked “Built” above, is on GitHub and builds in a few commands.</p>
+				<p>StockFW 1.0.7 for Windows and Linux: an installer, a Linux tarball and checksums on GitHub, or build the same code from source in a few commands.</p>
 			</div>
 			<div class="btn-row">
-				<a class="btn btn-wall" href="./download.html">Download 1.0.5</a>
+				<a class="btn btn-wall" href="./download.html">Download 1.0.7</a>
 				<a class="btn btn-line" href="./docs/index.html">Documentation</a>
 			</div>
 		</div>
@@ -388,7 +388,7 @@ Nothing was changed (dry run).</code></pre></div>
 					<li><a href="./index.html#tour">Features</a></li>
 					<li><a href="./download.html">Download</a></li>
 					<li><a href="./changelog.html">Changelog</a></li>
-					<li><a href="./index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="./index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>

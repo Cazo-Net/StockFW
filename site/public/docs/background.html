@@ -23,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -107,16 +107,13 @@
 <li><strong>About StockFW</strong> shows the version and credits.</li>
 <li><strong>Quit StockFW</strong> ends the program. It does <em>not</em> stop the firewall: the engine keeps enforcing whatever was last applied, exactly as it would if StockFW crashed. To stop filtering, open the window and press <strong>Stop firewall</strong>, or run <code>sudo stockfw stop</code>.</li>
 </ul>
-<div class="callout soon">
-<span class="label">Coming in 1.0.7</span>
-<p>A richer tray menu: the state, the last few blocks, Start and Stop, and the Sentinel mode, without opening the window. Quit stays a plain quit.</p>
-</div>
+<p>The tray menu also shows the firewall state, the last few blocks and the Sentinel mode, and has <strong>Start firewall</strong> and <strong>Stop firewall</strong>, so the common actions never need the window. Quit stays a plain quit.</p>
 
 <h2 id="what-runs-in-the-background">What runs in the background<a class="anchor" href="#what-runs-in-the-background" aria-label="Link to this section">#</a></h2>
 <ul>
 <li>Event monitoring, and everything fed by it: the Activity counters, the Copilot’s baseline, Sentinel’s detectors.</li>
 <li>Sentinel’s ten-minute expiry timer for auto-blocks.</li>
-<li>In 1.0.7, the hourly check for threat-intel feed updates. <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></li>
+<li><span class="plat">Linux</span> The hourly check for threat-intel feed updates, for the feeds you have turned on.</li>
 </ul>
 <p>Memory stays flat: the Activity series are fixed-size rings, the Events list keeps 2,000 rows, the Copilot keeps 200 insights, and a 150-second soak at full event rate found no growth. <span class="ev ev-measured" title="A number from an experiment that was actually run."><b>Measured</b> 150-second soak, docs chapter 9</span></p>
 
@@ -129,7 +126,7 @@
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/preferences.html"><span>Previous</span><strong>Preferences</strong></a><a class="next" href="../docs/security.html"><span>Next</span><strong>Security model</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/background.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/background.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -162,7 +159,7 @@
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>

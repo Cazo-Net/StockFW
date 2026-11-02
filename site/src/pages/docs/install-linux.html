@@ -10,7 +10,7 @@ description: Installing StockFW on Debian, Kali, Ubuntu or WSL2 from the tarball
 <h2>Before you start</h2>
 <ul>
 <li>An x86-64 distribution with GTK 3. Debian, Kali, Ubuntu and WSL2 are what it is tested on.</li>
-<li><code>iptables</code>, and for IPv6 filtering in 1.0.7, <code>ip6tables</code>. On current distributions both are the nftables-backed versions, which is fine: StockFW’s rules land in nftables through them.</li>
+<li><code>iptables</code> and <code>ip6tables</code>, and <code>nft</code> if you want threat-intel blocklists. On current distributions both are the nftables-backed versions, which is fine: StockFW’s rules land in nftables through them.</li>
 <li>Root, for reading the kernel log and for changing rules. Everything else works as your own user.</li>
 </ul>
 
@@ -74,10 +74,10 @@ $ sudo /usr/local/bin/StockFW      # as root: the full tool</pre>
 </tbody>
 </table>
 </div>
-<p>In the kernel, StockFW owns the chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>PREROUTING</code> and <code>POSTROUTING</code>. On each apply only those chains are replaced; rules that Docker, libvirt or ufw keep in the same tables are not touched. [[built]]</p>
+<p>In the kernel, StockFW owns the chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>PREROUTING</code> and <code>POSTROUTING</code>. On each apply only those chains are replaced; rules that Docker, libvirt or ufw keep in the same tables are not touched.</p>
 
 <h2>Events on Linux</h2>
-<p>The policy logs what it drops, rejects and, since 1.0.7, newly allows, and the Events page reads those lines from the kernel ring buffer (<code>/dev/kmsg</code>) directly, so it works on WSL, in containers and on systems without rsyslog or journald. [[built]] The 1.0.5 and 1.0.6 releases read <code>/var/log/kern.log</code> or <code>journalctl -k</code> instead. In both cases, root is required.</p>
+<p>The policy logs what it drops, rejects and, with <em>Log allowed connections</em> on, newly allows, and the Events page reads those lines from the kernel ring buffer (<code>/dev/kmsg</code>) directly, so it works on WSL, in containers and on systems without rsyslog or journald. Root is required.</p>
 
 <h2>Update</h2>
 <p>Unpack the new tarball and run its <code>install.sh</code> again. Your policy and preferences are outside <code>/usr/local</code> and are kept.</p>
@@ -87,4 +87,4 @@ $ sudo /usr/local/bin/StockFW      # as root: the full tool</pre>
 <p>Removes the binaries, the menu entry, the icons and the licence. It leaves your policy in <code>/etc/stockfw</code> or <code>~/.stockfw</code>, and any rules currently loaded in the kernel: press <strong>Stop firewall</strong> or run <code>sudo stockfw stop</code> first if you want those gone.</p>
 
 <h2>Build it yourself</h2>
-<p>The newest code builds with CMake and Ninja in a few commands. See <a href="{{root}}download.html#build-linux">Build on Linux</a>.</p>
+<p>StockFW builds with CMake and Ninja in a few commands. See <a href="{{root}}download.html#build-linux">Build on Linux</a>.</p>

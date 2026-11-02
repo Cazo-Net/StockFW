@@ -33,24 +33,12 @@ description: What StockFW is, how its four parts fit together, and how to read t
 <ul>
 <li>[[verified:test name]] An automated test in the repository proves it. The name is the test, so you can run it: most live in <code>port/tests/</code> and in <code>tests/test-core.sh</code>.</li>
 <li>[[measured:a number]] A number from an experiment that was run, such as the 150-second memory soak.</li>
-<li>[[built]] Done in the 1.0.7 development code on <code>main</code> and covered by its tests; not in the 1.0.5 release you can download today.</li>
-<li>[[soon]] Being written for 1.0.7. The shape is decided; details may still move.</li>
-<li>[[planned]] Intended. Not built, not promised for a date.</li>
-<li>[[gap]] A limit StockFW has today, written down so it is not mistaken for a feature.</li>
+<li>[[gap]] A limit StockFW has, written down so it is not mistaken for a feature.</li>
 </ul>
 <p>Where the two platforms differ, a badge says which one a sentence is about: [[win]] [[linux]]. Everything without a badge applies to both.</p>
 
-<h2>Versions</h2>
-<div class="tbl-wrap">
-<table class="tbl">
-<thead><tr><th>Version</th><th>Where</th><th>Status</th></tr></thead>
-<tbody>
-<tr><td>{{release}}</td><td><a href="{{root}}download.html">Download</a></td><td>The current release, 11 October 2026.</td></tr>
-<tr><td>1.0.6</td><td>merged into <code>main</code></td><td>Not packaged. Activity graphs, the command line, the dashboard. The 1.0.7 work now sits on top of it.</td></tr>
-<tr><td>{{next}}</td><td>branch <code>main</code></td><td>In development. These pages describe it, with the stamps above marking what is finished.</td></tr>
-</tbody>
-</table>
-</div>
+<h2>Version</h2>
+<p>These pages describe StockFW {{version}}, the release on the <a href="{{root}}download.html">download page</a>. What changed in earlier versions is in the <a href="{{root}}changelog.html">changelog</a>.</p>
 
 <h2>The longer document</h2>
 <p>These pages explain how to use StockFW. The reasoning behind it, the threat model with file-and-line evidence, every defect found and how it was fixed, and the measurements, are in <a href="{{repo}}/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">the architecture and security document</a> in the repository, one chapter per release. When these pages and that document disagree, the document is right and this site has a bug; please <a href="{{repo}}/issues">report it</a>.</p>

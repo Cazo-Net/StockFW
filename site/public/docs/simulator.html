@@ -23,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -158,13 +158,13 @@ A simulation only: nothing was written.
 <ul>
 <li>It answers from the policy, not from the engine. If someone added a rule directly in <code>wf.msc</code> or with <code>iptables</code>, the simulator does not see it. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></li>
 <li>It reasons about new connections. Replies to an already open connection always pass, and the simulator does not model them.</li>
-<li>Threat-intel lists are not consulted yet. When they land, an address the policy allows but a list blocks will be answered “Blocked by threat intel: <em>list</em>”. <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></li>
+<li><span class="plat">Linux</span> An address the policy allows but a threat-intel list blocks is answered “Blocked by threat intel: <em>list</em>”, because the list is checked before the policy in the kernel too.</li>
 </ul>
 
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/copilot.html"><span>Previous</span><strong>Copilot</strong></a><a class="next" href="../docs/trust.html"><span>Next</span><strong>Trust</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/simulator.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/simulator.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -198,7 +198,7 @@ A simulation only: nothing was written.
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>

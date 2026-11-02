@@ -106,7 +106,7 @@ curl,partial,1</pre>
 <h2>In the engine</h2>
 <ul>
 <li>[[win]] Rules named <code>StockFW-…</code> are policy rules; <code>StockFW …</code> (with a space) are Preferences rules. StockFW owns everything with those prefixes and nothing else. <code>wf.msc</code> or <code>netsh advfirewall firewall show rule name=all</code> lists them.</li>
-<li>[[linux]] Chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>FORWARD</code> (router mode), <code>PREROUTING</code> and <code>POSTROUTING</code>; log prefixes <code>STOCKFW-DROP</code>, <code>STOCKFW-REJECT</code> and <code>STOCKFW-ALLOW</code>. In 1.0.7, the nftables table <code>inet stockfw_intel</code> for threat intel, with the log prefix <code>STOCKFW-TI</code>. <code>nft list ruleset</code> shows all of it.</li>
+<li>[[linux]] Chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>FORWARD</code> (router mode), <code>PREROUTING</code> and <code>POSTROUTING</code>; log prefixes <code>STOCKFW-DROP</code>, <code>STOCKFW-REJECT</code> and <code>STOCKFW-ALLOW</code>. The nftables table <code>inet stockfw_intel</code> for threat intel, with the log prefix <code>STOCKFW-TI</code>. <code>nft list ruleset</code> shows all of it.</li>
 </ul>
 
 <h2>Backing up</h2>

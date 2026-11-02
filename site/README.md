@@ -27,16 +27,13 @@ The HTML is plain.  A few shortcodes expand at build time:
 |---|---|
 | `[[verified:test name]]` | A green "Verified" stamp naming the test that proves the claim. |
 | `[[measured:what]]` | A "Measured" stamp for a number from an experiment. |
-| `[[built]]` | "Built for 1.0.7": done on the development branch, not in the current release. |
-| `[[soon]]` | "In progress for 1.0.7". |
-| `[[planned]]` | Intended, not built. |
 | `[[gap]]` | A known limit, stated so it is not mistaken for a feature. |
 | `[[win]]`, `[[linux]]`, `[[both]]` | A platform badge. |
 | `[[shot:name\|alt text\|caption]]` | A screenshot from `public/assets/screens/name.webp`, with its real dimensions. |
 
 Code blocks are `<pre data-lang="sh" data-title="optional title">`.
 `{{root}}` is the relative path to the site root (so links work from
-`docs/`), and `{{release}}`, `{{version}}`, `{{next}}` and `{{repo}}`
+`docs/`), and `{{release}}`, `{{version}}` and `{{repo}}`
 come from `CONFIG` at the top of `build.py`.
 
 The build fails, and writes nothing, when a page links to a file or an

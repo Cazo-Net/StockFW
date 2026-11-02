@@ -23,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -141,7 +141,7 @@
 <p>There is no language model and no prompt. The what-if parser recognises a dozen words; the behaviour analysis is counters. An attacker’s only input is the traffic it generates, which becomes rows and numbers, never instructions. Everything the Copilot proposes is printed as the exact rule in a Yes/No dialog, allow rules are never applied without that dialog, and the one autonomous action, Sentinel’s auto-block, can only add a deny for a public destination, expires in ten minutes, and is fenced as described on <a href="../docs/copilot.html">the Copilot page</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-adversarial.sh</span></p>
 
 <h2 id="what-leaves-your-computer">What leaves your computer<a class="anchor" href="#what-leaves-your-computer" aria-label="Link to this section">#</a></h2>
-<p>Nothing. StockFW has no telemetry, no analytics, no update check and no network client. The only processes it starts are local system tools. Event data lives in memory and on screen; the policy records intent, not history; the audit log records what StockFW did, not what you connected to. In 1.0.7 the threat-intel feature will download lists, each only after you turn it on and accept its publisher’s terms, from that publisher and no mirror, and the consent dialog says what the publisher learns (your public address and <code>StockFW/<em>version</em></code>). <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></p>
+<p>Nothing. StockFW has no telemetry, no analytics, no update check and no network client. The only processes it starts are local system tools. Event data lives in memory and on screen; the policy records intent, not history; the audit log records what StockFW did, not what you connected to. The one exception is threat intel: a feed is downloaded only after you turn it on and accept its publisher’s terms, from that publisher and no mirror, and the consent dialog says what the publisher learns (your public address and <code>StockFW/<em>version</em></code>).</p>
 <p>One machine setting outside the firewall is changed, and disclosed when it happens: on Windows, enabling monitoring turns on the <em>Filtering Platform Connection</em> audit subcategory with <code>auditpol</code>.</p>
 
 <h2 id="the-local-dashboard">The local dashboard<a class="anchor" href="#the-local-dashboard" aria-label="Link to this section">#</a></h2>
@@ -158,7 +158,7 @@
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/background.html"><span>Previous</span><strong>Background and the tray</strong></a><a class="next" href="../docs/ipv6.html"><span>Next</span><strong>IPv6</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/security.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/security.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -194,7 +194,7 @@
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>

@@ -32,9 +32,9 @@ LAYOUTS = SRC / "layouts"
 PAGES = SRC / "pages"
 
 CONFIG = {
-    "version": "1.0.6",          # what the docs describe (main)
-    "next": "1.0.7",             # what is being built
-    "release": "1.0.5",          # the newest published GitHub release
+    "version": "1.0.7",          # the release these pages describe
+    "next": "1.0.7",             # unused since the site became the 1.0.7 site; kept for old pages
+    "release": "1.0.7",          # the GitHub release the download page points at
     "repo": "https://github.com/Cazo-Net/StockFW",
     "site_name": "StockFW",
 }
@@ -106,9 +106,6 @@ EV_LABELS = {
 EV_TITLES = {
     "verified": "An automated test in the StockFW repository proves this claim.",
     "measured": "A number from an experiment that was actually run.",
-    "built": "Done in the 1.0.7 development code on main; ships with 1.0.7.",
-    "soon": "Being built for 1.0.7; details may still change.",
-    "planned": "Intended, not built yet.",
     "gap": "A limit StockFW has today, stated so it is not mistaken for a feature.",
 }
 PLATFORMS = {"win": "Windows", "linux": "Linux", "both": "Windows and Linux"}

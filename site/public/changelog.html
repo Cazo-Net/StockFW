@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Changelog · StockFW</title>
-<meta name="description" content="What changed in each StockFW version, from the 1.0.3 GTK3 port to the 1.0.7 work in progress.">
+<meta name="description" content="What changed in each StockFW version, from the 1.0.3 GTK3 port to the current 1.0.7 release.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Changelog · StockFW">
-<meta property="og:description" content="What changed in each StockFW version, from the 1.0.3 GTK3 port to the 1.0.7 work in progress.">
+<meta property="og:description" content="What changed in each StockFW version, from the 1.0.3 GTK3 port to the current 1.0.7 release.">
 <meta property="og:type" content="website">
 <link rel="icon" href="./assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="./assets/img/apple-touch-icon.png">
@@ -23,7 +23,7 @@
 		<a class="brand" href="./index.html">
 			<img src="./assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="./index.html#tour">Features</a>
@@ -49,7 +49,7 @@
 	<div class="wrap">
 		<p class="label">Changelog</p>
 		<h1>Changelog</h1>
-		<p>What changed in each StockFW version, from the 1.0.3 GTK3 port to the 1.0.7 work in progress.</p>
+		<p>What changed in each StockFW version, from the 1.0.3 GTK3 port to the current 1.0.7 release.</p>
 	</div>
 </section>
 <div class="page-body">
@@ -57,9 +57,7 @@
 <div class="prose">
 <p class="lede">Each release also adds a chapter to <a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">the architecture and security document</a>, which records the evidence behind every claim below. This page is the short version.</p>
 
-<h2 id="v1-0-7">1.0.7 · in development<a class="anchor" href="#v1-0-7" aria-label="Link to this section">#</a></h2>
-<p>On branch <code>main</code>, unreleased. Items marked <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span> are committed and tested; items marked <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span> are being written.</p>
-<h3 id="v1-0-7-built">Built<a class="anchor" href="#v1-0-7-built" aria-label="Link to this section">#</a></h3>
+<h2 id="v1-0-7">1.0.7 · current release<a class="anchor" href="#v1-0-7" aria-label="Link to this section">#</a></h2>
 <ul>
 <li><strong>IPv6 is filtered on Linux.</strong> The whole policy is rendered before the kernel is touched, loaded with <code>iptables-restore</code> and <code>ip6tables-restore</code>, and if the IPv6 half is refused the IPv4 half is put back, so the kernel never runs half a policy. Neighbour discovery, router adverts, path-MTU and DHCPv6 replies are always allowed. Each address goes to its own family; a host name is looked up once and written as both. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-apply-dual.sh</span></li>
 <li><strong>What each rule covers.</strong> A <em>Covers</em> column on the Policy page (IPv4 only, IPv6 only, IPv4 + IPv6) with the reason as a tooltip; an IPv6 line on the Overview; <code>covers</code> and <code>covers_why</code> in <code>stockfw policy list --json</code>; the dashboard’s firewall tile says “In force for IPv4 and IPv6” or warns “IPv4 only”.</li>
@@ -67,21 +65,16 @@
 <li><strong>Generator bugs fixed on the way:</strong> outbound host rules were never rules at all (missing <code>-A OUTBOUND</code>); hyphen port ranges were refused by iptables; router-mode denies were bypassed; forwards were dropped after DNAT.</li>
 <li><strong>Linux events read the kernel ring buffer</strong> (<code>/dev/kmsg</code>) instead of depending on rsyslog or journald, so Events works on WSL, in containers and on minimal installs. Allowed new connections are logged too (<code>STOCKFW-ALLOW</code>, rate-limited), so the Activity graph’s allowed line is drawn on Linux. An empty list says why it is empty.</li>
 <li><strong>The redesigned desktop app.</strong> A dark sidebar replaces the tab band; a new Overview page answers “is this computer protected?” in one sentence with IPv4 and IPv6 status, counters, open connections with their programs, adapters and recent blocks; every other page is rebuilt as cards. Virtual adapters are hidden by default and counted.</li>
-<li><strong>Windows Overview</strong> shows the firewall profile in force and the network the computer is on, through <code>INetFwPolicy2</code> and <code>INetworkListManager</code>. Compile-tested in CI; not yet run by hand on Windows.</li>
-<li><strong>Threat-intel core:</strong> address-range arithmetic (<code>fs-iprange</code>), the feed catalogue with its parsers and guards (<code>fs-feed</code>), the downloader (<code>fs-fetch</code>), discovery of this computer’s own addresses and DNS servers (<code>fs-hostnet</code>), the engine that builds and stores the sets (<code>fs-intel</code>), the nftables table <code>inet stockfw_intel</code> loaded in one transaction (<code>fs-intelset</code>), and the Linux backend’s enforcement slots, with protected ranges that can never be blocked. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-intelset.sh</span></li>
+<li><strong>Windows Overview</strong> shows the firewall profile in force and the network the computer is on, through <code>INetFwPolicy2</code> and <code>INetworkListManager</code>.</li>
+<li><strong>Threat-intel blocklists</strong> <span class="plat">Linux</span> (Spamhaus DROP, abuse.ch Feodo Tracker, DShield, FireHOL, blocklist.de, Emerging Threats, CINS Army, Tor exits): opt-in per feed with its terms shown, strict parsing with size and coverage caps, protected ranges that can never be blocked, one nftables table <code>inet stockfw_intel</code> loaded in a single transaction, a Threat Intel page, <code>stockfw intel</code>, and events that say which list blocked a connection. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-feed.c</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-intelset.sh</span></li>
+<li><strong>Country and network-owner (ASN) blocking</strong> <span class="plat">Linux</span> from the IPFire location database, verified by its signature, with an anycast warning in the picker.</li>
+<li><strong>Background mode and a richer tray menu;</strong> the Preferences dialog and the What-if window redesigned to match the new look; a smarter What-if parser.</li>
+<li><strong>Windows rule translation fixed:</strong> service rules for protocols other than TCP no longer open all ports.</li>
 <li><strong>A new logo</strong> (flame, gear and SF shield), generated into every size the app, installer and dashboard use from one master file.</li>
 <li><strong>Continuous integration:</strong> Linux and Windows builds and test suites on every pull request, with the Windows installer kept as a run artifact.</li>
 </ul>
-<h3 id="v1-0-7-progress">In progress<a class="anchor" href="#v1-0-7-progress" aria-label="Link to this section">#</a></h3>
-<ul>
-<li>Threat-intel feeds (Spamhaus DROP, abuse.ch Feodo Tracker, DShield, FireHOL, blocklist.de, Emerging Threats, CINS Army, Tor exits): opt-in per feed with its terms shown, strict parsing with size and coverage caps, a Threat Intel page, <code>stockfw intel</code>, and events that say which list blocked a connection.</li>
-<li>Country and network-owner (ASN) blocking from the IPFire location database, verified by its signature, with an anycast warning in the picker.</li>
-<li>Background mode and a richer tray menu; the Preferences dialog and the What-if window redesigned to match the new look; a smarter What-if parser.</li>
-<li>A Windows rule-translation fix: service rules for protocols other than TCP no longer open all ports.</li>
-<li>Chapter 14 of the architecture document, and the version bump.</li>
-</ul>
 
-<h2 id="v1-0-6">1.0.6 · merged into <code>main</code>, unreleased<a class="anchor" href="#v1-0-6" aria-label="Link to this section">#</a></h2>
+<h2 id="v1-0-6">1.0.6 · development version, shipped as part of 1.0.7<a class="anchor" href="#v1-0-6" aria-label="Link to this section">#</a></h2>
 <ul>
 <li><strong>Activity page</strong> with two graphs over 15 minutes to 24 hours: events per minute (allowed and blocked) and adapter throughput, a crosshair, a table view, and a shaded “no data” band for time before the app started. Series are kept in 10-second slots for 24 hours at a fixed memory cost. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-activity-smoke</span></li>
 <li><strong>The <code>stockfw</code> command line</strong> on Linux: <code>status</code>, <code>policy list|add|remove</code>, <code>apply [--dry-run]</code>, <code>start</code>, <code>stop</code>, <code>simulate</code>, <code>events [-n N] [-f] [--blocked]</code>, <code>connections</code>, <code>interfaces [--watch]</code>, <code>dashboard</code>; <code>--json</code> everywhere; exit codes 0, 1, 2, 3 and 5. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
@@ -138,7 +131,7 @@
 					<li><a href="./index.html#tour">Features</a></li>
 					<li><a href="./download.html">Download</a></li>
 					<li><a href="./changelog.html">Changelog</a></li>
-					<li><a href="./index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="./index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>

@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>IPv6 · StockFW</title>
-<meta name="description" content="How StockFW filters IPv6: natively on Windows, and on Linux since 1.0.7 with one policy rendered for both families, one rollback, honest status, and the Covers column that says what each rule reaches.">
+<meta name="description" content="How StockFW filters IPv6: natively on Windows, and on Linux with one policy rendered for both families, one rollback, honest status, and the Covers column that says what each rule reaches.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="IPv6 · StockFW">
-<meta property="og:description" content="How StockFW filters IPv6: natively on Windows, and on Linux since 1.0.7 with one policy rendered for both families, one rollback, honest status, and the Covers column that says what each rule reaches.">
+<meta property="og:description" content="How StockFW filters IPv6: natively on Windows, and on Linux with one policy rendered for both families, one rollback, honest status, and the Covers column that says what each rule reaches.">
 <meta property="og:type" content="website">
 <link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
@@ -23,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -93,16 +93,13 @@
 		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Protection</p>
 		<article class="prose">
 <h1>IPv6</h1>
-<p class="lede">A rule that only exists for IPv4 is a door left open on every network that also speaks IPv6, which today is most of them. StockFW tells you, per rule and on the Overview, exactly which families are filtered, and on Linux since 1.0.7 it filters both from the same policy.</p>
+<p class="lede">A rule that only exists for IPv4 is a door left open on every network that also speaks IPv6, which today is most of them. StockFW tells you, per rule and on the Overview, exactly which families are filtered, and on Linux it filters both from the same policy.</p>
 
 <h2 id="windows">Windows<a class="anchor" href="#windows" aria-label="Link to this section">#</a></h2>
 <p><span class="plat">Windows</span> Windows Firewall rules apply to both families unless an address scopes them, so a rule for <em>Anyone</em> covers IPv4 and IPv6, and a rule for <code>2001:db8::5</code> covers IPv6 only. The Overview’s two tiles both read “Filtered” whenever the firewall is on. One limit: the Windows engine takes addresses, not names, so a rule whose target is a host name covers nothing there, and the Covers column says so. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></p>
 
-<h2 id="linux-before-1-0-7">Linux before 1.0.7<a class="anchor" href="#linux-before-1-0-7" aria-label="Link to this section">#</a></h2>
-<p><span class="plat">Linux</span> The 1.0.5 and 1.0.6 releases drive <code>iptables</code> only. Their IPv4 policy is complete, and IPv6 traffic is <em>not filtered</em> by StockFW at all: whatever the kernel’s default is, that is what happens. Both releases say so in the README and the architecture document; neither pretends otherwise in the app. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span> If you run one of them on a network with IPv6, you are relying on your router or on another firewall for that family.</p>
-
-<h2 id="linux-since-1-0-7">Linux since 1.0.7<a class="anchor" href="#linux-since-1-0-7" aria-label="Link to this section">#</a></h2>
-<p><span class="plat">Linux</span> <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span> The whole policy is rendered <em>before</em> the kernel is touched into two payloads, one for <code>iptables-restore</code> and one for <code>ip6tables-restore</code>, each with a filter part and, in router mode, a nat part. The backend snapshots StockFW’s chains in both families, loads IPv4, then IPv6, and on any failure puts back every table it changed. Each payload is loaded with <code>--noflush</code> and declares only StockFW’s own chains, so rules that Docker, libvirt or ufw keep in the same tables are never seen, and the hook from <code>INPUT</code> into <code>INBOUND</code> is not removed and re-added during a re-apply. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-apply-dual.sh</span></p>
+<h2 id="linux">Linux<a class="anchor" href="#linux" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Linux</span> The whole policy is rendered <em>before</em> the kernel is touched into two payloads, one for <code>iptables-restore</code> and one for <code>ip6tables-restore</code>, each with a filter part and, in router mode, a nat part. The backend snapshots StockFW’s chains in both families, loads IPv4, then IPv6, and on any failure puts back every table it changed. Each payload is loaded with <code>--noflush</code> and declares only StockFW’s own chains, so rules that Docker, libvirt or ufw keep in the same tables are never seen, and the hook from <code>INPUT</code> into <code>INBOUND</code> is not removed and re-added during a re-apply. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-apply-dual.sh</span></p>
 <p>The rollback covers both families, always. The first version rolled IPv6 back and skipped IPv4 whenever the IPv6 restore itself failed, which would have left IPv4 on the new policy while the dialog said nothing changed; four “teeth” runs now pin it, each removing one part of the rollback and watching a specific check go red.</p>
 
 <h3 id="which-family-a-rule-reaches">Which family a rule reaches<a class="anchor" href="#which-family-a-rule-reaches" aria-label="Link to this section">#</a></h3>
@@ -140,15 +137,14 @@
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/security.html"><span>Previous</span><strong>Security model</strong></a><a class="next" href="../docs/threat-intel.html"><span>Next</span><strong>Threat-intel blocklists</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/ipv6.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/ipv6.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
 		<h2>On this page</h2>
 		<ul>
 			<li class="lvl2"><a href="#windows">Windows</a></li>
-			<li class="lvl2"><a href="#linux-before-1-0-7">Linux before 1.0.7</a></li>
-			<li class="lvl2"><a href="#linux-since-1-0-7">Linux since 1.0.7</a></li>
+			<li class="lvl2"><a href="#linux">Linux</a></li>
 			<li class="lvl3"><a href="#which-family-a-rule-reaches">Which family a rule reaches</a></li>
 			<li class="lvl3"><a href="#what-ipv6-always-needs">What IPv6 always needs</a></li>
 			<li class="lvl3"><a href="#router-mode">Router mode</a></li>
@@ -175,7 +171,7 @@
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>

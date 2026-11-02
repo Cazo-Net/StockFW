@@ -5,7 +5,7 @@ order: 12
 description: The Activity page: the Policy activity and Network I/O graphs, the range and adapter pickers, the no-data band, the crosshair and the table view.
 ---
 <h1>Activity</h1>
-<p class="lede">Two graphs over the last 15 minutes to 24 hours: how many connections your policy allowed and blocked per minute, and how many bytes per second crossed your adapters. The page is new in 1.0.6.</p>
+<p class="lede">Two graphs over the last 15 minutes to 24 hours: how many connections your policy allowed and blocked per minute, and how many bytes per second crossed your adapters.</p>
 
 [[shot:activity|The Activity page: 15 min selected, three tiles (blocked 405, allowed 505, throughput 111 kB/s received and 1000 B/s sent), and two graphs with a shaded no-data band on the left, red and blue lines on the right.|Fifteen minutes of a staged port scan arriving while a download runs. The grey band is time before the app opened.]]
 
@@ -19,7 +19,7 @@ description: The Activity page: the Policy activity and Network I/O graphs, the 
 
 <h2>Policy activity</h2>
 <p>Events per minute, allowed in blue and blocked in red. It counts exactly what the <a href="{{root}}docs/events.html">Events page</a> lists, after that page’s filters and its duplicate check, and it counts each event at the event’s own time, not when the app happened to read it. That matters on Windows, where the first poll delivers a batch of recent history: those events land in their own minutes, and anything older than the app is dropped into the no-data band rather than piled into the current minute as a false spike. [[verified:fs-activity-smoke]]</p>
-<p>On Linux in 1.0.5 and 1.0.6 the allowed line is not drawn and the card says so, because the kernel log carried only drops and rejects, and a flat allowed line would have claimed that nothing was allowed. Since 1.0.7 the policy logs the first packet of each new allowed connection, so the line is real. [[built]]</p>
+<p>On Linux the allowed line is only as real as the kernel log: the policy logs the first packet of each new allowed connection when <em>Log allowed connections</em> is on. With it off, the card says the line is not drawn, rather than drawing a flat line that would claim nothing was allowed.</p>
 
 <h2>Network I/O</h2>
 <p>Bytes per second received and sent, from the adapters’ own cumulative counters: <code>GetIfTable2</code> on Windows, <code>/proc/net/dev</code> on Linux. No packet capture, no trace session, no elevation. A counter that goes backwards (a driver reload) starts a new baseline rather than drawing negative traffic. [[verified:test-core.sh]]</p>

@@ -70,5 +70,5 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 <pre data-lang="sh" data-title="From a script on the same machine">$ curl -s -H "X-StockFW-Token: $TOKEN" http://127.0.0.1:43977/api/summary</pre>
 <p>A request without the token, or with a wrong one, gets <code>401 Unauthorized</code> and no body worth reading.</p>
 
-<h2>Coming in 1.0.7</h2>
-<p>The threat-intel state and the enforced lists, read-only like everything else. [[soon]]</p>
+<h2>Threat intel</h2>
+<p>[[linux]] The threat-intel state and the enforced lists are shown too, read-only like everything else: whether enforcement is on, each enabled feed with its last update, and how many ranges the kernel holds.</p>

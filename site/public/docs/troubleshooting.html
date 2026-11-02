@@ -23,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.6</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -112,7 +112,7 @@
 <dt>“Monitoring is not available” on Linux</dt>
 <dd>The kernel log needs root. Start the app with <code>sudo</code>, or add yourself to the <code>adm</code> group for the command line’s <code>events</code>.</dd>
 <dt>The list stays empty although the firewall is running</dt>
-<dd>Read the sentence under the empty list. “Waiting for the first event” means nothing has been blocked or logged yet; try an inbound connection from another machine to a closed port. On Linux, allowed connections are logged only from 1.0.7 and only with <em>Log allowed connections</em> on; before that, the page shows drops and rejects only.</dd>
+<dd>Read the sentence under the empty list. “Waiting for the first event” means nothing has been blocked or logged yet; try an inbound connection from another machine to a closed port. On Linux, allowed connections are logged only with <em>Log allowed connections</em> on; otherwise the page shows drops and rejects only.</dd>
 <dt>No events in WSL2, a container or a network namespace</dt>
 <dd><span class="plat">Linux</span> The kernel delivers firewall log lines from a non-initial network namespace only when <code>net.netfilter.nf_log_all_netns=1</code>. Set it on the host: <code>sudo sysctl -w net.netfilter.nf_log_all_netns=1</code>. WSL2’s kernel also needs the netfilter log modules; a stock Ubuntu WSL image has them.</dd>
 <dt>The Program column is empty</dt>
@@ -140,7 +140,7 @@
 <h2 id="ipv6">IPv6<a class="anchor" href="#ipv6" aria-label="Link to this section">#</a></h2>
 <dl>
 <dt>The IPv6 tile reads “Not filtered: ip6tables is not installed”</dt>
-<dd><span class="plat">Linux</span> <code>sudo apt install iptables</code> brings <code>ip6tables</code> on Debian-family systems; <code>dnf install iptables-nft</code> on Fedora. Then Apply again. Until then only IPv4 is filtered, and the app says so rather than pretending. 1.0.5 and 1.0.6 never filter IPv6 on Linux. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
+<dd><span class="plat">Linux</span> <code>sudo apt install iptables</code> brings <code>ip6tables</code> on Debian-family systems; <code>dnf install iptables-nft</code> on Fedora. Then Apply again. Until then only IPv4 is filtered, and the app says so rather than pretending. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
 <dt>“None on this system”</dt>
 <dd>The kernel has no IPv6 stack. Nothing to filter, nothing wrong.</dd>
 </dl>
@@ -169,8 +169,6 @@
 <dd>Under <code>sudo</code> StockFW will not start a browser as root. Copy the printed URL into your own browser. The token is in it.</dd>
 <dt>The dashboard page shows “Unauthorized”</dt>
 <dd>The browser tab lost the token: the <code>#token=…</code> fragment was cut from the URL before the page loaded, the tab was reopened in a new session, or the URL is from an earlier run. Start again and open the freshly printed URL.</dd>
-<dt><code>stockfw: error: unknown command: intel</code></dt>
-<dd>You have 1.0.6. <code>stockfw intel</code> arrives with 1.0.7. <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></dd>
 </dl>
 
 <h2 id="uninstalling-and-starting-over">Uninstalling and starting over<a class="anchor" href="#uninstalling-and-starting-over" aria-label="Link to this section">#</a></h2>
@@ -187,7 +185,7 @@
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/files.html"><span>Previous</span><strong>Files and formats</strong></a><a class="next" href="../docs/faq.html"><span>Next</span><strong>Questions and answers</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/troubleshooting.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/troubleshooting.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
@@ -223,7 +221,7 @@
 					<li><a href="../index.html#tour">Features</a></li>
 					<li><a href="../download.html">Download</a></li>
 					<li><a href="../changelog.html">Changelog</a></li>
-					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
 				</ul>
 			</div>
 			<div>
