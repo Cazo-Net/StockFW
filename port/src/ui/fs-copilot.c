@@ -18,6 +18,7 @@
 #include "core/fs-audit.h"
 #include "core/fs-util.h"
 #include "ui/fs-app.h"
+#include "ui/fs-icons.h"
 #include "ui/fs-policyview.h"
 #include "ui/fs-simviz.h"
 #include "core/fs-apply.h"
@@ -121,18 +122,25 @@ static const gchar *insight_type_to_string (FsInsightType type);
 static const gchar *severity_to_string (FsCopilotSeverity sev);
 
 /* =====================================================================
- * Helper: button with a stock GTK icon + label
+ * Helper: button with one of the app's drawn icons + label
+ *
+ * FS_ICON_N_KINDS means no icon.  The drawn icons replace the theme's
+ * ("system-search", "list-add" ...): which of those a Windows runtime
+ * ships is not something the page can count on, and a missing one
+ * renders as a broken-image square.
  * ===================================================================== */
 static GtkWidget *
-button_with_icon (const gchar *icon_name, const gchar *label)
+button_with_icon (FsIconKind icon, const gchar *label)
 {
     GtkWidget *btn = gtk_button_new ();
-    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
-    GtkWidget *img = gtk_image_new_from_icon_name (icon_name, GTK_ICON_SIZE_BUTTON);
+    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *lbl = gtk_label_new (label);
 
-    gtk_box_pack_start (GTK_BOX (box), img, FALSE, FALSE, 0);
+    if (icon != FS_ICON_N_KINDS)
+        gtk_box_pack_start (GTK_BOX (box), fs_icon_new (icon, 14),
+                            FALSE, FALSE, 0);
     gtk_box_pack_start (GTK_BOX (box), lbl, FALSE, FALSE, 0);
+    gtk_widget_set_halign (box, GTK_ALIGN_CENTER);
     gtk_container_add (GTK_CONTAINER (btn), box);
     return btn;
 }
@@ -141,40 +149,29 @@ button_with_icon (const gchar *icon_name, const gchar *label)
  * Helper: create a stat card (big value + label)
  * ===================================================================== */
 static GtkWidget *
-make_stat_card (const gchar *label, const gchar *icon_name, GtkWidget **value_out)
+make_stat_card (const gchar *label, GtkWidget **value_out)
 {
-    GtkWidget *frame = gtk_frame_new (NULL);
-    gtk_widget_set_size_request (frame, 120, 72);
-    /* The card's own border comes from the theme; no etched shadow
-     * stacked on top of it. */
-    gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_NONE);
-    gtk_style_context_add_class (gtk_widget_get_style_context (frame),
-                                 "card-frame");
-
-    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
-    gtk_container_set_border_width (GTK_CONTAINER (box), 8);
-    gtk_container_add (GTK_CONTAINER (frame), box);
-
-    /* Value + icon row */
-    GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
-
-    GtkWidget *icon = gtk_image_new_from_icon_name (icon_name, GTK_ICON_SIZE_LARGE_TOOLBAR);
-    gtk_box_pack_start (GTK_BOX (row), icon, FALSE, FALSE, 0);
-
-    GtkWidget *val = gtk_label_new ("0");
-    GtkStyleContext *ctx = gtk_widget_get_style_context (val);
-    gtk_style_context_add_class (ctx, "title");
-    gtk_box_pack_start (GTK_BOX (row), val, FALSE, FALSE, 0);
-
-    gtk_box_pack_start (GTK_BOX (box), row, FALSE, FALSE, 0);
+    /* The Overview's stat card: the name small on top, the number
+     * large under it.  No theme icon: which icons a Windows runtime
+     * ships is not something the page can count on, and a missing one
+     * renders as a broken-image square. */
+    GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+    gtk_style_context_add_class (gtk_widget_get_style_context (card), "card");
+    gtk_style_context_add_class (gtk_widget_get_style_context (card),
+                                 "stat-card");
 
     GtkWidget *lbl = gtk_label_new (label);
-    gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "dim-label");
-    gtk_label_set_xalign (GTK_LABEL (lbl), 0.5);
-    gtk_box_pack_start (GTK_BOX (box), lbl, FALSE, FALSE, 0);
+    gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "muted");
+    gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
+    gtk_box_pack_start (GTK_BOX (card), lbl, FALSE, FALSE, 0);
+
+    GtkWidget *val = gtk_label_new ("0");
+    gtk_style_context_add_class (gtk_widget_get_style_context (val), "stat-big");
+    gtk_label_set_xalign (GTK_LABEL (val), 0.0);
+    gtk_box_pack_start (GTK_BOX (card), val, FALSE, FALSE, 0);
 
     *value_out = val;
-    return frame;
+    return card;
 }
 
 /* =====================================================================
@@ -272,7 +269,7 @@ build_insights_tree (void)
     gtk_style_context_add_class (gtk_widget_get_style_context (tree),
                                  "data-grid");
     gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (tree),
-                                  GTK_TREE_VIEW_GRID_LINES_BOTH);
+                                  GTK_TREE_VIEW_GRID_LINES_HORIZONTAL);
 
     g_signal_connect (tree, "row-activated", G_CALLBACK (on_row_activated), NULL);
 
@@ -359,35 +356,14 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         g_free (pref);
     }
 
-    copilot_vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-    gtk_container_set_border_width (GTK_CONTAINER (copilot_vbox), 8);
+    /* The window's page frame supplies the title and the margins. */
+    copilot_vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
 
     /* ===== Header ===== */
     {
+        /* The page's name and description are in the window's page
+         * header; this row keeps the page's two controls. */
         GtkWidget *hdr = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-
-        /* security-high is the shield, which is what a firewall tool's
-         * header should carry.  The original pick,
-         * "utilities-system-monitor", is not shipped by any theme we
-         * bundle, so it would have rendered as a blank space. */
-        GtkWidget *icon = gtk_image_new_from_icon_name (
-            "security-high", GTK_ICON_SIZE_DIALOG);
-        gtk_box_pack_start (GTK_BOX (hdr), icon, FALSE, FALSE, 0);
-
-        GtkWidget *titles = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-
-        GtkWidget *t1 = gtk_label_new (_("Smart Firewall Copilot"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (t1), "title");
-        gtk_label_set_xalign (GTK_LABEL (t1), 0.0);
-        gtk_box_pack_start (GTK_BOX (titles), t1, FALSE, FALSE, 0);
-
-        GtkWidget *t2 = gtk_label_new (
-            _("AI-powered anomaly detection, rule analysis & what-if simulation"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (t2), "dim-label");
-        gtk_label_set_xalign (GTK_LABEL (t2), 0.0);
-        gtk_box_pack_start (GTK_BOX (titles), t2, FALSE, FALSE, 0);
-
-        gtk_box_pack_start (GTK_BOX (hdr), titles, TRUE, TRUE, 0);
 
         /* Sentinel mode: detect only, or detect + auto-block.  The
          * auto path stages critical insights into the policy with a
@@ -410,10 +386,11 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
                                 FALSE, FALSE, 0);
             gtk_box_pack_start (GTK_BOX (mode_box), sentinel_combo,
                                 FALSE, FALSE, 0);
+            gtk_widget_set_valign (sentinel_combo, GTK_ALIGN_CENTER);
             gtk_box_pack_start (GTK_BOX (hdr), mode_box, FALSE, FALSE, 0);
         }
 
-        GtkWidget *analyze_btn = button_with_icon ("system-search", _("Run Analysis"));
+        GtkWidget *analyze_btn = button_with_icon (FS_ICON_SEARCH, _("Run analysis"));
         gtk_style_context_add_class (gtk_widget_get_style_context (analyze_btn),
                                      "btn-primary");
         g_signal_connect (analyze_btn, "clicked",
@@ -425,15 +402,14 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 
     /* ===== Stats dashboard ===== */
     {
-        GtkWidget *stats = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_widget_set_margin_top (stats, 4);
-        gtk_widget_set_margin_bottom (stats, 4);
+        GtkWidget *stats = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+        gtk_box_set_homogeneous (GTK_BOX (stats), TRUE);
 
         GtkWidget *c1, *c2, *c3, *c4;
-        c1 = make_stat_card (_("Apps Learned"),     "system-users",       &stat_apps);
-        c2 = make_stat_card (_("Active Insights"),  "dialog-warning",     &stat_insights);
-        c3 = make_stat_card (_("Events Analyzed"),  "view-list",          &stat_events);
-        c4 = make_stat_card (_("Policy Rules"),     "preferences-system", &stat_rules);
+        c1 = make_stat_card (_("Apps learned"),    &stat_apps);
+        c2 = make_stat_card (_("Active insights"), &stat_insights);
+        c3 = make_stat_card (_("Events analyzed"), &stat_events);
+        c4 = make_stat_card (_("Policy rules"),    &stat_rules);
 
         gtk_box_pack_start (GTK_BOX (stats), c1, TRUE, TRUE, 0);
         gtk_box_pack_start (GTK_BOX (stats), c2, TRUE, TRUE, 0);
@@ -445,10 +421,17 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 
     /* ===== Insights tree ===== */
     {
-        GtkWidget *lbl = gtk_label_new (_("Insights & Suggestions"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "heading");
+        /* One card, as on the Overview: heading, list, actions. */
+        GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+        gtk_style_context_add_class (gtk_widget_get_style_context (card), "card");
+
+        GtkWidget *lbl = gtk_label_new (_("Insights and suggestions"));
+        gtk_style_context_add_class (gtk_widget_get_style_context (lbl),
+                                     "card-heading");
+        gtk_style_context_add_class (gtk_widget_get_style_context (lbl),
+                                     "card-head");
         gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), lbl, FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (card), lbl, FALSE, FALSE, 0);
 
         insights_tree = build_insights_tree ();
         GtkWidget *scrolled = gtk_scrolled_window_new (NULL, NULL);
@@ -457,40 +440,45 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         gtk_scrolled_window_set_min_content_height (
             GTK_SCROLLED_WINDOW (scrolled), 140);
         gtk_container_add (GTK_CONTAINER (scrolled), insights_tree);
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), scrolled, TRUE, TRUE, 0);
+        gtk_box_pack_start (GTK_BOX (card), scrolled, TRUE, TRUE, 0);
 
         /* Buttons row */
         GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+        gtk_style_context_add_class (gtk_widget_get_style_context (btn_box),
+                                     "card-foot");
 
-        GtkWidget *apply_btn = button_with_icon ("list-add", _("Apply Selected Rule"));
+        GtkWidget *apply_btn = button_with_icon (FS_ICON_N_KINDS,
+                                                 _("Apply selected rule"));
         gtk_style_context_add_class (gtk_widget_get_style_context (apply_btn),
                                      "btn-primary");
         g_signal_connect (apply_btn, "clicked",
                           G_CALLBACK (on_apply_suggestion_clicked), NULL);
         gtk_box_pack_start (GTK_BOX (btn_box), apply_btn, FALSE, FALSE, 0);
 
-        GtkWidget *clear_btn = button_with_icon ("edit-clear", _("Clear Insights"));
+        GtkWidget *clear_btn = button_with_icon (FS_ICON_N_KINDS, _("Clear insights"));
         gtk_style_context_add_class (gtk_widget_get_style_context (clear_btn),
                                      "btn-subtle");
         g_signal_connect (clear_btn, "clicked", G_CALLBACK (on_clear_clicked), NULL);
         gtk_box_pack_start (GTK_BOX (btn_box), clear_btn, FALSE, FALSE, 0);
 
-        GtkWidget *undo_btn = button_with_icon ("edit-undo",
-                                                _("Undo Auto-Block"));
+        GtkWidget *undo_btn = button_with_icon (FS_ICON_N_KINDS,
+                                                _("Undo auto-block"));
         gtk_style_context_add_class (gtk_widget_get_style_context (undo_btn),
                                      "btn-subtle");
         g_signal_connect (undo_btn, "clicked",
                           G_CALLBACK (on_undo_auto_clicked), NULL);
         gtk_box_pack_start (GTK_BOX (btn_box), undo_btn, FALSE, FALSE, 0);
 
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), btn_box, FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (card), btn_box, FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (copilot_vbox), card, TRUE, TRUE, 0);
     }
 
     /* ===== What-if simulator ===== */
     {
-        GtkWidget *frame = gtk_frame_new (_("What-If Simulator"));
+        GtkWidget *frame = gtk_frame_new (_("What-if simulator"));
         gtk_style_context_add_class (gtk_widget_get_style_context (frame),
                                      "card-frame");
+        gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_NONE);
         GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width (GTK_CONTAINER (box), 6);
 
@@ -502,7 +490,7 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         gtk_widget_set_hexpand (scenario_entry, TRUE);
         gtk_box_pack_start (GTK_BOX (row), scenario_entry, TRUE, TRUE, 0);
 
-        GtkWidget *sim_btn = button_with_icon ("media-playback-start", _("Simulate"));
+        GtkWidget *sim_btn = button_with_icon (FS_ICON_PLAY, _("Simulate"));
         gtk_style_context_add_class (gtk_widget_get_style_context (sim_btn),
                                      "btn-primary");
         g_signal_connect (sim_btn, "clicked",
@@ -526,7 +514,9 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 
     /* ===== Policy Analysis ===== */
     {
-        GtkWidget *a_lbl = gtk_label_new (_("Policy Analysis"));
+        GtkWidget *a_lbl = gtk_label_new (_("Policy analysis"));
+        gtk_style_context_add_class (gtk_widget_get_style_context (a_lbl),
+                                     "card-heading");
         gtk_label_set_xalign (GTK_LABEL (a_lbl), 0.0);
         gtk_box_pack_start (GTK_BOX (copilot_vbox), a_lbl, FALSE, FALSE, 0);
 

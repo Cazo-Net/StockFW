@@ -301,6 +301,58 @@ check_colours (void)
 	       "stylesheet clears box-shadow (white-sliver fix present)");
 }
 
+/* The colour a widget's style resolves to for background-color. */
+static gboolean
+bg_is (GtkWidget *w, gint r, gint g, gint b, gchar **got)
+{
+	GtkStyleContext *ctx = gtk_widget_get_style_context (w);
+	GdkRGBA *bg = NULL;
+	gboolean ok;
+
+	gtk_style_context_get (ctx, gtk_style_context_get_state (ctx),
+	                       "background-color", &bg, NULL);
+	ok = bg != NULL &&
+	     near ((gint) (bg->red * 255 + 0.5), r, 2) &&
+	     near ((gint) (bg->green * 255 + 0.5), g, 2) &&
+	     near ((gint) (bg->blue * 255 + 0.5), b, 2);
+	*got = bg != NULL ? g_strdup_printf ("%.0f,%.0f,%.0f",
+	                                     bg->red * 255, bg->green * 255,
+	                                     bg->blue * 255)
+	                  : g_strdup ("none");
+	if (bg != NULL)
+		gdk_rgba_free (bg);
+	return ok;
+}
+
+/* A dialog's button row: Enter's button (the default response) is the
+ * dark primary, the other one the white secondary -- the pair every
+ * confirm and staging dialog shows. */
+static void
+check_dialog_buttons (void)
+{
+	GtkWidget *dialog = gtk_dialog_new_with_buttons (
+		"theme smoke", NULL, 0,
+		"_Cancel", GTK_RESPONSE_CANCEL,
+		"_OK", GTK_RESPONSE_OK, NULL);
+	GtkWidget *ok, *cancel;
+	gchar *got;
+
+	gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
+	ok = gtk_dialog_get_widget_for_response (GTK_DIALOG (dialog),
+	                                         GTK_RESPONSE_OK);
+	cancel = gtk_dialog_get_widget_for_response (GTK_DIALOG (dialog),
+	                                             GTK_RESPONSE_CANCEL);
+
+	CHECK (bg_is (ok, 0x16, 0x18, 0x1d, &got),
+	       "dialog default button (OK) is the dark primary (got %s)", got);
+	g_free (got);
+	CHECK (bg_is (cancel, 0xff, 0xff, 0xff, &got),
+	       "dialog Cancel is the white secondary (got %s)", got);
+	g_free (got);
+
+	gtk_widget_destroy (dialog);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -309,6 +361,7 @@ main (int argc, char **argv)
 	if (install_theme ()) {
 		check_nav_heights ();
 		check_colours ();
+		check_dialog_buttons ();
 	}
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",

@@ -706,6 +706,9 @@ build_group (FsRuleKind kind, const gchar *title)
 	frame = gtk_frame_new (title);
 	gtk_style_context_add_class (gtk_widget_get_style_context (frame),
 	                             "card-frame");
+	/* The card's own border is the frame; a second, etched one inside
+	 * it read as a box in a box. */
+	gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_NONE);
 	box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
 	gtk_container_set_border_width (GTK_CONTAINER (box), 6);
 	gtk_container_add (GTK_CONTAINER (frame), box);
@@ -715,7 +718,7 @@ build_group (FsRuleKind kind, const gchar *title)
 	gtk_style_context_add_class (gtk_widget_get_style_context (group->view),
 	                             "data-grid");
 	gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (group->view),
-	                              GTK_TREE_VIEW_GRID_LINES_BOTH);
+	                              GTK_TREE_VIEW_GRID_LINES_HORIZONTAL);
 
 	columns = fs_rule_columns (kind, &n);
 
@@ -820,7 +823,7 @@ fs_policyview_page (FsPolicy *policy)
 	/* Toolbar: Apply lives here rather than in a menu because it is the
 	 * one action a user comes to this page for. */
 	bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-	gtk_container_set_border_width (GTK_CONTAINER (bar), 6);
+	gtk_widget_set_margin_bottom (bar, 14);
 
 	button = gtk_button_new_with_mnemonic (_("_Apply policy"));
 	gtk_style_context_add_class (gtk_widget_get_style_context (button),
@@ -833,6 +836,8 @@ fs_policyview_page (FsPolicy *policy)
 	 * guards.  Its state is the honest signal that Apply will stage
 	 * and audit without touching the firewall. */
 	button = gtk_toggle_button_new_with_label (_("Audit-only"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
 	gtk_widget_set_tooltip_text (button,
 	                             _("Stage changes and write audit "
 	                               "lines without touching the "
@@ -859,8 +864,9 @@ fs_policyview_page (FsPolicy *policy)
 
 	gtk_box_pack_start (GTK_BOX (outer), bar, FALSE, FALSE, 0);
 
-	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
-	gtk_container_set_border_width (GTK_CONTAINER (page), 12);
+	page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 14);
+	/* Room for an overlay scrollbar beside the cards. */
+	gtk_widget_set_margin_end (page, 6);
 
 	/* An empty policy would leave the user with nothing, so seed the
 	 * documented defaults on a first run. */

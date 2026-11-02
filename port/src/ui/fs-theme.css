@@ -21,10 +21,21 @@ window {
 }
 
 /* --- generic surfaces ----------------------------------------------- */
+/* A GtkFrame drawn as a card: white, hairline border, the title as a
+ * heading inside it rather than a legend cut into the line (the pages
+ * set the frame's own shadow to none). */
 .card-frame {
 	background-color: #ffffff;
-	border: 1px solid #e0e0e0;
-	border-radius: 8px;
+	border: 1px solid #e3e6eb;
+	border-radius: 12px;
+	padding: 4px 6px 6px 6px;
+}
+frame.card-frame > label {
+	margin: 10px 0 4px 6px;
+	padding: 0;
+	font-size: 13px;
+	font-weight: bold;
+	color: #16181d;
 }
 .content-area {
 	background-color: #f4f5f7;
@@ -138,11 +149,43 @@ GtkSearchEntry:focus {
 	background-color: #ffffff;
 }
 
-combobox,
-combo {
-	border: 1px solid #d5d9de;
-	border-radius: 4px;
+/* Drop-downs read as the white secondary buttons beside them. */
+combobox button.combo {
+	background-image: none;
 	background-color: #ffffff;
+	border: 1px solid #cdd2da;
+	border-radius: 8px;
+	color: #16181d;
+	box-shadow: none;
+}
+combobox button.combo:hover {
+	background-color: #f4f5f7;
+}
+
+/* --- dialog buttons --------------------------------------------------- *
+ * Every dialog's button row (Cancel / OK, Cancel / Stage, Yes / No)
+ * takes the page buttons' look: white secondary buttons, and the
+ * dialog's default response -- the one Enter presses, which GTK marks
+ * with .default -- in the dark primary colour of the sidebar.        */
+.dialog-action-area button {
+	background-image: none;
+	background-color: #ffffff;
+	border: 1px solid #cdd2da;
+	border-radius: 8px;
+	color: #16181d;
+	padding: 6px 14px;
+}
+.dialog-action-area button:hover {
+	background-color: #f4f5f7;
+}
+.dialog-action-area button.default {
+	background-color: #16181d;
+	border-color: #16181d;
+	color: #ffffff;
+}
+.dialog-action-area button.default:hover {
+	background-color: #2a2f39;
+	border-color: #2a2f39;
 }
 
 /* --- switches (profile toggles) -------------------------------------- */
@@ -173,30 +216,31 @@ switch slider {
 .data-grid,
 treeview {
 	background-color: #ffffff;
-	color: #212121;
-	font-size: 12px;
-	/* Monospace-friendly cells: ports, IPs and counts line up. */
-	font-family: "Cascadia Mono", "Consolas", monospace;
+	color: #16181d;
+	font-size: 13px;
+	/* The UI font, as on the Overview.  Columns of addresses, ports
+	 * and digests set a fixed-width face on their own renderer, so
+	 * those still line up digit for digit. */
 }
 .data-grid header,
 treeview header {
-	background-color: #f2f3f5;
-	border-bottom: 1px solid #dcdfe3;
+	background-color: #ffffff;
+	border-bottom: 1px solid #e3e6eb;
 }
 .data-grid header button,
 treeview header button {
-	background-color: #f2f3f5;
+	background-color: #ffffff;
 	background-image: none;
-	color: #303236;
+	color: #5b6472;
 	border: none;
-	border-right: 1px solid #dcdfe3;
-	padding: 6px 10px;
+	border-radius: 0;
+	padding: 8px 10px;
 	font-weight: bold;
-	font-size: 11px;
+	font-size: 12px;
 }
 .data-grid header button:hover,
 treeview header button:hover {
-	background-color: #e6e9ec;
+	background-color: #f4f5f7;
 }
 .data-grid row,
 treeview row {
@@ -237,7 +281,7 @@ treeview row:selected {
 /* In-cell text padding for compact network strings. */
 .data-grid cell,
 treeview cell {
-	font-size: 12px;
+	font-size: 13px;
 }
 
 /* --- status line (hero) ---------------------------------------------- */
@@ -337,9 +381,11 @@ treeview cell {
 }
 
 /* --- Events sub-header utility bar ------------------------------------ */
+/* Sits on the page canvas above the list card, like the Overview's
+ * controls; no strip of its own. */
 .events-toolbar {
-	background-color: #ffffff;
-	border-bottom: 1px solid #e0e0e0;
+	background-color: transparent;
+	margin-bottom: 12px;
 }
 .events-count {
 	font-weight: bold;
@@ -349,13 +395,13 @@ treeview cell {
 
 /* --- read-only output panels (Copilot scrollback) --------------------- */
 .output-view {
-	background-color: #fafafa;
-	border: 1px solid #e0e0e0;
-	border-radius: 4px;
+	background-color: #fafbfc;
+	border: 1px solid #e3e6eb;
+	border-radius: 8px;
 }
 .output-view textview,
 .output-view text {
-	background-color: #fafafa;
+	background-color: #fafbfc;
 	color: #333333;
 	font-family: monospace;
 	font-size: 12px;
@@ -385,24 +431,25 @@ dialog {
 .chart-card,
 .stat-tile {
 	background-color: #ffffff;
-	border: 1px solid #e0e0e0;
-	border-radius: 8px;
-	padding: 12px 14px;
+	border: 1px solid #e3e6eb;
+	border-radius: 12px;
+	padding: 14px 16px;
 }
 .card-title {
 	font-weight: bold;
 	font-size: 14px;
 	color: #212121;
 }
+/* The Overview's stat card wording: the name in quiet sentence case,
+ * the number large in ink. */
 .stat-caption {
-	font-weight: bold;
-	font-size: 11px;
-	color: #6b7280;
+	font-size: 13px;
+	color: #5b6472;
 }
 .stat-value {
 	font-weight: bold;
-	font-size: 20px;
-	color: #212121;
+	font-size: 26px;
+	color: #16181d;
 }
 .chart-legend {
 	color: #424242;
@@ -544,6 +591,22 @@ button.nav-item label {
 .overview {
 	padding: 28px 32px 36px 32px;
 }
+/* Every page but the Overview: the shared header and the margins,
+ * which match the Overview's so the title does not jump. */
+.page {
+	padding: 28px 32px 24px 32px;
+}
+.page-head {
+	margin-bottom: 18px;
+}
+/* A list in a card: a few pixels of inset keep the list's square
+ * corners inside the card's rounded ones. */
+.list-card {
+	padding: 4px;
+}
+.card-heading.card-head {
+	padding: 14px 16px 8px 16px;
+}
 .page-title {
 	font-size: 22px;
 	font-weight: bold;
@@ -562,6 +625,15 @@ button.nav-item label {
 	background-color: #ffffff;
 	border: 1px solid #e3e6eb;
 	border-radius: 12px;
+}
+/* Soft lift for every card-like surface: one tight, faint shadow, so a
+ * card reads as resting on the canvas without a heavy drop shadow. */
+.card,
+.card-frame,
+.chart-card,
+.stat-tile {
+	box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06),
+	            0 1px 3px rgba(16, 24, 40, 0.04);
 }
 .padded-card {
 	padding: 16px;

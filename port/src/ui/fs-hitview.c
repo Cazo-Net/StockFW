@@ -1418,7 +1418,6 @@ fs_hitview_page (void)
 	/* Sub-header utility bar: live counter, filter, monitor switch,
 	 * Clear and Refresh, as the spec has them. */
 	header = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-	gtk_container_set_border_width (GTK_CONTAINER (header), 6);
 	gtk_style_context_add_class (gtk_widget_get_style_context (header),
 	                             "events-toolbar");
 
@@ -1529,8 +1528,9 @@ fs_hitview_page (void)
 	view = gtk_tree_view_new_with_model (filter_model);
 	gtk_style_context_add_class (gtk_widget_get_style_context (view),
 	                             "data-grid");
+	/* Hairlines between rows only, as on the Overview. */
 	gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (view),
-	                              GTK_TREE_VIEW_GRID_LINES_BOTH);
+	                              GTK_TREE_VIEW_GRID_LINES_HORIZONTAL);
 
 	/* Right-click: Event -> Rule menu. */
 	g_signal_connect (view, "button-press-event",
@@ -1545,6 +1545,12 @@ fs_hitview_page (void)
 			continue;
 
 		renderer = gtk_cell_renderer_text_new ();
+
+		/* Addresses and ports in a fixed-width face, so a column
+		 * of them lines up digit for digit; words stay in the UI
+		 * font. */
+		if (i == COL_PORT || i == COL_SOURCE || i == COL_DESTINATION)
+			g_object_set (renderer, "family", "monospace", NULL);
 
 		column = gtk_tree_view_column_new_with_attributes (
 			_(column_defs[i].label), renderer, "text", i, NULL);
@@ -1574,12 +1580,14 @@ fs_hitview_page (void)
 	gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
 	                                GTK_POLICY_AUTOMATIC,
 	                                GTK_POLICY_AUTOMATIC);
+	/* The card around the list is the border. */
 	gtk_scrolled_window_set_shadow_type (GTK_SCROLLED_WINDOW (scroll),
-	                                     GTK_SHADOW_IN);
+	                                     GTK_SHADOW_NONE);
 	gtk_widget_set_vexpand (scroll, TRUE);
 	gtk_container_add (GTK_CONTAINER (scroll), view);
 	{
 		GtkWidget *overlay = gtk_overlay_new ();
+		GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 
 		empty_label = gtk_label_new (NULL);
 		gtk_label_set_justify (GTK_LABEL (empty_label), GTK_JUSTIFY_CENTER);
@@ -1596,7 +1604,12 @@ fs_hitview_page (void)
 		gtk_overlay_set_overlay_pass_through (GTK_OVERLAY (overlay),
 		                                      empty_label, TRUE);
 		gtk_widget_set_vexpand (overlay, TRUE);
-		gtk_box_pack_start (GTK_BOX (page), overlay, TRUE, TRUE, 0);
+		gtk_style_context_add_class (
+			gtk_widget_get_style_context (card), "card");
+		gtk_style_context_add_class (
+			gtk_widget_get_style_context (card), "list-card");
+		gtk_box_pack_start (GTK_BOX (card), overlay, TRUE, TRUE, 0);
+		gtk_box_pack_start (GTK_BOX (page), card, TRUE, TRUE, 0);
 	}
 
 	/* Start monitoring straight away: the whole point of the page is

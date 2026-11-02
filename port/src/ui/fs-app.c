@@ -215,12 +215,68 @@ register_actions (void)
 	}
 }
 
+/* [ page_frame ]
+ * The header every page but the Overview shares: the page's name and
+ * one line on what it is for, above the page's own controls, on the
+ * same margins as the Overview so the title does not jump when the
+ * sidebar switches pages.  The Overview draws its own header because
+ * its title row also carries the Lock toggle. */
+static GtkWidget *
+page_frame (const gchar *title, const gchar *subtitle, GtkWidget *content,
+            gboolean scrolls)
+{
+	GtkWidget *page = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	GtkWidget *head = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+	GtkWidget *label;
+
+	gtk_style_context_add_class (gtk_widget_get_style_context (page),
+	                             "page");
+	gtk_style_context_add_class (gtk_widget_get_style_context (head),
+	                             "page-head");
+
+	label = gtk_label_new (title);
+	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	gtk_style_context_add_class (gtk_widget_get_style_context (label),
+	                             "page-title");
+	gtk_box_pack_start (GTK_BOX (head), label, FALSE, FALSE, 0);
+
+	label = gtk_label_new (subtitle);
+	gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+	gtk_style_context_add_class (gtk_widget_get_style_context (label),
+	                             "page-subtitle");
+	gtk_box_pack_start (GTK_BOX (head), label, FALSE, FALSE, 0);
+
+	gtk_box_pack_start (GTK_BOX (page), head, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (page), content, TRUE, TRUE, 0);
+
+	/* A page with no list of its own to scroll (Activity's graphs,
+	 * Copilot's stacked cards) scrolls as a whole, header included,
+	 * as the Overview does.  Otherwise its minimum height becomes the
+	 * window's, and the notebook is as tall as its tallest page. */
+	if (scrolls) {
+		GtkWidget *scroll = gtk_scrolled_window_new (NULL, NULL);
+
+		gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+		                                GTK_POLICY_NEVER,
+		                                GTK_POLICY_AUTOMATIC);
+		gtk_container_add (GTK_CONTAINER (scroll), page);
+		return scroll;
+	}
+	return page;
+}
+
 /* [ add_page ]
  * Appends a notebook page.  The sidebar item for it already exists:
- * the two are index-aligned by FsAppPage. */
+ * the two are index-aligned by FsAppPage.  A NULL subtitle means the
+ * page draws its own header (the Overview); `scrolls' as page_frame. */
 static void
-add_page (const gchar *title, GtkWidget *content)
+add_page (const gchar *title, const gchar *subtitle, GtkWidget *content,
+          gboolean scrolls)
 {
+	if (subtitle != NULL)
+		content = page_frame (title, subtitle, content, scrolls);
+
 	gtk_widget_show_all (content);
 	gtk_notebook_append_page (GTK_NOTEBOOK (fsapp.notebook), content,
 	                          gtk_label_new (title));
@@ -602,11 +658,17 @@ fs_app_activate (GtkApplication *app)
 	g_signal_connect (fsapp.notebook, "switch-page",
 	                  G_CALLBACK (on_page_switched), NULL);
 
-	add_page (_("Overview"), fs_statusview_page ());
-	add_page (_("Events"), fs_hitview_page ());
+	add_page (_("Overview"), NULL, fs_statusview_page (), FALSE);
+	add_page (_("Events"),
+	          _("Connections your rules allowed or blocked, as they "
+	            "happen."),
+	          fs_hitview_page (), FALSE);
 
 	/* Activity (1.0.6): the graphs, beside the list they count. */
-	add_page (_("Activity"), fs_activityview_page ());
+	add_page (_("Activity"),
+	          _("Allowed and blocked events, and adapter traffic, over "
+	            "time."),
+	          fs_activityview_page (), TRUE);
 
 	policy = fs_policy_new ();
 
@@ -631,7 +693,10 @@ fs_app_activate (GtkApplication *app)
 			g_clear_error (&error);
 	}
 
-	add_page (_("Policy"), fs_policyview_page (policy));
+	add_page (_("Policy"),
+	          _("The rules StockFW enforces, and which addresses each "
+	            "one covers."),
+	          fs_policyview_page (policy), FALSE);
 
 	/* Smart Firewall Copilot tab */
 	copilot = fs_copilot_new ();
@@ -650,7 +715,10 @@ fs_app_activate (GtkApplication *app)
 		g_free (baseline);
 	}
 
-	add_page (_("Copilot"), fs_copilot_page (copilot, policy));
+	add_page (_("Copilot"),
+	          _("Learns each program's usual traffic, flags what is "
+	            "unusual, and tries rule changes before you make them."),
+	          fs_copilot_page (copilot, policy), TRUE);
 
 	/* P6 (false-outage hardening): the Sentinel staged-block list is
 	 * persisted, so a restart must reconcile it -- rows whose ten
@@ -662,7 +730,10 @@ fs_app_activate (GtkApplication *app)
 	fs_copilot_autoblocks_restore (policy);
 
 	/* Trust tab: the application trust engine's surface. */
-	add_page (_("Trust"), fs_trustview_page ());
+	add_page (_("Trust"),
+	          _("Who published a program, whether it is signed, and "
+	            "whether it has changed since you attested it."),
+	          fs_trustview_page (), FALSE);
 
 	gtk_widget_show_all (fsapp.window);
 	sync_nav ((guint) gtk_notebook_get_current_page (
