@@ -3,6 +3,7 @@
  *--------------------------------------------------------------------*/
 #include "cli/fs-cli.h"
 #include "core/fs-apply.h"
+#include "core/fs-audit.h"
 #include "core/fs-autoblock.h"
 #include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
@@ -989,7 +990,8 @@ start_or_stop (gint argc, gboolean start)
 	FsPolicy *policy;
 	FsSettings *settings;
 	GError *error = NULL;
-	gboolean ok;
+	gboolean ok, on_disk = FALSE;
+	gint malformed = 0;
 	gchar *notes;
 
 	if (argc > 1) {
@@ -1002,27 +1004,66 @@ start_or_stop (gint argc, gboolean start)
 
 	/* Load first, always: the backend starts from the policy it was
 	 * handed, and an unloaded one is an empty one. */
-	policy = fs_cli_load_policy (NULL, NULL);
+	policy = fs_cli_load_policy (&on_disk, &malformed);
 	settings = backend_context (policy);
 
 	if (start) {
 		FsApplyOutcome *outcome;
+		FsPolicy *lift = fs_policy_new ();
 		gchar *mode = fs_prefs_get_string (FS_PREFS_SENTINEL_MODE,
 		                                   "auto");
+		gchar *journal = fs_apply_journal_path ();
+		gboolean have_journal = g_file_test (journal,
+		                                     G_FILE_TEST_EXISTS);
+
+		g_free (journal);
 
 		/* Sentinel's blocks whose ten minutes ran out while nothing
-		 * was running to lift them (a reboot) come out before the
-		 * start can install them again. */
+		 * was running to lift them (a reboot) come out of the file,
+		 * and the start leaves every one of them out of what it
+		 * installs. */
 		fs_autoblock_expire (policy, g_get_real_time () / G_USEC_PER_SEC,
-		                     g_strcmp0 (mode, "auto") != 0);
+		                     g_strcmp0 (mode, "auto") != 0, lift);
 		g_free (mode);
 
-		/* Through the start gate: audit-only mode is honoured (the
-		 * last applied policy is started, the held changes stay
-		 * held) and the start is on the audit record. */
-		outcome = fs_firewall_start_safe (fs_backend (), policy, "cli",
-		                                  fs_apply_hold_reason (),
-		                                  &error);
+		if (fs_backend ()->start_applies_policy && !have_journal &&
+		    (!on_disk || malformed > 0)) {
+			/* Nothing was ever applied, so this start would be the
+			 * first apply of the file: refused when there is no
+			 * file or a line of it could not be read, rather than
+			 * starting a policy that is empty or missing rules. */
+			fs_audit_log ("firewall start refused",
+			              !on_disk
+			              ? "cli | refused | no policy saved and none "
+			                "applied before"
+			              : "cli | refused | malformed lines in the "
+			                "saved policy and none applied before");
+			if (!on_disk)
+				g_set_error (&error, FS_APPLY_ERROR, 0,
+				             "no policy saved in %s and none applied "
+				             "before, so there is nothing to start",
+				             fs_util_rules_dir ());
+			else
+				g_set_error (&error, FS_APPLY_ERROR, 0,
+				             "%d line(s) of the policy in %s could not "
+				             "be read and no policy was applied before; "
+				             "fix them, then run `stockfw apply'",
+				             malformed, fs_util_rules_dir ());
+			ok = FALSE;
+			notes = NULL;
+			fs_policy_free (lift);
+			goto report;
+		}
+
+		/* Through the start gate: the last APPLIED policy is what
+		 * starts (changes saved but not applied stay off, held or
+		 * not), audit-only mode is honoured, and the start is on the
+		 * audit record. */
+		outcome = fs_firewall_start_lifting (fs_backend (), policy, lift,
+		                                     "cli",
+		                                     fs_apply_hold_reason (),
+		                                     &error);
+		fs_policy_free (lift);
 		ok = (outcome->result == FS_APPLY_OK);
 		if (outcome->result == FS_APPLY_DRY_RUN && error == NULL)
 			g_set_error (&error, FS_APPLY_ERROR, 0,
@@ -1039,12 +1080,23 @@ start_or_stop (gint argc, gboolean start)
 			        "policy; later changes stay held.\n",
 			        fs_cli_amber (), fs_cli_reset (),
 			        outcome->hold_reason);
+		else if (ok && have_journal &&
+		         fs_backend ()->start_applies_policy &&
+		         (outcome->impact->added > 0 ||
+		          outcome->impact->removed > 0) &&
+		         !fs_cli.json && !fs_cli.quiet)
+			printf ("%sNot applied:%s the saved policy has changes "
+			        "that are not live.  Started with the last "
+			        "applied policy; `stockfw apply --dry-run' lists "
+			        "them, `stockfw apply' puts them live.\n",
+			        fs_cli_amber (), fs_cli_reset ());
 		fs_apply_outcome_free (outcome);
 	} else {
 		ok = fs_firewall_stop_logged (fs_backend (), "cli", &error);
 		notes = NULL;
 	}
 
+report:
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{");
 

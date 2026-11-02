@@ -25,6 +25,13 @@ gboolean       fs_statusview_policy_locked (void);
 
 void           fs_statusview_set_state (FsFirewallState state);
 FsFirewallState fs_statusview_get_state (void);
+/* Ask the backend again and, if the firewall changed state behind our
+ * back (`stockfw stop' in a terminal, Windows Firewall switched off in
+ * its own settings), show the new state here, in the sidebar and in
+ * the tray.  The tray calls it when its menu opens and on its slow
+ * timer: a menu that says "On" over a stopped firewall is worse than
+ * no menu. */
+void           fs_statusview_reread_state (void);
 
 /* The policy whose rules the Overview counts.  Not owned. */
 void           fs_statusview_set_policy (FsPolicy *policy);

@@ -37,9 +37,15 @@ gchar *fs_autoblock_state_path (void);
  * removed (disk error) is kept, so a later pass retries it.  Rows the
  * user already deleted from the policy simply go.  Returns how many
  * rules came out of the policy; each is audited.  A missing state
- * file means nothing was staged: 0. */
+ * file means nothing was staged: 0.
+ *
+ * `lifted', when not NULL, receives a copy of EVERY row that is due,
+ * whether it came out of the file, had already gone from it, or is
+ * kept for a retry: the journal of what was live may still hold any of
+ * them, and the start must leave them all out
+ * (fs_firewall_start_lifting). */
 guint fs_autoblock_expire (FsPolicy *policy, gint64 now_epoch,
-                           gboolean lift_all);
+                           gboolean lift_all, FsPolicy *lifted);
 
 G_END_DECLS
 

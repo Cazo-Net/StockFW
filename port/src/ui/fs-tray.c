@@ -2,13 +2,21 @@
  * The notification-area surface: StockFW running in the background.
  *
  * GTK3 ships exactly one tray API -- GtkStatusIcon -- deprecated since
- * 3.14 but fully wired on MSYS2: the toolkit calls Shell_NotifyIconW
- * and reports the result honestly through gtk_status_icon_is_embedded()
- * (verified against the live Windows shell by tests/ui-tray-smoke.c).
+ * 3.14 but fully wired on MSYS2: the toolkit calls Shell_NotifyIconW.
  * This whole file compiles inside the deprecation guard on purpose --
- * there is no non-deprecated replacement in GTK3, and inventing a
- * half-working Win32 shim would be strictly worse than the documented
- * API that is actually tested.
+ * there is no non-deprecated replacement in GTK3.
+ *
+ * Whether the icon is really up is where the platforms differ.  On X11
+ * gtk_status_icon_is_embedded() is the tray's own answer and
+ * "notify::embedded" follows it.  On Windows GTK answers TRUE whatever
+ * Shell_NotifyIconW said and never notifies, so fs_tray_active() asks
+ * the shell instead: is Explorer's taskbar (Shell_TrayWnd) there to
+ * hold an icon at all.  When Explorer (re)creates its taskbar it
+ * broadcasts "TaskbarCreated" and GTK adds the icon again; an elevated
+ * copy lets that message through UIPI (ChangeWindowMessageFilter), or
+ * a restarted Explorer would leave it with no icon for good.  While
+ * the window is hidden a slow watch shows it if the taskbar goes and
+ * does not come back.
  *
  * The rule that keeps the background app trustworthy: the window may
  * only hide when an icon is really up to bring it back from.  The gate
@@ -35,11 +43,16 @@
 #include "core/fs-prefs.h"
 #include "core/fs-i18n.h"
 
+#ifdef G_OS_WIN32
+#include <windows.h>
+#endif
+
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 
 /* Sentinel's tray pause. */
 #define SENTINEL_PAUSE_S (60 * 60)
-/* The slow refresh: the tooltip's count, and midnight. */
+/* The slow refresh: the firewall's state, the tooltip's count, and
+ * midnight.  STOCKFW_TRAY_REFRESH_S shortens it for the tests. */
 #define TRAY_REFRESH_S   60
 
 /* The icon (NULL = none), the window Open restores, and the firewall's
@@ -341,25 +354,31 @@ refresh_recent (void)
 	gtk_widget_show_all (recent_menu);
 }
 
+/* The reason a row that changes the firewall is greyed in a copy
+ * without the rights to (the Windows backend reads the firewall
+ * without elevation, so "available" alone would enable rows that only
+ * fail after their confirmation). */
+static const gchar *
+needs_rights_reason (void)
+{
+#ifdef G_OS_WIN32
+	return _("Needs StockFW running as administrator.");
+#else
+	return _("Needs StockFW started with sudo.");
+#endif
+}
+
 static void
 refresh_protection (void)
 {
-	const FsBackend *backend = fs_backend ();
-	gboolean available = backend->available != NULL &&
-	                     backend->available ();
+	gboolean available = fs_app_can_change_firewall ();
 
 	gtk_menu_item_set_label (GTK_MENU_ITEM (item_protection),
 	                         tray_fw == FS_FW_STOPPED
 	                         ? _("_Resume protection")
 	                         : _("_Pause protection..."));
 	if (!available)
-#ifdef G_OS_WIN32
-		set_reason (item_protection, FALSE,
-		            _("Needs StockFW running as administrator."));
-#else
-		set_reason (item_protection, FALSE,
-		            _("Needs StockFW started with sudo."));
-#endif
+		set_reason (item_protection, FALSE, needs_rights_reason ());
 	else if (tray_fw == FS_FW_NONE)
 		set_reason (item_protection, FALSE,
 		            _("The firewall's state could not be read."));
@@ -384,9 +403,18 @@ refresh_sentinel (void)
 	}
 	gtk_menu_item_set_label (GTK_MENU_ITEM (item_sentinel),
 	                         _("Pause Sentinel auto-block for 1 hour"));
-	set_reason (item_sentinel, fs_copilot_sentinel_can_pause (),
-	            _("Sentinel is not blocking anything automatically "
-	              "(it is in detect-only mode)."));
+	/* Only where Sentinel could block at all: it acts on events this
+	 * copy watches, through rules this copy may apply. */
+	if (!fs_app_can_change_firewall ())
+		set_reason (item_sentinel, FALSE, needs_rights_reason ());
+	else if (!watching_events ())
+		set_reason (item_sentinel, FALSE,
+		            _("Sentinel is not watching events here, so it "
+		              "has nothing to block."));
+	else
+		set_reason (item_sentinel, fs_copilot_sentinel_can_pause (),
+		            _("Sentinel is not blocking anything automatically "
+		              "(it is in detect-only mode)."));
 }
 
 static void
@@ -445,6 +473,11 @@ refresh_menu (void)
 	if (tray_menu == NULL)
 		return;
 
+	/* The firewall itself, asked again: it may have been stopped from
+	 * a terminal or the system's own settings since the last look.
+	 * That updates tray_fw (and the Overview) through
+	 * fs_tray_set_firewall() when it changed. */
+	fs_statusview_reread_state ();
 	refresh_rows ();
 	refresh_autostart ();
 }
@@ -565,17 +598,47 @@ on_activate (GtkStatusIcon *icon, gpointer data)
 	fs_tray_show_window ();
 }
 
+/* [ position_menu ] -- the status icon's own placement, then kept on
+ * the monitor at the width the menu has NOW.  The rows are relabelled
+ * just before every popup ("Resume Sentinel auto-block (paused, 60 min
+ * left)" is much wider than "Pause ..."), and the first popup after a
+ * row grew was otherwise placed for the old width: cut off at the
+ * screen edge, its submenu arrows out of sight. */
+static void
+position_menu (GtkMenu *menu, gint *x, gint *y, gboolean *push_in,
+               gpointer icon)
+{
+	GtkRequisition natural;
+	GdkMonitor *monitor;
+	GdkRectangle area;
+
+	gtk_status_icon_position_menu (menu, x, y, push_in, icon);
+
+	gtk_widget_get_preferred_size (GTK_WIDGET (menu), NULL, &natural);
+	monitor = gdk_display_get_monitor_at_point (
+		gtk_widget_get_display (GTK_WIDGET (menu)), *x, *y);
+	if (monitor == NULL)
+		return;
+	gdk_monitor_get_workarea (monitor, &area);
+	if (*x + natural.width > area.x + area.width)
+		*x = MAX (area.x, area.x + area.width - natural.width);
+}
+
 /* [ on_popup_menu ] -- right click opens the menu, freshly read,
  * positioned on the icon the way a notification-area menu must be. */
 static void
 on_popup_menu (GtkStatusIcon *icon, guint button, guint activate_time,
                gpointer data)
 {
+	GtkWidget *menu;
+
 	(void) data;
 
 	update_tooltip ();
-	gtk_menu_popup (GTK_MENU (fs_tray_menu ()), NULL, NULL,
-	                gtk_status_icon_position_menu, icon,
+	menu = fs_tray_menu ();
+	/* Measured again now, before it is placed: see position_menu. */
+	gtk_widget_queue_resize (menu);
+	gtk_menu_popup (GTK_MENU (menu), NULL, NULL, position_menu, icon,
 	                button, activate_time);
 }
 
@@ -610,14 +673,66 @@ on_embedded_changed (GObject *icon, GParamSpec *pspec, gpointer data)
 		                                           NULL);
 }
 
-/* The slow timer: the tooltip's count, and midnight resetting it. */
+/* The slow timer: the firewall's state asked again, the tooltip's
+ * count, and midnight resetting it. */
 static gboolean
 on_refresh_timer (gpointer data)
 {
 	(void) data;
 
+	fs_statusview_reread_state ();
 	fs_tray_refresh ();
 	return G_SOURCE_CONTINUE;
+}
+
+#ifdef G_OS_WIN32
+/* [ taskbar_up ] -- Explorer's taskbar, which holds the notification
+ * area, exists.  No taskbar, no icon, whatever GTK says. */
+static gboolean
+taskbar_up (void)
+{
+	return FindWindowW (L"Shell_TrayWnd", NULL) != NULL;
+}
+
+/* [ win32_icon_watch ] -- the Windows half of lost_icon_check (GTK
+ * never notifies there): every few seconds while the window is hidden,
+ * and two misses in a row -- the taskbar gone and not back -- bring
+ * the window up. */
+static guint win32_watch = 0;
+static guint win32_misses = 0;
+
+static gboolean
+win32_icon_watch (gpointer data)
+{
+	(void) data;
+
+	if (tray_icon == NULL || tray_window == NULL ||
+	    gtk_widget_get_visible (GTK_WIDGET (tray_window)) ||
+	    taskbar_up ()) {
+		win32_misses = 0;
+		return G_SOURCE_CONTINUE;
+	}
+	if (++win32_misses >= 2) {
+		win32_misses = 0;
+		fs_tray_show_window ();
+	}
+	return G_SOURCE_CONTINUE;
+}
+#endif
+
+static guint
+refresh_period (void)
+{
+	const gchar *env = g_getenv ("STOCKFW_TRAY_REFRESH_S");
+
+	if (env != NULL && *env != '\0') {
+		gchar *end = NULL;
+		guint64 v = g_ascii_strtoull (env, &end, 10);
+
+		if (end != NULL && *end == '\0' && v >= 1 && v <= 86400)
+			return (guint) v;
+	}
+	return TRAY_REFRESH_S;
 }
 
 /* [ create_icon ] -- only from fs_tray_sync(), window already known.
@@ -640,8 +755,17 @@ create_icon (void)
 	                  G_CALLBACK (on_embedded_changed), NULL);
 	update_tooltip ();
 	if (tray_timer == 0)
-		tray_timer = g_timeout_add_seconds (TRAY_REFRESH_S,
+		tray_timer = g_timeout_add_seconds (refresh_period (),
 		                                    on_refresh_timer, NULL);
+#ifdef G_OS_WIN32
+	/* An elevated copy does not receive a medium-integrity Explorer's
+	 * broadcasts unless it says so; without "TaskbarCreated" GTK never
+	 * re-adds the icon after Explorer restarts. */
+	ChangeWindowMessageFilter (RegisterWindowMessageW (L"TaskbarCreated"),
+	                           MSGFLT_ADD);
+	if (win32_watch == 0)
+		win32_watch = g_timeout_add_seconds (3, win32_icon_watch, NULL);
+#endif
 }
 
 /* [ destroy_icon ] -- visible=FALSE first so the shell drops the icon
@@ -653,6 +777,12 @@ destroy_icon (void)
 		g_source_remove (tray_timer);
 		tray_timer = 0;
 	}
+#ifdef G_OS_WIN32
+	if (win32_watch != 0) {
+		g_source_remove (win32_watch);
+		win32_watch = 0;
+	}
+#endif
 	if (tray_icon == NULL)
 		return;
 
@@ -698,13 +828,21 @@ fs_tray_uninstall (void)
 }
 
 /* [ fs_tray_active ] -- "an icon is really up": the object exists AND
- * the shell embedded it.  The second half is the honest one -- a shell
- * that refused the icon reads as not active, so nothing downstream
- * hides the window on its strength. */
+ * the shell can be holding it.  The second half is the honest one -- a
+ * shell that refused the icon reads as not active, so nothing
+ * downstream hides the window on its strength.  X11: the tray's own
+ * answer.  Windows: GTK always says embedded there, so the taskbar's
+ * presence is what is checked (see the top of this file). */
 gboolean
 fs_tray_active (void)
 {
-	return tray_icon != NULL && gtk_status_icon_is_embedded (tray_icon);
+	if (tray_icon == NULL)
+		return FALSE;
+#ifdef G_OS_WIN32
+	return taskbar_up ();
+#else
+	return gtk_status_icon_is_embedded (tray_icon);
+#endif
 }
 
 /* [ fs_tray_hide_on_close ] -- the gate behind close/minimize to tray.

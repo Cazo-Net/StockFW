@@ -18,9 +18,12 @@
  *     stops it only on "Pause protection", and then reads Resume
  *     protection, which starts it again; greyed with a reason when the
  *     backend is not available;
+ *   - a firewall stopped or started OUTSIDE StockFW shows as such when
+ *     the menu opens, and on the slow timer with no menu open;
  *   - Pause Sentinel auto-block pauses and resumes, both audited; it is
  *     greyed with a reason when Sentinel is in detect mode (scenario
- *     "detect", its own process);
+ *     "detect", its own process) and in a copy that cannot change the
+ *     firewall;
  *   - Start at sign-in writes and removes the autostart entry, and a
  *     failure shows an error and leaves the tick showing the truth;
  *   - Preferences and About open their dialogs;
@@ -336,6 +339,8 @@ prepare (void)
 	SCRATCH_ENV ("STOCKFW_BEHAVIOR_FILE", "behavior.csv");
 	SCRATCH_ENV ("STOCKFW_TRUST_FILE", "trust.csv");
 	SCRATCH_ENV ("STOCKFW_AUTOSTART_DIR", "autostart");
+	/* The tray's slow refresh, every second instead of every minute. */
+	g_setenv ("STOCKFW_TRAY_REFRESH_S", "1", TRUE);
 
 	fs_prefs_init ();
 	fs_prefs_load ();
@@ -533,6 +538,46 @@ check_main (void)
 	       "Resume protection starts it again through the start gate "
 	       "(%u starts)", starts);
 
+	/* 5b. Stopped behind the app's back (`stockfw stop' in a
+	 * terminal): the menu asks again when it opens, and the slow
+	 * timer does with no menu open. */
+	fake_state = FS_FW_STOPPED;
+	menu = fs_tray_menu ();
+	CHECK (g_strcmp0 (label_of (item_at (menu, 0)), "Firewall: Off") == 0,
+	       "a firewall stopped outside StockFW reads \"Firewall: Off\" "
+	       "as soon as the menu opens (got \"%s\")",
+	       label_of (item_at (menu, 0)));
+	CHECK (item_labelled (menu, "_Resume protection") != NULL,
+	       "...and the menu offers Resume, not Pause");
+	fake_state = FS_FW_RUNNING;
+	menu = fs_tray_menu ();
+	CHECK (g_strcmp0 (label_of (item_at (menu, 0)),
+	                  "Firewall: On - Private network") == 0,
+	       "started again outside StockFW: \"On\" again (got \"%s\")",
+	       label_of (item_at (menu, 0)));
+	fake_state = FS_FW_STOPPED;
+	{
+		GtkStatusIcon *icon = fs_tray_icon ();
+		gchar *tip = NULL;
+
+		/* STOCKFW_TRAY_REFRESH_S=1 (prepare): two periods. */
+		for (gint i = 0; i < 25; i++) {
+			g_usleep (100 * 1000);
+			pump ();
+		}
+		G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+		if (icon != NULL)
+			tip = gtk_status_icon_get_tooltip_text (icon);
+		G_GNUC_END_IGNORE_DEPRECATIONS
+		CHECK (tip != NULL &&
+		       g_str_has_prefix (tip, "StockFW - Firewall OFF"),
+		       "with no menu open, the slow timer catches it too: "
+		       "\"%s\"", tip != NULL ? tip : "(none)");
+		g_free (tip);
+	}
+	fake_state = FS_FW_RUNNING;
+	menu = fs_tray_menu ();
+
 	fake_avail = FALSE;
 	menu = fs_tray_menu ();
 	item = item_labelled (menu, "_Pause protection...");
@@ -540,6 +585,11 @@ check_main (void)
 	       gtk_widget_get_tooltip_text (item) != NULL,
 	       "without the rights to change the firewall, Pause is greyed "
 	       "with the reason as its tooltip");
+	item = item_labelled (menu, "Pause Sentinel auto-block for 1 hour");
+	CHECK (item != NULL && !gtk_widget_get_sensitive (item) &&
+	       gtk_widget_get_tooltip_text (item) != NULL,
+	       "...and so is Pause Sentinel: it could not block anything "
+	       "from here");
 	fake_avail = TRUE;
 	menu = fs_tray_menu ();
 

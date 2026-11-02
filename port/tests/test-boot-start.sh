@@ -15,6 +15,15 @@
 #     off is NOT installed again, and leaves the policy file;
 #   - in audit-only mode the last APPLIED policy is started, not the
 #     file with its held changes;
+#   - out of audit-only mode too: a change saved but never applied (an
+#     SSH allow) stays out of the kernel after a reboot -- the start
+#     installs the journal, not the file;
+#   - rule files that are gone (the journal kept) never start an empty
+#     policy over the applied one;
+#   - with nothing ever applied, a missing or malformed policy file is
+#     refused, non-zero and on the audit record, not started;
+#   - a Sentinel block that was live (journal) and expired is left out
+#     even after its row left the policy file;
 #   - a block by host name that cannot be looked up (no network yet)
 #     does not stop the start: the rest goes in, and the output says
 #     which block was left out.
@@ -127,6 +136,79 @@ check "audit-only: the held change is NOT in the kernel" bash -c "! iptables -S 
 grep -qi "held" "$SCRATCH/held.log" &&
 	ok "audit-only: the output says the changes stay held" ||
 	fail "audit-only: the output says the changes stay held ($(cat "$SCRATCH/held.log"))"
+
+"$CLI" stop > /dev/null 2>&1
+
+# ---------------------------------------------------------------- 4. the file is not the journal
+printf '[client]\npolicy_audit_only=false\n' > "$XDG_CONFIG_HOME/stockfw/stockfw.conf"
+"$CLI" apply > /dev/null 2>&1
+"$CLI" stop > /dev/null 2>&1
+# Saved after the last apply, never applied: an SSH allow.
+"$CLI" policy add inbound-allow-service SSH 22 Anyone > /dev/null 2>&1
+check "(setup) the allow is in the saved policy" grep -rq "22" "$STOCKFW_RULES_DIR/inbound"
+"$CLI" start > "$SCRATCH/unapplied.log" 2>&1
+rc=$?
+check "unapplied: stockfw start succeeds (rc=$rc)" [ "$rc" -eq 0 ]
+check "unapplied: the applied block is back" in_kernel "203.0.113.9"
+check "unapplied: the SSH allow saved but never applied is NOT in the kernel" \
+	bash -c "! iptables -S | grep -q -- '--dport 22'"
+grep -qi "not applied" "$SCRATCH/unapplied.log" &&
+	ok "unapplied: the output says the saved changes are not live" ||
+	fail "unapplied: the output says the saved changes are not live ($(cat "$SCRATCH/unapplied.log"))"
+"$CLI" stop > /dev/null 2>&1
+
+# The rule files are gone; the journal is not.
+mv "$STOCKFW_RULES_DIR" "$SCRATCH/rules.saved"
+"$CLI" start > "$SCRATCH/nofiles.log" 2>&1
+rc=$?
+check "no rule files: stockfw start still succeeds from the journal (rc=$rc)" [ "$rc" -eq 0 ]
+check "no rule files: the applied block is still enforced -- no empty policy" in_kernel "203.0.113.9"
+"$CLI" stop > /dev/null 2>&1
+
+# Nothing applied ever, and no rule files: refused.
+mv "$STOCKFW_APPLIED_FILE" "$SCRATCH/applied.saved"
+"$CLI" start > "$SCRATCH/nothing.log" 2>&1
+rc=$?
+check "nothing applied, no policy: the start is refused (rc=$rc)" [ "$rc" -ne 0 ]
+check "nothing applied, no policy: the kernel was not touched" bash -c "! iptables -S | grep -q INBOUND"
+grep -q "firewall start refused" "$STOCKFW_AUDIT_FILE" 2>/dev/null &&
+	ok "nothing applied, no policy: the refusal is on the audit record" ||
+	fail "nothing applied, no policy: the refusal is on the audit record"
+
+# Nothing applied ever, and a malformed line in the policy: refused.
+mv "$SCRATCH/rules.saved" "$STOCKFW_RULES_DIR"
+echo "999.1.1.1, bad host" >> "$STOCKFW_RULES_DIR/outbound/deny-to"
+"$CLI" start > "$SCRATCH/malformed.log" 2>&1
+rc=$?
+check "nothing applied, a malformed line: the start is refused (rc=$rc)" [ "$rc" -ne 0 ]
+check "nothing applied, a malformed line: the kernel was not touched" bash -c "! iptables -S | grep -q INBOUND"
+grep -q "could not" "$SCRATCH/malformed.log" &&
+	ok "nothing applied, a malformed line: the output says why" ||
+	fail "nothing applied, a malformed line: the output says why ($(cat "$SCRATCH/malformed.log"))"
+sed -i '/999.1.1.1/d' "$STOCKFW_RULES_DIR/outbound/deny-to"
+mv "$SCRATCH/applied.saved" "$STOCKFW_APPLIED_FILE"
+
+# A Sentinel block that went live, expired while the machine was off,
+# and whose row the user already deleted from the policy file: the
+# journal still has it, the start must not.
+"$CLI" policy remove inbound-allow-service 1 > /dev/null 2>&1
+"$CLI" policy add outbound-deny-to 203.0.113.44 --comment "Sentinel: beacon" > /dev/null
+"$CLI" apply > /dev/null 2>&1
+"$CLI" stop > /dev/null 2>&1
+check "(setup) the Sentinel block is in the journal" grep -q "203.0.113.44" "$STOCKFW_APPLIED_FILE"
+"$CLI" --json policy list --kind outbound-deny-to > "$SCRATCH/list.json" 2>&1
+num=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["rules"]; print([x["number"] for x in r if x["target"]=="203.0.113.44"][0])' "$SCRATCH/list.json" 2>/dev/null)
+"$CLI" policy remove outbound-deny-to "${num:-0}" > /dev/null 2>&1
+check "(setup) ...and no longer in the policy file" bash -c "! grep -rq 203.0.113.44 '$STOCKFW_RULES_DIR'"
+printf 'S,%s,6,203.0.113.44, Sentinel: beacon\n' "$OLD" > "$STOCKFW_AUTOBLOCK_FILE"
+"$CLI" start > "$SCRATCH/gone.log" 2>&1
+rc=$?
+check "expired and gone from the file: stockfw start succeeds (rc=$rc)" [ "$rc" -eq 0 ]
+check "expired and gone from the file: the block is NOT installed from the journal" \
+	bash -c "! iptables -S | grep -q 203.0.113.44"
+check "expired and gone from the file: the user's block is" in_kernel "203.0.113.9"
+check "expired and gone from the file: the journal now says what is live" \
+	bash -c "! grep -q 203.0.113.44 '$STOCKFW_APPLIED_FILE'"
 
 "$CLI" stop > /dev/null 2>&1
 

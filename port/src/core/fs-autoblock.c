@@ -34,7 +34,8 @@ fs_autoblock_state_path (void)
 
 /* [ fs_autoblock_expire ] */
 guint
-fs_autoblock_expire (FsPolicy *policy, gint64 now_epoch, gboolean lift_all)
+fs_autoblock_expire (FsPolicy *policy, gint64 now_epoch, gboolean lift_all,
+                     FsPolicy *lifted)
 {
 	gchar *path, *contents = NULL;
 	gchar **lines;
@@ -95,6 +96,12 @@ fs_autoblock_expire (FsPolicy *policy, gint64 now_epoch, gboolean lift_all)
 
 		changed = TRUE;
 		rule = fs_rule_from_csv ((FsRuleKind) kind, parts[3]);
+
+		/* Due, wherever it still is: the start leaves it out of
+		 * the journal too. */
+		if (rule != NULL && lifted != NULL &&
+		    !fs_policy_contains (lifted, rule))
+			fs_policy_add (lifted, rule);     /* stores a copy */
 
 		if (rule == NULL || !fs_policy_contains (policy, rule)) {
 			/* The user already took it out: forget the row. */

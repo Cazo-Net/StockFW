@@ -1166,7 +1166,7 @@ fs_copilot_lift_auto_blocks_for_dest (const gchar *dest)
  * failed stays tracked so the expiry timer retries it instead of
  * leaving a block nobody manages. */
 gboolean
-fs_copilot_autoblocks_restore (FsPolicy *policy)
+fs_copilot_autoblocks_restore (FsPolicy *policy, FsPolicy *due)
 {
     gchar *path;
     gchar *contents = NULL;
@@ -1239,6 +1239,17 @@ fs_copilot_autoblocks_restore (FsPolicy *policy)
                 ? "expired while StockFW was not running"
                 : "Sentinel is not in auto mode";
 
+            /* Due, whether or not the policy still holds it: the
+             * firewall may (the journal says), and the caller takes
+             * it off there. */
+            if (due != NULL) {
+                FsRule *rule = fs_rule_from_csv (ab->kind, ab->csv);
+
+                if (rule != NULL && !fs_policy_contains (due, rule))
+                    fs_policy_add (due, rule);     /* stores a copy */
+                fs_rule_free (rule);
+            }
+
             if (auto_block_rule_in_policy (ab))
                 auto_block_drop (ab, why);
 
@@ -1310,16 +1321,9 @@ fs_copilot_autoblocks_restore (FsPolicy *policy)
     g_free (contents);
     g_free (path);
 
-    /* Rows came out of the policy: the firewall still holds them until
-     * a push or a start.  The caller decides which (fs-app.c). */
-    return stale > 0 || lifted > 0;
-}
-
-/* [ fs_copilot_autoblocks_push ] -- see fs-copilot.h. */
-void
-fs_copilot_autoblocks_push (void)
-{
-    auto_block_push ();
+    /* Rows are due: the firewall may still hold them until a start or
+     * a lift.  The caller decides which (fs-app.c), from `due'. */
+    return stale > 0 || lifted > 0 || retried > 0;
 }
 
 /* ===== Sentinel pause (tray menu) ================================ */

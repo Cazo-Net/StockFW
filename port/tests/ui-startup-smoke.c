@@ -22,10 +22,16 @@
  *              instead;
  *   heldnone   audit-only mode on and nothing ever applied: the
  *              firewall is left alone entirely;
- *   push       no start at launch, firewall running: the expired
- *              Sentinel block is pushed OFF the firewall through the
- *              apply gate (it used to stay live until some later
- *              apply);
+ *   startjournal  a policy was applied before (the journal): the start
+ *              installs THAT, less the expired Sentinel block -- not
+ *              the file, whose allow was saved but never applied;
+ *   push       no start at launch, firewall running, the expired
+ *              Sentinel block live (in the journal): only its REMOVAL
+ *              is pushed through the apply gate -- the journal less
+ *              the block.  The allow saved but never applied stays
+ *              off (pushing the whole file put it live);
+ *   pushnone   the same, but the expired block was never live: nothing
+ *              is pushed at all;
  *   stopped    no start at launch, firewall stopped: nothing is
  *              applied (on Linux an apply IS a start, and a firewall
  *              the user left stopped must not start behind them).
@@ -34,8 +40,10 @@
  * statics); run with no arguments, the binary runs them all.
  *
  * Teeth: move the START_ON_GUI block in fs-app.c back above the Policy
- * page, and "start" fails on the rule count; drop the push in
- * start_at_launch() and "push" fails.  See tests/README.md.
+ * page, and "start" fails on the rule count; drop the lift in
+ * start_at_launch() and "push" fails; push the policy file instead of
+ * the journal less the block and "push" and "pushnone" fail on the
+ * unapplied allow.  See tests/README.md.
  *--------------------------------------------------------------------*/
 
 #include <gtk/gtk.h>
@@ -249,7 +257,7 @@ prepare (void)
 	FsPolicy *policy;
 	gchar *path, *rows;
 	gint64 now = g_get_real_time () / G_USEC_PER_SEC;
-	gboolean start_on_gui = g_strcmp0 (scenario, "push") != 0 &&
+	gboolean start_on_gui = !g_str_has_prefix (scenario, "push") &&
 	                        g_strcmp0 (scenario, "stopped") != 0;
 	gboolean audit_only = g_str_has_prefix (scenario, "held");
 
@@ -277,12 +285,21 @@ prepare (void)
 	put_rule (policy, FS_RULE_OUTBOUND_DENY_TO, SENTINEL_CSV);
 	fs_policy_save (policy);
 
-	/* What is live, for the held scenario: the user's block only --
-	 * the allow was added later, while changes were held. */
-	if (g_strcmp0 (scenario, "held") == 0) {
+	/* What is live (the journal).  held, pushnone: the user's block
+	 * only -- the allow was saved later and never applied.
+	 * startjournal, push: that block and Sentinel's, which went live
+	 * when Sentinel staged it. */
+	if (g_strcmp0 (scenario, "held") == 0 ||
+	    g_strcmp0 (scenario, "pushnone") == 0 ||
+	    g_strcmp0 (scenario, "startjournal") == 0 ||
+	    g_strcmp0 (scenario, "push") == 0) {
 		FsPolicy *live = fs_policy_new ();
 
 		put_rule (live, FS_RULE_OUTBOUND_DENY_TO, USER_BLOCK);
+		if (g_strcmp0 (scenario, "startjournal") == 0 ||
+		    g_strcmp0 (scenario, "push") == 0)
+			put_rule (live, FS_RULE_OUTBOUND_DENY_TO,
+			          SENTINEL_CSV);
 		fs_apply_journal_save (live, NULL);
 		fs_policy_free (live);
 	}
@@ -305,8 +322,8 @@ prepare (void)
 	fs_prefs_set_bool (FS_PREFS_ENABLE_TRAY_ICON, FALSE);
 	fs_prefs_save ();
 
-	fake_state = g_strcmp0 (scenario, "push") == 0 ? FS_FW_RUNNING
-	                                                : FS_FW_STOPPED;
+	fake_state = g_str_has_prefix (scenario, "push") ? FS_FW_RUNNING
+	                                                 : FS_FW_STOPPED;
 }
 
 static void
@@ -361,6 +378,20 @@ check_scenario (void)
 		       starts, applies);
 		CHECK (audit_has ("firewall start held"),
 		       "heldnone: the held start is on the audit record");
+	} else if (g_strcmp0 (scenario, "startjournal") == 0) {
+		CHECK (starts == 0 && applies == 1,
+		       "startjournal: the start installed the journal, not "
+		       "the file (%u starts, %u applies)", starts, applies);
+		CHECK (seen_at_apply != NULL && seen_at_apply->len == 1 &&
+		       seen (seen_at_apply, FS_RULE_OUTBOUND_DENY_TO,
+		             USER_BLOCK),
+		       "startjournal: what went in is the applied block, less "
+		       "the expired Sentinel block (%u rules)",
+		       seen_at_apply != NULL ? seen_at_apply->len : 0);
+		CHECK (!seen (seen_at_apply, FS_RULE_INBOUND_ALLOW_FROM,
+		              USER_ALLOW),
+		       "startjournal: the allow saved but never applied stays "
+		       "off the firewall");
 	} else if (g_strcmp0 (scenario, "push") == 0) {
 		CHECK (starts == 0, "push: start at launch is off, so no "
 		       "start (got %u)", starts);
@@ -372,6 +403,18 @@ check_scenario (void)
 		       "push: the expired Sentinel block was pushed off the "
 		       "running firewall, the user's block kept (%u applies)",
 		       applies);
+		CHECK (seen_at_apply != NULL &&
+		       !seen (seen_at_apply, FS_RULE_INBOUND_ALLOW_FROM,
+		              USER_ALLOW),
+		       "push: only the block's removal went out -- the allow "
+		       "saved but never applied did not ride along");
+		CHECK (audit_has ("sentinel auto-block expired"),
+		       "push: the removal is on the audit record");
+	} else if (g_strcmp0 (scenario, "pushnone") == 0) {
+		CHECK (starts == 0 && applies == 0,
+		       "pushnone: the expired block was never live, so "
+		       "nothing is pushed -- least of all the unapplied allow "
+		       "(%u starts, %u applies)", starts, applies);
 	} else if (g_strcmp0 (scenario, "stopped") == 0) {
 		CHECK (starts == 0 && applies == 0,
 		       "stopped: a stopped firewall is not started behind "
@@ -438,7 +481,8 @@ static int
 run_all (const gchar *self)
 {
 	static const gchar *const all[] = {
-		"start", "held", "heldnone", "push", "stopped"
+		"start", "startjournal", "held", "heldnone", "push",
+		"pushnone", "stopped"
 	};
 	int bad = 0;
 

@@ -42,15 +42,16 @@ void     fs_copilot_sentinel_pause     (guint seconds);
  * running out of the policy, re-arm the rest with their ORIGINAL
  * wall-clock time (a restart grants no fresh ten minutes), and lift
  * everything when Sentinel is not in auto mode.  Call once, after
- * the Copilot page has been built with `policy'. */
-gboolean fs_copilot_autoblocks_restore (FsPolicy *policy);
-
-/* The restore only edits the policy and its file.  Returns TRUE when
- * it took rows OUT of the policy (expired, or Sentinel left auto
- * mode): those blocks are still on the firewall until something
- * pushes, so the caller either starts the firewall with the restored
- * policy or calls this to push it through the apply gate. */
-void fs_copilot_autoblocks_push (void);
+ * the Copilot page has been built with `policy'.
+ *
+ * The restore only edits the policy and its file.  Every row that is
+ * due -- taken out of the policy, already gone from it, or kept there
+ * for a retry -- is copied into `due' (may be NULL), because the
+ * FIREWALL may still hold it: the caller starts the firewall without
+ * them (fs_firewall_start_lifting) or takes them off it
+ * (fs_firewall_lift_live).  Never by applying the policy file, which
+ * may hold changes nobody applied.  TRUE when any row was due. */
+gboolean fs_copilot_autoblocks_restore (FsPolicy *policy, FsPolicy *due);
 
 /* The staged list is written on every stage and every retire; this
  * retries the write when the last one failed, and does nothing

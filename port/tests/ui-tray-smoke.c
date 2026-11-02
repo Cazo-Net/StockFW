@@ -30,6 +30,7 @@
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-tray.h"
+#include "core/fs-backend.h"
 #include "core/fs-prefs.h"
 #include "core/fs-i18n.h"
 
@@ -272,10 +273,25 @@ main (int argc, char **argv)
 		       !gtk_widget_get_sensitive (row[0]) &&
 		       !gtk_widget_get_sensitive (row[1]),
 		       "the two information rows are insensitive");
-		check (g_strcmp0 (gtk_menu_item_get_label (
-		                      GTK_MENU_ITEM (row[0])),
-		                  _("Firewall: On - Private network")) == 0,
-		       "the first row carries the live state and network");
+		{
+			/* Opening the menu asks the backend again (a state
+			 * fed in earlier may be stale by now), so the row
+			 * says what the real backend says this moment. */
+			FsFirewallState live = fs_backend ()->get_state ();
+			const gchar *want =
+				live == FS_FW_RUNNING || live == FS_FW_HIT
+				? _("Firewall: On")
+				: live == FS_FW_LOCKED
+				? _("Firewall: On, policy locked")
+				: live == FS_FW_STOPPED ? _("Firewall: Off")
+				: _("Firewall: state unknown");
+			const gchar *got = gtk_menu_item_get_label (
+				GTK_MENU_ITEM (row[0]));
+
+			check (got != NULL && g_str_has_prefix (got, want),
+			       "the first row carries the state the backend "
+			       "reports when the menu opens");
+		}
 		check (GTK_IS_SEPARATOR_MENU_ITEM (row[13]),
 		       "Quit is fenced off behind its own separator");
 		check (g_strcmp0 (gtk_menu_item_get_label (

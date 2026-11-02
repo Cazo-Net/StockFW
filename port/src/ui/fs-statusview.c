@@ -1353,7 +1353,7 @@ fs_statusview_firewall_start (GtkWidget *parent, const gchar *source)
 	const FsBackend *backend = fs_backend ();
 	FsApplyOutcome *outcome;
 	GError *error = NULL;
-	gboolean started;
+	gboolean started, had_journal;
 
 	if (shared_policy == NULL) {
 		/* Never start on a policy nobody loaded: on Linux that
@@ -1363,6 +1363,12 @@ fs_statusview_firewall_start (GtkWidget *parent, const gchar *source)
 		return FALSE;
 	}
 
+	{
+		gchar *journal = fs_apply_journal_path ();
+
+		had_journal = g_file_test (journal, G_FILE_TEST_EXISTS);
+		g_free (journal);
+	}
 	outcome = fs_firewall_start_safe (backend, shared_policy,
 	                                  source != NULL ? source : "window",
 	                                  fs_policyview_hold_reason (),
@@ -1402,6 +1408,25 @@ fs_statusview_firewall_start (GtkWidget *parent, const gchar *source)
 			                 _("Firewall started with the last "
 			                   "applied policy"), why);
 			g_free (why);
+		} else if (had_journal && backend->start_applies_policy &&
+		           (outcome->impact->added > 0 ||
+		            outcome->impact->removed > 0)) {
+			/* A start brings back what was applied; saved changes
+			 * that never were stay off until Apply.  Say so, or
+			 * the Policy page reads as if it were in force. */
+			GString *why = g_string_new (
+				_("The firewall is running the last policy that "
+				  "was applied.  Changes saved on the Policy page "
+				  "since then are not in force yet: apply them "
+				  "there to put them live."));
+
+			if (outcome->notes != NULL)
+				g_string_append_printf (why, "\n\n%s",
+				                        outcome->notes);
+			fs_dialogs_info (parent,
+			                 _("Firewall started with the last "
+			                   "applied policy"), why->str);
+			g_string_free (why, TRUE);
 		} else if (outcome->notes != NULL) {
 			/* Started, with notes: what the policy in force does
 			 * not cover (a block whose name could not be looked
@@ -1594,6 +1619,29 @@ FsFirewallState
 fs_statusview_get_state (void)
 {
 	return current_state;
+}
+
+/* [ fs_statusview_reread_state ] -- see fs-statusview.h. */
+void
+fs_statusview_reread_state (void)
+{
+	const FsBackend *backend = fs_backend ();
+	FsFirewallState now;
+
+	if (backend->get_state == NULL)
+		return;
+
+	now = backend->get_state ();
+	if (now == FS_FW_RUNNING && policy_locked)
+		now = FS_FW_LOCKED;
+
+	/* On either way: keep the finer state this page already shows
+	 * (locked, hit) rather than flatten it. */
+	if (now == current_state ||
+	    (state_is_running (now) && state_is_running (current_state)))
+		return;
+
+	fs_statusview_set_state (now);
 }
 
 /* ------------------------------------------------------------------ page */

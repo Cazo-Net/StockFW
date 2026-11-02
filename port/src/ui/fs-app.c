@@ -31,6 +31,7 @@
 #include "core/fs-script.h"
 #include "core/fs-copilot.h"
 #include "core/fs-trust.h"
+#include "core/fs-util.h"
 #include "core/fs-i18n.h"
 #include "stockfw-logo-32.h"
 #include "stockfw-logo-64.h"
@@ -615,46 +616,82 @@ app_trust_signature (const gchar *path, FsTrustSignature *sig,
 	return backend->trust_signature (path, sig, publisher);
 }
 
+/* [ fs_app_can_change_firewall ] -- see fs-app.h. */
+gboolean
+fs_app_can_change_firewall (void)
+{
+	const FsBackend *backend = fs_backend ();
+
+	if (backend->available == NULL || !backend->available ())
+		return FALSE;
+#ifdef G_OS_WIN32
+	/* The Windows backend reads the firewall without elevation, so
+	 * "available" is not "may change it": that takes an elevated
+	 * token.  On Linux available() already means root. */
+	return fs_util_privileged ();
+#else
+	return TRUE;
+#endif
+}
+
 /* [ start_at_launch ]
  * "Start the firewall on program startup", once the policy is really
  * loaded and Sentinel's restore has taken its expired rows out.  The
  * start goes through the start gate, so audit-only mode and the Policy
- * Lock hold it exactly as they hold an apply, and it is audited.  A
- * failure is not fatal: the window still opens and the state line
- * reports what actually happened.
+ * Lock hold it exactly as they hold an apply, it is audited, and on
+ * Linux it installs the last APPLIED policy (the journal), never
+ * changes in the file that nobody applied.  A failure is not fatal:
+ * the window still opens and the state line reports what actually
+ * happened.
  *
- * `restore_dropped': Sentinel's boot restore took rows out of the
- * policy (blocks whose ten minutes ran out while StockFW was closed).
- * Those blocks are still on the firewall until something pushes; a
- * start that installed the restored policy already did, otherwise
- * they are pushed through the apply gate here -- but on Linux only
- * while the firewall runs, because there an apply IS a start, and a
- * firewall the user left stopped must not start behind their back. */
+ * `due': the Sentinel blocks whose ten minutes ran out while StockFW
+ * was closed.  The firewall may still hold them.  A start leaves them
+ * out of what it installs; otherwise only THEIR removal is pushed
+ * (fs_firewall_lift_live: the journal less those rules) -- and only
+ * by a copy that may change the firewall, and on Linux only while the
+ * firewall runs, because there an apply IS a start, and a firewall the
+ * user left stopped must not start behind their back.  The policy
+ * file is never what gets pushed here: it may hold an allow nobody
+ * applied. */
 static void
-start_at_launch (gboolean restore_dropped)
+start_at_launch (const FsPolicy *due)
 {
 	const FsBackend *backend = fs_backend ();
-	gboolean installed = FALSE;
+	gboolean installed = FALSE, any_due = FALSE;
+
+	for (gint k = 0; due != NULL && k < FS_RULE_N_KINDS; k++)
+		if (due->kinds[k]->len > 0)
+			any_due = TRUE;
 
 	if (fs_prefs_get_bool (FS_PREFS_START_ON_GUI, FALSE) &&
-	    backend->available ()) {
+	    fs_app_can_change_firewall ()) {
 		GError *error = NULL;
 		FsApplyOutcome *outcome;
 
-		outcome = fs_firewall_start_safe (backend, policy,
-		                                  "start on program startup",
-		                                  fs_policyview_hold_reason (),
-		                                  &error);
-		installed = outcome->applied && !outcome->held;
+		outcome = fs_firewall_start_lifting (backend, policy, due,
+		                                     "start on program startup",
+		                                     fs_policyview_hold_reason (),
+		                                     &error);
+		installed = outcome->applied;
 		g_clear_error (&error);
 		fs_apply_outcome_free (outcome);
 	}
 
-	if (restore_dropped && !installed &&
+	if (any_due && !installed && fs_app_can_change_firewall () &&
 	    (!backend->start_applies_policy ||
 	     (backend->get_state != NULL &&
-	      backend->get_state () == FS_FW_RUNNING)))
-		fs_copilot_autoblocks_push ();
+	      backend->get_state () == FS_FW_RUNNING))) {
+		GError *error = NULL;
+		FsApplyOutcome *outcome;
+
+		outcome = fs_firewall_lift_live (backend, due,
+		                                 "sentinel auto-block expired",
+		                                 fs_policyview_hold_reason (),
+		                                 &error);
+		if (outcome != NULL)
+			fs_apply_outcome_free (outcome);
+		g_clear_error (&error);
+	}
 }
 
 /* --------------------------------------------------------- hidden start
@@ -831,9 +868,35 @@ on_query_end (GtkApplication *app, gpointer data)
 	save_state (TRUE);
 }
 
-/* [ on_shutdown ] -- the run loop ended without fs_app_quit(): the
- * session manager's Stop quits the application directly.  Write what
- * changed since query-end. */
+/* [ free_state ] -- the policy, the settings and the Copilot.  Only
+ * once the run loop has ended (on_shutdown): the Overview's refresh,
+ * Sentinel's expiry and the backend all hold the same pointers, and a
+ * source that came due in the same loop pass as the quit is still
+ * dispatched after it -- freeing in the quit handed those freed
+ * memory. */
+static void
+free_state (void)
+{
+	if (policy != NULL) {
+		fs_policy_free (policy);
+		policy = NULL;
+	}
+
+	if (settings != NULL) {
+		fs_settings_free (settings);
+		settings = NULL;
+	}
+
+	if (copilot != NULL) {
+		fs_copilot_free (copilot);
+		copilot = NULL;
+	}
+}
+
+/* [ on_shutdown ] -- the run loop has ended, by fs_app_quit() or by
+ * the session manager's Stop, which quits the application directly
+ * (then write what changed since query-end).  Nothing runs after
+ * this: now the shared state may go. */
 static void
 on_shutdown (GApplication *app, gpointer data)
 {
@@ -842,6 +905,8 @@ on_shutdown (GApplication *app, gpointer data)
 
 	if (!quit_started)
 		save_state (FALSE);
+
+	free_state ();
 }
 
 #ifdef G_OS_WIN32
@@ -895,7 +960,7 @@ void
 fs_app_activate (GtkApplication *app)
 {
 	GtkWidget *box;
-	gboolean restore_dropped;
+	FsPolicy *due;
 
 	/* Everything below builds static state once: a second activate
 	 * would start a second monitor, a second Sentinel and a second
@@ -1024,7 +1089,8 @@ fs_app_activate (GtkApplication *app)
 	 * not "auto" lifts the lot.  The page above owns the shared policy
 	 * and the mode cache this reads; start_at_launch() takes what came
 	 * out to the firewall. */
-	restore_dropped = fs_copilot_autoblocks_restore (policy);
+	due = fs_policy_new ();
+	fs_copilot_autoblocks_restore (policy, due);
 
 	/* Trust tab: the application trust engine's surface. */
 	add_page (_("Trust"),
@@ -1033,7 +1099,8 @@ fs_app_activate (GtkApplication *app)
 	          fs_trustview_page (), FALSE);
 
 	/* Policy loaded, Sentinel reconciled: now the firewall may start. */
-	start_at_launch (restore_dropped);
+	start_at_launch (due);
+	fs_policy_free (due);
 
 	/* Everything inside the window is shown now; the window itself
 	 * only below, once it is known whether it may stay hidden. */
@@ -1135,11 +1202,12 @@ quit_when_unwound (gpointer data)
  * firewall is left as it is.
  *
  * A quit can arrive while a dialog runs its own loop: a signal or
- * --quit is dispatched by whatever loop is running.  Freeing the
- * policy under that dialog would hand its caller freed memory when
- * the dialog returns, so in that case the state is saved and the icon
- * taken down at once, the dialogs are closed, and the rest waits for
- * the outer loop. */
+ * --quit is dispatched by whatever loop is running.  In that case the
+ * state is saved and the icon taken down at once, the dialogs are
+ * closed, and the rest waits for the outer loop.  Nothing is freed
+ * before the run loop has ended (on_shutdown): a dialog's caller, or
+ * a timer due in the same loop pass, still finds everything in
+ * place. */
 void
 fs_app_quit (void)
 {
@@ -1179,22 +1247,9 @@ quit_finish (void)
 	/* Whatever changed while the dialogs closed. */
 	save_state (FALSE);
 
-	if (policy != NULL) {
-		fs_policy_free (policy);
-		policy = NULL;
-	}
-
-	if (settings != NULL) {
-		fs_settings_free (settings);
-		settings = NULL;
-	}
-
-	if (copilot != NULL) {
-		fs_copilot_free (copilot);
-		copilot = NULL;
-	}
-
-	/* Through the default application too: a signal can come before
+	/* Nothing is freed here: sources already due in this loop pass
+	 * still run after us.  on_shutdown() frees once the loop is over.
+	 * Through the default application too: a signal can come before
 	 * activate has recorded ours. */
 	if (app != NULL)
 		g_application_quit (app);

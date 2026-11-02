@@ -41,6 +41,7 @@
 #include "core/fs-rules.h"
 #include "ui/fs-app.h"
 #include "ui/fs-copilot.h"
+#include "ui/fs-statusview.h"
 #include "ui/fs-tray.h"
 
 /* fs-app.c's own instance: NULL once a quit has finished. */
@@ -469,6 +470,48 @@ run_dialog (gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+/* The quit and a timer that reads the shared policy come due in the
+ * same loop pass (a loop that was late, as a stopped or busy process
+ * is): GLib dispatches both, the reader after the quit.  It used to
+ * find the policy freed under it -- the Overview's 2 s refresh did,
+ * after a SIGTERM. */
+static gboolean same_tick_ran = FALSE;
+
+static gboolean
+same_tick_quit (gpointer data)
+{
+	(void) data;
+
+	fs_app_quit ();
+	return G_SOURCE_REMOVE;
+}
+
+static gboolean
+same_tick_reader (gpointer data)
+{
+	(void) data;
+
+	same_tick_ran = TRUE;
+	CHECK (copilot != NULL,
+	       "a timer due in the same loop pass as the quit still finds "
+	       "everything in place");
+	/* What the Overview's refresh does with the shared policy. */
+	fs_statusview_set_state (FS_FW_RUNNING);
+	return G_SOURCE_REMOVE;
+}
+
+static gboolean
+arm_same_tick (gpointer data)
+{
+	(void) data;
+
+	g_timeout_add (20, same_tick_quit, NULL);
+	g_timeout_add (20, same_tick_reader, NULL);
+	/* Late: both are overdue by the next pass. */
+	g_usleep (150 * 1000);
+	return G_SOURCE_REMOVE;
+}
+
 static gboolean
 run_checks (gpointer data)
 {
@@ -495,6 +538,8 @@ on_activate (GtkApplication *app, gpointer data)
 
 	if (g_strcmp0 (scenario, "dialog") == 0)
 		g_timeout_add (200, run_dialog, NULL);
+	else if (g_strcmp0 (scenario, "sametick") == 0)
+		g_timeout_add (200, arm_same_tick, NULL);
 	else
 		g_timeout_add (200, run_checks, NULL);
 }
@@ -524,7 +569,8 @@ rm_rf (const gchar *path)
 static int
 run_all (const gchar *self)
 {
-	static const gchar *const all[] = { "autosave", "queryend", "dialog" };
+	static const gchar *const all[] = { "autosave", "queryend", "dialog",
+	                                    "sametick" };
 	int bad = 0;
 
 	for (guint i = 0; i < G_N_ELEMENTS (all); i++) {
@@ -582,6 +628,12 @@ main (int argc, char **argv)
 		CHECK (file_has (prefs_file, "session_probe=stopped"),
 		       "a Stop without fs_app_quit() still writes what "
 		       "changed after query-end");
+	if (g_strcmp0 (scenario, "sametick") == 0) {
+		CHECK (same_tick_ran,
+		       "(the reader ran in the quit's loop pass)");
+		CHECK (copilot == NULL,
+		       "everything is freed once the loop has ended");
+	}
 	if (g_strcmp0 (scenario, "dialog") == 0) {
 		CHECK (copilot == NULL,
 		       "the quit finished once the dialog had returned");

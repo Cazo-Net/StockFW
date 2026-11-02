@@ -4424,6 +4424,192 @@ static void test_start_gate (void)
 	g_free (dir);
 }
 
+/* --- a start installs what was APPLIED, never the file (1.0.7) ----------
+ * The boot unit runs `stockfw start' unattended at every boot.  A
+ * start that installed the policy FILE put live whatever had been
+ * saved but never applied (an allow nobody pushed), and with the rule
+ * files gone it started an empty policy over a working one.  A start
+ * on a backend whose start installs a policy now installs the journal,
+ * less the expired Sentinel rows it is handed, held or not; a journal
+ * that cannot be read refuses the start.  fs_firewall_lift_live takes
+ * expired rows off without applying anything else. */
+
+static void test_start_from_journal (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-start-journal-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *file_policy, *live, *lift, *loaded;
+	FsRule *allow, *block, *sentinel;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	gchar *audit;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+
+	allow = gate_rule (FS_RULE_INBOUND_ALLOW_SERVICE, "SSH", "22",
+	                   FS_TARGET_ANY);
+	block = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+	                   "203.0.113.9");
+	sentinel = gate_rule (FS_RULE_OUTBOUND_DENY_TO, NULL, NULL,
+	                      "198.51.100.77");
+
+	/* Applied: the block and a Sentinel block.  Saved since, never
+	 * applied: an SSH allow. */
+	live = fs_policy_new ();
+	fs_policy_add (live, block);
+	fs_policy_add (live, sentinel);
+	fs_apply_journal_save (live, NULL);
+	file_policy = fs_policy_new ();
+	fs_policy_add (file_policy, block);
+	fs_policy_add (file_policy, sentinel);
+	fs_policy_add (file_policy, allow);
+
+	/* 1. Unheld, journal present: the journal goes in, start() (which
+	 * would install the file) is never called. */
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start,
+	                                  file_policy, "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       fake_starts == 0 && fake_full_calls == 1,
+	       "start: with a journal, the journal is installed, not the "
+	       "file (%d starts, %d applies)", fake_starts, fake_full_calls);
+	CHECK (fake_seen_len == 1 && gate_policy_total (fake_seen[0]) == 2 &&
+	       !fs_policy_contains (fake_seen[0], allow),
+	       "start: the allow that was saved but never applied stays "
+	       "OFF the firewall");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	/* 2. ...less what it is told to lift (expired Sentinel rows), and
+	 * the journal then records that as live. */
+	lift = fs_policy_new ();
+	fs_policy_add (lift, sentinel);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_lifting (&fake_backend_linux_start,
+	                                     file_policy, lift, "test", NULL,
+	                                     &error);
+	CHECK (outcome->result == FS_APPLY_OK && fake_starts == 0 &&
+	       fake_seen_len == 1 && gate_policy_total (fake_seen[0]) == 1 &&
+	       fs_policy_contains (fake_seen[0], block) &&
+	       !fs_policy_contains (fake_seen[0], sentinel),
+	       "start: the expired Sentinel block is left out, the user's "
+	       "block goes in");
+	loaded = fs_policy_new ();
+	CHECK (fs_apply_journal_load (loaded, NULL) &&
+	       gate_policy_total (loaded) == 1 &&
+	       !fs_policy_contains (loaded, sentinel),
+	       "start: the journal records what this start installed");
+	fs_policy_free (loaded);
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	audit = gate_audit_read ();
+	CHECK (audit != NULL &&
+	       strstr (audit, "started with the last applied policy") &&
+	       strstr (audit, "expired Sentinel block") &&
+	       strstr (audit, "not applied:"),
+	       "start: the audit line says the journal started, what was "
+	       "left out and what stays unapplied");
+	g_free (audit);
+
+	/* 3. The rule files are gone (empty policy) but the journal is
+	 * there: the start still installs what was applied. */
+	fs_apply_journal_save (live, NULL);
+	{
+		FsPolicy *empty = fs_policy_new ();
+
+		fake_reset ();
+		fake_starts = 0;
+		outcome = fs_firewall_start_safe (&fake_backend_linux_start,
+		                                  empty, "test", NULL, &error);
+		CHECK (outcome->result == FS_APPLY_OK && fake_starts == 0 &&
+		       fake_seen_len == 1 &&
+		       gate_policy_total (fake_seen[0]) == 2,
+		       "start: an empty policy file never replaces what was "
+		       "live (%d rules installed, want 2)",
+		       fake_seen_len == 1 ? (gint) gate_policy_total (
+		       fake_seen[0]) : -1);
+		fs_apply_outcome_free (outcome);
+		g_clear_error (&error);
+		fs_policy_free (empty);
+	}
+
+	/* 4. A journal that is there but cannot be read: refused, neither
+	 * it nor the file goes in. */
+	g_file_set_contents (file, "this is not a journal row\n", -1, NULL);
+	fake_reset ();
+	fake_starts = 0;
+	outcome = fs_firewall_start_safe (&fake_backend_linux_start,
+	                                  file_policy, "test", NULL, &error);
+	CHECK (outcome->result == FS_APPLY_FAILED && !outcome->applied &&
+	       fake_starts == 0 && fake_full_calls == 0 && error != NULL,
+	       "start: an unreadable journal refuses the start, firewall "
+	       "untouched");
+	fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+	audit = gate_audit_read ();
+	CHECK (audit != NULL &&
+	       strstr (audit, "journal could not be read") != NULL,
+	       "start: the refusal is audited");
+	g_free (audit);
+
+	/* 5. Lifting expired rows off a running firewall: only their
+	 * removal, never the file. */
+	fs_apply_journal_save (live, NULL);
+	fake_reset ();
+	outcome = fs_firewall_lift_live (&fake_backend_linux_start, lift,
+	                                 "test", NULL, &error);
+	CHECK (outcome != NULL && outcome->applied && fake_seen_len == 1 &&
+	       gate_policy_total (fake_seen[0]) == 1 &&
+	       fs_policy_contains (fake_seen[0], block) &&
+	       !fs_policy_contains (fake_seen[0], allow),
+	       "lift: the journal less the expired block is applied -- the "
+	       "unapplied allow does not ride along");
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
+	g_clear_error (&error);
+
+	fake_reset ();
+	outcome = fs_firewall_lift_live (&fake_backend_linux_start, lift,
+	                                 "test", NULL, &error);
+	CHECK (outcome == NULL && fake_full_calls == 0,
+	       "lift: a row that is not live any more changes nothing");
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
+
+	remove (file);
+	fake_reset ();
+	outcome = fs_firewall_lift_live (&fake_backend_linux_start, lift,
+	                                 "test", NULL, &error);
+	CHECK (outcome == NULL && fake_full_calls == 0,
+	       "lift: no journal, nothing known to be live, nothing done");
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
+
+	fake_reset ();
+	fs_rule_free (allow);
+	fs_rule_free (block);
+	fs_rule_free (sentinel);
+	fs_policy_free (lift);
+	fs_policy_free (live);
+	fs_policy_free (file_policy);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_rmdir (dir);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
 /* --- Sentinel's persisted blocks at a start without the app ------------
  * `stockfw start' at boot has no Sentinel running to lift a block whose
  * ten minutes ran out while the machine was off; fs_autoblock_expire
@@ -4439,7 +4625,7 @@ static void test_autoblock_expire (void)
 	const gchar *new_csv = "203.0.113.10, Sentinel: fresh beacon";
 	const gchar *user_csv = "198.51.100.7, mine";
 	gint64 now = 1800000000;
-	FsPolicy *policy;
+	FsPolicy *policy, *lifted;
 	FsRule *probe;
 	gchar *rows, *after = NULL;
 	guint dropped;
@@ -4467,9 +4653,32 @@ static void test_autoblock_expire (void)
 	g_file_set_contents (state, rows, -1, NULL);
 	g_free (rows);
 
-	dropped = fs_autoblock_expire (policy, now, FALSE);
+	{
+		/* A second stale row whose rule the user already deleted
+		 * from the file: the journal may still hold it. */
+		gchar *more = NULL, *both;
+
+		g_file_get_contents (state, &more, NULL, NULL);
+		both = g_strdup_printf ("%sS,%" G_GINT64_FORMAT ",%d,%s\n",
+		                        more, now - 7200,
+		                        (int) FS_RULE_OUTBOUND_DENY_TO,
+		                        "192.0.2.200, Sentinel: deleted");
+		g_file_set_contents (state, both, -1, NULL);
+		g_free (both);
+		g_free (more);
+	}
+	lifted = fs_policy_new ();
+	dropped = fs_autoblock_expire (policy, now, FALSE, lifted);
 	CHECK (dropped == 1, "autoblock expire: one stale block came out "
 	       "(got %u)", dropped);
+	probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, old_csv);
+	CHECK (fs_policy_contains (lifted, probe) &&
+	       fs_policy_count (lifted, FS_RULE_OUTBOUND_DENY_TO) == 2,
+	       "autoblock expire: every due row is handed back for the "
+	       "start to leave out, the one already gone from the file "
+	       "too (%u)", fs_policy_count (lifted, FS_RULE_OUTBOUND_DENY_TO));
+	fs_rule_free (probe);
+	fs_policy_free (lifted);
 	probe = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, old_csv);
 	CHECK (!fs_policy_contains (policy, probe),
 	       "autoblock expire: the stale block left the policy");
@@ -4500,10 +4709,10 @@ static void test_autoblock_expire (void)
 	       "autoblock expire: the state file keeps only the live row");
 	g_free (after);
 
-	dropped = fs_autoblock_expire (policy, now, TRUE);
+	dropped = fs_autoblock_expire (policy, now, TRUE, NULL);
 	CHECK (dropped == 1, "autoblock expire: Sentinel out of auto mode "
 	       "lifts the rest (got %u)", dropped);
-	CHECK (fs_autoblock_expire (policy, now, FALSE) == 0,
+	CHECK (fs_autoblock_expire (policy, now, FALSE, NULL) == 0,
 	       "autoblock expire: nothing left, nothing removed");
 
 	fs_policy_clear (policy);
@@ -6461,6 +6670,7 @@ int main (void)
 	test_apply_delta ();
 	test_apply_gate ();
 	test_start_gate ();
+	test_start_from_journal ();
 	test_autoblock_expire ();
 	test_autostart ();
 	test_block_tally ();

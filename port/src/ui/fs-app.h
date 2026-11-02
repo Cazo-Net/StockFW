@@ -58,6 +58,12 @@ void fs_app_quit    (void);
  * next periodic save writes it (1.0.7 session safety). */
 void fs_app_note_learning (void);
 
+/* TRUE when this copy may change the firewall (apply, start, stop):
+ * the backend is there and, on Windows, the process is elevated --
+ * the Windows backend reads state without elevation, so "available"
+ * alone would enable controls that only fail after a confirmation. */
+gboolean fs_app_can_change_firewall (void);
+
 /* Re-reads the preferences into the shared FsSettings and hands the
  * refreshed context back to the backend.  Called after the Preferences
  * dialog is accepted, so the Firewall pages take effect. */

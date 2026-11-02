@@ -270,6 +270,12 @@ linux_available (void)
 static FsFirewallState
 linux_get_state (void)
 {
+	/* Without root iptables cannot be read at all.  That is "unknown",
+	 * not "stopped": the boot unit may well have the rules in force
+	 * while a copy without root (the one started at sign-in) looks. */
+	if (geteuid () != 0)
+		return FS_FW_NONE;
+
 	if (!chain_exists ())
 		return FS_FW_STOPPED;
 
