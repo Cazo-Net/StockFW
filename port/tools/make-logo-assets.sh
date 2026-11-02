@@ -9,6 +9,8 @@
 #          and in the command-line dashboard (header and favicon)
 #   port/installer/nsis/resources/stockfw_icon.ico (16..256) and .png
 #       -- StockFW.exe's icon (stockfw.rc) and the Windows installer's
+#   port/installer/nsis/resources/stockfw_header.bmp, stockfw_welcome.bmp
+#       -- the installer's page banner and Welcome/Finish side panel
 #   port/installer/linux/stockfw-icon{-48,,-256}.png
 #       -- the Linux menu entry's icon (hicolor 48, 128, 256)
 #   pixmaps/stockfw.png (48) -- the original tree's icon
@@ -103,6 +105,41 @@ done
 "${IM[@]}" "${ICO_PARTS[@]}" "$PORT/installer/nsis/resources/stockfw_icon.ico"
 cp "$TMP/ico-256.png" "$PORT/installer/nsis/resources/stockfw_icon.png"
 echo "  installer/nsis/resources/stockfw_icon.ico (16-256) and .png"
+
+# Windows installer artwork (NSIS Modern UI).  NSIS only takes 24-bit
+# BMP3 files with no alpha, so the logo is flattened onto a solid
+# background.  Colours are the app's own (fs-theme.css): sidebar
+# #16181d / #2a2f39, accent #c62828, muted text #5b6472 / #8b93a1.
+#   stockfw_header.bmp   150x57   top banner of every inner page (white,
+#                                 like the banner it sits in)
+#   stockfw_welcome.bmp  164x314  left panel of the Welcome and Finish pages
+FONT_BOLD="DejaVu-Sans-Bold"
+FONT="DejaVu-Sans"
+render 44 "$TMP/hdr-logo.png"
+"${IM[@]}" -size 150x57 xc:'#ffffff' \
+  "$TMP/hdr-logo.png" -geometry +4+6 -composite \
+  -font "$FONT_BOLD" -pointsize 19 -fill '#16181d' \
+  -annotate +52+31 'StockFW' \
+  -font "$FONT" -pointsize 10 -fill '#5b6472' \
+  -annotate +53+45 'Firewall' \
+  -fill '#c62828' -draw 'rectangle 0,55 149,56' \
+  -alpha remove -alpha off -type TrueColor -strip \
+  "BMP3:$PORT/installer/nsis/resources/stockfw_header.bmp"
+echo "  installer/nsis/resources/stockfw_header.bmp (150x57)"
+
+render 120 "$TMP/side-logo.png"
+"${IM[@]}" -size 164x314 gradient:'#2a2f39-#16181d' \
+  "$TMP/side-logo.png" -geometry +22+46 -composite \
+  -gravity north \
+  -font "$FONT_BOLD" -pointsize 22 -fill '#ffffff' \
+  -annotate +0+180 'StockFW' \
+  -fill '#c62828' -draw 'rectangle 62,214 101,216' \
+  -font "$FONT" -pointsize 10 -fill '#cdd2da' \
+  -annotate +0+226 'Firewall for' \
+  -annotate +0+240 'Windows and Linux' \
+  -alpha remove -alpha off -type TrueColor -strip \
+  "BMP3:$PORT/installer/nsis/resources/stockfw_welcome.bmp"
+echo "  installer/nsis/resources/stockfw_welcome.bmp (164x314)"
 
 # Linux: hicolor theme sizes for the menu entry.
 render 48  "$PORT/installer/linux/stockfw-icon-48.png"

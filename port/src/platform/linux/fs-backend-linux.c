@@ -141,14 +141,18 @@ have_iptables (GError **error)
 {
 	gchar *argv[] = { (gchar *) "iptables", (gchar *) "--version", NULL };
 	GError *local = NULL;
+	/* The lookup returns the path it found, which is ours to free:
+	 * testing it inline leaked one string per apply. */
+	gchar *found = g_find_program_in_path ("iptables");
 
-	if (!g_find_program_in_path ("iptables")) {
+	if (found == NULL) {
 		g_set_error_literal (error,
 		                     g_quark_from_static_string ("fs-backend-linux"),
 		                     0,
 		                     "iptables was not found on PATH.");
 		return FALSE;
 	}
+	g_free (found);
 
 	/* A present but unusable binary (missing kernel support, broken
 	 * alternatives link) still deserves a message.  The probe's own

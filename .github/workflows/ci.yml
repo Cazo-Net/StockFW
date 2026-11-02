@@ -1,0 +1,157 @@
+# StockFW continuous integration: build and test on Linux and on Windows
+# (MSYS2 UCRT64, the toolchain the README documents), and keep the
+# Windows installer each run produces so a build can be tried without
+# setting MSYS2 up first.
+#
+# It runs for every pull request (on the pull request merged into its
+# base, so what is tested is what merging would give), for pushes to
+# main, and by hand from the Actions tab.  Work-in-progress branches
+# without a pull request are not built.
+
+name: StockFW CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux build and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and test dependencies
+        run: |
+          # librsvg2-common (the SVG image loader) and shared-mime-info
+          # are only recommended by GTK, so --no-install-recommends leaves
+          # them out, yet every desktop has them: the Adwaita theme draws
+          # some of its marks (the radio bullet, for one) from SVG files.
+          # Without the loader GTK warns, and the smoke tests count any
+          # GTK warning as a failure.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libgtk-3-dev \
+            librsvg2-common shared-mime-info \
+            iptables nftables xvfb xauth
+
+      - name: Build
+        run: |
+          cmake -S port -B port/build-linux -G Ninja
+          ninja -C port/build-linux
+
+      - name: Core, adversarial and command-line tests
+        working-directory: port
+        run: |
+          bash tests/test-core.sh
+          bash tests/test-adversarial.sh
+          bash tests/test-cli.sh
+          bash tests/test-logstart.sh
+          ninja -C build-linux fs-intel-test fs-netplace-test fs-nftset-load
+          ./build-linux/fs-intel-test
+          ./build-linux/fs-netplace-test
+
+      - name: UI smoke tests on a virtual display
+        working-directory: port
+        env:
+          NO_AT_BRIDGE: "1"
+        run: |
+          # fs-tray-smoke is left out on Linux: it checks that the icon
+          # is embedded in a notification area, and a bare X server has
+          # none.  The Windows job runs it.
+          smokes="fs-ui-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke
+                  fs-trustview-smoke fs-copilot-smoke fs-statusview-smoke
+                  fs-activity-smoke fs-overview-place-smoke"
+          ninja -C build-linux $smokes
+          for t in $smokes; do
+            echo "== $t"
+            xvfb-run -a "./build-linux/$t"
+          done
+
+      - name: Live firewall tests as root, each in a private network namespace
+        working-directory: port
+        run: |
+          # These print SKIP and pass when root, iptables or nft is
+          # missing.  Everything is installed here, so a skip means the
+          # test did not run, and that fails the job.
+          strict () {
+            local log rc
+            log="$(mktemp)"
+            sudo bash "$1" > "$log" 2>&1 && rc=0 || rc=$?
+            cat "$log"
+            if grep -q '^SKIP' "$log"; then
+              echo "::error::$1 was skipped on CI"
+              return 1
+            fi
+            return "$rc"
+          }
+          strict tests/test-apply-linux.sh
+          strict tests/test-apply-dual.sh
+          strict tests/test-nftset.sh
+
+  windows:
+    name: Windows build, tests and installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            base-devel
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-gtk3
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-nsis
+
+      - name: Build
+        id: build
+        run: |
+          cd port
+          cmake -S . -B build -G Ninja
+          cmake --build build
+
+      - name: Every test suite (tests/full-suite.sh)
+        run: |
+          cd port
+          bash tests/full-suite.sh
+
+      # The installer is built whenever the program built, even when a
+      # test failed: the run stays red, and the installer is there to
+      # look at the failure on a real machine.
+      - name: Build the installer
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          cd port
+          bash installer/build_installer.sh
+          # Now that the runtime is staged, check it carries GLib's
+          # spawn helpers (without them no netsh or event log call works).
+          bash tests/test-installer-spawn.sh
+
+      - name: Keep the installer
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockFW-windows-installer
+          path: port/installer/nsis/StockFW-*-Setup.exe
+          if-no-files-found: error
+          retention-days: 30
