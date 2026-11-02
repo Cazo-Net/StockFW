@@ -423,6 +423,119 @@ test_tcp (void)
 	        "tcp: no text");
 }
 
+/* ====================================================== hostile input */
+
+/* Damaged and boundary input for every parser: what is not exactly the
+ * kernel's (or resolv.conf's) form adds nothing, never a different
+ * address, and nothing is read past a field's end. */
+static void
+test_hostile (void)
+{
+	GString *big;
+
+	/* Every field one digit off, a sign or a prefix; then one good
+	 * row, last and without its newline, which still counts. */
+	expect (fs_hostnet_parse_route (
+	        "eth0\t00000000\t0016433C6\t0003\n"     /* 9 digits     */
+	        "eth0\t00000000\t0x6433C6\t0003\n"      /* 0x prefix    */
+	        "eth0\t00000000\t+16433C6\t0003\n"      /* sign         */
+	        "eth0\t000000000\t016433C6\t0003\n"     /* dest 9       */
+	        "eth0\t0000000\t016433C6\t0003\n"       /* dest 7       */
+	        "eth0\t00000000\t016433C6\t-003\n"      /* flags sign   */
+	        "eth0\t00000000\t016433C6\t000000003\n" /* flags 9      */
+	        "eth0\t00000000\t016433C6\n"            /* no flags     */
+	        "\n\n\t\n"
+	        "eth0 00000000 FE0200C0 0003"),
+	        "192.0.2.254",
+	        "hostile /proc/net/route: damaged fields add nothing; a last "
+	        "row without its newline counts");
+	expect (fs_hostnet_parse_route (""), "(empty)",
+	        "hostile /proc/net/route: empty text");
+
+	expect (fs_hostnet_parse_ipv6_route (
+	        /* destination 31 and 33 digits */
+	        "0000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000400 00000001 00000000 00000003 eth0\n"
+	        "000000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000002 00000400 00000001 00000000 00000003 eth0\n"
+	        /* next hop 33 digits, and one with a non-digit */
+	        "00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe8000000000000000000000000000033 00000400 00000001 00000000 00000003 eth0\n"
+	        "00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe80000000000000000000000000000g 00000400 00000001 00000000 00000003 eth0\n"
+	        /* prefix length not hex, and 0x100 */
+	        "00000000000000000000000000000000 zz 00000000000000000000000000000000 00 fe800000000000000000000000000005 00000400 00000001 00000000 00000003 eth0\n"
+	        "00000000000000000000000000000000 100 00000000000000000000000000000000 00 fe800000000000000000000000000006 00000400 00000001 00000000 00000003 eth0\n"
+	        /* only five fields: still a default with a next hop */
+	        "00000000000000000000000000000000 00 00000000000000000000000000000000 00 FE800000000000000000000000000007"),
+	        "fe80::7",
+	        "hostile /proc/net/ipv6_route: wrong widths and non-digits "
+	        "add nothing");
+
+	/* A port over 0xffff never stands for 22, and a slot that is not
+	 * "<digits>:" is not a row. */
+	expect (fs_hostnet_parse_tcp_peers (
+	        "   0: 0F02000A:10016 176433C6:C35A 01 0\n"   /* port 5 digits */
+	        "   1: 0F02000A:0016 176433C6 01 0\n"         /* no port       */
+	        "   2: 0F02000A:0016 176433C6:C35A:1 01 0\n"  /* two colons    */
+	        "   x: 0F02000A:0016 186433C6:C35A 01 0\n"    /* slot          */
+	        "    : 0F02000A:0016 196433C6:C35A 01 0\n"    /* slot          */
+	        "   3 0F02000A:0016 1A6433C6:C35A 01 0\n"     /* no colon      */
+	        "   4: 0F02000A:0016 1B6433C6:C35A 001 0\n"   /* 001 is 01     */
+	        "   5: 0F02000A:0016 1C6433C6:C35A 11 0\n"    /* 0x11, not 01  */
+	        "   6: 0F02000A:0016 1D6433C6:C35A",          /* no state      */
+	        FALSE, 22),
+	        "198.51.100.27",
+	        "hostile tcp: damaged rows add nothing, a different state "
+	        "is not ESTABLISHED");
+	expect (fs_hostnet_parse_tcp_peers (
+	        "   0: 0F02000A:0016 176433C6:C35A 01 0\n", FALSE, 0x10016),
+	        "(empty)",
+	        "hostile tcp: a local port over 65535 matches no row");
+
+	expect (fs_hostnet_parse_ssh_env (" \t198.51.100.23\t50122 x 22",
+	                                  NULL),
+	        "198.51.100.23", "hostile SSH: leading blanks and tabs");
+	expect (fs_hostnet_parse_ssh_env ("198.51.100.23/24 50122 x 22",
+	                                  "203.0.113.8 50122 22"),
+	        "203.0.113.8",
+	        "hostile SSH: a prefix is not an address -> SSH_CLIENT");
+	expect (fs_hostnet_parse_ssh_env ("%eth0 50122 x 22",
+	                                  "203.0.113.8%eth1 50122 22"),
+	        "203.0.113.8",
+	        "hostile SSH: a bare zone is not an address; an IPv4 zone "
+	        "is dropped");
+	expect (fs_hostnet_parse_ssh_env ("198.51.100.23,203.0.113.1 1 x 22",
+	                                  NULL),
+	        "(empty)", "hostile SSH: two addresses in one word");
+	big = g_string_new (NULL);
+	while (big->len < 256 * 1024)
+		g_string_append (big, "1.2.3.4.");
+	expect (fs_hostnet_parse_ssh_env (big->str, big->str), "(empty)",
+	        "hostile SSH: a 256 KiB word");
+	g_string_free (big, TRUE);
+
+	/* "nameserver" as a prefix of another word, upper case, and
+	 * blanks around: only the real keyword counts. */
+	expect (fs_hostnet_parse_resolvers (
+	        "nameserver127.0.0.1\n"
+	        "NAMESERVER 203.0.113.1\n"
+	        "nameservers 203.0.113.2\n"
+	        "  nameserver\t127.0.0.53  \r\n"
+	        "nameserver\n"
+	        "nameserver not-an-address\n",
+	        "nameserver 1.1.1.1\n", NULL),
+	        "1.1.1.1 127.0.0.53",
+	        "hostile resolvers: lookalike lines are not servers, so "
+	        "127.0.0.53 alone still means the upstream file");
+	expect (fs_hostnet_parse_resolvers ("nameserver 127.255.255.255\n"
+	                                    "nameserver 128.0.0.0\n",
+	                                    "nameserver 1.1.1.1\n", NULL),
+	        "127.255.255.255-128.0.0.0",
+	        "hostile resolvers: 128.0.0.0 next to 127/8 is a real "
+	        "server (merged intervals are not taken for loopback)");
+	expect (fs_hostnet_parse_resolvers ("nameserver ::1\nnameserver ::2\n",
+	                                    "nameserver 1.1.1.1\n", NULL),
+	        "::1-::2",
+	        "hostile resolvers: ::2 next to ::1 is a real server");
+}
+
 /* ===================================================== new, free, all */
 
 static void
@@ -646,6 +759,9 @@ same_text (const gchar *path, const gchar *want)
 	return same;
 }
 
+/* fs-hostnet.c's cap on a resolver file. */
+#define RESOLVER_CAP_HERE (1024 * 1024)
+
 #define RUN_DIR   "/run/sfw-hostnet"
 #define LIVE_STUB "nameserver 127.0.0.53\noptions edns0 trust-ad\nsearch .\n"
 #define LIVE_HOSTS \
@@ -779,6 +895,63 @@ check_v4 (const FsRangeSet *set, const gchar *want, const gchar *what)
 	g_free (got);
 }
 
+/* Many SSH sessions at once, so /proc/net/tcp (150 bytes a row) is
+ * more than two of the reader's 64 KiB blocks and takes dozens of reads
+ * (the kernel hands out a page of whole rows per read): every session
+ * must still be found, the last ones included.  The peers are 127.1.x.y
+ * on lo; the server ends wait in `srv''s accept queue, ESTABLISHED all
+ * the same. */
+#define MANY_SESSIONS 500
+
+static void
+check_many_sessions (gint srv)
+{
+	gint clients[MANY_SESSIONS];
+	guint made = 0, found = 0;
+	gchar *text = NULL;
+	gsize len = 0;
+	FsHostNet *h;
+
+	if (listen (srv, 2 * MANY_SESSIONS) != 0) {
+		CHECK (FALSE, "live setup: a longer accept queue (%s)",
+		       g_strerror (errno));
+		return;
+	}
+	for (guint i = 0; i < MANY_SESSIONS; i++) {
+		gchar *from = g_strdup_printf ("127.1.%u.%u", i / 200,
+		                               i % 200 + 1);
+
+		clients[i] = connect_from (from, "127.0.0.1");
+		g_free (from);
+		if (clients[i] >= 0)
+			made++;
+	}
+	CHECK (made == MANY_SESSIONS &&
+	       g_file_get_contents ("/proc/net/tcp", &text, &len, NULL) &&
+	       len > 2 * 64 * 1024,
+	       "live setup: %u sessions on port 22, /proc/net/tcp over "
+	       "two 64 KiB blocks (%" G_GSIZE_FORMAT " bytes)", made, len);
+	g_free (text);
+
+	h = fs_hostnet_read (NULL);
+	for (guint i = 0; i < MANY_SESSIONS; i++) {
+		guint32 peer = (127u << 24) | (1u << 16) | ((i / 200) << 8) |
+		               (i % 200 + 1);
+
+		if (fs_range_set_contains4 (h->sessions, peer))
+			found++;
+	}
+	CHECK (found == MANY_SESSIONS,
+	       "live: sessions: all %u peers of a /proc/net/tcp of many "
+	       "reads, to its end (found %u)",
+	       MANY_SESSIONS, found);
+	fs_hostnet_free (h);
+
+	for (guint i = 0; i < MANY_SESSIONS; i++)
+		if (clients[i] >= 0)
+			close (clients[i]);
+}
+
 static gint
 live_main (void)
 {
@@ -806,8 +979,10 @@ live_main (void)
 
 	files = mount_fixtures ();
 
-	/* lo with a service address on it; sfw0 up with three addresses;
-	 * sfw2 down with one; a point-to-point tun with a peer. */
+	/* lo with a service address on it; sfw0 up with three addresses
+	 * and a fourth with a peer (ifupdown's "pointopoint" on Ethernet,
+	 * as some hosting providers configure it); sfw2 down with one; a
+	 * point-to-point tun with a peer. */
 	if (!setup (ARGV ("ip", "link", "set", "lo", "up")) ||
 	    !setup (ARGV ("ip", "addr", "add", "203.0.113.200/32", "dev", "lo")) ||
 	    !setup (ARGV ("ip", "link", "add", "sfw0", "type", "veth",
@@ -815,6 +990,8 @@ live_main (void)
 	    !setup (ARGV ("ip", "addr", "add", "198.51.100.7/24", "dev", "sfw0")) ||
 	    !setup (ARGV ("ip", "addr", "add", "203.0.113.5/26", "dev", "sfw0")) ||
 	    !setup (ARGV ("ip", "addr", "add", "203.0.113.6/26", "dev", "sfw0")) ||
+	    !setup (ARGV ("ip", "addr", "add", "198.51.100.9", "peer",
+	                  "203.0.113.150/32", "dev", "sfw0")) ||
 	    !setup (ARGV ("ip", "link", "set", "sfw0", "up")) ||
 	    !setup (ARGV ("ip", "link", "set", "sfw1", "up")) ||
 	    !setup (ARGV ("ip", "link", "add", "sfw2", "type", "veth",
@@ -913,8 +1090,10 @@ live_main (void)
 	h = fs_hostnet_read (NULL);
 	CHECK (all_normalized (h), "live read 2: all six sets normalized");
 	check_v4 (h->own, tun ?
-	          "10.9.0.1 198.51.100.7 203.0.113.5-203.0.113.6 203.0.113.200" :
-	          "198.51.100.7 203.0.113.5-203.0.113.6 203.0.113.200",
+	          "10.9.0.1 198.51.100.7 198.51.100.9 203.0.113.5-203.0.113.6 "
+	          "203.0.113.200" :
+	          "198.51.100.7 198.51.100.9 203.0.113.5-203.0.113.6 "
+	          "203.0.113.200",
 	          "live: own, IPv4: every address of the interfaces that are "
 	          "up, lo's service address too");
 	CHECK (!fs_range_set_contains_text (h->own, "127.0.0.1") &&
@@ -926,9 +1105,13 @@ live_main (void)
 	       !fs_range_set_contains_text (h->onlink, "192.0.2.1"),
 	       "live: an interface that is down adds nothing");
 	check_v4 (h->onlink, tun ?
-	          "198.51.100.0/24 203.0.113.0/26 203.0.113.133 203.0.113.200" :
-	          "198.51.100.0/24 203.0.113.0/26 203.0.113.200",
+	          "198.51.100.0/24 203.0.113.0/26 203.0.113.133 203.0.113.150 "
+	          "203.0.113.200" :
+	          "198.51.100.0/24 203.0.113.0/26 203.0.113.150 203.0.113.200",
 	          "live: onlink, IPv4: each address's prefix");
+	CHECK (fs_range_set_contains_text (h->onlink, "203.0.113.150"),
+	       "live: an address with a peer on an Ethernet link: the peer "
+	       "is on-link (the kernel routes it there)");
 	if (tun)
 		CHECK (fs_range_set_contains_text (h->onlink, "203.0.113.133") &&
 		       !fs_range_set_contains_text (h->onlink, "10.9.0.1"),
@@ -965,6 +1148,9 @@ live_main (void)
 	fs_range_set_free (six);
 	fs_hostnet_free (h);
 
+	if (srv >= 0)
+		check_many_sessions (srv);
+
 	if (files) {
 		gchar *big;
 		GString *pad = g_string_new ("# Generated by NetworkManager\n"
@@ -991,6 +1177,34 @@ live_main (void)
 		CHECK (fs_range_set_contains_text (h->resolvers, "192.0.2.53") &&
 		       !fs_range_set_contains_text (h->resolvers, "192.0.2.54"),
 		       "live: a resolver file is read up to its cap, no further");
+		fs_hostnet_free (h);
+
+		/* --- read 4b: the cap falls inside a line.  The bytes up to
+		 * the cap end in "nameserver 192.0.2.5", the start of a line
+		 * that names 192.0.2.54: that piece must be dropped, never
+		 * read as a server that nobody named. */
+		pad = g_string_new ("# Generated by NetworkManager\n"
+		                    "nameserver 192.0.2.53\n");
+		while (pad->len + 64 + 2 <= RESOLVER_CAP_HERE - 20)
+			g_string_append (pad, "# padding padding padding padding "
+			                 "padding padding padding p\n");
+		g_string_append_c (pad, '#');
+		while (pad->len < RESOLVER_CAP_HERE - 20 - 1)
+			g_string_append_c (pad, 'p');
+		g_string_append (pad, "\nnameserver 192.0.2.54\n");
+		CHECK (strncmp (pad->str + RESOLVER_CAP_HERE - 20,
+		                "nameserver 192.0.2.5", 20) == 0 &&
+		       pad->str[RESOLVER_CAP_HERE] == '4',
+		       "live setup: the cap falls between \"192.0.2.5\" and "
+		       "\"4\"");
+		big = g_string_free (pad, FALSE);
+		write_in_place ("/run/NetworkManager/no-stub-resolv.conf", big);
+		g_free (big);
+		h = fs_hostnet_read (NULL);
+		expect (fs_range_set_copy (h->resolvers),
+		        "1.1.1.1 127.0.0.53 192.0.2.53 2606:4700:4700::1111",
+		        "live: a line cut by the cap is dropped, not read as "
+		        "192.0.2.5");
 		fs_hostnet_free (h);
 
 		/* --- read 5: a FIFO where a resolver file belongs: skipped,
@@ -1105,6 +1319,7 @@ main (int argc, char **argv)
 	test_resolvers ();
 	test_ssh_env ();
 	test_tcp ();
+	test_hostile ();
 	test_new_all ();
 	test_read_here ();
 #ifdef __linux__

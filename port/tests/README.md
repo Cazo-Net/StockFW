@@ -125,6 +125,15 @@ to keep and the feed hosts.
   SSH_CLIENT.  `/proc/net/tcp` and `tcp6`: ESTABLISHED rows on the local
   port only (not LISTEN, TIME_WAIT, port 0x1600, or our own client to a
   remote port 22), the port as plain hex, an IPv4-mapped peer as IPv4.
+- **Hostile input to every parser**: fields one digit long or short, a
+  sign or "0x", non-digits, missing fields, a last row without its
+  newline, a port over 0xffff, slots that are not "<digits>:", a state
+  that is not 01; SSH variables with blanks, a prefix, a bare zone, two
+  addresses in one word, a 256 KiB word; resolver lines that only look
+  like "nameserver" lines; a server next to 127/8 or ::1 that merges
+  with the loopback one into one interval (still a real server, so the
+  upstream files stay unread).  Damage adds nothing, never a different
+  address.
 - **fs_hostnet_new/free/all**: six empty normalized sets; all six merged.
 - **This machine** (no root): normalized sets, no loopback in own or
   onlink, `$SSH_CONNECTION`'s client kept.
@@ -133,15 +142,20 @@ to keep and the feed hosts.
   anything unless /proc shows network and mount namespaces other than
   its parent's (and init's, where readable) and a network namespace
   with every interface still down.  There it makes lo with a service
-  address, a veth with three addresses, a veth left down, a tun with a
+  address, a veth with three addresses and a fourth with a peer
+  (ifupdown's "pointopoint" on Ethernet), a veth left down, a tun with a
   peer, a default route, sshd's port with one session up and one in
   TIME_WAIT, a tmpfs over /run with systemd-resolved's file (a symlink)
   and NetworkManager's, and fixtures bound over /etc/resolv.conf and
   /etc/hosts; then checks own, onlink, gateways, sessions, resolvers and
   update hosts exactly, loopback absent, the down interface absent, the
-  tun's peer on-link, an IPv6 feed address kept without IPv6 configured,
-  a resolver file read only up to its 1 MiB cap, and a FIFO at a
-  resolver path skipped (an alarm turns a hang into a FAIL).  Everything
+  tun's peer and the Ethernet peer on-link, an IPv6 feed address kept
+  without IPv6 configured, 500 sessions on port 22 (a /proc/net/tcp of
+  more than two 64 KiB blocks and dozens of reads) all found, a resolver
+  file read only up to its 1 MiB cap, a line cut by that cap dropped
+  rather than read as a shorter address ("nameserver 192.0.2.54" cut to
+  192.0.2.5), and a FIFO at a resolver path skipped (an alarm turns a
+  hang into a FAIL).  Everything
   vanishes with the namespaces.  IPv6 is checked live only on a kernel
   that has it; elsewhere the test says so and the fixtures cover it.
 
@@ -169,3 +183,18 @@ restored (cmp) and green again:
 | SSH zone suffix kept | "SSH_CONNECTION, a zone suffix is dropped" |
 | fs_hostnet_all forgets update_hosts | "fs_hostnet_all: every set, merged" |
 | the remote port taken for the local one | "tcp: ESTABLISHED rows on local port 22"; live "sessions" |
+
+Added by the review (each re-injected, seen failing, restored with cmp,
+green again):
+
+| bug | check that caught it |
+|---|---|
+| a peer address on a link that is not point-to-point given the local /32 (the bug the review fixed) | live "an address with a peer on an Ethernet link: the peer is on-link" and the exact onlink check |
+| /proc tables capped at 64 KiB | live "sessions: all 500 peers of a /proc/net/tcp of many reads" (found 212) |
+| the piece of a line cut by the cap handed over | live "a line cut by the cap is dropped, not read as 192.0.2.5" (got 192.0.2.5) |
+| no partial line kept between blocks (every block handed over whole) | the same check |
+| a field longer than the kernel's width read by its first digits | "hostile /proc/net/route ..." (got 60.67.22.0 and 198.51.100.1); "tcp6 text read as tcp" |
+| a merged interval taken for loopback by its start alone | "hostile resolvers: 128.0.0.0 next to 127/8 is a real server" |
+
+Re-verified from the table above: route gateway read big-endian,
+ESTABLISHED filter dropped, loopback addresses in own.

@@ -696,6 +696,17 @@ add_prefix (FsRangeSet *set, const guint8 *addr, const guint8 *mask,
 		                   u128_from_bytes (last));
 }
 
+/* Whether `a' and `b' lie in the same block under `mask'. */
+static gboolean
+same_prefix (const guint8 *a, const guint8 *b, const guint8 *mask,
+             gsize len)
+{
+	for (gsize i = 0; i < len; i++)
+		if ((a[i] & mask[i]) != (b[i] & mask[i]))
+			return FALSE;
+	return TRUE;
+}
+
 /* own and onlink from every address of every interface that is up.
  * Loopback addresses are left out (they are protected anyway); any
  * other address counts wherever it is, a service address put on lo
@@ -723,12 +734,20 @@ read_interfaces (FsRangeSet *own, FsRangeSet *onlink)
 
 		if (sockaddr_bytes (ifa->ifa_netmask, mask) != len)
 			memset (mask, 0xff, len);
-		/* A point-to-point link connects the peer's prefix, not the
+		/* An address with a peer connects the peer's prefix, not the
 		 * local address's ("ip addr add A peer P/n" routes P/n to
-		 * the link); getifaddrs() puts the peer in ifa_dstaddr, and
-		 * the local address there too when there is no peer. */
-		if ((ifa->ifa_flags & IFF_POINTOPOINT) != 0 &&
-		    sockaddr_bytes (ifa->ifa_dstaddr, peer) == len)
+		 * the link).  That is not only for point-to-point links:
+		 * ifupdown's "pointopoint" puts a /32 with a peer on an
+		 * Ethernet card, as some hosting providers configure it.
+		 * glibc puts the peer in ifa_dstaddr, which on any other
+		 * link is the same field as ifa_broadaddr: there it holds
+		 * the broadcast address, inside the local prefix, or the
+		 * local address itself when there is neither.  So whatever
+		 * it holds outside the local prefix is the peer (a broadcast
+		 * address set outside it, a misconfiguration, would only
+		 * keep more reachable, never less). */
+		if (sockaddr_bytes (ifa->ifa_dstaddr, peer) == len &&
+		    !same_prefix (addr, peer, mask, len))
 			base = peer;
 		add_prefix (onlink, base, mask, len);
 	}
