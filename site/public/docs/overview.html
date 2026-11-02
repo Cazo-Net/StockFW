@@ -97,7 +97,7 @@
 		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
 		<article class="prose">
 <h1>Overview</h1>
-<p class="lede">The first page answers one question, “is this computer protected?”, in one sentence, and then shows the four things you would check next. It is the 1.0.7 design; the 1.0.5 release has a Status page with the same facts laid out as a strip. <span class="ev ev-built" title="Done on the 1.0.7 development branch; ships with 1.0.7."><b>Built</b> for 1.0.7</span></p>
+<p class="lede">The first page answers one question, “is this computer protected?”, in one sentence, and then shows the four things you would check next. It is the 1.0.7 design; the 1.0.5 release has a Status page with the same facts laid out as a strip. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></p>
 
 <figure class="shot"><img src="../assets/screens/overview.webp" alt="The Overview page: a green protection card with Stop firewall and View events buttons and four tiles, a row of counters, the open connections table, the network adapters card and the recent blocks list." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Protected, both families filtered, nine rules, one adapter, live connections with their programs.</figcaption></figure>
 
@@ -105,11 +105,11 @@
 <p>Green with a shield when the firewall is running and your policy is in force; red when it is stopped. The sentence under the heading says what that means for traffic, and the four tiles break it down:</p>
 <dl>
 <dt>IPv4 traffic, IPv6 traffic</dt>
-<dd>“Filtered” or “Not filtered”, separately. On Linux the IPv6 tile reads the real state of the kernel: if <code>ip6tables</code> is not installed, the IPv6 chains are not loaded, or they are loaded but not hooked, it says “Not filtered” and the sidebar shows the reason, rather than inferring IPv6 from IPv4. On Windows both read “Filtered” when the firewall is on, because Windows Firewall rules cover both families. <span class="ev ev-built" title="Done on the 1.0.7 development branch; ships with 1.0.7."><b>Built</b> for 1.0.7</span></dd>
+<dd>“Filtered” or “Not filtered”, separately. On Linux the IPv6 tile reads the real state of the kernel: if <code>ip6tables</code> is not installed, the IPv6 chains are not loaded, or they are loaded but not hooked, it says “Not filtered” and the sidebar shows the reason, rather than inferring IPv6 from IPv4. On Windows both read “Filtered” when the firewall is on, because Windows Firewall rules cover both families. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></dd>
 <dt>Policy</dt>
 <dd>How many rules are saved. Saved is not the same as applied; the Policy page says which rules are live.</dd>
 <dt>Engine</dt>
-<dd>What is doing the filtering: <em>Linux (iptables)</em> or <em>Windows Firewall</em>. On Windows the card also shows the profile in force (Domain, Private or Public) and the network the computer is on, read through the firewall’s own interfaces. <span class="ev ev-built" title="Done on the 1.0.7 development branch; ships with 1.0.7."><b>Built</b> for 1.0.7</span> Compile-tested in CI; not yet run by hand on Windows.</dd>
+<dd>What is doing the filtering: <em>Linux (iptables)</em> or <em>Windows Firewall</em>. On Windows the card also shows the profile in force (Domain, Private or Public) and the network the computer is on, read through the firewall’s own interfaces. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span> Compile-tested in CI; not yet run by hand on Windows.</dd>
 </dl>
 <p><strong>Start firewall</strong> puts your saved policy in force: on Linux it loads the rules, on Windows it switches the firewall profiles on. <strong>Stop firewall</strong> takes StockFW’s rules out again (Linux) or switches the profiles off (Windows), and the card turns red, because that is what it means. <strong>View events</strong> jumps to the Events page.</p>
 <div class="callout soon">

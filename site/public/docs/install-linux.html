@@ -166,10 +166,10 @@ StockFW-1.0.5-linux-x86_64.tar.gz: OK
 </tbody>
 </table>
 </div>
-<p>In the kernel, StockFW owns the chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>PREROUTING</code> and <code>POSTROUTING</code>. On each apply only those chains are replaced; rules that Docker, libvirt or ufw keep in the same tables are not touched. <span class="ev ev-built" title="Done on the 1.0.7 development branch; ships with 1.0.7."><b>Built</b> for 1.0.7</span></p>
+<p>In the kernel, StockFW owns the chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>PREROUTING</code> and <code>POSTROUTING</code>. On each apply only those chains are replaced; rules that Docker, libvirt or ufw keep in the same tables are not touched. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span></p>
 
 <h2 id="events-on-linux">Events on Linux<a class="anchor" href="#events-on-linux" aria-label="Link to this section">#</a></h2>
-<p>The policy logs what it drops, rejects and, since 1.0.7, newly allows, and the Events page reads those lines from the kernel ring buffer (<code>/dev/kmsg</code>) directly, so it works on WSL, in containers and on systems without rsyslog or journald. <span class="ev ev-built" title="Done on the 1.0.7 development branch; ships with 1.0.7."><b>Built</b> for 1.0.7</span> The 1.0.5 and 1.0.6 releases read <code>/var/log/kern.log</code> or <code>journalctl -k</code> instead. In both cases, root is required.</p>
+<p>The policy logs what it drops, rejects and, since 1.0.7, newly allows, and the Events page reads those lines from the kernel ring buffer (<code>/dev/kmsg</code>) directly, so it works on WSL, in containers and on systems without rsyslog or journald. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span> The 1.0.5 and 1.0.6 releases read <code>/var/log/kern.log</code> or <code>journalctl -k</code> instead. In both cases, root is required.</p>
 
 <h2 id="update">Update<a class="anchor" href="#update" aria-label="Link to this section">#</a></h2>
 <p>Unpack the new tarball and run its <code>install.sh</code> again. Your policy and preferences are outside <code>/usr/local</code> and are kept.</p>

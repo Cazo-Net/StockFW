@@ -106,7 +106,7 @@ EV_LABELS = {
 EV_TITLES = {
     "verified": "An automated test in the StockFW repository proves this claim.",
     "measured": "A number from an experiment that was actually run.",
-    "built": "Done on the 1.0.7 development branch; ships with 1.0.7.",
+    "built": "Done in the 1.0.7 development code on main; ships with 1.0.7.",
     "soon": "Being built for 1.0.7; details may still change.",
     "planned": "Intended, not built yet.",
     "gap": "A limit StockFW has today, stated so it is not mistaken for a feature.",

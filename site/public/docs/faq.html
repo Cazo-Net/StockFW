@@ -127,7 +127,7 @@
 <dt>iptables or nftables?</dt>
 <dd>StockFW drives <code>iptables</code> and <code>ip6tables</code>, which on every current distribution are the nftables-backed versions, so its rules land in nftables and <code>nft list ruleset</code> shows them. The 1.0.7 threat-intel sets use <code>nft</code> directly. A native nftables backend for the policy is planned for a later release. <span class="ev ev-planned" title="Intended, not built yet."><b>Planned</b></span></dd>
 <dt>Does it fight with ufw, firewalld, Docker or libvirt?</dt>
-<dd>StockFW owns its own chains (<code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code>, <code>STOCKFW-SNAT</code>) and replaces only those; rules other tools keep in the same tables are not touched, and the loads use <code>--noflush</code>. <span class="ev ev-built" title="Done on the 1.0.7 development branch; ships with 1.0.7."><b>Built</b> for 1.0.7</span> Two tools both setting a default policy on <code>INPUT</code> will still disagree about what the default is, so run one host firewall manager at a time; ufw and firewalld are alternatives to StockFW, Docker and libvirt coexist with it.</dd>
+<dd>StockFW owns its own chains (<code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code>, <code>STOCKFW-SNAT</code>) and replaces only those; rules other tools keep in the same tables are not touched, and the loads use <code>--noflush</code>. <span class="ev ev-built" title="Done in the 1.0.7 development code on main; ships with 1.0.7."><b>Built</b> for 1.0.7</span> Two tools both setting a default policy on <code>INPUT</code> will still disagree about what the default is, so run one host firewall manager at a time; ufw and firewalld are alternatives to StockFW, Docker and libvirt coexist with it.</dd>
 <dt>Why root, and not polkit or a setuid helper?</dt>
 <dd>Because a desktop program that can silently rewrite the firewall is a worse posture than one that asks for root openly. StockFW never raises its own rights. <a href="../docs/install-linux.html#why-there-is-no-polkit-policy-or-setuid-helper">More</a>.</dd>
 <dt>Which distributions?</dt>
@@ -147,7 +147,7 @@
 <h2 id="versions">Versions<a class="anchor" href="#versions" aria-label="Link to this section">#</a></h2>
 <dl>
 <dt>Which version can I download?</dt>
-<dd>1.0.5. 1.0.6 is merged on <code>main</code> and not packaged yet; 1.0.7 is in development. The <a href="../download.html">download page</a> explains how to build either.</dd>
+<dd>1.0.5. 1.0.6 was merged into <code>main</code> without a package, and 1.0.7 is being developed on <code>main</code> on top of it. The <a href="../download.html">download page</a> explains how to build it.</dd>
 <dt>The app says 1.0.6 but I built the 1.0.7 branch</dt>
 <dd>The version string is bumped at release time, so a development build reports the last version until then.</dd>
 <dt>Why do these pages mark some things “Built” or “In progress”?</dt>
