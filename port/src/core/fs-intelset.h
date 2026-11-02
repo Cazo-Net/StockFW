@@ -122,7 +122,9 @@ gchar *fs_intelset_nft_set_name (const gchar *id, FsAddrFamily family);
  *
  * A family with no ranges in a set has neither set nor rules.  The
  * empty rule set yields just the first two lines: the table is removed.
- * NULL only when a set's id is invalid.  Caller frees. */
+ * NULL only when a set is one fs_intel_ruleset_add() would have
+ * refused -- an invalid id or direction, or an id used twice -- which
+ * only a struct filled in by hand can hold.  Caller frees. */
 gchar *fs_intelset_nft_script (const FsIntelRuleset *ruleset);
 
 /* The script that removes the table, and only it; harmless when it is
@@ -148,9 +150,19 @@ GHashTable *fs_intelset_nft_parse_counters (const gchar *listing);
  * stockfw_intel is there, and the digest in its comment ("sfw:" taken
  * off; NULL when it has no such comment).  Strict and small: it looks
  * only for the object with "family": "inet" and "name":
- * "stockfw_intel".  FALSE when the table is absent; *digest is set to
- * NULL first.  digest may be NULL. */
+ * "stockfw_intel".  FALSE when the table is absent -- and also when the
+ * text is not a whole listing, which fs_intelset_nft_parse_live_state()
+ * tells apart; *digest is set to NULL first.  digest may be NULL. */
 gboolean fs_intelset_nft_parse_live (const gchar *json, gchar **digest);
+
+/* The same with the three answers kept apart [S10]: PRESENT (with
+ * *digest as above), ABSENT (a whole listing without the table), or
+ * UNKNOWN when `json' is not a whole `nft -j list tables' document (no
+ * top-level "nftables" list, broken or trailing text): a listing that
+ * cannot be read says nothing about the kernel, so it must not read
+ * as a missing table. */
+FsIntelLive fs_intelset_nft_parse_live_state (const gchar *json,
+                                              gchar **digest);
 
 G_END_DECLS
 
