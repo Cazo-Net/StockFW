@@ -2892,6 +2892,14 @@ static const FsBackend windows_backend = {
 	.trust_signature       = fs_trust_win_signature,
 	.get_profile_defaults  = firewalled_get_profile_defaults,
 	.get_profile_block_all_inbound = firewalled_get_profile_block_all_inbound
+	/* intel_apply, intel_clear, intel_counters and intel_live stay
+	 * NULL until Round 3 of threat intel (design section 2): a NULL
+	 * slot is how the engine and every surface learn that blocklists
+	 * are not available on Windows yet -- the state reads
+	 * "unsupported", an apply fails with FS_INTEL_ERR_UNSUPPORTED,
+	 * and the user's Stop has no lists to suspend.  A slot that
+	 * existed only to fail would turn "unsupported" into "cannot
+	 * tell" and make every Stop report an error. */
 };
 
 const FsBackend *

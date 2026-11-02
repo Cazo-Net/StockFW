@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Files and formats · StockFW</title>
+<meta name="description" content="Every file StockFW keeps, where it is on each platform, and its exact format: the policy files, the applied journal, preferences, the audit log, the Trust baseline, the behaviour baseline and Sentinel’s staging record.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#16181d">
+<meta property="og:title" content="Files and formats · StockFW">
+<meta property="og:description" content="Every file StockFW keeps, where it is on each platform, and its exact format: the policy files, the applied journal, preferences, the audit log, the Trust baseline, the behaviour baseline and Sentinel’s staging record.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.6</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html" aria-current="page"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Reference
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Reference</p>
+		<article class="prose">
+<h1>Files and formats</h1>
+<p class="lede">StockFW keeps everything as plain text you can read, copy, diff and back up. There is no database and no registry blob. This page is the format reference; nothing here is needed to use the app.</p>
+
+<h2 id="where">Where<a class="anchor" href="#where" aria-label="Link to this section">#</a></h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Platform</th><th>Policy and journal</th><th>Preferences, logs, baselines</th></tr></thead>
+<tbody>
+<tr><td>Windows</td><td><code>%LOCALAPPDATA%\stockfw\</code></td><td><code>%APPDATA%\stockfw\</code></td></tr>
+<tr><td>Linux, as your user</td><td><code>~/.stockfw/</code></td><td><code>~/.config/stockfw/</code></td></tr>
+<tr><td>Linux, as root</td><td><code>/etc/stockfw/</code></td><td><code>/root/.config/stockfw/</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>STOCKFW_RULES_DIR</code> overrides the first column; <code>XDG_CONFIG_HOME</code> the second on Linux; and <code>STOCKFW_AUDIT_FILE</code>, <code>STOCKFW_TRUST_FILE</code> and <code>STOCKFW_AUTOBLOCK_FILE</code> point single files elsewhere.</p>
+
+<h2 id="policy-files">The policy<a class="anchor" href="#policy-files" aria-label="Link to this section">#</a></h2>
+<p>One file per rule kind, no extension, under <code>inbound/</code> and <code>outbound/</code>. A file that does not exist is an empty kind.</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>File</th><th>Columns</th></tr></thead>
+<tbody>
+<tr><td><code>inbound/allow-from</code></td><td>host, comment</td></tr>
+<tr><td><code>inbound/allow-service</code></td><td>service, port, for, comment</td></tr>
+<tr><td><code>inbound/forward</code></td><td>service, firewall port, to, port, comment</td></tr>
+<tr><td><code>outbound/allow-to</code>, <code>outbound/allow-from</code>, <code>outbound/deny-to</code>, <code>outbound/deny-from</code></td><td>host, comment</td></tr>
+<tr><td><code>outbound/allow-service</code>, <code>outbound/deny-service</code></td><td>service, port, for, comment</td></tr>
+</tbody>
+</table>
+</div>
+<div class="code" data-copy="all"><div class="code-head"><span>inbound/allow-service</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>SSH, 22, 192.168.1.0/24, admin LAN
+HTTPS, 443, Anyone, web server</code></pre></div>
+<div class="code" data-copy="all"><div class="code-head"><span>inbound/forward</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>Web, 8080, 192.168.1.30, 80, lab box</code></pre></div>
+<p>Comma-separated, one rule per line, a space after each comma on write and optional on read. The comment is the last field and may be empty. A field may not contain a comma or a line break, and the app refuses to save one that does, because it would become another field. Ports are digits only (a range is <code>1024:2048</code>); a host is an address, a CIDR network, <code>Anyone</code>, or a host name that does not start with a hyphen. A line that does not parse is skipped at load and counted (“2 malformed policy rules were skipped”); saving writes back only the rules that parsed, and never rewrites a bad line into something else. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_policy_load_validation_f1</span></p>
+<p>Round trip is exact: what you save is what loads. You may edit these files by hand with the app closed; the Policy page shows the result, and nothing reaches the firewall until Apply.</p>
+
+<h2 id="applied-csv">The applied journal<a class="anchor" href="#applied-csv" aria-label="Link to this section">#</a></h2>
+<p><code>applied.csv</code> next to the policy: the last policy the engine accepted. Apply measures its impact against this file, not against the saved policy, and rolls back to it when the engine refuses.</p>
+<div class="code" data-copy="all"><div class="code-head"><span>applied.csv</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code># StockFW applied policy journal v1
+inbound-allow-service, "SSH, 22, 192.168.1.0/24, admin LAN"
+outbound-deny-to, "198.51.100.66, known bad host"</code></pre></div>
+<p>One row per applied rule: the kind, then the rule’s own line as one quoted field. A row that cannot be trusted fails the whole load, and an apply then refuses rather than roll back to something unverifiable; the dialog says so. The file is rewritten after every successful apply. If it is missing, the next apply counts every rule as added, which is also what happens on a fresh install. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></p>
+
+<h2 id="stockfw-conf">Preferences<a class="anchor" href="#stockfw-conf" aria-label="Link to this section">#</a></h2>
+<p><code>stockfw.conf</code>, an ini file with two groups. Keys keep the names the original program used, so a setting is easy to find:</p>
+<div class="code" data-copy="all"><div class="code-head"><span>stockfw.conf</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>[client]
+first_run=false
+enable_tray_icon=true
+minimize_to_tray=true
+filter/redundant=false
+filter/not_for_firewall=true
+policy_auto_apply=true
+policy_audit_only=false
+start_firewall_on_gui=false
+
+[firewall]
+ext_if=eth0
+int_if=
+nat=false
+icmp/enable=true
+icmp/echo_request=true
+deny_packets=true
+block_external_broadcast=false
+block_non_routables=true
+restrictive_outbound=false
+log_allowed=true</code></pre></div>
+<p>A missing key takes its default. The <a href="../docs/preferences.html">Preferences page</a> describes each setting.</p>
+
+<h2 id="audit-log">The audit log<a class="anchor" href="#audit-log" aria-label="Link to this section">#</a></h2>
+<p><code>audit.log</code>, append-only, one line per thing StockFW did to the firewall or the baselines:</p>
+<div class="code" data-copy="all"><div class="code-head"><span>audit.log</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>2026-11-02T16:40:12Z | policy applied | source=Policy page mode=live +1 added (1 allow, 0 block), -0 removed (0 allow, 0 block), =8 unchanged
+2026-11-02T16:41:03Z | policy held, firewall untouched | source=cli mode=audit-only +0 added ... =9 unchanged
+2026-11-02T16:44:50Z | event rule added | outbound-deny-to 203.0.113.9 (Events page) live
+2026-11-02T16:51:19Z | sentinel auto-block | outbound-deny-to 198.51.100.77 beacon 6 contacts, mean 30 s
+2026-11-02T17:01:19Z | sentinel rule removed | outbound-deny-to 198.51.100.77: expired after 10 minutes
+2026-11-02T17:05:02Z | trust-attest | /usr/bin/nc.openbsd sha256=…</code></pre></div>
+<p>The three fields are the time in UTC, the action, and the detail, separated by <code> | </code>. Actions include <code>policy applied</code>, <code>policy applied, with notes</code>, <code>policy apply failed</code>, <code>policy apply refused</code>, <code>policy apply: no change</code>, <code>policy held, firewall untouched</code>, <code>event rule added</code>, <code>event rule added (bi-directional twin)</code>, <code>event trust removed</code>, the <code>sentinel …</code> family and <code>trust-attest</code> / <code>trust-forget</code>. Line breaks and the separator inside a detail are escaped, so a tool’s error text can never read as a second, forged entry. The app only ever appends; rotation is yours. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></p>
+
+<h2 id="trust-csv">The Trust baseline<a class="anchor" href="#trust-csv" aria-label="Link to this section">#</a></h2>
+<p><code>trust.csv</code>: quoted CSV, eight fields per row, one row per attested path.</p>
+<div class="code" data-copy="all"><div class="code-head"><span>trust.csv</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>"C:\Program Files\Mozilla Firefox\firefox.exe","9f3b…c1","68425616","1761840000","valid","Mozilla Corporation","1762085102","1762091840"</code></pre></div>
+<p>Path, SHA-256, size, modification time (unix seconds), signature state (<code>valid</code>, <code>invalid</code>, <code>unsigned</code>, <code>na</code>, <code>unknown</code>), publisher, first seen, last seen. A row with a different number of fields is skipped, never the file. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_trust_engine</span></p>
+
+<h2 id="behavior-csv">The behaviour baseline<a class="anchor" href="#behavior-csv" aria-label="Link to this section">#</a></h2>
+<p><code>behavior.csv</code>: what the Copilot has learned, one fact per row, keyed by program.</p>
+<div class="code" data-copy="all"><div class="code-head"><span>behavior.csv</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>firefox,meta,1342,98304,2211840,1762080000,1762091830
+firefox,rate,1762091400,7,6250,41,0
+firefox,port,443,1288
+firefox,port,80,41
+firefox,dest,104.16.4.34,212
+firefox,hour,14,301
+curl,partial,1</code></pre></div>
+<p>Row kinds: <code>meta</code> (totals and first/last seen), <code>rate</code> (the connection-frequency state), <code>port</code>, <code>dest</code> and <code>hour</code> (counts), and <code>partial</code> (the profile was capped and can no longer claim novelty). Rows of an unknown kind are ignored, so an older version can read a newer file. Delete the file to start learning from scratch.</p>
+
+<h2 id="autoblocks">Sentinel’s staging record<a class="anchor" href="#autoblocks" aria-label="Link to this section">#</a></h2>
+<p><code>autoblocks</code>: what Sentinel has staged and when, rewritten on every stage and every retirement.</p>
+<div class="code" data-copy="all"><div class="code-head"><span>autoblocks</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>S,1762094279,7,198.51.100.77, Sentinel: beacon 6 contacts</code></pre></div>
+<p>Four fields: <code>S</code>, the staging time in unix seconds, the rule kind’s number, and the rule’s own CSV line last, so its commas survive the split. At start-up, rows older than ten minutes are taken out of the policy with an audit line; fresh rows are re-armed with their original time. Deleting this file loses the tracking of staged rows, not the rows themselves, which the destination gates and the next Apply then govern. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-copilot-smoke</span></p>
+
+<h2 id="in-the-engine">In the engine<a class="anchor" href="#in-the-engine" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><span class="plat">Windows</span> Rules named <code>StockFW-…</code> are policy rules; <code>StockFW …</code> (with a space) are Preferences rules. StockFW owns everything with those prefixes and nothing else. <code>wf.msc</code> or <code>netsh advfirewall firewall show rule name=all</code> lists them.</li>
+<li><span class="plat">Linux</span> Chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>FORWARD</code> (router mode), <code>PREROUTING</code> and <code>POSTROUTING</code>; log prefixes <code>STOCKFW-DROP</code>, <code>STOCKFW-REJECT</code> and <code>STOCKFW-ALLOW</code>. In 1.0.7, the nftables table <code>inet stockfw_intel</code> for threat intel, with the log prefix <code>STOCKFW-TI</code>. <code>nft list ruleset</code> shows all of it.</li>
+</ul>
+
+<h2 id="backing-up">Backing up<a class="anchor" href="#backing-up" aria-label="Link to this section">#</a></h2>
+<p>Copy the two directories. Restoring the policy directory onto another machine and pressing Apply reproduces the firewall there; the journal will count every rule as added, which is correct. The baselines and the audit log are per machine and worth keeping for their history, not for restoring.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/dashboard.html"><span>Previous</span><strong>Dashboard</strong></a><a class="next" href="../docs/troubleshooting.html"><span>Next</span><strong>Troubleshooting</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/files.html">Edit this page on GitHub</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#where">Where</a></li>
+			<li class="lvl2"><a href="#policy-files">The policy</a></li>
+			<li class="lvl2"><a href="#applied-csv">The applied journal</a></li>
+			<li class="lvl2"><a href="#stockfw-conf">Preferences</a></li>
+			<li class="lvl2"><a href="#audit-log">The audit log</a></li>
+			<li class="lvl2"><a href="#trust-csv">The Trust baseline</a></li>
+			<li class="lvl2"><a href="#behavior-csv">The behaviour baseline</a></li>
+			<li class="lvl2"><a href="#autoblocks">Sentinel’s staging record</a></li>
+			<li class="lvl2"><a href="#in-the-engine">In the engine</a></li>
+			<li class="lvl2"><a href="#backing-up">Backing up</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

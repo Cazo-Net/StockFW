@@ -1,0 +1,90 @@
+---
+title: Install on Linux
+section: Get started
+order: 3
+description: Installing StockFW on Debian, Kali, Ubuntu or WSL2 from the tarball, running it as root without widening sudo, and where it keeps its files.
+---
+<h1>Install on Linux</h1>
+<p class="lede">The Linux build is a small tarball: the desktop app, the <code>stockfw</code> command line, a menu entry and an install script. GTK comes from your distribution, so the download is under 200 KB.</p>
+
+<h2>Before you start</h2>
+<ul>
+<li>An x86-64 distribution with GTK 3. Debian, Kali, Ubuntu and WSL2 are what it is tested on.</li>
+<li><code>iptables</code>, and for IPv6 filtering in 1.0.7, <code>ip6tables</code>. On current distributions both are the nftables-backed versions, which is fine: StockFW’s rules land in nftables through them.</li>
+<li>Root, for reading the kernel log and for changing rules. Everything else works as your own user.</li>
+</ul>
+
+<h2>Install</h2>
+<pre data-lang="sh">$ sha256sum -c SHA256SUMS.txt --ignore-missing
+StockFW-{{release}}-linux-x86_64.tar.gz: OK
+$ tar xzf StockFW-{{release}}-linux-x86_64.tar.gz
+$ cd StockFW-{{release}}-linux-x86_64
+$ sudo ./install.sh</pre>
+<p>The script checks that every library the binary links against is present, by soname rather than by package name, because Debian and Ubuntu renamed <code>libgtk-3-0</code> to <code>libgtk-3-0t64</code> and a package check would wrongly fail a working system. If something is missing, it names the library and stops:</p>
+<pre data-lang="sh">$ sudo apt install libgtk-3-0 libgdk-pixbuf-2.0-0   # Debian, Kali, Ubuntu
+$ sudo dnf install gtk3                              # Fedora
+$ sudo pacman -S gtk3                                # Arch</pre>
+<p><code>iptables</code> is checked separately and only warned about: without it the app still runs, reads, simulates and shows the policy; only applying needs it.</p>
+
+<h2>What gets installed</h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Path</th><th>What</th></tr></thead>
+<tbody>
+<tr><td><code>/usr/local/bin/StockFW</code></td><td>The desktop application.</td></tr>
+<tr><td><code>/usr/local/bin/stockfw</code></td><td>The command line and local dashboard. The two names differ only in case; they are staged apart in the tarball so a case-insensitive filesystem cannot merge them.</td></tr>
+<tr><td><code>/usr/local/share/applications/stockfw.desktop</code></td><td>The menu entry (Settings › StockFW). It starts the unprivileged app.</td></tr>
+<tr><td><code>/usr/local/share/icons/hicolor/{48x48,128x128,256x256}/apps/stockfw.png</code></td><td>Icons.</td></tr>
+<tr><td><code>/usr/local/share/doc/stockfw/LICENSE.txt</code></td><td>Licence text.</td></tr>
+<tr><td><code>/usr/local/bin/stockfw-uninstall</code></td><td>Removes all of the above.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Run it</h2>
+<pre data-lang="sh">$ StockFW                          # as yourself: policy, simulator, Trust; no events, no apply
+$ sudo /usr/local/bin/StockFW      # as root: the full tool</pre>
+<p>As your own user, the app can show and edit a policy, run the simulator and inspect programs, but the kernel log is unreadable without root, so the Events page says that monitoring is unavailable rather than showing an empty list, and Apply refuses with a message rather than half-applying.</p>
+
+<h3>Why the full path after <code>sudo</code></h3>
+<p><code>sudo</code> does not search your <code>PATH</code>. It uses <code>Defaults secure_path</code> from <code>/etc/sudoers</code>, which on Debian and Kali is <code>/usr/sbin:/usr/bin:/sbin:/bin</code> and does not include <code>/usr/local/bin</code>. So <code>sudo StockFW</code> reports “command not found” while plain <code>StockFW</code> works. The installer detects this and warns in its summary.</p>
+<p>It deliberately does not edit <code>sudoers</code>. Adding <code>/usr/local/bin</code> to <code>secure_path</code> would widen the search path for every command anyone runs under <code>sudo</code> on that machine, which is a worse trade than typing a path.</p>
+
+<h3>Why there is no polkit policy or setuid helper</h3>
+<p>StockFW expects to already be root when it changes the firewall and never re-executes itself through <code>sudo</code>. A desktop program that can silently rewrite the whole firewall is a worse security posture than one that asks for root openly, so the installer ships neither a polkit rule nor a setuid wrapper. Grant privilege by launching with <code>sudo</code>, or through your desktop environment’s own mechanism.</p>
+
+<h2>Two homes: yours and root’s</h2>
+<p>The policy lives in a directory that depends on who is running the program:</p>
+<ul>
+<li>as your user: <code>~/.stockfw/</code>, with preferences and logs in <code>~/.config/stockfw/</code>;</li>
+<li>as root: <code>/etc/stockfw/</code>, with preferences and logs in <code>/root/.config/stockfw/</code>.</li>
+</ul>
+<p>A rule you add as yourself is therefore not the rule <code>sudo stockfw apply</code> applies. Pick one identity for policy work and stay with it: the simplest is to run both the app and every <code>stockfw policy</code> command through <code>sudo</code>, so everything lives in <code>/etc/stockfw</code>. For scripts and tests, <code>STOCKFW_RULES_DIR=/some/dir</code> points both programs at one directory regardless of who runs them.</p>
+
+<h2>Where StockFW keeps its files</h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>File (as root)</th><th>Holds</th></tr></thead>
+<tbody>
+<tr><td><code>/etc/stockfw/inbound/…</code>, <code>outbound/…</code></td><td>The policy, one file per rule kind. See <a href="{{root}}docs/files.html">Files and formats</a>.</td></tr>
+<tr><td><code>/etc/stockfw/applied.csv</code></td><td>The last policy the engine accepted: what Apply measures against and rolls back to.</td></tr>
+<tr><td><code>/root/.config/stockfw/stockfw.conf</code></td><td>Preferences.</td></tr>
+<tr><td><code>/root/.config/stockfw/audit.log</code></td><td>One line per apply, attest, forget and Sentinel action. Append-only.</td></tr>
+<tr><td><code>/root/.config/stockfw/trust.csv</code>, <code>behavior.csv</code>, <code>autoblocks</code></td><td>The Trust baseline, the Copilot’s learned behaviour, Sentinel’s staged blocks.</td></tr>
+</tbody>
+</table>
+</div>
+<p>In the kernel, StockFW owns the chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>PREROUTING</code> and <code>POSTROUTING</code>. On each apply only those chains are replaced; rules that Docker, libvirt or ufw keep in the same tables are not touched. [[built]]</p>
+
+<h2>Events on Linux</h2>
+<p>The policy logs what it drops, rejects and, since 1.0.7, newly allows, and the Events page reads those lines from the kernel ring buffer (<code>/dev/kmsg</code>) directly, so it works on WSL, in containers and on systems without rsyslog or journald. [[built]] The 1.0.5 and 1.0.6 releases read <code>/var/log/kern.log</code> or <code>journalctl -k</code> instead. In both cases, root is required.</p>
+
+<h2>Update</h2>
+<p>Unpack the new tarball and run its <code>install.sh</code> again. Your policy and preferences are outside <code>/usr/local</code> and are kept.</p>
+
+<h2>Uninstall</h2>
+<pre data-lang="sh">$ sudo /usr/local/bin/stockfw-uninstall</pre>
+<p>Removes the binaries, the menu entry, the icons and the licence. It leaves your policy in <code>/etc/stockfw</code> or <code>~/.stockfw</code>, and any rules currently loaded in the kernel: press <strong>Stop firewall</strong> or run <code>sudo stockfw stop</code> first if you want those gone.</p>
+
+<h2>Build it yourself</h2>
+<p>The newest code builds with CMake and Ninja in a few commands. See <a href="{{root}}download.html#build-linux">Build on Linux</a>.</p>

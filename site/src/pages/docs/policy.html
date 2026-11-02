@@ -1,0 +1,76 @@
+---
+title: Policy
+section: Using the app
+order: 13
+description: The Policy page: the nine rule kinds, what each one means, the Covers column, bi-directional rules, how Apply works step by step, Audit-only and Lock, and what is validated.
+---
+<h1>Policy</h1>
+<p class="lede">Your rules, grouped by kind, each one a row you can read. Saving a rule changes a file in your profile; pressing <strong>Apply</strong> changes the firewall, after showing you what will change.</p>
+
+[[shot:policy|The Policy page with Apply policy and Audit-only buttons and three rule groups as cards: Allow connections from host, Allow inbound service and Forward service, each with a Covers column.|Rules are grouped by kind. Point at a Covers cell and the tooltip says why a rule reaches the families it does.]]
+
+<h2>How to think about it</h2>
+<p>The engine’s defaults do most of the work: new inbound connections are denied unless a rule allows them, new outbound connections are allowed unless a rule denies them, and replies to connections that are already open always pass. StockFW rules are exceptions to those defaults, which is why the kinds are named the way they are: <em>allow inbound</em>, <em>deny outbound</em>. There is no inbound-deny kind because inbound is already denied; to stop trusting a host you remove its allow.</p>
+
+<h2>The rule kinds</h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>On the page</th><th>Command-line name</th><th>Fields</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>Allow connections from host</td><td><code>inbound-allow-from</code></td><td>host</td><td>Everything from this address, network or host name may come in.</td></tr>
+<tr><td>Allow inbound service</td><td><code>inbound-allow-service</code></td><td>service, port, for</td><td>This port may be reached from <em>for</em>: a host, a network such as <code>192.168.1.0/24</code>, or <code>Anyone</code>.</td></tr>
+<tr><td>Forward service</td><td><code>inbound-forward</code></td><td>service, firewall port, to, port</td><td>Traffic arriving on the firewall port is sent to another host and port. Router mode only; needs an external interface in Preferences, and the destination must be an address.</td></tr>
+<tr><td>Allow connections to host</td><td><code>outbound-allow-to</code></td><td>host</td><td>Everything to this host may go out, even in restrictive outbound mode.</td></tr>
+<tr><td>Allow outbound service</td><td><code>outbound-allow-service</code></td><td>service, port, for</td><td>This port may be reached outbound, for the given host or anyone.</td></tr>
+<tr><td>Deny connections to host</td><td><code>outbound-deny-to</code></td><td>host</td><td>Nothing may go out to this host.</td></tr>
+<tr><td>Deny outbound service</td><td><code>outbound-deny-service</code></td><td>service, port, for</td><td>This port may not be reached outbound, for the given host or anyone.</td></tr>
+<tr><td>Allow / deny connections from (router mode)</td><td><code>outbound-allow-from</code>, <code>outbound-deny-from</code></td><td>host</td><td>For a LAN host behind this machine: what it may or may not send out through it.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Every rule can carry a comment, which is kept in the file and shown in its own column. The “service” field is a name for your benefit; the port is what the engine sees. Common names (SSH, HTTP, HTTPS, DNS, RDP and so on) are known, so the simulator and the Events page can use them.</p>
+
+<h2>Covers</h2>
+<p>A rule reaches the address families its target can reach, and the <em>Covers</em> column says which, with the reason as a tooltip. [[built]]</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Target</th><th>Covers</th></tr></thead>
+<tbody>
+<tr><td>An IPv4 address or network</td><td>IPv4 only</td></tr>
+<tr><td>An IPv6 address or network</td><td>IPv6 only</td></tr>
+<tr><td><code>Anyone</code>, or an empty field</td><td>IPv4 + IPv6</td></tr>
+<tr><td>A host name</td><td>IPv4 + IPv6 on Linux, where the name is looked up once at apply and written as each family’s addresses. Nothing on Windows, whose firewall takes addresses only.</td></tr>
+<tr><td>A forward</td><td>Its destination’s family. Nothing when the destination is a name or a range, which the generator leaves out.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The same answer appears as <code>[IPv4 only]</code> in <code>stockfw policy list</code> and as <code>covers</code> and <code>covers_why</code> in its JSON, and a test checks that, for each kind of target, “Covers” names a family exactly when that family’s generated rules contain the rule. [[verified:test-core.sh]]</p>
+
+<h2>One direction or both</h2>
+<p>Inbound and outbound are separate rule spaces, so allowing a peer both ways would normally take two rules. On the groups where a rule has an opposite-direction twin, the Add row carries a <em>Direction</em> control: <em>Inbound only</em> (or <em>Outbound only</em>) by default, or <em>Bi-directional</em>, which stages the twin as part of the same change. The pairs are exact: allow-from pairs with allow-to, and inbound allow-service pairs with outbound allow-service. Deny kinds and forwards have no twin, so the control is absent there rather than disabled. The pair is saved as one change: if the write fails, both rules come back out. [[verified:test_direction_pairing]]</p>
+<p>This is about <em>new</em> connections in the other direction. Replies to an open connection never need a rule; the engine is stateful.</p>
+
+<h2>Apply, step by step</h2>
+<ol>
+<li><strong>Save first.</strong> Adding, editing or removing a rule writes the policy file immediately, and if the write fails the change is taken back out of memory, so what you see is always what is on disk.</li>
+<li><strong>Measure.</strong> Pressing <strong>Apply policy</strong> compares the saved policy with the journal of what the engine last accepted (<code>applied.csv</code>) and shows the counts: “+1 added (1 allow, 0 block), −0 removed, =8 unchanged”. Nothing has happened yet; you can say No.</li>
+<li><strong>Push.</strong> On Linux the whole policy is rendered into an <code>iptables-restore</code> payload and an <code>ip6tables-restore</code> payload and loaded with <code>--noflush</code>, so only StockFW’s own chains are replaced, each family in one atomic step; if the IPv6 load is refused, the IPv4 load is undone. [[built]] On Windows each rule is one <code>netsh advfirewall</code> command, and only the rules that changed are touched. Preferences that compile to rules (ICMP, broadcasts, reserved sources) are pushed in the same step.</li>
+<li><strong>Record.</strong> On success the journal is updated to what is now live, so the next Apply measures against reality.</li>
+<li><strong>Report.</strong> The dialog says what the engine said. On Linux a successful apply can carry notes (“ip6tables is not installed”, “the forward to 192.168.1.30 was left out: no external interface is set”); on Windows a rule the engine refused makes the apply partial, and the gate restores the last good policy and reports whether the restore worked.</li>
+<li><strong>Audit.</strong> One line in <code>audit.log</code>: the source (Policy page, Events page, Copilot, Sentinel or <code>cli</code>), the mode, the counts, and any notes. [[verified:test_apply_gate]]</li>
+</ol>
+<p><em>Apply policy changes immediately</em>, on the <em>Interface › Policy</em> preference page, skips the button: each edit is pushed as soon as it is saved, through the same gate and with the same audit line.</p>
+
+<h2>Audit-only and Lock</h2>
+<p><strong>Audit-only</strong> on this page and <strong>Lock policy</strong> on the Overview both hold the firewall still. While either is on, Apply measures and records the change, writes an audit line reading “policy held, firewall untouched”, and leaves the engine alone. Turn it off and press Apply when you are ready. Rehearsing a policy this way is the intended use. [[verified:test_apply_gate]]</p>
+
+<h2>What is checked before anything is saved</h2>
+<ul>
+<li>Ports are digits only (so <code>80abc</code> and <code>0x50</code> are refused), 0 to 65535, and a range’s first port is not above its last.</li>
+<li>Hosts are an IPv4 or IPv6 address, a network in CIDR form (<code>192.168.1.0/24</code>, <code>2001:db8::/32</code>), or a host name; a host name may not start with a hyphen.</li>
+<li>A comma or line break inside a field is refused, because the files are plain comma-separated text and it would become a second field. [[verified:test_policy_load_validation_f1]]</li>
+</ul>
+<p>When a policy file is loaded and a row does not parse, that row is skipped and counted (“2 malformed policy rules were skipped”), never guessed at or rewritten, and saving does not silently drop or change it. [[verified:test-core.sh]]</p>
+
+<h2>In the engine</h2>
+<p>On Windows every rule StockFW creates is named <code>StockFW-…</code>, with the same canonical name used to add and to delete it, so a change never leaves a stale copy behind; a verified clear re-enumerates and retries until none remain. On Linux the rules live in chains StockFW owns (<code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code>, <code>STOCKFW-SNAT</code>) and nothing else in the tables is touched. In both cases <code>wf.msc</code> or <code>nft list ruleset</code> can confirm what StockFW says. The files behind the page are described in <a href="{{root}}docs/files.html">Files and formats</a>.</p>

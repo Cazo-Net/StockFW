@@ -1,0 +1,151 @@
+/* Documentation layout: the app's own shape.  A dark rail on the left
+ * (the app's sidebar), the page in the middle, and "On this page" on
+ * the right when there is room. */
+
+.docs {
+	display: grid;
+	grid-template-columns: 270px minmax(0, 1fr) 220px;
+	align-items: start;
+	max-width: 1400px;
+	margin-inline: auto;
+	min-height: calc(100vh - var(--head-h));
+}
+
+.docs-rail {
+	position: sticky;
+	top: calc(var(--head-h) + 3px + env(safe-area-inset-top, 0px));
+	height: calc(100vh - var(--head-h) - 3px - env(safe-area-inset-top, 0px));
+	overflow-y: auto;
+	background: #16181d;
+	color: #c3c9d4;
+	padding: 22px 14px 40px max(14px, env(safe-area-inset-left, 0px));
+	scrollbar-width: thin;
+	scrollbar-color: #3a414e transparent;
+}
+.docs-rail h2 {
+	font: 500 0.7rem var(--mono);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: #8c95a5;
+	padding: 0 10px;
+	margin: 22px 0 6px;
+}
+.docs-rail h2:first-child { margin-top: 0; }
+.docs-rail ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+.docs-rail a {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 7px 10px;
+	border-radius: 7px;
+	color: #c3c9d4;
+	text-decoration: none;
+	font-size: 0.93rem;
+	line-height: 1.3;
+}
+.docs-rail a:hover { background: #20242c; color: #fff; }
+.docs-rail a[aria-current="page"] { background: #2a2f39; color: #fff; box-shadow: inset 3px 0 0 var(--wall); font-weight: 600; }
+.docs-rail .tag {
+	font: 500 0.62rem var(--mono);
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: #f0c060;
+	border: 1px solid #5c4a1f;
+	border-radius: 3px;
+	padding: 0 4px;
+	flex: none;
+}
+
+.docs-main {
+	min-width: 0;
+	padding: 40px 48px 0;
+}
+.crumbs {
+	font: 500 0.72rem var(--mono);
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted);
+	margin-bottom: 14px;
+}
+.crumbs a { color: inherit; text-decoration: none; }
+.crumbs a:hover { color: var(--ink); }
+.doc-foot {
+	max-width: 74ch;
+	margin-top: 64px;
+	padding-top: 20px;
+	border-top: 1px solid var(--line);
+	display: grid;
+	gap: 22px;
+}
+.pager { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pager a {
+	display: grid;
+	gap: 2px;
+	padding: 14px 16px;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-sm);
+	background: var(--surface);
+	text-decoration: none;
+	color: var(--ink);
+	min-width: 0;
+}
+.pager a:hover { border-color: var(--wall); }
+.pager span { font: 500 0.7rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.pager strong { font-weight: 650; }
+.pager .next { text-align: right; grid-column: 2; }
+.edit-line { color: var(--muted); font-size: var(--fs-sm); display: flex; flex-wrap: wrap; gap: 6px 18px; }
+
+.toc {
+	position: sticky;
+	top: calc(var(--head-h) + 3px + env(safe-area-inset-top, 0px));
+	max-height: calc(100vh - var(--head-h) - 3px);
+	overflow-y: auto;
+	padding: 40px 16px 40px 0;
+	font-size: 0.85rem;
+}
+.toc h2 { font: 500 0.7rem var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+.toc ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; border-left: 1px solid var(--line); }
+.toc a { display: block; padding: 4px 0 4px 12px; color: var(--muted); text-decoration: none; margin-left: -1px; border-left: 2px solid transparent; line-height: 1.35; }
+.toc a:hover { color: var(--ink); }
+.toc a.on { color: var(--ink); border-left-color: var(--wall); }
+.toc .lvl3 a { padding-left: 24px; font-size: 0.8rem; }
+
+.rail-toggle { display: none; }
+
+@media (max-width: 1200px) {
+	.docs { grid-template-columns: 260px minmax(0, 1fr); }
+	.toc { display: none; }
+}
+@media (max-width: 900px) {
+	.docs { grid-template-columns: minmax(0, 1fr); }
+	.docs-rail {
+		position: fixed;
+		inset: calc(var(--head-h) + 3px + env(safe-area-inset-top, 0px)) 0 0 0;
+		height: auto;
+		z-index: 40;
+		display: none;
+		padding-left: max(16px, env(safe-area-inset-left, 0px));
+		padding-right: max(16px, env(safe-area-inset-right, 0px));
+		padding-bottom: calc(40px + env(safe-area-inset-bottom, 0px));
+	}
+	.docs-rail.open { display: block; }
+	.docs-main { padding: 20px var(--gutter-r) 0 var(--gutter-l); }
+	.rail-toggle {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		margin-bottom: 18px;
+		padding: 10px 12px;
+		border: 1px solid var(--line);
+		border-radius: 8px;
+		background: var(--surface);
+		color: var(--ink);
+		font: 600 0.9rem var(--sans);
+		cursor: pointer;
+	}
+	.rail-toggle svg { width: 18px; height: 18px; }
+	.pager { grid-template-columns: 1fr; }
+	.pager .next { grid-column: 1; }
+}

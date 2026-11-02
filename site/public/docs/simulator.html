@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>What-if simulator · StockFW</title>
+<meta name="description" content="Asking the simulator a question in plain words: the grammar it understands, how a verdict is reached, what the window shows, Create This Rule, and the stockfw simulate command.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#16181d">
+<meta property="og:title" content="What-if simulator · StockFW">
+<meta property="og:description" content="Asking the simulator a question in plain words: the grammar it understands, how a verdict is reached, what the window shows, Create This Rule, and the stockfw simulate command.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>(function(){try{var t=localStorage.getItem("sfw-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}})();</script>
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.6</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn" id="theme-btn" type="button" aria-label="Change theme">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17Z" fill="currentColor"/></svg>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html" aria-current="page"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Using the app
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
+		<article class="prose">
+<h1>What-if simulator</h1>
+<p class="lede">Type a sentence about a connection and the simulator tells you whether your saved policy would allow or block it, which rule decided, and why. It is a question, not a change: simulating writes nothing.</p>
+
+<figure class="shot narrow"><img src="../assets/screens/whatif-allowed.webp" alt="The What-If Simulation window: a packet travelling from 192.168.1.50 through the wall to the local SSH port, a green ALLOWED badge, and the matched rule “StockFW: Allow SSH (inbound, 192.168.1.0/24)”." width="670" height="574" loading="lazy" decoding="async"><figcaption>Allowed by a rule. The rule’s name is the same one the Policy page and the engine use.</figcaption></figure>
+
+<h2 id="where-it-lives">Where it lives<a class="anchor" href="#where-it-lives" aria-label="Link to this section">#</a></h2>
+<p>In the box at the bottom of the <a href="../docs/copilot.html">Copilot</a> page, in the <a href="../docs/dashboard.html">dashboard</a>, and as <code>stockfw simulate</code> on the <a href="../docs/cli.html">command line</a>. All three run the same code against the same policy files, and a test asserts that the window, the command line and the dashboard give the same verdict for the same sentence. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
+
+<h2 id="how-to-phrase-a-question">How to phrase a question<a class="anchor" href="#how-to-phrase-a-question" aria-label="Link to this section">#</a></h2>
+<p>The grammar is deliberately small, so what gets evaluated is always what you typed and nothing the simulator guessed. Words can come in any order.</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>You write</th><th>It means</th></tr></thead>
+<tbody>
+<tr><td><code>inbound</code>, <code>incoming</code>, or <code>from</code> an address</td><td>Traffic arriving at this computer. With neither word, <code>from</code> means inbound.</td></tr>
+<tr><td><code>outbound</code>, <code>outgoing</code>, or <code>to</code> an address</td><td>Traffic leaving this computer.</td></tr>
+<tr><td>an address or network: <code>203.0.113.50</code>, <code>192.168.1.0/24</code>, <code>2001:db8::5</code></td><td>The remote end.</td></tr>
+<tr><td><code>port 22</code>, <code>22 port</code>, or a service name: <code>ssh</code>, <code>rdp</code>, <code>https</code>, <code>dns</code>, <code>telnet</code></td><td>The local port for inbound, the remote port for outbound. A service name is looked up to its port; a number wins over a name when both appear.</td></tr>
+<tr><td><code>udp</code>, <code>icmp</code>, <code>ping</code></td><td>The protocol. Without one of these, TCP.</td></tr>
+<tr><td><code>allow ssh …</code>, <code>block dns …</code></td><td>The word after <em>allow</em> names the service; the verb itself is not part of the question (the simulator answers what the policy does, not what you want).</td></tr>
+</tbody>
+</table>
+</div>
+<div class="code" data-copy="all"><div class="code-head"><span>Sentences that work</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>allow ssh from 192.168.1.50 on port 22
+inbound rdp from 203.0.113.50
+outbound tcp to 198.51.100.66 port 443
+outbound telnet to 203.0.113.7
+inbound udp port 53
+ping from 10.0.0.9</code></pre></div>
+<p>A sentence with no direction, no port and no address cannot be answered; the window says “Couldn’t understand this query” and shows examples instead of guessing.</p>
+
+<h2 id="how-a-verdict-is-reached">How a verdict is reached<a class="anchor" href="#how-a-verdict-is-reached" aria-label="Link to this section">#</a></h2>
+<ol>
+<li>The sentence is parsed into a scenario: direction, protocol, port, remote address, and the service or program named.</li>
+<li>The saved policy is compiled into the same firewall rules Apply would create, with the same names.</li>
+<li>The scenario is matched against those rules in the engine’s order: a matching block wins over a matching allow, a matching allow over the default, and the default is <em>deny inbound, allow outbound</em>.</li>
+<li>The answer names the deciding rule, or says that no rule matched and the default applied, and when the verdict is BLOCKED it suggests the exact rule that would allow it.</li>
+</ol>
+<p>The policy it reads is the <em>saved</em> one, so the simulator can rehearse a change before Apply: add a rule, simulate, and only then push. With <em>Audit-only</em> on, you can even press Apply and watch the counts without the engine changing. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></p>
+
+<figure class="shot narrow"><img src="../assets/screens/whatif-blocked.webp" alt="The What-If Simulation window: a packet from 203.0.113.50 bounced back by the wall, a red BLOCKED badge, and the explanation that no rule matched and the default is to deny inbound." width="670" height="599" loading="lazy" decoding="async"><figcaption>Blocked by the default. The text offers the rule that would allow it.</figcaption></figure>
+
+<h2 id="the-window">The window<a class="anchor" href="#the-window" aria-label="Link to this section">#</a></h2>
+<p>The verdict plays as a short animation: the packet leaves its source, reaches the wall, and either passes through to its destination or is turned back. Under it, the badge reads <em>ALLOWED</em> or <em>BLOCKED</em>, then the question as you typed it, the scenario as the simulator understood it (protocol, from, to, port, direction), the rule that decided, and the explanation. <em>Replay</em> runs the animation again. The window is a GTK drawing with no images, so it renders the same on every theme. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-simviz-smoke</span></p>
+
+<figure class="shot narrow"><img src="../assets/screens/whatif-outbound-blocked.webp" alt="The What-If Simulation window for an outbound connection to 198.51.100.66 on port 443, turned back at the wall by the rule “StockFW: Block outbound (198.51.100.66)”." width="670" height="599" loading="lazy" decoding="async"><figcaption>An outbound block. Replies to an open connection would not be asked about; this is a new connection.</figcaption></figure>
+
+<h2 id="create-this-rule">Create This Rule<a class="anchor" href="#create-this-rule" aria-label="Link to this section">#</a></h2>
+<p>When the verdict is BLOCKED and the simulator can express the rule that would allow it, <strong>Create This Rule</strong> appears. It prints the rule in a Yes/No dialog, exactly as it will be written to the policy file. After Yes the rule is saved and pushed through the same apply gate as the Policy page, and the result says whether it is live or staged for a later Apply. The simulator never creates a rule on its own, and never a block: blocking is a decision you make on the Policy or Events page.</p>
+
+<h2 id="from-a-script">From a script<a class="anchor" href="#from-a-script" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw simulate "inbound rdp from 203.0.113.50"</span>
+BLOCKED  Inbound TCP connection from 203.0.113.50 to local port 3389 (rdp)
+  Packet     inbound TCP port 3389 from 203.0.113.50
+  Rule       Default deny (no matching rule)
+  Why        No rule in the loaded policy matches this connection.  Default policy: deny inbound.
+  To allow   Allow inbound TCP port 3389 from 203.0.113.50.
+A simulation only: nothing was written.
+<span class="p">$ </span><span class="cmd">echo $?</span>
+5</code></pre></div>
+<p>The exit status is 0 for ALLOWED and 5 for BLOCKED, so a deployment script can refuse to continue when a port it needs would be closed. <code>--json</code> gives the verdict, scenario, rule, reason and suggestion as one object. See <a href="../docs/cli.html#simulate">the command line reference</a>.</p>
+
+<h2 id="what-it-does-not-know">What it does not know<a class="anchor" href="#what-it-does-not-know" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>It answers from the policy, not from the engine. If someone added a rule directly in <code>wf.msc</code> or with <code>iptables</code>, the simulator does not see it. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></li>
+<li>It reasons about new connections. Replies to an already open connection always pass, and the simulator does not model them.</li>
+<li>Threat-intel lists are not consulted yet. When they land, an address the policy allows but a list blocks will be answered “Blocked by threat intel: <em>list</em>”. <span class="ev ev-soon" title="Being built for 1.0.7; details may still change."><b>In progress</b> for 1.0.7</span></li>
+</ul>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/copilot.html"><span>Previous</span><strong>Copilot</strong></a><a class="next" href="../docs/trust.html"><span>Next</span><strong>Trust</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.6, with 1.0.7 work marked where it applies.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/simulator.html">Edit this page on GitHub</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#where-it-lives">Where it lives</a></li>
+			<li class="lvl2"><a href="#how-to-phrase-a-question">How to phrase a question</a></li>
+			<li class="lvl2"><a href="#how-a-verdict-is-reached">How a verdict is reached</a></li>
+			<li class="lvl2"><a href="#the-window">The window</a></li>
+			<li class="lvl2"><a href="#create-this-rule">Create This Rule</a></li>
+			<li class="lvl2"><a href="#from-a-script">From a script</a></li>
+			<li class="lvl2"><a href="#what-it-does-not-know">What it does not know</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">Coming in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Created by Qusai Fethalrahman. Developed by H3xCore and the StockFW Project.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

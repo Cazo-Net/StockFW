@@ -57,9 +57,11 @@ jobs:
           bash tests/test-adversarial.sh
           bash tests/test-cli.sh
           bash tests/test-logstart.sh
-          ninja -C build-linux fs-intel-test fs-netplace-test fs-nftset-load
+          ninja -C build-linux fs-intel-test fs-netplace-test fs-nftset-load \
+            fs-whatif-test
           ./build-linux/fs-intel-test
           ./build-linux/fs-netplace-test
+          ./build-linux/fs-whatif-test
 
       - name: UI smoke tests on a virtual display
         working-directory: port
@@ -98,6 +100,7 @@ jobs:
           strict tests/test-apply-linux.sh
           strict tests/test-apply-dual.sh
           strict tests/test-nftset.sh
+          strict tests/test-whatif-live.sh
 
   windows:
     name: Windows build, tests and installer
