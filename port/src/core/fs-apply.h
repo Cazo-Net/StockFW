@@ -118,6 +118,31 @@ FsApplyOutcome *fs_policy_apply_safe (const FsBackend *backend,
                                       GError **error);
 void fs_apply_outcome_free (FsApplyOutcome *outcome);
 
+/* The same gate for a change of firewall settings (Preferences: ICMP,
+ * rejection method, devices ...).  The caller has already put the new
+ * settings in the backend's context.  Differences from the policy
+ * gate:
+ *   - always the whole-set apply_rules, never the narrow path and
+ *     never the "no change" shortcut: the policy may be unchanged
+ *     while every rule the settings produce is not;
+ *   - a rollback runs under the settings that were live: swap (TRUE)
+ *     must put the previous settings in the context and swap (FALSE)
+ *     the new ones back; the gate calls them around the rollback
+ *     only.  The new settings stay in the context afterwards: they
+ *     are saved, and the next apply tries them again;
+ *   - audit lines say "firewall settings" instead of "policy".
+ * Holds, refusals, verdicts and the journal work exactly as in
+ * fs_policy_apply_safe. */
+typedef void (*FsSettingsSwapFunc) (gboolean previous, gpointer data);
+
+FsApplyOutcome *fs_settings_apply_safe (const FsBackend *backend,
+                                        FsPolicy *policy,
+                                        const gchar *source,
+                                        const gchar *hold,
+                                        FsSettingsSwapFunc swap,
+                                        gpointer swap_data,
+                                        GError **error);
+
 /* Audit-only testing mode: the preference, the hold reason it
  * produces (or NULL when off), and the setter for the Policy page's
  * toggle.  The Status page's Lock is UI state on top of this;

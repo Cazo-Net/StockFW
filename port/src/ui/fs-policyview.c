@@ -677,11 +677,11 @@ on_apply_clicked (GtkButton *button, gpointer data)
 static void
 maybe_apply_instantly (void)
 {
-	/* Default to FALSE: the original StockFW required an explicit
-	 * Apply click.  Auto-apply on every edit was noisy and showed
-	 * "Administrator required" dialogs when not elevated.  The user
-	 * can enable it in Preferences → Interface if they run elevated. */
-	if (!fs_prefs_get_bool (FS_PREFS_APPLY_POLICY_INSTANTLY, FALSE))
+	/* Off unless set: the original StockFW required an explicit
+	 * Apply click.  The default lives in the settings table
+	 * (core/fs-prefs.c); the user turns it on in Preferences >
+	 * Policy. */
+	if (!fs_prefs_bool (FS_PREFS_APPLY_POLICY_INSTANTLY))
 		return;
 
 	apply_policy_now (FALSE);

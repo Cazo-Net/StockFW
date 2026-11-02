@@ -420,7 +420,7 @@ fs_policy_delta_free (FsPolicyDelta *delta)
 gboolean
 fs_apply_audit_only (void)
 {
-	return fs_prefs_get_bool (FS_PREFS_AUDIT_ONLY, FALSE);
+	return fs_prefs_bool (FS_PREFS_AUDIT_ONLY);
 }
 
 /* [ fs_apply_hold_reason ]
@@ -458,19 +458,26 @@ apply_detail (const gchar *source, const gchar *mode, const gchar *what,
 	                        tail != NULL ? tail : "");
 }
 
-/* [ fs_policy_apply_safe ] */
-FsApplyOutcome *
-fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
-                      const gchar *source, const gchar *hold,
-                      GError **error)
+/* [ apply_gate ]
+ * Both public gates.  settings_swap != NULL marks a settings change:
+ * the backend context already holds the new settings, so even an
+ * unchanged policy needs the whole-set apply (the narrow path and the
+ * "no change" shortcut only know about policy rows), and a rollback
+ * must run under the settings that were live before. */
+static FsApplyOutcome *
+apply_gate (const FsBackend *backend, FsPolicy *policy,
+            const gchar *source, const gchar *hold,
+            FsSettingsSwapFunc settings_swap, gpointer swap_data,
+            GError **error)
 {
 	FsApplyOutcome *outcome;
 	FsPolicy *before;
 	GError *journal_error = NULL;
 	FsPolicyDelta *delta = NULL;
 	gboolean have_before;
+	gboolean settings = (settings_swap != NULL);
 	gchar *desc;
-	const gchar *mode = "full";
+	const gchar *mode = settings ? "full, settings" : "full";
 
 	g_return_val_if_fail (policy != NULL, NULL);
 
@@ -492,7 +499,9 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 		outcome->held = TRUE;
 		outcome->hold_reason = hold;
 		outcome->result = FS_APPLY_DRY_RUN;
-		fs_audit_log ("policy held, firewall untouched", detail);
+		fs_audit_log (settings
+		              ? "firewall settings held, firewall untouched"
+		              : "policy held, firewall untouched", detail);
 		g_free (detail);
 		goto out;
 	}
@@ -514,8 +523,9 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 	}
 
 	/* Narrow path -- including the best case of all: nothing changed,
-	 * so the firewall is not touched at all. */
-	if (have_before) {
+	 * so the firewall is not touched at all.  Never for a settings
+	 * change: those rules are not policy rows. */
+	if (have_before && !settings) {
 		delta = fs_policy_delta (before, policy);
 
 		if (delta->empty) {
@@ -569,15 +579,22 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 				source, mode, desc,
 				"applied but the journal could not be saved",
 				save_error != NULL ? save_error->message : NULL);
-			fs_audit_log ("policy applied, journal NOT saved", detail);
+			fs_audit_log (settings
+			              ? "firewall settings applied, journal NOT saved"
+			              : "policy applied, journal NOT saved", detail);
 			g_free (detail);
 			g_clear_error (&save_error);
 		} else {
 			detail = apply_detail (source, mode, desc, outcome->notes,
 			                       NULL);
-			fs_audit_log (outcome->notes != NULL
-			              ? "policy applied, with notes"
-			              : "policy applied", detail);
+			if (settings)
+				fs_audit_log (outcome->notes != NULL
+				              ? "firewall settings applied, with notes"
+				              : "firewall settings applied", detail);
+			else
+				fs_audit_log (outcome->notes != NULL
+				              ? "policy applied, with notes"
+				              : "policy applied", detail);
 			g_free (detail);
 		}
 	} else {
@@ -598,7 +615,8 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 			detail = apply_detail (
 				source, mode, result_text, err_text,
 				outcome->rollback_detail);
-			fs_audit_log ("policy apply failed", detail);
+			fs_audit_log (settings ? "firewall settings apply failed"
+			                       : "policy apply failed", detail);
 			g_free (detail);
 		} else {
 			GError *rollback_error = NULL;
@@ -607,9 +625,16 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 			outcome->rollback_attempted = TRUE;
 
 			/* Full restore of the journal state: the rollback's own
-			 * verdict is checked, never assumed. */
+			 * verdict is checked, never assumed.  A settings change
+			 * is rolled back under the settings that were live, then
+			 * the new ones go back into the context: they are saved,
+			 * and the next apply tries them again. */
+			if (settings)
+				settings_swap (TRUE, swap_data);
 			rollback_result = backend->apply_rules (before,
 			                                        &rollback_error);
+			if (settings)
+				settings_swap (FALSE, swap_data);
 			outcome->rollback_verified =
 				(rollback_result == FS_APPLY_OK);
 			outcome->rollback_detail = g_strdup_printf (
@@ -625,7 +650,8 @@ fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
 			detail = apply_detail (
 				source, mode, result_text, err_text,
 				outcome->rollback_detail);
-			fs_audit_log ("policy apply failed", detail);
+			fs_audit_log (settings ? "firewall settings apply failed"
+			                       : "policy apply failed", detail);
 			g_free (detail);
 			g_clear_error (&rollback_error);
 		}
@@ -638,6 +664,28 @@ out:
 	g_free (desc);
 
 	return outcome;
+}
+
+/* [ fs_policy_apply_safe ] */
+FsApplyOutcome *
+fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
+                      const gchar *source, const gchar *hold,
+                      GError **error)
+{
+	return apply_gate (backend, policy, source, hold, NULL, NULL, error);
+}
+
+/* [ fs_settings_apply_safe ] */
+FsApplyOutcome *
+fs_settings_apply_safe (const FsBackend *backend, FsPolicy *policy,
+                        const gchar *source, const gchar *hold,
+                        FsSettingsSwapFunc swap, gpointer swap_data,
+                        GError **error)
+{
+	g_return_val_if_fail (swap != NULL, NULL);
+
+	return apply_gate (backend, policy, source, hold, swap, swap_data,
+	                   error);
 }
 
 /* [ fs_apply_outcome_free ] */

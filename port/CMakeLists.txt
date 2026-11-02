@@ -116,6 +116,7 @@ add_executable(StockFW
   src/main.c
   src/ui/fs-app.c
   src/ui/fs-dialogs.c
+  src/ui/fs-prefsdialog.c
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
@@ -225,6 +226,7 @@ endif()
 set(FS_UI_ONLY_SOURCES
   src/ui/fs-app.c
   src/ui/fs-dialogs.c
+  src/ui/fs-prefsdialog.c
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
@@ -249,6 +251,23 @@ target_compile_definitions(fs-ui-smoke PRIVATE
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-ui-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+
+# The Preferences window against a fake backend that answers once as
+# the Linux backend and once as the Windows one, so both platforms'
+# page sets, the honest hiding, the device choosers and the
+# changed-only save are exercised on any machine.  The test supplies
+# fs_backend() itself, hence the UI sources without a backend.
+add_executable(fs-prefs-fake-smoke EXCLUDE_FROM_ALL
+  tests/ui-prefs-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-prefs-fake-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-prefs-fake-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-prefs-fake-smoke PRIVATE
+  FS_PREFS_FAKE_BACKEND
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
 
 # The Events page and its reason strip.  Separate from fs-ui-smoke
 # because building the page starts the platform event source, which

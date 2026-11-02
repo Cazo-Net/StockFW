@@ -14,137 +14,127 @@
 #include <stdarg.h>
 #include <string.h>
 
+/* [ settings_fill ]
+ * Every field from one reader: the table default (defaults_only) or the
+ * stored value with the table default behind it.  One function for
+ * both, so a fresh FsSettings and an unset key can never mean two
+ * different things -- the defaults themselves live in fs-prefs.c. */
+static gboolean
+settings_bool (const gchar *key, gboolean defaults_only)
+{
+	if (defaults_only) {
+		const FsPrefSpec *spec = fs_prefs_spec (key);
+
+		g_return_val_if_fail (spec != NULL, FALSE);
+		return spec->bool_default;
+	}
+
+	return fs_prefs_bool (key);
+}
+
+static gchar *
+settings_device (const gchar *key, gboolean defaults_only)
+{
+	gchar *text;
+
+	if (defaults_only) {
+		const FsPrefSpec *spec = fs_prefs_spec (key);
+
+		text = g_strdup (spec != NULL ? spec->string_default : NULL);
+	} else {
+		text = fs_prefs_string (key);
+	}
+
+	/* "" is "no device chosen", the same as unset. */
+	if (text != NULL && *text == '\0') {
+		g_free (text);
+		text = NULL;
+	}
+
+	return text;
+}
+
+static void
+settings_fill (FsSettings *settings, gboolean defaults_only)
+{
+	g_free (settings->ext_device);
+	g_free (settings->int_device);
+	settings->ext_device = settings_device (FS_PREFS_FW_EXT_IF, defaults_only);
+	settings->int_device = settings_device (FS_PREFS_FW_INT_IF, defaults_only);
+
+	settings->nat          = settings_bool (FS_PREFS_FW_NAT, defaults_only);
+	settings->filter_icmp  = settings_bool (FS_PREFS_FW_FILTER_ICMP, defaults_only);
+	settings->deny_packets = settings_bool (FS_PREFS_FW_DENY_PACKETS, defaults_only);
+	settings->block_external_broadcast =
+		settings_bool (FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST, defaults_only);
+	settings->block_internal_broadcast =
+		settings_bool (FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST, defaults_only);
+	settings->block_non_routables =
+		settings_bool (FS_PREFS_FW_BLOCK_NON_ROUTABLES, defaults_only);
+	settings->restrictive_outbound =
+		settings_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND, defaults_only);
+	settings->log_allowed =
+		settings_bool (FS_PREFS_FW_LOG_ALLOWED, defaults_only);
+
+	settings->icmp_echo_request =
+		settings_bool (FS_PREFS_FW_ICMP_ECHO_REQUEST, defaults_only);
+	settings->icmp_echo_reply =
+		settings_bool (FS_PREFS_FW_ICMP_ECHO_REPLY, defaults_only);
+	settings->icmp_traceroute =
+		settings_bool (FS_PREFS_FW_ICMP_TRACEROUTE, defaults_only);
+	settings->icmp_mstraceroute =
+		settings_bool (FS_PREFS_FW_ICMP_MSTRACEROUTE, defaults_only);
+	settings->icmp_unreachable =
+		settings_bool (FS_PREFS_FW_ICMP_UNREACHABLE, defaults_only);
+	settings->icmp_timestamping =
+		settings_bool (FS_PREFS_FW_ICMP_TIMESTAMPING, defaults_only);
+	settings->icmp_masking =
+		settings_bool (FS_PREFS_FW_ICMP_MASKING, defaults_only);
+	settings->icmp_redirection =
+		settings_bool (FS_PREFS_FW_ICMP_REDIRECTION, defaults_only);
+	settings->icmp_source_quenches =
+		settings_bool (FS_PREFS_FW_ICMP_SOURCE_QUENCHES, defaults_only);
+}
+
+/* [ fs_settings_new ]
+ * The defaults of a fresh install, from the settings table, whether or
+ * not the preferences have been read yet. */
 FsSettings *
 fs_settings_new (void)
 {
 	FsSettings *settings = g_new0 (FsSettings, 1);
 
-	settings->filter_icmp  = TRUE;
-	settings->filter_tos   = TRUE;
-	settings->deny_packets = TRUE;
-
-	/* The original shipped no schema default for the per-type keys,
-	 * so these are the ones that keep a normal machine working on
-	 * first run: ping, traceroute and the unreachable reports.  The
-	 * privacy-questionable ones start off. */
-	settings->icmp_echo_request    = TRUE;
-	settings->icmp_echo_reply      = TRUE;
-	settings->icmp_traceroute      = TRUE;
-	settings->icmp_mstraceroute    = TRUE;
-	settings->icmp_unreachable     = TRUE;
-	settings->icmp_timestamping    = FALSE;
-	settings->icmp_masking         = FALSE;
-	settings->icmp_redirection     = FALSE;
-	settings->icmp_source_quenches = FALSE;
-
-	/* Must agree with the fallbacks in fs_settings_load_prefs(), so a
-	 * freshly constructed settings object behaves like a fresh install
-	 * whether or not prefs have been read yet. */
-	settings->block_non_routables = TRUE;
-	settings->log_allowed         = TRUE;
+	settings_fill (settings, TRUE);
 
 	return settings;
 }
 
 /* [ fs_settings_load_prefs ]
- * The Firewall pages of the Preferences dialog set these keys; reading
+ * The Firewall pages of the Preferences window set these keys; reading
  * them here is what makes those pages mean something. */
 void
 fs_settings_load_prefs (FsSettings *settings)
 {
-	gchar *text;
-
 	if (settings == NULL)
 		return;
 
-	g_free (settings->ext_device);
-	g_free (settings->int_device);
-
-	text = fs_prefs_get_string (FS_PREFS_FW_EXT_IF, NULL);
-	settings->ext_device = text;
-
-	text = fs_prefs_get_string (FS_PREFS_FW_INT_IF, NULL);
-	settings->int_device = text;
-
-	settings->nat                   = fs_prefs_get_bool (FS_PREFS_FW_NAT, FALSE);
-	settings->filter_icmp           = fs_prefs_get_bool (FS_PREFS_FW_FILTER_ICMP, TRUE);
-	settings->filter_tos            = fs_prefs_get_bool (FS_PREFS_FW_FILTER_TOS, TRUE);
-	settings->deny_packets          = fs_prefs_get_bool (FS_PREFS_FW_DENY_PACKETS, TRUE);
-	settings->block_external_broadcast =
-		fs_prefs_get_bool (FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST, FALSE);
-	settings->block_internal_broadcast =
-		fs_prefs_get_bool (FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST, FALSE);
-	settings->block_non_routables   =
-		fs_prefs_get_bool (FS_PREFS_FW_BLOCK_NON_ROUTABLES, TRUE);
-	settings->restrictive_outbound  =
-		fs_prefs_get_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND, FALSE);
-	settings->log_allowed           =
-		fs_prefs_get_bool (FS_PREFS_FW_LOG_ALLOWED, TRUE);
-
-	/* ICMP types.  The fallbacks match fs_settings_new() so an unset
-	 * key behaves like a fresh install. */
-	settings->icmp_echo_request =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_ECHO_REQUEST, TRUE);
-	settings->icmp_echo_reply =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_ECHO_REPLY, TRUE);
-	settings->icmp_traceroute =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_TRACEROUTE, TRUE);
-	settings->icmp_mstraceroute =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_MSTRACEROUTE, TRUE);
-	settings->icmp_unreachable =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_UNREACHABLE, TRUE);
-	settings->icmp_timestamping =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_TIMESTAMPING, FALSE);
-	settings->icmp_masking =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_MASKING, FALSE);
-	settings->icmp_redirection =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_REDIRECTION, FALSE);
-	settings->icmp_source_quenches =
-		fs_prefs_get_bool (FS_PREFS_FW_ICMP_SOURCE_QUENCHES, FALSE);
+	settings_fill (settings, FALSE);
 }
 
-void
-fs_settings_save_prefs (const FsSettings *settings)
+FsSettings *
+fs_settings_copy (const FsSettings *settings)
 {
+	FsSettings *copy;
+
 	if (settings == NULL)
-		return;
+		return NULL;
 
-	fs_prefs_set_string (FS_PREFS_FW_EXT_IF,
-	                     settings->ext_device ? settings->ext_device : "");
-	fs_prefs_set_string (FS_PREFS_FW_INT_IF,
-	                     settings->int_device ? settings->int_device : "");
-	fs_prefs_set_bool (FS_PREFS_FW_NAT, settings->nat);
-	fs_prefs_set_bool (FS_PREFS_FW_FILTER_ICMP, settings->filter_icmp);
-	fs_prefs_set_bool (FS_PREFS_FW_FILTER_TOS, settings->filter_tos);
-	fs_prefs_set_bool (FS_PREFS_FW_DENY_PACKETS, settings->deny_packets);
-	fs_prefs_set_bool (FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST,
-	                   settings->block_external_broadcast);
-	fs_prefs_set_bool (FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST,
-	                   settings->block_internal_broadcast);
-	fs_prefs_set_bool (FS_PREFS_FW_BLOCK_NON_ROUTABLES,
-	                   settings->block_non_routables);
-	fs_prefs_set_bool (FS_PREFS_FW_RESTRICTIVE_OUTBOUND,
-	                   settings->restrictive_outbound);
-	fs_prefs_set_bool (FS_PREFS_FW_LOG_ALLOWED, settings->log_allowed);
+	copy = g_new (FsSettings, 1);
+	*copy = *settings;
+	copy->ext_device = g_strdup (settings->ext_device);
+	copy->int_device = g_strdup (settings->int_device);
 
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_ECHO_REQUEST,
-	                   settings->icmp_echo_request);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_ECHO_REPLY,
-	                   settings->icmp_echo_reply);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_TRACEROUTE,
-	                   settings->icmp_traceroute);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_MSTRACEROUTE,
-	                   settings->icmp_mstraceroute);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_UNREACHABLE,
-	                   settings->icmp_unreachable);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_TIMESTAMPING,
-	                   settings->icmp_timestamping);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_MASKING,
-	                   settings->icmp_masking);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_REDIRECTION,
-	                   settings->icmp_redirection);
-	fs_prefs_set_bool (FS_PREFS_FW_ICMP_SOURCE_QUENCHES,
-	                   settings->icmp_source_quenches);
+	return copy;
 }
 
 void

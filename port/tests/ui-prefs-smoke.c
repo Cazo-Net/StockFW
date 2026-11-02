@@ -1,34 +1,51 @@
 /*---[ ui-prefs-smoke.c ]--------------------------------------------------
  *
- * UI smoke test for the Preferences dialog.
+ * UI smoke test for the Preferences window (1.0.7).
  *
- * It opens the real dialog, walks the section tree one row at a time,
- * checks that each row selects the notebook page it is supposed to, and
- * finally presses Accept.  That covers the three things a unit test
- * cannot see: the pages actually build, the tree and the notebook stay
- * index-aligned, and the save path runs.
+ * Built twice:
  *
- * Deliberately NOT part of StockFW.exe -- the CMake target is
- * EXCLUDE_FROM_ALL -- so no test hook is ever shipped to a user.
+ *   fs-ui-smoke           against this platform's real backend.  Opens
+ *                         the real window, checks its pages against the
+ *                         backend's capability bits (and pins those bits
+ *                         to the backend's identity), walks every page
+ *                         from the navigation, checks nothing dead is on
+ *                         offer, and saves without a change: nothing
+ *                         may be written.  Also checks the About credits
+ *                         and the compiled-in stylesheet, as before.
  *
- * The caller isolates the preference file by pointing APPDATA (Windows)
- * or XDG_CONFIG_HOME (Linux) at a scratch directory, so Accept cannot
- * disturb the user's real settings.
+ *   fs-prefs-fake-smoke   (FS_PREFS_FAKE_BACKEND) supplies fs_backend()
+ *                         itself and answers once as the Linux backend
+ *                         and once as the Windows one, so both platforms'
+ *                         windows are exercised on any machine:
+ *                           - the page set per FS_FWSEC_* / FS_FWHON_*;
+ *                           - honest hiding (no Reject/Drop, outbound
+ *                             mode or devices on Windows), honest
+ *                             notes (ICMP on Windows is IPv4 allow rules);
+ *                           - D1: the Internet device combo shows the
+ *                             stored device, not "the first one";
+ *                           - D2: the local device combo is filled and
+ *                             keeps a stored device that is not present;
+ *                           - D3: an unset "apply immediately" reads off,
+ *                             as the Policy page treats it;
+ *                           - D4: Linux blocks that need an Internet
+ *                             device are disabled, with the reason, until
+ *                             one is chosen;
+ *                           - D8: Save writes only what changed, never a
+ *                             setting the window does not offer;
+ *                           - D5: a firewall change with the firewall
+ *                             running asks before applying, never applies
+ *                             an empty policy, and Cancel writes nothing.
+ *                         With STOCKFW_PREFS_SHOTS=<dir> it also saves a
+ *                         PNG of every page (and a narrow window).
  *
- * It also asserts the About dialog's credits are valid Pango markup:
- * GtkAboutDialog renders authors WITHOUT escaping them, so the bare
- * '&' in the creator line once made Pango fail and the raw
- * <span size=...> tags showed on screen instead of the name.
- *
- * And it checks the compiled-in light stylesheet (fs-theme-css.h):
- * the sheet must load without a GError, must still carry the palette
- * tokens the design pins down, and must not use the pseudo-class
- * names this GTK3.24 deprecates (:focused, :insensitive) -- GTK only
- * reports those at widget style resolution, where no test can see
- * them, so they are asserted absent as substrings instead.
- *
+ * Deliberately NOT part of StockFW.exe -- the CMake targets are
+ * EXCLUDE_FROM_ALL -- so no test hook is ever shipped to a user.  The
+ * preference file is pointed at a scratch directory first thing, so
+ * nothing touches the user's real settings.
  *----------------------------------------------------------------------*/
 #include <gtk/gtk.h>
+#include <glib/gstdio.h>
+#include <string.h>
 
 #include "core/fs-prefs.h"
 #include "core/fs-backend.h"
@@ -36,673 +53,1133 @@
 #include "ui/fs-dialogs.h"
 #include "fs-theme-css.h"   /* generated from src/ui/fs-theme.css */
 
-/* Timeout so a dialog that never appears fails instead of hanging. */
-#define SMOKE_STEP_MS  150
-#define SMOKE_MAX_RUNS 400
+#define SMOKE_STEP_MS  100
+#define SMOKE_MAX_RUNS 600
 
-static guint phase = 0;
-static guint runs = 0;
-static gboolean failed = FALSE;
+static int failures = 0;
+static guint warnings = 0;
 
-/* The light theme ships inside the binary (fs-theme-css.h,
- * generated from src/ui/fs-theme.css at configure time).  Three
- * assertions, because GTK reports CSS problems three different ways:
- *
- *   - hard parse errors -> load_from_data() returns FALSE with a
- *     GError (demonstrated: "not-a-color" fails the load);
- *   - soft problems (deprecated pseudo-classes) only surface at
- *     widget style resolution, where no test hook can count them --
- *     so those names are asserted absent as substrings instead
- *     (demonstrated: adding ":insensitive" fails this check; it is
- *     exactly what the first themed spawn reported);
- *   - a sheet that parses fine but lost a design colour is invisible
- *     to GTK altogether -- the pinned palette tokens are asserted
- *     present (demonstrated: removing #14161b fails this check).
- *
- * No log handler is installed: every CSS defect class found so far
- * is either a hard load failure or one of the two substrings above. */
+#define CHECK(cond, ...) do {                                   \
+	g_print ((cond) ? "ok:   " : "FAIL: ");                 \
+	g_print (__VA_ARGS__);                                  \
+	g_print ("\n");                                         \
+	if (!(cond))                                            \
+		failures++;                                     \
+} while (0)
 
-/* Every row in the tree, depth first, so the children of Interface and
- * Firewall are visited too -- iter_n_children() with a NULL parent only
- * counts the two top level rows. */
+static GLogWriterOutput
+count_warnings (GLogLevelFlags level, const GLogField *fields,
+                gsize n_fields, gpointer data)
+{
+	(void) data;
+	if (level & (G_LOG_LEVEL_WARNING | G_LOG_LEVEL_CRITICAL))
+		warnings++;
+	return g_log_writer_default (level, fields, n_fields, NULL);
+}
+
+/* The capability sets the shipped backends declare.  fs-ui-smoke pins
+ * the real backend to its row, so the fake below cannot drift from
+ * what users run. */
+#define LINUX_SECTIONS (FS_FWSEC_NETWORK | FS_FWSEC_ICMP | FS_FWSEC_ADVANCED)
+#define LINUX_HONORS   (FS_FWHON_REJECT_METHOD | FS_FWHON_RATE_LIMIT | \
+                        FS_FWHON_LOG_ALLOWED | FS_FWHON_HOST_NAMES |   \
+                        FS_FWHON_OUTBOUND_MODE | FS_FWHON_ICMP_EXACT)
+#define WINDOWS_SECTIONS (FS_FWSEC_ICMP | FS_FWSEC_ADVANCED)
+#define WINDOWS_HONORS   0u
+
+/* ===================================================== fake backend */
+#ifdef FS_PREFS_FAKE_BACKEND
+
+static FsFirewallState fake_state = FS_FW_RUNNING;
+static guint fake_apply_calls = 0;
+static guint fake_list_calls = 0;
+
+static gboolean fake_available (void) { return TRUE; }
+static FsFirewallState fake_get_state (void) { return fake_state; }
+
+static FsApplyResult
+fake_apply_rules (const FsPolicy *policy, GError **error)
+{
+	(void) policy;
+	(void) error;
+	fake_apply_calls++;
+	return FS_APPLY_OK;
+}
+
+static FsInterface *
+iface (const gchar *name, const gchar *ip)
+{
+	FsInterface *i = g_new0 (FsInterface, 1);
+
+	i->name = g_strdup (name);
+	i->ip = g_strdup (ip);
+	return i;
+}
+
+/* eth0 first, so "the first device" is never the stored one, and eth1
+ * twice, as getifaddrs() reports a device with two addresses. */
 static GList *
-walk_paths (GtkTreeModel *model, GtkTreeIter *parent, GList *paths)
+fake_list_interfaces (void)
 {
-	GtkTreeIter iter;
-	gboolean valid;
+	GList *l = NULL;
 
-	for (valid = gtk_tree_model_iter_children (model, &iter, parent);
-	     valid;
-	     valid = gtk_tree_model_iter_next (model, &iter)) {
-		paths = g_list_append (paths, gtk_tree_model_get_path (model, &iter));
-		paths = walk_paths (model, &iter, paths);
-	}
-
-	return paths;
+	fake_list_calls++;
+	l = g_list_append (l, iface ("eth0", "10.0.0.2"));
+	l = g_list_append (l, iface ("eth1", "192.168.1.2"));
+	l = g_list_append (l, iface ("eth1", "192.168.1.3"));
+	l = g_list_append (l, iface ("wlan0", "192.168.50.7"));
+	return l;
 }
 
-/* [ find_widget ] depth first search for the first descendant of a type */
+static FsIpv6State
+fake_ipv6_state (gchar **detail)
+{
+	if (detail != NULL)
+		*detail = NULL;
+	return FS_IPV6_FILTERED;
+}
+
+static FsBackend fake_backend = {
+	.name            = "fake",
+	.display_name    = "Fake backend",
+	.available       = fake_available,
+	.get_state       = fake_get_state,
+	.apply_rules     = fake_apply_rules,
+	.list_interfaces = fake_list_interfaces,
+};
+
+static void
+fake_as_linux (void)
+{
+	fake_backend.name = "fake-linux";
+	fake_backend.display_name = "Linux (iptables)";
+	fake_backend.fw_sections = LINUX_SECTIONS;
+	fake_backend.fw_honors = LINUX_HONORS;
+	fake_backend.ipv6_state = fake_ipv6_state;
+	fake_backend.list_interfaces = fake_list_interfaces;
+}
+
+static void
+fake_as_windows (void)
+{
+	fake_backend.name = "fake-windows";
+	fake_backend.display_name = "Windows Defender Firewall";
+	fake_backend.fw_sections = WINDOWS_SECTIONS;
+	fake_backend.fw_honors = WINDOWS_HONORS;
+	fake_backend.ipv6_state = NULL;
+	fake_backend.list_interfaces = fake_list_interfaces;
+}
+
+const FsBackend *
+fs_backend (void)
+{
+	return &fake_backend;
+}
+
+const gchar *
+fs_error_domain (void)
+{
+	return "fake";
+}
+
+void
+fs_backend_set_context (FsPolicy *policy, FsSettings *settings)
+{
+	(void) policy;
+	(void) settings;
+}
+
+#endif /* FS_PREFS_FAKE_BACKEND */
+
+/* ========================================================== helpers */
+
 static GtkWidget *
-find_widget (GtkWidget *root, GType type)
+find_named (GtkWidget *root, const gchar *name)
 {
 	GtkWidget *found = NULL;
+	GList *children;
 
 	if (root == NULL)
 		return NULL;
-
-	if (G_TYPE_CHECK_INSTANCE_TYPE (root, type))
+	if (g_strcmp0 (gtk_widget_get_name (root), name) == 0)
 		return root;
-
 	if (!GTK_IS_CONTAINER (root))
 		return NULL;
 
-	GList *children = gtk_container_get_children (GTK_CONTAINER (root));
-
+	children = gtk_container_get_children (GTK_CONTAINER (root));
 	for (GList *l = children; l != NULL && found == NULL; l = l->next)
-		found = find_widget (l->data, type);
-
+		found = find_named (l->data, name);
 	g_list_free (children);
 
 	return found;
 }
 
-/* [ find_check_under ] depth first search for the check button whose
- * label reads as given (already translated by the caller). */
-static GtkWidget *
-find_check_under (GtkWidget *root, const gchar *want)
+/* Every label's text under root, joined. */
+static void
+gather_text (GtkWidget *root, GString *out)
 {
-	GtkWidget *found = NULL;
-
-	if (root == NULL)
-		return NULL;
-
-	if (GTK_IS_CHECK_BUTTON (root)) {
-		const gchar *label = gtk_button_get_label (GTK_BUTTON (root));
-
-		if (label != NULL && g_strcmp0 (label, want) == 0)
-			return root;
-	}
-
-	if (!GTK_IS_CONTAINER (root))
-		return NULL;
-
-	GList *children = gtk_container_get_children (GTK_CONTAINER (root));
-
-	for (GList *l = children; l != NULL && found == NULL; l = l->next)
-		found = find_check_under (l->data, want);
-
-	g_list_free (children);
-
-	return found;
-}
-
-/* [ label_mentions ] TRUE when a label somewhere below reads as
- * containing the needle -- the disclosure-note probe. */
-static gboolean
-label_mentions (GtkWidget *root, const gchar *needle)
-{
-	gboolean found = FALSE;
-
-	if (root == NULL)
-		return FALSE;
+	GList *children;
 
 	if (GTK_IS_LABEL (root)) {
-		const gchar *text = gtk_label_get_text (GTK_LABEL (root));
-
-		if (text != NULL && g_strrstr (text, needle) != NULL)
-			return TRUE;
+		g_string_append (out, gtk_label_get_text (GTK_LABEL (root)));
+		g_string_append_c (out, '\n');
 	}
-
+	if (GTK_IS_BUTTON (root) && gtk_button_get_label (GTK_BUTTON (root))) {
+		g_string_append (out, gtk_button_get_label (GTK_BUTTON (root)));
+		g_string_append_c (out, '\n');
+	}
 	if (!GTK_IS_CONTAINER (root))
-		return FALSE;
-
-	GList *children = gtk_container_get_children (GTK_CONTAINER (root));
-
-	for (GList *l = children; l != NULL && !found; l = l->next)
-		found = label_mentions (l->data, needle);
-
+		return;
+	children = gtk_container_get_children (GTK_CONTAINER (root));
+	for (GList *l = children; l != NULL; l = l->next)
+		gather_text (l->data, out);
 	g_list_free (children);
+}
 
+G_GNUC_UNUSED static gboolean
+mentions (GtkWidget *root, const gchar *needle)
+{
+	GString *text = g_string_new (NULL);
+	gboolean found;
+
+	gather_text (root, text);
+	found = strstr (text->str, needle) != NULL;
+	g_string_free (text, TRUE);
 	return found;
 }
 
-/* [ find_dialog ] the Preferences window, once it exists */
-static GtkDialog *
-find_dialog (void)
+static GtkWidget *
+find_prefs (void)
 {
 	GList *windows = gtk_window_list_toplevels ();
-	GtkDialog *found = NULL;
+	GtkWidget *found = NULL;
 
-	for (GList *l = windows; l != NULL; l = l->next) {
-		GtkWindow *w = l->data;
-
-		if (GTK_IS_DIALOG (w) &&
-		    g_strcmp0 (gtk_window_get_title (w), "Preferences") == 0) {
-			found = GTK_DIALOG (w);
-			break;
-		}
-	}
-
+	for (GList *l = windows; l != NULL; l = l->next)
+		if (g_strcmp0 (gtk_widget_get_name (l->data),
+		               "fs-preferences") == 0 &&
+		    gtk_widget_get_mapped (l->data))
+			found = l->data;
 	g_list_free (windows);
-
 	return found;
 }
 
-/* [ drive_dialog ] one tick of the driver */
-static gboolean
-drive_dialog (gpointer data)
+/* The first mapped message dialog, or NULL. */
+static GtkWidget *
+find_message (void)
 {
-	static GList *paths = NULL;
-	GtkDialog *dialog;
-	GtkWidget *tree;
-	GtkWidget *notebook;
+	GList *windows = gtk_window_list_toplevels ();
+	GtkWidget *found = NULL;
+
+	for (GList *l = windows; l != NULL; l = l->next)
+		if (GTK_IS_MESSAGE_DIALOG (l->data) &&
+		    gtk_widget_get_mapped (l->data))
+			found = l->data;
+	g_list_free (windows);
+	return found;
+}
+
+static void
+pump (void)
+{
+	for (gint i = 0; i < 6; i++) {
+		while (gtk_events_pending ())
+			gtk_main_iteration ();
+		g_usleep (20000);
+	}
+}
+
+/* The page ids in navigation order, "general,events,...". */
+static gchar *
+nav_order (GtkWidget *win)
+{
+	GtkWidget *stack = find_named (win, "prefs-pages");
+	GString *out = g_string_new (NULL);
+	GList *pages;
+
+	if (stack == NULL)
+		return g_string_free (out, FALSE);
+
+	pages = gtk_container_get_children (GTK_CONTAINER (stack));
+	for (GList *l = pages; l != NULL; l = l->next) {
+		gchar *id = NULL;
+
+		gtk_container_child_get (GTK_CONTAINER (stack), l->data,
+		                         "name", &id, NULL);
+		if (out->len > 0)
+			g_string_append_c (out, ',');
+		g_string_append (out, id != NULL ? id : "?");
+		g_free (id);
+	}
+	g_list_free (pages);
+	return g_string_free (out, FALSE);
+}
+
+static gchar *
+expected_pages (guint32 sections, guint32 honors)
+{
+	GString *out = g_string_new ("general,events,policy");
+
+	if (honors & (FS_FWHON_REJECT_METHOD | FS_FWHON_OUTBOUND_MODE |
+	              FS_FWHON_LOG_ALLOWED))
+		g_string_append (out, ",firewall");
+	if (sections & FS_FWSEC_NETWORK)
+		g_string_append (out, ",network");
+	if (sections & FS_FWSEC_ICMP)
+		g_string_append (out, ",icmp");
+	if (sections & FS_FWSEC_ADVANCED)
+		g_string_append (out, ",protection");
+	return g_string_free (out, FALSE);
+}
+
+/* Clicks each navigation item; each must show its own page. */
+static void
+check_navigation (GtkWidget *win, const gchar *pages, const gchar *shots,
+                  const gchar *tag)
+{
+	GtkWidget *stack = find_named (win, "prefs-pages");
+	gchar **ids = g_strsplit (pages, ",", -1);
+	guint ok = 0, n = 0;
+
+	for (guint i = 0; ids[i] != NULL; i++) {
+		gchar *nav_name = g_strconcat ("nav:", ids[i], NULL);
+		GtkWidget *item = find_named (win, nav_name);
+		const gchar *now;
+
+		n++;
+		if (item == NULL) {
+			CHECK (FALSE, "[%s] navigation item for \"%s\"", tag, ids[i]);
+			g_free (nav_name);
+			continue;
+		}
+		gtk_button_clicked (GTK_BUTTON (item));
+		pump ();
+		now = gtk_stack_get_visible_child_name (GTK_STACK (stack));
+		if (g_strcmp0 (now, ids[i]) == 0 &&
+		    gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (item)))
+			ok++;
+		else
+			CHECK (FALSE, "[%s] \"%s\" shows page %s", tag, ids[i], now);
+
+		if (shots != NULL) {
+			GdkWindow *gw = gtk_widget_get_window (win);
+			GdkPixbuf *pix = gdk_pixbuf_get_from_window (
+				gw, 0, 0, gdk_window_get_width (gw),
+				gdk_window_get_height (gw));
+			gchar *file = g_strdup_printf ("%s/%s-%02u-%s.png", shots,
+			                               tag, i, ids[i]);
+
+			if (pix != NULL) {
+				gdk_pixbuf_save (pix, file, "png", NULL, NULL);
+				g_object_unref (pix);
+				g_print ("shot: %s\n", file);
+			}
+			g_free (file);
+
+			/* A page taller than the window: its end too. */
+			{
+				GtkWidget *scroll = gtk_stack_get_visible_child (
+					GTK_STACK (stack));
+				GtkAdjustment *adj = GTK_IS_SCROLLED_WINDOW (scroll)
+					? gtk_scrolled_window_get_vadjustment (
+						GTK_SCROLLED_WINDOW (scroll))
+					: NULL;
+
+				if (adj != NULL &&
+				    gtk_adjustment_get_upper (adj) >
+				    gtk_adjustment_get_page_size (adj) + 1) {
+					gtk_adjustment_set_value (adj,
+						gtk_adjustment_get_upper (adj));
+					pump ();
+					file = g_strdup_printf ("%s/%s-%02u-%s-end.png",
+					                        shots, tag, i, ids[i]);
+					pix = gdk_pixbuf_get_from_window (
+						gw, 0, 0, gdk_window_get_width (gw),
+						gdk_window_get_height (gw));
+					if (pix != NULL) {
+						gdk_pixbuf_save (pix, file, "png",
+						                 NULL, NULL);
+						g_object_unref (pix);
+						g_print ("shot: %s\n", file);
+					}
+					g_free (file);
+					gtk_adjustment_set_value (adj, 0);
+				}
+			}
+		}
+		g_free (nav_name);
+	}
+	CHECK (ok == n && n > 0,
+	       "[%s] every navigation item shows its own page (%u/%u)",
+	       tag, ok, n);
+	g_strfreev (ids);
+}
+
+/* Nothing the port does not do may be on offer anywhere. */
+static void
+check_no_dead_controls (GtkWidget *win, const gchar *tag)
+{
+	static const gchar *dead[] = {
+		"ToS", "Type of Service", "DHCP lease", "DHCP for",
+		"DHCP server", "dial-out", "Dial-out",
+		"not implemented", "Ignored hosts", "Ignored ports", "_Help"
+	};
+	GString *text = g_string_new (NULL);
+	guint hits = 0;
+
+	gather_text (win, text);
+	for (guint i = 0; i < G_N_ELEMENTS (dead); i++)
+		if (strstr (text->str, dead[i]) != NULL) {
+			g_print ("       dead text found: %s\n", dead[i]);
+			hits++;
+		}
+	CHECK (hits == 0, "[%s] no dead control or Help button on any page",
+	       tag);
+	g_string_free (text, TRUE);
+}
+
+/* Keys the settings file holds, from the file on disk. */
+static gboolean
+disk_has (const gchar *key, gchar **value)
+{
+	GKeyFile *kf = g_key_file_new ();
+	gboolean has = FALSE;
+
+	if (value != NULL)
+		*value = NULL;
+
+	if (g_key_file_load_from_file (kf, fs_prefs_path (), 0, NULL)) {
+		const gchar *rest = key + strlen ("/apps/stockfw/");
+		const gchar *slash = strchr (rest, '/');
+		gchar *group = g_strndup (rest, (gsize) (slash - rest));
+
+		has = g_key_file_has_key (kf, group, slash + 1, NULL);
+		if (has && value != NULL)
+			*value = g_key_file_get_value (kf, group, slash + 1, NULL);
+		g_free (group);
+	}
+	g_key_file_free (kf);
+	return has;
+}
+
+/* Table keys on disk, as "key=value" lines sorted by table order. */
+static gchar *
+disk_table_keys (void)
+{
+	guint n = 0;
+	const FsPrefSpec *specs = fs_prefs_specs (&n);
+	GString *out = g_string_new (NULL);
+
+	for (guint i = 0; i < n; i++) {
+		gchar *value = NULL;
+
+		if (disk_has (specs[i].key, &value))
+			g_string_append_printf (out, "%s=%s;",
+			                        specs[i].key + strlen ("/apps/stockfw/"),
+			                        value);
+		g_free (value);
+	}
+	return g_string_free (out, FALSE);
+}
+
+G_GNUC_UNUSED static gboolean
+sensitive (GtkWidget *win, const gchar *key)
+{
+	GtkWidget *w = find_named (win, key);
+
+	return w != NULL && gtk_widget_get_sensitive (w);
+}
+
+G_GNUC_UNUSED static gboolean
+reason_shown (GtkWidget *win, const gchar *key)
+{
+	gchar *name = g_strconcat ("reason:", key, NULL);
+	GtkWidget *w = find_named (win, name);
+
+	g_free (name);
+	return w != NULL && gtk_widget_get_visible (w);
+}
+
+G_GNUC_UNUSED static void
+set_switch (GtkWidget *win, const gchar *key, gboolean on)
+{
+	GtkWidget *w = find_named (win, key);
+
+	if (w != NULL && GTK_IS_SWITCH (w))
+		gtk_switch_set_active (GTK_SWITCH (w), on);
+	else
+		CHECK (FALSE, "switch for %s exists", key);
+}
+
+G_GNUC_UNUSED static void
+set_combo (GtkWidget *win, const gchar *key, const gchar *id)
+{
+	GtkWidget *w = find_named (win, key);
+
+	if (w != NULL && GTK_IS_COMBO_BOX (w))
+		gtk_combo_box_set_active_id (GTK_COMBO_BOX (w), id);
+	else
+		CHECK (FALSE, "choice for %s exists", key);
+}
+
+G_GNUC_UNUSED static const gchar *
+combo_id (GtkWidget *win, const gchar *key)
+{
+	GtkWidget *w = find_named (win, key);
+
+	return (w != NULL && GTK_IS_COMBO_BOX (w))
+	       ? gtk_combo_box_get_active_id (GTK_COMBO_BOX (w)) : NULL;
+}
+
+G_GNUC_UNUSED static gchar *
+combo_text (GtkWidget *win, const gchar *key)
+{
+	GtkWidget *w = find_named (win, key);
+
+	return (w != NULL && GTK_IS_COMBO_BOX_TEXT (w))
+	       ? gtk_combo_box_text_get_active_text (GTK_COMBO_BOX_TEXT (w))
+	       : NULL;
+}
+
+/* Every id a combo offers, "a,b,c". */
+G_GNUC_UNUSED static gchar *
+combo_ids (GtkWidget *win, const gchar *key)
+{
+	GtkWidget *w = find_named (win, key);
+	GString *out = g_string_new (NULL);
 	GtkTreeModel *model;
-	guint rows;
-	gint page;
+	GtkTreeIter iter;
+	gint col;
+
+	if (w == NULL || !GTK_IS_COMBO_BOX (w))
+		return g_string_free (out, FALSE);
+
+	model = gtk_combo_box_get_model (GTK_COMBO_BOX (w));
+	col = gtk_combo_box_get_id_column (GTK_COMBO_BOX (w));
+	if (gtk_tree_model_get_iter_first (model, &iter)) {
+		guint n = 0;
+
+		do {
+			gchar *id = NULL;
+
+			gtk_tree_model_get (model, &iter, col, &id, -1);
+			if (n++ > 0)
+				g_string_append_c (out, ',');
+			g_string_append (out, id != NULL ? id : "");
+			g_free (id);
+		} while (gtk_tree_model_iter_next (model, &iter));
+	}
+	return g_string_free (out, FALSE);
+}
+
+/* With STOCKFW_PREFS_SHOTS set: the window as it is now, as <name>.png. */
+G_GNUC_UNUSED static void
+snap (GtkWidget *win, const gchar *page, const gchar *name)
+{
+	const gchar *dir = g_getenv ("STOCKFW_PREFS_SHOTS");
+	gchar *nav, *file;
+	GdkWindow *gw;
+	GdkPixbuf *pix;
+
+	if (dir == NULL)
+		return;
+
+	nav = g_strconcat ("nav:", page, NULL);
+	gtk_button_clicked (GTK_BUTTON (find_named (win, nav)));
+	g_free (nav);
+	pump ();
+
+	gw = gtk_widget_get_window (win);
+	pix = gdk_pixbuf_get_from_window (gw, 0, 0, gdk_window_get_width (gw),
+	                                  gdk_window_get_height (gw));
+	file = g_strdup_printf ("%s/%s.png", dir, name);
+	if (pix != NULL) {
+		gdk_pixbuf_save (pix, file, "png", NULL, NULL);
+		g_object_unref (pix);
+		g_print ("shot: %s\n", file);
+	}
+	g_free (file);
+}
+
+static void
+click (GtkWidget *win, const gchar *name)
+{
+	GtkWidget *w = find_named (win, name);
+
+	if (w != NULL)
+		gtk_button_clicked (GTK_BUTTON (w));
+	else
+		CHECK (FALSE, "button %s exists", name);
+}
+
+/* ========================================================= scenarios */
+
+typedef enum
+{
+	ANSWER_NONE,        /* no question may appear              */
+	ANSWER_LATER,
+	ANSWER_APPLY_NOW
+} Answer;
+
+typedef struct
+{
+	const gchar *tag;
+	void       (*drive) (GtkWidget *win);
+	Answer       answer;
+	/* set by the driver */
+	gboolean     drove;
+	gboolean     asked;
+	gboolean     reported;
+	gchar       *report_text;
+} Scenario;
+
+static Scenario *current = NULL;
+static guint runs = 0;
+static gboolean scenario_done = FALSE;
+
+/* [ tick ]
+ * Drives one scenario: the window first, then any question or report
+ * that follows its Save. */
+static gboolean
+tick (gpointer data)
+{
+	GtkWidget *win, *msg;
 
 	(void) data;
 
 	if (++runs > SMOKE_MAX_RUNS) {
-		g_printerr ("ui-prefs-smoke: FAILED, dialog never completed\n");
-		failed = TRUE;
-		gtk_main_quit ();
+		CHECK (FALSE, "[%s] the window completed in time",
+		       current->tag);
+		scenario_done = TRUE;
 		return G_SOURCE_REMOVE;
 	}
 
-	dialog = find_dialog ();
+	msg = find_message ();
+	if (msg != NULL) {
+		const gchar *name = gtk_widget_get_name (msg);
 
-	if (dialog == NULL)
-		return G_SOURCE_CONTINUE;   /* still being built */
+		if (g_strcmp0 (name, "prefs-apply-question") == 0) {
+			current->asked = TRUE;
+			gtk_dialog_response (GTK_DIALOG (msg),
+			                     current->answer == ANSWER_APPLY_NOW
+			                     ? GTK_RESPONSE_OK
+			                     : GTK_RESPONSE_CANCEL);
+		} else {
+			GString *text = g_string_new (NULL);
 
-	tree = find_widget (GTK_WIDGET (dialog), GTK_TYPE_TREE_VIEW);
-	notebook = find_widget (GTK_WIDGET (dialog), GTK_TYPE_NOTEBOOK);
-
-	if (tree == NULL || notebook == NULL) {
-		g_printerr ("ui-prefs-smoke: FAILED, %s missing\n",
-		            tree == NULL ? "section tree" : "page notebook");
-		failed = TRUE;
-		gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
-		return G_SOURCE_REMOVE;
+			gather_text (msg, text);
+			current->reported = TRUE;
+			g_free (current->report_text);
+			current->report_text = g_string_free (text, FALSE);
+			gtk_dialog_response (GTK_DIALOG (msg), GTK_RESPONSE_OK);
+		}
+		return G_SOURCE_CONTINUE;
 	}
 
-	model = gtk_tree_view_get_model (GTK_TREE_VIEW (tree));
-
-	/* A tree with a model but no column renders as a blank box --
-	 * exactly the bug that shipped once.  The model walk below would
-	 * still pass, so the column is checked separately. */
-	if (gtk_tree_view_get_n_columns (GTK_TREE_VIEW (tree)) < 1) {
-		g_printerr ("ui-prefs-smoke: FAILED, section tree has no "
-		            "column, it would render empty\n");
-		failed = TRUE;
-		gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
-		return G_SOURCE_REMOVE;
+	if (!current->drove) {
+		win = find_prefs ();
+		if (win == NULL)
+			return G_SOURCE_CONTINUE;
+		pump ();
+		current->drove = TRUE;
+		current->drive (win);
 	}
+
+	return scenario_done ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
+}
+
+static void
+run_scenario (Scenario *scenario)
+{
+	guint source;
+
+	current = scenario;
+	runs = 0;
+	scenario_done = FALSE;
+	g_print ("---- %s\n", scenario->tag);
+
+	source = g_timeout_add (SMOKE_STEP_MS, tick, NULL);
+	fs_dialogs_preferences (NULL);
+	scenario_done = TRUE;
+	/* Let a pending tick see the flag and go. */
+	if (g_main_context_find_source_by_id (NULL, source) != NULL)
+		g_source_remove (source);
+
+	CHECK (scenario->drove, "[%s] the window opened and was driven",
+	       scenario->tag);
+	if (scenario->answer == ANSWER_NONE)
+		CHECK (!scenario->asked,
+		       "[%s] no apply question (nothing to apply to)",
+		       scenario->tag);
+	else
+		CHECK (scenario->asked,
+		       "[%s] a firewall change with the firewall running asks "
+		       "\"Apply the new firewall settings now?\"", scenario->tag);
+}
+
+/* Writes the start state straight into a fresh settings file. */
+static void
+seed (const gchar *contents)
+{
+	g_file_set_contents (fs_prefs_path (), contents, -1, NULL);
+	CHECK (fs_prefs_load (), "seeded settings load");
+}
+
+static void
+check_pages (GtkWidget *win, const gchar *tag)
+{
+	gchar *want = expected_pages (fs_backend ()->fw_sections,
+	                              fs_backend ()->fw_honors);
+	gchar *have = nav_order (win);
+
+	CHECK (g_strcmp0 (want, have) == 0,
+	       "[%s] pages follow the capability bits: %s (want %s)",
+	       tag, have, want);
+	check_navigation (win, have, g_getenv ("STOCKFW_PREFS_SHOTS"), tag);
+	check_no_dead_controls (win, tag);
 
 	{
-		GList *columns = gtk_tree_view_get_columns (
-			GTK_TREE_VIEW (tree));
-		GList *l;
-		gboolean has_text_renderer = FALSE;
+		GtkWidget *bg = find_named (win, "prefs-background");
 
-		for (l = columns; l != NULL; l = l->next) {
-			GList *cells = gtk_cell_layout_get_cells (
-				GTK_CELL_LAYOUT (l->data));
+		CHECK (bg != NULL && !gtk_widget_get_visible (bg),
+		       "[%s] the Background card is in place and hidden until "
+		       "it has a setting", tag);
+	}
+	g_free (want);
+	g_free (have);
+}
 
-			for (GList *c = cells; c != NULL; c = c->next) {
-				if (GTK_IS_CELL_RENDERER_TEXT (c->data))
-					has_text_renderer = TRUE;
-			}
-			g_list_free (cells);
-		}
-		g_list_free (columns);
+/* ---------------------------------------------------- real backend */
+#ifndef FS_PREFS_FAKE_BACKEND
 
-		if (!has_text_renderer) {
-			g_printerr ("ui-prefs-smoke: FAILED, section tree "
-			            "column has no text renderer\n");
-			failed = TRUE;
-			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
-			return G_SOURCE_REMOVE;
-		}
+static void
+drive_real (GtkWidget *win)
+{
+	const FsBackend *b = fs_backend ();
+
+	if (g_strcmp0 (b->name, "linux") == 0)
+		CHECK (b->fw_sections == LINUX_SECTIONS &&
+		       b->fw_honors == LINUX_HONORS,
+		       "the Linux capability set is the one the fake smoke "
+		       "tests (sections 0x%x honors 0x%x)",
+		       b->fw_sections, b->fw_honors);
+	else if (g_strcmp0 (b->name, "windows") == 0)
+		CHECK (b->fw_sections == WINDOWS_SECTIONS &&
+		       b->fw_honors == WINDOWS_HONORS,
+		       "the Windows capability set is the one the fake smoke "
+		       "tests (sections 0x%x honors 0x%x)",
+		       b->fw_sections, b->fw_honors);
+
+	check_pages (win, b->name);
+
+	/* Open and Save without touching anything: nothing is written. */
+	click (win, "prefs-save");
+}
+
+#else
+/* ---------------------------------------------------- fake backend */
+
+static void
+drive_linux (GtkWidget *win)
+{
+	gchar *text, *ids, *keys;
+
+	check_pages (win, "linux");
+
+	/* D1: the stored Internet device, not row 1 (eth0). */
+	CHECK (g_strcmp0 (combo_id (win, FS_PREFS_FW_EXT_IF), "eth1") == 0,
+	       "D1: the Internet device combo shows the stored eth1 (got %s)",
+	       combo_id (win, FS_PREFS_FW_EXT_IF));
+
+	/* D2: the local device combo lists the devices too, and keeps a
+	 * stored device that is not attached, marked as such. */
+	ids = combo_ids (win, FS_PREFS_FW_INT_IF);
+	CHECK (g_strcmp0 (ids, ",eth0,eth1,wlan0,eth9") == 0,
+	       "D2: the local device combo lists every device once plus the "
+	       "absent stored one (%s)", ids);
+	g_free (ids);
+	ids = combo_ids (win, FS_PREFS_FW_EXT_IF);
+	CHECK (g_strcmp0 (ids, ",eth0,eth1,wlan0") == 0,
+	       "both combos are filled from list_interfaces, eth1 once (%s)",
+	       ids);
+	g_free (ids);
+	text = combo_text (win, FS_PREFS_FW_INT_IF);
+	CHECK (g_strcmp0 (combo_id (win, FS_PREFS_FW_INT_IF), "eth9") == 0 &&
+	       text != NULL && strstr (text, "not present") != NULL,
+	       "D2: the stored local device eth9 stays chosen as \"%s\"",
+	       text != NULL ? text : "(none)");
+	g_free (text);
+	{
+		GtkWidget *note = find_named (win, "prefs-absent-note");
+
+		CHECK (note != NULL && gtk_widget_get_visible (note),
+		       "the \"not present\" note is shown");
 	}
 
-	if (paths == NULL)
-		paths = walk_paths (model, NULL, NULL);
+	/* D3: unset reads as off, as the Policy page treats it. */
+	{
+		GtkWidget *w = find_named (win, FS_PREFS_APPLY_POLICY_INSTANTLY);
 
-	rows = g_list_length (paths);
-
-	if (phase < rows) {
-		GtkTreePath *path = g_list_nth_data (paths, phase);
-		GtkTreeIter iter;
-		gchar *label = NULL;
-		gint section = -1;
-
-		gtk_tree_view_set_cursor (GTK_TREE_VIEW (tree), path, NULL, FALSE);
-
-		page = gtk_notebook_get_current_page (GTK_NOTEBOOK (notebook));
-
-		if (gtk_tree_model_get_iter (model, &iter, path))
-			gtk_tree_model_get (model, &iter, 0, &section, 1, &label, -1);
-
-		g_print ("ui-prefs-smoke: %2u %-20s section %d -> page %d %s\n",
-		         phase, label ? label : "?", section, page,
-		         page == (gint) phase ? "ok" : "MISMATCH");
-
-		/* Row i must select notebook page i -- the invariant the
-		 * sidebar's alignment rests on.  (Not "section == page":
-		 * per-page FS_FWSEC_* gating makes the section enums of the
-		 * offered pages non-contiguous on purpose.) */
-		if (page != (gint) phase) {
-			g_printerr ("ui-prefs-smoke: FAILED, sidebar row %u "
-			            "selected page %d\n", phase, page);
-			failed = TRUE;
-			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
-			return G_SOURCE_REMOVE;
-		}
-
-		/* WYSIWYG: a Firewall sub-page must appear exactly when the
-		 * backend's fw_sections bit says it reads it.  A page offered
-		 * without its bit asks the user to configure a firewall that
-		 * is not listening; a bit without its page hides a real
-		 * feature. */
-		if (label != NULL) {
-			static const struct
-			{
-				const gchar *label;
-				guint32      bit;
-			} fw_pages[] = {
-				{ "Network Settings", FS_FWSEC_NETWORK },
-				{ "ICMP Filtering",   FS_FWSEC_ICMP },
-				{ "ToS Filtering",    FS_FWSEC_TOS },
-				{ "Advanced Options", FS_FWSEC_ADVANCED }
-			};
-
-			for (guint i = 0; i < G_N_ELEMENTS (fw_pages); i++) {
-				if (g_strcmp0 (label, _(fw_pages[i].label)) != 0)
-					continue;
-
-				if ((fs_backend ()->fw_sections &
-				     fw_pages[i].bit) == 0) {
-					g_printerr ("ui-prefs-smoke: FAILED, "
-					            "\"%s\" is offered but the "
-					            "backend does not read it\n",
-					            fw_pages[i].label);
-					failed = TRUE;
-					g_free (label);
-					gtk_dialog_response (dialog,
-					                     GTK_RESPONSE_CANCEL);
-					return G_SOURCE_REMOVE;
-				}
-			}
-		}
-
-		/* The tray switches are implemented (src/ui/fs-tray.c), so
-		 * both must be PRESENT and SENSITIVE on the Interface page,
-		 * and the page must not still carry the old note admitting
-		 * the settings do nothing.  A regression to the disabled
-		 * state fails here, not in review. */
-		if (label != NULL &&
-		    g_strcmp0 (label, _("Interface")) == 0) {
-			GtkWidget *iface =
-				gtk_notebook_get_nth_page (
-					GTK_NOTEBOOK (notebook), page);
-			static const gchar *tray_checks[] = {
-				"Show a tray icon", "Minimize to the tray"
-			};
-			gboolean tray_ok = TRUE;
-
-			if (iface == NULL) {
-				g_printerr ("ui-prefs-smoke: FAILED, the "
-				            "Interface page is not in the "
-				            "notebook\n");
-				failed = TRUE;
-				tray_ok = FALSE;
-			}
-
-			for (guint i = 0;
-			     iface != NULL && i < G_N_ELEMENTS (tray_checks);
-			     i++) {
-				GtkWidget *check =
-					find_check_under (iface, _(tray_checks[i]));
-
-				if (check == NULL) {
-					g_printerr ("ui-prefs-smoke: FAILED, "
-					            "\"%s\" is missing from the "
-					            "Interface page\n",
-					            tray_checks[i]);
-					failed = TRUE;
-					tray_ok = FALSE;
-				} else if (!gtk_widget_get_sensitive (check)) {
-					g_printerr ("ui-prefs-smoke: FAILED, "
-					            "\"%s\" is insensitive but the "
-					            "tray module implements it\n",
-					            tray_checks[i]);
-					failed = TRUE;
-					tray_ok = FALSE;
-				}
-			}
-
-			if (iface != NULL &&
-			    label_mentions (iface, "not implemented")) {
-				g_printerr ("ui-prefs-smoke: FAILED, the "
-				            "Interface page still carries a "
-				            "\"not implemented\" note\n");
-				failed = TRUE;
-				tray_ok = FALSE;
-			}
-
-			if (tray_ok)
-				g_print ("ui-prefs-smoke: tray switches "
-				         "present, live, and honestly "
-				         "described\n");
-		}
-
-		/* The settings pages, as the backend's capability bits
-		 * declare them.  ICMP is live wherever it is offered (both
-		 * backends read it, through the plan on Windows and the
-		 * script generator on Linux); the rate-limit disclosure
-		 * appears exactly where the backend cannot rate-limit. */
-		if (label != NULL &&
-		    g_strcmp0 (label, _("ICMP Filtering")) == 0) {
-			GtkWidget *icmp_page =
-				gtk_notebook_get_nth_page (
-					GTK_NOTEBOOK (notebook), page);
-			GtkWidget *master = icmp_page != NULL
-				? find_check_under (icmp_page,
-				                    _("Enable ICMP filtering"))
-				: NULL;
-
-			if (master == NULL ||
-			    !gtk_widget_get_sensitive (master)) {
-				g_printerr ("ui-prefs-smoke: FAILED, the ICMP "
-				            "master switch is missing or "
-				            "insensitive on an offered page\n");
-				failed = TRUE;
-			} else {
-				g_print ("ui-prefs-smoke: ICMP page live "
-				         "(master switch sensitive)\n");
-			}
-
-			if (icmp_page != NULL) {
-				gboolean wants_note =
-					(fs_backend ()->fw_honors &
-					 FS_FWHON_RATE_LIMIT) == 0;
-
-				if (wants_note !=
-				    label_mentions (icmp_page, "rate limits")) {
-					g_printerr ("ui-prefs-smoke: FAILED, the "
-					            "ICMP rate-limit disclosure "
-					            "does not match "
-					            "FS_FWHON_RATE_LIMIT\n");
-					failed = TRUE;
-				}
-			}
-		}
-
-		/* Advanced Options: the blocks are live wherever the page
-		 * is offered, but the rejection method is live only where
-		 * the backend can actually reject -- and where it cannot
-		 * (Windows drops silently) it stays disabled with an
-		 * admission, never live and inert. */
-		if (label != NULL &&
-		    g_strcmp0 (label, _("Advanced Options")) == 0) {
-			GtkWidget *adv_page =
-				gtk_notebook_get_nth_page (
-					GTK_NOTEBOOK (notebook), page);
-			GtkWidget *reject = adv_page != NULL
-				? find_check_under (adv_page,
-				                    _("Reject with error packet"))
-				: NULL;
-			gboolean can = (fs_backend ()->fw_honors &
-			                FS_FWHON_REJECT_METHOD) != 0;
-
-			if (reject == NULL) {
-				g_printerr ("ui-prefs-smoke: FAILED, the "
-				            "rejection radio pair is missing\n");
-				failed = TRUE;
-			} else if (gtk_widget_get_sensitive (reject) != can) {
-				g_printerr ("ui-prefs-smoke: FAILED, the "
-				            "rejection method is %s but "
-				            "FS_FWHON_REJECT_METHOD says %s\n",
-				            gtk_widget_get_sensitive (reject)
-					            ? "live" : "disabled",
-				            can ? "live" : "disabled");
-				failed = TRUE;
-			} else if (!can &&
-			           !label_mentions (adv_page,
-			                            "drops blocked packets")) {
-				g_printerr ("ui-prefs-smoke: FAILED, the "
-				            "disabled rejection method carries "
-				            "no admission note\n");
-				failed = TRUE;
-			} else {
-				g_print ("ui-prefs-smoke: rejection method "
-				         "honestly %s\n",
-				         can ? "live"
-				             : "disabled with a note");
-			}
-
-			if (adv_page != NULL) {
-				static const gchar *live_checks[] = {
-					"Block broadcasts from external network",
-					"Block broadcasts from internal network",
-					"Block traffic from reserved addresses "
-					"on public interfaces"
-				};
-				gboolean blocks_ok = TRUE;
-
-				for (guint i = 0;
-				     i < G_N_ELEMENTS (live_checks); i++) {
-					GtkWidget *check =
-						find_check_under (adv_page,
-						                  _(live_checks[i]));
-
-					if (check == NULL ||
-					    !gtk_widget_get_sensitive (check)) {
-						g_printerr ("ui-prefs-smoke: "
-						            "FAILED, \"%s\" is "
-						            "missing or "
-						            "insensitive on an "
-						            "offered page\n",
-						            live_checks[i]);
-						failed = TRUE;
-						blocks_ok = FALSE;
-					}
-				}
-
-				if (blocks_ok)
-					g_print ("ui-prefs-smoke: broadcast and "
-					         "reserved-source blocks live\n");
-			}
-		}
-
-		g_free (label);
-		phase++;
-		return G_SOURCE_CONTINUE;
+		CHECK (w != NULL && !gtk_switch_get_active (GTK_SWITCH (w)),
+		       "D3: \"Apply policy changes immediately\" is off when "
+		       "the key is unset");
 	}
 
-	if (phase == rows) {
-		/* Four base pages, plus one per FS_FWSEC_* bit the backend
-		 * sets: Linux offers all four sub-pages (8 sections),
-		 * Windows offers ICMP Filtering and Advanced Options (6), a
-		 * backend that reads no settings offers the base pages
-		 * alone (4). */
-		guint32 secs = fs_backend ()->fw_sections;
-		guint expected = 4;
+	/* Firewall page rows, Linux only. */
+	CHECK (g_strcmp0 (combo_id (win, FS_PREFS_FW_DENY_PACKETS), "drop") == 0,
+	       "blocked connections: Drop by default");
+	CHECK (g_strcmp0 (combo_id (win, FS_PREFS_FW_RESTRICTIVE_OUTBOUND),
+	                  "allow") == 0,
+	       "outbound: Allow all by default");
+	{
+		GtkWidget *warn = find_named (win, "prefs-outbound-warning");
 
-		for (guint32 bit = 1; bit != 0; bit <<= 1)
-			if (secs & bit)
-				expected++;
+		CHECK (warn != NULL && !gtk_widget_get_visible (warn),
+		       "no restrictive-mode warning while outbound is allowed");
+		set_combo (win, FS_PREFS_FW_RESTRICTIVE_OUTBOUND, "block");
+		CHECK (warn != NULL && gtk_widget_get_visible (warn) &&
+		       mentions (warn, "updates"),
+		       "choosing \"Block outgoing\" shows the warning, updates "
+		       "named");
+		snap (win, "firewall", "linux-firewall-block-outgoing");
+		set_combo (win, FS_PREFS_FW_RESTRICTIVE_OUTBOUND, "allow");
+	}
+	CHECK (find_named (win, FS_PREFS_FW_LOG_ALLOWED) != NULL,
+	       "\"Log allowed connections\" is offered on Linux");
 
-		/* Pin the shipped capability sets.  The count check above
-		 * derives from the same bits the pages are gated on, so on
-		 * its own it would pass no matter which bits a sabotage
-		 * flipped; this anchors them to the backend's identity. */
-		if (g_strcmp0 (fs_backend ()->name, "windows") == 0 &&
-		    (secs != (FS_FWSEC_ICMP | FS_FWSEC_ADVANCED) ||
-		     fs_backend ()->fw_honors != 0)) {
-			g_printerr ("ui-prefs-smoke: FAILED, the Windows "
-			            "capability set drifted "
-			            "(fw_sections=0x%x fw_honors=0x%x)\n",
-			            secs, fs_backend ()->fw_honors);
-			failed = TRUE;
-			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
-			return G_SOURCE_REMOVE;
-		}
+	/* D4: Linux blocks need the Internet device. */
+	CHECK (sensitive (win, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST) &&
+	       sensitive (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES) &&
+	       !reason_shown (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES),
+	       "D4: with an Internet device the device blocks are live");
+	CHECK (!sensitive (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST) &&
+	       reason_shown (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST),
+	       "D4: the local-network block is disabled, with the reason, "
+	       "while sharing is off");
+	set_combo (win, FS_PREFS_FW_EXT_IF, "");
+	CHECK (!sensitive (win, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST) &&
+	       !sensitive (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES) &&
+	       reason_shown (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES) &&
+	       reason_shown (win, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST),
+	       "D4: with no Internet device those blocks are disabled and "
+	       "say why");
+	CHECK (!sensitive (win, FS_PREFS_FW_NAT) &&
+	       reason_shown (win, FS_PREFS_FW_NAT),
+	       "connection sharing needs both devices, and says so");
+	snap (win, "protection", "linux-protection-no-device");
+	snap (win, "network", "linux-network-no-device");
+	set_combo (win, FS_PREFS_FW_EXT_IF, "eth1");
+	CHECK (sensitive (win, FS_PREFS_FW_NAT) &&
+	       !reason_shown (win, FS_PREFS_FW_NAT),
+	       "with both devices chosen, sharing can be turned on");
+	set_switch (win, FS_PREFS_FW_NAT, TRUE);
+	CHECK (sensitive (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST),
+	       "sharing on: the local-network block becomes live");
+	set_switch (win, FS_PREFS_FW_NAT, FALSE);
 
-		g_print ("ui-prefs-smoke: %u sections (fw_sections=0x%x), "
-		         "all mapped correctly\n", rows, secs);
+	/* ICMP: types follow the master switch; the notes fit Linux. */
+	set_switch (win, FS_PREFS_FW_FILTER_ICMP, FALSE);
+	CHECK (!sensitive (win, FS_PREFS_FW_ICMP_ECHO_REQUEST),
+	       "ICMP types are disabled while filtering is off");
+	set_switch (win, FS_PREFS_FW_FILTER_ICMP, TRUE);
+	CHECK (sensitive (win, FS_PREFS_FW_ICMP_ECHO_REQUEST),
+	       "ICMP types come back with filtering");
+	{
+		GtkWidget *icmp = find_named (win, "prefs-pages");
 
-		if (rows != expected) {
-			g_printerr ("ui-prefs-smoke: FAILED, expected %u "
-			            "sections for fw_sections=0x%x, got %u\n",
-			            expected, secs, rows);
-			failed = TRUE;
-			gtk_dialog_response (dialog, GTK_RESPONSE_CANCEL);
-			return G_SOURCE_REMOVE;
-		}
-
-		phase++;
-		return G_SOURCE_CONTINUE;
+		CHECK (mentions (icmp, "IPv6 uses the same choices") &&
+		       !mentions (icmp, "Windows' own rules") &&
+		       !mentions (icmp, "rate limits"),
+		       "Linux ICMP notes: IPv6 yes, Windows caveats no");
 	}
 
-	/* Everything visited: press Accept so the save path runs too. */
-	g_print ("ui-prefs-smoke: pressing Accept\n");
-	gtk_dialog_response (dialog, GTK_RESPONSE_OK);
+	/* The policy link works only with nothing pending. */
+	CHECK (sensitive (win, "prefs-open-policy"),
+	       "\"Change on the Policy page\" is live with no changes");
 
-	return G_SOURCE_REMOVE;
+	/* D8: change exactly two settings, one of them a firewall one. */
+	set_switch (win, FS_PREFS_FW_ICMP_ECHO_REQUEST, FALSE);
+	set_switch (win, FS_PREFS_SKIP_REDUNDANT, TRUE);
+	CHECK (!sensitive (win, "prefs-open-policy"),
+	       "the Policy link waits while changes are pending");
+	{
+		GtkWidget *status = find_named (win, "prefs-status");
+
+		CHECK (status != NULL &&
+		       g_strcmp0 (gtk_label_get_text (GTK_LABEL (status)),
+		                  "2 unsaved changes") == 0,
+		       "the footer counts the changes (\"%s\")",
+		       status ? gtk_label_get_text (GTK_LABEL (status)) : "");
+	}
+
+	keys = disk_table_keys ();
+	g_print ("       before save: %s\n", keys);
+	g_free (keys);
+
+	if (g_getenv ("STOCKFW_PREFS_SHOTS") != NULL) {
+		/* A narrow window must still read: wrapping, scrolling. */
+		gchar *file = g_build_filename (g_getenv ("STOCKFW_PREFS_SHOTS"),
+		                                "linux-narrow-protection.png",
+		                                NULL);
+		GdkPixbuf *pix;
+		GdkWindow *gw;
+
+		gtk_window_resize (GTK_WINDOW (win), 560, 460);
+		click (win, "nav:protection");
+		pump ();
+		pump ();
+		gw = gtk_widget_get_window (win);
+		pix = gdk_pixbuf_get_from_window (gw, 0, 0,
+		                                  gdk_window_get_width (gw),
+		                                  gdk_window_get_height (gw));
+		if (pix != NULL) {
+			gdk_pixbuf_save (pix, file, "png", NULL, NULL);
+			g_object_unref (pix);
+			g_print ("shot: %s\n", file);
+		}
+		g_free (file);
+		click (win, "nav:firewall");
+		set_combo (win, FS_PREFS_FW_RESTRICTIVE_OUTBOUND, "block");
+		pump ();
+		file = g_build_filename (g_getenv ("STOCKFW_PREFS_SHOTS"),
+		                         "linux-narrow-firewall-block.png", NULL);
+		pix = gdk_pixbuf_get_from_window (gw, 0, 0,
+		                                  gdk_window_get_width (gw),
+		                                  gdk_window_get_height (gw));
+		if (pix != NULL) {
+			gdk_pixbuf_save (pix, file, "png", NULL, NULL);
+			g_object_unref (pix);
+			g_print ("shot: %s\n", file);
+		}
+		g_free (file);
+		set_combo (win, FS_PREFS_FW_RESTRICTIVE_OUTBOUND, "allow");
+	}
+
+	click (win, "prefs-save");
+}
+
+static void
+drive_windows (GtkWidget *win)
+{
+	check_pages (win, "windows");
+
+	CHECK (find_named (win, FS_PREFS_FW_DENY_PACKETS) == NULL &&
+	       find_named (win, FS_PREFS_FW_RESTRICTIVE_OUTBOUND) == NULL &&
+	       find_named (win, FS_PREFS_FW_LOG_ALLOWED) == NULL,
+	       "Windows: no Reject/Drop, outbound mode or allowed logging");
+	CHECK (find_named (win, FS_PREFS_FW_EXT_IF) == NULL &&
+	       find_named (win, FS_PREFS_FW_INT_IF) == NULL &&
+	       find_named (win, FS_PREFS_FW_NAT) == NULL,
+	       "Windows: no device choosers and no connection sharing");
+	{
+		GtkWidget *pages = find_named (win, "prefs-pages");
+
+		CHECK (mentions (pages, "IPv4 only") &&
+		       mentions (pages, "Windows' own rules") &&
+		       mentions (pages, "rate limits") &&
+		       !mentions (pages, "IPv6 uses the same choices"),
+		       "Windows ICMP notes: IPv4 allow rules beside Windows' "
+		       "own, no rate limits");
+		CHECK (mentions (pages, "Windows treats as public"),
+		       "Windows protection rows describe the profile scoping");
+	}
+	CHECK (sensitive (win, FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST) &&
+	       sensitive (win, FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST) &&
+	       sensitive (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES),
+	       "Windows protection switches are live (no device needed)");
+
+	set_switch (win, FS_PREFS_FW_FILTER_ICMP, FALSE);
+	click (win, "prefs-save");
+}
+
+static void
+drive_cancel (GtkWidget *win)
+{
+	set_switch (win, FS_PREFS_SKIP_REDUNDANT, TRUE);
+	set_switch (win, FS_PREFS_FW_ICMP_TIMESTAMPING, TRUE);
+	click (win, "prefs-cancel");
+}
+
+static void
+drive_no_change (GtkWidget *win)
+{
+	/* Toggle and toggle back: no change, nothing written, no question. */
+	set_switch (win, FS_PREFS_FW_ICMP_TIMESTAMPING, TRUE);
+	set_switch (win, FS_PREFS_FW_ICMP_TIMESTAMPING, FALSE);
+	click (win, "prefs-save");
+}
+
+#endif
+
+/* ============================================================== main */
+
+static void
+check_about_and_theme (void)
+{
+	const gchar **authors = fs_dialogs_about_authors ();
+	static const gchar *const tokens[] = {
+		"#f4f5f7", "#14161b", "#16181d", "#2a2f39", "#eaf0fb",
+		"#ffebee", "#b71c1c", "#f9f9f9",
+	};
+	static const gchar *const forbidden[] = { ":focused", ":insensitive" };
+	GtkCssProvider *provider = gtk_css_provider_new ();
+	GError *error = NULL;
+
+	/* GtkAboutDialog parses authors as markup without escaping them,
+	 * so each must parse -- and the creator line must read as written. */
+	CHECK (authors != NULL && authors[0] != NULL, "About has authors");
+	for (guint i = 0; authors != NULL && authors[i] != NULL; i++) {
+		gchar *plain = NULL;
+		gboolean ok = pango_parse_markup (authors[i], -1, '\0', NULL,
+		                                  &plain, NULL, NULL);
+
+		CHECK (ok, "about author %u is valid markup", i);
+		if (i == 0)
+			CHECK (g_strcmp0 (plain,
+			                  "Qusai Fethalrahman (Qusaifox2@gmail.com)"
+			                  " - Creator & Original Developer") == 0,
+			       "the creator line renders as written");
+		g_free (plain);
+	}
+
+	CHECK (gtk_css_provider_load_from_data (provider, fs_theme_css, -1,
+	                                        &error) && error == NULL,
+	       "theme loads clean%s%s", error ? ": " : "",
+	       error ? error->message : "");
+	g_clear_error (&error);
+	for (guint i = 0; i < G_N_ELEMENTS (tokens); i++)
+		CHECK (strstr (fs_theme_css, tokens[i]) != NULL,
+		       "theme keeps palette token %s", tokens[i]);
+	for (guint i = 0; i < G_N_ELEMENTS (forbidden); i++)
+		CHECK (strstr (fs_theme_css, forbidden[i]) == NULL,
+		       "theme avoids deprecated %s", forbidden[i]);
+
+	/* The theme drives the window: install it as the app does. */
+	gtk_style_context_add_provider_for_screen (
+		gdk_screen_get_default (), GTK_STYLE_PROVIDER (provider),
+		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	g_object_unref (provider);
 }
 
 int
 main (int argc, char **argv)
 {
-	gint rc;
+	gchar *dir;
+
+	/* Isolate the settings file before anything computes its path. */
+	dir = g_dir_make_tmp ("stockfw-prefs-smoke-XXXXXX", NULL);
+#ifdef G_OS_WIN32
+	g_setenv ("APPDATA", dir, TRUE);
+#else
+	g_setenv ("XDG_CONFIG_HOME", dir, TRUE);
+#endif
+	g_log_set_writer_func (count_warnings, NULL, NULL);
 
 	gtk_init (&argc, &argv);
-	fs_prefs_load ();
+	g_mkdir_with_parents (g_path_get_dirname (fs_prefs_path ()), 0700);
 
-	/* About credits: GtkAboutDialog parses the author strings as
-	 * markup without escaping them (see fs-dialogs.c), so every
-	 * string must be valid Pango markup -- and the creator line must
-	 * still READ as written once parsed, neither mangled nor
-	 * double-escaped.  Without g_markup_escape_text() the bare '&'
-	 * fails here, which is exactly what shipped: the dialog showed
-	 * the raw <span size=...> tags. */
+	check_about_and_theme ();
+
+#ifndef FS_PREFS_FAKE_BACKEND
 	{
-		const gchar **authors = fs_dialogs_about_authors ();
-		gchar *creator = NULL;
+		static Scenario real = { "real", drive_real, ANSWER_NONE,
+		                         FALSE, FALSE, FALSE, NULL };
+		gchar *keys;
 
-		if (authors == NULL || authors[0] == NULL) {
-			g_printerr ("ui-prefs-smoke: FAILED, no About authors\n");
-			failed = TRUE;
-		} else {
-			for (guint i = 0; authors[i] != NULL; i++) {
-				GError *error = NULL;
-				gchar *plain = NULL;
-
-				if (!pango_parse_markup (authors[i], -1, '\0',
-				                          NULL, &plain, NULL,
-				                          &error)) {
-					g_printerr ("ui-prefs-smoke: FAILED, "
-					            "about author %u \"%s\" is "
-					            "not valid markup: %s\n",
-					            i, authors[i],
-					            error != NULL
-					            ? error->message : "?");
-					failed = TRUE;
-				} else {
-					g_print ("ui-prefs-smoke: about author "
-					         "%u renders as: %s\n",
-					         i, plain != NULL ? plain : "");
-					if (i == 0) {
-						creator = plain;
-						plain = NULL;
-					}
-				}
-				g_clear_error (&error);
-				g_free (plain);
-			}
-
-			if (creator != NULL &&
-			    g_strcmp0 (creator,
-			               "Qusai Fethalrahman (Qusaifox2@gmail.com)"
-			               " - Creator & Original Developer") != 0) {
-				g_printerr ("ui-prefs-smoke: FAILED, creator "
-				            "line renders as \"%s\"\n", creator);
-				failed = TRUE;
-			}
-		}
-		g_free (creator);
+		seed ("[client]\nenable_tray_icon=true\n");
+		run_scenario (&real);
+		keys = disk_table_keys ();
+		CHECK (g_strcmp0 (keys, "client/enable_tray_icon=true;") == 0,
+		       "Save without a change writes nothing (%s)", keys);
+		g_free (keys);
 	}
-
-	/* The stylesheet checks: load, pinned palette, forbidden
-	 * pseudo-classes -- see the file comment for each one's teeth. */
+#else
 	{
-		static const gchar *const tokens[] = {
-			"#f4f5f7",   /* canvas (1.0.7 palette)        */
-			"#14161b",   /* sidebar                       */
-			"#16181d",   /* ink, primary button           */
-			"#2a2f39",   /* selected nav item, hover      */
-			"#eaf0fb",   /* selected row (neutral)        */
-			"#ffebee",   /* blocked row background        */
-			"#b71c1c",   /* blocked row text              */
-			"#f9f9f9",   /* alternating status rows       */
-		};
-		static const gchar *const forbidden[] = {
-			":focused",     /* GTK4 name; GTK3.24 warns "use
-			                   :focus instead" at style resolve */
-			":insensitive", /* ditto, use :disabled            */
-		};
-		GtkCssProvider *provider = gtk_css_provider_new ();
-		GError *error = NULL;
-		gboolean loaded;
+		static Scenario linux_run = { "linux", drive_linux, ANSWER_LATER,
+		                              FALSE, FALSE, FALSE, NULL };
+		static Scenario windows_run = { "windows", drive_windows,
+		                                ANSWER_APPLY_NOW,
+		                                FALSE, FALSE, FALSE, NULL };
+		static Scenario cancel_run = { "cancel", drive_cancel,
+		                               ANSWER_NONE,
+		                               FALSE, FALSE, FALSE, NULL };
+		static Scenario same_run = { "no-change", drive_no_change,
+		                             ANSWER_NONE,
+		                             FALSE, FALSE, FALSE, NULL };
+		gchar *keys, *value = NULL;
 
-		loaded = gtk_css_provider_load_from_data (provider,
-		                                          fs_theme_css,
-		                                          -1, &error);
+		/* ---- Linux ---- */
+		fake_as_linux ();
+		fake_state = FS_FW_RUNNING;
+		seed ("[firewall]\next_if=eth1\nint_if=eth9\n");
+		run_scenario (&linux_run);
+		keys = disk_table_keys ();
+		CHECK (g_strcmp0 (keys,
+		                  "client/filter/redundant=true;"
+		                  "firewall/ext_if=eth1;firewall/int_if=eth9;"
+		                  "firewall/icmp/echo_request=false;") == 0,
+		       "D8: Save wrote exactly the two changed settings and "
+		       "kept both devices (%s)", keys);
+		g_free (keys);
+		CHECK (!disk_has (FS_PREFS_APPLY_POLICY_INSTANTLY, NULL) &&
+		       !fs_prefs_bool (FS_PREFS_APPLY_POLICY_INSTANTLY),
+		       "D3: Save did not turn \"apply immediately\" on");
+		CHECK (fake_apply_calls == 0,
+		       "\"Later\" left the firewall alone");
 
-		if (!loaded || error != NULL) {
-			g_printerr ("ui-prefs-smoke: FAILED, stylesheet "
-			            "did not load: %s\n",
-			            error != NULL ? error->message : "?");
-			failed = TRUE;
-		} else {
-			g_print ("ui-prefs-smoke: theme loads clean\n");
+		/* ---- Cancel writes nothing ---- */
+		keys = disk_table_keys ();
+		run_scenario (&cancel_run);
+		{
+			gchar *after = disk_table_keys ();
+
+			CHECK (g_strcmp0 (keys, after) == 0,
+			       "Cancel wrote nothing");
+			g_free (after);
 		}
 
-		for (guint i = 0; i < G_N_ELEMENTS (tokens); i++) {
-			if (g_strstr_len (fs_theme_css, -1, tokens[i]) == NULL) {
-				g_printerr ("ui-prefs-smoke: FAILED, theme is "
-				            "missing palette token %s\n",
-				            tokens[i]);
-				failed = TRUE;
-			}
-		}
+		/* ---- Changed and changed back: nothing ---- */
+		run_scenario (&same_run);
+		{
+			gchar *after = disk_table_keys ();
 
-		for (guint i = 0; i < G_N_ELEMENTS (forbidden); i++) {
-			if (g_strstr_len (fs_theme_css, -1,
-			                  forbidden[i]) != NULL) {
-				g_printerr ("ui-prefs-smoke: FAILED, theme uses "
-				            "deprecated pseudo-class %s\n",
-				            forbidden[i]);
-				failed = TRUE;
-			}
+			CHECK (g_strcmp0 (keys, after) == 0,
+			       "a setting changed and changed back is not "
+			       "written, and asks nothing");
+			g_free (after);
 		}
+		g_free (keys);
 
-		g_clear_error (&error);
-		g_object_unref (provider);
+		/* ---- Windows ---- */
+		fake_as_windows ();
+		fake_state = FS_FW_RUNNING;
+		seed ("[firewall]\ndeny_packets=false\n"
+		      "restrictive_outbound=true\next_if=eth1\n");
+		run_scenario (&windows_run);
+		keys = disk_table_keys ();
+		CHECK (g_strcmp0 (keys,
+		                  "firewall/ext_if=eth1;"
+		                  "firewall/icmp/enable=false;"
+		                  "firewall/deny_packets=false;"
+		                  "firewall/restrictive_outbound=true;") == 0,
+		       "D8: on Windows only the ICMP switch was written; the "
+		       "settings Windows does not offer kept their values (%s)",
+		       keys);
+		g_free (keys);
+		CHECK (windows_run.reported && windows_run.report_text != NULL &&
+		       strstr (windows_run.report_text, "no policy loaded") != NULL,
+		       "\"Apply now\" with no policy loaded says so instead of "
+		       "applying");
+		CHECK (fake_apply_calls == 0,
+		       "an empty policy is never applied in place of the real "
+		       "one");
+		(void) value;
+		CHECK (fake_list_calls > 0, "Linux asked for its devices");
 	}
+#endif
 
-	g_timeout_add (SMOKE_STEP_MS, drive_dialog, NULL);
+	CHECK (warnings == 0, "no GLib/GTK warnings (%u)", warnings);
 
-	fs_dialogs_preferences (NULL);
-
-	if (failed) {
-		g_printerr ("ui-prefs-smoke: FAILED\n");
-		rc = 1;
-	} else {
-		g_print ("ui-prefs-smoke: OK\n");
-		rc = 0;
-	}
-
-	return rc;
+	g_print ("\nui-prefs-smoke: %s, %d failure(s)\n",
+	         failures ? "FAILED" : "PASSED", failures);
+	return failures ? 1 : 0;
 }

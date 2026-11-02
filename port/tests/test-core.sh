@@ -4202,6 +4202,467 @@ static void test_apply_gate (void)
 	g_free (dir);
 }
 
+/* --- firewall settings through the apply gate (Preferences, D5) ------
+ * A settings change must reach the firewall even when the policy rows
+ * did not change -- which the policy gate's narrow path would call "no
+ * change" -- and a failed apply must be rolled back under the settings
+ * that were live. */
+
+static gboolean swap_previous_active = FALSE;
+static GString *swap_trace = NULL;
+static GString *apply_trace = NULL;
+
+static void
+settings_swap_probe (gboolean previous, gpointer data)
+{
+	(void) data;
+	swap_previous_active = previous;
+	g_string_append_c (swap_trace, previous ? 'P' : 'N');
+}
+
+/* Records under which settings each whole-set apply ran. */
+static FsApplyResult
+fake_apply_rules_traced (const FsPolicy *policy, GError **error)
+{
+	g_string_append_c (apply_trace, swap_previous_active ? 'p' : 'n');
+	return fake_apply_rules (policy, error);
+}
+
+static const FsBackend fake_backend_traced = {
+	.name = "fake-traced",
+	.display_name = "scripted fake backend, settings traced",
+	.available = fake_available,
+	.apply_rules = fake_apply_rules_traced,
+	.apply_delta = fake_apply_delta,
+};
+
+static void test_settings_apply_gate (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (),
+	                               "stockfw-settings-gate-test", NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy;
+	FsApplyOutcome *outcome;
+	GError *error = NULL;
+	gchar *contents;
+	gint before_full;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+	swap_trace = g_string_new (NULL);
+	apply_trace = g_string_new (NULL);
+
+	fake_reset ();
+	policy = gate_policy_two ();
+
+	/* Make the policy live, so the journal matches it exactly. */
+	outcome = fs_policy_apply_safe (&fake_backend_traced, policy,
+	                                "settings test", NULL, &error);
+	CHECK (outcome->applied && fake_full_calls == 1,
+	       "settings gate: the policy is live first");
+	fs_apply_outcome_free (outcome);
+
+	/* The policy gate sees nothing to do... */
+	before_full = fake_full_calls;
+	outcome = fs_policy_apply_safe (&fake_backend_traced, policy,
+	                                "settings test", NULL, &error);
+	CHECK (outcome->narrow && fake_full_calls == before_full &&
+	       fake_delta_calls == 0,
+	       "settings gate: the policy gate calls an unchanged policy "
+	       "\"no change\" and leaves the firewall alone");
+	fs_apply_outcome_free (outcome);
+
+	/* ...so a settings change goes the whole way. */
+	outcome = fs_settings_apply_safe (&fake_backend_traced, policy,
+	                                  "settings test", NULL,
+	                                  settings_swap_probe, NULL, &error);
+	CHECK (outcome->result == FS_APPLY_OK && outcome->applied &&
+	       !outcome->narrow && fake_full_calls == before_full + 1 &&
+	       fake_delta_calls == 0,
+	       "settings gate: an unchanged policy is applied whole when the "
+	       "settings changed");
+	CHECK (swap_trace->len == 0,
+	       "settings gate: a successful apply never swaps settings");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| firewall settings applied |") != NULL,
+	       "settings gate: the audit line says \"firewall settings "
+	       "applied\"");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	/* A hold reaches nothing and swaps nothing. */
+	before_full = fake_full_calls;
+	outcome = fs_settings_apply_safe (&fake_backend_traced, policy,
+	                                  "settings test",
+	                                  "audit-only testing mode",
+	                                  settings_swap_probe, NULL, &error);
+	CHECK (outcome->held && outcome->result == FS_APPLY_DRY_RUN &&
+	       fake_full_calls == before_full && swap_trace->len == 0,
+	       "settings gate: a hold leaves the firewall and the settings "
+	       "context untouched");
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents,
+	               "| firewall settings held, firewall untouched |") != NULL,
+	       "settings gate: the hold is audited as a settings hold");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	/* A failure is rolled back under the previous settings, and the
+	 * new ones go back into the context afterwards. */
+	g_string_truncate (apply_trace, 0);
+	fake_enqueue (FS_APPLY_FAILED);
+	fake_enqueue (FS_APPLY_OK);
+	outcome = fs_settings_apply_safe (&fake_backend_traced, policy,
+	                                  "settings test", NULL,
+	                                  settings_swap_probe, NULL, &error);
+	CHECK (outcome->result == FS_APPLY_FAILED && !outcome->applied &&
+	       outcome->rollback_attempted && outcome->rollback_verified,
+	       "settings gate: a failed apply is rolled back and verified");
+	CHECK (g_strcmp0 (apply_trace->str, "np") == 0 &&
+	       g_strcmp0 (swap_trace->str, "PN") == 0 &&
+	       !swap_previous_active,
+	       "settings gate: new settings first, the rollback under the "
+	       "previous ones, the new ones back after (applies %s, swaps %s)",
+	       apply_trace->str, swap_trace->str);
+	g_clear_error (&error);
+	contents = gate_audit_read ();
+	CHECK (contents != NULL &&
+	       strstr (contents, "| firewall settings apply failed |") != NULL &&
+	       strstr (contents, "rollback verified") != NULL,
+	       "settings gate: the failure and the verified rollback are "
+	       "audited");
+	g_free (contents);
+	fs_apply_outcome_free (outcome);
+
+	/* No journal: nothing to restore, nothing swapped. */
+	remove (file);
+	g_string_truncate (swap_trace, 0);
+	fake_enqueue (FS_APPLY_FAILED);
+	outcome = fs_settings_apply_safe (&fake_backend_traced, policy,
+	                                  "settings test", NULL,
+	                                  settings_swap_probe, NULL, &error);
+	CHECK (!outcome->rollback_attempted && swap_trace->len == 0 &&
+	       outcome->rollback_detail != NULL &&
+	       strstr (outcome->rollback_detail, "no applied-policy journal")
+	       != NULL,
+	       "settings gate: with no journal there is honestly nothing "
+	       "to restore");
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+
+	fake_reset ();
+	fs_policy_free (policy);
+	g_string_free (swap_trace, TRUE);
+	g_string_free (apply_trace, TRUE);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_free (file);
+	g_free (audit_file);
+	g_free (dir);
+}
+
+/* --- the settings table (Preferences, D3 D6 D8) ----------------------
+ * One key/type/default table in fs-prefs.c.  Pinned here: a fresh
+ * FsSettings, an unset key and the first-run defaults all agree with
+ * it; every reader in src/ that still passes a literal fallback for a
+ * table key passes the table's (the source is scanned, so a consumer
+ * that drifts fails here, not on a user's machine); an unreadable
+ * settings file is kept before defaults overwrite it; and the edit
+ * copy writes only what changed and may be written. */
+
+typedef struct
+{
+	const gchar *key;
+	gsize        offset;
+} SettingsField;
+
+#define SF(key, field) { key, G_STRUCT_OFFSET (FsSettings, field) }
+
+static const SettingsField settings_fields[] = {
+	SF (FS_PREFS_FW_NAT, nat),
+	SF (FS_PREFS_FW_FILTER_ICMP, filter_icmp),
+	SF (FS_PREFS_FW_DENY_PACKETS, deny_packets),
+	SF (FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST, block_external_broadcast),
+	SF (FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST, block_internal_broadcast),
+	SF (FS_PREFS_FW_BLOCK_NON_ROUTABLES, block_non_routables),
+	SF (FS_PREFS_FW_RESTRICTIVE_OUTBOUND, restrictive_outbound),
+	SF (FS_PREFS_FW_LOG_ALLOWED, log_allowed),
+	SF (FS_PREFS_FW_ICMP_ECHO_REQUEST, icmp_echo_request),
+	SF (FS_PREFS_FW_ICMP_ECHO_REPLY, icmp_echo_reply),
+	SF (FS_PREFS_FW_ICMP_TRACEROUTE, icmp_traceroute),
+	SF (FS_PREFS_FW_ICMP_MSTRACEROUTE, icmp_mstraceroute),
+	SF (FS_PREFS_FW_ICMP_UNREACHABLE, icmp_unreachable),
+	SF (FS_PREFS_FW_ICMP_TIMESTAMPING, icmp_timestamping),
+	SF (FS_PREFS_FW_ICMP_MASKING, icmp_masking),
+	SF (FS_PREFS_FW_ICMP_REDIRECTION, icmp_redirection),
+	SF (FS_PREFS_FW_ICMP_SOURCE_QUENCHES, icmp_source_quenches),
+};
+
+static gboolean
+settings_field (const FsSettings *s, gsize offset)
+{
+	return G_STRUCT_MEMBER (gboolean, s, offset);
+}
+
+/* Every .c under dir, recursively. */
+static void
+collect_sources (const gchar *dir, GPtrArray *out)
+{
+	GDir *d = g_dir_open (dir, 0, NULL);
+	const gchar *name;
+
+	if (d == NULL)
+		return;
+	while ((name = g_dir_read_name (d)) != NULL) {
+		gchar *path = g_build_filename (dir, name, NULL);
+
+		if (g_file_test (path, G_FILE_TEST_IS_DIR))
+			collect_sources (path, out);
+		else if (g_str_has_suffix (name, ".c"))
+			g_ptr_array_add (out, g_strdup (path));
+		g_free (path);
+	}
+	g_dir_close (d);
+}
+
+static void
+reset_prefs_file (const gchar *contents)
+{
+	g_file_set_contents (fs_prefs_path (), contents, -1, NULL);
+	fs_prefs_load ();
+}
+
+static void test_prefs_table (void)
+{
+	guint n = 0;
+	const FsPrefSpec *specs = fs_prefs_specs (&n);
+	FsSettings *fresh, *loaded;
+	guint mismatches = 0, literal_uses = 0, scanned = 0, unread = 0;
+	GPtrArray *files;
+	GRegex *literal;
+	gchar *backup, *text = NULL;
+
+	CHECK (n >= 25, "the settings table has every setting (%u rows)", n);
+
+	/* Dead keys are not settings any more. */
+	CHECK (fs_prefs_spec ("/apps/stockfw/firewall/tos/enable") == NULL &&
+	       fs_prefs_spec ("/apps/stockfw/firewall/dhcp/enable_server") == NULL &&
+	       fs_prefs_spec ("/apps/stockfw/client/start_firewall_on_dhcp") == NULL &&
+	       fs_prefs_spec ("/apps/stockfw/client/first_run") == NULL,
+	       "the table carries no ToS, DHCP, dial-out or first-run key");
+
+	/* fs_settings_new() and an unset store agree with the table. */
+	g_mkdir_with_parents (g_path_get_dirname (fs_prefs_path ()), 0700);
+	reset_prefs_file ("");
+	fresh = fs_settings_new ();
+	loaded = fs_settings_new ();
+	fs_settings_load_prefs (loaded);
+	for (guint i = 0; i < G_N_ELEMENTS (settings_fields); i++) {
+		const FsPrefSpec *spec = fs_prefs_spec (settings_fields[i].key);
+
+		if (spec == NULL ||
+		    settings_field (fresh, settings_fields[i].offset) !=
+		    spec->bool_default ||
+		    settings_field (loaded, settings_fields[i].offset) !=
+		    spec->bool_default) {
+			printf ("       mismatch: %s\n", settings_fields[i].key);
+			mismatches++;
+		}
+	}
+	CHECK (mismatches == 0 && fresh->ext_device == NULL &&
+	       loaded->int_device == NULL,
+	       "fs_settings_new() and unset keys give the table's defaults "
+	       "(%u mismatches)", mismatches);
+	fs_settings_free (fresh);
+	fs_settings_free (loaded);
+
+	/* D3: the one that drifted -- off unless set. */
+	CHECK (!fs_prefs_bool (FS_PREFS_APPLY_POLICY_INSTANTLY) &&
+	       !fs_prefs_spec (FS_PREFS_APPLY_POLICY_INSTANTLY)->bool_default,
+	       "D3: \"apply policy changes immediately\" is off unless set");
+
+	/* Every literal fallback for a table key in src/ matches. */
+	files = g_ptr_array_new_with_free_func (g_free);
+	collect_sources ("src", files);
+	literal = g_regex_new ("fs_prefs_get_(bool|string)\\s*\\(\\s*"
+	                       "(FS_PREFS_[A-Z0-9_]+)\\s*,\\s*([^)]*?)\\s*\\)",
+	                       G_REGEX_MULTILINE, 0, NULL);
+	for (guint f = 0; f < files->len; f++) {
+		gchar *src = NULL;
+		GMatchInfo *m = NULL;
+
+		if (!g_file_get_contents (files->pdata[f], &src, NULL, NULL))
+			continue;
+		scanned++;
+		g_regex_match (literal, src, 0, &m);
+		while (g_match_info_matches (m)) {
+			gchar *kind = g_match_info_fetch (m, 1);
+			gchar *macro = g_match_info_fetch (m, 2);
+			gchar *fallback = g_match_info_fetch (m, 3);
+
+			for (guint i = 0; i < n; i++) {
+				gboolean ok;
+
+				if (g_strcmp0 (specs[i].name, macro) != 0)
+					continue;
+				literal_uses++;
+				if (g_strcmp0 (kind, "bool") == 0)
+					ok = g_strcmp0 (fallback,
+					                specs[i].bool_default
+					                ? "TRUE" : "FALSE") == 0;
+				else
+					ok = FALSE;   /* use fs_prefs_string() */
+				if (!ok) {
+					printf ("       %s: %s falls back to %s, "
+					        "the table says %s\n",
+					        (gchar *) files->pdata[f], macro,
+					        fallback,
+					        specs[i].type == FS_PREF_BOOL
+					        ? (specs[i].bool_default
+					           ? "TRUE" : "FALSE")
+					        : specs[i].string_default);
+					mismatches++;
+				}
+			}
+			g_free (kind);
+			g_free (macro);
+			g_free (fallback);
+			g_match_info_next (m, NULL);
+		}
+		g_match_info_free (m);
+
+		g_free (src);
+	}
+	CHECK (scanned > 20 && mismatches == 0,
+	       "every consumer in src/ falls back to the table's default "
+	       "(%u files, %u literal reads of table keys, %u mismatches)",
+	       scanned, literal_uses, mismatches);
+	for (guint i = 0; i < n; i++) {
+		gboolean read = FALSE;
+
+		for (guint f = 0; f < files->len && !read; f++) {
+			gchar *src = NULL;
+
+			/* The table itself and the window that edits it
+			 * are not readers. */
+			if (g_str_has_suffix (files->pdata[f], "fs-prefs.c") ||
+			    g_str_has_suffix (files->pdata[f],
+			                      "fs-prefsdialog.c") ||
+			    !g_file_get_contents (files->pdata[f], &src, NULL,
+			                          NULL))
+				continue;
+			read = strstr (src, specs[i].name) != NULL;
+			g_free (src);
+		}
+		if (!read) {
+			printf ("       nothing reads %s\n", specs[i].name);
+			unread++;
+		}
+	}
+	CHECK (unread == 0, "every table setting is read by something "
+	       "outside the settings code and the Preferences window");
+	g_regex_unref (literal);
+	g_ptr_array_unref (files);
+
+	/* First-run defaults: every bool written, nothing dead. */
+	reset_prefs_file ("");
+	fs_prefs_set_defaults ();
+	fs_prefs_load ();
+	mismatches = 0;
+	for (guint i = 0; i < n; i++)
+		if (specs[i].type == FS_PREF_BOOL &&
+		    (!fs_prefs_has_key (specs[i].key) ||
+		     fs_prefs_get_bool (specs[i].key, !specs[i].bool_default) !=
+		     specs[i].bool_default))
+			mismatches++;
+	CHECK (mismatches == 0 &&
+	       !fs_prefs_has_key ("/apps/stockfw/firewall/tos/enable") &&
+	       !fs_prefs_has_key ("/apps/stockfw/client/first_run"),
+	       "first-run defaults are the table's, and no dead key is "
+	       "written");
+
+	/* ...and never overwrite what is there. */
+	reset_prefs_file ("[firewall]\ndeny_packets=false\n");
+	fs_prefs_set_defaults ();
+	CHECK (!fs_prefs_bool (FS_PREFS_FW_DENY_PACKETS),
+	       "defaults leave a stored value alone");
+
+	/* D6: an unreadable file is kept before anything replaces it. */
+	backup = fs_prefs_backup_path ();
+	remove (backup);
+	g_file_set_contents (fs_prefs_path (),
+	                     "[client\nenable_tray_icon=maybe\n", -1, NULL);
+	CHECK (!fs_prefs_load (), "D6: an unparsable settings file fails "
+	       "to load");
+	CHECK (g_file_get_contents (backup, &text, NULL, NULL) &&
+	       g_strcmp0 (text, "[client\nenable_tray_icon=maybe\n") == 0,
+	       "D6: and is kept, byte for byte, as %s", backup);
+	g_free (text);
+	text = NULL;
+	fs_prefs_set_defaults ();
+	CHECK (fs_prefs_load () &&
+	       g_file_get_contents (backup, &text, NULL, NULL) &&
+	       strstr (text, "maybe") != NULL,
+	       "D6: the defaults written after it leave the kept copy alone");
+	g_free (text);
+	remove (backup);
+	g_free (backup);
+
+	/* D8: the edit copy writes only changed, writable values. */
+	reset_prefs_file ("[firewall]\next_if=eth1\n");
+	{
+		FsPrefsEdit *edit = fs_prefs_edit_new ();
+		gboolean firewall = TRUE;
+		guint written;
+
+		CHECK (g_strcmp0 (fs_prefs_edit_get_string (edit,
+		                  FS_PREFS_FW_EXT_IF), "eth1") == 0 &&
+		       !fs_prefs_edit_get_bool (edit,
+		                                FS_PREFS_APPLY_POLICY_INSTANTLY),
+		       "edit: the copy starts from the stored values and the "
+		       "table's defaults");
+
+		fs_prefs_edit_set_bool (edit, FS_PREFS_SKIP_REDUNDANT, TRUE);
+		fs_prefs_edit_set_bool (edit, FS_PREFS_FW_DENY_PACKETS, FALSE);
+		fs_prefs_edit_set_bool (edit, FS_PREFS_FW_NAT, FALSE); /* same */
+		fs_prefs_edit_set_writable (edit, FS_PREFS_SKIP_REDUNDANT, TRUE);
+		fs_prefs_edit_set_writable (edit, FS_PREFS_FW_NAT, TRUE);
+		fs_prefs_edit_set_writable (edit, FS_PREFS_FW_EXT_IF, TRUE);
+		/* deny_packets changed but stays unwritable: its control is
+		 * not offered (Windows). */
+		CHECK (fs_prefs_edit_n_changed (edit) == 2,
+		       "edit: two values differ from the snapshot");
+
+		written = fs_prefs_edit_commit (edit, &firewall);
+		CHECK (written == 1 && !firewall &&
+		       fs_prefs_bool (FS_PREFS_SKIP_REDUNDANT) &&
+		       !fs_prefs_has_key (FS_PREFS_FW_DENY_PACKETS) &&
+		       !fs_prefs_has_key (FS_PREFS_FW_NAT) &&
+		       !fs_prefs_has_key (FS_PREFS_APPLY_POLICY_INSTANTLY),
+		       "D8: only the changed, writable value is written; an "
+		       "unchanged one and one with no control are not");
+		CHECK (fs_prefs_edit_commit (edit, NULL) == 0,
+		       "edit: committing again writes nothing");
+
+		fs_prefs_edit_set_writable (edit, FS_PREFS_FW_DENY_PACKETS, TRUE);
+		written = fs_prefs_edit_commit (edit, &firewall);
+		CHECK (written == 1 && firewall &&
+		       !fs_prefs_bool (FS_PREFS_FW_DENY_PACKETS),
+		       "edit: a firewall setting reports itself as one");
+		fs_prefs_edit_free (edit);
+	}
+
+	reset_prefs_file ("");
+}
+
 /* --- the settings plan ------------------------------------------------
  * fs-settings-plan.c maps the Firewall preferences onto portable rules
  * that the Windows backend executes.  Each mapping is pinned here: the
@@ -5958,6 +6419,8 @@ int main (void)
 	test_apply_impact ();
 	test_apply_delta ();
 	test_apply_gate ();
+	test_settings_apply_gate ();
+	test_prefs_table ();
 	test_settings_plan ();
 	test_netparse_log ();
 	test_netparse_proc ();

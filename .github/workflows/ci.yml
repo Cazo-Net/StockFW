@@ -69,9 +69,10 @@ jobs:
           # fs-tray-smoke is left out on Linux: it checks that the icon
           # is embedded in a notification area, and a bare X server has
           # none.  The Windows job runs it.
-          smokes="fs-ui-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke
-                  fs-trustview-smoke fs-copilot-smoke fs-statusview-smoke
-                  fs-activity-smoke fs-overview-place-smoke"
+          smokes="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke
+                  fs-simviz-smoke fs-theme-smoke fs-trustview-smoke
+                  fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
+                  fs-overview-place-smoke"
           ninja -C build-linux $smokes
           for t in $smokes; do
             echo "== $t"

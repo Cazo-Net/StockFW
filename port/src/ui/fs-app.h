@@ -2,6 +2,8 @@
 #define FS_APP_H
 
 #include <gtk/gtk.h>
+#include "core/fs-apply.h"
+#include "core/fs-script.h"
 
 G_BEGIN_DECLS
 
@@ -37,6 +39,15 @@ void fs_app_quit    (void);
  * refreshed context back to the backend.  Called after the Preferences
  * dialog is accepted, so the Firewall pages take effect. */
 void fs_app_reload_settings (void);
+
+/* Pushes the policy to the firewall under the settings just reloaded,
+ * through the apply gate (fs_settings_apply_safe): `previous' are the
+ * settings that were live before the save, for the rollback; `hold' is
+ * the audit-only / Lock reason or NULL.  NULL when there is no loaded
+ * policy to apply (the main window was never built). */
+FsApplyOutcome *fs_app_apply_settings (const FsSettings *previous,
+                                       const gchar *hold,
+                                       GError **error);
 
 G_END_DECLS
 

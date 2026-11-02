@@ -28,6 +28,7 @@
 #include "core/fs-prefs.h"
 #include "core/fs-rules.h"
 #include "core/fs-script.h"
+#include "core/fs-apply.h"
 #include "core/fs-copilot.h"
 #include "core/fs-trust.h"
 #include "core/fs-i18n.h"
@@ -685,7 +686,7 @@ fs_app_activate (GtkApplication *app)
 	/* "Start the firewall on program startup".  A failure here is not
 	 * fatal: the window still opens and the state line reports what
 	 * actually happened. */
-	if (fs_prefs_get_bool (FS_PREFS_START_ON_GUI, FALSE) &&
+	if (fs_prefs_bool (FS_PREFS_START_ON_GUI) &&
 	    fs_backend ()->available ()) {
 		GError *error = NULL;
 
@@ -762,6 +763,39 @@ fs_app_reload_settings (void)
 
 	/* The Preferences dialog may have toggled the tray switches. */
 	fs_tray_sync ();
+}
+
+/* [ settings_swap ]
+ * The apply gate's hook for a settings rollback: the previous settings
+ * into the backend's context for the restore, the saved ones back
+ * afterwards. */
+static void
+settings_swap (gboolean previous, gpointer data)
+{
+	fs_backend_set_context (policy, previous ? (FsSettings *) data
+	                                         : settings);
+}
+
+FsApplyOutcome *
+fs_app_apply_settings (const FsSettings *previous, const gchar *hold,
+                       GError **error)
+{
+	FsSettings *before;
+	FsApplyOutcome *outcome;
+
+	/* No window, no loaded policy: nothing to apply them with, and an
+	 * empty policy is never pushed in its place. */
+	if (policy == NULL || settings == NULL)
+		return NULL;
+
+	before = previous != NULL ? fs_settings_copy (previous)
+	                          : fs_settings_new ();
+	outcome = fs_settings_apply_safe (fs_backend (), policy,
+	                                  "preferences", hold,
+	                                  settings_swap, before, error);
+	fs_settings_free (before);
+
+	return outcome;
 }
 
 void

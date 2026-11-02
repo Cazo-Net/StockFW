@@ -26,7 +26,6 @@ typedef struct
 	gchar    *int_device;
 	gboolean  nat;
 	gboolean  filter_icmp;
-	gboolean  filter_tos;
 	gboolean  block_external_broadcast;
 	gboolean  block_internal_broadcast;
 	gboolean  block_non_routables;
@@ -67,13 +66,14 @@ FsSettings *fs_settings_new  (void);
 void        fs_settings_free (FsSettings *settings);
 
 /* Fills an FsSettings from the Firewall preferences, so the Preferences
- * dialog changes the rules that are actually generated instead of
- * writing keys nothing reads.  Call after fs_prefs_load() and again
- * whenever the dialog is accepted. */
+ * window changes the rules that are actually generated instead of
+ * writing keys nothing reads.  Unset keys take the settings table's
+ * default (core/fs-prefs.h), as fs_settings_new() does.  Call after
+ * fs_prefs_load() and again whenever the window is saved. */
 void        fs_settings_load_prefs (FsSettings *settings);
 
-/* Writes an FsSettings back to the same keys. */
-void        fs_settings_save_prefs (const FsSettings *settings);
+/* A deep copy; NULL for NULL. */
+FsSettings *fs_settings_copy (const FsSettings *settings);
 
 /* The control script: detects iptables, loads the policy modules and
  * dispatches to the per-direction setup scripts. */

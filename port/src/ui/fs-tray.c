@@ -239,7 +239,7 @@ fs_tray_sync (void)
 	if (tray_window == NULL)
 		return;
 
-	want = fs_prefs_get_bool (FS_PREFS_ENABLE_TRAY_ICON, TRUE);
+	want = fs_prefs_bool (FS_PREFS_ENABLE_TRAY_ICON);
 
 	if (want && tray_icon == NULL)
 		create_icon ();
@@ -271,7 +271,7 @@ fs_tray_active (void)
 gboolean
 fs_tray_hide_on_close (void)
 {
-	return fs_prefs_get_bool (FS_PREFS_MINIMIZE_TO_TRAY, TRUE) &&
+	return fs_prefs_bool (FS_PREFS_MINIMIZE_TO_TRAY) &&
 	       fs_tray_active ();
 }
 
