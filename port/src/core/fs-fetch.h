@@ -7,6 +7,8 @@
  *     CURL_CA_BUNDLE, SSL_CERT_*, SSLKEYLOGFILE, *_proxy or HOME;
  *   - https only, also for redirects; a proxy only when the caller
  *     passes one, `--noproxy *' otherwise;
+ *   - one URL is one transfer: `--globoff', or curl would expand [..]
+ *     and {..} in the URL into many requests, even to other hosts;
  *   - as root, curl runs as `nobody' (resolved before the fork) with no
  *     supplementary groups; no such account => no download;
  *   - the body comes over a pipe, never a file, and is counted here:
@@ -67,7 +69,8 @@ const gchar *fs_fetch_curl_path (void);
 /* The argv fs_fetch() runs for `request' with `curl' as argv[0]:
  * curl -q --proto =https --proto-redir =https --proto-default https
  *      --tlsv1.2 --fail --silent --show-error --location
- *      --max-redirs 3 --max-filesize <max_bytes> --max-time <timeout_s>
+ *      --max-redirs 3 --globoff
+ *      --max-filesize <max_bytes> --max-time <timeout_s>
  *      --connect-timeout 20 --user-agent <ua> --output -
  *      (--noproxy * | --proxy <proxy>) --url <url>
  * NULL when the request is invalid (bad URL or proxy, zero limits).
