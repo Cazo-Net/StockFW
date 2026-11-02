@@ -23,6 +23,9 @@
  *   H5  Preferences' Help button and F1 open the topic for the page it
  *       shows, and Help takes input while Preferences is modal
  *   H6  one Help window: asking again raises it
+ *   H9  What-If's settings fixes open Preferences at the page that
+ *       holds the switch they name, and every switch and page name the
+ *       engine may use is in the dialog as written
  *   A1  About: the exact creator credit, no e-mail address, the
  *       licence summary true to the source, both licence texts, one
  *       window, transient for the main window, not modal
@@ -57,6 +60,7 @@
 #include "ui/fs-helpwindow.h"
 #include "core/fs-backend.h"
 #include "core/fs-prefs.h"
+#include "core/fs-whatif.h"
 
 #include <gtk/gtk.h>
 #include <math.h>
@@ -484,6 +488,10 @@ check_claims (void)
 		  "your outbound deny rules",
 		  "ACC-1: Linux logs only the default drops; deny rules, "
 		  "Sentinel and Protection drops are not logged" },
+		{ "events", "length and type of service",
+		  "In and Out are the network adapters",
+		  "HELP-EVENTS-COLS: only the columns Events shows are named "
+		  "(Length and ToS are hidden and cannot be shown)" },
 		{ "troubleshooting", "blocked traffic only once something is "
 		  "blocked", "a quiet list does not mean they blocked nothing",
 		  "ACC-1: a quiet Events list is no proof nothing was blocked" },
@@ -1138,6 +1146,124 @@ check_preferences (void)
 	close_help ();
 }
 
+/* ======================================= H9: What-If's settings fixes */
+
+/* HELP-WI-PREFS: a settings fix opens Preferences at the page that holds
+ * the switch it names, and every switch and page the engine may name is
+ * there under that name.  The labels exactly, not paraphrased; the page
+ * as the window's sidebar titles it. */
+static const gchar *h9_page = NULL;
+static gboolean     h9_driven = FALSE;
+static guint        h9_ticks = 0;
+
+static gboolean
+whatif_prefs_tick (gpointer data)
+{
+	GtkWidget *prefs = find_toplevel ("fs-preferences");
+	GtkWidget *stack;
+	GPtrArray *labels;
+	const gchar *shown;
+	guint missing = 0, named = 0;
+
+	(void) data;
+	if (++h9_ticks > 200) {
+		CHECK (FALSE, "[H9] Preferences opened in time (%s)", h9_page);
+		return G_SOURCE_REMOVE;
+	}
+	if (prefs == NULL || !gtk_widget_get_mapped (prefs))
+		return G_SOURCE_CONTINUE;
+	pump ();
+	h9_driven = TRUE;
+
+	stack = find_named (prefs, "prefs-pages");
+	shown = gtk_stack_get_visible_child_name (GTK_STACK (stack));
+	CHECK (g_strcmp0 (shown, h9_page) == 0,
+	       "[H9] a fix for page %s opens Preferences there (shown: %s)",
+	       h9_page, shown);
+
+	labels = g_ptr_array_new ();
+	collect_labels (prefs, labels);
+	for (guint i = 0; ; i++) {
+		const gchar *label, *where, *page, *title_want;
+		const gchar *key = fs_whatif_setting_nth (i, &label, &where, &page);
+		GtkWidget *child;
+		gchar *title = NULL;
+		gboolean has_label = FALSE;
+
+		if (key == NULL)
+			break;
+		if (g_strcmp0 (page, h9_page) != 0)
+			continue;
+		named++;
+		for (guint j = 0; j < labels->len && !has_label; j++)
+			has_label = g_strcmp0 (gtk_label_get_text (
+				g_ptr_array_index (labels, j)), label) == 0;
+		child = gtk_stack_get_child_by_name (GTK_STACK (stack), page);
+		if (child != NULL)
+			gtk_container_child_get (GTK_CONTAINER (stack), child,
+			                         "title", &title, NULL);
+		title_want = g_str_has_prefix (where, "Preferences > ")
+			? where + strlen ("Preferences > ") : where;
+		if (!has_label || g_strcmp0 (title, title_want) != 0) {
+			printf ("       %s: switch \"%s\" %s; page \"%s\" is \"%s\"\n",
+			        key, label, has_label ? "found" : "MISSING",
+			        title_want, title != NULL ? title : "(none)");
+			missing++;
+		}
+		g_free (title);
+	}
+	g_ptr_array_free (labels, TRUE);
+	CHECK (named > 0 && missing == 0,
+	       "[H9] every switch a fix names on %s is there by that label, "
+	       "on the page it names (%u of %u wrong)", h9_page, missing,
+	       named);
+
+	click (prefs, "prefs-cancel");
+	return G_SOURCE_REMOVE;
+}
+
+static void
+check_whatif_prefs (void)
+{
+	static const gchar *pages[] = { "icmp", "protection", NULL };
+	GtkWidget *main_window =
+		GTK_WIDGET (gtk_application_get_active_window (app));
+	gchar *whatif = topic_text ("whatif");
+
+	CHECK (strstr (whatif, "open Preferences at the ICMP or Protection "
+	                       "page") != NULL &&
+	       strstr (whatif, "Preferences page that decides") == NULL,
+	       "[H9] the What-If topic says which Preferences page a fix "
+	       "opens");
+	g_free (whatif);
+
+	{
+		/* Every page a fix names is one of the pages opened below. */
+		const gchar *page = NULL;
+		guint stray = 0;
+
+		for (guint i = 0; fs_whatif_setting_nth (i, NULL, NULL, &page)
+		     != NULL; i++)
+			if (!g_strv_contains (pages, page)) {
+				printf ("       a fix names page \"%s\"\n", page);
+				stray++;
+			}
+		CHECK (stray == 0,
+		       "[H9] every fix names a Preferences page by its id (%u "
+		       "stray)", stray);
+	}
+
+	for (guint i = 0; pages[i] != NULL; i++) {
+		h9_page = pages[i];
+		h9_driven = FALSE;
+		h9_ticks = 0;
+		g_timeout_add (50, whatif_prefs_tick, NULL);
+		fs_dialogs_preferences_at (main_window, pages[i]);
+		pump ();
+		CHECK (h9_driven, "[H9] Preferences was driven (%s)", pages[i]);
+	}
+}
+
 /* =========================================================== About */
 
 static void
@@ -1555,6 +1681,9 @@ check_layout (void)
 	gint widest = 0;
 	const gchar *widest_topic = "";
 	GtkAllocation a;
+	GString *nav_cut = g_string_new (NULL);
+	guint nav_seen = 0;
+	gint help_w = 0, help_h = 0;
 
 	close_help ();
 	fs_help_show (main_window, "getting-started");
@@ -1567,12 +1696,32 @@ check_layout (void)
 	       "[L1] the Help sidebar is %d pixels wide, as Preferences' "
 	       "(%d)", a.width, FS_SIDE_WIDTH);
 
-	/* UX5, UX9: no topic makes the window wider than 640. */
+	/* UX5, UX9: no topic makes the window wider than 640.  And at
+	 * Help's own size every topic title in the sidebar reads in full
+	 * (HELP-NAV-TRUNC): none is cut short with an ellipsis. */
+	gtk_window_get_size (GTK_WINDOW (win), &help_w, &help_h);
 	for (guint i = 0; i < fs_help_topic_count (); i++) {
+		GPtrArray *labels = g_ptr_array_new ();
 		gint w;
 
 		fs_help_show (NULL, fs_help_topic_nth (i)->id);
 		pump ();
+		collect_class (find_named (win, "help-topics"), "help-topic-label",
+		               labels);
+		for (guint j = 0; j < labels->len; j++) {
+			GtkLabel *l = g_ptr_array_index (labels, j);
+			const gchar *text = gtk_label_get_text (l);
+
+			if (!gtk_widget_get_mapped (GTK_WIDGET (l)))
+				continue;
+			nav_seen++;
+			if (pango_layout_is_ellipsized (gtk_label_get_layout (l)) &&
+			    strstr (nav_cut->str, text) == NULL)
+				g_string_append_printf (nav_cut, "%s\"%s\"",
+				                        nav_cut->len > 0 ? ", " : "",
+				                        text);
+		}
+		g_ptr_array_free (labels, TRUE);
 		w = min_width (win);
 		if (w > widest) {
 			widest = w;
@@ -1582,6 +1731,11 @@ check_layout (void)
 	CHECK (widest <= 640,
 	       "[L1] Help fits a 640-pixel window on every topic (widest "
 	       "minimum %d, on %s)", widest, widest_topic);
+	CHECK (nav_seen > 0 && nav_cut->len == 0,
+	       "[L1] at %dx%d no sidebar topic title is cut short (%u seen; "
+	       "cut: %s)", help_w, help_h, nav_seen,
+	       nav_cut->len > 0 ? nav_cut->str : "none");
+	g_string_free (nav_cut, TRUE);
 
 	/* UX5: the caps keep their own height beside text that wraps. */
 	gtk_window_resize (GTK_WINDOW (win), 640, 680);
@@ -1703,6 +1857,7 @@ run_all (gpointer data)
 	check_search ();
 	check_links ();
 	check_preferences ();
+	check_whatif_prefs ();
 	check_about ();
 	check_about_keys ();
 	check_help_keys ();

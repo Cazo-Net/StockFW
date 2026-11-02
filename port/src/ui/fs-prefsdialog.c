@@ -1844,7 +1844,14 @@ fs_dialogs_preferences_cancel (void)
 void
 fs_dialogs_preferences (GtkWidget *parent)
 {
+	fs_dialogs_preferences_at (parent, NULL);
+}
+
+void
+fs_dialogs_preferences_at (GtkWidget *parent, const gchar *page)
+{
 	PrefsWin win;
+	GtkWidget *first;
 	GtkWidget *save;
 
 	if (open_prefs != NULL) {
@@ -1867,7 +1874,12 @@ fs_dialogs_preferences (GtkWidget *parent)
 	open_prefs = &win;
 
 	gtk_widget_show_all (win.window);
-	gtk_stack_set_visible_child_name (GTK_STACK (win.stack), "general");
+	/* The page asked for if this platform offers it, else General. */
+	first = page != NULL
+		? gtk_stack_get_child_by_name (GTK_STACK (win.stack), page) : NULL;
+	gtk_stack_set_visible_child_name (GTK_STACK (win.stack),
+	                                  first != NULL && gtk_widget_get_visible (first)
+	                                  ? page : "general");
 	on_page_shown (G_OBJECT (win.stack), NULL, &win);
 	gtk_widget_grab_focus (save);
 

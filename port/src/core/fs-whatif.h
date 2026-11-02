@@ -334,7 +334,8 @@ typedef struct
 	gint        policy_index;
 	gchar      *target;            /* LIFT_SENTINEL: the destination   */
 	gint64      expires_unix;      /* LIFT_SENTINEL: 0 = not known     */
-	gchar      *page;              /* OPEN_*SETTINGS: "icmp", "advanced" */
+	gchar      *page;              /* OPEN_*SETTINGS: the Preferences
+	                                * page id, "icmp" or "protection" */
 	gchar      *setting;           /* OPEN_*SETTINGS: the FsSettings field
 	                                * to change ("icmp_echo_request")  */
 	gboolean    setting_on;        /* ... and the value it should get  */
@@ -421,6 +422,12 @@ gboolean fs_whatif_action_verify (const FsWhatIfContext *ctx,
                                   gchar **why);
 
 /* ---- text --------------------------------------------------------- */
+
+/* The Preferences switches a settings fix may name: the i-th one's key
+ * (NULL past the last), its label as the dialog shows it, where it is
+ * in words ("Preferences > ICMP") and the dialog's page id ("icmp"). */
+const gchar *fs_whatif_setting_nth (guint i, const gchar **label,
+                                    const gchar **where, const gchar **page);
 
 /* The whole answer as a few lines of plain text (the panel and the
  * command line print this).  Caller frees. */

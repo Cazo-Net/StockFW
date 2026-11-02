@@ -33,6 +33,12 @@ void fs_dialogs_confirm (GtkWidget *parent,
  * to a running firewall through the apply gate. */
 void fs_dialogs_preferences (GtkWidget *parent);
 
+/* The same window, opened at the page whose id is `page' ("icmp",
+ * "protection"; fs-prefsdialog.c names them).  A page this platform
+ * does not offer, or NULL, opens General.  What-If's settings fixes use
+ * it to land on the page that holds the switch they name. */
+void fs_dialogs_preferences_at (GtkWidget *parent, const gchar *page);
+
 /* Start at sign-in was changed elsewhere (the tray menu): an open
  * Preferences window shows the new state, unless the user has already
  * moved its switch, which then stays as they left it. */

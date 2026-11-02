@@ -122,8 +122,10 @@ static const FsHelpBlock overview[] = {
 static const FsHelpBlock events[] = {
 	{ FS_HELP_PARA, N_("The Events page lists what the firewall decided, "
 	  "newest first, with blocked rows tinted red. Each row has the time, "
-	  "the direction (In or Out), source and destination, port, service, "
-	  "protocol, length and type of service.") },
+	  "the direction, In and Out, the port, source and destination, "
+	  "protocol and service. On Linux, In and Out are the network "
+	  "adapters the packet came in on and went out through; on Windows, "
+	  "In is this computer's address and Out the other side's.") },
 	{ FS_HELP_HEAD, N_("Watching and filtering") },
 	{ FS_HELP_ITEM, N_("<b>Monitor</b> turns event reading on and off. If "
 	  "it cannot run, a strip above the list says why, most often that "
@@ -360,9 +362,11 @@ static const FsHelpBlock whatif[] = {
 	  "answer you asked for, and nothing else changes. <b>Create allow "
 	  "rule</b> or <b>Create block rule</b> shows the exact row first; "
 	  "a created allow always names one port and one protocol. Other "
-	  "fixes open the rule in Policy, lift a Sentinel block, open the "
-	  "Preferences page that decides, start the firewall or apply the "
-	  "policy.") },
+	  "fixes open the rule in Policy, lift a Sentinel block, start the "
+	  "firewall or apply the policy. <b>Open ICMP settings</b> and "
+	  "<b>Open Protection settings</b> open Preferences at the ICMP or "
+	  "Protection page, and the fix names the switch to turn on or off "
+	  "there.") },
 	{ FS_HELP_PARA, N_("After you say yes, the row is checked again, "
 	  "saved to your policy and applied through the same steps as "
 	  "<b>Apply policy</b>, unless Audit-only or Lock policy is holding "

@@ -1344,7 +1344,13 @@ build_nav (void)
 
 		gtk_widget_set_name (row, name);
 		g_free (name);
-		gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
+		/* A title too long for the sidebar wraps onto a second line
+		 * rather than losing its end: the tooltip is the summary, so
+		 * a cut title could not be read anywhere in the list. */
+		gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+		gtk_label_set_line_wrap_mode (GTK_LABEL (label),
+		                              PANGO_WRAP_WORD_CHAR);
+		gtk_label_set_max_width_chars (GTK_LABEL (label), 1);
 		gtk_widget_set_tooltip_text (row, _(t->summary));
 		add_class (row, "help-topic");
 		add_class (row, "side-item");

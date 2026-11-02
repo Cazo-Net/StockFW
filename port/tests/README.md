@@ -836,6 +836,16 @@ check that failed is in brackets):
   (Re-injected: the branch's pre-merge `fs-helpcontent.c` and the old
   heading, which fail all fourteen H8 checks and both changed H7
   ones.)
+- H9: What-If's settings fixes.  `fs_dialogs_preferences_at` opens
+  Preferences at `icmp` and at `protection`, and each is the page
+  shown; every switch label and page title `fs_whatif_setting_nth`
+  lists (the ones a fix's text names) is in the dialog as written; the
+  What-If topic says a fix opens the ICMP or Protection page.
+  (Re-injected: the old engine labels and pages "Enable ICMP
+  filtering" on "Preferences > Firewall > ICMP Filtering"; the dialog
+  always opening on General.)  `fs-copilot-smoke` presses Open ICMP
+  settings in the What-If window and checks that Preferences opens at
+  ICMP (re-injected: `fs-copilot.c` calling `fs_dialogs_preferences`).
 - K1: keyboard.  Tab and Shift+Tab in About walk View licence texts,
   the website, Copy system info and Close; About asks for the keyboard
   when it opens (`gtk_window_present`), since a dialog that never gets
@@ -854,9 +864,12 @@ check that failed is in brackets):
   the page is a centred column of at most 700 pixels; related-topic
   chips sit 6 pixels apart (a GtkFlowBox spread them, so they are laid
   out by a small wrapping container); the sidebar is `FS_SIDE_WIDTH`,
-  as in Preferences.  (Re-injected: caps filling the row; caps that
-  never wrap; the descriptions' width left free; no column limit;
-  chips 60 apart; a 250-pixel sidebar.)
+  as in Preferences.  At Help's own size (980 by 680) no topic title
+  in the sidebar is ellipsized: a long one wraps.  (Re-injected: caps
+  filling the row; caps that never wrap; the descriptions' width left
+  free; no column limit; chips 60 apart; a 250-pixel sidebar; the
+  topic labels ellipsized at the end, which cuts "Running in the
+  background" and "Command line and dashboard".)
 
 The prefs smoke's Help-button check was seen failing with the button
 left out of the footer.
