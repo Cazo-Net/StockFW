@@ -182,3 +182,67 @@ not written yet, so `fs-intelset-driver apply` stands in for it, and the
 tooth makes the driver clear first, as a backend would if the delete
 were split off.  The sanitizer build is its own CMake directory,
 configured with `-fsanitize=address,undefined`.
+
+### Review additions (`fs-intelset-test`, `tests/test-intelset.sh`)
+
+An independent review added hostile checks for what the first round
+left unproven, and one contract fix:
+
+- **Unknown is not absent.**  `fs_intelset_nft_parse_live()` answered
+  FALSE both for a listing without the table and for text that is not a
+  listing at all, so a backend built on it could only report a garbled
+  `nft -j list tables` as a missing table -- the state "not loaded", a
+  claim about the kernel nobody checked [S10].
+  `fs_intelset_nft_parse_live_state()` keeps the three answers apart
+  (`FsIntelLive`: present, absent, unknown); `parse_live()` is unchanged
+  and is now TRUE exactly when that answer is present.  Every live check
+  runs both readers; truncated or trailing text, `{}`, an `nftables`
+  member that is not a list and a warning line before the listing are
+  unknown, and the driver's `live` prints `unknown` (exit 1).  Live: an
+  `nft` on `PATH` that prints one line of its own before the real
+  listing reads as `unknown`, not `absent`.
+- **Element statements at their edges**: 1, 999, 1000, 1001 and 2000
+  elements give statements of exactly 1000 and the rest, never an empty
+  one (an empty `{  }` is a syntax error that fails the whole apply);
+  live, `nft -c` accepts exactly 1000 and 1001 elements.  The 2500 check
+  could not see a count that is one too high only at exact multiples.
+- **Labels never reach nft**: a set whose label is
+  `Evil" counter accept comment "x"` plus `flush ruleset` renders byte
+  for byte the script of the same set without a label.
+- **Hand-made sets with NULL ranges** render and hash as an empty set.
+- **Parsers at their edges**: `nft -a` handles after the comment, the
+  40-character id, leading zeros and CRLF still count; a comment of
+  `sfw:` and 31 or 33 hex digits is no digest.
+- **Sets that are all empty** (not the empty rule set): `nft -c`
+  accepts them, and the table loads with its digest, three chains and no
+  set.
+- **UDP direction cells**, the same six as TCP with a query and its
+  answer -- only conntrack tells the answer from a request [N0]: in (a)
+  dropped, (b) answered; out (a) answered, (b) refused at once; both (a)
+  dropped, (b) refused at once.  A datagram this computer sends to an
+  OUT-listed address is refused by `send()` itself (EPERM, the output
+  hook kept it in), where TCP sees EHOSTUNREACH from the reject.
+- **A child that keeps nft's pipes open**: an `nft` that leaves a
+  process holding its stdout and stderr still stops at the timeout, for
+  an apply and for a listing; killing nft alone would leave the runner
+  reading until that child exits.
+
+Teeth of the review additions, each injected by a script that asserts
+the exact old text, seen failing, restored with `cp`, checked with
+`cmp`, and seen green again:
+
+| Bug re-injected | Check that failed |
+|---|---|
+| `parse_live_state()` answers absent for text that is not a listing | the eight `-> unknown` live checks; `a listing that cannot be read is unknown, not absent` (absent) |
+| the number of element statements computed as n / 1000 + 1 | `1000 elements go in statements of 1000` (got 1000+0); `2000 ...` (1000+1000+0); `nft -c accepts the script of k1000.spec` (syntax error); `1000 elements are one add-element statement` -- the 2500 check and every golden still passed |
+| the label printed as the rule comment | `a hostile label never reaches the script`, and the goldens |
+| the timer kills nft but keeps reading its pipes (no cancel) | `live: ...` and `apply: an nft whose child holds its pipes open still stops at the timeout` (8010 ms) -- the existing hung-nft checks still passed |
+| the digest taken from any comment at least `sfw:` + 32 long | `sfw: and 33 hex digits` |
+| a counter whose comment does not end the line is skipped | `handles after the comment, a 40-character id, leading zeros and CRLF still count` |
+
+The review also re-injected three teeth of the first round and saw them
+fail: IN rules without `ct direction original` (`in (b)`, now also `in,
+UDP (b)`, and `forward, in set: a routed connection to the listed
+client still works`); no `iif "lo" accept` (`loopback, in set`,
+`loopback, both set`); the label hashed into the digest (the goldens,
+`golden digest`, `a label change leaves the digest alone`).

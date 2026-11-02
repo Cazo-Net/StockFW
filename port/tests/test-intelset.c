@@ -375,6 +375,103 @@ test_scripts (void)
 	}
 }
 
+/* The sizes of the add-element statements the script of one IN set of
+ * `n' separate IPv4 addresses has, as "1000+1"; an empty statement
+ * ("{  }") counts as 0.  Caller frees. */
+static gchar *
+element_statements (guint n)
+{
+	FsRangeSet *many = fs_range_set_new ();
+	FsIntelRuleset *rs = fs_intel_ruleset_new ();
+	GString *sizes = g_string_new (NULL);
+	gchar *script, **lines;
+
+	for (guint32 i = 0; i < n; i++)
+		fs_range_set_add4 (many, 0xc6120000u + 2 * i, 0xc6120000u + 2 * i);
+	fs_range_set_normalize (many);
+	fs_intel_ruleset_add (rs, "chunk", NULL, FS_INTEL_DIR_IN, many);
+	script = fs_intelset_nft_script (rs);
+	lines = g_strsplit (script != NULL ? script : "", "\n", -1);
+	for (guint i = 0; lines[i] != NULL; i++) {
+		const gchar *open = strchr (lines[i], '{'), *p;
+		guint size = 0;
+
+		if (!g_str_has_prefix (lines[i], "add element ") || open == NULL)
+			continue;
+		for (p = open + 1; *p == ' '; p++)
+			;
+		if (*p != '}') {
+			size = 1;
+			while ((p = strchr (p, ',')) != NULL) {
+				size++;
+				p++;
+			}
+		}
+		g_string_append_printf (sizes, "%s%u", sizes->len ? "+" : "", size);
+	}
+	g_strfreev (lines);
+	g_free (script);
+	fs_intel_ruleset_free (rs);
+	return g_string_free (sizes, FALSE);
+}
+
+/* Chunks of FS_INTEL_NFT_CHUNK at their edges: an off-by-one in the
+ * loop would add an empty statement after an exact multiple, which nft
+ * refuses as a syntax error, failing the whole apply [N7]. */
+static void
+test_chunks (void)
+{
+	static const struct
+	{
+		guint        n;
+		const gchar *want;
+	} cases[] = {
+		{ 1,    "1"         },
+		{ 999,  "999"       },
+		{ 1000, "1000"      },
+		{ 1001, "1000+1"    },
+		{ 2000, "1000+1000" },
+	};
+
+	for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
+		gchar *got = element_statements (cases[i].n);
+
+		CHECK (g_strcmp0 (got, cases[i].want) == 0,
+		       "%u elements go in statements of %s, none empty (got %s)",
+		       cases[i].n, cases[i].want, got);
+		g_free (got);
+	}
+}
+
+/* A label is display text.  It never reaches nft, so a hostile one
+ * cannot inject a statement, and renaming a list changes no byte of
+ * the script. */
+static void
+test_labels (void)
+{
+	static const gchar hostile[] =
+		"Evil\" counter accept comment \"x\"\n}\nflush ruleset\n#";
+	FsIntelRuleset *a = fs_intel_ruleset_new ();
+	FsIntelRuleset *b = fs_intel_ruleset_new ();
+	gchar *sa, *sb;
+
+	fs_intel_ruleset_add (a, "feed-in", hostile, FS_INTEL_DIR_BOTH,
+	                      ranges ("192.0.2.0/24", "2001:db8::/48", NULL));
+	fs_intel_ruleset_add (b, "feed-in", NULL, FS_INTEL_DIR_BOTH,
+	                      ranges ("192.0.2.0/24", "2001:db8::/48", NULL));
+	sa = fs_intelset_nft_script (a);
+	sb = fs_intelset_nft_script (b);
+	CHECK (sa != NULL && g_strcmp0 (sa, sb) == 0 &&
+	       strstr (sa, "flush") == NULL && strstr (sa, "Evil") == NULL &&
+	       strstr (sa, "accept comment") == NULL,
+	       "a hostile label never reaches the script: byte for byte the "
+	       "script of the same set without a label");
+	g_free (sa);
+	g_free (sb);
+	fs_intel_ruleset_free (a);
+	fs_intel_ruleset_free (b);
+}
+
 /* ================================================================ ids */
 
 static void
@@ -534,6 +631,31 @@ test_ruleset (void)
 		bad->dir = 7;
 		CHECK (fs_intelset_nft_script (rs) == NULL,
 		       "a hand-made set with no valid direction renders no script");
+
+		/* No ranges at all is what fs_intel_ruleset_add() makes of
+		 * NULL: an empty set, rendered as nothing. */
+		bad->dir = FS_INTEL_DIR_BOTH;
+		fs_range_set_free (bad->ranges);
+		bad->ranges = NULL;
+		{
+			FsIntelRuleset *same = fs_intel_ruleset_new ();
+			gchar *script = fs_intelset_nft_script (rs);
+			gchar *da = fs_intel_ruleset_digest (rs), *db;
+
+			add_in4 (same);
+			fs_intel_ruleset_add (same, "other", NULL,
+			                      FS_INTEL_DIR_BOTH, NULL);
+			db = fs_intel_ruleset_digest (same);
+			CHECK (script != NULL && strstr (script, "s_other") == NULL &&
+			       strstr (script, "s_feed_in_4") != NULL &&
+			       g_strcmp0 (da, db) == 0,
+			       "a hand-made set with NULL ranges renders and hashes "
+			       "as an empty set");
+			g_free (script);
+			g_free (da);
+			g_free (db);
+			fs_intel_ruleset_free (same);
+		}
 		fs_intel_ruleset_free (rs);
 	}
 }
@@ -743,6 +865,20 @@ test_counters (void)
 	       "sums saturate instead of wrapping");
 	g_hash_table_unref (t);
 
+	/* What `nft -a list chain' adds after the comment, the longest
+	 * id, leading zeros and CRLF line ends all still read. */
+	t = fs_intelset_nft_parse_counters (
+		"\t\tip saddr @s_l_4 counter packets 3 bytes 180 drop comment "
+		"\"a123456789-123456789-123456789-123456789\" # handle 7\r\n"
+		"\t\tip daddr @s_b_4 counter packets 007 bytes 0420 reject with "
+		"icmpx admin-prohibited comment \"b\" # handle 12\r\n");
+	CHECK (g_hash_table_size (t) == 2 &&
+	       counter_is (t, "a123456789-123456789-123456789-123456789", 3, 180) &&
+	       counter_is (t, "b", 7, 420),
+	       "handles after the comment, a 40-character id, leading zeros "
+	       "and CRLF still count");
+	g_hash_table_unref (t);
+
 	t = fs_intelset_nft_parse_counters (NULL);
 	CHECK (t != NULL && g_hash_table_size (t) == 0,
 	       "no listing: an empty table, never NULL");
@@ -783,47 +919,70 @@ static const gchar JSON_EMPTY[] =
 	"{\"nftables\": [{\"metainfo\": {\"version\": \"1.0.9\", \"release_name\": "
 	"\"Old Doc Yak #3\", \"json_schema_version\": 1}}]}\n";
 
+/* Short names for the three answers, in the table below. */
+#define PRESENT FS_INTEL_LIVE_PRESENT
+#define ABSENT  FS_INTEL_LIVE_ABSENT
+#define UNKNOWN FS_INTEL_LIVE_UNKNOWN
+
+static const gchar *
+live_name (FsIntelLive live)
+{
+	switch (live) {
+	case FS_INTEL_LIVE_PRESENT:
+		return "present";
+	case FS_INTEL_LIVE_ABSENT:
+		return "absent";
+	default:
+		return "unknown";
+	}
+}
+
+/* Both readers: parse_live_state() keeps the three answers apart, and
+ * parse_live() is TRUE exactly when that answer is "present". */
 static void
-expect_live (const gchar *what, const gchar *json, gboolean want_present,
+expect_live (const gchar *what, const gchar *json, FsIntelLive want,
              const gchar *want_digest)
 {
 	/* The parser must set *digest to NULL first: a stale value left
 	 * there would read as a digest. */
 	static gchar untouched[] = "untouched";
-	gchar *digest = untouched;
-	gboolean present = fs_intelset_nft_parse_live (json, &digest);
+	gchar *digest = untouched, *digest2 = untouched;
+	FsIntelLive got = fs_intelset_nft_parse_live_state (json, &digest);
+	gboolean present = fs_intelset_nft_parse_live (json, &digest2);
 
-	CHECK (present == want_present && g_strcmp0 (digest, want_digest) == 0,
+	CHECK (got == want && g_strcmp0 (digest, want_digest) == 0 &&
+	       present == (want == FS_INTEL_LIVE_PRESENT) &&
+	       g_strcmp0 (digest2, want_digest) == 0,
 	       "live: %s -> %s, digest %s (got %s, %s)", what,
-	       want_present ? "present" : "absent",
-	       want_digest != NULL ? want_digest : "none",
-	       present ? "present" : "absent",
-	       digest != NULL ? digest : "none");
+	       live_name (want), want_digest != NULL ? want_digest : "none",
+	       live_name (got), digest != NULL ? digest : "none");
 	if (digest != untouched)
 		g_free (digest);
+	if (digest2 != untouched)
+		g_free (digest2);
 }
 
 static void
 test_live (void)
 {
-	expect_live ("captured, ours with a digest", JSON_PRESENT, TRUE,
+	expect_live ("captured, ours with a digest", JSON_PRESENT, PRESENT,
 	             "43254231e49deba9152e6f56f6251661");
-	expect_live ("captured, ours without a comment", JSON_NO_COMMENT, TRUE,
+	expect_live ("captured, ours without a comment", JSON_NO_COMMENT, PRESENT,
 	             NULL);
 	expect_live ("captured, only stockfw_intel2 and family ip", JSON_DECOYS,
-	             FALSE, NULL);
-	expect_live ("captured, no tables at all", JSON_EMPTY, FALSE, NULL);
+	             ABSENT, NULL);
+	expect_live ("captured, no tables at all", JSON_EMPTY, ABSENT, NULL);
 	expect_live ("only \"stockfw_intel2\"",
 	             "{\"nftables\": [{\"table\": {\"family\": \"inet\", \"name\": "
 	             "\"stockfw_intel2\", \"comment\": \"sfw:0123456789abcdef"
-	             "0123456789abcdef\"}}]}", FALSE, NULL);
+	             "0123456789abcdef\"}}]}", ABSENT, NULL);
 	expect_live ("only family \"ip\"",
 	             "{\"nftables\": [{\"table\": {\"family\": \"ip\", \"name\": "
 	             "\"stockfw_intel\", \"comment\": \"sfw:0123456789abcdef"
-	             "0123456789abcdef\"}}]}", FALSE, NULL);
+	             "0123456789abcdef\"}}]}", ABSENT, NULL);
 	expect_live ("a prefix of the name (\"stockfw_inte\")",
 	             "{\"nftables\": [{\"table\": {\"family\": \"inet\", \"name\": "
-	             "\"stockfw_inte\"}}]}", FALSE, NULL);
+	             "\"stockfw_inte\"}}]}", ABSENT, NULL);
 
 	/* Other spacing and key order. */
 	expect_live ("pretty-printed, keys in another order",
@@ -831,12 +990,12 @@ test_live (void)
 	             "    {\n      \"table\" : {\n        \"comment\" : \"sfw:0123456789abcdef0123456789abcdef\",\n"
 	             "        \"handle\" : 9,\n        \"name\" : \"stockfw_intel\",\n"
 	             "        \"family\" : \"inet\",\n        \"flags\" : [ \"dormant\" ]\n      }\n    }\n  ]\n}\n",
-	             TRUE, "0123456789abcdef0123456789abcdef");
+	             PRESENT, "0123456789abcdef0123456789abcdef");
 	expect_live ("no blanks at all",
 	             "{\"nftables\":[{\"table\":{\"name\":\"stockfw_intel\","
 	             "\"family\":\"inet\",\"handle\":1,\"comment\":"
 	             "\"sfw:00000000000000000000000000000000\"}}]}",
-	             TRUE, "00000000000000000000000000000000");
+	             PRESENT, "00000000000000000000000000000000");
 
 	/* Same family and name, but not a table object. */
 	expect_live ("a set or chain object with the same family and name",
@@ -844,42 +1003,56 @@ test_live (void)
 	             "\"stockfw_intel\", \"table\": \"stockfw_intel\"}}, "
 	             "{\"chain\": {\"family\": \"inet\", \"table\": "
 	             "\"stockfw_intel\", \"name\": \"stockfw_intel\"}}]}",
-	             FALSE, NULL);
+	             ABSENT, NULL);
 	expect_live ("a table object nested anywhere but the top-level list",
 	             "{\"other\": {\"table\": {\"family\": \"inet\", \"name\": "
-	             "\"stockfw_intel\"}}, \"nftables\": []}", FALSE, NULL);
+	             "\"stockfw_intel\"}}, \"nftables\": []}", ABSENT, NULL);
 
 	/* Comments that are not a digest StockFW wrote. */
 	expect_live ("a comment without the sfw: tag",
 	             "{\"nftables\": [{\"table\": {\"family\": \"inet\", \"name\": "
 	             "\"stockfw_intel\", \"comment\": \"made by hand\"}}]}",
-	             TRUE, NULL);
+	             PRESENT, NULL);
 	expect_live ("sfw: and something that is not 32 hex digits",
 	             "{\"nftables\": [{\"table\": {\"family\": \"inet\", \"name\": "
 	             "\"stockfw_intel\", \"comment\": \"sfw:0123456789ABCDEF"
-	             "0123456789abcdef\"}}]}", TRUE, NULL);
+	             "0123456789abcdef\"}}]}", PRESENT, NULL);
+	expect_live ("sfw: and 31 hex digits",
+	             "{\"nftables\": [{\"table\": {\"family\": \"inet\", \"name\": "
+	             "\"stockfw_intel\", \"comment\": \"sfw:0123456789abcdef"
+	             "0123456789abcde\"}}]}", PRESENT, NULL);
+	expect_live ("sfw: and 33 hex digits",
+	             "{\"nftables\": [{\"table\": {\"family\": \"inet\", \"name\": "
+	             "\"stockfw_intel\", \"comment\": \"sfw:0123456789abcdef"
+	             "0123456789abcdef0\"}}]}", PRESENT, NULL);
 	expect_live ("a comment that is not a string",
 	             "{\"nftables\": [{\"table\": {\"family\": \"inet\", \"name\": "
-	             "\"stockfw_intel\", \"comment\": 42}}]}", TRUE, NULL);
+	             "\"stockfw_intel\", \"comment\": 42}}]}", PRESENT, NULL);
 	expect_live ("a name written with an escape is not ours",
 	             "{\"nftables\": [{\"table\": {\"family\": \"inet\", \"name\": "
-	             "\"stockfw\\u005fintel\"}}]}", FALSE, NULL);
+	             "\"stockfw\\u005fintel\"}}]}", ABSENT, NULL);
 	expect_live ("escapes elsewhere are read past",
 	             "{\"nftables\": [{\"metainfo\": {\"release_name\": "
 	             "\"a \\\"quoted\\\" \\\\ name \\u00e9\"}}, {\"table\": {\"family\": "
 	             "\"inet\", \"name\": \"stockfw_intel\", \"comment\": "
 	             "\"sfw:0123456789abcdef0123456789abcdef\"}}]}",
-	             TRUE, "0123456789abcdef0123456789abcdef");
+	             PRESENT, "0123456789abcdef0123456789abcdef");
 
 	/* Not JSON, or not whole. */
 	expect_live ("truncated", "{\"nftables\": [{\"table\": {\"family\": "
-	             "\"inet\", \"name\": \"stockfw_intel\"}}", FALSE, NULL);
+	             "\"inet\", \"name\": \"stockfw_intel\"}}", UNKNOWN, NULL);
 	expect_live ("trailing garbage", "{\"nftables\": [{\"table\": "
 	             "{\"family\": \"inet\", \"name\": \"stockfw_intel\"}}]} x",
-	             FALSE, NULL);
-	expect_live ("a bare string", "\"stockfw_intel\"", FALSE, NULL);
-	expect_live ("empty text", "", FALSE, NULL);
-	expect_live ("NULL", NULL, FALSE, NULL);
+	             UNKNOWN, NULL);
+	expect_live ("a bare string", "\"stockfw_intel\"", UNKNOWN, NULL);
+	expect_live ("empty text", "", UNKNOWN, NULL);
+	expect_live ("NULL", NULL, UNKNOWN, NULL);
+	expect_live ("whole JSON without the nftables list", "{}", UNKNOWN, NULL);
+	expect_live ("an nftables member that is not a list",
+	             "{\"nftables\": {\"table\": {\"family\": \"inet\", "
+	             "\"name\": \"stockfw_intel\"}}}", UNKNOWN, NULL);
+	expect_live ("a line of text before the listing",
+	             "Warning: something\n{\"nftables\": []}\n", UNKNOWN, NULL);
 	{
 		GString *deep = g_string_new ("{\"nftables\": ");
 
@@ -889,7 +1062,7 @@ test_live (void)
 			g_string_append_c (deep, ']');
 		g_string_append_c (deep, '}');
 		expect_live ("nesting 100 deep is refused, not recursed into",
-		             deep->str, FALSE, NULL);
+		             deep->str, UNKNOWN, NULL);
 		g_string_free (deep, TRUE);
 	}
 
@@ -901,6 +1074,8 @@ int
 main (void)
 {
 	test_scripts ();
+	test_chunks ();
+	test_labels ();
 	test_ids ();
 	test_ruleset ();
 	test_digest ();

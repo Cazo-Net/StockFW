@@ -9,7 +9,8 @@
  *   check SPEC    `nft -c' the script; prints "ok"
  *   apply SPEC    apply it in one transaction; prints "applied <digest>"
  *   clear         remove the table; prints "cleared"
- *   live          "present <digest>", "present without digest", "absent"
+ *   live          "present <digest>", "present without digest", "absent",
+ *                 or "unknown" (exit 1) when nft's listing cannot be read
  *   counters      "<id> <packets> <bytes>" per id, sorted by id
  *
  * SPEC is a file with one set per line, "<id> <in|out|both> [<range>
@@ -192,18 +193,29 @@ cmd_live (void)
 	GError *error = NULL;
 	gchar *json = capture (args, &error);
 	gchar *digest = NULL;
+	int rc = 0;
 
 	if (json == NULL)
 		return fail (error);
-	if (!fs_intelset_nft_parse_live (json, &digest))
+	switch (fs_intelset_nft_parse_live_state (json, &digest)) {
+	case FS_INTEL_LIVE_PRESENT:
+		if (digest == NULL)
+			g_print ("present without digest\n");
+		else
+			g_print ("present %s\n", digest);
+		break;
+	case FS_INTEL_LIVE_ABSENT:
 		g_print ("absent\n");
-	else if (digest == NULL)
-		g_print ("present without digest\n");
-	else
-		g_print ("present %s\n", digest);
+		break;
+	default:
+		/* What intel_live reports as "cannot tell". */
+		g_print ("unknown\n");
+		rc = 1;
+		break;
+	}
 	g_free (digest);
 	g_free (json);
-	return 0;
+	return rc;
 }
 
 static int

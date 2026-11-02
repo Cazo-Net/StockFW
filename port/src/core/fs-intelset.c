@@ -785,6 +785,7 @@ typedef struct
 
 typedef struct
 {
+	gboolean listing;   /* a top-level "nftables" list was read whole */
 	gboolean found;
 	gchar   *digest;
 } LiveScan;
@@ -876,22 +877,27 @@ static gboolean
 live_top_member (Json *js, const JsonString *key, guint depth,
                  gpointer data)
 {
+	LiveScan *live = data;
+
 	if (!json_string_is (key, "nftables") || !json_peek (js, '['))
 		return json_value (js, depth);
-	return json_array (js, depth, live_item, data);
+	if (!json_array (js, depth, live_item, data))
+		return FALSE;
+	live->listing = TRUE;
+	return TRUE;
 }
 
-gboolean
-fs_intelset_nft_parse_live (const gchar *json, gchar **digest)
+FsIntelLive
+fs_intelset_nft_parse_live_state (const gchar *json, gchar **digest)
 {
-	LiveScan live = { FALSE, NULL };
+	LiveScan live = { FALSE, FALSE, NULL };
 	Json js;
 	gboolean ok;
 
 	if (digest != NULL)
 		*digest = NULL;
 	if (json == NULL)
-		return FALSE;
+		return FS_INTEL_LIVE_UNKNOWN;
 
 	/* {"nftables": [{"metainfo": {...}}, {"table": {...}}, ...]}.
 	 * Only that position counts: a set or chain object that happens to
@@ -901,15 +907,26 @@ fs_intelset_nft_parse_live (const gchar *json, gchar **digest)
 	ok = json_object (&js, 0, live_top_member, &live);
 	json_skip_blanks (&js);
 
-	/* A listing that is not whole JSON says nothing reliable. */
-	if (!ok || js.p != js.end || !live.found) {
+	/* Text that is not one whole listing says nothing reliable about
+	 * the kernel: "cannot tell", never "the table is missing", which
+	 * the state check would report as not loaded [S10]. */
+	if (!ok || js.p != js.end || !live.listing) {
 		g_free (live.digest);
-		return FALSE;
+		return FS_INTEL_LIVE_UNKNOWN;
 	}
+	if (!live.found)
+		return FS_INTEL_LIVE_ABSENT;
 
 	if (digest != NULL)
 		*digest = live.digest;
 	else
 		g_free (live.digest);
-	return TRUE;
+	return FS_INTEL_LIVE_PRESENT;
+}
+
+gboolean
+fs_intelset_nft_parse_live (const gchar *json, gchar **digest)
+{
+	return fs_intelset_nft_parse_live_state (json, digest) ==
+	       FS_INTEL_LIVE_PRESENT;
 }
