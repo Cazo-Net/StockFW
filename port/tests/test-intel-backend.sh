@@ -459,10 +459,15 @@ drv clear >/dev/null
 # our chains (rules only).  Never a table, a set or the ruleset, which
 # would print every element [S8.3].
 lists="$(grep -v -- "-f -" "$W/nft.log" | sort -u)"
-odd="$(grep -v -x -e "-j list tables" -e "list chain inet stockfw_intel input" \
+odd="$(grep -v -x -e "-j list chains inet" -e "-j list tables" -e "list chain inet stockfw_intel input" \
   -e "list chain inet stockfw_intel output" -e "list chain inet stockfw_intel forward" <<<"$lists")"
 check '[ -z "$odd" ] && grep -q "^list chain" <<<"$lists"' \
-      "the slots list only the tables and our three chains, never a table or set (${odd:-none other})"
+      "the slots list only the chains, the tables and our three chains, never a table or set (${odd:-none other})"
+# The live read is the chain listing (milliseconds), not `list tables'
+# (which loads every set element): only a table whose chains carry no
+# common digest falls back to the table's comment.
+check 'grep -q -x -- "-j list chains inet" <<<"$lists"' \
+      "the live state is read from the chain listing (-j list chains inet)"
 
 # ---------------------------------------------- 14. foreign rules, after
 others="$(cat "$W"/scripts/*.nft | grep -E '^(table|delete|add|flush|destroy|insert|replace)' | grep -v -E '^(table|delete table|add element) inet stockfw_intel( |$)')"

@@ -24,6 +24,7 @@
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-statusview.h"
+#include "ui/fs-intelview.h"
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-icons.h"
@@ -1423,7 +1424,10 @@ fs_statusview_intel_follow (gboolean start, const gchar *source)
 
 	job->start = start;
 	job->source = g_strdup (source);
-	job->hold = g_strdup (fs_apply_hold_reason ());
+	/* The same hold as every apply the page makes: audit-only mode,
+	 * or the Overview's Lock.  A Start under the Lock leaves the lists
+	 * not loaded rather than load a change the Lock was holding. */
+	job->hold = g_strdup (fs_intelview_hold_reason ());
 	/* One thread at most: the jobs run in the order pushed. */
 	if (intel_pool == NULL)
 		intel_pool = g_thread_pool_new (intel_job_run, NULL, 1, FALSE,

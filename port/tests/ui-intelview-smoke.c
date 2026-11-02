@@ -948,8 +948,9 @@ main (int argc, char **argv)
 	click ("intel-update");
 	t = feed_text ("status", "spamhaus-drop");
 	CHECK (strstr (t, "failed") && strstr (t, "Could not resolve host") &&
-	       strstr (t, "is still used"),
-	       "a failed download says so and keeps the copy (\"%s\")", t);
+	       strstr (t, "is kept and in force") && !strstr (t, "still used"),
+	       "a failed download says so and keeps the copy, in force while "
+	       "it is (\"%s\")", t);
 	g_free (t);
 	serve ("spamhaus-drop", b10);
 
@@ -985,6 +986,28 @@ main (int argc, char **argv)
 	       text_of ("intel-state-title"));
 	shot ("06-paused.png");
 
+	/* Paused: the lookup must not say "is blocked" (the kernel holds
+	 * nothing), and the failed update's copy is "kept", not "in force"
+	 * or "still used". */
+	t = feed_text ("status", "spamhaus-drop");
+	CHECK (strstr (t, "is kept.") && !strstr (t, "in force") &&
+	       !strstr (t, "still used"),
+	       "paused: the failed update's copy is kept, not said to be used "
+	       "(\"%s\")", t);
+	g_free (t);
+	lookup ("45.1.0.9");
+	CHECK (strstr (text_of ("intel-lookup-result"), "Spamhaus DROP (IPv4)") &&
+	       strstr (text_of ("intel-lookup-result"), "not blocked now") &&
+	       !strstr (text_of ("intel-lookup-result"), "and is blocked") &&
+	       !gtk_style_context_has_class (gtk_widget_get_style_context (
+	               find (page, "intel-lookup-result")), "intel-hit"),
+	       "paused: lookup says the list holds it but nothing blocks it now "
+	       "(\"%s\")", text_of ("intel-lookup-result"));
+	CHECK (find (page, "intel-lists-empty") != NULL &&
+	       gtk_style_context_has_class (gtk_widget_get_style_context (
+	               find (page, "intel-lists-empty")), "intel-pad"),
+	       "\"No list file imported.\" is padded like the rows");
+
 	/* ---- stopped: a change is saved, not applied ---- */
 	calls = kern.apply_calls;
 	serve ("feodo", t = plain_body (12, 77));
@@ -1007,6 +1030,8 @@ main (int argc, char **argv)
 	CHECK (strcmp (text_of ("intel-state-title"), "Protected") == 0 &&
 	       strstr (kern.last_sets, "feodo") != NULL,
 	       "Start: both lists in force (%s)", kern.last_sets);
+	CHECK (!visible ("intel-lookup-result"),
+	       "the paused lookup's answer is gone once the state changed");
 
 	/* ---- a hold (the Lock) ---- */
 	test_hold = "the policy is locked on the Overview";
@@ -1021,6 +1046,41 @@ main (int argc, char **argv)
 	click ("intel-apply");   /* the config now differs from the kernel */
 	CHECK (strstr (kern.last_sets, "feodo") == NULL,
 	       "released: Apply takes feodo out (%s)", kern.last_sets);
+
+	/* A feed turned on under the Lock blocks nothing: once the 30 s
+	 * refresh took the message line away, its row must still say so,
+	 * while the hero stays Protected for the other list. */
+	test_hold = "the policy is locked on the Overview";
+	CHECK (g_strcmp0 (fs_intelview_hold_reason (), test_hold) == 0,
+	       "fs_intelview_hold_reason: the Lock's sentence (what the Status "
+	       "page's Start is held by)");
+	flip ("feodo", TRUE);
+	refresh ();
+	t = feed_text ("status", "feodo");
+	CHECK (strcmp (text_of ("intel-state-title"), "Protected") == 0 &&
+	       !visible ("intel-message") && strstr (kern.last_sets, "feodo") == NULL &&
+	       strstr (t, "not in force") && strstr (t, "locked"),
+	       "held under the Lock: after a refresh the feodo row says it is "
+	       "not in force, and why (\"%s\")", t);
+	g_free (t);
+	shot ("06c-held-feodo-on.png");
+	test_hold = NULL;
+	CHECK (fs_intelview_hold_reason () == NULL,
+	       "fs_intelview_hold_reason: NULL without a hold");
+	refresh ();
+	t = feed_text ("status", "feodo");
+	CHECK (strstr (t, "press Apply") != NULL,
+	       "released, not applied yet: \"press Apply\" (\"%s\")", t);
+	g_free (t);
+	click ("intel-apply");
+	t = feed_text ("status", "feodo");
+	CHECK (strstr (kern.last_sets, "feodo") != NULL &&
+	       strstr (t, "in force") && !strstr (t, "not in force"),
+	       "applied: the row says in force (\"%s\")", t);
+	g_free (t);
+	flip ("feodo", FALSE);
+	CHECK (strstr (kern.last_sets, "feodo") == NULL,
+	       "(feodo off again: %s)", kern.last_sets);
 
 	/* ---- lookup ---- */
 	lookup ("45.1.0.9");
@@ -1038,7 +1098,7 @@ main (int argc, char **argv)
 	       text_of ("intel-lookup-result"));
 
 	/* ---- allow list ---- */
-	set_editor ("intel-allow-text", "45.1.0.9\n# a partner\n");
+	set_editor ("intel-allow-text", "45.1.0.9 # a partner\n# another\n");
 	click ("intel-allow-save");
 	lookup ("45.1.0.9");
 	CHECK (strstr (text_of ("intel-lookup-result"), "allow list") != NULL,
@@ -1065,14 +1125,21 @@ main (int argc, char **argv)
 	{
 		gchar *file = g_build_filename (base, "Office VPN.txt", NULL);
 
-		g_file_set_contents (file, "198.51.100.0/24\n198.51.101.5\n", -1,
-		                     NULL);
+		g_file_set_contents (file, "198.51.100.0/24\n198.51.101.5\n"
+		                     "10.1.2.3\nnot an address\n", -1, NULL);
 		fs_intelview_set_import_path (file);
 		click ("intel-import");
 		CHECK (find (page, "list-row-local-office-vpn") != NULL &&
 		       strstr (kern.last_sets, "local-office-vpn") != NULL,
 		       "import: the file becomes a list, applied (%s)",
 		       kern.last_sets);
+		CHECK (strstr (text_of ("intel-message"), "did not parse (the first "
+		                        "is line 4)") &&
+		       strstr (text_of ("intel-message"), "never blocked") &&
+		       gtk_style_context_has_class (gtk_widget_get_style_context (
+		               find (page, "intel-message")), "intel-warn"),
+		       "import: the bad line and the private entry are named, as a "
+		       "warning (\"%s\")", text_of ("intel-message"));
 		fs_intelview_set_import_path (NULL);
 		g_free (file);
 	}

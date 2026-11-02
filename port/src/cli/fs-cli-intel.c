@@ -403,6 +403,7 @@ fs_cli_intel_json (GString *out, gboolean with_sources)
 	g_string_append_c (out, ',');
 	fs_json_kv_str (out, "detail", detail);           g_string_append_c (out, ',');
 	fs_json_kv_bool (out, "master", config->enabled); g_string_append_c (out, ',');
+	fs_json_kv_str (out, "proxy", config->proxy);     g_string_append_c (out, ',');
 	fs_json_kv_str (out, "hold", fs_apply_hold_reason ());
 	g_string_append_c (out, ',');
 	fs_json_key (out, "lists");
@@ -484,6 +485,8 @@ intel_status (gint argc, gchar **argv)
 		printf ("  %-12s %s\n", "", detail);
 	printf ("  %-12s %s\n", "Switch", config->enabled
 	        ? "on" : "off: no list is downloaded or enforced");
+	printf ("  %-12s %s\n", "Proxy", config->proxy != NULL ? config->proxy
+	        : "none (`stockfw intel proxy URL' sets one)");
 	if (hold != NULL)
 		printf ("  %-12s %saudit-only: applies are recorded, the kernel "
 		        "is left untouched%s\n", "Apply mode", fs_cli_amber (),
@@ -882,6 +885,65 @@ intel_switch (gint argc, gboolean on)
 		printf ("Threat intel switched %s.  %sNot live yet: run `sudo "
 		        "stockfw intel apply'.%s\n", on ? "on" : "off",
 		        fs_cli_dim (), fs_cli_reset ());
+	}
+	fs_intel_config_free (config);
+	return FS_EXIT_OK;
+}
+
+/* ------------------------------------------------------------- proxy */
+
+/* `stockfw intel proxy [URL|none]': show or set the download proxy.
+ * Without one every download runs with --noproxy *, so a network that
+ * only reaches the internet through a proxy needs this. */
+static gint
+intel_proxy (gint argc, gchar **argv)
+{
+	FsIntelConfig *config;
+	GError *error = NULL;
+	gint status = FS_EXIT_OK;
+	gboolean set = argc == 1;
+
+	if (argc > 1) {
+		fs_cli_error ("usage: stockfw intel proxy [URL|none]");
+		return FS_EXIT_USAGE;
+	}
+	config = load_config (set, &error);
+	if (config == NULL)
+		return fail (error, "proxy");
+	if (set) {
+		const gchar *v = argv[0];
+
+		if (g_ascii_strcasecmp (v, "none") == 0 ||
+		    g_ascii_strcasecmp (v, "off") == 0)
+			v = NULL;
+		if (!fs_intel_config_set_proxy (config, v, &error)) {
+			fs_intel_config_free (config);
+			fs_cli_error ("%s", error->message);
+			fs_cli_hint ("e.g. http://proxy.example:3128, or none");
+			g_clear_error (&error);
+			return FS_EXIT_USAGE;
+		}
+		if (!save_config (config, &status)) {
+			fs_intel_config_free (config);
+			return status;
+		}
+	}
+	if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+
+		fs_json_kv_str (out, "proxy", config->proxy);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else if (!fs_cli.quiet) {
+		if (config->proxy != NULL)
+			printf ("Downloads go through the proxy %s.\n", config->proxy);
+		else
+			printf ("No proxy: downloads connect to each feed's host "
+			        "directly.\n");
+		if (set)
+			printf ("%sThe next `stockfw intel update' uses it.%s\n",
+			        fs_cli_dim (), fs_cli_reset ());
 	}
 	fs_intel_config_free (config);
 	return FS_EXIT_OK;
@@ -1456,24 +1518,18 @@ intel_import (gint argc, gchar **argv)
 	config = load_config (TRUE, &error);
 	if (config == NULL)
 		return fail (error, "import");
-	if (dir == 0) {
-		/* A list imported again keeps its direction; a new one blocks
-		 * both ways: the user named these addresses. */
-		const FsIntelListConf *l = NULL;
-
-		for (guint i = 0; i < config->lists->len && l == NULL; i++) {
-			const FsIntelListConf *c = g_ptr_array_index (config->lists,
-			                                              i);
-
-			if (g_strcmp0 (c->name, name) == 0)
-				l = c;
-		}
-		dir = l != NULL ? l->dir : FS_INTEL_DIR_BOTH;
-	}
+	/* dir 0 (no --direction): a list imported again keeps its
+	 * direction -- the engine finds it by name in any case or spacing,
+	 * as it does to replace it -- and a new one blocks both ways. */
 	if (!fs_intel_import_list (config, path, name, dir, &stats, &id,
 	                           &error)) {
 		fs_intel_config_free (config);
 		return fail (error, "import");
+	}
+	{
+		const FsIntelListConf *l = fs_intel_config_list (config, id);
+
+		dir = l != NULL ? l->dir : FS_INTEL_DIR_BOTH;
 	}
 	if (!save_config (config, &status)) {
 		g_free (id);
@@ -1867,14 +1923,32 @@ intel_lookup (gint argc, gchar **argv)
 		fs_intel_config_free (config);
 		return FS_EXIT_USAGE;
 	}
+	/* What the kernel does, not just what the configuration asks for
+	 * (design 6.6): exit 5 only when the kernel blocks it now. */
+	fs_intel_lookup_live (fs_backend (), config, argv[0], &r);
 	sentence = fs_intel_lookup_sentence (config, &r);
-	status = r.blocked ? FS_EXIT_BLOCKED : FS_EXIT_OK;
+	status = r.in_force ? FS_EXIT_BLOCKED : FS_EXIT_OK;
 
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{");
 
 		fs_json_kv_str (out, "address", argv[0]);       g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "blocked", r.blocked);    g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "in_force", r.in_force);  g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "pending", r.pending);    g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "uncertain", r.uncertain && !r.in_force);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "state", fs_intel_state_to_string (r.state));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "state_detail", r.state_detail);
+		g_string_append_c (out, ',');
+		g_string_append (out, "\"in_force_lists\":[");
+		for (guint i = 0; i < r.kernel_sources->len; i++) {
+			if (i > 0)
+				g_string_append_c (out, ',');
+			fs_json_string (out, g_ptr_array_index (r.kernel_sources, i));
+		}
+		g_string_append (out, "],");
 		fs_json_kv_str (out, "direction",
 		                r.dir != 0 ? dir_word (r.dir) : NULL);
 		g_string_append_c (out, ',');
@@ -1897,11 +1971,47 @@ intel_lookup (gint argc, gchar **argv)
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else {
-		if (r.blocked)
+		if (r.blocked && r.in_force)
 			printf ("%sBLOCKED%s  %s (%s: %s)\n", fs_cli_red (),
 			        fs_cli_reset (), sentence, dir_word (r.dir),
 			        dir_prose (r.dir));
-		else if (r.sources->len == 0)
+		else if (r.in_force) {
+			/* The kernel still blocks what the configuration no
+			 * longer does: an exception or a change not applied. */
+			GString *names = g_string_new (NULL);
+
+			for (guint i = 0; i < r.kernel_sources->len; i++) {
+				const gchar *id = g_ptr_array_index (r.kernel_sources, i);
+				const gchar *l = fs_intel_config_label (config, id);
+
+				g_string_append_printf (names, "%s%s", i ? ", " : "",
+				                        l != NULL ? l : id);
+			}
+			printf ("%sBLOCKED%s  the kernel still blocks %s (%s): the "
+			        "change that lets it through is not applied yet; "
+			        "`sudo stockfw intel apply' puts it in force.\n",
+			        fs_cli_red (), fs_cli_reset (), argv[0], names->str);
+			g_string_free (names, TRUE);
+		} else if (r.blocked && r.uncertain) {
+			printf ("%sMAYBE BLOCKED%s  %s (%s), but a list changed "
+			        "since the last apply, so whether the kernel blocks "
+			        "it now cannot be told; `sudo stockfw intel apply' "
+			        "puts the new copy in force.\n", fs_cli_amber (),
+			        fs_cli_reset (), sentence, dir_word (r.dir));
+		} else if (r.blocked) {
+			const gchar *why =
+				r.state == FS_INTEL_STATE_ENFORCED
+				? "the lists have changes that are not applied yet; "
+				  "`sudo stockfw intel apply' puts them in force"
+				: r.state_detail != NULL ? r.state_detail
+				: "the lists are not in force";
+
+			printf ("%sLISTED, NOT BLOCKED NOW%s  %s once in force "
+			        "(%s), but the kernel does not block it: %s "
+			        "(threat intel %s).\n", fs_cli_amber (),
+			        fs_cli_reset (), sentence, dir_word (r.dir), why,
+			        fs_intel_state_to_string (r.state));
+		} else if (r.sources->len == 0)
 			printf ("%sNOT LISTED%s  no list that is turned on holds %s.\n",
 			        fs_cli_green (), fs_cli_reset (), argv[0]);
 		else {
@@ -1925,7 +2035,7 @@ intel_lookup (gint argc, gchar **argv)
 			        why);
 			g_string_free (names, TRUE);
 		}
-		if (r.blocked)
+		if (r.blocked || r.in_force)
 			printf ("%sA mistake?  `sudo stockfw intel except %s' lets it "
 			        "through.%s\n", fs_cli_dim (), argv[0], fs_cli_reset ());
 	}
@@ -1954,6 +2064,7 @@ fs_cli_cmd_intel (gint argc, gchar **argv)
 	if (strcmp (sub, "on") == 0)              return intel_switch (n, TRUE);
 	if (strcmp (sub, "off") == 0)             return intel_switch (n, FALSE);
 	if (strcmp (sub, "add-feed") == 0)        return intel_add_feed (n, rest);
+	if (strcmp (sub, "proxy") == 0)           return intel_proxy (n, rest);
 	if (strcmp (sub, "update") == 0)          return intel_update (n, rest);
 	if (strcmp (sub, "apply") == 0)           return intel_apply (n, rest);
 	if (strcmp (sub, "clear") == 0)           return intel_clear (n, rest);

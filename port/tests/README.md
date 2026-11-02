@@ -1600,3 +1600,69 @@ caches until exit), with no AddressSanitizer, LeakSanitizer or
 UndefinedBehaviorSanitizer report.  With leak checking on, `test-cli.sh`
 first found that `stockfw policy add` never freed the rule it parsed
 (the policy stores copies), five reports, one per add; that is fixed.
+
+## Threat intel, round 3 review fixes (`intel-r3/integrated`)
+
+What the kernel does, not just the configuration; one engine operation
+at a time; and the CLI, the dashboard and the page saying the same.
+
+| check | where | what it proves |
+|---|---|---|
+| `a Stop during an apply waits for it ..., then the lists are down and suspended` | `fs-intel-test` | the engine lock (`flock` on `<store>/engine.lock`): a Stop from another thread blocks until the apply ends, then wins; the audit has intel-apply before intel-suspend |
+| `an apply that waited for a Stop is held ...` | `fs-intel-test` | an apply that had to wait, and finds the firewall stopped by the operation it waited for, is held, the kernel left empty |
+| `an apply that did not wait is not held by an old Stop` | `fs-intel-test` | a deliberate `intel apply` with the firewall stopped behaves as before |
+| `a Stop during an apply waits for it, then the lists are down and suspended` | `test-intel-cli.sh` | the same across processes: `intel apply` slowed by an nft wrapper, `stockfw stop` a moment later |
+| `an update during which a Stop carried the counters keeps them` | `fs-intel-test` | an update re-reads the carried totals under the lock before it writes its state |
+| `lookup_live: ...` (10 checks) | `fs-intel-test` | `fs_intel_lookup_live`: not loaded, enforced, an exception saved but not applied (still in force, pending), applied, removed, a direction change, Stop, Start, clear, a new copy not applied (uncertain), another table (differs) |
+| `lookup of an exception not applied: the kernel still blocks it, exit 5, pending`, `lookup after clear ...`, `lookup with the firewall stopped ...` | `test-intel-cli.sh` | `stockfw intel lookup` exits 5 only when the kernel blocks the address (checked with `nft get element`) |
+| `lookup: a listed address names the list, but nothing is in force: exit 0, in_force false` | `test-cli.sh` | without a kernel table the answer is never "blocked" |
+| `paused: lookup says the list holds it but nothing blocks it now` | `fs-intelview-smoke` | the page's lookup box under Paused (no red "is blocked") |
+| `the paused lookup's answer is gone once the state changed` | `fs-intelview-smoke` | a stale answer is hidden when a snapshot changes the state |
+| `held under the Lock: after a refresh the feodo row says it is not in force, and why` | `fs-intelview-smoke` | a feed turned on under the Lock reads "On, but not in force: the policy is locked ..." after the 30 s refresh took the message away |
+| `paused: the failed update's copy is kept, not said to be used` | `fs-intelview-smoke` | "is kept", and "and in force" only when it is |
+| `"No list file imported." is padded like the rows` | `fs-intelview-smoke` | the placeholder has `intel-pad` |
+| `import: the bad line and the private entry are named, as a warning` | `fs-intelview-smoke` | the page's Import reports `invalid`, `too_broad` and `protected_hits` as the CLI does |
+| `fs_intelview_hold_reason: the Lock's sentence ...` | `fs-intelview-smoke` | the one hold that the page's applies and the Status page's Start both use |
+| `re-import with dir 0 keeps the list's direction (in)` | `fs-intel-test` | `fs_intel_import_list` with dir 0 keeps the replaced list's direction (the name in any case or spacing) |
+| `re-import, the name in another case and spacing, no --direction: still out` | `test-intel-cli.sh` | the CLI passes 0 when `--direction` is absent |
+| `events: a list's block is in the history, with its rule; a set not applied is not`, `events (table): a RULE column names the list` | `test-cli.sh` | `stockfw events` (and the dashboard's history, the same function) reads `STOCKFW-TI` lines as the live feed does, with `fs_intel_rule_text` |
+| `chains: ...` (11 checks) | `fs-intelset-test` | `fs_intelset_nft_parse_live_chains`: one digest on every chain, an older table without chain comments (fallback), mixed digests, decoys, broken listings |
+| the goldens | `fs-intelset-test` | every chain carries `comment "sfw:<digest>"` |
+| `every chain carries the digest too: ...` | `test-intelset.sh` | real nft 1.0.9 loads the chain comments, and `nft -j list chains inet` reads the digest |
+| `the live state is read from the chain listing (-j list chains inet)` | `test-intel-backend.sh` | the backend's live read is the fast listing |
+| `unknown: the reason is in the sentence` | `fs-intel-test` | `intel_live_error` (no nft) reaches the state's sentence |
+| `proxy ...` (5 checks), `intel proxy ...` (3 checks) | `fs-intel-test`, `test-cli.sh` | `fs_intel_config_set_proxy` and `stockfw intel proxy URL\|none`; one with a password is refused; `status` shows it |
+| `rule text of ...` | `fs-intel-test` | `fs_intel_rule_text`, shared by the backend, `stockfw events` and the dashboard |
+
+Teeth (each injected into the source by a script that asserts the old
+text once, rebuilt, run, seen failing on the named check, restored with
+`cp`, checked with `cmp`):
+
+| injected bug | check that fails |
+|---|---|
+| `engine_lock` never locks | `a Stop during an apply waits for it ...` |
+| a waited apply is not held | `an apply that waited for a Stop is held` |
+| the CLI's exit 5 from `blocked` (the configuration) | `lookup: a listed address names the list, but nothing is in force ...` |
+| the applied exceptions ignored | `lookup_live: exception not applied: ...` |
+| the page says "is blocked" from the configuration | `paused: lookup says the list holds it ...` |
+| `stockfw events` without `STOCKFW-TI` lines | `events: a list's block is in the history ...` |
+| a re-import widens to both | `re-import with dir 0 keeps the list's direction (in)` |
+| the page's Import drops lines silently | `import: the bad line and the private entry are named ...` |
+| no digest on the chains | `golden: an IN set, IPv4 only` |
+| the chain parser takes mixed digests | `chains: one chain replaced by hand, ...` |
+| the unknown state without the backend's reason | `unknown: the reason is in the sentence` |
+| a proxy with a password accepted | `proxy with a password: refused, nothing set` |
+| a held feed reads "Up to date." | `held under the Lock: after a refresh ...` |
+| "is still used" under Paused | `paused: the failed update's copy is kept, ...` |
+| the placeholder without `intel-pad` | `"No list file imported." is padded like the rows` |
+| the stale lookup answer stays | `the paused lookup's answer is gone once the state changed` |
+| the update does not re-read the carried counters | `an update during which a Stop carried the counters keeps them` |
+
+Not covered by a test: the Status page's Start calling
+`fs_intelview_hold_reason` (its worker runs on the real backend); the
+smoke checks the function it calls.
+
+The sanitizer build runs `fs-intel-test`, `fs-intelset-test`,
+`test-intel-cli.sh`, `test-intel-backend.sh`, `test-cli.sh` and
+`test-intelset.sh` with leak checking on, and `fs-intelview-smoke` with
+it off, with no report.

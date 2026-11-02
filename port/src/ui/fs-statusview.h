@@ -27,7 +27,7 @@ void           fs_statusview_set_state (FsFirewallState state);
 FsFirewallState fs_statusview_get_state (void);
 
 /* After the firewall started (start TRUE) or stopped: the threat-intel
- * blocklists follow (fs_intel_resume under fs_apply_hold_reason(), or
+ * blocklists follow (fs_intel_resume under fs_intelview_hold_reason(), or
  * fs_intel_suspend), in a worker, one job at a time, in order; an
  * error dialog if they could not.  `source' names the caller in the
  * audit log. */

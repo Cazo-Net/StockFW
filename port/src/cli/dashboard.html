@@ -845,7 +845,7 @@ code {
     clear(tb);
     var f = state.filter.toLowerCase(), shown = 0;
     state.events.forEach(function (e) {
-      var hay = [e.source, e.destination, e.port, e.service, e.protocol, e.direction].join(" ").toLowerCase();
+      var hay = [e.source, e.destination, e.port, e.service, e.protocol, e.direction, e.rule].join(" ").toLowerCase();
       if (f && hay.indexOf(f) < 0) return;
       shown++;
       var tr = el("tr");
@@ -855,7 +855,7 @@ code {
       tr.appendChild(el("td", "mono", e.source || "–"));
       tr.appendChild(el("td", "mono", e.destination || "–"));
       tr.appendChild(el("td", null, e.port || "–"));
-      tr.appendChild(el("td", null, (e.service || "") + (e.protocol ? " · " + e.protocol : "")));
+      tr.appendChild(el("td", null, (e.service || "") + (e.protocol ? " · " + e.protocol : "") + (e.rule ? " · " + e.rule : "")));
       tb.appendChild(tr);
     });
     if (shown === 0) {

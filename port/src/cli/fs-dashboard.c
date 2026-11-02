@@ -610,6 +610,7 @@ events_json (Dash *dash, GHashTable *params)
 		fs_json_kv_str (out, "port", hit->port);             g_string_append_c (out, ',');
 		fs_json_kv_str (out, "protocol", hit->protocol);     g_string_append_c (out, ',');
 		fs_json_kv_str (out, "service", service);            g_string_append_c (out, ',');
+		fs_json_kv_str (out, "rule", hit->rule);             g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "blocked", fs_hit_is_blocked (hit));
 		g_string_append_c (out, '}');
 		g_free (service);

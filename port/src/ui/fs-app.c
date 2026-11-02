@@ -694,6 +694,11 @@ fs_app_activate (GtkApplication *app)
 	fs_settings_load_prefs (settings);
 	fs_backend_set_context (policy, settings);
 
+	/* Threat Intel (1.0.7): every blocklist apply -- the page's and
+	 * a Start's -- is held by the Overview's Lock as well as by
+	 * audit-only mode; set before start-on-open below. */
+	fs_intelview_set_hold_func (app_intel_hold);
+
 	/* "Start the firewall on program startup".  A failure here is not
 	 * fatal: the window still opens and the state line reports what
 	 * actually happened. */
@@ -712,9 +717,7 @@ fs_app_activate (GtkApplication *app)
 	            "one covers."),
 	          fs_policyview_page (policy), FALSE);
 
-	/* Threat Intel (1.0.7): the blocklists.  Its applies are held by
-	 * the Overview's Lock as well as by audit-only mode. */
-	fs_intelview_set_hold_func (app_intel_hold);
+	/* Threat Intel (1.0.7): the blocklists. */
 	add_page (_("Threat Intel"), NULL, fs_intelview_page (), FALSE);
 
 	/* Smart Firewall Copilot tab */

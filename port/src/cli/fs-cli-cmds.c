@@ -160,6 +160,7 @@ hit_row_json (GString *out, const FsHit *hit)
 	fs_json_kv_str (out, "service", service);            g_string_append_c (out, ',');
 	fs_json_kv_str (out, "in", hit->in);                 g_string_append_c (out, ',');
 	fs_json_kv_str (out, "out", hit->out);               g_string_append_c (out, ',');
+	fs_json_kv_str (out, "rule", hit->rule);             g_string_append_c (out, ',');
 	fs_json_kv_bool (out, "blocked", fs_hit_is_blocked (hit));
 	g_string_append_c (out, '}');
 	g_free (service);
@@ -1412,12 +1413,26 @@ fs_cli_log_history (guint max_lines, gint64 *complete_from, GError **error)
 	for (guint i = 0; lines[i] != NULL; i++) {
 		FsHit parsed = { 0 };
 		FsHit *hit;
+		gchar *intel_id = NULL;
 
-		if (!fs_netparse_log_line (lines[i], &parsed, NULL))
+		/* A threat-intel block, read as the backend's live feed reads
+		 * it: kept only when <id> is a set of the rule set StockFW
+		 * applied [S17.3], and named after its list. */
+		if (fs_netparse_intel_line (lines[i], &parsed, NULL, &intel_id)) {
+			if (!fs_intel_applied_has (intel_id)) {
+				g_free (intel_id);
+				fs_netparse_clear_hit (&parsed);
+				continue;
+			}
+			fs_netparse_name_blocked (&parsed);
+			parsed.rule = fs_intel_rule_text (intel_id);
+			g_free (intel_id);
+		} else if (fs_netparse_log_line (lines[i], &parsed, NULL)) {
+			fs_netparse_name_by_verdict (&parsed,
+			                             fs_netparse_log_verdict (lines[i]));
+		} else {
 			continue;
-
-		fs_netparse_name_by_verdict (&parsed,
-		                             fs_netparse_log_verdict (lines[i]));
+		}
 		hit = fs_hit_new ();
 		*hit = parsed;          /* the fields move into the heap hit */
 		g_ptr_array_add (hits, hit);
@@ -1441,7 +1456,7 @@ typedef struct
 static gchar **
 hit_row (const FsHit *hit)
 {
-	gchar **row = g_new0 (gchar *, 9);
+	gchar **row = g_new0 (gchar *, 10);
 	gboolean blocked = fs_hit_is_blocked (hit);
 	gchar *service = fs_hit_service_name (hit);
 
@@ -1455,6 +1470,8 @@ hit_row (const FsHit *hit)
 	row[5] = g_strdup (hit->port ? hit->port : "-");
 	row[6] = service;
 	row[7] = g_strdup (hit->protocol ? hit->protocol : "-");
+	/* Why it was dropped, when the log says: "Threat intel: <list>". */
+	row[8] = g_strdup (hit->rule != NULL && *hit->rule ? hit->rule : "-");
 
 	return row;
 }
@@ -1477,11 +1494,12 @@ print_hit (const FsHit *hit, EventsState *st)
 		gchar **row = hit_row (hit);
 		gboolean blocked = fs_hit_is_blocked (hit);
 
-		printf ("%s%s%s  %s%-7s%s  %-3s  %-15s → %-15s  %-5s  %s/%s\n",
+		printf ("%s%s%s  %s%-7s%s  %-3s  %-15s → %-15s  %-5s  %s/%s%s%s\n",
 		        fs_cli_dim (), row[0], fs_cli_reset (),
 		        blocked ? fs_cli_red () : fs_cli_green (), row[1],
 		        fs_cli_reset (), row[2], row[3], row[4], row[5], row[6],
-		        row[7]);
+		        row[7], hit->rule != NULL && *hit->rule ? "  " : "",
+		        hit->rule != NULL && *hit->rule ? hit->rule : "");
 		g_strfreev (row);
 	}
 
@@ -1566,7 +1584,7 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 		} else {
 			static const gchar *headers[] = {
 				"TIME", "VERDICT", "DIR", "SOURCE", "DESTINATION",
-				"PORT", "SERVICE", "PROTO"
+				"PORT", "SERVICE", "PROTO", "RULE"
 			};
 			GPtrArray *rows = g_ptr_array_new_with_free_func (
 				(GDestroyNotify) g_strfreev);
@@ -1581,7 +1599,7 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 
 			st.printed = rows->len;
 			if (rows->len > 0)
-				fs_cli_table (headers, 8, rows, 40);
+				fs_cli_table (headers, 9, rows, 40);
 			g_ptr_array_unref (rows);
 
 			if (st.printed == 0 && !fs_cli.quiet)

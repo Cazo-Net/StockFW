@@ -84,16 +84,19 @@ static const gchar GOLDEN_IN4[] =
 	"\tcomment \"sfw:7322e67f7b093a917d49cd417dd976d7\"\n"
 	"\tset s_feed_in_4 { type ipv4_addr; flags interval; }\n"
 	"\tchain input {\n"
+	"\t\tcomment \"sfw:7322e67f7b093a917d49cd417dd976d7\"\n"
 	"\t\ttype filter hook input priority filter - 10; policy accept;\n"
 	"\t\tiif \"lo\" accept\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-in \" level info\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original counter drop comment \"feed-in\"\n"
 	"\t}\n"
 	"\tchain output {\n"
+	"\t\tcomment \"sfw:7322e67f7b093a917d49cd417dd976d7\"\n"
 	"\t\ttype filter hook output priority filter - 10; policy accept;\n"
 	"\t\toif \"lo\" accept\n"
 	"\t}\n"
 	"\tchain forward {\n"
+	"\t\tcomment \"sfw:7322e67f7b093a917d49cd417dd976d7\"\n"
 	"\t\ttype filter hook forward priority filter - 10; policy accept;\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-in \" level info\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original counter drop comment \"feed-in\"\n"
@@ -108,16 +111,19 @@ static const gchar GOLDEN_OUT6[] =
 	"\tcomment \"sfw:3606c7af9889afedfedb2e3c37deb3b7\"\n"
 	"\tset s_feed_out_6 { type ipv6_addr; flags interval; }\n"
 	"\tchain input {\n"
+	"\t\tcomment \"sfw:3606c7af9889afedfedb2e3c37deb3b7\"\n"
 	"\t\ttype filter hook input priority filter - 10; policy accept;\n"
 	"\t\tiif \"lo\" accept\n"
 	"\t}\n"
 	"\tchain output {\n"
+	"\t\tcomment \"sfw:3606c7af9889afedfedb2e3c37deb3b7\"\n"
 	"\t\ttype filter hook output priority filter - 10; policy accept;\n"
 	"\t\toif \"lo\" accept\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-out \" level info\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original counter reject with icmpx type admin-prohibited comment \"feed-out\"\n"
 	"\t}\n"
 	"\tchain forward {\n"
+	"\t\tcomment \"sfw:3606c7af9889afedfedb2e3c37deb3b7\"\n"
 	"\t\ttype filter hook forward priority filter - 10; policy accept;\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-out \" level info\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original counter reject with icmpx type admin-prohibited comment \"feed-out\"\n"
@@ -133,6 +139,7 @@ static const gchar GOLDEN_BOTH[] =
 	"\tset s_feed_both_4 { type ipv4_addr; flags interval; }\n"
 	"\tset s_feed_both_6 { type ipv6_addr; flags interval; }\n"
 	"\tchain input {\n"
+	"\t\tcomment \"sfw:68ca2f1469cc978f02dd154b67c0c887\"\n"
 	"\t\ttype filter hook input priority filter - 10; policy accept;\n"
 	"\t\tiif \"lo\" accept\n"
 	"\t\tip saddr @s_feed_both_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-both \" level info\n"
@@ -141,6 +148,7 @@ static const gchar GOLDEN_BOTH[] =
 	"\t\tip6 saddr @s_feed_both_6 counter drop comment \"feed-both\"\n"
 	"\t}\n"
 	"\tchain output {\n"
+	"\t\tcomment \"sfw:68ca2f1469cc978f02dd154b67c0c887\"\n"
 	"\t\ttype filter hook output priority filter - 10; policy accept;\n"
 	"\t\toif \"lo\" accept\n"
 	"\t\tip daddr @s_feed_both_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-both \" level info\n"
@@ -149,6 +157,7 @@ static const gchar GOLDEN_BOTH[] =
 	"\t\tip6 daddr @s_feed_both_6 counter reject with icmpx type admin-prohibited comment \"feed-both\"\n"
 	"\t}\n"
 	"\tchain forward {\n"
+	"\t\tcomment \"sfw:68ca2f1469cc978f02dd154b67c0c887\"\n"
 	"\t\ttype filter hook forward priority filter - 10; policy accept;\n"
 	"\t\tip saddr @s_feed_both_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-both \" level info\n"
 	"\t\tip saddr @s_feed_both_4 counter drop comment \"feed-both\"\n"
@@ -174,6 +183,7 @@ static const gchar GOLDEN_SEVERAL[] =
 	"\tset s_feed_both_4 { type ipv4_addr; flags interval; }\n"
 	"\tset s_feed_both_6 { type ipv6_addr; flags interval; }\n"
 	"\tchain input {\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\ttype filter hook input priority filter - 10; policy accept;\n"
 	"\t\tiif \"lo\" accept\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-in \" level info\n"
@@ -184,6 +194,7 @@ static const gchar GOLDEN_SEVERAL[] =
 	"\t\tip6 saddr @s_feed_both_6 counter drop comment \"feed-both\"\n"
 	"\t}\n"
 	"\tchain output {\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\ttype filter hook output priority filter - 10; policy accept;\n"
 	"\t\toif \"lo\" accept\n"
 	"\t\tip6 daddr @s_feed_out_6 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-out \" level info\n"
@@ -194,6 +205,7 @@ static const gchar GOLDEN_SEVERAL[] =
 	"\t\tip6 daddr @s_feed_both_6 counter reject with icmpx type admin-prohibited comment \"feed-both\"\n"
 	"\t}\n"
 	"\tchain forward {\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\ttype filter hook forward priority filter - 10; policy accept;\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI feed-in \" level info\n"
 	"\t\tip saddr @s_feed_in_4 ct direction original counter drop comment \"feed-in\"\n"
@@ -776,6 +788,7 @@ test_digest (void)
 static const gchar LISTING[] =
 	"table inet stockfw_intel {\n"
 	"\tchain input {\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\ttype filter hook input priority filter - 10; policy accept;\n"
 	"\t\tiif \"lo\" accept\n"
 	"\t\tip saddr @s_alpha_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI alpha \" level info\n"
@@ -791,6 +804,7 @@ static const gchar LISTING[] =
 	"}\n"
 	"table inet stockfw_intel {\n"
 	"\tchain output {\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\ttype filter hook output priority filter - 10; policy accept;\n"
 	"\t\toif \"lo\" accept\n"
 	"\t\tip daddr @s_alpha_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI alpha \" level info\n"
@@ -801,6 +815,7 @@ static const gchar LISTING[] =
 	"}\n"
 	"table inet stockfw_intel {\n"
 	"\tchain forward {\n"
+	"\t\tcomment \"sfw:a06d0e574758073c0514fb6047039306\"\n"
 	"\t\ttype filter hook forward priority filter - 10; policy accept;\n"
 	"\t\tip saddr @s_alpha_4 limit rate 10/second burst 20 packets log prefix \"STOCKFW-TI alpha \" level info\n"
 	"\t\tip saddr @s_alpha_4 counter packets 0 bytes 0 drop comment \"alpha\"\n"
@@ -1070,6 +1085,79 @@ test_live (void)
 	       "live: the digest pointer may be NULL");
 }
 
+/* `nft -j list chains inet' as nft 1.0.9 printed it for a table this
+ * StockFW wrote (every chain carries the digest), with a decoy chain of
+ * another table that carries a different one. */
+#define CHAIN_JSON(table, name, comment) \
+	"{\"chain\": {\"family\": \"inet\", \"table\": \"" table "\", " \
+	"\"name\": \"" name "\", \"handle\": 1, " comment "\"type\": " \
+	"\"filter\", \"hook\": \"" name "\", \"prio\": -10, " \
+	"\"policy\": \"accept\"}}"
+#define META "{\"metainfo\": {\"version\": \"1.0.9\", " \
+	"\"release_name\": \"Old Doc Yak #3\", \"json_schema_version\": 1}}"
+#define D1 "\"comment\": \"sfw:43254231e49deba9152e6f56f6251661\", "
+#define D2 "\"comment\": \"sfw:ffffffffffffffffffffffffffffffff\", "
+
+static void
+expect_chains (const gchar *what, const gchar *json, FsIntelLive want,
+               const gchar *want_digest)
+{
+	static gchar untouched[] = "untouched";
+	gchar *digest = untouched;
+	FsIntelLive got = fs_intelset_nft_parse_live_chains (json, &digest);
+
+	CHECK (got == want && g_strcmp0 (digest, want_digest) == 0,
+	       "chains: %s -> %s, digest %s (got %s, %s)", what,
+	       live_name (want), want_digest != NULL ? want_digest : "none",
+	       live_name (got), digest != NULL && digest != untouched
+	       ? digest : "none");
+	if (digest != untouched)
+		g_free (digest);
+}
+
+static void
+test_live_chains (void)
+{
+	expect_chains ("ours, every chain with the digest, a decoy table's chain",
+	               "{\"nftables\": [" META ", "
+	               CHAIN_JSON ("stockfw_intel2", "input", D2) ", "
+	               CHAIN_JSON ("stockfw_intel", "input", D1) ", "
+	               CHAIN_JSON ("stockfw_intel", "output", D1) ", "
+	               CHAIN_JSON ("stockfw_intel", "forward", D1) "]}\n",
+	               PRESENT, "43254231e49deba9152e6f56f6251661");
+	expect_chains ("an older table: chains without comments (read the table)",
+	               "{\"nftables\": [" META ", "
+	               CHAIN_JSON ("stockfw_intel", "input", "") ", "
+	               CHAIN_JSON ("stockfw_intel", "output", "") "]}",
+	               PRESENT, NULL);
+	expect_chains ("one chain replaced by hand, without the digest",
+	               "{\"nftables\": [" META ", "
+	               CHAIN_JSON ("stockfw_intel", "input", D1) ", "
+	               CHAIN_JSON ("stockfw_intel", "output", "") "]}",
+	               PRESENT, NULL);
+	expect_chains ("two different digests",
+	               "{\"nftables\": [" META ", "
+	               CHAIN_JSON ("stockfw_intel", "input", D1) ", "
+	               CHAIN_JSON ("stockfw_intel", "output", D2) "]}",
+	               PRESENT, NULL);
+	expect_chains ("only another table's chains",
+	               "{\"nftables\": [" META ", "
+	               CHAIN_JSON ("stockfw_intel2", "input", D1) "]}",
+	               ABSENT, NULL);
+	expect_chains ("no chains at all", "{\"nftables\": [" META "]}",
+	               ABSENT, NULL);
+	expect_chains ("a family ip chain of the same table name",
+	               "{\"nftables\": [{\"chain\": {\"family\": \"ip\", "
+	               "\"table\": \"stockfw_intel\", \"name\": \"input\", "
+	               D1 "\"handle\": 1}}]}", ABSENT, NULL);
+	expect_chains ("cut short", "{\"nftables\": [" META ", "
+	               CHAIN_JSON ("stockfw_intel", "input", D1), UNKNOWN, NULL);
+	expect_chains ("not a listing", "{}", UNKNOWN, NULL);
+	expect_chains ("NULL", NULL, UNKNOWN, NULL);
+	expect_chains ("an error line first",
+	               "Error: x\n{\"nftables\": []}", UNKNOWN, NULL);
+}
+
 int
 main (void)
 {
@@ -1081,6 +1169,7 @@ main (void)
 	test_digest ();
 	test_counters ();
 	test_live ();
+	test_live_chains ();
 
 	g_print ("\n%s: %u failure(s)\n", failures ? "FAILED" : "PASSED",
 	         failures);

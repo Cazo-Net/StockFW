@@ -259,6 +259,11 @@ typedef struct
 	 * a table removed behind StockFW's back (a reboot, `nft flush
 	 * ruleset') is reported, never assumed [S10]. */
 	FsIntelLive (*intel_live) (gchar **digest);
+	/* Why this thread's last intel_live answered UNKNOWN, as one
+	 * sentence the user can act on ("nft was not found on PATH.
+	 * Install the nftables package ..."); NULL when it did not or the
+	 * platform cannot say.  Caller frees.  Optional (NULL slot). */
+	gchar *(*intel_live_error) (void);
 } FsBackend;
 
 /* Profile identifiers, matching Windows' own numbering. */

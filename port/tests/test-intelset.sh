@@ -310,6 +310,9 @@ d_several="$("$DRV" digest "$F_SEVERAL")"
 check '[ $rc -eq 0 ] && [ "$out" = "applied $d_several" ]' "the rule set applies (${out:0:60})"
 live="$("$DRV" live)"
 check '[ "$live" = "present $d_several" ]' "the live digest read back is the applied one ($live)"
+live="$("$DRV" live-chains)"
+check '[ "$live" = "present $d_several" ]' \
+      "every chain carries the digest too: \`nft -j list chains' (no set element loaded) reads it ($live)"
 check 'nft list set inet stockfw_intel s_feed_in_4 | grep -q "192.0.2.0/24"' "its sets are in the kernel"
 check 'nft list chain inet stockfw_intel input | grep -q "ip saddr @s_a123456789_123456789_123456789_123456789_4 counter"' \
       "a 40-character id makes a working set name, rule and comment"

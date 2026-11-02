@@ -154,12 +154,16 @@ sudo stockfw intel enable spamhaus-drop --accept-terms
 sudo stockfw intel update                             # download the feeds that are due
 sudo stockfw intel apply                              # load the lists into the kernel
 sudo stockfw intel status                             # protected? which lists, how many blocks
-sudo stockfw intel lookup 203.0.113.7                 # which lists hold it; exit 5 if blocked
+sudo stockfw intel lookup 203.0.113.7                 # which lists hold it; exit 5 if the kernel blocks it now
 sudo stockfw intel except 203.0.113.7                 # a mistake: never block this address
 sudo stockfw intel import mylist.txt --name "My list" # your own list, no network
 ```
 
 `stockfw help intel` lists every action. Each one takes `--json`.
+Downloads connect to each feed's host directly. Behind a proxy, set it
+with `sudo stockfw intel proxy http://proxy.example:3128` (`none` removes
+it); it is kept as `[intel] proxy=` in `/var/lib/stockfw/intel/intel.conf`
+and `stockfw intel status` shows it.
 `feeds` and `terms` work without root until something is turned on.
 After that the store is root-only, so every `stockfw intel` command
 needs sudo.

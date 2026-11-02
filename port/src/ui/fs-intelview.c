@@ -175,6 +175,7 @@ typedef struct
 	Snapshot        *snap;
 	gchar           *message;
 	gboolean         failed;
+	gboolean         warned;     /* done, but something was left out  */
 	GPtrArray       *notes;      /* gchar*; NULL: keep the last ones  */
 	gchar           *lookup;
 	gboolean         lookup_blocked;
@@ -605,6 +606,25 @@ take_snapshot (const FsBackend *b)
 	return s;
 }
 
+/* Each line cut at its first '#': a trailing comment, as the
+ * blocklist's CSV reader allows.  Caller frees. */
+static gchar *
+strip_comments (const gchar *text)
+{
+	gchar **lines = g_strsplit (text != NULL ? text : "", "\n", -1);
+	gchar *out;
+
+	for (guint i = 0; lines[i] != NULL; i++) {
+		gchar *hash = strchr (lines[i], '#');
+
+		if (hash != NULL)
+			*hash = '\0';
+	}
+	out = g_strjoinv ("\n", lines);
+	g_strfreev (lines);
+	return out;
+}
+
 /* Append a sentence to the job's message. */
 static void
 say (Job *job, const gchar *text)
@@ -853,7 +873,12 @@ job_simple (Job *job)
 		ok = fs_intel_config_remove (config, job->id, &error);
 		break;
 	case JOB_EXCEPTIONS: {
-		FsRangeSet *set = fs_range_set_from_text (job->text, &error);
+		/* "203.0.113.6 # mail" is accepted here as it is in your
+		 * blocklist: the comment is cut, never kept. */
+		gchar *bare = strip_comments (job->text);
+		FsRangeSet *set = fs_range_set_from_text (bare, &error);
+
+		g_free (bare);
 
 		ok = set != NULL;
 		if (ok) {
@@ -909,10 +934,11 @@ job_simple (Job *job)
 		} else {
 			path = g_strdup (job->text);
 		}
+		/* Direction 0: a list imported again keeps the direction
+		 * it had (set with the CLI); a new one blocks both ways. */
 		if (ok)
-			ok = fs_intel_import_list (config, path, job->name,
-			                           FS_INTEL_DIR_BOTH, &stats,
-			                           NULL, &error);
+			ok = fs_intel_import_list (config, path, job->name, 0,
+			                           &stats, NULL, &error);
 		if (job->kind == JOB_DENY && path != NULL)
 			g_unlink (path);
 		g_free (path);
@@ -926,6 +952,42 @@ job_simple (Job *job)
 			say (job, t);
 			g_free (t);
 			g_free (n);
+			/* What was left out, as the CLI says it: a mistyped
+			 * or private address must not just disappear. */
+			if (stats.invalid > 0) {
+				t = g_strdup_printf (g_dngettext (NULL,
+					"%u line did not parse (the first is line %u) "
+					"and was skipped.",
+					"%u lines did not parse (the first is line %u) "
+					"and were skipped.", stats.invalid),
+					stats.invalid, stats.first_invalid);
+				say (job, t);
+				g_free (t);
+				job->warned = TRUE;
+			}
+			if (stats.too_broad > 0) {
+				t = g_strdup_printf (g_dngettext (NULL,
+					"%u entry was too broad to block and was left "
+					"out.",
+					"%u entries were too broad to block and were "
+					"left out.", stats.too_broad), stats.too_broad);
+				say (job, t);
+				g_free (t);
+				job->warned = TRUE;
+			}
+			if (stats.protected_hits > 0) {
+				t = g_strdup_printf (g_dngettext (NULL,
+					"%u entry overlapped addresses that are never "
+					"blocked (private, loopback, multicast...); that "
+					"part was left out.",
+					"%u entries overlapped addresses that are never "
+					"blocked (private, loopback, multicast...); that "
+					"part was left out.", stats.protected_hits),
+					stats.protected_hits);
+				say (job, t);
+				g_free (t);
+				job->warned = TRUE;
+			}
 		}
 		break;
 	}
@@ -991,6 +1053,25 @@ job_lookup (Job *job)
 		g_string_printf (out, _("\"%s\" is not one address. Type one "
 		                        "address, like 203.0.113.7 or "
 		                        "2001:db8::1."), addr);
+		goto out;
+	}
+	/* What the kernel does, never just the configuration (design
+	 * 6.6): "is blocked" only while a set in the kernel holds it. */
+	fs_intel_lookup_live (job->backend, config, addr, &r);
+	if (r.in_force && !r.blocked) {
+		GString *names = g_string_new (NULL);
+
+		for (guint i = 0; i < r.kernel_sources->len; i++) {
+			if (i > 0)
+				g_string_append (names, ", ");
+			g_string_append (names, source_name (config,
+				g_ptr_array_index (r.kernel_sources, i)));
+		}
+		g_string_printf (out, _("%s is still blocked by %s: the change "
+		                        "that lets it through is not in force "
+		                        "yet. Press Apply."), addr, names->str);
+		job->lookup_blocked = TRUE;
+		g_string_free (names, TRUE);
 	} else if (r.sources->len == 0) {
 		g_string_printf (out, _("%s is on none of the lists that are "
 		                        "turned on."), addr);
@@ -1003,10 +1084,29 @@ job_lookup (Job *job)
 			g_string_append (names, source_name (config,
 				g_ptr_array_index (r.sources, i)));
 		}
-		if (r.blocked) {
+		if (r.blocked && r.in_force) {
 			g_string_printf (out, _("%s is on %s, and is blocked (%s)."),
 			                 addr, names->str, dir_words (r.dir));
 			job->lookup_blocked = TRUE;
+		} else if (r.blocked && r.uncertain) {
+			g_string_printf (out, _("%s is on %s, and is blocked (%s) "
+			                        "once your changes are in force. A "
+			                        "list changed since the last apply, so "
+			                        "whether it is blocked now cannot be "
+			                        "told: press Apply."),
+			                 addr, names->str, dir_words (r.dir));
+		} else if (r.blocked && r.state == FS_INTEL_STATE_ENFORCED) {
+			g_string_printf (out, _("%s is on %s, and would be blocked "
+			                        "(%s) once your changes are in force. "
+			                        "It is not blocked yet: press Apply."),
+			                 addr, names->str, dir_words (r.dir));
+		} else if (r.blocked) {
+			g_string_printf (out, _("%s is on %s, and would be blocked "
+			                        "(%s) once the lists are in force. It "
+			                        "is not blocked now: %s"),
+			                 addr, names->str, dir_words (r.dir),
+			                 r.state_detail != NULL ? r.state_detail
+			                 : _("the lists are not in force."));
 		} else if (r.is_exception) {
 			g_string_printf (out, _("%s is on %s, but never blocked: it "
 			                        "is on your allow list."),
@@ -1023,6 +1123,7 @@ job_lookup (Job *job)
 		}
 		g_string_free (names, TRUE);
 	}
+out:
 	fs_intel_lookup_clear (&r);
 	fs_hostnet_free (host);
 	fs_intel_config_free (config);
@@ -1095,6 +1196,13 @@ job_done (GObject *source, GAsyncResult *result, gpointer data)
 		jobs_pending--;
 
 	if (job->snap != NULL) {
+		/* A lookup's answer describes the kernel as it was: once the
+		 * state changes, or anything was changed or applied, it may
+		 * be wrong, so it goes rather than stay on screen. */
+		if (lookup_result != NULL &&
+		    (job->kind != JOB_REFRESH || shown == NULL ||
+		     shown->state != job->snap->state))
+			gtk_widget_hide (lookup_result);
 		snapshot_free (shown);
 		shown = job->snap;
 		job->snap = NULL;
@@ -1125,8 +1233,11 @@ job_done (GObject *source, GAsyncResult *result, gpointer data)
 	if (job->message != NULL && message_label != NULL) {
 		gtk_label_set_text (GTK_LABEL (message_label), job->message);
 		remove_class (message_label, "intel-error");
+		remove_class (message_label, "intel-warn");
 		if (job->failed)
 			add_class (message_label, "intel-error");
+		else if (job->warned)
+			add_class (message_label, "intel-warn");
 		gtk_widget_show (message_label);
 	}
 	set_busy_widgets ();
@@ -1150,17 +1261,24 @@ redraw_idle (gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+const gchar *
+fs_intelview_hold_reason (void)
+{
+	const gchar *h = fs_apply_hold_reason ();
+
+	if (h == NULL && hold_func != NULL)
+		h = hold_func ();
+	return h;
+}
+
 static Job *
 job_new (JobKind kind)
 {
 	Job *job = g_new0 (Job, 1);
-	const gchar *h = fs_apply_hold_reason ();
 
 	job->kind = kind;
 	job->backend = backend ();
-	if (h == NULL && hold_func != NULL)
-		h = hold_func ();
-	job->hold = g_strdup (h);
+	job->hold = g_strdup (fs_intelview_hold_reason ());
 	return job;
 }
 
@@ -1184,6 +1302,30 @@ job_start (Job *job, const gchar *first_line)
 }
 
 /* --------------------------------------------------------------- feeds */
+
+/* A source that is on and has a copy, but that the kernel was not
+ * given, while the table is loaded: saved under the Lock or audit-only
+ * mode, or not applied yet.  The hero can read Protected for the other
+ * lists, so the row must say this one blocks nothing; it is the only
+ * notice left once the message line goes.  NULL when there is nothing
+ * to say (in force, or the hero already says nothing is). */
+static gchar *
+not_in_force_text (const Snapshot *s, const gchar *id)
+{
+	const gchar *h;
+
+	if ((s->state != FS_INTEL_STATE_ENFORCED &&
+	     s->state != FS_INTEL_STATE_DIFFERS) ||
+	    g_hash_table_contains (s->in_force, id))
+		return NULL;
+	h = fs_intelview_hold_reason ();
+	if (h != NULL && *h != '\0')
+		return g_strdup_printf (_("On, but not in force: %s. It blocks "
+		                          "nothing until that is lifted and the "
+		                          "lists are applied."), h);
+	return g_strdup (_("On, but not in force yet: it blocks nothing until "
+	                   "you press Apply."));
+}
 
 /* One feed row's status: a sentence and its level (0 ok, 1 warn,
  * 2 bad, 3 quiet). */
@@ -1217,10 +1359,18 @@ feed_status (const Snapshot *s, const FsIntelFeedConf *f,
 	if (st != NULL && st->last_error != NULL) {
 		*level = 2;
 		if (st->fetched_at > 0) {
+			/* "Still used" read as "still blocking" under a hero
+			 * that says the lists are off: say "kept", and "in
+			 * force" only when the kernel holds it. */
 			when = date_text (st->fetched_at);
-			out = g_strdup_printf (_("The last update failed: %s. The "
-			                         "copy from %s is still used."),
-			                       st->last_error, when);
+			out = g_strdup_printf (
+				s->state == FS_INTEL_STATE_ENFORCED &&
+				g_hash_table_contains (s->in_force, f->id)
+				? _("The last update failed: %s. The copy from %s "
+				    "is kept and in force.")
+				: _("The last update failed: %s. The copy from %s "
+				    "is kept."),
+				st->last_error, when);
 			g_free (when);
 			return out;
 		}
@@ -1234,6 +1384,11 @@ feed_status (const Snapshot *s, const FsIntelFeedConf *f,
 	if (fs_intel_source_is_stale (s->config, f->id, s->now)) {
 		*level = 1;
 		return g_strdup (_("Out of date: no fresh copy for a long time."));
+	}
+	out = not_in_force_text (s, f->id);
+	if (out != NULL) {
+		*level = 1;
+		return out;
 	}
 	*level = 0;
 	if (s->state == FS_INTEL_STATE_ENFORCED &&
@@ -1665,6 +1820,17 @@ list_row (const Snapshot *s, const FsIntelListConf *l, gboolean locked)
 	gtk_box_pack_start (GTK_BOX (text), wrap_label (t->str, "intel-meta"),
 	                    FALSE, FALSE, 0);
 	g_string_free (t, TRUE);
+	x = l->enabled && st != NULL ? not_in_force_text (s, l->id) : NULL;
+	if (x != NULL) {
+		GtkWidget *warn = wrap_label (x, "intel-status");
+
+		add_class (warn, "intel-warn");
+		name = g_strdup_printf ("list-status-%s", l->id);
+		gtk_widget_set_name (warn, name);
+		g_free (name);
+		gtk_box_pack_start (GTK_BOX (text), warn, FALSE, FALSE, 0);
+		g_free (x);
+	}
 	gtk_box_pack_start (GTK_BOX (row), text, TRUE, TRUE, 0);
 
 	b = gtk_button_new_with_label (_("Remove"));
@@ -1910,11 +2076,16 @@ show_snapshot (void)
 	{
 		GList *kids = gtk_container_get_children (GTK_CONTAINER (lists_box));
 
-		if (kids == NULL)
-			gtk_box_pack_start (GTK_BOX (lists_box),
-			                    label_new (_("No list file imported."),
-			                               "muted", 0.0),
-			                    FALSE, FALSE, 0);
+		if (kids == NULL) {
+			/* Padded like the rows, in the card's text column. */
+			GtkWidget *none = label_new (_("No list file imported."),
+			                             "muted", 0.0);
+
+			add_class (none, "intel-pad");
+			gtk_widget_set_name (none, "intel-lists-empty");
+			gtk_box_pack_start (GTK_BOX (lists_box), none, FALSE,
+			                    FALSE, 0);
+		}
 		g_list_free (kids);
 	}
 	gtk_widget_show_all (feeds_box);
@@ -2314,7 +2485,7 @@ fs_intelview_page (void)
 	card = card_new (_("Your lists"),
 	                 _("One address, network (203.0.113.0/24) or range "
 	                   "(203.0.113.5-203.0.113.9) per line. # starts a "
-	                   "comment."), &body);
+	                   "comment; comments are not kept."), &body);
 	gtk_widget_set_name (card, "intel-yours");
 	edit_cards[0] = card;
 	row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);

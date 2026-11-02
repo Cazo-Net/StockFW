@@ -160,6 +160,15 @@ gboolean fs_intel_config_set_enabled (FsIntelConfig *config,
                                       const gchar *id, gboolean enabled,
                                       GError **error);
 
+/* The download proxy ([intel] proxy= in intel.conf): an http:// or
+ * https:// URL that fs_fetch_proxy_is_acceptable() takes, with no
+ * "user:pass@" (curl's argv is readable by every local user, so a
+ * credential there would be published); NULL or "" for none, so curl
+ * runs with --noproxy *.  Anything else is FS_INTEL_ERR_INVALID and
+ * changes nothing.  The config is NOT saved. */
+gboolean fs_intel_config_set_proxy (FsIntelConfig *config,
+                                    const gchar *proxy, GError **error);
+
 /* The consent text for one feed (design 8): the host contacted, how
  * often, what the host learns (this computer's public address and
  * "StockFW/<version>"), the licence or "see the terms" with the terms
@@ -177,8 +186,9 @@ gchar *fs_intel_consent_text (const FsIntelConfig *config,
  * replacing the list of that name (the same name in any case or
  * spacing).  A different name whose slug is already another list's id
  * ("Office VPN" and "office-vpn") is refused with FS_INTEL_ERR_INVALID
- * before anything is written.  The config is NOT saved: the caller
- * saves it.  *id_out (nullable) receives the id. */
+ * before anything is written.  dir 0 keeps the direction of the list
+ * it replaces (FS_INTEL_DIR_BOTH for a new one).  The config is NOT
+ * saved: the caller saves it.  *id_out (nullable) receives the id. */
 gboolean fs_intel_import_list (FsIntelConfig *config, const gchar *path,
                                const gchar *name, FsIntelDir dir,
                                FsFeedParseStats *stats, gchar **id_out,
@@ -433,14 +443,45 @@ typedef struct
 	gboolean   is_protected; /* fs_range_protected()                     */
 	gboolean   is_exception;
 	gboolean   is_host;      /* kept reachable by `host'                 */
-	gboolean   blocked;      /* listed and none of the three above       */
+	gboolean   blocked;      /* listed and none of the three above: what
+	                          * the configuration asks for              */
+
+	/* What the kernel does, filled by fs_intel_lookup_live() only
+	 * (fs_intel_lookup leaves them zero / NULL). */
+	FsIntelState state;      /* fs_intel_state()                         */
+	gchar       *state_detail; /* its sentence                          */
+	gboolean     in_force;   /* the kernel blocks it now: the state is
+	                          * enforced and a set it was given holds it
+	                          * (minus the exceptions applied with it,
+	                          * protected space and `host')             */
+	GPtrArray   *kernel_sources; /* gchar* ids of those sets            */
+	gboolean     pending;    /* enforced, but the lists, their
+	                          * directions or the exceptions changed
+	                          * since the last apply, so `blocked' and
+	                          * `in_force' can differ until the next one */
+	gboolean     uncertain;  /* a set in the kernel was built from a copy
+	                          * of its list that is no longer stored (an
+	                          * update not applied yet): whether that set
+	                          * holds the address cannot be told, so
+	                          * `in_force' FALSE is not a "no"          */
 } FsIntelLookup;
 
 /* FALSE when `addr' is not a single address (v4, v6, v4-mapped v6).
- * Reads the enabled sources' stored lists.  host may be NULL. */
+ * Reads the enabled sources' stored lists: the configuration's answer.
+ * host may be NULL. */
 gboolean fs_intel_lookup (const FsIntelConfig *config,
                           const FsHostNet *host, const gchar *addr,
                           FsIntelLookup *result);
+/* After fs_intel_lookup() on the same result: what the kernel does
+ * with the address (design 6.6: every surface shows the kernel, never
+ * just the configuration).  Reads fs_intel_state() and, when enforced,
+ * the sets applied.state says were given to the kernel, each only while
+ * its stored list is still the one it was built from (applied.state
+ * records each set's list digest and the exceptions applied with it).
+ * Creates nothing. */
+void     fs_intel_lookup_live (const FsBackend *backend,
+                               const FsIntelConfig *config,
+                               const gchar *addr, FsIntelLookup *result);
 void     fs_intel_lookup_clear (FsIntelLookup *result);
 
 /* "Blocked by threat intel: Spamhaus DROP (IPv4), Feodo Tracker" or
@@ -455,6 +496,14 @@ gchar   *fs_intel_lookup_sentence (const FsIntelConfig *config,
  * only then [S17.3].  Cheap: cached by applied.state's mtime.  FALSE
  * without creating anything where there is no store. */
 gboolean fs_intel_applied_has (const gchar *id);
+
+/* An event's rule for a "STOCKFW-TI <id>" line: "Threat intel: <the
+ * list's name>" (catalog name, else the config's label, else the id).
+ * Names are cached: an id is the slug of its name.  Every reader of the
+ * kernel log uses it -- the backend's live feed, `stockfw events' and
+ * the dashboard's history -- so they all name a list the same way.
+ * Thread-safe; creates nothing.  Caller frees. */
+gchar   *fs_intel_rule_text (const gchar *id);
 
 G_END_DECLS
 

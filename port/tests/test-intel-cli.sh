@@ -334,6 +334,16 @@ check '[ "$(jget "[(l[\"id\"], l[\"name\"], l[\"direction\"], l[\"entries\"], l[
 run --json intel list show local-my-list
 check '[ "$(jget "d[\"ranges\"]")" = "['"'192.0.2.128/28'"', '"'192.0.2.200'"', '"'2001:db8:77::/48'"']" ]' \
       "list show ID: its stored ranges, 10.1.2.3 left out ($(jget 'd["ranges"]'))"
+# Imported again under the same name in another case and spacing, with
+# no --direction: it keeps "out" (the engine matches the name as it does
+# to replace the list), never widens to both.
+run intel import "$W/mine.txt" --name "my  LIST"
+check '[ $rc -eq 0 ] && grep -q "(local-my-list): 4 entries, out" <<<"$out"' \
+      "re-import, the name in another case and spacing, no --direction: still out"
+S -q intel import "$W/mine.txt" --name "My list"
+run --json intel lists
+check '[ "$(jget "[(l[\"name\"], l[\"direction\"]) for l in d[\"lists\"]]")" = "[('"'My list'"', '"'out'"')]" ]' \
+      "  ... and the list still reads out ($(jget 'd["lists"]'))"
 printf '203.0.113.200\n' > "$W/second.txt"
 run intel list add "$W/second.txt" --name "Second"
 check '[ $rc -eq 0 ] && grep -q "both: blocks both directions" <<<"$out"' "list add (the import alias): a new list blocks both ways"
@@ -382,8 +392,8 @@ run status
 check 'grep -qE "^  Threat intel +enforced" <<<"$out"' "stockfw status: a Threat intel line, enforced"
 
 run --json intel lookup 203.0.113.9
-check '[ $rc -eq 5 ] && [ "$(jget "d[\"blocked\"], d[\"direction\"], [l[\"id\"] for l in d[\"lists\"]]")" = "True both ['"'$FEED'"']" ]' \
-      "lookup of a listed address: blocked, exit 5, names the list"
+check '[ $rc -eq 5 ] && [ "$(jget "d[\"blocked\"], d[\"in_force\"], d[\"state\"], d[\"direction\"], [l[\"id\"] for l in d[\"lists\"]]")" = "True True enforced both ['"'$FEED'"']" ]' \
+      "lookup of a listed address: blocked and in force, exit 5, names the list"
 run intel lookup 203.0.113.7
 check '[ $rc -eq 0 ] && grep -q "^LISTED, NOT BLOCKED.*exception" <<<"$out"' "lookup of the exception: listed, not blocked, exit 0"
 run intel lookup 192.0.2.200
@@ -402,6 +412,13 @@ check '[ $rc -eq 0 ] && [ "$(jget "d[\"held\"], d[\"applied\"]")" = "True False"
       "audit-only mode: the apply is held, exit 0, the kernel untouched"
 run intel apply
 check '[ $rc -eq 0 ] && grep -q "^Held: audit-only testing mode" <<<"$out"' "  ... and says so"
+# The exception is saved, not applied: the kernel still blocks it, and
+# the lookup says what the kernel does.
+run --json intel lookup 203.0.113.9
+check '[ $rc -eq 5 ] && [ "$(jget "d[\"blocked\"], d[\"in_force\"], d[\"pending\"], d[\"in_force_lists\"]")" = "False True True ['"'$FEED'"']" ] && has_element s_custom_cli_feed_4 203.0.113.9' \
+      "lookup of an exception not applied: the kernel still blocks it, exit 5, pending"
+run intel lookup 203.0.113.9
+check '[ $rc -eq 5 ] && grep -q "^BLOCKED  the kernel still blocks 203.0.113.9" <<<"$out"' "  ... and says so in words"
 rm "$XDG_CONFIG_HOME/stockfw/stockfw.conf"
 S -q intel unexcept 203.0.113.9
 
@@ -414,6 +431,11 @@ check '[ "$(audit_lines intel-clear)" = $((n_clear + 1)) ] && grep -q " | intel-
       "  ... one intel-clear audit line"
 run --json intel status
 check '[ "$(jget "d[\"state\"], len(d[\"lists\"])")" = "not-loaded 3" ]' "  ... the three lists are still turned on"
+run --json intel lookup 203.0.113.9
+check '[ $rc -eq 0 ] && [ "$(jget "d[\"blocked\"], d[\"in_force\"], d[\"state\"]")" = "True False not-loaded" ]' \
+      "lookup after clear: listed, not in force, exit 0 (nothing is in the kernel)"
+run intel lookup 203.0.113.9
+check '[ $rc -eq 0 ] && grep -q "^LISTED, NOT BLOCKED NOW" <<<"$out"' "  ... LISTED, NOT BLOCKED NOW"
 run intel clear
 check '[ $rc -eq 0 ] && [ "$(live)" = absent ]' "clear again (nothing loaded): not an error"
 run intel apply
@@ -432,6 +454,9 @@ check '[ $rc -eq 3 ] && grep -q "needs-root" <<<"$out"' "status as nobody, with 
 if command -v iptables >/dev/null; then
   run stop
   check '[ $rc -eq 0 ] && [ "$(live)" = absent ]' "(stockfw stop: the lists are suspended)"
+  run --json intel lookup 203.0.113.9
+  check '[ $rc -eq 0 ] && [ "$(jget "d[\"blocked\"], d[\"in_force\"], d[\"state\"]")" = "True False suspended" ]' \
+        "lookup with the firewall stopped: listed, not in force, exit 0"
   serve "$W/v3.txt"
   run --json intel update --now
   check '[ $rc -eq 0 ] && [ "$(jget "d[\"results\"][0][\"outcome\"], d[\"reapply\"][\"result\"]")" = "updated skipped" ] && [ "$(live)" = absent ]' \
@@ -456,6 +481,26 @@ if command -v iptables >/dev/null; then
   check '[ $rc -eq 0 ] && [ "$(jget "d[\"reapply\"][\"result\"]")" = applied ] && [ "$(live)" = "$D4" ] && has_element s_custom_cli_feed_4 198.51.100.99' \
         "update while running and enforced: the new copy is applied at once"
   run stop
+
+  # A Stop during an apply (another process: cron's update, the app):
+  # the engine lock makes the Stop wait for the apply and then take the
+  # lists down -- the apply never brings them back behind its back.
+  # nft is slowed by a wrapper so the apply is still running.
+  mkdir -p "$W/slow"
+  printf '#!/bin/sh\ncase " $* " in *" -f "*) sleep 2;; esac\nexec %s "$@"\n' \
+    "$(command -v nft)" > "$W/slow/nft"
+  chmod 755 "$W/slow/nft"
+  S -q start
+  S -q intel except 198.51.100.77   # a change, so the apply loads a new table
+  ( PATH="$W/slow:$PATH" "$CLI" intel apply > "$W/race.out" 2>&1 ) &
+  race=$!
+  sleep 0.7
+  run stop
+  wait "$race"
+  run --json intel status
+  check '[ "$(live)" = absent ] && [ "$(jget "d[\"state\"]")" = suspended ] && [ "$(grep -n " | intel-suspend | source=cli" "$W/audit.log" | tail -1 | cut -d: -f1)" -gt "$(grep -n " | intel-apply | source=cli" "$W/audit.log" | tail -1 | cut -d: -f1)" ]' \
+        "a Stop during an apply waits for it, then the lists are down and suspended ($(jget 'd["state"]'))"
+  S -q intel unexcept 198.51.100.77
 else
   echo "skip: update with the firewall running (no iptables)"
 fi

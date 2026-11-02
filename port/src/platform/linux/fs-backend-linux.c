@@ -1098,14 +1098,24 @@ intel_ready (GError **error)
 }
 
 /* [ intel_read_live ]
- * The table in the kernel now: `nft -j list tables', which names the
- * tables and their comments and never lists an element.  UNKNOWN, with
- * error, when it cannot be read -- never ABSENT: a listing nobody could
- * read says nothing about the kernel.  *digest (caller frees) is set
- * only for PRESENT, and may still be NULL then. */
+ * The table in the kernel now.  First `nft -j list chains inet': the
+ * script puts the digest on every chain, and listing chains never
+ * loads a set element (milliseconds; `nft -j list tables' loads them
+ * all, about 2 s at 240k intervals, against a 10 s timeout).  Any
+ * other answer is read again from `nft -j list tables': a table whose
+ * chains carry no common digest (an older StockFW's, or changed by
+ * hand) by its own comment, and no chain of ours at all because a
+ * table without chains still is a table -- that listing is cheap when
+ * there is no table, so the common "not loaded" case stays fast.
+ * UNKNOWN, with error, when it cannot be read -- never
+ * ABSENT: a listing nobody could read says nothing about the kernel.
+ * *digest (caller frees) is set only for PRESENT, and may still be
+ * NULL then. */
 static FsIntelLive
 intel_read_live (gchar **digest, GError **error)
 {
+	static const gchar *const chains[] = { "-j", "list", "chains", "inet",
+	                                       NULL };
 	static const gchar *const args[] = { "-j", "list", "tables", NULL };
 	FsIntelLive live;
 	gchar *json;
@@ -1113,6 +1123,16 @@ intel_read_live (gchar **digest, GError **error)
 	*digest = NULL;
 	if (!intel_ready (error))
 		return FS_INTEL_LIVE_UNKNOWN;
+
+	json = fs_nft_capture (chains, intel_timeout (INTEL_LIST_TIMEOUT_MS),
+	                       error);
+	if (json == NULL)
+		return FS_INTEL_LIVE_UNKNOWN;
+	live = fs_intelset_nft_parse_live_chains (json, digest);
+	g_free (json);
+	if (live == FS_INTEL_LIVE_PRESENT && *digest != NULL)
+		return live;
+	g_clear_pointer (digest, g_free);
 
 	json = fs_nft_capture (args, intel_timeout (INTEL_LIST_TIMEOUT_MS),
 	                       error);
@@ -1381,18 +1401,32 @@ linux_intel_counters (void)
 	return counters;
 }
 
+/* Why this thread's last linux_intel_live was UNKNOWN. */
+static GPrivate live_error = G_PRIVATE_INIT (g_free);
+
 /* [ linux_intel_live ] -- see FsBackend.intel_live. */
 static FsIntelLive
 linux_intel_live (gchar **digest)
 {
 	gchar *have = NULL;
-	FsIntelLive live = intel_read_live (&have, NULL);
+	GError *error = NULL;
+	FsIntelLive live = intel_read_live (&have, &error);
 
+	g_private_replace (&live_error, live == FS_INTEL_LIVE_UNKNOWN &&
+	                   error != NULL ? g_strdup (error->message) : NULL);
+	g_clear_error (&error);
 	if (digest != NULL)
 		*digest = have;
 	else
 		g_free (have);
 	return live;
+}
+
+/* [ linux_intel_live_error ] -- see FsBackend.intel_live_error. */
+static gchar *
+linux_intel_live_error (void)
+{
+	return g_strdup (g_private_get (&live_error));
 }
 
 static GList *
@@ -1782,43 +1816,6 @@ static GString *log_partial = NULL;
  * page's Serious column stayed at zero and Sentinel's blocked fan-out
  * signal could not fire).  An ALLOW line (1.0.7) is the first packet
  * of a connection the policy accepted, and stays unmarked. */
-/* [ intel_rule_text ]
- * "Threat intel: <the list's name>" for a list id.  Names are cached:
- * an id is the slug of its name, so it keeps its name for as long as
- * it exists, and the log can deliver ten lines a second per list. */
-static gchar *
-intel_rule_text (const gchar *id)
-{
-	static GHashTable *labels = NULL;
-	const gchar *label;
-
-	if (labels == NULL)
-		labels = g_hash_table_new_full (g_str_hash, g_str_equal,
-		                                g_free, g_free);
-	label = g_hash_table_lookup (labels, id);
-	if (label == NULL) {
-		const FsFeedInfo *fi = fs_feed_catalog_find (id);
-		gchar *name = NULL;
-
-		if (fi != NULL) {
-			name = g_strdup (fi->name);
-		} else {
-			FsIntelConfig *config = fs_intel_config_load (NULL);
-
-			if (config != NULL &&
-			    fs_intel_config_label (config, id) != NULL)
-				name = g_strdup (fs_intel_config_label (config,
-				                                        id));
-			fs_intel_config_free (config);
-		}
-		if (name == NULL)
-			return g_strdup_printf (_("Threat intel: %s"), id);
-		g_hash_table_replace (labels, g_strdup (id), name);
-		label = name;
-	}
-	return g_strdup_printf (_("Threat intel: %s"), label);
-}
-
 static void
 deliver_log_line (const gchar *line)
 {
@@ -1838,7 +1835,7 @@ deliver_log_line (const gchar *line)
 			return;
 		}
 		fs_netparse_name_blocked (&hit);
-		hit.rule = intel_rule_text (intel_id);
+		hit.rule = fs_intel_rule_text (intel_id);
 		g_free (intel_id);
 		if (log_callback != NULL)
 			log_callback (&hit, log_user_data);
@@ -2301,7 +2298,8 @@ static const FsBackend linux_backend = {
 	.intel_apply           = linux_intel_apply,
 	.intel_clear           = linux_intel_clear,
 	.intel_counters        = linux_intel_counters,
-	.intel_live            = linux_intel_live
+	.intel_live            = linux_intel_live,
+	.intel_live_error      = linux_intel_live_error
 };
 
 const FsBackend *

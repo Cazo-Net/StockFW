@@ -260,11 +260,15 @@ assert not [x for x in d['feeds'] if x['id'] == 'feodo'][0]['enabled']"
     bash -c "[ \$(icode intel import '$TMP/mine.txt' --name 'CLI list') = 0 ] && grep -q 'CLI list (local-cli-list): 2 entries, both' '$TMP/iout'"
   check "except: an address the list holds" \
     bash -c "[ \$(icode intel except 198.51.100.5) = 0 ]"
-  check "lookup: a listed address exits 5 and names the list" py "
+  # Nothing was applied here: the list would block it, the kernel does
+  # not, so the answer is "not blocked now" (exit 0), never exit 5.
+  check "lookup: a listed address names the list, but nothing is in force: exit 0, in_force false" py "
 import json, subprocess
 r = subprocess.run(['$S', '--json', 'intel', 'lookup', '203.0.113.50'], capture_output=True, text=True)
 d = json.loads(r.stdout)
-assert r.returncode == 5 and d['blocked'] and d['lists'] == [{'id': 'local-cli-list', 'name': 'CLI list'}], (r.returncode, d)"
+assert r.returncode == 0 and d['blocked'] and not d['in_force'] and d['state'] != 'enforced' and d['in_force_lists'] == [] and d['lists'] == [{'id': 'local-cli-list', 'name': 'CLI list'}], (r.returncode, d)"
+  check "lookup (text): LISTED, NOT BLOCKED NOW, with why" \
+    bash -c "'$S' intel lookup 203.0.113.50 | grep -q 'LISTED, NOT BLOCKED NOW.*CLI list'"
   check "lookup: the exception is listed but not blocked (exit 0)" py "
 import json, subprocess
 r = subprocess.run(['$S', '--json', 'intel', 'lookup', '198.51.100.5'], capture_output=True, text=True)
@@ -272,6 +276,45 @@ d = json.loads(r.stdout)
 assert r.returncode == 0 and not d['blocked'] and d['exception'] and len(d['lists']) == 1, (r.returncode, d)"
   check "lookup: not an address is a usage error (exit 2)" \
     bash -c "[ \$(icode intel lookup nonsense) = 2 ]"
+  # A list's blocks in the event history, as the backend's live feed
+  # shows them: only for an id of the applied rule set (here a record
+  # written by hand), named after the list, in a RULE column / "rule".
+  py "
+import datetime, os
+now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+def at(m): return (now - datetime.timedelta(minutes=m)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+open('$TMP/ti.log', 'w').write('\\n'.join([
+ at(3) + ' host kernel: [1.0] STOCKFW-DROP IN=eth0 OUT= SRC=203.0.113.5 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40000 DPT=22 SYN',
+ at(2) + ' host kernel: [2.0] STOCKFW-TI local-cli-list IN=eth0 OUT= SRC=203.0.113.50 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40001 DPT=22 SYN',
+ at(1) + ' host kernel: [3.0] STOCKFW-TI feodo IN=eth0 OUT= SRC=203.0.113.51 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40002 DPT=22 SYN',
+]) + '\\n')
+fd = os.open('$STOCKFW_INTEL_DIR/applied.state', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+os.write(fd, b'[applied]\\ndigest=0123456789abcdef0123456789abcdef\\napplied-at=1\\nsuspended=false\\ncount4=1\\ncount6=0\\nsets=local-cli-list;\\nruled=local-cli-list;\\n')
+os.close(fd)
+"
+  check "events: a list's block is in the history, with its rule; a set not applied is not" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_LOG_FILE='$TMP/ti.log')
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '-n', '50'], capture_output=True, text=True, env=env).stdout)
+assert [(e['source'], e['blocked'], e['rule']) for e in ev] == [('203.0.113.5', True, None), ('203.0.113.50', True, 'Threat intel: CLI list')], ev"
+  check "events (table): a RULE column names the list" \
+    bash -c "STOCKFW_LOG_FILE='$TMP/ti.log' '$S' events -n 50 | head -1 | grep -q 'PROTO *RULE' && STOCKFW_LOG_FILE='$TMP/ti.log' '$S' events -n 50 | grep -q '203.0.113.50.*Threat intel: CLI list'"
+  rm -f "$STOCKFW_INTEL_DIR/applied.state"
+  check "intel proxy: one with a password is refused (exit 2), none is saved" \
+    bash -c "[ \$(icode intel proxy http://u:p@proxy.example:3128) = 2 ] && ! grep -q proxy= '$STOCKFW_INTEL_DIR/intel.conf'"
+  check "intel proxy URL: saved, and status shows it" py "
+import json, subprocess
+r = subprocess.run(['$S', '--json', 'intel', 'proxy', 'http://proxy.example:3128'], capture_output=True, text=True)
+assert r.returncode == 0 and json.loads(r.stdout)['proxy'] == 'http://proxy.example:3128', r
+d = json.loads(subprocess.run(['$S', '--json', 'intel', 'status'], capture_output=True, text=True).stdout)
+assert d['proxy'] == 'http://proxy.example:3128', d
+t = subprocess.run(['$S', 'intel', 'status'], capture_output=True, text=True).stdout
+assert 'Proxy        http://proxy.example:3128' in t, t"
+  check "intel proxy none: removed" py "
+import json, subprocess
+r = subprocess.run(['$S', '--json', 'intel', 'proxy', 'none'], capture_output=True, text=True)
+assert r.returncode == 0 and json.loads(r.stdout)['proxy'] is None, r
+assert 'proxy=' not in open('$STOCKFW_INTEL_DIR/intel.conf').read()"
   check "status --json carries an intel object" py "
 import json, subprocess
 d = json.loads(subprocess.run(['$S', '--json', 'status'], capture_output=True, text=True).stdout)
