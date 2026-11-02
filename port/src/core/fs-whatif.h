@@ -423,7 +423,8 @@ gboolean fs_whatif_action_verify (const FsWhatIfContext *ctx,
 
 /* ---- text --------------------------------------------------------- */
 
-/* The Preferences switches a settings fix may name: the i-th one's key
+/* The Preferences switches a settings fix may name on this platform (the
+ * broadcast blocks are Linux only): the i-th one's key
  * (NULL past the last), its label as the dialog shows it, where it is
  * in words ("Preferences > ICMP") and the dialog's page id ("icmp"). */
 const gchar *fs_whatif_setting_nth (guint i, const gchar **label,

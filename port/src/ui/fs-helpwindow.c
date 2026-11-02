@@ -505,7 +505,16 @@ text_label (const gchar *markup, const gchar *klass)
 	gtk_label_set_yalign (GTK_LABEL (label), 0.0);
 	gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
 	gtk_label_set_line_wrap_mode (GTK_LABEL (label), PANGO_WRAP_WORD_CHAR);
-	gtk_label_set_width_chars (GTK_LABEL (label), 20);
+	/* Body text keeps a floor of 20 characters, so a narrow window
+	 * does not squeeze it to a few words a line. A heading has none:
+	 * the floor is counted in the label's own font, and 20 characters
+	 * of the 24-pixel title are wider than the page column of a
+	 * 640-pixel window in a wide font (340 pixels in DejaVu Sans). A
+	 * heading's narrowest is its longest word. */
+	gtk_label_set_width_chars (GTK_LABEL (label),
+	                           g_strcmp0 (klass, "help-title") == 0
+	                           || g_strcmp0 (klass, "help-h2") == 0
+	                           ? -1 : 20);
 	gtk_label_set_max_width_chars (GTK_LABEL (label), TEXT_CHARS);
 	gtk_widget_set_halign (label, GTK_ALIGN_FILL);
 	gtk_widget_set_hexpand (label, TRUE);
@@ -817,6 +826,18 @@ topic_button (const FsHelpTopic *topic, const gchar *prefix,
 	gtk_button_set_relief (GTK_BUTTON (button), GTK_RELIEF_NONE);
 	gtk_widget_set_halign (button, GTK_ALIGN_START);
 	add_class (button, klass);
+	/* A title runs on one line where there is room and wraps where
+	 * there is not: "Next: Command line and dashboard" on one line is
+	 * 283 pixels in DejaVu Sans, more than a 640-pixel window leaves the
+	 * page, and one topic must not widen the window. */
+	{
+		GtkWidget *label = gtk_bin_get_child (GTK_BIN (button));
+
+		gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+		gtk_label_set_line_wrap_mode (GTK_LABEL (label),
+		                              PANGO_WRAP_WORD_CHAR);
+		gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+	}
 	g_object_set_data (G_OBJECT (button), "topic-id", (gpointer) topic->id);
 	g_signal_connect (button, "clicked", G_CALLBACK (on_topic_button), NULL);
 	return button;
@@ -940,9 +961,11 @@ keys_row (const gchar *spec)
 		/* One width for every row's text, minimum and natural
 		 * alike: the caps get their width first, the same on every
 		 * row, so the texts line up, and the text takes (and wraps
-		 * in) the rest of the line. */
-		gtk_label_set_width_chars (GTK_LABEL (what), 20);
-		gtk_label_set_max_width_chars (GTK_LABEL (what), 20);
+		 * in) the rest of the line. 12 characters, not 20: with the
+		 * caps beside it, 20 characters of a wide font (DejaVu Sans)
+		 * left the window 2 pixels short of being 640 wide. */
+		gtk_label_set_width_chars (GTK_LABEL (what), 12);
+		gtk_label_set_max_width_chars (GTK_LABEL (what), 12);
 		gtk_box_pack_start (GTK_BOX (row), what, TRUE, TRUE, 0);
 	}
 	g_strfreev (tokens);

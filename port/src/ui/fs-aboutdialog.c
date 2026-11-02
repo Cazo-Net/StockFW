@@ -236,7 +236,13 @@ on_copy_info (GtkButton *button, gpointer data)
 	guint id;
 
 	gtk_clipboard_set_text (clipboard, info, -1);
+#ifndef G_OS_WIN32
+	/* Keep the text after StockFW quits.  Not on Windows: GDK there
+	 * renders the clipboard on Windows' request when the owner goes
+	 * away, and a store renders formats it has no data for, warning
+	 * "Setting selection property with ... NULL" once for each. */
 	gtk_clipboard_store (clipboard);
+#endif
 	g_free (info);
 
 	gtk_widget_show (copied);

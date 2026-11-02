@@ -27,8 +27,9 @@ check () {
 }
 
 # One line of text with single spaces, for comparing prose wrapped
-# differently in C strings and in a text file.
-flat () { tr '\n' ' ' | tr -s ' \t' ' '; }
+# differently in C strings and in a text file.  Carriage returns go too:
+# a Windows checkout (core.autocrlf) ends the text file's lines in CRLF.
+flat () { tr -d '\r' | tr '\n' ' ' | tr -s ' \t' ' '; }
 
 # The About summary, from the C source: the string pieces of the
 # label that starts "StockFW is free software", joined.

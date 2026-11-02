@@ -902,7 +902,10 @@ check_design (GtkWidget *win, const gchar *pages, const gchar *tag)
 
 		gtk_widget_get_allocation (page, &col);
 		gtk_widget_get_allocation (gtk_widget_get_parent (page), &area);
-		CHECK (area.width > 1000 && col.width <= 720
+		/* Wider than the column by a margin, not "over 1000": Windows
+		 * keeps a window inside the work area, and a 1024x768 runner
+		 * leaves 768 pixels beside the sidebar. */
+		CHECK (area.width >= 720 + 40 && col.width <= 720
 		       && ABS ((col.x - area.x)
 		               - (area.x + area.width - col.x - col.width)) <= 2,
 		       "[%s] on a %d-pixel area the settings column is %d wide "

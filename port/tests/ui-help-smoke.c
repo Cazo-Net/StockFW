@@ -1799,7 +1799,10 @@ check_layout (void)
 		gtk_widget_get_allocation (page, &a);
 		gtk_widget_get_allocation (gtk_widget_get_parent (page),
 		                           &content);
-		CHECK (a.width <= 700 && content.width > 1000,
+		/* Wider than the column by a margin, not "over 1000": Windows
+		 * keeps a window inside the work area, and a 1024x768 runner
+		 * leaves 768 pixels beside the sidebar. */
+		CHECK (a.width <= 700 && content.width >= 700 + 40,
 		       "[L1] on a %d-pixel content area the page column is %d "
 		       "wide (at most 700)", content.width, a.width);
 		CHECK (ABS ((a.x - content.x)

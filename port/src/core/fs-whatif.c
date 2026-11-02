@@ -5345,6 +5345,10 @@ typedef struct
 	const gchar *page;
 	gboolean     icmp;
 	const gchar *scope;     /* what else it changes, in words */
+	/* Linux only: a block a device scopes.  Preferences offers it only
+	 * where it can match (fs-prefsdialog.c, the Protection page), and
+	 * the Windows model has no such rule, so no fix may name it there. */
+	gboolean     linux_only;
 } Flip;
 
 #define SCOPE_ICMP_TYPE N_("It applies to this kind of ICMP from every " \
@@ -5391,11 +5395,11 @@ static const Flip flips[] = {
 	{ "block_external_broadcast",
 	  G_STRUCT_OFFSET (FsSettings, block_external_broadcast),
 	  N_("Block broadcasts from the Internet side"), ADV_PAGE, "protection",
-	  FALSE, SCOPE_EVERYONE },
+	  FALSE, SCOPE_EVERYONE, TRUE },
 	{ "block_internal_broadcast",
 	  G_STRUCT_OFFSET (FsSettings, block_internal_broadcast),
 	  N_("Block broadcasts from the local network"), ADV_PAGE, "protection",
-	  FALSE, SCOPE_EVERYONE },
+	  FALSE, SCOPE_EVERYONE, TRUE },
 	{ "block_non_routables",
 	  G_STRUCT_OFFSET (FsSettings, block_non_routables),
 	  N_("Block reserved source addresses"),
@@ -5403,22 +5407,36 @@ static const Flip flips[] = {
 	  SCOPE_EVERYONE }
 };
 
+static gboolean
+flip_offered (const Flip *f, FsWhatIfPlatform platform)
+{
+	return !f->linux_only || platform == FS_WHATIF_LINUX_FIRST_MATCH;
+}
+
 /* [ fs_whatif_setting_nth ]
- * The i-th Preferences switch a fix may name (NULL past the last), so a
- * test can hold each label and page to the dialog itself. */
+ * The i-th Preferences switch a fix may name on this platform (NULL past
+ * the last), so a test can hold each label and page to the dialog this
+ * build shows. */
 const gchar *
 fs_whatif_setting_nth (guint i, const gchar **label, const gchar **where,
                        const gchar **page)
 {
-	if (i >= G_N_ELEMENTS (flips))
-		return NULL;
-	if (label != NULL)
-		*label = _(flips[i].label);
-	if (where != NULL)
-		*where = _(flips[i].where);
-	if (page != NULL)
-		*page = flips[i].page;
-	return flips[i].key;
+	FsWhatIfPlatform native = fs_whatif_native_platform ();
+
+	for (guint j = 0; j < G_N_ELEMENTS (flips); j++) {
+		if (!flip_offered (&flips[j], native))
+			continue;
+		if (i-- > 0)
+			continue;
+		if (label != NULL)
+			*label = _(flips[j].label);
+		if (where != NULL)
+			*where = _(flips[j].where);
+		if (page != NULL)
+			*page = flips[j].page;
+		return flips[j].key;
+	}
+	return NULL;
 }
 
 static const Flip *
@@ -6695,7 +6713,8 @@ answer_actions (const FsWhatIfContext *ctx, Model *m, const FsWhatIfQuery *q,
 				FsWhatIfAction *a;
 				const gchar *scope;
 
-				if (f->icmp != icmp)
+				if (f->icmp != icmp ||
+				    !flip_offered (f, ctx->platform))
 					continue;
 
 				a = action_new (f->icmp ? FS_WHATIF_ACT_OPEN_ICMP_SETTINGS
