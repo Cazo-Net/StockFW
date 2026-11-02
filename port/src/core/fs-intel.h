@@ -69,6 +69,14 @@ enum
  * (Round 3).  Caller frees. */
 gchar *fs_intel_dir (GError **error);
 
+/* Whether the store directory is there at all, found without creating
+ * it (fs_intel_dir creates it).  A computer where no list was ever
+ * turned on has none; the read-only surfaces (`stockfw intel status',
+ * `feeds', the dashboard) then show the defaults rather than make one.
+ * An error other than "no such file" counts as there, so the caller's
+ * next store call says what is wrong.  Always FALSE off Linux. */
+gboolean fs_intel_store_exists (void);
+
 /* ---- configuration (design 6.2) ------------------------------------ */
 
 typedef struct
@@ -343,6 +351,17 @@ FsIntelOutcome *fs_intel_apply_safe (const FsBackend *backend,
 gboolean fs_intel_suspend (const FsBackend *backend, const gchar *source,
                            GError **error);
 
+/* Remove the table now, on request (`stockfw intel clear'), the
+ * configuration untouched: the counters are carried, intel_clear runs
+ * when a table is there, and applied.state records nothing loaded (not
+ * suspended), so the state reads "not-loaded" while lists are turned on
+ * until the next apply or Start.  Otherwise as fs_intel_suspend: a
+ * missing nft is not an error when the record says StockFW left no
+ * table; no store directory is created; a no-op (TRUE) without intel
+ * slots.  One audit line ("intel-clear") when anything was done. */
+gboolean fs_intel_clear (const FsBackend *backend, const gchar *source,
+                         GError **error);
+
 /* The user started the firewall.  First applied.state stops saying
  * "suspended" (it then records nothing loaded), so a Start whose apply
  * is held, refused or fails reads "not-loaded", never "suspended";
@@ -383,14 +402,17 @@ const gchar *fs_intel_state_to_string (FsIntelState state);
  * flushed is "differs".  Not seen: elements taken out of a set, or
  * some of a list's rules removed while others remain.  Nothing turned
  * on is "off" even when the kernel cannot be read, unless applied.state
- * says StockFW left a table there. */
+ * says StockFW left a table there.  With no store directory (no list
+ * ever turned on) and no config given, nothing is created: "off", or
+ * "differs" when a table is in the kernel anyway. */
 FsIntelState fs_intel_state (const FsBackend *backend,
                              const FsIntelConfig *config,
                              gchar **detail);
 
 /* Blocked packets per source id: carried totals plus the live
  * counters.  gchar* -> FsIntelCounter* (owned by the table); never
- * NULL. */
+ * NULL.  With no store directory, only the live counters (none is
+ * created). */
 GHashTable *fs_intel_counters (const FsBackend *backend);
 
 /* ---- lookup (design 6.8) -------------------------------------------- */

@@ -36,7 +36,8 @@ enum
 	FS_EXIT_FAILURE   = 1,
 	FS_EXIT_USAGE     = 2,
 	FS_EXIT_NEED_ROOT = 3,
-	FS_EXIT_BLOCKED   = 5    /* simulate: the traffic would be blocked */
+	FS_EXIT_BLOCKED   = 5    /* simulate: the traffic would be blocked;
+	                          * intel lookup: a list blocks the address */
 };
 
 /* Global output switches, set once by main. */
@@ -99,6 +100,17 @@ gchar *fs_cli_rule_summary (const FsRule *rule);
 GPtrArray *fs_cli_log_history (guint max_lines, gint64 *complete_from,
                                GError **error);
 
+/* The uniform refusal for a command that needs root: prints the
+ * error and a sudo hint, returns FS_EXIT_NEED_ROOT. */
+gint fs_cli_need_root (const gchar *what);
+
+/* Threat intel (fs-cli-intel.c), for `stockfw status' and the
+ * dashboard: one JSON object {state, detail, master, hold, lists[]}
+ * (lists: the sources turned on, when with_sources), and the status
+ * line "  Threat intel  enforced  (...)".  Neither creates the store. */
+void fs_cli_intel_json        (GString *out, gboolean with_sources);
+void fs_cli_intel_status_line (void);
+
 /* ---------------------------------------------------------- commands */
 
 typedef gint (*FsCliCommand) (gint argc, gchar **argv);
@@ -113,6 +125,7 @@ gint fs_cli_cmd_events      (gint argc, gchar **argv);
 gint fs_cli_cmd_connections (gint argc, gchar **argv);
 gint fs_cli_cmd_interfaces  (gint argc, gchar **argv);
 gint fs_cli_cmd_dashboard   (gint argc, gchar **argv);
+gint fs_cli_cmd_intel       (gint argc, gchar **argv);
 
 /* Per-command help text (NULL for an unknown command). */
 const gchar *fs_cli_command_help (const gchar *command);

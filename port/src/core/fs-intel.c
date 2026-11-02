@@ -469,6 +469,12 @@ store_exists (void)
 #endif
 }
 
+gboolean
+fs_intel_store_exists (void)
+{
+	return store_exists ();
+}
+
 static void
 store_close (Store *store)
 {
@@ -3487,10 +3493,15 @@ done:
 	return o;
 }
 
-gboolean
-fs_intel_suspend (const FsBackend *backend, const gchar *source,
-                  GError **error)
+/* Remove the table, carrying its counters first.  suspend: the user
+ * stopped the firewall, and applied.state says so ("intel-suspend");
+ * otherwise an explicit clear, after which applied.state records
+ * nothing loaded ("intel-clear"). */
+static gboolean
+take_down (const FsBackend *backend, const gchar *source, gboolean suspend,
+           GError **error)
 {
+	const gchar *action = suspend ? "intel-suspend" : "intel-clear";
 	Store store = { -1 };
 	GError *local = NULL, *store_err = NULL;
 	GHashTable *snapshot = NULL;
@@ -3525,7 +3536,7 @@ fs_intel_suspend (const FsBackend *backend, const gchar *source,
 			                          "no-store error=%s", src, why);
 			g_free (why);
 		}
-		audit ("intel-suspend", detail);
+		audit (action, detail);
 		g_free (detail);
 		if (!ok)
 			g_propagate_error (error, local);
@@ -3566,11 +3577,11 @@ fs_intel_suspend (const FsBackend *backend, const gchar *source,
 	}
 	if (ok && have_store) {
 		carry_counters (&store, snapshot, now);
-		if (!have_record) {
+		if (!have_record || !suspend) {
 			applied_clear (&a);
-			applied_empty (&a, TRUE);
+			applied_empty (&a, suspend);
 		}
-		a.suspended = TRUE;
+		a.suspended = suspend;
 		if (!applied_write (&store, &a, &local))
 			ok = FALSE;
 	}
@@ -3588,7 +3599,7 @@ fs_intel_suspend (const FsBackend *backend, const gchar *source,
 		                               src, why);
 		g_free (why);
 	}
-	audit ("intel-suspend", detail);
+	audit (action, detail);
 	g_free (detail);
 	if (!ok)
 		g_propagate_error (error, local);
@@ -3601,6 +3612,20 @@ fs_intel_suspend (const FsBackend *backend, const gchar *source,
 	if (have_store)
 		store_close (&store);
 	return ok;
+}
+
+gboolean
+fs_intel_suspend (const FsBackend *backend, const gchar *source,
+                  GError **error)
+{
+	return take_down (backend, source, TRUE, error);
+}
+
+gboolean
+fs_intel_clear (const FsBackend *backend, const gchar *source,
+                GError **error)
+{
+	return take_down (backend, source, FALSE, error);
 }
 
 FsIntelOutcome *
@@ -3729,6 +3754,19 @@ fs_intel_state (const FsBackend *backend, const FsIntelConfig *config,
 		set_detail (detail, g_strdup (_("Blocklists are not available "
 		                                "on this platform yet.")));
 		return FS_INTEL_STATE_UNSUPPORTED;
+	}
+	if (!store_exists () && (config == NULL || !want_any (config))) {
+		/* No list was ever turned on here: nothing to read, and a
+		 * question about the state never creates the store. */
+		live = backend->intel_live (NULL);
+		if (live == FS_INTEL_LIVE_PRESENT) {
+			set_detail (detail, g_strdup (
+				_("Blocklists are turned off, but the kernel still "
+				  "holds blocklist rules; apply to remove them.")));
+			return FS_INTEL_STATE_DIFFERS;
+		}
+		set_detail (detail, g_strdup (_("No blocklist is turned on.")));
+		return FS_INTEL_STATE_OFF;
 	}
 	if (!store_open (&store, &local)) {
 		state = g_error_matches (local, FS_INTEL_ERROR,
@@ -3867,7 +3905,9 @@ fs_intel_counters (const FsBackend *backend)
 	GHashTable *live = NULL;
 	Store store;
 
-	if (store_open (&store, NULL)) {
+	/* The carried totals live in the store; a question about the
+	 * counters never creates one. */
+	if (store_exists () && store_open (&store, NULL)) {
 		FsIntelConfig *config = config_load_in (&store, NULL);
 		GPtrArray *ids = g_ptr_array_new ();
 

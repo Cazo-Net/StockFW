@@ -214,6 +214,7 @@ if(FS_PLATFORM STREQUAL "linux")
   add_executable(stockfw
     src/cli/fs-cli-main.c
     src/cli/fs-cli-cmds.c
+    src/cli/fs-cli-intel.c
     src/cli/fs-dashboard.c
     ${FS_BACKEND_SOURCES}
   )
@@ -476,6 +477,26 @@ if(FS_PLATFORM STREQUAL "linux")
   )
   target_link_libraries(fs-intel-e2e-driver PRIVATE fs-core-nogui)
   target_compile_definitions(fs-intel-e2e-driver PRIVATE
+                             FS_FETCH_TESTING=1
+                             FS_VERSION="${PROJECT_VERSION}")
+  # `stockfw intel' end to end (tests/test-intel-cli.sh): the real CLI
+  # sources and release backend, with a copy of fs-fetch.c compiled with
+  # FS_FETCH_TESTING so $STOCKFW_TEST_CACERT can name the test server's
+  # CA (the fs-intel-e2e-driver arrangement).  Never installed: the
+  # `stockfw' that ships has no test hook.
+  add_executable(stockfw-intel-test EXCLUDE_FROM_ALL
+    src/cli/fs-cli-main.c
+    src/cli/fs-cli-cmds.c
+    src/cli/fs-cli-intel.c
+    src/cli/fs-dashboard.c
+    src/core/fs-fetch.c
+    ${FS_BACKEND_SOURCES}
+  )
+  target_include_directories(stockfw-intel-test PRIVATE
+                             "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(stockfw-intel-test PRIVATE fs-core-nogui
+                        PkgConfig::GIO)
+  target_compile_definitions(stockfw-intel-test PRIVATE
                              FS_FETCH_TESTING=1
                              FS_VERSION="${PROJECT_VERSION}")
 endif()

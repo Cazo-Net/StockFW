@@ -74,6 +74,9 @@ typedef struct
 	const gchar *includes;       /* space-separated ids this list
 	                              * already contains, or NULL           */
 	gboolean     has_v6;         /* the list publishes IPv6 entries     */
+	const gchar *credit;         /* the attribution shown wherever the
+	                              * list is named (Spamhaus asks for
+	                              * credit in a product); never NULL    */
 } FsFeedInfo;
 
 /* The catalog, in display order (design section 4.1).  *n receives the
