@@ -168,8 +168,9 @@ for loader in "$BUILD"/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.dll; do
 done
 seen=" "
 loader_deps=0
-while [ -n "${queue// /}" ]; do
+while :; do
   set -- $queue
+  [ "$#" -gt 0 ] || break
   name=$1
   shift
   queue="$*"
