@@ -28,6 +28,36 @@
 	toggler("menu-btn", "site-nav");
 	toggler("rail-btn", "docs-rail");
 
+	/* In the docs rail, bring the current page into view without
+	 * moving the page itself (scrollIntoView would scroll the window too). */
+	var rail = document.getElementById("docs-rail");
+	var railCur = rail && rail.querySelector('a[aria-current="page"]');
+	if (rail && railCur) {
+		var want = railCur.offsetTop - rail.clientHeight / 2;
+		if (want > 0) rail.scrollTop = want;
+	}
+
+	/* ------------------------------------------------- back to top */
+	var topBtn = document.getElementById("top-btn");
+	var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+	function toTop(e) {
+		if (e) e.preventDefault();
+		window.scrollTo({ top: 0, left: 0, behavior: reduceMotion ? "auto" : "smooth" });
+		var main = document.getElementById("main");
+		if (main) { main.setAttribute("tabindex", "-1"); main.focus({ preventScroll: true }); }
+	}
+	if (topBtn) {
+		var shown = false;
+		var onScroll = function () {
+			var show = window.scrollY > 600;
+			if (show !== shown) { shown = show; topBtn.hidden = !show; }
+		};
+		window.addEventListener("scroll", onScroll, { passive: true });
+		onScroll();
+		topBtn.addEventListener("click", toTop);
+	}
+	document.querySelectorAll("a.to-top").forEach(function (a) { a.addEventListener("click", toTop); });
+
 	/* ------------------------------------------------- copy buttons */
 	document.querySelectorAll(".code[data-copy]").forEach(function (block) {
 		var btn = block.querySelector(".copy-btn");
