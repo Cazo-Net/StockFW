@@ -38,6 +38,8 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-trust.h"
 #include "core/fs-apply.h"
 #include "core/fs-netparse.h"
+#include "core/fs-activity.h"
+#include "core/fs-json.h"
 
 static int failures = 0;
 
@@ -4723,6 +4725,242 @@ static void test_netparse_proc (void)
 	       "connections: direction guess matches the Windows backend's");
 }
 
+/* ---- 1.0.6: activity time series (fs-activity) -------------------- */
+
+static gint64 activity_test_now;
+
+static gint64
+activity_test_clock (gpointer data)
+{
+	(void) data;
+	return activity_test_now;
+}
+
+static void test_activity_series (void)
+{
+	FsActivity *a;
+	guint64 values[8];
+	guint covered[8];
+	gint64 start;
+	guint step;
+
+	/* Start mid-slot: 10:00:05 on an arbitrary day. */
+	activity_test_now = 1760000405;
+	a = fs_activity_new (activity_test_clock, NULL);
+
+	CHECK (fs_activity_started (a) == 1760000405,
+	       "activity: starts at the clock's now");
+
+	/* Nothing counted yet: the window has coverage only from the
+	 * start, and points before it are no-data (covered 0), never a
+	 * zero that reads as an idle firewall. */
+	step = fs_activity_window (a, FS_ACTIVITY_ALLOWED, 60, 4, values,
+	                           covered, &start);
+	CHECK (step == 60 && start == 1760000220,
+	       "activity: points align to the step (start %" G_GINT64_FORMAT
+	       ", step %u)", start, step);
+	CHECK (covered[0] == 0 && covered[1] == 0 && covered[2] == 0 &&
+	       covered[3] == 1 && values[3] == 0,
+	       "activity: before the start is no data; the current point "
+	       "covers only the elapsed second (got %u %u %u %u)",
+	       covered[0], covered[1], covered[2], covered[3]);
+
+	/* Count across two minutes. */
+	fs_activity_add (a, FS_ACTIVITY_ALLOWED, 3);
+	fs_activity_add (a, FS_ACTIVITY_BLOCKED, 1);
+	activity_test_now += 30;                      /* 10:00:35 */
+	fs_activity_add (a, FS_ACTIVITY_ALLOWED, 2);
+	activity_test_now += 60;                      /* 10:01:35 */
+	fs_activity_add (a, FS_ACTIVITY_ALLOWED, 7);
+
+	fs_activity_window (a, FS_ACTIVITY_ALLOWED, 60, 3, values, covered,
+	                    &start);
+	CHECK (values[1] == 5 && values[2] == 7,
+	       "activity: counts land in their minute (got %" G_GUINT64_FORMAT
+	       " %" G_GUINT64_FORMAT ")", values[1], values[2]);
+	CHECK (covered[1] == 55 && covered[2] == 36,
+	       "activity: the first minute is covered from the start (55 s), "
+	       "the current one up to now (36 s) -- got %u %u",
+	       covered[1], covered[2]);
+	CHECK (fs_activity_total (a, FS_ACTIVITY_ALLOWED, 3600) == 12 &&
+	       fs_activity_total (a, FS_ACTIVITY_BLOCKED, 3600) == 1,
+	       "activity: totals over the last hour");
+
+	/* Future times clamp to now; times before the start are dropped. */
+	CHECK (fs_activity_add_at (a, FS_ACTIVITY_BLOCKED,
+	                           activity_test_now + 500, 1) &&
+	       fs_activity_total (a, FS_ACTIVITY_BLOCKED, 10) == 1,
+	       "activity: a future stamp is counted now");
+	CHECK (!fs_activity_add_at (a, FS_ACTIVITY_BLOCKED,
+	                            fs_activity_started (a) - 1, 1),
+	       "activity: a stamp before the start is refused");
+
+	/* An unknown series reads as measured zeros, not as no data. */
+	fs_activity_window (a, "never.counted", 60, 3, values, covered, NULL);
+	CHECK (values[2] == 0 && covered[2] == 36,
+	       "activity: an unknown series is zeros with real coverage");
+
+	/* A day and a half later: the ring has wrapped.  Old counts are
+	 * gone, the slots passed over read zero, and coverage stops at
+	 * the ring's 24-hour floor. */
+	activity_test_now += 36 * 3600;
+	fs_activity_add (a, FS_ACTIVITY_ALLOWED, 4);
+	CHECK (fs_activity_total (a, FS_ACTIVITY_ALLOWED, FS_ACTIVITY_SPAN_S)
+	       == 4,
+	       "activity: after 36 h only what is inside the 24 h ring "
+	       "remains (got %" G_GUINT64_FORMAT ")",
+	       fs_activity_total (a, FS_ACTIVITY_ALLOWED, FS_ACTIVITY_SPAN_S));
+	fs_activity_window (a, FS_ACTIVITY_ALLOWED, 3600, 26, NULL, covered,
+	                    NULL);
+	CHECK (covered[0] == 0 && covered[1] < 3600 && covered[25] > 0,
+	       "activity: a point older than the ring is no data, the one "
+	       "the ring's floor cuts through is partial (got %u %u %u)",
+	       covered[0], covered[1], covered[25]);
+	CHECK (!fs_activity_add_at (a, FS_ACTIVITY_ALLOWED,
+	                            activity_test_now - FS_ACTIVITY_SPAN_S - 20,
+	                            1),
+	       "activity: a stamp older than the ring is refused");
+
+	/* The series cap: new names past it are refused, old ones count. */
+	{
+		guint accepted = 0;
+
+		for (guint i = 0; i < FS_ACTIVITY_MAX_SERIES + 5; i++) {
+			gchar *name = g_strdup_printf ("test.%u", i);
+
+			if (fs_activity_add (a, name, 1))
+				accepted++;
+			g_free (name);
+		}
+
+		CHECK (g_list_length (fs_activity_series_names (a)) ==
+		       FS_ACTIVITY_MAX_SERIES,
+		       "activity: never more than %d series",
+		       FS_ACTIVITY_MAX_SERIES);
+		CHECK (fs_activity_add (a, FS_ACTIVITY_ALLOWED, 1),
+		       "activity: an existing series still counts at the cap "
+		       "(%u new names accepted)", accepted);
+	}
+
+	/* Steps for the four ranges the graphs offer. */
+	CHECK (fs_activity_step_for (15 * 60, 120) == 10 &&
+	       fs_activity_step_for (3600, 120) == 30 &&
+	       fs_activity_step_for (6 * 3600, 120) == 300 &&
+	       fs_activity_step_for (24 * 3600, 120) == 900,
+	       "activity: step choice 15 min/1 h/6 h/24 h -> 10 s/30 s/5 min/15 min");
+	CHECK (fs_activity_window (a, NULL, 25, 1, NULL, NULL, NULL) == 30,
+	       "activity: a step is rounded up to whole slots");
+
+	fs_activity_free (a);
+}
+
+static void test_activity_sampler (void)
+{
+	FsActivity *a;
+	FsActivitySampler *s;
+	FsIfaceStat eth = { 0 }, wlan = { 0 };
+	GList *stats = NULL;
+	gchar *eth_rx;
+
+	activity_test_now = 1760100000;
+	a = fs_activity_new (activity_test_clock, NULL);
+	s = fs_activity_sampler_new (a);
+
+	eth.device = (gchar *) "eth0";   eth.received = 1000; eth.sent = 500;
+	wlan.device = (gchar *) "wlan0"; wlan.received = 10;  wlan.sent = 10;
+	stats = g_list_append (stats, &eth);
+	stats = g_list_append (stats, &wlan);
+
+	CHECK (fs_activity_sampler_feed (s, stats) == 0 &&
+	       fs_activity_total (a, FS_ACTIVITY_NET_RX, 60) == 0,
+	       "sampler: the first sample is a baseline, not traffic");
+
+	activity_test_now += 2;
+	eth.received = 4000;  eth.sent = 700;
+	wlan.received = 110;  wlan.sent = 15;
+	CHECK (fs_activity_sampler_feed (s, stats) == 2,
+	       "sampler: the second sample yields a delta per device");
+	CHECK (fs_activity_total (a, FS_ACTIVITY_NET_RX, 60) == 3100 &&
+	       fs_activity_total (a, FS_ACTIVITY_NET_TX, 60) == 205,
+	       "sampler: totals are the sum of the device deltas");
+
+	eth_rx = fs_activity_device_series ("eth0", FALSE);
+	CHECK (g_strcmp0 (eth_rx, "net.eth0.rx") == 0 &&
+	       fs_activity_total (a, eth_rx, 60) == 3000,
+	       "sampler: per-device series");
+
+	/* Counter reset: eth0 went backwards.  That is a new baseline,
+	 * never 2^64 bytes of traffic. */
+	activity_test_now += 2;
+	eth.received = 50;  eth.sent = 20;
+	wlan.received = 110; wlan.sent = 15;
+	fs_activity_sampler_feed (s, stats);
+	CHECK (fs_activity_total (a, eth_rx, 60) == 3000,
+	       "sampler: a counter that went backwards adds nothing");
+
+	activity_test_now += 2;
+	eth.received = 150;
+	fs_activity_sampler_feed (s, stats);
+	CHECK (fs_activity_total (a, eth_rx, 60) == 3100,
+	       "sampler: counting resumes from the reset baseline");
+
+	/* A device that disappears and returns starts from a baseline. */
+	stats = g_list_remove (stats, &wlan);
+	activity_test_now += 2;
+	fs_activity_sampler_feed (s, stats);
+	stats = g_list_append (stats, &wlan);
+	wlan.received = 99999;
+	activity_test_now += 2;
+	fs_activity_sampler_feed (s, stats);
+	{
+		gchar *wl = fs_activity_device_series ("wlan0", FALSE);
+
+		CHECK (fs_activity_total (a, wl, 60) == 100,
+		       "sampler: a returning device is re-baselined (got %"
+		       G_GUINT64_FORMAT ")", fs_activity_total (a, wl, 60));
+		g_free (wl);
+	}
+
+	g_free (eth_rx);
+	g_list_free (stats);
+	fs_activity_sampler_free (s);
+	fs_activity_free (a);
+}
+
+static void test_json_writer (void)
+{
+	GString *out = g_string_new (NULL);
+
+	fs_json_string (out, "a\"b\\c\n\t\x01</script>&");
+	CHECK (strcmp (out->str,
+	               "\"a\\\"b\\\\c\\n\\t\\u0001\\u003c/script\\u003e\\u0026\"") == 0,
+	       "json: quotes, backslashes, control characters and <>& are "
+	       "escaped -- got %s", out->str);
+
+	g_string_truncate (out, 0);
+	fs_json_string (out, "caf\xc3\xa9 \xff");
+	CHECK (g_utf8_validate (out->str, -1, NULL) &&
+	       strstr (out->str, "caf\xc3\xa9") != NULL,
+	       "json: valid UTF-8 kept, an invalid byte repaired -- got %s",
+	       out->str);
+
+	g_string_truncate (out, 0);
+	g_string_append_c (out, '{');
+	fs_json_kv_str (out, "s", NULL);
+	g_string_append_c (out, ',');
+	fs_json_kv_int (out, "i", -5);
+	g_string_append_c (out, ',');
+	fs_json_kv_uint (out, "u", G_GUINT64_CONSTANT (18446744073709551615));
+	g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "b", TRUE);
+	g_string_append_c (out, '}');
+	CHECK (strcmp (out->str,
+	               "{\"s\":null,\"i\":-5,\"u\":18446744073709551615,\"b\":true}")
+	       == 0, "json: key/value helpers -- got %s", out->str);
+
+	g_string_free (out, TRUE);
+}
+
 int main (void)
 {
 	/* Point the preference file somewhere disposable before anything
@@ -4775,6 +5013,9 @@ int main (void)
 	test_settings_plan ();
 	test_netparse_log ();
 	test_netparse_proc ();
+	test_activity_series ();
+	test_activity_sampler ();
+	test_json_writer ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

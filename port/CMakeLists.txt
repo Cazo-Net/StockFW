@@ -45,6 +45,8 @@ add_library(fs-core STATIC
   src/core/fs-trust.c
   src/core/fs-apply.c
   src/core/fs-netparse.c
+  src/core/fs-activity.c
+  src/core/fs-json.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
