@@ -2,7 +2,7 @@
  * The Events list's model (1.0.7): a GtkTreeModel over the event store
  * that copies nothing.
  *
- * It holds one array of seqs -- the events the current filter lets
+ * It holds one list of seqs -- the events the current filter lets
  * through, in the current sort order -- and answers every cell from
  * the store when the view asks for it, which is only for the rows on
  * screen.  So 100,000 events cost the view 800 KB of seqs instead of

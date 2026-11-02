@@ -178,9 +178,10 @@ typedef enum
 /* What the filter bar and `stockfw events' can ask for.  Every part
  * is optional (NULL / empty / ANY / 0) and the parts are ANDed.
  *
- *   text       case-insensitive, anywhere in any text field (direction,
- *              devices, port, addresses, length, ToS, protocol,
- *              service, rule; the time has its own range below)
+ *   text       case-insensitive, anywhere in a column the Events list
+ *              shows: the time as shown, direction, devices, port,
+ *              addresses, length, ToS, protocol, service.  Not the
+ *              rule, which no column shows.
  *   protocol   the protocol, case-insensitive, whole
  *   port       "443", "1000-2000" or "1000:2000": the event's port
  *   address    an address, CIDR block ("10.0.0.0/8") or range

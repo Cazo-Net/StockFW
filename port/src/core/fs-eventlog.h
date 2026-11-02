@@ -10,9 +10,13 @@
  *   (STOCKFW_EVENTS_DIR overrides both; the tests use it.)
  *
  * One file per UTC day, split into parts so no single file grows past
- * a twentieth of the size cap: events-YYYY-MM-DD-NNN.log.  The names
- * sort in time order.  Each line is one event, tab-separated, with a
- * checksum at the end:
+ * a twentieth of the size cap (at least 16 KB, at most 32 MB):
+ * events-YYYY-MM-DD-NNN.log, the part three digits or more (-1000
+ * follows -999).  A session goes on after the day's highest part, so
+ * the day and then the part number give the time order.  An event is
+ * filed under its own day, a late one under the file being written,
+ * and one stamped after today under today.  Each line is one event,
+ * tab-separated, with a checksum at the end:
  *
  *   ticks  time  direction  in  out  port  source  destination
  *   length  tos  protocol  service  rule  checksum
@@ -28,9 +32,20 @@
  *
  * Limits: files older than the day limit and, oldest first, files
  * past the size cap are deleted when the log opens, when it moves to
- * a new file, and when the cap is passed.  Writes are buffered and
- * flushed by the caller (the Events page flushes every second), so a
- * crash loses at most the last unflushed second.
+ * a new file, and when the cap is passed.  A file counts as of the day
+ * it was last written when that is before the day in its name.  Writes
+ * are buffered and flushed by the caller (the Events page flushes
+ * every second), so a crash loses at most the last unflushed second.
+ *
+ * A failed write (disk full, a quota, an I/O error) is not the end:
+ * the events queued for it are dropped and counted, and the next
+ * flush tries again after a back-off of 1 s doubling to 60 s (at once
+ * after fs_eventlog_set_limits).  The first write that works clears
+ * the problem.
+ *
+ * Reading streams each file in chunks, and the load at start counts
+ * back from the end of the newest files, so it reads only the bytes
+ * of the events it loads.
  *--------------------------------------------------------------------*/
 #ifndef FS_EVENTLOG_H
 #define FS_EVENTLOG_H
@@ -46,7 +61,7 @@ G_BEGIN_DECLS
 #define FS_EVENTLOG_MIN_DAYS        1u
 #define FS_EVENTLOG_MAX_DAYS     3650u
 #define FS_EVENTLOG_MIN_MB          1u
-#define FS_EVENTLOG_MAX_MB     100000u
+#define FS_EVENTLOG_MAX_MB      10000u
 
 typedef struct _FsEventLog FsEventLog;
 
@@ -62,19 +77,22 @@ FsEventLog *fs_eventlog_open       (const gchar *dir, guint max_days,
 void        fs_eventlog_close      (FsEventLog *log);
 const gchar *fs_eventlog_dir       (const FsEventLog *log);
 
-/* New limits; prunes at once. */
+/* New limits; prunes at once, and a failed write is tried again at the
+ * next flush. */
 void        fs_eventlog_set_limits (FsEventLog *log, guint max_days,
                                     guint64 max_bytes);
 
 /* Queues one event (ticks as the store holds them) for the next flush;
- * flushes by itself past 64 KB.  FALSE once writing has failed: the
- * reason is in fs_eventlog_problem, and nothing more is written until
- * the log is reopened. */
+ * flushes by itself past 64 KB.  FALSE while writing is failing (the
+ * reason is in fs_eventlog_problem): the event waits for the next try
+ * while the queue has room, and is dropped and counted after that. */
 gboolean    fs_eventlog_append     (FsEventLog *log, const FsHit *hit,
                                     gint64 ticks);
 gboolean    fs_eventlog_flush      (FsEventLog *log, GError **error);
-/* Why writing stopped, or NULL. */
+/* Why writing is failing, or NULL once a write works again. */
 const gchar *fs_eventlog_problem   (const FsEventLog *log);
+/* Events lost to failed writes since the log was opened. */
+guint64     fs_eventlog_dropped    (const FsEventLog *log);
 
 /* Deletes every history file in the folder (the log stays open and
  * starts a new file).  Returns how many files went. */
@@ -103,8 +121,9 @@ typedef struct
 } FsEventLogStats;
 
 /* Loads the most recent events, at most max_events, into store, oldest
- * first, as fs_eventstore_append would take them live.  Only the files
- * needed are read: newest first until enough lines are counted.
+ * first, as fs_eventstore_append would take them live.  Only the bytes
+ * needed are read: back from the newest file's end until enough lines
+ * are counted.
  * stats may be NULL.  Returns how many the store accepted. */
 guint       fs_eventlog_load_recent (const gchar *dir, FsEventStore *store,
                                      guint max_events,

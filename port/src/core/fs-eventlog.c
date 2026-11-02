@@ -7,6 +7,7 @@
 #include <glib/gstdio.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -40,33 +41,62 @@ struct _FsEventLog
 
 	int      fd;            /* -1 until the first flush needs it */
 	gchar    cur_day[16];   /* "" before the first event         */
+	gint64   cur_daynum;    /* cur_day, as days since 1970       */
 	guint    cur_part;
+	gboolean part_known;    /* cur_part looked up for cur_day    */
 	gchar   *cur_name;
 	guint64  cur_size;
 	guint64  total_bytes;   /* every history file, about          */
 
 	GString *buf;
-	gchar   *problem;
+	gchar   *problem;       /* the last write failure, until a write
+	                         * works again                        */
+	gint64   retry_at;      /* monotonic us: the next try         */
+	guint    retry_s;       /* the back-off now                   */
+	guint64  dropped;       /* events lost to failed writes       */
 };
 
 /* ------------------------------------------------------------ names */
 
-/* "events-YYYY-MM-DD-NNN.log" */
+/* "events-YYYY-MM-DD-N.log", N three to nine digits.  Parts are written
+ * as %03u, so the 1000th of a day is -1000: a fixed length of three
+ * used to hide it and every later part from the limits, the load and
+ * Delete history, and the folder grew past its cap without bound. */
+#define NAME_DAY_END 17               /* "events-YYYY-MM-DD"            */
+#define PART_DIGITS_MAX 9
+#define PART_LAST 999999999u
+
 static gboolean
 is_log_name (const gchar *name)
 {
-	if (strlen (name) != 25 || !g_str_has_prefix (name, "events-") ||
-	    !g_str_has_suffix (name, ".log"))
+	gsize len = strlen (name);
+	gsize digits;
+
+	if (len < NAME_DAY_END + 1 + 3 + 4 ||
+	    len > NAME_DAY_END + 1 + PART_DIGITS_MAX + 4 ||
+	    !g_str_has_prefix (name, "events-") ||
+	    !g_str_has_suffix (name, ".log") || name[NAME_DAY_END] != '-')
 		return FALSE;
 
-	for (guint i = 7; i < 21; i++) {
-		gboolean dash = (i == 11 || i == 14 || i == 17);
+	for (guint i = 7; i < NAME_DAY_END; i++) {
+		gboolean dash = (i == 11 || i == 14);
 
 		if (dash ? name[i] != '-' : !g_ascii_isdigit (name[i]))
 			return FALSE;
 	}
 
+	digits = len - NAME_DAY_END - 1 - 4;
+	for (gsize i = 0; i < digits; i++)
+		if (!g_ascii_isdigit (name[NAME_DAY_END + 1 + i]))
+			return FALSE;
+
 	return TRUE;
+}
+
+static guint
+name_part (const gchar *name)
+{
+	return (guint) g_ascii_strtoull (name + NAME_DAY_END + 1, NULL, 10);
 }
 
 /* Days since 1970 of a file name's date. */
@@ -83,32 +113,100 @@ name_day (const gchar *name)
 	return ticks / TICKS_PER_DAY;
 }
 
-static gint
-cmp_names (gconstpointer a, gconstpointer b)
+typedef struct
 {
-	return strcmp (*(const gchar * const *) a, *(const gchar * const *) b);
+	gchar   *name;
+	gint64   day;       /* the name's day                                */
+	guint    part;
+	guint64  size;
+	/* The day it counts as for the limits: the name's, or the day it
+	 * was last written when that is earlier.  A file named for a day
+	 * after it was written (an event stamped in the future, before
+	 * such stamps were filed under today) would otherwise sort as the
+	 * newest, outlive the real recent files under the size cap, and
+	 * escape the age limit until that future date. */
+	gint64   age_day;
+	gint64   mtime;     /* seconds; 0 when unknown                       */
+} LogFile;
+
+static void
+log_file_free (gpointer p)
+{
+	LogFile *f = p;
+
+	g_free (f->name);
+	g_free (f);
 }
 
-/* The history files in dir, oldest first. */
+static gint
+cmp_files (gconstpointer a, gconstpointer b)
+{
+	const LogFile *x = *(const LogFile * const *) a;
+	const LogFile *y = *(const LogFile * const *) b;
+
+	if (x->age_day != y->age_day)
+		return x->age_day < y->age_day ? -1 : 1;
+	if (x->mtime != y->mtime)
+		return x->mtime < y->mtime ? -1 : 1;
+	if (x->day != y->day)
+		return x->day < y->day ? -1 : 1;
+	if (x->part != y->part)
+		return x->part < y->part ? -1 : 1;
+	return strcmp (x->name, y->name);
+}
+
+/* [ list_logs ]
+ * The history files in dir, oldest first: by age_day, then by when
+ * each was last written, then by the name's day and the part as a
+ * number (part 1000 after 999).  A day's parts are written in order (a
+ * session goes on after the highest part there is, see open_current),
+ * so the last write and the part number agree; the write time is what
+ * puts a misdated file where its events belong. */
 static GPtrArray *
 list_logs (const gchar *dir)
 {
-	GPtrArray *names = g_ptr_array_new_with_free_func (g_free);
+	GPtrArray *files = g_ptr_array_new_with_free_func (log_file_free);
 	GDir *d = g_dir_open (dir, 0, NULL);
 	const gchar *name;
 
 	if (d == NULL)
-		return names;
+		return files;
 
-	while ((name = g_dir_read_name (d)) != NULL)
-		if (is_log_name (name))
-			g_ptr_array_add (names, g_strdup (name));
+	while ((name = g_dir_read_name (d)) != NULL) {
+		LogFile *f;
+		gchar *path;
+		GStatBuf st;
+
+		if (!is_log_name (name))
+			continue;
+
+		f = g_new0 (LogFile, 1);
+		f->name = g_strdup (name);
+		f->day = name_day (name);
+		f->part = name_part (name);
+		f->age_day = f->day;
+
+		path = g_build_filename (dir, name, NULL);
+		if (g_stat (path, &st) == 0) {
+			gint64 written = (gint64) st.st_mtime / 86400;
+
+			f->size = (guint64) st.st_size;
+			f->mtime = (gint64) st.st_mtime;
+			if (st.st_mtime > 0 && written < f->day)
+				f->age_day = written;
+		}
+		g_free (path);
+
+		g_ptr_array_add (files, f);
+	}
 
 	g_dir_close (d);
-	g_ptr_array_sort (names, cmp_names);
+	g_ptr_array_sort (files, cmp_files);
 
-	return names;
+	return files;
 }
+
+#define LOG_AT(files, i) ((LogFile *) g_ptr_array_index ((files), (i)))
 
 static guint64
 file_size (const gchar *path)
@@ -273,22 +371,61 @@ fs_eventlog_parse_line (gchar *line, FsHit *hit, gint64 *ticks)
 
 /* --------------------------------------------------------------- log */
 
+/* A part is a twentieth of the cap, between 16 KB and 32 MB.  Without
+ * the top, the 10,000 MB setting made 500 MB parts, and the start read
+ * a whole one to show the last 1,000 events. */
+#define PART_MIN ((guint64) 16 * 1024)
+#define PART_TOP ((guint64) 32 * 1024 * 1024)
+
+/* After a failed write, the next try waits 1 s, then 2, 4 ... 60 s. */
+#define RETRY_MAX_S 60u
+
 static guint64
 part_max (const FsEventLog *log)
 {
-	return MAX (log->max_bytes / 20, (guint64) 16384);
+	return CLAMP (log->max_bytes / 20, PART_MIN, PART_TOP);
 }
 
+/* Lines of a buffer that could be events (not headers, not empty). */
+static guint
+count_lines (const gchar *text, gsize len)
+{
+	const gchar *p = text, *end = text + len;
+	guint n = 0;
+
+	while (p < end) {
+		const gchar *nl = memchr (p, '\n', (gsize) (end - p));
+		const gchar *stop = nl != NULL ? nl : end;
+
+		if (stop > p && *p != '#')
+			n++;
+		p = stop + 1;
+	}
+
+	return n;
+}
+
+/* [ set_problem ]
+ * Writing failed.  What was queued is dropped and counted, the file is
+ * closed, and the next flush after the back-off tries again: a full
+ * disk that gets space back, or a quota raised, resumes the history
+ * without a restart. */
 static void
 set_problem (FsEventLog *log, const gchar *what, int err)
 {
 	g_free (log->problem);
 	log->problem = g_strdup_printf ("%s: %s", what, g_strerror (err));
+	log->dropped += count_lines (log->buf->str, log->buf->len);
 	g_string_truncate (log->buf, 0);
 	if (log->fd >= 0) {
 		close (log->fd);
 		log->fd = -1;
 	}
+
+	log->retry_s = log->retry_s == 0 ? 1 : MIN (log->retry_s * 2,
+	                                            RETRY_MAX_S);
+	log->retry_at = g_get_monotonic_time () +
+	                (gint64) log->retry_s * G_USEC_PER_SEC;
 }
 
 static gboolean
@@ -312,69 +449,68 @@ make_dir (const gchar *dir, GError **error)
 void
 fs_eventlog_usage (const gchar *dir, guint64 *bytes, guint *files)
 {
-	GPtrArray *names = list_logs (dir);
+	GPtrArray *list = list_logs (dir);
 	guint64 total = 0;
 
-	for (guint i = 0; i < names->len; i++) {
-		gchar *path = g_build_filename (dir, names->pdata[i], NULL);
-
-		total += file_size (path);
-		g_free (path);
-	}
+	for (guint i = 0; i < list->len; i++)
+		total += LOG_AT (list, i)->size;
 
 	if (bytes != NULL)
 		*bytes = total;
 	if (files != NULL)
-		*files = names->len;
-	g_ptr_array_unref (names);
+		*files = list->len;
+	g_ptr_array_unref (list);
 }
 
 guint
 fs_eventlog_prune_dir (const gchar *dir, guint max_days, guint64 max_bytes,
                        gint64 now_us, const gchar *keep)
 {
-	GPtrArray *names = list_logs (dir);
+	GPtrArray *list = list_logs (dir);
 	gint64 today = (now_us * 10) / TICKS_PER_DAY;
-	guint64 *sizes = g_new0 (guint64, names->len + 1);
-	gboolean *gone = g_new0 (gboolean, names->len + 1);
+	gboolean *gone = g_new0 (gboolean, list->len + 1);
 	guint64 total = 0;
 	guint removed = 0;
 
-	for (guint i = 0; i < names->len; i++) {
-		gchar *path = g_build_filename (dir, names->pdata[i], NULL);
-
-		sizes[i] = file_size (path);
-		total += sizes[i];
-
-		if (max_days > 0 &&
-		    name_day (names->pdata[i]) < today - (gint64) max_days &&
-		    g_strcmp0 (names->pdata[i], keep) != 0 &&
-		    g_remove (path) == 0) {
-			gone[i] = TRUE;
-			total -= sizes[i];
-			removed++;
-		}
-		g_free (path);
-	}
-
-	for (guint i = 0; i < names->len && max_bytes > 0 &&
-	                  total > max_bytes; i++) {
+	for (guint i = 0; i < list->len; i++) {
+		LogFile *f = LOG_AT (list, i);
 		gchar *path;
 
-		if (gone[i] || g_strcmp0 (names->pdata[i], keep) == 0)
+		total += f->size;
+		if (max_days == 0 ||
+		    f->age_day >= today - (gint64) max_days ||
+		    g_strcmp0 (f->name, keep) == 0)
 			continue;
 
-		path = g_build_filename (dir, names->pdata[i], NULL);
+		path = g_build_filename (dir, f->name, NULL);
 		if (g_remove (path) == 0) {
-			total -= sizes[i];
+			gone[i] = TRUE;
+			total -= f->size;
 			removed++;
 		}
 		g_free (path);
 	}
 
-	g_free (sizes);
+	/* Oldest first, today's earlier parts included, until the rest
+	 * fit. */
+	for (guint i = 0; i < list->len && max_bytes > 0 &&
+	                  total > max_bytes; i++) {
+		LogFile *f = LOG_AT (list, i);
+		gchar *path;
+
+		if (gone[i] || g_strcmp0 (f->name, keep) == 0)
+			continue;
+
+		path = g_build_filename (dir, f->name, NULL);
+		if (g_remove (path) == 0) {
+			total -= f->size;
+			removed++;
+		}
+		g_free (path);
+	}
+
 	g_free (gone);
-	g_ptr_array_unref (names);
+	g_ptr_array_unref (list);
 
 	return removed;
 }
@@ -419,6 +555,10 @@ fs_eventlog_set_limits (FsEventLog *log, guint max_days, guint64 max_bytes)
 		         (guint64) FS_EVENTLOG_MAX_MB * 1024 * 1024)
 		: (guint64) FS_EVENTLOG_DEFAULT_MB * 1024 * 1024;
 
+	/* Saving Preferences is also the user's "try again": a failed
+	 * write is retried at the next flush, not after the back-off. */
+	log->retry_at = 0;
+
 	fs_eventlog_prune_dir (log->dir, log->max_days, log->max_bytes,
 	                       g_get_real_time (), log->cur_name);
 	fs_eventlog_usage (log->dir, &log->total_bytes, NULL);
@@ -434,10 +574,35 @@ close_current (FsEventLog *log)
 	log->cur_size = 0;
 }
 
+/* The highest part there is of cur_day, or 0. */
+static guint
+last_part (FsEventLog *log)
+{
+	GPtrArray *list = list_logs (log->dir);
+	gchar *prefix = g_strdup_printf ("events-%s-", log->cur_day);
+	guint best = 0;
+
+	for (guint i = 0; i < list->len; i++) {
+		LogFile *f = LOG_AT (list, i);
+
+		if (g_str_has_prefix (f->name, prefix))
+			best = MAX (best, f->part);
+	}
+
+	g_free (prefix);
+	g_ptr_array_unref (list);
+	return best;
+}
+
 /* [ open_current ]
  * The file for cur_day: the last part that still has room, or a new
- * one.  A file whose last line was cut short gets a newline first, so
- * the next line starts clean (the cut one fails its checksum). */
+ * one.  A session goes on from the highest part of the day there is,
+ * never a lower free number: once the size cap had deleted the day's
+ * first parts, a restart wrote the newest events into -000, which then
+ * sorted as the oldest, so the start did not show them and the next
+ * prune deleted them first.  A file whose last line was cut short gets
+ * a newline first, so the next line starts clean (the cut one fails
+ * its checksum). */
 static gboolean
 open_current (FsEventLog *log)
 {
@@ -448,6 +613,11 @@ open_current (FsEventLog *log)
 	if (log->fd >= 0)
 		return TRUE;
 
+	if (!log->part_known) {
+		log->cur_part = last_part (log);
+		log->part_known = TRUE;
+	}
+
 	for (;; log->cur_part++) {
 		g_free (log->cur_name);
 		log->cur_name = g_strdup_printf ("events-%s-%03u.log",
@@ -455,7 +625,8 @@ open_current (FsEventLog *log)
 		g_free (path);
 		path = g_build_filename (log->dir, log->cur_name, NULL);
 
-		if (log->cur_part >= 999 || file_size (path) < part_max (log))
+		if (log->cur_part >= PART_LAST ||
+		    file_size (path) < part_max (log))
 			break;
 	}
 
@@ -469,8 +640,10 @@ open_current (FsEventLog *log)
 
 #ifndef G_OS_WIN32
 	if (fchmod (fd, 0600) != 0) {
-		set_problem (log, path, errno);
+		int err = errno;
+
 		close (fd);
+		set_problem (log, path, err);
 		g_free (path);
 		return FALSE;
 	}
@@ -510,7 +683,10 @@ fs_eventlog_flush (FsEventLog *log, GError **error)
 	if (log == NULL)
 		return TRUE;
 
-	if (log->problem != NULL) {
+	/* Failing: wait out the back-off, then try again with whatever
+	 * was queued since. */
+	if (log->problem != NULL &&
+	    (g_get_monotonic_time () < log->retry_at || log->buf->len == 0)) {
 		g_set_error_literal (error, G_FILE_ERROR, G_FILE_ERROR_FAILED,
 		                     log->problem);
 		return FALSE;
@@ -537,6 +713,8 @@ fs_eventlog_flush (FsEventLog *log, GError **error)
 			gchar *what = g_strdup_printf ("writing %s",
 			                               log->cur_name);
 
+			/* What did reach the file is not counted as lost. */
+			g_string_erase (log->buf, 0, (gssize) (p - log->buf->str));
 			set_problem (log, what, err);
 			g_free (what);
 			g_set_error_literal (error, G_FILE_ERROR,
@@ -551,10 +729,16 @@ fs_eventlog_flush (FsEventLog *log, GError **error)
 	}
 	g_string_truncate (log->buf, 0);
 
+	/* Written again: the problem is over. */
+	g_clear_pointer (&log->problem, g_free);
+	log->retry_s = 0;
+	log->retry_at = 0;
+
 	/* A full part: the next flush starts the next one. */
 	if (log->cur_size >= part_max (log)) {
 		close_current (log);
-		log->cur_part++;
+		if (log->cur_part < PART_LAST)
+			log->cur_part++;
 	}
 
 	if (log->total_bytes > log->max_bytes) {
@@ -566,29 +750,55 @@ fs_eventlog_flush (FsEventLog *log, GError **error)
 	return TRUE;
 }
 
+/* [ fs_eventlog_append ]
+ * The file is the event's day, with two exceptions.  A late event
+ * older than the file being written joins that file.  An event stamped
+ * after today (a clock that jumped ahead and came back, a garbled
+ * stamp) is filed under today: going by the newest stamp seen, one
+ * such event used to move every later event of the session into the
+ * future day's file, which the size cap then kept over the real recent
+ * files.  And when the file being written is itself after today (the
+ * clock was put back), the log moves back to today. */
 gboolean
 fs_eventlog_append (FsEventLog *log, const FsHit *hit, gint64 ticks)
 {
-	gchar day[16];
+	gint64 today, day;
 
 	if (log == NULL || hit == NULL)
 		return FALSE;
-	if (log->problem != NULL)
-		return FALSE;
 
-	/* The file is the event's day, but never an earlier one than the
-	 * file being written: a late, older event joins today's file. */
-	fs_event_time_day (ticks, day);
-	if (strcmp (day, log->cur_day) > 0) {
-		if (log->cur_day[0] != '\0' && !fs_eventlog_flush (log, NULL))
-			return FALSE;
+	/* Failing, with the queue for the next try full: try now if the
+	 * back-off is over, else this one is lost, and counted. */
+	if (log->problem != NULL && log->buf->len >= FLUSH_AT &&
+	    !fs_eventlog_flush (log, NULL)) {
+		log->dropped++;
+		return FALSE;
+	}
+
+	today = (g_get_real_time () * 10) / TICKS_PER_DAY;
+	day = ticks >= 0 ? ticks / TICKS_PER_DAY : 0;
+	if (day > today)
+		day = today;
+
+	if (log->cur_day[0] == '\0' || day > log->cur_daynum ||
+	    log->cur_daynum > today) {
+		if (log->cur_day[0] != '\0' && log->problem == NULL)
+			fs_eventlog_flush (log, NULL);
 		close_current (log);
-		g_strlcpy (log->cur_day, day, sizeof log->cur_day);
+		fs_event_time_day (day * TICKS_PER_DAY, log->cur_day);
+		log->cur_daynum = day;
 		log->cur_part = 0;
+		log->part_known = FALSE;
 		fs_eventlog_prune_dir (log->dir, log->max_days, log->max_bytes,
 		                       g_get_real_time (), NULL);
 		fs_eventlog_usage (log->dir, &log->total_bytes, NULL);
 	}
+
+	/* The file open, so its size is known before the queue is
+	 * measured against the part's room: a session that went on in a
+	 * part half full used to overrun it by a whole queue. */
+	if (log->fd < 0 && log->problem == NULL)
+		open_current (log);
 
 	fs_eventlog_format_line (log->buf, hit, ticks);
 
@@ -596,7 +806,7 @@ fs_eventlog_append (FsEventLog *log, const FsHit *hit, gint64 ticks)
 	    log->cur_size + log->buf->len >= part_max (log))
 		return fs_eventlog_flush (log, NULL);
 
-	return TRUE;
+	return log->problem == NULL;
 }
 
 const gchar *
@@ -605,12 +815,20 @@ fs_eventlog_problem (const FsEventLog *log)
 	return log != NULL ? log->problem : NULL;
 }
 
+guint64
+fs_eventlog_dropped (const FsEventLog *log)
+{
+	return log != NULL ? log->dropped : 0;
+}
+
 void
 fs_eventlog_close (FsEventLog *log)
 {
 	if (log == NULL)
 		return;
 
+	/* The last try, whatever the back-off says. */
+	log->retry_at = 0;
 	fs_eventlog_flush (log, NULL);
 	close_current (log);
 	g_string_free (log->buf, TRUE);
@@ -622,11 +840,12 @@ fs_eventlog_close (FsEventLog *log)
 guint
 fs_eventlog_clear_dir (const gchar *dir, GError **error)
 {
-	GPtrArray *names = list_logs (dir);
+	GPtrArray *list = list_logs (dir);
 	guint removed = 0;
 
-	for (guint i = 0; i < names->len; i++) {
-		gchar *path = g_build_filename (dir, names->pdata[i], NULL);
+	for (guint i = 0; i < list->len; i++) {
+		gchar *path = g_build_filename (dir, LOG_AT (list, i)->name,
+		                                NULL);
 
 		if (g_remove (path) == 0)
 			removed++;
@@ -638,7 +857,7 @@ fs_eventlog_clear_dir (const gchar *dir, GError **error)
 		g_free (path);
 	}
 
-	g_ptr_array_unref (names);
+	g_ptr_array_unref (list);
 	return removed;
 }
 
@@ -653,8 +872,12 @@ fs_eventlog_clear (FsEventLog *log, GError **error)
 	g_string_truncate (log->buf, 0);
 	close_current (log);
 	log->cur_part = 0;
+	log->part_known = FALSE;
 	log->cur_day[0] = '\0';
+	log->cur_daynum = 0;
 	g_clear_pointer (&log->problem, g_free);
+	log->retry_s = 0;
+	log->retry_at = 0;
 
 	removed = fs_eventlog_clear_dir (log->dir, error);
 	fs_eventlog_usage (log->dir, &log->total_bytes, NULL);
@@ -664,69 +887,179 @@ fs_eventlog_clear (FsEventLog *log, GError **error)
 
 /* ----------------------------------------------------------- reading */
 
-/* Lines of a buffer that could be events (not headers, not empty). */
-static guint
-count_lines (const gchar *text, gsize len)
-{
-	const gchar *p = text, *end = text + len;
-	guint n = 0;
+/* Files are read in chunks, so memory stays at one chunk and one line
+ * whatever a file's size; a line longer than LINE_LONGEST is damage. */
+#define READ_CHUNK   (256 * 1024)
+#define LINE_LONGEST (64 * 1024)
 
-	while (p < end) {
-		const gchar *nl = memchr (p, '\n', (gsize) (end - p));
-		const gchar *stop = nl != NULL ? nl : end;
-
-		if (stop > p && *p != '#')
-			n++;
-		p = stop + 1;
-	}
-
-	return n;
-}
+#ifdef G_OS_WIN32
+#define seek64 _fseeki64
+#define tell64 _ftelli64
+#else
+#define seek64 fseeko
+#define tell64 ftello
+#endif
 
 typedef void (*LineFunc) (const FsHit *hit, gint64 ticks, gpointer data);
 
-/* Every event line of one file, skipping the first `skip' candidates. */
+/* One line, without its newline; line[len] may be overwritten. */
 static void
-read_file (const gchar *path, guint skip, LineFunc func, gpointer data,
+take_line (gchar *line, gsize len, LineFunc func, gpointer data,
            FsEventLogStats *stats)
 {
-	gchar *text = NULL;
-	gsize len = 0;
-	gchar *p, *end;
-	guint seen = 0;
+	FsHit hit;
+	gint64 ticks;
 
-	if (!g_file_get_contents (path, &text, &len, NULL))
+	if (len == 0 || line[0] == '#')
 		return;
 
-	if (stats != NULL) {
+	line[len] = '\0';
+	if (fs_eventlog_parse_line (line, &hit, &ticks)) {
+		if (stats != NULL)
+			stats->lines++;
+		func (&hit, ticks, data);
+	} else if (stats != NULL) {
+		stats->bad_lines++;
+	}
+}
+
+/* Every event line of one file from byte `from' on. */
+static void
+read_file (const gchar *path, gint64 from, LineFunc func, gpointer data,
+           FsEventLogStats *stats)
+{
+	FILE *f = g_fopen (path, "rb");
+	gchar *chunk;
+	GString *carry;
+	gboolean too_long = FALSE;
+	gsize n;
+
+	if (f == NULL)
+		return;
+	if (from > 0 && seek64 (f, from, SEEK_SET) != 0) {
+		fclose (f);
+		return;
+	}
+
+	if (stats != NULL)
 		stats->files++;
-		stats->bytes += len;
-	}
 
-	p = text;
-	end = text + len;
-	while (p < end) {
-		gchar *nl = memchr (p, '\n', (gsize) (end - p));
-		gchar *stop = nl != NULL ? nl : end;
-		FsHit hit;
-		gint64 ticks;
+	chunk = g_malloc (READ_CHUNK + 1);
+	carry = g_string_new (NULL);
 
-		if (stop > p && *p != '#') {
-			if (seen++ >= skip) {
-				*stop = '\0';
-				if (fs_eventlog_parse_line (p, &hit, &ticks)) {
-					if (stats != NULL)
-						stats->lines++;
-					func (&hit, ticks, data);
-				} else if (stats != NULL) {
-					stats->bad_lines++;
+	while ((n = fread (chunk, 1, READ_CHUNK, f)) > 0) {
+		gchar *p = chunk, *end = chunk + n;
+
+		if (stats != NULL)
+			stats->bytes += n;
+
+		while (p < end) {
+			gchar *nl = memchr (p, '\n', (gsize) (end - p));
+			gsize len = (gsize) ((nl != NULL ? nl : end) - p);
+
+			/* A line that goes on in the next chunk. */
+			if (nl == NULL) {
+				if (!too_long &&
+				    carry->len + len <= LINE_LONGEST)
+					g_string_append_len (carry, p,
+					                     (gssize) len);
+				else {
+					too_long = TRUE;
+					g_string_truncate (carry, 0);
 				}
+				break;
 			}
+
+			if (too_long || carry->len + len > LINE_LONGEST) {
+				if (stats != NULL)
+					stats->bad_lines++;
+			} else if (carry->len > 0) {
+				g_string_append_len (carry, p, (gssize) len);
+				take_line (carry->str, carry->len, func, data,
+				           stats);
+			} else {
+				take_line (p, len, func, data, stats);
+			}
+			too_long = FALSE;
+			g_string_truncate (carry, 0);
+			p = nl + 1;
 		}
-		p = stop + 1;
 	}
 
-	g_free (text);
+	/* A last line with no newline: cut short, or being written. */
+	if (too_long) {
+		if (stats != NULL)
+			stats->bad_lines++;
+	} else if (carry->len > 0) {
+		take_line (carry->str, carry->len, func, data, stats);
+	}
+
+	g_string_free (carry, TRUE);
+	g_free (chunk);
+	fclose (f);
+}
+
+/* [ count_back ]
+ * Counts event lines back from the end of path until `need' are found,
+ * reading only those bytes.  Returns the offset of the first one
+ * counted (0 when the whole file was needed) and sets *found. */
+static gint64
+count_back (const gchar *path, guint need, guint *found)
+{
+	FILE *f = g_fopen (path, "rb");
+	gchar *buf;
+	gint64 pos, line_end;
+	gint next = -1;          /* the byte after the one being looked at */
+	gint64 result = 0;
+	gboolean whole = TRUE;
+
+	*found = 0;
+	if (f == NULL || need == 0) {
+		if (f != NULL)
+			fclose (f);
+		return 0;
+	}
+	if (seek64 (f, 0, SEEK_END) != 0 || (pos = tell64 (f)) < 0) {
+		fclose (f);
+		return 0;
+	}
+
+	buf = g_malloc (READ_CHUNK);
+	line_end = pos;
+	while (pos > 0 && whole) {
+		gsize len = (gsize) MIN ((gint64) READ_CHUNK, pos);
+
+		pos -= (gint64) len;
+		if (seek64 (f, pos, SEEK_SET) != 0 ||
+		    fread (buf, 1, len, f) != len) {
+			whole = FALSE;
+			break;
+		}
+
+		for (gsize i = len; i-- > 0;) {
+			gint64 at = pos + (gint64) i;
+
+			if (buf[i] == '\n') {
+				/* The line after it: [at + 1, line_end). */
+				if (line_end > at + 1 && next != '#' &&
+				    ++*found == need) {
+					result = at + 1;
+					whole = FALSE;
+					break;
+				}
+				line_end = at;
+			}
+			next = (guchar) buf[i];
+		}
+	}
+
+	/* The file's first line. */
+	if (whole && line_end > 0 && next != '#')
+		++*found;
+
+	g_free (buf);
+	fclose (f);
+	return result;
 }
 
 typedef struct
@@ -749,10 +1082,10 @@ guint
 fs_eventlog_load_recent (const gchar *dir, FsEventStore *store,
                          guint max_events, FsEventLogStats *stats)
 {
-	GPtrArray *names;
+	GPtrArray *list;
 	guint need = max_events;
 	gint start = -1;
-	guint skip = 0;
+	gint64 start_at = 0;
 	LoadCtx ctx = { store, stats, 0 };
 
 	if (stats != NULL)
@@ -760,41 +1093,33 @@ fs_eventlog_load_recent (const gchar *dir, FsEventStore *store,
 	if (dir == NULL || store == NULL || max_events == 0)
 		return 0;
 
-	names = list_logs (dir);
+	list = list_logs (dir);
 
-	/* Newest first, counting, until the files hold enough. */
-	for (gint i = (gint) names->len - 1; i >= 0 && need > 0; i--) {
-		gchar *path = g_build_filename (dir, names->pdata[i], NULL);
-		gchar *text = NULL;
-		gsize len = 0;
+	/* Newest first, counting back from each file's end, until the
+	 * files hold enough: only the bytes to be loaded are read. */
+	for (gint i = (gint) list->len - 1; i >= 0 && need > 0; i--) {
+		gchar *path = g_build_filename (dir, LOG_AT (list, i)->name,
+		                                NULL);
+		guint found = 0;
 
-		if (g_file_get_contents (path, &text, &len, NULL)) {
-			guint n = count_lines (text, len);
-
-			start = i;
-			if (n >= need) {
-				skip = n - need;
-				need = 0;
-			} else {
-				skip = 0;
-				need -= n;
-			}
-		}
-		g_free (text);
+		start_at = count_back (path, need, &found);
+		start = i;
+		need -= MIN (found, need);
 		g_free (path);
 	}
 
 	/* Then oldest first, into the store. */
-	for (guint i = start >= 0 ? (guint) start : names->len;
-	     i < names->len; i++) {
-		gchar *path = g_build_filename (dir, names->pdata[i], NULL);
+	for (guint i = start >= 0 ? (guint) start : list->len;
+	     i < list->len; i++) {
+		gchar *path = g_build_filename (dir, LOG_AT (list, i)->name,
+		                                NULL);
 
-		read_file (path, (gint) i == start ? skip : 0, load_one, &ctx,
-		           stats);
+		read_file (path, (gint) i == start ? start_at : 0, load_one,
+		           &ctx, stats);
 		g_free (path);
 	}
 
-	g_ptr_array_unref (names);
+	g_ptr_array_unref (list);
 	if (stats != NULL)
 		stats->loaded = ctx.loaded;
 
@@ -827,7 +1152,7 @@ fs_eventlog_foreach (const gchar *dir, gint64 since_us, gint64 until_us,
                      FsEventLogFunc func, gpointer user_data,
                      FsEventLogStats *stats)
 {
-	GPtrArray *names;
+	GPtrArray *list;
 	ForeachCtx ctx = { since_us * 10, until_us * 10, func, user_data };
 	gint64 since_day = since_us > 0 ? (since_us * 10) / TICKS_PER_DAY : 0;
 
@@ -836,19 +1161,23 @@ fs_eventlog_foreach (const gchar *dir, gint64 since_us, gint64 until_us,
 	if (dir == NULL || func == NULL)
 		return;
 
-	names = list_logs (dir);
-	for (guint i = 0; i < names->len; i++) {
+	list = list_logs (dir);
+	for (guint i = 0; i < list->len; i++) {
+		LogFile *f = LOG_AT (list, i);
 		gchar *path;
 
-		/* A file holds events of its day or earlier, never later,
-		 * so a day before the start has nothing in range. */
-		if (since_us > 0 && name_day (names->pdata[i]) < since_day)
+		/* A file holds events of its day or earlier, so a day
+		 * before the start has nothing in range.  (A stamp that was
+		 * in the future when it arrived is filed under the day it
+		 * arrived, and a range starting after that day misses it;
+		 * the stamp is wrong anyway.) */
+		if (since_us > 0 && f->day < since_day)
 			continue;
 
-		path = g_build_filename (dir, names->pdata[i], NULL);
+		path = g_build_filename (dir, f->name, NULL);
 		read_file (path, 0, foreach_one, &ctx, stats);
 		g_free (path);
 	}
 
-	g_ptr_array_unref (names);
+	g_ptr_array_unref (list);
 }

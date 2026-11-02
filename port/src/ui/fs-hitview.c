@@ -63,6 +63,11 @@ static FsEventLog   *elog = NULL;
 static guint         elog_flush_id = 0;
 static guint         history_loaded = 0;
 static gchar        *history_problem = NULL;
+/* The history warning on the strip, while it is there, and what the
+ * strip said before it (a reason monitoring cannot run): put back when
+ * writing works again, unless something else took the strip since. */
+static gchar        *history_warning = NULL;
+static gchar        *history_warning_was = NULL;
 
 /* The filter bar: the search entry plus the row of boxes under it.
  * The matching lives in core (FsEventQuery), decided once per distinct
@@ -827,6 +832,55 @@ fs_hitview_history_loaded (void)
 	return history_loaded;
 }
 
+static void set_monitor_warning (const gchar *reason);
+static gboolean monitor_warning_is (const gchar *text);
+static const gchar *monitor_warning_text (void);
+
+/* [ history_warning_sync ]
+ * The strip says so as soon as history stops being saved, at the page
+ * build or in the middle of a session (a full disk), and the warning
+ * goes when writing works again.  The flush tick used to drop the
+ * error, so history could stop for the rest of the session with
+ * nothing on the page. */
+static void
+history_warning_sync (void)
+{
+	const gchar *problem = fs_hitview_history_problem ();
+
+	if (problem != NULL) {
+		guint64 lost = elog != NULL ? fs_eventlog_dropped (elog) : 0;
+		gchar *msg = lost > 0
+			? g_strdup_printf (
+				_("Event history is not being saved: %s.  Trying "
+				  "again; %" G_GUINT64_FORMAT " events not "
+				  "saved so far."), problem, lost)
+			: g_strdup_printf (
+				_("Event history is not being saved: %s"),
+				problem);
+
+		if (g_strcmp0 (msg, history_warning) != 0) {
+			if (history_warning == NULL) {
+				g_free (history_warning_was);
+				history_warning_was =
+					g_strdup (monitor_warning_text ());
+			}
+			set_monitor_warning (msg);
+			g_free (history_warning);
+			history_warning = msg;
+		} else {
+			g_free (msg);
+		}
+		return;
+	}
+
+	if (history_warning != NULL) {
+		if (monitor_warning_is (history_warning))
+			set_monitor_warning (history_warning_was);
+		g_clear_pointer (&history_warning, g_free);
+		g_clear_pointer (&history_warning_was, g_free);
+	}
+}
+
 static gboolean
 on_history_flush (gpointer data)
 {
@@ -834,6 +888,7 @@ on_history_flush (gpointer data)
 
 	if (elog != NULL)
 		fs_eventlog_flush (elog, NULL);
+	history_warning_sync ();
 	return G_SOURCE_CONTINUE;
 }
 
@@ -1020,6 +1075,22 @@ set_monitor_warning (const gchar *reason)
 
 	gtk_label_set_text (GTK_LABEL (monitor_warning_label), reason);
 	gtk_widget_show (monitor_warning);
+}
+
+/* What the strip says, or NULL when it is not up. */
+static const gchar *
+monitor_warning_text (void)
+{
+	if (monitor_warning == NULL || !gtk_widget_get_visible (monitor_warning))
+		return NULL;
+	return gtk_label_get_text (GTK_LABEL (monitor_warning_label));
+}
+
+/* TRUE when the strip is up and says text. */
+static gboolean
+monitor_warning_is (const gchar *text)
+{
+	return text != NULL && g_strcmp0 (monitor_warning_text (), text) == 0;
 }
 
 void
@@ -1748,7 +1819,12 @@ fs_hitview_page (void)
 	gtk_widget_set_name (filter_entry, "events-filter-text");
 	gtk_entry_set_placeholder_text (
 		GTK_ENTRY (filter_entry),
-		_("Search events (host, port, service, rule)"));
+		_("Search events (time, host, port, service)"));
+	gtk_widget_set_tooltip_text (
+		filter_entry,
+		_("Shows the rows where a column contains this text, in any "
+		  "case: the time as shown, direction, devices, port, "
+		  "addresses, length, ToS, protocol or service."));
 	gtk_widget_set_size_request (filter_entry, 260, -1);
 	g_signal_connect (filter_entry, "search-changed",
 	                  G_CALLBACK (on_search_changed), NULL);
@@ -1994,14 +2070,9 @@ fs_hitview_page (void)
 	}
 
 	/* History that could not be opened is said, not swallowed. */
-	if (fs_hitview_history_problem () != NULL) {
-		gchar *msg = g_strdup_printf (
-			_("Event history is not being saved: %s"),
-			fs_hitview_history_problem ());
-
-		set_monitor_warning (msg);
-		g_free (msg);
-	}
+	g_clear_pointer (&history_warning, g_free);
+	g_clear_pointer (&history_warning_was, g_free);
+	history_warning_sync ();
 
 	/* Start monitoring straight away: the whole point of the page is
 	 * watching events, and the original did this too.  A failure here

@@ -58,6 +58,7 @@
 #include <string.h>
 
 #include "core/fs-prefs.h"
+#include "core/fs-eventlog.h"
 #include "core/fs-backend.h"
 #include "core/fs-i18n.h"
 #include "core/fs-rules.h"
@@ -1261,6 +1262,9 @@ static gboolean events_days_live_on = FALSE;
 static gboolean events_days_live_off = TRUE;
 static gboolean events_mb_live_off = TRUE;
 static gdouble events_max_shown = 0;
+static gboolean events_history_on_at_first = TRUE;
+static gboolean events_days_live_at_first = TRUE;
+static gdouble events_days_top = 0, events_mb_top = 0;
 
 static gchar *
 label_of (GtkWidget *win, const gchar *name)
@@ -1300,11 +1304,27 @@ events_step (gpointer data)
 	click (win, "events-history-clear");      /* asks; the tick says OK */
 	events_usage_after = label_of (win, "events-history-usage");
 
+	/* The rows' tops are the limits the app goes by. */
+	w = find_named (win, FS_PREFS_EVENTS_HISTORY_DAYS);
+	if (w != NULL && GTK_IS_SPIN_BUTTON (w))
+		gtk_spin_button_get_range (GTK_SPIN_BUTTON (w), NULL,
+		                           &events_days_top);
+	w = find_named (win, FS_PREFS_EVENTS_HISTORY_MB);
+	if (w != NULL && GTK_IS_SPIN_BUTTON (w))
+		gtk_spin_button_get_range (GTK_SPIN_BUTTON (w), NULL,
+		                           &events_mb_top);
+
+	/* Off at first; on, off, and back where it started. */
+	w = find_named (win, FS_PREFS_EVENTS_HISTORY);
+	events_history_on_at_first = w == NULL || !GTK_IS_SWITCH (w) ||
+	                             gtk_switch_get_active (GTK_SWITCH (w));
+	events_days_live_at_first = sensitive (win,
+	                                       FS_PREFS_EVENTS_HISTORY_DAYS);
+	set_switch (win, FS_PREFS_EVENTS_HISTORY, TRUE);
 	events_days_live_on = sensitive (win, FS_PREFS_EVENTS_HISTORY_DAYS);
 	set_switch (win, FS_PREFS_EVENTS_HISTORY, FALSE);
 	events_days_live_off = sensitive (win, FS_PREFS_EVENTS_HISTORY_DAYS);
 	events_mb_live_off = sensitive (win, FS_PREFS_EVENTS_HISTORY_MB);
-	set_switch (win, FS_PREFS_EVENTS_HISTORY, TRUE);
 
 	set_spin (win, FS_PREFS_EVENTS_MAX, 250000);
 	set_spin (win, FS_PREFS_EVENTS_HISTORY_DAYS, 7);
@@ -1739,9 +1759,17 @@ main (int argc, char **argv)
 			       != NULL,
 			       "...and the row says so at once (%s)",
 			       events_usage_after);
+			CHECK (!events_history_on_at_first &&
+			       !events_days_live_at_first,
+			       "Keep event history is off until switched on");
 			CHECK (events_days_live_on && !events_days_live_off &&
 			       !events_mb_live_off,
 			       "days and size are live only while history is on");
+			CHECK (events_days_top == FS_EVENTLOG_MAX_DAYS &&
+			       events_mb_top == FS_EVENTLOG_MAX_MB,
+			       "the days and size rows go up to the limits the "
+			       "app keeps to (%.0f days, %.0f MB)",
+			       events_days_top, events_mb_top);
 			keys = disk_table_keys ();
 			CHECK (strstr (keys, "client/events/max_events=250000;")
 			       != NULL &&

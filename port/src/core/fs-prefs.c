@@ -345,7 +345,9 @@ static const FsPrefSpec prefs_table[] = {
 	SPEC_BOOL (FS_PREFS_SKIP_REDUNDANT,          FALSE, FALSE),
 	SPEC_BOOL (FS_PREFS_SKIP_NOT_FOR_FIREWALL,   TRUE,  FALSE),
 	SPEC_STRING (FS_PREFS_EVENTS_MAX,            "100000", FALSE),
-	SPEC_BOOL (FS_PREFS_EVENTS_HISTORY,          TRUE,  FALSE),
+	/* Off until chosen: a month of addresses, ports and devices on
+	 * disk is the user's call, not an upgrade's. */
+	SPEC_BOOL (FS_PREFS_EVENTS_HISTORY,          FALSE, FALSE),
 	SPEC_STRING (FS_PREFS_EVENTS_HISTORY_DAYS,   "30",  FALSE),
 	SPEC_STRING (FS_PREFS_EVENTS_HISTORY_MB,     "200", FALSE),
 

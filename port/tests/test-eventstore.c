@@ -11,6 +11,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef G_OS_WIN32
+#include <sys/utime.h>
+#else
+#include <signal.h>
+#include <sys/resource.h>
+#include <utime.h>
+#endif
 
 #include "core/fs-eventstore.h"
 #include "core/fs-eventlog.h"
@@ -464,7 +471,47 @@ test_queries (void)
 	n = count_matches (s, &f);
 	CHECK (n == 400, "text, case-insensitive, in the service (%u)", n);
 	f.text = "spamhaus";
-	CHECK (count_matches (s, &f) == 40, "text reaches the rule field");
+	n = count_matches (s, &f);
+	CHECK (n == 0, "text leaves out the rule, which no column shows: a "
+	       "row it matched had no cell with the text (%u)", n);
+	f.text = "10:01:";
+	n = count_matches (s, &f);
+	CHECK (n == 600, "text finds the time as the list shows it: "
+	       "10:01:00 to 10:01:59.9 (%u)", n);
+	f.text = "t10:03";
+	n = count_matches (s, &f);
+	CHECK (n == 200, "the time, in any case (%u)", n);
+	f.text = "2026-11-02";
+	n = count_matches (s, &f);
+	CHECK (n == 2002, "a date finds both stamp forms (%u)", n);
+	f.text = "T10:00:05.5000000z";
+	n = count_matches (s, &f);
+	CHECK (n == 1, "a whole stamp, fraction and all, finds its one event "
+	       "(%u)", n);
+	f.text = "12:00:01Z";
+	n = count_matches (s, &f);
+	CHECK (n == 1, "a stamp without a fraction too (%u)", n);
+
+	/* The command line's --grep reads the same columns. */
+	{
+		FsEventFilter g = { 0 };
+		FsEventQuery *q;
+		gboolean by_rule, by_time;
+		Ev e;
+
+		ev_make (&e, 50);           /* has the Spamhaus rule */
+		g.text = "spamhaus";
+		q = fs_eventquery_new (&g, NULL);
+		by_rule = fs_eventquery_match_hit (q, &e.hit, 0);
+		fs_eventquery_free (q);
+		g.text = "10:00:05";
+		q = fs_eventquery_new (&g, NULL);
+		by_time = fs_eventquery_match_hit (q, &e.hit, 0);
+		fs_eventquery_free (q);
+		CHECK (!by_rule && by_time,
+		       "--grep finds the time and not the rule, as the list "
+		       "does");
+	}
 	f.text = "203.0.113.17";
 	n = count_matches (s, &f);
 	CHECK (n == 110, "text is a substring test: .17 and .170-.179 (%u)", n);
@@ -590,29 +637,28 @@ test_query_cache_reuse (void)
 	q = fs_eventquery_new (&f, NULL);
 
 	ev_make (&e, 1);
-	e.hit.rule = "needle rule";
+	e.hit.service = "needle service";
 	seq = fs_eventstore_append (s, &e.hit, 0);
 	CHECK (fs_eventquery_match (q, s, seq), "the needle is found");
-	old_id = fs_eventstore_field_id (s, seq, FS_EV_RULE);
+	old_id = fs_eventstore_field_id (s, seq, FS_EV_SERVICE);
 
 	/* Push it out; its strings are freed. */
 	for (guint n = 2; n < 1100; n++) {
 		ev_make (&e, n);
-		e.hit.rule = NULL;
 		fs_eventstore_append (s, &e.hit, 0);
 	}
 
 	/* New strings until one of them is given the freed id. */
 	seq = 0;
 	for (guint n = 0; n < 5000 && seq == 0; n++) {
-		gchar rule[32];
+		gchar service[32];
 		guint64 got;
 
 		ev_make (&e, 10000 + n);
-		g_snprintf (rule, sizeof rule, "other rule %u", n);
-		e.hit.rule = rule;
+		g_snprintf (service, sizeof service, "other service %u", n);
+		e.hit.service = service;
 		got = fs_eventstore_append (s, &e.hit, 0);
-		if (fs_eventstore_field_id (s, got, FS_EV_RULE) == old_id)
+		if (fs_eventstore_field_id (s, got, FS_EV_SERVICE) == old_id)
 			seq = got;
 	}
 	CHECK (seq != 0, "the freed id was given to a new string");
@@ -669,6 +715,41 @@ test_csv (const gchar *tmp)
 #endif
 	g_free (text);
 	g_free (path);
+
+	/* A leading minus is a plain number or a formula.  "-1+1" and the
+	 * DDE payload start with a minus and a digit too, and a
+	 * spreadsheet runs both. */
+	{
+		static const struct {
+			const gchar *in;
+			const gchar *out;
+		} cases[] = {
+			{ "-1+1",                    "\"'-1+1\"" },
+			{ "-2+3+cmd|' /C calc'!A0",  "\"'-2+3+cmd|' /C calc'!A0\"" },
+			{ "-5",                      "-5" },
+			{ "-1.25",                   "-1.25" },
+			{ "-1.",                     "\"'-1.\"" },
+			{ "-",                       "-" },
+			{ "=1+1",                    "\"'=1+1\"" },
+			{ "@SUM(1)",                 "\"'@SUM(1)\"" },
+		};
+
+		for (guint i = 0; i < G_N_ELEMENTS (cases); i++) {
+			GString *row = g_string_new (NULL);
+			FsHit c = { 0 };
+			gchar *want;
+
+			c.time = "t";
+			c.service = (gchar *) cases[i].in;
+			fs_event_csv_row (row, &c, FALSE);
+			want = g_strdup_printf (",%s,allowed,", cases[i].out);
+			CHECK (strstr (row->str, want) != NULL,
+			       "CSV: %s is written as %s (%s)", cases[i].in,
+			       cases[i].out, row->str);
+			g_free (want);
+			g_string_free (row, TRUE);
+		}
+	}
 	fs_eventstore_free (s);
 }
 
@@ -1072,6 +1153,490 @@ test_log_foreach (const gchar *tmp)
 	g_free (dir);
 }
 
+/* ------------------------------------------------- history at volume */
+
+/* Every file in dir that looks like history, whatever is_log_name
+ * thinks: what is really on disk. */
+static guint
+disk_logs (const gchar *dir, guint *max_part)
+{
+	GDir *d = g_dir_open (dir, 0, NULL);
+	const gchar *name;
+	guint n = 0;
+
+	if (max_part != NULL)
+		*max_part = 0;
+	while (d != NULL && (name = g_dir_read_name (d)) != NULL) {
+		if (!g_str_has_prefix (name, "events-") ||
+		    !g_str_has_suffix (name, ".log"))
+			continue;
+		n++;
+		if (max_part != NULL && strlen (name) > 22)
+			*max_part = MAX (*max_part, (guint) g_ascii_strtoull (
+				name + 18, NULL, 10));
+	}
+	if (d != NULL)
+		g_dir_close (d);
+	return n;
+}
+
+/* [ test_log_many_parts ]
+ * A busy day under the smallest cap passes part 999.  The part after
+ * it is -1000, which a name check of fixed length used to hide: the
+ * limits, the usage, the load and Delete history all ignored it, and
+ * the folder grew to 21 times its cap. */
+static void
+test_log_many_parts (const gchar *tmp)
+{
+	gchar *dir = g_build_filename (tmp, "manyparts", NULL);
+	gint64 now_ticks = g_get_real_time () * 10;
+	const guint n = 460000;
+	FsEventLog *log = fs_eventlog_open (dir, 30, 1024 * 1024, NULL);
+	FsEventStore *s = fs_eventstore_new (FS_EVENTSTORE_MAX_CAPACITY);
+	guint64 bytes = 0;
+	guint files = 0, on_disk, max_part = 0;
+	FsHit *last;
+	Ev e;
+
+	for (guint i = 0; i < n; i++) {
+		ev_make (&e, i);
+		fs_eventlog_append (log, &e.hit, now_ticks + i);
+	}
+	fs_eventlog_close (log);
+
+	on_disk = disk_logs (dir, &max_part);
+	fs_eventlog_usage (dir, &bytes, &files);
+	CHECK (max_part >= 1000, "a day's parts go past 999 (the last is %u)",
+	       max_part);
+	CHECK (files == on_disk, "usage sees every history file on disk (%u "
+	       "of %u)", files, on_disk);
+	CHECK (bytes <= 1024 * 1024 + 1024 * 1024 / 20 + 70000,
+	       "the folder stays near its 1 MB cap past part 999 (%"
+	       G_GUINT64_FORMAT " bytes in %u files)", bytes, on_disk);
+
+	fs_eventlog_load_recent (dir, s, FS_EVENTSTORE_MAX_CAPACITY, NULL);
+	last = fs_eventstore_get_hit (s, fs_eventstore_last_seq (s));
+	ev_make (&e, n - 1);
+	CHECK (last != NULL && hits_equal (last, &e.hit),
+	       "the start reads back the newest event, in part %u", max_part);
+	fs_hit_free (last);
+
+	CHECK (fs_eventlog_clear_dir (dir, NULL) == on_disk &&
+	       disk_logs (dir, NULL) == 0,
+	       "Delete history deletes every part, -1000 and after included");
+
+	fs_eventstore_free (s);
+	g_free (dir);
+}
+
+/* TRUE when the store holds an event equal to hit. */
+static gboolean
+holds (FsEventStore *s, const FsHit *hit)
+{
+	gboolean found = FALSE;
+
+	for (guint64 q = fs_eventstore_first_seq (s);
+	     q != 0 && q <= fs_eventstore_last_seq (s) && !found; q++) {
+		FsHit *h = fs_eventstore_get_hit (s, q);
+
+		found = h != NULL && hits_equal (h, hit);
+		fs_hit_free (h);
+	}
+	return found;
+}
+
+/* Ticks non-decreasing over the whole store: what a load in time order
+ * gives. */
+static gboolean
+store_in_time_order (FsEventStore *s)
+{
+	for (guint64 q = fs_eventstore_first_seq (s);
+	     q < fs_eventstore_last_seq (s); q++)
+		if (fs_eventstore_ticks (s, q) > fs_eventstore_ticks (s, q + 1))
+			return FALSE;
+	return TRUE;
+}
+
+/* [ test_log_restart_parts ]
+ * The size cap deletes a day's first parts; a restart then has to go
+ * on after the highest part, not fill the lowest free number.  It
+ * used to write the newest events to -000, which sorted as the oldest:
+ * the start left them out, and the next prune deleted them first. */
+static void
+test_log_restart_parts (const gchar *tmp)
+{
+	gchar *dir = g_build_filename (tmp, "restart", NULL);
+	gint64 now_ticks = g_get_real_time () * 10;
+	FsEventStore *s = fs_eventstore_new (1000);
+	FsEventStore *all = fs_eventstore_new (FS_EVENTSTORE_MAX_CAPACITY);
+	FsEventLog *log;
+	FsHit *h;
+	Ev e;
+
+	/* Session 1: more than the cap, so the day's first parts go. */
+	log = fs_eventlog_open (dir, 30, 1024 * 1024, NULL);
+	for (guint i = 0; i < 20000; i++) {
+		ev_make (&e, i);
+		fs_eventlog_append (log, &e.hit, now_ticks - 200000000 + i);
+	}
+	fs_eventlog_close (log);
+
+	/* Session 2: 50 events, the newest of all. */
+	log = fs_eventlog_open (dir, 30, 1024 * 1024, NULL);
+	for (guint i = 0; i < 50; i++) {
+		ev_make (&e, 100000 + i);
+		fs_eventlog_append (log, &e.hit, now_ticks + i);
+	}
+	fs_eventlog_close (log);
+
+	fs_eventlog_load_recent (dir, s, 1000, NULL);
+	h = fs_eventstore_get_hit (s, fs_eventstore_last_seq (s));
+	ev_make (&e, 100049);
+	CHECK (h != NULL && hits_equal (h, &e.hit) && store_in_time_order (s),
+	       "after a restart, the start shows the newest events last, in "
+	       "time order");
+	fs_hit_free (h);
+
+	/* Session 3: later still, past the cap again. */
+	log = fs_eventlog_open (dir, 30, 1024 * 1024, NULL);
+	for (guint i = 0; i < 6000; i++) {
+		ev_make (&e, 200000 + i);
+		fs_eventlog_append (log, &e.hit, now_ticks + 1000 + i);
+	}
+	fs_eventlog_close (log);
+
+	/* Going on in a part half full fills it to the part size, not
+	 * past it by a whole write queue. */
+	{
+		GDir *d = g_dir_open (dir, 0, NULL);
+		const gchar *name;
+		guint64 biggest = 0;
+
+		while (d != NULL && (name = g_dir_read_name (d)) != NULL) {
+			gchar *path = g_build_filename (dir, name, NULL);
+			GStatBuf sb;
+
+			if (g_stat (path, &sb) == 0)
+				biggest = MAX (biggest, (guint64) sb.st_size);
+			g_free (path);
+		}
+		if (d != NULL)
+			g_dir_close (d);
+		CHECK (biggest <= 1024 * 1024 / 20 + 200,
+		       "no part grows past its size, a session going on in one "
+		       "included (the biggest %" G_GUINT64_FORMAT " bytes)",
+		       biggest);
+	}
+
+	fs_eventlog_load_recent (dir, all, FS_EVENTSTORE_MAX_CAPACITY, NULL);
+	h = fs_eventstore_get_hit (all, fs_eventstore_last_seq (all));
+	ev_make (&e, 205999);
+	CHECK (store_in_time_order (all) && h != NULL &&
+	       hits_equal (h, &e.hit),
+	       "what the cap leaves is the newest, and it reads back in time "
+	       "order (%u events)", fs_eventstore_length (all));
+	fs_hit_free (h);
+
+	fs_eventstore_free (s);
+	fs_eventstore_free (all);
+	g_free (dir);
+}
+
+static void
+set_mtime (const gchar *path, gint64 when)
+{
+	struct utimbuf t;
+
+	t.actime = (time_t) when;
+	t.modtime = (time_t) when;
+	g_utime (path, &t);
+}
+
+static gchar *
+day_name (gint64 ticks, guint part)
+{
+	gchar day[16];
+
+	fs_event_time_day (ticks, day);
+	return g_strdup_printf ("events-%s-%03u.log", day, part);
+}
+
+/* A file of about kb kilobytes of comment lines. */
+static void
+write_filler (const gchar *path, guint kb)
+{
+	GString *text = g_string_new ("# StockFW event history 1\n");
+
+	while (text->len < (gsize) kb * 1024)
+		g_string_append (text, "# filler line of a hand-made history file\n");
+	g_file_set_contents (path, text->str, (gssize) text->len, NULL);
+	g_string_free (text, TRUE);
+}
+
+/* [ test_log_future_stamp ]
+ * A clock that jumps ahead and comes back.  One event stamped a year
+ * ahead used to move every later event of the session into that day's
+ * file, which then sorted as the newest: the size cap deleted the real
+ * recent files first, and the age limit could not touch it for a year. */
+static void
+test_log_future_stamp (const gchar *tmp)
+{
+	gchar *dir = g_build_filename (tmp, "clock", NULL);
+	gchar *legacy = g_build_filename (tmp, "clock-legacy", NULL);
+	gint64 now_us = g_get_real_time ();
+	gint64 now_ticks = now_us * 10;
+	gint64 year = 365 * 864000000000LL;
+	gint64 now_s = now_us / G_USEC_PER_SEC;
+	FsEventStore *s = fs_eventstore_new (FS_EVENTSTORE_MAX_CAPACITY);
+	FsEventLog *log;
+	gboolean future_named = FALSE, found = FALSE;
+	gchar today[16];
+	GDir *d;
+	const gchar *name;
+	Ev e;
+
+	log = fs_eventlog_open (dir, 30, 1024 * 1024, NULL);
+	for (guint i = 0; i < 100; i++) {
+		ev_make (&e, i);
+		fs_eventlog_append (log, &e.hit, now_ticks + i);
+	}
+	ev_make (&e, 9999);
+	fs_eventlog_append (log, &e.hit, now_ticks + year);
+	for (guint i = 0; i < 6000; i++) {
+		ev_make (&e, 20000 + i);
+		fs_eventlog_append (log, &e.hit, now_ticks + 1000 + i);
+	}
+	fs_eventlog_close (log);
+
+	fs_event_time_day (now_ticks, today);
+	d = g_dir_open (dir, 0, NULL);
+	while (d != NULL && (name = g_dir_read_name (d)) != NULL)
+		if (g_str_has_prefix (name, "events-") &&
+		    strncmp (name + 7, today, 10) > 0)
+			future_named = TRUE;
+	if (d != NULL)
+		g_dir_close (d);
+	CHECK (!future_named, "an event stamped a year ahead does not start a "
+	       "file for that day; it is filed under today");
+
+	fs_eventlog_load_recent (dir, s, FS_EVENTSTORE_MAX_CAPACITY, NULL);
+	ev_make (&e, 9999);
+	found = holds (s, &e.hit);
+	CHECK (found && fs_eventstore_length (s) == 6101,
+	       "...and kept there with its own stamp (%u events back)",
+	       fs_eventstore_length (s));
+
+	/* Files from before the fix: one named a year ahead, written
+	 * between two of today's.  The cap goes by when each was last
+	 * written, so today's newest file stays. */
+	{
+		gchar *f0 = day_name (now_ticks, 0);
+		gchar *ff = day_name (now_ticks + year, 0);
+		gchar *f1 = day_name (now_ticks, 1);
+		gchar *p0 = g_build_filename (legacy, f0, NULL);
+		gchar *pf = g_build_filename (legacy, ff, NULL);
+		gchar *p1 = g_build_filename (legacy, f1, NULL);
+		guint removed;
+
+		g_mkdir_with_parents (legacy, 0700);
+		write_filler (p0, 400);
+		write_filler (pf, 400);
+		write_filler (p1, 400);
+		set_mtime (p0, now_s - 300);
+		set_mtime (pf, now_s - 200);
+		set_mtime (p1, now_s - 100);
+
+		removed = fs_eventlog_prune_dir (legacy, 30, 500 * 1024, now_us,
+		                                 NULL);
+		CHECK (removed == 2 && !g_file_test (p0, G_FILE_TEST_EXISTS) &&
+		       !g_file_test (pf, G_FILE_TEST_EXISTS) &&
+		       g_file_test (p1, G_FILE_TEST_EXISTS),
+		       "the size cap deletes a file named for a later day by "
+		       "when it was written: today's newest file stays (%u gone)",
+		       removed);
+
+		/* Written 40 days ago, named a year ahead: past the age
+		 * limit. */
+		write_filler (pf, 1);
+		set_mtime (pf, now_s - 40 * 86400);
+		removed = fs_eventlog_prune_dir (legacy, 30, 0, now_us, NULL);
+		CHECK (removed == 1 && !g_file_test (pf, G_FILE_TEST_EXISTS),
+		       "a file named for a later day ages from when it was "
+		       "written");
+
+		g_free (p0);
+		g_free (pf);
+		g_free (p1);
+		g_free (f0);
+		g_free (ff);
+		g_free (f1);
+	}
+
+	fs_eventstore_free (s);
+	g_free (legacy);
+	g_free (dir);
+}
+
+#ifndef G_OS_WIN32
+/* [ test_log_write_failure ]
+ * A full disk (RLIMIT_FSIZE makes write() fail as ENOSPC would): the
+ * problem is said and the lost events counted, and once there is room
+ * again the history goes on, after the back-off or at once after new
+ * limits are set (Preferences > Save).  It used to stop for the rest of
+ * the session.  Nothing is printed while the limit is down. */
+static void
+test_log_write_failure (const gchar *tmp)
+{
+	gchar *dir = g_build_filename (tmp, "full", NULL);
+	gint64 now_ticks = g_get_real_time () * 10;
+	FsEventLog *log = fs_eventlog_open (dir, 30, 0, NULL);
+	FsEventStore *s = fs_eventstore_new (FS_EVENTSTORE_MAX_CAPACITY);
+	struct rlimit old, low;
+	gchar *problem;
+	guint64 dropped, dropped_all;
+	gboolean early, later, first_ok, again_ok, after_limits;
+	FsHit *h;
+	Ev e;
+
+	fflush (stdout);
+	signal (SIGXFSZ, SIG_IGN);
+	getrlimit (RLIMIT_FSIZE, &old);
+	low = old;
+	low.rlim_cur = 20000;
+	setrlimit (RLIMIT_FSIZE, &low);
+
+	for (guint i = 0; i < 2000; i++) {
+		ev_make (&e, i);
+		fs_eventlog_append (log, &e.hit, now_ticks + i);
+		if (i % 100 == 0)
+			fs_eventlog_flush (log, NULL);
+	}
+	fs_eventlog_flush (log, NULL);
+	problem = g_strdup (fs_eventlog_problem (log));
+	dropped = fs_eventlog_dropped (log);
+
+	/* Room again. */
+	setrlimit (RLIMIT_FSIZE, &old);
+	for (guint i = 0; i < 10; i++) {
+		ev_make (&e, 5000 + i);
+		fs_eventlog_append (log, &e.hit, now_ticks + 5000 + i);
+	}
+	early = fs_eventlog_flush (log, NULL);
+	g_usleep (1200000);
+	later = fs_eventlog_flush (log, NULL);
+	first_ok = later && fs_eventlog_problem (log) == NULL;
+
+	/* Full again, then Preferences > Save. */
+	setrlimit (RLIMIT_FSIZE, &low);
+	for (guint i = 0; i < 1000; i++) {
+		ev_make (&e, 6000 + i);
+		fs_eventlog_append (log, &e.hit, now_ticks + 6000 + i);
+	}
+	fs_eventlog_flush (log, NULL);
+	again_ok = fs_eventlog_problem (log) == NULL;
+	setrlimit (RLIMIT_FSIZE, &old);
+	fs_eventlog_set_limits (log, 30, 0);
+	for (guint i = 0; i < 10; i++) {
+		ev_make (&e, 8000 + i);
+		fs_eventlog_append (log, &e.hit, now_ticks + 8000 + i);
+	}
+	after_limits = fs_eventlog_flush (log, NULL) &&
+	               fs_eventlog_problem (log) == NULL;
+	dropped_all = fs_eventlog_dropped (log);
+	fs_eventlog_close (log);
+	signal (SIGXFSZ, SIG_DFL);
+
+	CHECK (problem != NULL && dropped > 0,
+	       "a failed write is said (%s) and the events lost are counted "
+	       "(%" G_GUINT64_FORMAT ")", problem != NULL ? problem : "nothing",
+	       dropped);
+	CHECK (!early, "the next try waits out the back-off");
+	CHECK (first_ok, "after it, with room again, writing goes on and the "
+	       "problem is cleared");
+	CHECK (!again_ok && after_limits,
+	       "a second failure, then new limits (Preferences > Save): "
+	       "tried again at once, and it works");
+
+	fs_eventlog_load_recent (dir, s, FS_EVENTSTORE_MAX_CAPACITY, NULL);
+	h = fs_eventstore_get_hit (s, fs_eventstore_last_seq (s));
+	ev_make (&e, 8009);
+	CHECK (h != NULL && hits_equal (h, &e.hit),
+	       "the events after the failure are in the history");
+	CHECK (fs_eventstore_length (s) + dropped_all == 3020,
+	       "every event is either in the history or counted as lost "
+	       "(%u + %" G_GUINT64_FORMAT " of 3020): while failing, 64 KB "
+	       "wait for the next try", fs_eventstore_length (s), dropped_all);
+
+	fs_hit_free (h);
+	g_free (problem);
+	fs_eventstore_free (s);
+	g_free (dir);
+}
+#endif
+
+/* [ test_log_big_cap ]
+ * The largest cap the Preferences offer (10,000 MB): a part stops at
+ * 32 MB, and the start reads only the bytes of the events it loads.
+ * Parts were a twentieth of the cap, 500 MB here, and the start read
+ * the newest one whole, twice: 905 ms and 496 MB of memory to show
+ * 1,000 events. */
+static void
+test_log_big_cap (const gchar *tmp)
+{
+	gchar *dir = g_build_filename (tmp, "bigcap", NULL);
+	gint64 now_ticks = g_get_real_time () * 10;
+	const guint n = 300000;
+	FsEventLog *log = fs_eventlog_open (dir, 30,
+	                                    (guint64) FS_EVENTLOG_MAX_MB *
+	                                    1024 * 1024, NULL);
+	FsEventStore *s = fs_eventstore_new (1000);
+	FsEventLogStats st;
+	guint64 bytes = 0, biggest = 0;
+	guint files = 0;
+	FsHit *h;
+	GDir *d;
+	const gchar *name;
+	Ev e;
+
+	for (guint i = 0; i < n; i++) {
+		ev_make (&e, i);
+		fs_eventlog_append (log, &e.hit, now_ticks + i);
+	}
+	fs_eventlog_close (log);
+
+	fs_eventlog_usage (dir, &bytes, &files);
+	d = g_dir_open (dir, 0, NULL);
+	while (d != NULL && (name = g_dir_read_name (d)) != NULL) {
+		gchar *path = g_build_filename (dir, name, NULL);
+		GStatBuf sb;
+
+		if (g_stat (path, &sb) == 0)
+			biggest = MAX (biggest, (guint64) sb.st_size);
+		g_free (path);
+	}
+	if (d != NULL)
+		g_dir_close (d);
+	CHECK (files >= 2 && biggest <= 32 * 1024 * 1024 + 70000,
+	       "under the 10,000 MB cap a part stops at 32 MB (%u files, the "
+	       "biggest %" G_GUINT64_FORMAT " bytes, %" G_GUINT64_FORMAT
+	       " in all)", files, biggest, bytes);
+
+	fs_eventlog_load_recent (dir, s, 1000, &st);
+	h = fs_eventstore_get_hit (s, fs_eventstore_last_seq (s));
+	ev_make (&e, n - 1);
+	CHECK (st.loaded == 1000 && h != NULL && hits_equal (h, &e.hit),
+	       "the start loads the newest 1,000");
+	CHECK (st.bytes < 1000 * 200,
+	       "...reading %" G_GUINT64_FORMAT " bytes of the %"
+	       G_GUINT64_FORMAT " on disk: only those events' lines",
+	       st.bytes, bytes);
+	fs_hit_free (h);
+
+	fs_eventlog_clear_dir (dir, NULL);
+	fs_eventstore_free (s);
+	g_free (dir);
+}
+
 /* ------------------------------------------------------------ bench */
 
 static glong
@@ -1142,6 +1707,7 @@ bench (guint n, const gchar *tmp)
 		static const struct { const gchar *what; FsEventFilter f; } qs[] = {
 			{ "text \"203.0.113.17\"", { "203.0.113.17", 0, NULL, NULL, NULL, 0, 0, 0 } },
 			{ "text \"ssh\"",          { "ssh", 0, NULL, NULL, NULL, 0, 0, 0 } },
+			{ "text \"10:3\" (times)", { "10:3", 0, NULL, NULL, NULL, 0, 0, 0 } },
 			{ "port 22",               { NULL, 0, NULL, "22", NULL, 0, 0, 0 } },
 			{ "CIDR 10.0.0.0/12",      { NULL, 0, NULL, NULL, "10.0.0.0/12", 0, 0, 0 } },
 			{ "blocked inbound TCP",   { NULL, FS_EVQ_DIR_IN, "TCP", NULL, NULL, FS_EVQ_ACTION_BLOCKED, 0, 0 } },
@@ -1220,6 +1786,13 @@ main (int argc, char **argv)
 	test_log_limits (tmp);
 	test_log_bounded_load (tmp);
 	test_log_foreach (tmp);
+	test_log_many_parts (tmp);
+	test_log_restart_parts (tmp);
+	test_log_future_stamp (tmp);
+#ifndef G_OS_WIN32
+	test_log_write_failure (tmp);
+#endif
+	test_log_big_cap (tmp);
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);

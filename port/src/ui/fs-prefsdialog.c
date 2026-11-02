@@ -800,20 +800,20 @@ build_events (PrefsWin *win, GtkWidget *nav)
 		  "the command line (stockfw events --history) can search "
 		  "further back. At "
 		  "start the newest events, up to the list size, are read "
-		  "back: about a tenth of a second per 100,000. Off: nothing is "
-		  "written or read back; files already saved stay until you "
-		  "delete them."),
+		  "back: about a tenth of a second per 100,000. Off, as it "
+		  "starts: nothing is written or read back; files already "
+		  "saved stay until you delete them."),
 		NULL);
 	add_number (win, card, FS_PREFS_EVENTS_HISTORY_DAYS,
 		_("Keep history for (days)"),
 		_("Files from days longer ago than this are deleted."),
-		FS_EVENTLOG_MIN_DAYS, 365, 1)->master = history;
+		FS_EVENTLOG_MIN_DAYS, FS_EVENTLOG_MAX_DAYS, 1)->master = history;
 	add_number (win, card, FS_PREFS_EVENTS_HISTORY_MB,
 		_("History size limit (MB)"),
 		_("Past this the oldest files are deleted, whatever their age. "
 		  "An event takes about 120 bytes on disk: 200 MB holds about "
 		  "1.7 million."),
-		FS_EVENTLOG_MIN_MB, 10000, 10)->master = history;
+		FS_EVENTLOG_MIN_MB, FS_EVENTLOG_MAX_MB, 10)->master = history;
 
 	/* What is saved now, and the way to delete it. */
 	row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 16);

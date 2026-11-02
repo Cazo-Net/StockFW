@@ -786,6 +786,9 @@ typedef struct
 struct _FsEventQuery
 {
 	gchar               *text;       /* NULL: no text test          */
+	gboolean             text_timeish; /* could be in a time stamp  */
+	gint64               time_sec;   /* the second in time_text      */
+	gchar                time_text[FS_EVENT_TIME_BUF]; /* "...:SSZ"  */
 	FsEventDirFilter     direction;
 	gchar               *protocol;
 	gboolean             has_port;
@@ -858,6 +861,61 @@ parse_port_spec (const gchar *text, guint *lo, guint *hi)
 	return ok;
 }
 
+/* Only text that could be part of "2026-11-02T10:00:00.0000000Z" can
+ * be in a stamp: its characters, at most one '.', two '-', two ':'.
+ * Other searches (an address has three dots) never format a time. */
+static gboolean
+could_be_in_stamp (const gchar *t)
+{
+	guint dots = 0, dashes = 0, colons = 0;
+
+	if (t[strspn (t, "0123456789-:.TtZz")] != '\0')
+		return FALSE;
+	for (; *t != '\0'; t++) {
+		dots += *t == '.';
+		dashes += *t == '-';
+		colons += *t == ':';
+	}
+	return dots <= 1 && dashes <= 2 && colons <= 2;
+}
+
+/* The time as the list shows it.  The text up to the second is made
+ * once per second (the rows come in time order, mostly), the fraction
+ * by hand: a search over a million stamps stays a few tens of ms. */
+static const gchar *
+query_time_text (FsEventQuery *q, const Rec *r, gchar buf[FS_EVENT_TIME_BUF])
+{
+	gint64 sec;
+	gsize len;
+
+	if (r->ticks < 0) {
+		fs_event_time_format (r->ticks, r->id[FS_EV_TIME] == TIME_FRAC7
+		                      ? FS_EVENT_TIME_FRAC7 : FS_EVENT_TIME_SECS,
+		                      buf);
+		return buf;
+	}
+
+	sec = r->ticks / 10000000;
+	if (sec != q->time_sec) {
+		fs_event_time_format (sec * 10000000, FS_EVENT_TIME_SECS,
+		                      q->time_text);
+		q->time_sec = sec;
+	}
+	if (r->id[FS_EV_TIME] != TIME_FRAC7)
+		return q->time_text;
+
+	len = strlen (q->time_text) - 1;          /* without the Z */
+	memcpy (buf, q->time_text, len);
+	buf[len] = '.';
+	for (gint i = 7, frac = (gint) (r->ticks % 10000000); i >= 1; i--) {
+		buf[len + (gsize) i] = (gchar) ('0' + frac % 10);
+		frac /= 10;
+	}
+	buf[len + 8] = 'Z';
+	buf[len + 9] = '\0';
+	return buf;
+}
+
 FsEventQuery *
 fs_eventquery_new (const FsEventFilter *f, GError **error)
 {
@@ -869,10 +927,13 @@ fs_eventquery_new (const FsEventFilter *f, GError **error)
 	if (f->text != NULL) {
 		gchar *t = g_strstrip (g_strdup (f->text));
 
-		if (*t != '\0')
+		if (*t != '\0') {
 			q->text = t;
-		else
+			q->text_timeish = could_be_in_stamp (t);
+			q->time_sec = G_MININT64;
+		} else {
 			g_free (t);
+		}
 	}
 
 	if (f->protocol != NULL) {
@@ -1080,11 +1141,27 @@ fs_eventquery_match (FsEventQuery *q, const FsEventStore *s, guint64 seq)
 	    !(cached_bits (q, s, r->id[FS_EV_DESTINATION]) & BIT_ADDR))
 		return FALSE;
 
+	/* The columns the list shows, as it shows them: the time, then
+	 * direction to service.  Not the rule, which no column shows: a
+	 * row it matched had no cell with the text in it. */
 	if (q->text != NULL) {
 		gboolean any = FALSE;
 
-		for (guint f = FS_EV_DIRECTION; f < FS_EV_N_FIELDS && !any; f++)
+		for (guint f = FS_EV_DIRECTION; f <= FS_EV_SERVICE && !any; f++)
 			any = (cached_bits (q, s, r->id[f]) & BIT_TEXT) != 0;
+
+		if (!any && (r->id[FS_EV_TIME] == TIME_FRAC7 ||
+		             r->id[FS_EV_TIME] == TIME_SECS)) {
+			if (q->text_timeish) {
+				gchar buf[FS_EVENT_TIME_BUF];
+
+				any = ascii_case_contains (
+					query_time_text (q, r, buf), q->text);
+			}
+		} else if (!any) {
+			any = (cached_bits (q, s, r->id[FS_EV_TIME]) &
+			       BIT_TEXT) != 0;
+		}
 		if (!any)
 			return FALSE;
 	}
@@ -1146,10 +1223,11 @@ fs_eventquery_match_hit (const FsEventQuery *q, const FsHit *h,
 		return FALSE;
 
 	if (q->text != NULL) {
+		/* What fs_eventquery_match reads: the shown columns. */
 		const gchar *fields[] = {
-			h->direction, h->in, h->out, h->port, h->source,
-			h->destination, h->length, h->tos, h->protocol,
-			h->service, h->rule
+			h->time, h->direction, h->in, h->out, h->port,
+			h->source, h->destination, h->length, h->tos,
+			h->protocol, h->service
 		};
 		gboolean any = FALSE;
 
@@ -1296,6 +1374,34 @@ out:
 
 /* ------------------------------------------------------------ export */
 
+/* "-5", "-1.25": a plain negative number, which a spreadsheet reads as
+ * a number and nothing more. */
+static gboolean
+plain_number (const gchar *s)
+{
+	if (*s == '-')
+		s++;
+	if (!g_ascii_isdigit (*s))
+		return FALSE;
+	while (g_ascii_isdigit (*s))
+		s++;
+	if (*s == '.') {
+		s++;
+		if (!g_ascii_isdigit (*s))
+			return FALSE;
+		while (g_ascii_isdigit (*s))
+			s++;
+	}
+	return *s == '\0';
+}
+
+/* [ csv_field ]
+ * A field a spreadsheet would run as a formula (= + - @ TAB CR first)
+ * is written as text: quoted, with an apostrophe in front.  A leading
+ * '-' is left alone only for a whole plain number (or alone): "-1+1" and the DDE
+ * payload "-2+3+cmd|' /C calc'!A0" start with a minus and a digit too,
+ * and both run, and the IN=, OUT=, SRC= and PROTO= text comes from the
+ * kernel or a syslog line as it is. */
 static void
 csv_field (GString *out, const gchar *value)
 {
@@ -1307,8 +1413,8 @@ csv_field (GString *out, const gchar *value)
 
 	formula = value[0] == '=' || value[0] == '+' || value[0] == '@' ||
 	          value[0] == '\t' || value[0] == '\r' ||
-	          (value[0] == '-' && !g_ascii_isdigit (value[1]) &&
-	           value[1] != '\0');
+	          (value[0] == '-' && value[1] != '\0' &&
+	           !plain_number (value));
 	quote = formula || strpbrk (value, ",\"\r\n") != NULL;
 
 	if (!quote) {

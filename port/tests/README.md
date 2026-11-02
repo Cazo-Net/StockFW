@@ -98,16 +98,34 @@ list) and `core/fs-eventlog.c` (the history on disk):
   reused; a query's cached answer is not reused for a new string that
   got an old id.
 - duplicates: the same row twice is one event, as before.
-- filters: text, direction, verdict, protocol, port (single, range,
-  colon), address (v4 and v6 CIDR, ranges; names and /33 refused), time
-  window, and every combination agreeing with the store-free check the
-  command line uses.
-- CSV: the header, quoting, formula-looking fields defused, mode 0600.
+- filters: text (the columns the list shows, the time as shown
+  included, the rule not; `--grep` the same), direction, verdict,
+  protocol, port (single, range, colon), address (v4 and v6 CIDR,
+  ranges; names and /33 refused), time window, and every combination
+  agreeing with the store-free check the command line uses.
+- CSV: the header, quoting, formula-looking fields defused (a leading
+  minus too, unless the whole field is a plain number: `-1+1` and the
+  DDE payload `-2+3+cmd|' /C calc'!A0` are defused, `-5` and `-1.25`
+  are not), mode 0600.
 - history: round trip with escapes and a text stamp; a cut-short last
   line and a damaged middle line skipped and counted, the next write
   starting on a fresh line; folder 0700 and files 0600 (a loosened file
   put back); age and size limits (a file that is not ours left alone);
   the bounded load at start reads only the newest files it needs.
+- history at volume: 460,000 events in a day under the 1 MB cap go past
+  part 999, and usage, the cap, the load and Delete history all see
+  part 1000 and after; a restart after the cap took the day's first
+  parts goes on after the highest part, so the start shows the newest
+  and the cap deletes the oldest; no part grows past its size; an event
+  stamped a year ahead is filed under today, and a file named for a
+  later day (from before) is capped and aged by when it was written;
+  under the 10,000 MB cap a part stops at 32 MB and the start reads
+  only the bytes of the 1,000 events it loads.
+- a full disk (Linux; `RLIMIT_FSIZE` makes write() fail as ENOSPC
+  would): the problem is said and the lost events counted, the next try
+  waits out the back-off, then history goes on; new limits (Preferences
+  > Save) try again at once; every event is either in the history or
+  counted as lost.
 
 ## Events list at scale (`fs-hitview-smoke`)
 
@@ -131,10 +149,26 @@ the list kept; CSV export writes the filtered rows; sorting by port is
 numeric both ways and a live event lands in sorted place; the history
 files are written.  Timings are printed as `measure:` lines.
 
+History is off until switched on (checked), so the smoke switches it on
+in a scratch settings folder.  On Linux it also fills the disk in the
+middle of the session (`RLIMIT_FSIZE`): the strip says history is not
+being saved within seconds, and with room again the history goes on
+and the strip goes back to what it said.
+
+At the list's largest, 1,000,000 events in a real view, a burst of
+5,000 live events under the port sort and under the source sort must
+cost about what it costs under the time sort (within 6 times, plus 20
+us).  Before the row list was kept in chunks each such event moved up
+to the whole row array twice, about 200 us at this size.  After those
+bursts, and after 360,000 adds and drops at 20,000 rows (chunks split
+and joined many times), the rows must be exactly those a sort from
+scratch gives.
+
 The Preferences smoke (below) covers Preferences > Events: the list
-size, the history switch with its days and size rows live only while
-it is on, values clamped to the row's range, and Delete history asking
-first, then deleting only history files.
+size, the history switch (off at first) with its days and size rows
+live only while it is on and going up to the limits the app keeps to
+(3,650 days, 10,000 MB), values clamped to the row's range, and Delete
+history asking first, then deleting only history files.
 
 ## Where the computer is connected (`fs-netplace-test`, `fs-overview-place-smoke`)
 

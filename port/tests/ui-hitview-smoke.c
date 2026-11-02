@@ -26,6 +26,12 @@
 #include "ui/fs-eventmodel.h"
 #include "core/fs-eventstore.h"
 #include "core/fs-eventlog.h"
+#include "core/fs-prefs.h"
+
+#ifndef G_OS_WIN32
+#include <signal.h>
+#include <sys/resource.h>
+#endif
 
 static int failures = 0;
 
@@ -1122,6 +1128,294 @@ check_scale (GtkWidget *page)
 	g_object_unref (page);
 }
 
+/* What the strip says, or NULL while it is hidden. */
+static gchar *
+strip_text (GtkWidget *page)
+{
+	GtkWidget *strip = NULL;
+	GList *children, *l;
+	gchar *text = NULL;
+
+	find_strip (page, &strip);
+	if (strip == NULL || !shown_up_to (strip, page))
+		return NULL;
+
+	children = gtk_container_get_children (GTK_CONTAINER (strip));
+	for (l = children; l != NULL && text == NULL; l = l->next)
+		if (GTK_IS_LABEL (l->data))
+			text = g_strdup (gtk_label_get_text (GTK_LABEL (l->data)));
+	g_list_free (children);
+	return text;
+}
+
+#ifndef G_OS_WIN32
+/* Live events, a few at a time, while the main loop runs for up to ms
+ * or until the strip says what want asks for (NULL: what it said in
+ * was). */
+static gboolean
+run_until_strip (GtkWidget *page, const gchar *want, const gchar *was,
+                 guint ms, guint *next)
+{
+	gint64 end = g_get_monotonic_time () + (gint64) ms * 1000;
+	gchar time[FS_EVENT_TIME_BUF], src[48], dst[48], port[8];
+	FsHit hit;
+
+	while (g_get_monotonic_time () < end) {
+		gchar *now;
+		gboolean done;
+
+		for (guint i = 0; i < 20; i++) {
+			make_event ((*next)++, &hit, time, src, dst, port);
+			fs_hitview_append (&hit);
+		}
+		pump ();
+		now = strip_text (page);
+		done = want != NULL ? (now != NULL && strstr (now, want) != NULL)
+		                    : g_strcmp0 (now, was) == 0;
+		g_free (now);
+		if (done)
+			return TRUE;
+		g_usleep (50000);
+	}
+	return FALSE;
+}
+
+/* [ check_history_failure ]
+ * A full disk in the middle of a session: the strip says history is
+ * not being saved, and once there is room again the history goes on
+ * and the strip goes back to what it said.  RLIMIT_FSIZE makes write()
+ * fail the way a full disk does (EFBIG for ENOSPC).  Nothing is printed
+ * while the limit is down: stdout may be a file. */
+static void
+check_history_failure (GtkWidget *page)
+{
+	struct rlimit old, low;
+	gchar *dir = fs_hitview_history_dir ();
+	gchar *before, *failing;
+	gboolean warned, recovered;
+	guint64 bytes_failing = 0, bytes_after = 0;
+	guint next = 900000;
+
+	before = strip_text (page);
+	fflush (stdout);
+	fflush (stderr);
+
+	signal (SIGXFSZ, SIG_IGN);
+	getrlimit (RLIMIT_FSIZE, &old);
+	low = old;
+	low.rlim_cur = 1;
+	setrlimit (RLIMIT_FSIZE, &low);
+
+	warned = run_until_strip (page, "not being saved", NULL, 4000, &next);
+	failing = strip_text (page);
+	fs_eventlog_usage (dir, &bytes_failing, NULL);
+
+	setrlimit (RLIMIT_FSIZE, &old);
+	recovered = run_until_strip (page, NULL, before, 8000, &next);
+	signal (SIGXFSZ, SIG_DFL);
+	fs_eventlog_usage (dir, &bytes_after, NULL);
+
+	CHECK (warned && failing != NULL &&
+	       strstr (failing, "Event history is not being saved") != NULL,
+	       "a write that fails in the middle of a session is on the "
+	       "strip within seconds (%s)", failing != NULL ? failing : "none");
+	CHECK (recovered && fs_hitview_history_problem () == NULL,
+	       "with room again, history is written again and the strip goes "
+	       "back to what it said before (%s)",
+	       before != NULL ? before : "hidden");
+	CHECK (bytes_after > bytes_failing,
+	       "...and the events after it are in the files (%" G_GUINT64_FORMAT
+	       " bytes, %" G_GUINT64_FORMAT " while failing)", bytes_after,
+	       bytes_failing);
+
+	g_free (before);
+	g_free (failing);
+	g_free (dir);
+}
+#endif
+
+/* Appends burst events to a full store through the model, the way
+ * fs_hitview_append does; returns microseconds per event. */
+static gdouble
+model_burst (FsEventStore *s, FsEventModel *m, guint from, guint burst)
+{
+	gchar time[FS_EVENT_TIME_BUF], src[48], dst[48], port[8];
+	FsHit hit;
+	gint64 t = g_get_monotonic_time ();
+
+	for (guint i = 0; i < burst; i++) {
+		guint64 seq;
+
+		make_event (from + i, &hit, time, src, dst, port);
+		seq = fs_eventstore_append (s, &hit, 0);
+		fs_event_model_note_append (m, seq);
+	}
+	return (gdouble) (g_get_monotonic_time () - t) / burst;
+}
+
+static gboolean
+same_rows (GArray *a, GArray *b)
+{
+	return a->len == b->len &&
+	       memcmp (a->data, b->data, a->len * sizeof (guint64)) == 0;
+}
+
+/* [ check_sorted_burst ]
+ * The list at its largest, 1,000,000 events, shown in a real view: a
+ * burst of 5,000 live events under the port sort costs about what it
+ * costs under the time sort.  Each event used to move up to the whole
+ * row array twice (add in sort order, drop the oldest from the middle):
+ * about 200 us an event at this size, so a burst of 5,000 a second
+ * took the main thread whole.  And the rows kept that way are exactly
+ * the rows a sort from scratch gives. */
+static void
+check_sorted_burst (void)
+{
+	const guint cap = FS_EVENTSTORE_MAX_CAPACITY;
+	const guint burst = 5000;
+	FsEventStore *s = fs_eventstore_new (cap);
+	gchar time[FS_EVENT_TIME_BUF], src[48], dst[48], port[8];
+	FsEventModel *m;
+	GtkWidget *win, *scroll, *tree;
+	GArray *kept, *fresh;
+	FsHit hit;
+	gdouble by_time, by_port, by_source, sort_ms;
+	gint64 t;
+
+	for (guint i = 0; i < cap; i++) {
+		make_event (i, &hit, time, src, dst, port);
+		fs_eventstore_append (s, &hit, 0);
+	}
+	m = fs_event_model_new (s);
+
+	win = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+	gtk_window_set_default_size (GTK_WINDOW (win), 1240, 760);
+	scroll = gtk_scrolled_window_new (NULL, NULL);
+	tree = gtk_tree_view_new ();
+	for (gint c = 0; c < FS_HITCOL_COLOR; c++) {
+		GtkTreeViewColumn *col = gtk_tree_view_column_new_with_attributes (
+			"c", gtk_cell_renderer_text_new (), "text", c, NULL);
+
+		gtk_tree_view_column_set_sizing (col, GTK_TREE_VIEW_COLUMN_FIXED);
+		gtk_tree_view_column_set_fixed_width (col, 100);
+		gtk_tree_view_append_column (GTK_TREE_VIEW (tree), col);
+	}
+	gtk_tree_view_set_fixed_height_mode (GTK_TREE_VIEW (tree), TRUE);
+	gtk_tree_view_set_model (GTK_TREE_VIEW (tree), GTK_TREE_MODEL (m));
+	gtk_container_add (GTK_CONTAINER (scroll), tree);
+	gtk_container_add (GTK_CONTAINER (win), scroll);
+	gtk_widget_show_all (win);
+	pump ();
+
+	by_time = model_burst (s, m, cap, burst);
+	pump ();
+
+	t = g_get_monotonic_time ();
+	gtk_tree_sortable_set_sort_column_id (GTK_TREE_SORTABLE (m),
+	                                      FS_HITCOL_PORT,
+	                                      GTK_SORT_ASCENDING);
+	pump ();
+	sort_ms = (g_get_monotonic_time () - t) / 1000.0;
+	by_port = model_burst (s, m, cap + burst, burst);
+	pump ();
+
+	gtk_tree_sortable_set_sort_column_id (GTK_TREE_SORTABLE (m),
+	                                      FS_HITCOL_SOURCE,
+	                                      GTK_SORT_DESCENDING);
+	pump ();
+	by_source = model_burst (s, m, cap + 2 * burst, burst);
+	pump ();
+
+	printf ("measure: %u live events into %u shown, time sort: %.1f us "
+	        "each\n", burst, cap, by_time);
+	printf ("measure: sort %u rows by port, view attached: %.0f ms\n",
+	        cap, sort_ms);
+	printf ("measure: %u live events into %u shown, port sort: %.1f us "
+	        "each (%.0f events/s at most)\n", burst, cap, by_port,
+	        1e6 / by_port);
+	printf ("measure: %u live events into %u shown, source sort "
+	        "(descending): %.1f us each\n", burst, cap, by_source);
+
+	CHECK (fs_event_model_n_rows (m) == cap &&
+	       gtk_tree_model_iter_n_children (GTK_TREE_MODEL (m), NULL) ==
+	       (gint) cap,
+	       "the full list stays full while the ring turns over (%u rows)",
+	       fs_event_model_n_rows (m));
+	CHECK (by_port <= 6.0 * by_time + 20.0 &&
+	       by_source <= 6.0 * by_time + 20.0,
+	       "at %u rows a live event under another sort costs about what it "
+	       "costs under the time sort (port %.1f us, source %.1f us, time "
+	       "%.1f us)", cap, by_port, by_source, by_time);
+
+	/* The rows as the events left them, against a sort from scratch. */
+	kept = fs_event_model_rows (m);
+	gtk_tree_view_set_model (GTK_TREE_VIEW (tree), NULL);
+	fs_event_model_rebuild (m);
+	fresh = fs_event_model_rows (m);
+	CHECK (same_rows (kept, fresh),
+	       "after %u adds and drops under three sorts, the rows are those "
+	       "a sort from scratch gives", 3 * burst);
+	g_array_unref (kept);
+	g_array_unref (fresh);
+
+	gtk_widget_destroy (win);
+	g_object_unref (m);
+	fs_eventstore_free (s);
+}
+
+/* [ check_rows_churn ]
+ * 20,000 events sorted by port: each live event joins the end of its
+ * port's rows and the oldest leaves the start of another's, so the
+ * row chunks there split and the ones emptying join their neighbours,
+ * over and over.  After each round the rows must be exactly those a
+ * sort from scratch gives. */
+static void
+check_rows_churn (void)
+{
+	const guint cap = 20000;
+	FsEventStore *s = fs_eventstore_new (cap);
+	gchar time[FS_EVENT_TIME_BUF], src[48], dst[48], port[8];
+	FsEventModel *m;
+	FsHit hit;
+	guint next = 0, bad_round = 0;
+
+	for (; next < cap; next++) {
+		make_event (next, &hit, time, src, dst, port);
+		fs_eventstore_append (s, &hit, 0);
+	}
+	m = fs_event_model_new (s);
+	gtk_tree_sortable_set_sort_column_id (GTK_TREE_SORTABLE (m),
+	                                      FS_HITCOL_PORT,
+	                                      GTK_SORT_ASCENDING);
+
+	for (guint round = 1; round <= 6 && bad_round == 0; round++) {
+		GArray *kept, *fresh;
+
+		if (round == 4)
+			gtk_tree_sortable_set_sort_column_id (
+				GTK_TREE_SORTABLE (m), FS_HITCOL_SERVICE,
+				GTK_SORT_DESCENDING);
+		model_burst (s, m, next, 3 * cap);
+		next += 3 * cap;
+
+		kept = fs_event_model_rows (m);
+		fs_event_model_rebuild (m);
+		fresh = fs_event_model_rows (m);
+		if (!same_rows (kept, fresh) || kept->len != cap)
+			bad_round = round;
+		g_array_unref (kept);
+		g_array_unref (fresh);
+	}
+
+	CHECK (bad_round == 0,
+	       "rows kept through 360,000 adds and drops at 20,000 (chunks "
+	       "split and joined) are those a sort from scratch gives (first "
+	       "wrong round: %u)", bad_round);
+
+	g_object_unref (m);
+	fs_eventstore_free (s);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1130,8 +1424,22 @@ main (int argc, char **argv)
 	GtkWidget *strip = NULL;
 	gboolean running;
 	gchar *scratch = NULL;
+	gchar *config;
+
+	/* Settings in a scratch folder too, before anything reads them. */
+	config = g_dir_make_tmp ("fs-hitview-smoke-config-XXXXXX", NULL);
+#ifdef G_OS_WIN32
+	g_setenv ("APPDATA", config, TRUE);
+#else
+	g_setenv ("XDG_CONFIG_HOME", config, TRUE);
+#endif
 
 	gtk_init (&argc, &argv);
+
+	/* History is kept only once chosen. */
+	CHECK (!fs_prefs_bool (FS_PREFS_EVENTS_HISTORY),
+	       "event history is off until the user switches it on");
+	fs_prefs_set_bool (FS_PREFS_EVENTS_HISTORY, TRUE);
 
 	/* History goes to a scratch folder, never the account's own. */
 	if (g_getenv ("STOCKFW_EVENTS_DIR") == NULL) {
@@ -1201,7 +1509,12 @@ main (int argc, char **argv)
 
 	check_list_behaviour (page);
 	check_filter_bar (page);
+#ifndef G_OS_WIN32
+	check_history_failure (page);
+#endif
 	check_scale (page);
+	check_sorted_burst ();
+	check_rows_churn ();
 
 	fs_hitview_stop ();
 	gtk_widget_destroy (page);
