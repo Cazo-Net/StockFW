@@ -308,6 +308,7 @@ if(FS_PLATFORM STREQUAL "linux")
     src/cli/fs-cli-copilot.c
     src/cli/fs-cli-trust.c
     src/cli/fs-cli-help.c
+    src/cli/fs-cli-act.c
     src/control/fs-control.c
   )
   add_executable(stockfw
@@ -332,6 +333,19 @@ if(FS_PLATFORM STREQUAL "linux")
   target_link_libraries(stockfw-dash-test PRIVATE fs-core-nogui PkgConfig::GIO)
   target_compile_definitions(stockfw-dash-test PRIVATE
                              FS_VERSION="${PROJECT_VERSION}" FS_DASH_TESTING=1)
+
+  # `simulate --do' (PR 4, 4C) with one test hook: compiled with
+  # FS_ACT_TESTING, $STOCKFW_TEST_FIX_PORT widens the port of the fix
+  # about to be written, so tests/test-cli.sh can see the refusal of a
+  # rule fs_whatif_row_is_safe does not allow.  Never installed.
+  add_executable(stockfw-act-test EXCLUDE_FROM_ALL
+    ${FS_CLI_SOURCES}
+    ${FS_BACKEND_SOURCES}
+  )
+  target_include_directories(stockfw-act-test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(stockfw-act-test PRIVATE fs-core-nogui PkgConfig::GIO)
+  target_compile_definitions(stockfw-act-test PRIVATE
+                             FS_VERSION="${PROJECT_VERSION}" FS_ACT_TESTING=1)
 
   # The session rules of fs-dash-auth.c on a clock of the test's own.
   add_executable(fs-dash-auth-test EXCLUDE_FROM_ALL

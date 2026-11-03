@@ -1256,6 +1256,7 @@ A second front end over the same engine — fs-core and the platform backend, li
 **Terminal actions (15.5).** The core under PR 4's commands is in 15.5.1 and adds no command itself. Each package lists its commands here:
 <!-- PR4-B: copilot and sentinel commands (15.5.2) -->
 <!-- PR4-C: events act and simulate --do (15.5.3) -->
+`events act block-dest|block-service|allow-dest|trust-source|untrust-source [filters] [--pick N] [--both] [--no-apply] [--yes]` turns an event into a rule, and `simulate QUERY --do N [--yes]` runs the What-If fix numbered N (15.5.3).
 <!-- PR4-D: trust and intel editors (15.5.4) -->
 <!-- PR4-E: help topics and about (15.5.5) -->
 
@@ -2281,7 +2282,27 @@ The terminal gets the desktop app's actions: blocking and allowing from an event
 
 #### 15.5.3 Event and What-If actions (4C)
 
-(filled by its package)
+**`events act ACTION`.** The Events page's buttons in a terminal. The actions are `block-dest` and `block-service` (outbound deny rows), `allow-dest` and `trust-source` (allow rows) and `untrust-source` (it removes an inbound-allow-from row). The event filters choose the events (`--addr`, `--blocked`, `-n` and the rest), and each event gives one rule through `fs_eventrule_build`, the app's own builder. The candidates are newest first, with duplicate rules dropped. With more than one, the command prints them numbered and exits 2 with nothing changed; `--pick N` picks one. Then it shows the event and the rule, shows what will happen, and asks. `--both` adds the bi-directional twin of an allow (`fs_rule_counterpart`), and `--no-apply` only saves. Each action is one control op under the policy lock:
+
+- `rule.block`: the row is saved (or found already there) and goes live alone through `fs_firewall_add_live` (15.5.1). A saved allow that nobody applied stays off the firewall. On a stopped firewall the row is recorded for the next start. The lockout guard runs on the journal plus the row.
+- `rule.allow`: an allow widens what gets through, so the CLI shows the full apply preview of the saved policy with the row in (the rows added and removed, the notes and the lockout guard, from `fs-cli-policy.c`), and the op applies the saved policy through `fs_policy_apply_safe`. For `allow-dest` the op first lifts Sentinel's blocks of the address (`fs_autoblock_lift_for_dest`, the Events page's rule, P6): the state row, Sentinel's policy row and the live rule all go. The preview says so and shows those rows among the removed ones.
+- `rule.untrust`: the row leaves the policy file and comes off the firewall alone (`fs_firewall_lift_live`).
+
+Every save writes an audit line ("event rule added | cli | ROW", "event trust removed").
+
+**`simulate QUERY --do N`.** `simulate` now numbers its fixes (`  1 [create-allow] ...`), and `--do N` runs fix N on the saved policy:
+
+- A rule fix (create-allow, create-block) must be one the engine verified. The row must pass `fs_whatif_row_is_safe` (one address or block, one port, one protocol), or the command exits 2 and writes nothing. After the question the fix is verified again on a fresh policy, then it goes through `rule.allow` or `rule.block` with the source `what-if`, which runs the same check again.
+- A start (`START_FIREWALL`) runs `stockfw start` (with `--yes` when it was given), which is the start gate: `op_start` and `fs_firewall_start_recorded`, the start_safe family. Audit-only mode holds it and the gate writes "firewall start held, firewall untouched". An apply fix runs `stockfw apply` the same way, so its own preview and lockout guard apply. A Sentinel lift fix uses the new op `whatif.lift`.
+- Fixes that open a rule or change a setting print the command to run (`stockfw policy show REF`, `stockfw config set NAME on --apply`). They do not run it.
+
+**Asking.** A command asks only when stdin is a terminal (`[y/N]` on stderr; Enter is no). With no terminal and no `--yes` it refuses at once, says that nothing was changed, and names `--yes`; it never reads stdin. A write as non-root exits 3 before the question, except with `--no-apply`, which writes only the policy file. When a StockFW window runs as root, the command warns first: the window keeps its own copy of the policy and the Sentinel list (15.5.1).
+
+**Where the source and the plan differ.** (1) The start in `--do` runs `stockfw start` itself rather than calling `fs_firewall_start_safe` directly. The plan's point is that it passes the start gate, and `op_start` is that gate: `fs_firewall_start_recorded` is the start_safe family with the journal and the audit line. (2) The CLI draws the allow preview itself from the saved policy with the row in; the op then runs the real apply, and the lockout guard runs in both. (3) `--no-apply` with `allow-dest` saves the allow and lifts nothing: a lift is a live change. (4) The ops are `rule.block`, `rule.allow`, `rule.untrust` and `whatif.lift`; `copilot block` (4B) can use `rule.block`. (5) The engine offers only rule fixes that pass its own check, so the refused-fix test uses a test build, `stockfw-act-test` (`FS_ACT_TESTING`, not installed), where `STOCKFW_TEST_FIX_PORT` replaces the fix's port before the checks.
+
+**[Verified]** `test-cli.sh` block PR4-C, 22 checks. Without a firewall: usage errors (no action, a misspelt action, `--pick` and `--both` without `act`); two events with two rules are listed by number and nothing is written; with stdin an open pipe (`sleep 20 |`, under `timeout 10`) both `events act` and `simulate --do` refuse at once and write nothing; on a pseudo-terminal Enter and `n` keep the policy and `y` saves it with an audit line; the same rule again is "already in the policy"; the `--do` usage errors; the numbering; completion. As root in a private network namespace, against the real backend: `--do` on the start fix with audit-only on is held (exit 1), the firewall stays stopped and the gate's audit line is written; `--do` on a fix the safety check refuses exits 2 with the policy files and the journal unchanged; the same fix unwidened is saved, applied and live; `block-dest` is live alone while a saved allow stays off; `allow-dest` on an address Sentinel blocks takes the block off the firewall, the state file and the policy file and puts the allow live; `untrust-source` takes the trust row off the firewall. Every check fails with its control removed (the file copied aside, the bug patched in, rebuilt and run, then put back with `cp` and checked with `cmp`): no lift in `rule.allow`; no `fs_whatif_row_is_safe` in the CLI (the op still refuses it, exit 1, so the exit-2 check fails); `--do` start calling the backend's start directly (started, no audit line); no terminal check before the question (both pipe checks time out); no numbering; several candidates not listed; `--pick` taken without `act`; the block applied as a full apply (the saved allow goes live); the untrust row not lifted; no audit line; no "already" check; no completion of the actions.
+
+**Not verified.** Nothing here was run on Windows; the code is in `src/cli` and `src/control`, which are not built there. The race with a running root window is only warned about, not tested.
 
 #### 15.5.4 Trust and intel (4D)
 

@@ -558,6 +558,44 @@ gint fs_cli_cmd_listening (gint argc, gchar **argv);
 /* === WP-E === */
 /* === end WP-E === */
 
+/* === PR4-C === */
+/* Event and What-If actions (fs-cli-act.c, 4C). */
+
+/* `events act ACTION': block-dest, block-service, allow-dest,
+ * trust-source, untrust-source.  _usage prints the error for a missing
+ * or unknown action (given may be NULL). */
+gboolean fs_cli_events_act_known (const gchar *action);
+void     fs_cli_events_act_usage (const gchar *given);
+/* The action on one of `events' (FsHit*, oldest first, as the filters
+ * of `events' kept them; may be NULL): the newest event of each rule,
+ * picked by `pick' (1-based; 0: the only one), shown, asked about and
+ * sent to the control layer.  Returns the exit status. */
+gint     fs_cli_events_act (const gchar *action, GPtrArray *events,
+                            guint pick, gboolean both, gboolean no_apply,
+                            gboolean yes);
+
+/* `simulate --do N': N read (an error printed when it is not 1 or
+ * more); the answer's text with each fix numbered ("  1 [create-allow]
+ * ..."); and fix N run.  `result' answers `line' against the saved
+ * policy. */
+gboolean fs_cli_simulate_do_number    (const gchar *text, guint *n);
+gchar   *fs_cli_whatif_number_actions (const FsWhatIfResult *result,
+                                       const gchar *text);
+gint     fs_cli_simulate_do           (const FsWhatIfResult *result,
+                                       const gchar *line,
+                                       gboolean assume_running, guint n,
+                                       gboolean yes);
+
+/* The What-If context fs_cli_whatif_policy asks in (fs-cli-cmds.c);
+ * *settings_out is borrowed by it: free it after the context. */
+FsWhatIfContext *fs_cli_whatif_context (const FsPolicy *policy,
+                                        gboolean assume_running,
+                                        FsSettings **settings_out);
+
+/* fs-cli-config.c: is a StockFW window running as root? */
+gboolean fs_cli_root_gui_running (void);
+/* === end PR4-C === */
+
 G_END_DECLS
 
 #endif /* FS_CLI_H */

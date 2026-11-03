@@ -3720,3 +3720,26 @@ settings record not kept; no due row for a rule still live; no
 earlier-session rows in `lift_for_dest`; the lift never reaching the
 firewall; `lift_expired` taking fresh rows; the comment not cut from the
 allow-list text.
+
+## Event and What-If actions (`stockfw-act-test`)
+
+```sh
+cd port
+sudo bash tests/test-cli.sh      # block PR4-C builds stockfw-act-test
+```
+
+The PR4-C block of `test-cli.sh` checks `events act` and `simulate --do`:
+the usage errors, the numbered list when there is more than one rule,
+the refusal without a terminal (stdin an open pipe, under `timeout`),
+the question on a pseudo-terminal, and, as root in a private network
+namespace, a held `--do` start, a refused fix, a block live alone, an
+`allow-dest` that lifts Sentinel's block and an untrust.
+`stockfw-act-test` is the CLI built with `FS_ACT_TESTING`: there
+`STOCKFW_TEST_FIX_PORT` replaces a fix's port, so the test can give
+`--do` a fix the safety check refuses. It is not installed.
+
+Teeth, each seen failing when re-injected: no lift in `rule.allow`; no
+safety check in the CLI; `--do` start calling the backend directly; no
+terminal check; no numbering; several rules not listed; `--pick`
+without `act`; a block applied as a full apply; the untrust row not
+lifted; no audit line; no "already" check; no completion.

@@ -240,6 +240,19 @@ into `/usr/local/share/doc/stockfw/`.
   firewall: the change waits for the next start instead.
 <!-- PR4-B -->
 <!-- PR4-C -->
+- **New `stockfw events act`.** Block, allow or trust from an event, as
+  the Events page does: `block-dest`, `block-service`, `allow-dest`,
+  `trust-source` and `untrust-source`. It shows the event and the rule
+  and asks first. A block goes live alone, so a rule you saved and
+  never applied stays off. An allow shows the whole apply first, and
+  `allow-dest` also lifts Sentinel's block of that address. With several
+  rules to choose from, `--pick N` chooses one.
+- **New `stockfw simulate ... --do N`.** `simulate` numbers its fixes,
+  and `--do N` runs one: a new rule (only one StockFW checks as safe), a
+  start (through the normal start, so audit-only mode holds it), an
+  apply or a Sentinel lift. Other fixes print the command to run.
+- Both ask only on a terminal. Without one they need `--yes`, and they
+  never wait for input.
 <!-- PR4-D -->
 <!-- PR4-E -->
 

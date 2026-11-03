@@ -3294,6 +3294,193 @@ rm -rf "$L"
 # === end PR4-B ===
 
 # === PR4-C ===
+# Event and What-If actions (master plan PR 4, 4C): `events act' turns
+# an event into a rule, `simulate --do N' runs a What-If fix.  Each
+# shows what it will do, asks only on a terminal (else --yes, and never
+# waits), and writes through the control layer.  Scratch directories of
+# its own; the live part runs in a private network namespace.
+C="$(mktemp -d /tmp/stockfw-pr4c-XXXXXX)"; chmod 755 "$C"
+c_env () { env STOCKFW_RULES_DIR="$C/rules" STOCKFW_APPLIED_FILE="$C/applied" \
+               STOCKFW_AUDIT_FILE="$C/audit" STOCKFW_AUTOBLOCK_FILE="$C/autoblocks" \
+               STOCKFW_RUN_DIR="$C/run" STOCKFW_LOG_FILE="$C/kern.log" "$@"; }
+c_rc () { local want="$1"; shift; c_env "$@" > "$C/out" 2> "$C/err"; [ "$?" -eq "$want" ]; }
+c_sha () { cat "$C"/rules/*/* 2> /dev/null | sha256sum; }
+c_now=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+cat > "$C/kern.log" <<EOF
+$c_now host kernel: [1.0] STOCKFW-DROP IN= OUT=eth0 SRC=10.0.0.5 DST=203.0.113.70 LEN=60 PROTO=TCP SPT=50000 DPT=443 SYN
+$c_now host kernel: [2.0] STOCKFW-DROP IN= OUT=eth0 SRC=10.0.0.5 DST=203.0.113.71 LEN=60 PROTO=TCP SPT=50001 DPT=443 SYN
+$c_now host kernel: [3.0] STOCKFW-DROP IN=eth0 OUT= SRC=203.0.113.80 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40000 DPT=22 SYN
+EOF
+c_env "$S" -q policy add outbound-deny-to 198.51.100.20
+c_sum=$(c_sha)
+
+check "PR4-C: events act without an action, or with an unknown one, is a usage error" \
+  bash -c "$(declare -f c_env c_rc); C='$C'; c_rc 2 '$S' events act &&
+           c_rc 2 '$S' events act block-dst && grep -q 'did you mean block-dest' '$C/err'"
+check "PR4-C: --pick and --both go with events act only" \
+  bash -c "$(declare -f c_env c_rc); C='$C'; c_rc 2 '$S' events --pick 1 && c_rc 2 '$S' events --both &&
+           c_rc 2 '$S' events act block-dest --both --yes --no-apply"
+check "PR4-C: two events with two rules: listed by number, exit 2, nothing written" \
+  bash -c "$(declare -f c_env c_rc c_sha); C='$C'; c_rc 2 '$S' events act block-dest --no-apply --yes &&
+           grep -q '^1 .*203.0.113.71' '$C/out' && grep -q '^2 .*203.0.113.70' '$C/out' &&
+           grep -q 'with --pick N' '$C/err' && [ \"\$(c_sha)\" = '$c_sum' ]"
+# No terminal: stdin is a pipe that stays open (a sleep feeds it).  The
+# command must refuse at once, not wait for an answer.
+check "PR4-C: no terminal and no --yes: refused at once (stdin an open pipe), names --yes, nothing written" \
+  bash -c "$(declare -f c_env c_sha); C='$C'; S='$S'
+           sleep 20 | timeout 10 env STOCKFW_RULES_DIR='$C/rules' STOCKFW_APPLIED_FILE='$C/applied' \
+             STOCKFW_AUDIT_FILE='$C/audit' STOCKFW_RUN_DIR='$C/run' STOCKFW_LOG_FILE='$C/kern.log' \
+             '$S' events act block-dest --addr 203.0.113.71 --no-apply > '$C/out' 2> '$C/err'
+           rc=\$?; [ \$rc -eq 1 ] && grep -q 'pass --yes' '$C/err' && grep -q 'outbound-deny-to  203.0.113.71' '$C/out' &&
+           [ \"\$(c_sha)\" = '$c_sum' ]"
+check "PR4-C: simulate --do without a terminal and without --yes: refused at once, nothing written" \
+  bash -c "$(declare -f c_sha); C='$C'
+           sleep 20 | timeout 10 env STOCKFW_RULES_DIR='$C/rules' STOCKFW_APPLIED_FILE='$C/applied' \
+             STOCKFW_RUN_DIR='$C/run' '$S' simulate 'inbound tcp 22 from 203.0.113.7' --do 1 > '$C/out' 2> '$C/err'
+           rc=\$?; [ \$rc -ne 124 ] && [ \"\$(c_sha)\" = '$c_sum' ] && [ ! -e '$C/applied' ]"
+c_tty () {   # c_tty <answer> <args...>: stdin is a terminal
+  python3 -I - "$@" <<'PYEOF'
+import os, subprocess, sys
+m, s = os.openpty()
+p = subprocess.Popen(sys.argv[2:], stdin=s, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+os.close(s)
+os.write(m, sys.argv[1].encode())
+out, err = p.communicate(timeout=60)
+os.close(m)
+sys.stdout.write(out.decode()); sys.stderr.write(err.decode())
+sys.exit(p.returncode)
+PYEOF
+}
+check "PR4-C: on a terminal Enter and n keep the policy as it was" \
+  bash -c "$(declare -f c_env c_tty c_sha); C='$C'
+           c_env bash -c \"\$(declare -f c_tty); c_tty \\\$'\\\\n' '$S' events act block-dest --pick 1 --no-apply\" > /dev/null 2> '$C/err'; [ \$? -eq 1 ] &&
+           grep -q 'Save this rule? \[y/N\]' '$C/err' && grep -q 'nothing was changed' '$C/err' &&
+           c_env bash -c \"\$(declare -f c_tty); c_tty \\\$'n\\\\n' '$S' events act block-dest --pick 1 --no-apply\" > /dev/null 2>&1; [ \$? -eq 1 ] &&
+           [ \"\$(c_sha)\" = '$c_sum' ]"
+check "PR4-C: on a terminal y saves it (--no-apply: saved only, the journal untouched, an audit line)" \
+  bash -c "$(declare -f c_env c_tty); C='$C'
+           c_env bash -c \"\$(declare -f c_tty); c_tty \\\$'y\\\\n' '$S' events act block-dest --pick 1 --no-apply\" > '$C/out' 2>&1 &&
+           grep -q '^203.0.113.71, Blocked from event view' '$C/rules/outbound/deny-to' && [ ! -e '$C/applied' ] &&
+           grep -q 'event rule added | cli | 203.0.113.71, Blocked from event view' '$C/audit'"
+check "PR4-C: the same rule again: already in the policy, nothing added" \
+  bash -c "$(declare -f c_env c_rc); C='$C'; c_rc 0 '$S' events act block-dest --addr 203.0.113.71 --no-apply --yes &&
+           grep -q 'Already in the policy' '$C/out' && [ \$(grep -c 203.0.113.71 '$C/rules/outbound/deny-to') -eq 1 ]"
+check "PR4-C: simulate --do: a fix that does not exist, --yes alone and --applied are usage errors" \
+  bash -c "$(declare -f c_env c_rc); C='$C'; c_rc 2 '$S' simulate 'inbound tcp 22 from 203.0.113.7' --assume-running --do 9 &&
+           grep -q 'no fix 9' '$C/err' && c_rc 2 '$S' simulate 'inbound ssh' --yes &&
+           c_rc 2 '$S' simulate 'inbound ssh' --applied --do 1 && c_rc 2 '$S' simulate 'inbound ssh' --do 0"
+check "PR4-C: simulate numbers its fixes for --do" \
+  bash -c "$(declare -f c_env); C='$C'; c_env '$S' simulate 'inbound tcp 2222 from 203.0.113.7' --assume-running |
+           grep -q '^  1 \[create-allow\] Allow inbound TCP port 2222 from 203.0.113.7:'"
+check "PR4-C: completion offers act and its actions" \
+  bash -c "'$S' __complete events '' | grep -qx act && '$S' __complete events act '' | grep -qx untrust-source &&
+           '$S' __complete events act block-dest --pi | grep -qx -- --pick && '$S' __complete simulate x --d | grep -qx -- --do"
+
+# --- live, as root, in a private network namespace.
+if [ "$(id -u)" = 0 ] && command -v iptables > /dev/null 2>&1 &&
+   command -v ip > /dev/null 2>&1 && unshare -n true 2> /dev/null &&
+   cmake --build "$BUILD" --target stockfw-act-test > /dev/null 2>&1; then
+  cat > "$C/live.sh" <<'LIVE'
+S="$1"; T="$2"; C="$3"
+f=0
+t () { local what="$1"; shift; if "$@"; then echo "ok:   $what"; else echo "FAIL: $what"; f=$((f+1)); fi; }
+export STOCKFW_RULES_DIR="$C/live-rules" STOCKFW_APPLIED_FILE="$C/live-applied"
+export STOCKFW_AUDIT_FILE="$C/live-audit" STOCKFW_AUTOBLOCK_FILE="$C/live-autoblocks"
+export STOCKFW_RUN_DIR="$C/run" HOME="$C/home" XDG_CONFIG_HOME="$C/home/.config"
+export STOCKFW_LOG_FILE="$C/kern.log"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+mkdir -p "$HOME"
+ip link set lo up
+live () { iptables-save | grep -v '^#'; }
+export -f live
+sha () { cat "$STOCKFW_RULES_DIR"/*/* | sha256sum; }
+
+# --- simulate --do start, audit-only on (H12): no policy was ever
+# applied, so the start gate holds it and writes an audit line.  The
+# firewall stays stopped.
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" config audit-only on > /dev/null
+Q="inbound tcp 2222 from 203.0.113.7"
+"$S" --json simulate "$Q" > "$C/q.json"
+n=$(python3 -I -c '
+import json, sys
+k = 0
+for a in json.load(open(sys.argv[1]))["answers"]:
+    for x in a["actions"]:
+        k += 1
+        if x["kind"] == sys.argv[2]:
+            print(k); sys.exit(0)
+' "$C/q.json" start-firewall)
+"$S" simulate "$Q" --do "${n:-0}" --yes < /dev/null > "$C/start.out" 2>&1; rc=$?
+t "--do start (fix ${n:-none}) with audit-only on: held, exit 1, the firewall not started (rc $rc)" \
+  bash -c "[ -n '$n' ] && [ $rc -eq 1 ] && grep -q 'held (audit-only testing mode)' '$C/start.out' && ! iptables -S INBOUND > /dev/null 2>&1"
+t "  ...and the start gate wrote its audit line" \
+  grep -q '| firewall start held, firewall untouched | cli | held | audit-only testing mode |' "$STOCKFW_AUDIT_FILE"
+"$S" config audit-only off > /dev/null
+"$S" apply --yes < /dev/null > /dev/null 2>&1
+
+# --- simulate --do on a fix fs_whatif_row_is_safe refuses (H8): the
+# test build widens the fix's port to a range before the checks.
+s0=$(sha); j0=$(sha256sum < "$STOCKFW_APPLIED_FILE")
+"$S" --json simulate "$Q" > "$C/q.json"
+n=$(python3 -I -c '
+import json, sys
+k = 0
+for a in json.load(open(sys.argv[1]))["answers"]:
+    for x in a["actions"]:
+        k += 1
+        if x["kind"] == sys.argv[2]:
+            print(k); sys.exit(0)
+' "$C/q.json" create-allow)
+STOCKFW_TEST_FIX_PORT=2000-2222 "$T" simulate "$Q" --do "${n:-0}" --yes < /dev/null > "$C/unsafe.out" 2>&1; rc=$?
+t "--do on a fix the safety check refuses: exit 2, named, nothing written (rc $rc)" \
+  bash -c "[ -n '$n' ] && [ $rc -eq 2 ] && grep -q 'is not a rule StockFW writes for you (\"2000-2222\" is not one port)' '$C/unsafe.out' &&
+           [ \"\$(cat '$STOCKFW_RULES_DIR'/*/* | sha256sum)\" = '$s0' ] && [ \"\$(sha256sum < '$STOCKFW_APPLIED_FILE')\" = '$j0' ] &&
+           ! iptables-save | grep -q 2222"
+"$S" simulate "$Q" --do "${n:-0}" --yes < /dev/null > "$C/allow.out" 2>&1; rc=$?
+t "--do on the same fix unwidened: shown in full, saved and applied, live (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && grep -q 'The apply: +1 added' '$C/allow.out' && grep -q 'what-if rule added | cli | TCP, 2222, 203.0.113.7' '$STOCKFW_AUDIT_FILE' &&
+           iptables-save | grep -q -- '-s 203.0.113.7/32 -p tcp -m tcp --dport 2222'"
+
+# --- events act block-dest: live alone (add_live).  A saved allow that
+# nobody applied stays off the firewall.
+"$S" -q policy add inbound-allow-service SSH 22 198.51.100.0/24
+"$S" events act block-dest --addr 203.0.113.71 --yes < /dev/null > "$C/block.out" 2>&1; rc=$?
+t "events act block-dest: the block is live alone (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && grep -q '^Live: only this change went out' '$C/block.out' && live | grep -q -- '-d 203.0.113.71/32 -j DROP'"
+t "  ...the saved, unapplied allow is not live" bash -c "! live | grep -q '198.51.100.0/24'"
+
+# --- events act allow-dest on a destination Sentinel blocks (C14): the
+# auto-block comes off live, out of the state file and the policy file,
+# and the allow goes live with the saved policy (shown first).
+"$S" -q policy add outbound-deny-to 203.0.113.70 --comment "Sentinel: test"
+"$S" apply --yes < /dev/null > /dev/null 2>&1
+echo "S,$(date +%s),6,203.0.113.70, Sentinel: test" > "$STOCKFW_AUTOBLOCK_FILE"
+t "allow-dest: before, Sentinel's block of 203.0.113.70 is live" bash -c "live | grep -q -- '-d 203.0.113.70/32 -j DROP'"
+"$S" events act allow-dest --addr 203.0.113.70 --yes < /dev/null > "$C/lift.out" 2>&1; rc=$?
+t "allow-dest: the preview names the lift and the whole apply (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && grep -q \"Sentinel's block of 203.0.113.70 is lifted first (1)\" '$C/lift.out' && grep -q '^- outbound-deny-to:.*203.0.113.70' '$C/lift.out'"
+t "allow-dest: Sentinel's block is off the firewall, the allow is live" \
+  bash -c "! live | grep -q -- '-d 203.0.113.70/32 -j DROP' && live | grep -q -- '-d 203.0.113.70/32 -j ACCEPT'"
+t "allow-dest: the state row and Sentinel's policy row are gone" \
+  bash -c "! grep -q 203.0.113.70 '$STOCKFW_AUTOBLOCK_FILE' && ! grep -q '203.0.113.70, Sentinel' '$STOCKFW_RULES_DIR/outbound/deny-to'"
+
+# --- events act untrust-source (C15): the trust row off alone.
+"$S" -q policy add inbound-allow-from 203.0.113.80
+"$S" apply --yes < /dev/null > /dev/null 2>&1
+"$S" events act untrust-source --yes < /dev/null > "$C/untrust.out" 2>&1; rc=$?
+t "untrust-source: the row is removed and off the firewall (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && ! live | grep -q '203.0.113.80' && ! grep -q 203.0.113.80 '$STOCKFW_RULES_DIR/inbound/allow-from'"
+exit "$f"
+LIVE
+  unshare -n bash "$C/live.sh" "$S" "$BUILD/stockfw-act-test" "$C" > "$C/live.log" 2>&1
+  live_rc=$?
+  sed 's/^\(ok:   \|FAIL: \)/\1PR4-C: /' "$C/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the 4C live checks need root, iptables, ip, unshare and the stockfw-act-test target"
+fi
+rm -rf "$C"
 # === end PR4-C ===
 
 # === PR4-D ===

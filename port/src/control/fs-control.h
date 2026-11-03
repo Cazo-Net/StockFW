@@ -25,6 +25,7 @@
 
 #include <glib.h>
 #include "core/fs-apply.h"
+#include "core/fs-autoblock.h"
 #include "core/fs-backend.h"
 #include "core/fs-intel.h"
 #include "core/fs-lockout.h"
@@ -134,6 +135,14 @@ typedef struct
 	/* === PR4-B === */
 	/* === end PR4-B === */
 	/* === PR4-C === */
+	/* rule.allow (with lift_dest) and whatif.lift: Sentinel's blocks
+	 * lifted (fs_autoblock_lift_for_dest); its outcome is its own */
+	FsAutoblockLift *lift;
+	gchar           *lift_error;   /* rule.allow: the lift was refused  */
+	/* rule.block, rule.untrust: the firewall was not touched, with no
+	 * error: no journal (nothing on record as live; `journal' says),
+	 * or nothing to change on it                                     */
+	gboolean         live_none;
 	/* === end PR4-C === */
 	/* === PR4-D === */
 	/* === end PR4-D === */

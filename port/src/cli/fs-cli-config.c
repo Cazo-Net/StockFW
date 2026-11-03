@@ -292,15 +292,15 @@ gui_probe (const gchar *name)
 	return root;
 }
 
-/* [ root_gui_running ]
+/* [ fs_cli_root_gui_running ]
  * Is a StockFW window running as root?  It keeps its own copy of the
  * settings in memory and writes it back when it saves, so a change made
  * here can be undone by it, and its window does not show the change.
  * Found by its instance socket (core/fs-instance.c): an abstract name
  * "stockfw-gui-<uid>" (or $STOCKFW_INSTANCE_NAME), whose owner is
- * root. */
-static gboolean
-root_gui_running (void)
+ * root.  `events act' and `simulate --do' (4C) ask it too. */
+gboolean
+fs_cli_root_gui_running (void)
 {
 	const gchar *env = g_getenv ("STOCKFW_INSTANCE_NAME");
 	gchar *contents = NULL;
@@ -1236,7 +1236,7 @@ write_settings (GPtrArray *keys, GPtrArray *values, GPtrArray *reset,
 	}
 
 	/* Saved. */
-	root_gui = root_gui_running ();
+	root_gui = fs_cli_root_gui_running ();
 	fs_json_kv_bool (json, "saved", TRUE);
 	g_string_append_c (json, ',');
 	fs_json_kv_str (json, "file", fs_prefs_path ());
