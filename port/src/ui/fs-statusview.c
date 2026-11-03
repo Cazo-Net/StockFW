@@ -1496,17 +1496,28 @@ fs_statusview_intel_follow (gboolean start, const gchar *source)
 gboolean
 fs_statusview_firewall_start (GtkWidget *parent, const gchar *source)
 {
+	FsStartReport report =
+		fs_statusview_firewall_start_report (parent, source);
+
+	return report == FS_START_RUNNING || report == FS_START_RUNNING_HELD;
+}
+
+/* [ fs_statusview_firewall_start_report ] -- see fs-statusview.h. */
+FsStartReport
+fs_statusview_firewall_start_report (GtkWidget *parent, const gchar *source)
+{
 	const FsBackend *backend = fs_backend ();
 	FsApplyOutcome *outcome;
 	GError *error = NULL;
 	gboolean started, had_journal;
+	FsStartReport report = FS_START_FAILED;
 
 	if (shared_policy == NULL) {
 		/* Never start on a policy nobody loaded: on Linux that
 		 * would install an empty ruleset over the real one. */
 		fs_dialogs_error (parent, _("Failed to start the firewall"),
 		                  _("The policy has not been loaded yet."));
-		return FALSE;
+		return FS_START_FAILED;
 	}
 
 	{
@@ -1522,7 +1533,10 @@ fs_statusview_firewall_start (GtkWidget *parent, const gchar *source)
 	started = (outcome->result == FS_APPLY_OK);
 
 	if (outcome->result == FS_APPLY_DRY_RUN) {
-		gchar *why = g_strdup_printf (
+		gchar *why;
+
+		report = FS_START_HELD;
+		why = g_strdup_printf (
 			_("Changes are being held (%s) and no policy has been "
 			  "applied before, so there is nothing safe to start "
 			  "with.  Turn the hold off on the Policy page, then "
@@ -1539,6 +1553,8 @@ fs_statusview_firewall_start (GtkWidget *parent, const gchar *source)
 		                  : fs_util_apply_result_to_string (
 		                        (int) outcome->result));
 	} else {
+		report = (outcome->held && backend->start_applies_policy)
+		       ? FS_START_RUNNING_HELD : FS_START_RUNNING;
 		fs_statusview_set_state (backend->get_state != NULL
 		                         ? backend->get_state () : FS_FW_NONE);
 		/* The blocklists follow the Start (off the main loop). */
@@ -1589,7 +1605,7 @@ fs_statusview_firewall_start (GtkWidget *parent, const gchar *source)
 
 	g_clear_error (&error);
 	fs_apply_outcome_free (outcome);
-	return started;
+	return report;
 }
 
 /* [ fs_statusview_stop_consequence ] -- see fs-statusview.h. */

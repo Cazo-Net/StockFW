@@ -36,7 +36,7 @@
 
 **Chapter 14: 1.0.7 Addendum** · 14.1 IPv6 on Linux: One Policy, Two Families, One Rollback · 14.2 Windows Rule Translation: Protocols, Port Specs and Sides · 14.3 The What-If Engine: Two Models, Every Case, Verified Fixes · 14.4 Help, About, and the Preferences Redesign · 14.5 The Copilot: Fixed Rules, Shown Evidence, Verified Fixes · 14.6 Threat-Intel Blocklists on Linux and Windows, and Country and Network Blocking on Linux · 14.7 Events at Volume: Event Store, History on Disk, Windows Burst Capture · 14.8 Release Review: Where System Tools Come From, and the Dashboard Token · 14.9 Release Packaging: One Version, Real Documents, Runnable Installers · 14.10 Release Review: What StockFW Contacts, Credits, and One Test Runner · 14.11 Second Release Review: History While It Loads, the Dashboard's Launch Page, Credits and Packaging
 
-**Chapter 15: After 1.0.7 (unreleased)** · 15.1 Wayland and WSL: No Tray Icon, and Words the Window App Does Not Take · 15.2 The command line made truthful · 15.3 Dashboard hardening · 15.4 Terminal control: settings and policy editing
+**Chapter 15: After 1.0.7 (unreleased)** · 15.1 Wayland and WSL: No Tray Icon, and Words the Window App Does Not Take · 15.2 The command line made truthful · 15.3 Dashboard hardening · 15.4 Terminal control: settings and policy editing · 15.6 What-If start respects audit-only (H12)
 
 ---
 
@@ -1175,6 +1175,8 @@ From 2026-10-08 to 2026-10-10 StockFW locked this machine out of legitimate site
 
 **Honest limits.** The netsh label match assumes English `netsh` output (the same caveat the elevation matcher carries); a deleted state file loses the tracking of what was staged — the policy rows themselves are then governed by the destination gates and the next clear, not by a phantom record; the cooldown is session-scoped by design (see B), so a restart with a still-gated, still-uncooled insight may stage again — which is now a fresh decision under gates A/C rather than a loop; hostname destinations can never auto-block (Sentinel hits carry literal IPs, so this costs nothing); and Windows' block-beats-allow precedence is platform behavior — the fix lifts the block, it does not pretend the precedence changed.
 
+**After 1.0.7 (15.6, H12).** The same Copilot page carries the What-If card. Its "Start the firewall" button called the backend's `start()` directly, so audit-only mode and the Policy Lock did not hold it and no audit line was written. It now goes through the start gate (`fs_statusview_firewall_start` -> `fs_firewall_start_safe`), as the Overview's Start button and the tray's Resume do. **[Verified]** `fs-whatif-start-smoke`.
+
 ---
 
 ### 12.10 Detection Validation: the P4 Adversarial Suite
@@ -2238,6 +2240,27 @@ A review of the merged packages found the following. Each is fixed, and each fix
 - **Words.** 15.4.1 named the Events filters by the wrong labels; they are "Hide repeated events" and "Skip events not addressed to this computer", as in the window. A sentence in 13.5 had a capital letter after a semicolon.
 
 **Not verified.** Nothing here was run on Windows; the core, the app, the Windows backend and `test-pr3-core.c` were compiled and linked here against Windows headers with MinGW, with no warning. The race between a window and a terminal was not run end to end; the core test holds the lock with a test descriptor instead.
+
+### 15.6 What-If start respects audit-only (H12)
+
+**The bug.** The What-If card offers "Start the firewall" when the firewall is stopped (`FS_WHATIF_ACT_START_FIREWALL`). `whatif_start_firewall()` in `src/ui/fs-copilot.c` called `fs_backend()->start()` directly. That skipped the start gate: audit-only mode and the Policy Lock did not hold it, no audit line was written, and the journal of the last applied policy was not used. On Linux, `start` installs the policy file, so changes saved but never applied went live. The engine offers the action whether a hold is on or not.
+
+**The fix.** The button now calls `fs_statusview_firewall_start_report (parent, "what-if")`, the same start the Overview's Start button and the tray's Resume make (`fs_statusview_firewall_start` is a wrapper that returns TRUE when it runs). It hands the shared policy and `fs_policyview_hold_reason()` to `fs_firewall_start_safe`, shows the same dialog when the start is held or fails, refreshes the Overview, and lets the blocklists follow the start. The audit line names the source `what-if`. The What-If window then says what happened, from what the gate did (`fs_statusview_firewall_start_report` returns `FS_START_RUNNING`, `FS_START_RUNNING_HELD`, `FS_START_HELD` or `FS_START_FAILED`): started, started with the last applied policy (held), not started (held), or did not start. A failure with a hold on is reported as a failure, not as a hold; on Windows a hold never stops a start, so there every failure is a failure.
+
+The question before the start says what the gate does. On Linux: the last policy that was applied goes live and changes saved since then stay off until applied; if nothing was applied before, the saved policy is applied, unless a hold is on, and then it does not start. On Windows: Windows Firewall is switched on and the rules are not changed. It no longer says "it loads the saved policy".
+
+What a held start does depends on the platform, as for the Start button (`fs-apply.h`):
+
+| Platform model | Hold on, nothing applied before | Hold on, a policy applied before | Audit line |
+|---|---|---|---|
+| Linux (start installs a policy) | not started (`FS_APPLY_DRY_RUN`) | the journal (last applied policy) goes in; `start()` is not called | `firewall start held, firewall untouched` or `firewall started` with mode `held` |
+| Windows (start switches enforcement on) | started; the rules in the firewall's store do not change | the same | `firewall started`, mode `start`, with the hold named |
+
+**Tests.** `fs-whatif-start-smoke` (`tests/ui-whatif-start-smoke.c`) runs the real app against a fake backend that reads "stopped" and counts starts and applies. It asks the card a question, opens Details, presses "Start the firewall" and says Yes, in six processes: `held`, `journal`, `windows`, `unheld`, `winfail` (Windows model, hold on, the backend's start fails) and `badjournal` (Linux model, hold on, a journal that cannot be read). The last two check that the window says "did not start", not "held". Every scenario checks the question: no "loads the saved policy", and the platform's own wording. On Linux it needs root, because the What-If trusts a "stopped" reading only from root (`whatif_state_reliable`); as another user it prints SKIP. CI runs it in the Linux job with `sudo` (a SKIP there fails the job) and in the Windows job through `tests/full-suite.sh`. `test-core.sh` (`test_no_direct_start_in_ui`) checks that no file in `src/ui` calls `->start (` and that `whatif_start_firewall` calls `fs_statusview_firewall_start_report`.
+
+**Teeth.** With the old call put back (`fs_backend ()->start (NULL)` in place of `fs_statusview_firewall_start`), all four scenarios fail: `held` and `journal` start the backend (1 start) and write no audit line, `windows` and `unheld` write no audit line. Both `test-core.sh` checks fail too. With the old message choice put back (a failed start reported as held whenever a hold is on), `winfail` and `badjournal` fail. With the old question put back, all six scenarios fail. The file was copied aside, patched, rebuilt and run, then copied back and checked with `cmp`.
+
+**Not verified.** Nothing here was run on Windows. The app, with `fs-copilot.c` and `fs-statusview.c`, was compiled and linked here with MinGW against Windows GTK libraries, and the smoke was compiled against Windows headers, with no warning; neither was run. The Windows CI job runs the smoke.
 
 ---
 

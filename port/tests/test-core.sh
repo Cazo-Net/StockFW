@@ -8616,6 +8616,57 @@ out:
 	g_free (hdr);
 }
 
+/* --- H12: no window control starts the firewall behind the gate -----
+ * The What-If card's "Start the firewall" called fs_backend()->start()
+ * directly, so audit-only mode did not hold it and nothing was audited.
+ * Every start in src/ui now goes through the start gate
+ * (fs_statusview_firewall_start[_report] -> fs_firewall_start_safe, or
+ * fs_firewall_start_lifting at launch).  Read from the source;
+ * tests/ui-whatif-start-smoke.c presses the button. */
+static void test_no_direct_start_in_ui (void)
+{
+	GDir *dir = g_dir_open ("src/ui", 0, NULL);
+	const gchar *name;
+	GString *where = g_string_new (NULL);
+	gchar *src = NULL;
+	const gchar *gate = NULL;
+
+	CHECK (dir != NULL, "H12: src/ui is readable");
+	while (dir != NULL && (name = g_dir_read_name (dir)) != NULL) {
+		gchar *path, *text = NULL;
+
+		if (!g_str_has_suffix (name, ".c"))
+			continue;
+		path = g_build_filename ("src/ui", name, NULL);
+		if (g_file_get_contents (path, &text, NULL, NULL) &&
+		    (strstr (text, "->start (") != NULL ||
+		     strstr (text, "->start(") != NULL))
+			g_string_append_printf (where, " %s", name);
+		g_free (text);
+		g_free (path);
+	}
+	if (dir != NULL)
+		g_dir_close (dir);
+	CHECK (where->len == 0,
+	       "H12: no direct backend start in src/ui (found in:%s)",
+	       where->len > 0 ? where->str : " none");
+	g_string_free (where, TRUE);
+
+	if (g_file_get_contents ("src/ui/fs-copilot.c", &src, NULL, NULL)) {
+		const gchar *fn = strstr (src, "\nwhatif_start_firewall (");
+		const gchar *end = fn != NULL ? strstr (fn, "\n}") : NULL;
+
+		gate = fn != NULL ? strstr (fn, "fs_statusview_firewall_start_report (")
+		                  : NULL;
+		if (gate != NULL && end != NULL && gate > end)
+			gate = NULL;
+	}
+	CHECK (gate != NULL,
+	       "H12: the What-If start goes through "
+	       "fs_statusview_firewall_start_report (the start gate)");
+	g_free (src);
+}
+
 /* --- "Start the firewall when StockFW opens" -------------------------
  * On Linux, start applies a policy.  At launch the shared policy is
  * created empty and only filled when the Policy page is built, and
@@ -11667,6 +11718,7 @@ int main (void)
 	test_restore_plan ();
 	test_sharing_needs_both_devices ();
 	test_start_on_open_order ();
+	test_no_direct_start_in_ui ();
 	test_activity_series ();
 	test_activity_sampler ();
 	test_json_writer ();
