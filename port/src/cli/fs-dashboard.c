@@ -1274,6 +1274,16 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 			        "started as root).\n");
 		else
 			printf ("\n  Open the URL above in your browser.\n");
+	} else if (dash.launch_file != NULL && !fs_cli.json) {
+		/* xdg-open started, but whether the browser can read the
+		 * launch page is not known here: a snap or Flatpak browser
+		 * is usually not allowed into $XDG_RUNTIME_DIR or a hidden
+		 * folder, and shows an error instead.  The URL always
+		 * works (code review of the release, finding 1). */
+		printf ("\n  A browser was started.  If it shows an error and "
+		        "not the dashboard\n  (a snap or Flatpak browser may "
+		        "not read the page it was given),\n  open the URL "
+		        "above in it.\n");
 	}
 
 	if (!fs_cli.json)

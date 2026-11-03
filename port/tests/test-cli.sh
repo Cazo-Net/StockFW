@@ -753,6 +753,8 @@ check "  ...the page is 0600 in a 0700 directory" \
   bash -c "[ \"\$(cat '$OD/seen/mode')\" = 600 ] && [ \"\$(cat '$OD/seen/dirmode')\" = 700 ]"
 check "  ...and sends the browser on to the URL with the token" \
   bash -c "grep -qF 'location.replace(\"$OURL\")' '$OD/seen/page.html' && grep -qF 'url=$OURL\"' '$OD/seen/page.html'"
+check "  ...and the terminal says to open the URL if the browser cannot read the page" \
+  bash -c "grep -q 'A browser was started' '$OD/out' && grep -q 'open the URL' '$OD/out'"
 check "  ...it stays until the token is used" bash -c "[ -f '$OPAGE' ]"
 curl -sS -o /dev/null -H "X-StockFW-Token: $OTOKEN" "http://127.0.0.1:$OPORT/api/summary"
 check "  ...and is removed, with its directory, once it is" \

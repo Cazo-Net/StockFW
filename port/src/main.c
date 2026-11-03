@@ -239,6 +239,50 @@ already_running_notice (int *argc, char ***argv)
 	gtk_widget_destroy (dialog);
 }
 
+#ifdef G_OS_WIN32
+/* [ runtime_dll_dir_keep ]
+ * SetDefaultDllDirectories (below) takes PATH out of the search for
+ * DLLs loaded later, such as the gdk-pixbuf loaders and what they need
+ * (librsvg for SVG).  Installed, that changes nothing: the installer
+ * puts every runtime DLL beside StockFW.exe.  A build run from its
+ * build folder found its GTK runtime (MSYS2's /ucrt64/bin) through
+ * PATH, and icons and images failed (code review of the release,
+ * finding 4).  The folder GTK was loaded from -- already trusted,
+ * since its code is running -- is added back, when it is not
+ * StockFW's own; PATH, the current folder and every other folder stay
+ * out. */
+static void
+runtime_dll_dir_keep (void)
+{
+	static const wchar_t *const names[] = {
+		L"libgtk-3-0.dll", L"libglib-2.0-0.dll", L"glib-2.0-0.dll"
+	};
+	wchar_t exe[MAX_PATH], rt[MAX_PATH];
+	wchar_t *cut;
+	HMODULE mod = NULL;
+	DWORD n;
+
+	for (gsize i = 0; i < G_N_ELEMENTS (names) && mod == NULL; i++)
+		mod = GetModuleHandleW (names[i]);
+	if (mod == NULL)
+		return;
+	n = GetModuleFileNameW (mod, rt, MAX_PATH);
+	if (n == 0 || n >= MAX_PATH)
+		return;
+	n = GetModuleFileNameW (NULL, exe, MAX_PATH);
+	if (n == 0 || n >= MAX_PATH)
+		return;
+	if ((cut = wcsrchr (rt, L'\\')) == NULL)
+		return;
+	*cut = L'\0';
+	if ((cut = wcsrchr (exe, L'\\')) == NULL)
+		return;
+	*cut = L'\0';
+	if (_wcsicmp (rt, exe) != 0)
+		AddDllDirectory (rt);
+}
+#endif
+
 int
 main (int argc, char *argv[])
 {
@@ -257,6 +301,7 @@ main (int argc, char *argv[])
 	 * folder.  spawn_capture() already names System32 itself; these
 	 * guard whatever else might not (fs-toolpath.h). */
 	SetDefaultDllDirectories (LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+	runtime_dll_dir_keep ();
 	SetEnvironmentVariableW (L"NoDefaultCurrentDirectoryInExePath", L"1");
 #endif
 
