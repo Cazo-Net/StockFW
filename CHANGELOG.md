@@ -118,6 +118,13 @@ into `/usr/local/share/doc/stockfw/`.
 - **SSH sessions on any port are kept.** The addresses a blocklist must
   never cut now include the clients of sshd on every port it listens
   on, not only port 22.
+- **`events -f` shows a status line on a terminal.** Under the rows,
+  on stderr: the firewall state, live or pending, HELD (audit-only),
+  blocked today, Sentinel and where the events come from. It is
+  redrawn after each event and every few seconds. `--no-status-line`
+  turns it off, and it is never shown with `--json`, `--csv`, `-q`,
+  `TERM=dumb` or in a pipe, so `--json` output is still one event per
+  line and nothing else.
 <!-- WP-F -->
 <!-- WP-E -->
 

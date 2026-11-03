@@ -1595,7 +1595,9 @@ time.sleep(2)
 stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00')
 open(live, 'a').write(stamp + ' host kernel: [9.0] STOCKFW-DROP IN=eth0 OUT= SRC=2001:db8:aaaa:bbbb:cccc:dddd:eeee:1 DST=2001:db8::5 LEN=80 PROTO=TCP SPT=1 DPT=3389 SYN\n')
 out = p.communicate(timeout=20)[0].decode('utf-8', 'replace')
-lines = [re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', l.rstrip('\r')) for l in out.split('\n')]
+# What is left after the last carriage return: the status line of
+# 15.2.5 is drawn and cleared with \r before each row.
+lines = [re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', l.rstrip('\r')).split('\r')[-1] for l in out.split('\n')]
 head = [l for l in lines if l.startswith('TIME')]
 row = [l for l in lines if '2001:db8' in l]
 assert len(head) == 1 and len(row) == 1, lines
@@ -1726,6 +1728,99 @@ rm -rf "$D"
 # === end WP-D ===
 
 # === WP-F ===
+# The live event line of events -f (master plan PR 1, adjustment 2):
+# a status line on stderr under the rows, only when stdout and stderr
+# are both terminals.  The checks run events -f under script(1), set
+# the size with stty inside it, append fixture lines while it follows,
+# and read the raw bytes of the terminal.  events -f needs root.
+if [ "$(id -u)" = 0 ] && command -v script > /dev/null && command -v stty > /dev/null; then
+  F="$(mktemp -d /tmp/stockfw-wpf-XXXXXX)"; chmod 755 "$F"
+  # f_run NAME MODE SHELL-COMMAND: follow a fresh copy of the fixture
+  # under script, append three lines (two blocked, one allowed) after
+  # 2 s and save the raw terminal bytes in $F/NAME.out.  In the
+  # command, $S is stockfw and the followed file's name holds an ESC
+  # and a U+202E.  MODE "held" turns audit-only on first.
+  f_run () { py "
+import datetime, os, subprocess, time
+F, name, mode, cmd = '$F', '$1', '$2', '''$3'''
+live = F + '/' + name + '-\x1b[2J\u202e.log'
+now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+def at(s): return (now - datetime.timedelta(seconds=s)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+k = ' host kernel: [1.0] '
+bad_in = 'e\x1b]0;pwn\x07th\u202e0'
+open(live, 'w').write(at(30) + k + 'STOCKFW-DROP IN=' + bad_in + ' OUT= SRC=203.0.113.5 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40000 DPT=22 SYN\n'
+                      + at(20) + k + 'STOCKFW-ALLOW IN= OUT=eth0 SRC=10.0.0.5 DST=203.0.113.9 LEN=60 PROTO=TCP SPT=50000 DPT=443 SYN\n')
+cfg = F + '/cfg-' + name
+os.makedirs(cfg + '/stockfw', exist_ok=True)
+open(cfg + '/stockfw/stockfw.conf', 'w').write('[client]\npolicy_audit_only=true\n' if mode == 'held' else '')
+env = dict(os.environ, STOCKFW_LOG_FILE=live, STOCKFW_RULES_DIR=F + '/rules', XDG_CONFIG_HOME=cfg,
+           XDG_DATA_HOME=F + '/data', TERM='xterm', S='$S', OUT=F + '/' + name + '.pipe')
+env.pop('COLUMNS', None)
+p = subprocess.Popen(['script', '-qec', cmd, '/dev/null'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+time.sleep(2)
+with open(live, 'a') as f:
+    f.write(at(0) + k + 'STOCKFW-DROP IN=' + bad_in + ' OUT= SRC=198.51.100.1 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=1 DPT=23 SYN\n')
+    f.flush(); time.sleep(0.5)
+    f.write(at(0) + k + 'STOCKFW-ALLOW IN= OUT=eth0 SRC=10.0.0.5 DST=198.51.100.2 LEN=60 PROTO=TCP SPT=2 DPT=443 SYN\n')
+    f.flush(); time.sleep(0.5)
+    f.write(at(0) + k + 'STOCKFW-REJECT IN=' + bad_in + ' OUT= SRC=198.51.100.3 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=3 DPT=3389 SYN\n')
+open(F + '/' + name + '.out', 'wb').write(p.communicate(timeout=30)[0])"; }
+  # f_check NAME PYTHON: assertions on the bytes ($F/NAME.out is `out').
+  f_check () { py "
+import re, json
+out = open('$F/$1.out', 'rb').read()
+STATUS = re.compile(rb'\r\x1b\[K(?:\x1b\[[0-9;]*m)*((?:running|stopped|locked|state unknown)\b[^\r\n\x1b]*)')
+lines = [m.group(1).decode('utf-8') for m in STATUS.finditer(out)]
+$2"; }
+  f_none () { f_check "$1" "
+assert b'\x1b[K' not in out and b'blocked today' not in out, out"; }
+
+  f_run tty plain 'stty rows 20 cols 100; timeout -s INT 6 "$S" --full events -n 5 -f --wide'
+  check "events -f: on a terminal the stderr status line is redrawn after every event row" f_check tty "
+rows = re.findall(rb'198\.51\.100\.[0-9] [^\r\n]*\r\n\r\x1b\[K(?:\x1b\[[0-9;]*m)*(?:running|stopped|locked|state unknown) ', out)
+assert len(rows) == 3, out
+assert lines and all('blocked today' in l and 'Sentinel auto' in l for l in lines), lines
+assert 'HELD' not in out.decode('utf-8', 'replace')"
+  check "  ...blocked today rises by exactly the two blocked lines appended (not the allowed one)" f_check tty "
+n = [int(re.search(r'blocked today ([0-9]+)', l).group(1)) for l in lines]
+assert n[0] >= 1 and n[-1] == n[0] + 2 and sorted(n) == n, n"
+  check "  ...the line fits 100 columns (stty cols 100) and is cleared before the count at Ctrl-C" f_check tty "
+assert all(len(l) <= 99 for l in lines), [len(l) for l in lines]
+assert re.search(rb'\r\x1b\[K\r\n3 events \(2 blocked\) in', out), out[-200:]"
+  check "  ...ESC and U+202E from the log are escaped in the rows and on the status line" f_check tty "
+assert b'\x1b]' not in out and b'\x07' not in out and b'\x1b[2J' not in out and '\u202e'.encode() not in out, out
+low = out.lower()
+assert len(re.findall(rb'e\\\\x1b\]0;pwn\\\\x07th\\\\u202e0', low)) == 3, out
+assert all('\\\\x1b[2J\\\\u202e.log' in l for l in lines), lines"
+
+  f_run held held 'stty rows 20 cols 100; timeout -s INT 5 "$S" events -n 1 -f'
+  check "events -f: with audit-only on, the line says HELD (audit-only)" f_check held "
+assert lines and all('HELD (audit-only)' in l for l in lines), lines"
+
+  f_run narrow plain 'stty rows 20 cols 0; COLUMNS=60 timeout -s INT 5 "$S" events -n 1 -f'
+  check "events -f: a terminal with no width (ws_col 0) falls back to COLUMNS=60" f_check narrow "
+assert lines and all(len(l) <= 59 and l.endswith(('\u2026', '...')) for l in lines), lines"
+
+  f_run ndjson plain 'stty rows 20 cols 100; timeout -s INT 5 "$S" --json events -n 2 -f | head -n 4 > "$OUT"'
+  check "events -f --json | head: only event objects, one per line, and no status line" f_check ndjson "
+objs = [json.loads(l) for l in open('$F/ndjson.pipe').read().splitlines()]
+assert len(objs) == 4 and all(isinstance(o, dict) and 'blocked' in o and 'source' in o for o in objs), objs
+assert b'\x1b[K' not in out and b'blocked today' not in out, out"
+
+  f_run json plain 'stty rows 20 cols 100; timeout -s INT 5 "$S" --json events -n 1 -f'
+  check "events -f --json on a terminal: no status line" f_none json
+  f_run nostat plain 'stty rows 20 cols 100; timeout -s INT 5 "$S" events -n 1 -f --no-status-line'
+  check "events -f --no-status-line: no status line" f_none nostat
+  f_run quiet plain 'stty rows 20 cols 100; timeout -s INT 5 "$S" -q events -n 1 -f'
+  check "events -q -f: no status line" f_none quiet
+  f_run dumb plain 'stty rows 20 cols 100; TERM=dumb timeout -s INT 5 "$S" events -n 1 -f'
+  check "events -f with TERM=dumb: no status line" f_none dumb
+  f_run pipe plain 'stty rows 20 cols 100; timeout -s INT 5 "$S" events -n 1 -f | cat'
+  check "events -f into a pipe: no status line" f_none pipe
+  rm -rf "$F"
+else
+  echo "skip: the live event line checks (need root, script(1) and stty)"
+fi
 # === end WP-F ===
 
 # === WP-E ===

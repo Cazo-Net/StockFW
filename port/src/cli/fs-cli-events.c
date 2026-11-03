@@ -265,6 +265,14 @@ typedef struct
 	GMainLoop  *loop;
 	gboolean    interrupted;
 	gint        rc;
+	/* -f: the live status line on stderr (15.2.5) */
+	gboolean    status_on;
+	gboolean    status_drawn;
+	FsCliStatusSnapshot *snap;
+	gint64      snap_us;      /* when snap was read (monotonic)       */
+	gint64      blocked_base; /* blocked today when following began   */
+	guint64     blocked_live; /* blocked events seen since then       */
+	gint        day;          /* the local day blocked_base counts    */
 } EventsState;
 
 /* [ hit_time_us ] -- the hit's own time, 0 when it cannot be read. */
@@ -349,12 +357,17 @@ csv_line (const FsHit *hit)
 }
 
 /* [ status_line_hook ]
- * The live event line (master plan PR 1, adjustment 2) is WP-F's: it
- * redraws a status line on stderr around each event and on the timer.
- * This is where it hooks in.  `moment' says when it is called:
- * before a row is printed (clear the line), after it (draw it again),
- * on the 2 s tick, and once when following stops.  It does nothing
- * yet. */
+ * The live event line (master plan PR 1, adjustment 2).  When stdout
+ * and stderr are both terminals, a status line sits under the rows on
+ * stderr: before a row it is cleared (\r\033[K), after the row it is
+ * drawn again, and on the 2 s tick it is redrawn, with the facts read
+ * again (fs_cli_status_snapshot) every 5 s.  It shows the firewall
+ * state, live or pending, HELD (audit-only), blocked today, Sentinel
+ * and where the events come from.  Blocked today is the count when
+ * following began plus every blocked event seen since, so no line is
+ * counted twice.  Every text from outside goes through
+ * fs_cli_out_safe, and the line is cut to the terminal's width so it
+ * never wraps (a wrapped line cannot be cleared with \r). */
 typedef enum
 {
 	STATUS_BEFORE_ROW,
@@ -363,11 +376,209 @@ typedef enum
 	STATUS_STOP
 } StatusMoment;
 
+#define STATUS_REFRESH_US (5 * G_USEC_PER_SEC)
+
+/* [ status_line_wanted ]
+ * Never with --json or --csv, with -q, with --no-status-line, when
+ * stdout or stderr is not a terminal, or with TERM=dumb. */
+static gboolean
+status_line_wanted (gboolean csv, gboolean off)
+{
+	const gchar *term = g_getenv ("TERM");
+
+	if (off || fs_cli.json || csv || fs_cli.quiet)
+		return FALSE;
+	if (!isatty (STDOUT_FILENO) || !isatty (STDERR_FILENO))
+		return FALSE;
+	return term == NULL || g_ascii_strcasecmp (term, "dumb") != 0;
+}
+
+static gint
+local_day (void)
+{
+	GDateTime *now = g_date_time_new_now_local ();
+	gint day = g_date_time_get_year (now) * 1000 +
+	           g_date_time_get_day_of_year (now);
+
+	g_date_time_unref (now);
+	return day;
+}
+
+static void
+status_snapshot_read (EventsState *st)
+{
+	fs_cli_status_snapshot_free (st->snap);
+	st->snap = fs_cli_status_snapshot ();
+	st->snap_us = g_get_monotonic_time ();
+}
+
+/* [ status_line_start ] -- the first snapshot, when following begins. */
+static void
+status_line_start (EventsState *st)
+{
+	if (!st->status_on)
+		return;
+	status_snapshot_read (st);
+	st->blocked_base = st->snap->blocked_today;
+	st->blocked_live = 0;
+	st->day = local_day ();
+}
+
+static const gchar *
+status_state_word (FsFirewallState state)
+{
+	switch (state) {
+	case FS_FW_RUNNING: return "running";
+	case FS_FW_STOPPED: return "stopped";
+	case FS_FW_LOCKED:  return "locked";
+	default:            return "state unknown";
+	}
+}
+
+/* [ status_line_text ] -- the line, before it is cut to the width. */
+static gchar *
+status_line_text (const EventsState *st)
+{
+	const FsCliStatusSnapshot *snap = st->snap;
+	GString *line = g_string_new (NULL);
+	gchar *sep = g_strdup_printf (" %s ", fs_cli_sym (FS_CLI_SYM_SEP));
+	gchar *text;
+
+	g_string_append (line, status_state_word (snap->state));
+	if (snap->state != FS_FW_STOPPED) {
+		const gchar *live;
+
+		switch (snap->live) {
+		case FS_CLI_LIVE_SAME:       live = "live";            break;
+		case FS_CLI_LIVE_PENDING:    live = "changes pending"; break;
+		case FS_CLI_LIVE_NO_JOURNAL: live = "never applied";   break;
+		case FS_CLI_LIVE_STOPPED:    live = "stopped";         break;
+		default:                     live = "live: unknown";   break;
+		}
+		g_string_append_printf (line, "%s%s", sep, live);
+	}
+	if (snap->settings_pending)
+		g_string_append_printf (line, "%ssettings pending", sep);
+	if (snap->held)
+		g_string_append_printf (line, "%sHELD (audit-only)", sep);
+
+	if (st->blocked_base >= 0)
+		g_string_append_printf (line, "%sblocked today %" G_GUINT64_FORMAT,
+		                        sep, (guint64) st->blocked_base +
+		                        st->blocked_live);
+	else
+		g_string_append_printf (line, "%sblocked today unknown, %"
+		                        G_GUINT64_FORMAT " since start", sep,
+		                        st->blocked_live);
+
+	text = fs_cli_out_safe (snap->sentinel_mode);
+	g_string_append_printf (line, "%sSentinel %s", sep, text);
+	g_free (text);
+	if (snap->sentinel_staged > 0)
+		g_string_append_printf (line, ", %d staged", snap->sentinel_staged);
+
+	if (snap->monitor_readable) {
+		text = fs_cli_out_safe (snap->monitor_source != NULL
+		                        ? snap->monitor_source : "the kernel log");
+		g_string_append_printf (line, "%sfrom %s", sep, text);
+	} else {
+		text = fs_cli_out_safe (snap->monitor_problem != NULL
+		                        ? snap->monitor_problem
+		                        : "the kernel log cannot be read");
+		g_string_append_printf (line, "%slog: %s", sep, text);
+	}
+	g_free (text);
+
+	g_free (sep);
+	return g_string_free (line, FALSE);
+}
+
+/* [ status_line_fit ]
+ * At most width - 1 columns (writing the last column makes some
+ * terminals wrap), with an ellipsis when cut.  A wide character
+ * counts two. */
+static gchar *
+status_line_fit (const gchar *text, guint width)
+{
+	const gchar *ell = fs_cli_sym (FS_CLI_SYM_ELLIPSIS);
+	guint ell_w = (guint) g_utf8_strlen (ell, -1);
+	guint used = 0, room = (width < 2 ? 2 : width) - 1;
+	guint keep = room > ell_w ? room - ell_w : 0;
+	const gchar *p, *cut = NULL;
+
+	for (p = text; *p != '\0'; p = g_utf8_next_char (p)) {
+		guint w = g_unichar_iswide (g_utf8_get_char (p)) ? 2 : 1;
+
+		if (cut == NULL && used + w > keep)
+			cut = p;
+		if (used + w > room) {
+			GString *out = g_string_new_len (text, cut - text);
+
+			g_string_append (out, ell);
+			return g_string_free (out, FALSE);
+		}
+		used += w;
+	}
+	return g_strdup (text);
+}
+
+static void
+status_line_draw (EventsState *st)
+{
+	guint width = fs_cli_term_width ();
+	gint day = local_day ();
+	gchar *text, *fit;
+
+	/* After midnight the count starts again. */
+	if (day != st->day) {
+		st->day = day;
+		st->blocked_base = 0;
+		st->blocked_live = 0;
+	}
+	text = status_line_text (st);
+	/* ws_col 0 and no $COLUMNS: 80 rather than a line that wraps. */
+	fit = status_line_fit (text, width > 0 ? width : 80);
+	fprintf (stderr, "\r\033[K%s%s%s", fs_cli_dim (), fit, fs_cli_reset ());
+	fflush (stderr);
+	st->status_drawn = TRUE;
+	g_free (fit);
+	g_free (text);
+}
+
+static void
+status_line_clear (EventsState *st)
+{
+	if (!st->status_drawn)
+		return;
+	fputs ("\r\033[K", stderr);
+	fflush (stderr);
+	st->status_drawn = FALSE;
+}
+
 static void
 status_line_hook (EventsState *st, StatusMoment moment)
 {
-	(void) st;
-	(void) moment;
+	if (!st->status_on || st->snap == NULL)
+		return;
+
+	switch (moment) {
+	case STATUS_BEFORE_ROW:
+		status_line_clear (st);
+		break;
+	case STATUS_TICK:
+		if (g_get_monotonic_time () - st->snap_us >= STATUS_REFRESH_US)
+			status_snapshot_read (st);
+		status_line_draw (st);
+		break;
+	case STATUS_AFTER_ROW:
+		status_line_draw (st);
+		break;
+	case STATUS_STOP:
+		status_line_clear (st);
+		fs_cli_status_snapshot_free (st->snap);
+		st->snap = NULL;
+		break;
+	}
 }
 
 /* [ print_live_hit ] -- one followed event, in the table's columns. */
@@ -408,6 +619,12 @@ print_live_hit (const FsHit *hit, EventsState *st)
 static void
 on_live_hit (const FsHit *hit, gpointer data)
 {
+	EventsState *st = data;
+
+	/* Blocked today counts every blocked event, whatever the filters
+	 * let through. */
+	if (st->status_on && fs_hit_is_blocked (hit))
+		st->blocked_live++;
 	print_live_hit (hit, data);
 }
 
@@ -1114,7 +1331,7 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 	guint count = 20, top = 10;
 	gboolean follow = FALSE, saved = FALSE, reverse = FALSE;
 	gboolean summary = FALSE, want_blocked = FALSE, want_allowed = FALSE;
-	gboolean by_given = FALSE, top_given = FALSE;
+	gboolean by_given = FALSE, top_given = FALSE, no_status = FALSE;
 	const gchar *since = NULL, *until = NULL, *dir_opt = NULL;
 	const gchar *port_opt = NULL;
 	FsEventFilter filter = { 0 };
@@ -1209,6 +1426,8 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			st.csv = TRUE;
 		} else if (strcmp (argv[i], "--summary") == 0) {
 			summary = TRUE;
+		} else if (strcmp (argv[i], "--no-status-line") == 0) {
+			no_status = TRUE;
 		} else {
 			fs_cli_unknown_option ("events", argv[i]);
 			bad = FS_EXIT_USAGE;
@@ -1484,6 +1703,9 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 		st.started_us = g_get_monotonic_time ();
 		st.printed = st.blocked = 0;
 		st.rc = FS_EXIT_OK;
+		st.status_on = status_line_wanted (st.csv, no_status);
+		status_line_start (&st);
+		status_line_hook (&st, STATUS_AFTER_ROW);
 		g_unix_signal_add (SIGINT, on_follow_signal, &st);
 		g_unix_signal_add (SIGTERM, on_follow_signal, &st);
 		check = g_timeout_add_seconds (2, on_reader_check, &st);
@@ -1494,6 +1716,9 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 
 		backend->log_stop ();
 		rc = st.rc;
+		/* Whatever ended it, the line is not left behind. */
+		if (!st.interrupted || fs_cli.quiet)
+			status_line_hook (&st, STATUS_STOP);
 
 		/* Ctrl-C: what was seen, on stderr; the exit stays 0. */
 		if (st.interrupted && !fs_cli.quiet) {
@@ -1514,6 +1739,7 @@ out:
 	if (st.queries != NULL)
 		g_ptr_array_unref (st.queries);
 	g_free (st.widths);
+	fs_cli_status_snapshot_free (st.snap);
 	g_ptr_array_unref (by_names);
 	g_array_unref (ranges);
 	g_free (dir);
@@ -2582,6 +2808,7 @@ static const FsCliOption events_opts[] = {
 	{ "--reverse",     FALSE, NULL },
 	{ "--csv",         FALSE, NULL },
 	{ "--summary",     FALSE, NULL },
+	{ "--no-status-line", FALSE, NULL },
 	{ NULL, FALSE, NULL }
 };
 
@@ -2616,8 +2843,8 @@ static const FsCliOption interfaces_opts[] = {
 
 const FsCliCommandDef fs_cli_events_commands[] = {
 	{ "events", fs_cli_cmd_events,
-"Usage: stockfw events [-n N] [-f] [--history] [--json|--csv] [--wide]\n"
-"                      [-r] [--utc] [filters]\n"
+"Usage: stockfw events [-n N] [-f [--no-status-line]] [--history]\n"
+"                      [--json|--csv] [--wide] [-r] [--utc] [filters]\n"
 "       stockfw events --summary [--by KEY[,KEY]] [--top N] [filters]\n"
 "\n"
 "The last N (default 20, up to 1000000) events, oldest first (-r: newest\n"
@@ -2632,7 +2859,13 @@ const FsCliCommandDef fs_cli_events_commands[] = {
 "  -f, --follow          keep printing new events, in the table's\n"
 "                        columns, until Ctrl-C (which prints a count);\n"
 "                        with --json one object per line (NDJSON).  If\n"
-"                        the event reader stops, it says why and exits 1\n"
+"                        the event reader stops, it says why and exits 1.\n"
+"                        On a terminal a status line under the rows\n"
+"                        shows the state, live or pending, HELD\n"
+"                        (audit-only), blocked today, Sentinel and the\n"
+"                        event source\n"
+"  --no-status-line      -f without that line (it is never shown with\n"
+"                        --json, --csv, -q, TERM=dumb or in a pipe)\n"
 "  --wide                full time with year and zone, plus the IN and\n"
 "                        OUT devices, LEN and TOS\n"
 "  --utc                 times as ISO-8601 UTC (2026-11-03T09:04:37Z)\n"
