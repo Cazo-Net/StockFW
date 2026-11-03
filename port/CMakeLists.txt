@@ -68,6 +68,7 @@ add_library(fs-core STATIC
   src/core/fs-feed.c
   src/core/fs-fetch.c
   src/core/fs-hostnet.c
+  src/core/fs-lockout.c
   src/core/fs-intel.c
   src/core/fs-geodb.c
   src/core/fs-intelwin.c

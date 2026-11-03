@@ -37,6 +37,33 @@ into `/usr/local/share/doc/stockfw/`.
 - `stockfw version` prints one line: `stockfw 1.0.7 · Linux (nftables)`.
   `help help`, `help version` and `help intel geo` work.
 <!-- WP-B -->
+- **`apply` after `stop` starts the firewall again.** Before, it compared
+  the policy with the last apply, found no change and left the firewall
+  stopped. Now a stopped (or unreadable) firewall gets the whole policy,
+  and the audit line says why. This is a core fix, so the desktop app's
+  Apply gets it too.
+- **Lines that are not rules are named.** `stockfw check` lists each
+  one with its file, line and reason (exit 1). `apply` refuses them,
+  the dry run too (exit 2). `SSH,,Anyone` still loads, because a known
+  service needs no port. A port such as 99999 is reported once, as an
+  error.
+- **Rules have references.** `inbound-allow-service:2` (also `#2` or
+  `KIND 2`) works in `policy show`, `policy remove`, `policy list`,
+  `simulate --json` (`rule_ref`) and `copilot health --json`.
+  `policy add` and `remove` echo the reference and check the rule's own
+  traffic.
+- **`stockfw policy diff`** shows the saved policy against the applied
+  one. `apply --dry-run` lists the rows it would add and remove, and
+  says which forwards would be left out.
+- **The lockout guard.** Over SSH, `apply` and `start` check that the
+  new policy still lets your session in. If it would not, they ask on a
+  terminal, and without one they refuse unless you pass `--yes`.
+  This works under `sudo` too, where `SSH_CONNECTION` is gone.
+- `start` and `stop` say "Already running" or "Already stopped" and
+  write no audit line when there is nothing to do.
+- `simulate --applied` asks the applied policy, not the saved one.
+  `copilot health --severity info|warning|critical` sets the level that
+  gives exit 7.
 <!-- WP-C -->
 <!-- WP-D -->
 <!-- WP-F -->

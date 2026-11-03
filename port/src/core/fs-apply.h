@@ -114,6 +114,10 @@ typedef struct
 	                                    * firewall settings changed: a
 	                                    * settings apply, or a policy
 	                                    * apply with settings pending   */
+	FsFirewallState firewall_was;      /* what the backend read before
+	                                    * the apply: FS_FW_NONE when it
+	                                    * was not read (no get_state, a
+	                                    * hold, no backend)             */
 } FsApplyOutcome;
 
 /* The single safe path from a policy to the firewall.  The policy
@@ -122,7 +126,15 @@ typedef struct
  * non-empty, is the reason the firewall must stay untouched
  * ("audit-only testing mode", "policy locked") and the apply becomes
  * FS_APPLY_DRY_RUN with an audit line.  Returns a caller-owned
- * outcome; NULL only if policy was NULL. */
+ * outcome; NULL only if policy was NULL.
+ *
+ * The journal says what the last apply put live, not what is live now:
+ * after a stop nothing is.  So where a start installs the policy
+ * (start_applies_policy, Linux) the narrow path and the "no change"
+ * shortcut are taken only when the backend reads the firewall as
+ * running; otherwise the whole policy goes out (apply_rules), which
+ * starts the firewall, and the audit mode says "full (firewall was
+ * stopped)".  The rollback target is the journal either way. */
 FsApplyOutcome *fs_policy_apply_safe (const FsBackend *backend,
                                       FsPolicy *policy,
                                       const gchar *source,

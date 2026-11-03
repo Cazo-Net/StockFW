@@ -816,7 +816,7 @@ import json, os, subprocess
 env = dict(os.environ, STOCKFW_RULES_DIR='$A/rules')
 for args in (['198.51.100.7', '--comment', '--json'], ['198.51.100.8', '--comment=-x']):
     r = subprocess.run(['$S', 'policy', 'add', 'outbound-deny-to', *args], capture_output=True, text=True, env=env)
-    assert r.returncode == 0 and r.stdout.startswith('+ '), (args, r)
+    assert r.returncode == 0 and r.stdout.startswith('Added '), (args, r)
 d = json.loads(subprocess.run(['$S', '--json', 'policy', 'list'], capture_output=True, text=True, env=env).stdout)
 c = {r['target']: r['comment'] for r in d['rules']}
 assert c.get('198.51.100.7') == '--json' and c.get('198.51.100.8') == '-x', c"
@@ -905,6 +905,284 @@ rm -rf "$A"
 # === end WP-A ===
 
 # === WP-B ===
+# Policy truth and safe changes (cli-plan.md section 4, WP-B): lines
+# that are not rules, KIND:N references, `policy diff', the A1 apply
+# with the firewall stopped, the lockout guard and start/stop that know
+# the state.  Scratch rules of its own, readable by nobody; the root
+# parts run in a private network namespace.
+B="$(mktemp -d /tmp/stockfw-wpb-XXXXXX)"; chmod 755 "$B"
+b_env () { env STOCKFW_RULES_DIR="$B/$1" STOCKFW_APPLIED_FILE="$B/$1.applied" \
+               STOCKFW_LOG_FILE="$B/kern.log" STOCKFW_LAN_PREFIX=192.168.1.0/24 \
+               STOCKFW_LOCAL_ADDRESSES=192.168.1.5 "${@:2}"; }
+b_rc () { local want="$1"; shift; b_env "$@" > "$TMP/out" 2> "$TMP/err"; [ "$?" -eq "$want" ]; }
+: > "$B/kern.log"
+# A journal (STOCKFW_APPLIED_FILE) written from rule-file rows:
+# b_journal <dir> "<kind index>|<row>" ...  (the kind index is the
+# FsRuleKind: 1 inbound-allow-service, 2 forward, 6 outbound-deny-to).
+b_journal () { local d="$1"; shift; python3 -I -c "
+import csv, sys
+rows = sys.argv[1:]
+with open('$B/$d.applied', 'w', newline='') as f:
+    f.write('# StockFW applied policy journal v1\n')
+    w = csv.writer(f, lineterminator='\n')
+    for r in rows:
+        k, row = r.split('|', 1)
+        w.writerow([k, row])
+" "$@"; }
+
+# --- check: a line that is not a rule (survey A2, A3)
+mkdir -p "$B/chk/inbound"
+printf '%s\n' 'SSH, 22, Anyone,' 'HTTP, 80, Anyone,' 'HTTPS, 443, Anyone,' \
+  'DNS, 53, Anyone,' 'NTP, 123, Anyone,' 'IMAP, 143, Anyone,' \
+  'garbage line without commas' > "$B/chk/inbound/allow-service"
+check "check: a line without commas is a problem (rc 1, FILE:7:)" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; S='$S'; b_rc 1 chk '$S' check && grep -q 'allow-service:7: expected NAME, PORT, FOR' '$TMP/out'"
+check "  ...apply --dry-run refuses it (rc 2)" b_rc 2 chk "$S" apply --dry-run
+check "  ...status --json counts it once" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/chk', STOCKFW_APPLIED_FILE='$B/chk.applied')
+d = json.loads(subprocess.run(['$S', '--json', 'status'], capture_output=True, text=True, env=env).stdout)
+assert d['malformed_rules'] == 1, d['malformed_rules']"
+check "  ...and policy list --json does not list it" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/chk')
+d = json.loads(subprocess.run(['$S', '--json', 'policy', 'list'], capture_output=True, text=True, env=env).stdout)
+assert len(d['rules']) == 6 and not any('garbage' in (r['service'] or '') for r in d['rules']), d
+assert d['rules'][0]['rule_ref'] == 'inbound-allow-service:1', d['rules'][0]"
+check "  ...check --json gives file, path, line and reason" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/chk')
+r = subprocess.run(['$S', '--json', 'check'], capture_output=True, text=True, env=env)
+d = json.loads(r.stdout)
+assert r.returncode == 1 and d['ok'] is False and len(d['problems']) == 1, d
+p = d['problems'][0]
+assert p['file'] == 'inbound/allow-service' and p['line'] == 7, p
+assert p['path'] == '$B/chk/inbound/allow-service' and 'no commas' in p['reason'], p"
+mkdir -p "$B/port/inbound"
+printf '%s\n' 'SSH, 22, Anyone,' 'FTP, 99999, Anyone,' > "$B/port/inbound/allow-service"
+check "check: port 99999 is \"out of range\" once on stderr, as an error" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 2 port '$S' apply --dry-run &&
+           [ \$(grep -c 'out of range' '$TMP/err') -eq 1 ] &&
+           grep 'out of range' '$TMP/err' | grep -q '^stockfw: error: '"
+mkdir -p "$B/ok/inbound"
+printf '%s\n' 'SSH,,Anyone' > "$B/ok/inbound/allow-service"
+check "check: SSH,,Anyone still loads (a known service needs no port)" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 0 ok '$S' check"
+
+# --- diff: saved against applied
+# As root the firewall's real state would decide "live"; uid 65534
+# cannot read it, so the diff is against the journal alone.
+BU=""
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null; then
+  BU="setpriv --reuid=65534 --regid=65534 --clear-groups"
+fi
+mkdir -p "$B/d/inbound" "$B/d/outbound"
+printf '%s\n' 'SSH, 22, 192.168.1.0/24,' 'HTTP, 80, Anyone,' 'HTTPS, 443, Anyone,' \
+  'PostgreSQL, 5432, 192.168.1.0/24,' > "$B/d/inbound/allow-service"
+printf '%s\n' 'Web, 8080, 192.168.1.10, 80' > "$B/d/inbound/forward"
+b_journal d '1|SSH, 22, 192.168.1.0/24,' '1|HTTP, 80, Anyone,' '1|HTTPS, 443, Anyone,' \
+  '2|Web, 8080, 192.168.1.10, 80' '6|198.51.100.3,'
+check "diff: one row added (inbound-allow-service:4), one removed, pending" py "
+import json, os, subprocess
+BU = '$BU'.split()
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/d', STOCKFW_APPLIED_FILE='$B/d.applied')
+d = json.loads(subprocess.run(BU + ['$S', '--json', 'policy', 'diff'], capture_output=True, text=True, env=env).stdout)
+assert d['live'] == 'pending' and d['added'][0]['ref'] == 'inbound-allow-service:4', d
+assert len(d['added']) == 1 and len(d['removed']) == 1 and d['unchanged'] == 4, d
+assert d['removed'][0]['ref'] == 'outbound-deny-to:1' and d['epoch'] > 0, d"
+check "  ...the forward with no external interface is one note, not an added row" py "
+import json, os, subprocess
+BU = '$BU'.split()
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/d', STOCKFW_APPLIED_FILE='$B/d.applied')
+d = json.loads(subprocess.run(BU + ['$S', '--json', 'policy', 'diff'], capture_output=True, text=True, env=env).stdout)
+assert len(d['notes']) == 1 and 'inbound-forward:1' in d['notes'][0] and 'left out' in d['notes'][0], d['notes']
+assert not any(a['kind'] == 'inbound-forward' for a in d['added']), d['added']"
+check "  ...apply --dry-run --json lists as many added_rules as it counts" py "
+import json, os, subprocess
+BU = '$BU'.split()
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/d', STOCKFW_APPLIED_FILE='$B/d.applied')
+d = json.loads(subprocess.run(BU + ['$S', '--json', 'apply', '--dry-run'], capture_output=True, text=True, env=env).stdout)
+assert len(d['added_rules']) == d['added'] == 1 and len(d['removed_rules']) == d['removed'] == 1, d
+assert d['added_rules'][0]['ref'] == 'inbound-allow-service:4' and len(d['notes']) == 1, d"
+check "  ...and the text names the rows with their references" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 0 d $BU '$S' policy diff &&
+           grep -q '^+ inbound-allow-service:4  PostgreSQL' '$TMP/out' &&
+           grep -q '^- outbound-deny-to:1  198.51.100.3.*(as applied)' '$TMP/out'"
+b_journal d '1|SSH, 22, 192.168.1.0/24,' '1|HTTP, 80, Anyone,' '1|HTTPS, 443, Anyone,' \
+  '1|PostgreSQL, 5432, 192.168.1.0/24,' '2|Web, 8080, 192.168.1.10, 80'
+check "diff: a journal that holds the saved rows is live == same" py "
+import json, os, subprocess
+BU = '$BU'.split()
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/d', STOCKFW_APPLIED_FILE='$B/d.applied')
+d = json.loads(subprocess.run(BU + ['$S', '--json', 'policy', 'diff'], capture_output=True, text=True, env=env).stdout)
+assert d['live'] == 'same' and d['added'] == [] and d['removed'] == [], d"
+
+# --- references: KIND:N everywhere
+mkdir -p "$B/r1/inbound" "$B/r1/outbound"
+printf '%s\n' 'SSH, 22, Anyone,' 'HTTP, 80, Anyone,' > "$B/r1/inbound/allow-service"
+printf '%s\n' '198.51.100.1, first' '203.0.113.9, second' > "$B/r1/outbound/deny-to"
+cp -r "$B/r1" "$B/r2"; cp -r "$B/r1" "$B/r3"
+check "refs: remove KIND:N, KIND N and KIND#N remove the same row" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 0 r1 '$S' policy remove inbound-allow-service:1 &&
+           b_rc 0 r2 '$S' policy remove inbound-allow-service 1 &&
+           b_rc 0 r3 '$S' policy remove 'inbound-allow-service#1' &&
+           cmp -s '$B/r1/inbound/allow-service' '$B/r2/inbound/allow-service' &&
+           cmp -s '$B/r1/inbound/allow-service' '$B/r3/inbound/allow-service' &&
+           ! grep -q SSH '$B/r1/inbound/allow-service' && grep -q HTTP '$B/r1/inbound/allow-service'"
+check "refs: a number past the end is refused (rc 2), nothing removed" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 2 r1 '$S' policy remove outbound-deny-to:3 &&
+           [ \$(wc -l < '$B/r1/outbound/deny-to') -eq 2 ]"
+check "refs: simulate --json's rule_ref goes straight into policy remove" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/r2')
+d = json.loads(subprocess.run(['$S', '--json', 'simulate', '--assume-running', 'outbound tcp to 203.0.113.9 port 443'],
+                              capture_output=True, text=True, env=env).stdout)
+ref = d['rule_ref']
+assert ref == 'outbound-deny-to:2' and d['answers'][0]['rule_ref'] == ref, d
+assert [t for t in d['answers'][0]['trace'] if t['decides']][0]['rule_ref'] == ref, d
+r = subprocess.run(['$S', 'policy', 'remove', ref], capture_output=True, text=True, env=env)
+assert r.returncode == 0 and 'Removed outbound-deny-to:2' in r.stdout, r
+rows = open('$B/r2/outbound/deny-to').read()
+assert '203.0.113.9' not in rows and '198.51.100.1' in rows, rows"
+check "refs: policy show REF prints one rule; --json is the rule object" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/r3')
+d = json.loads(subprocess.run(['$S', '--json', 'policy', 'show', 'outbound-deny-to:2'], capture_output=True, text=True, env=env).stdout)
+assert d['ref'] == 'outbound-deny-to:2' and d['fields']['target'] == '203.0.113.9' and d['comment'] == 'second', d
+assert d['status'] == 'pending', d"
+check "refs: policy add echoes the reference and a check of its own traffic" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 0 r3 '$S' policy add inbound-allow-service SSH 22 192.168.1.0/24 &&
+           grep -q '^Added inbound-allow-service:2  SSH  port 22  for 192.168.1.0/24' '$TMP/out' &&
+           grep -q '^Check: inbound tcp port 22 from 192.168.1.1 .* ALLOWED (saved policy)' '$TMP/out' &&
+           grep -q 'preview: stockfw policy diff' '$TMP/out'"
+check "refs: policy add --json carries the rule and the rules directory" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/r3')
+d = json.loads(subprocess.run(['$S', '--json', 'policy', 'add', 'inbound-allow-service', 'HTTPS', '--both'],
+                              capture_output=True, text=True, env=env).stdout)
+assert d['rule']['ref'] == 'inbound-allow-service:3' and d['twin']['ref'] == 'outbound-allow-service:1', d
+assert d['rules_dir'] == '$B/r3' and d['check']['verdict'] == 'ALLOWED', d"
+if [ "$(id -u)" != 0 ]; then
+  check "refs: a policy edited without sudo says sudo applies /etc/stockfw" \
+    bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 0 r3 '$S' policy add outbound-deny-to 203.0.113.44 && grep -q '/etc/stockfw' '$TMP/out'"
+elif command -v setpriv > /dev/null; then
+  cp -r "$B/r1" "$B/r4"; chown -R 65534:65534 "$B/r4"
+  check "refs: a policy edited without sudo says sudo applies /etc/stockfw" \
+    bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 0 r4 setpriv --reuid=65534 --regid=65534 --clear-groups '$S' policy add outbound-deny-to 203.0.113.44 && grep -q 'with sudo, stockfw reads and applies /etc/stockfw' '$TMP/out'"
+fi
+mkdir -p "$B/cp/inbound"
+printf '%s\n' 'RDP, 3389, Anyone,' > "$B/cp/inbound/allow-service"
+check "refs: copilot health --json keeps index 0 and adds rule_ref" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_RULES_DIR='$B/cp', STOCKFW_LAN_PREFIX='192.168.1.0/24', STOCKFW_LOCAL_ADDRESSES='192.168.1.5')
+r = subprocess.run(['$S', '--json', 'copilot', 'health'], capture_output=True, text=True, env=env)
+f = json.loads(r.stdout)['findings'][0]
+assert r.returncode == 7 and f['rule']['index'] == 0 and f['rule']['rule_ref'] == 'inbound-allow-service:1', f
+assert f['rule']['kind'] == 'inbound_allow_service', f"
+mkdir -p "$B/info/outbound"
+printf '%s\n' '198.51.100.9, nothing to allow' > "$B/info/outbound/allow-to"
+check "copilot health --severity: info findings exit 7 by default, 0 at warning" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 7 info '$S' copilot health && b_rc 0 info '$S' copilot health --severity warning &&
+           b_rc 2 info '$S' copilot health --severity loud"
+
+# --- simulate --applied: the journal, not the saved file
+mkdir -p "$B/sa/inbound"
+printf '%s\n' 'SSH, 22, Anyone,' > "$B/sa/inbound/allow-service"
+b_journal sa '1|SSH, 22, Anyone,' '6|203.0.113.50,'
+check "simulate --applied asks the journal: BLOCKED (5) where the saved policy says 0" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 0 sa '$S' simulate --assume-running outbound tcp to 203.0.113.50 port 443 &&
+           b_rc 5 sa '$S' simulate --applied --assume-running outbound tcp to 203.0.113.50 port 443 &&
+           grep -q '(applied policy, ' '$TMP/out' && grep -q 'Decided by outbound-deny-to:1' '$TMP/out'"
+
+# --- lockout as any user: a dry run warns and changes nothing
+b_user=()
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null; then
+  b_user=(setpriv --reuid=65534 --regid=65534 --clear-groups)
+fi
+mkdir -p "$B/lk/inbound"
+printf '%s\n' 'SSH, 22, 192.168.1.0/24,' > "$B/lk/inbound/allow-service"
+b_lockout_dry () {
+  b_rc 0 lk "${b_user[@]}" env SSH_CONNECTION='10.0.0.5 50000 10.0.0.1 22' "$S" apply --dry-run &&
+  grep -q 'warning: this policy would block your SSH session' "$TMP/err" &&
+  grep -q 'from 10.0.0.5 to port 22: BLOCKED' "$TMP/err"
+}
+check "lockout: apply --dry-run as uid 65534 warns about the SSH session, rc 0" b_lockout_dry
+
+# --- live, as root, in a private network namespace
+if [ "$(id -u)" = 0 ] && command -v iptables > /dev/null 2>&1 &&
+   command -v ip > /dev/null 2>&1 && unshare -n true 2> /dev/null; then
+  cat > "$B/live.sh" <<'LIVE'
+S="$1"; B="$2"
+f=0
+ok () { echo "ok:   $1"; }
+no () { echo "FAIL: $1"; f=$((f+1)); }
+t () { local what="$1"; shift; if "$@"; then ok "$what"; else no "$what"; fi; }
+export STOCKFW_RULES_DIR="$B/live" STOCKFW_APPLIED_FILE="$B/live.applied"
+export STOCKFW_AUDIT_FILE="$B/live.audit" STOCKFW_AUTOBLOCK_FILE="$B/live.autoblocks"
+export HOME="$B/home" XDG_CONFIG_HOME="$B/home/.config"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+mkdir -p "$HOME"
+ip link set lo up
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" -q policy add outbound-deny-to 198.51.100.3
+# A1: apply, stop, apply: the second apply must start the firewall.
+"$S" apply > "$B/a1.out" 2>&1; "$S" stop > /dev/null 2>&1
+"$S" apply > "$B/a2.out" 2>&1; rc=$?
+t "A1: apply after stop does not say \"Nothing to change\" (rc $rc)" bash -c "[ $rc -eq 0 ] && ! grep -q 'Nothing to change' '$B/a2.out' && grep -q 'firewall was stopped and is now running' '$B/a2.out'"
+t "A1: ...the chains are back" bash -c "iptables -S INBOUND > /dev/null"
+t "A1: ...status says running" bash -c "'$S' --json status | python3 -I -c 'import json,sys; assert json.load(sys.stdin)[\"state\"] == \"running\"'"
+t "A1: ...the audit line says why it was whole" bash -c "grep '| policy applied |' '$STOCKFW_AUDIT_FILE' | tail -1 | grep -q '| full (firewall was stopped) |'"
+# Running: an unchanged apply still takes the narrow path.
+"$S" apply > /dev/null 2>&1
+t "A1: apply; apply while running stays narrow" bash -c "tail -1 '$STOCKFW_AUDIT_FILE' | grep -q '| narrow |'"
+t "A1: --json says what the firewall was" bash -c "'$S' --json apply | python3 -I -c 'import json,sys; assert json.load(sys.stdin)[\"firewall_was\"] == \"running\"'"
+# B6: start and stop know the state.
+n0=$(wc -l < "$STOCKFW_AUDIT_FILE")
+"$S" start > "$B/st.out" 2>&1
+t "start while running: \"Already running\", no audit line" bash -c "grep -q '^Already running' '$B/st.out' && [ \$(wc -l < '$STOCKFW_AUDIT_FILE') -eq $n0 ]"
+"$S" stop > /dev/null 2>&1; "$S" stop > "$B/sp.out" 2>&1
+t "stop; stop: one audit line, then \"Already stopped\"" bash -c "[ \$(wc -l < '$STOCKFW_AUDIT_FILE') -eq $((n0 + 1)) ] && grep -q '^Already stopped' '$B/sp.out'"
+"$S" start > /dev/null 2>&1
+# Lockout: the SSH row narrowed to the LAN, a session from elsewhere.
+"$S" -q policy remove inbound-allow-service:1
+"$S" -q policy add inbound-allow-service SSH 22 192.168.1.0/24
+snap () { iptables-save | grep -v '^#' | sha256sum; }
+before=$(snap)
+SSH_CONNECTION='10.0.0.5 50000 10.0.0.1 22' "$S" apply < /dev/null > "$B/lk.out" 2>&1; rc=$?
+t "lockout: no terminal, no --yes: refused (rc $rc), the firewall untouched" bash -c "[ $rc -eq 1 ] && [ '$(snap)' = '$before' ] && grep -q 'pass --yes' '$B/lk.out'"
+SSH_CONNECTION='10.0.0.5 50000 10.0.0.1 22' "$S" --json apply --yes < /dev/null > "$B/lky.out" 2> /dev/null; rc=$?
+t "lockout: --yes applies, and the JSON says it was confirmed" bash -c "[ $rc -eq 0 ] && [ '$(snap)' != '$before' ] && python3 -I -c 'import json; d = json.load(open(\"$B/lky.out\")); l = d[\"lockout\"]; assert l[\"checked\"] and l[\"verdict\"] == \"BLOCKED\" and l[\"client\"] == \"10.0.0.5\" and l[\"confirmed\"], d'"
+"$S" -q policy add outbound-deny-to 198.51.100.4
+SSH_CONNECTION='192.168.1.20 50000 10.0.0.1 22' "$S" apply < /dev/null > "$B/lan.out" 2>&1; rc=$?
+t "lockout: a session from the LAN is no warning (rc $rc)" bash -c "[ $rc -eq 0 ] && ! grep -q warning '$B/lan.out'"
+"$S" -q policy add outbound-deny-to 198.51.100.5
+t "lockout: no SSH session, no check" bash -c "'$S' --json apply < /dev/null | python3 -I -c 'import json,sys; l = json.load(sys.stdin)[\"lockout\"]; assert l == {\"checked\": False, \"reason\": \"not an SSH session\"}, l'"
+# Under sudo the variable is gone: the session is in the kernel's
+# table.  An established connection to port 22 from 10.0.0.5.
+ip addr add 10.0.0.1/32 dev lo; ip addr add 10.0.0.5/32 dev lo
+python3 -I -c '
+import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("10.0.0.1", 22)); s.listen()
+c = socket.socket(); c.bind(("10.0.0.5", 0)); c.connect(("10.0.0.1", 22)); a, _ = s.accept()
+print("up", flush=True); time.sleep(30)' > "$B/peer.out" &
+peer=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q up "$B/peer.out" 2>/dev/null && break; sleep 0.2; done
+"$S" -q policy add outbound-deny-to 198.51.100.6 2> /dev/null
+before=$(snap)
+"$S" apply < /dev/null > "$B/sudo.out" 2>&1; rc=$?
+t "lockout under sudo: a peer in the TCP table, no SSH_CONNECTION: refused (rc $rc)" bash -c "[ $rc -eq 1 ] && [ '$(snap)' = '$before' ] && grep -q 'from 10.0.0.5 to port 22' '$B/sudo.out'"
+kill "$peer" 2> /dev/null; wait "$peer" 2> /dev/null
+exit "$f"
+LIVE
+  unshare -n bash "$B/live.sh" "$S" "$B" > "$B/live.log" 2>&1
+  live_rc=$?
+  cat "$B/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the live A1, lockout and start/stop checks need root, iptables, ip and unshare"
+fi
+rm -rf "$B"
 # === end WP-B ===
 
 # === WP-C ===
