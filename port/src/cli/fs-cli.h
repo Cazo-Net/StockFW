@@ -413,6 +413,19 @@ void                 fs_cli_status_snapshot_free (FsCliStatusSnapshot *snap);
 /* Each package adds its prototypes in its own block. */
 
 /* === WP-B === */
+/* The saved policy and the lines of its files that are not rules
+ * (problems: FsPolicyProblem*, never NULL; unref it).  Prints nothing:
+ * the command says what it does about them. */
+FsPolicy *fs_cli_load_policy_report (gboolean *on_disk,
+                                     GPtrArray **problems);
+/* Each problem as "stockfw: error: PATH:LINE: reason: \"text\"", then
+ * one hint, so a command prints them once. */
+void      fs_cli_print_problems     (const GPtrArray *problems);
+/* A rule as one JSON object: {ref, kind, number, fields{service, port,
+ * target, to, to_port}, comment, summary}; number is 1-based. */
+void      fs_cli_rule_json          (GString *out, const FsRule *rule,
+                                     guint number);
+gint      fs_cli_cmd_check          (gint argc, gchar **argv);
 /* === end WP-B === */
 
 /* === WP-C === */

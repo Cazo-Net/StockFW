@@ -104,13 +104,16 @@ FsPolicy *
 fs_cli_load_policy (gboolean *on_disk, gint *malformed)
 {
 	FsPolicy *policy = fs_policy_new ();
-	gint bad = 0;
-	gboolean any = fs_policy_load (policy, &bad);
+	GPtrArray *problems = NULL;
+	/* Silent: a command that cares prints the problems once
+	 * (fs_cli_load_policy_report, fs_cli_print_problems). */
+	gboolean any = fs_policy_load_report (policy, &problems);
 
 	if (on_disk != NULL)
 		*on_disk = any;
 	if (malformed != NULL)
-		*malformed = bad;
+		*malformed = (gint) problems->len;
+	g_ptr_array_unref (problems);
 
 	return policy;
 }
@@ -506,6 +509,19 @@ whatif_action_word (FsWhatIfActionKind kind)
 	}
 }
 
+/* [ json_kv_ref ] -- "rule_ref":"KIND:N" for a policy row, else null
+ * (cli-plan.md section 3: added next to policy_kind and policy_row). */
+static void
+json_kv_ref (GString *out, gint kind, gint index)
+{
+	gchar *ref = NULL;
+
+	if (kind >= 0 && kind < FS_RULE_N_KINDS && index >= 0)
+		ref = fs_cli_rule_ref ((FsRuleKind) kind, (guint) index + 1);
+	fs_json_kv_str (out, "rule_ref", ref);
+	g_free (ref);
+}
+
 static void
 json_kv_int (GString *out, const gchar *key, gint value)
 {
@@ -587,6 +603,9 @@ fs_cli_whatif_json (GString *out, const FsWhatIfResult *r,
 	fs_json_kv_str (out, "remote", q->host);            g_string_append_c (out, ',');
 	fs_json_kv_str (out, "rule", main_a != NULL ? main_a->rule : NULL);
 	g_string_append_c (out, ',');
+	json_kv_ref (out, main_a != NULL ? main_a->policy_kind : -1,
+	             main_a != NULL ? main_a->policy_index : -1);
+	g_string_append_c (out, ',');
 	fs_json_kv_str (out, "reason", r->answers->len == 1 && main_a != NULL
 	                               ? main_a->reason : r->summary);
 	g_string_append_c (out, ',');
@@ -637,6 +656,8 @@ fs_cli_whatif_json (GString *out, const FsWhatIfResult *r,
 		json_kv_int (out, "policy_kind", a->policy_kind);
 		g_string_append_c (out, ',');
 		json_kv_int (out, "policy_row", a->policy_index);
+		g_string_append_c (out, ',');
+		json_kv_ref (out, a->policy_kind, a->policy_index);
 		g_string_append (out, ",\"cases\":[");
 		for (guint k = 0; k < a->cases->len; k++) {
 			const FsWhatIfCase *c = g_ptr_array_index (a->cases, k);
@@ -651,6 +672,8 @@ fs_cli_whatif_json (GString *out, const FsWhatIfResult *r,
 			fs_json_kv_str (out, "rule", c->rule);
 			g_string_append_c (out, ',');
 			fs_json_kv_str (out, "origin", whatif_origin_word (c->origin));
+			g_string_append_c (out, ',');
+			json_kv_ref (out, c->policy_kind, c->policy_index);
 			g_string_append_c (out, '}');
 		}
 		g_string_append (out, "],\"trace\":[");
@@ -673,6 +696,8 @@ fs_cli_whatif_json (GString *out, const FsWhatIfResult *r,
 			json_kv_int (out, "policy_kind", st->policy_kind);
 			g_string_append_c (out, ',');
 			json_kv_int (out, "policy_row", st->policy_index);
+			g_string_append_c (out, ',');
+			json_kv_ref (out, st->policy_kind, st->policy_index);
 			g_string_append_c (out, ',');
 			fs_json_kv_bool (out, "allows", st->allows);
 			g_string_append_c (out, ',');

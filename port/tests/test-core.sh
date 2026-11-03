@@ -56,6 +56,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-intel.h"
 #include "core/fs-hostnet.h"
 #include "core/fs-toolpath.h"
+#include "core/fs-lockout.h"
 #include <stdlib.h>
 
 static int failures = 0;
@@ -11235,6 +11236,250 @@ static void test_toolpath (void)
 #endif
 }
 
+/* === WP-B === */
+/* Policy truth and safe changes (cli-plan.md WP-B): the problem report
+ * of the policy loader, the apply gate with the firewall stopped, and
+ * the lockout guard. */
+
+/* [ test_policy_load_report ]
+ * Each line that is not a rule comes back with its file, its line
+ * number and a reason in words; the rules around it still load. */
+static void test_policy_load_report (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (), "stockfw-wpb-report",
+	                               NULL);
+	gchar *old = g_strdup (g_getenv ("STOCKFW_RULES_DIR"));
+	gchar *path;
+	FsPolicy *policy = fs_policy_new ();
+	GPtrArray *problems = NULL;
+	const FsPolicyProblem *p;
+	gint malformed = -1;
+
+	g_setenv ("STOCKFW_RULES_DIR", dir, TRUE);
+	path = fs_util_rules_path ("inbound/allow-service");
+	fs_util_ensure_parent_dir (path);
+	g_file_set_contents (path,
+		"SSH, 22, Anyone, fine\n"
+		"garbage line without commas\n"
+		"FTP, 99999, Anyone,\n"
+		"SSH,,Anyone\n"
+		"Frobnicator,,Anyone\n", -1, NULL);
+
+	CHECK (fs_policy_load_report (policy, &problems),
+	       "report: the file loads");
+	CHECK (problems != NULL && problems->len == 3,
+	       "report: three lines are not rules (got %u)",
+	       problems != NULL ? problems->len : 0);
+	CHECK (fs_policy_count (policy, FS_RULE_INBOUND_ALLOW_SERVICE) == 2,
+	       "report: the good row and the portless known service load "
+	       "(got %u)", fs_policy_count (policy,
+	                                    FS_RULE_INBOUND_ALLOW_SERVICE));
+	if (problems != NULL && problems->len == 3) {
+		p = g_ptr_array_index (problems, 0);
+		CHECK (p->line == 2 &&
+		       g_strcmp0 (p->file, "inbound/allow-service") == 0 &&
+		       g_strcmp0 (p->reason,
+		                  "expected NAME, PORT, FOR (no commas)") == 0 &&
+		       g_strcmp0 (p->text, "garbage line without commas") == 0,
+		       "report: line 2 has no commas (%u, %s)", p->line,
+		       p->reason);
+		p = g_ptr_array_index (problems, 1);
+		CHECK (p->line == 3 &&
+		       g_strcmp0 (p->reason,
+		                  "port \"99999\" is out of range (1-65535)") == 0,
+		       "report: line 3's port is out of range (%u, %s)",
+		       p->line, p->reason);
+		p = g_ptr_array_index (problems, 2);
+		CHECK (p->line == 5 &&
+		       g_strcmp0 (p->reason, "no port, and \"Frobnicator\" is "
+		                  "not a known service") == 0,
+		       "report: line 5 names no port and no known service "
+		       "(%u, %s)", p->line, p->reason);
+	}
+	g_ptr_array_unref (problems);
+
+	/* The old entry point counts the same lines. */
+	CHECK (fs_policy_load (policy, &malformed) && malformed == 3,
+	       "report: fs_policy_load counts the same three (got %d)",
+	       malformed);
+
+	/* The journal keeps the F-1 check only: a portless row a 1.0.7
+	 * apply recorded must not make the boot start refuse (Q6). */
+	{
+		FsRule *r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                              "Frobnicator,,Anyone");
+
+		CHECK (!fs_rule_fields_sane (r) && fs_rule_addresses_sane (r),
+		       "report: a portless unknown service is not a policy row, "
+		       "but its addresses are sane for the journal");
+		fs_rule_free (r);
+	}
+
+	fs_policy_free (policy);
+	g_free (path);
+	if (old != NULL)
+		g_setenv ("STOCKFW_RULES_DIR", old, TRUE);
+	else
+		g_unsetenv ("STOCKFW_RULES_DIR");
+	g_free (old);
+	g_free (dir);
+}
+
+static FsFirewallState wpb_state = FS_FW_RUNNING;
+static FsFirewallState wpb_get_state (void) { return wpb_state; }
+
+static const FsBackend fake_backend_stateful = {
+	.name = "fake-state",
+	.display_name = "scripted fake backend that reads its state",
+	.start_applies_policy = TRUE,
+	.available = fake_available,
+	.get_state = wpb_get_state,
+	.apply_rules = fake_apply_rules,
+	.apply_delta = fake_apply_delta,
+};
+
+/* [ test_apply_while_stopped ]
+ * The journal says what the last apply put live, not what is live now.
+ * With the firewall stopped the gate must load the whole policy (which
+ * starts it) instead of finding "no change" against the journal. */
+static void test_apply_while_stopped (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (), "stockfw-wpb-a1",
+	                               NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy;
+	FsApplyOutcome *o;
+	gchar *log;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+	fake_reset ();
+	policy = gate_policy_two ();
+
+	/* Running: the first apply is whole, the second finds no change. */
+	wpb_state = FS_FW_RUNNING;
+	o = fs_policy_apply_safe (&fake_backend_stateful, policy, "wpb", NULL,
+	                          NULL);
+	CHECK (o->applied && fake_full_calls == 1,
+	       "A1: the first apply goes out whole");
+	fs_apply_outcome_free (o);
+	o = fs_policy_apply_safe (&fake_backend_stateful, policy, "wpb", NULL,
+	                          NULL);
+	CHECK (o->applied && o->narrow && fake_full_calls == 1 &&
+	       fake_delta_calls == 0 && o->firewall_was == FS_FW_RUNNING,
+	       "A1: running and unchanged: the narrow no-change path, the "
+	       "backend untouched");
+	fs_apply_outcome_free (o);
+
+	/* Stopped: the same unchanged policy goes out whole. */
+	wpb_state = FS_FW_STOPPED;
+	o = fs_policy_apply_safe (&fake_backend_stateful, policy, "wpb", NULL,
+	                          NULL);
+	CHECK (o->applied && !o->narrow && fake_full_calls == 2 &&
+	       o->firewall_was == FS_FW_STOPPED,
+	       "A1: stopped: the whole policy is applied (full calls %d, "
+	       "narrow %d)", fake_full_calls, o->narrow);
+	fs_apply_outcome_free (o);
+	log = gate_audit_read ();
+	CHECK (log != NULL && strstr (log, "| full (firewall was stopped) |")
+	                      != NULL,
+	       "A1: the audit line says the firewall was stopped");
+	g_free (log);
+
+	/* Unknown (no root to read it): whole too, never "no change". */
+	wpb_state = FS_FW_NONE;
+	o = fs_policy_apply_safe (&fake_backend_stateful, policy, "wpb", NULL,
+	                          NULL);
+	CHECK (o->applied && !o->narrow && fake_full_calls == 3,
+	       "A1: a state that cannot be read takes the whole apply");
+	fs_apply_outcome_free (o);
+
+	/* A backend that cannot read its state keeps the narrow path. */
+	o = fs_policy_apply_safe (&fake_backend, policy, "wpb", NULL, NULL);
+	CHECK (o->applied && o->narrow && fake_full_calls == 3 &&
+	       o->firewall_was == FS_FW_NONE,
+	       "A1: no get_state: the narrow path as before");
+	fs_apply_outcome_free (o);
+
+	fake_reset ();
+	fs_policy_free (policy);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_rmdir (dir);
+	g_free (audit_file);
+	g_free (file);
+	g_free (dir);
+}
+
+/* [ test_lockout_check ]
+ * Each SSH peer is asked about as a new connection on each port. */
+static void test_lockout_check (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *ssh = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+	                                "SSH, 22, 192.168.1.0/24, admin");
+	FsRangeSet *peers = fs_range_set_new ();
+	FsRangeSet *lan = fs_range_set_new ();
+	FsRangeSet *none = fs_range_set_new ();
+	GArray *ports = g_array_new (FALSE, FALSE, sizeof (guint16));
+	GArray *other = g_array_new (FALSE, FALSE, sizeof (guint16));
+	guint16 p22 = 22, p2222 = 2222;
+	FsLockoutReport *r;
+
+	fs_policy_add (policy, ssh);
+	fs_range_set_add_text (peers, "10.0.0.5");
+	fs_range_set_add_text (lan, "192.168.1.20");
+	g_array_append_val (ports, p22);
+	g_array_append_val (other, p2222);
+
+	r = fs_lockout_check (policy, NULL, peers, ports);
+	CHECK (r->checked && fs_lockout_report_cuts (r) &&
+	       r->verdict == FS_WHATIF_BLOCKED && r->worst != NULL &&
+	       g_strcmp0 (r->worst->peer, "10.0.0.5") == 0 &&
+	       r->worst->port == 22,
+	       "lockout: a peer outside the SSH row's network is cut");
+	fs_lockout_report_free (r);
+
+	r = fs_lockout_check (policy, NULL, lan, ports);
+	CHECK (r->checked && !fs_lockout_report_cuts (r) &&
+	       r->worst != NULL && r->worst->policy_kind ==
+	       FS_RULE_INBOUND_ALLOW_SERVICE && r->worst->policy_index == 0,
+	       "lockout: a peer inside it is allowed, by that row");
+	fs_lockout_report_free (r);
+
+	r = fs_lockout_check (policy, NULL, lan, other);
+	CHECK (fs_lockout_report_cuts (r),
+	       "lockout: sshd on another port is cut by a port-22 row");
+	fs_lockout_report_free (r);
+
+	r = fs_lockout_check (policy, NULL, none, ports);
+	CHECK (!r->checked && !fs_lockout_report_cuts (r) &&
+	       g_strcmp0 (r->why_not, "not an SSH session") == 0,
+	       "lockout: no peer, no check");
+	fs_lockout_report_free (r);
+
+	CHECK (fs_lockout_env_port ("10.0.0.5 50000 10.0.0.1 2222") == 2222 &&
+	       fs_lockout_env_port ("10.0.0.5 50000 10.0.0.1") == 0 &&
+	       fs_lockout_env_port ("a b c 99999") == 0 &&
+	       fs_lockout_env_port (NULL) == 0,
+	       "lockout: the server port of $SSH_CONNECTION");
+
+	g_array_unref (other);
+	g_array_unref (ports);
+	fs_range_set_free (none);
+	fs_range_set_free (lan);
+	fs_range_set_free (peers);
+	fs_rule_free (ssh);
+	fs_policy_free (policy);
+}
+/* === end WP-B === */
+
 int main (void)
 {
 	gchar *run_dir = make_run_dir ();
@@ -11350,6 +11595,11 @@ int main (void)
 	test_hostnet_onlink ();
 	test_winstore_sddl ();
 	test_toolpath ();
+	/* === WP-B === */
+	test_policy_load_report ();
+	test_apply_while_stopped ();
+	test_lockout_check ();
+	/* === end WP-B === */
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);
