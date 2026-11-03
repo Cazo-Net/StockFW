@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(stockfw
-        VERSION 1.0.6
+        VERSION 1.0.7
         DESCRIPTION "Firewall configuration tool (Windows + Linux port)"
         LANGUAGES C)
 
@@ -620,7 +620,7 @@ if(FS_BACKEND_LIBS)
 endif()
 
 # ---------------------------------------- 1.0.7 threat intel, round 1
-# Design: docs/1.0.7-threat-intel-design.md (revision 2).  Every target
+# Design: docs/design/1.0.7-threat-intel-design.md (revision 2).  Every target
 # below is a test; `ninja <name>' builds it, the README says how to run.
 #
 # The nftables rendering (pure) and a driver for the live namespace

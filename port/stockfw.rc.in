@@ -3,8 +3,8 @@
 IDI_ICON1 ICON "@STOCKFW_ICON_ICO@"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,5,0
- PRODUCTVERSION 1,0,5,0
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -17,12 +17,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "StockFW Project"
             VALUE "FileDescription", "StockFW - Smart Firewall Configuration Tool"
-            VALUE "FileVersion", "1.0.6"
+            VALUE "FileVersion", "@PROJECT_VERSION@"
             VALUE "InternalName", "StockFW"
             VALUE "LegalCopyright", "(C) 2000-2026 StockFW Project"
             VALUE "OriginalFilename", "StockFW.exe"
             VALUE "ProductName", "StockFW"
-            VALUE "ProductVersion", "1.0.6"
+            VALUE "ProductVersion", "@PROJECT_VERSION@"
         END
     END
     BLOCK "VarFileInfo"
