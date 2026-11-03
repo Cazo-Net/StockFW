@@ -33,7 +33,7 @@ built.
 
 ## Features
 
-- **Status** — real profile state at a glance: on Windows the three
+- **Overview** — real profile state at a glance: on Windows the three
   firewall profiles (Domain, Private, Public) with enable/disable, on
   Linux the filter-table posture. The app's logo is embedded in the
   executable, so an installed copy and a development build render
@@ -257,7 +257,7 @@ stops you connecting to them, *both* does both. Outbound blocks are
 rejected so programs fail at once instead of hanging.
 
 **After a reboot** nothing is loaded, policy or lists, until the
-firewall is started again (Status page, `stockfw start`, or
+firewall is started again (Overview page, `stockfw start`, or
 start-on-open). Start loads the lists with the policy, and Stop removes
 both.
 
@@ -324,9 +324,11 @@ It does not:
   other local users can read while a download runs. Do not put a
   secret in a custom feed's URL. A proxy with a user name and password
   in it is refused;
-- answer from What-If, Copilot or `stockfw simulate` yet: these still
-  judge the policy alone. Ask `stockfw intel lookup` or the page's
-  lookup box;
+- answer from What-If, Copilot or `stockfw simulate`: these judge the
+  policy alone and consult neither the blocklists nor the country and
+  network rules, so they can say *allowed* for an address a list or a
+  country rule drops. Ask `stockfw intel lookup` or the page's lookup
+  box;
 - block by country or network owner on Windows. On Linux it does; see
   the next section.
 
@@ -366,6 +368,10 @@ sudo stockfw intel lookup 192.0.2.10          # registered in, the network, and 
   BY-SA 4.0; StockFW has not confirmed it, so commercial use may need
   IPFire's permission. The page, the CLI and every lookup that shows
   location data carry this line.
+- **What-If, the Copilot and `stockfw simulate`** do not consult these
+  rules (or the blocklists): they judge the policy alone, so they can
+  answer *allowed* for a host in a blocked country. `stockfw intel
+  lookup` says whether a rule blocks an address.
 - **Windows** does not support country or network blocking in 1.0.7, a
   limit of that platform; the card says so and has no controls. The
   blocklists work there.
@@ -526,20 +532,32 @@ Every claim in the documentation is graded `[Verified]` / `[Measured]` /
 
 ```sh
 cd port
-bash tests/full-suite.sh             # every suite below, one pass, one verdict
-bash tests/test-core.sh              # rule engine, CSV, copilot detections + policy health, sentinel, event-rule, what-if, direction pairing
-bash tests/test-winlog.sh            # Security-log parsing + dedup
-bash tests/test-logstart.sh          # event stream start-up
-bash tests/test-installer-spawn.sh   # staged spawn helpers
-bash tests/test-state-windows.sh     # per-profile backend compile
-bash tests/test-uaf-analyze.sh       # analyzer proves the UAF fix
-bash tests/test-cli.sh               # Linux: stockfw CLI + dashboard security model
-bash tests/test-intel-cli.sh         # Linux, root: stockfw intel end to end (private namespaces)
+sudo xvfb-run -a bash tests/full-suite.sh   # Linux: every suite, one build, one verdict
+bash tests/full-suite.sh                    # Windows (MSYS2 UCRT64), elevated shell
+```
 
-ninja -C build fs-ui-smoke fs-hitview-smoke fs-activity-smoke
-./build/fs-ui-smoke                  # UI wiring smoke
-./build/fs-hitview-smoke             # hit-view rendering + filter smoke
-./build/fs-activity-smoke            # Activity page: counting, no-data, drawing
+`tests/full-suite.sh` uses one build directory — `build-linux/` on
+Linux, `build/` on Windows, or `$STOCKFW_BUILD` — configures it if it is
+missing, builds every target the suites need, and then runs every suite
+in `port/tests/` that belongs to the platform: the core and engine
+suites, the unit binaries, the CLI and dashboard, the live firewall,
+threat-intel, country and downloader suites (Linux, as root, each in
+private namespaces), the installers, and every UI smoke. The summary
+lists PASS, FAIL or SKIP for each suite; a suite of the other platform,
+or one that needs root or a display it does not have, says SKIP.
+`fs-tray-smoke` needs a notification area and runs on Windows (or with
+`STOCKFW_TRAY_SMOKE=1`). [`port/tests/README.md`](port/tests/README.md)
+describes each suite. A few of them on their own:
+
+```sh
+bash tests/test-core.sh              # rule engine, CSV, copilot detections + policy health, sentinel, event-rule, what-if, direction pairing
+bash tests/test-winlog.sh            # Windows: Security-log parsing + dedup
+bash tests/test-cli.sh               # Linux: stockfw CLI + dashboard security model
+sudo bash tests/test-intel-cli.sh    # Linux, root: stockfw intel end to end (private namespaces)
+
+ninja -C build-linux fs-ui-smoke fs-hitview-smoke
+xvfb-run -a ./build-linux/fs-ui-smoke       # UI wiring smoke
+xvfb-run -a ./build-linux/fs-hitview-smoke  # hit-view rendering + filter smoke
 ```
 
 The suites include *teeth* tests: known bugs are re-injected to prove the

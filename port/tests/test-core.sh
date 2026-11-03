@@ -11428,14 +11428,55 @@ health_rc=0
 # Wording guard: the Copilot is a set of fixed rules, and nothing in the
 # program or the docs may call it AI.  The one sentence that says there
 # is no AI model is allowed.
-WORDING_HITS="$(grep -rnE '\bAI\b|AI-' src ../docs ../README.md 2>/dev/null \
+# The installers, their documents and the release notes ship to users
+# too (the Windows installer once carried a changelog promising
+# "AI-powered" detection), so they are read as well.  site/ is the
+# website's own tree and has its own checks.
+WORDING_HITS="$(grep -rnE '\bAI\b|AI-' src docs installer ../docs ../README.md \
+  ../CHANGELOG.md ../RELEASING.md ../AUTHORS ../CREDITS 2>/dev/null \
   | grep -v 'There is no AI model' || true)"
 if [ -n "$WORDING_HITS" ]; then
-  echo "FAIL: \"AI\" wording in the program or the docs:"
+  echo "FAIL: \"AI\" wording in the program, the installers or the docs:"
   echo "$WORDING_HITS"
   exit 1
 fi
-echo "ok:   wording guard: no \"AI\" claims in src, docs or README"
+echo "ok:   wording guard: no \"AI\" claims in src, installers, docs, README or CHANGELOG"
+
+# Credits: "Stock Team & Qusai - Creator & Original Developer", never the
+# creator's full name or e-mail address, anywhere in the repository
+# (the legacy tree included).
+if git -C .. rev-parse --git-dir > /dev/null 2>&1; then
+  NAME_HITS="$(git -C .. grep -nIi -e 'fethalrahma[n]' -e 'qusaifo[x]' || true)"
+else
+  NAME_HITS="$(grep -rnIi -e 'fethalrahma[n]' -e 'qusaifo[x]' .. \
+    --exclude-dir=.git --exclude-dir='build*' 2>/dev/null || true)"
+fi
+if [ -n "$NAME_HITS" ]; then
+  echo "FAIL: a credit carries the creator's full name or e-mail address:"
+  echo "$NAME_HITS"
+  exit 1
+fi
+for f in ../AUTHORS ../CREDITS ../README.md src/ui/fs-aboutdialog.c; do
+  if ! grep -q 'Stock Team & Qusai' "$f"; then
+    echo "FAIL: $f does not credit \"Stock Team & Qusai\""
+    exit 1
+  fi
+done
+echo "ok:   credits guard: Stock Team & Qusai, no full name, no e-mail address"
+
+# Privacy (DOCS-HELP-07): the location database downloads as a
+# blocklist does, so "Your data" and the threat-intel topic must name it
+# wherever they say what StockFW downloads.
+PRIV="$(tr -d '\r\n\t' < src/ui/fs-helpcontent.c | sed 's/"  *"//g')"
+case "$PRIV" in
+  *'nothing unless you turn on a <a href=\"help:threat-intel\">threat-intel blocklist</a> or the location database'*) ;;
+  *) echo "FAIL: Help > Your data says only a blocklist downloads anything"; exit 1 ;;
+esac
+case "$PRIV" in
+  *'While no list and not the location database is on, StockFW makes no network request'*) ;;
+  *) echo "FAIL: Help > Threat intel says no list means no network request"; exit 1 ;;
+esac
+echo "ok:   privacy guard: Help names the location database as a download"
 
 # SECURITY-1 and SECURITY-2: the spawns that run system tools go through
 # fs-toolpath, never a PATH search (root) or CreateProcess's search of
