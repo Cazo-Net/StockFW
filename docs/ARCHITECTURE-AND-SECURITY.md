@@ -36,7 +36,7 @@
 
 **Chapter 14: 1.0.7 Addendum** · 14.1 IPv6 on Linux: One Policy, Two Families, One Rollback · 14.2 Windows Rule Translation: Protocols, Port Specs and Sides · 14.3 The What-If Engine: Two Models, Every Case, Verified Fixes · 14.4 Help, About, and the Preferences Redesign · 14.5 The Copilot: Fixed Rules, Shown Evidence, Verified Fixes · 14.6 Threat-Intel Blocklists on Linux and Windows, and Country and Network Blocking on Linux · 14.7 Events at Volume: Event Store, History on Disk, Windows Burst Capture · 14.8 Release Review: Where System Tools Come From, and the Dashboard Token · 14.9 Release Packaging: One Version, Real Documents, Runnable Installers · 14.10 Release Review: What StockFW Contacts, Credits, and One Test Runner · 14.11 Second Release Review: History While It Loads, the Dashboard's Launch Page, Credits and Packaging
 
-**Chapter 15: After 1.0.7 (unreleased)** · 15.1 Wayland and WSL: No Tray Icon, and Words the Window App Does Not Take · 15.2 The command line made truthful
+**Chapter 15: After 1.0.7 (unreleased)** · 15.1 Wayland and WSL: No Tray Icon, and Words the Window App Does Not Take · 15.2 The command line made truthful · 15.3 Dashboard hardening
 
 ---
 
@@ -1238,15 +1238,15 @@ A second front end over the same engine — fs-core and the platform backend, li
 | Threat | Control | Evidence |
 |---|---|---|
 | Another machine on the network | Binds `127.0.0.1` only; there is no option to bind elsewhere | `test-cli.sh`: listener is loopback-only |
-| Another local user or process | 128-bit token from `/dev/urandom` per run, required as the `X-StockFW-Token` header and compared in constant time; never accepted in the query string; the page itself carries no token and no data | 401 without, with a wrong, and with a query-string token |
-| A web page in the user's browser (CSRF) | Custom header requirement (a cross-origin page cannot set it without a CORS preflight, which is never granted); GET/HEAD only; the API changes nothing | 405 on POST |
-| DNS rebinding | `Host` must be `127.0.0.1:PORT` or `localhost:PORT` | 403 for a foreign Host even with the token |
+| Another local user or process | 128-bit token from `/dev/urandom` per run, required as the `X-StockFW-Token` header and compared in constant time; never accepted in the query string; the page itself carries no token and no data. Since 15.3.1 a connection is read only if it comes from 127.0.0.1 and its socket belongs to the account the dashboard serves (its own uid, or `SUDO_UID` under sudo, never uid 0), from the `uid` column of `/proc/net/tcp`; any other is closed at accept, unread | 401 without, with a wrong, and with a query-string token; `test-dashboard.sh`: root, `nobody` and 127.0.0.2 get no byte back, even with the token |
+| A web page in the user's browser (CSRF) | Custom header requirement (a cross-origin page cannot set it without a CORS preflight, which is never granted); GET/HEAD only; the API changes nothing. Since 15.3.1 any `Upgrade` header gets 400 (no WebSocket) and `Transfer-Encoding` gets 400 | 405 on POST; 400 for `Upgrade: websocket` |
+| DNS rebinding | `Host` must be exactly `127.0.0.1:PORT`, given once. `localhost:PORT` was accepted until 15.3.1; it is refused now, because the server binds IPv4 only and another account may listen on `[::1]:PORT`, where a browser sent to `localhost` may go first | 403 for a foreign Host even with the token, for `localhost:PORT` and for two `Host` headers |
 | Token leakage | Token travels in the URL **fragment**, which browsers never send to servers or put in `Referer`; the page moves it to `sessionStorage` and strips it from the address bar; `Referrer-Policy: no-referrer`. Since 1.0.7 (14.8) the token is in no argument list: `xdg-open` gets a 0600 redirect page under `$XDG_RUNTIME_DIR`, so another account cannot read it from `/proc/<pid>/cmdline` | page HTML contains no token; `test-cli.sh`: xdg-open's command line holds no token, the page is 0600 in a 0700 folder and goes once the token is used |
 | Script injection via log content | Every DOM node built with `textContent`; JSON escapes `<`, `>`, `&`; CSP `default-src 'none'` with a per-run nonce for the one script and style block; `frame-ancestors 'none'` | CSP and nonce checked |
-| Resource exhaustion | 16 KB request-head cap however the bytes are split (a bug where a head ending in the read that crossed the limit slipped through was found and fixed), 10 s socket timeout, 32 connections at most, simulator input capped at 300 characters | 431 test fails with the fix reverted |
-| Running a browser as root | Under `sudo` the dashboard prints the address instead of launching a browser | by construction |
+| Resource exhaustion | 16 KB request-head cap however the bytes are split (a bug where a head ending in the read that crossed the limit slipped through was found and fixed), simulator input capped at 300 characters. Until 15.3.1: a 10 s inactivity timeout and 32 connections at most, so 32 slow senders shut the user out. Since 15.3.1: the head within 5 s of the accept, a body (at most 64 KB, by `Content-Length` only) within 5 s more, the answer written within 5 s; 16 connections per uid still sending, a new one closing the oldest; 64 in all | 431 test fails with the fix reverted; `test-dashboard.sh`: with 32 slow senders a valid request answers within 1 s (the 1.0.7 server answered nothing) |
+| Running a browser as root | Under `sudo` the dashboard prints the address instead of launching a browser. Since 15.3.1, as root without `SUDO_UID` it does not start, since it would serve nobody | by construction; `test-dashboard.sh`: exit 1 without `SUDO_UID` and with `SUDO_UID=0` |
 
-After 1.0.7 the dashboard's `monitoring` field is decided by what the account can read (`fs_cli_log_readable`), not by its user id, and when it is not root the dashboard follows a readable log file itself (15.2.3). Nothing else in this table changed.
+After 1.0.7 the dashboard's `monitoring` field is decided by what the account can read (`fs_cli_log_readable`), not by its user id, and when it is not root the dashboard follows a readable log file itself (15.2.3). The request checks changed in 15.3.1, as the table says; the credentials (token, launch page) change in 15.3.2.
 
 Changes are deliberately not possible from the browser: `stockfw policy` and `stockfw apply` remain the write path. The dashboard leaves its own sockets out of the connection list, since they exist only because someone is looking (**[Verified]** fails with the filter removed). **[Verified]** `test-cli.sh`, 52 checks, run against scratch rule and config directories and a fixture log; `apply` only ever runs with `--dry-run`. After 1.0.7 (15.2) this is no longer so: the script has 297 checks, and as root it also runs real `apply`, `start` and `stop`, but only inside a private network namespace (`unshare -n`), never on the host's firewall.
 
@@ -1972,6 +1972,64 @@ A security review of the joined PR then found seven more. Each was reproduced or
 - **`events --summary` over a very long window died of SIGFPE.** `bucket_step()` grew a `guint` step by a day at a time until the window fitted in 48 bars. A window of more than about 6,500 years (`--until 9999-12-30` with no `--since`, which starts at 1970) cannot, so the step wrapped round to 0 after about 2^25 turns and the next division trapped. The step is now worked out in 64 bits, as few whole days as fit in 48 bars (the same answer as the loop where it ended), and capped at the most whole days a `guint` holds, so such a window gets up to 75 bars. The bars' start is also rounded down before 1970, where C's `%` is negative and moved it later than `--since`.
 
 **[Verified]** One check (or a few) per finding, each made to fail with its fix taken out: the file was copied to a scratch folder, the bug put back with a script that asserted the fixed text, the tree rebuilt and the test run, then the file restored with `cp` and checked with `cmp`. `test-cli.sh`: a kernel-log line with OSC, BEL and `ESC[2J` in `IN=` and `PROTO=`; `events --csv` piped and under `script` (a pty) has no raw ESC or BEL and the fields read back escaped (failed with the raw `printf`). A service name with U+202E; `simulate --assume-running` prints `Allow web‮nimda` and no raw U+202E (failed). `events --summary --until 9999-12-30` and `--since 0001-01-01 --until 9999-12-31` exit 0 with a step of whole days within a `guint` and at most 75 bars (with the old loop: killed by SIGFPE, return code -8). In the private network namespace: audit-only on, the firewall stopped, a journal that lets SSH in from the LAN only and `SSH_CONNECTION` from 10.0.0.5: `start </dev/null` is refused (exit 1, "pass --yes to start") and the ruleset is unchanged, and `start --yes` starts it, held (the first check failed with the old condition: exit 0, the journal installed). `test-intel-cli.sh` (private namespaces): a list imported as `abc<U+202E>txt.exe`; the import line, the apply's `Now` line, `intel status`, `stockfw status` and `intel list remove` print `abc‮txt.exe` and no raw U+202E (all five failed with the escaping taken out). `test-core.sh`: 70 ALLOWED LAN peers and the session's own peer 203.0.113.5, which the SSH row does not let in; `fs_lockout_check()` stops at 64 and counts 7 not asked, `fs_lockout_check_own()` asks about 203.0.113.5 first and reports it BLOCKED, 65 pairs, 6 skipped (failed when the own peers were not put first: ALLOWED, worst 192.168.1.1). `tests/fake-sshd.py --activated` opens the listener in a process that is not sshd and hands it to a child named sshd, as systemd does; its port is among `fs_hostnet_ssh_listen_ports()` and its session is kept (failed with the first holder only: no port). `tests/fake-sshd.py --exec` runs `test-sockets --own PORT` as a child of the fake sshd with no SSH variables; it reads its own peer, 127.0.0.3, from the ancestor (failed without the ancestor walk: empty). `src/core` still builds with `__linux__` undefined (`gcc -fsyntax-only -U__linux__` on `fs-hostnet.c` and `fs-lockout.c`, no warning): the new Linux code is behind its guard. As root, on a build in a world-readable folder: `tests/test-cli.sh` 302 checks, no failure; `tests/test-core.sh` passed; `tests/test-intel-cli.sh` 157 checks, no failure; `xvfb-run -a bash tests/full-suite.sh` on that build: every Linux suite passed (5 skipped: the Windows-only ones and `fs-tray-smoke`, which needs a notification area). Not run on Windows: the Windows build was not compiled here.
+
+### 15.3 Dashboard hardening
+
+`stockfw dashboard` (13.6) stays read-only and stays on 127.0.0.1. This work fixes the server it already had, in three packages: 2A the HTTP server, 2B authentication, 2C the page. Each package fills its own subsection.
+
+#### 15.3.1 The HTTP server (2A)
+
+**The split.** The server is now `src/cli/fs-dash-http.c` (with `fs-dash-http.h`). It owns the listening socket, the checks made at accept, the connection slots, the deadlines, request parsing and the checks every request crosses. `fs-dashboard.c` keeps the data, the routes, the token and the launch page, and gives the server one handler. Both are Linux command-line code; nothing in `src/core` changed.
+
+**Who is served.** The dashboard reads connections from one account only:
+- not root: its own uid;
+- as root: the uid in `SUDO_UID`, which `sudo` sets. As root without `SUDO_UID`, or with `SUDO_UID=0`, it refuses to start (exit 1) and says why. A browser does not run as root, so a root-owned client is some other process.
+
+The terminal shows that uid under sudo ("Serves uid N only"). There is still no privilege drop: that needs the root daemon (PR 7).
+
+**At accept, before a byte is read.** `on_incoming` closes the connection at once, unread, unless:
+1. the peer address is exactly 127.0.0.1 (not another address in 127/8);
+2. the peer's socket is listed in `/proc/net/tcp` (or `/proc/net/tcp6`, as `::ffff:127.0.0.1`, for a dual-stack client) with the peer's address and port as its local end and ours as its remote end, has an owner (inode not 0), and its `uid` column is the served uid. That uid is never 0.
+
+`SO_PEERCRED` does not work on TCP, so the owner comes from the kernel's table. The lookup is `fs_dash_peer_uid()`. It matches the address columns as the kernel prints them: each 32-bit word with `%08X` as it sits in memory, the port in host order. A peer with no socket owner is closed. WSL is not detected yet. A Windows browser reaching the dashboard through WSL's localhost forwarding should have no socket of the user's account, so it is expected to be refused too; this was not measured on a WSL host (2B adds detection and `--allow-windows`). Refusals are not logged yet: the plan sends them to the daemon (PR 7).
+
+**Slots (T2).** At most 16 connections per uid may be sending a request (`FS_DASH_SLOTS_OPEN`). One more closes the oldest of them. A connection leaves its slot once its request is in and it is being answered. At most 64 connections are open at all (`FS_DASH_MAX_ALL`). The 1.0.7 server closed the 33rd connection at once, so 32 slow senders shut the user out for as long as they liked. Now a slow sender can delay the user's request, never block it. The plan's 16 further slots for sessions come with sessions and streams (2B and later); no connection is held open after its answer yet.
+
+**Deadlines (T2).** The 10 s inactivity timeout is gone; one byte every 6 s kept a connection open for ever. Now:
+- the request head must be complete within 5 s of the accept (`FS_DASH_DEADLINE_S`);
+- a body (`Content-Length`) within 5 s of the end of the head;
+- the answer must be written within 5 s.
+
+A connection past its deadline is closed without an answer. The timer cancels the read or write in flight, and its callback frees the connection, so a connection is freed in one place only.
+
+**Every request, before the handler:**
+- request line with three parts and `HTTP/1.x`, else 400;
+- head at most 16 KB however it is split, else 431 (kept);
+- exactly one `Host`, equal to `127.0.0.1:PORT`, else 403. `localhost:PORT` is no longer accepted (G4, T5): the server binds IPv4 only, another account may listen on `[::1]:PORT`, and a browser sent to `localhost` may go there first. `fs_dash_http_allow_host()` is the hook for `--origin-port` (2B);
+- any `Upgrade` header gets 400, so no WebSocket or other protocol switch (T7);
+- any `Transfer-Encoding` gets 400; bodies are sized by `Content-Length` only;
+- `Content-Length` must be digits, appear once, and be at most 64 KB (`FS_DASH_MAX_BODY`), else 400 or 413. The body is read before the handler runs. Nothing uses it yet.
+
+The handler then does what it did: GET and HEAD only (405), the token, the routes. Answers and their security headers are unchanged.
+
+**[Verified]** `tests/test-dashboard.sh` (new; in `full-suite.sh` and in CI's Linux job, as the runner's user and as root): 15 checks as root. The dashboard runs as `sudo` runs it, with `SUDO_UID=65533`; the user's requests are made as uid 65533.
+- With 32 connections held open by sending a byte every 0.3 s, from the user's own uid, a valid request is answered with 200 within 1 s. The same test against the 1.0.7 server (bc77b84) gets nothing back: curl's `000`.
+- A head sent a byte at a time is cut off between 4.5 and 7 s; a promised body that does not come is cut off in the same window, unanswered; with the body it gets 200.
+- `Host: localhost:PORT` and `Host: 127.0.0.1:1` get 403, two `Host` headers get 403, `Upgrade: websocket` gets 400 with the token and from a foreign `Origin`, `Transfer-Encoding` gets 400, `Content-Length: 70000` gets 413.
+- With a valid token, a connection from uid 0 and one from uid `nobody` get no byte back (curl `000`); one from 127.0.0.2 gets none either; the user's own still gets 200.
+- As root without `SUDO_UID`, and with `SUDO_UID=0`, it exits 1 and prints no token.
+
+Each check was made to fail with its control taken out (copy the file to a scratch folder, put the bug back with a script that asserts the fixed text, rebuild, run, restore with `cp`, check with `cmp`): `localhost` accepted again: its check fails. The `Upgrade` check removed: both `Upgrade` checks fail. A full slot group refusing the new connection instead of closing the oldest (the 1.0.7 behaviour): the 32-sender check fails. No deadline at accept: the trickled-head check fails. The deadline cleared, not restarted, after the head: the body check fails. The accept check skipped: the root, `nobody`, 127.0.0.2 and no-byte checks fail. Only the uid comparison skipped: the root, `nobody` and no-byte checks fail. Root accepted as the served user: the refusal checks fail (and, since root then is the user, every request made as uid 65533 fails too). With every file restored, all 15 pass.
+
+`tests/test-cli.sh` keeps its dashboard checks and now runs them the same way: as root, the dashboard gets `SUDO_UID=65533`, and a `curl` first on `PATH` makes every request as that uid. Its `localhost` check now expects 403. The launch-page check (dashboard as `nobody`) and the WP-C check make their requests as `nobody`.
+
+#### 15.3.2 Authentication (2B)
+
+(filled by its package)
+
+#### 15.3.3 The page (2C)
+
+(filled by its package)
 
 ---
 

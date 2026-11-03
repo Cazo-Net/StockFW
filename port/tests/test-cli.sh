@@ -48,10 +48,12 @@ S="$BUILD/stockfw"
 TMP="$(mktemp -d)"
 DASH_PID=""
 INTEL_BASE=""
+DW=""
 cleanup () {
   [ -n "$DASH_PID" ] && kill "$DASH_PID" 2>/dev/null
   rm -rf "$TMP"
   [ -n "$INTEL_BASE" ] && rm -rf "$INTEL_BASE"
+  [ -n "$DW" ] && rm -rf "$DW"
 }
 trap cleanup EXIT
 
@@ -605,8 +607,39 @@ else
 fi
 
 # --------------------------------------------------------- dashboard
+# The dashboard reads only connections whose socket belongs to the
+# account it serves: its own, or SUDO_UID under sudo, never uid 0
+# (docs 15.3.1; tests/test-dashboard.sh tests that part).  As root it
+# runs here the way sudo runs it, with SUDO_UID=65533, and every
+# request is made as uid 65533: a `curl' first on PATH does that (uid
+# DASH_PEER_UID when set), and peer_py runs Python as that uid.  The
+# answers are written to $DW, which that uid can write.
+DW="$(mktemp -d /tmp/stockfw-dash-XXXXXX)"; chmod 755 "$DW"
+mkdir "$DW/bin"
+REAL_CURL="$(command -v curl)"
+DASH_ENV=(env)
+DASH_UID="$(id -u)"
+peer_py () { py "$1"; }
+if [ "$(id -u)" = 0 ]; then
+  DASH_UID=65533
+  DASH_ENV=(env SUDO_UID=65533)
+  chown 65533:65533 "$DW"
+  peer_py () { setpriv --reuid=65533 --regid=65533 --clear-groups python3 -I -c "$1"; }
+fi
+cat > "$DW/bin/curl" <<CEOF
+#!/bin/sh
+if [ "\$(id -u)" = 0 ]; then
+  u="\${DASH_PEER_UID:-$DASH_UID}"
+  exec setpriv --reuid="\$u" --regid="\$u" --clear-groups "$REAL_CURL" "\$@"
+fi
+exec "$REAL_CURL" "\$@"
+CEOF
+chmod 755 "$DW/bin/curl"
+SAVED_PATH="$PATH"
+export PATH="$DW/bin:$PATH"
+
 DPORT=$(py 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
-"$S" dashboard --no-open --port "$DPORT" > "$TMP/dash.txt" 2>&1 &
+"${DASH_ENV[@]}" "$S" dashboard --no-open --port "$DPORT" > "$TMP/dash.txt" 2>&1 &
 DASH_PID=$!
 for _ in $(seq 1 50); do
   grep -q '#token=' "$TMP/dash.txt" 2>/dev/null && break
@@ -624,14 +657,14 @@ check "it listens on loopback only" \
 code () { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
 
 check "the page loads without the token (it holds no data)" \
-  bash -c "[ \$(curl -sS -o '$TMP/page.html' -w '%{http_code}' '$B/') = 200 ]"
-check "  ...and the token is not in it" bash -c "! grep -q '$TOKEN' '$TMP/page.html'"
+  bash -c "[ \$(curl -sS -o '$DW/page.html' -w '%{http_code}' '$B/') = 200 ]"
+check "  ...and the token is not in it" bash -c "! grep -q '$TOKEN' '$DW/page.html'"
 check "  ...and its scripts carry this run's CSP nonce" py "
 import re, subprocess
 h = subprocess.run(['curl', '-sS', '-D', '-', '-o', '/dev/null', '$B/'], capture_output=True, text=True).stdout
 csp = re.search(r'Content-Security-Policy: (.*)', h).group(1)
 nonce = re.search(r\"'nonce-([0-9a-f]{32})'\", csp).group(1)
-page = open('$TMP/page.html').read()
+page = open('$DW/page.html').read()
 assert \"default-src 'none'\" in csp and \"frame-ancestors 'none'\" in csp, csp
 assert page.count('nonce=\"' + nonce + '\"') >= 2 and '{{NONCE}}' not in page"
 check "the API refuses a request without the token (401)" \
@@ -641,14 +674,14 @@ check "  ...and a wrong token (401)" \
 check "  ...and the token in the query string (401: headers only)" \
   bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' '$B/api/summary?token=$TOKEN') = 401 ]"
 check "the token unlocks the API (200)" \
-  bash -c "[ \$(curl -sS -o '$TMP/s.json' -w '%{http_code}' -H 'X-StockFW-Token: $TOKEN' '$B/api/summary') = 200 ]"
+  bash -c "[ \$(curl -sS -o '$DW/s.json' -w '%{http_code}' -H 'X-StockFW-Token: $TOKEN' '$B/api/summary') = 200 ]"
 check "a foreign Host header is refused even with the token (DNS rebinding, 403)" \
   bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: attacker.example:$DPORT' -H 'X-StockFW-Token: $TOKEN' '$B/api/summary') = 403 ]"
-check "localhost:PORT is accepted as a Host" \
-  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: localhost:$DPORT' -H 'X-StockFW-Token: $TOKEN' '$B/api/summary') = 200 ]"
+check "localhost:PORT is refused as a Host (403): another account may hold [::1]:PORT" \
+  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: localhost:$DPORT' -H 'X-StockFW-Token: $TOKEN' '$B/api/summary') = 403 ]"
 check "POST is refused (405): the dashboard is read-only" \
   bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'X-StockFW-Token: $TOKEN' '$B/api/summary') = 405 ]"
-check "a request head over 16 KB is refused (431), however it is split" py "
+check "a request head over 16 KB is refused (431), however it is split" peer_py "
 import socket
 s = socket.create_connection(('127.0.0.1', $DPORT))
 s.sendall(b'GET / HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\nX: ' + b'a' * 20000 + b'\r\n\r\n')
@@ -658,11 +691,11 @@ check "a path outside the API is 404, not a file read" \
 
 api () { curl -sS -H "X-StockFW-Token: $TOKEN" "$B/api/$1"; }
 check "summary says whether IPv6 is filtered, and logs allowed traffic by default" py "
-import json; d = json.load(open('$TMP/s.json'))
+import json; d = json.load(open('$DW/s.json'))
 assert d['ipv6']['state'] in ('filtered', 'not-filtered', 'absent', 'unknown') and d['ipv6']['detail'], d
 assert d['logs_allowed'] is True, d"
 check "summary counts the fixture's blocked events and the saved policy" py "
-import json; d = json.load(open('$TMP/s.json'))
+import json; d = json.load(open('$DW/s.json'))
 assert d['blocked_24h'] == 4 and d['blocked_1h'] == 4, d
 assert d['policy_saved'] is True and d['rules'] == 2, d"
 check "activity: blocked events land in the graph, honest no-data before the log starts" py "
@@ -718,7 +751,7 @@ assert [(x['id'], x['direction'], x['status']) for x in g['rules']] == [('countr
   check "intel: POST is refused (405): the panel is read-only" \
     bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'X-StockFW-Token: $TOKEN' '$B/api/intel') = 405 ]"
   check "the page has the blocklist panel and asks for /api/intel" \
-    bash -c "grep -q 'id=\"h-intel\"' '$TMP/page.html' && grep -q '/api/intel' '$TMP/page.html'"
+    bash -c "grep -q 'id=\"h-intel\"' '$DW/page.html' && grep -q '/api/intel' '$DW/page.html'"
 fi
 check "the dashboard's own sockets are not listed as connections" py "
 import json, subprocess
@@ -779,7 +812,7 @@ check "  ...and sends the browser on to the URL with the token" \
 check "  ...and the terminal says to open the URL if the browser cannot read the page" \
   bash -c "grep -q 'A browser was started' '$OD/out' && grep -q 'open the URL' '$OD/out'"
 check "  ...it stays until the token is used" bash -c "[ -f '$OPAGE' ]"
-curl -sS -o /dev/null -H "X-StockFW-Token: $OTOKEN" "http://127.0.0.1:$OPORT/api/summary"
+DASH_PEER_UID=65534 curl -sS -o /dev/null -H "X-StockFW-Token: $OTOKEN" "http://127.0.0.1:$OPORT/api/summary"
 check "  ...and is removed, with its directory, once it is" \
   bash -c "[ ! -e '$OPAGE' ] && [ ! -e \"\$(dirname '$OPAGE')\" ]"
 kill "$DASH_PID" 2>/dev/null; wait "$DASH_PID" 2>/dev/null; DASH_PID=""
@@ -788,11 +821,14 @@ check "  ...and nothing is left in the runtime directory when it stops" \
 rm -rf "$OD"
 
 check "a second dashboard on a busy port fails cleanly (exit 1)" py "
-import socket, subprocess
+import os, socket, subprocess
 s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(1)
 p = s.getsockname()[1]
-r = subprocess.run(['$S', 'dashboard', '--no-open', '--port', str(p)], capture_output=True, text=True, timeout=10)
-assert r.returncode == 1 and 'error' in r.stderr, (r.returncode, r.stderr)"
+r = subprocess.run(['$S', 'dashboard', '--no-open', '--port', str(p)], capture_output=True, text=True, timeout=10,
+                   env=dict(os.environ, SUDO_UID='65533'))
+assert r.returncode == 1 and 'cannot listen' in r.stderr, (r.returncode, r.stderr)"
+export PATH="$SAVED_PATH"
+rm -rf "$DW"
 
 # Each work package of the next release keeps its tests between its
 # own markers (cli-plan.md section 4), so the packages never touch one
@@ -1503,7 +1539,7 @@ assert r.returncode == 5 and 'lifts by itself' in r.stdout, r"
 # dashboard: monitoring by readability, and live rows from the file.
 if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null || [ "$(id -u)" != 0 ]; then
   check "dashboard: as uid 65534 with a readable log, monitoring is on and new lines arrive" c_py "
-import socket, urllib.request
+import socket
 s = socket.socket(); s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]; s.close()
 pre = $C_AS
 p = subprocess.Popen(pre + ['$S', 'dashboard', '--no-open', '--port', str(port)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=CENV)
@@ -1515,8 +1551,10 @@ try:
             url = line; break
     token = url.split('#token=')[1].split()[0]
     def get(path):
-        req = urllib.request.Request('http://127.0.0.1:%d%s' % (port, path), headers={'X-StockFW-Token': token})
-        return json.loads(urllib.request.urlopen(req, timeout=5).read())
+        # As the dashboard's own account: it reads no other (15.3.1).
+        r = subprocess.run(pre + ['curl', '-sS', '--max-time', '5', '-H', 'X-StockFW-Token: ' + token,
+                                  'http://127.0.0.1:%d%s' % (port, path)], capture_output=True, text=True)
+        return json.loads(r.stdout)
     d = get('/api/summary')
     assert d['monitoring'] is True and d['root'] is False and 'readable without root' in d['monitor_note'], d
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00')

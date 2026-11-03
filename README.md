@@ -498,11 +498,14 @@ sudo ./build-linux/stockfw events -f --json                   # NDJSON, live
 The dashboard's security model: it binds 127.0.0.1 and nothing else;
 each run makes a 128-bit token, passed in the URL fragment (never sent
 to the server or logged) and then as a request header compared in
-constant time; the `Host` header must name 127.0.0.1 or localhost on
-its port, so a DNS-rebinding page cannot reach it; GET and HEAD only,
-a 16 KB cap on request heads, a 10 s timeout and 32 connections at
-most; a per-run CSP nonce with `default-src 'none'`; and it never opens
-a browser as root. It is read-only: changes go through `stockfw policy`
+constant time; it reads only connections from 127.0.0.1 whose socket
+belongs to your account (under `sudo`, the account that ran it; never
+root), and closes any other at once; the `Host` header must be exactly
+127.0.0.1 on its port, so a DNS-rebinding page cannot reach it; GET and
+HEAD only, a 16 KB cap on request heads, 5 s for the head and 5 s for a
+body, and at most 16 unfinished requests per account, a new one closing
+the oldest; a per-run CSP nonce with `default-src 'none'`; and it never
+opens a browser as root. It is read-only: changes go through `stockfw policy`
 and `stockfw apply`, which use the same gate as the desktop app.
 
 `xz` and `openssl` (liblzma and libcrypto) read and verify the location

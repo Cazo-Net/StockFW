@@ -205,10 +205,15 @@ to your shell's start-up file:
 
 `stockfw dashboard` serves a read-only page on 127.0.0.1 only, behind a
 token that changes every run, and opens it in your browser (never as
-root: under `sudo` it prints the address instead).  The same `sudo`
-search-path note as above applies: `sudo /usr/local/bin/stockfw` always
-works.  Under WSL, open the printed address in your Windows browser and
-leave the terminal running while you use it.
+root: under `sudo` it prints the address instead).  It answers only
+your own account: under `sudo`, the account that ran `sudo`.  Run it
+with `sudo` from your own account, not from a root shell, where it
+refuses to start.  Open the address exactly as printed, with
+`127.0.0.1`: `localhost` is refused.  The same `sudo` search-path note
+as above applies: `sudo /usr/local/bin/stockfw` always works.  Under
+WSL, a browser on the Windows side may be refused for now, since its
+connection does not come from your Linux account; a browser inside WSL
+works.  Leave the terminal running while you use it.
 
 ## Uninstall
 

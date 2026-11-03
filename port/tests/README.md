@@ -87,6 +87,29 @@ by stamp, every filter, a damaged and a cut-short line skipped and
 counted, unreadable filters refused with exit 2, and a missing folder
 named with where it would be.
 
+As root, the dashboard runs here as `sudo` runs it, with
+`SUDO_UID=65533`, and a `curl` first on `PATH` makes every request as
+uid 65533: the dashboard reads no other account's connections.
+
+## Dashboard HTTP server (`tests/test-dashboard.sh`)
+
+```sh
+cd port
+sudo STOCKFW_BUILD=build-linux bash tests/test-dashboard.sh
+```
+
+Linux only; takes about 15 s.  Starts the dashboard from a copy of
+`stockfw` in a directory every account can read, with `SUDO_UID=65533`
+when run as root, and checks `src/cli/fs-dash-http.c` (docs 15.3.1):
+with 32 slow senders holding connections a valid request answers
+within 1 s; a head or a body trickled in is cut off after 5 s;
+`Host: localhost:PORT`, two `Host` headers, `Upgrade`,
+`Transfer-Encoding` and a body over 64 KB are refused.  As root it
+also checks that connections from root, from `nobody` and from
+127.0.0.2 get no byte back even with the token, and that the dashboard
+refuses to start as root without `SUDO_UID`.  Without root those
+checks print `skip:`.
+
 
 ## Event store and history (`tests/test-eventstore.sh`)
 

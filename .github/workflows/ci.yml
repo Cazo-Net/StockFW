@@ -88,6 +88,7 @@ jobs:
           bash tests/test-winevt.sh
           bash tests/test-adversarial.sh
           bash tests/test-cli.sh
+          bash tests/test-dashboard.sh
           bash tests/test-logstart.sh
           bash tests/test-licence-texts.sh
           bash tests/test-uaf-analyze.sh
@@ -202,6 +203,9 @@ jobs:
           strict tests/test-intel-e2e.sh
           strict tests/test-intel-cli.sh
           strict tests/test-fetch.sh
+          # The dashboard's HTTP server as root: it serves SUDO_UID, and
+          # connections from root and nobody are closed at accept.
+          strict tests/test-dashboard.sh
           sudo ./build-linux/fs-hostnet-test
           # The boot unit and `stockfw start' as the unit runs it; the
           # Linux installer in a private mount namespace; start at

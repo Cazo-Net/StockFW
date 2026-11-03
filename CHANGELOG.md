@@ -148,6 +148,29 @@ into `/usr/local/share/doc/stockfw/`.
   for GTK at all. The default still builds the desktop app too. CI
   checks that `stockfw` needs no GTK, GDK, Pango or cairo library.
 
+### Dashboard (stockfw dashboard)
+
+It is still read-only and still listens on 127.0.0.1 only.
+
+- **Slow connections can no longer lock you out.** Until now, 32
+  connections that sent a byte every few seconds kept the dashboard
+  from answering anyone, for as long as they liked. Now the request
+  head must arrive within 5 s and a body within 5 s more, and when 16
+  connections from one account are still sending, a new one closes the
+  oldest. With 32 such connections open, a normal request is answered
+  within 1 s.
+- **Only your own account is served.** A connection is read only when
+  it comes from 127.0.0.1 and its socket belongs to you (under `sudo`,
+  to the account that ran `sudo`). Connections from root or any other
+  account are closed at once, unread, even with a valid link. As root
+  without `sudo`, `stockfw dashboard` now refuses to start and says why.
+  Under WSL, a browser on the Windows side may be refused for now.
+- **Use the address as printed.** `http://localhost:PORT` is no longer
+  accepted, only `http://127.0.0.1:PORT`: another account could listen
+  on `[::1]` at the same port and catch a browser sent to `localhost`.
+- Requests with `Upgrade` (WebSocket) or `Transfer-Encoding` get 400,
+  and a body over 64 KB gets 413.
+
 ### Fixed
 
 - **Wayland desktops and WSL: no tray icon, no start-up warning.** GTK

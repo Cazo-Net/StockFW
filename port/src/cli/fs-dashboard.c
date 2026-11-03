@@ -15,11 +15,16 @@
  *     custom header cannot be sent cross-origin without a CORS
  *     preflight, which this server never answers, so another web page in
  *     the same browser cannot read the API or ride the token.
- *   - The Host header must be 127.0.0.1:<port> or localhost:<port>.  That
- *     closes DNS rebinding: a hostile name re-pointed at 127.0.0.1 still
- *     arrives with its own Host and is refused.
- *   - GET and HEAD only, a 16 KB cap on the request head, a 10 s socket
- *     timeout and at most 32 connections at once.
+ *   - The Host header must be exactly 127.0.0.1:<port>.  That closes
+ *     DNS rebinding: a hostile name re-pointed at 127.0.0.1 still
+ *     arrives with its own Host and is refused.  `localhost' is refused
+ *     too: another account may listen on [::1] at the same port.
+ *   - Only connections from 127.0.0.1 whose socket belongs to the user
+ *     the dashboard serves (its own uid, or SUDO_UID under sudo; never
+ *     uid 0) are read at all; deadlines and per-uid slots keep slow
+ *     senders from locking the user out.  That part, the server
+ *     itself, is fs-dash-http.c.
+ *   - GET and HEAD only, a 16 KB cap on the request head.
  *   - The API is read-only.  Changing the firewall stays with
  *     `stockfw apply' and the desktop app, where a human confirms it.
  *     The what-if simulator is a question, not a change.
@@ -35,6 +40,7 @@
  *     style, font or image can load, so nothing leaves the machine.
  *--------------------------------------------------------------------*/
 #include "cli/fs-cli.h"
+#include "cli/fs-dash-http.h"
 #include "core/fs-activity.h"
 #include "core/fs-apply.h"
 #include "core/fs-copilot.h"
@@ -55,20 +61,17 @@
 #include <string.h>
 #include <unistd.h>
 
-#define DASH_MAX_HEAD        16384
-#define DASH_MAX_CONNECTIONS 32
 #define DASH_RECENT_EVENTS   500
 #define DASH_SAMPLE_MS       2000
 #define DASH_HISTORY_LINES   20000
 
 typedef struct
 {
-	GSocketService    *service;
+	FsDashHttp        *http;
 	guint16            port;
+	uid_t              peer_uid;     /* whose browser is served */
 	gchar              token[33];
 	gchar              nonce[33];
-	gchar             *host_ip;      /* "127.0.0.1:<port>" */
-	gchar             *host_name;    /* "localhost:<port>" */
 	gchar             *page;         /* the HTML with the nonce in it */
 	gint64             started;
 
@@ -92,20 +95,11 @@ typedef struct
 	gint64             stats_now_us;
 	gint64             stats_prev_us;
 
-	guint              open_connections;
 	GMainLoop         *loop;
 
 	gchar             *launch_dir;   /* the browser's redirect page:   */
 	gchar             *launch_file;  /* removed once the token is used */
 } Dash;
-
-typedef struct
-{
-	Dash              *dash;
-	GSocketConnection *connection;
-	GString           *head;
-	guint8             buffer[4096];
-} Conn;
 
 static void launch_page_remove (Dash *dash);
 
@@ -853,190 +847,49 @@ simulate_json (GHashTable *params, guint *status)
 	return g_string_free (out, FALSE);
 }
 
-/* ---------------------------------------------------------------- HTTP */
+/* ------------------------------------------------------------ routing */
 
-static const gchar *
-status_text (guint status)
-{
-	switch (status) {
-	case 200: return "OK";
-	case 204: return "No Content";
-	case 400: return "Bad Request";
-	case 401: return "Unauthorized";
-	case 403: return "Forbidden";
-	case 404: return "Not Found";
-	case 405: return "Method Not Allowed";
-	case 431: return "Request Header Fields Too Large";
-	case 503: return "Service Unavailable";
-	default:  return "Error";
-	}
-}
-
+/* [ handle_request ]
+ * Every request that passed fs-dash-http.c's checks (peer, Host,
+ * Upgrade, sizes, deadlines) lands here and is answered once. */
 static void
-on_written (GObject *source, GAsyncResult *result, gpointer data)
+handle_request (FsDashConn *conn, gpointer data)
 {
-	Conn *conn = data;
+	Dash *dash = data;
+	const gchar *method = fs_dash_conn_method (conn);
+	const gchar *path = fs_dash_conn_path (conn);
+	GHashTable *params = fs_dash_conn_params (conn);
+	gchar *token;
 
-	g_output_stream_write_all_finish (G_OUTPUT_STREAM (source), result,
-	                                  NULL, NULL);
-	g_io_stream_close (G_IO_STREAM (conn->connection), NULL, NULL);
-
-	conn->dash->open_connections--;
-	g_object_unref (conn->connection);
-	g_string_free (conn->head, TRUE);
-	g_free (conn);
-}
-
-/* [ respond ] -- write one complete response and close. */
-static void
-respond (Conn *conn, guint status, const gchar *type, const guint8 *body,
-         gsize body_len, gboolean head_only)
-{
-	Dash *dash = conn->dash;
-	GString *out = g_string_new (NULL);
-	GOutputStream *stream;
-	GBytes *bytes;
-	gsize size;
-	gpointer data;
-
-	g_string_append_printf (out,
-		"HTTP/1.1 %u %s\r\n"
-		"Content-Type: %s\r\n"
-		"Content-Length: %" G_GSIZE_FORMAT "\r\n"
-		"Cache-Control: no-store\r\n"
-		"X-Content-Type-Options: nosniff\r\n"
-		"X-Frame-Options: DENY\r\n"
-		"Referrer-Policy: no-referrer\r\n"
-		"Cross-Origin-Opener-Policy: same-origin\r\n"
-		"Cross-Origin-Resource-Policy: same-origin\r\n"
-		"Content-Security-Policy: default-src 'none'; "
-		"script-src 'nonce-%s'; style-src 'nonce-%s'; "
-		"connect-src 'self'; img-src 'self'; base-uri 'none'; "
-		"form-action 'none'; frame-ancestors 'none'\r\n"
-		"Connection: close\r\n\r\n",
-		status, status_text (status), type, body_len,
-		dash->nonce, dash->nonce);
-
-	if (!head_only && body != NULL)
-		g_string_append_len (out, (const gchar *) body, (gssize) body_len);
-
-	size  = out->len;
-	data  = g_string_free (out, FALSE);
-	bytes = g_bytes_new_take (data, size);
-
-	stream = g_io_stream_get_output_stream (G_IO_STREAM (conn->connection));
-
-	/* write_all_async does not copy: the GBytes stays alive in the
-	 * closure until the write has finished. */
-	g_object_set_data_full (G_OBJECT (conn->connection), "fs-response",
-	                        bytes, (GDestroyNotify) g_bytes_unref);
-	g_output_stream_write_all_async (stream, g_bytes_get_data (bytes, NULL),
-	                                 size, G_PRIORITY_DEFAULT, NULL,
-	                                 on_written, conn);
-}
-
-static void
-respond_json (Conn *conn, guint status, gchar *json, gboolean head_only)
-{
-	respond (conn, status, "application/json; charset=utf-8",
-	         (const guint8 *) json, strlen (json), head_only);
-	g_free (json);
-}
-
-static void
-respond_error (Conn *conn, guint status, const gchar *message)
-{
-	GString *out = g_string_new ("{");
-
-	fs_json_kv_str (out, "error", message);
-	g_string_append_c (out, '}');
-	respond_json (conn, status, g_string_free (out, FALSE), FALSE);
-}
-
-/* [ header_value ] -- a request header, case-insensitively; NULL if absent. */
-static gchar *
-header_value (gchar **lines, const gchar *name)
-{
-	gsize n = strlen (name);
-
-	for (guint i = 1; lines[i] != NULL; i++) {
-		if (g_ascii_strncasecmp (lines[i], name, n) == 0 &&
-		    lines[i][n] == ':') {
-			gchar *value = g_strdup (lines[i] + n + 1);
-
-			return g_strstrip (value);
-		}
-	}
-
-	return NULL;
-}
-
-static void
-handle_request (Conn *conn)
-{
-	Dash *dash = conn->dash;
-	gchar **lines, **parts;
-	gchar *host, *token, *path, *query;
-	GHashTable *params = NULL;
-	gboolean head_only;
-
-	lines = g_strsplit (conn->head->str, "\r\n", -1);
-	parts = g_strsplit (lines[0], " ", 3);
-
-	if (g_strv_length (parts) != 3 || !g_str_has_prefix (parts[2], "HTTP/1.")) {
-		respond_error (conn, 400, "Malformed request line.");
-		goto out;
-	}
-
-	if (strcmp (parts[0], "GET") != 0 && strcmp (parts[0], "HEAD") != 0) {
-		respond_error (conn, 405, "Read-only: GET and HEAD only.");
-		goto out;
-	}
-	head_only = strcmp (parts[0], "HEAD") == 0;
-
-	/* DNS rebinding: only our own two spellings of ourselves. */
-	host = header_value (lines, "Host");
-	if (host == NULL || (g_ascii_strcasecmp (host, dash->host_ip) != 0 &&
-	                     g_ascii_strcasecmp (host, dash->host_name) != 0)) {
-		g_free (host);
-		respond_error (conn, 403, "Unexpected Host header.");
-		goto out;
-	}
-	g_free (host);
-
-	path  = parts[1];
-	query = strchr (path, '?');
-	if (query != NULL) {
-		*query++ = '\0';
-		params = g_uri_parse_params (query, -1, "&",
-		                             G_URI_PARAMS_WWW_FORM, NULL);
+	if (strcmp (method, "GET") != 0 && strcmp (method, "HEAD") != 0) {
+		fs_dash_respond_error (conn, 405, "Read-only: GET and HEAD only.");
+		return;
 	}
 
 	if (strcmp (path, "/") == 0 || strcmp (path, "/index.html") == 0) {
-		respond (conn, 200, "text/html; charset=utf-8",
-		         (const guint8 *) dash->page, strlen (dash->page),
-		         head_only);
-		goto out_params;
+		fs_dash_respond (conn, 200, "text/html; charset=utf-8",
+		                 (const guint8 *) dash->page, strlen (dash->page));
+		return;
 	}
 
 	if (strcmp (path, "/logo.png") == 0) {
-		respond (conn, 200, "image/png", stockfw_logo_64_png,
-		         stockfw_logo_64_png_len, head_only);
-		goto out_params;
+		fs_dash_respond (conn, 200, "image/png", stockfw_logo_64_png,
+		                 stockfw_logo_64_png_len);
+		return;
 	}
 
 	if (!g_str_has_prefix (path, "/api/")) {
-		respond_error (conn, 404, "Not found.");
-		goto out_params;
+		fs_dash_respond_error (conn, 404, "Not found.");
+		return;
 	}
 
-	token = header_value (lines, "X-StockFW-Token");
+	token = fs_dash_conn_header (conn, "X-StockFW-Token");
 	if (!token_equal (dash->token, token)) {
 		g_free (token);
-		respond_error (conn, 401, "This dashboard link is not valid for "
-		               "the running `stockfw dashboard'. Open the URL it "
-		               "printed when it started.");
-		goto out_params;
+		fs_dash_respond_error (conn, 401, "This dashboard link is not "
+		                       "valid for the running `stockfw dashboard'. "
+		                       "Open the URL it printed when it started.");
+		return;
 	}
 	g_free (token);
 	/* The browser got here with the token: its redirect page, which
@@ -1044,117 +897,27 @@ handle_request (Conn *conn)
 	launch_page_remove (dash);
 
 	if (strcmp (path, "/api/summary") == 0) {
-		respond_json (conn, 200, summary_json (dash), head_only);
+		fs_dash_respond_json (conn, 200, summary_json (dash));
 	} else if (strcmp (path, "/api/activity") == 0) {
-		respond_json (conn, 200, activity_json (dash, params), head_only);
+		fs_dash_respond_json (conn, 200, activity_json (dash, params));
 	} else if (strcmp (path, "/api/events") == 0) {
-		respond_json (conn, 200, events_json (dash, params), head_only);
+		fs_dash_respond_json (conn, 200, events_json (dash, params));
 	} else if (strcmp (path, "/api/connections") == 0) {
-		respond_json (conn, 200, connections_json (conn->dash), head_only);
+		fs_dash_respond_json (conn, 200, connections_json (dash));
 	} else if (strcmp (path, "/api/interfaces") == 0) {
-		respond_json (conn, 200, interfaces_json (dash), head_only);
+		fs_dash_respond_json (conn, 200, interfaces_json (dash));
 	} else if (strcmp (path, "/api/policy") == 0) {
-		respond_json (conn, 200, policy_json (), head_only);
+		fs_dash_respond_json (conn, 200, policy_json ());
 	} else if (strcmp (path, "/api/intel") == 0) {
-		respond_json (conn, 200, intel_json (), head_only);
+		fs_dash_respond_json (conn, 200, intel_json ());
 	} else if (strcmp (path, "/api/simulate") == 0) {
 		guint status = 200;
 		gchar *json = simulate_json (params, &status);
 
-		respond_json (conn, status, json, head_only);
+		fs_dash_respond_json (conn, status, json);
 	} else {
-		respond_error (conn, 404, "No such API endpoint.");
+		fs_dash_respond_error (conn, 404, "No such API endpoint.");
 	}
-
-out_params:
-	if (params != NULL)
-		g_hash_table_unref (params);
-out:
-	g_strfreev (parts);
-	g_strfreev (lines);
-}
-
-static void on_read (GObject *source, GAsyncResult *result, gpointer data);
-
-static void
-read_more (Conn *conn)
-{
-	GInputStream *in = g_io_stream_get_input_stream (
-		G_IO_STREAM (conn->connection));
-
-	g_input_stream_read_async (in, conn->buffer, sizeof (conn->buffer),
-	                           G_PRIORITY_DEFAULT, NULL, on_read, conn);
-}
-
-static void
-drop_connection (Conn *conn)
-{
-	g_io_stream_close (G_IO_STREAM (conn->connection), NULL, NULL);
-	conn->dash->open_connections--;
-	g_object_unref (conn->connection);
-	g_string_free (conn->head, TRUE);
-	g_free (conn);
-}
-
-static void
-on_read (GObject *source, GAsyncResult *result, gpointer data)
-{
-	Conn *conn = data;
-	gssize got = g_input_stream_read_finish (G_INPUT_STREAM (source),
-	                                         result, NULL);
-	gchar *end;
-
-	if (got <= 0) {
-		drop_connection (conn);
-		return;
-	}
-
-	g_string_append_len (conn->head, (const gchar *) conn->buffer, got);
-
-	end = strstr (conn->head->str, "\r\n\r\n");
-
-	/* The cap holds however the bytes were split across reads: a
-	 * head that ends inside the read that crossed the limit is still
-	 * too large. */
-	if ((end != NULL ? (gsize) (end - conn->head->str) : conn->head->len)
-	    > DASH_MAX_HEAD) {
-		respond_error (conn, 431, "Request head too large.");
-		return;
-	}
-
-	if (end != NULL) {
-		/* A GET has no body; whatever follows the head is ignored. */
-		g_string_truncate (conn->head, (gsize) (end - conn->head->str));
-		handle_request (conn);
-		return;
-	}
-
-	read_more (conn);
-}
-
-static gboolean
-on_incoming (GSocketService *service, GSocketConnection *connection,
-             GObject *source, gpointer data)
-{
-	Dash *dash = data;
-	GSocket *socket = g_socket_connection_get_socket (connection);
-	Conn *conn;
-
-	if (dash->open_connections >= DASH_MAX_CONNECTIONS) {
-		g_io_stream_close (G_IO_STREAM (connection), NULL, NULL);
-		return TRUE;
-	}
-
-	g_socket_set_timeout (socket, 10);
-
-	conn = g_new0 (Conn, 1);
-	conn->dash = dash;
-	conn->connection = g_object_ref (connection);
-	conn->head = g_string_sized_new (1024);
-	dash->open_connections++;
-
-	read_more (conn);
-	return TRUE;
 }
 
 /* ------------------------------------------------------------- startup */
@@ -1279,14 +1042,39 @@ open_browser (Dash *dash, const gchar *url)
 	return ok;
 }
 
+/* [ served_uid ]
+ * The one account whose connections the dashboard reads: its own, or
+ * under sudo the invoking user's (SUDO_UID, set by sudo, which only
+ * root could have changed).  Never uid 0: a browser does not run as
+ * root, so a root-owned client is someone else's process.  FALSE as
+ * root without a usable SUDO_UID. */
+static gboolean
+served_uid (uid_t *uid)
+{
+	const gchar *v;
+	gchar *end = NULL;
+	guint64 u;
+
+	if (geteuid () != 0) {
+		*uid = geteuid ();
+		return TRUE;
+	}
+	v = g_getenv ("SUDO_UID");
+	if (v == NULL || !g_ascii_isdigit (*v))
+		return FALSE;
+	u = g_ascii_strtoull (v, &end, 10);
+	if (*end != '\0' || u == 0 || u >= G_MAXUINT32)
+		return FALSE;
+	*uid = (uid_t) u;
+	return TRUE;
+}
+
 gint
 fs_cli_cmd_dashboard (gint argc, gchar **argv)
 {
 	Dash dash = { 0 };
 	guint16 want_port = 0;
 	gboolean no_open = FALSE;
-	GInetAddress *loopback;
-	GSocketAddress *address, *bound = NULL;
 	GError *error = NULL;
 	gchar *url;
 	guint sample_id;
@@ -1325,38 +1113,32 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 		}
 	}
 
+	if (!served_uid (&dash.peer_uid)) {
+		fs_cli_error ("the dashboard does not serve uid 0: as root it "
+		              "needs SUDO_UID, the account whose browser opens it");
+		fs_cli_hint ("run it as yourself, or with sudo from your own "
+		             "account");
+		return FS_EXIT_FAILURE;
+	}
+
 	if (!random_hex (dash.token, 16) || !random_hex (dash.nonce, 16)) {
 		fs_cli_error ("cannot read /dev/urandom for the access token");
 		return FS_EXIT_FAILURE;
 	}
 
-	dash.service = g_socket_service_new ();
-	loopback = g_inet_address_new_loopback (G_SOCKET_FAMILY_IPV4);
-	address = g_inet_socket_address_new (loopback, want_port);
-	g_object_unref (loopback);
-
-	if (!g_socket_listener_add_address (G_SOCKET_LISTENER (dash.service),
-	                                    address, G_SOCKET_TYPE_STREAM,
-	                                    G_SOCKET_PROTOCOL_TCP, NULL,
-	                                    &bound, &error)) {
+	dash.http = fs_dash_http_new (want_port, dash.peer_uid, &error);
+	if (dash.http == NULL) {
 		fs_cli_error ("cannot listen on 127.0.0.1:%u: %s", want_port,
 		              error->message);
 		if (want_port != 0)
 			fs_cli_hint ("leave out --port to let the system pick a "
 			             "free one");
 		g_error_free (error);
-		g_object_unref (address);
-		g_object_unref (dash.service);
 		return FS_EXIT_FAILURE;
 	}
-	g_object_unref (address);
-
-	dash.port = g_inet_socket_address_get_port (G_INET_SOCKET_ADDRESS (bound));
-	g_object_unref (bound);
-
-	dash.host_ip   = g_strdup_printf ("127.0.0.1:%u", dash.port);
-	dash.host_name = g_strdup_printf ("localhost:%u", dash.port);
-	dash.started   = g_get_real_time () / G_USEC_PER_SEC;
+	dash.port = fs_dash_http_port (dash.http);
+	fs_dash_http_set_nonce (dash.http, dash.nonce);
+	dash.started = g_get_real_time () / G_USEC_PER_SEC;
 
 	/* The page's inline style and script carry this run's nonce;
 	 * nothing else is allowed to execute or style it. */
@@ -1375,8 +1157,7 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 	on_sample (&dash);
 	sample_id = g_timeout_add (DASH_SAMPLE_MS, on_sample, &dash);
 
-	g_signal_connect (dash.service, "incoming", G_CALLBACK (on_incoming), &dash);
-	g_socket_service_start (dash.service);
+	fs_dash_http_start (dash.http, handle_request, &dash);
 
 	url = g_strdup_printf ("http://127.0.0.1:%u/#token=%s", dash.port,
 	                       dash.token);
@@ -1395,6 +1176,9 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 		        fs_cli_reset (), url);
 		printf ("  %-11s 127.0.0.1:%u only, read-only, this run's token\n",
 		        "Listening", dash.port);
+		if (geteuid () == 0)
+			printf ("  %-11s uid %u only (SUDO_UID)\n", "Serves",
+			        (guint) dash.peer_uid);
 		printf ("  %-11s %s\n", "Events",
 		        dash.monitor_note != NULL ? dash.monitor_note : "-");
 		if (!dash.monitoring && geteuid () != 0) {
@@ -1437,8 +1221,6 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 	g_main_loop_run (dash.loop);
 
 	/* Teardown, in the order things were started. */
-	g_socket_service_stop (dash.service);
-	g_socket_listener_close (G_SOCKET_LISTENER (dash.service));
 	g_source_remove (sample_id);
 	if (dash.follow_id != 0) {
 		g_source_remove (dash.follow_id);
@@ -1449,7 +1231,7 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 
 	launch_page_remove (&dash);
 	g_main_loop_unref (dash.loop);
-	g_object_unref (dash.service);
+	fs_dash_http_free (dash.http);
 	g_queue_free_full (dash.recent, (GDestroyNotify) fs_hit_free);
 	g_list_free_full (dash.stats_now, (GDestroyNotify) fs_iface_stat_free);
 	g_list_free_full (dash.stats_prev, (GDestroyNotify) fs_iface_stat_free);
@@ -1458,8 +1240,6 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 	fs_activity_free (dash.events);
 	g_free (dash.monitor_note);
 	g_free (dash.page);
-	g_free (dash.host_ip);
-	g_free (dash.host_name);
 	g_free (url);
 
 	if (!fs_cli.json && !fs_cli.quiet)
@@ -1485,12 +1265,14 @@ const FsCliCommandDef fs_cli_dashboard_commands[] = {
 "graphs, recent events, connections, the policy, the threat-intel\n"
 "blocklists and the what-if simulator -- and opens it in your browser.\n"
 "\n"
-"Security: it listens on 127.0.0.1 only, every API call needs a token\n"
-"generated for this run (it is in the URL printed at start), requests\n"
-"for any other Host are refused, and the API is read-only: changing\n"
-"the firewall stays with `stockfw apply' and the desktop app.  Under\n"
-"sudo the browser is not started as root; open the printed URL\n"
-"yourself.  Stop it with Ctrl-C.\n",
+"Security: it listens on 127.0.0.1 only and answers only connections\n"
+"from your own account (under sudo, the account in SUDO_UID; never\n"
+"root).  Every API call needs a token generated for this run (it is\n"
+"in the URL printed at start), the address must be 127.0.0.1:PORT\n"
+"(not localhost), and the API is read-only: changing the firewall\n"
+"stays with `stockfw apply' and the desktop app.  Under sudo the\n"
+"browser is not started as root; open the printed URL yourself.\n"
+"Stop it with Ctrl-C.\n",
 	  dashboard_opts, NULL },
 
 	{ NULL, NULL, NULL, NULL, NULL }

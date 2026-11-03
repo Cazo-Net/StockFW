@@ -297,6 +297,7 @@ if(FS_PLATFORM STREQUAL "linux")
     src/cli/fs-cli-views.c
     src/cli/fs-cli-intel.c
     src/cli/fs-dashboard.c
+    src/cli/fs-dash-http.c
     src/cli/fs-cli-complete.c
   )
   add_executable(stockfw
