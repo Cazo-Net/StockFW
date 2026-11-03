@@ -40,6 +40,11 @@
 #include <lzma.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef G_OS_WIN32
+#include <windows.h>
+#include <aclapi.h>
+#include <sddl.h>
+#endif
 #ifndef G_OS_WIN32
 #include <unistd.h>
 #endif
@@ -511,8 +516,63 @@ rm_rf (const gchar *path)
 	g_rmdir (path);
 }
 
+#ifdef G_OS_WIN32
+/* Gives `dir' a protected access list: SYSTEM, Administrators and this
+ * account, nobody else.  A new folder inherits its parent's list, and
+ * on the CI runner (D:\a, under a drive root that lets Users create
+ * folders and files) that lets Users change it, which the engine
+ * rightly refuses as a store parent (design 11.5). */
+static gboolean
+protect_dir (const gchar *dir)
+{
+	HANDLE token = NULL;
+	DWORD len = 0;
+	TOKEN_USER *tu = NULL;
+	LPSTR me = NULL;
+	gchar *sddl = NULL;
+	gunichar2 *w = NULL;
+	PSECURITY_DESCRIPTOR sd = NULL;
+	PACL dacl = NULL;
+	BOOL present = FALSE, defaulted = FALSE;
+	gboolean ok = FALSE;
+
+	if (!OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token))
+		return FALSE;
+	GetTokenInformation (token, TokenUser, NULL, 0, &len);
+	tu = g_malloc0 (len ? len : 1);
+	if (len != 0 &&
+	    GetTokenInformation (token, TokenUser, tu, len, &len) &&
+	    ConvertSidToStringSidA (tu->User.Sid, &me)) {
+		sddl = g_strdup_printf ("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+		                        "(A;OICI;FA;;;%s)", me);
+		w = g_utf8_to_utf16 (dir, -1, NULL, NULL, NULL);
+		if (w != NULL &&
+		    ConvertStringSecurityDescriptorToSecurityDescriptorA (
+			    sddl, SDDL_REVISION_1, &sd, NULL) &&
+		    GetSecurityDescriptorDacl (sd, &present, &dacl,
+		                               &defaulted) && present &&
+		    SetNamedSecurityInfoW ((LPWSTR) w, SE_FILE_OBJECT,
+		                           DACL_SECURITY_INFORMATION |
+		                           PROTECTED_DACL_SECURITY_INFORMATION,
+		                           NULL, NULL, dacl, NULL)
+		    == ERROR_SUCCESS)
+			ok = TRUE;
+	}
+	if (sd != NULL)
+		LocalFree (sd);
+	if (me != NULL)
+		LocalFree (me);
+	g_free (w);
+	g_free (sddl);
+	g_free (tu);
+	CloseHandle (token);
+	return ok;
+}
+#endif
+
 /* A scratch directory the engine accepts as a store parent (StrictModes:
- * no parent writable by others, so not under /tmp). */
+ * no parent writable by others, so not under /tmp; on Windows, one with
+ * its own protected access list). */
 static gboolean
 make_base (const gchar *argv0)
 {
@@ -535,6 +595,13 @@ make_base (const gchar *argv0)
 			g_free (tmpl);
 			continue;
 		}
+#ifdef G_OS_WIN32
+		if (!protect_dir (dir)) {
+			rm_rf (dir);
+			g_free (dir);
+			continue;
+		}
+#endif
 		probe = g_build_filename (dir, "probe", NULL);
 		g_setenv ("STOCKFW_INTEL_DIR", probe, TRUE);
 		got = fs_intel_dir (NULL);
