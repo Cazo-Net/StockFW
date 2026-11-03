@@ -350,7 +350,10 @@ static const FsHelpBlock copilot[] = {
 	  "country or network rules stopped. Outbound, one finding per "
 	  "program and address; inbound, one finding per list or rule per "
 	  "hour. On Windows the log does not name the list, so this check "
-	  "finds nothing there.") },
+	  "finds nothing there. These findings, and a timed-contacts finding "
+	  "for an address a list or rule blocks, offer neither <b>Ask "
+	  "What-If</b> nor a block: What-If does not consult the lists or "
+	  "the rules, and the address is blocked already.") },
 	{ FS_HELP_PARA, N_("Scans and login attempts are reported only: the "
 	  "Copilot never changes an inbound rule, and no finding offers an "
 	  "Allow. Two different checks on the same address within an hour "

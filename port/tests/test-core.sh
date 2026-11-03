@@ -1855,6 +1855,42 @@ static void test_sentinel_beacon (void)
 	CHECK (beacon != NULL && beacon->severity == FS_COPILOT_CRITICAL &&
 	       strstr (beacon->why, "block list") != NULL,
 	       "a beacon to a listed address is Critical and says why");
+	/* CORRECTNESS-2 (1.0.7 release review): What-If does not consult
+	 * the lists or the country and network rules, so it would answer
+	 * "Allowed" and a block rule would look like a change. */
+	CHECK (beacon != NULL && beacon->whatif_line == NULL &&
+	       beacon->rule_csv == NULL && beacon->suggested_rule == NULL &&
+	       !beacon->auto_applicable && beacon->withheld != NULL &&
+	       strstr (beacon->withheld, "already blocks it") != NULL,
+	       "a beacon a list blocks offers no What-If line and no block "
+	       "(%s)", beacon != NULL ? beacon->withheld : "none");
+	fs_copilot_free (copilot);
+
+	/* Reported first while allowed, then blocked by a country rule:
+	 * the block and the What-If line of the first report go. */
+	copilot = fs_copilot_new ();
+	hit.destination = "203.0.113.67";
+	hit.rule = NULL;
+	for (i = 0; i < 6; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	CHECK (beacon != NULL && beacon->whatif_line != NULL &&
+	       beacon->rule_csv != NULL,
+	       "an allowed beacon offers What-If and a block");
+	hit.rule = "Threat intel: Country CN";
+	for (i = 6; i < 10; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 1 &&
+	       beacon != NULL && beacon->severity == FS_COPILOT_CRITICAL &&
+	       beacon->whatif_line == NULL && beacon->rule_csv == NULL &&
+	       beacon->suggested_rule == NULL && !beacon->auto_applicable,
+	       "once a country rule blocks it, the same finding drops the "
+	       "block and the What-If line (%s)",
+	       beacon != NULL && beacon->rule_csv != NULL ? beacon->rule_csv
+	                                                  : "none");
 	fs_copilot_free (copilot);
 	hit.rule = NULL;
 }
@@ -2970,6 +3006,9 @@ static void test_threat_intel (void)
 	       "intel: outbound is a Warning naming the list and the app");
 	CHECK (ins != NULL && ins->rule_csv == NULL && !ins->auto_applicable,
 	       "intel: nothing to stage, the list already blocks it");
+	CHECK (ins != NULL && ins->whatif_line == NULL,
+	       "intel: no Ask What-If: What-If does not consult the lists "
+	       "or the country and network rules (CORRECTNESS-2)");
 
 	intel_feed (c, "In", "198.51.100.1", "192.168.1.7",
 	            "Threat intel: FireHOL level 1", h0 + 10);

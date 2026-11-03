@@ -2667,6 +2667,15 @@ emit_insight (FsCopilot *copilot, FsInsight *insight)
 			old->timestamp = insight->timestamp;
 			if (insight->severity > old->severity)
 				old->severity = insight->severity;
+			/* A beacon now blocked by a list or a country or network
+			 * rule carries no block and no What-If line: an earlier
+			 * report's must not stay on the card (CORRECTNESS-2). */
+			if (insight->type == FS_INSIGHT_BEACON &&
+			    insight->rule_csv == NULL) {
+				g_clear_pointer (&old->rule_csv, g_free);
+				g_clear_pointer (&old->suggested_rule, g_free);
+				g_clear_pointer (&old->whatif_line, g_free);
+			}
 #define TAKE(f) do { if (insight->f != NULL) { g_free (old->f); \
                      old->f = insight->f; insight->f = NULL; } } while (0)
 			TAKE (title);
@@ -3049,8 +3058,15 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 		insight->count = stamps->len;
 		insight->subject = g_strdup (dst);
 		insight->events_filter = g_strdup (dst);
-		insight->whatif_line = g_strdup_printf (
-			"outbound %s port %s to %s", udp ? "udp" : "tcp", port, dst);
+		/* Blocked by a list or a country or network rule: no What-If
+		 * line and no block rule (CORRECTNESS-2).  What-If does not
+		 * consult those, so it would answer "Allowed" and make a block
+		 * rule look like a change, when the address is blocked
+		 * already. */
+		if (!intel)
+			insight->whatif_line = g_strdup_printf (
+				"outbound %s port %s to %s", udp ? "udp" : "tcp",
+				port, dst);
 		/* One row per contact, from that contact's own record: its
 		 * time, whether it was refused and by what. */
 		for (i = first; i < stamps->len; i++) {
@@ -3066,6 +3082,16 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
 			ev->blocked = b->blocked;
 			ev->rule = g_strdup (b->rule);
 			insight_add_evidence (insight, ev);
+		}
+
+		if (intel) {
+			insight->withheld = g_strdup (
+				_("Nothing to stage: a blocklist or a country or "
+				  "network rule already blocks it."));
+			insight->auto_applicable = FALSE;
+			if (!key_owned)
+				g_free (key);
+			return insight;
 		}
 
 		insight->suggested_rule = g_strdup_printf (
@@ -3989,12 +4015,15 @@ threat_intel_check (FsCopilot *copilot, const FsHit *hit, gint64 now_unix)
 			_("Block lists include shared hosting and advertising "
 			  "addresses that ordinary pages load."));
 		insight->events_filter = g_strdup (remote);
-		insight->whatif_line = g_strdup_printf (
-			"outbound tcp port %s to %s",
-			hit->port != NULL && *hit->port ? hit->port : "443", remote);
+		/* No What-If line (1.0.7 release review, CORRECTNESS-2): the
+		 * What-If engine answers from the policy alone and does not
+		 * consult blocklists or country and network rules, so for this
+		 * address it would say "Allowed" next to a card that says the
+		 * connection was blocked. */
 	}
 	insight->withheld = g_strdup (
-		_("Nothing to stage: the block list already blocks it."));
+		_("Nothing to stage: a blocklist or a country or network rule "
+		  "already blocks it."));
 	insight_add_evidence (insight, evidence_from_hit (hit, inbound,
 	                                                  now_unix));
 	return insight;

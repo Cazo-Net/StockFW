@@ -3386,3 +3386,8 @@ Windows-like backend on Linux).
   `$XDG_RUNTIME_DIR` and redirects to the printed URL, and it is gone
   once the token is used.  Teeth: handing xdg-open the URL again fails
   five checks.
+- Block-list findings (`test_threat_intel`, `test_sentinel_beacon` in
+  `test-core.sh`): no What-If line and no block for traffic a list or a
+  country or network rule dropped, also when an open beacon finding is
+  updated.  Teeth: putting the What-If line back, or not clearing the
+  earlier report's block, fails them.
