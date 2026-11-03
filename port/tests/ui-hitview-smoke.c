@@ -533,6 +533,11 @@ find_named (GtkWidget *widget, const gchar *name)
 static GArray *frame_costs = NULL;
 static gint64  frame_started = 0;
 
+/* How often the 100,000-row scroll may be measured before its bounds
+ * count as missed (see the scrolling check), and how often it was. */
+#define SCROLL_ATTEMPTS 3
+static guint scroll_attempts = 0;
+
 static void
 on_frame_start (GdkFrameClock *clock, gpointer data)
 {
@@ -824,36 +829,58 @@ check_scale (GtkWidget *page)
 
 	/* Scrolling: frame cost at 100,000 rows against the same window
 	 * holding 1,000.  The view must not get slower with the row count;
-	 * what a frame costs at all is Xvfb's software rendering of ~30
-	 * rows of text. */
+	 * what a frame costs at all is the display's rendering of ~30 rows
+	 * of text (Xvfb's software rendering on Linux).
+	 *
+	 * A shared CI machine can stall for a burst of frames that has
+	 * nothing to do with the view: on Windows CI (PR #32, first run)
+	 * the medians were 27.4 vs 26.8 ms but the p95 was 68 vs 28 ms,
+	 * and a re-run of the same commit passed.  So the 100,000-row
+	 * scroll is measured up to SCROLL_ATTEMPTS times and must fit the
+	 * same bounds once.  Noise only ever adds time; a view whose
+	 * frames grow with the row count misses the bounds on every
+	 * attempt, and each attempt is printed. */
 	reads0 = fs_event_model_value_reads (FS_EVENT_MODEL (model));
 	{
 		FrameStats big;
+		gboolean painted = FALSE, flat = FALSE;
 
-		measure_scroll (tree, 300, &big);
-		printf ("measure: scrolling %u rows: %u frames, layout+paint "
-		        "median %.2f ms, p95 %.2f ms, worst %.2f ms (1,000 rows: "
-		        "median %.2f ms, p95 %.2f ms)\n", n, big.frames,
-		        big.median, big.p95, big.worst, small.median, small.p95);
-		CHECK (big.missed == 0 && big.frames == 300,
-		       "every scroll step was painted (%u missed)", big.missed);
-		CHECK (big.median <= small.median * 1.5 + 2.0 &&
-		       big.p95 <= small.p95 * 1.5 + 4.0,
+		for (scroll_attempts = 1; ; scroll_attempts++) {
+			measure_scroll (tree, 300, &big);
+			painted = big.missed == 0 && big.frames == 300;
+			flat = big.median <= small.median * 1.5 + 2.0 &&
+			       big.p95 <= small.p95 * 1.5 + 4.0;
+			printf ("measure: scrolling %u rows (attempt %u of at most "
+			        "%u): %u frames, layout+paint median %.2f ms, p95 "
+			        "%.2f ms, worst %.2f ms (1,000 rows: median %.2f ms, "
+			        "p95 %.2f ms)\n", n, scroll_attempts, SCROLL_ATTEMPTS,
+			        big.frames, big.median, big.p95, big.worst,
+			        small.median, small.p95);
+			if ((painted && flat) || scroll_attempts == SCROLL_ATTEMPTS)
+				break;
+		}
+		CHECK (painted,
+		       "every scroll step was painted (%u missed, attempt %u)",
+		       big.missed, scroll_attempts);
+		CHECK (flat,
 		       "a frame at %u rows costs what it costs at 1,000 (median "
-		       "%.1f vs %.1f ms)", n, big.median, small.median);
+		       "%.1f vs %.1f ms, p95 %.1f vs %.1f ms, attempt %u)", n,
+		       big.median, small.median, big.p95, small.p95,
+		       scroll_attempts);
 	}
 	{
 		guint64 reads = fs_event_model_value_reads (FS_EVENT_MODEL (model))
 		                - reads0;
+		guint steps = 300 * scroll_attempts;
 
 		printf ("measure: cell values read while scrolling: %"
-		        G_GUINT64_FORMAT " (%u rows x 12 columns would be %u)\n",
-		        reads, n, n * 12);
+		        G_GUINT64_FORMAT " in %u steps (%u rows x 12 columns "
+		        "would be %u per step)\n", reads, steps, n, n * 12);
 		/* A screen holds about 30 rows of 11 columns; each cell
 		 * reads its text and the blocked flag. */
-		CHECK (reads > 0 && reads / 300 < 2400,
+		CHECK (reads > 0 && reads / steps < 2400,
 		       "only rows on screen are read: %" G_GUINT64_FORMAT
-		       " per frame, whatever the %u rows", reads / 300, n);
+		       " per frame, whatever the %u rows", reads / steps, n);
 	}
 	pump ();
 	shot (window, "events-100k");
