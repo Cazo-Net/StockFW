@@ -32,7 +32,10 @@ into `/usr/local/share/doc/stockfw/`.
 - **Hints you can run.** A hint that needs root names the program by its
   full path and repeats your words, so `sudo` finds it.
 - **Text from logs and comments is escaped.** Control characters and
-  bidi controls are printed as `\xNN` or `\uNNNN`, never raw.
+  bidi controls are printed as `\xNN` or `\uNNNN`, never raw. That
+  includes the rows of `events --csv`, the rule names in `simulate`'s
+  answer, and threat-intel list and feed names in `status`,
+  `intel status`, `intel apply` and `intel import`.
 - `stockfw version` prints one line: `stockfw 1.0.7 · Linux (nftables)`.
   `help help`, `help version` and `help intel geo` work.
 - **`apply` after `stop` starts the firewall again.** Before, it compared
@@ -56,7 +59,12 @@ into `/usr/local/share/doc/stockfw/`.
 - **The lockout guard.** Over SSH, `apply` and `start` check that the
   new policy still lets your session in. If it would not, they ask on a
   terminal, and without one they refuse unless you pass `--yes`.
-  This works under `sudo` too, where `SSH_CONNECTION` is gone.
+  This works under `sudo` too, where `SSH_CONNECTION` is gone: your own
+  session is found through the sshd it runs under and is always checked
+  first, however many other SSH sessions the computer has. It finds
+  sshd on any port, also when systemd starts it (`ssh.socket`). In
+  audit-only mode, `start` still puts the last applied policy live, so
+  the check runs there too.
 - `start` and `stop` say "Already running" or "Already stopped" and
   write no audit line of their own when there is nothing to do. A
   `stop` on a stopped firewall still takes threat-intel blocklists
@@ -88,7 +96,8 @@ into `/usr/local/share/doc/stockfw/`.
 - **`events` triage.** `--summary` counts the events of a window (the
   last 24 hours by default) per source and per port, with a bar per
   hour; `--by` and `--top` choose the tables. `--wide` adds the devices,
-  length and ToS, `--csv` writes what the desktop app exports, `-r`
+  length and ToS, `--csv` writes what the desktop app exports (control
+  characters escaped, as everywhere in the tool), `-r`
   puts the newest first and `--utc` prints ISO times. `--port` takes a
   list (`22,443,8000:8100`) and `--dir` takes `both`.
 - **`events` refuses what it cannot answer.** `--blocked` with

@@ -36,6 +36,7 @@
 #include "core/fs-hostnet.h"
 #include "core/fs-netparse.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #ifdef __linux__
@@ -722,9 +723,13 @@ tcp_lines (const gchar *lines, gpointer data)
 /* [ inode_pids ]
  * socket inode (gint64*) -> pid (string) for every process whose fd
  * table this account may list.  `wanted' (inodes as gint64*) limits
- * the walk, and ends it once each is placed; NULL takes every socket. */
+ * the walk, and ends it once each is placed; NULL takes every socket.
+ * `accept' NULL: the first holder (lowest pid) of each socket.  Else
+ * a socket is placed only on a holder that `accept' takes, so one held
+ * by several processes is not judged by whichever comes first: under
+ * systemd socket activation pid 1 holds sshd's listener too. */
 static GHashTable *
-inode_pids (GHashTable *wanted)
+inode_pids (GHashTable *wanted, gboolean (*accept) (const gchar *pid))
 {
 	GHashTable *pids = g_hash_table_new_full (g_int64_hash, g_int64_equal,
 	                                          g_free, g_free);
@@ -739,6 +744,7 @@ inode_pids (GHashTable *wanted)
 		gchar *fd_path;
 		GDir *fds;
 		const gchar *fd;
+		gint taken = -1;          /* accept (pid): -1 not asked yet */
 
 		if (!g_ascii_isdigit (*pid))
 			continue;
@@ -760,7 +766,13 @@ inode_pids (GHashTable *wanted)
 			}
 			if (inode != 0 &&
 			    (wanted == NULL || g_hash_table_contains (wanted, &inode)) &&
-			    !g_hash_table_contains (pids, &inode)) {
+			    !g_hash_table_contains (pids, &inode) &&
+			    accept != NULL && taken < 0)
+				taken = accept (pid) ? 1 : 0;
+			if (inode != 0 &&
+			    (wanted == NULL || g_hash_table_contains (wanted, &inode)) &&
+			    !g_hash_table_contains (pids, &inode) &&
+			    (accept == NULL || taken == 1)) {
 				gint64 *key = g_new (gint64, 1);
 
 				*key = (gint64) inode;
@@ -881,7 +893,7 @@ fs_hostnet_socket_owners (const GList *sockets)
 		}
 	}
 
-	pids = inode_pids (wanted);
+	pids = inode_pids (wanted, NULL);
 	programs = g_hash_table_new_full (g_str_hash, g_str_equal, NULL, g_free);
 	g_hash_table_iter_init (&iter, pids);
 	while (g_hash_table_iter_next (&iter, &key, &value)) {
@@ -928,13 +940,16 @@ fs_hostnet_ssh_listen_ports (void)
 		}
 	}
 
-	pids = inode_pids (wanted);
+	/* Any holder that is sshd, not only the first: with socket
+	 * activation (ssh.socket) systemd, pid 1, holds the listener as
+	 * well and always comes first. */
+	pids = inode_pids (wanted, is_sshd);
 	for (GList *l = listen; l != NULL; l = l->next) {
 		FsNetSocket *s = l->data;
 		const gchar *pid = g_hash_table_lookup (pids, &s->inode);
 		guint16 port = (guint16) s->local_port;
 
-		if (pid != NULL && !has_port (ports, port) && is_sshd (pid))
+		if (pid != NULL && !has_port (ports, port))
 			g_array_append_val (ports, port);
 	}
 	g_array_sort (ports, port_order);
@@ -945,6 +960,131 @@ fs_hostnet_ssh_listen_ports (void)
 	g_list_free_full (sockets, (GDestroyNotify) fs_net_socket_free);
 #endif
 	return ports;
+}
+
+#ifdef __linux__
+
+/* [ is_ssh_session ] -- sshd, or the per-session process OpenSSH 9.8
+ * and later split off (sshd-session). */
+static gboolean
+is_ssh_session (const gchar *pid)
+{
+	gchar *program = pid_program (pid);
+	gchar *comm = pid_comm (pid);
+	gboolean yes = g_strcmp0 (program, "sshd") == 0 ||
+	               g_strcmp0 (comm, "sshd") == 0 ||
+	               g_strcmp0 (program, "sshd-session") == 0 ||
+	               g_strcmp0 (comm, "sshd-session") == 0;
+
+	g_free (program);
+	g_free (comm);
+	return yes;
+}
+
+/* [ pid_parent ] -- the parent pid from /proc/PID/stat, as text; NULL
+ * when it cannot be read or is 0.  The comm field may hold spaces and
+ * ')', so the fields are read after the last ')'. */
+static gchar *
+pid_parent (const gchar *pid)
+{
+	gchar *path = g_build_filename ("/proc", pid, "stat", NULL);
+	gchar *text = NULL, *close, *ppid = NULL;
+	gchar state;
+	gint parent = 0;
+
+	if (g_file_get_contents (path, &text, NULL, NULL) &&
+	    (close = strrchr (text, ')')) != NULL &&
+	    sscanf (close + 1, " %c %d", &state, &parent) == 2 && parent > 0)
+		ppid = g_strdup_printf ("%d", parent);
+	g_free (text);
+	g_free (path);
+	return ppid;
+}
+
+/* [ add_socket_inodes ] -- every socket in PID's fd table into `into'
+ * (gint64* keys). */
+static void
+add_socket_inodes (const gchar *pid, GHashTable *into)
+{
+	gchar *fd_path = g_build_filename ("/proc", pid, "fd", NULL);
+	GDir *fds = g_dir_open (fd_path, 0, NULL);
+	const gchar *fd;
+
+	while (fds != NULL && (fd = g_dir_read_name (fds)) != NULL) {
+		gchar *link = g_build_filename (fd_path, fd, NULL);
+		gchar *target = g_file_read_link (link, NULL);
+
+		g_free (link);
+		if (target != NULL && g_str_has_prefix (target, "socket:[")) {
+			gchar *end = NULL;
+			guint64 inode = g_ascii_strtoull (target + 8, &end, 10);
+
+			if (inode != 0 && end != NULL && *end == ']') {
+				gint64 *key = g_new (gint64, 1);
+
+				*key = (gint64) inode;
+				g_hash_table_add (into, key);
+			}
+		}
+		g_free (target);
+	}
+	if (fds != NULL)
+		g_dir_close (fds);
+	g_free (fd_path);
+}
+
+#endif /* __linux__ */
+
+FsRangeSet *
+fs_hostnet_own_ssh_peers (const GArray *ports)
+{
+	FsRangeSet *own = fs_hostnet_parse_ssh_env (g_getenv ("SSH_CONNECTION"),
+	                                            g_getenv ("SSH_CLIENT"));
+#ifdef __linux__
+	GHashTable *inodes = g_hash_table_new_full (g_int64_hash, g_int64_equal,
+	                                            g_free, NULL);
+	gchar *pid = g_strdup_printf ("%d", (gint) getppid ());
+
+	/* Up the parent chain to init: the sshd (or sshd-session) this
+	 * command runs under holds the session's socket, whatever sudo
+	 * did to the environment.  Bounded, should /proc be odd. */
+	for (guint depth = 0; pid != NULL && depth < 64 &&
+	                      strcmp (pid, "1") != 0; depth++) {
+		gchar *parent = pid_parent (pid);
+
+		if (is_ssh_session (pid))
+			add_socket_inodes (pid, inodes);
+		g_free (pid);
+		pid = parent;
+	}
+	g_free (pid);
+
+	if (g_hash_table_size (inodes) > 0 && ports != NULL && ports->len > 0) {
+		GList *sockets = NULL;
+
+		read_lines ("/proc/net/tcp", PROC_CAP, socket_lines, &sockets);
+		read_lines ("/proc/net/tcp6", PROC_CAP, socket6_lines, &sockets);
+		/* A connection up, to one of sshd's ports, held by that
+		 * sshd: the client end of a forward (-L) sshd opened has
+		 * someone else's port as its local one. */
+		for (GList *l = sockets; l != NULL; l = l->next) {
+			FsNetSocket *s = l->data;
+			gint64 inode = (gint64) s->inode;
+
+			if (s->state == TCP_STATE_ESTABLISHED && s->inode != 0 &&
+			    s->remote_addr != NULL &&
+			    has_port (ports, (guint16) s->local_port) &&
+			    g_hash_table_contains (inodes, &inode))
+				fs_range_set_add_text (own, s->remote_addr);
+		}
+		g_list_free_full (sockets, (GDestroyNotify) fs_net_socket_free);
+	}
+	g_hash_table_unref (inodes);
+#else
+	(void) ports;
+#endif
+	fs_range_set_normalize (own);
+	return own;
 }
 
 #if defined __linux__ || defined G_OS_WIN32

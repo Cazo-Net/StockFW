@@ -338,7 +338,11 @@ event_row (const FsHit *hit, gboolean wide)
 /* [ csv_line ] -- one event as the export writes it: the service name
  * without the marker, the verdict as its own column, and the rule the
  * event names (never the log marker).  The core's writer adds the
- * formula guard. */
+ * formula guard; the row then goes through fs_cli_out_safe, as every
+ * other event row does, so a log field or a list name holding ESC, a
+ * C1 control or a bidi control cannot steer the terminal (or the one
+ * that later shows the file).  A line break in a field is escaped too,
+ * so a row stays one line. */
 static void
 csv_line (const FsHit *hit)
 {
@@ -346,11 +350,14 @@ csv_line (const FsHit *hit)
 	FsHit view = *hit;
 	gchar *service = fs_hit_service_name (hit);
 	gchar *rule = fs_cli_hit_rule_name (hit);
+	gchar *safe;
 
 	view.service = service;
 	view.rule = rule;
 	fs_event_csv_row (out, &view, fs_hit_is_blocked (hit));
-	printf ("%s\n", out->str);
+	safe = fs_cli_out_safe (out->str);
+	printf ("%s\n", safe);
+	g_free (safe);
 	g_string_free (out, TRUE);
 	g_free (service);
 	g_free (rule);
@@ -996,8 +1003,20 @@ bucket_step (gint64 range_s)
 	for (guint i = 0; i < G_N_ELEMENTS (longer) &&
 	     (range_s + step - 1) / step > 24; i++)
 		step = longer[i];
-	while ((range_s + step - 1) / step > 48)
-		step += 86400;
+	/* More than 48 bars: whole days, as few as fit in 48, worked out
+	 * in 64 bits.  A window of thousands of years (--until 9999-12-30
+	 * with no --since) needs more than a guint of seconds per bar; the
+	 * old `step += 86400' loop wrapped round to 0 there and divided by
+	 * it (SIGFPE).  The step stops at the most whole days a guint
+	 * holds, and such a window gets a few more bars (75 at most up to
+	 * the year 9999). */
+	if ((range_s + step - 1) / step > 48) {
+		const guint64 max_step = (G_MAXUINT / 86400u) * 86400u;
+		guint64 want = ((guint64) range_s + 47) / 48;
+
+		want = (want + 86399) / 86400 * 86400;
+		step = (guint) MIN (want, max_step);
+	}
 	return step;
 }
 
@@ -1236,8 +1255,16 @@ run_summary (const FsEventFilter *filter, const GPtrArray *queries,
 		s.from_us = s.to_us - G_USEC_PER_SEC;
 	range_s = MAX ((s.to_us - s.from_us) / G_USEC_PER_SEC, 1);
 	s.step = bucket_step (range_s);
-	/* Buckets start on the step, so they land on round times. */
-	s.from_us -= (s.from_us / G_USEC_PER_SEC % s.step) * G_USEC_PER_SEC;
+	/* Buckets start on the step, so they land on round times: rounded
+	 * down, also before 1970 (C's % is negative there, which moved the
+	 * start later than --since). */
+	{
+		gint64 off = s.from_us / G_USEC_PER_SEC % (gint64) s.step;
+
+		if (off < 0)
+			off += s.step;
+		s.from_us -= off * G_USEC_PER_SEC;
+	}
 	s.n_buckets = (guint) (((s.to_us - s.from_us) / G_USEC_PER_SEC +
 	                        s.step - 1) / s.step);
 	s.b_blocked = g_new0 (guint64, MAX (s.n_buckets, 1));

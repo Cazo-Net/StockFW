@@ -871,6 +871,12 @@ check "output: the comment's ESC and U+202E are printed escaped, never raw" \
            STOCKFW_RULES_DIR='$A/rules' '$S' policy list > '$TMP/esc.txt' &&
            grep -qF 'a\\x1b[31mred\\u202eX' '$TMP/esc.txt' &&
            ! grep -q \$'\\033' '$TMP/esc.txt' && ! grep -q \$'\\342\\200\\256' '$TMP/esc.txt'"
+# Review notes (docs 15.2): simulate's description names rules after
+# the policy's rows; a service name with U+202E showed reversed.
+check "output: simulate prints a rule label's U+202E escaped, never raw" \
+  bash -c "STOCKFW_RULES_DIR='$TMP/simrules' '$S' -q policy add inbound-allow-service \"\$(printf 'web\\342\\200\\256nimda')\" 8080 Anyone &&
+           STOCKFW_RULES_DIR='$TMP/simrules' '$S' --color=never simulate --assume-running inbound tcp port 8080 from 8.8.8.8 > '$TMP/sim.txt';
+           grep -qF \"Allow web\\\\u202enimda\" '$TMP/sim.txt' && ! grep -q \$'\\342\\200\\256' '$TMP/sim.txt'"
 a_root_hint () { a_nobody "$S" apply > /dev/null 2> "$TMP/err"; [ "$?" -eq 3 ] &&
                  grep -qF "sudo $S apply'" "$TMP/err" && ! grep -q '`sudo stockfw' "$TMP/err"; }
 check "output: a root hint names this program by its full path and repeats the arguments" a_root_hint
@@ -1231,6 +1237,19 @@ before=$(snap)
 "$S" apply < /dev/null > "$B/sudo2222.out" 2>&1; rc=$?
 t "lockout under sudo, sshd on 2222: refused (rc $rc), the firewall untouched" bash -c "[ $rc -eq 1 ] && [ '$(snap)' = '$before' ] && grep -q 'from 10.0.0.5 to port 2222' '$B/sudo2222.out'"
 kill "$peer" 2> /dev/null; wait "$peer" 2> /dev/null
+# Held (audit-only), a start with a journal still installs it
+# (fs_firewall_start_lifting), so the guard runs on it as on an unheld
+# start (docs 15.2, review notes).  The journal lets SSH in from the
+# LAN only; the session is from 10.0.0.5.
+"$S" stop > /dev/null 2>&1
+mkdir -p "$XDG_CONFIG_HOME/stockfw"
+printf '[client]\npolicy_audit_only=true\n' > "$XDG_CONFIG_HOME/stockfw/stockfw.conf"
+before=$(snap)
+SSH_CONNECTION='10.0.0.5 50000 10.0.0.1 22' "$S" start < /dev/null > "$B/heldstart.out" 2>&1; rc=$?
+t "lockout: a held start that installs the journal: refused without --yes (rc $rc), the firewall untouched" bash -c "[ $rc -eq 1 ] && [ '$(snap)' = '$before' ] && grep -q 'pass --yes to start' '$B/heldstart.out'"
+SSH_CONNECTION='10.0.0.5 50000 10.0.0.1 22' "$S" start --yes < /dev/null > "$B/heldstarty.out" 2>&1; rc=$?
+t "  ...--yes starts it, and says it was held (rc $rc)" bash -c "[ $rc -eq 0 ] && [ '$(snap)' != '$before' ] && grep -q 'Held' '$B/heldstarty.out'"
+rm -f "$XDG_CONFIG_HOME/stockfw/stockfw.conf"
 exit "$f"
 LIVE
   unshare -n bash "$B/live.sh" "$S" "$B" > "$B/live.log" 2>&1
@@ -1622,6 +1641,38 @@ assert '6 blocked' in out and 'SOURCE' in out and '22/tcp' in out and 'Remote De
 check "events: --by with a typo is refused with a suggestion; --by without --summary is refused" \
   bash -c "'$S' events --summary --by sorce 2> '$TMP/err'; [ \$? -eq 2 ] && grep -q 'did you mean src' '$TMP/err' &&
            '$S' events --by src 2> /dev/null; [ \$? -eq 2 ]"
+# Review notes (docs 15.2): the CSV rows go through fs_cli_out_safe
+# like every other event row.  An interface name may hold ESC (the
+# kernel refuses only '/', ':' and blanks); raw, `events --csv' on a
+# terminal rewrote the window title and cleared the screen.
+py "
+import datetime
+t = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+open('$D/esc-kern.log', 'w').write(t + ' host kernel: [1.0] STOCKFW-DROP IN=e\x1b]0;PWNED\x07th0 OUT= SRC=203.0.113.5 DST=10.0.0.5 LEN=60 PROTO=TC\x1b[2JP SPT=40000 DPT=22 SYN\n')
+"
+d_csv_esc () { py "
+import csv, io, os, subprocess
+env = dict(os.environ, STOCKFW_LOG_FILE='$D/esc-kern.log')
+piped = subprocess.run(['$S', 'events', '--csv'], capture_output=True, env=env).stdout
+tty = subprocess.run(['script', '-qec', '$S events --csv', '/dev/null'], capture_output=True, env=env).stdout
+for out in (piped, tty):
+    assert b'\x1b' not in out and b'\x07' not in out, out
+    assert b'e\\\\x1b]0;PWNED\\\\x07th0' in out and b'TC\\\\x1b[2JP' in out, out
+rows = list(csv.reader(io.StringIO(piped.decode())))
+assert len(rows) == 2 and rows[1][2] == 'e\\\\x1b]0;PWNED\\\\x07th0', rows"; }
+check "events --csv: ESC and BEL from the log are escaped (\\x1b), piped and on a terminal, never raw" d_csv_esc
+# `events --summary' over thousands of years: the bar step is worked
+# out in 64 bits.  It wrapped a guint round to 0 and died of SIGFPE.
+d_far_until () { py "
+import json, subprocess
+for a in (['--until', '9999-12-30'], ['--since', '0001-01-01 00:00', '--until', '9999-12-31 00:00']):
+    r = subprocess.run(['$S', '--json', 'events', '--summary', *a], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, (a, r.returncode, r.stderr)
+    d = json.loads(r.stdout)
+    assert 0 < d['step'] <= 4294967295 and d['step'] % 86400 == 0 and len(d['buckets']) <= 75, (a, d['step'], len(d['buckets']))
+r = subprocess.run(['$S', 'events', '--summary', '--until', '9999-12-30'], capture_output=True, text=True, timeout=30)
+assert r.returncode == 0 and 'blocked' in r.stdout, (r.returncode, r.stderr)"; }
+check "events --summary --until 9999-12-30: answers (exit 0), the step fits, no SIGFPE" d_far_until
 
 # Python helpers for the events -f checks.  wait_reader: block until
 # the reader (tail -n 0 -F FILE) has the followed file open, so a line

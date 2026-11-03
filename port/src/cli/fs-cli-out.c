@@ -75,9 +75,10 @@ fs_cli_out_safe (const gchar *text)
 	return g_string_free (out, FALSE);
 }
 
-/* [ safe_lines ] -- out_safe line by line: a notice keeps its breaks. */
-static gchar *
-safe_lines (const gchar *text)
+/* [ fs_cli_out_safe_lines ] -- out_safe line by line: a notice keeps
+ * its breaks. */
+gchar *
+fs_cli_out_safe_lines (const gchar *text)
 {
 	gchar **lines = g_strsplit (text != NULL ? text : "", "\n", -1);
 	gchar *joined;
@@ -100,7 +101,7 @@ notice (const gchar *label, const gchar *colour, const gchar *format,
         va_list args)
 {
 	gchar *text = g_strdup_vprintf (format, args);
-	gchar *safe = safe_lines (text);
+	gchar *safe = fs_cli_out_safe_lines (text);
 
 	fprintf (stderr, "stockfw: %s%s:%s %s\n",
 	         fs_cli.color_err ? colour : "", label,

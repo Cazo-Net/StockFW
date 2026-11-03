@@ -41,6 +41,8 @@ typedef struct
 	gint            policy_kind;   /* FsRuleKind of the deciding row,
 	                                * or -1 when no policy row decided */
 	gint            policy_index;  /* 0-based row, or -1               */
+	gboolean        own;           /* the peer of this process's own
+	                                * session (fs_lockout_check_own)  */
 } FsLockoutPair;
 
 typedef struct
@@ -53,9 +55,12 @@ typedef struct
 	                                * then ALLOWED                     */
 	const FsLockoutPair *worst;    /* the first pair with that verdict,
 	                                * or NULL when nothing was checked */
+	guint            skipped;      /* peers not asked about: past the
+	                                * cap (FS_LOCKOUT_MAX_PEERS)       */
 } FsLockoutReport;
 
-/* At most this many peers are asked about (a busy jump host). */
+/* At most this many peers are asked about (a busy jump host), besides
+ * the session's own peers, which are always asked about first. */
 #define FS_LOCKOUT_MAX_PEERS 64
 
 /* Ask about every peer in `peers' on every port in `ports' (guint16),
@@ -67,18 +72,33 @@ FsLockoutReport *fs_lockout_check (const FsPolicy *policy,
                                    const FsRangeSet *peers,
                                    const GArray *ports);
 
+/* fs_lockout_check, with the peers of the session running the command
+ * (`own', from fs_lockout_sessions) asked about first and outside the
+ * cap: on a jump host with more than FS_LOCKOUT_MAX_PEERS sessions
+ * that sort lower (any IPv4 peer sorts before an IPv6 one), the cap
+ * used to leave the admin's own address out, and a report with only
+ * other users' ALLOWED peers said ALLOWED.  `own' may be NULL. */
+FsLockoutReport *fs_lockout_check_own (const FsPolicy *policy,
+                                       const FsSettings *settings,
+                                       const FsRangeSet *own,
+                                       const FsRangeSet *peers,
+                                       const GArray *ports);
+
 /* TRUE when the report found a pair the policy would cut (BLOCKED) or
  * might cut (DEPENDS). */
 gboolean fs_lockout_report_cuts (const FsLockoutReport *report);
 
 void fs_lockout_report_free (FsLockoutReport *report);
 
-/* This computer's SSH peers and ports, as fs_lockout_check takes them:
- * peers from fs_hostnet_read()->sessions; ports from
+/* This computer's SSH peers and ports, as fs_lockout_check_own takes
+ * them: `own' from fs_hostnet_own_ssh_peers() (the session running
+ * this command, $SSH_CONNECTION or its sshd ancestor's connection);
+ * peers from fs_hostnet_read()->sessions, with `own' added; ports from
  * fs_hostnet_ssh_listen_ports() (sshd's listening ports; 22 when that
  * cannot be read) plus the server port of $SSH_CONNECTION.  Free with
  * fs_range_set_free and g_array_unref. */
-void fs_lockout_sessions (FsRangeSet **peers, GArray **ports);
+void fs_lockout_sessions (FsRangeSet **own, FsRangeSet **peers,
+                          GArray **ports);
 
 /* The server port of an $SSH_CONNECTION value ("client cport server
  * sport"), or 0 when there is none or it is not a port. */

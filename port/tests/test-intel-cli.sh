@@ -421,6 +421,35 @@ check '[ $rc -eq 0 ] && grep -q "Threat intel enforced" <<<"$out" && grep -q "^$
 run status
 check 'grep -qE "^  Threat intel +enforced" <<<"$out"' "stockfw status: a Threat intel line, enforced"
 
+# ------------------------------------------- a list name on a terminal
+# A list name may hold a bidi control (the engine refuses only Cc
+# characters, and the desktop app names an import after its file).
+# Every line that names the list escapes it, as the table always did:
+# the import line, the apply's Now line, `intel status' and `stockfw
+# status' (docs 15.2, review notes).  Without the fix the raw U+202E
+# reached the terminal and showed "abcexe.txt".
+RLO="$(printf '\342\200\256')"
+printf '203.0.113.201\n' > "$W/rlo.txt"
+run intel import "$W/rlo.txt" --name "abc${RLO}txt.exe"
+check '[ $rc -eq 0 ] && ! grep -qF "$RLO" <<<"$out" && grep -qF "abc\\u202etxt.exe" <<<"$out"' \
+      "import of a list named with U+202E: the line escapes it"
+RLO_ID="$(S --json intel lists | py 'import json,sys; print([l["id"] for l in json.load(sys.stdin)["lists"] if l["name"].startswith("abc")][0])')"
+run intel apply
+check '[ $rc -eq 0 ] && ! grep -qF "$RLO" <<<"$out" && grep -q "^  Now .*abc\\\\u202etxt.exe" <<<"$out"' \
+      "  ... apply: the Now line escapes it"
+run intel status
+check '[ $rc -eq 0 ] && ! grep -qF "$RLO" <<<"$out" && grep -qF "abc\\u202etxt.exe" <<<"$out"' \
+      "  ... intel status: the detail line escapes it"
+run status
+check '! grep -qF "$RLO" <<<"$out" && grep -qE "^  Threat intel .*abc\\\\u202etxt.exe" <<<"$out"' \
+      "  ... stockfw status: the Threat intel line escapes it"
+run intel list remove "$RLO_ID"
+check '[ $rc -eq 0 ] && ! grep -qF "$RLO" <<<"$out" && grep -qF "abc\\u202etxt.exe" <<<"$out"' \
+      "  ... list remove: the line escapes it"
+# Back to the three sets; the checks below compare with this digest.
+run --json intel apply
+DIG="$(jget 'd["digest"]')"
+
 run --json intel lookup 203.0.113.9
 check '[ $rc -eq 5 ] && [ "$(jget "d[\"blocked\"], d[\"in_force\"], d[\"state\"], d[\"direction\"], [l[\"id\"] for l in d[\"lists\"]]")" = "True True enforced both ['"'$FEED'"']" ]' \
       "lookup of a listed address: blocked and in force, exit 5, names the list"
