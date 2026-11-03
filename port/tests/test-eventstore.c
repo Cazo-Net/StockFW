@@ -482,8 +482,8 @@ test_queries (void)
 	CHECK (n == 400, "text, case-insensitive, in the service (%u)", n);
 	f.text = "spamhaus";
 	n = count_matches (s, &f);
-	CHECK (n == 0, "text leaves out the rule, which no column shows: a "
-	       "row it matched had no cell with the text (%u)", n);
+	CHECK (n == 40, "text finds a block's rule, which the Service "
+	       "column names after the service (%u of the 40)", n);
 	f.text = "10:01:";
 	n = count_matches (s, &f);
 	CHECK (n == 600, "text finds the time as the list shows it: "
@@ -506,21 +506,25 @@ test_queries (void)
 	{
 		FsEventFilter g = { 0 };
 		FsEventQuery *q;
-		gboolean by_rule, by_time;
+		gboolean by_rule, by_time, allowed_rule;
 		Ev e;
 
-		ev_make (&e, 50);           /* has the Spamhaus rule */
+		ev_make (&e, 50);           /* blocked, the Spamhaus rule */
 		g.text = "spamhaus";
 		q = fs_eventquery_new (&g, NULL);
 		by_rule = fs_eventquery_match_hit (q, &e.hit, 0);
+		/* An allowed event's rule is shown nowhere. */
+		e.hit.service = "HTTPS";
+		allowed_rule = fs_eventquery_match_hit (q, &e.hit, 0);
+		e.hit.service = "SSH [BLOCKED]";
 		fs_eventquery_free (q);
 		g.text = "10:00:05";
 		q = fs_eventquery_new (&g, NULL);
 		by_time = fs_eventquery_match_hit (q, &e.hit, 0);
 		fs_eventquery_free (q);
-		CHECK (!by_rule && by_time,
-		       "--grep finds the time and not the rule, as the list "
-		       "does");
+		CHECK (by_rule && by_time && !allowed_rule,
+		       "--grep finds the time and a block's rule, not an "
+		       "allowed event's rule, as the list does");
 	}
 	f.text = "203.0.113.17";
 	n = count_matches (s, &f);

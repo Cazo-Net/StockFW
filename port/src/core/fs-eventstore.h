@@ -180,8 +180,9 @@ typedef enum
  *
  *   text       case-insensitive, anywhere in a column the Events list
  *              shows: the time as shown, direction, devices, port,
- *              addresses, length, ToS, protocol, service.  Not the
- *              rule, which no column shows.
+ *              addresses, length, ToS, protocol, service, and
+ *              for a blocked event the rule that blocked it, which
+ *              the Service column names after the service.
  *   protocol   the protocol, case-insensitive, whole
  *   port       "443", "1000-2000" or "1000:2000": the event's port
  *   address    an address, CIDR block ("10.0.0.0/8") or range

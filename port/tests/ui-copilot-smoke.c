@@ -23,6 +23,18 @@
  *   5. lift all      -- one call retires every staged block;
  *   6. detect mode   -- with the pref switched, auto_pass stages
  *      nothing at all;
+ *   8. the page      -- tiles that count what the lists hold, findings
+ *      with a severity word and an evidence drawer Enter opens, policy
+ *      health fixes that are offered only when verified, asked before
+ *      writing, written exactly, and undone byte for byte; the empty
+ *      states; drawer text that can be selected without closing the
+ *      drawer; the keyboard focus kept across refreshes; undone changes
+ *      kept and marked; a dark-theme run in a child process, where the
+ *      page stays light like the rest of the app.  FS_SHOT_DIR gets
+ *      the screenshots.  Like section 7 it asks a known firewall (the
+ *      network namespace, or the Windows stand-in on a Private
+ *      network), with the local network and this computer's addresses
+ *      fixed (STOCKFW_LAN_PREFIX, STOCKFW_LOCAL_ADDRESSES).
  *   7. What-If card  -- the entry keeps its line, the chips say how it
  *      was read, the answer row and Recent (five, newest first) fill
  *      in, Details opens a window beside the page (never modal), and
@@ -130,6 +142,14 @@ isolate (void)
 	 * Linux): the Sentinel mode switch below writes there. */
 	g_setenv ("APPDATA", scratch, TRUE);
 	g_setenv ("XDG_CONFIG_HOME", scratch, TRUE);
+	/* The local network a health fix narrows to, and this computer's
+	 * own addresses (none known, as in the root run's network namespace
+	 * and behind the Windows stand-in): fixed, so the checks do not
+	 * depend on this machine's adapters.  A private address of the
+	 * machine's own (a CI runner's 10.1.0.x) is a LAN the fix must keep
+	 * reachable, and would refuse the narrowing section 8 expects. */
+	g_setenv ("STOCKFW_LAN_PREFIX", "192.168.1.0/24", TRUE);
+	g_setenv ("STOCKFW_LOCAL_ADDRESSES", "", TRUE);
 
 	g_free (rules);
 	g_free (audit);
@@ -220,7 +240,7 @@ audit_mentions (const gchar *needle)
 	return hit;
 }
 
-/* Six metronomic contacts: enough for the beacon detector, at dst:port
+/* Eight metronomic contacts: enough for Sentinel to auto-block, at dst:port
  * with exact 60 s intervals. */
 static void
 feed_beacon (FsCopilot *copilot, const gchar *dest, gint64 t0)
@@ -236,7 +256,7 @@ feed_beacon (FsCopilot *copilot, const gchar *dest, gint64 t0)
 	hit.protocol    = "TCP";
 	hit.service     = "smoke.exe";
 
-	for (i = 0; i < 6; i++)
+	for (i = 0; i < 8; i++)
 		fs_copilot_feed_event_at (copilot, &hit,
 		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
 }
@@ -259,6 +279,56 @@ find_beacon (FsCopilot *copilot)
 
 	g_list_free (insights);
 	return found;
+}
+
+/* The beacon finding about one destination. */
+static const FsInsight *
+find_beacon_to (FsCopilot *copilot, const gchar *dest)
+{
+	GList *insights = fs_copilot_get_insights (copilot);
+	const FsInsight *found = NULL;
+
+	for (GList *l = insights; l != NULL; l = l->next) {
+		FsInsight *ins = l->data;
+
+		if (ins->type == FS_INSIGHT_BEACON &&
+		    g_strcmp0 (ins->destination, dest) == 0) {
+			found = ins;
+			break;
+		}
+	}
+	g_list_free (insights);
+	return found;
+}
+
+/* Five irregular connections from another program to dest: an
+ * established destination for it (3 or more), and no beacon. */
+static void
+feed_other (FsCopilot *copilot, const gchar *app, const gchar *dest,
+            gint64 t0)
+{
+	FsHit hit;
+
+	memset (&hit, 0, sizeof hit);
+	hit.direction   = "Out";
+	hit.source      = "192.168.1.7";
+	hit.destination = (gchar *) dest;
+	hit.port        = "443";
+	hit.protocol    = "TCP";
+	hit.service     = (gchar *) app;
+	for (gint i = 0; i < 5; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+			t0 + (gint64) (i * i * 7 + 1) * G_USEC_PER_SEC);
+}
+
+/* Whether the finding's drawer text (withheld) says `needle'. */
+static gboolean
+withheld_says (FsCopilot *copilot, const gchar *dest, const gchar *needle)
+{
+	const FsInsight *b = find_beacon_to (copilot, dest);
+
+	return b != NULL && !b->auto_applicable && b->withheld != NULL &&
+	       strstr (b->withheld, needle) != NULL;
 }
 
 /* ---- 7. the What-If card --------------------------------------------- */
@@ -634,6 +704,23 @@ fs_backend (void)
 static void
 whatif_isolate (void)
 {
+	static gboolean done = FALSE;
+
+#ifdef G_OS_WIN32
+	/* Every caller (sections 7, 8 and the dark run), not only the
+	 * first: section 7 hands the real backend back when it ends, and
+	 * section 8's health checks would otherwise read the runner's own
+	 * network profile (Public, where StockFW's reserved-source block
+	 * decides a 192.168.x.x probe) and its adapters. */
+	whatif_fake_on = TRUE;
+	whatif_profile = FS_PROFILE_PRIVATE;
+	CHECK (g_strcmp0 (fs_backend ()->name, "whatif-windows") == 0,
+	       "what-if: the section asks a known Windows firewall, not the "
+	       "machine's");
+#endif
+	if (done)
+		return;
+	done = TRUE;
 #ifdef __linux__
 	if (geteuid () == 0 && unshare (CLONE_NEWNET) == 0) {
 		gint status = 0;
@@ -642,13 +729,6 @@ whatif_isolate (void)
 		                           &status, NULL);
 		(void) status;
 	}
-#endif
-#ifdef G_OS_WIN32
-	whatif_fake_on = TRUE;
-	whatif_profile = FS_PROFILE_PRIVATE;
-	CHECK (g_strcmp0 (fs_backend ()->name, "whatif-windows") == 0,
-	       "what-if: the section asks a known Windows firewall, not the "
-	       "machine's");
 #endif
 	fs_apply_set_audit_only (TRUE);
 }
@@ -939,6 +1019,843 @@ test_whatif_card (FsPolicy *policy, GtkWidget *page)
 	confirm_text = NULL;
 }
 
+/* ---- 8. the page: tiles, findings, policy health, changes ------------ */
+
+static guint
+list_rows (GtkWidget *root, const gchar *name)
+{
+	GtkWidget *list = named (root, name);
+	GList *kids;
+	guint n;
+
+	if (list == NULL)
+		return 0;
+	kids = gtk_container_get_children (GTK_CONTAINER (list));
+	n = g_list_length (kids);
+	g_list_free (kids);
+	return n;
+}
+
+static GtkWidget *
+list_row (GtkWidget *root, const gchar *name, guint i)
+{
+	GtkWidget *list = named (root, name);
+	GList *kids;
+	GtkWidget *row;
+
+	if (list == NULL)
+		return NULL;
+	kids = gtk_container_get_children (GTK_CONTAINER (list));
+	row = g_list_nth_data (kids, i);
+	g_list_free (kids);
+	return row;
+}
+
+/* The row whose text carries `needle'. */
+static GtkWidget *
+row_with (GtkWidget *root, const gchar *name, const gchar *needle)
+{
+	for (guint i = 0; i < list_rows (root, name); i++) {
+		GtkWidget *row = list_row (root, name, i);
+
+		if (fs_simviz_find_label (row, needle) != NULL)
+			return row;
+	}
+	return NULL;
+}
+
+static const gchar *
+text_of (GtkWidget *root, const gchar *name)
+{
+	GtkWidget *w = named (root, name);
+
+	return w != NULL && GTK_IS_LABEL (w)
+	       ? gtk_label_get_text (GTK_LABEL (w)) : "";
+}
+
+static gboolean
+shown (GtkWidget *root, const gchar *name)
+{
+	GtkWidget *w = named (root, name);
+
+	return w != NULL && gtk_widget_is_visible (w);
+}
+
+static guint
+tile_value (GtkWidget *page, const gchar *tile)
+{
+	gchar *n = g_strdup_printf ("%s-value", tile);
+	guint v = (guint) g_ascii_strtoull (text_of (page, n), NULL, 10);
+
+	g_free (n);
+	return v;
+}
+
+/* Health rows the tile should count: every row but the "no effect in
+ * this mode" notes, found by their own words. */
+static guint
+health_counted (GtkWidget *page, guint *notes)
+{
+	guint n = 0, skip = 0;
+
+	for (guint i = 0; i < list_rows (page, "health-list"); i++) {
+		GtkWidget *row = list_row (page, "health-list", i);
+
+		if (fs_simviz_find_label (row, "no effect in") != NULL ||
+		    fs_simviz_find_label (row, "have no effect") != NULL)
+			skip++;
+		else
+			n++;
+	}
+	if (notes != NULL)
+		*notes = skip;
+	return n;
+}
+
+/* A left click (press, then release) on `w', delivered as GTK delivers a
+ * pointer event: to `w' first, then up through its parents until one
+ * handles it.  The list box's own click gesture is among them. */
+static void
+click_on (GtkWidget *list, GtkWidget *w)
+{
+	GdkSeat *seat = gdk_display_get_default_seat (gdk_display_get_default ());
+	gint x = 0, y = 0;
+
+	gtk_widget_translate_coordinates (w, list, 4, 4, &x, &y);
+	for (gint i = 0; i < 2; i++) {
+		GdkEvent *ev = gdk_event_new (i == 0 ? GDK_BUTTON_PRESS
+		                                     : GDK_BUTTON_RELEASE);
+
+		ev->button.window = g_object_ref (gtk_widget_get_window (list));
+		ev->button.send_event = TRUE;
+		ev->button.time = GDK_CURRENT_TIME;
+		ev->button.x = x;
+		ev->button.y = y;
+		ev->button.button = 1;
+		gdk_event_set_device (ev, gdk_seat_get_pointer (seat));
+		gtk_propagate_event (w, ev);
+		gdk_event_free (ev);
+		pump (20);
+	}
+	pump (60);
+}
+
+/* The widget that has the keyboard focus in `top'. */
+static GtkWidget *
+focus_of (GtkWidget *top)
+{
+	return gtk_window_get_focus (GTK_WINDOW (top));
+}
+
+static gint
+path_cmp (gconstpointer a, gconstpointer b)
+{
+	return g_strcmp0 (*(const gchar * const *) a, *(const gchar * const *) b);
+}
+
+static void
+rules_walk (const gchar *dir, GPtrArray *paths)
+{
+	GDir *d = g_dir_open (dir, 0, NULL);
+	const gchar *n;
+
+	while (d != NULL && (n = g_dir_read_name (d)) != NULL) {
+		gchar *p = g_build_filename (dir, n, NULL);
+
+		if (g_file_test (p, G_FILE_TEST_IS_DIR)) {
+			rules_walk (p, paths);
+			g_free (p);
+		} else {
+			g_ptr_array_add (paths, p);
+		}
+	}
+	if (d != NULL)
+		g_dir_close (d);
+}
+
+/* Every rules file, in path order, with its bytes: what `cmp' would
+ * compare. */
+static gchar *
+rules_bytes (void)
+{
+	gchar *dir = scratch_path ("rules");
+	GPtrArray *paths = g_ptr_array_new_with_free_func (g_free);
+	GString *all = g_string_new (NULL);
+
+	rules_walk (dir, paths);
+	g_ptr_array_sort (paths, path_cmp);
+	for (guint i = 0; i < paths->len; i++) {
+		const gchar *p = g_ptr_array_index (paths, i);
+		gchar *t = file_contents (p);
+
+		g_string_append_printf (all, "== %s\n%s", p, t);
+		g_free (t);
+	}
+	g_ptr_array_unref (paths);
+	g_free (dir);
+	return g_string_free (all, FALSE);
+}
+
+static void
+click (GtkWidget *root, const gchar *name)
+{
+	GtkWidget *b = named (root, name);
+
+	if (b != NULL)
+		gtk_button_clicked (GTK_BUTTON (b));
+	pump (60);
+}
+
+/* A widget drawn to a PNG at its full size, whether or not all of it
+ * fits on the screen. */
+static void
+shoot_widget (GtkWidget *w, const gchar *name)
+{
+	const gchar *dir = g_getenv ("FS_SHOT_DIR");
+	cairo_surface_t *s;
+	cairo_t *cr;
+	gchar *path;
+	GtkAllocation a;
+
+	if (dir == NULL || *dir == '\0' || w == NULL)
+		return;
+	pump (150);
+	gtk_widget_get_allocation (w, &a);
+	if (a.width < 2 || a.height < 2)
+		return;
+	s = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, a.width, a.height);
+	cr = cairo_create (s);
+	gtk_widget_draw (w, cr);
+	cairo_destroy (cr);
+	path = g_strdup_printf ("%s/%s.png", dir, name);
+	cairo_surface_write_to_png (s, path);
+	cairo_surface_destroy (s);
+	g_free (path);
+}
+
+/* Enter on a focused widget, as the keyboard delivers it: a key event
+ * the window hands to its focus widget, whose key bindings act. */
+static void
+press_enter (GtkWidget *top, GtkWidget *w)
+{
+	GdkEvent *ev = gdk_event_new (GDK_KEY_PRESS);
+
+	gtk_window_present (GTK_WINDOW (top));
+	gtk_widget_grab_focus (w);
+	pump (30);
+	ev->key.window = g_object_ref (gtk_widget_get_window (top));
+	ev->key.send_event = TRUE;
+	ev->key.time = GDK_CURRENT_TIME;
+	ev->key.keyval = GDK_KEY_Return;
+	/* Key bindings match on the hardware keycode, as a real key
+	 * press carries it. */
+	{
+		GdkKeymapKey *keys = NULL;
+		gint n = 0;
+
+		if (gdk_keymap_get_entries_for_keyval (
+			    gdk_keymap_get_for_display (gdk_display_get_default ()),
+			    GDK_KEY_Return, &keys, &n) && n > 0)
+			ev->key.hardware_keycode = (guint16) keys[0].keycode;
+		g_free (keys);
+	}
+	gdk_event_set_device (ev, gdk_seat_get_keyboard (
+		gdk_display_get_default_seat (gdk_display_get_default ())));
+	gtk_main_do_event (ev);
+	gdk_event_free (ev);
+	pump (80);
+}
+
+static void
+install_app_css (void)
+{
+	static gboolean done = FALSE;
+	GtkCssProvider *css;
+
+	if (done)
+		return;
+	done = TRUE;
+	css = gtk_css_provider_new ();
+	if (gtk_css_provider_load_from_data (css, fs_theme_css, -1, NULL))
+		gtk_style_context_add_provider_for_screen (
+			gdk_screen_get_default (), GTK_STYLE_PROVIDER (css),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	g_object_unref (css);
+}
+
+static GtkWidget *
+page_window (GtkWidget *page, GtkWidget **scroller)
+{
+	GtkWidget *top = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+	GtkWidget *sw = gtk_scrolled_window_new (NULL, NULL);
+
+	gtk_window_set_default_size (GTK_WINDOW (top), 1040, 900);
+	gtk_container_set_border_width (GTK_CONTAINER (page), 24);
+	gtk_container_add (GTK_CONTAINER (sw), page);
+	gtk_container_add (GTK_CONTAINER (top), sw);
+	gtk_widget_show_all (top);
+	pump (120);
+	if (scroller != NULL)
+		*scroller = sw;
+	return top;
+}
+
+static void
+feed_intel_inbound (FsCopilot *copilot, gint64 t0)
+{
+	FsHit hit;
+
+	memset (&hit, 0, sizeof hit);
+	hit.direction   = "In";
+	hit.source      = "198.51.100.9";
+	hit.destination = "192.168.1.7";
+	hit.port        = "23";
+	hit.protocol    = "TCP";
+	hit.service     = "TELNET [BLOCKED]";
+	hit.rule        = "Threat intel: smoke list";
+	fs_copilot_feed_event_at (copilot, &hit, t0);
+}
+
+/* The empty states, on a Copilot that has seen nothing, then one that
+ * has seen events and found nothing. */
+static void
+test_page_empty (FsPolicy *policy, FsCopilot *copilot)
+{
+	FsCopilot *fresh = fs_copilot_new ();
+	GtkWidget *page = fs_copilot_page (fresh, policy);
+	GtkWidget *top = page_window (page, NULL);
+
+	CHECK (shown (page, "findings-empty") &&
+	       strstr (text_of (page, "findings-empty-text"),
+	               "The Copilot learns from the event log. Nothing to "
+	               "check yet.") != NULL,
+	       "page: no events yet says the Copilot has nothing to check");
+	CHECK (shown (page, "findings-reason") &&
+	       strstr (text_of (page, "findings-reason"),
+	               "No events are arriving: ") != NULL,
+	       "page: monitoring off: the reason is shown (\"%s\")",
+	       text_of (page, "findings-reason"));
+	CHECK (!shown (page, "findings-list"),
+	       "page: no empty list is drawn");
+	shoot_widget (page, "copilot-empty");
+	gtk_widget_destroy (top);
+	fs_copilot_free (fresh);
+
+	/* Events seen, nothing found: all clear, and honest about it. */
+	page = fs_copilot_page (copilot, policy);
+	fs_copilot_clear_insights (copilot);
+	fs_copilot_view_refresh ();
+	top = page_window (page, NULL);
+	CHECK (shown (page, "findings-empty") &&
+	       strstr (text_of (page, "findings-empty-text"), "No findings from")
+	       != NULL &&
+	       strstr (text_of (page, "findings-empty-text"),
+	               "This is not a guarantee that nothing is wrong.") != NULL,
+	       "page: all clear says it is not a guarantee (\"%s\")",
+	       text_of (page, "findings-empty-text"));
+	CHECK (shown (page, "findings-checked") &&
+	       fs_simviz_find_label (named (page, "findings-checked"),
+	                             "12 ports in 60 s") != NULL,
+	       "page: \"What is checked\" lists the checks and their limits");
+	CHECK (tile_value (page, "tile-attention") == 0,
+	       "page: nothing needs attention");
+	gtk_widget_destroy (top);
+}
+
+static void
+test_page (FsPolicy *policy, FsCopilot *copilot)
+{
+	GtkWidget *page, *top, *row, *rev, *b;
+	gchar *before, *after;
+	guint timer, n;
+	const gint64 t0 = (gint64) 900000 * G_USEC_PER_SEC;
+
+	whatif_isolate ();
+	install_app_css ();
+	fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode", "detect");
+
+	test_page_empty (policy, copilot);
+
+	/* ---- policy health ---- */
+	policy_add (policy, FS_RULE_INBOUND_ALLOW_SERVICE, "RDP, 3389, Anyone");
+	policy_add (policy, FS_RULE_INBOUND_ALLOW_SERVICE, "TCP, 3389, Anyone");
+	/* An outbound allow while outbound is open: an expected Info note. */
+	policy_add (policy, FS_RULE_OUTBOUND_ALLOW_TO, "203.0.113.80, smoke note");
+	CHECK (fs_policy_save (policy), "page: the risky rows save");
+
+	page = fs_copilot_page (copilot, policy);
+	top = page_window (page, NULL);
+	click (page, "health-again");
+
+	{
+		guint notes = 0;
+
+		n = health_counted (page, &notes);
+		CHECK (notes >= 1 && n >= 2 &&
+		       tile_value (page, "tile-health") == n,
+		       "page: the Policy health tile counts the findings but "
+		       "not the \"no effect in this mode\" notes (tile %u, "
+		       "counted rows %u, notes %u)",
+		       tile_value (page, "tile-health"), n, notes);
+		CHECK (notes == 0 ||
+		       strstr (text_of (page, "tile-health-note"), "below") != NULL,
+		       "page: the tile's note says the notes are below (\"%s\")",
+		       text_of (page, "tile-health-note"));
+	}
+	/* Needs attention counts the Critical health rows too: a Critical
+	 * "RDP open to the internet" must not sit under a 0. */
+	CHECK (tile_value (page, "tile-attention") >= 1,
+	       "page: Needs attention counts the policy's Critical rows "
+	       "(got %u)", tile_value (page, "tile-attention"));
+	/* Each health button names its row for a screen reader. */
+	row = row_with (page, "health-list", "open to the internet");
+	{
+		GtkWidget *sr = row != NULL ? named (row, "cp-health-rule") : NULL;
+		const gchar *acc = sr != NULL
+			? atk_object_get_name (gtk_widget_get_accessible (sr)) : NULL;
+
+		CHECK (acc != NULL && g_str_has_prefix (acc, "Show rule: ") &&
+		       strstr (acc, " rule ") != NULL,
+		       "page: Show rule's accessible name names the row (\"%s\")",
+		       acc != NULL ? acc : "");
+	}
+	row = row_with (page, "health-list", "open to the internet");
+	CHECK (row != NULL && named (row, "cp-health-fix") == NULL &&
+	       named (row, "cp-health-nofix") != NULL &&
+	       strstr (text_of (row, "cp-health-nofix"), "No fix offered") != NULL,
+	       "page: an unverified fix gets no Fix button, only its reason "
+	       "(\"%s\")", row != NULL ? text_of (row, "cp-health-nofix") : "");
+	CHECK (row != NULL && fs_simviz_find_label (row, "Critical") != NULL,
+	       "page: a health row's pill says its severity in a word");
+
+	/* One row left: the narrowing is verified now. */
+	{
+		FsRule *r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                              "TCP, 3389, Anyone");
+
+		fs_policy_remove (policy, r);
+		fs_rule_free (r);
+		CHECK (fs_policy_save (policy), "page: the second row is gone");
+	}
+	click (page, "health-again");
+	n = health_counted (page, NULL);
+	CHECK (tile_value (page, "tile-health") == n,
+	       "page: the tile follows the check (tile %u, rows %u)",
+	       tile_value (page, "tile-health"), n);
+	row = row_with (page, "health-list", "RDP (3389)");
+	CHECK (row != NULL && named (row, "cp-health-fix") != NULL,
+	       "page: a verified narrowing gets a Fix button");
+	CHECK (row != NULL &&
+	       strstr (text_of (row, "cp-health-fixline"),
+	               "RDP, 3389, 192.168.1.0/24") != NULL &&
+	       strstr (text_of (row, "cp-health-checks"),
+	               "from 203.0.113.10: ALLOWED -> BLOCKED") != NULL &&
+	       strstr (text_of (row, "cp-health-checks"),
+	               "from 192.168.1.20: ALLOWED -> ALLOWED") != NULL,
+	       "page: the fix and its What-If checks are shown before anything "
+	       "is written");
+	shoot_widget (page, "copilot-health");
+
+	before = rules_bytes ();
+	timer = g_timeout_add (40, answer_confirm, NULL);
+
+	confirm_answer = GTK_RESPONSE_NO;
+	confirm_seen = 0;
+	if (row != NULL)
+		click (row, "cp-health-fix");
+	pump (60);
+	after = rules_bytes ();
+	CHECK (confirm_seen == 1 && confirm_text != NULL &&
+	       strstr (confirm_text, "Before: RDP, 3389, Anyone") != NULL &&
+	       strstr (confirm_text, "After:  RDP, 3389, 192.168.1.0/24") != NULL &&
+	       strstr (confirm_text, "ALLOWED -> BLOCKED") != NULL,
+	       "page: Fix asks first, with the before and after rows and the "
+	       "checks");
+	CHECK (g_strcmp0 (before, after) == 0,
+	       "page: answering No writes nothing (rules files unchanged)");
+	if (g_strcmp0 (before, after) != 0)
+		printf ("--- before\n%s\n--- after\n%s\n", before, after);
+	g_free (after);
+
+	confirm_answer = GTK_RESPONSE_YES;
+	confirm_seen = 0;
+	row = row_with (page, "health-list", "RDP (3389)");
+	if (row != NULL)
+		click (row, "cp-health-fix");
+	pump (120);
+	CHECK (confirm_seen == 1 &&
+	       policy_has (policy, FS_RULE_INBOUND_ALLOW_SERVICE,
+	                   "RDP, 3389, 192.168.1.0/24") &&
+	       !policy_has (policy, FS_RULE_INBOUND_ALLOW_SERVICE,
+	                    "RDP, 3389, Anyone"),
+	       "page: answering Yes writes exactly the after row");
+	CHECK (audit_mentions ("copilot health fix"),
+	       "page: the fix is audited");
+	CHECK (shown (page, "cp-health-card-strip") &&
+	       strstr (text_of (page, "cp-health-card-strip"),
+	               "Held back on purpose") != NULL,
+	       "page: the push is reported as held, not applied (\"%s\")",
+	       text_of (page, "cp-health-card-strip"));
+	CHECK (row_with (page, "health-list", "RDP (3389)") == NULL &&
+	       tile_value (page, "tile-health") ==
+	       health_counted (page, NULL),
+	       "page: checked again, the finding is gone and the tile follows");
+	CHECK (row_with (page, "changes-list", "Policy fix") != NULL,
+	       "page: the fix is listed under Changes with an Undo");
+	shoot_widget (page, "copilot-health-fixed");
+
+	row = row_with (page, "changes-list", "Policy fix");
+	if (row != NULL)
+		click (row, "cp-change-undo");
+	pump (60);
+	after = rules_bytes ();
+	CHECK (g_strcmp0 (before, after) == 0,
+	       "page: Undo restores the rules files byte for byte");
+	if (g_strcmp0 (before, after) != 0)
+		printf ("--- before\n%s\n--- after\n%s\n", before, after);
+	CHECK (audit_mentions ("copilot health fix undone"),
+	       "page: the undo is audited");
+	row = row_with (page, "changes-list", "Policy fix");
+	CHECK (row != NULL && named (row, "cp-change-undo") == NULL &&
+	       g_str_has_prefix (text_of (row, "cp-change-ended"), "Undone at "),
+	       "page: the undone change stays in Changes, marked \"Undone at\" "
+	       "with no Undo button (\"%s\")",
+	       row != NULL ? text_of (row, "cp-change-ended") : "");
+	g_free (after);
+	g_free (before);
+
+	/* ---- findings ---- */
+	fs_copilot_clear_insights (copilot);
+	feed_beacon (copilot, "5.5.5.5", t0);
+	feed_intel_inbound (copilot, t0 + 10 * G_USEC_PER_SEC);
+	fs_copilot_view_refresh ();
+	pump (60);
+
+	n = list_rows (page, "findings-list");
+	CHECK (n == 2, "page: two findings, two rows (got %u)", n);
+	for (guint i = 0; i < n; i++) {
+		GtkWidget *r = list_row (page, "findings-list", i);
+		GtkWidget *pill = named (r, "cp-pill");
+		const gchar *acc = atk_object_get_name (gtk_widget_get_accessible (r));
+		gboolean word = pill != NULL &&
+			(fs_simviz_find_label (pill, "Critical") != NULL ||
+			 fs_simviz_find_label (pill, "Warning") != NULL ||
+			 fs_simviz_find_label (pill, "Info") != NULL);
+
+		CHECK (word, "page: row %u has a severity pill with a word", i);
+		CHECK (acc != NULL && (g_str_has_prefix (acc, "Critical: ") ||
+		                       g_str_has_prefix (acc, "Warning: ") ||
+		                       g_str_has_prefix (acc, "Info: ")),
+		       "page: row %u's accessible name is \"severity: title\" "
+		       "(\"%s\")", i, acc != NULL ? acc : "");
+	}
+	{
+		/* The health rows still listed count too, by their pills. */
+		guint health = 0;
+
+		for (guint i = 0; i < list_rows (page, "health-list"); i++) {
+			GtkWidget *hr = list_row (page, "health-list", i);
+			GtkWidget *pill = named (hr, "cp-pill");
+
+			if (pill != NULL &&
+			    (fs_simviz_find_label (pill, "Critical") != NULL ||
+			     fs_simviz_find_label (pill, "Warning") != NULL))
+				health++;
+		}
+		CHECK (tile_value (page, "tile-attention") == 1 + health,
+		       "page: Needs attention counts the Warning finding, not "
+		       "the Info, plus %u Critical or Warning health rows (got "
+		       "%u)", health, tile_value (page, "tile-attention"));
+	}
+
+	row = row_with (page, "findings-list", "near-fixed interval");
+	rev = row != NULL ? named (row, "cp-drawer") : NULL;
+	CHECK (rev != NULL &&
+	       !gtk_revealer_get_reveal_child (GTK_REVEALER (rev)),
+	       "page: the beacon's drawer starts closed");
+	if (row != NULL)
+		press_enter (top, row);
+	CHECK (rev != NULL && gtk_revealer_get_reveal_child (GTK_REVEALER (rev)),
+	       "page: Enter opens the drawer");
+	CHECK (row != NULL && named (row, "cp-evidence") != NULL &&
+	       fs_simviz_find_label (named (row, "cp-evidence"), "5.5.5.5")
+	       != NULL,
+	       "page: the drawer shows the events behind the finding");
+	CHECK (row != NULL && fs_simviz_find_label (row, "Why flagged") != NULL &&
+	       fs_simviz_find_label (row, "Could be harmless") != NULL &&
+	       strstr (text_of (row, "cp-autoblock-status"), "Detect only")
+	       != NULL,
+	       "page: why, could be harmless, and what Sentinel did (\"%s\")",
+	       row != NULL ? text_of (row, "cp-autoblock-status") : "");
+
+	/* The drawer's text is for reading and copying: selectable, and a
+	 * click inside it does not close the drawer. */
+	{
+		GtkWidget *ev = row != NULL ? named (row, "cp-evidence") : NULL;
+		GList *cells = ev != NULL
+			? gtk_container_get_children (GTK_CONTAINER (ev)) : NULL;
+		gboolean sel = cells != NULL, tab = FALSE;
+
+		for (GList *c = cells; c != NULL; c = c->next) {
+			/* The column heads are captions, not data. */
+			if (gtk_style_context_has_class (
+				    gtk_widget_get_style_context (c->data),
+				    "cp-caption"))
+				continue;
+			if (!GTK_IS_LABEL (c->data) ||
+			    !gtk_label_get_selectable (GTK_LABEL (c->data)))
+				sel = FALSE;
+			if (gtk_widget_get_can_focus (c->data))
+				tab = TRUE;
+		}
+		g_list_free (cells);
+		CHECK (sel && !tab,
+		       "page: the evidence cells are selectable text, out of the "
+		       "Tab order");
+		CHECK (row != NULL && named (row, "cp-autoblock-status") != NULL &&
+		       gtk_label_get_selectable (GTK_LABEL (named (row,
+		                                 "cp-autoblock-status"))),
+		       "page: what Sentinel did can be selected and copied");
+	}
+	if (row != NULL && named (row, "cp-drawer-guard") != NULL)
+		click_on (named (page, "findings-list"),
+		          gtk_bin_get_child (GTK_BIN (named (row,
+		                                              "cp-drawer-guard"))));
+	CHECK (rev != NULL && gtk_revealer_get_reveal_child (GTK_REVEALER (rev)),
+	       "page: a click inside the open drawer leaves it open");
+	/* The same click on the row's head still closes it, so the click
+	 * above did reach the list. */
+	if (row != NULL && named (row, "cp-finding-title") != NULL)
+		click_on (named (page, "findings-list"),
+		          named (row, "cp-finding-title"));
+	CHECK (rev != NULL && !gtk_revealer_get_reveal_child (GTK_REVEALER (rev)),
+	       "page: a click on the row's head closes the drawer");
+	if (row != NULL)
+		press_enter (top, row);
+
+
+	/* A refresh keeps the keyboard focus: the list follows the events
+	 * every second, and the focused row must not be thrown away.  The
+	 * threat-intel row adds each new event, so a second event changes
+	 * what it shows. */
+	{
+		GtkWidget *intel = row_with (page, "findings-list", "smoke list");
+		GtkWidget *dis = NULL, *f, *nrow;
+
+		if (intel != NULL) {
+			press_enter (top, intel);
+			dis = named (intel, "cp-dismiss");
+		}
+		if (dis != NULL)
+			gtk_widget_grab_focus (dis);
+		pump (30);
+		fs_copilot_view_refresh ();
+		pump (60);
+		CHECK (dis != NULL && focus_of (top) == dis &&
+		       row_with (page, "findings-list", "smoke list") == intel,
+		       "page: a refresh with nothing new keeps the row and its "
+		       "focused button");
+
+		feed_intel_inbound (copilot, t0 + 20 * G_USEC_PER_SEC);
+		fs_copilot_view_refresh ();
+		pump (60);
+		nrow = row_with (page, "findings-list", "smoke list");
+		f = focus_of (top);
+		CHECK (nrow != NULL && nrow != intel,
+		       "page: a row that shows a new event is rebuilt");
+		CHECK (nrow != NULL && f != NULL &&
+		       g_strcmp0 (gtk_widget_get_name (f), "cp-dismiss") == 0 &&
+		       gtk_widget_is_ancestor (f, nrow),
+		       "page: when the focused row changes, the focus goes to the "
+		       "same button in its new row (focus on \"%s\")",
+		       f != NULL ? gtk_widget_get_name (f) : "nothing");
+		CHECK (nrow != NULL && gtk_revealer_get_reveal_child (
+		           GTK_REVEALER (named (nrow, "cp-drawer"))),
+		       "page: the rebuilt row stays open");
+		CHECK (row != NULL &&
+		       row_with (page, "findings-list", "near-fixed interval") == row,
+		       "page: the row that did not change is the same widget");
+		/* Looked up again: a broken build may have replaced it. */
+		row = row_with (page, "findings-list", "near-fixed interval");
+		rev = row != NULL ? named (row, "cp-drawer") : NULL;
+	}
+	b = row != NULL ? named (row, "cp-add-block") : NULL;
+	CHECK (b != NULL,
+	       "page: a block rule verified with What-If is offered");
+	shoot_widget (page, "copilot-findings");
+
+	/* Add block rule: asks, No writes nothing, Yes writes the row. */
+	confirm_answer = GTK_RESPONSE_NO;
+	confirm_seen = 0;
+	if (b != NULL)
+		gtk_button_clicked (GTK_BUTTON (b));
+	pump (60);
+	CHECK (confirm_seen == 1 && strstr (confirm_text, "BLOCKED with the rule")
+	       != NULL &&
+	       !policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+	                    "5.5.5.5, Sentinel: periodic beacon"),
+	       "page: Add block rule asks first; No writes nothing");
+	confirm_answer = GTK_RESPONSE_YES;
+	confirm_seen = 0;
+	row = row_with (page, "findings-list", "near-fixed interval");
+	b = row != NULL ? named (row, "cp-add-block") : NULL;
+	if (b != NULL)
+		gtk_button_clicked (GTK_BUTTON (b));
+	pump (120);
+	CHECK (confirm_seen == 1 &&
+	       policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+	                   "5.5.5.5, Sentinel: periodic beacon") &&
+	       audit_mentions ("copilot block rule added"),
+	       "page: Yes adds exactly the rule, audited");
+	row = row_with (page, "changes-list", "Block rule added");
+	CHECK (row != NULL, "page: the rule is under Changes");
+	if (row != NULL)
+		click (row, "cp-change-undo");
+	pump (60);
+	CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+	                    "5.5.5.5, Sentinel: periodic beacon") &&
+	       audit_mentions ("copilot block rule undone"),
+	       "page: Undo takes it out again, audited");
+
+	/* Ask What-If fills the card. */
+	row = row_with (page, "findings-list", "near-fixed interval");
+	if (row != NULL && named (row, "cp-ask-whatif") != NULL)
+		click (row, "cp-ask-whatif");
+	CHECK (g_strcmp0 (gtk_entry_get_text (GTK_ENTRY (named (page,
+	                  "whatif-entry"))),
+	                  "outbound tcp port 443 to 5.5.5.5") == 0,
+	       "page: Ask What-If puts the finding's line in the card (\"%s\")",
+	       gtk_entry_get_text (GTK_ENTRY (named (page, "whatif-entry"))));
+
+	/* Dismiss hides it for the session. */
+	row = row_with (page, "findings-list", "smoke list");
+	if (row != NULL)
+		click (row, "cp-dismiss");
+	CHECK (list_rows (page, "findings-list") == 1 &&
+	       row_with (page, "findings-list", "smoke list") == NULL,
+	       "page: Dismiss hides the finding");
+
+	g_source_remove (timer);
+	shoot_widget (page, "copilot-light");
+	gtk_widget_destroy (top);
+	fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode", "auto");
+}
+
+/* Dark theme: the page stays light like the rest of the app (it used
+ * to turn dark on its own).  Run in a child with Adwaita's dark
+ * variant, as fs-simviz-smoke does. */
+static void
+test_dark (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsCopilot *copilot = fs_copilot_new ();
+	GtkWidget *page, *top, *row, *title;
+	GdkRGBA fg;
+	gint malformed = 0;
+
+	whatif_isolate ();
+	install_app_css ();
+	fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode", "detect");
+	fs_policy_load (policy, &malformed);
+	policy_add (policy, FS_RULE_INBOUND_ALLOW_SERVICE, "RDP, 3389, Anyone");
+	page = fs_copilot_page (copilot, policy);
+	top = page_window (page, NULL);
+	feed_beacon (copilot, "5.5.5.5", (gint64) 900000 * G_USEC_PER_SEC);
+	fs_copilot_view_refresh ();
+	pump (60);
+
+	/* The rest of the app keeps its light cards under a dark desktop
+	 * theme; the Copilot page did not, and was the one dark page. */
+	CHECK (!gtk_style_context_has_class (gtk_widget_get_style_context (page),
+	                                     "cp-dark") &&
+	       !gtk_style_context_has_class (gtk_widget_get_style_context (page),
+	                                     "fs-wi-dark"),
+	       "dark: the page stays light like the rest of the app");
+	row = list_row (page, "findings-list", 0);
+	if (row != NULL) {
+		g_signal_emit_by_name (named (page, "findings-list"), "row-activated",
+		                       row);
+		pump (80);
+	}
+	title = row != NULL ? named (row, "cp-finding-title") : NULL;
+	if (title != NULL) {
+		GtkStyleContext *sc = gtk_widget_get_style_context (title);
+
+		gtk_style_context_get_color (sc, gtk_style_context_get_state (sc),
+		                             &fg);
+	}
+	CHECK (title != NULL &&
+	       0.2126 * fg.red + 0.7152 * fg.green + 0.0722 * fg.blue < 0.4,
+	       "dark: a finding's title is dark text on the light card");
+	{
+		/* Every evidence cell too: a label with no colour of its own
+		 * takes the dark theme's white text. */
+		GtkWidget *ev = row != NULL ? named (row, "cp-evidence") : NULL;
+		GList *cells = ev != NULL
+			? gtk_container_get_children (GTK_CONTAINER (ev)) : NULL;
+		guint light = 0, n = 0;
+
+		for (GList *c = cells; c != NULL; c = c->next) {
+			GtkStyleContext *sc = gtk_widget_get_style_context (c->data);
+			GdkRGBA cf;
+
+			gtk_style_context_get_color (sc,
+				gtk_style_context_get_state (sc), &cf);
+			n++;
+			if (0.2126 * cf.red + 0.7152 * cf.green + 0.0722 * cf.blue
+			    > 0.6)
+				light++;
+		}
+		g_list_free (cells);
+		CHECK (n > 6 && light == 0,
+		       "dark: the evidence cells are dark text on the light card "
+		       "(%u of %u light)", light, n);
+	}
+	{
+		GtkWidget *card = named (page, "tile-health");
+		GdkRGBA *bg = NULL;
+
+		if (card != NULL) {
+			GtkStyleContext *sc = gtk_widget_get_style_context (card);
+
+			gtk_style_context_get (sc, gtk_style_context_get_state (sc),
+			                       "background-color", &bg, NULL);
+		}
+		CHECK (bg != NULL &&
+		       0.2126 * bg->red + 0.7152 * bg->green + 0.0722 * bg->blue
+		       > 0.8,
+		       "dark: the cards keep their light background");
+		if (bg != NULL)
+			gdk_rgba_free (bg);
+	}
+	CHECK (row != NULL && named (row, "cp-pill") != NULL &&
+	       gtk_revealer_get_reveal_child (GTK_REVEALER (named (row,
+	                                                         "cp-drawer"))),
+	       "dark: the pill and the open drawer render");
+	shoot_widget (page, "copilot-dark");
+	gtk_widget_destroy (top);
+}
+
+static void
+run_dark_child (const gchar *self)
+{
+	gchar *argv[] = { (gchar *) self, (gchar *) "--dark", NULL };
+	gchar **envp = g_get_environ ();
+	gint status = 1;
+	GError *error = NULL;
+
+	envp = g_environ_setenv (envp, "GTK_THEME", "Adwaita:dark", TRUE);
+	if (!g_spawn_sync (NULL, argv, envp, G_SPAWN_CHILD_INHERITS_STDIN,
+	                   NULL, NULL, NULL, NULL, &status, &error)) {
+		CHECK (FALSE, "dark: could not start the dark run: %s",
+		       error->message);
+		g_clear_error (&error);
+	} else {
+		CHECK (status == 0, "dark: the dark-theme run passed");
+	}
+	g_strfreev (envp);
+}
+
 /* ---- the smoke ------------------------------------------------------- */
 
 int
@@ -949,6 +1866,12 @@ main (int argc, char **argv)
 	isolate ();
 
 	gtk_init (&argc, &argv);
+
+	if (argc > 1 && strcmp (argv[1], "--dark") == 0) {
+		test_dark ();
+		printf ("\n%d failure(s) in the dark run\n", failures);
+		return failures ? 1 : 0;
+	}
 
 	FsPolicy *policy = fs_policy_new ();
 	FsCopilot *copilot = fs_copilot_new ();
@@ -1094,6 +2017,62 @@ main (int argc, char **argv)
 	CHECK (!fs_copilot_sentinel_auto_pass (),
 	       "after lift-all the cooldown keeps everything down");
 
+	/* ---- 5b. the gates are judged when the pass stages ------------- *
+	 * R1: paused from the tray, a stranger's beacon becomes
+	 * auto-blockable; then another program makes 5 connections to the
+	 * same host; then the pause ends and the pass "catches up".  The
+	 * host is now established elsewhere, so nothing may be staged. */
+
+	fs_copilot_sentinel_pause (3600);
+	feed_beacon (copilot, "5.6.7.9", t0 + (gint64) 2500 * G_USEC_PER_SEC);
+	{
+		const FsInsight *b = find_beacon_to (copilot, "5.6.7.9");
+
+		CHECK (b != NULL && b->auto_applicable,
+		       "R1 setup: the paused beacon asks to be auto-blocked");
+	}
+	feed_other (copilot, "brave.exe", "5.6.7.9",
+	            t0 + (gint64) 3000 * G_USEC_PER_SEC);
+	CHECK (!fs_copilot_sentinel_auto_pass (),
+	       "R1: nothing is staged while paused");
+	fs_copilot_sentinel_pause (0);
+	CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+	                    "5.6.7.9, Sentinel: periodic beacon"),
+	       "R1: resume does not block a host brave.exe now uses");
+	CHECK (!audit_mentions ("5.6.7.9, Sentinel"),
+	       "R1: no auto-block of that host is audited");
+	CHECK (withheld_says (copilot, "5.6.7.9", "brave.exe has 5 recorded"),
+	       "R1: the finding now says why the block was withheld");
+
+	/* R2: the user's own outbound allow for the host.  Made when the
+	 * finding exists (the Policy page), and before (a row from an
+	 * earlier session): neither may be overruled by a block. */
+	fs_copilot_sentinel_pause (3600);
+	feed_beacon (copilot, "9.8.7.6", t0 + (gint64) 4000 * G_USEC_PER_SEC);
+	{
+		const FsInsight *b = find_beacon_to (copilot, "9.8.7.6");
+
+		CHECK (b != NULL && b->auto_applicable,
+		       "R2 setup: the paused beacon asks to be auto-blocked");
+	}
+	policy_add (policy, FS_RULE_OUTBOUND_ALLOW_TO, "9.8.7.0/24, my allow");
+	CHECK (fs_policy_save (policy), "R2 setup: the user's allow saves");
+	fs_copilot_sentinel_pause (0);
+	CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+	                    "9.8.7.6, Sentinel: periodic beacon"),
+	       "R2: resume does not stage a deny over the user's allow");
+	CHECK (withheld_says (copilot, "9.8.7.6", "you allowed this destination"),
+	       "R2: the finding says the user's allow withholds the block");
+
+	feed_beacon (copilot, "9.8.7.5", t0 + (gint64) 5000 * G_USEC_PER_SEC);
+	CHECK (!fs_copilot_sentinel_auto_pass (),
+	       "R2: a new beacon to an allowed host stages nothing");
+	CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+	                    "9.8.7.5, Sentinel: periodic beacon"),
+	       "R2: the policy holds no Sentinel deny next to the allow");
+	CHECK (withheld_says (copilot, "9.8.7.5", "you allowed this destination"),
+	       "R2: the new finding is report only, and says why");
+
 	/* ---- 6. detect mode: auto_pass stages nothing ------------------ */
 
 	fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode", "detect");
@@ -1107,7 +2086,53 @@ main (int argc, char **argv)
 	                    "7.7.7.7, Sentinel: periodic beacon"),
 	       "detect mode leaves the policy free of the block");
 
+	/* R1: Detect only, then another program uses the host, then the
+	 * user switches to auto-block, which runs the pass at once. */
+	feed_beacon (copilot, "7.7.7.8", t0 + (gint64) 6000 * G_USEC_PER_SEC);
+	{
+		const FsInsight *b = find_beacon_to (copilot, "7.7.7.8");
+
+		CHECK (b != NULL && b->auto_applicable,
+		       "R1 setup: the detect-mode beacon is auto-blockable");
+	}
+	feed_other (copilot, "brave.exe", "7.7.7.8",
+	            t0 + (gint64) 6600 * G_USEC_PER_SEC);
+	{
+		GtkWidget *to_auto = named (page, "sentinel-auto");
+		GtkWidget *to_detect = named (page, "sentinel-detect");
+
+		CHECK (to_auto != NULL && to_detect != NULL,
+		       "the Sentinel mode buttons are on the page");
+		if (to_auto != NULL)
+			gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (to_auto),
+			                              TRUE);
+		{
+			gchar *mode = fs_prefs_get_string (
+				"/apps/stockfw/client/sentinel/mode", "");
+
+			CHECK (g_strcmp0 (mode, "auto") == 0,
+			       "R1 setup: the switch to auto-block took");
+			g_free (mode);
+		}
+		CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+		                    "7.7.7.8, Sentinel: periodic beacon"),
+		       "R1: the switch to auto-block does not block a host "
+		       "brave.exe now uses");
+		CHECK (policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+		                   "7.7.7.7, Sentinel: periodic beacon"),
+		       "R1 control: the switch still stages the stranger "
+		       "nobody else uses");
+		if (to_detect != NULL)
+			gtk_toggle_button_set_active (
+				GTK_TOGGLE_BUTTON (to_detect), TRUE);
+		CHECK (!policy_has (policy, FS_RULE_OUTBOUND_DENY_TO,
+		                    "7.7.7.7, Sentinel: periodic beacon"),
+		       "back in detect mode, the staged block is lifted");
+	}
+
 	test_whatif_card (policy, page);
+	test_page (policy, copilot);
+	run_dark_child (argv[0]);
 
 	printf ("%d failure(s)\n", failures);
 	return failures ? 1 : 0;

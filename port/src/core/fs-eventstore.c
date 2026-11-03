@@ -1143,13 +1143,18 @@ fs_eventquery_match (FsEventQuery *q, const FsEventStore *s, guint64 seq)
 		return FALSE;
 
 	/* The columns the list shows, as it shows them: the time, then
-	 * direction to service.  Not the rule, which no column shows: a
-	 * row it matched had no cell with the text in it. */
+	 * direction to service, and the rule that blocked a blocked event,
+	 * which the Service column names after the service ("Threat
+	 * intel: Spamhaus DROP (IPv4)"; the Copilot's "Show in Events"
+	 * filters on it).  An allowed event's rule is shown nowhere. */
 	if (q->text != NULL) {
 		gboolean any = FALSE;
 
 		for (guint f = FS_EV_DIRECTION; f <= FS_EV_SERVICE && !any; f++)
 			any = (cached_bits (q, s, r->id[f]) & BIT_TEXT) != 0;
+		if (!any && (rec_flags (s, r, FS_EV_SERVICE) & ATOM_BLOCKED))
+			any = (cached_bits (q, s, r->id[FS_EV_RULE]) &
+			       BIT_TEXT) != 0;
 
 		if (!any && (r->id[FS_EV_TIME] == TIME_FRAC7 ||
 		             r->id[FS_EV_TIME] == TIME_SECS)) {
@@ -1224,7 +1229,8 @@ fs_eventquery_match_hit (const FsEventQuery *q, const FsHit *h,
 		return FALSE;
 
 	if (q->text != NULL) {
-		/* What fs_eventquery_match reads: the shown columns. */
+		/* What fs_eventquery_match reads: the shown columns,
+		 * and a block's rule. */
 		const gchar *fields[] = {
 			h->time, h->direction, h->in, h->out, h->port,
 			h->source, h->destination, h->length, h->tos,
@@ -1235,6 +1241,9 @@ fs_eventquery_match_hit (const FsEventQuery *q, const FsHit *h,
 		for (guint i = 0; i < G_N_ELEMENTS (fields) && !any; i++)
 			any = fields[i] != NULL &&
 			      ascii_case_contains (fields[i], q->text);
+		if (!any && h->rule != NULL && h->service != NULL &&
+		    strstr (h->service, "[BLOCKED]") != NULL)
+			any = ascii_case_contains (h->rule, q->text);
 		if (!any)
 			return FALSE;
 	}

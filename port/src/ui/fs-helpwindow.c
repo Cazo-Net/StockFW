@@ -1577,10 +1577,11 @@ fs_help_show (GtkWidget *parent, const gchar *topic)
 const gchar *
 fs_help_topic_for_page (gint page)
 {
-	/* FsAppPage order: Overview, Events, Activity, Policy, Copilot,
-	 * Trust. */
+	/* FsAppPage order: Overview, Events, Activity, Policy, Threat
+	 * Intel, Copilot, Trust. */
 	static const gchar *const ids[] = {
-		"overview", "events", "activity", "policy", "copilot", "trust"
+		"overview", "events", "activity", "policy", "threat-intel",
+		"copilot", "trust"
 	};
 
 	if (page < 0 || page >= (gint) G_N_ELEMENTS (ids))

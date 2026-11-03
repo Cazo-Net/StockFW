@@ -2,10 +2,10 @@
 
 # StockFW
 
-**Smart firewall configuration tool with a local AI copilot.**
+**Smart firewall configuration tool with a local, rule-based Copilot.**
 GTK3 · Windows and Linux · status, live events, policy editing, and a
-Copilot page that analyzes, explains and simulates rules — entirely
-offline.
+Copilot page that checks the event log and the policy with fixed rules,
+shows the evidence, and simulates rules, entirely offline.
 
 StockFW makes a stock OS firewall *legible*: policy as a readable, diffable
 CSV; events as a classified, searchable stream; advanced knobs in one
@@ -75,11 +75,27 @@ rules — without a shell prompt.
   only* on the inbound groups), and **Bi-directional** stages the
   opposite-direction twin as one all-or-nothing save — if the write
   fails, neither half stays.
-- **Copilot** — a **local, deterministic** analysis page, no LLM. Policy
-  Analysis reads the event feed and your rules and proposes the exact
-  firewall rule it would install, shows it in a Yes/No dialog before
-  anything is written, is **allow-only** (it can never silently open
-  more than you approve), and rolls back if the save fails. The
+- **Copilot** — a **local, rule-based** page: fixed checks, no model,
+  no network. **Findings** from the event log (inbound port scans,
+  repeated attempts on a login port, new destinations for a known app,
+  contacts at a near-fixed interval, block-list hits, fan-out, rate
+  spikes), each with a severity word, an evidence drawer (the events,
+  why it was flagged with the numbers and limits, why it could be
+  harmless, what Sentinel did) and actions (a block offered only when
+  What-If confirms it, Ask What-If, Show in Events, Dismiss).
+  **Policy health** reports duplicate, shadowed, unreachable and
+  no-effect rules, broad allows, risky services open to the internet
+  and denies that reach no address family; a fix is offered only when
+  the What-If engine has checked it, and it asks first. **Changes made
+  by the Copilot** lists every auto-block and fix with Undo. Sentinel
+  is a two-way switch: Detect only, or Detect + auto-block (outbound
+  blocks to unknown public addresses, for 10 minutes). No finding is
+  not a guarantee that nothing is wrong, and the page says so. On
+  Linux the kernel log names no program, so the Copilot learns per
+  service there, and it sees allowed traffic only when allowed-event
+  logging is on. `stockfw copilot health [--json]` runs the policy
+  check from the command line (exit 7 with findings) and writes
+  nothing. The
   **What-If Simulator** takes a line like *"allow SSH from
   192.168.1.50 on port 22"* and answers **BLOCKED/ALLOWED** against
   the real policy: block rules take precedence the way Windows
@@ -117,6 +133,13 @@ rules — without a shell prompt.
   dashboard on **127.0.0.1 only**, behind a token that changes every
   run, with the same graphs, live events, connections, the simulator
   and the policy — see [below](#command-line-and-dashboard-linux).
+- **Threat-intel blocklists** *(Linux, 1.0.7, opt-in)* — block
+  addresses that well-known public lists name as hijacked networks,
+  botnet servers or attackers, plus your own lists, in the kernel
+  before the policy sees a packet. Every feed is off until you turn it
+  on and accept its terms; with nothing on, StockFW makes no network
+  request. A **Threat Intel** page, `stockfw intel` and a read-only
+  dashboard card — see [below](#threat-intel-blocklists-linux-107).
 - **Preferences** — what you see is what you save: pages that do not
   apply to the current backend are not shown, so there are no dead
   settings that silently do nothing.
@@ -140,6 +163,150 @@ when you apply and written as its IPv4 and IPv6 addresses. Neighbour
 discovery, router adverts, path-MTU and DHCPv6 are always allowed, even
 in restrictive mode, because IPv6 does not work without them. Without
 `ip6tables` installed, the apply reports that IPv6 is not filtered.
+
+## Threat-intel blocklists (Linux and Windows, 1.0.7)
+
+StockFW can block the addresses on public threat-intel lists ("feeds")
+and on lists you make yourself, on Linux and on Windows. The Windows
+side is built and compiled but has not yet been run on a real Windows
+computer (see *On Windows* below).
+
+**How it works.** Each list you turn on is downloaded from its own
+publisher over HTTPS, checked, stored under `/var/lib/stockfw/intel`
+(root only) and loaded into one nftables table of StockFW's own,
+`inet stockfw_intel`. That table is checked before the iptables policy,
+and a policy apply never touches it. Blocked packets are logged with the
+list's name, so on the Events page a block reads *Threat intel: <list>*.
+
+**On Windows.** The same page, the same feeds and the same checks.
+The lists are stored under `%ProgramData%\StockFW\intel` (Administrators
+and SYSTEM only) and enforced as block rules of StockFW's own in Windows
+Firewall. Changing anything needs StockFW to run elevated. Windows
+Firewall keeps no per-rule counts, so where Linux says *Blocked N
+packets* the page says why there is no number, and the Blocked tile
+reads *n/a*. When the rules are there but Windows Firewall is not
+enforcing them (the service stopped, a profile off, or Group Policy in
+charge) the page says *Not in force* and why; rules changed by someone
+else read *Changed outside StockFW*. The `stockfw` command is built on
+Linux only.
+
+### Turning it on
+
+You need root, `nft` (the `nftables` package) and `curl`.
+
+In the desktop app, open **Threat Intel** in the sidebar and switch a
+feed on. A dialog first tells you which host it is downloaded from, how
+often, what that host learns (this computer's public address and
+"StockFW/<version>"), its licence and terms. Nothing is downloaded until
+you accept. While the app is open it checks every hour for feeds that
+are due. Changing a list needs the app to run as root; otherwise the
+page says *Needs administrator rights*.
+
+From the command line:
+
+```sh
+stockfw intel feeds                                   # every feed, its licence and credit
+stockfw intel terms spamhaus-drop                     # what turning it on means
+sudo stockfw intel enable spamhaus-drop --accept-terms
+sudo stockfw intel update                             # download the feeds that are due
+sudo stockfw intel apply                              # load the lists into the kernel
+sudo stockfw intel status                             # protected? which lists, how many blocks
+sudo stockfw intel lookup 203.0.113.7                 # which lists hold it; exit 5 if the kernel blocks it now
+sudo stockfw intel except 203.0.113.7                 # a mistake: never block this address
+sudo stockfw intel import mylist.txt --name "My list" # your own list, no network
+```
+
+`stockfw help intel` lists every action. Each one takes `--json`.
+Downloads connect to each feed's host directly. Behind a proxy, set it
+with `sudo stockfw intel proxy http://proxy.example:3128` (`none` removes
+it); it is kept as `[intel] proxy=` in `/var/lib/stockfw/intel/intel.conf`
+and `stockfw intel status` shows it.
+`feeds` and `terms` work without root until something is turned on.
+After that the store is root-only, so every `stockfw intel` command
+needs sudo.
+
+`stockfw intel update` can run from cron or a systemd timer. It loads
+the new copies only while the firewall runs, the lists are already
+loaded and audit-only mode is off. Otherwise it stores them and says
+why it did not load them.
+
+**Direction.** *in* stops listed addresses connecting to you, *out*
+stops you connecting to them, *both* does both. Outbound blocks are
+rejected so programs fail at once instead of hanging.
+
+**After a reboot** nothing is loaded, policy or lists, until the
+firewall is started again (Status page, `stockfw start`, or
+start-on-open). Start loads the lists with the policy, and Stop removes
+both.
+
+### The feeds
+
+| Feed (`id`) | What it lists | Licence / terms | Commercial use | Credit |
+|---|---|---|---|---|
+| Spamhaus DROP, IPv4 (`spamhaus-drop`) *recommended* | Networks hijacked or run by spammers and cyber-criminals. Daily, both directions | free; [Spamhaus DROP terms](https://www.spamhaus.org/drop/terms/) (no licence named) | not restricted; credit Spamhaus | The Spamhaus Project, spamhaus.org (DROP) |
+| Spamhaus DROP, IPv6 (`spamhaus-dropv6`) *recommended* | The IPv6 part of DROP. Daily, both directions | as above | not restricted; credit Spamhaus | The Spamhaus Project, spamhaus.org (DROPv6) |
+| abuse.ch Feodo Tracker (`feodo`) *recommended* | Botnet command-and-control servers seen active recently. Every 6 h, both directions | CC0 ([abuse.ch terms](https://abuse.ch/terms-of-use/)) | allowed | abuse.ch Feodo Tracker, feodotracker.abuse.ch |
+| DShield top attackers (`dshield`) | The 20 /24 networks that attacked DShield sensors most over three days. Daily, inbound | CC BY-NC-SA 2.5 | **non-commercial only** | DShield.org, SANS Internet Storm Center |
+| FireHOL level 1 (`firehol-level1`) | An aggregate of Spamhaus DROP, DShield, Feodo Tracker and unroutable space. Daily, inbound; fetched from raw.githubusercontent.com | no licence of its own; [see the repository](https://github.com/firehol/blocklist-ipsets) | **non-commercial only** (it contains DShield's list) | FireHOL IP lists, iplists.firehol.org |
+| blocklist.de (`blocklist-de`) | Addresses that attacked servers reporting to blocklist.de (fail2ban and similar) in the last 48 hours. Daily, inbound | [blocklist.de terms](https://www.blocklist.de/en/terms.html) (no licence named) | see terms | blocklist.de |
+| Emerging Threats compromised hosts (`et-compromised`) | Hosts seen compromised and attacking others. Daily, inbound | no licence published ([community thread](https://community.emergingthreats.net/t/licensing-is-the-compromised-ips-list-also-open/676)) | see terms | Emerging Threats, emergingthreats.net |
+| CINS Army (`cins-army`) | Up to 15,000 addresses with the poorest reputation in the CINS network. Daily, inbound | no licence named ([cinsscore.com](https://cinsscore.com/)) | see terms | CINS Army list, cinsscore.com |
+| Tor exit relays (`tor-exits`) | The relays Tor traffic leaves from. This is a choice about Tor users, not protection from a threat. Every 6 h, inbound | no licence named ([bulk exit list](https://check.torproject.org/api/bulk)) | see terms | The Tor Project, check.torproject.org |
+
+The direction shown is the default; `stockfw intel enable ID
+--direction in|out|both` chooses another (the page uses the default).
+The update interval is fixed per feed (24 hours for a feed you add
+yourself).
+
+The lists and their data belong to their publishers. StockFW only
+downloads them for you, from each publisher and from no mirror. The
+page, `stockfw intel feeds` and the dashboard show each list's licence
+(or "see terms"), whether it is non-commercial, and its credit line.
+Before turning on a non-commercial list on a business computer, get the
+publisher's permission. A licence is named only where the publisher
+names one. You can also add your own feed by URL (`stockfw intel
+add-feed`, HTTPS only).
+
+### What it does and does not do
+
+It does:
+
+- block every address on the lists you turn on, IPv4 and IPv6, in the
+  directions you choose, and count the blocks ("blocked N since
+  <date>");
+- never block what this computer needs: its own addresses and network,
+  gateways, DNS servers, your SSH session, the feed servers themselves,
+  special-purpose ranges and your allow list. `apply` says when a list
+  named any of these;
+- refuse an update that looks wrong, keeping the copy you had: a list
+  that suddenly shrinks or empties, one older than the copy you have,
+  one whose coverage jumps, entries wider than a /10 (IPv4) or /29
+  (IPv6), or a body that is not a list. The page offers *Accept smaller
+  list* or *Accept larger list*, and `stockfw intel update` prints the
+  flag to use;
+- show what the kernel is really doing: *Protected*, *Not loaded*
+  (after a reboot or a `flush ruleset`), *Paused* (the firewall was
+  stopped), or *Changed outside StockFW*, never only what is
+  configured.
+
+It does not:
+
+- filter domains or URLs, inspect traffic, or detect intrusions. It
+  blocks IP addresses that the lists name, and nothing else;
+- make the lists right. Lists contain mistakes and go stale, and a
+  blocked address may be a shared host you need. Use the allow list or
+  `stockfw intel except`;
+- verify signatures, because no feed publishes them. Integrity rests on
+  HTTPS to the publisher and the update checks above;
+- keep a key secret. curl gets the feed URL on its command line, which
+  other local users can read while a download runs. Do not put a
+  secret in a custom feed's URL. A proxy with a user name and password
+  in it is refused;
+- answer from What-If, Copilot or `stockfw simulate` yet: these still
+  judge the policy alone. Ask `stockfw intel lookup` or the page's
+  lookup box;
+- block by country or network owner, on either platform. That is a
+  later round.
 
 ## Running in the background, and after a reboot (1.0.7)
 
@@ -275,13 +442,14 @@ Every claim in the documentation is graded `[Verified]` / `[Measured]` /
 ```sh
 cd port
 bash tests/full-suite.sh             # every suite below, one pass, one verdict
-bash tests/test-core.sh              # rule engine, CSV, copilot, sentinel, event-rule, what-if, direction pairing
+bash tests/test-core.sh              # rule engine, CSV, copilot detections + policy health, sentinel, event-rule, what-if, direction pairing
 bash tests/test-winlog.sh            # Security-log parsing + dedup
 bash tests/test-logstart.sh          # event stream start-up
 bash tests/test-installer-spawn.sh   # staged spawn helpers
 bash tests/test-state-windows.sh     # per-profile backend compile
 bash tests/test-uaf-analyze.sh       # analyzer proves the UAF fix
 bash tests/test-cli.sh               # Linux: stockfw CLI + dashboard security model
+bash tests/test-intel-cli.sh         # Linux, root: stockfw intel end to end (private namespaces)
 
 ninja -C build fs-ui-smoke fs-hitview-smoke fs-activity-smoke
 ./build/fs-ui-smoke                  # UI wiring smoke
@@ -317,3 +485,9 @@ the license ultimately declared for their portion.
   Developer
 - **H3xCore** — Developer
 - **StockFW Project** — GTK3 port, Windows backend, Copilot
+- **Threat-intel data** — the blocklists belong to their publishers:
+  The Spamhaus Project, abuse.ch, DShield.org (SANS Internet Storm
+  Center), FireHOL IP lists, blocklist.de, Emerging Threats, CINS Army
+  and The Tor Project. StockFW does not ship their data; it downloads
+  a list only after you turn it on (see
+  [Threat-intel blocklists](#threat-intel-blocklists-linux-107)).

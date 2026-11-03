@@ -456,6 +456,19 @@ summary_json (Dash *dash)
 	return g_string_free (out, FALSE);
 }
 
+/* [ intel_json ]
+ * The threat-intel blocklists, read-only (design 8): the state the
+ * kernel is in and the lists turned on, with their licence and credit.
+ * Never creates the store; nothing here can change a list. */
+static gchar *
+intel_json (void)
+{
+	GString *out = g_string_new (NULL);
+
+	fs_cli_intel_json (out, TRUE);
+	return g_string_free (out, FALSE);
+}
+
 static void
 series_json (GString *out, FsActivity *activity, const gchar *series,
              guint step, guint n)
@@ -597,6 +610,7 @@ events_json (Dash *dash, GHashTable *params)
 		fs_json_kv_str (out, "port", hit->port);             g_string_append_c (out, ',');
 		fs_json_kv_str (out, "protocol", hit->protocol);     g_string_append_c (out, ',');
 		fs_json_kv_str (out, "service", service);            g_string_append_c (out, ',');
+		fs_json_kv_str (out, "rule", hit->rule);             g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "blocked", fs_hit_is_blocked (hit));
 		g_string_append_c (out, '}');
 		g_free (service);
@@ -901,6 +915,8 @@ handle_request (Conn *conn)
 		respond_json (conn, 200, interfaces_json (dash), head_only);
 	} else if (strcmp (path, "/api/policy") == 0) {
 		respond_json (conn, 200, policy_json (), head_only);
+	} else if (strcmp (path, "/api/intel") == 0) {
+		respond_json (conn, 200, intel_json (), head_only);
 	} else if (strcmp (path, "/api/simulate") == 0) {
 		guint status = 200;
 		gchar *json = simulate_json (params, &status);

@@ -7,7 +7,8 @@
  * feeds are downloaded from.
  *
  * fs_hostnet_read() gathers it all from the running system (Linux:
- * getifaddrs, /proc/net, resolver files; elsewhere: empty).  The
+ * getifaddrs, /proc/net, resolver files; Windows: GetAdaptersAddresses,
+ * GetExtendedTcpTable; elsewhere: empty).  The
  * parsers it uses are pure and public, so the tests feed them fixtures.
  *--------------------------------------------------------------------*/
 #ifndef FS_HOSTNET_H
@@ -47,6 +48,11 @@ void        fs_hostnet_free (FsHostNet *host);
  *   update_hosts every host in `hosts' (NULL-terminated, may be NULL)
  *                looked up with getaddrinfo (AF_UNSPEC); a host that
  *                does not resolve adds nothing.
+ * Windows (Round 3): own, onlink, gateways and resolvers from
+ * GetAdaptersAddresses() over every adapter that is up (on-link
+ * prefixes through fs_hostnet_add_onlink()); sessions from the SSH
+ * variables and GetExtendedTcpTable() for local ports 22 and 3389
+ * (Remote Desktop); update_hosts as above.
  * Never NULL.  A source that cannot be read adds nothing. */
 FsHostNet  *fs_hostnet_read (const gchar *const *hosts);
 
@@ -54,6 +60,15 @@ FsHostNet  *fs_hostnet_read (const gchar *const *hosts);
 FsRangeSet *fs_hostnet_all (const FsHostNet *host);
 
 /* ---- pure parsers -------------------------------------------------- */
+
+/* Adds the block `addr' (4 or 16 network-order bytes) lies in under a
+ * prefix length -- Windows' OnLinkPrefixLength -- to `set': (addr & m)
+ * to (addr | ~m).  A prefix of 0 or wider than the family adds the
+ * address alone: a zero length would keep every address reachable and
+ * empty every list without a word.  Other lengths of `addr' add
+ * nothing. */
+void fs_hostnet_add_onlink (FsRangeSet *set, const guint8 *addr, gsize len,
+                            guint prefix);
 
 /* Default IPv4 gateways from /proc/net/route text: rows whose
  * Destination is 00000000, whose Flags have RTF_GATEWAY (0x2) and

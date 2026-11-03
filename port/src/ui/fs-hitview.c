@@ -27,6 +27,7 @@
 #include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
 #include "core/fs-eventrule.h"
+#include "ui/fs-intelview.h"
 #include "core/fs-rules.h"
 #include "core/fs-audit.h"
 #include "core/fs-util.h"
@@ -128,6 +129,20 @@ static const struct
 	{ N_(""),            FALSE, NULL },   /* colour, never shown */
 };
 
+/* The colour column holds "" for an allowed event, ROW_BLOCKED for a
+ * block, or -- 1.0.7 -- the rule that blocked it when the event says
+ * ("Threat intel: Spamhaus DROP (IPv4)", FsHit.rule).  Any non-empty
+ * value paints the row red; a rule is also shown after the service. */
+#define ROW_BLOCKED "#cc0000"
+
+/* The rule stored in a row's colour column, or NULL. */
+static const gchar *
+row_rule (const gchar *color)
+{
+	return color != NULL && *color != '\0' &&
+	       strcmp (color, ROW_BLOCKED) != 0 ? color : NULL;
+}
+
 /* [ color_cell_data ]
  * Paints each row:
  *   - selected   -> left to the theme, so the blue highlight and the
@@ -187,6 +202,24 @@ color_cell_data (GtkTreeViewColumn *column, GtkCellRenderer *renderer,
 	              "background", background,
 	              "foreground", foreground,
 	              NULL);
+
+	/* The Service column also names the rule that blocked it. */
+	if (GPOINTER_TO_INT (data) == COL_SERVICE) {
+		gchar *service = NULL, *flag = NULL;
+
+		gtk_tree_model_get (model, iter, COL_SERVICE, &service,
+		                    COL_COLOR, &flag, -1);
+		if (row_rule (flag) != NULL) {
+			gchar *text = g_strdup_printf ("%s \xc2\xb7 %s",
+			                               service ? service : "",
+			                               row_rule (flag));
+
+			g_object_set (renderer, "text", text, NULL);
+			g_free (text);
+		}
+		g_free (service);
+		g_free (flag);
+	}
 }
 
 /* [ fs_hitview_format_time ]
@@ -562,13 +595,10 @@ on_search_changed (GtkSearchEntry *entry, gpointer data)
 }
 
 static void
-on_filter_reset (GtkButton *button, gpointer data)
+clear_filter_boxes (void)
 {
 	GtkWidget *entries[] = { filter_entry, filter_protocol, filter_port,
 	                         filter_address, filter_since, filter_until };
-
-	(void) button;
-	(void) data;
 
 	for (guint i = 0; i < G_N_ELEMENTS (entries); i++)
 		if (entries[i] != NULL)
@@ -577,7 +607,15 @@ on_filter_reset (GtkButton *button, gpointer data)
 		gtk_combo_box_set_active (GTK_COMBO_BOX (filter_direction), 0);
 	if (filter_action != NULL)
 		gtk_combo_box_set_active (GTK_COMBO_BOX (filter_action), 0);
+}
 
+static void
+on_filter_reset (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+
+	clear_filter_boxes ();
 	fs_hitview_refilter_now ();
 }
 
@@ -705,8 +743,8 @@ hit_is_outbound (const FsHit *hit)
  *
  * Ported from the original hitview.c, which ran both inside
  * hitview_append_hit() before the status counters were touched.  So a
- * filtered event produces no row, no counter tick and no Copilot
- * input -- it is as if the firewall had not logged it. */
+ * filtered event produces no row and no counter tick.  The Copilot
+ * is fed before these filters (see on_hit), so it still sees it. */
 
 /* The row the list accepted most recently, kept as copies rather than
  * as a pointer into the model because rows are trimmed once the cap
@@ -817,6 +855,29 @@ static void
 on_hit (const FsHit *hit, gpointer user_data)
 {
 	gboolean blocked;
+	extern FsCopilot *copilot;
+
+	/* The Copilot sees every event, before the display filters: "skip
+	 * repeats" is about what the list shows, and a run of identical
+	 * attempts is exactly the shape of a login storm or a timed
+	 * check-in.  Hiding the repeats from the checks would let them
+	 * reach the Copilot as one event. */
+	if (copilot != NULL) {
+		fs_copilot_feed_event (copilot, hit);
+		/* The baseline changed: the next periodic save writes it. */
+		fs_app_note_learning ();
+	}
+
+	/* Sentinel auto-block: in auto mode a fresh beacon finding is
+	 * staged into the policy right here, for the event that completed
+	 * it, even when the list below does not show that event.  The pass
+	 * is a cheap walk; the page is only rebuilt when a block was
+	 * actually staged. */
+	if (fs_copilot_sentinel_auto_pass ())
+		fs_copilot_view_refresh ();
+
+	/* The page's counters follow every event the checks saw. */
+	fs_copilot_note_event ();
 
 	/* Both filters run before anything is counted, as they did in the
 	 * original. */
@@ -836,24 +897,6 @@ on_hit (const FsHit *hit, gpointer user_data)
 
 	/* The Activity page counts exactly what this list shows. */
 	fs_activityview_note_hit (hit);
-
-	/* Feed to copilot for learning and anomaly detection. */
-	extern FsCopilot *copilot;
-	if (copilot != NULL) {
-		fs_copilot_feed_event (copilot, hit);
-		/* The baseline changed: the next periodic save writes it. */
-		fs_app_note_learning ();
-	}
-
-	/* Sentinel auto-block: in auto mode a fresh beacon insight is
-	 * staged into the policy right here, not the next time someone
-	 * opens the Copilot page.  The pass itself is a cheap walk; the
-	 * insight list is only rebuilt when a block was actually staged. */
-	if (fs_copilot_sentinel_auto_pass ())
-		fs_copilot_view_refresh ();
-
-	/* Update copilot stats counter. */
-	fs_copilot_note_event ();
 
 	/* Status page counters.  These were declared but never called,
 	 * which is why the panel always read 0. */
@@ -1234,6 +1277,44 @@ fs_hitview_active (void)
 	return fs_backend ()->log_active ();
 }
 
+/* [ fs_hitview_set_filter ] -- the Copilot's "Show in Events". */
+void
+fs_hitview_set_filter (const gchar *text)
+{
+	if (filter_entry == NULL)
+		return;
+
+	/* Only this text: the other boxes would hide what the finding
+	 * points at. */
+	clear_filter_boxes ();
+	gtk_entry_set_text (GTK_ENTRY (filter_entry), text != NULL ? text : "");
+	/* At once, not after the search entry's typing delay. */
+	fs_hitview_refilter_now ();
+}
+
+/* [ fs_hitview_monitor_problem ]
+ * Why no events arrive, or NULL while monitoring runs. */
+gchar *
+fs_hitview_monitor_problem (void)
+{
+	const FsBackend *backend = fs_backend ();
+	const gchar *why;
+
+	if (fs_hitview_active ())
+		return NULL;
+
+	why = backend->log_problem != NULL ? backend->log_problem () : NULL;
+	if (why != NULL && *why != '\0')
+		return g_strdup (why);
+
+	if (monitor_warning != NULL && gtk_widget_get_visible (monitor_warning))
+		return g_strdup (gtk_label_get_text (
+			GTK_LABEL (monitor_warning_label)));
+
+	return g_strdup (_("Event monitoring is off. Turn on Monitor on the "
+	                   "Events page."));
+}
+
 const FsHit *
 fs_hitview_selected (void)
 {
@@ -1257,6 +1338,10 @@ fs_hitview_selected (void)
 
 	g_clear_pointer (&hit, fs_hit_free);
 	hit = fs_eventstore_get_hit (estore, seq);
+	/* The rule is the row's only for a block, as the list shows it
+	 * (the Service column names it, and "Add exception" offers it). */
+	if (hit != NULL && !fs_eventstore_is_blocked (estore, seq))
+		g_clear_pointer (&hit->rule, g_free);
 
 	return hit;
 }
@@ -1617,6 +1702,25 @@ on_menu_untrust_activated (GtkMenuItem *item, gpointer data)
 	g_free (source);
 }
 
+/* [ on_menu_intel_exception ] -- "Add exception for <address>". */
+static void
+on_menu_intel_exception (GtkMenuItem *item, gpointer data)
+{
+	const FsHit *hit = fs_hitview_selected ();
+	GtkWidget *top;
+
+	(void) item;
+	(void) data;
+	if (hit == NULL)
+		return;
+	top = view != NULL ? gtk_widget_get_toplevel (view) : NULL;
+	fs_intelview_add_exception (top != NULL && GTK_IS_WINDOW (top)
+	                            ? GTK_WINDOW (top) : NULL,
+	                            hit_is_outbound (hit) ? hit->destination
+	                                                  : hit->source,
+	                            hit->rule);
+}
+
 /* [ on_view_button_press ]
  * Right-click selects the row under the cursor and pops the menu of
  * actions that fit this event's direction. */
@@ -1651,6 +1755,30 @@ on_view_button_press (GtkWidget *widget, GdkEventButton *event,
 		return FALSE;
 
 	menu = gtk_menu_new ();
+
+	/* A blocklist's block (design 8, [P2]): an Allow rule would not
+	 * help, the list would still block it; the way out is an
+	 * exception on the Threat Intel page. */
+	if (fs_intelview_rule_is_intel (hit->rule)) {
+		const gchar *remote = hit_is_outbound (hit) ? hit->destination
+		                                            : hit->source;
+		GtkWidget *item;
+		gchar *label;
+
+		if (remote == NULL || *remote == '\0') {
+			gtk_widget_destroy (menu);
+			return FALSE;
+		}
+		label = g_strdup_printf (_("Add exception for %s"), remote);
+		item = gtk_menu_item_new_with_label (label);
+		g_free (label);
+		g_signal_connect (item, "activate",
+		                  G_CALLBACK (on_menu_intel_exception), NULL);
+		gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+		gtk_widget_show_all (menu);
+		gtk_menu_popup_at_pointer (GTK_MENU (menu), (GdkEvent *) event);
+		return TRUE;
+	}
 
 	if (hit_is_outbound (hit) &&
 	    hit->destination != NULL && *hit->destination != '\0') {
@@ -2111,7 +2239,8 @@ fs_hitview_page (void)
 				column, renderer, time_cell_data, NULL, NULL);
 		else
 			gtk_tree_view_column_set_cell_data_func (
-				column, renderer, color_cell_data, NULL, NULL);
+				column, renderer, color_cell_data,
+				GINT_TO_POINTER (i), NULL);
 
 		/* Column visibility is remembered, as in the original. */
 		if (column_defs[i].pref_key != NULL)

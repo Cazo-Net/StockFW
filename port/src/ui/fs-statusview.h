@@ -33,6 +33,14 @@ FsFirewallState fs_statusview_get_state (void);
  * no menu. */
 void           fs_statusview_reread_state (void);
 
+/* After the firewall started (start TRUE) or stopped: the threat-intel
+ * blocklists follow (fs_intel_resume under fs_intelview_hold_reason(), or
+ * fs_intel_suspend), in a worker, one job at a time, in order; an
+ * error dialog if they could not.  `source' names the caller in the
+ * audit log. */
+void           fs_statusview_intel_follow (gboolean start,
+                                           const gchar *source);
+
 /* The policy whose rules the Overview counts.  Not owned. */
 void           fs_statusview_set_policy (FsPolicy *policy);
 
@@ -85,6 +93,10 @@ void fs_statusview_note_block    (const FsHit *hit);
 /* The Recent blocks card's rows, newest first, as "title\ndetail".
  * For tests.  Free with g_strfreev. */
 gchar **fs_statusview_recent_blocks (void);
+
+/* The Threat Intel page read a new blocklist state: the verdict card
+ * says it again (fs_intelview_summary). */
+void fs_statusview_intel_changed (void);
 
 G_END_DECLS
 

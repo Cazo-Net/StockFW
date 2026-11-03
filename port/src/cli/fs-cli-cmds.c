@@ -9,6 +9,8 @@
 #include "core/fs-copilot.h"
 #include "core/fs-eventlog.h"
 #include "core/fs-eventstore.h"
+#include "core/fs-intel.h"
+#include "core/fs-health.h"
 #include "core/fs-service.h"
 #include "core/fs-json.h"
 #include "core/fs-netparse.h"
@@ -108,13 +110,20 @@ fs_cli_load_policy (gboolean *on_disk, gint *malformed)
 	return policy;
 }
 
+gint
+fs_cli_need_root (const gchar *what)
+{
+	fs_cli_error ("%s needs root privileges", what);
+	fs_cli_hint (FS_CLI_RIGHTS ", e.g. `" FS_CLI_SUDO "stockfw %s'",
+	             what);
+	return FS_EXIT_NEED_ROOT;
+}
+
 /* [ need_root ] -- the uniform refusal for privileged commands. */
 static gint
 need_root (const gchar *what)
 {
-	fs_cli_error ("%s needs root privileges", what);
-	fs_cli_hint ("run it with sudo, e.g. `sudo stockfw %s'", what);
-	return FS_EXIT_NEED_ROOT;
+	return fs_cli_need_root (what);
 }
 
 /* [ backend_context ]
@@ -158,6 +167,7 @@ hit_row_json (GString *out, const FsHit *hit)
 	fs_json_kv_str (out, "service", service);            g_string_append_c (out, ',');
 	fs_json_kv_str (out, "in", hit->in);                 g_string_append_c (out, ',');
 	fs_json_kv_str (out, "out", hit->out);               g_string_append_c (out, ',');
+	fs_json_kv_str (out, "rule", hit->rule);             g_string_append_c (out, ',');
 	fs_json_kv_bool (out, "blocked", fs_hit_is_blocked (hit));
 	g_string_append_c (out, '}');
 	g_free (service);
@@ -301,6 +311,11 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 		fs_json_kv_str (out, "apply_hold", hold);         g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "monitoring_available", root); g_string_append_c (out, ',');
 		fs_json_kv_uint (out, "connections", g_list_length (conns));
+		g_string_append_c (out, ',');
+		/* Threat intel: the state the kernel is in, never just the
+		 * configuration (design 6.6). */
+		fs_json_key (out, "intel");
+		fs_cli_intel_json (out, FALSE);
 		g_string_append (out, ",\"interfaces\":[");
 		for (GList *l = stats; l != NULL; l = l->next) {
 			FsIfaceStat *s = l->data;
@@ -382,6 +397,8 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 			printf ("  %-12s %s%d malformed rule%s skipped%s\n", "",
 			        fs_cli_amber (), malformed, malformed == 1 ? "" : "s",
 			        fs_cli_reset ());
+
+		fs_cli_intel_status_line ();
 
 		printf ("  %-12s %s\n", "Apply mode",
 		        hold != NULL ? "audit-only: applies are recorded, the "
@@ -593,7 +610,7 @@ policy_add (gint argc, gchar **argv)
 	FsRule *rule, *twin = NULL;
 	FsPolicy *policy;
 	gchar *csv, *summary;
-	gboolean ok;
+	gboolean ok, paired;
 
 	if (argc < 1 || !fs_cli_kind_parse (argv[0], &kind)) {
 		fs_cli_error (argc < 1 ? "policy add needs a rule kind"
@@ -720,12 +737,15 @@ policy_add (gint argc, gchar **argv)
 		return FS_EXIT_OK;
 	}
 
-	/* Ownership passes to the policy on success; on failure the store
-	 * is put back and the rules are ours to free. */
-	if (twin != NULL)
+	/* The policy stores copies (fs_policy_add), so the rules stay ours
+	 * to free whether the save works or not. */
+	paired = twin != NULL;
+	if (paired)
 		ok = fs_policy_add_persist_pair (policy, rule, twin);
 	else
 		ok = fs_policy_add_persist (policy, rule);
+	fs_rule_free (rule);
+	fs_rule_free (twin);
 
 	if (!ok) {
 		fs_cli_error ("could not save the policy in %s",
@@ -744,7 +764,7 @@ policy_add (gint argc, gchar **argv)
 
 		fs_json_kv_bool (out, "added", TRUE);           g_string_append_c (out, ',');
 		fs_json_kv_str (out, "kind", fs_cli_kind_name (kind)); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "both_directions", twin != NULL); g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "both_directions", paired); g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "applied", FALSE);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
@@ -752,7 +772,7 @@ policy_add (gint argc, gchar **argv)
 	} else if (!fs_cli.quiet) {
 		printf ("%s+%s %s %s%s\n", fs_cli_green (), fs_cli_reset (),
 		        fs_cli_kind_name (kind), summary,
-		        twin != NULL ? "  (and its opposite direction)" : "");
+		        paired ? "  (and its opposite direction)" : "");
 		printf ("%sSaved in %s.  Not live yet: run `sudo stockfw apply'.%s\n",
 		        fs_cli_dim (), fs_util_rules_dir (), fs_cli_reset ());
 	}
@@ -986,15 +1006,91 @@ fs_cli_cmd_apply (gint argc, gchar **argv)
 
 /* --------------------------------------------------------- start / stop */
 
+/* [ intel_follow ]
+ * The threat-intel blocklists follow the user's Stop and Start (design
+ * 6.5): after the firewall stopped they are removed and recorded as
+ * suspended (fs_intel_suspend); after it started they are applied again
+ * through the gate, under the same hold as any apply (fs_intel_resume).
+ * Nothing happens where no list was ever turned on.  Appends an "intel"
+ * member to `json' when given, else prints; FALSE when the blocklists
+ * did not follow. */
+static gboolean
+intel_follow (gboolean start, GString *json)
+{
+	const FsBackend *backend = fs_backend ();
+	FsIntelOutcome *o = NULL;
+	GError *error = NULL;
+	GString *notes = g_string_new (NULL);
+	const gchar *result;
+	gboolean ok;
+
+	if (start) {
+		o = fs_intel_resume (backend, "cli", fs_apply_hold_reason (),
+		                     &error);
+		ok = error == NULL && (o == NULL || o->result != FS_APPLY_FAILED);
+		if (o == NULL)
+			result = error != NULL ? "failed" : "none";
+		else if (o->held)
+			result = "held";
+		else
+			result = o->result == FS_APPLY_OK ? "applied" : "failed";
+	} else {
+		ok = fs_intel_suspend (backend, "cli", &error);
+		result = ok ? "suspended" : "failed";
+	}
+	for (guint i = 0; o != NULL && o->notes != NULL && i < o->notes->len;
+	     i++)
+		g_string_append_printf (notes, "%s\n",
+		                        (gchar *) g_ptr_array_index (o->notes, i));
+
+	if (json != NULL) {
+		g_string_append_c (json, ',');
+		fs_json_key (json, "intel");
+		g_string_append_c (json, '{');
+		fs_json_kv_bool (json, "ok", ok);
+		g_string_append_c (json, ',');
+		fs_json_kv_str (json, "result", result);
+		g_string_append_c (json, ',');
+		fs_json_kv_str (json, "hold", o != NULL ? o->hold_reason : NULL);
+		g_string_append_c (json, ',');
+		fs_json_kv_str (json, "error", error ? error->message : NULL);
+		g_string_append_c (json, ',');
+		fs_json_key (json, "notes");
+		append_lines_json (json, notes->str);
+		g_string_append_c (json, '}');
+	} else if (!ok) {
+		fs_cli_error ("the blocklists could not be %s: %s",
+		              start ? "applied" : "removed",
+		              error != NULL ? error->message
+		                            : FS_CLI_LIVE " does not hold "
+		                              "them");
+		print_notes (notes->str);
+	} else if (o != NULL && o->held) {
+		printf ("%snote:%s blocklists not applied: %s\n", fs_cli_amber (),
+		        fs_cli_reset (), o->hold_reason);
+	} else if (o != NULL) {
+		if (!fs_cli.quiet)
+			printf ("Blocklists applied (%u list%s).\n", o->sets,
+			        o->sets == 1 ? "" : "s");
+		print_notes (notes->str);
+	}
+
+	g_string_free (notes, TRUE);
+	g_clear_error (&error);
+	fs_intel_outcome_free (o);
+	return ok;
+}
+
 static gint
 start_or_stop (gint argc, gboolean start)
 {
 	FsPolicy *policy;
 	FsSettings *settings;
 	GError *error = NULL;
-	gboolean ok, on_disk = FALSE;
+	gboolean ok, intel_ok = TRUE, on_disk = FALSE;
 	gint malformed = 0;
 	gchar *notes;
+	GString *out = NULL;
 
 	if (argc > 1) {
 		fs_cli_error ("%s takes no arguments", start ? "start" : "stop");
@@ -1100,16 +1196,12 @@ start_or_stop (gint argc, gboolean start)
 
 report:
 	if (fs_cli.json) {
-		GString *out = g_string_new ("{");
-
+		out = g_string_new ("{");
 		fs_json_kv_bool (out, "ok", ok);  g_string_append_c (out, ',');
 		fs_json_kv_str (out, "error", error ? error->message : NULL);
 		g_string_append_c (out, ',');
 		fs_json_key (out, "notes");
 		append_lines_json (out, notes);
-		g_string_append_c (out, '}');
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
 	} else if (ok) {
 		if (!fs_cli.quiet)
 			printf ("Firewall %s.\n", start ? "started" : "stopped");
@@ -1120,12 +1212,23 @@ report:
 		              error ? error->message : "unknown error");
 	}
 
+	/* Only once the firewall itself did what was asked: a Start that
+	 * failed applies no blocklist, a Stop that failed removes none. */
+	if (ok)
+		intel_ok = intel_follow (start, out);
+
+	if (out != NULL) {
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	}
+
 	g_clear_error (&error);
 	g_free (notes);
 	fs_settings_free (settings);
 	fs_policy_free (policy);
 
-	return ok ? FS_EXIT_OK : FS_EXIT_FAILURE;
+	return ok && intel_ok ? FS_EXIT_OK : FS_EXIT_FAILURE;
 }
 
 gint fs_cli_cmd_start (gint argc, gchar **argv) { return start_or_stop (argc, TRUE); }
@@ -1649,12 +1752,26 @@ fs_cli_log_history (guint max_lines, gint64 *complete_from, GError **error)
 	for (guint i = 0; lines[i] != NULL; i++) {
 		FsHit parsed = { 0 };
 		FsHit *hit;
+		gchar *intel_id = NULL;
 
-		if (!fs_netparse_log_line (lines[i], &parsed, NULL))
+		/* A threat-intel block, read as the backend's live feed reads
+		 * it: kept only when <id> is a set of the rule set StockFW
+		 * applied [S17.3], and named after its list. */
+		if (fs_netparse_intel_line (lines[i], &parsed, NULL, &intel_id)) {
+			if (!fs_intel_applied_has (intel_id)) {
+				g_free (intel_id);
+				fs_netparse_clear_hit (&parsed);
+				continue;
+			}
+			fs_netparse_name_blocked (&parsed);
+			parsed.rule = fs_intel_rule_text (intel_id);
+			g_free (intel_id);
+		} else if (fs_netparse_log_line (lines[i], &parsed, NULL)) {
+			fs_netparse_name_by_verdict (&parsed,
+			                             fs_netparse_log_verdict (lines[i]));
+		} else {
 			continue;
-
-		fs_netparse_name_by_verdict (&parsed,
-		                             fs_netparse_log_verdict (lines[i]));
+		}
 		hit = fs_hit_new ();
 		*hit = parsed;          /* the fields move into the heap hit */
 		g_ptr_array_add (hits, hit);
@@ -1694,7 +1811,7 @@ hit_passes (const FsEventQuery *query, const FsHit *hit)
 static gchar **
 hit_row (const FsHit *hit)
 {
-	gchar **row = g_new0 (gchar *, 9);
+	gchar **row = g_new0 (gchar *, 10);
 	gboolean blocked = fs_hit_is_blocked (hit);
 	gchar *service = fs_hit_service_name (hit);
 
@@ -1708,6 +1825,8 @@ hit_row (const FsHit *hit)
 	row[5] = g_strdup (hit->port ? hit->port : "-");
 	row[6] = service;
 	row[7] = g_strdup (hit->protocol ? hit->protocol : "-");
+	/* Why it was dropped, when the log says: "Threat intel: <list>". */
+	row[8] = g_strdup (hit->rule != NULL && *hit->rule ? hit->rule : "-");
 
 	return row;
 }
@@ -1730,11 +1849,12 @@ print_hit (const FsHit *hit, EventsState *st)
 		gchar **row = hit_row (hit);
 		gboolean blocked = fs_hit_is_blocked (hit);
 
-		printf ("%s%s%s  %s%-7s%s  %-3s  %-15s → %-15s  %-5s  %s/%s\n",
+		printf ("%s%s%s  %s%-7s%s  %-3s  %-15s → %-15s  %-5s  %s/%s%s%s\n",
 		        fs_cli_dim (), row[0], fs_cli_reset (),
 		        blocked ? fs_cli_red () : fs_cli_green (), row[1],
 		        fs_cli_reset (), row[2], row[3], row[4], row[5], row[6],
-		        row[7]);
+		        row[7], hit->rule != NULL && *hit->rule ? "  " : "",
+		        hit->rule != NULL && *hit->rule ? hit->rule : "");
 		g_strfreev (row);
 	}
 
@@ -2001,7 +2121,7 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 		} else {
 			static const gchar *headers[] = {
 				"TIME", "VERDICT", "DIR", "SOURCE", "DESTINATION",
-				"PORT", "SERVICE", "PROTO"
+				"PORT", "SERVICE", "PROTO", "RULE"
 			};
 			GPtrArray *rows = g_ptr_array_new_with_free_func (
 				(GDestroyNotify) g_strfreev);
@@ -2013,7 +2133,7 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 
 			st.printed = rows->len;
 			if (rows->len > 0)
-				fs_cli_table (headers, 8, rows, 40);
+				fs_cli_table (headers, 9, rows, 40);
 			g_ptr_array_unref (rows);
 
 			if (st.printed == 0 && !fs_cli.quiet)
@@ -2291,4 +2411,233 @@ fs_cli_cmd_interfaces (gint argc, gchar **argv)
 	g_list_free_full (now, (GDestroyNotify) fs_iface_stat_free);
 
 	return FS_EXIT_OK;
+}
+
+/* ------------------------------------------------------------- copilot */
+
+/* "checks":[{probe, before, after}, ...]: a fix's What-If checks. */
+static void
+health_checks_json (GString *out, const GPtrArray *checks)
+{
+	g_string_append (out, "\"checks\":[");
+	for (guint k = 0; checks != NULL && k < checks->len; k++) {
+		const FsHealthCheck *c = g_ptr_array_index (checks, k);
+
+		if (k > 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "probe", c->probe);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "before", fs_whatif_verdict_name (c->before));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "after", fs_whatif_verdict_name (c->after));
+		g_string_append_c (out, '}');
+	}
+	g_string_append_c (out, ']');
+}
+
+/* [ health_json ] -- one schema, shared with the dashboard if it ever
+ * serves it: version, the rule count, the platform model, findings. */
+static void
+health_json (GString *out, const GPtrArray *findings, guint rules,
+             FsWhatIfPlatform platform)
+{
+	g_string_append (out, "{\"version\":1,");
+	fs_json_kv_uint (out, "policy_rules", rules);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "platform",
+	                platform == FS_WHATIF_WINDOWS_BLOCK_WINS
+	                ? "windows-block-wins" : "linux-first-match");
+	g_string_append (out, ",\"findings\":[");
+	for (guint i = 0; i < findings->len; i++) {
+		const FsHealthFinding *f = g_ptr_array_index (findings, i);
+
+		if (i > 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "kind", fs_health_kind_name (f->kind));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "severity",
+		                fs_health_severity_name (f->severity));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "title", f->title);
+		g_string_append (out, ",\"rule\":{");
+		fs_json_kv_str (out, "kind",
+		                fs_health_rule_kind_name ((FsRuleKind) f->policy_kind));
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "index", (guint64) MAX (f->policy_index, 0));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "csv", f->rule_csv);
+		g_string_append (out, "},");
+		if (f->other_csv != NULL && f->other_kind >= 0) {
+			g_string_append (out, "\"other\":{");
+			fs_json_kv_str (out, "kind", fs_health_rule_kind_name (
+				(FsRuleKind) f->other_kind));
+			g_string_append_c (out, ',');
+			fs_json_kv_uint (out, "index",
+			                 (guint64) MAX (f->other_index, 0));
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "csv", f->other_csv);
+			g_string_append (out, "},");
+		}
+		fs_json_kv_str (out, "why", f->why);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "evidence", f->evidence);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "whatif", f->whatif_line);
+		g_string_append (out, ",\"fix\":");
+		if (f->fix == FS_HEALTH_FIX_NONE) {
+			g_string_append (out, "null,");
+			fs_json_kv_str (out, "no_fix_reason", f->no_fix_reason);
+			/* A fix that was tried and failed its checks: what it
+			 * would have changed and the checks, which the reason
+			 * points to. */
+			if (f->checks != NULL && f->checks->len > 0) {
+				g_string_append (out, ",\"tried\":{");
+				fs_json_kv_str (out, "before", f->fix_before);
+				g_string_append_c (out, ',');
+				fs_json_kv_str (out, "after", f->fix_after);
+				g_string_append_c (out, ',');
+				health_checks_json (out, f->checks);
+				g_string_append_c (out, '}');
+			}
+		} else {
+			g_string_append_c (out, '{');
+			fs_json_kv_str (out, "label", f->fix_label);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "before", f->fix_before);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "after", f->fix_after);
+			g_string_append_c (out, ',');
+			fs_json_kv_bool (out, "verified", f->verified);
+			g_string_append_c (out, ',');
+			health_checks_json (out, f->checks);
+			g_string_append_c (out, '}');
+		}
+		g_string_append_c (out, '}');
+	}
+	g_string_append (out, "]}");
+}
+
+/* [ copilot_health ]
+ * The Copilot page's policy health check on the saved policy, with the
+ * same What-If context `simulate' builds.  It writes nothing: a fix is
+ * printed with the checks that verify it, and making it stays with the
+ * desktop app (or `stockfw policy').  Exit 0 with no findings, 7 with
+ * findings, 2 when the policy cannot be read in full. */
+static gint
+copilot_health (void)
+{
+	gint malformed = 0;
+	FsPolicy *policy = fs_cli_load_policy (NULL, &malformed);
+	FsSettings *settings;
+	FsWhatIfContext *ctx;
+	GPtrArray *findings;
+	gchar *prefix;
+	guint rules = 0;
+	gint status;
+
+	if (malformed > 0) {
+		fs_cli_error ("%d policy row(s) could not be read, so the check "
+		              "would be incomplete", malformed);
+		fs_cli_hint ("see `stockfw policy list'");
+		fs_policy_free (policy);
+		return FS_EXIT_USAGE;
+	}
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		rules += policy->kinds[k]->len;
+
+	settings = fs_settings_new ();
+	fs_settings_load_prefs (settings);
+	ctx = fs_whatif_context_new (fs_whatif_native_platform (), policy,
+	                             settings);
+	fs_copilot_whatif_observe (ctx, fs_backend (), geteuid () == 0);
+	prefix = fs_health_lan_prefix_auto (fs_backend ());
+	findings = fs_health_check (ctx, prefix);
+	status = findings->len > 0 ? FS_EXIT_FINDINGS : FS_EXIT_OK;
+
+	if (fs_cli.json) {
+		GString *out = g_string_new (NULL);
+
+		health_json (out, findings, rules, ctx->platform);
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else {
+		printf ("%s%u rules checked, %u finding%s%s\n", fs_cli_bold (),
+		        rules, findings->len, findings->len == 1 ? "" : "s",
+		        fs_cli_reset ());
+		for (guint i = 0; i < findings->len; i++) {
+			const FsHealthFinding *f = g_ptr_array_index (findings, i);
+			const gchar *colour =
+				f->severity == FS_COPILOT_CRITICAL ? fs_cli_red ()
+				: f->severity == FS_COPILOT_WARNING ? fs_cli_amber ()
+				                                    : fs_cli_dim ();
+
+			printf ("\n%s[%s]%s %s\n", colour,
+			        fs_health_severity_name (f->severity),
+			        fs_cli_reset (), f->title);
+			printf ("  rule:  %s #%d: %s\n",
+			        fs_health_rule_kind_name ((FsRuleKind) f->policy_kind),
+			        f->policy_index + 1, f->rule_csv);
+			if (f->why != NULL)
+				printf ("  why:   %s\n", f->why);
+			if (f->fix != FS_HEALTH_FIX_NONE && f->verified) {
+				printf ("  fix:   %s: %s -> %s\n", f->fix_label,
+				        f->fix_before,
+				        f->fix_after != NULL ? f->fix_after : "(removed)");
+				for (guint k = 0; k < f->checks->len; k++) {
+					const FsHealthCheck *c =
+						g_ptr_array_index (f->checks, k);
+
+					printf ("         checked: %s: %s -> %s\n", c->probe,
+					        fs_whatif_verdict_name (c->before),
+					        fs_whatif_verdict_name (c->after));
+				}
+			} else if (f->no_fix_reason != NULL) {
+				printf ("  %sno fix offered: %s%s\n", fs_cli_dim (),
+				        f->no_fix_reason, fs_cli_reset ());
+				if (f->checks != NULL && f->checks->len > 0)
+					printf ("  tried: %s -> %s\n", f->fix_before,
+					        f->fix_after != NULL ? f->fix_after
+					                             : "(removed)");
+				for (guint k = 0; f->checks != NULL &&
+				                  k < f->checks->len; k++) {
+					const FsHealthCheck *c =
+						g_ptr_array_index (f->checks, k);
+
+					printf ("         checked: %s: %s -> %s\n", c->probe,
+					        fs_whatif_verdict_name (c->before),
+					        fs_whatif_verdict_name (c->after));
+				}
+			}
+		}
+		if (findings->len == 0)
+			printf ("No overlaps, conflicts or open risky services.\n");
+		printf ("%sA check only: nothing was written. Fixes are made on "
+		        "the Copilot page.%s\n", fs_cli_dim (), fs_cli_reset ());
+	}
+
+	g_ptr_array_unref (findings);
+	g_free (prefix);
+	fs_whatif_context_free (ctx);
+	fs_settings_free (settings);
+	fs_policy_free (policy);
+	return status;
+}
+
+/* [ fs_cli_cmd_copilot ] */
+gint
+fs_cli_cmd_copilot (gint argc, gchar **argv)
+{
+	if (argc < 2 || strcmp (argv[1], "health") != 0) {
+		fs_cli_error ("copilot needs a subcommand");
+		fs_cli_hint ("stockfw copilot health [--json]");
+		return FS_EXIT_USAGE;
+	}
+	if (argc > 2) {
+		fs_cli_error ("unexpected argument: %s", argv[2]);
+		fs_cli_hint ("stockfw copilot health [--json]");
+		return FS_EXIT_USAGE;
+	}
+	return copilot_health ();
 }

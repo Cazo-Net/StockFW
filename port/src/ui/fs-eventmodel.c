@@ -861,9 +861,20 @@ tm_get_value (GtkTreeModel *model, GtkTreeIter *iter, gint column,
 		g_value_set_string (value,
 		                    fs_eventstore_time_text (m->store, seq, buf));
 	} else if (column == FS_HITCOL_COLOR) {
-		g_value_set_static_string (
-			value, fs_eventstore_is_blocked (m->store, seq)
-			       ? "#cc0000" : "");
+		/* "" allowed, "#cc0000" blocked, or, for a block whose
+		 * event names the rule that blocked it ("Threat intel:
+		 * Spamhaus DROP (IPv4)"), that rule: the Events page
+		 * paints any non-empty value red and shows a rule after
+		 * the service. */
+		const gchar *rule = fs_eventstore_field (m->store, seq,
+		                                         FS_EV_RULE);
+
+		if (!fs_eventstore_is_blocked (m->store, seq))
+			g_value_set_static_string (value, "");
+		else if (rule != NULL && *rule != '\0')
+			g_value_set_static_string (value, rule);
+		else
+			g_value_set_static_string (value, "#cc0000");
 	} else {
 		/* Interned: lives as long as the event, which outlives
 		 * this value (nothing drops an event while a cell is

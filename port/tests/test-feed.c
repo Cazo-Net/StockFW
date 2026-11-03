@@ -132,7 +132,7 @@ test_catalog (void)
 	guint n = 0, recommended = 0;
 	const FsFeedInfo *cat = fs_feed_catalog (&n);
 	gboolean ids = TRUE, unique = TRUE, urls = TRUE, hosts = TRUE;
-	gboolean pages = TRUE, words = TRUE, finds = TRUE, includes = TRUE;
+	gboolean pages = TRUE, words = TRUE, credits = TRUE, finds = TRUE, includes = TRUE;
 	gboolean intervals = TRUE, licences = TRUE;
 	const FsFeedInfo *dshield;
 
@@ -178,6 +178,11 @@ test_catalog (void)
 		words = words && f->name != NULL && *f->name != '\0' &&
 		        f->category != NULL && *f->category != '\0' &&
 		        f->description != NULL && *f->description != '\0';
+		/* The attribution every surface shows next to the list;
+		 * Spamhaus asks for credit, and it names them. */
+		credits = credits && f->credit != NULL && *f->credit != '\0' &&
+		          (strncmp (f->id, "spamhaus", 8) != 0 ||
+		           strstr (f->credit, "Spamhaus") != NULL);
 		finds = finds && fs_feed_catalog_find (f->id) == f;
 		intervals = intervals && f->interval_hours >= 1 &&
 		            f->interval_hours <= 24 * 7;
@@ -212,6 +217,8 @@ test_catalog (void)
 	CHECK (pages, "every feed has an info page and a terms page, both "
 	       "https");
 	CHECK (words, "every feed has a name, a category and a description");
+	CHECK (credits, "every feed has a credit line; Spamhaus's names "
+	       "Spamhaus");
 	CHECK (finds, "fs_feed_catalog_find finds every id");
 	CHECK (fs_feed_catalog_find ("nope") == NULL &&
 	       fs_feed_catalog_find (NULL) == NULL,

@@ -12,7 +12,9 @@
  * Columns: the twelve string columns of the old GtkListStore, in the
  * same order (FsHitColumn), so cell functions and tests that read
  * COL_TIME .. COL_COLOR keep working.  COL_TIME is the stamp as the
- * backend gave it, COL_COLOR "#cc0000" for a blocked event.
+ * backend gave it, COL_COLOR "" for an allowed event and, for a
+ * blocked one, the rule that blocked it when the event names one
+ * ("Threat intel: ..."), else "#cc0000".
  *
  * Sorting (GtkTreeSortable): any column, either way; by default the
  * newest event first.  Ties go by time, then by arrival.

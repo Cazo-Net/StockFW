@@ -19,19 +19,28 @@
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
+#ifndef G_OS_WIN32
+#include <unistd.h>
+#endif
 
 #include "core/fs-backend.h"
 #include "core/fs-types.h"
+#include "core/fs-copilot.h"
+#include "core/fs-prefs.h"
+#include "core/fs-util.h"
 #include "ui/fs-hitview.h"
 #include "ui/fs-eventmodel.h"
 #include "core/fs-eventstore.h"
 #include "core/fs-eventlog.h"
-#include "core/fs-prefs.h"
 
 #ifndef G_OS_WIN32
 #include <signal.h>
 #include <sys/resource.h>
 #endif
+
+/* The app's Copilot (fs-app.c): the Events page feeds it. */
+extern FsCopilot *copilot;
+static gchar *log_file = NULL;
 
 static int failures = 0;
 
@@ -1416,6 +1425,84 @@ check_rows_churn (void)
 	fs_eventstore_free (s);
 }
 
+static void
+pump_ms (guint ms)
+{
+	gint64 until = g_get_monotonic_time () + (gint64) ms * 1000;
+
+	do {
+		while (gtk_events_pending ())
+			gtk_main_iteration_do (FALSE);
+		g_usleep (2000);
+	} while (g_get_monotonic_time () < until);
+}
+
+/* [ check_feed_order ]
+ * The Copilot sees every event, before the list's display filters:
+ * with "skip repeats" on, ten identical attempts are one row on the
+ * list and still ten events to the checks (a login storm or a timed
+ * check-in is exactly a run of identical lines).  Runs where the
+ * backend reads the scratch log (Linux as root). */
+static void
+check_feed_order (void)
+{
+	const gchar *line =
+		"Oct 11 14:30:00 kali kernel: [ 1234.5] STOCKFW-DROP "
+		"IN=eth0 OUT= SRC=192.0.2.10 DST=198.51.100.20 "
+		"PROTO=TCP SPT=54321 DPT=22 LEN=60";
+	gint64 deadline;
+	guint64 seen0;
+	guint rows0;
+	GString *ten;
+
+	if (log_file == NULL || !fs_hitview_active ()) {
+		printf ("skip: feed order (the backend is not reading the "
+		        "scratch log here)\n");
+		return;
+	}
+
+	/* Repeats skipped; foreign traffic listed, so the one row the ten
+	 * lines make is there to count. */
+	fs_prefs_set_bool (FS_PREFS_SKIP_REDUNDANT, TRUE);
+	fs_prefs_set_bool (FS_PREFS_SKIP_NOT_FOR_FIREWALL, FALSE);
+	fs_hitview_clear ();
+
+	/* Wake: until one line arrives, the tail may not be following. */
+	deadline = g_get_monotonic_time () + 8 * G_USEC_PER_SEC;
+	while (fs_copilot_events_seen (copilot) == 0 &&
+	       g_get_monotonic_time () < deadline) {
+		fs_util_append_to_file (log_file,
+			"Oct 11 14:29:59 kali kernel: STOCKFW-DROP IN=eth9 OUT= "
+			"SRC=0.0.0.0 DST=0.0.0.0 PROTO=TCP SPT=1 DPT=1", TRUE);
+		pump_ms (200);
+	}
+	CHECK (fs_copilot_events_seen (copilot) > 0,
+	       "feed order: the scratch log reaches the Copilot");
+
+	seen0 = fs_copilot_events_seen (copilot);
+	rows0 = fs_hitview_count ();
+	ten = g_string_new (NULL);
+	for (guint i = 0; i < 10; i++)
+		g_string_append_printf (ten, "%s%s", i > 0 ? "\n" : "", line);
+	fs_util_append_to_file (log_file, ten->str, TRUE);
+	g_string_free (ten, TRUE);
+
+	deadline = g_get_monotonic_time () + 8 * G_USEC_PER_SEC;
+	while (fs_copilot_events_seen (copilot) < seen0 + 10 &&
+	       g_get_monotonic_time () < deadline)
+		pump_ms (50);
+	pump_ms (200);
+
+	CHECK (fs_copilot_events_seen (copilot) == seen0 + 10,
+	       "feed order: with skip repeats on, 10 identical events still "
+	       "reach the Copilot as 10 (got %" G_GUINT64_FORMAT ")",
+	       fs_copilot_events_seen (copilot) - seen0);
+	CHECK (fs_hitview_count () == rows0 + 1,
+	       "feed order: and the list shows them as one row (got %u)",
+	       fs_hitview_count () - rows0);
+	fs_prefs_set_bool (FS_PREFS_SKIP_REDUNDANT, FALSE);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1468,6 +1555,18 @@ main (int argc, char **argv)
 		g_free (dir);
 	}
 
+	/* As root, a scratch kernel log the backend tails (its own
+	 * STOCKFW_LOG_FILE seam), so the feed-order check can put exact
+	 * lines in front of the real parser. */
+#ifndef G_OS_WIN32
+	if (geteuid () == 0) {
+		log_file = g_build_filename (config, "kern.log", NULL);
+		g_file_set_contents (log_file, "", 0, NULL);
+		g_setenv ("STOCKFW_LOG_FILE", log_file, TRUE);
+	}
+#endif
+	copilot = fs_copilot_new ();
+
 	page = fs_hitview_page ();
 
 	CHECK (fs_hitview_history_loaded () == 500 &&
@@ -1509,6 +1608,7 @@ main (int argc, char **argv)
 
 	check_list_behaviour (page);
 	check_filter_bar (page);
+	check_feed_order ();
 #ifndef G_OS_WIN32
 	check_history_failure (page);
 #endif

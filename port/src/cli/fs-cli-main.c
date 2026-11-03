@@ -187,9 +187,11 @@ static const gchar *main_help =
 "  apply [--dry-run]          Push the saved policy to the firewall (root)\n"
 "  start | stop               Start or stop the firewall (root)\n"
 "  simulate \"<traffic>\"       What-if: would this traffic be allowed or blocked?\n"
+"  copilot health             Check the policy for overlaps, conflicts, risky allows\n"
 "  events [-n N] [-f]         Recent firewall events; --history for saved ones\n"
 "  connections                Active TCP connections and their programs\n"
 "  interfaces [--watch]       Network adapters with traffic counters and rates\n"
+"  intel <action>             Threat-intel blocklists (stockfw help intel)\n"
 "  dashboard [--port N]       Serve the local web dashboard and open it\n"
 "  help [command]             Help for one command\n"
 "  version                    Print the version\n"
@@ -201,13 +203,15 @@ static const gchar *main_help =
 "  -h, --help    This help;  -V, --version  the version\n"
 "\n"
 "Exit status:\n"
-"  0  success          2  usage error           5  simulate: BLOCKED\n"
-"  1  failure          3  needs root privileges\n"
+"  0  success          2  usage error           5  simulate: BLOCKED;\n"
+"  1  failure          3  needs root privileges    intel lookup: blocked\n"
 "                                               6  simulate: DEPENDS\n"
+"                                               7  copilot health: findings\n"
 "\n"
 "Policy files live in ~/.stockfw (or /etc/stockfw when run as root) --\n"
 "the same files the desktop app edits.  Nothing here talks to the\n"
-"network: the dashboard listens on 127.0.0.1 only.\n";
+"network, except `stockfw intel update' downloading the blocklists you\n"
+"turned on; the dashboard listens on 127.0.0.1 only.\n";
 
 typedef struct
 {
@@ -273,13 +277,17 @@ static const CommandDef commands[] = {
 "off, and Sentinel blocks whose ten minutes ran out are left out.  The\n"
 "boot unit (stockfw.service) runs this at every boot.  When nothing was\n"
 "ever applied, the saved policy is started instead, and the start is\n"
-"refused if there is none or a line of it is malformed.  Needs root.\n" },
+"refused if there is none or a line of it is malformed.  Threat-intel\n"
+"blocklists that are turned on are applied again, through the same gate\n"
+"(audit-only mode holds them too); if they cannot be, the firewall still\n"
+"runs and the exit status is non-zero.  Needs root.\n" },
 
 	{ "stop", fs_cli_cmd_stop,
 "Usage: stockfw stop\n"
 "\n"
-"Removes StockFW's own chains.  Rules owned by Docker, libvirt or\n"
-"anything else are left alone.  Needs root.\n" },
+"Removes StockFW's own chains, and its threat-intel blocklists until\n"
+"the next start.  Rules owned by Docker, libvirt or anything else are\n"
+"left alone.  Needs root.\n" },
 
 	{ "simulate", fs_cli_cmd_simulate,
 "Usage: stockfw simulate \"<traffic>\" [--assume-running] [--json]\n"
@@ -299,6 +307,22 @@ static const CommandDef commands[] = {
 "  stockfw simulate \"allow ssh from 192.168.1.50 on port 22\"\n"
 "  stockfw simulate \"inbound rdp\"\n"
 "  stockfw simulate \"outbound tcp to 203.0.113.9 port 443\"\n" },
+
+	{ "copilot", fs_cli_cmd_copilot,
+"Usage: stockfw copilot health [--json]\n"
+"\n"
+"Runs the Copilot page's policy health check on the saved policy:\n"
+"rules that repeat another, rules another rule already covers, allows a\n"
+"deny makes unreachable, outbound allows that do nothing while outbound\n"
+"traffic is allowed, wide or risky inbound allows from anyone, and deny\n"
+"rules that reach no address family.  These are fixed rules, not a\n"
+"model.  Each fix is shown with the What-If checks that verify it, and\n"
+"one that does not verify is not offered.  It writes nothing: fixes\n"
+"are made on the Copilot page.  The local network a narrowing uses is\n"
+"the first adapter with a private IPv4 address.\n"
+"\n"
+"Exits 0 with no findings, 7 with findings, and 2 when the policy\n"
+"cannot be read in full.  In --json, rule.index counts from 0.\n" },
 
 	{ "events", fs_cli_cmd_events,
 "Usage: stockfw events [-n N] [-f|--follow] [--history] [--json]\n"
@@ -322,7 +346,7 @@ static const CommandDef commands[] = {
 "  --grep TEXT           a column of the Events list contains TEXT\n"
 "                        (any case): the time, direction, devices,\n"
 "                        port, addresses, length, ToS, protocol or\n"
-"                        service\n"
+"                        service, or the list that blocked it\n"
 "  --dir in|out          the direction\n"
 "  --proto P             TCP, UDP, ICMP...\n"
 "  --port P              443, 1000-2000 or 1000:2000\n"
@@ -348,12 +372,63 @@ static const CommandDef commands[] = {
 "current rate (measured over one second).  --watch refreshes every two\n"
 "seconds until Ctrl-C.  Alias: stockfw net\n" },
 
+	{ "intel", fs_cli_cmd_intel,
+"Usage: stockfw intel [status]                     State, and the lists turned on\n"
+"       stockfw intel feeds                        Every feed: on/off, licence,\n"
+"                                                  credit, entries, last update\n"
+"       stockfw intel terms FEED                   What turning FEED on means\n"
+"       stockfw intel enable ID [--direction D] [--accept-terms]\n"
+"       stockfw intel disable ID\n"
+"       stockfw intel on | off                     The master switch\n"
+"       stockfw intel add-feed NAME URL [--format F] [--direction D]\n"
+"       stockfw intel proxy [URL|none]             The download proxy\n"
+"       stockfw intel update [--feed ID] [--now] [--accept-shrink]\n"
+"                            [--accept-coverage] [--no-apply]\n"
+"       stockfw intel apply [--dry-run]            Load the lists into the kernel\n"
+"       stockfw intel clear                        Remove them from the kernel\n"
+"       stockfw intel import FILE --name NAME [--direction D]\n"
+"       stockfw intel lists | list show [ID]       Your own lists (and one's ranges)\n"
+"       stockfw intel remove ID                    A local list or custom feed\n"
+"       stockfw intel except | unexcept ADDRESS...  Never block / block again\n"
+"       stockfw intel exceptions\n"
+"       stockfw intel lookup ADDRESS               Which lists hold it; blocked?\n"
+"\n"
+"Blocklists of addresses known for attacks, botnets or abuse, blocked\n"
+"in the kernel before the policy sees a packet (Linux, nftables).  Every\n"
+"feed is off until you turn it on and accept its terms: `intel terms'\n"
+"says which host it is downloaded from, how often, what that host\n"
+"learns, and its licence.  With nothing turned on StockFW makes no\n"
+"network request at all.\n"
+"\n"
+"D is in (stops them connecting to you), out (stops you connecting to\n"
+"them) or both.  `intel list add' and `intel list remove' are the same\n"
+"as import and remove.  Changes to the configuration are saved and take\n"
+"effect with `intel apply'; `update' downloads the feeds that are due\n"
+"(--now: all of them) and, when the lists are enforced, the firewall\n"
+"runs and audit-only mode is off, enforces the new copies.  A copy that\n"
+"shrank to almost nothing or rolled back to an older date is refused\n"
+"unless --accept-shrink; one whose coverage jumped needs\n"
+"--accept-coverage.  Addresses this computer needs (its own network,\n"
+"gateways, DNS servers, SSH sessions, the download servers) are never\n"
+"blocked, and `apply' says which ones a list named.\n"
+"\n"
+"Downloads connect to each feed's host directly; behind a proxy, set it\n"
+"with `intel proxy http://HOST:PORT' ([intel] proxy= in intel.conf).\n"
+"A proxy with a user name or password is refused: curl's command line\n"
+"is readable by every local user.\n"
+"\n"
+"Exit status: 0 done, 1 failed (update: a feed failed or was refused;\n"
+"apply: the kernel refused), 2 usage (unknown id, terms not accepted),\n"
+"3 needs root, 5 lookup: a list blocks the address.  Audit-only mode\n"
+"holds `apply' (exit 0, nothing loaded).  `clear', like `stockfw stop',\n"
+"is not held.  `apply' and `clear' need root.\n" },
+
 	{ "dashboard", fs_cli_cmd_dashboard,
 "Usage: stockfw dashboard [--port N] [--no-open] [--json]\n"
 "\n"
 "Serves a live dashboard -- status, the Policy activity and Network I/O\n"
-"graphs, recent events, connections, the policy and the what-if\n"
-"simulator -- and opens it in your browser.\n"
+"graphs, recent events, connections, the policy, the threat-intel\n"
+"blocklists and the what-if simulator -- and opens it in your browser.\n"
 "\n"
 "Security: it listens on 127.0.0.1 only, every API call needs a token\n"
 "generated for this run (it is in the URL printed at start), requests\n"

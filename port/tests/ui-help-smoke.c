@@ -5,18 +5,20 @@
  * checks, each seen failing with its bug put back (tests/README.md):
  *
  *   H1  the app.help action and F1 on the main window open Help at
- *       the topic for the page shown; the sidebar's Help item too
+ *       the topic for the page shown (Threat Intel included); the
+ *       sidebar's Help item too
  *   H2  every topic renders, and shows every block it has; all markup
  *       parses, every help: link and related id resolves, no em dash
  *   H7  claims the code does not back are gone, and what it really
  *       does is said: what is logged on Linux, the Windows broadcast
  *       and reserved-address blocks, when an expired Sentinel block
  *       leaves the firewall, rule names, what the licence is
- *   H8  1.0.7 as merged: only threat intel (and country/ASN blocking)
- *       carries a "Not in this build" callout; What-If, the tray menu
- *       and its Help item, start at sign-in, one copy per user, the
- *       hidden start and the Linux boot service are described in the
- *       present tense, as the code does them
+ *   H8  1.0.7 as merged: threat intel (PR #18), What-If, the tray
+ *       menu and its Help item, start at sign-in, one copy per user,
+ *       the hidden start and the Linux boot service are described in
+ *       the present tense, as the code does them; the one "Not in
+ *       this build" callout left is on the threat-intel topic and is
+ *       about blocking by country or network owner (ASN)
  *   H3  search filters the topic list (and says when nothing matches);
  *       Enter opens the first topic found
  *   H4  links, related chips, Next, Back and Forward navigate
@@ -530,8 +532,8 @@ check_claims (void)
 		{ "windows", "<tt>StockFW-</tt> followed", "names start with",
 		  "ACC-6: rule names start with StockFW" },
 		{ "threat-intel", "Windows, and blocking by country",
-		  "Windows Firewall rules on Windows",
-		  "ACC-7: threat intel is planned for Windows too" },
+		  "Windows Firewall block rules in the group",
+		  "ACC-7: threat intel works on Windows too" },
 		{ "windows", "the one system setting StockFW changes besides",
 		  "turning profiles on or off",
 		  "ACC-8: StockFW also turns profiles on and off" },
@@ -560,9 +562,10 @@ check_claims (void)
 	}
 }
 
-/* H8: the features PR #14 and #17 brought into this build are
+/* H8: the features PR #14, #17 and #18 brought into this build are
  * described as present, in the words the code uses; only what is not
- * in it carries the "Not in this build" callout. */
+ * in it (blocking by country or network owner) carries the "Not in
+ * this build" callout. */
 static void
 check_merged_107 (void)
 {
@@ -599,6 +602,40 @@ check_merged_107 (void)
 		{ "cli", "says blocked.",
 		  "6 simulate says it depends",
 		  "stockfw simulate exits 6 for DEPENDS" },
+		/* Threat intel (PR #18) is in this build. */
+		{ "threat-intel", "not available in this build",
+		  "<b>Accept and turn on</b>",
+		  "threat intel: turning a feed on and its terms dialog" },
+		{ "threat-intel", "What is planned",
+		  "<i>would be blocked once in force</i>",
+		  "threat intel: a lookup says blocked only when in force" },
+		{ "threat-intel", "Until then", "<tt>inet stockfw_intel</tt>",
+		  "threat intel: the Linux nftables table" },
+		{ "threat-intel", "planned for both platforms",
+		  "<b>StockFW Threat Intel</b>",
+		  "threat intel: the Windows Firewall rule group" },
+		{ "threat-intel", "comes later",
+		  "does not count what each rule blocks",
+		  "threat intel: Windows keeps no per-rule counts" },
+		{ "threat-intel", "Safeguards planned",
+		  "<b>Accept smaller list</b>",
+		  "threat intel: the update judge refuses a suspicious copy" },
+		{ "threat-intel", "makes no network connection for them",
+		  "<tt>/api/intel</tt>",
+		  "threat intel: the CLI and the dashboard" },
+		{ "events", "Coming in", "offers <b>Add exception</b>",
+		  "Events names the list on Linux and offers an exception" },
+		{ "whatif", "Blocked by threat intel",
+		  "does not consult the",
+		  "What-If says it does not consult the blocklists" },
+		{ "linux", "Coming in", "<tt>inet stockfw_intel</tt>",
+		  "Linux notes name the blocklists' nftables table" },
+		{ "windows", "Coming in", "<b>StockFW Threat Intel</b>",
+		  "Windows notes name the blocklists' rule group" },
+		{ "cli", "Coming in", "<tt>stockfw intel lookup</tt> and an "
+		  "address", "the cli topic lists stockfw intel" },
+		{ "background", "Coming in", "checks once an hour for",
+		  "background says when the blocklists update" },
 	};
 	guint soon_elsewhere = 0, soon_intel = 0;
 
@@ -626,24 +663,70 @@ check_merged_107 (void)
 			gboolean says = b->text != NULL &&
 			                strstr (b->text, "1.0.7") != NULL;
 
+			/* Outside the callout, no sentence may say a feature
+			 * is missing or on its way, whatever its case. */
+			if (!soon && b->text != NULL) {
+				gchar *low = g_ascii_strdown (b->text, -1);
+
+				if (strstr (low, "in this build") != NULL ||
+				    strstr (low, "planned") != NULL ||
+				    strstr (low, "coming in") != NULL ||
+				    strstr (low, "coming soon") != NULL)
+					says = TRUE;
+				g_free (low);
+			}
+
 			if (soon && strcmp (t->id, "threat-intel") == 0)
 				soon_intel++;
 			else if (soon || says)
 				soon_elsewhere++;
 		}
-		if (strstr (t->summary, "Coming") != NULL)
-			soon_elsewhere++;
+		{
+			gchar *low = g_ascii_strdown (t->summary, -1);
+
+			if (strstr (low, "coming") != NULL ||
+			    strstr (low, "planned") != NULL ||
+			    strstr (low, "in this build") != NULL)
+				soon_elsewhere++;
+			g_free (low);
+		}
 	}
 	CHECK (soon_elsewhere == 0 && soon_intel == 1,
-	       "[H8] only threat intel is marked as not in this build (%u "
-	       "callouts or mentions of 1.0.7 elsewhere)", soon_elsewhere);
+	       "[H8] one \"Not in this build\" callout, on the threat-intel "
+	       "topic (%u callouts, or 1.0.7, planned or coming wording, "
+	       "elsewhere, %u there)",
+	       soon_elsewhere, soon_intel);
 	{
-		gchar *intel = topic_text ("threat-intel");
+		const FsHelpTopic *t = fs_help_topic_find ("threat-intel");
+		const FsHelpBlock *soon = NULL;
 
-		CHECK (strstr (intel, "not available in this build") != NULL,
-		       "[H8] threat intel and country/ASN blocking say they are "
-		       "not available in this build");
-		g_free (intel);
+		for (const FsHelpBlock *b = t->blocks; b->kind != FS_HELP_END;
+		     b++)
+			if (b->kind == FS_HELP_SOON)
+				soon = b;
+		gchar *low = soon != NULL ? g_ascii_strdown (soon->text, -1)
+		                          : g_strdup ("");
+		const gchar *stop = strchr (low, '.');
+		gchar *first = g_strndup (low, stop != NULL
+		                               ? (gsize) (stop - low)
+		                               : strlen (low));
+
+		/* The sentence that says "not in this build" names country
+		 * and ASN blocking and nothing about threat intel; no part
+		 * of the callout names the blocklists. */
+		CHECK (soon != NULL && strstr (first, "country") != NULL
+		       && strstr (first, "(asn)") != NULL
+		       && strstr (first, "not in this build") != NULL
+		       && strstr (first, "intel") == NULL
+		       && strstr (low, "blocklist") == NULL,
+		       "[H8] that callout is about country and ASN blocking "
+		       "only, not threat intel");
+		g_free (first);
+		g_free (low);
+		CHECK (strstr (t->summary, "available") == NULL
+		       && strstr (t->summary, "build") == NULL,
+		       "[H8] the threat-intel summary describes it as present "
+		       "(%s)", t->summary);
 	}
 	{
 		/* This build is 1.0.7: the callout's heading must not
@@ -880,7 +963,7 @@ check_search (void)
 	CHECK (rows_listed (win) == 0 && gtk_widget_get_visible (empty),
 	       "[H3] a word in no topic lists none and says so");
 
-	gtk_entry_set_text (GTK_ENTRY (search), "blocklist");
+	gtk_entry_set_text (GTK_ENTRY (search), "feodo");
 	pump ();
 	g_signal_emit_by_name (search, "activate");
 	pump ();
@@ -966,8 +1049,9 @@ check_links (void)
 	       "[H4] Alt+Left goes back");
 
 	click (win, "help-next");
-	CHECK (g_strcmp0 (fs_help_current_topic (), "copilot") == 0,
-	       "[H4] Next opens the topic after Policy (%s)",
+	CHECK (g_strcmp0 (fs_help_current_topic (), "threat-intel") == 0,
+	       "[H4] Next opens the topic after Policy, Threat intel as in "
+	       "the main window's sidebar (%s)",
 	       fs_help_current_topic ());
 
 	fs_help_show (NULL, "prefs-icmp");
@@ -1040,6 +1124,38 @@ check_opening (void)
 	pump ();
 	CHECK (fs_help_window () == first && count_toplevels ("fs-help") == 1,
 	       "[H6] asking twice more still leaves one Help window");
+	close_help ();
+
+	/* Every page has its own topic: Threat Intel sits between Policy
+	 * and Copilot, so a table that forgot it shifts Copilot and Trust
+	 * too. */
+	{
+		static const struct { gint page; const gchar *id; } pages[] = {
+			{ FS_PAGE_OVERVIEW, "overview" },
+			{ FS_PAGE_EVENTS,   "events" },
+			{ FS_PAGE_ACTIVITY, "activity" },
+			{ FS_PAGE_POLICY,   "policy" },
+			{ FS_PAGE_INTEL,    "threat-intel" },
+			{ FS_PAGE_COPILOT,  "copilot" },
+			{ FS_PAGE_TRUST,    "trust" },
+		};
+
+		CHECK (G_N_ELEMENTS (pages) == FS_PAGE_COUNT,
+		       "[H1] every page is checked (%d pages)", FS_PAGE_COUNT);
+		for (guint i = 0; i < G_N_ELEMENTS (pages); i++)
+			CHECK (g_strcmp0 (fs_help_topic_for_page (pages[i].page),
+			                  pages[i].id) == 0,
+			       "[H1] the page %d opens the %s topic (%s)",
+			       pages[i].page, pages[i].id,
+			       fs_help_topic_for_page (pages[i].page));
+	}
+	fs_app_show_page (FS_PAGE_INTEL);
+	pump ();
+	send_key (main_window, GDK_KEY_F1, 0);
+	CHECK (fs_help_window () != NULL
+	       && g_strcmp0 (fs_help_current_topic (), "threat-intel") == 0,
+	       "[H1] F1 on the Threat Intel page opens the threat-intel topic "
+	       "(%s)", fs_help_current_topic ());
 	close_help ();
 
 	fs_app_show_page (FS_PAGE_ACTIVITY);

@@ -45,10 +45,17 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-autostart.h"
 #include "core/fs-blocktally.h"
 #include <glib/gstdio.h>
+#include <stdlib.h>
 #ifndef G_OS_WIN32
 #include <unistd.h>
 #endif
 #include "core/fs-i18n.h"
+#include "core/fs-intelset.h"
+#include "core/fs-intelwin.h"
+#include "core/fs-winstore.h"
+#include "core/fs-intel.h"
+#include "core/fs-hostnet.h"
+#include <stdlib.h>
 
 static int failures = 0;
 
@@ -1678,14 +1685,48 @@ static void test_sentinel_beacon (void)
 	       "six metronomic contacts raise exactly one beacon");
 
 	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	CHECK (beacon != NULL && beacon->severity == FS_COPILOT_WARNING,
+	       "the beacon is a Warning, not Critical: timing alone is not proof");
+	CHECK (beacon != NULL && !beacon->auto_applicable &&
+	       beacon->withheld != NULL &&
+	       strstr (beacon->withheld, "waits for 8 contacts") != NULL,
+	       "at six contacts it is report-only, and says it waits for 8");
+	CHECK (beacon != NULL && beacon->evidence != NULL &&
+	       beacon->evidence->len == 6 &&
+	       ((FsEvidence *) g_ptr_array_index (beacon->evidence, 5))->when -
+	       ((FsEvidence *) g_ptr_array_index (beacon->evidence, 4))->when == 60,
+	       "the evidence holds the six contacts, 60 s apart");
+	CHECK (beacon != NULL && beacon->why != NULL &&
+	       strstr (beacon->why, "0.30") != NULL &&
+	       strstr (beacon->why, "6 contacts") != NULL,
+	       "why: the numbers next to the limits (\"%s\")",
+	       beacon != NULL && beacon->why != NULL ? beacon->why : "");
+	CHECK (beacon != NULL && beacon->benign != NULL &&
+	       strstr (beacon->benign, "Update checks") != NULL &&
+	       strstr (beacon->description, "so do update checks") != NULL,
+	       "the text says what else looks like this");
+	CHECK (beacon != NULL &&
+	       g_strcmp0 (beacon->whatif_line,
+	                  "outbound tcp port 8443 to 203.0.113.9") == 0,
+	       "Ask What-If gets the matching line");
+
+	/* Contacts 7 and 8: the same finding, now eligible for the block. */
+	for (i = 6; i < 8; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 1,
+	       "contacts 7 and 8 update the finding, they add no second one");
+	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	CHECK (beacon != NULL && beacon->count >= 2 &&
+	       beacon->evidence->len == 8,
+	       "the updated finding holds all eight contacts");
 	if (beacon != NULL) {
 		FsPolicy *policy = fs_policy_new ();
 		FsRule *probe;
 
-		CHECK (beacon->severity == FS_COPILOT_CRITICAL,
-		       "the beacon is CRITICAL");
-		CHECK (beacon->auto_applicable && beacon->rule_csv != NULL,
-		       "the beacon carries an auto-applicable rule");
+		CHECK (beacon->auto_applicable && beacon->rule_csv != NULL &&
+		       beacon->withheld == NULL,
+		       "at eight contacts the beacon carries an auto-applicable rule");
 		CHECK (beacon->rule_kind == FS_RULE_OUTBOUND_DENY_TO,
 		       "the rule parses as an outbound deny, not a service allow");
 
@@ -1701,7 +1742,7 @@ static void test_sentinel_beacon (void)
 	}
 
 	/* More of the same must not stack reports. */
-	for (i = 6; i < 9; i++)
+	for (i = 8; i < 11; i++)
 		fs_copilot_feed_event_at (copilot, &hit,
 		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
 	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 1,
@@ -1752,6 +1793,69 @@ static void test_sentinel_beacon (void)
 	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 0,
 	       "inbound traffic is not scored as an egress beacon");
 	fs_copilot_free (copilot);
+	hit.direction = "Out";
+
+	/* Two programs polling one server are two series: interleaved,
+	 * each is every 60 s; mixed together they would be every 30 s. */
+	copilot = fs_copilot_new ();
+	for (i = 0; i < 6; i++) {
+		hit.service = "agent-a.exe";
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+		hit.service = "agent-b.exe";
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) (i * 60 + 30) * G_USEC_PER_SEC);
+	}
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 2,
+	       "two apps polling one destination are two series (got %u)",
+	       count_insights (copilot, FS_INSIGHT_BEACON));
+	fs_copilot_free (copilot);
+	hit.service = "unknown";
+
+	/* Time sync is periodic by nature: port 123 is never timed. */
+	copilot = fs_copilot_new ();
+	hit.port = "123";
+	hit.protocol = "UDP";
+	for (i = 0; i < 10; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 64 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 0,
+	       "NTP (port 123) is never reported as a beacon");
+	fs_copilot_free (copilot);
+
+	/* DNS to this computer's resolvers is never timed; DNS to another
+	 * server is. */
+	copilot = fs_copilot_new ();
+	fs_copilot_set_resolvers (copilot, "# test\nnameserver 203.0.113.9\n");
+	hit.port = "53";
+	for (i = 0; i < 8; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 0,
+	       "DNS to a configured resolver is not a beacon");
+	hit.destination = "198.51.100.53";
+	for (i = 0; i < 8; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 1,
+	       "DNS to some other server is timed like anything else");
+	fs_copilot_free (copilot);
+
+	/* A beacon to an address a block list names is Critical. */
+	copilot = fs_copilot_new ();
+	hit.port = "8443";
+	hit.protocol = "TCP";
+	hit.destination = "203.0.113.66";
+	hit.rule = "Threat intel: Spamhaus DROP";
+	for (i = 0; i < 6; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	CHECK (beacon != NULL && beacon->severity == FS_COPILOT_CRITICAL &&
+	       strstr (beacon->why, "block list") != NULL,
+	       "a beacon to a listed address is Critical and says why");
+	fs_copilot_free (copilot);
+	hit.rule = NULL;
 }
 
 static void test_sentinel_fanout (void)
@@ -1767,7 +1871,10 @@ static void test_sentinel_fanout (void)
 	hit.source    = "192.168.1.7";
 	hit.port      = "443";
 	hit.protocol  = "TCP";
-	hit.service   = "HTTPS";
+	/* A program's name, as a Windows log carries it: a port's service
+	 * name ("HTTPS") stands for every program on the port, and only
+	 * refused hosts count for it (test_copilot_review_fixes, F10). */
+	hit.service   = "scanner.exe";
 
 	/* 60 distinct hosts inside 60 seconds: a scan. */
 	for (i = 0; i < 60; i++) {
@@ -1783,8 +1890,12 @@ static void test_sentinel_fanout (void)
 		const FsInsight *fo = find_insight (copilot, FS_INSIGHT_FANOUT);
 
 		if (fo != NULL) {
-			CHECK (fo->severity == FS_COPILOT_CRITICAL,
-			       "the fan-out is CRITICAL");
+			CHECK (fo->severity == FS_COPILOT_WARNING,
+			       "the fan-out is a Warning");
+			CHECK (fo->why != NULL && strstr (fo->why, "60 distinct") &&
+			       fo->application != NULL &&
+			       strstr (fo->title, "scanner.exe") != NULL,
+			       "it names the program and the numbers");
 			CHECK (fo->rule_csv == NULL && !fo->auto_applicable,
 			       "fan-out carries no guessed rule to auto-apply");
 		}
@@ -1835,6 +1946,24 @@ static void test_sentinel_fanout (void)
 	}
 	CHECK (count_insights (copilot, FS_INSIGHT_FANOUT) == 1,
 	       "10 distinct blocked hosts raise a fan-out");
+	fs_copilot_free (copilot);
+
+	/* Per program: two apps reaching 40 hosts each are not one app
+	 * reaching 80. */
+	copilot = fs_copilot_new ();
+	for (i = 0; i < 40; i++) {
+		g_snprintf (dest, sizeof dest, "203.0.113.%d", i);
+		hit.destination = dest;
+		hit.service = "browser.exe";
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * G_USEC_PER_SEC);
+		g_snprintf (dest, sizeof dest, "198.51.100.%d", i);
+		hit.service = "mail.exe";
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * G_USEC_PER_SEC);
+	}
+	CHECK (count_insights (copilot, FS_INSIGHT_FANOUT) == 0,
+	       "two apps reaching 40 hosts each do not trip the 60-host limit");
 	fs_copilot_free (copilot);
 }
 
@@ -1986,7 +2115,7 @@ static void test_sentinel_auto_gates (void)
 		c = fs_copilot_new ();
 		hit.service     = "stranger.exe";
 		hit.destination = "203.0.113.50";
-		for (i = 0; i < 6; i++)
+		for (i = 0; i < 8; i++)
 			fs_copilot_feed_event_at (c, &hit,
 			                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
 		b = find_insight (c, FS_INSIGHT_BEACON);
@@ -1998,7 +2127,7 @@ static void test_sentinel_auto_gates (void)
 		c = fs_copilot_new ();
 		hit.service     = "lan.exe";
 		hit.destination = "192.168.77.50";
-		for (i = 0; i < 6; i++)
+		for (i = 0; i < 8; i++)
 			fs_copilot_feed_event_at (c, &hit,
 			                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
 		b = find_insight (c, FS_INSIGHT_BEACON);
@@ -2011,7 +2140,7 @@ static void test_sentinel_auto_gates (void)
 		c = fs_copilot_new ();
 		hit.service     = "svchost.exe";
 		hit.destination = "224.0.0.252";
-		for (i = 0; i < 6; i++)
+		for (i = 0; i < 8; i++)
 			fs_copilot_feed_event_at (c, &hit,
 			                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
 		b = find_insight (c, FS_INSIGHT_BEACON);
@@ -2032,7 +2161,7 @@ static void test_sentinel_auto_gates (void)
 			fs_copilot_feed_event_at (c, &hit,
 			                          t0 + (gint64) i * 3600 * G_USEC_PER_SEC);
 		hit.port = "443";
-		for (i = 0; i < 6; i++)
+		for (i = 0; i < 8; i++)
 			fs_copilot_feed_event_at (
 				c, &hit,
 				t0 + (gint64) 3 * 3600 * G_USEC_PER_SEC +
@@ -2042,6 +2171,77 @@ static void test_sentinel_auto_gates (void)
 		       "the established CDN beacon is still reported");
 		CHECK (b == NULL || !b->auto_applicable,
 		       "an established baseline destination is not auto-blockable");
+		CHECK (b != NULL && b->withheld != NULL &&
+		       strstr (b->withheld, "already talked") != NULL,
+		       "and the row says why the block was withheld");
+		fs_copilot_free (c);
+	}
+
+	/* No finding that could open something is ever auto-applicable:
+	 * every check, on a mixed corpus, offers auto only on deny rows. */
+	{
+		FsCopilot *c = fs_copilot_new ();
+		FsHit hit;
+		GList *all, *l;
+		guint autos = 0, bad = 0;
+		gchar port[16], src[32];
+		gint i;
+		const gint64 t0 = (gint64) 930000 * G_USEC_PER_SEC;
+
+		memset (&hit, 0, sizeof hit);
+		hit.direction = "Out";
+		hit.source = "192.168.1.7";
+		hit.protocol = "TCP";
+		hit.service = "mixed.exe";
+		hit.destination = "203.0.113.70";
+		for (i = 0; i < 40; i++) {           /* baseline, then new ports */
+			g_snprintf (port, sizeof port, "%d", i < 12 ? 443 : 2000 + i);
+			hit.port = port;
+			fs_copilot_feed_event_full (c, &hit,
+				t0 + (gint64) i * 7 * G_USEC_PER_SEC, 1700000000 + i);
+		}
+		hit.port = "8443";
+		hit.destination = "203.0.113.71";
+		for (i = 0; i < 9; i++)              /* a beacon */
+			fs_copilot_feed_event_full (c, &hit,
+				t0 + (gint64) (1000 + i * 60) * G_USEC_PER_SEC,
+				1700001000 + i * 60);
+		hit.direction = "In";
+		hit.destination = "192.168.1.7";
+		hit.service = "SSH [BLOCKED]";
+		hit.port = "22";
+		for (i = 0; i < 12; i++) {           /* login attempts + a scan */
+			g_snprintf (src, sizeof src, "198.51.100.%d", 1 + (i % 2));
+			hit.source = src;
+			fs_copilot_feed_event_full (c, &hit,
+				t0 + (gint64) (2000 + i) * G_USEC_PER_SEC,
+				1700002000 + i);
+		}
+		all = fs_copilot_get_insights (c);
+		for (l = all; l != NULL; l = l->next) {
+			FsInsight *ins = l->data;
+
+			if (!ins->auto_applicable)
+				continue;
+			autos++;
+			if (ins->rule_kind != FS_RULE_OUTBOUND_DENY_TO &&
+			    ins->rule_kind != FS_RULE_OUTBOUND_DENY_SERVICE)
+				bad++;
+		}
+		CHECK (g_list_length (all) >= 2 && autos == 1 && bad == 0,
+		       "a mixed corpus: only the beacon's deny is auto-applicable "
+		       "(%u auto, %u not a deny, of %u findings)", autos, bad,
+		       g_list_length (all));
+		for (l = all; l != NULL; l = l->next) {
+			FsInsight *ins = l->data;
+
+			if (ins->type != FS_INSIGHT_BEACON)
+				CHECK (ins->rule_csv == NULL &&
+				       ins->suggested_rule == NULL,
+				       "\"%s\" offers no rule (an anomaly is not answered "
+				       "with an allow)", ins->title);
+		}
+		g_list_free (all);
 		fs_copilot_free (c);
 	}
 
@@ -2195,30 +2395,33 @@ static void test_behavior_derivation (void)
 	fs_copilot_free (copilot);
 }
 
+/* A profile that is 8 days old with 50 connections over three hours:
+ * old and large enough for the new-destination check. */
+static void
+behavior_mature (FsCopilot *copilot, FsHit *hit, const gchar *app,
+                 gint64 start)
+{
+	const gint64 step = 5 * 3600;
+
+	behavior_hit (hit, app, "192.168.1.7", "198.51.100.10", "443", "out");
+	for (gint k = 0; k < 3; k++)
+		for (gint i = 0; i < (k < 2 ? 17 : 16); i++)
+			behavior_feed (copilot, hit, start + k * step);
+}
+
 static void test_behavior_signals (void)
 {
 	FsCopilot *copilot = fs_copilot_new ();
 	FsHit hit;
 	const FsInsight *ins;
-	const FsAppProfile *p;
 	GDateTime *dt;
 	gchar *expected;
+	gchar dest[32];
 	gint i;
-	/* 5-hour steps: four local hours stay distinct on any timezone,
-	 * including across a DST jump. */
 	const gint64 w0 = 1700000400;
-	const gint64 step = 5 * 3600;
+	const gint64 start = w0 - 8 * 86400;   /* same local hour as w0 */
 
-	/* Baseline: 10 connections, port 443, one host, three hours. */
-	behavior_hit (&hit, "sync.exe", "192.168.1.7", "198.51.100.10",
-	              "443", "out");
-	for (i = 0; i < 4; i++)
-		behavior_feed (copilot, &hit, w0);
-	for (i = 0; i < 3; i++)
-		behavior_feed (copilot, &hit, w0 + step);
-	for (i = 0; i < 3; i++)
-		behavior_feed (copilot, &hit, w0 + 2 * step);
-
+	behavior_mature (copilot, &hit, "sync.exe", start);
 	CHECK (total_insights (copilot) == 0,
 	       "the baseline phase raises nothing at all");
 
@@ -2226,14 +2429,15 @@ static void test_behavior_signals (void)
 	 * destination together. */
 	behavior_hit (&hit, "sync.exe", "192.168.1.7", "203.0.113.66",
 	              "8443", "out");
-	behavior_feed (copilot, &hit, w0 + step);
+	behavior_feed (copilot, &hit, w0);
 
 	CHECK (total_insights (copilot) == 1,
 	       "two signals on one event raise exactly one finding");
 	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_PORT);
 	CHECK (ins != NULL, "the finding is typed by its strongest signal");
-	CHECK (ins != NULL && ins->severity == FS_COPILOT_CRITICAL,
-	       "correlated signals escalate to critical");
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING,
+	       "two signals together are a Warning (Critical needs a Critical "
+	       "check or two different checks)");
 	if (ins != NULL) {
 		CHECK (strstr (ins->description, "8443") != NULL,
 		       "the description names the new port");
@@ -2241,62 +2445,141 @@ static void test_behavior_signals (void)
 		       "and the new destination");
 		CHECK (strstr (ins->description, "\n- ") != NULL,
 		       "as two listed signals, not one");
-		CHECK (ins->rule_csv == NULL && !ins->auto_applicable,
-		       "a correlated finding suggests no rule -- a human's call");
+		CHECK (ins->rule_csv == NULL && ins->suggested_rule == NULL &&
+		       !ins->auto_applicable,
+		       "a behavior finding suggests no rule");
+		CHECK (ins->why != NULL && strstr (ins->why, "8 days") != NULL &&
+		       strstr (ins->why, "50 connections") != NULL,
+		       "why: the profile's age and size next to the limits (%s)",
+		       ins->why != NULL ? ins->why : "");
+		CHECK (ins->evidence != NULL && ins->evidence->len == 1 &&
+		       ((FsEvidence *) g_ptr_array_index (ins->evidence, 0))->port
+		       == 8443,
+		       "the event behind it is the evidence");
 	}
 
-	/* A single novel destination still gets the allow suggestion. */
+	/* A single new destination: Info, no allow offered. */
 	behavior_hit (&hit, "sync.exe", "192.168.1.7", "203.0.113.77",
 	              "443", "out");
-	behavior_feed (copilot, &hit, w0 + step);
+	behavior_feed (copilot, &hit, w0 + 60);
 	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 1,
 	       "a first contact raises one destination finding");
 	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_DESTINATION);
-	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING,
-	       "a single signal is a warning");
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO,
+	       "a single signal is Info");
 	if (ins != NULL) {
 		CHECK (strstr (ins->description, "203.0.113.77") != NULL,
 		       "the description names the host");
-		CHECK (strstr (ins->description, "the baseline knew 2") != NULL,
+		CHECK (strstr (ins->description, "The baseline knew 2") != NULL,
 		       "and how many destinations the baseline knew");
-		CHECK (ins->rule_csv != NULL &&
-		       strstr (ins->rule_csv, "203.0.113.77") != NULL,
-		       "a single-signal finding carries its allow suggestion");
+		CHECK (ins->rule_csv == NULL && ins->suggested_rule == NULL,
+		       "no allow is offered for an anomaly");
+		CHECK (g_strcmp0 (ins->whatif_line,
+		                  "outbound tcp port 443 to 203.0.113.77") == 0,
+		       "Ask What-If gets the line instead");
 	}
 
-	/* First activity in a fourth hour, once the app HAS hours. */
-	dt = g_date_time_new_from_unix_local (w0 + 3 * step);
+	/* A second new destination in the same hour joins that finding. */
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "203.0.113.78",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0 + 120);
+	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_DESTINATION);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 1 &&
+	       ins != NULL && ins->count == 2 && ins->evidence->len == 2,
+	       "one finding per app per hour: the second contact updates it");
+
+	/* Our own network and infrastructure are never "new destinations". */
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "192.168.5.5",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0 + 5 * 3600);
+	behavior_hit (&hit, "sync.exe", "192.168.1.7", "224.0.0.251",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0 + 5 * 3600);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 1,
+	       "a LAN or multicast first contact is not reported");
+
+	/* First activity in a new hour, once the app HAS hours. */
+	dt = g_date_time_new_from_unix_local (w0 + 2 * 3600);
 	expected = g_strdup_printf ("first activity at %02d:00",
 	                            g_date_time_get_hour (dt));
 	g_date_time_unref (dt);
 
 	behavior_hit (&hit, "sync.exe", "192.168.1.7", "198.51.100.10",
 	              "443", "out");
-	behavior_feed (copilot, &hit, w0 + 3 * step);
+	behavior_feed (copilot, &hit, w0 + 2 * 3600);
 	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_TIME) == 1,
-	       "the first activity in a fourth hour is a timing finding");
+	       "the first activity in a new hour is a timing finding");
 	ins = find_insight (copilot, FS_INSIGHT_UNUSUAL_TIME);
 	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO,
 	       "a lone timing finding stays informational");
 	if (ins != NULL) {
 		CHECK (strstr (ins->description, expected) != NULL,
 		       "the description names the unexpected hour");
-		CHECK (strstr (ins->description, "established hours") != NULL,
+		CHECK (strstr (ins->description, "Established hours") != NULL,
 		       "and points at the established ones");
 	}
 	g_free (expected);
 
-	/* Absorbed: a second event in that hour says nothing. */
-	behavior_feed (copilot, &hit, w0 + 3 * step);
+	behavior_feed (copilot, &hit, w0 + 2 * 3600);
 	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_TIME) == 1,
 	       "a second event in that hour says nothing new");
-
-	/* And the known port is quiet against the grown profile. */
-	p = fs_copilot_get_profile (copilot, "sync.exe");
-	CHECK (p != NULL && p->total_connections == 14,
-	       "every event reached the profile, signals or not");
-
 	fs_copilot_free (copilot);
+
+	/* Too young or too small: no new-destination finding at all. */
+	copilot = fs_copilot_new ();
+	behavior_hit (&hit, "young.exe", "192.168.1.7", "198.51.100.10",
+	              "443", "out");
+	for (i = 0; i < 60; i++)
+		behavior_feed (copilot, &hit, w0 - 86400);
+	behavior_hit (&hit, "young.exe", "192.168.1.7", "203.0.113.90",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 0,
+	       "a one-day-old profile (60 connections) raises no destination "
+	       "finding: the check needs 7 days");
+	fs_copilot_free (copilot);
+
+	copilot = fs_copilot_new ();
+	behavior_hit (&hit, "small.exe", "192.168.1.7", "198.51.100.10",
+	              "443", "out");
+	for (i = 0; i < 40; i++)
+		behavior_feed (copilot, &hit, start);
+	behavior_hit (&hit, "small.exe", "192.168.1.7", "203.0.113.90",
+	              "443", "out");
+	behavior_feed (copilot, &hit, w0);
+	CHECK (count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION) == 0,
+	       "an 8-day-old profile with 40 connections raises none: the check "
+	       "needs 50");
+	fs_copilot_free (copilot);
+
+	/* The churn guard: an app that meets 20 new hosts in a week is
+	 * browser-like, and the 21st is not news. */
+	for (gint churn = 0; churn < 2; churn++) {
+		guint before, after;
+
+		copilot = fs_copilot_new ();
+		behavior_mature (copilot, &hit, "browser.exe", start);
+		for (i = 0; i < (churn ? 20 : 1); i++) {
+			g_snprintf (dest, sizeof dest, "203.0.113.%d", 100 + i);
+			behavior_hit (&hit, "browser.exe", "192.168.1.7", dest,
+			              "443", "out");
+			behavior_feed (copilot, &hit, w0);
+		}
+		before = count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION);
+		behavior_hit (&hit, "browser.exe", "192.168.1.7", "198.51.100.200",
+		              "443", "out");
+		behavior_feed (copilot, &hit, w0 + 10 * 3600);
+		after = count_insights (copilot, FS_INSIGHT_UNUSUAL_DESTINATION);
+		if (churn)
+			CHECK (before == 1 && after == 1,
+			       "after 20 new hosts in a week the app is browser-like: "
+			       "the next new host raises nothing");
+		else
+			CHECK (before == 1 && after == 2,
+			       "with one earlier new host, a new host in another hour "
+			       "is a second finding");
+		fs_copilot_free (copilot);
+	}
 }
 
 static void test_behavior_hour_guard (void)
@@ -2374,23 +2657,945 @@ static void test_behavior_insight_cap (void)
 	gchar dest[64];
 	gint i;
 
-	/* Baseline, then a flood of first contacts: the insight list is
-	 * bounded, and the flood cannot grow it without end. */
-	behavior_hit (&hit, "scan.exe", "192.168.1.7", "198.51.100.1",
-	              "443", "out");
-	for (i = 0; i < 10; i++)
-		behavior_feed (copilot, &hit, 1700000400);
-
+	/* A flood of findings: 205 sources each scanning 12 ports.  The
+	 * insight list is bounded, and the flood cannot grow it without
+	 * end. */
 	for (i = 1; i <= 205; i++) {
-		g_snprintf (dest, sizeof dest, "203.0.113.%d", i);
-		hit.destination = dest;
-		behavior_feed (copilot, &hit, 1700000400);
+		g_snprintf (dest, sizeof dest, "203.0.%d.%d", 100 + i / 200,
+		            i % 200 + 1);
+		for (gint p = 0; p < 12; p++) {
+			gchar port[8];
+
+			g_snprintf (port, sizeof port, "%d", 1000 + p);
+			behavior_hit (&hit, "Unknown [BLOCKED]", dest, "192.168.1.7",
+			              port, "In");
+			behavior_feed (copilot, &hit, 1700000400);
+		}
 	}
 
 	CHECK (total_insights (copilot) == 200,
 	       "the insight list stops at its cap, however loud the flood");
 
 	fs_copilot_free (copilot);
+}
+
+/* ==== 1.0.7 Copilot: inbound checks, block lists, dedup ==========
+ * Driven with exact clocks (monotonic for the windows, unix for the
+ * evidence and the once-per-hour memory). */
+
+static void
+inbound_feed (FsCopilot *c, const gchar *src, guint port,
+              gboolean blocked, gint64 sec)
+{
+	FsHit hit;
+	gchar p[8];
+
+	g_snprintf (p, sizeof p, "%u", port);
+	memset (&hit, 0, sizeof hit);
+	hit.direction = (gchar *) "In";
+	hit.source = (gchar *) src;
+	hit.destination = (gchar *) "192.168.1.7";
+	hit.port = p;
+	hit.protocol = (gchar *) "TCP";
+	hit.service = (gchar *) (blocked ? "Unknown [BLOCKED]" : "Unknown");
+	fs_copilot_feed_event_full (c, &hit,
+	                            (gint64) (950000 + sec) * G_USEC_PER_SEC,
+	                            1700100000 + sec);
+}
+
+static void test_inbound_scan (void)
+{
+	FsCopilot *c;
+	const FsInsight *ins;
+	gint i;
+
+	/* 12 distinct ports in a minute, all refused: one Info finding. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 12; i++)
+		inbound_feed (c, "203.0.113.5", 1000 + i, TRUE, i * 4);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1,
+	       "scan: 12 local ports in 60 s from one source report once");
+	ins = find_insight (c, FS_INSIGHT_INBOUND_SCAN);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO &&
+	       strstr (ins->description, "was refused") != NULL,
+	       "scan: all refused is Info, and says so");
+	CHECK (ins != NULL && ins->rule_csv == NULL && !ins->auto_applicable &&
+	       ins->withheld != NULL,
+	       "scan: never a rule, never auto");
+	CHECK (ins != NULL && ins->evidence->len == 12 &&
+	       strstr (ins->description, "1000, 1001") != NULL &&
+	       strstr (ins->why, "12 distinct ports in the last 60 seconds") != NULL,
+	       "scan: the evidence and the counts next to the limits");
+
+	/* More ports from the same source within the hour: still one. */
+	for (i = 12; i < 30; i++)
+		inbound_feed (c, "203.0.113.5", 1000 + i, TRUE, 50 + i);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1,
+	       "scan: one report per source per hour");
+	fs_copilot_free (c);
+
+	/* 11 ports, each tried twice: 22 events, not a scan. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 22; i++)
+		inbound_feed (c, "203.0.113.6", 2000 + i % 11, TRUE, i * 2);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 0,
+	       "scan: 11 distinct ports do not (22 events: ports, not events, "
+	       "count)");
+	fs_copilot_free (c);
+
+	/* 25 ports over 10 minutes, slowly. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 25; i++)
+		inbound_feed (c, "203.0.113.7", 3000 + i, TRUE, i * 20);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1,
+	       "scan: 25 ports in 10 minutes report, however slow");
+	fs_copilot_free (c);
+
+	/* Some got through to allowed ports: a Warning naming them. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 12; i++)
+		inbound_feed (c, "198.51.100.40", i == 3 ? 22 : 4000 + i, i != 3,
+		              i);
+	ins = find_insight (c, FS_INSIGHT_INBOUND_SCAN);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING &&
+	       strstr (ins->description, "ports your policy allows: 22") != NULL,
+	       "scan: reaching an allowed port is a Warning that names it");
+	fs_copilot_free (c);
+
+	/* From the LAN: Info, whatever got through. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 12; i++)
+		inbound_feed (c, "192.168.1.50", 5000 + i, FALSE, i);
+	ins = find_insight (c, FS_INSIGHT_INBOUND_SCAN);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO &&
+	       strstr (ins->why, "local network") != NULL,
+	       "scan: a LAN scanner is reported as Info");
+	fs_copilot_free (c);
+
+	/* Loopback is not a scanner. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 20; i++)
+		inbound_feed (c, "127.0.0.1", 6000 + i, FALSE, i);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 0,
+	       "scan: loopback is ignored");
+	fs_copilot_free (c);
+}
+
+static void test_brute_force (void)
+{
+	FsCopilot *c;
+	FsPolicy *policy;
+	const FsInsight *ins;
+	gint i;
+
+	/* 10 refused SSH attempts in 5 minutes, no policy attached. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "198.51.100.23", 22, TRUE, i * 25);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 1,
+	       "brute: 10 attempts in 5 minutes report");
+	ins = find_insight (c, FS_INSIGHT_BRUTE_FORCE);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_INFO &&
+	       ins->rule_csv == NULL && !ins->auto_applicable,
+	       "brute: all refused is Info, never a rule, never auto");
+	CHECK (ins != NULL && strstr (ins->description, "SSH") != NULL &&
+	       strstr (ins->description, "allowed-event logging") != NULL &&
+	       ins->evidence->len == 10,
+	       "brute: names the service, the logging caveat, the attempts");
+	fs_copilot_free (c);
+
+	/* 9 do not. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 9; i++)
+		inbound_feed (c, "198.51.100.23", 22, TRUE, i * 25);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 0,
+	       "brute: 9 attempts do not");
+	fs_copilot_free (c);
+
+	/* 10 spread over 6 minutes: never 10 inside any 5 minutes. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "198.51.100.23", 22, TRUE, i * 40);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 0,
+	       "brute: 10 attempts over 6 minutes do not (the window expires)");
+	fs_copilot_free (c);
+
+	/* Not a login port. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 15; i++)
+		inbound_feed (c, "198.51.100.23", 8080, TRUE, i * 5);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 0,
+	       "brute: port 8080 is not a login port");
+	fs_copilot_free (c);
+
+	/* The policy lets the source in: Critical. */
+	c = fs_copilot_new ();
+	policy = fs_policy_new ();
+	{
+		FsRule *r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                              "RDP, 3389, Anyone");
+
+		fs_policy_add (policy, r);
+		fs_rule_free (r);
+	}
+	fs_copilot_set_policy (c, policy);
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "198.51.100.24", 3389, TRUE, i * 25);
+	ins = find_insight (c, FS_INSIGHT_BRUTE_FORCE);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_CRITICAL &&
+	       strstr (ins->title, "the policy lets it in") != NULL &&
+	       strstr (ins->why, "ALLOWED") != NULL,
+	       "brute: Critical when What-If says the policy allows the source");
+	CHECK (ins != NULL && ins->rule_csv == NULL && !ins->auto_applicable,
+	       "brute: even then, never auto-applicable");
+
+	/* From the LAN, allowed, one of them refused: a Warning.  (With
+	 * none refused it is Info: test_copilot_review_fixes, F5.) */
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "192.168.1.60", 3389, i == 0, 400 + i * 2);
+	{
+		GList *all = fs_copilot_get_insights (c);
+		gboolean lan_warn = FALSE;
+
+		for (GList *l = all; l != NULL; l = l->next) {
+			FsInsight *x = l->data;
+
+			if (x->type == FS_INSIGHT_BRUTE_FORCE &&
+			    g_strcmp0 (x->subject, "192.168.1.60") == 0)
+				lan_warn = x->severity == FS_COPILOT_WARNING;
+		}
+		g_list_free (all);
+		CHECK (lan_warn, "brute: an allowed LAN source is a Warning");
+	}
+	fs_copilot_free (c);
+	fs_policy_free (policy);
+
+	/* What-If says DEPENDS, and the log shows connections let in: the
+	 * log answers it for the network this computer was on.  The case
+	 * on each platform model: on Linux a row for a host name; on
+	 * Windows a private source, which StockFW's reserved-source block
+	 * stops on Public networks only (the Copilot asks without the
+	 * network in use).  All refused stays Info. */
+	policy = fs_policy_new ();
+	{
+		FsRule *r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+#ifdef G_OS_WIN32
+		                              "RDP, 3389, Anyone"
+#else
+		                              "RDP, 3389, lan.example"
+#endif
+		                              );
+		FsWhatIfContext *ctx;
+		FsWhatIfResult *res;
+
+		fs_policy_add (policy, r);
+		fs_rule_free (r);
+		ctx = fs_whatif_context_new (fs_whatif_native_platform (), policy,
+		                             NULL);
+		ctx->firewall = FS_WHATIF_FW_RUNNING;
+		res = fs_whatif_simulate_text (ctx,
+		                               "inbound tcp port 3389 from 192.168.1.61");
+		CHECK (res->verdict == FS_WHATIF_DEPENDS,
+		       "brute: the probe for this case depends (got %s)",
+		       fs_whatif_verdict_name (res->verdict));
+		fs_whatif_result_free (res);
+		fs_whatif_context_free (ctx);
+	}
+	c = fs_copilot_new ();
+	fs_copilot_set_policy (c, policy);
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "192.168.1.61", 3389, i == 0, i * 2);
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "192.168.1.62", 3389, TRUE, 100 + i * 2);
+	{
+		const FsInsight *let = NULL, *refused = NULL;
+		GList *all = fs_copilot_get_insights (c);
+
+		for (GList *l = all; l != NULL; l = l->next) {
+			const FsInsight *x = l->data;
+
+			if (x->type != FS_INSIGHT_BRUTE_FORCE)
+				continue;
+			if (g_strcmp0 (x->subject, "192.168.1.61") == 0)
+				let = x;
+			if (g_strcmp0 (x->subject, "192.168.1.62") == 0)
+				refused = x;
+		}
+		CHECK (let != NULL && let->severity == FS_COPILOT_WARNING &&
+		       strstr (let->title, "lets it in") != NULL &&
+		       strstr (let->description, "answer depends") != NULL &&
+		       strstr (let->why, "DEPENDS") != NULL,
+		       "brute: DEPENDS with connections let in is a LAN Warning "
+		       "(\"%s\")", let != NULL ? let->title : "none");
+		CHECK (refused != NULL && refused->severity == FS_COPILOT_INFO &&
+		       strstr (refused->title, "lets") == NULL,
+		       "brute: DEPENDS with every attempt refused stays Info");
+		g_list_free (all);
+	}
+	fs_copilot_free (c);
+	fs_policy_free (policy);
+}
+
+static void
+intel_feed (FsCopilot *c, const gchar *dir, const gchar *src,
+            const gchar *dst, const gchar *rule, gint64 unix_sec)
+{
+	FsHit hit;
+
+	memset (&hit, 0, sizeof hit);
+	hit.direction = (gchar *) dir;
+	hit.source = (gchar *) src;
+	hit.destination = (gchar *) dst;
+	hit.port = (gchar *) "443";
+	hit.protocol = (gchar *) "TCP";
+	hit.service = (gchar *) "browser.exe [BLOCKED]";
+	hit.rule = (gchar *) rule;
+	fs_copilot_feed_event_full (c, &hit, (gint64) 960000 * G_USEC_PER_SEC,
+	                            unix_sec);
+}
+
+static void test_threat_intel (void)
+{
+	FsCopilot *c = fs_copilot_new ();
+	const FsInsight *ins;
+	const gint64 h0 = 1700200800;   /* on the hour */
+
+	intel_feed (c, "Out", "192.168.1.7", "203.0.113.200",
+	            "Threat intel: Spamhaus DROP", h0);
+	ins = find_insight (c, FS_INSIGHT_THREAT_INTEL);
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING &&
+	       strstr (ins->title, "Spamhaus DROP") != NULL &&
+	       strstr (ins->title, "browser.exe") != NULL,
+	       "intel: outbound is a Warning naming the list and the app");
+	CHECK (ins != NULL && ins->rule_csv == NULL && !ins->auto_applicable,
+	       "intel: nothing to stage, the list already blocks it");
+
+	intel_feed (c, "In", "198.51.100.1", "192.168.1.7",
+	            "Threat intel: FireHOL level 1", h0 + 10);
+	intel_feed (c, "In", "198.51.100.2", "192.168.1.7",
+	            "Threat intel: FireHOL level 1", h0 + 20);
+	intel_feed (c, "In", "198.51.100.3", "192.168.1.7",
+	            "Threat intel: FireHOL level 1", h0 + 30);
+	CHECK (count_insights (c, FS_INSIGHT_THREAT_INTEL) == 2,
+	       "intel: three inbound drops in an hour roll up into one finding");
+	ins = find_insight (c, FS_INSIGHT_THREAT_INTEL);
+	CHECK (ins != NULL && ins->count == 3 && ins->evidence->len == 3 &&
+	       ins->severity == FS_COPILOT_INFO,
+	       "intel: the roll-up is Info and counts all three");
+
+	intel_feed (c, "In", "198.51.100.4", "192.168.1.7",
+	            "Threat intel: FireHOL level 1", h0 + 3700);
+	CHECK (count_insights (c, FS_INSIGHT_THREAT_INTEL) == 3,
+	       "intel: the next hour starts a new roll-up");
+
+	intel_feed (c, "In", "198.51.100.5", "192.168.1.7", "Location block",
+	            h0 + 3710);
+	CHECK (count_insights (c, FS_INSIGHT_THREAT_INTEL) == 4,
+	       "intel: a country block is its own roll-up");
+
+	intel_feed (c, "In", "198.51.100.6", "192.168.1.7", NULL, h0 + 3720);
+	CHECK (count_insights (c, FS_INSIGHT_THREAT_INTEL) == 4,
+	       "intel: an event with no rule is no intel finding");
+	fs_copilot_free (c);
+}
+
+static void test_insight_dedup (void)
+{
+	FsCopilot *c = fs_copilot_new ();
+	FsHit hit;
+	const FsInsight *b, *t;
+	gint i;
+
+	/* A beacon and a block-list hit on the same host within the hour:
+	 * two different checks, so both become Critical and say why. */
+	memset (&hit, 0, sizeof hit);
+	hit.direction = "Out";
+	hit.source = "192.168.1.7";
+	hit.destination = "203.0.113.150";
+	hit.port = "8443";
+	hit.protocol = "TCP";
+	hit.service = "agent.exe";
+	for (i = 0; i < 6; i++)
+		fs_copilot_feed_event_full (c, &hit,
+			(gint64) (970000 + i * 60) * G_USEC_PER_SEC,
+			1700300000 + i * 60);
+	b = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (b != NULL && b->severity == FS_COPILOT_WARNING,
+	       "dedup: the beacon alone is a Warning");
+	intel_feed (c, "Out", "192.168.1.7", "203.0.113.150",
+	            "Threat intel: Spamhaus DROP", 1700300400);
+	b = find_insight (c, FS_INSIGHT_BEACON);
+	t = find_insight (c, FS_INSIGHT_THREAT_INTEL);
+	CHECK (b != NULL && t != NULL && b->severity == FS_COPILOT_CRITICAL &&
+	       t->severity == FS_COPILOT_CRITICAL &&
+	       strstr (b->why, "Also flagged") != NULL,
+	       "dedup: two different checks on one host within the hour are "
+	       "Critical, and say so");
+	fs_copilot_free (c);
+}
+
+/* ==== 1.0.7 Copilot review fixes ===================================
+ * Each block pins one reviewed failure: the scenario that broke and
+ * what it must give now. */
+
+static void
+out_feed (FsCopilot *c, const gchar *app, const gchar *dst,
+          const gchar *port, const gchar *proto, const gchar *rule,
+          gint64 sec)
+{
+	FsHit hit;
+
+	memset (&hit, 0, sizeof hit);
+	hit.direction = (gchar *) "Out";
+	hit.source = (gchar *) "192.168.1.7";
+	hit.destination = (gchar *) dst;
+	hit.port = (gchar *) port;
+	hit.protocol = (gchar *) proto;
+	hit.service = (gchar *) app;
+	hit.rule = (gchar *) rule;
+	fs_copilot_feed_event_full (c, &hit,
+	                            (gint64) (980000 + sec) * G_USEC_PER_SEC,
+	                            1700400000 + sec);
+}
+
+static const FsInsight *
+find_by_subject (FsCopilot *c, FsInsightType type, const gchar *subject)
+{
+	GList *all = fs_copilot_get_insights (c);
+	const FsInsight *found = NULL;
+
+	for (GList *l = all; l != NULL && found == NULL; l = l->next) {
+		FsInsight *x = l->data;
+
+		if (x->type == type && g_strcmp0 (x->subject, subject) == 0)
+			found = x;
+	}
+	g_list_free (all);
+	return found;
+}
+
+static gchar *
+write_tmp (const gchar *dir, const gchar *name, const gchar *text)
+{
+	gchar *path = g_build_filename (dir, name, NULL);
+
+	g_file_set_contents (path, text, -1, NULL);
+	return path;
+}
+
+static void test_copilot_review_fixes (void)
+{
+	FsCopilot *c;
+	const FsInsight *ins;
+	gint i;
+
+	/* F1: the machine's own DNS servers and gateway.
+	 * A systemd-resolved system: resolv.conf names only the stub,
+	 * the upstream list names 1.1.1.1, the default route goes via a
+	 * public gateway 203.0.113.1. */
+	{
+		gchar *dir = g_dir_make_tmp ("fs-cp-net-XXXXXX", NULL);
+		gchar *rc = write_tmp (dir, "resolv.conf",
+		                       "nameserver 127.0.0.53\noptions edns0\n");
+		gchar *rd = write_tmp (dir, "resolved.conf",
+		                       "nameserver 1.1.1.1\n");
+		gchar *rt = write_tmp (dir, "route",
+			"Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\t"
+			"Mask\t\tMTU\tWindow\tIRTT\n"
+			"eth0\t00000000\t017100CB\t0003\t0\t0\t0\t00000000\t0\t0\t0\n");
+		gchar *old = g_strdup (g_getenv ("STOCKFW_RESOLV_CONF"));
+		FsInsight probe;
+
+		g_setenv ("STOCKFW_RESOLV_CONF", rc, TRUE);
+		g_setenv ("STOCKFW_RESOLVED_CONF", rd, TRUE);
+		g_setenv ("STOCKFW_ROUTE_FILE", rt, TRUE);
+		c = fs_copilot_new ();
+		for (i = 0; i < 8; i++)
+			out_feed (c, "systemd-resolved", "1.1.1.1", "53", "UDP", NULL,
+			          i * 30);
+		for (i = 0; i < 8; i++)
+			out_feed (c, "systemd-resolved", "1.1.1.1", "853", "TCP", NULL,
+			          i * 60);
+		CHECK (count_insights (c, FS_INSIGHT_BEACON) == 0,
+		       "F1: DNS (53) and DNS over TLS (853) to the upstream behind "
+		       "a 127.0.0.53 stub are never timed");
+
+		for (i = 0; i < 8; i++)
+			out_feed (c, "agent.exe", "1.1.1.1", "443", "TCP", NULL,
+			          1000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (ins != NULL && !ins->auto_applicable &&
+		       ins->withheld != NULL &&
+		       strstr (ins->withheld, "DNS servers or its default "
+		                              "gateway") != NULL &&
+		       !fs_insight_is_auto_safe (ins),
+		       "F1: a resolver on any other port is reported, never "
+		       "auto-blocked, and the choke point refuses it too");
+		fs_copilot_clear_insights (c);
+
+		for (i = 0; i < 8; i++)
+			out_feed (c, "agent.exe", "203.0.113.1", "8443", "TCP", NULL,
+			          2000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (ins != NULL && !ins->auto_applicable &&
+		       !fs_insight_is_auto_safe (ins),
+		       "F1: the default gateway, though public, is never "
+		       "auto-blocked");
+
+		memset (&probe, 0, sizeof probe);
+		probe.rule_kind = FS_RULE_OUTBOUND_DENY_TO;
+		probe.rule_csv = (gchar *) "1.1.1.1, Sentinel: periodic beacon";
+		CHECK (!fs_insight_is_auto_safe (&probe),
+		       "F1: fs_insight_is_auto_safe refuses a deny to a resolver");
+		fs_copilot_free (c);
+		CHECK (fs_insight_is_auto_safe (&probe),
+		       "F1: and forgets them with the copilot that read them");
+
+		if (old != NULL)
+			g_setenv ("STOCKFW_RESOLV_CONF", old, TRUE);
+		else
+			g_unsetenv ("STOCKFW_RESOLV_CONF");
+		g_unsetenv ("STOCKFW_RESOLVED_CONF");
+		g_unsetenv ("STOCKFW_ROUTE_FILE");
+		g_remove (rc);
+		g_remove (rd);
+		g_remove (rt);
+		g_rmdir (dir);
+		g_free (rc);
+		g_free (rd);
+		g_free (rt);
+		g_free (dir);
+		g_free (old);
+	}
+
+	/* The stub alone, its upstream unreadable: DNS is still timed (a
+	 * DNS tunnel is a real thing) but never blocked automatically. */
+	c = fs_copilot_new ();
+	fs_copilot_set_resolvers (c, "nameserver 127.0.0.53\n");
+	for (i = 0; i < 8; i++)
+		out_feed (c, "domain", "1.1.1.1", "53", "UDP", NULL, i * 30);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (ins != NULL && !ins->auto_applicable &&
+	       strstr (ins->withheld, "upstream servers could not be read")
+	       != NULL,
+	       "F1: behind a stub with an unknown upstream, DNS is reported, "
+	       "never auto-blocked");
+	fs_copilot_free (c);
+
+	/* A configured resolver on 853. */
+	c = fs_copilot_new ();
+	fs_copilot_set_resolvers (c, "nameserver 8.8.8.8\n");
+	for (i = 0; i < 8; i++)
+		out_feed (c, "domain-s", "8.8.8.8", "853", "TCP", NULL, i * 60);
+	CHECK (count_insights (c, FS_INSIGHT_BEACON) == 0,
+	       "F1: DNS over TLS to a configured resolver is never timed");
+	fs_copilot_free (c);
+
+	/* F2: a host another program uses all the time. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 100; i++)
+		out_feed (c, "browser.exe", "93.184.216.34", "443", "TCP", NULL,
+		          i * 7);
+	for (i = 0; i < 8; i++)
+		out_feed (c, "updater.exe", "93.184.216.34", "443", "TCP", NULL,
+		          5000 + i * 60);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (ins != NULL && !ins->auto_applicable && ins->withheld != NULL &&
+	       strstr (ins->withheld, "browser.exe has 100 recorded") != NULL,
+	       "F2: a destination another program has a history with is never "
+	       "auto-blocked (the block would hit every program)");
+	fs_copilot_free (c);
+	c = fs_copilot_new ();
+	for (i = 0; i < 8; i++)
+		out_feed (c, "updater.exe", "93.184.216.34", "443", "TCP", NULL,
+		          5000 + i * 60);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (ins != NULL && ins->auto_applicable,
+	       "F2 control: the same run to a stranger is still auto-blocked");
+
+	/* R1: the staging pass judges the gates again.  The finding was
+	 * made auto-blockable; another program then makes 5 connections
+	 * to the host.  The re-check withholds and says why. */
+	CHECK (ins != NULL &&
+	       fs_copilot_beacon_recheck (c, (FsInsight *) ins),
+	       "R1 control: the re-check passes while nothing changed");
+	for (i = 0; i < 5; i++)
+		out_feed (c, "brave.exe", "93.184.216.34", "443", "TCP", NULL,
+		          9000 + i * i * 7 + 1);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (ins != NULL &&
+	       !fs_copilot_beacon_recheck (c, (FsInsight *) ins) &&
+	       !ins->auto_applicable && ins->withheld != NULL &&
+	       strstr (ins->withheld, "brave.exe has 5 recorded") != NULL,
+	       "R1: another program's later use of the host withholds the "
+	       "block at stage time, and the finding says so");
+	fs_copilot_free (c);
+
+	/* R2: the user's own outbound allow for the host (or a network
+	 * around it) withholds the block, when the finding is made and
+	 * when it is staged.  An "Anyone" allow does not count. */
+	{
+		FsPolicy *p = fs_policy_new ();
+		FsRule *allow = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_TO,
+		                                  "Anyone, open outbound");
+
+		c = fs_copilot_new ();
+		fs_policy_add (p, allow);
+		fs_rule_free (allow);
+		fs_copilot_set_policy (c, p);
+		for (i = 0; i < 8; i++)
+			out_feed (c, "updater.exe", "9.8.7.6", "443", "TCP", NULL,
+			          5000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (ins != NULL && ins->auto_applicable,
+		       "R2 control: an allow-to-Anyone row does not withhold");
+		allow = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_TO,
+		                          "9.8.7.0/24, my allow");
+		fs_policy_add (p, allow);
+		fs_rule_free (allow);
+		CHECK (ins != NULL &&
+		       !fs_copilot_beacon_recheck (c, (FsInsight *) ins) &&
+		       !ins->auto_applicable && ins->withheld != NULL &&
+		       strstr (ins->withheld, "you allowed this destination") != NULL,
+		       "R2: an allow row added later for a network around the "
+		       "host withholds the block at stage time");
+		fs_copilot_free (c);
+
+		c = fs_copilot_new ();
+		fs_copilot_set_policy (c, p);
+		for (i = 0; i < 8; i++)
+			out_feed (c, "updater.exe", "9.8.7.6", "443", "TCP", NULL,
+			          5000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (ins != NULL && !ins->auto_applicable &&
+		       ins->withheld != NULL &&
+		       strstr (ins->withheld, "you allowed this destination") != NULL,
+		       "R2: a beacon to a host the policy allows is reported, "
+		       "never made auto-blockable");
+		fs_copilot_free (c);
+		fs_policy_free (p);
+	}
+
+	/* R3: on Linux the profile key is the port's service name, and
+	 * the withheld text must not call it a program. */
+	{
+		gchar *s443 = fs_service_lookup_port (443);
+		gchar *s80  = fs_service_lookup_port (80);
+		gchar *want;
+
+		CHECK (s443 != NULL && s80 != NULL &&
+		       g_strcmp0 (s443, s80) != 0,
+		       "R3 setup: ports 443 and 80 have service names");
+		c = fs_copilot_new ();
+		for (i = 0; i < 5; i++)
+			out_feed (c, s443, "4.3.2.1", "443", "TCP", NULL,
+			          i * i * 7 + 1);
+		for (i = 0; i < 8; i++)
+			out_feed (c, s80, "4.3.2.1", "80", "TCP", NULL,
+			          1000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		want = g_strdup_printf ("traffic on the %s port (any program) "
+		                        "has 5 recorded", s443);
+		CHECK (ins != NULL && !ins->auto_applicable &&
+		       ins->withheld != NULL &&
+		       strstr (ins->withheld, want) != NULL,
+		       "R3: another service key is named as a port's traffic, "
+		       "not as a program");
+		g_free (want);
+		fs_copilot_free (c);
+
+		/* the key's own history, before the run, on another port */
+		c = fs_copilot_new ();
+		for (i = 0; i < 4; i++)
+			out_feed (c, "Unknown", "4.3.2.2", "40001", "TCP", NULL,
+			          i * i * 7 + 1);
+		for (i = 0; i < 8; i++)
+			out_feed (c, "Unknown", "4.3.2.2", "40000", "TCP", NULL,
+			          1000 + i * 60);
+		ins = find_insight (c, FS_INSIGHT_BEACON);
+		CHECK (ins != NULL && !ins->auto_applicable &&
+		       ins->withheld != NULL &&
+		       strstr (ins->withheld, "traffic on this port already "
+		                              "reached") != NULL &&
+		       strstr (ins->withheld, "program") == NULL,
+		       "R3: a service key's own history is not called a "
+		       "program's");
+		fs_copilot_free (c);
+		g_free (s443);
+		g_free (s80);
+	}
+	c = NULL;
+
+	/* F3: a 300-port scan is one finding, and small findings never
+	 * push it out of the list. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 300; i++)
+		inbound_feed (c, "45.33.32.156", 30000 + i, TRUE, i);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1 &&
+	       count_insights (c, FS_INSIGHT_UNUSUAL_PORT) == 0 &&
+	       total_insights (c) == 1,
+	       "F3: 300 refused probes leave exactly one scan finding and no "
+	       "\"used port N\" rows (got %u)", total_insights (c));
+	{
+		/* Probes the policy let through are the stranger's ports
+		 * too. */
+		FsCopilot *c2 = fs_copilot_new ();
+
+		for (i = 0; i < 40; i++)
+			inbound_feed (c2, "45.33.32.158", 40000 + i, FALSE, i);
+		CHECK (count_insights (c2, FS_INSIGHT_UNUSUAL_PORT) == 0 &&
+		       count_insights (c2, FS_INSIGHT_INBOUND_SCAN) == 1,
+		       "F3: allowed inbound probes are no \"used port N\" rows "
+		       "either");
+		fs_copilot_free (c2);
+	}
+	for (i = 0; i < 10; i++)
+		out_feed (c, "tool.exe", "203.0.113.80", "443", "TCP", NULL,
+		          400 + i);
+	for (i = 0; i < 260; i++) {
+		gchar p[8];
+
+		g_snprintf (p, sizeof p, "%d", 10000 + i);
+		out_feed (c, "tool.exe", "203.0.113.80", p, "TCP", NULL, 420 + i);
+	}
+	CHECK (total_insights (c) == 200 &&
+	       count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1,
+	       "F3: 260 new-port findings fill the list, and the scan finding "
+	       "is still on it");
+	fs_copilot_free (c);
+
+	/* F4: a full source table, then a real scan. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 1024; i++) {
+		gchar src[32];
+
+		g_snprintf (src, sizeof src, "198.51.%d.%d", i / 250, i % 250 + 1);
+		inbound_feed (c, src, 23, TRUE, i / 4);
+	}
+	for (i = 0; i < 40; i++)
+		inbound_feed (c, "45.33.32.156", 2000 + i, TRUE, 260 + i);
+	ins = find_by_subject (c, FS_INSIGHT_INBOUND_SCAN, "45.33.32.156");
+	CHECK (ins != NULL,
+	       "F4: with 1024 sources in the window, a new scanner is still "
+	       "seen");
+	{
+		const FsAppProfile *p = fs_copilot_get_profile (c, "Unknown");
+
+		CHECK (p != NULL && !p->baseline_partial &&
+		       g_hash_table_size (p->common_destinations) == 0,
+		       "F4: refused probes teach the profile no destinations, so "
+		       "they cannot fill it and silence it");
+	}
+	/* ... and the login table. */
+	for (i = 0; i < 1024; i++) {
+		gchar src[32];
+
+		g_snprintf (src, sizeof src, "198.18.%d.%d", i / 250, i % 250 + 1);
+		inbound_feed (c, src, 22, TRUE, 300 + i / 8);
+	}
+	for (i = 0; i < 10; i++)
+		inbound_feed (c, "45.33.32.157", 22, TRUE, 440 + i);
+	CHECK (find_by_subject (c, FS_INSIGHT_BRUTE_FORCE, "45.33.32.157")
+	       != NULL,
+	       "F4: with the login table full, a new source is still counted");
+	fs_copilot_free (c);
+
+	/* A scanner rotating its address inside one IPv6 /64. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 40; i++) {
+		gchar src[64];
+
+		g_snprintf (src, sizeof src, "2001:db8:1:2::%x", 0x100 + i);
+		inbound_feed (c, src, 1000 + i, TRUE, i);
+	}
+	ins = find_insight (c, FS_INSIGHT_INBOUND_SCAN);
+	CHECK (count_insights (c, FS_INSIGHT_INBOUND_SCAN) == 1 && ins != NULL &&
+	       g_strcmp0 (ins->subject, "2001:db8:1:2::/64") == 0 &&
+	       strstr (ins->title, "40 addresses") != NULL &&
+	       strstr (ins->title, "probed 40 ports") != NULL,
+	       "F4: 40 addresses of one /64 are one scanner (\"%s\")",
+	       ins != NULL ? ins->title : "");
+	CHECK (ins != NULL && ins->evidence->len == 12 &&
+	       g_strcmp0 (((FsEvidence *) g_ptr_array_index (
+	                   ins->evidence, 11))->remote,
+	                  "2001:db8:1:2::127") == 0,
+	       "F4: its evidence names each address the log showed");
+	fs_copilot_free (c);
+
+	/* F5: an admin's own deploy over an allowed SSH port. */
+	{
+		FsPolicy *policy = fs_policy_new ();
+		FsRule *r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                              "SSH, 22, Anyone");
+
+		fs_policy_add (policy, r);
+		fs_rule_free (r);
+		c = fs_copilot_new ();
+		fs_copilot_set_policy (c, policy);
+		for (i = 0; i < 12; i++)
+			inbound_feed (c, "203.0.113.77", 22, FALSE, i * 10);
+		ins = find_insight (c, FS_INSIGHT_BRUTE_FORCE);
+		CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING &&
+		       strstr (ins->title, "connections") != NULL &&
+		       strstr (ins->title, "attempts") == NULL &&
+		       strstr (ins->description, "cannot tell a failed login")
+		       != NULL,
+		       "F5: allowed connections only are a Warning about "
+		       "\"connections\", not Critical \"attempts\"");
+		/* F8: the open finding follows the run. */
+		CHECK (ins != NULL && ins->count == 12 &&
+		       strstr (ins->description, "made 12 connections") != NULL,
+		       "F8: the 11th and 12th connection update the finding");
+		fs_copilot_free (c);
+
+		/* F6: SSH on a port the policy gives it. */
+		r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                      "SSH, 2222, Anyone");
+		fs_policy_add (policy, r);
+		fs_rule_free (r);
+		c = fs_copilot_new ();
+		fs_copilot_set_policy (c, policy);
+		for (i = 0; i < 30; i++)
+			inbound_feed (c, "45.33.32.157", 2222, TRUE, i * 5);
+		ins = find_insight (c, FS_INSIGHT_BRUTE_FORCE);
+		CHECK (ins != NULL && strstr (ins->title, "SSH") != NULL,
+		       "F6: SSH on 2222, as the policy names it, is a login port");
+		fs_copilot_free (c);
+		fs_policy_free (policy);
+	}
+	c = fs_copilot_new ();
+	for (i = 0; i < 30; i++)
+		inbound_feed (c, "45.33.32.157", 2222, TRUE, i * 5);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 0,
+	       "F6 control: without that policy row 2222 is no login port");
+	fs_copilot_free (c);
+
+	/* F6: split across services. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 9; i++) {
+		inbound_feed (c, "45.33.32.156", 22, TRUE, i * 10);
+		inbound_feed (c, "45.33.32.156", 3389, TRUE, i * 10 + 1);
+	}
+	ins = find_insight (c, FS_INSIGHT_BRUTE_FORCE);
+	CHECK (count_insights (c, FS_INSIGHT_BRUTE_FORCE) == 1 && ins != NULL &&
+	       strstr (ins->title, "SSH and RDP") != NULL && ins->count == 18,
+	       "F6: 9 on SSH and 9 on RDP from one host are 18 attempts");
+	fs_copilot_free (c);
+
+	/* F8: a 40-port scan reads 40, not the 12 it was first seen at. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 40; i++)
+		inbound_feed (c, "45.33.32.156", 2000 + i, TRUE, i);
+	ins = find_insight (c, FS_INSIGHT_INBOUND_SCAN);
+	CHECK (ins != NULL && strstr (ins->title, "probed 40 ports") != NULL &&
+	       ins->count == 40 && ins->evidence->len == 12 &&
+	       ((FsEvidence *) g_ptr_array_index (ins->evidence, 11))->port ==
+	       2039,
+	       "F8: the open scan finding follows the scan (\"%s\")",
+	       ins != NULL ? ins->title : "");
+	fs_copilot_free (c);
+
+	/* F7: the browser memory survives a restart. */
+	{
+		gchar *dir = g_dir_make_tmp ("fs-cp-nd-XXXXXX", NULL);
+		gchar *path = g_build_filename (dir, "behavior.csv", NULL);
+		gchar *text = NULL;
+		gint64 t1 = 8 * 86400;
+		gchar d[32];
+
+		c = fs_copilot_new ();
+		for (i = 0; i < 60; i++)
+			out_feed (c, "chrome.exe", "142.250.1.1", "443", "TCP", NULL, i);
+		for (i = 0; i < 30; i++) {
+			g_snprintf (d, sizeof d, "104.16.%d.1", i);
+			out_feed (c, "chrome.exe", d, "443", "TCP", NULL,
+			          t1 + i * 3600);
+		}
+		fs_copilot_clear_insights (c);
+		CHECK (fs_copilot_baseline_save (c, path, NULL),
+		       "F7: the baseline saves");
+		fs_copilot_free (c);
+		g_file_get_contents (path, &text, NULL, NULL);
+		CHECK (text != NULL && strstr (text, "chrome.exe,newdest,") != NULL,
+		       "F7: behavior.csv keeps the first contacts");
+		g_free (text);
+
+		c = fs_copilot_new ();
+		fs_copilot_baseline_load (c, path, NULL);
+		out_feed (c, "chrome.exe", "104.17.0.2", "443", "TCP", NULL,
+		          t1 + 32 * 3600);
+		CHECK (count_insights (c, FS_INSIGHT_UNUSUAL_DESTINATION) == 0,
+		       "F7: after a restart the browser is still browser-like");
+		fs_copilot_free (c);
+		g_remove (path);
+		g_rmdir (dir);
+		g_free (path);
+		g_free (dir);
+	}
+
+	/* F9: every evidence row is its own contact. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 8; i++)
+		out_feed (c, i < 7 ? "agent.exe" : "agent.exe [BLOCKED]",
+		          "203.0.113.70", "8443", "TCP",
+		          i < 7 ? NULL : "Threat intel: Spamhaus DROP", i * 60);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	{
+		gboolean rows_ok = ins != NULL && ins->evidence->len == 8;
+
+		for (i = 0; rows_ok && i < 8; i++) {
+			const FsEvidence *e = g_ptr_array_index (ins->evidence, i);
+
+			rows_ok = (i < 7) ? (!e->blocked && e->rule == NULL)
+			                  : (e->blocked &&
+			                     g_strcmp0 (e->rule, "Threat intel: "
+			                                "Spamhaus DROP") == 0);
+		}
+		CHECK (rows_ok,
+		       "F9: seven allowed contacts stay allowed in the evidence; "
+		       "only the eighth shows the block list");
+	}
+	fs_copilot_free (c);
+	c = fs_copilot_new ();
+	for (i = 0; i < 6; i++) {
+		out_feed (c, "agent.exe", "203.0.113.71", "4500", "TCP", NULL,
+		          i * 60);
+		out_feed (c, "agent.exe", "203.0.113.71", "4500", "UDP", NULL,
+		          i * 60 + 30);
+	}
+	CHECK (count_insights (c, FS_INSIGHT_BEACON) == 2,
+	       "F9: TCP and UDP to one port are two series, not one at 30 s");
+	ins = find_insight (c, FS_INSIGHT_BEACON);
+	CHECK (ins != NULL &&
+	       g_strcmp0 (((FsEvidence *) g_ptr_array_index (ins->evidence, 0))
+	                  ->protocol,
+	                  ((FsEvidence *) g_ptr_array_index (ins->evidence, 5))
+	                  ->protocol) == 0,
+	       "F9: a series' rows share one protocol");
+	fs_copilot_free (c);
+
+	/* F10: a port's service name is every program on that port. */
+	c = fs_copilot_new ();
+	for (i = 0; i < 70; i++) {
+		gchar d[32];
+
+		g_snprintf (d, sizeof d, "151.101.%d.%d", i / 50, i % 50 + 1);
+		out_feed (c, "https", d, "443", "TCP", NULL, i / 2);
+	}
+	CHECK (count_insights (c, FS_INSIGHT_FANOUT) == 0,
+	       "F10: one busy page on \"https\" (70 hosts, none refused) is "
+	       "no fan-out");
+	for (i = 0; i < 10; i++) {
+		gchar d[32];
+
+		g_snprintf (d, sizeof d, "198.51.100.%d", i + 1);
+		out_feed (c, "https [BLOCKED]", d, "443", "TCP", NULL, 40 + i);
+	}
+	ins = find_insight (c, FS_INSIGHT_FANOUT);
+	CHECK (ins != NULL && strstr (ins->why, "only refused hosts count")
+	       != NULL,
+	       "F10: ten refused hosts on \"https\" still are, and say why");
+	fs_copilot_free (c);
 }
 
 static void test_behavior_persistence (void)
@@ -3673,6 +4878,14 @@ static void test_trust_engine (void)
 
 /* --- small helpers -------------------------------------------------- */
 
+/* fs_policy_add stores a copy: add `rule' and free it. */
+static void
+policy_add_take (FsPolicy *policy, FsRule *rule)
+{
+	fs_policy_add (policy, rule);
+	fs_rule_free (rule);
+}
+
 static FsRule *
 gate_rule (FsRuleKind kind, const gchar *service, const gchar *port,
            const gchar *target)
@@ -4613,7 +5826,7 @@ static void test_start_gate (void)
 	/* 2. Held, journal present: start() is NOT called (it would
 	 * install the file); the journal policy is applied instead. */
 	live = fs_policy_new ();
-	fs_policy_add (live, gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE,
+	policy_add_take (live, gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE,
 	                                "SSH", "22", FS_TARGET_ANY));
 	fs_apply_journal_save (live, NULL);
 	fake_reset ();
@@ -4933,11 +6146,11 @@ static void test_autoblock_expire (void)
 	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
 
 	policy = fs_policy_new ();
-	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	policy_add_take (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
 	                                         old_csv));
-	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	policy_add_take (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
 	                                         new_csv));
-	fs_policy_add (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
+	policy_add_take (policy, fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO,
 	                                         user_csv));
 	fs_policy_save (policy);
 
@@ -5522,7 +6735,12 @@ static void test_prefs_table (void)
 	       "the table carries no ToS, DHCP, dial-out or first-run key");
 
 	/* fs_settings_new() and an unset store agree with the table. */
-	g_mkdir_with_parents (g_path_get_dirname (fs_prefs_path ()), 0700);
+	{
+		gchar *prefs_dir = g_path_get_dirname (fs_prefs_path ());
+
+		g_mkdir_with_parents (prefs_dir, 0700);
+		g_free (prefs_dir);
+	}
 	reset_prefs_file ("");
 	fresh = fs_settings_new ();
 	loaded = fs_settings_new ();
@@ -5759,7 +6977,12 @@ static void test_settings_pending (void)
 	remove (audit_file);
 	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
 	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
-	g_mkdir_with_parents (g_path_get_dirname (fs_prefs_path ()), 0700);
+	{
+		gchar *prefs_dir = g_path_get_dirname (fs_prefs_path ());
+
+		g_mkdir_with_parents (prefs_dir, 0700);
+		g_free (prefs_dir);
+	}
 	reset_prefs_file ("");
 
 	fake_reset ();
@@ -7282,6 +8505,63 @@ static void test_sharing_needs_both_devices (void)
 	fs_policy_free (p);
 }
 
+/* Review T5: the CLI's blocklist text names the platform's firewall
+ * and its way to get rights (fs-cli.h's FS_CLI_LIVE, FS_CLI_SUDO,
+ * FS_CLI_RIGHTS) in fs-cli-cmds.c too, not only in fs-cli-intel.c.  The
+ * CLI is built on Linux only, so the Windows words are read from the
+ * source: no Linux-only literal where the macros belong. */
+static gchar *
+read_lf (const gchar *path)
+{
+	gchar *src = NULL;
+
+	if (!g_file_get_contents (path, &src, NULL, NULL))
+		return NULL;
+	{
+		gchar *w = src;
+		for (const gchar *r = src; *r != '\0'; r++)
+			if (*r != '\r')
+				*w++ = *r;
+		*w = '\0';
+	}
+	return src;
+}
+
+static void test_cli_platform_words (void)
+{
+	gchar *cmds = read_lf ("src/cli/fs-cli-cmds.c");
+	gchar *intel = read_lf ("src/cli/fs-cli-intel.c");
+	gchar *hdr = read_lf ("src/cli/fs-cli.h");
+	const gchar *win;
+
+	CHECK (cmds != NULL && intel != NULL && hdr != NULL,
+	       "cli words: the CLI sources are readable");
+	if (cmds == NULL || intel == NULL || hdr == NULL)
+		goto out;
+	win = strstr (hdr, "#elif defined G_OS_WIN32");
+	CHECK (win != NULL &&
+	       strstr (win, "#define FS_CLI_LIVE      \"Windows Firewall\"")
+	       != NULL &&
+	       strstr (win, "#define FS_CLI_SUDO      \"\"") != NULL &&
+	       strstr (win, "opened as administrator") != NULL,
+	       "cli words: fs-cli.h names Windows Firewall and an "
+	       "administrator prompt for Windows");
+	CHECK (strstr (cmds, "\"the kernel does not hold them\"") == NULL &&
+	       strstr (cmds, "FS_CLI_LIVE \" does not hold \"") != NULL,
+	       "cli words: Stop and Start's blocklist error in fs-cli-cmds.c "
+	       "names the platform's firewall (FS_CLI_LIVE)");
+	CHECK (strstr (cmds, "\"run it with sudo, e.g.") == NULL &&
+	       strstr (cmds, "FS_CLI_RIGHTS \", e.g. `\" FS_CLI_SUDO") != NULL,
+	       "cli words: the root hint in fs-cli-cmds.c is the platform's "
+	       "(FS_CLI_RIGHTS, FS_CLI_SUDO)");
+	CHECK (strstr (intel, "#define FS_CLI_LIVE") == NULL,
+	       "cli words: one definition, in fs-cli.h");
+out:
+	g_free (cmds);
+	g_free (intel);
+	g_free (hdr);
+}
+
 /* --- "Start the firewall when StockFW opens" -------------------------
  * On Linux, start applies a policy.  At launch the shared policy is
  * created empty and only filled when the Policy page is built, and
@@ -7764,6 +9044,67 @@ static void test_netparse_verdicts (void)
 	CHECK (fs_netparse_log_line (drop, &hit, NULL), "parse again");
 	fs_netparse_name_by_verdict (&hit, FS_LOG_VERDICT_NONE);
 	CHECK (fs_hit_is_blocked (&hit), "an unknown verdict is named blocked");
+	fs_netparse_clear_hit (&hit);
+}
+
+/* 1.0.7 threat intel: the table logs "STOCKFW-TI <id> " (design 7).
+ * Only fs_netparse_intel_line takes those lines, and only with an id
+ * the engine could have written; the policy's parser never does, so a
+ * reader that knows nothing of the lists (the CLI's event list) cannot
+ * show one as a policy block. */
+static void test_netparse_intel_line (void)
+{
+	const gchar *ti =
+		"2026-11-02T10:00:00Z STOCKFW-TI spamhaus-drop IN=eth0 OUT= "
+		"SRC=203.0.113.7 DST=198.51.100.1 LEN=60 PROTO=TCP SPT=4444 "
+		"DPT=22";
+	const gchar *ti_out =
+		"Nov  2 10:00:00 host kernel: [99.1] STOCKFW-TI local-office IN= "
+		"OUT=eth0 SRC=10.0.0.2 DST=203.0.113.9 PROTO=TCP SPT=40000 "
+		"DPT=443";
+	const gchar *bad_id =
+		"2026-11-02T10:00:00Z STOCKFW-TI Bad;id IN=eth0 OUT= "
+		"SRC=203.0.113.7 DST=198.51.100.1 PROTO=TCP DPT=22";
+	const gchar *no_id =
+		"2026-11-02T10:00:00Z STOCKFW-TI";
+	const gchar *drop =
+		"2026-11-02T10:00:00Z STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 DST=198.51.100.1 PROTO=TCP SPT=1 DPT=443";
+	FsHit hit = { 0 };
+	gchar *id = NULL;
+
+	CHECK (fs_netparse_intel_line (ti, &hit, NULL, &id) &&
+	       g_strcmp0 (id, "spamhaus-drop") == 0 &&
+	       g_strcmp0 (hit.source, "203.0.113.7") == 0 &&
+	       g_strcmp0 (hit.port, "22") == 0 &&
+	       g_strcmp0 (hit.direction, "in") == 0 &&
+	       g_strcmp0 (hit.time, "2026-11-02T10:00:00Z") == 0,
+	       "intel line: the list's id and the packet's fields (id %s, "
+	       "src %s)", id ? id : "(null)",
+	       hit.source ? hit.source : "(null)");
+	fs_netparse_clear_hit (&hit);
+	g_clear_pointer (&id, g_free);
+
+	CHECK (fs_netparse_intel_line (ti_out, &hit, NULL, &id) &&
+	       g_strcmp0 (id, "local-office") == 0 &&
+	       g_strcmp0 (hit.direction, "out") == 0 &&
+	       g_strcmp0 (hit.destination, "203.0.113.9") == 0,
+	       "intel line: an outbound block in a classic syslog line");
+	fs_netparse_clear_hit (&hit);
+	g_clear_pointer (&id, g_free);
+
+	CHECK (!fs_netparse_intel_line (bad_id, &hit, NULL, &id) &&
+	       id == NULL && hit.source == NULL,
+	       "intel line: an id the engine could not have written is "
+	       "not an event");
+	CHECK (!fs_netparse_intel_line (no_id, &hit, NULL, &id) && id == NULL,
+	       "intel line: a marker with nothing after it is not an event");
+	CHECK (!fs_netparse_intel_line (drop, &hit, NULL, &id) && id == NULL,
+	       "intel line: a policy line is not an intel line");
+	CHECK (!fs_netparse_log_line (ti, &hit, NULL) && hit.source == NULL,
+	       "the policy parser never takes an intel line");
+	CHECK (fs_netparse_intel_line (ti, &hit, NULL, NULL),
+	       "intel line: the id is optional for the caller");
 	fs_netparse_clear_hit (&hit);
 }
 
@@ -8363,17 +9704,1393 @@ out:
 	fs_script_set_resolver (NULL);
 }
 
+/* ---- threat intel on Windows (fs-intelwin, design 11) ---------------- */
+
+#define IW_GEN  "g0123abcd"
+#define IW_GEN2 "g89abcdef"
+
+static FsRangeSet *
+iw_set (const gchar *const *tokens)
+{
+	FsRangeSet *s = fs_range_set_new ();
+
+	for (guint i = 0; tokens[i] != NULL; i++)
+		fs_range_set_add_text (s, tokens[i]);
+	fs_range_set_normalize (s);
+	return s;
+}
+
+/* A rule set of two lists: "alpha" both ways (5 IPv4, 2 IPv6), "beta"
+ * outbound only (1 IPv4). */
+static FsIntelRuleset *
+iw_ruleset (void)
+{
+	static const gchar *const alpha[] = {
+		"10.0.0.0/8", "192.0.2.7", "198.51.100.0/24",
+		"203.0.113.10-203.0.113.20", "45.0.0.1",
+		"2001:db8::/32", "2001:db8:ffff::1", NULL };
+	static const gchar *const beta[] = { "100.64.0.0/10", NULL };
+	FsIntelRuleset *rs = fs_intel_ruleset_new ();
+
+	fs_intel_ruleset_add (rs, "alpha", "Alpha | list\nsecond line",
+	                      FS_INTEL_DIR_BOTH, iw_set (alpha));
+	fs_intel_ruleset_add (rs, "beta", "Beta", FS_INTEL_DIR_OUT,
+	                      iw_set (beta));
+	return rs;
+}
+
+/* What Windows Firewall would hand back for a plan's rules: every
+ * property as written, RemoteAddresses optionally the way Windows
+ * stores it (IPv4 with dotted masks, tokens in another order). */
+static gchar *
+iw_windows_form (const gchar *remote)
+{
+	gchar **t = g_strsplit (remote, ",", -1);
+	guint n = g_strv_length (t);
+	GString *out = g_string_new (NULL);
+
+	for (guint k = n; k-- > 0;) {
+		gchar *tok = t[k];
+		gchar *slash = strchr (tok, '/');
+
+		if (out->len > 0)
+			g_string_append_c (out, ',');
+		if (strchr (tok, ':') == NULL && strchr (tok, '-') == NULL) {
+			guint bits = slash ? (guint) atoi (slash + 1) : 32;
+			guint32 m = bits == 0 ? 0 : 0xffffffffu << (32 - bits);
+
+			if (slash)
+				*slash = '\0';
+			g_string_append_printf (out, "%s/%u.%u.%u.%u", tok,
+			                        m >> 24, (m >> 16) & 255,
+			                        (m >> 8) & 255, m & 255);
+		} else {
+			g_string_append (out, tok);
+		}
+	}
+	g_strfreev (t);
+	return g_string_free (out, FALSE);
+}
+
+static GPtrArray *
+iw_seen_from_plan (const FsIntelWinPlan *plan, gboolean windows_form)
+{
+	GPtrArray *seen = g_ptr_array_new_with_free_func (fs_intelwin_seen_free);
+
+	for (guint i = 0; i < plan->rules->len; i++) {
+		const FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+		FsIntelWinSeen *s = fs_intelwin_seen_new ();
+
+		s->name = g_strdup (r->name);
+		s->description = g_strdup (r->description);
+		s->grouping = g_strdup (FS_INTELWIN_GROUP);
+		s->direction = (gint) r->dir;
+		s->action = 0;
+		s->enabled = r->enabled;
+		s->profiles = 0x7fffffff;   /* NET_FW_PROFILE2_ALL */
+		s->protocol = 256;
+		s->local_addresses = g_strdup ("*");
+		s->remote_addresses = windows_form && r->family != FS_AF_NONE
+		                      ? iw_windows_form (r->remote)
+		                      : g_strdup (r->remote);
+		s->local_ports = NULL;
+		s->remote_ports = NULL;
+		s->interface_types = g_strdup ("All");
+		g_ptr_array_add (seen, s);
+	}
+	return seen;
+}
+
+static FsIntelWinSeen *
+iw_find (GPtrArray *seen, const gchar *name)
+{
+	for (guint i = 0; i < seen->len; i++) {
+		FsIntelWinSeen *s = g_ptr_array_index (seen, i);
+
+		if (g_strcmp0 (s->name, name) == 0)
+			return s;
+	}
+	return NULL;
+}
+
+static FsIntelWinRule *
+iw_rule (const FsIntelWinPlan *plan, const gchar *name)
+{
+	for (guint i = 0; i < plan->rules->len; i++) {
+		FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+
+		if (strcmp (r->name, name) == 0)
+			return r;
+	}
+	return NULL;
+}
+
+/* ---- the Windows store's security descriptors (fs-winstore, 11.5) --- */
+
+/* A reader for the SDDL subset the store uses and Windows shows for a
+ * folder (owner "O:", "D:" with "P", "(type;flags;rights;;;sid)"), as
+ * the judge's input.  `trusted' names the SIDs taken as trusted, as
+ * fs-winstore.c does: SY, BA, and the user when it is trusted. */
+typedef struct
+{
+	gchar         *owner;
+	gboolean       has_dacl;
+	gboolean       protected_dacl;
+	FsWinstoreAce  aces[16];
+	gchar         *sids[16];
+	guint          n;
+} SddlRead;
+
+static guint32
+sddl_rights (const gchar *r)
+{
+	if (g_str_has_prefix (r, "0x"))
+		return (guint32) g_ascii_strtoull (r + 2, NULL, 16);
+	if (strcmp (r, "FA") == 0)
+		return 0x1f01ffu;   /* FILE_ALL_ACCESS */
+	if (strcmp (r, "GA") == 0)
+		return 0x10000000u;
+	if (strcmp (r, "GR") == 0)
+		return 0x80000000u;
+	if (strcmp (r, "GW") == 0)
+		return 0x40000000u;
+	return 0xffffffffu;   /* unknown: make it fail loudly */
+}
+
+static guint8
+sddl_flags (const gchar *f)
+{
+	guint8 out = 0;
+
+	for (; f[0] != '\0' && f[1] != '\0'; f += 2) {
+		if (strncmp (f, "OI", 2) == 0)
+			out |= 0x01;
+		else if (strncmp (f, "CI", 2) == 0)
+			out |= 0x02;
+		else if (strncmp (f, "IO", 2) == 0)
+			out |= 0x08;
+		else if (strncmp (f, "ID", 2) == 0)
+			out |= 0x10;
+	}
+	return out;
+}
+
+static gboolean
+sddl_read (const gchar *sddl, SddlRead *out)
+{
+	const gchar *p = sddl;
+
+	memset (out, 0, sizeof *out);
+	if (g_str_has_prefix (p, "O:")) {
+		const gchar *d = strstr (p, "D:");
+
+		if (d == NULL)
+			d = p + strlen (p);   /* an owner and no access list */
+		out->owner = g_strndup (p + 2, (gsize) (d - p - 2));
+		p = d;
+	}
+	if (!g_str_has_prefix (p, "D:"))
+		return TRUE;
+	out->has_dacl = TRUE;
+	p += 2;
+	while (*p != '\0' && *p != '(') {
+		if (*p == 'P')
+			out->protected_dacl = TRUE;
+		p++;
+	}
+	while (*p == '(' && out->n < G_N_ELEMENTS (out->aces)) {
+		const gchar *end = strchr (p, ')');
+		gchar *body, **f;
+
+		if (end == NULL)
+			return FALSE;
+		body = g_strndup (p + 1, (gsize) (end - p - 1));
+		f = g_strsplit (body, ";", -1);
+		if (g_strv_length (f) != 6) {
+			g_strfreev (f);
+			g_free (body);
+			return FALSE;
+		}
+		out->aces[out->n].type =
+			strcmp (f[0], "A") == 0 ? FS_WINSTORE_ACE_ALLOWED :
+			strcmp (f[0], "D") == 0 ? FS_WINSTORE_ACE_DENIED :
+			strcmp (f[0], "AU") == 0 ? FS_WINSTORE_ACE_AUDIT :
+			strcmp (f[0], "OA") == 0 ? 0x05 : 0xff;
+		out->aces[out->n].flags = sddl_flags (f[1]);
+		out->aces[out->n].mask = sddl_rights (f[2]);
+		out->sids[out->n] = g_strdup (f[5]);
+		out->n++;
+		g_strfreev (f);
+		g_free (body);
+		p = end + 1;
+	}
+	return *p == '\0';
+}
+
+static void
+sddl_trust (SddlRead *r, const gchar *user)
+{
+	for (guint i = 0; i < r->n; i++)
+		r->aces[i].trusted = strcmp (r->sids[i], "SY") == 0 ||
+		                     strcmp (r->sids[i], "BA") == 0 ||
+		                     (user != NULL &&
+		                      strcmp (r->sids[i], user) == 0);
+}
+
+static gboolean
+sddl_owner_trusted (const SddlRead *r, const gchar *creator,
+                    const gchar *user)
+{
+	/* No "O:": Windows makes the creating account the owner. */
+	const gchar *o = r->owner != NULL ? r->owner : creator;
+
+	return strcmp (o, "SY") == 0 || strcmp (o, "BA") == 0 ||
+	       (user != NULL && strcmp (o, user) == 0);
+}
+
+static void
+sddl_clear (SddlRead *r)
+{
+	g_free (r->owner);
+	for (guint i = 0; i < r->n; i++)
+		g_free (r->sids[i]);
+}
+
+/* Judges `sddl' as a folder created by `creator', with `user' trusted
+ * (NULL: the default store, where only SY and BA are). */
+static FsWinstoreFault
+judge_sddl (const gchar *sddl, const gchar *creator, const gchar *user,
+            gboolean *readable)
+{
+	SddlRead r;
+	FsWinstoreFault f;
+
+	if (!sddl_read (sddl, &r)) {
+		sddl_clear (&r);
+		return (FsWinstoreFault) -1;
+	}
+	sddl_trust (&r, user);
+	f = fs_winstore_judge (sddl_owner_trusted (&r, creator, user),
+	                       r.has_dacl, r.aces, r.n, readable);
+	sddl_clear (&r);
+	return f;
+}
+
+#define WS_ADMIN_USER "S-1-5-21-111-222-333-500"   /* runneradmin, say */
+
+static void
+test_winstore_sddl (void)
+{
+	gchar *parent = fs_winstore_sddl (FS_WINSTORE_DIR_PARENT, TRUE, NULL);
+	gchar *store = fs_winstore_sddl (FS_WINSTORE_DIR_STORE, TRUE, NULL);
+	gchar *over = fs_winstore_sddl (FS_WINSTORE_DIR_STORE, TRUE,
+	                                WS_ADMIN_USER);
+	gchar *over_plain = fs_winstore_sddl (FS_WINSTORE_DIR_STORE, FALSE,
+	                                      WS_ADMIN_USER);
+	gchar *old_parent = g_strdup ("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                              "(A;OICI;0x1200a9;;;BU)");
+	gboolean readable = TRUE;
+	SddlRead r;
+
+	/* What StockFW creates, exactly. */
+	CHECK (strcmp (parent, "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                       "(A;OICI;0x1200a9;;;BU)") == 0,
+	       "winstore: %%ProgramData%%\\StockFW is created owned by "
+	       "Administrators, protected, SYSTEM and Administrators full, "
+	       "Users read (%s)", parent);
+	CHECK (strcmp (store, "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)") == 0,
+	       "winstore: intel is created owned by Administrators, "
+	       "protected, SYSTEM and Administrators only (%s)", store);
+	CHECK (strcmp (over, "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                     "(A;OICI;FA;;;" WS_ADMIN_USER ")") == 0 &&
+	       strcmp (over_plain, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                           "(A;OICI;FA;;;" WS_ADMIN_USER ")") == 0,
+	       "winstore: an override adds the current user; it names "
+	       "Administrators as owner only when elevated (%s | %s)", over,
+	       over_plain);
+	CHECK (sddl_read (parent, &r) && r.protected_dacl && r.owner != NULL &&
+	       strcmp (r.owner, "BA") == 0,
+	       "winstore: the reader sees the owner and the protection");
+	sddl_clear (&r);
+
+	/* Each passes the check it will meet, created by an elevated
+	 * administrator account that is neither SYSTEM nor
+	 * Administrators: the CI's runneradmin (round 3 on Windows). */
+	CHECK (judge_sddl (parent, WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_SAFE && readable,
+	       "winstore: StockFW's own %%ProgramData%%\\StockFW passes the "
+	       "default store's check (Users may read it)");
+	CHECK (judge_sddl (store, WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_SAFE && !readable,
+	       "winstore: StockFW's own intel passes, and nobody else may "
+	       "read it (so it is never tightened again)");
+	CHECK (judge_sddl (over, WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_SAFE &&
+	       judge_sddl (over_plain, WS_ADMIN_USER, WS_ADMIN_USER,
+	                   &readable) == FS_WINSTORE_SAFE,
+	       "winstore: an override passes the override's check, elevated "
+	       "or not");
+
+	/* The fault the CI found: without "O:BA" the creating account owns
+	 * the folder, and the default store trusts no user. */
+	CHECK (judge_sddl (old_parent, WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_OWNER,
+	       "winstore: a folder created without an owner belongs to the "
+	       "account that made it, and the default store refuses it "
+	       "(the CI failure: owned by runneradmin)");
+	CHECK (judge_sddl (old_parent, "SY", NULL, &readable) ==
+	       FS_WINSTORE_SAFE,
+	       "winstore: ... which only a creator that is SYSTEM avoided");
+
+	/* A folder another account made first is refused as foreign, even
+	 * with StockFW's access list on it. */
+	CHECK (judge_sddl ("O:BUD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_OWNER &&
+	       judge_sddl ("O:S-1-5-21-111-222-333-1001D:P(A;OICI;FA;;;SY)",
+	                   WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_FAULT_OWNER,
+	       "winstore: a folder owned by Users, or by another user under "
+	       "an override, is refused as foreign");
+
+	/* A folder that inherits a drive root's default access list (the
+	 * runner's D:\a\_temp\...): Users may add folders (CI;AD) and,
+	 * through the inherit-only entry for files, add files below;
+	 * CREATOR OWNER applies to what is created inside only. */
+	CHECK (judge_sddl ("O:" WS_ADMIN_USER "D:AI(A;OICIID;FA;;;SY)"
+	                   "(A;OICIID;FA;;;BA)(A;OICIID;0x1200a9;;;BU)"
+	                   "(A;CIID;0x4;;;BU)(A;CIIOID;0x2;;;BU)"
+	                   "(A;OICIIOID;GA;;;CO)",
+	                   WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE,
+	       "winstore: a temporary folder under a drive root (Users may "
+	       "add folders to it) is refused as an override's parent (the "
+	       "CI failure for the override and the engine checks)");
+	CHECK (judge_sddl ("O:" WS_ADMIN_USER "D:AI(A;OICIID;FA;;;SY)"
+	                   "(A;OICIID;FA;;;BA)(A;OICIID;0x1200a9;;;BU)"
+	                   "(A;CIIOID;0x2;;;BU)(A;OICIIOID;GA;;;CO)",
+	                   WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_SAFE && readable,
+	       "winstore: inherit-only entries (CREATOR OWNER, Users' "
+	       "add-file for what is inside) do not count against the "
+	       "folder itself; Users' read makes it readable");
+
+	/* The rest of the judge. */
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(D;;FA;;;WD)(AU;SA;FA;;;WD)",
+	                   WS_ADMIN_USER, NULL, &readable) == FS_WINSTORE_SAFE &&
+	       !readable,
+	       "winstore: deny and audit entries are not grants");
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;0x40000;;;WD)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE &&
+	       judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;0x40;;;AU)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE &&
+	       judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;GW;;;BU)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE,
+	       "winstore: write-DAC for Everyone, delete-child for "
+	       "Authenticated Users, generic write for Users: each refused");
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;FA;;;" WS_ADMIN_USER ")",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE,
+	       "winstore: the current user is trusted only under an "
+	       "override, never in the default store");
+	CHECK (judge_sddl ("O:BA", WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_NO_DACL,
+	       "winstore: no access list is refused");
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(OA;;FA;;;WD)", WS_ADMIN_USER,
+	                   NULL, &readable) == FS_WINSTORE_FAULT_UNKNOWN_ACE,
+	       "winstore: an entry the judge cannot read (an object ACE) is "
+	       "refused");
+	CHECK (fs_winstore_fault_text (FS_WINSTORE_SAFE) == NULL &&
+	       fs_winstore_fault_text (FS_WINSTORE_FAULT_OWNER) != NULL &&
+	       strstr (fs_winstore_fault_text (FS_WINSTORE_FAULT_CHANGE),
+	               "may change it") != NULL,
+	       "winstore: every fault has its sentence");
+
+	g_free (parent);
+	g_free (store);
+	g_free (over);
+	g_free (over_plain);
+	g_free (old_parent);
+}
+
+static void
+test_intelwin_gen (void)
+{
+	const gchar *taken[] = { "g00000005", NULL };
+	gchar *g;
+
+	CHECK (fs_intelwin_gen_is_valid (IW_GEN), "intelwin: %s is a generation",
+	       IW_GEN);
+	CHECK (!fs_intelwin_gen_is_valid ("G0123abcd") &&
+	       !fs_intelwin_gen_is_valid ("g0123ABCD") &&
+	       !fs_intelwin_gen_is_valid ("g0123abc") &&
+	       !fs_intelwin_gen_is_valid ("g0123abcde") &&
+	       !fs_intelwin_gen_is_valid ("g0123abc ") &&
+	       !fs_intelwin_gen_is_valid (NULL),
+	       "intelwin: upper case, short, long, trailing space and NULL "
+	       "are not generations");
+	g = fs_intelwin_gen_new (5, NULL);
+	CHECK (g_strcmp0 (g, "g00000005") == 0,
+	       "intelwin: a new generation comes from its seed (%s)", g);
+	g_free (g);
+	g = fs_intelwin_gen_new (5, taken);
+	CHECK (fs_intelwin_gen_is_valid (g) && strcmp (g, "g00000005") != 0,
+	       "intelwin: a new generation is never one already on the "
+	       "firewall (%s)", g);
+	g_free (g);
+}
+
+static void
+test_intelwin_plan (void)
+{
+	FsIntelRuleset *rs = iw_ruleset ();
+	FsIntelWinPlan *plan = fs_intelwin_plan (rs, IW_GEN, 2, 1000);
+	static const gchar *const names[] = {
+		"SFW-TI alpha in IPv4 1/3 " IW_GEN,
+		"SFW-TI alpha in IPv4 2/3 " IW_GEN,
+		"SFW-TI alpha in IPv4 3/3 " IW_GEN,
+		"SFW-TI alpha in IPv6 1/1 " IW_GEN,
+		"SFW-TI alpha out IPv4 1/3 " IW_GEN,
+		"SFW-TI alpha out IPv4 2/3 " IW_GEN,
+		"SFW-TI alpha out IPv4 3/3 " IW_GEN,
+		"SFW-TI alpha out IPv6 1/1 " IW_GEN,
+		"SFW-TI beta out IPv4 1/1 " IW_GEN,
+		"SFW-TI manifest " IW_GEN,
+	};
+	gboolean names_ok, shape_ok = TRUE, lossless = TRUE;
+	gchar *digest = fs_intel_ruleset_digest (rs);
+	const FsIntelWinRule *m;
+	gchar *want;
+
+	CHECK (plan != NULL && plan->rules->len == G_N_ELEMENTS (names),
+	       "intelwin plan: 2 lists, one both ways, 2 tokens a rule -> %u "
+	       "rules (got %u)", (guint) G_N_ELEMENTS (names),
+	       plan ? plan->rules->len : 0);
+	if (plan == NULL || plan->rules->len != G_N_ELEMENTS (names))
+		goto out;
+	names_ok = TRUE;
+	for (guint i = 0; i < G_N_ELEMENTS (names); i++) {
+		const FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+
+		if (strcmp (r->name, names[i]) != 0) {
+			printf ("      rule %u is \"%s\", wanted \"%s\"\n", i,
+			        r->name, names[i]);
+			names_ok = FALSE;
+		}
+	}
+	CHECK (names_ok, "intelwin plan: names encode list, direction, "
+	       "family, chunk i/n and generation, inbound before outbound, "
+	       "IPv4 before IPv6, the manifest last");
+	CHECK (g_strcmp0 (plan->digest, digest) == 0 && plan->plan != NULL &&
+	       strlen (plan->plan) == 32 && g_strcmp0 (plan->gen, IW_GEN) == 0,
+	       "intelwin plan: carries the rule set's digest, its generation "
+	       "and a 32-digit plan hash");
+
+	for (guint i = 0; i + 1 < plan->rules->len; i++) {
+		const FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+
+		if (!r->enabled || r->tokens == 0 || r->tokens > 2 ||
+		    r->family == FS_AF_NONE ||
+		    g_str_has_prefix (r->name, "StockFW-") ||
+		    !g_str_has_prefix (r->name, FS_INTELWIN_PREFIX) ||
+		    strchr (r->description, '|') != NULL ||
+		    strchr (r->description, '\n') != NULL ||
+		    (strstr (r->name, " in ") ? r->dir != FS_INTELWIN_IN
+		                              : r->dir != FS_INTELWIN_OUT))
+			shape_ok = FALSE;
+	}
+	CHECK (shape_ok, "intelwin plan: every address rule is enabled, has "
+	       "1-2 tokens, the direction its name says, never the policy's "
+	       "\"StockFW-\" prefix, and a description without '|' or line "
+	       "breaks");
+
+	/* No address lost or added: per list and direction, the rules'
+	 * RemoteAddresses read back are the list. */
+	for (guint s = 0; s < rs->sets->len; s++) {
+		const FsIntelSet *set = g_ptr_array_index (rs->sets, s);
+
+		for (guint d = 1; d <= 2; d++) {
+			FsRangeSet *got = fs_range_set_new ();
+			gchar *a, *b;
+			gchar *prefix;
+
+			if ((set->dir & d) == 0)
+				continue;
+			prefix = g_strdup_printf ("SFW-TI %s %s ", set->id,
+			                          d == 1 ? "in" : "out");
+			for (guint i = 0; i < plan->rules->len; i++) {
+				const FsIntelWinRule *r =
+					g_ptr_array_index (plan->rules, i);
+
+				if (g_str_has_prefix (r->name, prefix))
+					fs_intelwin_parse_remote (r->remote, got);
+			}
+			fs_range_set_normalize (got);
+			a = fs_range_set_to_text (got);
+			b = fs_range_set_to_text (set->ranges);
+			if (strcmp (a, b) != 0)
+				lossless = FALSE;
+			g_free (a);
+			g_free (b);
+			g_free (prefix);
+			fs_range_set_free (got);
+		}
+	}
+	CHECK (lossless, "intelwin plan: per list and direction, the chunks "
+	       "together hold exactly the list's addresses");
+
+	m = g_ptr_array_index (plan->rules, plan->rules->len - 1);
+	want = g_strdup_printf ("sfw:%s plan:%s rules:9", digest, plan->plan);
+	CHECK (!m->enabled && m->family == FS_AF_NONE &&
+	       g_strcmp0 (m->remote, FS_INTELWIN_MANIFEST_REMOTE) == 0 &&
+	       g_str_has_suffix (m->description, want),
+	       "intelwin plan: the manifest is disabled, names only "
+	       "192.0.2.1 and ends \"%s\"", want);
+	g_free (want);
+	CHECK (strstr (((FsIntelWinRule *) g_ptr_array_index (plan->rules, 0))
+	               ->description, "Alpha") != NULL,
+	       "intelwin plan: a rule's description names its list");
+out:
+	fs_intelwin_plan_free (plan);
+	g_free (digest);
+
+	/* The same rule set planned again: the same rules. */
+	{
+		FsIntelWinPlan *a = fs_intelwin_plan (rs, IW_GEN, 2, 1000);
+		FsIntelWinPlan *b = fs_intelwin_plan (rs, IW_GEN2, 2, 1000);
+
+		CHECK (a && b && g_strcmp0 (a->digest, b->digest) == 0 &&
+		       g_strcmp0 (a->plan, b->plan) != 0,
+		       "intelwin plan: another generation names other rules, "
+		       "so its plan hash differs; the digest does not");
+		fs_intelwin_plan_free (a);
+		fs_intelwin_plan_free (b);
+	}
+
+	/* Refusals. */
+	CHECK (fs_intelwin_plan (rs, "g0123ABCD", 2, 1000) == NULL &&
+	       fs_intelwin_plan (rs, "x; rm", 2, 1000) == NULL &&
+	       fs_intelwin_plan (rs, IW_GEN, 0, 1000) == NULL &&
+	       fs_intelwin_plan (rs, IW_GEN, 2, 0) == NULL,
+	       "intelwin plan: an invalid generation or a zero limit plans "
+	       "nothing");
+	{
+		FsIntelSet *first = g_ptr_array_index (rs->sets, 0);
+		gchar *saved = first->id;
+
+		first->id = (gchar *) "../evil name";
+		CHECK (fs_intelwin_plan (rs, IW_GEN, 2, 1000) == NULL,
+		       "intelwin plan: a hand-filled set whose id is not valid "
+		       "never becomes a rule name");
+		first->id = (gchar *) "beta";
+		CHECK (fs_intelwin_plan (rs, IW_GEN, 2, 1000) == NULL,
+		       "intelwin plan: two sets with one id are refused");
+		first->id = saved;
+	}
+	fs_intel_ruleset_free (rs);
+
+	/* The empty rule set leaves no rule; a list emptied by
+	 * subtraction leaves the manifest alone. */
+	rs = fs_intel_ruleset_new ();
+	plan = fs_intelwin_plan (rs, IW_GEN, FS_INTELWIN_MAX_TOKENS,
+	                         FS_INTELWIN_MAX_CHARS);
+	CHECK (plan != NULL && plan->rules->len == 0 && plan->digest != NULL,
+	       "intelwin plan: the empty rule set has no rule at all");
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_add (rs, "emptied", "Emptied", FS_INTEL_DIR_BOTH,
+	                      fs_range_set_new ());
+	plan = fs_intelwin_plan (rs, IW_GEN, FS_INTELWIN_MAX_TOKENS,
+	                         FS_INTELWIN_MAX_CHARS);
+	CHECK (plan != NULL && plan->rules->len == 1 &&
+	       strcmp (((FsIntelWinRule *) plan->rules->pdata[0])->name,
+	               "SFW-TI manifest " IW_GEN) == 0,
+	       "intelwin plan: a list with every address subtracted leaves "
+	       "only the manifest, so it still reads as loaded");
+	if (plan != NULL) {
+		GPtrArray *seen = iw_seen_from_plan (plan, FALSE);
+		FsIntelWinRead rd;
+
+		fs_intelwin_read (seen, &rd);
+		CHECK (rd.live == FS_INTEL_LIVE_PRESENT &&
+		       g_strcmp0 (rd.digest, plan->digest) == 0,
+		       "intelwin read: ... and reads back PRESENT with its digest");
+		fs_intelwin_read_clear (&rd);
+		g_ptr_array_unref (seen);
+	}
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_free (rs);
+}
+
+/* The real limits, on lists the size of real feeds. */
+static void
+test_intelwin_limits (void)
+{
+	FsIntelRuleset *rs = fs_intel_ruleset_new ();
+	FsRangeSet *v4 = fs_range_set_new ();
+	FsRangeSet *v6 = fs_range_set_new ();
+	FsIntelWinPlan *plan;
+	guint rules4 = 0, rules6 = 0, max_tok = 0;
+	gsize max_len = 0;
+	guint64 tokens = 0;
+
+	/* 2500 separate IPv4 addresses. */
+	for (guint i = 0; i < 2500; i++)
+		fs_range_set_add4 (v4, 0x0a000000u + i * 4, 0x0a000000u + i * 4);
+	fs_range_set_normalize (v4);
+	/* 1500 IPv6 ranges that print as long "a-b" tokens. */
+	for (guint i = 0; i < 1500; i++) {
+		FsU128 a = { G_GUINT64_CONSTANT (0x2001db8abcdef012) + i * 2,
+		             G_GUINT64_CONSTANT (0x123456789abcdef1) };
+		FsU128 b = { a.hi, G_GUINT64_CONSTANT (0xfedcba9876543210) };
+
+		fs_range_set_add6 (v6, a, b);
+	}
+	fs_range_set_normalize (v6);
+	fs_intel_ruleset_add (rs, "big4", "Big v4", FS_INTEL_DIR_IN, v4);
+	fs_intel_ruleset_add (rs, "big6", "Big v6", FS_INTEL_DIR_IN, v6);
+
+	plan = fs_intelwin_plan (rs, IW_GEN, FS_INTELWIN_MAX_TOKENS,
+	                         FS_INTELWIN_MAX_CHARS);
+	for (guint i = 0; plan != NULL && i < plan->rules->len; i++) {
+		const FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+
+		if (r->family == FS_AF_NONE)
+			continue;
+		if (r->family == FS_AF_V4)
+			rules4++;
+		else
+			rules6++;
+		tokens += r->tokens;
+		max_tok = MAX (max_tok, r->tokens);
+		max_len = MAX (max_len, strlen (r->remote));
+	}
+	CHECK (plan != NULL && rules4 == 3 && tokens == 4000 &&
+	       max_tok <= FS_INTELWIN_MAX_TOKENS &&
+	       max_len <= FS_INTELWIN_MAX_CHARS,
+	       "intelwin limits: 2500 IPv4 addresses take 3 rules, every "
+	       "rule holds at most %u addresses and %u characters (most: %u, "
+	       "%" G_GSIZE_FORMAT ")", FS_INTELWIN_MAX_TOKENS,
+	       FS_INTELWIN_MAX_CHARS, max_tok, max_len);
+	CHECK (rules6 >= 3,
+	       "intelwin limits: 1500 long IPv6 ranges are split by "
+	       "characters before they reach 1000 a rule (%u rules)", rules6);
+	CHECK (plan != NULL && iw_rule (plan, "SFW-TI big4 in IPv4 3/3 " IW_GEN)
+	       != NULL && iw_rule (plan, "SFW-TI big4 in IPv4 3/3 " IW_GEN)
+	       ->tokens == 500,
+	       "intelwin limits: the last chunk holds the remainder (500)");
+	fs_intelwin_plan_free (plan);
+
+	/* A cap smaller than one token: the token stands alone, never
+	 * split. */
+	plan = fs_intelwin_plan (rs, IW_GEN, 1000, 5);
+	CHECK (plan != NULL && plan->rules->len == 4000 + 1,
+	       "intelwin limits: a token longer than the character cap gets "
+	       "a rule of its own, never cut");
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_free (rs);
+}
+
+static void
+test_intelwin_parse_remote (void)
+{
+	FsRangeSet *s = fs_range_set_new ();
+	gchar *text;
+
+	CHECK (fs_intelwin_parse_remote ("10.0.0.0/255.0.0.0,"
+	                                 "192.0.2.7/255.255.255.255,"
+	                                 "203.0.113.10-203.0.113.20,"
+	                                 "2001:db8::/32, 2001:db8:ffff::1", s),
+	       "intelwin remote: dotted masks, a range, IPv6 and spaces "
+	       "after commas are read");
+	fs_range_set_normalize (s);
+	text = fs_range_set_to_text (s);
+	CHECK (g_strcmp0 (text, "10.0.0.0/8\n192.0.2.7\n"
+	                        "203.0.113.10-203.0.113.20\n2001:db8::/32\n") == 0,
+	       "intelwin remote: ... as the same addresses (%s)", text);
+	g_free (text);
+	fs_range_set_free (s);
+
+	{
+		static const gchar *const bad[] = {
+			"*", "LocalSubnet", "DNS", "DefaultGateway", "Intranet",
+			"", "1.2.3.4,,5.6.7.8", "1.2.3.4,", "1.2.3.4/255.0.255.0",
+			"1.2.3.4/33", "example.com", "1.2.3.4,*",
+		};
+		gboolean all = TRUE;
+
+		for (guint i = 0; i < G_N_ELEMENTS (bad); i++) {
+			FsRangeSet *t = fs_range_set_new ();
+
+			fs_range_set_add_text (t, "198.51.100.1");
+			if (fs_intelwin_parse_remote (bad[i], t) ||
+			    fs_range_set_count4 (t) != 1 ||
+			    fs_range_set_count6 (t) != 0) {
+				printf ("      accepted or touched: \"%s\"\n", bad[i]);
+				all = FALSE;
+			}
+			fs_range_set_free (t);
+		}
+		CHECK (all && !fs_intelwin_parse_remote (NULL, NULL),
+		       "intelwin remote: \"*\", keywords, empty tokens, a mask "
+		       "with holes and names are refused, and the set is left "
+		       "as it was");
+	}
+}
+
+typedef void (*IwTamper) (GPtrArray *seen);
+
+static void iw_t_drop_chunk (GPtrArray *s)
+{ g_ptr_array_remove (s, iw_find (s, "SFW-TI alpha in IPv4 2/3 " IW_GEN)); }
+static void iw_t_disable (GPtrArray *s)
+{ iw_find (s, "SFW-TI alpha in IPv4 1/3 " IW_GEN)->enabled = FALSE; }
+static void iw_t_allow (GPtrArray *s)
+{ iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN)->action = 1; }
+static void iw_t_direction (GPtrArray *s)
+{ iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN)->direction = 1; }
+static void iw_t_profile (GPtrArray *s)
+{ iw_find (s, "SFW-TI alpha out IPv6 1/1 " IW_GEN)->profiles = 4; }
+static void iw_t_protocol (GPtrArray *s)
+{ iw_find (s, "SFW-TI alpha out IPv6 1/1 " IW_GEN)->protocol = 6; }
+static void iw_t_local_port (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv6 1/1 " IW_GEN);
+	g_free (x->local_ports);
+	x->local_ports = g_strdup ("443");
+}
+static void iw_t_local_addr (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv6 1/1 " IW_GEN);
+	g_free (x->local_addresses);
+	x->local_addresses = g_strdup ("10.9.9.9");
+}
+static void iw_t_program (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv4 3/3 " IW_GEN);
+	x->application = g_strdup ("C:\\nothing.exe");
+}
+static void iw_t_remote_port (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	g_free (x->remote_ports);
+	x->remote_ports = g_strdup ("443");
+}
+static void iw_t_service (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	g_free (x->service);
+	x->service = g_strdup ("Dnscache");
+}
+static void iw_t_iftype (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv4 3/3 " IW_GEN);
+	g_free (x->interface_types);
+	x->interface_types = g_strdup ("Wireless");
+}
+static void iw_t_ifaces (GPtrArray *s)
+{ iw_find (s, "SFW-TI alpha in IPv4 3/3 " IW_GEN)->interfaces = TRUE; }
+static void iw_t_conditions (GPtrArray *s)
+{ iw_find (s, "SFW-TI alpha in IPv4 3/3 " IW_GEN)->conditions = TRUE; }
+static void iw_t_remote_less (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv4 1/3 " IW_GEN);
+	gchar *comma = strchr (x->remote_addresses, ',');
+	if (comma != NULL)
+		*comma = '\0';   /* one address fewer */
+}
+static void iw_t_remote_any (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv4 1/3 " IW_GEN);
+	g_free (x->remote_addresses);
+	x->remote_addresses = g_strdup ("*");
+}
+static void iw_t_remote_mixed (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	gchar *more = g_strconcat (x->remote_addresses, ",2001:db8::1", NULL);
+	g_free (x->remote_addresses);
+	x->remote_addresses = more;
+}
+static void iw_t_swap (GPtrArray *s)
+{
+	/* Same addresses overall, moved between two rules. */
+	FsIntelWinSeen *a = iw_find (s, "SFW-TI alpha in IPv4 1/3 " IW_GEN);
+	FsIntelWinSeen *b = iw_find (s, "SFW-TI alpha in IPv4 2/3 " IW_GEN);
+	gchar *t = a->remote_addresses;
+	a->remote_addresses = b->remote_addresses;
+	b->remote_addresses = t;
+}
+static void iw_t_extra (GPtrArray *s)
+{
+	FsIntelWinSeen *x = fs_intelwin_seen_new ();
+	FsIntelWinSeen *like = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+
+	*x = *like;
+	x->name = g_strdup ("SFW-TI gamma out IPv4 1/1 " IW_GEN);
+	x->description = g_strdup (like->description);
+	x->grouping = g_strdup (like->grouping);
+	x->local_addresses = g_strdup (like->local_addresses);
+	x->remote_addresses = g_strdup ("8.8.8.8");
+	x->interface_types = g_strdup (like->interface_types);
+	g_ptr_array_add (s, x);
+}
+static void iw_t_foreign (GPtrArray *s)
+{
+	FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+	x->name = g_strdup ("Someone's rule");
+	x->grouping = g_strdup (FS_INTELWIN_GROUP);
+	x->action = 1;
+	x->enabled = TRUE;
+	g_ptr_array_add (s, x);
+}
+static void iw_t_old_gen (GPtrArray *s)
+{
+	FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+	x->name = g_strdup ("SFW-TI alpha in IPv4 1/1 " IW_GEN2);
+	x->grouping = g_strdup (FS_INTELWIN_GROUP);
+	x->direction = 1;
+	x->enabled = TRUE;
+	x->profiles = 7;
+	x->protocol = 256;
+	x->remote_addresses = g_strdup ("192.0.2.7");
+	g_ptr_array_add (s, x);
+}
+static void iw_t_no_manifest (GPtrArray *s)
+{ g_ptr_array_remove (s, iw_find (s, "SFW-TI manifest " IW_GEN)); }
+static void iw_t_manifest_count (GPtrArray *s)
+{
+	FsIntelWinSeen *m = iw_find (s, "SFW-TI manifest " IW_GEN);
+	gchar *at = g_strrstr (m->description, "rules:");
+	gchar *edited = g_strndup (m->description,
+	                           (gsize) (at - m->description));
+	g_free (m->description);
+	m->description = g_strconcat (edited, "rules:8", NULL);
+	g_free (edited);
+	/* And one rule gone, so the count would match. */
+	g_ptr_array_remove (s, iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN));
+}
+static void iw_t_rename (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	g_free (x->name);
+	x->name = g_strdup ("SFW-TI betb out IPv4 1/1 " IW_GEN);
+}
+static void iw_t_regroup (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	g_free (x->grouping);
+	x->grouping = g_strdup ("Other");
+}
+
+static void
+test_intelwin_read (void)
+{
+	FsIntelRuleset *rs = iw_ruleset ();
+	FsIntelWinPlan *plan = fs_intelwin_plan (rs, IW_GEN, 2, 1000);
+	GPtrArray *seen;
+	FsIntelWinRead rd;
+	static const struct { IwTamper fn; const gchar *what; } t[] = {
+		{ iw_t_drop_chunk,     "a chunk deleted" },
+		{ iw_t_disable,        "a rule disabled" },
+		{ iw_t_allow,          "a rule turned into allow" },
+		{ iw_t_direction,      "a rule's direction flipped" },
+		{ iw_t_profile,        "a rule narrowed to the Public profile" },
+		{ iw_t_protocol,       "a rule narrowed to TCP" },
+		{ iw_t_local_port,     "a rule narrowed to local port 443" },
+		{ iw_t_local_addr,     "a rule narrowed to one local address" },
+		{ iw_t_program,        "a rule narrowed to one program" },
+		{ iw_t_remote_port,    "a rule narrowed to remote port 443" },
+		{ iw_t_service,        "a rule narrowed to one service" },
+		{ iw_t_iftype,         "a rule narrowed to wireless adapters" },
+		{ iw_t_ifaces,         "a rule narrowed to named adapters" },
+		{ iw_t_conditions,     "a rule given a user/app/IPsec condition" },
+		{ iw_t_remote_less,    "an address taken out of a rule" },
+		{ iw_t_remote_any,     "a rule's addresses set to *" },
+		{ iw_t_remote_mixed,   "an IPv6 address added to an IPv4 rule" },
+		{ iw_t_swap,           "addresses moved between two chunks" },
+		{ iw_t_extra,          "a rule added with a name like ours" },
+		{ iw_t_foreign,        "someone else's rule put in our group" },
+		{ iw_t_old_gen,        "a rule left from an earlier apply" },
+		{ iw_t_no_manifest,    "the manifest deleted" },
+		{ iw_t_manifest_count, "the manifest's count edited to match a "
+		                       "deleted rule" },
+		{ iw_t_rename,         "a rule renamed" },
+		{ iw_t_regroup,        "a rule moved out of our group" },
+	};
+
+	g_return_if_fail (plan != NULL);
+
+	fs_intelwin_read (NULL, &rd);
+	CHECK (rd.live == FS_INTEL_LIVE_ABSENT && rd.ours == 0,
+	       "intelwin read: no rule at all is ABSENT");
+	fs_intelwin_read_clear (&rd);
+
+	/* Someone else's rules, even with our prefix, are not ours. */
+	seen = g_ptr_array_new_with_free_func (fs_intelwin_seen_free);
+	{
+		FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+		x->name = g_strdup ("SFW-TI alpha in IPv4 1/1 " IW_GEN);
+		x->grouping = g_strdup ("Somebody else");
+		g_ptr_array_add (seen, x);
+		x = fs_intelwin_seen_new ();
+		x->name = g_strdup ("StockFW-in-ssh");
+		g_ptr_array_add (seen, x);
+	}
+	fs_intelwin_read (seen, &rd);
+	CHECK (rd.live == FS_INTEL_LIVE_ABSENT,
+	       "intelwin read: rules outside our group are never counted, "
+	       "whatever their names");
+	fs_intelwin_read_clear (&rd);
+	g_ptr_array_unref (seen);
+
+	seen = iw_seen_from_plan (plan, FALSE);
+	fs_intelwin_read (seen, &rd);
+	CHECK (rd.live == FS_INTEL_LIVE_PRESENT &&
+	       g_strcmp0 (rd.digest, plan->digest) == 0 &&
+	       g_strcmp0 (rd.gen, IW_GEN) == 0 && rd.ours == plan->rules->len,
+	       "intelwin read: the rules as written read back PRESENT with "
+	       "the plan's digest and generation");
+	fs_intelwin_read_clear (&rd);
+	g_ptr_array_unref (seen);
+
+	seen = iw_seen_from_plan (plan, TRUE);
+	/* Windows also hands rules back in its own order. */
+	for (guint i = 0; i < seen->len / 2; i++) {
+		gpointer a = seen->pdata[i];
+
+		seen->pdata[i] = seen->pdata[seen->len - 1 - i];
+		seen->pdata[seen->len - 1 - i] = a;
+	}
+	{
+		FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+		x->name = g_strdup ("Core Networking - DNS (UDP-Out)");
+		x->grouping = g_strdup ("@FirewallAPI.dll,-25000");
+		x->action = 1;
+		g_ptr_array_add (seen, x);
+	}
+	fs_intelwin_read (seen, &rd);
+	CHECK (rd.live == FS_INTEL_LIVE_PRESENT &&
+	       g_strcmp0 (rd.digest, plan->digest) == 0,
+	       "intelwin read: still PRESENT when Windows writes IPv4 with "
+	       "dotted masks, reorders tokens and rules, and other rules "
+	       "exist (e.g. \"%s\")",
+	       ((FsIntelWinSeen *) iw_find (seen, "SFW-TI beta out IPv4 1/1 "
+	                                    IW_GEN))->remote_addresses);
+	fs_intelwin_read_clear (&rd);
+	g_ptr_array_unref (seen);
+
+	for (guint i = 0; i < G_N_ELEMENTS (t); i++) {
+		seen = iw_seen_from_plan (plan, FALSE);
+		t[i].fn (seen);
+		fs_intelwin_read (seen, &rd);
+		CHECK (rd.live == FS_INTEL_LIVE_PARTIAL && rd.digest == NULL &&
+		       rd.why != NULL && rd.why[0] != '\0',
+		       "intelwin read: %s is PARTIAL, never the digest (%s)",
+		       t[i].what, rd.why ? rd.why : "no reason");
+		fs_intelwin_read_clear (&rd);
+		g_ptr_array_unref (seen);
+	}
+
+	/* Two applies' rules: both generations are reported, so the backend
+	 * can remove the one it is not keeping. */
+	seen = iw_seen_from_plan (plan, FALSE);
+	iw_t_old_gen (seen);
+	fs_intelwin_read (seen, &rd);
+	CHECK (rd.gens != NULL && rd.gens->len == 2,
+	       "intelwin read: every generation on the firewall is listed");
+	fs_intelwin_read_clear (&rd);
+	g_ptr_array_unref (seen);
+
+	CHECK (g_strcmp0 (fs_intelwin_name_gen ("SFW-TI x in IPv4 1/1 "
+	                                        IW_GEN), IW_GEN) == 0 &&
+	       fs_intelwin_name_gen ("StockFW-in " IW_GEN) == NULL &&
+	       fs_intelwin_name_gen ("SFW-TI x in IPv4 1/1 g0123ABCD") == NULL &&
+	       fs_intelwin_name_gen (NULL) == NULL,
+	       "intelwin: a name's generation is read only from names "
+	       "StockFW writes");
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_free (rs);
+}
+
+static void
+test_intelwin_force (void)
+{
+	FsIntelWinForce f;
+	gchar *s;
+
+#define IW_FORCE_OK() do { \
+	memset (&f, 0, sizeof f); \
+	f.service_known = TRUE; f.service_running = TRUE; \
+	f.policy_read = TRUE; f.gp_read = TRUE; \
+	f.current = FS_INTELWIN_PROFILE_PUBLIC; \
+	f.enabled[0] = f.enabled[1] = f.enabled[2] = 1; \
+} while (0)
+
+	IW_FORCE_OK ();
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s == NULL, "intelwin force: firewall on for the profile in use "
+	       "is in force");
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.service_running = FALSE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "MpsSvc") && strstr (s, "not running"),
+	       "intelwin force: the service stopped says so (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.gp_override = TRUE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "Group Policy"),
+	       "intelwin force: Group Policy that ignores local rules says so "
+	       "(%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.enabled[2] = 0;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "off for the Public profile") &&
+	       strstr (s, "block nothing"),
+	       "intelwin force: firewall off for the only profile in use "
+	       "(%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.current = FS_INTELWIN_PROFILE_DOMAIN | FS_INTELWIN_PROFILE_PUBLIC;
+	f.enabled[2] = 0;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "Public") && strstr (s, "on that network"),
+	       "intelwin force: off for one of two profiles in use names it "
+	       "(%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.current = FS_INTELWIN_PROFILE_PRIVATE | FS_INTELWIN_PROFILE_PUBLIC;
+	f.enabled[1] = f.enabled[2] = 0;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "Private and Public profiles"),
+	       "intelwin force: two profiles off are both named (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.enabled[1] = 0;   /* Private off, but only Public in use */
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s == NULL, "intelwin force: a profile no network has does not "
+	       "matter");
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.excluded[2] = 1;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "excluded"),
+	       "intelwin force: adapters excluded from the profile in use "
+	       "(%s)", s);
+	g_free (s);
+
+	/* Review W5: what cannot be read is never "in force". */
+	IW_FORCE_OK ();
+	f.policy_read = FALSE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read") &&
+	       strstr (s, "does not report the blocklists as in force"),
+	       "intelwin force: profiles in use that could not be read are "
+	       "never in force (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.enabled[2] = -1;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read") && strstr (s, "Public profile"),
+	       "intelwin force: a profile in use whose firewall switch could "
+	       "not be read is never in force (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.enabled[0] = -1;   /* Domain unreadable, but only Public in use */
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s == NULL, "intelwin force: an unreadable profile no network "
+	       "has does not matter");
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.current = FS_INTELWIN_PROFILE_PRIVATE | FS_INTELWIN_PROFILE_PUBLIC;
+	f.enabled[1] = -1;
+	f.enabled[2] = 0;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "off for the Public profile"),
+	       "intelwin force: a profile known to be off is named before one "
+	       "that could not be read (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.gp_read = FALSE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read"),
+	       "intelwin force: a Group Policy state that could not be read is "
+	       "never in force (%s)", s);
+	g_free (s);
+#undef IW_FORCE_OK
+}
+
+/* Review of Round 3 on Windows (W3, W6): the pure pieces the backend's
+ * fixes rest on. */
+static void
+test_intelwin_review (void)
+{
+	FsIntelRuleset *rs = iw_ruleset ();
+	FsIntelWinPlan *plan = fs_intelwin_plan (rs, IW_GEN, 2, 1000);
+	GPtrArray *seen;
+	gchar *a, *b;
+
+	g_return_if_fail (plan != NULL);
+
+	/* W6: after taking a failed apply's rules out again, the backend
+	 * counts what of that generation is still there. */
+	seen = iw_seen_from_plan (plan, FALSE);
+	CHECK (fs_intelwin_count_gen (seen, IW_GEN) == plan->rules->len &&
+	       fs_intelwin_count_gen (seen, IW_GEN2) == 0,
+	       "intelwin review: every rule of a generation is counted, none "
+	       "of another");
+	/* A foreign rule first in the group, and an earlier apply's rule:
+	 * neither hides the new generation, nor counts as it. */
+	{
+		FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+		x->name = g_strdup ("Someone's rule");
+		x->grouping = g_strdup (FS_INTELWIN_GROUP);
+		g_ptr_array_insert (seen, 0, x);
+	}
+	iw_t_old_gen (seen);
+	CHECK (fs_intelwin_count_gen (seen, IW_GEN) == plan->rules->len &&
+	       fs_intelwin_count_gen (seen, IW_GEN2) == 1,
+	       "intelwin review: rules of a generation are counted past a "
+	       "foreign rule in the group and an earlier apply's rule");
+	g_ptr_array_unref (seen);
+	seen = iw_seen_from_plan (plan, FALSE);
+	for (guint i = 0; i < seen->len; i++) {
+		FsIntelWinSeen *x = g_ptr_array_index (seen, i);
+
+		g_free (x->grouping);
+		x->grouping = g_strdup ("Other");
+	}
+	CHECK (fs_intelwin_count_gen (seen, IW_GEN) == 0 &&
+	       fs_intelwin_count_gen (NULL, IW_GEN) == 0 &&
+	       fs_intelwin_count_gen (seen, NULL) == 0,
+	       "intelwin review: rules outside the group are never counted");
+	g_ptr_array_unref (seen);
+
+	/* W6: names that differ only in case share a key, so a removal
+	 * renames the rule first instead of trusting Remove's matching. */
+	a = fs_intelwin_name_key ("SFW-TI alpha in IPv4 1/1 " IW_GEN);
+	b = fs_intelwin_name_key ("sfw-ti ALPHA in ipv4 1/1 G0123ABCD");
+	CHECK (a != NULL && g_strcmp0 (a, b) == 0,
+	       "intelwin review: rule names that differ only in case share "
+	       "one key");
+	g_free (b);
+	b = fs_intelwin_name_key ("SFW-TI alpha in IPv4 2/2 " IW_GEN);
+	CHECK (g_strcmp0 (a, b) != 0 && fs_intelwin_name_key (NULL) == NULL,
+	       "intelwin review: different names keep different keys");
+	g_free (a);
+	g_free (b);
+
+	/* W3: the policy lists its own rules by name; a blocklist rule is
+	 * never one of them. */
+	CHECK (fs_netsh_rule_name_is_ours ("StockFW- Allow SSH -inbound-") &&
+	       fs_netsh_rule_name_is_ours ("StockFW Allow SSH") &&
+	       !fs_netsh_rule_name_is_ours ("SFW-TI alpha in IPv4 1/1 "
+	                                     IW_GEN) &&
+	       !fs_netsh_rule_name_is_ours ("SFW-TI manifest " IW_GEN) &&
+	       !fs_netsh_rule_name_is_ours ("Core Networking - DNS") &&
+	       !fs_netsh_rule_name_is_ours (NULL),
+	       "intelwin review: the policy's rule names are told apart from "
+	       "the blocklist rules'");
+
+	/* W3: why the policy no longer lists through netsh's printout.  A
+	 * rule set at the interval limit written as Windows rules: netsh
+	 * `show rule name=all' prints every RemoteIP, and this much text
+	 * alone is past the 16 MiB the backend reads of a child's output. */
+	{
+		FsIntelRuleset *big = fs_intel_ruleset_new ();
+		FsRangeSet *v6 = fs_range_set_new ();
+		FsIntelWinPlan *bp;
+		guint64 chars = 0;
+		guint n = FS_INTEL_MAX_INTERVALS / 2;
+
+		for (guint i = 0; i < n; i++) {
+			FsU128 lo = { G_GUINT64_CONSTANT (0x2001db8abcdef012) + i * 2,
+			              G_GUINT64_CONSTANT (0x123456789abcdef1) };
+			FsU128 hi = { lo.hi, G_GUINT64_CONSTANT (0xfedcba9876543210) };
+
+			fs_range_set_add6 (v6, lo, hi);
+		}
+		fs_range_set_normalize (v6);
+		fs_intel_ruleset_add (big, "huge", "Huge", FS_INTEL_DIR_BOTH, v6);
+		bp = fs_intelwin_plan (big, IW_GEN, FS_INTELWIN_MAX_TOKENS,
+		                       FS_INTELWIN_MAX_CHARS);
+		for (guint i = 0; bp != NULL && i < bp->rules->len; i++)
+			chars += strlen (((FsIntelWinRule *)
+			                  g_ptr_array_index (bp->rules, i))->remote);
+		CHECK (bp != NULL && chars > 16u * 1024 * 1024,
+		       "intelwin review: %u long IPv6 ranges both ways print %"
+		       G_GUINT64_FORMAT " characters of addresses in %u rules, "
+		       "more than the 16 MiB a netsh listing may hold", n, chars,
+		       bp ? bp->rules->len : 0);
+		fs_intelwin_plan_free (bp);
+		fs_intel_ruleset_free (big);
+	}
+
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_free (rs);
+}
+
+static void
+test_hostnet_onlink (void)
+{
+	const guint8 a4[4] = { 192, 168, 1, 37 };
+	const guint8 a6[16] = { 0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+	                        0x12, 0x34, 0, 0, 0, 0, 0, 1 };
+	FsRangeSet *s;
+	gchar *text;
+
+	s = fs_range_set_new ();
+	fs_hostnet_add_onlink (s, a4, 4, 24);
+	fs_hostnet_add_onlink (s, a6, 16, 64);
+	fs_range_set_normalize (s);
+	text = fs_range_set_to_text (s);
+	CHECK (g_strcmp0 (text, "192.168.1.0/24\nfe80::/64\n") == 0,
+	       "hostnet onlink: an address and its OnLinkPrefixLength give "
+	       "the block it lies in (%s)", text);
+	g_free (text);
+	fs_range_set_free (s);
+
+	s = fs_range_set_new ();
+	fs_hostnet_add_onlink (s, a4, 4, 0);
+	fs_hostnet_add_onlink (s, a4, 4, 33);
+	fs_hostnet_add_onlink (s, a6, 16, 200);
+	fs_hostnet_add_onlink (s, a4, 3, 8);
+	fs_range_set_normalize (s);
+	text = fs_range_set_to_text (s);
+	CHECK (g_strcmp0 (text, "192.168.1.37\nfe80::1234:0:0:1\n") == 0,
+	       "hostnet onlink: a zero or too-wide prefix keeps the address "
+	       "alone, never everything; a bad length adds nothing (%s)",
+	       text);
+	g_free (text);
+	fs_range_set_free (s);
+
+	s = fs_range_set_new ();
+	fs_hostnet_add_onlink (s, a4, 4, 30);
+	text = fs_range_set_to_text (s);
+	CHECK (g_strcmp0 (text, "192.168.1.36/30\n") == 0,
+	       "hostnet onlink: a prefix inside a byte (%s)", text);
+	g_free (text);
+	fs_range_set_free (s);
+}
+
+/* [ rm_tree ] -- remove the run's private directory and everything
+ * under it.  Symbolic links are removed, never followed. */
+static void
+rm_tree (const gchar *path)
+{
+	GDir *dir;
+	const gchar *name;
+
+	if (!g_file_test (path, G_FILE_TEST_IS_SYMLINK) &&
+	    g_file_test (path, G_FILE_TEST_IS_DIR) &&
+	    (dir = g_dir_open (path, 0, NULL)) != NULL) {
+		while ((name = g_dir_read_name (dir)) != NULL) {
+			gchar *child = g_build_filename (path, name, NULL);
+
+			rm_tree (child);
+			g_free (child);
+		}
+		g_dir_close (dir);
+		g_rmdir (path);
+		return;
+	}
+	g_remove (path);
+}
+
+/* [ make_run_dir ]
+ * Every scratch path this program uses (the settings and audit files
+ * under the config dir, and the fixed-name test directories such as
+ * stockfw-behavior-test) lives under g_get_tmp_dir ().  A shared /tmp
+ * that a root run, or another session, filled with root-owned copies
+ * made a later normal-user run fail by the dozen and then crash.  So
+ * the temp dir is pointed at a fresh directory only this run owns,
+ * BEFORE GLib first reads and caches it, and removed at the end. */
+static gchar *
+make_run_dir (void)
+{
+#ifdef G_OS_WIN32
+	const gchar *base = g_getenv ("TEMP");
+
+	if (base == NULL || *base == '\0')
+		base = g_getenv ("TMP");
+	if (base == NULL || *base == '\0')
+		base = ".";
+#else
+	const gchar *base = g_getenv ("TMPDIR");
+
+	if (base == NULL || *base == '\0')
+		base = "/tmp";
+#endif
+	gchar *tmpl = g_build_filename (base, "stockfw-core-XXXXXX", NULL);
+
+	if (g_mkdtemp_full (tmpl, 0700) == NULL) {
+		fprintf (stderr, "cannot make a private test directory under "
+		         "%s\n", base);
+		exit (2);
+	}
+#ifdef G_OS_WIN32
+	g_setenv ("TEMP", tmpl, TRUE);
+	g_setenv ("TMP", tmpl, TRUE);
+#else
+	g_setenv ("TMPDIR", tmpl, TRUE);
+#endif
+	return tmpl;
+}
+
 int main (void)
 {
+	gchar *run_dir = make_run_dir ();
+
 	/* Point the preference file somewhere disposable before anything
-	 * reads it: the path is computed once, on first use. */
+	 * reads it: the path is computed once, on first use.  The temp
+	 * dir is this run's own (make_run_dir), never a shared /tmp. */
 #ifdef G_OS_WIN32
 	g_setenv ("APPDATA", g_get_tmp_dir (), TRUE);
 #else
 	g_setenv ("XDG_CONFIG_HOME", g_get_tmp_dir (), TRUE);
 #endif
+	{
+#ifdef G_OS_WIN32
+		const gchar *cfg = g_getenv ("APPDATA");
+#else
+		const gchar *cfg = g_getenv ("XDG_CONFIG_HOME");
+#endif
+		GStatBuf st;
+		gboolean own = cfg != NULL && g_strcmp0 (cfg, run_dir) == 0 &&
+		               g_stat (cfg, &st) == 0;
+
+#ifndef G_OS_WIN32
+		own = own && st.st_uid == getuid () && (st.st_mode & 0077) == 0;
+#endif
+		CHECK (own, "the settings, baseline and audit files go to a "
+		       "directory only this run owns, not a shared /tmp");
+	}
+	/* The Copilot reads this computer's DNS servers and gateways; the
+	 * tests use none (the review-fix test sets its own). */
+	g_setenv ("STOCKFW_RESOLV_CONF", "/dev/null", TRUE);
 
 	test_ports ();
+	test_cli_platform_words ();
 	test_hosts ();
 	test_rule_csv ();
 	test_policy_persist ();
@@ -8398,6 +11115,11 @@ int main (void)
 	test_behavior_hour_guard ();
 	test_behavior_rate ();
 	test_behavior_insight_cap ();
+	test_inbound_scan ();
+	test_brute_force ();
+	test_threat_intel ();
+	test_insight_dedup ();
+	test_copilot_review_fixes ();
 	test_behavior_persistence ();
 	test_behavior_partial ();
 	test_behavior_app_cap ();
@@ -8431,6 +11153,7 @@ int main (void)
 	test_netparse_proc ();
 	test_netparse_kmsg ();
 	test_netparse_verdicts ();
+	test_netparse_intel_line ();
 	test_script_accept_log ();
 	test_target_families ();
 	test_restore_plan ();
@@ -8439,17 +11162,28 @@ int main (void)
 	test_activity_series ();
 	test_activity_sampler ();
 	test_json_writer ();
+	test_intelwin_gen ();
+	test_intelwin_plan ();
+	test_intelwin_limits ();
+	test_intelwin_parse_remote ();
+	test_intelwin_read ();
+	test_intelwin_force ();
+	test_intelwin_review ();
+	test_hostnet_onlink ();
+	test_winstore_sddl ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);
 
+	rm_tree (run_dir);
+	g_free (run_dir);
 	return failures ? 1 : 0;
 }
 EOF
 
 EXTRA_LIBS=""
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
-  EXTRA_LIBS="-lws2_32 -lole32 -loleaut32 -liphlpapi -ladvapi32 -lshell32"
+  EXTRA_LIBS="-lws2_32 -liphlpapi -ladvapi32 -lshell32 -lole32 -loleaut32"
 fi
 
 # STOCKFW_TEST_CFLAGS adds compiler flags, for the sanitizer run the
@@ -8480,3 +11214,28 @@ cc ${STOCKFW_TEST_CFLAGS:-} tests/test-whatif.c \
    $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
 
 "$BUILD_DIR/test-whatif"
+
+# The Copilot's policy health check (tests/test-health.c): exact coverage,
+# the golden table on both platform models, every fix verified by the
+# What-If engine, apply and undo proved on the rules file.
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} tests/test-health.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0) \
+   -o "$BUILD_DIR/test-health" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
+
+"$BUILD_DIR/test-health"
+
+# Wording guard: the Copilot is a set of fixed rules, and nothing in the
+# program or the docs may call it AI.  The one sentence that says there
+# is no AI model is allowed.
+WORDING_HITS="$(grep -rnE '\bAI\b|AI-' src ../docs ../README.md 2>/dev/null \
+  | grep -v 'There is no AI model' || true)"
+if [ -n "$WORDING_HITS" ]; then
+  echo "FAIL: \"AI\" wording in the program or the docs:"
+  echo "$WORDING_HITS"
+  exit 1
+fi
+echo "ok:   wording guard: no \"AI\" claims in src, docs or README"

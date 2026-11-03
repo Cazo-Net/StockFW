@@ -41,6 +41,7 @@ add_library(fs-core STATIC
   src/core/fs-fwrule.c
   src/core/fs-whatif.c
   src/core/fs-copilot.c
+  src/core/fs-health.c
   src/core/fs-eventrule.c
   src/core/fs-audit.c
   src/core/fs-trust.c
@@ -63,6 +64,8 @@ add_library(fs-core STATIC
   src/core/fs-fetch.c
   src/core/fs-hostnet.c
   src/core/fs-intel.c
+  src/core/fs-intelwin.c
+  src/core/fs-winstore.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
@@ -80,16 +83,21 @@ target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY)
 target_compile_definitions(fs-core-nogui PRIVATE
                            FS_VERSION="${PROJECT_VERSION}")
 if(WIN32)
-  target_link_libraries(fs-core-nogui PUBLIC ws2_32 ole32 oleaut32 advapi32)
+  target_link_libraries(fs-core-nogui PUBLIC ws2_32 iphlpapi advapi32 shell32
+                        ole32 oleaut32)
 endif()
 
 # core/ uses getnameinfo()/inet_pton() for reverse lookups; Windows keeps
-# those in ws2_32, POSIX has them in libc.  fs-autostart.c registers the
+# those in ws2_32, POSIX has them in libc.  iphlpapi (the adapter and TCP
+# tables fs-hostnet reads), advapi32 (the threat-intel store's ACLs) and
+# shell32 (its %ProgramData% lookup) are Windows system libraries: no
+# package to install, nothing to stage.  fs-autostart.c registers the
 # sign-in task through the Task Scheduler's COM API: ole32 + oleaut32.
 # fs-util.c gives the event history and its exports an owner-only DACL:
 # advapi32.
 if(WIN32)
-  target_link_libraries(fs-core PUBLIC ws2_32 ole32 oleaut32 advapi32)
+  target_link_libraries(fs-core PUBLIC ws2_32 iphlpapi advapi32 shell32
+                        ole32 oleaut32)
 endif()
 
 # -------------------------------------------------------------- platform
@@ -171,6 +179,7 @@ add_executable(StockFW
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
+  src/ui/fs-intelview.c
   src/ui/fs-tray.c
   src/ui/fs-icons.c
   ${FS_BACKEND_SOURCES}
@@ -253,6 +262,7 @@ if(FS_PLATFORM STREQUAL "linux")
   add_executable(stockfw
     src/cli/fs-cli-main.c
     src/cli/fs-cli-cmds.c
+    src/cli/fs-cli-intel.c
     src/cli/fs-dashboard.c
     ${FS_BACKEND_SOURCES}
   )
@@ -285,6 +295,7 @@ set(FS_UI_ONLY_SOURCES
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
+  src/ui/fs-intelview.c
   src/ui/fs-tray.c
   src/ui/fs-icons.c
 )
@@ -486,11 +497,22 @@ add_executable(fs-theme-smoke EXCLUDE_FROM_ALL
 target_include_directories(fs-theme-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-theme-smoke PRIVATE PkgConfig::GTK3)
 # ------------------------------------------------------- 1.0.7 core tests
-# Threat intel: address ranges and the blocklist-to-nftables script
+# Threat intel: address ranges, the blocklist-to-nftables script and the
+# engine (fs-intel.c) through a fake backend and downloader
 # (test-intel.c).  GLib only, no display, no network, no root: runs
 # anywhere the core builds.  `ninja fs-intel-test'.
 add_executable(fs-intel-test EXCLUDE_FROM_ALL tests/test-intel.c)
 target_link_libraries(fs-intel-test PRIVATE fs-core-nogui)
+# Threat intel on the real Windows Firewall (Round 3, design 11): the
+# Windows backend's intel slots, every rule read back through
+# INetFwRules.  Needs an elevated shell (prints SKIP otherwise).
+# `ninja fs-intel-windows-test'; tests/full-suite.sh runs it on Windows.
+if(WIN32)
+  add_executable(fs-intel-windows-test EXCLUDE_FROM_ALL
+    tests/test-intel-windows.c ${FS_BACKEND_SOURCES})
+  target_link_libraries(fs-intel-windows-test PRIVATE fs-core-nogui
+                        ${FS_BACKEND_LIBS})
+endif()
 # Driver for tests/test-nftset.sh (real nft in a network namespace).
 add_executable(fs-nftset-load EXCLUDE_FROM_ALL tests/nftset-load.c)
 target_link_libraries(fs-nftset-load PRIVATE fs-core-nogui)
@@ -503,6 +525,11 @@ target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)
 # fixes it offers (test-whatif.c; test-core.sh runs it too).  GLib only.
 add_executable(fs-whatif-test EXCLUDE_FROM_ALL tests/test-whatif.c)
 target_link_libraries(fs-whatif-test PRIVATE fs-core-nogui)
+# The Copilot's policy health check: exact coverage, the golden table on
+# both platform models, and every fix verified by the What-If engine
+# (test-health.c; test-core.sh runs it too).  GLib only.
+add_executable(fs-health-test EXCLUDE_FROM_ALL tests/test-health.c)
+target_link_libraries(fs-health-test PRIVATE fs-core-nogui)
 # The Overview against a fake backend that answers the way Windows does
 # (profiles, the profile in use, the network's name), so the Windows
 # half of the page is exercised on any platform.  The test supplies
@@ -618,4 +645,59 @@ if(FS_PLATFORM STREQUAL "linux")
   target_link_libraries(fs-intel-backend-driver PRIVATE fs-core-nogui)
   target_compile_definitions(fs-intel-backend-driver PRIVATE
                              FS_BACKEND_TESTING=1)
+  # The engine end to end (tests/test-intel-e2e.sh): the default
+  # downloader, the real store, this computer read live and the release
+  # backend.  Its own copy of fs-fetch.c is compiled with
+  # FS_FETCH_TESTING only so $STOCKFW_TEST_CACERT can name the test
+  # server's CA (the fs-fetch-test arrangement); the backend copy has no
+  # test hook.
+  add_executable(fs-intel-e2e-driver EXCLUDE_FROM_ALL
+    tests/intel-e2e-driver.c
+    src/core/fs-fetch.c
+    src/platform/linux/fs-backend-linux.c
+  )
+  target_link_libraries(fs-intel-e2e-driver PRIVATE fs-core-nogui)
+  target_compile_definitions(fs-intel-e2e-driver PRIVATE
+                             FS_FETCH_TESTING=1
+                             FS_VERSION="${PROJECT_VERSION}")
+  # `stockfw intel' end to end (tests/test-intel-cli.sh): the real CLI
+  # sources and release backend, with a copy of fs-fetch.c compiled with
+  # FS_FETCH_TESTING so $STOCKFW_TEST_CACERT can name the test server's
+  # CA (the fs-intel-e2e-driver arrangement).  Never installed: the
+  # `stockfw' that ships has no test hook.
+  add_executable(stockfw-intel-test EXCLUDE_FROM_ALL
+    src/cli/fs-cli-main.c
+    src/cli/fs-cli-cmds.c
+    src/cli/fs-cli-intel.c
+    src/cli/fs-dashboard.c
+    src/core/fs-fetch.c
+    ${FS_BACKEND_SOURCES}
+  )
+  target_include_directories(stockfw-intel-test PRIVATE
+                             "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(stockfw-intel-test PRIVATE fs-core-nogui
+                        PkgConfig::GIO)
+  target_compile_definitions(stockfw-intel-test PRIVATE
+                             FS_FETCH_TESTING=1
+                             FS_VERSION="${PROJECT_VERSION}")
+endif()
+
+# The Threat Intel page (1.0.7) and the Events page's blocklist
+# attribution, against a fake intel backend (fs_intelview_set_backend)
+# and a fake downloader: every state of the page, consent, refusals and
+# their override, the editors, lookup, Add exception, and that the
+# work runs off the main loop.  INTEL_SMOKE_SHOTS=<dir> writes a PNG of
+# each state.  Run under xvfb-run as root or with STOCKFW_TEST_SAFE_DIR.
+add_executable(fs-intelview-smoke EXCLUDE_FROM_ALL
+  tests/ui-intelview-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_include_directories(fs-intelview-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-intelview-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-intelview-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-intelview-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()

@@ -5,9 +5,9 @@
  *   - Say what the build in front of the reader does today.  A feature
  *     that is not in this build gets one FS_HELP_SOON callout ("Not in
  *     this build"), never a sentence that reads as present.  In 1.0.7
- *     that is threat intel and blocking by country or network owner
- *     only: parts of their core are merged, but nothing in the app
- *     turns them on yet.
+ *     that is blocking by country or network owner (ASN) only, on the
+ *     threat-intel topic.  Threat intel itself is in this build and is
+ *     described in the present tense, as the code does it.
  *   - Never promise protection the app does not give.
  *   - Plain sentences, no em dashes.
  *   - Topic ids are stable: Preferences and F1 open topics by id, and
@@ -64,7 +64,10 @@ static const FsHelpBlock getting_started[] = {
 	  "the main window. Preferences, Help and About StockFW sit at the "
 	  "bottom, above the firewall's state. Press <b>F1</b> on any page "
 	  "to open the help for that page.") },
-	{ FS_HELP_SEE, "overview policy events shortcuts" },
+	{ FS_HELP_PARA, N_("The <a href=\"help:threat-intel\">Threat "
+	  "Intel</a> page blocks addresses named on public blocklists. Every "
+	  "list is off until you turn it on.") },
+	{ FS_HELP_SEE, "overview policy events threat-intel shortcuts" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -92,6 +95,11 @@ static const FsHelpBlock overview[] = {
 	  "filtered until you start it again. On Linux it removes StockFW's "
 	  "rules and leaves those of other tools, such as ufw or Docker, as "
 	  "they are.") },
+	{ FS_HELP_PARA, N_("While the firewall runs, the card can add a "
+	  "sentence on the <a href=\"help:threat-intel\">threat-intel "
+	  "blocklists</a> when they are in force, not in force and why, not "
+	  "loaded, or changed outside StockFW. Stopping the firewall takes the blocklists out too, and "
+	  "starting it puts them back.") },
 	{ FS_HELP_HEAD, N_("Firewall profiles (Windows)") },
 	{ FS_HELP_PARA, N_("Windows applies one of three profiles to each "
 	  "network: Domain, Private or Public. The Overview lists all three "
@@ -115,7 +123,7 @@ static const FsHelpBlock overview[] = {
 	{ FS_HELP_NOTE, N_("Every number here is one the system reported. "
 	  "Where a platform cannot report something, its card is left out "
 	  "rather than shown as zero.") },
-	{ FS_HELP_SEE, "events activity windows linux" },
+	{ FS_HELP_SEE, "events activity threat-intel windows linux" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -191,7 +199,20 @@ static const FsHelpBlock events[] = {
 	  "<a href=\"help:prefs-protection\">Protection</a> blocks drop "
 	  "packets without logging them, so they do not appear on "
 	  "Events.") },
-	{ FS_HELP_SEE, "prefs-events activity sentinel troubleshooting" },
+	{ FS_HELP_HEAD, N_("Threat-intel blocks") },
+	{ FS_HELP_PARA, N_("On Linux, packets a "
+	  "<a href=\"help:threat-intel\">threat-intel</a> list blocks are "
+	  "logged at a limited rate, so in a flood not every packet appears. "
+	  "Their row names the list, such as "
+	  "<i>Threat intel: Spamhaus DROP (IPv4)</i>, and right-clicking it "
+	  "offers <b>Add exception</b>, which puts the address on the allow "
+	  "list.") },
+	{ FS_HELP_PARA, N_("On Windows the Security log does not name the rule "
+	  "that blocked a connection, so Events cannot say which list blocked "
+	  "an address. Look the address up on the Threat Intel page "
+	  "instead.") },
+	{ FS_HELP_SEE, "prefs-events activity sentinel threat-intel "
+	  "troubleshooting" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -294,31 +315,86 @@ static const FsHelpBlock policy[] = {
 };
 
 static const FsHelpBlock copilot[] = {
-	{ FS_HELP_PARA, N_("The Copilot page learns what each program usually "
-	  "does on the network and points out what is new or unusual. It all "
-	  "runs on this computer: nothing is sent anywhere, and no language "
-	  "model is involved.") },
-	{ FS_HELP_HEAD, N_("Insights and suggestions") },
-	{ FS_HELP_PARA, N_("Each insight has a type (such as New App, Unusual "
-	  "Port, Unusual Dest, Beacon or Fan-Out), a severity and a "
-	  "description. Double-click one to read the whole explanation.") },
-	{ FS_HELP_PARA, N_("Some insights come with a suggested rule. Select "
-	  "the insight and press <b>Apply selected rule</b>: StockFW shows "
-	  "the exact rule and adds nothing until you say yes. <b>Clear "
-	  "insights</b> empties the list.") },
-	{ FS_HELP_PARA, N_("The counts at the top say how many programs "
-	  "StockFW has learned, how many insights are open, how many events "
-	  "it has analysed and how many rules your policy has. What it "
-	  "learned is saved when StockFW quits and read back when it starts, "
-	  "so a restart does not call every program new.") },
-	{ FS_HELP_HEAD, N_("Policy analysis") },
-	{ FS_HELP_PARA, N_("<b>Run analysis</b> reads your rules and recent "
-	  "events and reports conflicts, redundant rules and missing ones, "
-	  "with a suggestion where it has one.") },
+	{ FS_HELP_PARA, N_("The Copilot page is a set of fixed rules that run "
+	  "on this computer, over the firewall's event log and your saved "
+	  "policy. Each rule is a count compared with a written limit, so the "
+	  "same events always give the same findings. Nothing is sent "
+	  "anywhere, and no language model is involved.") },
+	{ FS_HELP_PARA, N_("Four tiles sit at the top: <b>Needs attention</b> "
+	  "(the Critical and Warning findings, from the events and from the "
+	  "policy), <b>Policy health</b>, <b>Auto-blocks active</b>, and "
+	  "<b>Apps learned</b>, which reads <b>Services learned</b> on Linux, "
+	  "where the log names a port's service rather than a program.") },
+	{ FS_HELP_HEAD, N_("What it looks for") },
+	{ FS_HELP_ITEM, N_("<b>Beacon</b> and <b>Fan-Out</b> in outgoing "
+	  "traffic: see <a href=\"help:sentinel\">Sentinel</a>.") },
+	{ FS_HELP_ITEM, N_("<b>Inbound port scan</b>: one address reaching 12 "
+	  "different ports of this computer within a minute, or 25 within ten "
+	  "minutes. Info when every probe was refused, Warning when one "
+	  "reached an allowed port.") },
+	{ FS_HELP_ITEM, N_("<b>Login attempts</b>: one address making 10 "
+	  "connections in five minutes to SSH, RDP, VNC, Telnet, FTP or SMB, "
+	  "counted together. The log cannot tell a failed login from a good "
+	  "one, so the severity rests on what was refused and on whether your "
+	  "policy lets that address in: Critical when attempts from the "
+	  "internet were refused and the policy lets that address in.") },
+	{ FS_HELP_ITEM, N_("<b>Something new for a program</b>, once it has a "
+	  "history: a port it never used, a public address it never "
+	  "contacted, an hour of the day it was never active, or far more "
+	  "connections than usual. What it learned is saved, so a restart "
+	  "does not call every program new.") },
+	{ FS_HELP_ITEM, N_("<b>Block list</b>, on Linux: traffic one of your "
+	  "<a href=\"help:threat-intel\">threat-intel blocklists</a> "
+	  "stopped. Outbound, one finding per program and address; inbound, "
+	  "one finding per list per hour. On Windows the log does not name "
+	  "the list, so this check finds nothing there.") },
+	{ FS_HELP_PARA, N_("Scans and login attempts are reported only: the "
+	  "Copilot never changes an inbound rule, and no finding offers an "
+	  "Allow. Two different checks on the same address within an hour "
+	  "make both findings Critical.") },
+	{ FS_HELP_HEAD, N_("A finding") },
+	{ FS_HELP_PARA, N_("Each finding has a severity in a word (Info, "
+	  "Warning or Critical). Click it, or press Enter, to open what was "
+	  "seen, why it was flagged with the numbers next to the limits, what "
+	  "could make it harmless, what Sentinel did, and the events behind "
+	  "it.") },
+	{ FS_HELP_PARA, N_("<b>Block outbound to this address</b> is offered "
+	  "only when What-If says the block would change the answer from "
+	  "allowed to blocked; it shows the rule and asks first. <b>Ask "
+	  "What-If</b>, <b>Show in Events</b> and <b>Dismiss</b> change "
+	  "nothing. Findings are kept while StockFW runs; dismissals are not "
+	  "saved.") },
+	{ FS_HELP_HEAD, N_("Policy health") },
+	{ FS_HELP_PARA, N_("The Policy health card checks your saved rules: "
+	  "duplicates, rules another rule already covers, allows a deny "
+	  "cancels, outbound allows that have no effect while outbound is "
+	  "open, inbound allows over more than 100 ports, risky services "
+	  "such as RDP, SMB or a database open to anyone, and rows that match "
+	  "neither IPv4 nor IPv6. <b>Check again</b> runs it on the policy as it is "
+	  "now.") },
+	{ FS_HELP_PARA, N_("A fix is offered only when What-If, asked before "
+	  "and after the change, shows it does what it says: a removal "
+	  "changes no answer, and a narrowing to the local network keeps the "
+	  "local answers and blocks the internet. <b>Fix…</b> shows the rule "
+	  "before and after and the checks, and writes nothing until you say "
+	  "yes. Otherwise the row says <b>No fix offered</b> and why.") },
+	{ FS_HELP_PARA, N_("On Linux, <tt>stockfw copilot health</tt> runs the "
+	  "same check from the <a href=\"help:cli\">command line</a> and "
+	  "writes nothing.") },
+	{ FS_HELP_HEAD, N_("Changes and Undo") },
+	{ FS_HELP_PARA, N_("<b>Changes made by the Copilot</b> lists, newest "
+	  "first, every block Sentinel put in place, every block you made "
+	  "from a finding and every health fix. <b>Undo</b> takes a block out "
+	  "or puts the fixed rule back as it was. A change that expired or "
+	  "was undone stays in the list, marked with when it ended.") },
+	{ FS_HELP_NOTE, N_("No finding means none of the checks matched, not "
+	  "that nothing is wrong. The Copilot sees only what the firewall "
+	  "logs: allowed connections appear only while their logging is "
+	  "on.") },
 	{ FS_HELP_PARA, N_("<a href=\"help:whatif\">What-If</a> and "
 	  "<a href=\"help:sentinel\">Sentinel</a> live on this page too, and "
 	  "each has its own topic.") },
-	{ FS_HELP_SEE, "whatif sentinel trust" },
+	{ FS_HELP_SEE, "whatif sentinel policy" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -379,6 +455,11 @@ static const FsHelpBlock whatif[] = {
 	  "settings. Rules that other programs or Windows itself added, or "
 	  "that someone wrote with iptables directly, can also allow or "
 	  "block the connection.") },
+	{ FS_HELP_NOTE, N_("The answer does not consult the "
+	  "<a href=\"help:threat-intel\">threat-intel blocklists</a>. To "
+	  "see whether a list blocks an address, use <b>Look up an "
+	  "address</b> on the Threat Intel page, or <tt>stockfw intel "
+	  "lookup</tt> on Linux.") },
 	{ FS_HELP_HEAD, N_("Fixing it") },
 	{ FS_HELP_PARA, N_("<b>What you can do</b> lists only fixes StockFW "
 	  "has checked: with the change in place the question gets the "
@@ -401,41 +482,56 @@ static const FsHelpBlock whatif[] = {
 
 static const FsHelpBlock sentinel[] = {
 	{ FS_HELP_PARA, N_("Sentinel reads the same events as the Events page "
-	  "and looks for two patterns in outgoing traffic:") },
+	  "and looks for two patterns in outgoing traffic, counted per "
+	  "program (per port's service on Linux):") },
 	{ FS_HELP_ITEM, N_("<b>Beacon</b>: a program contacting the same host "
 	  "and port at very regular intervals, at least six times, between "
 	  "10 seconds and 10 minutes apart. Malware checking in with whoever "
 	  "controls it looks like this; people and most programs do not keep "
-	  "such exact time.") },
-	{ FS_HELP_ITEM, N_("<b>Fan-Out</b>: this computer contacting 60 or "
-	  "more different hosts within a minute, or 10 or more that were "
-	  "blocked. That looks like a scan.") },
+	  "such exact time. Time sync (port 123), and DNS to this computer's "
+	  "own DNS servers, are never timed.") },
+	{ FS_HELP_ITEM, N_("<b>Fan-Out</b>: one program contacting 60 or more "
+	  "different hosts within a minute, or 10 or more that were blocked. "
+	  "On Linux only the blocked ones count, because one port's service "
+	  "covers every browser.") },
 	{ FS_HELP_HEAD, N_("Modes") },
-	{ FS_HELP_PARA, N_("The <b>Sentinel</b> menu on the Copilot page has "
-	  "two modes. <b>Detect only</b> reports what it sees and changes "
-	  "nothing. <b>Detect + auto-block</b>, the default, also blocks a "
-	  "beacon's destination for ten minutes.") },
-	{ FS_HELP_PARA, N_("An automatic block is an outbound deny rule added "
-	  "to your policy and applied at once. It is lifted after ten "
-	  "minutes, or straight away with <b>Undo auto-block</b>. A block "
-	  "that was lifted is not put back while StockFW keeps running.") },
-	{ FS_HELP_HEAD, N_("What Sentinel never blocks") },
-	{ FS_HELP_ITEM, N_("Private networks, loopback, link-local and "
-	  "multicast addresses, and anything it cannot recognise as a public "
-	  "address.") },
-	{ FS_HELP_ITEM, N_("A destination the program had already used at "
-	  "least three times before the regular pattern began.") },
-	{ FS_HELP_ITEM, N_("Anything found by Fan-Out: it is reported, never "
-	  "blocked.") },
+	{ FS_HELP_PARA, N_("The switch at the top of the Copilot page has two "
+	  "modes. <b>Detect only</b> reports what it sees and changes "
+	  "nothing. <b>Detect + auto-block</b>, the default, can also block "
+	  "a beacon's destination for ten minutes.") },
+	{ FS_HELP_PARA, N_("An automatic block is one outbound deny rule for "
+	  "one address, added to your policy and applied the same way as "
+	  "your own changes. It is lifted after ten minutes, or straight away "
+	  "with <b>Undo block</b> on the finding or <b>Undo</b> under "
+	  "<b>Changes made by the Copilot</b>. A block that was lifted is not "
+	  "put back while StockFW keeps running.") },
+	{ FS_HELP_HEAD, N_("When it blocks, and when it never does") },
+	{ FS_HELP_PARA, N_("It blocks only a beacon seen at least eight times, "
+	  "and only when every check below still passes at the moment it "
+	  "blocks, not just when the beacon was first seen. Otherwise the "
+	  "finding says which check held it back.") },
+	{ FS_HELP_ITEM, N_("Private networks, loopback, link-local, multicast "
+	  "and reserved addresses, and anything that is not a plain public "
+	  "address, are never blocked.") },
+	{ FS_HELP_ITEM, N_("Nor are this computer's DNS servers and default "
+	  "gateways, on any port.") },
+	{ FS_HELP_ITEM, N_("Nor a host your policy allows: an outbound allow "
+	  "rule for it, or for a network around it, is the last word.") },
+	{ FS_HELP_ITEM, N_("Nor a host the program had already used at least "
+	  "three times before, or that another program has used three times "
+	  "or more: the block would apply to every program.") },
+	{ FS_HELP_ITEM, N_("Nor anything found by Fan-Out, a scan or login "
+	  "attempts: those are reported, never blocked.") },
 	{ FS_HELP_ITEM, N_("Your own rules: Sentinel never changes, expires "
 	  "or removes them.") },
-	{ FS_HELP_PARA, N_("Your Allow is the last word: allowing a "
-	  "destination on the Events page lifts Sentinel's block on it. "
-	  "Switching to <b>Detect only</b> lifts every automatic block.") },
+	{ FS_HELP_PARA, N_("Allowing a destination on the Events page or from "
+	  "What-If lifts Sentinel's block on it. Switching to <b>Detect "
+	  "only</b> lifts every automatic block.") },
 	{ FS_HELP_NOTE, N_("Every block, lift and expiry is written to the "
 	  "audit log (audit.log, next to the settings file). The list of "
 	  "automatic blocks is saved too, so after a restart each block keeps "
-	  "only the time it had left.") },
+	  "only the time it had left, and one whose time ran out is removed "
+	  "before the firewall starts.") },
 	{ FS_HELP_WARN, N_("Sentinel watches outgoing traffic only, and only "
 	  "what the event log shows. It is an early warning, not a "
 	  "guarantee: a program that varies its timing, or talks to an "
@@ -727,29 +823,160 @@ static const FsHelpBlock prefs_protection[] = {
 /* ------------------------------------------------------------- more */
 
 static const FsHelpBlock threat_intel[] = {
-	{ FS_HELP_SOON, N_("Threat-intel blocklists, and blocking by country "
-	  "or network owner (ASN), are not available in this build. Nothing "
-	  "described here is protecting this computer, and StockFW downloads "
-	  "no lists.") },
-	{ FS_HELP_PARA, N_("What is planned: you pick well-known public "
-	  "blocklists, such as Spamhaus DROP or the abuse.ch Feodo Tracker, "
-	  "and accept each list's terms. StockFW downloads them from their "
-	  "publishers, checks them, and blocks the listed addresses in both "
-	  "directions. Every list is off until you turn it on, and StockFW "
-	  "makes no network connection for them unless you do.") },
-	{ FS_HELP_PARA, N_("Safeguards planned with it: your own networks and "
-	  "other reserved ranges are never blocked by a list, a download much "
-	  "larger or smaller than the last one is refused, and the Events "
-	  "page names the list behind each block, with a way to add an "
-	  "exception.") },
-	{ FS_HELP_PARA, N_("The lists are planned for both platforms: loaded "
-	  "as nftables sets on Linux and as Windows Firewall rules on "
-	  "Windows. Blocking by country or network owner (ASN) comes "
-	  "later.") },
-	{ FS_HELP_NOTE, N_("Until then, to block an address you know is bad, "
-	  "add it under <b>Deny connections to host</b> on the "
-	  "<a href=\"help:policy\">Policy</a> page.") },
-	{ FS_HELP_SEE, "policy linux" },
+	{ FS_HELP_PARA, N_("The Threat Intel page blocks the addresses named "
+	  "on public blocklists, called feeds, and on lists of your own. It "
+	  "blocks IP addresses and networks only. It does not block domain "
+	  "names or web addresses, and it does not look inside "
+	  "traffic.") },
+	{ FS_HELP_HEAD, N_("Turning a list on") },
+	{ FS_HELP_STEP, N_("Check that <b>Use blocklists</b>, at the top of "
+	  "the page, is on. It is the switch for every list at once.") },
+	{ FS_HELP_STEP, N_("Turn on a list under <b>Blocklists</b>, such as "
+	  "Spamhaus DROP or the abuse.ch Feodo Tracker. The first time, a "
+	  "dialog says which host the list comes from, how often it is "
+	  "downloaded, what that host learns, the list's licence and terms, "
+	  "and that lists contain mistakes.") },
+	{ FS_HELP_STEP, N_("Press <b>Accept and turn on</b>. StockFW downloads "
+	  "the list, checks it and puts it in force.") },
+	{ FS_HELP_PARA, N_("Every list is off until you turn it on. While no "
+	  "list is on, StockFW makes no network request for threat intel. "
+	  "Each download goes over HTTPS to the host the dialog names. That "
+	  "host sees this computer's public IP address and that it runs "
+	  "StockFW and which version. Nothing else is sent. With a download "
+	  "proxy set, every download goes through the proxy, which sees the "
+	  "host asked for.") },
+	{ FS_HELP_NOTE, N_("Some lists may be used only for non-commercial "
+	  "purposes. The list's row and the dialog say so.") },
+	{ FS_HELP_HEAD, N_("Your own lists") },
+	{ FS_HELP_ITEM, N_("<b>Allow list: never blocked</b>: your exceptions. "
+	  "No list may block these addresses.") },
+	{ FS_HELP_ITEM, N_("<b>Your blocklist: always blocked</b>: addresses "
+	  "you type in, blocked in both directions.") },
+	{ FS_HELP_ITEM, N_("<b>Import</b>, under <b>Imported list files</b>: "
+	  "a text file with one address, network or range per line. A new "
+	  "imported list blocks both directions, and has its own "
+	  "switch.") },
+	{ FS_HELP_HEAD, N_("Inbound and outbound") },
+	{ FS_HELP_PARA, N_("Each list's row says which way it blocks. "
+	  "<i>Stops them connecting to you</i> is inbound, <i>Stops you "
+	  "connecting to them</i> is outbound, and some lists block both "
+	  "ways. Spamhaus DROP and the Feodo Tracker block both ways; the "
+	  "other public lists block inbound. On Linux, <tt>stockfw intel "
+	  "enable</tt> with <tt>--direction</tt> chooses another "
+	  "direction.") },
+	{ FS_HELP_PARA, N_("An inbound list stops connections the listed "
+	  "address starts. Replies to connections you start still pass. An "
+	  "outbound list stops connections you start to the address. A list "
+	  "that blocks both ways blocks all traffic to and from it.") },
+	{ FS_HELP_HEAD, N_("Apply and exceptions") },
+	{ FS_HELP_PARA, N_("A change on the page goes to the firewall at once. "
+	  "While Audit-only or <b>Lock policy</b> holds changes back, or the "
+	  "firewall is stopped, the change is saved and not put in force. "
+	  "<b>Apply</b>, shown while the firewall runs, puts the saved lists "
+	  "in force. A list that is on but not in force says so on its "
+	  "row.") },
+	{ FS_HELP_PARA, N_("Lists contain mistakes. If a list blocks something "
+	  "you need, put the address on the allow list. On Linux the Events "
+	  "page names the list that blocked an address, and offers <b>Add "
+	  "exception</b> on that row.") },
+	{ FS_HELP_HEAD, N_("What the page says") },
+	{ FS_HELP_PARA, N_("The card at the top reads the rules on the system, "
+	  "not only your settings:") },
+	{ FS_HELP_ITEM, N_("<b>Protected</b>: the rules StockFW last applied "
+	  "are in force. A list turned on but not applied yet is not among "
+	  "them, and its row says so.") },
+	{ FS_HELP_ITEM, N_("<b>Off</b>: no list is on, or <b>Use "
+	  "blocklists</b> is off.") },
+	{ FS_HELP_ITEM, N_("<b>Not loaded</b>: a list is on, but its rules are "
+	  "not on the system, for example because it was never downloaded "
+	  "or the last apply was held.") },
+	{ FS_HELP_ITEM, N_("<b>Changed outside StockFW</b>, or <b>Off, but "
+	  "rules still in place</b>: the rules on the system differ from what "
+	  "StockFW last applied. <b>Apply</b> puts them right.") },
+	{ FS_HELP_ITEM, N_("<b>Paused</b>: the firewall was stopped, so the "
+	  "lists are off until it starts again.") },
+	{ FS_HELP_ITEM, N_("<b>Not in force</b>: on Windows, the rules are "
+	  "there but Windows Firewall does not enforce them on the network in "
+	  "use. It may be off for that profile, overridden by Group Policy, or "
+	  "its service may be stopped. The card says which.") },
+	{ FS_HELP_ITEM, N_("<b>Needs administrator rights</b>: the lists need "
+	  "root on Linux and StockFW (Elevated) on Windows.") },
+	{ FS_HELP_ITEM, N_("<b>Unknown</b>: the rules on the system could not "
+	  "be read. The card says why.") },
+	{ FS_HELP_PARA, N_("While the firewall runs, the Overview's status "
+	  "card and the tray icon's tooltip can add a sentence on the lists: "
+	  "in force, not in force, not loaded, or changed outside "
+	  "StockFW.") },
+	{ FS_HELP_HEAD, N_("Looking up an address") },
+	{ FS_HELP_PARA, N_("Type one address under <b>Look up an address</b>. "
+	  "The answer names the lists that hold it. It says the address "
+	  "<i>is blocked</i> only when the lists are in force and the rules "
+	  "on the system hold it. Otherwise it says the address <i>would be "
+	  "blocked once in force</i>, and why it is not now. An address that "
+	  "is never blocked says that too.") },
+	{ FS_HELP_HEAD, N_("Updates") },
+	{ FS_HELP_PARA, N_("Each feed is downloaded again on its own schedule, "
+	  "every 6 or 24 hours. <b>Update now</b> downloads every list that "
+	  "is on and puts them in force. While StockFW runs, it checks once "
+	  "an hour for feeds that are due. It puts the new copies in force "
+	  "only when the firewall runs, nothing holds changes back, and the "
+	  "lists are in force or were changed outside StockFW.") },
+	{ FS_HELP_PARA, N_("Every new copy is checked before it is used. It is "
+	  "refused if it is not a list, has too many entries, covers too many "
+	  "addresses in all, suddenly shrinks or empties, suddenly covers "
+	  "many more addresses, or is older than the copy StockFW has. An "
+	  "entry wider than a /10 (IPv4) or a /29 (IPv6) is left out, and a "
+	  "list with as many of those as entries kept is refused. A refused "
+	  "or failed update keeps the previous copy.") },
+	{ FS_HELP_PARA, N_("A copy refused for suddenly covering many more "
+	  "addresses offers <b>Accept larger list</b> on its row. A copy "
+	  "refused for shrinking, emptying or being older offers <b>Accept "
+	  "smaller list</b>. Either takes that copy anyway.") },
+	{ FS_HELP_HEAD, N_("Never blocked") },
+	{ FS_HELP_PARA, N_("Whatever a list says, StockFW keeps these "
+	  "reachable, and <b>Notes from the last apply</b> lists what it left "
+	  "out:") },
+	{ FS_HELP_ITEM, N_("private, loopback and other special-purpose "
+	  "ranges") },
+	{ FS_HELP_ITEM, N_("this computer's own addresses and networks, its "
+	  "gateways and its DNS servers") },
+	{ FS_HELP_ITEM, N_("the other end of an SSH connection to port 22 on "
+	  "this computer, or of the SSH session StockFW runs in, and on "
+	  "Windows of a remote desktop connection to port 3389") },
+	{ FS_HELP_ITEM, N_("the hosts the lists are downloaded from, and the "
+	  "download proxy") },
+	{ FS_HELP_ITEM, N_("the addresses on your allow list") },
+	{ FS_HELP_HEAD, N_("On Linux") },
+	{ FS_HELP_PARA, N_("The lists are one nftables table of StockFW's own, "
+	  "<tt>inet stockfw_intel</tt>, checked before the policy's rules. "
+	  "It also filters traffic this computer forwards. Applying the "
+	  "policy never touches it. An inbound block drops the packet. An "
+	  "outbound block refuses it, so the program fails at once. Blocks "
+	  "are logged at a limited rate and all counted, so the page shows "
+	  "how many each list blocked.") },
+	{ FS_HELP_PARA, N_("The kernel forgets the table at a reboot. "
+	  "<tt>stockfw start</tt>, and so the boot service, puts the lists "
+	  "back once the firewall starts.") },
+	{ FS_HELP_HEAD, N_("On Windows") },
+	{ FS_HELP_PARA, N_("The lists are Windows Firewall block rules in the "
+	  "group <b>StockFW Threat Intel</b>, apart from the policy's rules. "
+	  "Windows keeps them across a restart. Pausing protection takes them "
+	  "out until it is resumed.") },
+	{ FS_HELP_NOTE, N_("Windows Firewall does not count what each rule "
+	  "blocks, so the page shows <i>n/a</i> for blocked counts on "
+	  "Windows. The Security log does not name the rule either, "
+	  "so Events cannot say which list blocked an address.") },
+	{ FS_HELP_HEAD, N_("Command line and dashboard") },
+	{ FS_HELP_PARA, N_("On Linux, <tt>stockfw intel</tt> does what the "
+	  "page does, and also adds your own feeds and sets a download proxy. "
+	  "<tt>sudo stockfw intel update</tt> run from cron or a timer keeps "
+	  "the lists fresh while StockFW is closed. The dashboard shows the "
+	  "lists read-only, at <tt>/api/intel</tt>. See "
+	  "<a href=\"help:cli\">Command line and dashboard</a>.") },
+	{ FS_HELP_SOON, N_("Blocking by country or by network owner (ASN) is "
+	  "not in this build. Threat intel here blocks only the addresses "
+	  "and networks a list names.") },
+	{ FS_HELP_SEE, "events cli linux windows" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -807,13 +1034,22 @@ static const FsHelpBlock background[] = {
 	  "A copy started with more rights takes over from one started "
 	  "without them.") },
 	{ FS_HELP_NOTE, N_("Quitting StockFW does not turn the firewall off. "
-	  "The rules stay in force; event monitoring, Sentinel and the "
-	  "graphs stop until StockFW runs again. A Sentinel block that is in "
+	  "The rules and the threat-intel blocklists stay in force; event "
+	  "monitoring, Sentinel and the graphs stop until StockFW runs "
+	  "again. A Sentinel block that is in "
 	  "force when you quit stays on the firewall while StockFW is "
 	  "closed. When StockFW starts again with the rights to change the "
 	  "firewall, a block whose ten minutes ran out meanwhile is taken "
 	  "off. On Linux that happens only while the firewall is running; "
 	  "otherwise the block goes when the firewall next starts.") },
+	{ FS_HELP_PARA, N_("While StockFW runs with the rights to change the "
+	  "firewall, in the window or in the tray, it checks once an hour for "
+	  "<a href=\"help:threat-intel\">blocklists</a> that are due, "
+	  "downloads them, and puts the new copies in force when the firewall "
+	  "runs, nothing holds changes back, and the lists are in force or "
+	  "were changed outside StockFW. While StockFW is closed nothing updates "
+	  "them, unless <tt>sudo stockfw intel update</tt> runs from cron or "
+	  "a timer on Linux.") },
 	{ FS_HELP_NOTE, N_("Your settings, and what the Copilot learned, are "
 	  "saved every few minutes and when you sign out or shut down, not "
 	  "only when you quit.") },
@@ -823,7 +1059,7 @@ static const FsHelpBlock background[] = {
 	  "start the firewall from StockFW running with sudo, or run "
 	  "<tt>sudo stockfw start</tt>. See "
 	  "<a href=\"help:linux\">Linux notes</a>.") },
-	{ FS_HELP_SEE, "prefs-general linux sentinel" },
+	{ FS_HELP_SEE, "prefs-general linux sentinel threat-intel" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -856,16 +1092,68 @@ static const FsHelpBlock cli[] = {
 	{ FS_HELP_ITEM, N_("<tt>stockfw connections</tt> and <tt>stockfw "
 	  "interfaces</tt>: open connections, and adapters with their "
 	  "traffic.") },
+	{ FS_HELP_ITEM, N_("<tt>stockfw intel</tt>: the "
+	  "<a href=\"help:threat-intel\">threat-intel blocklists</a>. See "
+	  "below.") },
 	{ FS_HELP_ITEM, N_("<tt>stockfw help</tt> and a command name: help "
 	  "for that command.") },
 	{ FS_HELP_CODE, "stockfw simulate \"inbound ssh from 203.0.113.5\"" },
 	{ FS_HELP_PARA, N_("Every command takes <tt>--json</tt> for scripts. "
 	  "Exit codes: 0 success, 1 failure, 2 usage error, 3 needs root, "
-	  "5 simulate says blocked, 6 simulate says it depends.") },
+	  "5 simulate says blocked or a list blocks the address now, "
+	  "6 simulate says it depends, 7 <tt>copilot health</tt> found "
+	  "something.") },
+	{ FS_HELP_HEAD, N_("Threat-intel blocklists") },
+	{ FS_HELP_ITEM, N_("<tt>stockfw intel</tt> or <tt>stockfw intel "
+	  "status</tt>: the lists' state, read from the kernel, and the lists "
+	  "turned on.") },
+	{ FS_HELP_ITEM, N_("<tt>stockfw intel on</tt> and <tt>off</tt>: the "
+	  "<b>Use blocklists</b> switch.") },
+	{ FS_HELP_ITEM, N_("<tt>stockfw intel feeds</tt> lists every feed. "
+	  "<tt>stockfw intel terms</tt> and a feed's id says what turning it "
+	  "on means. <tt>stockfw intel enable</tt> turns it on only with "
+	  "<tt>--accept-terms</tt>, and <tt>--direction in</tt>, "
+	  "<tt>out</tt> or <tt>both</tt> chooses which way it blocks. "
+	  "<tt>stockfw intel disable</tt> turns it off.") },
+	{ FS_HELP_NOTE, N_("Unlike the page, every <tt>stockfw intel</tt> "
+	  "command that changes a setting or a list only saves it, apart from "
+	  "<tt>update</tt> and <tt>apply</tt>. A feed turned on blocks "
+	  "nothing until <tt>sudo stockfw "
+	  "intel update</tt> and then <tt>sudo stockfw intel apply</tt> run. "
+	  "Other changes need <tt>apply</tt>.") },
+	{ FS_HELP_ITEM, N_("<tt>stockfw intel update</tt>: downloads the feeds "
+	  "that are due (<tt>--now</tt>: all of them; <tt>--feed</tt> and an "
+	  "id: that one). It puts the new copies in force when the firewall "
+	  "runs, audit-only mode is off, and the lists are in force or were "
+	  "changed outside StockFW. <tt>--no-apply</tt> only downloads. "
+	  "<tt>--accept-coverage</tt> takes a copy refused for suddenly "
+	  "covering many more addresses, and <tt>--accept-shrink</tt> one "
+	  "refused for shrinking, emptying or being older.") },
+	{ FS_HELP_ITEM, N_("<tt>stockfw intel apply</tt> and <tt>stockfw intel "
+	  "clear</tt>: load the lists into the kernel, or take them out "
+	  "(root). Audit-only mode holds <tt>apply</tt>. With "
+	  "<tt>--dry-run</tt> it only shows what it would load.") },
+	{ FS_HELP_ITEM, N_("<tt>stockfw intel import</tt> a file with "
+	  "<tt>--name</tt>, <tt>stockfw intel except</tt> and "
+	  "<tt>unexcept</tt> an address, <tt>stockfw intel add-feed</tt> and "
+	  "<tt>stockfw intel proxy</tt>: your own lists, exceptions, feeds "
+	  "and download proxy. <tt>stockfw intel lists</tt> and "
+	  "<tt>exceptions</tt> show them, and <tt>stockfw intel remove</tt> "
+	  "and an id removes an imported list or a feed you added.") },
+	{ FS_HELP_ITEM, N_("<tt>stockfw intel lookup</tt> and an address: which "
+	  "lists hold it. It exits with 5 only when a list blocks it in the "
+	  "kernel now.") },
+	{ FS_HELP_PARA, N_("<tt>stockfw intel update</tt> exits with 1 when a "
+	  "feed failed or was refused. <tt>apply</tt> exits with 1 when the "
+	  "kernel refused the lists, and with 0 when audit-only mode held "
+	  "it. An unknown id, or terms not accepted, "
+	  "is a usage error, 2.") },
+	{ FS_HELP_CODE, "sudo stockfw intel lookup 203.0.113.7" },
 	{ FS_HELP_HEAD, N_("The local dashboard") },
 	{ FS_HELP_PARA, N_("<tt>stockfw dashboard</tt> serves a read-only web "
-	  "page with the graphs, live events, connections, the simulator and "
-	  "the policy, and opens it in your browser. It changes nothing: "
+	  "page with the graphs, live events, connections, the simulator, "
+	  "the policy and the threat-intel blocklists' state "
+	  "(<tt>/api/intel</tt>), and opens it in your browser. It changes nothing: "
 	  "edits go through <tt>stockfw policy</tt> and <tt>stockfw "
 	  "apply</tt>.") },
 	{ FS_HELP_ITEM, N_("It listens on 127.0.0.1 only, so other computers "
@@ -879,7 +1167,7 @@ static const FsHelpBlock cli[] = {
 	{ FS_HELP_NOTE, N_("If sudo says the command was not found, give the "
 	  "full path, <tt>sudo /usr/local/bin/stockfw</tt>: sudo does not "
 	  "look in /usr/local/bin on some systems.") },
-	{ FS_HELP_SEE, "whatif linux troubleshooting" },
+	{ FS_HELP_SEE, "whatif threat-intel linux troubleshooting" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -941,12 +1229,25 @@ static const FsHelpBlock linux_notes[] = {
 	{ FS_HELP_PARA, N_("Start at sign-in runs StockFW without root, so "
 	  "that copy cannot read the rules: it shows the firewall's state as "
 	  "unknown. Start StockFW with sudo to take over from it.") },
+	{ FS_HELP_HEAD, N_("Threat-intel blocklists") },
+	{ FS_HELP_PARA, N_("The <a href=\"help:threat-intel\">blocklists</a> "
+	  "are one nftables table of StockFW's own, <tt>inet "
+	  "stockfw_intel</tt>, which <tt>sudo nft list table inet "
+	  "stockfw_intel</tt> shows. It is checked before the policy's "
+	  "rules, it also filters forwarded traffic, and applying the policy "
+	  "never touches it. The lists and "
+	  "what StockFW downloaded are kept in /var/lib/stockfw/intel, which "
+	  "only root can read.") },
+	{ FS_HELP_PARA, N_("A reboot empties the table like the rest of the "
+	  "kernel's rules. <tt>stockfw start</tt>, and so the boot service, "
+	  "puts the lists back once the firewall starts.") },
 	{ FS_HELP_HEAD, N_("Events") },
 	{ FS_HELP_PARA, N_("Events come from the kernel's own buffer "
 	  "(/dev/kmsg), or from /var/log/kern.log or <tt>journalctl -k</tt> "
 	  "where that cannot be read. Only packets StockFW's own rules logged "
-	  "are listed.") },
-	{ FS_HELP_SEE, "troubleshooting cli prefs-firewall prefs-network" },
+	  "are listed, the threat-intel lists' blocks among them.") },
+	{ FS_HELP_SEE, "troubleshooting cli threat-intel prefs-firewall "
+	  "prefs-network" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -956,6 +1257,13 @@ static const FsHelpBlock windows_notes[] = {
 	  "<tt>StockFW</tt>, which you can also see in Windows Security "
 	  "under Firewall and network protection, Advanced settings. Rules "
 	  "you or other programs made are left alone.") },
+	{ FS_HELP_PARA, N_("The <a href=\"help:threat-intel\">threat-intel "
+	  "blocklists</a> are separate block rules in the group <b>StockFW "
+	  "Threat Intel</b>, whose names start with <tt>SFW-TI</tt>. "
+	  "Applying the policy never touches them. Windows keeps them across "
+	  "a restart. Windows Firewall does not count what each rule blocks, "
+	  "so the Threat Intel page shows no blocked counts on "
+	  "Windows.") },
 	{ FS_HELP_HEAD, N_("Administrator rights") },
 	{ FS_HELP_PARA, N_("StockFW starts without administrator rights and "
 	  "never raises them on its own. Without them you can look around, "
@@ -1005,7 +1313,11 @@ static const FsHelpBlock windows_notes[] = {
 	  "is on. StockFW turns that on when it runs as administrator. Besides "
 	  "firewall rules and turning profiles on or off, it is the only "
 	  "system setting StockFW changes.") },
-	{ FS_HELP_SEE, "overview troubleshooting prefs-icmp prefs-protection" },
+	{ FS_HELP_PARA, N_("The Security log does not name the rule that "
+	  "blocked a connection, so Events cannot say which threat-intel "
+	  "list blocked an address.") },
+	{ FS_HELP_SEE, "overview troubleshooting threat-intel prefs-icmp "
+	  "prefs-protection" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -1035,11 +1347,24 @@ static const FsHelpBlock troubleshooting[] = {
 	  "default, or <b>Block outgoing unless allowed</b>, drops it. Your "
 	  "outbound deny rules, Sentinel's blocks and the Protection blocks "
 	  "are not logged, so a quiet list does not mean they blocked "
-	  "nothing.") },
+	  "nothing. Threat-intel blocks are logged at a limited "
+	  "rate.") },
 	{ FS_HELP_ITEM, N_("Clear the search box and the filters "
 	  "(<b>Reset</b>), and check <b>Hide repeated "
 	  "events</b> and <b>Skip events not addressed to this computer</b> "
 	  "in <a href=\"help:prefs-events\">Preferences</a>.") },
+	{ FS_HELP_HEAD, N_("A blocklist blocks something you need") },
+	{ FS_HELP_STEP, N_("On the <a href=\"help:threat-intel\">Threat "
+	  "Intel</a> page, type the address under <b>Look up an address</b>. "
+	  "The answer names the lists that hold it.") },
+	{ FS_HELP_STEP, N_("Put the address on <b>Allow list: never "
+	  "blocked</b> and press <b>Save allow list</b>. On Linux you can "
+	  "also right-click its row on the Events page and choose <b>Add "
+	  "exception</b>, or run <tt>sudo stockfw intel except</tt> and the "
+	  "address, then <tt>sudo stockfw intel apply</tt>.") },
+	{ FS_HELP_NOTE, N_("On Windows the Security log does not name the "
+	  "list, so Events offers no exception there: use the Threat Intel "
+	  "page.") },
 	{ FS_HELP_HEAD, N_("Locked out of SSH") },
 	{ FS_HELP_PARA, N_("Inbound connections are blocked unless a rule "
 	  "allows them, so a policy without an SSH rule refuses new logins "
@@ -1081,7 +1406,7 @@ static const FsHelpBlock troubleshooting[] = {
 	  "copies the version, the GTK version, the platform and the firewall "
 	  "StockFW drives, ready to paste into a report. It holds no "
 	  "personal data.") },
-	{ FS_HELP_SEE, "linux windows events cli" },
+	{ FS_HELP_SEE, "linux windows events threat-intel cli" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -1132,9 +1457,13 @@ static const FsHelpBlock about[] = {
 	  "installers show the same. StockFW comes with no warranty.") },
 	{ FS_HELP_HEAD, N_("Your data") },
 	{ FS_HELP_PARA, N_("StockFW works offline and has no telemetry: it "
-	  "sends nothing about you or your traffic anywhere. Its files stay "
-	  "on this computer: the policy, the settings, the audit log, the "
-	  "trust baseline and what the Copilot has learned.") },
+	  "sends nothing about you or your traffic anywhere. It downloads "
+	  "nothing unless you turn on a "
+	  "<a href=\"help:threat-intel\">threat-intel blocklist</a>; each "
+	  "download shows the host the list comes from this computer's public "
+	  "address and the StockFW version. Its files stay on this "
+	  "computer: the policy, the settings, the audit log, the trust "
+	  "baseline, the blocklists and what the Copilot has learned.") },
 	{ FS_HELP_PARA, N_("The project lives at "
 	  "<a href=\"https://github.com/Cazo-Net/StockFW\">"
 	  "github.com/Cazo-Net/StockFW</a>.") },
@@ -1177,10 +1506,19 @@ static const FsHelpTopic topics[] = {
 	  N_("rules inbound outbound services ports hosts order conflict "
 	     "apply audit-only bi-directional forward deny allow csv"),
 	  policy },
+	{ "threat-intel", NULL, NULL,
+	  N_("Threat intel"),
+	  N_("Blocklists of known bad addresses, downloaded or imported, "
+	     "blocked inbound, outbound or both."),
+	  N_("blocklist feeds spamhaus feodo dshield firehol tor exception "
+	     "allow import lookup update consent terms nftables "
+	     "stockfw_intel country asn"),
+	  threat_intel },
 	{ "copilot", NULL, NULL,
 	  N_("Copilot"),
 	  N_("Insights from your traffic, and a check of your rules."),
-	  N_("insights suggestions analysis baseline learned unusual"),
+	  N_("findings insights baseline learned unusual scan login brute "
+	     "force health fix undo changes evidence"),
 	  copilot },
 	{ "whatif", NULL, NULL,
 	  N_("What-If"),
@@ -1248,13 +1586,7 @@ static const FsHelpTopic topics[] = {
 	  N_("broadcast spoofed reserved private loopback"),
 	  prefs_protection },
 
-	{ "threat-intel", NULL, N_("More"),
-	  N_("Threat intel"),
-	  N_("Blocklists of known bad addresses. Not available in this "
-	     "build."),
-	  N_("blocklist feeds spamhaus feodo country asn nftables"),
-	  threat_intel },
-	{ "background", NULL, NULL,
+	{ "background", NULL, N_("More"),
 	  N_("Running in the background"),
 	  N_("The tray icon and its menu, starting at sign-in, one StockFW at "
 	     "a time, and what keeps running."),
@@ -1264,7 +1596,8 @@ static const FsHelpTopic topics[] = {
 	{ "cli", NULL, NULL,
 	  N_("Command line and dashboard"),
 	  N_("The stockfw tool and its read-only local web page (Linux)."),
-	  N_("terminal stockfw command json dashboard browser server"),
+	  N_("terminal stockfw command json dashboard browser server intel "
+	     "blocklist exit code"),
 	  cli },
 
 	{ "linux", NULL, N_("Platforms"),
@@ -1272,14 +1605,14 @@ static const FsHelpTopic topics[] = {
 	  N_("Root, iptables and nftables, IPv6, and the boot service that "
 	     "puts the rules back after a reboot."),
 	  N_("sudo root iptables nftables ip6tables ipv6 kernel reboot boot "
-	     "systemd service ufw docker"),
+	     "systemd service ufw docker stockfw_intel blocklist"),
 	  linux_notes },
 	{ "windows", NULL, NULL,
 	  N_("Windows notes"),
 	  N_("Windows Defender Firewall, its profiles, and administrator "
 	     "rights."),
 	  N_("administrator elevated uac profile domain private public "
-	     "defender security log"),
+	     "defender security log blocklist rule group"),
 	  windows_notes },
 
 	{ "troubleshooting", NULL, N_("Reference"),

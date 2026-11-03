@@ -11,7 +11,8 @@
  *   clear         remove the table; prints "cleared"
  *   live          "present <digest>", "present without digest", "absent",
  *                 or "unknown" (exit 1) when nft's listing cannot be read
- *   counters      "<id> <packets> <bytes>" per id, sorted by id
+ *   live-chains   the same from `nft -j list chains inet' (the fast read)
+ *   counters     "<id> <packets> <bytes>" per id, sorted by id
  *
  * SPEC is a file with one set per line, "<id> <in|out|both> [<range>
  * ...]"; blank lines and '#' comments are skipped.  --timeout-ms gives
@@ -218,6 +219,39 @@ cmd_live (void)
 	return rc;
 }
 
+/* The fast read the backend makes first: `nft -j list chains inet'. */
+static int
+cmd_live_chains (void)
+{
+	static const gchar *const args[] = { "-j", "list", "chains", "inet",
+	                                     NULL };
+	GError *error = NULL;
+	gchar *json = capture (args, &error);
+	gchar *digest = NULL;
+	int rc = 0;
+
+	if (json == NULL)
+		return fail (error);
+	switch (fs_intelset_nft_parse_live_chains (json, &digest)) {
+	case FS_INTEL_LIVE_PRESENT:
+		if (digest == NULL)
+			g_print ("present without digest\n");
+		else
+			g_print ("present %s\n", digest);
+		break;
+	case FS_INTEL_LIVE_ABSENT:
+		g_print ("absent\n");
+		break;
+	default:
+		g_print ("unknown\n");
+		rc = 1;
+		break;
+	}
+	g_free (digest);
+	g_free (json);
+	return rc;
+}
+
 static int
 cmd_counters (void)
 {
@@ -261,7 +295,7 @@ static int
 usage (void)
 {
 	g_printerr ("usage: fs-intelset-driver [--timeout-ms N] "
-	            "script|digest|check|apply SPEC | clear | live | "
+	            "script|digest|check|apply SPEC | clear | live | live-chains | "
 	            "counters\n");
 	return 2;
 }
@@ -282,6 +316,8 @@ main (int argc, char **argv)
 
 	if (strcmp (argv[a], "clear") == 0 && argc == a + 1)
 		return cmd_clear ();
+	if (strcmp (argv[a], "live-chains") == 0 && argc == a + 1)
+		return cmd_live_chains ();
 	if (strcmp (argv[a], "live") == 0 && argc == a + 1)
 		return cmd_live ();
 	if (strcmp (argv[a], "counters") == 0 && argc == a + 1)

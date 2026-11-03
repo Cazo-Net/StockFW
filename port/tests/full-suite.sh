@@ -79,6 +79,37 @@ run_sh "START AT SIGN-IN (Linux, real binary)" tests/test-autostart.sh "PASSED|F
 run_sh "BOOT START (unit + stockfw start, private netns)" tests/test-boot-start.sh "PASSED|FAILED|SKIP"
 run_sh "LINUX INSTALLER (boot unit, private mount ns)" tests/test-linux-install.sh "PASSED|FAILED|SKIP"
 
+# Threat intel on the real Windows Firewall (Round 3): the backend's
+# blocklist rules applied, read back through INetFwRules, cleared.
+# Windows only; prints SKIP in a shell that is not elevated, which
+# fails instead when STOCKFW_REQUIRE_WINDOWS_INTEL=1 (the CI sets it).
+# Rules that cannot be read always fail.
+section "THREAT INTEL (Windows Firewall rules)"
+if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
+  rc=0
+  ninja -C build fs-intel-windows-test > "$TMP/last-ninja.txt" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    ./build/fs-intel-windows-test > "$TMP/last-suite.txt" 2>&1 || rc=$?
+    grep -E "PASSED|FAILED|SKIP" "$TMP/last-suite.txt" | tail -4
+    echo "exit=$rc  (ok checks: $(grep -c '^ok:' "$TMP/last-suite.txt"))"
+    # This test runs only on the CI's Windows runner, so the log is all
+    # there is to read: on a failure, its whole output, unfiltered (the
+    # details it prints -- the rules that differ, an unexpected ACE --
+    # go to stdout with the FAIL lines, indented under them).
+    if [ "$rc" -ne 0 ]; then
+      echo "----- fs-intel-windows-test, whole output -----"
+      cat "$TMP/last-suite.txt"
+      echo "----- end of fs-intel-windows-test output -----"
+    fi
+  else
+    echo "ninja exit=$rc"
+    grep "error" "$TMP/last-ninja.txt" | head -5
+  fi
+  [ "$rc" -eq 0 ] || fails=$((fails+1))
+else
+  echo "ok:   skipped (Windows only)"
+fi
+
 section "UI SMOKE TARGETS"
 rc=0
 ninja -C build fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
