@@ -2364,6 +2364,7 @@ fs_hitview_page (void)
 		                    FALSE, 0);
 
 		toggle = gtk_switch_new ();
+		gtk_widget_set_name (toggle, "events-monitor");
 		/* A horizontal GtkBox allocates every child the full row
 		 * height (the pack "fill" flag is main-axis only, and the
 		 * default valign is FILL), so the 46x22 switch would
