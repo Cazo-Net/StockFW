@@ -43,6 +43,12 @@ static const gchar *config_subs[] = {
 	"list", "get", "set", "reset", "apply", "devices", "audit-only", NULL
 };
 static const gchar *dashboard_subs[] = { "link", NULL };
+/* PR 4, 4C: `events act ACTION'. */
+static const gchar *events_subs[] = { "act", NULL };
+static const gchar *events_actions[] = {
+	"block-dest", "block-service", "allow-dest", "trust-source",
+	"untrust-source", NULL
+};
 
 static const gchar *events_by[] = {
 	"src", "dst", "port", "service", "dir", "rule", "hour", NULL
@@ -287,6 +293,11 @@ emit_positional (Out *o, const FsCliCommandDef *def, GPtrArray *pos)
 	} else if (strcmp (name, "dashboard") == 0) {
 		if (pos->len == 0)
 			emit_all (o, dashboard_subs);
+	} else if (strcmp (name, "events") == 0) {
+		if (pos->len == 0)
+			emit_all (o, events_subs);
+		else if (pos->len == 1 && strcmp (p0, "act") == 0)
+			emit_all (o, events_actions);
 	} else if (strcmp (name, "intel") == 0) {
 		if (pos->len == 0) {
 			emit_all (o, intel_subs);

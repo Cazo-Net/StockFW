@@ -1813,6 +1813,450 @@ out:
 /* === end PR4-B === */
 
 /* === PR4-C === */
+/* Event and What-If actions (4C): `events act' and `simulate --do'.
+ *
+ *   rule.block    a deny row (and, with "both", its twin) is saved, then
+ *                 put on the firewall alone through fs_firewall_add_live:
+ *                 the journal plus the rows, never the saved file, so a
+ *                 saved allow that nobody applied stays off (C14)
+ *   rule.allow    an allow row is saved; "lift_dest" then lifts
+ *                 Sentinel's blocks of that address
+ *                 (fs_autoblock_lift_for_dest, C14); then the saved
+ *                 policy is applied, as `apply' does: an allow widens
+ *                 what gets through, so the terminal shows the whole
+ *                 apply before it asks
+ *   rule.untrust  the inbound-allow-from row for "target" is removed and
+ *                 taken off the firewall alone (fs_firewall_lift_live,
+ *                 C15)
+ *   whatif.lift   Sentinel's blocks of "target" are lifted (H9)
+ *
+ * "no_apply" b: rule.* only save.  "whatif" b: the row is a What-If fix
+ * and must pass fs_whatif_row_is_safe (H8), whoever sends it.  "from"
+ * s: "event" or "whatif", for the audit line.  Live work needs root,
+ * and the lockout guard stands in front of it (CONFIRM: nothing
+ * changed). */
+
+static gboolean
+kind_is_block (FsRuleKind kind)
+{
+	return kind == FS_RULE_OUTBOUND_DENY_TO ||
+	       kind == FS_RULE_OUTBOUND_DENY_FROM ||
+	       kind == FS_RULE_OUTBOUND_DENY_SERVICE;
+}
+
+/* [ act_rows ] -- the row (and its twin) of rule.block or rule.allow,
+ * checked.  FALSE: refused, r says why. */
+static gboolean
+act_rows (FsControlResult *r, GVariant *params, gboolean block)
+{
+	FsRuleKind kind;
+	gsize n = 0;
+	const gchar **fields;
+
+	if (!fs_control_kind_parse (p_str (params, "kind"), &kind)) {
+		fail (r, FS_CONTROL_USAGE, NULL, "not a rule kind: %s",
+		      p_str (params, "kind") != NULL ? p_str (params, "kind")
+		                                     : "(none)");
+		return FALSE;
+	}
+	if (kind_is_block (kind) != block || kind == FS_RULE_INBOUND_FORWARD) {
+		fail (r, FS_CONTROL_USAGE, NULL, "%s is not %s rule",
+		      kind_names[kind], block ? "a block" : "an allow");
+		return FALSE;
+	}
+	fields = p_strv (params, "fields", &n);
+	r->rule = rule_from_fields (r, kind, fields, n,
+	                            p_str (params, "comment"));
+	g_free (fields);
+	if (r->rule == NULL || !rule_checked (r, r->rule))
+		return FALSE;
+
+	/* A What-If fix: only a row StockFW may write on the user's behalf
+	 * (one address or block, one port, one protocol). */
+	if (p_bool (params, "whatif")) {
+		FsWhatIfAction act;
+		gchar *why = NULL;
+
+		memset (&act, 0, sizeof act);
+		act.kind = block ? FS_WHATIF_ACT_CREATE_BLOCK
+		                 : FS_WHATIF_ACT_CREATE_ALLOW;
+		act.row = r->rule;
+		if (!fs_whatif_row_is_safe (&act, &why)) {
+			fail (r, FS_CONTROL_USAGE, NULL,
+			      "not a rule StockFW writes for you: %s",
+			      why != NULL ? why : "it was not checked");
+			g_free (why);
+			return FALSE;
+		}
+	}
+
+	if (p_bool (params, "both")) {
+		r->twin = fs_rule_counterpart (r->rule);
+		if (r->twin == NULL) {
+			fail (r, FS_CONTROL_USAGE, NULL,
+			      "%s has no opposite-direction twin; --both only "
+			      "applies to allow rules", kind_names[kind]);
+			return FALSE;
+		}
+	}
+	return TRUE;
+}
+
+/* [ act_audit ] -- "event rule added | cli | <csv>". */
+static void
+act_audit (const FsControlActor *actor, GVariant *params, const gchar *what,
+           const FsRule *rule)
+{
+	gboolean whatif = g_strcmp0 (p_str (params, "from"), "whatif") == 0;
+	gchar *csv = fs_rule_to_csv (rule);
+	gchar *action = g_strdup_printf ("%s %s", whatif ? "what-if" : "event",
+	                                 what);
+	gchar *detail = g_strdup_printf ("%s | %s", actor->channel, csv);
+
+	fs_audit_log (action, detail);
+	g_free (detail);
+	g_free (action);
+	g_free (csv);
+}
+
+/* [ act_save ] -- the rows saved, under the lock (r->policy is the
+ * policy read under it); "already" when they are all there.  FALSE:
+ * the save failed. */
+static gboolean
+act_save (FsControlResult *r, const FsControlActor *actor, GVariant *params)
+{
+	if (fs_policy_contains (r->policy, r->rule) &&
+	    (r->twin == NULL || fs_policy_contains (r->policy, r->twin))) {
+		r->already = TRUE;
+	} else {
+		gboolean ok = r->twin != NULL
+		            ? fs_policy_add_persist_pair (r->policy, r->rule,
+		                                          r->twin)
+		            : fs_policy_add_persist (r->policy, r->rule);
+
+		if (!ok) {
+			save_failed (r);
+			return FALSE;
+		}
+		r->saved = TRUE;
+		act_audit (actor, params, "rule added", r->rule);
+		if (r->twin != NULL)
+			act_audit (actor, params, "rule added (bi-directional twin)",
+			           r->twin);
+	}
+	r->number = rule_number (r->policy, r->rule);
+	if (r->twin != NULL)
+		r->twin_number = rule_number (r->policy, r->twin);
+	return TRUE;
+}
+
+/* [ saved_settings ] -- the saved Firewall preferences, read now. */
+static FsSettings *
+saved_settings (void)
+{
+	FsSettings *settings = fs_settings_new ();
+
+	fs_prefs_load ();
+	fs_settings_load_prefs (settings);
+	return settings;
+}
+
+/* [ journal_edit ] -- the journal (what is live) with the rows of `add'
+ * in it, or `drop' out of it; NULL when there is no journal. */
+static FsPolicy *
+journal_edit (const FsPolicy *add, FsRule *drop)
+{
+	FsPolicy *j = fs_policy_new ();
+
+	if (!fs_apply_journal_load (j, NULL)) {
+		fs_policy_free (j);
+		return NULL;
+	}
+	for (gint k = 0; add != NULL && k < FS_RULE_N_KINDS; k++)
+		for (guint i = 0; i < add->kinds[k]->len; i++) {
+			FsRule *row = g_ptr_array_index (add->kinds[k], i);
+
+			if (!fs_policy_contains (j, row))
+				fs_policy_add (j, row);
+		}
+	if (drop != NULL)
+		fs_policy_remove (j, drop);
+	return j;
+}
+
+/* [ act_guard ] -- the lockout guard on `after' (taken), unless a hold
+ * keeps the firewall untouched or there is no `after'.  FALSE: CONFIRM,
+ * nothing changed. */
+static gboolean
+act_guard (FsControlResult *r, GVariant *params, FsPolicy *after)
+{
+	FsSettings *settings;
+	gboolean ok = TRUE;
+
+	if (after == NULL)
+		return TRUE;
+	if (fs_apply_hold_reason () == NULL) {
+		settings = saved_settings ();
+		ok = guard (r, after, settings, p_bool (params, "yes"));
+		fs_settings_free (settings);
+	}
+	fs_policy_free (after);
+	return ok;
+}
+
+/* [ live_result ] -- r's status after a live edit.  A NULL outcome with
+ * no error: nothing to change on the firewall (no journal, or the rows
+ * are live already, or not live). */
+static void
+live_result (FsControlResult *r, GError *error)
+{
+	if (r->outcome == NULL) {
+		if (error != NULL)
+			fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		else
+			r->live_none = TRUE;
+		return;
+	}
+	if (r->outcome->held || r->outcome->result == FS_APPLY_OK ||
+	    r->outcome->result == FS_APPLY_DRY_RUN)
+		return;
+	fail (r, r->outcome->result == FS_APPLY_NO_PRIVILEGE
+	         ? FS_CONTROL_NEED_ROOT : FS_CONTROL_FAILED, NULL, "%s",
+	      error != NULL ? error->message
+	      : fs_util_apply_result_to_string ((int) r->outcome->result));
+}
+
+/* [ act_lock ] -- the policy lock, and the policy read under it. */
+static FsPolicyLock *
+act_lock (FsControlResult *r)
+{
+	GError *error = NULL;
+	FsPolicyLock *lock = fs_policy_lock (&error);
+	FsPolicy *journal;
+
+	if (lock == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		g_error_free (error);
+		return NULL;
+	}
+	r->policy = load_policy (r, TRUE, NULL);
+	if (r->policy == NULL) {
+		fs_policy_unlock (lock);
+		return NULL;
+	}
+	journal = fs_policy_new ();
+	r->journal = fs_apply_journal_load (journal, NULL);
+	fs_policy_free (journal);
+	return lock;
+}
+
+static void
+op_rule_block (FsControlResult *r, const FsControlActor *actor,
+               GVariant *params)
+{
+	gboolean live = !p_bool (params, "no_apply");
+	FsPolicyLock *lock;
+	FsPolicy *add;
+	GError *error = NULL;
+
+	if (!act_rows (r, params, TRUE))
+		return;
+	if (live && !need_root (r, actor))
+		return;
+	lock = act_lock (r);
+	if (lock == NULL)
+		return;
+
+	add = fs_policy_new ();
+	fs_policy_add (add, r->rule);
+	if (r->twin != NULL)
+		fs_policy_add (add, r->twin);
+
+	/* Guarded on what will be live: the journal plus the rows. */
+	if ((!live || act_guard (r, params, journal_edit (add, NULL))) &&
+	    act_save (r, actor, params) && live) {
+		hand_context (policy_copy (r->policy), saved_settings ());
+		r->outcome = fs_firewall_add_live (fs_backend (), add,
+		                                   actor->channel,
+		                                   fs_apply_hold_reason (), &error);
+		live_result (r, error);
+	}
+	g_clear_error (&error);
+	fs_policy_free (add);
+	fs_policy_unlock (lock);
+}
+
+static void
+op_rule_allow (FsControlResult *r, const FsControlActor *actor,
+               GVariant *params)
+{
+	gboolean live = !p_bool (params, "no_apply");
+	const gchar *dest = p_str (params, "lift_dest");
+	FsPolicyLock *lock;
+	FsPolicy *after;
+	GError *error = NULL;
+
+	if (!act_rows (r, params, FALSE))
+		return;
+	if (live && !need_root (r, actor))
+		return;
+	lock = act_lock (r);
+	if (lock == NULL)
+		return;
+
+	/* Guarded on what will be live: the whole saved policy, rows in. */
+	if (live) {
+		after = policy_copy (r->policy);
+		if (!fs_policy_contains (after, r->rule))
+			fs_policy_add (after, r->rule);
+		if (r->twin != NULL && !fs_policy_contains (after, r->twin))
+			fs_policy_add (after, r->twin);
+		if (!act_guard (r, params, after)) {
+			fs_policy_unlock (lock);
+			return;
+		}
+	}
+	if (!act_save (r, actor, params) || !live) {
+		fs_policy_unlock (lock);
+		return;
+	}
+
+	/* The user's Allow is the last word for this address: Sentinel's
+	 * blocks of it go first, as on the Events page (P6). */
+	if (dest != NULL && *dest != '\0') {
+		hand_context (policy_copy (r->policy), saved_settings ());
+		r->lift = fs_autoblock_lift_for_dest (fs_backend (), r->policy,
+		                                      dest, NULL, actor->channel,
+		                                      fs_apply_hold_reason (),
+		                                      &error);
+		if (r->lift == NULL)
+			r->lift_error = g_strdup (error != NULL ? error->message
+			                          : "the lift was refused");
+		g_clear_error (&error);
+		/* The lift wrote the file: read it again. */
+		fs_policy_free (r->policy);
+		r->policy = load_policy (r, FALSE, NULL);
+	}
+
+	apply_now (r, actor, policy_copy (r->policy), saved_settings ());
+	if (r->lift_error != NULL && r->status == FS_CONTROL_OK)
+		fail (r, FS_CONTROL_FAILED, NULL,
+		      "Sentinel's block of %s could not be lifted: %s", dest,
+		      r->lift_error);
+	fs_policy_unlock (lock);
+}
+
+static void
+op_rule_untrust (FsControlResult *r, const FsControlActor *actor,
+                 GVariant *params)
+{
+	gboolean live = !p_bool (params, "no_apply");
+	const gchar *target = p_str (params, "target");
+	GPtrArray *rows;
+	FsRule *row = NULL;
+	FsPolicyLock *lock;
+	GError *error = NULL;
+
+	if (target == NULL || *target == '\0') {
+		fail (r, FS_CONTROL_USAGE, NULL, "no source address given");
+		return;
+	}
+	if (live && !need_root (r, actor))
+		return;
+	lock = act_lock (r);
+	if (lock == NULL)
+		return;
+
+	/* Matched on the address alone, as the Events page does: the row
+	 * may carry any comment. */
+	rows = r->policy->kinds[FS_RULE_INBOUND_ALLOW_FROM];
+	for (guint i = 0; i < rows->len && row == NULL; i++) {
+		FsRule *x = g_ptr_array_index (rows, i);
+
+		if (x->target != NULL &&
+		    g_ascii_strcasecmp (x->target, target) == 0) {
+			row = x;
+			r->number = i + 1;
+		}
+	}
+	if (row == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL,
+		      "%s is not trusted: no inbound-allow-from rule names it, "
+		      "so the default-deny inbound policy already blocks it",
+		      target);
+		fs_policy_unlock (lock);
+		return;
+	}
+	r->rule = fs_rule_copy (row);
+
+	/* Guarded on what will be live: the journal less the row. */
+	if (live && !act_guard (r, params, journal_edit (NULL, r->rule))) {
+		fs_policy_unlock (lock);
+		return;
+	}
+	if (!fs_policy_remove_persist (r->policy, row)) {
+		save_failed (r);
+		fs_policy_unlock (lock);
+		return;
+	}
+	r->saved = TRUE;
+	act_audit (actor, params, "trust removed", r->rule);
+
+	if (live) {
+		FsPolicy *lift = fs_policy_new ();
+
+		fs_policy_add (lift, r->rule);
+		hand_context (policy_copy (r->policy), saved_settings ());
+		r->outcome = fs_firewall_lift_live (fs_backend (), lift,
+		                                    actor->channel,
+		                                    fs_apply_hold_reason (), &error);
+		live_result (r, error);
+		fs_policy_free (lift);
+	}
+	g_clear_error (&error);
+	fs_policy_unlock (lock);
+}
+
+static void
+op_whatif_lift (FsControlResult *r, const FsControlActor *actor,
+                GVariant *params)
+{
+	const gchar *target = p_str (params, "target");
+	const FsApplyOutcome *o;
+	FsPolicyLock *lock;
+	GError *error = NULL;
+
+	if (target == NULL || *target == '\0') {
+		fail (r, FS_CONTROL_USAGE, NULL, "no address given");
+		return;
+	}
+	if (!need_root (r, actor))
+		return;
+	lock = act_lock (r);
+	if (lock == NULL)
+		return;
+
+	hand_context (policy_copy (r->policy), saved_settings ());
+	r->lift = fs_autoblock_lift_for_dest (fs_backend (), r->policy, target,
+	                                      "lifted from What-If",
+	                                      actor->channel,
+	                                      fs_apply_hold_reason (), &error);
+	o = r->lift != NULL ? r->lift->outcome : NULL;
+	if (r->lift == NULL)
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error != NULL
+		      ? error->message : "the lift was refused");
+	else if (r->lift->rows == 0 && r->lift->removed == 0)
+		fail (r, FS_CONTROL_FAILED, NULL,
+		      "no Sentinel block of %s could be lifted (it may have "
+		      "expired already)", target);
+	else if (o != NULL && !o->held && o->result != FS_APPLY_OK &&
+	         o->result != FS_APPLY_DRY_RUN)
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error != NULL
+		      ? error->message
+		      : fs_util_apply_result_to_string ((int) o->result));
+	g_clear_error (&error);
+	fs_policy_unlock (lock);
+}
 /* === end PR4-C === */
 
 /* === PR4-D === */
@@ -1846,6 +2290,10 @@ static const struct
 	{ "copilot.undo",   op_copilot_undo },
 	/* === end PR4-B === */
 	/* === PR4-C === */
+	{ "rule.block",     op_rule_block },
+	{ "rule.allow",     op_rule_allow },
+	{ "rule.untrust",   op_rule_untrust },
+	{ "whatif.lift",    op_whatif_lift },
 	/* === end PR4-C === */
 	/* === PR4-D === */
 	/* === end PR4-D === */
@@ -1924,6 +2372,8 @@ fs_control_result_free (FsControlResult *r)
 	g_free (r->whatif_line);
 	/* === end PR4-B === */
 	/* === PR4-C === */
+	fs_autoblock_lift_free (r->lift);
+	g_free (r->lift_error);
 	/* === end PR4-C === */
 	/* === PR4-D === */
 	/* === end PR4-D === */
@@ -2194,6 +2644,32 @@ fs_control_result_json (const FsControlResult *r)
 	}
 	/* === end PR4-B === */
 	/* === PR4-C === */
+	if (g_str_has_prefix (r->op, "rule.")) {
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "saved", r->saved);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "journal", r->journal);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "live_none", r->live_none);
+	}
+	if (r->lift != NULL || r->lift_error != NULL) {
+		const FsApplyOutcome *o = r->lift != NULL ? r->lift->outcome : NULL;
+
+		g_string_append (out, ",\"lift\":{");
+		fs_json_kv_uint (out, "rows", r->lift != NULL ? r->lift->rows : 0);
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "removed",
+		                 r->lift != NULL ? r->lift->removed : 0);
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "kept", r->lift != NULL ? r->lift->kept : 0);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "live", o != NULL && o->applied);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "held", o != NULL && o->held);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "error", r->lift_error);
+		g_string_append_c (out, '}');
+	}
 	/* === end PR4-C === */
 	/* === PR4-D === */
 	/* === end PR4-D === */

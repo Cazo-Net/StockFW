@@ -510,9 +510,24 @@ FsWhatIfResult *
 fs_cli_whatif_policy (const FsPolicy *policy, const gchar *line,
                       gboolean assume_running)
 {
+	FsSettings *settings = NULL;
+	FsWhatIfContext *ctx = fs_cli_whatif_context (policy, assume_running,
+	                                              &settings);
+	FsWhatIfResult *result = fs_whatif_simulate_text (ctx, line);
+
+	fs_whatif_context_free (ctx);
+	fs_settings_free (settings);
+	return result;
+}
+
+/* [ fs_cli_whatif_context ] -- the context fs_cli_whatif_policy asks
+ * in; `simulate --do' (4C) checks a fix again in a fresh one. */
+FsWhatIfContext *
+fs_cli_whatif_context (const FsPolicy *policy, gboolean assume_running,
+                       FsSettings **settings_out)
+{
 	FsSettings *settings = fs_settings_new ();
 	FsWhatIfContext *ctx;
-	FsWhatIfResult *result;
 
 	fs_settings_load_prefs (settings);
 	ctx = fs_whatif_context_new (fs_whatif_native_platform (), policy,
@@ -526,11 +541,8 @@ fs_cli_whatif_policy (const FsPolicy *policy, const gchar *line,
 	fs_copilot_whatif_live (ctx, policy, fs_apply_hold_reason ());
 	fs_cli_sentinel_whatif (ctx, policy);
 
-	result = fs_whatif_simulate_text (ctx, line);
-
-	fs_whatif_context_free (ctx);
-	fs_settings_free (settings);
-	return result;
+	*settings_out = settings;
+	return ctx;
 }
 
 static const gchar *

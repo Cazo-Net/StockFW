@@ -8,6 +8,7 @@
  * the command that read it; `apply' refuses while there are any.
  *--------------------------------------------------------------------*/
 #include "cli/fs-cli.h"
+#include "cli/fs-cli-act.h"
 #include "control/fs-control.h"
 #include "core/fs-apply.h"
 #include "core/fs-audit.h"
@@ -2495,6 +2496,86 @@ edit_applied (const FsControlResult *r, const GString *lock, GString *json)
 	return r->outcome != NULL ? apply_status (r->outcome) : FS_EXIT_OK;
 }
 
+/* === PR4-C === */
+/* What `events act' and `simulate --do' (fs-cli-act.c) share with
+ * `apply': the guarded send, the apply's own text and JSON, and the
+ * preview of `apply --dry-run'. */
+FsControlResult *
+fs_cli_control_guarded (const gchar *op, GVariant *base, gboolean yes,
+                        const gchar *verb, GString *lock, gint *status)
+{
+	return control_guarded (op, base, yes, verb, lock, status, NULL);
+}
+
+void
+fs_cli_apply_print (const FsControlResult *r)
+{
+	apply_print (r);
+}
+
+void
+fs_cli_apply_json_members (GString *out, const FsControlResult *r,
+                           const gchar *lock)
+{
+	apply_json_members (out, r, lock);
+}
+
+gint
+fs_cli_apply_status (const FsApplyOutcome *outcome)
+{
+	return apply_status (outcome);
+}
+
+/* [ fs_cli_apply_preview ]
+ * What applying `after' would put on the firewall, as `apply --dry-run'
+ * says it: the stopped firewall it would start, the impact, every row
+ * that goes live or comes off, the notes, and the lockout guard's
+ * warning (stderr).  With json, a "preview" member is appended
+ * instead (and "lockout"). */
+void
+fs_cli_apply_preview (const FsPolicy *after, GString *json)
+{
+	FsPolicy *applied = fs_policy_new ();
+	gboolean have = fs_apply_journal_load (applied, NULL);
+	FsPolicyImpact *impact = fs_policy_impact (have ? applied : NULL, after);
+	Diff *d = diff_new (after, have ? applied : NULL);
+	GPtrArray *notes = preview_notes (after);
+	gchar *desc = fs_policy_impact_describe (impact);
+	FsFirewallState st;
+	const gchar *fw = firewall_word (&st);
+
+	if (json != NULL) {
+		g_string_append (json, ",\"preview\":{");
+		fs_json_kv_str (json, "impact", desc);
+		g_string_append_c (json, ',');
+		fs_json_kv_str (json, "firewall_state", fw);
+		g_string_append_c (json, ',');
+		diff_rows_json (json, "added_rules", d->added, d->added_n);
+		g_string_append_c (json, ',');
+		diff_rows_json (json, "removed_rules", d->removed, d->removed_n);
+		g_string_append_c (json, ',');
+		notes_json (json, notes);
+		g_string_append_c (json, '}');
+		lockout_guard (after, json);
+	} else {
+		if (st == FS_FW_STOPPED)
+			printf ("The firewall is stopped: the apply loads the "
+			        "whole policy (%u rules) and starts it.\n",
+			        fs_cli_policy_total (after));
+		printf ("The apply: %s\n", desc);
+		diff_rows_print (d);
+		notes_print (notes);
+		lockout_guard (after, NULL);
+	}
+
+	g_free (desc);
+	g_ptr_array_unref (notes);
+	diff_free (d);
+	fs_policy_impact_free (impact);
+	fs_policy_free (applied);
+}
+/* === end PR4-C === */
+
 gint
 fs_cli_cmd_apply (gint argc, gchar **argv)
 {
@@ -2918,14 +2999,28 @@ fs_cli_cmd_simulate (gint argc, gchar **argv)
 {
 	FsWhatIfResult *result;
 	GPtrArray *words = g_ptr_array_new ();
-	gboolean assume_running = FALSE, use_applied = FALSE;
+	gboolean assume_running = FALSE, use_applied = FALSE, yes = FALSE;
+	guint do_n = 0;
 	gchar *line;
 	gint status;
 	FsPolicy *applied = NULL;
 
 	for (gint i = 1; i < argc; i++) {
-		if (fs_cli_is_option_at (argv, i) &&
-		    strcmp (argv[i], "--assume-running") == 0) {
+		const gchar *v = NULL;
+		gint bad = FS_EXIT_OK;
+
+		if (fs_cli_take_opt (argc, argv, &i, "--do", &v, &bad)) {
+			/* 4C: run fix N of the answer (fs-cli-act.c). */
+			if (v == NULL || !fs_cli_simulate_do_number (v, &do_n)) {
+				g_ptr_array_free (words, TRUE);
+				return FS_EXIT_USAGE;
+			}
+		} else if (fs_cli_is_option_at (argv, i) &&
+		           (strcmp (argv[i], "--yes") == 0 ||
+		            strcmp (argv[i], "-y") == 0)) {
+			yes = TRUE;
+		} else if (fs_cli_is_option_at (argv, i) &&
+		           strcmp (argv[i], "--assume-running") == 0) {
 			assume_running = TRUE;
 		} else if (fs_cli_is_option_at (argv, i) &&
 		           strcmp (argv[i], "--applied") == 0) {
@@ -2943,6 +3038,16 @@ fs_cli_cmd_simulate (gint argc, gchar **argv)
 	}
 	g_ptr_array_add (words, NULL);
 
+	if (yes && do_n == 0) {
+		g_ptr_array_free (words, TRUE);
+		fs_cli_error ("--yes goes with --do");
+		return FS_EXIT_USAGE;
+	}
+	if (do_n > 0 && use_applied) {
+		g_ptr_array_free (words, TRUE);
+		fs_cli_error ("--do works on the saved policy, not with --applied");
+		return FS_EXIT_USAGE;
+	}
 	if (words->len < 2) {
 		g_ptr_array_free (words, TRUE);
 		fs_cli_error ("simulate needs a description of the traffic");
@@ -2979,6 +3084,30 @@ fs_cli_cmd_simulate (gint argc, gchar **argv)
 	result = applied != NULL
 	         ? fs_cli_whatif_policy (applied, line, assume_running)
 	         : fs_cli_whatif (line, assume_running);
+
+	/* --do N (4C): the fix is run, and its outcome is the answer; in
+	 * text the question's answer comes first, so the fix is seen in its
+	 * place. */
+	if (do_n > 0) {
+		if (!fs_cli.json && !fs_cli.quiet &&
+		    result->verdict != FS_WHATIF_ERROR) {
+			gchar *raw, *safe, *text;
+
+			refs_in_actions (result);
+			raw = fs_whatif_result_describe (result);
+			safe = fs_cli_out_safe_lines (raw);
+			text = fs_cli_whatif_number_actions (result, safe);
+			printf ("%s\n", text);
+			g_free (text);
+			g_free (safe);
+			g_free (raw);
+		}
+		status = fs_cli_simulate_do (result, line, assume_running, do_n,
+		                             yes);
+		fs_whatif_result_free (result);
+		g_free (line);
+		return status;
+	}
 
 	switch (result->verdict) {
 	case FS_WHATIF_ALLOWED: status = FS_EXIT_OK;      break;
@@ -3023,6 +3152,10 @@ fs_cli_cmd_simulate (gint argc, gchar **argv)
 		 * by line, as `policy list' shows them. */
 		raw = fs_whatif_result_describe (result);
 		text = fs_cli_out_safe_lines (raw);
+		g_free (raw);
+		/* Each fix gets its number, for --do N. */
+		raw = text;
+		text = fs_cli_whatif_number_actions (result, raw);
 		g_free (raw);
 		rest = strchr (text, '\n');
 
@@ -3111,6 +3244,9 @@ static const FsCliOption start_opts[] = {
 static const FsCliOption simulate_opts[] = {
 	{ "--assume-running", FALSE, NULL },
 	{ "--applied",        FALSE, NULL },
+	{ "--do",             TRUE,  NULL },
+	{ "--yes",            FALSE, NULL },
+	{ "-y",               FALSE, NULL },
 	{ NULL, FALSE, NULL }
 };
 
@@ -3252,6 +3388,7 @@ const FsCliCommandDef fs_cli_policy_commands[] = {
 	{ "simulate", fs_cli_cmd_simulate,
 "Usage: stockfw simulate \"<traffic>\" [--assume-running] [--applied]\n"
 "                        [--json]\n"
+"       stockfw simulate \"<traffic>\" --do N [--yes]\n"
 "\n"
 "Answers ALLOWED, BLOCKED or DEPENDS for described traffic against the\n"
 "saved policy and Firewall preferences, the way the Copilot page's\n"
@@ -3260,11 +3397,28 @@ const FsCliCommandDef fs_cli_policy_commands[] = {
 "the line leaves open (host, port, protocol, direction) is answered\n"
 "for every case: DEPENDS names the split.  When the firewall is not\n"
 "running the answer says so; --assume-running answers as if it were.\n"
-"--applied asks the last applied policy instead of the saved one.  It\n"
-"writes nothing: it is a question, not a change.  Exits 0 for ALLOWED,\n"
-"5 for BLOCKED, 6 for DEPENDS and 2 for a line it cannot read, so\n"
-"scripts can branch on it.  With -q only the verdict word is printed.\n"
+"--applied asks the last applied policy instead of the saved one.\n"
+"Without --do it writes nothing: it is a question, not a change.  Exits\n"
+"0 for ALLOWED, 5 for BLOCKED, 6 for DEPENDS and 2 for a line it cannot\n"
+"read, so scripts can branch on it.  With -q only the verdict word is\n"
+"printed.\n"
 "An unknown option is refused rather than read as part of the question.\n"
+"\n"
+"The fixes are numbered 1, 2 ... in the answer.  --do N runs fix N, as\n"
+"the What-If window's buttons do.  The question is answered against the\n"
+"policy as it is now and the fix is shown before anything changes; it\n"
+"is asked about with [y/N] on a terminal, and without one --yes is\n"
+"needed (nothing is ever waited for).  A rule to create must be one\n"
+"StockFW writes for you (one address or block, one port, one protocol)\n"
+"and must still do only what was asked, else it exits 2 and writes\n"
+"nothing.  A block is saved and put live alone (the last applied policy\n"
+"plus the row); an allow is saved and the saved policy applied, shown\n"
+"in full first.  Lifting Sentinel's block takes only its own block off.\n"
+"Starting the firewall is `stockfw start' (the start gate: audit-only\n"
+"mode holds it, with an audit line); applying is `stockfw apply'.  A\n"
+"fix that opens a rule or a setting prints the command to run.  Exit 0\n"
+"when done, 1 when not done, 2 for a fix that is refused, 3 without\n"
+"root.\n"
 "\n"
 "Examples:\n"
 "  stockfw simulate \"allow ssh from 192.168.1.50 on port 22\"\n"

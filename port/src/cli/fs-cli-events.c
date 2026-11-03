@@ -1801,8 +1801,26 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 	gchar *dir = NULL;
 	GError *error = NULL;
 	gint rc = FS_EXIT_OK;
+	/* `events act ACTION' (4C): the events the filters keep go to
+	 * fs_cli_events_act (fs-cli-act.c) instead of the screen. */
+	const gchar *act = NULL;
+	guint pick = 0;
+	gboolean both = FALSE, no_apply = FALSE;
+	gint first = 1;
 
-	for (gint i = 1; i < argc; i++) {
+	if (argc > 1 && strcmp (argv[1], "act") == 0 &&
+	    !fs_cli_is_positional (1)) {
+		if (argc < 3 || fs_cli_is_option_at (argv, 2) ||
+		    !fs_cli_events_act_known (argv[2])) {
+			fs_cli_events_act_usage (argc < 3 ? NULL : argv[2]);
+			rc = FS_EXIT_USAGE;
+			goto out;
+		}
+		act = argv[2];
+		first = 3;
+	}
+
+	for (gint i = first; i < argc; i++) {
 		const gchar *v = NULL;
 		gint bad = FS_EXIT_OK;
 
@@ -1861,6 +1879,23 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			top_given = TRUE;
 			if (v != NULL && !parse_count ("--top", v, 100000, &top))
 				bad = FS_EXIT_USAGE;
+		} else if (fs_cli_take_opt (argc, argv, &i, "--pick", &v, &bad)) {
+			if (v != NULL && act == NULL) {
+				fs_cli_error ("--pick goes with `events act'");
+				bad = FS_EXIT_USAGE;
+			} else if (v != NULL &&
+			           (!parse_count ("--pick", v, 1000000, &pick) ||
+			            pick == 0)) {
+				if (pick == 0 && g_ascii_isdigit (*v))
+					fs_cli_error ("--pick counts from 1");
+				bad = FS_EXIT_USAGE;
+			}
+		} else if (act != NULL && fs_cli_is_option_at (argv, i) &&
+		           strcmp (argv[i], "--both") == 0) {
+			both = TRUE;
+		} else if (act != NULL && fs_cli_is_option_at (argv, i) &&
+		           strcmp (argv[i], "--no-apply") == 0) {
+			no_apply = TRUE;
 		} else if (!fs_cli_is_option_at (argv, i)) {
 			fs_cli_error ("unexpected argument: %s", argv[i]);
 			bad = FS_EXIT_USAGE;
@@ -1946,7 +1981,17 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 		rc = FS_EXIT_USAGE;
 		goto out;
 	}
-	if (yes && !clear) {
+	/* An action picks one event: none of the other outputs. */
+	if (act != NULL && (follow || summary || stats_wanted || clear ||
+	                    st.csv)) {
+		fs_cli_error ("events act cannot be used with %s",
+		              follow ? "-f" : summary ? "--summary"
+		              : stats_wanted ? "--stats"
+		              : clear ? "--clear-history" : "--csv");
+		rc = FS_EXIT_USAGE;
+		goto out;
+	}
+	if (yes && !clear && act == NULL) {
 		fs_cli_error ("--yes goes with --clear-history");
 		rc = FS_EXIT_USAGE;
 		goto out;
@@ -2098,6 +2143,11 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			g_ptr_array_remove_index (history, 0);
 		if (!follow)
 			coverage_note ();
+	}
+
+	if (act != NULL) {
+		rc = fs_cli_events_act (act, history, pick, both, no_apply, yes);
+		goto out;
 	}
 
 	/* -r: newest first. */
@@ -3373,6 +3423,11 @@ static const FsCliOption events_opts[] = {
 	{ "--clear-history", FALSE, NULL },
 	{ "--yes",           FALSE, NULL },
 	{ "-y",              FALSE, NULL },
+	/* === PR4-C === */
+	{ "--pick",          TRUE,  "act" },
+	{ "--both",          FALSE, "act" },
+	{ "--no-apply",      FALSE, "act" },
+	/* === end PR4-C === */
 	{ NULL, FALSE, NULL }
 };
 
@@ -3413,6 +3468,8 @@ const FsCliCommandDef fs_cli_events_commands[] = {
 "       stockfw events --summary [--by KEY[,KEY]] [--top N] [filters]\n"
 "       stockfw events --stats [--history] [filters]\n"
 "       stockfw events --clear-history [--history-dir DIR] [--yes]\n"
+"       stockfw events act ACTION [filters] [--pick N] [--both]\n"
+"                      [--no-apply] [--yes]\n"
 "\n"
 "The last N (default 20, up to 1000000) events, oldest first (-r: newest\n"
 "first).  By default they are read from the kernel log, which usually\n"
@@ -3484,12 +3541,31 @@ const FsCliCommandDef fs_cli_events_commands[] = {
 "\n"
 "The RULE column names the threat-intel list that blocked an event.\n"
 "\n"
+"events act turns one event into a rule, as the Events page's menu\n"
+"does.  ACTION is block-dest (outbound: deny all traffic to its\n"
+"destination), block-service (its service and port to that\n"
+"destination), allow-dest (allow its destination; Sentinel's blocks of\n"
+"it are lifted), trust-source (inbound: allow its source) or\n"
+"untrust-source (remove the inbound allow for its source).  The events\n"
+"the filters keep (the last N of them) are the choice, newest first;\n"
+"events that give the same rule count once.  With more than one rule to\n"
+"choose from it lists them and --pick N takes one.  The event and the\n"
+"rule are shown, and on a terminal it asks [y/N]; without a terminal\n"
+"--yes is needed.  A block is saved and put live alone (the last\n"
+"applied policy plus the row: nothing else that is saved and not\n"
+"applied goes live with it).  An allow is saved and the saved policy is\n"
+"applied, so the whole apply is shown first.  untrust-source takes only\n"
+"that rule off.  --both adds the twin in the other direction (allows\n"
+"only).  --no-apply only saves.  Live changes need root, and the\n"
+"lockout guard asks again before one would cut an SSH session.\n"
+"\n"
 "Examples:\n"
 "  stockfw events --history --since 1d --port 22,3389 --dir in\n"
 "  stockfw events --summary --since 7d --by src --top 5\n"
 "  stockfw events --history -n 1000 --addr 203.0.113.0/24 --csv\n"
 "  stockfw events -f --prefs-filters\n"
-"  stockfw events --stats --history --since 1d --collapse-repeats\n",
+"  stockfw events --stats --history --since 1d --collapse-repeats\n"
+"  stockfw events act block-dest --addr 203.0.113.9 --dir out\n",
 	  events_opts, NULL },
 
 	{ "connections", fs_cli_cmd_connections,
