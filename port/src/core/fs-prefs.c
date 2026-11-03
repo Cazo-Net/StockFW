@@ -768,6 +768,19 @@ prefs_write_defaults (void)
 }
 
 /* [ fs_prefs_set_persist ] */
+/* [ prefs_extra_key ]
+ * Keys outside the table that fs_prefs_set_persist writes too, with the
+ * values each takes (NULL: back to its default).  Sentinel's mode is set
+ * on the Copilot page, not in Preferences (PR 4, 4B: `sentinel mode'). */
+static gboolean
+prefs_extra_key (const gchar *key, const gchar *value)
+{
+	if (g_strcmp0 (key, "/apps/stockfw/client/sentinel/mode") == 0)
+		return value == NULL || strcmp (value, "auto") == 0 ||
+		       strcmp (value, "detect") == 0;
+	return FALSE;
+}
+
 gboolean
 fs_prefs_set_persist (const gchar * const *keys, const gchar * const *values,
                       guint n, gboolean *was_unreadable, GError **error)
@@ -785,12 +798,13 @@ fs_prefs_set_persist (const gchar * const *keys, const gchar * const *values,
 	for (guint i = 0; i < n; i++) {
 		const FsPrefSpec *spec = fs_prefs_spec (keys[i]);
 
-		if (spec == NULL) {
+		if (spec == NULL && !prefs_extra_key (keys[i], values[i])) {
 			g_set_error (error, FS_PREFS_ERROR, FS_PREFS_ERR_INVALID,
 			             "%s is not a setting", keys[i]);
 			return FALSE;
 		}
-		if (values[i] != NULL && spec->type == FS_PREF_BOOL &&
+		if (spec != NULL && values[i] != NULL &&
+		    spec->type == FS_PREF_BOOL &&
 		    strcmp (values[i], "true") != 0 &&
 		    strcmp (values[i], "false") != 0) {
 			g_set_error (error, FS_PREFS_ERROR, FS_PREFS_ERR_INVALID,
@@ -858,7 +872,7 @@ fs_prefs_set_persist (const gchar * const *keys, const gchar * const *values,
 			prefs_dirty = TRUE;
 			g_free (group);
 			g_free (leaf);
-		} else if (spec->type == FS_PREF_BOOL) {
+		} else if (spec != NULL && spec->type == FS_PREF_BOOL) {
 			fs_prefs_set_bool (keys[i], strcmp (values[i], "true") == 0);
 		} else {
 			fs_prefs_set_string (keys[i], values[i]);

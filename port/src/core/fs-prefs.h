@@ -194,7 +194,9 @@ typedef enum
  * keys (A12); *was_unreadable (nullable) says so.  Refused before
  * anything is touched: a key that is not in the table, a switch value
  * that is not true or false.  Validate first (fs_prefs_validate): this
- * only writes.  The in-memory store is replaced by the file's. */
+ * only writes.  The in-memory store is replaced by the file's.  One key
+ * outside the table is taken too: Sentinel's mode
+ * ("/apps/stockfw/client/sentinel/mode", "auto" or "detect"; PR 4). */
 gboolean fs_prefs_set_persist (const gchar * const *keys,
                                const gchar * const *values, guint n,
                                gboolean *was_unreadable, GError **error);

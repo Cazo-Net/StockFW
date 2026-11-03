@@ -327,6 +327,14 @@ root_gui_running (void)
 	return found;
 }
 
+/* === PR4-B === */
+gboolean
+fs_cli_root_gui_running (void)
+{
+	return root_gui_running ();
+}
+/* === end PR4-B === */
+
 static void
 root_gui_warning (gboolean running)
 {

@@ -2161,7 +2161,7 @@ check "__complete events --proto '' gives the four protocols" \
 check "a word after -- is a plain word, not an option to complete" \
   bash -c "[ -z \"\$('$S' __complete policy -- -)\" ]"
 check "--json anywhere is ignored by __complete" \
-  bash -c "[ \"\$('$S' __complete --json copilot '')\" = health ]"
+  bash -c "[ \"\$('$S' __complete --json copilot '' | head -1)\" = health ]"
 # References from the saved policy.
 ER="$E/rules"
 check "two rules saved in a scratch policy" \
@@ -3291,6 +3291,226 @@ rm -rf "$L"
 # === end PR4-A ===
 
 # === PR4-B ===
+# Copilot and Sentinel in the terminal (master plan PR 4, 4B): `copilot
+# checks' from the engine's numbers, `copilot scan' replaying a saved
+# history, `copilot show', `copilot health --fix N' and `copilot
+# changes --undo ID' (the policy file comes back byte for byte), the
+# questions only on a terminal, and as root in a private network
+# namespace `copilot block' (only the block goes live, never a saved
+# allow nobody applied), its undo, and `sentinel lift' and `sentinel
+# mode detect'.  $P/pb is stockfw with this block's scratch files.
+P="$(mktemp -d /tmp/stockfw-pr4b-XXXXXX)"; chmod 755 "$P"
+echo "nameserver 198.51.100.53" > "$P/resolv.conf"; : > "$P/none"
+cat > "$P/pb" <<PB
+#!/bin/bash
+export STOCKFW_RULES_DIR="\${PB_RULES:-$P/rules}" XDG_CONFIG_HOME='$P/cfg'
+export STOCKFW_RUN_DIR='$P/run' STOCKFW_AUDIT_FILE='$P/audit'
+export STOCKFW_AUTOBLOCK_FILE='$P/autoblocks' STOCKFW_CHANGELOG_FILE='$P/changes.jsonl'
+export STOCKFW_EVENTS_DIR="\${STOCKFW_EVENTS_DIR:-$P/history}" STOCKFW_LOG_FILE='$P/kern.log'
+export STOCKFW_RESOLV_CONF='$P/resolv.conf' STOCKFW_RESOLVED_CONF='$P/none' STOCKFW_ROUTE_FILE='$P/none'
+export STOCKFW_LAN_PREFIX=192.168.1.0/24 STOCKFW_LOCAL_ADDRESSES=192.168.1.5
+exec '$S' "\$@"
+PB
+chmod 755 "$P/pb"
+PB="$P/pb"
+pb_snap () { (cd "$P/rules" && find . -type f ! -name .lock -exec sha256sum {} + | sort) > "$1"; }
+# hist.py DIR N: a saved history (core/fs-eventlog.c's format) of
+# 2026-10-30: 8 outbound contacts to 203.0.113.80:443 a minute apart,
+# and N inbound SSH attempts from 198.51.100.23, ten seconds apart.
+cat > "$P/hist.py" <<'HIST'
+import datetime, os, sys
+H, n = sys.argv[1], int(sys.argv[2])
+os.makedirs(H, mode=0o700, exist_ok=True)
+def fnv(b):
+    h = 2166136261
+    for c in b:
+        h = ((h ^ c) * 16777619) & 0xffffffff
+    return h
+base = datetime.datetime(2026, 10, 30, 9, 0, tzinfo=datetime.timezone.utc)
+ev = []
+def add(sec, d, port, src, dst, svc):
+    dt = base + datetime.timedelta(seconds=sec)
+    f = [str(int(dt.timestamp()) * 10000000), dt.strftime('%Y-%m-%dT%H:%M:%SZ'), d,
+         'eth0' if d == 'in' else '', 'eth0' if d == 'out' else '', port, src, dst,
+         '60', '0x00', 'TCP', svc, 'STOCKFW-DROP']
+    body = '\t'.join(f)
+    ev.append((sec, body + '\t%08x\n' % fnv(body.encode())))
+for i in range(8):
+    add(i * 60, 'out', '443', '10.0.0.5', '203.0.113.80', 'HTTPS')
+for i in range(n):
+    add(600 + i * 10, 'in', '22', '198.51.100.23', '10.0.0.5', 'SSH [BLOCKED]')
+ev.sort()
+open(os.path.join(H, 'events-2026-10-30-000.log'), 'w').write(
+    '# StockFW event history 1\n' + ''.join(b for _, b in ev))
+HIST
+python3 -I "$P/hist.py" "$P/history" 12
+
+check "PR4-B: copilot checks prints the engine's numbers" bash -c "
+  '$PB' copilot checks > '$P/checks' &&
+  grep -q 'Contacts at a near-fixed interval: 6 or more, 10 s to 10 min apart, timing varying under 30 % (auto-block needs 8' '$P/checks' &&
+  grep -q 'Fan-out: one program reaching 60 or more hosts in 60 s, or 10' '$P/checks' &&
+  grep -q 'Inbound scan: one source trying 12 ports in 60 s, or 25 in 10' '$P/checks' &&
+  grep -q 'Login attempts: 10 in 5 min from one source to SSH, RDP, VNC, Telnet, FTP or SMB' '$P/checks' ||
+  { cat '$P/checks' >&2; false; }"
+# The text follows the engine: the threshold `checks' prints is the one
+# the check uses.  N-1 attempts in the window give no finding, N do.
+check "PR4-B: the login-attempts number in \`copilot checks' is the engine's threshold" py "
+import json, os, re, shutil, subprocess
+c = json.loads(subprocess.run(['$PB', '--json', 'copilot', 'checks'], capture_output=True, text=True).stdout)['checks']
+m = re.match(r'Login attempts: (\d+) in (\d+) min', [x for x in c if x.startswith('Login attempts')][0])
+n, w = int(m.group(1)), int(m.group(2))
+assert 10 * n < w * 60, (n, w)       # the fixture's ten-second spacing fits the window
+def types(k):
+    d = '$P/h%d' % k
+    shutil.rmtree(d, ignore_errors=True)
+    subprocess.run(['python3', '-I', '$P/hist.py', d, str(k)], check=True)
+    r = subprocess.run(['$PB', '--json', 'copilot', 'scan', '--history'],
+                       env=dict(os.environ, STOCKFW_EVENTS_DIR=d), capture_output=True, text=True)
+    return [f['type'] for f in json.loads(r.stdout)['findings']]
+assert 'Login attempts' not in types(n - 1), types(n - 1)
+assert 'Login attempts' in types(n), types(n)"
+check "PR4-B: copilot scan --history on the fixture: timed contacts and login attempts (exit 7)" py "
+import json, subprocess
+r = subprocess.run(['$PB', '--json', 'copilot', 'scan', '--history'], capture_output=True, text=True)
+assert r.returncode == 7, r
+d = json.loads(r.stdout)
+t = {f['type']: f for f in d['findings']}
+assert d['events'] == 20 and d['source'] == 'history' and d['baseline'] is False, d
+assert 'Timed contacts' in t and 'Login attempts' in t, d
+b = t['Timed contacts']
+assert b['destination'] == '203.0.113.80' and b['rule']['kind'] == 'outbound-deny-to', b
+assert b['whatif'] == 'outbound tcp port 443 to 203.0.113.80', b
+r2 = subprocess.run(['$PB', '--json', 'copilot', 'scan', '--history'], capture_output=True, text=True)
+assert [f['id'] for f in json.loads(r2.stdout)['findings']] == [f['id'] for f in d['findings']], 'IDs differ between runs'
+r3 = subprocess.run(['$PB', '--json', 'copilot', 'scan', '--history', '--since', '2026-10-31'], capture_output=True, text=True)
+assert r3.returncode == 0 and json.loads(r3.stdout)['findings'] == [], r3
+open('$P/beacon-id', 'w').write(b['id'])"
+BID="$(cat "$P/beacon-id" 2>/dev/null)"
+check "PR4-B: copilot show ID: the drawer, a ready simulate line, the block rule" bash -c "
+  '$PB' copilot show '$BID' --history > '$P/show' &&
+  grep -q 'Timed contacts' '$P/show' && grep -q '^Why: ' '$P/show' &&
+  grep -q \"^Ask What-If: stockfw simulate 'outbound tcp port 443 to 203.0.113.80'\" '$P/show' &&
+  grep -q 'stockfw copilot block $BID' '$P/show' ||
+  { cat '$P/show' >&2; false; }"
+check "PR4-B: copilot show: an ID not in the scan exits 1, one that is not hex 2" bash -c "
+  '$PB' copilot show 0000ffff --history 2> /dev/null; [ \$? -eq 1 ] &&
+  '$PB' copilot show zz --history 2> /dev/null; [ \$? -eq 2 ]"
+
+# copilot health --fix N: RDP open to anyone is narrowed to the LAN,
+# and the undo puts the files back as they were.
+"$PB" -q policy add inbound-allow-service SSH 22 192.168.1.0/24
+"$PB" -q policy add inbound-allow-service RDP 3389 Anyone
+"$PB" -q policy add outbound-deny-to 198.51.100.66 --comment one
+pb_snap "$P/rules-before"
+# stdin a pipe that stays open: a read would wait the full ten seconds.
+timeout 10 "$PB" copilot health --fix 1 > /dev/null 2> "$P/err" < <(sleep 30)
+pb_rc=$?; kill $! 2> /dev/null
+pb_snap "$P/rules-mid"
+check "PR4-B: health --fix with stdin an open pipe and no --yes: refused at once, naming --yes, nothing written (rc $pb_rc)" \
+  bash -c "[ $pb_rc -eq 1 ] && grep -q -- '--yes' '$P/err' && cmp -s '$P/rules-before' '$P/rules-mid'"
+check "PR4-B: copilot health --fix 1 --yes narrows RDP to the LAN and logs change 1" bash -c "
+  '$PB' copilot health --fix 1 --yes < /dev/null > '$P/fix' 2>&1 &&
+  grep -q '^RDP, 3389, 192.168.1.0/24' '$P/rules/inbound/allow-service' &&
+  grep -q \"Check it:  stockfw simulate 'inbound tcp port 3389 from 203.0.113.10'\" '$P/fix' &&
+  '$PB' --json copilot changes | python3 -I -c 'import json,sys; c=json.load(sys.stdin)[\"changes\"]; assert len(c)==1 and c[0][\"id\"]==1 and c[0][\"undone\"] is False and c[0][\"type\"]==\"health-fix\", c' ||
+  { cat '$P/fix' >&2; false; }"
+"$PB" -q copilot changes --undo 1 < /dev/null; pb_snap "$P/rules-after"
+check "PR4-B: health --fix 1, then copilot changes --undo 1: the policy files are byte-identical" \
+  cmp "$P/rules-before" "$P/rules-after"
+check "PR4-B: a second undo of the same change is refused (exit 2)" bash -c "
+  '$PB' copilot changes --undo 1 2> '$P/err'; [ \$? -eq 2 ] && grep -q 'undone already' '$P/err'"
+# A duplicate between two other rows: the fix removes the later copy,
+# and the undo puts it back between the same two rows (the anchor).
+printf '198.51.100.66, one\n198.51.100.68, mid\n198.51.100.66, one\n198.51.100.67, two\n' > "$P/rules/outbound/deny-to"
+pb_snap "$P/rules-before2"
+check "PR4-B: a duplicate removed by --fix comes back in its place on undo (byte-identical)" bash -c "
+  n=\$('$PB' --json copilot health | python3 -I -c 'import json,sys; print([f[\"number\"] for f in json.load(sys.stdin)[\"findings\"] if f[\"kind\"]==\"duplicate\"][0])') &&
+  '$PB' -q copilot health --fix \"\$n\" --yes < /dev/null > /dev/null &&
+  [ \$(grep -c '198.51.100.66' '$P/rules/outbound/deny-to') -eq 1 ] &&
+  id=\$('$PB' --json copilot changes | python3 -I -c 'import json,sys; print(json.load(sys.stdin)[\"changes\"][-1][\"id\"])') &&
+  '$PB' -q copilot changes --undo \"\$id\" < /dev/null &&
+  (cd '$P/rules' && find . -type f ! -name .lock -exec sha256sum {} + | sort) > '$P/rules-after2' &&
+  cmp '$P/rules-before2' '$P/rules-after2' || { cat '$P/rules/outbound/deny-to' >&2; false; }"
+# The scan hands the engine the saved policy first: with SSH open to
+# anyone, the login attempts are ones the policy lets in.
+PB_RULES="$P/rules-ssh" "$PB" -q policy add inbound-allow-service SSH 22 Anyone
+check "PR4-B: copilot scan judges the findings against the saved policy" py "
+import json, os, subprocess
+def brute(env):
+    r = subprocess.run(['$PB', '--json', 'copilot', 'scan', '--history'],
+                       env=dict(os.environ, **env), capture_output=True, text=True)
+    return [f for f in json.loads(r.stdout)['findings'] if f['type'] == 'Login attempts'][0]
+o, s = brute({}), brute({'PB_RULES': '$P/rules-ssh'})
+assert 'lets it in' not in o['title'] and o['severity'] != 'critical', o
+assert 'the policy lets it in' in s['title'] and s['severity'] == 'critical', s"
+check "PR4-B: sentinel lift with no target or two, a bad mode, a bad subcommand: usage errors (exit 2)" bash -c "
+  '$PB' sentinel lift 2> /dev/null; [ \$? -eq 2 ] &&
+  '$PB' sentinel lift --all --expired 2> /dev/null; [ \$? -eq 2 ] &&
+  '$PB' sentinel mode sometimes 2> /dev/null; [ \$? -eq 2 ] &&
+  '$PB' sentinel frobnicate 2> /dev/null; [ \$? -eq 2 ]"
+check "PR4-B: __complete copilot '' lists the six subcommands, sentinel mode '' the two modes" \
+  bash -c "[ \"\$('$S' __complete copilot '' | tr '\n' ' ')\" = 'health scan show block checks changes ' ] &&
+           [ \"\$('$S' __complete sentinel mode '' | tr '\n' ' ')\" = 'auto detect ' ]"
+
+# Live, as root, in a private network namespace.
+if [ "$(id -u)" = 0 ] && command -v iptables > /dev/null 2>&1 &&
+   command -v ip > /dev/null 2>&1 && unshare -n true 2> /dev/null; then
+  cat > "$P/live.sh" <<'LIVE'
+S="$1"; P="$2"; L="$P/live"
+f=0
+t () { local what="$1"; shift; if "$@"; then echo "ok:   $what"; else echo "FAIL: $what"; f=$((f+1)); fi; }
+mkdir -p "$L/home"
+export STOCKFW_RULES_DIR="$L/rules" STOCKFW_APPLIED_FILE="$L/applied"
+export STOCKFW_AUDIT_FILE="$L/audit" STOCKFW_AUTOBLOCK_FILE="$L/autoblocks"
+export STOCKFW_RUN_DIR="$L/run" HOME="$L/home" XDG_CONFIG_HOME="$L/home/.config"
+export STOCKFW_CHANGELOG_FILE="$L/changes.jsonl" STOCKFW_EVENTS_DIR="$P/history"
+export STOCKFW_RESOLV_CONF="$P/resolv.conf" STOCKFW_RESOLVED_CONF="$P/none" STOCKFW_ROUTE_FILE="$P/none"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR STOCKFW_LAN_PREFIX STOCKFW_LOCAL_ADDRESSES
+ip link set lo up
+live () { iptables-save | grep -v '^#'; }
+export -f live
+"$S" -q policy add outbound-deny-to 198.51.100.20
+"$S" apply < /dev/null > /dev/null 2>&1
+# Saved, never applied: an inbound allow for SSH from 203.0.113.0/24.
+"$S" -q policy add inbound-allow-service SSH 22 203.0.113.0/24
+ID=$("$S" --json copilot scan --history | python3 -I -c 'import json,sys; print([x["id"] for x in json.load(sys.stdin)["findings"] if x["type"] == "Timed contacts"][0])')
+timeout 10 "$S" copilot block "$ID" --history > /dev/null 2> "$L/err" < <(sleep 30); rc=$?; kill $! 2> /dev/null
+t "4B: copilot block with stdin an open pipe and no --yes is refused at once (rc $rc)" bash -c "[ $rc -eq 1 ] && grep -q -- '--yes' '$L/err' && ! grep -q 203.0.113.80 '$STOCKFW_RULES_DIR/outbound/deny-to'"
+"$S" copilot block "$ID" --history --yes < /dev/null > "$L/block" 2>&1; rc=$?
+t "4B: copilot block puts the block live (rc $rc: $(tr '\n' ' ' < "$L/block"))" bash -c "[ $rc -eq 0 ] && live | grep -q '203.0.113.80'"
+t "4B: ...the saved, unapplied inbound allow is not live" bash -c "! live | grep -q '203.0.113.0/24'"
+t "4B: ...the rule is saved as the user's (Copilot:), and change 1 records it" bash -c "grep -q '^203.0.113.80, Copilot: periodic beacon' '$STOCKFW_RULES_DIR/outbound/deny-to' && grep -q '\"type\":\"block-rule\",\"id\":1' '$STOCKFW_CHANGELOG_FILE'"
+"$S" -q sentinel lift 203.0.113.80 < /dev/null > /dev/null 2>&1
+t "4B: ...a Sentinel lift for the address leaves the user's block alone" bash -c "live | grep -q '203.0.113.80' && grep -q '^203.0.113.80' '$STOCKFW_RULES_DIR/outbound/deny-to'"
+"$S" copilot changes --undo 1 < /dev/null > "$L/undo" 2>&1; rc=$?
+t "4B: copilot changes --undo 1 takes the block off the firewall and out of the file (rc $rc)" bash -c "[ $rc -eq 0 ] && ! live | grep -q '203.0.113.80' && ! grep -q 203.0.113.80 '$STOCKFW_RULES_DIR/outbound/deny-to' && live | grep -q '198.51.100.20'"
+t "4B: ...and the saved allow is still not live" bash -c "! live | grep -q '203.0.113.0/24'"
+now=$(date +%s)
+for a in 203.0.113.60 203.0.113.61 203.0.113.62 203.0.113.63; do
+  "$S" -q policy add outbound-deny-to "$a" --comment "Sentinel: test"
+done
+"$S" apply < /dev/null > /dev/null 2>&1
+{ echo "S,$((now - 100)),6,203.0.113.60, Sentinel: test"
+  echo "S,$((now - 700)),6,203.0.113.61, Sentinel: test"
+  echo "S,$((now - 100)),6,203.0.113.62, Sentinel: test"
+  echo "S,$((now - 100)),6,203.0.113.63, Sentinel: test"; } > "$STOCKFW_AUTOBLOCK_FILE"
+"$S" sentinel lift 203.0.113.60 < /dev/null > "$L/l1" 2>&1; rc=$?
+t "4B: sentinel lift TARGET: that block is off the firewall, the file and the state; the others stay (rc $rc)" bash -c "[ $rc -eq 0 ] && ! live | grep -q 203.0.113.60 && ! grep -q 203.0.113.60 '$STOCKFW_AUTOBLOCK_FILE' && ! grep -rq 203.0.113.60 '$STOCKFW_RULES_DIR' && live | grep -q 203.0.113.61 && live | grep -q 203.0.113.62"
+"$S" sentinel lift --expired < /dev/null > "$L/l2" 2>&1; rc=$?
+t "4B: sentinel lift --expired: only the expired block is lifted (rc $rc)" bash -c "[ $rc -eq 0 ] && ! live | grep -q 203.0.113.61 && live | grep -q 203.0.113.62 && grep -q 'Lifted 1 Sentinel block: 203.0.113.61' '$L/l2'"
+"$S" sentinel mode detect < /dev/null > "$L/m" 2>&1; rc=$?
+t "4B: sentinel mode detect saves the mode and lifts every block live (rc $rc)" bash -c "[ $rc -eq 0 ] && [ \"\$('$S' sentinel mode)\" = detect ] && ! live | grep -qE '203.0.113.6[23]' && ! grep -q 'S,' '$STOCKFW_AUTOBLOCK_FILE' && live | grep -q 198.51.100.20"
+t "4B: ...the audit log names the mode change and the lift" bash -c "grep -q 'sentinel mode | auto -> detect (cli)' '$STOCKFW_AUDIT_FILE' && grep -q 'sentinel auto-blocks lifted | cli | Sentinel switched to detect only' '$STOCKFW_AUDIT_FILE'"
+exit "$f"
+LIVE
+  unshare -n bash "$P/live.sh" "$S" "$P" > "$P/live.log" 2>&1
+  live_rc=$?
+  sed 's/^\(ok:   \|FAIL: \)4B: /\1PR4-B: /' "$P/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the 4B live checks need root, iptables, ip and unshare"
+fi
+rm -rf "$P"
 # === end PR4-B ===
 
 # === PR4-C ===

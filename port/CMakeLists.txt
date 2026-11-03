@@ -309,6 +309,7 @@ if(FS_PLATFORM STREQUAL "linux")
     src/cli/fs-cli-trust.c
     src/cli/fs-cli-help.c
     src/control/fs-control.c
+    src/control/fs-changelog.c
   )
   add_executable(stockfw
     ${FS_CLI_SOURCES}
