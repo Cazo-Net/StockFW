@@ -83,23 +83,28 @@ The tag starts CI on the tagged commit (`.github/workflows/ci.yml`, tags
 
 When both jobs pass, the `release` job:
 
-- refuses a version whose `CHANGELOG.md` section has no date, a pushed
-  tag that is not `v` plus the version in `port/CMakeLists.txt`, and, when
-  started from the website, a version whose tag or release already exists;
+- refuses a version whose `CHANGELOG.md` section has no date, and a pushed
+  tag that is not `v` plus the version in `port/CMakeLists.txt`; started
+  from the website for a tag that already exists, it also refuses when
+  `main` differs from the tag in any file the packages are built from;
 - downloads that run's two artifacts, checks the tarball against its
   `.sha256`, and writes `SHA256SUMS.txt` for the installer and the tarball;
 - takes the release notes from the version's `CHANGELOG.md` section;
-- creates a **draft** release named `StockFW 1.0.7` with exactly
-  `StockFW-1.0.7-Setup.exe`, `StockFW-1.0.7-linux-x86_64.tar.gz` and
-  `SHA256SUMS.txt`.
+- with no release for the tag yet, creates a **draft** release named
+  `StockFW 1.0.7` with exactly `StockFW-1.0.7-Setup.exe`,
+  `StockFW-1.0.7-linux-x86_64.tar.gz` and `SHA256SUMS.txt`;
+- with a release that lacks some of those files (one made by hand on the
+  website, say), uploads all three and fills in empty notes, leaving the
+  release published or draft as it was;
+- with all three files already there, changes nothing.
 
 Publishing a draft that was started from the website creates the tag, and
-that tag runs CI once more; its release job sees the release already
-exists and changes nothing.
+that tag runs CI once more; its release job finds the files there and
+changes nothing.
 
-If either job fails, there is no draft: fix the cause and start again (a
-pushed tag is deleted first with `git push origin :refs/tags/v1.0.7` and
-`git tag -d v1.0.7`).
+If either job fails, nothing is uploaded: fix the cause and start again
+(a pushed tag is deleted first with `git push origin :refs/tags/v1.0.7`
+and `git tag -d v1.0.7`).
 
 ## 6. Publish the release
 
