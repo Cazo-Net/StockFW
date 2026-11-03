@@ -33,6 +33,7 @@ the tests never touches a real `/etc/stockfw`.
 | start on open | the app's one start goes through the start gate (`fs_firewall_start_lifting` in `start_at_launch`), only after the policy is loaded and Sentinel's expired blocks are out of it; no direct backend start (read from `fs-app.c`) |
 | Windows rules | policy rows to netsh rules and argv, refusals, the upgrade apply (see below) |
 | threat intel on Windows | blocklist rules: plan, chunking, read-back verdicts, in force, on-link prefixes (see below) |
+| Copilot | detections with evidence, the policy health check and its verified fixes, the wording guard (see below) |
 
 ## Event source (`tests/test-logstart.sh`)
 
@@ -1220,6 +1221,19 @@ per process:
   own; the quit closes it as Cancel would (the moved setting is not
   saved) instead of waiting for it, and the Copilot's state is still
   intact.
+- `background` (`STOCKFW_AUTOSAVE_S=1`; the DNS server and gateway
+  fixed through `STOCKFW_RESOLV_CONF` and `STOCKFW_ROUTE_FILE`): the
+  window is hidden as "Minimize to the tray" hides it (directly, since
+  xvfb has no notification area for the icon to embed in), and then
+  the Copilot must keep working.  A Sentinel block restored with three
+  seconds left is lifted from the policy and the staged list on time,
+  and audited; seven timed contacts fed into the app's Copilot and the
+  eighth delivered through the Events page's own callback stage a
+  Sentinel block (policy, staged list, apply gate); the periodic save
+  writes what was learned; the tray's "Pause Sentinel auto-block for 1
+  hour" is offered, pauses, the menu then offers Resume, and a second
+  timed series stages nothing while paused; no window or dialog came
+  up meanwhile (the tray icon's own window aside).
 
 No scenario stops the firewall.  `test-core.sh` pins
 `fs_prefs_dirty()`.
@@ -1236,6 +1250,17 @@ instead of in shutdown fails "sametick" (a timer due in the same loop
 pass as the quit found freed memory); leave the Preferences window out
 of the quit and "the quit closes the Preferences window" and
 "promptly" fail.
+
+Teeth for `background`, each re-injected in the real file, seen
+failing with `fs-session-smoke background`, restored with `cp` and
+proved with `cmp`:
+
+| Bug re-injected | Checks that caught it |
+|---|---|
+| the Copilot fed only while the Events page is on screen (`fs-hitview.c`) | "an event delivered while hidden reaches the Copilot (7 seen)", "the contact that completes a timed series is staged ...", "what the Copilot learned while hidden is written ..." |
+| the expiry timer waits while the Copilot page is not on screen (`fs-copilot.c`) | "a Sentinel block whose ten minutes ran out while the window was hidden is lifted ...", "...and audited (0)" |
+| the periodic save skipped while the window is hidden (`fs-app.c`) | "what the Copilot learned while hidden is written by the periodic save" |
+| Sentinel's automatic pass run only while the Events page is on screen (`fs-hitview.c`) | "the contact that completes a timed series is staged as a Sentinel block while the window is hidden" |
 ## Windows rule translation (`tests/test-core.sh`)
 
 ```sh
@@ -1689,6 +1714,182 @@ checked with `cmp`:
 
 The run is also clean under AddressSanitizer and UBSan (LeakSanitizer
 on), and passes as root and as an ordinary user.
+## The Copilot (`tests/test-health.c`, `test-core.sh`, `fs-copilot-smoke`)
+
+```sh
+cd port
+bash tests/test-core.sh                     # detections, then test-health.c, then the wording guard
+ninja -C build-linux fs-health-test         # test-health.c through CMake
+ninja -C build-linux fs-copilot-smoke fs-hitview-smoke
+xvfb-run -a ./build-linux/fs-copilot-smoke  # section 8: the page; a dark run in a child
+xvfb-run -a ./build-linux/fs-hitview-smoke  # feed order (as root)
+bash tests/test-cli.sh                      # stockfw copilot health
+```
+
+The Copilot is a set of fixed rules; the design is
+`docs/ARCHITECTURE-AND-SECURITY.md` chapter 4 (every detection, its
+limits, Sentinel's gates, what each platform's log shows) and section
+14.5 (the 1.0.7 rework, the health check and the page).  That the
+Copilot keeps working with the window hidden is `fs-session-smoke`'s
+`background` scenario (Session safety, above).
+
+`test-health.c` (pure GLib) pins the policy health check
+(`core/fs-health.c`):
+
+- exact coverage: a port range covers a port inside it, a network an
+  address inside it, TCP never covers UDP, a host name never covers or
+  is covered;
+- a golden table, one small policy per check, on both platform models:
+  duplicate, shadowed, unreachable, no effect, broad (101 ports is,
+  100 is not), risky open (RDP Critical, SSH Info), a forward to a risky
+  port, a deny by host name on Windows;
+- every fix verified by the What-If engine, with its probes and their
+  verdicts before and after, and the refusals: a narrowing that would
+  also block a LAN host, a narrowing another row undoes, no known LAN,
+  a removal that would change a verdict;
+- apply and undo, by content, proved with the rules file's bytes,
+  including an undo after the user removed another row in between.
+
+`test-core.sh` adds the detections: the inbound scan (12 distinct ports
+in 60 s reports; 11 ports tried twice do not), repeated login attempts
+(10 in 5 minutes report; 10 over 6 minutes do not; Critical when the
+policy admits the source; never auto-applicable), block-list hits
+(outbound Warning naming the list; inbound rolled up per list per
+hour), dedup by key, beacons per app (two apps polling one host are two
+series; port 123 is never reported; auto-block needs 8 contacts),
+fan-out per app, and that on a mixed corpus only the beacon's deny is
+auto-applicable and no anomaly offers an allow.
+`test_copilot_review_fixes` (F1 to F10) adds: DNS on 53 and 853 to a
+configured resolver is not timed, and a resolver on another port, the
+default gateway and a stub resolver with an unknown upstream are never
+auto-blocked, also at `fs_insight_is_auto_safe` (the resolver, route
+and stub files come from `STOCKFW_RESOLV_CONF`, `STOCKFW_RESOLVED_CONF`
+and `STOCKFW_ROUTE_FILE`; main sets `STOCKFW_RESOLV_CONF=/dev/null` so
+the host's own network never decides a result); a destination another
+program has recorded connections to is withheld; allowed inbound probes
+and refused probes teach the profile nothing; 260 new-port findings
+evict behavior findings first; with 1024 sources tracked a new scanner
+and a new login source are still seen; 40 addresses of one /64 make one
+aggregate finding naming them; allowed-only login attempts from a
+public source the policy admits are a Warning; SSH on a port the policy
+names, and 9 attempts on SSH plus 9 on RDP from one source, report;
+the new-destination times survive a restart; later probes update the
+open scan and login findings; each beacon evidence row has its own
+verdict, and TCP and UDP to one port are two series; a busy service
+name ("https") does not trip fan-out without refused hosts.  The
+mixed-corpus and fan-out tests feed program names (`scanner.exe`).
+Its last step is the
+wording guard: `\bAI\b` or `AI-` anywhere in `src`, `docs` or the
+README fails the suite, except the one sentence that says there is no
+AI model.
+
+`fs-copilot-smoke` section 8 drives the page with applies on hold
+(as root, in a network namespace of its own; on Windows against the
+section 7 stand-in, a known firewall on a Private network, for every
+section that calls `whatif_isolate`; `STOCKFW_LAN_PREFIX` fixes the
+LAN and `STOCKFW_LOCAL_ADDRESSES` this computer's addresses, so a
+runner's own 10.1.0.x or Public profile cannot decide the checks): the tiles follow the data (no constant), each finding
+row has a pill with a word and an ATK name "Severity: title", the
+drawer opens by click and by a real Enter key event and shows evidence
+rows, an unverified fix has no button and says why, Fix asks first (No
+writes nothing; Yes writes exactly the after row, audited), Undo puts
+the rules files back byte for byte, the block offered from a finding is
+checked by What-If first, and the empty states (no events, all clear
+with "This is not a guarantee", monitoring off with its reason).  It
+also checks: the Policy health tile counts the rows but not the "no
+effect in this mode" notes (found by their own words, not a flag the
+page sets) and says the notes are below; Needs attention counts the
+Critical and Warning health rows; Show rule's ATK name names its row;
+an undone change stays in Changes marked "Undone at" with no Undo; the
+evidence cells are selectable and out of the Tab order; a click
+delivered inside the open drawer (through `gtk_propagate_event`, so
+the list box's own click gesture sees it) leaves it open, and the same
+click on the head closes it; a refresh with nothing new keeps every
+row widget and the focused button; a row that shows a new event is
+rebuilt, stays open, and gets the focus back on the same button.  A
+child process repeats the page under `GTK_THEME=Adwaita:dark` and
+checks that it stays light (no dark class, dark title text, light
+card).  Set `FS_SHOT_DIR` to save screenshots.
+
+`fs-hitview-smoke` checks the feed order as root: with "skip repeats"
+on, 10 identical log lines give the Copilot 10 events while the list
+shows 1 row.
+
+`test-cli.sh` checks `stockfw copilot health`: usage errors exit 2, a
+clean policy exits 0, RDP open to anyone exits 7 with a verified
+narrowing in `--json`, and the rules directory (files and times) is
+unchanged afterwards.  The local network (`STOCKFW_LAN_PREFIX`) and
+this computer's addresses (`STOCKFW_LOCAL_ADDRESSES`) are fixed: with
+the real adapters, a CI runner's 10.1.0.x is a second private network
+the narrowing would cut off, so no fix was offered and the check read
+`fix: null` (seen on GitHub's Ubuntu runner, and reproduced as a
+normal user in a network namespace with 10.1.0.42/16 and 172.17.0.1/16).
+That case is now a check of its own: with 192.168.1.5 and 10.1.0.42
+no narrowing is offered, `tried` holds the failed 10.1.0.20 check, and
+the text prints it under the reason.  A failed check prints the JSON
+it read.
+
+Teeth, each re-injected, seen failing, and restored with `cp` (proved
+with `cmp`):
+
+| Bug re-injected | Checks that caught it |
+|---|---|
+| coverage ignores the protocol (`fs-health.c`) | "TCP 8080 and UDP 8080 are not the same rule", both models |
+| fix verification skipped: `verified` forced TRUE | "a narrowing that also blocks a LAN host gets no fix", "no narrowing while another row still opens the port", both models |
+| the narrowing writes `0.0.0.0/0` | 18 checks, among them "the fix narrows the row to the LAN, verified" and "checked: 203.0.113.10:3389 ALLOWED -> BLOCKED" |
+| a host-name deny not flagged on Windows (the design's "Windows model treated as first match" row is replaced by this one: the unreachable golden rows already run on both models) | "windows: a deny by host name blocks nothing on Windows" |
+| Undo finds the row by index, not by content | "undo: by content, the right row is restored (not row 2)" |
+| the scan counts events, not distinct ports | "scan: 11 distinct ports do not (22 events ...)" |
+| the brute-force window never expires | "brute: 10 attempts over 6 minutes do not (the window expires)" |
+| the beacon keyed without the app | "two apps polling one destination are two series" |
+| the NTP guard removed | "NTP (port 123) is never reported as a beacon" |
+| inbound block-list hits not rolled up | 5 intel checks, among them "three inbound drops in an hour roll up into one finding" |
+| anomaly findings carry an auto-applicable allow row | "a mixed corpus: only the beacon's deny is auto-applicable", and 31 "offers no rule" checks |
+| "AI-powered" put back in the About dialog | the wording guard |
+| the Copilot fed after the skip-repeats filter (`fs-hitview.c`) | "feed order: ... 10 identical events still reach the Copilot as 10 (got 1)" |
+| a constant in the Policy health tile (`fs-copilot.c`) | "page: the Policy health tile counts the findings but not the ... notes", "page: the tile follows the check" |
+| DNS over TLS (853) timed like any port | "F1: DNS (53) and DNS over TLS ...", "F1: DNS over TLS to a configured ..." |
+| resolvers and the gateway not withheld | "F1: a resolver on any other port ...", "F1: the default gateway ..." |
+| `fs_insight_is_auto_safe` ignores the resolvers and gateway | "F1: fs_insight_is_auto_safe refuses ..." |
+| systemd-resolved's upstream list not read | "F1: DNS (53) and DNS over TLS ..." |
+| a stub with an unknown upstream auto-blocked | "F1: behind a stub with an unknown upstream ..." |
+| only the program's own history checked | "F2: a destination another program ..." |
+| new-port signal on inbound events | "F3: allowed inbound probes ..." |
+| refused probes recorded in the profile | "F4: refused probes teach the profile no destinations" |
+| the 200 cap evicts the oldest finding of any kind | "F3: 260 new-port findings ..." |
+| the scan table refuses new sources when full | "F4: with 1024 sources ..." |
+| no IPv6 /64 aggregate | "F4: 40 addresses of one /64 ...", "F4: its evidence names ..." |
+| the login table refuses new sources when full | "F4: with the login table full ..." |
+| allowed-only attempts always Info | "F5: allowed connections only ..." |
+| login ports from the policy ignored | "F6: SSH on 2222 ..." |
+| login attempts counted per port | "F6: 9 on SSH and 9 on RDP ..." |
+| new-destination times not saved | "F7: behavior.csv keeps ...", "F7: after a restart ..." |
+| an open finding not updated within the hour | "F8: the 11th and 12th ...", "F8: the open scan finding ..." |
+| every beacon evidence row copies the latest verdict | "F9: seven allowed contacts ..." |
+| the protocol left out of the beacon key | "F9: TCP and UDP to one port ..." |
+| a service-name key counts any host for fan-out | "F10: one busy page ..." |
+| the findings list rebuilt on every refresh (`fs-copilot.c`) | "page: a refresh with nothing new keeps the row and its focused button", "page: the row that did not change is the same widget" |
+| the focus not put back after a row is rebuilt | "page: when the focused row changes, the focus goes to the same button in its new row" |
+| the page given the dark class again | "dark: the page stays light like the rest of the app" |
+| the evidence cells' colour rule removed (`fs-theme.css`) | "dark: the evidence cells are dark text on the light card (48 of 54 light)" |
+| Undo removes the change from the list | "page: the undone change stays in Changes ..." |
+| Needs attention skips the health rows | "page: Needs attention counts the policy's Critical rows", "page: Needs attention counts the Warning finding ..." |
+| the health tile counts the "no effect" notes | "page: the Policy health tile counts the findings but not the ... notes" and 3 more |
+| the drawer guard lets the click through | "page: a click inside the open drawer leaves it open" |
+| drawer text not selectable | "page: the evidence cells are selectable text ...", "page: what Sentinel did can be selected and copied" |
+| Show rule without its ATK name | "page: Show rule's accessible name names the row" |
+| the tile note does not say the notes are below | "page: the tile's note says the notes are below" |
+| the auto pass does not judge the gates again (`fs-copilot.c`, UI) | "R1: resume does not block a host brave.exe now uses", "R1: the switch to auto-block does not block ...", "R2: resume does not stage a deny over the user's allow" and 3 more |
+| `fs_copilot_beacon_recheck` passes every beacon unjudged | "R1: another program's later use of the host withholds ...", "R2: an allow row added later ...", and the same 6 smoke checks |
+| the user's allow row not a gate | "R2: a beacon to a host the policy allows ...", "R2: an allow row added later ...", "R2: a new beacon to an allowed host stages nothing" and 4 more |
+| a Linux service key called a program in the withheld text | "R3: another service key is named as a port's traffic ...", "R3: a service key's own history ..." |
+| `test-core` writes its settings under the shared temp dir | "the settings, baseline and audit files go to a directory only this run owns ..."; run as a normal user next to a root-owned `/tmp/stockfw`, 86 checks fail and the program crashes |
+
+Since the review of 1.0.7, the staging pass asks `fs_copilot_beacon_recheck`
+before it writes, so a pass that runs late (a tray pause ending, a switch
+from Detect only, a retry) judges the beacon's gates with that moment's
+baseline, network and policy. `test-core.sh` makes its own temp dir for
+each run and removes it at the end.
 
 ## Threat-intel backend slots on Linux (`tests/test-intel-backend.sh`)
 

@@ -187,6 +187,7 @@ static const gchar *main_help =
 "  apply [--dry-run]          Push the saved policy to the firewall (root)\n"
 "  start | stop               Start or stop the firewall (root)\n"
 "  simulate \"<traffic>\"       What-if: would this traffic be allowed or blocked?\n"
+"  copilot health             Check the policy for overlaps, conflicts, risky allows\n"
 "  events [-n N] [-f]         Recent firewall events; -f follows live (root)\n"
 "  connections                Active TCP connections and their programs\n"
 "  interfaces [--watch]       Network adapters with traffic counters and rates\n"
@@ -205,6 +206,7 @@ static const gchar *main_help =
 "  0  success          2  usage error           5  simulate: BLOCKED;\n"
 "  1  failure          3  needs root privileges    intel lookup: blocked\n"
 "                                               6  simulate: DEPENDS\n"
+"                                               7  copilot health: findings\n"
 "\n"
 "Policy files live in ~/.stockfw (or /etc/stockfw when run as root) --\n"
 "the same files the desktop app edits.  Nothing here talks to the\n"
@@ -305,6 +307,22 @@ static const CommandDef commands[] = {
 "  stockfw simulate \"allow ssh from 192.168.1.50 on port 22\"\n"
 "  stockfw simulate \"inbound rdp\"\n"
 "  stockfw simulate \"outbound tcp to 203.0.113.9 port 443\"\n" },
+
+	{ "copilot", fs_cli_cmd_copilot,
+"Usage: stockfw copilot health [--json]\n"
+"\n"
+"Runs the Copilot page's policy health check on the saved policy:\n"
+"rules that repeat another, rules another rule already covers, allows a\n"
+"deny makes unreachable, outbound allows that do nothing while outbound\n"
+"traffic is allowed, wide or risky inbound allows from anyone, and deny\n"
+"rules that reach no address family.  These are fixed rules, not a\n"
+"model.  Each fix is shown with the What-If checks that verify it, and\n"
+"one that does not verify is not offered.  It writes nothing: fixes\n"
+"are made on the Copilot page.  The local network a narrowing uses is\n"
+"the first adapter with a private IPv4 address.\n"
+"\n"
+"Exits 0 with no findings, 7 with findings, and 2 when the policy\n"
+"cannot be read in full.  In --json, rule.index counts from 0.\n" },
 
 	{ "events", fs_cli_cmd_events,
 "Usage: stockfw events [-n N] [-f|--follow] [--blocked] [--json]\n"

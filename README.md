@@ -2,10 +2,10 @@
 
 # StockFW
 
-**Smart firewall configuration tool with a local AI copilot.**
+**Smart firewall configuration tool with a local, rule-based Copilot.**
 GTK3 · Windows and Linux · status, live events, policy editing, and a
-Copilot page that analyzes, explains and simulates rules — entirely
-offline.
+Copilot page that checks the event log and the policy with fixed rules,
+shows the evidence, and simulates rules, entirely offline.
 
 StockFW makes a stock OS firewall *legible*: policy as a readable, diffable
 CSV; events as a classified, searchable stream; advanced knobs in one
@@ -52,11 +52,27 @@ rules — without a shell prompt.
   only* on the inbound groups), and **Bi-directional** stages the
   opposite-direction twin as one all-or-nothing save — if the write
   fails, neither half stays.
-- **Copilot** — a **local, deterministic** analysis page, no LLM. Policy
-  Analysis reads the event feed and your rules and proposes the exact
-  firewall rule it would install, shows it in a Yes/No dialog before
-  anything is written, is **allow-only** (it can never silently open
-  more than you approve), and rolls back if the save fails. The
+- **Copilot** — a **local, rule-based** page: fixed checks, no model,
+  no network. **Findings** from the event log (inbound port scans,
+  repeated attempts on a login port, new destinations for a known app,
+  contacts at a near-fixed interval, block-list hits, fan-out, rate
+  spikes), each with a severity word, an evidence drawer (the events,
+  why it was flagged with the numbers and limits, why it could be
+  harmless, what Sentinel did) and actions (a block offered only when
+  What-If confirms it, Ask What-If, Show in Events, Dismiss).
+  **Policy health** reports duplicate, shadowed, unreachable and
+  no-effect rules, broad allows, risky services open to the internet
+  and denies that reach no address family; a fix is offered only when
+  the What-If engine has checked it, and it asks first. **Changes made
+  by the Copilot** lists every auto-block and fix with Undo. Sentinel
+  is a two-way switch: Detect only, or Detect + auto-block (outbound
+  blocks to unknown public addresses, for 10 minutes). No finding is
+  not a guarantee that nothing is wrong, and the page says so. On
+  Linux the kernel log names no program, so the Copilot learns per
+  service there, and it sees allowed traffic only when allowed-event
+  logging is on. `stockfw copilot health [--json]` runs the policy
+  check from the command line (exit 7 with findings) and writes
+  nothing. The
   **What-If Simulator** takes a line like *"allow SSH from
   192.168.1.50 on port 22"* and answers **BLOCKED/ALLOWED** against
   the real policy: block rules take precedence the way Windows
@@ -401,7 +417,7 @@ Every claim in the documentation is graded `[Verified]` / `[Measured]` /
 ```sh
 cd port
 bash tests/full-suite.sh             # every suite below, one pass, one verdict
-bash tests/test-core.sh              # rule engine, CSV, copilot, sentinel, event-rule, what-if, direction pairing
+bash tests/test-core.sh              # rule engine, CSV, copilot detections + policy health, sentinel, event-rule, what-if, direction pairing
 bash tests/test-winlog.sh            # Security-log parsing + dedup
 bash tests/test-logstart.sh          # event stream start-up
 bash tests/test-installer-spawn.sh   # staged spawn helpers

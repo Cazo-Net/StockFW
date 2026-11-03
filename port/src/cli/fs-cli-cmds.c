@@ -8,6 +8,7 @@
 #include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
 #include "core/fs-intel.h"
+#include "core/fs-health.h"
 #include "core/fs-service.h"
 #include "core/fs-json.h"
 #include "core/fs-netparse.h"
@@ -2200,4 +2201,233 @@ fs_cli_cmd_interfaces (gint argc, gchar **argv)
 	g_list_free_full (now, (GDestroyNotify) fs_iface_stat_free);
 
 	return FS_EXIT_OK;
+}
+
+/* ------------------------------------------------------------- copilot */
+
+/* "checks":[{probe, before, after}, ...]: a fix's What-If checks. */
+static void
+health_checks_json (GString *out, const GPtrArray *checks)
+{
+	g_string_append (out, "\"checks\":[");
+	for (guint k = 0; checks != NULL && k < checks->len; k++) {
+		const FsHealthCheck *c = g_ptr_array_index (checks, k);
+
+		if (k > 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "probe", c->probe);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "before", fs_whatif_verdict_name (c->before));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "after", fs_whatif_verdict_name (c->after));
+		g_string_append_c (out, '}');
+	}
+	g_string_append_c (out, ']');
+}
+
+/* [ health_json ] -- one schema, shared with the dashboard if it ever
+ * serves it: version, the rule count, the platform model, findings. */
+static void
+health_json (GString *out, const GPtrArray *findings, guint rules,
+             FsWhatIfPlatform platform)
+{
+	g_string_append (out, "{\"version\":1,");
+	fs_json_kv_uint (out, "policy_rules", rules);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "platform",
+	                platform == FS_WHATIF_WINDOWS_BLOCK_WINS
+	                ? "windows-block-wins" : "linux-first-match");
+	g_string_append (out, ",\"findings\":[");
+	for (guint i = 0; i < findings->len; i++) {
+		const FsHealthFinding *f = g_ptr_array_index (findings, i);
+
+		if (i > 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "kind", fs_health_kind_name (f->kind));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "severity",
+		                fs_health_severity_name (f->severity));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "title", f->title);
+		g_string_append (out, ",\"rule\":{");
+		fs_json_kv_str (out, "kind",
+		                fs_health_rule_kind_name ((FsRuleKind) f->policy_kind));
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "index", (guint64) MAX (f->policy_index, 0));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "csv", f->rule_csv);
+		g_string_append (out, "},");
+		if (f->other_csv != NULL && f->other_kind >= 0) {
+			g_string_append (out, "\"other\":{");
+			fs_json_kv_str (out, "kind", fs_health_rule_kind_name (
+				(FsRuleKind) f->other_kind));
+			g_string_append_c (out, ',');
+			fs_json_kv_uint (out, "index",
+			                 (guint64) MAX (f->other_index, 0));
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "csv", f->other_csv);
+			g_string_append (out, "},");
+		}
+		fs_json_kv_str (out, "why", f->why);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "evidence", f->evidence);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "whatif", f->whatif_line);
+		g_string_append (out, ",\"fix\":");
+		if (f->fix == FS_HEALTH_FIX_NONE) {
+			g_string_append (out, "null,");
+			fs_json_kv_str (out, "no_fix_reason", f->no_fix_reason);
+			/* A fix that was tried and failed its checks: what it
+			 * would have changed and the checks, which the reason
+			 * points to. */
+			if (f->checks != NULL && f->checks->len > 0) {
+				g_string_append (out, ",\"tried\":{");
+				fs_json_kv_str (out, "before", f->fix_before);
+				g_string_append_c (out, ',');
+				fs_json_kv_str (out, "after", f->fix_after);
+				g_string_append_c (out, ',');
+				health_checks_json (out, f->checks);
+				g_string_append_c (out, '}');
+			}
+		} else {
+			g_string_append_c (out, '{');
+			fs_json_kv_str (out, "label", f->fix_label);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "before", f->fix_before);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "after", f->fix_after);
+			g_string_append_c (out, ',');
+			fs_json_kv_bool (out, "verified", f->verified);
+			g_string_append_c (out, ',');
+			health_checks_json (out, f->checks);
+			g_string_append_c (out, '}');
+		}
+		g_string_append_c (out, '}');
+	}
+	g_string_append (out, "]}");
+}
+
+/* [ copilot_health ]
+ * The Copilot page's policy health check on the saved policy, with the
+ * same What-If context `simulate' builds.  It writes nothing: a fix is
+ * printed with the checks that verify it, and making it stays with the
+ * desktop app (or `stockfw policy').  Exit 0 with no findings, 7 with
+ * findings, 2 when the policy cannot be read in full. */
+static gint
+copilot_health (void)
+{
+	gint malformed = 0;
+	FsPolicy *policy = fs_cli_load_policy (NULL, &malformed);
+	FsSettings *settings;
+	FsWhatIfContext *ctx;
+	GPtrArray *findings;
+	gchar *prefix;
+	guint rules = 0;
+	gint status;
+
+	if (malformed > 0) {
+		fs_cli_error ("%d policy row(s) could not be read, so the check "
+		              "would be incomplete", malformed);
+		fs_cli_hint ("see `stockfw policy list'");
+		fs_policy_free (policy);
+		return FS_EXIT_USAGE;
+	}
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		rules += policy->kinds[k]->len;
+
+	settings = fs_settings_new ();
+	fs_settings_load_prefs (settings);
+	ctx = fs_whatif_context_new (fs_whatif_native_platform (), policy,
+	                             settings);
+	fs_copilot_whatif_observe (ctx, fs_backend (), geteuid () == 0);
+	prefix = fs_health_lan_prefix_auto (fs_backend ());
+	findings = fs_health_check (ctx, prefix);
+	status = findings->len > 0 ? FS_EXIT_FINDINGS : FS_EXIT_OK;
+
+	if (fs_cli.json) {
+		GString *out = g_string_new (NULL);
+
+		health_json (out, findings, rules, ctx->platform);
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else {
+		printf ("%s%u rules checked, %u finding%s%s\n", fs_cli_bold (),
+		        rules, findings->len, findings->len == 1 ? "" : "s",
+		        fs_cli_reset ());
+		for (guint i = 0; i < findings->len; i++) {
+			const FsHealthFinding *f = g_ptr_array_index (findings, i);
+			const gchar *colour =
+				f->severity == FS_COPILOT_CRITICAL ? fs_cli_red ()
+				: f->severity == FS_COPILOT_WARNING ? fs_cli_amber ()
+				                                    : fs_cli_dim ();
+
+			printf ("\n%s[%s]%s %s\n", colour,
+			        fs_health_severity_name (f->severity),
+			        fs_cli_reset (), f->title);
+			printf ("  rule:  %s #%d: %s\n",
+			        fs_health_rule_kind_name ((FsRuleKind) f->policy_kind),
+			        f->policy_index + 1, f->rule_csv);
+			if (f->why != NULL)
+				printf ("  why:   %s\n", f->why);
+			if (f->fix != FS_HEALTH_FIX_NONE && f->verified) {
+				printf ("  fix:   %s: %s -> %s\n", f->fix_label,
+				        f->fix_before,
+				        f->fix_after != NULL ? f->fix_after : "(removed)");
+				for (guint k = 0; k < f->checks->len; k++) {
+					const FsHealthCheck *c =
+						g_ptr_array_index (f->checks, k);
+
+					printf ("         checked: %s: %s -> %s\n", c->probe,
+					        fs_whatif_verdict_name (c->before),
+					        fs_whatif_verdict_name (c->after));
+				}
+			} else if (f->no_fix_reason != NULL) {
+				printf ("  %sno fix offered: %s%s\n", fs_cli_dim (),
+				        f->no_fix_reason, fs_cli_reset ());
+				if (f->checks != NULL && f->checks->len > 0)
+					printf ("  tried: %s -> %s\n", f->fix_before,
+					        f->fix_after != NULL ? f->fix_after
+					                             : "(removed)");
+				for (guint k = 0; f->checks != NULL &&
+				                  k < f->checks->len; k++) {
+					const FsHealthCheck *c =
+						g_ptr_array_index (f->checks, k);
+
+					printf ("         checked: %s: %s -> %s\n", c->probe,
+					        fs_whatif_verdict_name (c->before),
+					        fs_whatif_verdict_name (c->after));
+				}
+			}
+		}
+		if (findings->len == 0)
+			printf ("No overlaps, conflicts or open risky services.\n");
+		printf ("%sA check only: nothing was written. Fixes are made on "
+		        "the Copilot page.%s\n", fs_cli_dim (), fs_cli_reset ());
+	}
+
+	g_ptr_array_unref (findings);
+	g_free (prefix);
+	fs_whatif_context_free (ctx);
+	fs_settings_free (settings);
+	fs_policy_free (policy);
+	return status;
+}
+
+/* [ fs_cli_cmd_copilot ] */
+gint
+fs_cli_cmd_copilot (gint argc, gchar **argv)
+{
+	if (argc < 2 || strcmp (argv[1], "health") != 0) {
+		fs_cli_error ("copilot needs a subcommand");
+		fs_cli_hint ("stockfw copilot health [--json]");
+		return FS_EXIT_USAGE;
+	}
+	if (argc > 2) {
+		fs_cli_error ("unexpected argument: %s", argv[2]);
+		fs_cli_hint ("stockfw copilot health [--json]");
+		return FS_EXIT_USAGE;
+	}
+	return copilot_health ();
 }

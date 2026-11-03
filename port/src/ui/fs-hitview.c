@@ -548,6 +548,29 @@ static void
 on_hit (const FsHit *hit, gpointer user_data)
 {
 	gboolean blocked;
+	extern FsCopilot *copilot;
+
+	/* The Copilot sees every event, before the display filters: "skip
+	 * repeats" is about what the list shows, and a run of identical
+	 * attempts is exactly the shape of a login storm or a timed
+	 * check-in.  Hiding the repeats from the checks would let them
+	 * reach the Copilot as one event. */
+	if (copilot != NULL) {
+		fs_copilot_feed_event (copilot, hit);
+		/* The baseline changed: the next periodic save writes it. */
+		fs_app_note_learning ();
+	}
+
+	/* Sentinel auto-block: in auto mode a fresh beacon finding is
+	 * staged into the policy right here, for the event that completed
+	 * it, even when the list below does not show that event.  The pass
+	 * is a cheap walk; the page is only rebuilt when a block was
+	 * actually staged. */
+	if (fs_copilot_sentinel_auto_pass ())
+		fs_copilot_view_refresh ();
+
+	/* The page's counters follow every event the checks saw. */
+	fs_copilot_note_event ();
 
 	/* Both filters run before anything is counted, as they did in the
 	 * original. */
@@ -567,24 +590,6 @@ on_hit (const FsHit *hit, gpointer user_data)
 
 	/* The Activity page counts exactly what this list shows. */
 	fs_activityview_note_hit (hit);
-
-	/* Feed to copilot for learning and anomaly detection. */
-	extern FsCopilot *copilot;
-	if (copilot != NULL) {
-		fs_copilot_feed_event (copilot, hit);
-		/* The baseline changed: the next periodic save writes it. */
-		fs_app_note_learning ();
-	}
-
-	/* Sentinel auto-block: in auto mode a fresh beacon insight is
-	 * staged into the policy right here, not the next time someone
-	 * opens the Copilot page.  The pass itself is a cheap walk; the
-	 * insight list is only rebuilt when a block was actually staged. */
-	if (fs_copilot_sentinel_auto_pass ())
-		fs_copilot_view_refresh ();
-
-	/* Update copilot stats counter. */
-	fs_copilot_note_event ();
 
 	/* Status page counters.  These were declared but never called,
 	 * which is why the panel always read 0. */
@@ -865,6 +870,41 @@ gboolean
 fs_hitview_active (void)
 {
 	return fs_backend ()->log_active ();
+}
+
+/* [ fs_hitview_set_filter ] -- the Copilot's "Show in Events". */
+void
+fs_hitview_set_filter (const gchar *text)
+{
+	if (filter_entry == NULL)
+		return;
+
+	gtk_entry_set_text (GTK_ENTRY (filter_entry), text != NULL ? text : "");
+	/* At once, not after the search entry's typing delay. */
+	on_filter_changed (GTK_SEARCH_ENTRY (filter_entry), NULL);
+}
+
+/* [ fs_hitview_monitor_problem ]
+ * Why no events arrive, or NULL while monitoring runs. */
+gchar *
+fs_hitview_monitor_problem (void)
+{
+	const FsBackend *backend = fs_backend ();
+	const gchar *why;
+
+	if (fs_hitview_active ())
+		return NULL;
+
+	why = backend->log_problem != NULL ? backend->log_problem () : NULL;
+	if (why != NULL && *why != '\0')
+		return g_strdup (why);
+
+	if (monitor_warning != NULL && gtk_widget_get_visible (monitor_warning))
+		return g_strdup (gtk_label_get_text (
+			GTK_LABEL (monitor_warning_label)));
+
+	return g_strdup (_("Event monitoring is off. Turn on Monitor on the "
+	                   "Events page."));
 }
 
 const FsHit *

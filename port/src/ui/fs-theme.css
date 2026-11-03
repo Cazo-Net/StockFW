@@ -840,6 +840,93 @@ button.fs-link label {
 }
 
 /* =====================================================================
+ * Copilot page (1.0.7): findings, policy health, changes.
+ * Light, as the rest of the app is, whatever the desktop theme: a dark
+ * page inside the light window read as a rendering fault.
+ * ===================================================================== */
+.cp-title {
+	font-size: 13px;
+	font-weight: bold;
+	color: #16181d;
+}
+.cp-sub,
+.cp-body {
+	font-size: 13px;
+	color: #3a4250;
+}
+.cp-meta,
+.cp-caption {
+	font-size: 12px;
+	color: #5b6472;
+}
+/* The evidence cells carry only .mono; without a colour of their own
+ * they took the desktop theme's text colour, white under a dark theme,
+ * on the white card. */
+#cp-evidence label.mono {
+	color: #16181d;
+}
+.cp-drawer-head {
+	font-size: 12px;
+	font-weight: bold;
+	color: #16181d;
+	margin-top: 4px;
+}
+.cp-arrow {
+	color: #5b6472;
+	font-size: 12px;
+}
+.cp-drawer {
+	padding: 8px 0 4px 0;
+	border-top: 1px solid #eef0f3;
+	margin-top: 6px;
+}
+.cp-list-frame {
+	background-color: #ffffff;
+	border: 1px solid #e3e6eb;
+	border-radius: 10px;
+}
+.cp-list-frame > border {
+	border: none;
+}
+list.cp-list {
+	background-color: transparent;
+}
+list.cp-list row.cp-row {
+	padding: 10px 12px;
+	border-bottom: 1px solid #eef0f3;
+	background-color: transparent;
+}
+list.cp-list row.cp-row:last-child {
+	border-bottom: none;
+}
+list.cp-list row.cp-row:hover {
+	background-color: #f7f8fa;
+}
+list.cp-list row.cp-row:focus {
+	outline: 2px solid #1d4ed8;
+	outline-offset: -2px;
+}
+.cp-pill {
+	padding: 2px 8px;
+}
+.cp-strip {
+	padding: 8px 12px;
+	font-size: 13px;
+}
+.ok-strip {
+	background-color: #f4fbf7;
+	border: 1px solid #bfe3cf;
+	border-radius: 4px;
+	color: #145a38;
+}
+/* The What-If log's tones (its text tags read these colours). */
+.output-view textview.tone-ok   { color: #1e7f4f; }
+.output-view textview.tone-bad  { color: #b42318; }
+.output-view textview.tone-warn { color: #8a5300; }
+.output-view textview.tone-info { color: #1d4ed8; }
+.output-view textview.tone-dim  { color: #5b6472; }
+
+/* =====================================================================
  * 1.0.7: the sidebar Help and Preferences share
  * One width (FS_SIDE_WIDTH), the same group headings, and items of the
  * same size, icon and inset, so the two windows match side by side.
