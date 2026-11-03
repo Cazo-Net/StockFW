@@ -13,6 +13,24 @@ dialog; and a Copilot layer that can answer "why is this blocked?"
 (analysis), "what would happen if?" (what-if simulation) and propose
 rules — without a shell prompt.
 
+## Start here
+
+| | |
+|---|---|
+| **Code** | Everything StockFW builds and ships lives in [`port/`](port/): the GTK3 app, the `stockfw` command line, both backends, the installers and the tests. |
+| **Build** | [Build](#build) below: CMake + Ninja on Linux and on Windows (MSYS2 UCRT64). |
+| **Install** | Linux: [`port/installer/linux/README.md`](port/installer/linux/README.md) (the tarball and `sudo ./install.sh`). Windows: `StockFW-<version>-Setup.exe` from the release page. |
+| **Docs** | [`docs/README.md`](docs/README.md), the index of every document. |
+| **Changes** | [`CHANGELOG.md`](CHANGELOG.md). |
+| **Release** | [`RELEASING.md`](RELEASING.md): the steps and the asset names. |
+
+The autotools files at the top level (`configure.in`, `Makefile.am`,
+`autogen.sh` and the rest), `src/`, `po/`, `pixmaps/`, `scripts/`,
+`stockfw.spec*`, `stockfw.desktop*`, `stockfw.pam`, `stockfw.console`,
+`stockfw.schemas.in` and `fedora.init` are the **legacy GPL tree** the
+port started from. They are kept for licensing and history and are not
+built.
+
 ## Features
 
 - **Status** — real profile state at a glance: on Windows the three
@@ -133,13 +151,13 @@ rules — without a shell prompt.
   dashboard on **127.0.0.1 only**, behind a token that changes every
   run, with the same graphs, live events, connections, the simulator
   and the policy — see [below](#command-line-and-dashboard-linux).
-- **Threat-intel blocklists** *(Linux, 1.0.7, opt-in)* — block
+- **Threat-intel blocklists** *(Linux and Windows, 1.0.7, opt-in)* — block
   addresses that well-known public lists name as hijacked networks,
   botnet servers or attackers, plus your own lists, in the kernel
   before the policy sees a packet. Every feed is off until you turn it
   on and accept its terms; with nothing on, StockFW makes no network
   request. A **Threat Intel** page, `stockfw intel` and a read-only
-  dashboard card — see [below](#threat-intel-blocklists-linux-107).
+  dashboard card — see [below](#threat-intel-blocklists-linux-and-windows-107).
 - **Countries and networks** *(Linux, 1.0.7, opt-in)* — block the
   address ranges registered in a country, or held by a network (AS),
   from IPFire's signed location database — see
@@ -423,7 +441,7 @@ Chapter 5.
 
 ```sh
 pacman -S --needed base-devel \
-    mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake}
+    mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake,xz,openssl}
 
 cd port
 cmake -S . -B build -G Ninja
@@ -436,7 +454,8 @@ Run the toolchain from the UCRT64 shell.
 ### Linux (Debian / Kali / WSL2)
 
 ```sh
-sudo apt install build-essential cmake ninja-build libgtk-3-dev
+sudo apt install build-essential cmake ninja-build pkg-config \
+    libgtk-3-dev liblzma-dev libssl-dev
 
 cd port
 cmake -S . -B build-linux -G Ninja
@@ -469,16 +488,36 @@ most; a per-run CSP nonce with `default-src 'none'`; and it never opens
 a browser as root. It is read-only: changes go through `stockfw policy`
 and `stockfw apply`, which use the same gate as the desktop app.
 
+`xz` and `openssl` (liblzma and libcrypto) read and verify the location
+database behind country and network blocking; CMake stops if
+pkg-config cannot find them.
+
 ### Installer (Windows, NSIS)
 
 ```sh
-cd port/installer
-./build_installer.sh
+cd port
+cmake -S . -B build -G Ninja && cmake --build build
+bash installer/build_installer.sh      # installer/nsis/StockFW-<version>-Setup.exe
 ```
 
-The installer bundles the full GTK3 runtime and the spawn helpers into
-`$INSTDIR` and fails the build if any staged launcher still carries the
-old branding.
+The installer bundles the full GTK3 runtime, liblzma, libcrypto and the
+spawn helpers into `$INSTDIR`, with the project README, `CHANGELOG.md`
+and `LICENSE.txt`. The version comes from `port/CMakeLists.txt`. The
+build stops if any staged launcher still carries the old branding.
+
+### Installer (Linux, tarball)
+
+```sh
+cd port
+bash tools/build-linux.sh                       # Release build into build-linux/
+bash installer/linux/build_installer_linux.sh   # installer/linux/dist/StockFW-<version>-linux-x86_64.tar.gz
+```
+
+The binaries are stripped as they are staged, and the packager checks
+that `install.sh`, `StockFW` and `cli/stockfw` are executable inside the
+archive. `cmake --install` puts only the two binaries in place;
+`install.sh` is the supported install, with the desktop entry, icons,
+boot service and uninstaller.
 
 ## Tests
 
@@ -509,6 +548,8 @@ cannot fail is not a green suite.
 
 ## Documentation
 
+[`docs/README.md`](docs/README.md) lists every document. The main ones:
+
 - [`docs/ARCHITECTURE-AND-SECURITY.md`](docs/ARCHITECTURE-AND-SECURITY.md)
   — full architecture and security document: data flow, backends,
   privilege model with file:line evidence, findings register,
@@ -516,6 +557,7 @@ cannot fail is not a green suite.
 - [`docs/PORTING.md`](docs/PORTING.md) — porting notes and prerequisites.
 - [`port/docs/ELEVATED.md`](port/docs/ELEVATED.md) — the elevated helper
   protocol.
+- [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASING.md`](RELEASING.md).
 
 ## License
 
@@ -527,13 +569,12 @@ the license ultimately declared for their portion.
 
 ## Credits
 
-- **Qusai** Qusaifox2@gmail.com — Creator & Original
-  Developer
+- **Stock Team & Qusai** — Creator & Original Developer
 - **H3xCore** — Developer
-- **StockFW Project** — GTK3 port, Windows backend, Copilot
+- **Stock Team** — GTK3 port, Windows backend, Copilot
 - **Threat-intel data** — the blocklists belong to their publishers:
   The Spamhaus Project, abuse.ch, DShield.org (SANS Internet Storm
   Center), FireHOL IP lists, blocklist.de, Emerging Threats, CINS Army
   and The Tor Project. StockFW does not ship their data; it downloads
   a list only after you turn it on (see
-  [Threat-intel blocklists](#threat-intel-blocklists-linux-107)).
+  [Threat-intel blocklists](#threat-intel-blocklists-linux-and-windows-107)).

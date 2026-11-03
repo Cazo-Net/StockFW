@@ -16,6 +16,20 @@ elevation once and then run the same binary, which is what makes the
 The `.vbs` is the one to hand people. It runs the PowerShell wrapper
 hidden, so the only thing they see is the UAC prompt and then the app.
 
+### AutoHotkey (not shipped, untested)
+
+For anyone who already runs AutoHotkey v2, the same launch is one line.
+It is not shipped and nothing tests it (there is no AutoHotkey on the
+build machines); the three files above are the supported paths. Until
+1.0.7 this lived as a comment-only `port/StockFW-elevated.ahk`, whose
+`Run` line had unbalanced quotes.
+
+```autohotkey
+#Requires AutoHotkey v2.0
+; Save next to StockFW.exe.  "*RunAs" asks UAC for elevation.
+Run '*RunAs "' A_ScriptDir '\StockFW.exe"'
+```
+
 ## What it does
 
 `Start-Process -Verb RunAs` is the only way to trigger a UAC prompt from

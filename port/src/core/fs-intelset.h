@@ -7,7 +7,7 @@
  * has been subtracted.  fs-intel.c builds it; the backend enforces it.
  *
  * Everything here is pure, so the core suite can check every byte nft
- * would receive.  The design is docs/1.0.7-threat-intel-design.md,
+ * would receive.  The design is docs/design/1.0.7-threat-intel-design.md,
  * section 7; the bracketed tags ([N0] ...) name the review findings a
  * rule answers.
  *--------------------------------------------------------------------*/

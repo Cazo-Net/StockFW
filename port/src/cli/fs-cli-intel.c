@@ -1,6 +1,6 @@
 /*---[ fs-cli-intel.c ]--------------------------------------------------
  * `stockfw intel': the threat-intel blocklists from the command line
- * (docs/1.0.7-threat-intel-design.md, section 8).
+ * (docs/design/1.0.7-threat-intel-design.md, section 8).
  *
  * A front end over the engine (core/fs-intel.h) and nothing more: the
  * consent check, the store, the update guards, the build and its

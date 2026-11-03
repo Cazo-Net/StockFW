@@ -1,0 +1,223 @@
+# Changelog
+
+What changed in each StockFW release. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version
+numbers follow the project version in `port/CMakeLists.txt`.
+
+Each release also adds a chapter to
+[`docs/ARCHITECTURE-AND-SECURITY.md`](docs/ARCHITECTURE-AND-SECURITY.md),
+which records the evidence behind every entry here (Chapter 14 for
+1.0.7). The installers ship this file: the Windows installer installs it
+beside `StockFW.exe`, and the Linux tarball carries it and installs it
+into `/usr/local/share/doc/stockfw/`.
+
+## [1.0.7] - Unreleased
+
+### Added
+
+- **What-If engine.** A new engine behind the What-If simulator that
+  models each platform's firewall: first match on Linux, block wins on
+  Windows. It takes in the Firewall preferences, Sentinel's blocks,
+  whether the firewall is running and whether the saved policy is live.
+  The parser reads a line the way people type it and shows how it read
+  it as chips. A DEPENDS answer spells out the split when a line leaves
+  something open. The answer shows every rule checked in order, and
+  offers only fixes the engine has verified against the policy. A What-If
+  window opens beside the page (not modal) with the verdict, a diagram,
+  "What you can do", "Why" and "Good to know". `stockfw simulate` gives
+  the same answer and exits 6 for DEPENDS.
+- **Preferences redesign.** The settings window is rebuilt to match
+  the new look: a grouped sidebar, a title and purpose line on every
+  page, and settings in titled groups. What it shows is what it saves,
+  and settings are applied under the last applied policy.
+- **Background mode and tray.** `StockFW --background` (or
+  `--minimized`) starts StockFW in the notification area. The tray menu
+  shows a live status header and the firewall state, greys what the
+  running copy cannot do, and has Start at sign-in. If no notification
+  area takes the icon, the window is shown instead.
+- **One StockFW per session.** Starting StockFW again brings the running
+  copy forward. `StockFW --quit` asks it to quit cleanly. A launch with
+  more rights (`sudo StockFW`, or StockFW (Elevated)) takes over from the
+  copy without them.
+- **Start at sign-in.** On Windows this is a Task Scheduler task that
+  runs without administrator rights. On Linux it is an XDG autostart
+  entry. It can be set from the tray, Preferences > General, or
+  `--enable-autostart` / `--disable-autostart`.
+- **Boot service on Linux.** The Linux installer installs and enables
+  `stockfw.service`, which runs `stockfw start` before the network
+  comes up. It loads the last applied policy, so the rules come back
+  after a reboot.
+- **Saving while running.** Settings and what the Copilot has learned
+  are saved every five minutes when they change, and when the session
+  ends.
+- **Help window and About.** A Help window with a searchable sidebar of
+  topics, Back and Forward, and links between topics. It opens with F1
+  at the topic for the page shown, and works offline. The About window
+  now has the credits, a licence summary that matches the source, both
+  licence texts, and Copy system info.
+- **Copilot upgrade.** The Copilot is local and rule-based: fixed checks,
+  no model and no network. Findings from the event log (inbound port
+  scans, repeated attempts on a login port, new destinations for a
+  known app, contacts at a near-fixed interval, block-list hits, fan-out,
+  rate spikes) each come with a severity, an evidence drawer and
+  actions. A block is offered only when What-If confirms it. Policy
+  health reports duplicate, shadowed, unreachable and no-effect rules,
+  broad allows, risky services open to the internet, and denies that
+  reach no address family, and offers only fixes What-If has checked.
+  "Changes made by the Copilot" lists every auto-block and fix with
+  Undo. `stockfw copilot health` runs the policy check from the command
+  line.
+- **Events at volume.** The Events list holds 100,000 events by default
+  and up to 1,000,000 (Preferences > Events) and stays responsive at
+  that size. A filter bar works on direction, verdict, protocol, port or
+  range, address or CIDR block, and a time range, and the filtered rows
+  export to CSV. On Windows every 5156/5157 event in a burst is read, up
+  to 10,000 per poll.
+- **Event history.** Keep event history is off by default. When it is
+  on, events are saved to daily files that only your account can read,
+  kept 30 days or 200 MB by default. The history is read back at start
+  on a worker thread, and `stockfw events --history` searches it.
+- **Threat-intel blocklists on Linux and Windows.** Opt-in public lists:
+  Spamhaus DROP, abuse.ch Feodo Tracker, DShield, FireHOL, blocklist.de,
+  Emerging Threats, CINS Army and Tor exit nodes. You can also add your
+  own lists. Each feed is off until you turn it on and accept its terms;
+  with none on, StockFW makes no network request. Feeds are parsed
+  strictly, and protected ranges can never be blocked. On Linux the lists
+  are one nftables table loaded in a single transaction; on Windows they
+  are Windows Firewall rules. Includes a Threat Intel page,
+  `stockfw intel`, a dashboard card, and events that name the list that
+  blocked a connection.
+- **Country and network blocking on Linux.** Block the address ranges
+  registered in a country, or held by a network (AS number), from
+  IPFire's signed location database. Includes an anycast warning,
+  `stockfw intel geo` and a lookup that says "registered in". Windows does
+  not support this in 1.0.7.
+- **IPv6 on Linux.** One apply loads the policy into both `iptables` and
+  `ip6tables`, each in one atomic step. If the IPv6 half is refused, the
+  IPv4 half is rolled back. Neighbour discovery, router adverts,
+  path-MTU and DHCPv6 are always allowed. Each rule shows which families
+  it covers, and the Overview says whether IPv6 is filtered.
+- **New look.** A dark sidebar replaces the tab band. A new Overview
+  page answers "is this computer protected?". There is a new logo.
+- **Continuous integration.** Linux and Windows builds and test suites
+  run on every pull request. Each run keeps the Windows installer and the
+  Linux tarball as artifacts.
+
+### Changed
+
+- Linux events are read from the kernel ring buffer (`/dev/kmsg`), and
+  allowed new connections are logged too. An empty Events list says why
+  it is empty.
+- Windows rules use real protocols, port specs and sides. A rule is
+  refused rather than widened.
+- Router mode on Linux uses its own NAT chains, which are replaced on
+  every apply.
+- As root, StockFW runs `iptables`, `ip6tables`, `nft` and `journalctl`
+  only from `/usr/sbin`, `/usr/bin`, `/sbin` or `/bin`. On Windows it
+  runs `netsh`, `wevtutil` and `auditpol` only from System32.
+- `stockfw dashboard` gives the browser a private page that redirects to
+  the dashboard, so the token is no longer on any command line.
+- The Linux tarball's binaries are stripped, and `install.sh` is
+  executable inside the archive.
+- The Linux installer checks for `liblzma.so.5` and `libcrypto.so.3`,
+  and warns when `nft` or `curl` is missing.
+- The Windows installer ships the real README, this changelog and the
+  licence file, and its licence page lists liblzma and OpenSSL
+  libcrypto.
+
+### Fixed
+
+- Generator bugs on Linux: outbound host rules that were never added,
+  hyphenated port ranges, router-mode denies that were bypassed, and
+  forwards dropped after DNAT.
+- The Windows broadcast-block settings no longer create rules that
+  block nothing.
+- The Copilot no longer offers Ask What-If or a block for traffic that a
+  list or a country or network rule already blocks.
+
+## [1.0.6] - development version, shipped as part of 1.0.7
+
+### Added
+
+- **Activity page.** Policy activity (events per minute, allowed and
+  blocked) and Network I/O (throughput per adapter) graphs over 15
+  minutes to 24 hours. Includes a crosshair and a table view, and the
+  time before the app started is shaded as "no data".
+- **`stockfw` command line on Linux.** `status`, `policy list|add|remove`,
+  `apply [--dry-run]`, `start`, `stop`, `simulate`, `events`,
+  `connections` and `interfaces`, all with `--json` and stable exit
+  codes.
+- **Local dashboard.** `stockfw dashboard` serves a read-only page on
+  127.0.0.1 only, behind a token that changes every run.
+
+### Fixed
+
+- Linux events: fields in the right columns, drops marked as blocked,
+  and the kernel's own time stamps.
+- The Network and Connections panels on Linux show real data.
+- Desktop UI: buttons no longer print "_Add", frame titles can be read,
+  an empty Events list says why, and the window opens at a usable size.
+
+## [1.0.5] - 2026-10-11
+
+### Added
+
+- **Application trust engine.** Shows whether a program is signed or
+  unsigned, its SHA-256 and its publisher, with attested baselines that
+  notice unexpected changes.
+- **Explainable behaviour analysis.** Per-program baselines, and
+  findings on the Copilot page that read as sentences.
+- **Safe policy enforcement.** An apply gate with an impact preview, an
+  applied-policy journal, narrow delta application, and verified
+  rollback.
+- **System tray and background operation.** Close or minimize to the
+  tray, a firewall-state tooltip, and an Open/Quit menu.
+- **What-If simulator.** Type a line like "allow SSH from 192.168.1.50
+  on port 22" and get a BLOCKED or ALLOWED verdict against the real
+  policy, without writing anything.
+- **Bi-directional Direction setting** on the rule kinds that can be
+  paired, saved for both directions in one all-or-nothing save.
+- **Canonical test runner** `tests/full-suite.sh`.
+
+### Changed
+
+- **Sentinel hardening.** Auto-block refuses whole destination classes
+  (your own network, loopback, multicast, protocol infrastructure,
+  anything it cannot classify), never re-stages a rule it just took
+  down, and keeps staged blocks across restarts with their remaining
+  time. An Allow in the event view lifts Sentinel's block for that
+  destination.
+- **Preferences on Windows.** The ICMP, broadcast, profile, port-range
+  and notification settings now take effect. Pages that Windows cannot
+  honour are hidden rather than greyed.
+- The chat-style assistant pane was removed from the Copilot page.
+  Status messages appear in the Policy Analysis log.
+
+## [1.0.4] - 2026-10
+
+### Added
+
+- **Event to Rule in one click.** Right-click an event to block or allow
+  its destination, block that service to it, or trust an inbound source.
+- **Events filter bar.**
+- **Sentinel.** Detects beacons and fan-out, and can auto-block for a
+  limited time with one-click Undo. Every action is written to an
+  append-only `audit.log`.
+
+### Fixed
+
+- Policy rows are validated when loaded, and control characters are
+  stripped from rule names.
+
+## 1.0.3 and earlier
+
+The GTK3 port that the later releases build on:
+
+- A GTK3 firewall configuration tool for Windows and Linux.
+- Windows Defender Firewall backend (`netsh`) and Linux `iptables`
+  backend.
+- Per-profile firewall control (Domain, Private and Public).
+- Policy rule management with CSV import and export.
+- The Smart Firewall Copilot: rule-based anomaly detection over the
+  event log.
+- Elevated launcher for administrator operations.

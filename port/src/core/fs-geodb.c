@@ -1,6 +1,6 @@
 /*---[ fs-geodb.c ]------------------------------------------------------
  * The IPFire location database reader.  See fs-geodb.h and
- * docs/1.0.7-threat-intel-design.md, section 12.
+ * docs/design/1.0.7-threat-intel-design.md, section 12.
  *
  * Original code, written from the published layout of libloc's format
  * version 1; no libloc code or structure definition is used.  The facts

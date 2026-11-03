@@ -1,6 +1,6 @@
 /*---[ fs-intelwin.c ]---------------------------------------------------
  * The threat-intel rule set on Windows: plan, read back, in force.
- * See fs-intelwin.h and docs/1.0.7-threat-intel-design.md, section 11.
+ * See fs-intelwin.h and docs/design/1.0.7-threat-intel-design.md, section 11.
  * Pure: no Windows header, no COM, so it builds and is tested on every
  * platform.
  *--------------------------------------------------------------------*/

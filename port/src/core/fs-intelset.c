@@ -1,6 +1,6 @@
 /*---[ fs-intelset.c ]---------------------------------------------------
  * The threat-intel rule set and its nftables rendering.  See
- * fs-intelset.h; the design is docs/1.0.7-threat-intel-design.md,
+ * fs-intelset.h; the design is docs/design/1.0.7-threat-intel-design.md,
  * section 7.
  *
  * Everything here is text in, text out.  Running nft is fs-nftset.c's

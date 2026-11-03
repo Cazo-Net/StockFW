@@ -137,7 +137,7 @@ FsRangeSet *fs_range_set_from_text (const gchar *text, GError **error);
  * Loopback, unspecified, RFC 1918, CGNAT, link-local, multicast,
  * reserved/broadcast, special-purpose (192.0.0.0/24, 192.88.99.0/24,
  * 198.18.0.0/15), ULA, IPv4-mapped, NAT64.  Normalized; owned by the
- * module, never free it.  See docs/1.0.7-threat-intel-design.md, s3. */
+ * module, never free it.  See docs/design/1.0.7-threat-intel-design.md, s3. */
 const FsRangeSet *fs_range_protected (void);
 
 /* Nameserver addresses from resolv.conf text ("nameserver <addr>"

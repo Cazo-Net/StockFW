@@ -1,6 +1,6 @@
 /*---[ fs-geodb.h ]------------------------------------------------------
  * A hardened reader for the IPFire location database (1.0.7 threat
- * intel, round 2).  Design: docs/1.0.7-threat-intel-design.md, section
+ * intel, round 2).  Design: docs/design/1.0.7-threat-intel-design.md, section
  * 11.
  *
  * The database is a file in libloc's format version 1, published daily
