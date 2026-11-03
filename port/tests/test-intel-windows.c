@@ -743,6 +743,7 @@ typedef struct
 	const gchar *dir;
 	gpointer     handle;
 	gboolean     waited;
+	volatile gint started;
 	volatile gint done;
 } LockWaiter;
 
@@ -751,6 +752,7 @@ lock_waiter (gpointer data)
 {
 	LockWaiter *w = data;
 
+	g_atomic_int_set (&w->started, 1);
 	w->handle = fs_winstore_lock (w->dir, "engine.lock", &w->waited);
 	g_atomic_int_set (&w->done, 1);
 	return NULL;
@@ -775,7 +777,13 @@ check_engine_lock (void)
 	       "engine lock: taken at once when nobody holds it");
 	w.dir = tmp;
 	t = g_thread_new ("lock-waiter", lock_waiter, &w);
-	g_usleep (300 * 1000);
+	/* A loaded runner can start the thread late: wait until it runs,
+	 * then give it time to reach the lock and block there.  Without
+	 * the wait it could ask only after the release and never wait
+	 * (CI, 2026-11-03). */
+	for (guint i = 0; i < 1000 && g_atomic_int_get (&w.started) == 0; i++)
+		g_usleep (10 * 1000);
+	g_usleep (500 * 1000);
 	CHECK (g_atomic_int_get (&w.done) == 0,
 	       "engine lock: a second holder (another handle, another "
 	       "thread) waits while the first holds it");
