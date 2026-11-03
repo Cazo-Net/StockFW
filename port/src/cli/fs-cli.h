@@ -391,17 +391,17 @@ gboolean fs_cli_parse_window (const gchar *since, const gchar *until,
 /* ----------------------------------------- status (fs-cli-status.c) */
 
 /* What the live event line shows (master plan PR 1, WP-F), read in one
- * go.  The parts marked WP-C are filled by that package; until then
- * they read as unknown.  fs_cli_status_snapshot_free. */
+ * go: the readers of `stockfw status' (fs-cli-status.c), each fact
+ * read fresh.  fs_cli_status_snapshot_free. */
 typedef struct
 {
 	FsFirewallState state;           /* FS_FW_NONE: unknown (needs root) */
 	FsCliLive       live;
 	gboolean        settings_pending;
 	gboolean        held;            /* audit-only: applies are held     */
-	gint64          blocked_today;   /* -1: unknown (WP-C)               */
-	gchar          *sentinel_mode;   /* the preference: "auto", "off"... */
-	gint            sentinel_staged; /* -1: unknown (WP-C)               */
+	gint64          blocked_today;   /* -1: unknown (nothing readable)   */
+	gchar          *sentinel_mode;   /* the preference: "auto", "detect" */
+	gint            sentinel_staged; /* rows in Sentinel's state file    */
 	gboolean        monitor_readable;
 	gchar          *monitor_source;  /* nullable                         */
 	gchar          *monitor_problem; /* nullable                         */
@@ -416,6 +416,68 @@ void                 fs_cli_status_snapshot_free (FsCliStatusSnapshot *snap);
 /* === end WP-B === */
 
 /* === WP-C === */
+
+/* One audit log entry, "<ISO UTC> | <action> | <detail>" as
+ * fs_audit_log writes it (fs-cli-views.c).  origin is "cli" or "gui"
+ * where the layout says (the apply gate's lines, threat intel's
+ * "source="), else NULL; detail is what follows the origin. */
+typedef struct
+{
+	gint64  epoch;
+	gchar  *action;
+	gchar  *origin;
+	gchar  *detail;
+	gchar  *raw;
+} FsCliAuditEntry;
+
+void             fs_cli_audit_entry_free (FsCliAuditEntry *e);
+/* NULL for a damaged line. */
+FsCliAuditEntry *fs_cli_audit_parse_line (const gchar *line);
+/* Every good entry of the file, oldest first; lines_total counts the
+ * lines that are not empty, bad_lines those that did not read.  NULL
+ * with error when the file cannot be read. */
+GPtrArray       *fs_cli_audit_read       (const gchar *path,
+                                          guint *lines_total,
+                                          guint *bad_lines,
+                                          GError **error);
+/* The newest apply, start or stop entry of fs_audit_path(), or NULL. */
+FsCliAuditEntry *fs_cli_audit_last_apply (void);
+/* {"time","epoch","action","origin","detail"[,"raw"]} */
+void             fs_cli_audit_entry_json (GString *out,
+                                          const FsCliAuditEntry *e,
+                                          gboolean with_raw);
+
+/* One row of Sentinel's state file, "S,<epoch>,<kind>,<csv>".  rule is
+ * NULL when the csv does not read. */
+typedef struct
+{
+	gint64      epoch;
+	FsRuleKind  kind;
+	gchar      *csv;
+	FsRule     *rule;
+} FsCliSentinelBlock;
+
+void       fs_cli_sentinel_block_free (FsCliSentinelBlock *b);
+/* The rows of the file at path (read only, never rewritten); NULL with
+ * error when it cannot be read (G_FILE_ERROR_NOENT: nothing staged). */
+GPtrArray *fs_cli_sentinel_read       (const gchar *path, guint *bad_rows,
+                                       GError **error);
+/* How many blocks fs_autoblock_state_path() holds, and the next time
+ * one lifts (0: none to come). */
+gint       fs_cli_sentinel_staged     (gint64 *next_lift);
+/* Sentinel's staged outbound blocks that are still in `policy', given
+ * to the What-If engine with the time each lifts. */
+void       fs_cli_sentinel_whatif     (FsWhatIfContext *ctx,
+                                       const FsPolicy *policy);
+
+/* Blocked events since local midnight (fs-cli-status.c): from the
+ * saved event history when it is kept, else from the kernel log.
+ * -1 when neither can be read.  last_block (nullable) receives a copy
+ * of the newest one (fs_hit_free); source (nullable) "history" or
+ * "kernel_log". */
+gint64     fs_cli_blocked_today       (FsHit **last_block,
+                                       const gchar **source);
+
 /* === end WP-C === */
 
 /* === WP-D === */

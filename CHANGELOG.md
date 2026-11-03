@@ -38,6 +38,24 @@ into `/usr/local/share/doc/stockfw/`.
   `help help`, `help version` and `help intel geo` work.
 <!-- WP-B -->
 <!-- WP-C -->
+- **`stockfw status` says whether what you saved is live**: "12 rules,
+  live" or "1 change not applied". New lines show the last apply, start
+  or stop, the packets blocked today and the last one, and whether
+  `stockfw.service` puts the rules back at boot. `status -v` adds the
+  firewall settings, the event history and Sentinel; `status -q` prints
+  one line. The JSON only gains fields.
+- **Monitoring is decided by what you can read, not by your user id.**
+  A user in the `adm` group now sees "reading /var/log/kern.log", and
+  `monitoring_available` in `status --json` is true. The dashboard
+  follows a readable log file itself when it is not run as root.
+- **New `stockfw audit`** reads the audit log: `-n`, `--since`,
+  `--until`, `--action`, `--grep`, `-r`, `-f`, `--utc`, `--file` and
+  `--json`. Damaged lines are counted, never dropped silently.
+- **New `stockfw sentinel list`** shows Sentinel's staged blocks and when
+  each lifts. It only reads; `simulate` now also knows about these
+  blocks.
+- `--since` and `--until` take an ISO time without seconds, such as
+  `2026-11-02T23:30Z`.
 <!-- WP-D -->
 <!-- WP-F -->
 <!-- WP-E -->
