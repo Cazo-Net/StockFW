@@ -1,16 +1,32 @@
 /*---[ fs-copilot.c ]---------------------------------------------------
- * AI-Powered Smart Firewall Copilot - UI.
+ * The Copilot page (1.0.7).
  *
- * Features:
- *   - Dashboard stats (learned apps, insights, events, rules)
- *   - Policy rule analyzer (conflicts, redundancies, gaps)
- *   - Anomaly detection insights with color-coded severity
- *   - What-if traffic simulation against real rules
- *   - One-click rule suggestion application
+ * Rule-based checks of the event log and the policy, run on this
+ * computer.  Nothing here learns a model or sends anything anywhere;
+ * every finding names the check that raised it and the events behind
+ * it.  The page has:
+ *
+ *   - Sentinel: Detect only, or Detect + auto-block (outbound blocks to
+ *     unknown public addresses, ten minutes each);
+ *   - four tiles: findings that need attention, policy health findings,
+ *     auto-blocks active, and apps (services on Linux) learned;
+ *   - Findings: one row per finding with a severity pill (icon and
+ *     word); Enter or a click opens its drawer: what was seen, why it
+ *     was flagged, why it could be harmless, and what Sentinel did;
+ *   - Policy health (core/fs-health.h): overlaps, conflicts and risky
+ *     open services, each fix checked with What-If before it is
+ *     offered, asked again before it is written, confirmed, and undone
+ *     from the Changes card;
+ *   - the What-If card;
+ *   - Changes made by the Copilot, newest first, each with Undo.
+ *
+ * Colours come from the theme classes (fs-theme.css, and the What-If
+ * styles for the pills); a dark desktop theme gets the dark variants.
  *--------------------------------------------------------------------*/
 
 #include "fs-copilot.h"
 #include "core/fs-copilot.h"
+#include "core/fs-health.h"
 #include "core/fs-rules.h"
 #include "core/fs-fwrule.h"
 #include "core/fs-backend.h"
@@ -20,6 +36,7 @@
 #include "ui/fs-app.h"
 #include "ui/fs-icons.h"
 #include "ui/fs-policyview.h"
+#include "ui/fs-hitview.h"
 #include "ui/fs-simviz.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-statusview.h"
@@ -35,41 +52,60 @@
 #endif
 
 /* =====================================================================
- * Column indices for the insights tree
- * ===================================================================== */
-enum
-{
-    COL_ICON,        /* stock icon name */
-    COL_TITLE,
-    COL_TYPE,
-    COL_SEVERITY,
-    COL_DESC,
-    COL_APP,
-    COL_DEST,
-    COL_SUGGESTION,
-    COL_RULE_CSV,
-    COL_KIND,        /* FsRuleKind that rule_csv parses as (int) */
-    COL_STATUS,      /* Sentinel auto-block state, or empty */
-    COL_N_COLS
-};
-
-/* =====================================================================
  * Widget state
  * ===================================================================== */
-static GtkListStore  *insights_store   = NULL;
-static GtkWidget     *insights_tree    = NULL;
-static GtkWidget     *scenario_entry   = NULL;
-static GtkWidget     *sim_output       = NULL;
-static GtkWidget     *stat_apps        = NULL;
-static GtkWidget     *stat_insights    = NULL;
-static GtkWidget     *stat_events      = NULL;
-static GtkWidget     *stat_rules       = NULL;
-static GtkWidget     *analysis_output  = NULL;
-static GtkWidget     *copilot_vbox     = NULL;
+static GtkWidget     *scenario_entry   = NULL;   /* What-If card */
+static GtkWidget     *sim_output       = NULL;   /* What-If log  */
+static GtkWidget     *copilot_vbox     = NULL;   /* the page     */
+
+static GtkWidget     *sentinel_detect  = NULL;
+static GtkWidget     *sentinel_auto    = NULL;
+static GtkWidget     *sentinel_strip   = NULL;
+
+static GtkWidget     *tile_attention   = NULL;   /* value labels */
+static GtkWidget     *tile_attention_note = NULL;
+static GtkWidget     *tile_health      = NULL;
+static GtkWidget     *tile_health_note = NULL;
+static GtkWidget     *tile_blocks      = NULL;
+static GtkWidget     *tile_blocks_note = NULL;
+static GtkWidget     *tile_learned     = NULL;
+static GtkWidget     *tile_learned_note = NULL;
+
+static GtkWidget     *findings_list    = NULL;
+static GtkWidget     *findings_frame   = NULL;   /* the list's card */
+static GtkWidget     *findings_count   = NULL;
+static GtkWidget     *findings_empty   = NULL;
+static GtkWidget     *findings_empty_text = NULL;
+static GtkWidget     *findings_reason  = NULL;
+static GtkWidget     *findings_checked = NULL;
+static GtkWidget     *findings_strip   = NULL;
+
+static GtkWidget     *health_list      = NULL;
+static GtkWidget     *health_frame     = NULL;
+static GtkWidget     *health_summary   = NULL;
+static GtkWidget     *health_empty     = NULL;
+static GtkWidget     *health_strip     = NULL;
+
+static GtkWidget     *changes_list     = NULL;
+static GtkWidget     *changes_frame    = NULL;
+static GtkWidget     *changes_empty    = NULL;
+static GtkWidget     *changes_strip    = NULL;
 
 static FsCopilot     *global_copilot   = NULL;
 static FsPolicy      *copilot_policy   = NULL;
 static guint          total_events     = 0;
+static guint          refresh_id       = 0;
+
+/* The last health check: FsHealthFinding*, most severe first. */
+static GPtrArray     *health_findings  = NULL;
+static guint          health_rules     = 0;
+static gint64         health_at        = 0;
+
+/* Session memory, by a finding's key. */
+static GHashTable    *dismissed        = NULL;   /* key -> TRUE        */
+static GHashTable    *expanded         = NULL;   /* key -> TRUE        */
+static GHashTable    *verify_cache     = NULL;   /* key -> reason, ""
+                                                  * when verified     */
 
 /* ===== Sentinel state (1.0.4) =====================================
  *
@@ -78,7 +114,6 @@ static guint          total_events     = 0;
  * the time they were staged: the user can undo any of them, and
  * every one expires ten minutes after staging unless it was staged
  * manually through the Policy page first. */
-static GtkWidget     *sentinel_combo   = NULL;
 static gchar          sentinel_mode[16] = "auto";
 
 /* FS_AUTOBLOCK_TTL_S (core/fs-autoblock.h): auto-blocks lift after
@@ -114,25 +149,97 @@ static gboolean   auto_block_failed_once = FALSE;
  * decision instead of inheriting a grudge. */
 static GHashTable *auto_block_cooldown = NULL;  /* "kind|csv" -> TRUE */
 
+/* Changes made from this page (block rules added, health fixes), for
+ * the Changes card.  Live auto-blocks are listed from auto_blocks; one
+ * that ends is kept here (AUTO_BLOCK) so the card, the audit view the
+ * user sees, never forgets a change was made.  An undone change stays
+ * too, marked with when and how it ended. */
+typedef enum
+{
+    CP_CHANGE_BLOCK_RULE,
+    CP_CHANGE_HEALTH_FIX,
+    CP_CHANGE_AUTO_BLOCK
+} CpChangeKind;
+
+typedef struct
+{
+    CpChangeKind  kind;
+    gint64        at;              /* unix seconds                 */
+    gchar        *label;
+    FsRuleKind    rule_kind;       /* BLOCK_RULE                   */
+    gchar        *csv;             /* BLOCK_RULE                   */
+    FsHealthUndo *undo;            /* HEALTH_FIX                   */
+    gint64        ended_at;        /* undone or lifted, 0 = live   */
+    gchar        *ended_how;       /* "Undone", "Lifted after ..." */
+} CpChange;
+
+#define CP_CHANGES_MAX 100
+
+static GPtrArray *changes = NULL;    /* CpChange*, oldest first */
+
 /* =====================================================================
  * Forward declarations
  * ===================================================================== */
 static void refresh_insights (void);
 static void update_stats (void);
-static void run_policy_analysis (void);
-static void on_simulate_clicked (GtkButton *btn, gpointer data);
+static void health_run (void);
+static void changes_render (void);
 static GtkWidget *whatif_card_new (void);
-static void on_apply_suggestion_clicked (GtkButton *btn, gpointer data);
-static void on_analyze_clicked (GtkButton *btn, gpointer data);
-static void on_clear_clicked (GtkButton *btn, gpointer data);
-static void on_sentinel_mode_changed (GtkComboBox *combo, gpointer data);
-static void on_undo_auto_clicked (GtkButton *btn, gpointer data);
+static void whatif_ask (const gchar *line);
+static void on_simulate_clicked (GtkButton *btn, gpointer data);
+static FsWhatIfContext *whatif_context_build (FsSettings *settings);
+static const gchar *apply_result_text (FsApplyResult result);
 static gboolean auto_block_expire_cb (gpointer data);
-static void on_row_activated (GtkTreeView *tree, GtkTreePath *path,
-                              GtkTreeViewColumn *col, gpointer data);
-static const gchar *severity_to_icon (FsCopilotSeverity sev);
-static const gchar *insight_type_to_string (FsInsightType type);
-static const gchar *severity_to_string (FsCopilotSeverity sev);
+static void auto_block_retire (AutoBlock *ab, const gchar *why);
+static void auto_block_push (void);
+static gboolean auto_block_cooldown_contains (FsRuleKind kind,
+                                              const gchar *csv);
+
+/* =====================================================================
+ * Small helpers
+ * ===================================================================== */
+/* One class, or several separated by spaces. */
+static void
+add_class (GtkWidget *w, const gchar *names)
+{
+    gchar **v;
+
+    if (w == NULL || names == NULL)
+        return;
+    v = g_strsplit (names, " ", -1);
+    for (guint i = 0; v[i] != NULL; i++)
+        if (*v[i] != '\0')
+            gtk_style_context_add_class (gtk_widget_get_style_context (w),
+                                         v[i]);
+    g_strfreev (v);
+}
+
+static GtkWidget *
+text_new (const gchar *text, const gchar *cls, gboolean wrap)
+{
+    GtkWidget *l = gtk_label_new (text);
+
+    add_class (l, cls);
+    gtk_label_set_xalign (GTK_LABEL (l), 0.0);
+    if (wrap) {
+        gtk_label_set_line_wrap (GTK_LABEL (l), TRUE);
+        gtk_label_set_line_wrap_mode (GTK_LABEL (l), PANGO_WRAP_WORD_CHAR);
+    }
+    gtk_label_set_selectable (GTK_LABEL (l), FALSE);
+    return l;
+}
+
+static GtkWidget *
+button_new (const gchar *label, const gchar *cls, const gchar *name)
+{
+    GtkWidget *b = gtk_button_new_with_label (label);
+
+    add_class (b, cls);
+    if (name != NULL)
+        gtk_widget_set_name (b, name);
+    gtk_widget_set_valign (b, GTK_ALIGN_CENTER);
+    return b;
+}
 
 /* =====================================================================
  * Helper: button with one of the app's drawn icons + label
@@ -158,37 +265,156 @@ button_with_icon (FsIconKind icon, const gchar *label)
     return btn;
 }
 
-/* =====================================================================
- * Helper: create a stat card (big value + label)
- * ===================================================================== */
-static GtkWidget *
-make_stat_card (const gchar *label, GtkWidget **value_out)
+/* Shows or hides a widget that stays out of the page's show_all while
+ * it is empty (no_show_all). */
+static void
+reveal (GtkWidget *w, gboolean on)
 {
-    /* The Overview's stat card: the name small on top, the number
-     * large under it.  No theme icon: which icons a Windows runtime
-     * ships is not something the page can count on, and a missing one
-     * renders as a broken-image square. */
-    GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
-    gtk_style_context_add_class (gtk_widget_get_style_context (card), "card");
-    gtk_style_context_add_class (gtk_widget_get_style_context (card),
-                                 "stat-card");
+    if (w == NULL)
+        return;
+    gtk_widget_set_no_show_all (w, !on);
+    if (on)
+        gtk_widget_show_all (w);
+    else
+        gtk_widget_hide (w);
+}
 
-    GtkWidget *lbl = gtk_label_new (label);
-    gtk_style_context_add_class (gtk_widget_get_style_context (lbl), "muted");
-    gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
-    gtk_box_pack_start (GTK_BOX (card), lbl, FALSE, FALSE, 0);
+/* A status line inside a card: what an action did.  level is "ok",
+ * "warn" or "bad"; NULL text hides it. */
+static void
+strip_set (GtkWidget *strip, const gchar *level, const gchar *text)
+{
+    GtkStyleContext *sc;
 
-    GtkWidget *val = gtk_label_new ("0");
-    gtk_style_context_add_class (gtk_widget_get_style_context (val), "stat-big");
-    gtk_label_set_xalign (GTK_LABEL (val), 0.0);
-    gtk_box_pack_start (GTK_BOX (card), val, FALSE, FALSE, 0);
+    if (strip == NULL)
+        return;
+    if (text == NULL || *text == '\0') {
+        reveal (strip, FALSE);
+        return;
+    }
+    sc = gtk_widget_get_style_context (strip);
+    gtk_style_context_remove_class (sc, "ok-strip");
+    gtk_style_context_remove_class (sc, "warning-strip");
+    gtk_style_context_remove_class (sc, "error-strip");
+    gtk_style_context_add_class (sc,
+        g_strcmp0 (level, "bad") == 0 ? "error-strip"
+        : g_strcmp0 (level, "warn") == 0 ? "warning-strip" : "ok-strip");
+    gtk_label_set_text (GTK_LABEL (strip), text);
+    reveal (strip, TRUE);
+}
 
-    *value_out = val;
-    return card;
+static GtkWidget *
+strip_new (const gchar *name)
+{
+    GtkWidget *s = text_new ("", "cp-strip", TRUE);
+
+    gtk_widget_set_name (s, name);
+    gtk_widget_set_no_show_all (s, TRUE);
+    return s;
+}
+
+static void
+clear_container (GtkWidget *box)
+{
+    GList *kids, *l;
+
+    if (box == NULL)
+        return;
+    kids = gtk_container_get_children (GTK_CONTAINER (box));
+    for (l = kids; l != NULL; l = l->next)
+        gtk_widget_destroy (l->data);
+    g_list_free (kids);
+}
+
+/* "just now", "4 min ago", "3 h ago", or the date. */
+static gchar *
+ago_text (gint64 when)
+{
+    gint64 now = g_get_real_time () / G_USEC_PER_SEC;
+    gint64 d = now - when;
+
+    if (when <= 0)
+        return g_strdup ("");
+    if (d < 60)
+        return g_strdup (_("just now"));
+    if (d < 3600)
+        return g_strdup_printf (_("%d min ago"), (gint) (d / 60));
+    if (d < 86400)
+        return g_strdup_printf (_("%d h ago"), (gint) (d / 3600));
+    {
+        GDateTime *dt = g_date_time_new_from_unix_local (when);
+        gchar *s = g_date_time_format (dt, "%Y-%m-%d");
+
+        g_date_time_unref (dt);
+        return s;
+    }
+}
+
+static gchar *
+clock_text (gint64 when)
+{
+    GDateTime *dt = g_date_time_new_from_unix_local (when);
+    gchar *s = g_date_time_format (dt, "%H:%M");
+
+    g_date_time_unref (dt);
+    return s;
+}
+
+static const gchar *
+severity_word (FsCopilotSeverity sev)
+{
+    switch (sev) {
+    case FS_COPILOT_CRITICAL: return _("Critical");
+    case FS_COPILOT_WARNING:  return _("Warning");
+    case FS_COPILOT_INFO:
+    default:                  return _("Info");
+    }
+}
+
+/* A severity pill: an icon and the word, in the What-If badge styles,
+ * so it never depends on colour alone. */
+static GtkWidget *
+severity_pill (FsCopilotSeverity sev)
+{
+    GtkWidget *pill = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+    FsIconKind icon = sev == FS_COPILOT_CRITICAL ? FS_ICON_SHIELD_X
+                      : sev == FS_COPILOT_WARNING ? FS_ICON_SHIELD_ALERT
+                                                  : FS_ICON_INFO;
+
+    fs_simviz_install_css ();
+    add_class (pill, "fs-wi-badge");
+    add_class (pill, "cp-pill");
+    add_class (pill, sev == FS_COPILOT_CRITICAL ? "bad"
+                     : sev == FS_COPILOT_WARNING ? "warn" : "ok");
+    gtk_box_pack_start (GTK_BOX (pill), fs_icon_new (icon, 12),
+                        FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (pill), gtk_label_new (severity_word (sev)),
+                        FALSE, FALSE, 0);
+    gtk_widget_set_name (pill, "cp-pill");
+    gtk_widget_set_valign (pill, GTK_ALIGN_START);
+    gtk_widget_set_halign (pill, GTK_ALIGN_START);
+    return pill;
+}
+
+static const gchar *
+rule_kind_words (gint kind)
+{
+    switch (kind) {
+    case FS_RULE_INBOUND_ALLOW_FROM:     return _("Inbound allow from host");
+    case FS_RULE_INBOUND_ALLOW_SERVICE:  return _("Inbound service");
+    case FS_RULE_INBOUND_FORWARD:        return _("Port forward");
+    case FS_RULE_OUTBOUND_ALLOW_TO:      return _("Outbound allow to host");
+    case FS_RULE_OUTBOUND_ALLOW_FROM:    return _("Outbound allow from host");
+    case FS_RULE_OUTBOUND_ALLOW_SERVICE: return _("Outbound service");
+    case FS_RULE_OUTBOUND_DENY_TO:       return _("Outbound deny to host");
+    case FS_RULE_OUTBOUND_DENY_FROM:     return _("Outbound deny from host");
+    case FS_RULE_OUTBOUND_DENY_SERVICE:  return _("Outbound deny service");
+    default:                             return _("Rule");
+    }
 }
 
 /* =====================================================================
- * Helper: create a styled text view for output
+ * Helper: create a styled text view for output (the What-If log)
  * ===================================================================== */
 static GtkWidget *
 make_output_view (void)
@@ -215,8 +441,24 @@ make_output_view (void)
     return scrolled;
 }
 
+/* The colour of a tone class (tone-ok, tone-bad ...) on this widget,
+ * from the theme: the stylesheet has a light and a dark value for
+ * each, so the log stays readable on either. */
+static void
+tone_color (GtkWidget *w, const gchar *tone, GdkRGBA *out)
+{
+    GtkStyleContext *sc = gtk_widget_get_style_context (w);
+
+    gtk_style_context_save (sc);
+    gtk_style_context_add_class (sc, tone);
+    gtk_style_context_get_color (sc, gtk_style_context_get_state (sc), out);
+    gtk_style_context_restore (sc);
+}
+
 /* =====================================================================
- * Helper: append text to a GtkTextView with optional style tag
+ * Helper: append text to a GtkTextView with optional style tag.  The
+ * tags keep their old names (green, red, orange, blue, dim); their
+ * colours come from the theme's tone classes.
  * ===================================================================== */
 static void
 text_view_append (GtkWidget *scrolled, const gchar *text, const gchar *tag)
@@ -233,24 +475,36 @@ text_view_append (GtkWidget *scrolled, const gchar *text, const gchar *tag)
         GtkTextTag *t = gtk_text_tag_table_lookup (
             gtk_text_buffer_get_tag_table (buf), tag);
         if (!t) {
+            const gchar *tone = NULL;
+
             t = gtk_text_tag_new (tag);
-            if (g_strcmp0(tag, "bold") == 0)
-                g_object_set(t, "weight", PANGO_WEIGHT_BOLD, NULL);
-            else if (g_strcmp0(tag, "title") == 0) {
-                g_object_set(t, "weight", PANGO_WEIGHT_BOLD,
-                             "scale", 1.15, NULL);
-            } else if (g_strcmp0(tag, "green") == 0)
-                g_object_set(t, "foreground", "#2e7d32", NULL);
-            else if (g_strcmp0(tag, "red") == 0)
-                g_object_set(t, "foreground", "#c62828", NULL);
-            else if (g_strcmp0(tag, "orange") == 0)
-                g_object_set(t, "foreground", "#e65100", NULL);
-            else if (g_strcmp0(tag, "blue") == 0)
-                g_object_set(t, "foreground", "#1565c0", NULL);
-            else if (g_strcmp0(tag, "dim") == 0)
-                g_object_set(t, "foreground", "#757575", NULL);
+            if (g_strcmp0 (tag, "bold") == 0)
+                g_object_set (t, "weight", PANGO_WEIGHT_BOLD, NULL);
+            else if (g_strcmp0 (tag, "title") == 0)
+                g_object_set (t, "weight", PANGO_WEIGHT_BOLD,
+                              "scale", 1.15, NULL);
+            else if (g_strcmp0 (tag, "green") == 0)
+                tone = "tone-ok";
+            else if (g_strcmp0 (tag, "red") == 0)
+                tone = "tone-bad";
+            else if (g_strcmp0 (tag, "orange") == 0)
+                tone = "tone-warn";
+            else if (g_strcmp0 (tag, "blue") == 0)
+                tone = "tone-info";
+            else if (g_strcmp0 (tag, "dim") == 0)
+                tone = "tone-dim";
+            if (tone != NULL) {
+                GdkRGBA c;
+
+                tone_color (view, tone, &c);
+                g_object_set (t, "foreground-rgba", &c, NULL);
+                if (g_strcmp0 (tone, "tone-bad") == 0 ||
+                    g_strcmp0 (tone, "tone-warn") == 0)
+                    g_object_set (t, "weight", PANGO_WEIGHT_SEMIBOLD, NULL);
+            }
             gtk_text_tag_table_add (
                 gtk_text_buffer_get_tag_table (buf), t);
+            g_object_unref (t);
         }
         gtk_text_buffer_insert_with_tags_by_name (buf, &end, text, -1, tag, NULL);
     } else {
@@ -261,88 +515,2010 @@ text_view_append (GtkWidget *scrolled, const gchar *text, const gchar *tag)
 }
 
 /* =====================================================================
- * build_insights_tree - Create the insights tree view
+ * The apply gate, reported into a card's strip
  * ===================================================================== */
-static GtkWidget *
-build_insights_tree (void)
+static void
+cp_push (const gchar *why, GtkWidget *strip, const gchar *done)
 {
-    /* G_TYPE_STRING for every string column above (COL_ICON ..
-     * COL_RULE_CSV, COL_STATUS), G_TYPE_INT for COL_KIND, in enum
-     * order ending at COL_N_COLS.  Passing fewer columns leaves
-     * GObject reading an uninitialised GType out of the varargs,
-     * which is a crash waiting to happen. */
-    insights_store = gtk_list_store_new (COL_N_COLS,
-        G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
-        G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
-        G_TYPE_STRING, G_TYPE_INT,   G_TYPE_STRING);
+    GError *error = NULL;
+    FsApplyOutcome *outcome;
+    gchar *text;
 
-    GtkWidget *tree = gtk_tree_view_new_with_model (GTK_TREE_MODEL (insights_store));
-    g_object_unref (GTK_TREE_MODEL (insights_store));
-    gtk_tree_view_set_headers_visible (GTK_TREE_VIEW (tree), TRUE);
-    gtk_style_context_add_class (gtk_widget_get_style_context (tree),
-                                 "data-grid");
-    gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (tree),
-                                  GTK_TREE_VIEW_GRID_LINES_HORIZONTAL);
+    if (copilot_policy == NULL)
+        return;
 
-    g_signal_connect (tree, "row-activated", G_CALLBACK (on_row_activated), NULL);
+    outcome = fs_policy_apply_safe (fs_backend (), copilot_policy, why,
+                                    fs_policyview_hold_reason (), &error);
+    if (outcome->applied) {
+        text = g_strdup_printf (_("%s Saved, and %s."), done,
+                                apply_result_text (outcome->result));
+        strip_set (strip, outcome->result == FS_APPLY_OK ? "ok" : "warn",
+                   text);
+    } else if (outcome->held) {
+        text = g_strdup_printf (_("%s Saved. Held back on purpose (%s), so "
+                                  "it is not on the firewall yet."),
+                                done, outcome->hold_reason);
+        strip_set (strip, "warn", text);
+    } else {
+        text = g_strdup_printf (
+            _("%s Saved, but it is not live: %s%s%s. %s"), done,
+            apply_result_text (outcome->result),
+            error != NULL ? " - " : "",
+            error != NULL ? error->message : "",
+            outcome->rollback_attempted && outcome->rollback_verified
+            ? _("The previous policy was restored and the restore was "
+                "verified.")
+            : outcome->rollback_attempted
+              ? _("The rollback also failed; check the Status page.")
+              : _("No applied policy is recorded, so nothing was "
+                  "restored."));
+        strip_set (strip, "bad", text);
+    }
+    g_free (text);
+    fs_apply_outcome_free (outcome);
+    g_clear_error (&error);
+}
 
-    GtkCellRenderer *r;
-    GtkTreeViewColumn *c;
+/* =====================================================================
+ * Findings
+ * ===================================================================== */
 
-    /* Severity icon */
-    r = gtk_cell_renderer_pixbuf_new ();
-    c = gtk_tree_view_column_new_with_attributes ("", r,
-                                                  "icon-name", COL_ICON, NULL);
-    gtk_tree_view_column_set_sizing (c, GTK_TREE_VIEW_COLUMN_FIXED);
-    gtk_tree_view_column_set_fixed_width (c, 32);
-    gtk_tree_view_append_column (GTK_TREE_VIEW (tree), c);
+/* The finding with this key, or NULL when it is gone. */
+static FsInsight *
+insight_by_key (const gchar *key)
+{
+    GList *all, *l;
+    FsInsight *hit = NULL;
 
-    /* Title */
-    r = gtk_cell_renderer_text_new ();
-    g_object_set (r, "weight", PANGO_WEIGHT_BOLD, NULL);
-    c = gtk_tree_view_column_new_with_attributes (_("Title"), r,
-                                                  "text", COL_TITLE, NULL);
-    gtk_tree_view_column_set_min_width (c, 160);
-    gtk_tree_view_column_set_expand (c, TRUE);
-    gtk_tree_view_append_column (GTK_TREE_VIEW (tree), c);
+    if (global_copilot == NULL || key == NULL)
+        return NULL;
+    all = fs_copilot_get_insights (global_copilot);
+    for (l = all; l != NULL && hit == NULL; l = l->next) {
+        FsInsight *ins = l->data;
 
-    /* Type */
-    r = gtk_cell_renderer_text_new ();
-    c = gtk_tree_view_column_new_with_attributes (_("Type"), r,
-                                                  "text", COL_TYPE, NULL);
-    gtk_tree_view_column_set_min_width (c, 90);
-    gtk_tree_view_append_column (GTK_TREE_VIEW (tree), c);
+        if (g_strcmp0 (ins->key, key) == 0)
+            hit = ins;
+    }
+    g_list_free (all);
+    return hit;
+}
 
-    /* Severity */
-    r = gtk_cell_renderer_text_new ();
-    c = gtk_tree_view_column_new_with_attributes (_("Severity"), r,
-                                                  "text", COL_SEVERITY, NULL);
-    gtk_tree_view_column_set_min_width (c, 70);
-    gtk_tree_view_append_column (GTK_TREE_VIEW (tree), c);
+/* A stable key for a finding, also for one the core gave none. */
+static gchar *
+insight_key (const FsInsight *ins)
+{
+    if (ins->key != NULL)
+        return g_strdup (ins->key);
+    return g_strdup_printf ("%d|%s|%s", (gint) ins->type,
+                            ins->application != NULL ? ins->application : "",
+                            ins->title != NULL ? ins->title : "");
+}
 
-    /* Description */
-    r = gtk_cell_renderer_text_new ();
-    g_object_set (r, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
-    c = gtk_tree_view_column_new_with_attributes (_("Description"), r,
-                                                  "text", COL_DESC, NULL);
-    gtk_tree_view_column_set_min_width (c, 250);
-    gtk_tree_view_append_column (GTK_TREE_VIEW (tree), c);
+static AutoBlock *auto_block_find (FsRuleKind kind, const gchar *csv);
 
-    /* App */
-    r = gtk_cell_renderer_text_new ();
-    c = gtk_tree_view_column_new_with_attributes (_("App"), r,
-                                                  "text", COL_APP, NULL);
-    gtk_tree_view_column_set_min_width (c, 80);
-    gtk_tree_view_append_column (GTK_TREE_VIEW (tree), c);
+static AutoBlock *
+insight_auto_block (const FsInsight *ins)
+{
+    if (ins->rule_csv == NULL || *ins->rule_csv == '\0')
+        return NULL;
+    return auto_block_find (ins->rule_kind, ins->rule_csv);
+}
 
-    /* Sentinel auto-block status */
-    r = gtk_cell_renderer_text_new ();
-    c = gtk_tree_view_column_new_with_attributes (_("Status"), r,
-                                                  "text", COL_STATUS, NULL);
-    gtk_tree_view_column_set_min_width (c, 90);
-    gtk_tree_view_append_column (GTK_TREE_VIEW (tree), c);
+/* What Sentinel did, or will not do, for this finding. */
+static gchar *
+auto_block_words (const FsInsight *ins)
+{
+    AutoBlock *ab = insight_auto_block (ins);
 
-    return tree;
+    if (ab != NULL) {
+        gchar *at = clock_text (ab->at_epoch);
+        gchar *until = clock_text (ab->at_epoch + FS_AUTOBLOCK_TTL_S);
+        gchar *s = g_strdup_printf (
+            _("Blocked automatically at %s; the block lifts at %s. Undo "
+              "lifts it now."), at, until);
+
+        g_free (at);
+        g_free (until);
+        return s;
+    }
+    if (ins->withheld != NULL)
+        return g_strdup_printf (_("Not blocked automatically: %s"),
+                                ins->withheld);
+    if (ins->auto_applicable && ins->rule_csv != NULL &&
+        auto_block_cooldown_contains (ins->rule_kind, ins->rule_csv))
+        return g_strdup (_("Not blocked again: its automatic block was "
+                           "lifted earlier in this session."));
+    if (ins->auto_applicable && g_strcmp0 (sentinel_mode, "auto") != 0)
+        return g_strdup (_("Not blocked: Sentinel is set to Detect only."));
+    if (ins->auto_applicable && fs_copilot_sentinel_paused (NULL))
+        return g_strdup (_("Not blocked: Sentinel auto-block is paused from "
+                           "the tray menu."));
+    if (ins->auto_applicable)
+        return g_strdup (_("Sentinel may block this automatically, for 10 "
+                           "minutes."));
+    return g_strdup (_("Never blocked automatically: only outbound "
+                       "contacts to unknown public addresses are."));
+}
+
+/* Is "Block outbound to this address" honest for this finding?  The What-If engine
+ * answers the finding's line against the policy as it is and with the
+ * rule added: offered only when that turns ALLOWED into BLOCKED.  The
+ * answer is about the saved policy, so the firewall is taken as
+ * running it.  TRUE, or FALSE with *why. */
+static gboolean
+block_rule_verify (const FsInsight *ins, gchar **why)
+{
+    FsSettings *settings;
+    FsWhatIfContext *ctx;
+    FsWhatIfResult *r;
+    FsRule *rule;
+    FsWhatIfVerdict before, after;
+
+    *why = NULL;
+    if (copilot_policy == NULL) {
+        *why = g_strdup (_("no traffic policy is loaded"));
+        return FALSE;
+    }
+    if (ins->rule_csv == NULL || ins->rule_kind != FS_RULE_OUTBOUND_DENY_TO) {
+        *why = g_strdup (_("this kind of finding has no block rule to "
+                           "offer"));
+        return FALSE;
+    }
+    rule = fs_insight_to_rule (ins);
+    if (rule == NULL) {
+        *why = g_strdup (_("the rule could not be read"));
+        return FALSE;
+    }
+    if (fs_policy_contains (copilot_policy, rule)) {
+        fs_rule_free (rule);
+        *why = g_strdup (_("that rule is already in your policy"));
+        return FALSE;
+    }
+    if (ins->whatif_line == NULL) {
+        fs_rule_free (rule);
+        *why = g_strdup (_("there is no What-If line to check it with"));
+        return FALSE;
+    }
+
+    settings = fs_settings_new ();
+    ctx = whatif_context_build (settings);
+    ctx->firewall = FS_WHATIF_FW_RUNNING;
+    ctx->live = FS_WHATIF_LIVE_YES;
+
+    r = fs_whatif_simulate_text (ctx, ins->whatif_line);
+    before = r->verdict;
+    fs_whatif_result_free (r);
+
+    fs_policy_add (copilot_policy, rule);
+    r = fs_whatif_simulate_text (ctx, ins->whatif_line);
+    after = r->verdict;
+    fs_whatif_result_free (r);
+    fs_policy_remove (copilot_policy, rule);
+
+    fs_whatif_context_free (ctx);
+    fs_settings_free (settings);
+    fs_rule_free (rule);
+
+    if (before != FS_WHATIF_ALLOWED) {
+        *why = g_strdup_printf (_("What-If says \"%s\" is %s already, so a "
+                                  "block rule would change nothing"),
+                                ins->whatif_line,
+                                fs_whatif_verdict_name (before));
+        return FALSE;
+    }
+    if (after != FS_WHATIF_BLOCKED) {
+        *why = g_strdup_printf (_("What-If says the rule would leave \"%s\" "
+                                  "%s"), ins->whatif_line,
+                                fs_whatif_verdict_name (after));
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* Cached per finding for the session; "" means verified.  The cache
+ * is cleared whenever this page changes the policy, and the check runs
+ * once more just before anything is written. */
+static const gchar *
+block_rule_verdict (const FsInsight *ins, const gchar *key)
+{
+    gchar *why = NULL;
+    const gchar *cached;
+
+    if (verify_cache == NULL)
+        verify_cache = g_hash_table_new_full (g_str_hash, g_str_equal,
+                                              g_free, g_free);
+    cached = g_hash_table_lookup (verify_cache, key);
+    if (cached != NULL)
+        return cached;
+
+    if (block_rule_verify (ins, &why))
+        why = g_strdup ("");
+    g_hash_table_insert (verify_cache, g_strdup (key), why);
+    return why;
+}
+
+static void
+verify_cache_clear (void)
+{
+    if (verify_cache != NULL)
+        g_hash_table_remove_all (verify_cache);
+}
+
+static gboolean
+cp_confirm (const gchar *title, const gchar *text)
+{
+    GtkWidget *top = copilot_vbox != NULL
+                     ? gtk_widget_get_toplevel (copilot_vbox) : NULL;
+    GtkWidget *confirm = gtk_message_dialog_new (
+        GTK_IS_WINDOW (top) ? GTK_WINDOW (top) : NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO, "%s", text);
+    gint response;
+
+    gtk_window_set_title (GTK_WINDOW (confirm), title);
+    response = gtk_dialog_run (GTK_DIALOG (confirm));
+    gtk_widget_destroy (confirm);
+    return response == GTK_RESPONSE_YES;
+}
+
+static void
+change_free (gpointer data)
+{
+    CpChange *c = data;
+
+    g_free (c->label);
+    g_free (c->csv);
+    g_free (c->ended_how);
+    if (c->undo != NULL)
+        fs_health_undo_free (c->undo);
+    g_free (c);
+}
+
+static void
+change_add (CpChange *c)
+{
+    if (changes == NULL)
+        changes = g_ptr_array_new_with_free_func (change_free);
+    if (c->at == 0)
+        c->at = g_get_real_time () / G_USEC_PER_SEC;
+    g_ptr_array_add (changes, c);
+    /* Bounded: the oldest ended entries go first. */
+    for (guint i = 0; changes->len > CP_CHANGES_MAX && i < changes->len; ) {
+        CpChange *o = g_ptr_array_index (changes, i);
+
+        if (o->ended_at != 0)
+            g_ptr_array_remove_index (changes, i);
+        else
+            i++;
+    }
+}
+
+/* [ change_end ] -- an undone change stays on the card, marked. */
+static void
+change_end (CpChange *c, const gchar *how)
+{
+    c->ended_at = g_get_real_time () / G_USEC_PER_SEC;
+    g_free (c->ended_how);
+    c->ended_how = g_strdup (how);
+    if (c->undo != NULL) {
+        fs_health_undo_free (c->undo);
+        c->undo = NULL;
+    }
+}
+
+/* "Block outbound to this address": checked again, confirmed, saved, pushed. */
+static void
+on_add_block_clicked (GtkButton *btn, gpointer data)
+{
+    const gchar *key = g_object_get_data (G_OBJECT (btn), "cp-key");
+    FsInsight *ins = insight_by_key (key);
+    FsRule *rule;
+    gchar *why = NULL;
+    gchar *question;
+    gchar *done;
+    CpChange *c;
+
+    (void) data;
+    if (ins == NULL) {
+        strip_set (findings_strip, "warn",
+                   _("That finding is gone; nothing was written."));
+        refresh_insights ();
+        return;
+    }
+
+    /* The policy may have changed since the drawer opened. */
+    if (!block_rule_verify (ins, &why)) {
+        gchar *t = g_strdup_printf (_("No rule was written: %s."), why);
+
+        strip_set (findings_strip, "warn", t);
+        g_free (t);
+        g_free (why);
+        verify_cache_clear ();
+        refresh_insights ();
+        return;
+    }
+
+    question = g_strdup_printf (
+        _("Add this block rule?\n\n"
+          "Rule: %s (outbound deny to host)\n\n"
+          "Checked by What-If: \"%s\" is ALLOWED now and BLOCKED with "
+          "the rule.\n\n"
+          "This adds the rule to your policy, saves it and pushes it to "
+          "the firewall. Undo is under Changes made by the Copilot."),
+        ins->rule_csv, ins->whatif_line);
+    if (!cp_confirm (_("Add Block Rule"), question)) {
+        g_free (question);
+        strip_set (findings_strip, "ok", _("Nothing was written."));
+        return;
+    }
+    g_free (question);
+
+    rule = fs_insight_to_rule (ins);
+    if (rule == NULL || !fs_policy_add_persist (copilot_policy, rule)) {
+        strip_set (findings_strip, "bad",
+                   _("The rule could not be saved, so nothing was "
+                     "added."));
+        fs_rule_free (rule);
+        return;
+    }
+    fs_rule_free (rule);
+    fs_audit_log ("copilot block rule added", ins->rule_csv);
+    fs_policyview_reload (copilot_policy);
+
+    c = g_new0 (CpChange, 1);
+    c->kind = CP_CHANGE_BLOCK_RULE;
+    c->rule_kind = ins->rule_kind;
+    c->csv = g_strdup (ins->rule_csv);
+    c->label = g_strdup_printf (_("Block rule added: %s"), ins->rule_csv);
+    change_add (c);
+
+    done = g_strdup_printf (_("Block rule added: %s."), ins->rule_csv);
+    cp_push ("copilot block rule", findings_strip, done);
+    g_free (done);
+
+    verify_cache_clear ();
+    refresh_insights ();
+    health_run ();
+}
+
+static void
+on_undo_block_clicked (GtkButton *btn, gpointer data)
+{
+    const gchar *key = g_object_get_data (G_OBJECT (btn), "cp-key");
+    FsInsight *ins = insight_by_key (key);
+    AutoBlock *ab = ins != NULL ? insight_auto_block (ins) : NULL;
+    gchar *done;
+
+    (void) data;
+    if (ab == NULL) {
+        strip_set (findings_strip, "warn",
+                   _("That automatic block has already been lifted."));
+        refresh_insights ();
+        return;
+    }
+    done = g_strdup_printf (_("Automatic block lifted: %s."), ab->csv);
+    auto_block_retire (ab, "undone by user");
+    cp_push ("sentinel auto-block undone", findings_strip, done);
+    g_free (done);
+    verify_cache_clear ();
+    refresh_insights ();
+}
+
+/* "Ask What-If": the line in the card's entry, asked, and the card
+ * scrolled into view. */
+static void
+ask_whatif_line (const gchar *line)
+{
+    GtkWidget *card;
+    GtkWidget *sw;
+
+    if (line == NULL || scenario_entry == NULL)
+        return;
+    gtk_entry_set_text (GTK_ENTRY (scenario_entry), line);
+    whatif_ask (line);
+
+    card = fs_simviz_find_named (copilot_vbox, "whatif-card");
+    sw = card != NULL ? gtk_widget_get_ancestor (card,
+                                                 GTK_TYPE_SCROLLED_WINDOW)
+                      : NULL;
+    if (sw != NULL) {
+        gint x = 0, y = 0;
+        GtkWidget *child = gtk_bin_get_child (GTK_BIN (sw));
+
+        if (child != NULL &&
+            gtk_widget_translate_coordinates (card, child, 0, 0, &x, &y))
+            gtk_adjustment_set_value (
+                gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (sw)),
+                y);
+    }
+    gtk_widget_grab_focus (scenario_entry);
+}
+
+static void
+on_ask_whatif_clicked (GtkButton *btn, gpointer data)
+{
+    (void) data;
+    ask_whatif_line (g_object_get_data (G_OBJECT (btn), "cp-line"));
+}
+
+static void
+on_show_events_clicked (GtkButton *btn, gpointer data)
+{
+    (void) data;
+    fs_hitview_set_filter (g_object_get_data (G_OBJECT (btn), "cp-filter"));
+    fs_app_show_page (FS_PAGE_EVENTS);
+}
+
+static void
+on_dismiss_clicked (GtkButton *btn, gpointer data)
+{
+    const gchar *key = g_object_get_data (G_OBJECT (btn), "cp-key");
+
+    (void) data;
+    if (key == NULL)
+        return;
+    if (dismissed == NULL)
+        dismissed = g_hash_table_new_full (g_str_hash, g_str_equal,
+                                           g_free, NULL);
+    g_hash_table_add (dismissed, g_strdup (key));
+    strip_set (findings_strip, "ok",
+               _("Finding dismissed for this session. It comes back when "
+                 "StockFW restarts and it is seen again."));
+    refresh_insights ();
+}
+
+static GtkWidget *drawer_text_new (const gchar *text, const gchar *cls,
+                                   gboolean wrap, gboolean focusable);
+
+/* The evidence table: one mono row per event. */
+static GtkWidget *
+evidence_table (const FsInsight *ins)
+{
+    GtkWidget *grid = gtk_grid_new ();
+    static const gchar *heads[] = { N_("Time"), N_("Direction"),
+                                    N_("Remote"), N_("Port"),
+                                    N_("Protocol"), N_("Verdict") };
+    guint n = ins->evidence != NULL ? ins->evidence->len : 0;
+
+    gtk_widget_set_name (grid, "cp-evidence");
+    gtk_grid_set_column_spacing (GTK_GRID (grid), 16);
+    gtk_grid_set_row_spacing (GTK_GRID (grid), 2);
+    for (guint c = 0; c < G_N_ELEMENTS (heads); c++)
+        gtk_grid_attach (GTK_GRID (grid),
+                         text_new (_(heads[c]), "cp-caption", FALSE),
+                         (gint) c, 0, 1, 1);
+
+    for (guint i = 0; i < n; i++) {
+        /* Newest first. */
+        const FsEvidence *ev = g_ptr_array_index (ins->evidence, n - 1 - i);
+        GDateTime *dt = g_date_time_new_from_unix_local (ev->when);
+        gchar *when = g_date_time_format (dt, "%H:%M:%S");
+        gchar *port = ev->port > 0 ? g_strdup_printf ("%u", ev->port)
+                                   : g_strdup ("-");
+        gchar *verdict = ev->rule != NULL && *ev->rule != '\0'
+            ? g_strdup_printf ("%s (%s)", ev->blocked ? _("Blocked")
+                                                      : _("Allowed"),
+                               ev->rule)
+            : g_strdup (ev->blocked ? _("Blocked") : _("Allowed"));
+        const gchar *cells[6];
+
+        cells[0] = when;
+        cells[1] = ev->inbound ? _("in") : _("out");
+        cells[2] = ev->remote != NULL ? ev->remote : "-";
+        cells[3] = port;
+        cells[4] = ev->protocol != NULL ? ev->protocol : "-";
+        cells[5] = verdict;
+        for (guint c = 0; c < 6; c++)
+            gtk_grid_attach (GTK_GRID (grid),
+                             drawer_text_new (cells[c], "mono", FALSE, FALSE),
+                             (gint) c, (gint) i + 1, 1, 1);
+        g_date_time_unref (dt);
+        g_free (when);
+        g_free (port);
+        g_free (verdict);
+    }
+    return grid;
+}
+
+static void
+drawer_part (GtkWidget *box, const gchar *heading, GtkWidget *body)
+{
+    GtkWidget *h = text_new (heading, "cp-drawer-head", FALSE);
+
+    gtk_box_pack_start (GTK_BOX (box), h, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (box), body, FALSE, FALSE, 0);
+}
+
+/* The actions that need What-If are added when the drawer first opens:
+ * a check per row on every refresh would ask the backend far too
+ * often. */
+static void
+drawer_fill_actions (GtkWidget *row)
+{
+    GtkWidget *actions = g_object_get_data (G_OBJECT (row), "cp-actions");
+    GtkWidget *note = g_object_get_data (G_OBJECT (row), "cp-action-note");
+    const gchar *key = g_object_get_data (G_OBJECT (row), "cp-key");
+    FsInsight *ins = insight_by_key (key);
+    const gchar *verdict;
+    GtkWidget *b;
+
+    if (actions == NULL || ins == NULL ||
+        g_object_get_data (G_OBJECT (row), "cp-filled") != NULL)
+        return;
+    g_object_set_data (G_OBJECT (row), "cp-filled", GINT_TO_POINTER (1));
+
+    if (ins->rule_csv == NULL || insight_auto_block (ins) != NULL)
+        return;
+
+    verdict = block_rule_verdict (ins, key);
+    if (verdict != NULL && *verdict == '\0') {
+        b = button_new (_("Block outbound to this address"), "btn-primary",
+                        "cp-add-block");
+        g_object_set_data_full (G_OBJECT (b), "cp-key", g_strdup (key),
+                                g_free);
+        g_signal_connect (b, "clicked", G_CALLBACK (on_add_block_clicked),
+                          NULL);
+        gtk_box_pack_start (GTK_BOX (actions), b, FALSE, FALSE, 0);
+        gtk_box_reorder_child (GTK_BOX (actions), b, 0);
+        gtk_widget_show (b);
+    } else if (note != NULL && verdict != NULL) {
+        gchar *t = g_strdup_printf (_("No block rule offered: %s."), verdict);
+
+        gtk_label_set_text (GTK_LABEL (note), t);
+        reveal (note, TRUE);
+        g_free (t);
+    }
+}
+
+static void
+row_set_open (GtkWidget *row, gboolean open, gboolean animate)
+{
+    GtkWidget *rev = g_object_get_data (G_OBJECT (row), "cp-drawer");
+    GtkWidget *arrow = g_object_get_data (G_OBJECT (row), "cp-arrow");
+    const gchar *key = g_object_get_data (G_OBJECT (row), "cp-key");
+
+    if (rev == NULL)
+        return;
+    if (open)
+        drawer_fill_actions (row);
+    gtk_revealer_set_transition_duration (
+        GTK_REVEALER (rev),
+        animate && fs_simviz_animations_enabled () ? 150 : 0);
+    gtk_revealer_set_reveal_child (GTK_REVEALER (rev), open);
+    if (arrow != NULL)
+        gtk_label_set_text (GTK_LABEL (arrow), open ? "\u25BE" : "\u25B8");
+    if (expanded == NULL)
+        expanded = g_hash_table_new_full (g_str_hash, g_str_equal,
+                                          g_free, NULL);
+    if (key != NULL) {
+        if (open)
+            g_hash_table_add (expanded, g_strdup (key));
+        else
+            g_hash_table_remove (expanded, key);
+    }
+    {
+        AtkObject *acc = gtk_widget_get_accessible (row);
+
+        atk_object_set_description (acc, open ? _("Details shown")
+                                              : _("Press Enter for the "
+                                                  "details"));
+    }
+}
+
+/* A click inside the open drawer is for reading and copying (the text
+ * is selectable), not for the row: stopped here, it never reaches the
+ * list, which would take it as "activate" and close the drawer.  The
+ * head still toggles it, and Enter on the row. */
+static gboolean
+on_drawer_button (GtkWidget *w, GdkEventButton *ev, gpointer data)
+{
+    (void) w;
+    (void) ev;
+    (void) data;
+    return TRUE;
+}
+
+/* Drawer text: selectable, so an address or a rule can be copied.  A
+ * table cell stays out of the Tab order (twelve rows of six would be
+ * 72 stops; its right-click menu still copies). */
+static GtkWidget *
+drawer_text_new (const gchar *text, const gchar *cls, gboolean wrap,
+                 gboolean focusable)
+{
+    GtkWidget *l = text_new (text, cls, wrap);
+
+    gtk_label_set_selectable (GTK_LABEL (l), TRUE);
+    gtk_widget_set_can_focus (l, focusable);
+    return l;
+}
+
+static void
+on_finding_activated (GtkListBox *box, GtkListBoxRow *row, gpointer data)
+{
+    GtkWidget *rev = g_object_get_data (G_OBJECT (row), "cp-drawer");
+
+    (void) box;
+    (void) data;
+    if (rev == NULL)
+        return;
+    row_set_open (GTK_WIDGET (row),
+                  !gtk_revealer_get_reveal_child (GTK_REVEALER (rev)), TRUE);
+}
+
+static GtkWidget *
+finding_row_new (const FsInsight *ins)
+{
+    GtkWidget *row = gtk_list_box_row_new ();
+    GtkWidget *outer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+    GtkWidget *texts = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *rev = gtk_revealer_new ();
+    GtkWidget *drawer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *actions = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *note, *l, *b, *arrow;
+    AutoBlock *ab = insight_auto_block (ins);
+    gchar *key = insight_key (ins);
+    gchar *ago = ago_text ((gint64) ins->timestamp);
+    gchar *line, *a11y, *first, *nl, *aw;
+
+    add_class (row, "cp-row");
+    gtk_widget_set_name (row, "cp-finding");
+    gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), TRUE);
+    g_object_set_data_full (G_OBJECT (row), "cp-key", g_strdup (key), g_free);
+
+    a11y = g_strdup_printf ("%s: %s", severity_word (ins->severity),
+                            ins->title != NULL ? ins->title : "");
+    atk_object_set_name (gtk_widget_get_accessible (row), a11y);
+    g_free (a11y);
+
+    /* Head: pill, title and one line, the auto-block tag, the arrow. */
+    gtk_box_pack_start (GTK_BOX (head), severity_pill (ins->severity),
+                        FALSE, FALSE, 0);
+    l = text_new (ins->title, "cp-title", TRUE);
+    gtk_widget_set_name (l, "cp-finding-title");
+    gtk_box_pack_start (GTK_BOX (texts), l, FALSE, FALSE, 0);
+
+    first = g_strdup (ins->description != NULL ? ins->description : "");
+    nl = strchr (first, '\n');
+    if (nl != NULL)
+        *nl = '\0';
+    line = g_strdup_printf ("%s%s%s%s%s", fs_insight_type_name (ins->type),
+                            ins->application != NULL ? " · " : "",
+                            ins->application != NULL ? ins->application : "",
+                            *ago != '\0' ? " · " : "", ago);
+    l = text_new (first, "cp-sub", TRUE);
+    gtk_box_pack_start (GTK_BOX (texts), l, FALSE, FALSE, 0);
+    l = text_new (line, "cp-meta", TRUE);
+    gtk_box_pack_start (GTK_BOX (texts), l, FALSE, FALSE, 0);
+    g_free (first);
+    g_free (line);
+    gtk_box_pack_start (GTK_BOX (head), texts, TRUE, TRUE, 0);
+
+    if (ab != NULL) {
+        gint64 left = ab->at_epoch + FS_AUTOBLOCK_TTL_S -
+                      g_get_real_time () / G_USEC_PER_SEC;
+        gchar *t = g_strdup_printf (_("Auto-blocked · %d min left"),
+                                    (gint) MAX (1, (left + 59) / 60));
+
+        l = text_new (t, "fs-wi-tag", FALSE);
+        add_class (l, "warn");
+        gtk_widget_set_name (l, "cp-autotag");
+        gtk_widget_set_valign (l, GTK_ALIGN_START);
+        gtk_box_pack_start (GTK_BOX (head), l, FALSE, FALSE, 0);
+        g_free (t);
+    }
+    arrow = text_new ("\u25B8", "cp-arrow", FALSE);
+    gtk_widget_set_valign (arrow, GTK_ALIGN_START);
+    gtk_box_pack_end (GTK_BOX (head), arrow, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (outer), head, FALSE, FALSE, 0);
+
+    /* The drawer. */
+    add_class (drawer, "cp-drawer");
+    if (ins->evidence != NULL && ins->evidence->len > 0) {
+        GtkWidget *seen = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+
+        gtk_box_pack_start (GTK_BOX (seen), evidence_table (ins),
+                            FALSE, FALSE, 0);
+        if (ins->count > ins->evidence->len) {
+            gchar *t = g_strdup_printf (
+                _("The last %u of %u matching events."),
+                ins->evidence->len, ins->count);
+
+            gtk_box_pack_start (GTK_BOX (seen), text_new (t, "cp-meta", TRUE),
+                                FALSE, FALSE, 0);
+            g_free (t);
+        }
+        drawer_part (drawer, _("What we saw"), seen);
+    }
+    if (ins->description != NULL)
+        drawer_part (drawer, _("In full"),
+                     drawer_text_new (ins->description, "cp-body", TRUE, TRUE));
+    if (ins->why != NULL)
+        drawer_part (drawer, _("Why flagged"),
+                     drawer_text_new (ins->why, "cp-body", TRUE, TRUE));
+    if (ins->benign != NULL)
+        drawer_part (drawer, _("Could be harmless"),
+                     drawer_text_new (ins->benign, "cp-body", TRUE, TRUE));
+    aw = auto_block_words (ins);
+    l = drawer_text_new (aw, "cp-body", TRUE, TRUE);
+    gtk_widget_set_name (l, "cp-autoblock-status");
+    drawer_part (drawer, _("Auto-block"), l);
+    g_free (aw);
+
+    gtk_widget_set_name (actions, "cp-actions");
+    if (ab != NULL) {
+        b = button_new (_("Undo block"), "btn-primary", "cp-undo-block");
+        g_object_set_data_full (G_OBJECT (b), "cp-key", g_strdup (key),
+                                g_free);
+        g_signal_connect (b, "clicked", G_CALLBACK (on_undo_block_clicked),
+                          NULL);
+        gtk_box_pack_start (GTK_BOX (actions), b, FALSE, FALSE, 0);
+    }
+    if (ins->whatif_line != NULL) {
+        b = button_new (_("Ask What-If"), "btn-subtle", "cp-ask-whatif");
+        g_object_set_data_full (G_OBJECT (b), "cp-line",
+                                g_strdup (ins->whatif_line), g_free);
+        g_signal_connect (b, "clicked", G_CALLBACK (on_ask_whatif_clicked),
+                          NULL);
+        gtk_box_pack_start (GTK_BOX (actions), b, FALSE, FALSE, 0);
+    }
+    if (ins->events_filter != NULL) {
+        b = button_new (_("Show in Events"), "btn-subtle", "cp-show-events");
+        g_object_set_data_full (G_OBJECT (b), "cp-filter",
+                                g_strdup (ins->events_filter), g_free);
+        g_signal_connect (b, "clicked", G_CALLBACK (on_show_events_clicked),
+                          NULL);
+        gtk_box_pack_start (GTK_BOX (actions), b, FALSE, FALSE, 0);
+    }
+    b = button_new (_("Dismiss"), "btn-subtle", "cp-dismiss");
+    g_object_set_data_full (G_OBJECT (b), "cp-key", g_strdup (key), g_free);
+    g_signal_connect (b, "clicked", G_CALLBACK (on_dismiss_clicked), NULL);
+    gtk_box_pack_start (GTK_BOX (actions), b, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (drawer), actions, FALSE, FALSE, 4);
+
+    note = text_new ("", "cp-meta", TRUE);
+    gtk_widget_set_name (note, "cp-action-note");
+    gtk_widget_set_no_show_all (note, TRUE);
+    gtk_box_pack_start (GTK_BOX (drawer), note, FALSE, FALSE, 0);
+
+    gtk_revealer_set_transition_type (GTK_REVEALER (rev),
+                                      GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
+    {
+        GtkWidget *guard = gtk_event_box_new ();
+
+        gtk_event_box_set_visible_window (GTK_EVENT_BOX (guard), FALSE);
+        gtk_widget_set_name (guard, "cp-drawer-guard");
+        g_signal_connect (guard, "button-press-event",
+                          G_CALLBACK (on_drawer_button), NULL);
+        g_signal_connect (guard, "button-release-event",
+                          G_CALLBACK (on_drawer_button), NULL);
+        gtk_container_add (GTK_CONTAINER (guard), drawer);
+        gtk_container_add (GTK_CONTAINER (rev), guard);
+    }
+    gtk_widget_set_name (rev, "cp-drawer");
+    gtk_box_pack_start (GTK_BOX (outer), rev, FALSE, FALSE, 0);
+
+    gtk_container_add (GTK_CONTAINER (row), outer);
+    g_object_set_data (G_OBJECT (row), "cp-drawer", rev);
+    g_object_set_data (G_OBJECT (row), "cp-arrow", arrow);
+    g_object_set_data (G_OBJECT (row), "cp-actions", actions);
+    g_object_set_data (G_OBJECT (row), "cp-action-note", note);
+
+    g_free (ago);
+    g_free (key);
+    return row;
+}
+
+static gint
+severity_rank_cmp (gconstpointer a, gconstpointer b)
+{
+    const FsInsight *x = a, *y = b;
+
+    return (gint) y->severity - (gint) x->severity;
+}
+
+/* What the checks look for, for the all-clear state. */
+static GtkWidget *
+checked_list_new (void)
+{
+    static const gchar *checks[] = {
+#ifdef G_OS_WIN32
+        N_("Contacts at a near-fixed interval: 6 or more, timing varying "
+           "under 30 % (auto-block needs 8, to an unknown public address "
+           "no other program uses and your policy does not allow). DNS to "
+           "this computer's own DNS servers is not timed."),
+#else
+        /* The Linux log names no programs: the gate compares the
+         * traffic of each port's service. */
+        N_("Contacts at a near-fixed interval: 6 or more, timing varying "
+           "under 30 % (auto-block needs 8, to an unknown public address "
+           "that traffic on other ports does not use and your policy does "
+           "not allow). DNS to this computer's own DNS servers is not "
+           "timed."),
+#endif
+        N_("Fan-out: one program reaching 60 or more hosts in a minute, or "
+           "10 refused hosts. When the log names a port's service instead "
+           "of a program, only the refused hosts count."),
+        N_("Inbound scan: one source trying 12 ports in 60 s, or 25 in "
+           "10 min. Addresses of one IPv6 /64 are also counted together."),
+        N_("Login attempts: 10 in 5 min from one source to SSH, RDP, VNC, "
+           "Telnet, FTP or SMB, on their usual ports or the ports your "
+           "policy names for them, and whether your policy lets that "
+           "source in."),
+        N_("Block list or country rule hits, outbound and inbound."),
+        N_("A known app using a new port, a new public destination (after "
+           "7 days and 50 connections), a new hour, or a rate spike."),
+        N_("Policy health: duplicates, rules another rule covers, allows a "
+           "deny overrides, wide or risky inbound allows, deny rules that "
+           "reach nothing."),
+    };
+    GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+
+    for (guint i = 0; i < G_N_ELEMENTS (checks); i++) {
+        gchar *t = g_strdup_printf ("- %s", _(checks[i]));
+
+        gtk_box_pack_start (GTK_BOX (box), text_new (t, "cp-body", TRUE),
+                            FALSE, FALSE, 0);
+        g_free (t);
+    }
+    gtk_widget_set_margin_start (box, 8);
+    return box;
+}
+
+static guint
+learned_count (gint64 *since)
+{
+    GList *profiles, *l;
+    guint n;
+
+    *since = 0;
+    if (global_copilot == NULL)
+        return 0;
+    profiles = fs_copilot_get_all_profiles (global_copilot);
+    n = g_list_length (profiles);
+    for (l = profiles; l != NULL; l = l->next) {
+        const FsAppProfile *p = l->data;
+
+        if (p->first_seen > 0 &&
+            (*since == 0 || (gint64) p->first_seen < *since))
+            *since = (gint64) p->first_seen;
+    }
+    g_list_free (profiles);
+    return n;
+}
+
+/* ---- the findings list, updated in place ---------------------------
+ * The list follows the events about once a second.  Rebuilding every
+ * row each time destroyed the row that had the keyboard focus, so a
+ * keyboard or screen-reader user was thrown out of the list every
+ * second.  Rows are kept by their insight key; a row is rebuilt only
+ * when what it shows changed (its signature), and the focus goes back
+ * to the same place in the new row. */
+static GHashTable *finding_rows = NULL;   /* key -> row (borrowed) */
+
+static gchar *
+finding_signature (const FsInsight *ins)
+{
+    AutoBlock *ab = insight_auto_block (ins);
+    gchar *ago = ago_text ((gint64) ins->timestamp);
+    gchar *aw = auto_block_words (ins);
+    const FsEvidence *last = ins->evidence != NULL && ins->evidence->len > 0
+        ? g_ptr_array_index (ins->evidence, ins->evidence->len - 1) : NULL;
+    gint64 left = ab != NULL ? (ab->at_epoch + FS_AUTOBLOCK_TTL_S -
+                                g_get_real_time () / G_USEC_PER_SEC + 59) / 60
+                             : -1;
+    gchar *sig = g_strdup_printf (
+        "%d|%d|%s|%s|%s|%s|%s|%u|%u|%" G_GINT64_FORMAT "|%s|%s|%"
+        G_GINT64_FORMAT "|%d",
+        ins->type, ins->severity, ins->title, ins->description, ins->why,
+        ins->benign, ins->whatif_line, ins->count,
+        ins->evidence != NULL ? ins->evidence->len : 0,
+        last != NULL ? last->when : 0, ago, aw, left, ins->rule_csv != NULL);
+
+    g_free (ago);
+    g_free (aw);
+    return sig;
+}
+
+static gint
+finding_order_cmp (GtkListBoxRow *a, GtkListBoxRow *b, gpointer data)
+{
+    (void) data;
+    return GPOINTER_TO_INT (g_object_get_data (G_OBJECT (a), "cp-order")) -
+           GPOINTER_TO_INT (g_object_get_data (G_OBJECT (b), "cp-order"));
+}
+
+static void
+on_finding_row_destroy (GtkWidget *row, gpointer data)
+{
+    const gchar *key = g_object_get_data (G_OBJECT (row), "cp-key");
+
+    (void) data;
+    if (finding_rows != NULL && key != NULL &&
+        g_hash_table_lookup (finding_rows, key) == row)
+        g_hash_table_remove (finding_rows, key);
+}
+
+/* The focus widget when it is `row' or inside it, else NULL. */
+static GtkWidget *
+focus_inside (GtkWidget *row)
+{
+    GtkWidget *top = gtk_widget_get_toplevel (row);
+    GtkWidget *f = GTK_IS_WINDOW (top)
+                   ? gtk_window_get_focus (GTK_WINDOW (top)) : NULL;
+
+    if (f != NULL && (f == row || gtk_widget_is_ancestor (f, row)))
+        return f;
+    return NULL;
+}
+
+static GtkWidget *
+find_named (GtkWidget *w, const gchar *name)
+{
+    GtkWidget *found = NULL;
+
+    if (g_strcmp0 (gtk_widget_get_name (w), name) == 0)
+        return w;
+    if (GTK_IS_CONTAINER (w)) {
+        GList *kids = gtk_container_get_children (GTK_CONTAINER (w));
+
+        for (GList *l = kids; l != NULL && found == NULL; l = l->next)
+            found = find_named (l->data, name);
+        g_list_free (kids);
+    }
+    return found;
+}
+
+static void
+findings_render (void)
+{
+    GList *all, *l;
+    GList *shown = NULL;
+    GHashTable *keep;
+    GtkWidget *refocus = NULL;
+    gchar *refocus_name = NULL;
+    gint lost_at = -1;
+    guint n = 0;
+
+    if (findings_list == NULL)
+        return;
+    if (finding_rows == NULL)
+        finding_rows = g_hash_table_new_full (g_str_hash, g_str_equal,
+                                              g_free, NULL);
+
+    all = global_copilot != NULL ? fs_copilot_get_insights (global_copilot)
+                                 : NULL;
+    for (l = all; l != NULL; l = l->next) {
+        FsInsight *ins = l->data;
+        gchar *key = insight_key (ins);
+
+        if (dismissed == NULL || !g_hash_table_contains (dismissed, key))
+            shown = g_list_prepend (shown, ins);
+        g_free (key);
+    }
+    g_list_free (all);
+    shown = g_list_reverse (shown);
+    shown = g_list_sort (shown, severity_rank_cmp)  /* a stable merge sort */;
+
+    keep = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+    for (l = shown; l != NULL; l = l->next) {
+        FsInsight *ins = l->data;
+        gchar *key = insight_key (ins);
+        gchar *sig = finding_signature (ins);
+        GtkWidget *row = g_hash_table_lookup (finding_rows, key);
+
+        if (row != NULL &&
+            g_strcmp0 (g_object_get_data (G_OBJECT (row), "cp-sig"), sig) != 0) {
+            GtkWidget *f = focus_inside (row);
+
+            if (f != NULL) {
+                const gchar *nm = gtk_widget_get_name (f);
+
+                g_free (refocus_name);
+                refocus_name = f != row && nm != NULL && *nm != '\0' &&
+                               !g_str_has_prefix (nm, "Gtk")
+                               ? g_strdup (nm) : NULL;
+                refocus = NULL;
+            }
+            gtk_widget_destroy (row);   /* drops it from finding_rows */
+            row = NULL;
+            if (f != NULL) {
+                row = finding_row_new (ins);
+                refocus = row;
+            }
+        }
+        if (row == NULL || g_hash_table_lookup (finding_rows, key) == NULL) {
+            if (row == NULL)
+                row = finding_row_new (ins);
+            g_object_set_data_full (G_OBJECT (row), "cp-sig", g_strdup (sig),
+                                    g_free);
+            g_signal_connect (row, "destroy",
+                              G_CALLBACK (on_finding_row_destroy), NULL);
+            g_hash_table_replace (finding_rows, g_strdup (key), row);
+            gtk_container_add (GTK_CONTAINER (findings_list), row);
+            gtk_widget_show_all (row);
+            if (expanded != NULL && g_hash_table_contains (expanded, key))
+                row_set_open (row, TRUE, FALSE);
+        }
+        g_object_set_data (G_OBJECT (row), "cp-order", GINT_TO_POINTER (n));
+        g_hash_table_add (keep, key);
+        g_free (sig);
+        n++;
+    }
+    g_list_free (shown);
+
+    /* Rows whose finding went away (dismissed, or evicted by the cap). */
+    {
+        GList *kids = gtk_container_get_children (GTK_CONTAINER (findings_list));
+
+        for (l = kids; l != NULL; l = l->next) {
+            const gchar *key = g_object_get_data (G_OBJECT (l->data), "cp-key");
+
+            if (key != NULL && g_hash_table_contains (keep, key))
+                continue;
+            if (focus_inside (l->data) != NULL)
+                lost_at = gtk_list_box_row_get_index (l->data);
+            gtk_widget_destroy (l->data);
+        }
+        g_list_free (kids);
+    }
+    g_hash_table_destroy (keep);
+    gtk_list_box_invalidate_sort (GTK_LIST_BOX (findings_list));
+
+    /* Put the focus back where it was. */
+    if (refocus != NULL) {
+        GtkWidget *target = refocus_name != NULL
+                            ? find_named (refocus, refocus_name) : NULL;
+
+        gtk_widget_grab_focus (target != NULL && gtk_widget_get_visible (target)
+                               ? target : refocus);
+    } else if (lost_at >= 0 && n > 0) {
+        GtkListBoxRow *r = gtk_list_box_get_row_at_index (
+            GTK_LIST_BOX (findings_list), MIN ((guint) lost_at, n - 1));
+
+        if (r != NULL)
+            gtk_widget_grab_focus (GTK_WIDGET (r));
+    }
+    g_free (refocus_name);
+
+    {
+        gchar *t = g_strdup_printf (n == 1 ? _("%u finding")
+                                           : _("%u findings"), n);
+
+        gtk_label_set_text (GTK_LABEL (findings_count), t);
+        g_free (t);
+    }
+
+    /* The empty states. */
+    reveal (findings_frame, n > 0);
+    if (n > 0) {
+        reveal (findings_empty, FALSE);
+        return;
+    }
+    {
+        guint64 seen = global_copilot != NULL
+                       ? fs_copilot_events_seen (global_copilot) : 0;
+        gchar *problem = fs_hitview_monitor_problem ();
+        gint64 since;
+        guint apps = learned_count (&since);
+        gchar *t;
+
+        if (seen == 0) {
+            t = g_strdup (_("The Copilot learns from the event log. Nothing "
+                            "to check yet."));
+        } else {
+            gchar *events = g_strdup_printf ("%" G_GUINT64_FORMAT, seen);
+
+            t = g_strdup_printf (
+                _("No findings from %s events across %u %s. None of the "
+                  "checks matched. This is not a guarantee that nothing is "
+                  "wrong."), events, apps,
+#ifdef G_OS_WIN32
+                apps == 1 ? _("app") : _("apps"));
+#else
+                apps == 1 ? _("service") : _("services"));
+#endif
+            g_free (events);
+        }
+        gtk_label_set_text (GTK_LABEL (findings_empty_text), t);
+        g_free (t);
+
+        if (problem != NULL) {
+            t = g_strdup_printf (_("No events are arriving: %s"), problem);
+            gtk_label_set_text (GTK_LABEL (findings_reason), t);
+            g_free (t);
+        }
+        reveal (findings_empty, TRUE);
+        reveal (findings_reason, problem != NULL);
+        reveal (findings_checked, seen > 0);
+        g_free (problem);
+    }
+}
+
+/* =====================================================================
+ * Policy health
+ * ===================================================================== */
+
+static const FsHealthFinding *
+health_by_index (gint i)
+{
+    if (health_findings == NULL || i < 0 || (guint) i >= health_findings->len)
+        return NULL;
+    return g_ptr_array_index (health_findings, i);
+}
+
+static gchar *
+health_checks_text (const FsHealthFinding *f)
+{
+    GString *s = g_string_new (NULL);
+
+    for (guint i = 0; f->checks != NULL && i < f->checks->len; i++) {
+        const FsHealthCheck *c = g_ptr_array_index (f->checks, i);
+
+        g_string_append_printf (s, "%s%s: %s -> %s", s->len ? "\n" : "",
+                                c->probe, fs_whatif_verdict_name (c->before),
+                                fs_whatif_verdict_name (c->after));
+    }
+    return g_string_free (s, FALSE);
+}
+
+static void
+on_health_fix_clicked (GtkButton *btn, gpointer data)
+{
+    const FsHealthFinding *old = health_by_index (
+        GPOINTER_TO_INT (g_object_get_data (G_OBJECT (btn), "cp-index")));
+    FsHealthFinding *now = NULL;
+    FsSettings *settings;
+    FsWhatIfContext *ctx;
+    GPtrArray *fresh;
+    gchar *prefix;
+    gchar *table, *question, *why = NULL, *done;
+    FsHealthUndo *undo = NULL;
+    CpChange *c;
+
+    (void) data;
+    if (old == NULL || copilot_policy == NULL)
+        return;
+
+    /* Run the check again on the policy as it is now: the fix is
+     * written only when the same finding, with the same fix and the
+     * same What-If results, is still there. */
+    settings = fs_settings_new ();
+    ctx = whatif_context_build (settings);
+    prefix = fs_health_lan_prefix_auto (fs_backend ());
+    fresh = fs_health_check (ctx, prefix);
+    g_free (prefix);
+    for (guint i = 0; i < fresh->len && now == NULL; i++)
+        if (fs_health_finding_same (old, g_ptr_array_index (fresh, i)))
+            now = g_ptr_array_index (fresh, i);
+    fs_whatif_context_free (ctx);
+    fs_settings_free (settings);
+
+    if (now == NULL || !now->verified || now->fix == FS_HEALTH_FIX_NONE) {
+        strip_set (health_strip, "warn",
+                   _("The policy changed since this was checked, so "
+                     "nothing was written. The check ran again."));
+        g_ptr_array_unref (fresh);
+        health_run ();
+        return;
+    }
+
+    table = health_checks_text (now);
+    question = g_strdup_printf (
+        _("%s?\n\n"
+          "Before: %s\n"
+          "After:  %s\n\n"
+          "Checked by What-If (before -> after):\n%s\n\n"
+          "This changes your policy, saves it and pushes it to the "
+          "firewall. Undo is under Changes made by the Copilot."),
+        now->fix_label, now->fix_before,
+        now->fix_after != NULL ? now->fix_after : _("(rule removed)"),
+        table);
+    g_free (table);
+
+    if (!cp_confirm (_("Fix Policy"), question)) {
+        g_free (question);
+        g_ptr_array_unref (fresh);
+        strip_set (health_strip, "ok", _("Nothing was changed."));
+        return;
+    }
+    g_free (question);
+
+    if (!fs_health_fix_apply (copilot_policy, now, &undo, &why)) {
+        gchar *t = g_strdup_printf (_("Nothing was changed: %s"),
+                                    why != NULL ? why : "");
+
+        strip_set (health_strip, "bad", t);
+        g_free (t);
+        g_free (why);
+        g_ptr_array_unref (fresh);
+        health_run ();
+        return;
+    }
+    fs_policyview_reload (copilot_policy);
+
+    c = g_new0 (CpChange, 1);
+    c->kind = CP_CHANGE_HEALTH_FIX;
+    c->undo = undo;
+    c->label = g_strdup_printf (_("Policy fix: %s"), now->fix_label);
+    change_add (c);
+
+    done = g_strdup_printf (_("%s: done."), now->fix_label);
+    cp_push ("copilot health fix", health_strip, done);
+    g_free (done);
+    g_ptr_array_unref (fresh);
+
+    verify_cache_clear ();
+    health_run ();
+    update_stats ();
+}
+
+static void
+on_health_rule_clicked (GtkButton *btn, gpointer data)
+{
+    gint kind = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (btn),
+                                                    "cp-kind"));
+    gint index = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (btn),
+                                                     "cp-row"));
+
+    (void) data;
+    fs_app_show_page (FS_PAGE_POLICY);
+    if (kind >= 0 && kind < FS_RULE_N_KINDS)
+        fs_policyview_select ((FsRuleKind) kind, index);
+}
+
+static GtkWidget *
+health_row_new (const FsHealthFinding *f, gint index)
+{
+    GtkWidget *row = gtk_list_box_row_new ();
+    GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+    GtkWidget *texts = gtk_box_new (GTK_ORIENTATION_VERTICAL, 3);
+    GtkWidget *buttons = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *l, *b;
+    gchar *t;
+
+    add_class (row, "cp-row");
+    gtk_widget_set_name (row, "cp-health");
+    gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), FALSE);
+    t = g_strdup_printf ("%s: %s", severity_word (f->severity), f->title);
+    atk_object_set_name (gtk_widget_get_accessible (row), t);
+    g_free (t);
+
+    gtk_box_pack_start (GTK_BOX (head), severity_pill (f->severity),
+                        FALSE, FALSE, 0);
+    l = text_new (f->title, "cp-title", TRUE);
+    gtk_box_pack_start (GTK_BOX (texts), l, FALSE, FALSE, 0);
+
+    t = g_strdup_printf (_("%s rule %d: %s"),
+                         rule_kind_words (f->policy_kind),
+                         f->policy_index + 1, f->rule_csv);
+    gtk_box_pack_start (GTK_BOX (texts), text_new (t, "cp-sub mono", TRUE),
+                        FALSE, FALSE, 0);
+    g_free (t);
+    if (f->why != NULL)
+        gtk_box_pack_start (GTK_BOX (texts), text_new (f->why, "cp-body",
+                                                       TRUE),
+                            FALSE, FALSE, 0);
+    /* The other row involved, in the same words (the core's evidence
+     * line names kinds the way the JSON does). */
+    if (f->other_csv != NULL && f->other_kind >= 0) {
+        t = g_strdup_printf (_("The other row: %s rule %d: %s"),
+                             rule_kind_words (f->other_kind),
+                             f->other_index + 1, f->other_csv);
+        gtk_box_pack_start (GTK_BOX (texts), text_new (t, "cp-meta mono",
+                                                       TRUE),
+                            FALSE, FALSE, 0);
+        g_free (t);
+    }
+
+    if (f->fix != FS_HEALTH_FIX_NONE && f->verified) {
+        gchar *checks = health_checks_text (f);
+
+        t = g_strdup_printf (_("Fix: %s -> %s"), f->fix_before,
+                             f->fix_after != NULL ? f->fix_after
+                                                  : _("(removed)"));
+        l = text_new (t, "cp-sub mono", TRUE);
+        gtk_widget_set_name (l, "cp-health-fixline");
+        gtk_box_pack_start (GTK_BOX (texts), l, FALSE, FALSE, 0);
+        g_free (t);
+        t = g_strdup_printf (_("Checked by What-If:\n%s"), checks);
+        l = text_new (t, "cp-meta mono", TRUE);
+        gtk_widget_set_name (l, "cp-health-checks");
+        gtk_box_pack_start (GTK_BOX (texts), l, FALSE, FALSE, 0);
+        g_free (t);
+        g_free (checks);
+
+        b = button_new (_("Fix…"), "btn-primary", "cp-health-fix");
+        g_object_set_data (G_OBJECT (b), "cp-index",
+                           GINT_TO_POINTER (index));
+        g_signal_connect (b, "clicked", G_CALLBACK (on_health_fix_clicked),
+                          NULL);
+        t = g_strdup_printf (_("Fix: %s"), f->fix_label);
+        atk_object_set_name (gtk_widget_get_accessible (b), t);
+        g_free (t);
+        gtk_box_pack_start (GTK_BOX (buttons), b, FALSE, FALSE, 0);
+    } else if (f->no_fix_reason != NULL) {
+        t = g_strdup_printf (_("No fix offered: %s"), f->no_fix_reason);
+        l = text_new (t, "cp-meta", TRUE);
+        gtk_widget_set_name (l, "cp-health-nofix");
+        gtk_box_pack_start (GTK_BOX (texts), l, FALSE, FALSE, 0);
+        g_free (t);
+    }
+    gtk_box_pack_start (GTK_BOX (head), texts, TRUE, TRUE, 0);
+
+    b = button_new (_("Show rule"), "btn-subtle", "cp-health-rule");
+    g_object_set_data (G_OBJECT (b), "cp-kind",
+                       GINT_TO_POINTER (f->policy_kind));
+    g_object_set_data (G_OBJECT (b), "cp-row",
+                       GINT_TO_POINTER (f->policy_index));
+    g_signal_connect (b, "clicked", G_CALLBACK (on_health_rule_clicked),
+                      NULL);
+    /* Each button names its row: a screen reader otherwise hears the
+     * same "Show rule" for every finding. */
+    t = g_strdup_printf (_("Show rule: %s rule %d"),
+                         rule_kind_words (f->policy_kind),
+                         f->policy_index + 1);
+    atk_object_set_name (gtk_widget_get_accessible (b), t);
+    g_free (t);
+    gtk_box_pack_start (GTK_BOX (buttons), b, FALSE, FALSE, 0);
+    if (f->whatif_line != NULL) {
+        b = button_new (_("Ask What-If"), "btn-subtle", "cp-ask-whatif");
+        g_object_set_data_full (G_OBJECT (b), "cp-line",
+                                g_strdup (f->whatif_line), g_free);
+        g_signal_connect (b, "clicked", G_CALLBACK (on_ask_whatif_clicked),
+                          NULL);
+        t = g_strdup_printf (_("Ask What-If: %s"), f->title);
+        atk_object_set_name (gtk_widget_get_accessible (b), t);
+        g_free (t);
+        gtk_box_pack_start (GTK_BOX (buttons), b, FALSE, FALSE, 0);
+    }
+    gtk_box_pack_end (GTK_BOX (head), buttons, FALSE, FALSE, 0);
+    gtk_container_add (GTK_CONTAINER (row), head);
+    return row;
+}
+
+static guint
+policy_row_count (void)
+{
+    guint n = 0;
+
+    if (copilot_policy == NULL)
+        return 0;
+    for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+        n += copilot_policy->kinds[k]->len;
+    return n;
+}
+
+static void
+health_render (void)
+{
+    guint n = health_findings != NULL ? health_findings->len : 0;
+    gchar *t, *ago;
+
+    if (health_list == NULL)
+        return;
+    clear_container (health_list);
+    for (guint i = 0; i < n; i++) {
+        GtkWidget *row = health_row_new (g_ptr_array_index (health_findings,
+                                                            i), (gint) i);
+
+        gtk_container_add (GTK_CONTAINER (health_list), row);
+        gtk_widget_show_all (row);
+    }
+
+    ago = ago_text (health_at);
+    t = g_strdup_printf (_("%u %s checked · %u %s · %s"), health_rules,
+                         health_rules == 1 ? _("rule") : _("rules"), n,
+                         n == 1 ? _("finding") : _("findings"), ago);
+    gtk_label_set_text (GTK_LABEL (health_summary), t);
+    g_free (t);
+    g_free (ago);
+
+    reveal (health_frame, n > 0);
+    if (n == 0) {
+        t = copilot_policy == NULL
+            ? g_strdup (_("No traffic policy is loaded."))
+            : g_strdup_printf (_("%u %s checked. No overlaps, conflicts "
+                                 "or open risky services."), health_rules,
+                               health_rules == 1 ? _("rule") : _("rules"));
+        gtk_label_set_text (GTK_LABEL (health_empty), t);
+        g_free (t);
+    }
+    reveal (health_empty, n == 0);
+}
+
+/* [ health_run ] -- the check on the policy as it is now. */
+static void
+health_run (void)
+{
+    FsSettings *settings;
+    FsWhatIfContext *ctx;
+    gchar *prefix;
+
+    if (health_findings != NULL)
+        g_ptr_array_unref (health_findings);
+    health_findings = NULL;
+    health_rules = policy_row_count ();
+    health_at = g_get_real_time () / G_USEC_PER_SEC;
+
+    if (copilot_policy != NULL) {
+        settings = fs_settings_new ();
+        ctx = whatif_context_build (settings);
+        prefix = fs_health_lan_prefix_auto (fs_backend ());
+        health_findings = fs_health_check (ctx, prefix);
+        g_free (prefix);
+        fs_whatif_context_free (ctx);
+        fs_settings_free (settings);
+    }
+    health_render ();
+    update_stats ();
+}
+
+static void
+on_health_again_clicked (GtkButton *btn, gpointer data)
+{
+    (void) btn;
+    (void) data;
+    strip_set (health_strip, NULL, NULL);
+    health_run ();
+}
+
+/* =====================================================================
+ * Changes made by the Copilot
+ * ===================================================================== */
+
+static void
+on_change_undo_clicked (GtkButton *btn, gpointer data)
+{
+    gint kind = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (btn),
+                                                    "cp-kind"));
+    gpointer ref = g_object_get_data (G_OBJECT (btn), "cp-ref");
+    gchar *why = NULL;
+    gchar *done = NULL;
+
+    (void) data;
+
+    if (kind == 0) {
+        /* An automatic block: still staged? */
+        AutoBlock *ab = ref;
+
+        if (auto_blocks == NULL || !g_ptr_array_find (auto_blocks, ab, NULL)) {
+            strip_set (changes_strip, "warn",
+                       _("That automatic block has already been lifted."));
+            changes_render ();
+            return;
+        }
+        done = g_strdup_printf (_("Automatic block lifted: %s."), ab->csv);
+        auto_block_retire (ab, "undone by user");
+        cp_push ("sentinel auto-block undone", changes_strip, done);
+    } else {
+        CpChange *c = ref;
+
+        if (changes == NULL || !g_ptr_array_find (changes, c, NULL) ||
+            c->ended_at != 0 || c->kind == CP_CHANGE_AUTO_BLOCK)
+            return;
+        if (c->kind == CP_CHANGE_BLOCK_RULE) {
+            FsRule *rule = fs_rule_from_csv (c->rule_kind, c->csv);
+            gboolean ok = rule != NULL &&
+                          fs_policy_remove_persist (copilot_policy, rule);
+
+            fs_rule_free (rule);
+            if (!ok) {
+                strip_set (changes_strip, "bad",
+                           _("The rule is no longer in the policy, or the "
+                             "policy could not be saved; nothing was "
+                             "changed."));
+                return;
+            }
+            fs_audit_log ("copilot block rule undone", c->csv);
+            done = g_strdup_printf (_("Block rule removed: %s."), c->csv);
+        } else {
+            if (!fs_health_undo_apply (copilot_policy, c->undo, &why)) {
+                gchar *t = g_strdup_printf (_("Nothing was changed: %s"),
+                                            why != NULL ? why : "");
+
+                strip_set (changes_strip, "bad", t);
+                g_free (t);
+                g_free (why);
+                return;
+            }
+            done = g_strdup_printf (_("Undone: %s."), c->label);
+        }
+        change_end (c, _("Undone"));
+        /* What the other cards said about it is old news now. */
+        strip_set (health_strip, NULL, NULL);
+        strip_set (findings_strip, NULL, NULL);
+        fs_policyview_reload (copilot_policy);
+        cp_push ("copilot change undone", changes_strip, done);
+    }
+    g_free (done);
+    verify_cache_clear ();
+    refresh_insights ();
+    health_run ();
+}
+
+typedef struct
+{
+    gint64       at;
+    gchar       *text;
+    gint         kind;      /* 0 auto-block, 1 page change */
+    gpointer     ref;
+    gchar       *ended;     /* "Undone at 14:02", or NULL  */
+} ChangeLine;
+
+static gchar *changes_sig = NULL;   /* what the card shows now */
+
+static gint
+change_line_cmp (gconstpointer a, gconstpointer b)
+{
+    const ChangeLine *x = *(ChangeLine * const *) a;
+    const ChangeLine *y = *(ChangeLine * const *) b;
+
+    return x->at < y->at ? 1 : x->at > y->at ? -1 : 0;
+}
+
+static void
+change_line_free (gpointer data)
+{
+    ChangeLine *l = data;
+
+    g_free (l->text);
+    g_free (l->ended);
+    g_free (l);
+}
+
+static void
+changes_render (void)
+{
+    GPtrArray *lines;
+    GString *sig;
+
+    if (changes_list == NULL)
+        return;
+    lines = g_ptr_array_new_with_free_func (change_line_free);
+
+    for (guint i = 0; auto_blocks != NULL && i < auto_blocks->len; i++) {
+        AutoBlock *ab = g_ptr_array_index (auto_blocks, i);
+        ChangeLine *l = g_new0 (ChangeLine, 1);
+        FsRule *r = fs_rule_from_csv (ab->kind, ab->csv);
+        gchar *until = clock_text (ab->at_epoch + FS_AUTOBLOCK_TTL_S);
+
+        l->at = ab->at_epoch;
+        l->kind = 0;
+        l->ref = ab;
+        l->text = g_strdup_printf (_("Auto-block %s (lifts at %s)"),
+                                   r != NULL && r->target != NULL
+                                   ? r->target : ab->csv, until);
+        fs_rule_free (r);
+        g_free (until);
+        g_ptr_array_add (lines, l);
+    }
+    for (guint i = 0; changes != NULL && i < changes->len; i++) {
+        CpChange *c = g_ptr_array_index (changes, i);
+        ChangeLine *l = g_new0 (ChangeLine, 1);
+
+        l->at = c->at;
+        l->kind = 1;
+        l->ref = c;
+        l->text = g_strdup (c->label);
+        if (c->ended_at != 0) {
+            gchar *end = clock_text (c->ended_at);
+
+            l->ended = g_strdup_printf (_("%s at %s"), c->ended_how, end);
+            g_free (end);
+        }
+        g_ptr_array_add (lines, l);
+    }
+    g_ptr_array_sort (lines, change_line_cmp);
+
+    /* The card is redrawn only when what it says changed: a refresh
+     * every second must not take the keyboard focus off an Undo. */
+    sig = g_string_new (NULL);
+    for (guint i = 0; i < lines->len; i++) {
+        ChangeLine *l = g_ptr_array_index (lines, i);
+
+        g_string_append_printf (sig, "%" G_GINT64_FORMAT "|%d|%p|%s|%s\n",
+                                l->at, l->kind, l->ref, l->text,
+                                l->ended != NULL ? l->ended : "");
+    }
+    if (changes_sig != NULL && strcmp (changes_sig, sig->str) == 0) {
+        g_string_free (sig, TRUE);
+        g_ptr_array_unref (lines);
+        return;
+    }
+    g_free (changes_sig);
+    changes_sig = g_string_free (sig, FALSE);
+    clear_container (changes_list);
+
+    for (guint i = 0; i < lines->len; i++) {
+        ChangeLine *l = g_ptr_array_index (lines, i);
+        GtkWidget *row = gtk_list_box_row_new ();
+        GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+        gchar *at = clock_text (l->at);
+        GtkWidget *b;
+
+        add_class (row, "cp-row");
+        gtk_widget_set_name (row, "cp-change");
+        gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), FALSE);
+        gtk_box_pack_start (GTK_BOX (box), text_new (at, "cp-meta mono",
+                                                     FALSE),
+                            FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (box), text_new (l->text, "cp-body",
+                                                     TRUE),
+                            TRUE, TRUE, 0);
+        if (l->ended != NULL) {
+            /* Ended: kept for the record, nothing left to undo. */
+            b = text_new (l->ended, "cp-meta", FALSE);
+            gtk_widget_set_name (b, "cp-change-ended");
+            gtk_widget_set_valign (b, GTK_ALIGN_CENTER);
+        } else {
+            gchar *a11y = g_strdup_printf (_("Undo: %s"), l->text);
+
+            b = button_new (_("Undo"), "btn-subtle", "cp-change-undo");
+            g_object_set_data (G_OBJECT (b), "cp-kind",
+                               GINT_TO_POINTER (l->kind));
+            g_object_set_data (G_OBJECT (b), "cp-ref", l->ref);
+            g_signal_connect (b, "clicked",
+                              G_CALLBACK (on_change_undo_clicked), NULL);
+            atk_object_set_name (gtk_widget_get_accessible (b), a11y);
+            g_free (a11y);
+        }
+        gtk_box_pack_end (GTK_BOX (box), b, FALSE, FALSE, 0);
+        gtk_container_add (GTK_CONTAINER (row), box);
+        gtk_container_add (GTK_CONTAINER (changes_list), row);
+        gtk_widget_show_all (row);
+        g_free (at);
+    }
+
+    reveal (changes_frame, lines->len > 0);
+    reveal (changes_empty, lines->len == 0);
+    g_ptr_array_unref (lines);
+}
+
+/* =====================================================================
+ * Tiles
+ * ===================================================================== */
+static void
+tile_set (GtkWidget *value, GtkWidget *note, guint n, const gchar *text)
+{
+    gchar buf[32];
+
+    if (value == NULL)
+        return;
+    g_snprintf (buf, sizeof buf, "%u", n);
+    gtk_label_set_text (GTK_LABEL (value), buf);
+    gtk_label_set_text (GTK_LABEL (note), text != NULL ? text : "");
+}
+
+static void
+update_stats (void)
+{
+    GList *all, *l;
+    guint attention = 0, critical = 0;
+    gchar *t;
+
+    if (tile_attention == NULL)
+        return;
+
+    all = global_copilot != NULL ? fs_copilot_get_insights (global_copilot)
+                                 : NULL;
+    for (l = all; l != NULL; l = l->next) {
+        FsInsight *ins = l->data;
+        gchar *key = insight_key (ins);
+
+        if ((dismissed == NULL || !g_hash_table_contains (dismissed, key)) &&
+            ins->severity >= FS_COPILOT_WARNING) {
+            attention++;
+            if (ins->severity == FS_COPILOT_CRITICAL)
+                critical++;
+        }
+        g_free (key);
+    }
+    g_list_free (all);
+    /* The policy health findings count here too: a Critical "RDP open
+     * to the internet" below must not sit under a 0. */
+    for (guint i = 0; health_findings != NULL && i < health_findings->len;
+         i++) {
+        const FsHealthFinding *f = g_ptr_array_index (health_findings, i);
+
+        if (f->severity >= FS_COPILOT_WARNING) {
+            attention++;
+            if (f->severity == FS_COPILOT_CRITICAL)
+                critical++;
+        }
+    }
+    t = critical > 0 ? g_strdup_printf (_("%u critical"), critical)
+                     : g_strdup (_("Critical and warning findings, events "
+                                   "and policy"));
+    tile_set (tile_attention, tile_attention_note, attention, t);
+    g_free (t);
+
+    {
+        /* A note that is expected in the mode the firewall runs in
+         * (outbound allows while outbound is open, as on a fresh
+         * install) is listed below but not counted: a tile that never
+         * reaches 0 teaches people to ignore it. */
+        guint n = 0, notes = 0;
+
+        for (guint i = 0; health_findings != NULL &&
+             i < health_findings->len; i++) {
+            const FsHealthFinding *f = g_ptr_array_index (health_findings,
+                                                          i);
+
+            if (f->kind == FS_HEALTH_NO_EFFECT)
+                notes++;
+            else
+                n++;
+        }
+        t = notes == 0
+            ? g_strdup_printf (_("%u %s checked"), health_rules,
+                               health_rules == 1 ? _("rule") : _("rules"))
+            : g_strdup_printf (_("%u %s checked, %u %s below"),
+                               health_rules,
+                               health_rules == 1 ? _("rule") : _("rules"),
+                               notes, notes == 1 ? _("note") : _("notes"));
+        tile_set (tile_health, tile_health_note, n, t);
+        g_free (t);
+    }
+
+    {
+        guint n = auto_blocks != NULL ? auto_blocks->len : 0;
+        gint64 soonest = 0;
+
+        for (guint i = 0; i < n; i++) {
+            AutoBlock *ab = g_ptr_array_index (auto_blocks, i);
+            gint64 due = ab->at_epoch + FS_AUTOBLOCK_TTL_S;
+
+            if (soonest == 0 || due < soonest)
+                soonest = due;
+        }
+        if (n > 0) {
+            gint64 left = soonest - g_get_real_time () / G_USEC_PER_SEC;
+
+            t = g_strdup_printf (_("next lifts in %d min"),
+                                 (gint) MAX (1, (left + 59) / 60));
+        } else {
+            t = g_strdup (g_strcmp0 (sentinel_mode, "auto") == 0
+                          ? _("None staged") : _("Detect only"));
+        }
+        tile_set (tile_blocks, tile_blocks_note, n, t);
+        g_free (t);
+    }
+
+    {
+        gint64 since;
+        guint n = learned_count (&since);
+
+        if (since > 0) {
+            GDateTime *dt = g_date_time_new_from_unix_local (since);
+            gchar *d = g_date_time_format (dt, "%Y-%m-%d");
+
+            t = g_strdup_printf (_("since %s"), d);
+            g_free (d);
+            g_date_time_unref (dt);
+        } else {
+            t = g_strdup (_("Nothing learned yet"));
+        }
+        tile_set (tile_learned, tile_learned_note, n, t);
+        g_free (t);
+    }
+
+    changes_render ();
+}
+
+static GtkWidget *
+tile_new (const gchar *caption, const gchar *name, GtkWidget **value,
+          GtkWidget **note)
+{
+    GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+    GtkWidget *v;
+    gchar *vn = g_strdup_printf ("%s-value", name);
+
+    add_class (card, "card");
+    add_class (card, "stat-card");
+    gtk_widget_set_name (card, name);
+    gtk_box_pack_start (GTK_BOX (card), text_new (caption, "stat-caption",
+                                                  FALSE),
+                        FALSE, FALSE, 0);
+    v = text_new ("0", "stat-big", FALSE);
+    gtk_widget_set_name (v, vn);
+    gtk_box_pack_start (GTK_BOX (card), v, FALSE, FALSE, 0);
+    *note = text_new ("", "stat-note", TRUE);
+    {
+        gchar *nn = g_strdup_printf ("%s-note", name);
+
+        gtk_widget_set_name (*note, nn);
+        g_free (nn);
+    }
+    gtk_box_pack_start (GTK_BOX (card), *note, FALSE, FALSE, 0);
+    *value = v;
+    g_free (vn);
+    return card;
+}
+
+/* =====================================================================
+ * Refresh
+ * ===================================================================== */
+static void
+refresh_insights (void)
+{
+    findings_render ();
+    update_stats ();
+}
+
+static gboolean
+refresh_cb (gpointer data)
+{
+    (void) data;
+    refresh_id = 0;
+    refresh_insights ();
+    return G_SOURCE_REMOVE;
+}
+
+void
+fs_copilot_view_refresh (void)
+{
+    refresh_insights ();
+}
+
+/* fs_copilot_note_event -- called from the Events page for every
+ * event the checks saw: the page follows at most once a second. */
+void
+fs_copilot_note_event (void)
+{
+    total_events++;
+    if (findings_list != NULL && refresh_id == 0)
+        refresh_id = g_timeout_add (1000, refresh_cb, NULL);
+}
+
+/* =====================================================================
+ * Sentinel control
+ * ===================================================================== */
+static void
+sentinel_sync_buttons (void)
+{
+    if (sentinel_detect == NULL)
+        return;
+    gtk_toggle_button_set_active (
+        GTK_TOGGLE_BUTTON (g_strcmp0 (sentinel_mode, "auto") == 0
+                           ? sentinel_auto : sentinel_detect), TRUE);
+}
+
+static void
+on_sentinel_toggled (GtkToggleButton *btn, gpointer data)
+{
+    const gchar *id = data;
+
+    if (!gtk_toggle_button_get_active (btn) ||
+        g_strcmp0 (id, sentinel_mode) == 0)
+        return;
+
+    g_strlcpy (sentinel_mode, id, sizeof sentinel_mode);
+    fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode",
+                         sentinel_mode);
+
+    if (g_strcmp0 (sentinel_mode, "auto") == 0) {
+        gboolean staged = fs_copilot_sentinel_auto_pass ();
+
+        strip_set (sentinel_strip, "ok",
+                   staged
+                   ? _("Detect + auto-block is on. A finding was blocked "
+                       "for 10 minutes; Undo is in its drawer and under "
+                       "Changes.")
+                   : _("Detect + auto-block is on. Nothing needed "
+                       "blocking."));
+    } else {
+        guint n = auto_blocks != NULL ? auto_blocks->len : 0;
+        gchar *t;
+
+        /* P6: leaving auto mode takes down what auto mode staged --
+         * detect means detect, not "whatever is still lingering". */
+        fs_copilot_lift_all_auto_blocks ("Sentinel switched to detect");
+        t = n == 0
+            ? g_strdup (_("Detect only: findings are reported, nothing is "
+                          "blocked automatically."))
+            : g_strdup_printf (_("Detect only: findings are reported, "
+                                 "nothing is blocked automatically. %u "
+                                 "automatic blocks were lifted."), n);
+        strip_set (sentinel_strip, "ok", t);
+        g_free (t);
+    }
+    refresh_insights ();
+}
+
+/* The page is gone: forget its widgets (a rebuilt page has its own). */
+static void
+on_page_destroy (GtkWidget *w, gpointer data)
+{
+    (void) data;
+    if (w != copilot_vbox)
+        return;
+    copilot_vbox = NULL;
+    scenario_entry = sim_output = NULL;
+    sentinel_detect = sentinel_auto = sentinel_strip = NULL;
+    tile_attention = tile_attention_note = tile_health = NULL;
+    tile_health_note = tile_blocks = tile_blocks_note = NULL;
+    tile_learned = tile_learned_note = NULL;
+    findings_list = findings_frame = findings_count = NULL;
+    findings_empty = findings_empty_text = findings_reason = NULL;
+    findings_checked = findings_strip = NULL;
+    health_list = health_frame = health_summary = NULL;
+    health_empty = health_strip = NULL;
+    changes_list = changes_frame = changes_empty = changes_strip = NULL;
+    g_clear_pointer (&changes_sig, g_free);
+    g_clear_pointer (&finding_rows, g_hash_table_destroy);
+    if (refresh_id != 0) {
+        g_source_remove (refresh_id);
+        refresh_id = 0;
+    }
+}
+
+static void
+on_open_events_clicked (GtkButton *b, gpointer data)
+{
+    (void) b;
+    (void) data;
+    fs_app_show_page (FS_PAGE_EVENTS);
+}
+
+static void
+on_page_map (GtkWidget *w, gpointer data)
+{
+    (void) w;
+    (void) data;
+    /* The Policy page may have changed the policy meanwhile. */
+    health_run ();
+    refresh_insights ();
+}
+
+/* A card: heading, an optional muted count on the right, a strip. */
+static GtkWidget *
+section_card (const gchar *heading, const gchar *name, GtkWidget **right,
+              GtkWidget **strip, GtkWidget **body)
+{
+    GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *inner = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+    gchar *sn = g_strdup_printf ("%s-strip", name);
+
+    add_class (card, "card");
+    gtk_widget_set_name (card, name);
+    add_class (head, "card-head");
+    gtk_box_pack_start (GTK_BOX (head), text_new (heading, "card-heading",
+                                                  FALSE),
+                        FALSE, FALSE, 0);
+    if (right != NULL) {
+        *right = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_box_pack_end (GTK_BOX (head), *right, FALSE, FALSE, 0);
+    }
+    gtk_box_pack_start (GTK_BOX (card), head, FALSE, FALSE, 0);
+
+    gtk_widget_set_margin_start (inner, 16);
+    gtk_widget_set_margin_end (inner, 16);
+    gtk_widget_set_margin_bottom (inner, 14);
+    *strip = strip_new (sn);
+    gtk_box_pack_start (GTK_BOX (inner), *strip, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (card), inner, FALSE, FALSE, 0);
+    *body = inner;
+    g_free (sn);
+    return card;
+}
+
+static GtkWidget *
+list_new (const gchar *name, GtkWidget **frame)
+{
+    GtkWidget *list = gtk_list_box_new ();
+
+    gtk_widget_set_name (list, name);
+    gtk_list_box_set_selection_mode (GTK_LIST_BOX (list),
+                                     GTK_SELECTION_NONE);
+    add_class (list, "cp-list");
+    *frame = gtk_frame_new (NULL);
+    add_class (*frame, "list-card");
+    add_class (*frame, "cp-list-frame");
+    gtk_container_add (GTK_CONTAINER (*frame), list);
+    gtk_widget_set_no_show_all (*frame, TRUE);
+    return list;
 }
 
 /* =====================================================================
@@ -351,6 +2527,8 @@ build_insights_tree (void)
 GtkWidget *
 fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
 {
+    GtkWidget *row, *card, *body, *right, *b, *l;
+
     global_copilot = copilot;
     copilot_policy = policy;
 
@@ -369,155 +2547,162 @@ fs_copilot_page (FsCopilot *copilot, FsPolicy *policy)
         g_free (pref);
     }
 
-    /* The window's page frame supplies the title and the margins. */
-    copilot_vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+    fs_simviz_install_css ();
 
-    /* ===== Header ===== */
+    /* The window's page frame supplies the title, the one subtitle
+     * (with the "nothing is sent anywhere" line) and the margins.  The
+     * page follows the app's own light theme, as every other page
+     * does, whatever the desktop theme is. */
+    copilot_vbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 14);
+    gtk_widget_set_name (copilot_vbox, "copilot-page");
+    add_class (copilot_vbox, "cp-page");
+    g_signal_connect (copilot_vbox, "map", G_CALLBACK (on_page_map), NULL);
+    g_signal_connect (copilot_vbox, "destroy", G_CALLBACK (on_page_destroy),
+                      NULL);
+
+    /* ===== Sentinel ===== */
+    card = section_card (_("Sentinel"), "cp-sentinel", &right,
+                         &sentinel_strip, &body);
     {
-        /* The page's name and description are in the window's page
-         * header; this row keeps the page's two controls. */
-        GtkWidget *hdr = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *seg = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
 
-        /* Sentinel mode: detect only, or detect + auto-block.  The
-         * auto path stages critical insights into the policy with a
-         * ten-minute time-box (see fs_copilot_sentinel_auto_pass). */
-        {
-            GtkWidget *mode_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
-            GtkWidget *mode_lbl = gtk_label_new (_("Sentinel:"));
-
-            sentinel_combo = gtk_combo_box_text_new ();
-            gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (sentinel_combo),
-                                       "detect", _("Detect only"));
-            gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (sentinel_combo),
-                                       "auto", _("Detect + auto-block"));
-            gtk_combo_box_set_active_id (GTK_COMBO_BOX (sentinel_combo),
-                                         sentinel_mode);
-            g_signal_connect (sentinel_combo, "changed",
-                              G_CALLBACK (on_sentinel_mode_changed), NULL);
-
-            gtk_box_pack_start (GTK_BOX (mode_box), mode_lbl,
-                                FALSE, FALSE, 0);
-            gtk_box_pack_start (GTK_BOX (mode_box), sentinel_combo,
-                                FALSE, FALSE, 0);
-            gtk_widget_set_valign (sentinel_combo, GTK_ALIGN_CENTER);
-            gtk_box_pack_start (GTK_BOX (hdr), mode_box, FALSE, FALSE, 0);
-        }
-
-        GtkWidget *analyze_btn = button_with_icon (FS_ICON_SEARCH, _("Run analysis"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (analyze_btn),
-                                     "btn-primary");
-        g_signal_connect (analyze_btn, "clicked",
-                          G_CALLBACK (on_analyze_clicked), NULL);
-        gtk_box_pack_end (GTK_BOX (hdr), analyze_btn, FALSE, FALSE, 0);
-
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), hdr, FALSE, FALSE, 0);
+        add_class (seg, "segmented");
+        gtk_widget_set_name (seg, "sentinel-mode");
+        sentinel_detect = gtk_radio_button_new_with_label (NULL,
+                                                           _("Detect only"));
+        sentinel_auto = gtk_radio_button_new_with_label_from_widget (
+            GTK_RADIO_BUTTON (sentinel_detect), _("Detect + auto-block"));
+        gtk_widget_set_name (sentinel_detect, "sentinel-detect");
+        gtk_widget_set_name (sentinel_auto, "sentinel-auto");
+        gtk_toggle_button_set_mode (GTK_TOGGLE_BUTTON (sentinel_detect),
+                                    FALSE);
+        gtk_toggle_button_set_mode (GTK_TOGGLE_BUTTON (sentinel_auto), FALSE);
+        add_class (sentinel_detect, "seg-button");
+        add_class (sentinel_auto, "seg-button");
+        gtk_box_pack_start (GTK_BOX (seg), sentinel_detect, FALSE, FALSE, 0);
+        gtk_box_pack_start (GTK_BOX (seg), sentinel_auto, FALSE, FALSE, 0);
+        sentinel_sync_buttons ();
+        g_signal_connect (sentinel_detect, "toggled",
+                          G_CALLBACK (on_sentinel_toggled), (gpointer) "detect");
+        g_signal_connect (sentinel_auto, "toggled",
+                          G_CALLBACK (on_sentinel_toggled), (gpointer) "auto");
+        gtk_box_pack_start (GTK_BOX (right), seg, FALSE, FALSE, 0);
     }
+    gtk_box_pack_start (GTK_BOX (body), text_new (
+        _("Auto-block only stages outbound blocks to unknown public "
+          "addresses, for 10 minutes. Everything else waits for you."),
+        "cp-body", TRUE), FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (copilot_vbox), card, FALSE, FALSE, 0);
 
-    /* ===== Stats dashboard ===== */
-    {
-        GtkWidget *stats = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
-        gtk_box_set_homogeneous (GTK_BOX (stats), TRUE);
+    /* ===== Tiles ===== */
+    row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_box_set_homogeneous (GTK_BOX (row), TRUE);
+    gtk_box_pack_start (GTK_BOX (row),
+        tile_new (_("Needs attention"), "tile-attention", &tile_attention,
+                  &tile_attention_note), TRUE, TRUE, 0);
+    gtk_box_pack_start (GTK_BOX (row),
+        tile_new (_("Policy health"), "tile-health", &tile_health,
+                  &tile_health_note), TRUE, TRUE, 0);
+    gtk_box_pack_start (GTK_BOX (row),
+        tile_new (_("Auto-blocks active"), "tile-blocks", &tile_blocks,
+                  &tile_blocks_note), TRUE, TRUE, 0);
+    gtk_box_pack_start (GTK_BOX (row),
+#ifdef G_OS_WIN32
+        tile_new (_("Apps learned"), "tile-learned", &tile_learned,
+                  &tile_learned_note),
+#else
+        /* The Linux log names no programs: one profile per service. */
+        tile_new (_("Services learned"), "tile-learned", &tile_learned,
+                  &tile_learned_note),
+#endif
+        TRUE, TRUE, 0);
+    gtk_box_pack_start (GTK_BOX (copilot_vbox), row, FALSE, FALSE, 0);
 
-        GtkWidget *c1, *c2, *c3, *c4;
-        c1 = make_stat_card (_("Apps learned"),    &stat_apps);
-        c2 = make_stat_card (_("Active insights"), &stat_insights);
-        c3 = make_stat_card (_("Events analyzed"), &stat_events);
-        c4 = make_stat_card (_("Policy rules"),    &stat_rules);
+    /* ===== Findings ===== */
+    card = section_card (_("Findings"), "cp-findings", &right,
+                         &findings_strip, &body);
+    findings_count = text_new ("", "muted", FALSE);
+    gtk_widget_set_name (findings_count, "findings-count");
+    gtk_box_pack_start (GTK_BOX (right), findings_count, FALSE, FALSE, 0);
+    findings_list = list_new ("findings-list", &findings_frame);
+    gtk_list_box_set_sort_func (GTK_LIST_BOX (findings_list),
+                                finding_order_cmp, NULL, NULL);
+    g_signal_connect (findings_list, "row-activated",
+                      G_CALLBACK (on_finding_activated), NULL);
+    gtk_box_pack_start (GTK_BOX (body), findings_frame, FALSE, FALSE, 0);
 
-        gtk_box_pack_start (GTK_BOX (stats), c1, TRUE, TRUE, 0);
-        gtk_box_pack_start (GTK_BOX (stats), c2, TRUE, TRUE, 0);
-        gtk_box_pack_start (GTK_BOX (stats), c3, TRUE, TRUE, 0);
-        gtk_box_pack_start (GTK_BOX (stats), c4, TRUE, TRUE, 0);
+    findings_empty = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_set_name (findings_empty, "findings-empty");
+    findings_empty_text = text_new ("", "empty-state", TRUE);
+    gtk_widget_set_name (findings_empty_text, "findings-empty-text");
+    gtk_box_pack_start (GTK_BOX (findings_empty), findings_empty_text,
+                        FALSE, FALSE, 0);
+    findings_reason = text_new ("", "warning-strip", TRUE);
+    add_class (findings_reason, "cp-strip");
+    gtk_widget_set_name (findings_reason, "findings-reason");
+    gtk_widget_set_no_show_all (findings_reason, TRUE);
+    gtk_box_pack_start (GTK_BOX (findings_empty), findings_reason,
+                        FALSE, FALSE, 0);
+    findings_checked = gtk_expander_new (_("What is checked"));
+    gtk_widget_set_name (findings_checked, "findings-checked");
+    gtk_container_add (GTK_CONTAINER (findings_checked), checked_list_new ());
+    gtk_widget_set_no_show_all (findings_checked, TRUE);
+    gtk_box_pack_start (GTK_BOX (findings_empty), findings_checked,
+                        FALSE, FALSE, 0);
+    b = button_new (_("Open Events"), "fs-link", "findings-open-events");
+    gtk_widget_set_halign (b, GTK_ALIGN_START);
+    g_signal_connect (b, "clicked", G_CALLBACK (on_open_events_clicked),
+                      NULL);
+    gtk_box_pack_start (GTK_BOX (findings_empty), b, FALSE, FALSE, 0);
+    gtk_widget_set_no_show_all (findings_empty, TRUE);
+    gtk_box_pack_start (GTK_BOX (body), findings_empty, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (copilot_vbox), card, FALSE, FALSE, 0);
 
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), stats, FALSE, FALSE, 0);
-    }
-
-    /* ===== Insights tree ===== */
-    {
-        /* One card, as on the Overview: heading, list, actions. */
-        GtkWidget *card = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-        gtk_style_context_add_class (gtk_widget_get_style_context (card), "card");
-
-        GtkWidget *lbl = gtk_label_new (_("Insights and suggestions"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (lbl),
-                                     "card-heading");
-        gtk_style_context_add_class (gtk_widget_get_style_context (lbl),
-                                     "card-head");
-        gtk_label_set_xalign (GTK_LABEL (lbl), 0.0);
-        gtk_box_pack_start (GTK_BOX (card), lbl, FALSE, FALSE, 0);
-
-        insights_tree = build_insights_tree ();
-        GtkWidget *scrolled = gtk_scrolled_window_new (NULL, NULL);
-        gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scrolled),
-                                        GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-        gtk_scrolled_window_set_min_content_height (
-            GTK_SCROLLED_WINDOW (scrolled), 140);
-        gtk_container_add (GTK_CONTAINER (scrolled), insights_tree);
-        gtk_box_pack_start (GTK_BOX (card), scrolled, TRUE, TRUE, 0);
-
-        /* Buttons row */
-        GtkWidget *btn_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
-        gtk_style_context_add_class (gtk_widget_get_style_context (btn_box),
-                                     "card-foot");
-
-        GtkWidget *apply_btn = button_with_icon (FS_ICON_N_KINDS,
-                                                 _("Apply selected rule"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (apply_btn),
-                                     "btn-primary");
-        g_signal_connect (apply_btn, "clicked",
-                          G_CALLBACK (on_apply_suggestion_clicked), NULL);
-        gtk_box_pack_start (GTK_BOX (btn_box), apply_btn, FALSE, FALSE, 0);
-
-        GtkWidget *clear_btn = button_with_icon (FS_ICON_N_KINDS, _("Clear insights"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (clear_btn),
-                                     "btn-subtle");
-        g_signal_connect (clear_btn, "clicked", G_CALLBACK (on_clear_clicked), NULL);
-        gtk_box_pack_start (GTK_BOX (btn_box), clear_btn, FALSE, FALSE, 0);
-
-        GtkWidget *undo_btn = button_with_icon (FS_ICON_N_KINDS,
-                                                _("Undo auto-block"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (undo_btn),
-                                     "btn-subtle");
-        g_signal_connect (undo_btn, "clicked",
-                          G_CALLBACK (on_undo_auto_clicked), NULL);
-        gtk_box_pack_start (GTK_BOX (btn_box), undo_btn, FALSE, FALSE, 0);
-
-        gtk_box_pack_start (GTK_BOX (card), btn_box, FALSE, FALSE, 0);
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), card, TRUE, TRUE, 0);
-    }
+    /* ===== Policy health ===== */
+    card = section_card (_("Policy health"), "cp-health-card", &right,
+                         &health_strip, &body);
+    health_summary = text_new ("", "muted", FALSE);
+    gtk_widget_set_name (health_summary, "health-summary");
+    gtk_box_pack_start (GTK_BOX (right), health_summary, FALSE, FALSE, 0);
+    b = button_new (_("Check again"), "btn-subtle", "health-again");
+    g_signal_connect (b, "clicked", G_CALLBACK (on_health_again_clicked),
+                      NULL);
+    gtk_box_pack_start (GTK_BOX (right), b, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (body), text_new (
+        _("Overlaps, conflicts and open risky services in the saved "
+          "policy. A fix is offered only when What-If shows it does what "
+          "it says."), "cp-body", TRUE), FALSE, FALSE, 0);
+    health_list = list_new ("health-list", &health_frame);
+    gtk_box_pack_start (GTK_BOX (body), health_frame, FALSE, FALSE, 0);
+    health_empty = text_new ("", "empty-state", TRUE);
+    gtk_widget_set_name (health_empty, "health-empty");
+    gtk_widget_set_no_show_all (health_empty, TRUE);
+    gtk_box_pack_start (GTK_BOX (body), health_empty, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (copilot_vbox), card, FALSE, FALSE, 0);
 
     /* ===== What-If simulator ===== */
     gtk_box_pack_start (GTK_BOX (copilot_vbox), whatif_card_new (),
                         FALSE, FALSE, 0);
 
-    /* ===== Policy Analysis ===== */
-    {
-        GtkWidget *a_lbl = gtk_label_new (_("Policy analysis"));
-        gtk_style_context_add_class (gtk_widget_get_style_context (a_lbl),
-                                     "card-heading");
-        gtk_label_set_xalign (GTK_LABEL (a_lbl), 0.0);
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), a_lbl, FALSE, FALSE, 0);
-
-        analysis_output = make_output_view ();
-        gtk_widget_set_size_request (analysis_output, -1, 80);
-        gtk_box_pack_start (GTK_BOX (copilot_vbox), analysis_output, FALSE, FALSE, 0);
-    }
+    /* ===== Changes ===== */
+    card = section_card (_("Changes made by the Copilot"), "cp-changes",
+                         NULL, &changes_strip, &body);
+    changes_list = list_new ("changes-list", &changes_frame);
+    gtk_box_pack_start (GTK_BOX (body), changes_frame, FALSE, FALSE, 0);
+    l = text_new (_("No changes yet. Automatic blocks, block rules added "
+                    "here and policy fixes are listed with an Undo."),
+                  "empty-state", TRUE);
+    gtk_widget_set_name (l, "changes-empty");
+    changes_empty = l;
+    gtk_widget_set_no_show_all (changes_empty, TRUE);
+    gtk_box_pack_start (GTK_BOX (body), changes_empty, FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (copilot_vbox), card, FALSE, FALSE, 0);
 
     /* Initial data */
+    health_run ();
     refresh_insights ();
-    update_stats ();
 
     return copilot_vbox;
-}
-
-/* =====================================================================
- * fs_copilot_view_refresh - Public refresh
- * ===================================================================== */
-void
-fs_copilot_view_refresh (void)
-{
-    refresh_insights ();
-    update_stats ();
 }
 
 /* =====================================================================
@@ -530,7 +2715,6 @@ fs_copilot_view_refresh (void)
  * minutes after staging -- a false positive must not be a permanent
  * policy change.  Every step is written to the append-only audit log.
  * ===================================================================== */
-
 static AutoBlock *
 auto_block_find (FsRuleKind kind, const gchar *csv)
 {
@@ -787,6 +2971,31 @@ auto_block_retire (AutoBlock *ab, const gchar *why)
     auto_block_drop (ab, why);
     auto_block_cooldown_add (ab->kind, ab->csv);
 
+    /* The Changes card keeps it, with how it ended. */
+    {
+        CpChange *c = g_new0 (CpChange, 1);
+        FsRule *r = fs_rule_from_csv (ab->kind, ab->csv);
+        const gchar *how =
+            g_strcmp0 (why, "expired after 10 minutes") == 0
+            ? _("Lifted after 10 minutes")
+            : g_strcmp0 (why, "user allowed this destination") == 0
+            ? _("Lifted when you allowed this destination")
+            : g_str_has_prefix (why != NULL ? why : "", "undone") ||
+              g_str_has_prefix (why != NULL ? why : "", "lifted by user")
+            ? _("Undone") : _("Lifted");
+
+        c->kind = CP_CHANGE_AUTO_BLOCK;
+        c->at = ab->at_epoch;
+        c->rule_kind = ab->kind;
+        c->csv = g_strdup (ab->csv);
+        c->label = g_strdup_printf (_("Auto-block %s"),
+                                    r != NULL && r->target != NULL
+                                    ? r->target : ab->csv);
+        fs_rule_free (r);
+        change_add (c);
+        change_end (c, how);
+    }
+
     if (auto_blocks != NULL && g_ptr_array_remove (auto_blocks, ab))
         auto_block_state_save ();
 }
@@ -859,6 +3068,7 @@ fs_copilot_sentinel_auto_pass (void)
 {
     GList *insights, *l;
     gboolean changed = FALSE;
+    gboolean rechecked_out = FALSE;
     gint64 now;
 
     if (global_copilot == NULL || copilot_policy == NULL ||
@@ -879,6 +3089,11 @@ fs_copilot_sentinel_auto_pass (void)
         now - auto_block_last_fail < FS_AUTOBLOCK_RETRY_US)
         return FALSE;
 
+    /* The re-check reads the user's allow rows from the copilot's
+     * policy: it must be the one this pass writes to. */
+    if (fs_copilot_get_policy (global_copilot) != copilot_policy)
+        fs_copilot_set_policy (global_copilot, copilot_policy);
+
     insights = fs_copilot_get_insights (global_copilot);
 
     for (l = insights; l != NULL; l = l->next) {
@@ -895,6 +3110,17 @@ fs_copilot_sentinel_auto_pass (void)
          * Apply button, and those are never staged here. */
         if (!fs_insight_is_auto_safe (ins))
             continue;
+
+        /* The finding's gates were judged when it was made; this pass
+         * may run much later (a pause ending, a switch from Detect
+         * only, the retry after a failed write).  Judge them again
+         * now: another program may use the host by now, or the user
+         * may have allowed it.  A gate that now withholds updates the
+         * finding's drawer text. */
+        if (!fs_copilot_beacon_recheck (global_copilot, ins)) {
+            rechecked_out = TRUE;
+            continue;
+        }
 
         if (auto_block_find (ins->rule_kind, ins->rule_csv) != NULL)
             continue;
@@ -955,52 +3181,11 @@ fs_copilot_sentinel_auto_pass (void)
         auto_block_push ();
     }
 
+    /* A finding that a gate now withholds says so in its drawer. */
+    if (rechecked_out && !changed)
+        refresh_insights ();
+
     return changed;
-}
-
-static const gchar *
-auto_block_status (FsInsight *ins)
-{
-    if (ins->rule_csv == NULL || *ins->rule_csv == '\0')
-        return "";
-
-    return auto_block_find (ins->rule_kind, ins->rule_csv) != NULL
-           ? _("Auto-blocked") : "";
-}
-
-/* [ on_undo_auto_clicked ]
- * Lift the most recent Sentinel auto-block right now. */
-static void
-on_undo_auto_clicked (GtkButton *btn, gpointer data)
-{
-    AutoBlock *ab;
-    gchar *csv;
-
-    (void) btn;
-    (void) data;
-
-    if (auto_blocks == NULL || auto_blocks->len == 0) {
-        text_view_append (analysis_output,
-            "\n[=] No Sentinel auto-block is staged.\n", "dim");
-        return;
-    }
-
-    ab  = g_ptr_array_index (auto_blocks, auto_blocks->len - 1);
-    csv = g_strdup (ab->csv);
-
-    /* Retire: drop + cooldown + out of the state file, so the next
-     * auto pass cannot stage the very rule the user just lifted. */
-    auto_block_retire (ab, "undone by user");
-
-    auto_block_push ();
-    refresh_insights ();
-    update_stats ();
-
-    text_view_append (analysis_output,
-        "\n[OK] Sentinel auto-block undone:\n  ", "green");
-    text_view_append (analysis_output, csv, "bold");
-    text_view_append (analysis_output, "\n", NULL);
-    g_free (csv);
 }
 
 /* [ fs_copilot_lift_all_auto_blocks ]
@@ -1347,9 +3532,8 @@ fs_copilot_sentinel_pause (guint seconds)
             return;
         fs_audit_log ("sentinel auto-block resumed",
                       "tray | auto-block stages critical insights again");
-        if (analysis_output != NULL)
-            text_view_append (analysis_output,
-                "\n[Sentinel] auto-block resumed.\n", "dim");
+        strip_set (sentinel_strip, "ok",
+                   _("Sentinel auto-block resumed."));
         /* Catch up on what arrived while paused. */
         if (fs_copilot_sentinel_auto_pass ())
             refresh_insights ();
@@ -1368,194 +3552,10 @@ fs_copilot_sentinel_pause (guint seconds)
         fs_audit_log ("sentinel auto-block paused", detail);
         g_free (detail);
     }
-    if (analysis_output != NULL)
-        text_view_append (analysis_output,
-            "\n[Sentinel] auto-block paused from the tray menu: insights "
-            "are still reported, nothing new is staged.\n", "dim");
-}
-
-/* [ on_sentinel_mode_changed ] */
-static void
-on_sentinel_mode_changed (GtkComboBox *combo, gpointer data)
-{
-    const gchar *id = gtk_combo_box_get_active_id (combo);
-
-    (void) data;
-
-    if (id == NULL)
-        return;
-
-    g_strlcpy (sentinel_mode, id, sizeof sentinel_mode);
-    fs_prefs_set_string ("/apps/stockfw/client/sentinel/mode",
-                         sentinel_mode);
-
-    if (g_strcmp0 (sentinel_mode, "auto") == 0) {
-        gboolean staged = fs_copilot_sentinel_auto_pass ();
-
-        if (staged)
-            refresh_insights ();
-
-        text_view_append (analysis_output,
-            "\n[Sentinel] auto-block armed: critical insights with a "
-            "ready rule are staged into the policy for 10 minutes "
-            "(Undo on this page lifts one early).\n", "dim");
-    } else {
-        /* P6: leaving auto mode takes down what auto mode staged --
-         * detect means detect, not "whatever is still lingering". */
-        fs_copilot_lift_all_auto_blocks ("Sentinel switched to detect");
-
-        text_view_append (analysis_output,
-            "\n[Sentinel] detect only: insights are reported, nothing "
-            "is staged.\n", "dim");
-    }
-}
-
-/* =====================================================================
- * refresh_insights - Reload insights into the tree
- * ===================================================================== */
-static void
-refresh_insights (void)
-{
-    if (!global_copilot || !insights_store)
-        return;
-
-    gtk_list_store_clear (insights_store);
-
-    GList *insights = fs_copilot_get_insights (global_copilot);
-    GList *l;
-
-    for (l = insights; l != NULL; l = l->next)
-    {
-        FsInsight *ins = l->data;
-        GtkTreeIter iter;
-
-        gtk_list_store_append (insights_store, &iter);
-        gtk_list_store_set (insights_store, &iter,
-            COL_ICON,       severity_to_icon (ins->severity),
-            COL_TITLE,      ins->title,
-            COL_TYPE,       insight_type_to_string (ins->type),
-            COL_SEVERITY,   severity_to_string (ins->severity),
-            COL_DESC,       ins->description,
-            COL_APP,        ins->application ? ins->application : "-",
-            COL_DEST,       ins->destination ? ins->destination : "-",
-            COL_SUGGESTION, ins->suggested_rule ? ins->suggested_rule : "-",
-            COL_RULE_CSV,   ins->rule_csv ? ins->rule_csv : "",
-            COL_KIND,       (gint) ins->rule_kind,
-            COL_STATUS,     auto_block_status (ins),
-            -1);
-    }
-
-    g_list_free (insights);
-}
-
-/* =====================================================================
- * update_stats - Refresh the stat cards
- * ===================================================================== */
-static void
-update_stats (void)
-{
-    gchar buf[32];
-
-    if (global_copilot && stat_apps) {
-        GList *profiles = fs_copilot_get_all_profiles (global_copilot);
-        g_snprintf (buf, sizeof buf, "%u", g_list_length (profiles));
-        gtk_label_set_text (GTK_LABEL (stat_apps), buf);
-        g_list_free (profiles);
-    }
-
-    if (global_copilot && stat_insights) {
-        GList *ins = fs_copilot_get_insights (global_copilot);
-        g_snprintf (buf, sizeof buf, "%u", g_list_length (ins));
-        gtk_label_set_text (GTK_LABEL (stat_insights), buf);
-        g_list_free (ins);
-    }
-
-    if (stat_events) {
-        g_snprintf (buf, sizeof buf, "%u", total_events);
-        gtk_label_set_text (GTK_LABEL (stat_events), buf);
-    }
-
-    if (stat_rules) {
-        g_snprintf (buf, sizeof buf, "0");
-        gtk_label_set_text (GTK_LABEL (stat_rules), buf);
-    }
-}
-
-/* =====================================================================
- * fs_copilot_note_event - called from hitview
- * ===================================================================== */
-void
-fs_copilot_note_event (void)
-{
-    total_events++;
-    if (stat_events) {
-        gchar buf[32];
-        g_snprintf (buf, sizeof buf, "%u", total_events);
-        gtk_label_set_text (GTK_LABEL (stat_events), buf);
-    }
-}
-
-/* =====================================================================
- * run_policy_analysis - Analyze learned profiles for issues
- * ===================================================================== */
-static void
-run_policy_analysis (void)
-{
-    text_view_append (analysis_output,
-        "\n=== Policy Analysis ===\n", "title");
-
-    GList *profiles = fs_copilot_get_all_profiles (global_copilot);
-    guint num_apps = g_list_length (profiles);
-
-    text_view_append (analysis_output,
-        g_strdup_printf ("Learned %u application profiles\n", num_apps),
-        NULL);
-
-    GList *l;
-    guint issues = 0;
-    for (l = profiles; l != NULL; l = l->next) {
-        FsAppProfile *p = l->data;
-        if (p->total_connections < 10) continue;
-
-        guint port_count = g_hash_table_size (p->common_ports);
-        if (port_count > 20) {
-            text_view_append (analysis_output,
-                g_strdup_printf (
-                    "  [!] %s: used %u different ports - possible port scanning\n",
-                    p->app_name, port_count), "orange");
-            issues++;
-        }
-
-        guint dest_count = g_hash_table_size (p->common_destinations);
-        if (dest_count > 50) {
-            text_view_append (analysis_output,
-                g_strdup_printf (
-                    "  [!] %s: connected to %u unique hosts - possible C2\n",
-                    p->app_name, dest_count), "orange");
-            issues++;
-        }
-    }
-
-    if (issues == 0) {
-        text_view_append (analysis_output,
-            "  [OK] No issues detected in learned profiles\n", "green");
-    }
-
-    text_view_append (analysis_output,
-        g_strdup_printf ("\nAnalysis complete. %u event(s) analyzed.\n",
-                         total_events), "dim");
-}
-
-/* =====================================================================
- * on_analyze_clicked
- * ===================================================================== */
-static void
-on_analyze_clicked (GtkButton *btn, gpointer data)
-{
-    (void)btn; (void)data;
-    run_policy_analysis ();
+    strip_set (sentinel_strip, "warn",
+               _("Sentinel auto-block is paused from the tray menu: "
+                 "findings are still reported, nothing new is blocked."));
     refresh_insights ();
-    update_stats ();
 }
 
 /* =====================================================================
@@ -1639,200 +3639,6 @@ apply_result_text (FsApplyResult result)
     case FS_APPLY_FAILED:
     default:                     return "the firewall rejected the change";
     }
-}
-
-/* =====================================================================
- * on_apply_suggestion_clicked
- *
- * Adds the selected suggestion to the shared policy, saves it, refreshes
- * the Policy page and pushes it to the live firewall.  Every outcome is
- * reported honestly: before this, the button printed "[OK] Applied" and
- * touched nothing at all.
- * ===================================================================== */
-static void
-on_apply_suggestion_clicked (GtkButton *btn, gpointer data)
-{
-    (void)btn; (void)data;
-
-    GtkTreeSelection *sel = gtk_tree_view_get_selection (
-        GTK_TREE_VIEW (insights_tree));
-    GtkTreeModel *model;
-    GtkTreeIter iter;
-
-    if (!gtk_tree_selection_get_selected (sel, &model, &iter))
-        return;
-
-    gchar *rule_csv = NULL;
-    gchar *title = NULL;
-    gint rule_kind = FS_RULE_OUTBOUND_ALLOW_SERVICE;
-    gtk_tree_model_get (model, &iter,
-                        COL_RULE_CSV, &rule_csv,
-                        COL_TITLE, &title,
-                        COL_KIND, &rule_kind,
-                        -1);
-
-    if (!rule_csv || !*rule_csv) {
-        text_view_append (analysis_output,
-            "\n[!] Selected insight has no auto-applicable rule.\n",
-            "orange");
-        g_free (rule_csv);
-        g_free (title);
-        return;
-    }
-
-    if (copilot_policy == NULL) {
-        text_view_append (analysis_output,
-            "\n[!] No traffic policy is loaded, so nothing can be applied.\n",
-            "orange");
-        g_free (rule_csv);
-        g_free (title);
-        return;
-    }
-
-    /* Parse before promising anything: a malformed suggestion must not
-     * be reported as applied.  The kind comes from the insight itself
-     * -- a Sentinel block suggestion parses as a deny, not as the
-     * service-allow every legacy suggestion used. */
-    FsRule *rule = fs_rule_from_csv ((FsRuleKind) rule_kind, rule_csv);
-
-    if (rule == NULL) {
-        text_view_append (analysis_output,
-            "\n[!] Could not parse the suggested rule, nothing was applied:\n  ",
-            "orange");
-        text_view_append (analysis_output, rule_csv, "bold");
-        text_view_append (analysis_output, "\n", NULL);
-        g_free (rule_csv);
-        g_free (title);
-        return;
-    }
-
-    if (fs_policy_contains (copilot_policy, rule)) {
-        text_view_append (analysis_output,
-            "\n[=] Already in your policy, not added again:\n  ", "dim");
-        text_view_append (analysis_output, rule_csv, "bold");
-        text_view_append (analysis_output, "\n", NULL);
-        fs_rule_free (rule);
-        g_free (rule_csv);
-        g_free (title);
-        return;
-    }
-
-    GtkWidget *dialog = gtk_message_dialog_new (
-        GTK_WINDOW (gtk_widget_get_toplevel (copilot_vbox)),
-        GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
-        _("Apply this AI-suggested rule?\n\n"
-          "Insight: %s\n"
-          "Rule: %s\n\n"
-          "This will add the rule to your policy, save it to disk and\n"
-          "push it to the firewall."),
-        title ? title : "?", rule_csv);
-
-    gtk_window_set_title (GTK_WINDOW (dialog), _("Apply AI Suggestion"));
-
-    gint response = gtk_dialog_run (GTK_DIALOG (dialog));
-    gtk_widget_destroy (dialog);
-
-    if (response != GTK_RESPONSE_YES) {
-        fs_rule_free (rule);
-        g_free (rule_csv);
-        g_free (title);
-        return;
-    }
-
-    fs_policy_add (copilot_policy, rule);
-    fs_rule_free (rule);
-    rule = NULL;
-
-    /* Persist.  If the write fails, take the row back out so what the
-     * Policy page shows and what is on disk stay the same thing. */
-    if (!fs_policyview_save (copilot_policy)) {
-        FsRule *rollback = fs_rule_from_csv ((FsRuleKind) rule_kind,
-                                             rule_csv);
-
-        if (rollback != NULL) {
-            fs_policy_remove (copilot_policy, rollback);
-            fs_rule_free (rollback);
-        }
-
-        text_view_append (analysis_output,
-            "\n[!] Could not save the rule to disk, nothing was applied:\n  ",
-            "red");
-        text_view_append (analysis_output, rule_csv, "bold");
-        text_view_append (analysis_output, "\n", NULL);
-        g_free (rule_csv);
-        g_free (title);
-        return;
-    }
-
-    /* Show it on the Policy page straight away. */
-    fs_policyview_reload (copilot_policy);
-    update_stats ();
-
-    /* And put it in front of the actual firewall. */
-    {
-        GError *error = NULL;
-        FsApplyOutcome *outcome = fs_policy_apply_safe (
-            fs_backend (), copilot_policy, "copilot suggestion",
-            fs_policyview_hold_reason (), &error);
-
-        if (outcome->applied) {
-            text_view_append (analysis_output,
-                "\n[OK] Rule added, saved and applied:\n  ", "green");
-            text_view_append (analysis_output, rule_csv, "bold");
-            text_view_append (analysis_output, "\n     ", NULL);
-            text_view_append (analysis_output, apply_result_text (outcome->result),
-                              outcome->result == FS_APPLY_OK ? "green" : "orange");
-            text_view_append (analysis_output, "\n", NULL);
-        } else if (outcome->held) {
-            text_view_append (analysis_output,
-                "\n[..] Rule added to your policy and saved, but held "
-                "back on purpose -- not applied:\n  ", "orange");
-            text_view_append (analysis_output, rule_csv, "bold");
-            text_view_append (analysis_output, "\n     ", NULL);
-            text_view_append (analysis_output, outcome->hold_reason, "orange");
-            text_view_append (analysis_output,
-                "\n     Turn the hold off (Audit-only on the Policy page, "
-                "or the Lock on the Status page) and apply again.\n",
-                "dim");
-        } else {
-            /* The row really is in the policy -- say so rather than
-             * implying the whole thing failed. */
-            text_view_append (analysis_output,
-                "\n[!] Rule added to your policy and saved, but it is NOT "
-                "live yet:\n  ", "orange");
-            text_view_append (analysis_output, rule_csv, "bold");
-            text_view_append (analysis_output, "\n     ", NULL);
-            text_view_append (analysis_output, apply_result_text (outcome->result), "orange");
-            if (error != NULL) {
-                text_view_append (analysis_output, "\n     ", NULL);
-                text_view_append (analysis_output, error->message, "dim");
-            }
-            /* The rollback truth sits right under the failure. */
-            text_view_append (analysis_output, "\n     ", NULL);
-            if (outcome->rollback_attempted && outcome->rollback_verified)
-                text_view_append (analysis_output,
-                    "The previous policy was restored to the firewall and "
-                    "that restore was verified.", "dim");
-            else if (outcome->rollback_attempted)
-                text_view_append (analysis_output,
-                    "The rollback ALSO failed -- the firewall may be in an "
-                    "inconsistent state; check the Status page.", "dim");
-            else
-                text_view_append (analysis_output,
-                    "No previously applied policy is recorded, so nothing "
-                    "could be restored.", "dim");
-            text_view_append (analysis_output,
-                "\n     Re-run StockFW as administrator and apply the "
-                "policy to activate it.\n", "dim");
-        }
-        fs_apply_outcome_free (outcome);
-        g_clear_error (&error);
-    }
-
-    refresh_insights ();
-
-    g_free (rule_csv);
-    g_free (title);
 }
 
 /* =====================================================================
@@ -3200,100 +5006,4 @@ whatif_window_action (GtkWidget *window, const FsWhatIfResult *result,
     }
 
     whatif_report_end ();
-}
-
-/* =====================================================================
- * on_clear_clicked
- * ===================================================================== */
-static void
-on_clear_clicked (GtkButton *btn, gpointer data)
-{
-    (void)btn; (void)data;
-    if (global_copilot)
-        fs_copilot_clear_insights (global_copilot);
-    refresh_insights ();
-    update_stats ();
-    text_view_append (analysis_output, "\nInsights cleared.\n", "dim");
-}
-
-/* =====================================================================
- * on_row_activated - Double-click for details
- * ===================================================================== */
-static void
-on_row_activated (GtkTreeView *tree, GtkTreePath *path,
-                  GtkTreeViewColumn *col, gpointer data)
-{
-    (void)path; (void)col; (void)data;
-
-    GtkTreeModel *model = gtk_tree_view_get_model (tree);
-    GtkTreeIter iter;
-    if (!gtk_tree_model_get_iter (model, &iter, path)) return;
-
-    gchar *title = NULL, *desc = NULL, *sugg = NULL, *app = NULL;
-    gtk_tree_model_get (model, &iter,
-        COL_TITLE, &title, COL_DESC, &desc,
-        COL_SUGGESTION, &sugg, COL_APP, &app, -1);
-
-    GtkWidget *dialog = gtk_message_dialog_new (
-        GTK_WINDOW (gtk_widget_get_toplevel (copilot_vbox)),
-        GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
-        "%s\n\n%s\n\nApp: %s\nSuggestion: %s",
-        title ? title : "", desc ? desc : "",
-        app ? app : "-", sugg ? sugg : "-");
-    gtk_window_set_title (GTK_WINDOW (dialog), _("Insight Details"));
-    gtk_dialog_run (GTK_DIALOG (dialog));
-    gtk_widget_destroy (dialog);
-
-    g_free (title); g_free (desc); g_free (sugg); g_free (app);
-}
-
-/* =====================================================================
- * severity_to_icon - Map severity to stock GTK icon
- * ===================================================================== */
-static const gchar *
-severity_to_icon (FsCopilotSeverity sev)
-{
-    switch (sev) {
-    case FS_COPILOT_CRITICAL: return "dialog-error";
-    case FS_COPILOT_WARNING:  return "dialog-warning";
-    case FS_COPILOT_INFO:     return "dialog-information";
-    default:                  return "dialog-question";
-    }
-}
-
-/* =====================================================================
- * insight_type_to_string
- * ===================================================================== */
-static const gchar *
-insight_type_to_string (FsInsightType type)
-{
-    switch (type) {
-    case FS_INSIGHT_NEW_APPLICATION:      return _("New App");
-    case FS_INSIGHT_UNUSUAL_PORT:         return _("Unusual Port");
-    case FS_INSIGHT_UNUSUAL_DESTINATION:  return _("Unusual Dest");
-    case FS_INSIGHT_UNUSUAL_VOLUME:       return _("Unusual Volume");
-    case FS_INSIGHT_UNUSUAL_TIME:         return _("Unusual Time");
-    case FS_INSIGHT_RULE_CONFLICT:        return _("Rule Conflict");
-    case FS_INSIGHT_REDUNDANT_RULE:       return _("Redundant Rule");
-    case FS_INSIGHT_MISSING_RULE:         return _("Missing Rule");
-    case FS_INSIGHT_SUSPICIOUS_BEHAVIOR:  return _("Suspicious");
-    case FS_INSIGHT_RULE_OPTIMIZATION:    return _("Optimization");
-    case FS_INSIGHT_BEACON:               return _("Beacon");
-    case FS_INSIGHT_FANOUT:               return _("Fan-Out");
-    default:                              return _("Unknown");
-    }
-}
-
-/* =====================================================================
- * severity_to_string
- * ===================================================================== */
-static const gchar *
-severity_to_string (FsCopilotSeverity sev)
-{
-    switch (sev) {
-    case FS_COPILOT_INFO:     return _("Info");
-    case FS_COPILOT_WARNING:  return _("Warning");
-    case FS_COPILOT_CRITICAL: return _("Critical");
-    default:                  return _("Unknown");
-    }
 }

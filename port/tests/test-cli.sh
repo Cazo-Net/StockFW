@@ -167,6 +167,93 @@ assert d['verdict'] == 'ALLOWED' and d['answers'][0]['origin'] == 'stopped', d
 assert d['notes'][0].startswith('Once the firewall runs: BLOCKED'), d['notes']"
 fi
 
+# --------------------------------------------------------- copilot health
+# A policy of its own, so the findings are exactly the ones planted.
+# The machine is fixed too: the local network a narrowing uses
+# (STOCKFW_LAN_PREFIX) and this computer's own addresses
+# (STOCKFW_LOCAL_ADDRESSES, one on that network).  Every private
+# address of the computer is a LAN the fix must keep reachable, so with
+# the real adapters a CI runner's 10.1.0.x would decide the answer.
+# It must write nothing.
+CP_RULES="$TMP/rules-cp"
+mkdir -p "$CP_RULES"
+CP_ENV="STOCKFW_RULES_DIR='$CP_RULES' STOCKFW_LAN_PREFIX=192.168.1.0/24 STOCKFW_LOCAL_ADDRESSES=192.168.1.5"
+cp_run () { STOCKFW_RULES_DIR="$CP_RULES" STOCKFW_LAN_PREFIX=192.168.1.0/24 \
+            STOCKFW_LOCAL_ADDRESSES=192.168.1.5 "$@"; }
+cp_snap () { (cd "$CP_RULES" && find . -type f -exec md5sum {} + | sort; stat -c '%n %y' .; ls -lA --time-style=full-iso -R .) > "$1"; }
+# cp_json_at <local addresses> <python>: runs `stockfw --json copilot
+# health' in the fixed environment with those addresses as this
+# computer's, then the python on r (the process) and d (the document);
+# a failed check prints the document it read.  cp_json: on the LAN only.
+cp_json_at () { py "
+import json, os, subprocess, sys
+env = dict(os.environ, STOCKFW_RULES_DIR='$CP_RULES',
+           STOCKFW_LAN_PREFIX='192.168.1.0/24',
+           STOCKFW_LOCAL_ADDRESSES='$1')
+r = subprocess.run(['$S', '--json', 'copilot', 'health'], env=env,
+                   capture_output=True, text=True)
+try:
+    d = json.loads(r.stdout)
+$(printf '%s\n' "$2" | sed 's/^/    /')
+except Exception:
+    print('--- stockfw --json copilot health (exit %d) printed:' % r.returncode, file=sys.stderr)
+    print(r.stdout + r.stderr, file=sys.stderr)
+    raise"; }
+cp_json () { cp_json_at 192.168.1.5 "$1"; }
+
+check "help lists copilot" bash -c "'$S' help | grep -q 'copilot health'"
+check "copilot with no subcommand is a usage error (exit 2)" rc_is 2 "$S" copilot
+check "copilot health with a stray argument is a usage error (exit 2)" \
+  rc_is 2 "$S" copilot health now
+check "copilot health on an empty policy: no findings (exit 0)" \
+  rc_is 0 cp_run "$S" copilot health
+check "  ...and --json says so" cp_json "
+assert d['version'] == 1 and d['findings'] == [] and d['policy_rules'] == 0, d"
+cp_run "$S" policy add inbound-allow-service RDP 3389 Anyone > /dev/null
+cp_snap "$TMP/cp-before"
+check "copilot health with RDP open to anyone: findings (exit 7)" \
+  rc_is 7 cp_run "$S" copilot health
+check "  ...--json parses: risky_open, critical, a verified narrowing" cp_json "
+assert r.returncode == 7, r.returncode
+f = [x for x in d['findings'] if x['kind'] == 'risky_open']
+assert len(f) == 1, d
+f = f[0]
+assert f['severity'] == 'critical' and f['rule']['csv'] == 'RDP, 3389, Anyone', f
+assert f['rule']['kind'] == 'inbound_allow_service' and f['rule']['index'] == 0, f
+fx = f['fix']
+assert fx is not None, f
+assert fx['verified'] and fx['after'] == 'RDP, 3389, 192.168.1.0/24', fx
+outside = [c for c in fx['checks'] if '203.0.113.10' in c['probe']]
+assert outside and outside[0]['before'] == 'ALLOWED' and outside[0]['after'] == 'BLOCKED', fx
+lan = [c for c in fx['checks'] if '192.168.1.20' in c['probe']]
+assert lan and all(c['before'] == c['after'] for c in lan), fx"
+check "  ...the text output names the fix and says nothing was written" \
+  bash -c "$CP_ENV '$S' copilot health > '$TMP/cp-text';
+           grep -q 'fix:   Narrow to 192.168.1.0/24' '$TMP/cp-text' &&
+           grep -q 'nothing was written' '$TMP/cp-text' ||
+           { cat '$TMP/cp-text' >&2; false; }"
+# A computer on two private networks (a CI runner's 10.1.0.x beside the
+# LAN): narrowing to one would cut the other off, so no fix is offered,
+# and the checks the reason points to are printed.
+check "  ...on a second private network no narrowing is offered, and the failed check is shown" \
+  cp_json_at 192.168.1.5,10.1.0.42 "
+f = [x for x in d['findings'] if x['kind'] == 'risky_open'][0]
+assert f['fix'] is None and 'did not give the promised' in f['no_fix_reason'], f
+t = f['tried']
+assert t['after'] == 'RDP, 3389, 192.168.1.0/24', t
+other = [c for c in t['checks'] if '10.1.0.20' in c['probe']]
+assert other and other[0]['before'] == 'ALLOWED' and other[0]['after'] == 'BLOCKED', t"
+check "  ...and the text output lists that check under the reason" \
+  bash -c "STOCKFW_RULES_DIR='$CP_RULES' STOCKFW_LAN_PREFIX=192.168.1.0/24 STOCKFW_LOCAL_ADDRESSES=192.168.1.5,10.1.0.42 '$S' copilot health > '$TMP/cp-text2';
+           grep -q 'no fix offered' '$TMP/cp-text2' &&
+           grep -q 'checked: Inbound TCP port 3389 from 10.1.0.20: ALLOWED -> BLOCKED' '$TMP/cp-text2' ||
+           { cat '$TMP/cp-text2' >&2; false; }"
+cp_snap "$TMP/cp-after"
+check "copilot health writes nothing (rules files and their times unchanged)" \
+  cmp -s "$TMP/cp-before" "$TMP/cp-after"
+check "copilot health in text mode shows the word for the severity" \
+  bash -c "$CP_ENV '$S' copilot health | grep -q '^\[critical\] RDP (3389) is open to the internet'"
+
 # --------------------------------------------------------- apply (dry run only)
 check "apply --dry-run previews and changes nothing" \
   bash -c "'$S' apply --dry-run | grep -q 'Nothing was changed'"

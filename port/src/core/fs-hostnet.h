@@ -7,7 +7,8 @@
  * feeds are downloaded from.
  *
  * fs_hostnet_read() gathers it all from the running system (Linux:
- * getifaddrs, /proc/net, resolver files; elsewhere: empty).  The
+ * getifaddrs, /proc/net, resolver files; Windows: the gateways and DNS
+ * servers GetAdaptersAddresses reports, the other sets empty).  The
  * parsers it uses are pure and public, so the tests feed them fixtures.
  *--------------------------------------------------------------------*/
 #ifndef FS_HOSTNET_H

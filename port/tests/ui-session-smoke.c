@@ -27,7 +27,17 @@
  *   prefs
  *     - the same with the Preferences window open, which is no
  *       GtkDialog and runs a loop of its own: the quit closes it as its
- *       Cancel would (a change made in it is not saved) and finishes.
+ *       Cancel would (a change made in it is not saved) and finishes;
+ *   background (the window hidden, as "Minimize to the tray" leaves it)
+ *     - a Sentinel block whose ten minutes run out while the window is
+ *       hidden is lifted from the policy on time;
+ *     - an event still reaches the Copilot: the contact that completes
+ *       a timed series is staged as a Sentinel block, through the
+ *       Events page's own callback;
+ *     - what the Copilot learned is written by the periodic save;
+ *     - the tray's Pause Sentinel item stays offered, pauses, and a
+ *       paused Sentinel stages nothing;
+ *     - nothing opens a window or a dialog meanwhile.
  *
  * Needs a display (xvfb-run).  Everything the app writes goes to a
  * scratch directory.
@@ -66,6 +76,10 @@ static int failures = 0;
 } while (0)
 
 #define SENTINEL_CSV "203.0.113.9, Sentinel: beacon to 203.0.113.9"
+/* The background scenario's timed contacts. */
+#define BEACON_DEST  "203.0.113.77"
+#define BEACON_DEST2 "203.0.113.78"
+#define BEACON_APP   "beaconprobe"
 #define PROBE_KEY    "/apps/stockfw/client/session_probe"
 
 /* ------------------------------------------------------- fake backend */
@@ -285,20 +299,42 @@ prepare (void)
 	SCRATCH_ENV ("STOCKFW_BEHAVIOR_FILE", "behavior.csv");
 	SCRATCH_ENV ("STOCKFW_TRUST_FILE", "trust.csv");
 	SCRATCH_ENV ("STOCKFW_AUTOSTART_DIR", "autostart");
-	if (g_strcmp0 (scenario, "autosave") == 0)
+	if (g_strcmp0 (scenario, "autosave") == 0 ||
+	    g_strcmp0 (scenario, "background") == 0)
 		g_setenv ("STOCKFW_AUTOSAVE_S", "1", TRUE);
 	else
 		g_unsetenv ("STOCKFW_AUTOSAVE_S");
 
 	baseline_file = in_scratch ("behavior.csv");
 
+	/* The DNS servers and gateway the Copilot exempts, fixed, so the
+	 * documentation addresses below are ordinary public hosts. */
+	path = in_scratch ("resolv.conf");
+	g_file_set_contents (path, "nameserver 192.0.2.53\n", -1, NULL);
+	g_setenv ("STOCKFW_RESOLV_CONF", path, TRUE);
+	g_free (path);
+	path = in_scratch ("route");
+	g_file_set_contents (path,
+		"Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\t"
+		"Mask\t\tMTU\tWindow\tIRTT\n"
+		"eth0\t00000000\t0102000A\t0003\t0\t0\t0\t00000000\t0\t0\t0\n",
+		-1, NULL);
+	g_setenv ("STOCKFW_ROUTE_FILE", path, TRUE);
+	g_free (path);
+	g_unsetenv ("STOCKFW_RESOLVED_CONF");
+
 	/* Sentinel staged a block a minute ago (nine minutes left), so
-	 * the restore re-arms it and there is a staged list to write. */
+	 * the restore re-arms it and there is a staged list to write.  In
+	 * the background scenario it was staged nine minutes and 57
+	 * seconds ago: its ten minutes run out while the window is
+	 * hidden. */
 	policy = fs_policy_new ();
 	put_rule (policy, FS_RULE_OUTBOUND_DENY_TO, SENTINEL_CSV);
 	fs_policy_save (policy);
 	fs_policy_free (policy);
-	rows = g_strdup_printf ("S,%" G_GINT64_FORMAT ",%d,%s\n", now - 60,
+	rows = g_strdup_printf ("S,%" G_GINT64_FORMAT ",%d,%s\n",
+	                        g_strcmp0 (scenario, "background") == 0
+	                        ? now - 597 : now - 60,
 	                        (int) FS_RULE_OUTBOUND_DENY_TO, SENTINEL_CSV);
 	path = in_scratch ("autoblocks");
 	g_file_set_contents (path, rows, -1, NULL);
@@ -380,6 +416,177 @@ check_autosave (void)
 	g_free (good);
 	g_free (blocker);
 	g_free (bad);
+}
+
+/* --- background: the window hidden behind the tray icon ----------- */
+
+/* The policy as saved in the rules directory: what Sentinel staged or
+ * lifted, read back from disk. */
+static gboolean
+policy_has (const gchar *target)
+{
+	FsPolicy *policy = fs_policy_new ();
+	GPtrArray *rows;
+	gboolean found = FALSE;
+
+	fs_policy_load (policy, NULL);
+	rows = policy->kinds[FS_RULE_OUTBOUND_DENY_TO];
+	for (guint i = 0; rows != NULL && i < rows->len; i++) {
+		FsRule *rule = g_ptr_array_index (rows, i);
+
+		if (g_strcmp0 (rule->target, target) == 0)
+			found = TRUE;
+	}
+	fs_policy_free (policy);
+	return found;
+}
+
+static GtkWidget *
+menu_item_prefixed (GtkWidget *menu, const gchar *prefix)
+{
+	GList *items = gtk_container_get_children (GTK_CONTAINER (menu));
+	GtkWidget *found = NULL;
+
+	for (GList *l = items; l != NULL && found == NULL; l = l->next)
+		if (GTK_IS_MENU_ITEM (l->data) &&
+		    !GTK_IS_SEPARATOR_MENU_ITEM (l->data) &&
+		    g_str_has_prefix (gtk_menu_item_get_label (l->data),
+		                      prefix))
+			found = l->data;
+	g_list_free (items);
+	return found;
+}
+
+/* Visible top-level windows other than the tray icon itself. */
+static guint
+visible_windows (void)
+{
+	GList *tops = gtk_window_list_toplevels ();
+	guint n = 0;
+
+	for (GList *l = tops; l != NULL; l = l->next)
+		if (gtk_widget_get_visible (l->data) &&
+		    gtk_window_get_window_type (l->data) ==
+		    GTK_WINDOW_TOPLEVEL &&
+		    /* the icon's own plug, which is what stays up */
+		    g_strcmp0 (G_OBJECT_TYPE_NAME (l->data),
+		               "GtkTrayIcon") != 0)
+			n++;
+	g_list_free (tops);
+	return n;
+}
+
+/* Seven contacts 30 s apart, the last 30 s ago, straight into the
+ * app's Copilot (a test cannot wait three minutes); the eighth, which
+ * completes the series, then comes now through the Events page's own
+ * log callback, as the backend delivers it. */
+static void
+beacon_series (const gchar *dest)
+{
+	gint64 now_us = g_get_monotonic_time ();
+	gint64 now_unix = g_get_real_time () / G_USEC_PER_SEC;
+	FsHit *hit = fs_hit_new ();
+
+	hit->time = g_strdup ("2026-11-02 10:42:01");
+	hit->direction = g_strdup ("Out");
+	hit->protocol = g_strdup ("TCP");
+	hit->port = g_strdup ("4444");
+	hit->source = g_strdup ("192.0.2.20");
+	hit->destination = g_strdup (dest);
+	hit->service = g_strdup (BEACON_APP);
+	for (gint k = 7; k >= 1; k--)
+		fs_copilot_feed_event_full (copilot, hit,
+		                            now_us - (gint64) k * 30 *
+		                            G_USEC_PER_SEC,
+		                            now_unix - k * 30);
+	if (log_cb != NULL)
+		log_cb (hit, log_user);
+	fs_hit_free (hit);
+}
+
+static void
+check_background (void)
+{
+	GtkWindow *win = gtk_application_get_active_window (the_app);
+	GtkWidget *item;
+	gchar *list = in_scratch ("autoblocks");
+
+	if (win == NULL) {
+		GList *wins = gtk_application_get_windows (the_app);
+
+		win = wins != NULL ? wins->data : NULL;
+	}
+
+	/* What the window's close does with the tray icon up and "Minimize
+	 * to the tray" on (fs-app.c): it is hidden, nothing else.  The
+	 * icon cannot embed without a notification area (xvfb), so the
+	 * hide is done here directly. */
+	CHECK (win != NULL && gtk_widget_get_visible (GTK_WIDGET (win)),
+	       "(the window is up before it is hidden)");
+	if (win == NULL)
+		return;
+	gtk_widget_hide (GTK_WIDGET (win));
+	wait_s (0.3);
+	CHECK (!gtk_widget_get_visible (GTK_WIDGET (win)) &&
+	       visible_windows () == 0,
+	       "(the window is hidden; nothing of StockFW is on screen)");
+	CHECK (policy_has ("203.0.113.9") &&
+	       file_has (list, "203.0.113.9"),
+	       "(the restored Sentinel block is in the policy, about 3 s "
+	       "left)");
+	CHECK (log_cb != NULL,
+	       "the Events page keeps monitoring with the window hidden");
+
+	/* 1. Expiry runs while hidden. */
+	wait_s (4.5);
+	CHECK (!policy_has ("203.0.113.9") && !file_has (list, "203.0.113.9"),
+	       "a Sentinel block whose ten minutes ran out while the window "
+	       "was hidden is lifted from the policy and the staged list");
+	CHECK (audit_count ("expired after 10 minutes") == 1,
+	       "...and audited (%u)", audit_count ("expired after 10 minutes"));
+
+	/* 2. Events reach the Copilot; Sentinel stages the block. */
+	g_unlink (baseline_file);
+	beacon_series (BEACON_DEST);
+	CHECK (fs_copilot_events_seen (copilot) >= 8,
+	       "an event delivered while hidden reaches the Copilot (%"
+	       G_GUINT64_FORMAT " seen)", fs_copilot_events_seen (copilot));
+	CHECK (policy_has (BEACON_DEST) && file_has (list, BEACON_DEST),
+	       "the contact that completes a timed series is staged as a "
+	       "Sentinel block while the window is hidden");
+	CHECK (audit_count ("sentinel auto-block is live") >= 1,
+	       "...and pushed through the apply gate");
+
+	/* 3. The periodic save writes what was learned. */
+	wait_s (2.2);
+	CHECK (file_has (baseline_file, BEACON_APP),
+	       "what the Copilot learned while hidden is written by the "
+	       "periodic save");
+
+	/* 4. The tray's Sentinel item works with the window hidden. */
+	item = menu_item_prefixed (fs_tray_menu (),
+	                           "Pause Sentinel auto-block for 1 hour");
+	CHECK (item != NULL && gtk_widget_get_sensitive (item),
+	       "the tray offers Pause Sentinel auto-block while hidden");
+	if (item != NULL)
+		gtk_menu_item_activate (GTK_MENU_ITEM (item));
+	CHECK (fs_copilot_sentinel_paused (NULL) &&
+	       menu_item_prefixed (fs_tray_menu (),
+	                           "Resume Sentinel auto-block (paused, ")
+	       != NULL,
+	       "...it pauses Sentinel, and the menu says so");
+	beacon_series (BEACON_DEST2);
+	CHECK (!policy_has (BEACON_DEST2),
+	       "a paused Sentinel stages nothing, window hidden or not");
+	fs_copilot_sentinel_pause (0);
+
+	/* 5. Nothing came up meanwhile. */
+	wait_s (0.3);
+	CHECK (!gtk_widget_get_visible (GTK_WIDGET (win)) &&
+	       visible_windows () == 0,
+	       "nothing opened a window or a dialog while hidden");
+
+	g_free (list);
 }
 
 static void
@@ -642,6 +849,9 @@ run_checks (gpointer data)
 		fs_app_quit ();
 	} else if (g_strcmp0 (scenario, "queryend") == 0) {
 		check_queryend ();
+	} else if (g_strcmp0 (scenario, "background") == 0) {
+		check_background ();
+		fs_app_quit ();
 	}
 	return G_SOURCE_REMOVE;
 }
@@ -692,7 +902,8 @@ static int
 run_all (const gchar *self)
 {
 	static const gchar *const all[] = { "autosave", "queryend", "dialog",
-	                                    "prefs", "sametick" };
+	                                    "prefs", "sametick",
+	                                    "background" };
 	int bad = 0;
 
 	for (guint i = 0; i < G_N_ELEMENTS (all); i++) {

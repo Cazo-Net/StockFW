@@ -1125,8 +1125,10 @@ fs_app_activate (GtkApplication *app)
 	}
 
 	add_page (_("Copilot"),
-	          _("Learns each program's usual traffic, flags what is "
-	            "unusual, and tries rule changes before you make them."),
+	          _("Checks the event log and the policy with fixed rules on "
+	            "this computer, shows the events and the rule behind each "
+	            "finding, and tries rule changes before you make them. "
+	            "Nothing is sent anywhere."),
 	          fs_copilot_page (copilot, policy), TRUE);
 
 	/* P6 (false-outage hardening): the Sentinel staged-block list is

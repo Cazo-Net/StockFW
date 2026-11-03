@@ -41,6 +41,7 @@ add_library(fs-core STATIC
   src/core/fs-fwrule.c
   src/core/fs-whatif.c
   src/core/fs-copilot.c
+  src/core/fs-health.c
   src/core/fs-eventrule.c
   src/core/fs-audit.c
   src/core/fs-trust.c
@@ -496,6 +497,11 @@ target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)
 # fixes it offers (test-whatif.c; test-core.sh runs it too).  GLib only.
 add_executable(fs-whatif-test EXCLUDE_FROM_ALL tests/test-whatif.c)
 target_link_libraries(fs-whatif-test PRIVATE fs-core-nogui)
+# The Copilot's policy health check: exact coverage, the golden table on
+# both platform models, and every fix verified by the What-If engine
+# (test-health.c; test-core.sh runs it too).  GLib only.
+add_executable(fs-health-test EXCLUDE_FROM_ALL tests/test-health.c)
+target_link_libraries(fs-health-test PRIVATE fs-core-nogui)
 # The Overview against a fake backend that answers the way Windows does
 # (profiles, the profile in use, the network's name), so the Windows
 # half of the page is exercised on any platform.  The test supplies
