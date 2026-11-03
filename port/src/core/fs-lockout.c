@@ -31,7 +31,10 @@ verdict_rank (FsWhatIfVerdict v)
 	}
 }
 
-/* [ peer_texts ] -- one address per range start, at most `cap'. */
+/* [ peer_texts ] -- every address of every range, at most `cap'.
+ * The set is normalized, so two peers next to each other (10.0.0.5
+ * and 10.0.0.6) are one range: each address in it is a peer of its
+ * own, not only the first. */
 static GPtrArray *
 peer_texts (const FsRangeSet *peers, guint cap)
 {
@@ -42,20 +45,35 @@ peer_texts (const FsRangeSet *peers, guint cap)
 
 	for (guint i = 0; peers->v4 != NULL && i < peers->v4->len &&
 	                  out->len < cap; i++) {
-		guint32 a = g_array_index (peers->v4, FsRange4, i).start;
+		FsRange4 r = g_array_index (peers->v4, FsRange4, i);
+		guint32 a = r.start;
 
-		g_ptr_array_add (out, g_strdup_printf ("%u.%u.%u.%u",
-		                                       (a >> 24) & 0xff,
-		                                       (a >> 16) & 0xff,
-		                                       (a >> 8) & 0xff,
-		                                       a & 0xff));
+		for (;;) {
+			g_ptr_array_add (out, g_strdup_printf ("%u.%u.%u.%u",
+			                                       (a >> 24) & 0xff,
+			                                       (a >> 16) & 0xff,
+			                                       (a >> 8) & 0xff,
+			                                       a & 0xff));
+			if (a >= r.end || out->len >= cap)
+				break;
+			a++;
+		}
 	}
 	for (guint i = 0; peers->v6 != NULL && i < peers->v6->len &&
 	                  out->len < cap; i++) {
-		FsRange6 one = g_array_index (peers->v6, FsRange6, i);
+		FsRange6 r = g_array_index (peers->v6, FsRange6, i);
+		FsRange6 one;
 
-		one.end = one.start;
-		g_ptr_array_add (out, fs_range6_to_string (&one));
+		one.start = r.start;
+		for (;;) {
+			one.end = one.start;
+			g_ptr_array_add (out, fs_range6_to_string (&one));
+			if ((one.start.hi == r.end.hi &&
+			     one.start.lo == r.end.lo) || out->len >= cap)
+				break;
+			if (++one.start.lo == 0)
+				one.start.hi++;
+		}
 	}
 	return out;
 }

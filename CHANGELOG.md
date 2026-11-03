@@ -58,7 +58,12 @@ into `/usr/local/share/doc/stockfw/`.
   terminal, and without one they refuse unless you pass `--yes`.
   This works under `sudo` too, where `SSH_CONNECTION` is gone.
 - `start` and `stop` say "Already running" or "Already stopped" and
-  write no audit line when there is nothing to do.
+  write no audit line of their own when there is nothing to do. A
+  `stop` on a stopped firewall still takes threat-intel blocklists
+  down, and that is logged as `intel-suspend`.
+- `policy add` and `policy remove` refuse (exit 2) while a line of the
+  rule files is not a rule, and name it. Saving would have deleted
+  that line without a word.
 - `simulate --applied` asks the applied policy, not the saved one.
   `copilot health --severity info|warning|critical` sets the level that
   gives exit 7.

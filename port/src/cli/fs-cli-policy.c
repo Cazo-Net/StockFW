@@ -120,13 +120,40 @@ fs_cli_print_problems (const GPtrArray *problems)
 		fs_cli_error ("%s", line);
 		g_free (line);
 	}
-	if (problems != NULL && problems->len > 0)
-		fs_cli_hint ("these line%s %s not rules and %s left out; "
+	if (problems != NULL && problems->len == 1)
+		fs_cli_hint ("this line is not a rule and is left out; "
+		             "`stockfw check' lists it, apply refuses until "
+		             "it is fixed");
+	else if (problems != NULL && problems->len > 1)
+		fs_cli_hint ("these lines are not rules and are left out; "
 		             "`stockfw check' lists them, apply refuses until "
-		             "they are fixed",
-		             problems->len == 1 ? "" : "s",
-		             problems->len == 1 ? "is" : "are",
-		             problems->len == 1 ? "is" : "are");
+		             "they are fixed");
+}
+
+/* [ not_rules ] -- "is not a rule" or "are not rules", for n lines. */
+static const gchar *
+not_rules (guint n)
+{
+	return n == 1 ? "is not a rule" : "are not rules";
+}
+
+/* [ refuse_lossy_save ] -- policy add and remove rewrite the rule
+ * files from memory, and a line that is not a rule is not in memory:
+ * the save would delete it without a word.  So they refuse, name the
+ * lines, and leave the files as they are.  TRUE when refused. */
+static gboolean
+refuse_lossy_save (GPtrArray *problems)
+{
+	if (problems == NULL || problems->len == 0)
+		return FALSE;
+	fs_cli_print_problems (problems);
+	fs_cli_error ("not saved: %u line%s of the policy %s, and saving "
+	              "would delete %s", problems->len,
+	              problems->len == 1 ? "" : "s", not_rules (problems->len),
+	              problems->len == 1 ? "it" : "them");
+	fs_cli_hint ("fix or delete %s in the file by hand, then run the "
+	             "command again", problems->len == 1 ? "it" : "them");
+	return TRUE;
 }
 
 /* ------------------------------------------------------ rule objects */
@@ -919,6 +946,7 @@ policy_add (gint argc, gchar **argv)
 	gchar *csv;
 	gboolean ok, paired;
 	guint number, twin_number = 0;
+	GPtrArray *problems = NULL;
 
 	if (argc < 1 || !fs_cli_kind_parse (argv[0], &kind)) {
 		if (argc < 1)
@@ -1048,7 +1076,15 @@ policy_add (gint argc, gchar **argv)
 		}
 	}
 
-	policy = fs_cli_load_policy_report (NULL, NULL);
+	policy = fs_cli_load_policy_report (NULL, &problems);
+	if (refuse_lossy_save (problems)) {
+		g_ptr_array_unref (problems);
+		fs_rule_free (rule);
+		fs_rule_free (twin);
+		fs_policy_free (policy);
+		return FS_EXIT_USAGE;
+	}
+	g_ptr_array_unref (problems);
 
 	if (fs_policy_contains (policy, rule) &&
 	    (twin == NULL || fs_policy_contains (policy, twin))) {
@@ -1153,8 +1189,15 @@ policy_remove (gint argc, gchar **argv)
 	gint i = 0;
 	FsRule *copy;
 	gchar *line;
+	GPtrArray *problems = NULL;
 
-	policy = fs_cli_load_policy_report (NULL, NULL);
+	policy = fs_cli_load_policy_report (NULL, &problems);
+	if (refuse_lossy_save (problems)) {
+		g_ptr_array_unref (problems);
+		fs_policy_free (policy);
+		return FS_EXIT_USAGE;
+	}
+	g_ptr_array_unref (problems);
 	if (!take_ref (argc, argv, &i, policy, &kind, &number,
 	               "stockfw policy remove KIND:N  (or KIND N)")) {
 		fs_policy_free (policy);
@@ -1845,10 +1888,9 @@ fs_cli_cmd_apply (gint argc, gchar **argv)
 	 * firewall: refused, the dry run included, until it is fixed. */
 	if (problems->len > 0) {
 		fs_cli_print_problems (problems);
-		fs_cli_error ("not applied: %u line%s of the policy %s not "
-		              "rules", problems->len,
-		              problems->len == 1 ? "" : "s",
-		              problems->len == 1 ? "is" : "are");
+		fs_cli_error ("not applied: %u line%s of the policy %s",
+		              problems->len, problems->len == 1 ? "" : "s",
+		              not_rules (problems->len));
 		g_ptr_array_unref (problems);
 		fs_policy_free (policy);
 		return FS_EXIT_USAGE;
@@ -2200,10 +2242,10 @@ start_or_stop (gint argc, gchar **argv, gboolean start)
 		 * named, and apply refuses until they are fixed. */
 		if (malformed > 0 && !fs_cli.json) {
 			fs_cli_print_problems (problems);
-			warn ("%d line%s of the saved policy %s not rules; the "
+			warn ("%d line%s of the saved policy %s; the "
 			      "start uses the last applied policy", malformed,
 			      malformed == 1 ? "" : "s",
-			      malformed == 1 ? "is" : "are");
+			      not_rules ((guint) malformed));
 		}
 
 		/* The lockout guard, on what the start installs: the
@@ -2567,6 +2609,25 @@ finding_ref (gint kind, gint index)
 	return fs_cli_rule_ref ((FsRuleKind) kind, (guint) index + 1);
 }
 
+/* [ health_line ] -- one line of `copilot health': the text, which
+ * holds rule names, comments, hosts and probe text from the rule
+ * files, goes through fs_cli_out_safe; `pre' and `post' (colour) and
+ * the line break stay outside. */
+static void G_GNUC_PRINTF (3, 4)
+health_line (const gchar *pre, const gchar *post, const gchar *format, ...)
+{
+	va_list args;
+	gchar *raw, *safe;
+
+	va_start (args, format);
+	raw = g_strdup_vprintf (format, args);
+	va_end (args);
+	safe = fs_cli_out_safe (raw);
+	printf ("%s%s%s\n", pre, safe, post);
+	g_free (safe);
+	g_free (raw);
+}
+
 /* [ health_json ] -- one schema, shared with the dashboard if it ever
  * serves it: version, the rule count, the platform model, findings. */
 static void
@@ -2678,10 +2739,10 @@ copilot_health (FsCopilotSeverity threshold)
 
 	if (problems->len > 0) {
 		fs_cli_print_problems (problems);
-		fs_cli_error ("%u policy line%s %s not rules, so the check would "
+		fs_cli_error ("%u policy line%s %s, so the check would "
 		              "be incomplete", problems->len,
 		              problems->len == 1 ? "" : "s",
-		              problems->len == 1 ? "is" : "are");
+		              not_rules (problems->len));
 		g_ptr_array_unref (problems);
 		fs_policy_free (policy);
 		return FS_EXIT_USAGE;
@@ -2722,50 +2783,55 @@ copilot_health (FsCopilotSeverity threshold)
 				                                    : fs_cli_dim ();
 			gchar *ref = finding_ref (f->policy_kind, f->policy_index);
 
-			printf ("\n%s[%s]%s %s\n", colour,
+			printf ("\n%s[%s]%s ", colour,
 			        fs_health_severity_name (f->severity),
-			        fs_cli_reset (), f->title);
-			printf ("  rule:  %s: %s\n", ref != NULL ? ref : "?",
-			        f->rule_csv);
+			        fs_cli_reset ());
+			health_line ("", "", "%s", f->title);
+			health_line ("", "", "  rule:  %s: %s",
+			             ref != NULL ? ref : "?", f->rule_csv);
 			g_free (ref);
 			/* A finding about two rows names both. */
 			if (f->other_csv != NULL && f->other_kind >= 0) {
 				gchar *oref = finding_ref (f->other_kind,
 				                           f->other_index);
 
-				printf ("  and:   %s: %s\n", oref != NULL ? oref : "?",
-				        f->other_csv);
+				health_line ("", "", "  and:   %s: %s",
+				             oref != NULL ? oref : "?", f->other_csv);
 				g_free (oref);
 			}
 			if (f->why != NULL)
-				printf ("  why:   %s\n", f->why);
+				health_line ("", "", "  why:   %s", f->why);
 			if (f->fix != FS_HEALTH_FIX_NONE && f->verified) {
-				printf ("  fix:   %s: %s -> %s\n", f->fix_label,
-				        f->fix_before,
-				        f->fix_after != NULL ? f->fix_after : "(removed)");
+				health_line ("", "", "  fix:   %s: %s -> %s",
+				             f->fix_label, f->fix_before,
+				             f->fix_after != NULL ? f->fix_after
+				                                  : "(removed)");
 				for (guint k = 0; k < f->checks->len; k++) {
 					const FsHealthCheck *c =
 						g_ptr_array_index (f->checks, k);
 
-					printf ("         checked: %s: %s -> %s\n", c->probe,
-					        fs_whatif_verdict_name (c->before),
-					        fs_whatif_verdict_name (c->after));
+					health_line ("", "", "         checked: %s: %s -> %s",
+					             c->probe,
+					             fs_whatif_verdict_name (c->before),
+					             fs_whatif_verdict_name (c->after));
 				}
 			} else if (f->no_fix_reason != NULL) {
-				printf ("  %sno fix offered: %s%s\n", fs_cli_dim (),
-				        f->no_fix_reason, fs_cli_reset ());
+				health_line (fs_cli_dim (), fs_cli_reset (),
+				             "  no fix offered: %s", f->no_fix_reason);
 				if (f->checks != NULL && f->checks->len > 0)
-					printf ("  tried: %s -> %s\n", f->fix_before,
-					        f->fix_after != NULL ? f->fix_after
-					                             : "(removed)");
+					health_line ("", "", "  tried: %s -> %s",
+					             f->fix_before,
+					             f->fix_after != NULL ? f->fix_after
+					                                  : "(removed)");
 				for (guint k = 0; f->checks != NULL &&
 				                  k < f->checks->len; k++) {
 					const FsHealthCheck *c =
 						g_ptr_array_index (f->checks, k);
 
-					printf ("         checked: %s: %s -> %s\n", c->probe,
-					        fs_whatif_verdict_name (c->before),
-					        fs_whatif_verdict_name (c->after));
+					health_line ("", "", "         checked: %s: %s -> %s",
+					             c->probe,
+					             fs_whatif_verdict_name (c->before),
+					             fs_whatif_verdict_name (c->after));
 				}
 			}
 		}
@@ -2847,9 +2913,12 @@ static const FsCliOption policy_opts[] = {
 	{ NULL, FALSE, NULL }
 };
 
+/* apply -n is still read as --dry-run (fs_cli_cmd_apply), but it is
+ * not listed here: it stays an undocumented alias (cli-plan.md section
+ * 3), out of the man page and completion, where it would read like the
+ * -n N of events and audit. */
 static const FsCliOption apply_opts[] = {
 	{ "--dry-run", FALSE, NULL },
-	{ "-n",        FALSE, NULL },
 	{ "--verbose", FALSE, NULL },
 	{ "-v",        FALSE, NULL },
 	{ "--yes",     FALSE, NULL },
@@ -2918,6 +2987,9 @@ const FsCliCommandDef fs_cli_policy_commands[] = {
 "field or comment that starts with a dash goes after \"--\" or as\n"
 "--comment=TEXT.\n"
 "\n"
+"add and remove refuse while a line of the files is not a rule\n"
+"(`stockfw check'): saving would delete that line.\n"
+"\n"
 "Examples:\n"
 "  stockfw policy add inbound-allow-service SSH 22 192.168.1.0/24\n"
 "  stockfw policy add outbound-deny-to 203.0.113.9 --comment bad\n"
@@ -2977,7 +3049,9 @@ const FsCliCommandDef fs_cli_policy_commands[] = {
 "\n"
 "Removes StockFW's own chains, and its threat-intel blocklists until\n"
 "the next start.  Rules owned by Docker, libvirt or anything else are\n"
-"left alone.  Stopped already: nothing is done.  Needs root.\n",
+"left alone.  When it is stopped already, the stop is not logged, but\n"
+"threat-intel blocklists are still taken down; with threat intel set\n"
+"up, that writes an intel-suspend line to the audit log.  Needs root.\n",
 	  no_opts, NULL },
 
 	{ "simulate", fs_cli_cmd_simulate,

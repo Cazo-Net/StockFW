@@ -11464,6 +11464,43 @@ static void test_lockout_check (void)
 	       "lockout: no peer, no check");
 	fs_lockout_report_free (r);
 
+	/* Peers next to each other are one range once normalized (as
+	 * fs_hostnet_read leaves them): each address is still asked
+	 * about, not only the first. */
+	{
+		FsRule *ssh6 = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                                 "SSH, 22, 2001:db8::/127,");
+		FsRangeSet *pair4 = fs_range_set_new ();
+		FsRangeSet *pair6 = fs_range_set_new ();
+
+		fs_policy_add (policy, ssh6);
+		fs_range_set_add_text (pair4, "192.168.1.255");
+		fs_range_set_add_text (pair4, "192.168.2.0");
+		fs_range_set_normalize (pair4);
+		fs_range_set_add_text (pair6, "2001:db8::1");
+		fs_range_set_add_text (pair6, "2001:db8::2");
+		fs_range_set_normalize (pair6);
+
+		r = fs_lockout_check (policy, NULL, pair4, ports);
+		CHECK (pair4->v4->len == 1 && r->pairs->len == 2 &&
+		       fs_lockout_report_cuts (r) && r->worst != NULL &&
+		       g_strcmp0 (r->worst->peer, "192.168.2.0") == 0,
+		       "lockout: of two adjacent IPv4 peers (one range), the "
+		       "second, outside the LAN, is cut");
+		fs_lockout_report_free (r);
+
+		r = fs_lockout_check (policy, NULL, pair6, ports);
+		CHECK (pair6->v6->len == 1 && r->pairs->len == 2 &&
+		       fs_lockout_report_cuts (r) && r->worst != NULL &&
+		       g_strcmp0 (r->worst->peer, "2001:db8::2") == 0,
+		       "lockout: the same for two adjacent IPv6 peers");
+		fs_lockout_report_free (r);
+
+		fs_range_set_free (pair6);
+		fs_range_set_free (pair4);
+		fs_rule_free (ssh6);
+	}
+
 	CHECK (fs_lockout_env_port ("10.0.0.5 50000 10.0.0.1 2222") == 2222 &&
 	       fs_lockout_env_port ("10.0.0.5 50000 10.0.0.1") == 0 &&
 	       fs_lockout_env_port ("a b c 99999") == 0 &&

@@ -522,19 +522,29 @@ status_line_fit (const gchar *text, guint width)
 	return g_strdup (text);
 }
 
+/* [ status_day_roll ] -- after midnight the count starts again.  Run
+ * before a blocked event is counted as well as before a draw, so the
+ * first event of a new day is counted in the new day, not wiped with
+ * the old one. */
 static void
-status_line_draw (EventsState *st)
+status_day_roll (EventsState *st)
 {
-	guint width = fs_cli_term_width ();
 	gint day = local_day ();
-	gchar *text, *fit;
 
-	/* After midnight the count starts again. */
 	if (day != st->day) {
 		st->day = day;
 		st->blocked_base = 0;
 		st->blocked_live = 0;
 	}
+}
+
+static void
+status_line_draw (EventsState *st)
+{
+	guint width = fs_cli_term_width ();
+	gchar *text, *fit;
+
+	status_day_roll (st);
 	text = status_line_text (st);
 	/* ws_col 0 and no $COLUMNS: 80 rather than a line that wraps. */
 	fit = status_line_fit (text, width > 0 ? width : 80);
@@ -623,8 +633,10 @@ on_live_hit (const FsHit *hit, gpointer data)
 
 	/* Blocked today counts every blocked event, whatever the filters
 	 * let through. */
-	if (st->status_on && fs_hit_is_blocked (hit))
+	if (st->status_on && fs_hit_is_blocked (hit)) {
+		status_day_roll (st);
 		st->blocked_live++;
+	}
 	print_live_hit (hit, data);
 }
 

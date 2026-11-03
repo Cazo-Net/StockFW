@@ -16,10 +16,16 @@
 #
 # Everything runs against scratch directories (STOCKFW_RULES_DIR,
 # XDG_CONFIG_HOME) and a fixture log (STOCKFW_LOG_FILE): the test never
-# touches /etc/stockfw or the live firewall, and `apply' only ever runs
-# with --dry-run.  Linux only; no root needed.
+# touches /etc/stockfw or the host's firewall.  Without root, `apply'
+# only ever runs with --dry-run.  As root, more checks run (the live
+# event line, events -f, the lockout guard, real apply, start and
+# stop); the ones that change a firewall do so only inside a private
+# network namespace (unshare -n).  Linux only.
 #
 #   cd port && bash tests/test-cli.sh
+#
+# It builds the whole tree in the build directory first: the manual
+# page and `cmake --install' need more than the stockfw target.
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PORT="$(dirname "$HERE")"
@@ -32,8 +38,8 @@ fi
 
 BUILD="${STOCKFW_BUILD:-$PORT/build-linux}"
 if ! { cmake -S . -B "$BUILD" -G Ninja > /dev/null &&
-       cmake --build "$BUILD" --target stockfw > /dev/null; }; then
-  echo "FAIL: could not build the stockfw target"
+       cmake --build "$BUILD" > /dev/null; }; then
+  echo "FAIL: could not build the tree in $BUILD"
   echo "FAILED: 1 failure(s)"
   exit 1
 fi
@@ -172,6 +178,8 @@ d = json.loads(subprocess.run(['unshare', '-n', '$S', '--json', 'simulate',
                               capture_output=True, text=True).stdout)
 assert d['verdict'] == 'ALLOWED' and d['answers'][0]['origin'] == 'stopped', d
 assert d['notes'][0].startswith('Once the firewall runs: BLOCKED'), d['notes']"
+else
+  echo "skip: simulate with the firewall stopped (needs root, iptables and unshare)"
 fi
 
 # --------------------------------------------------------- copilot health
@@ -207,6 +215,21 @@ except Exception:
     print(r.stdout + r.stderr, file=sys.stderr)
     raise"; }
 cp_json () { cp_json_at 192.168.1.5 "$1"; }
+
+# The text of `copilot health' shows a rule's name and comment as the
+# rule file holds them: an ESC or a BEL there reaches the terminal only
+# escaped (\x1b), like every other command that shows a rule.
+check "copilot health: a rule name and comment with ESC and BEL are printed escaped" py "
+import os, subprocess
+d = '$TMP/rules-cp-esc'
+env = dict(os.environ, STOCKFW_RULES_DIR=d, STOCKFW_LAN_PREFIX='192.168.1.0/24', STOCKFW_LOCAL_ADDRESSES='192.168.1.5')
+a = subprocess.run(['$S', 'policy', 'add', 'inbound-allow-service', 'EV\x1b]0;PWNED\x07IL', '3389', 'Anyone',
+                    '--comment', 'c\x1b[2J'], env=env, capture_output=True)
+assert a.returncode == 0, a
+r = subprocess.run(['$S', 'copilot', 'health'], env=env, capture_output=True)
+assert r.returncode == 7 and b'rule:' in r.stdout, r
+assert b'\x1b' not in r.stdout and b'\x07' not in r.stdout, r.stdout
+assert b'EV\\\\x1b]0;PWNED\\\\x07IL' in r.stdout and b'c\\\\x1b[2J' in r.stdout, r.stdout"
 
 check "help lists copilot" bash -c "'$S' help | grep -q 'copilot health'"
 check "copilot with no subcommand is a usage error (exit 2)" rc_is 2 "$S" copilot
@@ -968,6 +991,24 @@ mkdir -p "$B/ok/inbound"
 printf '%s\n' 'SSH,,Anyone' > "$B/ok/inbound/allow-service"
 check "check: SSH,,Anyone still loads (a known service needs no port)" \
   bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 0 ok '$S' check"
+check "check: one bad line reads \"this line is not a rule\" and \"1 line ... is not a rule\"" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 2 port '$S' apply --dry-run &&
+           grep -q 'hint: this line is not a rule and is left out' '$TMP/err' &&
+           grep -q 'not applied: 1 line of the policy is not a rule\$' '$TMP/err'"
+# policy add and remove rewrite every rule file from memory, where a
+# line that is not a rule is missing: they refuse instead of deleting it.
+mkdir -p "$B/lossy/inbound" "$B/lossy/outbound"
+printf '%s\n' 'SSH, 22, 192.168.1.0/24,' 'PostgreSQL 5432 10.0.0.0/8' 'HTTP,80,Anyone,' \
+  > "$B/lossy/inbound/allow-service"
+printf '%s\n' '198.51.100.7,' > "$B/lossy/outbound/deny-to"
+cp -r "$B/lossy" "$B/lossy.orig"
+check "policy remove: refuses (rc 2) when a line is not a rule, and names it" \
+  bash -c "$(declare -f b_env b_rc); B='$B'; TMP='$TMP'; b_rc 2 lossy '$S' policy remove inbound-allow-service:2 &&
+           grep -q 'allow-service:2: expected NAME, PORT, FOR' '$TMP/err' &&
+           grep -q 'not saved: 1 line of the policy is not a rule' '$TMP/err' && [ ! -s '$TMP/out' ]"
+check "policy add: refuses (rc 2) for a rule of another kind too" \
+  b_rc 2 lossy "$S" policy add outbound-deny-to 203.0.113.9
+check "  ...and the rule files are left byte for byte" diff -r "$B/lossy" "$B/lossy.orig"
 
 # --- diff: saved against applied
 # As root the firewall's real state would decide "live"; uid 65534
@@ -1330,6 +1371,8 @@ r = subprocess.run(['unshare', '-n', 'sh', '-c', '\"\$0\" policy add inbound-all
 d = json.loads(r.stdout)
 e = d['entries'][-1]
 assert e['action'] == 'policy applied' and e['origin'] == 'cli' and e['detail'].startswith('full (firewall was stopped) | +1 added'), d"
+else
+  echo "skip: the audit check after a real apply (needs root and unshare)"
 fi
 
 # status: the journal fixture holds the saved rules -> live.
@@ -1580,21 +1623,66 @@ check "events: --by with a typo is refused with a suggestion; --by without --sum
   bash -c "'$S' events --summary --by sorce 2> '$TMP/err'; [ \$? -eq 2 ] && grep -q 'did you mean src' '$TMP/err' &&
            '$S' events --by src 2> /dev/null; [ \$? -eq 2 ]"
 
+# Python helpers for the events -f checks.  wait_reader: block until
+# the reader (tail -n 0 -F FILE) has the followed file open, so a line
+# appended after it is a live event, however slow the machine.
+# interrupt: Ctrl-C to the stockfw process running ARGV0.
+# away_from_midnight: wait while local midnight is less than a minute
+# away, so "blocked today" cannot roll over in the middle of a check.
+FOLLOW_PY=$(cat <<'PYEOF'
+import datetime, os, signal, time
+def _procs():
+    for pid in os.listdir('/proc'):
+        if pid.isdigit():
+            try:
+                yield pid, open('/proc/%s/cmdline' % pid, 'rb').read().split(b'\0')
+            except OSError:
+                pass
+def wait_reader(live, limit=20):
+    end = time.time() + limit
+    while time.time() < end:
+        for pid, argv in _procs():
+            if argv[:4] == [b'tail', b'-n', b'0', b'-F'] and len(argv) > 4 and argv[4] == os.fsencode(live):
+                try:
+                    if any(os.readlink('/proc/%s/fd/%s' % (pid, fd)) == live for fd in os.listdir('/proc/%s/fd' % pid)):
+                        return
+                except OSError:
+                    pass
+        time.sleep(0.05)
+    raise AssertionError('the event reader never opened %r' % live)
+def interrupt(argv0):
+    for pid, argv in _procs():
+        if argv[0] == os.fsencode(argv0) and b'events' in argv:
+            try:
+                os.kill(int(pid), signal.SIGINT)
+            except OSError:
+                pass
+def away_from_midnight():
+    while True:
+        t = datetime.datetime.now()
+        secs = t.hour * 3600 + t.minute * 60 + t.second
+        if 60 <= secs <= 86400 - 60:
+            return
+        time.sleep(1)
+PYEOF
+)
 if [ "$(id -u)" = 0 ] && command -v script > /dev/null; then
   # -f on a terminal: the live row sits under the header's columns
   # (1.0.7 printed it with its own widths and merged the service and
   # the protocol), and Ctrl-C ends it with a count on stderr, exit 0.
-  d_follow () { py "
+  d_follow () { py "$FOLLOW_PY
 import os, re, subprocess, time, datetime
 live = '$D/live.log'
 open(live, 'w').write(open('$D/kern.log').read())
 env = dict(os.environ, STOCKFW_LOG_FILE=live)
-p = subprocess.Popen(['script', '-qec', 'COLUMNS=200 timeout -s INT 5 $S events -n 5 -f; echo rc=\$?', '/dev/null'],
+p = subprocess.Popen(['script', '-qec', 'COLUMNS=200 timeout -s INT 30 $S events -n 5 -f; echo rc=\$?', '/dev/null'],
                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
-time.sleep(2)
+wait_reader(live)
 stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00')
 open(live, 'a').write(stamp + ' host kernel: [9.0] STOCKFW-DROP IN=eth0 OUT= SRC=2001:db8:aaaa:bbbb:cccc:dddd:eeee:1 DST=2001:db8::5 LEN=80 PROTO=TCP SPT=1 DPT=3389 SYN\n')
-out = p.communicate(timeout=20)[0].decode('utf-8', 'replace')
+time.sleep(1)
+interrupt('$S')
+out = p.communicate(timeout=40)[0].decode('utf-8', 'replace')
 # What is left after the last carriage return: the status line of
 # 15.2.5 is drawn and cleared with \r before each row.
 lines = [re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', l.rstrip('\r')).split('\r')[-1] for l in out.split('\n')]
@@ -1736,11 +1824,14 @@ rm -rf "$D"
 if [ "$(id -u)" = 0 ] && command -v script > /dev/null && command -v stty > /dev/null; then
   F="$(mktemp -d /tmp/stockfw-wpf-XXXXXX)"; chmod 755 "$F"
   # f_run NAME MODE SHELL-COMMAND: follow a fresh copy of the fixture
-  # under script, append three lines (two blocked, one allowed) after
-  # 2 s and save the raw terminal bytes in $F/NAME.out.  In the
-  # command, $S is stockfw and the followed file's name holds an ESC
-  # and a U+202E.  MODE "held" turns audit-only on first.
-  f_run () { py "
+  # under script, append three lines (two blocked, one allowed) once
+  # the reader has the file open, then Ctrl-C, and save the raw
+  # terminal bytes in $F/NAME.out.  In the command, $S is stockfw and
+  # the followed file's name holds an ESC and a U+202E.  MODE "held"
+  # turns audit-only on first.  Not within a minute of midnight, so
+  # the history line is today's and the count does not roll over.
+  f_run () { py "$FOLLOW_PY
+away_from_midnight()
 import datetime, os, subprocess, time
 F, name, mode, cmd = '$F', '$1', '$2', '''$3'''
 live = F + '/' + name + '-\x1b[2J\u202e.log'
@@ -1757,14 +1848,16 @@ env = dict(os.environ, STOCKFW_LOG_FILE=live, STOCKFW_RULES_DIR=F + '/rules', XD
            XDG_DATA_HOME=F + '/data', TERM='xterm', S='$S', OUT=F + '/' + name + '.pipe')
 env.pop('COLUMNS', None)
 p = subprocess.Popen(['script', '-qec', cmd, '/dev/null'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
-time.sleep(2)
+wait_reader(live)
 with open(live, 'a') as f:
     f.write(at(0) + k + 'STOCKFW-DROP IN=' + bad_in + ' OUT= SRC=198.51.100.1 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=1 DPT=23 SYN\n')
     f.flush(); time.sleep(0.5)
     f.write(at(0) + k + 'STOCKFW-ALLOW IN= OUT=eth0 SRC=10.0.0.5 DST=198.51.100.2 LEN=60 PROTO=TCP SPT=2 DPT=443 SYN\n')
     f.flush(); time.sleep(0.5)
     f.write(at(0) + k + 'STOCKFW-REJECT IN=' + bad_in + ' OUT= SRC=198.51.100.3 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=3 DPT=3389 SYN\n')
-open(F + '/' + name + '.out', 'wb').write(p.communicate(timeout=30)[0])"; }
+time.sleep(1)
+interrupt('$S')
+open(F + '/' + name + '.out', 'wb').write(p.communicate(timeout=40)[0])"; }
   # f_check NAME PYTHON: assertions on the bytes ($F/NAME.out is `out').
   f_check () { py "
 import re, json
@@ -1772,10 +1865,14 @@ out = open('$F/$1.out', 'rb').read()
 STATUS = re.compile(rb'\r\x1b\[K(?:\x1b\[[0-9;]*m)*((?:running|stopped|locked|state unknown)\b[^\r\n\x1b]*)')
 lines = [m.group(1).decode('utf-8') for m in STATUS.finditer(out)]
 $2"; }
+  # No status line -- and the run did work: the appended rows are there
+  # and nothing was refused.
   f_none () { f_check "$1" "
-assert b'\x1b[K' not in out and b'blocked today' not in out, out"; }
+assert b'\x1b[K' not in out and b'blocked today' not in out, out
+assert out.count(b'198.51.') >= 3, out
+assert b'error:' not in out and b'unknown option' not in out, out"; }
 
-  f_run tty plain 'stty rows 20 cols 100; timeout -s INT 6 "$S" --full events -n 5 -f --wide'
+  f_run tty plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" --full events -n 5 -f --wide'
   check "events -f: on a terminal the stderr status line is redrawn after every event row" f_check tty "
 rows = re.findall(rb'198\.51\.100\.[0-9] [^\r\n]*\r\n\r\x1b\[K(?:\x1b\[[0-9;]*m)*(?:running|stopped|locked|state unknown) ', out)
 assert len(rows) == 3, out
@@ -1793,30 +1890,88 @@ low = out.lower()
 assert len(re.findall(rb'e\\\\x1b\]0;pwn\\\\x07th\\\\u202e0', low)) == 3, out
 assert all('\\\\x1b[2J\\\\u202e.log' in l for l in lines), lines"
 
-  f_run held held 'stty rows 20 cols 100; timeout -s INT 5 "$S" events -n 1 -f'
+  f_run held held 'stty rows 20 cols 100; timeout -s INT 30 "$S" events -n 1 -f'
   check "events -f: with audit-only on, the line says HELD (audit-only)" f_check held "
 assert lines and all('HELD (audit-only)' in l for l in lines), lines"
 
-  f_run narrow plain 'stty rows 20 cols 0; COLUMNS=60 timeout -s INT 5 "$S" events -n 1 -f'
+  f_run narrow plain 'stty rows 20 cols 0; COLUMNS=60 timeout -s INT 30 "$S" events -n 1 -f'
   check "events -f: a terminal with no width (ws_col 0) falls back to COLUMNS=60" f_check narrow "
 assert lines and all(len(l) <= 59 and l.endswith(('\u2026', '...')) for l in lines), lines"
 
-  f_run ndjson plain 'stty rows 20 cols 100; timeout -s INT 5 "$S" --json events -n 2 -f | head -n 4 > "$OUT"'
+  f_run ndjson plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" --json events -n 2 -f | head -n 4 > "$OUT"'
   check "events -f --json | head: only event objects, one per line, and no status line" f_check ndjson "
 objs = [json.loads(l) for l in open('$F/ndjson.pipe').read().splitlines()]
 assert len(objs) == 4 and all(isinstance(o, dict) and 'blocked' in o and 'source' in o for o in objs), objs
 assert b'\x1b[K' not in out and b'blocked today' not in out, out"
 
-  f_run json plain 'stty rows 20 cols 100; timeout -s INT 5 "$S" --json events -n 1 -f'
+  f_run json plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" --json events -n 1 -f'
   check "events -f --json on a terminal: no status line" f_none json
-  f_run nostat plain 'stty rows 20 cols 100; timeout -s INT 5 "$S" events -n 1 -f --no-status-line'
+  f_run nostat plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" events -n 1 -f --no-status-line'
   check "events -f --no-status-line: no status line" f_none nostat
-  f_run quiet plain 'stty rows 20 cols 100; timeout -s INT 5 "$S" -q events -n 1 -f'
+  f_run quiet plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" -q events -n 1 -f'
   check "events -q -f: no status line" f_none quiet
-  f_run dumb plain 'stty rows 20 cols 100; TERM=dumb timeout -s INT 5 "$S" events -n 1 -f'
+  f_run dumb plain 'stty rows 20 cols 100; TERM=dumb timeout -s INT 30 "$S" events -n 1 -f'
   check "events -f with TERM=dumb: no status line" f_none dumb
-  f_run pipe plain 'stty rows 20 cols 100; timeout -s INT 5 "$S" events -n 1 -f | cat'
+  f_run pipe plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" events -n 1 -f | cat'
   check "events -f into a pipe: no status line" f_none pipe
+
+  # Midnight: the first blocked event of a new day is counted in it.
+  # fake-clock.so moves the wall clock of stockfw (not its timers) to
+  # 23:59:55 UTC; once midnight has passed and before the next 2 s
+  # redraw, one DROP is appended.  1.0.7's line counted it, then the
+  # redraw saw the new day and wiped it: "blocked today 0" all day.
+  # A run whose redraw falls too close after midnight proves nothing
+  # and is run again one second later.
+  if cc -shared -fPIC -o "$F/fake-clock.so" tests/fake-clock.c -ldl 2> /dev/null; then
+    f_midnight () { py "$FOLLOW_PY
+import datetime, os, re, select, subprocess, time
+F, start = '$F', int('$1')
+live = F + '/midnight-%d.log' % start
+open(live, 'w').write('')
+os.makedirs(F + '/cfg-midnight/stockfw', exist_ok=True)
+open(F + '/cfg-midnight/stockfw/stockfw.conf', 'w').write('')
+day = datetime.datetime.now(datetime.timezone.utc).replace(hour=23, minute=59, second=start, microsecond=0)
+off = day.timestamp() - time.time()
+midnight = day.timestamp() + (60 - start) - off          # in real time
+env = dict(os.environ, STOCKFW_LOG_FILE=live, STOCKFW_RULES_DIR=F + '/rules', XDG_CONFIG_HOME=F + '/cfg-midnight',
+           XDG_DATA_HOME=F + '/data', TERM='xterm', TZ='UTC', S='$S', SO=F + '/fake-clock.so',
+           FAKE_OFFSET_US=str(int(off * 1e6)))
+env.pop('COLUMNS', None)
+cmd = 'stty rows 20 cols 100; timeout -s INT 30 env LD_PRELOAD=\"\$SO\" \"\$S\" events -n 0 -f'
+p = subprocess.Popen(['script', '-qec', cmd, '/dev/null'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+out, draws = b'', []
+def pump(until):
+    global out
+    while time.time() < until:
+        r, _, _ = select.select([p.stdout], [], [], 0.02)
+        if r:
+            chunk = os.read(p.stdout.fileno(), 65536)
+            if not chunk:
+                return
+            out += chunk
+            if b'blocked today' in chunk:
+                draws.append(time.time())
+wait_reader(live)
+pump(midnight + 0.15)
+before = [t for t in draws if t < midnight]
+assert before, out
+nxt = before[-1] + 2.0
+if nxt - time.time() < 0.6:
+    interrupt('$S'); p.communicate(timeout=40)
+    print('retry'); raise SystemExit(3)
+open(live, 'a').write(datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+                      + ' host kernel: [1.0] STOCKFW-DROP IN=eth0 OUT= SRC=198.51.100.9 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=1 DPT=23 SYN\n')
+pump(time.time() + 0.4)
+interrupt('$S')
+out += p.communicate(timeout=40)[0]
+rows = re.findall(rb'198\.51\.100\.9 [^\r\n]*\r\n\r\x1b\[K(?:\x1b\[[0-9;]*m)*[^\r\n\x1b]*blocked today ([0-9]+)', out)
+assert rows == [b'1'], (rows, out[-600:])"; }
+    f_midnight 55; rc=$?
+    [ "$rc" -eq 3 ] && { f_midnight 54; rc=$?; }
+    check "events -f: a blocked event just after midnight counts in the new day (blocked today 1)" [ "$rc" -eq 0 ]
+  else
+    echo "skip: the midnight check (no C compiler for tests/fake-clock.c)"
+  fi
   rm -rf "$F"
 else
   echo "skip: the live event line checks (need root, script(1) and stty)"
@@ -1942,6 +2097,15 @@ check "  ...with the exit codes 0 1 2 3 5 6 7 and no 4" \
 check "  ...names every STOCKFW_ variable src/cli reads" \
   bash -c "for v in \$(grep -oh 'getenv (\"STOCKFW_[A-Z_]*' src/cli/*.c | sed 's/.*\"//' | sort -u); do grep -q \"^\\.B \$v\\\$\" '$E/stockfw.1' || { echo \"missing \$v\"; exit 1; }; done"
 check "  ...is the page the build wrote" cmp -s "$E/stockfw.1" "$BUILD/stockfw.1"
+check "  ...SEE ALSO names no StockFW(1) page (there is none)" \
+  bash -c "! grep -q '^\\.BR StockFW' '$E/stockfw.1' && grep -q '^\\.BR nft (8),' '$E/stockfw.1'"
+# apply -n is an accepted alias of --dry-run that stays undocumented.
+check "apply -n: still a dry run, but not on the page or in completion" \
+  bash -c "a=\$('$S' apply -n 2>&1); ra=\$?; b=\$('$S' apply --dry-run 2>&1); rb=\$?;
+           [ \$ra -ne 2 ] && [ \$ra -eq \$rb ] && [ \"\$a\" = \"\$b\" ] &&
+           ! '$S' __complete apply - | grep -qx -- -n &&
+           '$S' __complete apply - | grep -qx -- --dry-run &&
+           ! sed -n '/^\\.SH \"STOCKFW APPLY\"/,/^\\.SH \"STOCKFW START\"/p' '$E/stockfw.1' | grep -qF '\\fB\\-n\\fR'"
 if command -v groff > /dev/null; then
   groff -man -Tutf8 -ww "$E/stockfw.1" > /dev/null 2> "$E/groff.err"
   check "groff -man -Tutf8 -ww reads it without a warning" \

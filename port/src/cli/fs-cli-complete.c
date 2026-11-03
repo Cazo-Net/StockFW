@@ -612,7 +612,10 @@ fs_cli_man_main (gint argc, gchar **argv)
 	}
 
 	g_string_append (out, ".SH \"SEE ALSO\"\n");
-	g_string_append (out, ".BR StockFW (1)\nis the desktop app. Shell "
+	g_string_append (out, ".BR nft (8),\n.BR iptables (8).\n"
+	                      "The desktop app, \\fBStockFW\\fR, has no manual "
+	                      "page of its own, and a build with "
+	                      "FS_BUILD_GUI=OFF has no desktop app. Shell "
 	                      "completion for bash and zsh asks \\fBstockfw\\fR "
 	                      "itself for the words it offers.\n");
 
