@@ -13,12 +13,14 @@
 #include "cli/fs-cli.h"
 #include "core/fs-activity.h"
 #include "core/fs-apply.h"
+#include "core/fs-eventfilter.h"
 #include "core/fs-eventlog.h"
 #include "core/fs-eventstore.h"
 #include "core/fs-health.h"
 #include "core/fs-hostnet.h"
 #include "core/fs-json.h"
 #include "core/fs-netparse.h"
+#include "core/fs-prefs.h"
 #include "core/fs-util.h"
 
 #include <gio/gio.h>
@@ -29,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 /* ------------------------------------------------------- shared helpers */
@@ -251,9 +254,50 @@ static const gchar csv_header[] =
 	"time,direction,in,out,port,source,destination,length,tos,"
 	"protocol,service,action,rule";
 
+/* [ Display ]
+ * The two filters of Preferences > Events (C18, J5, J6), run the way
+ * the Events page runs them: on the stream as it comes, before the
+ * list's own filters and before anything is counted.  A repeat is the
+ * same port, protocol, source and destination as the last event let
+ * through; "not for this computer" is an inbound event to an address
+ * that is none of this machine's (broadcast, multicast, a neighbour's).
+ * `--collapse-repeats' and `--for-me' turn them on, `--prefs-filters'
+ * takes them from the preferences, as the desktop app does. */
+typedef struct
+{
+	FsHitFilter *filter;     /* NULL: neither filter is on              */
+	gboolean     repeats;
+	gboolean     not_for_me;
+	guint64      seen;
+	guint64      repeats_hidden;
+	guint64      not_for_me_hidden;
+} Display;
+
+/* [ display_keep ] -- TRUE when the event goes on to the list. */
+static gboolean
+display_keep (Display *d, const FsHit *hit)
+{
+	if (d == NULL)
+		return TRUE;
+	d->seen++;
+	if (d->filter == NULL)
+		return TRUE;
+	if (d->repeats && fs_hit_filter_is_redundant (d->filter, hit)) {
+		d->repeats_hidden++;
+		return FALSE;
+	}
+	if (d->not_for_me && !fs_hit_filter_keep (d->filter, hit, FALSE, TRUE)) {
+		d->not_for_me_hidden++;
+		return FALSE;
+	}
+	fs_hit_filter_remember (d->filter, hit);
+	return TRUE;
+}
+
 typedef struct
 {
 	GPtrArray  *queries;     /* FsEventQuery*, any may match; NULL: all */
+	Display    *display;
 	gboolean    wide;
 	gboolean    csv;
 	guint      *widths;      /* -f: the frozen column widths          */
@@ -644,6 +688,8 @@ on_live_hit (const FsHit *hit, gpointer data)
 		status_day_roll (st);
 		st->blocked_live++;
 	}
+	if (!display_keep (st->display, hit))
+		return;
 	print_live_hit (hit, data);
 }
 
@@ -715,6 +761,7 @@ on_reader_check (gpointer data)
 typedef struct
 {
 	const GPtrArray *queries;
+	Display         *display;
 	GQueue           kept;
 	guint            want;
 	guint            matched;
@@ -725,7 +772,8 @@ on_history_hit (const FsHit *hit, gint64 ticks, gpointer data)
 {
 	HistoryScan *scan = data;
 
-	if (!queries_match (scan->queries, hit, ticks / 10))
+	if (!display_keep (scan->display, hit) ||
+	    !queries_match (scan->queries, hit, ticks / 10))
 		return;
 
 	scan->matched++;
@@ -738,10 +786,10 @@ on_history_hit (const FsHit *hit, gint64 ticks, gpointer data)
 
 static GPtrArray *
 read_saved_history (const gchar *dir, const FsEventFilter *filter,
-                    const GPtrArray *queries, guint want,
+                    const GPtrArray *queries, Display *display, guint want,
                     FsEventLogStats *stats)
 {
-	HistoryScan scan = { queries, G_QUEUE_INIT, want, 0 };
+	HistoryScan scan = { queries, display, G_QUEUE_INIT, want, 0 };
 	GPtrArray *hits = g_ptr_array_new_with_free_func (
 		(GDestroyNotify) fs_hit_free);
 
@@ -799,6 +847,7 @@ typedef struct
 typedef struct
 {
 	const GPtrArray *queries;
+	Display  *display;
 	gint64    from_us;
 	gint64    to_us;
 	guint     step;          /* seconds per bucket                     */
@@ -878,7 +927,8 @@ summary_add (Summary *s, const FsHit *hit, gint64 time_us)
 	gboolean blocked = fs_hit_is_blocked (hit);
 	gint64 epoch = time_us > 0 ? time_us / G_USEC_PER_SEC : -1;
 
-	if (!queries_match (s->queries, hit, time_us))
+	if (!display_keep (s->display, hit) ||
+	    !queries_match (s->queries, hit, time_us))
 		return;
 
 	if (blocked)
@@ -1240,8 +1290,8 @@ summary_text (const Summary *s, const gchar *source, guint top)
 /* [ run_summary ] -- `events --summary': every matching event counted. */
 static gint
 run_summary (const FsEventFilter *filter, const GPtrArray *queries,
-             gboolean saved, const gchar *dir, GPtrArray *by_names,
-             guint top)
+             Display *display, gboolean saved, const gchar *dir,
+             GPtrArray *by_names, guint top)
 {
 	Summary s = { 0 };
 	gchar *source = NULL;
@@ -1249,6 +1299,7 @@ run_summary (const FsEventFilter *filter, const GPtrArray *queries,
 	gint rc = FS_EXIT_OK;
 
 	s.queries = queries;
+	s.display = display;
 	s.to_us = filter->until_us > 0 ? filter->until_us : g_get_real_time ();
 	s.from_us = filter->since_us;
 	if (s.from_us >= s.to_us)
@@ -1325,6 +1376,371 @@ out:
 	return rc;
 }
 
+/* ---------------------------------------- events --stats, --clear-history */
+
+/* [ history_writer_active ]
+ * Does a copy of StockFW hold the history folder's writer lock now
+ * (core/fs-eventlog.c: flock on <dir>/.lock while a log is open)?  A
+ * shared lock that cannot be had means it does.  Nothing is created:
+ * no lock file, no writer.  `activity' asks too. */
+gboolean
+fs_cli_history_writer_active (const gchar *dir)
+{
+	gchar *path = g_build_filename (dir, ".lock", NULL);
+	gint fd = open (path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY);
+	gboolean held = FALSE;
+
+	g_free (path);
+	if (fd < 0)
+		return FALSE;
+	if (flock (fd, LOCK_SH | LOCK_NB) != 0)
+		held = errno == EWOULDBLOCK || errno == EAGAIN;
+	close (fd);
+	return held;
+}
+
+/* [ history_problem ]
+ * "Not being written: ..." of Preferences > Events (J11), as far as a
+ * process that is not the writer can tell: NULL while a copy of
+ * StockFW writes the folder. */
+static const gchar *
+history_problem (const gchar *dir)
+{
+	if (fs_cli_history_writer_active (dir))
+		return NULL;
+	if (!fs_prefs_bool (FS_PREFS_EVENTS_HISTORY))
+		return "Keep event history is off (Preferences > Events)";
+	return "no copy of StockFW is running to write it (the desktop app "
+	       "writes it while it runs)";
+}
+
+/* [ history_usage_text ]
+ * The Preferences window's usage line: "1.2 MB in 3 files, in DIR."
+ * or "No saved history in DIR.", then "Not being written: why" when
+ * that applies.  Safe for a terminal. */
+static gchar *
+history_usage_text (const gchar *dir, guint64 bytes, guint files,
+                    const gchar *problem)
+{
+	gchar *safe = fs_cli_out_safe (dir);
+	gchar *size = fs_cli_format_bytes (bytes);
+	GString *t = g_string_new (NULL);
+
+	if (files == 0)
+		g_string_printf (t, "No saved history in %s.", safe);
+	else
+		g_string_printf (t, "%s in %u file%s, in %s.", size, files,
+		                 files == 1 ? "" : "s", safe);
+	if (problem != NULL)
+		g_string_append_printf (t, "\nNot being written: %s.", problem);
+	g_free (size);
+	g_free (safe);
+	return g_string_free (t, FALSE);
+}
+
+static void
+history_json (GString *out, const gchar *dir, guint64 bytes, guint files,
+              const gchar *problem)
+{
+	g_string_append_c (out, '{');
+	fs_json_kv_str (out, "dir", dir);                 g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "keep_history",
+	                 fs_prefs_bool (FS_PREFS_EVENTS_HISTORY));
+	g_string_append_c (out, ',');
+	fs_json_kv_uint (out, "bytes", bytes);            g_string_append_c (out, ',');
+	fs_json_kv_uint (out, "files", files);            g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "being_written", problem == NULL);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "problem", problem);
+	g_string_append_c (out, '}');
+}
+
+/* [ print_history_lines ] -- "History  ..." with a hanging indent. */
+static void
+print_history_lines (const gchar *label, const gchar *text)
+{
+	gchar **lines = g_strsplit (text, "\n", -1);
+
+	for (guint i = 0; lines[i] != NULL; i++)
+		printf ("%-11s %s\n", i == 0 ? label : "", lines[i]);
+	g_strfreev (lines);
+}
+
+/* [ clear_history ]
+ * `events --clear-history' (J11): the usage and why it is not being
+ * written first, then "Delete ...? [y/N]" on a terminal (No by
+ * default; --yes skips it, and without a terminal --yes is needed),
+ * then fs_eventlog_clear_dir, which deletes nothing while another
+ * copy is writing the folder. */
+static gint
+clear_history (const gchar *dir, gboolean yes)
+{
+	guint64 bytes = 0, after_bytes = 0;
+	guint files = 0, after_files = 0, removed = 0;
+	const gchar *problem;
+	gchar *text;
+	GError *error = NULL;
+	gint rc = FS_EXIT_OK;
+
+	if (g_file_test (dir, G_FILE_TEST_IS_DIR))
+		fs_eventlog_usage (dir, &bytes, &files);
+	problem = history_problem (dir);
+	text = history_usage_text (dir, bytes, files, problem);
+	if (!fs_cli.json)
+		print_history_lines ("History", text);
+	g_free (text);
+
+	if (files == 0) {
+		if (fs_cli.json) {
+			GString *out = g_string_new ("{");
+
+			fs_json_kv_uint (out, "deleted", 0);
+			g_string_append (out, ",\"history\":");
+			history_json (out, dir, bytes, files, problem);
+			g_string_append (out, ",\"error\":null}");
+			fs_cli_print_json (out);
+			g_string_free (out, TRUE);
+		} else if (!fs_cli.quiet) {
+			printf ("Nothing to delete.\n");
+		}
+		return FS_EXIT_OK;
+	}
+
+	if (!yes) {
+		gchar answer[16] = "";
+		gchar *safe;
+
+		if (!isatty (STDIN_FILENO)) {
+			fs_cli_error ("refused: pass --yes to delete the saved event "
+			              "history");
+			return FS_EXIT_FAILURE;
+		}
+		safe = fs_cli_out_safe (dir);
+		fprintf (stderr, "Delete the saved event history?  Every history "
+		         "file in %s is deleted now.  [y/N] ", safe);
+		g_free (safe);
+		fflush (stderr);
+		if (fgets (answer, sizeof answer, stdin) == NULL ||
+		    (g_ascii_strcasecmp (g_strstrip (answer), "y") != 0 &&
+		     g_ascii_strcasecmp (answer, "yes") != 0)) {
+			fs_cli_error ("not deleted: the history was left as it was");
+			return FS_EXIT_FAILURE;
+		}
+	}
+
+	removed = fs_eventlog_clear_dir (dir, &error);
+	fs_eventlog_usage (dir, &after_bytes, &after_files);
+	if (error != NULL) {
+		fs_cli_error ("%s%s", g_error_matches (error, FS_EVENTLOG_ERROR,
+		                                       FS_EVENTLOG_ERROR_IN_USE)
+		              ? "" : "some history was not deleted: ",
+		              error->message);
+		rc = FS_EXIT_FAILURE;
+	}
+
+	if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+
+		fs_json_kv_uint (out, "deleted", removed);
+		g_string_append (out, ",\"history\":");
+		history_json (out, dir, after_bytes, after_files,
+		              history_problem (dir));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "error", error != NULL ? error->message
+		                                            : NULL);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else if (!fs_cli.quiet || error == NULL) {
+		gchar *safe = fs_cli_out_safe (dir);
+
+		printf ("Deleted %u history file%s from %s.\n", removed,
+		        removed == 1 ? "" : "s", safe);
+		g_free (safe);
+		if (after_files > 0) {
+			text = history_usage_text (dir, after_bytes, after_files,
+			                           NULL);
+			print_history_lines ("Left", text);
+			g_free (text);
+		}
+	}
+	g_clear_error (&error);
+	return rc;
+}
+
+/* [ Stats ] -- `events --stats': what the filters made of the events. */
+typedef struct
+{
+	const GPtrArray *queries;
+	Display         *display;
+	guint64          outside;       /* hidden by the list's filters   */
+	guint64          in_blocked, in_allowed, out_blocked, out_allowed;
+} Stats;
+
+static void
+stats_add (Stats *st, const FsHit *hit, gint64 time_us)
+{
+	gboolean blocked;
+
+	if (!display_keep (st->display, hit))
+		return;
+	if (!queries_match (st->queries, hit, time_us)) {
+		st->outside++;
+		return;
+	}
+	blocked = fs_hit_is_blocked (hit);
+	if (fs_hit_is_outbound (hit)) {
+		if (blocked)
+			st->out_blocked++;
+		else
+			st->out_allowed++;
+	} else if (blocked) {
+		st->in_blocked++;
+	} else {
+		st->in_allowed++;
+	}
+}
+
+static void
+on_stats_history_hit (const FsHit *hit, gint64 ticks, gpointer data)
+{
+	stats_add (data, hit, ticks / 10);
+}
+
+/* [ run_stats ]
+ * How many events were read, how many each filter hid (repeats, not
+ * for this computer, the list's own filters) and how many were left,
+ * inbound and outbound, blocked and allowed -- the Overview's Totals
+ * (B10) over the events read -- then the history: how much is saved,
+ * where, and why it is not being written. */
+static gint
+run_stats (const FsEventFilter *filter, const GPtrArray *queries,
+           Display *display, gboolean saved, const gchar *dir)
+{
+	Stats st = { queries, display, 0, 0, 0, 0, 0 };
+	gchar *source = NULL, *hdir = NULL;
+	gchar *log_error = NULL;
+	guint64 bytes = 0, shown;
+	guint files = 0;
+	const gchar *problem;
+	FsEventLogStats lstats = { 0 };
+	gint rc = FS_EXIT_OK;
+
+	if (saved) {
+		fs_eventlog_foreach (dir, filter->since_us, filter->until_us,
+		                     on_stats_history_hit, &st, &lstats);
+		source = g_strdup (dir);
+	} else {
+		GError *error = NULL;
+		GPtrArray *hits = fs_cli_log_history (FS_EVENTSTORE_MAX_CAPACITY,
+		                                      NULL, &error);
+
+		if (hits == NULL) {
+			log_error = g_strdup (error->message);
+			g_error_free (error);
+			rc = geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
+		} else {
+			for (guint i = 0; i < hits->len; i++) {
+				const FsHit *hit = g_ptr_array_index (hits, i);
+
+				stats_add (&st, hit, hit_time_us (hit));
+			}
+			g_ptr_array_unref (hits);
+			fs_cli_log_readable (&source, NULL);
+		}
+	}
+	shown = st.in_blocked + st.in_allowed + st.out_blocked + st.out_allowed;
+
+	hdir = dir != NULL ? g_strdup (dir) : fs_eventlog_default_dir ();
+	if (g_file_test (hdir, G_FILE_TEST_IS_DIR))
+		fs_eventlog_usage (hdir, &bytes, &files);
+	problem = history_problem (hdir);
+
+	if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+
+		fs_json_kv_str (out, "source", log_error != NULL ? NULL
+		                : source != NULL ? source : "the kernel log");
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "error", log_error);  g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "read", display->seen); g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "shown", shown);     g_string_append (out, ",\"inbound\":{");
+		fs_json_kv_uint (out, "blocked", st.in_blocked);   g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "allowed", st.in_allowed);   g_string_append (out, "},\"outbound\":{");
+		fs_json_kv_uint (out, "blocked", st.out_blocked);  g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "allowed", st.out_allowed);  g_string_append (out, "},\"hidden\":{");
+		fs_json_kv_uint (out, "repeats", display->repeats_hidden);
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "not_for_me", display->not_for_me_hidden);
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "filters", st.outside);
+		g_string_append (out, "},\"filters\":{");
+		fs_json_kv_bool (out, "collapse_repeats", display->repeats);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "for_me", display->not_for_me);
+		g_string_append (out, "},");
+		fs_json_kv_uint (out, "bad_lines", lstats.bad_lines);
+		g_string_append (out, ",\"history\":");
+		history_json (out, hdir, bytes, files, problem);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else {
+		gchar *text;
+
+		if (log_error != NULL) {
+			printf ("%-11s %s%s%s\n", "Events", fs_cli_amber (),
+			        "the kernel log cannot be read", fs_cli_reset ());
+		} else {
+			gchar *n = count_text (display->seen);
+			gchar *k = count_text (shown);
+			gchar *src = fs_cli_out_safe (source != NULL ? source
+			                              : "the kernel log");
+
+			printf ("%-11s %s read from %s, %s shown\n", "Events", n,
+			        src, k);
+			g_free (n); g_free (k); g_free (src);
+			n = count_text (st.in_blocked);
+			k = count_text (st.in_allowed);
+			printf ("%-11s %s blocked, %s allowed\n", "  Inbound", n, k);
+			g_free (n); g_free (k);
+			n = count_text (st.out_blocked);
+			k = count_text (st.out_allowed);
+			printf ("%-11s %s blocked, %s allowed\n", "  Outbound", n, k);
+			g_free (n); g_free (k);
+			{
+				gchar *r = count_text (display->repeats_hidden);
+				gchar *m = count_text (display->not_for_me_hidden);
+				gchar *o = count_text (st.outside);
+
+				printf ("%-11s %s repeat%s%s, %s not for this computer%s, "
+				        "%s by the filters\n", "  Hidden", r,
+				        display->repeats_hidden == 1 ? "" : "s",
+				        display->repeats ? "" : " (off)", m,
+				        display->not_for_me ? "" : " (off)", o);
+				g_free (r); g_free (m); g_free (o);
+			}
+		}
+		text = history_usage_text (hdir, bytes, files, problem);
+		print_history_lines ("History", text);
+		g_free (text);
+		if (saved && lstats.bad_lines > 0 && !fs_cli.quiet)
+			fprintf (stderr, "%s%u damaged or cut-short line(s) in the "
+			         "history were skipped.%s\n", fs_cli_dim (),
+			         lstats.bad_lines, fs_cli_reset ());
+	}
+	if (log_error != NULL) {
+		fs_cli_error ("%s", log_error);
+		fs_cli_hint ("`stockfw events --stats --history' counts the history "
+		             "the desktop app saved");
+	}
+
+	g_free (log_error);
+	g_free (source);
+	g_free (hdir);
+	return rc;
+}
+
 /* [ add_by_keys ] -- "--by src,port": checked against the keys. */
 static gboolean
 add_by_keys (const gchar *v, GPtrArray *names)
@@ -1371,6 +1787,9 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 	gboolean follow = FALSE, saved = FALSE, reverse = FALSE;
 	gboolean summary = FALSE, want_blocked = FALSE, want_allowed = FALSE;
 	gboolean by_given = FALSE, top_given = FALSE, no_status = FALSE;
+	gboolean stats_wanted = FALSE, clear = FALSE, yes = FALSE;
+	gboolean prefs_filters = FALSE;
+	Display display = { 0 };
 	const gchar *since = NULL, *until = NULL, *dir_opt = NULL;
 	const gchar *port_opt = NULL;
 	FsEventFilter filter = { 0 };
@@ -1467,6 +1886,19 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			summary = TRUE;
 		} else if (strcmp (argv[i], "--no-status-line") == 0) {
 			no_status = TRUE;
+		} else if (strcmp (argv[i], "--collapse-repeats") == 0) {
+			display.repeats = TRUE;
+		} else if (strcmp (argv[i], "--for-me") == 0) {
+			display.not_for_me = TRUE;
+		} else if (strcmp (argv[i], "--prefs-filters") == 0) {
+			prefs_filters = TRUE;
+		} else if (strcmp (argv[i], "--stats") == 0) {
+			stats_wanted = TRUE;
+		} else if (strcmp (argv[i], "--clear-history") == 0) {
+			clear = TRUE;
+		} else if (strcmp (argv[i], "--yes") == 0 ||
+		           strcmp (argv[i], "-y") == 0) {
+			yes = TRUE;
 		} else {
 			fs_cli_unknown_option ("events", argv[i]);
 			bad = FS_EXIT_USAGE;
@@ -1499,6 +1931,47 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 		rc = FS_EXIT_USAGE;
 		goto out;
 	}
+	/* One thing at a time: deleting the history, its numbers, a
+	 * summary, or the events themselves. */
+	if (clear && (follow || summary || stats_wanted || st.csv)) {
+		fs_cli_error ("--clear-history cannot be used with %s",
+		              follow ? "-f" : summary ? "--summary"
+		              : stats_wanted ? "--stats" : "--csv");
+		rc = FS_EXIT_USAGE;
+		goto out;
+	}
+	if (stats_wanted && (follow || summary || st.csv)) {
+		fs_cli_error ("--stats cannot be used with %s",
+		              follow ? "-f" : summary ? "--summary" : "--csv");
+		rc = FS_EXIT_USAGE;
+		goto out;
+	}
+	if (yes && !clear) {
+		fs_cli_error ("--yes goes with --clear-history");
+		rc = FS_EXIT_USAGE;
+		goto out;
+	}
+	if (clear) {
+		dir = dir_opt != NULL ? g_strdup (dir_opt)
+		                      : fs_eventlog_default_dir ();
+		rc = clear_history (dir, yes);
+		if (rc != FS_EXIT_OK && dir_opt == NULL && geteuid () == 0 &&
+		    g_getenv ("SUDO_USER") != NULL)
+			fs_cli_hint ("under sudo this is root's history; give "
+			             "--history-dir for yours");
+		goto out;
+	}
+
+	/* The Events page's two filters (C18): asked for, or as the
+	 * preferences have them. */
+	if (prefs_filters) {
+		display.repeats |= fs_prefs_bool (FS_PREFS_SKIP_REDUNDANT);
+		display.not_for_me |= fs_prefs_bool (FS_PREFS_SKIP_NOT_FOR_FIREWALL);
+	}
+	if (display.repeats || display.not_for_me)
+		display.filter = fs_hit_filter_new (fs_backend ()->list_interfaces);
+	st.display = &display;
+
 	if ((by_given || top_given) && !summary) {
 		fs_cli_error ("%s goes with --summary", by_given ? "--by" : "--top");
 		fs_cli_hint ("for example `stockfw events --summary --by src --top 5'");
@@ -1567,17 +2040,24 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			g_ptr_array_add (by_names, (gpointer) "src");
 			g_ptr_array_add (by_names, (gpointer) "port");
 		}
-		rc = run_summary (&filter, st.queries, saved, dir, by_names, top);
+		rc = run_summary (&filter, st.queries, &display, saved, dir,
+		                  by_names, top);
+		goto out;
+	}
+
+	if (stats_wanted) {
+		rc = run_stats (&filter, st.queries, &display, saved, dir);
 		goto out;
 	}
 
 	if (saved) {
-		history = read_saved_history (dir, &filter, st.queries, count,
-		                              &stats);
+		history = read_saved_history (dir, &filter, st.queries, &display,
+		                              count, &stats);
 	} else if (count > 0) {
 		/* With a filter, look further back so N matches can be
 		 * found, then keep the newest N of them. */
-		history = fs_cli_log_history (st.queries != NULL
+		history = fs_cli_log_history (st.queries != NULL ||
+		                              display.filter != NULL
 		                              ? MAX (count, 100000u) : count,
 		                              NULL, &error);
 
@@ -1598,14 +2078,15 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			rc = geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
 			goto out;
 		}
-		if (st.queries != NULL) {
+		if (st.queries != NULL || display.filter != NULL) {
 			GPtrArray *kept = g_ptr_array_new_with_free_func (
 				(GDestroyNotify) fs_hit_free);
 
 			for (guint i = 0; i < history->len; i++) {
 				FsHit *hit = g_ptr_array_index (history, i);
 
-				if (queries_match (st.queries, hit, hit_time_us (hit))) {
+				if (display_keep (&display, hit) &&
+				    queries_match (st.queries, hit, hit_time_us (hit))) {
 					g_ptr_array_index (history, i) = NULL;
 					g_ptr_array_add (kept, hit);
 				}
@@ -1697,7 +2178,7 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 		} else if (rows->len == 0 && history != NULL && !fs_cli.quiet) {
 			printf ("%s%s%s\n", fs_cli_dim (),
 			        saved ? "No saved events match."
-			        : st.queries != NULL
+			        : st.queries != NULL || display.filter != NULL
 			        ? "No StockFW events in the kernel log match."
 			        : "No StockFW events in the kernel log yet.",
 			        fs_cli_reset ());
@@ -1708,6 +2189,20 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 		fprintf (stderr, "%s%u damaged or cut-short line(s) in the "
 		         "history were skipped.%s\n", fs_cli_dim (),
 		         stats.bad_lines, fs_cli_reset ());
+	/* What the two filters left out, so an empty list is explained. */
+	if (!follow && display.filter != NULL && !fs_cli.quiet &&
+	    !fs_cli.json && (display.repeats_hidden > 0 ||
+	                     display.not_for_me_hidden > 0)) {
+		gchar *r = count_text (display.repeats_hidden);
+		gchar *m = count_text (display.not_for_me_hidden);
+
+		fprintf (stderr, "%sHidden: %s repeat%s, %s not for this "
+		         "computer.%s\n", fs_cli_dim (), r,
+		         display.repeats_hidden == 1 ? "" : "s", m,
+		         fs_cli_reset ());
+		g_free (r);
+		g_free (m);
+	}
 
 	if (follow) {
 		const FsBackend *backend = fs_backend ();
@@ -1782,6 +2277,7 @@ out:
 	g_ptr_array_unref (by_names);
 	g_array_unref (ranges);
 	g_free (dir);
+	fs_hit_filter_free (display.filter);
 	return rc;
 }
 
@@ -2613,8 +3109,11 @@ rates (const FsIfaceStat *s, GList *before, gdouble seconds,
  * long, and the first frame of --watch was once divided by 2 when it
  * had been measured over 1 s, showing half the rate. */
 static void
-print_interfaces (GList *now, GList *before, gdouble seconds, gboolean all)
+print_interfaces (GList *now, GList *before, gdouble seconds, gboolean all,
+                  gboolean no_virtual)
 {
+	guint virtuals = 0;
+
 	if (fs_cli.json) {
 		GString *out = g_string_new ("[");
 
@@ -2623,6 +3122,8 @@ print_interfaces (GList *now, GList *before, gdouble seconds, gboolean all)
 			gdouble rx, tx;
 
 			if (!s->up && !all)
+				continue;
+			if (no_virtual && fs_netif_is_virtual (s))
 				continue;
 			rates (s, before, seconds, &rx, &tx);
 			if (out->len > 1)
@@ -2664,6 +3165,12 @@ print_interfaces (GList *now, GList *before, gdouble seconds, gboolean all)
 				hidden++;
 				continue;
 			}
+			/* B12: bridges, tunnels and the like, behind "Show
+			 * them" on the Overview. */
+			if (no_virtual && fs_netif_is_virtual (s)) {
+				virtuals++;
+				continue;
+			}
 			rates (s, before, seconds, &rx, &tx);
 			row = g_new0 (gchar *, 8);
 			row[0] = g_strconcat (s->device, s->up ? "" : " (down)", NULL);
@@ -2676,7 +3183,10 @@ print_interfaces (GList *now, GList *before, gdouble seconds, gboolean all)
 			g_ptr_array_add (rows, row);
 		}
 
-		if (rows->len == 0)
+		if (rows->len == 0 && virtuals > 0)
+			printf ("No network adapters but virtual ones (leave out "
+			        "--no-virtual to see them).\n");
+		else if (rows->len == 0)
 			printf ("No network adapters with traffic counters%s.\n",
 			        hidden > 0 ? " are up (--all shows the others)" : "");
 		else
@@ -2685,6 +3195,11 @@ print_interfaces (GList *now, GList *before, gdouble seconds, gboolean all)
 			fprintf (stderr, "%s%u adapter%s down (--all shows %s).%s\n",
 			         fs_cli_dim (), hidden, hidden == 1 ? " is" : "s are",
 			         hidden == 1 ? "it" : "them", fs_cli_reset ());
+		if (virtuals > 0 && rows->len > 0 && !fs_cli.quiet)
+			fprintf (stderr, "%s%u virtual adapter%s hidden (bridges, "
+			         "tunnels, containers: --no-virtual).%s\n",
+			         fs_cli_dim (), virtuals, virtuals == 1 ? "" : "s",
+			         fs_cli_reset ());
 		g_ptr_array_unref (rows);
 		g_free (down);
 		g_free (up);
@@ -2716,7 +3231,7 @@ gint
 fs_cli_cmd_interfaces (gint argc, gchar **argv)
 {
 	const FsBackend *backend = fs_backend ();
-	gboolean watch = FALSE, all = FALSE;
+	gboolean watch = FALSE, all = FALSE, no_virtual = FALSE;
 	guint interval = 2, frames = 0;    /* 0 frames: until Ctrl-C */
 	gboolean clear;
 	GList *before, *now;
@@ -2753,6 +3268,9 @@ fs_cli_cmd_interfaces (gint argc, gchar **argv)
 		} else if (fs_cli_is_option_at (argv, i) &&
 		           strcmp (argv[i], "--all") == 0) {
 			all = TRUE;
+		} else if (fs_cli_is_option_at (argv, i) &&
+		           strcmp (argv[i], "--no-virtual") == 0) {
+			no_virtual = TRUE;
 		} else if (fs_cli_is_option_at (argv, i)) {
 			fs_cli_unknown_option ("interfaces", argv[i]);
 			return FS_EXIT_USAGE;
@@ -2777,7 +3295,7 @@ fs_cli_cmd_interfaces (gint argc, gchar **argv)
 
 	if (!watch) {
 		print_interfaces (now, before, (gdouble) (t_now - t_before) /
-		                  G_USEC_PER_SEC, all);
+		                  G_USEC_PER_SEC, all, no_virtual);
 	} else {
 		guint shown = 0;
 
@@ -2795,7 +3313,7 @@ fs_cli_cmd_interfaces (gint argc, gchar **argv)
 			if (clear)
 				printf ("\033[H\033[2J");
 			print_interfaces (now, before, (gdouble) (t_now - t_before) /
-			                  G_USEC_PER_SEC, all);
+			                  G_USEC_PER_SEC, all, no_virtual);
 			fflush (stdout);
 			if (clear && !fs_cli.quiet)
 				fprintf (stderr, "%sRefreshing every %u s -- Ctrl-C to "
@@ -2848,6 +3366,13 @@ static const FsCliOption events_opts[] = {
 	{ "--csv",         FALSE, NULL },
 	{ "--summary",     FALSE, NULL },
 	{ "--no-status-line", FALSE, NULL },
+	{ "--collapse-repeats", FALSE, NULL },
+	{ "--for-me",        FALSE, NULL },
+	{ "--prefs-filters", FALSE, NULL },
+	{ "--stats",         FALSE, NULL },
+	{ "--clear-history", FALSE, NULL },
+	{ "--yes",           FALSE, NULL },
+	{ "-y",              FALSE, NULL },
 	{ NULL, FALSE, NULL }
 };
 
@@ -2877,6 +3402,7 @@ static const FsCliOption interfaces_opts[] = {
 	{ "--watch", FALSE, NULL },
 	{ "-w",      FALSE, NULL },
 	{ "--all",   FALSE, NULL },
+	{ "--no-virtual", FALSE, NULL },
 	{ NULL, FALSE, NULL }
 };
 
@@ -2885,6 +3411,8 @@ const FsCliCommandDef fs_cli_events_commands[] = {
 "Usage: stockfw events [-n N] [-f [--no-status-line]] [--history]\n"
 "                      [--json|--csv] [--wide] [-r] [--utc] [filters]\n"
 "       stockfw events --summary [--by KEY[,KEY]] [--top N] [filters]\n"
+"       stockfw events --stats [--history] [filters]\n"
+"       stockfw events --clear-history [--history-dir DIR] [--yes]\n"
 "\n"
 "The last N (default 20, up to 1000000) events, oldest first (-r: newest\n"
 "first).  By default they are read from the kernel log, which usually\n"
@@ -2916,6 +3444,26 @@ const FsCliCommandDef fs_cli_events_commands[] = {
 "  --by KEY              what the summary counts by: src, dst, port,\n"
 "                        service, dir, rule or hour (default src,port)\n"
 "  --top N               rows per summary table (default 10)\n"
+"  --stats               how many events were read, how many each filter\n"
+"                        hid, inbound and outbound, blocked and allowed;\n"
+"                        then the saved history: its size, its folder\n"
+"                        and, when it is not being written, why\n"
+"\n"
+"The two filters of Preferences > Events run first, on the events as\n"
+"they come, as the Events page runs them (stderr says how many each hid):\n"
+"  --collapse-repeats    hide an event with the same port, protocol,\n"
+"                        source and destination as the one before it\n"
+"  --for-me              hide inbound events to addresses that are not\n"
+"                        this computer's (broadcast, multicast, others)\n"
+"  --prefs-filters       both as the preferences set them (\"Hide\n"
+"                        repeated events\", \"Skip events not addressed\n"
+"                        to this computer\"); under sudo, root's\n"
+"\n"
+"--clear-history deletes the saved history (the folder of --history, or\n"
+"--history-dir).  It first shows what is there and why it is not being\n"
+"written, then asks \"[y/N]\" on a terminal; --yes skips the question,\n"
+"and without a terminal --yes is needed.  While another copy of StockFW\n"
+"is writing the folder, nothing is deleted (exit 1).\n"
 "\n"
 "Filters, all of which must match (the Events page has the same):\n"
 "  --since T, --until T  a time: 15m, 2h, 3d, 1w, now, 2026-11-01,\n"
@@ -2939,7 +3487,9 @@ const FsCliCommandDef fs_cli_events_commands[] = {
 "Examples:\n"
 "  stockfw events --history --since 1d --port 22,3389 --dir in\n"
 "  stockfw events --summary --since 7d --by src --top 5\n"
-"  stockfw events --history -n 1000 --addr 203.0.113.0/24 --csv\n",
+"  stockfw events --history -n 1000 --addr 203.0.113.0/24 --csv\n"
+"  stockfw events -f --prefs-filters\n"
+"  stockfw events --stats --history --since 1d --collapse-repeats\n",
 	  events_opts, NULL },
 
 	{ "connections", fs_cli_cmd_connections,
@@ -2978,11 +3528,14 @@ const FsCliCommandDef fs_cli_events_commands[] = {
 	  listening_opts, NULL },
 
 	{ "interfaces", fs_cli_cmd_interfaces,
-"Usage: stockfw interfaces [--watch[=SECS]] [-c COUNT] [--all] [--json]\n"
+"Usage: stockfw interfaces [--watch[=SECS]] [-c COUNT] [--all]\n"
+"                          [--no-virtual] [--json]\n"
 "\n"
 "Network adapters that are up, with their type, address, total traffic\n"
 "and the current rate (measured over one second).  --all shows the\n"
-"adapters that are down too.  --watch refreshes every SECS seconds\n"
+"adapters that are down too.  --no-virtual leaves out virtual ones\n"
+"(bridges, veth and tun devices, Docker's, tunnels), as the Overview\n"
+"does until \"Show them\", and says on stderr how many.  --watch refreshes every SECS seconds\n"
 "(default 2) until Ctrl-C; -c COUNT stops after that many frames.  With\n"
 "--json and --watch, each frame is one line (NDJSON).  Alias: stockfw net\n",
 	  interfaces_opts, "net" },

@@ -33,6 +33,7 @@
 #include "core/fs-util.h"
 #include "core/fs-apply.h"
 #include "core/fs-eventlog.h"
+#include "core/fs-eventfilter.h"
 #include "core/fs-i18n.h"
 
 #include <string.h>
@@ -751,107 +752,10 @@ hit_is_outbound (const FsHit *hit)
  * filtered event produces no row and no counter tick.  The Copilot
  * is fed before these filters (see on_hit), so it still sees it. */
 
-/* The row the list accepted most recently, kept as copies rather than
- * as a pointer into the model because rows are trimmed once the cap
- * is passed. */
-static gchar *last_port = NULL;
-static gchar *last_proto = NULL;
-static gchar *last_src = NULL;
-static gchar *last_dst = NULL;
-
-/* [ hit_is_redundant ]
- * The original compared port, protocol, source and destination
- * against the previous hit and treated a match as one event repeated.
- * Checked most likely to differ first. */
-static gboolean
-hit_is_redundant (const FsHit *hit)
-{
-	if (hit == NULL || last_dst == NULL ||
-	    hit->port == NULL || hit->protocol == NULL ||
-	    hit->source == NULL || hit->destination == NULL)
-		return FALSE;
-
-	if (g_strcmp0 (hit->port, last_port) != 0)
-		return FALSE;
-
-	if (g_strcmp0 (hit->protocol, last_proto) != 0)
-		return FALSE;
-
-	if (g_strcmp0 (hit->source, last_src) != 0)
-		return FALSE;
-
-	return g_strcmp0 (hit->destination, last_dst) == 0;
-}
-
-static void
-remember_hit (const FsHit *hit)
-{
-	if (hit == NULL)
-		return;
-
-	g_free (last_port);
-	g_free (last_proto);
-	g_free (last_src);
-	g_free (last_dst);
-
-	last_port  = g_strdup (hit->port);
-	last_proto = g_strdup (hit->protocol);
-	last_src   = g_strdup (hit->source);
-	last_dst   = g_strdup (hit->destination);
-}
-
-/* Local addresses are refreshed on a timer rather than read per event:
- * the Windows implementation asks GetAdaptersAddresses, which is far
- * too heavy to call for every packet in a flood. */
-static GList  *local_addresses = NULL;
-static gint64  local_addresses_checked = 0;
-
-static GList *
-current_local_addresses (void)
-{
-	const gint64 now = g_get_monotonic_time ();
-
-	if (local_addresses == NULL || now - local_addresses_checked > 10 * G_USEC_PER_SEC) {
-		g_list_free_full (local_addresses,
-		                  (GDestroyNotify) fs_interface_free);
-		local_addresses = fs_backend ()->list_interfaces ();
-		local_addresses_checked = now;
-	}
-
-	return local_addresses;
-}
-
-/* [ hit_is_for_me ]
- * TRUE when the destination is one of this machine's own addresses.
- *
- * The original compared against the single external interface's IP.
- * Asking every interface is both more accurate and something that can
- * work on Windows, which has no one "external device" to query.  The
- * useful effect is the same: broadcast and multicast destinations are
- * not us, so discovery noise stops flooding the list. */
-static gboolean
-hit_is_for_me (const FsHit *hit)
-{
-	GList *ifaces;
-	gboolean found = FALSE;
-
-	if (hit == NULL || hit->destination == NULL)
-		return FALSE;
-
-	ifaces = current_local_addresses ();
-
-	for (GList *l = ifaces; l != NULL; l = l->next) {
-		FsInterface *iface = l->data;
-
-		if (iface->ip != NULL &&
-		    g_ascii_strcasecmp (iface->ip, hit->destination) == 0) {
-			found = TRUE;
-			break;
-		}
-	}
-
-	return found;
-}
+/* The filters themselves live in core (fs-eventfilter.c), shared with
+ * the terminal and the daemon: the last row shown and the local
+ * addresses, refreshed on a timer, are kept there. */
+static FsHitFilter *event_filter = NULL;
 
 /* [ on_hit ]
  * Backend log callback.  Runs on the main loop because the backend
@@ -886,19 +790,18 @@ on_hit (const FsHit *hit, gpointer user_data)
 
 	/* Both filters run before anything is counted, as they did in the
 	 * original. */
-	if (fs_prefs_bool (FS_PREFS_SKIP_REDUNDANT) &&
-	    hit_is_redundant (hit))
-		return;
-
-	if (fs_prefs_bool (FS_PREFS_SKIP_NOT_FOR_FIREWALL) &&
-	    !hit_is_for_me (hit) && !hit_is_outbound (hit))
+	if (event_filter == NULL)
+		event_filter = fs_hit_filter_new (fs_backend ()->list_interfaces);
+	if (!fs_hit_filter_keep (event_filter, hit,
+	                           fs_prefs_bool (FS_PREFS_SKIP_REDUNDANT),
+	                           fs_prefs_bool (FS_PREFS_SKIP_NOT_FOR_FIREWALL)))
 		return;
 
 	if (!fs_hitview_append (hit))
 		return;
 
 	blocked = hit_is_blocked (hit);
-	remember_hit (hit);
+	fs_hit_filter_remember (event_filter, hit);
 
 	/* The Activity page counts exactly what this list shows. */
 	fs_activityview_note_hit (hit);

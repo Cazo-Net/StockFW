@@ -7,6 +7,12 @@
 
 #include <stdio.h>
 #include <string.h>
+#ifndef G_OS_WIN32
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 
 #define FS_PREFS_GROUP_PREFIX "/apps/stockfw/"
 #define FS_PREFS_GROUP_CLIENT  "client"
@@ -736,4 +742,138 @@ fs_prefs_edit_commit (FsPrefsEdit *edit, gboolean *firewall_changed)
 		*firewall_changed = fw;
 
 	return written;
+}
+
+/* =====================================================================
+ * Writing some keys, and only those (PR 3)
+ * ===================================================================== */
+
+GQuark
+fs_prefs_error_quark (void)
+{
+	return g_quark_from_static_string ("stockfw-prefs-error");
+}
+
+/* [ prefs_write_defaults ] -- fs_prefs_set_defaults without the save. */
+static void
+prefs_write_defaults (void)
+{
+	for (guint i = 0; i < G_N_ELEMENTS (prefs_table); i++) {
+		const FsPrefSpec *spec = &prefs_table[i];
+
+		/* As fs_prefs_set_defaults: strings stay unset. */
+		if (!fs_prefs_has_key (spec->key) && spec->type == FS_PREF_BOOL)
+			fs_prefs_set_bool (spec->key, spec->bool_default);
+	}
+}
+
+/* [ fs_prefs_set_persist ] */
+gboolean
+fs_prefs_set_persist (const gchar * const *keys, const gchar * const *values,
+                      guint n, gboolean *was_unreadable, GError **error)
+{
+	gboolean ok = FALSE;
+#ifndef G_OS_WIN32
+	gchar *lock_path = NULL;
+	int fd = -1;
+#endif
+
+	if (was_unreadable != NULL)
+		*was_unreadable = FALSE;
+
+	/* Every key and value is checked before anything is touched. */
+	for (guint i = 0; i < n; i++) {
+		const FsPrefSpec *spec = fs_prefs_spec (keys[i]);
+
+		if (spec == NULL) {
+			g_set_error (error, FS_PREFS_ERROR, FS_PREFS_ERR_INVALID,
+			             "%s is not a setting", keys[i]);
+			return FALSE;
+		}
+		if (values[i] != NULL && spec->type == FS_PREF_BOOL &&
+		    strcmp (values[i], "true") != 0 &&
+		    strcmp (values[i], "false") != 0) {
+			g_set_error (error, FS_PREFS_ERROR, FS_PREFS_ERR_INVALID,
+			             "%s takes true or false, not \"%s\"", keys[i],
+			             values[i]);
+			return FALSE;
+		}
+	}
+
+	if (!fs_util_ensure_parent_dir (fs_prefs_path ())) {
+		g_set_error (error, FS_PREFS_ERROR, FS_PREFS_ERR_SAVE,
+		             "cannot create the settings directory for %s",
+		             fs_prefs_path ());
+		return FALSE;
+	}
+
+#ifndef G_OS_WIN32
+	/* One writer: flock on "<file>.lock".  Another writer's change
+	 * made before we hold it is read back below, never lost. */
+	lock_path = g_strconcat (fs_prefs_path (), ".lock", NULL);
+	fd = open (lock_path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (fd < 0) {
+		g_set_error (error, FS_PREFS_ERROR, FS_PREFS_ERR_SAVE,
+		             "cannot open the lock %s: %s", lock_path,
+		             g_strerror (errno));
+		g_free (lock_path);
+		return FALSE;
+	}
+	while (flock (fd, LOCK_EX) != 0) {
+		if (errno == EINTR)
+			continue;
+		g_set_error (error, FS_PREFS_ERROR, FS_PREFS_ERR_SAVE,
+		             "cannot lock %s: %s", lock_path, g_strerror (errno));
+		close (fd);
+		g_free (lock_path);
+		return FALSE;
+	}
+#endif
+
+	/* Re-read under the lock: what is on disk now is the base. */
+	if (prefs_file != NULL) {
+		g_key_file_free (prefs_file);
+		prefs_file = NULL;
+	}
+	fs_prefs_init ();
+	if (g_file_test (fs_prefs_path (), G_FILE_TEST_EXISTS) &&
+	    !fs_prefs_load ()) {
+		/* A12: the unreadable file was kept as <file>.bad by
+		 * fs_prefs_load; the defaults are written in its place,
+		 * then the keys asked for. */
+		if (was_unreadable != NULL)
+			*was_unreadable = TRUE;
+		prefs_write_defaults ();
+	}
+
+	for (guint i = 0; i < n; i++) {
+		const FsPrefSpec *spec = fs_prefs_spec (keys[i]);
+
+		if (values[i] == NULL) {
+			/* Back to the table's default: the key goes. */
+			gchar *group = NULL, *leaf = NULL;
+
+			prefs_split_key (keys[i], &group, &leaf);
+			g_key_file_remove_key (prefs_file, group, leaf, NULL);
+			prefs_dirty = TRUE;
+			g_free (group);
+			g_free (leaf);
+		} else if (spec->type == FS_PREF_BOOL) {
+			fs_prefs_set_bool (keys[i], strcmp (values[i], "true") == 0);
+		} else {
+			fs_prefs_set_string (keys[i], values[i]);
+		}
+	}
+
+	ok = fs_prefs_save ();
+	if (!ok)
+		g_set_error (error, FS_PREFS_ERROR, FS_PREFS_ERR_SAVE,
+		             "could not write the settings to %s",
+		             fs_prefs_path ());
+
+#ifndef G_OS_WIN32
+	close (fd);   /* releases the flock */
+	g_free (lock_path);
+#endif
+	return ok;
 }

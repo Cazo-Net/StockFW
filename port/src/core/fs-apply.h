@@ -281,6 +281,56 @@ GHashTable *fs_apply_journal_settings (void);
  * the next policy apply on every backend. */
 gboolean    fs_apply_settings_pending (void);
 
+/* ---- PR 3: settings at boot, and "Apply settings now" ---------------- */
+
+/* The journal's recorded settings as an FsSettings (fs_settings_free),
+ * or NULL when there is no journal or it predates the record.
+ * recorded_out (nullable) receives the key -> value map itself
+ * (g_hash_table_unref). */
+FsSettings *fs_settings_from_journal (GHashTable **recorded_out);
+
+/* fs_firewall_start_lifting, for a caller that gave the backend other
+ * settings than the saved preferences: `recorded' (key -> value text,
+ * as fs_apply_journal_settings gives it) is what the journal written by
+ * this start records, so the record keeps saying what is live.  NULL
+ * records the saved preferences, as fs_firewall_start_lifting does.
+ * `stockfw start' (the boot unit) gives the backend the journal's own
+ * settings when the journal records them (3B): a boot brings back the
+ * settings last applied, never ones saved and not applied. */
+FsApplyOutcome *fs_firewall_start_recorded (const FsBackend *backend,
+                                            FsPolicy *policy,
+                                            const FsPolicy *lift,
+                                            GHashTable *recorded,
+                                            const gchar *source,
+                                            const gchar *hold,
+                                            GError **error);
+
+/* How the backend is handed a policy and settings: the platform's
+ * fs_backend_set_context, or a test's own.  Core never calls the
+ * backend's global itself. */
+typedef void (*FsSettingsContextFunc) (FsPolicy *policy,
+                                       FsSettings *settings);
+
+/* [ fs_settings_apply_saved ] (J36)
+ * Put `settings' (the saved preferences, as loaded) in force under
+ * `under', the policy that is live -- the journal's, so policy edits
+ * nobody applied stay off -- through fs_settings_apply_safe: holds,
+ * the whole-set apply, rollback and the audit line.  The rollback runs
+ * under the settings the journal recorded, or, with no record,
+ * `saved_before' (the settings saved before this change; NULL: the
+ * table's defaults).  set_context hands the backend each pair; the new
+ * pair stays in its context afterwards, so `under' and `settings' must
+ * outlive the caller's use of the backend.  NULL (nothing touched)
+ * when under or settings is NULL. */
+FsApplyOutcome *fs_settings_apply_saved (const FsBackend *backend,
+                                         FsSettingsContextFunc set_context,
+                                         FsPolicy *under,
+                                         FsSettings *settings,
+                                         const FsSettings *saved_before,
+                                         const gchar *source,
+                                         const gchar *hold,
+                                         GError **error);
+
 G_END_DECLS
 
 #endif /* FS_APPLY_H */

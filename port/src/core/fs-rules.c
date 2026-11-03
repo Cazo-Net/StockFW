@@ -8,6 +8,13 @@
 #include "core/fs-service.h"
 
 #include <string.h>
+#ifndef G_OS_WIN32
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 /* Column layout per kind.  This is the on-disk CSV contract and must not
  * be reordered without a migration.  The UI reads the labels from here so
@@ -562,8 +569,23 @@ gboolean
 fs_policy_save (FsPolicy *policy)
 {
 	gboolean ok = TRUE;
+	FsPolicyLock *lock;
 
 	if (policy == NULL)
+		return FALSE;
+
+	/* T15: a row whose fields would change shape on the way back in
+	 * (a comma is a field boundary, a line break a row boundary) is
+	 * never written, and neither is anything else: every file stays
+	 * as it was. */
+	for (gint kind = 0; kind < FS_RULE_N_KINDS; kind++)
+		for (guint i = 0; i < policy->kinds[kind]->len; i++)
+			if (!fs_rule_validate (g_ptr_array_index (policy->kinds[kind],
+			                                          i), NULL))
+				return FALSE;
+
+	lock = fs_policy_lock (NULL);
+	if (lock == NULL)
 		return FALSE;
 
 	for (gint kind = 0; kind < FS_RULE_N_KINDS; kind++) {
@@ -608,6 +630,7 @@ fs_policy_save (FsPolicy *policy)
 		g_free (relative);
 	}
 
+	fs_policy_unlock (lock);
 	return ok;
 }
 
@@ -964,4 +987,338 @@ fs_rule_coverage (const FsRule *rule, gboolean names_resolved,
 		g_free (text);
 
 	return fam;
+}
+
+/* =====================================================================
+ * Validation, the policy lock and edit in place (PR 3)
+ * ===================================================================== */
+
+GQuark
+fs_rules_error_quark (void)
+{
+	return g_quark_from_static_string ("stockfw-rules-error");
+}
+
+/* [ fs_rule_validate ] */
+gboolean
+fs_rule_validate (const FsRule *rule, GError **error)
+{
+	const gchar *fields[6];
+
+	if (rule == NULL || rule->kind < 0 || rule->kind >= FS_RULE_N_KINDS) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+		                     "not a rule");
+		return FALSE;
+	}
+
+	fields[0] = rule->service;
+	fields[1] = rule->port;
+	fields[2] = rule->target;
+	fields[3] = rule->to;
+	fields[4] = rule->to_port;
+	fields[5] = rule->comment;
+
+	/* The policy files are comma-separated with no quoting: a comma
+	 * inside a field would silently become a field boundary, and a
+	 * line break a new row nobody typed. */
+	for (guint i = 0; i < G_N_ELEMENTS (fields); i++) {
+		if (fields[i] != NULL && strpbrk (fields[i], ",\n\r") != NULL) {
+			g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+			             "a field may not contain a comma or a line "
+			             "break: \"%s\"", fields[i]);
+			return FALSE;
+		}
+	}
+
+	/* The row's first field starts the line: one that starts with '#'
+	 * (after blanks, which the loader strips) would read back as a
+	 * comment, and the rule would be gone. */
+	{
+		const gchar *first;
+
+		switch (rule->kind) {
+		case FS_RULE_INBOUND_FORWARD:
+		case FS_RULE_INBOUND_ALLOW_SERVICE:
+		case FS_RULE_OUTBOUND_ALLOW_SERVICE:
+		case FS_RULE_OUTBOUND_DENY_SERVICE:
+			first = rule->service;
+			break;
+		default:
+			first = rule->target;
+			break;
+		}
+		while (first != NULL && g_ascii_isspace (*first))
+			first++;
+		if (first != NULL && *first == '#') {
+			g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+			             "the first field may not start with '#' (the "
+			             "line would read back as a comment): \"%s\"",
+			             first);
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+/* [ the policy lock ]
+ * One writer at a time.  On Linux: flock on <run>/apply.lock (the
+ * directory created 0750 if absent), then on <rules_dir>/.lock, always
+ * in that order.  Re-entrant within the process (a depth counter under
+ * a recursive mutex): a flock taken twice through two descriptors
+ * would wait for itself.  Windows: the mutex alone. */
+struct _FsPolicyLock
+{
+	guint depth_at;
+};
+
+static GRecMutex policy_mutex;
+static guint     policy_depth = 0;
+#ifndef G_OS_WIN32
+static int       policy_fd_apply = -1;
+static int       policy_fd_rules = -1;
+#endif
+
+gchar *
+fs_policy_run_dir (void)
+{
+	const gchar *env = g_getenv ("STOCKFW_RUN_DIR");
+
+	if (env != NULL && *env != '\0')
+		return g_strdup (env);
+	return g_strdup ("/run/stockfw");
+}
+
+#ifndef G_OS_WIN32
+/* [ lock_take ]
+ * Open (creating) and flock `path'.  -2: skipped, because this account
+ * may not create it; an account that cannot open the lock cannot write
+ * what it guards either, and root is never skipped.  -1: failed, with
+ * *error set. */
+static int
+lock_take (const gchar *path, GError **error)
+{
+	int fd = open (path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+
+	if (fd < 0) {
+		int e = errno;
+
+		if (geteuid () != 0 &&
+		    (e == EACCES || e == EPERM || e == EROFS || e == ENOENT))
+			return -2;
+		g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_LOCK,
+		             "cannot open the lock %s: %s", path,
+		             g_strerror (e));
+		return -1;
+	}
+
+	while (flock (fd, LOCK_EX) != 0) {
+		int e = errno;
+
+		if (e == EINTR)
+			continue;
+		close (fd);
+		g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_LOCK,
+		             "cannot lock %s: %s", path, g_strerror (e));
+		return -1;
+	}
+
+	return fd;
+}
+
+/* [ lock_files ] -- both flocks, in order; FALSE with *error set. */
+static gboolean
+lock_files (GError **error)
+{
+	gchar *run = fs_policy_run_dir ();
+	gchar *apply = g_build_filename (run, "apply.lock", NULL);
+	gchar *rules = fs_util_rules_path (".lock");
+	gboolean ok = FALSE;
+	int fd;
+
+	/* The run directory: 0750, root's when root makes it (tmpfiles
+	 * makes it at boot from PR 7 on). */
+	if (g_mkdir_with_parents (run, 0750) != 0 && geteuid () == 0) {
+		g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_LOCK,
+		             "cannot create %s: %s", run, g_strerror (errno));
+		goto out;
+	}
+	fd = lock_take (apply, error);
+	if (fd == -1)
+		goto out;
+	policy_fd_apply = fd;
+
+	/* No rules directory: nothing there to guard, and apply.lock
+	 * already orders every writer.  It is not made just for the lock:
+	 * a start or an apply (the gate takes the lock too) must not
+	 * create an empty policy folder where there was none. */
+	if (rules != NULL && !g_file_test (fs_util_rules_dir (),
+	                                   G_FILE_TEST_IS_DIR)) {
+		g_free (rules);
+		rules = NULL;
+	}
+	if (rules != NULL) {
+		if (!fs_util_ensure_parent_dir (rules) && geteuid () == 0) {
+			g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_LOCK,
+			             "cannot create the rules directory %s",
+			             fs_util_rules_dir ());
+			fd = -1;
+		} else {
+			fd = lock_take (rules, error);
+		}
+		if (fd == -1) {
+			if (policy_fd_apply >= 0)
+				close (policy_fd_apply);
+			policy_fd_apply = -1;
+			goto out;
+		}
+		policy_fd_rules = fd;
+	}
+	ok = TRUE;
+
+out:
+	g_free (rules);
+	g_free (apply);
+	g_free (run);
+	return ok;
+}
+#endif
+
+FsPolicyLock *
+fs_policy_lock (GError **error)
+{
+	FsPolicyLock *lock;
+
+	g_rec_mutex_lock (&policy_mutex);
+
+#ifndef G_OS_WIN32
+	if (policy_depth == 0 && !lock_files (error)) {
+		g_rec_mutex_unlock (&policy_mutex);
+		return NULL;
+	}
+#else
+	(void) error;
+#endif
+
+	lock = g_new0 (FsPolicyLock, 1);
+	lock->depth_at = ++policy_depth;
+	return lock;
+}
+
+void
+fs_policy_unlock (FsPolicyLock *lock)
+{
+	if (lock == NULL)
+		return;
+
+	g_warn_if_fail (lock->depth_at == policy_depth);
+	g_free (lock);
+
+	if (policy_depth > 0 && --policy_depth == 0) {
+#ifndef G_OS_WIN32
+		/* Closing releases the flock: rules first, the reverse of
+		 * the order they were taken in. */
+		if (policy_fd_rules >= 0)
+			close (policy_fd_rules);
+		if (policy_fd_apply >= 0)
+			close (policy_fd_apply);
+		policy_fd_rules = -1;
+		policy_fd_apply = -1;
+#endif
+	}
+
+	g_rec_mutex_unlock (&policy_mutex);
+}
+
+/* [ fs_policy_replace_persist ] */
+gboolean
+fs_policy_replace_persist (FsPolicy *policy, const FsRule *old,
+                           const FsRule *rule, GError **error)
+{
+	return fs_policy_replace_nth_persist (policy, -1, old, rule, error);
+}
+
+/* [ fs_policy_replace_nth_persist ] */
+gboolean
+fs_policy_replace_nth_persist (FsPolicy *policy, gint nth, const FsRule *old,
+                               const FsRule *rule, GError **error)
+{
+	GPtrArray *rows;
+	gchar *needle, *want, *why;
+	gint at = -1;
+	gboolean twice = FALSE;
+	FsRule *was;
+	FsPolicyLock *lock;
+
+	if (policy == NULL || old == NULL || rule == NULL ||
+	    old->kind < 0 || old->kind >= FS_RULE_N_KINDS) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+		                     "nothing to replace");
+		return FALSE;
+	}
+	if (rule->kind != old->kind) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+		                     "an edit keeps the rule's kind");
+		return FALSE;
+	}
+	if (!fs_rule_validate (rule, error))
+		return FALSE;
+	why = fs_rule_problem (rule);
+	if (why != NULL) {
+		g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+		             "not a valid rule: %s", why);
+		g_free (why);
+		return FALSE;
+	}
+
+	rows = policy->kinds[old->kind];
+	needle = fs_rule_to_csv (old);
+	want = fs_rule_to_csv (rule);
+	/* A row named by its number is that row, never an identical one
+	 * before it: a hand-edited file can hold the same row twice. */
+	for (guint i = 0; i < rows->len; i++) {
+		gchar *csv = fs_rule_to_csv (g_ptr_array_index (rows, i));
+
+		if (at < 0 && (nth < 0 || (guint) nth == i) &&
+		    g_strcmp0 (csv, needle) == 0)
+			at = (gint) i;
+		else if (g_strcmp0 (csv, want) == 0)
+			twice = TRUE;
+		g_free (csv);
+	}
+	g_free (needle);
+	g_free (want);
+
+	if (at < 0) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_NOT_FOUND,
+		                     "the rule is no longer in the policy");
+		return FALSE;
+	}
+	if (twice) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_DUPLICATE,
+		                     "the policy already holds that rule");
+		return FALSE;
+	}
+
+	lock = fs_policy_lock (error);
+	if (lock == NULL)
+		return FALSE;
+
+	/* In place, so the row keeps its number; one save. */
+	was = g_ptr_array_index (rows, at);
+	rows->pdata[at] = fs_rule_copy (rule);
+
+	if (!fs_policy_save (policy)) {
+		fs_rule_free (rows->pdata[at]);
+		rows->pdata[at] = was;
+		fs_policy_unlock (lock);
+		g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_SAVE,
+		             "could not save the policy in %s",
+		             fs_util_rules_dir ());
+		return FALSE;
+	}
+
+	fs_policy_unlock (lock);
+	fs_rule_free (was);
+	return TRUE;
 }

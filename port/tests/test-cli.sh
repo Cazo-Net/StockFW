@@ -60,6 +60,8 @@ trap cleanup EXIT
 export STOCKFW_RULES_DIR="$TMP/rules"
 export XDG_CONFIG_HOME="$TMP/config"
 export STOCKFW_LOG_FILE="$TMP/kern.log"
+# The policy lock's apply.lock (PR 3): never the host's /run/stockfw.
+export STOCKFW_RUN_DIR="$TMP/run"
 unset NO_COLOR
 
 fails=0
@@ -1069,7 +1071,8 @@ check "policy remove: refuses (rc 2) when a line is not a rule, and names it" \
            grep -q 'not saved: 1 line of the policy is not a rule' '$TMP/err' && [ ! -s '$TMP/out' ]"
 check "policy add: refuses (rc 2) for a rule of another kind too" \
   b_rc 2 lossy "$S" policy add outbound-deny-to 203.0.113.9
-check "  ...and the rule files are left byte for byte" diff -r "$B/lossy" "$B/lossy.orig"
+# (.lock is the policy lock's file, PR 3: it holds no rule.)
+check "  ...and the rule files are left byte for byte" diff -r -x .lock "$B/lossy" "$B/lossy.orig"
 
 # --- diff: saved against applied
 # As root the firewall's real state would decide "live"; uid 65534
@@ -2287,6 +2290,965 @@ if command -v readelf > /dev/null; then
     bash -c "! readelf -d '$S' | grep -Ei 'gtk|gdk|pango|cairo'"
 fi
 # === end WP-E ===
+
+# === PR3-A ===
+# The core and control layer (master plan, PR 3, package 3A) and boot
+# settings (3B).  Every write goes through fs_control_do under the
+# policy lock; a row that would not read back as itself is refused; a
+# boot brings back the settings last applied.  Scratch directories of
+# its own; the live part runs in a private network namespace.
+P="$(mktemp -d /tmp/stockfw-pr3a-XXXXXX)"; chmod 755 "$P"
+p_env () { env STOCKFW_RULES_DIR="$P/$1" STOCKFW_APPLIED_FILE="$P/$1.applied" \
+               STOCKFW_RUN_DIR="$P/run" "${@:2}"; }
+p_rc () { local want="$1"; shift; p_env "$@" > "$TMP/out" 2> "$TMP/err"; [ "$?" -eq "$want" ]; }
+
+# T15: the rule files are CSV with no quoting.  A comma or a line break
+# in a field is refused by fs_rule_validate (core), not split into
+# fields or rows, and nothing is written.
+check "PR3-A: a comma in a comment is refused (rc 2), named, the file's sha256 unchanged" \
+  bash -c "$(declare -f p_env p_rc); P='$P'; TMP='$TMP'; p_rc 0 sha '$S' policy add outbound-deny-to 198.51.100.8 &&
+           h=\$(sha256sum < '$P/sha/outbound/deny-to') &&
+           p_rc 2 sha '$S' policy add outbound-deny-to 198.51.100.9 --comment 'one, two' &&
+           grep -q 'may not contain a comma or a line break: \"one, two\"' '$TMP/err' &&
+           [ \"\$(sha256sum < '$P/sha/outbound/deny-to')\" = \"\$h\" ]"
+check "PR3-A: a line break in a comment is refused too" \
+  bash -c "$(declare -f p_env p_rc); P='$P'; TMP='$TMP'; p_rc 2 val '$S' policy add outbound-deny-to 198.51.100.9 --comment \"\$(printf 'a\n198.51.100.66,')\" &&
+           [ ! -e '$P/val/outbound/deny-to' ]"
+check "PR3-A: a field with a comma is refused, not read as two fields" \
+  bash -c "$(declare -f p_env p_rc); P='$P'; TMP='$TMP'; p_rc 2 val '$S' policy add inbound-allow-service 'SSH,22' 22 Anyone &&
+           grep -q 'may not contain a comma' '$TMP/err' && [ ! -e '$P/val/inbound/allow-service' ]"
+
+# One writer at a time, and each reads the policy under the lock: two
+# adds that start while another holder has the lock both land.  (Read
+# before the lock, the second save would write over the first.)
+pr3_race () {
+  mkdir -p "$P/run"
+  flock "$P/run/apply.lock" sleep 1.5 &
+  local holder=$! i
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$P/run/apply.lock" ] && break; sleep 0.1; done
+  sleep 0.2
+  p_env race "$S" -q policy add outbound-deny-to 198.51.100.21 > /dev/null 2>&1 &
+  local a=$!
+  p_env race "$S" -q policy add outbound-deny-to 198.51.100.22 > /dev/null 2>&1 &
+  local b=$!
+  sleep 0.5
+  # Both wait for the holder: nothing is written yet.
+  [ ! -s "$P/race/outbound/deny-to" ] || { wait; return 1; }
+  wait "$a" && wait "$b" && wait "$holder" &&
+  grep -q '^198.51.100.21' "$P/race/outbound/deny-to" &&
+  grep -q '^198.51.100.22' "$P/race/outbound/deny-to"
+}
+check "PR3-A: two policy adds while the lock is held wait, then both rows land" pr3_race
+check "PR3-A: the lock files are apply.lock in the run directory and .lock with the rules" \
+  bash -c "[ -e '$P/run/apply.lock' ] && [ -e '$P/race/.lock' ]"
+
+# policy remove names the row it read: removing still works by number.
+check "PR3-A: policy remove by number goes through the control layer" \
+  bash -c "$(declare -f p_env p_rc); P='$P'; TMP='$TMP'; p_rc 0 race '$S' policy remove outbound-deny-to:1 &&
+           grep -q '^Removed' '$TMP/out' && [ \$(grep -c . '$P/race/outbound/deny-to') -eq 1 ]"
+
+# --- 3B, live, as root, in a private network namespace: `start' (the
+# boot unit) installs the settings the journal records, not the ones
+# saved since; a journal from before the record falls back to the
+# saved preferences.  Config-less: the test writes the preferences file
+# itself.
+if [ "$(id -u)" = 0 ] && command -v iptables-save > /dev/null 2>&1 &&
+   unshare -n true 2> /dev/null; then
+  cat > "$P/boot.sh" <<'BOOT'
+S="$1"; P="$2"
+f=0
+ok () { echo "ok:   $1"; }
+no () { echo "FAIL: $1"; f=$((f+1)); }
+t () { local what="$1"; shift; if "$@"; then ok "$what"; else no "$what"; fi; }
+export STOCKFW_RULES_DIR="$P/boot" STOCKFW_APPLIED_FILE="$P/boot.applied"
+export STOCKFW_AUDIT_FILE="$P/boot.audit" STOCKFW_AUTOBLOCK_FILE="$P/boot.autoblocks"
+export STOCKFW_RUN_DIR="$P/run"
+export HOME="$P/home" XDG_CONFIG_HOME="$P/home/.config"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+CONF="$XDG_CONFIG_HOME/stockfw/stockfw.conf"
+mkdir -p "$XDG_CONFIG_HOME/stockfw"
+ip link set lo up 2> /dev/null
+snap () { iptables-save | grep -v '^#' | sed 's/\[[0-9]*:[0-9]*\]//' | sha256sum; }
+icmp () { printf '[firewall]\nicmp/enable=%s\n' "$1" > "$CONF"; }
+
+icmp false
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" apply > /dev/null 2>&1
+applied=$(snap)
+t "3B: the journal records the settings applied (ICMP filtering off)" \
+  grep -q '^# setting /apps/stockfw/firewall/icmp/enable=false' "$STOCKFW_APPLIED_FILE"
+
+# Saved, not applied: ICMP filtering on.
+icmp true
+"$S" apply --dry-run > /dev/null 2>&1
+"$S" stop > /dev/null 2>&1
+"$S" start > "$P/start.out" 2>&1; rc=$?
+t "3B: start after a saved, unapplied settings change (rc $rc)" [ "$rc" -eq 0 ]
+t "3B: ...installs the firewall exactly as applied, not the saved settings" \
+  [ "$(snap)" = "$applied" ]
+t "3B: ...and the journal it writes still records what is live" \
+  grep -q '^# setting /apps/stockfw/firewall/icmp/enable=false' "$STOCKFW_APPLIED_FILE"
+
+# A journal from before the record: the saved preferences, as before.
+grep -v '^# setting ' "$STOCKFW_APPLIED_FILE" > "$P/old.applied"
+cp "$P/old.applied" "$STOCKFW_APPLIED_FILE"
+"$S" stop > /dev/null 2>&1
+"$S" start > /dev/null 2>&1; rc=$?
+t "3B: with an older journal start takes the saved settings (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && [ '$(snap)' != '$applied' ]"
+"$S" stop > /dev/null 2>&1
+exit "$f"
+BOOT
+  unshare -n bash "$P/boot.sh" "$S" "$P" > "$P/boot.log" 2>&1
+  boot_rc=$?
+  cat "$P/boot.log"
+  fails=$((fails + boot_rc))
+else
+  echo "skip: the 3B boot-settings check needs root, iptables and unshare"
+fi
+rm -rf "$P"
+# === end PR3-A ===
+
+# === PR3-C ===
+# `stockfw config' (package 3C): the Preferences window's settings from
+# the terminal.  Writes go to root's copy through the control layer
+# (settings.set: fs_prefs_validate, then fs_prefs_set_persist); `config
+# apply' puts the saved firewall settings in force under the policy
+# last applied.  Scratch directories of its own; the live part runs in
+# a private network namespace.
+C="$(mktemp -d /tmp/stockfw-pr3c-XXXXXX)"; chmod 755 "$C"
+c_env () { env XDG_CONFIG_HOME="$C/$1/conf" STOCKFW_RULES_DIR="$C/$1/rules" \
+               STOCKFW_APPLIED_FILE="$C/$1/applied" STOCKFW_AUDIT_FILE="$C/$1/audit" \
+               STOCKFW_RUN_DIR="$C/run" "${@:2}"; }
+c_rc () { local want="$1"; shift; c_env "$@" > "$TMP/out" 2> "$TMP/err"; [ "$?" -eq "$want" ]; }
+c_conf () { echo "$C/$1/conf/stockfw/stockfw.conf"; }
+
+if [ "$(id -u)" = 0 ]; then
+  # J19/J37: sharing needs both devices -- refused with the window's own
+  # reason (ui/fs-prefsdialog.c), and nothing is written.
+  check "PR3-C: config set nat on without both devices: exit 2 with the window's reason" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 2 nat '$S' config set firewall/nat true &&
+             grep -qF 'firewall.nat: Needs both devices: choose an Internet device and a local network device above.' '$TMP/err' &&
+             grep -q 'help topic: prefs-network' '$TMP/err' && [ ! -e '$(c_conf nat)' ]"
+  check "PR3-C: ...one device is not enough either" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 2 nat '$S' config set nat on ext_if eth9 &&
+             grep -qF 'Needs both devices' '$TMP/err' && [ ! -e '$(c_conf nat)' ]"
+  # The whole set is checked at once: both devices in the same call.
+  check "PR3-C: config set nat true ext_if X int_if Y in one call is saved" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 0 nat '$S' config set nat true ext_if eth8 int_if eth9 &&
+             grep -qx 'nat=true' '$(c_conf nat)' && grep -qx 'ext_if=eth8' '$(c_conf nat)' &&
+             grep -qx 'int_if=eth9' '$(c_conf nat)' && grep -q 'not present' '$TMP/err' &&
+             grep -q 'Saved, not applied' '$TMP/out'"
+  check "PR3-C: config get reads it back (on), --json too" \
+    bash -c "[ \"\$($(declare -f c_env); C='$C'; c_env nat '$S' config get firewall.nat)\" = on ] &&
+             $(declare -f c_env); C='$C'; c_env nat '$S' --json config get ext-if |
+             python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(d[\"value\"]!=\"eth8\")'"
+  check "PR3-C: an ICMP type cannot change while ICMP filtering goes off (exit 2)" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 2 icmp '$S' config set icmp off echo_request off &&
+             grep -q 'Filter ICMP messages' '$TMP/err' && [ ! -e '$(c_conf icmp)' ]"
+  check "PR3-C: an unknown setting is a usage error with a suggestion" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 2 nat '$S' config set firewall.natt on &&
+             grep -q 'did you mean firewall.nat' '$TMP/err'"
+  check "PR3-C: a value a switch does not take is refused" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 2 nat '$S' config set log_allowed maybe &&
+             grep -q 'is not on or off' '$TMP/err'"
+  check "PR3-C: config reset takes a key back to its default (removed from the file)" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 0 nat '$S' config reset nat &&
+             ! grep -q '^nat=' '$(c_conf nat)' && grep -qx 'ext_if=eth8' '$(c_conf nat)'"
+  if command -v setpriv > /dev/null; then
+    check "PR3-C: a non-root config set is refused (exit 3), with the sudo hint, nothing written" \
+      bash -c "$(declare -f c_env); C='$C'; h=\$(sha256sum < '$(c_conf nat)');
+               c_env nat setpriv --reuid=65534 --regid=65534 --clear-groups '$S' config set deny_packets reject \
+                 > '$TMP/out' 2> '$TMP/err'; rc=\$?;
+               [ \$rc -eq 3 ] && grep -q 'sudo' '$TMP/err' && grep -q \"root's copy\" '$TMP/err' &&
+               [ \"\$(sha256sum < '$(c_conf nat)')\" = \"\$h\" ]"
+  fi
+
+  # Two writers of different keys keep both: each reads the file under
+  # its lock.  The test holds the lock while both start, so both have
+  # read the old file before either writes.
+  pr3c_race () {
+    local conf; conf="$(c_conf race)"
+    mkdir -p "$(dirname "$conf")"
+    printf '[client]\nenable_tray_icon=true\n' > "$conf"
+    flock "$conf.lock" sleep 1.5 &
+    local holder=$! i
+    for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$conf.lock" ] && break; sleep 0.1; done
+    sleep 0.2
+    local held; held="$(sha256sum < "$conf")"
+    c_env race "$S" -q config set filter.redundant on > /dev/null 2>&1 &
+    local a=$!
+    c_env race "$S" -q config set events.max_events 5000 > /dev/null 2>&1 &
+    local b=$!
+    # Both wait while the lock is held: nothing written yet (without
+    # the lock they would write now, and often still keep both keys).
+    sleep 0.5
+    local during; during="$(sha256sum < "$conf")"
+    wait "$a" && wait "$b" && wait "$holder" && [ "$during" = "$held" ] &&
+    grep -qx 'filter/redundant=true' "$conf" && grep -qx 'events/max_events=5000' "$conf" &&
+    grep -qx 'enable_tray_icon=true' "$conf"
+  }
+  check "PR3-C: two config set calls on different keys at once keep both" pr3c_race
+
+  # A12: a file that cannot be read is kept as .bad, the defaults are
+  # written with the change.
+  pr3c_bad () {
+    local conf; conf="$(c_conf bad)"
+    mkdir -p "$(dirname "$conf")"
+    printf 'this is [not an ini file\n\x01' > "$conf"
+    cp "$conf" "$C/bad.orig"
+    c_env bad "$S" config set deny_packets reject > "$TMP/out" 2> "$TMP/err" &&
+    cmp -s "$conf.bad" "$C/bad.orig" && grep -q 'kept as' "$TMP/err" &&
+    grep -qx 'deny_packets=false' "$conf" && grep -qx 'enable_tray_icon=true' "$conf"
+  }
+  check "PR3-C: an unreadable settings file is kept as .bad and the defaults written (A12)" pr3c_bad
+
+  check "PR3-C: config set audit-only on writes the audit log (B2/J13)" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 0 audit '$S' config set audit-only on &&
+             grep -q 'Audit-only mode is on' '$TMP/out' &&
+             grep -q '| audit-only mode | cli | on' '$C/audit/audit' &&
+             [ \"\$($(declare -f c_env); C='$C'; c_env audit '$S' config audit-only)\" = on ] &&
+             c_rc 0 audit '$S' config audit-only off && grep -q '| audit-only mode | cli | off' '$C/audit/audit'"
+  check "PR3-C: config list --json parses; --changed lists only the changed" \
+    bash -c "$(declare -f c_env); C='$C'; c_env nat '$S' --json config list --changed |
+             python3 -I -c 'import json,sys; d=json.load(sys.stdin); n=[s[\"name\"] for s in d[\"settings\"]]; sys.exit(sorted(n)!=[\"firewall.ext_if\",\"firewall.int_if\"])'"
+  check "PR3-C: config list --firewall lists only firewall settings" \
+    bash -c "$(declare -f c_env); C='$C'; c_env nat '$S' --json config list --firewall |
+             python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(not d[\"settings\"] or not all(s[\"firewall\"] for s in d[\"settings\"]))'"
+  check "PR3-C: config devices marks a chosen device that is not there" \
+    bash -c "$(declare -f c_env); C='$C'; c_env nat '$S' config devices | grep -qE '^eth9 +\\(not present\\) +local network'"
+  check "PR3-C: completion offers config's actions and setting names" \
+    bash -c "'$S' __complete config se | grep -qx set && '$S' __complete config set firewall.ext | grep -qx firewall.ext_if &&
+             '$S' __complete config set nat '' | grep -qx on"
+
+  # A StockFW window running as root keeps its own copy and writes it
+  # back: `set' says so.  A stand-in listens on the instance name.
+  pr3c_gui () {
+    local name="stockfw-gui-pr3c-$$"
+    python3 -I -c '
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind("\0" + sys.argv[1]); s.listen(4)
+print("up", flush=True); time.sleep(5)' "$name" > "$C/gui.up" &
+    local gui=$! i
+    for i in $(seq 30); do [ -s "$C/gui.up" ] && break; sleep 0.1; done
+    c_env gui env STOCKFW_INSTANCE_NAME="$name" "$S" config set filter.redundant on > "$TMP/out" 2> "$TMP/err"
+    local warned=$?
+    grep -q 'StockFW window is running as root' "$TMP/err" || warned=1
+    c_env gui env STOCKFW_INSTANCE_NAME="$name-none" "$S" config set filter.redundant off > "$TMP/out" 2> "$TMP/err"
+    ! grep -q 'running as root' "$TMP/err" || warned=1
+    kill "$gui" 2> /dev/null; wait "$gui" 2> /dev/null
+    [ "$warned" -eq 0 ]
+  }
+  check "PR3-C: config set warns when a StockFW window runs as root, not otherwise" pr3c_gui
+else
+  echo "skip: the PR3-C config writes need root"
+fi
+
+# --- live, as root, in a private network namespace: `config apply'
+# applies the saved settings under the journal's policy, so a policy
+# edit saved and not applied stays off; a boot (`stockfw start') keeps
+# the settings last applied.
+if [ "$(id -u)" = 0 ] && command -v iptables-save > /dev/null 2>&1 &&
+   unshare -n true 2> /dev/null; then
+  cat > "$C/live.sh" <<'LIVE'
+S="$1"; C="$2"
+f=0
+t () { local what="$1"; shift; if "$@"; then echo "ok:   $what"; else echo "FAIL: $what"; f=$((f+1)); fi; }
+export STOCKFW_RULES_DIR="$C/live/rules" STOCKFW_APPLIED_FILE="$C/live/applied"
+export STOCKFW_AUDIT_FILE="$C/live/audit" STOCKFW_AUTOBLOCK_FILE="$C/live/autoblocks"
+export STOCKFW_RUN_DIR="$C/run" HOME="$C/live/home" XDG_CONFIG_HOME="$C/live/home/.config"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+mkdir -p "$HOME"
+ip link set lo up 2> /dev/null
+rules () { iptables-save | grep -v '^#' | sed 's/\[[0-9]*:[0-9]*\]//'; }
+
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" apply > /dev/null 2>&1
+t "PR3-C live: echo requests are allowed after the first apply" \
+  bash -c "iptables-save | grep -q 'icmp-type 8 '"
+
+# Saved, not applied: a policy row and an ICMP setting.
+"$S" -q policy add outbound-deny-to 198.51.100.77
+"$S" config set echo_request off > /dev/null 2>&1
+t "PR3-C live: config set alone changes nothing live" \
+  bash -c "iptables-save | grep -q 'icmp-type 8 '"
+"$S" config apply > "$C/apply.out" 2>&1; rc=$?
+t "PR3-C live: config apply (rc $rc) shows the difference and the impact" \
+  bash -c "[ $rc -eq 0 ] && grep -q 'firewall.icmp.echo_request' '$C/apply.out' &&
+           grep -q 'Impact: .* removed' '$C/apply.out' && grep -q 'stay off' '$C/apply.out'"
+t "PR3-C live: ...the setting is in force" \
+  bash -c "! iptables-save | grep -q 'icmp-type 8 '"
+t "PR3-C live: ...under the journal: the unapplied policy row did not go live" \
+  bash -c "! iptables-save | grep -q '198.51.100.77'"
+t "PR3-C live: ...and the journal records the setting" \
+  grep -q '^# setting /apps/stockfw/firewall/icmp/echo_request=false' "$STOCKFW_APPLIED_FILE"
+"$S" config apply > "$C/apply2.out" 2>&1
+t "PR3-C live: a second config apply has nothing to do" \
+  grep -q 'Nothing to apply' "$C/apply2.out"
+
+# A boot keeps what was applied: a saved, unapplied ICMP change does
+# not go live at `stockfw start'.
+applied=$(rules | sha256sum)
+"$S" config set echo_reply off > /dev/null 2>&1
+"$S" stop > /dev/null 2>&1
+"$S" start > /dev/null 2>&1; rc=$?
+t "PR3-C live: start after config set without --apply (rc $rc) installs what was applied" \
+  bash -c "[ $rc -eq 0 ] && [ '$(rules | sha256sum)' = '$applied' ]"
+
+# --apply saves and applies in one go.
+"$S" config set timestamping on --apply > "$C/apply3.out" 2>&1; rc=$?
+t "PR3-C live: config set --apply (rc $rc) applies" \
+  bash -c "[ $rc -eq 0 ] && grep -q '^Applied' '$C/apply3.out' &&
+           grep -q '^# setting /apps/stockfw/firewall/icmp/timestamping=true' '$STOCKFW_APPLIED_FILE'"
+t "PR3-C live: ...the policy row saved earlier is still not live" \
+  bash -c "! iptables-save | grep -q '198.51.100.77'"
+
+# Audit-only holds it: nothing changes, the settings stay saved.
+"$S" config set audit-only on > /dev/null 2>&1
+before=$(rules | sha256sum)
+"$S" config set echo_request on --apply > "$C/held.out" 2>&1; rc=$?
+t "PR3-C live: audit-only holds config set --apply (rc $rc), the firewall untouched" \
+  bash -c "[ $rc -eq 0 ] && grep -q '^Held' '$C/held.out' && [ '$(rules | sha256sum)' = '$before' ]"
+"$S" config set audit-only off > /dev/null 2>&1
+
+# A policy apply sends the saved settings too: `config set' says so
+# up front and the apply says it did (review fix).
+"$S" config set echo_reply on > "$C/set4.out" 2>&1
+t "PR3-C live: config set without --apply names a policy apply as well" \
+  grep -q 'or a policy apply' "$C/set4.out"
+"$S" policy add inbound-allow-service HTTP 80 Anyone --apply --yes > "$C/apply4.out" 2>&1; rc=$?
+t "PR3-C live: policy add --apply (rc $rc) says the saved settings went out" \
+  bash -c "[ $rc -eq 0 ] && grep -q 'saved firewall settings went out' '$C/apply4.out' &&
+           grep -q '^# setting /apps/stockfw/firewall/icmp/echo_reply=true' '$STOCKFW_APPLIED_FILE'"
+"$S" policy add inbound-allow-service HTTPS 443 Anyone --apply --yes > "$C/apply5.out" 2>&1
+t "PR3-C live: ...and an apply with no settings pending does not" \
+  bash -c "grep -q '^Applied' '$C/apply5.out' && ! grep -q 'saved firewall settings' '$C/apply5.out'"
+"$S" stop > /dev/null 2>&1
+exit "$f"
+LIVE
+  unshare -n bash "$C/live.sh" "$S" "$C" > "$C/live.log" 2>&1
+  live_rc=$?
+  cat "$C/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the PR3-C live config apply check needs root, iptables and unshare"
+fi
+rm -rf "$C"
+# === end PR3-C ===
+
+# === PR3-D ===
+# Policy editing (package 3D): `policy edit' changes a row in place
+# (one save, the comment kept), `policy init' seeds the default rules,
+# and --apply on add, edit and remove applies under the same lock, with
+# the SSH check in front.  Every write goes through fs_control_do.  Own
+# scratch directories; anything that touches a firewall runs in a
+# private network namespace.
+Q="$(mktemp -d /tmp/stockfw-pr3d-XXXXXX)"; chmod 755 "$Q"
+q_env () { env STOCKFW_RULES_DIR="$Q/$1" STOCKFW_APPLIED_FILE="$Q/$1.applied" \
+               STOCKFW_RUN_DIR="$Q/run" "${@:2}"; }
+q_rc () { local want="$1"; shift; q_env "$@" > "$TMP/out" 2> "$TMP/err"; [ "$?" -eq "$want" ]; }
+# The rule files of a policy, hashed together (not the lock file).
+q_sum () { (cd "$Q/$1" && find . -type f ! -name .lock | LC_ALL=C sort | xargs -r sha256sum | sha256sum); }
+
+q_env ed "$S" -q policy add outbound-deny-to 203.0.113.1 --comment one
+q_env ed "$S" -q policy add outbound-deny-to 203.0.113.2 --comment two
+q_env ed "$S" -q policy add outbound-deny-to 203.0.113.3 --comment three
+
+# E4: same number, same place, the comment kept.  A remove and an add
+# would put the row last.
+q_edit_keeps () {
+  q_rc 0 ed "$S" policy edit outbound-deny-to:2 203.0.113.22 &&
+  grep -q '^Changed outbound-deny-to:2  203.0.113.22' "$TMP/out" &&
+  grep -q 'was: 203.0.113.2$' "$TMP/out" &&
+  [ "$(cat "$Q/ed/outbound/deny-to")" = "$(printf '203.0.113.1, one\n203.0.113.22, two\n203.0.113.3, three')" ]
+}
+check "PR3-D: policy edit changes the row in place and keeps its comment" q_edit_keeps
+# The same row twice (a hand-edited file): KIND:3 is row 3, not the
+# identical row 2 before it.
+q_edit_dup () {
+  mkdir -p "$Q/dup/inbound" &&
+  printf 'Anyone, a\n203.0.113.1, x\n203.0.113.1, x\n' > "$Q/dup/inbound/allow-from" &&
+  q_rc 0 dup "$S" policy edit inbound-allow-from:3 203.0.113.9 &&
+  [ "$(cat "$Q/dup/inbound/allow-from")" = "$(printf 'Anyone, a\n203.0.113.1, x\n203.0.113.9, x')" ]
+}
+check "PR3-D: policy edit KIND:N changes row N when an identical row comes first" q_edit_dup
+# A first field that starts with '#' would read back as a comment and
+# the rule would be gone: refused, nothing written.
+q_hash () {
+  q_env hash "$S" policy add outbound-deny-service '#evil' 443 any > "$TMP/out" 2> "$TMP/err"
+  [ "$?" -eq 2 ] && grep -q "may not start with '#'" "$TMP/err" &&
+  ! grep -rqs evil "$Q/hash"
+}
+check "PR3-D: policy add refuses a service name that starts with '#'" q_hash
+check "PR3-D: policy edit --comment alone changes only the comment" \
+  bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 0 ed '$S' policy edit outbound-deny-to:3 --comment 'third one' &&
+           grep -qx '203.0.113.3, third one' '$Q/ed/outbound/deny-to' && grep -q 'comment: third one' '$TMP/out'"
+check "PR3-D: \"-\" keeps a field: policy edit outbound-allow-service:1 - 5353 -" \
+  bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 0 ed '$S' -q policy add outbound-allow-service DNS 53 Anyone --comment resolver &&
+           q_rc 0 ed '$S' policy edit outbound-allow-service:1 - 5353 - &&
+           grep -qx 'DNS, 5353, Anyone, resolver' '$Q/ed/outbound/allow-service'"
+check "PR3-D: policy edit --json names the rule and what it was" \
+  bash -c "$(declare -f q_env); Q='$Q'; q_env ed '$S' --json policy edit outbound-deny-to:1 203.0.113.11 |
+           python3 -I -c 'import json,sys; d = json.load(sys.stdin); assert d[\"changed\"] and d[\"rule\"][\"ref\"] == \"outbound-deny-to:1\" and d[\"rule\"][\"fields\"][\"target\"] == \"203.0.113.11\" and d[\"was\"][\"fields\"][\"target\"] == \"203.0.113.1\" and d[\"rule\"][\"comment\"] == \"one\" and d[\"applied\"] is False, d'"
+check "PR3-D: policy edit with the wrong number of fields is a usage error, nothing saved" \
+  bash -c "$(declare -f q_env q_rc q_sum); Q='$Q'; TMP='$TMP'; h=\$(q_sum ed) && q_rc 2 ed '$S' policy edit outbound-deny-to:1 a b &&
+           grep -q 'takes 1 field, got 2' '$TMP/err' && [ \"\$(q_sum ed)\" = \"\$h\" ]"
+# One save: each rule file is written once (a remove and an add would
+# write it twice, even one that puts the row back at its place).  Only
+# where strace is installed; CI installs it and fails on the skip line.
+if command -v strace > /dev/null 2>&1; then
+  check "PR3-D: policy edit is one save (the file is replaced once)" \
+    bash -c "$(declare -f q_env); Q='$Q'; q_env ed strace -f -e trace=rename,renameat,renameat2 -o '$Q/strace.out' '$S' -q policy edit outbound-deny-to:2 203.0.113.23 &&
+             [ \$(grep -c 'outbound/deny-to\"' '$Q/strace.out') -eq 1 ]"
+else
+  echo "skip: the one-save check of policy edit needs strace"
+fi
+
+# T15 for edit: a comma or a line break in the comment, and a host
+# field that carries iptables words, are refused and the files keep
+# their exact bytes.
+q_refused () {   # q_refused <what the error says> <edit args...>
+  local says="$1"; shift
+  local h; h=$(q_sum ed)
+  q_rc 2 ed "$S" policy edit "$@" && grep -q -- "$says" "$TMP/err" &&
+  [ "$(q_sum ed)" = "$h" ] && ! grep -q '203.0.113.66' "$Q/ed/outbound/deny-to"
+}
+check "PR3-D: edit with a comma in the comment: refused, sha256 unchanged" \
+  q_refused 'may not contain a comma' outbound-deny-to:1 --comment 'one, 203.0.113.66'
+check "PR3-D: edit with a line break in the comment: refused, no forged row" \
+  q_refused 'may not contain a comma or a line break' outbound-deny-to:1 --comment "$(printf 'one\n203.0.113.66, forged')"
+check "PR3-D: edit with a host \"203.0.113.5 -j ACCEPT\": refused, sha256 unchanged" \
+  q_refused 'is not an address' outbound-deny-to:1 '203.0.113.5 -j ACCEPT'
+check "PR3-D: edit of a number the kind does not have is a usage error" \
+  bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 2 ed '$S' policy edit outbound-deny-to:9 203.0.113.9 &&
+           grep -q 'has no rule number 9' '$TMP/err'"
+
+# One writer at a time: two adds and an edit, started while the test
+# holds the policy lock, wait for it; then all three land.
+q_race () {
+  mkdir -p "$Q/run"
+  q_env ed "$S" -q policy add outbound-deny-to 203.0.113.30 > /dev/null 2>&1
+  flock "$Q/run/apply.lock" sleep 1.5 &
+  local holder=$! i
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$Q/run/apply.lock" ] && break; sleep 0.1; done
+  sleep 0.2
+  local h; h=$(q_sum ed)
+  q_env ed "$S" -q policy add outbound-deny-to 203.0.113.31 > /dev/null 2>&1 &
+  local a=$!
+  q_env ed "$S" -q policy add outbound-deny-to 203.0.113.32 > /dev/null 2>&1 &
+  local b=$!
+  q_env ed "$S" -q policy edit outbound-deny-to:1 --comment raced > /dev/null 2>&1 &
+  local c=$!
+  sleep 0.5
+  # All three wait for the holder: nothing is written yet.
+  [ "$(q_sum ed)" = "$h" ] || { wait; return 1; }
+  wait "$a" && wait "$b" && wait "$c" && wait "$holder" &&
+  grep -q '^203.0.113.31, *$' "$Q/ed/outbound/deny-to" &&
+  grep -q '^203.0.113.32, *$' "$Q/ed/outbound/deny-to" &&
+  grep -q '^203.0.113.30, *$' "$Q/ed/outbound/deny-to" &&
+  [ "$(head -1 "$Q/ed/outbound/deny-to")" = '203.0.113.11, raced' ]
+}
+check "PR3-D: two policy adds and an edit while the lock is held: they wait, no row is lost" q_race
+
+# CONFLICT: an edit reads row 1, then waits for the lock; the holder
+# changes row 1 meanwhile.  The edit is refused and the holder's row
+# stays: it never overwrites a row the user did not see.
+q_conflict () {
+  mkdir -p "$Q/cf/outbound"
+  printf '203.0.113.60, first\n203.0.113.61, second\n' > "$Q/cf/outbound/deny-to"
+  flock "$Q/run/apply.lock" sleep 1.5 &
+  local holder=$! i
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$Q/run/apply.lock" ] && break; sleep 0.1; done
+  sleep 0.2
+  q_env cf "$S" policy edit outbound-deny-to:1 203.0.113.62 > "$TMP/out" 2> "$TMP/err" &
+  local e=$!
+  sleep 0.6
+  printf '203.0.113.70, changed\n203.0.113.61, second\n' > "$Q/cf/outbound/deny-to"
+  wait "$holder"; wait "$e"; local rc=$?
+  [ "$rc" -eq 1 ] && grep -q 'no longer the rule that was read' "$TMP/err" &&
+  [ "$(cat "$Q/cf/outbound/deny-to")" = "$(printf '203.0.113.70, changed\n203.0.113.61, second')" ]
+}
+check "PR3-D: an edit of a row another writer changed meanwhile is refused (CONFLICT, rc 1)" q_conflict
+
+# A19: policy init seeds the default rules; a policy with rules is kept
+# unless --force.
+check "PR3-D: an empty policy's list points at policy init" \
+  bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 0 init '$S' policy list && grep -q 'stockfw policy init' '$TMP/out' &&
+           ! grep -q 'open the desktop app' '$TMP/out'"
+check "PR3-D: policy init saves the default rules (DHCP and DNS out)" \
+  bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 0 init '$S' policy init &&
+           [ \"\$(cat '$Q/init/outbound/allow-service')\" = \"\$(printf 'DHCP, 67-68, Anyone, \nDNS, 53, Anyone, ')\" ] &&
+           grep -q 'outbound-allow-service:2  DNS' '$TMP/out'"
+check "PR3-D: policy init again is refused (rc 2) and the files are unchanged" \
+  bash -c "$(declare -f q_env q_rc q_sum); Q='$Q'; TMP='$TMP'; q_rc 0 init '$S' -q policy add outbound-deny-to 203.0.113.40 && h=\$(q_sum init) &&
+           q_rc 2 init '$S' policy init && grep -q 'pass --force' '$TMP/err' && [ \"\$(q_sum init)\" = \"\$h\" ]"
+check "PR3-D: policy init --force replaces it, and --json says how many rules went" \
+  bash -c "$(declare -f q_env); Q='$Q'; q_env init '$S' --json policy init --force |
+           python3 -I -c 'import json,sys; d = json.load(sys.stdin); assert d[\"initialized\"] and d[\"replaced\"] == 3 and len(d[\"rules\"]) == 2, d' &&
+           [ ! -s '$Q/init/outbound/deny-to' ]"
+
+# --apply needs root, and says so before anything is saved.
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null; then
+  mkdir -p "$Q/nr"; chmod 777 "$Q/nr"
+  check "PR3-D: policy add --apply as uid 65534: needs root (rc 3), nothing saved" \
+    bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 3 nr setpriv --reuid=65534 --regid=65534 --clear-groups '$S' policy add outbound-deny-to 203.0.113.41 --apply &&
+             grep -q 'needs root' '$TMP/err' && [ ! -e '$Q/nr/outbound/deny-to' ]"
+fi
+
+# --- live, as root, in a private network namespace: --apply makes the
+# edit live under the same lock, and the SSH check runs on the policy
+# the edit gives, before anything is saved.
+if [ "$(id -u)" = 0 ] && command -v iptables-save > /dev/null 2>&1 &&
+   unshare -n true 2> /dev/null; then
+  cat > "$Q/live.sh" <<'LIVE'
+S="$1"; Q="$2"
+f=0
+ok () { echo "ok:   $1"; }
+no () { echo "FAIL: $1"; f=$((f+1)); }
+t () { local what="$1"; shift; if "$@"; then ok "$what"; else no "$what"; fi; }
+export STOCKFW_RULES_DIR="$Q/live" STOCKFW_APPLIED_FILE="$Q/live.applied"
+export STOCKFW_AUDIT_FILE="$Q/live.audit" STOCKFW_AUTOBLOCK_FILE="$Q/live.autoblocks"
+export STOCKFW_RUN_DIR="$Q/run"
+export HOME="$Q/home" XDG_CONFIG_HOME="$Q/home/.config"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+mkdir -p "$HOME"
+ip link set lo up 2> /dev/null
+snap () { iptables-save | grep -v '^#' | sed 's/\[[0-9]*:[0-9]*\]//' | sha256sum; }
+files () { (cd "$STOCKFW_RULES_DIR" && find . -type f ! -name .lock | LC_ALL=C sort | xargs -r sha256sum | sha256sum); }
+
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" policy add outbound-deny-to 203.0.113.40 --apply > "$Q/a.out" 2>&1; rc=$?
+t "3D: policy add --apply (rc $rc): the rule is live" \
+  bash -c "[ $rc -eq 0 ] && grep -q '^Applied' '$Q/a.out' && iptables-save | grep -q '203.0.113.40'"
+t "3D: ...and the journal is the saved policy" grep -q '203.0.113.40' "$STOCKFW_APPLIED_FILE"
+"$S" policy edit outbound-deny-to:1 203.0.113.41 --apply > "$Q/e.out" 2>&1; rc=$?
+t "3D: policy edit --apply (rc $rc): the new row is live, the old one gone" \
+  bash -c "[ $rc -eq 0 ] && iptables-save | grep -q '203.0.113.41' && ! iptables-save | grep -q '203.0.113.40'"
+"$S" --json policy remove outbound-deny-to:1 --apply > "$Q/r.out" 2>&1; rc=$?
+t "3D: policy remove --apply --json (rc $rc): gone from the firewall, \"applied\" true" \
+  bash -c "[ $rc -eq 0 ] && ! iptables-save | grep -q '203.0.113.41' &&
+           python3 -I -c 'import json; d = json.load(open(\"$Q/r.out\")); assert d[\"removed\"] and d[\"applied\"] and d[\"apply\"][\"result\"], d'"
+
+# The SSH check: narrowing the SSH row would cut a session from
+# 203.0.113.50.  Without a terminal and --yes: refused, and neither the
+# files nor the firewall change.
+before=$(snap); fbefore=$(files)
+SSH_CONNECTION='203.0.113.50 50000 198.51.100.1 22' "$S" policy edit inbound-allow-service:1 - - 198.51.100.0/24 --apply < /dev/null > "$Q/lk.out" 2>&1; rc=$?
+t "3D: edit --apply that would cut the SSH session: refused (rc $rc), nothing saved, firewall untouched" \
+  bash -c "[ $rc -eq 1 ] && [ '$(snap)' = '$before' ] && [ '$(files)' = '$fbefore' ] &&
+           grep -q 'from 203.0.113.50 to port 22' '$Q/lk.out' && grep -q 'nothing was saved' '$Q/lk.out'"
+SSH_CONNECTION='203.0.113.50 50000 198.51.100.1 22' "$S" --json policy edit inbound-allow-service:1 - - 198.51.100.0/24 --apply --yes < /dev/null > "$Q/lky.out" 2> /dev/null; rc=$?
+t "3D: ...with --yes it is saved and applied, and the JSON says it was confirmed" \
+  bash -c "[ $rc -eq 0 ] && [ '$(snap)' != '$before' ] && grep -q '^SSH, 22, 198.51.100.0/24' '$STOCKFW_RULES_DIR/inbound/allow-service' &&
+           python3 -I -c 'import json; d = json.load(open(\"$Q/lky.out\")); l = d[\"apply\"][\"lockout\"]; assert d[\"changed\"] and d[\"applied\"] and l[\"confirmed\"] and l[\"client\"] == \"203.0.113.50\", d'"
+"$S" stop > /dev/null 2>&1
+exit "$f"
+LIVE
+  unshare -n bash "$Q/live.sh" "$S" "$Q" > "$Q/live.log" 2>&1
+  live_rc=$?
+  cat "$Q/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the 3D --apply checks need root, iptables and unshare"
+fi
+rm -rf "$Q"
+# === end PR3-D ===
+
+# === PR3-E ===
+# Overview, events and activity (master plan, PR 3, package 3E): the
+# verdict on line 1 of `status', `stop' asking on a terminal,
+# `interfaces --no-virtual', the Events page's two filters and the
+# history's numbers in `events', and `activity' rebuilt from a fixture
+# history.  Scratch directories of its own; what changes a firewall or
+# adds a device runs in a private network (and mount) namespace.
+E="$(mktemp -d /tmp/stockfw-pr3e-XXXXXX)"; chmod 755 "$E"
+e_env () { env XDG_CONFIG_HOME="$E/config" STOCKFW_RULES_DIR="$E/rules" \
+               STOCKFW_EVENTS_DIR="$E/no-history" "$@"; }
+mkdir -p "$E/config/stockfw"
+
+# --- status: line 1 is the Overview's verdict, the same as --json's.
+check "PR3-E: status line 1 is the verdict title, and --json carries the verdict" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config', STOCKFW_RULES_DIR='$E/rules')
+t = subprocess.run(['$S', 'status'], capture_output=True, text=True, env=env)
+d = json.loads(subprocess.run(['$S', '--json', 'status'], capture_output=True, text=True, env=env).stdout)
+v = d['verdict']
+assert set(v) == {'level', 'key', 'word', 'title', 'body'}, v
+assert v['level'] in ('ok', 'warn', 'bad', 'unknown') and v['title'] and v['body'], v
+first = t.stdout.splitlines()[0]
+assert first.endswith(' ' + v['title']), (first, v)
+assert t.stdout.splitlines()[1].strip() == v['body'] or v['body'].startswith(t.stdout.splitlines()[1].strip()), t.stdout
+assert 'StockFW ' in t.stdout.splitlines()[3], t.stdout"
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null; then
+  cp "$S" "$E/stockfw-copy"; chmod 755 "$E/stockfw-copy"
+  check "PR3-E: as a user who cannot read the firewall, line 1 says the state is unknown" \
+    bash -c "setpriv --reuid=65534 --regid=65534 --clear-groups env HOME=/nonexistent XDG_CONFIG_HOME='$E/nobody' '$E/stockfw-copy' status 2> /dev/null | head -1 | grep -q \"The firewall's state is unknown\$\""
+fi
+
+# --- events: the fixture history.  One UTC day file per day, lines as
+# core/fs-eventlog.c writes them (FNV-1a checksum).
+EH="$E/history"
+py "
+import os, time, datetime
+H = '$EH'
+os.makedirs(H, mode=0o700)
+def fnv(b):
+    h = 2166136261
+    for c in b:
+        h = ((h ^ c) * 16777619) & 0xffffffff
+    return h
+def line(epoch, d, port, src, dst, proto, service):
+    stamp = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    f = [str(epoch * 10000000), stamp, d, 'eth0' if d == 'in' else '', 'eth0' if d == 'out' else '',
+         port, src, dst, '60', '0x00', proto, service, 'STOCKFW-DROP']
+    body = '\t'.join(f)
+    return body + '\t%08x\n' % fnv(body.encode())
+now = int(time.time())
+ev = [  # (seconds ago, dir, port, src, dst, service)
+  (10800, 'in', '22',  '203.0.113.5', '198.51.100.1', 'SSH [BLOCKED]'),
+  (10790, 'in', '22',  '203.0.113.5', '198.51.100.1', 'SSH [BLOCKED]'),
+  (10780, 'in', '23',  '203.0.113.6', '198.51.100.1', 'Telnet [BLOCKED]'),
+  (10770, 'in', '22',  '203.0.113.5', '198.51.100.1', 'SSH [BLOCKED]'),
+  (1800,  'in', '137', '198.51.100.7', '198.51.100.255', 'NetBIOS [BLOCKED]'),
+  (1795,  'in', '137', '198.51.100.7', '198.51.100.255', 'NetBIOS [BLOCKED]'),
+  (1790,  'out', '443', '198.51.100.1', '203.0.113.9', 'HTTPS'),
+  (310,   'in', '3389', '203.0.113.8', '198.51.100.1', 'Remote Desktop [BLOCKED]'),
+  (300,   'in', '3389', '203.0.113.8', '198.51.100.1', 'Remote Desktop [BLOCKED]'),
+]
+days = {}
+for ago, d, port, src, dst, svc in ev:
+    e = now - ago
+    day = datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime('%Y-%m-%d')
+    days.setdefault(day, []).append(line(e, d, port, src, dst, 'TCP' if port != '137' else 'UDP', svc))
+for day, lines in days.items():
+    with open(os.path.join(H, 'events-%s-000.log' % day), 'w') as f:
+        f.write('# StockFW event history 1\n' + ''.join(lines))
+open('$E/now', 'w').write(str(now))
+"
+
+check "PR3-E: events --collapse-repeats hides an event the same as the one before it (9 -> 6)" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+def ports(*a):
+    return [e['port'] for e in json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '-n', '100', *a], capture_output=True, text=True, env=env).stdout)]
+assert ports() == ['22', '22', '23', '22', '137', '137', '443', '3389', '3389'], ports()
+assert ports('--collapse-repeats') == ['22', '23', '22', '137', '443', '3389'], ports('--collapse-repeats')
+# The filters run before the list's own: a repeat of a hidden event
+# is still a repeat of the one let through.
+assert ports('--collapse-repeats', '--port', '22') == ['22', '22'], ports('--collapse-repeats', '--port', '22')
+r = subprocess.run(['$S', 'events', '--history-dir', '$EH', '--collapse-repeats'], capture_output=True, text=True, env=env)
+assert r.returncode == 0 and 'Hidden: 3 repeats, 0 not for this computer.' in r.stderr, r"
+
+check "PR3-E: --prefs-filters takes Hide repeated events from the preferences" py "
+import json, subprocess, os
+open('$E/config/stockfw/stockfw.conf', 'w').write('[client]\nfilter/redundant=true\nfilter/not_for_firewall=false\n')
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '-n', '100', '--prefs-filters'], capture_output=True, text=True, env=env).stdout)
+assert len(d) == 6, d
+open('$E/config/stockfw/stockfw.conf', 'w').write('[client]\nfilter/redundant=false\nfilter/not_for_firewall=false\n')
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '-n', '100', '--prefs-filters'], capture_output=True, text=True, env=env).stdout)
+assert len(d) == 9, d
+os.remove('$E/config/stockfw/stockfw.conf')"
+
+check "PR3-E: events --stats counts what each filter hid, in and out, and the history's usage and problem" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '--stats', '--collapse-repeats', '--dir', 'in'], capture_output=True, text=True, env=env).stdout)
+assert d['read'] == 9 and d['shown'] == 5 and d['hidden'] == {'repeats': 3, 'not_for_me': 0, 'filters': 1}, d
+assert d['inbound'] == {'blocked': 5, 'allowed': 0} and d['outbound'] == {'blocked': 0, 'allowed': 0}, d
+h = d['history']
+assert h['dir'] == '$EH' and h['files'] >= 1 and h['bytes'] > 0 and not h['being_written'], h
+assert h['problem'].startswith('Keep event history is off'), h
+t = subprocess.run(['$S', 'events', '--history-dir', '$EH', '--stats'], capture_output=True, text=True, env=env).stdout
+assert 'in %d file' % h['files'] in t and 'in $EH.' in t and 'Not being written: Keep event history is off' in t, t
+import re
+assert '9 read from $EH, 9 shown' in t and re.search(r'Outbound +0 blocked, 1 allowed', t), t"
+
+check "PR3-E: --stats sees a writer that holds the history's lock: no problem then" py "
+import fcntl, json, subprocess, os
+fd = os.open('$EH/.lock', os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '--stats'], capture_output=True, text=True, env=env).stdout)
+os.close(fd)
+assert d['history']['being_written'] and d['history']['problem'] is None, d['history']
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '--stats'], capture_output=True, text=True, env=env).stdout)
+assert not d['history']['being_written'], d['history']"
+
+check "PR3-E: events usage errors: --clear-history with --stats, --yes alone, --stats with -f" bash -c "
+  '$S' events --clear-history --stats 2> '$E/err'; [ \$? -eq 2 ] && grep -q 'cannot be used with --stats' '$E/err' &&
+  '$S' events --yes 2> '$E/err'; [ \$? -eq 2 ] && grep -q 'goes with --clear-history' '$E/err' &&
+  '$S' events --stats -f 2> /dev/null; [ \$? -eq 2 ]"
+
+# --- activity: the fixture history gives the expected series.  It is
+# read as a history being written: a stand-in writer holds its lock.
+e_hold () {   # e_hold: hold $EH/.lock in the background, as a writer does
+  python3 -I -c "import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+print('held', flush=True)
+time.sleep(600)" "$EH/.lock" > "$E/held" &
+  e_writer=$!
+  for _ in $(seq 100); do grep -q held "$E/held" 2> /dev/null && return 0; sleep 0.05; done
+  return 1
+}
+e_hold || echo "FAIL: could not hold the history's lock"
+check "PR3-E: activity --range 1h: the fixture's series point by point, the tiles, no data nowhere" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+now = int(open('$E/now').read())
+r = subprocess.run(['$S', '--json', 'activity', '--history-dir', '$EH', '--range', '1h', '--no-rate'], capture_output=True, text=True, env=env)
+d = json.loads(r.stdout)
+assert d['source'] == 'history' and d['range_s'] == 3600 and d['step_s'] == 60 and d['points'] == 60, d
+assert d['counting_since'] == now - 10800, (d['counting_since'], now)
+start, step = d['start_epoch'], d['step_s']
+want_b = [0] * 60; want_a = [0] * 60
+for ago, blocked in [(1800, 1), (1795, 1), (1790, 0), (310, 1), (300, 1)]:
+    i = (now - ago - start) // step
+    if 0 <= i < 60:
+        (want_b if blocked else want_a)[i] += 1
+assert d['blocked'] == want_b, (d['blocked'], want_b)
+assert d['allowed'] == want_a, (d['allowed'], want_a)
+assert d['totals'] == {'blocked_1h': 4, 'blocked_24h': 8, 'allowed_1h': 1, 'allowed_24h': 1}, d['totals']
+assert d['network'] is None and any('saved history' in n for n in d['notes']), d"
+
+check "PR3-E: activity --range 24h: points before the history begins are no data (null), not zero" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+now = int(open('$E/now').read())
+d = json.loads(subprocess.run(['$S', '--json', 'activity', '--history-dir', '$EH', '--range', '24h', '--no-rate'], capture_output=True, text=True, env=env).stdout)
+start, step, n = d['start_epoch'], d['step_s'], d['points']
+since = d['counting_since']
+for i, v in enumerate(d['blocked']):
+    covered = start + (i + 1) * step > since
+    assert (v is None) == (not covered), (i, v, since, start, step)
+assert sum(v for v in d['blocked'] if v) == 8 and d['blocked'].count(None) > 0, d['blocked']"
+
+check "PR3-E: activity text: a sparkline per series, the tiles, notes on stderr; --table one row a point" py "
+import subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config', LC_ALL='C.UTF-8')
+r = subprocess.run(['$S', 'activity', '--history-dir', '$EH', '--no-rate'], capture_output=True, text=True, env=env)
+assert r.returncode == 0, r
+lines = r.stdout.splitlines()
+assert lines[0].startswith('Activity') and 'last hour' in lines[0], r.stdout
+assert lines[1].lstrip().startswith('Blocked') and '█' in lines[1] and 'max 2' in lines[1], r.stdout
+assert any('4 in the last hour' in l and '8 in 24 h' in l for l in lines), r.stdout
+assert 'note: Counted from the saved history in $EH' in r.stderr, r.stderr
+import json
+a = ['activity', '--history-dir', '$EH', '--range', '15m', '--no-rate']
+d = json.loads(subprocess.run(['$S', '--json'] + a, capture_output=True, text=True, env=env).stdout)
+t = subprocess.run(['$S', '--plain'] + a + ['--table'], capture_output=True, text=True, env=env).stdout
+rows = t.splitlines()
+assert len(rows) == d['points'] and [int(x.split('\t')[1]) for x in rows] == d['blocked'], (t, d)
+assert sum(d['blocked']) == 2, d"
+
+check "PR3-E: activity --range 2h is a usage error with a suggestion; --device must exist" bash -c "
+  '$S' activity --history-dir '$EH' --range 2h 2> '$E/err'; [ \$? -eq 2 ] && grep -q 'wants 15m, 1h, 6h or 24h' '$E/err' &&
+  '$S' activity --history-dir '$EH' --device nosuchdev0 2> '$E/err'; [ \$? -eq 2 ] && grep -q \"no adapter \\\`nosuchdev0'\" '$E/err'"
+kill "$e_writer" 2> /dev/null; wait "$e_writer" 2> /dev/null
+
+# A history nobody writes ends at its last event (review fix): later
+# points are no data and the totals unknown, never zeros.
+check "PR3-E: activity --history-dir with no writer: after the last event no data, totals null, a note" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+now = int(open('$E/now').read())
+d = json.loads(subprocess.run(['$S', '--json', 'activity', '--history-dir', '$EH', '--range', '1h', '--no-rate'], capture_output=True, text=True, env=env).stdout)
+start, step = d['start_epoch'], d['step_s']
+last = now - 300
+for i, v in enumerate(d['blocked']):
+    assert (v is None) == (start + i * step > last), (i, v, start, step, last)
+assert d['blocked'].count(None) >= 3, d['blocked']
+assert set(d['totals'].values()) == {None}, d['totals']
+assert any('No copy of StockFW is writing this history' in n for n in d['notes']), d['notes']
+t = subprocess.run(['$S', 'activity', '--history-dir', '$EH', '--no-rate'], capture_output=True, text=True, env=env)
+assert 'unknown in the last hour' in t.stdout, t.stdout"
+
+check "PR3-E: activity reads the kernel log when no history is kept, counting from its first line" py "
+import json, subprocess, os, time
+now = int(time.time())
+def kl(ago, port):
+    t = time.localtime(now - ago)
+    return time.strftime('%b ', t) + ('%2d ' % t.tm_mday) + time.strftime('%H:%M:%S', t) + \
+        ' vm kernel: [1.0] STOCKFW-DROP IN=eth0 OUT= MAC= SRC=203.0.113.5 DST=198.51.100.1 LEN=60 TOS=0x00 PREC=0x00 TTL=50 ID=1 PROTO=TCP SPT=40000 DPT=%d WINDOW=1024 RES=0x00 SYN URGP=0\n' % port
+open('$E/kern.log', 'w').write(kl(1200, 22) + kl(600, 23) + kl(120, 22))
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config', STOCKFW_EVENTS_DIR='$E/no-history', STOCKFW_LOG_FILE='$E/kern.log')
+r = subprocess.run(['$S', '--json', 'activity', '--no-rate'], capture_output=True, text=True, env=env)
+d = json.loads(r.stdout)
+assert d['source'] == 'kernel_log' and d['source_path'] == '$E/kern.log', d
+assert abs(d['counting_since'] - (now - 1200)) <= 1 and sum(v or 0 for v in d['blocked']) == 3, d
+assert d['blocked'].count(None) > 0 and d['totals']['blocked_1h'] == 3, d"
+
+check "PR3-E: activity picks a kept history only while it is written, else the kernel log, with a note" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config', STOCKFW_EVENTS_DIR='$EH', STOCKFW_LOG_FILE='$E/kern.log')
+d = json.loads(subprocess.run(['$S', '--json', 'activity', '--no-rate'], capture_output=True, text=True, env=env).stdout)
+assert d['source'] == 'kernel_log' and d['totals']['blocked_1h'] == 3, d
+assert any('is not being written now' in n for n in d['notes']), d['notes']
+h = subprocess.Popen(['python3', '-I', '-c', 'import fcntl, os, sys, time\nfd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\nfcntl.flock(fd, fcntl.LOCK_EX)\nprint(1, flush=True)\ntime.sleep(60)', '$EH/.lock'], stdout=subprocess.PIPE)
+h.stdout.readline()
+d = json.loads(subprocess.run(['$S', '--json', 'activity', '--no-rate'], capture_output=True, text=True, env=env).stdout)
+h.kill(); h.wait()
+assert d['source'] == 'history' and d['totals']['blocked_1h'] == 4, d"
+
+# --- events --clear-history: usage first, a question, nothing without --yes.
+e_tty () {   # e_tty <answer> <args...>: stdin is a terminal
+  python3 -I - "$@" <<'PYEOF'
+import os, subprocess, sys
+m, s = os.openpty()
+p = subprocess.Popen(sys.argv[2:], stdin=s, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+os.close(s)
+os.write(m, sys.argv[1].encode())
+out, err = p.communicate(timeout=60)
+os.close(m)
+sys.stdout.write(out.decode()); sys.stderr.write(err.decode())
+sys.exit(p.returncode)
+PYEOF
+}
+n_files () { ls "$EH" | grep -c '^events-'; }
+before=$(n_files)
+check "PR3-E: --clear-history without a terminal and without --yes: refused, usage shown, nothing deleted" \
+  bash -c "'$S' events --clear-history --history-dir '$EH' < /dev/null > '$E/out' 2> '$E/err'; [ \$? -eq 1 ] &&
+           grep -q 'in $EH.' '$E/out' && grep -q 'Not being written: ' '$E/out' && grep -q 'pass --yes' '$E/err' &&
+           [ \$(ls '$EH' | grep -c '^events-') -eq $before ]"
+check "PR3-E: --clear-history on a terminal: Enter and n keep the history" \
+  bash -c "$(declare -f e_tty); e_tty \$'\\n' '$S' events --clear-history --history-dir '$EH' > /dev/null 2> '$E/err'; [ \$? -eq 1 ] &&
+           grep -q 'Delete the saved event history' '$E/err' && grep -q 'not deleted' '$E/err' &&
+           e_tty \$'n\\n' '$S' events --clear-history --history-dir '$EH' > /dev/null 2>&1; [ \$? -eq 1 ] &&
+           [ \$(ls '$EH' | grep -c '^events-') -eq $before ]"
+check "PR3-E: --clear-history while another copy writes the folder: nothing deleted (exit 1)" py "
+import fcntl, os, subprocess
+fd = os.open('$EH/.lock', os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+r = subprocess.run(['$S', 'events', '--clear-history', '--history-dir', '$EH', '--yes'], capture_output=True, text=True)
+os.close(fd)
+assert r.returncode == 1 and 'another copy of StockFW' in r.stderr, r
+assert len([f for f in os.listdir('$EH') if f.startswith('events-')]) == $before"
+check "PR3-E: --clear-history on a terminal, answered y: every history file goes" \
+  bash -c "$(declare -f e_tty); e_tty \$'y\\n' '$S' events --clear-history --history-dir '$EH' > '$E/out' 2>&1 &&
+           grep -q 'Deleted $before history file' '$E/out' && [ \$(ls '$EH' | grep -c '^events-') -eq 0 ]"
+check "PR3-E: --clear-history --json on an empty folder: deleted 0, the usage" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--clear-history', '--history-dir', '$EH', '--yes'], capture_output=True, text=True).stdout)
+assert d['deleted'] == 0 and d['history']['files'] == 0 and d['error'] is None, d"
+
+# --- live, as root, in a private network namespace: --for-me against
+# this computer's own address, interfaces --no-virtual, and stop.
+if [ "$(id -u)" = 0 ] && command -v iptables > /dev/null 2>&1 &&
+   unshare -n -m true 2> /dev/null; then
+  cat > "$E/live.sh" <<'LIVE'
+S="$1"; E="$2"
+f=0
+ok () { echo "ok:   $1"; }
+no () { echo "FAIL: $1"; f=$((f+1)); }
+t () { local what="$1"; shift; if "$@"; then ok "$what"; else no "$what"; fi; }
+export STOCKFW_RULES_DIR="$E/live" STOCKFW_APPLIED_FILE="$E/live.applied"
+export STOCKFW_AUDIT_FILE="$E/live.audit" STOCKFW_AUTOBLOCK_FILE="$E/live.autoblocks"
+export STOCKFW_RUN_DIR="$E/run" STOCKFW_EVENTS_DIR="$E/no-history"
+export HOME="$E/home" XDG_CONFIG_HOME="$E/home/.config"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+# The adapters' type and state come from sysfs: this namespace's own.
+mount -t sysfs sysfs /sys
+ip link set lo up
+ip link add dummy0 type veth peer name dummy1 && ip link set dummy0 up &&
+  ip link set dummy1 up && ip addr add 198.51.100.1/24 dev dummy0
+
+# A history written now: in to us, in to the broadcast, out from us.
+python3 -I - "$E/fm" <<'PY'
+import os, sys, time, datetime
+H = sys.argv[1]; os.makedirs(H, mode=0o700)
+def fnv(b):
+    h = 2166136261
+    for c in b: h = ((h ^ c) * 16777619) & 0xffffffff
+    return h
+now = int(time.time()); out = []
+for i, (d, port, src, dst, svc) in enumerate([
+        ('in', '22', '203.0.113.5', '198.51.100.1', 'SSH [BLOCKED]'),
+        ('in', '137', '198.51.100.7', '198.51.100.255', 'NetBIOS [BLOCKED]'),
+        ('out', '443', '198.51.100.1', '203.0.113.9', 'HTTPS'),
+        ('in', '5353', '198.51.100.7', '224.0.0.251', 'mDNS [BLOCKED]')]):
+    e = now - 60 + i
+    st = datetime.datetime.fromtimestamp(e, datetime.timezone.utc)
+    body = '\t'.join([str(e * 10000000), st.strftime('%Y-%m-%dT%H:%M:%SZ'), d, '', '', port, src, dst, '60', '0x00', 'UDP', svc, 'STOCKFW-DROP'])
+    out.append(body + '\t%08x\n' % fnv(body.encode()))
+day = datetime.datetime.fromtimestamp(now - 60, datetime.timezone.utc).strftime('%Y-%m-%d')
+open(os.path.join(H, 'events-%s-000.log' % day), 'w').write('# StockFW event history 1\n' + ''.join(out))
+PY
+ports () { "$S" --json events --history-dir "$E/fm" -n 10 "$@" |
+           python3 -I -c 'import json,sys; print(" ".join(e["port"] for e in json.load(sys.stdin)))'; }
+t "3E: events --for-me keeps what is addressed to 198.51.100.1 and what it sent ($(ports --for-me))" \
+  [ "$(ports --for-me)" = "22 443" ]
+t "3E: ...and without it every event is listed" [ "$(ports)" = "22 137 443 5353" ]
+t "3E: --stats counts the two not for this computer" \
+  bash -c "'$S' --json events --history-dir '$E/fm' --stats --for-me | python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d[\"hidden\"][\"not_for_me\"] == 2 and d[\"shown\"] == 2, d'"
+
+# interfaces --no-virtual: dummy0 (a veth) is virtual.
+t "3E: interfaces lists dummy0 as Virtual" \
+  bash -c "'$S' --json interfaces | python3 -I -c 'import json,sys; assert any(i[\"device\"] == \"dummy0\" and i[\"type\"] == \"Virtual\" for i in json.load(sys.stdin))'"
+t "3E: interfaces --no-virtual leaves it out, and says why the list is empty" \
+  bash -c "'$S' --json interfaces --no-virtual | python3 -I -c 'import json,sys; assert not any(i[\"device\"] == \"dummy0\" for i in json.load(sys.stdin))' &&
+           '$S' interfaces --no-virtual > '$E/iout' 2>&1 && ! grep -q dummy0 '$E/iout' && grep -q 'but virtual ones' '$E/iout'"
+
+# stop: asks on a terminal, Cancel by default.
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" apply > /dev/null 2>&1
+chain () { iptables -S INBOUND > /dev/null 2>&1; }
+t "3E: the firewall runs (INBOUND chain present)" chain
+python3 -I - "$S" > "$E/stop1" 2>&1 <<'PY'
+import os, subprocess, sys
+for answer in (b'\n', b'n\n'):
+    m, s = os.openpty()
+    p = subprocess.Popen([sys.argv[1], 'stop'], stdin=s, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    os.close(s); os.write(m, answer)
+    out, err = p.communicate(timeout=60); os.close(m)
+    print(p.returncode, repr(err.decode()))
+PY
+t "3E: stop on a terminal shows Pause protection? and asks [y/N]" \
+  grep -q 'Pause protection?.*Stop the firewall? \[y/N\]' "$E/stop1"
+t "3E: ...Enter and n leave it running (exit 1, chain present)" \
+  bash -c "[ \$(grep -c '^1 .*not stopped' '$E/stop1') -eq 2 ] && iptables -S INBOUND > /dev/null 2>&1"
+python3 -I - "$S" > "$E/stop2" 2>&1 <<'PY'
+import os, subprocess, sys
+m, s = os.openpty()
+p = subprocess.Popen([sys.argv[1], 'stop'], stdin=s, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+os.close(s); os.write(m, b'y\n')
+out, err = p.communicate(timeout=60); os.close(m)
+print(p.returncode, out.decode())
+PY
+t "3E: ...y stops it" bash -c "grep -q '^0 Firewall stopped' '$E/stop2' && ! iptables -S INBOUND > /dev/null 2>&1"
+"$S" start > /dev/null 2>&1
+"$S" stop < /dev/null > "$E/stop3" 2>&1; rc=$?
+t "3E: stop with no terminal on stdin and no --yes stops as before (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && ! grep -q 'Stop the firewall' '$E/stop3' && ! iptables -S INBOUND > /dev/null 2>&1"
+# A script or service whose stdin is a pipe that stays open (no EOF)
+# must not wait for an answer either: the prompt is only for a terminal.
+"$S" start > /dev/null 2>&1
+timeout 10 "$S" stop < <(sleep 20) > "$E/stop3p" 2>&1; rc=$?
+t "3E: stop with an open pipe on stdin never waits for input (rc $rc, 124 = hung)" \
+  bash -c "[ $rc -eq 0 ] && ! grep -q 'Stop the firewall' '$E/stop3p' && ! iptables -S INBOUND > /dev/null 2>&1"
+"$S" start > /dev/null 2>&1
+python3 -I - "$S" > "$E/stop4" 2>&1 <<'PY'
+import os, subprocess, sys
+m, s = os.openpty()
+p = subprocess.Popen([sys.argv[1], 'stop', '--yes'], stdin=s, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+os.close(s)
+out, err = p.communicate(timeout=60); os.close(m)
+print(p.returncode, repr(err.decode()))
+PY
+t "3E: stop --yes on a terminal does not ask" \
+  bash -c "grep -q '^0 ' '$E/stop4' && ! grep -q 'Stop the firewall' '$E/stop4' && ! iptables -S INBOUND > /dev/null 2>&1"
+exit "$f"
+LIVE
+  unshare -n -m bash "$E/live.sh" "$S" "$E" > "$E/live.log" 2>&1
+  live_rc=$?
+  sed 's/^\(ok:   \|FAIL: \)3E: /\1PR3-E: /' "$E/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the 3E live checks need root, iptables and unshare"
+fi
+rm -rf "$E"
+# === end PR3-E ===
 
 echo ""
 if [ "$fails" -eq 0 ]; then

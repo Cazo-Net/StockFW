@@ -351,6 +351,28 @@ internet-first; the verdict ignoring the profile in use; the "In use"
 marks never shown; switching a profile on from the card not re-judging
 until the next poll.
 
+## The verdict in both front ends (`fs-verdict-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-verdict-smoke
+DISPLAY=:99 ./build-linux/fs-verdict-smoke   # needs a display
+```
+
+`stockfw status` prints the Overview's verdict on its first line from
+`fs_verdict_compute` (core); the window still has its own copy in
+`update_overview` (`src/ui/fs-statusview.c`).  `tests/verdict-golden.h`
+is one table for both: `test-pr3-core.c` (run by `test-core.sh`) checks
+the core against every row, and this smoke builds the real Overview
+page against a fake Linux-shaped backend (and one with no IPv6 slot),
+sets each row's state and IPv6 answer that the window can be given, and
+checks the card's title, body, sidebar word and level against the row
+and against `fs_verdict_compute`, byte for byte.
+
+Teeth, each seen failing when re-injected: a sentence changed in the
+core's copy (row and parity checks), the same in the window's copy, and
+the core ignoring the IPv6 answer.
+
 
 ## Preferences (`fs-ui-smoke`, `fs-prefs-fake-smoke`)
 

@@ -153,7 +153,7 @@ UNITS="fs-netplace-test fs-feed-test fs-intelset-test fs-hostnet-test
 SMOKES="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke
         fs-theme-smoke fs-trustview-smoke fs-copilot-smoke
         fs-statusview-smoke fs-activity-smoke fs-overview-place-smoke
-        fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke
+        fs-verdict-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke
         fs-intelview-smoke"
 if [ "$WINDOWS" -eq 1 ] || [ "${STOCKFW_TRAY_SMOKE:-}" = 1 ]; then
   SMOKES="$SMOKES fs-tray-smoke"

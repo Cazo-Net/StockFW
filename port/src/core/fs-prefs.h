@@ -173,6 +173,81 @@ void      fs_prefs_set_int    (const gchar *key, gint value);
  * yet, then saves.  Keys the file already holds are left alone. */
 void fs_prefs_set_defaults (void);
 
+/* ---- PR 3: the terminal writes settings -------------------------- */
+
+GQuark fs_prefs_error_quark (void);
+#define FS_PREFS_ERROR (fs_prefs_error_quark ())
+typedef enum
+{
+	FS_PREFS_ERR_INVALID,   /* not a setting, or not a value it takes */
+	FS_PREFS_ERR_SAVE       /* the file could not be locked or written */
+} FsPrefsError;
+
+/* [ fs_prefs_set_persist ]
+ * Change only `keys' (n of them) and write the file: flock on
+ * "<file>.lock" (not on Windows), re-read the file under it, set each
+ * key (a switch takes "true" or "false"; a NULL value removes the key,
+ * so it reads as the table's default), save.  Every other key keeps
+ * what the file held when the lock was taken, so two writers of
+ * different keys both keep theirs.  A file that cannot be read is kept
+ * as fs_prefs_backup_path() and the defaults are written with the
+ * keys (A12); *was_unreadable (nullable) says so.  Refused before
+ * anything is touched: a key that is not in the table, a switch value
+ * that is not true or false.  Validate first (fs_prefs_validate): this
+ * only writes.  The in-memory store is replaced by the file's. */
+gboolean fs_prefs_set_persist (const gchar * const *keys,
+                               const gchar * const *values, guint n,
+                               gboolean *was_unreadable, GError **error);
+
+/* ---- PR 3: what the Preferences window allows, without the window --
+ *
+ * fs_prefs_validate (fs-prefs-check.c) decides a set of changes the way
+ * the Preferences window does: the keys the backend honours (its
+ * FS_FWSEC_* and FS_FWHON_* bits), each value's form, and the
+ * dependencies between keys, checked on the whole set at once (NAT
+ * with both devices in one call is fine).  Refusals carry the window's
+ * own reason text and the Help topic of the page it is on; warnings are
+ * what the window shows beside an accepted choice.  The fake-backend
+ * Preferences smoke checks the two against each other. */
+typedef struct
+{
+	const gchar *key;      /* the table's key; NULL: the set as a whole */
+	gchar       *reason;   /* one sentence                              */
+	const gchar *topic;    /* "prefs-network", ...                      */
+} FsPrefsIssue;
+
+typedef struct
+{
+	GPtrArray  *refusals;  /* FsPrefsIssue*; empty when the set is fine */
+	GPtrArray  *warnings;  /* FsPrefsIssue*                             */
+	/* Each accepted key -> the value to store ("true"/"false", the
+	 * number or device as text, "" for no device).  Keys are the
+	 * table's own strings. */
+	GHashTable *values;
+} FsPrefsCheck;
+
+/* keys[i] = values[i], n pairs, against the store as loaded now.
+ * Values take on/off, true/false, yes/no, 1/0 for switches (and
+ * drop/reject for the rejection method, block/allow for outgoing),
+ * digits in range for numbers, a device name or "" for the devices.
+ * devices (nullable, NULL-ended) are the devices present: a device
+ * not among them is accepted with a warning, as the window marks it
+ * "not present".  Never NULL; fs_prefs_check_free. */
+FsPrefsCheck *fs_prefs_validate (const gchar * const *keys,
+                                 const gchar * const *values, guint n,
+                                 guint32 fw_sections, guint32 fw_honors,
+                                 const gchar * const *devices);
+void          fs_prefs_check_free (FsPrefsCheck *check);
+
+/* Does a backend with these bits act on `key'?  Settings that are not
+ * firewall settings always count; a firewall setting counts where the
+ * window shows its row. */
+gboolean      fs_prefs_key_honoured (const gchar *key, guint32 fw_sections,
+                                     guint32 fw_honors);
+/* The Help topic of the Preferences page a key is on ("prefs-icmp"),
+ * "preferences" for a key on none. */
+const gchar  *fs_prefs_key_topic    (const gchar *key);
+
 G_END_DECLS
 
 #endif /* FS_PREFS_H */

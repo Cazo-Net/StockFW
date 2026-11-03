@@ -211,6 +211,10 @@ gboolean fs_cli_log_readable (gchar **source, gchar **problem);
 GPtrArray *fs_cli_log_history (guint max_lines, gint64 *complete_from,
                                GError **error);
 
+/* Does a copy of StockFW write the event history in `dir' now (it
+ * holds the folder's writer lock)?  Creates nothing. */
+gboolean   fs_cli_history_writer_active (const gchar *dir);
+
 /* The uniform refusal for a command that needs root: prints the error
  * and a hint that repeats the user's own command with sudo and the
  * full path (fs_cli_sudo_hint), returns FS_EXIT_NEED_ROOT. */
@@ -275,6 +279,10 @@ extern const FsCliCommandDef fs_cli_events_commands[];     /* fs-cli-events.c */
 extern const FsCliCommandDef fs_cli_views_commands[];      /* fs-cli-views.c  */
 extern const FsCliCommandDef fs_cli_intel_commands[];      /* fs-cli-intel.c  */
 extern const FsCliCommandDef fs_cli_dashboard_commands[];  /* fs-dashboard.c  */
+extern const FsCliCommandDef fs_cli_config_commands[];     /* fs-cli-config.c */
+extern const FsCliCommandDef fs_cli_activity_commands[];   /* fs-cli-activity.c */
+/* The setting names `config list' shows, NULL-ended (completion). */
+const gchar * const *fs_cli_config_names (void);
 
 /* Every command, in the order the tables are joined (*n of them). */
 const FsCliCommandDef * const *fs_cli_all_commands (guint *n);
@@ -303,6 +311,14 @@ gint fs_cli_cmd_connections (gint argc, gchar **argv);
 gint fs_cli_cmd_interfaces  (gint argc, gchar **argv);
 gint fs_cli_cmd_dashboard   (gint argc, gchar **argv);
 gint fs_cli_cmd_intel       (gint argc, gchar **argv);
+gint fs_cli_cmd_activity    (gint argc, gchar **argv);
+
+/* `stop' on a terminal (B5): the consequence text, then "Stop the
+ * firewall? [y/N]" on stderr, No by default.  TRUE to go on: --yes,
+ * no terminal on stdin (as before), a firewall that is stopped
+ * already, or the answer y.  FALSE prints why (fs-cli-status.c). */
+const gchar *fs_cli_stop_consequence (void);
+gboolean     fs_cli_stop_confirm     (gboolean yes);
 
 /* Help for a topic: the main help for NULL, NULL for an unknown one.
  * Topics are the commands, their aliases, "help" and "version". */

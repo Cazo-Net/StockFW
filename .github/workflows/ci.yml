@@ -64,7 +64,7 @@ jobs:
             xdotool stalonetray desktop-file-utils \
             liblzma-dev libssl-dev xz-utils \
             python3-location location libloc-database clang libclang-rt-dev \
-            nsis gcc-mingw-w64-x86-64 libgtk-3-bin
+            nsis gcc-mingw-w64-x86-64 libgtk-3-bin strace
 
       - name: Build
         run: |
@@ -128,7 +128,7 @@ jobs:
           smokes="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke
                   fs-simviz-smoke fs-theme-smoke fs-trustview-smoke
                   fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
-                  fs-overview-place-smoke
+                  fs-overview-place-smoke fs-verdict-smoke
                   fs-startup-smoke fs-traymenu-smoke fs-session-smoke
                   fs-help-smoke fs-intelview-smoke"
           ninja -C build-linux $smokes
@@ -231,7 +231,7 @@ jobs:
           log="$(mktemp)"
           sudo bash tests/test-cli.sh > "$log" 2>&1 && rc=0 || rc=$?
           cat "$log"
-          if grep -E '^skip: .*(root|script\(1\)|stty|unshare|C compiler)' "$log"; then
+          if grep -E '^skip: .*(root|script\(1\)|stty|unshare|C compiler|strace)' "$log"; then
             echo "::error::tests/test-cli.sh skipped root-only checks on CI"
             exit 1
           fi

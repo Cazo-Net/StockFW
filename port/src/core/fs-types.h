@@ -50,6 +50,12 @@ typedef struct
 
 void fs_iface_stat_free (FsIfaceStat *s);
 
+/* Adapters that are not hardware: Docker and libvirt bridges, veth
+ * pairs, Hyper-V switches, VPN tunnels, loopback (kind "Virtual",
+ * "Tunnel" or "Loopback").  Real, but noise on a page that answers "is
+ * this computer protected" (B12; `stockfw interfaces --no-virtual'). */
+gboolean fs_netif_is_virtual (const FsIfaceStat *stat);
+
 /* One row of the Status page's "Active connections" panel. */
 typedef struct
 {
