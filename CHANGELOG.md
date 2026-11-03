@@ -151,7 +151,9 @@ into `/usr/local/share/doc/stockfw/`.
   through one control layer and holds a lock (`/run/stockfw/apply.lock`
   and a `.lock` file beside the rules) from the moment it reads the
   policy until it has saved it. Two `policy add` commands at once both
-  keep their rule; before, the second could write over the first.
+  keep their rule; before, the second could write over the first. The
+  desktop app's applies, starts and stops take the same lock, so a
+  window and a terminal never apply at the same moment.
 - **The CLI now writes preferences (root's copy).** Root's settings file
   can be changed from the command line, one key at a time, and the keys
   it does not name are kept as they are on disk. The same checks as the
@@ -161,6 +163,10 @@ into `/usr/local/share/doc/stockfw/`.
   files have no quoting, so such a row would read back as other fields
   or as two rows. The check is now in the core, so every writer of the
   rule files and the apply journal makes it, and nothing is written.
+  A service name or address that starts with `#` is refused too: the
+  line would read back as a comment and the rule would be gone. An
+  apply checks every row before it touches the firewall, so a row the
+  journal would refuse never goes live.
 - **Start at boot: boot uses the settings last applied.**
   `stockfw start`, which the boot unit runs, now brings back the firewall settings that went out
   with the last apply, as the journal records them. A settings change
@@ -179,13 +185,16 @@ into `/usr/local/share/doc/stockfw/`.
   checks your SSH session, and applies the settings under the policy
   last applied, so policy edits you have not applied stay off. Boot
   uses the settings last applied, so a setting saved with `set` alone
-  does not go live at the next boot either.
+  does not go live at the next boot either. A policy apply (`stockfw
+  apply`, or `--apply` on a policy edit) sends the saved settings too,
+  as in the desktop app, and now says so; `set` says so before.
 - `config set` warns when a StockFW window runs as root: it keeps its
   own copy of the settings and can write it back.
 - **`stockfw policy edit`.** It changes a rule in place: the rule keeps
   its number and its comment (unless `--comment` is given), and the
   policy is saved once. `-` keeps a field as it is. A rule that another
-  command changed in the meantime is refused, not overwritten.
+  command changed in the meantime is refused, not overwritten. In a
+  file that holds the same row twice, `KIND:N` changes row N.
 - **`stockfw policy init`.** It saves the default rules that the desktop
   app starts from (DHCP and DNS out), so a computer without the desktop
   app can start from them too. It does not replace a policy that has
@@ -217,7 +226,9 @@ into `/usr/local/share/doc/stockfw/`.
   15 minutes, hour, 6 hours or day as a sparkline or a table, the counts
   of the last hour and day, and the throughput now. It is rebuilt from
   the saved history or the kernel log, and a time it could not see is
-  shown as no data, not as zero.
+  shown as no data, not as zero. The saved history is used only while
+  a copy of StockFW writes it; a history nobody writes now shows no
+  data after its last event.
 
 ### Fixed
 

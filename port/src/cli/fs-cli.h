@@ -211,6 +211,10 @@ gboolean fs_cli_log_readable (gchar **source, gchar **problem);
 GPtrArray *fs_cli_log_history (guint max_lines, gint64 *complete_from,
                                GError **error);
 
+/* Does a copy of StockFW write the event history in `dir' now (it
+ * holds the folder's writer lock)?  Creates nothing. */
+gboolean   fs_cli_history_writer_active (const gchar *dir);
+
 /* The uniform refusal for a command that needs root: prints the error
  * and a hint that repeats the user's own command with sudo and the
  * full path (fs_cli_sudo_hint), returns FS_EXIT_NEED_ROOT. */

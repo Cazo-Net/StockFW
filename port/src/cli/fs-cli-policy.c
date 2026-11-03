@@ -2356,6 +2356,7 @@ apply_json_members (GString *out, const FsControlResult *r,
 	fs_json_kv_bool (out, "held", outcome->held);         g_string_append_c (out, ',');
 	fs_json_kv_str (out, "hold_reason", outcome->hold_reason); g_string_append_c (out, ',');
 	fs_json_kv_bool (out, "narrow", outcome->narrow);     g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "settings", outcome->settings); g_string_append_c (out, ',');
 	fs_json_kv_str (out, "firewall_was", was_word (outcome->firewall_was));
 	g_string_append_c (out, ',');
 	fs_json_kv_str (out, "result",
@@ -2402,6 +2403,12 @@ apply_print (const FsControlResult *r)
 			        fs_cli_reset (),
 			        outcome->narrow ? "only the changes" : "whole policy",
 			        desc);
+		/* A policy apply also sends the firewall settings saved and
+		 * not applied (the control op loads the saved preferences):
+		 * say so, as `config set' said they wait for an apply. */
+		if (outcome->settings)
+			printf ("The saved firewall settings went out with it: "
+			        "they differed from the ones last applied.\n");
 		fs_cli_print_notes (outcome->notes);
 		if (r->intel.ran)
 			intel_print (&r->intel, NULL);

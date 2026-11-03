@@ -20,7 +20,8 @@
  *
  * Only root writes, and only root's copy: the firewall, the boot unit
  * and `apply' run as root read that one.  A firewall setting that is
- * saved is not in force until `config apply' (or `set --apply'), and a
+ * saved is not in force until the next apply: `config apply' (or `set
+ * --apply'), or a policy apply, which sends the saved settings too; a
  * boot starts with the settings last applied (3B), never with ones
  * only saved.
  *--------------------------------------------------------------------*/
@@ -461,8 +462,10 @@ config_list (gint argc, gchar **argv)
 			if (pending && live != NULL)
 				printf ("\nSaved firewall settings differ from the ones "
 				        "last applied (APPLIED).  The firewall, and a "
-				        "boot, use the applied ones until `stockfw "
-				        "config apply'.\n");
+				        "boot, use the applied ones until the next "
+				        "apply: `stockfw config apply', or a policy "
+				        "apply (`stockfw apply', --apply), which sends "
+				        "them too.\n");
 			else if (pending)
 				printf ("\nNo applied settings are on record: the next "
 				        "apply sends every firewall setting.\n");
@@ -1329,7 +1332,9 @@ write_settings (GPtrArray *keys, GPtrArray *values, GPtrArray *reset,
 		}
 	} else if (firewall_changed && !fs_cli.json && !fs_cli.quiet) {
 		printf ("Saved, not applied: the firewall, and a boot, keep the "
-		        "settings last applied until `stockfw config apply'.\n");
+		        "settings last applied until the next apply: `stockfw "
+		        "config apply', or a policy apply (`stockfw apply', "
+		        "--apply), which sends them too.\n");
 	} else if (apply && !fs_cli.json && nchanged == 0) {
 		printf ("Nothing to apply: the firewall already has the saved "
 		        "settings.\n");
@@ -1589,7 +1594,9 @@ const FsCliCommandDef fs_cli_config_commands[] = {
 "\n"
 "A firewall setting that is saved is not in force until it is applied:\n"
 "the firewall and a boot (`stockfw start') keep the settings last\n"
-"applied.  `config apply', or --apply, shows what changes and how many\n"
+"applied.  The next apply of either kind sends them: `config apply',\n"
+"and also a policy apply (`stockfw apply', `policy ... --apply'), which\n"
+"says so.  `config apply', or --apply, shows what changes and how many\n"
 "firewall rules that adds and removes, checks that your SSH session\n"
 "stays open (--yes to go on anyway), and applies the settings under the\n"
 "policy last applied: policy changes saved and not applied stay off.\n"

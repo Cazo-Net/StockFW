@@ -1382,9 +1382,9 @@ out:
  * Does a copy of StockFW hold the history folder's writer lock now
  * (core/fs-eventlog.c: flock on <dir>/.lock while a log is open)?  A
  * shared lock that cannot be had means it does.  Nothing is created:
- * no lock file, no writer. */
-static gboolean
-history_writer_active (const gchar *dir)
+ * no lock file, no writer.  `activity' asks too. */
+gboolean
+fs_cli_history_writer_active (const gchar *dir)
 {
 	gchar *path = g_build_filename (dir, ".lock", NULL);
 	gint fd = open (path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY);
@@ -1406,7 +1406,7 @@ history_writer_active (const gchar *dir)
 static const gchar *
 history_problem (const gchar *dir)
 {
-	if (history_writer_active (dir))
+	if (fs_cli_history_writer_active (dir))
 		return NULL;
 	if (!fs_prefs_bool (FS_PREFS_EVENTS_HISTORY))
 		return "Keep event history is off (Preferences > Events)";

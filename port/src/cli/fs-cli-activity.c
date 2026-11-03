@@ -127,6 +127,14 @@ count_words (guint64 n)
 	return g_string_free (out, FALSE);
 }
 
+/* [ total_words ] -- a total, or "unknown" when the record ends before
+ * now (stop >= 0): a history nobody writes has no count to now. */
+static gchar *
+total_words (gint64 stop, guint64 n)
+{
+	return stop >= 0 ? g_strdup ("unknown") : count_words (n);
+}
+
 /* [ throughput ]
  * Bytes per second now, received and sent, over one second: every
  * adapter that is up, or only `device'.  FALSE when the backend has no
@@ -241,6 +249,7 @@ fs_cli_cmd_activity (gint argc, gchar **argv)
 	const gchar *source_kind;
 	gint64 now = g_get_real_time () / G_USEC_PER_SEC;
 	gint64 started = 0, start_epoch = 0, complete_from = 0;
+	gint64 stop = -1;           /* >= 0: the record ends there */
 	guint64 *blocked = NULL, *allowed = NULL;
 	guint *covered = NULL, *covered_a = NULL;
 	gboolean logs_allowed = fs_prefs_bool (FS_PREFS_FW_LOG_ALLOWED);
@@ -339,10 +348,22 @@ fs_cli_cmd_activity (gint argc, gchar **argv)
 	/* The source: the saved history while it is kept (or asked for),
 	 * else the kernel log, as `status' counts blocked today. */
 	dir = dir_opt != NULL ? g_strdup (dir_opt) : fs_eventlog_default_dir ();
-	if (!saved)
-		saved = g_file_test (dir, G_FILE_TEST_IS_DIR) &&
-		        (g_getenv ("STOCKFW_EVENTS_DIR") != NULL ||
-		         fs_prefs_bool (FS_PREFS_EVENTS_HISTORY));
+	if (!saved && g_file_test (dir, G_FILE_TEST_IS_DIR) &&
+	    (g_getenv ("STOCKFW_EVENTS_DIR") != NULL ||
+	     fs_prefs_bool (FS_PREFS_EVENTS_HISTORY))) {
+		/* Kept, but only a running copy writes it: a history nobody
+		 * writes ends at its last event, the kernel log does not. */
+		saved = fs_cli_history_writer_active (dir);
+		if (!saved) {
+			gchar *safe = fs_cli_out_safe (dir);
+
+			g_ptr_array_add (notes, g_strdup_printf (
+				"The saved history in %s is not being written now (no "
+				"copy of StockFW runs to write it): read the kernel log "
+				"instead (--history reads the history anyway).", safe));
+			g_free (safe);
+		}
+	}
 	if (saved) {
 		FsEventLogStats stats = { 0 };
 
@@ -364,6 +385,14 @@ fs_cli_cmd_activity (gint argc, gchar **argv)
 		for (guint i = 0; i < fill.counts->len; i++)
 			started = MIN (started,
 			               g_array_index (fill.counts, Count, i).epoch);
+		/* ...up to now only while a copy of StockFW writes it.  Else
+		 * the record ends at its last event: after that, no data. */
+		if (!fs_cli_history_writer_active (dir)) {
+			stop = started;
+			for (guint i = 0; i < fill.counts->len; i++)
+				stop = MAX (stop,
+				            g_array_index (fill.counts, Count, i).epoch);
+		}
 	} else {
 		GError *error = NULL;
 		GPtrArray *hits = fs_cli_log_history (FS_EVENTSTORE_MAX_CAPACITY,
@@ -421,6 +450,16 @@ fs_cli_cmd_activity (gint argc, gchar **argv)
 	                           blocked, covered, &start_epoch);
 	fs_activity_window (activity, FS_ACTIVITY_ALLOWED, step, n_points,
 	                    allowed, covered_a, NULL);
+	/* A history nobody writes: nothing is known after `stop', so no
+	 * zero there that reads as an idle firewall. */
+	if (stop >= 0)
+		for (guint i = 0; i < n_points; i++) {
+			gint64 from = start_epoch + (gint64) i * step;
+			guint upto = from > stop ? 0 : (guint) (stop - from + 1);
+
+			covered[i] = MIN (covered[i], upto);
+			covered_a[i] = MIN (covered_a[i], upto);
+		}
 
 	if (!no_rate)
 		have_rate = throughput (device, &rx, &tx, &found);
@@ -437,6 +476,15 @@ fs_cli_cmd_activity (gint argc, gchar **argv)
 			saved ? "the saved history in " : "", safe, since));
 		g_free (since);
 		g_free (safe);
+	}
+	if (stop >= 0) {
+		gchar *last = clock_text (stop);
+
+		g_ptr_array_add (notes, g_strdup_printf (
+			"No copy of StockFW is writing this history now: nothing is "
+			"known after its last event (%s), so later points show no "
+			"data and the totals are not counted.", last));
+		g_free (last);
 	}
 	if (!logs_allowed)
 		g_ptr_array_add (notes, g_strdup (
@@ -462,20 +510,30 @@ fs_cli_cmd_activity (gint argc, gchar **argv)
 		series_json (out, "blocked", blocked, covered, n_points);
 		g_string_append_c (out, ',');
 		series_json (out, "allowed", allowed, covered_a, n_points);
-		g_string_append (out, ",\"totals\":{");
-		fs_json_kv_uint (out, "blocked_1h",
-		                 fs_activity_total (activity, FS_ACTIVITY_BLOCKED, 3600));
-		g_string_append_c (out, ',');
-		fs_json_kv_uint (out, "blocked_24h",
-		                 fs_activity_total (activity, FS_ACTIVITY_BLOCKED,
-		                                    FS_ACTIVITY_SPAN_S));
-		g_string_append_c (out, ',');
-		fs_json_kv_uint (out, "allowed_1h",
-		                 fs_activity_total (activity, FS_ACTIVITY_ALLOWED, 3600));
-		g_string_append_c (out, ',');
-		fs_json_kv_uint (out, "allowed_24h",
-		                 fs_activity_total (activity, FS_ACTIVITY_ALLOWED,
-		                                    FS_ACTIVITY_SPAN_S));
+		/* A record that ends before now has no total "in the last
+		 * hour": null, not a count that leaves the rest out. */
+		if (stop >= 0) {
+			g_string_append (out, ",\"totals\":{\"blocked_1h\":null,"
+			                 "\"blocked_24h\":null,\"allowed_1h\":null,"
+			                 "\"allowed_24h\":null");
+		} else {
+			g_string_append (out, ",\"totals\":{");
+			fs_json_kv_uint (out, "blocked_1h",
+			                 fs_activity_total (activity, FS_ACTIVITY_BLOCKED,
+			                                    3600));
+			g_string_append_c (out, ',');
+			fs_json_kv_uint (out, "blocked_24h",
+			                 fs_activity_total (activity, FS_ACTIVITY_BLOCKED,
+			                                    FS_ACTIVITY_SPAN_S));
+			g_string_append_c (out, ',');
+			fs_json_kv_uint (out, "allowed_1h",
+			                 fs_activity_total (activity, FS_ACTIVITY_ALLOWED,
+			                                    3600));
+			g_string_append_c (out, ',');
+			fs_json_kv_uint (out, "allowed_24h",
+			                 fs_activity_total (activity, FS_ACTIVITY_ALLOWED,
+			                                    FS_ACTIVITY_SPAN_S));
+		}
 		g_string_append (out, "},\"network\":");
 		if (have_rate) {
 			g_string_append_c (out, '{');
@@ -513,9 +571,9 @@ fs_cli_cmd_activity (gint argc, gchar **argv)
 		g_ptr_array_unref (rows);
 	} else {
 		gchar *from = clock_text (start_epoch);
-		gchar *b1 = count_words (fs_activity_total (activity,
+		gchar *b1 = total_words (stop, fs_activity_total (activity,
 		                                            FS_ACTIVITY_BLOCKED, 3600));
-		gchar *b24 = count_words (fs_activity_total (activity,
+		gchar *b24 = total_words (stop, fs_activity_total (activity,
 		                                             FS_ACTIVITY_BLOCKED,
 		                                             FS_ACTIVITY_SPAN_S));
 		gchar *since = clock_text (started);
@@ -538,9 +596,9 @@ fs_cli_cmd_activity (gint argc, gchar **argv)
 		        fs_cli_sym (FS_CLI_SYM_SEP), b24, fs_cli_sym (FS_CLI_SYM_SEP),
 		        since);
 		if (logs_allowed) {
-			gchar *a1 = count_words (fs_activity_total (
+			gchar *a1 = total_words (stop, fs_activity_total (
 				activity, FS_ACTIVITY_ALLOWED, 3600));
-			gchar *a24 = count_words (fs_activity_total (
+			gchar *a24 = total_words (stop, fs_activity_total (
 				activity, FS_ACTIVITY_ALLOWED, FS_ACTIVITY_SPAN_S));
 
 			printf ("  %-*s%s in the last hour %s %s in 24 h\n",
@@ -617,9 +675,11 @@ const FsCliCommandDef fs_cli_activity_commands[] = {
 "of --device (measured over one second; --no-rate leaves it out).\n"
 "\n"
 "The series are rebuilt from the saved event history while it is kept\n"
-"(or with --history, --history-dir), else from the kernel log, which\n"
-"usually needs root.  A point before the source could have seen\n"
-"anything is no data (a dot, null in --json), not a zero.  --table\n"
+"and a copy of StockFW writes it (or with --history, --history-dir),\n"
+"else from the kernel log, which usually needs root.  A point before\n"
+"the source could have seen anything is no data (a dot, null in\n"
+"--json), not a zero; so is a point after the last event of a history\n"
+"nobody writes now, whose totals are then unknown.  --table\n"
 "prints one row per point.  Notes on stderr say where the counts come\n"
 "from and, on Linux, that only blocked packets are in the kernel log\n"
 "unless Log allowed is on.\n"

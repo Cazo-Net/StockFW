@@ -725,7 +725,8 @@ op_policy_replace (FsControlResult *r, const FsControlActor *actor,
 		}
 	}
 
-	if (!fs_policy_replace_persist (r->policy, r->old, rule, &error)) {
+	if (!fs_policy_replace_nth_persist (r->policy, (gint) r->number - 1,
+	                                    r->old, rule, &error)) {
 		fail (r, g_error_matches (error, FS_RULES_ERROR,
 		                          FS_RULES_ERR_SAVE)
 		         ? FS_CONTROL_FAILED : FS_CONTROL_USAGE,

@@ -1030,6 +1030,34 @@ fs_rule_validate (const FsRule *rule, GError **error)
 		}
 	}
 
+	/* The row's first field starts the line: one that starts with '#'
+	 * (after blanks, which the loader strips) would read back as a
+	 * comment, and the rule would be gone. */
+	{
+		const gchar *first;
+
+		switch (rule->kind) {
+		case FS_RULE_INBOUND_FORWARD:
+		case FS_RULE_INBOUND_ALLOW_SERVICE:
+		case FS_RULE_OUTBOUND_ALLOW_SERVICE:
+		case FS_RULE_OUTBOUND_DENY_SERVICE:
+			first = rule->service;
+			break;
+		default:
+			first = rule->target;
+			break;
+		}
+		while (first != NULL && g_ascii_isspace (*first))
+			first++;
+		if (first != NULL && *first == '#') {
+			g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+			             "the first field may not start with '#' (the "
+			             "line would read back as a comment): \"%s\"",
+			             first);
+			return FALSE;
+		}
+	}
+
 	return TRUE;
 }
 
@@ -1198,6 +1226,14 @@ gboolean
 fs_policy_replace_persist (FsPolicy *policy, const FsRule *old,
                            const FsRule *rule, GError **error)
 {
+	return fs_policy_replace_nth_persist (policy, -1, old, rule, error);
+}
+
+/* [ fs_policy_replace_nth_persist ] */
+gboolean
+fs_policy_replace_nth_persist (FsPolicy *policy, gint nth, const FsRule *old,
+                               const FsRule *rule, GError **error)
+{
 	GPtrArray *rows;
 	gchar *needle, *want, *why;
 	gint at = -1;
@@ -1229,10 +1265,13 @@ fs_policy_replace_persist (FsPolicy *policy, const FsRule *old,
 	rows = policy->kinds[old->kind];
 	needle = fs_rule_to_csv (old);
 	want = fs_rule_to_csv (rule);
+	/* A row named by its number is that row, never an identical one
+	 * before it: a hand-edited file can hold the same row twice. */
 	for (guint i = 0; i < rows->len; i++) {
 		gchar *csv = fs_rule_to_csv (g_ptr_array_index (rows, i));
 
-		if (at < 0 && g_strcmp0 (csv, needle) == 0)
+		if (at < 0 && (nth < 0 || (guint) nth == i) &&
+		    g_strcmp0 (csv, needle) == 0)
 			at = (gint) i;
 		else if (g_strcmp0 (csv, want) == 0)
 			twice = TRUE;

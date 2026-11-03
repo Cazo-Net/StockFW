@@ -193,7 +193,8 @@ typedef enum
  * FALSE (with FS_RULES_ERR_INVALID and the field in the message) when
  * a field holds a comma or a line break: the rule files are CSV with no
  * quoting, so the row would read back as other fields or other rows
- * (T15).  fs_policy_save refuses a policy holding such a row and writes
+ * (T15); also when the first field starts with '#', which would read
+ * back as a comment line.  fs_policy_save refuses a policy holding such a row and writes
  * nothing; so does the apply journal.  Every writer of fs_rule_to_csv
  * output calls it. */
 gboolean  fs_rule_validate (const FsRule *rule, GError **error);
@@ -224,6 +225,12 @@ gchar        *fs_policy_run_dir (void);
  * save failure the old row is put back (SAVE). */
 gboolean  fs_policy_replace_persist (FsPolicy *policy, const FsRule *old,
                                      const FsRule *rule, GError **error);
+/* The same for row `nth' (from 0) of old's kind, which must be
+ * identical to `old': `policy edit KIND:N' changes row N even when an
+ * identical row comes before it.  nth < 0: the first identical row. */
+gboolean  fs_policy_replace_nth_persist (FsPolicy *policy, gint nth,
+                                         const FsRule *old,
+                                         const FsRule *rule, GError **error);
 
 G_END_DECLS
 

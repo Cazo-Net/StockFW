@@ -2381,11 +2381,16 @@ if [ "$(id -u)" = 0 ]; then
     local holder=$! i
     for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$conf.lock" ] && break; sleep 0.1; done
     sleep 0.2
+    local held; held="$(sha256sum < "$conf")"
     c_env race "$S" -q config set filter.redundant on > /dev/null 2>&1 &
     local a=$!
     c_env race "$S" -q config set events.max_events 5000 > /dev/null 2>&1 &
     local b=$!
-    wait "$a" && wait "$b" && wait "$holder" &&
+    # Both wait while the lock is held: nothing written yet (without
+    # the lock they would write now, and often still keep both keys).
+    sleep 0.5
+    local during; during="$(sha256sum < "$conf")"
+    wait "$a" && wait "$b" && wait "$holder" && [ "$during" = "$held" ] &&
     grep -qx 'filter/redundant=true' "$conf" && grep -qx 'events/max_events=5000' "$conf" &&
     grep -qx 'enable_tray_icon=true' "$conf"
   }
@@ -2512,6 +2517,19 @@ before=$(rules | sha256sum)
 t "PR3-C live: audit-only holds config set --apply (rc $rc), the firewall untouched" \
   bash -c "[ $rc -eq 0 ] && grep -q '^Held' '$C/held.out' && [ '$(rules | sha256sum)' = '$before' ]"
 "$S" config set audit-only off > /dev/null 2>&1
+
+# A policy apply sends the saved settings too: `config set' says so
+# up front and the apply says it did (review fix).
+"$S" config set echo_reply on > "$C/set4.out" 2>&1
+t "PR3-C live: config set without --apply names a policy apply as well" \
+  grep -q 'or a policy apply' "$C/set4.out"
+"$S" policy add inbound-allow-service HTTP 80 Anyone --apply --yes > "$C/apply4.out" 2>&1; rc=$?
+t "PR3-C live: policy add --apply (rc $rc) says the saved settings went out" \
+  bash -c "[ $rc -eq 0 ] && grep -q 'saved firewall settings went out' '$C/apply4.out' &&
+           grep -q '^# setting /apps/stockfw/firewall/icmp/echo_reply=true' '$STOCKFW_APPLIED_FILE'"
+"$S" policy add inbound-allow-service HTTPS 443 Anyone --apply --yes > "$C/apply5.out" 2>&1
+t "PR3-C live: ...and an apply with no settings pending does not" \
+  bash -c "grep -q '^Applied' '$C/apply5.out' && ! grep -q 'saved firewall settings' '$C/apply5.out'"
 "$S" stop > /dev/null 2>&1
 exit "$f"
 LIVE
@@ -2552,6 +2570,23 @@ q_edit_keeps () {
   [ "$(cat "$Q/ed/outbound/deny-to")" = "$(printf '203.0.113.1, one\n203.0.113.22, two\n203.0.113.3, three')" ]
 }
 check "PR3-D: policy edit changes the row in place and keeps its comment" q_edit_keeps
+# The same row twice (a hand-edited file): KIND:3 is row 3, not the
+# identical row 2 before it.
+q_edit_dup () {
+  mkdir -p "$Q/dup/inbound" &&
+  printf 'Anyone, a\n203.0.113.1, x\n203.0.113.1, x\n' > "$Q/dup/inbound/allow-from" &&
+  q_rc 0 dup "$S" policy edit inbound-allow-from:3 203.0.113.9 &&
+  [ "$(cat "$Q/dup/inbound/allow-from")" = "$(printf 'Anyone, a\n203.0.113.1, x\n203.0.113.9, x')" ]
+}
+check "PR3-D: policy edit KIND:N changes row N when an identical row comes first" q_edit_dup
+# A first field that starts with '#' would read back as a comment and
+# the rule would be gone: refused, nothing written.
+q_hash () {
+  q_env hash "$S" policy add outbound-deny-service '#evil' 443 any > "$TMP/out" 2> "$TMP/err"
+  [ "$?" -eq 2 ] && grep -q "may not start with '#'" "$TMP/err" &&
+  ! grep -rqs evil "$Q/hash"
+}
+check "PR3-D: policy add refuses a service name that starts with '#'" q_hash
 check "PR3-D: policy edit --comment alone changes only the comment" \
   bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 0 ed '$S' policy edit outbound-deny-to:3 --comment 'third one' &&
            grep -qx '203.0.113.3, third one' '$Q/ed/outbound/deny-to' && grep -q 'comment: third one' '$TMP/out'"
@@ -2566,11 +2601,14 @@ check "PR3-D: policy edit with the wrong number of fields is a usage error, noth
   bash -c "$(declare -f q_env q_rc q_sum); Q='$Q'; TMP='$TMP'; h=\$(q_sum ed) && q_rc 2 ed '$S' policy edit outbound-deny-to:1 a b &&
            grep -q 'takes 1 field, got 2' '$TMP/err' && [ \"\$(q_sum ed)\" = \"\$h\" ]"
 # One save: each rule file is written once (a remove and an add would
-# write it twice).  Only where strace is installed.
+# write it twice, even one that puts the row back at its place).  Only
+# where strace is installed; CI installs it and fails on the skip line.
 if command -v strace > /dev/null 2>&1; then
   check "PR3-D: policy edit is one save (the file is replaced once)" \
     bash -c "$(declare -f q_env); Q='$Q'; q_env ed strace -f -e trace=rename,renameat,renameat2 -o '$Q/strace.out' '$S' -q policy edit outbound-deny-to:2 203.0.113.23 &&
              [ \$(grep -c 'outbound/deny-to\"' '$Q/strace.out') -eq 1 ]"
+else
+  echo "skip: the one-save check of policy edit needs strace"
 fi
 
 # T15 for edit: a comma or a line break in the comment, and a host
@@ -2849,7 +2887,19 @@ check "PR3-E: events usage errors: --clear-history with --stats, --yes alone, --
   '$S' events --yes 2> '$E/err'; [ \$? -eq 2 ] && grep -q 'goes with --clear-history' '$E/err' &&
   '$S' events --stats -f 2> /dev/null; [ \$? -eq 2 ]"
 
-# --- activity: the fixture history gives the expected series.
+# --- activity: the fixture history gives the expected series.  It is
+# read as a history being written: a stand-in writer holds its lock.
+e_hold () {   # e_hold: hold $EH/.lock in the background, as a writer does
+  python3 -I -c "import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+print('held', flush=True)
+time.sleep(600)" "$EH/.lock" > "$E/held" &
+  e_writer=$!
+  for _ in $(seq 100); do grep -q held "$E/held" 2> /dev/null && return 0; sleep 0.05; done
+  return 1
+}
+e_hold || echo "FAIL: could not hold the history's lock"
 check "PR3-E: activity --range 1h: the fixture's series point by point, the tiles, no data nowhere" py "
 import json, subprocess, os
 env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
@@ -2902,6 +2952,24 @@ assert sum(d['blocked']) == 2, d"
 check "PR3-E: activity --range 2h is a usage error with a suggestion; --device must exist" bash -c "
   '$S' activity --history-dir '$EH' --range 2h 2> '$E/err'; [ \$? -eq 2 ] && grep -q 'wants 15m, 1h, 6h or 24h' '$E/err' &&
   '$S' activity --history-dir '$EH' --device nosuchdev0 2> '$E/err'; [ \$? -eq 2 ] && grep -q \"no adapter \\\`nosuchdev0'\" '$E/err'"
+kill "$e_writer" 2> /dev/null; wait "$e_writer" 2> /dev/null
+
+# A history nobody writes ends at its last event (review fix): later
+# points are no data and the totals unknown, never zeros.
+check "PR3-E: activity --history-dir with no writer: after the last event no data, totals null, a note" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+now = int(open('$E/now').read())
+d = json.loads(subprocess.run(['$S', '--json', 'activity', '--history-dir', '$EH', '--range', '1h', '--no-rate'], capture_output=True, text=True, env=env).stdout)
+start, step = d['start_epoch'], d['step_s']
+last = now - 300
+for i, v in enumerate(d['blocked']):
+    assert (v is None) == (start + i * step > last), (i, v, start, step, last)
+assert d['blocked'].count(None) >= 3, d['blocked']
+assert set(d['totals'].values()) == {None}, d['totals']
+assert any('No copy of StockFW is writing this history' in n for n in d['notes']), d['notes']
+t = subprocess.run(['$S', 'activity', '--history-dir', '$EH', '--no-rate'], capture_output=True, text=True, env=env)
+assert 'unknown in the last hour' in t.stdout, t.stdout"
 
 check "PR3-E: activity reads the kernel log when no history is kept, counting from its first line" py "
 import json, subprocess, os, time
@@ -2917,6 +2985,18 @@ d = json.loads(r.stdout)
 assert d['source'] == 'kernel_log' and d['source_path'] == '$E/kern.log', d
 assert abs(d['counting_since'] - (now - 1200)) <= 1 and sum(v or 0 for v in d['blocked']) == 3, d
 assert d['blocked'].count(None) > 0 and d['totals']['blocked_1h'] == 3, d"
+
+check "PR3-E: activity picks a kept history only while it is written, else the kernel log, with a note" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config', STOCKFW_EVENTS_DIR='$EH', STOCKFW_LOG_FILE='$E/kern.log')
+d = json.loads(subprocess.run(['$S', '--json', 'activity', '--no-rate'], capture_output=True, text=True, env=env).stdout)
+assert d['source'] == 'kernel_log' and d['totals']['blocked_1h'] == 3, d
+assert any('is not being written now' in n for n in d['notes']), d['notes']
+h = subprocess.Popen(['python3', '-I', '-c', 'import fcntl, os, sys, time\nfd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\nfcntl.flock(fd, fcntl.LOCK_EX)\nprint(1, flush=True)\ntime.sleep(60)', '$EH/.lock'], stdout=subprocess.PIPE)
+h.stdout.readline()
+d = json.loads(subprocess.run(['$S', '--json', 'activity', '--no-rate'], capture_output=True, text=True, env=env).stdout)
+h.kill(); h.wait()
+assert d['source'] == 'history' and d['totals']['blocked_1h'] == 4, d"
 
 # --- events --clear-history: usage first, a question, nothing without --yes.
 e_tty () {   # e_tty <answer> <args...>: stdin is a terminal

@@ -922,13 +922,76 @@ out:
 	return outcome;
 }
 
+/* [ gate_lock ]
+ * Every apply, start and stop holds the policy lock (re-entrant: the
+ * terminal's control layer already holds it), so a caller that did not
+ * take it -- the desktop app -- waits for another writer instead of
+ * racing it to the backend and the journal.
+ *
+ * T15 before the backend: every row of `policy' (when given) must
+ * read back as itself.  A row that would not is refused here, not
+ * after the firewall took it: the journal would refuse it, stay at the
+ * apply before, and a later narrow apply would compute its delta from
+ * that stale journal and leave rules live that the policy dropped.
+ *
+ * NULL: refused; *outcome_out is then a FAILED outcome (with `policy''s
+ * empty impact) when asked for, the audit log says why, and *error is
+ * set. */
+static FsPolicyLock *
+gate_lock (const FsPolicy *policy, const gchar *source,
+           FsApplyOutcome **outcome_out, GError **error)
+{
+	GError *lock_error = NULL;
+	FsPolicyLock *lock = fs_policy_lock (&lock_error);
+	const gchar *why = "the policy lock could not be taken";
+	gchar *detail;
+
+	if (lock != NULL && policy != NULL) {
+		for (gint kind = 0; lock != NULL && kind < FS_RULE_N_KINDS; kind++)
+			for (guint i = 0; lock != NULL &&
+			     i < policy->kinds[kind]->len; i++)
+				if (!fs_rule_validate (g_ptr_array_index (
+				                           policy->kinds[kind], i),
+				                       &lock_error)) {
+					fs_policy_unlock (lock);
+					lock = NULL;
+					why = "a row would not read back as itself";
+				}
+	}
+	if (lock != NULL)
+		return lock;
+
+	detail = apply_detail (source, "refused", why,
+	                       lock_error != NULL ? lock_error->message : NULL,
+	                       NULL);
+	fs_audit_log ("firewall change refused", detail);
+	g_free (detail);
+	if (outcome_out != NULL) {
+		*outcome_out = g_new0 (FsApplyOutcome, 1);
+		(*outcome_out)->result = FS_APPLY_FAILED;
+		(*outcome_out)->impact = fs_policy_impact (policy, policy);
+	}
+	g_propagate_error (error, lock_error);
+	return NULL;
+}
+
 /* [ fs_policy_apply_safe ] */
 FsApplyOutcome *
 fs_policy_apply_safe (const FsBackend *backend, FsPolicy *policy,
                       const gchar *source, const gchar *hold,
                       GError **error)
 {
-	return apply_gate (backend, policy, source, hold, NULL, NULL, error);
+	FsApplyOutcome *outcome = NULL;
+	FsPolicyLock *lock;
+
+	g_return_val_if_fail (policy != NULL, NULL);
+	lock = gate_lock (policy, source, &outcome, error);
+	if (lock == NULL)
+		return outcome;
+	outcome = apply_gate (backend, policy, source, hold, NULL, NULL,
+	                      error);
+	fs_policy_unlock (lock);
+	return outcome;
 }
 
 /* [ fs_settings_apply_safe ] */
@@ -938,10 +1001,19 @@ fs_settings_apply_safe (const FsBackend *backend, FsPolicy *policy,
                         FsSettingsSwapFunc swap, gpointer swap_data,
                         GError **error)
 {
-	g_return_val_if_fail (swap != NULL, NULL);
+	FsApplyOutcome *outcome = NULL;
+	FsPolicyLock *lock;
 
-	return apply_gate (backend, policy, source, hold, swap, swap_data,
-	                   error);
+	g_return_val_if_fail (swap != NULL, NULL);
+	g_return_val_if_fail (policy != NULL, NULL);
+
+	lock = gate_lock (policy, source, &outcome, error);
+	if (lock == NULL)
+		return outcome;
+	outcome = apply_gate (backend, policy, source, hold, swap, swap_data,
+	                      error);
+	fs_policy_unlock (lock);
+	return outcome;
 }
 
 /* [ fs_apply_outcome_free ] */
@@ -1024,11 +1096,33 @@ fs_firewall_start_safe (const FsBackend *backend, FsPolicy *policy,
 	                                  error);
 }
 
-/* [ fs_firewall_start_lifting ] */
+static FsApplyOutcome *start_lifting (const FsBackend *backend,
+                                      FsPolicy *policy, const FsPolicy *lift,
+                                      const gchar *source, const gchar *hold,
+                                      GError **error);
+
+/* [ fs_firewall_start_lifting ] -- start_lifting under the lock. */
 FsApplyOutcome *
 fs_firewall_start_lifting (const FsBackend *backend, FsPolicy *policy,
                            const FsPolicy *lift, const gchar *source,
                            const gchar *hold, GError **error)
+{
+	FsApplyOutcome *outcome = NULL;
+	FsPolicyLock *lock;
+
+	g_return_val_if_fail (policy != NULL, NULL);
+	lock = gate_lock (policy, source, &outcome, error);
+	if (lock == NULL)
+		return outcome;
+	outcome = start_lifting (backend, policy, lift, source, hold, error);
+	fs_policy_unlock (lock);
+	return outcome;
+}
+
+static FsApplyOutcome *
+start_lifting (const FsBackend *backend, FsPolicy *policy,
+               const FsPolicy *lift, const gchar *source,
+               const gchar *hold, GError **error)
 {
 	FsApplyOutcome *outcome;
 	FsPolicy *before;
@@ -1226,9 +1320,15 @@ fs_firewall_lift_live (const FsBackend *backend, const FsPolicy *lift,
 {
 	FsPolicy *live;
 	FsApplyOutcome *outcome = NULL;
+	FsPolicyLock *lock;
 
 	if (lift == NULL)
 		return NULL;
+
+	/* The journal read and the apply under one hold of the lock. */
+	lock = gate_lock (lift, source, &outcome, error);
+	if (lock == NULL)
+		return outcome;
 
 	/* Nothing on record as live: nothing to take off. */
 	live = fs_policy_new ();
@@ -1238,6 +1338,7 @@ fs_firewall_lift_live (const FsBackend *backend, const FsPolicy *lift,
 		                                error);
 
 	fs_policy_free (live);
+	fs_policy_unlock (lock);
 	return outcome;
 }
 
@@ -1248,6 +1349,7 @@ fs_firewall_stop_logged (const FsBackend *backend, const gchar *source,
 {
 	gboolean ok;
 	gchar *detail;
+	FsPolicyLock *lock;
 
 	if (backend == NULL || backend->available == NULL ||
 	    backend->stop == NULL || !backend->available ()) {
@@ -1263,7 +1365,11 @@ fs_firewall_stop_logged (const FsBackend *backend, const gchar *source,
 		return FALSE;
 	}
 
+	lock = gate_lock (NULL, source, NULL, error);
+	if (lock == NULL)
+		return FALSE;
 	ok = backend->stop (error);
+	fs_policy_unlock (lock);
 	detail = apply_detail (source, "stop", ok ? "stopped" : "FAILED",
 	                       (!ok && error != NULL && *error != NULL)
 	                       ? (*error)->message : NULL, NULL);

@@ -109,6 +109,26 @@ test_rule_validate (void)
 	       "validate: a line break in the comment is refused");
 	CHECK (!fs_rule_validate (cr, NULL),
 	       "validate: a carriage return in a field is refused");
+	/* Review fix: a first field that starts with '#' reads back as a
+	 * comment line, so the rule would be gone. */
+	{
+		FsRule *hash = rule_service (" #evil", "443", "Anyone", "");
+		FsRule *hash_to = rule_target (FS_RULE_OUTBOUND_DENY_TO, "#x", "");
+		FsRule *hash_note = rule_target (FS_RULE_OUTBOUND_DENY_TO,
+		                                 "198.51.100.9", "#1 note");
+
+		CHECK (!fs_rule_validate (hash, &error) && error != NULL &&
+		       strstr (error->message, "'#'") != NULL,
+		       "validate: a service name that starts with '#' is refused");
+		g_clear_error (&error);
+		CHECK (!fs_rule_validate (hash_to, NULL),
+		       "validate: a target that starts with '#' is refused");
+		CHECK (fs_rule_validate (hash_note, NULL),
+		       "validate: a '#' later in the row (the comment) passes");
+		fs_rule_free (hash);
+		fs_rule_free (hash_to);
+		fs_rule_free (hash_note);
+	}
 
 	/* The writer refuses and leaves the file as it was. */
 	fs_policy_add (policy, good);
@@ -201,6 +221,43 @@ test_replace_persist (void)
 	       g_error_matches (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID),
 	       "replace: an edit cannot change the kind");
 	g_clear_error (&error);
+
+	/* Review fix: the same row twice (a hand-edited file).  Row 3 by
+	 * number is row 3, not the identical row 2 before it. */
+	{
+		FsPolicy *dup = fs_policy_new ();
+		FsRule *x = rule_target (FS_RULE_INBOUND_ALLOW_FROM, "Anyone", "a");
+		FsRule *y = rule_target (FS_RULE_INBOUND_ALLOW_FROM, "203.0.113.1",
+		                         "x");
+		FsRule *z = rule_target (FS_RULE_INBOUND_ALLOW_FROM, "203.0.113.9",
+		                         "x");
+		GPtrArray *rows = dup->kinds[FS_RULE_INBOUND_ALLOW_FROM];
+		gchar *r2, *r3;
+
+		g_ptr_array_add (rows, fs_rule_copy (x));
+		g_ptr_array_add (rows, fs_rule_copy (y));
+		g_ptr_array_add (rows, fs_rule_copy (y));
+		CHECK (fs_policy_replace_nth_persist (dup, 2, y, z, &error),
+		       "replace nth: row 3 of two identical rows is replaced");
+		g_clear_error (&error);
+		r2 = fs_rule_to_csv (g_ptr_array_index (rows, 1));
+		r3 = fs_rule_to_csv (g_ptr_array_index (rows, 2));
+		CHECK (strstr (r2, "203.0.113.1") != NULL &&
+		       strstr (r3, "203.0.113.9") != NULL,
+		       "replace nth: ...row 3 changed, row 2 did not: %s / %s",
+		       r2, r3);
+		g_free (r2);
+		g_free (r3);
+		CHECK (!fs_policy_replace_nth_persist (dup, 0, y, z, &error) &&
+		       g_error_matches (error, FS_RULES_ERROR,
+		                        FS_RULES_ERR_NOT_FOUND),
+		       "replace nth: a row number that is not `old' is NOT_FOUND");
+		g_clear_error (&error);
+		fs_policy_free (dup);
+		fs_rule_free (x);
+		fs_rule_free (y);
+		fs_rule_free (z);
+	}
 
 	fs_policy_free (policy);
 	fs_rule_free (a);
@@ -792,6 +849,102 @@ test_settings_journal (void)
 	g_free (path);
 }
 
+/* ---------------------------------------- T15 before the backend */
+
+/* Review fix: a row that would not read back as itself is refused
+ * before the backend is touched, not only by the journal after it. */
+static void
+test_gate_validates (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *ok = rule_target (FS_RULE_INBOUND_ALLOW_FROM, "203.0.113.9", "");
+	FsRule *bad = rule_target (FS_RULE_OUTBOUND_DENY_TO, "198.51.100.9",
+	                           "web, primary");
+	FsApplyOutcome *o;
+	GError *error = NULL;
+	gint applies, starts;
+
+	fs_policy_add (policy, ok);
+	fs_policy_add (policy, bad);
+	applies = fake_applies;
+	starts = fake_starts;
+	o = fs_policy_apply_safe (&fake_backend, policy, "test", NULL, &error);
+	CHECK (o != NULL && o->result == FS_APPLY_FAILED && !o->applied &&
+	       error != NULL && fake_applies == applies,
+	       "gate: a comma row is refused before the backend applies");
+	fs_apply_outcome_free (o);
+	g_clear_error (&error);
+	o = fs_firewall_start_safe (&fake_backend, policy, "test", NULL, &error);
+	CHECK (o != NULL && o->result == FS_APPLY_FAILED &&
+	       fake_starts == starts && fake_applies == applies,
+	       "gate: ...and before a start installs it");
+	fs_apply_outcome_free (o);
+	g_clear_error (&error);
+
+	fs_policy_free (policy);
+	fs_rule_free (ok);
+	fs_rule_free (bad);
+}
+
+#ifndef G_OS_WIN32
+/* ------------------------------------- the desktop app's applies wait */
+
+/* Review fix: the gate itself takes the policy lock, so an apply, a
+ * start or a stop by a caller that did not (the desktop app) waits
+ * for a terminal's apply instead of racing it to the backend and the
+ * journal. */
+static volatile gint gate_done = 0;
+
+static gpointer
+gate_thread (gpointer data)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsApplyOutcome *o = NULL;
+	gint what = GPOINTER_TO_INT (data);
+
+	if (what == 0)
+		o = fs_policy_apply_safe (&fake_backend, policy, "test", NULL,
+		                          NULL);
+	else if (what == 1)
+		o = fs_firewall_start_safe (&fake_backend, policy, "test", NULL,
+		                            NULL);
+	else
+		fs_firewall_stop_logged (&fake_backend, "test", NULL);
+	fs_apply_outcome_free (o);
+	fs_policy_free (policy);
+	g_atomic_int_set (&gate_done, 1);
+	return NULL;
+}
+
+static void
+test_gate_takes_lock (void)
+{
+	static const gchar *const names[] = { "an apply", "a start", "a stop" };
+	gchar *run = fs_policy_run_dir ();
+	gchar *path = g_build_filename (run, "apply.lock", NULL);
+
+	for (gint what = 0; what < 3; what++) {
+		int fd = open (path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+		GThread *t;
+
+		CHECK (fd >= 0 && flock (fd, LOCK_EX) == 0,
+		       "gate lock: the test holds apply.lock");
+		g_atomic_int_set (&gate_done, 0);
+		t = g_thread_new ("gate", gate_thread, GINT_TO_POINTER (what));
+		g_usleep (300 * 1000);
+		CHECK (g_atomic_int_get (&gate_done) == 0,
+		       "gate lock: %s waits while another writer holds the lock",
+		       names[what]);
+		close (fd);
+		g_thread_join (t);
+		CHECK (g_atomic_int_get (&gate_done) == 1,
+		       "gate lock: ...and runs once it is released");
+	}
+	g_free (path);
+	g_free (run);
+}
+#endif
+
 /* The scratch directory, removed at the end (Windows has no TMPDIR to
  * put it under the test's own folder). */
 static void
@@ -855,6 +1008,10 @@ main (void)
 	test_netif_virtual ();
 	test_hit_filter ();
 	test_settings_journal ();
+	test_gate_validates ();
+#ifndef G_OS_WIN32
+	test_gate_takes_lock ();
+#endif
 
 	printf ("test-pr3-core: %d checks, %d failures\n", checks, failures);
 	rm_tree (dir);
