@@ -11809,5 +11809,58 @@ then
 fi
 echo "ok:   cli guard: fs_cli_take_opt options and the option tables agree"
 
+# === WP-D ===
+# The socket tables (cli-plan.md WP-D): the UDP parser, the listening
+# test, port names, the connection rows' new fields, and the SSH
+# sessions an apply keeps on every port sshd listens on
+# (tests/test-sockets.c, a test build of src/core).
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} tests/test-sockets.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   -o "$BUILD_DIR/test-sockets" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+if ! "$BUILD_DIR/test-sockets"; then
+  exit 1
+fi
+# Live (Linux): a listener named sshd on a free port, with a session
+# from 127.0.0.3.  The port is found from the socket's owner, and the
+# session on it is kept, as one on 22 always was.
+if [ "$(uname -s)" = Linux ] && command -v python3 > /dev/null; then
+  rm -f "$BUILD_DIR/sshd-in"
+  mkfifo "$BUILD_DIR/sshd-in"
+  python3 -I tests/fake-sshd.py < "$BUILD_DIR/sshd-in" > "$BUILD_DIR/sshd-port" &
+  SSHD_PID=$!
+  exec 7> "$BUILD_DIR/sshd-in"
+  for _ in $(seq 50); do [ -s "$BUILD_DIR/sshd-port" ] && break; sleep 0.1; done
+  SSHD_PORT="$(cat "$BUILD_DIR/sshd-port")"
+  SSHD_PORTS="$("$BUILD_DIR/test-sockets" --ssh-ports)"
+  SSHD_SESSION="$("$BUILD_DIR/test-sockets" --session 127.0.0.3)"
+  exec 7>&-
+  wait "$SSHD_PID" 2> /dev/null || true
+  case ",$SSHD_PORTS," in
+    *",$SSHD_PORT,"*) ;;
+    *) echo "FAIL: sshd's port $SSHD_PORT is not among the ssh ports ($SSHD_PORTS)"; exit 1 ;;
+  esac
+  if [ "$SSHD_SESSION" != yes ]; then
+    echo "FAIL: the session to sshd on port $SSHD_PORT is not kept"
+    exit 1
+  fi
+  echo "ok:   hostnet: sshd found on port $SSHD_PORT by its owner, and its session kept"
+fi
+# `stockfw interfaces': a rate is the bytes over the real time between
+# the two samples.  1.0.7 divided the first --watch frame, measured over
+# one second, by 2.0, and showed half the rate.
+IFACE_BODY="$(awk '/^fs_cli_cmd_interfaces /,/^}/' src/cli/fs-cli-events.c)"
+if printf '%s\n' "$IFACE_BODY" | grep -nE 'print_interfaces \([^;]*[0-9]\.[0-9]' ||
+   [ "$(printf '%s\n' "$IFACE_BODY" | grep -c 't_now - t_before')" -lt 2 ] ||
+   [ "$(printf '%s\n' "$IFACE_BODY" | grep -c 'g_get_monotonic_time')" -lt 2 ]; then
+  echo "FAIL: interfaces divides by a fixed interval, not the time measured"
+  exit 1
+fi
+echo "ok:   cli guard: interfaces rates use the time measured between samples"
+# === end WP-D ===
+
 [ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ] && [ "$intelgeo_rc" -eq 0 ] \
   && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]

@@ -15,6 +15,7 @@
 #include "core/fs-eventstore.h"
 #include "core/fs-intel.h"
 #include "core/fs-health.h"
+#include "core/fs-i18n.h"
 #include "core/fs-service.h"
 #include "core/fs-json.h"
 #include "core/fs-netparse.h"
@@ -159,11 +160,56 @@ fs_cli_policy_total (const FsPolicy *policy)
 	return total;
 }
 
-/* [ hit_row_json ] -- one event as a JSON object. */
+/* [ hit_rule ] -- the rule a hit names, or NULL: never the kernel-log
+ * marker (STOCKFW-DROP) the saved history keeps in that field. */
+static const gchar *
+hit_rule (const FsHit *hit)
+{
+	if (hit->rule == NULL || *hit->rule == '\0' ||
+	    g_str_has_prefix (hit->rule, "STOCKFW-"))
+		return NULL;
+	return hit->rule;
+}
+
+gchar *
+fs_cli_hit_rule_name (const FsHit *hit)
+{
+	const gchar *rule = hit_rule (hit);
+	gchar *prefix;
+	gchar *name;
+
+	if (rule == NULL)
+		return NULL;
+	/* "Threat intel: <list>" (fs_intel_rule_text): the list. */
+	prefix = g_strdup_printf (_("Threat intel: %s"), "");
+	name = g_strdup (g_str_has_prefix (rule, prefix) && rule[strlen (prefix)]
+	                 ? rule + strlen (prefix) : rule);
+	g_free (prefix);
+	return name;
+}
+
+gint64
+fs_cli_hit_epoch (const FsHit *hit)
+{
+	GDateTime *when;
+	gint64 epoch;
+
+	if (hit->time == NULL ||
+	    (when = g_date_time_new_from_iso8601 (hit->time, NULL)) == NULL)
+		return -1;
+	epoch = g_date_time_to_unix (when);
+	g_date_time_unref (when);
+	return epoch;
+}
+
+/* [ hit_row_json ] -- one event as a JSON object.  1.0.8 added length,
+ * tos, epoch and rule_name (fields are only ever added). */
 void
 fs_cli_hit_row_json (GString *out, const FsHit *hit)
 {
 	gchar *service = fs_hit_service_name (hit);
+	gchar *rule_name = fs_cli_hit_rule_name (hit);
+	gint64 epoch = fs_cli_hit_epoch (hit);
 
 	g_string_append_c (out, '{');
 	fs_json_kv_str (out, "time", hit->time);             g_string_append_c (out, ',');
@@ -177,7 +223,28 @@ fs_cli_hit_row_json (GString *out, const FsHit *hit)
 	fs_json_kv_str (out, "out", hit->out);               g_string_append_c (out, ',');
 	fs_json_kv_str (out, "rule", hit->rule);             g_string_append_c (out, ',');
 	fs_json_kv_bool (out, "blocked", fs_hit_is_blocked (hit));
+	g_string_append_c (out, ',');
+	/* New fields: absent is null, never "". */
+	fs_json_key (out, "length");
+	if (hit->length != NULL && g_ascii_isdigit (*hit->length) &&
+	    strspn (hit->length, "0123456789") == strlen (hit->length) &&
+	    strlen (hit->length) < 10)
+		g_string_append_printf (out, "%" G_GUINT64_FORMAT,
+		                        g_ascii_strtoull (hit->length, NULL, 10));
+	else
+		g_string_append (out, "null");
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "tos", hit->tos && *hit->tos ? hit->tos : NULL);
+	g_string_append_c (out, ',');
+	fs_json_key (out, "epoch");
+	if (epoch >= 0)
+		g_string_append_printf (out, "%" G_GINT64_FORMAT, epoch);
+	else
+		g_string_append (out, "null");
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "rule_name", rule_name);
 	g_string_append_c (out, '}');
+	g_free (rule_name);
 	g_free (service);
 }
 
@@ -998,7 +1065,7 @@ fs_cli_hit_row (const FsHit *hit)
 	row[6] = service;
 	row[7] = g_strdup (hit->protocol ? hit->protocol : "-");
 	/* Why it was dropped, when the log says: "Threat intel: <list>". */
-	row[8] = g_strdup (hit->rule != NULL && *hit->rule ? hit->rule : "-");
+	row[8] = g_strdup (hit_rule (hit) != NULL ? hit_rule (hit) : "-");
 
 	/* Log fields are what the kernel printed, interface names and
 	 * list names included: nothing reaches the terminal raw. */

@@ -34,6 +34,7 @@
 #endif
 
 #include "core/fs-hostnet.h"
+#include "core/fs-netparse.h"
 
 #include <string.h>
 
@@ -447,11 +448,36 @@ parse_endpoint (gchar *text, gsize words, guint8 *addr, guint32 *port)
 FsRangeSet *
 fs_hostnet_parse_tcp_peers (const gchar *text, gboolean v6, guint local_port)
 {
+	GArray *ports = g_array_new (FALSE, FALSE, sizeof (guint16));
+	guint16 port = (guint16) local_port;
+	FsRangeSet *set;
+
+	if (local_port <= 0xffff)
+		g_array_append_val (ports, port);
+	set = fs_hostnet_parse_tcp_peers_on (text, v6, ports);
+	g_array_unref (ports);
+	return set;
+}
+
+/* [ has_port ] -- is `port' one of `ports' (guint16)? */
+static gboolean
+has_port (const GArray *ports, guint32 port)
+{
+	for (guint i = 0; ports != NULL && i < ports->len; i++)
+		if (g_array_index (ports, guint16, i) == port)
+			return TRUE;
+	return FALSE;
+}
+
+FsRangeSet *
+fs_hostnet_parse_tcp_peers_on (const gchar *text, gboolean v6,
+                               const GArray *ports)
+{
 	FsRangeSet *set = fs_range_set_new ();
 	gsize words = v6 ? 4 : 1;
 	gchar *copy, *cursor, *line;
 
-	if (text == NULL)
+	if (text == NULL || ports == NULL || ports->len == 0)
 		return set;
 
 	copy = cursor = g_strdup (text);
@@ -471,7 +497,7 @@ fs_hostnet_parse_tcp_peers (const gchar *text, gboolean v6, guint local_port)
 		 * is 0.0.0.0; a TIME_WAIT or closing row is a session that
 		 * has already ended; our own client to someone else's port
 		 * 22 has 22 as the REMOTE port. */
-		if (state != TCP_STATE_ESTABLISHED || lport != local_port)
+		if (state != TCP_STATE_ESTABLISHED || !has_port (ports, lport))
 			continue;
 		add_address (set, remote, words * 4);
 	}
@@ -679,8 +705,9 @@ route6_lines (const gchar *lines, gpointer into)
 
 typedef struct
 {
-	FsRangeSet *into;
-	gboolean    v6;
+	FsRangeSet   *into;
+	gboolean      v6;
+	const GArray *ports;
 } TcpTable;
 
 static void
@@ -689,10 +716,236 @@ tcp_lines (const gchar *lines, gpointer data)
 	TcpTable *table = data;
 
 	merge (table->into,
-	       fs_hostnet_parse_tcp_peers (lines, table->v6, SSH_PORT));
+	       fs_hostnet_parse_tcp_peers_on (lines, table->v6, table->ports));
+}
+
+/* [ inode_pids ]
+ * socket inode (gint64*) -> pid (string) for every process whose fd
+ * table this account may list.  `wanted' (inodes as gint64*) limits
+ * the walk, and ends it once each is placed; NULL takes every socket. */
+static GHashTable *
+inode_pids (GHashTable *wanted)
+{
+	GHashTable *pids = g_hash_table_new_full (g_int64_hash, g_int64_equal,
+	                                          g_free, g_free);
+	GDir *proc;
+	const gchar *pid;
+
+	if (wanted != NULL && g_hash_table_size (wanted) == 0)
+		return pids;
+
+	proc = g_dir_open ("/proc", 0, NULL);
+	while (proc != NULL && (pid = g_dir_read_name (proc)) != NULL) {
+		gchar *fd_path;
+		GDir *fds;
+		const gchar *fd;
+
+		if (!g_ascii_isdigit (*pid))
+			continue;
+
+		fd_path = g_build_filename ("/proc", pid, "fd", NULL);
+		fds = g_dir_open (fd_path, 0, NULL);
+		while (fds != NULL && (fd = g_dir_read_name (fds)) != NULL) {
+			gchar *link = g_build_filename (fd_path, fd, NULL);
+			gchar *target = g_file_read_link (link, NULL);
+			guint64 inode = 0;
+
+			g_free (link);
+			if (target != NULL && g_str_has_prefix (target, "socket:[")) {
+				gchar *end = NULL;
+
+				inode = g_ascii_strtoull (target + 8, &end, 10);
+				if (end == NULL || *end != ']')
+					inode = 0;
+			}
+			if (inode != 0 &&
+			    (wanted == NULL || g_hash_table_contains (wanted, &inode)) &&
+			    !g_hash_table_contains (pids, &inode)) {
+				gint64 *key = g_new (gint64, 1);
+
+				*key = (gint64) inode;
+				g_hash_table_insert (pids, key, g_strdup (pid));
+			}
+			g_free (target);
+		}
+		if (fds != NULL)
+			g_dir_close (fds);
+		g_free (fd_path);
+
+		/* Every socket placed: the rest of /proc cannot add one. */
+		if (wanted != NULL &&
+		    g_hash_table_size (pids) == g_hash_table_size (wanted))
+			break;
+	}
+	if (proc != NULL)
+		g_dir_close (proc);
+	return pids;
+}
+
+/* [ pid_comm ] -- /proc/PID/comm, stripped; NULL when unreadable. */
+static gchar *
+pid_comm (const gchar *pid)
+{
+	gchar *path = g_build_filename ("/proc", pid, "comm", NULL);
+	gchar *name = NULL;
+
+	if (g_file_get_contents (path, &name, NULL, NULL))
+		g_strstrip (name);
+	g_free (path);
+	return name;
+}
+
+/* [ pid_program ]
+ * The executable's basename, as the Windows backend shows it; the
+ * kernel's 15-character comm name when the exe link cannot be read
+ * (another user's process, a kernel thread). */
+static gchar *
+pid_program (const gchar *pid)
+{
+	gchar *link = g_build_filename ("/proc", pid, "exe", NULL);
+	gchar *target = g_file_read_link (link, NULL);
+	gchar *name;
+
+	g_free (link);
+	if (target == NULL)
+		return pid_comm (pid);
+
+	/* A replaced binary reads "/usr/bin/foo (deleted)". */
+	if (g_str_has_suffix (target, " (deleted)"))
+		target[strlen (target) - strlen (" (deleted)")] = '\0';
+	name = g_path_get_basename (target);
+	g_free (target);
+	return name;
+}
+
+/* [ is_sshd ] -- the program or the comm name is sshd's. */
+static gboolean
+is_sshd (const gchar *pid)
+{
+	gchar *program = pid_program (pid);
+	gchar *comm = pid_comm (pid);
+	gboolean yes = g_strcmp0 (program, "sshd") == 0 ||
+	               g_strcmp0 (comm, "sshd") == 0;
+
+	g_free (program);
+	g_free (comm);
+	return yes;
+}
+
+static void
+socket_lines (const gchar *lines, gpointer data)
+{
+	GList **into = data;
+
+	*into = g_list_concat (*into, fs_netparse_proc_tcp (lines, FALSE));
+}
+
+static void
+socket6_lines (const gchar *lines, gpointer data)
+{
+	GList **into = data;
+
+	*into = g_list_concat (*into, fs_netparse_proc_tcp (lines, TRUE));
+}
+
+static gint
+port_order (gconstpointer a, gconstpointer b)
+{
+	return (gint) *(const guint16 *) a - (gint) *(const guint16 *) b;
 }
 
 #endif /* __linux__ */
+
+GHashTable *
+fs_hostnet_socket_owners (const GList *sockets)
+{
+	GHashTable *owners = g_hash_table_new_full (g_int64_hash, g_int64_equal,
+	                                            g_free, g_free);
+#ifdef __linux__
+	GHashTable *wanted = NULL, *pids, *programs;
+	GHashTableIter iter;
+	gpointer key, value;
+
+	if (sockets != NULL) {
+		wanted = g_hash_table_new (g_int64_hash, g_int64_equal);
+		for (const GList *l = sockets; l != NULL; l = l->next) {
+			FsNetSocket *s = l->data;
+
+			if (s->inode != 0)
+				g_hash_table_add (wanted, &s->inode);
+		}
+		/* Nothing to look up: do not walk /proc for nothing. */
+		if (g_hash_table_size (wanted) == 0) {
+			g_hash_table_unref (wanted);
+			return owners;
+		}
+	}
+
+	pids = inode_pids (wanted);
+	programs = g_hash_table_new_full (g_str_hash, g_str_equal, NULL, g_free);
+	g_hash_table_iter_init (&iter, pids);
+	while (g_hash_table_iter_next (&iter, &key, &value)) {
+		gchar *program = g_hash_table_lookup (programs, value);
+		gint64 *copy = g_new (gint64, 1);
+
+		if (program == NULL) {
+			program = pid_program (value);
+			if (program == NULL)
+				program = g_strdup ("?");
+			g_hash_table_insert (programs, value, program);
+		}
+		*copy = *(gint64 *) key;
+		g_hash_table_insert (owners, copy, g_strdup (program));
+	}
+	g_hash_table_unref (programs);
+	g_hash_table_unref (pids);
+	if (wanted != NULL)
+		g_hash_table_unref (wanted);
+#else
+	(void) sockets;
+#endif
+	return owners;
+}
+
+GArray *
+fs_hostnet_ssh_listen_ports (void)
+{
+	GArray *ports = g_array_new (FALSE, FALSE, sizeof (guint16));
+#ifdef __linux__
+	GList *sockets = NULL, *listen = NULL;
+	GHashTable *wanted, *pids;
+
+	read_lines ("/proc/net/tcp", PROC_CAP, socket_lines, &sockets);
+	read_lines ("/proc/net/tcp6", PROC_CAP, socket6_lines, &sockets);
+
+	wanted = g_hash_table_new (g_int64_hash, g_int64_equal);
+	for (GList *l = sockets; l != NULL; l = l->next) {
+		FsNetSocket *s = l->data;
+
+		if (fs_netparse_socket_is_listening (s) && s->inode != 0) {
+			g_hash_table_add (wanted, &s->inode);
+			listen = g_list_prepend (listen, s);
+		}
+	}
+
+	pids = inode_pids (wanted);
+	for (GList *l = listen; l != NULL; l = l->next) {
+		FsNetSocket *s = l->data;
+		const gchar *pid = g_hash_table_lookup (pids, &s->inode);
+		guint16 port = (guint16) s->local_port;
+
+		if (pid != NULL && !has_port (ports, port) && is_sshd (pid))
+			g_array_append_val (ports, port);
+	}
+	g_array_sort (ports, port_order);
+
+	g_hash_table_unref (pids);
+	g_hash_table_unref (wanted);
+	g_list_free (listen);
+	g_list_free_full (sockets, (GDestroyNotify) fs_net_socket_free);
+#endif
+	return ports;
+}
 
 #if defined __linux__ || defined G_OS_WIN32
 
@@ -983,6 +1236,7 @@ fs_hostnet_read (const gchar *const *hosts)
 #ifdef __linux__
 	gchar *resolv_conf, *resolved, *nm;
 	TcpTable table;
+	GArray *ssh_ports;
 
 	read_interfaces (host->own, host->onlink);
 
@@ -1007,11 +1261,21 @@ fs_hostnet_read (const gchar *const *hosts)
 	merge (host->sessions,
 	       fs_hostnet_parse_ssh_env (g_getenv ("SSH_CONNECTION"),
 	                                 g_getenv ("SSH_CLIENT")));
+	/* On 22, and wherever sshd listens (a server moved to 2222 is
+	 * still the session an apply must not cut). */
+	ssh_ports = fs_hostnet_ssh_listen_ports ();
+	if (!has_port (ssh_ports, SSH_PORT)) {
+		guint16 port = SSH_PORT;
+
+		g_array_append_val (ssh_ports, port);
+	}
 	table.into = host->sessions;
+	table.ports = ssh_ports;
 	table.v6 = FALSE;
 	read_lines ("/proc/net/tcp", PROC_CAP, tcp_lines, &table);
 	table.v6 = TRUE;
 	read_lines ("/proc/net/tcp6", PROC_CAP, tcp_lines, &table);
+	g_array_unref (ssh_ports);
 
 	resolve_hosts (hosts, host->update_hosts);
 

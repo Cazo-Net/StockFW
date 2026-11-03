@@ -378,7 +378,7 @@ name_hit (FsHit *hit, gboolean blocked)
 		return;
 
 	if (hit->port != NULL)
-		name = fs_service_lookup_port (atoi (hit->port));
+		name = fs_netparse_port_name ((guint) MAX (atoi (hit->port), 0));
 	if (name == NULL && hit->protocol != NULL &&
 	    g_ascii_strcasecmp (hit->protocol, "ICMP") == 0)
 		name = g_strdup ("ICMP");
@@ -658,8 +658,9 @@ decode_address (const gchar *field, gboolean ipv6, gchar **addr,
 	return TRUE;
 }
 
-GList *
-fs_netparse_proc_tcp (const gchar *text, gboolean ipv6)
+/* [ parse_proc_table ] -- tcp, tcp6, udp and udp6 share their columns. */
+static GList *
+parse_proc_table (const gchar *text, gboolean ipv6, gboolean udp)
 {
 	gchar **lines;
 	GList *list = NULL;
@@ -709,6 +710,8 @@ fs_netparse_proc_tcp (const gchar *text, gboolean ipv6)
 		s->inode = g_ascii_strtoull (f[9], &end, 10);
 		if (end == NULL || *end != '\0')
 			s->inode = 0;
+		s->udp = udp;
+		s->ipv6 = ipv6;
 
 		list = g_list_prepend (list, s);
 		g_strfreev (raw);
@@ -717,6 +720,69 @@ fs_netparse_proc_tcp (const gchar *text, gboolean ipv6)
 	g_strfreev (lines);
 
 	return g_list_reverse (list);
+}
+
+GList *
+fs_netparse_proc_tcp (const gchar *text, gboolean ipv6)
+{
+	return parse_proc_table (text, ipv6, FALSE);
+}
+
+GList *
+fs_netparse_proc_udp (const gchar *text, gboolean ipv6)
+{
+	return parse_proc_table (text, ipv6, TRUE);
+}
+
+const gchar *
+fs_netparse_tcp_state_name (guint state)
+{
+	/* include/net/tcp_states.h */
+	static const gchar *const names[] = {
+		NULL, "ESTABLISHED", "SYN_SENT", "SYN_RECV", "FIN_WAIT1",
+		"FIN_WAIT2", "TIME_WAIT", "CLOSE", "CLOSE_WAIT", "LAST_ACK",
+		"LISTEN", "CLOSING", "NEW_SYN_RECV"
+	};
+
+	if (state < G_N_ELEMENTS (names) && names[state] != NULL)
+		return names[state];
+	return "UNKNOWN";
+}
+
+/* [ well_known ]
+ * Single ports the service table (fs-service.c) does not name but a
+ * reader expects to see named: the table holds the services the Policy
+ * page offers and the back doors worth blocking, not everything a scan
+ * knocks on.  The names are the ones the What-If reader prints. */
+static const struct { guint port; const gchar *name; } well_known[] = {
+	{ 69, "TFTP" },        { 88, "Kerberos" },     { 161, "SNMP" },
+	{ 162, "SNMP trap" },  { 389, "LDAP" },        { 465, "SMTPS" },
+	{ 500, "IKE" },        { 514, "syslog" },      { 587, "Mail submission" },
+	{ 631, "IPP printing" }, { 636, "LDAPS" },     { 873, "rsync" },
+	{ 990, "FTPS" },       { 993, "IMAPS" },       { 995, "POP3S" },
+	{ 1194, "OpenVPN" },   { 1433, "SQL Server" }, { 1883, "MQTT" },
+	{ 3306, "MySQL" },     { 3389, "Remote Desktop" },
+	{ 4500, "IPsec NAT-T" }, { 5060, "SIP" },      { 5222, "XMPP" },
+	{ 5353, "mDNS" },      { 5432, "PostgreSQL" }, { 5900, "VNC" },
+	{ 5938, "TeamViewer" }, { 5985, "WinRM" },     { 6379, "Redis" },
+	{ 6667, "IRC" },       { 25565, "Minecraft" }, { 27017, "MongoDB" },
+	{ 32400, "Plex" },     { 51820, "WireGuard" }
+};
+
+gchar *
+fs_netparse_port_name (guint port)
+{
+	gchar *name;
+
+	if (port == 0 || port > 65535)
+		return NULL;
+	name = fs_service_lookup_port ((gint) port);
+	if (name != NULL)
+		return name;
+	for (guint i = 0; i < G_N_ELEMENTS (well_known); i++)
+		if (well_known[i].port == port)
+			return g_strdup (well_known[i].name);
+	return NULL;
 }
 
 const gchar *
@@ -742,6 +808,17 @@ address_is_unspecified (const gchar *addr)
 	       strcmp (addr, "::") == 0;
 }
 
+gboolean
+fs_netparse_socket_is_listening (const FsNetSocket *s)
+{
+	if (s == NULL)
+		return FALSE;
+	if (s->udp)
+		return address_is_unspecified (s->remote_addr) &&
+		       s->remote_port == 0;
+	return s->state == TCP_STATE_LISTEN;
+}
+
 GList *
 fs_netparse_connections (const GList *sockets, GHashTable *programs)
 {
@@ -755,7 +832,7 @@ fs_netparse_connections (const GList *sockets, GHashTable *programs)
 	for (const GList *l = sockets; l != NULL; l = l->next) {
 		const FsNetSocket *s = l->data;
 
-		if (s->state == TCP_STATE_LISTEN)
+		if (!s->udp && s->state == TCP_STATE_LISTEN)
 			g_hash_table_add (listening,
 			                  GUINT_TO_POINTER (s->local_port));
 	}
@@ -768,9 +845,10 @@ fs_netparse_connections (const GList *sockets, GHashTable *programs)
 		gboolean inbound;
 		guint port;
 
-		if (s->state == TCP_STATE_LISTEN ||
-		    s->state == TCP_STATE_TIME_WAIT ||
-		    s->state == TCP_STATE_CLOSE)
+		if (!s->udp &&
+		    (s->state == TCP_STATE_LISTEN ||
+		     s->state == TCP_STATE_TIME_WAIT ||
+		     s->state == TCP_STATE_CLOSE))
 			continue;
 
 		if (address_is_unspecified (s->remote_addr) ||
@@ -780,7 +858,8 @@ fs_netparse_connections (const GList *sockets, GHashTable *programs)
 		if (programs != NULL && s->inode != 0)
 			program = g_hash_table_lookup (programs, &s->inode);
 
-		if (g_hash_table_contains (listening,
+		if (!s->udp &&
+		    g_hash_table_contains (listening,
 		                           GUINT_TO_POINTER (s->local_port)))
 			inbound = TRUE;
 		else
@@ -797,11 +876,15 @@ fs_netparse_connections (const GList *sockets, GHashTable *programs)
 		conn->source      = g_strdup (s->local_addr);
 		conn->destination = g_strdup (s->remote_addr);
 		conn->port        = g_strdup_printf ("%u", port);
-		conn->protocol    = g_strdup ("TCP");
+		conn->protocol    = g_strdup (s->udp ? "UDP" : "TCP");
 		conn->direction   = g_strdup (inbound ? "Inbound" : "Outbound");
 		conn->program     = g_strdup (program != NULL ? program : "?");
+		conn->local_port  = s->local_port;
+		conn->remote_port = s->remote_port;
+		conn->state       = s->udp ? NULL
+		                    : g_strdup (fs_netparse_tcp_state_name (s->state));
 
-		service = fs_service_lookup_port ((gint) port);
+		service = fs_netparse_port_name (port);
 		conn->service = service != NULL ? service : g_strdup ("Unknown");
 
 		list = g_list_prepend (list, conn);

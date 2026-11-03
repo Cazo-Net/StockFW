@@ -22,6 +22,7 @@
 #include "core/fs-util.h"
 #include "core/fs-service.h"
 #include "core/fs-netparse.h"
+#include "core/fs-hostnet.h"
 #include "core/fs-i18n.h"
 #include "core/fs-script.h"
 #include "core/fs-intel.h"
@@ -1698,123 +1699,6 @@ linux_list_interface_stats (void)
 	return stats;
 }
 
-/* [ program_for_pid ]
- * The executable's basename, as the Windows backend shows it; the
- * kernel's 15-character comm name when the exe link cannot be read
- * (another user's process, a kernel thread). */
-static gchar *
-program_for_pid (const gchar *pid)
-{
-	gchar *link = g_build_filename ("/proc", pid, "exe", NULL);
-	gchar *target = g_file_read_link (link, NULL);
-	gchar *name = NULL;
-
-	g_free (link);
-
-	if (target != NULL) {
-		/* A replaced binary reads "/usr/bin/foo (deleted)". */
-		if (g_str_has_suffix (target, " (deleted)"))
-			target[strlen (target) - strlen (" (deleted)")] = '\0';
-		name = g_path_get_basename (target);
-		g_free (target);
-		return name;
-	}
-
-	link = g_build_filename ("/proc", pid, "comm", NULL);
-	if (g_file_get_contents (link, &name, NULL, NULL))
-		g_strstrip (name);
-	else
-		name = NULL;
-	g_free (link);
-
-	return name;
-}
-
-/* [ socket_owners ]
- * socket inode -> program name, for every process whose fd table this
- * account may list.  Built only when there is a socket to look up, so
- * an idle machine does not walk /proc every refresh for nothing. */
-static GHashTable *
-socket_owners (const GList *sockets)
-{
-	GHashTable *wanted, *owners;
-	GDir *proc;
-	const gchar *pid;
-
-	wanted = g_hash_table_new (g_int64_hash, g_int64_equal);
-	for (const GList *l = sockets; l != NULL; l = l->next) {
-		FsNetSocket *s = l->data;
-
-		if (s->inode != 0)
-			g_hash_table_add (wanted, &s->inode);
-	}
-
-	owners = g_hash_table_new_full (g_int64_hash, g_int64_equal,
-	                                g_free, g_free);
-
-	if (g_hash_table_size (wanted) == 0) {
-		g_hash_table_unref (wanted);
-		return owners;
-	}
-
-	proc = g_dir_open ("/proc", 0, NULL);
-
-	while (proc != NULL && (pid = g_dir_read_name (proc)) != NULL) {
-		gchar *fd_path;
-		GDir *fds;
-		const gchar *fd;
-		gchar *program = NULL;
-
-		if (!g_ascii_isdigit (*pid))
-			continue;
-
-		fd_path = g_build_filename ("/proc", pid, "fd", NULL);
-		fds = g_dir_open (fd_path, 0, NULL);
-
-		while (fds != NULL && (fd = g_dir_read_name (fds)) != NULL) {
-			gchar *link = g_build_filename (fd_path, fd, NULL);
-			gchar *target = g_file_read_link (link, NULL);
-			guint64 inode;
-
-			g_free (link);
-
-			if (target != NULL &&
-			    sscanf (target, "socket:[%" G_GUINT64_FORMAT "]",
-			            &inode) == 1 &&
-			    g_hash_table_contains (wanted, &inode) &&
-			    !g_hash_table_contains (owners, &inode)) {
-				gint64 *key = g_new (gint64, 1);
-
-				if (program == NULL)
-					program = program_for_pid (pid);
-
-				*key = (gint64) inode;
-				g_hash_table_insert (owners, key,
-				                     g_strdup (program != NULL
-				                               ? program : "?"));
-			}
-
-			g_free (target);
-		}
-
-		if (fds != NULL)
-			g_dir_close (fds);
-		g_free (fd_path);
-		g_free (program);
-
-		/* Every socket placed: the rest of /proc cannot add one. */
-		if (g_hash_table_size (owners) == g_hash_table_size (wanted))
-			break;
-	}
-
-	if (proc != NULL)
-		g_dir_close (proc);
-
-	g_hash_table_unref (wanted);
-
-	return owners;
-}
-
 /* [ linux_list_connections ]
  * Connected TCP sockets, IPv4 and IPv6, with their owning program. */
 static GList *
@@ -1836,13 +1720,23 @@ linux_list_connections (void)
 		g_free (text);
 	}
 
-	owners = socket_owners (sockets);
+	/* No socket: nothing to look up (NULL would ask for every one). */
+	if (sockets == NULL)
+		return NULL;
+	owners = fs_hostnet_socket_owners (sockets);
 	list = fs_netparse_connections (sockets, owners);
 
 	g_hash_table_unref (owners);
 	g_list_free_full (sockets, (GDestroyNotify) fs_net_socket_free);
 
 	return list;
+}
+
+/* [ linux_socket_owners ] -- every socket this account can place. */
+static GHashTable *
+linux_socket_owners (void)
+{
+	return fs_hostnet_socket_owners (NULL);
 }
 
 /* ------------------------------------------------------------ syslog tail
@@ -2348,6 +2242,7 @@ static const FsBackend linux_backend = {
 	.list_interfaces       = linux_list_interfaces,
 	.list_interface_stats  = linux_list_interface_stats,
 	.list_connections      = linux_list_connections,
+	.socket_owners         = linux_socket_owners,
 	.log_start             = linux_log_start,
 	.log_stop              = linux_log_stop,
 	.log_active            = linux_log_active,

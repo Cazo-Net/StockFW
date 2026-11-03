@@ -37,6 +37,7 @@ static const gchar *main_help =
 "  copilot health             Check the policy for overlaps and risks\n"
 "  events [-n N] [-f]         Recent firewall events; --history for saved\n"
 "  connections                Active TCP connections and their programs\n"
+"  listening                  Open ports, their programs and who can reach them\n"
 "  interfaces [--watch]       Network adapters with traffic and rates\n"
 "  audit [-n N] [-f]          The audit log: every apply, start and stop\n"
 "  sentinel [list]            Sentinel's staged blocks (read-only)\n"

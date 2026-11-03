@@ -125,7 +125,7 @@ void fs_netparse_clear_hit (FsHit *hit);
  * Free with g_list_free_full (..., fs_iface_stat_free). */
 GList *fs_netparse_proc_dev (const gchar *text);
 
-/* One row of /proc/net/tcp or /proc/net/tcp6. */
+/* One row of /proc/net/tcp, tcp6, udp or udp6. */
 typedef struct
 {
 	gchar   *local_addr;    /* dotted quad or IPv6 text; an IPv4-mapped
@@ -133,8 +133,11 @@ typedef struct
 	guint    local_port;
 	gchar   *remote_addr;
 	guint    remote_port;
-	guint    state;         /* the kernel's TCP state number          */
+	guint    state;         /* the kernel's TCP state number (UDP: 07
+	                         * unconnected, 01 connected)             */
 	guint64  inode;         /* 0 for sockets with no owner (TIME_WAIT) */
+	gboolean udp;           /* read from a udp table                  */
+	gboolean ipv6;          /* read from a tcp6 or udp6 table         */
 } FsNetSocket;
 
 void fs_net_socket_free (FsNetSocket *s);
@@ -144,6 +147,29 @@ void fs_net_socket_free (FsNetSocket *s);
  * g_list_free_full (..., fs_net_socket_free). */
 GList *fs_netparse_proc_tcp (const gchar *text, gboolean ipv6);
 
+/* Parse /proc/net/udp (ipv6 = FALSE) or /proc/net/udp6 (ipv6 = TRUE).
+ * The columns are those of the tcp tables, so the rows are the same
+ * FsNetSocket, with udp set.  Every row is kept: a socket that only
+ * receives (DNS, mDNS, DHCP) has the peer 0.0.0.0:0 or :::0, one that
+ * was connected has a real peer.  fs_netparse_socket_is_listening
+ * tells them apart. */
+GList *fs_netparse_proc_udp (const gchar *text, gboolean ipv6);
+
+/* TRUE for a socket that waits for others: a TCP row in LISTEN, or a
+ * UDP row with no peer. */
+gboolean fs_netparse_socket_is_listening (const FsNetSocket *s);
+
+/* The kernel's name for a TCP state number ("ESTABLISHED", "LISTEN",
+ * "TIME_WAIT"...); "UNKNOWN" for a number it does not use. */
+const gchar *fs_netparse_tcp_state_name (guint state);
+
+/* The name a port is shown with on the Events page and in the
+ * connection list: the service table (fs_service_lookup_port) first,
+ * then a short list of well-known single ports that table does not
+ * hold (3389 Remote Desktop, 161 SNMP, 5432 PostgreSQL...).  NULL when
+ * neither knows the port.  Caller frees. */
+gchar *fs_netparse_port_name (guint port);
+
 /* The Status page's "Active connections" rows from parsed sockets:
  * connected sockets only (not LISTEN, TIME_WAIT or CLOSE, and never a
  * 0.0.0.0:0 peer); inbound when the local port is one a LISTEN row in
@@ -152,8 +178,10 @@ GList *fs_netparse_proc_tcp (const gchar *text, gboolean ipv6);
  * from our end for an inbound connection and the peer's end for an
  * outbound one; and the owning program from `programs' (inode as
  * guint64* -> name), or "?" when the socket's owner could not be read.
- * Returns a list of FsConnection*, caller frees with
- * fs_connection_free. */
+ * A UDP row (udp set) counts when it has a peer (a connected UDP
+ * socket); its state is NULL.  local_port, remote_port and the state
+ * name are filled in too.  Returns a list of FsConnection*, caller
+ * frees with fs_connection_free. */
 GList *fs_netparse_connections (const GList *sockets,
                                 GHashTable *programs);
 

@@ -575,3 +575,94 @@ fs_cli_sudo_hint (const gchar *args)
 	g_free (exe);
 	return text;
 }
+
+/* === WP-D === */
+/* A table printed a row at a time (`events -f'): the widths are frozen
+ * from the rows known up front, laid out as fs_cli_table_ex lays them
+ * out, and every later row is printed at those widths. */
+
+guint *
+fs_cli_table_widths (const gchar * const *headers, guint n_cols,
+                     GPtrArray *rows, guint max_cell, gint flex_col)
+{
+	guint *widths = g_new0 (guint, n_cols);
+	guint *floors = g_new0 (guint, n_cols);
+	guint term;
+
+	if (fs_cli.full)
+		max_cell = 0;
+	for (guint c = 0; c < n_cols; c++) {
+		widths[c] = (guint) g_utf8_strlen (headers[c], -1);
+		floors[c] = MAX (widths[c], 1u);
+	}
+	for (guint r = 0; rows != NULL && r < rows->len; r++) {
+		gchar **row = g_ptr_array_index (rows, r);
+
+		for (guint c = 0; c < n_cols; c++) {
+			gchar *safe = fs_cli_out_safe (row[c]);
+			gchar *cut = cell_text (safe, max_cell);
+
+			widths[c] = MAX (widths[c], (guint) g_utf8_strlen (cut, -1));
+			g_free (cut);
+			g_free (safe);
+		}
+	}
+	term = fs_cli.full ? 0 : fs_cli_term_width ();
+	if (term > 0 && n_cols > 0)
+		fit_widths (widths, floors, n_cols, flex_col, term);
+	g_free (floors);
+	return widths;
+}
+
+void
+fs_cli_table_header (const gchar * const *headers, guint n_cols,
+                     const guint *widths)
+{
+	if (fs_cli.plain)
+		return;
+	printf ("%s", fs_cli_bold ());
+	for (guint c = 0; c < n_cols; c++) {
+		if (c + 1 < n_cols)
+			printf ("%-*s  ", (gint) (widths[c] + strlen (headers[c]) -
+			                          g_utf8_strlen (headers[c], -1)),
+			        headers[c]);
+		else
+			printf ("%s", headers[c]);
+	}
+	printf ("%s\n", fs_cli_reset ());
+}
+
+void
+fs_cli_table_row (gchar **row, guint n_cols, const guint *widths,
+                  const gchar * const *colours)
+{
+	gboolean cut = !fs_cli.full && fs_cli_term_width () > 0;
+
+	for (guint c = 0; c < n_cols; c++) {
+		gchar *safe = fs_cli_out_safe (row[c]);
+		const gchar *colour = colours != NULL && colours[c] != NULL &&
+		                      *colours[c] != '\0' && !fs_cli.plain
+		                      ? colours[c] : NULL;
+		gchar *text;
+		glong chars;
+
+		if (fs_cli.plain) {
+			printf ("%s%s", c > 0 ? "\t" : "", safe);
+			g_free (safe);
+			continue;
+		}
+		/* A wider cell is cut on a terminal, so the columns stay
+		 * under their header; a pipe gets every character. */
+		text = cut ? cell_text (safe, widths[c]) : g_strdup (safe);
+		chars = g_utf8_strlen (text, -1);
+		printf ("%s%s%s", colour != NULL ? colour : "", text,
+		        colour != NULL ? fs_cli_reset () : "");
+		if (c + 1 < n_cols)
+			printf ("%*s  ", (gint) (chars < (glong) widths[c]
+			                         ? widths[c] - (guint) chars : 0), "");
+		g_free (text);
+		g_free (safe);
+	}
+	printf ("\n");
+}
+/* === end WP-D === */
