@@ -1018,9 +1018,9 @@ static const FsHelpBlock threat_intel[] = {
 	  "card shows the copy's date; a copy older than 30 days is marked "
 	  "out of date and still used.") },
 	{ FS_HELP_NOTE, N_("Location data: IPFire location database "
-	  "(location.ipfire.org). The file declares the licence CC BY-SA "
-	  "4.0; StockFW has not confirmed it, so commercial use may need "
-	  "IPFire's permission. The card, the command line and every lookup "
+	  "(location.ipfire.org), licensed CC BY-SA 4.0, as IPFire has "
+	  "confirmed: credit IPFire and share any changed copy under the "
+	  "same licence. The card, the command line and every lookup "
 	  "that shows location data carry this line.") },
 	{ FS_HELP_PARA, N_("On Linux, <tt>stockfw intel geo</tt> does the "
 	  "same: <tt>sudo stockfw intel geo on --accept-terms</tt>, "

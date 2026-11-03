@@ -1107,13 +1107,13 @@ check_geo (void)
 	       strstr (last_dialog_text, "once a day") != NULL &&
 	       strstr (last_dialog_text, "public IP address") != NULL &&
 	       strstr (last_dialog_text, "CC BY-SA 4.0") != NULL &&
-	       strstr (last_dialog_text, "has not confirmed") != NULL &&
+	       strstr (last_dialog_text, "IPFire has confirmed") != NULL &&
 	       strstr (last_dialog_text, "where an address range is "
 	                                 "registered, not where a computer "
 	                                 "is") != NULL &&
 	       strstr (last_dialog_text, "anycast") != NULL,
 	       "geo: turning it on asks first: the host, how often, what it "
-	       "learns, the licence as the file declares it (unconfirmed), "
+	       "learns, the licence as IPFire confirmed it, "
 	       "\"registered in\", anycast");
 	CHECK (geo_fetches == 0 && geo_conf (&on, &rules) && !on &&
 	       !gtk_switch_get_active (GTK_SWITCH (sw)),

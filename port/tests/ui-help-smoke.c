@@ -650,9 +650,8 @@ check_merged_107 (void)
 		  "<b>Anycast</b> mark",
 		  "countries: the anycast warning and its mark" },
 		{ "threat-intel", "CC BY-SA 4.0 licence",
-		  "The file declares the licence CC BY-SA 4.0; StockFW has not "
-		  "confirmed it",
-		  "countries: the licence as the file declares it, unconfirmed" },
+		  "licensed CC BY-SA 4.0, as IPFire has confirmed",
+		  "countries: the licence, as IPFire confirmed it" },
 		{ "threat-intel", "every hour",
 		  "downloaded at most once a day",
 		  "countries: the database is downloaded at most once a day" },

@@ -1031,8 +1031,8 @@ check that failed is in brackets):
   `stockfw intel lookup` and the hourly update check.  Blocking by
   country or network owner is described as present too: the switch
   "Use the location database" and its dialog, "is registered, not where
-  the computer using it is", the "Anycast" mark, the licence as the
-  file declares it and unconfirmed, "downloaded at most once a day",
+  the computer using it is", the "Anycast" mark, the licence as
+  IPFire confirmed it (CC BY-SA 4.0), "downloaded at most once a day",
   Windows "not supported on Windows in this version of StockFW", and
   the CLI topic's `stockfw intel geo`.  No FS_HELP_SOON callout is
   left in any topic (the last one, on country and ASN blocking, went
@@ -2591,7 +2591,7 @@ the downloads and the backend are fakes) checks:
 
 | Area | What it pins down |
 |---|---|
-| wording | the attribution names IPFire and the declared licence and says it is not confirmed; the consent text names the host, how often, what the server learns, "registered", anycast and exceptions; the defaults are off and never consented; source kinds and set names by id; on Windows, "not supported on Windows in this version" |
+| wording | the attribution names IPFire and the licence and says IPFire confirmed it; the consent text names the host, how often, what the server learns, "registered", anycast and exceptions; the defaults are off and never consented; source kinds and set names by id; on Windows, "not supported on Windows in this version" |
 | config | `[geo]` and `[location <id>]` round trip; refusals for a key of the wrong kind, bad or missing values, a bad id or name, more than 1,000 values; codes and AS numbers are normalised, deduplicated and sorted |
 | consent | no rule and no enabling without the terms accepted; a config that says enabled but never accepted downloads nothing |
 | no network | the default configuration, the database off, no consent, the master switch off: no request at all; the database's host (and the proxy) is in `fs_intel_update_hosts` only while it is on |
@@ -3283,8 +3283,8 @@ curl runs as nobody, so the files are world-readable.
 
 - `fs-intelview-smoke` (`check_geo`): the card's controls on Linux; no
   picker before consent; the licence line; the consent dialog's text
-  (host, how often, what it learns, the licence as declared and
-  unconfirmed, "registered in", anycast), Cancel (nothing downloaded),
+  (host, how often, what it learns, the licence as IPFire
+  confirmed it, "registered in", anycast), Cancel (nothing downloaded),
   Accept (one download from the IPFire URL); the date and state; the
   picker's 7 countries and the "Example" AS search; Netherlands picked
   with "in": in force, its networks, and the "Anycast" chip whose

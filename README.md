@@ -369,9 +369,9 @@ sudo stockfw intel lookup 192.0.2.10          # registered in, the network, and 
   keeps the copy in use. Lookups read the local copy and make no
   request.
 - **Licence and attribution.** Location data: IPFire location database
-  (https://location.ipfire.org/). The file declares the licence CC
-  BY-SA 4.0; StockFW has not confirmed it, so commercial use may need
-  IPFire's permission. The page, the CLI and every lookup that shows
+  (https://location.ipfire.org/), licensed CC BY-SA 4.0, as IPFire
+  has confirmed: credit IPFire and share any changed copy under the
+  same licence. The page, the CLI and every lookup that shows
   location data carry this line.
 - **What-If, the Copilot and `stockfw simulate`** do not consult these
   rules (or the blocklists): they judge the policy alone, so they can

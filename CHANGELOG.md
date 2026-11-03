@@ -90,8 +90,9 @@ into `/usr/local/share/doc/stockfw/`.
 - **Country and network blocking on Linux.** Block the address ranges
   registered in a country, or held by a network (AS number), from
   IPFire's signed location database. Includes an anycast warning,
-  `stockfw intel geo` and a lookup that says "registered in". Windows does
-  not support this in 1.0.7.
+  `stockfw intel geo` and a lookup that says "registered in". The data is
+  CC BY-SA 4.0, as IPFire has confirmed. Windows does not support this in
+  1.0.7.
 - **IPv6 on Linux.** One apply loads the policy into both `iptables` and
   `ip6tables`, each in one atomic step. If the IPv6 half is refused, the
   IPv4 half is rolled back. Neighbour discovery, router adverts,

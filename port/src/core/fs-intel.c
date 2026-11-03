@@ -2257,9 +2257,9 @@ gchar *
 fs_intel_geo_attribution (void)
 {
 	return g_strdup_printf (
-		_("Location data: IPFire location database (%s). The file "
-		  "declares the licence CC BY-SA 4.0; StockFW has not confirmed "
-		  "it, so commercial use may need IPFire's permission."),
+		_("Location data: IPFire location database (%s), licensed "
+		  "CC BY-SA 4.0, as IPFire has confirmed: credit IPFire and "
+		  "share any changed copy under the same licence."),
 		GEO_TERMS_URL);
 }
 
