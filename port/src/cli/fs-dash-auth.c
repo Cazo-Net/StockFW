@@ -55,6 +55,7 @@ struct _FsDashAuth
 	GSocketService *link;
 	gchar          *link_path;
 	guint16         port;
+	guint16         origin_port;  /* --origin-port, or 0 */
 };
 
 /* ------------------------------------------------------------ secrets */
@@ -544,10 +545,16 @@ on_link (GSocketService *service, GSocketConnection *connection,
 		GOutputStream *out;
 
 		if (code != NULL) {
-			reply = g_strdup_printf ("port=%u\ncode=%s\nfile=%s\n"
+			gchar *origin = auth->origin_port != 0
+				? g_strdup_printf ("origin_port=%u\n", auth->origin_port)
+				: g_strdup ("");
+
+			reply = g_strdup_printf ("port=%u\n%scode=%s\nfile=%s\n"
 			                         "fingerprint=%s\n", auth->port,
-			                         code, file != NULL ? file : "",
+			                         origin, code,
+			                         file != NULL ? file : "",
 			                         auth->fingerprint);
+			g_free (origin);
 			g_socket_set_timeout (sock, 2);
 			out = g_io_stream_get_output_stream (G_IO_STREAM (connection));
 			g_output_stream_write_all (out, reply, strlen (reply), NULL,
@@ -558,6 +565,12 @@ on_link (GSocketService *service, GSocketConnection *connection,
 	}
 	g_io_stream_close (G_IO_STREAM (connection), NULL, NULL);
 	return TRUE;
+}
+
+void
+fs_dash_auth_set_origin_port (FsDashAuth *auth, guint16 port)
+{
+	auth->origin_port = port;
 }
 
 gboolean

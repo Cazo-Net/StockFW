@@ -67,7 +67,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <pwd.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <gio/gunixsocketaddress.h>
 
 #define DASH_RECENT_EVENTS   500
@@ -1265,9 +1267,69 @@ on_ownerless_refused (gpointer unused, gpointer data)
 
 /* -------------------------------------------------------------- link */
 
+/* [ unix_listening ]
+ * TRUE when /proc/net/unix lists a listening socket bound to `path'. */
+static gboolean
+unix_listening (const gchar *path)
+{
+	gchar *text = NULL;
+	gchar **lines;
+	gboolean found = FALSE;
+
+	if (!g_file_get_contents ("/proc/net/unix", &text, NULL, NULL))
+		return FALSE;
+	lines = g_strsplit (text, "\n", -1);
+	/* Num RefCount Protocol Flags Type St Inode Path */
+	for (guint i = 1; lines[i] != NULL && !found; i++) {
+		guint flags = 0, st = 0;
+		gint at = -1;
+
+		if (sscanf (lines[i], "%*s %*x %*x %x %*x %x %*u %n", &flags, &st,
+		            &at) == 2 && at > 0)
+			found = (flags & 0x10000) != 0 && st == 1 &&
+			        strcmp (lines[i] + at, path) == 0;
+	}
+	g_strfreev (lines);
+	g_free (text);
+	return found;
+}
+
+/* [ socket_live ]
+ * TRUE when a dashboard listens on the socket at `path'.  A socket left
+ * by a dashboard that was killed (SIGKILL, a crash) is not counted as a
+ * running dashboard, and is removed (review of PR 2).  /proc/net/unix
+ * answers first, since a connect makes a live dashboard issue a code;
+ * a socket it does not list (another network namespace, say) is tried
+ * with a connect, and only ECONNREFUSED counts as gone.  The directory
+ * is the user's own, 0700. */
+static gboolean
+socket_live (const gchar *path)
+{
+	struct sockaddr_un sa;
+	gint fd;
+	gboolean live = TRUE;
+
+	if (unix_listening (path) || strlen (path) >= sizeof (sa.sun_path))
+		return TRUE;
+	memset (&sa, 0, sizeof (sa));
+	sa.sun_family = AF_UNIX;
+	strcpy (sa.sun_path, path);
+	fd = socket (AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (fd < 0)
+		return TRUE;
+	if (connect (fd, (struct sockaddr *) &sa, sizeof (sa)) != 0 &&
+	    errno == ECONNREFUSED) {
+		g_unlink (path);
+		live = FALSE;
+	}
+	close (fd);
+	return live;
+}
+
 /* [ link_socket ]
  * The socket of the dashboard on `port', or of the only one running for
- * this account when port is 0.  NULL after printing why. */
+ * this account when port is 0.  NULL after printing why.  Sockets of
+ * dashboards that are gone are skipped (and removed). */
 static gchar *
 link_socket (guint16 port, gint *status)
 {
@@ -1285,8 +1347,14 @@ link_socket (guint16 port, gint *status)
 
 		if (sscanf (name, "dash-%u.so%c", &p, &tail) == 2 && tail == 'c' &&
 		    g_str_has_suffix (name, ".sock") && p > 0 && p < 65536 &&
-		    (port == 0 || p == port))
-			g_ptr_array_add (found, g_build_filename (dir, name, NULL));
+		    (port == 0 || p == port)) {
+			gchar *one = g_build_filename (dir, name, NULL);
+
+			if (socket_live (one))
+				g_ptr_array_add (found, one);
+			else
+				g_free (one);
+		}
 	}
 	if (d != NULL)
 		g_dir_close (d);
@@ -1338,6 +1406,7 @@ dashboard_link (guint16 port)
 	gchar *path;
 	gchar **lines;
 	const gchar *code = NULL, *file = NULL, *fp = NULL, *port_s = NULL;
+	const gchar *origin_s = NULL;
 	GError *error = NULL;
 	gint status;
 
@@ -1381,6 +1450,8 @@ dashboard_link (guint16 port)
 			fp = lines[i] + 12;
 		else if (g_str_has_prefix (lines[i], "port="))
 			port_s = lines[i] + 5;
+		else if (g_str_has_prefix (lines[i], "origin_port="))
+			origin_s = lines[i] + 12;
 	}
 	if (code == NULL || strlen (code) != 32 || port_s == NULL || fp == NULL) {
 		fs_cli_error ("the dashboard at %s gave no link", path);
@@ -1395,6 +1466,11 @@ dashboard_link (guint16 port)
 
 		fs_json_kv_uint (out, "port", g_ascii_strtoull (port_s, NULL, 10));
 		g_string_append_c (out, ',');
+		if (origin_s != NULL) {
+			fs_json_kv_uint (out, "origin_port",
+			                 g_ascii_strtoull (origin_s, NULL, 10));
+			g_string_append_c (out, ',');
+		}
 		if (file != NULL && *file != '\0')
 			fs_json_kv_str (out, "link_file", file);
 		else
@@ -1406,6 +1482,11 @@ dashboard_link (guint16 port)
 		g_string_free (out, TRUE);
 	} else if (isatty (STDOUT_FILENO)) {
 		printf ("http://127.0.0.1:%s/#code=%s\n", port_s, code);
+		/* --origin-port: the same code through `ssh -L N:...'
+		 * (review of PR 2: only the server's port was printed). */
+		if (origin_s != NULL)
+			printf ("  Over SSH: http://127.0.0.1:%s/#code=%s\n",
+			        origin_s, code);
 		printf ("  One use, for 2 minutes.  Fingerprint %s.\n", fp);
 	} else if (file != NULL && *file != '\0') {
 		printf ("%s\n", file);
@@ -1549,6 +1630,8 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 		fs_dash_http_on_ownerless_refused (dash.http, on_ownerless_refused,
 		                                   &dash);
 
+	if (dash.origin_port != 0 && dash.origin_port != dash.port)
+		fs_dash_auth_set_origin_port (dash.auth, dash.origin_port);
 	if (!fs_dash_auth_listen_link (dash.auth, dash.port, &error)) {
 		link_error = g_strdup (error->message);
 		g_clear_error (&error);
@@ -1685,6 +1768,9 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 	dash.loop = g_main_loop_new (NULL, FALSE);
 	g_unix_signal_add (SIGINT, on_quit_signal, &dash);
 	g_unix_signal_add (SIGTERM, on_quit_signal, &dash);
+	/* Closing the terminal sends SIGHUP: the launch files and the link
+	 * socket must go then too (review of PR 2). */
+	g_unix_signal_add (SIGHUP, on_quit_signal, &dash);
 	g_main_loop_run (dash.loop);
 
 	/* Teardown, in the order things were started. */

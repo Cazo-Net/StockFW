@@ -71,6 +71,7 @@ stop_dash () {
 }
 cleanup () {
   stop_dash
+  end_netns
   rm -rf "$W"
 }
 trap cleanup EXIT
@@ -102,6 +103,23 @@ export STOCKFW_LOG_FILE="$W/kern.log"
 
 check "the release build has no test hooks (no STOCKFW_TEST_ variable in stockfw)" \
   bash -c "! grep -qa 'STOCKFW_TEST_' '$W/stockfw' && grep -qa 'STOCKFW_TEST_CLOCK_FILE' '$W/stockfw-test'"
+
+# mk_netns <tw buckets>: a network namespace of its own (root only),
+# held by a sleeping process $NSHOLD, with lo up and at most that many
+# TIME_WAIT entries.  end_netns ends it.
+SAVED_START=("${START[@]}")
+NSHOLD=""
+mk_netns () {
+  unshare -n sleep 600 2>/dev/null &
+  NSHOLD=$!
+  sleep 0.2
+  nsenter -t "$NSHOLD" -n ip link set lo up 2>/dev/null &&
+    nsenter -t "$NSHOLD" -n sysctl -qw "net.ipv4.tcp_max_tw_buckets=$1" 2>/dev/null
+}
+end_netns () {
+  [ -n "$NSHOLD" ] && { kill "$NSHOLD" 2>/dev/null; wait "$NSHOLD" 2>/dev/null; }
+  NSHOLD=""
+}
 
 free_port () { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 
@@ -457,6 +475,27 @@ stop_dash
 check "when the dashboard stops, its socket and launch files are gone" \
   bash -c "[ ! -e '$RUN/stockfw/dash-$DPORT.sock' ] && [ -z \"\$(ls '$RUN' | grep stockfw-dashboard)\" ]"
 
+# Review of PR 2: closing the terminal (SIGHUP) left the socket and the
+# launch files behind, and `dashboard link' then counted every socket
+# left behind as a running dashboard.
+start_dash "$W/stockfw" "$DPORT"
+kill -HUP "$DASH_PID"; wait "$DASH_PID" 2>/dev/null; DASH_PID=""
+check "on SIGHUP (the terminal closed) the socket and launch files are gone too" \
+  bash -c "[ ! -e '$RUN/stockfw/dash-$DPORT.sock' ] && [ -z \"\$(ls '$RUN' | grep stockfw-dashboard)\" ]"
+start_dash "$W/stockfw" "$DPORT"
+kill -KILL "$DASH_PID"; wait "$DASH_PID" 2>/dev/null; DASH_PID=""
+check "a dashboard killed with SIGKILL leaves its socket (nothing can remove it)" \
+  [ -S "$RUN/stockfw/dash-$DPORT.sock" ]
+rm -rf "$RUN"/stockfw-dashboard-*
+DPORT2=$(free_port)
+start_dash "$W/stockfw" "$DPORT2"
+LINK_OUT2="$(as_user "$W/stockfw" dashboard link 2>&1)"; LINK_RC=$?
+check "after a dashboard was killed, dashboard link finds the one still running" \
+  bash -c "[ '$LINK_RC' = 0 ] && printf '%s\n' '$LINK_OUT2' | grep -qE '^/.*/open.html$'"
+check "  ...and the socket the killed one left is removed" \
+  bash -c "[ ! -e '$RUN/stockfw/dash-$DPORT.sock' ] && [ -S '$RUN/stockfw/dash-$DPORT2.sock' ]"
+stop_dash
+
 # ------------------------------------------------------- --origin-port
 # ssh -L N:127.0.0.1:PORT host (T22): the browser's end is 127.0.0.1:N.
 OPORT=$(free_port)
@@ -472,6 +511,16 @@ check "  ...a GET with Host 127.0.0.1:N gets 200" \
   [ "$(code -H "Host: 127.0.0.1:$OPORT" -H "X-StockFW-Session: $OKEY" "$B/api/summary")" = 200 ]
 check "  ...Host 127.0.0.1:N+1 gets 403" \
   [ "$(code -H "Host: 127.0.0.1:$((OPORT+1))" -H "X-StockFW-Session: $OKEY" "$B/api/summary")" = 403 ]
+check "  ...dashboard link on a terminal prints the link on port N too" python3 -I -c "
+import os, pty, subprocess, re
+pre = '$AS'.split()
+m, s = pty.openpty()
+r = subprocess.run(pre + ['$W/stockfw', 'dashboard', 'link'], stdin=s, stdout=s, stderr=s, timeout=10)
+os.close(s)
+out = os.read(m, 4096)
+assert r.returncode == 0 and re.search(rb'http://127\.0\.0\.1:$OPORT/#code=[0-9a-f]{32}', out), out"
+check "  ...and its --json names origin_port" bash -c "
+  $AS '$W/stockfw' --json dashboard link | python3 -I -c 'import json,sys; assert json.load(sys.stdin)[\"origin_port\"] == $OPORT'"
 OC2=$(new_code)
 check "  ...an Origin of :N with Host :PORT (mismatched) gets 403" \
   [ "$(post "$DPORT" "{\"code\":\"$OC2\"}" "${PAGE[@]}")" = 403 ]
@@ -479,6 +528,26 @@ stop_dash
 start_dash "$W/stockfw" "$DPORT"
 check "without --origin-port, Host 127.0.0.1:N gets 403" \
   [ "$(code -H "Host: 127.0.0.1:$OPORT" "$B/")" = 403 ]
+stop_dash
+
+# ---------------------------------------------- empty lines (RFC 9112)
+# Review of PR 2: a request that began with "\r\n\r\n" was a head of
+# length 0 with no request line, and NULL went to g_strsplit.  GLib
+# only logged it; with G_DEBUG=fatal-criticals the dashboard died.
+G_DEBUG=fatal-criticals start_dash "$W/stockfw" "$DPORT"
+check "empty lines before the request line are ignored: the request is answered (200)" upy "
+import socket
+s = socket.create_connection(('127.0.0.1', $DPORT)); s.settimeout(5)
+s.sendall(b'\r\n\r\nGET /logo.png HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\n\r\n')
+assert s.recv(64).startswith(b'HTTP/1.1 200'), 'not 200'"
+check "  ...and \"\\r\\n\\r\\n\" alone, then a close, leaves the dashboard running" upy "
+import socket, time
+s = socket.create_connection(('127.0.0.1', $DPORT)); s.sendall(b'\r\n\r\n'); time.sleep(0.3); s.close()
+time.sleep(0.3)
+s = socket.create_connection(('127.0.0.1', $DPORT)); s.settimeout(5)
+s.sendall(b'GET /logo.png HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\n\r\n')
+assert s.recv(64).startswith(b'HTTP/1.1 200'), 'not 200'"
+check "  ...with no GLib warning" bash -c "! grep -q CRITICAL '$W/dash.txt'"
 stop_dash
 
 # ------------------------------------------- the test clock (E7, T12)
@@ -537,7 +606,47 @@ if [ "$ROOT" = 1 ]; then
     echo \"\$r\" | grep -q '\"via\":\"wsl\"' && grep -q 'allow-windows' '$W/dash.txt'"
   check "  ...while root is still closed at accept (000)" \
     [ "$(curl -sS -o /dev/null -w '%{http_code}' "$B/" 2>/dev/null)" = 000 ]
+  # Review of PR 2: under --allow-windows, a connection whose socket
+  # has no owner on this machine is let in.  A socket its process has
+  # closed (an orphan: inode 0, or no row at all once the TIME_WAIT
+  # table is full) used to count as that too, so another account got a
+  # request read by closing at once.  closed_at_once [prefix...]: with
+  # the dashboard stopped, uid 65532 sends a POST with a fresh code and
+  # closes; true when that code still works afterwards (the POST was
+  # not read).
+  closed_at_once () {
+    local c; c=$(new_code)
+    [ -n "$c" ] || return 1
+    kill -STOP "$DASH_PID"
+    "$@" setpriv --reuid=65532 --regid=65532 --clear-groups python3 -I -c "
+import socket
+b = b'{\"code\":\"$c\"}'
+s = socket.create_connection(('127.0.0.1', $DPORT))
+s.sendall(b'POST /api/session HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\nOrigin: http://127.0.0.1:$DPORT\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n' % len(b) + b)
+s.close()"
+    sleep 0.3
+    kill -CONT "$DASH_PID"
+    sleep 0.5
+    [ "$("$@" setpriv --reuid=65534 --regid=65534 --clear-groups curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Origin: http://127.0.0.1:$DPORT" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' -H 'Content-Type: application/json' --data "{\"code\":\"$c\"}" "$B/api/session" 2>/dev/null)" = 200 ]
+  }
+  check "  ...a request from another account that closed at once is not read (orphan, inode 0)" \
+    closed_at_once
   stop_dash
+  # The same in a network namespace of its own that keeps no TIME_WAIT
+  # entries, as a full table does: the closed socket is then gone.
+  if mk_netns 0; then
+    START=(nsenter -t "$NSHOLD" -n "${SAVED_START[@]}")
+    start_dash "$W/stockfw-test" "$DPORT" --allow-windows
+    START=("${SAVED_START[@]}")
+    check "  ...nor when its closed socket is gone (no TIME_WAIT entry)" \
+      closed_at_once nsenter -t "$NSHOLD" -n
+    check "  ...while a Windows peer still open is answered there (200)" \
+      [ "$(nsenter -t "$NSHOLD" -n setpriv --reuid=65534 --regid=65534 --clear-groups curl -sS -o /dev/null -w '%{http_code}' "$B/" 2>/dev/null)" = 200 ]
+    stop_dash
+  else
+    check "a network namespace for the TIME_WAIT check (unshare -n, ip, sysctl)" false
+  fi
+  end_netns
   unset STOCKFW_TEST_WSL STOCKFW_TEST_OWNERLESS_UID
 fi
 
@@ -552,7 +661,50 @@ if [ "$ROOT" = 1 ]; then
     timeout 10 env SUDO_UID=$USER_UID XDG_RUNTIME_DIR=/nonexistent '$W/stockfw' dashboard --no-open > '$W/out' 2>&1; rc=\$?
     [ \$rc = 1 ] && grep -q 'nowhere to go' '$W/out'"
 else
-  echo "skip: peer uid, link socket and WSL peer checks need root (a second account)"
+  echo "skip: peer uid, link socket, WSL peer and full socket table checks need root (a second account)"
+fi
+
+# ------------------------------------------- a full socket table (T2)
+# Review of PR 2: the accept check used to read and split all of
+# /proc/net/tcp for every connection, so an account that filled the
+# table with TIME_WAIT entries (no file descriptors held) slowed every
+# request down: about 150 ms each at 60,000 entries.  The one-socket
+# netlink lookup does not grow with the table.  It runs in a network
+# namespace of its own, so the entries (they stay 60 s) slow nothing
+# else on the machine.  Nobody makes the entries; the user's requests
+# fetch /logo.png (the API reads the connection table itself).
+if [ "$ROOT" = 1 ]; then
+  if mk_netns 262144; then
+    START=(nsenter -t "$NSHOLD" -n "${SAVED_START[@]}")
+    start_dash "$W/stockfw" "$DPORT"
+    START=("${SAVED_START[@]}")
+    nsenter -t "$NSHOLD" -n setpriv --reuid=65534 --regid=65534 --clear-groups python3 -I -c "
+import socket
+l = socket.socket(); l.bind(('127.0.0.1', 0)); l.listen(128)
+lp = l.getsockname()[1]; made = 0
+for a in range(1, 255):
+    for b in range(1, 255):
+        if made >= 40000: break
+        c = socket.socket(); c.bind(('127.0.%d.%d' % (a, b), 0))
+        c.connect(('127.0.0.1', lp)); s, _ = l.accept()
+        c.close(); s.close(); made += 1"
+    check "with 40,000 TIME_WAIT entries in the table, 20 requests answer within 2 s (T2)" \
+      nsenter -t "$NSHOLD" -n setpriv --reuid=$USER_UID --regid=$USER_UID --clear-groups python3 -I -c "
+import socket, time
+assert sum(1 for _ in open('/proc/net/tcp')) > 40000
+t0 = time.monotonic()
+for i in range(20):
+    c = socket.create_connection(('127.0.0.1', $DPORT)); c.settimeout(5)
+    c.sendall(b'GET /logo.png HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\n\r\n')
+    assert c.recv(64).startswith(b'HTTP/1.1 200')
+    c.close()
+took = time.monotonic() - t0
+assert took < 2.0, took"
+    stop_dash
+  else
+    check "a network namespace for the T2 check (unshare -n, ip, sysctl)" false
+  fi
+  end_netns
 fi
 
 echo ""

@@ -6,8 +6,9 @@
  *   - At accept, before a byte is read: the peer is 127.0.0.1, and the
  *     peer's socket belongs to the one uid this dashboard serves (its
  *     own, or SUDO_UID under sudo; never uid 0).  The owner comes from
- *     the uid column of /proc/net/tcp, since SO_PEERCRED does not work
- *     on TCP.  Any other connection is closed at once, unread.
+ *     one NETLINK_SOCK_DIAG lookup of the peer's socket, since
+ *     SO_PEERCRED does not work on TCP.  Any other connection, and one
+ *     whose socket has no owner left, is closed at once, unread.
  *   - Slots: at most FS_DASH_SLOTS_OPEN connections per uid may be
  *     sending a request.  One more closes the oldest of them, so slow
  *     senders can no longer lock the user out (T2: with 32 of them
@@ -24,14 +25,25 @@
  *   - Every answer is written in one piece with Connection: close and
  *     the dashboard's security headers (2B added Trusted Types,
  *     Permissions-Policy and Cross-Origin-Embedder-Policy).
- *   - WSL with --allow-windows (2B): a peer with no socket owner is
- *     served as its own class; otherwise it is closed like any other.
+ *   - WSL with --allow-windows (2B): a peer whose socket the kernel
+ *     does not have at all is served as its own class; otherwise it is
+ *     closed like any other.
  *--------------------------------------------------------------------*/
 #include "cli/fs-dash-http.h"
 #include "core/fs-json.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <linux/inet_diag.h>
+#include <linux/netlink.h>
+#include <linux/sock_diag.h>
 
 typedef struct
 {
@@ -65,6 +77,7 @@ struct _FsDashConn
 	gboolean           aborted;
 
 	GString           *in;       /* every byte read so far */
+	gboolean           head_seen;
 	gsize              head_len; /* up to the blank line, once seen */
 	gsize              body_len;
 	guint8             buffer[4096];
@@ -81,128 +94,121 @@ struct _FsDashConn
 
 /* ------------------------------------------------------- the peer's uid */
 
-/* [ hex_word ] -- 8 hex digits as the kernel printed a 32-bit word. */
-static gboolean
-hex_word (const gchar *s, guint32 *out)
-{
-	gchar buf[9];
-	gchar *end = NULL;
-
-	memcpy (buf, s, 8);
-	buf[8] = '\0';
-	*out = (guint32) g_ascii_strtoull (buf, &end, 16);
-	return end == buf + 8;
-}
-
-/* [ addr_matches ]
- * One "ADDR:PORT" column of /proc/net/tcp{,6} against an address in
- * network byte order.  The kernel prints each 32-bit word of the
- * address with %08X as it sits in memory, and the port in host order.
- * In tcp6 an IPv4 address appears in its mapped form ::ffff:a.b.c.d. */
-static gboolean
-addr_matches (const gchar *col, gboolean v6, const guint8 *bytes4,
-              guint16 port)
-{
-	guint8 want[16];
-	guint words = v6 ? 4 : 1;
-	const gchar *colon = strchr (col, ':');
-	gchar *end = NULL;
-	guint64 p;
-
-	if (colon == NULL || (gsize) (colon - col) != words * 8)
-		return FALSE;
-	p = g_ascii_strtoull (colon + 1, &end, 16);
-	if (end == colon + 1 || *end != '\0' || p != port)
-		return FALSE;
-
-	if (v6) {
-		memset (want, 0, 10);
-		want[10] = 0xff;
-		want[11] = 0xff;
-		memcpy (want + 12, bytes4, 4);
-	} else {
-		memcpy (want, bytes4, 4);
-	}
-
-	for (guint i = 0; i < words; i++) {
-		guint32 word, mine;
-
-		if (!hex_word (col + i * 8, &word))
-			return FALSE;
-		memcpy (&mine, want + i * 4, 4);
-		if (word != mine)
-			return FALSE;
-	}
-	return TRUE;
-}
-
-static gboolean
-owner_in (const gchar *file, gboolean v6, const guint8 *peer4,
-          guint16 peer_port, const guint8 *local4, guint16 local_port,
-          uid_t *uid)
-{
-	gchar *text = NULL;
-	gchar **lines;
-	gboolean found = FALSE;
-
-	if (!g_file_get_contents (file, &text, NULL, NULL))
-		return FALSE;
-
-	lines = g_strsplit (text, "\n", -1);
-	/* Line 0 is the column header. */
-	for (guint i = 1; lines[i] != NULL && !found; i++) {
-		gchar **f = g_strsplit_set (g_strstrip (lines[i]), " \t", -1);
-		const gchar *col[10];
-		guint n = 0;
-
-		for (guint k = 0; f[k] != NULL && n < G_N_ELEMENTS (col); k++)
-			if (*f[k] != '\0')
-				col[n++] = f[k];
-
-		/* sl local rem st tx:rx tr:when retrnsmt uid timeout inode */
-		if (n == G_N_ELEMENTS (col) &&
-		    addr_matches (col[1], v6, peer4, peer_port) &&
-		    addr_matches (col[2], v6, local4, local_port)) {
-			gchar *end = NULL;
-			guint64 u = g_ascii_strtoull (col[7], &end, 10);
-			gchar *iend = NULL;
-			guint64 inode = g_ascii_strtoull (col[9], &iend, 10);
-
-			/* Inode 0: no socket owner (an orphan, or a
-			 * connection the kernel is finishing). */
-			if (end != col[7] && *end == '\0' && u < G_MAXUINT32 &&
-			    iend != col[9] && *iend == '\0' && inode != 0) {
-				*uid = (uid_t) u;
-				found = TRUE;
-			}
-		}
-		g_strfreev (f);
-	}
-	g_strfreev (lines);
-	g_free (text);
-	return found;
-}
-
-gboolean
+/* [ fs_dash_peer_uid ]
+ * One NETLINK_SOCK_DIAG query for the one socket whose local end is
+ * `peer' and whose remote end is `local' (the review of PR 2 replaced
+ * a scan of /proc/net/tcp).  The kernel looks the socket up by its four
+ * values in its hash table and answers in the same call, so:
+ *   - the cost does not grow with the number of sockets on the
+ *     machine: another account that fills the table with TIME_WAIT
+ *     entries no longer slows every accept down (T2);
+ *   - the answer is one consistent lookup: a file read in pieces while
+ *     sockets come and go could miss a row, and a missed row looked
+ *     like "no owner" (WSL) under --allow-windows.
+ * A dual-stack IPv6 client connected to 127.0.0.1 is found by the
+ * IPv4 lookup too: the kernel keeps both in one table. */
+FsDashPeer
 fs_dash_peer_uid (GInetSocketAddress *peer, GInetSocketAddress *local,
                   uid_t *uid)
 {
 	GInetAddress *pa = g_inet_socket_address_get_address (peer);
 	GInetAddress *la = g_inet_socket_address_get_address (local);
-	guint8 p4[4], l4[4];
-	guint16 pp = g_inet_socket_address_get_port (peer);
-	guint16 lp = g_inet_socket_address_get_port (local);
+	struct {
+		struct nlmsghdr         nlh;
+		struct inet_diag_req_v2 req;
+	} msg;
+	struct sockaddr_nl kernel = { .nl_family = AF_NETLINK };
+	struct timeval tv = { .tv_sec = 1 };
+	union {
+		struct nlmsghdr nlh;
+		guint8          bytes[8192];
+	} answer;
+	struct nlmsghdr *h;
+	ssize_t got;
+	gint fd;
+	FsDashPeer result = FS_DASH_PEER_UNKNOWN;
 
 	if (g_inet_address_get_family (pa) != G_SOCKET_FAMILY_IPV4 ||
 	    g_inet_address_get_family (la) != G_SOCKET_FAMILY_IPV4)
-		return FALSE;
-	memcpy (p4, g_inet_address_to_bytes (pa), 4);
-	memcpy (l4, g_inet_address_to_bytes (la), 4);
+		return FS_DASH_PEER_UNKNOWN;
 
-	/* An IPv4 client lists its socket in tcp; a dual-stack IPv6
-	 * client connecting to 127.0.0.1 lists it in tcp6, mapped. */
-	return owner_in ("/proc/net/tcp", FALSE, p4, pp, l4, lp, uid) ||
-	       owner_in ("/proc/net/tcp6", TRUE, p4, pp, l4, lp, uid);
+	memset (&msg, 0, sizeof (msg));
+	msg.nlh.nlmsg_len = sizeof (msg);
+	msg.nlh.nlmsg_type = SOCK_DIAG_BY_FAMILY;
+	msg.nlh.nlmsg_flags = NLM_F_REQUEST;   /* one socket, not a dump */
+	msg.nlh.nlmsg_seq = 1;
+	msg.req.sdiag_family = AF_INET;
+	msg.req.sdiag_protocol = IPPROTO_TCP;
+	msg.req.idiag_states = ~0U;
+	msg.req.id.idiag_sport = htons (g_inet_socket_address_get_port (peer));
+	msg.req.id.idiag_dport = htons (g_inet_socket_address_get_port (local));
+	memcpy (msg.req.id.idiag_src, g_inet_address_to_bytes (pa), 4);
+	memcpy (msg.req.id.idiag_dst, g_inet_address_to_bytes (la), 4);
+	msg.req.id.idiag_cookie[0] = INET_DIAG_NOCOOKIE;
+	msg.req.id.idiag_cookie[1] = INET_DIAG_NOCOOKIE;
+
+	fd = socket (AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
+	if (fd < 0)
+		return FS_DASH_PEER_UNKNOWN;
+	setsockopt (fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof (tv));
+	if (sendto (fd, &msg, sizeof (msg), 0, (struct sockaddr *) &kernel,
+	            sizeof (kernel)) != (ssize_t) sizeof (msg)) {
+		close (fd);
+		return FS_DASH_PEER_UNKNOWN;
+	}
+	do
+		got = recv (fd, &answer, sizeof (answer), 0);
+	while (got < 0 && errno == EINTR);
+	close (fd);
+	if (got <= 0)
+		return FS_DASH_PEER_UNKNOWN;
+
+	h = &answer.nlh;
+	if (NLMSG_OK (h, (gsize) got) && h->nlmsg_seq == 1) {
+		if (h->nlmsg_type == NLMSG_ERROR &&
+		    h->nlmsg_len >= NLMSG_LENGTH (sizeof (struct nlmsgerr))) {
+			const struct nlmsgerr *e = NLMSG_DATA (h);
+
+			/* The kernel looked and found no such socket. */
+			if (e->error == -ENOENT)
+				result = FS_DASH_PEER_ABSENT;
+		} else if (h->nlmsg_type == SOCK_DIAG_BY_FAMILY &&
+		           h->nlmsg_len >= NLMSG_LENGTH (sizeof (struct inet_diag_msg))) {
+			const struct inet_diag_msg *m = NLMSG_DATA (h);
+
+			/* Inode 0: no socket owner.  An orphan (its process
+			 * closed it), or a connection the kernel is
+			 * finishing.  It is there, so it is not WSL's relay,
+			 * and nobody can be named: refused. */
+			if (m->idiag_inode == 0) {
+				result = FS_DASH_PEER_NO_OWNER;
+			} else {
+				*uid = (uid_t) m->idiag_uid;
+				result = FS_DASH_PEER_OWNED;
+			}
+		}
+	}
+	return result;
+}
+
+/* [ peer_still_open ]
+ * TRUE while the peer has not closed its end.  Under --allow-windows a
+ * peer the kernel has no socket for is let in, and a closed one can be
+ * absent too: when the TIME_WAIT table is full, the kernel drops a
+ * socket its process closed instead of keeping it (no row, no owner).
+ * A browser, or WSL's relay for one, waits for the answer before it
+ * closes, so a peer that already sent its FIN is not one of them. */
+static gboolean
+peer_still_open (GSocketConnection *connection)
+{
+	gint fd = g_socket_get_fd (g_socket_connection_get_socket (connection));
+	struct tcp_info info;
+	socklen_t len = sizeof (info);
+
+	memset (&info, 0, sizeof (info));
+	if (getsockopt (fd, IPPROTO_TCP, TCP_INFO, &info, &len) != 0)
+		return FALSE;
+	return info.tcpi_state == TCP_ESTABLISHED;
 }
 
 /* The slot group of peers without a socket owner (WSL, 2B). */
@@ -226,27 +232,35 @@ peer_allowed (FsDashHttp *http, GSocketConnection *connection, uid_t *uid,
 
 		/* 127.0.0.1 exactly: not another address of 127/8. */
 		if (g_strcmp0 (text, "127.0.0.1") == 0) {
-			gboolean listed = fs_dash_peer_uid (
+			FsDashPeer found = fs_dash_peer_uid (
 				G_INET_SOCKET_ADDRESS (peer),
 				G_INET_SOCKET_ADDRESS (local), uid);
 #ifdef FS_DASH_TESTING
 			/* The test build only: sockets of this uid count as
-			 * having no owner, as Windows' relay is expected to. */
+			 * absent, as Windows' relay is expected to be. */
 			const gchar *t = g_getenv ("STOCKFW_TEST_OWNERLESS_UID");
 
-			if (listed && t != NULL && *t != '\0' &&
+			if (found == FS_DASH_PEER_OWNED && t != NULL && *t != '\0' &&
 			    g_ascii_strtoull (t, NULL, 10) == (guint64) *uid)
-				listed = FALSE;
+				found = FS_DASH_PEER_ABSENT;
 #endif
-			if (listed && *uid == http->peer_uid && *uid != 0) {
+			/* Only a lookup that named the served uid, or one
+			 * that positively found no socket, gets further.  A
+			 * socket without an owner (an orphan) and a failed
+			 * lookup are closed like another account. */
+			if (found == FS_DASH_PEER_OWNED &&
+			    *uid == http->peer_uid && *uid != 0) {
 				ok = TRUE;
-			} else if (!listed && http->allow_ownerless) {
+			} else if (found == FS_DASH_PEER_ABSENT &&
+			           http->allow_ownerless &&
+			           peer_still_open (connection)) {
 				/* WSL with --allow-windows: no socket of
 				 * this machine's accounts, so the relay. */
 				*uid = OWNERLESS_UID;
 				*ownerless = TRUE;
 				ok = TRUE;
-			} else if (!listed && http->ownerless_refused != NULL) {
+			} else if (found == FS_DASH_PEER_ABSENT &&
+			           http->ownerless_refused != NULL) {
 				http->ownerless_refused (NULL, http->ownerless_data);
 			}
 		}
@@ -552,6 +566,12 @@ parse_head (FsDashConn *conn, gsize *body_len)
 	g_free (head);
 	*body_len = 0;
 
+	/* on_read skips empty lines before the request line, so an empty
+	 * first line cannot happen; the check stays all the same. */
+	if (conn->lines[0] == NULL || *conn->lines[0] == '\0') {
+		fs_dash_respond_error (conn, 400, "Malformed request line.");
+		return FALSE;
+	}
 	parts = g_strsplit (conn->lines[0], " ", 3);
 	if (g_strv_length (parts) != 3 ||
 	    !g_str_has_prefix (parts[2], "HTTP/1.")) {
@@ -659,8 +679,23 @@ on_read (GObject *source, GAsyncResult *result, gpointer data)
 
 	g_string_append_len (conn->in, (const gchar *) conn->buffer, got);
 
-	if (conn->head_len == 0) {
-		gchar *end = strstr (conn->in->str, "\r\n\r\n");
+	if (!conn->head_seen) {
+		gchar *end;
+		gsize skip = 0;
+
+		/* Empty lines before the request line are ignored, as
+		 * RFC 9112 2.2 asks.  Without this, "\r\n\r\n" was a head
+		 * of length 0 with no request line (review of PR 2). */
+		while (conn->in->len >= skip + 2 &&
+		       conn->in->str[skip] == '\r' && conn->in->str[skip + 1] == '\n')
+			skip += 2;
+		if (skip > 0)
+			g_string_erase (conn->in, 0, (gssize) skip);
+		if (conn->in->len == 0) {
+			read_more (conn);
+			return;
+		}
+		end = strstr (conn->in->str, "\r\n\r\n");
 
 		/* The cap holds however the bytes were split across reads:
 		 * a head that ends inside the read that crossed the limit
@@ -675,6 +710,7 @@ on_read (GObject *source, GAsyncResult *result, gpointer data)
 			return;
 		}
 		conn->head_len = (gsize) (end - conn->in->str);
+		conn->head_seen = TRUE;
 		if (!parse_head (conn, &conn->body_len))
 			return;
 		/* The body has its own deadline, from the end of the head. */

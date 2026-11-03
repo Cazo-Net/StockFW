@@ -99,7 +99,9 @@ void         fs_dash_auth_tick         (FsDashAuth *auth);
 
 /* `stockfw dashboard link': listens on <runtime>/stockfw/dash-<port>.sock.
  * A connection from the served uid gets "port=", "code=", "file=" and
- * "fingerprint=" lines and is closed; nothing is read from it. */
+ * "fingerprint=" lines (and "origin_port=" with --origin-port) and is
+ * closed; nothing is read from it. */
+void         fs_dash_auth_set_origin_port (FsDashAuth *auth, guint16 port);
 gboolean     fs_dash_auth_listen_link  (FsDashAuth *auth, guint16 port,
                                         GError **error);
 const gchar *fs_dash_auth_link_path    (const FsDashAuth *auth);

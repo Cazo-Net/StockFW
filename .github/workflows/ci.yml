@@ -167,7 +167,8 @@ jobs:
         run: |
           # These print SKIP and pass when root, iptables or nft is
           # missing.  Everything is installed here, so a skip means the
-          # test did not run, and that fails the job.
+          # test did not run, and that fails the job.  With "parts",
+          # a lower-case "skip:" line (some checks not run) fails too.
           strict () {
             local log rc
             log="$(mktemp)"
@@ -175,6 +176,10 @@ jobs:
             cat "$log"
             if grep -q '^SKIP' "$log"; then
               echo "::error::$1 was skipped on CI"
+              return 1
+            fi
+            if [ "${2:-}" = parts ] && grep -q '^skip:' "$log"; then
+              echo "::error::$1 skipped root-only checks on CI"
               return 1
             fi
             return "$rc"
@@ -204,8 +209,10 @@ jobs:
           strict tests/test-intel-cli.sh
           strict tests/test-fetch.sh
           # The dashboard's HTTP server as root: it serves SUDO_UID, and
-          # connections from root and nobody are closed at accept.
-          strict tests/test-dashboard.sh
+          # connections from root and nobody are closed at accept.  Its
+          # root-only checks say "skip:" when they cannot run (no
+          # setpriv): here that fails the job.
+          strict tests/test-dashboard.sh parts
           sudo ./build-linux/fs-hostnet-test
           # The boot unit and `stockfw start' as the unit runs it; the
           # Linux installer in a private mount namespace; start at

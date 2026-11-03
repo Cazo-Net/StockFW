@@ -133,10 +133,19 @@ main (void)
 		CHECK (r == FS_DASH_REDEEM_OK &&
 		       fs_dash_auth_check (auth, key2, TRUE) == FS_DASH_SESSION_OK,
 		       "  ...and a fresh link gives a session that may write");
+		/* The write comes 10 minutes into the session; the check
+		 * is 20 minutes in, past the first 15 minutes and 10 after
+		 * the write.  (Review of PR 2: a write at once and a check
+		 * 14 minutes later passed with no restart at all.) */
+		now_s += 10 * 60;
 		fs_dash_auth_note_write (auth, key2);
-		now_s += 14 * 60;
+		now_s += 10 * 60;
 		CHECK (fs_dash_auth_check (auth, key2, TRUE) == FS_DASH_SESSION_OK,
 		       "a write starts the 15 minutes again");
+		now_s += 5 * 60 + 1;
+		CHECK (fs_dash_auth_check (auth, key2, TRUE) ==
+		       FS_DASH_SESSION_WRITE_STALE,
+		       "  ...and 15 min 1 s after that write, a write needs a fresh link");
 		fs_dash_auth_end (auth, key2);
 		CHECK (fs_dash_auth_check (auth, key2, FALSE) == FS_DASH_SESSION_NONE,
 		       "an ended session is refused (401)");

@@ -12020,12 +12020,33 @@ fi
 echo "ok:   dashboard guard: no --token option and no token header (T10)"
 # The page builds every node with textContent (T14).  Banned: the HTML
 # parsers and script runners, WebSocket and EventSource, inline on*
-# handlers, and href, src, style, srcdoc or action set from script.
+# handlers, and href, src, style, srcdoc or action set from script
+# (styles and computed attribute names only through the two gates).
 DOM_HITS="$(grep -nE 'innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval[[:space:]]*\(|new[[:space:]]+Function|setTimeout[[:space:]]*\([[:space:]]*["'"'"'`]|setInterval[[:space:]]*\([[:space:]]*["'"'"'`]|WebSocket|EventSource|createContextualFragment|DOMParser|srcdoc' \
   src/cli/dashboard.html || true)"
 DOM_HITS="$DOM_HITS$(grep -nE '<[a-zA-Z][^>]*[[:space:]]on[a-zA-Z]+[[:space:]]*=' src/cli/dashboard.html || true)"
 DOM_HITS="$DOM_HITS$(grep -nE '\.on[a-z]+[[:space:]]*=[^=]|setAttribute[[:space:]]*\([[:space:]]*["'"'"'](href|src|style|on[a-z]*|action|formaction|xlink:href)["'"'"']|\.(href|src|action|formAction)[[:space:]]*=[^=]|\.style\.cssText|\.setAttributeNS[[:space:]]*\(' \
   src/cli/dashboard.html || true)"
+# Review of PR 2: a style property set from script (el.style.x = ...)
+# and an attribute whose name is a variable (setAttribute(k, ...)) went
+# through.  Now each has one gate in the page, which checks the name
+# (and for styles the value), marked gate:style and gate:attr; any other
+# such write, or a second gate, is a hit.
+DOM_HITS="$DOM_HITS$(grep -nE '\.style\b|\bstyle[[:space:]]*\[|setProperty[[:space:]]*\(|setAttribute[[:space:]]*\([[:space:]]*[^"'"'"'[:space:]]|\[[[:space:]]*["'"'"'](href|src|style|on[a-z]*|action|formAction|srcdoc)["'"'"'][[:space:]]*\][[:space:]]*=[^=]' \
+  src/cli/dashboard.html | grep -vE '/\* gate:(style|attr) \*/$' || true)"
+DOM_HITS="$DOM_HITS$(grep -nE 'svg[[:space:]]*\([^)]*[{,][[:space:]]*["'"'"']?(href|src|style|on[a-z]+|action|formaction|xlink:href)["'"'"']?[[:space:]]*:' \
+  src/cli/dashboard.html || true)"
+for gate in style attr; do
+  [ "$(grep -c "/\* gate:$gate \*/\$" src/cli/dashboard.html)" = 1 ] ||
+    DOM_HITS="$DOM_HITS
+gate:$gate is not on exactly one line"
+done
+grep -q 'if (BAD_ATTR.test(k)) throw' src/cli/dashboard.html ||
+  DOM_HITS="$DOM_HITS
+the svg() gate no longer checks the attribute name"
+grep -q 'if (!STYLE_OK.hasOwnProperty(prop) || /url|' src/cli/dashboard.html ||
+  DOM_HITS="$DOM_HITS
+the setStyle() gate no longer checks the name and value"
 if [ -n "$DOM_HITS" ]; then
   echo "FAIL: dashboard.html uses a banned DOM API or attribute (textContent only, T14):"
   echo "$DOM_HITS"

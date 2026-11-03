@@ -81,12 +81,19 @@ void         fs_dash_respond_json    (FsDashConn *conn, guint status,
 void         fs_dash_respond_error   (FsDashConn *conn, guint status,
                                       const gchar *message);
 
+typedef enum
+{
+	FS_DASH_PEER_OWNED,     /* found, and *uid is its owner */
+	FS_DASH_PEER_NO_OWNER,  /* found, with no owner (inode 0) */
+	FS_DASH_PEER_ABSENT,    /* the kernel has no such socket */
+	FS_DASH_PEER_UNKNOWN    /* the lookup failed */
+} FsDashPeer;
+
 /* [ fs_dash_peer_uid ]
- * The uid that owns the other end of a loopback TCP connection, from
- * the uid column of /proc/net/tcp (or tcp6) for the socket whose local
- * address is `peer' and whose remote address is `local'.  FALSE when no
- * such socket is listed or it has no owner (inode 0). */
-gboolean     fs_dash_peer_uid        (GInetSocketAddress *peer,
+ * Who owns the other end of a loopback TCP connection: one
+ * NETLINK_SOCK_DIAG lookup of the socket whose local address is `peer'
+ * and whose remote address is `local'. */
+FsDashPeer   fs_dash_peer_uid        (GInetSocketAddress *peer,
                                       GInetSocketAddress *local,
                                       uid_t *uid);
 

@@ -494,10 +494,25 @@ code {
     if (text !== undefined && text !== null) n.textContent = String(text);
     return n;
   }
+  /* The only two places where script sets an attribute named by a
+     variable, or a style.  Both check the name, and setStyle the value;
+     the source guard in test-core.sh allows these two lines and no
+     other attribute or style write by a computed name (T14). */
+  var BAD_ATTR = /^(on|href$|src$|style$|action$|formaction$|xlink:)/i;
   function svg(tag, attrs) {
     var n = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (var k in attrs) n.setAttribute(k, attrs[k]);
+    for (var k in attrs) {
+      if (BAD_ATTR.test(k)) throw new Error("svg: attribute " + k);
+      n.setAttribute(k, attrs[k]); /* gate:attr */
+    }
     return n;
+  }
+  var STYLE_OK = { background: 1, display: 1, left: 1, top: 1 };
+  function setStyle(n, prop, value) {
+    value = String(value);
+    if (!STYLE_OK.hasOwnProperty(prop) || /url|expression|image|[;:{}\\<>"'@]/i.test(value))
+      throw new Error("setStyle: " + prop);
+    n.style[prop] = value; /* gate:style */
   }
   function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
   function fmtBytes(b) {
@@ -716,7 +731,7 @@ code {
       tip.appendChild(el("div", "t", hhmm(from) + "–" + hhmm(from + opts.step)));
       rates.forEach(function (r, si) {
         var row = el("div", "r");
-        var k = el("i", "key"); k.style.background = opts.series[si].color;
+        var k = el("i", "key"); setStyle(k, "background", opts.series[si].color);
         row.appendChild(k);
         row.appendChild(el("b", null, r[i] === null ? "no data" : opts.fmt(r[i])));
         row.appendChild(el("span", null, opts.series[si].label));
@@ -725,18 +740,18 @@ code {
         dots[si].setAttribute("cx", px); dots[si].setAttribute("cy", y(r[i]));
         dots[si].setAttribute("visibility", "visible");
       });
-      tip.style.display = "block";
+      setStyle(tip, "display", "block");
       var scale = host.clientWidth / W;
       var left = px * scale + 14;
       if (left + tip.offsetWidth > host.clientWidth) left = px * scale - tip.offsetWidth - 14;
-      tip.style.left = Math.max(0, left) + "px";
-      tip.style.top = (M.t + 6) + "px";
+      setStyle(tip, "left", Math.max(0, left) + "px");
+      setStyle(tip, "top", (M.t + 6) + "px");
       host.dataset.idx = i;
     }
     function hide() {
       cross.setAttribute("visibility", "hidden");
       dots.forEach(function (d) { d.setAttribute("visibility", "hidden"); });
-      tip.style.display = "none";
+      setStyle(tip, "display", "none");
       delete host.dataset.idx;
     }
     function idxAt(ev) {
@@ -761,7 +776,7 @@ code {
     clear(lg);
     series.forEach(function (s) {
       var sp = el("span");
-      var k = el("i", "key"); k.style.background = s.color;
+      var k = el("i", "key"); setStyle(k, "background", s.color);
       sp.appendChild(k);
       sp.appendChild(document.createTextNode(s.label));
       lg.appendChild(sp);
@@ -831,7 +846,7 @@ code {
       var t = $("table-" + b.dataset.table), c = $("chart-" + b.dataset.table);
       var on = !t.classList.contains("show");
       t.classList.toggle("show", on);
-      c.style.display = on ? "none" : "";
+      setStyle(c, "display", on ? "none" : "");
       b.setAttribute("aria-expanded", on ? "true" : "false");
       b.textContent = on ? "Chart" : "Table";
       if (!on) renderCharts();
@@ -868,8 +883,8 @@ code {
       : "Monitoring off · run with sudo";
     $("t-rx").textContent = fmtRate(sm.rx_per_s);
     $("t-tx").textContent = fmtRate(sm.tx_per_s);
-    $("k-rx").style.background = css("--rx");
-    $("k-tx").style.background = css("--tx");
+    setStyle($("k-rx"), "background", css("--rx"));
+    setStyle($("k-tx"), "background", css("--tx"));
     $("t-conns").textContent = fmtNum(sm.connections);
     $("t-rules").textContent = sm.policy_saved ? fmtNum(sm.rules) + " rules" : "None";
     $("t-rules-d").textContent = sm.rules_dir;
