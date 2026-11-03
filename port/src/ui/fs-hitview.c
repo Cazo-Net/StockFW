@@ -436,8 +436,8 @@ hit_is_outbound (const FsHit *hit)
  *
  * Ported from the original hitview.c, which ran both inside
  * hitview_append_hit() before the status counters were touched.  So a
- * filtered event produces no row, no counter tick and no Copilot
- * input -- it is as if the firewall had not logged it. */
+ * filtered event produces no row and no counter tick.  The Copilot
+ * is fed before these filters (see on_hit), so it still sees it. */
 
 /* The row the list accepted most recently, kept as copies rather than
  * as a pointer into the model because rows are trimmed once the cap

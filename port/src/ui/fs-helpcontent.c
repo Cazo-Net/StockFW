@@ -320,6 +320,11 @@ static const FsHelpBlock copilot[] = {
 	  "contacted, an hour of the day it was never active, or far more "
 	  "connections than usual. What it learned is saved, so a restart "
 	  "does not call every program new.") },
+	{ FS_HELP_ITEM, N_("<b>Block list</b>, on Linux: traffic one of your "
+	  "<a href=\"help:threat-intel\">threat-intel blocklists</a> "
+	  "stopped. Outbound, one finding per program and address; inbound, "
+	  "one finding per list per hour. On Windows the log does not name "
+	  "the list, so this check finds nothing there.") },
 	{ FS_HELP_PARA, N_("Scans and login attempts are reported only: the "
 	  "Copilot never changes an inbound rule, and no finding offers an "
 	  "Allow. Two different checks on the same address within an hour "
@@ -1055,7 +1060,8 @@ static const FsHelpBlock cli[] = {
 	{ FS_HELP_PARA, N_("Every command takes <tt>--json</tt> for scripts. "
 	  "Exit codes: 0 success, 1 failure, 2 usage error, 3 needs root, "
 	  "5 simulate says blocked or a list blocks the address now, "
-	  "6 simulate says it depends.") },
+	  "6 simulate says it depends, 7 <tt>copilot health</tt> found "
+	  "something.") },
 	{ FS_HELP_HEAD, N_("Threat-intel blocklists") },
 	{ FS_HELP_ITEM, N_("<tt>stockfw intel</tt> or <tt>stockfw intel "
 	  "status</tt>: the lists' state, read from the kernel, and the lists "
