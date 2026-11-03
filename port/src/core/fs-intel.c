@@ -196,15 +196,15 @@ unsupported_text (void)
 /* Country and network-owner blocking reads IPFire's location database
  * into nftables sets: Linux only.  Windows enforces the blocklists
  * (Round 3) but not this. */
-static const gchar *
-geo_unsupported_text (void)
+const gchar *
+fs_intel_geo_unsupported_text (void)
 {
 #ifdef G_OS_WIN32
-	return _("Blocking by country or network owner is not available on "
-	         "Windows yet. Blocklists are.");
+	return _("Blocking by country or network owner is not supported on "
+	         "Windows in this version. Blocklists are.");
 #else
-	return _("Blocking by country or network owner is not available on "
-	         "this platform yet.");
+	return _("Blocking by country or network owner is not supported on "
+	         "this platform.");
 #endif
 }
 
@@ -2135,7 +2135,7 @@ fs_intel_config_enable_geo (FsIntelConfig *config, gboolean accept_terms,
 	if (!fs_intel_geo_supported ()) {
 		g_set_error_literal (error, FS_INTEL_ERROR,
 		                     FS_INTEL_ERR_UNSUPPORTED,
-		                     geo_unsupported_text ());
+		                     fs_intel_geo_unsupported_text ());
 		return FALSE;
 	}
 	if (config->geo_accepted_at <= 0 && !accept_terms) {
@@ -2173,7 +2173,7 @@ fs_intel_config_add_location (FsIntelConfig *config, const gchar *name,
 	if (!fs_intel_geo_supported ()) {
 		g_set_error_literal (error, FS_INTEL_ERROR,
 		                     FS_INTEL_ERR_UNSUPPORTED,
-		                     geo_unsupported_text ());
+		                     fs_intel_geo_unsupported_text ());
 		return FALSE;
 	}
 	if (config->geo_accepted_at <= 0) {
@@ -3139,7 +3139,7 @@ geo_acquire (const Store *store, gboolean *missing, GError **error)
 	(void) store;
 	*missing = FALSE;
 	g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNSUPPORTED,
-	                     geo_unsupported_text ());
+	                     fs_intel_geo_unsupported_text ());
 	return NULL;
 #endif
 }
@@ -3507,7 +3507,7 @@ geo_update_one (const FsIntelConfig *config, guint flags, gint64 now)
 		                   g_strdup (_("Threat intel is switched off.")));
 	if (!fs_intel_geo_supported ())
 		return result_new (FS_INTEL_GEO_ID, FS_INTEL_FAILED, 0,
-		                   g_strdup (geo_unsupported_text ()));
+		                   g_strdup (fs_intel_geo_unsupported_text ()));
 	if (config->geo_accepted_at <= 0)
 		return result_new (FS_INTEL_GEO_ID, FS_INTEL_NEEDS_CONSENT, 0,
 		                   g_strdup (_("Its terms have not been "

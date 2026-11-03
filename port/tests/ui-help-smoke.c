@@ -15,10 +15,13 @@
  *       leaves the firewall, rule names, what the licence is
  *   H8  1.0.7 as merged: threat intel (PR #18), What-If, the tray
  *       menu and its Help item, start at sign-in, one copy per user,
- *       the hidden start and the Linux boot service are described in
- *       the present tense, as the code does them; the one "Not in
- *       this build" callout left is on the threat-intel topic and is
- *       about blocking by country or network owner (ASN)
+ *       the hidden start, the Linux boot service and blocking by
+ *       country or network owner (ASN) are described in the present
+ *       tense, as the code does them; no "Not in this build" callout
+ *       is left anywhere; the country text says "registered in", warns
+ *       about anycast, carries the licence line, says the database is
+ *       downloaded at most once a day, and names Windows as a platform
+ *       that does not support it
  *   H3  search filters the topic list (and says when nothing matches);
  *       Enter opens the first topic found
  *   H4  links, related chips, Next, Back and Forward navigate
@@ -562,10 +565,10 @@ check_claims (void)
 	}
 }
 
-/* H8: the features PR #14, #17 and #18 brought into this build are
- * described as present, in the words the code uses; only what is not
- * in it (blocking by country or network owner) carries the "Not in
- * this build" callout. */
+/* H8: the features PR #14, #17 and #18 and country and network-owner
+ * blocking brought into this build are described as present, in the
+ * words the code uses; no topic carries a "Not in this build"
+ * callout. */
 static void
 check_merged_107 (void)
 {
@@ -636,8 +639,30 @@ check_merged_107 (void)
 		  "address", "the cli topic lists stockfw intel" },
 		{ "background", "Coming in", "checks once an hour for",
 		  "background says when the blocklists update" },
+		/* Country and network-owner blocking is in this build. */
+		{ "threat-intel", "not in this build",
+		  "<b>Use the location database</b>",
+		  "countries: the switch, and the consent dialog naming the host" },
+		{ "threat-intel", "is located in",
+		  "is registered, not where the computer using it is",
+		  "countries: a country is where a range is registered" },
+		{ "threat-intel", "Not in this build",
+		  "<b>Anycast</b> mark",
+		  "countries: the anycast warning and its mark" },
+		{ "threat-intel", "CC BY-SA 4.0 licence",
+		  "The file declares the licence CC BY-SA 4.0; StockFW has not "
+		  "confirmed it",
+		  "countries: the licence as the file declares it, unconfirmed" },
+		{ "threat-intel", "every hour",
+		  "downloaded at most once a day",
+		  "countries: the database is downloaded at most once a day" },
+		{ "threat-intel", "Windows yet",
+		  "not supported on Windows in this version of StockFW",
+		  "countries: Windows does not support it, said as a limit" },
+		{ "cli", "Coming in", "<tt>stockfw intel geo</tt>",
+		  "the cli topic lists stockfw intel geo" },
 	};
-	guint soon_elsewhere = 0, soon_intel = 0;
+	guint soon_elsewhere = 0, soon_any = 0;
 
 	for (guint i = 0; i < G_N_ELEMENTS (claims); i++) {
 		gchar *text = topic_text (claims[i].id);
@@ -676,9 +701,9 @@ check_merged_107 (void)
 				g_free (low);
 			}
 
-			if (soon && strcmp (t->id, "threat-intel") == 0)
-				soon_intel++;
-			else if (soon || says)
+			if (soon)
+				soon_any++;
+			else if (says)
 				soon_elsewhere++;
 		}
 		{
@@ -691,55 +716,35 @@ check_merged_107 (void)
 			g_free (low);
 		}
 	}
-	CHECK (soon_elsewhere == 0 && soon_intel == 1,
-	       "[H8] one \"Not in this build\" callout, on the threat-intel "
-	       "topic (%u callouts, or 1.0.7, planned or coming wording, "
-	       "elsewhere, %u there)",
-	       soon_elsewhere, soon_intel);
+	CHECK (soon_elsewhere == 0 && soon_any == 0,
+	       "[H8] no \"Not in this build\" callout in any topic, and no "
+	       "1.0.7, planned or coming wording (%u callouts, %u such "
+	       "sentences)", soon_any, soon_elsewhere);
 	{
 		const FsHelpTopic *t = fs_help_topic_find ("threat-intel");
-		const FsHelpBlock *soon = NULL;
 
-		for (const FsHelpBlock *b = t->blocks; b->kind != FS_HELP_END;
-		     b++)
-			if (b->kind == FS_HELP_SOON)
-				soon = b;
-		gchar *low = soon != NULL ? g_ascii_strdown (soon->text, -1)
-		                          : g_strdup ("");
-		const gchar *stop = strchr (low, '.');
-		gchar *first = g_strndup (low, stop != NULL
-		                               ? (gsize) (stop - low)
-		                               : strlen (low));
-
-		/* The sentence that says "not in this build" names country
-		 * and ASN blocking and nothing about threat intel; no part
-		 * of the callout names the blocklists. */
-		CHECK (soon != NULL && strstr (first, "country") != NULL
-		       && strstr (first, "(asn)") != NULL
-		       && strstr (first, "not in this build") != NULL
-		       && strstr (first, "intel") == NULL
-		       && strstr (low, "blocklist") == NULL,
-		       "[H8] that callout is about country and ASN blocking "
-		       "only, not threat intel");
-		g_free (first);
-		g_free (low);
 		CHECK (strstr (t->summary, "available") == NULL
-		       && strstr (t->summary, "build") == NULL,
-		       "[H8] the threat-intel summary describes it as present "
-		       "(%s)", t->summary);
+		       && strstr (t->summary, "build") == NULL
+		       && strstr (t->summary, "country") != NULL,
+		       "[H8] the threat-intel summary describes blocklists and "
+		       "countries as present (%s)", t->summary);
 	}
 	{
-		/* This build is 1.0.7: the callout's heading must not
-		 * promise it. */
+		/* The window shows the country section and no callout
+		 * heading. */
 		gchar *shown;
 
 		fs_help_show (NULL, "threat-intel");
 		pump ();
 		shown = text_of (fs_help_window ());
-		CHECK (strstr (shown, "Not in this build") != NULL &&
-		       strstr (shown, "Coming in") == NULL,
-		       "[H8] the callout reads \"Not in this build\", not "
-		       "\"Coming in 1.0.7\"");
+		CHECK (strstr (shown, "Not in this build") == NULL &&
+		       strstr (shown, "Coming in") == NULL &&
+		       strstr (shown, "Countries and networks") != NULL &&
+		       strstr (shown, "Location data: IPFire location "
+		                      "database") != NULL,
+		       "[H8] the threat-intel topic shows \"Countries and "
+		       "networks\" with the licence line, and no \"Not in "
+		       "this build\" heading");
 		g_free (shown);
 	}
 }

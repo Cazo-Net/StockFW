@@ -614,8 +614,14 @@ gchar   *fs_intel_lookup_sentence (const FsIntelConfig *config,
 #define FS_INTEL_MAX_LOCATION_INTERVALS 500000u
 
 /* Whether country and network-owner blocking can work here: FALSE on
- * Windows until Round 3 (13.10). */
+ * Windows in 1.0.7 (design 13.10). */
 gboolean fs_intel_geo_supported (void);
+/* Where it is not (fs_intel_geo_supported FALSE): the one sentence
+ * every surface shows instead of the controls.  On Windows "Blocking by
+ * country or network owner is not supported on Windows in this version.
+ * Blocklists are.": a platform limit, not a promise.  Translated;
+ * static. */
+const gchar *fs_intel_geo_unsupported_text (void);
 
 /* What kind of source an id names (design 13.7). */
 typedef enum

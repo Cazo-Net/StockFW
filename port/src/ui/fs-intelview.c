@@ -13,6 +13,13 @@
  *              list" or "Accept larger list"), blocked count, switch
  *   your lists the allow list (exceptions), your own blocklist, and
  *              imported list files
+ *   countries  blocking by the country an address range is registered
+ *              in, or by the network that owns it (design 13.11): the
+ *              location database's switch (with its consent), state
+ *              and Update; a picker over its countries and networks;
+ *              the rules, each with a warning when it covers anycast
+ *              networks; the licence line.  Linux only: elsewhere the
+ *              card holds one sentence and no control.
  *   lookup     "Is 203.0.113.7 on a list?"
  *   notes      what the last build kept reachable or left out
  *
@@ -61,6 +68,7 @@ static const gchar intel_css[] =
 	" background-color: #eef2f7; border-radius: 9px;"
 	" padding: 1px 8px; }\n"
 	".intel-chip-good { color: #145a38; background-color: #ddf2e6; }\n"
+	".intel-chip-warn { color: #6b3f00; background-color: #fcebc8; }\n"
 	".intel-message { font-size: 13px; color: #3a4250; }\n"
 	".intel-message.intel-error { color: #b42318; }\n"
 	".intel-lookup-result { font-size: 13px; color: #16181d; }\n"
@@ -129,6 +137,14 @@ typedef struct
 	gchar         *exceptions;   /* text form                           */
 	gchar         *deny;         /* the "My blocklist" text form        */
 	gint64         now;
+	/* Countries and networks (design 13.11). */
+	gboolean         geo_supported; /* fs_intel_geo_supported (or the
+	                              * smoke test's stand-in)            */
+	FsIntelGeoStatus geo;        /* zero: no store, nothing downloaded */
+	gchar         *geo_error;    /* the database's state could not be
+	                              * read                               */
+	GPtrArray     *geo_countries; /* FsGeodbCountry*; NULL: no copy   */
+	GHashTable    *geo_stats;    /* rule id -> FsIntelLocationStats*  */
 } Snapshot;
 
 static void
@@ -144,6 +160,10 @@ snapshot_free (Snapshot *s)
 	g_clear_pointer (&s->in_force, g_hash_table_unref);
 	g_free (s->exceptions);
 	g_free (s->deny);
+	fs_intel_geo_status_clear (&s->geo);
+	g_free (s->geo_error);
+	g_clear_pointer (&s->geo_countries, g_ptr_array_unref);
+	g_clear_pointer (&s->geo_stats, g_hash_table_unref);
 	g_free (s);
 }
 
@@ -164,7 +184,11 @@ typedef enum
 	JOB_IMPORT,          /* a list file                                  */
 	JOB_REMOVE,          /* a list or custom feed                        */
 	JOB_APPLY,
-	JOB_LOOKUP
+	JOB_LOOKUP,
+	JOB_GEO_SWITCH,      /* the location database on or off            */
+	JOB_GEO_UPDATE,      /* download it now, then apply                */
+	JOB_GEO_ADD,         /* a country or network rule                  */
+	JOB_GEO_SEARCH       /* the picker's network search (no snapshot)  */
 } JobKind;
 
 typedef struct
@@ -188,6 +212,9 @@ typedef struct
 	GPtrArray       *notes;      /* gchar*; NULL: keep the last ones  */
 	gchar           *lookup;
 	gboolean         lookup_blocked;
+	FsIntelLocationKind geo_kind; /* JOB_GEO_ADD                       */
+	FsIntelDir       geo_dir;
+	GPtrArray       *geo_ases;   /* JOB_GEO_SEARCH: FsGeodbAs*        */
 } Job;
 
 static void
@@ -206,6 +233,8 @@ job_free (gpointer data)
 	if (job->notes != NULL)
 		g_ptr_array_unref (job->notes);
 	g_free (job->lookup);
+	if (job->geo_ases != NULL)
+		g_ptr_array_unref (job->geo_ases);
 	g_free (job);
 }
 
@@ -232,7 +261,33 @@ static GtkWidget *allow_view, *deny_view, *allow_save, *deny_save;
 static GtkWidget *import_button;
 static GtkWidget *lookup_entry, *lookup_button, *lookup_result;
 static GtkWidget *notes_card, *notes_label;
-static GtkWidget *edit_cards[2];
+static GtkWidget *edit_cards[3];
+
+/* The countries and networks card. */
+static GtkWidget *geo_unsupported, *geo_controls, *geo_switch;
+static GtkWidget *geo_state_label, *geo_update_button, *geo_attribution;
+static GtkWidget *geo_entry, *geo_dir_combo, *geo_add_button, *geo_rules_box;
+static GtkWidget *geo_picker_row;
+static GtkListStore *geo_store = NULL;
+static gint64     geo_store_created = -1;  /* countries filled from    */
+static guint      geo_search_id = 0;
+static gchar     *geo_search_done = NULL;  /* text the AS rows are for */
+static gint       geo_supported_override = -1;
+/* The row picked in the completion, until the entry is edited. */
+static FsIntelLocationKind geo_pick_kind = 0;
+static gchar     *geo_pick_value = NULL, *geo_pick_name = NULL;
+static gchar     *geo_pick_text = NULL;
+/* fs_intel_location_stats per rule, computed in the worker under the
+ * engine lock and kept while the rule, the copy in use and the allow
+ * list are the same (a large country takes a while to enumerate). */
+static GHashTable *geo_stats_cache = NULL;
+
+enum { GEO_COL_TEXT, GEO_COL_KIND, GEO_COL_VALUE, GEO_COL_NAME,
+       GEO_COL_KEY, GEO_N_COLS };
+
+static void       geo_fill_ases (const GPtrArray *ases);
+static GtkWidget *card_new      (const gchar *title, const gchar *subtitle,
+                                 GtkWidget **body_out);
 
 static Snapshot *shown = NULL;     /* the snapshot on screen           */
 
@@ -538,11 +593,24 @@ is_root (void)
 /* Whether the config asks for any list (the engine's want_any): with
  * none, rules still there are the user's own "off" not yet applied,
  * or someone else's, never a change to lists that are on. */
+/* The location database is in use (the engine's geo_usable). */
+static gboolean
+geo_on (const FsIntelConfig *config)
+{
+	return config != NULL && config->enabled && config->geo_enabled &&
+	       config->geo_accepted_at > 0 && fs_intel_geo_supported ();
+}
+
 static gboolean
 config_wants (const FsIntelConfig *config)
 {
 	if (config == NULL || !config->enabled)
 		return FALSE;
+	if (geo_on (config))
+		for (guint i = 0; i < config->locations->len; i++)
+			if (((FsIntelLocationConf *) g_ptr_array_index (
+			        config->locations, i))->enabled)
+				return TRUE;
 	for (guint i = 0; i < config->feeds->len; i++)
 		if (((FsIntelFeedConf *) g_ptr_array_index (config->feeds,
 		                                            i))->enabled)
@@ -629,6 +697,105 @@ fs_intelview_summary (void)
 	}
 }
 
+/* Country and network-owner blocking here: the engine's answer, or the
+ * smoke test's stand-in for a platform without it. */
+static gboolean
+geo_supported_here (void)
+{
+	if (geo_supported_override >= 0)
+		return geo_supported_override != 0;
+	return fs_intel_geo_supported ();
+}
+
+/* A rule's values as fs_intel_config_add_location takes them.  Caller
+ * frees with g_strfreev. */
+static gchar **
+location_values (const FsIntelLocationConf *l)
+{
+	GPtrArray *v = g_ptr_array_new ();
+
+	if (l->kind == FS_INTEL_LOCATION_COUNTRY) {
+		for (guint i = 0; l->countries != NULL && l->countries[i] != NULL;
+		     i++)
+			g_ptr_array_add (v, g_strdup (l->countries[i]));
+	} else {
+		for (guint i = 0; l->asns != NULL && i < l->asns->len; i++)
+			g_ptr_array_add (v, g_strdup_printf ("%u",
+				g_array_index (l->asns, guint32, i)));
+	}
+	g_ptr_array_add (v, NULL);
+	return (gchar **) g_ptr_array_free (v, FALSE);
+}
+
+/* What each rule covers, for the anycast warning (design 13.6): from
+ * the cache while the rule, the copy in use and the allow list are
+ * unchanged.  Worker, under the engine lock. */
+static GHashTable *
+geo_stats_for (const FsIntelConfig *config, gint64 created,
+               const gchar *exceptions)
+{
+	GHashTable *out = g_hash_table_new_full (g_str_hash, g_str_equal,
+	                                         g_free, g_free);
+
+	if (geo_stats_cache == NULL)
+		geo_stats_cache = g_hash_table_new_full (g_str_hash, g_str_equal,
+		                                         g_free, g_free);
+	if (g_hash_table_size (geo_stats_cache) > 256)
+		g_hash_table_remove_all (geo_stats_cache);
+	for (guint i = 0; i < config->locations->len; i++) {
+		const FsIntelLocationConf *l =
+			g_ptr_array_index (config->locations, i);
+		gchar **values = location_values (l);
+		gchar *joined = g_strjoinv (",", values);
+		gchar *key = g_strdup_printf ("%s|%d|%s|%" G_GINT64_FORMAT "|%s",
+		                              l->id, l->kind, joined, created,
+		                              exceptions != NULL ? exceptions : "");
+		FsIntelLocationStats *st = g_hash_table_lookup (geo_stats_cache,
+		                                                key);
+
+		if (st == NULL) {
+			FsIntelLocationStats got;
+
+			if (fs_intel_location_stats (config, l->kind,
+			                             (const gchar *const *) values,
+			                             &got, NULL)) {
+				st = g_memdup2 (&got, sizeof got);
+				g_hash_table_replace (geo_stats_cache, key, st);
+				key = NULL;
+			}
+		}
+		if (st != NULL)
+			g_hash_table_replace (out, g_strdup (l->id),
+			                      g_memdup2 (st, sizeof *st));
+		g_free (key);
+		g_free (joined);
+		g_strfreev (values);
+	}
+	return out;
+}
+
+/* The location half of a snapshot: the database's state, its countries
+ * for the picker, and what each rule covers. */
+static void
+snapshot_geo (Snapshot *s)
+{
+	GError *error = NULL;
+
+	if (!s->geo_supported || !s->store)
+		return;
+	if (!fs_intel_geo_status (&s->geo, s->now, &error)) {
+		s->geo_error = g_strdup (error->message);
+		g_clear_error (&error);
+		return;
+	}
+	if (!s->geo.present)
+		return;
+	s->geo_countries = fs_intel_geo_countries (NULL);
+	if (s->config->locations->len > 0)
+		s->geo_stats = geo_stats_for (s->config, s->geo.created_at,
+		                              s->exceptions);
+}
+
 static Snapshot *
 take_snapshot (const FsBackend *b)
 {
@@ -644,6 +811,7 @@ take_snapshot (const FsBackend *b)
 	                                     NULL);
 	s->fw_running = s->supported && firewall_running (b);
 	s->counts_unavailable = fs_intel_counts_unavailable (b);
+	s->geo_supported = geo_supported_here ();
 
 	if (!s->supported) {
 		s->state = FS_INTEL_STATE_UNSUPPORTED;
@@ -717,6 +885,16 @@ take_snapshot (const FsBackend *b)
 	}
 
 	s->exceptions = fs_range_set_to_text (s->config->exceptions);
+	snapshot_geo (s);
+	for (guint i = 0; i < s->config->locations->len; i++) {
+		FsIntelLocationConf *l = g_ptr_array_index (s->config->locations,
+		                                            i);
+
+		if (fs_intel_applied_has (l->id))
+			g_hash_table_add (s->in_force, g_strdup (l->id));
+		else if (l->enabled && geo_on (s->config) && s->geo.present)
+			s->not_applied++;
+	}
 	if (fs_intel_config_list (s->config, DENY_ID) != NULL) {
 		FsRangeSet *set = fs_intel_source_load (DENY_ID, NULL);
 
@@ -914,6 +1092,33 @@ update_feed (Job *job, const FsIntelConfig *config, const gchar *id,
 	return stored;
 }
 
+/* Download the location database (FS_INTEL_GEO_ID), saying how it
+ * went: at once with `flags' FS_INTEL_UPDATE_NOW, else only when due
+ * (once a day). */
+static void
+update_geo (Job *job, const FsIntelConfig *config, guint flags)
+{
+	GPtrArray *results;
+
+	progress (_("Downloading the location database" ELLIPSIS), -1);
+	results = fs_intel_update (config, FS_INTEL_GEO_ID, flags,
+	                           g_get_real_time () / G_USEC_PER_SEC);
+	for (guint i = 0; i < results->len; i++) {
+		FsIntelUpdateResult *r = g_ptr_array_index (results, i);
+		gchar *t = g_strdup_printf (_("Location database: %s"),
+		                            r->message);
+
+		if (r->outcome == FS_INTEL_FAILED ||
+		    r->outcome == FS_INTEL_REFUSED ||
+		    r->outcome == FS_INTEL_NEEDS_CONSENT)
+			fail (job, t);
+		else if (r->outcome != FS_INTEL_NOT_DUE)
+			say (job, t);
+		g_free (t);
+	}
+	g_ptr_array_unref (results);
+}
+
 static void
 job_update_all (Job *job, gboolean scheduled)
 {
@@ -933,13 +1138,17 @@ job_update_all (Job *job, gboolean scheduled)
 			continue;
 		g_ptr_array_add (ids, f->id);
 	}
-	if (ids->len == 0 && !scheduled)
+	if (ids->len == 0 && !scheduled && !geo_on (config))
 		say (job, config->enabled ? _("No feed is turned on.")
 		                          : _("Threat intel is switched off."));
 	for (guint i = 0; i < ids->len; i++)
 		update_feed (job, config, g_ptr_array_index (ids, i),
 		             scheduled ? 0 : FS_INTEL_UPDATE_NOW, i, ids->len);
-	if (ids->len > 0 || !scheduled)
+	/* The location database: at most once a day on its own (design
+	 * 13.5), at once with Update now. */
+	if (geo_on (config))
+		update_geo (job, config, scheduled ? 0 : FS_INTEL_UPDATE_NOW);
+	if (ids->len > 0 || !scheduled || geo_on (config))
 		apply_now (job, config, scheduled);
 	g_ptr_array_unref (ids);
 	fs_intel_config_free (config);
@@ -1136,6 +1345,101 @@ job_simple (Job *job)
 	fs_intel_config_free (config);
 }
 
+/* The location database's switch.  On: the consent was given in the
+ * dialog (accept_terms); a copy never downloaded is fetched now, so
+ * the rules block something. */
+static void
+job_geo_switch (Job *job)
+{
+	FsIntelConfig *config = load_config (job);
+	GError *error = NULL;
+	FsIntelGeoStatus st;
+
+	if (config == NULL)
+		return;
+	if (job->on) {
+		if (!fs_intel_config_enable_geo (config, job->accept_terms,
+		                                 &error)) {
+			fail (job, error->message);
+			g_clear_error (&error);
+			fs_intel_config_free (config);
+			return;
+		}
+	} else {
+		fs_intel_config_disable_geo (config);
+	}
+	if (!save_config (job, config)) {
+		fs_intel_config_free (config);
+		return;
+	}
+	say (job, job->on ? _("The location database is on.")
+	                  : _("The location database is off. Your country "
+	                      "and network rules are kept and block nothing."));
+	if (job->on && geo_on (config) &&
+	    fs_intel_geo_status (&st, g_get_real_time () / G_USEC_PER_SEC,
+	                         NULL)) {
+		if (!st.present)
+			update_geo (job, config, FS_INTEL_UPDATE_NOW);
+		fs_intel_geo_status_clear (&st);
+	}
+	apply_now (job, config, FALSE);
+	fs_intel_config_free (config);
+}
+
+static void
+job_geo_update (Job *job)
+{
+	FsIntelConfig *config = load_config (job);
+
+	if (config == NULL)
+		return;
+	if (!geo_on (config)) {
+		fail (job, _("The location database is turned off."));
+		fs_intel_config_free (config);
+		return;
+	}
+	update_geo (job, config, FS_INTEL_UPDATE_NOW);
+	apply_now (job, config, FALSE);
+	fs_intel_config_free (config);
+}
+
+static void
+job_geo_add (Job *job)
+{
+	FsIntelConfig *config = load_config (job);
+	GError *error = NULL;
+	const gchar *values[2] = { job->text, NULL };
+	gchar *id = NULL, *t;
+
+	if (config == NULL)
+		return;
+	if (!fs_intel_config_add_location (config, job->name, job->geo_kind,
+	                                   values, job->geo_dir, &id,
+	                                   &error)) {
+		fail (job, error->message);
+		g_clear_error (&error);
+		fs_intel_config_free (config);
+		return;
+	}
+	if (save_config (job, config)) {
+		t = g_strdup_printf (_("%s added."), job->name);
+		say (job, t);
+		g_free (t);
+		apply_now (job, config, FALSE);
+	}
+	g_free (id);
+	fs_intel_config_free (config);
+}
+
+/* The picker's network search: the ASes whose name or number holds
+ * the text, from the copy in use. */
+static void
+job_geo_search (Job *job)
+{
+	job->geo_ases = fs_intel_store_exists ()
+	                ? fs_intel_geo_search_as (job->text, 50, NULL) : NULL;
+}
+
 static void
 job_accept (Job *job)
 {
@@ -1204,8 +1508,17 @@ job_lookup (Job *job)
 		                        "yet. Press Apply."), addr, names->str);
 		job->lookup_blocked = TRUE;
 		g_string_free (names, TRUE);
-	} else if (r.sources->len == 0) {
-		g_string_printf (out, _("%s is on none of the lists that are "
+	} else if (r.locations_unknown->len > 0 && !r.blocked) {
+		/* Review GEO-1: never "not on a list" for what the copy in
+		 * use cannot say. */
+		gchar *sentence = fs_intel_lookup_sentence (config, &r);
+
+		g_string_printf (out, "%s", sentence != NULL ? sentence : "");
+		g_free (sentence);
+		job->lookup_blocked = TRUE;
+	} else if (r.sources->len == 0 && r.locations->len == 0) {
+		g_string_printf (out, _("%s is on none of the lists, and in none "
+		                        "of the countries or networks, that are "
 		                        "turned on."), addr);
 	} else {
 		GString *names = g_string_new (NULL);
@@ -1215,6 +1528,16 @@ job_lookup (Job *job)
 				g_string_append (names, ", ");
 			g_string_append (names, source_name (config,
 				g_ptr_array_index (r.sources, i)));
+		}
+		for (guint i = 0; i < r.locations->len; i++) {
+			const gchar *id = g_ptr_array_index (r.locations, i);
+
+			if (names->len > 0)
+				g_string_append (names, ", ");
+			g_string_append_printf (names,
+				fs_intel_source_kind (id) == FS_INTEL_KIND_ASN
+				? _("the network rule %s") : _("the country rule %s"),
+				source_name (config, id));
 		}
 		if (r.blocked && r.in_force) {
 			g_string_printf (out, _("%s is on %s, and is blocked (%s)."),
@@ -1255,6 +1578,55 @@ job_lookup (Job *job)
 		}
 		g_string_free (names, TRUE);
 	}
+	/* Where it is registered, with the licence line (design 13.1),
+	 * while the location database answers. */
+	if (geo_on (config) && (r.geo_found || r.geo_unknown)) {
+		gchar *attribution = fs_intel_geo_attribution ();
+
+		g_string_append (out, "\n");
+		if (r.geo_unknown) {
+			g_string_append (out, _("Where it is registered cannot be "
+			                        "told: the location database in use "
+			                        "cannot be read."));
+		} else {
+			gchar *country = r.country[0] == '\0' ? NULL
+				: r.country_name != NULL
+				? g_strdup_printf ("%s (%s)", r.country_name, r.country)
+				: g_strdup (r.country);
+			gchar *as = r.asn == 0 ? NULL
+				: r.as_name != NULL
+				? g_strdup_printf ("AS%u %s", r.asn, r.as_name)
+				: g_strdup_printf ("AS%u", r.asn);
+
+			if (country != NULL)
+				g_string_append_printf (out, _("Registered in %s."),
+				                        country);
+			else
+				g_string_append (out, _("The location database names "
+				                        "no country for it."));
+			g_string_append_c (out, ' ');
+			g_string_append_printf (out, _("Network %s%s%s."),
+			                        r.network != NULL ? r.network : "?",
+			                        as != NULL ? ", " : "",
+			                        as != NULL ? as : "");
+			if (r.geo_flags & FS_GEODB_FLAG_ANYCAST) {
+				g_string_append_c (out, ' ');
+				g_string_append (out, _("It is anycast: answered from "
+				                        "many places."));
+			}
+			if (r.geo_via_nat64) {
+				g_string_append_c (out, ' ');
+				g_string_append (out, _("A NAT64 address: the country "
+				                        "and network are those of the "
+				                        "IPv4 address it carries."));
+			}
+			g_free (country);
+			g_free (as);
+		}
+		g_string_append (out, "\n");
+		g_string_append (out, attribution);
+		g_free (attribution);
+	}
 out:
 	fs_intel_lookup_clear (&r);
 	fs_hostnet_free (host);
@@ -1281,9 +1653,13 @@ job_thread (GTask *task, gpointer source, gpointer data,
 	case JOB_FEED:       job_feed (job);                      break;
 	case JOB_APPLY:      job_apply (job);                     break;
 	case JOB_LOOKUP:     job_lookup (job);                    break;
+	case JOB_GEO_SWITCH: job_geo_switch (job);                break;
+	case JOB_GEO_UPDATE: job_geo_update (job);                break;
+	case JOB_GEO_ADD:    job_geo_add (job);                   break;
+	case JOB_GEO_SEARCH: job_geo_search (job);                break;
 	default:             job_simple (job);                    break;
 	}
-	if (job->kind != JOB_LOOKUP)
+	if (job->kind != JOB_LOOKUP && job->kind != JOB_GEO_SEARCH)
 		job->snap = take_snapshot (job->backend);
 	g_mutex_unlock (&engine_lock);
 
@@ -1326,6 +1702,17 @@ job_done (GObject *source, GAsyncResult *result, gpointer data)
 
 	if (jobs_pending > 0)
 		jobs_pending--;
+
+	if (job->kind == JOB_GEO_SEARCH) {
+		geo_fill_ases (job->geo_ases);
+		g_free (geo_search_done);
+		geo_search_done = g_strdup (job->text);
+		if (geo_entry != NULL && gtk_widget_has_focus (geo_entry))
+			gtk_entry_completion_complete (
+				gtk_entry_get_completion (GTK_ENTRY (geo_entry)));
+		set_busy_widgets ();
+		return;
+	}
 
 	if (job->snap != NULL) {
 		/* A lookup's answer describes the kernel as it was: once the
@@ -1652,8 +2039,11 @@ on_remove_clicked (GtkButton *button, gpointer data)
 	                                 source_name (shown->config, id));
 	gtk_widget_set_name (dialog, "intel-remove-dialog");
 	gtk_message_dialog_format_secondary_text (GTK_MESSAGE_DIALOG (dialog),
-		"%s", _("Its addresses are no longer blocked, and its stored "
-		        "copy is deleted."));
+		"%s", fs_intel_source_kind (id) == FS_INTEL_KIND_COUNTRY ||
+		      fs_intel_source_kind (id) == FS_INTEL_KIND_ASN
+		      ? _("Its addresses are no longer blocked.")
+		      : _("Its addresses are no longer blocked, and its stored "
+		          "copy is deleted."));
 	gtk_dialog_add_buttons (GTK_DIALOG (dialog), _("_Cancel"),
 	                        GTK_RESPONSE_CANCEL, _("Remove"),
 	                        GTK_RESPONSE_ACCEPT, NULL);
@@ -1664,7 +2054,7 @@ on_remove_clicked (GtkButton *button, gpointer data)
 	gtk_widget_destroy (dialog);
 	job = job_new (JOB_REMOVE);
 	job->id = g_strdup (id);
-	job_start (job, _("Removing the list" ELLIPSIS));
+	job_start (job, _("Removing it" ELLIPSIS));
 }
 
 static gboolean
@@ -2025,6 +2415,445 @@ text_view_text (GtkWidget *view)
 	return gtk_text_buffer_get_text (buf, &a, &b, FALSE);
 }
 
+/* ---------------------------------------------- countries and networks */
+
+/* "Germany (DE)" for a country rule's values, "AS64500 Example One"
+ * for a network rule's, from the copy in use where it names them. */
+static gchar *
+geo_values_text (const Snapshot *s, const FsIntelLocationConf *l)
+{
+	GString *out = g_string_new (NULL);
+
+	if (l->kind == FS_INTEL_LOCATION_COUNTRY) {
+		for (guint i = 0; l->countries != NULL && l->countries[i] != NULL;
+		     i++) {
+			const gchar *name = NULL;
+
+			for (guint j = 0; s->geo_countries != NULL &&
+			                  j < s->geo_countries->len; j++) {
+				FsGeodbCountry *c = g_ptr_array_index (s->geo_countries,
+				                                       j);
+
+				if (strcmp (c->code, l->countries[i]) == 0)
+					name = c->name;
+			}
+			if (i > 0)
+				g_string_append (out, ", ");
+			if (name != NULL && *name != '\0')
+				g_string_append_printf (out, "%s (%s)", name,
+				                        l->countries[i]);
+			else
+				g_string_append (out, l->countries[i]);
+		}
+	} else {
+		for (guint i = 0; l->asns != NULL && i < l->asns->len; i++)
+			g_string_append_printf (out, "%sAS%u", i ? ", " : "",
+			                        g_array_index (l->asns, guint32, i));
+	}
+	return g_string_free (out, FALSE);
+}
+
+/* The anycast warning (design 13.6): NULL when the rule covers no
+ * anycast network. */
+static gchar *
+geo_anycast_text (const FsIntelLocationStats *st)
+{
+	gchar *n4, *out;
+
+	if (st == NULL || st->anycast_prefixes == 0)
+		return NULL;
+	if (st->anycast_addresses4 == 0)
+		return g_strdup_printf (g_dngettext (NULL,
+			"Includes %u anycast network (IPv6). Anycast addresses "
+			"are answered from many places, so this rule may also "
+			"block services outside what you chose.",
+			"Includes %u anycast networks (IPv6). Anycast addresses "
+			"are answered from many places, so this rule may also "
+			"block services outside what you chose.",
+			st->anycast_prefixes), st->anycast_prefixes);
+	n4 = grouped (st->anycast_addresses4);
+	out = g_strdup_printf (g_dngettext (NULL,
+		"Includes %u anycast network (%s IPv4 addresses). Anycast "
+		"addresses are answered from many places, so this rule may "
+		"also block services outside what you chose.",
+		"Includes %u anycast networks (%s IPv4 addresses). Anycast "
+		"addresses are answered from many places, so this rule may "
+		"also block services outside what you chose.",
+		st->anycast_prefixes), st->anycast_prefixes, n4);
+	g_free (n4);
+	return out;
+}
+
+/* A rule's status: a sentence and its level (0 ok, 1 warn, 3 quiet). */
+static gchar *
+geo_rule_status (const Snapshot *s, const FsIntelLocationConf *l,
+                 gint *level)
+{
+	gchar *out;
+
+	*level = 3;
+	if (!l->enabled)
+		return g_strdup (_("Off."));
+	if (!geo_on (s->config)) {
+		*level = 1;
+		return g_strdup (_("On, but the location database is off: it "
+		                   "blocks nothing."));
+	}
+	if (!s->geo.present) {
+		*level = 1;
+		return g_strdup (_("On, but the location database has not been "
+		                   "downloaded yet: it blocks nothing."));
+	}
+	out = not_in_force_text (s, l->id);
+	if (out != NULL) {
+		*level = 1;
+		return out;
+	}
+	if (s->state == FS_INTEL_STATE_ENFORCED &&
+	    g_hash_table_contains (s->in_force, l->id)) {
+		*level = 0;
+		return g_strdup (_("In force."));
+	}
+	return g_strdup (_("On."));
+}
+
+static GtkWidget *
+geo_rule_row (const Snapshot *s, const FsIntelLocationConf *l,
+              gboolean locked)
+{
+	static const gchar *const levels[] = {
+		"intel-ok", "intel-warn", "intel-bad", "muted"
+	};
+	const FsIntelSourceState *st = g_hash_table_lookup (s->sources, l->id);
+	const FsIntelLocationStats *stats =
+		s->geo_stats != NULL ? g_hash_table_lookup (s->geo_stats, l->id)
+		                     : NULL;
+	GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 14);
+	GtkWidget *text = gtk_box_new (GTK_ORIENTATION_VERTICAL, 3);
+	GtkWidget *head = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+	GtkWidget *sw = gtk_switch_new ();
+	GtkWidget *label, *b;
+	GString *t = g_string_new (NULL);
+	gchar *x, *name, *any;
+	gint level;
+
+	add_class (row, "intel-row");
+	name = g_strdup_printf ("geo-row-%s", l->id);
+	gtk_widget_set_name (row, name);
+	g_free (name);
+
+	gtk_box_pack_start (GTK_BOX (head), label_new (l->name, "profile-label",
+	                                               0.0), FALSE, FALSE, 0);
+	label = label_new (l->kind == FS_INTEL_LOCATION_COUNTRY
+	                   ? _("Country") : _("Network"), "intel-chip", 0.5);
+	gtk_widget_set_valign (label, GTK_ALIGN_CENTER);
+	gtk_box_pack_start (GTK_BOX (head), label, FALSE, FALSE, 0);
+	any = geo_anycast_text (stats);
+	if (any != NULL) {
+		/* The owner's request: a rule that covers anycast networks
+		 * says so where the rule is, with the numbers on hover. */
+		GtkWidget *warn = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 4);
+
+		add_class (warn, "intel-chip");
+		add_class (warn, "intel-chip-warn");
+		gtk_box_pack_start (GTK_BOX (warn),
+		                    fs_icon_new (FS_ICON_SHIELD_ALERT, 12),
+		                    FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (warn), label_new (_("Anycast"), NULL,
+		                                               0.5),
+		                    FALSE, FALSE, 0);
+		gtk_widget_set_valign (warn, GTK_ALIGN_CENTER);
+		gtk_widget_set_tooltip_text (warn, any);
+		atk_object_set_description (gtk_widget_get_accessible (warn), any);
+		name = g_strdup_printf ("geo-anycast-%s", l->id);
+		gtk_widget_set_name (warn, name);
+		g_free (name);
+		gtk_box_pack_start (GTK_BOX (head), warn, FALSE, FALSE, 0);
+	}
+	gtk_box_pack_start (GTK_BOX (text), head, FALSE, FALSE, 0);
+
+	x = geo_values_text (s, l);
+	g_string_append (t, x);
+	g_free (x);
+	g_string_append (t, DOT);
+	g_string_append (t, dir_sentence (l->dir));
+	if (stats != NULL) {
+		guint nets = stats->prefixes4 + stats->prefixes6;
+		gchar *n = grouped (nets);
+
+		g_string_append (t, DOT);
+		if (nets == 0)
+			g_string_append (t, _("no network in the database"));
+		else
+			g_string_append_printf (t, g_dngettext (NULL,
+			                        "%s network", "%s networks", nets), n);
+		g_free (n);
+		if (stats->addresses4 > 0) {
+			n = grouped (stats->addresses4);
+			g_string_append_printf (t, g_dngettext (NULL,
+			                        " (%s IPv4 address)",
+			                        " (%s IPv4 addresses)",
+			                        (gulong) MIN (stats->addresses4,
+			                                      G_MAXULONG)), n);
+			g_free (n);
+		}
+	}
+	g_string_append (t, DOT);
+	x = blocked_text (s, l->id, st);
+	g_string_append (t, x);
+	g_free (x);
+	label = wrap_label (t->str, "intel-meta");
+	name = g_strdup_printf ("geo-facts-%s", l->id);
+	gtk_widget_set_name (label, name);
+	g_free (name);
+	gtk_box_pack_start (GTK_BOX (text), label, FALSE, FALSE, 0);
+	g_string_free (t, TRUE);
+
+	x = geo_rule_status (s, l, &level);
+	label = wrap_label (x, levels[level]);
+	add_class (label, "intel-status");
+	name = g_strdup_printf ("geo-status-%s", l->id);
+	gtk_widget_set_name (label, name);
+	g_free (name);
+	gtk_box_pack_start (GTK_BOX (text), label, FALSE, FALSE, 0);
+	g_free (x);
+	gtk_box_pack_start (GTK_BOX (row), text, TRUE, TRUE, 0);
+
+	b = gtk_button_new_with_label (_("Remove"));
+	add_class (b, "fs-link");
+	gtk_widget_set_valign (b, GTK_ALIGN_CENTER);
+	name = g_strdup_printf ("geo-remove-%s", l->id);
+	gtk_widget_set_name (b, name);
+	g_free (name);
+	g_signal_connect_data (b, "clicked", G_CALLBACK (on_remove_clicked),
+	                       g_strdup (l->id), free_closure_data, 0);
+	gtk_widget_set_sensitive (b, !locked);
+	gtk_box_pack_start (GTK_BOX (row), b, FALSE, FALSE, 0);
+
+	gtk_widget_set_valign (sw, GTK_ALIGN_CENTER);
+	name = g_strdup_printf ("geo-switch-%s", l->id);
+	gtk_widget_set_name (sw, name);
+	g_free (name);
+	atk_object_set_name (gtk_widget_get_accessible (sw), l->name);
+	gtk_switch_set_active (GTK_SWITCH (sw), l->enabled);
+	gtk_switch_set_state (GTK_SWITCH (sw), l->enabled);
+	g_signal_connect_data (sw, "state-set", G_CALLBACK (on_list_state_set),
+	                       g_strdup (l->id), free_closure_data, 0);
+	gtk_widget_set_sensitive (sw, !locked);
+	gtk_box_pack_start (GTK_BOX (row), sw, FALSE, FALSE, 0);
+	return row;
+}
+
+/* The database's state, one line. */
+static gchar *
+geo_state_text (const Snapshot *s, gint *level)
+{
+	GString *t = g_string_new (NULL);
+	gchar *x;
+
+	*level = 3;
+	if (s->geo_error != NULL) {
+		*level = 2;
+		g_string_printf (t, _("The location database cannot be read: %s"),
+		                 s->geo_error);
+		return g_string_free (t, FALSE);
+	}
+	if (!s->config->geo_enabled)
+		g_string_append (t, _("Off. Nothing is downloaded."));
+	else if (!s->config->enabled)
+		g_string_append (t, _("On, but threat intel is switched off."));
+	else
+		g_string_append (t, _("On."));
+	if (s->geo.present) {
+		gchar *day = date_text (s->geo.created_at);
+		gchar *n = grouped (s->geo.networks);
+
+		g_string_append_c (t, ' ');
+		g_string_append_printf (t, _("Database of %s, %s networks."), day,
+		                        n);
+		g_free (day);
+		g_free (n);
+		if (s->geo.fetched_at > 0) {
+			x = ago_text (s->now, s->geo.fetched_at);
+			g_string_append_c (t, ' ');
+			g_string_append_printf (t, _("Downloaded %s."), x);
+			g_free (x);
+		}
+		if (s->geo.stale) {
+			*level = 1;
+			g_string_append_c (t, ' ');
+			g_string_append (t, _("It is more than 30 days old; it is "
+			                      "still used."));
+		} else if (s->config->geo_enabled) {
+			*level = 0;
+		}
+	} else if (s->geo.damaged != NULL) {
+		*level = 2;
+		g_string_append_c (t, ' ');
+		g_string_append_printf (t, _("The copy in use cannot be used: %s"),
+		                        s->geo.damaged);
+	} else if (s->config->geo_enabled) {
+		*level = 1;
+		g_string_append_c (t, ' ');
+		g_string_append (t, _("Not downloaded yet: press Update "
+		                      "database."));
+	}
+	if (s->geo.refused != NULL) {
+		*level = MAX (*level == 3 ? 0 : *level, 1);
+		g_string_append_c (t, ' ');
+		g_string_append_printf (t, _("The last update was refused: %s"),
+		                        s->geo.refused);
+	} else if (s->geo.last_error != NULL) {
+		*level = 2;
+		g_string_append_c (t, ' ');
+		g_string_append_printf (t, _("The last update failed: %s"),
+		                        s->geo.last_error);
+	}
+	return g_string_free (t, FALSE);
+}
+
+/* The picker's countries, from the copy the snapshot read: refilled
+ * only when that copy changes.  Network rows (the search's) stay. */
+static void
+geo_fill_countries (const Snapshot *s)
+{
+	GtkTreeIter it;
+	gint64 created = s->geo_countries != NULL ? s->geo.created_at : 0;
+	gboolean valid;
+
+	if (geo_store == NULL || created == geo_store_created)
+		return;
+	geo_store_created = created;
+	valid = gtk_tree_model_get_iter_first (GTK_TREE_MODEL (geo_store), &it);
+	while (valid) {
+		gint kind;
+
+		gtk_tree_model_get (GTK_TREE_MODEL (geo_store), &it,
+		                    GEO_COL_KIND, &kind, -1);
+		valid = kind == FS_INTEL_LOCATION_COUNTRY
+		        ? gtk_list_store_remove (geo_store, &it)
+		        : gtk_tree_model_iter_next (GTK_TREE_MODEL (geo_store),
+		                                    &it);
+	}
+	for (guint i = 0; s->geo_countries != NULL &&
+	                  i < s->geo_countries->len; i++) {
+		FsGeodbCountry *c = g_ptr_array_index (s->geo_countries, i);
+		const gchar *name = c->name != NULL && *c->name != '\0'
+		                    ? c->name : c->code;
+		gchar *shown = g_strdup_printf ("%s (%s)", name, c->code);
+		gchar *key = g_ascii_strdown (shown, -1);
+
+		gtk_list_store_insert_with_values (geo_store, NULL, -1,
+			GEO_COL_TEXT, shown, GEO_COL_KIND,
+			(gint) FS_INTEL_LOCATION_COUNTRY, GEO_COL_VALUE, c->code,
+			GEO_COL_NAME, name, GEO_COL_KEY, key, -1);
+		g_free (shown);
+		g_free (key);
+	}
+}
+
+/* The search's networks replace the last search's. */
+static void
+geo_fill_ases (const GPtrArray *ases)
+{
+	GtkTreeIter it;
+	gboolean valid;
+
+	if (geo_store == NULL)
+		return;
+	valid = gtk_tree_model_get_iter_first (GTK_TREE_MODEL (geo_store), &it);
+	while (valid) {
+		gint kind;
+
+		gtk_tree_model_get (GTK_TREE_MODEL (geo_store), &it,
+		                    GEO_COL_KIND, &kind, -1);
+		valid = kind == FS_INTEL_LOCATION_ASN
+		        ? gtk_list_store_remove (geo_store, &it)
+		        : gtk_tree_model_iter_next (GTK_TREE_MODEL (geo_store),
+		                                    &it);
+	}
+	for (guint i = 0; ases != NULL && i < ases->len; i++) {
+		FsGeodbAs *a = g_ptr_array_index (ases, i);
+		gchar *shown = a->name != NULL && *a->name != '\0'
+		               ? g_strdup_printf ("AS%u %s", a->asn, a->name)
+		               : g_strdup_printf ("AS%u", a->asn);
+		gchar *value = g_strdup_printf ("%u", a->asn);
+		gchar *key = g_ascii_strdown (shown, -1);
+
+		gtk_list_store_insert_with_values (geo_store, NULL, -1,
+			GEO_COL_TEXT, shown, GEO_COL_KIND,
+			(gint) FS_INTEL_LOCATION_ASN, GEO_COL_VALUE, value,
+			GEO_COL_NAME, shown, GEO_COL_KEY, key, -1);
+		g_free (shown);
+		g_free (value);
+		g_free (key);
+	}
+}
+
+static void
+show_geo (const Snapshot *s, gboolean locked)
+{
+	static const gchar *const levels[] = {
+		"intel-ok", "intel-warn", "intel-bad", "muted"
+	};
+	gboolean geo_locked = locked || !s->config->enabled;
+	gchar *t;
+	gint level;
+
+	gtk_widget_set_visible (edit_cards[2], s->supported);
+	gtk_widget_set_visible (geo_unsupported, !s->geo_supported);
+	gtk_widget_set_visible (geo_controls, s->geo_supported);
+	if (!s->geo_supported)
+		return;
+
+	gtk_switch_set_active (GTK_SWITCH (geo_switch), s->config->geo_enabled);
+	gtk_switch_set_state (GTK_SWITCH (geo_switch), s->config->geo_enabled);
+	gtk_widget_set_sensitive (geo_switch, !geo_locked);
+	t = geo_state_text (s, &level);
+	gtk_label_set_text (GTK_LABEL (geo_state_label), t);
+	g_free (t);
+	for (guint i = 0; i < G_N_ELEMENTS (levels); i++)
+		remove_class (geo_state_label, levels[i]);
+	add_class (geo_state_label, levels[level]);
+	gtk_widget_set_sensitive (geo_update_button,
+	                          !geo_locked && geo_on (s->config));
+	/* The picker needs terms accepted (a rule is refused otherwise)
+	 * and a copy to pick from. */
+	gtk_widget_set_visible (geo_picker_row,
+	                        s->config->geo_accepted_at > 0);
+	gtk_widget_set_sensitive (geo_entry, !s->needs_root &&
+	                          s->config_error == NULL &&
+	                          s->geo.present);
+	gtk_widget_set_sensitive (geo_dir_combo, !geo_locked);
+	gtk_widget_set_sensitive (geo_add_button, !geo_locked);
+	geo_fill_countries (s);
+
+	clear_box (geo_rules_box);
+	for (guint i = 0; i < s->config->locations->len; i++) {
+		FsIntelLocationConf *l = g_ptr_array_index (s->config->locations,
+		                                            i);
+
+		if (i > 0)
+			gtk_box_pack_start (GTK_BOX (geo_rules_box),
+			                    gtk_separator_new (
+			                        GTK_ORIENTATION_HORIZONTAL),
+			                    FALSE, FALSE, 0);
+		gtk_box_pack_start (GTK_BOX (geo_rules_box),
+		                    geo_rule_row (s, l, geo_locked), FALSE, FALSE,
+		                    0);
+	}
+	if (s->config->locations->len == 0) {
+		GtkWidget *none = label_new (_("No country or network is "
+		                               "blocked."), "muted", 0.0);
+
+		add_class (none, "intel-pad");
+		gtk_widget_set_name (none, "intel-geo-empty");
+		gtk_box_pack_start (GTK_BOX (geo_rules_box), none, FALSE, FALSE,
+		                    0);
+	}
+	gtk_widget_show_all (geo_rules_box);
+}
+
 /* The state card: the words for what the kernel does (design 6.6). */
 static void
 show_state (const Snapshot *s)
@@ -2156,6 +2985,19 @@ show_state (const Snapshot *s)
 		if (c != NULL)
 			blocked += c->packets;
 	}
+	/* Country and network rules are sets in the same table. */
+	for (guint i = 0; geo_on (s->config) &&
+	                  i < s->config->locations->len; i++) {
+		FsIntelLocationConf *l = g_ptr_array_index (s->config->locations,
+		                                            i);
+		FsIntelCounter *c = g_hash_table_lookup (s->counters, l->id);
+
+		if (!l->enabled)
+			continue;
+		on++;
+		if (c != NULL)
+			blocked += c->packets;
+	}
 	if (!s->config->enabled)
 		on = 0;
 	{
@@ -2256,6 +3098,7 @@ show_snapshot (void)
 
 	for (guint i = 0; i < G_N_ELEMENTS (edit_cards); i++)
 		gtk_widget_set_visible (edit_cards[i], s->supported);
+	show_geo (s, locked);
 
 	syncing = FALSE;
 }
@@ -2406,6 +3249,416 @@ on_page_map (GtkWidget *widget, gpointer data)
 	(void) data;
 	if (jobs_pending == 0)
 		fs_intelview_refresh ();
+}
+
+/* ------------------------------------------- countries and networks */
+
+/* The message line under the state card, outside a job. */
+static void
+show_message (const gchar *text, gboolean failed)
+{
+	if (message_label == NULL)
+		return;
+	gtk_label_set_text (GTK_LABEL (message_label), text);
+	remove_class (message_label, "intel-error");
+	remove_class (message_label, "intel-warn");
+	if (failed)
+		add_class (message_label, "intel-error");
+	gtk_widget_show (message_label);
+}
+
+static gboolean
+on_geo_state_set (GtkSwitch *sw, gboolean on, gpointer data)
+{
+	gboolean accept = FALSE;
+	Job *job;
+
+	(void) sw;
+	(void) data;
+	if (syncing || shown == NULL)
+		return FALSE;
+	/* The consent dialog, the first time (design 13.2, [S14.3]): the
+	 * host, how often, what it learns, the licence, "registered in",
+	 * anycast. */
+	if (on && shown->config->geo_accepted_at <= 0) {
+		gchar *text = fs_intel_geo_consent_text (shown->config);
+		GtkWidget *dialog = gtk_message_dialog_new (
+			toplevel (), GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+			GTK_BUTTONS_NONE, "%s",
+			_("Turn on the location database?"));
+		gint response;
+
+		gtk_widget_set_name (dialog, "intel-geo-consent-dialog");
+		gtk_message_dialog_format_secondary_text (
+			GTK_MESSAGE_DIALOG (dialog), "%s", text);
+		gtk_dialog_add_buttons (GTK_DIALOG (dialog),
+		                        _("_Cancel"), GTK_RESPONSE_CANCEL,
+		                        _("Accept and turn on"),
+		                        GTK_RESPONSE_ACCEPT, NULL);
+		gtk_dialog_set_default_response (GTK_DIALOG (dialog),
+		                                 GTK_RESPONSE_CANCEL);
+		response = run_dialog (GTK_DIALOG (dialog));
+		gtk_widget_destroy (dialog);
+		g_free (text);
+		if (response != GTK_RESPONSE_ACCEPT) {
+			g_idle_add (redraw_idle, NULL);
+			return TRUE;
+		}
+		accept = TRUE;
+	}
+	job = job_new (JOB_GEO_SWITCH);
+	job->on = on;
+	job->accept_terms = accept;
+	job_start (job, on ? _("Turning the location database on" ELLIPSIS)
+	                   : _("Turning the location database off" ELLIPSIS));
+	return TRUE;
+}
+
+static void
+on_geo_update_clicked (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+	job_start (job_new (JOB_GEO_UPDATE),
+	           _("Downloading the location database" ELLIPSIS));
+}
+
+static void
+geo_pick_clear (void)
+{
+	geo_pick_kind = 0;
+	g_clear_pointer (&geo_pick_value, g_free);
+	g_clear_pointer (&geo_pick_name, g_free);
+	g_clear_pointer (&geo_pick_text, g_free);
+}
+
+/* A row matches when its text holds what was typed, in any case. */
+static gboolean
+geo_match (GtkEntryCompletion *completion, const gchar *key,
+           GtkTreeIter *iter, gpointer data)
+{
+	GtkTreeModel *model = gtk_entry_completion_get_model (completion);
+	gchar *row_key = NULL, *typed;
+	gboolean hit;
+
+	(void) data;
+	gtk_tree_model_get (model, iter, GEO_COL_KEY, &row_key, -1);
+	typed = g_ascii_strdown (key != NULL ? key : "", -1);
+	g_strstrip (typed);
+	hit = row_key != NULL && *typed != '\0' && strstr (row_key, typed) != NULL;
+	g_free (typed);
+	g_free (row_key);
+	return hit;
+}
+
+static gboolean
+on_geo_match_selected (GtkEntryCompletion *completion, GtkTreeModel *model,
+                       GtkTreeIter *iter, gpointer data)
+{
+	gint kind;
+
+	(void) completion;
+	(void) data;
+	geo_pick_clear ();
+	gtk_tree_model_get (model, iter, GEO_COL_KIND, &kind,
+	                    GEO_COL_VALUE, &geo_pick_value,
+	                    GEO_COL_NAME, &geo_pick_name,
+	                    GEO_COL_TEXT, &geo_pick_text, -1);
+	geo_pick_kind = (FsIntelLocationKind) kind;
+	gtk_entry_set_text (GTK_ENTRY (geo_entry), geo_pick_text);
+	gtk_editable_set_position (GTK_EDITABLE (geo_entry), -1);
+	return TRUE;
+}
+
+static gboolean
+geo_search_fire (gpointer data)
+{
+	const gchar *text;
+	Job *job;
+
+	(void) data;
+	geo_search_id = 0;
+	if (geo_entry == NULL)
+		return G_SOURCE_REMOVE;
+	text = gtk_entry_get_text (GTK_ENTRY (geo_entry));
+	if (strlen (text) < 2 || g_strcmp0 (text, geo_search_done) == 0)
+		return G_SOURCE_REMOVE;
+	job = job_new (JOB_GEO_SEARCH);
+	job->text = g_strdup (text);
+	job_start (job, NULL);
+	return G_SOURCE_REMOVE;
+}
+
+static void
+on_geo_entry_changed (GtkEditable *editable, gpointer data)
+{
+	const gchar *text = gtk_entry_get_text (GTK_ENTRY (editable));
+
+	(void) data;
+	if (geo_pick_text != NULL && strcmp (text, geo_pick_text) != 0)
+		geo_pick_clear ();
+	/* The networks are many: they are searched as you type, in the
+	 * worker, a quarter of a second after the last key. */
+	if (geo_search_id != 0)
+		g_source_remove (geo_search_id);
+	geo_search_id = strlen (text) >= 2
+	                ? g_timeout_add (250, geo_search_fire, NULL) : 0;
+}
+
+/* The row of the picker's model whose text, name or code is `text'
+ * (any case); FALSE when none is. */
+static gboolean
+geo_find_row (const gchar *text, FsIntelLocationKind *kind, gchar **value,
+              gchar **name)
+{
+	GtkTreeIter it;
+	gboolean valid;
+
+	if (geo_store == NULL)
+		return FALSE;
+	valid = gtk_tree_model_get_iter_first (GTK_TREE_MODEL (geo_store), &it);
+	while (valid) {
+		gchar *t = NULL, *v = NULL, *n = NULL;
+		gint k;
+		gboolean hit;
+
+		gtk_tree_model_get (GTK_TREE_MODEL (geo_store), &it,
+		                    GEO_COL_TEXT, &t, GEO_COL_VALUE, &v,
+		                    GEO_COL_NAME, &n, GEO_COL_KIND, &k, -1);
+		hit = g_ascii_strcasecmp (t, text) == 0 ||
+		      g_ascii_strcasecmp (n, text) == 0 ||
+		      (k == FS_INTEL_LOCATION_COUNTRY &&
+		       g_ascii_strcasecmp (v, text) == 0);
+		g_free (t);
+		if (hit) {
+			*kind = (FsIntelLocationKind) k;
+			*value = v;
+			*name = n;
+			return TRUE;
+		}
+		g_free (v);
+		g_free (n);
+		valid = gtk_tree_model_iter_next (GTK_TREE_MODEL (geo_store), &it);
+	}
+	return FALSE;
+}
+
+/* "AS13335", "as13335" or "13335": the number, or 0. */
+static guint32
+geo_parse_asn (const gchar *text)
+{
+	gchar *end = NULL;
+	guint64 v;
+
+	if (g_ascii_strncasecmp (text, "AS", 2) == 0)
+		text += 2;
+	if (!g_ascii_isdigit (*text))
+		return 0;
+	v = g_ascii_strtoull (text, &end, 10);
+	return end != NULL && *end == '\0' && v > 0 && v <= G_MAXUINT32
+	       ? (guint32) v : 0;
+}
+
+static void
+on_geo_add_clicked (GtkButton *button, gpointer data)
+{
+	gchar *text = g_strstrip (g_strdup (
+		gtk_entry_get_text (GTK_ENTRY (geo_entry))));
+	FsIntelLocationKind kind = 0;
+	gchar *value = NULL, *name = NULL, *line;
+	const gchar *dir_id;
+	guint32 asn;
+	Job *job;
+
+	(void) button;
+	(void) data;
+	if (geo_pick_text != NULL && strcmp (text, geo_pick_text) == 0) {
+		kind = geo_pick_kind;
+		value = g_strdup (geo_pick_value);
+		name = g_strdup (geo_pick_name);
+	} else if (geo_find_row (text, &kind, &value, &name)) {
+		/* typed in full */
+	} else if ((asn = geo_parse_asn (text)) != 0) {
+		kind = FS_INTEL_LOCATION_ASN;
+		value = g_strdup_printf ("%u", asn);
+		name = g_strdup_printf ("AS%u", asn);
+	} else if (strlen (text) == 2 && g_ascii_isalpha (text[0]) &&
+	           g_ascii_isalpha (text[1])) {
+		kind = FS_INTEL_LOCATION_COUNTRY;
+		value = g_ascii_strup (text, -1);
+		name = g_strdup (value);
+	} else {
+		show_message (_("Pick a country or network from the list, or type "
+		                "a country code (DE) or an AS number (AS64500)."),
+		              TRUE);
+		g_free (text);
+		return;
+	}
+	dir_id = gtk_combo_box_get_active_id (GTK_COMBO_BOX (geo_dir_combo));
+	job = job_new (JOB_GEO_ADD);
+	job->geo_kind = kind;
+	if (!fs_intel_dir_from_string (dir_id != NULL ? dir_id : "both",
+	                               &job->geo_dir))
+		job->geo_dir = FS_INTEL_DIR_BOTH;
+	job->text = value;
+	job->name = name;
+	line = g_strdup_printf (_("Adding %s" ELLIPSIS), name);
+	job_start (job, line);
+	g_free (line);
+	g_free (text);
+	geo_pick_clear ();
+	gtk_entry_set_text (GTK_ENTRY (geo_entry), "");
+}
+
+static GtkWidget *
+build_geo_card (void)
+{
+	GtkWidget *card, *body, *row, *col, *label, *sw_row;
+	GtkEntryCompletion *completion;
+	gchar *attribution;
+
+	card = card_new (_("Countries and networks"),
+	                 _("Block addresses by the country their range is "
+	                   "registered in, or by the network that owns them "
+	                   "(its AS number). A country is where an address "
+	                   "range is registered, not where a computer is."),
+	                 &body);
+	gtk_widget_set_name (card, "intel-geo");
+	edit_cards[2] = card;
+
+	/* Where it does not exist (Windows in 1.0.7): one sentence, and no
+	 * control that would act. */
+	geo_unsupported = wrap_label (fs_intel_geo_unsupported_text (),
+	                              "muted");
+	gtk_widget_set_name (geo_unsupported, "intel-geo-unsupported");
+	add_class (geo_unsupported, "intel-pad");
+	gtk_widget_set_no_show_all (geo_unsupported, TRUE);
+	gtk_box_pack_start (GTK_BOX (body), geo_unsupported, FALSE, FALSE, 0);
+
+	geo_controls = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	gtk_widget_set_name (geo_controls, "intel-geo-controls");
+
+	/* The database: switch, state, Update database. */
+	sw_row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 14);
+	add_class (sw_row, "intel-row");
+	geo_switch = gtk_switch_new ();
+	gtk_widget_set_name (geo_switch, "intel-geo-switch");
+	gtk_widget_set_valign (geo_switch, GTK_ALIGN_CENTER);
+	atk_object_set_name (gtk_widget_get_accessible (geo_switch),
+	                     _("Use the location database"));
+	g_signal_connect (geo_switch, "state-set",
+	                  G_CALLBACK (on_geo_state_set), NULL);
+	gtk_box_pack_start (GTK_BOX (sw_row), geo_switch, FALSE, FALSE, 0);
+	col = gtk_box_new (GTK_ORIENTATION_VERTICAL, 3);
+	gtk_box_pack_start (GTK_BOX (col),
+	                    label_new (_("Use the location database"),
+	                               "profile-label", 0.0), FALSE, FALSE, 0);
+	label = wrap_label (_("IPFire's database of who holds each address "
+	                      "range, downloaded from location.ipfire.org at "
+	                      "most once a day while it is on."), "muted");
+	gtk_box_pack_start (GTK_BOX (col), label, FALSE, FALSE, 0);
+	geo_state_label = wrap_label (NULL, "intel-status");
+	gtk_widget_set_name (geo_state_label, "intel-geo-state");
+	gtk_box_pack_start (GTK_BOX (col), geo_state_label, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (sw_row), col, TRUE, TRUE, 0);
+	geo_update_button = gtk_button_new_with_label (_("Update database"));
+	gtk_widget_set_name (geo_update_button, "intel-geo-update");
+	add_class (geo_update_button, "btn-subtle");
+	gtk_widget_set_valign (geo_update_button, GTK_ALIGN_CENTER);
+	g_signal_connect (geo_update_button, "clicked",
+	                  G_CALLBACK (on_geo_update_clicked), NULL);
+	gtk_box_pack_start (GTK_BOX (sw_row), geo_update_button, FALSE, FALSE,
+	                    0);
+	gtk_box_pack_start (GTK_BOX (geo_controls), sw_row, FALSE, FALSE, 0);
+
+	/* The picker: one entry over the countries and the networks. */
+	geo_picker_row = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
+	gtk_widget_set_name (geo_picker_row, "intel-geo-picker");
+	add_class (geo_picker_row, "intel-subhead");
+	gtk_box_pack_start (GTK_BOX (geo_picker_row),
+	                    label_new (_("Block a country or network"),
+	                               "profile-label", 0.0), FALSE, FALSE, 0);
+	row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+	geo_entry = gtk_entry_new ();
+	gtk_widget_set_name (geo_entry, "intel-geo-entry");
+	gtk_entry_set_placeholder_text (GTK_ENTRY (geo_entry),
+	                                _("Germany, DE, AS64500 or a "
+	                                  "network's name"));
+	gtk_entry_set_width_chars (GTK_ENTRY (geo_entry), 34);
+	atk_object_set_name (gtk_widget_get_accessible (geo_entry),
+	                     _("Country or network to block"));
+	geo_store = gtk_list_store_new (GEO_N_COLS, G_TYPE_STRING, G_TYPE_INT,
+	                                G_TYPE_STRING, G_TYPE_STRING,
+	                                G_TYPE_STRING);
+	geo_store_created = -1;
+	completion = gtk_entry_completion_new ();
+	gtk_entry_completion_set_model (completion, GTK_TREE_MODEL (geo_store));
+	gtk_entry_completion_set_text_column (completion, GEO_COL_TEXT);
+	gtk_entry_completion_set_match_func (completion, geo_match, NULL, NULL);
+	gtk_entry_completion_set_minimum_key_length (completion, 1);
+	gtk_entry_completion_set_popup_set_width (completion, TRUE);
+	g_signal_connect (completion, "match-selected",
+	                  G_CALLBACK (on_geo_match_selected), NULL);
+	gtk_entry_set_completion (GTK_ENTRY (geo_entry), completion);
+	g_object_unref (completion);
+	g_signal_connect (geo_entry, "changed",
+	                  G_CALLBACK (on_geo_entry_changed), NULL);
+	g_signal_connect (geo_entry, "activate",
+	                  G_CALLBACK (on_geo_add_clicked), NULL);
+	gtk_box_pack_start (GTK_BOX (row), geo_entry, FALSE, FALSE, 0);
+	geo_dir_combo = gtk_combo_box_text_new ();
+	gtk_widget_set_name (geo_dir_combo, "intel-geo-dir");
+	gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (geo_dir_combo), "both",
+	                           _("Both ways"));
+	gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (geo_dir_combo), "in",
+	                           _("When they connect to you"));
+	gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (geo_dir_combo), "out",
+	                           _("When you connect to them"));
+	gtk_combo_box_set_active_id (GTK_COMBO_BOX (geo_dir_combo), "both");
+	atk_object_set_name (gtk_widget_get_accessible (geo_dir_combo),
+	                     _("Direction"));
+	gtk_box_pack_start (GTK_BOX (row), geo_dir_combo, FALSE, FALSE, 0);
+	geo_add_button = gtk_button_new_with_label (_("Block"));
+	gtk_widget_set_name (geo_add_button, "intel-geo-add");
+	add_class (geo_add_button, "btn-subtle");
+	g_signal_connect (geo_add_button, "clicked",
+	                  G_CALLBACK (on_geo_add_clicked), NULL);
+	gtk_box_pack_start (GTK_BOX (row), geo_add_button, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (geo_picker_row), row, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (geo_picker_row),
+	                    wrap_label (_("Type a country (Germany or DE), or "
+	                                  "part of a network's name or its AS "
+	                                  "number (AS64500), and pick it from "
+	                                  "the list."), "intel-meta"),
+	                    FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (geo_controls), geo_picker_row, FALSE,
+	                    FALSE, 0);
+
+	gtk_box_pack_start (GTK_BOX (geo_controls),
+	                    gtk_separator_new (GTK_ORIENTATION_HORIZONTAL),
+	                    FALSE, FALSE, 0);
+	geo_rules_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+	gtk_widget_set_name (geo_rules_box, "intel-geo-rules");
+	add_class (geo_rules_box, "intel-lists");
+	gtk_box_pack_start (GTK_BOX (geo_controls), geo_rules_box, FALSE,
+	                    FALSE, 0);
+
+	/* The licence line wherever location data is shown (design
+	 * 13.1). */
+	attribution = fs_intel_geo_attribution ();
+	geo_attribution = wrap_label (attribution, "intel-meta");
+	g_free (attribution);
+	gtk_widget_set_name (geo_attribution, "intel-geo-attribution");
+	add_class (geo_attribution, "intel-pad");
+	gtk_label_set_selectable (GTK_LABEL (geo_attribution), TRUE);
+	gtk_box_pack_start (GTK_BOX (geo_controls), geo_attribution, FALSE,
+	                    FALSE, 0);
+
+	gtk_widget_show_all (geo_controls);
+	gtk_widget_hide (geo_controls);
+	gtk_widget_set_no_show_all (geo_controls, TRUE);
+	gtk_box_pack_start (GTK_BOX (body), geo_controls, FALSE, FALSE, 0);
+	return card;
 }
 
 /* --------------------------------------------------------------- build */
@@ -2726,6 +3979,9 @@ fs_intelview_page (void)
 	gtk_box_pack_start (GTK_BOX (body), lists_box, FALSE, FALSE, 0);
 	gtk_box_pack_start (GTK_BOX (page), card, FALSE, FALSE, 0);
 
+	/* ---- countries and networks ---- */
+	gtk_box_pack_start (GTK_BOX (page), build_geo_card (), FALSE, FALSE, 0);
+
 	/* ---- lookup ---- */
 	card = card_new (_("Look up an address"),
 	                 _("Which of the lists that are on name an address, "
@@ -2856,6 +4112,12 @@ gboolean
 fs_intelview_busy (void)
 {
 	return jobs_pending > 0;
+}
+
+void
+fs_intelview_set_geo_supported (gint supported)
+{
+	geo_supported_override = supported;
 }
 
 void

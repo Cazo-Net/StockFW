@@ -845,16 +845,20 @@ check that failed is in brackets):
   "Accept smaller list", and `/api/intel`; Events offers "Add
   exception"; What-If says it does not consult the lists; the Linux,
   Windows, CLI and background topics name the table, the group,
-  `stockfw intel lookup` and the hourly update check.  Exactly one
-  FS_HELP_SOON callout is left, on the threat-intel topic; it is about
-  blocking by country or network owner (ASN): its first sentence names
-  country and ASN and says "not in this build" without the word
-  "intel", and no part of it says "blocklist", in any case; the
-  topic's summary no longer says "not available in this build"; no
-  other block or summary mentions 1.0.7 or says "in this build",
-  "planned" or "coming", in any case, and the
-  callout's heading reads "Not in this build" (this build is 1.0.7, so
-  "Coming in 1.0.7" was false).  (Re-injected: the pre-PR #18
+  `stockfw intel lookup` and the hourly update check.  Blocking by
+  country or network owner is described as present too: the switch
+  "Use the location database" and its dialog, "is registered, not where
+  the computer using it is", the "Anycast" mark, the licence as the
+  file declares it and unconfirmed, "downloaded at most once a day",
+  Windows "not supported on Windows in this version of StockFW", and
+  the CLI topic's `stockfw intel geo`.  No FS_HELP_SOON callout is
+  left in any topic (the last one, on country and ASN blocking, went
+  with the page and the command); the threat-intel summary names
+  countries and does not say "available" or "build"; no block or
+  summary mentions 1.0.7 or says "in this build", "planned" or
+  "coming", in any case; and the shown threat-intel topic has
+  "Countries and networks" with the licence line and no "Not in this
+  build" heading.  (Re-injected: the pre-PR #18
   `fs-helpcontent.c`, which fails the fifteen threat-intel H8 checks,
   the changed H7 one and H4's Next; before that, the branch's pre-merge
   `fs-helpcontent.c` and the old heading, which failed the fourteen
@@ -2170,7 +2174,7 @@ the downloads and the backend are fakes) checks:
 
 | Area | What it pins down |
 |---|---|
-| wording | the attribution names IPFire and the declared licence and says it is not confirmed; the consent text names the host, how often, what the server learns, "registered", anycast and exceptions; the defaults are off and never consented; source kinds and set names by id; on Windows, "not available on Windows yet" |
+| wording | the attribution names IPFire and the declared licence and says it is not confirmed; the consent text names the host, how often, what the server learns, "registered", anycast and exceptions; the defaults are off and never consented; source kinds and set names by id; on Windows, "not supported on Windows in this version" |
 | config | `[geo]` and `[location <id>]` round trip; refusals for a key of the wrong kind, bad or missing values, a bad id or name, more than 1,000 values; codes and AS numbers are normalised, deduplicated and sorted |
 | consent | no rule and no enabling without the terms accepted; a config that says enabled but never accepted downloads nothing |
 | no network | the default configuration, the database off, no consent, the master switch off: no request at all; the database's host (and the proxy) is in `fs_intel_update_hosts` only while it is on |
@@ -2837,3 +2841,102 @@ restored with `cp` and checked with `cmp`.
 
 fs-intelset-test runs both branches' chain-listing cases (`test_live_chains`, `test_chains_live_more`)
 under Round 3's rule: two chains with different digests, or one without, give no digest.
+
+## Countries and networks on the page, the command line and in Help (design 13.16)
+
+```sh
+ninja -C build-linux fs-intelview-smoke fs-help-smoke stockfw stockfw-intel-test
+xvfb-run -a ./build-linux/fs-intelview-smoke
+xvfb-run -a ./build-linux/fs-help-smoke
+bash tests/test-cli.sh
+sudo bash tests/test-intel-cli.sh   # STOCKFW_INTEL_CLI must name a copy nobody can run
+```
+
+Everything here uses the signed test databases in `tests/geodb`
+(`small.db`, `small-older.db`), signed with `k1`'s key.  The release
+build pins IPFire's key and has no way to change it; the test builds
+compile `fs-geodb.c` with `FS_GEODB_TESTING`, so `fs-intelview-smoke`
+sets `k1.pub` with `fs_geodb_set_key` and replaces the downloader with
+`fs_geodb_set_fetcher` (it xz's `small.db` in memory and counts the
+requests), and `stockfw-intel-test` reads the key from
+`$STOCKFW_TEST_GEODB_KEY` (an absolute path).  `test-intel-cli.sh`
+section 10 serves the xz'd databases through a stand-in curl
+(`STOCKFW_TEST_CURL`) that logs each request and prints the file;
+curl runs as nobody, so the files are world-readable.
+
+- `fs-intelview-smoke` (`check_geo`): the card's controls on Linux; no
+  picker before consent; the licence line; the consent dialog's text
+  (host, how often, what it learns, the licence as declared and
+  unconfirmed, "registered in", anycast), Cancel (nothing downloaded),
+  Accept (one download from the IPFire URL); the date and state; the
+  picker's 7 countries and the "Example" AS search; Netherlands picked
+  with "in": in force, its networks, and the "Anycast" chip whose
+  tooltip reads "Includes 1 anycast network (IPv6) ..."; "de" typed in
+  full (Germany, no chip); AS64500 picked from the search; three rules;
+  text that names nothing; the lookup of `2c0f:f000::1` (the rule,
+  "Registered in", anycast, the licence line); Remove (page, config and
+  kernel); Update database (a second request); off (rules kept, sets
+  gone); on again without a second dialog; a platform without it
+  (the sentence `fs_intel_geo_unsupported_text()` and no control that
+  acts).  GTK prints a Gdk-CRITICAL for an entry with a completion in
+  an offscreen window at every allocation; the smoke drops only that
+  message and fails on any other critical.
+- `test-intel-cli.sh` section 1: `intel geo`, `geo status --json`,
+  `geo terms`, `geo search` (exit 1), `geo on` without
+  `--accept-terms` (exit 2, plain and JSON), `geo add` before consent
+  (exit 2), `geo off` and an unknown action, none of which creates the
+  store.  Section 10: `geo update` with the database off (exit 2, no
+  request); `geo on --accept-terms` (no download by the switch);
+  `geo update` (one request to the IPFire URL, `location.db` is the
+  signed file, 0600), again (unchanged), `intel update` without
+  `--now` (no request: at most daily); an older copy refused (exit 1,
+  the copy in use byte for byte); `geo status` (date, stale, licence,
+  counts, the refusal, the attribution; plain and JSON); `geo search`;
+  `geo add` (named from the database, two ASes in one rule, a code the
+  database lacks with its note, bad values exit 2); `geo list`;
+  `geo remove` (and of a feed id: exit 2); `intel apply` (the
+  country's networks in `s_country_netherlands_4`/`_6`, nothing of
+  another country, the anycast note); lookups (exit 5 and "registered
+  in" in JSON; "Registered in", the anycast network, the meaning and the
+  attribution in text; NAT64; an address the database lacks; private
+  space listed but never blocked; an AS rule); a damaged copy (unknown;
+  restored with `cp` and `cmp`); `intel disable`/`enable` by a rule's
+  id; `intel status --json`'s `location`; `geo on`/`add` as nobody
+  (exit 3); `geo off` then `apply` (the sets leave the kernel, the
+  lookup's `location` is null); on again; remove.
+- `test-cli.sh` (no root, no download): `intel geo` with its sentence;
+  `geo on` without consent (exit 2, nothing accepted); `geo add` before
+  consent; `geo search` with no database (exit 1); consent then a rule
+  (`no-database`); `intel status --json`'s `location`; a lookup with no
+  copy (`found` false with the reason); `/api/intel`'s read-only
+  `location` object.
+- `fs-help-smoke` H8, above.
+
+Each check below was seen failing with its bug put back in a copy of
+the source; the copy was then restored with `cp` and checked with
+`cmp`.
+
+| bug put back | test | check that fails |
+|---|---|---|
+| `geo on` without `--accept-terms` creates the store (`load_config (on, ...)`) | test-intel-cli.sh | `geo on without --accept-terms: exit 2, the terms shown, the flag named, no store` |
+| `geo on` passes TRUE for the consent | test-intel-cli.sh | the same, and the JSON one |
+| `geo add` creates the store before the consent check | test-intel-cli.sh | `geo add before consent: exit 2, no store` |
+| the lookup's attribution line left out | test-intel-cli.sh | `lookup (plain) of the anycast network: Registered in, anycast, the meaning, the attribution` |
+| the lookup's JSON `unknown` always false | test-intel-cli.sh | `the database damaged: lookup says unknown` |
+| the lookup's JSON `via_nat64` always false | test-intel-cli.sh | `lookup of a NAT64 address: the IPv4 address's country and network, via_nat64` |
+| the apply's anycast note never written | test-intel-cli.sh | `... and the apply says the Netherlands includes anycast networks` |
+| `/api/intel` without its `location` object | test-cli.sh | `intel: the location fields, read-only (rules, database, attribution)` (and `intel status --json carries the location object`) |
+| the page turns the database on without the consent dialog | fs-intelview-smoke | `geo: turning it on asks first: ...`, `geo: Accept turns it on and downloads it once` |
+| the page never shows the anycast chip | fs-intelview-smoke | `geo: a rule whose set holds an anycast network carries the warning, with the count on hover` |
+| the card's licence line empty | fs-intelview-smoke | `geo: the card carries the licence line` |
+| the card's controls shown where the platform has none | fs-intelview-smoke | `geo: a platform without it shows its sentence (...) and no control` |
+| the "Not in this build" callout put back on the threat-intel topic | fs-help-smoke | `[H8] no "Not in this build" callout in any topic ...`, `[H8] the threat-intel topic shows "Countries and networks" ...` |
+| the anycast mark's name left out of the help | fs-help-smoke | `[H8] countries: the anycast warning and its mark` |
+| the help says "not available on Windows yet" | fs-help-smoke | `[H8] countries: Windows does not support it, said as a limit` |
+
+Not verified: a download from the real `location.ipfire.org` (every
+test uses the test databases and a stand-in downloader); the page on
+a desktop with a screen reader (it runs offscreen under Xvfb); the
+time the per-rule statistics take for a large country of IPFire's full
+database in the page; the card on Windows (checked through a
+Windows-like backend on Linux).

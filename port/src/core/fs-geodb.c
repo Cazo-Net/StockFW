@@ -517,9 +517,26 @@ load_key (GError **error)
 	size_t group_len = 0;
 
 #ifdef FS_GEODB_TESTING
+	gboolean set_by_call;
+
 	g_mutex_lock (&testing_lock);
+	set_by_call = testing_key != NULL;
 	pem = g_strdup (testing_key != NULL ? testing_key : pinned_key_pem);
 	g_mutex_unlock (&testing_lock);
+	{
+		/* Test builds only: $STOCKFW_TEST_GEODB_KEY names a PEM file
+		 * (an absolute path) to verify with, for a test that cannot
+		 * call fs_geodb_testing_set_key() (the CLI test binary). */
+		const gchar *path = g_getenv ("STOCKFW_TEST_GEODB_KEY");
+		gchar *text = NULL;
+
+		if (!set_by_call && path != NULL &&
+		    g_path_is_absolute (path) &&
+		    g_file_get_contents (path, &text, NULL, NULL)) {
+			g_free (pem);
+			pem = text;
+		}
+	}
 #else
 	pem = g_strdup (pinned_key_pem);
 #endif

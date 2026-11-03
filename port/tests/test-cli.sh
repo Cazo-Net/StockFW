@@ -368,6 +368,37 @@ assert i['state'] in ('not-loaded', 'needs-root', 'unknown', 'differs') and i['d
     }
     check "intel apply and clear need root (exit 3)" needs_root
   fi
+  # Countries and networks: without the database's consent nothing is
+  # saved; with it a rule is kept, and the status reads it back.  No
+  # download here (test-intel-cli.sh downloads the test databases).
+  check "intel geo: the status, with the \"registered in\" sentence" \
+    bash -c "[ \$(icode intel geo) = 0 ] && grep -q '^  Location ' '$TMP/iout' && grep -q 'registered, not where a computer is' '$TMP/iout'"
+  check "intel geo on without --accept-terms: exit 2, the terms name location.ipfire.org" \
+    bash -c "[ \$(icode intel geo on) = 2 ] && grep -q 'location.ipfire.org' '$TMP/iout' && grep -q -- '--accept-terms' '$TMP/ierr' && '$S' --json intel geo status | grep -q '\"terms_accepted_at\":null'"
+  check "intel geo add before consent: exit 2, nothing saved" \
+    bash -c "[ \$(icode intel geo add country DE) = 2 ] && ! grep -qi 'country-' '$STOCKFW_INTEL_DIR/intel.conf'"
+  check "intel geo search with no database: exit 1" \
+    bash -c "[ \$(icode intel geo search Example) = 1 ] && grep -q 'not been downloaded' '$TMP/ierr'"
+  check "intel geo on --accept-terms, then add country DE --dir in: a rule, no database yet" py "
+import json, subprocess
+r = subprocess.run(['$S', '--json', 'intel', 'geo', 'on', '--accept-terms'], capture_output=True, text=True)
+assert r.returncode == 0 and json.loads(r.stdout)['terms_accepted_now'], r
+r = subprocess.run(['$S', '--json', 'intel', 'geo', 'add', 'country', 'de', '--dir', 'in'], capture_output=True, text=True)
+d = json.loads(r.stdout)
+assert r.returncode == 0 and d['id'] == 'country-de' and d['values'] == ['DE'] and d['direction'] == 'in', (r, d)
+d = json.loads(subprocess.run(['$S', '--json', 'intel', 'geo', 'list'], capture_output=True, text=True).stdout)
+assert [(x['id'], x['status']) for x in d['rules']] == [('country-de', 'no-database')], d"
+  check "intel status --json carries the location object" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'intel', 'status'], capture_output=True, text=True).stdout)
+g = d['location']
+assert g['supported'] and g['enabled'] and not g['database']['present'] and g['url'].startswith('https://location.ipfire.org/'), g
+assert 'IPFire' in g['attribution'] and [x['id'] for x in g['rules']] == ['country-de'], g"
+  check "intel lookup with the database on and no copy: \"registered in\" unknown, exit 0" py "
+import json, subprocess
+r = subprocess.run(['$S', '--json', 'intel', 'lookup', '192.0.2.1'], capture_output=True, text=True)
+d = json.loads(r.stdout)
+assert r.returncode == 0 and d['location']['found'] is False and d['location']['why_none'], (r.returncode, d)"
   check "intel apply --dry-run names the sets and changes nothing" \
     bash -c "'$S' intel apply --dry-run > '$TMP/dry.txt' && grep -q '^  local-cli-list  *both' '$TMP/dry.txt' && grep -q 'Nothing was changed' '$TMP/dry.txt'"
 else
@@ -478,6 +509,13 @@ by = {l['id']: l for l in d['lists']}
 assert set(by) == {'feodo', 'local-cli-list'}, by.keys()
 assert by['feodo']['licence'] == 'CC0' and 'abuse.ch' in by['feodo']['credit']
 assert by['local-cli-list']['name'] == 'CLI list' and by['local-cli-list']['entries'] == 2"
+  check "intel: the location fields, read-only (rules, database, attribution)" py "
+import json, subprocess
+d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/intel'],
+                              capture_output=True, text=True).stdout)
+g = d['location']
+assert g['enabled'] and g['database']['present'] is False and 'IPFire' in g['attribution'], g
+assert [(x['id'], x['direction'], x['status']) for x in g['rules']] == [('country-de', 'in', 'no-database')], g"
   check "intel: POST is refused (405): the panel is read-only" \
     bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'X-StockFW-Token: $TOKEN' '$B/api/intel') = 405 ]"
   check "the page has the blocklist panel and asks for /api/intel" \

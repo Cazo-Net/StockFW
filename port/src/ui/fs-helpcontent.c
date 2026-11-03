@@ -5,11 +5,10 @@
  *   - Say what the build in front of the reader does today.  A feature
  *     that is not in this build gets one FS_HELP_SOON callout ("Not in
  *     this build"), never a sentence that reads as present.  In 1.0.7
- *     that is blocking by country or network owner (ASN) only, on the
- *     threat-intel topic: its engine is in the Linux build, but no
- *     page or command turns it on.  Threat intel itself is in this
- *     build and is described in the present tense, as the code does
- *     it.
+ *     there is none: threat intel and blocking by country or network
+ *     owner (ASN) are both described in the present tense, as the code
+ *     does them.  What a platform cannot do (country blocking on
+ *     Windows) is said as a limit of that platform, never as a promise.
  *   - Never promise protection the app does not give.
  *   - Plain sentences, no em dashes.
  *   - Topic ids are stable: Preferences and F1 open topics by id, and
@@ -868,9 +867,56 @@ static const FsHelpBlock threat_intel[] = {
 	  "the lists fresh while StockFW is closed. The dashboard shows the "
 	  "lists read-only, at <tt>/api/intel</tt>. See "
 	  "<a href=\"help:cli\">Command line and dashboard</a>.") },
-	{ FS_HELP_SOON, N_("Blocking by country or by network owner (ASN) is "
-	  "not in this build: neither this page nor the command line can "
-	  "turn it on, and on Windows it is not available at all.") },
+	{ FS_HELP_HEAD, N_("Countries and networks") },
+	{ FS_HELP_PARA, N_("The <b>Countries and networks</b> card blocks "
+	  "addresses by the country their range is registered in, or by the "
+	  "network that holds them, named by its number (such as AS64500) "
+	  "and its owner. It uses IPFire's location database, a signed file "
+	  "StockFW downloads and keeps on this computer. Lookups read that "
+	  "copy and make no network request.") },
+	{ FS_HELP_STEP, N_("Turn on <b>Use the location database</b>. The "
+	  "first time, a dialog says the file comes from "
+	  "<tt>location.ipfire.org</tt> at most once a day, what that host "
+	  "learns, the licence, and that a country means where a range is "
+	  "registered. Press <b>Accept and turn on</b>.") },
+	{ FS_HELP_STEP, N_("Type a country (Germany or DE) or a network "
+	  "(AS64500, or part of its owner's name) under <b>Block a country "
+	  "or network</b>, and pick it from the list. Choose the direction "
+	  "and press <b>Block</b>.") },
+	{ FS_HELP_STEP, N_("Each rule gets a row with its networks, a switch "
+	  "and <b>Remove</b>.") },
+	{ FS_HELP_WARN, N_("A country here is where an address range is "
+	  "registered, not where the computer using it is. A company "
+	  "registered in one country can run servers in many others, and "
+	  "cloud hosts, VPNs and mobile networks cross borders. Lookups and "
+	  "the rows say <i>registered in</i> for this reason.") },
+	{ FS_HELP_WARN, N_("Some networks are anycast: the same addresses "
+	  "answer from many places at once, so blocking them can block "
+	  "services far from the country you chose. A rule that holds "
+	  "anycast networks carries an <b>Anycast</b> mark; point at it to "
+	  "see how many. The addresses on your allow list are never "
+	  "blocked.") },
+	{ FS_HELP_PARA, N_("The database is downloaded at most once a day, "
+	  "with the lists. <b>Update database</b> downloads it at once. "
+	  "StockFW refuses any copy whose signature does not verify and any "
+	  "copy older than the one it has, and keeps the copy in use. The "
+	  "card shows the copy's date; a copy older than 30 days is marked "
+	  "out of date and still used.") },
+	{ FS_HELP_NOTE, N_("Location data: IPFire location database "
+	  "(location.ipfire.org). The file declares the licence CC BY-SA "
+	  "4.0; StockFW has not confirmed it, so commercial use may need "
+	  "IPFire's permission. The card, the command line and every lookup "
+	  "that shows location data carry this line.") },
+	{ FS_HELP_PARA, N_("On Linux, <tt>stockfw intel geo</tt> does the "
+	  "same: <tt>sudo stockfw intel geo on --accept-terms</tt>, "
+	  "<tt>geo update</tt>, <tt>geo search</tt>, <tt>geo add country DE "
+	  "--dir in</tt>, <tt>geo list</tt> and <tt>geo remove</tt>. "
+	  "<tt>stockfw intel lookup</tt> says where an address is registered "
+	  "and which network holds it.") },
+	{ FS_HELP_NOTE, N_("Windows: blocking by country or network owner is "
+	  "not supported on Windows in this version of StockFW. There the "
+	  "card says so and has no controls. The blocklists work on Windows "
+	  "as described above.") },
 	{ FS_HELP_SEE, "events cli linux windows" },
 	{ FS_HELP_END, NULL }
 };
@@ -1033,6 +1079,15 @@ static const FsHelpBlock cli[] = {
 	{ FS_HELP_ITEM, N_("<tt>stockfw intel lookup</tt> and an address: which "
 	  "lists hold it. It exits with 5 only when a list blocks it in the "
 	  "kernel now.") },
+	{ FS_HELP_ITEM, N_("<tt>stockfw intel geo</tt>: blocking by country or "
+	  "network owner. <tt>geo terms</tt> shows what turning it on means, "
+	  "<tt>sudo stockfw intel geo on --accept-terms</tt> turns it on, "
+	  "<tt>geo update</tt> downloads the database at once, <tt>geo "
+	  "search</tt> finds a country or network, <tt>geo add country DE "
+	  "--dir in</tt> or <tt>geo add asn 64500</tt> adds a rule, and "
+	  "<tt>geo list</tt> and <tt>geo remove</tt> show and remove them. A "
+	  "lookup then says where the address is registered. Linux "
+	  "only.") },
 	{ FS_HELP_PARA, N_("<tt>stockfw intel update</tt> exits with 1 when a "
 	  "feed failed or was refused. <tt>apply</tt> exits with 1 when the "
 	  "kernel refused the lists, and with 0 when audit-only mode held "
@@ -1397,10 +1452,12 @@ static const FsHelpTopic topics[] = {
 	{ "threat-intel", NULL, NULL,
 	  N_("Threat intel"),
 	  N_("Blocklists of known bad addresses, downloaded or imported, "
-	     "blocked inbound, outbound or both."),
+	     "and blocking by country or network owner, inbound, outbound "
+	     "or both."),
 	  N_("blocklist feeds spamhaus feodo dshield firehol tor exception "
 	     "allow import lookup update consent terms nftables "
-	     "stockfw_intel country asn"),
+	     "stockfw_intel country asn geo location ipfire anycast "
+	     "registered network"),
 	  threat_intel },
 	{ "copilot", NULL, NULL,
 	  N_("Copilot"),

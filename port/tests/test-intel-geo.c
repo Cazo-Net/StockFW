@@ -99,9 +99,9 @@ test_wording (void)
 
 		CHECK (!fs_intel_geo_supported () &&
 		       !fs_intel_config_enable_geo (c, TRUE, &e) &&
-		       e != NULL && strstr (e->message, "not available on "
-		                            "Windows yet") != NULL,
-		       "Windows: location blocking is not available yet");
+		       e != NULL && strstr (e->message, "not supported on "
+		                            "Windows in this version") != NULL,
+		       "Windows: location blocking is not supported");
 		g_clear_error (&e);
 	}
 #else

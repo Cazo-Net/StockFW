@@ -101,6 +101,10 @@ rules — without a shell prompt.
   on and accept its terms; with nothing on, StockFW makes no network
   request. A **Threat Intel** page, `stockfw intel` and a read-only
   dashboard card — see [below](#threat-intel-blocklists-linux-107).
+- **Countries and networks** *(Linux, 1.0.7, opt-in)* — block the
+  address ranges registered in a country, or held by a network (AS),
+  from IPFire's signed location database — see
+  [below](#countries-and-networks-linux-107).
 - **Preferences** — what you see is what you save: pages that do not
   apply to the current backend are not shown, so there are no dead
   settings that silently do nothing.
@@ -266,8 +270,50 @@ It does not:
 - answer from What-If, Copilot or `stockfw simulate` yet: these still
   judge the policy alone. Ask `stockfw intel lookup` or the page's
   lookup box;
-- block by country or network owner, on either platform. That is a
-  later round.
+- block by country or network owner on Windows. On Linux it does; see
+  the next section.
+
+## Countries and networks (Linux, 1.0.7)
+
+The **Countries and networks** card on the Threat Intel page, and
+`stockfw intel geo`, block the address ranges *registered* in a country,
+or held by a network named by its number (AS64500), in the same
+`inet stockfw_intel` table as the blocklists. It is off until you turn
+it on and accept what that means:
+
+```sh
+stockfw intel geo terms                       # the host, how often, what it learns, the licence
+sudo stockfw intel geo on --accept-terms
+sudo stockfw intel geo update                 # download the database now
+stockfw intel geo search nether               # find a country or a network by name
+sudo stockfw intel geo add country NL --dir in
+sudo stockfw intel geo add asn 64500
+sudo stockfw intel apply
+stockfw intel lookup 192.0.2.10               # registered in, the network, and whether a rule blocks it
+```
+
+- **Registered, not located.** A country is where an address range is
+  registered, not where the computer using it is. Cloud hosts, VPNs and
+  mobile networks cross borders; lookups say *registered in*.
+- **Anycast.** Some networks answer from many places at once; a rule
+  that holds them may block services elsewhere. The page marks such a
+  rule *Anycast* (the count on hover) and `apply` says how many.
+- **The database** is IPFire's, downloaded from `location.ipfire.org`
+  over HTTPS at most once a day with the lists (*Update database* or
+  `geo update` downloads it at once). StockFW refuses a copy whose
+  signature does not verify or that is older than the one it has, and
+  keeps the copy in use. Lookups read the local copy and make no
+  request.
+- **Licence and attribution.** Location data: IPFire location database
+  (https://location.ipfire.org/). The file declares the licence CC
+  BY-SA 4.0; StockFW has not confirmed it, so commercial use may need
+  IPFire's permission. The page, the CLI and every lookup that shows
+  location data carry this line.
+- **Windows** does not support country or network blocking in 1.0.7, a
+  limit of that platform; the card says so and has no controls. The
+  blocklists work there.
+- The dashboard's `/api/intel` shows the switch, the database's date and
+  state and the rules, read-only.
 
 ## Running in the background, and after a reboot (1.0.7)
 

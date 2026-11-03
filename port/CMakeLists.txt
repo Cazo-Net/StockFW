@@ -661,14 +661,17 @@ if(FS_PLATFORM STREQUAL "linux")
   # `stockfw intel' end to end (tests/test-intel-cli.sh): the real CLI
   # sources and release backend, with a copy of fs-fetch.c compiled with
   # FS_FETCH_TESTING so $STOCKFW_TEST_CACERT can name the test server's
-  # CA (the fs-intel-e2e-driver arrangement).  Never installed: the
-  # `stockfw' that ships has no test hook.
+  # CA (the fs-intel-e2e-driver arrangement), and of fs-geodb.c compiled
+  # with FS_GEODB_TESTING so $STOCKFW_TEST_GEODB_KEY can name the key
+  # the test databases (tests/geodb) are signed with.  Never installed:
+  # the `stockfw' that ships has no test hook.
   add_executable(stockfw-intel-test EXCLUDE_FROM_ALL
     src/cli/fs-cli-main.c
     src/cli/fs-cli-cmds.c
     src/cli/fs-cli-intel.c
     src/cli/fs-dashboard.c
     src/core/fs-fetch.c
+    src/core/fs-geodb.c
     ${FS_BACKEND_SOURCES}
   )
   target_include_directories(stockfw-intel-test PRIVATE
@@ -677,6 +680,7 @@ if(FS_PLATFORM STREQUAL "linux")
                         PkgConfig::GIO)
   target_compile_definitions(stockfw-intel-test PRIVATE
                              FS_FETCH_TESTING=1
+                             FS_GEODB_TESTING=1
                              FS_VERSION="${PROJECT_VERSION}")
 endif()
 
@@ -686,8 +690,12 @@ endif()
 # their override, the editors, lookup, Add exception, and that the
 # work runs off the main loop.  INTEL_SMOKE_SHOTS=<dir> writes a PNG of
 # each state.  Run under xvfb-run as root or with STOCKFW_TEST_SAFE_DIR.
+# Its own fs-geodb.c, compiled with FS_GEODB_TESTING, so the countries
+# and networks card can be driven with the test databases in
+# tests/geodb (signed with tests/geodb/k1.pub's key).
 add_executable(fs-intelview-smoke EXCLUDE_FROM_ALL
   tests/ui-intelview-smoke.c
+  src/core/fs-geodb.c
   ${FS_UI_SOURCES}
 )
 target_include_directories(fs-intelview-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
@@ -695,6 +703,8 @@ target_link_libraries(fs-intelview-smoke PRIVATE fs-core PkgConfig::GTK3)
 target_compile_definitions(fs-intelview-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
   FS_PLATFORM_NAME="${FS_PLATFORM}"
+  FS_GEODB_TESTING=1
+  FS_TEST_GEODB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/geodb"
 )
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-intelview-smoke PRIVATE ${FS_BACKEND_LIBS})

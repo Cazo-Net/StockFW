@@ -22,7 +22,14 @@
  *   - the lookup box;
  *   - Events: a list's block shows the list's name, is found by the
  *     filter, carries the rule in the selection, and "Add exception"
- *     puts the address on the allow list.
+ *     puts the address on the allow list;
+ *   - countries and networks (design 13.11), with tests/geodb's small
+ *     database: the consent dialog's text, Cancel and Accept, the
+ *     database's date and state, the picker's model (every country,
+ *     the networks searched as you type), adding by picking and by
+ *     typing a code, the anycast warning and its tooltip, the lookup's
+ *     "Registered in" and licence line, Remove, Update database, off,
+ *     and the sentence (no control) where the platform has none.
  *
  * With INTEL_SMOKE_SHOTS=<dir>, a PNG of the page in each state.
  * Teeth: tests/README.md, "The Threat Intel page".
@@ -30,11 +37,13 @@
 
 #include <gtk/gtk.h>
 #include <glib/gstdio.h>
+#include <lzma.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "core/fs-backend.h"
 #include "core/fs-feed.h"
+#include "core/fs-geodb.h"
 #include "core/fs-intel.h"
 #include "core/fs-intelset.h"
 #include "core/fs-netparse.h"
@@ -758,6 +767,392 @@ check_events (void)
 	gtk_widget_destroy (ewin);
 }
 
+/* ------------------------------------------ countries and networks */
+
+/* The location database the fake downloader serves: tests/geodb's
+ * small.db (written by libloc's writer, signed with k1's key), xz'd
+ * here.  Its networks: DE, US (anycast, private space), FR, NL (one
+ * public anycast /20, 2c0f:f000::/20), GB, IT, JP; ASes "Example One"
+ * (64500), "Example Two GmbH" (64501) and more. */
+static GBytes *geo_xz = NULL;
+static guint   geo_fetches = 0;
+
+static GBytes *
+geo_fetch (const gchar *url, const gchar *proxy, gpointer data,
+           GError **error)
+{
+	(void) proxy;
+	(void) data;
+	(void) error;
+	g_atomic_int_inc (&geo_fetches);
+	CHECK (g_strcmp0 (url, FS_GEODB_URL) == 0,
+	       "geo: the database is fetched from %s", url);
+	return g_bytes_ref (geo_xz);
+}
+
+static gboolean
+geo_setup (void)
+{
+	gchar *pem = NULL, *db = NULL;
+	gsize len = 0;
+	guint8 *out;
+	size_t out_pos = 0, cap;
+	gboolean ok;
+
+	ok = g_file_get_contents (FS_TEST_GEODB_DIR "/k1.pub", &pem, NULL,
+	                          NULL) &&
+	     g_file_get_contents (FS_TEST_GEODB_DIR "/small.db", &db, &len,
+	                          NULL);
+	if (!ok) {
+		g_free (pem);
+		g_free (db);
+		return FALSE;
+	}
+	fs_geodb_testing_set_key (pem);
+	cap = lzma_stream_buffer_bound (len);
+	out = g_malloc (cap);
+	ok = lzma_easy_buffer_encode (6, LZMA_CHECK_CRC64, NULL,
+	                              (const guint8 *) db, len, out, &out_pos,
+	                              cap) == LZMA_OK;
+	if (ok)
+		geo_xz = g_bytes_new_take (out, out_pos);
+	else
+		g_free (out);
+	g_free (pem);
+	g_free (db);
+	fs_geodb_set_fetcher (geo_fetch, NULL);
+	return ok;
+}
+
+/* Let a timer of the page fire (the picker's search waits 250 ms after
+ * the last key), then wait for the work it started. */
+static void
+pump_ms (guint ms)
+{
+	gint64 until = g_get_monotonic_time () + (gint64) ms * 1000;
+
+	while (g_get_monotonic_time () < until) {
+		while (gtk_events_pending ())
+			gtk_main_iteration ();
+		g_usleep (5000);
+	}
+	wait_idle ();
+}
+
+/* The picker's row whose text is `text'; FALSE when there is none. */
+static gboolean
+geo_row (GtkTreeModel *model, const gchar *text, GtkTreeIter *out,
+         gint *kind)
+{
+	gboolean valid = gtk_tree_model_get_iter_first (model, out);
+
+	while (valid) {
+		gchar *t = NULL;
+		gint k = 0;
+		gboolean hit;
+
+		gtk_tree_model_get (model, out, 0, &t, 1, &k, -1);
+		hit = g_strcmp0 (t, text) == 0;
+		g_free (t);
+		if (hit) {
+			if (kind != NULL)
+				*kind = k;
+			return TRUE;
+		}
+		valid = gtk_tree_model_iter_next (model, out);
+	}
+	return FALSE;
+}
+
+static guint
+geo_rows_of_kind (GtkTreeModel *model, gint kind)
+{
+	GtkTreeIter it;
+	gboolean valid = gtk_tree_model_get_iter_first (model, &it);
+	guint n = 0;
+
+	while (valid) {
+		gint k = 0;
+
+		gtk_tree_model_get (model, &it, 1, &k, -1);
+		n += k == kind;
+		valid = gtk_tree_model_iter_next (model, &it);
+	}
+	return n;
+}
+
+/* Pick `text' in the completion, as a click on its row does. */
+static void
+geo_pick (const gchar *text)
+{
+	GtkWidget *entry = find (page, "intel-geo-entry");
+	GtkEntryCompletion *c = gtk_entry_get_completion (GTK_ENTRY (entry));
+	GtkTreeModel *model = gtk_entry_completion_get_model (c);
+	GtkTreeIter it;
+	gboolean handled = FALSE;
+
+	CHECK (geo_row (model, text, &it, NULL),
+	       "geo: \"%s\" is in the picker's list", text);
+	g_signal_emit_by_name (c, "match-selected", model, &it, &handled);
+}
+
+static gboolean
+geo_conf (gboolean *enabled, guint *rules)
+{
+	FsIntelConfig *c = fs_intel_config_load (NULL);
+
+	if (c == NULL)
+		return FALSE;
+	*enabled = c->geo_enabled;
+	*rules = c->locations->len;
+	fs_intel_config_free (c);
+	return TRUE;
+}
+
+static void
+check_geo (void)
+{
+	GtkWidget *sw = find (page, "intel-geo-switch");
+	GtkWidget *entry = find (page, "intel-geo-entry");
+	GtkTreeModel *model = gtk_entry_completion_get_model (
+		gtk_entry_get_completion (GTK_ENTRY (entry)));
+	GtkTreeIter it;
+	GtkWidget *w;
+	gchar *attribution = fs_intel_geo_attribution ();
+	gboolean on = FALSE;
+	guint rules = 0;
+	gint kind = 0;
+	const gchar *tip;
+	gchar *t;
+
+	if (!gtk_switch_get_active (GTK_SWITCH (find (page, "intel-master"))))
+		gtk_switch_set_active (GTK_SWITCH (find (page, "intel-master")),
+		                       TRUE);
+	wait_idle ();
+	CHECK (visible ("intel-geo") && visible ("intel-geo-controls") &&
+	       !visible ("intel-geo-unsupported"),
+	       "geo: on Linux the countries and networks card has its "
+	       "controls, not the unsupported sentence");
+	CHECK (!visible ("intel-geo-picker"),
+	       "geo: no picker before the database's terms are accepted");
+	CHECK (strcmp (text_of ("intel-geo-attribution"), attribution) == 0,
+	       "geo: the card carries the licence line (\"%s\")",
+	       text_of ("intel-geo-attribution"));
+
+	/* Consent: Cancel changes nothing and downloads nothing. */
+	next_response = GTK_RESPONSE_CANCEL;
+	gtk_switch_set_active (GTK_SWITCH (sw), TRUE);
+	wait_idle ();
+	CHECK (g_strcmp0 (last_dialog, "intel-geo-consent-dialog") == 0 &&
+	       strstr (last_dialog_text, "location.ipfire.org") != NULL &&
+	       strstr (last_dialog_text, "once a day") != NULL &&
+	       strstr (last_dialog_text, "public IP address") != NULL &&
+	       strstr (last_dialog_text, "CC BY-SA 4.0") != NULL &&
+	       strstr (last_dialog_text, "has not confirmed") != NULL &&
+	       strstr (last_dialog_text, "where an address range is "
+	                                 "registered, not where a computer "
+	                                 "is") != NULL &&
+	       strstr (last_dialog_text, "anycast") != NULL,
+	       "geo: turning it on asks first: the host, how often, what it "
+	       "learns, the licence as the file declares it (unconfirmed), "
+	       "\"registered in\", anycast");
+	CHECK (geo_fetches == 0 && geo_conf (&on, &rules) && !on &&
+	       !gtk_switch_get_active (GTK_SWITCH (sw)),
+	       "geo: Cancel at the consent dialog: still off, nothing "
+	       "downloaded");
+
+	/* Accept: on, and downloaded at once. */
+	next_response = GTK_RESPONSE_ACCEPT;
+	gtk_switch_set_active (GTK_SWITCH (sw), TRUE);
+	wait_idle ();
+	CHECK (geo_fetches == 1 && geo_conf (&on, &rules) && on,
+	       "geo: Accept turns it on and downloads it once (%u)",
+	       geo_fetches);
+	CHECK (strstr (text_of ("intel-geo-state"), "Database of") != NULL &&
+	       strstr (text_of ("intel-geo-state"), "more than 30 days old") !=
+	       NULL,
+	       "geo: its date and state are shown (\"%s\")",
+	       text_of ("intel-geo-state"));
+	CHECK (visible ("intel-geo-picker") &&
+	       gtk_widget_is_sensitive (entry),
+	       "geo: the picker is there once a copy is");
+
+	/* The picker's model: every country of the copy in use... */
+	CHECK (geo_rows_of_kind (model, FS_INTEL_LOCATION_COUNTRY) == 7 &&
+	       geo_row (model, "Netherlands (NL)", &it, &kind) &&
+	       kind == FS_INTEL_LOCATION_COUNTRY &&
+	       geo_row (model, "Germany (DE)", &it, NULL),
+	       "geo: the picker lists the database's 7 countries, code and "
+	       "name");
+	/* ... and its networks, searched as you type. */
+	gtk_entry_set_text (GTK_ENTRY (entry), "Example");
+	pump_ms (400);
+	CHECK (geo_row (model, "AS64500 Example One", &it, &kind) &&
+	       kind == FS_INTEL_LOCATION_ASN &&
+	       geo_row (model, "AS64501 Example Two GmbH", &it, NULL) &&
+	       geo_rows_of_kind (model, FS_INTEL_LOCATION_ASN) == 2,
+	       "geo: typing \"Example\" searches the networks: AS64500 and "
+	       "AS64501 (%u network rows)",
+	       geo_rows_of_kind (model, FS_INTEL_LOCATION_ASN));
+	/* Add: Netherlands, inbound, picked from the list. */
+	gtk_entry_set_text (GTK_ENTRY (entry), "Nether");
+	geo_pick ("Netherlands (NL)");
+	CHECK (strcmp (gtk_entry_get_text (GTK_ENTRY (entry)),
+	               "Netherlands (NL)") == 0,
+	       "geo: picking a row puts it in the entry");
+	gtk_combo_box_set_active_id (GTK_COMBO_BOX (find (page,
+	                                                  "intel-geo-dir")),
+	                             "in");
+	kern.apply_calls = 0;
+	click ("intel-geo-add");
+	CHECK (find (page, "geo-row-country-netherlands") != NULL &&
+	       kern.last_sets != NULL &&
+	       strstr (kern.last_sets, "country-netherlands") != NULL &&
+	       kern.apply_calls > 0,
+	       "geo: Block adds the rule and puts it in force (%s)",
+	       kern.last_sets ? kern.last_sets : "nothing applied");
+	t = g_strdup (text_of ("geo-facts-country-netherlands"));
+	CHECK (strstr (t, "Netherlands (NL)") != NULL &&
+	       strstr (t, "Stops them connecting to you.") != NULL,
+	       "geo: its row names the country and the direction (\"%s\")",
+	       t);
+	g_free (t);
+	CHECK (strcmp (text_of ("geo-status-country-netherlands"),
+	               "In force.") == 0,
+	       "geo: and says it is in force (\"%s\")",
+	       text_of ("geo-status-country-netherlands"));
+	w = find (page, "geo-anycast-country-netherlands");
+	tip = w != NULL ? gtk_widget_get_tooltip_text (w) : NULL;
+	CHECK (w != NULL && gtk_widget_get_visible (w) && tip != NULL &&
+	       strstr (tip, "Includes 1 anycast network (IPv6)") != NULL &&
+	       strstr (tip, "may also block services outside what you "
+	                    "chose") != NULL,
+	       "geo: a rule whose set holds an anycast network carries the "
+	       "warning, with the count on hover (\"%s\")",
+	       tip != NULL ? tip : "no warning");
+
+	/* Add: DE typed as a code, not picked; its anycast network (US,
+	 * private space) is not DE's, so no warning. */
+	gtk_entry_set_text (GTK_ENTRY (entry), "de");
+	gtk_combo_box_set_active_id (GTK_COMBO_BOX (find (page,
+	                                                  "intel-geo-dir")),
+	                             "both");
+	click ("intel-geo-add");
+	CHECK (find (page, "geo-row-country-germany") != NULL &&
+	       find (page, "geo-anycast-country-germany") == NULL,
+	       "geo: a country code typed in full adds that country by its "
+	       "name, and a rule without anycast networks has no warning");
+
+	/* Add: a network, picked from the search. */
+	gtk_entry_set_text (GTK_ENTRY (entry), "Example One");
+	pump_ms (400);
+	geo_pick ("AS64500 Example One");
+	click ("intel-geo-add");
+	CHECK (find (page, "geo-row-asn-as64500-example-one") != NULL &&
+	       strstr (kern.last_sets, "asn-as64500-example-one") != NULL,
+	       "geo: a network picked from the search is blocked by its AS "
+	       "number (%s)", kern.last_sets);
+	CHECK (geo_conf (&on, &rules) && rules == 3,
+	       "geo: three rules saved (%u)", rules);
+
+	/* Something that is neither. */
+	gtk_entry_set_text (GTK_ENTRY (entry), "nowhere land");
+	click ("intel-geo-add");
+	CHECK (geo_conf (&on, &rules) && rules == 3 &&
+	       strstr (text_of ("intel-message"), "Pick a country or network")
+	       != NULL,
+	       "geo: text that names no country or network adds nothing and "
+	       "says why (\"%s\")", text_of ("intel-message"));
+
+	/* Lookup: where an address is registered, with the licence line. */
+	lookup ("2c0f:f000::1");
+	t = g_strdup (text_of ("intel-lookup-result"));
+	CHECK (strstr (t, "the country rule Netherlands") != NULL &&
+	       strstr (t, "Registered in Netherlands (NL).") != NULL &&
+	       strstr (t, "anycast") != NULL &&
+	       strstr (t, attribution) != NULL,
+	       "geo: the lookup names the rule, \"Registered in\", anycast "
+	       "and the licence line (\"%s\")", t);
+	g_free (t);
+	shot ("11-countries.png");
+
+	/* Remove: asked first; the set leaves the kernel. */
+	next_response = GTK_RESPONSE_ACCEPT;
+	click ("geo-remove-country-germany");
+	CHECK (g_strcmp0 (last_dialog, "intel-remove-dialog") == 0 &&
+	       strstr (last_dialog_text, "stored copy") == NULL &&
+	       find (page, "geo-row-country-germany") == NULL &&
+	       strstr (kern.last_sets, "country-germany") == NULL &&
+	       geo_conf (&on, &rules) && rules == 2,
+	       "geo: Remove asks, then the rule is gone from the page, the "
+	       "config and the kernel");
+
+	/* Update database: downloaded again. */
+	click ("intel-geo-update");
+	CHECK (geo_fetches == 2 &&
+	       strstr (text_of ("intel-message"), "Location database:") != NULL,
+	       "geo: Update database downloads it again (\"%s\")",
+	       text_of ("intel-message"));
+
+	/* Off: the rules stay and block nothing. */
+	gtk_switch_set_active (GTK_SWITCH (sw), FALSE);
+	wait_idle ();
+	CHECK (geo_conf (&on, &rules) && !on && rules == 2 &&
+	       strstr (text_of ("geo-status-country-netherlands"),
+	               "location database is off") != NULL &&
+	       strstr (kern.last_sets, "country-netherlands") == NULL,
+	       "geo: turned off, the rules are kept, say they block nothing, "
+	       "and their sets leave the kernel (\"%s\")",
+	       text_of ("geo-status-country-netherlands"));
+	next_response = GTK_RESPONSE_CANCEL;
+	gtk_switch_set_active (GTK_SWITCH (sw), TRUE);
+	wait_idle ();
+	CHECK (geo_conf (&on, &rules) && on &&
+	       g_strcmp0 (last_dialog, "intel-geo-consent-dialog") != 0,
+	       "geo: on again: its terms were accepted once, no second "
+	       "dialog");
+	next_response = GTK_RESPONSE_ACCEPT;
+
+	/* Where it does not exist (Windows in 1.0.7): the sentence, and no
+	 * control that acts. */
+	fs_intelview_set_geo_supported (0);
+	fs_intelview_set_backend (&win_backend);
+	refresh ();
+	CHECK (visible ("intel-geo") && visible ("intel-geo-unsupported") &&
+	       strcmp (text_of ("intel-geo-unsupported"),
+	               fs_intel_geo_unsupported_text ()) == 0 &&
+	       !visible ("intel-geo-controls") &&
+	       !gtk_widget_is_visible (find (page, "intel-geo-switch")) &&
+	       !gtk_widget_is_visible (find (page, "intel-geo-add")),
+	       "geo: a platform without it shows its sentence (\"%s\") and "
+	       "no control", text_of ("intel-geo-unsupported"));
+	shot ("12-countries-unsupported.png");
+	fs_intelview_set_geo_supported (-1);
+	fs_intelview_set_backend (&fake_backend);
+	refresh ();
+	g_free (attribution);
+}
+
+/* An entry with a completion asks GDK for its monitor at every
+ * allocation; in an offscreen window there is none, and GDK says so
+ * with this critical (a plain GtkWindow does not: checked by hand).
+ * Only that message is dropped; every other one is printed and
+ * counted. */
+static guint other_criticals = 0;
+
+static void
+gdk_log (const gchar *domain, GLogLevelFlags level, const gchar *message,
+         gpointer data)
+{
+	(void) data;
+	if (message != NULL &&
+	    strstr (message, "gdk_window_get_origin: assertion "
+	                     "'GDK_IS_WINDOW (window)' failed") != NULL)
+		return;
+	other_criticals++;
+	g_log_default_handler (domain, level, message, NULL);
+}
+
 /* ---------------------------------------------------------------- main */
 
 int
@@ -786,6 +1181,8 @@ main (int argc, char **argv)
 	}
 	shots = g_getenv ("INTEL_SMOKE_SHOTS");
 	gtk_init (&argc, &argv);
+	g_log_set_handler ("Gdk", G_LOG_LEVEL_CRITICAL | G_LOG_LEVEL_WARNING,
+	                   gdk_log, NULL);
 	install_theme ();
 	seen_progress = g_string_new (NULL);
 
@@ -808,6 +1205,11 @@ main (int argc, char **argv)
 	bodies = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
 	errors = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
 	fs_intel_set_fetcher (fake_fetch, NULL);
+	if (!geo_setup ()) {
+		printf ("FAIL: the test location database (%s) could not be "
+		        "read\n", FS_TEST_GEODB_DIR);
+		return 1;
+	}
 	fs_intelview_set_backend (&fake_backend);
 	fs_intelview_set_responder (respond, NULL);
 	fs_intelview_set_hold_func (hold);
@@ -1340,6 +1742,9 @@ main (int argc, char **argv)
 	fs_intelview_set_backend (&fake_backend);
 	refresh ();
 
+	/* ---- countries and networks ---- */
+	check_geo ();
+
 	/* ---- unsupported (no intel slots) ---- */
 	fs_intelview_set_backend (&bare_backend);
 	refresh ();
@@ -1360,6 +1765,8 @@ main (int argc, char **argv)
 	g_free (b1);
 	g_string_free (seen_progress, TRUE);
 	gtk_widget_destroy (window);
+	CHECK (other_criticals == 0, "no other GDK critical or warning (%u)",
+	       other_criticals);
 	if (g_getenv ("INTEL_SMOKE_KEEP") == NULL)
 		rm_rf (base);
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
