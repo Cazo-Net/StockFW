@@ -2,7 +2,7 @@
 # The Linux event monitor reading the kernel ring buffer (/dev/kmsg):
 # real LOG lines arrive with the right verdict, forged user-space lines
 # do not.  See test-logstart-kmsg.c.  Needs root, iptables, and a host
-# with no /var/log/kern.log (else the backend reads that file instead).
+# (/dev/kmsg is tried before /var/log/kern.log, so a kern.log does not matter).
 #
 #   sudo ./tests/test-logstart-kmsg.sh
 

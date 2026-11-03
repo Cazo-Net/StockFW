@@ -178,17 +178,14 @@ main (void)
 		printf ("SKIP: /dev/kmsg is not readable here\n");
 		return 0;
 	}
-	if (g_file_test ("/var/log/kern.log", G_FILE_TEST_EXISTS)) {
-		printf ("note: /var/log/kern.log exists; forcing the ring "
-		        "buffer is not possible on this host\n");
-		printf ("SKIP: the backend would read /var/log/kern.log\n");
-		return 0;
-	}
+	/* Since 1.0.7 the backend tries /dev/kmsg before kern.log and the
+	 * journal, so a kern.log on the host (the CI runner has one) no
+	 * longer decides the source: no skip for it. */
 
 	g_unsetenv ("STOCKFW_LOG_FILE");
 
 	started = backend->log_start (on_hit, NULL, &error);
-	CHECK (started, "log_start succeeds with no kern.log and no journal");
+	CHECK (started, "log_start succeeds with no STOCKFW_LOG_FILE");
 	if (!started) {
 		printf ("    reason: %s\n", error ? error->message : "(none)");
 		return 1;
