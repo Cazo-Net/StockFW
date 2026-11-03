@@ -40,11 +40,15 @@
 #include <lzma.h>
 #include <stdio.h>
 #include <string.h>
+#ifndef G_OS_WIN32
+#include <unistd.h>
+#endif
 
 #include "core/fs-backend.h"
 #include "core/fs-feed.h"
 #include "core/fs-geodb.h"
 #include "core/fs-intel.h"
+#include "core/fs-winstore.h"
 #include "core/fs-intelset.h"
 #include "core/fs-netparse.h"
 #include "core/fs-prefs.h"
@@ -1800,9 +1804,22 @@ main (int argc, char **argv)
 	/* ---- unknown ---- */
 	kern.unknown = TRUE;
 	refresh ();
-	CHECK (strcmp (text_of ("intel-state-title"), "Unknown") == 0,
-	       "the kernel cannot be read: \"Unknown\" (got \"%s\")",
-	       text_of ("intel-state-title"));
+	/* Root sees "Unknown"; without rights the same unreadable kernel
+	 * is "Needs administrator rights" (fs_intel_state), which is what
+	 * the CI's non-root smoke run sees. */
+	{
+#ifdef G_OS_WIN32
+		gboolean admin = fs_winstore_is_admin ();
+#else
+		gboolean admin = geteuid () == 0;
+#endif
+		const gchar *want = admin ? "Unknown"
+		                          : "Needs administrator rights";
+
+		CHECK (strcmp (text_of ("intel-state-title"), want) == 0,
+		       "the kernel cannot be read: \"%s\" (got \"%s\")",
+		       want, text_of ("intel-state-title"));
+	}
 	shot ("09-unknown.png");
 	kern.unknown = FALSE;
 
