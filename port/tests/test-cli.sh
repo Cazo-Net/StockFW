@@ -3833,6 +3833,137 @@ rm -rf "$D4"
 # === end PR4-D ===
 
 # === PR4-E ===
+# Help and About (master plan PR 4, 4E): the desktop app's help topics
+# in a terminal and as stockfw-topics(7), and `about'.  Every topic id
+# renders as its own text with no markup left, no line is wider than 80
+# columns (piped, and on a 60-column terminal), every help:ID link is
+# printed as a command that prints that topic, the GUI-only topics are
+# listed apart, and the About credits are the About window's.  Nothing
+# here asks a question, so nothing waits for input.
+H="$TMP/pr4e"
+mkdir -p "$H"
+"$S" --json help topics > "$H/topics.json" 2> "$H/err"
+check "PR4-E: help --json topics is one JSON document of 25 topics" \
+  py "import json; d = json.load(open('$H/topics.json')); assert len(d['topics']) == 25, len(d['topics'])"
+check "PR4-E: every topic id renders: exit 0, its title first, its summary, no markup left" py "
+import json, subprocess
+for t in json.load(open('$H/topics.json'))['topics']:
+    r = subprocess.run(['$S', 'help', 'topic', t['id']], capture_output=True, text=True, timeout=20)
+    assert r.returncode == 0 and not r.stderr, (t['id'], r)
+    lines = r.stdout.split('\n')
+    assert lines[0] == t['title'], (t['id'], lines[0])
+    assert ' '.join(r.stdout.split()).find(' '.join(t['summary'].split())) > 0, t['id']
+    for bad in ('<b>', '</', '<tt>', '<a ', '&amp;', '&lt;', '&quot;', 'help:'):
+        assert bad not in r.stdout, (t['id'], bad)
+    open('$H/topic-' + t['id'], 'w').write(r.stdout)"
+check "PR4-E: no line of help topics, any topic, a search or about is over 80 columns (piped)" py "
+import glob, subprocess
+outs = [open(f).read() for f in glob.glob('$H/topic-*')]
+for args in (['help', 'topics'], ['help', '--search', 'ssh'], ['about'], ['help']):
+    outs.append(subprocess.run(['$S'] + args, capture_output=True, text=True, timeout=20).stdout)
+assert len(outs) == 29, len(outs)
+long = [l for o in outs for l in o.split('\n') if len(l) > 80]
+assert not long, long"
+if command -v script > /dev/null; then
+  check "PR4-E: on a 60-column terminal a topic fits 60 columns" py "
+import os, re, subprocess
+env = dict(os.environ, COLUMNS='60')
+out = subprocess.run(['script', '-qec', 'stty cols 60 rows 24 2>/dev/null; $S help getting-started', '/dev/null'],
+                     capture_output=True, env=env, timeout=20).stdout.decode('utf-8', 'replace')
+lines = [re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', l.rstrip('\r')) for l in out.split('\n')]
+assert len(lines) > 20 and not [l for l in lines if len(l) > 60], [l for l in lines if len(l) > 60]"
+else
+  echo "skip: PR4-E: the 60-column terminal check (no script(1))"
+fi
+check "PR4-E: every help:ID link is printed as a command, and each prints that topic" py "
+import json, re, subprocess
+titles = {t['id']: t['title'] for t in json.load(open('$H/topics.json'))['topics']}
+cmds = set(); links = 0
+for i in titles:
+    text = ' '.join(open('$H/topic-' + i).read().split())
+    found = re.findall(r'\((stockfw help (?:topic )?([a-z-]+))\)', text)
+    links += len(found)
+    cmds.update(found)
+assert links >= 40, links
+for cmd, i in sorted(cmds):
+    r = subprocess.run(cmd.replace('stockfw', '$S', 1).split(), capture_output=True, text=True, timeout=20)
+    assert r.returncode == 0 and r.stdout.split('\n')[0] == titles[i], (cmd, r.stdout[:200])"
+check "PR4-E: help events stays the events command's help, and points at the topic" \
+  bash -c "'$S' help events > '$H/ev' && head -1 '$H/ev' | grep -q '^Usage: stockfw events' &&
+           tail -1 '$H/ev' | grep -qx 'The guide has a topic on it too: stockfw help topic events'"
+check "PR4-E: help topics lists the desktop app's topics apart; the rest name no tray, window, Ctrl+ or sign-in" \
+  bash -c "'$S' help topics > '$H/list' && sed '/^Desktop app topics\$/,\$d' '$H/list' > '$H/main' &&
+           sed -n '/^Desktop app topics\$/,\$p' '$H/list' > '$H/desk' &&
+           [ \"\$(grep -cE '^  (preferences|prefs-general|background|shortcuts) ' '$H/desk')\" = 4 ] &&
+           ! grep -qE '^  (preferences|prefs-general|background|shortcuts) ' '$H/main' &&
+           grep -qE '^  prefs-icmp ' '$H/main' &&
+           ! grep -qiwE 'tray|window|sign[ -]in' '$H/main' && ! grep -q 'Ctrl+' '$H/main'"
+check "PR4-E: a desktop app topic says so when it is shown" \
+  bash -c "'$S' help shortcuts | sed -n 3p | grep -q \"about the desktop app's own\""
+check "PR4-E: help --search ssh login finds topics (exit 0); a word no topic holds exits 1" \
+  bash -c "'$S' help --search ssh login | grep -q '^  getting-started ' &&
+           '$S' help --search zzqqy > /dev/null 2> '$H/serr'; [ \$? -eq 1 ] && grep -q 'no help topic holds' '$H/serr'"
+check "PR4-E: help --search with no word, and an unknown topic, are usage errors (exit 2)" \
+  bash -c "'$S' help --search > /dev/null 2>&1; [ \$? -eq 2 ] &&
+           '$S' help gettng-started > /dev/null 2> '$H/uerr'; [ \$? -eq 2 ] &&
+           grep -q \"did you mean \\\`stockfw help getting-started'\" '$H/uerr'"
+check "PR4-E: help --json topic policy: blocks with kinds, links as commands" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'help', 'topic', 'policy'], capture_output=True, text=True).stdout)
+kinds = {b['kind'] for b in d['blocks']}
+assert d['id'] == 'policy' and d['command'] == 'stockfw help topic policy' and {'para', 'see'} <= kinds, d
+assert all('<' not in b.get('text', '') for b in d['blocks'])"
+check "PR4-E: __complete help offers the topics, and help topic pre the prefs topics" \
+  bash -c "'$S' __complete help '' | grep -qx getting-started && '$S' __complete help '' | grep -qx topics &&
+           '$S' __complete help - | grep -qx -- --search &&
+           [ \"\$('$S' __complete help topic prefs-i)\" = prefs-icmp ]"
+check "PR4-E: about: version, the About window's credits in its order, licence and website" py "
+import re, subprocess
+src = open('src/ui/fs-aboutdialog.c').read()
+want = re.findall(r'^\t\t\"([^\"]+ - [^\"]+)\",\$', src.split('fs_dialogs_about_credits (void)')[1].split('NULL')[0], re.M)
+assert len(want) == 3, want
+out = subprocess.run(['$S', 'about', '--credits'], capture_output=True, text=True).stdout
+assert out.split('\n')[:-1] == want, (out, want)
+out = subprocess.run(['$S', 'about'], capture_output=True, text=True).stdout
+assert out.startswith('StockFW ') and all(c in out for c in want), out
+assert 'https://github.com/Cazo-Net/StockFW' in out and 'stockfw about --licences' in out, out"
+check "PR4-E: about --licences prints both texts of the source in full" \
+  bash -c "'$S' about --licences > '$H/lic' && grep -q 'GNU GENERAL PUBLIC LICENSE' '$H/lic' &&
+           grep -q 'Apache License' '$H/lic' && [ \"\$(wc -l < '$H/lic')\" -gt 400 ]"
+check "PR4-E: about --system: four lines, no GTK, no user or host name; --json parses" \
+  bash -c "'$S' about --system > '$H/sys' 2> /dev/null && [ \"\$(wc -l < '$H/sys')\" = 4 ] &&
+           head -1 '$H/sys' | grep -q '^StockFW ' && grep -q '^GLib ' '$H/sys' && ! grep -q 'GTK' '$H/sys' &&
+           ! grep -qwF \"\$(hostname)\" '$H/sys' && ! grep -qwF \"\$(id -un)\" '$H/sys' &&
+           '$S' --json about --system | python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d[\"platform\"] == \"linux\"'"
+check "PR4-E: about takes one of --credits, --licences, --system (exit 2), and no word" \
+  bash -c "'$S' about --credits --system > /dev/null 2>&1; [ \$? -eq 2 ] && '$S' about extra > /dev/null 2>&1; [ \$? -eq 2 ]"
+check "PR4-E: help and about never read stdin: an open pipe that never ends does not hold them" py "
+import subprocess
+for args in (['help', 'topics'], ['help', 'getting-started'], ['about'], ['about', '--system']):
+    p = subprocess.Popen(['$S'] + args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    assert p.wait(timeout=10) == 0, args
+    p.stdin.close()"
+"$S" __man topics > "$H/topics.7" 2> "$H/err"
+check "PR4-E: __man topics writes stockfw-topics(7), the page the build wrote" \
+  bash -c "head -3 '$H/topics.7' | grep -q '^\\.TH STOCKFW\\\\-TOPICS 7' && cmp -s '$H/topics.7' '$BUILD/stockfw-topics.7' && [ ! -s '$H/err' ]"
+check "  ...one section per topic, with the command that prints it" py "
+import json
+page = open('$H/topics.7').read()
+for t in json.load(open('$H/topics.json'))['topics']:
+    assert '\n.B ' + t['command'].replace('-', '\\\\-') + '\n' in page, t['id']"
+check "  ...stockfw(1) names it under SEE ALSO, and cmake --install puts it in man7" \
+  bash -c "grep -q '^\\.BR stockfw\\\\-topics (7),' '$BUILD/stockfw.1' &&
+           cmake --install '$BUILD' --prefix '$H/inst' > /dev/null 2>&1 &&
+           cmp -s '$H/inst/share/man/man7/stockfw-topics.7' '$BUILD/stockfw-topics.7'"
+if command -v groff > /dev/null; then
+  groff -man -Tutf8 -ww "$H/topics.7" > /dev/null 2> "$H/groff.err"
+  check "  ...groff -man -Tutf8 -ww reads it without a warning" \
+    bash -c "[ ! -s '$H/groff.err' ] || { cat '$H/groff.err'; false; }"
+else
+  echo "skip: PR4-E: groff is not installed; stockfw-topics(7) is not formatted"
+fi
+check "PR4-E: no \"AI\" wording in the topics page or what help and about print" \
+  bash -c "! cat '$H/topics.7' '$H'/topic-* '$H/list' | grep -nE '\\bAI\\b|AI-' && ! '$S' about | grep -qE '\\bAI\\b'"
 # === end PR4-E ===
 
 echo ""

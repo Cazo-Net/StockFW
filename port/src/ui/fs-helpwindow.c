@@ -23,7 +23,7 @@
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-helpwindow.h"
-#include "ui/fs-helpcontent.h"
+#include "core/fs-helpcontent.h"
 #include "ui/fs-icons.h"
 #include "core/fs-i18n.h"
 

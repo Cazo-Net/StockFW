@@ -334,8 +334,10 @@ gint fs_cli_cmd_activity    (gint argc, gchar **argv);
 const gchar *fs_cli_stop_consequence (void);
 gboolean     fs_cli_stop_confirm     (gboolean yes);
 
-/* Help for a topic: the main help for NULL, NULL for an unknown one.
- * Topics are the commands, their aliases, "help" and "version". */
+/* Help for a command: the main help for NULL, NULL for an unknown one.
+ * Commands are those of the tables, their aliases and "version";
+ * `stockfw help' itself is fs-cli-help.c's (PR 4, 4E), which also
+ * prints the guide's topics. */
 const gchar *fs_cli_command_help (const gchar *command);
 
 /* ----------------------------------------------------------- parsing */
@@ -605,6 +607,12 @@ FsWhatIfContext *fs_cli_whatif_context (const FsPolicy *policy,
 /* fs-cli-config.c: is a StockFW window running as root? */
 gboolean fs_cli_root_gui_running (void);
 /* === end PR4-C === */
+
+/* === PR4-E === */
+/* `stockfw __man topics' (fs-cli-complete.c): the help topics as the
+ * page stockfw-topics(7), written by fs-cli-help.c. */
+gint fs_cli_help_man_topics (void);
+/* === end PR4-E === */
 
 G_END_DECLS
 

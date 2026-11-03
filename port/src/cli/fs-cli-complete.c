@@ -6,6 +6,7 @@
  *                                WORD (it may be empty); the shell
  *                                scripts in contrib/completion call it
  *   stockfw __man                the manual page stockfw(1), in roff
+ *   stockfw __man topics         the help topics as stockfw-topics(7)
  *
  * fs-cli-main.c runs them before it parses anything, and neither is in
  * a table, so `help', the command list and did-you-mean never show
@@ -14,6 +15,7 @@
 #include "cli/fs-cli.h"
 #include "core/fs-intel.h"
 #include "core/fs-netparse.h"
+#include "core/fs-helpcontent.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -54,6 +56,7 @@ static const gchar *trust_subs[] = {
 	"list", "check", "inspect", "attest", "forget", NULL
 };
 /* === end PR4-D === */
+static const gchar *help_subs[] = { "topics", "topic", NULL };
 
 static const gchar *events_by[] = {
 	"src", "dst", "port", "service", "dir", "rule", "hour", NULL
@@ -418,9 +421,17 @@ fs_cli_complete_main (gint argc, gchar **argv)
 			emit_globals (&o);
 		else
 			emit_commands (&o);
-	} else if (is_help) {
-		if (pos->len == 0)
+	} else if (is_help && !(cur[0] == '-' && !positional)) {
+		/* a command, or a topic of the guide (PR 4, 4E) */
+		if (pos->len == 0) {
 			emit_commands (&o);
+			emit_all (&o, help_subs);
+		}
+		if (pos->len == 0 ||
+		    (pos->len == 1 && g_str_has_prefix (g_ptr_array_index (pos, 0),
+		                                        "topic")))
+			for (guint i = 0; i < fs_help_topic_count (); i++)
+				emit (&o, fs_help_topic_nth (i)->id);
 	} else if (def == NULL) {
 		/* an unknown command: nothing to offer */
 	} else if (cur[0] == '-' && !positional) {
@@ -555,6 +566,9 @@ fs_cli_man_main (gint argc, gchar **argv)
 	GString *out = g_string_new (NULL);
 	const gchar *main_help = fs_cli_command_help (NULL);
 
+	if (argc > 0 && strcmp (argv[0], "topics") == 0)
+		return fs_cli_help_man_topics ();
+
 	g_string_append (out,
 		".\\\" stockfw(1), made by `stockfw __man' from the command tables.\n"
 		".\\\" Do not edit: change the help texts in src/cli instead.\n");
@@ -610,8 +624,6 @@ fs_cli_man_main (gint argc, gchar **argv)
 		}
 	}
 
-	g_string_append (out, ".SH \"STOCKFW HELP\"\n");
-	roff_verbatim (out, fs_cli_command_help ("help"));
 	g_string_append (out, ".SH \"STOCKFW VERSION\"\n");
 	roff_verbatim (out, fs_cli_command_help ("version"));
 
@@ -670,7 +682,8 @@ fs_cli_man_main (gint argc, gchar **argv)
 	}
 
 	g_string_append (out, ".SH \"SEE ALSO\"\n");
-	g_string_append (out, ".BR nft (8),\n.BR iptables (8).\n"
+	g_string_append (out, ".BR stockfw\\-topics (7),\n"
+	                      ".BR nft (8),\n.BR iptables (8).\n"
 	                      "The desktop app, \\fBStockFW\\fR, has no manual "
 	                      "page of its own, and a build with "
 	                      "FS_BUILD_GUI=OFF has no desktop app. Shell "
