@@ -569,6 +569,10 @@ on_deadline (gpointer data)
 /* Reads from one pipe per round, at most: a curl that writes to stderr
  * without end must not keep the loop from its deadline. */
 #define READS_PER_ROUND      16
+/* The pipes' buffer: with the default (a few KiB) curl stalls on a full
+ * pipe between our rounds, and a round that read anything never waits,
+ * so the transfer is not held to a few KiB per POLL_MS. */
+#define PIPE_BUFFER          (1024 * 1024)
 
 enum { PIPE_DATA, PIPE_EMPTY, PIPE_CLOSED, PIPE_FAILED };
 
@@ -738,8 +742,8 @@ win_run_curl (Transfer *t, gchar **argv, gchar **envp, guint deadline_s,
 	memset (&sa, 0, sizeof sa);
 	sa.nLength = sizeof sa;
 	sa.bInheritHandle = TRUE;
-	if (!CreatePipe (&out_r, &out_w, &sa, 0) ||
-	    !CreatePipe (&err_r, &err_w, &sa, 0) ||
+	if (!CreatePipe (&out_r, &out_w, &sa, PIPE_BUFFER) ||
+	    !CreatePipe (&err_r, &err_w, &sa, PIPE_BUFFER) ||
 	    !SetHandleInformation (out_r, HANDLE_FLAG_INHERIT, 0) ||
 	    !SetHandleInformation (err_r, HANDLE_FLAG_INHERIT, 0) ||
 	    (in = CreateFileW (L"NUL", GENERIC_READ,
@@ -828,8 +832,7 @@ win_run_curl (Transfer *t, gchar **argv, gchar **envp, guint deadline_s,
 		gint64 now;
 		gint r;
 		guint n;
-		/* A pipe that still had data at the end of its reads: no
-		 * waiting in the next round. */
+		/* A round that read anything: no waiting in the next one. */
 		gboolean busy = FALSE;
 
 		if (!*exited &&
@@ -856,6 +859,7 @@ win_run_curl (Transfer *t, gchar **argv, gchar **envp, guint deadline_s,
 			if (r == PIPE_EMPTY)
 				break;
 			if (r == PIPE_DATA) {
+				busy = TRUE;
 				g_byte_array_append (t->body, t->out_buf, got);
 				if (t->body->len > t->max_bytes) {
 					win_stop (t, pi.hProcess,
@@ -890,6 +894,7 @@ win_run_curl (Transfer *t, gchar **argv, gchar **envp, guint deadline_s,
 			if (r == PIPE_EMPTY)
 				break;
 			if (r == PIPE_DATA) {
+				busy = TRUE;
 				if (t->err->len < STDERR_MAX)
 					g_string_append_len (
 						t->err, (const gchar *) t->err_buf,

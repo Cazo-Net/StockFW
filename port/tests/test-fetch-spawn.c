@@ -200,6 +200,25 @@ check_bytes (gsize n, gsize cap)
 	g_free (path);
 }
 
+/* A body of a few MiB arrives at pipe speed, not a few KiB per poll
+ * (the Windows loop once waited 50 ms after every small read). */
+static void
+test_speed (void)
+{
+	GError *error = NULL;
+	gint64 t0 = g_get_monotonic_time ();
+	GBytes *b = fetch ("/bytes/8000000", 10000000, 60, &error);
+	gdouble took = (g_get_monotonic_time () - t0) /
+	               (gdouble) G_USEC_PER_SEC;
+
+	CHECK (b != NULL && g_bytes_get_size (b) == 8000000 && took < 10.0,
+	       "8 MB arrive in %.1f s (under 10 s)%s%s", took,
+	       error != NULL ? ": " : "", error != NULL ? error->message : "");
+	if (b != NULL)
+		g_bytes_unref (b);
+	g_clear_error (&error);
+}
+
 static void
 test_sizes (void)
 {
@@ -443,6 +462,7 @@ main (int argc, char **argv)
 
 	test_console (fake);
 	test_sizes ();
+	test_speed ();
 	test_failures (fake);
 	check_argv ("a b");
 	check_argv ("\"");
