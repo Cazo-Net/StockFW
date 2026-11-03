@@ -60,6 +60,7 @@
 #include "core/fs-service.h"
 #include "core/fs-i18n.h"
 #include "core/fs-util.h"
+#include "core/fs-winevt.h"
 #include "netfw-compat.h"
 
 /* Linked through CMake: ole32, oleaut32, iphlpapi, ws2_32 */
@@ -292,12 +293,22 @@ netsh_safe_name (const gchar *name)
  * wedged child instead of hanging the caller.
  * ------------------------------------------------------------------ */
 
-/* Budgets.  wevtutil answers a ten-record query well under a second
+/* Budgets.  wevtutil answers a one-record query well under a second
  * when it works at all, so ten seconds means "wedged" and killing it
- * costs nothing but that poll's results.  netsh reconfigures the
+ * costs nothing but that probe.  A poll may read FS_WINEVT_POLL_CAP
+ * (10,000) events, which takes a few seconds on a slow disk: thirty
+ * seconds before it counts as wedged, and the next poll then asks for
+ * half as many (fs_winevt_poll_done).  netsh reconfigures the
  * firewall and can legitimately take a while on a loaded machine. */
-#define SPAWN_TIMEOUT_WEVTUTIL_MS 10000
-#define SPAWN_TIMEOUT_NETSH_MS    30000
+#define SPAWN_TIMEOUT_WEVTUTIL_MS      10000
+#define SPAWN_TIMEOUT_WEVTUTIL_POLL_MS 30000
+#define SPAWN_TIMEOUT_NETSH_MS         30000
+
+/* What a child may hand back.  A poll of 10,000 events in XML is
+ * about 15 MB; anything bigger is cut there (and the cut is counted as
+ * skipped events, never parsed as half an event). */
+#define SPAWN_OUTPUT_MAX       (16 * 1024 * 1024)
+#define SPAWN_OUTPUT_MAX_POLL  (64 * 1024 * 1024)
 
 /* [ win32_error_text ]
  * The system's own message for a GetLastError() code, trimmed of the
@@ -401,10 +412,8 @@ build_command_line (gchar **argv)
  * the offset sits at the end after the wait -- rewind first.
  * *truncated is set when the output was longer than the cap and was
  * cut: a caller must never take a cut-off output as complete. */
-#define READ_OUTPUT_CAP (16 * 1024 * 1024)
-
 static gchar *
-read_handle_output (HANDLE handle, gboolean *truncated)
+read_handle_output (HANDLE handle, gsize max_bytes, gboolean *truncated)
 {
 	LARGE_INTEGER size;
 	LARGE_INTEGER zero;
@@ -421,13 +430,14 @@ read_handle_output (HANDLE handle, gboolean *truncated)
 	if (!GetFileSizeEx (handle, &size) || size.QuadPart < 0)
 		return NULL;
 
-	/* A ten-record text query is a few kilobytes; a child gone wrong
-	 * must not get to allocate gigabytes of heap for us.  What is cut
-	 * is reported, never passed off as the whole output (review W3:
-	 * `netsh show rule name=all' printed every address of every
-	 * blocklist rule and could run past the cap). */
-	if (size.QuadPart > READ_OUTPUT_CAP) {
-		size.QuadPart = READ_OUTPUT_CAP;
+	/* A ten-record text query is a few kilobytes and a poll of 10,000
+	 * records about 15 MB; a child gone wrong must not get to allocate
+	 * gigabytes of heap for us.  What is cut is reported, never passed
+	 * off as the whole output (review W3: `netsh show rule name=all'
+	 * printed every address of every blocklist rule and could run past
+	 * the cap). */
+	if ((guint64) size.QuadPart > (guint64) max_bytes) {
+		size.QuadPart = (LONGLONG) max_bytes;
 		*truncated = TRUE;
 	}
 
@@ -492,9 +502,10 @@ read_handle_output (HANDLE handle, gboolean *truncated)
  * what it always did -- or ERROR_TIMEOUT (1460) when the budget ran
  * out and the child was killed. */
 static gboolean
-spawn_capture (gchar **argv, gint timeout_ms,
-               gchar **standard_output, gchar **standard_error,
-               gint *exit_status, GError **error)
+spawn_capture_max (gchar **argv, gint timeout_ms, gsize out_max,
+                   gboolean *out_truncated,
+                   gchar **standard_output, gchar **standard_error,
+                   gint *exit_status, GError **error)
 {
 	SECURITY_ATTRIBUTES sa;
 	STARTUPINFOEXW si;
@@ -517,12 +528,15 @@ spawn_capture (gchar **argv, gint timeout_ms,
 	gboolean use_attrs = FALSE;
 	DWORD wait_result = WAIT_FAILED;   /* early exits must return FALSE */
 	DWORD code = 0;
-	gboolean cut = FALSE;
+	gboolean out_cut = FALSE;
+	gboolean err_cut = FALSE;
 
 	if (standard_output != NULL)
 		*standard_output = NULL;
 	if (standard_error != NULL)
 		*standard_error = NULL;
+	if (out_truncated != NULL)
+		*out_truncated = FALSE;
 
 	cmd_line = build_command_line (argv);
 
@@ -651,15 +665,21 @@ spawn_capture (gchar **argv, gint timeout_ms,
 
 	CloseHandle (pi.hProcess);
 
-	out_text = read_handle_output (out_handle, &cut);
-	err_text = read_handle_output (err_handle, &cut);
-	if (cut) {
-		/* The child ran, but what it said cannot be used whole. */
+	out_text = read_handle_output (out_handle, out_max, &out_cut);
+	err_text = read_handle_output (err_handle, SPAWN_OUTPUT_MAX, &err_cut);
+	if (out_truncated != NULL)
+		*out_truncated = out_cut;
+	if (err_cut || (out_cut && out_truncated == NULL)) {
+		/* The child ran, but what it said cannot be used whole.  Only
+		 * a caller that asked for out_truncated (the event poll, which
+		 * counts what it could not read) takes a cut stdout. */
 		if (error != NULL)
 			g_set_error (error, quark, 0,
-			             "The output of %s was longer than %d MiB and "
+			             "The output of %s was longer than %u MiB and "
 			             "was cut off, so it was not used",
-			             argv[0], READ_OUTPUT_CAP / (1024 * 1024));
+			             argv[0],
+			             (guint) ((err_cut ? SPAWN_OUTPUT_MAX : out_max)
+			                      / (1024 * 1024)));
 		wait_result = WAIT_FAILED;
 		goto out;
 	}
@@ -701,6 +721,17 @@ out:
 	g_free (wide_cmd);
 
 	return wait_result == WAIT_OBJECT_0 || wait_result == WAIT_TIMEOUT;
+}
+
+/* [ spawn_capture ] -- spawn_capture_max with the usual 16 MB. */
+static gboolean
+spawn_capture (gchar **argv, gint timeout_ms,
+               gchar **standard_output, gchar **standard_error,
+               gint *exit_status, GError **error)
+{
+	return spawn_capture_max (argv, timeout_ms, SPAWN_OUTPUT_MAX, NULL,
+	                          standard_output, standard_error,
+	                          exit_status, error);
 }
 
 /* [ run_netsh ]
@@ -1852,6 +1883,12 @@ firewalled_list_connections (void)
  * thread that runs the query and hands the result back to the main
  * loop with g_idle_add, so neither the child's runtime nor a hang can
  * freeze the UI.
+ *
+ * 1.0.7: each poll reads every 5156/5157 event after the last record
+ * it saw (by EventRecordID, up to 10,000 a poll), not the newest ten,
+ * so a burst of thousands reaches the list.  The query, the XML
+ * parsing, the skip count and the log-clear check are in
+ * core/fs-winevt.c, where the tests run them on every platform.
  * ------------------------------------------------------------------ */
 
 static guint     log_source_id = 0;
@@ -1873,225 +1910,71 @@ static gpointer  log_user_data = NULL;
 static gboolean poll_in_flight = FALSE;
 static guint    log_generation = 0;
 
+/* Where the reader is in the Security log, and what it skipped. */
+static FsWinEvtCursor log_cursor;
+
 /* One finished (or timed out) query, waiting for the main loop. */
 typedef struct {
-	gchar *output;
-	gchar *err_text;
-	gint   exit_code;
-	guint  generation;
+	gchar   *output;
+	gchar   *err_text;
+	gchar   *newest_output;  /* the probe after an empty poll, or NULL */
+	gint     exit_code;
+	gboolean truncated;      /* output past SPAWN_OUTPUT_MAX_POLL      */
+	guint64  after;          /* the record the query read after        */
+	guint    asked;          /* /c: of the query                       */
+	guint    generation;
 } PollResult;
 
-/* Records already handed to the UI.  The query re-reads the latest ten
- * events on every poll, so each poll must drop whatever earlier ones
- * delivered.  Remembering a single timestamp was not enough: the batch
- * shifts as new events arrive, and the old check only recognised the
- * one record that happened to carry that exact timestamp -- everything
- * else was re-announced, so the list filled with copies every five
- * seconds.  Bounded well above the ten the query ever returns. */
-#define SEEN_RECORDS_MAX 64
-static GHashTable *seen_records = NULL;     /* record text -> TRUE      */
-static GQueue      seen_order = G_QUEUE_INIT; /* oldest at the tail     */
-
-/* [ parse_firewall_event ]
- * wevtutil text output from the Security log has the shape:
- *
- *   Date: 2026-10-06T10:58:39.1040000Z
- *   Event ID: 5157
- *   ...
- *   Description:
- *   The Windows Filtering Platform has blocked a connection.
- *
- *   Application Information:
- *       Process ID:     11964
- *       Application Name:  \device\harddiskvolume9\...brave.exe
- *
- *   Network Information:
- *       Direction:      Inbound
- *       Source Address:     fe80::...
- *       Source Port:        5353
- *       Destination Address: ff02::fb
- *       Destination Port:   5353
- *       Protocol:       17
- *
- * Pull the labelled fields out of it. */
-static gboolean
-parse_firewall_event (const gchar *text, FsHit *hit)
-{
-	gchar **lines = g_strsplit (text, "\r\n", -1);
-	gboolean got_address = FALSE;
-	gboolean is_blocked = FALSE;
-	gchar *app_path = NULL;
-	gchar *direction_str = NULL;
-
-	/* Detect blocked vs permitted from the description. */
-	if (strstr (text, "blocked a connection") != NULL)
-		is_blocked = TRUE;
-
-	for (gint i = 0; lines[i] != NULL; i++) {
-		gchar *line = g_strstrip (lines[i]);
-		gchar *colon;
-
-		if (line == NULL || *line == '\0')
-			continue;
-
-		/* Timestamp line. */
-		if (g_str_has_prefix (line, "Date:")) {
-			hit->time = g_strdup (g_strstrip (line + 5));
-			continue;
-		}
-
-		colon = strchr (line, ':');
-		if (colon == NULL)
-			continue;
-
-		*colon = '\0';
-		line = g_strstrip (line);
-
-		{
-			const gchar *value = g_strstrip (colon + 1);
-
-			if (g_strcmp0 (line, "Protocol") == 0) {
-				gchar *sp = strchr (value, ' ');
-				if (sp != NULL)
-					*sp = '\0';
-				hit->protocol = g_strdup (value);
-			} else if (g_strcmp0 (line, "Source Address") == 0) {
-				hit->source = g_strdup (value);
-			} else if (g_strcmp0 (line, "Destination Address") == 0) {
-				hit->destination = g_strdup (value);
-				got_address = TRUE;
-			} else if (g_strcmp0 (line, "Destination Port") == 0) {
-				/* DPT=: the port the original displayed -- the
-				 * service port for inbound, the remote port for
-				 * outbound.  The source port is an ephemeral
-				 * client port and was never shown; putting it in
-				 * "port" made every service lookup miss. */
-				hit->port = g_strdup (value);
-			} else if (g_strcmp0 (line, "Direction") == 0) {
-				direction_str = g_strdup (value);
-			} else if (g_strcmp0 (line, "Application Name") == 0) {
-				app_path = g_strdup (value);
-			}
-		}
-	}
-
-	g_strfreev (lines);
-
-	if (!got_address) {
-		g_clear_pointer (&hit->time, g_free);
-		g_clear_pointer (&hit->in, g_free);
-		g_clear_pointer (&hit->out, g_free);
-		g_clear_pointer (&hit->source, g_free);
-		g_clear_pointer (&hit->destination, g_free);
-		g_clear_pointer (&hit->port, g_free);
-		g_clear_pointer (&hit->protocol, g_free);
-		g_clear_pointer (&hit->service, g_free);
-		g_clear_pointer (&direction_str, g_free);
-		g_clear_pointer (&app_path, g_free);
-		return FALSE;
-	}
-
-	/* Direction. */
-	gboolean inbound;
-
-	if (direction_str != NULL) {
-		inbound = g_ascii_strncasecmp (direction_str, "Inbound", 7) == 0;
-		g_free (direction_str);
-	} else {
-		inbound = TRUE;
-	}
-	hit->direction = g_strdup (inbound ? "in" : "out");
-
-	/* The original's In/Out columns showed the interface a packet
-	 * arrived on and left on (IN=, OUT=).  Event 5156/5157 carries no
-	 * interface, so show the local side under In and the remote side
-	 * under Out -- the same local/remote reading, direction aware. */
-	if (inbound) {
-		hit->in  = g_strdup (hit->destination ? hit->destination : "?");
-		hit->out = g_strdup (hit->source ? hit->source : "?");
-	} else {
-		hit->in  = g_strdup (hit->source ? hit->source : "?");
-		hit->out = g_strdup (hit->destination ? hit->destination : "?");
-	}
-
-	/* Protocol: numeric to name.  Replace in place -- assigning a new
-	 * string over the old one leaked the numeric original on every
-	 * event. */
-	if (hit->protocol != NULL) {
-		const gchar *name = NULL;
-
-		if (g_strcmp0 (hit->protocol, "6") == 0)
-			name = "TCP";
-		else if (g_strcmp0 (hit->protocol, "17") == 0)
-			name = "UDP";
-		else if (g_strcmp0 (hit->protocol, "1") == 0)
-			name = "ICMP";
-
-		if (name != NULL) {
-			g_free (hit->protocol);
-			hit->protocol = g_strdup (name);
-		}
-	}
-
-	/* Service name from port. */
-	hit->service = fs_service_lookup_port (atoi (hit->port ? hit->port : "0"));
-	if (hit->service == NULL)
-		hit->service = g_strdup (_("Unknown"));
-
-	/* Use application name as service if available (more specific). */
-	if (app_path != NULL) {
-		/* Extract the exe name from the full path. */
-		const gchar *base = strrchr (app_path, '\\');
-		base = base ? base + 1 : app_path;
-		if (*base != '\0') {
-			g_free (hit->service);
-			hit->service = g_strdup (base);
-		}
-		g_free (app_path);
-	}
-
-	/* Mark blocked events with a visible marker. */
-	if (is_blocked) {
-		gchar *old = hit->service;
-		hit->service = g_strdup_printf ("%s [BLOCKED]", old ? old : "?");
-		g_free (old);
-	}
-
-	return TRUE;
-}
-
 /* [ run_wevtutil ]
- * One Security-log query, with both output streams captured.
+ * One wevtutil run (argv from core/fs-winevt.c), with both output
+ * streams captured.
  *
- * Goes through spawn_capture(), so the query opens no console window
- * and cannot hang the caller beyond the spawn budget.  On Windows the
- * raw process exit code lands in *exit_code, so 5 here really is
- * ERROR_ACCESS_DENIED. */
+ * Goes through spawn_capture_max(), so the query opens no console
+ * window and cannot hang the caller beyond the spawn budget.  On
+ * Windows the raw process exit code lands in *exit_code, so 5 here
+ * really is ERROR_ACCESS_DENIED. */
 static gboolean
-run_wevtutil (gchar **standard_output, gchar **standard_error,
-              gint *exit_code, GError **error)
+run_wevtutil (gchar **args, gint timeout_ms, gsize out_max,
+              gboolean *truncated, gchar **standard_output,
+              gchar **standard_error, gint *exit_code, GError **error)
 {
-	gchar *args[] = {
-		"wevtutil.exe", "qe", "Security",
-		"/q:*[System[(EventID=5156 or EventID=5157)]]",
-		"/c:10", "/rd:true", "/f:text", NULL
-	};
 	gint status = 0;
 
-	if (standard_output != NULL)
-		*standard_output = NULL;
-	if (standard_error != NULL)
-		*standard_error = NULL;
-
-	if (!spawn_capture (args, SPAWN_TIMEOUT_WEVTUTIL_MS,
-	                    standard_output, standard_error,
-	                    &status, error))
+	if (!spawn_capture_max (args, timeout_ms, out_max, truncated,
+	                        standard_output, standard_error,
+	                        &status, error))
 		return FALSE;
 
 	if (exit_code != NULL)
 		*exit_code = status;
 
 	return TRUE;
+}
+
+/* [ run_probe ] -- the newest record of any kind (fs_winevt_probe_argv). */
+static gboolean
+run_probe (gchar **standard_output, gchar **standard_error,
+           gint *exit_code, GError **error)
+{
+	gchar **args = fs_winevt_probe_argv ();
+	gboolean ok = run_wevtutil (args, SPAWN_TIMEOUT_WEVTUTIL_MS,
+	                            SPAWN_OUTPUT_MAX, NULL, standard_output,
+	                            standard_error, exit_code, error);
+
+	g_strfreev (args);
+	return ok;
+}
+
+/* [ newest_record ] -- the record number in a probe's output, 0 when
+ * the log holds nothing. */
+static guint64
+newest_record (const gchar *output)
+{
+	GPtrArray *events = fs_winevt_parse_xml (output, NULL);
+	guint64 newest = fs_winevt_newest (events);
+
+	g_ptr_array_unref (events);
+	return newest;
 }
 
 /* [ security_log_denied ]
@@ -2106,150 +1989,16 @@ security_log_denied (gint exit_code, const gchar *stderr_text)
 	        strstr (stderr_text, "Access is denied") != NULL);
 }
 
-/* [ free_hit_fields ]
- * "hit" is a stack local; fs_hit_free would g_free() the struct itself
- * and corrupt the heap.  Free only the strings parse allocated. */
-static void
-free_hit_fields (FsHit *hit)
-{
-	g_clear_pointer (&hit->time, g_free);
-	g_clear_pointer (&hit->direction, g_free);
-	g_clear_pointer (&hit->in, g_free);
-	g_clear_pointer (&hit->out, g_free);
-	g_clear_pointer (&hit->source, g_free);
-	g_clear_pointer (&hit->destination, g_free);
-	g_clear_pointer (&hit->port, g_free);
-	g_clear_pointer (&hit->protocol, g_free);
-	g_clear_pointer (&hit->service, g_free);
-}
-
-/* [ record_seen ] / [ remember_record ]
- * The de-duplication the poll loop runs every record through.  Kept as
- * named functions so tests can drive them directly: the old inline
- * "does the record text contain the last timestamp" check re-delivered
- * almost everything on every poll, and that bug was invisible without
- * feeding it two identical batches. */
-static gboolean
-record_seen (const gchar *record)
-{
-	return seen_records != NULL &&
-	       g_hash_table_contains (seen_records, record);
-}
-
-static void
-remember_record (const gchar *record)
-{
-	gchar *key;
-
-	if (seen_records == NULL)
-		seen_records = g_hash_table_new_full (g_str_hash, g_str_equal,
-		                                       g_free, NULL);
-
-	/* Bounded: the query only ever returns SEEN_RECORDS_MAX-ish
-	 * records, so the table holds a batch or two, never history. */
-	while (g_queue_get_length (&seen_order) >= SEEN_RECORDS_MAX) {
-		gchar *oldest = g_queue_pop_tail (&seen_order);
-
-		g_hash_table_remove (seen_records, oldest);
-	}
-
-	key = g_strdup (record);
-	g_queue_push_head (&seen_order, key);
-	g_hash_table_insert (seen_records, key, GINT_TO_POINTER (1));
-}
-
-static void
-forget_all_records (void)
-{
-	g_queue_clear (&seen_order);
-	g_clear_pointer (&seen_records, g_hash_table_destroy);
-}
-
-/* [ split_firewall_records ]
- * Cuts wevtutil /f:text output into one record per event, at every
- * line starting with "Event[" -- wevtutil's own record marker.
- *
- * Blank lines are NOT record separators: a 5156/5157 record carries
- * them inside its Description block (headline sentence, then the
- * field sections).  The old blank-line split chopped every record in
- * two -- the header half has no addresses and was dropped, the field
- * half had no Date -- which on screen is an empty list no matter how
- * much traffic there is.  Output without the marker falls back to the
- * old split so an oddly shaped batch still yields something. */
-static GPtrArray *
-split_firewall_records (const gchar *output)
-{
-	GPtrArray *records = g_ptr_array_new_with_free_func (g_free);
-	gchar **lines;
-	GString *current = NULL;
-	gboolean saw_marker = FALSE;
-
-	if (output == NULL || *output == '\0')
-		return records;
-
-	lines = g_strsplit (output, "\r\n", -1);
-
-	for (gint i = 0; lines[i] != NULL; i++) {
-		if (g_str_has_prefix (lines[i], "Event[")) {
-			saw_marker = TRUE;
-			if (current != NULL)
-				g_ptr_array_add (records,
-				                 g_string_free (current, FALSE));
-			current = g_string_new (NULL);
-
-			/* The marker itself is the record's POSITION in this
-			 * batch (Event[0] is the newest), and the positions move
-			 * every time a new event arrives: an event that was
-			 * Event[3] last poll is Event[4] this poll.  Keeping the
-			 * line in the record text made every shifted record a
-			 * "new" record to the de-duplication below, so one fresh
-			 * event re-delivered the whole batch as duplicates --
-			 * the same rows over and over in the list.  The content
-			 * after the marker is identical for the same event on
-			 * every poll, so that is what the record is made of. */
-			continue;
-		}
-
-		if (current == NULL)
-			current = g_string_new (NULL);  /* text before marker */
-
-		g_string_append (current, lines[i]);
-		g_string_append (current, "\r\n");
-	}
-
-	if (current != NULL)
-		g_ptr_array_add (records, g_string_free (current, FALSE));
-
-	g_strfreev (lines);
-
-	if (!saw_marker) {
-		gchar **chunks;
-		GPtrArray *fallback = g_ptr_array_new_with_free_func (g_free);
-
-		g_ptr_array_unref (records);
-		records = fallback;
-
-		chunks = g_strsplit (output, "\r\n\r\n", -1);
-		for (gint i = 0; chunks[i] != NULL; i++) {
-			if (*chunks[i] != '\0')
-				g_ptr_array_add (records, g_strdup (chunks[i]));
-		}
-		g_strfreev (chunks);
-	}
-
-	return records;
-}
-
 /* [ poll_deliver ]
  * Runs on the GTK main loop (g_idle_add) -- the only place that may
- * touch the callback, the seen-set and GTK, since the worker thread
+ * touch the callback, the cursor and GTK, since the worker thread
  * goes near none of them. */
 static gboolean
 poll_deliver (gpointer data)
 {
 	PollResult *result = data;
-	GPtrArray *records;
-	guint new_events = 0;
+	GPtrArray *events, *fresh;
+	gboolean cut = FALSE;
 
 	/* Release the in-flight guard first: even a discarded result
 	 * means the worker is done. */
@@ -2260,6 +2009,15 @@ poll_deliver (gpointer data)
 	if (result->generation != log_generation)
 		goto out;
 
+	/* Killed at the budget: ask for fewer next time.  The cursor did
+	 * not move, but the next poll still reads the newest first: a
+	 * backlog larger than the halved request loses its older part,
+	 * and that part is counted as skipped (fs_winevt_take). */
+	if (result->exit_code == ERROR_TIMEOUT) {
+		fs_winevt_poll_done (&log_cursor, TRUE);
+		goto out;
+	}
+
 	if (result->exit_code != 0) {
 		/* firewalled_log_start() checks this before it starts the
 		 * timer, so reaching here means the right to read the log was
@@ -2269,49 +2027,37 @@ poll_deliver (gpointer data)
 		goto out;
 	}
 
+	fs_winevt_poll_done (&log_cursor, FALSE);
+
+	/* A poll with nothing above the cursor brought the newest record
+	 * of any kind: below the cursor, the log was cleared, and the
+	 * batch in hand (all of it after the clear) is read from the
+	 * start. */
+	if (result->newest_output != NULL)
+		fs_winevt_check_newest (&log_cursor,
+		                        newest_record (result->newest_output));
+
 	if (result->output == NULL)
 		goto out;
 
-	records = split_firewall_records (result->output);
+	events = fs_winevt_parse_xml (result->output, &cut);
+	fresh = fs_winevt_take (&log_cursor, events, result->asked,
+	                        cut || result->truncated);
 
-	for (guint i = 0; i < records->len; i++) {
-		const gchar *record = g_ptr_array_index (records, i);
-		FsHit hit = { 0 };
-		guint len = strlen (record);
-
-		if (len < 40)
-			continue;
-
-		/* Drop anything an earlier poll already delivered: the query
-		 * re-reads the latest ten events every time. */
-		if (record_seen (record))
-			continue;
-
-		/* Remember before parsing: a record we cannot parse is still
-		 * delivered again next poll, and would otherwise be parsed
-		 * (and rejected) forever. */
-		remember_record (record);
-
-		if (!parse_firewall_event (record, &hit)) {
-			free_hit_fields (&hit);
-			continue;
-		}
+	for (guint i = 0; i < fresh->len; i++) {
+		const FsWinEvent *e = g_ptr_array_index (fresh, i);
 
 		if (log_callback != NULL)
-			log_callback (&hit, log_user_data);
-
-		new_events++;
-
-		free_hit_fields (&hit);
+			log_callback (e->hit, log_user_data);
 	}
 
-	g_ptr_array_unref (records);
+	g_ptr_array_unref (fresh);
+	g_ptr_array_unref (events);
 
 out:
-	(void) new_events;
-
 	g_free (result->output);
 	g_free (result->err_text);
+	g_free (result->newest_output);
 	g_free (result);
 
 	return G_SOURCE_REMOVE;
@@ -2319,15 +2065,53 @@ out:
 
 /* [ poll_worker ]
  * The worker thread itself: all it does is run wevtutil -- a plain
- * Win32 spawn through spawn_capture(), no COM, no GTK, no shared
- * state -- and post the result to the main loop. */
+ * Win32 spawn through spawn_capture_max(), no COM, no GTK, no shared
+ * state (the cursor was copied into the result at dispatch) -- and
+ * post the result to the main loop.  A poll that finds nothing also
+ * asks for the newest record of any kind, for the log-clear check. */
 static gpointer
 poll_worker (gpointer data)
 {
 	PollResult *result = data;
+	gchar **args = fs_winevt_poll_argv (result->after, result->asked);
 
-	run_wevtutil (&result->output, &result->err_text,
+	run_wevtutil (args, SPAWN_TIMEOUT_WEVTUTIL_POLL_MS,
+	              SPAWN_OUTPUT_MAX_POLL, &result->truncated,
+	              &result->output, &result->err_text,
 	              &result->exit_code, NULL);
+	g_strfreev (args);
+
+	/* A query this Windows will not take (an event log service that
+	 * refuses the EventRecordID condition): ask for the newest
+	 * records without it, fewer of them, and let fs_winevt_take drop
+	 * what was delivered already.  Not for a refusal of rights or a
+	 * timeout, which the plain query would meet as well. */
+	if (result->exit_code != 0 && result->exit_code != ERROR_TIMEOUT &&
+	    result->exit_code != ERROR_ACCESS_DENIED && result->after > 0) {
+		g_clear_pointer (&result->output, g_free);
+		g_clear_pointer (&result->err_text, g_free);
+		result->asked = MIN (result->asked, FS_WINEVT_FALLBACK_CAP);
+		args = fs_winevt_poll_argv (0, result->asked);
+		run_wevtutil (args, SPAWN_TIMEOUT_WEVTUTIL_POLL_MS,
+		              SPAWN_OUTPUT_MAX_POLL, &result->truncated,
+		              &result->output, &result->err_text,
+		              &result->exit_code, NULL);
+		g_strfreev (args);
+	}
+
+	/* Nothing above the cursor: an empty poll, or in the fallback a
+	 * batch of only old records, which is also what a log cleared and
+	 * filled again answers.  The probe tells which. */
+	if (result->exit_code == 0 &&
+	    fs_winevt_needs_probe (result->output, result->after)) {
+		gchar *err_text = NULL;
+		gint code = -1;
+
+		if (!run_probe (&result->newest_output, &err_text, &code,
+		                NULL) || code != 0)
+			g_clear_pointer (&result->newest_output, g_free);
+		g_free (err_text);
+	}
 
 	g_idle_add (poll_deliver, result);
 	return NULL;
@@ -2351,6 +2135,9 @@ poll_events (gpointer data)
 
 	result = g_new0 (PollResult, 1);
 	result->generation = log_generation;
+	result->after = log_cursor.last_id;
+	result->asked = log_cursor.cap != 0 ? log_cursor.cap
+	                                      : FS_WINEVT_POLL_CAP;
 
 	poll_in_flight = TRUE;
 
@@ -2414,7 +2201,7 @@ firewalled_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 	 * five second timer anyway would tell the user the opposite of the
 	 * truth: monitoring would read as switched on while nothing could
 	 * ever arrive. */
-	if (!run_wevtutil (&output, &err_text, &exit_code, &local_error)) {
+	if (!run_probe (&output, &err_text, &exit_code, &local_error)) {
 		/* spawn_capture()'s message already names the program and the
 		 * Windows error ("Could not run wevtutil.exe: ..."). */
 		if (local_error != NULL)
@@ -2428,8 +2215,6 @@ firewalled_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 		g_clear_pointer (&err_text, g_free);
 		return FALSE;
 	}
-
-	g_clear_pointer (&output, g_free);
 
 	if (err_text != NULL)
 		g_strstrip (err_text);
@@ -2456,10 +2241,17 @@ firewalled_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 					? err_text : _("no detail"));
 
 		g_clear_pointer (&err_text, g_free);
+		g_clear_pointer (&output, g_free);
 		return FALSE;
 	}
 
 	g_clear_pointer (&err_text, g_free);
+
+	/* Start after the newest record now: what came before is either
+	 * in the saved history already or from before this session.  A
+	 * stop and start in one session starts after "now" again. */
+	fs_winevt_cursor_init (&log_cursor, newest_record (output));
+	g_clear_pointer (&output, g_free);
 
 	/* The log is readable; make sure Windows is recording into it. */
 	ensure_filtering_audit ();
@@ -2491,13 +2283,20 @@ firewalled_log_stop (void)
 
 	log_callback = NULL;
 	log_user_data = NULL;
-	forget_all_records ();
 }
 
 static gboolean
 firewalled_log_active (void)
 {
 	return log_source_id != 0;
+}
+
+/* [ firewalled_log_skipped ] -- FsBackend.log_skipped: the upper bound
+ * fs_winevt_take counted when a poll came back full. */
+static guint64
+firewalled_log_skipped (void)
+{
+	return log_cursor.skipped;
 }
 
 static gboolean
@@ -3840,6 +3639,7 @@ static const FsBackend windows_backend = {
 	.log_start             = firewalled_log_start,
 	.log_stop              = firewalled_log_stop,
 	.log_active            = firewalled_log_active,
+	.log_skipped           = firewalled_log_skipped,
 	.dhcp_set_enabled      = firewalled_dhcp_set_enabled,
 	.get_profile_enabled   = firewalled_get_profile_enabled,
 	.set_profile_enabled   = firewalled_set_profile_enabled,

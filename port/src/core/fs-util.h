@@ -74,6 +74,16 @@ gboolean fs_util_remove_line_from_file (const gchar *path, gint position);
 /* Ensures every parent directory of path exists. */
 gboolean fs_util_ensure_parent_dir (const gchar *path);
 
+/* [ fs_util_make_private ]
+ * Makes path readable and writable by this account only: mode 0700
+ * (a folder) or 0600 (a file) on POSIX; on Windows a protected DACL
+ * (no inherited entries) with one entry, full control for the user
+ * the process runs as, inherited by what is created inside a folder.
+ * Returns FALSE with errno set when it could not; on Windows a file
+ * system without ACLs (FAT) counts as done, as there is nothing to
+ * set. */
+gboolean fs_util_make_private (const gchar *path, gboolean is_dir);
+
 /* Directory holding the generated policy files.  Overridable with the
  * STOCKFW_RULES_DIR environment variable so the app can run
  * unprivileged for development. */

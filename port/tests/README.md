@@ -71,8 +71,178 @@ parsed back, and the dashboard's security model: loopback only, the
 per-run token (header only, never the query string or the page), the
 Host check against DNS rebinding, GET/HEAD only, the 16 KB request-head
 cap, the CSP nonce, and the dashboard leaving its own sockets out of the
-connection list.
+connection list.  `stockfw events` is checked with its filters
+against the kernel log, and `--history` against a history folder the
+test writes by hand (so the file format is pinned too): oldest first
+across days, `-n` keeping the newest, `--since`/`--until` by day and
+by stamp, every filter, a damaged and a cut-short line skipped and
+counted, unreadable filters refused with exit 2, and a missing folder
+named with where it would be.
 
+
+## Event store and history (`tests/test-eventstore.sh`)
+
+```sh
+cd port
+bash tests/test-eventstore.sh               # the checks
+bash tests/test-eventstore.sh bench 100000  # timings and memory
+bash tests/test-eventstore.sh bench 1000000
+```
+
+Compiles `src/core/*.c` by hand, like `test-core.sh`; GLib only.  It
+pins down `core/fs-eventstore.c` (the ring buffer behind the Events
+list) and `core/fs-eventlog.c` (the history on disk):
+
+- times: both backend stamps read and written back exactly, anything
+  else kept as text; every `--since`/From form.
+- the ring: the oldest goes first, the evict callback sees it still
+  readable, growing and shrinking keep the newest, 1,000,000 is the cap.
+- interning: one copy of each string, freed with its last event, ids
+  reused; a query's cached answer is not reused for a new string that
+  got an old id.
+- duplicates: the same row twice is one event, as before.
+- filters: text (the columns the list shows, the time as shown
+  included, the rule not; `--grep` the same), direction, verdict,
+  protocol, port (single, range, colon), address (v4 and v6 CIDR,
+  ranges; names and /33 refused), time window, and every combination
+  agreeing with the store-free check the command line uses.
+- CSV: the header, quoting, formula-looking fields defused (a leading
+  minus too, unless the whole field is a plain number: `-1+1` and the
+  DDE payload `-2+3+cmd|' /C calc'!A0` are defused, `-5` and `-1.25`
+  are not), mode 0600.
+- history: round trip with escapes and a text stamp; a cut-short last
+  line and a damaged middle line skipped and counted, the next write
+  starting on a fresh line; folder 0700 and files 0600 (a loosened file
+  put back); age and size limits (a file that is not ours left alone);
+  the bounded load at start reads only the newest files it needs.
+- history at volume: 460,000 events in a day under the 1 MB cap go past
+  part 999, and usage, the cap, the load and Delete history all see
+  part 1000 and after; a restart after the cap took the day's first
+  parts goes on after the highest part, so the start shows the newest
+  and the cap deletes the oldest; no part grows past its size; an event
+  stamped a year ahead is filed under today, and a file named for a
+  later day (from before) is capped and aged by when it was written;
+  under the 10,000 MB cap a part stops at 32 MB and the start reads
+  only the bytes of the 1,000 events it loads.
+- a full disk (Linux; `RLIMIT_FSIZE` makes write() fail as ENOSPC
+  would): the problem is said and the lost events counted, the next try
+  waits out the back-off, then history goes on; new limits (Preferences
+  > Save) try again at once; every event is either in the history or
+  counted as lost.
+- one writer per folder: a second log on the same folder is refused
+  (`FS_EVENTLOG_ERROR_IN_USE`, "another copy of StockFW is saving the
+  history") while the first is open, from this process and from a
+  forked child; once the child is killed without closing (a crash) the
+  system has dropped its lock and the folder opens again.  The lock file
+  is 0600, not counted as history and not deleted by Delete history.
+
+Teeth: open the lock without `flock()` and "a second log on the same
+folder is refused while it is open" fails.
+
+## The Windows event log reader (`tests/test-winevt.sh`)
+
+```sh
+cd port
+bash tests/test-winevt.sh
+```
+
+Runs `core/fs-winevt.c`, the logic of the Windows backend's
+Security-log reader, on any platform, against a fake log
+(`tests/winevt-fixture.h`: records first..last in wevtutil's raw
+`/f:xml` shape, 5156 and 5157 alternating, a 4624 logon every
+thousandth).  Until 1.0.7 the backend read the newest ten events every
+five seconds (`/c:10`), so a burst of 4,000 reached the Events list as
+ten.  It checks:
+
+- parsing: a 5156 and a 5157 give the rows the text reader gave (port
+  is the destination port, In and Out the local and remote side by
+  direction, `%%14592`/`%%14593` and the rendered words, protocol
+  names, the program's file name as the service, `[BLOCKED]` on 5157,
+  `&amp;` and `&#233;` unescaped, the time from `TimeCreated`); another
+  event id or no `DestAddress` gives no row; double quotes, a BOM and
+  an `EventID` with attributes are read; a cut-short last element is
+  left out and said.
+- the command: the poll's exact argv (`/q:` with `EventRecordID>N`,
+  `/c:10000`, `/rd:true`, `/f:xml`), no metacharacter in the query, and
+  the probe's argv (the newest record of any kind).
+- polls against the fake log: the start skips what was there; a burst
+  of 4,000 arrives whole, oldest first, once, and all 4,000 land in an
+  event store; the same log again delivers nothing; a burst of 30,000
+  delivers the newest 10,000 and counts the gap below them as skipped
+  (an upper bound: the gap holds the logons too); a cut-short read
+  counts what it lost; a cleared log (newest record below the cursor)
+  sends the cursor back to 0 and the records since the clear arrive,
+  once; rollover needs nothing; overlapping batches in both orders give
+  each record once; a timed-out read halves the next request down to
+  500 and good reads double it back; when the event log refuses the
+  record condition, the newest records read without it deliver only
+  what is new and a full batch that reaches back past the cursor (also
+  over a logon record) counts nothing as skipped.  Parsing 10,000 events must take
+  well under a poll (about 75 ms here).
+
+Teeth (each restored with `cp` and checked with `cmp`): `/c:10` fails
+"poll argv"; taking records at the cursor (`>=`) fails "once each";
+no sort fails "oldest first"; no skip count fails "skipped: the record
+gap"; no clear check fails "cleared"; no halving fails "timeout: half";
+the time looked for outside `<System>` fails "the time is
+TimeCreated's SystemTime"; no `&amp;` fails "&amp; unescaped"; a
+full batch counting a skip though it reached the cursor fails "no
+record condition (fallback)".
+
+On Windows `tests/test-winlog.sh` runs the same fake log through the
+real spawn: `fake-wevtutil.exe` (built beside the test, found before
+System32) answers for `STOCKFW_FAKE_WEVTUTIL_LOG` ("first last"),
+honours the query's `EventRecordID>`, `/c:` and `/rd:`, pads with NULs
+and records its arguments; with `STOCKFW_FAKE_WEVTUTIL_NO_RECORDID=1`
+it refuses a query with the record condition (exit 15001).  The test starts monitoring, checks a burst
+of 4,000 arrives whole and in order, nothing twice, 10,000 of a
+30,000 burst with the skip shown through `log_skipped`, the records
+after a clear, that a refused record condition still brings the new
+records once with nothing counted as skipped, and that the query
+reached wevtutil as one argument.
+
+## Events list at scale (`fs-hitview-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-hitview-smoke
+xvfb-run -a -s "-screen 0 1280x900x24" ./build-linux/fs-hitview-smoke
+STOCKFW_EVENTS_SHOTS=/some/dir xvfb-run -a ./build-linux/fs-hitview-smoke
+```
+
+Builds the real Events page with its history in a scratch folder
+(`STOCKFW_EVENTS_DIR`).  Besides the page's older checks, it reads 500
+saved events back at start, then appends 100,000 events into the shown
+list and checks: the list's model is the virtual one (no GtkListStore,
+no filter copy) in fixed-height mode; appending reads only the visible
+cells; a scroll frame at 100,000 rows costs what it costs at 1,000;
+the port, CIDR, protocol and combined filters give the store's own
+count, label included, and every shown row matches; live events at the
+cap land or are left out as the filter says; a bad port is refused and
+the list kept; CSV export writes the filtered rows; sorting by port is
+numeric both ways and a live event lands in sorted place; the history
+files are written.  Timings are printed as `measure:` lines.
+
+History is off until switched on (checked), so the smoke switches it on
+in a scratch settings folder.  On Linux it also fills the disk in the
+middle of the session (`RLIMIT_FSIZE`): the strip says history is not
+being saved within seconds, and with room again the history goes on
+and the strip goes back to what it said.
+
+At the list's largest, 1,000,000 events in a real view, a burst of
+5,000 live events under the port sort and under the source sort must
+cost about what it costs under the time sort (within 6 times, plus 20
+us).  Before the row list was kept in chunks each such event moved up
+to the whole row array twice, about 200 us at this size.  After those
+bursts, and after 360,000 adds and drops at 20,000 rows (chunks split
+and joined many times), the rows must be exactly those a sort from
+scratch gives.
+
+The Preferences smoke (below) covers Preferences > Events: the list
+size, the history switch (off at first) with its days and size rows
+live only while it is on and going up to the limits the app keeps to
+(3,650 days, 10,000 MB), values clamped to the row's range, and Delete
+history asking first, then deleting only history files.
 
 ## Where the computer is connected (`fs-netplace-test`, `fs-overview-place-smoke`)
 
@@ -1038,6 +1208,13 @@ half from uid 65534 and half from root, do not hold up a show or a
 launch with `SUDO_UID=65534` makes it quit cleanly and takes its place,
 after which the user launching again only raises root's window.
 
+With Keep event history on, the test also reads which processes hold
+the history folder's writer lock (`/proc/*/fd`): the first copy does;
+after a second launch hands over, still only the first copy (the
+handoff never opens the history); a hidden `--background` copy has it
+open and a second `--minimized` launch does not; after `--quit` no
+process holds it.
+
 Teeth: read from a connection before checking who it is (as 1.0.7
 did) and five "silent" checks fail; skip the takeover in `main()`
 and five "takeover" checks fail; install the SIGHUP handler over
@@ -1221,13 +1398,27 @@ per process:
   own; the quit closes it as Cancel would (the moved setting is not
   saved) instead of waiting for it, and the Copilot's state is still
   intact.
+- `history`: started as `--background` starts it (window hidden) with
+  Keep event history on.  A burst of 4,000 events fed through the
+  app's monitor callback is all in the Events list and, within a
+  second, all in the history file, the window still hidden; a second
+  writer on the folder is refused while the app runs; a skip count from
+  the backend (`log_skipped`) shows beside the count as "(up to 1,234
+  skipped)" with a tooltip; ten events fed right before `fs_app_quit()`
+  are in the file after the run, and the folder's lock is free again.
 - `background` (`STOCKFW_AUTOSAVE_S=1`; the DNS server and gateway
   fixed through `STOCKFW_RESOLV_CONF` and `STOCKFW_ROUTE_FILE`): the
   window is hidden as "Minimize to the tray" hides it (directly, since
   xvfb has no notification area for the icon to embed in), and then
-  the Copilot must keep working.  A Sentinel block restored with three
-  seconds left is lifted from the policy and the staged list on time,
-  and audited; seven timed contacts fed into the app's Copilot and the
+  the Copilot must keep working.  A Sentinel block restored with 12
+  seconds of its ten minutes left is in the policy once the window is
+  hidden (a precondition: 12 s covers the start-up, which took over
+  3 s on the Windows runner; with too little left the boot restore
+  already takes it out as "expired while StockFW was not running" and
+  the timer under test never runs), is lifted from the policy and the
+  staged list by the expiry timer (waited for up to 4 s past its due
+  time, and not before it), and audited "expired after 10 minutes";
+  seven timed contacts fed into the app's Copilot and the
   eighth delivered through the Events page's own callback stage a
   Sentinel block (policy, staged list, apply gate); the periodic save
   writes what was learned; the tray's "Pause Sentinel auto-block for 1
@@ -1249,7 +1440,11 @@ on the Stop path fails its check; freeing the state in the quit
 instead of in shutdown fails "sametick" (a timer due in the same loop
 pass as the quit found freed memory); leave the Preferences window out
 of the quit and "the quit closes the Preferences window" and
-"promptly" fail.
+"promptly" fail.  For `history`: no `fs_hitview_shutdown()` in
+`on_shutdown` fails "the quit let the folder go"; without it and
+without the flush in `save_state(TRUE)` "written on the way out"
+fails (4,000 lines, not 4,010); no `flock()` fails "no second
+writer"; no skip text fails "skipped show beside the count".
 
 Teeth for `background`, each re-injected in the real file, seen
 failing with `fs-session-smoke background`, restored with `cp` and
@@ -1261,6 +1456,7 @@ proved with `cmp`:
 | the expiry timer waits while the Copilot page is not on screen (`fs-copilot.c`) | "a Sentinel block whose ten minutes ran out while the window was hidden is lifted ...", "...and audited (0)" |
 | the periodic save skipped while the window is hidden (`fs-app.c`) | "what the Copilot learned while hidden is written by the periodic save" |
 | Sentinel's automatic pass run only while the Events page is on screen (`fs-hitview.c`) | "the contact that completes a timed series is staged as a Sentinel block while the window is hidden" |
+
 ## Windows rule translation (`tests/test-core.sh`)
 
 ```sh

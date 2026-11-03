@@ -7,6 +7,8 @@
 #include "core/fs-autoblock.h"
 #include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
+#include "core/fs-eventlog.h"
+#include "core/fs-eventstore.h"
 #include "core/fs-intel.h"
 #include "core/fs-health.h"
 #include "core/fs-service.h"
@@ -1785,9 +1787,25 @@ fs_cli_log_history (guint max_lines, gint64 *complete_from, GError **error)
 
 typedef struct
 {
-	gboolean only_blocked;
-	guint    printed;
+	FsEventQuery *query;     /* NULL: every event */
+	guint         printed;
 } EventsState;
+
+/* [ hit_passes ]
+ * The filters of `stockfw events', the same query the Events page
+ * runs.  A kernel-log stamp that cannot be read has no time, so it
+ * fails a --since or --until. */
+static gboolean
+hit_passes (const FsEventQuery *query, const FsHit *hit)
+{
+	gint64 ticks = 0;
+
+	if (query == NULL)
+		return TRUE;
+	if (fs_event_time_parse (hit->time, &ticks) == FS_EVENT_TIME_OTHER)
+		ticks = 0;
+	return fs_eventquery_match_hit (query, hit, ticks / 10);
+}
 
 /* [ hit_row ] -- one event as table cells (caller frees with g_strfreev). */
 static gchar **
@@ -1816,7 +1834,7 @@ hit_row (const FsHit *hit)
 static void
 print_hit (const FsHit *hit, EventsState *st)
 {
-	if (st->only_blocked && !fs_hit_is_blocked (hit))
+	if (!hit_passes (st->query, hit))
 		return;
 
 	if (fs_cli.json) {
@@ -1857,59 +1875,241 @@ on_sigint (gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+/* The newest `want' matching events of the saved history, oldest
+ * first.  The hit's strings are only lent for the call: kept ones are
+ * copied. */
+typedef struct
+{
+	const FsEventQuery *query;
+	GQueue              kept;
+	guint               want;
+	guint               matched;
+} HistoryScan;
+
+static void
+on_history_hit (const FsHit *hit, gint64 ticks, gpointer data)
+{
+	HistoryScan *scan = data;
+
+	if (scan->query != NULL &&
+	    !fs_eventquery_match_hit (scan->query, hit, ticks / 10))
+		return;
+
+	scan->matched++;
+	if (scan->want == 0)
+		return;
+	g_queue_push_tail (&scan->kept, fs_hit_copy (hit));
+	if (scan->kept.length > scan->want)
+		fs_hit_free (g_queue_pop_head (&scan->kept));
+}
+
+static GPtrArray *
+read_saved_history (const gchar *dir, const FsEventFilter *filter,
+                    const FsEventQuery *query, guint want,
+                    FsEventLogStats *stats)
+{
+	HistoryScan scan = { query, G_QUEUE_INIT, want, 0 };
+	GPtrArray *hits = g_ptr_array_new_with_free_func (
+		(GDestroyNotify) fs_hit_free);
+
+	fs_eventlog_foreach (dir, filter->since_us, filter->until_us,
+	                     on_history_hit, &scan, stats);
+	while (scan.kept.length > 0)
+		g_ptr_array_add (hits, g_queue_pop_head (&scan.kept));
+	return hits;
+}
+
+/* [ take_value ]
+ * The value of an option, as "--opt VALUE" or "--opt=VALUE".  NULL
+ * when argv[*i] is not that option. */
+static const gchar *
+take_value (gint argc, gchar **argv, gint *i, const gchar *opt,
+            gboolean *missing)
+{
+	gsize n = strlen (opt);
+
+	if (strcmp (argv[*i], opt) == 0) {
+		if (*i + 1 >= argc) {
+			*missing = TRUE;
+			return NULL;
+		}
+		return argv[++*i];
+	}
+	if (strncmp (argv[*i], opt, n) == 0 && argv[*i][n] == '=')
+		return argv[*i] + n + 1;
+	return NULL;
+}
+
 gint
 fs_cli_cmd_events (gint argc, gchar **argv)
 {
 	guint count = 20;
-	gboolean follow = FALSE;
-	EventsState st = { FALSE, 0 };
-	GPtrArray *history;
+	gboolean follow = FALSE, saved = FALSE, missing = FALSE;
+	const gchar *since = NULL, *until = NULL, *dir_opt = NULL;
+	FsEventFilter filter = { 0 };
+	EventsState st = { NULL, 0 };
+	FsEventLogStats stats = { 0 };
+	GPtrArray *history = NULL;
+	gchar *dir = NULL;
 	GError *error = NULL;
+	gint64 now = g_get_real_time ();
+	gint rc = FS_EXIT_OK;
 
 	for (gint i = 1; i < argc; i++) {
-		if ((strcmp (argv[i], "-n") == 0 || strcmp (argv[i], "--lines") == 0)
-		    && i + 1 < argc) {
-			gchar *end = NULL;
-			guint64 v = g_ascii_strtoull (argv[++i], &end, 10);
+		const gchar *v;
 
-			if (end == NULL || *end != '\0' || v > 100000) {
-				fs_cli_error ("-n wants a number up to 100000");
+		if ((v = take_value (argc, argv, &i, "-n", &missing)) != NULL ||
+		    (v = take_value (argc, argv, &i, "--lines", &missing))
+		    != NULL) {
+			gchar *end = NULL;
+			guint64 n = g_ascii_strtoull (v, &end, 10);
+
+			if (!g_ascii_isdigit (*v) || end == NULL || *end != '\0' ||
+			    n > FS_EVENTSTORE_MAX_CAPACITY) {
+				fs_cli_error ("-n wants a number up to %u",
+				              FS_EVENTSTORE_MAX_CAPACITY);
 				return FS_EXIT_USAGE;
 			}
-			count = (guint) v;
+			count = (guint) n;
+		} else if ((v = take_value (argc, argv, &i, "--since", &missing))
+		           != NULL) {
+			since = v;
+		} else if ((v = take_value (argc, argv, &i, "--until", &missing))
+		           != NULL) {
+			until = v;
+		} else if ((v = take_value (argc, argv, &i, "--grep", &missing))
+		           != NULL) {
+			filter.text = v;
+		} else if ((v = take_value (argc, argv, &i, "--proto", &missing))
+		           != NULL) {
+			filter.protocol = v;
+		} else if ((v = take_value (argc, argv, &i, "--port", &missing))
+		           != NULL) {
+			filter.port = v;
+		} else if ((v = take_value (argc, argv, &i, "--addr", &missing))
+		           != NULL) {
+			filter.address = v;
+		} else if ((v = take_value (argc, argv, &i, "--history-dir",
+		                            &missing)) != NULL) {
+			dir_opt = v;
+			saved = TRUE;
+		} else if ((v = take_value (argc, argv, &i, "--dir", &missing))
+		           != NULL) {
+			if (g_ascii_strcasecmp (v, "in") == 0)
+				filter.direction = FS_EVQ_DIR_IN;
+			else if (g_ascii_strcasecmp (v, "out") == 0)
+				filter.direction = FS_EVQ_DIR_OUT;
+			else {
+				fs_cli_error ("--dir wants in or out, not `%s'", v);
+				return FS_EXIT_USAGE;
+			}
+		} else if (missing) {
+			break;
 		} else if (strcmp (argv[i], "-f") == 0 ||
 		           strcmp (argv[i], "--follow") == 0) {
 			follow = TRUE;
+		} else if (strcmp (argv[i], "--history") == 0) {
+			saved = TRUE;
 		} else if (strcmp (argv[i], "--blocked") == 0) {
-			st.only_blocked = TRUE;
+			filter.action = FS_EVQ_ACTION_BLOCKED;
+		} else if (strcmp (argv[i], "--allowed") == 0) {
+			filter.action = FS_EVQ_ACTION_ALLOWED;
 		} else {
 			fs_cli_error ("unexpected argument: %s", argv[i]);
 			return FS_EXIT_USAGE;
 		}
+		if (missing)
+			break;
+	}
+	if (missing) {
+		fs_cli_error ("%s wants a value", argv[argc - 1]);
+		return FS_EXIT_USAGE;
 	}
 
-	if (count > 0) {
-		history = fs_cli_log_history (count, NULL, &error);
+	if (since != NULL &&
+	    !fs_event_parse_time_spec (since, now, FALSE, &filter.since_us,
+	                               &error)) {
+		fs_cli_error ("--since: %s", error->message);
+		g_error_free (error);
+		return FS_EXIT_USAGE;
+	}
+	if (until != NULL &&
+	    !fs_event_parse_time_spec (until, now, TRUE, &filter.until_us,
+	                               &error)) {
+		fs_cli_error ("--until: %s", error->message);
+		g_error_free (error);
+		return FS_EXIT_USAGE;
+	}
+	st.query = fs_eventquery_new (&filter, &error);
+	if (st.query == NULL) {
+		fs_cli_error ("%s", error->message);
+		g_error_free (error);
+		return FS_EXIT_USAGE;
+	}
+	if (fs_eventquery_is_empty (st.query))
+		g_clear_pointer (&st.query, fs_eventquery_free);
+
+	if (saved) {
+		/* The history the desktop app saves for this account (root's
+		 * own under sudo: point --history-dir at the user's). */
+		dir = dir_opt != NULL ? g_strdup (dir_opt)
+		                      : fs_eventlog_default_dir ();
+		if (!g_file_test (dir, G_FILE_TEST_IS_DIR)) {
+			fs_cli_error ("no saved event history in %s", dir);
+			fs_cli_hint ("the desktop app saves it while Preferences > "
+			             "Events > Keep event history is on%s",
+			             geteuid () == 0 && g_getenv ("SUDO_USER")
+			             ? "; under sudo this is root's folder, give "
+			               "--history-dir for yours" : "");
+			rc = FS_EXIT_FAILURE;
+			goto out;
+		}
+		history = read_saved_history (dir, &filter, st.query, count,
+		                              &stats);
+	} else if (count > 0) {
+		/* With a filter, look further back so N matches can be
+		 * found, then keep the newest N of them. */
+		history = fs_cli_log_history (st.query != NULL
+		                              ? MAX (count, 100000u) : count,
+		                              NULL, &error);
 
 		if (history == NULL) {
 			fs_cli_error ("%s", error->message);
 			g_error_free (error);
 			if (geteuid () != 0)
-				fs_cli_hint ("try `sudo stockfw events'");
-			return geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
+				fs_cli_hint ("try `sudo stockfw events', or "
+				             "`stockfw events --history' for the "
+				             "history the desktop app saved");
+			rc = geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
+			goto out;
 		}
+		if (st.query != NULL) {
+			GPtrArray *kept = g_ptr_array_new_with_free_func (
+				(GDestroyNotify) fs_hit_free);
 
+			for (guint i = 0; i < history->len; i++) {
+				FsHit *hit = g_ptr_array_index (history, i);
+
+				if (hit_passes (st.query, hit)) {
+					g_ptr_array_index (history, i) = NULL;
+					g_ptr_array_add (kept, hit);
+				}
+			}
+			g_ptr_array_unref (history);
+			history = kept;
+		}
+		while (history->len > count)
+			g_ptr_array_remove_index (history, 0);
+	}
+
+	if (history != NULL && count > 0) {
 		if (fs_cli.json && !follow) {
 			GString *out = g_string_new ("[");
 
 			for (guint i = 0; i < history->len; i++) {
-				const FsHit *hit = g_ptr_array_index (history, i);
-
-				if (st.only_blocked && !fs_hit_is_blocked (hit))
-					continue;
 				if (out->len > 1)
 					g_string_append_c (out, ',');
-				hit_row_json (out, hit);
+				hit_row_json (out, g_ptr_array_index (history, i));
 			}
 			g_string_append_c (out, ']');
 			fs_cli_print_json (out);
@@ -1926,13 +2126,10 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			GPtrArray *rows = g_ptr_array_new_with_free_func (
 				(GDestroyNotify) g_strfreev);
 
-			for (guint i = 0; i < history->len; i++) {
-				const FsHit *hit = g_ptr_array_index (history, i);
-
-				if (st.only_blocked && !fs_hit_is_blocked (hit))
-					continue;
-				g_ptr_array_add (rows, hit_row (hit));
-			}
+			for (guint i = 0; i < history->len; i++)
+				g_ptr_array_add (rows,
+				                 hit_row (g_ptr_array_index (history,
+				                                             i)));
 
 			st.printed = rows->len;
 			if (rows->len > 0)
@@ -1940,12 +2137,18 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			g_ptr_array_unref (rows);
 
 			if (st.printed == 0 && !fs_cli.quiet)
-				printf ("%sNo StockFW events in the kernel log yet.%s\n",
-				        fs_cli_dim (), fs_cli_reset ());
+				printf ("%s%s%s\n", fs_cli_dim (),
+				        saved ? "No saved events match."
+				        : st.query != NULL
+				        ? "No StockFW events in the kernel log match."
+				        : "No StockFW events in the kernel log yet.",
+				        fs_cli_reset ());
 		}
-
-		g_ptr_array_unref (history);
 	}
+	if (saved && stats.bad_lines > 0 && !fs_cli.quiet && !fs_cli.json)
+		fprintf (stderr, "%s%u damaged or cut-short line(s) in the "
+		         "history were skipped.%s\n", fs_cli_dim (),
+		         stats.bad_lines, fs_cli_reset ());
 
 	if (follow) {
 		const FsBackend *backend = fs_backend ();
@@ -1956,7 +2159,8 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			fs_cli_error ("cannot follow events: %s",
 			              error ? error->message : "no event source");
 			g_clear_error (&error);
-			return geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
+			rc = geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
+			goto out;
 		}
 
 		if (!fs_cli.json && !fs_cli.quiet)
@@ -1972,7 +2176,13 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 		backend->log_stop ();
 	}
 
-	return FS_EXIT_OK;
+out:
+	if (history != NULL)
+		g_ptr_array_unref (history);
+	if (st.query != NULL)
+		fs_eventquery_free (st.query);
+	g_free (dir);
+	return rc;
 }
 
 /* --------------------------------------------------------- connections */

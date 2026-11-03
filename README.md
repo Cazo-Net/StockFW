@@ -21,19 +21,42 @@ rules — without a shell prompt.
   executable, so an installed copy and a development build render
   identically. Icons are real GTK stock/themed icons — no emoji, ever.
 - **Events** — a live, deduplicated event stream. On Windows: Security
-  log 5156/5157 (connection allowed/blocked) parsed from
-  `wevtutil /f:text`, polled every 5 seconds with a batch cap. On Linux:
-  kernel drop logging. Rows are classified, and a **filter bar** narrows
-  the list as you type (case-insensitive, any field — the count label
-  shows *"3 of 1200 events"* so an empty result is never mistaken for an
-  idle firewall). **Right-click any row for one-click Event → Rule**:
-  block/allow that destination, block this service to it, or trust an
+  log 5156/5157 (connection allowed/blocked) read with `wevtutil` every
+  5 seconds: every record after the last one read, up to 10,000 a poll,
+  so a burst of thousands reaches the list whole (until 1.0.7 a poll
+  read the newest ten); past 10,000 in one poll the newest are listed
+  and the count says how many were skipped. On Linux: kernel drop
+  logging. Rows are classified, and a **filter bar** narrows
+  the list as you type (case-insensitive, any column shown, the time
+  included — the count label shows *"3 of 1,200 events"* so an empty
+  result is never mistaken for an idle firewall), with direction,
+  verdict, protocol, port or range, address or CIDR block, and a
+  From/To time range beside it; the filtered rows export to CSV. The
+  list holds 100,000 events by default and up to 1,000,000
+  (Preferences > Events), about 75 bytes each, and stays quick at that
+  size: it is a view over a ring buffer, not a copy of it, and a live
+  event under any sort moves at most a few kilobytes of it, so a burst
+  of thousands of events a second at 1,000,000 rows leaves the window
+  free to scroll and filter. **Right-click any row for one-click Event
+  → Rule**: block/allow that destination, block this service to it, or trust an
   inbound source — where the kind has an opposite-direction twin the
   confirm dialog carries the **Direction** setting (one direction by
   default, **Bi-directional** stages the twin as the same change),
   every action confirms, saves with rollback if the write fails, and
   reports honestly whether it is live or only staged.
-  The list is a window over the OS log — the OS log remains the archive.
+  The list is a window over the OS log. With **Keep event history**
+  switched on (Preferences > Events; it is off until you choose it,
+  because it keeps addresses, ports and devices on disk) every listed
+  event is also saved, one file per day in parts of at most 32 MB,
+  readable only by your account, in `~/.local/share/stockfw/events`
+  (Windows: `%LOCALAPPDATA%\stockfw\events`), kept 30 days or 200 MB
+  by default; the newest events are read back at start (only their
+  bytes are read), and `stockfw events --history` searches them. If
+  the disk fills, the Events page says so, counts what was not saved,
+  and history picks up again once there is room. Preferences > Events
+  has the limits and a Delete history button. History is saved while
+  StockFW runs hidden in the notification area too, and only one copy
+  writes it at a time. Nothing leaves the machine.
 - **Sentinel** — detect *and* auto-block rogue-agent behavior in the
   event feed: **periodic beacons** (metronomic egress to one host:port —
   a covert-channel signature; jitter, polled batches and inbound traffic
@@ -385,6 +408,8 @@ The Linux build also produces `build-linux/stockfw`:
 ./build-linux/stockfw simulate "inbound ssh from 203.0.113.5" # exit 5 if blocked
 sudo ./build-linux/stockfw apply --dry-run                    # impact preview only
 sudo ./build-linux/stockfw events -f --json                   # NDJSON, live
+./build-linux/stockfw events --history --since 1d --port 22  # saved history
+./build-linux/stockfw events --history --addr 10.0.0.0/8 --json -n 1000
 ./build-linux/stockfw dashboard                               # opens the browser
 ```
 

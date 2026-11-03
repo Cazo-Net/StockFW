@@ -52,6 +52,9 @@ add_library(fs-core STATIC
   src/core/fs-iprange.c
   src/core/fs-nftset.c
   src/core/fs-netplace.c
+  src/core/fs-eventstore.c
+  src/core/fs-eventlog.c
+  src/core/fs-winevt.c
   src/core/fs-autoblock.c
   src/core/fs-instance.c
   src/core/fs-autostart.c
@@ -90,6 +93,8 @@ endif()
 # shell32 (its %ProgramData% lookup) are Windows system libraries: no
 # package to install, nothing to stage.  fs-autostart.c registers the
 # sign-in task through the Task Scheduler's COM API: ole32 + oleaut32.
+# fs-util.c gives the event history and its exports an owner-only DACL:
+# advapi32.
 if(WIN32)
   target_link_libraries(fs-core PUBLIC ws2_32 iphlpapi advapi32 shell32
                         ole32 oleaut32)
@@ -169,6 +174,7 @@ add_executable(StockFW
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
+  src/ui/fs-eventmodel.c
   src/ui/fs-activityview.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
@@ -284,6 +290,7 @@ set(FS_UI_ONLY_SOURCES
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
+  src/ui/fs-eventmodel.c
   src/ui/fs-activityview.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c

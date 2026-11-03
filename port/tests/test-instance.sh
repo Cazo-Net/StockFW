@@ -21,7 +21,11 @@
 #     do not hold up a show or a --quit behind them;
 #   - root's copy (sudo StockFW) takes over from the user's copy without
 #     root: that one quits cleanly, and a later launch by the user only
-#     shows root's.
+#     shows root's;
+#   - with Keep event history on, only the running copy holds the
+#     history folder's writer lock: a second launch hands over without
+#     opening the history, a hidden (--background) copy has it open,
+#     and --quit lets it go.
 #
 # Needs a display (xvfb-run -a bash tests/test-instance.sh) and
 # xdotool; stalonetray provides the notification area (those checks
@@ -89,6 +93,7 @@ cat > "$XDG_CONFIG_HOME/stockfw/stockfw.conf" <<EOF
 start_firewall_on_gui=false
 enable_tray_icon=true
 minimize_to_tray=true
+events/keep_history=true
 EOF
 
 listening () { grep -q "@$STOCKFW_INSTANCE_NAME\$" /proc/net/unix; }
@@ -103,6 +108,15 @@ main_windows () {
 }
 visible_windows () { main_windows | wc -l; }
 any_window () { main_windows | head -1; }
+
+# The processes that have the event history's writer lock open
+# (core/fs-eventlog.c take_lock), one pid per line.
+LOCK="$XDG_DATA_HOME/stockfw/events/.lock"
+lock_holders () {
+	find /proc/[0-9]*/fd -lname "$LOCK" 2>/dev/null | cut -d/ -f3 | sort -u
+}
+held_only_by () { [ "$(lock_holders)" = "$1" ]; }
+held_by_none () { [ -z "$(lock_holders)" ]; }
 
 wait_for () {   # wait_for <seconds> <command...>
 	local limit=$(( $1 * 10 )); shift
@@ -122,6 +136,7 @@ dead ()       { ! kill -0 "$1" 2>/dev/null; }
 A=$!
 check "first launch claims the instance name" wait_for 30 listening
 check "first launch shows its window" wait_for 30 is_visible
+check "history: the first copy holds the history's writer lock" wait_for 10 held_only_by "$A"
 
 WIN="$(any_window)"
 xdotool windowunmap --sync "$WIN" 2>/dev/null
@@ -138,6 +153,7 @@ check "the first copy is still running" alive "$A"
 check "the first copy brought its window back to the front" wait_for 10 is_visible
 check "there is still exactly one StockFW window on screen" [ "$(visible_windows)" -eq 1 ]
 check "the second launch did not claim a second instance" [ "$(grep -c "@$STOCKFW_INSTANCE_NAME\$" /proc/net/unix)" -eq 1 ]
+check "history: the handoff did not open the history a second time" held_only_by "$A"
 
 # ---------------------------------------------------------------- 2. who may ask
 if command -v setpriv >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
@@ -162,6 +178,7 @@ rc=$?
 check "the instance quit cleanly, not killed (exit $rc)" [ "$rc" -eq 0 ]
 check "it saved its settings on the way out" grep -q "minimize_to_tray" "$XDG_CONFIG_HOME/stockfw/stockfw.conf"
 check "the name is free again" wait_for 5 bash -c "! grep -q '@$STOCKFW_INSTANCE_NAME\$' /proc/net/unix"
+check "history: the quit let the history's writer lock go" held_by_none
 
 timeout 30 "$BIN" --quit > "$SCRATCH/quit2.log" 2>&1
 rc=$?
@@ -182,12 +199,14 @@ if command -v stalonetray >/dev/null 2>&1; then
 	sleep 7
 	check "--background with a notification area: the window stays hidden" is_hidden
 	check "...and the copy runs behind the icon" alive "$A"
+	check "history: the hidden copy has the history open" held_only_by "$A"
 
 	timeout 15 "$BIN" --minimized > "$SCRATCH/bg2.log" 2>&1
 	rc=$?
 	check "a second background launch (--minimized) exits at once (rc=$rc)" [ "$rc" -eq 0 ]
 	sleep 1
 	check "...and leaves the running copy hidden" is_hidden
+	check "history: ...and did not open the history beside it" held_only_by "$A"
 
 	timeout 15 "$BIN" > "$SCRATCH/bg3.log" 2>&1
 	check "a normal second launch brings the hidden window up" wait_for 10 is_visible
