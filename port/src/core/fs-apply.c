@@ -48,10 +48,17 @@ fs_apply_journal_path (void)
  * not recorded". */
 #define JOURNAL_SETTING "# setting "
 
+/* The settings the backend was really given, when a caller gave it
+ * others than the saved preferences (a start under the journal's own
+ * settings, 3B); NULL: the saved preferences. */
+static GHashTable *journal_record_override = NULL;
+
 static void
 journal_append_settings (GString *out)
 {
-	GHashTable *values = fs_prefs_firewall_values ();
+	GHashTable *values = journal_record_override != NULL
+	                   ? g_hash_table_ref (journal_record_override)
+	                   : fs_prefs_firewall_values ();
 	guint n = 0;
 	const FsPrefSpec *specs = fs_prefs_specs (&n);
 
@@ -91,6 +98,14 @@ fs_apply_journal_save (const FsPolicy *policy, GError **error)
 		                     "no policy to journal");
 		return FALSE;
 	}
+
+	/* T15: a row that would not read back as itself is never
+	 * journalled (the journal is the restore point). */
+	for (gint kind = 0; kind < FS_RULE_N_KINDS; kind++)
+		for (guint i = 0; i < policy->kinds[kind]->len; i++)
+			if (!fs_rule_validate (g_ptr_array_index (
+			                           policy->kinds[kind], i), error))
+				return FALSE;
 
 	path = fs_apply_journal_path ();
 	out = g_string_new ("# StockFW applied policy journal v1\n");
@@ -1257,4 +1272,107 @@ fs_firewall_stop_logged (const FsBackend *backend, const gchar *source,
 	g_free (detail);
 
 	return ok;
+}
+
+/* =====================================================================
+ * Settings: what boot uses and what Preferences applies (PR 3)
+ * ===================================================================== */
+
+/* [ fs_firewall_start_recorded ] */
+FsApplyOutcome *
+fs_firewall_start_recorded (const FsBackend *backend, FsPolicy *policy,
+                            const FsPolicy *lift, GHashTable *recorded,
+                            const gchar *source, const gchar *hold,
+                            GError **error)
+{
+	FsApplyOutcome *outcome;
+
+	/* The journal written by this start records what the backend was
+	 * given, not the saved preferences. */
+	journal_record_override = recorded;
+	outcome = fs_firewall_start_lifting (backend, policy, lift, source,
+	                                     hold, error);
+	journal_record_override = NULL;
+
+	return outcome;
+}
+
+/* [ fs_settings_from_journal ] */
+FsSettings *
+fs_settings_from_journal (GHashTable **recorded_out)
+{
+	GHashTable *recorded = fs_apply_journal_settings ();
+	FsSettings *settings;
+
+	if (recorded_out != NULL)
+		*recorded_out = NULL;
+	if (recorded == NULL)
+		return NULL;
+
+	settings = fs_settings_new ();
+	fs_settings_load_values (settings, recorded);
+	if (recorded_out != NULL)
+		*recorded_out = recorded;
+	else
+		g_hash_table_unref (recorded);
+
+	return settings;
+}
+
+typedef struct
+{
+	FsSettingsContextFunc set_context;
+	FsPolicy             *under;
+	FsSettings           *settings;
+	FsSettings           *previous;
+} SavedSwap;
+
+static void
+saved_swap (gboolean previous, gpointer data)
+{
+	SavedSwap *s = data;
+
+	s->set_context (s->under, previous ? s->previous : s->settings);
+}
+
+/* [ fs_settings_apply_saved ] */
+FsApplyOutcome *
+fs_settings_apply_saved (const FsBackend *backend,
+                         FsSettingsContextFunc set_context,
+                         FsPolicy *under, FsSettings *settings,
+                         const FsSettings *saved_before,
+                         const gchar *source, const gchar *hold,
+                         GError **error)
+{
+	SavedSwap swap;
+	FsApplyOutcome *outcome;
+	FsSettings *previous;
+
+	g_return_val_if_fail (set_context != NULL, NULL);
+	if (under == NULL || settings == NULL)
+		return NULL;
+
+	/* What to roll back to: the settings the journal says went out
+	 * with the live policy, or -- with no record -- the ones saved
+	 * before this change (fs-prefsdialog.c offer_apply does the
+	 * same). */
+	previous = fs_settings_from_journal (NULL);
+	if (previous == NULL)
+		previous = saved_before != NULL ? fs_settings_copy (saved_before)
+		                                : fs_settings_new ();
+
+	swap.set_context = set_context;
+	swap.under = under;
+	swap.settings = settings;
+	swap.previous = previous;
+
+	set_context (under, settings);
+	outcome = fs_settings_apply_safe (backend, under, source, hold,
+	                                  saved_swap, &swap, error);
+	/* The new settings stay in the backend's context (the gate swaps
+	 * them back after a rollback): `previous' is no longer referenced
+	 * by it. */
+	fs_settings_free (previous);
+
+	return outcome;
 }

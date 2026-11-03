@@ -5285,24 +5285,25 @@ static void test_apply_journal (void)
 	       "the comment survives the round trip");
 
 	/* The dialect cannot represent a comma inside a comment: the row
-	 * would not parse back.  The journal refuses such a journal
-	 * outright instead of loading half of it -- the same strictness
-	 * as any other malformed row. */
+	 * would not parse back.  Since PR 3 (T15) such a journal is never
+	 * written (fs_rule_validate), and the one on disk stays the
+	 * restore point. */
 	{
 		FsPolicy *comma = fs_policy_new ();
+		FsPolicy *again = fs_policy_new ();
 		FsRule *crow = gate_rule (FS_RULE_OUTBOUND_ALLOW_SERVICE,
 		                          "DNS", "53", FS_TARGET_ANY);
 
 		crow->comment = g_strdup ("resolver, primary");
 		fs_policy_add (comma, crow);
 		fs_rule_free (crow);
-		CHECK (fs_apply_journal_save (comma, NULL),
-		       "the comma-carrying journal writes");
-		CHECK (!fs_apply_journal_load (loaded, &error) && error != NULL &&
-		       g_error_matches (error, FS_APPLY_ERROR,
-		                        FS_APPLY_ERR_MALFORMED),
-		       "but the dialect refuses to read it back -- no half-load");
+		CHECK (!fs_apply_journal_save (comma, &error) && error != NULL,
+		       "the comma-carrying journal is refused, not written");
 		g_clear_error (&error);
+		CHECK (fs_apply_journal_load (again, NULL) &&
+		       gate_policy_total (again) == 2,
+		       "and the journal on disk still loads, both rows");
+		fs_policy_free (again);
 		fs_policy_free (comma);
 	}
 
@@ -11769,6 +11770,21 @@ cc ${STOCKFW_TEST_CFLAGS:-} tests/test-health.c \
 health_rc=0
 "$BUILD_DIR/test-health" || health_rc=$?
 
+# PR 3's core API (tests/test-pr3-core.c): the row validator and its
+# writers, edit in place, the policy lock, writing some preferences
+# only, the Preferences window's rules, the Overview verdict, the
+# Events filters and the settings a boot brings back.  Its scratch
+# files go under $BUILD_DIR (TMPDIR), removed on exit.
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} tests/test-pr3-core.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   -o "$BUILD_DIR/test-pr3-core" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+pr3_rc=0
+TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr3-core" || pr3_rc=$?
+
 # Wording guard: the Copilot is a set of fixed rules, and nothing in the
 # program or the docs may call it AI.  The one sentence that says there
 # is no AI model is allowed.
@@ -12007,4 +12023,4 @@ echo "ok:   cli guard: interfaces rates use the time measured between samples"
 # === end WP-D ===
 
 [ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ] && [ "$intelgeo_rc" -eq 0 ] \
-  && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]
+  && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] && [ "$pr3_rc" -eq 0 ]

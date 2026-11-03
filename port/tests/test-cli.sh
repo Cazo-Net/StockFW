@@ -58,6 +58,8 @@ trap cleanup EXIT
 export STOCKFW_RULES_DIR="$TMP/rules"
 export XDG_CONFIG_HOME="$TMP/config"
 export STOCKFW_LOG_FILE="$TMP/kern.log"
+# The policy lock's apply.lock (PR 3): never the host's /run/stockfw.
+export STOCKFW_RUN_DIR="$TMP/run"
 unset NO_COLOR
 
 fails=0
@@ -1014,7 +1016,8 @@ check "policy remove: refuses (rc 2) when a line is not a rule, and names it" \
            grep -q 'not saved: 1 line of the policy is not a rule' '$TMP/err' && [ ! -s '$TMP/out' ]"
 check "policy add: refuses (rc 2) for a rule of another kind too" \
   b_rc 2 lossy "$S" policy add outbound-deny-to 203.0.113.9
-check "  ...and the rule files are left byte for byte" diff -r "$B/lossy" "$B/lossy.orig"
+# (.lock is the policy lock's file, PR 3: it holds no rule.)
+check "  ...and the rule files are left byte for byte" diff -r -x .lock "$B/lossy" "$B/lossy.orig"
 
 # --- diff: saved against applied
 # As root the firewall's real state would decide "live"; uid 65534
@@ -2193,6 +2196,136 @@ if command -v readelf > /dev/null; then
     bash -c "! readelf -d '$S' | grep -Ei 'gtk|gdk|pango|cairo'"
 fi
 # === end WP-E ===
+
+# === PR3-A ===
+# The core and control layer (master plan, PR 3, package 3A) and boot
+# settings (3B).  Every write goes through fs_control_do under the
+# policy lock; a row that would not read back as itself is refused; a
+# boot brings back the settings last applied.  Scratch directories of
+# its own; the live part runs in a private network namespace.
+P="$(mktemp -d /tmp/stockfw-pr3a-XXXXXX)"; chmod 755 "$P"
+p_env () { env STOCKFW_RULES_DIR="$P/$1" STOCKFW_APPLIED_FILE="$P/$1.applied" \
+               STOCKFW_RUN_DIR="$P/run" "${@:2}"; }
+p_rc () { local want="$1"; shift; p_env "$@" > "$TMP/out" 2> "$TMP/err"; [ "$?" -eq "$want" ]; }
+
+# T15: the rule files are CSV with no quoting.  A comma or a line break
+# in a field is refused by fs_rule_validate (core), not split into
+# fields or rows, and nothing is written.
+check "PR3-A: a comma in a comment is refused (rc 2), named, the file's sha256 unchanged" \
+  bash -c "$(declare -f p_env p_rc); P='$P'; TMP='$TMP'; p_rc 0 sha '$S' policy add outbound-deny-to 198.51.100.8 &&
+           h=\$(sha256sum < '$P/sha/outbound/deny-to') &&
+           p_rc 2 sha '$S' policy add outbound-deny-to 198.51.100.9 --comment 'one, two' &&
+           grep -q 'may not contain a comma or a line break: \"one, two\"' '$TMP/err' &&
+           [ \"\$(sha256sum < '$P/sha/outbound/deny-to')\" = \"\$h\" ]"
+check "PR3-A: a line break in a comment is refused too" \
+  bash -c "$(declare -f p_env p_rc); P='$P'; TMP='$TMP'; p_rc 2 val '$S' policy add outbound-deny-to 198.51.100.9 --comment \"\$(printf 'a\n198.51.100.66,')\" &&
+           [ ! -e '$P/val/outbound/deny-to' ]"
+check "PR3-A: a field with a comma is refused, not read as two fields" \
+  bash -c "$(declare -f p_env p_rc); P='$P'; TMP='$TMP'; p_rc 2 val '$S' policy add inbound-allow-service 'SSH,22' 22 Anyone &&
+           grep -q 'may not contain a comma' '$TMP/err' && [ ! -e '$P/val/inbound/allow-service' ]"
+
+# One writer at a time, and each reads the policy under the lock: two
+# adds that start while another holder has the lock both land.  (Read
+# before the lock, the second save would write over the first.)
+pr3_race () {
+  mkdir -p "$P/run"
+  flock "$P/run/apply.lock" sleep 1.5 &
+  local holder=$! i
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$P/run/apply.lock" ] && break; sleep 0.1; done
+  sleep 0.2
+  p_env race "$S" -q policy add outbound-deny-to 198.51.100.21 > /dev/null 2>&1 &
+  local a=$!
+  p_env race "$S" -q policy add outbound-deny-to 198.51.100.22 > /dev/null 2>&1 &
+  local b=$!
+  sleep 0.5
+  # Both wait for the holder: nothing is written yet.
+  [ ! -s "$P/race/outbound/deny-to" ] || { wait; return 1; }
+  wait "$a" && wait "$b" && wait "$holder" &&
+  grep -q '^198.51.100.21' "$P/race/outbound/deny-to" &&
+  grep -q '^198.51.100.22' "$P/race/outbound/deny-to"
+}
+check "PR3-A: two policy adds while the lock is held wait, then both rows land" pr3_race
+check "PR3-A: the lock files are apply.lock in the run directory and .lock with the rules" \
+  bash -c "[ -e '$P/run/apply.lock' ] && [ -e '$P/race/.lock' ]"
+
+# policy remove names the row it read: removing still works by number.
+check "PR3-A: policy remove by number goes through the control layer" \
+  bash -c "$(declare -f p_env p_rc); P='$P'; TMP='$TMP'; p_rc 0 race '$S' policy remove outbound-deny-to:1 &&
+           grep -q '^Removed' '$TMP/out' && [ \$(grep -c . '$P/race/outbound/deny-to') -eq 1 ]"
+
+# --- 3B, live, as root, in a private network namespace: `start' (the
+# boot unit) installs the settings the journal records, not the ones
+# saved since; a journal from before the record falls back to the
+# saved preferences.  Config-less: the test writes the preferences file
+# itself.
+if [ "$(id -u)" = 0 ] && command -v iptables-save > /dev/null 2>&1 &&
+   unshare -n true 2> /dev/null; then
+  cat > "$P/boot.sh" <<'BOOT'
+S="$1"; P="$2"
+f=0
+ok () { echo "ok:   $1"; }
+no () { echo "FAIL: $1"; f=$((f+1)); }
+t () { local what="$1"; shift; if "$@"; then ok "$what"; else no "$what"; fi; }
+export STOCKFW_RULES_DIR="$P/boot" STOCKFW_APPLIED_FILE="$P/boot.applied"
+export STOCKFW_AUDIT_FILE="$P/boot.audit" STOCKFW_AUTOBLOCK_FILE="$P/boot.autoblocks"
+export STOCKFW_RUN_DIR="$P/run"
+export HOME="$P/home" XDG_CONFIG_HOME="$P/home/.config"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+CONF="$XDG_CONFIG_HOME/stockfw/stockfw.conf"
+mkdir -p "$XDG_CONFIG_HOME/stockfw"
+ip link set lo up 2> /dev/null
+snap () { iptables-save | grep -v '^#' | sed 's/\[[0-9]*:[0-9]*\]//' | sha256sum; }
+icmp () { printf '[firewall]\nicmp/enable=%s\n' "$1" > "$CONF"; }
+
+icmp false
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" apply > /dev/null 2>&1
+applied=$(snap)
+t "3B: the journal records the settings applied (ICMP filtering off)" \
+  grep -q '^# setting /apps/stockfw/firewall/icmp/enable=false' "$STOCKFW_APPLIED_FILE"
+
+# Saved, not applied: ICMP filtering on.
+icmp true
+"$S" apply --dry-run > /dev/null 2>&1
+"$S" stop > /dev/null 2>&1
+"$S" start > "$P/start.out" 2>&1; rc=$?
+t "3B: start after a saved, unapplied settings change (rc $rc)" [ "$rc" -eq 0 ]
+t "3B: ...installs the firewall exactly as applied, not the saved settings" \
+  [ "$(snap)" = "$applied" ]
+t "3B: ...and the journal it writes still records what is live" \
+  grep -q '^# setting /apps/stockfw/firewall/icmp/enable=false' "$STOCKFW_APPLIED_FILE"
+
+# A journal from before the record: the saved preferences, as before.
+grep -v '^# setting ' "$STOCKFW_APPLIED_FILE" > "$P/old.applied"
+cp "$P/old.applied" "$STOCKFW_APPLIED_FILE"
+"$S" stop > /dev/null 2>&1
+"$S" start > /dev/null 2>&1; rc=$?
+t "3B: with an older journal start takes the saved settings (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && [ '$(snap)' != '$applied' ]"
+"$S" stop > /dev/null 2>&1
+exit "$f"
+BOOT
+  unshare -n bash "$P/boot.sh" "$S" "$P" > "$P/boot.log" 2>&1
+  boot_rc=$?
+  cat "$P/boot.log"
+  fails=$((fails + boot_rc))
+else
+  echo "skip: the 3B boot-settings check needs root, iptables and unshare"
+fi
+rm -rf "$P"
+# === end PR3-A ===
+
+# === PR3-C ===
+# `stockfw config' (package 3C): filled by its package.
+# === end PR3-C ===
+
+# === PR3-D ===
+# Policy editing (package 3D): filled by its package.
+# === end PR3-D ===
+
+# === PR3-E ===
+# Overview, events and activity (package 3E): filled by its package.
+# === end PR3-E ===
 
 echo ""
 if [ "$fails" -eq 0 ]; then

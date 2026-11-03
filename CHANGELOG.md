@@ -147,6 +147,31 @@ into `/usr/local/share/doc/stockfw/`.
   builds `stockfw` and its manual page without GTK, and does not look
   for GTK at all. The default still builds the desktop app too. CI
   checks that `stockfw` needs no GTK, GDK, Pango or cairo library.
+<!-- PR3-A -->
+- **One writer at a time.** Every change the command line makes goes
+  through one control layer and holds a lock (`/run/stockfw/apply.lock`
+  and a `.lock` file beside the rules) from the moment it reads the
+  policy until it has saved it. Two `policy add` commands at once both
+  keep their rule; before, the second could write over the first.
+- **The CLI now writes preferences (root's copy).** Root's settings file
+  can be changed from the command line, one key at a time, and the keys
+  it does not name are kept as they are on disk. The same checks as the
+  Preferences window apply, with its own reasons (`stockfw config`
+  comes with the next part of this work). A settings file that cannot
+  be read is kept as `.bad`.
+- **A comma or a line break in a rule field is refused.** The rule
+  files have no quoting, so such a row would read back as other fields
+  or as two rows. The check is now in the core, so every writer of the
+  rule files and the apply journal makes it, and nothing is written.
+- **Start at boot: boot uses the settings last applied.**
+  `stockfw start`, which the boot unit runs, now brings back the firewall settings that went out
+  with the last apply, as the journal records them. A settings change
+  that was saved and never applied no longer goes live at the next
+  boot. A journal from before this change has no settings, and then
+  the saved settings are used, as before.
+<!-- PR3-C -->
+<!-- PR3-D -->
+<!-- PR3-E -->
 
 ### Fixed
 

@@ -1451,6 +1451,98 @@ emitted (const gchar *ext, const gchar *intf, gboolean nat)
 	return e;
 }
 
+/* [ validator_agrees ] (PR 3)
+ * The terminal's fs_prefs_validate, asked to change each Protection row
+ * with these devices and sharing, refuses exactly the rows the window
+ * shows disabled, with the window's own reason text; and it has a word
+ * on sharing exactly when the window shows the sharing reason. */
+static gboolean
+reason_text_is (GtkWidget *win, const gchar *key, const gchar *text)
+{
+	gchar *name = g_strconcat ("reason:", key, NULL);
+	GtkWidget *w = find_named (win, name);
+
+	g_free (name);
+	return w != NULL && GTK_IS_LABEL (w) &&
+	       g_strcmp0 (gtk_label_get_text (GTK_LABEL (w)), text) == 0;
+}
+
+static const FsPrefsIssue *
+issue_for (const GPtrArray *list, const gchar *key)
+{
+	for (guint i = 0; i < list->len; i++) {
+		const FsPrefsIssue *is = g_ptr_array_index (list, i);
+
+		if (g_strcmp0 (is->key, key) == 0)
+			return is;
+	}
+	return NULL;
+}
+
+static gboolean
+validator_agrees (GtkWidget *win, const gchar *ext, const gchar *intf,
+                  gboolean nat)
+{
+	static const gchar *rows[] = {
+		FS_PREFS_FW_BLOCK_EXTERNAL_BROADCAST,
+		FS_PREFS_FW_BLOCK_NON_ROUTABLES,
+		FS_PREFS_FW_BLOCK_INTERNAL_BROADCAST,
+	};
+	const FsBackend *b = fs_backend ();
+	gboolean agree = TRUE;
+
+	for (guint r = 0; r < G_N_ELEMENTS (rows); r++) {
+		const gchar *keys[4] = { FS_PREFS_FW_EXT_IF, FS_PREFS_FW_INT_IF,
+		                         FS_PREFS_FW_NAT, rows[r] };
+		const gchar *values[4] = { ext, intf, nat ? "on" : "off",
+		                           fs_prefs_bool (rows[r]) ? "off"
+		                                                   : "on" };
+		FsPrefsCheck *c = fs_prefs_validate (keys, values, 4,
+		                                     b->fw_sections, b->fw_honors,
+		                                     NULL);
+		const FsPrefsIssue *no = issue_for (c->refusals, rows[r]);
+
+		if ((no != NULL) == sensitive (win, rows[r]) ||
+		    (no != NULL && !reason_text_is (win, rows[r], no->reason))) {
+			g_print ("       ext=%s int=%s nat=%d %s: validator %s, "
+			         "window %s\n", ext, intf, nat, rows[r],
+			         no != NULL ? no->reason : "accepts",
+			         sensitive (win, rows[r]) ? "live" : "disabled");
+			agree = FALSE;
+		}
+		fs_prefs_check_free (c);
+	}
+
+	/* Sharing: the window shows its reason whenever sharing could not
+	 * act with these devices, on or off; the validator says the same
+	 * (refused, or a warning when it is stored on) for sharing on. */
+	{
+		const gchar *keys[3] = { FS_PREFS_FW_EXT_IF, FS_PREFS_FW_INT_IF,
+		                         FS_PREFS_FW_NAT };
+		const gchar *values[3] = { ext, intf, "on" };
+		FsPrefsCheck *c = fs_prefs_validate (keys, values, 3,
+		                                     b->fw_sections, b->fw_honors,
+		                                     NULL);
+		const FsPrefsIssue *shared = issue_for (c->refusals,
+		                                        FS_PREFS_FW_NAT);
+
+		if (shared == NULL)
+			shared = issue_for (c->warnings, FS_PREFS_FW_NAT);
+		if ((shared != NULL) != reason_shown (win, FS_PREFS_FW_NAT) ||
+		    (shared != NULL &&
+		     !reason_text_is (win, FS_PREFS_FW_NAT, shared->reason))) {
+			g_print ("       ext=%s int=%s nat=%d sharing: validator "
+			         "%s, window reason %s\n", ext, intf, nat,
+			         shared != NULL ? shared->reason : "accepts",
+			         reason_shown (win, FS_PREFS_FW_NAT) ? "shown"
+			                                             : "hidden");
+			agree = FALSE;
+		}
+		fs_prefs_check_free (c);
+	}
+	return agree;
+}
+
 /* Every device and sharing combination: a row is live exactly when the
  * generator emits its rule, and disabled (with its reason) exactly when
  * it does not. */
@@ -1459,7 +1551,7 @@ drive_dependencies (GtkWidget *win)
 {
 	static const gchar *exts[] = { "", "eth1" };
 	static const gchar *ints[] = { "", "eth0" };
-	guint agree = 0, n = 0;
+	guint agree = 0, n = 0, same = 0;
 
 	for (guint e = 0; e < G_N_ELEMENTS (exts); e++)
 	for (guint i = 0; i < G_N_ELEMENTS (ints); i++)
@@ -1485,6 +1577,8 @@ drive_dependencies (GtkWidget *win)
 		     !gen.int_bcast &&
 		     reason_shown (win, FS_PREFS_FW_NAT) == !gen.sharing;
 		n++;
+		if (validator_agrees (win, exts[e], ints[i], nat))
+			same++;
 		if (ok)
 			agree++;
 		else
@@ -1504,6 +1598,10 @@ drive_dependencies (GtkWidget *win)
 	CHECK (agree == n && n == 8,
 	       "every Protection and sharing row is live exactly when the "
 	       "rule generator emits its rule (%u/%u combinations)", agree, n);
+	CHECK (same == n && n == 8,
+	       "fs_prefs_validate (the terminal's check) refuses exactly the "
+	       "rows the window disables, with the window's reasons (%u/%u "
+	       "combinations)", same, n);
 	click (win, "prefs-cancel");
 }
 

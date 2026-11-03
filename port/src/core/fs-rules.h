@@ -176,6 +176,55 @@ guint fs_policy_count (const FsPolicy *policy, FsRuleKind kind);
  * rules dir.  Free with g_free. */
 gchar *fs_rule_kind_path (FsRuleKind kind);
 
+/* ---- PR 3: one writer, and no row that changes shape on disk ------- */
+
+GQuark fs_rules_error_quark (void);
+#define FS_RULES_ERROR (fs_rules_error_quark ())
+typedef enum
+{
+	FS_RULES_ERR_INVALID,     /* the row cannot be written as it is   */
+	FS_RULES_ERR_NOT_FOUND,   /* the row to change is not there       */
+	FS_RULES_ERR_DUPLICATE,   /* the change would store a row twice   */
+	FS_RULES_ERR_SAVE,        /* the files could not be written       */
+	FS_RULES_ERR_LOCK         /* the policy lock could not be taken   */
+} FsRulesError;
+
+/* [ fs_rule_validate ]
+ * FALSE (with FS_RULES_ERR_INVALID and the field in the message) when
+ * a field holds a comma or a line break: the rule files are CSV with no
+ * quoting, so the row would read back as other fields or other rows
+ * (T15).  fs_policy_save refuses a policy holding such a row and writes
+ * nothing; so does the apply journal.  Every writer of fs_rule_to_csv
+ * output calls it. */
+gboolean  fs_rule_validate (const FsRule *rule, GError **error);
+
+/* [ fs_policy_lock ]
+ * One writer of the policy at a time, across processes.  Linux: flock
+ * on <run>/apply.lock, then <rules_dir>/.lock (always in that order;
+ * <run> is /run/stockfw, created 0750 when absent, or
+ * $STOCKFW_RUN_DIR).  Windows: within the process only.  Blocks until
+ * both are held.  Re-entrant within one process; fs_policy_save and the
+ * persist calls take it themselves, and a caller that reads, changes
+ * and saves (fs_control) holds it across all three, so a write made by
+ * another process in between is never lost.  An account that may not
+ * create a lock file (not root) goes on without it: it cannot write the
+ * files either.  NULL with *error when root cannot take it. */
+typedef struct _FsPolicyLock FsPolicyLock;
+FsPolicyLock *fs_policy_lock   (GError **error);
+void          fs_policy_unlock (FsPolicyLock *lock);
+/* "/run/stockfw", or $STOCKFW_RUN_DIR.  g_free. */
+gchar        *fs_policy_run_dir (void);
+
+/* [ fs_policy_replace_persist ]
+ * Edit in place (E4): the row identical (CSV) to `old' becomes a copy
+ * of `rule', at the same position and number, and the policy is saved
+ * once.  Refused, nothing changed: a different kind, a row that fails
+ * fs_rule_validate or fs_rule_problem (INVALID), `old' not there
+ * (NOT_FOUND), `rule' already stored as another row (DUPLICATE).  On a
+ * save failure the old row is put back (SAVE). */
+gboolean  fs_policy_replace_persist (FsPolicy *policy, const FsRule *old,
+                                     const FsRule *rule, GError **error);
+
 G_END_DECLS
 
 #endif /* FS_RULES_H */

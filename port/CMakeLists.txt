@@ -84,6 +84,9 @@ add_library(fs-core STATIC
   src/core/fs-intelwin.c
   src/core/fs-winstore.c
   src/core/fs-toolpath.c
+  src/core/fs-prefs-check.c
+  src/core/fs-verdict.c
+  src/core/fs-eventfilter.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 pkg_check_modules(GLIBONLY REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0)
@@ -298,6 +301,8 @@ if(FS_PLATFORM STREQUAL "linux")
     src/cli/fs-cli-intel.c
     src/cli/fs-dashboard.c
     src/cli/fs-cli-complete.c
+    src/cli/fs-cli-config.c
+    src/control/fs-control.c
   )
   add_executable(stockfw
     ${FS_CLI_SOURCES}

@@ -91,6 +91,7 @@ static const FsCliCommandDef * const tables[] = {
 	fs_cli_views_commands,
 	fs_cli_intel_commands,
 	fs_cli_dashboard_commands,
+	fs_cli_config_commands,
 };
 
 const FsCliCommandDef * const *
@@ -588,8 +589,10 @@ main (int argc, char *argv[])
 		return FS_EXIT_OK;
 	}
 
-	/* Preferences (audit-only mode, Advanced Options) are the desktop
-	 * app's; read them, never write them from here. */
+	/* Preferences (audit-only mode, Advanced Options): read them here.
+	 * The terminal writes them (root's copy) only through the control
+	 * layer, fs_prefs_set_persist under the lock, never with
+	 * fs_prefs_save on this snapshot. */
 	fs_prefs_load ();
 
 	g_ptr_array_add (rest, NULL);

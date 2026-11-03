@@ -5,6 +5,7 @@
  * fs-cli-intel.c and fs-dashboard.c.
  *--------------------------------------------------------------------*/
 #include "cli/fs-cli.h"
+#include "control/fs-control.h"
 #include "core/fs-apply.h"
 #include "core/fs-audit.h"
 #include "core/fs-autoblock.h"
@@ -36,17 +37,9 @@
 
 /* ------------------------------------------------------------- helpers */
 
-static const gchar *kind_names[FS_RULE_N_KINDS] = {
-	"inbound-allow-from",
-	"inbound-allow-service",
-	"inbound-forward",
-	"outbound-allow-to",
-	"outbound-allow-from",
-	"outbound-allow-service",
-	"outbound-deny-to",
-	"outbound-deny-from",
-	"outbound-deny-service",
-};
+/* The kinds' names are the control layer's (one table for the terminal,
+ * the daemon and the dashboard). */
+#define kind_names (fs_control_kind_names ())
 
 const gchar *
 fs_cli_kind_name (FsRuleKind kind)
@@ -63,14 +56,7 @@ fs_cli_kind_names (void)
 gboolean
 fs_cli_kind_parse (const gchar *name, FsRuleKind *kind)
 {
-	for (gint i = 0; i < FS_RULE_N_KINDS; i++) {
-		if (g_strcmp0 (name, kind_names[i]) == 0) {
-			*kind = (FsRuleKind) i;
-			return TRUE;
-		}
-	}
-
-	return FALSE;
+	return fs_control_kind_parse (name, kind);
 }
 
 gchar *
