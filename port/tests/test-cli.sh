@@ -1186,6 +1186,271 @@ rm -rf "$B"
 # === end WP-B ===
 
 # === WP-C ===
+# status truth, audit and sentinel list (cli-plan.md section 4, WP-C).
+# Everything has its own scratch directory, readable by nobody, so the
+# checks that matter without root run as uid 65534 when the suite runs
+# as root.
+C="$(mktemp -d /tmp/stockfw-wpc-XXXXXX)"; chmod 755 "$C"
+mkdir -p "$C/rules" "$C/cfg/stockfw"
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null; then
+  C_AS="['setpriv', '--reuid=65534', '--regid=65534', '--clear-groups']"
+else
+  C_AS="[]"
+fi
+# The environment every WP-C check runs in (python: CENV).
+C_PRE="
+import datetime, hashlib, json, os, subprocess, time
+CENV = dict(os.environ, STOCKFW_RULES_DIR='$C/rules', XDG_CONFIG_HOME='$C/cfg',
+            STOCKFW_AUDIT_FILE='$C/audit.log', STOCKFW_LOG_FILE='$C/kern.log',
+            STOCKFW_EVENTS_DIR='$C/no-history', STOCKFW_AUTOBLOCK_FILE='$C/autoblocks',
+            STOCKFW_APPLIED_FILE='$C/applied.csv', STOCKFW_SYSTEMD_DIR='$C/systemd')
+def run(*args, nobody=False, env=None):
+    pre = $C_AS if nobody else []
+    return subprocess.run(pre + ['$S'] + list(args), capture_output=True, text=True, env=env or CENV, timeout=20)
+def js(*args, **kw):
+    r = run('--json', *args, **kw)
+    assert r.returncode == 0, r
+    return json.loads(r.stdout)
+"
+c_py () { py "$C_PRE
+$1"; }
+
+# An audit log across midnight UTC with one damaged line, as
+# fs_audit_log writes it (the gate's layout was pinned from a real
+# apply, start and stop in a private namespace).
+cat > "$C/audit.log" <<'AEOF'
+2026-11-02T22:00:00Z | policy applied | cli | full | +1 added (1 allow, 0 block), -0 removed (0 allow, 0 block), =0 unchanged
+2026-11-02T23:10:00Z | firewall stopped | policy page | stop | stopped
+this line is damaged
+2026-11-02T23:45:00Z | intel-apply | source=cli result=ok digest=x sets=0 v4=0 v6=0
+2026-11-03T00:05:00Z | firewall started | cli | start | started with the last applied policy
+2026-11-03T00:20:00Z | sentinel auto-block | 203.0.113.77, Sentinel: periodic beacon
+AEOF
+# Three drops seconds ago, one from two days ago, and noise.
+py "
+import datetime
+now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+def at(s): return (now - datetime.timedelta(seconds=s)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+open('$C/kern.log', 'w').write('\n'.join([
+ at(2 * 86400) + ' host kernel: [0.5] STOCKFW-DROP IN=eth0 OUT= SRC=192.0.2.200 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40000 DPT=23 SYN',
+ at(3) + ' host kernel: [1.0] STOCKFW-DROP IN=eth0 OUT= SRC=203.0.113.5 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40000 DPT=22 SYN',
+ at(3) + ' host kernel: [1.5] some other driver says hello',
+ at(2) + ' host kernel: [2.0] STOCKFW-DROP IN=eth0 OUT= SRC=198.51.100.7 DST=10.0.0.5 LEN=40 PROTO=TCP SPT=40001 DPT=445 SYN',
+ at(1) + ' host kernel: [3.0] STOCKFW-DROP IN= OUT=eth0 SRC=10.0.0.5 DST=203.0.113.9 LEN=60 PROTO=TCP SPT=50000 DPT=443 SYN',
+]) + '\n')
+"
+chmod -R a+rX "$C"
+
+check "audit: -n 2 gives the last 2 entries, and the damaged line is counted (bad_lines 1, stderr note)" c_py "
+r = run('--json', 'audit', '-n', '2')
+d = json.loads(r.stdout)
+assert r.returncode == 0 and len(d['entries']) == 2, r
+assert d['bad_lines'] == 1 and d['lines_total'] == 6, d
+assert '1 damaged line skipped' in r.stderr, r.stderr
+assert [e['action'] for e in d['entries']] == ['firewall started', 'sentinel auto-block'], d"
+check "audit: --action start gives the one start line, from cli" c_py "
+d = js('audit', '--action', 'start')
+assert [(e['action'], e['origin']) for e in d['entries']] == [('firewall started', 'cli')], d"
+check "audit: --since/--until in ISO UTC pick the entries across midnight" c_py "
+d = js('audit', '--since', '2026-11-02T23:30Z', '--until', '2026-11-03T00:10Z')
+assert [e['action'] for e in d['entries']] == ['intel-apply', 'firewall started'], d"
+check "audit: origin is cli, gui or null as the line says, never guessed" c_py "
+d = js('audit', '-n', '0')
+assert [e['origin'] for e in d['entries']] == ['cli', 'gui', 'cli', 'cli', None], d
+assert d['entries'][1]['detail'] == 'stop | stopped', d"
+check "audit: every epoch is the stamp's own UTC second, in any time zone" c_py "
+env = dict(CENV, TZ='Asia/Kolkata')
+r = run('--json', 'audit', '-n', '0', env=env)
+d = json.loads(r.stdout)
+for e in d['entries']:
+    want = datetime.datetime.fromisoformat(e['raw'].split(' | ')[0].replace('Z', '+00:00')).timestamp()
+    assert e['epoch'] == want and e['time'] == e['raw'].split(' | ')[0], e
+r = run('audit', '--utc', '-n', '1', env=env)
+assert '2026-11-03T00:20:00Z' in r.stdout, r.stdout"
+check "audit: --since garbage is a usage error (exit 2)" c_py "
+r = run('audit', '--since', 'garbage')
+assert r.returncode == 2 and 'not a time' in r.stderr, r"
+check "audit: --action strat says \"did you mean --action start\" (exit 2)" c_py "
+r = run('audit', '--action', 'strat')
+assert r.returncode == 2 and 'did you mean --action start' in r.stderr, r"
+check "audit: no log is exit 1, \"nothing recorded yet\", with the path" c_py "
+r = run('audit', env=dict(CENV, STOCKFW_AUDIT_FILE='$C/none.log'))
+assert r.returncode == 1 and 'nothing recorded yet' in r.stderr and '$C/none.log' in r.stderr, r"
+check "audit: --file refuses a link and a directory (exit 1)" c_py "
+os.path.lexists('$C/link.log') or os.symlink('$C/audit.log', '$C/link.log')
+for p in ('$C/link.log', '$C'):
+    r = run('audit', '--file', p)
+    assert r.returncode == 1 and 'not a regular file' in r.stderr, (p, r)
+assert run('audit', '--file', '$C/audit.log').returncode == 0"
+check "audit: the table has TIME ACTION FROM DETAIL and a header with the line count" c_py "
+r = run('audit', '-n', '0')
+lines = r.stdout.splitlines()
+assert lines[0].startswith('Audit log $C/audit.log  (6 lines'), lines
+assert lines[1].split() == ['TIME', 'ACTION', 'FROM', 'DETAIL'], lines
+assert any('firewall stopped' in l and ' gui ' in l for l in lines), lines"
+check "audit -f --json: a new line arrives as one NDJSON object" c_py "
+import shutil
+shutil.copy('$C/audit.log', '$C/follow.log')
+env = dict(CENV, STOCKFW_AUDIT_FILE='$C/follow.log')
+p = subprocess.Popen(['$S', '--json', 'audit', '-f', '-n', '1'], stdout=subprocess.PIPE, text=True, env=env)
+first = json.loads(p.stdout.readline())
+with open('$C/follow.log', 'a') as f:
+    f.write('2026-11-03T10:00:00Z | firewall stopped | cli | stop | stopped\n')
+line = p.stdout.readline()
+p.terminate(); p.wait(timeout=5)
+e = json.loads(line)
+assert first['action'] == 'sentinel auto-block', first
+assert e['action'] == 'firewall stopped' and e['origin'] == 'cli' and e['epoch'] == datetime.datetime(2026, 11, 3, 10, tzinfo=datetime.timezone.utc).timestamp(), e"
+if [ "$(id -u)" = 0 ] && command -v unshare > /dev/null; then
+  # A real apply, in a private network namespace: the newest entry is
+  # that apply, from cli.
+  check "audit: after a real apply (netns), the last entry is an apply from cli" c_py "
+env = {k: v for k, v in CENV.items() if k != 'STOCKFW_APPLIED_FILE'}
+env.update(STOCKFW_AUDIT_FILE='$C/netns-audit.log', STOCKFW_RULES_DIR='$C/netns-rules')
+r = subprocess.run(['unshare', '-n', 'sh', '-c', '\"\$0\" policy add inbound-allow-service SSH 22 Anyone >/dev/null && \"\$0\" apply >/dev/null 2>&1 && \"\$0\" --json audit -n 1', '$S'], capture_output=True, text=True, env=env, timeout=60)
+d = json.loads(r.stdout)
+e = d['entries'][-1]
+assert e['action'] == 'policy applied' and e['origin'] == 'cli' and e['detail'].startswith('full | +1 added'), d"
+fi
+
+# status: the journal fixture holds the saved rules -> live.
+c_py "
+r = run('policy', 'add', 'inbound-allow-service', 'SSH', '22', 'Anyone')
+assert r.returncode == 0, r
+# The settings it went out with: the defaults, as a real apply writes them.
+sets = ['ext_if=', 'int_if=', 'nat=false', 'icmp/enable=true', 'icmp/echo_request=true', 'icmp/echo_reply=true',
+        'icmp/traceroute=true', 'icmp/mstraceroute=true', 'icmp/unreachable=true', 'icmp/timestamping=false',
+        'icmp/masking=false', 'icmp/redirection=false', 'icmp/source_quenches=false', 'deny_packets=true',
+        'restrictive_outbound=false', 'log_allowed=true', 'block_external_broadcast=false',
+        'block_internal_broadcast=false', 'block_non_routables=true']
+open('$C/applied.csv', 'w').write('# StockFW applied policy journal v1\n# rules translation 2\n1,\"SSH, 22, Anyone, \"\n'
+                                  + ''.join('# setting /apps/stockfw/firewall/%s\n' % x for x in sets))
+" > /dev/null
+chmod -R a+rX "$C"
+check "status: a journal equal to the rules is live == \"same\", pending 0" c_py "
+d = js('status', nobody=True)
+assert d['live'] == 'same' and d['pending'] == {'added': 0, 'removed': 0, 'settings': False}, d"
+check "  ...one more rule: live == \"pending\", pending.added == 1, and the text says so" c_py "
+assert run('policy', 'add', 'outbound-deny-to', '203.0.113.77', '--comment', 'Sentinel: periodic beacon').returncode == 0
+os.system('chmod -R a+rX $C')
+d = js('status', nobody=True)
+assert d['live'] == 'pending' and d['pending']['added'] == 1 and d['pending']['removed'] == 0, d
+t = run('status', nobody=True).stdout
+assert '2 rules, 1 change not applied (stockfw policy diff)' in t, t
+q = run('-q', 'status', nobody=True).stdout
+assert q == 'unknown, 1 change pending\n', q"
+check "status: last_apply is the newest gate line of the audit log, to the second" c_py "
+d = js('status')
+la = d['last_apply']
+assert la['action'] == 'firewall started' and la['origin'] == 'cli', la
+assert la['epoch'] == datetime.datetime(2026, 11, 3, 0, 5, tzinfo=datetime.timezone.utc).timestamp(), la"
+check "status: as uid 65534 with a readable log, monitoring is readable (1.0.7 said no)" c_py "
+d = js('status', nobody=True)
+assert d['monitoring'] == {'readable': True, 'source': '$C/kern.log', 'problem': None}, d['monitoring']
+assert d['monitoring_available'] is True, d
+assert 'reading $C/kern.log' in run('status', nobody=True).stdout"
+check "  ...and an unreadable one is not, with the reason" c_py "
+d = js('status', nobody=True, env=dict(CENV, STOCKFW_LOG_FILE='$C/missing.log'))
+m = d['monitoring']
+assert m['readable'] is False and d['monitoring_available'] is False and 'cannot read' in m['problem'], d"
+check "status: blocked today counts the 3 drops since local midnight, and names the last" c_py "
+now = datetime.datetime.now()
+midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+want = 3 if time.time() - 3 >= midnight else None
+d = js('status')
+if want is not None:
+    assert d['blocked_today'] == 3 and d['blocked_source'] == 'kernel_log', d
+    assert d['last_block']['destination'] == '203.0.113.9' and d['last_block']['blocked'] is True, d
+    assert 'today 3' in run('status').stdout"
+check "status -v --json: the firewall settings, restrictive outbound from stockfw.conf" c_py "
+open('$C/cfg/stockfw/stockfw.conf', 'w').write('[firewall]\nrestrictive_outbound=true\n')
+d = js('status', '-v')
+assert d['settings']['/apps/stockfw/firewall/restrictive_outbound'] == 'true', d['settings']
+assert d['sentinel']['mode'] == 'auto' and d['history']['enabled'] is False, d
+t = run('status', '-v').stdout
+assert 'blocked unless a rule allows it (restrictive)' in t and 'Policy Lock is not enforced by the CLI' in t, t
+os.remove('$C/cfg/stockfw/stockfw.conf')"
+check "status: the boot unit is read (absent, then enabled)" c_py "
+assert js('status')['boot_unit'] == 'absent'
+os.makedirs('$C/systemd/multi-user.target.wants', exist_ok=True)
+open('$C/systemd/stockfw.service', 'w').write('[Unit]\n')
+os.path.lexists('$C/systemd/multi-user.target.wants/stockfw.service') or os.symlink('$C/systemd/stockfw.service', '$C/systemd/multi-user.target.wants/stockfw.service')
+d = js('status')
+assert d['boot_unit'] == 'enabled' and d['host'], d
+assert 'stockfw.service enabled' in run('status').stdout"
+check "status --json: every 1.0.7 key is still there" c_py "
+old = ['version', 'backend', 'state', 'ipv6', 'root', 'rules_dir', 'policy_saved', 'malformed_rules',
+       'rules', 'apply_hold', 'monitoring_available', 'connections', 'intel', 'interfaces']
+d = js('status')
+assert all(k in d for k in old), [k for k in old if k not in d]
+assert set(d['ipv6']) == {'state', 'detail'}"
+check "status: an unknown option is refused (exit 2)" c_py "
+r = run('status', '--verbos')
+assert r.returncode == 2 and 'did you mean --verbose' in r.stderr, r"
+
+# sentinel list: one fresh row, one expired, one damaged.
+py "
+import time
+t = int(time.time())
+open('$C/autoblocks', 'w').write('S,%d,6,203.0.113.77, Sentinel: periodic beacon\nS,%d,6,203.0.113.78, Sentinel: fan-out\nnot a row\n' % (t - 60, t - 700))
+"
+chmod -R a+rX "$C"
+check "sentinel list --json: fresh and expired rows, and the file is not changed" c_py "
+before = hashlib.sha256(open('$C/autoblocks', 'rb').read()).hexdigest()
+r = run('--json', 'sentinel', 'list')
+d = json.loads(r.stdout)
+after = hashlib.sha256(open('$C/autoblocks', 'rb').read()).hexdigest()
+assert before == after, 'sentinel list changed the file'
+b = {x['target']: x for x in d['blocks']}
+assert b['203.0.113.77']['expired'] is False and b['203.0.113.78']['expired'] is True, d
+assert b['203.0.113.77']['rule_ref'] == 'outbound-deny-to:1' and b['203.0.113.78']['rule_ref'] is None, d
+assert b['203.0.113.77']['why'] == 'periodic beacon' and d['mode'] == 'auto', d
+assert b['203.0.113.77']['expires_epoch'] - b['203.0.113.77']['epoch'] == 600, d
+assert '1 damaged row' in r.stderr, r.stderr"
+check "sentinel: the table, and \`sentinel lift' is refused (exit 2)" c_py "
+t = run('sentinel').stdout
+assert 'TARGET' in t and 'due since' in t and 'outbound-deny-to:1' in t, t
+r = run('sentinel', 'lift')
+assert r.returncode == 2, r"
+check "status -v: Sentinel's staged count comes from the same file" c_py "
+d = js('status', '-v')
+assert d['sentinel']['staged'] == 2 and d['sentinel']['next_lift_epoch'] > time.time(), d['sentinel']"
+check "simulate: a staged Sentinel block says when it lifts" c_py "
+r = run('simulate', '--assume-running', 'outbound', 'to', '203.0.113.77', 'port', '443')
+assert r.returncode == 5 and 'lifts by itself' in r.stdout, r"
+
+# dashboard: monitoring by readability, and live rows from the file.
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null || [ "$(id -u)" != 0 ]; then
+  check "dashboard: as uid 65534 with a readable log, monitoring is on and new lines arrive" c_py "
+import socket, urllib.request
+s = socket.socket(); s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]; s.close()
+pre = $C_AS
+p = subprocess.Popen(pre + ['$S', 'dashboard', '--no-open', '--port', str(port)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=CENV)
+try:
+    url = ''
+    for _ in range(50):
+        line = p.stdout.readline()
+        if '#token=' in line:
+            url = line; break
+    token = url.split('#token=')[1].split()[0]
+    def get(path):
+        req = urllib.request.Request('http://127.0.0.1:%d%s' % (port, path), headers={'X-StockFW-Token': token})
+        return json.loads(urllib.request.urlopen(req, timeout=5).read())
+    d = get('/api/summary')
+    assert d['monitoring'] is True and d['root'] is False and 'readable without root' in d['monitor_note'], d
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+    with open('$C/kern.log', 'a') as f:
+        f.write(stamp + ' host kernel: [9.0] STOCKFW-DROP IN=eth0 OUT= SRC=192.0.2.123 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40000 DPT=8443 SYN\n')
+    for _ in range(30):
+        if any(e['source'] == '192.0.2.123' for e in get('/api/events')):
+            break
+        time.sleep(0.2)
+    else:
+        raise AssertionError('the appended line never reached /api/events')
+finally:
+    p.terminate(); p.wait(timeout=5)"
+fi
+rm -rf "$C"
 # === end WP-C ===
 
 # === WP-D ===

@@ -180,6 +180,14 @@ test_time_specs (void)
 	CHECK (fs_event_parse_time_spec ("2026-11-01T14:30:00Z", now, FALSE,
 	                                 &v, NULL) &&
 	       v == 1793543400LL * G_USEC_PER_SEC, "an ISO stamp with Z");
+	/* 1.0.8 (audit --since): minutes and a zone, no seconds. */
+	CHECK (fs_event_parse_time_spec ("2026-11-01T14:30Z", now, FALSE,
+	                                 &v, NULL) &&
+	       v == 1793543400LL * G_USEC_PER_SEC, "an ISO stamp with Z and no "
+	       "seconds");
+	CHECK (fs_event_parse_time_spec ("2026-11-01T15:30+01:00", now, FALSE,
+	                                 &v, NULL) &&
+	       v == 1793543400LL * G_USEC_PER_SEC, "an offset and no seconds");
 	CHECK (!fs_event_parse_time_spec ("yesterday", now, FALSE, &v, &error) &&
 	       error != NULL, "words are refused, with a reason");
 	g_clear_error (&error);

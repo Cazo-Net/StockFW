@@ -451,8 +451,8 @@ fs_cli_whatif (const gchar *line, gboolean assume_running)
 }
 
 /* [ fs_cli_whatif_policy ]
- * Sentinel's staged blocks are not added yet: their reader is WP-C's
- * (cli-plan.md A3). */
+ * Sentinel's staged blocks come from its state file, through WP-C's
+ * read-only parser (fs_cli_sentinel_whatif, fs-cli-views.c). */
 FsWhatIfResult *
 fs_cli_whatif_policy (const FsPolicy *policy, const gchar *line,
                       gboolean assume_running)
@@ -471,6 +471,7 @@ fs_cli_whatif_policy (const FsPolicy *policy, const gchar *line,
 	if (assume_running)
 		ctx->firewall = FS_WHATIF_FW_RUNNING;
 	fs_copilot_whatif_live (ctx, policy, fs_apply_hold_reason ());
+	fs_cli_sentinel_whatif (ctx, policy);
 
 	result = fs_whatif_simulate_text (ctx, line);
 

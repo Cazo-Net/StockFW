@@ -38,6 +38,7 @@
 #include "core/fs-activity.h"
 #include "core/fs-apply.h"
 #include "core/fs-copilot.h"
+#include "core/fs-intel.h"
 #include "core/fs-json.h"
 #include "core/fs-netparse.h"
 #include "core/fs-util.h"
@@ -79,6 +80,12 @@ typedef struct
 	gboolean           monitoring;
 	gchar             *monitor_note; /* why not, or where from */
 	gboolean           backfilled;
+	/* WP-C: a log file this account can read, followed here when the
+	 * backend's reader is not available (it needs root). */
+	gchar             *follow_path;
+	goffset            follow_offset;
+	GString           *follow_partial;
+	guint              follow_id;
 
 	GList             *stats_now;    /* FsIfaceStat*, last sample */
 	GList             *stats_prev;
@@ -202,6 +209,113 @@ on_sample (gpointer data)
 	return G_SOURCE_CONTINUE;
 }
 
+/* === WP-C === */
+/* [ follow_parse ]
+ * One kernel-log line as an event, read the way fs_cli_log_history
+ * reads it: a threat-intel block only when its set is one StockFW
+ * applied, a policy event named by its verdict.  NULL for any other
+ * line. */
+static FsHit *
+follow_parse (const gchar *line)
+{
+	FsHit parsed = { 0 };
+	FsHit *hit;
+	gchar *intel_id = NULL;
+
+	if (fs_netparse_intel_line (line, &parsed, NULL, &intel_id)) {
+		if (!fs_intel_applied_has (intel_id)) {
+			g_free (intel_id);
+			fs_netparse_clear_hit (&parsed);
+			return NULL;
+		}
+		fs_netparse_name_blocked (&parsed);
+		parsed.rule = fs_intel_rule_text (intel_id);
+		g_free (intel_id);
+	} else if (fs_netparse_log_line (line, &parsed, NULL)) {
+		fs_netparse_name_by_verdict (&parsed,
+		                             fs_netparse_log_verdict (line));
+	} else {
+		return NULL;
+	}
+	hit = fs_hit_new ();
+	*hit = parsed;
+	return hit;
+}
+
+/* [ on_follow ] -- new whole lines of the followed file. */
+static gboolean
+on_follow (gpointer data)
+{
+	Dash *dash = data;
+	GStatBuf st;
+	FILE *file;
+	gchar buf[8192];
+	gsize got;
+
+	if (g_stat (dash->follow_path, &st) != 0)
+		return G_SOURCE_CONTINUE;
+	if ((goffset) st.st_size < dash->follow_offset) {
+		dash->follow_offset = 0;            /* rotated or cut short */
+		g_string_truncate (dash->follow_partial, 0);
+	}
+	if ((goffset) st.st_size == dash->follow_offset)
+		return G_SOURCE_CONTINUE;
+	file = g_fopen (dash->follow_path, "rb");
+	if (file == NULL)
+		return G_SOURCE_CONTINUE;
+	if (fseeko (file, (off_t) dash->follow_offset, SEEK_SET) == 0)
+		while ((got = fread (buf, 1, sizeof buf, file)) > 0) {
+			dash->follow_offset += (goffset) got;
+			g_string_append_len (dash->follow_partial, buf, (gssize) got);
+		}
+	fclose (file);
+
+	for (;;) {
+		gchar *nl = memchr (dash->follow_partial->str, '\n',
+		                    dash->follow_partial->len);
+		gchar *line;
+		FsHit *hit;
+
+		if (nl == NULL)
+			break;
+		line = g_strndup (dash->follow_partial->str,
+		                  (gsize) (nl - dash->follow_partial->str));
+		g_string_erase (dash->follow_partial, 0,
+		                nl - dash->follow_partial->str + 1);
+		hit = follow_parse (line);
+		if (hit != NULL) {
+			on_live_hit (hit, dash);
+			fs_hit_free (hit);
+		}
+		g_free (line);
+	}
+	return G_SOURCE_CONTINUE;
+}
+
+/* [ follow_start ]
+ * Monitoring is decided by what this account can read (the probe of
+ * `stockfw status', fs_cli_log_readable), not by its user id: when the
+ * backend's reader is refused, a readable log file is followed here. */
+static gboolean
+follow_start (Dash *dash)
+{
+	gchar *source = NULL;
+	GStatBuf st;
+
+	if (!fs_cli_log_readable (&source, NULL) || source == NULL ||
+	    !g_file_test (source, G_FILE_TEST_IS_REGULAR) ||
+	    g_stat (source, &st) != 0) {
+		g_free (source);
+		return FALSE;
+	}
+	dash->follow_path = source;
+	dash->follow_offset = (goffset) st.st_size;
+	dash->follow_partial = g_string_new (NULL);
+	dash->follow_id = g_timeout_add (500, on_follow, dash);
+	return TRUE;
+}
+/* === end WP-C === */
+
 /* [ load_events ]
  * Backfill the Policy activity series from the kernel log -- the log is
  * the archive -- then follow it live.  Coverage starts at the first
@@ -246,6 +360,13 @@ load_events (Dash *dash)
 		dash->monitor_note = g_strdup (dash->backfilled
 			? "Live, with history from the kernel log"
 			: "Live since the dashboard started");
+	} else if (follow_start (dash)) {
+		gchar *safe = fs_cli_out_safe (dash->follow_path);
+
+		dash->monitoring = TRUE;
+		dash->monitor_note = g_strdup_printf (
+			"Live from %s (readable without root)", safe);
+		g_free (safe);
 	} else {
 		dash->monitoring = FALSE;
 		dash->monitor_note = g_strdup (error != NULL ? error->message
@@ -1319,7 +1440,11 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 	g_socket_service_stop (dash.service);
 	g_socket_listener_close (G_SOCKET_LISTENER (dash.service));
 	g_source_remove (sample_id);
-	if (dash.monitoring && fs_backend ()->log_stop != NULL)
+	if (dash.follow_id != 0) {
+		g_source_remove (dash.follow_id);
+		g_string_free (dash.follow_partial, TRUE);
+		g_free (dash.follow_path);
+	} else if (dash.monitoring && fs_backend ()->log_stop != NULL)
 		fs_backend ()->log_stop ();
 
 	launch_page_remove (&dash);

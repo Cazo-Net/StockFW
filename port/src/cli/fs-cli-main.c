@@ -38,6 +38,8 @@ static const gchar *main_help =
 "  events [-n N] [-f]         Recent firewall events; --history for saved\n"
 "  connections                Active TCP connections and their programs\n"
 "  interfaces [--watch]       Network adapters with traffic and rates\n"
+"  audit [-n N] [-f]          The audit log: every apply, start and stop\n"
+"  sentinel [list]            Sentinel's staged blocks (read-only)\n"
 "  intel <action>             Threat-intel blocklists (stockfw help intel)\n"
 "  dashboard [--port N]       Serve the local web dashboard and open it\n"
 "  help [command]             Help for one command\n"
