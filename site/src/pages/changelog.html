@@ -1,12 +1,45 @@
 ---
 title: Changelog
 eyebrow: Changelog
-description: What changed in each StockFW version, up to the current 1.0.7 release.
+description: What changed in each StockFW version, up to the current 1.0.8 release.
 ---
 <div class="prose">
 <p class="lede">Each release also adds a chapter to <a href="{{repo}}/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">the architecture and security document</a>, which records the evidence behind every claim below. This page is the short version.</p>
 
-<h2 id="v1-0-7">{{version}} · 3 November 2026 · current release</h2>
+<!-- RELEASE DAY: replace DATE below with the v1.0.8 release date -->
+<h2 id="v1-0-8">{{version}} · DATE · current release</h2>
+<p>The terminal release. On Linux, <code>stockfw</code> now does from a terminal what the window does, and says what is true: whether the saved policy is live, who can reach each open port, what the audit log holds, and what Sentinel has staged. Every sample on the <a href="{{root}}docs/cli.html">command line page</a> is this release’s real output.</p>
+<h3>Added</h3>
+<ul>
+<li><strong>The live event line.</strong> <code>stockfw events -f</code> prints new events in the table’s columns and, on a terminal, keeps a status line under them: firewall state, live or pending, HELD (audit-only), blocked today, Sentinel and the event source. Never shown with <code>--json</code>, <code>--csv</code>, <code>-q</code> or in a pipe, so machine output stays one event per line. When the reader stops, <code>-f</code> says why and exits 1. <a href="{{root}}docs/cli.html#events-follow">The live event line</a>. [[verified:test-cli.sh]]</li>
+<li><strong>Events triage.</strong> <code>events --summary</code> counts a window per source and per port with a bar per hour (<code>--by</code>, <code>--top</code>); <code>--wide</code>, <code>--csv</code>, <code>-r</code>, <code>--utc</code>; <code>--port</code> takes a list and <code>--dir</code> takes <code>both</code>. The RULE column names the threat-intel list that blocked an event; 3389 is Remote Desktop and 161 is SNMP, in the terminal and on the Events page. [[verified:test-cli.sh]]</li>
+<li><strong><code>stockfw status</code> says whether what you saved is live</strong>: “12 rules, live” or “1 change not applied”, the last apply, start or stop, the packets blocked today and the last one, and whether <code>stockfw.service</code> puts the rules back at boot. <code>-v</code> adds the firewall settings, the event history and Sentinel; <code>-q</code> prints one line. Monitoring is decided by what your account can read, tried rather than guessed from your user id. [[verified:test-cli.sh]]</li>
+<li><strong>New commands.</strong> <code>stockfw audit</code> reads the audit log with filters and <code>-f</code>; <code>stockfw sentinel list</code> shows Sentinel’s staged blocks and when each lifts; <code>stockfw listening</code> shows every open port, the program behind it and whether the policy lets the LAN and the internet reach it, with the rule that decides; <code>stockfw check</code> lists the lines of the policy files that are not rules. <a href="{{root}}docs/cli.html#audit">audit</a>, <a href="{{root}}docs/cli.html#sentinel">sentinel</a>, <a href="{{root}}docs/cli.html#listening">listening</a>, <a href="{{root}}docs/cli.html#check">check</a>. [[verified:test-cli.sh]]</li>
+<li><strong>Rules have references.</strong> <code>inbound-allow-service:2</code> works in <code>policy show</code>, <code>remove</code>, <code>list --status</code>, <code>simulate --json</code> and <code>copilot health --json</code>; <code>add</code> and <code>remove</code> echo the reference and check the rule’s own traffic. <code>policy diff</code> shows the saved policy against the applied one, and <code>apply --dry-run</code> lists the rows it would add and remove. [[verified:test-cli.sh]]</li>
+<li><strong>The lockout guard.</strong> Over SSH, <code>apply</code> and <code>start</code> check that the new policy still lets your session in, under <code>sudo</code> too, with sshd on any port; they ask on a terminal and refuse without one unless <code>--yes</code> is given. SSH clients on every port sshd listens on are in the set a blocklist may never cut. <a href="{{root}}docs/cli.html#lockout">The lockout guard</a>. [[verified:test-cli.sh]] [[verified:test-hostnet.c]]</li>
+<li><strong>Global options and honest tables.</strong> <code>--plain</code>, <code>--full</code> and <code>--color=auto|always|never</code>; tables fit the terminal and only the terminal; symbols fall back to ASCII; a hint that needs root names the program by its full path. Text from logs and comments is escaped before it reaches the terminal, everywhere. <code>-q simulate</code> prints only the verdict word; <code>copilot health --severity</code> sets the level that gives exit 7; <code>simulate --applied</code> asks the applied policy. [[verified:test-cli.sh]]</li>
+<li><strong><code>connections</code> and <code>interfaces</code>, in detail.</strong> Both ports and the TCP state, filters by address, port, program, direction and state, counts with <code>--by</code>, connected UDP with <code>--udp</code>; rates measured over the real time between samples, <code>--watch=SECS</code>, <code>-c COUNT</code>, <code>--all</code>, one line per frame with <code>--json</code>. [[verified:test-sockets.c]]</li>
+<li><strong><code>man stockfw</code>, and completion for bash and zsh.</strong> The manual page is written by the tool from the same tables its parser reads, so it cannot fall behind; completion offers commands, options, values and your own rule references. The Linux installer puts all three under <code>/usr/local/share</code>. <a href="{{root}}docs/cli.html#man">Manual page and completion</a>. [[verified:test-cli.sh]]</li>
+<li><strong>A build of the command line alone.</strong> <code>cmake -DFS_BUILD_GUI=OFF</code> builds <code>stockfw</code> and its manual page without GTK. CI checks that <code>stockfw</code> needs no GTK, GDK, Pango or cairo library. [[verified:test-nogui-build.sh]]</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Options are read the way you meant them.</strong> The word after an option that takes a value is that value; everything after <code>--</code> is a plain word; an unknown option is refused (exit 2) instead of ignored or folded into a <code>simulate</code> question; a typo gets “did you mean…?”.</li>
+<li><strong><code>apply</code> after <code>stop</code> starts the firewall again.</strong> A stopped or unreadable firewall gets the whole policy and the audit line says why. A core fix, so the desktop app’s Apply gets it too.</li>
+<li><strong>Lines that are not rules are named</strong>, with their file, line and reason. <code>apply</code> refuses them, and so do <code>policy add</code> and <code>remove</code>, which would have deleted such a line without a word. <code>SSH,,Anyone</code> still loads.</li>
+<li><code>start</code> and <code>stop</code> say “Already running” or “Already stopped” and write no audit line of their own; a stop on a stopped firewall still takes the blocklists down, logged as <code>intel-suspend</code>. <code>--since</code> and <code>--until</code> take an ISO time without seconds. <code>stockfw version</code> prints one line.</li>
+<li>The Linux README and the installer no longer say that every Debian and Kali <code>sudo</code> leaves out <code>/usr/local/bin</code>; Ubuntu’s default includes it, Fedora, RHEL and some Kali systems leave it out.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Wayland desktops and WSL: no tray icon, no start-up warning.</strong> GTK has a tray only on X11 and Windows; StockFW no longer tries to make one on Wayland (GNOME, KDE Plasma, WSLg), so the <code>Gtk-CRITICAL</code> line at every start is gone, a background start shows the window, and Preferences greys both tray switches with the reason. <a href="{{root}}docs/background.html">Background, tray and sign-in</a>. [[verified:test-notray.sh]]</li>
+<li><strong>The window keeps up with a firewall stopped from outside</strong>, with or without a tray icon: the once-a-minute re-read of the firewall state ran only while a tray icon existed.</li>
+<li><code>StockFW dashboard</code> says what to run instead of GTK’s “This application can not open files”, and exits with status 2.</li>
+<li><code>install.sh</code> reads <code>sudo</code>’s <code>secure_path</code> in the unquoted form RHEL and Fedora write, so the warning appears there too.</li>
+<li><code>events</code> refuses <code>--blocked</code> with <code>--allowed</code> and an unknown <code>--proto</code> (exit 2) instead of letting the last flag win; the first <code>interfaces --watch</code> frame showed half the rate.</li>
+</ul>
+
+<h2 id="v1-0-7">1.0.7 · 3 November 2026</h2>
 <h3>Added</h3>
 <ul>
 <li><strong>The What-If engine.</strong> A parser that reads a question the way you say it and shows how it read it; an engine that models your platform’s firewall (first match on Linux, block wins on Windows) together with the Firewall preferences, Sentinel’s blocks, whether the firewall runs and whether the saved policy is live; DEPENDS answers that spell out the split; the whole trace of rules checked; and fixes verified against the policy before they are offered. A window beside the page, not over it, and the same answer from <code>stockfw simulate</code>, with exit 6 for DEPENDS. [[verified:test-whatif.c]] [[verified:ui-simviz-smoke]]</li>

@@ -5,7 +5,7 @@ order: 3
 description: Installing StockFW on Debian, Kali, Ubuntu or WSL2 from the tarball, running it as root without widening sudo, and where it keeps its files.
 ---
 <h1>Install on Linux</h1>
-<p class="lede">The Linux build is one tarball of about 1.2 MB: the desktop app, the <code>stockfw</code> command line, a boot service, a menu entry, the README, the changelog, the licence texts and an install script. GTK comes from your distribution.</p>
+<p class="lede">The Linux build is one tarball of about 1.2 MB: the desktop app, the <code>stockfw</code> command line with its manual page and shell completion, a boot service, a menu entry, the README, the changelog, the licence texts and an install script. GTK comes from your distribution.</p>
 
 <h2>Before you start</h2>
 <ul>
@@ -34,6 +34,8 @@ $ sudo pacman -S gtk3 xz openssl                                       # Arch</p
 <tbody>
 <tr><td><code>/usr/local/bin/StockFW</code></td><td>The desktop application.</td></tr>
 <tr><td><code>/usr/local/bin/stockfw</code></td><td>The command line and local dashboard. The two names differ only in case; they are staged apart in the tarball so a case-insensitive filesystem cannot merge them.</td></tr>
+<tr><td><code>/usr/local/share/man/man1/stockfw.1</code></td><td>The manual page, <code>man stockfw</code>, written by the tool itself from its command tables.</td></tr>
+<tr><td><code>/usr/local/share/bash-completion/completions/stockfw</code>, <code>/usr/local/share/zsh/site-functions/_stockfw</code></td><td>Completion for bash and zsh: commands, options, values and your own rule references. See <a href="{{root}}docs/cli.html#man">the command line page</a>.</td></tr>
 <tr><td><code>/usr/local/share/applications/stockfw.desktop</code></td><td>The menu entry (Settings › StockFW). It starts the unprivileged app.</td></tr>
 <tr><td><code>/usr/local/share/icons/hicolor/{48x48,128x128,256x256}/apps/stockfw.png</code></td><td>Icons.</td></tr>
 <tr><td><code>/etc/systemd/system/stockfw.service</code></td><td>The boot service, enabled by the installer: it runs <code>stockfw start</code> before the network comes up and loads the last applied policy, so the rules are back after a restart. See <a href="#at-boot">At boot</a>.</td></tr>
@@ -49,7 +51,7 @@ $ sudo /usr/local/bin/StockFW      # as root: the full tool</pre>
 <p>As your own user, the app can show and edit a policy, run the simulator and inspect programs, but the kernel log is unreadable without root, so the Events page says that monitoring is unavailable rather than showing an empty list, and Apply refuses with a message rather than half-applying.</p>
 
 <h3>Why the full path after <code>sudo</code></h3>
-<p><code>sudo</code> does not search your <code>PATH</code>. It uses <code>Defaults secure_path</code> from <code>/etc/sudoers</code>, which on Debian and Kali is <code>/usr/sbin:/usr/bin:/sbin:/bin</code> and does not include <code>/usr/local/bin</code>. So <code>sudo StockFW</code> reports “command not found” while plain <code>StockFW</code> works. The installer detects this and warns in its summary.</p>
+<p><code>sudo</code> does not search your <code>PATH</code>. It uses <code>Defaults secure_path</code> from <code>/etc/sudoers</code>, which on Fedora, RHEL and some Kali systems is <code>/usr/sbin:/usr/bin:/sbin:/bin</code> and does not include <code>/usr/local/bin</code> (Ubuntu’s default does). There, <code>sudo StockFW</code> reports “command not found” while plain <code>StockFW</code> works. The installer reads <code>secure_path</code> in both the quoted form Debian writes and the unquoted form RHEL and Fedora write, and warns in its summary when the path is missing.</p>
 <p>It deliberately does not edit <code>sudoers</code>. Adding <code>/usr/local/bin</code> to <code>secure_path</code> would widen the search path for every command anyone runs under <code>sudo</code> on that machine, which is a worse trade than typing a path.</p>
 
 <h3>Why there is no polkit policy or setuid helper</h3>

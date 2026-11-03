@@ -12,9 +12,9 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <dt>“Administrator privileges required”, “Not live yet: run `sudo stockfw apply’”, exit status 3</dt>
 <dd>You are changing the firewall without the rights to do it. The change is saved and will be applied the next time Apply runs with rights. On Windows use the <em>StockFW (Elevated)</em> shortcut; on Linux run <code>sudo /usr/local/bin/StockFW</code> or <code>sudo stockfw apply</code>. Nothing was half-applied.</dd>
 <dt>“sudo: StockFW: command not found”</dt>
-<dd>[[linux]] <code>sudo</code> does not search <code>/usr/local/bin</code> on Debian, Kali and Ubuntu. Type the full path: <code>sudo /usr/local/bin/StockFW</code>. The installer warns about this and deliberately does not edit <code>sudoers</code>; see <a href="{{root}}docs/install-linux.html#why-the-full-path-after-sudo">why</a>.</dd>
+<dd>[[linux]] <code>sudo</code> does not search <code>/usr/local/bin</code> on Fedora, RHEL and some Kali systems (Ubuntu’s default includes it). Type the full path: <code>sudo /usr/local/bin/StockFW</code>. The installer warns about this and deliberately does not edit <code>sudoers</code>; see <a href="{{root}}docs/install-linux.html#why-the-full-path-after-sudo">why</a>.</dd>
 <dt>“libcrypto.so.3 is OpenSSL 3” from install.sh</dt>
-<dd>[[linux]] The distribution ships only OpenSSL 1.1 (Debian 11, Ubuntu 20.04). StockFW 1.0.7 links OpenSSL 3 and liblzma 5 to read the signed location database, and the installer stops before copying anything rather than install a program and a boot service that could not start. Upgrade the distribution, or build from source against the libraries it has.</dd>
+<dd>[[linux]] The distribution ships only OpenSSL 1.1 (Debian 11, Ubuntu 20.04). StockFW links OpenSSL 3 and liblzma 5 to read the signed location database, and the installer stops before copying anything rather than install a program and a boot service that could not start. Upgrade the distribution, or build from source against the libraries it has.</dd>
 <dt>“nft not found” or “curl not found” from install.sh</dt>
 <dd>[[linux]] A warning, not a failure. Without <code>nft</code> the threat-intel lists and country rules cannot be loaded, and without <code>curl</code> they cannot be downloaded; the Threat Intel page says so. <code>sudo apt install nftables curl</code>.</dd>
 <dt>“Windows protected your PC” when running the installer</dt>
@@ -79,6 +79,10 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <dl>
 <dt>No tray icon</dt>
 <dd>Your desktop has no tray host (GNOME without the AppIndicator extension, or a headless session). The window works as usual and closing it quits. See <a href="{{root}}docs/background.html">Background and the tray</a>.</dd>
+<dt>No tray icon on Wayland or in WSL, and both tray switches are greyed out</dt>
+<dd>[[linux]] GTK has a tray only on X11 and Windows. On a Wayland session (GNOME and KDE Plasma by default, and WSL’s WSLg) StockFW makes no icon: a background start shows the window, closing the window quits, and Preferences greys <em>Show a tray icon</em> and <em>Close and minimize to the tray</em> with the reason. Under <code>sudo</code> StockFW runs on XWayland instead, where the tray works as on X11. No <code>Gtk-CRITICAL</code> line is printed at start. [[verified:test-notray.sh]]</dd>
+<dt>“This application can not open files” after <code>StockFW dashboard</code> or <code>StockFW status</code></dt>
+<dd>[[linux]] That was the 1.0.7 message. The window app takes options only; a word such as <code>dashboard</code> belongs to the command-line tool. It now exits with status 2 and names the command you meant: <code>sudo ./cli/stockfw dashboard</code> from the unpacked folder, or <code>sudo /usr/local/bin/stockfw dashboard</code> once installed.</dd>
 <dt>I closed the window and the app is still running</dt>
 <dd>That is <em>Minimize to the tray</em>. Open it from the tray icon, start StockFW again (a second launch brings the running copy forward), or run <code>StockFW --quit</code>. Quitting does not stop the firewall.</dd>
 <dt>StockFW does not start at sign-in</dt>
@@ -89,6 +93,10 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <dl>
 <dt>“cannot listen on 127.0.0.1:8080”</dt>
 <dd>The port is taken. Leave out <code>--port</code> and the system picks a free one.</dd>
+<dt>“Not live yet” in <code>stockfw status</code>, or <code>stockfw apply</code> after <code>stockfw stop</code> says nothing changed</dt>
+<dd>[[linux]] <code>stockfw status</code> says “N changes not applied”: run <code>stockfw policy diff</code> to see them and <code>sudo stockfw apply</code> to make them live. An apply after a stop now loads the whole policy and starts the firewall again; in 1.0.7 it compared the policy with the last apply, found no change and left the firewall stopped.</dd>
+<dt>“the event reader stopped” from <code>stockfw events -f</code></dt>
+<dd>[[linux]] The kernel log could no longer be read (the file named by <code>STOCKFW_LOG_FILE</code> was removed, or <code>/dev/kmsg</code> refused). The command says why and exits 1 rather than waiting forever; fix the source and start it again.</dd>
 <dt>The dashboard did not open a browser, or the browser shows a file error</dt>
 <dd>Under <code>sudo</code> StockFW will not start a browser as root. A snap or Flatpak browser cannot read the private launch page StockFW hands it. In both cases copy the printed URL into your browser; the token is in it.</dd>
 <dt>The dashboard page shows “Unauthorized”</dt>
