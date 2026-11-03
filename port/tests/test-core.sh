@@ -11418,12 +11418,15 @@ static void test_apply_while_stopped (void)
 }
 
 /* [ test_lockout_check ]
- * Each SSH peer is asked about as a new connection on each port. */
+ * Each SSH peer is asked about as a new connection on each port.
+ * The addresses are public documentation ranges: the Windows model
+ * blocks reserved sources such as 192.168/16 on Public networks, so a
+ * LAN peer is DEPENDS there, not ALLOWED. */
 static void test_lockout_check (void)
 {
 	FsPolicy *policy = fs_policy_new ();
 	FsRule *ssh = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
-	                                "SSH, 22, 192.168.1.0/24, admin");
+	                                "SSH, 22, 203.0.113.0/24, admin");
 	FsRangeSet *peers = fs_range_set_new ();
 	FsRangeSet *lan = fs_range_set_new ();
 	FsRangeSet *none = fs_range_set_new ();
@@ -11434,7 +11437,7 @@ static void test_lockout_check (void)
 
 	fs_policy_add (policy, ssh);
 	fs_range_set_add_text (peers, "10.0.0.5");
-	fs_range_set_add_text (lan, "192.168.1.20");
+	fs_range_set_add_text (lan, "203.0.113.20");
 	g_array_append_val (ports, p22);
 	g_array_append_val (other, p2222);
 
@@ -11474,8 +11477,8 @@ static void test_lockout_check (void)
 		FsRangeSet *pair6 = fs_range_set_new ();
 
 		fs_policy_add (policy, ssh6);
-		fs_range_set_add_text (pair4, "192.168.1.255");
-		fs_range_set_add_text (pair4, "192.168.2.0");
+		fs_range_set_add_text (pair4, "203.0.113.255");
+		fs_range_set_add_text (pair4, "203.0.114.0");
 		fs_range_set_normalize (pair4);
 		fs_range_set_add_text (pair6, "2001:db8::1");
 		fs_range_set_add_text (pair6, "2001:db8::2");
@@ -11484,7 +11487,7 @@ static void test_lockout_check (void)
 		r = fs_lockout_check (policy, NULL, pair4, ports);
 		CHECK (pair4->v4->len == 1 && r->pairs->len == 2 &&
 		       fs_lockout_report_cuts (r) && r->worst != NULL &&
-		       g_strcmp0 (r->worst->peer, "192.168.2.0") == 0,
+		       g_strcmp0 (r->worst->peer, "203.0.114.0") == 0,
 		       "lockout: of two adjacent IPv4 peers (one range), the "
 		       "second, outside the LAN, is cut");
 		fs_lockout_report_free (r);
