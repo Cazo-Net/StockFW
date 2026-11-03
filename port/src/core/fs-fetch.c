@@ -14,8 +14,18 @@
  *
  * The transfer runs on a private GMainContext pushed as the thread
  * default for the call, so fs_fetch() blocks only its caller and never
- * dispatches anything that belongs to another loop.
+ * dispatches anything that belongs to another loop.  On Windows curl is
+ * started without GLib, with no console window (see "transfer, on
+ * Windows" below).
  *--------------------------------------------------------------------*/
+
+#ifdef _WIN32
+/* PROC_THREAD_ATTRIBUTE_HANDLE_LIST for the curl start on Windows: the
+ * same floor as the Windows backend, set before any header. */
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
+#endif
 
 #include "core/fs-fetch.h"
 
@@ -412,8 +422,10 @@ become_nobody (gpointer data)
 
 typedef struct
 {
+#ifndef G_OS_WIN32
 	GSubprocess  *proc;
 	GCancellable *cancel;      /* stops the pipe reads once we stop curl */
+#endif
 	gsize         max_bytes;
 	GByteArray   *body;
 	GString      *err;         /* the first STDERR_MAX bytes of stderr  */
@@ -427,6 +439,7 @@ typedef struct
 	guint8        err_buf[READ_CHUNK];
 } Transfer;
 
+#ifndef G_OS_WIN32
 /* Kill curl and give up on its pipes: what it printed so far no longer
  * matters.  The wait for its exit still runs to the end in the loop, so
  * nothing is left running when fs_fetch() returns.  The first reason
@@ -528,6 +541,413 @@ on_deadline (gpointer data)
 	stop_transfer (data, FS_FETCH_ERR_TIMEOUT);
 	return G_SOURCE_REMOVE;
 }
+#endif /* !G_OS_WIN32 */
+
+#ifdef G_OS_WIN32
+/* ================================================ transfer, on Windows
+ *
+ * curl.exe is a console program.  Started through GLib (GSubprocess or
+ * g_spawn), a console program gets a console window of its own whenever
+ * its parent has none, and the window app never has one: GLib cannot
+ * pass CREATE_NO_WINDOW.  Every threat-intel install or update flashed
+ * one console window per list on the owner's screen (2026-11-03).  So
+ * on Windows curl is started with CreateProcessW and CREATE_NO_WINDOW,
+ * as the backend starts netsh and wevtutil (ARCH 3.7).
+ *
+ * The output comes back over two anonymous pipes, so no byte of the
+ * body touches the disk.  Nothing here blocks on them: every POLL_MS
+ * the loop waits on the process, then takes what each pipe holds
+ * (PeekNamedPipe says how much), so curl never stalls on a full pipe,
+ * and the size cap and the deadline are checked between reads. */
+
+#define POLL_MS              50
+/* After curl has exited, how long its pipes may stay open (another
+ * process inherited a write end) before we stop reading them. */
+#define DRAIN_AFTER_EXIT_MS  2000
+/* After we kill curl, how long we wait for it to be gone. */
+#define KILL_WAIT_MS         10000
+/* Reads from one pipe per round, at most: a curl that writes to stderr
+ * without end must not keep the loop from its deadline. */
+#define READS_PER_ROUND      16
+
+enum { PIPE_DATA, PIPE_EMPTY, PIPE_CLOSED, PIPE_FAILED };
+
+/* Takes what the pipe holds now, at most cap bytes, without blocking.
+ * PIPE_CLOSED once every write end is closed and the pipe is empty. */
+static gint
+win_pipe_read (HANDLE h, guint8 *buf, DWORD cap, DWORD *got,
+               DWORD *last_error)
+{
+	DWORD avail = 0;
+
+	*got = 0;
+	if (!PeekNamedPipe (h, NULL, 0, NULL, &avail, NULL)) {
+		*last_error = GetLastError ();
+		return *last_error == ERROR_BROKEN_PIPE ? PIPE_CLOSED
+		                                        : PIPE_FAILED;
+	}
+	if (avail == 0)
+		return PIPE_EMPTY;
+	if (!ReadFile (h, buf, MIN (avail, cap), got, NULL)) {
+		*last_error = GetLastError ();
+		return *last_error == ERROR_BROKEN_PIPE ? PIPE_CLOSED
+		                                        : PIPE_FAILED;
+	}
+	return *got > 0 ? PIPE_DATA : PIPE_EMPTY;
+}
+
+/* One argument of a command line, quoted so that the C runtime's parser
+ * (the CommandLineToArgvW rules) hands it to curl unchanged. */
+static void
+win_append_arg (GString *cmd, const gchar *arg)
+{
+	gsize backslashes = 0;
+
+	if (*arg != '\0' && strpbrk (arg, " \t\n\v\"") == NULL) {
+		g_string_append (cmd, arg);
+		return;
+	}
+	g_string_append_c (cmd, '"');
+	for (const gchar *p = arg; *p != '\0'; p++) {
+		if (*p == '\\') {
+			backslashes++;
+			continue;
+		}
+		/* Backslashes before a quote are doubled, plus one for the
+		 * quote; anywhere else they stand as they are. */
+		if (*p == '"')
+			backslashes = backslashes * 2 + 1;
+		for (; backslashes > 0; backslashes--)
+			g_string_append_c (cmd, '\\');
+		g_string_append_c (cmd, *p);
+	}
+	/* Backslashes running into the closing quote are doubled. */
+	for (backslashes *= 2; backslashes > 0; backslashes--)
+		g_string_append_c (cmd, '\\');
+	g_string_append_c (cmd, '"');
+}
+
+/* Two NAME=value entries in the order Windows wants an environment
+ * block: by name, ignoring case. */
+static gint
+win_env_compare (const gchar *x, const gchar *y)
+{
+	gsize nx = strcspn (x, "="), ny = strcspn (y, "=");
+	gint c = g_ascii_strncasecmp (x, y, MIN (nx, ny));
+
+	if (c != 0)
+		return c;
+	return nx < ny ? -1 : nx > ny ? 1 : 0;
+}
+
+/* envp as a CreateProcessW environment block, sorted by name: each
+ * NAME=value in UTF-16 with its NUL, then one more NUL. */
+static gunichar2 *
+win_env_block (gchar **envp)
+{
+	GArray *block = g_array_new (FALSE, FALSE, sizeof (gunichar2));
+	const gunichar2 nul = 0;
+	guint count = g_strv_length (envp);
+	gchar **sorted = g_memdup2 (envp, (count + 1) * sizeof (gchar *));
+
+	/* A handful of entries: an insertion sort. */
+	for (guint i = 1; i < count; i++)
+		for (guint j = i; j > 0 &&
+		     win_env_compare (sorted[j - 1], sorted[j]) > 0; j--) {
+			gchar *swap = sorted[j - 1];
+
+			sorted[j - 1] = sorted[j];
+			sorted[j] = swap;
+		}
+	for (guint i = 0; sorted[i] != NULL; i++) {
+		glong n = 0;
+		gunichar2 *w = g_utf8_to_utf16 (sorted[i], -1, NULL, &n, NULL);
+
+		if (w == NULL || n == 0) {
+			g_free (w);
+			continue;
+		}
+		g_array_append_vals (block, w, (guint) n);
+		g_array_append_val (block, nul);
+		g_free (w);
+	}
+	g_free (sorted);   /* the strings still belong to envp */
+	if (block->len == 0)
+		g_array_append_val (block, nul);
+	g_array_append_val (block, nul);
+	return (gunichar2 *) g_array_free (block, FALSE);
+}
+
+static void
+win_stop (Transfer *t, HANDLE process, gint why)
+{
+	if (t->stopped == 0)
+		t->stopped = why;
+	TerminateProcess (process, 1);
+}
+
+/* Runs curl (argv[0] is its full path) with exactly envp, in the system
+ * folder, and collects into t what it prints.  TRUE once curl ran:
+ * *exited says whether it was seen to end and *code is its exit code.
+ * FALSE with @error set when it could not be started. */
+static gboolean
+win_run_curl (Transfer *t, gchar **argv, gchar **envp, guint deadline_s,
+              gboolean *exited, DWORD *code, GError **error)
+{
+	SECURITY_ATTRIBUTES sa;
+	STARTUPINFOEXW si;
+	PROCESS_INFORMATION pi;
+	HANDLE in = INVALID_HANDLE_VALUE;
+	HANDLE out_r = NULL, out_w = NULL, err_r = NULL, err_w = NULL;
+	HANDLE inherit[3];
+	PPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
+	SIZE_T attr_size = 0;
+	gboolean use_attrs = FALSE, started = FALSE;
+	gboolean out_open = TRUE, err_open = TRUE;
+	gunichar2 *wprog = NULL, *wcmd = NULL, *wenv = NULL, *wcwd = NULL;
+	GString *cmd = g_string_new (NULL);
+	gchar *cwd = windows_dir (TRUE);
+	gint64 deadline, ended_at = 0, killed_at = 0;
+	gboolean busy_before = FALSE;
+	DWORD last = 0;
+
+	*exited = FALSE;
+	*code = 0;
+
+	for (guint i = 0; argv[i] != NULL; i++) {
+		if (i > 0)
+			g_string_append_c (cmd, ' ');
+		win_append_arg (cmd, argv[i]);
+	}
+	wprog = g_utf8_to_utf16 (argv[0], -1, NULL, NULL, NULL);
+	wcmd = g_utf8_to_utf16 (cmd->str, -1, NULL, NULL, NULL);
+	wenv = win_env_block (envp);
+	/* The working folder is the system folder, never the caller's. */
+	if (cwd != NULL)
+		wcwd = g_utf8_to_utf16 (cwd, -1, NULL, NULL, NULL);
+	if (wprog == NULL || wcmd == NULL) {
+		g_set_error_literal (error, FS_FETCH_ERROR,
+		                     FS_FETCH_ERR_FAILED,
+		                     "Could not download: curl's command line "
+		                     "is not valid text");
+		goto out;
+	}
+
+	/* Two pipes; only their write ends, and the null device as stdin,
+	 * go to curl. */
+	memset (&sa, 0, sizeof sa);
+	sa.nLength = sizeof sa;
+	sa.bInheritHandle = TRUE;
+	if (!CreatePipe (&out_r, &out_w, &sa, 0) ||
+	    !CreatePipe (&err_r, &err_w, &sa, 0) ||
+	    !SetHandleInformation (out_r, HANDLE_FLAG_INHERIT, 0) ||
+	    !SetHandleInformation (err_r, HANDLE_FLAG_INHERIT, 0) ||
+	    (in = CreateFileW (L"NUL", GENERIC_READ,
+	                       FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+	                       OPEN_EXISTING, 0, NULL)) ==
+	    INVALID_HANDLE_VALUE) {
+		gchar *msg = g_win32_error_message ((gint) GetLastError ());
+
+		g_set_error (error, FS_FETCH_ERROR, FS_FETCH_ERR_FAILED,
+		             "Could not download: curl could not be started: "
+		             "%s", msg);
+		g_free (msg);
+		goto out;
+	}
+
+	/* curl inherits those three handles and nothing else; if the list
+	 * cannot be set up, plain inheritance is untidy, never broken. */
+	inherit[0] = in;
+	inherit[1] = out_w;
+	inherit[2] = err_w;
+	InitializeProcThreadAttributeList (NULL, 1, 0, &attr_size);
+	if (attr_size > 0) {
+		attrs = g_malloc (attr_size);
+		if (!InitializeProcThreadAttributeList (attrs, 1, 0,
+		                                        &attr_size)) {
+			g_clear_pointer (&attrs, g_free);
+		} else if (!UpdateProcThreadAttribute (
+			attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit,
+			sizeof inherit, NULL, NULL)) {
+			DeleteProcThreadAttributeList (attrs);
+			g_clear_pointer (&attrs, g_free);
+		} else {
+			use_attrs = TRUE;
+		}
+	}
+
+	memset (&si, 0, sizeof si);
+	si.StartupInfo.cb = use_attrs ? sizeof (STARTUPINFOEXW)
+	                              : sizeof (STARTUPINFOW);
+	si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+	si.StartupInfo.hStdInput = in;
+	si.StartupInfo.hStdOutput = out_w;
+	si.StartupInfo.hStdError = err_w;
+	si.lpAttributeList = use_attrs ? attrs : NULL;
+	memset (&pi, 0, sizeof pi);
+
+	/* lpApplicationName is the full path, so no search is made. */
+	if (!CreateProcessW ((const wchar_t *) wprog, (wchar_t *) wcmd,
+	                     NULL, NULL, TRUE,
+	                     CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT |
+	                     (use_attrs ? EXTENDED_STARTUPINFO_PRESENT : 0),
+	                     wenv, (const wchar_t *) wcwd,
+	                     &si.StartupInfo, &pi)) {
+		DWORD e = GetLastError ();
+		gchar *msg = g_win32_error_message ((gint) e);
+
+		if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)
+			g_set_error (error, FS_FETCH_ERROR,
+			             FS_FETCH_ERR_NO_CURL,
+			             "Could not download: curl is not "
+			             "installed (%s)", argv[0]);
+		else
+			g_set_error (error, FS_FETCH_ERROR,
+			             FS_FETCH_ERR_FAILED,
+			             "Could not download: curl could not be "
+			             "started: %s", msg);
+		g_free (msg);
+		goto out;
+	}
+	started = TRUE;
+
+	/* Our copies of what curl inherited go now: its exit closes the
+	 * last write ends, and that ends the reads below. */
+	CloseHandle (pi.hThread);
+	CloseHandle (out_w);
+	out_w = NULL;
+	CloseHandle (err_w);
+	err_w = NULL;
+	CloseHandle (in);
+	in = INVALID_HANDLE_VALUE;
+
+	deadline = g_get_monotonic_time () +
+	           (gint64) deadline_s * G_USEC_PER_SEC;
+	while (!*exited || out_open || err_open) {
+		DWORD got = 0;
+		gint64 now;
+		gint r;
+		guint n;
+		/* A pipe that still had data at the end of its reads: no
+		 * waiting in the next round. */
+		gboolean busy = FALSE;
+
+		if (!*exited &&
+		    WaitForSingleObject (pi.hProcess,
+		                         busy_before ? 0 : POLL_MS) ==
+		    WAIT_OBJECT_0) {
+			*exited = TRUE;
+			ended_at = g_get_monotonic_time ();
+		}
+
+		/* Never ask for more than one byte past the cap: that one
+		 * byte is the proof the body is too large. */
+		for (n = 0; out_open; n++) {
+			gsize room = t->max_bytes - t->body->len;
+			DWORD want = room >= READ_CHUNK ? (DWORD) READ_CHUNK
+			                                : (DWORD) room + 1;
+
+			if (n == READS_PER_ROUND) {
+				busy = TRUE;
+				break;
+			}
+			r = win_pipe_read (out_r, t->out_buf, want, &got,
+			                   &last);
+			if (r == PIPE_EMPTY)
+				break;
+			if (r == PIPE_DATA) {
+				g_byte_array_append (t->body, t->out_buf, got);
+				if (t->body->len > t->max_bytes) {
+					win_stop (t, pi.hProcess,
+					          FS_FETCH_ERR_TOO_LARGE);
+					out_open = err_open = FALSE;
+				}
+				continue;
+			}
+			if (r == PIPE_FAILED && t->stopped == 0) {
+				gchar *msg = g_win32_error_message ((gint) last);
+
+				t->read_error = g_error_new_literal (
+					G_IO_ERROR,
+					g_io_error_from_win32_error ((gint) last),
+					msg);
+				g_free (msg);
+				win_stop (t, pi.hProcess, FS_FETCH_ERR_FAILED);
+				err_open = FALSE;
+			}
+			out_open = FALSE;
+		}
+
+		/* stderr: the first STDERR_MAX bytes kept, the rest read and
+		 * dropped. */
+		for (n = 0; err_open; n++) {
+			if (n == READS_PER_ROUND) {
+				busy = TRUE;
+				break;
+			}
+			r = win_pipe_read (err_r, t->err_buf,
+			                   (DWORD) sizeof t->err_buf, &got, &last);
+			if (r == PIPE_EMPTY)
+				break;
+			if (r == PIPE_DATA) {
+				if (t->err->len < STDERR_MAX)
+					g_string_append_len (
+						t->err, (const gchar *) t->err_buf,
+						(gssize) MIN ((gsize) got,
+						              STDERR_MAX - t->err->len));
+				continue;
+			}
+			err_open = FALSE;
+		}
+
+		now = g_get_monotonic_time ();
+		if (t->stopped == 0 && now >= deadline) {
+			win_stop (t, pi.hProcess, FS_FETCH_ERR_TIMEOUT);
+			out_open = err_open = FALSE;
+		}
+		if (t->stopped != 0 && killed_at == 0)
+			killed_at = now;
+		if (!*exited && killed_at != 0 &&
+		    now - killed_at > (gint64) KILL_WAIT_MS * 1000)
+			break;   /* TerminateProcess did not take: give up */
+		if (*exited && (out_open || err_open)) {
+			if (now - ended_at > (gint64) DRAIN_AFTER_EXIT_MS * 1000)
+				out_open = err_open = FALSE;
+			else if (!busy)
+				Sleep (POLL_MS);
+		}
+		busy_before = busy;
+	}
+
+	if (*exited && !GetExitCodeProcess (pi.hProcess, code))
+		*exited = FALSE;
+	CloseHandle (pi.hProcess);
+
+out:
+	if (attrs != NULL) {
+		if (use_attrs)
+			DeleteProcThreadAttributeList (attrs);
+		g_free (attrs);
+	}
+	if (in != INVALID_HANDLE_VALUE)
+		CloseHandle (in);
+	if (out_r != NULL)
+		CloseHandle (out_r);
+	if (out_w != NULL)
+		CloseHandle (out_w);
+	if (err_r != NULL)
+		CloseHandle (err_r);
+	if (err_w != NULL)
+		CloseHandle (err_w);
+	g_free (wprog);
+	g_free (wcmd);
+	g_free (wenv);
+	g_free (wcwd);
+	g_free (cwd);
+	g_string_free (cmd, TRUE);
+	return started;
+}
+#endif /* G_OS_WIN32 */
 
 /* ============================================================ results */
 
@@ -569,17 +989,17 @@ curl_detail (const GString *err)
 
 /* The error for a curl that ran and exited (or died) on its own. */
 static void
-set_curl_error (GError **error, GSubprocess *proc, const GString *err,
-                gboolean dropped)
+set_curl_error (GError **error, gboolean exited, gint status,
+                gint term_sig, const GString *err, gboolean dropped)
 {
 	gchar *detail = curl_detail (err);
-	gint status, code;
+	gint code;
 
-	if (!g_subprocess_get_if_exited (proc)) {
+	if (!exited) {
 #ifdef G_OS_UNIX
 		g_set_error (error, FS_FETCH_ERROR, FS_FETCH_ERR_FAILED,
 		             "Could not download: curl was stopped by "
-		             "signal %d", g_subprocess_get_term_sig (proc));
+		             "signal %d", term_sig);
 #else
 		g_set_error_literal (error, FS_FETCH_ERROR,
 		                     FS_FETCH_ERR_FAILED,
@@ -589,7 +1009,6 @@ set_curl_error (GError **error, GSubprocess *proc, const GString *err,
 		return;
 	}
 
-	status = g_subprocess_get_exit_status (proc);
 #ifdef G_OS_UNIX
 	if (dropped && status == EXIT_CANNOT_DROP) {
 		g_set_error_literal (error, FS_FETCH_ERROR,
@@ -645,19 +1064,22 @@ fs_fetch (const FsFetchRequest *request, GError **error)
 	const gchar *why = NULL;
 	const gchar *curl;
 	gboolean dropped = FALSE;
-	GSubprocessLauncher *launcher;
-	GMainContext *context;
-	GSource *deadline;
-	GError *local = NULL;
+	gboolean exited = FALSE;
+	gint status = 0, term_sig = 0;
 	gchar **argv, **envp;
 	Transfer *t;
 	GBytes *result = NULL;
 	guint deadline_s;
+#ifdef G_OS_WIN32
+	DWORD code = 0;
+#else
+	GSubprocessLauncher *launcher;
+	GMainContext *context;
+	GSource *deadline;
+	GError *local = NULL;
+#endif
 #ifdef G_OS_UNIX
 	Account nobody = { 0, 0 };
-#endif
-#ifdef G_OS_WIN32
-	gchar *cwd;
 #endif
 
 	g_return_val_if_fail (request != NULL, NULL);
@@ -764,31 +1186,48 @@ fs_fetch (const FsFetchRequest *request, GError **error)
 	}
 #endif
 
+	deadline_s = request->timeout_s > G_MAXUINT - KILL_GRACE_S
+	             ? G_MAXUINT : request->timeout_s + KILL_GRACE_S;
+	t = g_new0 (Transfer, 1);
+	t->max_bytes = request->max_bytes;
+	t->body = g_byte_array_sized_new (
+		(guint) MIN (request->max_bytes + 1, (gsize) READ_CHUNK));
+	t->err = g_string_new (NULL);
+	envp = fs_fetch_envp ();
+
+#ifdef G_OS_WIN32
+	/* [Unverified on Windows] No privilege drop on Windows: curl runs
+	 * with StockFW's rights (a known gap, design 11.8).  No console
+	 * window, the system folder as its working folder, exactly envp:
+	 * win_run_curl. */
+	if (!win_run_curl (t, argv, envp, deadline_s, &exited, &code,
+	                   error)) {
+		g_strfreev (envp);
+		g_strfreev (argv);
+		g_byte_array_unref (t->body);
+		g_string_free (t->err, TRUE);
+		g_free (t);
+		return NULL;
+	}
+	g_strfreev (envp);
+	g_strfreev (argv);
+	status = (gint) code;
+#else
 	/* ---- spawn: stdin is /dev/null (no STDIN flag), every other
 	 * descriptor of ours is closed in the child (no INHERIT_FDS), and
 	 * the environment is exactly fs_fetch_envp(): set_environ replaces
 	 * the copy of ours a new launcher starts with. */
 	launcher = g_subprocess_launcher_new (G_SUBPROCESS_FLAGS_STDOUT_PIPE |
 	                                      G_SUBPROCESS_FLAGS_STDERR_PIPE);
-	envp = fs_fetch_envp ();
 	g_subprocess_launcher_set_environ (launcher, envp);
-#ifdef G_OS_WIN32
-	/* [Unverified on Windows] No privilege drop on Windows: curl runs
-	 * with StockFW's rights (a known gap, design 11.8).  The working
-	 * folder is the system folder, never the caller's. */
-	cwd = windows_dir (TRUE);
-	if (cwd != NULL)
-		g_subprocess_launcher_set_cwd (launcher, cwd);
-	g_free (cwd);
-#else
 	/* Nothing relative may resolve inside the caller's directory. */
 	g_subprocess_launcher_set_cwd (launcher, "/");
+#ifdef G_OS_UNIX
 	if (dropped)
 		g_subprocess_launcher_set_child_setup (launcher, become_nobody,
 		                                       &nobody, NULL);
 #endif
 
-	t = g_new0 (Transfer, 1);
 	t->proc = g_subprocess_launcher_spawnv (launcher,
 	                                        (const gchar * const *) argv,
 	                                        &local);
@@ -811,6 +1250,8 @@ fs_fetch (const FsFetchRequest *request, GError **error)
 			             "Could not download: curl could not be "
 			             "started: %s", local->message);
 		g_error_free (local);
+		g_byte_array_unref (t->body);
+		g_string_free (t->err, TRUE);
 		g_free (t);
 		return NULL;
 	}
@@ -820,17 +1261,10 @@ fs_fetch (const FsFetchRequest *request, GError **error)
 	g_main_context_push_thread_default (context);
 
 	t->cancel = g_cancellable_new ();
-	t->max_bytes = request->max_bytes;
-	t->body = g_byte_array_sized_new (
-		(guint) MIN (request->max_bytes + 1, (gsize) READ_CHUNK));
-	t->err = g_string_new (NULL);
-
 	read_stdout (t);
 	read_stderr (t);
 	g_subprocess_wait_async (t->proc, NULL, on_child_exit, t);
 
-	deadline_s = request->timeout_s > G_MAXUINT - KILL_GRACE_S
-	             ? G_MAXUINT : request->timeout_s + KILL_GRACE_S;
 	deadline = g_timeout_source_new_seconds (deadline_s);
 	g_source_set_callback (deadline, on_deadline, t, NULL);
 	g_source_attach (deadline, context);
@@ -840,6 +1274,17 @@ fs_fetch (const FsFetchRequest *request, GError **error)
 
 	g_source_destroy (deadline);
 	g_source_unref (deadline);
+
+	exited = g_subprocess_get_if_exited (t->proc);
+	if (exited)
+		status = g_subprocess_get_exit_status (t->proc);
+#ifdef G_OS_UNIX
+	else
+		term_sig = g_subprocess_get_term_sig (t->proc);
+#endif
+	g_main_context_pop_thread_default (context);
+	g_main_context_unref (context);
+#endif /* G_OS_WIN32 */
 
 	/* ---- the outcome: our own stops first, then curl's word */
 	switch (t->stopped) {
@@ -860,25 +1305,24 @@ fs_fetch (const FsFetchRequest *request, GError **error)
 		             "read: %s", t->read_error->message);
 		break;
 	default:
-		if (g_subprocess_get_if_exited (t->proc) &&
-		    g_subprocess_get_exit_status (t->proc) == 0) {
+		if (exited && status == 0) {
 			result = g_byte_array_free_to_bytes (t->body);
 			t->body = NULL;
 		} else {
-			set_curl_error (error, t->proc, t->err, dropped);
+			set_curl_error (error, exited, status, term_sig, t->err,
+			                dropped);
 		}
 		break;
 	}
-
-	g_main_context_pop_thread_default (context);
-	g_main_context_unref (context);
 
 	if (t->body != NULL)
 		g_byte_array_unref (t->body);
 	g_string_free (t->err, TRUE);
 	g_clear_error (&t->read_error);
+#ifndef G_OS_WIN32
 	g_object_unref (t->cancel);
 	g_object_unref (t->proc);
+#endif
 	g_free (t);
 	return result;
 }

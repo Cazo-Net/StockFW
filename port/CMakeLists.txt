@@ -700,6 +700,19 @@ add_executable(fs-fetch-test EXCLUDE_FROM_ALL
 target_link_libraries(fs-fetch-test PRIVATE fs-core-nogui)
 target_compile_definitions(fs-fetch-test PRIVATE FS_FETCH_TESTING=1
                            FS_VERSION="${PROJECT_VERSION}")
+# How fs_fetch() starts and reads curl, on Windows and Linux, against a
+# fake curl (tests/test-fetch-spawn.c): on Windows, no console window.
+# The fake is plain C without GLib: fs_fetch() gives curl no PATH on
+# Windows, so it must start with the system's DLLs alone.
+add_executable(fs-fake-curl EXCLUDE_FROM_ALL tests/fake-curl.c)
+add_executable(fs-fetch-spawn-test EXCLUDE_FROM_ALL
+  tests/test-fetch-spawn.c
+  src/core/fs-fetch.c
+)
+target_link_libraries(fs-fetch-spawn-test PRIVATE fs-core-nogui)
+target_compile_definitions(fs-fetch-spawn-test PRIVATE FS_FETCH_TESTING=1
+                           FS_VERSION="${PROJECT_VERSION}")
+add_dependencies(fs-fetch-spawn-test fs-fake-curl)
 # What must stay reachable: parsers over fixtures, and a live read.
 add_executable(fs-hostnet-test EXCLUDE_FROM_ALL tests/test-hostnet.c)
 target_link_libraries(fs-hostnet-test PRIVATE fs-core-nogui)

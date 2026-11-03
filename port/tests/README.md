@@ -745,6 +745,34 @@ case instead of only being printed.
 | leftovers | 2 to 4 fetches in a row of each outcome (a body, the cap, TLS, HTTP, the timer's kill, no curl, PRIVILEGE) leave the caller with no more descriptors than after the first, and no curl running |
 | release | the release objects of `fs-fetch.c` (fs-core, fs-core-nogui) name neither `STOCKFW_TEST_CURL` nor `STOCKFW_TEST_CACERT`; the test object does (the control) |
 
+### How curl is started (`fs-fetch-spawn-test`, Windows and Linux)
+
+```sh
+ninja -C build-linux fs-fetch-spawn-test   # also builds fs-fake-curl
+./build-linux/fs-fetch-spawn-test          # not as root
+```
+
+`tests/test-fetch-spawn.c` runs `fs_fetch()` against
+`tests/fake-curl.c` in curl's place (`fs-fake-curl` next to the test,
+or the path given as the first argument).  The fake is plain C without
+GLib, because on Windows `fs_fetch()` gives curl no `PATH`; it reads
+only `--url` and acts on its path (`/ok`, `/bytes/N`, `/exit6`, `/hang`,
+`/stderr-flood`, `/argv`, `/env`, `/cwd`).  On Windows the test calls
+`FreeConsole()` first, as the window app has no console, and checks
+that the fake started by `fs_fetch()` has no console window on the
+screen, then starts the same fake through `GSubprocess` (how curl was
+started before the fix) and checks that it does get one: the control
+that proves the first check can fail.  On both platforms: the body at
+and under the cap, TOO_LARGE one byte over, exit 6 and 22, a hanging
+curl killed at the deadline, 4 MiB on stderr, user agents with spaces,
+quotes and backslashes reaching curl unchanged, the environment exactly
+`fs_fetch_envp()`, the working folder (`/`, or the Windows system
+folder), a missing curl as NO_CURL, and no handle or descriptor left
+after twenty downloads.  As root on Linux it prints SKIP: curl would run
+as `nobody`, which `test-fetch.sh` covers.  `full-suite.sh` runs it on
+both; CI runs it as the runner's user on Linux and in `full-suite.sh` on
+Windows.
+
 Teeth, each re-injected into `fs-fetch.c` and seen failing, then
 restored (checked with `cmp`) and green again.  After the dash, the
 checks that caught it:

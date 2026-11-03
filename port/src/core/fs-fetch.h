@@ -16,7 +16,9 @@
  *     timeout kills it too.
  *
  * fs_fetch() blocks; call it from a worker thread in the UI.  It runs
- * its own GMainContext, so it is safe from any thread.
+ * its own GMainContext, so it is safe from any thread.  On Windows curl
+ * is started with CreateProcessW and CREATE_NO_WINDOW, never through
+ * GLib, so no console window opens (ARCH 3.7).
  *
  * Test builds only (FS_FETCH_TESTING defined) also read
  * STOCKFW_TEST_CURL (curl path) and STOCKFW_TEST_CACERT (adds --cacert);
