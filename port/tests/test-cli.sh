@@ -2316,7 +2316,213 @@ rm -rf "$P"
 # === end PR3-A ===
 
 # === PR3-C ===
-# `stockfw config' (package 3C): filled by its package.
+# `stockfw config' (package 3C): the Preferences window's settings from
+# the terminal.  Writes go to root's copy through the control layer
+# (settings.set: fs_prefs_validate, then fs_prefs_set_persist); `config
+# apply' puts the saved firewall settings in force under the policy
+# last applied.  Scratch directories of its own; the live part runs in
+# a private network namespace.
+C="$(mktemp -d /tmp/stockfw-pr3c-XXXXXX)"; chmod 755 "$C"
+c_env () { env XDG_CONFIG_HOME="$C/$1/conf" STOCKFW_RULES_DIR="$C/$1/rules" \
+               STOCKFW_APPLIED_FILE="$C/$1/applied" STOCKFW_AUDIT_FILE="$C/$1/audit" \
+               STOCKFW_RUN_DIR="$C/run" "${@:2}"; }
+c_rc () { local want="$1"; shift; c_env "$@" > "$TMP/out" 2> "$TMP/err"; [ "$?" -eq "$want" ]; }
+c_conf () { echo "$C/$1/conf/stockfw/stockfw.conf"; }
+
+if [ "$(id -u)" = 0 ]; then
+  # J19/J37: sharing needs both devices -- refused with the window's own
+  # reason (ui/fs-prefsdialog.c), and nothing is written.
+  check "PR3-C: config set nat on without both devices: exit 2 with the window's reason" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 2 nat '$S' config set firewall/nat true &&
+             grep -qF 'firewall.nat: Needs both devices: choose an Internet device and a local network device above.' '$TMP/err' &&
+             grep -q 'help topic: prefs-network' '$TMP/err' && [ ! -e '$(c_conf nat)' ]"
+  check "PR3-C: ...one device is not enough either" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 2 nat '$S' config set nat on ext_if eth9 &&
+             grep -qF 'Needs both devices' '$TMP/err' && [ ! -e '$(c_conf nat)' ]"
+  # The whole set is checked at once: both devices in the same call.
+  check "PR3-C: config set nat true ext_if X int_if Y in one call is saved" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 0 nat '$S' config set nat true ext_if eth8 int_if eth9 &&
+             grep -qx 'nat=true' '$(c_conf nat)' && grep -qx 'ext_if=eth8' '$(c_conf nat)' &&
+             grep -qx 'int_if=eth9' '$(c_conf nat)' && grep -q 'not present' '$TMP/err' &&
+             grep -q 'Saved, not applied' '$TMP/out'"
+  check "PR3-C: config get reads it back (on), --json too" \
+    bash -c "[ \"\$($(declare -f c_env); C='$C'; c_env nat '$S' config get firewall.nat)\" = on ] &&
+             $(declare -f c_env); C='$C'; c_env nat '$S' --json config get ext-if |
+             python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(d[\"value\"]!=\"eth8\")'"
+  check "PR3-C: an ICMP type cannot change while ICMP filtering goes off (exit 2)" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 2 icmp '$S' config set icmp off echo_request off &&
+             grep -q 'Filter ICMP messages' '$TMP/err' && [ ! -e '$(c_conf icmp)' ]"
+  check "PR3-C: an unknown setting is a usage error with a suggestion" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 2 nat '$S' config set firewall.natt on &&
+             grep -q 'did you mean firewall.nat' '$TMP/err'"
+  check "PR3-C: a value a switch does not take is refused" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 2 nat '$S' config set log_allowed maybe &&
+             grep -q 'is not on or off' '$TMP/err'"
+  check "PR3-C: config reset takes a key back to its default (removed from the file)" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 0 nat '$S' config reset nat &&
+             ! grep -q '^nat=' '$(c_conf nat)' && grep -qx 'ext_if=eth8' '$(c_conf nat)'"
+  if command -v setpriv > /dev/null; then
+    check "PR3-C: a non-root config set is refused (exit 3), with the sudo hint, nothing written" \
+      bash -c "$(declare -f c_env); C='$C'; h=\$(sha256sum < '$(c_conf nat)');
+               c_env nat setpriv --reuid=65534 --regid=65534 --clear-groups '$S' config set deny_packets reject \
+                 > '$TMP/out' 2> '$TMP/err'; rc=\$?;
+               [ \$rc -eq 3 ] && grep -q 'sudo' '$TMP/err' && grep -q \"root's copy\" '$TMP/err' &&
+               [ \"\$(sha256sum < '$(c_conf nat)')\" = \"\$h\" ]"
+  fi
+
+  # Two writers of different keys keep both: each reads the file under
+  # its lock.  The test holds the lock while both start, so both have
+  # read the old file before either writes.
+  pr3c_race () {
+    local conf; conf="$(c_conf race)"
+    mkdir -p "$(dirname "$conf")"
+    printf '[client]\nenable_tray_icon=true\n' > "$conf"
+    flock "$conf.lock" sleep 1.5 &
+    local holder=$! i
+    for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$conf.lock" ] && break; sleep 0.1; done
+    sleep 0.2
+    c_env race "$S" -q config set filter.redundant on > /dev/null 2>&1 &
+    local a=$!
+    c_env race "$S" -q config set events.max_events 5000 > /dev/null 2>&1 &
+    local b=$!
+    wait "$a" && wait "$b" && wait "$holder" &&
+    grep -qx 'filter/redundant=true' "$conf" && grep -qx 'events/max_events=5000' "$conf" &&
+    grep -qx 'enable_tray_icon=true' "$conf"
+  }
+  check "PR3-C: two config set calls on different keys at once keep both" pr3c_race
+
+  # A12: a file that cannot be read is kept as .bad, the defaults are
+  # written with the change.
+  pr3c_bad () {
+    local conf; conf="$(c_conf bad)"
+    mkdir -p "$(dirname "$conf")"
+    printf 'this is [not an ini file\n\x01' > "$conf"
+    cp "$conf" "$C/bad.orig"
+    c_env bad "$S" config set deny_packets reject > "$TMP/out" 2> "$TMP/err" &&
+    cmp -s "$conf.bad" "$C/bad.orig" && grep -q 'kept as' "$TMP/err" &&
+    grep -qx 'deny_packets=false' "$conf" && grep -qx 'enable_tray_icon=true' "$conf"
+  }
+  check "PR3-C: an unreadable settings file is kept as .bad and the defaults written (A12)" pr3c_bad
+
+  check "PR3-C: config set audit-only on writes the audit log (B2/J13)" \
+    bash -c "$(declare -f c_env c_rc); C='$C'; TMP='$TMP'; c_rc 0 audit '$S' config set audit-only on &&
+             grep -q 'Audit-only mode is on' '$TMP/out' &&
+             grep -q '| audit-only mode | cli | on' '$C/audit/audit' &&
+             [ \"\$($(declare -f c_env); C='$C'; c_env audit '$S' config audit-only)\" = on ] &&
+             c_rc 0 audit '$S' config audit-only off && grep -q '| audit-only mode | cli | off' '$C/audit/audit'"
+  check "PR3-C: config list --json parses; --changed lists only the changed" \
+    bash -c "$(declare -f c_env); C='$C'; c_env nat '$S' --json config list --changed |
+             python3 -I -c 'import json,sys; d=json.load(sys.stdin); n=[s[\"name\"] for s in d[\"settings\"]]; sys.exit(sorted(n)!=[\"firewall.ext_if\",\"firewall.int_if\"])'"
+  check "PR3-C: config list --firewall lists only firewall settings" \
+    bash -c "$(declare -f c_env); C='$C'; c_env nat '$S' --json config list --firewall |
+             python3 -I -c 'import json,sys; d=json.load(sys.stdin); sys.exit(not d[\"settings\"] or not all(s[\"firewall\"] for s in d[\"settings\"]))'"
+  check "PR3-C: config devices marks a chosen device that is not there" \
+    bash -c "$(declare -f c_env); C='$C'; c_env nat '$S' config devices | grep -qE '^eth9 +\\(not present\\) +local network'"
+  check "PR3-C: completion offers config's actions and setting names" \
+    bash -c "'$S' __complete config se | grep -qx set && '$S' __complete config set firewall.ext | grep -qx firewall.ext_if &&
+             '$S' __complete config set nat '' | grep -qx on"
+
+  # A StockFW window running as root keeps its own copy and writes it
+  # back: `set' says so.  A stand-in listens on the instance name.
+  pr3c_gui () {
+    local name="stockfw-gui-pr3c-$$"
+    python3 -I -c '
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind("\0" + sys.argv[1]); s.listen(4)
+print("up", flush=True); time.sleep(5)' "$name" > "$C/gui.up" &
+    local gui=$! i
+    for i in $(seq 30); do [ -s "$C/gui.up" ] && break; sleep 0.1; done
+    c_env gui env STOCKFW_INSTANCE_NAME="$name" "$S" config set filter.redundant on > "$TMP/out" 2> "$TMP/err"
+    local warned=$?
+    grep -q 'StockFW window is running as root' "$TMP/err" || warned=1
+    c_env gui env STOCKFW_INSTANCE_NAME="$name-none" "$S" config set filter.redundant off > "$TMP/out" 2> "$TMP/err"
+    ! grep -q 'running as root' "$TMP/err" || warned=1
+    kill "$gui" 2> /dev/null; wait "$gui" 2> /dev/null
+    [ "$warned" -eq 0 ]
+  }
+  check "PR3-C: config set warns when a StockFW window runs as root, not otherwise" pr3c_gui
+else
+  echo "skip: the PR3-C config writes need root"
+fi
+
+# --- live, as root, in a private network namespace: `config apply'
+# applies the saved settings under the journal's policy, so a policy
+# edit saved and not applied stays off; a boot (`stockfw start') keeps
+# the settings last applied.
+if [ "$(id -u)" = 0 ] && command -v iptables-save > /dev/null 2>&1 &&
+   unshare -n true 2> /dev/null; then
+  cat > "$C/live.sh" <<'LIVE'
+S="$1"; C="$2"
+f=0
+t () { local what="$1"; shift; if "$@"; then echo "ok:   $what"; else echo "FAIL: $what"; f=$((f+1)); fi; }
+export STOCKFW_RULES_DIR="$C/live/rules" STOCKFW_APPLIED_FILE="$C/live/applied"
+export STOCKFW_AUDIT_FILE="$C/live/audit" STOCKFW_AUTOBLOCK_FILE="$C/live/autoblocks"
+export STOCKFW_RUN_DIR="$C/run" HOME="$C/live/home" XDG_CONFIG_HOME="$C/live/home/.config"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+mkdir -p "$HOME"
+ip link set lo up 2> /dev/null
+rules () { iptables-save | grep -v '^#' | sed 's/\[[0-9]*:[0-9]*\]//'; }
+
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" apply > /dev/null 2>&1
+t "PR3-C live: echo requests are allowed after the first apply" \
+  bash -c "iptables-save | grep -q 'icmp-type 8 '"
+
+# Saved, not applied: a policy row and an ICMP setting.
+"$S" -q policy add outbound-deny-to 198.51.100.77
+"$S" config set echo_request off > /dev/null 2>&1
+t "PR3-C live: config set alone changes nothing live" \
+  bash -c "iptables-save | grep -q 'icmp-type 8 '"
+"$S" config apply > "$C/apply.out" 2>&1; rc=$?
+t "PR3-C live: config apply (rc $rc) shows the difference and the impact" \
+  bash -c "[ $rc -eq 0 ] && grep -q 'firewall.icmp.echo_request' '$C/apply.out' &&
+           grep -q 'Impact: .* removed' '$C/apply.out' && grep -q 'stay off' '$C/apply.out'"
+t "PR3-C live: ...the setting is in force" \
+  bash -c "! iptables-save | grep -q 'icmp-type 8 '"
+t "PR3-C live: ...under the journal: the unapplied policy row did not go live" \
+  bash -c "! iptables-save | grep -q '198.51.100.77'"
+t "PR3-C live: ...and the journal records the setting" \
+  grep -q '^# setting /apps/stockfw/firewall/icmp/echo_request=false' "$STOCKFW_APPLIED_FILE"
+"$S" config apply > "$C/apply2.out" 2>&1
+t "PR3-C live: a second config apply has nothing to do" \
+  grep -q 'Nothing to apply' "$C/apply2.out"
+
+# A boot keeps what was applied: a saved, unapplied ICMP change does
+# not go live at `stockfw start'.
+applied=$(rules | sha256sum)
+"$S" config set echo_reply off > /dev/null 2>&1
+"$S" stop > /dev/null 2>&1
+"$S" start > /dev/null 2>&1; rc=$?
+t "PR3-C live: start after config set without --apply (rc $rc) installs what was applied" \
+  bash -c "[ $rc -eq 0 ] && [ '$(rules | sha256sum)' = '$applied' ]"
+
+# --apply saves and applies in one go.
+"$S" config set timestamping on --apply > "$C/apply3.out" 2>&1; rc=$?
+t "PR3-C live: config set --apply (rc $rc) applies" \
+  bash -c "[ $rc -eq 0 ] && grep -q '^Applied' '$C/apply3.out' &&
+           grep -q '^# setting /apps/stockfw/firewall/icmp/timestamping=true' '$STOCKFW_APPLIED_FILE'"
+t "PR3-C live: ...the policy row saved earlier is still not live" \
+  bash -c "! iptables-save | grep -q '198.51.100.77'"
+
+# Audit-only holds it: nothing changes, the settings stay saved.
+"$S" config set audit-only on > /dev/null 2>&1
+before=$(rules | sha256sum)
+"$S" config set echo_request on --apply > "$C/held.out" 2>&1; rc=$?
+t "PR3-C live: audit-only holds config set --apply (rc $rc), the firewall untouched" \
+  bash -c "[ $rc -eq 0 ] && grep -q '^Held' '$C/held.out' && [ '$(rules | sha256sum)' = '$before' ]"
+"$S" config set audit-only off > /dev/null 2>&1
+"$S" stop > /dev/null 2>&1
+exit "$f"
+LIVE
+  unshare -n bash "$C/live.sh" "$S" "$C" > "$C/live.log" 2>&1
+  live_rc=$?
+  cat "$C/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the PR3-C live config apply check needs root, iptables and unshare"
+fi
+rm -rf "$C"
 # === end PR3-C ===
 
 # === PR3-D ===

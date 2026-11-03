@@ -36,6 +36,9 @@ static const gchar *intel_geo_subs[] = {
 };
 static const gchar *copilot_subs[]  = { "health", NULL };
 static const gchar *sentinel_subs[] = { "list", NULL };
+static const gchar *config_subs[] = {
+	"list", "get", "set", "reset", "apply", "devices", "audit-only", NULL
+};
 
 static const gchar *events_by[] = {
 	"src", "dst", "port", "service", "dir", "rule", "hour", NULL
@@ -300,6 +303,19 @@ emit_positional (Out *o, const FsCliCommandDef *def, GPtrArray *pos)
 			           strcmp (p1, "remove") == 0)
 				emit_intel_ids (o, INTEL_LOCATIONS);
 		}
+	} else if (strcmp (name, "config") == 0) {
+		/* set NAME VALUE NAME VALUE...: a name, then a value. */
+		if (pos->len == 0) {
+			emit_all (o, config_subs);
+		} else if ((strcmp (p0, "get") == 0 && pos->len == 1) ||
+		           strcmp (p0, "reset") == 0 ||
+		           (strcmp (p0, "set") == 0 && pos->len % 2 == 1)) {
+			emit_all (o, fs_cli_config_names ());
+		} else if ((strcmp (p0, "set") == 0 && pos->len % 2 == 0) ||
+		           (strcmp (p0, "audit-only") == 0 && pos->len == 1)) {
+			emit (o, "on");
+			emit (o, "off");
+		}
 	}
 }
 
@@ -456,6 +472,8 @@ static const struct { const gchar *name, *what; } environment[] = {
 	  "The baseline the health check compares with." },
 	{ "STOCKFW_SYSTEMD_DIR",
 	  "Where status looks for stockfw.service, instead of /etc/systemd/system." },
+	{ "STOCKFW_INSTANCE_NAME",
+	  "The desktop app's instance name that config set looks for, to warn when a StockFW window runs as root." },
 	{ "NO_COLOR",
 	  "When set, no colour unless --color=always is given." },
 	{ "TERM",
@@ -473,6 +491,7 @@ static const struct { const gchar *path, *what; } files[] = {
 	{ "/etc/stockfw/", "The policy used as root, which apply and start load." },
 	{ "/etc/stockfw/applied.csv", "The apply journal: the policy that was last applied." },
 	{ "~/.config/stockfw/audit.log", "The audit log (root: /root/.config/stockfw/audit.log)." },
+	{ "~/.config/stockfw/stockfw.conf", "The settings (config); root's copy, /root/.config/stockfw/stockfw.conf, is the one the firewall uses and config set writes." },
 	{ "~/.local/share/stockfw/events/", "The event history, when the desktop app keeps it." },
 	{ "/var/lib/stockfw/intel/", "The threat-intel store (root)." },
 	{ "/etc/systemd/system/stockfw.service", "Puts the rules back at boot (stockfw start)." },

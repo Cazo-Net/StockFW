@@ -138,7 +138,8 @@ typedef struct
  *   apply           yes b                                    (root)
  *   firewall.start  yes b                                    (root)
  *   firewall.stop                                            (root)
- *   settings.set    keys as, values as                       (root)
+ *   settings.set    keys as, values as, reset as (keys back to
+ *                   the table's default)                     (root)
  *   settings.apply  yes b                                    (root)
  * An unknown op is USAGE. */
 FsControlResult *fs_control_do (const FsControlActor *actor,

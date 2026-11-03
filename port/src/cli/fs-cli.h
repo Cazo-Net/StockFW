@@ -276,6 +276,8 @@ extern const FsCliCommandDef fs_cli_views_commands[];      /* fs-cli-views.c  */
 extern const FsCliCommandDef fs_cli_intel_commands[];      /* fs-cli-intel.c  */
 extern const FsCliCommandDef fs_cli_dashboard_commands[];  /* fs-dashboard.c  */
 extern const FsCliCommandDef fs_cli_config_commands[];     /* fs-cli-config.c */
+/* The setting names `config list' shows, NULL-ended (completion). */
+const gchar * const *fs_cli_config_names (void);
 
 /* Every command, in the order the tables are joined (*n of them). */
 const FsCliCommandDef * const *fs_cli_all_commands (guint *n);

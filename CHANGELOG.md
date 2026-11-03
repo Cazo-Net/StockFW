@@ -170,6 +170,21 @@ into `/usr/local/share/doc/stockfw/`.
   boot. A journal from before this change has no settings, and then
   the saved settings are used, as before.
 <!-- PR3-C -->
+- **`stockfw config`: the Preferences settings from the terminal.**
+  `config list`, `get`, `set NAME VALUE...`, `reset`, `apply`,
+  `devices` and `audit-only on|off`. The CLI now writes preferences
+  (root's copy): `set` needs root, checks the change as the Preferences
+  window does and refuses with its reasons (sharing needs both devices,
+  which you can set in the same call), and writes only the settings you
+  name. An unreadable settings file is kept as `.bad`.
+- **Saved settings are not applied until you say so.** `config apply`
+  (or `set --apply`) shows what changes and how many firewall rules,
+  checks your SSH session, and applies the settings under the policy
+  last applied, so policy edits you have not applied stay off. Boot
+  uses the settings last applied, so a setting saved with `set` alone
+  does not go live at the next boot either.
+- `config set` warns when a StockFW window runs as root: it keeps its
+  own copy of the settings and can write it back.
 <!-- PR3-D -->
 <!-- PR3-E -->
 
