@@ -1981,7 +1981,7 @@ A security review of the joined PR then found seven more. Each was reproduced or
 
 ### 15.4 Terminal control: settings and policy editing
 
-The terminal gets the rest of the desktop app's controls: settings, policy editing and the Overview's verdict (the master plan's PR 3). The work comes in five packages. 3A (core and control) and 3B (boot settings) are in 15.4.1; 3C, 3D and 3E have a subsection each. As in 15.2, `tests/test-cli.sh` has one block per package (`# === PR3-A ===` and so on).
+The terminal gets the rest of the desktop app's controls: settings, policy editing and the Overview's verdict (the master plan's PR 3). The work comes in five packages. 3A (core and control) and 3B (boot settings) are in 15.4.1; 3C, 3D and 3E have a subsection each. As in 15.2, `tests/test-cli.sh` has one block per package (`# === PR3-A ===` and so on). **[Verified]** With the five packages merged, as root, on a build in a world-readable folder: `test-cli.sh` 392 checks, no failure; `test-core.sh` passed (`test-pr3-core` 94 checks); `test-intel-cli.sh` 157 checks, no failure; `fs-verdict-smoke`, `fs-prefs-fake-smoke`, `fs-statusview-smoke` and `fs-hitview-smoke` passed under `xvfb-run`. Nothing was run on Windows.
 
 #### 15.4.1 Core and control (3A, 3B)
 
