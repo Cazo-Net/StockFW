@@ -1,7 +1,8 @@
 # StockFW continuous integration: build and test on Linux and on Windows
 # (MSYS2 UCRT64, the toolchain the README documents), and keep the
-# Windows installer each run produces so a build can be tried without
-# setting MSYS2 up first.
+# Windows installer and the Linux tarball each run produces, so a build
+# can be tried without setting anything up first.  RELEASING.md takes
+# the release assets from the run on main of the tagged commit.
 #
 # It runs for every pull request (on the pull request merged into its
 # base, so what is tested is what merging would give), for pushes to
@@ -49,7 +50,8 @@ jobs:
             iptables nftables xvfb xauth \
             xdotool stalonetray desktop-file-utils \
             liblzma-dev libssl-dev xz-utils \
-            python3-location location libloc-database clang libclang-rt-dev
+            python3-location location libloc-database clang libclang-rt-dev \
+            nsis binutils-mingw-w64-x86-64
 
       - name: Build
         run: |
@@ -144,6 +146,33 @@ jobs:
           strict tests/test-boot-start.sh
           strict tests/test-linux-install.sh
           strict tests/test-autostart.sh
+
+      # The release tarball: its own Release build (the tests above ran
+      # on the default RelWithDebInfo one), packaged and stripped by the
+      # packager, then checked as a user gets it -- install.sh runnable
+      # as ./install.sh, the version, the changelog, the licence list.
+      # nsis and binutils-mingw-w64 above let test-release.sh compile
+      # StockFW.nsi and the version resource here as well.
+      - name: Build and check the Linux tarball
+        id: tarball
+        working-directory: port
+        run: |
+          export STOCKFW_BUILD_DIR="$PWD/build-release"
+          bash tools/build-linux.sh
+          bash installer/linux/build_installer_linux.sh
+          STOCKFW_REQUIRE_PACKAGE=1 bash tests/test-release.sh
+          version="$(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9][0-9.]*\).*/\1/p' CMakeLists.txt | head -n 1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the Linux tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockFW-${{ steps.tarball.outputs.version }}-linux-x86_64
+          path: |
+            port/installer/linux/dist/StockFW-*-linux-x86_64.tar.gz
+            port/installer/linux/dist/StockFW-*-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
 
   windows:
     name: Windows build, tests and installer

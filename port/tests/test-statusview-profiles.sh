@@ -27,8 +27,13 @@ if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
   exit 0
 fi
 
+# $OUT/ui/*.o is the object tree the hand-written tools/build-linux.sh
+# made before 1.0.7.  That script now runs CMake, which keeps its
+# objects elsewhere; the same smoke is the CMake target
+# fs-statusview-smoke (CI runs it under xvfb-run).
 if [ ! -d "$OUT/ui" ]; then
-  echo "SKIP: $OUT not built -- run tools/build-linux.sh first"
+  echo "SKIP: no hand-built object tree in $OUT/ui -- run the CMake target instead:"
+  echo "      ninja -C build-linux fs-statusview-smoke && xvfb-run -a ./build-linux/fs-statusview-smoke"
   exit 0
 fi
 
@@ -52,7 +57,7 @@ gcc "$HERE/ui-statusview-smoke.c" \
     -I src \
     -I "$OUT" \
     $(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0 gtk+-3.0) \
-    -DFS_VERSION='"1.0.6"' -DFS_PLATFORM_NAME='"linux"' \
+    -DFS_VERSION='"1.0.7"' -DFS_PLATFORM_NAME='"linux"' \
     -o "$BUILD_DIR/ui-statusview-smoke" \
     $UI_OBJS \
     "$OUT/libfs-core.a" \

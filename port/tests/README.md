@@ -3398,3 +3398,64 @@ Windows-like backend on Linux).
   copy let go (`check_history_retry`) lists the 50 older saved events
   and not the one newer than the list.  Teeth: a retry that installs the
   writer only lists 0 of 50; dropping the cutoff lists 51.
+
+## Release packaging (`tests/test-release.sh`, 1.0.7)
+
+```sh
+cd port
+bash tests/test-release.sh                     # source checks; the tarball too when build-linux/ is built
+STOCKFW_BUILD_DIR=build-release STOCKFW_REQUIRE_PACKAGE=1 bash tests/test-release.sh   # as CI runs it
+```
+
+What it checks (architecture document 14.9):
+
+- Version: every `#define FS_VERSION` fallback and `-DFS_VERSION`
+  literal in `src/`, `tests/` and `tools/` equals `project(VERSION)`;
+  `stockfw.rc.in` takes all four fields from `@PROJECT_VERSION*@`, is
+  configured as CMake does it and compiled with windres (when
+  installed); `StockFW.nsi` has no APP_VERSION of its own and stops
+  without one; `build_installer.sh` passes `-DAPP_VERSION` and names no
+  version; the Linux `LICENSE.txt` is a `@VERSION@` template; the Linux
+  README names only this version and the tarball's real name.
+- Docs: a `## [<version>]` section in `CHANGELOG.md`, which does not call
+  the Copilot AI; the three asset names in `RELEASING.md`; every in-page
+  link in `README.md` lands on a heading (GitHub's anchor rules).
+- Modes: the shell entry points are executable on disk and 100755 in git.
+- Windows installer, run on its own: the documentation step stages the
+  root README and CHANGELOG byte for byte; the licence step writes the
+  version and lists liblzma and OpenSSL libcrypto; with makensis,
+  `StockFW.nsi` compiles with `-DAPP_VERSION` against stand-in stage
+  files into `StockFW-<version>-Setup.exe` (file properties
+  `<version>.0`), and fails without APP_VERSION or without
+  `CHANGELOG.md`.
+- Linux tarball, with a Linux build: the real packager into a scratch
+  directory; `install.sh`, `StockFW` and `cli/stockfw` are
+  `-rwxr-xr-x` in the archive and the documents `-rw-r--r--`; neither
+  binary has `.symtab` or `.debug_info`; both report the version; the
+  README, project README, changelog and licence are the real ones;
+  `./install.sh` runs directly (as a non-root user, where it stops at
+  its root check); the `.sha256` matches. The archive listing is printed.
+
+`tests/test-linux-install.sh` (root, private mount namespace) also
+checks that the install summary reports `nft` and `curl`, and, with a
+stand-in `ldconfig` that hides `libcrypto.so.3`, that `install.sh` fails,
+names the library and installs nothing. `tests/test-licence-texts.sh`
+checks the version line of both licence files.
+
+Teeth (each in a copy of the tree, restored with `cp` and checked with
+`cmp`):
+
+| Bug put back | Fails |
+|---|---|
+| `#define FS_VERSION "1.0.6"` in `main.c` | the `main.c` fallback, every FS_VERSION literal |
+| `!define APP_VERSION "1.0.6"` in `StockFW.nsi` | no APP_VERSION of its own; makensis compile, output name, file properties |
+| `FILEVERSION 1,0,5,0` in `stockfw.rc.in` | no literal version, all four fields, the configured `.rc` |
+| the old documentation step (stub README) | stages the project README, stages CHANGELOG.md |
+| makensis without `-DAPP_VERSION` | passes `-DAPP_VERSION` |
+| OpenSSL missing from the Windows licence list | lists liblzma and OpenSSL libcrypto |
+| liblzma missing from the Linux `LICENSE.txt` | the archive's licence lists them |
+| `cp` of a 0644 `install.sh` in the packager | executable on disk, packages, `install.sh` is `-rwxr-xr-x` |
+| the packager's `strip` line removed | no symbol table (both binaries) |
+| the old `#threat-intel-blocklists-linux-107` anchor | every in-page link lands |
+| no `## [1.0.7]` changelog section | the changelog section, packages, the archive's name |
+| `libcrypto.so.3` dropped from `install.sh`'s list | (`test-linux-install.sh`) fails, names it, installs nothing |

@@ -70,6 +70,33 @@ check "the boot unit is disabled" [ ! -e "$WANTS" -a ! -L "$WANTS" ]
 check "...and removed" [ ! -e "$UNIT" ]
 check "the binaries are gone" [ ! -e "$PREFIX/bin/StockFW" -a ! -e "$PREFIX/bin/stockfw" ]
 
+# The tools the install summary must account for (1.0.7): nft and curl
+# are only warnings, but the user is told either way.
+grep -Eq 'nft (found|not found)' "$SCRATCH/install.log" &&
+grep -Eq 'curl (found|not found)' "$SCRATCH/install.log"
+check "the install reports nft and curl" [ $? -eq 0 ]
+
+# A system without OpenSSL 3 (Debian 11, Ubuntu 20.04): the binaries
+# need libcrypto.so.3, so install.sh stops before installing anything
+# and names the library.  ldconfig is the installer's only source for
+# the check, so a stand-in that hides libcrypto.so.3 is that system.
+REAL_LDCONFIG="$(command -v ldconfig || true)"
+if [ -n "$REAL_LDCONFIG" ]; then
+	mkdir -p "$SCRATCH/fakebin"
+	printf '#!/bin/sh\n"%s" "$@" | grep -v %s\n' "$REAL_LDCONFIG" \
+		"'libcrypto\.so\.3 '" > "$SCRATCH/fakebin/ldconfig"
+	chmod 755 "$SCRATCH/fakebin/ldconfig"
+	PREFIX2="$SCRATCH/prefix-no-ssl3"
+	PATH="$SCRATCH/fakebin:$PATH" PREFIX="$PREFIX2" \
+		bash "$PORT/installer/linux/install.sh" > "$SCRATCH/install-nossl.log" 2>&1
+	rc=$?
+	check "without libcrypto.so.3, install.sh fails (rc=$rc)" [ "$rc" -ne 0 ]
+	check "...naming libcrypto.so.3" grep -q 'missing runtime libraries:.*libcrypto\.so\.3' "$SCRATCH/install-nossl.log"
+	check "...and installs nothing" [ ! -e "$PREFIX2/bin/StockFW" ]
+else
+	echo "SKIP: no ldconfig; the missing-libcrypto case is not run"
+fi
+
 umount /etc/systemd/system
 echo
 if [ "$failures" -eq 0 ]; then
