@@ -2320,7 +2320,201 @@ rm -rf "$P"
 # === end PR3-C ===
 
 # === PR3-D ===
-# Policy editing (package 3D): filled by its package.
+# Policy editing (package 3D): `policy edit' changes a row in place
+# (one save, the comment kept), `policy init' seeds the default rules,
+# and --apply on add, edit and remove applies under the same lock, with
+# the SSH check in front.  Every write goes through fs_control_do.  Own
+# scratch directories; anything that touches a firewall runs in a
+# private network namespace.
+Q="$(mktemp -d /tmp/stockfw-pr3d-XXXXXX)"; chmod 755 "$Q"
+q_env () { env STOCKFW_RULES_DIR="$Q/$1" STOCKFW_APPLIED_FILE="$Q/$1.applied" \
+               STOCKFW_RUN_DIR="$Q/run" "${@:2}"; }
+q_rc () { local want="$1"; shift; q_env "$@" > "$TMP/out" 2> "$TMP/err"; [ "$?" -eq "$want" ]; }
+# The rule files of a policy, hashed together (not the lock file).
+q_sum () { (cd "$Q/$1" && find . -type f ! -name .lock | LC_ALL=C sort | xargs -r sha256sum | sha256sum); }
+
+q_env ed "$S" -q policy add outbound-deny-to 203.0.113.1 --comment one
+q_env ed "$S" -q policy add outbound-deny-to 203.0.113.2 --comment two
+q_env ed "$S" -q policy add outbound-deny-to 203.0.113.3 --comment three
+
+# E4: same number, same place, the comment kept.  A remove and an add
+# would put the row last.
+q_edit_keeps () {
+  q_rc 0 ed "$S" policy edit outbound-deny-to:2 203.0.113.22 &&
+  grep -q '^Changed outbound-deny-to:2  203.0.113.22' "$TMP/out" &&
+  grep -q 'was: 203.0.113.2$' "$TMP/out" &&
+  [ "$(cat "$Q/ed/outbound/deny-to")" = "$(printf '203.0.113.1, one\n203.0.113.22, two\n203.0.113.3, three')" ]
+}
+check "PR3-D: policy edit changes the row in place and keeps its comment" q_edit_keeps
+check "PR3-D: policy edit --comment alone changes only the comment" \
+  bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 0 ed '$S' policy edit outbound-deny-to:3 --comment 'third one' &&
+           grep -qx '203.0.113.3, third one' '$Q/ed/outbound/deny-to' && grep -q 'comment: third one' '$TMP/out'"
+check "PR3-D: \"-\" keeps a field: policy edit outbound-allow-service:1 - 5353 -" \
+  bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 0 ed '$S' -q policy add outbound-allow-service DNS 53 Anyone --comment resolver &&
+           q_rc 0 ed '$S' policy edit outbound-allow-service:1 - 5353 - &&
+           grep -qx 'DNS, 5353, Anyone, resolver' '$Q/ed/outbound/allow-service'"
+check "PR3-D: policy edit --json names the rule and what it was" \
+  bash -c "$(declare -f q_env); Q='$Q'; q_env ed '$S' --json policy edit outbound-deny-to:1 203.0.113.11 |
+           python3 -I -c 'import json,sys; d = json.load(sys.stdin); assert d[\"changed\"] and d[\"rule\"][\"ref\"] == \"outbound-deny-to:1\" and d[\"rule\"][\"fields\"][\"target\"] == \"203.0.113.11\" and d[\"was\"][\"fields\"][\"target\"] == \"203.0.113.1\" and d[\"rule\"][\"comment\"] == \"one\" and d[\"applied\"] is False, d'"
+check "PR3-D: policy edit with the wrong number of fields is a usage error, nothing saved" \
+  bash -c "$(declare -f q_env q_rc q_sum); Q='$Q'; TMP='$TMP'; h=\$(q_sum ed) && q_rc 2 ed '$S' policy edit outbound-deny-to:1 a b &&
+           grep -q 'takes 1 field, got 2' '$TMP/err' && [ \"\$(q_sum ed)\" = \"\$h\" ]"
+# One save: each rule file is written once (a remove and an add would
+# write it twice).  Only where strace is installed.
+if command -v strace > /dev/null 2>&1; then
+  check "PR3-D: policy edit is one save (the file is replaced once)" \
+    bash -c "$(declare -f q_env); Q='$Q'; q_env ed strace -f -e trace=rename,renameat,renameat2 -o '$Q/strace.out' '$S' -q policy edit outbound-deny-to:2 203.0.113.23 &&
+             [ \$(grep -c 'outbound/deny-to\"' '$Q/strace.out') -eq 1 ]"
+fi
+
+# T15 for edit: a comma or a line break in the comment, and a host
+# field that carries iptables words, are refused and the files keep
+# their exact bytes.
+q_refused () {   # q_refused <what the error says> <edit args...>
+  local says="$1"; shift
+  local h; h=$(q_sum ed)
+  q_rc 2 ed "$S" policy edit "$@" && grep -q -- "$says" "$TMP/err" &&
+  [ "$(q_sum ed)" = "$h" ] && ! grep -q '203.0.113.66' "$Q/ed/outbound/deny-to"
+}
+check "PR3-D: edit with a comma in the comment: refused, sha256 unchanged" \
+  q_refused 'may not contain a comma' outbound-deny-to:1 --comment 'one, 203.0.113.66'
+check "PR3-D: edit with a line break in the comment: refused, no forged row" \
+  q_refused 'may not contain a comma or a line break' outbound-deny-to:1 --comment "$(printf 'one\n203.0.113.66, forged')"
+check "PR3-D: edit with a host \"203.0.113.5 -j ACCEPT\": refused, sha256 unchanged" \
+  q_refused 'is not an address' outbound-deny-to:1 '203.0.113.5 -j ACCEPT'
+check "PR3-D: edit of a number the kind does not have is a usage error" \
+  bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 2 ed '$S' policy edit outbound-deny-to:9 203.0.113.9 &&
+           grep -q 'has no rule number 9' '$TMP/err'"
+
+# One writer at a time: two adds and an edit, started while the test
+# holds the policy lock, wait for it; then all three land.
+q_race () {
+  mkdir -p "$Q/run"
+  q_env ed "$S" -q policy add outbound-deny-to 203.0.113.30 > /dev/null 2>&1
+  flock "$Q/run/apply.lock" sleep 1.5 &
+  local holder=$! i
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$Q/run/apply.lock" ] && break; sleep 0.1; done
+  sleep 0.2
+  local h; h=$(q_sum ed)
+  q_env ed "$S" -q policy add outbound-deny-to 203.0.113.31 > /dev/null 2>&1 &
+  local a=$!
+  q_env ed "$S" -q policy add outbound-deny-to 203.0.113.32 > /dev/null 2>&1 &
+  local b=$!
+  q_env ed "$S" -q policy edit outbound-deny-to:1 --comment raced > /dev/null 2>&1 &
+  local c=$!
+  sleep 0.5
+  # All three wait for the holder: nothing is written yet.
+  [ "$(q_sum ed)" = "$h" ] || { wait; return 1; }
+  wait "$a" && wait "$b" && wait "$c" && wait "$holder" &&
+  grep -q '^203.0.113.31, *$' "$Q/ed/outbound/deny-to" &&
+  grep -q '^203.0.113.32, *$' "$Q/ed/outbound/deny-to" &&
+  grep -q '^203.0.113.30, *$' "$Q/ed/outbound/deny-to" &&
+  [ "$(head -1 "$Q/ed/outbound/deny-to")" = '203.0.113.11, raced' ]
+}
+check "PR3-D: two policy adds and an edit while the lock is held: they wait, no row is lost" q_race
+
+# CONFLICT: an edit reads row 1, then waits for the lock; the holder
+# changes row 1 meanwhile.  The edit is refused and the holder's row
+# stays: it never overwrites a row the user did not see.
+q_conflict () {
+  mkdir -p "$Q/cf/outbound"
+  printf '203.0.113.60, first\n203.0.113.61, second\n' > "$Q/cf/outbound/deny-to"
+  flock "$Q/run/apply.lock" sleep 1.5 &
+  local holder=$! i
+  for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$Q/run/apply.lock" ] && break; sleep 0.1; done
+  sleep 0.2
+  q_env cf "$S" policy edit outbound-deny-to:1 203.0.113.62 > "$TMP/out" 2> "$TMP/err" &
+  local e=$!
+  sleep 0.6
+  printf '203.0.113.70, changed\n203.0.113.61, second\n' > "$Q/cf/outbound/deny-to"
+  wait "$holder"; wait "$e"; local rc=$?
+  [ "$rc" -eq 1 ] && grep -q 'no longer the rule that was read' "$TMP/err" &&
+  [ "$(cat "$Q/cf/outbound/deny-to")" = "$(printf '203.0.113.70, changed\n203.0.113.61, second')" ]
+}
+check "PR3-D: an edit of a row another writer changed meanwhile is refused (CONFLICT, rc 1)" q_conflict
+
+# A19: policy init seeds the default rules; a policy with rules is kept
+# unless --force.
+check "PR3-D: an empty policy's list points at policy init" \
+  bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 0 init '$S' policy list && grep -q 'stockfw policy init' '$TMP/out' &&
+           ! grep -q 'open the desktop app' '$TMP/out'"
+check "PR3-D: policy init saves the default rules (DHCP and DNS out)" \
+  bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 0 init '$S' policy init &&
+           [ \"\$(cat '$Q/init/outbound/allow-service')\" = \"\$(printf 'DHCP, 67-68, Anyone, \nDNS, 53, Anyone, ')\" ] &&
+           grep -q 'outbound-allow-service:2  DNS' '$TMP/out'"
+check "PR3-D: policy init again is refused (rc 2) and the files are unchanged" \
+  bash -c "$(declare -f q_env q_rc q_sum); Q='$Q'; TMP='$TMP'; q_rc 0 init '$S' -q policy add outbound-deny-to 203.0.113.40 && h=\$(q_sum init) &&
+           q_rc 2 init '$S' policy init && grep -q 'pass --force' '$TMP/err' && [ \"\$(q_sum init)\" = \"\$h\" ]"
+check "PR3-D: policy init --force replaces it, and --json says how many rules went" \
+  bash -c "$(declare -f q_env); Q='$Q'; q_env init '$S' --json policy init --force |
+           python3 -I -c 'import json,sys; d = json.load(sys.stdin); assert d[\"initialized\"] and d[\"replaced\"] == 3 and len(d[\"rules\"]) == 2, d' &&
+           [ ! -s '$Q/init/outbound/deny-to' ]"
+
+# --apply needs root, and says so before anything is saved.
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null; then
+  mkdir -p "$Q/nr"; chmod 777 "$Q/nr"
+  check "PR3-D: policy add --apply as uid 65534: needs root (rc 3), nothing saved" \
+    bash -c "$(declare -f q_env q_rc); Q='$Q'; TMP='$TMP'; q_rc 3 nr setpriv --reuid=65534 --regid=65534 --clear-groups '$S' policy add outbound-deny-to 203.0.113.41 --apply &&
+             grep -q 'needs root' '$TMP/err' && [ ! -e '$Q/nr/outbound/deny-to' ]"
+fi
+
+# --- live, as root, in a private network namespace: --apply makes the
+# edit live under the same lock, and the SSH check runs on the policy
+# the edit gives, before anything is saved.
+if [ "$(id -u)" = 0 ] && command -v iptables-save > /dev/null 2>&1 &&
+   unshare -n true 2> /dev/null; then
+  cat > "$Q/live.sh" <<'LIVE'
+S="$1"; Q="$2"
+f=0
+ok () { echo "ok:   $1"; }
+no () { echo "FAIL: $1"; f=$((f+1)); }
+t () { local what="$1"; shift; if "$@"; then ok "$what"; else no "$what"; fi; }
+export STOCKFW_RULES_DIR="$Q/live" STOCKFW_APPLIED_FILE="$Q/live.applied"
+export STOCKFW_AUDIT_FILE="$Q/live.audit" STOCKFW_AUTOBLOCK_FILE="$Q/live.autoblocks"
+export STOCKFW_RUN_DIR="$Q/run"
+export HOME="$Q/home" XDG_CONFIG_HOME="$Q/home/.config"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+mkdir -p "$HOME"
+ip link set lo up 2> /dev/null
+snap () { iptables-save | grep -v '^#' | sed 's/\[[0-9]*:[0-9]*\]//' | sha256sum; }
+files () { (cd "$STOCKFW_RULES_DIR" && find . -type f ! -name .lock | LC_ALL=C sort | xargs -r sha256sum | sha256sum); }
+
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" policy add outbound-deny-to 203.0.113.40 --apply > "$Q/a.out" 2>&1; rc=$?
+t "3D: policy add --apply (rc $rc): the rule is live" \
+  bash -c "[ $rc -eq 0 ] && grep -q '^Applied' '$Q/a.out' && iptables-save | grep -q '203.0.113.40'"
+t "3D: ...and the journal is the saved policy" grep -q '203.0.113.40' "$STOCKFW_APPLIED_FILE"
+"$S" policy edit outbound-deny-to:1 203.0.113.41 --apply > "$Q/e.out" 2>&1; rc=$?
+t "3D: policy edit --apply (rc $rc): the new row is live, the old one gone" \
+  bash -c "[ $rc -eq 0 ] && iptables-save | grep -q '203.0.113.41' && ! iptables-save | grep -q '203.0.113.40'"
+"$S" --json policy remove outbound-deny-to:1 --apply > "$Q/r.out" 2>&1; rc=$?
+t "3D: policy remove --apply --json (rc $rc): gone from the firewall, \"applied\" true" \
+  bash -c "[ $rc -eq 0 ] && ! iptables-save | grep -q '203.0.113.41' &&
+           python3 -I -c 'import json; d = json.load(open(\"$Q/r.out\")); assert d[\"removed\"] and d[\"applied\"] and d[\"apply\"][\"result\"], d'"
+
+# The SSH check: narrowing the SSH row would cut a session from
+# 203.0.113.50.  Without a terminal and --yes: refused, and neither the
+# files nor the firewall change.
+before=$(snap); fbefore=$(files)
+SSH_CONNECTION='203.0.113.50 50000 198.51.100.1 22' "$S" policy edit inbound-allow-service:1 - - 198.51.100.0/24 --apply < /dev/null > "$Q/lk.out" 2>&1; rc=$?
+t "3D: edit --apply that would cut the SSH session: refused (rc $rc), nothing saved, firewall untouched" \
+  bash -c "[ $rc -eq 1 ] && [ '$(snap)' = '$before' ] && [ '$(files)' = '$fbefore' ] &&
+           grep -q 'from 203.0.113.50 to port 22' '$Q/lk.out' && grep -q 'nothing was saved' '$Q/lk.out'"
+SSH_CONNECTION='203.0.113.50 50000 198.51.100.1 22' "$S" --json policy edit inbound-allow-service:1 - - 198.51.100.0/24 --apply --yes < /dev/null > "$Q/lky.out" 2> /dev/null; rc=$?
+t "3D: ...with --yes it is saved and applied, and the JSON says it was confirmed" \
+  bash -c "[ $rc -eq 0 ] && [ '$(snap)' != '$before' ] && grep -q '^SSH, 22, 198.51.100.0/24' '$STOCKFW_RULES_DIR/inbound/allow-service' &&
+           python3 -I -c 'import json; d = json.load(open(\"$Q/lky.out\")); l = d[\"apply\"][\"lockout\"]; assert d[\"changed\"] and d[\"applied\"] and l[\"confirmed\"] and l[\"client\"] == \"203.0.113.50\", d'"
+"$S" stop > /dev/null 2>&1
+exit "$f"
+LIVE
+  unshare -n bash "$Q/live.sh" "$S" "$Q" > "$Q/live.log" 2>&1
+  live_rc=$?
+  cat "$Q/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the 3D --apply checks need root, iptables and unshare"
+fi
+rm -rf "$Q"
 # === end PR3-D ===
 
 # === PR3-E ===

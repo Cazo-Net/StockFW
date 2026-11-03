@@ -629,9 +629,9 @@ policy_list (gint argc, gchar **argv)
 
 	if (!on_disk) {
 		printf ("No policy saved yet in %s.\n", fs_util_rules_dir ());
-		printf ("%sAdd a rule with `stockfw policy add', or open the "
-		        "desktop app once to seed the defaults.%s\n",
-		        fs_cli_dim (), fs_cli_reset ());
+		printf ("%sAdd a rule with `stockfw policy add', or start from "
+		        "the default rules (DHCP and DNS out) with `stockfw policy "
+		        "init'.%s\n", fs_cli_dim (), fs_cli_reset ());
 		goto done;
 	}
 
@@ -885,6 +885,53 @@ service_default_port (const gchar *name, const gchar **canonical)
 	return NULL;
 }
 
+/* With the apply code below: an edit op sent with or without --apply,
+ * the refusal when the lockout question was not confirmed, and what
+ * the apply after the edit did (3D). */
+static FsControlResult *edit_send (const gchar *op, GVariant *base,
+                                   gboolean apply, gboolean yes,
+                                   GString *lock, gint *status);
+static gint edit_refused (const gchar *verb, const GString *lock,
+                          gint status);
+static gint edit_applied (const FsControlResult *r, const GString *lock,
+                          GString *json);
+
+/* [ edit_failed ] -- an edit op that did not save: why, and the exit
+ * status. */
+static gint
+edit_failed (const FsControlResult *r)
+{
+	gint status = r->status == FS_CONTROL_USAGE ? FS_EXIT_USAGE
+	            : r->status == FS_CONTROL_NEED_ROOT ? FS_EXIT_NEED_ROOT
+	            : FS_EXIT_FAILURE;
+
+	if (!refuse_lossy_save (r->problems)) {
+		fs_cli_error ("%s", r->error);
+		if (r->hint != NULL)
+			fs_cli_hint ("%s", r->hint);
+	}
+	return status;
+}
+
+/* [ take_edit_opts ]
+ * --apply and --yes (-y), as add, edit and remove take them.  TRUE
+ * when argv[i] was one. */
+static gboolean
+take_edit_opts (gchar **argv, gint i, gboolean *apply, gboolean *yes)
+{
+	if (!fs_cli_is_option_at (argv, i))
+		return FALSE;
+	if (strcmp (argv[i], "--apply") == 0) {
+		*apply = TRUE;
+		return TRUE;
+	}
+	if (strcmp (argv[i], "--yes") == 0 || strcmp (argv[i], "-y") == 0) {
+		*yes = TRUE;
+		return TRUE;
+	}
+	return FALSE;
+}
+
 /* [ lockout_note_after_edit ]
  * As root, an edit of the saved policy does not reach the firewall,
  * but the next apply would: say so when that apply would cut an SSH
@@ -924,11 +971,13 @@ policy_add (gint argc, gchar **argv)
 	GPtrArray *fields;
 	gint want;
 	const FsRule *rule, *twin;
-	gboolean paired;
+	gboolean paired, apply = FALSE, yes = FALSE;
 	guint number, twin_number;
 	GVariantBuilder b;
-	FsControlActor actor;
+	GVariant *base;
+	GString *lock;
 	FsControlResult *r;
+	gint status = FS_EXIT_OK;
 
 	if (argc < 1 || !fs_cli_kind_parse (argv[0], &kind)) {
 		if (argc < 1)
@@ -956,6 +1005,8 @@ policy_add (gint argc, gchar **argv)
 		} else if (!fs_cli_is_positional_at (argv, i) &&
 		           strcmp (argv[i], "--both") == 0) {
 			both = TRUE;
+		} else if (take_edit_opts (argv, i, &apply, &yes)) {
+			/* taken */
 		} else if (fs_cli_is_option_at (argv, i)) {
 			/* Never let a mistyped option become a rule field; a
 			 * field that starts with a dash goes after "--". */
@@ -1021,6 +1072,11 @@ policy_add (gint argc, gchar **argv)
 		return FS_EXIT_USAGE;
 	}
 
+	if (apply && geteuid () != 0) {
+		g_ptr_array_unref (fields);
+		return fs_cli_need_root ("policy add --apply");
+	}
+
 	first = g_ptr_array_index (fields, 0);
 	g_ptr_array_add (fields, NULL);
 	g_variant_builder_init (&b, G_VARIANT_TYPE_VARDICT);
@@ -1032,13 +1088,23 @@ policy_add (gint argc, gchar **argv)
 	g_variant_builder_add (&b, "{sv}", "comment",
 	                       g_variant_new_string (comment));
 	g_variant_builder_add (&b, "{sv}", "both", g_variant_new_boolean (both));
-	actor = fs_control_actor_self ("cli");
-	r = fs_control_do (&actor, "policy.add", g_variant_builder_end (&b));
-	g_ptr_array_unref (fields);
+	g_variant_builder_add (&b, "{sv}", "apply", g_variant_new_boolean (apply));
+	base = g_variant_ref_sink (g_variant_builder_end (&b));
+	lock = g_string_new (NULL);
+	r = edit_send ("policy.add", base, apply, yes, lock, &status);
+	g_variant_unref (base);
 
-	if (r->status != FS_CONTROL_OK) {
-		gint status = r->status == FS_CONTROL_USAGE ? FS_EXIT_USAGE
-		                                             : FS_EXIT_FAILURE;
+	if (r->status == FS_CONTROL_CONFIRM) {
+		status = edit_refused ("added", lock, status);
+		g_string_free (lock, TRUE);
+		g_ptr_array_unref (fields);
+		fs_control_result_free (r);
+		return status;
+	}
+	if (r->status != FS_CONTROL_OK && r->outcome == NULL) {
+		status = r->status == FS_CONTROL_USAGE ? FS_EXIT_USAGE
+		       : r->status == FS_CONTROL_NEED_ROOT ? FS_EXIT_NEED_ROOT
+		       : FS_EXIT_FAILURE;
 
 		if (r->invalid_rule) {
 			if (want == 1)
@@ -1058,9 +1124,12 @@ policy_add (gint argc, gchar **argv)
 			if (r->hint != NULL)
 				fs_cli_hint ("%s", r->hint);
 		}
+		g_string_free (lock, TRUE);
+		g_ptr_array_unref (fields);
 		fs_control_result_free (r);
 		return status;
 	}
+	g_ptr_array_unref (fields);
 
 	rule = r->rule;
 	twin = r->twin;
@@ -1076,17 +1145,23 @@ policy_add (gint argc, gchar **argv)
 			fs_json_kv_str (out, "rules_dir", fs_util_rules_dir ());
 			g_string_append (out, ",\"rule\":");
 			fs_cli_rule_json (out, rule, number);
+			if (apply)
+				status = edit_applied (r, lock, out);
 			g_string_append_c (out, '}');
 			fs_cli_print_json (out);
 			g_string_free (out, TRUE);
-		} else if (!fs_cli.quiet) {
+		} else {
 			gchar *line = rule_line (rule, number);
 
-			printf ("Already in the policy: %s\n", line);
+			if (!fs_cli.quiet)
+				printf ("Already in the policy: %s\n", line);
+			if (apply)
+				status = edit_applied (r, lock, NULL);
 			g_free (line);
 		}
+		g_string_free (lock, TRUE);
 		fs_control_result_free (r);
-		return FS_EXIT_OK;
+		return status;
 	}
 
 	paired = twin != NULL;
@@ -1098,7 +1173,10 @@ policy_add (gint argc, gchar **argv)
 		fs_json_kv_bool (out, "added", TRUE);           g_string_append_c (out, ',');
 		fs_json_kv_str (out, "kind", fs_cli_kind_name (kind)); g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "both_directions", paired); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "applied", FALSE);        g_string_append_c (out, ',');
+		if (!apply) {
+			fs_json_kv_bool (out, "applied", FALSE);
+			g_string_append_c (out, ',');
+		}
 		fs_json_kv_str (out, "rules_dir", fs_util_rules_dir ());
 		g_string_append (out, ",\"rule\":");
 		fs_cli_rule_json (out, rule, number);
@@ -1107,29 +1185,37 @@ policy_add (gint argc, gchar **argv)
 			fs_cli_rule_json (out, twin, twin_number);
 		}
 		row_check (rule, out);
+		if (apply)
+			status = edit_applied (r, lock, out);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
-	} else if (!fs_cli.quiet) {
-		gchar *line = rule_line (rule, number);
+	} else {
+		if (!fs_cli.quiet) {
+			gchar *line = rule_line (rule, number);
 
-		printf ("%sAdded%s %s", fs_cli_green (), fs_cli_reset (), line);
-		if (paired) {
-			gchar *ref = fs_cli_rule_ref (twin->kind, twin_number);
+			printf ("%sAdded%s %s", fs_cli_green (), fs_cli_reset (),
+			        line);
+			if (paired) {
+				gchar *ref = fs_cli_rule_ref (twin->kind, twin_number);
 
-			printf ("  and %s", ref);
-			g_free (ref);
+				printf ("  and %s", ref);
+				g_free (ref);
+			}
+			printf ("\n");
+			g_free (line);
+			row_check (rule, NULL);
 		}
-		printf ("\n");
-		g_free (line);
-		row_check (rule, NULL);
-		not_live_line ();
-		own_policy_note ();
+		status = edit_applied (r, lock, NULL);
+		if (!apply)
+			own_policy_note ();
 	}
 
-	lockout_note_after_edit (r->policy);
+	if (!apply)
+		lockout_note_after_edit (r->policy);
+	g_string_free (lock, TRUE);
 	fs_control_result_free (r);
-	return FS_EXIT_OK;
+	return status;
 }
 
 static gint
@@ -1140,28 +1226,55 @@ policy_remove (gint argc, gchar **argv)
 	guint number;
 	gint i = 0;
 	gchar *line, *csv;
-	GPtrArray *problems = NULL;
+	GPtrArray *problems = NULL, *words;
 	GVariantBuilder b;
-	FsControlActor actor;
+	GVariant *base;
+	GString *lock;
 	FsControlResult *r;
+	gboolean apply = FALSE, yes = FALSE;
+	gint status = FS_EXIT_OK;
+
+	/* --apply and --yes anywhere; the rest is the reference. */
+	words = g_ptr_array_new ();
+	for (gint w = 0; w < argc; w++) {
+		if (take_edit_opts (argv, w, &apply, &yes))
+			continue;
+		if (fs_cli_is_option_at (argv, w)) {
+			fs_cli_unknown_option ("policy remove", argv[w]);
+			g_ptr_array_unref (words);
+			return FS_EXIT_USAGE;
+		}
+		g_ptr_array_add (words, argv[w]);
+	}
+	g_ptr_array_add (words, NULL);
+	argc = (gint) words->len - 1;
+	argv = (gchar **) words->pdata;
+	if (apply && geteuid () != 0) {
+		g_ptr_array_unref (words);
+		return fs_cli_need_root ("policy remove --apply");
+	}
 
 	policy = fs_cli_load_policy_report (NULL, &problems);
 	if (refuse_lossy_save (problems)) {
 		g_ptr_array_unref (problems);
+		g_ptr_array_unref (words);
 		fs_policy_free (policy);
 		return FS_EXIT_USAGE;
 	}
 	g_ptr_array_unref (problems);
 	if (!take_ref (argc, argv, &i, policy, &kind, &number,
 	               "stockfw policy remove KIND:N  (or KIND N)")) {
+		g_ptr_array_unref (words);
 		fs_policy_free (policy);
 		return FS_EXIT_USAGE;
 	}
 	if (i < argc) {
 		fs_cli_error ("unexpected argument: %s", argv[i]);
+		g_ptr_array_unref (words);
 		fs_policy_free (policy);
 		return FS_EXIT_USAGE;
 	}
+	g_ptr_array_unref (words);
 
 	/* The row as read goes with the number: if another writer changed
 	 * the policy since, the control layer refuses (CONFLICT) rather
@@ -1178,18 +1291,21 @@ policy_remove (gint argc, gchar **argv)
 		g_variant_builder_add (&b, "{sv}", "csv",
 		                       g_variant_new_string (csv));
 	g_free (csv);
-	actor = fs_control_actor_self ("cli");
-	r = fs_control_do (&actor, "policy.remove", g_variant_builder_end (&b));
+	g_variant_builder_add (&b, "{sv}", "apply", g_variant_new_boolean (apply));
+	base = g_variant_ref_sink (g_variant_builder_end (&b));
+	lock = g_string_new (NULL);
+	r = edit_send ("policy.remove", base, apply, yes, lock, &status);
+	g_variant_unref (base);
 
-	if (r->status != FS_CONTROL_OK) {
-		gint status = r->status == FS_CONTROL_USAGE ? FS_EXIT_USAGE
-		                                             : FS_EXIT_FAILURE;
-
-		if (!refuse_lossy_save (r->problems)) {
-			fs_cli_error ("%s", r->error);
-			if (r->hint != NULL)
-				fs_cli_hint ("%s", r->hint);
-		}
+	if (r->status == FS_CONTROL_CONFIRM) {
+		status = edit_refused ("removed", lock, status);
+		g_string_free (lock, TRUE);
+		fs_control_result_free (r);
+		return status;
+	}
+	if (!r->saved) {
+		status = edit_failed (r);
+		g_string_free (lock, TRUE);
 		fs_control_result_free (r);
 		return status;
 	}
@@ -1205,19 +1321,352 @@ policy_remove (gint argc, gchar **argv)
 		g_string_append (out, ",\"rule\":");
 		fs_cli_rule_json (out, r->rule, number);
 		row_check (r->rule, out);
+		if (apply)
+			status = edit_applied (r, lock, out);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
-	} else if (!fs_cli.quiet) {
-		printf ("%sRemoved%s %s\n", fs_cli_red (), fs_cli_reset (), line);
-		row_check (r->rule, NULL);
-		not_live_line ();
+	} else {
+		if (!fs_cli.quiet) {
+			printf ("%sRemoved%s %s\n", fs_cli_red (), fs_cli_reset (),
+			        line);
+			row_check (r->rule, NULL);
+		}
+		status = edit_applied (r, lock, NULL);
 	}
 
-	lockout_note_after_edit (r->policy);
+	if (!apply)
+		lockout_note_after_edit (r->policy);
 	g_free (line);
+	g_string_free (lock, TRUE);
 	fs_control_result_free (r);
-	return FS_EXIT_OK;
+	return status;
+}
+
+/* [ rule_field ] -- field c of a rule, in the order `policy add' takes
+ * them (the CSV order, less the comment). */
+static const gchar *
+rule_field (const FsRule *rule, gint c)
+{
+	switch (rule->kind) {
+	case FS_RULE_INBOUND_FORWARD: {
+		const gchar *f[] = { rule->service, rule->port, rule->to,
+		                     rule->to_port };
+		return c < 4 ? f[c] : NULL;
+	}
+	case FS_RULE_INBOUND_ALLOW_SERVICE:
+	case FS_RULE_OUTBOUND_ALLOW_SERVICE:
+	case FS_RULE_OUTBOUND_DENY_SERVICE: {
+		const gchar *f[] = { rule->service, rule->port, rule->target };
+		return c < 3 ? f[c] : NULL;
+	}
+	default:
+		return c == 0 ? rule->target : NULL;
+	}
+}
+
+/* [ policy_edit ]
+ * E4: one rule changed in place -- same kind, same number, one save
+ * (policy.replace, fs_policy_replace_persist).  All of the kind's
+ * fields, "-" keeping a field as it is, or none when only --comment
+ * changes.  The comment is kept unless --comment is given.  The row
+ * read here goes with the request, so a row another writer changed
+ * meanwhile is refused (CONFLICT), never overwritten. */
+static gint
+policy_edit (gint argc, gchar **argv)
+{
+	FsPolicy *policy;
+	GPtrArray *problems = NULL, *words, *fields;
+	FsRuleKind kind;
+	guint number;
+	gint i = 0, want;
+	const gchar *comment = NULL;
+	gboolean apply = FALSE, yes = FALSE;
+	const FsRule *old;
+	gchar *csv;
+	GVariantBuilder b;
+	GVariant *base;
+	GString *lock;
+	FsControlResult *r;
+	gint status = FS_EXIT_OK;
+	static const gchar usage[] =
+		"stockfw policy edit KIND:N [FIELD...] [--comment TEXT]";
+
+	words = g_ptr_array_new ();
+	for (gint w = 0; w < argc; w++) {
+		const gchar *v;
+		gint st = FS_EXIT_OK;
+
+		if (fs_cli_take_opt (argc, argv, &w, "--comment", &v, &st)) {
+			if (v == NULL) {
+				g_ptr_array_unref (words);
+				return st;
+			}
+			comment = v;
+		} else if (take_edit_opts (argv, w, &apply, &yes)) {
+			/* taken */
+		} else if (fs_cli_is_option_at (argv, w)) {
+			fs_cli_unknown_option ("policy edit", argv[w]);
+			g_ptr_array_unref (words);
+			return FS_EXIT_USAGE;
+		} else {
+			g_ptr_array_add (words, argv[w]);
+		}
+	}
+	g_ptr_array_add (words, NULL);
+	if (apply && geteuid () != 0) {
+		g_ptr_array_unref (words);
+		return fs_cli_need_root ("policy edit --apply");
+	}
+
+	policy = fs_cli_load_policy_report (NULL, &problems);
+	if (refuse_lossy_save (problems) ||
+	    !take_ref ((gint) words->len - 1, (gchar **) words->pdata, &i,
+	               policy, &kind, &number, usage)) {
+		g_ptr_array_unref (problems);
+		g_ptr_array_unref (words);
+		fs_policy_free (policy);
+		return FS_EXIT_USAGE;
+	}
+	g_ptr_array_unref (problems);
+
+	old = g_ptr_array_index (policy->kinds[kind], number - 1);
+	want = kind_field_count (kind);
+	fields = g_ptr_array_new ();
+	for (guint w = (guint) i; w + 1 < words->len; w++) {
+		const gchar *f = g_ptr_array_index (words, w);
+		gint c = (gint) fields->len;
+
+		/* "-" keeps the field as it is. */
+		g_ptr_array_add (fields, (gpointer) (strcmp (f, "-") == 0 &&
+		                                     c < want
+		                                     ? rule_field (old, c) : f));
+	}
+	g_ptr_array_unref (words);
+
+	if (fields->len == 0 && comment == NULL) {
+		fs_cli_error ("nothing to change: give the fields, or --comment");
+		fs_cli_hint ("%s  (\"-\" keeps a field)", usage);
+		g_ptr_array_unref (fields);
+		fs_policy_free (policy);
+		return FS_EXIT_USAGE;
+	}
+	if (fields->len == 0) {
+		for (gint c = 0; c < want; c++)
+			g_ptr_array_add (fields, (gpointer) rule_field (old, c));
+	} else if ((gint) fields->len != want) {
+		gint n = 0;
+		const gchar * const *labels = fs_rule_columns (kind, &n);
+		GString *expect = g_string_new (NULL);
+
+		for (gint c = 0; c < want; c++)
+			g_string_append_printf (expect, "%s<%s>",
+			                        c ? " " : "", labels[c]);
+		fs_cli_error ("%s takes %d field%s, got %u",
+		              fs_cli_kind_name (kind), want, want == 1 ? "" : "s",
+		              fields->len);
+		fs_cli_hint ("stockfw policy edit %s:%u %s  (\"-\" keeps a "
+		             "field)", fs_cli_kind_name (kind), number,
+		             expect->str);
+		g_string_free (expect, TRUE);
+		g_ptr_array_unref (fields);
+		fs_policy_free (policy);
+		return FS_EXIT_USAGE;
+	}
+
+	for (guint f = 0; f < fields->len; f++)
+		if (g_ptr_array_index (fields, f) == NULL)
+			g_ptr_array_index (fields, f) = (gpointer) "";
+	for (guint f = 0; f < fields->len; f++)
+		if (!g_utf8_validate (g_ptr_array_index (fields, f), -1, NULL)) {
+			fs_cli_error ("a field must be UTF-8 text");
+			g_ptr_array_unref (fields);
+			fs_policy_free (policy);
+			return FS_EXIT_USAGE;
+		}
+	if (comment != NULL && !g_utf8_validate (comment, -1, NULL)) {
+		fs_cli_error ("a comment must be UTF-8 text");
+		g_ptr_array_unref (fields);
+		fs_policy_free (policy);
+		return FS_EXIT_USAGE;
+	}
+
+	csv = fs_rule_to_csv (old);
+	g_ptr_array_add (fields, NULL);
+	g_variant_builder_init (&b, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add (&b, "{sv}", "kind",
+	                       g_variant_new_string (fs_cli_kind_name (kind)));
+	g_variant_builder_add (&b, "{sv}", "number",
+	                       g_variant_new_uint32 (number));
+	if (g_utf8_validate (csv, -1, NULL))
+		g_variant_builder_add (&b, "{sv}", "csv",
+		                       g_variant_new_string (csv));
+	g_variant_builder_add (&b, "{sv}", "fields",
+	                       g_variant_new_strv ((const gchar * const *)
+	                                           fields->pdata, -1));
+	if (comment != NULL)
+		g_variant_builder_add (&b, "{sv}", "comment",
+		                       g_variant_new_string (comment));
+	g_variant_builder_add (&b, "{sv}", "apply", g_variant_new_boolean (apply));
+	base = g_variant_ref_sink (g_variant_builder_end (&b));
+	g_free (csv);
+	g_ptr_array_unref (fields);
+	fs_policy_free (policy);
+
+	lock = g_string_new (NULL);
+	r = edit_send ("policy.replace", base, apply, yes, lock, &status);
+	g_variant_unref (base);
+
+	if (r->status == FS_CONTROL_CONFIRM) {
+		status = edit_refused ("changed", lock, status);
+	} else if (!r->saved) {
+		if (r->invalid_rule) {
+			fs_cli_error ("not a valid %s rule: %s",
+			              fs_cli_kind_name (kind),
+			              r->problem != NULL ? r->problem
+			              : "check the host, port or range");
+			fs_cli_hint ("hosts are addresses, networks (10.0.0.0/8) "
+			             "or \"Anyone\"; ports are 1-65535 or a range "
+			             "1024:2048");
+			status = FS_EXIT_USAGE;
+		} else {
+			status = edit_failed (r);
+		}
+	} else if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+
+		fs_json_kv_bool (out, "changed", TRUE);  g_string_append_c (out, ',');
+		fs_json_kv_str (out, "kind", fs_cli_kind_name (kind));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "rules_dir", fs_util_rules_dir ());
+		g_string_append (out, ",\"rule\":");
+		fs_cli_rule_json (out, r->rule, r->number);
+		g_string_append (out, ",\"was\":");
+		fs_cli_rule_json (out, r->old, r->number);
+		row_check (r->rule, out);
+		status = edit_applied (r, lock, out);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else {
+		if (!fs_cli.quiet) {
+			gchar *line = rule_line (r->rule, r->number);
+			gchar *was = fs_cli_rule_summary (r->old);
+			gchar *safe_was = fs_cli_out_safe (was);
+
+			printf ("%sChanged%s %s\n", fs_cli_green (), fs_cli_reset (),
+			        line);
+			printf ("%s  was: %s%s\n", fs_cli_dim (), safe_was,
+			        fs_cli_reset ());
+			if (g_strcmp0 (r->old->comment, r->rule->comment) != 0) {
+				gchar *c = fs_cli_out_safe (r->rule->comment);
+
+				printf ("  comment: %s\n", *c != '\0' ? c : "(none)");
+				g_free (c);
+			}
+			g_free (safe_was);
+			g_free (was);
+			g_free (line);
+			row_check (r->rule, NULL);
+		}
+		status = edit_applied (r, lock, NULL);
+		if (!apply)
+			own_policy_note ();
+	}
+
+	if (r->saved && !apply)
+		lockout_note_after_edit (r->policy);
+	g_string_free (lock, TRUE);
+	fs_control_result_free (r);
+	return status;
+}
+
+/* [ policy_init ]
+ * A19: the default rules a first run of the desktop app seeds (DHCP
+ * and DNS out), saved -- for a computer that never had the desktop
+ * app.  A saved policy with rules is replaced only with --force. */
+static gint
+policy_init (gint argc, gchar **argv)
+{
+	gboolean force = FALSE;
+	GVariantBuilder b;
+	FsControlActor actor;
+	FsControlResult *r;
+	gint status = FS_EXIT_OK;
+
+	for (gint i = 0; i < argc; i++) {
+		if (fs_cli_is_option_at (argv, i) &&
+		    strcmp (argv[i], "--force") == 0) {
+			force = TRUE;
+		} else if (fs_cli_is_option_at (argv, i)) {
+			fs_cli_unknown_option ("policy init", argv[i]);
+			return FS_EXIT_USAGE;
+		} else {
+			fs_cli_error ("unexpected argument: %s", argv[i]);
+			return FS_EXIT_USAGE;
+		}
+	}
+
+	g_variant_builder_init (&b, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add (&b, "{sv}", "force", g_variant_new_boolean (force));
+	actor = fs_control_actor_self ("cli");
+	r = fs_control_do (&actor, "policy.init", g_variant_builder_end (&b));
+
+	if (!r->saved) {
+		status = r->status == FS_CONTROL_USAGE ? FS_EXIT_USAGE
+		       : FS_EXIT_FAILURE;
+		fs_cli_error ("%s", r->error);
+		if (r->hint != NULL)
+			fs_cli_hint ("%s", r->hint);
+	} else if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+		guint shown = 0;
+
+		fs_json_kv_bool (out, "initialized", TRUE); g_string_append_c (out, ',');
+		fs_json_kv_str (out, "rules_dir", fs_util_rules_dir ());
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "replaced", r->dropped);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "applied", FALSE);
+		g_string_append (out, ",\"rules\":[");
+		for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+			for (guint n = 0; n < r->policy->kinds[k]->len; n++) {
+				if (shown++ > 0)
+					g_string_append_c (out, ',');
+				fs_cli_rule_json (out,
+				                  g_ptr_array_index (r->policy->kinds[k], n),
+				                  n + 1);
+			}
+		g_string_append (out, "]}");
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else if (!fs_cli.quiet) {
+		gchar *dir = fs_cli_out_safe (fs_util_rules_dir ());
+
+		printf ("%sSaved%s the default rules in %s", fs_cli_green (),
+		        fs_cli_reset (), dir);
+		if (r->dropped > 0)
+			printf (" (they replace %u rule%s)", r->dropped,
+			        r->dropped == 1 ? "" : "s");
+		printf (":\n");
+		for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+			for (guint n = 0; n < r->policy->kinds[k]->len; n++) {
+				gchar *line = rule_line (
+				        g_ptr_array_index (r->policy->kinds[k], n), n + 1);
+
+				printf ("  %s\n", line);
+				g_free (line);
+			}
+		g_free (dir);
+		printf ("Nothing comes in unless a rule allows it.  Add what this "
+		        "computer serves,\nfor example: stockfw policy add "
+		        "inbound-allow-service SSH\n");
+		not_live_line ();
+		own_policy_note ();
+	}
+
+	fs_control_result_free (r);
+	return status;
 }
 
 /* ------------------------------------------------- diff and the preview */
@@ -1559,7 +2008,7 @@ fs_cli_cmd_policy (gint argc, gchar **argv)
 {
 	const gchar *sub = argc > 1 ? argv[1] : "list";
 	static const gchar * const subs[] = {
-		"list", "show", "add", "remove", "diff"
+		"list", "show", "add", "edit", "remove", "diff", "init"
 	};
 
 	if (strcmp (sub, "list") == 0 || strcmp (sub, "ls") == 0)
@@ -1570,6 +2019,10 @@ fs_cli_cmd_policy (gint argc, gchar **argv)
 		return policy_add (argc - 2, argv + 2);
 	if (strcmp (sub, "remove") == 0 || strcmp (sub, "rm") == 0)
 		return policy_remove (argc - 2, argv + 2);
+	if (strcmp (sub, "edit") == 0)
+		return policy_edit (argc - 2, argv + 2);
+	if (strcmp (sub, "init") == 0)
+		return policy_init (argc - 2, argv + 2);
 	if (strcmp (sub, "diff") == 0)
 		return policy_diff (argc - 2, argv + 2);
 
@@ -1594,7 +2047,7 @@ fs_cli_cmd_policy (gint argc, gchar **argv)
 		else
 			fs_cli_error ("unknown policy action: %s", sub);
 	}
-	fs_cli_hint ("policy list | show | add | remove | diff");
+	fs_cli_hint ("policy list | show | add | edit | remove | diff | init");
 	return FS_EXIT_USAGE;
 }
 
@@ -1736,16 +2189,17 @@ lockout_guard (const FsPolicy *policy, GString *json)
 	fs_settings_free (settings);
 }
 
-/* [ control_send ] -- an op whose only param is "yes". */
+/* [ control_send ] -- an op with `base' (a{sv}, or NULL; not taken)
+ * and "yes". */
 static FsControlResult *
-control_send (const gchar *op, gboolean yes)
+control_send (const gchar *op, GVariant *base, gboolean yes)
 {
 	FsControlActor actor = fs_control_actor_self ("cli");
-	GVariantBuilder b;
+	GVariantDict d;
 
-	g_variant_builder_init (&b, G_VARIANT_TYPE_VARDICT);
-	g_variant_builder_add (&b, "{sv}", "yes", g_variant_new_boolean (yes));
-	return fs_control_do (&actor, op, g_variant_builder_end (&b));
+	g_variant_dict_init (&d, base);
+	g_variant_dict_insert (&d, "yes", "b", yes);
+	return fs_control_do (&actor, op, g_variant_dict_end (&d));
 }
 
 /* [ control_guarded ]
@@ -1757,11 +2211,11 @@ control_send (const gchar *op, gboolean yes)
  * Appends the "lockout" member to `lock'.  Never NULL; still CONFIRM
  * when the user did not confirm (*status = FS_EXIT_FAILURE). */
 static FsControlResult *
-control_guarded (const gchar *op, gboolean yes, const gchar *verb,
-                 GString *lock, gint *status,
+control_guarded (const gchar *op, GVariant *base, gboolean yes,
+                 const gchar *verb, GString *lock, gint *status,
                  void (*seen) (const FsControlResult *r))
 {
-	FsControlResult *r = control_send (op, yes);
+	FsControlResult *r = control_send (op, base, yes);
 	gboolean confirmed = FALSE;
 
 	if (seen != NULL)
@@ -1771,7 +2225,7 @@ control_guarded (const gchar *op, gboolean yes, const gchar *verb,
 	if (r->status == FS_CONTROL_CONFIRM) {
 		if (lockout_ask (verb, FALSE, &confirmed)) {
 			fs_control_result_free (r);
-			r = control_send (op, TRUE);
+			r = control_send (op, base, TRUE);
 		} else {
 			*status = FS_EXIT_FAILURE;
 		}
@@ -1876,18 +2330,173 @@ apply_dry_run (FsPolicy *policy, gboolean verbose, gboolean yes)
 	return status;
 }
 
+/* [ apply_status ] -- the exit status an apply outcome gives. */
+static gint
+apply_status (const FsApplyOutcome *outcome)
+{
+	if (outcome->held || outcome->result == FS_APPLY_OK)
+		return FS_EXIT_OK;
+	if (outcome->result == FS_APPLY_NO_PRIVILEGE)
+		return FS_EXIT_NEED_ROOT;
+	return FS_EXIT_FAILURE;
+}
+
+/* [ apply_json_members ]
+ * The members of `apply --json' ("applied" ... "notes", the lockout
+ * member `lock' and "intel"), without the braces: `apply' prints them
+ * as its object, an edit with --apply as its "apply" member. */
+static void
+apply_json_members (GString *out, const FsControlResult *r,
+                    const gchar *lock)
+{
+	const FsApplyOutcome *outcome = r->outcome;
+	gchar *desc = fs_policy_impact_describe (outcome->impact);
+
+	fs_json_kv_bool (out, "applied", outcome->applied);   g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "held", outcome->held);         g_string_append_c (out, ',');
+	fs_json_kv_str (out, "hold_reason", outcome->hold_reason); g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "narrow", outcome->narrow);     g_string_append_c (out, ',');
+	fs_json_kv_str (out, "firewall_was", was_word (outcome->firewall_was));
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "result",
+	                fs_util_apply_result_to_string ((int) outcome->result));
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "impact", desc);                 g_string_append_c (out, ',');
+	fs_json_kv_str (out, "error", r->error);              g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "rollback_attempted", outcome->rollback_attempted); g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "rollback_verified", outcome->rollback_verified);
+	g_string_append_c (out, ',');
+	fs_json_key (out, "notes");
+	fs_cli_append_lines_json (out, outcome->notes);
+	g_string_append (out, lock);
+	/* An apply that started a stopped firewall brought the
+	 * blocklists back, as a start does. */
+	if (r->intel.ran)
+		intel_print (&r->intel, out);
+	g_free (desc);
+}
+
+/* [ apply_print ] -- what `apply' prints for an outcome. */
+static void
+apply_print (const FsControlResult *r)
+{
+	const FsApplyOutcome *outcome = r->outcome;
+	const gchar *errmsg = r->error;
+	gchar *desc = fs_policy_impact_describe (outcome->impact);
+
+	if (outcome->held) {
+		printf ("%sHeld:%s %s.  The firewall was left untouched.\n",
+		        fs_cli_amber (), fs_cli_reset (), outcome->hold_reason);
+		printf ("Recorded in the audit log: %s\n", desc);
+	} else if (outcome->result == FS_APPLY_OK) {
+		if (outcome->firewall_was == FS_FW_STOPPED)
+			printf ("%sApplied%s (whole policy; the firewall was "
+			        "stopped and is now running): %s\n",
+			        fs_cli_green (), fs_cli_reset (), desc);
+		else if (outcome->narrow && outcome->impact->added == 0 &&
+		         outcome->impact->removed == 0)
+			printf ("Nothing to change: the policy already matches the "
+			        "firewall.\n");
+		else
+			printf ("%sApplied%s (%s): %s\n", fs_cli_green (),
+			        fs_cli_reset (),
+			        outcome->narrow ? "only the changes" : "whole policy",
+			        desc);
+		fs_cli_print_notes (outcome->notes);
+		if (r->intel.ran)
+			intel_print (&r->intel, NULL);
+	} else {
+		fs_cli_error ("%s", errmsg != NULL ? errmsg
+		              : fs_util_apply_result_to_string ((int) outcome->result));
+		if (outcome->rollback_attempted && outcome->rollback_verified)
+			fs_cli_hint ("the firewall was restored to the last applied "
+			             "policy, and that restore was verified");
+		else if (outcome->rollback_attempted)
+			fs_cli_error ("the rollback ALSO failed: the firewall may be "
+			              "inconsistent -- check `stockfw status'");
+		else
+			fs_cli_hint ("no applied policy was recorded, so there was "
+			             "nothing to roll back to");
+	}
+	g_free (desc);
+}
+
+/* [ edit_send ]
+ * 3D: an edit op (policy.add, .remove, .replace) with `base' params.
+ * With --apply the control layer applies the saved policy under the
+ * same lock, and the lockout guard stands in front of both: the
+ * warning, the question and the second send are control_guarded's,
+ * and a CONFIRM that was not confirmed saved nothing.  `lock' gets the
+ * lockout member. */
+static FsControlResult *
+edit_send (const gchar *op, GVariant *base, gboolean apply, gboolean yes,
+           GString *lock, gint *status)
+{
+	if (!apply)
+		return control_send (op, base, FALSE);
+	return control_guarded (op, base, yes, "Apply", lock, status, NULL);
+}
+
+/* [ edit_refused ]
+ * An edit with --apply the user did not confirm: nothing was saved.
+ * `verb' is the JSON word ("added", "removed", "changed"). */
+static gint
+edit_refused (const gchar *verb, const GString *lock, gint status)
+{
+	if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+
+		fs_json_kv_bool (out, verb, FALSE);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "saved", FALSE);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "error", "refused: the policy would block "
+		                "an SSH session (pass --yes)");
+		g_string_append (out, lock->str);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else {
+		fs_cli_hint ("nothing was saved: the policy files are as they "
+		             "were");
+	}
+	return status;
+}
+
+/* [ edit_applied ]
+ * After an edit was saved: with --apply, what the apply did (an
+ * "applied" member and an "apply" object in JSON), else the "not live
+ * yet" line.  Returns the exit status. */
+static gint
+edit_applied (const FsControlResult *r, const GString *lock, GString *json)
+{
+	if (json != NULL) {
+		g_string_append_c (json, ',');
+		fs_json_kv_bool (json, "applied", r->outcome != NULL &&
+		                 r->outcome->applied);
+		if (r->outcome != NULL) {
+			g_string_append (json, ",\"apply\":{");
+			apply_json_members (json, r, lock->str);
+			g_string_append_c (json, '}');
+		}
+	} else if (r->outcome != NULL) {
+		if (!fs_cli.quiet || apply_status (r->outcome) != FS_EXIT_OK)
+			apply_print (r);
+	} else {
+		not_live_line ();
+	}
+	return r->outcome != NULL ? apply_status (r->outcome) : FS_EXIT_OK;
+}
+
 gint
 fs_cli_cmd_apply (gint argc, gchar **argv)
 {
 	gboolean dry_run = FALSE, verbose = FALSE, yes = FALSE;
 	FsPolicy *policy;
-	const FsApplyOutcome *outcome;
-	const gchar *errmsg;
 	FsControlResult *r;
 	GPtrArray *problems = NULL;
 	gboolean on_disk;
 	gint status = FS_EXIT_OK;
-	gchar *desc;
 	GString *lock;
 
 	for (gint i = 1; i < argc; i++) {
@@ -1951,7 +2560,7 @@ fs_cli_cmd_apply (gint argc, gchar **argv)
 	}
 
 	lock = g_string_new (NULL);
-	r = control_guarded ("apply", yes, "Apply", lock, &status, NULL);
+	r = control_guarded ("apply", NULL, yes, "Apply", lock, &status, NULL);
 	fs_policy_free (policy);
 	if (r->status == FS_CONTROL_CONFIRM) {
 		if (fs_cli.json) {
@@ -1984,84 +2593,19 @@ fs_cli_cmd_apply (gint argc, gchar **argv)
 		return status;
 	}
 
-	outcome = r->outcome;
-	errmsg = r->error;
-	desc = fs_policy_impact_describe (outcome->impact);
-
-	if (outcome->held) {
-		status = FS_EXIT_OK;
-	} else if (outcome->result == FS_APPLY_OK) {
-		status = FS_EXIT_OK;
-	} else if (outcome->result == FS_APPLY_NO_PRIVILEGE) {
-		status = FS_EXIT_NEED_ROOT;
-	} else {
-		status = FS_EXIT_FAILURE;
-	}
-
+	status = apply_status (r->outcome);
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{");
 
-		fs_json_kv_bool (out, "applied", outcome->applied);   g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "held", outcome->held);         g_string_append_c (out, ',');
-		fs_json_kv_str (out, "hold_reason", outcome->hold_reason); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "narrow", outcome->narrow);     g_string_append_c (out, ',');
-		fs_json_kv_str (out, "firewall_was", was_word (outcome->firewall_was));
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "result",
-		                fs_util_apply_result_to_string ((int) outcome->result));
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "impact", desc);                 g_string_append_c (out, ',');
-		fs_json_kv_str (out, "error", errmsg);                g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "rollback_attempted", outcome->rollback_attempted); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "rollback_verified", outcome->rollback_verified);
-		g_string_append_c (out, ',');
-		fs_json_key (out, "notes");
-		fs_cli_append_lines_json (out, outcome->notes);
-		g_string_append (out, lock->str);
-		/* An apply that started a stopped firewall brought the
-		 * blocklists back, as a start does. */
-		if (r->intel.ran)
-			intel_print (&r->intel, out);
+		apply_json_members (out, r, lock->str);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
-	} else if (outcome->held) {
-		printf ("%sHeld:%s %s.  The firewall was left untouched.\n",
-		        fs_cli_amber (), fs_cli_reset (), outcome->hold_reason);
-		printf ("Recorded in the audit log: %s\n", desc);
-	} else if (outcome->result == FS_APPLY_OK) {
-		if (outcome->firewall_was == FS_FW_STOPPED)
-			printf ("%sApplied%s (whole policy; the firewall was "
-			        "stopped and is now running): %s\n",
-			        fs_cli_green (), fs_cli_reset (), desc);
-		else if (outcome->narrow && outcome->impact->added == 0 &&
-		         outcome->impact->removed == 0)
-			printf ("Nothing to change: the policy already matches the "
-			        "firewall.\n");
-		else
-			printf ("%sApplied%s (%s): %s\n", fs_cli_green (),
-			        fs_cli_reset (),
-			        outcome->narrow ? "only the changes" : "whole policy",
-			        desc);
-		fs_cli_print_notes (outcome->notes);
-		if (r->intel.ran)
-			intel_print (&r->intel, NULL);
 	} else {
-		fs_cli_error ("%s", errmsg != NULL ? errmsg
-		              : fs_util_apply_result_to_string ((int) outcome->result));
-		if (outcome->rollback_attempted && outcome->rollback_verified)
-			fs_cli_hint ("the firewall was restored to the last applied "
-			             "policy, and that restore was verified");
-		else if (outcome->rollback_attempted)
-			fs_cli_error ("the rollback ALSO failed: the firewall may be "
-			              "inconsistent -- check `stockfw status'");
-		else
-			fs_cli_hint ("no applied policy was recorded, so there was "
-			             "nothing to roll back to");
+		apply_print (r);
 	}
 
 	g_string_free (lock, TRUE);
-	g_free (desc);
 	fs_control_result_free (r);
 
 	return status;
@@ -2166,9 +2710,9 @@ start_or_stop (gint argc, gchar **argv, gboolean start)
 	/* The bodies are the control layer's (firewall.start, which takes
 	 * the journal's settings, 3B; firewall.stop). */
 	lock = g_string_new (NULL);
-	r = start ? control_guarded ("firewall.start", yes, "Start", lock,
+	r = start ? control_guarded ("firewall.start", NULL, yes, "Start", lock,
 	                             &status, start_seen)
-	          : control_send ("firewall.stop", FALSE);
+	          : control_send ("firewall.stop", NULL, FALSE);
 
 	if (r->status == FS_CONTROL_CONFIRM) {
 		if (fs_cli.json) {
@@ -2846,6 +3390,17 @@ static const FsCliOption policy_opts[] = {
 	{ "--status",  FALSE, "list" },
 	{ "--comment", TRUE,  "add"  },
 	{ "--both",    FALSE, "add"  },
+	{ "--apply",   FALSE, "add"  },
+	{ "--yes",     FALSE, "add"  },
+	{ "-y",        FALSE, "add"  },
+	{ "--comment", TRUE,  "edit" },
+	{ "--apply",   FALSE, "edit" },
+	{ "--yes",     FALSE, "edit" },
+	{ "-y",        FALSE, "edit" },
+	{ "--apply",   FALSE, "remove" },
+	{ "--yes",     FALSE, "remove" },
+	{ "-y",        FALSE, "remove" },
+	{ "--force",   FALSE, "init" },
 	{ NULL, FALSE, NULL }
 };
 
@@ -2888,12 +3443,17 @@ const FsCliCommandDef fs_cli_policy_commands[] = {
 "Usage: stockfw policy list [KIND|in|out] [--grep TEXT] [--status]\n"
 "       stockfw policy show REF\n"
 "       stockfw policy add KIND FIELD... [--comment TEXT] [--both]\n"
-"       stockfw policy remove REF\n"
+"                          [--apply [--yes]]\n"
+"       stockfw policy edit REF [FIELD...] [--comment TEXT]\n"
+"                          [--apply [--yes]]\n"
+"       stockfw policy remove REF [--apply [--yes]]\n"
 "       stockfw policy diff\n"
+"       stockfw policy init [--force]\n"
 "\n"
 "Edits the saved policy -- the files the desktop app's Policy page\n"
 "shows.  Changes are validated (hosts, ports and ranges fail closed)\n"
-"and saved; nothing reaches the firewall until `stockfw apply'.\n"
+"and saved; nothing reaches the firewall until `stockfw apply', or\n"
+"--apply.  One writer at a time: an edit waits for another to finish.\n"
 "\n"
 "A rule's reference REF is KIND:N, numbered as `policy list' shows it\n"
 "(inbound-allow-service:2).  KIND#N and KIND N work too.\n"
@@ -2903,9 +3463,20 @@ const FsCliCommandDef fs_cli_policy_commands[] = {
 "  show    one rule: its fields, what it covers, live or pending\n"
 "  add     a rule; it prints the reference and a What-If check of the\n"
 "          rule's own traffic on the saved policy\n"
+"  edit    a rule in place: same kind, same number, one save.  Give\n"
+"          all of its fields (\"-\" keeps one as it is), or none to\n"
+"          change only the comment; the comment is kept unless\n"
+"          --comment is given (--comment '' clears it)\n"
 "  remove  a rule, by its reference\n"
 "  diff    the saved policy against the applied one: + rows to add,\n"
 "          - rows to take away (numbered as applied)\n"
+"  init    saves the default rules (DHCP and DNS out) the desktop app\n"
+"          starts from; --force replaces a policy that has rules\n"
+"\n"
+"--apply then applies the saved policy, as `stockfw apply' does, under\n"
+"the same lock (root).  The SSH check runs first, on the policy the\n"
+"edit gives: when it would block your SSH session, nothing is saved\n"
+"unless you confirm, or pass --yes.\n"
 "\n"
 "Kinds and their fields:\n"
 "  inbound-allow-from      HOST\n"
@@ -2923,14 +3494,17 @@ const FsCliCommandDef fs_cli_policy_commands[] = {
 "field or comment that starts with a dash goes after \"--\" or as\n"
 "--comment=TEXT.\n"
 "\n"
-"add and remove refuse while a line of the files is not a rule\n"
-"(`stockfw check'): saving would delete that line.\n"
+"add, edit and remove refuse while a line of the files is not a rule\n"
+"(`stockfw check'): saving would delete that line.  A comma or a line\n"
+"break in a field or comment is refused: the files have no quoting.\n"
 "\n"
 "Examples:\n"
 "  stockfw policy add inbound-allow-service SSH 22 192.168.1.0/24\n"
 "  stockfw policy add outbound-deny-to 203.0.113.9 --comment bad\n"
 "  stockfw policy show inbound-allow-service:1\n"
-"  stockfw policy remove outbound-deny-to:1\n",
+"  stockfw policy edit inbound-allow-service:1 - 2222 -\n"
+"  stockfw policy edit outbound-deny-to:1 --comment 'old server'\n"
+"  stockfw policy remove outbound-deny-to:1 --apply\n",
 	  policy_opts, NULL },
 
 	{ "check", fs_cli_cmd_check,

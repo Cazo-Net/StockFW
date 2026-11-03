@@ -102,6 +102,10 @@ typedef struct
 	GPtrArray       *problems;     /* FsPolicyProblem*: lines of the
 	                                * files that are not rules (refused) */
 	gboolean         no_policy;    /* apply/start: no rule file at all  */
+	gboolean         saved;        /* 3D: the edit (or init) was saved;
+	                                * an "apply" after it may still have
+	                                * failed (status, error say so)     */
+	guint            dropped;      /* policy.init: rows it replaced     */
 
 	/* apply, firewall.start, firewall.stop, settings.apply */
 	FsApplyOutcome  *outcome;
@@ -135,6 +139,13 @@ typedef struct
  *                   with CONFLICT when the row there is another now)
  *   policy.replace  kind s, number u, csv s, fields as, comment s
  *                   (no comment: the old row's is kept)
+ *   policy.init     force b: the default rules (DHCP and DNS out),
+ *                   refused (USAGE) when a policy with rules is saved
+ *                   and force is not given
+ * policy.add, policy.remove and policy.replace also take "apply" b and
+ * "yes" b (3D): the saved policy is then applied under the same lock
+ * (root).  The lockout guard runs on the policy the edit would give
+ * before anything is saved, so CONFIRM still means nothing changed.
  *   apply           yes b                                    (root)
  *   firewall.start  yes b                                    (root)
  *   firewall.stop                                            (root)
