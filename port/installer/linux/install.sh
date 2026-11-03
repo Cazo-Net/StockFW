@@ -2,7 +2,7 @@
 # StockFW Linux installer
 #
 #   sudo ./install.sh          install
-#   sudo ./uninstall.sh        remove (installed by this script)
+#   sudo /usr/local/bin/stockfw-uninstall   remove (installed by this script)
 #
 # What it does:
 #   - checks the runtime libraries the binary actually links against,
@@ -79,7 +79,8 @@ fi
 ok "binary is a Linux ELF executable"
 
 # --- dependency check: sonames via ldconfig ------------------------------
-# The binary's own NEEDED entries, in link order.  libgtk-3.so.0 and
+# The binaries' own NEEDED entries (StockFW and cli/stockfw), the C
+# library aside; tests/test-release.sh compares this list with readelf.  libgtk-3.so.0 and
 # libgdk-3.so.0 both come from the GTK3 package; listed separately
 # because a stripped install can carry one without the other.
 # liblzma and libcrypto (1.0.7) read the location database; a system
@@ -87,7 +88,7 @@ ok "binary is a Linux ELF executable"
 # and StockFW and the boot service would then fail to start at all.
 NEEDED="libgtk-3.so.0 libgdk-3.so.0 libgdk_pixbuf-2.0.so.0
         libpango-1.0.so.0 libpangocairo-1.0.so.0 libcairo.so.2
-        libglib-2.0.so.0 libgobject-2.0.so.0 libgio-2.0.so.0
+        libatk-1.0.so.0 libglib-2.0.so.0 libgobject-2.0.so.0 libgio-2.0.so.0
         liblzma.so.5 libcrypto.so.3"
 
 MISSING=""
@@ -220,7 +221,7 @@ if [ -x "$BINDIR/stockfw" ] && [ -f "$HERE/stockfw.service" ] &&
     fi
 else
     warn "no systemd: firewall rules will NOT come back after a reboot"
-    warn "until StockFW is started with sudo (or 'sudo stockfw start' runs)"
+    warn "until StockFW is started with sudo (or 'sudo $BINDIR/stockfw start' runs)"
 fi
 
 install -Dm644 "$HERE/stockfw.desktop" "$DATADIR/applications/$APPID.desktop"

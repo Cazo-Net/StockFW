@@ -19,7 +19,7 @@ BEGIN
             VALUE "FileDescription", "StockFW - Smart Firewall Configuration Tool"
             VALUE "FileVersion", "@PROJECT_VERSION@"
             VALUE "InternalName", "StockFW"
-            VALUE "LegalCopyright", "(C) 2000-2026 StockFW Project"
+            VALUE "LegalCopyright", "Copyright (C) 2024-2026 StockFW Project"
             VALUE "OriginalFilename", "StockFW.exe"
             VALUE "ProductName", "StockFW"
             VALUE "ProductVersion", "@PROJECT_VERSION@"

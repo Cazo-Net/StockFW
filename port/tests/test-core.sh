@@ -11462,6 +11462,15 @@ for f in ../AUTHORS ../CREDITS ../README.md src/ui/fs-aboutdialog.c; do
     exit 1
   fi
 done
+# The port's own credit reads "Stock Team" too: About and Help said
+# "StockFW Project - GTK3 Port, ..." (release review, problem 1).
+for f in src/ui/fs-aboutdialog.c src/ui/fs-helpcontent.c; do
+  if ! tr -d '\n\t' < "$f" | sed 's/"  *"//g' | grep -q 'Stock Team - GTK3 Port, Windows Backend, Copilot' ||
+     grep -q 'StockFW Project' "$f"; then
+    echo "FAIL: $f does not credit \"Stock Team - GTK3 Port, Windows Backend, Copilot\""
+    exit 1
+  fi
+done
 echo "ok:   credits guard: Stock Team & Qusai, no full name, no e-mail address"
 
 # Privacy (DOCS-HELP-07): the location database downloads as a

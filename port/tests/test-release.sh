@@ -119,6 +119,22 @@ check $? "installer/linux/README.md names StockFW-$V-linux-x86_64.tar.gz"
 grep -q 'cmake -S "\$PORT" -B "\$OUT"' "$PORT_DIR/tools/build-linux.sh"
 check $? "tools/build-linux.sh builds through CMakeLists.txt"
 
+# One copyright line on everything the release carries: the Windows
+# file properties (stockfw.rc.in), the installer's own (StockFW.nsi) and
+# both licence files said three different things (release review).
+COPY_LINE='Copyright (C) 2024-2026 StockFW Project'
+copy_bad=""
+grep -q "\"LegalCopyright\", \"$COPY_LINE\"" "$PORT_DIR/stockfw.rc.in" || copy_bad="$copy_bad stockfw.rc.in"
+grep -q "\"LegalCopyright\" \"$COPY_LINE\"" "$PORT_DIR/installer/nsis/StockFW.nsi" || copy_bad="$copy_bad StockFW.nsi"
+grep -qx "$COPY_LINE" "$PORT_DIR/installer/linux/LICENSE.txt" || copy_bad="$copy_bad installer/linux/LICENSE.txt"
+grep -qx "$COPY_LINE" "$PORT_DIR/installer/build_installer.sh" || copy_bad="$copy_bad build_installer.sh"
+others="$(grep -hoE '(\(C\)|Copyright \(C\)) [0-9-]+ StockFW Project' \
+	"$PORT_DIR/stockfw.rc.in" "$PORT_DIR/installer/nsis/StockFW.nsi" \
+	"$PORT_DIR/installer/linux/LICENSE.txt" "$PORT_DIR/installer/build_installer.sh" |
+	grep -vx "$COPY_LINE" || true)"
+[ -z "$others" ] || copy_bad="$copy_bad (also: $others)"
+check "$(yes_if [ -z "$copy_bad" ])" "one copyright line, '$COPY_LINE', in the resource script, the NSIS script and both licence files (differs:$copy_bad)"
+
 # ---------------------------------------------------------------- 2. docs
 grep -q "^## \[$V\]" "$ROOT/CHANGELOG.md"
 check $? "CHANGELOG.md has a ## [$V] section"
@@ -172,10 +188,32 @@ grep -q 'CHANGELOG.md' "$SCRATCH/nsis-docs.sh"
 check $? "the NSIS documentation step was found in build_installer.sh"
 ( ROOT_DIR="$ROOT" PORT_DIR="$PORT_DIR" STAGE_DIR="$NS" VERSION="$V"; \
   . "$SCRATCH/nsis-docs.sh" ) > /dev/null 2>&1
-cmp -s "$NS/README.md" "$ROOT/README.md"
+sh "$PORT_DIR/tools/readme-for-package.sh" "$V" "$ROOT/README.md" "$SCRATCH/readme-pkg.md"
+cmp -s "$NS/README.md" "$SCRATCH/readme-pkg.md"
 check $? "the Windows installer stages the project README (not a stub)"
+# Alone in a package, a relative link leads nowhere (release review,
+# problem 5): every link has a scheme or is an in-page anchor, and
+# with the tag's address taken out again the text is the README's.
+rel="$(grep -oE '\]\([^)]*\)' "$NS/README.md" | grep -vE '^\]\((https?:|mailto:|#)' || true)"
+check "$(yes_if [ -z "$rel" ])" "the packaged README has no relative link left (found: $(echo $rel | head -c 200))"
+sed "s#https://github.com/Cazo-Net/StockFW/blob/v$V/##g" "$NS/README.md" > "$SCRATCH/readme-back.md"
+sed -E 's#\]\(\./#](#g' "$ROOT/README.md" > "$SCRATCH/readme-root.md"
+cmp -s "$SCRATCH/readme-back.md" "$SCRATCH/readme-root.md"
+check $? "  ...and otherwise it is the project README, links to v$V pointing at the same files"
 cmp -s "$NS/CHANGELOG.md" "$ROOT/CHANGELOG.md"
 check $? "the Windows installer stages CHANGELOG.md"
+
+# The strip step stops the build without strip, as the Linux
+# packager does (it once warned and shipped the exe unstripped).
+sed -n '/^# 1\. Copy main executable/,/^echo "  Stripped StockFW.exe"$/p' \
+	"$PORT_DIR/installer/build_installer.sh" > "$SCRATCH/nsis-strip.sh"
+mkdir -p "$SCRATCH/wstrip/build" "$SCRATCH/wstrip/stage" "$SCRATCH/wstrip/bin"
+printf 'MZ' > "$SCRATCH/wstrip/build/StockFW.exe"
+for t in cp mkdir echo; do ln -sf "$(command -v $t)" "$SCRATCH/wstrip/bin/$t" 2>/dev/null; done
+( PATH="$SCRATCH/wstrip/bin"; BUILD_DIR="$SCRATCH/wstrip/build"; STAGE_DIR="$SCRATCH/wstrip/stage"; \
+  . "$SCRATCH/nsis-strip.sh" ) > /dev/null 2>&1
+r=$?
+check "$(yes_if [ $r -ne 0 ] && [ -s "$SCRATCH/nsis-strip.sh" ])" "the Windows packager stops when strip is missing"
 
 sed -n '/^# 6\. Create LICENSE.txt/,/^done$/p' "$PORT_DIR/installer/build_installer.sh" \
 	> "$SCRATCH/nsis-lic.sh"
@@ -266,6 +304,16 @@ if [ -x "$BUILD/StockFW" ] && [ -x "$BUILD/stockfw" ] &&
 			! readelf -S "$U/$b" 2>/dev/null | grep -q ' \.symtab'
 			check $? "$b carries no symbol table"
 		done
+		# install.sh checks every library the binaries name (the C
+		# library aside): it once left out libatk-1.0.so.0.
+		listed="$(sed -n '/^NEEDED="/,/"$/p' "$U/install.sh" | tr -d '"' | sed 's/^NEEDED=//' | tr -s ' \n' '\n')"
+		unlisted=""
+		for so in $(readelf -d "$U/StockFW" "$U/cli/stockfw" 2>/dev/null |
+		            sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort -u); do
+			case "$so" in libc.so.*|libm.so.*|ld-linux*|libpthread.so.*|libdl.so.*|librt.so.*|libasan.so.*|libubsan.so.*) continue ;; esac  # (the C library; sanitizer builds)
+			echo "$listed" | grep -qx "$so" || unlisted="$unlisted $so"
+		done
+		check "$(yes_if [ -z "$unlisted" ])" "install.sh checks for every library the binaries need (missing:$unlisted)"
 		got="$(timeout 10 "$U/StockFW" --version 2>/dev/null)"
 		case "$got" in "StockFW $V "*) r=0 ;; *) r=1 ;; esac
 		check $r "the unpacked StockFW --version says $V ('$got')"
@@ -274,8 +322,8 @@ if [ -x "$BUILD/StockFW" ] && [ -x "$BUILD/stockfw" ] &&
 		check $r "the unpacked stockfw --version says $V ('$got')"
 		cmp -s "$U/CHANGELOG.md" "$ROOT/CHANGELOG.md"
 		check $? "the archive carries CHANGELOG.md"
-		cmp -s "$U/README-project.md" "$ROOT/README.md"
-		check $? "the archive carries the project README"
+		cmp -s "$U/README-project.md" "$SCRATCH/readme-pkg.md"
+		check $? "the archive carries the project README, its links pointing at v$V"
 		cmp -s "$U/README.md" "$PORT_DIR/installer/linux/README.md"
 		check $? "the archive's README.md is the Linux installer README"
 		grep -qx "Version $V" "$U/LICENSE.txt"

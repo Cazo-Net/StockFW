@@ -95,7 +95,7 @@ unfiltered until someone starts StockFW with `sudo` again.
   never applied): those wait for the next apply. Sentinel blocks whose
   ten minutes ran out while the machine was off are not put back.
 - It has no stop action. `systemctl stop stockfw` and shutting down
-  never take the rules away; `sudo stockfw stop` does.
+  never take the rules away; `sudo /usr/local/bin/stockfw stop` does.
 - A block by host name cannot be looked up before the network is up, so
   it is left out at boot (`journalctl -u stockfw` names it) and goes in
   with the next apply (`sudo /usr/local/bin/stockfw apply`, or applying
@@ -145,7 +145,7 @@ search-path note as above applies: use `sudo /usr/local/bin/stockfw`.
 
 ## Uninstall
 
-    sudo stockfw-uninstall
+    sudo /usr/local/bin/stockfw-uninstall
 
 Removes exactly what `install.sh` created, disables the boot service,
 asks a running StockFW to quit and removes your own sign-in entry. It

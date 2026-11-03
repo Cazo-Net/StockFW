@@ -32,7 +32,7 @@ VIAddVersionKey /LANG=0 "ProductVersion" "${APP_VERSION}"
 VIAddVersionKey /LANG=0 "FileVersion" "${APP_VERSION_FULL}"
 VIAddVersionKey /LANG=0 "FileDescription" "${APP_NAME} Setup"
 VIAddVersionKey /LANG=0 "CompanyName" "${APP_PUBLISHER}"
-VIAddVersionKey /LANG=0 "LegalCopyright" "(C) 04-10-2026 StockFW Project"
+VIAddVersionKey /LANG=0 "LegalCopyright" "Copyright (C) 2024-2026 StockFW Project"
 
 ;------------------------------------------------------------------------------
 ; Modern UI 2 Configuration

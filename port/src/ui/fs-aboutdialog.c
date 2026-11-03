@@ -87,7 +87,7 @@ fs_dialogs_about_credits (void)
 	static const gchar *const credits[] = {
 		"Stock Team & Qusai - Creator & Original Developer",
 		"H3xCore - Developer",
-		"StockFW Project - GTK3 Port, Windows Backend, Copilot",
+		"Stock Team - GTK3 Port, Windows Backend, Copilot",
 		NULL
 	};
 

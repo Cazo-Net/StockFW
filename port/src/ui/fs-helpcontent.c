@@ -1510,7 +1510,7 @@ static const FsHelpBlock about[] = {
 	{ FS_HELP_ITEM, N_("Stock Team &amp; Qusai - Creator &amp; Original "
 	  "Developer") },
 	{ FS_HELP_ITEM, N_("H3xCore - Developer") },
-	{ FS_HELP_ITEM, N_("StockFW Project - GTK3 Port, Windows Backend, "
+	{ FS_HELP_ITEM, N_("Stock Team - GTK3 Port, Windows Backend, "
 	  "Copilot") },
 	{ FS_HELP_HEAD, N_("Licence") },
 	{ FS_HELP_PARA, N_("The source carries two licence texts: the GNU "

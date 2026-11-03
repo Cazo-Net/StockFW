@@ -131,7 +131,11 @@ done
 # with no documentation at all and a zero exit status.
 echo "[3/5] Copying documentation..."
 install -m644 "$LINUX_DIR/README.md" "$STAGE/README.md"
-install -m644 "$PORT_DIR_ROOT/README.md" "$STAGE/README-project.md"
+# Alone in the archive, its relative links would lead nowhere: they
+# point at the repository at this release's tag instead.
+sh "$PORT_DIR/tools/readme-for-package.sh" "$VERSION" \
+    "$PORT_DIR_ROOT/README.md" "$STAGE/README-project.md"
+chmod 644 "$STAGE/README-project.md"
 install -m644 "$PORT_DIR_ROOT/CHANGELOG.md" "$STAGE/CHANGELOG.md"
 # The changelog must describe this release.
 if ! grep -q "^## \[$VERSION\]" "$STAGE/CHANGELOG.md"; then

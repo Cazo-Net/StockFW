@@ -52,13 +52,15 @@ echo "[1/7] Copying main executable..."
 cp "$BUILD_DIR/StockFW.exe" "$STAGE_DIR/StockFW.exe"
 # The release carries no debug information: a RelWithDebInfo exe is
 # mostly DWARF.  Only the staged copy is stripped; build/ keeps its
-# symbols for debugging.
-if command -v strip >/dev/null 2>&1; then
-    strip --strip-unneeded "$STAGE_DIR/StockFW.exe"
-    echo "  Stripped StockFW.exe"
-else
-    echo "WARNING: strip not found; StockFW.exe is staged with debug information" >&2
+# symbols for debugging.  No strip stops the build, as the Linux
+# packager does: it used to warn and ship the unstripped exe.
+if ! command -v strip >/dev/null 2>&1; then
+    echo "ERROR: strip not found; StockFW.exe would ship with debug information" >&2
+    echo "       Install binutils (pacman -S mingw-w64-ucrt-x86_64-binutils)" >&2
+    exit 1
 fi
+strip --strip-unneeded "$STAGE_DIR/StockFW.exe"
+echo "  Stripped StockFW.exe"
 
 # 2. Copy GTK3 runtime dependencies - copy ALL DLLs (no whitelist)
 echo "[2/7] Copying GTK3 runtime (ALL DLLs)..."
@@ -246,6 +248,10 @@ for doc in README.md CHANGELOG.md; do
     fi
     cp "$ROOT_DIR/$doc" "$STAGE_DIR/$doc"
 done
+# Installed without docs/ and port/ beside it: the README's relative
+# links point at the repository at this release's tag instead.
+sh "$PORT_DIR/tools/readme-for-package.sh" "$VERSION" \
+    "$ROOT_DIR/README.md" "$STAGE_DIR/README.md"
 if ! grep -q "^## \[$VERSION\]" "$STAGE_DIR/CHANGELOG.md"; then
     echo "ERROR: CHANGELOG.md has no section for $VERSION" >&2
     exit 1
