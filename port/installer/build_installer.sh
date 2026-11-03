@@ -145,18 +145,14 @@ Version 1.0.6
 
 Copyright (C) 2024-2026 StockFW Project
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+StockFW is free software and comes with no warranty. Its source
+carries two licence texts: the GNU General Public License version 2
+(COPYING) and the Apache License 2.0 (LICENSE). The code it was ported
+from was released under the GNU GPL, version 2 or any later version.
+Which licence covers which part is still being reviewed.
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+This is the same summary the About window shows. Both licence texts
+follow in full at the end of this file.
 
 ---
 
@@ -188,6 +184,17 @@ NSIS (zlib license)
 
 Icons and branding derived from original project assets.
 EOF
+# The licence texts the source carries, in full, after the summary:
+# the installer's licence page is the first licence a user reads, and
+# it must say what the About window says (tests/test-licence-texts.sh).
+for text in COPYING LICENSE; do
+    if [ ! -s "$PORT_DIR/../$text" ]; then
+        echo "ERROR: $text is missing from the source tree" >&2
+        exit 1
+    fi
+    printf '\n---\n\n%s\n\n' "$text" >> "$STAGE_DIR/LICENSE.txt"
+    cat "$PORT_DIR/../$text" >> "$STAGE_DIR/LICENSE.txt"
+done
 
 # 7. Copy documentation
 echo "[7/7] Copying documentation..."

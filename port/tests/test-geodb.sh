@@ -1,6 +1,6 @@
 #!/bin/bash
 # The location database reader (src/core/fs-geodb.c, 1.0.7 design
-# section 11) against libloc itself, IPFire's own database, the xz tool,
+# section 12) against libloc itself, IPFire's own database, the xz tool,
 # the downloader and a coverage-guided fuzzer.
 #
 #   tests/test-geodb.sh            everything below

@@ -24,12 +24,15 @@
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-statusview.h"
+#include "ui/fs-intelview.h"
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-icons.h"
 #include "ui/fs-tray.h"
+#include "ui/fs-policyview.h"
 #include "core/fs-apply.h"
 #include "core/fs-backend.h"
+#include "core/fs-blocktally.h"
 #include "core/fs-intel.h"
 #include "core/fs-netplace.h"
 #include "core/fs-util.h"
@@ -468,6 +471,19 @@ update_overview (void)
 
 		if (current_state == FS_FW_LOCKED || policy_locked)
 			g_string_append (body, _(" Policy changes are locked."));
+
+		/* The blocklists, as the Threat Intel page last read them:
+		 * "not in force" with the platform's reason, never folded
+		 * into "protected" [S10]. */
+		{
+			gchar *intel = fs_intelview_summary ();
+
+			if (intel != NULL) {
+				g_string_append_c (body, ' ');
+				g_string_append (body, intel);
+				g_free (intel);
+			}
+		}
 	} else if (current_state == FS_FW_STOPPED) {
 		level = FS_VERDICT_BAD;
 		icon = FS_ICON_SHIELD_X;
@@ -660,6 +676,9 @@ refresh_place (gboolean rejudge)
 		                         FS_PROFILE_BIT (i)) != 0);
 	}
 
+	if (changed)
+		fs_tray_set_firewall (current_state,
+		                      fs_network_place_kind (net_place));
 	if (rejudge && changed)
 		update_overview ();
 }
@@ -832,6 +851,15 @@ fs_statusview_note_block (const FsHit *hit)
 		recent_block_free (g_queue_pop_tail (&recent));
 
 	rebuild_recent ();
+
+	/* The tray's "Blocked today" and its Recent blocks. */
+	{
+		GDateTime *now = g_date_time_new_now_local ();
+
+		fs_block_tally_note (hit, now);
+		g_date_time_unref (now);
+	}
+	fs_tray_refresh ();
 }
 
 gchar **
@@ -1296,6 +1324,12 @@ on_conn_toggle (GtkButton *button, gpointer data)
 }
 
 void
+fs_statusview_intel_changed (void)
+{
+	update_overview ();
+}
+
+void
 fs_statusview_refresh (void)
 {
 	refresh_network ();
@@ -1347,6 +1381,9 @@ typedef struct
 	gchar   *hold;
 	gchar   *error;   /* set by the worker; NULL when they followed */
 	gchar   *notes;
+	gchar   *not_in_force; /* applied, but the firewall does not
+	                        * enforce them (Windows: off for the
+	                        * profile in use): why */
 } IntelJob;
 
 static GThreadPool *intel_pool;
@@ -1358,6 +1395,7 @@ intel_job_free (IntelJob *job)
 	g_free (job->hold);
 	g_free (job->error);
 	g_free (job->notes);
+	g_free (job->not_in_force);
 	g_free (job);
 }
 
@@ -1378,8 +1416,18 @@ intel_job_done (gpointer data)
 			: _("The firewall stopped, but its blocklists could not "
 			    "be removed"), text);
 		g_free (text);
+	} else if (job->not_in_force != NULL) {
+		/* Applied, and blocking nothing: said as plainly as a
+		 * failure, never left to read as "in force" [S10]. */
+		fs_dialogs_error (NULL, _("The firewall started, but its "
+		                          "blocklists are not in force"),
+		                  job->not_in_force);
 	}
 	intel_job_free (job);
+	/* The engine's state changed (Stop took the lists down, Start put
+	 * them back): the Overview and the tray read it again now, not at
+	 * the Threat Intel page's next tick (review T1). */
+	fs_intelview_refresh ();
 	return G_SOURCE_REMOVE;
 }
 
@@ -1396,7 +1444,15 @@ intel_job_run (gpointer data, gpointer user_data)
 		                                     job->hold, &error);
 
 		if (o != NULL && o->result == FS_APPLY_FAILED && error == NULL)
+#ifdef G_OS_WIN32
+			job->error = g_strdup (_("Windows Firewall does not hold "
+			                         "them."));
+#else
 			job->error = g_strdup (_("The kernel does not hold them."));
+#endif
+		if (o != NULL && o->result == FS_APPLY_OK &&
+		    o->not_in_force != NULL)
+			job->not_in_force = g_strdup (o->not_in_force);
 		if (o != NULL && o->notes != NULL && o->notes->len > 0) {
 			GString *notes = g_string_new (NULL);
 
@@ -1423,7 +1479,10 @@ fs_statusview_intel_follow (gboolean start, const gchar *source)
 
 	job->start = start;
 	job->source = g_strdup (source);
-	job->hold = g_strdup (fs_apply_hold_reason ());
+	/* The same hold as every apply the page makes: audit-only mode,
+	 * or the Overview's Lock.  A Start under the Lock leaves the lists
+	 * not loaded rather than load a change the Lock was holding. */
+	job->hold = g_strdup (fs_intelview_hold_reason ());
 	/* One thread at most: the jobs run in the order pushed. */
 	if (intel_pool == NULL)
 		intel_pool = g_thread_pool_new (intel_job_run, NULL, 1, FALSE,
@@ -1431,48 +1490,175 @@ fs_statusview_intel_follow (gboolean start, const gchar *source)
 	g_thread_pool_push (intel_pool, job, NULL);
 }
 
-static void
-do_start (void)
+/* [ fs_statusview_firewall_start ] -- see fs-statusview.h.  Through
+ * the start gate, so the Start button, the tray's Resume and the start
+ * on launch are held, refused and audited the same way. */
+gboolean
+fs_statusview_firewall_start (GtkWidget *parent, const gchar *source)
 {
+	const FsBackend *backend = fs_backend ();
+	FsApplyOutcome *outcome;
 	GError *error = NULL;
+	gboolean started, had_journal;
 
-	if (!fs_backend ()->start (&error)) {
-		fs_dialogs_error (NULL, _("Failed to start the firewall"),
-		                  error ? error->message : NULL);
-		g_clear_error (&error);
-		return;
+	if (shared_policy == NULL) {
+		/* Never start on a policy nobody loaded: on Linux that
+		 * would install an empty ruleset over the real one. */
+		fs_dialogs_error (parent, _("Failed to start the firewall"),
+		                  _("The policy has not been loaded yet."));
+		return FALSE;
 	}
 
-	fs_statusview_set_state (fs_backend ()->get_state ());
-	fs_statusview_intel_follow (TRUE, "status page");
+	{
+		gchar *journal = fs_apply_journal_path ();
 
-	/* Started, with notes: what the policy in force does not cover
-	 * (a block whose name could not be looked up, IPv6 without
-	 * ip6tables).  The user pressed Start, so this is the moment. */
-	if (fs_backend ()->apply_notes != NULL) {
-		gchar *notes = fs_backend ()->apply_notes ();
-
-		if (notes != NULL)
-			fs_dialogs_info (NULL, _("Firewall started, with notes"),
-			                 notes);
-		g_free (notes);
+		had_journal = g_file_test (journal, G_FILE_TEST_EXISTS);
+		g_free (journal);
 	}
+	outcome = fs_firewall_start_safe (backend, shared_policy,
+	                                  source != NULL ? source : "window",
+	                                  fs_policyview_hold_reason (),
+	                                  &error);
+	started = (outcome->result == FS_APPLY_OK);
+
+	if (outcome->result == FS_APPLY_DRY_RUN) {
+		gchar *why = g_strdup_printf (
+			_("Changes are being held (%s) and no policy has been "
+			  "applied before, so there is nothing safe to start "
+			  "with.  Turn the hold off on the Policy page, then "
+			  "start the firewall."),
+			outcome->hold_reason != NULL ? outcome->hold_reason
+			                             : "");
+
+		fs_dialogs_info (parent, _("The firewall was not started"),
+		                 why);
+		g_free (why);
+	} else if (!started) {
+		fs_dialogs_error (parent, _("Failed to start the firewall"),
+		                  error != NULL ? error->message
+		                  : fs_util_apply_result_to_string (
+		                        (int) outcome->result));
+	} else {
+		fs_statusview_set_state (backend->get_state != NULL
+		                         ? backend->get_state () : FS_FW_NONE);
+		/* The blocklists follow the Start (off the main loop). */
+		fs_statusview_intel_follow (TRUE, source != NULL ? source
+		                                                 : "window");
+
+		if (outcome->held && backend->start_applies_policy) {
+			gchar *why = g_strdup_printf (
+				_("The firewall is running the last policy that "
+				  "was applied.  Changes made since then stay "
+				  "held (%s)."),
+				outcome->hold_reason != NULL
+				? outcome->hold_reason : "");
+
+			fs_dialogs_info (parent,
+			                 _("Firewall started with the last "
+			                   "applied policy"), why);
+			g_free (why);
+		} else if (had_journal && backend->start_applies_policy &&
+		           (outcome->impact->added > 0 ||
+		            outcome->impact->removed > 0)) {
+			/* A start brings back what was applied; saved changes
+			 * that never were stay off until Apply.  Say so, or
+			 * the Policy page reads as if it were in force. */
+			GString *why = g_string_new (
+				_("The firewall is running the last policy that "
+				  "was applied.  Changes saved on the Policy page "
+				  "since then are not in force yet: apply them "
+				  "there to put them live."));
+
+			if (outcome->notes != NULL)
+				g_string_append_printf (why, "\n\n%s",
+				                        outcome->notes);
+			fs_dialogs_info (parent,
+			                 _("Firewall started with the last "
+			                   "applied policy"), why->str);
+			g_string_free (why, TRUE);
+		} else if (outcome->notes != NULL) {
+			/* Started, with notes: what the policy in force does
+			 * not cover (a block whose name could not be looked
+			 * up, IPv6 without ip6tables).  The user pressed
+			 * Start, so this is the moment. */
+			fs_dialogs_info (parent,
+			                 _("Firewall started, with notes"),
+			                 outcome->notes);
+		}
+	}
+
+	g_clear_error (&error);
+	fs_apply_outcome_free (outcome);
+	return started;
 }
 
-static void
-do_stop (void)
+/* [ fs_statusview_stop_consequence ] -- see fs-statusview.h. */
+const gchar *
+fs_statusview_stop_consequence (void)
 {
-	GError *error = NULL;
+	if (fs_backend ()->start_applies_policy)
+		return _("StockFW takes its rules out of the firewall.  Until "
+		         "you resume, the ports and addresses your policy "
+		         "blocks are no longer blocked.\n\nEvent monitoring "
+		         "keeps running.  Resume protection puts the policy "
+		         "back.");
 
-	if (!fs_backend ()->stop (&error)) {
-		fs_dialogs_error (NULL, _("Failed to stop the firewall"),
+	return _("Windows Defender Firewall is switched off for every "
+	         "network profile (Domain, Private and Public).  Until you "
+	         "resume, nothing is filtered.\n\nYour rules are kept.  "
+	         "Resume protection switches the profiles back on.");
+}
+
+/* [ fs_statusview_firewall_stop ] -- see fs-statusview.h. */
+gboolean
+fs_statusview_firewall_stop (GtkWidget *parent, const gchar *source)
+{
+	const FsBackend *backend = fs_backend ();
+	GtkWidget *dialog, *button;
+	GError *error = NULL;
+	gint response;
+
+	dialog = gtk_message_dialog_new (parent != NULL
+	                                 ? GTK_WINDOW (parent) : NULL,
+	                                 GTK_DIALOG_MODAL,
+	                                 GTK_MESSAGE_WARNING,
+	                                 GTK_BUTTONS_NONE,
+	                                 "%s", _("Pause protection?"));
+	gtk_window_set_title (GTK_WINDOW (dialog), _("Pause protection"));
+	gtk_message_dialog_format_secondary_text (
+		GTK_MESSAGE_DIALOG (dialog), "%s",
+		fs_statusview_stop_consequence ());
+	gtk_dialog_add_button (GTK_DIALOG (dialog), _("_Cancel"),
+	                       GTK_RESPONSE_CANCEL);
+	button = gtk_dialog_add_button (GTK_DIALOG (dialog),
+	                                _("_Pause protection"),
+	                                GTK_RESPONSE_ACCEPT);
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "destructive-action");
+	/* Enter must not switch a firewall off: Cancel is the default. */
+	gtk_dialog_set_default_response (GTK_DIALOG (dialog),
+	                                 GTK_RESPONSE_CANCEL);
+	gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+
+	response = gtk_dialog_run (GTK_DIALOG (dialog));
+	gtk_widget_destroy (dialog);
+
+	if (response != GTK_RESPONSE_ACCEPT)
+		return FALSE;
+
+	if (!fs_firewall_stop_logged (backend,
+	                              source != NULL ? source : "window",
+	                              &error)) {
+		fs_dialogs_error (parent, _("Failed to stop the firewall"),
 		                  error ? error->message : NULL);
 		g_clear_error (&error);
-		return;
+		return FALSE;
 	}
 
-	fs_statusview_set_state (fs_backend ()->get_state ());
-	fs_statusview_intel_follow (FALSE, "status page");
+	fs_statusview_set_state (backend->get_state != NULL
+	                         ? backend->get_state () : FS_FW_NONE);
+	fs_statusview_intel_follow (FALSE, source != NULL ? source : "window");
+	return TRUE;
 }
 
 static void
@@ -1482,9 +1668,13 @@ on_power_clicked (GtkButton *button, gpointer data)
 	(void) data;
 
 	if (state_is_running (current_state))
-		do_stop ();
+		fs_statusview_firewall_stop (gtk_widget_get_toplevel (
+		                                 GTK_WIDGET (button)),
+		                             "window");
 	else
-		do_start ();
+		fs_statusview_firewall_start (gtk_widget_get_toplevel (
+		                                  GTK_WIDGET (button)),
+		                              "window");
 }
 
 static void
@@ -1539,35 +1729,21 @@ fs_statusview_policy_locked (void)
 	return policy_locked;
 }
 
-/* [ state_to_text ] -- the tray tooltip's sentence. */
-static const gchar *
-state_to_text (FsFirewallState state)
-{
-	switch (state) {
-	case FS_FW_STOPPED: return _("The firewall is stopped");
-	case FS_FW_RUNNING: return _("The firewall is running");
-	case FS_FW_LOCKED:  return _("The firewall is locked");
-	case FS_FW_HIT:     return _("The firewall has been hit");
-	case FS_FW_NONE:
-	default:            return _("Firewall state is unknown");
-	}
-}
-
 void
 fs_statusview_set_state (FsFirewallState state)
 {
 	current_state = state;
-
-	/* The tray tooltip carries the same sentence, so the background
-	 * app answers a glance even while the window is hidden.  No icon
-	 * up: fs-tray.c keeps the text for the next one. */
-	fs_tray_set_state (state_to_text (state));
 
 	sync_lock_button ();
 	refresh_profiles ();
 	/* Re-read the place without judging: refresh_ipv6 judges next,
 	 * with everything fresh. */
 	refresh_place (FALSE);
+
+	/* The tray's header and tooltip carry the same state, so the
+	 * background app answers a glance while the window is hidden.  No
+	 * icon up: fs-tray.c keeps it for the next one. */
+	fs_tray_set_firewall (state, fs_network_place_kind (net_place));
 	fs_statusview_refresh_ipv6 ();
 }
 
@@ -1593,6 +1769,29 @@ FsFirewallState
 fs_statusview_get_state (void)
 {
 	return current_state;
+}
+
+/* [ fs_statusview_reread_state ] -- see fs-statusview.h. */
+void
+fs_statusview_reread_state (void)
+{
+	const FsBackend *backend = fs_backend ();
+	FsFirewallState now;
+
+	if (backend->get_state == NULL)
+		return;
+
+	now = backend->get_state ();
+	if (now == FS_FW_RUNNING && policy_locked)
+		now = FS_FW_LOCKED;
+
+	/* On either way: keep the finer state this page already shows
+	 * (locked, hit) rather than flatten it. */
+	if (now == current_state ||
+	    (state_is_running (now) && state_is_running (current_state)))
+		return;
+
+	fs_statusview_set_state (now);
 }
 
 /* ------------------------------------------------------------------ page */

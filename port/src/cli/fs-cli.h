@@ -22,11 +22,35 @@
 #include <glib.h>
 #include "core/fs-backend.h"
 #include "core/fs-rules.h"
+#include "core/fs-whatif.h"
 
 G_BEGIN_DECLS
 
 #ifndef FS_VERSION
 #define FS_VERSION "1.0.6"
+#endif
+
+/* Where the blocklists are enforced, and how a command gets the rights
+ * to change them, in the words of the platform this is built for (every
+ * command's text, fs-cli-cmds.c and fs-cli-intel.c; review T5).  The
+ * CLI is built on Linux only (CMakeLists.txt), but its text must stay
+ * true if it is built elsewhere: on Windows the rules are Windows
+ * Firewall rules and there is no sudo (an elevated prompt instead). */
+#ifdef __linux__
+#define FS_CLI_LIVE      "the kernel"
+#define FS_CLI_LIVE_CAP  "The kernel"
+#define FS_CLI_SUDO      "sudo "
+#define FS_CLI_RIGHTS    "run it with sudo"
+#elif defined G_OS_WIN32
+#define FS_CLI_LIVE      "Windows Firewall"
+#define FS_CLI_LIVE_CAP  "Windows Firewall"
+#define FS_CLI_SUDO      ""
+#define FS_CLI_RIGHTS    "run it from a prompt opened as administrator"
+#else
+#define FS_CLI_LIVE      "the firewall"
+#define FS_CLI_LIVE_CAP  "The firewall"
+#define FS_CLI_SUDO      ""
+#define FS_CLI_RIGHTS    "run it with administrator rights"
 #endif
 
 /* Exit codes. */
@@ -36,7 +60,11 @@ enum
 	FS_EXIT_FAILURE   = 1,
 	FS_EXIT_USAGE     = 2,
 	FS_EXIT_NEED_ROOT = 3,
-	FS_EXIT_BLOCKED   = 5    /* simulate: the traffic would be blocked */
+	FS_EXIT_BLOCKED   = 5,   /* simulate: the traffic would be blocked;
+	                          * intel lookup: a list blocks the address */
+	FS_EXIT_DEPENDS   = 6    /* simulate: allowed in some cases, blocked
+	                          * in others (never 0: scripts that branch
+	                          * on "allowed" must not take it as yes) */
 };
 
 /* Global output switches, set once by main. */
@@ -82,6 +110,19 @@ void fs_cli_print_json (GString *json);
  * Sets *on_disk to FALSE when no rule file exists yet. */
 FsPolicy *fs_cli_load_policy (gboolean *on_disk, gint *malformed);
 
+/* One What-If line answered against the saved policy and Firewall
+ * preferences, with what the backend can tell about the firewall
+ * (unknown without root) and whether the policy is the applied one.
+ * assume_running answers as if the firewall ran.  Never NULL; free
+ * with fs_whatif_result_free. */
+FsWhatIfResult *fs_cli_whatif (const gchar *line, gboolean assume_running);
+
+/* The answer as one JSON object: the flat fields the dashboard reads
+ * (verdict, direction, protocol, port, remote, rule, reason,
+ * suggestion) and every direction in full (trace, cases, actions). */
+void fs_cli_whatif_json (GString *out, const FsWhatIfResult *result,
+                         const gchar *input);
+
 /* Command-line names for rule kinds: "inbound-allow-service" ... */
 const gchar *fs_cli_kind_name  (FsRuleKind kind);
 gboolean     fs_cli_kind_parse (const gchar *name, FsRuleKind *kind);
@@ -99,6 +140,17 @@ gchar *fs_cli_rule_summary (const FsRule *rule);
 GPtrArray *fs_cli_log_history (guint max_lines, gint64 *complete_from,
                                GError **error);
 
+/* The uniform refusal for a command that needs root: prints the
+ * error and a sudo hint, returns FS_EXIT_NEED_ROOT. */
+gint fs_cli_need_root (const gchar *what);
+
+/* Threat intel (fs-cli-intel.c), for `stockfw status' and the
+ * dashboard: one JSON object {state, detail, master, hold, lists[]}
+ * (lists: the sources turned on, when with_sources), and the status
+ * line "  Threat intel  enforced  (...)".  Neither creates the store. */
+void fs_cli_intel_json        (GString *out, gboolean with_sources);
+void fs_cli_intel_status_line (void);
+
 /* ---------------------------------------------------------- commands */
 
 typedef gint (*FsCliCommand) (gint argc, gchar **argv);
@@ -113,6 +165,7 @@ gint fs_cli_cmd_events      (gint argc, gchar **argv);
 gint fs_cli_cmd_connections (gint argc, gchar **argv);
 gint fs_cli_cmd_interfaces  (gint argc, gchar **argv);
 gint fs_cli_cmd_dashboard   (gint argc, gchar **argv);
+gint fs_cli_cmd_intel       (gint argc, gchar **argv);
 
 /* Per-command help text (NULL for an unknown command). */
 const gchar *fs_cli_command_help (const gchar *command);

@@ -6,30 +6,35 @@
  * the original stockfw.c with a plain GtkApplication.
  *
  * Layout (1.0.7 redesign): a dark sidebar on the left -- the logo on a
- * light tile, one item per page, Preferences and About, and the
+ * light tile, one item per page, Preferences, Help and About, and the
  * firewall's verdict at the bottom -- and the selected page on the
  * right.  The pages live in a GtkNotebook whose own tabs are hidden;
- * the sidebar items stand in for them.  There is no menubar: its three
- * entries (Preferences, About, Quit) are the sidebar's footer items and
- * the Ctrl+, / Ctrl+Q shortcuts.
+ * the sidebar items stand in for them.  There is no menubar: its
+ * entries (Preferences, Help, About, Quit) are the sidebar's footer
+ * items and the Ctrl+, / F1 / Ctrl+Q shortcuts.  F1 opens the Help
+ * topic for the page shown.
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-helpwindow.h"
 #include "ui/fs-statusview.h"
 #include "ui/fs-policyview.h"
 #include "ui/fs-hitview.h"
 #include "ui/fs-activityview.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-trustview.h"
+#include "ui/fs-intelview.h"
 #include "ui/fs-tray.h"
 #include "ui/fs-icons.h"
+#include "core/fs-apply.h"
 #include "core/fs-backend.h"
 #include "core/fs-prefs.h"
 #include "core/fs-rules.h"
 #include "core/fs-script.h"
 #include "core/fs-copilot.h"
 #include "core/fs-trust.h"
+#include "core/fs-util.h"
 #include "core/fs-i18n.h"
 #include "stockfw-logo-32.h"
 #include "stockfw-logo-64.h"
@@ -37,6 +42,11 @@
 #include "fs-theme-css.h"        /* generated from src/ui/fs-theme.css */
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
+
+#ifdef G_OS_WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>             /* MSG, WM_QUERYENDSESSION */
+#endif
 
 static FsApp fsapp = { NULL, NULL, NULL };
 
@@ -181,11 +191,34 @@ on_action_preferences (GSimpleAction *action, GVariant *parameter, gpointer data
 	fs_dialogs_preferences (fsapp.window);
 }
 
+/* [ show_help ]
+ * The Help window, at the topic for the page shown. */
+static void
+show_help (void)
+{
+	gint page = fsapp.notebook != NULL
+	          ? gtk_notebook_get_current_page (GTK_NOTEBOOK (fsapp.notebook))
+	          : -1;
+
+	fs_help_show (fsapp.window, fs_help_topic_for_page (page));
+}
+
+/* [ on_action_help ]
+ * "app.help" (F1) */
+static void
+on_action_help (GSimpleAction *action, GVariant *parameter, gpointer data)
+{
+	(void) action;
+	(void) parameter;
+	(void) data;
+	show_help ();
+}
+
 /* [ register_actions ] */
 static void
 register_actions (void)
 {
-	GSimpleAction *quit, *about, *preferences;
+	GSimpleAction *quit, *about, *preferences, *help;
 
 	quit = g_simple_action_new ("quit", NULL);
 	g_signal_connect (quit, "activate", G_CALLBACK (on_action_quit), NULL);
@@ -202,16 +235,24 @@ register_actions (void)
 	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (preferences));
 	g_object_unref (preferences);
 
+	help = g_simple_action_new ("help", NULL);
+	g_signal_connect (help, "activate", G_CALLBACK (on_action_help), NULL);
+	g_action_map_add_action (G_ACTION_MAP (fsapp.app), G_ACTION (help));
+	g_object_unref (help);
+
 	/* The menubar these used to live in is gone; the shortcuts stay. */
 	{
 		const gchar *quit_keys[] = { "<Primary>q", NULL };
 		const gchar *pref_keys[] = { "<Primary>comma", NULL };
+		const gchar *help_keys[] = { "F1", NULL };
 
 		gtk_application_set_accels_for_action (fsapp.app, "app.quit",
 		                                       quit_keys);
 		gtk_application_set_accels_for_action (fsapp.app,
 		                                       "app.preferences",
 		                                       pref_keys);
+		gtk_application_set_accels_for_action (fsapp.app, "app.help",
+		                                       help_keys);
 	}
 }
 
@@ -338,6 +379,18 @@ fs_app_show_page (FsAppPage page)
 	                               (gint) page);
 }
 
+FsAppPage
+fs_app_current_page (void)
+{
+	gint page;
+
+	if (fsapp.notebook == NULL)
+		return FS_PAGE_COUNT;
+	page = gtk_notebook_get_current_page (GTK_NOTEBOOK (fsapp.notebook));
+	return page >= 0 && page < FS_PAGE_COUNT ? (FsAppPage) page
+	                                         : FS_PAGE_COUNT;
+}
+
 /* [ on_page_switched ] -- keep the sidebar in step with the notebook. */
 static void
 on_page_switched (GtkNotebook *notebook, GtkWidget *page, guint page_num,
@@ -379,6 +432,14 @@ on_nav_preferences (GtkButton *button, gpointer data)
 	(void) button;
 	(void) data;
 	fs_dialogs_preferences (fsapp.window);
+}
+
+static void
+on_nav_help (GtkButton *button, gpointer data)
+{
+	(void) button;
+	(void) data;
+	show_help ();
 }
 
 static void
@@ -434,6 +495,7 @@ build_sidebar (void)
 		{ FS_ICON_LIST,         N_("Events") },
 		{ FS_ICON_ACTIVITY,     N_("Activity") },
 		{ FS_ICON_SLIDERS,      N_("Policy") },
+		{ FS_ICON_SHIELD_X,     N_("Threat Intel") },
 		{ FS_ICON_CHAT,         N_("Copilot") },
 		{ FS_ICON_CHECK_CIRCLE, N_("Trust") },
 	};
@@ -503,7 +565,7 @@ build_sidebar (void)
 	spacer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
 	gtk_box_pack_start (GTK_BOX (bar), spacer, TRUE, TRUE, 0);
 
-	/* ---- Preferences, About ---- */
+	/* ---- Preferences, Help, About ---- */
 	{
 		GtkWidget *item;
 
@@ -512,6 +574,13 @@ build_sidebar (void)
 		gtk_widget_set_tooltip_text (item, _("Preferences (Ctrl+,)"));
 		g_signal_connect (item, "clicked",
 		                  G_CALLBACK (on_nav_preferences), NULL);
+		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
+
+		item = nav_button (gtk_button_new (), FS_ICON_HELP, _("Help"));
+		gtk_widget_set_name (item, "nav-help");
+		gtk_widget_set_tooltip_text (item, _("Help (F1)"));
+		g_signal_connect (item, "clicked", G_CALLBACK (on_nav_help),
+		                  NULL);
 		gtk_box_pack_start (GTK_BOX (bar), item, FALSE, FALSE, 0);
 
 		item = nav_button (gtk_button_new (), FS_ICON_INFO,
@@ -597,10 +666,373 @@ app_trust_signature (const gchar *path, FsTrustSignature *sig,
 	return backend->trust_signature (path, sig, publisher);
 }
 
+/* What holds a blocklist apply besides audit-only mode: the Overview's
+ * Lock, as it holds the policy.  English, like fs_apply_hold_reason():
+ * the audit line records it verbatim. */
+static const gchar *
+app_intel_hold (void)
+{
+	return fs_statusview_policy_locked ()
+	       ? "the policy is locked on the Overview" : NULL;
+}
+
+/* [ fs_app_can_change_firewall ] -- see fs-app.h. */
+gboolean
+fs_app_can_change_firewall (void)
+{
+	const FsBackend *backend = fs_backend ();
+
+	if (backend->available == NULL || !backend->available ())
+		return FALSE;
+#ifdef G_OS_WIN32
+	/* The Windows backend reads the firewall without elevation, so
+	 * "available" is not "may change it": that takes an elevated
+	 * token.  On Linux available() already means root. */
+	return fs_util_privileged ();
+#else
+	return TRUE;
+#endif
+}
+
+/* [ start_at_launch ]
+ * "Start the firewall on program startup", once the policy is really
+ * loaded and Sentinel's restore has taken its expired rows out.  The
+ * start goes through the start gate, so audit-only mode and the Policy
+ * Lock hold it exactly as they hold an apply, it is audited, and on
+ * Linux it installs the last APPLIED policy (the journal), never
+ * changes in the file that nobody applied.  A failure is not fatal:
+ * the window still opens and the state line reports what actually
+ * happened.
+ *
+ * `due': the Sentinel blocks whose ten minutes ran out while StockFW
+ * was closed.  The firewall may still hold them.  A start leaves them
+ * out of what it installs; otherwise only THEIR removal is pushed
+ * (fs_firewall_lift_live: the journal less those rules) -- and only
+ * by a copy that may change the firewall, and on Linux only while the
+ * firewall runs, because there an apply IS a start, and a firewall the
+ * user left stopped must not start behind their back.  The policy
+ * file is never what gets pushed here: it may hold an allow nobody
+ * applied. */
+static void
+start_at_launch (const FsPolicy *due)
+{
+	const FsBackend *backend = fs_backend ();
+	gboolean installed = FALSE, any_due = FALSE;
+
+	for (gint k = 0; due != NULL && k < FS_RULE_N_KINDS; k++)
+		if (due->kinds[k]->len > 0)
+			any_due = TRUE;
+
+	if (fs_prefs_bool (FS_PREFS_START_ON_GUI) &&
+	    fs_app_can_change_firewall ()) {
+		GError *error = NULL;
+		FsApplyOutcome *outcome;
+
+		outcome = fs_firewall_start_lifting (backend, policy, due,
+		                                     "start on program startup",
+		                                     fs_policyview_hold_reason (),
+		                                     &error);
+		installed = outcome->applied;
+		/* Started: the blocklists follow, through their own gate
+		 * (off the main loop; nothing where none was turned on). */
+		if (outcome->result == FS_APPLY_OK)
+			fs_statusview_intel_follow (TRUE, "start on open");
+		g_clear_error (&error);
+		fs_apply_outcome_free (outcome);
+	}
+
+	if (any_due && !installed && fs_app_can_change_firewall () &&
+	    (!backend->start_applies_policy ||
+	     (backend->get_state != NULL &&
+	      backend->get_state () == FS_FW_RUNNING))) {
+		GError *error = NULL;
+		FsApplyOutcome *outcome;
+
+		outcome = fs_firewall_lift_live (backend, due,
+		                                 "sentinel auto-block expired",
+		                                 fs_policyview_hold_reason (),
+		                                 &error);
+		if (outcome != NULL)
+			fs_apply_outcome_free (outcome);
+		g_clear_error (&error);
+	}
+}
+
+/* --------------------------------------------------------- hidden start
+ *
+ * --background: the window stays hidden behind the tray icon -- but
+ * only once the shell has really embedded that icon.  Embedding is
+ * asynchronous (X11 docks it when the tray answers; Windows when
+ * Explorer's notification area is up), so the window waits up to
+ * HIDDEN_START_WAIT_S for it and is shown if it never comes: a hidden
+ * window with no icon would leave a running firewall front-end nobody
+ * can reach. */
+
+#define HIDDEN_START_WAIT_S 5
+
+static gboolean start_hidden = FALSE;
+static guint    hidden_timeout = 0;
+static gulong   hidden_embed_handler = 0;
+
+static void
+hidden_start_end (void)
+{
+	GtkStatusIcon *icon = fs_tray_icon ();
+
+	if (hidden_timeout != 0) {
+		g_source_remove (hidden_timeout);
+		hidden_timeout = 0;
+	}
+	if (hidden_embed_handler != 0) {
+		if (icon != NULL)
+			g_signal_handler_disconnect (icon,
+			                             hidden_embed_handler);
+		hidden_embed_handler = 0;
+	}
+}
+
+/* [ hidden_start_give_up ] -- no icon in time: show the window. */
+static gboolean
+hidden_start_give_up (gpointer data)
+{
+	(void) data;
+
+	hidden_timeout = 0;
+	hidden_start_end ();
+
+	if (!fs_tray_active ()) {
+		g_message ("StockFW: no notification area took the icon "
+		           "within %d s; showing the window instead of "
+		           "staying hidden", HIDDEN_START_WAIT_S);
+		gtk_widget_show (fsapp.window);
+	}
+	return G_SOURCE_REMOVE;
+}
+
+static void
+on_hidden_icon_embedded (GObject *icon, GParamSpec *pspec, gpointer data)
+{
+	(void) icon;
+	(void) pspec;
+	(void) data;
+
+	/* Docked: the window may stay hidden; nothing more to wait for. */
+	if (fs_tray_active ())
+		hidden_start_end ();
+}
+
+static void
+hidden_start_begin (void)
+{
+	GtkStatusIcon *icon = fs_tray_icon ();
+
+	if (icon == NULL) {
+		/* "Show a tray icon" is off: nothing to hide behind. */
+		gtk_widget_show (fsapp.window);
+		return;
+	}
+	if (fs_tray_active ())
+		return;
+
+	hidden_embed_handler = g_signal_connect (
+		icon, "notify::embedded",
+		G_CALLBACK (on_hidden_icon_embedded), NULL);
+	hidden_timeout = g_timeout_add_seconds (HIDDEN_START_WAIT_S,
+	                                        hidden_start_give_up, NULL);
+}
+
+/*---[ session safety (1.0.7) ]-----------------------------------------
+ * A copy that lives in the notification area for weeks is ended by a
+ * sign-out, a shutdown or a kill far more often than by its Quit item,
+ * and what the user set and what the Copilot learned must not depend
+ * on that item.  So:
+ *
+ *   - every AUTOSAVE_S the settings and the Copilot baseline are
+ *     written if they changed since the last write, and a Sentinel
+ *     staged-list write that failed is retried (that list is otherwise
+ *     written on every stage and retire);
+ *   - the session manager's query-end (register-session, main.c) and
+ *     Windows' WM_QUERYENDSESSION write everything at once.  Neither
+ *     asks to delay the sign-out: there is nothing here worth holding
+ *     a user's logout for, and the firewall runs without us;
+ *   - SIGTERM, SIGINT and SIGHUP quit through fs_app_quit() (main.c).
+ *
+ * None of this touches the firewall: it stays as it is.
+ * STOCKFW_AUTOSAVE_S shortens the period for the tests. */
+
+#define AUTOSAVE_S 300
+
+static guint    autosave_id = 0;
+static gboolean baseline_dirty = FALSE;
+static gboolean quit_started = FALSE;
+#ifdef G_OS_WIN32
+static gboolean session_ending = FALSE;
+#endif
+
+void
+fs_app_note_learning (void)
+{
+	baseline_dirty = TRUE;
+}
+
+/* [ save_state ] -- `everything' writes the settings and the baseline
+ * whether or not they changed (quit, end of session); otherwise only
+ * what changed since the last write.  Best effort throughout: each
+ * writer reports its own failure, and a baseline that could not be
+ * written stays dirty for the next round. */
+static void
+save_state (gboolean everything)
+{
+	if (everything || fs_prefs_dirty ())
+		fs_prefs_save ();
+
+	if (copilot != NULL && (everything || baseline_dirty)) {
+		gchar *path = fs_copilot_baseline_path ();
+
+		if (fs_copilot_baseline_save (copilot, path, NULL))
+			baseline_dirty = FALSE;
+		g_free (path);
+	}
+
+	fs_copilot_autoblocks_flush ();
+}
+
+static guint
+autosave_period (void)
+{
+	const gchar *env = g_getenv ("STOCKFW_AUTOSAVE_S");
+
+	if (env != NULL && *env != '\0') {
+		gchar *end = NULL;
+		guint64 s = g_ascii_strtoull (env, &end, 10);
+
+		if (end != NULL && *end == '\0' && s >= 1 && s <= 86400)
+			return (guint) s;
+	}
+	return AUTOSAVE_S;
+}
+
+static gboolean
+on_autosave (gpointer data)
+{
+	(void) data;
+
+	save_state (FALSE);
+	return G_SOURCE_CONTINUE;
+}
+
+/* [ on_query_end ] -- the session manager is about to end the session.
+ * No gtk_application_inhibit(): see the block comment above. */
+static void
+on_query_end (GtkApplication *app, gpointer data)
+{
+	(void) app;
+	(void) data;
+
+	save_state (TRUE);
+}
+
+/* [ free_state ] -- the policy, the settings and the Copilot.  Only
+ * once the run loop has ended (on_shutdown): the Overview's refresh,
+ * Sentinel's expiry and the backend all hold the same pointers, and a
+ * source that came due in the same loop pass as the quit is still
+ * dispatched after it -- freeing in the quit handed those freed
+ * memory. */
+static void
+free_state (void)
+{
+	if (policy != NULL) {
+		fs_policy_free (policy);
+		policy = NULL;
+	}
+
+	if (settings != NULL) {
+		fs_settings_free (settings);
+		settings = NULL;
+	}
+
+	if (copilot != NULL) {
+		fs_copilot_free (copilot);
+		copilot = NULL;
+	}
+}
+
+/* [ on_shutdown ] -- the run loop has ended, by fs_app_quit() or by
+ * the session manager's Stop, which quits the application directly
+ * (then write what changed since query-end).  Nothing runs after
+ * this: now the shared state may go. */
+static void
+on_shutdown (GApplication *app, gpointer data)
+{
+	(void) app;
+	(void) data;
+
+	if (!quit_started)
+		save_state (FALSE);
+
+	free_state ();
+}
+
+#ifdef G_OS_WIN32
+/* [ on_win32_message ] -- every message to a StockFW window passes
+ * here first.  Windows sends WM_QUERYENDSESSION to each top-level
+ * window before a sign-out or shutdown and WM_ENDSESSION after, and
+ * kills the process soon after that.  CONTINUE always: the default
+ * answer lets the session end. */
+static GdkFilterReturn
+on_win32_message (GdkXEvent *xevent, GdkEvent *event, gpointer data)
+{
+	const MSG *msg = (const MSG *) xevent;
+
+	(void) event;
+	(void) data;
+
+	if (msg->message == WM_QUERYENDSESSION) {
+		/* Once per sign-out, not once per window. */
+		if (!session_ending) {
+			session_ending = TRUE;
+			save_state (TRUE);
+		}
+	} else if (msg->message == WM_ENDSESSION) {
+		if (msg->wParam)
+			save_state (FALSE);
+		else
+			session_ending = FALSE;    /* someone cancelled it */
+	}
+	return GDK_FILTER_CONTINUE;
+}
+#endif
+
+static void
+session_safety_begin (GtkApplication *app)
+{
+	autosave_id = g_timeout_add_seconds (autosave_period (),
+	                                     on_autosave, NULL);
+	g_signal_connect (app, "query-end", G_CALLBACK (on_query_end), NULL);
+	g_signal_connect (app, "shutdown", G_CALLBACK (on_shutdown), NULL);
+
+#ifdef G_OS_WIN32
+	/* WM_QUERYENDSESSION only reaches windows that exist; a hidden
+	 * start never shows (so never creates) the main one.  Realized,
+	 * it exists without being shown. */
+	gtk_widget_realize (fsapp.window);
+	gdk_window_add_filter (NULL, on_win32_message, NULL);
+#endif
+}
+
 void
 fs_app_activate (GtkApplication *app)
 {
 	GtkWidget *box;
+	FsPolicy *due;
+
+	/* Everything below builds static state once: a second activate
+	 * would start a second monitor, a second Sentinel and a second
+	 * tray icon.  It only means "show me". */
+	if (fsapp.window != NULL) {
+		fs_app_present ();
+		return;
+	}
 
 	fsapp.app = GTK_APPLICATION (app);
 
@@ -682,23 +1114,22 @@ fs_app_activate (GtkApplication *app)
 	fs_settings_load_prefs (settings);
 	fs_backend_set_context (policy, settings);
 
-	/* "Start the firewall on program startup".  A failure here is not
-	 * fatal: the window still opens and the state line reports what
-	 * actually happened. */
-	if (fs_prefs_get_bool (FS_PREFS_START_ON_GUI, FALSE) &&
-	    fs_backend ()->available ()) {
-		GError *error = NULL;
+	/* Threat Intel (1.0.7): every blocklist apply -- the page's and
+	 * a Start's -- is held by the Overview's Lock as well as by
+	 * audit-only mode; set before start_at_launch() runs. */
+	fs_intelview_set_hold_func (app_intel_hold);
 
-		if (!fs_backend ()->start (&error))
-			g_clear_error (&error);
-		else
-			fs_statusview_intel_follow (TRUE, "start on open");
-	}
-
+	/* No start here: the policy above is still EMPTY.  The Policy page
+	 * below loads it from disk, Sentinel's restore then reconciles its
+	 * own rows, and only then does start_at_launch() run.  Starting
+	 * here installed a zero-rule policy on Linux (1.0.7 fix). */
 	add_page (_("Policy"),
 	          _("The rules StockFW enforces, and which addresses each "
 	            "one covers."),
 	          fs_policyview_page (policy), FALSE);
+
+	/* Threat Intel (1.0.7): the blocklists. */
+	add_page (_("Threat Intel"), NULL, fs_intelview_page (), FALSE);
 
 	/* Smart Firewall Copilot tab */
 	copilot = fs_copilot_new ();
@@ -725,11 +1156,13 @@ fs_app_activate (GtkApplication *app)
 	/* P6 (false-outage hardening): the Sentinel staged-block list is
 	 * persisted, so a restart must reconcile it -- rows whose ten
 	 * minutes ran out while StockFW was not running come out of the
-	 * policy BEFORE any apply can push them, the rest are re-armed
-	 * with their original clock, and a Sentinel mode that is not
-	 * "auto" lifts the lot.  The page above owns the shared policy
-	 * and the mode cache this reads. */
-	fs_copilot_autoblocks_restore (policy);
+	 * policy BEFORE the start below can install them, the rest are
+	 * re-armed with their original clock, and a Sentinel mode that is
+	 * not "auto" lifts the lot.  The page above owns the shared policy
+	 * and the mode cache this reads; start_at_launch() takes what came
+	 * out to the firewall. */
+	due = fs_policy_new ();
+	fs_copilot_autoblocks_restore (policy, due);
 
 	/* Trust tab: the application trust engine's surface. */
 	add_page (_("Trust"),
@@ -737,7 +1170,13 @@ fs_app_activate (GtkApplication *app)
 	            "whether it has changed since you attested it."),
 	          fs_trustview_page (), FALSE);
 
-	gtk_widget_show_all (fsapp.window);
+	/* Policy loaded, Sentinel reconciled: now the firewall may start. */
+	start_at_launch (due);
+	fs_policy_free (due);
+
+	/* Everything inside the window is shown now; the window itself
+	 * only below, once it is known whether it may stay hidden. */
+	gtk_widget_show_all (box);
 	sync_nav ((guint) gtk_notebook_get_current_page (
 		GTK_NOTEBOOK (fsapp.notebook)));
 
@@ -747,10 +1186,38 @@ fs_app_activate (GtkApplication *app)
 	/* Reflect the real firewall state, if the backend knows it. */
 	fs_statusview_set_state (fs_backend ()->get_state ());
 
-	/* Tray last: the icon reuses the window logo set above, and the
-	 * state call just now already fed the tooltip text. */
+	/* The tray before the window: a hidden start needs the icon up
+	 * first, to come back from.  It reuses the window logo set above,
+	 * and the state call just now already fed the tooltip text. */
 	fs_tray_set_window (GTK_WINDOW (fsapp.window));
 	fs_tray_sync ();
+
+	/* Everything that is saved now exists: save it as it changes. */
+	session_safety_begin (app);
+
+	if (start_hidden)
+		hidden_start_begin ();
+	else
+		gtk_widget_show (fsapp.window);
+}
+
+void
+fs_app_set_start_hidden (gboolean hidden)
+{
+	start_hidden = hidden;
+}
+
+void
+fs_app_present (void)
+{
+	/* Asked for before the window exists: open it visible. */
+	if (fsapp.window == NULL) {
+		start_hidden = FALSE;
+		return;
+	}
+
+	hidden_start_end ();
+	fs_tray_show_window ();
 }
 
 void
@@ -766,37 +1233,148 @@ fs_app_reload_settings (void)
 	fs_tray_sync ();
 }
 
+/* [ settings_swap ]
+ * The apply gate's hook for a settings rollback: the previous settings
+ * into the backend's context for the restore, the saved ones back
+ * afterwards. */
+static void
+settings_swap (gboolean previous, gpointer data)
+{
+	fs_backend_set_context (policy, previous ? (FsSettings *) data
+	                                         : settings);
+}
+
+FsPolicy *
+fs_app_policy (void)
+{
+	return policy;
+}
+
+FsApplyOutcome *
+fs_app_apply_settings (FsPolicy *under, const FsSettings *previous,
+                       const gchar *hold, GError **error)
+{
+	FsSettings *before;
+	FsApplyOutcome *outcome;
+
+	/* No window, no loaded policy: nothing to apply them with, and an
+	 * empty policy is never pushed in its place. */
+	if (under == NULL || policy == NULL || settings == NULL)
+		return NULL;
+
+	before = previous != NULL ? fs_settings_copy (previous)
+	                          : fs_settings_new ();
+	outcome = fs_settings_apply_safe (fs_backend (), under,
+	                                  "preferences", hold,
+	                                  settings_swap, before, error);
+	fs_settings_free (before);
+
+	return outcome;
+}
+
+#ifdef FS_PREFS_FAKE_BACKEND
+void
+fs_app_test_set_context (FsPolicy *test_policy, FsSettings *test_settings)
+{
+	policy = test_policy;
+	settings = test_settings;
+}
+#endif
+
+/* [ cancel_dialogs ] -- answer every open dialog as its close button
+ * would (GTK_RESPONSE_DELETE_EVENT), which ends a gtk_dialog_run()
+ * loop on its caller's "closed, change nothing" path.  The Preferences
+ * window is no GtkDialog but runs a loop of its own: it is cancelled
+ * the same way (nothing saved), or the quit would wait for it. */
+static void
+cancel_dialogs (void)
+{
+	GList *tops = gtk_window_list_toplevels ();
+	GList *l;
+
+	fs_dialogs_preferences_cancel ();
+
+	/* A response handler may destroy other windows in the list. */
+	for (l = tops; l != NULL; l = l->next)
+		g_object_ref (l->data);
+	for (l = tops; l != NULL; l = l->next) {
+		if (GTK_IS_DIALOG (l->data) &&
+		    gtk_widget_get_visible (GTK_WIDGET (l->data)))
+			gtk_dialog_response (GTK_DIALOG (l->data),
+			                     GTK_RESPONSE_DELETE_EVENT);
+	}
+	g_list_free_full (tops, g_object_unref);
+}
+
+static void quit_finish (void);
+
+static gboolean
+quit_when_unwound (gpointer data)
+{
+	(void) data;
+
+	if (g_main_depth () > 1)
+		return G_SOURCE_CONTINUE;
+
+	quit_finish ();
+	return G_SOURCE_REMOVE;
+}
+
+/* [ fs_app_quit ]
+ * The tray's Quit, the window's close button without a tray, --quit
+ * from another launch, and SIGTERM/SIGINT/SIGHUP all end here.  The
+ * firewall is left as it is.
+ *
+ * A quit can arrive while a dialog runs its own loop: a signal or
+ * --quit is dispatched by whatever loop is running.  In that case the
+ * state is saved and the icon taken down at once, the dialogs are
+ * closed, and the rest waits for the outer loop.  Nothing is freed
+ * before the run loop has ended (on_shutdown): a dialog's caller, or
+ * a timer due in the same loop pass, still finds everything in
+ * place. */
 void
 fs_app_quit (void)
 {
+	if (quit_started)
+		return;
+	quit_started = TRUE;
+
+	if (autosave_id != 0) {
+		g_source_remove (autosave_id);
+		autosave_id = 0;
+	}
+
 	/* Icon down first: a tray icon that outlives the program is a
 	 * dead icon that still looks clickable. */
 	fs_tray_uninstall ();
 
-	fs_prefs_save ();
+	/* Settings, the Copilot baseline (best effort: an unsaved
+	 * baseline only costs relearning, never a wrong rule or a lost
+	 * audit line) and a staged list still owed to its file. */
+	save_state (TRUE);
 
-	if (policy != NULL) {
-		fs_policy_free (policy);
-		policy = NULL;
+	if (g_main_depth () > 1) {
+		cancel_dialogs ();
+		g_timeout_add (100, quit_when_unwound, NULL);
+		return;
 	}
 
-	if (settings != NULL) {
-		fs_settings_free (settings);
-		settings = NULL;
-	}
+	quit_finish ();
+}
 
-	if (copilot != NULL) {
-		/* Best effort: an unsaved baseline only costs relearning,
-		 * never a wrong rule or a lost audit line. */
-		gchar *baseline = fs_copilot_baseline_path ();
+static void
+quit_finish (void)
+{
+	GApplication *app = fsapp.app != NULL ? G_APPLICATION (fsapp.app)
+	                                      : g_application_get_default ();
 
-		fs_copilot_baseline_save (copilot, baseline, NULL);
-		g_free (baseline);
+	/* Whatever changed while the dialogs closed. */
+	save_state (FALSE);
 
-		fs_copilot_free (copilot);
-		copilot = NULL;
-	}
-
-	if (fsapp.app != NULL)
-		g_application_quit (G_APPLICATION (fsapp.app));
+	/* Nothing is freed here: sources already due in this loop pass
+	 * still run after us.  on_shutdown() frees once the loop is over.
+	 * Through the default application too: a signal can come before
+	 * activate has recorded ours. */
+	if (app != NULL)
+		g_application_quit (app);
 }

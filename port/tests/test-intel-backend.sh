@@ -401,7 +401,7 @@ cat > "$W/usurp/nft" <<EOF
 #!/bin/bash
 # Loads, then something else replaces the table at once, with a
 # digest on the table and on its input chain, where the live check
-# reads it (design 12.7).
+# reads it (design 13.7).
 case " \$* " in *" -f "*) ;; *) exec "$REAL_NFT" "\$@" ;; esac
 "$REAL_NFT" "\$@" || exit
 printf 'table inet stockfw_intel {}\ndelete table inet stockfw_intel\ntable inet stockfw_intel {\n\tcomment "sfw:00000000000000000000000000000000"\n\tchain input {\n\t\ttype filter hook input priority filter - 10; policy accept;\n\t\tcomment "sfw:00000000000000000000000000000000"\n\t}\n}\n' | "$REAL_NFT" -f -
@@ -474,13 +474,18 @@ drv clear >/dev/null
 # tables (names and comments only, when no chain of ours is listed) and
 # our chains (rules only).  Never a table, a set or the ruleset, which
 # would print every element [S8.3].  `list tables' itself fetches every
-# element in nft 1.0.9 (design 12.7), so a table that is there must be
+# element in nft 1.0.9 (design 13.7), so a table that is there must be
 # read from `list chains' alone.
 lists="$(grep -v -- "-f -" "$W/nft.log" | sort -u)"
-odd="$(grep -v -x -e "-j list chains" -e "-j list tables" -e "list chain inet stockfw_intel input" \
+odd="$(grep -v -x -e "-j list chains inet" -e "-j list tables" -e "list chain inet stockfw_intel input" \
   -e "list chain inet stockfw_intel output" -e "list chain inet stockfw_intel forward" <<<"$lists")"
 check '[ -z "$odd" ] && grep -q "^list chain" <<<"$lists"' \
       "the slots list only the chains, the tables and our three chains, never a table or set (${odd:-none other})"
+# The live read is the chain listing (milliseconds), not `list tables'
+# (which loads every set element): only a table whose chains carry no
+# common digest falls back to the table's comment.
+check 'grep -q -x -- "-j list chains inet" <<<"$lists"' \
+      "the live state is read from the chain listing (-j list chains inet)"
 
 # ---------------------------------------------- 14. foreign rules, after
 others="$(cat "$W"/scripts/*.nft | grep -E '^(table|delete|add|flush|destroy|insert|replace)' | grep -v -E '^(table|delete table|add element) inet stockfw_intel( |$)')"

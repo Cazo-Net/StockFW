@@ -165,15 +165,17 @@ gboolean fs_intelset_nft_parse_live (const gchar *json, gchar **digest);
 FsIntelLive fs_intelset_nft_parse_live_state (const gchar *json,
                                               gchar **digest);
 
-/* The same answer from `nft -j list chains', which nft 1.0.9 prints
- * without fetching a single set element (`list tables' fetches them
- * all: seconds for a large country, design 12.7).  PRESENT when some
- * chain of table inet stockfw_intel is listed, with *digest from the
- * comment of its chain "input" (NULL when that chain or its comment is
- * missing); ABSENT when a whole listing holds no chain of it -- which a
- * table without chains also gives, so a caller that must tell those
- * apart asks `list tables' then; UNKNOWN as above. */
-FsIntelLive fs_intelset_nft_parse_chains_live (const gchar *json,
+/* The fast read, from `nft -j list chains' (milliseconds, where `list
+ * tables' loads every set element): fs_intelset_nft_script() puts the
+ * digest comment on each of the table's chains too.  PRESENT when
+ * table inet stockfw_intel has a chain, with *digest set only when
+ * every one of its chains carries the same "sfw:<digest>" comment
+ * (NULL otherwise: a table written by an older StockFW, whose chains
+ * carry none -- read the table's comment then -- or one changed by
+ * hand); ABSENT when a whole listing has no chain of that table (the
+ * table may still be there without chains: the caller asks `list
+ * tables' then); UNKNOWN for text that is not one whole listing. */
+FsIntelLive fs_intelset_nft_parse_live_chains (const gchar *json,
                                                gchar **digest);
 
 G_END_DECLS

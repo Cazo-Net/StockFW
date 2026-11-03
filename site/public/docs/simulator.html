@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>What-if simulator · StockFW</title>
+<meta name="description" content="Asking the firewall a question in plain words: how a line is read, how the answer is reached the way your platform’s firewall would reach it, what the What-If window shows, the one-click fixes it checks before offering, and the stockfw simulate command.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="What-if simulator · StockFW">
+<meta property="og:description" content="Asking the firewall a question in plain words: how a line is read, how the answer is reached the way your platform’s firewall would reach it, what the What-If window shows, the one-click fixes it checks before offering, and the stockfw simulate command.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html" aria-current="page"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Using the app
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
+		<article class="prose">
+<h1>What-if simulator</h1>
+<p class="lede">Type a sentence about a connection and StockFW tells you whether your firewall would allow it or block it, which rule decides, every rule it checked on the way, and what you can do about it. It is a question, not a change: asking writes nothing.</p>
+
+<figure class="shot"><img src="../assets/screens/whatif-allowed.webp" alt="The What-If window for “Can 192.168.1.50 reach my SSH?”: a green ALLOWED badge, the sentence “Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer”, a diagram of a LAN host sending a packet through the StockFW wall to this computer, a “What you can do” card reading “Nothing to change: this is already allowed”, a “The connection” card with direction, protocol, from, to, port and firewall model, and a “Why” card in which rule 11, “StockFW: Allow SSH (inbound, 192.168.1.50) (TCP)”, is marked DECIDES." width="720" height="969" loading="lazy" decoding="async"><figcaption>Allowed by a rule. The rule’s name is the one the Policy page and the engine use, and “Why” lists every rule that was checked before it.</figcaption></figure>
+
+<h2 id="where-it-lives">Where it lives<a class="anchor" href="#where-it-lives" aria-label="Link to this section">#</a></h2>
+<p>At the bottom of the <a href="../docs/copilot.html">Copilot</a> page, in the <a href="../docs/dashboard.html">dashboard</a>, and as <code>stockfw simulate</code> on the <a href="../docs/cli.html">command line</a>. All three run the same engine against the same policy files and the same firewall preferences, and the command-line tests assert that they agree. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
+<p>On the Copilot page the card keeps what you typed, so a question is refined rather than retyped. Under the entry, <em>Try</em> offers three example questions, and <em>Read as</em> shows, as chips, how your line was understood: the direction, the protocol, the port or service, the host, and, dashed, anything the line left open. The answer is one row: the verdict badge, one sentence, and <strong>Details</strong>, which opens the What-If window beside the page. The window is not modal, and asking again refreshes it in place. The last five questions stay listed, each one click from being asked again.</p>
+
+<figure class="shot"><img src="../assets/screens/whatif-card.webp" alt="The What-If card on the Copilot page: an entry holding “Can 192.168.1.50 reach my SSH?”, a Simulate button, three Try chips, Read as chips reading Inbound, TCP, SSH · port 22 and From 192.168.1.50 (LAN host), a red BLOCKED row saying “Saved policy, applies on hold: BLOCKED. No rule lets it in, so the default drops it.” with a Details button, and a Recent list." width="980" height="328" loading="lazy" decoding="async"><figcaption>The card on the Copilot page. Here the saved policy is not the one in force, because applies are on hold, and the answer says so before the verdict.</figcaption></figure>
+
+<h2 id="how-to-phrase-a-question">How to phrase a question<a class="anchor" href="#how-to-phrase-a-question" aria-label="Link to this section">#</a></h2>
+<p>Write it the way you would say it. The parser looks for the pieces below and ignores filler such as <em>please</em>, <em>I want</em> or <em>can you</em>; the order of words does not matter. Everything it recognised is shown back to you as <em>Read as</em>, so what gets evaluated is always what you typed, never a guess. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-whatif.c</span></p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>You write</th><th>It means</th></tr></thead>
+<tbody>
+<tr><td><code>inbound</code>, <code>incoming</code>, <code>ingress</code>; <code>outbound</code>, <code>outgoing</code>, <code>egress</code></td><td>The direction. Without one, the question is answered <em>both ways</em>, one tab per direction.</td></tr>
+<tr><td><code>from 192.168.1.50</code>, <code>to 8.8.8.8</code>, <code>reach</code>, <code>access</code>, an address, a network such as <code>192.168.1.0/<wbr>24</code>, or <code>[2001:db8::5]:443</code></td><td>The remote end. <code>internet</code>, <code>outside</code>, <code>anyone</code> or <code>anywhere</code> means any host. Without a host, the host is left open.</td></tr>
+<tr><td><code>port 22</code>, <code>22 port</code>, <code>:443</code>, or a service name: <code>SSH</code>, <code>RDP</code>, <code>HTTPS</code>, <code>DNS</code>, <code>Telnet</code></td><td>The port. A service name is looked up to its port and protocol (“SSH · port 22”); a number wins over a name when both appear.</td></tr>
+<tr><td><code>udp</code>, <code>icmp</code>, <code>ping</code></td><td>The protocol. A named service brings its own; a bare port is TCP; <code>ping</code> is ICMP echo request.</td></tr>
+<tr><td><code>allow</code>, <code>permit</code>, <code>open</code>, <code>let</code>; <code>block</code>, <code>deny</code>, <code>drop</code>, <code>reject</code></td><td>What you <em>want</em>. The answer still says what the firewall does now; the verb decides which fix is offered. “Is … allowed?” and “Can … reach …?” are plain questions.</td></tr>
+</tbody>
+</table>
+</div>
+<div class="code" data-copy="all"><div class="code-head"><span>Sentences that work</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>Can 192.168.1.50 reach my SSH?
+Is outbound DNS to 8.8.8.8 allowed?
+block RDP from the internet
+allow tcp port 8443 inbound
+outbound tcp port 443
+ping from 10.0.0.9</code></pre></div>
+<p>Whatever a line leaves open stays open. “<code>outbound tcp port 443</code>” names no host, so it is answered for every host your rules distinguish, and when they disagree the verdict is <em>DEPENDS</em> with the split spelled out. A line with nothing recognisable in it is an error, not an “outbound to anywhere” guess: the window says “StockFW could not read this question” and shows how to ask.</p>
+
+<h2 id="how-a-verdict-is-reached">How a verdict is reached<a class="anchor" href="#how-a-verdict-is-reached" aria-label="Link to this section">#</a></h2>
+<ol>
+<li>The line is parsed into a question: direction, protocol, port, host, your verb, and what was left open.</li>
+<li>Everything else that changes the answer is gathered: the Firewall preferences (ICMP types, the reject method, restrictive outbound, interfaces and NAT, the broadcast and reserved-source blocks), whether the firewall is running, whether the saved policy is the one actually loaded, Sentinel’s auto-blocks with their expiry, and on Windows the network profiles in force with their default actions.</li>
+<li>The policy is evaluated by a model of <em>your</em> firewall. <span class="plat">Linux</span> The INBOUND and OUTBOUND chains exactly as StockFW writes them, in order; the first rule that matches decides. The model renders itself as iptables lines and the test suite compares those with the real generator’s output, so the two cannot drift apart. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-whatif.c</span> <span class="plat">Windows</span> The policy as Windows Firewall rules plus the profile-scoped preference rules; any matching block wins over any allow, and with neither the profile’s default action decides.</li>
+<li>For each field the line left open, a representative of every range a rule draws on that field is tried. If they all agree, that is the answer. If not, the answer is DEPENDS: “Blocked for most hosts; allowed from 10.0.0.0/8 by rule ‘…’”.</li>
+<li>The answer carries the whole trace (every rule checked, skipped or matched), the deciding step, one plain sentence, and the fixes. A fix that would change the policy is offered only after the engine has re-run the question with the new row in place and found exactly the verdict you asked for, with nothing else changed.</li>
+</ol>
+<p>The policy it reads is the <em>saved</em> one, so you can rehearse a change before Apply: add a rule, ask, and only then push. When the saved policy is not what the firewall is running, the answer says so first (“Saved policy, applies on hold”), and when the firewall is stopped it says that nothing is filtered right now and what the verdict would be once it runs. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-simviz-smoke</span></p>
+
+<figure class="shot"><img src="../assets/screens/whatif-blocked.webp" alt="The What-If window for “allow tcp port 8443 inbound”: a red BLOCKED badge, “Inbound TCP port 8443 from any host to this computer”, the sentence “You asked to allow this. It is currently BLOCKED. No rule lets it in, so the default drops it.”, a “What you can do” card offering “Allow inbound TCP port 8443 from anyone” with a Create allow rule button and the exact row it would add, and a “Why” card ending in “Default: drop silently”, marked DECIDES." width="720" height="1136" loading="lazy" decoding="async"><figcaption>Blocked by the default. The fix was checked before it was offered, and the exact policy row it would write is printed under it.</figcaption></figure>
+
+<h2 id="the-window">The window<a class="anchor" href="#the-window" aria-label="Link to this section">#</a></h2>
+<p>The window is one scrolling page of cards.</p>
+<ul>
+<li><strong>The verdict.</strong> A badge reading <em>ALLOWED</em>, <em>BLOCKED</em> or <em>DEPENDS</em>, the connection in one sentence (“Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer”), what you typed, and the answer in one line that names the deciding rule. When the answer rests on something that is not the live firewall, an amber strip says so.</li>
+<li><strong>Both ways.</strong> A line asked without a direction gets one tab per direction, each with its own verdict.</li>
+<li><strong>The diagram.</strong> Where the traffic starts, the StockFW wall, where it is going. Each card says what it is (“This computer”, “LAN host 192.168.1.50”, “Internet host”, “Any host”) and which network it sits on; the far card names the port. The packet plays the verdict: it reaches the wall, and then passes through to a glowing destination, or bounces back off a red wall as the far line turns grey, or waits at an amber wall under a question mark when the answer depends. The round button replays it. With animations off, the final frame is drawn at once. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-simviz-smoke</span></li>
+<li><strong>What you can do.</strong> The fixes, described below.</li>
+<li><strong>The connection.</strong> Direction, protocol, from, to, port or service, the firewall model (“Linux iptables: the first matching rule decides” or “Windows Firewall: any matching block wins”), whether the firewall is running, whether the saved policy is live, and on Windows the profile in force.</li>
+<li><strong>Why.</strong> The trace as a numbered list. Rules that did not match are folded into one line (“Rules 1 to 10 did not match”) that opens on a click; the deciding step is highlighted and marked <em>DECIDES</em>; a rule from your policy carries an <em>Open in Policy</em> link to its row. For a DEPENDS answer the cases come first, each with its own badge and the rule that decides it.</li>
+<li><strong>Good to know.</strong> Everything the answer had to assume, such as “No valid internet-facing interface is set, so the reserved-address and broadcast blocks are not in force.”</li>
+</ul>
+<p>The window does not block the app behind it; <kbd>Esc</kbd> or <strong>Close</strong> dismisses it, and asking another question refreshes it in place. It is drawn with no images, in a light and a dark palette picked from your theme.</p>
+
+<figure class="shot"><img src="../assets/screens/whatif-depends.webp" alt="The What-If window for “inbound ssh”: an amber DEPENDS badge, the answer “Blocked for most hosts; allowed from 10.0.0.0/8 by rule ‘StockFW: Allow SSH (inbound, 10.0.0.0/8) (TCP)’”, the packet waiting at an amber wall, a Create allow rule offer for anyone, and a “Why” card that lists the two cases with their own badges before the trace." width="720" height="1244" loading="lazy" decoding="async"><figcaption>An answer that depends on what the line left open. Both cases are spelled out, and the one fix that resolves them is offered.</figcaption></figure>
+
+<h2 id="what-you-can-do">What you can do<a class="anchor" href="#what-you-can-do" aria-label="Link to this section">#</a></h2>
+<p>Every fix in this card was checked before it was offered, and each has one button.</p>
+<ul>
+<li><strong>Create allow rule</strong> or <strong>Create block rule</strong>, when a single row gives you the verdict you asked for. The exact row is printed under the offer, as the Policy page would show it (“Rule to add (Allow inbound service): TCP, 8443, Anyone, What-If: allow TCP 8443”). A created allow always names one port and one protocol: never portless, never every port for anyone.</li>
+<li><strong>Open rule in Policy</strong>, when a rule of yours is what blocks or allows it, so you can edit or remove that rule yourself.</li>
+<li><strong>Lift Sentinel block</strong>, with the minutes it has left, when the decision is one of Sentinel’s auto-blocks.</li>
+<li><strong>Open ICMP settings</strong> or <strong>Open Advanced Options</strong>, when a Firewall preference decides, and <strong>Start the firewall</strong> or <strong>Apply policy</strong> when the firewall is stopped or the saved policy is not the one loaded.</li>
+</ul>
+<p>When nothing is offered, the card says why: “Nothing to change: this is already allowed”; a block that comes before any allow StockFW could add, so the block itself has to change; a built-in rule that keeps the computer working; or a DEPENDS answer that no single change resolves.</p>
+<p>Pressing a <em>Create</em> button shows the row once more in a Yes/No dialog. After Yes, the engine checks the row again against the policy as it is by then, writes it, and pushes it through the same apply gate as the Policy page. The result is reported in the window and in the card’s <em>What changed</em> log, and it distinguishes “the row exists” from “the firewall enforces it”, because a rule staged for a later Apply is not yet in force. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></p>
+
+<figure class="shot"><img src="../assets/screens/whatif-outbound-blocked.webp" alt="The What-If window for “allow outbound tcp to 203.0.113.9 port 443”: BLOCKED, “You asked to allow this. It is currently BLOCKED. Rule ‘StockFW: Block outbound (203.0.113.9)’ blocks it.”, a packet from this computer bounced at the wall before an Internet host, a “What you can do” card offering “Open rule in Policy”, and a “Why” card in which rule 4 decides." width="720" height="1009" loading="lazy" decoding="async"><figcaption>Blocked by one of your own rules. No new allow could override it, so the fix is to open that rule.</figcaption></figure>
+
+<h2 id="from-a-script">From a script<a class="anchor" href="#from-a-script" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw simulate "inbound rdp from 203.0.113.50"</span>
+BLOCKED. No rule lets it in, so the default drops it.
+Read as: host 203.0.113.50; service Remote Desktop: TCP port 3389; inbound (confidence 90%)
+
+Inbound TCP port 3389 (Remote Desktop) from 203.0.113.50 to this computer: BLOCKED
+  No rule lets it in, so the default drops it.
+  How it was decided:
+    - StockFW: Allow inbound (192.168.1.1): 203.0.113.50 is not 192.168.1.1
+    - StockFW: Allow inbound (192.0.2.10): 203.0.113.50 is not 192.0.2.10
+    - StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP): only for port 22
+    - StockFW: Allow SSH (inbound, 192.168.1.0/24) (UDP): only for UDP; this is TCP
+    - StockFW: Allow HTTPS (inbound) (TCP): only for port 443
+    - StockFW: Allow HTTPS (inbound) (UDP): only for UDP; this is TCP
+    - StockFW: Allow Web (inbound): only for traffic a port forward redirected
+    * Default: log: logged; the next rule decides
+    =&gt; Default: drop silently: matches: drops it
+  [create-allow] Allow inbound TCP port 3389 from 203.0.113.50: Adds one row to the policy (Inbound: allow service): inbound TCP port 3389 from 203.0.113.50. Checked: with it this question is allowed, and nothing changes except inbound TCP port 3389 from 203.0.113.50.
+
+Good to know:
+  - No valid internet-facing interface is set, so the reserved-address and broadcast blocks are not in force.
+A simulation only: nothing was written.
+<span class="p">$ </span><span class="cmd">echo $?</span>
+5</code></pre></div>
+<p>The exit status is 0 for ALLOWED, 5 for BLOCKED and 6 for DEPENDS, so a deployment script can refuse to continue when a port it needs would be closed, and a 2 means the line could not be read. <code>--json</code> gives the whole answer as one object: the verdict and summary, the question as read, every direction’s trace, cases and checked actions. <code>--assume-running</code> answers for the firewall as it runs, for scripts that are not root and cannot read the live chains. See <a href="../docs/cli.html#simulate">the command line reference</a>.</p>
+
+<h2 id="what-it-does-not-know">What it does not know<a class="anchor" href="#what-it-does-not-know" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>It answers from StockFW’s own policy and preferences, not from the engine. A rule someone added directly in <code>wf.msc</code> or with <code>iptables</code> is not seen. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></li>
+<li>It answers about a <em>new</em> connection. Replies to a connection already open are always allowed, and the trace says so in its first step.</li>
+<li><span class="plat">Linux</span> Threat-intel blocklists are enforced before the policy, in their own table, and the simulator does not consult them: an address a list blocks can be answered ALLOWED here. The Threat Intel page’s lookup box answers that question. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></li>
+</ul>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/copilot.html"><span>Previous</span><strong>Copilot</strong></a><a class="next" href="../docs/trust.html"><span>Next</span><strong>Trust</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/simulator.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#where-it-lives">Where it lives</a></li>
+			<li class="lvl2"><a href="#how-to-phrase-a-question">How to phrase a question</a></li>
+			<li class="lvl2"><a href="#how-a-verdict-is-reached">How a verdict is reached</a></li>
+			<li class="lvl2"><a href="#the-window">The window</a></li>
+			<li class="lvl2"><a href="#what-you-can-do">What you can do</a></li>
+			<li class="lvl2"><a href="#from-a-script">From a script</a></li>
+			<li class="lvl2"><a href="#what-it-does-not-know">What it does not know</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stock Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Troubleshooting · StockFW</title>
+<meta name="description" content="What a message means and what to do: privileges, monitoring, sudo’s search path, the two policy homes, IPv6 not filtered, malformed rules, a refused apply, a Sentinel block you did not want, the tray, the dashboard, and WSL and containers.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Troubleshooting · StockFW">
+<meta property="og:description" content="What a message means and what to do: privileges, monitoring, sudo’s search path, the two policy homes, IPv6 not filtered, malformed rules, a refused apply, a Sentinel block you did not want, the tray, the dashboard, and WSL and containers.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html" aria-current="page"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Reference
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Reference</p>
+		<article class="prose">
+<h1>Troubleshooting</h1>
+<p class="lede">StockFW tries to say what is wrong in the place where it is wrong. This page collects those messages, says what each one means, and what fixes it.</p>
+
+<h2 id="privileges">Privileges<a class="anchor" href="#privileges" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>“Administrator privileges required”, “Not live yet: run `sudo stockfw apply’”, exit status 3</dt>
+<dd>You are changing the firewall without the rights to do it. The change is saved and will be applied the next time Apply runs with rights. On Windows use the <em>StockFW (Elevated)</em> shortcut; on Linux run <code>sudo /usr/local/bin/StockFW</code> or <code>sudo stockfw apply</code>. Nothing was half-applied.</dd>
+<dt>“sudo: StockFW: command not found”</dt>
+<dd><span class="plat">Linux</span> <code>sudo</code> does not search <code>/usr/local/bin</code> on Debian, Kali and Ubuntu. Type the full path: <code>sudo /usr/local/bin/StockFW</code>. The installer warns about this and deliberately does not edit <code>sudoers</code>; see <a href="../docs/install-linux.html#why-the-full-path-after-sudo">why</a>.</dd>
+<dt>“Windows protected your PC” when running the installer</dt>
+<dd>The installer is not code-signed yet. Check the SHA-256 against the download page, then <em>More info</em>, <em>Run anyway</em>.</dd>
+</dl>
+
+<h2 id="events">Events<a class="anchor" href="#events" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>“Monitoring is not available” on Windows</dt>
+<dd>The audit policy that makes Windows write firewall events is off. Open the elevated app once; it enables it. Or run <code>auditpol /set /subcategory:"Filtering Platform Connection" /success:enable /failure:enable</code> in an administrator PowerShell. See <a href="../docs/install-windows.html#enable-monitoring">Enable monitoring</a>. If a domain policy forces auditing off, StockFW cannot override it and says so.</dd>
+<dt>“Monitoring is not available” on Linux</dt>
+<dd>The kernel log needs root. Start the app with <code>sudo</code>, or add yourself to the <code>adm</code> group for the command line’s <code>events</code>.</dd>
+<dt>The list stays empty although the firewall is running</dt>
+<dd>Read the sentence under the empty list. “Waiting for the first event” means nothing has been blocked or logged yet; try an inbound connection from another machine to a closed port. On Linux, allowed connections are logged only with <em>Log allowed connections</em> on; otherwise the page shows drops and rejects only.</dd>
+<dt>No events in WSL2, a container or a network namespace</dt>
+<dd><span class="plat">Linux</span> The kernel delivers firewall log lines from a non-initial network namespace only when <code>net.netfilter.nf_log_all_netns=1</code>. Set it on the host: <code>sudo sysctl -w net.netfilter.nf_log_all_netns=1</code>. WSL2’s kernel also needs the netfilter log modules; a stock Ubuntu WSL image has them.</dd>
+<dt>The Program column is empty</dt>
+<dd><span class="plat">Linux</span> The kernel log carries no program name. The Overview’s connection table names programs for connections that are open; the Events page cannot for ones that are not. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
+</dl>
+
+<h2 id="policy-and-apply">Policy and Apply<a class="anchor" href="#policy-and-apply" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>A rule I added is not applied</dt>
+<dd><span class="plat">Linux</span> Check which policy you edited. As yourself the policy is <code>~/.stockfw</code>; as root it is <code>/etc/stockfw</code>. <code>stockfw status</code> prints the directory in use. Pick one identity for policy work; see <a href="../docs/install-linux.html#two-homes-yours-and-root-s">Two homes</a>.</dd>
+<dt>“N malformed policy rules were skipped”</dt>
+<dd>A line in a policy file did not parse: a non-numeric port, a host name starting with a hyphen, a stray comma. The line was skipped, not guessed at. Open the file named in the message, fix or delete the line, reload. Saving from the app writes only the rules that parsed. <a href="../docs/files.html#policy-files">The format</a>.</dd>
+<dt>Apply says “policy held, firewall untouched”</dt>
+<dd><em>Audit-only</em> on the Policy page or <em>Lock policy</em> on the Overview is on. The change was measured and recorded; the engine was left alone. Turn the hold off and Apply again.</dd>
+<dt>Apply failed and “the last good policy was restored”</dt>
+<dd>The engine refused a rule. The dialog carries the tool’s own message; on Windows it is often a target netsh cannot parse, on Linux a rule the kernel lacks a module for. The policy on the wire is what it was before you pressed Apply. The audit log has the line.</dd>
+<dt>“The forward to 192.168.1.30 was left out: no external interface is set”</dt>
+<dd>Port forwards need router mode: set the <em>Internet connected network device</em> and <em>Enable Internet connection sharing</em> on the Network Settings preference page.</dd>
+<dt>“NOT BLOCKED: <em>name</em> could not be looked up”</dt>
+<dd>A deny rule’s target is a host name that did not resolve while the firewall was being started, so it was left out rather than refuse to start at all. Fix the name or use the address, then Apply again; while the firewall is running, the same failure refuses the apply and keeps the old addresses blocked instead.</dd>
+<dt>A host-name rule covers nothing on Windows</dt>
+<dd><span class="plat">Windows</span> Windows Firewall takes addresses only. Use the address, or one rule per address. The Covers column warns.</dd>
+</dl>
+
+<h2 id="ipv6">IPv6<a class="anchor" href="#ipv6" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>The IPv6 tile reads “Not filtered: ip6tables is not installed”</dt>
+<dd><span class="plat">Linux</span> <code>sudo apt install iptables</code> brings <code>ip6tables</code> on Debian-family systems; <code>dnf install iptables-nft</code> on Fedora. Then Apply again. Until then only IPv4 is filtered, and the app says so rather than pretending. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
+<dt>“None on this system”</dt>
+<dd>The kernel has no IPv6 stack. Nothing to filter, nothing wrong.</dd>
+</dl>
+
+<h2 id="copilot-and-sentinel">Copilot and Sentinel<a class="anchor" href="#copilot-and-sentinel" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>Sentinel blocked something I use</dt>
+<dd>Select the finding and press <strong>Undo auto-block</strong>, or right-click the destination on the Events page and <em>Allow destination</em>: your Allow lifts the block and the two reach the firewall together. The block would have expired by itself in ten minutes; it cannot come back in this session. If it happens often, set Sentinel to <em>Detect only</em>, which takes every staged block down at once. Sentinel never blocks loopback, your LAN, multicast or a destination the program has used before; if it did, that is a bug worth <a href="https://github.com/Cazo-Net/StockFW/issues">reporting</a> with the audit lines.</dd>
+<dt>No insights appear</dt>
+<dd>The baseline needs history: four distinct hours before it judges hours, eight ten-minute windows before it judges rate. Novelty findings go quiet for a program whose profile is marked partial. <strong>Run analysis</strong> only reports what the policy and the events so far support.</dd>
+</dl>
+
+<h2 id="tray-and-window">Tray and window<a class="anchor" href="#tray-and-window" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>No tray icon</dt>
+<dd>Your desktop has no tray host (GNOME without the AppIndicator extension, or a headless session). The window works as usual and closing it quits. See <a href="../docs/background.html">Background and the tray</a>.</dd>
+<dt>I closed the window and the app is still running</dt>
+<dd>That is <em>Minimize to the tray</em>. Open it from the tray icon, or quit from the tray menu. Quitting does not stop the firewall.</dd>
+</dl>
+
+<h2 id="command-line-and-dashboard">Command line and dashboard<a class="anchor" href="#command-line-and-dashboard" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>“cannot listen on 127.0.0.1:8080”</dt>
+<dd>The port is taken. Leave out <code>--port</code> and the system picks a free one.</dd>
+<dt>The dashboard did not open a browser</dt>
+<dd>Under <code>sudo</code> StockFW will not start a browser as root. Copy the printed URL into your own browser. The token is in it.</dd>
+<dt>The dashboard page shows “Unauthorized”</dt>
+<dd>The browser tab lost the token: the <code>#token=…</code> fragment was cut from the URL before the page loaded, the tab was reopened in a new session, or the URL is from an earlier run. Start again and open the freshly printed URL.</dd>
+</dl>
+
+<h2 id="uninstalling-and-starting-over">Uninstalling and starting over<a class="anchor" href="#uninstalling-and-starting-over" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>Rules are still in the firewall after uninstalling</dt>
+<dd>By design the uninstaller leaves the engine as it is. Press <strong>Stop firewall</strong> before uninstalling, or afterwards: on Linux <code>sudo iptables -D INPUT -j INBOUND; sudo iptables -F INBOUND; sudo iptables -X INBOUND</code> and the same for <code>OUTBOUND</code> and the nat chains; on Windows delete the <code>StockFW-</code> rules in <code>wf.msc</code>.</dd>
+<dt>Start from scratch</dt>
+<dd>Stop the firewall, close the app, delete the two directories listed in <a href="../docs/files.html">Files and formats</a>. The next start is a first run.</dd>
+</dl>
+
+<h2 id="reporting-a-problem">Reporting a problem<a class="anchor" href="#reporting-a-problem" aria-label="Link to this section">#</a></h2>
+<p>Open an issue on <a href="https://github.com/Cazo-Net/StockFW/issues">GitHub</a> with the version (<em>About StockFW</em> or <code>stockfw version</code>), the platform, what you did, what the app said, and the relevant lines of <code>audit.log</code>. Nothing in the audit log is secret, but read it before pasting; it names your rules’ targets.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/files.html"><span>Previous</span><strong>Files and formats</strong></a><a class="next" href="../docs/faq.html"><span>Next</span><strong>Questions and answers</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/troubleshooting.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#privileges">Privileges</a></li>
+			<li class="lvl2"><a href="#events">Events</a></li>
+			<li class="lvl2"><a href="#policy-and-apply">Policy and Apply</a></li>
+			<li class="lvl2"><a href="#ipv6">IPv6</a></li>
+			<li class="lvl2"><a href="#copilot-and-sentinel">Copilot and Sentinel</a></li>
+			<li class="lvl2"><a href="#tray-and-window">Tray and window</a></li>
+			<li class="lvl2"><a href="#command-line-and-dashboard">Command line and dashboard</a></li>
+			<li class="lvl2"><a href="#uninstalling-and-starting-over">Uninstalling and starting over</a></li>
+			<li class="lvl2"><a href="#reporting-a-problem">Reporting a problem</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stock Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

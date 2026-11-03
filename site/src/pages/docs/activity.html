@@ -1,0 +1,34 @@
+---
+title: Activity
+section: Using the app
+order: 12
+description: The Activity page: the Policy activity and Network I/O graphs, the range and adapter pickers, the no-data band, the crosshair and the table view.
+---
+<h1>Activity</h1>
+<p class="lede">Two graphs over the last 15 minutes to 24 hours: how many connections your policy allowed and blocked per minute, and how many bytes per second crossed your adapters.</p>
+
+[[shot:activity|The Activity page: 15 min selected, three tiles (blocked 405, allowed 505, throughput 111 kB/s received and 1000 B/s sent), and two graphs with a shaded no-data band on the left, red and blue lines on the right.|Fifteen minutes of a staged port scan arriving while a download runs. The grey band is time before the app opened.]]
+
+<h2>The controls</h2>
+<ul>
+<li><strong>Range:</strong> 15 min, 1 hour, 6 hours, 24 hours. Both graphs follow it.</li>
+<li><strong>Adapter:</strong> all adapters together, or one. It affects the Network I/O graph and the throughput tile.</li>
+<li><strong>Show as table:</strong> every interval as a row, for reading exact numbers or copying them.</li>
+</ul>
+<p>The three tiles summarise the range: blocked and allowed counts for the last hour and the last 24 hours, with “counting since 16:23” when the app has been open for less than that, and the current throughput in and out.</p>
+
+<h2>Policy activity</h2>
+<p>Events per minute, allowed in blue and blocked in red. It counts exactly what the <a href="{{root}}docs/events.html">Events page</a> lists, after that page’s filters and its duplicate check, and it counts each event at the event’s own time, not when the app happened to read it. That matters on Windows, where the first poll delivers a batch of recent history: those events land in their own minutes, and anything older than the app is dropped into the no-data band rather than piled into the current minute as a false spike. [[verified:fs-activity-smoke]]</p>
+<p>On Linux the allowed line is only as real as the kernel log: the policy logs the first packet of each new allowed connection when <em>Log allowed connections</em> is on. With it off, the card says the line is not drawn, rather than drawing a flat line that would claim nothing was allowed.</p>
+
+<h2>Network I/O</h2>
+<p>Bytes per second received and sent, from the adapters’ own cumulative counters: <code>GetIfTable2</code> on Windows, <code>/proc/net/dev</code> on Linux. No packet capture, no trace session, no elevation. A counter that goes backwards (a driver reload) starts a new baseline rather than drawing negative traffic. [[verified:test-core.sh]]</p>
+
+<h2>Why the grey band</h2>
+<p>A graph that starts at zero looks like a quiet night. StockFW did not observe anything before it was opened, so that stretch is shaded “no data” and never drawn as a line. The newest point is partial, and its rate divides by the seconds that have actually elapsed, so the last sample is not drawn artificially low. [[verified:fs-activity-smoke]]</p>
+
+<h2>Reading a point</h2>
+<p>Move the mouse over a graph for a crosshair and a tooltip with the values at that interval; or focus the graph and use the arrow keys. Each graph has one y axis with round gridlines, time ticks spaced for their labels, a legend and a label at the end of each line, and the colours were checked for contrast in light mode: allowed and received <code>#2a78d6</code>, blocked <code>#e34948</code>, sent <code>#eb6834</code>.</p>
+
+<h2>How the data is kept</h2>
+<p>Counters are kept in 10-second slots, 8,640 per series (24 hours), at most 24 series, about 1.6 MB when full, so a week in the tray costs the same memory as an hour. Nothing is written to disk; the graphs are about this session. [[verified:test-core.sh]] The <a href="{{root}}docs/dashboard.html">dashboard</a> draws the same two graphs from the same code, and can backfill from the kernel log so its history starts before it was opened.</p>

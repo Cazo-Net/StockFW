@@ -11,7 +11,7 @@
 # GTK3 comes from the distribution's own packages and the dynamic linker
 # resolves it.  Bundling it would be both unnecessary and wrong (it would
 # bypass the distro's security updates).  The payload is therefore small:
-# binary, desktop entry, icon, license, install script.
+# binary, desktop entry, icon, license, install script, boot unit.
 set -euo pipefail
 
 PORT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -81,6 +81,16 @@ cp "$LINUX_DIR/stockfw-icon.png" "$STAGE/"
 cp "$LINUX_DIR/stockfw-icon-48.png"  "$STAGE/"
 cp "$LINUX_DIR/stockfw-icon-256.png" "$STAGE/"
 cp "$LINUX_DIR/LICENSE.txt"      "$STAGE/"
+# The summary, then both licence texts the source carries, in full
+# (tests/test-licence-texts.sh).
+for text in COPYING LICENSE; do
+    if [ ! -s "$PORT_DIR_ROOT/$text" ]; then
+        echo "ERROR: $text is missing from the source tree" >&2
+        exit 1
+    fi
+    printf '\n---\n\n%s\n\n' "$text" >> "$STAGE/LICENSE.txt"
+    cat "$PORT_DIR_ROOT/$text" >> "$STAGE/LICENSE.txt"
+done
 
 # 3. docs
 # The Linux-specific README is the one the user reads after extracting;
@@ -104,6 +114,8 @@ echo "  ok: README.md, LICENSE.txt"
 # 4. installer scripts
 echo "[4/5] Copying installer scripts..."
 cp "$LINUX_DIR/install.sh" "$STAGE/"
+# The boot unit (1.0.7): without it the rules are gone after a reboot.
+cp "$LINUX_DIR/stockfw.service" "$STAGE/"
 
 # 5. tar it up
 echo "[5/5] Creating archive..."

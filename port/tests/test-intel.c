@@ -19,6 +19,8 @@
 #include "core/fs-intelset.h"
 #include "core/fs-feed.h"
 #include "core/fs-hostnet.h"
+#include "core/fs-intelwin.h"
+#include "intel-engine-checks.h"
 
 #ifdef G_OS_UNIX
 #include <fcntl.h>
@@ -467,6 +469,9 @@ typedef struct
 
 static FakeNet net;
 
+/* Runs while a download is in progress (an apply or a Stop meanwhile). */
+static void (*during_fetch) (void);
+
 static GBytes *
 fake_fetch (const gchar *url, const gchar *proxy, gpointer user_data,
             GError **error)
@@ -475,6 +480,8 @@ fake_fetch (const gchar *url, const gchar *proxy, gpointer user_data,
 	const gchar *body, *err;
 
 	fn->calls++;
+	if (during_fetch != NULL)
+		during_fetch ();
 	g_free (fn->last_url);
 	g_free (fn->last_proxy);
 	fn->last_url = g_strdup (url);
@@ -583,6 +590,10 @@ typedef struct
 	                             * fails G_IO_ERROR_NOT_FOUND, live
 	                             * UNKNOWN, counters NULL            */
 	gboolean    counters_unreadable; /* the chains cannot be listed  */
+	gboolean    apply_inactive; /* an apply leaves rules that are not
+	                             * enforced (Windows: firewall off for
+	                             * the profile in use)               */
+	gchar      *not_in_force;   /* intel_not_in_force's sentence     */
 	FsIntelLive live;           /* what the kernel holds             */
 	gchar      *live_digest;
 	GHashTable *counters;       /* of the live table: id -> counter  */
@@ -592,6 +603,9 @@ typedef struct
 	gchar      *got_digest;     /* of the last ruleset received      */
 	gchar      *got_text;       /* "id dir\n<ranges>" per set        */
 	guint       got_sets;
+	void      (*during_apply) (void);  /* runs inside intel_apply     */
+	void      (*during_clear) (void);  /* runs inside intel_clear     */
+	const gchar *live_error;    /* intel_live_error's answer         */
 } FakeKernel;
 
 static FakeKernel kern;
@@ -634,6 +648,8 @@ fake_apply (const FsIntelRuleset *rs, GError **error)
 	gchar *digest = fs_intel_ruleset_digest (rs);
 
 	kern.apply_calls++;
+	if (kern.during_apply != NULL)
+		kern.during_apply ();
 	if (kern.no_tool) {
 		g_free (digest);
 		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
@@ -647,8 +663,9 @@ fake_apply (const FsIntelRuleset *rs, GError **error)
 	kern.got_sets = rs->sets->len;
 	if (kern.mode == APPLY_OK || kern.mode == APPLY_COMMITTED) {
 		/* The empty rule set renders no table. */
-		kern.live = rs->sets->len ? FS_INTEL_LIVE_PRESENT
-		                          : FS_INTEL_LIVE_ABSENT;
+		kern.live = rs->sets->len == 0 ? FS_INTEL_LIVE_ABSENT
+		            : kern.apply_inactive ? FS_INTEL_LIVE_INACTIVE
+		            : FS_INTEL_LIVE_PRESENT;
 		g_free (kern.live_digest);
 		kern.live_digest = rs->sets->len ? g_strdup (digest) : NULL;
 		/* A new table: every set with addresses has its counter
@@ -680,6 +697,8 @@ static gboolean
 fake_clear (GError **error)
 {
 	kern.clear_calls++;
+	if (kern.during_clear != NULL)
+		kern.during_clear ();
 	if (kern.no_tool) {
 		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
 		                     "nft was not found on PATH.");
@@ -724,13 +743,26 @@ fake_live (gchar **digest)
 		*digest = NULL;
 	if (kern.live_unknown || kern.no_tool)
 		return FS_INTEL_LIVE_UNKNOWN;
-	if (digest != NULL && kern.live == FS_INTEL_LIVE_PRESENT)
+	if (digest != NULL && (kern.live == FS_INTEL_LIVE_PRESENT ||
+	                       kern.live == FS_INTEL_LIVE_INACTIVE))
 		*digest = g_strdup (kern.live_digest);
 	return kern.live;
 }
 
+static gchar *
+fake_live_error (void)
+{
+	return g_strdup (kern.live_error);
+}
+
+static gchar *
+fake_not_in_force (void)
+{
+	return g_strdup (kern.not_in_force);
+}
+
 static FsBackend fake_backend;
-static FsBackend bare_backend;   /* no intel slots (Windows today)   */
+static FsBackend bare_backend;   /* no intel slots (another platform) */
 
 static void
 kern_reset (void)
@@ -743,17 +775,23 @@ kern_reset (void)
 	kern.live_unknown = FALSE;
 	kern.no_tool = FALSE;
 	kern.counters_unreadable = FALSE;
+	kern.apply_inactive = FALSE;
+	g_clear_pointer (&kern.not_in_force, g_free);
 	kern.live = FS_INTEL_LIVE_ABSENT;
 	g_clear_pointer (&kern.live_digest, g_free);
 	g_clear_pointer (&kern.got_digest, g_free);
 	g_clear_pointer (&kern.got_text, g_free);
 	kern.apply_calls = kern.clear_calls = kern.counter_calls = 0;
 	kern.got_sets = 0;
+	kern.during_apply = kern.during_clear = NULL;
+	kern.live_error = NULL;
+	fake_backend.intel_live_error = fake_live_error;
 	fake_backend.name = "fake";
 	fake_backend.intel_apply = fake_apply;
 	fake_backend.intel_clear = fake_clear;
 	fake_backend.intel_counters = fake_counters;
 	fake_backend.intel_live = fake_live;
+	fake_backend.intel_not_in_force = NULL;
 	bare_backend.name = "bare";
 }
 
@@ -1528,6 +1566,10 @@ test_update_guards (void)
 	CHECK (g_strcmp0 (text, list_before) == 0 && s && s->refused != NULL &&
 	       s->entries == 10,
 	       "a refused copy keeps the previous list and records why");
+	CHECK (s && s->refused_override == FS_INTEL_UPDATE_ACCEPT_SHRINK,
+	       "a shrink refusal records that --accept-shrink lets it in "
+	       "(the page's \"Accept smaller list\"; got %u)",
+	       s ? s->refused_override : 99);
 	fs_intel_source_state_free (s);
 	g_free (text);
 	serve ("feodo", "# nothing listed today\n");
@@ -1540,6 +1582,11 @@ test_update_guards (void)
 	CHECK (update1 (c, "feodo", FS_INTEL_UPDATE_NOW, NOW0 + 7 * HOUR, &msg) ==
 	       FS_INTEL_REFUSED, "an HTML error page: REFUSED (%s)", msg);
 	g_free (msg);
+	s = fs_intel_source_state ("feodo");
+	CHECK (s && s->refused != NULL && s->refused_override == 0,
+	       "a body that is not a list: nothing overrides it (got %u)",
+	       s ? s->refused_override : 99);
+	fs_intel_source_state_free (s);
 	serve_error ("feodo", "Could not download: SSL certificate problem|x\n"
 	             "INJECTED 2026-01-01T00:00:00Z | forged | line");
 	CHECK (update1 (c, "feodo", FS_INTEL_UPDATE_NOW, NOW0 + 7 * HOUR, &msg) ==
@@ -1559,6 +1606,13 @@ test_update_guards (void)
 	                FS_INTEL_UPDATE_ACCEPT_SHRINK, NOW0 + 8 * HOUR, &msg) ==
 	       FS_INTEL_UPDATED, "--accept-shrink lets the shrink in (%s)", msg);
 	g_free (msg);
+	s = fs_intel_source_state ("feodo");
+	text = get_file ("feodo.state");
+	CHECK (s && s->refused == NULL && s->refused_override == 0 &&
+	       text && !strstr (text, "refused-override"),
+	       "an accepted copy clears the refusal and its override");
+	fs_intel_source_state_free (s);
+	g_free (text);
 
 	/* The audit: one line per attempted feed, escaped. */
 	a = audit_text ();
@@ -1574,6 +1628,41 @@ test_update_guards (void)
 	g_free (body10);
 	g_free (body1);
 	g_free (list_before);
+	fs_intel_config_free (c);
+}
+
+/* A list that suddenly covers far more is refused with the override
+ * that lets it in (the page's "Accept larger list"), and that flag, not
+ * the shrink one, does. */
+static void
+test_update_grew (void)
+{
+	FsIntelConfig *c = conf_with ("cins-army");
+	FsIntelSourceState *s;
+	gchar *msg = NULL;
+
+	fresh_store ();
+	net_reset ();
+	serve ("cins-army", "45.0.0.0/16\n");
+	CHECK (update1 (c, "cins-army", 0, NOW0, NULL) == FS_INTEL_UPDATED,
+	       "grew: a /16 is stored");
+	serve ("cins-army", "45.0.0.0/10\n46.0.0.0/10\n");
+	CHECK (update1 (c, "cins-army", FS_INTEL_UPDATE_NOW |
+	                FS_INTEL_UPDATE_ACCEPT_SHRINK, NOW0 + HOUR, &msg) ==
+	       FS_INTEL_REFUSED, "grew: two /10s after a /16: REFUSED, also "
+	       "with --accept-shrink (%s)", msg);
+	g_free (msg);
+	s = fs_intel_source_state ("cins-army");
+	CHECK (s && s->refused != NULL &&
+	       s->refused_override == FS_INTEL_UPDATE_ACCEPT_COVERAGE,
+	       "grew: the refusal records --accept-coverage as its override "
+	       "(got %u)", s ? s->refused_override : 99);
+	fs_intel_source_state_free (s);
+	CHECK (update1 (c, "cins-army", FS_INTEL_UPDATE_NOW |
+	                FS_INTEL_UPDATE_ACCEPT_COVERAGE, NOW0 + 2 * HOUR,
+	                &msg) == FS_INTEL_UPDATED,
+	       "grew: --accept-coverage lets it in (%s)", msg);
+	g_free (msg);
 	fs_intel_config_free (c);
 }
 
@@ -2129,6 +2218,39 @@ test_build (void)
 	if (notes != NULL)
 		for (guint i = 0; i < notes->len; i++)
 			g_print ("      note: %s\n", (gchar *) notes->pdata[i]);
+	if (rs != NULL) {
+		/* Windows Firewall has no "allow wins": a block rule beats any
+		 * allow rule, so an exception only holds because the build
+		 * subtracted it before any rule was written.  The rules the
+		 * Windows backend would write never name a subtracted address. */
+		FsIntelWinPlan *plan = fs_intelwin_plan (rs, "g00000001",
+		                                         FS_INTELWIN_MAX_TOKENS,
+		                                         FS_INTELWIN_MAX_CHARS);
+		FsRangeSet *all = fs_range_set_new ();
+		gboolean parsed = plan != NULL && plan->rules->len > 1;
+
+		for (guint i = 0; plan != NULL && i < plan->rules->len; i++) {
+			const FsIntelWinRule *r = plan->rules->pdata[i];
+
+			if (r->family != FS_AF_NONE &&
+			    !fs_intelwin_parse_remote (r->remote, all))
+				parsed = FALSE;
+		}
+		fs_range_set_normalize (all);
+		CHECK (parsed &&
+		       fs_range_set_contains_text (all, "45.0.0.1") &&
+		       !fs_range_set_contains_text (all, "45.0.0.7") &&
+		       !fs_range_set_contains_text (all, "64:ff9b::2d08:2") &&
+		       !fs_range_set_contains_text (all, "64:ff9b::2d00:7") &&
+		       !fs_range_set_contains_text (all, "203.0.113.5") &&
+		       !fs_range_set_contains_text (all, "192.0.2.22") &&
+		       !fs_range_set_contains_text (all, "203.0.113.1"),
+		       "build -> Windows rules: exceptions and kept addresses are "
+		       "subtracted before any rule is written, so no Windows "
+		       "block rule names them");
+		fs_range_set_free (all);
+		fs_intelwin_plan_free (plan);
+	}
 	g_free (text);
 	g_clear_pointer (&notes, g_ptr_array_unref);
 	fs_intel_ruleset_free (rs);
@@ -2994,6 +3116,11 @@ test_gate_start_stop (void)
 		       "no store: stop and start do nothing, create nothing");
 		fs_intel_outcome_free (o);
 		g_clear_error (&e);
+		/* The log reader asks this for any "STOCKFW-TI" line. */
+		CHECK (!fs_intel_applied_has ("local-start") &&
+		       !g_file_test (never, G_FILE_TEST_EXISTS),
+		       "no store: a list's log line is not attributed, and "
+		       "asking creates nothing");
 		kern.live = FS_INTEL_LIVE_PRESENT;
 		kern.live_digest = g_strdup ("0123456789abcdef0123456789abcdef");
 		CHECK (fs_intel_suspend (&fake_backend, "test", &e) &&
@@ -3110,6 +3237,181 @@ typedef struct
 	gboolean     prot, exc, host;
 } LookupCase;
 
+
+/* ---- Windows: rules that are not whole, or not in force (Round 3) --- */
+
+static void
+test_state_windows (void)
+{
+	FsIntelConfig *c = fs_intel_config_new ();
+	FsHostNet *h = host_fixture ();
+	FsBackend win = { 0 };
+	FsIntelOutcome *o;
+	GError *e = NULL;
+	gchar *detail = NULL, *digest;
+	FsIntelState st;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+	audit_reset ();
+	fake_backend.intel_not_in_force = fake_not_in_force;
+	g_free (import_text (c, "Win", "45.0.0.1\n45.0.0.3\n",
+	                     FS_INTEL_DIR_BOTH, NULL));
+	fs_intel_config_save (c, NULL);
+
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_OK &&
+	       state_of (c, NULL) == FS_INTEL_STATE_ENFORCED,
+	       "windows states: applied and read back whole is enforced");
+	digest = o ? g_strdup (o->digest) : NULL;
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+
+	/* PARTIAL: some of our rules there, not as written. */
+	kern.live = FS_INTEL_LIVE_PARTIAL;
+	st = state_of (c, &detail);
+	CHECK (st == FS_INTEL_STATE_DIFFERS && detail &&
+	       strstr (detail, "missing or were changed"),
+	       "windows states: rules missing or edited outside StockFW read "
+	       "\"differs\", never enforced (%s)", detail);
+	g_clear_pointer (&detail, g_free);
+
+	/* Apply over PARTIAL replaces them. */
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	CHECK (o && o->result == FS_APPLY_OK && kern.apply_calls == 2 &&
+	       kern.live == FS_INTEL_LIVE_PRESENT,
+	       "windows states: an apply over partial rules writes them "
+	       "again, even with the same digest");
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+
+	/* INACTIVE: the rules are whole, the firewall does not enforce
+	 * them. */
+	kern.live = FS_INTEL_LIVE_INACTIVE;
+	kern.not_in_force = g_strdup ("Windows Firewall is off for the "
+	                              "Public profile.");
+	st = state_of (c, &detail);
+	CHECK (st == FS_INTEL_STATE_NOT_IN_FORCE &&
+	       g_strcmp0 (detail, kern.not_in_force) == 0,
+	       "windows states: whole rules the firewall does not enforce read "
+	       "\"not in force\" with the backend's reason (%s)", detail);
+	g_clear_pointer (&detail, g_free);
+	CHECK (g_strcmp0 (fs_intel_state_to_string (st), "not-in-force") == 0,
+	       "windows states: the state's name is \"not-in-force\"");
+
+	g_free (kern.live_digest);
+	kern.live_digest = g_strdup ("0123456789abcdef0123456789abcdef");
+	st = state_of (c, &detail);
+	CHECK (st == FS_INTEL_STATE_NOT_IN_FORCE && detail &&
+	       strstr (detail, "Public profile") &&
+	       strstr (detail, "not the ones StockFW last applied"),
+	       "windows states: not in force with other rules says both (%s)",
+	       detail);
+	g_clear_pointer (&detail, g_free);
+	g_free (kern.live_digest);
+	kern.live_digest = g_strdup (digest);
+
+	g_clear_pointer (&kern.not_in_force, g_free);
+	st = state_of (c, &detail);
+	CHECK (st == FS_INTEL_STATE_NOT_IN_FORCE && detail && *detail,
+	       "windows states: not in force without a reason still says so "
+	       "(%s)", detail);
+	g_clear_pointer (&detail, g_free);
+
+	/* UNKNOWN, and the platform knows nothing is enforced. */
+	kern.live_unknown = TRUE;
+	kern.not_in_force = g_strdup ("The Windows Firewall service (MpsSvc) "
+	                              "is not running.");
+	st = state_of (c, &detail);
+	CHECK (st == FS_INTEL_STATE_NOT_IN_FORCE &&
+	       detail && strstr (detail, "MpsSvc"),
+	       "windows states: rules that cannot be read with the service "
+	       "stopped read \"not in force\" (%s)", detail);
+	g_clear_pointer (&detail, g_free);
+	g_clear_pointer (&kern.not_in_force, g_free);
+	st = state_of (c, NULL);
+	CHECK (st == FS_INTEL_STATE_UNKNOWN || st == FS_INTEL_STATE_NEEDS_ROOT,
+	       "windows states: unreadable with nothing known is never "
+	       "\"not in force\" or \"enforced\" (%s)",
+	       fs_intel_state_to_string (st));
+	kern.live_unknown = FALSE;
+
+	/* An apply that leaves the rules not in force: OK, with a note
+	 * that says they block nothing yet. */
+	kern.apply_inactive = TRUE;
+	kern.not_in_force = g_strdup ("Windows Firewall is off for the "
+	                              "Public profile.");
+	kern.live = FS_INTEL_LIVE_ABSENT;
+	g_clear_pointer (&kern.live_digest, g_free);
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, &e);
+	{
+		gboolean noted = FALSE;
+
+		for (guint i = 0; o != NULL && i < o->notes->len; i++)
+			if (strstr (o->notes->pdata[i], "not in force") &&
+			    strstr (o->notes->pdata[i], "Public profile"))
+				noted = TRUE;
+		CHECK (o && o->result == FS_APPLY_OK && noted,
+		       "windows states: an apply whose rules are not enforced "
+		       "is OK and says, in its notes, that they are not in "
+		       "force");
+		/* Review T2: the page and the Status page's Start read this
+		 * field, not the notes, to never say "in force". */
+		CHECK (o && o->not_in_force != NULL &&
+		       strstr (o->not_in_force, "Public profile") != NULL,
+		       "windows states: ... and the outcome carries why "
+		       "(not_in_force: %s)", o && o->not_in_force
+		       ? o->not_in_force : "NULL");
+	}
+	fs_intel_outcome_free (o);
+	g_clear_error (&e);
+	kern.apply_inactive = FALSE;
+
+	/* Stop removes rules that are there, whole or not. */
+	kern.live = FS_INTEL_LIVE_PARTIAL;
+	kern.clear_calls = 0;
+	CHECK (fs_intel_suspend (&fake_backend, "test", &e) &&
+	       kern.clear_calls == 1 && kern.live == FS_INTEL_LIVE_ABSENT,
+	       "windows states: Stop removes partial rules too");
+	g_clear_error (&e);
+	kern.live = FS_INTEL_LIVE_INACTIVE;
+	kern.live_digest = g_strdup (digest);
+	kern.clear_calls = 0;
+	CHECK (fs_intel_suspend (&fake_backend, "test", &e) &&
+	       kern.clear_calls == 1 && kern.live == FS_INTEL_LIVE_ABSENT,
+	       "windows states: Stop removes rules that are not in force");
+	g_clear_error (&e);
+
+	/* Counts: a backend that applies but cannot count says so, never
+	 * "0 blocked". */
+	win.name = "windows-like";
+	win.intel_apply = fake_apply;
+	win.intel_clear = fake_clear;
+	win.intel_live = fake_live;
+	{
+		GHashTable *t = fs_intel_counters (&win);
+
+		CHECK (fs_intel_counts_unavailable (&win) != NULL &&
+		       strstr (fs_intel_counts_unavailable (&win),
+		               "cannot show") &&
+		       t != NULL && g_hash_table_size (t) == 0,
+		       "windows states: no counters slot -> counts are not "
+		       "available (\"%s\"), and no list gets a count of 0",
+		       fs_intel_counts_unavailable (&win));
+		g_hash_table_unref (t);
+	}
+	CHECK (fs_intel_counts_unavailable (&fake_backend) == NULL &&
+	       fs_intel_counts_unavailable (&bare_backend) == NULL,
+	       "windows states: a backend that counts, or has no blocklists "
+	       "at all, gets no such sentence");
+
+	fake_backend.intel_not_in_force = NULL;
+	g_free (digest);
+	fs_hostnet_free (h);
+	fs_intel_config_free (c);
+}
+
 static void
 test_lookup (void)
 {
@@ -3225,6 +3527,517 @@ test_lookup (void)
 	fs_intel_config_free (c);
 }
 
+/* ---- lookups answer from the kernel (design 6.6) -------------------- */
+
+typedef struct
+{
+	gboolean ok, blocked, in_force, pending, uncertain;
+	FsIntelState state;
+	gchar *kernel;     /* kernel_sources, space-separated */
+} Live;
+
+static Live
+live_lookup (const FsIntelConfig *c, const FsHostNet *h, const gchar *addr)
+{
+	FsIntelLookup r;
+	Live l = { 0 };
+	GString *k = g_string_new (NULL);
+
+	l.ok = fs_intel_lookup (c, h, addr, &r);
+	fs_intel_lookup_live (&fake_backend, c, addr, &r);
+	l.blocked = r.blocked;
+	l.in_force = r.in_force;
+	l.pending = r.pending;
+	l.uncertain = r.uncertain;
+	l.state = r.state;
+	for (guint i = 0; r.kernel_sources && i < r.kernel_sources->len; i++)
+		g_string_append_printf (k, "%s%s", i ? " " : "",
+		                        (gchar *) r.kernel_sources->pdata[i]);
+	l.kernel = g_string_free (k, FALSE);
+	fs_intel_lookup_clear (&r);
+	return l;
+}
+
+#define LIVE_CHECK(l, b, f, p, st, what) \
+	CHECK ((l).ok && (l).blocked == (b) && (l).in_force == (f) && \
+	       (l).pending == (p) && (l).state == (st), \
+	       "lookup_live: %s (blocked=%d in_force=%d pending=%d state=%s " \
+	       "kernel=[%s])", what, (l).blocked, (l).in_force, (l).pending, \
+	       fs_intel_state_to_string ((l).state), (l).kernel)
+
+static void
+apply_ok (const FsIntelConfig *c, const FsHostNet *h)
+{
+	FsIntelOutcome *o = fs_intel_apply_safe (&fake_backend, c, h, "test",
+	                                         NULL, NULL);
+
+	if (o == NULL || o->result != FS_APPLY_OK)
+		g_print ("(setup: an apply failed)\n");
+	fs_intel_outcome_free (o);
+}
+
+/* fs_intel_lookup_live on the Windows live values (merge of Round 3
+ * and the Windows enforcement): "in force" only when the rules are
+ * PRESENT with the digest last applied.  Rules the firewall does not
+ * enforce (INACTIVE), rules not whole (PARTIAL) and someone else's
+ * rules never are, and the state detail is the backend's sentence. */
+static void
+test_lookup_live_windows (void)
+{
+	FsIntelConfig *c = conf_with ("feodo");
+	FsHostNet *h = host_fixture ();
+	FsIntelLookup r = { 0 };
+	FsIntelState st;
+	gchar *detail = NULL, *good;
+	Live l;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+	/* Like the Windows backend: no counters slot, a not-in-force one. */
+	fake_backend.intel_counters = NULL;
+	fake_backend.intel_not_in_force = fake_not_in_force;
+	serve ("feodo", "45.0.0.1\n46.0.0.0/24\n");
+	g_ptr_array_unref (fs_intel_update (c, NULL, 0, NOW0));
+	fs_intel_config_save (c, NULL);
+	apply_ok (c, h);
+	good = g_strdup (kern.live_digest);
+
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, TRUE, FALSE, FS_INTEL_STATE_ENFORCED,
+	            "windows: PRESENT with the digest is in force (no counters "
+	            "slot needed)");
+	g_free (l.kernel);
+
+	kern.live = FS_INTEL_LIVE_INACTIVE;
+	kern.not_in_force = g_strdup ("Windows Firewall is off for the Public "
+	                              "profile, which the network in use has.");
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, FALSE, FS_INTEL_STATE_NOT_IN_FORCE,
+	            "windows: INACTIVE with the same digest is never in force");
+	g_free (l.kernel);
+	fs_intel_lookup (c, h, "45.0.0.1", &r);
+	fs_intel_lookup_live (&fake_backend, c, "45.0.0.1", &r);
+	CHECK (!r.in_force && r.kernel_sources->len == 0 &&
+	       g_strcmp0 (r.state_detail, kern.not_in_force) == 0,
+	       "windows: ... no list named in force, and the detail is the "
+	       "backend's sentence (%s)", r.state_detail);
+	fs_intel_lookup_clear (&r);
+
+	kern.live = FS_INTEL_LIVE_PARTIAL;
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, FALSE, FS_INTEL_STATE_DIFFERS,
+	            "windows: PARTIAL rules are never in force");
+	g_free (l.kernel);
+
+	kern.live = FS_INTEL_LIVE_PRESENT;
+	g_free (kern.live_digest);
+	kern.live_digest = g_strdup ("0123456789abcdef0123456789abcdef");
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, FALSE, FS_INTEL_STATE_DIFFERS,
+	            "windows: PRESENT with another digest is not in force");
+	g_free (l.kernel);
+
+	g_free (kern.live_digest);
+	kern.live_digest = good;
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, TRUE, FALSE, FS_INTEL_STATE_ENFORCED,
+	            "windows: back to PRESENT with the digest: in force again");
+	g_free (l.kernel);
+
+	/* No store at all (nothing ever turned on here), and rules of ours
+	 * on the firewall anyway: never "off". */
+	fresh_store ();
+	{
+		FsIntelConfig *none = fs_intel_config_new ();
+
+		kern.live = FS_INTEL_LIVE_PARTIAL;
+		st = fs_intel_state (&fake_backend, NULL, &detail);
+		CHECK (st == FS_INTEL_STATE_DIFFERS,
+		       "windows: no store, PARTIAL rules there: differs (%s)",
+		       detail);
+		g_clear_pointer (&detail, g_free);
+		kern.live = FS_INTEL_LIVE_INACTIVE;
+		st = fs_intel_state (&fake_backend, none, &detail);
+		CHECK (st == FS_INTEL_STATE_DIFFERS,
+		       "windows: no store, INACTIVE rules there: differs (%s)",
+		       detail);
+		g_clear_pointer (&detail, g_free);
+		CHECK (!fs_intel_store_exists (),
+		       "windows: ... and asking created no store");
+		fs_intel_config_free (none);
+	}
+
+	CHECK (fs_intel_counts_unavailable (&fake_backend) != NULL,
+	       "windows: a backend without counters says counts are "
+	       "unavailable");
+	kern_reset ();
+	CHECK (fs_intel_counts_unavailable (&fake_backend) == NULL,
+	       "windows: ... and one with counters does not");
+	fs_hostnet_free (h);
+	fs_intel_config_free (c);
+}
+
+static void
+test_lookup_live (void)
+{
+	FsIntelConfig *c = conf_with ("feodo");
+	FsHostNet *h = host_fixture ();
+	Live l;
+	FsIntelOutcome *o;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+	serve ("feodo", "45.0.0.1\n46.0.0.0/24\n");
+	g_ptr_array_unref (fs_intel_update (c, NULL, 0, NOW0));
+	fs_intel_config_save (c, NULL);
+
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, FALSE, FS_INTEL_STATE_NOT_LOADED,
+	            "listed, nothing applied: not in force");
+	g_free (l.kernel);
+
+	apply_ok (c, h);
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, TRUE, FALSE, FS_INTEL_STATE_ENFORCED,
+	            "applied: in force, by feodo");
+	CHECK (strcmp (l.kernel, "feodo") == 0, "  ... kernel_sources [%s]",
+	       l.kernel);
+	g_free (l.kernel);
+	l = live_lookup (c, h, "8.8.8.8");
+	LIVE_CHECK (l, FALSE, FALSE, FALSE, FS_INTEL_STATE_ENFORCED,
+	            "an address on no list");
+	g_free (l.kernel);
+
+	/* An exception saved but not applied: the kernel still blocks it. */
+	fs_range_set_add_text (c->exceptions, "45.0.0.1");
+	fs_range_set_normalize (c->exceptions);
+	fs_intel_config_save (c, NULL);
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, FALSE, TRUE, TRUE, FS_INTEL_STATE_ENFORCED,
+	            "exception not applied: not blocked by the config, still "
+	            "in force in the kernel, pending");
+	g_free (l.kernel);
+	apply_ok (c, h);
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, FALSE, FALSE, FALSE, FS_INTEL_STATE_ENFORCED,
+	            "exception applied: let through, nothing pending");
+	g_free (l.kernel);
+
+	/* The exception taken out, not applied: the kernel lets it in. */
+	fs_range_set_free (c->exceptions);
+	c->exceptions = fs_range_set_new ();
+	fs_intel_config_save (c, NULL);
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, TRUE, FS_INTEL_STATE_ENFORCED,
+	            "exception removed, not applied: would be blocked, is not");
+	g_free (l.kernel);
+	apply_ok (c, h);
+
+	/* A direction change not applied is pending; the kernel answer
+	 * stays the applied direction's. */
+	fs_intel_config_set_dir (c, "feodo", FS_INTEL_DIR_IN, NULL);
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, TRUE, TRUE, FS_INTEL_STATE_ENFORCED,
+	            "direction changed, not applied: in force, pending");
+	g_free (l.kernel);
+	fs_intel_config_set_dir (c, "feodo", FS_INTEL_DIR_BOTH, NULL);
+
+	/* Stop: nothing in the kernel. */
+	CHECK (fs_intel_suspend (&fake_backend, "test", NULL), "(suspend)");
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, FALSE, FS_INTEL_STATE_SUSPENDED,
+	            "firewall stopped: listed, not in force");
+	g_free (l.kernel);
+	o = fs_intel_resume (&fake_backend, "test", NULL, NULL);
+	fs_intel_outcome_free (o);
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, TRUE, FALSE, FS_INTEL_STATE_ENFORCED,
+	            "started again: in force");
+	g_free (l.kernel);
+
+	/* clear: not loaded. */
+	CHECK (fs_intel_clear (&fake_backend, "test", NULL), "(clear)");
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, FALSE, FS_INTEL_STATE_NOT_LOADED,
+	            "cleared: listed, not in force");
+	g_free (l.kernel);
+	apply_ok (c, h);
+
+	/* A new copy stored, not applied: what the kernel's set holds can
+	 * no longer be read, so the answer is uncertain, never "blocked". */
+	serve ("feodo", "45.0.0.1\n47.0.0.1\n");
+	g_ptr_array_unref (fs_intel_update (c, NULL, FS_INTEL_UPDATE_NOW,
+	                                    NOW0 + 10));
+	l = live_lookup (c, h, "47.0.0.1");
+	CHECK (l.blocked && !l.in_force && l.pending && l.uncertain,
+	       "lookup_live: a new copy not applied: listed, uncertain, "
+	       "pending (in_force=%d uncertain=%d)", l.in_force, l.uncertain);
+	g_free (l.kernel);
+
+	/* A table someone else loaded (differs): not in force. */
+	apply_ok (c, h);
+	g_free (kern.live_digest);
+	kern.live_digest = g_strdup ("0123456789abcdef0123456789abcdef");
+	l = live_lookup (c, h, "45.0.0.1");
+	LIVE_CHECK (l, TRUE, FALSE, FALSE, FS_INTEL_STATE_DIFFERS,
+	            "another table in the kernel: not in force");
+	g_free (l.kernel);
+
+	fs_hostnet_free (h);
+	fs_intel_config_free (c);
+}
+
+/* ---- one engine operation at a time (design 6.5) --------------------- */
+
+static GThread *racer;
+static gint     racer_done;
+static gboolean racer_ok;
+static FsIntelOutcome *racer_outcome;
+static FsIntelConfig  *racer_config;
+static FsHostNet      *racer_host;
+
+static gpointer
+stop_thread (gpointer data)
+{
+	(void) data;
+	racer_ok = fs_intel_suspend (&fake_backend, "racer", NULL);
+	g_atomic_int_set (&racer_done, 1);
+	return NULL;
+}
+
+static gpointer
+apply_thread (gpointer data)
+{
+	(void) data;
+	racer_outcome = fs_intel_apply_safe (&fake_backend, racer_config,
+	                                     racer_host, "racer", NULL, NULL);
+	g_atomic_int_set (&racer_done, 1);
+	return NULL;
+}
+
+/* Inside the apply: a Stop arrives from another thread (the Status
+ * page's worker, or `stockfw stop' in another process). */
+static gboolean racer_blocked;
+
+static void
+race_stop_during_apply (void)
+{
+	kern.during_apply = NULL;
+	g_atomic_int_set (&racer_done, 0);
+	racer = g_thread_new ("stop", stop_thread, NULL);
+	g_usleep (300 * 1000);
+	/* Still inside the lock holder: the racer must be blocked now.
+	 * (Reading racer_done after the holder returns races with the
+	 * racer finishing the moment the lock is released.) */
+	racer_blocked = !g_atomic_int_get (&racer_done);
+}
+
+static void
+race_apply_during_stop (void)
+{
+	kern.during_clear = NULL;
+	g_atomic_int_set (&racer_done, 0);
+	racer = g_thread_new ("apply", apply_thread, NULL);
+	g_usleep (300 * 1000);
+	racer_blocked = !g_atomic_int_get (&racer_done);
+}
+
+static void
+test_engine_lock (void)
+{
+	FsIntelConfig *c = fs_intel_config_new ();
+	FsHostNet *h = host_fixture ();
+	FsIntelOutcome *o;
+	gboolean waited;
+	gchar *audit, *pa, *ps;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+	audit_reset ();
+	g_free (import_text (c, "Race", "45.0.6.1\n", FS_INTEL_DIR_BOTH, NULL));
+	fs_intel_config_save (c, NULL);
+	apply_ok (c, h);
+
+	/* A Stop during an apply waits for it, then takes the lists down:
+	 * the apply never writes "enforced" over the Stop's "suspended". */
+	kern.during_apply = race_stop_during_apply;
+	racer_blocked = FALSE;
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, NULL);
+	waited = racer_blocked;
+	g_thread_join (racer);
+	audit = audit_text ();
+	pa = strstr (audit, "| intel-apply | source=test result=ok");
+	ps = strstr (audit, "| intel-suspend | source=racer result=ok");
+	CHECK (o != NULL && o->result == FS_APPLY_OK && waited && racer_ok &&
+	       kern.live == FS_INTEL_LIVE_ABSENT &&
+	       state_of (c, NULL) == FS_INTEL_STATE_SUSPENDED &&
+	       pa != NULL && ps != NULL && ps > pa,
+	       "a Stop during an apply waits for it (waited=%d), then the "
+	       "lists are down and suspended (state %s)", waited,
+	       fs_intel_state_to_string (state_of (c, NULL)));
+	g_free (audit);
+	fs_intel_outcome_free (o);
+
+	/* An apply that waited for a Stop does not load the lists behind
+	 * its back: it is held, the kernel left empty. */
+	o = fs_intel_resume (&fake_backend, "test", NULL, NULL);
+	fs_intel_outcome_free (o);
+	racer_config = c;
+	racer_host = h;
+	kern.during_clear = race_apply_during_stop;
+	racer_blocked = FALSE;
+	CHECK (fs_intel_suspend (&fake_backend, "test", NULL), "(suspend)");
+	waited = racer_blocked;
+	g_thread_join (racer);
+	CHECK (racer_outcome != NULL && racer_outcome->held &&
+	       racer_outcome->result == FS_APPLY_DRY_RUN && waited &&
+	       strstr (racer_outcome->hold_reason, "stopped while this apply "
+	               "waited") != NULL &&
+	       kern.live == FS_INTEL_LIVE_ABSENT &&
+	       state_of (c, NULL) == FS_INTEL_STATE_SUSPENDED,
+	       "an apply that waited for a Stop is held (waited=%d, %s), the "
+	       "lists stay down", waited, racer_outcome && racer_outcome->hold_reason
+	       ? racer_outcome->hold_reason : "not held");
+	fs_intel_outcome_free (racer_outcome);
+	racer_outcome = NULL;
+
+	/* An apply asked for while stopped, with no race, still goes in
+	 * (as before: `intel apply' with the firewall stopped). */
+	o = fs_intel_apply_safe (&fake_backend, c, h, "test", NULL, NULL);
+	CHECK (o != NULL && o->result == FS_APPLY_OK &&
+	       kern.live == FS_INTEL_LIVE_PRESENT,
+	       "an apply that did not wait is not held by an old Stop");
+	fs_intel_outcome_free (o);
+
+	fs_hostnet_free (h);
+	fs_intel_config_free (c);
+}
+
+/* An update downloads for minutes; a Stop in that time carries the
+ * counters into the source's state.  The update's own state write must
+ * keep them. */
+static void
+stop_during_fetch (void)
+{
+	during_fetch = NULL;
+	fs_intel_suspend (&fake_backend, "test", NULL);
+}
+
+static void
+test_update_keeps_carried (void)
+{
+	FsIntelConfig *c = conf_with ("feodo");
+	FsHostNet *h = host_fixture ();
+	FsIntelSourceState *s;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+	serve ("feodo", "45.0.8.1\n");
+	g_ptr_array_unref (fs_intel_update (c, NULL, 0, NOW0));
+	fs_intel_config_save (c, NULL);
+	apply_ok (c, h);
+	counter_set (kern.counters, "feodo", 42, 4200);
+	serve ("feodo", "45.0.8.1\n45.0.8.2\n");
+	during_fetch = stop_during_fetch;
+	g_ptr_array_unref (fs_intel_update (c, NULL, FS_INTEL_UPDATE_NOW,
+	                                    NOW0 + 60));
+	during_fetch = NULL;
+	s = fs_intel_source_state ("feodo");
+	CHECK (s != NULL && s->carried_packets == 42 && s->entries == 2,
+	       "an update during which a Stop carried the counters keeps them "
+	       "(carried %" G_GUINT64_FORMAT ", entries %u)",
+	       s ? s->carried_packets : 0, s ? s->entries : 0);
+	fs_intel_source_state_free (s);
+	fs_hostnet_free (h);
+	fs_intel_config_free (c);
+}
+
+/* ---- smaller engine fixes --------------------------------------------- */
+
+static void
+test_engine_misc (void)
+{
+	FsIntelConfig *c = fs_intel_config_new ();
+	FsIntelListConf *l;
+	GError *e = NULL;
+	gchar *id, *text, *detail = NULL;
+
+	fresh_store ();
+	net_reset ();
+	kern_reset ();
+
+	/* Re-importing a list keeps its direction (dir 0), whatever the
+	 * case or spacing of its name; a new list blocks both ways. */
+	id = import_text (c, "office bad", "45.0.7.1\n", FS_INTEL_DIR_IN, NULL);
+	g_free (id);
+	id = import_text (c, "Office  Bad", "45.0.7.2\n", 0, &e);
+	l = id != NULL ? fs_intel_config_list (c, id) : NULL;
+	CHECK (l != NULL && l->dir == FS_INTEL_DIR_IN && c->lists->len == 1,
+	       "re-import with dir 0 keeps the list's direction (in) (%s)",
+	       e ? e->message : l ? fs_intel_dir_to_string (l->dir) : "none");
+	g_clear_error (&e);
+	g_free (id);
+	id = import_text (c, "Fresh", "45.0.7.3\n", 0, NULL);
+	l = id != NULL ? fs_intel_config_list (c, id) : NULL;
+	CHECK (l != NULL && l->dir == FS_INTEL_DIR_BOTH,
+	       "a new list imported with dir 0 blocks both ways");
+	g_free (id);
+	CHECK (import_text (c, "Bad dir", "45.0.7.4\n", (FsIntelDir) 7, &e) == NULL &&
+	       e != NULL, "an invalid direction is still refused");
+	g_clear_error (&e);
+
+	/* The proxy setter. */
+	CHECK (!fs_intel_config_set_proxy (c, "http://user:pw@proxy.example:3128",
+	                                   &e) && e != NULL && c->proxy == NULL,
+	       "proxy with a password: refused, nothing set");
+	g_clear_error (&e);
+	CHECK (!fs_intel_config_set_proxy (c, "socks5://proxy.example:1080", &e) &&
+	       c->proxy == NULL, "a socks proxy: refused");
+	g_clear_error (&e);
+	CHECK (fs_intel_config_set_proxy (c, "http://proxy.example:3128", NULL) &&
+	       g_strcmp0 (c->proxy, "http://proxy.example:3128") == 0,
+	       "an http proxy: set");
+	fs_intel_config_save (c, NULL);
+	{
+		FsIntelConfig *back = fs_intel_config_load (NULL);
+
+		CHECK (back != NULL &&
+		       g_strcmp0 (back->proxy, "http://proxy.example:3128") == 0,
+		       "  ... saved as [intel] proxy= and read back");
+		fs_intel_config_free (back);
+	}
+	CHECK (fs_intel_config_set_proxy (c, "", NULL) && c->proxy == NULL,
+	       "an empty proxy: none");
+
+	/* The rule an event carries, the same for every reader. */
+	text = fs_intel_rule_text ("spamhaus-drop");
+	CHECK (g_strcmp0 (text, "Threat intel: Spamhaus DROP (IPv4)") == 0,
+	       "rule text of a catalog feed: \"%s\"", text);
+	g_free (text);
+	text = fs_intel_rule_text ("local-fresh");
+	CHECK (g_strcmp0 (text, "Threat intel: Fresh") == 0,
+	       "rule text of a local list, from the saved config: \"%s\"", text);
+	g_free (text);
+
+	/* Unknown with a reason: the backend says why the kernel could
+	 * not be read (no nft), and the state's sentence carries it. */
+	kern.live_unknown = TRUE;
+	kern.live_error = "nft was not found on PATH. Install the nftables "
+	                  "package to use blocklists.";
+	(void) state_of (c, &detail);
+	CHECK (detail != NULL && strstr (detail, "nftables package") != NULL,
+	       "unknown: the reason is in the sentence (\"%s\")", detail);
+	g_free (detail);
+	kern.live_unknown = FALSE;
+	kern.live_error = NULL;
+
+	fs_intel_config_free (c);
+}
+
 static void
 test_engine (const gchar *argv0)
 {
@@ -3236,10 +4049,15 @@ test_engine (const gchar *argv0)
 	kern_reset ();
 	net_reset ();
 	test_store_dir ();
+	/* The same checks fs-intel-windows-test runs on Windows, first:
+	 * an engine stuck on its own lock fails here, within a deadline,
+	 * before a later check that calls Start directly hangs. */
+	failures += intel_engine_checks (eng_base);
 	test_config ();
 	test_update_consent_and_network ();
 	test_update_guards ();
 	test_update_dates ();
+	test_update_grew ();
 	test_update_isolation_and_crash ();
 	test_stored_lists ();
 	test_cover6_at_cap ();
@@ -3251,7 +4069,13 @@ test_engine (const gchar *argv0)
 	test_gate_same_digest ();
 	test_gate_start_stop ();
 	test_state_rules ();
+	test_state_windows ();
 	test_lookup ();
+	test_lookup_live ();
+	test_lookup_live_windows ();
+	test_engine_lock ();
+	test_update_keeps_carried ();
+	test_engine_misc ();
 
 	fs_intel_set_fetcher (NULL, NULL);
 	rm_rf (eng_base);

@@ -75,6 +75,10 @@ const gchar *fs_profile_name (gint profile);
  * Private network".  NULL when no network is connected.  Caller frees. */
 gchar *fs_network_place_subtitle (const FsNetworkPlace *place);
 
+/* "Private network", "Public network", "Domain network" for the primary
+ * network (the tray menu's header); NULL when unknown or none. */
+const gchar *fs_network_place_kind (const FsNetworkPlace *place);
+
 /* "Windows Defender Firewall is applying the Private profile." or
  * "... the Private and Public profiles."  `engine' is the backend's
  * display name.  NULL when no profile is in use.  Caller frees. */

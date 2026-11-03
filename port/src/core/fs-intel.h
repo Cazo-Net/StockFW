@@ -66,9 +66,22 @@ enum
  * and non-root alike, only when that directory and every parent are
  * owned by the current user or by root and not writable by group or
  * others; otherwise FS_INTEL_ERR_UNSAFE_DIR.  Linux non-root with no
- * override: FS_INTEL_ERR_NEEDS_ROOT.  Windows: FS_INTEL_ERR_UNSUPPORTED
- * (Round 3).  Caller frees. */
+ * override: FS_INTEL_ERR_NEEDS_ROOT.  Windows (Round 3):
+ * %ProgramData%\StockFW\intel, Administrators and SYSTEM only, for an
+ * elevated process (FS_INTEL_ERR_NEEDS_ROOT otherwise), or
+ * $STOCKFW_INTEL_DIR under the checks of fs_winstore_dir().  Other
+ * platforms: FS_INTEL_ERR_UNSUPPORTED.  Caller frees. */
 gchar *fs_intel_dir (GError **error);
+
+/* Whether the store directory is there at all, found without creating
+ * it (fs_intel_dir creates it): FALSE means no list was ever turned on
+ * here.  The read-only surfaces (`stockfw intel status', `feeds', the
+ * dashboard, the Threat Intel page opening) ask this first and then
+ * show the defaults rather than make one.  An error other than "no
+ * such file" counts as there, so the caller's next store call says
+ * what is wrong.  Linux and Windows (fs_winstore_exists); always
+ * FALSE elsewhere. */
+gboolean fs_intel_store_exists (void);
 
 /* ---- configuration (design 6.2) ------------------------------------ */
 
@@ -93,7 +106,7 @@ typedef struct
 	gint64     imported_at;
 } FsIntelListConf;
 
-/* A location rule (design 12.3): countries or network owners (ASes)
+/* A location rule (design 13.3): countries or network owners (ASes)
  * from the location database, compiled into a set at every build. */
 typedef enum
 {
@@ -125,7 +138,7 @@ typedef struct
 	                           * catalog's direction), then custom feeds */
 	GPtrArray  *lists;        /* FsIntelListConf*                        */
 	FsRangeSet *exceptions;   /* normalized; never blocked               */
-	/* Round 2 (design 12.2): the location database and its rules.     */
+	/* Round 2 (design 13.2): the location database and its rules.     */
 	gboolean    geo_enabled;      /* download it, use it; default FALSE  */
 	gint64      geo_accepted_at;  /* its terms accepted, unix s; 0 never */
 	GPtrArray  *locations;        /* FsIntelLocationConf*                */
@@ -179,6 +192,15 @@ gboolean fs_intel_config_set_enabled (FsIntelConfig *config,
                                       const gchar *id, gboolean enabled,
                                       GError **error);
 
+/* The download proxy ([intel] proxy= in intel.conf): an http:// or
+ * https:// URL that fs_fetch_proxy_is_acceptable() takes, with no
+ * "user:pass@" (curl's argv is readable by every local user, so a
+ * credential there would be published); NULL or "" for none, so curl
+ * runs with --noproxy *.  Anything else is FS_INTEL_ERR_INVALID and
+ * changes nothing.  The config is NOT saved. */
+gboolean fs_intel_config_set_proxy (FsIntelConfig *config,
+                                    const gchar *proxy, GError **error);
+
 /* The consent text for one feed (design 8): the host contacted, how
  * often, what the host learns (this computer's public address and
  * "StockFW/<version>"), the licence or "see the terms" with the terms
@@ -196,8 +218,9 @@ gchar *fs_intel_consent_text (const FsIntelConfig *config,
  * replacing the list of that name (the same name in any case or
  * spacing).  A different name whose slug is already another list's id
  * ("Office VPN" and "office-vpn") is refused with FS_INTEL_ERR_INVALID
- * before anything is written.  The config is NOT saved: the caller
- * saves it.  *id_out (nullable) receives the id. */
+ * before anything is written.  dir 0 keeps the direction of the list
+ * it replaces (FS_INTEL_DIR_BOTH for a new one).  The config is NOT
+ * saved: the caller saves it.  *id_out (nullable) receives the id. */
 gboolean fs_intel_import_list (FsIntelConfig *config, const gchar *path,
                                const gchar *name, FsIntelDir dir,
                                FsFeedParseStats *stats, gchar **id_out,
@@ -222,6 +245,14 @@ typedef struct
 	guint64       carried_packets;/* counters carried across re-applies   */
 	guint64       carried_bytes;
 	gint64        counted_since;  /* unix s the first counter was taken   */
+	guint         refused_override; /* with `refused': the
+	                               * FS_INTEL_UPDATE_ACCEPT_* flag that
+	                               * lets that copy in (SHRINK for a
+	                               * list that shrank, emptied or went
+	                               * back in time, COVERAGE for one that
+	                               * grew); 0 when nothing overrides the
+	                               * refusal (not a list, over a cap,
+	                               * dated in the future)                 */
 } FsIntelSourceState;
 
 /* NULL when the source was never stored. */
@@ -291,7 +322,7 @@ void fs_intel_update_result_free (FsIntelUpdateResult *result);
  * FsIntelUpdateResult* in config order (GPtrArray with a free func);
  * never NULL.
  *
- * The location database (design 12.5): with only_id FS_INTEL_GEO_ID
+ * The location database (design 13.5): with only_id FS_INTEL_GEO_ID
  * just the database (FAILED, without a request, while it is off); with
  * only_id NULL it comes after the feeds while it is on.  It is
  * downloaded only with the master switch on, the database on and its
@@ -320,7 +351,7 @@ GPtrArray *fs_intel_update (const FsIntelConfig *config,
  * largest sets.  A tampered stored list: NULL with
  * FS_INTEL_ERR_TAMPERED.
  *
- * After the lists, while the location database is on (design 12.6):
+ * After the lists, while the location database is on (design 13.6):
  * one set per enabled location rule, the copy in use enumerated for its
  * countries or AS numbers, minus the same subtractions (exceptions win),
  * outbound rules also in 64:ff9b::/96.  Notes: a database not yet
@@ -346,6 +377,9 @@ typedef struct
 	guint         sets;
 	guint         count4, count6;
 	GPtrArray    *notes;      /* gchar*, from the build; never NULL     */
+	gchar        *not_in_force; /* OK, but the firewall does not enforce
+	                            * the rules (Windows: off for the
+	                            * profile in use): why; else NULL      */
 } FsIntelOutcome;
 
 void fs_intel_outcome_free (FsIntelOutcome *outcome);
@@ -353,7 +387,7 @@ void fs_intel_outcome_free (FsIntelOutcome *outcome);
 /* Every host a download contacts, to keep reachable (design 6.4,
  * [S7.2]): each enabled feed's host (a catalog feed's, or the host of a
  * custom feed's URL), the location database's host
- * (location.ipfire.org) while it is on and its terms accepted (12.5),
+ * (location.ipfire.org) while it is on and its terms accepted (13.5),
  * and -- when any of those is there and a proxy is configured -- the
  * proxy's host, since every download connects to the proxy rather than
  * to the feed.  Duplicates once.  NULL-terminated, never NULL;
@@ -394,6 +428,17 @@ FsIntelOutcome *fs_intel_apply_safe (const FsBackend *backend,
 gboolean fs_intel_suspend (const FsBackend *backend, const gchar *source,
                            GError **error);
 
+/* Remove the table now, on request (`stockfw intel clear'), the
+ * configuration untouched: the counters are carried, intel_clear runs
+ * when a table is there, and applied.state records nothing loaded (not
+ * suspended), so the state reads "not-loaded" while lists are turned on
+ * until the next apply or Start.  Otherwise as fs_intel_suspend: a
+ * missing nft is not an error when the record says StockFW left no
+ * table; no store directory is created; a no-op (TRUE) without intel
+ * slots.  One audit line ("intel-clear") when anything was done. */
+gboolean fs_intel_clear (const FsBackend *backend, const gchar *source,
+                         GError **error);
+
 /* The user started the firewall.  First applied.state stops saying
  * "suspended" (it then records nothing loaded), so a Start whose apply
  * is held, refused or fails reads "not-loaded", never "suspended";
@@ -417,11 +462,18 @@ typedef enum
 	FS_INTEL_STATE_DIFFERS,      /* a table, but not the applied one    */
 	FS_INTEL_STATE_SUSPENDED,    /* the user stopped the firewall       */
 	FS_INTEL_STATE_UNSUPPORTED,  /* no intel slots on this platform     */
-	FS_INTEL_STATE_NEEDS_ROOT    /* cannot read the kernel or the store */
+	FS_INTEL_STATE_NEEDS_ROOT,   /* cannot read the kernel or the store */
+	FS_INTEL_STATE_NOT_IN_FORCE  /* Round 3: rules there, or unreadable,
+	                              * and the platform's firewall does not
+	                              * enforce them on a network in use
+	                              * (Windows Firewall off for that
+	                              * profile, its service stopped, Group
+	                              * Policy ignoring local rules)        */
 } FsIntelState;
 
 /* "unknown" "off" "enforced" "not-loaded" "differs" "suspended"
- * "unsupported" "needs-root": the stable words for JSON and audit. */
+ * "unsupported" "needs-root" "not-in-force": the stable words for JSON
+ * and audit. */
 const gchar *fs_intel_state_to_string (FsIntelState state);
 
 /* Compare the kernel (backend->intel_live) with applied.state and the
@@ -434,15 +486,30 @@ const gchar *fs_intel_state_to_string (FsIntelState state);
  * flushed is "differs".  Not seen: elements taken out of a set, or
  * some of a list's rules removed while others remain.  Nothing turned
  * on is "off" even when the kernel cannot be read, unless applied.state
- * says StockFW left a table there. */
+ * says StockFW left a table there.  With no store directory (no list
+ * ever turned on) and no config given, nothing is created: "off", or
+ * "differs" when a table is in the kernel anyway.  Round 3 (Windows):
+ * rules that are not whole (FS_INTEL_LIVE_PARTIAL: one removed, edited
+ * or added) are "differs"; rules the firewall does not enforce on a
+ * network in use, or a firewall service that is stopped, are
+ * "not-in-force", with the backend's sentence (intel_not_in_force) as
+ * the detail. */
 FsIntelState fs_intel_state (const FsBackend *backend,
                              const FsIntelConfig *config,
                              gchar **detail);
 
 /* Blocked packets per source id: carried totals plus the live
  * counters.  gchar* -> FsIntelCounter* (owned by the table); never
- * NULL. */
+ * NULL.  With no store directory, only the live counters (none is
+ * created). */
 GHashTable *fs_intel_counters (const FsBackend *backend);
+
+/* Round 3: NULL when `backend' counts what its rules block; otherwise
+ * the sentence a surface shows instead of a count ("Windows Firewall
+ * does not count what each rule blocks, ..."), so a platform that
+ * cannot count never reads as "blocked 0".  NULL also for a backend
+ * without threat intel (the state already says unsupported). */
+const gchar *fs_intel_counts_unavailable (const FsBackend *backend);
 
 /* ---- lookup (design 6.8) -------------------------------------------- */
 
@@ -456,8 +523,8 @@ typedef struct
 	gboolean   is_exception;
 	gboolean   is_host;      /* kept reachable by `host'                 */
 	gboolean   blocked;      /* listed or located, and none of the three
-	                          * above                                    */
-	/* Round 2 (design 12.8), filled while the location database is on
+	                          * above: what the configuration asks for  */
+	/* Round 2 (design 13.8), filled while the location database is on
 	 * and a usable copy is in the store: */
 	GPtrArray *locations;    /* gchar* ids of enabled location rules
 	                          * holding it; never NULL after a lookup   */
@@ -482,6 +549,25 @@ typedef struct
 	                          * hold it; never NULL after a lookup; empty
 	                          * for an exception, protected space or
 	                          * this computer's addresses               */
+
+	/* What the kernel does, filled by fs_intel_lookup_live() only
+	 * (fs_intel_lookup leaves them zero / NULL). */
+	FsIntelState state;      /* fs_intel_state()                         */
+	gchar       *state_detail; /* its sentence                          */
+	gboolean     in_force;   /* the kernel blocks it now: the state is
+	                          * enforced and a set it was given holds it
+	                          * (minus the exceptions applied with it,
+	                          * protected space and `host')             */
+	GPtrArray   *kernel_sources; /* gchar* ids of those sets            */
+	gboolean     pending;    /* enforced, but the lists, their
+	                          * directions or the exceptions changed
+	                          * since the last apply, so `blocked' and
+	                          * `in_force' can differ until the next one */
+	gboolean     uncertain;  /* a set in the kernel was built from a copy
+	                          * of its list that is no longer stored (an
+	                          * update not applied yet): whether that set
+	                          * holds the address cannot be told, so
+	                          * `in_force' FALSE is not a "no"          */
 } FsIntelLookup;
 
 /* FALSE when `addr' is not a single address (v4, v6, v4-mapped v6).
@@ -493,10 +579,23 @@ typedef struct
  * address the database does not name, those of the IPv4 address it
  * carries, with geo_via_nat64 set).  When the copy in use cannot be
  * read while location sets are applied, `locations_unknown' names
- * them (geo_unknown).  host may be NULL. */
+ * them (geo_unknown).  This is the configuration's answer; what the
+ * kernel does is fs_intel_lookup_live().  host may be NULL. */
 gboolean fs_intel_lookup (const FsIntelConfig *config,
                           const FsHostNet *host, const gchar *addr,
                           FsIntelLookup *result);
+/* After fs_intel_lookup() on the same result: what the kernel does
+ * with the address (design 6.6: every surface shows the kernel, never
+ * just the configuration).  Reads fs_intel_state() and, when enforced,
+ * the sets applied.state says were given to the kernel, each only while
+ * its stored list is still the one it was built from (applied.state
+ * records each set's list digest and the exceptions applied with it).
+ * A location rule's set is asked through the copy of the location
+ * database in use, while that copy and the rule's values are the ones
+ * the set was built from; otherwise `uncertain'.  Creates nothing. */
+void     fs_intel_lookup_live (const FsBackend *backend,
+                               const FsIntelConfig *config,
+                               const gchar *addr, FsIntelLookup *result);
 void     fs_intel_lookup_clear (FsIntelLookup *result);
 
 /* "Blocked by threat intel: Spamhaus DROP (IPv4), Feodo Tracker" or
@@ -507,18 +606,18 @@ void     fs_intel_lookup_clear (FsIntelLookup *result);
 gchar   *fs_intel_lookup_sentence (const FsIntelConfig *config,
                                    const FsIntelLookup *result);
 
-/* ---- Round 2: the location database and location rules (design 12) - */
+/* ---- Round 2: the location database and location rules (design 13) - */
 
 /* The id of the location database in update results and labels. */
 #define FS_INTEL_GEO_ID "location"
-/* At most this many intervals over every location set (12.6). */
+/* At most this many intervals over every location set (13.6). */
 #define FS_INTEL_MAX_LOCATION_INTERVALS 500000u
 
 /* Whether country and network-owner blocking can work here: FALSE on
- * Windows until Round 3 (12.10). */
+ * Windows until Round 3 (13.10). */
 gboolean fs_intel_geo_supported (void);
 
-/* What kind of source an id names (design 12.7). */
+/* What kind of source an id names (design 13.7). */
 typedef enum
 {
 	FS_INTEL_KIND_UNKNOWN = 0,
@@ -532,12 +631,12 @@ typedef enum
 /* From the id alone (its prefix, or the catalog). */
 FsIntelSourceKind fs_intel_source_kind (const gchar *id);
 
-/* The consent text for the location database (12.2): the host, how
+/* The consent text for the location database (13.2): the host, how
  * often, what the host learns, the size, the licence status,
  * "registered in", anycast.  Plain text, translated.  Caller frees. */
 gchar *fs_intel_geo_consent_text (const FsIntelConfig *config);
 /* One line for every screen that shows location data: where it comes
- * from and its licence status (12.1).  Caller frees. */
+ * from and its licence status (13.1).  Caller frees. */
 gchar *fs_intel_geo_attribution (void);
 
 /* Turn the location database on.  Terms never accepted need
@@ -601,7 +700,7 @@ GPtrArray *fs_intel_geo_countries (GError **error);
 GPtrArray *fs_intel_geo_search_as (const gchar *query, guint max,
                                    GError **error);
 
-/* What a selection covers (design 12.6). */
+/* What a selection covers (design 13.6). */
 typedef struct
 {
 	guint   prefixes4, prefixes6;   /* the fewest CIDR prefixes          */
@@ -639,8 +738,19 @@ gboolean fs_intel_geo_lookup (const FsIntelConfig *config,
 
 /* Whether `id' is a set in the rule set last applied (and not
  * suspended): the kernel log parser accepts a "STOCKFW-TI <id>" line
- * only then [S17.3].  Cheap: cached by applied.state's mtime. */
+ * only then [S17.3], and the Threat Intel page marks a list "in force"
+ * only then.  Linux: cached by applied.state's mtime.  Windows: read
+ * each time.  FALSE without creating anything where there is no store,
+ * and always FALSE on other platforms. */
 gboolean fs_intel_applied_has (const gchar *id);
+
+/* An event's rule for a "STOCKFW-TI <id>" line: "Threat intel: <the
+ * list's name>" (catalog name, else the config's label, else the id).
+ * Names are cached: an id is the slug of its name.  Every reader of the
+ * kernel log uses it -- the backend's live feed, `stockfw events' and
+ * the dashboard's history -- so they all name a list the same way.
+ * Thread-safe; creates nothing.  Caller frees. */
+gchar   *fs_intel_rule_text (const gchar *id);
 
 G_END_DECLS
 

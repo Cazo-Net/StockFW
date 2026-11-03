@@ -25,9 +25,16 @@ gboolean       fs_statusview_policy_locked (void);
 
 void           fs_statusview_set_state (FsFirewallState state);
 FsFirewallState fs_statusview_get_state (void);
+/* Ask the backend again and, if the firewall changed state behind our
+ * back (`stockfw stop' in a terminal, Windows Firewall switched off in
+ * its own settings), show the new state here, in the sidebar and in
+ * the tray.  The tray calls it when its menu opens and on its slow
+ * timer: a menu that says "On" over a stopped firewall is worse than
+ * no menu. */
+void           fs_statusview_reread_state (void);
 
 /* After the firewall started (start TRUE) or stopped: the threat-intel
- * blocklists follow (fs_intel_resume under fs_apply_hold_reason(), or
+ * blocklists follow (fs_intel_resume under fs_intelview_hold_reason(), or
  * fs_intel_suspend), in a worker, one job at a time, in order; an
  * error dialog if they could not.  `source' names the caller in the
  * audit log. */
@@ -36,6 +43,23 @@ void           fs_statusview_intel_follow (gboolean start,
 
 /* The policy whose rules the Overview counts.  Not owned. */
 void           fs_statusview_set_policy (FsPolicy *policy);
+
+/* Start the firewall through the start gate (core/fs-apply.h), as the
+ * Overview's power button and the tray's "Resume protection" both do.
+ * Reports the outcome in a dialog over `parent' when there is one to
+ * report (held, failed, notes) and refreshes the state.  `source' names
+ * the control in the audit line.  TRUE when the firewall now runs. */
+gboolean       fs_statusview_firewall_start (GtkWidget *parent,
+                                             const gchar *source);
+
+/* Stop ("pause") the firewall: ALWAYS asks first, in a dialog that
+ * says what stopping does on this platform, with Cancel as the
+ * default.  TRUE only when the user agreed and the stop worked. */
+gboolean       fs_statusview_firewall_stop  (GtkWidget *parent,
+                                             const gchar *source);
+
+/* The confirmation's explanation for this platform (borrowed). */
+const gchar   *fs_statusview_stop_consequence (void);
 
 /* How the Overview judges the machine right now, for anything that
  * shows the same verdict elsewhere (the sidebar).  One judgement, so
@@ -69,6 +93,10 @@ void fs_statusview_note_block    (const FsHit *hit);
 /* The Recent blocks card's rows, newest first, as "title\ndetail".
  * For tests.  Free with g_strfreev. */
 gchar **fs_statusview_recent_blocks (void);
+
+/* The Threat Intel page read a new blocklist state: the verdict card
+ * says it again (fs_intelview_summary). */
+void fs_statusview_intel_changed (void);
 
 G_END_DECLS
 

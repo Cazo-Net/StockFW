@@ -1,6 +1,6 @@
 /*---[ test-intel-geo.c ]-------------------------------------------------
  * Threat intel round 2, part 2: country and network-owner (AS) rules in
- * the engine (src/core/fs-intel.c), design section 12.  The location
+ * the engine (src/core/fs-intel.c), design section 13.  The location
  * databases are written by the test (tests/geodb-writer.h) and signed
  * with a key made at run time; the reader is a test build
  * (FS_GEODB_TESTING) told that key.  The backend and both downloaders
@@ -207,7 +207,7 @@ find_base (const gchar *argv0)
 	return base != NULL;
 }
 
-/* The standard database (design 12.6's cases), made at `created':
+/* The standard database (design 13.6's cases), made at `created':
  *   198.51.100.0/24      XA  AS64500
  *   198.51.100.128/25    XB  AS64501   (more specific: XB wins)
  *   203.0.113.0/24       XA  AS64502   anycast
@@ -1567,6 +1567,58 @@ test_gate (void)
 	       "Start brings it back through the gate");
 	fs_intel_outcome_free (o);
 	g_clear_error (&e);
+
+	/* What the kernel does (fs_intel_lookup_live, from the threat-intel
+	 * branch): a location rule's set is asked through the copy of the
+	 * database it was built from, never read as a stored list. */
+	{
+		const gchar *xb[] = { "XB", NULL }, *xa[] = { "XA", NULL };
+		FsIntelLookup r;
+
+		fs_intel_lookup (c, host, "198.51.100.9", &r);
+		fs_intel_lookup_live (&fake_backend, c, "198.51.100.9", &r);
+		CHECK (r.state == FS_INTEL_STATE_ENFORCED && r.in_force &&
+		       !r.pending && !r.uncertain &&
+		       r.kernel_sources->len == 1 &&
+		       strcmp (g_ptr_array_index (r.kernel_sources, 0),
+		               "country-atlantis") == 0,
+		       "live: an address in the country set is blocked now, by "
+		       "it, and nothing is pending (in force %d, pending %d, "
+		       "uncertain %d, %u sets)", r.in_force, r.pending,
+		       r.uncertain, r.kernel_sources->len);
+		fs_intel_lookup_clear (&r);
+		fs_intel_lookup (c, host, "198.51.100.200", &r);
+		fs_intel_lookup_live (&fake_backend, c, "198.51.100.200", &r);
+		CHECK (r.state == FS_INTEL_STATE_ENFORCED && !r.in_force &&
+		       !r.pending && !r.uncertain &&
+		       r.kernel_sources->len == 0,
+		       "live: an address of another country is not blocked, "
+		       "and that is certain");
+		fs_intel_lookup_clear (&r);
+
+		/* The rule's values change, not applied yet: what the
+		 * kernel's set holds cannot be told from the rule now. */
+		fs_intel_config_set_location_values (c, "country-atlantis", xb,
+		                                     NULL);
+		fs_intel_lookup (c, host, "198.51.100.9", &r);
+		fs_intel_lookup_live (&fake_backend, c, "198.51.100.9", &r);
+		CHECK (r.pending && r.uncertain && !r.in_force,
+		       "live: the rule's countries changed since the apply: "
+		       "pending and uncertain, never a plain no");
+		fs_intel_lookup_clear (&r);
+		fs_intel_config_set_location_values (c, "country-atlantis", xa,
+		                                     NULL);
+
+		/* Turned off, not applied yet: the set is still there. */
+		fs_intel_config_set_enabled (c, "country-atlantis", FALSE, NULL);
+		fs_intel_lookup (c, host, "198.51.100.9", &r);
+		fs_intel_lookup_live (&fake_backend, c, "198.51.100.9", &r);
+		CHECK (r.pending && r.in_force && !r.blocked,
+		       "live: a rule turned off but not applied still blocks, "
+		       "and the change is pending");
+		fs_intel_lookup_clear (&r);
+		fs_intel_config_set_enabled (c, "country-atlantis", TRUE, NULL);
+	}
 
 	/* Review GEO-1: the copy in use stops verifying (or goes) after an
 	 * apply.  The kernel keeps the country set (the build fails

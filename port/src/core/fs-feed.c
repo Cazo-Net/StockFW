@@ -58,6 +58,7 @@ static const FsFeedInfo CATALOG[] = {
 		.recommended    = TRUE,
 		.includes       = NULL,
 		.has_v6         = FALSE,
+		.credit         = "The Spamhaus Project, spamhaus.org (DROP)",
 	},
 	/* Sample: 89 {"cidr":"2001:678:254::/48",...} lines and the same
 	 * metadata line ("records":89).  Terms and interval as above. */
@@ -81,6 +82,7 @@ static const FsFeedInfo CATALOG[] = {
 		.recommended    = TRUE,
 		.includes       = NULL,
 		.has_v6         = TRUE,
+		.credit         = "The Spamhaus Project, spamhaus.org (DROPv6)",
 	},
 	/* Sample: a '#' box with "# Last updated: 2026-03-04 14:28:39 UTC",
 	 * "# DstIP", one IPv4 address per line, "# END 1 entries".
@@ -108,6 +110,7 @@ static const FsFeedInfo CATALOG[] = {
 		.recommended    = TRUE,
 		.includes       = NULL,
 		.has_v6         = FALSE,
+		.credit         = "abuse.ch Feodo Tracker, feodotracker.abuse.ch",
 	},
 	/* Sample: '#' header with "#    updated: 2026-11-02T12:45:39.735756"
 	 * and "some rights reserved. Details http://creativecommons.org/
@@ -134,6 +137,7 @@ static const FsFeedInfo CATALOG[] = {
 		.recommended    = FALSE,
 		.includes       = NULL,
 		.has_v6         = FALSE,
+		.credit         = "DShield.org, SANS Internet Storm Center",
 	},
 	/* Sample: "# ipv4 hash:net ipset", "(includes: dshield feodo
 	 * fullbogons spamhaus_drop)", "# This File Date  : Sat Oct 24
@@ -169,6 +173,7 @@ static const FsFeedInfo CATALOG[] = {
 		.recommended    = FALSE,
 		.includes       = "spamhaus-drop feodo dshield",
 		.has_v6         = FALSE,
+		.credit         = "FireHOL IP lists, iplists.firehol.org",
 	},
 	/* Sample: one address per line, no comments, no date.  Export page:
 	 * "All IP addresses that have attacked one of our customers/servers
@@ -195,6 +200,7 @@ static const FsFeedInfo CATALOG[] = {
 		.recommended    = FALSE,
 		.includes       = NULL,
 		.has_v6         = TRUE,
+		.credit         = "blocklist.de",
 	},
 	/* The file could not be read with the web tools (the site refuses
 	 * robots); FireHOL's copy of it (et_compromised.ipset, source this
@@ -223,6 +229,7 @@ static const FsFeedInfo CATALOG[] = {
 		.recommended    = FALSE,
 		.includes       = NULL,
 		.has_v6         = FALSE,
+		.credit         = "Emerging Threats, emergingthreats.net",
 	},
 	/* Sample: one IPv4 address per line, no comments, no date.  The
 	 * home page: capped at 15,000 addresses, "a simple text file, with
@@ -247,6 +254,7 @@ static const FsFeedInfo CATALOG[] = {
 		.recommended    = FALSE,
 		.includes       = NULL,
 		.has_v6         = FALSE,
+		.credit         = "CINS Army list, cinsscore.com",
 	},
 	/* The Tor Project's "Latest bulk exit list" (its exit-ops notes);
 	 * the bulk exporter page names no licence or terms.  The exit
@@ -272,6 +280,7 @@ static const FsFeedInfo CATALOG[] = {
 		.recommended    = FALSE,
 		.includes       = NULL,
 		.has_v6         = FALSE,
+		.credit         = "The Tor Project, check.torproject.org",
 	},
 };
 

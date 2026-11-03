@@ -404,7 +404,7 @@ fs_intelset_nft_script (const FsIntelRuleset *ruleset)
 	 * StockFW applied [S10].  Each chain carries it too: nft 1.0.9
 	 * fetches every set element to list tables (seconds for a large
 	 * country), but lists chains without them, so the live check reads
-	 * the chains (design 12.7). */
+	 * the chains (design 13.7). */
 	digest = fs_intel_ruleset_digest (ruleset);
 	g_string_append_printf (out, "table inet " FS_INTEL_NFT_TABLE " {\n"
 	                        "\tcomment \"" FS_INTEL_DIGEST_TAG "%s\"\n",
@@ -431,12 +431,15 @@ fs_intelset_nft_script (const FsIntelRuleset *ruleset)
 	/* Every rule on its own line: nft 1.0.9 refuses a rule followed by
 	 * the closing brace on the same line [N7].  The three chains are
 	 * always there, so every reader sees one shape. */
+	/* Each chain carries the digest too: `nft -j list chains' reads it
+	 * in milliseconds, where listing the table's comment loads every
+	 * set element (seconds at 240k intervals). */
 	for (guint c = 0; c < G_N_ELEMENTS (chains); c++) {
 		g_string_append_printf (out, "\tchain %s {\n"
+		                        "\t\tcomment \"" FS_INTEL_DIGEST_TAG "%s\"\n"
 		                        "\t\ttype filter hook %s priority filter - 10; "
-		                        "policy accept;\n"
-		                        "\t\tcomment \"" FS_INTEL_DIGEST_TAG "%s\"\n",
-		                        chains[c].name, chains[c].name, digest);
+		                        "policy accept;\n",
+		                        chains[c].name, digest, chains[c].name);
 		if (chains[c].loopback != NULL)
 			g_string_append_printf (out, "\t\t%s\n", chains[c].loopback);
 
@@ -928,20 +931,21 @@ fs_intelset_nft_parse_live_state (const gchar *json, gchar **digest)
 	return FS_INTEL_LIVE_PRESENT;
 }
 
-/* ---- the same from `nft -j list chains' (design 12.7) ---------------- */
+/* ---- the same from `nft -j list chains' ---------------------------- */
 
 typedef struct
 {
-	JsonString family, table, name, comment;
-	gboolean   has_family, has_table, has_name, has_comment;
+	JsonString family, table, comment;
+	gboolean   has_family, has_table, has_comment;
 } LiveChain;
 
 typedef struct
 {
 	gboolean listing;
-	gboolean found;      /* some chain of our table                    */
-	gboolean input;      /* its input chain                            */
-	gchar   *digest;     /* from the input chain's comment             */
+	guint    chains;     /* chains of table inet stockfw_intel        */
+	guint    tagged;     /* ... that carry a digest comment           */
+	gboolean mixed;      /* two chains carry different digests        */
+	gchar   *digest;
 } ChainScan;
 
 static gboolean
@@ -958,9 +962,6 @@ live_chain_member (Json *js, const JsonString *key, guint depth,
 	} else if (json_string_is (key, "table")) {
 		slot = &c->table;
 		has = &c->has_table;
-	} else if (json_string_is (key, "name")) {
-		slot = &c->name;
-		has = &c->has_name;
 	} else if (json_string_is (key, "comment")) {
 		slot = &c->comment;
 		has = &c->has_comment;
@@ -981,21 +982,29 @@ chain_item_member (Json *js, const JsonString *key, guint depth,
 {
 	ChainScan *scan = data;
 	LiveChain c;
+	gchar *d;
 
 	if (!json_string_is (key, "chain") || !json_peek (js, '{'))
 		return json_value (js, depth);
+
 	memset (&c, 0, sizeof c);
 	if (!json_object (js, depth, live_chain_member, &c))
 		return FALSE;
-	if (!(c.has_family && c.has_table && c.has_name &&
-	      json_string_is (&c.family, "inet") &&
-	      json_string_is (&c.table, FS_INTEL_NFT_TABLE)))
+	if (!c.has_family || !c.has_table ||
+	    !json_string_is (&c.family, "inet") ||
+	    !json_string_is (&c.table, FS_INTEL_NFT_TABLE))
 		return TRUE;
-	scan->found = TRUE;
-	if (!scan->input && json_string_is (&c.name, "input")) {
-		scan->input = TRUE;
-		if (c.has_comment)
-			scan->digest = digest_from_comment (&c.comment);
+	scan->chains++;
+	d = c.has_comment ? digest_from_comment (&c.comment) : NULL;
+	if (d == NULL)
+		return TRUE;
+	scan->tagged++;
+	if (scan->digest == NULL)
+		scan->digest = d;
+	else {
+		if (strcmp (scan->digest, d) != 0)
+			scan->mixed = TRUE;
+		g_free (d);
 	}
 	return TRUE;
 }
@@ -1023,9 +1032,9 @@ chain_top_member (Json *js, const JsonString *key, guint depth,
 }
 
 FsIntelLive
-fs_intelset_nft_parse_chains_live (const gchar *json, gchar **digest)
+fs_intelset_nft_parse_live_chains (const gchar *json, gchar **digest)
 {
-	ChainScan scan = { FALSE, FALSE, FALSE, NULL };
+	ChainScan scan = { FALSE, 0, 0, FALSE, NULL };
 	Json js;
 	gboolean ok;
 
@@ -1041,8 +1050,12 @@ fs_intelset_nft_parse_chains_live (const gchar *json, gchar **digest)
 		g_free (scan.digest);
 		return FS_INTEL_LIVE_UNKNOWN;
 	}
-	if (!scan.found)
+	if (scan.chains == 0)
 		return FS_INTEL_LIVE_ABSENT;
+	/* One digest, on every chain: anything else is not a table this
+	 * StockFW wrote whole (a chain added or replaced by hand). */
+	if (scan.mixed || scan.tagged != scan.chains)
+		g_clear_pointer (&scan.digest, g_free);
 	if (digest != NULL)
 		*digest = scan.digest;
 	else

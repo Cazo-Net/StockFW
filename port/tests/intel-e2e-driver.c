@@ -31,7 +31,7 @@
  *   enable ID | disable ID    a feed or list on / off
  *   except ADDR | unexcept ADDR
  *
- * Round 2, country and network-owner rules (design section 12):
+ * Round 2, country and network-owner rules (design section 13):
  *
  *   geo-make DIR [N]          writes DIR/location.db.xz, a location
  *                             database for the test's addresses signed

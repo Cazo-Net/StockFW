@@ -1,0 +1,336 @@
+---
+title: StockFW
+head_title: StockFW · Know what your firewall will do before it does it
+description: StockFW manages the firewall built into Windows and Linux. Live events, a plain-text policy, a what-if simulator and a local copilot. No driver, no cloud, no account.
+layout: home
+---
+<section class="hero">
+	<div class="wrap hero-grid">
+		<div class="hero-copy">
+			<p class="label">Firewall manager · Windows and Linux · open source</p>
+			<h1>Know what your firewall will do <em>before it does it.</em></h1>
+			<p class="hero-sub">StockFW drives the firewall your system already has. It shows every connection that was allowed or blocked, keeps your policy as files you can read and diff, and answers “what would happen if?” before you change a thing.</p>
+			<div class="btn-row">
+				<a class="btn btn-wall" href="{{root}}download.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0 5-5m-5 5-5-5M4 19h16"/></svg>Download {{release}}</a>
+				<a class="btn btn-line" href="{{root}}docs/index.html">Read the documentation</a>
+			</div>
+			<ul class="hero-facts" aria-label="What StockFW never contains">
+				<li>No kernel driver</li>
+				<li>No cloud service</li>
+				<li>No telemetry</li>
+				<li>No silent rule changes</li>
+			</ul>
+		</div>
+
+		<div class="wi" id="wi">
+			<div class="wi-top"><span class="label">What-if simulator</span><span class="wi-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
+			<div class="wi-input"><span class="pr">stockfw simulate </span>"<span class="wi-q">allow ssh from 192.168.1.50 on port 22</span>"<span class="wi-caret" aria-hidden="true"></span></div>
+			<svg class="wi-scene" viewBox="0 0 460 150" role="img" aria-label="A packet travels from its source to the StockFW wall. The wall turns green and the packet continues when the policy allows it, or shakes red and the packet bounces back when it does not.">
+				<g class="node node-l" transform="translate(26 66)">
+					<g class="n-l-pc"><rect class="fillish" x="4" y="6" width="40" height="28" rx="3"/><path d="M14 42h20M24 34v8"/></g>
+					<g class="n-l-globe"><circle class="fillish" cx="24" cy="22" r="18"/><path d="M6 22h36M24 4c-7 6-7 30 0 36M24 4c7 6 7 30 0 36"/></g>
+				</g>
+				<text class="nlabel l-label" x="50" y="124" text-anchor="middle">192.168.1.50</text>
+				<text class="nsub l-sub" x="50" y="138" text-anchor="middle">remote host</text>
+				<line class="seg seg-l" x1="78" y1="86" x2="202" y2="86"/>
+				<line class="seg seg-r" x1="258" y1="86" x2="378" y2="86"/>
+				<g class="wall ok">
+					<rect class="wall-body" x="206" y="60" width="48" height="52" rx="3"/>
+					<path class="bricks" d="M206 73h48M206 86h48M206 99h48M222 60v13M238 73v13M222 86v13M238 99v13"/>
+					<path class="flame" d="M230 60c-9-6-10-16-3-25 1 6 4 9 7 10 1-5 0-9-2-13 8 5 12 14 8 22-2 4-6 6-10 6z"/>
+					<path class="flame-core" d="M230 59c-4-3-5-8-1-13 1 3 3 5 4 6 2 3 1 6-3 7z"/>
+				</g>
+				<g transform="translate(230 20)"><g class="badge badge-ok on"><circle r="12"/><path d="M-5 0l3.5 3.5L6-4"/></g></g>
+				<g transform="translate(230 20)"><g class="badge badge-no"><circle r="12"/><path d="M-4.5-4.5l9 9M4.5-4.5l-9 9"/></g></g>
+				<g class="node node-r glow" transform="translate(386 66)">
+					<rect class="halo" x="-6" y="-2" width="60" height="52" rx="8"/>
+					<g class="n-r-pc"><rect class="fillish" x="4" y="6" width="40" height="28" rx="3"/><path d="M14 42h20M24 34v8"/></g>
+					<g class="n-r-globe" style="display:none"><circle class="fillish" cx="24" cy="22" r="18"/><path d="M6 22h36M24 4c-7 6-7 30 0 36M24 4c7 6 7 30 0 36"/></g>
+				</g>
+				<text class="nlabel r-label" x="410" y="124" text-anchor="middle">this computer</text>
+				<text class="nsub r-sub" x="410" y="138" text-anchor="middle">local port 22</text>
+				<g class="packet" style="transform:translate(326px,74px)"><rect width="54" height="24" rx="4"/><text x="27" y="16" text-anchor="middle">TCP 22</text></g>
+			</svg>
+			<div class="wi-verdict"><span class="wi-pill ok">ALLOWED</span><span class="wi-scn">Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer</span></div>
+			<dl class="wi-detail">
+				<dt>Rule</dt><dd class="d-rule">StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)</dd>
+				<dt>Why</dt><dd class="d-why">You asked to allow this. It is already ALLOWED. Rule 'StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP)' allows it.</dd>
+				<dt>Fix</dt><dd class="d-fix">Nothing to change: this is already allowed, as you asked.</dd>
+				<dt>Exit</dt><dd class="d-exit exit-ok">0  (success)</dd>
+			</dl>
+			<div class="wi-chips" role="group" aria-label="Replay another line"></div>
+			<details class="wi-policy">
+				<summary>the example policy these verdicts were read against</summary>
+<pre><span class="k">inbound/allow-service</span>   SSH, 22, 192.168.1.0/24, admin LAN
+                        HTTPS, 443, Anyone, web server
+<span class="k">inbound/allow-from</span>      192.168.1.1, router
+                        2001:db8:1::/48, office v6
+<span class="k">outbound/deny-to</span>        198.51.100.66, known bad host
+<span class="k">outbound/deny-service</span>   Telnet, 23, Anyone, no cleartext logins</pre>
+			</details>
+			<p class="wi-note">Every verdict, reason and fix in this card is the real output of <code>stockfw simulate</code> against that policy, copied word for word. The page replays it; it does not judge anything itself.</p>
+		</div>
+	</div>
+</section>
+
+<section class="strip" aria-label="How StockFW connects to your system">
+	<div class="wrap">
+		<div class="strip-item"><span class="label">Engine on Windows</span><strong>Windows Filtering Platform</strong><span>through <code>netsh advfirewall</code> and the <code>INetFwPolicy2</code> interface, both supported by Microsoft</span></div>
+		<div class="strip-item"><span class="label">Engine on Linux</span><strong>netfilter</strong><span>through <code>iptables</code> and <code>ip6tables</code>; threat-intel sets go to nftables</span></div>
+		<div class="strip-item"><span class="label">Where events come from</span><strong>The system’s own log</strong><span>Security events 5156 and 5157 on Windows; the kernel ring buffer on Linux</span></div>
+		<div class="strip-item"><span class="label">Where your policy lives</span><strong>Plain text files</strong><span>one comma-separated file per rule kind, in your profile. Back it up by copying it.</span></div>
+	</div>
+</section>
+
+<section class="sec" id="tour">
+	<div class="wrap">
+		<div class="sec-head">
+			<p class="label">The desktop app</p>
+			<h2>Six pages. Each one answers a question you actually have.</h2>
+			<p>Every page below is a screenshot of StockFW {{version}} on Linux, in a test network that was really sending the traffic you see. Claims carry a stamp naming the automated test that proves them.</p>
+		</div>
+
+		<div class="shell">
+			<nav class="shell-rail" role="tablist" aria-label="App pages">
+				<div class="shell-brand"><img src="{{root}}assets/img/logo-64.png" alt="" width="30" height="30"><span>StockFW<small>{{version}}</small></span></div>
+				<a class="shell-tab" role="tab" href="#tour-overview" aria-controls="tour-overview" aria-selected="true" id="tab-overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4.5 6v6c0 4.5 3.2 7.6 7.5 9 4.3-1.4 7.5-4.5 7.5-9V6L12 3Z"/></svg>Overview<small>Am I protected?</small></a>
+				<a class="shell-tab" role="tab" href="#tour-events" aria-controls="tour-events" aria-selected="false" id="tab-events"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>Events<small>What just happened?</small></a>
+				<a class="shell-tab" role="tab" href="#tour-activity" aria-controls="tour-activity" aria-selected="false" id="tab-activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l5-7 4 4 5-8 4 5"/></svg>Activity<small>How much, over time?</small></a>
+				<a class="shell-tab" role="tab" href="#tour-policy" aria-controls="tour-policy" aria-selected="false" id="tab-policy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 5v14M12 5v14M19 5v14"/><circle cx="5" cy="10" r="2" fill="currentColor"/><circle cx="12" cy="15" r="2" fill="currentColor"/><circle cx="19" cy="8" r="2" fill="currentColor"/></svg>Policy<small>What will happen?</small></a>
+				<a class="shell-tab" role="tab" href="#tour-copilot" aria-controls="tour-copilot" aria-selected="false" id="tab-copilot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v10H9l-5 4V5Z"/></svg>Copilot<small>What should I do?</small></a>
+				<a class="shell-tab" role="tab" href="#tour-trust" aria-controls="tour-trust" aria-selected="false" id="tab-trust"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>Trust<small>Can I trust this file?</small></a>
+			</nav>
+
+			<div class="shell-panel active" id="tour-overview" role="tabpanel" aria-labelledby="tab-overview">
+				<div class="shell-copy">
+					<div>
+						<h3>Overview</h3>
+						<p class="q">Am I protected right now?</p>
+						<p>One sentence answers it, and says for which address families. Below it: how many connections were allowed and blocked since the app opened, what is open right now and which program owns it, your adapters, and the most recent blocks.</p>
+						<a class="more" href="{{root}}docs/overview.html">How the Overview page works</a>
+					</div>
+					<ul class="claims">
+						<li><p>IPv4 and IPv6 are reported separately. On Linux, if <code>ip6tables</code> is missing the page says “IPv6 is not filtered” and why, instead of a reassuring green.</p></li>
+						<li><p>Open connections show the owning program, read from <code>/proc</code> on Linux and the TCP table on Windows. A connection on a port something here listens on is marked inbound, not guessed from port numbers.</p>[[verified:test-core.sh]]</li>
+						<li><p>Virtual adapters (containers, VMs, VPN) are hidden by default and counted, so a laptop with Docker does not read like a server farm.</p></li>
+					</ul>
+				</div>
+				[[shot:overview|The Overview page: a green card reading “This computer is protected”, counters for inbound and outbound events, a table of open connections with their programs, the network adapters and the recent blocks.|The Overview page in StockFW 1.0.7. The traffic is real: a staged network with a scanner on the outside and two services on the inside.]]
+			</div>
+
+			<div class="shell-panel" id="tour-events" role="tabpanel" aria-labelledby="tab-events">
+				<div class="shell-copy">
+					<div>
+						<h3>Events</h3>
+						<p class="q">What just happened?</p>
+						<p>Every connection the firewall allowed or blocked, as it happens, with the program, both addresses, the port and the service name. Blocked rows are red. Type in the filter and the list narrows as you type; the count says “3 of 1200 events” so an empty result is never mistaken for a quiet firewall.</p>
+						<a class="more" href="{{root}}docs/events.html">The Events page, and turning an event into a rule</a>
+					</div>
+					<ul class="claims">
+						<li><p>Right-click a row to block or allow that destination, block that service to it, or trust an inbound source. The dialog prints the exact rule before anything is written.</p>[[verified:test_eventrule_builders]]</li>
+						<li><p>Rows land newest first by their own time stamp, duplicates are refused, and the list keeps 2,000 rows. The system log stays the archive.</p>[[verified:ui-hitview-smoke]]</li>
+						<li><p>On Linux the list is read straight from the kernel ring buffer, so it works on WSL, in containers and on systems without a syslog daemon.</p></li>
+					</ul>
+				</div>
+				[[shot:events|The Events page: 211 events in a table of time, direction, interface, port, source, destination, protocol and service; blocked rows are highlighted red.|Blocked rows in red. The filter box, the monitor switch, Clear and Refresh sit above the list.]]
+			</div>
+
+			<div class="shell-panel" id="tour-activity" role="tabpanel" aria-labelledby="tab-activity">
+				<div class="shell-copy">
+					<div>
+						<h3>Activity</h3>
+						<p class="q">How much, and when?</p>
+						<p>Two graphs over the last 15 minutes to 24 hours: allowed and blocked events per minute, and bytes per second through your adapters. A crosshair reads any point with the mouse or the arrow keys, and every graph has a table view.</p>
+						<a class="more" href="{{root}}docs/activity.html">Reading the Activity graphs</a>
+					</div>
+					<ul class="claims">
+						<li><p>Time before the app started is shaded “no data” rather than drawn as a flat zero that would look like a quiet night.</p>[[verified:fs-activity-smoke]]</li>
+						<li><p>Each event is counted at its own time, not when the app happened to read it, so a batch of history read at start-up does not become a spike.</p>[[verified:fs-activity-smoke]]</li>
+						<li><p>Throughput comes from the adapters’ own byte counters. No packet capture, no trace session, no elevation.</p>[[verified:test-core.sh]]</li>
+					</ul>
+				</div>
+				[[shot:activity|The Activity page: three tiles for blocked, allowed and current throughput, then two line graphs, Policy activity and Network I/O, with a shaded “no data” band before the app started.|Fifteen minutes of a port scan arriving while a download runs. The grey band on the left is time the app did not observe.]]
+			</div>
+
+			<div class="shell-panel" id="tour-policy" role="tabpanel" aria-labelledby="tab-policy">
+				<div class="shell-copy">
+					<div>
+						<h3>Policy</h3>
+						<p class="q">What will the firewall do?</p>
+						<p>Your rules, grouped by kind, each one a row you can read. A <strong>Covers</strong> column says whether a rule reaches IPv4, IPv6 or both, and why. Nothing reaches the firewall until you press Apply, and Apply shows you the impact first.</p>
+						<a class="more" href="{{root}}docs/policy.html">Rule kinds, the files behind them, and Apply</a>
+					</div>
+					<ul class="claims">
+						<li><p>What you save is what loads back: the policy round-trips through its files unchanged, and a row that does not parse is skipped and counted, never silently changed.</p>[[verified:test-core.sh]]</li>
+						<li><p>Apply goes through one gate: it measures the change against what is live, records what it applied, and if the firewall refuses, restores the last good policy and says whether that worked.</p>[[verified:test_apply_gate]]</li>
+						<li><p>Audit-only mode stages changes and writes the audit line while leaving the firewall untouched, so you can rehearse a policy.</p>[[verified:test_apply_gate]]</li>
+					</ul>
+				</div>
+				[[shot:policy|The Policy page: cards for “Allow connections from host”, “Allow inbound service” and “Forward service”, each a table with a Covers column reading IPv4 only, IPv6 only or IPv4 + IPv6.|Each rule says what it covers. The IPv6 range covers IPv6 only; “Anyone” covers both families.]]
+			</div>
+
+			<div class="shell-panel" id="tour-copilot" role="tabpanel" aria-labelledby="tab-copilot">
+				<div class="shell-copy">
+					<div>
+						<h3>Copilot</h3>
+						<p class="q">What should I do about it?</p>
+						<p>A local, rule-based analyst. It learns each program’s usual ports, destinations and hours, and flags the first time something steps outside them. Sentinel watches for the two signatures of a compromised program: a metronomic beacon and a fan-out scan. The What-if simulator answers a plain-language question against your real policy.</p>
+						<a class="more" href="{{root}}docs/copilot.html">Insights, Sentinel and auto-block</a>
+					</div>
+					<ul class="claims">
+						<li><p>No model, no network. The Copilot is a deterministic parser and a set of counters. It works on an air-gapped machine and cannot be prompt-injected because there is no prompt.</p>[[verified:test-core.sh]]</li>
+						<li><p>Auto-block can only ever tighten the policy, for ten minutes, with one-click undo, and never for your own network, multicast, loopback or a destination the program already used regularly.</p>[[verified:test-adversarial.sh]]</li>
+						<li><p>Every suggestion prints the literal rule and waits for your Yes. There is no “apply all”.</p>[[verified:test_insight_apply]]</li>
+					</ul>
+				</div>
+				[[shot:copilot|The Copilot page: Sentinel mode set to “Detect + auto-block”, tiles for apps learned, active insights, events analysed and policy rules, two warning insights about an unusual port and an unusual destination, and the What-if simulator box.|Two findings after a scan: a program using a port it never used, and a first contact with a new destination. Neither stages a rule by itself.]]
+			</div>
+
+			<div class="shell-panel" id="tour-trust" role="tabpanel" aria-labelledby="tab-trust">
+				<div class="shell-copy">
+					<div>
+						<h3>Trust</h3>
+						<p class="q">Can I trust this program?</p>
+						<p>Inspect any file: its SHA-256, size and date, and on Windows whether it is signed and by whom. Attest the ones you trust; the baseline tells you later if one of them changed. Scan the running processes in one click.</p>
+						<a class="more" href="{{root}}docs/trust.html">Attesting programs and reading the baseline</a>
+					</div>
+					<ul class="claims">
+						<li><p>Signature checks use <code>WinVerifyTrust</code> offline. No revocation lookups, no network, no hangs.</p>[[verified:test_trust_engine]] [[win]]</li>
+						<li><p>Hashing runs on a worker thread, one file at a time, so a two-hundred-megabyte installer never freezes the window.</p>[[verified:fs-trustview-smoke]]</li>
+						<li><p>Every attest and forget is an append-only line in the audit log, next to the policy changes.</p>[[verified:test_audit_log]]</li>
+					</ul>
+				</div>
+				[[shot:trust|The Trust page: a path box with Inspect, Refresh list and Scan processes buttons, a report for /usr/bin/nc.openbsd with its SHA-256 and “Matches the attested baseline”, and a baseline list of three programs marked in sync.|Three attested programs, all in sync with their baseline. On Linux the signature line reads “not checked” rather than guessing.]]
+			</div>
+		</div>
+	</div>
+</section>
+
+<section class="refuse" id="refuse">
+	<div class="wrap">
+		<div class="sec-head">
+			<p class="label">Design rules</p>
+			<h2>What StockFW refuses to be.</h2>
+			<p>A firewall tool is a privilege amplifier: whatever it can be tricked into applying, it applies with your rights. So the architecture is defined as much by what it leaves out as by what it does.</p>
+		</div>
+		<div class="ruleset">
+			<div class="rule"><span class="act">Never</span><span class="what">A kernel driver</span><span class="why">StockFW never touches a packet. It configures the filtering engine your operating system already runs and reads the log that engine already writes. There is no driver to crash, sign or exploit, and if StockFW stops, your firewall does not.</span></div>
+			<div class="rule"><span class="act">Never</span><span class="what">A cloud, an account, a model</span><span class="why">The Copilot is a parser and a set of counters that run on your machine. Nothing about your rules or your traffic leaves it. It works with the network cable unplugged.<br>[[verified:no network client in the source tree]]</span></div>
+			<div class="rule"><span class="act">Never</span><span class="what">Silent changes</span><span class="why">No file watcher, no auto-apply by default, no background service. The firewall moves when a human presses Apply in a window that has the right to do it, and every attempt is one line in the audit log.<br>[[verified:test_apply_gate]]</span></div>
+			<div class="rule"><span class="act">Never</span><span class="what">Rules that open more than you approved</span><span class="why">Suggestions are allow-only and print the exact rule. Auto-block is deny-only, time-boxed to ten minutes, and cannot touch rules you wrote yourself.<br>[[verified:test_sentinel_auto_gates]]</span></div>
+			<div class="rule"><span class="act">Never</span><span class="what">Shell commands</span><span class="why">Every tool StockFW runs, <code>netsh</code>, <code>iptables</code>, <code>wevtutil</code>, is started with an argument list, never a command line. A rule name cannot become a second parameter.<br>[[verified:append_spawn_arg, the exact inverse of CommandLineToArgvW]]</span></div>
+			<div class="rule"><span class="act allow">Always</span><span class="what">Your own tools</span><span class="why">The policy is text. <code>git diff</code> it, copy it to back it up, read it in Notepad. Everything StockFW knows, <code>wf.msc</code>, <code>nft list ruleset</code> and your event viewer can confirm.</span></div>
+		</div>
+	</div>
+</section>
+
+<section class="sec" id="cli">
+	<div class="wrap">
+		<div class="sec-head">
+			<p class="label">Command line and dashboard · [[linux]]</p>
+			<h2>The same engine, from a terminal.</h2>
+			<p><code>stockfw</code> drives the same policy files, simulator and apply gate as the desktop app, so a rule added in a script is the rule the Policy page shows. Every command takes <code>--json</code>, and exit codes are stable: <code>simulate</code> exits 5 when the traffic would be blocked.</p>
+		</div>
+		<div class="cli-grid">
+			<pre data-lang="term" data-title="Terminal · real output">$ stockfw status
+StockFW 1.0.7  Linux (iptables)
+
+  Firewall     ● running
+  IPv6         filtered
+  Policy       9 rules in /etc/stockfw
+  Apply mode   live
+  Monitoring   available (stockfw events -f, stockfw dashboard)
+  Adapters     eth0       192.168.1.20    ↓ 37.5 MB  ↑ 652.9 kB
+  Connections  3 active
+
+$ stockfw simulate "outbound telnet to 203.0.113.7"
+<span class="hi">BLOCKED</span>. Rule 'StockFW: Block Telnet (outbound) (TCP)' blocks it.
+Read as: host 203.0.113.7; service Telnet: TCP port 23; outbound (confidence 90%)
+
+Outbound TCP port 23 (Telnet) from this computer to 203.0.113.7: BLOCKED
+  Rule 'StockFW: Block Telnet (outbound) (TCP)' blocks it.
+  How it was decided:
+    - StockFW: Block outbound (198.51.100.66): 203.0.113.7 is not 198.51.100.66
+    =&gt; StockFW: Block Telnet (outbound) (TCP): matches: drops it
+  [open-rule] Open rule 'StockFW: Block Telnet (outbound)': Rule 'StockFW: Block Telnet (outbound)' (Outbound: deny service, row 1) blocks it. Edit or remove it on the Policy page. Without it, this is allowed.
+A simulation only: nothing was written.
+$ echo $?
+5
+
+$ stockfw events -n 3 --blocked
+TIME             VERDICT  DIR  SOURCE         DESTINATION   PORT  SERVICE      PROTO
+Nov 02 16:31:03  <span class="hi">BLOCKED</span>  in   203.0.113.51   192.168.1.20  445   Samba (SMB)  TCP
+Nov 02 16:31:04  <span class="hi">BLOCKED</span>  in   203.0.113.50   192.168.1.20  5900  VNC          TCP
+Nov 02 16:31:04  <span class="hi">BLOCKED</span>  in   198.51.100.23  192.168.1.20  3306  Unknown      TCP
+
+$ sudo stockfw apply --dry-run
+Would apply: +0 added (0 allow, 0 block), -0 removed (0 allow, 0 block), =9 unchanged
+Nothing was changed (dry run).</pre>
+			<div class="cli-side">
+				<p><code>stockfw dashboard</code> serves a read-only web page from the binary itself: the same graphs, live events, connections, the simulator and the policy, on <code>127.0.0.1</code> only, behind a token that changes every run. It is a window onto the firewall, not a way to change it: writes stay with <code>stockfw policy</code> and <code>stockfw apply</code>.</p>
+				[[shot:dashboard|The local web dashboard: a firewall tile reading Running, blocked and throughput tiles, the two graphs, recent events, active connections, the what-if simulator and the policy, all on one page.|The dashboard in a browser, served by the binary itself.]]
+				<p>[[verified:test-cli.sh, 52 checks on the dashboard’s security model]]</p>
+				<a class="btn btn-line btn-small" href="{{root}}docs/cli.html">Every command, with examples</a>
+			</div>
+		</div>
+	</div>
+</section>
+
+<section class="sec" id="platforms">
+	<div class="wrap">
+		<div class="sec-head">
+			<p class="label">Platforms</p>
+			<h2>One policy, two operating systems, no pretending.</h2>
+			<p>StockFW shows a control only where the backend underneath can honour it. Where the two platforms differ, the table says so.</p>
+		</div>
+		<div class="tbl-wrap">
+			<table class="tbl plat-tbl">
+				<thead><tr><th></th><th>Windows</th><th>Linux</th></tr></thead>
+				<tbody>
+					<tr><td>Rules are applied through</td><td><code>netsh advfirewall</code>, one argument list per rule</td><td><code>iptables-restore</code> and <code>ip6tables-restore</code>, one atomic load per family</td></tr>
+					<tr><td>Events come from</td><td>Security log events 5156 (allowed) and 5157 (blocked)</td><td>The kernel ring buffer, <code>/dev/kmsg</code>, with the policy’s own LOG rules</td></tr>
+					<tr><td>IPv6</td><td>Filtered; Windows Firewall covers both families</td><td>Filtered with the same policy, neighbour discovery always allowed</td></tr>
+					<tr><td>Firewall profiles</td><td>Domain, Private and Public, switched from the Overview</td><td>One firewall state</td></tr>
+					<tr><td>Preferences pages offered</td><td>ICMP Filtering, Advanced Options</td><td>Network, ICMP, ToS, Advanced</td></tr>
+					<tr><td>Program signatures (Trust)</td><td>Authenticode, offline</td><td>Hash and baseline only; signature reads “not checked”</td></tr>
+					<tr><td>Command line and dashboard</td><td>Not yet; the desktop app is the front end</td><td><code>stockfw</code> with every command and <code>--json</code></td></tr>
+					<tr><td>Threat-intel blocklists and country blocking</td><td>Not on Windows; the Threat Intel page says so</td><td>nftables sets built from the feeds and countries you enable</td></tr>
+					<tr><td>Install</td><td>NSIS installer with the GTK runtime bundled</td><td>Tarball with <code>install.sh</code>; GTK from your distribution</td></tr>
+				</tbody>
+			</table>
+		</div>
+	</div>
+</section>
+
+<section class="sec" id="next">
+	<div class="wrap">
+		<div class="sec-head">
+			<p class="label">New in {{version}}</p>
+			<h2>What 1.0.7 adds.</h2>
+			<p>The biggest changes in this release. The <a href="{{root}}changelog.html">changelog</a> has the full list, and the documentation covers each in depth.</p>
+		</div>
+		<div class="next-grid">
+			<div class="next-card"><h3>IPv6 on Linux</h3><p>One policy loaded into both families in one step, rolled back together if either half is refused. Neighbour discovery, router adverts and DHCPv6 replies always pass.</p></div>
+			<div class="next-card"><h3>The redesigned desktop app</h3><p>A sidebar, an Overview that answers “am I protected?” in one sentence, and every page rebuilt as cards. The screenshots on this site are of it.</p></div>
+			<div class="next-card"><h3>What each rule covers</h3><p>A Covers column on the Policy page, an IPv6 line on the Overview, and <code>covers</code> in the CLI’s JSON, so a rule can never silently apply to fewer addresses than you think.</p></div>
+			<div class="next-card"><h3>Threat-intel blocklists</h3><p>Opt in to well-known feeds such as Spamhaus DROP and abuse.ch Feodo Tracker. StockFW downloads, checks and loads them into nftables sets; events say which list blocked a connection. Off until you turn it on.</p></div>
+			<div class="next-card"><h3>Country and network-owner blocking</h3><p>Block by registered country or by the network that announces an address, from an offline, signed location database. The picker warns about anycast networks.</p></div>
+			<div class="next-card"><h3>Background mode and the tray</h3><p>Keep protecting after the window closes, with a tray menu that shows state and recent blocks. The Preferences dialog and the What-if window match the new look.</p></div>
+		</div>
+	</div>
+</section>
+
+<section class="dl-band">
+	<div class="wrap">
+		<div class="dl-card">
+			<div>
+				<h2>Install it in a minute.</h2>
+				<p>StockFW {{release}} for Windows and Linux: an installer, a Linux tarball and checksums on GitHub, or build the same code from source in a few commands.</p>
+			</div>
+			<div class="btn-row">
+				<a class="btn btn-wall" href="{{root}}download.html">Download {{release}}</a>
+				<a class="btn btn-line" href="{{root}}docs/index.html">Documentation</a>
+			</div>
+		</div>
+	</div>
+</section>

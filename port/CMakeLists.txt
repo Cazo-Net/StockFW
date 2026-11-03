@@ -44,6 +44,7 @@ add_library(fs-core STATIC
   src/core/fs-settings-plan.c
   src/core/fs-service.c
   src/core/fs-fwrule.c
+  src/core/fs-whatif.c
   src/core/fs-copilot.c
   src/core/fs-eventrule.c
   src/core/fs-audit.c
@@ -55,12 +56,18 @@ add_library(fs-core STATIC
   src/core/fs-iprange.c
   src/core/fs-nftset.c
   src/core/fs-netplace.c
+  src/core/fs-autoblock.c
+  src/core/fs-instance.c
+  src/core/fs-autostart.c
+  src/core/fs-blocktally.c
   src/core/fs-intelset.c
   src/core/fs-feed.c
   src/core/fs-fetch.c
   src/core/fs-hostnet.c
   src/core/fs-intel.c
   src/core/fs-geodb.c
+  src/core/fs-intelwin.c
+  src/core/fs-winstore.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3 PkgConfig::GEODB)
@@ -78,13 +85,19 @@ target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB)
 target_compile_definitions(fs-core-nogui PRIVATE
                            FS_VERSION="${PROJECT_VERSION}")
 if(WIN32)
-  target_link_libraries(fs-core-nogui PUBLIC ws2_32)
+  target_link_libraries(fs-core-nogui PUBLIC ws2_32 iphlpapi advapi32 shell32
+                        ole32 oleaut32)
 endif()
 
 # core/ uses getnameinfo()/inet_pton() for reverse lookups; Windows keeps
-# those in ws2_32, POSIX has them in libc.
+# those in ws2_32, POSIX has them in libc.  iphlpapi (the adapter and TCP
+# tables fs-hostnet reads), advapi32 (the threat-intel store's ACLs) and
+# shell32 (its %ProgramData% lookup) are Windows system libraries: no
+# package to install, nothing to stage.  fs-autostart.c registers the
+# sign-in task through the Task Scheduler's COM API: ole32 + oleaut32.
 if(WIN32)
-  target_link_libraries(fs-core PUBLIC ws2_32)
+  target_link_libraries(fs-core PUBLIC ws2_32 iphlpapi advapi32 shell32
+                        ole32 oleaut32)
 endif()
 
 # -------------------------------------------------------------- platform
@@ -126,11 +139,38 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/ui/fs-theme-css.h.in"
 set_property(DIRECTORY APPEND PROPERTY
              CMAKE_CONFIGURE_DEPENDS src/ui/fs-theme.css)
 
+# The two licence texts at the top of the repository, compiled into
+# fs-licence-text.h (build tree) for the About window's "View licence".
+# COPYING has form feeds between its pages; they are dropped.
+string(ASCII 12 FS_FORM_FEED)
+foreach(FS_LIC COPYING LICENSE)
+  set(FS_LIC_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../${FS_LIC}")
+  if(EXISTS "${FS_LIC_PATH}")
+    file(READ "${FS_LIC_PATH}" FS_LIC_TEXT)
+    set_property(DIRECTORY APPEND PROPERTY
+                 CMAKE_CONFIGURE_DEPENDS "${FS_LIC_PATH}")
+  else()
+    set(FS_LIC_TEXT "${FS_LIC} was not found when this copy was built. It is at the top of the StockFW source.")
+  endif()
+  string(REPLACE "\\" "\\\\" FS_LIC_TEXT "${FS_LIC_TEXT}")
+  string(REPLACE "\"" "\\\"" FS_LIC_TEXT "${FS_LIC_TEXT}")
+  string(REPLACE "\r" ""    FS_LIC_TEXT "${FS_LIC_TEXT}")
+  string(REPLACE "${FS_FORM_FEED}" "" FS_LIC_TEXT "${FS_LIC_TEXT}")
+  string(REPLACE "\n" "\\n" FS_LIC_TEXT "${FS_LIC_TEXT}")
+  set(FS_LICENCE_${FS_LIC} "${FS_LIC_TEXT}")
+endforeach()
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/ui/fs-licence-text.h.in"
+               "${CMAKE_CURRENT_BINARY_DIR}/fs-licence-text.h" @ONLY)
+
 # -------------------------------------------------------------------- app
 add_executable(StockFW
   src/main.c
   src/ui/fs-app.c
   src/ui/fs-dialogs.c
+  src/ui/fs-aboutdialog.c
+  src/ui/fs-prefsdialog.c
+  src/ui/fs-helpwindow.c
+  src/ui/fs-helpcontent.c
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
@@ -138,6 +178,7 @@ add_executable(StockFW
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
+  src/ui/fs-intelview.c
   src/ui/fs-tray.c
   src/ui/fs-icons.c
   ${FS_BACKEND_SOURCES}
@@ -220,6 +261,7 @@ if(FS_PLATFORM STREQUAL "linux")
   add_executable(stockfw
     src/cli/fs-cli-main.c
     src/cli/fs-cli-cmds.c
+    src/cli/fs-cli-intel.c
     src/cli/fs-dashboard.c
     ${FS_BACKEND_SOURCES}
   )
@@ -240,6 +282,10 @@ endif()
 set(FS_UI_ONLY_SOURCES
   src/ui/fs-app.c
   src/ui/fs-dialogs.c
+  src/ui/fs-aboutdialog.c
+  src/ui/fs-prefsdialog.c
+  src/ui/fs-helpwindow.c
+  src/ui/fs-helpcontent.c
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
@@ -247,6 +293,7 @@ set(FS_UI_ONLY_SOURCES
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
   src/ui/fs-trustview.c
+  src/ui/fs-intelview.c
   src/ui/fs-tray.c
   src/ui/fs-icons.c
 )
@@ -264,6 +311,23 @@ target_compile_definitions(fs-ui-smoke PRIVATE
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-ui-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+
+# The Preferences window against a fake backend that answers once as
+# the Linux backend and once as the Windows one, so both platforms'
+# page sets, the honest hiding, the device choosers and the
+# changed-only save are exercised on any machine.  The test supplies
+# fs_backend() itself, hence the UI sources without a backend.
+add_executable(fs-prefs-fake-smoke EXCLUDE_FROM_ALL
+  tests/ui-prefs-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-prefs-fake-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-prefs-fake-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-prefs-fake-smoke PRIVATE
+  FS_PREFS_FAKE_BACKEND
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
 
 # The Events page and its reason strip.  Separate from fs-ui-smoke
 # because building the page starts the platform event source, which
@@ -332,6 +396,24 @@ target_compile_definitions(fs-trustview-smoke PRIVATE
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-trustview-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+
+# The Help window and the About window (1.0.7), on the real main window
+# with its files in a scratch directory: F1 and app.help, every topic,
+# search, links, Preferences' Help, one instance, the About credits and
+# licence, Copy system info, and contrast under a dark theme.
+add_executable(fs-help-smoke EXCLUDE_FROM_ALL
+  tests/ui-help-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_include_directories(fs-help-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-help-smoke PRIVATE fs-core PkgConfig::GTK3 m)
+target_compile_definitions(fs-help-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-help-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-hitview-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
@@ -362,9 +444,21 @@ endif()
 # directly against scratch files -- the incident class (expiry loops,
 # orphaned rows, an Allow a block outranks) lives exactly there and
 # fs-core cannot see any of it.
+# On Windows the smoke supplies fs_backend() itself: the real backend
+# is compiled under another name (tests/ui-copilot-backend-win.c) and
+# the What-If section swaps in a Windows-shaped stand-in with a known
+# state, since Windows has no network namespace to isolate it in.
+if(FS_PLATFORM STREQUAL "windows")
+  set(FS_COPILOT_SMOKE_BACKEND
+      tests/ui-copilot-backend-win.c
+      src/platform/windows/fs-trust-win.c)
+else()
+  set(FS_COPILOT_SMOKE_BACKEND ${FS_BACKEND_SOURCES})
+endif()
 add_executable(fs-copilot-smoke EXCLUDE_FROM_ALL
   tests/ui-copilot-smoke.c
-  ${FS_UI_SOURCES}
+  ${FS_UI_ONLY_SOURCES}
+  ${FS_COPILOT_SMOKE_BACKEND}
 )
 target_include_directories(fs-copilot-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-copilot-smoke PRIVATE fs-core PkgConfig::GTK3)
@@ -385,6 +479,7 @@ add_executable(fs-simviz-smoke EXCLUDE_FROM_ALL
   tests/ui-simviz-smoke.c
   src/ui/fs-simviz.c
 )
+target_include_directories(fs-simviz-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-simviz-smoke PRIVATE fs-core PkgConfig::GTK3)
 
 # The light theme's teeth: src/ui/fs-theme.css compiled to
@@ -406,6 +501,16 @@ target_link_libraries(fs-theme-smoke PRIVATE PkgConfig::GTK3)
 # anywhere the core builds.  `ninja fs-intel-test'.
 add_executable(fs-intel-test EXCLUDE_FROM_ALL tests/test-intel.c)
 target_link_libraries(fs-intel-test PRIVATE fs-core-nogui)
+# Threat intel on the real Windows Firewall (Round 3, design 11): the
+# Windows backend's intel slots, every rule read back through
+# INetFwRules.  Needs an elevated shell (prints SKIP otherwise).
+# `ninja fs-intel-windows-test'; tests/full-suite.sh runs it on Windows.
+if(WIN32)
+  add_executable(fs-intel-windows-test EXCLUDE_FROM_ALL
+    tests/test-intel-windows.c ${FS_BACKEND_SOURCES})
+  target_link_libraries(fs-intel-windows-test PRIVATE fs-core-nogui
+                        ${FS_BACKEND_LIBS})
+endif()
 # Driver for tests/test-nftset.sh (real nft in a network namespace).
 add_executable(fs-nftset-load EXCLUDE_FROM_ALL tests/nftset-load.c)
 target_link_libraries(fs-nftset-load PRIVATE fs-core-nogui)
@@ -413,6 +518,11 @@ target_link_libraries(fs-nftset-load PRIVATE fs-core-nogui)
 # "profile in use is off" judgement (test-netplace.c).  GLib only.
 add_executable(fs-netplace-test EXCLUDE_FROM_ALL tests/test-netplace.c)
 target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)
+# The What-If engine's golden table: the reading of a line, both firewall
+# models, the Linux model pinned to the generator's chains, and the
+# fixes it offers (test-whatif.c; test-core.sh runs it too).  GLib only.
+add_executable(fs-whatif-test EXCLUDE_FROM_ALL tests/test-whatif.c)
+target_link_libraries(fs-whatif-test PRIVATE fs-core-nogui)
 # The Overview against a fake backend that answers the way Windows does
 # (profiles, the profile in use, the network's name), so the Windows
 # half of the page is exercised on any platform.  The test supplies
@@ -428,6 +538,65 @@ target_compile_definitions(fs-overview-place-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
   FS_PLATFORM_NAME="${FS_PLATFORM}"
 )
+# Startup safety (1.0.7): the real fs_app_activate() against a fake
+# Linux-shaped backend that records the policy it is handed at start,
+# so "start on program startup" can never again install the empty
+# policy it was handed before the Policy page loaded the real one, and
+# Sentinel's expired blocks really come off the firewall at launch.
+# Runs one process per scenario; supplies fs_backend() itself.
+add_executable(fs-startup-smoke EXCLUDE_FROM_ALL
+  tests/ui-startup-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-startup-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-startup-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-startup-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-startup-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
+# The tray menu (1.0.7) against the real app: every row worked the way
+# a click would, with a fake backend that records starts and stops and
+# hands back the app's event callback, so a blocked event runs through
+# the whole pipeline into "Blocked today" and Recent blocks.  Supplies
+# fs_backend() itself.
+add_executable(fs-traymenu-smoke EXCLUDE_FROM_ALL
+  tests/ui-traymenu-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-traymenu-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-traymenu-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-traymenu-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-traymenu-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
+
+# Session safety (1.0.7) against the real app: the periodic save writes
+# only what changed and retries a failed Sentinel list write, query-end
+# writes everything without holding up the logout, and a quit that
+# arrives under a running dialog frees nothing under it.  Supplies
+# fs_backend() itself.
+add_executable(fs-session-smoke EXCLUDE_FROM_ALL
+  tests/ui-session-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-session-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-session-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-session-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-session-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
 
 # ---------------------------------------- 1.0.7 threat intel, round 1
 # Design: docs/1.0.7-threat-intel-design.md (revision 2).  Every target
@@ -489,6 +658,46 @@ if(FS_PLATFORM STREQUAL "linux")
                              FS_FETCH_TESTING=1
                              FS_GEODB_TESTING=1
                              FS_VERSION="${PROJECT_VERSION}")
+  # `stockfw intel' end to end (tests/test-intel-cli.sh): the real CLI
+  # sources and release backend, with a copy of fs-fetch.c compiled with
+  # FS_FETCH_TESTING so $STOCKFW_TEST_CACERT can name the test server's
+  # CA (the fs-intel-e2e-driver arrangement).  Never installed: the
+  # `stockfw' that ships has no test hook.
+  add_executable(stockfw-intel-test EXCLUDE_FROM_ALL
+    src/cli/fs-cli-main.c
+    src/cli/fs-cli-cmds.c
+    src/cli/fs-cli-intel.c
+    src/cli/fs-dashboard.c
+    src/core/fs-fetch.c
+    ${FS_BACKEND_SOURCES}
+  )
+  target_include_directories(stockfw-intel-test PRIVATE
+                             "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(stockfw-intel-test PRIVATE fs-core-nogui
+                        PkgConfig::GIO)
+  target_compile_definitions(stockfw-intel-test PRIVATE
+                             FS_FETCH_TESTING=1
+                             FS_VERSION="${PROJECT_VERSION}")
+endif()
+
+# The Threat Intel page (1.0.7) and the Events page's blocklist
+# attribution, against a fake intel backend (fs_intelview_set_backend)
+# and a fake downloader: every state of the page, consent, refusals and
+# their override, the editors, lookup, Add exception, and that the
+# work runs off the main loop.  INTEL_SMOKE_SHOTS=<dir> writes a PNG of
+# each state.  Run under xvfb-run as root or with STOCKFW_TEST_SAFE_DIR.
+add_executable(fs-intelview-smoke EXCLUDE_FROM_ALL
+  tests/ui-intelview-smoke.c
+  ${FS_UI_SOURCES}
+)
+target_include_directories(fs-intelview-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-intelview-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-intelview-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-intelview-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
 
 # ---------------------------------------- 1.0.7 threat intel, round 2
@@ -509,7 +718,7 @@ target_compile_definitions(fs-geodb-test PRIVATE FS_GEODB_TESTING=1
                            FS_FETCH_TESTING=1
                            FS_VERSION="${PROJECT_VERSION}")
 # Country and network-owner rules in the engine (tests/test-intel-geo.c,
-# design section 12): databases written and signed by the test
+# design section 13): databases written and signed by the test
 # (tests/geodb-writer.h), a fake backend and fake downloaders.  Its own
 # copy of fs-geodb.c, compiled with FS_GEODB_TESTING so the reader
 # trusts the key the test makes.  `ninja fs-intel-geo-test'.

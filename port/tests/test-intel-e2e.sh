@@ -64,7 +64,7 @@
 #     at all, a Stop creates none;
 #   - the master switch off clears the table, no request is made, the
 #     carried counts stay; one audit line per attempt;
-#   - country and network-owner rules (design section 12), from a
+#   - country and network-owner rules (design section 13), from a
 #     location database the driver writes and signs: no rule without
 #     consent and no download while the database is off; the signed copy
 #     is stored 0600; a country rule (in), an AS rule (out) and a country
@@ -658,8 +658,12 @@ CLI="${STOCKFW_CLI:-$PORT/build-linux/stockfw}"
 CLI_RAN=0
 if [ -x "$CLI" ] && command -v iptables >/dev/null; then
   CLI_RAN=1
-  mkdir -p "$W/config"
-  cli() { PATH="$W/log:$PATH" XDG_CONFIG_HOME="$W/config" "$CLI" "$@"; }
+  mkdir -p "$W/config" "$W/clirules"
+  cli() { PATH="$W/log:$PATH" XDG_CONFIG_HOME="$W/config" STOCKFW_RULES_DIR="$W/clirules" "$CLI" "$@"; }
+  # `stockfw start' refuses to start with no policy saved and none
+  # applied before (the start gate): give it one rule of its own, in
+  # the scratch directory, never /etc/stockfw.
+  cli -q policy add inbound-allow-service SSH 22 Anyone > /dev/null
   out="$(cli stop)"; rc=$?
   check '[ $rc -eq 0 ] && grep -q -x "Firewall stopped." <<<"$out" && [ "$(live)" = absent ] && grep -q "^suspended: " <<<"$(drv state)"' \
         "stockfw stop: the firewall stops, the lists are removed and suspended ($out)"
@@ -726,7 +730,7 @@ check '[ $CLI_RAN = 0 ] || { [ "$(grep -c " | intel-suspend | source=cli result=
       "the command line's stops and starts are audited as source=cli"
 
 # ----------------------------- 12. country and network-owner rules
-# Design section 12.  The driver writes a location database for this
+# Design section 13.  The driver writes a location database for this
 # test's addresses (198.51.100.0/25 Atlantis XA AS64500, .128/25
 # Brigadoon XB AS64501, 203.0.113.0/24 Cockaigne XC anycast, this
 # computer's 192.0.2.0/24 XA, 2001:db8:a::/48 XA, 2001:db8:b::/48 XB)
@@ -897,7 +901,7 @@ fi
 
 # A large country loads, and is read back, within the backend's
 # timeouts.  `nft list tables' fetches every element (seconds here), so
-# the state check reads the digest from the chains (design 12.7).
+# the state check reads the digest from the chains (design 13.7).
 check '[ "$(drv geo-rule Large country XL in | head -1)" = "added country-large" ]' "a rule for Large ($GEO_LARGE networks)"
 t0=$(date +%s%N)
 out="$(apply)"

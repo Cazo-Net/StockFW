@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Install on Windows · StockFW</title>
+<meta name="description" content="Installing StockFW on Windows 10 or 11, running it with and without administrator rights, enabling monitoring, and where it keeps its files.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Install on Windows · StockFW">
+<meta property="og:description" content="Installing StockFW on Windows 10 or 11, running it with and without administrator rights, enabling monitoring, and where it keeps its files.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html" aria-current="page"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Get started
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Get started</p>
+		<article class="prose">
+<h1>Install on Windows</h1>
+<p class="lede">StockFW ships as a single installer that includes everything it needs. Installing takes a minute; the only decision is where to put it.</p>
+
+<h2 id="before-you-start">Before you start<a class="anchor" href="#before-you-start" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>Windows 10 or Windows 11, 64-bit.</li>
+<li>Windows Defender Firewall must exist. It always does, even when another security product is installed; StockFW manages the Windows engine, not a third-party one.</li>
+<li>An administrator account for installing, and for changing rules later. Reading events and editing the policy on disk do not need it.</li>
+</ul>
+
+<h2 id="run-the-installer">Run the installer<a class="anchor" href="#run-the-installer" aria-label="Link to this section">#</a></h2>
+<ol class="steps">
+<li><strong>Download and check it</strong><p>Get <code>StockFW-1.0.7-Setup.exe</code> and <code>SHA256SUMS.txt</code> from the <a href="../download.html">download page</a>. In PowerShell, <code>Get-FileHash .\StockFW-1.0.7-Setup.exe</code> must print the hash listed for it.</p></li>
+<li><strong>Get past SmartScreen</strong><p>The installer is not code-signed yet, so Windows shows “Windows protected your PC”. Choose <em>More info</em>, then <em>Run anyway</em>. You checked the hash; that is what the signature would have told you.</p></li>
+<li><strong>Accept the licence and choose a folder</strong><p>The default is <code>C:\Program Files\StockFW</code>. Keep it under Program Files if you can: that folder is writable only by administrators, which is part of what makes the elevated launcher safe to use.</p></li>
+<li><strong>Choose components</strong><p><em>Main Application</em> is required. <em>Desktop Shortcut</em> adds a shortcut to the ordinary, non-elevated app.</p></li>
+<li><strong>Finish</strong><p>The installer can start StockFW for you. The first start is a good moment to open the elevated copy once, so monitoring gets switched on (below).</p></li>
+</ol>
+
+<h2 id="what-gets-installed">What gets installed<a class="anchor" href="#what-gets-installed" aria-label="Link to this section">#</a></h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Where</th><th>What</th></tr></thead>
+<tbody>
+<tr><td><code>C:\<wbr>Program Files\<wbr>StockFW\<wbr>StockFW.exe</code></td><td>The application. Its manifest says <code>asInvoker</code>: it runs with the rights of whoever starts it and never raises them itself.</td></tr>
+<tr><td><code>…\<wbr>StockFW\<wbr>*.dll</code>, <code>lib\</code>, <code>share\</code>, <code>etc\</code></td><td>The GTK 3 runtime, complete, so the app does not depend on anything else on the machine.</td></tr>
+<tr><td><code>…\<wbr>StockFW\<wbr>StockFW-elevated.vbs</code>, <code>.cmd</code>, <code>.ps1</code></td><td>The elevated launchers. Each finds <code>StockFW.exe</code> next to itself and asks Windows for administrator rights with a normal UAC prompt.</td></tr>
+<tr><td><code>…\<wbr>StockFW\<wbr>README.md</code>, <code>CHANGELOG.md</code></td><td>The project README and release notes.</td></tr>
+<tr><td>Start menu › StockFW</td><td><em>StockFW</em>, <em>StockFW (Elevated)</em>, <em>Documentation</em>, <em>Uninstall</em>.</td></tr>
+<tr><td>Registry, <code>HKLM\<wbr>Software\<wbr>StockFW</code></td><td>The install folder, and the usual entry under <em>Apps &amp; features</em>.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="two-ways-to-run-it">Two ways to run it<a class="anchor" href="#two-ways-to-run-it" aria-label="Link to this section">#</a></h2>
+<h3 id="normal-the-stockfw-shortcut">Normal: the “StockFW” shortcut<a class="anchor" href="#normal-the-stockfw-shortcut" aria-label="Link to this section">#</a></h3>
+<p>Runs with your own rights. You can watch events (once monitoring is enabled), browse and edit the policy, run the simulator, inspect and attest programs, and change preferences. You cannot change the firewall: pressing <strong>Apply</strong>, <strong>Start</strong> or a profile switch fails with a clear message, “Administrator privileges required”, and the change stays saved for later. Nothing is half-applied.</p>
+<h3 id="elevated-the-stockfw-elevated-shortcut">Elevated: the “StockFW (Elevated)” shortcut<a class="anchor" href="#elevated-the-stockfw-elevated-shortcut" aria-label="Link to this section">#</a></h3>
+<p>Shows a UAC prompt, then runs with administrator rights. Apply, Start and Stop, the profile switches and Sentinel’s auto-block all work. Windows itself protects this window: a program running with ordinary rights cannot send it clicks or keystrokes.</p>
+<div class="callout note">
+<span class="label">How the launcher stays safe</span>
+<p>The launcher resolves every path relative to its own folder, never from <code>%TEMP%</code>, your profile or the registry, and it refuses to start if the GTK runtime is not beside the executable instead of searching for one elsewhere. An earlier version added a build folder to <code>PATH</code>; that was removed, because a user-writable folder on an administrator’s search path is how a planted DLL gets loaded. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-installer-spawn.sh</span></p>
+</div>
+
+<h2 id="enable-monitoring">Enable monitoring<a class="anchor" href="#enable-monitoring" aria-label="Link to this section">#</a></h2>
+<p>Windows writes a firewall event for every connection only when the audit policy asks it to. On its first elevated run StockFW enables the <em>Filtering Platform Connection</em> subcategory with <code>auditpol</code>; running it again is harmless. After that, events 5156 (allowed) and 5157 (blocked) appear in the Security log and on the Events page.</p>
+<p>If the Events page says monitoring is not enabled, open the elevated app once, or run this in an administrator PowerShell:</p>
+<div class="code" data-copy="commands"><div class="code-head"><span>PowerShell</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">PS> </span><span class="cmd">auditpol /set /subcategory:"Filtering Platform Connection" /success:enable /failure:enable</span></code></pre></div>
+<p>This is the one machine setting StockFW changes that is not a firewall rule, and the app says so when it does it.</p>
+
+<h2 id="where-stockfw-keeps-its-files">Where StockFW keeps its files<a class="anchor" href="#where-stockfw-keeps-its-files" aria-label="Link to this section">#</a></h2>
+<p>Everything is yours to read, copy or delete. Nothing is hidden in a database.</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>File</th><th>Holds</th></tr></thead>
+<tbody>
+<tr><td><code>%LOCALAPPDATA%\<wbr>stockfw\<wbr>inbound\<wbr>…</code>, <code>outbound\<wbr>…</code></td><td>The policy, one file per rule kind. See <a href="../docs/files.html">Files and formats</a>.</td></tr>
+<tr><td><code>%LOCALAPPDATA%\<wbr>stockfw\<wbr>applied.csv</code></td><td>The last policy the firewall accepted: the journal Apply measures against and rolls back to.</td></tr>
+<tr><td><code>%APPDATA%\<wbr>stockfw\<wbr>stockfw.conf</code></td><td>Preferences.</td></tr>
+<tr><td><code>%APPDATA%\<wbr>stockfw\<wbr>audit.log</code></td><td>One line per apply, attest, forget and Sentinel action. Append-only.</td></tr>
+<tr><td><code>%APPDATA%\<wbr>stockfw\<wbr>trust.csv</code>, <code>behavior.csv</code>, <code>autoblocks</code></td><td>The Trust baseline, the Copilot’s learned behaviour, and Sentinel’s staged blocks.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Rules StockFW creates in Windows Firewall are named <code>StockFW-…</code> (policy rules) and <code>StockFW …</code> (Preferences rules), so you can find them in <code>wf.msc</code>.</p>
+
+<h2 id="update">Update<a class="anchor" href="#update" aria-label="Link to this section">#</a></h2>
+<p>Run the new installer over the old one. Your policy, preferences and baselines are in your profile, not in the install folder, so they are kept.</p>
+
+<h2 id="uninstall">Uninstall<a class="anchor" href="#uninstall" aria-label="Link to this section">#</a></h2>
+<p><em>Settings › Apps</em>, or <em>Uninstall</em> in the Start menu folder. The uninstaller removes the program, the runtime and the shortcuts. It does not remove the firewall rules StockFW created or your files in <code>%APPDATA%</code> and <code>%LOCALAPPDATA%</code>; press <strong>Stop firewall</strong> in the app before uninstalling if you want the rules gone, or delete the <code>StockFW-…</code> rules in <code>wf.msc</code>.</p>
+
+<h2 id="build-it-yourself">Build it yourself<a class="anchor" href="#build-it-yourself" aria-label="Link to this section">#</a></h2>
+<p>StockFW builds on Windows with MSYS2 in about five commands. See <a href="../download.html#build-windows">Build on Windows</a>.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/index.html"><span>Previous</span><strong>Documentation</strong></a><a class="next" href="../docs/install-linux.html"><span>Next</span><strong>Install on Linux</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/install-windows.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#before-you-start">Before you start</a></li>
+			<li class="lvl2"><a href="#run-the-installer">Run the installer</a></li>
+			<li class="lvl2"><a href="#what-gets-installed">What gets installed</a></li>
+			<li class="lvl2"><a href="#two-ways-to-run-it">Two ways to run it</a></li>
+			<li class="lvl3"><a href="#normal-the-stockfw-shortcut">Normal: the “StockFW” shortcut</a></li>
+			<li class="lvl3"><a href="#elevated-the-stockfw-elevated-shortcut">Elevated: the “StockFW (Elevated)” shortcut</a></li>
+			<li class="lvl2"><a href="#enable-monitoring">Enable monitoring</a></li>
+			<li class="lvl2"><a href="#where-stockfw-keeps-its-files">Where StockFW keeps its files</a></li>
+			<li class="lvl2"><a href="#update">Update</a></li>
+			<li class="lvl2"><a href="#uninstall">Uninstall</a></li>
+			<li class="lvl2"><a href="#build-it-yourself">Build it yourself</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stock Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

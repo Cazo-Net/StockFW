@@ -24,6 +24,7 @@
 #include "core/fs-netparse.h"
 #include "core/fs-i18n.h"
 #include "core/fs-script.h"
+#include "core/fs-intel.h"
 #include "core/fs-intelset.h"
 #include "core/fs-nftset.h"
 
@@ -276,6 +277,12 @@ linux_available (void)
 static FsFirewallState
 linux_get_state (void)
 {
+	/* Without root iptables cannot be read at all.  That is "unknown",
+	 * not "stopped": the boot unit may well have the rules in force
+	 * while a copy without root (the one started at sign-in) looks. */
+	if (geteuid () != 0)
+		return FS_FW_NONE;
+
 	if (!chain_exists ())
 		return FS_FW_STOPPED;
 
@@ -726,7 +733,7 @@ load_family (const Family *f, const FsRestorePart *part, FamilySnap *snap,
 	 * unconditionally would send container and VM traffic, which their
 	 * own runtimes accept in other tables, into INBOUND's default drop
 	 * -- traffic that worked while IPv6 was not filtered at all. */
-	if (f->family == FS_FAMILY_IPV4 || (s != NULL && s->nat)) {
+	if (f->family == FS_FAMILY_IPV4 || fs_settings_sharing (s)) {
 		if (!ensure_jump (f, "filter", "FORWARD", "INBOUND")) {
 			*why = g_strdup ("could not hook INBOUND into FORWARD");
 			return FALSE;
@@ -880,7 +887,7 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 	if (result == FS_APPLY_OK) {
 		legacy_cleanup ();
 
-		if (current_settings->nat) {
+		if (fs_settings_sharing (current_settings)) {
 			linux_sysctl_forwarding ();
 			if (do6 && plan->v6.nat != NULL)
 				linux_sysctl_forwarding6 (current_settings->ext_device);
@@ -1097,22 +1104,29 @@ intel_ready (GError **error)
 }
 
 /* [ intel_read_live ]
- * The table in the kernel now.  First `nft -j list chains': nft 1.0.9
- * lists chains without fetching a set element, while `list tables'
- * fetches every one (11 to 13 s with 600,000 elements, past the
- * listing timeout: design 12.7).  Our chains carry the digest in their
- * comments.  Only when no chain of ours is listed does it ask `nft -j
- * list tables', to tell "no table" (cheap) from "a table whose chains
- * were deleted".  UNKNOWN, with error, when it cannot be read -- never
+ * The table in the kernel now.  First `nft -j list chains inet': the
+ * script puts the digest on every chain, and listing chains never
+ * loads a set element (milliseconds; `nft -j list tables' loads them
+ * all: about 2 s at 240k intervals, 11 to 13 s with a large country's
+ * 600,000 elements, past the listing timeout -- design 13.7).  Any
+ * other answer is read again from `nft -j list tables': a table whose
+ * chains carry no common digest (an older StockFW's, or changed by
+ * hand) by its own comment, and no chain of ours at all because a
+ * table without chains still is a table -- that listing is cheap when
+ * there is no table, so the common "not loaded" case stays fast.  A
+ * table found that way with no chain of ours blocks nothing, whatever
+ * its comment says: present, with no digest, so it reads "differs".
+ * UNKNOWN, with error, when it cannot be read -- never
  * ABSENT: a listing nobody could read says nothing about the kernel.
  * *digest (caller frees) is set only for PRESENT, and may still be
  * NULL then. */
 static FsIntelLive
 intel_read_live (gchar **digest, GError **error)
 {
-	static const gchar *const chains[] = { "-j", "list", "chains", NULL };
+	static const gchar *const chains[] = { "-j", "list", "chains", "inet",
+	                                       NULL };
 	static const gchar *const tables[] = { "-j", "list", "tables", NULL };
-	FsIntelLive live;
+	FsIntelLive live, by_chains;
 	gchar *json;
 
 	*digest = NULL;
@@ -1123,16 +1137,17 @@ intel_read_live (gchar **digest, GError **error)
 	                       error);
 	if (json == NULL)
 		return FS_INTEL_LIVE_UNKNOWN;
-	live = fs_intelset_nft_parse_chains_live (json, digest);
+	by_chains = fs_intelset_nft_parse_live_chains (json, digest);
 	g_free (json);
-	if (live == FS_INTEL_LIVE_UNKNOWN) {
+	if (by_chains == FS_INTEL_LIVE_UNKNOWN) {
 		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
 		                     "nft printed a chain listing that could not "
 		                     "be read");
-		return live;
+		return by_chains;
 	}
-	if (live == FS_INTEL_LIVE_PRESENT)
-		return live;
+	if (by_chains == FS_INTEL_LIVE_PRESENT && *digest != NULL)
+		return by_chains;
+	g_clear_pointer (digest, g_free);
 
 	json = fs_nft_capture (tables, intel_timeout (INTEL_LIST_TIMEOUT_MS),
 	                       error);
@@ -1145,7 +1160,7 @@ intel_read_live (gchar **digest, GError **error)
 		                     "be read");
 	/* A table with no chain of ours blocks nothing, whatever its own
 	 * comment says: present, with no digest, so it reads "differs". */
-	if (live == FS_INTEL_LIVE_PRESENT)
+	if (live == FS_INTEL_LIVE_PRESENT && by_chains == FS_INTEL_LIVE_ABSENT)
 		g_clear_pointer (digest, g_free);
 	g_free (json);
 	return live;
@@ -1404,18 +1419,32 @@ linux_intel_counters (void)
 	return counters;
 }
 
+/* Why this thread's last linux_intel_live was UNKNOWN. */
+static GPrivate live_error = G_PRIVATE_INIT (g_free);
+
 /* [ linux_intel_live ] -- see FsBackend.intel_live. */
 static FsIntelLive
 linux_intel_live (gchar **digest)
 {
 	gchar *have = NULL;
-	FsIntelLive live = intel_read_live (&have, NULL);
+	GError *error = NULL;
+	FsIntelLive live = intel_read_live (&have, &error);
 
+	g_private_replace (&live_error, live == FS_INTEL_LIVE_UNKNOWN &&
+	                   error != NULL ? g_strdup (error->message) : NULL);
+	g_clear_error (&error);
 	if (digest != NULL)
 		*digest = have;
 	else
 		g_free (have);
 	return live;
+}
+
+/* [ linux_intel_live_error ] -- see FsBackend.intel_live_error. */
+static gchar *
+linux_intel_live_error (void)
+{
+	return g_strdup (g_private_get (&live_error));
 }
 
 static GList *
@@ -1809,8 +1838,30 @@ static void
 deliver_log_line (const gchar *line)
 {
 	FsHit hit = { 0 };
+	gchar *intel_id = NULL;
 
-	if (*line == '\0' || !fs_netparse_log_line (line, &hit, NULL))
+	if (*line == '\0')
+		return;
+
+	/* A threat-intel block (design 7): shown only when the id is a set
+	 * of the rule set StockFW applied, so a stale or invented
+	 * "STOCKFW-TI" line is never attributed to a list [S17.3]. */
+	if (fs_netparse_intel_line (line, &hit, NULL, &intel_id)) {
+		if (!fs_intel_applied_has (intel_id)) {
+			g_free (intel_id);
+			fs_netparse_clear_hit (&hit);
+			return;
+		}
+		fs_netparse_name_blocked (&hit);
+		hit.rule = fs_intel_rule_text (intel_id);
+		g_free (intel_id);
+		if (log_callback != NULL)
+			log_callback (&hit, log_user_data);
+		fs_netparse_clear_hit (&hit);
+		return;
+	}
+
+	if (!fs_netparse_log_line (line, &hit, NULL))
 		return;
 
 	/* DROP/REJECT lines are blocked packets; since 1.0.7 the policy's
@@ -2232,16 +2283,21 @@ fs_backend_set_context (FsPolicy *policy, FsSettings *settings)
 static const FsBackend linux_backend = {
 	.name                  = "linux",
 	.display_name          = "Linux (iptables)",
-	/* Every Firewall sub-page: the generator reads all four (ToS is
-	 * offered as an admitted-dead page, matching the original's
-	 * layout).  REJECT vs DROP is a real iptables choice, and the
-	 * ICMP rules carry -m limit. */
+	/* Every settings page: the generator reads all three.  REJECT vs
+	 * DROP is a real iptables choice, the ICMP rules carry -m limit,
+	 * the outbound default is ours to set, and the ICMP choices are
+	 * the whole story for both families.  linux_start applies the
+	 * whole policy, so Start brings saved settings in too. */
 	.fw_sections           = FS_FWSEC_NETWORK | FS_FWSEC_ICMP |
-	                         FS_FWSEC_TOS | FS_FWSEC_ADVANCED,
+	                         FS_FWSEC_ADVANCED,
 	.fw_honors             = FS_FWHON_REJECT_METHOD |
 	                         FS_FWHON_RATE_LIMIT |
 	                         FS_FWHON_LOG_ALLOWED |
-	                         FS_FWHON_HOST_NAMES,
+	                         FS_FWHON_HOST_NAMES |
+	                         FS_FWHON_OUTBOUND_MODE |
+	                         FS_FWHON_ICMP_EXACT,
+	/* linux_start is linux_apply_rules (current_policy). */
+	.start_applies_policy  = TRUE,
 	.available             = linux_available,
 	.get_state             = linux_get_state,
 	.start                 = linux_start,
@@ -2265,7 +2321,8 @@ static const FsBackend linux_backend = {
 	.intel_apply           = linux_intel_apply,
 	.intel_clear           = linux_intel_clear,
 	.intel_counters        = linux_intel_counters,
-	.intel_live            = linux_intel_live
+	.intel_live            = linux_intel_live,
+	.intel_live_error      = linux_intel_live_error
 };
 
 const FsBackend *

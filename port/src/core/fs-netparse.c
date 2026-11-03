@@ -4,6 +4,7 @@
  * and the core suite exercises it headless.
  *--------------------------------------------------------------------*/
 #include "core/fs-netparse.h"
+#include "core/fs-intelset.h"
 #include "core/fs-service.h"
 
 #include <gio/gio.h>
@@ -197,8 +198,14 @@ fs_netparse_log_verdict (const gchar *line)
 	return verdict;
 }
 
-gboolean
-fs_netparse_log_line (const gchar *line, FsHit *hit, GDateTime *now)
+/* [ parse_line ]
+ * The policy's lines (intel_id NULL) start at a STOCKFW-DROP/-REJECT/
+ * -ALLOW marker; the threat-intel table's (intel_id set) at
+ * "STOCKFW-TI <id>", where the id must pass fs_intel_id_is_valid().
+ * Each reader takes only its own lines, so a reader that knows nothing
+ * of the lists never shows one as a policy block. */
+static gboolean
+parse_line (const gchar *line, FsHit *hit, GDateTime *now, gchar **intel_id)
 {
 	FsHit parsed = { 0 };
 	gchar **tokens;
@@ -218,8 +225,21 @@ fs_netparse_log_line (const gchar *line, FsHit *hit, GDateTime *now)
 		if (*token == '\0')
 			continue;
 
-		if (token_is_marker (token)) {
+		if (intel_id == NULL && token_is_marker (token)) {
 			is_ours = TRUE;
+			continue;
+		}
+
+		/* "STOCKFW-TI" and the id are two words: the prefix nft
+		 * logs is "STOCKFW-TI <id> ".  The first marker wins. */
+		if (intel_id != NULL && !is_ours &&
+		    g_str_has_suffix (token, "STOCKFW-TI")) {
+			if (tokens[i + 1] == NULL ||
+			    !fs_intel_id_is_valid (tokens[i + 1]))
+				break;
+			*intel_id = g_strdup (tokens[i + 1]);
+			is_ours = TRUE;
+			i++;
 			continue;
 		}
 
@@ -299,6 +319,31 @@ fs_netparse_log_line (const gchar *line, FsHit *hit, GDateTime *now)
 	g_date_time_unref (clock);
 
 	*hit = parsed;
+	return TRUE;
+}
+
+gboolean
+fs_netparse_log_line (const gchar *line, FsHit *hit, GDateTime *now)
+{
+	return parse_line (line, hit, now, NULL);
+}
+
+gboolean
+fs_netparse_intel_line (const gchar *line, FsHit *hit, GDateTime *now,
+                        gchar **id)
+{
+	gchar *found = NULL;
+
+	if (id != NULL)
+		*id = NULL;
+	if (!parse_line (line, hit, now, &found)) {
+		g_free (found);
+		return FALSE;
+	}
+	if (id != NULL)
+		*id = found;
+	else
+		g_free (found);
 	return TRUE;
 }
 
