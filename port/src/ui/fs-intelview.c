@@ -590,9 +590,6 @@ is_root (void)
 #endif
 }
 
-/* Whether the config asks for any list (the engine's want_any): with
- * none, rules still there are the user's own "off" not yet applied,
- * or someone else's, never a change to lists that are on. */
 /* The location database is in use (the engine's geo_usable). */
 static gboolean
 geo_on (const FsIntelConfig *config)
@@ -601,6 +598,9 @@ geo_on (const FsIntelConfig *config)
 	       config->geo_accepted_at > 0 && fs_intel_geo_supported ();
 }
 
+/* Whether the config asks for any list (the engine's want_any): with
+ * none, rules still there are the user's own "off" not yet applied,
+ * or someone else's, never a change to lists that are on. */
 static gboolean
 config_wants (const FsIntelConfig *config)
 {
@@ -2570,6 +2570,7 @@ geo_rule_row (const Snapshot *s, const FsIntelLocationConf *l,
 		g_free (name);
 		gtk_box_pack_start (GTK_BOX (head), warn, FALSE, FALSE, 0);
 	}
+	g_free (any);
 	gtk_box_pack_start (GTK_BOX (text), head, FALSE, FALSE, 0);
 
 	x = geo_values_text (s, l);

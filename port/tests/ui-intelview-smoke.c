@@ -890,10 +890,14 @@ geo_pick (const gchar *text)
 	GtkTreeModel *model = gtk_entry_completion_get_model (c);
 	GtkTreeIter it;
 	gboolean handled = FALSE;
+	gboolean found = geo_row (model, text, &it, NULL);
 
-	CHECK (geo_row (model, text, &it, NULL),
-	       "geo: \"%s\" is in the picker's list", text);
-	g_signal_emit_by_name (c, "match-selected", model, &it, &handled);
+	CHECK (found, "geo: \"%s\" is in the picker's list", text);
+	/* A row that is not there is a failure above, never a click on
+	 * an iterator that points nowhere. */
+	if (found)
+		g_signal_emit_by_name (c, "match-selected", model, &it,
+		                       &handled);
 }
 
 static gboolean

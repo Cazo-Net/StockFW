@@ -2912,9 +2912,13 @@ curl runs as nobody, so the files are world-readable.
   `location` object.
 - `fs-help-smoke` H8, above.
 
-Each check below was seen failing with its bug put back in a copy of
-the source; the copy was then restored with `cp` and checked with
-`cmp`.
+Each check below was seen failing with its bug put back in the source
+(the original kept in a copy); the file was then restored from the
+copy with `cp` and checked with `cmp`.  The table was re-run in full
+after the work-in-progress commit, on the tree as committed.  `geo_pick`
+in the smoke no longer emits "match-selected" for a row it did not
+find: with the countries bug put back, the smoke used to crash on an
+unset iterator instead of reporting the failures.
 
 | bug put back | test | check that fails |
 |---|---|---|
@@ -2930,6 +2934,8 @@ the source; the copy was then restored with `cp` and checked with
 | the page never shows the anycast chip | fs-intelview-smoke | `geo: a rule whose set holds an anycast network carries the warning, with the count on hover` |
 | the card's licence line empty | fs-intelview-smoke | `geo: the card carries the licence line` |
 | the card's controls shown where the platform has none | fs-intelview-smoke | `geo: a platform without it shows its sentence (...) and no control` |
+| the picker's countries never filled from the copy in use (`geo_fill_countries` returns at once) | fs-intelview-smoke | `geo: the picker lists the database's 7 countries, code and name`, `geo: "Netherlands (NL)" is in the picker's list`, and the add that follows |
+| Block ignores the direction chosen (always both) | fs-intelview-smoke | `geo: its row names the country and the direction (...)` |
 | the "Not in this build" callout put back on the threat-intel topic | fs-help-smoke | `[H8] no "Not in this build" callout in any topic ...`, `[H8] the threat-intel topic shows "Countries and networks" ...` |
 | the anycast mark's name left out of the help | fs-help-smoke | `[H8] countries: the anycast warning and its mark` |
 | the help says "not available on Windows yet" | fs-help-smoke | `[H8] countries: Windows does not support it, said as a limit` |
