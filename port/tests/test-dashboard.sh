@@ -1,9 +1,17 @@
 #!/bin/bash
-# The dashboard's HTTP server (src/cli/fs-dash-http.c), end to end:
-# the checks made at accept time (peer address and peer uid), the slots
-# and deadlines that keep slow senders from locking the user out, and
-# the request checks (Host, Upgrade, Transfer-Encoding, Content-Length).
-# docs/ARCHITECTURE-AND-SECURITY.md 15.3.1.
+# The dashboard's server and credentials, end to end (PR 2; docs
+# ARCHITECTURE-AND-SECURITY.md 15.3):
+#   - the HTTP server (src/cli/fs-dash-http.c, 15.3.1): the checks made
+#     at accept time (peer address and peer uid), the slots and
+#     deadlines that keep slow senders from locking the user out, and
+#     the request checks (Host, Upgrade, Transfer-Encoding,
+#     Content-Length);
+#   - the credentials (src/cli/fs-dash-auth.c, 15.3.2): launch codes,
+#     sessions, the link printed only to a terminal, `dashboard link',
+#     the Origin and Sec-Fetch checks, --origin-port, WSL and
+#     --allow-windows, the new headers; the session rules on a test
+#     clock (the stockfw-dash-test build and fs-dash-auth-test);
+#   - the page (15.3.3): it sends the session header.
 #
 # The dashboard serves one account: its own, or SUDO_UID under sudo,
 # never uid 0.  As root this script runs it the way sudo does, with
@@ -26,22 +34,12 @@ fi
 
 BUILD="${STOCKFW_BUILD:-$PORT/build-linux}"
 if ! { cmake -S . -B "$BUILD" -G Ninja > /dev/null &&
-       cmake --build "$BUILD" --target stockfw > /dev/null; }; then
-  echo "FAIL: could not build stockfw in $BUILD"
+       cmake --build "$BUILD" --target stockfw stockfw-dash-test \
+             fs-dash-auth-test > /dev/null; }; then
+  echo "FAIL: could not build stockfw, stockfw-dash-test and fs-dash-auth-test in $BUILD"
   echo "FAILED: 1 failure(s)"
   exit 1
 fi
-S="$BUILD/stockfw"
-
-# A copy the other accounts can run, in a directory they can read.
-W="$(mktemp -d /tmp/stockfw-dashtest-XXXXXX)"; chmod 755 "$W"
-cp "$S" "$W/stockfw"; chmod 755 "$W/stockfw"
-DASH_PID=""
-cleanup () {
-  [ -n "$DASH_PID" ] && kill "$DASH_PID" 2>/dev/null
-  rm -rf "$W"
-}
-trap cleanup EXIT
 
 fails=0
 check () {   # check <description> <command...>
@@ -54,6 +52,29 @@ check () {   # check <description> <command...>
   fi
 }
 
+# ----------------------------------------------------- the session rules
+# fs-dash-auth.c on a clock the test moves (codes, 12 h reads, the
+# 15 minute write rule, reuse, the caps).
+"$BUILD/fs-dash-auth-test" > "$BUILD/dash-auth-test.log" 2>&1
+auth_rc=$?
+sed 's/^/  unit: /' "$BUILD/dash-auth-test.log"
+check "fs-dash-auth-test: the session rules on a test clock" [ "$auth_rc" = 0 ]
+
+# A copy the other accounts can run, in a directory they can read.
+W="$(mktemp -d /tmp/stockfw-dashtest-XXXXXX)"; chmod 755 "$W"
+cp "$BUILD/stockfw" "$W/stockfw"; chmod 755 "$W/stockfw"
+cp "$BUILD/stockfw-dash-test" "$W/stockfw-test"; chmod 755 "$W/stockfw-test"
+DASH_PID=""
+stop_dash () {
+  [ -n "$DASH_PID" ] && { kill "$DASH_PID" 2>/dev/null; wait "$DASH_PID" 2>/dev/null; }
+  DASH_PID=""
+}
+cleanup () {
+  stop_dash
+  rm -rf "$W"
+}
+trap cleanup EXIT
+
 ROOT=0
 [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null && ROOT=1
 if [ "$ROOT" = 1 ]; then
@@ -61,49 +82,226 @@ if [ "$ROOT" = 1 ]; then
   as_user () { setpriv --reuid=$USER_UID --regid=$USER_UID --clear-groups "$@"; }
   as_nobody () { setpriv --reuid=65534 --regid=65534 --clear-groups "$@"; }
   START=(env SUDO_UID=$USER_UID)
+  AS="setpriv --reuid=$USER_UID --regid=$USER_UID --clear-groups"
 else
   USER_UID="$(id -u)"
   as_user () { "$@"; }
   START=(env)
+  AS=""
 fi
 
+# The user's runtime directory: launch files and the link socket.
+RUN="$W/run"
+mkdir -m 700 "$RUN"
+[ "$ROOT" = 1 ] && chown "$USER_UID:$USER_UID" "$RUN"
+export XDG_RUNTIME_DIR="$RUN"
 export STOCKFW_RULES_DIR="$W/rules"
 export XDG_CONFIG_HOME="$W/cfg"
 export STOCKFW_LOG_FILE="$W/kern.log"
 : > "$W/kern.log"
 
-DPORT=$(python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
-"${START[@]}" "$W/stockfw" dashboard --no-open --port "$DPORT" > "$W/dash.txt" 2>&1 &
-DASH_PID=$!
-for _ in $(seq 1 50); do
-  grep -q '#token=' "$W/dash.txt" 2>/dev/null && break
-  sleep 0.1
-done
-URL=$(grep -o 'http://[^ ]*' "$W/dash.txt")
-TOKEN=${URL##*#token=}
-B="http://127.0.0.1:$DPORT"
-check "the dashboard started (port $DPORT)" bash -c "[[ '$TOKEN' =~ ^[0-9a-f]{32}$ ]]"
+check "the release build has no test hooks (no STOCKFW_TEST_ variable in stockfw)" \
+  bash -c "! grep -qa 'STOCKFW_TEST_' '$W/stockfw' && grep -qa 'STOCKFW_TEST_CLOCK_FILE' '$W/stockfw-test'"
 
+free_port () { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+
+# start_dash <binary> <port> [args...]: stdout to $W/dash.txt (a pipe,
+# not a terminal); LINK_FILE is the launch file it names.
+start_dash () {
+  local bin="$1" port="$2"; shift 2
+  "${START[@]}" "$bin" dashboard --no-open --port "$port" "$@" > "$W/dash.txt" 2>&1 &
+  DASH_PID=$!
+  for _ in $(seq 1 50); do
+    grep -q 'Ctrl-C' "$W/dash.txt" 2>/dev/null && break
+    sleep 0.1
+  done
+  LINK_FILE=$(sed -n 's/^  Link file   //p' "$W/dash.txt")
+}
+code_in () { grep -oE '#code=[0-9a-f]{32}' "$1" 2>/dev/null | head -1 | cut -d= -f2; }
+# new_code: a code from `stockfw dashboard link', run as the user with
+# stdout piped (it prints the launch file's path).
+new_code () { code_in "$(as_user "$W/stockfw" dashboard link "$@" 2>/dev/null)"; }
+
+# post <port> <body> [curl args...]: a POST to /api/session as the
+# user; prints the status, the body goes to $W/body.
+post () {
+  local port="$1" body="$2"; shift 2
+  as_user curl -sS -o - -w '\n%{http_code}' -X POST --data-binary "$body" "$@" \
+    "http://127.0.0.1:$port/api/session" > "$W/resp" 2>/dev/null
+  tail -n1 "$W/resp"; sed '$d' "$W/resp" > "$W/body"
+}
+# The headers a browser's fetch from the page itself sends.
+page_hdrs () {  # page_hdrs <origin port>
+  PAGE=(-H "Origin: http://127.0.0.1:$1" -H 'Sec-Fetch-Site: same-origin'
+        -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty'
+        -H 'Content-Type: application/json')
+}
+# session <port> <code> [curl args]: the key, or nothing.
+session () {
+  local port="$1" code="$2"; shift 2
+  page_hdrs "$port"
+  [ "$(post "$port" "{\"code\":\"$code\"}" "${PAGE[@]}" "$@")" = 200 ] &&
+    python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["session"])' "$W/body"
+}
 # code <curl args...>: the status code of a request made as the user.
 code () { as_user curl -sS -o /dev/null -w '%{http_code}' "$@" 2>/dev/null; }
 upy () { as_user python3 -I -c "$1"; }
+no_long_hex () { ! grep -qE '[0-9a-f]{32,}' "$1"; }
 
-check "the user's own request is answered (200, as uid $USER_UID)" \
-  [ "$(code -H "X-StockFW-Token: $TOKEN" "$B/api/summary")" = 200 ]
+DPORT=$(free_port)
+B="http://127.0.0.1:$DPORT"
+start_dash "$W/stockfw" "$DPORT"
+FP=$(sed -n 's/^  Fingerprint \([0-9A-F-]*\) .*/\1/p' "$W/dash.txt")
+check "the dashboard started (port $DPORT) and names a launch file" \
+  bash -c "[ -n '$LINK_FILE' ] && [ -f '$LINK_FILE' ]"
+
+# ------------------------------------------------------ the link (T11)
+check "with stdout piped, no hex string of 32 characters or more is printed (T11)" \
+  no_long_hex "$W/dash.txt"
+check "  ...the launch file holds the code, 0600 in a 0700 directory of the user" \
+  bash -c "[ -n \"\$(grep -oE '#code=[0-9a-f]{32}' '$LINK_FILE')\" ] &&
+           [ \"\$(stat -c '%a %u' '$LINK_FILE')\" = '600 $USER_UID' ] &&
+           [ \"\$(stat -c '%a %u' \"\$(dirname '$LINK_FILE')\")\" = '700 $USER_UID' ]"
+check "  ...and the terminal shows a fingerprint (T13)" \
+  bash -c "[[ '$FP' =~ ^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$ ]]"
+check "on a terminal, the link with the code is printed" python3 -I -c "
+import os, pty, select, signal, subprocess, time, re
+m, s = pty.openpty()
+env = dict(os.environ)
+env.update(dict(x.split('=', 1) for x in '${START[*]}'.split()[1:]))
+p = subprocess.Popen(['$W/stockfw', 'dashboard', '--no-open'], stdin=s, stdout=s, stderr=s, env=env)
+os.close(s)
+out = b''; t0 = time.time()
+while time.time() - t0 < 5 and b'Ctrl-C' not in out:
+    if select.select([m], [], [], 0.2)[0]:
+        try: out += os.read(m, 4096)
+        except OSError: break
+p.send_signal(signal.SIGINT); p.wait(timeout=5)
+assert re.search(rb'http://127\.0\.0\.1:\d+/#code=[0-9a-f]{32}\b', out), out"
+"${START[@]}" "$W/stockfw" --json dashboard --no-open > "$W/json.txt" 2>&1 &
+JPID=$!
+for _ in $(seq 1 50); do grep -q link_file "$W/json.txt" && break; sleep 0.1; done
+kill "$JPID" 2>/dev/null; wait "$JPID" 2>/dev/null
+check "with --json, no 32-hex string either: the launch file's path instead" \
+  bash -c "no_long_hex () { ! grep -qE '[0-9a-f]{32,}' \"\$1\"; }; no_long_hex '$W/json.txt' &&
+           python3 -I -c 'import json,sys; d=json.loads(open(sys.argv[1]).read().splitlines()[0]); assert d[\"link_file\"].endswith(\"/open.html\") and d[\"fingerprint\"]' '$W/json.txt'"
+
+# ----------------------------------------------------- the launch code
+CODE1=$(code_in "$LINK_FILE")
+check "the page loads without a session (it holds no data)" \
+  [ "$(code "$B/")" = 200 ]
+check "the API refuses a request without a session (401)" \
+  [ "$(code "$B/api/summary")" = 401 ]
+page_hdrs "$DPORT"
+check "a code that was never issued gets 401" \
+  [ "$(post "$DPORT" '{"code":"0123456789abcdef0123456789abcdef"}' "${PAGE[@]}")" = 401 ]
+
+# The POST checks (D3 step 3), each on a valid code that must survive
+# the refusals.
+P_SITE=(-H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' -H 'Content-Type: application/json')
+J="{\"code\":\"$CODE1\"}"
+check "POST without Origin gets 403" \
+  [ "$(post "$DPORT" "$J" -H 'Sec-Fetch-Site: same-origin' "${P_SITE[@]}")" = 403 ]
+check "POST with a foreign Origin gets 403" \
+  [ "$(post "$DPORT" "$J" -H 'Origin: http://attacker.example' -H 'Sec-Fetch-Site: same-origin' "${P_SITE[@]}")" = 403 ]
+check "POST with Origin http://127.0.0.1:OTHERPORT gets 403" \
+  [ "$(post "$DPORT" "$J" -H "Origin: http://127.0.0.1:$((DPORT+1))" -H 'Sec-Fetch-Site: same-origin' "${P_SITE[@]}")" = 403 ]
+check "POST with Sec-Fetch-Site: same-site gets 403" \
+  [ "$(post "$DPORT" "$J" -H "Origin: http://127.0.0.1:$DPORT" -H 'Sec-Fetch-Site: same-site' "${P_SITE[@]}")" = 403 ]
+check "POST with Sec-Fetch-Site: cross-site gets 403" \
+  [ "$(post "$DPORT" "$J" -H "Origin: http://127.0.0.1:$DPORT" -H 'Sec-Fetch-Site: cross-site' "${P_SITE[@]}")" = 403 ]
+check "POST without Sec-Fetch-Site gets 403" \
+  [ "$(post "$DPORT" "$J" -H "Origin: http://127.0.0.1:$DPORT" "${P_SITE[@]}")" = 403 ]
+check "POST as text/plain (what a form can send) gets 415" \
+  [ "$(post "$DPORT" "$J" -H "Origin: http://127.0.0.1:$DPORT" -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' -H 'Content-Type: text/plain')" = 415 ]
+check "POST without Content-Length gets 411" upy "
+import socket
+s = socket.create_connection(('127.0.0.1', $DPORT))
+s.sendall(b'POST /api/session HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\nOrigin: http://127.0.0.1:$DPORT\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\nContent-Type: application/json\r\n\r\n')
+assert s.recv(64).startswith(b'HTTP/1.1 411'), 'not 411'"
+check "OPTIONS gets 405 and no CORS answer" bash -c "
+  h=\$($AS curl -sS -D - -o /dev/null -X OPTIONS -H 'Origin: http://attacker.example' -H 'Access-Control-Request-Method: POST' '$B/api/session')
+  echo \"\$h\" | grep -q '^HTTP/1.1 405' && ! echo \"\$h\" | grep -qi '^Access-Control'"
+
+KEY1=$(session "$DPORT" "$CODE1")
+check "the page's own POST swaps the code for a 64-hex session key (200)" \
+  bash -c "[[ '$KEY1' =~ ^[0-9a-f]{64}$ ]]"
+check "  ...the answer carries the terminal's fingerprint" \
+  python3 -I -c "import json; d=json.load(open('$W/body')); assert d['fingerprint'] == '$FP' and d['via'] == 'local', d"
+check "  ...and the launch file is gone, with its directory" \
+  bash -c "[ -n '$LINK_FILE' ] && [ ! -e '$LINK_FILE' ] && [ ! -e \"\$(dirname '$LINK_FILE')\" ]"
+check "the session key unlocks the API (200)" \
+  [ "$(code -H "X-StockFW-Session: $KEY1" "$B/api/summary")" = 200 ]
+check "  ...a wrong key gets 401" \
+  [ "$(code -H "X-StockFW-Session: $(printf 'ab%.0s' $(seq 1 32))" "$B/api/summary")" = 401 ]
+check "  ...the key in the query string gets 401 (headers only)" \
+  [ "$(code "$B/api/summary?session=$KEY1")" = 401 ]
+check "  ...the old token header gets 401" \
+  [ "$(code -H "X-StockFW-Token: $KEY1" "$B/api/summary")" = 401 ]
+check "summary shows the fingerprint the terminal printed" \
+  bash -c "$AS curl -sS -H 'X-StockFW-Session: $KEY1' '$B/api/summary' | python3 -I -c 'import json,sys; assert json.load(sys.stdin)[\"fingerprint\"] == \"$FP\"'"
+
+# GET checks (D3 step 4), with a valid session.
+S1=(-H "X-StockFW-Session: $KEY1")
+check "GET with a foreign Origin gets 403, even with a session" \
+  [ "$(code "${S1[@]}" -H 'Origin: http://attacker.example' "$B/api/summary")" = 403 ]
+check "GET with Sec-Fetch-Site: cross-site gets 403" \
+  [ "$(code "${S1[@]}" -H 'Sec-Fetch-Site: cross-site' "$B/api/summary")" = 403 ]
+check "GET with Sec-Fetch-Site: same-site gets 403" \
+  [ "$(code "${S1[@]}" -H 'Sec-Fetch-Site: same-site' "$B/api/summary")" = 403 ]
+check "GET from the page itself (own Origin, same-origin) gets 200" \
+  [ "$(code "${S1[@]}" -H "Origin: http://127.0.0.1:$DPORT" -H 'Sec-Fetch-Site: same-origin' "$B/api/summary")" = 200 ]
+
+# Reuse (T9): a second session from `dashboard link', then the first
+# code again.
+LINK_OUT="$(as_user "$W/stockfw" dashboard link 2>&1)"
+check "dashboard link, piped, prints only a launch file's path (no 32-hex string)" \
+  bash -c "printf '%s\n' '$LINK_OUT' | grep -qE '^/.*/open.html$' && ! printf '%s' '$LINK_OUT' | grep -qE '[0-9a-f]{32,}'"
+KEY2=$(session "$DPORT" "$(code_in "$LINK_OUT")")
+check "  ...and its code gives a second session" \
+  [ "$(code -H "X-StockFW-Session: $KEY2" "$B/api/summary")" = 200 ]
+page_hdrs "$DPORT"
+check "a code used a second time gets 410 (T9)" \
+  [ "$(post "$DPORT" "{\"code\":\"$CODE1\"}" "${PAGE[@]}")" = 410 ]
+check "  ...and every session ends, not only the one it opened" \
+  bash -c "[ \"\$($AS curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Session: $KEY1' '$B/api/summary')\" = 401 ] &&
+           [ \"\$($AS curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Session: $KEY2' '$B/api/summary')\" = 401 ]"
+check "  ...and the terminal says so" grep -q 'used dashboard link was presented again' "$W/dash.txt"
+check "dashboard link on a terminal prints the link with a code" python3 -I -c "
+import os, pty, subprocess, re
+pre = '$AS'.split()
+m, s = pty.openpty()
+r = subprocess.run(pre + ['$W/stockfw', 'dashboard', 'link'], stdin=s, stdout=s, stderr=s, timeout=10)
+os.close(s)
+out = os.read(m, 4096)
+assert r.returncode == 0 and re.search(rb'http://127\.0\.0\.1:$DPORT/#code=[0-9a-f]{32}', out), out"
+
+# ------------------------------------------------- new response headers
+check "every answer carries Trusted Types, Permissions-Policy and COEP" bash -c "
+  h=\$($AS curl -sS -D - -o /dev/null '$B/')
+  echo \"\$h\" | grep -q \"require-trusted-types-for 'script'; trusted-types 'none'\" &&
+  echo \"\$h\" | grep -q '^Permissions-Policy: camera=(), microphone=(), geolocation=(), clipboard-read=()' &&
+  echo \"\$h\" | grep -q '^Cross-Origin-Embedder-Policy: require-corp'"
+check "the page sends X-StockFW-Session and swaps the code at /api/session (2C)" bash -c "
+  p=\$($AS curl -sS '$B/')
+  echo \"\$p\" | grep -q 'X-StockFW-Session' && echo \"\$p\" | grep -q '\"/api/session\"' &&
+  ! echo \"\$p\" | grep -q 'X-StockFW-Token' && ! echo \"\$p\" | grep -q 'innerHTML'"
 
 # ------------------------------------------------------- request checks
+KEY=$(session "$DPORT" "$(new_code)")
+S=(-H "X-StockFW-Session: $KEY")
 check "Host: localhost:PORT is refused (403): only 127.0.0.1:PORT is ours (G4, T5)" \
-  [ "$(code -H "Host: localhost:$DPORT" -H "X-StockFW-Token: $TOKEN" "$B/api/summary")" = 403 ]
+  [ "$(code -H "Host: localhost:$DPORT" "${S[@]}" "$B/api/summary")" = 403 ]
 check "  ...and so is the right address on another port (403)" \
-  [ "$(code -H "Host: 127.0.0.1:1" -H "X-StockFW-Token: $TOKEN" "$B/api/summary")" = 403 ]
-check "Upgrade: websocket is refused (400), even with the token (T7)" \
-  [ "$(code -H "Upgrade: websocket" -H "Connection: Upgrade" -H "X-StockFW-Token: $TOKEN" "$B/api/summary")" = 400 ]
+  [ "$(code -H "Host: 127.0.0.1:1" "${S[@]}" "$B/api/summary")" = 403 ]
+check "Upgrade: websocket is refused (400), even with a session (T7)" \
+  [ "$(code -H "Upgrade: websocket" -H "Connection: Upgrade" "${S[@]}" "$B/api/summary")" = 400 ]
 check "  ...and from a foreign Origin too (400)" \
   [ "$(code -H "Upgrade: websocket" -H "Origin: http://attacker.example" "$B/")" = 400 ]
 check "Transfer-Encoding is refused (400)" \
-  [ "$(code -H "Transfer-Encoding: chunked" -H "X-StockFW-Token: $TOKEN" --data-binary x "$B/api/summary")" = 400 ]
+  [ "$(code -H "Transfer-Encoding: chunked" "${S[@]}" --data-binary x "$B/api/summary")" = 400 ]
 check "a Content-Length over 64 KB is refused (413)" \
-  [ "$(code -H "Content-Length: 70000" -H "X-StockFW-Token: $TOKEN" "$B/api/summary")" = 413 ]
+  [ "$(code -H "Content-Length: 70000" "${S[@]}" "$B/api/summary")" = 413 ]
 check "two Host headers are refused (403)" upy "
 import socket
 s = socket.create_connection(('127.0.0.1', $DPORT))
@@ -135,7 +333,7 @@ assert closed is not None and 4.5 <= closed <= 7, closed"
 check "a body promised by Content-Length and not sent is cut off after 5 s, unanswered" upy "
 import socket, time
 s = socket.create_connection(('127.0.0.1', $DPORT))
-s.sendall(b'GET /api/summary HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\nX-StockFW-Token: $TOKEN\r\nContent-Length: 10\r\n\r\nabc')
+s.sendall(b'GET /api/summary HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\nX-StockFW-Session: $KEY\r\nContent-Length: 10\r\n\r\nabc')
 s.settimeout(9)
 t0 = time.monotonic()
 try:
@@ -147,7 +345,7 @@ assert got == b'' and 4.5 <= t <= 7, (got, t)"
 check "  ...and the same request with its body is answered (200)" upy "
 import socket
 s = socket.create_connection(('127.0.0.1', $DPORT))
-s.sendall(b'GET /api/summary HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\nX-StockFW-Token: $TOKEN\r\nContent-Length: 10\r\n\r\n0123456789')
+s.sendall(b'GET /api/summary HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\nX-StockFW-Session: $KEY\r\nContent-Length: 10\r\n\r\n0123456789')
 assert s.recv(64).startswith(b'HTTP/1.1 200'), 'not 200'"
 
 # ---------------------------------------------------------------- slots
@@ -174,7 +372,7 @@ t = threading.Thread(target=trickle, daemon=True); t.start()
 time.sleep(1.0)
 t0 = time.monotonic()
 c = socket.create_connection(('127.0.0.1', $DPORT)); c.settimeout(3)
-c.sendall(b'GET /api/summary HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\nX-StockFW-Token: $TOKEN\r\n\r\n')
+c.sendall(b'GET /api/summary HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\nX-StockFW-Session: $KEY\r\n\r\n')
 data = b''
 try:
     while True:
@@ -201,12 +399,12 @@ except OSError:
 assert got == b'', got"
 
 if [ "$ROOT" = 1 ]; then
-  # The token is valid in every one of these: only the peer's uid
+  # The session is valid in every one of these: only the peer's uid
   # differs.  curl prints 000 when the connection closes unanswered.
   check "a connection from uid 0 (root) is closed at accept, unanswered (000)" \
-    [ "$(curl -sS -o /dev/null -w '%{http_code}' -H "X-StockFW-Token: $TOKEN" "$B/api/summary" 2>/dev/null)" = 000 ]
+    [ "$(curl -sS -o /dev/null -w '%{http_code}' "${S[@]}" "$B/api/summary" 2>/dev/null)" = 000 ]
   check "a connection from uid nobody is closed at accept, unanswered (000)" \
-    [ "$(as_nobody curl -sS -o /dev/null -w '%{http_code}' -H "X-StockFW-Token: $TOKEN" "$B/api/summary" 2>/dev/null)" = 000 ]
+    [ "$(as_nobody curl -sS -o /dev/null -w '%{http_code}' "${S[@]}" "$B/api/summary" 2>/dev/null)" = 000 ]
   check "  ...not one byte comes back, whatever is sent" python3 -I -c "
 import socket
 s = socket.create_connection(('127.0.0.1', $DPORT)); s.settimeout(5)
@@ -217,22 +415,144 @@ except OSError:
     got = b''
 assert got == b'', got"
   check "  ...while the user's own request still gets 200" \
-    [ "$(code -H "X-StockFW-Token: $TOKEN" "$B/api/summary")" = 200 ]
+    [ "$(code "${S[@]}" "$B/api/summary")" = 200 ]
   check "the terminal names the account served" \
     grep -q "uid $USER_UID only (SUDO_UID)" "$W/dash.txt"
+  # The link socket: SO_PEERCRED before anything is sent.  Root can get
+  # past the 0700 directory, and still gets nothing.
+  check "the link socket is 0700 in a 0700 directory of the user" \
+    bash -c "[ \"\$(stat -c '%a %u' '$RUN/stockfw')\" = '700 $USER_UID' ] &&
+             [ \"\$(stat -c '%u' '$RUN/stockfw/dash-$DPORT.sock')\" = '$USER_UID' ]"
+  check "  ...and a connection from another uid (root) gets no code" python3 -I -c "
+import socket
+s = socket.socket(socket.AF_UNIX); s.settimeout(5)
+s.connect('$RUN/stockfw/dash-$DPORT.sock')
+got = b''
+try:
+    while True:
+        d = s.recv(4096)
+        if not d: break
+        got += d
+except OSError:
+    pass
+assert b'code=' not in got, got"
+  check "dashboard link as root is refused (exit 1)" bash -c "
+    '$W/stockfw' dashboard link > /dev/null 2>&1; [ \$? = 1 ]"
 fi
 
-kill "$DASH_PID" 2>/dev/null; wait "$DASH_PID" 2>/dev/null; DASH_PID=""
+KEY_OLD="$KEY"
+stop_dash
+
+# A restart: every key dies with the process.
+start_dash "$W/stockfw" "$DPORT"
+# A session of the new run is open, so a key that outlived the run (or
+# keys that repeat) would be found.
+NEW_KEY=$(session "$DPORT" "$(code_in "$LINK_FILE")")
+check "after a restart, a key from the last run gets 401 (a new session is open)" \
+  bash -c "[[ '$NEW_KEY' =~ ^[0-9a-f]{64}$ ]] && [ '$NEW_KEY' != '$KEY_OLD' ] &&
+           [ \"\$($AS curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Session: $KEY_OLD' '$B/api/summary')\" = 401 ]"
+check "  ...and the link socket is there again for the new run" \
+  bash -c "[ -S '$RUN/stockfw/dash-$DPORT.sock' ]"
+stop_dash
+check "when the dashboard stops, its socket and launch files are gone" \
+  bash -c "[ ! -e '$RUN/stockfw/dash-$DPORT.sock' ] && [ -z \"\$(ls '$RUN' | grep stockfw-dashboard)\" ]"
+
+# ------------------------------------------------------- --origin-port
+# ssh -L N:127.0.0.1:PORT host (T22): the browser's end is 127.0.0.1:N.
+OPORT=$(free_port)
+start_dash "$W/stockfw" "$DPORT" --origin-port "$OPORT"
+OC=$(code_in "$LINK_FILE")
+page_hdrs "$OPORT"
+check "--origin-port N: a POST with Host and Origin 127.0.0.1:N opens a session (200)" \
+  [ "$(post "$DPORT" "{\"code\":\"$OC\"}" "${PAGE[@]}" -H "Host: 127.0.0.1:$OPORT")" = 200 ]
+check "  ...and the session is marked via=ssh" \
+  python3 -I -c "import json; d=json.load(open('$W/body')); assert d['via'] == 'ssh', d"
+OKEY=$(python3 -I -c "import json; print(json.load(open('$W/body'))['session'])")
+check "  ...a GET with Host 127.0.0.1:N gets 200" \
+  [ "$(code -H "Host: 127.0.0.1:$OPORT" -H "X-StockFW-Session: $OKEY" "$B/api/summary")" = 200 ]
+check "  ...Host 127.0.0.1:N+1 gets 403" \
+  [ "$(code -H "Host: 127.0.0.1:$((OPORT+1))" -H "X-StockFW-Session: $OKEY" "$B/api/summary")" = 403 ]
+OC2=$(new_code)
+check "  ...an Origin of :N with Host :PORT (mismatched) gets 403" \
+  [ "$(post "$DPORT" "{\"code\":\"$OC2\"}" "${PAGE[@]}")" = 403 ]
+stop_dash
+start_dash "$W/stockfw" "$DPORT"
+check "without --origin-port, Host 127.0.0.1:N gets 403" \
+  [ "$(code -H "Host: 127.0.0.1:$OPORT" "$B/")" = 403 ]
+stop_dash
+
+# ------------------------------------------- the test clock (E7, T12)
+# stockfw-dash-test reads seconds to add to its clock from a file.
+CLK="$W/clock"; echo 0 > "$CLK"; chmod 644 "$CLK"
+export STOCKFW_TEST_CLOCK_FILE="$CLK"
+start_dash "$W/stockfw-test" "$DPORT"
+TKEY=$(session "$DPORT" "$(code_in "$LINK_FILE")")
+LF2="$(as_user "$W/stockfw-test" dashboard link 2>/dev/null)"
+TCODE=$(code_in "$LF2")
+# The clock counts whole seconds and real time passes too: 117 + the
+# 1.5 s waited stays under 120.
+echo 117 > "$CLK"; sleep 1.5
+check "test clock: a code's launch file is still there before 120 s" \
+  bash -c "[ -n '$TCODE' ] && [ -f '$LF2' ]"
+echo 121 > "$CLK"; sleep 1.5
+check "  ...and gone at 121 s, with no request (T12)" \
+  bash -c "[ -n '$LF2' ] && [ ! -e '$LF2' ] && [ ! -e \"\$(dirname '$LF2')\" ]"
+page_hdrs "$DPORT"
+check "  ...and the code gets 410 at 121 s (T9)" \
+  [ "$(post "$DPORT" "{\"code\":\"$TCODE\"}" "${PAGE[@]}")" = 410 ]
+check "  ...an expired code ends no session" \
+  [ "$(code -H "X-StockFW-Session: $TKEY" "$B/api/summary")" = 200 ]
+echo $((12 * 3600 - 30)) > "$CLK"
+check "test clock: a session still reads 12 h after its code, less 30 s (E7)" \
+  [ "$(code -H "X-StockFW-Session: $TKEY" "$B/api/summary")" = 200 ]
+echo $((12 * 3600 + 5)) > "$CLK"
+check "  ...and gets 401 once the 12 h are over" \
+  [ "$(code -H "X-StockFW-Session: $TKEY" "$B/api/summary")" = 401 ]
+stop_dash
+unset STOCKFW_TEST_CLOCK_FILE
+
+# ---------------------------------------------------------- WSL (T21)
+check "--allow-windows off WSL refuses to start (exit 2)" bash -c "
+  STOCKFW_TEST_WSL=0 timeout 10 ${START[*]} '$W/stockfw-test' dashboard --no-open --allow-windows > '$W/out' 2>&1; rc=\$?
+  [ \$rc = 2 ] && grep -q 'WSL only' '$W/out'"
+if [ "$ROOT" = 1 ]; then
+  # In the test build, sockets of uid 65534 look as if they had no
+  # owner, as Windows' relay is expected to.
+  export STOCKFW_TEST_WSL=1 STOCKFW_TEST_OWNERLESS_UID=65534
+  start_dash "$W/stockfw-test" "$DPORT"
+  check "WSL, fail-closed: a peer with no socket owner is closed at accept (000)" \
+    [ "$(as_nobody curl -sS -o /dev/null -w '%{http_code}' "$B/" 2>/dev/null)" = 000 ]
+  sleep 0.3
+  check "  ...and the terminal says how to let it in" \
+    grep -q -- '--allow-windows' "$W/dash.txt"
+  stop_dash
+  start_dash "$W/stockfw-test" "$DPORT" --allow-windows
+  check "WSL with --allow-windows: that peer is answered (the page, 200)" \
+    [ "$(as_nobody curl -sS -o /dev/null -w '%{http_code}' "$B/" 2>/dev/null)" = 200 ]
+  check "  ...but still needs a session (401)" \
+    [ "$(as_nobody curl -sS -o /dev/null -w '%{http_code}' "$B/api/summary" 2>/dev/null)" = 401 ]
+  WC=$(code_in "$LINK_FILE")
+  check "  ...its session is marked via=wsl, and the terminal says Windows is let in" bash -c "
+    r=\$(setpriv --reuid=65534 --regid=65534 --clear-groups curl -sS -X POST -H 'Origin: http://127.0.0.1:$DPORT' -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' -H 'Content-Type: application/json' --data '{\"code\":\"$WC\"}' '$B/api/session')
+    echo \"\$r\" | grep -q '\"via\":\"wsl\"' && grep -q 'allow-windows' '$W/dash.txt'"
+  check "  ...while root is still closed at accept (000)" \
+    [ "$(curl -sS -o /dev/null -w '%{http_code}' "$B/" 2>/dev/null)" = 000 ]
+  stop_dash
+  unset STOCKFW_TEST_WSL STOCKFW_TEST_OWNERLESS_UID
+fi
 
 if [ "$ROOT" = 1 ]; then
   check "as root without SUDO_UID it refuses to start (exit 1), naming why" bash -c "
     timeout 10 env -u SUDO_UID '$W/stockfw' dashboard --no-open > '$W/out' 2>&1; rc=\$?
-    [ \$rc = 1 ] && grep -q 'does not serve uid 0' '$W/out' && ! grep -q 'token=' '$W/out'"
+    [ \$rc = 1 ] && grep -q 'does not serve uid 0' '$W/out' && ! grep -qE 'code=|Link file' '$W/out'"
   check "  ...and with SUDO_UID=0 too" bash -c "
     timeout 10 env SUDO_UID=0 '$W/stockfw' dashboard --no-open > '$W/out' 2>&1; rc=\$?
     [ \$rc = 1 ] && grep -q 'does not serve uid 0' '$W/out'"
+  check "under sudo with no runtime directory of the user and stdout piped, it does not start (exit 1)" bash -c "
+    timeout 10 env SUDO_UID=$USER_UID XDG_RUNTIME_DIR=/nonexistent '$W/stockfw' dashboard --no-open > '$W/out' 2>&1; rc=\$?
+    [ \$rc = 1 ] && grep -q 'nowhere to go' '$W/out'"
 else
-  echo "skip: peer uid checks need root (a second account)"
+  echo "skip: peer uid, link socket and WSL peer checks need root (a second account)"
 fi
 
 echo ""

@@ -259,6 +259,8 @@ td.allowed { color: var(--good); font-weight: 650; }
 .kind li .n { color: var(--text-3); width: 22px; text-align: right; flex: none; font-variant-numeric: tabular-nums; }
 .kind li .c { color: var(--text-3); }
 
+.fp { color: var(--text-2); font-size: 13px; margin: 0 0 12px; }
+.fp strong { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .04em; }
 footer { color: var(--text-3); font-size: 12px; text-align: center; padding: 24px; }
 .muted { color: var(--text-3); }
 code {
@@ -295,6 +297,8 @@ code {
 
 <main>
   <div class="banner" id="banner" role="alert"></div>
+  <p class="fp" id="fp" hidden>Fingerprint <strong id="fp-value"></strong>: the terminal that started this dashboard shows the same. If it does not, close this page.</p>
+  <p class="fp" id="wsl" hidden>Browsers on the Windows side are let in (<code>--allow-windows</code>).</p>
 
   <div class="filters" role="group" aria-label="Filters">
     <div class="seg" id="range" role="group" aria-label="Time range">
@@ -444,15 +448,40 @@ code {
 <script nonce="{{NONCE}}">
 "use strict";
 (function () {
-  /* ------------------------------------------------------------ token */
-  var token = null;
-  var m = /(?:^#|&)token=([0-9a-f]{32})/.exec(location.hash);
+  /* --------------------------------------------------- session (2C) */
+  /* The link carries a launch code in its fragment, which the browser
+   * never sends.  It is swapped once, by POST, for a session key that
+   * goes with every request as X-StockFW-Session.  The key is kept in
+   * sessionStorage only; no cookie is ever set. */
+  var session = null, launchCode = null;
+  var m = /(?:^#|&)code=([0-9a-f]{32})(?:&|$)/.exec(location.hash);
+  if (location.hash) history.replaceState(null, "", location.pathname);
   if (m) {
-    token = m[1];
-    try { sessionStorage.setItem("stockfw.token", token); } catch (e) {}
-    history.replaceState(null, "", location.pathname);
+    launchCode = m[1];
   } else {
-    try { token = sessionStorage.getItem("stockfw.token"); } catch (e) {}
+    try { session = sessionStorage.getItem("stockfw.session"); } catch (e) {}
+    if (session && !/^[0-9a-f]{64}$/.test(session)) session = null;
+  }
+  function forgetSession() {
+    session = null;
+    try { sessionStorage.removeItem("stockfw.session"); } catch (e) {}
+  }
+  function openSession(code) {
+    return fetch("/api/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code }),
+      cache: "no-store",
+      credentials: "omit"
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (b) {
+        if (!r.ok) throw { status: r.status, body: b };
+        if (!/^[0-9a-f]{64}$/.test(b.session || "")) throw { status: 401, body: b };
+        session = b.session;
+        try { sessionStorage.setItem("stockfw.session", session); } catch (e) {}
+        return b;
+      });
+    });
   }
 
   var state = { range: 3600, device: "", filter: "", events: [], failures: 0, lastOk: 0, summary: null };
@@ -505,11 +534,19 @@ code {
     return p;
   }
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+  /* One listener per node and event, replaced on each render (no on*
+   * properties or attributes anywhere: the source guard bans them). */
+  function handle(node, type, fn) {
+    var k = "fsOn" + type;
+    if (node[k]) node.removeEventListener(type, node[k]);
+    node[k] = fn;
+    node.addEventListener(type, fn);
+  }
 
   /* ------------------------------------------------------------ API */
   function api(path) {
-    if (!token) return Promise.reject({ status: 401 });
-    return fetch(path, { headers: { "X-StockFW-Token": token }, cache: "no-store" })
+    if (!session) return Promise.reject({ status: 401 });
+    return fetch(path, { headers: { "X-StockFW-Session": session }, cache: "no-store", credentials: "omit" })
       .then(function (r) {
         if (!r.ok) return r.json().catch(function () { return {}; }).then(function (b) { throw { status: r.status, body: b }; });
         return r.json();
@@ -709,14 +746,14 @@ code {
     }
     hit.addEventListener("pointermove", function (ev) { show(Math.max(0, Math.min(n - 1, idxAt(ev)))); });
     hit.addEventListener("pointerleave", hide);
-    host.onkeydown = function (ev) {
+    handle(host, "keydown", function (ev) {
       var cur = host.dataset.idx !== undefined ? Number(host.dataset.idx) : n - 1;
       if (ev.key === "ArrowLeft") { show(Math.max(0, cur - 1)); ev.preventDefault(); }
       else if (ev.key === "ArrowRight") { show(Math.min(n - 1, cur + 1)); ev.preventDefault(); }
       else if (ev.key === "Escape") hide();
-    };
-    host.onfocus = function () { show(n - 1); };
-    host.onblur = hide;
+    });
+    handle(host, "focus", function () { show(n - 1); });
+    handle(host, "blur", hide);
   }
 
   function legend(id, series) {
@@ -837,6 +874,8 @@ code {
     $("t-rules").textContent = sm.policy_saved ? fmtNum(sm.rules) + " rules" : "None";
     $("t-rules-d").textContent = sm.rules_dir;
     $("footer").textContent = "Read-only · listening on " + location.host + " only · no data leaves this machine · StockFW " + sm.version;
+    showFingerprint(sm.fingerprint);
+    $("wsl").hidden = !sm.allow_windows;
   }
 
   /* -------------------------------------------------------- events */
@@ -1023,10 +1062,20 @@ code {
   $("device").addEventListener("change", function (ev) { state.device = ev.target.value; refreshActivity(); });
 
   /* -------------------------------------------------------- refresh */
+  var NEW_LINK = " Run stockfw dashboard link in the terminal for a new link (it works once, for 2 minutes).";
+  function showFingerprint(fp) {
+    if (typeof fp !== "string" || !/^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(fp)) return;
+    $("fp-value").textContent = fp;
+    $("fp").hidden = false;
+  }
   function onError(e) {
-    if (e && e.status === 401) {
-      setLive("down", "Not authorised");
-      banner("This page has no valid access token for the running dashboard. Open the exact address that stockfw dashboard printed in your terminal; it changes every run.", true);
+    if (e && (e.status === 401 || e.status === 410)) {
+      forgetSession();
+      setLive("down", "Not signed in");
+      if (e.status === 410)
+        banner("This link was already used or has expired." + NEW_LINK, true);
+      else
+        banner("This page has no valid session for the running dashboard. Sessions end when the dashboard stops, after 12 hours, or when a link is used twice." + NEW_LINK, true);
       return true;
     }
     state.failures++;
@@ -1074,7 +1123,13 @@ code {
     refresh().then(function () { setTimeout(loop, 5000); }, function () { /* 401: stop polling */ });
   }
 
-  if (!token) {
+  if (launchCode) {
+    openSession(launchCode).then(function (b) {
+      showFingerprint(b.fingerprint);
+      loop();
+    }, function (e) { onError(e.status ? e : {}); });
+    launchCode = null;
+  } else if (!session) {
     onError({ status: 401 });
   } else {
     loop();

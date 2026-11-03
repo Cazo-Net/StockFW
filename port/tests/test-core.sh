@@ -12006,5 +12006,32 @@ fi
 echo "ok:   cli guard: interfaces rates use the time measured between samples"
 # === end WP-D ===
 
+# The dashboard (PR 2, 2B and 2C; docs 15.3.2-15.3.3).  No `--token'
+# option, ever: a credential in an argument list is readable by every
+# account from /proc/<pid>/cmdline (T10).  The session key is the only
+# credential the API takes, in a header.
+TOKEN_HITS="$(grep -nE '"--token|--token=|X-StockFW-Token' src/cli/*.c src/cli/*.h \
+  src/cli/dashboard.html || true)"
+if [ -n "$TOKEN_HITS" ]; then
+  echo "FAIL: a --token option or the old token header is back in src/cli:"
+  echo "$TOKEN_HITS"
+  exit 1
+fi
+echo "ok:   dashboard guard: no --token option and no token header (T10)"
+# The page builds every node with textContent (T14).  Banned: the HTML
+# parsers and script runners, WebSocket and EventSource, inline on*
+# handlers, and href, src, style, srcdoc or action set from script.
+DOM_HITS="$(grep -nE 'innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval[[:space:]]*\(|new[[:space:]]+Function|setTimeout[[:space:]]*\([[:space:]]*["'"'"'`]|setInterval[[:space:]]*\([[:space:]]*["'"'"'`]|WebSocket|EventSource|createContextualFragment|DOMParser|srcdoc' \
+  src/cli/dashboard.html || true)"
+DOM_HITS="$DOM_HITS$(grep -nE '<[a-zA-Z][^>]*[[:space:]]on[a-zA-Z]+[[:space:]]*=' src/cli/dashboard.html || true)"
+DOM_HITS="$DOM_HITS$(grep -nE '\.on[a-z]+[[:space:]]*=[^=]|setAttribute[[:space:]]*\([[:space:]]*["'"'"'](href|src|style|on[a-z]*|action|formaction|xlink:href)["'"'"']|\.(href|src|action|formAction)[[:space:]]*=[^=]|\.style\.cssText|\.setAttributeNS[[:space:]]*\(' \
+  src/cli/dashboard.html || true)"
+if [ -n "$DOM_HITS" ]; then
+  echo "FAIL: dashboard.html uses a banned DOM API or attribute (textContent only, T14):"
+  echo "$DOM_HITS"
+  exit 1
+fi
+echo "ok:   dashboard guard: no innerHTML, document.write, eval, WebSocket, EventSource or on* handlers in dashboard.html (T14)"
+
 [ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ] && [ "$intelgeo_rc" -eq 0 ] \
   && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]

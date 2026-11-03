@@ -170,6 +170,27 @@ It is still read-only and still listens on 127.0.0.1 only.
   on `[::1]` at the same port and catch a browser sent to `localhost`.
 - Requests with `Upgrade` (WebSocket) or `Transfer-Encoding` get 400,
   and a body over 64 KB gets 413.
+- **A link that works once.** The printed link now holds a code that
+  works once, for 2 minutes; the page swaps it for a session key, sent
+  in a header. Reads keep working for 12 hours. The per-run token is
+  gone. A link used twice ends every session, and the terminal says
+  so. Sessions end when the dashboard stops.
+- **The link is printed only to a terminal.** Piped, or with `--json`,
+  the output names a launch file (0600) instead, so the code does not
+  end up in logs. The launch file is deleted once it is used, or after
+  2 minutes.
+- **`stockfw dashboard link`** gets a new link from the running
+  dashboard, over a socket only your account can use.
+- **A fingerprint** shown in the terminal and at the top of the page,
+  so you can tell the page comes from your dashboard.
+- **Stricter browser checks.** The session request must come from the
+  page itself (`Origin`, `Sec-Fetch-*`, JSON). An API request from
+  another site is refused even with a valid session. New headers:
+  Trusted Types, `Permissions-Policy` and `Cross-Origin-Embedder-Policy`.
+- **`--origin-port N`** for `ssh -L N:127.0.0.1:PORT`: the dashboard
+  also answers as `127.0.0.1:N`.
+- **WSL:** a browser on the Windows side is refused, with a hint;
+  `--allow-windows` (WSL only) lets it in and the page says so.
 
 ### Fixed
 

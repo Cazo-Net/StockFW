@@ -42,6 +42,14 @@ guint16      fs_dash_http_port       (const FsDashHttp *http);
 void         fs_dash_http_set_nonce  (FsDashHttp *http, const gchar *nonce);
 /* Adds an accepted Host value.  "127.0.0.1:<port>" is always there. */
 void         fs_dash_http_allow_host (FsDashHttp *http, const gchar *host);
+/* WSL with --allow-windows (2B): a peer at 127.0.0.1 whose socket has
+ * no owner in /proc/net/tcp (Windows' localhost relay) is served too,
+ * and fs_dash_conn_ownerless() says so.  Off, it is closed at accept,
+ * and `refused' (when set) is called for it. */
+void         fs_dash_http_allow_ownerless (FsDashHttp *http, gboolean allow);
+void         fs_dash_http_on_ownerless_refused (FsDashHttp *http,
+                                                GFunc refused,
+                                                gpointer data);
 void         fs_dash_http_start      (FsDashHttp *http,
                                       FsDashHandler handler, gpointer data);
 void         fs_dash_http_free       (FsDashHttp *http);
@@ -54,6 +62,15 @@ gboolean     fs_dash_conn_head_only  (const FsDashConn *conn);
 /* A request header, case-insensitively; NULL if absent.  Free it. */
 gchar       *fs_dash_conn_header     (const FsDashConn *conn,
                                       const gchar *name);
+/* How many times a header appears. */
+guint        fs_dash_conn_header_count (const FsDashConn *conn,
+                                        const gchar *name);
+/* The body Content-Length announced (it is all read); NULL with none. */
+const gchar *fs_dash_conn_body       (const FsDashConn *conn, gsize *len);
+/* TRUE when Content-Length was given (even as 0). */
+gboolean     fs_dash_conn_has_length (const FsDashConn *conn);
+/* TRUE for a peer let in by fs_dash_http_allow_ownerless. */
+gboolean     fs_dash_conn_ownerless  (const FsDashConn *conn);
 
 void         fs_dash_respond         (FsDashConn *conn, guint status,
                                       const gchar *type, const guint8 *body,

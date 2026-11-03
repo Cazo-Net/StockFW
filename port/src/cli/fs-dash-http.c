@@ -22,7 +22,10 @@
  *     Transfer-Encoding (400), and a Content-Length of at most 64 KB
  *     (413), whose body is read before the handler runs.
  *   - Every answer is written in one piece with Connection: close and
- *     the dashboard's security headers.
+ *     the dashboard's security headers (2B added Trusted Types,
+ *     Permissions-Policy and Cross-Origin-Embedder-Policy).
+ *   - WSL with --allow-windows (2B): a peer with no socket owner is
+ *     served as its own class; otherwise it is closed like any other.
  *--------------------------------------------------------------------*/
 #include "cli/fs-dash-http.h"
 #include "core/fs-json.h"
@@ -46,6 +49,9 @@ struct _FsDashHttp
 	guint           all;    /* every live connection */
 	FsDashHandler   handler;
 	gpointer        handler_data;
+	gboolean        allow_ownerless;
+	GFunc           ownerless_refused;
+	gpointer        ownerless_data;
 };
 
 struct _FsDashConn
@@ -69,6 +75,8 @@ struct _FsDashConn
 	GHashTable        *params;
 	gboolean           head_only;
 	gboolean           answered;
+	gboolean           has_length;
+	gboolean           ownerless;
 };
 
 /* ------------------------------------------------------- the peer's uid */
@@ -197,9 +205,13 @@ fs_dash_peer_uid (GInetSocketAddress *peer, GInetSocketAddress *local,
 	       owner_in ("/proc/net/tcp6", TRUE, p4, pp, l4, lp, uid);
 }
 
+/* The slot group of peers without a socket owner (WSL, 2B). */
+#define OWNERLESS_UID ((uid_t) -1)
+
 /* [ peer_allowed ] -- the accept-time checks, before any byte is read. */
 static gboolean
-peer_allowed (FsDashHttp *http, GSocketConnection *connection, uid_t *uid)
+peer_allowed (FsDashHttp *http, GSocketConnection *connection, uid_t *uid,
+              gboolean *ownerless)
 {
 	GSocketAddress *peer, *local;
 	gboolean ok = FALSE;
@@ -213,11 +225,31 @@ peer_allowed (FsDashHttp *http, GSocketConnection *connection, uid_t *uid)
 		gchar *text = g_inet_address_to_string (pa);
 
 		/* 127.0.0.1 exactly: not another address of 127/8. */
-		if (g_strcmp0 (text, "127.0.0.1") == 0 &&
-		    fs_dash_peer_uid (G_INET_SOCKET_ADDRESS (peer),
-		                      G_INET_SOCKET_ADDRESS (local), uid) &&
-		    *uid == http->peer_uid && *uid != 0)
-			ok = TRUE;
+		if (g_strcmp0 (text, "127.0.0.1") == 0) {
+			gboolean listed = fs_dash_peer_uid (
+				G_INET_SOCKET_ADDRESS (peer),
+				G_INET_SOCKET_ADDRESS (local), uid);
+#ifdef FS_DASH_TESTING
+			/* The test build only: sockets of this uid count as
+			 * having no owner, as Windows' relay is expected to. */
+			const gchar *t = g_getenv ("STOCKFW_TEST_OWNERLESS_UID");
+
+			if (listed && t != NULL && *t != '\0' &&
+			    g_ascii_strtoull (t, NULL, 10) == (guint64) *uid)
+				listed = FALSE;
+#endif
+			if (listed && *uid == http->peer_uid && *uid != 0) {
+				ok = TRUE;
+			} else if (!listed && http->allow_ownerless) {
+				/* WSL with --allow-windows: no socket of
+				 * this machine's accounts, so the relay. */
+				*uid = OWNERLESS_UID;
+				*ownerless = TRUE;
+				ok = TRUE;
+			} else if (!listed && http->ownerless_refused != NULL) {
+				http->ownerless_refused (NULL, http->ownerless_data);
+			}
+		}
 		g_free (text);
 	}
 
@@ -311,7 +343,10 @@ status_text (guint status)
 	case 403: return "Forbidden";
 	case 404: return "Not Found";
 	case 405: return "Method Not Allowed";
+	case 410: return "Gone";
+	case 411: return "Length Required";
 	case 413: return "Content Too Large";
+	case 415: return "Unsupported Media Type";
 	case 431: return "Request Header Fields Too Large";
 	case 503: return "Service Unavailable";
 	default:  return "Error";
@@ -356,7 +391,11 @@ fs_dash_respond (FsDashConn *conn, guint status, const gchar *type,
 		"Content-Security-Policy: default-src 'none'; "
 		"script-src 'nonce-%s'; style-src 'nonce-%s'; "
 		"connect-src 'self'; img-src 'self'; base-uri 'none'; "
-		"form-action 'none'; frame-ancestors 'none'\r\n"
+		"form-action 'none'; frame-ancestors 'none'; "
+		"require-trusted-types-for 'script'; trusted-types 'none'\r\n"
+		"Permissions-Policy: camera=(), microphone=(), geolocation=(), "
+		"clipboard-read=()\r\n"
+		"Cross-Origin-Embedder-Policy: require-corp\r\n"
 		"Connection: close\r\n\r\n",
 		status, status_text (status), type, body_len,
 		http->nonce, http->nonce);
@@ -446,6 +485,33 @@ header_count (gchar **lines, const gchar *name, const gchar **first)
 		}
 	}
 	return count;
+}
+
+guint
+fs_dash_conn_header_count (const FsDashConn *conn, const gchar *name)
+{
+	return header_count (conn->lines, name, NULL);
+}
+
+const gchar *
+fs_dash_conn_body (const FsDashConn *conn, gsize *len)
+{
+	*len = conn->body_len;
+	if (!conn->has_length)
+		return NULL;
+	return conn->in->str + conn->head_len + 4;
+}
+
+gboolean
+fs_dash_conn_has_length (const FsDashConn *conn)
+{
+	return conn->has_length;
+}
+
+gboolean
+fs_dash_conn_ownerless (const FsDashConn *conn)
+{
+	return conn->ownerless;
 }
 
 gchar *
@@ -546,6 +612,7 @@ parse_head (FsDashConn *conn, gsize *body_len)
 			return FALSE;
 		}
 		*body_len = (gsize) want;
+		conn->has_length = TRUE;
 	}
 
 	query = strchr (conn->path, '?');
@@ -620,8 +687,8 @@ on_read (GObject *source, GAsyncResult *result, gpointer data)
 		return;
 	}
 
-	/* The body is read; nothing in this read-only server uses it yet,
-	 * and bytes past it are ignored (every answer closes). */
+	/* The body is read (fs_dash_conn_body); bytes past it are
+	 * ignored, since every answer closes. */
 	dispatch (conn);
 }
 
@@ -635,10 +702,11 @@ on_incoming (GSocketService *service, GSocketConnection *connection,
 	FsDashConn *conn;
 	SlotGroup *group;
 	uid_t uid = (uid_t) -1;
+	gboolean ownerless = FALSE;
 
 	/* Not one byte is read from a connection that fails these. */
 	if (http->all >= FS_DASH_MAX_ALL ||
-	    !peer_allowed (http, connection, &uid)) {
+	    !peer_allowed (http, connection, &uid, &ownerless)) {
 		g_io_stream_close (G_IO_STREAM (connection), NULL, NULL);
 		return TRUE;
 	}
@@ -660,6 +728,7 @@ on_incoming (GSocketService *service, GSocketConnection *connection,
 	conn->connection = g_object_ref (connection);
 	conn->cancel = g_cancellable_new ();
 	conn->in = g_string_sized_new (1024);
+	conn->ownerless = ownerless;
 	g_queue_push_tail (&group->open, conn);
 	conn->group = group;
 	conn->node = g_queue_peek_tail_link (&group->open);
@@ -723,6 +792,20 @@ void
 fs_dash_http_allow_host (FsDashHttp *http, const gchar *host)
 {
 	g_ptr_array_add (http->hosts, g_strdup (host));
+}
+
+void
+fs_dash_http_allow_ownerless (FsDashHttp *http, gboolean allow)
+{
+	http->allow_ownerless = allow;
+}
+
+void
+fs_dash_http_on_ownerless_refused (FsDashHttp *http, GFunc refused,
+                                   gpointer data)
+{
+	http->ownerless_refused = refused;
+	http->ownerless_data = data;
 }
 
 void
