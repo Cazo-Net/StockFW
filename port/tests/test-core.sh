@@ -50,6 +50,12 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include <unistd.h>
 #endif
 #include "core/fs-i18n.h"
+#include "core/fs-intelset.h"
+#include "core/fs-intelwin.h"
+#include "core/fs-winstore.h"
+#include "core/fs-intel.h"
+#include "core/fs-hostnet.h"
+#include <stdlib.h>
 
 static int failures = 0;
 
@@ -8499,6 +8505,63 @@ static void test_sharing_needs_both_devices (void)
 	fs_policy_free (p);
 }
 
+/* Review T5: the CLI's blocklist text names the platform's firewall
+ * and its way to get rights (fs-cli.h's FS_CLI_LIVE, FS_CLI_SUDO,
+ * FS_CLI_RIGHTS) in fs-cli-cmds.c too, not only in fs-cli-intel.c.  The
+ * CLI is built on Linux only, so the Windows words are read from the
+ * source: no Linux-only literal where the macros belong. */
+static gchar *
+read_lf (const gchar *path)
+{
+	gchar *src = NULL;
+
+	if (!g_file_get_contents (path, &src, NULL, NULL))
+		return NULL;
+	{
+		gchar *w = src;
+		for (const gchar *r = src; *r != '\0'; r++)
+			if (*r != '\r')
+				*w++ = *r;
+		*w = '\0';
+	}
+	return src;
+}
+
+static void test_cli_platform_words (void)
+{
+	gchar *cmds = read_lf ("src/cli/fs-cli-cmds.c");
+	gchar *intel = read_lf ("src/cli/fs-cli-intel.c");
+	gchar *hdr = read_lf ("src/cli/fs-cli.h");
+	const gchar *win;
+
+	CHECK (cmds != NULL && intel != NULL && hdr != NULL,
+	       "cli words: the CLI sources are readable");
+	if (cmds == NULL || intel == NULL || hdr == NULL)
+		goto out;
+	win = strstr (hdr, "#elif defined G_OS_WIN32");
+	CHECK (win != NULL &&
+	       strstr (win, "#define FS_CLI_LIVE      \"Windows Firewall\"")
+	       != NULL &&
+	       strstr (win, "#define FS_CLI_SUDO      \"\"") != NULL &&
+	       strstr (win, "opened as administrator") != NULL,
+	       "cli words: fs-cli.h names Windows Firewall and an "
+	       "administrator prompt for Windows");
+	CHECK (strstr (cmds, "\"the kernel does not hold them\"") == NULL &&
+	       strstr (cmds, "FS_CLI_LIVE \" does not hold \"") != NULL,
+	       "cli words: Stop and Start's blocklist error in fs-cli-cmds.c "
+	       "names the platform's firewall (FS_CLI_LIVE)");
+	CHECK (strstr (cmds, "\"run it with sudo, e.g.") == NULL &&
+	       strstr (cmds, "FS_CLI_RIGHTS \", e.g. `\" FS_CLI_SUDO") != NULL,
+	       "cli words: the root hint in fs-cli-cmds.c is the platform's "
+	       "(FS_CLI_RIGHTS, FS_CLI_SUDO)");
+	CHECK (strstr (intel, "#define FS_CLI_LIVE") == NULL,
+	       "cli words: one definition, in fs-cli.h");
+out:
+	g_free (cmds);
+	g_free (intel);
+	g_free (hdr);
+}
+
 /* --- "Start the firewall when StockFW opens" -------------------------
  * On Linux, start applies a policy.  At launch the shared policy is
  * created empty and only filled when the Policy page is built, and
@@ -8981,6 +9044,67 @@ static void test_netparse_verdicts (void)
 	CHECK (fs_netparse_log_line (drop, &hit, NULL), "parse again");
 	fs_netparse_name_by_verdict (&hit, FS_LOG_VERDICT_NONE);
 	CHECK (fs_hit_is_blocked (&hit), "an unknown verdict is named blocked");
+	fs_netparse_clear_hit (&hit);
+}
+
+/* 1.0.7 threat intel: the table logs "STOCKFW-TI <id> " (design 7).
+ * Only fs_netparse_intel_line takes those lines, and only with an id
+ * the engine could have written; the policy's parser never does, so a
+ * reader that knows nothing of the lists (the CLI's event list) cannot
+ * show one as a policy block. */
+static void test_netparse_intel_line (void)
+{
+	const gchar *ti =
+		"2026-11-02T10:00:00Z STOCKFW-TI spamhaus-drop IN=eth0 OUT= "
+		"SRC=203.0.113.7 DST=198.51.100.1 LEN=60 PROTO=TCP SPT=4444 "
+		"DPT=22";
+	const gchar *ti_out =
+		"Nov  2 10:00:00 host kernel: [99.1] STOCKFW-TI local-office IN= "
+		"OUT=eth0 SRC=10.0.0.2 DST=203.0.113.9 PROTO=TCP SPT=40000 "
+		"DPT=443";
+	const gchar *bad_id =
+		"2026-11-02T10:00:00Z STOCKFW-TI Bad;id IN=eth0 OUT= "
+		"SRC=203.0.113.7 DST=198.51.100.1 PROTO=TCP DPT=22";
+	const gchar *no_id =
+		"2026-11-02T10:00:00Z STOCKFW-TI";
+	const gchar *drop =
+		"2026-11-02T10:00:00Z STOCKFW-DROP IN=eth0 OUT= "
+		"SRC=192.0.2.1 DST=198.51.100.1 PROTO=TCP SPT=1 DPT=443";
+	FsHit hit = { 0 };
+	gchar *id = NULL;
+
+	CHECK (fs_netparse_intel_line (ti, &hit, NULL, &id) &&
+	       g_strcmp0 (id, "spamhaus-drop") == 0 &&
+	       g_strcmp0 (hit.source, "203.0.113.7") == 0 &&
+	       g_strcmp0 (hit.port, "22") == 0 &&
+	       g_strcmp0 (hit.direction, "in") == 0 &&
+	       g_strcmp0 (hit.time, "2026-11-02T10:00:00Z") == 0,
+	       "intel line: the list's id and the packet's fields (id %s, "
+	       "src %s)", id ? id : "(null)",
+	       hit.source ? hit.source : "(null)");
+	fs_netparse_clear_hit (&hit);
+	g_clear_pointer (&id, g_free);
+
+	CHECK (fs_netparse_intel_line (ti_out, &hit, NULL, &id) &&
+	       g_strcmp0 (id, "local-office") == 0 &&
+	       g_strcmp0 (hit.direction, "out") == 0 &&
+	       g_strcmp0 (hit.destination, "203.0.113.9") == 0,
+	       "intel line: an outbound block in a classic syslog line");
+	fs_netparse_clear_hit (&hit);
+	g_clear_pointer (&id, g_free);
+
+	CHECK (!fs_netparse_intel_line (bad_id, &hit, NULL, &id) &&
+	       id == NULL && hit.source == NULL,
+	       "intel line: an id the engine could not have written is "
+	       "not an event");
+	CHECK (!fs_netparse_intel_line (no_id, &hit, NULL, &id) && id == NULL,
+	       "intel line: a marker with nothing after it is not an event");
+	CHECK (!fs_netparse_intel_line (drop, &hit, NULL, &id) && id == NULL,
+	       "intel line: a policy line is not an intel line");
+	CHECK (!fs_netparse_log_line (ti, &hit, NULL) && hit.source == NULL,
+	       "the policy parser never takes an intel line");
+	CHECK (fs_netparse_intel_line (ti, &hit, NULL, NULL),
+	       "intel line: the id is optional for the caller");
 	fs_netparse_clear_hit (&hit);
 }
 
@@ -9580,6 +9704,1295 @@ out:
 	fs_script_set_resolver (NULL);
 }
 
+/* ---- threat intel on Windows (fs-intelwin, design 11) ---------------- */
+
+#define IW_GEN  "g0123abcd"
+#define IW_GEN2 "g89abcdef"
+
+static FsRangeSet *
+iw_set (const gchar *const *tokens)
+{
+	FsRangeSet *s = fs_range_set_new ();
+
+	for (guint i = 0; tokens[i] != NULL; i++)
+		fs_range_set_add_text (s, tokens[i]);
+	fs_range_set_normalize (s);
+	return s;
+}
+
+/* A rule set of two lists: "alpha" both ways (5 IPv4, 2 IPv6), "beta"
+ * outbound only (1 IPv4). */
+static FsIntelRuleset *
+iw_ruleset (void)
+{
+	static const gchar *const alpha[] = {
+		"10.0.0.0/8", "192.0.2.7", "198.51.100.0/24",
+		"203.0.113.10-203.0.113.20", "45.0.0.1",
+		"2001:db8::/32", "2001:db8:ffff::1", NULL };
+	static const gchar *const beta[] = { "100.64.0.0/10", NULL };
+	FsIntelRuleset *rs = fs_intel_ruleset_new ();
+
+	fs_intel_ruleset_add (rs, "alpha", "Alpha | list\nsecond line",
+	                      FS_INTEL_DIR_BOTH, iw_set (alpha));
+	fs_intel_ruleset_add (rs, "beta", "Beta", FS_INTEL_DIR_OUT,
+	                      iw_set (beta));
+	return rs;
+}
+
+/* What Windows Firewall would hand back for a plan's rules: every
+ * property as written, RemoteAddresses optionally the way Windows
+ * stores it (IPv4 with dotted masks, tokens in another order). */
+static gchar *
+iw_windows_form (const gchar *remote)
+{
+	gchar **t = g_strsplit (remote, ",", -1);
+	guint n = g_strv_length (t);
+	GString *out = g_string_new (NULL);
+
+	for (guint k = n; k-- > 0;) {
+		gchar *tok = t[k];
+		gchar *slash = strchr (tok, '/');
+
+		if (out->len > 0)
+			g_string_append_c (out, ',');
+		if (strchr (tok, ':') == NULL && strchr (tok, '-') == NULL) {
+			guint bits = slash ? (guint) atoi (slash + 1) : 32;
+			guint32 m = bits == 0 ? 0 : 0xffffffffu << (32 - bits);
+
+			if (slash)
+				*slash = '\0';
+			g_string_append_printf (out, "%s/%u.%u.%u.%u", tok,
+			                        m >> 24, (m >> 16) & 255,
+			                        (m >> 8) & 255, m & 255);
+		} else {
+			g_string_append (out, tok);
+		}
+	}
+	g_strfreev (t);
+	return g_string_free (out, FALSE);
+}
+
+static GPtrArray *
+iw_seen_from_plan (const FsIntelWinPlan *plan, gboolean windows_form)
+{
+	GPtrArray *seen = g_ptr_array_new_with_free_func (fs_intelwin_seen_free);
+
+	for (guint i = 0; i < plan->rules->len; i++) {
+		const FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+		FsIntelWinSeen *s = fs_intelwin_seen_new ();
+
+		s->name = g_strdup (r->name);
+		s->description = g_strdup (r->description);
+		s->grouping = g_strdup (FS_INTELWIN_GROUP);
+		s->direction = (gint) r->dir;
+		s->action = 0;
+		s->enabled = r->enabled;
+		s->profiles = 0x7fffffff;   /* NET_FW_PROFILE2_ALL */
+		s->protocol = 256;
+		s->local_addresses = g_strdup ("*");
+		s->remote_addresses = windows_form && r->family != FS_AF_NONE
+		                      ? iw_windows_form (r->remote)
+		                      : g_strdup (r->remote);
+		s->local_ports = NULL;
+		s->remote_ports = NULL;
+		s->interface_types = g_strdup ("All");
+		g_ptr_array_add (seen, s);
+	}
+	return seen;
+}
+
+static FsIntelWinSeen *
+iw_find (GPtrArray *seen, const gchar *name)
+{
+	for (guint i = 0; i < seen->len; i++) {
+		FsIntelWinSeen *s = g_ptr_array_index (seen, i);
+
+		if (g_strcmp0 (s->name, name) == 0)
+			return s;
+	}
+	return NULL;
+}
+
+static FsIntelWinRule *
+iw_rule (const FsIntelWinPlan *plan, const gchar *name)
+{
+	for (guint i = 0; i < plan->rules->len; i++) {
+		FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+
+		if (strcmp (r->name, name) == 0)
+			return r;
+	}
+	return NULL;
+}
+
+/* ---- the Windows store's security descriptors (fs-winstore, 11.5) --- */
+
+/* A reader for the SDDL subset the store uses and Windows shows for a
+ * folder (owner "O:", "D:" with "P", "(type;flags;rights;;;sid)"), as
+ * the judge's input.  `trusted' names the SIDs taken as trusted, as
+ * fs-winstore.c does: SY, BA, and the user when it is trusted. */
+typedef struct
+{
+	gchar         *owner;
+	gboolean       has_dacl;
+	gboolean       protected_dacl;
+	FsWinstoreAce  aces[16];
+	gchar         *sids[16];
+	guint          n;
+} SddlRead;
+
+static guint32
+sddl_rights (const gchar *r)
+{
+	if (g_str_has_prefix (r, "0x"))
+		return (guint32) g_ascii_strtoull (r + 2, NULL, 16);
+	if (strcmp (r, "FA") == 0)
+		return 0x1f01ffu;   /* FILE_ALL_ACCESS */
+	if (strcmp (r, "GA") == 0)
+		return 0x10000000u;
+	if (strcmp (r, "GR") == 0)
+		return 0x80000000u;
+	if (strcmp (r, "GW") == 0)
+		return 0x40000000u;
+	return 0xffffffffu;   /* unknown: make it fail loudly */
+}
+
+static guint8
+sddl_flags (const gchar *f)
+{
+	guint8 out = 0;
+
+	for (; f[0] != '\0' && f[1] != '\0'; f += 2) {
+		if (strncmp (f, "OI", 2) == 0)
+			out |= 0x01;
+		else if (strncmp (f, "CI", 2) == 0)
+			out |= 0x02;
+		else if (strncmp (f, "IO", 2) == 0)
+			out |= 0x08;
+		else if (strncmp (f, "ID", 2) == 0)
+			out |= 0x10;
+	}
+	return out;
+}
+
+static gboolean
+sddl_read (const gchar *sddl, SddlRead *out)
+{
+	const gchar *p = sddl;
+
+	memset (out, 0, sizeof *out);
+	if (g_str_has_prefix (p, "O:")) {
+		const gchar *d = strstr (p, "D:");
+
+		if (d == NULL)
+			d = p + strlen (p);   /* an owner and no access list */
+		out->owner = g_strndup (p + 2, (gsize) (d - p - 2));
+		p = d;
+	}
+	if (!g_str_has_prefix (p, "D:"))
+		return TRUE;
+	out->has_dacl = TRUE;
+	p += 2;
+	while (*p != '\0' && *p != '(') {
+		if (*p == 'P')
+			out->protected_dacl = TRUE;
+		p++;
+	}
+	while (*p == '(' && out->n < G_N_ELEMENTS (out->aces)) {
+		const gchar *end = strchr (p, ')');
+		gchar *body, **f;
+
+		if (end == NULL)
+			return FALSE;
+		body = g_strndup (p + 1, (gsize) (end - p - 1));
+		f = g_strsplit (body, ";", -1);
+		if (g_strv_length (f) != 6) {
+			g_strfreev (f);
+			g_free (body);
+			return FALSE;
+		}
+		out->aces[out->n].type =
+			strcmp (f[0], "A") == 0 ? FS_WINSTORE_ACE_ALLOWED :
+			strcmp (f[0], "D") == 0 ? FS_WINSTORE_ACE_DENIED :
+			strcmp (f[0], "AU") == 0 ? FS_WINSTORE_ACE_AUDIT :
+			strcmp (f[0], "OA") == 0 ? 0x05 : 0xff;
+		out->aces[out->n].flags = sddl_flags (f[1]);
+		out->aces[out->n].mask = sddl_rights (f[2]);
+		out->sids[out->n] = g_strdup (f[5]);
+		out->n++;
+		g_strfreev (f);
+		g_free (body);
+		p = end + 1;
+	}
+	return *p == '\0';
+}
+
+static void
+sddl_trust (SddlRead *r, const gchar *user)
+{
+	for (guint i = 0; i < r->n; i++)
+		r->aces[i].trusted = strcmp (r->sids[i], "SY") == 0 ||
+		                     strcmp (r->sids[i], "BA") == 0 ||
+		                     (user != NULL &&
+		                      strcmp (r->sids[i], user) == 0);
+}
+
+static gboolean
+sddl_owner_trusted (const SddlRead *r, const gchar *creator,
+                    const gchar *user)
+{
+	/* No "O:": Windows makes the creating account the owner. */
+	const gchar *o = r->owner != NULL ? r->owner : creator;
+
+	return strcmp (o, "SY") == 0 || strcmp (o, "BA") == 0 ||
+	       (user != NULL && strcmp (o, user) == 0);
+}
+
+static void
+sddl_clear (SddlRead *r)
+{
+	g_free (r->owner);
+	for (guint i = 0; i < r->n; i++)
+		g_free (r->sids[i]);
+}
+
+/* Judges `sddl' as a folder created by `creator', with `user' trusted
+ * (NULL: the default store, where only SY and BA are). */
+static FsWinstoreFault
+judge_sddl (const gchar *sddl, const gchar *creator, const gchar *user,
+            gboolean *readable)
+{
+	SddlRead r;
+	FsWinstoreFault f;
+
+	if (!sddl_read (sddl, &r)) {
+		sddl_clear (&r);
+		return (FsWinstoreFault) -1;
+	}
+	sddl_trust (&r, user);
+	f = fs_winstore_judge (sddl_owner_trusted (&r, creator, user),
+	                       r.has_dacl, r.aces, r.n, readable);
+	sddl_clear (&r);
+	return f;
+}
+
+#define WS_ADMIN_USER "S-1-5-21-111-222-333-500"   /* runneradmin, say */
+
+static void
+test_winstore_sddl (void)
+{
+	gchar *parent = fs_winstore_sddl (FS_WINSTORE_DIR_PARENT, TRUE, NULL);
+	gchar *store = fs_winstore_sddl (FS_WINSTORE_DIR_STORE, TRUE, NULL);
+	gchar *over = fs_winstore_sddl (FS_WINSTORE_DIR_STORE, TRUE,
+	                                WS_ADMIN_USER);
+	gchar *over_plain = fs_winstore_sddl (FS_WINSTORE_DIR_STORE, FALSE,
+	                                      WS_ADMIN_USER);
+	gchar *old_parent = g_strdup ("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                              "(A;OICI;0x1200a9;;;BU)");
+	gboolean readable = TRUE;
+	SddlRead r;
+
+	/* What StockFW creates, exactly. */
+	CHECK (strcmp (parent, "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                       "(A;OICI;0x1200a9;;;BU)") == 0,
+	       "winstore: %%ProgramData%%\\StockFW is created owned by "
+	       "Administrators, protected, SYSTEM and Administrators full, "
+	       "Users read (%s)", parent);
+	CHECK (strcmp (store, "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)") == 0,
+	       "winstore: intel is created owned by Administrators, "
+	       "protected, SYSTEM and Administrators only (%s)", store);
+	CHECK (strcmp (over, "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                     "(A;OICI;FA;;;" WS_ADMIN_USER ")") == 0 &&
+	       strcmp (over_plain, "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	                           "(A;OICI;FA;;;" WS_ADMIN_USER ")") == 0,
+	       "winstore: an override adds the current user; it names "
+	       "Administrators as owner only when elevated (%s | %s)", over,
+	       over_plain);
+	CHECK (sddl_read (parent, &r) && r.protected_dacl && r.owner != NULL &&
+	       strcmp (r.owner, "BA") == 0,
+	       "winstore: the reader sees the owner and the protection");
+	sddl_clear (&r);
+
+	/* Each passes the check it will meet, created by an elevated
+	 * administrator account that is neither SYSTEM nor
+	 * Administrators: the CI's runneradmin (round 3 on Windows). */
+	CHECK (judge_sddl (parent, WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_SAFE && readable,
+	       "winstore: StockFW's own %%ProgramData%%\\StockFW passes the "
+	       "default store's check (Users may read it)");
+	CHECK (judge_sddl (store, WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_SAFE && !readable,
+	       "winstore: StockFW's own intel passes, and nobody else may "
+	       "read it (so it is never tightened again)");
+	CHECK (judge_sddl (over, WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_SAFE &&
+	       judge_sddl (over_plain, WS_ADMIN_USER, WS_ADMIN_USER,
+	                   &readable) == FS_WINSTORE_SAFE,
+	       "winstore: an override passes the override's check, elevated "
+	       "or not");
+
+	/* The fault the CI found: without "O:BA" the creating account owns
+	 * the folder, and the default store trusts no user. */
+	CHECK (judge_sddl (old_parent, WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_OWNER,
+	       "winstore: a folder created without an owner belongs to the "
+	       "account that made it, and the default store refuses it "
+	       "(the CI failure: owned by runneradmin)");
+	CHECK (judge_sddl (old_parent, "SY", NULL, &readable) ==
+	       FS_WINSTORE_SAFE,
+	       "winstore: ... which only a creator that is SYSTEM avoided");
+
+	/* A folder another account made first is refused as foreign, even
+	 * with StockFW's access list on it. */
+	CHECK (judge_sddl ("O:BUD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_OWNER &&
+	       judge_sddl ("O:S-1-5-21-111-222-333-1001D:P(A;OICI;FA;;;SY)",
+	                   WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_FAULT_OWNER,
+	       "winstore: a folder owned by Users, or by another user under "
+	       "an override, is refused as foreign");
+
+	/* A folder that inherits a drive root's default access list (the
+	 * runner's D:\a\_temp\...): Users may add folders (CI;AD) and,
+	 * through the inherit-only entry for files, add files below;
+	 * CREATOR OWNER applies to what is created inside only. */
+	CHECK (judge_sddl ("O:" WS_ADMIN_USER "D:AI(A;OICIID;FA;;;SY)"
+	                   "(A;OICIID;FA;;;BA)(A;OICIID;0x1200a9;;;BU)"
+	                   "(A;CIID;0x4;;;BU)(A;CIIOID;0x2;;;BU)"
+	                   "(A;OICIIOID;GA;;;CO)",
+	                   WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE,
+	       "winstore: a temporary folder under a drive root (Users may "
+	       "add folders to it) is refused as an override's parent (the "
+	       "CI failure for the override and the engine checks)");
+	CHECK (judge_sddl ("O:" WS_ADMIN_USER "D:AI(A;OICIID;FA;;;SY)"
+	                   "(A;OICIID;FA;;;BA)(A;OICIID;0x1200a9;;;BU)"
+	                   "(A;CIIOID;0x2;;;BU)(A;OICIIOID;GA;;;CO)",
+	                   WS_ADMIN_USER, WS_ADMIN_USER, &readable) ==
+	       FS_WINSTORE_SAFE && readable,
+	       "winstore: inherit-only entries (CREATOR OWNER, Users' "
+	       "add-file for what is inside) do not count against the "
+	       "folder itself; Users' read makes it readable");
+
+	/* The rest of the judge. */
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(D;;FA;;;WD)(AU;SA;FA;;;WD)",
+	                   WS_ADMIN_USER, NULL, &readable) == FS_WINSTORE_SAFE &&
+	       !readable,
+	       "winstore: deny and audit entries are not grants");
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;0x40000;;;WD)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE &&
+	       judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;0x40;;;AU)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE &&
+	       judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;GW;;;BU)",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE,
+	       "winstore: write-DAC for Everyone, delete-child for "
+	       "Authenticated Users, generic write for Users: each refused");
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(A;;FA;;;" WS_ADMIN_USER ")",
+	                   WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_CHANGE,
+	       "winstore: the current user is trusted only under an "
+	       "override, never in the default store");
+	CHECK (judge_sddl ("O:BA", WS_ADMIN_USER, NULL, &readable) ==
+	       FS_WINSTORE_FAULT_NO_DACL,
+	       "winstore: no access list is refused");
+	CHECK (judge_sddl ("O:BAD:P(A;;FA;;;BA)(OA;;FA;;;WD)", WS_ADMIN_USER,
+	                   NULL, &readable) == FS_WINSTORE_FAULT_UNKNOWN_ACE,
+	       "winstore: an entry the judge cannot read (an object ACE) is "
+	       "refused");
+	CHECK (fs_winstore_fault_text (FS_WINSTORE_SAFE) == NULL &&
+	       fs_winstore_fault_text (FS_WINSTORE_FAULT_OWNER) != NULL &&
+	       strstr (fs_winstore_fault_text (FS_WINSTORE_FAULT_CHANGE),
+	               "may change it") != NULL,
+	       "winstore: every fault has its sentence");
+
+	g_free (parent);
+	g_free (store);
+	g_free (over);
+	g_free (over_plain);
+	g_free (old_parent);
+}
+
+static void
+test_intelwin_gen (void)
+{
+	const gchar *taken[] = { "g00000005", NULL };
+	gchar *g;
+
+	CHECK (fs_intelwin_gen_is_valid (IW_GEN), "intelwin: %s is a generation",
+	       IW_GEN);
+	CHECK (!fs_intelwin_gen_is_valid ("G0123abcd") &&
+	       !fs_intelwin_gen_is_valid ("g0123ABCD") &&
+	       !fs_intelwin_gen_is_valid ("g0123abc") &&
+	       !fs_intelwin_gen_is_valid ("g0123abcde") &&
+	       !fs_intelwin_gen_is_valid ("g0123abc ") &&
+	       !fs_intelwin_gen_is_valid (NULL),
+	       "intelwin: upper case, short, long, trailing space and NULL "
+	       "are not generations");
+	g = fs_intelwin_gen_new (5, NULL);
+	CHECK (g_strcmp0 (g, "g00000005") == 0,
+	       "intelwin: a new generation comes from its seed (%s)", g);
+	g_free (g);
+	g = fs_intelwin_gen_new (5, taken);
+	CHECK (fs_intelwin_gen_is_valid (g) && strcmp (g, "g00000005") != 0,
+	       "intelwin: a new generation is never one already on the "
+	       "firewall (%s)", g);
+	g_free (g);
+}
+
+static void
+test_intelwin_plan (void)
+{
+	FsIntelRuleset *rs = iw_ruleset ();
+	FsIntelWinPlan *plan = fs_intelwin_plan (rs, IW_GEN, 2, 1000);
+	static const gchar *const names[] = {
+		"SFW-TI alpha in IPv4 1/3 " IW_GEN,
+		"SFW-TI alpha in IPv4 2/3 " IW_GEN,
+		"SFW-TI alpha in IPv4 3/3 " IW_GEN,
+		"SFW-TI alpha in IPv6 1/1 " IW_GEN,
+		"SFW-TI alpha out IPv4 1/3 " IW_GEN,
+		"SFW-TI alpha out IPv4 2/3 " IW_GEN,
+		"SFW-TI alpha out IPv4 3/3 " IW_GEN,
+		"SFW-TI alpha out IPv6 1/1 " IW_GEN,
+		"SFW-TI beta out IPv4 1/1 " IW_GEN,
+		"SFW-TI manifest " IW_GEN,
+	};
+	gboolean names_ok, shape_ok = TRUE, lossless = TRUE;
+	gchar *digest = fs_intel_ruleset_digest (rs);
+	const FsIntelWinRule *m;
+	gchar *want;
+
+	CHECK (plan != NULL && plan->rules->len == G_N_ELEMENTS (names),
+	       "intelwin plan: 2 lists, one both ways, 2 tokens a rule -> %u "
+	       "rules (got %u)", (guint) G_N_ELEMENTS (names),
+	       plan ? plan->rules->len : 0);
+	if (plan == NULL || plan->rules->len != G_N_ELEMENTS (names))
+		goto out;
+	names_ok = TRUE;
+	for (guint i = 0; i < G_N_ELEMENTS (names); i++) {
+		const FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+
+		if (strcmp (r->name, names[i]) != 0) {
+			printf ("      rule %u is \"%s\", wanted \"%s\"\n", i,
+			        r->name, names[i]);
+			names_ok = FALSE;
+		}
+	}
+	CHECK (names_ok, "intelwin plan: names encode list, direction, "
+	       "family, chunk i/n and generation, inbound before outbound, "
+	       "IPv4 before IPv6, the manifest last");
+	CHECK (g_strcmp0 (plan->digest, digest) == 0 && plan->plan != NULL &&
+	       strlen (plan->plan) == 32 && g_strcmp0 (plan->gen, IW_GEN) == 0,
+	       "intelwin plan: carries the rule set's digest, its generation "
+	       "and a 32-digit plan hash");
+
+	for (guint i = 0; i + 1 < plan->rules->len; i++) {
+		const FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+
+		if (!r->enabled || r->tokens == 0 || r->tokens > 2 ||
+		    r->family == FS_AF_NONE ||
+		    g_str_has_prefix (r->name, "StockFW-") ||
+		    !g_str_has_prefix (r->name, FS_INTELWIN_PREFIX) ||
+		    strchr (r->description, '|') != NULL ||
+		    strchr (r->description, '\n') != NULL ||
+		    (strstr (r->name, " in ") ? r->dir != FS_INTELWIN_IN
+		                              : r->dir != FS_INTELWIN_OUT))
+			shape_ok = FALSE;
+	}
+	CHECK (shape_ok, "intelwin plan: every address rule is enabled, has "
+	       "1-2 tokens, the direction its name says, never the policy's "
+	       "\"StockFW-\" prefix, and a description without '|' or line "
+	       "breaks");
+
+	/* No address lost or added: per list and direction, the rules'
+	 * RemoteAddresses read back are the list. */
+	for (guint s = 0; s < rs->sets->len; s++) {
+		const FsIntelSet *set = g_ptr_array_index (rs->sets, s);
+
+		for (guint d = 1; d <= 2; d++) {
+			FsRangeSet *got = fs_range_set_new ();
+			gchar *a, *b;
+			gchar *prefix;
+
+			if ((set->dir & d) == 0)
+				continue;
+			prefix = g_strdup_printf ("SFW-TI %s %s ", set->id,
+			                          d == 1 ? "in" : "out");
+			for (guint i = 0; i < plan->rules->len; i++) {
+				const FsIntelWinRule *r =
+					g_ptr_array_index (plan->rules, i);
+
+				if (g_str_has_prefix (r->name, prefix))
+					fs_intelwin_parse_remote (r->remote, got);
+			}
+			fs_range_set_normalize (got);
+			a = fs_range_set_to_text (got);
+			b = fs_range_set_to_text (set->ranges);
+			if (strcmp (a, b) != 0)
+				lossless = FALSE;
+			g_free (a);
+			g_free (b);
+			g_free (prefix);
+			fs_range_set_free (got);
+		}
+	}
+	CHECK (lossless, "intelwin plan: per list and direction, the chunks "
+	       "together hold exactly the list's addresses");
+
+	m = g_ptr_array_index (plan->rules, plan->rules->len - 1);
+	want = g_strdup_printf ("sfw:%s plan:%s rules:9", digest, plan->plan);
+	CHECK (!m->enabled && m->family == FS_AF_NONE &&
+	       g_strcmp0 (m->remote, FS_INTELWIN_MANIFEST_REMOTE) == 0 &&
+	       g_str_has_suffix (m->description, want),
+	       "intelwin plan: the manifest is disabled, names only "
+	       "192.0.2.1 and ends \"%s\"", want);
+	g_free (want);
+	CHECK (strstr (((FsIntelWinRule *) g_ptr_array_index (plan->rules, 0))
+	               ->description, "Alpha") != NULL,
+	       "intelwin plan: a rule's description names its list");
+out:
+	fs_intelwin_plan_free (plan);
+	g_free (digest);
+
+	/* The same rule set planned again: the same rules. */
+	{
+		FsIntelWinPlan *a = fs_intelwin_plan (rs, IW_GEN, 2, 1000);
+		FsIntelWinPlan *b = fs_intelwin_plan (rs, IW_GEN2, 2, 1000);
+
+		CHECK (a && b && g_strcmp0 (a->digest, b->digest) == 0 &&
+		       g_strcmp0 (a->plan, b->plan) != 0,
+		       "intelwin plan: another generation names other rules, "
+		       "so its plan hash differs; the digest does not");
+		fs_intelwin_plan_free (a);
+		fs_intelwin_plan_free (b);
+	}
+
+	/* Refusals. */
+	CHECK (fs_intelwin_plan (rs, "g0123ABCD", 2, 1000) == NULL &&
+	       fs_intelwin_plan (rs, "x; rm", 2, 1000) == NULL &&
+	       fs_intelwin_plan (rs, IW_GEN, 0, 1000) == NULL &&
+	       fs_intelwin_plan (rs, IW_GEN, 2, 0) == NULL,
+	       "intelwin plan: an invalid generation or a zero limit plans "
+	       "nothing");
+	{
+		FsIntelSet *first = g_ptr_array_index (rs->sets, 0);
+		gchar *saved = first->id;
+
+		first->id = (gchar *) "../evil name";
+		CHECK (fs_intelwin_plan (rs, IW_GEN, 2, 1000) == NULL,
+		       "intelwin plan: a hand-filled set whose id is not valid "
+		       "never becomes a rule name");
+		first->id = (gchar *) "beta";
+		CHECK (fs_intelwin_plan (rs, IW_GEN, 2, 1000) == NULL,
+		       "intelwin plan: two sets with one id are refused");
+		first->id = saved;
+	}
+	fs_intel_ruleset_free (rs);
+
+	/* The empty rule set leaves no rule; a list emptied by
+	 * subtraction leaves the manifest alone. */
+	rs = fs_intel_ruleset_new ();
+	plan = fs_intelwin_plan (rs, IW_GEN, FS_INTELWIN_MAX_TOKENS,
+	                         FS_INTELWIN_MAX_CHARS);
+	CHECK (plan != NULL && plan->rules->len == 0 && plan->digest != NULL,
+	       "intelwin plan: the empty rule set has no rule at all");
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_add (rs, "emptied", "Emptied", FS_INTEL_DIR_BOTH,
+	                      fs_range_set_new ());
+	plan = fs_intelwin_plan (rs, IW_GEN, FS_INTELWIN_MAX_TOKENS,
+	                         FS_INTELWIN_MAX_CHARS);
+	CHECK (plan != NULL && plan->rules->len == 1 &&
+	       strcmp (((FsIntelWinRule *) plan->rules->pdata[0])->name,
+	               "SFW-TI manifest " IW_GEN) == 0,
+	       "intelwin plan: a list with every address subtracted leaves "
+	       "only the manifest, so it still reads as loaded");
+	if (plan != NULL) {
+		GPtrArray *seen = iw_seen_from_plan (plan, FALSE);
+		FsIntelWinRead rd;
+
+		fs_intelwin_read (seen, &rd);
+		CHECK (rd.live == FS_INTEL_LIVE_PRESENT &&
+		       g_strcmp0 (rd.digest, plan->digest) == 0,
+		       "intelwin read: ... and reads back PRESENT with its digest");
+		fs_intelwin_read_clear (&rd);
+		g_ptr_array_unref (seen);
+	}
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_free (rs);
+}
+
+/* The real limits, on lists the size of real feeds. */
+static void
+test_intelwin_limits (void)
+{
+	FsIntelRuleset *rs = fs_intel_ruleset_new ();
+	FsRangeSet *v4 = fs_range_set_new ();
+	FsRangeSet *v6 = fs_range_set_new ();
+	FsIntelWinPlan *plan;
+	guint rules4 = 0, rules6 = 0, max_tok = 0;
+	gsize max_len = 0;
+	guint64 tokens = 0;
+
+	/* 2500 separate IPv4 addresses. */
+	for (guint i = 0; i < 2500; i++)
+		fs_range_set_add4 (v4, 0x0a000000u + i * 4, 0x0a000000u + i * 4);
+	fs_range_set_normalize (v4);
+	/* 1500 IPv6 ranges that print as long "a-b" tokens. */
+	for (guint i = 0; i < 1500; i++) {
+		FsU128 a = { G_GUINT64_CONSTANT (0x2001db8abcdef012) + i * 2,
+		             G_GUINT64_CONSTANT (0x123456789abcdef1) };
+		FsU128 b = { a.hi, G_GUINT64_CONSTANT (0xfedcba9876543210) };
+
+		fs_range_set_add6 (v6, a, b);
+	}
+	fs_range_set_normalize (v6);
+	fs_intel_ruleset_add (rs, "big4", "Big v4", FS_INTEL_DIR_IN, v4);
+	fs_intel_ruleset_add (rs, "big6", "Big v6", FS_INTEL_DIR_IN, v6);
+
+	plan = fs_intelwin_plan (rs, IW_GEN, FS_INTELWIN_MAX_TOKENS,
+	                         FS_INTELWIN_MAX_CHARS);
+	for (guint i = 0; plan != NULL && i < plan->rules->len; i++) {
+		const FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+
+		if (r->family == FS_AF_NONE)
+			continue;
+		if (r->family == FS_AF_V4)
+			rules4++;
+		else
+			rules6++;
+		tokens += r->tokens;
+		max_tok = MAX (max_tok, r->tokens);
+		max_len = MAX (max_len, strlen (r->remote));
+	}
+	CHECK (plan != NULL && rules4 == 3 && tokens == 4000 &&
+	       max_tok <= FS_INTELWIN_MAX_TOKENS &&
+	       max_len <= FS_INTELWIN_MAX_CHARS,
+	       "intelwin limits: 2500 IPv4 addresses take 3 rules, every "
+	       "rule holds at most %u addresses and %u characters (most: %u, "
+	       "%" G_GSIZE_FORMAT ")", FS_INTELWIN_MAX_TOKENS,
+	       FS_INTELWIN_MAX_CHARS, max_tok, max_len);
+	CHECK (rules6 >= 3,
+	       "intelwin limits: 1500 long IPv6 ranges are split by "
+	       "characters before they reach 1000 a rule (%u rules)", rules6);
+	CHECK (plan != NULL && iw_rule (plan, "SFW-TI big4 in IPv4 3/3 " IW_GEN)
+	       != NULL && iw_rule (plan, "SFW-TI big4 in IPv4 3/3 " IW_GEN)
+	       ->tokens == 500,
+	       "intelwin limits: the last chunk holds the remainder (500)");
+	fs_intelwin_plan_free (plan);
+
+	/* A cap smaller than one token: the token stands alone, never
+	 * split. */
+	plan = fs_intelwin_plan (rs, IW_GEN, 1000, 5);
+	CHECK (plan != NULL && plan->rules->len == 4000 + 1,
+	       "intelwin limits: a token longer than the character cap gets "
+	       "a rule of its own, never cut");
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_free (rs);
+}
+
+static void
+test_intelwin_parse_remote (void)
+{
+	FsRangeSet *s = fs_range_set_new ();
+	gchar *text;
+
+	CHECK (fs_intelwin_parse_remote ("10.0.0.0/255.0.0.0,"
+	                                 "192.0.2.7/255.255.255.255,"
+	                                 "203.0.113.10-203.0.113.20,"
+	                                 "2001:db8::/32, 2001:db8:ffff::1", s),
+	       "intelwin remote: dotted masks, a range, IPv6 and spaces "
+	       "after commas are read");
+	fs_range_set_normalize (s);
+	text = fs_range_set_to_text (s);
+	CHECK (g_strcmp0 (text, "10.0.0.0/8\n192.0.2.7\n"
+	                        "203.0.113.10-203.0.113.20\n2001:db8::/32\n") == 0,
+	       "intelwin remote: ... as the same addresses (%s)", text);
+	g_free (text);
+	fs_range_set_free (s);
+
+	{
+		static const gchar *const bad[] = {
+			"*", "LocalSubnet", "DNS", "DefaultGateway", "Intranet",
+			"", "1.2.3.4,,5.6.7.8", "1.2.3.4,", "1.2.3.4/255.0.255.0",
+			"1.2.3.4/33", "example.com", "1.2.3.4,*",
+		};
+		gboolean all = TRUE;
+
+		for (guint i = 0; i < G_N_ELEMENTS (bad); i++) {
+			FsRangeSet *t = fs_range_set_new ();
+
+			fs_range_set_add_text (t, "198.51.100.1");
+			if (fs_intelwin_parse_remote (bad[i], t) ||
+			    fs_range_set_count4 (t) != 1 ||
+			    fs_range_set_count6 (t) != 0) {
+				printf ("      accepted or touched: \"%s\"\n", bad[i]);
+				all = FALSE;
+			}
+			fs_range_set_free (t);
+		}
+		CHECK (all && !fs_intelwin_parse_remote (NULL, NULL),
+		       "intelwin remote: \"*\", keywords, empty tokens, a mask "
+		       "with holes and names are refused, and the set is left "
+		       "as it was");
+	}
+}
+
+typedef void (*IwTamper) (GPtrArray *seen);
+
+static void iw_t_drop_chunk (GPtrArray *s)
+{ g_ptr_array_remove (s, iw_find (s, "SFW-TI alpha in IPv4 2/3 " IW_GEN)); }
+static void iw_t_disable (GPtrArray *s)
+{ iw_find (s, "SFW-TI alpha in IPv4 1/3 " IW_GEN)->enabled = FALSE; }
+static void iw_t_allow (GPtrArray *s)
+{ iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN)->action = 1; }
+static void iw_t_direction (GPtrArray *s)
+{ iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN)->direction = 1; }
+static void iw_t_profile (GPtrArray *s)
+{ iw_find (s, "SFW-TI alpha out IPv6 1/1 " IW_GEN)->profiles = 4; }
+static void iw_t_protocol (GPtrArray *s)
+{ iw_find (s, "SFW-TI alpha out IPv6 1/1 " IW_GEN)->protocol = 6; }
+static void iw_t_local_port (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv6 1/1 " IW_GEN);
+	g_free (x->local_ports);
+	x->local_ports = g_strdup ("443");
+}
+static void iw_t_local_addr (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv6 1/1 " IW_GEN);
+	g_free (x->local_addresses);
+	x->local_addresses = g_strdup ("10.9.9.9");
+}
+static void iw_t_program (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv4 3/3 " IW_GEN);
+	x->application = g_strdup ("C:\\nothing.exe");
+}
+static void iw_t_remote_port (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	g_free (x->remote_ports);
+	x->remote_ports = g_strdup ("443");
+}
+static void iw_t_service (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	g_free (x->service);
+	x->service = g_strdup ("Dnscache");
+}
+static void iw_t_iftype (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv4 3/3 " IW_GEN);
+	g_free (x->interface_types);
+	x->interface_types = g_strdup ("Wireless");
+}
+static void iw_t_ifaces (GPtrArray *s)
+{ iw_find (s, "SFW-TI alpha in IPv4 3/3 " IW_GEN)->interfaces = TRUE; }
+static void iw_t_conditions (GPtrArray *s)
+{ iw_find (s, "SFW-TI alpha in IPv4 3/3 " IW_GEN)->conditions = TRUE; }
+static void iw_t_remote_less (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv4 1/3 " IW_GEN);
+	gchar *comma = strchr (x->remote_addresses, ',');
+	if (comma != NULL)
+		*comma = '\0';   /* one address fewer */
+}
+static void iw_t_remote_any (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI alpha in IPv4 1/3 " IW_GEN);
+	g_free (x->remote_addresses);
+	x->remote_addresses = g_strdup ("*");
+}
+static void iw_t_remote_mixed (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	gchar *more = g_strconcat (x->remote_addresses, ",2001:db8::1", NULL);
+	g_free (x->remote_addresses);
+	x->remote_addresses = more;
+}
+static void iw_t_swap (GPtrArray *s)
+{
+	/* Same addresses overall, moved between two rules. */
+	FsIntelWinSeen *a = iw_find (s, "SFW-TI alpha in IPv4 1/3 " IW_GEN);
+	FsIntelWinSeen *b = iw_find (s, "SFW-TI alpha in IPv4 2/3 " IW_GEN);
+	gchar *t = a->remote_addresses;
+	a->remote_addresses = b->remote_addresses;
+	b->remote_addresses = t;
+}
+static void iw_t_extra (GPtrArray *s)
+{
+	FsIntelWinSeen *x = fs_intelwin_seen_new ();
+	FsIntelWinSeen *like = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+
+	*x = *like;
+	x->name = g_strdup ("SFW-TI gamma out IPv4 1/1 " IW_GEN);
+	x->description = g_strdup (like->description);
+	x->grouping = g_strdup (like->grouping);
+	x->local_addresses = g_strdup (like->local_addresses);
+	x->remote_addresses = g_strdup ("8.8.8.8");
+	x->interface_types = g_strdup (like->interface_types);
+	g_ptr_array_add (s, x);
+}
+static void iw_t_foreign (GPtrArray *s)
+{
+	FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+	x->name = g_strdup ("Someone's rule");
+	x->grouping = g_strdup (FS_INTELWIN_GROUP);
+	x->action = 1;
+	x->enabled = TRUE;
+	g_ptr_array_add (s, x);
+}
+static void iw_t_old_gen (GPtrArray *s)
+{
+	FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+	x->name = g_strdup ("SFW-TI alpha in IPv4 1/1 " IW_GEN2);
+	x->grouping = g_strdup (FS_INTELWIN_GROUP);
+	x->direction = 1;
+	x->enabled = TRUE;
+	x->profiles = 7;
+	x->protocol = 256;
+	x->remote_addresses = g_strdup ("192.0.2.7");
+	g_ptr_array_add (s, x);
+}
+static void iw_t_no_manifest (GPtrArray *s)
+{ g_ptr_array_remove (s, iw_find (s, "SFW-TI manifest " IW_GEN)); }
+static void iw_t_manifest_count (GPtrArray *s)
+{
+	FsIntelWinSeen *m = iw_find (s, "SFW-TI manifest " IW_GEN);
+	gchar *at = g_strrstr (m->description, "rules:");
+	gchar *edited = g_strndup (m->description,
+	                           (gsize) (at - m->description));
+	g_free (m->description);
+	m->description = g_strconcat (edited, "rules:8", NULL);
+	g_free (edited);
+	/* And one rule gone, so the count would match. */
+	g_ptr_array_remove (s, iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN));
+}
+static void iw_t_rename (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	g_free (x->name);
+	x->name = g_strdup ("SFW-TI betb out IPv4 1/1 " IW_GEN);
+}
+static void iw_t_regroup (GPtrArray *s)
+{
+	FsIntelWinSeen *x = iw_find (s, "SFW-TI beta out IPv4 1/1 " IW_GEN);
+	g_free (x->grouping);
+	x->grouping = g_strdup ("Other");
+}
+
+static void
+test_intelwin_read (void)
+{
+	FsIntelRuleset *rs = iw_ruleset ();
+	FsIntelWinPlan *plan = fs_intelwin_plan (rs, IW_GEN, 2, 1000);
+	GPtrArray *seen;
+	FsIntelWinRead rd;
+	static const struct { IwTamper fn; const gchar *what; } t[] = {
+		{ iw_t_drop_chunk,     "a chunk deleted" },
+		{ iw_t_disable,        "a rule disabled" },
+		{ iw_t_allow,          "a rule turned into allow" },
+		{ iw_t_direction,      "a rule's direction flipped" },
+		{ iw_t_profile,        "a rule narrowed to the Public profile" },
+		{ iw_t_protocol,       "a rule narrowed to TCP" },
+		{ iw_t_local_port,     "a rule narrowed to local port 443" },
+		{ iw_t_local_addr,     "a rule narrowed to one local address" },
+		{ iw_t_program,        "a rule narrowed to one program" },
+		{ iw_t_remote_port,    "a rule narrowed to remote port 443" },
+		{ iw_t_service,        "a rule narrowed to one service" },
+		{ iw_t_iftype,         "a rule narrowed to wireless adapters" },
+		{ iw_t_ifaces,         "a rule narrowed to named adapters" },
+		{ iw_t_conditions,     "a rule given a user/app/IPsec condition" },
+		{ iw_t_remote_less,    "an address taken out of a rule" },
+		{ iw_t_remote_any,     "a rule's addresses set to *" },
+		{ iw_t_remote_mixed,   "an IPv6 address added to an IPv4 rule" },
+		{ iw_t_swap,           "addresses moved between two chunks" },
+		{ iw_t_extra,          "a rule added with a name like ours" },
+		{ iw_t_foreign,        "someone else's rule put in our group" },
+		{ iw_t_old_gen,        "a rule left from an earlier apply" },
+		{ iw_t_no_manifest,    "the manifest deleted" },
+		{ iw_t_manifest_count, "the manifest's count edited to match a "
+		                       "deleted rule" },
+		{ iw_t_rename,         "a rule renamed" },
+		{ iw_t_regroup,        "a rule moved out of our group" },
+	};
+
+	g_return_if_fail (plan != NULL);
+
+	fs_intelwin_read (NULL, &rd);
+	CHECK (rd.live == FS_INTEL_LIVE_ABSENT && rd.ours == 0,
+	       "intelwin read: no rule at all is ABSENT");
+	fs_intelwin_read_clear (&rd);
+
+	/* Someone else's rules, even with our prefix, are not ours. */
+	seen = g_ptr_array_new_with_free_func (fs_intelwin_seen_free);
+	{
+		FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+		x->name = g_strdup ("SFW-TI alpha in IPv4 1/1 " IW_GEN);
+		x->grouping = g_strdup ("Somebody else");
+		g_ptr_array_add (seen, x);
+		x = fs_intelwin_seen_new ();
+		x->name = g_strdup ("StockFW-in-ssh");
+		g_ptr_array_add (seen, x);
+	}
+	fs_intelwin_read (seen, &rd);
+	CHECK (rd.live == FS_INTEL_LIVE_ABSENT,
+	       "intelwin read: rules outside our group are never counted, "
+	       "whatever their names");
+	fs_intelwin_read_clear (&rd);
+	g_ptr_array_unref (seen);
+
+	seen = iw_seen_from_plan (plan, FALSE);
+	fs_intelwin_read (seen, &rd);
+	CHECK (rd.live == FS_INTEL_LIVE_PRESENT &&
+	       g_strcmp0 (rd.digest, plan->digest) == 0 &&
+	       g_strcmp0 (rd.gen, IW_GEN) == 0 && rd.ours == plan->rules->len,
+	       "intelwin read: the rules as written read back PRESENT with "
+	       "the plan's digest and generation");
+	fs_intelwin_read_clear (&rd);
+	g_ptr_array_unref (seen);
+
+	seen = iw_seen_from_plan (plan, TRUE);
+	/* Windows also hands rules back in its own order. */
+	for (guint i = 0; i < seen->len / 2; i++) {
+		gpointer a = seen->pdata[i];
+
+		seen->pdata[i] = seen->pdata[seen->len - 1 - i];
+		seen->pdata[seen->len - 1 - i] = a;
+	}
+	{
+		FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+		x->name = g_strdup ("Core Networking - DNS (UDP-Out)");
+		x->grouping = g_strdup ("@FirewallAPI.dll,-25000");
+		x->action = 1;
+		g_ptr_array_add (seen, x);
+	}
+	fs_intelwin_read (seen, &rd);
+	CHECK (rd.live == FS_INTEL_LIVE_PRESENT &&
+	       g_strcmp0 (rd.digest, plan->digest) == 0,
+	       "intelwin read: still PRESENT when Windows writes IPv4 with "
+	       "dotted masks, reorders tokens and rules, and other rules "
+	       "exist (e.g. \"%s\")",
+	       ((FsIntelWinSeen *) iw_find (seen, "SFW-TI beta out IPv4 1/1 "
+	                                    IW_GEN))->remote_addresses);
+	fs_intelwin_read_clear (&rd);
+	g_ptr_array_unref (seen);
+
+	for (guint i = 0; i < G_N_ELEMENTS (t); i++) {
+		seen = iw_seen_from_plan (plan, FALSE);
+		t[i].fn (seen);
+		fs_intelwin_read (seen, &rd);
+		CHECK (rd.live == FS_INTEL_LIVE_PARTIAL && rd.digest == NULL &&
+		       rd.why != NULL && rd.why[0] != '\0',
+		       "intelwin read: %s is PARTIAL, never the digest (%s)",
+		       t[i].what, rd.why ? rd.why : "no reason");
+		fs_intelwin_read_clear (&rd);
+		g_ptr_array_unref (seen);
+	}
+
+	/* Two applies' rules: both generations are reported, so the backend
+	 * can remove the one it is not keeping. */
+	seen = iw_seen_from_plan (plan, FALSE);
+	iw_t_old_gen (seen);
+	fs_intelwin_read (seen, &rd);
+	CHECK (rd.gens != NULL && rd.gens->len == 2,
+	       "intelwin read: every generation on the firewall is listed");
+	fs_intelwin_read_clear (&rd);
+	g_ptr_array_unref (seen);
+
+	CHECK (g_strcmp0 (fs_intelwin_name_gen ("SFW-TI x in IPv4 1/1 "
+	                                        IW_GEN), IW_GEN) == 0 &&
+	       fs_intelwin_name_gen ("StockFW-in " IW_GEN) == NULL &&
+	       fs_intelwin_name_gen ("SFW-TI x in IPv4 1/1 g0123ABCD") == NULL &&
+	       fs_intelwin_name_gen (NULL) == NULL,
+	       "intelwin: a name's generation is read only from names "
+	       "StockFW writes");
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_free (rs);
+}
+
+static void
+test_intelwin_force (void)
+{
+	FsIntelWinForce f;
+	gchar *s;
+
+#define IW_FORCE_OK() do { \
+	memset (&f, 0, sizeof f); \
+	f.service_known = TRUE; f.service_running = TRUE; \
+	f.policy_read = TRUE; f.gp_read = TRUE; \
+	f.current = FS_INTELWIN_PROFILE_PUBLIC; \
+	f.enabled[0] = f.enabled[1] = f.enabled[2] = 1; \
+} while (0)
+
+	IW_FORCE_OK ();
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s == NULL, "intelwin force: firewall on for the profile in use "
+	       "is in force");
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.service_running = FALSE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "MpsSvc") && strstr (s, "not running"),
+	       "intelwin force: the service stopped says so (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.gp_override = TRUE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "Group Policy"),
+	       "intelwin force: Group Policy that ignores local rules says so "
+	       "(%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.enabled[2] = 0;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "off for the Public profile") &&
+	       strstr (s, "block nothing"),
+	       "intelwin force: firewall off for the only profile in use "
+	       "(%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.current = FS_INTELWIN_PROFILE_DOMAIN | FS_INTELWIN_PROFILE_PUBLIC;
+	f.enabled[2] = 0;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "Public") && strstr (s, "on that network"),
+	       "intelwin force: off for one of two profiles in use names it "
+	       "(%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.current = FS_INTELWIN_PROFILE_PRIVATE | FS_INTELWIN_PROFILE_PUBLIC;
+	f.enabled[1] = f.enabled[2] = 0;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "Private and Public profiles"),
+	       "intelwin force: two profiles off are both named (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.enabled[1] = 0;   /* Private off, but only Public in use */
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s == NULL, "intelwin force: a profile no network has does not "
+	       "matter");
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.excluded[2] = 1;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "excluded"),
+	       "intelwin force: adapters excluded from the profile in use "
+	       "(%s)", s);
+	g_free (s);
+
+	/* Review W5: what cannot be read is never "in force". */
+	IW_FORCE_OK ();
+	f.policy_read = FALSE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read") &&
+	       strstr (s, "does not report the blocklists as in force"),
+	       "intelwin force: profiles in use that could not be read are "
+	       "never in force (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.enabled[2] = -1;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read") && strstr (s, "Public profile"),
+	       "intelwin force: a profile in use whose firewall switch could "
+	       "not be read is never in force (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.enabled[0] = -1;   /* Domain unreadable, but only Public in use */
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s == NULL, "intelwin force: an unreadable profile no network "
+	       "has does not matter");
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.current = FS_INTELWIN_PROFILE_PRIVATE | FS_INTELWIN_PROFILE_PUBLIC;
+	f.enabled[1] = -1;
+	f.enabled[2] = 0;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "off for the Public profile"),
+	       "intelwin force: a profile known to be off is named before one "
+	       "that could not be read (%s)", s);
+	g_free (s);
+
+	IW_FORCE_OK ();
+	f.gp_read = FALSE;
+	s = fs_intelwin_not_in_force (&f);
+	CHECK (s && strstr (s, "cannot read"),
+	       "intelwin force: a Group Policy state that could not be read is "
+	       "never in force (%s)", s);
+	g_free (s);
+#undef IW_FORCE_OK
+}
+
+/* Review of Round 3 on Windows (W3, W6): the pure pieces the backend's
+ * fixes rest on. */
+static void
+test_intelwin_review (void)
+{
+	FsIntelRuleset *rs = iw_ruleset ();
+	FsIntelWinPlan *plan = fs_intelwin_plan (rs, IW_GEN, 2, 1000);
+	GPtrArray *seen;
+	gchar *a, *b;
+
+	g_return_if_fail (plan != NULL);
+
+	/* W6: after taking a failed apply's rules out again, the backend
+	 * counts what of that generation is still there. */
+	seen = iw_seen_from_plan (plan, FALSE);
+	CHECK (fs_intelwin_count_gen (seen, IW_GEN) == plan->rules->len &&
+	       fs_intelwin_count_gen (seen, IW_GEN2) == 0,
+	       "intelwin review: every rule of a generation is counted, none "
+	       "of another");
+	/* A foreign rule first in the group, and an earlier apply's rule:
+	 * neither hides the new generation, nor counts as it. */
+	{
+		FsIntelWinSeen *x = fs_intelwin_seen_new ();
+
+		x->name = g_strdup ("Someone's rule");
+		x->grouping = g_strdup (FS_INTELWIN_GROUP);
+		g_ptr_array_insert (seen, 0, x);
+	}
+	iw_t_old_gen (seen);
+	CHECK (fs_intelwin_count_gen (seen, IW_GEN) == plan->rules->len &&
+	       fs_intelwin_count_gen (seen, IW_GEN2) == 1,
+	       "intelwin review: rules of a generation are counted past a "
+	       "foreign rule in the group and an earlier apply's rule");
+	g_ptr_array_unref (seen);
+	seen = iw_seen_from_plan (plan, FALSE);
+	for (guint i = 0; i < seen->len; i++) {
+		FsIntelWinSeen *x = g_ptr_array_index (seen, i);
+
+		g_free (x->grouping);
+		x->grouping = g_strdup ("Other");
+	}
+	CHECK (fs_intelwin_count_gen (seen, IW_GEN) == 0 &&
+	       fs_intelwin_count_gen (NULL, IW_GEN) == 0 &&
+	       fs_intelwin_count_gen (seen, NULL) == 0,
+	       "intelwin review: rules outside the group are never counted");
+	g_ptr_array_unref (seen);
+
+	/* W6: names that differ only in case share a key, so a removal
+	 * renames the rule first instead of trusting Remove's matching. */
+	a = fs_intelwin_name_key ("SFW-TI alpha in IPv4 1/1 " IW_GEN);
+	b = fs_intelwin_name_key ("sfw-ti ALPHA in ipv4 1/1 G0123ABCD");
+	CHECK (a != NULL && g_strcmp0 (a, b) == 0,
+	       "intelwin review: rule names that differ only in case share "
+	       "one key");
+	g_free (b);
+	b = fs_intelwin_name_key ("SFW-TI alpha in IPv4 2/2 " IW_GEN);
+	CHECK (g_strcmp0 (a, b) != 0 && fs_intelwin_name_key (NULL) == NULL,
+	       "intelwin review: different names keep different keys");
+	g_free (a);
+	g_free (b);
+
+	/* W3: the policy lists its own rules by name; a blocklist rule is
+	 * never one of them. */
+	CHECK (fs_netsh_rule_name_is_ours ("StockFW- Allow SSH -inbound-") &&
+	       fs_netsh_rule_name_is_ours ("StockFW Allow SSH") &&
+	       !fs_netsh_rule_name_is_ours ("SFW-TI alpha in IPv4 1/1 "
+	                                     IW_GEN) &&
+	       !fs_netsh_rule_name_is_ours ("SFW-TI manifest " IW_GEN) &&
+	       !fs_netsh_rule_name_is_ours ("Core Networking - DNS") &&
+	       !fs_netsh_rule_name_is_ours (NULL),
+	       "intelwin review: the policy's rule names are told apart from "
+	       "the blocklist rules'");
+
+	/* W3: why the policy no longer lists through netsh's printout.  A
+	 * rule set at the interval limit written as Windows rules: netsh
+	 * `show rule name=all' prints every RemoteIP, and this much text
+	 * alone is past the 16 MiB the backend reads of a child's output. */
+	{
+		FsIntelRuleset *big = fs_intel_ruleset_new ();
+		FsRangeSet *v6 = fs_range_set_new ();
+		FsIntelWinPlan *bp;
+		guint64 chars = 0;
+		guint n = FS_INTEL_MAX_INTERVALS / 2;
+
+		for (guint i = 0; i < n; i++) {
+			FsU128 lo = { G_GUINT64_CONSTANT (0x2001db8abcdef012) + i * 2,
+			              G_GUINT64_CONSTANT (0x123456789abcdef1) };
+			FsU128 hi = { lo.hi, G_GUINT64_CONSTANT (0xfedcba9876543210) };
+
+			fs_range_set_add6 (v6, lo, hi);
+		}
+		fs_range_set_normalize (v6);
+		fs_intel_ruleset_add (big, "huge", "Huge", FS_INTEL_DIR_BOTH, v6);
+		bp = fs_intelwin_plan (big, IW_GEN, FS_INTELWIN_MAX_TOKENS,
+		                       FS_INTELWIN_MAX_CHARS);
+		for (guint i = 0; bp != NULL && i < bp->rules->len; i++)
+			chars += strlen (((FsIntelWinRule *)
+			                  g_ptr_array_index (bp->rules, i))->remote);
+		CHECK (bp != NULL && chars > 16u * 1024 * 1024,
+		       "intelwin review: %u long IPv6 ranges both ways print %"
+		       G_GUINT64_FORMAT " characters of addresses in %u rules, "
+		       "more than the 16 MiB a netsh listing may hold", n, chars,
+		       bp ? bp->rules->len : 0);
+		fs_intelwin_plan_free (bp);
+		fs_intel_ruleset_free (big);
+	}
+
+	fs_intelwin_plan_free (plan);
+	fs_intel_ruleset_free (rs);
+}
+
+static void
+test_hostnet_onlink (void)
+{
+	const guint8 a4[4] = { 192, 168, 1, 37 };
+	const guint8 a6[16] = { 0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+	                        0x12, 0x34, 0, 0, 0, 0, 0, 1 };
+	FsRangeSet *s;
+	gchar *text;
+
+	s = fs_range_set_new ();
+	fs_hostnet_add_onlink (s, a4, 4, 24);
+	fs_hostnet_add_onlink (s, a6, 16, 64);
+	fs_range_set_normalize (s);
+	text = fs_range_set_to_text (s);
+	CHECK (g_strcmp0 (text, "192.168.1.0/24\nfe80::/64\n") == 0,
+	       "hostnet onlink: an address and its OnLinkPrefixLength give "
+	       "the block it lies in (%s)", text);
+	g_free (text);
+	fs_range_set_free (s);
+
+	s = fs_range_set_new ();
+	fs_hostnet_add_onlink (s, a4, 4, 0);
+	fs_hostnet_add_onlink (s, a4, 4, 33);
+	fs_hostnet_add_onlink (s, a6, 16, 200);
+	fs_hostnet_add_onlink (s, a4, 3, 8);
+	fs_range_set_normalize (s);
+	text = fs_range_set_to_text (s);
+	CHECK (g_strcmp0 (text, "192.168.1.37\nfe80::1234:0:0:1\n") == 0,
+	       "hostnet onlink: a zero or too-wide prefix keeps the address "
+	       "alone, never everything; a bad length adds nothing (%s)",
+	       text);
+	g_free (text);
+	fs_range_set_free (s);
+
+	s = fs_range_set_new ();
+	fs_hostnet_add_onlink (s, a4, 4, 30);
+	text = fs_range_set_to_text (s);
+	CHECK (g_strcmp0 (text, "192.168.1.36/30\n") == 0,
+	       "hostnet onlink: a prefix inside a byte (%s)", text);
+	g_free (text);
+	fs_range_set_free (s);
+}
+
 /* [ rm_tree ] -- remove the run's private directory and everything
  * under it.  Symbolic links are removed, never followed. */
 static void
@@ -9677,6 +11090,7 @@ int main (void)
 	g_setenv ("STOCKFW_RESOLV_CONF", "/dev/null", TRUE);
 
 	test_ports ();
+	test_cli_platform_words ();
 	test_hosts ();
 	test_rule_csv ();
 	test_policy_persist ();
@@ -9739,6 +11153,7 @@ int main (void)
 	test_netparse_proc ();
 	test_netparse_kmsg ();
 	test_netparse_verdicts ();
+	test_netparse_intel_line ();
 	test_script_accept_log ();
 	test_target_families ();
 	test_restore_plan ();
@@ -9747,6 +11162,15 @@ int main (void)
 	test_activity_series ();
 	test_activity_sampler ();
 	test_json_writer ();
+	test_intelwin_gen ();
+	test_intelwin_plan ();
+	test_intelwin_limits ();
+	test_intelwin_parse_remote ();
+	test_intelwin_read ();
+	test_intelwin_force ();
+	test_intelwin_review ();
+	test_hostnet_onlink ();
+	test_winstore_sddl ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);
@@ -9759,7 +11183,7 @@ EOF
 
 EXTRA_LIBS=""
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
-  EXTRA_LIBS="-lws2_32 -lole32 -loleaut32"
+  EXTRA_LIBS="-lws2_32 -liphlpapi -ladvapi32 -lshell32 -lole32 -loleaut32"
 fi
 
 # STOCKFW_TEST_CFLAGS adds compiler flags, for the sanitizer run the

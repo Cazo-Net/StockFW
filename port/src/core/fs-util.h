@@ -142,6 +142,13 @@ GPtrArray *fs_util_csv_split_line (const gchar *line);
  * of name strings (caller destroys with g_hash_table_destroy). */
 GHashTable *fs_netsh_rule_names_extract (const gchar *output);
 
+/* Whether a firewall rule name is one of the policy's own: every
+ * spelling they have shipped with ("StockFW-", the older "StockFW ").
+ * The threat-intel rules ("SFW-TI ...") never are.  The Windows backend
+ * lists the policy's rules through INetFwRules with this (review W3),
+ * and fs_netsh_rule_names_extract keeps only names it accepts. */
+gboolean fs_netsh_rule_name_is_ours (const gchar *name);
+
 G_END_DECLS
 
 #endif /* FS_UTIL_H */

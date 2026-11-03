@@ -5,11 +5,12 @@
  * Two halves.  The parsers are pure (text in, set out) and build on
  * every platform, so the tests pin them against fixtures modelled on
  * the real files.  fs_hostnet_read() is the only part that touches the
- * system, and only on Linux: getifaddrs(), /proc/net, the resolver
- * files, the SSH variables and getaddrinfo().  Windows has none of
- * these sources wired in yet: its blocklists are Round 3 (design
- * section 2), and until then fs_hostnet_read() answers with six empty
- * sets there.
+ * system.  On Linux: getifaddrs(), /proc/net, the resolver files, the
+ * SSH variables and getaddrinfo().  On Windows (Round 3, design 11.4):
+ * GetAdaptersAddresses() for the addresses, prefixes, gateways and DNS
+ * servers of every adapter that is up, the SSH variables and
+ * GetExtendedTcpTable() for the SSH and Remote Desktop sessions, and
+ * getaddrinfo().
  *--------------------------------------------------------------------*/
 
 /* getifaddrs(), getaddrinfo(), IFF_UP and O_CLOEXEC are POSIX and BSD
@@ -19,16 +20,16 @@
 #define _GNU_SOURCE
 #endif
 
-/* Windows: GetAdaptersAddresses() names each adapter's gateways and DNS
- * servers.  The structures come from the headers; the function itself
- * is looked up in iphlpapi.dll at run time, so nothing that links the
- * core needs another import library. */
-#if defined(_WIN32)
+/* Windows: OnLinkPrefixLength and the gateway list of
+ * IP_ADAPTER_ADDRESSES need Vista or later; the feature test must come
+ * before any header.  winsock2 before windows.h, as everywhere. */
+#ifdef _WIN32
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0601
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #include <iphlpapi.h>
 #endif
 
@@ -57,6 +58,9 @@
 
 /* The local port whose established connections are kept: sshd's. */
 #define SSH_PORT 22
+/* On Windows also Remote Desktop's: an administrator applying a list
+ * over RDP must not lose the session (design 11.4). */
+#define RDP_PORT 3389
 
 /* ============================================================ helpers */
 
@@ -523,6 +527,36 @@ fs_hostnet_all (const FsHostNet *host)
 	return all;
 }
 
+void
+fs_hostnet_add_onlink (FsRangeSet *set, const guint8 *addr, gsize len,
+                       guint prefix)
+{
+	guint8 first[16], last[16];
+	guint bits = (guint) len * 8;
+
+	if (len != 4 && len != 16)
+		return;
+	/* No prefix, or one wider than the family: the address alone. A
+	 * zero length would otherwise keep every address reachable and
+	 * empty every list without a word. */
+	if (prefix == 0 || prefix > bits)
+		prefix = bits;
+	for (gsize i = 0; i < len; i++) {
+		guint at = (guint) i * 8;
+		guint8 mask = prefix >= at + 8 ? 0xff
+		            : prefix <= at     ? 0x00
+		            : (guint8) (0xff << (8 - (prefix - at)));
+
+		first[i] = addr[i] & mask;
+		last[i] = addr[i] | (guint8) ~mask;
+	}
+	if (len == 4)
+		fs_range_set_add4 (set, be32 (first), be32 (last));
+	else
+		fs_range_set_add6 (set, u128_from_bytes (first),
+		                   u128_from_bytes (last));
+}
+
 /* ======================================================= the system */
 
 #ifdef __linux__
@@ -658,6 +692,10 @@ tcp_lines (const gchar *lines, gpointer data)
 	       fs_hostnet_parse_tcp_peers (lines, table->v6, SSH_PORT));
 }
 
+#endif /* __linux__ */
+
+#if defined __linux__ || defined G_OS_WIN32
+
 /* The network-order bytes of an AF_INET or AF_INET6 socket address (4
  * or 16 of them); 0 for any other family, or no address. */
 static gsize
@@ -688,6 +726,10 @@ is_loopback (const guint8 *b, gsize len)
 		return b[0] == 127;
 	return memcmp (b, v6_loopback, sizeof v6_loopback) == 0;
 }
+
+#endif /* __linux__ || G_OS_WIN32 */
+
+#ifdef __linux__
 
 /* The block under a netmask: (a & m) to (a | ~m).  The kernel's
  * netmasks are contiguous; were one not, the interval would only grow
@@ -767,6 +809,10 @@ read_interfaces (FsRangeSet *own, FsRangeSet *onlink)
 	freeifaddrs (list);
 }
 
+#endif /* __linux__ */
+
+#if defined __linux__ || defined G_OS_WIN32
+
 /* Every address of every host, both families. */
 static void
 resolve_hosts (const gchar *const *hosts, FsRangeSet *into)
@@ -807,70 +853,128 @@ resolve_hosts (const gchar *const *hosts, FsRangeSet *into)
 	}
 }
 
-#endif /* __linux__ */
+#endif /* __linux__ || G_OS_WIN32 */
 
-#if defined(_WIN32)
-typedef ULONG (WINAPI *GaaFunc) (ULONG, ULONG, PVOID,
-                                 PIP_ADAPTER_ADDRESSES, PULONG);
+#ifdef G_OS_WIN32
 
-/* One socket address into a set (IPv4 or IPv6, nothing else). */
+/* [Unverified on Windows here: compiled and linked with mingw, run by
+ * fs-intel-windows-test on the CI's Windows runner.] */
+
+/* own, onlink, gateways and resolvers from every adapter that is up:
+ * its unicast addresses (loopback left out, as on Linux) with their
+ * on-link prefixes, its gateways and its DNS servers. */
 static void
-add_sockaddr_win32 (FsRangeSet *set, const SOCKET_ADDRESS *sa)
+read_adapters (FsHostNet *host)
 {
-	if (sa->lpSockaddr == NULL)
-		return;
-	if (sa->lpSockaddr->sa_family == AF_INET) {
-		const struct sockaddr_in *in =
-			(const struct sockaddr_in *) sa->lpSockaddr;
+	const ULONG flags = GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_ANYCAST |
+	                    GAA_FLAG_SKIP_MULTICAST |
+	                    GAA_FLAG_SKIP_FRIENDLY_NAME;
+	ULONG size = 32 * 1024, rc = ERROR_BUFFER_OVERFLOW;
+	IP_ADAPTER_ADDRESSES *list = NULL;
 
-		add_address (set, (const guint8 *) &in->sin_addr, 4);
-	} else if (sa->lpSockaddr->sa_family == AF_INET6) {
-		const struct sockaddr_in6 *in6 =
-			(const struct sockaddr_in6 *) sa->lpSockaddr;
-
-		add_address (set, (const guint8 *) &in6->sin6_addr, 16);
-	}
-}
-
-/* [ read_adapters_win32 ] -- the gateways and DNS servers of every
- * adapter that is up.  A failure at any step adds nothing. */
-static void
-read_adapters_win32 (FsRangeSet *gateways, FsRangeSet *resolvers)
-{
-	HMODULE dll = LoadLibraryW (L"iphlpapi.dll");
-	GaaFunc gaa;
-	IP_ADAPTER_ADDRESSES *list = NULL, *a;
-	ULONG size = 16384, status = ERROR_BUFFER_OVERFLOW;
-	const ULONG flags = GAA_FLAG_INCLUDE_GATEWAYS |
-	                    GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST;
-
-	if (dll == NULL)
-		return;
-	gaa = (GaaFunc) (void (*) (void)) GetProcAddress (
-		dll, "GetAdaptersAddresses");
-	for (gint tries = 0; gaa != NULL && tries < 3 &&
-	     status == ERROR_BUFFER_OVERFLOW; tries++) {
+	/* The table can grow between the size query and the read. */
+	for (guint tries = 0; tries < 4 && rc == ERROR_BUFFER_OVERFLOW;
+	     tries++) {
 		g_free (list);
-		list = g_malloc0 (size);
-		status = gaa (AF_UNSPEC, flags, NULL, list, &size);
+		list = g_malloc (size);
+		rc = GetAdaptersAddresses (AF_UNSPEC, flags, NULL, list, &size);
 	}
-	if (gaa != NULL && status == NO_ERROR) {
-		for (a = list; a != NULL; a = a->Next) {
-			IP_ADAPTER_GATEWAY_ADDRESS_LH *g;
-			IP_ADAPTER_DNS_SERVER_ADDRESS *d;
+	if (rc != NO_ERROR) {
+		g_free (list);
+		return;
+	}
+	for (const IP_ADAPTER_ADDRESSES *a = list; a != NULL; a = a->Next) {
+		if (a->OperStatus != IfOperStatusUp)
+			continue;
+		for (const IP_ADAPTER_UNICAST_ADDRESS *u = a->FirstUnicastAddress;
+		     u != NULL; u = u->Next) {
+			guint8 addr[16];
+			gsize len = sockaddr_bytes (u->Address.lpSockaddr, addr);
 
-			if (a->OperStatus != IfOperStatusUp)
+			if (len == 0 || is_loopback (addr, len))
 				continue;
-			for (g = a->FirstGatewayAddress; g != NULL; g = g->Next)
-				add_sockaddr_win32 (gateways, &g->Address);
-			for (d = a->FirstDnsServerAddress; d != NULL; d = d->Next)
-				add_sockaddr_win32 (resolvers, &d->Address);
+			add_address (host->own, addr, len);
+			fs_hostnet_add_onlink (host->onlink, addr, len,
+			                       u->OnLinkPrefixLength);
+		}
+		for (const IP_ADAPTER_GATEWAY_ADDRESS_LH *g =
+		             a->FirstGatewayAddress;
+		     g != NULL; g = g->Next) {
+			guint8 addr[16];
+			gsize len = sockaddr_bytes (g->Address.lpSockaddr, addr);
+
+			if (len != 0 && !all_zero (addr, len))
+				add_address (host->gateways, addr, len);
+		}
+		for (const IP_ADAPTER_DNS_SERVER_ADDRESS *d =
+		             a->FirstDnsServerAddress;
+		     d != NULL; d = d->Next) {
+			guint8 addr[16];
+			gsize len = sockaddr_bytes (d->Address.lpSockaddr, addr);
+
+			if (len != 0)
+				add_address (host->resolvers, addr, len);
 		}
 	}
 	g_free (list);
-	FreeLibrary (dll);
 }
-#endif /* _WIN32 */
+
+static gboolean
+kept_port (guint port)
+{
+	return port == SSH_PORT || port == RDP_PORT;
+}
+
+/* The peers of every established connection to this computer's SSH
+ * or Remote Desktop port, both families.  The tables are re-read when
+ * they grew between the size query and the read. */
+static void
+read_sessions (FsRangeSet *into)
+{
+	for (guint fam = 0; fam < 2; fam++) {
+		ULONG af = fam == 0 ? AF_INET : AF_INET6;
+		DWORD size = 0, rc = ERROR_INSUFFICIENT_BUFFER;
+		gpointer table = NULL;
+
+		for (guint tries = 0;
+		     tries < 4 && rc == ERROR_INSUFFICIENT_BUFFER; tries++) {
+			g_free (table);
+			table = size > 0 ? g_malloc (size) : NULL;
+			rc = GetExtendedTcpTable (table, &size, FALSE, af,
+			                          TCP_TABLE_OWNER_PID_ALL, 0);
+		}
+		if (rc != NO_ERROR || table == NULL) {
+			g_free (table);
+			continue;
+		}
+		if (af == AF_INET) {
+			const MIB_TCPTABLE_OWNER_PID *t = table;
+
+			for (DWORD i = 0; i < t->dwNumEntries; i++) {
+				const MIB_TCPROW_OWNER_PID *r = &t->table[i];
+
+				if (r->dwState == MIB_TCP_STATE_ESTAB &&
+				    kept_port (ntohs ((u_short) r->dwLocalPort)))
+					add_address (into,
+					             (const guint8 *) &r->dwRemoteAddr,
+					             4);
+			}
+		} else {
+			const MIB_TCP6TABLE_OWNER_PID *t = table;
+
+			for (DWORD i = 0; i < t->dwNumEntries; i++) {
+				const MIB_TCP6ROW_OWNER_PID *r = &t->table[i];
+
+				if (r->dwState == MIB_TCP_STATE_ESTAB &&
+				    kept_port (ntohs ((u_short) r->dwLocalPort)))
+					add_address (into, r->ucRemoteAddr, 16);
+			}
+		}
+		g_free (table);
+	}
+}
+
+#endif /* G_OS_WIN32 */
 
 FsHostNet *
 fs_hostnet_read (const gchar *const *hosts)
@@ -917,16 +1021,28 @@ fs_hostnet_read (const gchar *const *hosts)
 	fs_range_set_normalize (host->resolvers);
 	fs_range_set_normalize (host->sessions);
 	fs_range_set_normalize (host->update_hosts);
-#elif defined(_WIN32)
-	/* Windows: the gateways and DNS servers of every adapter that is
-	 * up (GetAdaptersAddresses), which the Copilot never blocks
-	 * automatically.  Its own addresses, prefixes and sessions come
-	 * with its blocklists in Round 3 (design section 2). */
-	(void) hosts;
-	read_adapters_win32 (host->gateways, host->resolvers);
+#elif defined G_OS_WIN32
+	WSADATA wsa;
+	gboolean wsa_ok = WSAStartup (MAKEWORD (2, 2), &wsa) == 0;
+
+	read_adapters (host);
+	merge (host->sessions,
+	       fs_hostnet_parse_ssh_env (g_getenv ("SSH_CONNECTION"),
+	                                 g_getenv ("SSH_CLIENT")));
+	read_sessions (host->sessions);
+	if (wsa_ok) {
+		resolve_hosts (hosts, host->update_hosts);
+		WSACleanup ();
+	}
+
+	fs_range_set_normalize (host->own);
+	fs_range_set_normalize (host->onlink);
 	fs_range_set_normalize (host->gateways);
 	fs_range_set_normalize (host->resolvers);
+	fs_range_set_normalize (host->sessions);
+	fs_range_set_normalize (host->update_hosts);
 #else
+	/* Other platforms: six empty sets; nothing applies a list there. */
 	(void) hosts;
 #endif
 	return host;

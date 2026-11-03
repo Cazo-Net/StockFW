@@ -773,8 +773,9 @@ fs_fetch (const FsFetchRequest *request, GError **error)
 	envp = fs_fetch_envp ();
 	g_subprocess_launcher_set_environ (launcher, envp);
 #ifdef G_OS_WIN32
-	/* [Unverified on Windows] No privilege drop on Windows (Round 3);
-	 * the working folder is the system folder, never the caller's. */
+	/* [Unverified on Windows] No privilege drop on Windows: curl runs
+	 * with StockFW's rights (a known gap, design 11.8).  The working
+	 * folder is the system folder, never the caller's. */
 	cwd = windows_dir (TRUE);
 	if (cwd != NULL)
 		g_subprocess_launcher_set_cwd (launcher, cwd);

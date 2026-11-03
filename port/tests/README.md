@@ -32,6 +32,7 @@ the tests never touches a real `/etc/stockfw`.
 | sharing | router mode (forwarding, masquerade, the accepts for both devices, the local-broadcast block) only with both devices chosen |
 | start on open | the app's one start goes through the start gate (`fs_firewall_start_lifting` in `start_at_launch`), only after the policy is loaded and Sentinel's expired blocks are out of it; no direct backend start (read from `fs-app.c`) |
 | Windows rules | policy rows to netsh rules and argv, refusals, the upgrade apply (see below) |
+| threat intel on Windows | blocklist rules: plan, chunking, read-back verdicts, in force, on-link prefixes (see below) |
 | Copilot | detections with evidence, the policy health check and its verified fixes, the wording guard (see below) |
 
 ## Event source (`tests/test-logstart.sh`)
@@ -764,8 +765,13 @@ What it pins down, each seen failing when its bug is put back (the
 check that failed is in brackets):
 
 - H1: `app.help` and F1 on the main window open Help at the topic for
-  the page shown; so does the sidebar's Help item.  Ctrl+W closes it.
-  (Re-injected: the action not registered; the accelerator on F2.)
+  the page shown; so does the sidebar's Help item.  Every page of the
+  main window maps to its own topic (`fs_help_topic_for_page`), and F1
+  on the Threat Intel page opens `threat-intel`.  Ctrl+W closes it.
+  (Re-injected: the action not registered; the accelerator on F2; the
+  page table without Threat Intel, as it was after the merge of PR
+  #18, which opened Copilot's topic on Threat Intel, Trust's on Copilot
+  and Getting started on Trust.)
 - H2: every topic in `fs-helpcontent.c` renders, with its title and
   every block on screen; every string parses as GtkLabel markup, every
   `help:` link and related topic names a real topic, and there is no em
@@ -773,9 +779,11 @@ check that failed is in brackets):
   link to `help:troubleshoot`.)
 - H3: search filters the topic list ("SSH locked" lists Troubleshooting
   and leaves Activity out), finds subtopics, says when nothing
-  matches, opens the first match on Enter and is cleared by Escape.
+  matches, opens the first match on Enter ("feodo" opens Threat intel)
+  and is cleared by Escape.
   (Re-injected: every topic matching.)
-- H4: links, related-topic chips, Next, the breadcrumb, the sidebar,
+- H4: links, related-topic chips, Next (after Policy comes Threat
+  intel, in the main window's sidebar order), the breadcrumb, the sidebar,
   Back, Forward, Alt+Left and Alt+Right all navigate.  (Re-injected:
   `help:` links not followed; the topic left not put on the Back
   list.)
@@ -819,7 +827,8 @@ check that failed is in brackets):
   a Sentinel block whose ten minutes ran out while StockFW was closed
   is taken off when StockFW starts again with the rights to (as
   `start_at_launch` in `fs-app.c` does); StockFW's Windows rules start
-  with `StockFW`; threat intel is planned for Windows too; StockFW
+  with `StockFW`; threat intel works on Windows too, as rules in their
+  own group; StockFW
   also turns profiles on and off; the ported code is GPL 2 or later.
   (Re-injected: the old `fs-helpcontent.c`, which fails all ten.)
 - H8: the help matches 1.0.7 as merged.  What-If answers DEPENDS, asks
@@ -829,14 +838,28 @@ check that failed is in brackets):
   with its Help item, one StockFW per user and `--background`; Sentinel
   describes the tray's pause; Preferences > General describes the
   sign-in switch; the Linux notes describe `stockfw.service`; the CLI
-  topic gives exit status 6 for DEPENDS.  Only the threat-intel topic
-  carries a FS_HELP_SOON callout, it says threat intel and country/ASN
-  blocking are not available in this build, no other block or summary
-  mentions 1.0.7, and the callout's heading reads "Not in this build"
-  (this build is 1.0.7, so "Coming in 1.0.7" was false).
-  (Re-injected: the branch's pre-merge `fs-helpcontent.c` and the old
-  heading, which fail all fourteen H8 checks and both changed H7
-  ones.)
+  topic gives exit status 6 for DEPENDS.  Threat intel (PR #18) is
+  described as present: the terms dialog's "Accept and turn on", a
+  lookup that says "would be blocked once in force" unless it is, the
+  Linux table `inet stockfw_intel` and the Windows rule group "StockFW
+  Threat Intel", no per-rule counts on Windows, the update judge's
+  "Accept smaller list", and `/api/intel`; Events offers "Add
+  exception"; What-If says it does not consult the lists; the Linux,
+  Windows, CLI and background topics name the table, the group,
+  `stockfw intel lookup` and the hourly update check.  Exactly one
+  FS_HELP_SOON callout is left, on the threat-intel topic; it is about
+  blocking by country or network owner (ASN): its first sentence names
+  country and ASN and says "not in this build" without the word
+  "intel", and no part of it says "blocklist", in any case; the
+  topic's summary no longer says "not available in this build"; no
+  other block or summary mentions 1.0.7 or says "in this build",
+  "planned" or "coming", in any case, and the
+  callout's heading reads "Not in this build" (this build is 1.0.7, so
+  "Coming in 1.0.7" was false).  (Re-injected: the pre-PR #18
+  `fs-helpcontent.c`, which fails the fifteen threat-intel H8 checks,
+  the changed H7 one and H4's Next; before that, the branch's pre-merge
+  `fs-helpcontent.c` and the old heading, which failed the fourteen
+  older H8 checks.)
 - H9: What-If's settings fixes.  `fs_dialogs_preferences_at` opens
   Preferences at `icmp` and at `protection`, and each is the page
   shown; every switch label and page title `fs_whatif_setting_nth`
@@ -1487,6 +1510,210 @@ And in the UI (`fs-simviz.c`, `fs-copilot.c`):
 | the stopped header saying it describes the saved policy | "a stopped firewall and a held policy are said up front" |
 | Create written without asking | "Create asks first", "answering No writes nothing" |
 
+## Threat-intel engine (`fs-intel-test`)
+
+```sh
+cd port
+ninja -C build-linux fs-intel-test && ./build-linux/fs-intel-test
+# Sanitizers: a separate Debug build with -fsanitize=address,undefined.
+# ASan's strstr interceptor makes g_strsplit quadratic on the 160,000-
+# line lists, so turn that one interceptor off:
+ASAN_OPTIONS=detect_leaks=1:intercept_strstr=0 ./build-asan/fs-intel-test
+```
+
+`src/core/fs-intel.c` (design section 6) driven through a fake backend
+and a fake downloader (`fs_intel_set_fetcher`).  The fake backend plays
+the kernel: it records the rule set `intel_apply` received (digest and
+every set's text) and can commit and return TRUE, fail and change
+nothing, commit and then "time out" (return FALSE), claim success and
+change nothing, or make `intel_live` read UNKNOWN.  No network, no nft;
+root is not needed (two store checks that chown a directory run only as
+root and say SKIP otherwise).  Each test gets a fresh store under a
+base directory whose every parent passes the store's own ownership
+check: `$STOCKFW_TEST_SAFE_DIR`, else `$HOME`, else the directory of
+the test binary; when none passes, the engine tests print SKIP.
+`$STOCKFW_AUDIT_FILE` points the audit at that base, and the checks
+read it back.
+
+What it proves:
+
+- **Store directory** [S2]: a safe override is created 0700; refused
+  (FS_INTEL_ERR_UNSAFE_DIR): a relative path, a directory under `/tmp`
+  (and nothing is created there), a directory writable by others or by
+  its group, a 0700 store inside a 0777 parent, the store itself a
+  symlink, and as root a directory owned by another user or a root store
+  inside a user's directory (`sudo -E`).  A symlinked parent is followed
+  and its target chain is what is checked.  Not root and no override:
+  NEEDS_ROOT.
+- **intel.conf**: a missing file is the defaults (every catalog feed in
+  catalog order, off, its default direction, terms not accepted); the
+  golden layout (`[feed <id>]`, `[list <id>]`, `[exceptions]`), 0600,
+  and a full round trip including a custom feed, a list name with `;`,
+  quotes and brackets, exceptions of both families and a proxy.  Unknown
+  keys, groups and feeds are ignored; each invalid value fails naming
+  `[group] key`: a bad direction, `enabled=yes`, a negative time, a time
+  with junk, a custom feed over http://, an unknown format, no name, an
+  id nft must never see (`Bad;Id`), a list name with a line break, a
+  list id without `local-`, a proxy with a password (it would be in
+  curl's argv), a socks proxy, an exception that is a host name, a
+  broken group line, bytes that are not UTF-8.  Hostile files: over
+  1 MiB, a symlink, a FIFO (refused without waiting), a stray temporary
+  from a crashed save (never read; saving next to it works).
+- **Consent** [S14]: enabling without accepting the terms changes
+  nothing (CONSENT), and `set_enabled` is no way around it; accepting
+  records when.  Custom feeds: http:// and `user@` refused, the slug id,
+  typed URL = consent, the same slug twice refused; catalog feeds cannot
+  be removed.  The consent text names the host, how often ("every 6
+  hours", "once a day"), what the host learns ("StockFW/<version>", the
+  public address), the licence or "see the provider's terms" with the
+  terms URL, the non-commercial warning (FireHOL level 1, DShield) and
+  how to make an exception.
+- **No network unless consented**: the default configuration makes no
+  request; every feed enabled without accepted terms gives
+  NEEDS_CONSENT and no request; the master switch off fetches nothing;
+  a URL the design's rule refuses (`fs_feed_url_is_acceptable`, stricter
+  than fs-fetch's own check) is never fetched; a custom feed goes
+  through the configured proxy; local lists and feeds that are off are
+  never fetched.
+- **Updates, guards and scheduling** (injected clock): first download
+  stored (0600, state recorded); 5 h later not due; due exactly one
+  interval after the last attempt; a clock that went back makes it due
+  at once; same bytes are UNCHANGED; `--now`; stale after 7 intervals
+  from the download, or from the content date when the list has one.
+  A shrink (10 to 1), an empty list, an HTML page and a failed download
+  are refused/failed and keep the previous list byte for byte (with
+  `refused` / `last_error` recorded, the tool's first line only);
+  `--accept-shrink` lets the shrink in.  A content date a year ahead is
+  refused even with `--accept-shrink` (it would make every honest copy
+  after it a ROLLBACK); an hour of skew is not "the future"; an older
+  content date is ROLLBACK; a stored content date in 2033 (clock put
+  back, or an edited state) is forgotten rather than refusing every
+  copy forever.  One audit line per attempted download, `|` escaped,
+  a forged second line never written.
+- **Per-feed isolation and crashes**: three feeds, three results in
+  config order; one failing, one garbage and one good side by side, the
+  first two keeping their lists.  A crash between writing the list and
+  its state (the old state put back over the new list): fetching the
+  old bytes again stores them again instead of reporting "unchanged"
+  over a list that is not theirs.  A damaged state is rebuilt with a
+  fresh history; a state with an out-of-range number is not trusted; a
+  stray temporary list is never loaded.  An id that is a path (a
+  hand-filled struct) neither writes nor deletes anything outside the
+  store.
+- **Stored lists** [S2.7, S4.4]: missing is STORE; tampered is TAMPERED:
+  a line that is not an entry, junk after an entry, 0.0.0.0/0, ::/0,
+  2000::/3, a /6, a NUL byte, 200,300 intervals; a symlink is refused.
+  What the parser let in loads again (eight adjacent /10s stored as one
+  /7, at the coverage cap exactly), and protected space in a stored
+  list is taken out, never blocked.  The parser's per-entry span floor
+  is not re-applied on load: a stored list is normalized, so adjacent
+  accepted entries merge into wider intervals; the coverage caps bound
+  what a tampered list can block.  Import: a CSV becomes
+  `local-<slug>`, enabled, in its direction, protected space left out;
+  the same name again replaces it; a file with no address, too-broad
+  entries, a FIFO and a directory are refused; removing a list deletes
+  its files.
+- **Build (golden)**: one exact rule set with the own address, on-link
+  network, gateway, resolver, SSH session, a feed's server and two
+  exceptions subtracted, IPv4 of out/both sets mapped into
+  64:ff9b::/96 (and an exception written in its NAT64 form honoured), a
+  list never downloaded left out with a note; a note per kind of address
+  kept, naming the list that had it; host NULL subtracts only
+  exceptions; master off is the empty rule set; FireHOL level 1 with
+  Feodo on gets the "already contains" note; a tampered list fails the
+  build.  Limits: 2 x 160,000 intervals is TOO_BIG naming both sets;
+  160,000 outbound intervals plus their NAT64 copies is TOO_BIG; 2^26
+  IPv4 addresses build, one /10 more is TOO_BIG naming the largest.
+- **Gate, lifecycle, state** [S10, N8, P4]: a hold is DRY_RUN with
+  nothing reaching the backend; a backend without intel slots is FAILED
+  "not available" and its state "unsupported"; the backend gets exactly
+  the built rule set; applied.state records digest, sets, not
+  suspended; `fs_intel_applied_has` answers for applied sets only.
+  A failed apply keeps applied.state and does not carry the counters
+  (the old table still counts them: 5, not 10); nft timing out after it
+  committed is OK because the live digest is the new one, and the
+  counters are carried once (5 + 2 live = 7); a backend that claims
+  success while the kernel holds the old table is FAILED and carries
+  nothing; an error with an unreadable kernel is FAILED, a success with
+  an unreadable kernel stands.  State: not-loaded before the first
+  apply and after a flush, enforced (naming the lists), differs for
+  another digest or none, unknown (needs-root when not root) for an
+  unreadable listing, never not-loaded; suspend removes the table,
+  carries the counters and reads "suspended" (and "differs" when a
+  table comes back); resume under a hold applies nothing, resume applies
+  again; a suspend whose tool fails is FALSE while the table is there
+  and fine when it is gone; lists off with the table still loaded is
+  "differs", not "off"; the empty rule set is expected ABSENT (also
+  after a timeout).  One audit line per attempt (13), tool output
+  escaped and cut to its first line.
+- **Hostile gate**: a tampered list never reaches the backend and the
+  old table stays enforced; a corrupt intel.conf makes the state
+  "unknown" naming the key and resume applies nothing; a damaged or
+  empty applied.state is never "enforced" on its word and attributes no
+  log line, and a re-apply heals it; an unsafe store applies nothing.
+- **Lookup** (26 addresses, each also compared with the built rule
+  set): CIDR edges (first, last, one before, one after) for IPv4 and an
+  IPv6 /48, upper-case IPv6, IPv4-mapped IPv6, the union of directions,
+  NAT64 addresses for an out list (and not for an in list), protected
+  space including the NAT64 form of an RFC 1918 address, exceptions,
+  kept host addresses; refused as not single addresses: a CIDR, a
+  range, a zone, a leading blank, a name, empty, `/128`.  The sentence
+  names the lists; NULL for an excepted address; host NULL keeps
+  nothing; master off lists nothing.
+
+Not checked here: the real kernel (`intel_apply` and the other slots
+are the Linux backend's, tested by `tests/test-intelset.sh`), real
+downloads (`tests/test-fetch.sh`), and `fs_hostnet_read` on a live
+system (`fs-hostnet-test`).  A custom feed URL may carry a key in its
+query string; while curl runs that key is visible in
+`/proc/<pid>/cmdline` to local users (intel.conf refuses proxy
+passwords for the same reason).
+
+Teeth, each re-injected into a copy of `src/core/fs-intel.c` (the old
+text asserted to occur once), seen failing, restored with `cp` and
+checked with `cmp`:
+
+| bug re-injected | checks that caught it |
+|---|---|
+| update fetches without accepted terms | "enabled without accepted terms: NEEDS_CONSENT, no request" (9 calls), "master switch off: not fetched" |
+| no URL rule before the download | "a URL the design's rule refuses is never fetched" |
+| `set_enabled` turns a feed on without consent | "set_enabled is no way around the consent" |
+| the master switch ignored by updates | "master switch off: not fetched" |
+| the master switch ignored by the build | "master switch off: empty rule set", "master switch off: nothing is listed" |
+| a future content date accepted | "a content date a year ahead: REFUSED" |
+| a stored future date never forgotten | "a stored content date in 2033 does not refuse an honest copy forever" (ROLLBACK) |
+| the shrink guard overridden | "10 -> 1 entries", "an empty list after 10 entries", "an older content date than ours", the list-kept checks |
+| a refused copy written over the list anyway | "a refused copy keeps the previous list", "after all of them the 10-entry list is still the one stored" |
+| "unchanged" without checking the list matches its state | "crash between list and state ...", "and the list on disk is the copy the state describes" |
+| a clock that went back waits for itself | "the clock went back: due again" |
+| tool output kept whole | "a failed download: ... the tool's first line only", the audit checks |
+| audit details not escaped | "audit: '\|' escaped ...", "one intel-apply line per attempt" |
+| a proxy with a password accepted | "intel.conf: a proxy with a password ... fails" |
+| store files followed through symlinks | "intel.conf as a symlink is refused" (it read /etc/passwd), "a list that is a symlink is refused" |
+| store files opened blocking | the run hangs at "intel.conf as a FIFO" (killed by a 60 s timeout) |
+| a store name may be a path | "an id that is a path: remove deletes nothing outside the store" (then a crash) |
+| a group-writable store accepted | "a directory writable by its group (0720) is refused" |
+| the store itself may be a symlink (stat for lstat) | "a symbolic link as the store itself is refused" |
+| parents of the store not checked | "/tmp", "and nothing was created there", "0700 store inside a 0777 parent", "a root-owned store inside a user's directory" |
+| no coverage caps on a stored list | the 0.0.0.0/0, ::/0, 2000::/3 and /6 tampered checks, "a tampered stored list: the build fails", "the backend is never called" |
+| what the host needs not subtracted | the build golden, and 10 gate checks downstream |
+| exceptions not subtracted | the build golden, and 8 gate checks downstream |
+| no NAT64 mapping for outbound sets | the build golden, "160,000 outbound intervals + their NAT64 copies", "lookup 64:ff9b::2d00:1 agrees with the built rule set" |
+| no interval limit | "320,000 intervals: TOO_BIG", "160,000 outbound ... TOO_BIG" |
+| no IPv4 union limit | "one /10 more: over 2^26 IPv4 addresses" |
+| the hold ignored | "hold: DRY_RUN, nothing reaches the backend", "resume under a hold", the audit count |
+| the error trusted over the live digest (nft timed out after committing) | "a timeout after nft committed: OK", "... and the state is enforced", the counter checks, "empty rule set, a timeout, the table absent: OK" |
+| the backend's success trusted over the live digest | "the backend reports success but the kernel holds the old table: FAILED", "... and nothing is carried" |
+| counters carried before the apply is known to have happened | "a failed apply: ... counters not carried", "counters after the failed apply: still 5, not 10", four more |
+| counters never carried on apply | "a timeout after nft committed ... counters carried once", "carried 5 + live 2 = 7" |
+| the empty rule set expected as a present table | "apply with nothing on: ... expected ABSENT, OK", "empty rule set, a timeout ..." |
+| suspended ignored by the state | "state: suspended", "resume under a hold: ... still suspended", "the tool complains but the table is gone: suspended" |
+| an unreadable listing read as absent | "state: an unreadable listing is unknown, never not-loaded" |
+| `fs_intel_applied_has` ignores suspended | "applied_has: nothing while suspended" |
+| lookup ignores the NAT64 form | "lookup 64:ff9b::2d00:1", "... agrees with the built rule set" |
+
+The run is also clean under AddressSanitizer and UBSan (LeakSanitizer
+on), and passes as root and as an ordinary user.
 ## The Copilot (`tests/test-health.c`, `test-core.sh`, `fs-copilot-smoke`)
 
 ```sh
@@ -1687,9 +1914,13 @@ after it committed is a success; after an nft success the table must
 carry the digest asked for (the empty rule set: no table at all), or
 the apply fails saying so.  A failure says which lists are in force
 now.  Errors are `G_IO_ERROR`: `PERMISSION_DENIED` (not root),
-`NOT_FOUND` (no nft), `TIMED_OUT`, `INVALID_ARGUMENT`, `FAILED`.  The
-Windows backend leaves the four slots NULL until Round 3: that is how
-the engine knows to say "unsupported" rather than "cannot tell".
+`NOT_FOUND` (no nft), `TIMED_OUT`, `INVALID_ARGUMENT`, `FAILED`.  A
+backend that leaves the slots NULL is how the engine knows to say
+"unsupported" rather than "cannot tell".  Since Round 3 the Windows
+backend fills intel_apply, intel_clear, intel_live and
+intel_not_in_force; it leaves intel_counters NULL, because Windows
+Firewall keeps no count per rule (see "Threat intel on Windows"
+below).
 
 `fs-intel-backend-driver` calls the slots through `fs_backend()` the way
 the engine does, plus the policy's `apply_rules`, `stop` and
@@ -1769,3 +2000,809 @@ The upfront `nft` lookup has no tooth: without it the runner's own
 The split-delete tooth of the rule-set section above stood in for this
 backend with `fs-intelset-driver apply`; here it is injected into the
 real `intel_apply` and caught by the same kind of rejected transaction.
+
+## Threat intel end to end on Linux (`tests/test-intel-e2e.sh`)
+
+```sh
+cd port
+ninja -C build-linux fs-intel-e2e-driver
+sudo bash tests/test-intel-e2e.sh   # needs root, nft, curl, openssl, python3; SKIPs otherwise
+```
+
+The engine (`fs-intel.c`) and the Linux slots (`fs-backend-linux.c`)
+were each tested against stand-ins: the engine through a fake backend
+and a fake downloader, the slots through a driver that builds rule sets
+by hand.  This test runs them together with nothing replaced.
+`fs-intel-e2e-driver` calls the engine the way a `stockfw intel` command
+would: `fs_intel_config_load`/`save`, `fs_intel_import_list`,
+`fs_intel_update` with the default downloader (`fs_fetch`, curl as
+nobody, 120 s), `fs_intel_apply_safe` with host NULL (so the engine
+reads this computer with `fs_hostnet_read()`), `fs_intel_suspend`,
+`fs_intel_resume`, `fs_intel_state`, `fs_intel_counters`,
+`fs_intel_lookup` and `fs_intel_applied_has`, all with `fs_backend()`.
+Its copy of `fs-fetch.c` is compiled with `FS_FETCH_TESTING` only so
+`$STOCKFW_TEST_CACERT` can name the test server's CA (the
+`fs-fetch-test` arrangement); its copy of the backend has no test hook.
+
+The test re-executes itself under `unshare -n -m`.  In there, a tmpfs
+over `/var/lib` holds the default store (`/var/lib/stockfw/intel`,
+created by the engine), a `resolv.conf` bound over `/etc/resolv.conf`
+names the DNS server, and a veth pair joins this computer
+(192.0.2.1/24, default gateway 192.0.2.2) to a peer namespace that
+plays the internet: the HTTPS feed server at 203.0.113.80 (a throwaway
+CA), the DNS server 203.0.113.53, the SSH client in `$SSH_CONNECTION`
+(198.51.100.22), an established connection to this computer's port 22
+from 198.51.100.33, and the listed and unlisted addresses.  The feed
+(custom, both directions) lists all of those plus this computer's own
+/24; a local CSV list (outbound only) holds 198.51.100.128/26 and
+203.0.113.128/25.  Packets are UDP datagrams with receivers on both
+sides; a send the kernel refuses (the outbound reject) is counted by the
+sender.  It proves:
+
+- with nothing turned on: state off, no table, and an update makes no
+  request at all; the store is created 0700 under a 0755 parent, and
+  `intel.conf` and every list are 0600;
+- the feed is downloaded by the default downloader as
+  `StockFW/<version>`, with its entries and content date recorded;
+- one apply builds both sets and loads them in one nft transaction,
+  the table carries the digest, the state is enforced, and a note names
+  each kind of address kept: this computer's own, its network, the
+  gateway, the DNS server, both SSH peers, the feed's server; the
+  kernel's set holds the listed address and none of the kept ones, and
+  the outbound entries are also in 64:ff9b::/96 (rule text only);
+- real packets: in from a listed address, dropped; in from an address
+  only the outbound list holds, delivered; in from every kept address,
+  delivered; out to a listed address, refused at once; out to unlisted
+  and kept addresses, delivered; the counters are exactly the packets
+  the lists stopped (12 and 4), and `fs_intel_lookup` agrees with every
+  packet, the NAT64 form included;
+- the next update reaches the feed's server although the enforced list
+  names it in both directions;
+- an update with a changed list: the address it dropped passes, the one
+  it added is dropped, and the counters carry across the replace;
+- bad copies change nothing in the store or the kernel: an HTML page,
+  an HTTP 503, the older copy replayed (rollback), a copy that shrank
+  from 16 entries to 2, and one dated a year ahead; an apply afterwards
+  enforces the last good copy with the same digest;
+- a transaction the kernel rejects fails naming the lists in force; the
+  previous table and its digest stay, the state still reads enforced,
+  the counters are not carried, and the change (an exception) is not in
+  force; with the real nft the exception lets its address through and
+  is noted, and the counters come out counted once; removing it gives
+  the previous digest again;
+- a stored list tampered with on disk (`0.0.0.0/0`) is refused before
+  any nft load, the kernel keeps the last good list, and the next update
+  stores the good copy again although the download is byte for byte the
+  one already recorded;
+- a hold reaches no nft (dry-run);
+- a table someone removed reads not-loaded (and the address really
+  passes), one someone else loaded reads differs, and an apply repairs
+  both;
+- user Stop and Start: suspend removes the table, the state reads
+  suspended, the log parser would accept no list line, the count
+  survives and the addresses pass; resume brings back the same digest
+  and the count goes on;
+- the master switch off: the apply removes the table, the state reads
+  off, nothing is blocked (and the lookup says so), an update makes no
+  request, and the carried counts stay;
+- one audit line per apply attempt (held and failed ones included), per
+  suspend, per feed update attempt and per import.
+
+The sanitizer build (`build-asan`, `-fsanitize=address,undefined`,
+Debug, LeakSanitizer on) of `fs-intel-e2e-driver` runs the whole test
+clean (`STOCKFW_INTEL_E2E_DRIVER` points the test at it).
+
+Not covered here: IPv6 packets (none are sent; the IPv6 sets are
+checked as rule text), `STOCKFW-TI` kernel log lines (nft's log
+statement is silent in a network namespace by default), catalog feeds
+and their real hosts (no internet; a custom feed stands in, and its
+host is an address, so no DNS lookup is made for it), and Windows.
+
+Teeth, each injected into the real source by a script that asserts the
+exact old text once; the driver was rebuilt, the named checks seen
+failing, the file restored with `cp` and checked with `cmp`, and the
+test seen green again:
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| a custom feed's host not kept reachable | `the next update reaches the feed's server although the enforced list names it`, `in from the feed's server`, its note, the kernel-set and NAT64 checks (31 in all) |
+| established connections to port 22 not read | `in from the peer of the established SSH connection`, its note, the kernel-set check, the lookup, the counters |
+| the DNS servers not read | `in from the DNS server`, `out to the DNS server`, its note, the kernel-set check, the lookup, the counters |
+| exceptions not subtracted | `with the real nft the exception is applied and noted`, `the exception lets 198.51.100.10 through` |
+| no NAT64 mapping for outbound lists | `IPv6 (rule text): outbound entries are also blocked in 64:ff9b::/96`, the interval count (v6=0) |
+| an outbound list also matched inbound | `in from an address only the outbound list holds`, and the counters |
+| counters carried when the apply failed | `the counters are not carried by a failed apply`, `... counted once` (21, not 20) |
+| the backend skips a re-apply of the digest already live | `... counted once` (24, not 20: the engine carried counts the kernel kept) |
+| suspend leaves the table | `Stop: suspend removes the table`, `state: suspended`, `while suspended the listed addresses really pass` |
+| suspend does not carry the counters | `the count survives the suspend`, `the count goes on from where it was` (23 -> 22) |
+| "unchanged" without checking the stored list against its state | `the next update stores the good copy again`, and every apply after it (the tampered list stays) |
+| no rollback guard | `the older copy replayed (a rollback)`, and the checks that need the newer copy |
+| the hold ignored | `a hold reaches no nft`, the audit count of held attempts |
+
+## Threat intel, second review (`fs-intel-test`, `tests/test-intel-backend.sh`, `tests/test-intel-e2e.sh`)
+
+What the second review of the engine found, and the checks that now
+hold each answer.
+
+`fs-intel-test` (fake backend, fake downloader):
+
+- **coverage counted as the parser counts it**: `test_cover6_at_cap`
+  builds a feed of 128 IPv6 ranges that are not /64-aligned and cover
+  exactly the cap (2^42 /64 networks). The parser accepts it, the update
+  stores it, the stored copy loads again (not TAMPERED) and builds;
+  one more /64 is refused by the parser, and a stored copy holding it is
+  TAMPERED. Both now use `fs_feed_cover6_64`.
+- **the proxy kept reachable** (`test_update_hosts`):
+  `fs_intel_update_hosts` lists each enabled feed's host (an upper-case
+  `HTTPS://` custom feed too), then the proxy's host while any feed is
+  on (IPv4, bracketed IPv6 with a port, a name already listed in
+  another case listed once); an apply with host NULL keeps a proxy and
+  a feed server that a list names, their NAT64 forms too, and says so
+  in a note ("a feed's download server or proxy"); with no feed on, the
+  proxy is not kept.
+- **a re-apply of the same digest that the tool fails**
+  (`test_gate_same_digest`): FAILED with the tool's error and the note
+  "The same rules were already in force, and still are.", nothing
+  carried (the counters read 5, not 10), still enforced, audited as
+  failed; committed then timed out: OK, carried once; the backend says
+  yes and changes nothing: OK, nothing carried (6, not 7); a real
+  replace: carried; nothing counted and refused: FAILED; another rule
+  set refused: FAILED without the same-rules note.
+- **Stop and Start** (`test_gate_start_stop`): a Start whose apply
+  fails, or whose build is refused (TAMPERED), reads not-loaded, never
+  suspended; a Stop with no table clears nothing; Start without intel
+  slots is a no-op; without nft (fake `G_IO_ERROR_NOT_FOUND`) a Stop
+  where nothing was ever applied is not an error and the state reads
+  off, while after a load the Stop fails NOT_FOUND and the state is
+  unknown or needs-root, never off, even with the list turned off; with
+  no store directory at all, Stop and Start create nothing, and a table
+  found anyway is still removed.
+- **flushed chains** (`test_state_rules`): `applied.state` records in
+  `ruled` the lists whose sets have addresses (not one an exception
+  emptied); one list's counter rules gone reads differs naming that
+  list only; all gone (`nft flush table`) reads differs naming both;
+  chains that cannot be listed, or a record from before `ruled`, leave
+  the digest to decide (enforced); an apply restores them.
+- **a list name that collides with another list's id** (in
+  `test_stored_lists`): "office-blocks", "Office: blocks!" and
+  "OFFICE_BLOCKS" are refused (INVALID, naming the list that has the
+  id) while "office  BLOCKS" stays untouched; the same name in another
+  case or spacing replaces it.
+- **values GKeyFile cannot decode** (in `test_config`): a bad escape in
+  the proxy, the exceptions, a custom feed's name or a list's name
+  fails the load naming the group and key; the same file without it
+  loads.
+- **a store others can read** (in `test_store_dir`): an existing store
+  of mode 0755, 0750, 0711 or 0705 is set to 0700, by `fs_intel_dir`
+  and by every store operation.
+
+`tests/test-intel-backend.sh` (real nft, private namespace):
+
+- the same rule set loaded under the wrapper that makes the kernel
+  refuse every load with elements: the slot fails, naming nft's error
+  and "The same blocklists (fingerprint ...) were already loaded and
+  are still in force"; the table was not replaced (its counters still
+  run);
+- `policy-reload` (the driver's new command: the backend's `reload`)
+  joins apply, stop and clear: the table and its counters are untouched.
+
+`tests/test-intel-e2e.sh` (everything real):
+
+- the same rule set refused by the kernel: `result failed`, the
+  same-rules note, the backend's error, the table, the state, the
+  counters and the carried totals as they were;
+- `nft flush table inet stockfw_intel`: differs, naming both lists, and
+  the address really passes; an apply restores the rules;
+- `stockfw stop` and `stockfw start` (the CLI, with iptables in the
+  namespace and its own `XDG_CONFIG_HOME`): stop removes the table and
+  the state reads suspended; start enforces the same digest again and
+  prints "Blocklists applied (2 lists)."; `--json` adds an `intel`
+  object (`result` suspended / applied); the audit records them as
+  `source=cli`. Skipped when the CLI is not built or iptables is
+  missing;
+- without nft (an empty `PATH`): after a load, a Stop fails saying nft
+  is missing and the state reads unknown; in a store where nothing was
+  ever loaded a Stop is not an error and the state reads off; with no
+  store at all a Stop creates none;
+- the driver's lookup now keeps the hosts `fs_intel_update_hosts`
+  gives, not a copy of that logic.
+
+Not covered: the Status page's Stop and Start and start-on-open call
+the same engine functions in a worker thread; they are built, not run
+here (no GUI test drives them). The `stockfw intel` commands, the
+Threat Intel page and Events attribution do not exist yet (design
+section 9).
+
+Teeth, each injected into the real source by
+`teeth.py` in a scratch directory, which asserts the exact old text
+occurs once, rebuilds, runs the test, looks for the named checks among
+the failures, then restores the file with `cp` and checks it with
+`cmp`:
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| the stored-list check counts IPv6 coverage as `end.hi - start.hi + 1` (the old count) | `cover6 cap: the stored copy loads again, not TAMPERED`, `cover6 cap: the build holds it and the healthy list` |
+| the proxy left out of `fs_intel_update_hosts` | `update hosts: each enabled feed's host ... then the proxy's`, `update hosts: an IPv6 proxy ...`, `apply: a list naming the proxy and a feed's server keeps both reachable ...`, `... and a note says so` |
+| resume leaves `suspended` in applied.state | `resume under a hold: ... never suspended`, `start, the apply fails: FAILED, then not-loaded, never suspended`, `start, the build refused: TAMPERED, then not-loaded` |
+| the state never checks the counter rules | `rules: one list's rules gone: differs, naming it`, `rules: the chains flushed: differs, never enforced` |
+| a same-digest re-apply the tool failed reported OK | `same digest, nft refuses: FAILED ...`, `... and the audit records the failure`, `same digest, nothing counted, nft refuses: FAILED` |
+| counters carried without proof the table was replaced | `same digest, the table untouched: OK, nothing carried (6, not 7)`, `same digest, replaced: carried once` |
+| the Linux backend calls an identical table after a refusal a success | `the same rule set refused: a failure that says the same lists are still in force` (test-intel-backend.sh) |
+| without nft, a Stop with nothing to remove is an error | `no nft, nothing ever applied: stop is not an error` |
+| without nft, the state reads unknown with nothing on | `no nft, nothing on: off, not unknown` |
+| a colliding import name replaces the other list | the three `import: "..." (the same slug, another name) is refused ...`, `import: two long names cut to the same id ...` |
+| undecodable intel.conf values read as absent | `intel.conf: a proxy with an invalid escape (\q) fails, naming [intel] proxy` |
+| an existing 0755 store accepted as it is | the four `store: an existing 0NNN store is set to 0700`, `store: saving the configuration into a 0755 store leaves it 0700` |
+| Stop creates a store where none was | `no store: stop and start do nothing, create nothing`, `no store, a table left behind: ...` |
+| the policy reload clears the intel table | `the lists and their counters are untouched by all of it`, and every later check that needs the table (test-intel-backend.sh) |
+| `stockfw stop` does not suspend the lists | `stockfw stop: the firewall stops, the lists are removed and suspended`, `stockfw --json stop: ...`, `the command line's stops and starts are audited as source=cli` (test-intel-e2e.sh) |
+| the old note wording ("a feed's download server") | `notes: every kind of address kept, and the list that named it`, `... and a note says so` |
+
+The sanitizer build (`build-asan`, Debug, `-fsanitize=address,undefined`)
+runs `fs-intel-test` clean.
+
+## `stockfw intel`: the threat-intel command line and dashboard panel (`tests/test-intel-cli.sh`, `tests/test-cli.sh`)
+
+```
+ninja -C build-linux stockfw stockfw-intel-test
+sudo bash tests/test-intel-cli.sh   # root, nft, curl, openssl, unshare, setpriv; SKIPs otherwise
+bash tests/test-cli.sh              # no kernel; the intel part needs a store base that passes
+                                    # the ownership check ($HOME or the build directory)
+```
+
+`stockfw intel` (design section 8) is `src/cli/fs-cli-intel.c`, a front end
+over the engine: status, feeds, terms, enable, disable, on, off, add-feed,
+update, apply, clear, import, lists, `list show|add|remove`, remove,
+except, unexcept, exceptions and lookup, each with `--json`.
+`stockfw status` gains an `intel` object and a "Threat intel" line; the
+dashboard gains `GET /api/intel` and a read-only "Threat-intel
+blocklists" card.  Exit codes follow the CLI: 0 done, 1 failed, 2 usage
+(unknown id, bad value, terms not accepted), 3 needs root, 5 `lookup`:
+a list blocks the address.  The engine gained `fs_intel_store_exists`
+and `fs_intel_clear`; `fs_intel_state` and `fs_intel_counters` no longer
+create the store; the catalog gained a `credit` line per feed.
+
+`tests/test-intel-cli.sh` re-executes itself under `unshare -n -m`: the
+store is the default `/var/lib/stockfw/intel` on a tmpfs over
+`/var/lib`, the feed server is a local HTTPS server on 127.0.0.1 with a
+throwaway CA, and the binary is `stockfw-intel-test` -- the real CLI
+sources and Linux backend with a copy of `fs-fetch.c` compiled with
+`FS_FETCH_TESTING` (the only build that reads `STOCKFW_TEST_CACERT`; the
+`stockfw` that ships has no hook).  A failing check prints the last
+command's exit status, stdout and stderr.  It checks:
+
+- nothing turned on: status, `--json status`, feeds (every catalog feed
+  with its licence or none, the non-commercial flag, credit, terms page,
+  interval), lookup, update and `stockfw --json status` exit 0, create
+  no store and make no request; `terms` names the host, how often and
+  the terms page;
+- consent: `enable` without `--accept-terms` exits 2, prints the terms,
+  names the flag and leaves the feed off (plain, and `--json` with
+  `needs_consent`); with it the feed is on, accepted now, in the
+  direction asked; turned off and on again it needs no flag; unknown
+  ids, directions, options and actions exit 2; an `http://` custom feed
+  is refused;
+- a custom feed whose URL has `?key=SECRETKEY`: the key never appears in
+  the output (JSON or table); the first change makes the store 0700 with
+  0600 files; update downloads it as `StockFW/<version>` (updated, 16
+  entries, not applied: the firewall is not running), then not due (no
+  request), `--now` unchanged; a copy that shrank to 2 entries is
+  refused (exit 1) and the 16-entry copy kept, status "refused";
+  `--accept-shrink --feed` takes it; an HTTP 404 fails (exit 1); `--feed`
+  of an unknown or turned-off feed exits 2;
+- local lists: import (4 entries, out; the unparsable line and the
+  private part named), `lists --json`, `list show ID` with its ranges
+  (10.1.2.3 left out), `list add` (a new list blocks both ways), the
+  same name in another case replaces, `list remove` deletes the files;
+  a missing `--name`, a missing file, removing a built-in feed and
+  showing an unknown list are errors;
+- exceptions: one bad value saves nothing (exit 2); two addresses
+  merge; `unexcept` takes one out;
+- apply: the dry run names three sets and loads nothing; apply loads
+  the digest the dry run named, the state is enforced, one
+  `intel-apply` audit line with `source=cli`, the kernel's sets hold the
+  lists minus the exception; `intel status` and `stockfw status` say
+  enforced; lookup exits 5 for listed addresses (naming the list and the
+  direction), 0 for the exception and an unlisted address, 2 for a
+  network;
+- audit-only mode (`[client] policy_audit_only=true`): apply is held,
+  exit 0, the kernel's table unchanged although the config changed;
+- clear: the table is gone, the state not-loaded, the three lists still
+  on, one `intel-clear` audit line; a second clear is not an error;
+  apply restores the same digest;
+- as nobody: apply and clear exit 3 and touch nothing; status with
+  root's store exits 3 and says needs-root;
+- with iptables: after `stockfw stop`, an update stores the new copy and
+  does not apply it; `stockfw start` applies it; with the firewall
+  running but the lists cleared, an update applies nothing;
+  `--no-apply` applies nothing; running and enforced, an update applies
+  the new copy at once;
+- the master switch off: the kernel untouched until apply, apply removes
+  the table (state off), update makes no request; removing the custom
+  feed deletes its files.
+
+`tests/test-cli.sh` (no kernel; the store in a directory under `$HOME`
+or the build directory, which passes the ownership check that `/tmp`
+never does): help lists `intel`; feeds without a store (and creating
+none) with LICENCE and CREDIT columns; consent refused and accepted;
+import, except, lookup exit 5 / 0 / 2; `status --json` carries `intel`;
+as nobody (or as the user, when not root) apply and clear exit 3;
+`apply --dry-run`; the dashboard's `/api/intel` needs the token, lists
+the two sources with licence and credit, refuses POST (405), and the
+page has the panel and asks for `/api/intel`; every JSON endpoint parses
+(intel included).  `fs-feed-test` checks that every catalog feed has a
+credit line and that Spamhaus's names Spamhaus.
+
+Not covered: the desktop Threat Intel page, the consent dialog and
+Events attribution (not built); IPv6 lookups against a live kernel
+(no IPv6 here); catalog feeds' real hosts (no internet: only a custom
+feed on 127.0.0.1 is downloaded).
+
+Teeth (`teeth.py` in a scratch directory: asserts the old text occurs
+once, rebuilds, runs the test, looks for the named checks among the
+failures, restores with `cp`, checks with `cmp`):
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| `enable` passes `TRUE` for the terms instead of `--accept-terms` | `enable without --accept-terms: exit 2, the terms shown, the flag named`, `... and the feed is still off`, `... as JSON: needs_consent ...`, `enable --accept-terms --direction in: on, accepted now` |
+| the CLI loads the config through the store even for read-only commands | `intel (status): off, exit 0, and no store is created`, `intel --json feeds: ... no store`, `intel lookup: ... no store`, `intel update with nothing on: ... no store`, `status --json: intel.state off, no store` |
+| `fs_intel_counters` opens the store without checking it exists | `intel --json feeds: ... no store`, `intel lookup: ... no store`, `intel update with nothing on: ...`, `status --json: ...` |
+| `fs_intel_state` without its no-store branch | `intel (status): off, exit 0, and no store is created` and the four other no-store checks |
+| `lookup` always exits 0 | `lookup of a listed address: blocked, exit 5, names the list`, `lookup of a local-list address: blocked out, exit 5` |
+| `update` exits 0 for a refused copy | `a copy that shrank to 2 entries: refused, exit 1` |
+| `update` re-applies without checking the firewall runs | `... and not applied: the firewall is not running` |
+| `update` re-applies without checking the lists are enforced | `update while running but the lists cleared: stored, not applied` |
+| `clear` records the lists as suspended | `clear: removed from the kernel, state not-loaded`, `... the three lists are still turned on`, `update while running but the lists cleared: ...` |
+| `intel apply` passes no hold | `audit-only mode: the apply is held, exit 0, the kernel untouched`, `... and says so` |
+| the feeds table prints a custom feed's URL unredacted | `... feeds shows it with the query string hidden` |
+| the dashboard without its `/api/intel` route | `intel: the state and the lists turned on, with licence and credit` (test-cli.sh) |
+| `intel apply`/`clear` without their root check | `intel apply and clear need root (exit 3)` (test-cli.sh) |
+| Spamhaus DROP's credit without "Spamhaus" | `every feed has a credit line; Spamhaus's names Spamhaus` (fs-feed-test) |
+| `stockfw status --json` without its `intel` object | `status --json carries an intel object` (test-cli.sh) |
+| `update --feed` of a feed that is turned off goes ahead | `update --feed of a feed that is off: exit 2` |
+
+The sanitizer build (`build-asan`) runs `test-cli.sh` and
+`test-intel-cli.sh` (with `STOCKFW_BUILD` / `STOCKFW_INTEL_CLI` naming
+it) with no AddressSanitizer or UndefinedBehaviorSanitizer report.
+
+## The Threat Intel page and Events attribution (1.0.7, design 8)
+
+`fs-intelview-smoke` (`ninja -C port/build-linux fs-intelview-smoke`,
+then `xvfb-run -a port/build-linux/fs-intelview-smoke`, as root or with
+`STOCKFW_TEST_SAFE_DIR` set to a directory the engine accepts as a store
+parent) builds the real page in an offscreen window against a fake
+intel backend (`fs_intelview_set_backend`: an in-memory table with a
+digest, counters and a firewall state) and a fake downloader
+(`fs_intel_set_fetcher`), with its own store, audit file and `HOME`.
+An auto-responder stands in for the user at every dialog
+(`fs_intelview_set_responder`). It flips the switches, clicks the
+buttons, types into the editors and reads back what the user reads:
+
+- no store: "Off", every feed "Off.", the page creates no store, and
+  FireHOL level 1 shows "Non-commercial use only" and a credit link to
+  its publisher;
+- turning a feed on asks first (the consent text names the host); Cancel
+  downloads and applies nothing; Accept downloads once and applies once,
+  "Protected", "Up to date and in force.", entries, last and next update;
+- the work runs in the worker: a 10 ms timer keeps firing on the main
+  loop during a 0.4 s download, the progress line names the download,
+  and while an update runs the controls are insensitive;
+- the blocked counter per feed and the card's tiles;
+- a list that shrank is refused, "Accept smaller list" is offered and
+  lets it in (and is applied); a failed download says so and keeps the
+  copy;
+- "Not loaded" with Apply, which puts it back; "Changed outside
+  StockFW"; "Paused" after the engine's suspend; "Unknown"; "Not
+  supported on this platform" with nothing usable (the Windows build
+  says "Not supported on Windows yet");
+- with the firewall stopped a change is saved, nothing applied, and the
+  page says when it will be; under a hold (the Overview's Lock) a change
+  is saved, not applied, and the reason is shown; Apply afterwards puts
+  it in;
+- lookup: a listed address (blocked, naming the list), an address on no
+  list, text that is not an address; the allow list (saved, then the
+  lookup says it is never blocked; a bad line is refused as an error);
+  your blocklist (saved as "My blocklist", applied, blocks); importing a
+  file ("Office VPN.txt" becomes `local-office-vpn`, applied) and
+  removing it (asked first);
+- Events: a line from `fs_netparse_intel_line` with its rule shows
+  "SSH [BLOCKED] · Threat intel: Spamhaus DROP (IPv4)" in the Service
+  column while a policy block shows as before; the selection carries the
+  rule and an untouched service; the filter finds the row by the list's
+  name; Add exception asks first naming the list, Cancel changes
+  nothing, Accept puts the address on the allow list.
+
+`INTEL_SMOKE_SHOTS=<dir>` writes a PNG of each state (off, protected,
+updating, refused, not loaded, differs, paused, your lists, events,
+unknown, unsupported).
+
+`test-core.sh` gains `test_netparse_intel_line`: the id and the fields of
+a `STOCKFW-TI <id>` line (RFC 3339 and classic syslog), an id the engine
+could not have written, a bare marker and a policy line are not intel
+events, and the policy parser never takes an intel line (so the CLI's
+event list cannot show one as a policy block). `fs-intel-test` gains the
+refusal's override: a shrink records `--accept-shrink`, sudden growth
+`--accept-coverage` (and only that flag lets it in), a body that is not
+a list records none, and an accepted copy clears it.
+
+Not covered: the Linux backend's check that a `STOCKFW-TI` line names a
+set of the applied rule set (`fs_intel_applied_has`) is in a static
+function of the log reader and is built, not run; the Events page's
+right-click menu itself (the smoke calls `fs_intelview_add_exception`,
+which the menu item calls); the page as a non-root user (needs root).
+
+Teeth (`teeth.py` in a scratch directory, the same procedure as above):
+
+| Bug re-injected | Check that failed |
+|---|---|
+| no consent dialog before a feed is turned on | `turning a feed on asks first, naming the host contacted` |
+| the job run on the main thread | `the window kept running during a 0.4 s download (1 timer ticks ...)` |
+| the refusal's override not recorded | `and "Accept smaller list" is offered`; `a shrink refusal records that --accept-shrink lets it in` (fs-intel-test) |
+| Events ignores the rule | `events: the list's block names the list in the Service column` |
+| the page creates the store when it opens | `opening the page creates no store (Stop and Start stay no-ops)` |
+| the Overview's Lock does not hold the apply | `under a hold: saved, not applied, and why` |
+| applied while the firewall is stopped | `firewall stopped: turning a feed on saves it, applies nothing, ...` |
+| controls usable while a job runs | `mid-update: the progress line shows (...), and the controls wait for it` |
+| the intel parser takes any id | `intel line: an id the engine could not have written is not an event` |
+| the policy parser takes intel lines | `the policy parser never takes an intel line` |
+| "Not loaded" shown as "Protected" | `table gone behind StockFW's back: "Not loaded", with Apply` |
+| the Events filter ignores the rule | `events: the filter finds the list's block by the list's name` |
+
+## Threat intel after the CLI and the page were merged (`intel-r3/integrated`)
+
+The CLI (`intel-r3/cli`) and the Threat Intel page (`intel-r3/ui`) were
+built side by side on the round 2 engine.  Once merged, the places
+where they disagreed were fixed, each with a check:
+
+| check | where | what it proves |
+|---|---|---|
+| `Spamhaus DROP: the credit names The Spamhaus Project` | `fs-intelview-smoke` | the page's credit link is the catalog's credit line (`FsFeedInfo.credit`), the words `stockfw intel feeds` and the dashboard print, not the download host |
+| `the consent text sends mistakes to this page's allow list` | `fs-intelview-smoke` | the consent text names the page's allow list (it said "Exceptions on the Threat Intel page", a heading the page does not have); `fs-intel-test`'s consent check still finds "exception" |
+| `... and it names the flag that takes it (the page's Accept smaller list)` | `test-intel-cli.sh` | a refused shrink prints `sudo stockfw intel update --feed ID --now --accept-shrink`, from the engine's `refused_override` |
+| `... the status says refused, accept_with --accept-shrink` | `test-intel-cli.sh` | `feeds --json` carries the same flag as `accept_with` |
+| `... update --json: refused, accept_with --accept-shrink` | `test-intel-cli.sh` | so does `update --json` |
+| `no store: a list's log line is not attributed, and asking creates nothing` | `fs-intel-test` | `fs_intel_applied_has`, which the Linux log reader (UI branch) asks for every `STOCKFW-TI` line, no longer creates the store, like the other read-only questions the CLI branch fixed |
+
+Teeth (each injected, rebuilt, run, restored with `cp`, checked with
+`cmp`):
+
+| injected bug | check that fails |
+|---|---|
+| the page's credit link shows `fi->host` again | `Spamhaus DROP: the credit names The Spamhaus Project` |
+| the consent text says "Exceptions on the Threat Intel page" again | `the consent text sends mistakes to this page's allow list` |
+| the CLI never reports an override (`accept_flag` returns NULL) | the three `test-intel-cli.sh` checks above |
+| the CLI maps a shrink to `--accept-coverage` | the same three checks |
+| `fs_intel_applied_has` without its `store_exists` check | `no store: a list's log line is not attributed, ...` (and then `no store, a table left behind: stop removes it, creates nothing`) |
+
+Every suite, module test and smoke was run on the merged tree (the
+smokes under `xvfb-run -a`; `fs-tray-smoke` fails headless as before).
+The sanitizer build (`build-asan`) runs `fs-feed-test`, `fs-intel-test`,
+`test-cli.sh` and `test-intel-cli.sh` with leak checking on, and
+`fs-intelview-smoke` and `fs-hitview-smoke` with it off (GTK keeps its
+caches until exit), with no AddressSanitizer, LeakSanitizer or
+UndefinedBehaviorSanitizer report.  With leak checking on, `test-cli.sh`
+first found that `stockfw policy add` never freed the rule it parsed
+(the policy stores copies), five reports, one per add; that is fixed.
+
+## Threat intel, round 3 review fixes (`intel-r3/integrated`)
+
+What the kernel does, not just the configuration; one engine operation
+at a time; and the CLI, the dashboard and the page saying the same.
+
+| check | where | what it proves |
+|---|---|---|
+| `a Stop during an apply waits for it ..., then the lists are down and suspended` | `fs-intel-test` | the engine lock (`flock` on `<store>/engine.lock`): a Stop from another thread blocks until the apply ends, then wins; the audit has intel-apply before intel-suspend |
+| `an apply that waited for a Stop is held ...` | `fs-intel-test` | an apply that had to wait, and finds the firewall stopped by the operation it waited for, is held, the kernel left empty |
+| `an apply that did not wait is not held by an old Stop` | `fs-intel-test` | a deliberate `intel apply` with the firewall stopped behaves as before |
+| `a Stop during an apply waits for it, then the lists are down and suspended` | `test-intel-cli.sh` | the same across processes: `intel apply` slowed by an nft wrapper, `stockfw stop` a moment later |
+| `an update during which a Stop carried the counters keeps them` | `fs-intel-test` | an update re-reads the carried totals under the lock before it writes its state |
+| `lookup_live: ...` (10 checks) | `fs-intel-test` | `fs_intel_lookup_live`: not loaded, enforced, an exception saved but not applied (still in force, pending), applied, removed, a direction change, Stop, Start, clear, a new copy not applied (uncertain), another table (differs) |
+| `lookup of an exception not applied: the kernel still blocks it, exit 5, pending`, `lookup after clear ...`, `lookup with the firewall stopped ...` | `test-intel-cli.sh` | `stockfw intel lookup` exits 5 only when the kernel blocks the address (checked with `nft get element`) |
+| `lookup: a listed address names the list, but nothing is in force: exit 0, in_force false` | `test-cli.sh` | without a kernel table the answer is never "blocked" |
+| `paused: lookup says the list holds it but nothing blocks it now` | `fs-intelview-smoke` | the page's lookup box under Paused (no red "is blocked") |
+| `the paused lookup's answer is gone once the state changed` | `fs-intelview-smoke` | a stale answer is hidden when a snapshot changes the state |
+| `held under the Lock: after a refresh the feodo row says it is not in force, and why` | `fs-intelview-smoke` | a feed turned on under the Lock reads "On, but not in force: the policy is locked ..." after the 30 s refresh took the message away |
+| `paused: the failed update's copy is kept, not said to be used` | `fs-intelview-smoke` | "is kept", and "and in force" only when it is |
+| `"No list file imported." is padded like the rows` | `fs-intelview-smoke` | the placeholder has `intel-pad` |
+| `import: the bad line and the private entry are named, as a warning` | `fs-intelview-smoke` | the page's Import reports `invalid`, `too_broad` and `protected_hits` as the CLI does |
+| `fs_intelview_hold_reason: the Lock's sentence ...` | `fs-intelview-smoke` | the one hold that the page's applies and the Status page's Start both use |
+| `re-import with dir 0 keeps the list's direction (in)` | `fs-intel-test` | `fs_intel_import_list` with dir 0 keeps the replaced list's direction (the name in any case or spacing) |
+| `re-import, the name in another case and spacing, no --direction: still out` | `test-intel-cli.sh` | the CLI passes 0 when `--direction` is absent |
+| `events: a list's block is in the history, with its rule; a set not applied is not`, `events (table): a RULE column names the list` | `test-cli.sh` | `stockfw events` (and the dashboard's history, the same function) reads `STOCKFW-TI` lines as the live feed does, with `fs_intel_rule_text` |
+| `chains: ...` (11 checks) | `fs-intelset-test` | `fs_intelset_nft_parse_live_chains`: one digest on every chain, an older table without chain comments (fallback), mixed digests, decoys, broken listings |
+| the goldens | `fs-intelset-test` | every chain carries `comment "sfw:<digest>"` |
+| `every chain carries the digest too: ...` | `test-intelset.sh` | real nft 1.0.9 loads the chain comments, and `nft -j list chains inet` reads the digest |
+| `the live state is read from the chain listing (-j list chains inet)` | `test-intel-backend.sh` | the backend's live read is the fast listing |
+| `unknown: the reason is in the sentence` | `fs-intel-test` | `intel_live_error` (no nft) reaches the state's sentence |
+| `proxy ...` (5 checks), `intel proxy ...` (3 checks) | `fs-intel-test`, `test-cli.sh` | `fs_intel_config_set_proxy` and `stockfw intel proxy URL\|none`; one with a password is refused; `status` shows it |
+| `rule text of ...` | `fs-intel-test` | `fs_intel_rule_text`, shared by the backend, `stockfw events` and the dashboard |
+
+Teeth (each injected into the source by a script that asserts the old
+text once, rebuilt, run, seen failing on the named check, restored with
+`cp`, checked with `cmp`):
+
+| injected bug | check that fails |
+|---|---|
+| `engine_lock` never locks | `a Stop during an apply waits for it ...` |
+| a waited apply is not held | `an apply that waited for a Stop is held` |
+| the CLI's exit 5 from `blocked` (the configuration) | `lookup: a listed address names the list, but nothing is in force ...` |
+| the applied exceptions ignored | `lookup_live: exception not applied: ...` |
+| the page says "is blocked" from the configuration | `paused: lookup says the list holds it ...` |
+| `stockfw events` without `STOCKFW-TI` lines | `events: a list's block is in the history ...` |
+| a re-import widens to both | `re-import with dir 0 keeps the list's direction (in)` |
+| the page's Import drops lines silently | `import: the bad line and the private entry are named ...` |
+| no digest on the chains | `golden: an IN set, IPv4 only` |
+| the chain parser takes mixed digests | `chains: one chain replaced by hand, ...` |
+| the unknown state without the backend's reason | `unknown: the reason is in the sentence` |
+| a proxy with a password accepted | `proxy with a password: refused, nothing set` |
+| a held feed reads "Up to date." | `held under the Lock: after a refresh ...` |
+| "is still used" under Paused | `paused: the failed update's copy is kept, ...` |
+| the placeholder without `intel-pad` | `"No list file imported." is padded like the rows` |
+| the stale lookup answer stays | `the paused lookup's answer is gone once the state changed` |
+| the update does not re-read the carried counters | `an update during which a Stop carried the counters keeps them` |
+
+Not covered by a test: the Status page's Start calling
+`fs_intelview_hold_reason` (its worker runs on the real backend); the
+smoke checks the function it calls.
+
+The sanitizer build runs `fs-intel-test`, `fs-intelset-test`,
+`test-intel-cli.sh`, `test-intel-backend.sh`, `test-cli.sh` and
+`test-intelset.sh` with leak checking on, and `fs-intelview-smoke` with
+it off, with no report.
+
+## Threat intel on Windows (`tests/test-core.sh`, `fs-intel-test`, `fs-intel-windows-test`)
+
+Round 3 (design section 11) enforces blocklists with Windows Firewall
+rules in the group `StockFW Threat Intel`. What the rules are and what
+a read-back means is pure code (`core/fs-intelwin.c`), so most of it is
+checked on Linux.
+
+`tests/test-core.sh` (pure):
+
+- **generations** (`test_intelwin_gen`): `g` and 8 lower-case hex
+  digits only; a new one is never one already on the firewall.
+- **the plan** (`test_intelwin_plan`): two lists, one both ways, at 2
+  tokens a rule: the exact names in order (inbound before outbound,
+  IPv4 before IPv6, chunk i/n, the generation, the manifest last); every
+  address rule enabled, with its direction, never named `StockFW-`, no
+  `|` or line break in a description; per list and direction the
+  chunks hold exactly the list's addresses; the manifest is disabled,
+  names only 192.0.2.1 and ends `sfw:<digest> plan:<hash> rules:9`;
+  another generation changes the plan hash, not the digest; invalid
+  generations, zero limits, an invalid or repeated id plan nothing; the
+  empty rule set has no rule; a list emptied by subtraction leaves the
+  manifest, which reads back PRESENT.
+- **the real limits** (`test_intelwin_limits`): 2500 IPv4 addresses
+  take 3 rules (1000, 1000, 500); 1500 long IPv6 ranges split by the
+  32,000-character cap; a token longer than the cap gets a rule of its
+  own, never cut.
+- **`RemoteAddresses` read back** (`test_intelwin_parse_remote`): dotted
+  masks, ranges, IPv6, spaces after commas; `*`, keywords, empty
+  tokens, masks with holes, prefixes over 32 and names are refused and
+  leave the set as it was.
+- **the verdict** (`test_intelwin_read`): no rule is ABSENT; rules
+  outside the group (even named like ours) are not counted; the rules
+  as written, and as Windows writes them back (dotted masks, tokens and
+  rules reordered, other rules around) read PRESENT with the digest;
+  25 tamperings each read PARTIAL with a reason and no digest (a chunk
+  deleted, disabled, allow, direction, profile, protocol, local port,
+  local address, program, remote port 443, one service (`Dnscache`),
+  interface type, named interfaces, an
+  `INetFwRule3` condition, an address taken out, `*`, an IPv6 address
+  in an IPv4 rule, addresses moved between chunks, a rule added with a
+  name like ours, a foreign rule in the group, a rule of an earlier
+  apply, the manifest deleted, the manifest's count edited to hide a
+  deleted rule, a rule renamed, a rule moved out of the group).
+- **in force** (`test_intelwin_force`): service stopped, Group Policy
+  override, off for the only profile in use, for one of two, for two,
+  excluded adapters each give their sentence; a profile no network has
+  gives none. Settings, Group Policy's state or a profile in use that
+  could not be read give "StockFW cannot read whether ...", never
+  nothing (review W5); a profile known to be off is named first, and an
+  unreadable profile no network has does not matter.
+- **review** (`test_intelwin_review`): `fs_intelwin_count_gen` counts
+  every rule of a generation, past a foreign rule in the group and an
+  earlier apply's rule, and never one outside the group (W6);
+  `fs_intelwin_name_key` gives names that differ only in case one key
+  (W6); `fs_netsh_rule_name_is_ours` tells the policy's names from the
+  blocklist rules' (W3); a rule set of 150,000 long IPv6 ranges both
+  ways holds about 24 million characters of addresses, past the 16 MiB
+  a netsh listing may hold (W3, the reason the policy lists through
+  COM).
+- **on-link prefixes** (`test_hostnet_onlink`): an address and
+  `OnLinkPrefixLength` give its block (a /24, a /64, a /30 inside a
+  byte); a prefix of 0 or wider than the family keeps the address
+  alone; a bad address length adds nothing.
+
+`fs-intel-test` (fake backend, `test_state_windows` and `test_build`):
+PARTIAL reads differs and an apply rewrites it; INACTIVE reads
+not-in-force with the backend's sentence (also when the rules are not
+the ones last applied, and with no sentence at all); unreadable rules
+with the service stopped read not-in-force, and with nothing known
+never read not-in-force or enforced; an apply that leaves the rules
+not enforced is OK with the note "in place, but not in force"; Stop
+removes PARTIAL and INACTIVE rules; a backend with no counters slot
+gets `fs_intel_counts_unavailable` and no count of 0; the build's
+exceptions and kept addresses reach no rule the Windows plan writes.
+
+`fs-intel-windows-test` (`tests/test-intel-windows.c`, Windows only,
+elevated only, run by `tests/full-suite.sh`): applies a two-list rule
+set through the real backend (one list at 2500 addresses, so three
+rules at the 1000 limit), reads every rule back through `INetFwRules`
+itself and compares names, group, direction, action, profiles,
+protocol, description and addresses with the plan; `intel_live` reads
+the digest; the same rule set again keeps the generation; a changed one
+replaces every old rule; a rule disabled by hand reads PARTIAL and an
+apply repairs it; a foreign rule in the group reads PARTIAL; every
+profile off reads INACTIVE with a reason (the profiles are put back);
+clear leaves nothing in the group and every rule outside it exactly as
+before, including a decoy that has one of our rule names in another
+group (checked for the decoy alone, the clear alone and the whole run,
+as multisets of whole rule lines sorted by text; a failure prints each
+line whose count differs, and `full-suite.sh` prints the whole output
+of this test when it fails); the store directory gets a
+protected DACL naming only SYSTEM, Administrators and the current user,
+and Administrators as owner; an override whose parent Users may change
+is refused and not created (its temporary parents are made with a
+protected DACL, as an override's parent must be). It prints SKIP when the shell is
+not elevated, the firewall service is stopped, or the computer already
+holds StockFW blocklist rules (they are the user's).
+
+Review additions: rules that cannot be read (`intel_live` UNKNOWN)
+fail, never skip (W1); with `STOCKFW_REQUIRE_WINDOWS_INTEL=1`, which
+the CI's Windows job sets, every skip fails, the whole-run ones and the
+parts below alike (W1). The apply over a foreign rule in the group is
+checked, the group then reads PRESENT with the digest and the foreign
+rule is gone, and the profile-off checks run whatever it returned (W2).
+"Policy beside big lists" applies 140,000 long IPv6 ranges both ways
+(more than 16 MiB of addresses), adds a rule with a policy name after
+them, runs the policy's clear and checks that the rule is gone and
+every blocklist rule is still there, whole (W3; it runs only when the
+computer holds no StockFW policy rules). "Store squatted" makes
+`%ProgramData%\StockFW` first, once as a folder owned by
+BUILTIN\Users and once as a link to another folder, and checks that
+`fs_intel_dir` moves it aside (the link as a link: the folder it points
+to keeps its file and gets no `intel`) and makes its own protected
+folder (W7; it runs only when the computer has no StockFW store). It
+was compiled and linked with mingw against the Windows headers in the
+development container, not run there.
+
+Teeth, each injected into the real source by `teeth.py` in a scratch
+directory, which asserts the exact old text occurs once, runs the
+test, looks for the named check among the failures, then restores the
+file with `cp` and checks it with `cmp`:
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| the read-back ignores a rule narrowed to fewer profiles | `intelwin read: a rule narrowed to the Public profile is PARTIAL` |
+| the plan hash covers names and directions, not addresses | `intelwin read: addresses moved between two chunks is PARTIAL` |
+| chunks are cut by token count only, no character cap | `intelwin limits: 1500 long IPv6 ranges are split by characters ...` |
+| a dotted mask with holes is accepted | `intelwin remote: "*", keywords, empty tokens, a mask with holes ...` |
+| a profile no network has counts as "off" | `intelwin force: a profile no network has does not matter` |
+| an on-link prefix of 0 keeps everything | `hostnet onlink: a zero or too-wide prefix keeps the address alone ...` |
+| PARTIAL rules read enforced | `windows states: rules missing or edited outside StockFW read "differs" ...` |
+| an apply into rules that are not enforced says nothing | `windows states: an apply whose rules are not enforced is OK and says ...` |
+| unreadable rules ignore the backend's "service stopped" | `windows states: rules that cannot be read with the service stopped ...` |
+| the read-back ignores a rule's direction | `intelwin read: a rule's direction flipped is PARTIAL` |
+| (W4) the read-back ignores remote ports | `intelwin read: a rule narrowed to remote port 443 is PARTIAL ...` |
+| (W4) the read-back ignores the service | `intelwin read: a rule narrowed to one service is PARTIAL ...` |
+| (W5) unreadable settings claim nothing (the old `return NULL`) | `intelwin force: profiles in use that could not be read are never in force` |
+| (W5) a profile in use that cannot be read counts as on | `intelwin force: a profile in use whose firewall switch could not be read ...` |
+| (W5) Group Policy's state is not required to be read | `intelwin force: a Group Policy state that could not be read ...` |
+| (W6) the name key is not case-folded | `intelwin review: rule names that differ only in case share one key` |
+| (W6) the generation count ignores the group | `intelwin review: rules outside the group are never counted` |
+| (W3) blocklist names pass as the policy's | `intelwin review: the policy's rule names are told apart ...` |
+
+The Windows backend's COM code itself has no tooth here: the container
+cannot run it (that covers W1, W2, W7 and the COM halves of W3 and W6:
+the policy's name listing through `INetFwRules`, the cut-off netsh
+output as an error, the rollback's read-back). `fs-intel-windows-test` is its check on the CI's Windows
+runner.
+
+## Threat intel, one feature on Linux and Windows (`intel-r3/integrated` with the Windows enforcement and main)
+
+The Windows enforcement (`claude/stockfw-1.0.7-wintel`) and main (the
+start gate, Preferences, background mode, the tray) were merged into
+`intel-r3/integrated`. The places where the Linux surfaces did not yet
+know the Windows states were fixed, each with a check (design 11.12):
+
+| check | where | what it proves |
+|---|---|---|
+| `windows: PRESENT with the digest is in force (no counters ...)` | `fs-intel-test` | `fs_intel_lookup_live` answers from the firewall's rules on Windows, with no counters slot |
+| `windows: INACTIVE with the same digest is never in force` | `fs-intel-test` | rules there but not enforced are not "in force"; the detail is the backend's sentence |
+| `windows: PARTIAL rules are never in force`, `windows: PRESENT with another digest is not in force` | `fs-intel-test` | rules not whole, or of an older list, are never in force |
+| `windows: no store, PARTIAL rules there: differs`, `... INACTIVE ...`, `... and asking created no store` | `fs-intel-test` | with no store, any rules of ours read differs, as PRESENT ones did, and nothing is created |
+| `windows: a backend without counters says counts are ...` | `fs-intel-test` | `fs_intel_counts_unavailable()` gives a sentence on Windows and none where there are counters |
+| `windows: rules the firewall does not enforce: "Not in force" ...` | `fs-intelview-smoke` | the page's card for the not-in-force state, with the backend's sentence |
+| `windows: the Overview and tray summary says not in force` | `fs-intelview-smoke` | `fs_intelview_summary`, which the Overview's verdict and the tray's tooltip show |
+| `windows: no count per feed, the reason instead` | `fs-intelview-smoke` | no "Blocked N packets" or "Nothing blocked yet" where there are no counts |
+| `windows: the Blocked tile says n/a, never 0` | `fs-intelview-smoke` | the tile never shows a zero it cannot know |
+| `windows: rules not whole read "Changed outside StockFW"`, `windows: whole and enforced again: "Protected"` | `fs-intelview-smoke` | PARTIAL reads differs on the page, and the page comes back |
+| `engine lock: taken at once ...`, `engine lock: a second holder ... waits`, `engine lock: a symbolic link in its place is refused` | `fs-intel-windows-test` | `LockFileEx` on `engine.lock` (Windows only) |
+| `winstore: %ProgramData%\StockFW is created owned by Administrators ...`, `winstore: intel is created ...`, `winstore: an override adds the current user ...` | `test-core.sh` | W8: the exact SDDL each folder is created with (`fs_winstore_sddl`); removing `O:BA` fails these and the two "passes" checks below |
+| `winstore: StockFW's own ... passes ...`, `winstore: a folder created without an owner ... refuses it`, `winstore: a temporary folder under a drive root ... is refused`, the other `winstore: ...` checks | `test-core.sh` | `fs_winstore_judge`, the pure owner and access-list check the Windows store runs, against SDDL as Windows shows it |
+| `store: an elevated StockFW makes Administrators the directory's owner ...`, `store: an override whose parent Users may change is refused ...`, `clear: the decoy named like ours is exactly as it was ...`, `clear: the clear itself changed no rule outside the group` | `fs-intel-windows-test` | W8, on the CI's Windows runner only |
+
+The start gate from main refuses `stockfw start` when no policy is
+saved and none was applied. `test-intel-cli.sh` (section 8) and
+`test-intel-e2e.sh` stop and start the firewall, so each now saves one
+policy rule first (`policy add inbound-allow-service SSH 22 Anyone`);
+`test-intel-e2e.sh` keeps that rule in its scratch directory through
+`STOCKFW_RULES_DIR`. Without it, 3 and 4 of their checks failed on
+the merged tree.
+
+Teeth (each injected into the real source by a script that asserts the
+exact old text occurs once, rebuilds, runs the test, looks for the
+named check among the failures, then restores the file with `cp` and
+checks it with `cmp`; all seven bit and all seven files were identical
+after):
+
+| injected bug | check that fails |
+|---|---|
+| no store: only PRESENT rules read differs (not `live_holds`) | `windows: no store, PARTIAL rules there: differs` |
+| `fs_intel_lookup_live` also answers in the not-in-force state | `windows: INACTIVE with the same digest is never in force` |
+| the per-feed facts ignore `counts_unavailable` | `windows: no count per feed, the reason instead` |
+| the Blocked tile shows the count whatever | `windows: the Blocked tile says n/a, never 0` |
+| the page's card has no not-in-force case | `windows: rules the firewall does not enforce: "Not in force"` |
+| the summary has no not-in-force case | `windows: the Overview and tray summary says not in force` |
+| the page never updates the summary (`summary_update` removed) | `windows: the Overview and tray summary says not in force` |
+
+Not covered:
+
+- `stockfw intel status` printing "n/a" and `counts_unavailable` in
+  its JSON: the CLI is built on Linux only, where there are always
+  counts, so that branch cannot be reached by a test here.
+- `fs-intel-windows-test` (the engine lock checks above included) is
+  compiled and linked with mingw against the Windows headers in the
+  development container and not run there; it runs on the CI's
+  Windows runner.
+- The Overview's verdict and the tray's tooltip are not read back by a
+  smoke; the smoke checks `fs_intelview_summary`, which both show.
+  (The tray's tooltip is read back since the review below.)
+
+Every suite, module test and smoke was run on the merged tree (the
+smokes under `xvfb-run -a`; `fs-tray-smoke` fails headless as before).
+The Windows sources compile (`wincheck.sh`) and `StockFW.exe` links
+(`winlink.sh`) with mingw.
+
+## Threat intel, review of the merge (design 11.13)
+
+| check | where | what it proves |
+|---|---|---|
+| `engine: after an apply the list is applied`, `engine: after a Stop the list is not applied`, `engine: a Start after a Stop returns and the list is applied again`, `engine: a Stop during an apply waits for it`, `engine: an apply that waited for a Stop is held`, `engine: after a clear the list is not applied` | `fs-intel-test` and `fs-intel-windows-test` (`tests/intel-engine-checks.h`) | M1: the engine's lock and `fs_intel_applied_has` through a fake backend, each call on a worker thread with a 30 s deadline (a self-deadlock prints `engine: ... returns within 30 s` as a FAIL and ends the run). On Linux the Linux branches run; on the Windows runner the G_OS_WIN32 ones (`engine_held`, `fs_winstore_lock` in every operation, `applied.state` read each time) |
+| `windows states: ... and the outcome carries why` | `fs-intel-test` | T2: an apply whose rules read INACTIVE is OK and carries `not_in_force` |
+| `windows: Apply with the firewall off for the profile says the rules are in place but not in force` | `fs-intelview-smoke` | T2: the page never says "The lists are in force." then |
+| `tray: after Stop, before the next read, the tooltip claims no blocklist in force`, `after Stop, once read: no summary` | `fs-intelview-smoke` | T1: the tray's tooltip, read back through `gtk_status_icon_get_tooltip_text` |
+| `held under the Lock: the summary names the list that is on but not in force` | `fs-intelview-smoke` | T3 |
+| `master switch off under the Lock: "Off, but rules still in place" ...` | `fs-intelview-smoke` | T4: the user's own switch is never "changed outside StockFW", and the summary says the rules still block |
+| `cli words: Stop and Start's blocklist error in fs-cli-cmds.c names the platform's firewall`, `cli words: the root hint in fs-cli-cmds.c is the platform's`, `cli words: fs-cli.h names Windows Firewall ...` | `tests/test-core.sh` | T5: read from the source (CR stripped), since the CLI is built on Linux only |
+
+`fs-intel-test` runs the engine checks first among its engine tests:
+an older check that calls Start directly would otherwise hang, not
+fail, on the same bug.
+
+Teeth (each injected into the real file, the named check seen failing,
+the file restored with `cp` and proved with `cmp`):
+
+| injected bug | check that fails |
+|---|---|
+| `engine_held` answers FALSE (the Linux branch; the reviewer's Windows bug made the Windows branch do the same) | `engine: a Start (fs_intel_resume) returns within 30 s`, and the run stops with exit 1 in about 30 s |
+| `fs_intel_applied_has` never finds the id (the Linux branch) | `engine: after an apply the list is applied`, `engine: a Start after a Stop returns and the list is applied again` |
+| the apply does not set `not_in_force` | `windows states: ... and the outcome carries why` |
+| the page's Apply ignores `not_in_force` | `windows: Apply with the firewall off for the profile ...` |
+| the tray adds the summary whatever the firewall's state | `tray: after Stop, before the next read, ...` |
+| the summary ignores lists not applied | `held under the Lock: the summary names the list ...` |
+| differs back to "changed outside StockFW" in the summary and the title | `master switch off under the Lock: ...` |
+| `fs-cli-cmds.c` says "the kernel does not hold them" again | `cli words: Stop and Start's blocklist error ...` |
+
+Not covered:
+
+- The engine checks run the G_OS_WIN32 branches only on the CI's
+  Windows runner; here they are compiled and linked with mingw and not
+  run, so their teeth against the Windows branches themselves (the
+  reviewer's two injections) were not seen failing.
+- `fs_intel_update` under the engine lock on Windows (it needs the
+  downloader on Windows); the Linux run covers the lock's use there.
+- The Status page's Stop and Start worker (`intel_job_done` reading the
+  state again, the not-in-force dialog after Start) runs on the real
+  backend and is built, not run; the smoke checks what it calls.

@@ -24,6 +24,7 @@
 #include "core/fs-netparse.h"
 #include "core/fs-i18n.h"
 #include "core/fs-script.h"
+#include "core/fs-intel.h"
 #include "core/fs-intelset.h"
 #include "core/fs-nftset.h"
 
@@ -775,8 +776,9 @@ linux_stop (GError **error)
 	/* The threat-intel table is not touched here either: the policy
 	 * apply, reload and clear all come through here, and a policy
 	 * change must never drop the blocklists or their counters [N6].
-	 * Only the user's Stop removes them, through the engine
-	 * (fs_intel_suspend after this). */
+	 * Only the user's Stop removes them: the CLI's `stop' and the
+	 * status view's Stop call fs_intel_suspend after this slot, and
+	 * Start calls fs_intel_resume after `start'. */
 	teardown_filter (&FAMILY4);
 	teardown_nat (&FAMILY4);
 
@@ -1102,14 +1104,24 @@ intel_ready (GError **error)
 }
 
 /* [ intel_read_live ]
- * The table in the kernel now: `nft -j list tables', which names the
- * tables and their comments and never lists an element.  UNKNOWN, with
- * error, when it cannot be read -- never ABSENT: a listing nobody could
- * read says nothing about the kernel.  *digest (caller frees) is set
- * only for PRESENT, and may still be NULL then. */
+ * The table in the kernel now.  First `nft -j list chains inet': the
+ * script puts the digest on every chain, and listing chains never
+ * loads a set element (milliseconds; `nft -j list tables' loads them
+ * all, about 2 s at 240k intervals, against a 10 s timeout).  Any
+ * other answer is read again from `nft -j list tables': a table whose
+ * chains carry no common digest (an older StockFW's, or changed by
+ * hand) by its own comment, and no chain of ours at all because a
+ * table without chains still is a table -- that listing is cheap when
+ * there is no table, so the common "not loaded" case stays fast.
+ * UNKNOWN, with error, when it cannot be read -- never
+ * ABSENT: a listing nobody could read says nothing about the kernel.
+ * *digest (caller frees) is set only for PRESENT, and may still be
+ * NULL then. */
 static FsIntelLive
 intel_read_live (gchar **digest, GError **error)
 {
+	static const gchar *const chains[] = { "-j", "list", "chains", "inet",
+	                                       NULL };
 	static const gchar *const args[] = { "-j", "list", "tables", NULL };
 	FsIntelLive live;
 	gchar *json;
@@ -1117,6 +1129,16 @@ intel_read_live (gchar **digest, GError **error)
 	*digest = NULL;
 	if (!intel_ready (error))
 		return FS_INTEL_LIVE_UNKNOWN;
+
+	json = fs_nft_capture (chains, intel_timeout (INTEL_LIST_TIMEOUT_MS),
+	                       error);
+	if (json == NULL)
+		return FS_INTEL_LIVE_UNKNOWN;
+	live = fs_intelset_nft_parse_live_chains (json, digest);
+	g_free (json);
+	if (live == FS_INTEL_LIVE_PRESENT && *digest != NULL)
+		return live;
+	g_clear_pointer (digest, g_free);
 
 	json = fs_nft_capture (args, intel_timeout (INTEL_LIST_TIMEOUT_MS),
 	                       error);
@@ -1173,14 +1195,21 @@ intel_in_force (FsIntelLive live, const gchar *have, const GError *why)
 /* [ intel_settle ]
  * The shared end of an apply and a clear: nft has run (`ran', with
  * run_error when it did not end well) and the kernel was read back
- * (`live', `have', read_error).  TRUE when the kernel holds what was
+ * (`live', `have', read_error); `had' is the digest live before nft
+ * ran (NULL: none, or not read).  TRUE when the kernel holds what was
  * asked for -- `want' as the digest, or no table when want is NULL --
  * whatever nft said; otherwise FALSE with an error that says what went
- * wrong and what is in force instead. */
+ * wrong and what is in force instead.
+ *
+ * One exception: nft failed and the kernel holds `want' because it held
+ * it before.  That is exactly what a transaction the kernel refused
+ * leaves behind when the rule set did not change (the hourly re-apply),
+ * so it is no proof the table was replaced: FALSE, saying the same
+ * lists are still in force, never a success nobody saw. */
 static gboolean
-intel_settle (const gchar *what, const gchar *want, gboolean ran,
-              const GError *run_error, FsIntelLive live, const gchar *have,
-              const GError *read_error, GError **error)
+intel_settle (const gchar *what, const gchar *want, const gchar *had,
+              gboolean ran, const GError *run_error, FsIntelLive live,
+              const gchar *have, const GError *read_error, GError **error)
 {
 	const gchar *said = run_error != NULL ? run_error->message
 	                                      : "nft failed without saying why";
@@ -1189,9 +1218,21 @@ intel_settle (const gchar *what, const gchar *want, gboolean ran,
 	if (want == NULL ? live == FS_INTEL_LIVE_ABSENT
 	                 : live == FS_INTEL_LIVE_PRESENT &&
 	                   g_strcmp0 (have, want) == 0) {
-		if (!ran)
-			g_debug ("threat intel: the %s took effect although nft "
-			         "reported: %s", what, said);
+		if (ran)
+			return TRUE;
+		if (want != NULL && g_strcmp0 (had, want) == 0) {
+			g_set_error (error,
+			             run_error != NULL ? run_error->domain
+			                               : G_IO_ERROR,
+			             run_error != NULL ? run_error->code
+			                               : G_IO_ERROR_FAILED,
+			             "%s%s The same blocklists (fingerprint %s) "
+			             "were already loaded and are still in force.",
+			             said, full_stop (said), want);
+			return FALSE;
+		}
+		g_debug ("threat intel: the %s took effect although nft "
+		         "reported: %s", what, said);
 		return TRUE;
 	}
 
@@ -1240,7 +1281,7 @@ static gboolean
 linux_intel_apply (const FsIntelRuleset *ruleset, GError **error)
 {
 	GError *run_error = NULL, *read_error = NULL;
-	gchar *script, *want = NULL, *have = NULL;
+	gchar *script, *want = NULL, *have = NULL, *had = NULL;
 	FsIntelLive live;
 	gboolean ran, ok;
 
@@ -1265,6 +1306,12 @@ linux_intel_apply (const FsIntelRuleset *ruleset, GError **error)
 	if (ruleset->sets->len > 0)
 		want = fs_intel_ruleset_digest (ruleset);
 
+	/* What was live before: if nft fails and the same digest is live
+	 * afterwards, it may never have been replaced (intel_settle).  A
+	 * listing, never the elements. */
+	if (intel_read_live (&had, NULL) != FS_INTEL_LIVE_PRESENT)
+		g_clear_pointer (&had, g_free);
+
 	/* One nft call, one transaction: the script creates the table if
 	 * it is missing, deletes it and builds the new one, so the old
 	 * lists stay in force unless the new ones load whole.  Deleting
@@ -1272,20 +1319,22 @@ linux_intel_apply (const FsIntelRuleset *ruleset, GError **error)
 	 * any blocklist whenever the new ones are refused.  A re-apply of
 	 * the same digest replaces the table too: it repairs a table
 	 * edited behind StockFW's back, and it resets the counters, which
-	 * the engine carries over just before this call -- skipping it
-	 * would make the engine count the same packets again next time. */
+	 * the engine carries over once it sees the table was replaced (a
+	 * counter lower than before) -- skipping it would make the engine
+	 * count the same packets again next time. */
 	ran = fs_nft_run_script_full (script, FALSE,
 	                              intel_timeout (FS_NFT_TIMEOUT_MS),
 	                              &run_error);
 	g_free (script);
 
 	live = intel_read_live (&have, &read_error);
-	ok = intel_settle ("blocklists", want, ran, run_error, live, have,
-	                   read_error, error);
+	ok = intel_settle ("blocklists", want, had, ran, run_error, live,
+	                   have, read_error, error);
 
 	g_clear_error (&run_error);
 	g_clear_error (&read_error);
 	g_free (have);
+	g_free (had);
 	g_free (want);
 	return ok;
 }
@@ -1311,7 +1360,7 @@ linux_intel_clear (GError **error)
 	g_free (script);
 
 	live = intel_read_live (&have, &read_error);
-	ok = intel_settle ("removal", NULL, ran, run_error, live, have,
+	ok = intel_settle ("removal", NULL, NULL, ran, run_error, live, have,
 	                   read_error, error);
 
 	g_clear_error (&run_error);
@@ -1358,18 +1407,32 @@ linux_intel_counters (void)
 	return counters;
 }
 
+/* Why this thread's last linux_intel_live was UNKNOWN. */
+static GPrivate live_error = G_PRIVATE_INIT (g_free);
+
 /* [ linux_intel_live ] -- see FsBackend.intel_live. */
 static FsIntelLive
 linux_intel_live (gchar **digest)
 {
 	gchar *have = NULL;
-	FsIntelLive live = intel_read_live (&have, NULL);
+	GError *error = NULL;
+	FsIntelLive live = intel_read_live (&have, &error);
 
+	g_private_replace (&live_error, live == FS_INTEL_LIVE_UNKNOWN &&
+	                   error != NULL ? g_strdup (error->message) : NULL);
+	g_clear_error (&error);
 	if (digest != NULL)
 		*digest = have;
 	else
 		g_free (have);
 	return live;
+}
+
+/* [ linux_intel_live_error ] -- see FsBackend.intel_live_error. */
+static gchar *
+linux_intel_live_error (void)
+{
+	return g_strdup (g_private_get (&live_error));
 }
 
 static GList *
@@ -1763,8 +1826,30 @@ static void
 deliver_log_line (const gchar *line)
 {
 	FsHit hit = { 0 };
+	gchar *intel_id = NULL;
 
-	if (*line == '\0' || !fs_netparse_log_line (line, &hit, NULL))
+	if (*line == '\0')
+		return;
+
+	/* A threat-intel block (design 7): shown only when the id is a set
+	 * of the rule set StockFW applied, so a stale or invented
+	 * "STOCKFW-TI" line is never attributed to a list [S17.3]. */
+	if (fs_netparse_intel_line (line, &hit, NULL, &intel_id)) {
+		if (!fs_intel_applied_has (intel_id)) {
+			g_free (intel_id);
+			fs_netparse_clear_hit (&hit);
+			return;
+		}
+		fs_netparse_name_blocked (&hit);
+		hit.rule = fs_intel_rule_text (intel_id);
+		g_free (intel_id);
+		if (log_callback != NULL)
+			log_callback (&hit, log_user_data);
+		fs_netparse_clear_hit (&hit);
+		return;
+	}
+
+	if (!fs_netparse_log_line (line, &hit, NULL))
 		return;
 
 	/* DROP/REJECT lines are blocked packets; since 1.0.7 the policy's
@@ -2224,7 +2309,8 @@ static const FsBackend linux_backend = {
 	.intel_apply           = linux_intel_apply,
 	.intel_clear           = linux_intel_clear,
 	.intel_counters        = linux_intel_counters,
-	.intel_live            = linux_intel_live
+	.intel_live            = linux_intel_live,
+	.intel_live_error      = linux_intel_live_error
 };
 
 const FsBackend *

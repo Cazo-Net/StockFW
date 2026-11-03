@@ -74,6 +74,9 @@ typedef struct
 	const gchar *includes;       /* space-separated ids this list
 	                              * already contains, or NULL           */
 	gboolean     has_v6;         /* the list publishes IPv6 entries     */
+	const gchar *credit;         /* the attribution shown wherever the
+	                              * list is named (Spamhaus asks for
+	                              * credit in a product); never NULL    */
 } FsFeedInfo;
 
 /* The catalog, in display order (design section 4.1).  *n receives the
@@ -145,6 +148,14 @@ FsRangeSet *fs_feed_parse (const gchar *data, gsize len, FsFeedFormat fmt,
  * header, quoted fields.  content_date is always 0. */
 FsRangeSet *fs_feed_parse_csv (const gchar *data, gsize len,
                                FsFeedParseStats *stats, GError **error);
+
+/* IPv6 coverage of `set' in /64 networks, as the coverage cap counts
+ * it (FsFeedParseStats.cover6_64): an interval of d + 1 addresses
+ * counts ceil ((d + 1) / 2^64) = d.hi + 1, the counts are added, and
+ * the sum saturates.  The engine re-checks a stored list with this
+ * same count, so a list the parser accepted can always be loaded
+ * again. */
+guint64 fs_feed_cover6_64 (const FsRangeSet *set);
 
 /* The design's URL rule (4.4): https:// only, <= 2048 bytes, printable
  * ASCII with no spaces, no "user@" part, a non-empty host, not starting

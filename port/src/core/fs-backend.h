@@ -59,7 +59,22 @@ typedef enum
 {
 	FS_INTEL_LIVE_UNKNOWN = 0,   /* cannot tell (not root, no nft)       */
 	FS_INTEL_LIVE_ABSENT,
-	FS_INTEL_LIVE_PRESENT
+	FS_INTEL_LIVE_PRESENT,
+	/* Round 3 (Windows), where the rules are many and can be edited
+	 * one by one: */
+	FS_INTEL_LIVE_PARTIAL,       /* some of StockFW's rules are there,
+	                              * but not a whole, unaltered rule set
+	                              * (a rule removed, edited or added);
+	                              * never with a digest                 */
+	FS_INTEL_LIVE_INACTIVE       /* some of StockFW's rules are there
+	                              * (with the digest when they are
+	                              * whole), and the firewall does not
+	                              * enforce them on some network in
+	                              * use: intel_not_in_force says why.
+	                              * Rules that cannot be read at all
+	                              * (the firewall service is stopped)
+	                              * are UNKNOWN; intel_not_in_force
+	                              * still says why nothing is enforced */
 } FsIntelLive;
 
 /* Where this computer is connected and which firewall profiles are in
@@ -259,10 +274,18 @@ typedef struct
 	/* 1.0.7 threat intel: replace every blocklist/location rule this
 	 * application owns with `ruleset' (an empty ruleset removes them),
 	 * all or nothing where the platform allows it.  NULL slots mean the
-	 * platform cannot enforce threat intel; the UI says so. */
+	 * platform cannot enforce threat intel; the UI says so.  TRUE when
+	 * the kernel holds the new rules afterwards, whatever the tool
+	 * said -- except when the tool failed and the kernel holds the
+	 * very rules it held before: nothing then shows the change went
+	 * through, so FALSE, with an error that says the same rules are
+	 * still in force.  The engine reads the kernel back either way. */
 	gboolean (*intel_apply) (const FsIntelRuleset *ruleset,
 	                         GError **error);
-	/* Remove them all.  Not an error when there is nothing to remove. */
+	/* Remove them all.  Not an error when there is nothing to remove,
+	 * as long as the platform's tool can say so: without it (Linux
+	 * without nft) the slot fails with G_IO_ERROR_NOT_FOUND, and the
+	 * engine decides from its own record whether that matters. */
 	gboolean (*intel_clear) (GError **error);
 	/* Packets and bytes blocked per set id since the rules were loaded:
 	 * gchar* -> FsIntelCounter* (core/fs-intelset.h), both owned by the
@@ -275,6 +298,21 @@ typedef struct
 	 * a table removed behind StockFW's back (a reboot, `nft flush
 	 * ruleset') is reported, never assumed [S10]. */
 	FsIntelLive (*intel_live) (gchar **digest);
+	/* Why this thread's last intel_live answered UNKNOWN, as one
+	 * sentence the user can act on ("nft was not found on PATH.
+	 * Install the nftables package ..."); NULL when it did not or the
+	 * platform cannot say.  Caller frees.  Optional (NULL slot). */
+	gchar *(*intel_live_error) (void);
+	/* Round 3: why the platform's firewall does not enforce the rules
+	 * right now -- one caller-owned sentence ("Windows Firewall is off
+	 * for the Public profile, which the network in use has.") -- or
+	 * NULL when it does, or cannot tell.  When StockFW's rules are
+	 * there, intel_live answers INACTIVE exactly when this has
+	 * something to say; when they cannot be read, UNKNOWN, and this
+	 * still says why nothing is in force.  NULL slot: rules that
+	 * are loaded are in force (Linux: the nft table filters whether or
+	 * not the policy runs). */
+	gchar *(*intel_not_in_force) (void);
 
 	/* 1.0.7 What-If: one profile's default actions -- what Windows
 	 * Firewall does with traffic no rule matches.  *inbound_block /

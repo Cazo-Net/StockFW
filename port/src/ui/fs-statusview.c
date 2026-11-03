@@ -24,6 +24,7 @@
  *--------------------------------------------------------------------*/
 
 #include "ui/fs-statusview.h"
+#include "ui/fs-intelview.h"
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-icons.h"
@@ -32,6 +33,7 @@
 #include "core/fs-apply.h"
 #include "core/fs-backend.h"
 #include "core/fs-blocktally.h"
+#include "core/fs-intel.h"
 #include "core/fs-netplace.h"
 #include "core/fs-util.h"
 #include "core/fs-i18n.h"
@@ -469,6 +471,19 @@ update_overview (void)
 
 		if (current_state == FS_FW_LOCKED || policy_locked)
 			g_string_append (body, _(" Policy changes are locked."));
+
+		/* The blocklists, as the Threat Intel page last read them:
+		 * "not in force" with the platform's reason, never folded
+		 * into "protected" [S10]. */
+		{
+			gchar *intel = fs_intelview_summary ();
+
+			if (intel != NULL) {
+				g_string_append_c (body, ' ');
+				g_string_append (body, intel);
+				g_free (intel);
+			}
+		}
 	} else if (current_state == FS_FW_STOPPED) {
 		level = FS_VERDICT_BAD;
 		icon = FS_ICON_SHIELD_X;
@@ -1309,6 +1324,12 @@ on_conn_toggle (GtkButton *button, gpointer data)
 }
 
 void
+fs_statusview_intel_changed (void)
+{
+	update_overview ();
+}
+
+void
 fs_statusview_refresh (void)
 {
 	refresh_network ();
@@ -1343,6 +1364,131 @@ on_place_timeout (gpointer data)
 }
 
 /* --------------------------------------------------------------- actions */
+
+/* [ the blocklists follow Start and Stop ]
+ * Design 6.5: a Stop removes the threat-intel blocklists and records
+ * them as suspended, a Start applies them again through the gate,
+ * under the same hold as any apply.  The work (reading this computer's
+ * addresses, resolving the feeds' hosts, loading up to hundreds of
+ * thousands of addresses) runs off the main loop, one job at a time and
+ * in order, so a Stop followed at once by a Start never races; a
+ * failure is shown once it is known.  Nothing happens where no list
+ * was ever turned on. */
+typedef struct
+{
+	gboolean start;
+	gchar   *source;
+	gchar   *hold;
+	gchar   *error;   /* set by the worker; NULL when they followed */
+	gchar   *notes;
+	gchar   *not_in_force; /* applied, but the firewall does not
+	                        * enforce them (Windows: off for the
+	                        * profile in use): why */
+} IntelJob;
+
+static GThreadPool *intel_pool;
+
+static void
+intel_job_free (IntelJob *job)
+{
+	g_free (job->source);
+	g_free (job->hold);
+	g_free (job->error);
+	g_free (job->notes);
+	g_free (job->not_in_force);
+	g_free (job);
+}
+
+static gboolean
+intel_job_done (gpointer data)
+{
+	IntelJob *job = data;
+
+	if (job->error != NULL) {
+		gchar *text = job->notes != NULL
+		              ? g_strdup_printf ("%s\n\n%s", job->error,
+		                                 job->notes)
+		              : g_strdup (job->error);
+
+		fs_dialogs_error (NULL, job->start
+			? _("The firewall started, but its blocklists could not "
+			    "be applied")
+			: _("The firewall stopped, but its blocklists could not "
+			    "be removed"), text);
+		g_free (text);
+	} else if (job->not_in_force != NULL) {
+		/* Applied, and blocking nothing: said as plainly as a
+		 * failure, never left to read as "in force" [S10]. */
+		fs_dialogs_error (NULL, _("The firewall started, but its "
+		                          "blocklists are not in force"),
+		                  job->not_in_force);
+	}
+	intel_job_free (job);
+	/* The engine's state changed (Stop took the lists down, Start put
+	 * them back): the Overview and the tray read it again now, not at
+	 * the Threat Intel page's next tick (review T1). */
+	fs_intelview_refresh ();
+	return G_SOURCE_REMOVE;
+}
+
+static void
+intel_job_run (gpointer data, gpointer user_data)
+{
+	IntelJob *job = data;
+	const FsBackend *backend = fs_backend ();
+	GError *error = NULL;
+
+	(void) user_data;
+	if (job->start) {
+		FsIntelOutcome *o = fs_intel_resume (backend, job->source,
+		                                     job->hold, &error);
+
+		if (o != NULL && o->result == FS_APPLY_FAILED && error == NULL)
+#ifdef G_OS_WIN32
+			job->error = g_strdup (_("Windows Firewall does not hold "
+			                         "them."));
+#else
+			job->error = g_strdup (_("The kernel does not hold them."));
+#endif
+		if (o != NULL && o->result == FS_APPLY_OK &&
+		    o->not_in_force != NULL)
+			job->not_in_force = g_strdup (o->not_in_force);
+		if (o != NULL && o->notes != NULL && o->notes->len > 0) {
+			GString *notes = g_string_new (NULL);
+
+			for (guint i = 0; i < o->notes->len; i++)
+				g_string_append_printf (notes, "%s%s",
+				                        i ? "\n" : "",
+				                        (gchar *) o->notes->pdata[i]);
+			job->notes = g_string_free (notes, FALSE);
+		}
+		fs_intel_outcome_free (o);
+	} else {
+		fs_intel_suspend (backend, job->source, &error);
+	}
+	if (error != NULL && job->error == NULL)
+		job->error = g_strdup (error->message);
+	g_clear_error (&error);
+	g_idle_add (intel_job_done, job);
+}
+
+void
+fs_statusview_intel_follow (gboolean start, const gchar *source)
+{
+	IntelJob *job = g_new0 (IntelJob, 1);
+
+	job->start = start;
+	job->source = g_strdup (source);
+	/* The same hold as every apply the page makes: audit-only mode,
+	 * or the Overview's Lock.  A Start under the Lock leaves the lists
+	 * not loaded rather than load a change the Lock was holding. */
+	job->hold = g_strdup (fs_intelview_hold_reason ());
+	/* One thread at most: the jobs run in the order pushed. */
+	if (intel_pool == NULL)
+		intel_pool = g_thread_pool_new (intel_job_run, NULL, 1, FALSE,
+		                                NULL);
+	g_thread_pool_push (intel_pool, job, NULL);
+}
 
 /* [ fs_statusview_firewall_start ] -- see fs-statusview.h.  Through
  * the start gate, so the Start button, the tray's Resume and the start
@@ -1395,6 +1541,9 @@ fs_statusview_firewall_start (GtkWidget *parent, const gchar *source)
 	} else {
 		fs_statusview_set_state (backend->get_state != NULL
 		                         ? backend->get_state () : FS_FW_NONE);
+		/* The blocklists follow the Start (off the main loop). */
+		fs_statusview_intel_follow (TRUE, source != NULL ? source
+		                                                 : "window");
 
 		if (outcome->held && backend->start_applies_policy) {
 			gchar *why = g_strdup_printf (
@@ -1508,6 +1657,7 @@ fs_statusview_firewall_stop (GtkWidget *parent, const gchar *source)
 
 	fs_statusview_set_state (backend->get_state != NULL
 	                         ? backend->get_state () : FS_FW_NONE);
+	fs_statusview_intel_follow (FALSE, source != NULL ? source : "window");
 	return TRUE;
 }
 

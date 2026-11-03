@@ -38,6 +38,7 @@
 #include "ui/fs-copilot.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-helpwindow.h"
+#include "ui/fs-intelview.h"
 #include "ui/fs-statusview.h"
 #include "core/fs-autostart.h"
 #include "core/fs-backend.h"
@@ -158,6 +159,23 @@ update_tooltip (void)
 	else
 		text = g_strdup_printf (_("StockFW - %s, not watching events"),
 		                        state);
+	{
+		/* The blocklists, as the Threat Intel page last read them
+		 * (not in force: with the reason).  Only while the firewall
+		 * runs, as on the Overview: a Stop takes them down, and the
+		 * page's last read may still be from before it (review
+		 * T1). */
+		gchar *intel = firewall_on (tray_fw) ? fs_intelview_summary ()
+		                                     : NULL;
+
+		if (intel != NULL) {
+			gchar *both = g_strdup_printf ("%s\n%s", text, intel);
+
+			g_free (text);
+			text = both;
+			g_free (intel);
+		}
+	}
 
 	gtk_status_icon_set_tooltip_text (tray_icon, text);
 	g_free (text);

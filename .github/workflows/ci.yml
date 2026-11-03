@@ -164,6 +164,11 @@ jobs:
           cmake --build build
 
       - name: Every test suite (tests/full-suite.sh)
+        env:
+          # The runner is elevated and its firewall service runs, so the
+          # threat-intel test on the real Windows Firewall must run:
+          # with this set, every SKIP of fs-intel-windows-test fails.
+          STOCKFW_REQUIRE_WINDOWS_INTEL: "1"
         run: |
           cd port
           bash tests/full-suite.sh

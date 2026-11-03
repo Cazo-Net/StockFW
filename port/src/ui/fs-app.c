@@ -24,6 +24,7 @@
 #include "ui/fs-activityview.h"
 #include "ui/fs-copilot.h"
 #include "ui/fs-trustview.h"
+#include "ui/fs-intelview.h"
 #include "ui/fs-tray.h"
 #include "ui/fs-icons.h"
 #include "core/fs-apply.h"
@@ -494,6 +495,7 @@ build_sidebar (void)
 		{ FS_ICON_LIST,         N_("Events") },
 		{ FS_ICON_ACTIVITY,     N_("Activity") },
 		{ FS_ICON_SLIDERS,      N_("Policy") },
+		{ FS_ICON_SHIELD_X,     N_("Threat Intel") },
 		{ FS_ICON_CHAT,         N_("Copilot") },
 		{ FS_ICON_CHECK_CIRCLE, N_("Trust") },
 	};
@@ -664,6 +666,16 @@ app_trust_signature (const gchar *path, FsTrustSignature *sig,
 	return backend->trust_signature (path, sig, publisher);
 }
 
+/* What holds a blocklist apply besides audit-only mode: the Overview's
+ * Lock, as it holds the policy.  English, like fs_apply_hold_reason():
+ * the audit line records it verbatim. */
+static const gchar *
+app_intel_hold (void)
+{
+	return fs_statusview_policy_locked ()
+	       ? "the policy is locked on the Overview" : NULL;
+}
+
 /* [ fs_app_can_change_firewall ] -- see fs-app.h. */
 gboolean
 fs_app_can_change_firewall (void)
@@ -721,6 +733,10 @@ start_at_launch (const FsPolicy *due)
 		                                     fs_policyview_hold_reason (),
 		                                     &error);
 		installed = outcome->applied;
+		/* Started: the blocklists follow, through their own gate
+		 * (off the main loop; nothing where none was turned on). */
+		if (outcome->result == FS_APPLY_OK)
+			fs_statusview_intel_follow (TRUE, "start on open");
 		g_clear_error (&error);
 		fs_apply_outcome_free (outcome);
 	}
@@ -1098,6 +1114,11 @@ fs_app_activate (GtkApplication *app)
 	fs_settings_load_prefs (settings);
 	fs_backend_set_context (policy, settings);
 
+	/* Threat Intel (1.0.7): every blocklist apply -- the page's and
+	 * a Start's -- is held by the Overview's Lock as well as by
+	 * audit-only mode; set before start_at_launch() runs. */
+	fs_intelview_set_hold_func (app_intel_hold);
+
 	/* No start here: the policy above is still EMPTY.  The Policy page
 	 * below loads it from disk, Sentinel's restore then reconciles its
 	 * own rows, and only then does start_at_launch() run.  Starting
@@ -1106,6 +1127,9 @@ fs_app_activate (GtkApplication *app)
 	          _("The rules StockFW enforces, and which addresses each "
 	            "one covers."),
 	          fs_policyview_page (policy), FALSE);
+
+	/* Threat Intel (1.0.7): the blocklists. */
+	add_page (_("Threat Intel"), NULL, fs_intelview_page (), FALSE);
 
 	/* Smart Firewall Copilot tab */
 	copilot = fs_copilot_new ();
