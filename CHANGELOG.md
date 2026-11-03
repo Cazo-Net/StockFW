@@ -15,7 +15,6 @@ into `/usr/local/share/doc/stockfw/`.
 
 ### Command line (stockfw)
 
-<!-- WP-A -->
 - **Options are read the way you meant them.** The word after an option
   that takes a value is that value: `--comment -h` saves the comment
   `-h`. Everything after `--` is a plain word. An option a command does
@@ -36,7 +35,6 @@ into `/usr/local/share/doc/stockfw/`.
   bidi controls are printed as `\xNN` or `\uNNNN`, never raw.
 - `stockfw version` prints one line: `stockfw 1.0.7 · Linux (nftables)`.
   `help help`, `help version` and `help intel geo` work.
-<!-- WP-B -->
 - **`apply` after `stop` starts the firewall again.** Before, it compared
   the policy with the last apply, found no change and left the firewall
   stopped. Now a stopped (or unreadable) firewall gets the whole policy,
@@ -64,7 +62,6 @@ into `/usr/local/share/doc/stockfw/`.
 - `simulate --applied` asks the applied policy, not the saved one.
   `copilot health --severity info|warning|critical` sets the level that
   gives exit 7.
-<!-- WP-C -->
 - **`stockfw status` says whether what you saved is live**: "12 rules,
   live" or "1 change not applied". New lines show the last apply, start
   or stop, the packets blocked today and the last one, and whether
@@ -83,7 +80,6 @@ into `/usr/local/share/doc/stockfw/`.
   blocks.
 - `--since` and `--until` take an ISO time without seconds, such as
   `2026-11-02T23:30Z`.
-<!-- WP-D -->
 - **`events` triage.** `--summary` counts the events of a window (the
   last 24 hours by default) per source and per port, with a bar per
   hour; `--by` and `--top` choose the tables. `--wide` adds the devices,
@@ -125,9 +121,18 @@ into `/usr/local/share/doc/stockfw/`.
   turns it off, and it is never shown with `--json`, `--csv`, `-q`,
   `TERM=dumb` or in a pipe, so `--json` output is still one event per
   line and nothing else.
-<!-- WP-F -->
-<!-- WP-E -->
-
+- **`man stockfw`, and completion for bash and zsh.** The manual page
+  lists every command and option, the exit codes, the environment
+  variables and the files. `stockfw` writes it itself from the same
+  tables its parser reads, so it cannot fall behind. Completion asks
+  `stockfw` too, and offers commands, options, values such as the
+  `--by` keys, and your own rule references
+  (`policy remove inbound-allow-service:2`). The Linux installer puts
+  all three in `/usr/local/share` and the uninstaller removes them.
+- **A build of the command line alone.** `cmake -DFS_BUILD_GUI=OFF`
+  builds `stockfw` and its manual page without GTK, and does not look
+  for GTK at all. The default still builds the desktop app too. CI
+  checks that `stockfw` needs no GTK, GDK, Pango or cairo library.
 
 ### Fixed
 

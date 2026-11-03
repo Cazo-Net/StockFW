@@ -5,8 +5,9 @@
 #
 # What it proves: the boot unit is installed with ExecStart pointing at
 # the installed `stockfw', and enabled (the multi-user.target.wants
-# link); the uninstaller disables and removes it, and removes the
-# binaries.  Needs root and unshare; SKIP otherwise.
+# link); the manual page and the bash and zsh completion are installed;
+# the uninstaller disables and removes the unit, and removes the
+# binaries, the page and the completion.  Needs root and unshare; SKIP otherwise.
 
 set -u
 
@@ -57,6 +58,10 @@ mkdir -p "$STAGE/cli"
 cp -a "$PORT/installer/linux/." "$STAGE/"
 install -m755 "$BUILD/StockFW" "$STAGE/StockFW"
 install -m755 "$BUILD/stockfw" "$STAGE/cli/stockfw"
+# The manual page and completion, as build_installer_linux.sh stages them.
+"$BUILD/stockfw" __man > "$STAGE/cli/stockfw.1"
+install -m644 "$PORT/contrib/completion/stockfw.bash" "$STAGE/cli/stockfw.bash"
+install -m644 "$PORT/contrib/completion/_stockfw" "$STAGE/cli/_stockfw"
 
 PREFIX="$SCRATCH/prefix"
 UNIT=/etc/systemd/system/stockfw.service
@@ -69,6 +74,11 @@ check "the boot unit is installed" [ -f "$UNIT" ]
 check "...running the installed stockfw" grep -qx "ExecStart=$PREFIX/bin/stockfw start" "$UNIT"
 check "...with no ExecStop" bash -c "! grep -q '^ExecStop' '$UNIT'"
 check "...and enabled for boot" [ -L "$WANTS" ]
+EXTRAS="$PREFIX/share/man/man1/stockfw.1 $PREFIX/share/bash-completion/completions/stockfw $PREFIX/share/zsh/site-functions/_stockfw"
+for f in $EXTRAS; do
+	check "installed: ${f#"$PREFIX/"}" [ -s "$f" ]
+done
+check "...the manual page is the tool's own" cmp -s "$STAGE/cli/stockfw.1" "$PREFIX/share/man/man1/stockfw.1"
 grep -q "puts the rules back before the network comes up" "$SCRATCH/install.log" &&
 	ok "the summary says what the service does" ||
 	fail "the summary says what the service does"
@@ -80,6 +90,11 @@ check "stockfw-uninstall succeeds (rc=$rc: $(tail -1 "$SCRATCH/uninstall.log"))"
 check "the boot unit is disabled" [ ! -e "$WANTS" -a ! -L "$WANTS" ]
 check "...and removed" [ ! -e "$UNIT" ]
 check "the binaries are gone" [ ! -e "$PREFIX/bin/StockFW" -a ! -e "$PREFIX/bin/stockfw" ]
+for f in $EXTRAS; do
+	check "removed: ${f#"$PREFIX/"}" [ ! -e "$f" ]
+done
+check "...and the completion folders it made" \
+	[ ! -e "$PREFIX/share/bash-completion" -a ! -e "$PREFIX/share/zsh" ]
 
 # The tools the install summary must account for (1.0.7): nft and curl
 # are only warnings, but the user is told either way.

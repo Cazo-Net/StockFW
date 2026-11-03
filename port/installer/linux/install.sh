@@ -187,6 +187,33 @@ if [ -f "$CLI" ]; then
     ok "$BINDIR/stockfw (command line and local dashboard)"
 fi
 
+# Its manual page and shell completion, staged beside it as
+# cli/stockfw.1, cli/stockfw.bash and cli/_stockfw; from a repo
+# checkout, the build's page and contrib/completion.  Optional, like
+# the tool: an older payload has none of them.
+MAN_SRC="$HERE/cli/stockfw.1"
+BASH_SRC="$HERE/cli/stockfw.bash"
+ZSH_SRC="$HERE/cli/_stockfw"
+if [ ! -f "$MAN_SRC" ] && [ -f "$(dirname "$CLI")/stockfw.1" ]; then
+    MAN_SRC="$(dirname "$CLI")/stockfw.1"
+fi
+if [ ! -f "$BASH_SRC" ] && [ -f "$HERE/../../contrib/completion/stockfw.bash" ]; then
+    BASH_SRC="$HERE/../../contrib/completion/stockfw.bash"
+    ZSH_SRC="$HERE/../../contrib/completion/_stockfw"
+fi
+if [ -x "$BINDIR/stockfw" ] && [ -f "$MAN_SRC" ]; then
+    install -Dm644 "$MAN_SRC" "$DATADIR/man/man1/stockfw.1"
+    ok "$DATADIR/man/man1/stockfw.1 (man stockfw)"
+fi
+if [ -x "$BINDIR/stockfw" ] && [ -f "$BASH_SRC" ]; then
+    install -Dm644 "$BASH_SRC" "$DATADIR/bash-completion/completions/stockfw"
+    ok "$DATADIR/bash-completion/completions/stockfw (bash completion)"
+fi
+if [ -x "$BINDIR/stockfw" ] && [ -f "$ZSH_SRC" ]; then
+    install -Dm644 "$ZSH_SRC" "$DATADIR/zsh/site-functions/_stockfw"
+    ok "$DATADIR/zsh/site-functions/_stockfw (zsh completion)"
+fi
+
 # The boot service: iptables rules live in the kernel only, so without
 # it every rule is gone after a reboot until someone starts StockFW
 # with sudo again.  It runs `stockfw start' before the network comes up
@@ -288,6 +315,13 @@ if [ -x "\$PREFIX/bin/StockFW" ]; then
 fi
 rm -f "\$PREFIX/bin/StockFW"
 rm -f "\$PREFIX/bin/stockfw"
+rm -f "\$PREFIX/share/man/man1/stockfw.1"
+rm -f "\$PREFIX/share/bash-completion/completions/stockfw"
+rm -f "\$PREFIX/share/zsh/site-functions/_stockfw"
+rmdir "\$PREFIX/share/bash-completion/completions" 2>/dev/null || true
+rmdir "\$PREFIX/share/bash-completion" 2>/dev/null || true
+rmdir "\$PREFIX/share/zsh/site-functions" 2>/dev/null || true
+rmdir "\$PREFIX/share/zsh" 2>/dev/null || true
 rm -f "\$PREFIX/share/applications/stockfw.desktop"
 rm -f "\$PREFIX/share/icons/hicolor/48x48/apps/stockfw.png"
 rm -f "\$PREFIX/share/icons/hicolor/128x128/apps/stockfw.png"
@@ -340,6 +374,7 @@ if [ -x "$BINDIR/stockfw" ]; then
     printf '\nFrom a terminal:\n'
     printf '    %-20s %s\n' "stockfw help" "(status, policy, simulate, events, ...)"
     printf '    %-20s %s\n' "stockfw dashboard" "(local web dashboard, 127.0.0.1 only)"
+    printf '    %-20s %s\n' "man stockfw" "(every command and option)"
 fi
 
 printf '\nAt boot:\n'

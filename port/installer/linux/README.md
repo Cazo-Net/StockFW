@@ -171,6 +171,38 @@ desktop app, from a terminal or a script:
 
 Every command takes `--json`.  `stockfw help <command>` has the details.
 
+Before you apply, and after:
+
+    stockfw check                          lines of the policy files that are not rules
+    stockfw policy diff                    what apply would add and remove
+    sudo /usr/local/bin/stockfw apply      make the saved policy live
+    stockfw audit -n 10                    the last applies, starts and stops
+    stockfw listening                      open ports, and who can reach them
+    stockfw events --summary --since 24h   who was blocked, on which ports
+
+`apply` refuses while `check` finds a problem.  Over SSH, `apply` and
+`start` check that the new policy still lets your session in; without
+a terminal they refuse unless you add `--yes`.  Hints that need root
+print the full path, as above, because `sudo` may not search
+`/usr/local/bin`.
+
+Exit codes: 0 done, 1 failed (or `check` found problems), 2 usage
+error, 3 needs root, 5 `simulate`: blocked, 6 `simulate`: depends,
+7 `copilot health`: findings.
+
+`man stockfw` lists every command and option.  The installer puts the
+manual page in `/usr/local/share/man/man1/stockfw.1`, and completion
+for bash in `/usr/local/share/bash-completion/completions/stockfw` and
+for zsh in `/usr/local/share/zsh/site-functions/_stockfw`.  Completion
+asks `stockfw` itself, so it offers your own rule references
+(`policy remove inbound-allow-service:2`).  If your shell does not
+load them (a distro without the `bash-completion` package, or a zsh
+`fpath` without `/usr/local/share/zsh/site-functions`), add one line
+to your shell's start-up file:
+
+    source /usr/local/share/bash-completion/completions/stockfw      # ~/.bashrc
+    fpath+=(/usr/local/share/zsh/site-functions); autoload -Uz compinit; compinit   # ~/.zshrc
+
 `stockfw dashboard` serves a read-only page on 127.0.0.1 only, behind a
 token that changes every run, and opens it in your browser (never as
 root: under `sudo` it prints the address instead).  The same `sudo`
@@ -198,8 +230,15 @@ first if you want the rules gone too.
 `tools/build-linux.sh` runs CMake (`cmake -S . -B build-linux
 -DCMAKE_BUILD_TYPE=Release`, then builds `StockFW` and `stockfw`);
 `CMakeLists.txt` is the one place that lists the sources, the libraries
-and the version. `cmake --install` puts only the two binaries in
-place; `install.sh` is the supported install.
+and the version. `cmake --install` puts the two binaries, the manual
+page and the completion files in place; `install.sh` is the supported
+install.
+
+A server with no display can build the command-line tool alone, with
+no GTK installed: `cmake -S . -B build-cli -G Ninja -DFS_BUILD_GUI=OFF`
+then `ninja -C build-cli` builds `stockfw` and its manual page, and no
+desktop app.  The default (`FS_BUILD_GUI=ON`) builds both and needs
+`libgtk-3-dev`.
 
 The packaging script:
 
@@ -213,7 +252,10 @@ The packaging script:
 - strips the binaries as it stages them;
 - requires a `CHANGELOG.md` section for the version;
 - checks that `install.sh`, `StockFW` and `cli/stockfw` are executable
-  inside the finished archive.
+  inside the finished archive;
+- stages the manual page (`cli/stockfw.1`, written by `stockfw __man`)
+  and the bash and zsh completion (`cli/stockfw.bash`, `cli/_stockfw`)
+  beside `cli/stockfw`.
 
 ## Requirements
 

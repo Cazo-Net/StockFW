@@ -151,6 +151,11 @@ built.
   dashboard on **127.0.0.1 only**, behind a token that changes every
   run, with the same graphs, live events, connections, the simulator
   and the policy — see [below](#command-line-and-dashboard-linux).
+  Since 1.0.7 (unreleased): `check`, `policy diff`, `audit`,
+  `listening`, `sentinel list` and `events --summary`, a guard against
+  locking yourself out over SSH, `man stockfw`, bash and zsh
+  completion, and a build of the command line alone with no GTK
+  (`-DFS_BUILD_GUI=OFF`).
 - **Threat-intel blocklists** *(Linux and Windows, 1.0.7, opt-in)* — block
   addresses that well-known public lists name as hijacked networks,
   botnet servers or attackers, plus your own lists, in the kernel

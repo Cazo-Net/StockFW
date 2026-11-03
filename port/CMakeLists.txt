@@ -24,8 +24,18 @@ endif()
 message(STATUS "StockFW platform backend: ${FS_PLATFORM}")
 
 # ------------------------------------------------------------------- deps
+# FS_BUILD_GUI=OFF builds fs-core and the command-line tool `stockfw'
+# only, and does not look for GTK at all: a server with no display
+# needs no GTK to build or run it.  ON (the default) also builds the
+# desktop app StockFW and its UI smoke tests.  CI builds both ways, and
+# checks that `stockfw' needs no GTK, GDK, Pango or cairo library.
+option(FS_BUILD_GUI "Build the desktop app (needs GTK 3)" ON)
+message(STATUS "StockFW desktop app (FS_BUILD_GUI): ${FS_BUILD_GUI}")
+
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0 glib-2.0 gio-2.0)
+if(FS_BUILD_GUI)
+  pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0 glib-2.0 gio-2.0)
+endif()
 pkg_check_modules(GETTEXT IMPORTED_TARGET glib-2.0)
 # The location database reader (core/fs-geodb.c, 1.0.7 threat intel
 # round 2): liblzma unpacks the download, libcrypto verifies IPFire's
@@ -76,14 +86,18 @@ add_library(fs-core STATIC
   src/core/fs-toolpath.c
 )
 target_include_directories(fs-core PUBLIC src resources)
-target_link_libraries(fs-core PUBLIC PkgConfig::GTK3 PkgConfig::GEODB)
+pkg_check_modules(GLIBONLY REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0)
+if(FS_BUILD_GUI)
+  target_link_libraries(fs-core PUBLIC PkgConfig::GTK3 PkgConfig::GEODB)
+else()
+  target_link_libraries(fs-core PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB)
+endif()
 # The engine names itself to feed servers ("StockFW/<version>").
 target_compile_definitions(fs-core PRIVATE FS_VERSION="${PROJECT_VERSION}")
 
 # The same sources linked against GLib/GIO only, for the CLI: fs-core
 # never includes GTK, and a server without a display should not need
 # libgtk installed to run `stockfw'.
-pkg_check_modules(GLIBONLY REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0)
 get_target_property(FS_CORE_SOURCES fs-core SOURCES)
 add_library(fs-core-nogui STATIC EXCLUDE_FROM_ALL ${FS_CORE_SOURCES})
 target_include_directories(fs-core-nogui PUBLIC src resources)
@@ -173,6 +187,7 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/ui/fs-licence-text.h.in"
                "${CMAKE_CURRENT_BINARY_DIR}/fs-licence-text.h" @ONLY)
 
 # -------------------------------------------------------------------- app
+if(FS_BUILD_GUI)
 add_executable(StockFW
   src/main.c
   src/ui/fs-app.c
@@ -247,6 +262,7 @@ if(WIN32)
 endif()
 
 install(TARGETS StockFW RUNTIME DESTINATION bin)
+endif() # FS_BUILD_GUI
 
 # -------------------------------------------------------------------- cli
 # `stockfw': the command-line front end and local dashboard.  Same
@@ -281,6 +297,7 @@ if(FS_PLATFORM STREQUAL "linux")
     src/cli/fs-cli-views.c
     src/cli/fs-cli-intel.c
     src/cli/fs-dashboard.c
+    src/cli/fs-cli-complete.c
   )
   add_executable(stockfw
     ${FS_CLI_SOURCES}
@@ -290,9 +307,30 @@ if(FS_PLATFORM STREQUAL "linux")
   target_link_libraries(stockfw PRIVATE fs-core-nogui PkgConfig::GIO)
   target_compile_definitions(stockfw PRIVATE FS_VERSION="${PROJECT_VERSION}")
   install(TARGETS stockfw RUNTIME DESTINATION bin)
+
+  # The manual page and shell completion (cli-plan.md WP-E).  The page
+  # is written by `stockfw __man' from the same command tables the
+  # parser reads, so it cannot drift from the options; the completion
+  # scripts are thin wrappers that ask `stockfw __complete'.
+  add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stockfw.1"
+    COMMAND stockfw __man > "${CMAKE_CURRENT_BINARY_DIR}/stockfw.1"
+    DEPENDS stockfw
+    COMMENT "Writing the manual page stockfw.1"
+    VERBATIM)
+  add_custom_target(stockfw-man ALL
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/stockfw.1")
+  include(GNUInstallDirs)
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/stockfw.1"
+          DESTINATION "${CMAKE_INSTALL_MANDIR}/man1")
+  install(FILES contrib/completion/stockfw.bash
+          DESTINATION "${CMAKE_INSTALL_DATADIR}/bash-completion/completions"
+          RENAME stockfw)
+  install(FILES contrib/completion/_stockfw
+          DESTINATION "${CMAKE_INSTALL_DATADIR}/zsh/site-functions")
 endif()
 
 # ------------------------------------------------------------------ smoke
+if(FS_BUILD_GUI)
 # UI smoke tests.  EXCLUDE_FROM_ALL so `ninja` alone never builds them
 # and nothing test-only can end up in StockFW.exe or the installer.
 #
@@ -516,6 +554,7 @@ add_executable(fs-theme-smoke EXCLUDE_FROM_ALL
 )
 target_include_directories(fs-theme-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-theme-smoke PRIVATE PkgConfig::GTK3)
+endif() # FS_BUILD_GUI
 # ------------------------------------------------------- 1.0.7 core tests
 # Threat intel: address ranges, the blocklist-to-nftables script and the
 # engine (fs-intel.c) through a fake backend and downloader
@@ -557,6 +596,7 @@ target_link_libraries(fs-whatif-test PRIVATE fs-core-nogui)
 # (test-health.c; test-core.sh runs it too).  GLib only.
 add_executable(fs-health-test EXCLUDE_FROM_ALL tests/test-health.c)
 target_link_libraries(fs-health-test PRIVATE fs-core-nogui)
+if(FS_BUILD_GUI)
 # The Overview against a fake backend that answers the way Windows does
 # (profiles, the profile in use, the network's name), so the Windows
 # half of the page is exercised on any platform.  The test supplies
@@ -631,6 +671,7 @@ target_compile_definitions(fs-session-smoke PRIVATE
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-session-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+endif() # FS_BUILD_GUI
 
 # ---------------------------------------- 1.0.7 threat intel, round 1
 # Design: docs/design/1.0.7-threat-intel-design.md (revision 2).  Every target
@@ -735,6 +776,7 @@ endif()
 # Its own fs-geodb.c, compiled with FS_GEODB_TESTING, so the countries
 # and networks card can be driven with the test databases in
 # tests/geodb (signed with tests/geodb/k1.pub's key).
+if(FS_BUILD_GUI)
 add_executable(fs-intelview-smoke EXCLUDE_FROM_ALL
   tests/ui-intelview-smoke.c
   src/core/fs-geodb.c
@@ -751,6 +793,7 @@ target_compile_definitions(fs-intelview-smoke PRIVATE
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-intelview-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+endif() # FS_BUILD_GUI
 
 # ---------------------------------------- 1.0.7 threat intel, round 2
 # The location database reader (tests/test-geodb.c; the README says how

@@ -1824,6 +1824,159 @@ fi
 # === end WP-F ===
 
 # === WP-E ===
+# Completion and the manual page (cli-plan.md WP-E): both come from the
+# command tables, so they are checked against the tables in the source
+# (read here with python, not through the binary), and the completion
+# scripts are run the way bash runs them.
+E="$TMP/wpe"
+mkdir -p "$E"
+# Every command and its options, from the tables in src/cli/*.c.
+py '
+import glob, re
+cmds = {}
+for path in sorted(glob.glob("src/cli/*.c")):
+    src = open(path, encoding="utf-8").read()
+    tables = {}
+    for m in re.finditer(r"static const FsCliOption (\w+)\[\] = \{(.*?)\n\};", src, re.S):
+        tables[m.group(1)] = re.findall(r"\{\s*\"(-[^\"]*)\",", m.group(2))
+    for m in re.finditer(r"\n\t\{ \"([a-z][a-z-]*)\", fs_cli_cmd_\w+,", src):
+        rest = src[m.end():]
+        o = re.search(r"\n\t  (\w+), (?:NULL|\"\w+\") \},", rest)
+        cmds[m.group(1)] = tables.get(o.group(1), []) if o else None
+with open("'"$E"'/tables", "w") as f:
+    for c, opts in cmds.items():
+        f.write(c + " " + " ".join(opts if opts is not None else ["?"]) + "\n")
+'
+check "the command tables were read from the source (at least 15 commands)" \
+  test "$(wc -l < "$E/tables")" -ge 15
+check "  ...and every command has its option table" \
+  bash -c "! grep -q ' ?\$' '$E/tables'"
+"$S" __complete '' > "$E/cmds" 2> "$E/err"
+missing=""
+while read -r c _; do
+  grep -qx -- "$c" "$E/cmds" || missing="$missing $c"
+done < "$E/tables"
+check "__complete '' lists every command of the tables (missing:$missing)" \
+  test -z "$missing"
+check "  ...and help and version, and nothing on stderr" \
+  bash -c "grep -qx help '$E/cmds' && grep -qx version '$E/cmds' && [ ! -s '$E/err' ]"
+check "  ...but not the hidden __complete and __man" \
+  bash -c "! grep -q '^__' '$E/cmds' && ! '$S' help | grep -q '__'"
+missing=""
+while read -r c opts; do
+  "$S" __complete "$c" - > "$E/opts" 2>/dev/null
+  for o in $opts; do
+    grep -qx -- "$o" "$E/opts" || missing="$missing $c:$o"
+  done
+done < "$E/tables"
+check "__complete CMD - offers every option of CMD's table (missing:$missing)" \
+  test -z "$missing"
+check "  ...and the global flags" \
+  bash -c "'$S' __complete events - | grep -qx -- --json"
+check "__complete policy list - offers --grep but not add's --comment" \
+  bash -c "'$S' __complete policy list - > '$E/o' && grep -qx -- --grep '$E/o' && ! grep -qx -- --comment '$E/o'"
+check "__complete events --by '' gives the summary keys" \
+  bash -c "[ \"\$('$S' __complete events --by '' | tr '\n' ' ')\" = 'src dst port service dir rule hour ' ]"
+check "__complete connections --by=p gives --by=program and --by=port" \
+  bash -c "[ \"\$('$S' __complete connections --by=p | tr '\n' ' ')\" = '--by=program --by=port ' ]"
+check "__complete events --proto '' gives the four protocols" \
+  bash -c "[ \"\$('$S' __complete events --proto '' | tr '\n' ' ')\" = 'tcp udp icmp icmpv6 ' ]"
+check "a word after -- is a plain word, not an option to complete" \
+  bash -c "[ -z \"\$('$S' __complete policy -- -)\" ]"
+check "--json anywhere is ignored by __complete" \
+  bash -c "[ \"\$('$S' __complete --json copilot '')\" = health ]"
+# References from the saved policy.
+ER="$E/rules"
+check "two rules saved in a scratch policy" \
+  bash -c "STOCKFW_RULES_DIR='$ER' '$S' policy add inbound-allow-service SSH 22 192.168.1.0/24 > /dev/null 2>&1 &&
+           STOCKFW_RULES_DIR='$ER' '$S' policy add outbound-deny-to 198.51.100.6 > /dev/null 2>&1"
+check "__complete policy remove '' prints exactly their 2 references" \
+  bash -c "[ \"\$(STOCKFW_RULES_DIR='$ER' '$S' __complete policy remove '' | tr '\n' ' ')\" = 'inbound-allow-service:1 outbound-deny-to:1 ' ]"
+STOCKFW_RULES_DIR="$ER" "$S" policy add outbound-deny-to 198.51.100.7 > /dev/null 2>&1
+check "  ...and 3 once a third rule is saved" \
+  bash -c "[ \"\$(STOCKFW_RULES_DIR='$ER' '$S' __complete policy show '' | wc -l)\" -eq 3 ]"
+check "__complete intel '' offers geo, and intel geo add '' country and asn" \
+  bash -c "'$S' __complete intel '' | grep -qx geo &&
+           [ \"\$('$S' __complete intel geo add '' | tr '\n' ' ')\" = 'country asn ' ]"
+# The bash script, run the way bash runs it: COMP_LINE and COMP_POINT
+# set, the function called, COMPREPLY read.
+BC="contrib/completion/stockfw.bash"
+check "bash -n accepts the bash completion" bash -n "$BC"
+cat > "$E/comp.sh" <<'EOS'
+# comp.sh SCRIPT LINE: what bash offers for LINE, one per line
+source "$1"
+COMP_LINE="$2"
+COMP_POINT=${#COMP_LINE}
+COMP_WORDBREAKS=$' \t\n"\'><=;|&(:'
+_stockfw
+printf '%s\n' "${COMPREPLY[@]}"
+EOS
+comp () { STOCKFW_RULES_DIR="$ER" bash "$E/comp.sh" "$BC" "$1"; }
+out="$(comp "$S sta")"
+check "bash: 'stockfw sta' completes to status and start ($(echo $out))" \
+  test "$(echo $out)" = "status start"
+out="$(comp "$S policy remove outbound-deny-to:")"
+check "bash: a reference after its colon completes to the number alone ($(echo $out))" \
+  test "$(echo $out)" = "1 2"
+out="$(comp "$S events --by=s")"
+check "bash: --by=s completes to the value alone ($(echo $out))" \
+  test "$(echo $out)" = "src service"
+if command -v zsh > /dev/null; then
+  check "zsh -n accepts the zsh completion" zsh -n contrib/completion/_stockfw
+else
+  echo "skip: zsh is not installed; zsh -n is not run"
+fi
+# The manual page.
+"$S" __man > "$E/stockfw.1" 2> "$E/err"
+missing=""
+while read -r c _; do
+  up="$(printf '%s' "$c" | tr a-z A-Z)"
+  grep -qx ".SH \"STOCKFW $up\"" "$E/stockfw.1" || missing="$missing $c"
+done < "$E/tables"
+check "__man has a .SH section for every command (missing:$missing)" \
+  test -z "$missing"
+check "  ...and NAME, SYNOPSIS, EXIT STATUS, ENVIRONMENT, FILES and EXAMPLES" \
+  bash -c "for s in NAME SYNOPSIS '\"EXIT STATUS\"' ENVIRONMENT FILES EXAMPLES; do grep -qx \".SH \$s\" '$E/stockfw.1' || exit 1; done"
+check "  ...with the exit codes 0 1 2 3 5 6 7 and no 4" \
+  bash -c "[ \"\$(sed -n '/^\\.SH \"EXIT STATUS\"/,/^\\.SH ENV/p' '$E/stockfw.1' | grep -A1 '^\\.TP' | grep '^\\.B' | tr -d '.B \n')\" = 0123567 ]"
+check "  ...names every STOCKFW_ variable src/cli reads" \
+  bash -c "for v in \$(grep -oh 'getenv (\"STOCKFW_[A-Z_]*' src/cli/*.c | sed 's/.*\"//' | sort -u); do grep -q \"^\\.B \$v\\\$\" '$E/stockfw.1' || { echo \"missing \$v\"; exit 1; }; done"
+check "  ...is the page the build wrote" cmp -s "$E/stockfw.1" "$BUILD/stockfw.1"
+if command -v groff > /dev/null; then
+  groff -man -Tutf8 -ww "$E/stockfw.1" > /dev/null 2> "$E/groff.err"
+  check "groff -man -Tutf8 -ww reads it without a warning" \
+    bash -c "[ ! -s '$E/groff.err' ] || { cat '$E/groff.err'; false; }"
+  # A dash must come out as the ASCII minus, or an option copied from
+  # the page (--dry-run) is not the option the parser knows.
+  groff -man -Tutf8 "$E/stockfw.1" 2> /dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$E/page.txt"
+  check "  ...and options print with ASCII dashes, ready to copy" \
+    bash -c "grep -q -- 'stockfw apply \\[--dry-run' '$E/page.txt' && ! grep -q \$'\\u2010' '$E/page.txt'"
+else
+  echo "skip: groff is not installed; the page is not formatted"
+fi
+# CMake's install rules put the page and the completion where man, bash
+# and zsh look.
+if cmake --install "$BUILD" --prefix "$E/inst" > "$E/install.log" 2>&1; then
+  check "cmake --install puts in share/man/man1/stockfw.1, bash and zsh completion" \
+    bash -c "cmp -s '$E/inst/share/man/man1/stockfw.1' '$BUILD/stockfw.1' &&
+             cmp -s '$E/inst/share/bash-completion/completions/stockfw' contrib/completion/stockfw.bash &&
+             cmp -s '$E/inst/share/zsh/site-functions/_stockfw' contrib/completion/_stockfw"
+else
+  check "cmake --install into a scratch prefix ($(tail -1 "$E/install.log"))" false
+fi
+# The wording guard of test-core.sh, over what these commands print.
+{ cat "$E/stockfw.1" "$E/cmds"
+  while read -r c _; do "$S" __complete "$c" - ; "$S" __complete "$c" ''; done < "$E/tables"
+} > "$E/all-generated" 2>/dev/null
+check "no \"AI\" wording in the generated page or completions" \
+  bash -c "! grep -nE '\\bAI\\b|AI-' '$E/all-generated'"
+# No GTK in the command-line tool (master plan PR 1, adjustment 5);
+# tests/test-nogui-build.sh builds it with FS_BUILD_GUI=OFF and GTK
+# hidden from pkg-config.
+if command -v readelf > /dev/null; then
+  check "stockfw needs no GTK, GDK, Pango or cairo library" \
+    bash -c "! readelf -d '$S' | grep -Ei 'gtk|gdk|pango|cairo'"
+fi
 # === end WP-E ===
 
 echo ""

@@ -233,6 +233,14 @@ static const gchar *global_flags[] = {
 	"-V", "--version",
 };
 
+const gchar * const *
+fs_cli_global_flags (guint *n)
+{
+	if (n != NULL)
+		*n = G_N_ELEMENTS (global_flags);
+	return global_flags;
+}
+
 typedef enum { COLOR_AUTO, COLOR_ALWAYS, COLOR_NEVER } ColorMode;
 
 typedef struct
@@ -444,6 +452,13 @@ main (int argc, char *argv[])
 	gint status;
 
 	setlocale (LC_ALL, "");
+
+	/* Completion and the manual page (fs-cli-complete.c): hidden, made
+	 * from the same tables, and never parsed as a command line. */
+	if (argc > 1 && strcmp (argv[1], "__complete") == 0)
+		return fs_cli_complete_main (argc - 2, argv + 2);
+	if (argc > 1 && strcmp (argv[1], "__man") == 0)
+		return fs_cli_man_main (argc - 2, argv + 2);
 
 	fs_cli.user_argc = argc - 1;
 	fs_cli.user_argv = argv + 1;

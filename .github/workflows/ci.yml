@@ -71,6 +71,15 @@ jobs:
           cmake -S port -B port/build-linux -G Ninja
           ninja -C port/build-linux
 
+      - name: Command-line tool without GTK (FS_BUILD_GUI=OFF)
+        working-directory: port
+        run: |
+          # Configures with GTK hidden from pkg-config, builds fs-core
+          # and stockfw, and checks with readelf -d that stockfw needs
+          # no GTK, GDK, Pango or cairo library; the default (ON) must
+          # still refuse to configure without GTK.
+          bash tests/test-nogui-build.sh
+
       - name: Core, adversarial and command-line tests
         working-directory: port
         run: |

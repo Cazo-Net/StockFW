@@ -98,6 +98,20 @@ if [ -f "$BUILD_DIR/stockfw" ]; then
     fi
     stage_bin "$BUILD_DIR/stockfw" "$STAGE/cli/stockfw"
     echo "  ok: command-line tool staged (cli/stockfw), stripped"
+    # Its manual page, written by the tool itself from its command
+    # tables (the build's stockfw.1 is the same text), and the bash and
+    # zsh completion, which ask the tool for the words they offer.
+    "$BUILD_DIR/stockfw" __man > "$STAGE/cli/stockfw.1"
+    chmod 644 "$STAGE/cli/stockfw.1"
+    install -m644 "$PORT_DIR/contrib/completion/stockfw.bash" "$STAGE/cli/stockfw.bash"
+    install -m644 "$PORT_DIR/contrib/completion/_stockfw" "$STAGE/cli/_stockfw"
+    for f in stockfw.1 stockfw.bash _stockfw; do
+        if [ ! -s "$STAGE/cli/$f" ]; then
+            echo "ERROR: cli/$f missing or empty in the staged payload" >&2
+            exit 1
+        fi
+    done
+    echo "  ok: cli/stockfw.1 (manual page), cli/stockfw.bash and cli/_stockfw (completion)"
 else
     echo "ERROR: $BUILD_DIR/stockfw is missing -- build it first:" >&2
     echo "       cd port && bash tools/build-linux.sh" >&2
@@ -178,6 +192,14 @@ for exe in install.sh StockFW cli/stockfw; do
     fi
 done
 echo "  ok: install.sh, StockFW and cli/stockfw are executable in the archive"
+for f in cli/stockfw.1 cli/stockfw.bash cli/_stockfw; do
+    mode="$(tar -tvzf "$TARBALL" "$NAME/$f" | cut -c1-10)"
+    if [ "$mode" != "-rw-r--r--" ]; then
+        echo "ERROR: $f is $mode in the archive, not -rw-r--r--" >&2
+        exit 1
+    fi
+done
+echo "  ok: the manual page and completion files are in the archive"
 
 SUM="$(sha256sum "$TARBALL" | cut -d' ' -f1)"
 printf '%s  %s\n' "$SUM" "$(basename "$TARBALL")" > "$TARBALL.sha256"

@@ -11692,13 +11692,29 @@ health_rc=0
 # too (the Windows installer once carried a changelog promising
 # "AI-powered" detection), so they are read as well.  site/ is the
 # website's own tree and has its own checks.
-WORDING_HITS="$(grep -rnE '\bAI\b|AI-' src docs installer ../docs ../README.md \
+WORDING_HITS="$(grep -rnE '\bAI\b|AI-' src docs installer contrib ../docs ../README.md \
   ../CHANGELOG.md ../RELEASING.md ../AUTHORS ../CREDITS 2>/dev/null \
   | grep -v 'There is no AI model' || true)"
 if [ -n "$WORDING_HITS" ]; then
   echo "FAIL: \"AI\" wording in the program, the installers or the docs:"
   echo "$WORDING_HITS"
   exit 1
+fi
+# The manual page and the completion words are printed by `stockfw'
+# from its tables in src/cli (read above), and contrib/ holds the
+# completion scripts.  When a build is at hand, what it prints is read
+# too.
+SFW="${STOCKFW_BUILD:-build-linux}/stockfw"
+if [ -x "$SFW" ]; then
+  GEN_HITS="$( { "$SFW" __man; "$SFW" __complete ''
+                 for c in $("$SFW" __complete ''); do
+                   "$SFW" __complete "$c" -; "$SFW" __complete "$c" ''
+                 done; } 2>/dev/null | grep -nE '\bAI\b|AI-' || true)"
+  if [ -n "$GEN_HITS" ]; then
+    echo "FAIL: \"AI\" wording in what stockfw __man or __complete prints:"
+    echo "$GEN_HITS"
+    exit 1
+  fi
 fi
 echo "ok:   wording guard: no \"AI\" claims in src, installers, docs, README or CHANGELOG"
 

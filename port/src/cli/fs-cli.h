@@ -281,6 +281,16 @@ const FsCliCommandDef * const *fs_cli_all_commands (guint *n);
 /* A command by its name or alias; NULL when there is none. */
 const FsCliCommandDef         *fs_cli_find_command (const gchar *name);
 
+/* === WP-E === */
+/* The global flags, as the parser takes them (*n of them). */
+const gchar * const *fs_cli_global_flags (guint *n);
+/* The hidden commands of fs-cli-complete.c, run by main() before it
+ * parses anything: `stockfw __complete WORD...' prints one candidate
+ * per line for the last WORD; `stockfw __man' writes stockfw(1). */
+gint fs_cli_complete_main (gint argc, gchar **argv);
+gint fs_cli_man_main      (gint argc, gchar **argv);
+/* === end WP-E === */
+
 gint fs_cli_cmd_status      (gint argc, gchar **argv);
 gint fs_cli_cmd_policy      (gint argc, gchar **argv);
 gint fs_cli_cmd_apply       (gint argc, gchar **argv);
