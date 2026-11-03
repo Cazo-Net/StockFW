@@ -83,12 +83,16 @@ EOF
 	grep -q "FILEVERSION $VMAJ,$VMIN,$VPAT,0" "$SCRATCH/stockfw.rc" &&
 	grep -q "\"ProductVersion\", \"$V\"" "$SCRATCH/stockfw.rc"
 	check $? "the configured stockfw.rc says $VMAJ,$VMIN,$VPAT,0 and \"$V\""
-	if command -v x86_64-w64-mingw32-windres >/dev/null 2>&1; then
+	# windres runs the MinGW C preprocessor and needs <windows.h>, so it
+	# takes the MinGW compiler as well as binutils.
+	if command -v x86_64-w64-mingw32-windres >/dev/null 2>&1 &&
+	   command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
 		x86_64-w64-mingw32-windres "$SCRATCH/stockfw.rc" -O coff \
 			-o "$SCRATCH/stockfw.res.o" 2>"$SCRATCH/windres.log"
 		check $? "windres compiles the configured stockfw.rc"
+		[ -s "$SCRATCH/windres.log" ] && sed 's/^/  windres: /' "$SCRATCH/windres.log"
 	else
-		echo "SKIP: windres not installed; the configured .rc is not compiled"
+		echo "SKIP: MinGW windres or gcc not installed; the configured .rc is not compiled"
 	fi
 else
 	echo "SKIP: cmake not installed; stockfw.rc.in is not configured"

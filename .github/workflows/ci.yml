@@ -51,7 +51,7 @@ jobs:
             xdotool stalonetray desktop-file-utils \
             liblzma-dev libssl-dev xz-utils \
             python3-location location libloc-database clang libclang-rt-dev \
-            nsis binutils-mingw-w64-x86-64
+            nsis gcc-mingw-w64-x86-64
 
       - name: Build
         run: |
@@ -180,8 +180,9 @@ jobs:
       # on the default RelWithDebInfo one), packaged and stripped by the
       # packager, then checked as a user gets it -- install.sh runnable
       # as ./install.sh, the version, the changelog, the licence list.
-      # nsis and binutils-mingw-w64 above let test-release.sh compile
-      # StockFW.nsi and the version resource here as well.
+      # nsis and gcc-mingw-w64 above let test-release.sh compile
+      # StockFW.nsi and the version resource here as well (windres needs
+      # the MinGW preprocessor and windows.h, not binutils alone).
       - name: Build and check the Linux tarball
         id: tarball
         working-directory: port
