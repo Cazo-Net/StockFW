@@ -87,7 +87,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PORT="$(dirname "$HERE")"
-DRV="${STOCKFW_INTEL_E2E_DRIVER:-$PORT/build-linux/fs-intel-e2e-driver}"
+DRV="${STOCKFW_INTEL_E2E_DRIVER:-${STOCKFW_BUILD:-$PORT/build-linux}/fs-intel-e2e-driver}"
 
 if [ "${STOCKFW_IN_NETNS:-}" != 1 ]; then
   if [ "$(id -u)" != 0 ]; then
@@ -654,7 +654,7 @@ check '[ "$p" = $((p0 + 1)) ] && [ "$b" = $((b0 + 38)) ]' "the count goes on fro
 
 # The same through the command line, which stops and starts the
 # firewall itself (iptables, in this namespace) and the lists with it.
-CLI="${STOCKFW_CLI:-$PORT/build-linux/stockfw}"
+CLI="${STOCKFW_CLI:-${STOCKFW_BUILD:-$PORT/build-linux}/stockfw}"
 CLI_RAN=0
 if [ -x "$CLI" ] && command -v iptables >/dev/null; then
   CLI_RAN=1

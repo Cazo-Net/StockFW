@@ -39,7 +39,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PORT="$(dirname "$HERE")"
-DRV="${FS_GEODB_TEST:-$PORT/build-linux/fs-geodb-test}"
+DRV="${FS_GEODB_TEST:-${STOCKFW_BUILD:-$PORT/build-linux}/fs-geodb-test}"
 REQUIRE="${STOCKFW_GEODB_REQUIRE:-0}"
 REAL_DB="${STOCKFW_GEODB_REAL:-/usr/share/libloc-location/location.db}"
 
@@ -94,7 +94,7 @@ if [ "${1:-}" = --regen ]; then
 fi
 
 if [ ! -x "$DRV" ]; then
-  ninja -C "$PORT/build-linux" fs-geodb-test >/dev/null || {
+  ninja -C "${STOCKFW_BUILD:-$PORT/build-linux}" fs-geodb-test >/dev/null || {
     echo "FAIL: cannot build fs-geodb-test"; exit 1; }
 fi
 
@@ -266,9 +266,9 @@ else
   if [ $rc -ne 0 ]; then
     grep -E 'ERROR|SUMMARY|runtime error|==' "$W/fuzz.log" | head -20
     ls "$W"/crash-* "$W"/leak-* "$W"/timeout-* 2>/dev/null
-    mkdir -p "$PORT/build-linux/geodb-fuzz-findings" 2>/dev/null &&
+    mkdir -p "${STOCKFW_BUILD:-$PORT/build-linux}/geodb-fuzz-findings" 2>/dev/null &&
       cp "$W"/crash-* "$W"/leak-* "$W"/timeout-* "$W"/oom-* \
-         "$PORT/build-linux/geodb-fuzz-findings/" 2>/dev/null
+         "${STOCKFW_BUILD:-$PORT/build-linux}/geodb-fuzz-findings/" 2>/dev/null
   fi
   check '[ $rc -eq 0 ]' \
     "the fuzzer ran ${FUZZ_SECONDS:-180} s and found nothing (findings would be kept in build-linux/geodb-fuzz-findings)"

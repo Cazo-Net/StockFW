@@ -125,9 +125,11 @@ if(FS_PLATFORM STREQUAL "windows")
   set(FS_BACKEND_LIBS ole32 oleaut32 iphlpapi ws2_32 wintrust crypt32)
 endif()
 
-# Standalone build of the backend alone, for quick compile checks.
+# Standalone build of the backend alone, for quick compile checks
+# (`ninja fs-backend-probe').  An object library: the backend has no
+# main(), so an executable of it could never link.
 if(FS_BACKEND_SOURCES)
-  add_executable(fs-backend-probe EXCLUDE_FROM_ALL ${FS_BACKEND_SOURCES})
+  add_library(fs-backend-probe OBJECT EXCLUDE_FROM_ALL ${FS_BACKEND_SOURCES})
   target_link_libraries(fs-backend-probe PRIVATE fs-core)
 endif()
 

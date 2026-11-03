@@ -1178,11 +1178,11 @@ check_geo (void)
 	CHECK (strstr (t, "Registered in Netherlands (NL)") != NULL &&
 	       strstr (t, "Stops them connecting to you.") != NULL,
 	       "geo: its row says where the country's ranges are registered "
-	       "and the direction (\"%s\")", t);
+	       "and the direction (\"%s\")", t != NULL ? t : "(null)");
 	CHECK (strstr (t, "1 anycast network, which may block services "
 	                  "elsewhere") != NULL,
 	       "geo: the row says how many anycast networks in words, for "
-	       "the keyboard and screen readers (\"%s\")", t);
+	       "the keyboard and screen readers (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	{
 		AtkObject *a = gtk_widget_get_accessible (
@@ -1248,7 +1248,7 @@ check_geo (void)
 	       strstr (t, "anycast") != NULL &&
 	       strstr (t, attribution) != NULL,
 	       "geo: the lookup names the rule, \"Registered in\", anycast "
-	       "and the licence line (\"%s\")", t);
+	       "and the licence line (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	shot ("11-countries.png");
 
@@ -1409,7 +1409,7 @@ main (int argc, char **argv)
 	CHECK (!fs_intel_store_exists (),
 	       "opening the page creates no store (Stop and Start stay no-ops)");
 	t = feed_text ("status", "spamhaus-drop");
-	CHECK (strcmp (t, "Off.") == 0, "a feed that is off says so (\"%s\")", t);
+	CHECK (strcmp (t, "Off.") == 0, "a feed that is off says so (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	{
 		GtkWidget *row = find (page, "feed-row-firehol-level1");
@@ -1453,7 +1453,7 @@ main (int argc, char **argv)
 	       "Cancel at the consent dialog: nothing downloaded, nothing "
 	       "applied, no store");
 	t = feed_text ("status", "spamhaus-drop");
-	CHECK (strcmp (t, "Off.") == 0, "and the feed is still off (\"%s\")", t);
+	CHECK (strcmp (t, "Off.") == 0, "and the feed is still off (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 
 	next_response = GTK_RESPONSE_ACCEPT;
@@ -1476,14 +1476,14 @@ main (int argc, char **argv)
 	       text_of ("intel-state-title"));
 	t = feed_text ("status", "spamhaus-drop");
 	CHECK (strcmp (t, "Up to date and in force.") == 0,
-	       "the feed: \"Up to date and in force.\" (\"%s\")", t);
+	       "the feed: \"Up to date and in force.\" (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	t = feed_text ("facts", "spamhaus-drop");
 	CHECK (strstr (t, "10 entries") && strstr (t, "updated just now") &&
 	       strstr (t, "next update in 24 h") &&
 	       strstr (t, "Nothing blocked yet"),
 	       "its facts: entries, last and next update, nothing blocked "
-	       "(\"%s\")", t);
+	       "(\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	CHECK (!visible ("intel-progress"), "the progress line goes when done");
 
@@ -1492,7 +1492,7 @@ main (int argc, char **argv)
 	refresh ();
 	t = feed_text ("facts", "spamhaus-drop");
 	CHECK (strstr (t, "Blocked 1,234 packets since") != NULL,
-	       "blocked counter per feed (\"%s\")", t);
+	       "blocked counter per feed (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	CHECK (strcmp (text_of ("intel-tile-2"), "1,234") == 0 &&
 	       strcmp (text_of ("intel-tile-0"), "1") == 0,
@@ -1529,7 +1529,7 @@ main (int argc, char **argv)
 	click ("intel-update");
 	t = feed_text ("status", "spamhaus-drop");
 	CHECK (strstr (t, "The last update was refused") != NULL,
-	       "a list that shrank to 1 of 10 is refused (\"%s\")", t);
+	       "a list that shrank to 1 of 10 is refused (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	CHECK (visible ("feed-accept-spamhaus-drop") &&
 	       strcmp (gtk_button_get_label (GTK_BUTTON (
@@ -1545,7 +1545,7 @@ main (int argc, char **argv)
 	CHECK (strstr (t, "1 entry") != NULL &&
 	       find (page, "feed-accept-spamhaus-drop") == NULL,
 	       "Accept smaller list lets the copy in, and the button goes "
-	       "(\"%s\")", t);
+	       "(\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	CHECK (kern.apply_calls > calls, "and the smaller list is applied");
 
@@ -1556,7 +1556,7 @@ main (int argc, char **argv)
 	CHECK (strstr (t, "failed") && strstr (t, "Could not resolve host") &&
 	       strstr (t, "is kept and in force") && !strstr (t, "still used"),
 	       "a failed download says so and keeps the copy, in force while "
-	       "it is (\"%s\")", t);
+	       "it is (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	serve ("spamhaus-drop", b10);
 
@@ -1599,7 +1599,7 @@ main (int argc, char **argv)
 	CHECK (strstr (t, "is kept.") && !strstr (t, "in force") &&
 	       !strstr (t, "still used"),
 	       "paused: the failed update's copy is kept, not said to be used "
-	       "(\"%s\")", t);
+	       "(\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	lookup ("45.1.0.9");
 	CHECK (strstr (text_of ("intel-lookup-result"), "Spamhaus DROP (IPv4)") &&
@@ -1667,7 +1667,7 @@ main (int argc, char **argv)
 	       !visible ("intel-message") && strstr (kern.last_sets, "feodo") == NULL &&
 	       strstr (t, "not in force") && strstr (t, "locked"),
 	       "held under the Lock: after a refresh the feodo row says it is "
-	       "not in force, and why (\"%s\")", t);
+	       "not in force, and why (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	shot ("06c-held-feodo-on.png");
 	{
@@ -1678,7 +1678,7 @@ main (int argc, char **argv)
 		CHECK (sum != NULL && strstr (sum, "except 1 list") != NULL &&
 		       strstr (sum, "not applied yet") != NULL,
 		       "held under the Lock: the summary names the list that is "
-		       "on but not in force (\"%s\")", sum);
+		       "on but not in force (\"%s\")", sum != NULL ? sum : "(null)");
 		g_free (sum);
 	}
 	{
@@ -1714,13 +1714,13 @@ main (int argc, char **argv)
 	refresh ();
 	t = feed_text ("status", "feodo");
 	CHECK (strstr (t, "press Apply") != NULL,
-	       "released, not applied yet: \"press Apply\" (\"%s\")", t);
+	       "released, not applied yet: \"press Apply\" (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	click ("intel-apply");
 	t = feed_text ("status", "feodo");
 	CHECK (strstr (kern.last_sets, "feodo") != NULL &&
 	       strstr (t, "in force") && !strstr (t, "not in force"),
-	       "applied: the row says in force (\"%s\")", t);
+	       "applied: the row says in force (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	flip ("feodo", FALSE);
 	CHECK (strstr (kern.last_sets, "feodo") == NULL,
@@ -1821,14 +1821,14 @@ main (int argc, char **argv)
 		CHECK (sum != NULL && strstr (sum, "not in force") != NULL &&
 		       strstr (sum, WIN_NOT_IN_FORCE) != NULL,
 		       "windows: the Overview and tray summary says not in "
-		       "force, with the reason (\"%s\")", sum);
+		       "force, with the reason (\"%s\")", sum != NULL ? sum : "(null)");
 		g_free (sum);
 	}
 	t = feed_text ("facts", "spamhaus-drop");
 	CHECK (strstr (t, fs_intel_counts_unavailable (&win_backend)) != NULL &&
 	       strstr (t, "Nothing blocked") == NULL &&
 	       strstr (t, "Blocked ") == NULL,
-	       "windows: no count per feed, the reason instead (\"%s\")", t);
+	       "windows: no count per feed, the reason instead (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	CHECK (strcmp (text_of ("intel-tile-2"), "n/a") == 0,
 	       "windows: the Blocked tile says n/a, never 0 (\"%s\")",
@@ -1861,7 +1861,7 @@ main (int argc, char **argv)
 		gchar *sum = fs_intelview_summary ();
 
 		CHECK (sum != NULL && strstr (sum, "changed outside") != NULL,
-		       "windows: ... and the summary says so (\"%s\")", sum);
+		       "windows: ... and the summary says so (\"%s\")", sum != NULL ? sum : "(null)");
 		g_free (sum);
 	}
 	kern.live = FS_INTEL_LIVE_PRESENT;
@@ -1873,7 +1873,7 @@ main (int argc, char **argv)
 		gchar *sum = fs_intelview_summary ();
 
 		CHECK (sum != NULL && strstr (sum, "are in force") != NULL,
-		       "windows: ... summary: in force (\"%s\")", sum);
+		       "windows: ... summary: in force (\"%s\")", sum != NULL ? sum : "(null)");
 		g_free (sum);
 	}
 	{

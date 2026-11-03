@@ -99,7 +99,7 @@ gcc -o "$BUILD_DIR/test-apply" \
 	-I "$PORT/src" $CF \
 	"$BUILD_DIR/test-apply.c" \
 	"$PORT/src/platform/linux/fs-backend-linux.c" \
-	"$PORT/build-linux/libfs-core.a" \
+	"${STOCKFW_BUILD:-$PORT/build-linux}/libfs-core.a" \
 	$LF 2> "$BUILD_DIR/cc.log"
 
 CHECK $? "test program compiles against the real Linux backend"
@@ -217,7 +217,7 @@ gcc -o "$BUILD_DIR/stop" \
 	-I "$PORT/src" $CF \
 	"$BUILD_DIR/stop.c" \
 	"$PORT/src/platform/linux/fs-backend-linux.c" \
-	"$PORT/build-linux/libfs-core.a" \
+	"${STOCKFW_BUILD:-$PORT/build-linux}/libfs-core.a" \
 	$LF 2> "$BUILD_DIR/stop.log"
 
 "$BUILD_DIR/stop" >/dev/null 2>"$BUILD_DIR/stop.err"

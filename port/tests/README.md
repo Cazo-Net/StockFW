@@ -3459,3 +3459,57 @@ Teeth (each in a copy of the tree, restored with `cp` and checked with
 | the old `#threat-intel-blocklists-linux-107` anchor | every in-page link lands |
 | no `## [1.0.7]` changelog section | the changelog section, packages, the archive's name |
 | `libcrypto.so.3` dropped from `install.sh`'s list | (`test-linux-install.sh`) fails, names it, installs nothing |
+
+## Release review: what StockFW contacts, credits, one test runner (1.0.7)
+
+`tests/full-suite.sh` is the one runner on both platforms:
+
+```sh
+cd port
+sudo xvfb-run -a bash tests/full-suite.sh   # Linux (build-linux/, or $STOCKFW_BUILD)
+bash tests/full-suite.sh                    # Windows, MSYS2 UCRT64 (build/, or $STOCKFW_BUILD)
+```
+
+It configures the build directory if it is missing, builds every target
+the suites run (the unit binaries, the Linux drivers, the UI smokes,
+`fs-backend-probe`), exports `STOCKFW_BUILD` so every suite reads that
+one build, and ends with PASS, FAIL or SKIP for each suite. Suites of
+the other platform print SKIP; `fs-tray-smoke` runs on Windows (or with
+`STOCKFW_TRAY_SMOKE=1`); `test-geodb.sh`'s fuzzer runs `FUZZ_SECONDS`
+(30 by default here). Run as root on Linux, the live suites each make
+their own private namespaces. Two checks depend on the host rather
+than the code: `test-logstart-kmsg.sh` needs kernel log lines, which a
+network namespace only produces with `net.netfilter.nf_log_all_netns=1`,
+and `test-cli.sh`'s "interfaces lists at least one adapter" needs a
+physical adapter, which a fresh network namespace does not have.
+
+New checks in `test-core.sh` (end of the script):
+
+- **wording guard**, widened: `src`, `docs`, `installer`, `../docs`, the
+  README, `CHANGELOG.md`, `RELEASING.md`, `AUTHORS` and `CREDITS`;
+- **credits guard**: no file in the repository (`git grep`) carries the
+  creator's full name or e-mail address, and `AUTHORS`, `CREDITS`, the
+  README and `fs-aboutdialog.c` name "Stock Team & Qusai";
+- **privacy guard**: Help > Your data names the location database next
+  to the blocklists as a download, and the Threat Intel topic says no
+  list *and not the location database* means no network request.
+
+`test-state-windows.sh` prints SKIP off Windows; `test-linux-install.sh`
+stages `install.sh` with the tested build's binaries, as the tarball
+lays them out.
+
+Teeth (each in a copy of one file, restored with `cp` and checked with
+`cmp`):
+
+| Bug put back | Fails |
+|---|---|
+| "AI-powered" line in `installer/build_installer.sh` | wording guard |
+| the creator's surname in `AUTHORS` | credits guard (full name) |
+| the old personal e-mail address in the README credits | credits guard (e-mail) |
+| "Stock Team & Qusai" removed from `CREDITS` | credits guard (credit line) |
+| the old Help text (both sentences) | privacy guard, Your data |
+| the old Threat Intel sentence only | privacy guard, Threat Intel |
+| `test-state-windows.sh` without its platform guard | it fails on Linux (`windows.h`) |
+| `fs-backend-probe` as an executable again | `ninja fs-backend-probe` fails to link |
+| `sum` passed bare to `%s` in `ui-intelview-smoke.c` | `-Wformat-overflow` "argument is null" |
+| the staged `StockFW` left out in `test-linux-install.sh` | `install.sh succeeds` fails |

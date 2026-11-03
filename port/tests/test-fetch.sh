@@ -64,7 +64,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PORT="$(dirname "$HERE")"
-DRV="${FS_FETCH_TEST:-$PORT/build-linux/fs-fetch-test}"
+DRV="${FS_FETCH_TEST:-${STOCKFW_BUILD:-$PORT/build-linux}/fs-fetch-test}"
 
 if [ "${STOCKFW_IN_NETNS:-}" != 1 ]; then
   if [ "$(id -u)" != 0 ]; then

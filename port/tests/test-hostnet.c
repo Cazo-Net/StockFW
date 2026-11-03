@@ -85,7 +85,9 @@ expect (FsRangeSet *set, const gchar *want, const gchar *what)
 	fs_range_set_free (set);
 }
 
-/* The IPv4 half of a set, as flat() writes it. */
+#ifdef __linux__
+/* The IPv4 half of a set, as flat() writes it (only the Linux parsers
+ * use it). */
 static gchar *
 flat4 (const FsRangeSet *set)
 {
@@ -97,6 +99,7 @@ flat4 (const FsRangeSet *set)
 	fs_range_set_free (v4);
 	return text;
 }
+#endif
 
 static gint
 u128_cmp (FsU128 a, FsU128 b)

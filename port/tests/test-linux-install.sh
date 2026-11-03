@@ -21,7 +21,7 @@ if ! command -v systemctl >/dev/null 2>&1; then
 	echo "SKIP: systemctl not installed"
 	exit 0
 fi
-if [ ! -x "$PORT/build-linux/StockFW" ] || [ ! -x "$PORT/build-linux/stockfw" ]; then
+if [ ! -x "${STOCKFW_BUILD:-$PORT/build-linux}/StockFW" ] || [ ! -x "${STOCKFW_BUILD:-$PORT/build-linux}/stockfw" ]; then
 	echo "SKIP: build StockFW and stockfw first (ninja -C build-linux)"
 	exit 0
 fi
@@ -47,11 +47,22 @@ if [ -d /run/systemd ]; then
 	mount -t tmpfs none /run/systemd || { echo "SKIP: cannot hide /run/systemd"; exit 0; }
 fi
 
+# install.sh as the tarball lays it out: the binaries next to it
+# (StockFW, cli/stockfw), taken from the build being tested
+# ($STOCKFW_BUILD, default build-linux), so the test never falls back to
+# whatever ../../build-linux holds.
+BUILD="${STOCKFW_BUILD:-$PORT/build-linux}"
+STAGE="$SCRATCH/stage"
+mkdir -p "$STAGE/cli"
+cp -a "$PORT/installer/linux/." "$STAGE/"
+install -m755 "$BUILD/StockFW" "$STAGE/StockFW"
+install -m755 "$BUILD/stockfw" "$STAGE/cli/stockfw"
+
 PREFIX="$SCRATCH/prefix"
 UNIT=/etc/systemd/system/stockfw.service
 WANTS=/etc/systemd/system/multi-user.target.wants/stockfw.service
 
-PREFIX="$PREFIX" bash "$PORT/installer/linux/install.sh" > "$SCRATCH/install.log" 2>&1
+PREFIX="$PREFIX" bash "$STAGE/install.sh" > "$SCRATCH/install.log" 2>&1
 rc=$?
 check "install.sh succeeds (rc=$rc)" [ "$rc" -eq 0 ]
 check "the boot unit is installed" [ -f "$UNIT" ]
@@ -88,7 +99,7 @@ if [ -n "$REAL_LDCONFIG" ]; then
 	chmod 755 "$SCRATCH/fakebin/ldconfig"
 	PREFIX2="$SCRATCH/prefix-no-ssl3"
 	PATH="$SCRATCH/fakebin:$PATH" PREFIX="$PREFIX2" \
-		bash "$PORT/installer/linux/install.sh" > "$SCRATCH/install-nossl.log" 2>&1
+		bash "$STAGE/install.sh" > "$SCRATCH/install-nossl.log" 2>&1
 	rc=$?
 	check "without libcrypto.so.3, install.sh fails (rc=$rc)" [ "$rc" -ne 0 ]
 	check "...naming libcrypto.so.3" grep -q 'missing runtime libraries:.*libcrypto\.so\.3' "$SCRATCH/install-nossl.log"

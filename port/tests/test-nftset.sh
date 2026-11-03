@@ -17,7 +17,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PORT="$(dirname "$HERE")"
-LOAD="$PORT/build-linux/fs-nftset-load"
+LOAD="${STOCKFW_BUILD:-$PORT/build-linux}/fs-nftset-load"
 
 if [ "${STOCKFW_IN_NETNS:-}" != 1 ]; then
   if [ "$(id -u)" != 0 ] || ! command -v nft >/dev/null ||

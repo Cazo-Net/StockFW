@@ -134,6 +134,12 @@ into `/usr/local/share/doc/stockfw/`.
   block nothing.
 - The Copilot no longer offers Ask What-If or a block for traffic that a
   list or a country or network rule already blocks.
+- Help says what StockFW downloads: the location database as well as
+  the blocklists, each only after you accept, plus DNS lookups of host
+  names in Linux rules.
+- `tests/full-suite.sh` uses one build directory and runs every suite on
+  Linux as well as Windows; CI runs the threat-intel, country and
+  downloader suites it had left out.
 
 ## [1.0.6] - development version, shipped as part of 1.0.7
 

@@ -219,7 +219,7 @@ else
 fi
 
 # ---------------------------------------------------------------- 5. Linux tarball
-BUILD="${STOCKFW_BUILD_DIR:-$PORT_DIR/build-linux}"
+BUILD="${STOCKFW_BUILD_DIR:-${STOCKFW_BUILD:-$PORT_DIR/build-linux}}"
 if [ -x "$BUILD/StockFW" ] && [ -x "$BUILD/stockfw" ] &&
    [ "$(od -An -tx1 -N4 "$BUILD/StockFW" | tr -d ' \n')" = 7f454c46 ]; then
 	DIST="$SCRATCH/dist"

@@ -184,7 +184,7 @@ LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
 gcc -o "$BUILD_DIR/dual" -I "$PORT/src" $CF -DFS_TOOLPATH_TESTING=1 \
 	"$BUILD_DIR/dual.c" "$PORT/src/core/fs-toolpath.c" \
 	"$PORT/src/platform/linux/fs-backend-linux.c" \
-	"$PORT/build-linux/libfs-core.a" $LF 2> "$BUILD_DIR/cc.log"
+	"${STOCKFW_BUILD:-$PORT/build-linux}/libfs-core.a" $LF 2> "$BUILD_DIR/cc.log"
 CHECK $? "harness compiles against the real Linux backend"
 [ -x "$BUILD_DIR/dual" ] || { cat "$BUILD_DIR/cc.log"; exit 1; }
 
