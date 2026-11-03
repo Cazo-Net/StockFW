@@ -281,7 +281,9 @@ Builds the real Events page with its history in a scratch folder
 saved events back at start, then appends 100,000 events into the shown
 list and checks: the list's model is the virtual one (no GtkListStore,
 no filter copy) in fixed-height mode; appending reads only the visible
-cells; a scroll frame at 100,000 rows costs what it costs at 1,000;
+cells; a scroll frame at 100,000 rows costs what it costs at 1,000
+(measured up to three times, so one stall on a busy CI machine does
+not decide it; every attempt is printed);
 the port, CIDR, protocol and combined filters give the store's own
 count, label included, and every shown row matches; live events at the
 cap land or are left out as the filter says; a bad port is refused and
