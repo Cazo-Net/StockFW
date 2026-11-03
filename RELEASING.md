@@ -58,7 +58,17 @@ builds and tests on Linux and Windows. Each run keeps two artifacts:
 
 Merge only when both jobs pass.
 
-## 4. Tag
+## 4. Start the release build
+
+Either way below, CI builds and tests both platforms again on the
+release commit, so the assets are built from exactly that commit.
+
+**On the website (no git).** Actions > **StockFW CI** > **Run workflow**,
+branch `main`, tick **draft_release**, then **Run workflow**. The draft
+names tag `v1.0.7` on the commit that was built; GitHub creates the tag
+when the draft is published.
+
+**With git.**
 
 ```sh
 git switch main && git pull
@@ -67,25 +77,34 @@ git push origin v1.0.7
 ```
 
 The tag starts CI on the tagged commit (`.github/workflows/ci.yml`, tags
-`vX.Y.Z`). Both jobs build and test again, so the assets are built from
-exactly the commit that is tagged.
+`vX.Y.Z`).
 
 ## 5. The release job drafts the release
 
 When both jobs pass, the `release` job:
 
-- refuses a tag that is not `v` plus the version in `port/CMakeLists.txt`,
-  and a version whose `CHANGELOG.md` section has no date;
+- refuses a version whose `CHANGELOG.md` section has no date, and a pushed
+  tag that is not `v` plus the version in `port/CMakeLists.txt`; started
+  from the website for a tag that already exists, it also refuses when
+  `main` differs from the tag in any file the packages are built from;
 - downloads that run's two artifacts, checks the tarball against its
   `.sha256`, and writes `SHA256SUMS.txt` for the installer and the tarball;
 - takes the release notes from the version's `CHANGELOG.md` section;
-- creates a **draft** release named `StockFW 1.0.7` with exactly
-  `StockFW-1.0.7-Setup.exe`, `StockFW-1.0.7-linux-x86_64.tar.gz` and
-  `SHA256SUMS.txt`.
+- with no release for the tag yet, creates a **draft** release named
+  `StockFW 1.0.7` with exactly `StockFW-1.0.7-Setup.exe`,
+  `StockFW-1.0.7-linux-x86_64.tar.gz` and `SHA256SUMS.txt`;
+- with a release that lacks some of those files (one made by hand on the
+  website, say), uploads all three and fills in empty notes, leaving the
+  release published or draft as it was;
+- with all three files already there, changes nothing.
 
-If either job fails, there is no draft: fix the cause, delete the tag
-(`git push origin :refs/tags/v1.0.7`, `git tag -d v1.0.7`), and tag the
-fixed commit.
+Publishing a draft that was started from the website creates the tag, and
+that tag runs CI once more; its release job finds the files there and
+changes nothing.
+
+If either job fails, nothing is uploaded: fix the cause and start again
+(a pushed tag is deleted first with `git push origin :refs/tags/v1.0.7`
+and `git tag -d v1.0.7`).
 
 ## 6. Publish the release
 

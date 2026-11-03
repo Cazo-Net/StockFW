@@ -20,12 +20,21 @@ on:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
   workflow_dispatch:
+    inputs:
+      draft_release:
+        description: >-
+          Also draft the GitHub release for the version in
+          port/CMakeLists.txt (main only; the tag is made when you publish)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # The event is part of the group, so a push to main never cancels a
+  # release run started by hand on main, nor the other way round.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -306,50 +315,105 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # A pushed tag vX.Y.Z runs both jobs above on the tagged commit and then
-  # drafts the GitHub release from their artifacts: the Windows installer,
-  # the Linux tarball and SHA256SUMS.txt, with the notes taken from the
-  # version's section of CHANGELOG.md.  It only drafts: a person reads the
-  # draft and presses Publish.  It refuses a tag that does not match the
-  # version in port/CMakeLists.txt or a version whose CHANGELOG section has
-  # no date, and it runs only when both jobs passed.
+  # The release job puts this run's artifacts into the GitHub release:
+  # the Windows installer, the Linux tarball and SHA256SUMS.txt, with the
+  # notes taken from the version's section of CHANGELOG.md.  It runs only
+  # when both jobs passed, in one of two ways:
+  #
+  # - a pushed tag vX.Y.Z (the tag must match the version in
+  #   port/CMakeLists.txt);
+  # - "Run workflow" on main with "draft_release" ticked (no git needed),
+  #   for tag v<version>.  If that tag already exists, every file that goes
+  #   into the packages must be the same on main as on the tag.
+  #
+  # With no release for the tag, it creates a draft (a person reads it and
+  # presses Publish; a draft for a tag that does not exist yet names the
+  # commit that was built, and GitHub creates the tag on Publish).  With a
+  # release that lacks some of the three assets (one made on the website,
+  # for instance), it uploads them and fills in empty notes, and leaves
+  # the release published or draft as it was.  With all three assets
+  # present it changes nothing.  Either way it refuses a version whose
+  # CHANGELOG section has no date.
   release:
     name: Draft the GitHub release
     needs: [linux, windows]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.draft_release &&
+       github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check the tag, the version and the changelog
+      - name: Check the version, the tag, the changelog and the release
         id: v
         run: |
           version="$(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9][0-9.]*\).*/\1/p' port/CMakeLists.txt | head -n 1)"
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match the version in port/CMakeLists.txt ($version)"
-            exit 1
-          fi
+          tag="v$version"
           if ! grep -q "^## \[$version\] - [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}" CHANGELOG.md; then
             echo "::error::CHANGELOG.md has no dated section for $version"
             exit 1
           fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the version in port/CMakeLists.txt ($version)"
+              exit 1
+            fi
+            tag_exists=yes
+          elif [ -n "$(git ls-remote --tags origin "refs/tags/$tag")" ]; then
+            tag_exists=yes
+            git fetch --no-tags --depth=1 origin "+refs/tags/$tag:refs/tags/$tag"
+            if ! git diff --quiet "$tag" HEAD -- . ':(exclude).github' \
+                 ':(exclude)site' ':(exclude)docs' ':(exclude)RELEASING.md'; then
+              echo "::error::main differs from tag $tag in files the packages are built from:"
+              git diff --stat "$tag" HEAD -- . ':(exclude).github' \
+                ':(exclude)site' ':(exclude)docs' ':(exclude)RELEASING.md'
+              exit 1
+            fi
+          else
+            tag_exists=no
+          fi
+          want="StockFW-$version-Setup.exe StockFW-$version-linux-x86_64.tar.gz SHA256SUMS.txt"
+          if gh release view "$tag" --json assets --jq '.assets[].name' > have.txt 2>/dev/null; then
+            missing=0
+            for a in $want; do grep -qxF "$a" have.txt || missing=1; done
+            if [ "$missing" = 0 ]; then
+              echo "::notice::$tag already has its release with all three assets; nothing is changed"
+              action=none
+            else
+              action=fill
+            fi
+          elif [ "$tag_exists" = yes ]; then
+            action=draft-tag
+          else
+            action=draft-commit
+          fi
+          echo "$tag: $action"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "action=$action" >> "$GITHUB_OUTPUT"
 
       - name: Fetch the Linux tarball
+        if: steps.v.outputs.action != 'none'
         uses: actions/download-artifact@v4
         with:
           name: StockFW-${{ steps.v.outputs.version }}-linux-x86_64
           path: release
 
       - name: Fetch the Windows installer
+        if: steps.v.outputs.action != 'none'
         uses: actions/download-artifact@v4
         with:
           name: StockFW-windows-installer
           path: release
 
       - name: Checksums and release notes
+        if: steps.v.outputs.action != 'none'
         working-directory: release
         env:
           V: ${{ steps.v.outputs.version }}
@@ -365,12 +429,31 @@ jobs:
             ../CHANGELOG.md > notes.md
           test -s notes.md
 
-      - name: Draft the release
+      - name: Draft or fill the release
+        if: steps.v.outputs.action != 'none'
         working-directory: release
         env:
-          GH_TOKEN: ${{ github.token }}
           V: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+          ACTION: ${{ steps.v.outputs.action }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
-            --title "StockFW $V" --notes-file notes.md \
-            "StockFW-$V-Setup.exe" "StockFW-$V-linux-x86_64.tar.gz" SHA256SUMS.txt
+          files="StockFW-$V-Setup.exe StockFW-$V-linux-x86_64.tar.gz SHA256SUMS.txt"
+          case "$ACTION" in
+          draft-tag)
+            gh release create "$TAG" --draft --verify-tag \
+              --title "StockFW $V" --notes-file notes.md $files ;;
+          draft-commit)
+            gh release create "$TAG" --draft --target="$GITHUB_SHA" \
+              --title "StockFW $V" --notes-file notes.md $files ;;
+          fill)
+            # All three together, so SHA256SUMS.txt always matches the
+            # two files beside it.
+            gh release upload "$TAG" --clobber $files
+            if [ -z "$(gh release view "$TAG" --json body --jq .body)" ]; then
+              gh release edit "$TAG" --notes-file notes.md
+            fi
+            if [ -z "$(gh release view "$TAG" --json name --jq .name)" ]; then
+              gh release edit "$TAG" --title "StockFW $V"
+            fi ;;
+          esac
+          gh release view "$TAG" --json assets --jq '.assets[].name'
