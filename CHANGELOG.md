@@ -11,7 +11,7 @@ which records the evidence behind every entry here (Chapter 14 for
 beside `StockFW.exe`, and the Linux tarball carries it and installs it
 into `/usr/local/share/doc/stockfw/`.
 
-## [1.0.7] - Unreleased
+## [1.0.7] - 2026-11-03
 
 ### Added
 
