@@ -1616,6 +1616,97 @@ check_history_retry (void)
 	g_free (dir);
 }
 
+/* [ check_history_pending ]
+ * Code review of the release, findings 2 and 3: while the history is
+ * opened on its worker there is no writer.  Every event that arrives
+ * meanwhile reaches the history file, also when a burst bigger than
+ * the list has made the list drop it; and limits saved meanwhile are
+ * applied when the load is finished early (Delete history, the
+ * sign-out flush), not only when the main loop installs it. */
+static void
+check_history_pending (void)
+{
+	gchar *dir = fs_eventlog_default_dir ();
+	FsEventLog *old;
+	FsEventStore *probe;
+	const gint64 now = g_get_real_time () * 10;
+	const guint burst = FS_EVENTSTORE_MIN_CAPACITY + 500;
+	guint old_left = 0, seen = 0;
+
+	fs_hitview_shutdown ();
+	/* A file twenty days old: kept at 30 days, pruned at 7. */
+	old = fs_eventlog_open (dir, 0, 0, NULL);
+	CHECK (old != NULL, "pending: the history can be opened");
+	if (old == NULL) {
+		g_free (dir);
+		return;
+	}
+	write_history (old, "203.0.113.91", now - 20LL * 86400 * 10000000, 3);
+	fs_eventlog_close (old);
+
+	fs_prefs_set_string (FS_PREFS_EVENTS_HISTORY_DAYS, "30");
+	fs_prefs_set_string (FS_PREFS_EVENTS_MAX, "1000");
+	fs_hitview_clear ();
+	fs_hitview_apply_settings ();   /* starts the load; list of 1000 */
+	CHECK (fs_hitview_history_pending (),
+	       "pending: the history is being opened on its worker");
+
+	/* No main loop from here on: the load cannot land by itself. */
+	for (guint i = 0; i < burst; i++) {
+		FsHit h = { 0 };
+		gchar stamp[FS_EVENT_TIME_BUF];
+
+		fs_event_time_format (now + (1200LL + i) * 10000000,
+		                      FS_EVENT_TIME_SECS, stamp);
+		h.time = stamp;
+		h.direction = (gchar *) "Out";
+		h.destination = (gchar *) "203.0.113.90";
+		fs_hitview_append (&h);
+	}
+	CHECK (fs_hitview_count () <= FS_EVENTSTORE_MIN_CAPACITY,
+	       "pending: the list kept only its newest %u (%u)",
+	       FS_EVENTSTORE_MIN_CAPACITY, fs_hitview_count ());
+
+	/* Saved while it runs: history_open cannot apply it yet. */
+	fs_prefs_set_string (FS_PREFS_EVENTS_HISTORY_DAYS, "7");
+	fs_hitview_apply_settings ();
+	CHECK (fs_hitview_history_pending (),
+	       "pending: still loading when the new limits are saved");
+
+	fs_hitview_flush_history ();    /* finishes the load early */
+	CHECK (!fs_hitview_history_pending (),
+	       "pending: the flush finished the load");
+
+	probe = fs_eventstore_new (FS_EVENTSTORE_MAX_CAPACITY);
+	fs_eventlog_load_recent (dir, probe, FS_EVENTSTORE_MAX_CAPACITY, NULL);
+	{
+		guint n = fs_eventstore_length (probe);
+		guint64 first = fs_eventstore_first_seq (probe);
+
+		for (guint i = 0; i < n; i++) {
+			const gchar *d = fs_eventstore_field (
+				probe, first + i, FS_EV_DESTINATION);
+
+			if (g_strcmp0 (d, "203.0.113.90") == 0)
+				seen++;
+			else if (g_strcmp0 (d, "203.0.113.91") == 0)
+				old_left++;
+		}
+	}
+	fs_eventstore_free (probe);
+	CHECK (seen == burst,
+	       "pending: every event that arrived during the load went to "
+	       "the history file, those the list dropped too (%u of %u)",
+	       seen, burst);
+	CHECK (old_left == 0,
+	       "pending: the 7 days saved during the load were applied when "
+	       "it was finished early (%u events of 20 days ago left)",
+	       old_left);
+
+	fs_prefs_set_string (FS_PREFS_EVENTS_HISTORY_DAYS, "30");
+	g_free (dir);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1770,6 +1861,7 @@ main (int argc, char **argv)
 	check_sorted_burst ();
 	check_rows_churn ();
 	check_history_retry ();
+	check_history_pending ();
 
 	fs_hitview_stop ();
 	gtk_widget_destroy (page);
