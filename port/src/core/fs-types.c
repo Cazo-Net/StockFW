@@ -53,6 +53,7 @@ fs_connection_free (FsConnection *c)
 	g_free (c->service);
 	g_free (c->program);
 	g_free (c->direction);
+	g_free (c->state);
 	g_free (c);
 }
 

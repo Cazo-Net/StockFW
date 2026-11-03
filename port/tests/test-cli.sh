@@ -911,6 +911,256 @@ rm -rf "$A"
 # === end WP-C ===
 
 # === WP-D ===
+# events, connections, listening and interfaces (cli-plan.md WP-D).
+# A directory of its own, readable by uid 65534 (the legend check runs
+# as nobody when the suite runs as root).
+D="$(mktemp -d /tmp/stockfw-wpd-XXXXXX)"; chmod 755 "$D"
+export STOCKFW_LOG_FILE="$D/kern.log"
+d_run () { env STOCKFW_RULES_DIR="$D/rules" "$@"; }
+d_rc () { local want="$1"; shift; d_run "$@" > "$TMP/out" 2> "$TMP/err"; [ "$?" -eq "$want" ]; }
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null; then
+  d_nobody () { setpriv --reuid=65534 --regid=65534 --clear-groups "$@"; }
+else
+  d_nobody () { "$@"; }
+fi
+# Seven events a minute apart: three from 203.0.113.5, two from
+# 198.51.100.7 (one with an IN field a spreadsheet would run as a
+# formula), one from 192.0.2.44, and one allowed outbound connection.
+py "
+import datetime
+now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+def at(m): return (now - datetime.timedelta(minutes=m)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+k = ' host kernel: [1.0] '
+open('$D/kern.log', 'w').write('\n'.join([
+ at(7) + k + 'STOCKFW-DROP IN=eth0 OUT= SRC=203.0.113.5 DST=10.0.0.5 LEN=60 TOS=0x10 PROTO=TCP SPT=40000 DPT=22 SYN',
+ at(6) + k + 'STOCKFW-DROP IN=eth0 OUT= SRC=203.0.113.5 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40001 DPT=22 SYN',
+ at(5) + k + 'STOCKFW-REJECT IN=eth0 OUT= SRC=203.0.113.5 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40002 DPT=3389 SYN',
+ at(4) + k + 'STOCKFW-DROP IN=eth0 OUT= SRC=198.51.100.7 DST=10.0.0.5 LEN=40 PROTO=TCP SPT=40003 DPT=445 SYN',
+ at(3) + k + 'STOCKFW-DROP IN==SUM(1+1) OUT= SRC=198.51.100.7 DST=10.0.0.5 LEN=76 PROTO=UDP SPT=40004 DPT=161',
+ at(2) + k + 'STOCKFW-DROP IN=eth0 OUT= SRC=192.0.2.44 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40005 DPT=22 SYN',
+ at(1) + k + 'STOCKFW-ALLOW IN= OUT=eth0 SRC=10.0.0.5 DST=203.0.113.9 LEN=60 PROTO=TCP SPT=50000 DPT=443 SYN',
+]) + '\n')
+"
+d_json () { "$S" --json events "$@" | python3 -I -c 'import json,sys; print(json.dumps(json.load(sys.stdin)))'; }
+
+check "events: --blocked with --allowed is a usage error (exit 2), not the last one winning" \
+  d_rc 2 "$S" events --blocked --allowed
+check "events: --proto foo is refused (exit 2) and names the four protocols" \
+  bash -c "'$S' events --proto foo 2> '$TMP/err'; [ \$? -eq 2 ] && grep -q 'tcp, udp, icmp or icmpv6' '$TMP/err'"
+check "  ...and --proto tpc suggests tcp" \
+  bash -c "'$S' events --proto tpc 2> '$TMP/err'; [ \$? -eq 2 ] && grep -q 'did you mean tcp' '$TMP/err'"
+check "events: --dir both is every event; inbound and --direction are aliases" py "
+import json, subprocess
+def q(*a): return json.loads(subprocess.run(['$S', '--json', 'events', *a], capture_output=True, text=True).stdout)
+assert len(q('--dir', 'both')) == 7
+assert q('--direction', 'inbound') == q('--dir', 'in') and len(q('--dir', 'in')) == 6
+assert [e['port'] for e in q('--dir', 'outbound')] == ['443']"
+check "events: --port 22,3389 is the union of both ports" py "
+import json, subprocess
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '--port', '22,3389'], capture_output=True, text=True).stdout)
+assert [e['port'] for e in ev] == ['22', '22', '3389', '22'], ev
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '--port', '400-500,161'], capture_output=True, text=True).stdout)
+assert [e['port'] for e in ev] == ['445', '161', '443'], ev"
+check "  ...and a list that cannot be read is a usage error" \
+  bash -c "'$S' events --port 22,,80 2> /dev/null; [ \$? -eq 2 ] && '$S' events --port 22,70000 2> /dev/null; [ \$? -eq 2 ]"
+check "events --utc: every row starts with an ISO-8601 UTC time" py "
+import re, subprocess
+out = subprocess.run(['$S', 'events', '--utc'], capture_output=True, text=True).stdout.splitlines()
+assert out[0].startswith('TIME') and len(out) == 8, out
+assert all(re.match(r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ ', l) for l in out[1:]), out"
+check "events --wide: IN, OUT, LEN and TOS columns; JSON has length, tos, epoch and rule_name" py "
+import json, subprocess
+out = subprocess.run(['$S', 'events', '--wide', '-n', '1'], capture_output=True, text=True).stdout.splitlines()
+assert out[0].split()[:5] == ['TIME', 'VERDICT', 'DIR', 'IN', 'OUT'] and 'LEN' in out[0] and 'TOS' in out[0], out
+ev = json.loads(subprocess.run(['$S', '--json', 'events'], capture_output=True, text=True).stdout)
+assert ev[0]['length'] == 60 and ev[0]['tos'] == '0x10' and ev[1]['tos'] is None, ev[:2]
+assert isinstance(ev[0]['epoch'], int) and ev[0]['rule_name'] is None, ev[0]"
+check "events --csv: a header and one row per event; a formula in a field is made harmless" py "
+import csv, io, subprocess
+rows = list(csv.reader(io.StringIO(subprocess.run(['$S', 'events', '--csv'], capture_output=True, text=True).stdout)))
+assert rows[0] == ['time', 'direction', 'in', 'out', 'port', 'source', 'destination', 'length', 'tos', 'protocol', 'service', 'action', 'rule'], rows[0]
+assert len(rows) == 8 and rows[5][4] == '161' and rows[5][2] == \"'=SUM(1+1)\", rows[5]
+assert rows[1][10] == 'SSH' and rows[1][11] == 'blocked' and rows[7][11] == 'allowed', rows"
+check "events -r: newest first" py "
+import json, subprocess
+def q(*a): return json.loads(subprocess.run(['$S', '--json', 'events', *a], capture_output=True, text=True).stdout)
+assert q('-r') == list(reversed(q())) and q('-r', '-n', '2')[0]['port'] == '443'"
+check "events: port 3389 is Remote Desktop and 161 SNMP in the kernel log, not Unknown" \
+  bash -c "'$S' events | grep -q '3389 *Remote Desktop' && '$S' events | grep -q '161 *SNMP'"
+check "events --history: the RULE column never shows the log marker (STOCKFW-DROP)" \
+  bash -c "'$S' events --history-dir '$H' -n 100 > '$TMP/out' && ! grep -q 'STOCKFW-' '$TMP/out' &&
+           '$S' --json events --history-dir '$H' | python3 -I -c 'import json,sys; assert all(e[\"rule_name\"] is None for e in json.load(sys.stdin))'"
+d_summary () { py "
+import collections, json, subprocess
+def run(*a): return json.loads(subprocess.run(['$S', '--json', 'events', *a], capture_output=True, text=True).stdout)
+d = run('--summary')
+src = collections.Counter(['203.0.113.5'] * 3 + ['198.51.100.7'] * 2 + ['192.0.2.44', '10.0.0.5'])
+want = sorted(src.items(), key=lambda kv: (-kv[1], kv[0]))
+got = [(g['key'], g['blocked'] + g['allowed']) for g in d['by']['src']]
+assert got == want, (got, want)
+assert d['blocked'] == 6 and d['allowed'] == 1 and d['total'] == 7, d
+assert d['by']['port'][0]['key'] == '22/tcp' and d['by']['port'][0]['blocked'] == 3, d['by']['port']
+assert d['by']['src'][0]['top_port'] == 22 and d['by']['src'][0]['distinct_ports'] == 2, d['by']['src'][0]
+assert sum(b['blocked'] + b['allowed'] for b in d['buckets']) == 7, d['buckets']
+blocked = run('--blocked', '-n', '100000', '--since', '24h')
+assert sum(g['blocked'] for g in d['by']['src']) == len(blocked) == 6
+p = run('--summary', '--port', '22,445', '--by', 'src')
+assert p['total'] == len(run('--port', '22,445', '-n', '100000')) == 4, p
+assert list(p['by']) == ['src'], p['by']"; }
+check "events --summary: counts per source and port equal a Counter over the fixture, filters included" d_summary
+check "  ...--top, --by hour and the table" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--summary', '--by', 'src,hour', '--top', '1'], capture_output=True, text=True).stdout)
+assert len(d['by']['src']) == 1 and d['by']['src'][0]['key'] == '203.0.113.5' and 'hour' in d['by'], d['by']
+out = subprocess.run(['$S', 'events', '--summary'], capture_output=True, text=True).stdout
+assert '6 blocked' in out and 'SOURCE' in out and '22/tcp' in out and 'Remote Desktop' in out, out"
+check "events: --by with a typo is refused with a suggestion; --by without --summary is refused" \
+  bash -c "'$S' events --summary --by sorce 2> '$TMP/err'; [ \$? -eq 2 ] && grep -q 'did you mean src' '$TMP/err' &&
+           '$S' events --by src 2> /dev/null; [ \$? -eq 2 ]"
+
+if [ "$(id -u)" = 0 ] && command -v script > /dev/null; then
+  # -f on a terminal: the live row sits under the header's columns
+  # (1.0.7 printed it with its own widths and merged the service and
+  # the protocol), and Ctrl-C ends it with a count on stderr, exit 0.
+  d_follow () { py "
+import os, re, subprocess, time, datetime
+live = '$D/live.log'
+open(live, 'w').write(open('$D/kern.log').read())
+env = dict(os.environ, STOCKFW_LOG_FILE=live)
+p = subprocess.Popen(['script', '-qec', 'COLUMNS=200 timeout -s INT 5 $S events -n 5 -f; echo rc=\$?', '/dev/null'],
+                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+time.sleep(2)
+stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+open(live, 'a').write(stamp + ' host kernel: [9.0] STOCKFW-DROP IN=eth0 OUT= SRC=2001:db8:aaaa:bbbb:cccc:dddd:eeee:1 DST=2001:db8::5 LEN=80 PROTO=TCP SPT=1 DPT=3389 SYN\n')
+out = p.communicate(timeout=20)[0].decode('utf-8', 'replace')
+lines = [re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', l.rstrip('\r')) for l in out.split('\n')]
+head = [l for l in lines if l.startswith('TIME')]
+row = [l for l in lines if '2001:db8' in l]
+assert len(head) == 1 and len(row) == 1, lines
+def starts(l): return [m.start() for m in re.finditer(r'(?:^|(?<=  ))\S', l)]
+assert starts(row[0]) == starts(head[0]), (head[0], row[0])
+assert 'Remote Desktop' in row[0] and 'TCP' in row[0], row[0]
+assert any(re.match(r'^1 event \(1 blocked\) in ', l) for l in lines), lines
+assert 'rc=0' in lines or 'rc=124' in lines, lines"; }
+  check "events -f: a live IPv6 row lines up with the header; Ctrl-C prints a count" d_follow
+  # The reader dying ends -f with a reason and exit 1: the followed
+  # file deleted (tail -F would wait for it forever), or the reader
+  # process gone.
+  d_death () { py "
+import os, subprocess, time
+live = '$D/live-$1.log'
+open(live, 'w').write('')
+env = dict(os.environ, STOCKFW_LOG_FILE=live)
+p = subprocess.Popen(['$S', 'events', '-n', '0', '-f'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+time.sleep(1.5)
+t0 = time.time()
+if '$1' == 'gone':
+    os.unlink(live)
+else:
+    subprocess.run(['pkill', '-f', 'tail -n 0 -F ' + live])
+out, err = p.communicate(timeout=10)
+took = time.time() - t0
+assert p.returncode == 1 and b'the event reader stopped' in err, (p.returncode, err)
+assert took <= 5, took"; }
+  check "events -f: the followed file deleted ends it within 5 s, exit 1, with the reason" d_death gone
+  check "events -f: the reader process killed ends it within 5 s, exit 1" d_death killed
+else
+  echo "skip: events -f checks (need root and script(1))"
+fi
+
+# listening: the sockets of a fixture /proc/net, the verdicts from the
+# What-If engine.  SSH is allowed from the LAN only.
+py "
+import os
+d = '$D/proc'
+os.makedirs(d)
+hdr = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n'
+def row(i, local, remote, st, inode):
+    return '%4d: %s %s %s 00000000:00000000 00:00000000 00000000     0        0 %d 1 0000000000000000 100 0 0 10 0\n' % (i, local, remote, st, inode)
+open(d + '/tcp', 'w').write(hdr + row(0, '00000000:0016', '00000000:0000', '0A', 91001)
+  + row(1, '00000000:1538', '00000000:0000', '0A', 91002) + row(2, '0100007F:0277', '00000000:0000', '0A', 91003)
+  + ''.join(row(3 + k, '0500000A:0016', '0764336C:%04X' % (40000 + k), '01', 92000 + k) for k in range(16)))
+open(d + '/tcp6', 'w').write(hdr)
+open(d + '/udp', 'w').write(hdr + row(0, '00000000:14E9', '00000000:0000', '07', 91005))
+open(d + '/udp6', 'w').write(hdr)
+"
+L_ENV=(env STOCKFW_RULES_DIR="$D/rules" STOCKFW_PROC_NET_DIR="$D/proc" STOCKFW_LAN_PREFIX=192.168.1.0/24)
+"${L_ENV[@]}" "$S" policy add inbound-allow-service SSH 22 192.168.1.0/24 > /dev/null
+d_listen () { py "
+import json, subprocess, sys
+env = dict(STOCKFW_RULES_DIR='$D/rules', STOCKFW_PROC_NET_DIR='$D/proc', STOCKFW_LAN_PREFIX='192.168.1.0/24')
+import os; env = dict(os.environ, **env)
+d = json.loads(subprocess.run(['$S', '--json', 'listening'], capture_output=True, text=True, env=env).stdout)
+by = {(x['proto'], x['port']): x for x in d}
+assert set(by) == {('tcp', 22), ('tcp', 5432), ('tcp', 631), ('udp', 5353)}, by
+ssh = by[('tcp', 22)]
+want = sys.argv[1] if len(sys.argv) > 1 else '$1'
+if want == 'lan':
+    assert ssh['lan'] == {'verdict': 'ALLOWED', 'rule_ref': 'inbound-allow-service:1'}, ssh
+else:
+    assert ssh['lan']['verdict'] == 'BLOCKED', ssh
+assert ssh['internet']['verdict'] == 'BLOCKED' and ssh['scope'] == 'all' and ssh['bind'] == '0.0.0.0', ssh
+assert by[('tcp', 5432)]['lan']['verdict'] == 'BLOCKED' and by[('tcp', 5432)]['internet']['verdict'] == 'BLOCKED'
+assert by[('tcp', 631)]['scope'] == 'local' and by[('tcp', 631)]['lan'] is None
+assert by[('udp', 5353)]['scope'] == 'all' and ssh['policy'] == 'saved'"; }
+check "listening: SSH limited to the LAN is ALLOWED from it by inbound-allow-service:1, BLOCKED from the internet" d_listen lan
+check "  ...the table: the rule that decides, local sockets counted, not shown" \
+  bash -c "STOCKFW_RULES_DIR='$D/rules' STOCKFW_PROC_NET_DIR='$D/proc' STOCKFW_LAN_PREFIX=192.168.1.0/24 '$S' listening > '$TMP/out' 2> /dev/null &&
+           grep -q '22/tcp .*ALLOWED *BLOCKED *inbound-allow-service:1' '$TMP/out' &&
+           grep -q '5432/tcp .*BLOCKED *BLOCKED *default inbound block' '$TMP/out' &&
+           ! grep -q '631/tcp' '$TMP/out' && grep -q '+ 1 socket for this computer only' '$TMP/out' &&
+           grep -q '0 ports reachable from the internet' '$TMP/out'"
+check "  ...-q prints only what the internet reaches: nothing here" \
+  bash -c "[ -z \"\$(STOCKFW_RULES_DIR='$D/rules' STOCKFW_PROC_NET_DIR='$D/proc' '$S' -q listening)\" ]"
+"${L_ENV[@]}" "$S" policy remove inbound-allow-service 1 > /dev/null
+check "listening: with the SSH row removed, 22 is BLOCKED from the LAN too (the What-If join is real)" d_listen none
+"${L_ENV[@]}" "$S" policy add inbound-allow-service SSH 22 Anyone > /dev/null
+check "  ...and SSH for Anyone is the one line -q prints" \
+  bash -c "STOCKFW_RULES_DIR='$D/rules' STOCKFW_PROC_NET_DIR='$D/proc' '$S' -q listening > '$TMP/out' &&
+           [ \$(grep -c . '$TMP/out') -eq 2 ] && grep -q '^22/tcp .*ALLOWED *ALLOWED' '$TMP/out'"
+check "listening (live): a TCP listener on 127.0.0.1 is local, with its program; a UDP socket is listed" py "
+import json, os, socket, subprocess
+t = socket.socket(); t.bind(('127.0.0.1', 0)); t.listen(1)
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.bind(('0.0.0.0', 0))
+env = dict(os.environ, STOCKFW_RULES_DIR='$D/rules')
+env.pop('STOCKFW_PROC_NET_DIR', None)
+d = json.loads(subprocess.run(['$S', '--json', 'listening'], capture_output=True, text=True, env=env).stdout)
+mine = [x for x in d if x['proto'] == 'tcp' and x['port'] == t.getsockname()[1]]
+assert len(mine) == 1 and mine[0]['scope'] == 'local' and mine[0]['lan'] is None, mine
+assert (mine[0]['program'] or '').startswith('python'), mine
+assert any(x['proto'] == 'udp' and x['port'] == u.getsockname()[1] and x['scope'] == 'all' for x in d), d"
+
+# connections: 16 sessions from one address collapse into one row.
+check "connections --by remote: 16 fixture sessions are one row, count 16" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_PROC_NET_DIR='$D/proc')
+d = json.loads(subprocess.run(['$S', '--json', 'connections', '--by', 'remote'], capture_output=True, text=True, env=env).stdout)
+assert d == [{'key': '108.51.100.7', 'count': 16}], d
+c = json.loads(subprocess.run(['$S', '--json', 'connections', '--port', '40003'], capture_output=True, text=True, env=env).stdout)
+assert len(c) == 1 and c[0]['remote_port'] == 40003 and c[0]['local_port'] == 22 and c[0]['state'] == 'ESTABLISHED', c
+assert json.loads(subprocess.run(['$S', '--json', 'connections', '--state', 'SYN_SENT'], capture_output=True, text=True, env=env).stdout) == []"
+check "connections: --state with a typo, --by with a typo and --dir sideways are usage errors" \
+  bash -c "'$S' connections --state ESTABLISHD 2> '$TMP/err'; [ \$? -eq 2 ] && grep -q 'did you mean ESTABLISHED' '$TMP/err' &&
+           '$S' connections --by remot 2> /dev/null; [ \$? -eq 2 ] && '$S' connections --dir sideways 2> /dev/null; [ \$? -eq 2 ]"
+d_legend () { STOCKFW_PROC_NET_DIR="$D/proc" d_nobody "$S" connections > "$TMP/out" 2> "$TMP/err" &&
+              grep -q '108.51.100.7' "$TMP/out" && ! grep -q 'another user' "$TMP/out" &&
+              { [ "$(id -u)" = 0 ] && ! command -v setpriv > /dev/null || grep -q 'another user' "$TMP/err"; }; }
+check "connections: the \"?\" legend goes to stderr (as uid 65534), never into the table on stdout" d_legend
+
+# interfaces --watch: NDJSON per frame, the banner on stderr only.
+check "interfaces --watch=1 -c 2 --json: two lines, each a JSON array" py "
+import json, subprocess
+r = subprocess.run(['$S', '--json', 'interfaces', '--watch=1', '-c', '2'], capture_output=True, text=True, timeout=30)
+lines = r.stdout.splitlines()
+assert r.returncode == 0 and len(lines) == 2 and all(isinstance(json.loads(l), list) for l in lines), r"
+check "interfaces --watch in a pipe: no ESC, and the banner once, on stderr, never on stdout" py "
+import subprocess
+r = subprocess.run(['$S', 'interfaces', '--watch=1', '-c', '2'], capture_output=True, timeout=30)
+assert b'\x1b' not in r.stdout and b'Refreshing' not in r.stdout, r.stdout
+assert r.stderr.count(b'Refreshing every 1 s') == 1 and r.stdout.count(b'ADAPTER') == 2, r"
+
+export STOCKFW_LOG_FILE="$TMP/kern.log"
+rm -rf "$D"
 # === end WP-D ===
 
 # === WP-F ===

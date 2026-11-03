@@ -419,6 +419,28 @@ void                 fs_cli_status_snapshot_free (FsCliStatusSnapshot *snap);
 /* === end WP-C === */
 
 /* === WP-D === */
+/* The rule an event names, for the RULE column and "rule_name": the
+ * threat-intel list ("Threat intel: X" gives X), or NULL -- never the
+ * kernel-log marker the saved history keeps there.  g_free. */
+gchar  *fs_cli_hit_rule_name (const FsHit *hit);
+/* The event's time as unix seconds; -1 when its stamp cannot be read. */
+gint64  fs_cli_hit_epoch     (const FsHit *hit);
+
+/* A table printed a row at a time (fs-cli-out.c).  fs_cli_table_widths
+ * lays the columns out as fs_cli_table_ex would for `rows' (which may
+ * be empty: the headers then set the widths) and returns n_cols widths
+ * (g_free).  fs_cli_table_header prints the header row (none with
+ * --plain); fs_cli_table_row prints one row at those widths, cutting a
+ * wider cell on a terminal only, each cell through fs_cli_out_safe;
+ * colours (nullable, n_cols entries, NULL for none) colour a cell. */
+guint *fs_cli_table_widths (const gchar * const *headers, guint n_cols,
+                            GPtrArray *rows, guint max_cell, gint flex_col);
+void   fs_cli_table_header (const gchar * const *headers, guint n_cols,
+                            const guint *widths);
+void   fs_cli_table_row    (gchar **row, guint n_cols, const guint *widths,
+                            const gchar * const *colours);
+
+gint fs_cli_cmd_listening (gint argc, gchar **argv);
 /* === end WP-D === */
 
 /* === WP-F === */

@@ -209,6 +209,13 @@ typedef struct
 	 * when the platform or the account cannot enumerate them. */
 	GList *(*list_connections) (void);
 
+	/* socket inode -> owning program for every socket this account
+	 * can see the owner of (gint64* keys, string values;
+	 * g_hash_table_unref).  `stockfw listening' names the program
+	 * behind each open port with it.  NULL where the platform has no
+	 * such map (Windows). */
+	GHashTable *(*socket_owners) (void);
+
 	/* Executable paths of currently running processes, deduplicated
 	 * (case-insensitively: two spellings of one path are one row).
 	 * Returns a GList of gchar* -- caller frees with g_list_free_full

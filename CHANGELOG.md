@@ -39,6 +39,40 @@ into `/usr/local/share/doc/stockfw/`.
 <!-- WP-B -->
 <!-- WP-C -->
 <!-- WP-D -->
+- **`events` triage.** `--summary` counts the events of a window (the
+  last 24 hours by default) per source and per port, with a bar per
+  hour; `--by` and `--top` choose the tables. `--wide` adds the devices,
+  length and ToS, `--csv` writes what the desktop app exports, `-r`
+  puts the newest first and `--utc` prints ISO times. `--port` takes a
+  list (`22,443,8000:8100`) and `--dir` takes `both`.
+- **`events` refuses what it cannot answer.** `--blocked` with
+  `--allowed`, and a `--proto` other than tcp, udp, icmp or icmpv6,
+  are usage errors (exit 2) instead of the last flag winning.
+- **`events -f` lines up and stops honestly.** Live rows use the
+  table's columns. When the event reader stops, `-f` says why and exits
+  1 instead of waiting forever. Ctrl-C prints how many events were seen.
+- **The RULE column** names the threat-intel list that blocked an
+  event, and never the log marker. Events JSON gains `length`, `tos`,
+  `epoch` and `rule_name`.
+- **Port names.** 3389 is Remote Desktop and 161 is SNMP in the event
+  and connection lists (they read "Unknown"), and so are other
+  well-known ports. This also changes the desktop app's Events page.
+- **New command `stockfw listening`.** Every open TCP and UDP port, the
+  program behind it, and whether the policy lets the LAN and the
+  internet reach it, with the rule that decides.
+- **`connections`** shows both ports and the TCP state, filters with
+  `--addr`, `--port`, `--program`, `--dir`, `--state` and `--no-local`,
+  counts with `--by remote|program|port`, and adds connected UDP with
+  `--udp`. The "?" legend now goes to stderr.
+- **`interfaces`** measures the rate over the real time between two
+  samples (the first `--watch` frame showed half the rate), stops on
+  SIGTERM, clears the screen on any terminal and never in a pipe, and
+  prints its banner on stderr. `--watch=SECS`, `-c COUNT` and `--all`
+  are new; adapters that are down are hidden unless `--all` is given.
+  With `--json --watch` each frame is one line.
+- **SSH sessions on any port are kept.** The addresses a blocklist must
+  never cut now include the clients of sshd on every port it listens
+  on, not only port 22.
 <!-- WP-F -->
 <!-- WP-E -->
 
