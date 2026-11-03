@@ -11505,7 +11505,7 @@ static void test_lockout_check (void)
 	}
 
 	/* A busy jump host (docs 15.2, review notes): 70 sessions from the
-	 * LAN sort before the admin's own peer, 203.0.113.5, which the SSH
+	 * SSH row's network sort before the admin's own peer, 203.0.114.5, which the SSH
 	 * row does not let in.  Capped at 64, the plain check never asks
 	 * about it and says ALLOWED; the session's own peer is asked about
 	 * first, outside the cap, and the report counts what it left out. */
@@ -11514,14 +11514,14 @@ static void test_lockout_check (void)
 		FsRangeSet *own = fs_range_set_new ();
 
 		for (guint i = 1; i <= 70; i++) {
-			gchar *a = g_strdup_printf ("192.168.1.%u", i);
+			gchar *a = g_strdup_printf ("203.0.113.%u", i);
 
 			fs_range_set_add_text (busy, a);
 			g_free (a);
 		}
-		fs_range_set_add_text (busy, "203.0.113.5");
+		fs_range_set_add_text (busy, "203.0.114.5");
 		fs_range_set_normalize (busy);
-		fs_range_set_add_text (own, "203.0.113.5");
+		fs_range_set_add_text (own, "203.0.114.5");
 
 		r = fs_lockout_check (policy, NULL, busy, ports);
 		CHECK (r->checked && !fs_lockout_report_cuts (r) &&
@@ -11534,7 +11534,7 @@ static void test_lockout_check (void)
 		r = fs_lockout_check_own (policy, NULL, own, busy, ports);
 		CHECK (r->checked && fs_lockout_report_cuts (r) &&
 		       r->verdict == FS_WHATIF_BLOCKED && r->worst != NULL &&
-		       g_strcmp0 (r->worst->peer, "203.0.113.5") == 0 &&
+		       g_strcmp0 (r->worst->peer, "203.0.114.5") == 0 &&
 		       r->worst->own &&
 		       r->pairs->len == FS_LOCKOUT_MAX_PEERS + 1 &&
 		       r->skipped == 6,
