@@ -8620,7 +8620,7 @@ out:
  * The What-If card's "Start the firewall" called fs_backend()->start()
  * directly, so audit-only mode did not hold it and nothing was audited.
  * Every start in src/ui now goes through the start gate
- * (fs_statusview_firewall_start -> fs_firewall_start_safe, or
+ * (fs_statusview_firewall_start[_report] -> fs_firewall_start_safe, or
  * fs_firewall_start_lifting at launch).  Read from the source;
  * tests/ui-whatif-start-smoke.c presses the button. */
 static void test_no_direct_start_in_ui (void)
@@ -8656,14 +8656,14 @@ static void test_no_direct_start_in_ui (void)
 		const gchar *fn = strstr (src, "\nwhatif_start_firewall (");
 		const gchar *end = fn != NULL ? strstr (fn, "\n}") : NULL;
 
-		gate = fn != NULL ? strstr (fn, "fs_statusview_firewall_start (")
+		gate = fn != NULL ? strstr (fn, "fs_statusview_firewall_start_report (")
 		                  : NULL;
 		if (gate != NULL && end != NULL && gate > end)
 			gate = NULL;
 	}
 	CHECK (gate != NULL,
 	       "H12: the What-If start goes through "
-	       "fs_statusview_firewall_start (the start gate)");
+	       "fs_statusview_firewall_start_report (the start gate)");
 	g_free (src);
 }
 

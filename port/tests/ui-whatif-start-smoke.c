@@ -25,7 +25,17 @@
  *            enforcement on (Windows): it starts, and the audit line
  *            names the hold;
  *   unheld   audit-only off (Linux model, nothing applied before): it
- *            starts once and is audited.
+ *            starts once and is audited;
+ *   winfail  audit-only on, Windows model, and the backend's start
+ *            fails: the What-If window says it did not start, not that
+ *            it was held (a hold never stops a Windows start);
+ *   badjournal  audit-only on, Linux model, a journal that cannot be
+ *            read: the start is refused, and the window says it did
+ *            not start, not that it was held.
+ *
+ * Every scenario also checks the question asked before the start: on
+ * Linux it says the last applied policy goes live (not "the saved
+ * policy"), on Windows that the firewall is switched on.
  *
  * Needs a display (xvfb-run).  On Linux it needs root: the What-If
  * trusts a "stopped" reading only from root (fs-copilot.c,
@@ -77,6 +87,7 @@ static int failures = 0;
 
 static FsFirewallState fake_state = FS_FW_STOPPED;
 static guint           starts = 0, applies = 0;
+static gboolean        start_fails = FALSE;
 static GPtrArray      *seen_at_apply = NULL;   /* "kind|csv" */
 
 static GPtrArray *
@@ -119,8 +130,13 @@ static FsFirewallState fake_get_state (void) { return fake_state; }
 static gboolean
 fake_start (GError **error)
 {
-	(void) error;
 	starts++;
+	if (start_fails) {
+		g_set_error_literal (error, g_quark_from_static_string (
+		                             "fake"), 1,
+		                     "fake start failed");
+		return FALSE;
+	}
 	fake_state = FS_FW_RUNNING;
 	return TRUE;
 }
@@ -427,8 +443,19 @@ prepare (void)
 		fs_policy_free (live);
 	}
 
+	/* badjournal: a journal is there but its row cannot be read. */
+	if (g_strcmp0 (scenario, "badjournal") == 0) {
+		gchar *journal = fs_apply_journal_path ();
+
+		g_file_set_contents (journal, "not a journal row\n", -1,
+		                     NULL);
+		g_free (journal);
+	}
+
 	fake_backend.start_applies_policy =
-		g_strcmp0 (scenario, "windows") != 0;
+		g_strcmp0 (scenario, "windows") != 0 &&
+		g_strcmp0 (scenario, "winfail") != 0;
+	start_fails = g_strcmp0 (scenario, "winfail") == 0;
 
 	fs_prefs_init ();
 	fs_prefs_load ();
@@ -480,6 +507,19 @@ press_start (void)
 
 	CHECK (strstr (dialogs_seen->str, "Start the firewall now?") != NULL,
 	       "%s: the start is asked first", scenario);
+	CHECK (strstr (dialogs_seen->str, "loads the saved policy") == NULL,
+	       "%s: the question does not promise the saved policy",
+	       scenario);
+	if (fake_backend.start_applies_policy)
+		CHECK (strstr (dialogs_seen->str,
+		               "filtering with the last policy") != NULL,
+		       "%s: the question says the last applied policy goes "
+		       "live", scenario);
+	else
+		CHECK (strstr (dialogs_seen->str,
+		               "switches Windows Firewall on") != NULL,
+		       "%s: the question says the firewall is switched on",
+		       scenario);
 
 	status = window_status (wi);
 	if (g_strcmp0 (scenario, "held") == 0) {
@@ -522,6 +562,37 @@ press_start (void)
 		                   "audit-only testing mode", NULL),
 		       "windows: an audit line says it started, and names the "
 		       "hold");
+		CHECK (strstr (status, "was started") != NULL &&
+		       strstr (status, "last applied") == NULL,
+		       "windows: the What-If window says it was started "
+		       "(\"%s\")", status);
+	} else if (g_strcmp0 (scenario, "winfail") == 0) {
+		CHECK (starts == 1 && fake_state == FS_FW_STOPPED,
+		       "winfail: the start was tried and failed (%u starts)",
+		       starts);
+		CHECK (audit_line ("firewall start failed", "what-if", NULL),
+		       "winfail: an audit line says the start failed");
+		CHECK (strstr (dialogs_seen->str,
+		               "Failed to start the firewall") != NULL,
+		       "winfail: the error dialog says it failed");
+		CHECK (strstr (status, "did not start") != NULL &&
+		       strstr (status, "held") == NULL,
+		       "winfail: the What-If window says it did not start, "
+		       "not that it was held (\"%s\")", status);
+	} else if (g_strcmp0 (scenario, "badjournal") == 0) {
+		CHECK (starts == 0 && applies == 0 &&
+		       fake_state == FS_FW_STOPPED,
+		       "badjournal: the firewall was not touched (%u starts, "
+		       "%u applies)", starts, applies);
+		CHECK (audit_line ("firewall start refused", "what-if", NULL),
+		       "badjournal: an audit line says the start was refused");
+		CHECK (strstr (dialogs_seen->str,
+		               "Failed to start the firewall") != NULL,
+		       "badjournal: the error dialog says it failed");
+		CHECK (strstr (status, "did not start") != NULL &&
+		       strstr (status, "held") == NULL,
+		       "badjournal: the What-If window says it did not start, "
+		       "not that it was held (\"%s\")", status);
 	} else if (g_strcmp0 (scenario, "unheld") == 0) {
 		CHECK (starts == 1,
 		       "unheld: the firewall was started once (%u starts)",
@@ -591,7 +662,8 @@ static int
 run_all (const gchar *self)
 {
 	static const gchar *const all[] = {
-		"held", "journal", "windows", "unheld"
+		"held", "journal", "windows", "unheld", "winfail",
+		"badjournal"
 	};
 	int bad = 0;
 

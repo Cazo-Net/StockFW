@@ -4907,12 +4907,13 @@ whatif_open_rule (GtkWidget *window, const FsWhatIfAction *act)
 }
 
 /* [ whatif_start_firewall ]
- * Through the start gate (fs_statusview_firewall_start ->
+ * Through the start gate (fs_statusview_firewall_start_report ->
  * fs_firewall_start_safe), like the Overview's Start button and the
  * tray's Resume: audit-only mode and the Policy Lock hold it, it is
  * audited, and the "last applied" journal decides what goes live
- * (H12).  The gate reports a hold or a failure in its own dialog;
- * the log says what happened. */
+ * (H12).  The gate reports a hold or a failure in its own dialog; the
+ * log says the same thing, from what the gate did -- a failure with a
+ * hold on is still a failure. */
 static void
 whatif_start_firewall (const FsWhatIfResult *result,
                        const FsWhatIfAction *act)
@@ -4922,9 +4923,20 @@ whatif_start_firewall (const FsWhatIfResult *result,
 
     if (!act->verified)
         return;
-    if (!whatif_confirm (act->label, _("Start the firewall now?\n\n"
-                                       "It loads the saved policy and "
-                                       "starts filtering."))) {
+    /* Say what a start does: on Linux it brings back the last policy
+     * that was applied, never the saved file (start_lifting). */
+    if (!whatif_confirm (act->label,
+                         fs_backend ()->start_applies_policy
+                         ? _("Start the firewall now?\n\n"
+                             "It starts filtering with the last policy "
+                             "that was applied; changes saved since then "
+                             "stay off until you apply them.  If no "
+                             "policy was applied before, it applies the "
+                             "saved one, unless audit-only mode or the "
+                             "Policy Lock is on: then it does not start.")
+                         : _("Start the firewall now?\n\n"
+                             "It switches Windows Firewall on.  Your "
+                             "rules are not changed."))) {
         whatif_log ("\n[=] The firewall was not started.\n", "dim");
         return;
     }
@@ -4932,27 +4944,28 @@ whatif_start_firewall (const FsWhatIfResult *result,
     parent = whatif_window != NULL
              ? whatif_window : gtk_widget_get_toplevel (sim_output);
     hold = fs_policyview_hold_reason ();
-    if (!fs_statusview_firewall_start (parent, "what-if")) {
-        if (hold != NULL) {
-            whatif_log ("\n[=] The firewall was not started. Changes are "
-                        "held (", "orange");
-            whatif_log (hold, "orange");
-            whatif_log ("); the message says why.\n", "orange");
-        } else {
-            whatif_log ("\n[!] The firewall did not start; the message "
-                        "says why.\n", "red");
-        }
+    switch (fs_statusview_firewall_start_report (parent, "what-if")) {
+    case FS_START_HELD:
+        whatif_log ("\n[=] The firewall was not started. Changes are "
+                    "held (", "orange");
+        whatif_log (hold != NULL ? hold : "", "orange");
+        whatif_log ("); the message says why.\n", "orange");
         return;
-    }
-
-    if (hold != NULL) {
+    case FS_START_FAILED:
+        whatif_log ("\n[!] The firewall did not start; the message "
+                    "says why.\n", "red");
+        return;
+    case FS_START_RUNNING_HELD:
         whatif_log ("\n[OK] The firewall was started with the last "
                     "applied policy. Changes since then stay held (",
                     "orange");
-        whatif_log (hold, "orange");
+        whatif_log (hold != NULL ? hold : "", "orange");
         whatif_log (").\n", "orange");
-    } else {
+        break;
+    case FS_START_RUNNING:
+    default:
         whatif_log ("\n[OK] The firewall was started.\n", "green");
+        break;
     }
     whatif_ask_again (result, act->gives);
 }

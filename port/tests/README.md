@@ -1318,6 +1318,12 @@ firewall" and says Yes.  One process per scenario:
 | journal | audit-only on, Linux model, a policy applied before: the journal goes in (the allow saved but never applied stays off), `start()` is never called, the audit line says `held` |
 | windows | audit-only on, Windows model (start only switches enforcement on): one start, and the audit line names the hold |
 | unheld | audit-only off: one start, audited |
+| winfail | audit-only on, Windows model, the backend's start fails: the audit line `firewall start failed`, the error dialog, and the window says "did not start", not "held" |
+| badjournal | audit-only on, Linux model, a journal that cannot be read: nothing touched, `firewall start refused`, the error dialog, and the window says "did not start", not "held" |
+
+Every scenario also checks the question asked first: it never says
+"loads the saved policy"; on Linux it says the last applied policy goes
+live, on Windows that the firewall is switched on.
 
 On Linux the What-If trusts a "stopped" reading only from root, so as
 another user the smoke prints SKIP.  CI runs it with `sudo` in the
@@ -1327,7 +1333,9 @@ checks that no file in `src/ui` calls the backend's `start` directly.
 
 Teeth: put back `fs_backend ()->start (...)` in `whatif_start_firewall`
 and all four scenarios fail (a start while held, no audit line), and
-so do both `test-core.sh` checks.
+so do both `test-core.sh` checks.  Put back the old message choice (a
+failed start reported as held whenever a hold is on) and `winfail` and
+`badjournal` fail.  Put back the old question and all six fail.
 
 
 ## No tray, and words the app does not take (`tests/test-notray.sh`)

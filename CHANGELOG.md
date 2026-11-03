@@ -296,7 +296,10 @@ It is still read-only and still listens on 127.0.0.1 only.
   Linux saved changes that were never applied went live. It now starts
   the firewall the same way as the Overview's Start button: held when a
   hold is on, the last applied policy on Linux, and an audit line every
-  time. The What-If window says what happened.
+  time. The What-If window says what happened, and a start that failed
+  is reported as a failure, not as held. The question before the start
+  no longer says it "loads the saved policy": on Linux it says the last
+  applied policy goes live, on Windows that the firewall is switched on.
 - **Windows: no console windows during threat-intel updates.** Turning
   on a blocklist, "Update now", and the daily update each downloaded
   every list through `curl.exe`, and each download opened a black
