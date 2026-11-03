@@ -297,6 +297,8 @@ if(FS_PLATFORM STREQUAL "linux")
     src/cli/fs-cli-views.c
     src/cli/fs-cli-intel.c
     src/cli/fs-dashboard.c
+    src/cli/fs-dash-http.c
+    src/cli/fs-dash-auth.c
     src/cli/fs-cli-complete.c
   )
   add_executable(stockfw
@@ -307,6 +309,28 @@ if(FS_PLATFORM STREQUAL "linux")
   target_link_libraries(stockfw PRIVATE fs-core-nogui PkgConfig::GIO)
   target_compile_definitions(stockfw PRIVATE FS_VERSION="${PROJECT_VERSION}")
   install(TARGETS stockfw RUNTIME DESTINATION bin)
+
+  # The dashboard's test build (PR 2, 2B): the same sources compiled
+  # with FS_DASH_TESTING, the only build in which $STOCKFW_TEST_CLOCK_FILE
+  # moves the session clock, $STOCKFW_TEST_WSL says whether this is WSL
+  # and $STOCKFW_TEST_OWNERLESS_UID makes one uid's sockets look as if
+  # they had no owner.  tests/test-dashboard.sh builds it by name.
+  add_executable(stockfw-dash-test EXCLUDE_FROM_ALL
+    ${FS_CLI_SOURCES}
+    ${FS_BACKEND_SOURCES}
+  )
+  target_include_directories(stockfw-dash-test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(stockfw-dash-test PRIVATE fs-core-nogui PkgConfig::GIO)
+  target_compile_definitions(stockfw-dash-test PRIVATE
+                             FS_VERSION="${PROJECT_VERSION}" FS_DASH_TESTING=1)
+
+  # The session rules of fs-dash-auth.c on a clock of the test's own.
+  add_executable(fs-dash-auth-test EXCLUDE_FROM_ALL
+    tests/dash-auth-test.c
+    src/cli/fs-dash-auth.c
+  )
+  target_include_directories(fs-dash-auth-test PRIVATE src)
+  target_link_libraries(fs-dash-auth-test PRIVATE PkgConfig::GIO)
 
   # The manual page and shell completion (cli-plan.md WP-E).  The page
   # is written by `stockfw __man' from the same command tables the
