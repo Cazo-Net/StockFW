@@ -11501,6 +11501,50 @@ static void test_lockout_check (void)
 		fs_rule_free (ssh6);
 	}
 
+	/* A busy jump host (docs 15.2, review notes): 70 sessions from the
+	 * LAN sort before the admin's own peer, 203.0.113.5, which the SSH
+	 * row does not let in.  Capped at 64, the plain check never asks
+	 * about it and says ALLOWED; the session's own peer is asked about
+	 * first, outside the cap, and the report counts what it left out. */
+	{
+		FsRangeSet *busy = fs_range_set_new ();
+		FsRangeSet *own = fs_range_set_new ();
+
+		for (guint i = 1; i <= 70; i++) {
+			gchar *a = g_strdup_printf ("192.168.1.%u", i);
+
+			fs_range_set_add_text (busy, a);
+			g_free (a);
+		}
+		fs_range_set_add_text (busy, "203.0.113.5");
+		fs_range_set_normalize (busy);
+		fs_range_set_add_text (own, "203.0.113.5");
+
+		r = fs_lockout_check (policy, NULL, busy, ports);
+		CHECK (r->checked && !fs_lockout_report_cuts (r) &&
+		       r->pairs->len == FS_LOCKOUT_MAX_PEERS && r->skipped == 7,
+		       "lockout: past the cap, the plain check stops at %u peers "
+		       "and counts 7 not asked (%u, skipped %u)",
+		       FS_LOCKOUT_MAX_PEERS, r->pairs->len, r->skipped);
+		fs_lockout_report_free (r);
+
+		r = fs_lockout_check_own (policy, NULL, own, busy, ports);
+		CHECK (r->checked && fs_lockout_report_cuts (r) &&
+		       r->verdict == FS_WHATIF_BLOCKED && r->worst != NULL &&
+		       g_strcmp0 (r->worst->peer, "203.0.113.5") == 0 &&
+		       r->worst->own &&
+		       r->pairs->len == FS_LOCKOUT_MAX_PEERS + 1 &&
+		       r->skipped == 6,
+		       "lockout: the session's own peer is asked about first, "
+		       "past a busy host's 70 others, and is cut (%s, %u pairs, "
+		       "skipped %u)", r->worst != NULL ? r->worst->peer : "-",
+		       r->pairs->len, r->skipped);
+		fs_lockout_report_free (r);
+
+		fs_range_set_free (own);
+		fs_range_set_free (busy);
+	}
+
 	CHECK (fs_lockout_env_port ("10.0.0.5 50000 10.0.0.1 2222") == 2222 &&
 	       fs_lockout_env_port ("10.0.0.5 50000 10.0.0.1") == 0 &&
 	       fs_lockout_env_port ("a b c 99999") == 0 &&
@@ -11901,6 +11945,50 @@ if [ "$(uname -s)" = Linux ] && command -v python3 > /dev/null; then
     exit 1
   fi
   echo "ok:   hostnet: sshd found on port $SSHD_PORT by its owner, and its session kept"
+
+  # Socket activation (ssh.socket; docs 15.2, review notes): a lower
+  # pid that is not sshd (systemd, pid 1) holds the listener too.  Any
+  # holder that is sshd makes it sshd's port, not only the first.
+  rm -f "$BUILD_DIR/sshd-in" "$BUILD_DIR/sshd-port"
+  mkfifo "$BUILD_DIR/sshd-in"
+  python3 -I tests/fake-sshd.py --activated < "$BUILD_DIR/sshd-in" > "$BUILD_DIR/sshd-port" &
+  SSHD_PID=$!
+  exec 7> "$BUILD_DIR/sshd-in"
+  for _ in $(seq 50); do [ -s "$BUILD_DIR/sshd-port" ] && break; sleep 0.1; done
+  SSHD_PORT="$(cat "$BUILD_DIR/sshd-port")"
+  SSHD_PORTS="$("$BUILD_DIR/test-sockets" --ssh-ports)"
+  SSHD_SESSION="$("$BUILD_DIR/test-sockets" --session 127.0.0.3)"
+  exec 7>&-
+  wait "$SSHD_PID" 2> /dev/null || true
+  case ",$SSHD_PORTS," in
+    *",$SSHD_PORT,"*) ;;
+    *) echo "FAIL: socket-activated sshd's port $SSHD_PORT is not among the ssh ports ($SSHD_PORTS)"; exit 1 ;;
+  esac
+  if [ "$SSHD_SESSION" != yes ]; then
+    echo "FAIL: the session to socket-activated sshd on port $SSHD_PORT is not kept"
+    exit 1
+  fi
+  echo "ok:   hostnet: socket-activated sshd on port $SSHD_PORT (an earlier non-sshd holder) is found, its session kept"
+
+  # The session this process runs in, with no $SSH_CONNECTION (sudo
+  # drops it): the connection its sshd ancestor holds on sshd's port.
+  # The lockout guard asks about it before any other peer.
+  rm -f "$BUILD_DIR/sshd-in" "$BUILD_DIR/sshd-port"
+  mkfifo "$BUILD_DIR/sshd-in"
+  env -u SSH_CONNECTION -u SSH_CLIENT python3 -I tests/fake-sshd.py --exec "$BUILD_DIR/test-sockets" --own \
+    < "$BUILD_DIR/sshd-in" > "$BUILD_DIR/sshd-port" &
+  SSHD_PID=$!
+  exec 7> "$BUILD_DIR/sshd-in"
+  for _ in $(seq 50); do [ -s "$BUILD_DIR/sshd-port" ] && break; sleep 0.1; done
+  SSHD_OWN="$(cat "$BUILD_DIR/sshd-port")"
+  exec 7>&-
+  wait "$SSHD_PID" 2> /dev/null || true
+  if [ "$SSHD_OWN" != "own=127.0.0.3" ]; then
+    echo "FAIL: the session's own peer from its sshd ancestor is not 127.0.0.3 ($SSHD_OWN)"
+    exit 1
+  fi
+  echo "ok:   hostnet: the session's own peer (127.0.0.3) is read from its sshd ancestor, no \$SSH_CONNECTION"
+  rm -f "$BUILD_DIR/sshd-in" "$BUILD_DIR/sshd-port"
 fi
 # `stockfw interfaces': a rate is the bytes over the real time between
 # the two samples.  1.0.7 divided the first --watch frame, measured over

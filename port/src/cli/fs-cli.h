@@ -361,6 +361,10 @@ gchar *fs_cli_wrap (const gchar *text, guint indent);
  * gives "".  g_free the result. */
 gchar *fs_cli_out_safe (const gchar *text);
 
+/* fs_cli_out_safe on each line of a text that has several: the line
+ * breaks are kept, everything else is escaped.  g_free the result. */
+gchar *fs_cli_out_safe_lines (const gchar *text);
+
 /* Symbols, as ASCII when the locale's charset is not UTF-8. */
 typedef enum
 {

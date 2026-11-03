@@ -210,12 +210,28 @@ notes_json (GString *out, const GPtrArray *notes)
 	g_string_append_c (out, ']');
 }
 
+/* [ print_safe ] -- a text that names a list or a feed after its
+ * owner's name, line by line through fs_cli_out_safe, then `after'. */
+static void
+print_safe (const gchar *text, const gchar *after)
+{
+	gchar *safe = fs_cli_out_safe_lines (text);
+
+	printf ("%s%s", safe, after);
+	g_free (safe);
+}
+
+/* [ notes_print ] -- the engine's notes name lists and feeds after
+ * the names their owners gave them: through fs_cli_out_safe. */
 static void
 notes_print (const GPtrArray *notes)
 {
-	for (guint i = 0; notes != NULL && i < notes->len; i++)
-		printf ("%snote:%s %s\n", fs_cli_amber (), fs_cli_reset (),
-		        (const gchar *) g_ptr_array_index (notes, i));
+	for (guint i = 0; notes != NULL && i < notes->len; i++) {
+		gchar *note = fs_cli_out_safe_lines (g_ptr_array_index (notes, i));
+
+		printf ("%snote:%s %s\n", fs_cli_amber (), fs_cli_reset (), note);
+		g_free (note);
+	}
 }
 
 /* ------------------------------------------------------------ sources */
@@ -510,8 +526,14 @@ fs_cli_intel_status_line (void)
 
 	printf ("  %-12s %s%s%s", "Threat intel", state_color (state),
 	        fs_intel_state_to_string (state), fs_cli_reset ());
-	if (detail != NULL)
-		printf ("%s  (%s)%s", fs_cli_dim (), detail, fs_cli_reset ());
+	/* The detail names the enforced or missing lists (a name the
+	 * user, or an imported file's name, chose). */
+	if (detail != NULL) {
+		gchar *safe = fs_cli_out_safe (detail);
+
+		printf ("%s  (%s)%s", fs_cli_dim (), safe, fs_cli_reset ());
+		g_free (safe);
+	}
 	printf ("\n");
 	g_free (detail);
 }
@@ -545,11 +567,14 @@ intel_status (gint argc, gchar **argv)
 
 	config = load_config (FALSE, &error);
 	if (config == NULL) {
+		gchar *safe;
+
 		state = fs_intel_state (backend, NULL, &detail);
+		safe = fs_cli_out_safe (detail != NULL ? detail : error->message);
 		printf ("  %-12s %s%s%s  %s(%s)%s\n", "Threat intel",
 		        state_color (state), fs_intel_state_to_string (state),
-		        fs_cli_reset (), fs_cli_dim (),
-		        detail != NULL ? detail : error->message, fs_cli_reset ());
+		        fs_cli_reset (), fs_cli_dim (), safe, fs_cli_reset ());
+		g_free (safe);
 		g_free (detail);
 		return fail (error, "status");
 	}
@@ -557,8 +582,12 @@ intel_status (gint argc, gchar **argv)
 	state = fs_intel_state (backend, config, &detail);
 	printf ("  %-12s %s%s%s\n", "Threat intel", state_color (state),
 	        fs_intel_state_to_string (state), fs_cli_reset ());
-	if (detail != NULL)
-		printf ("  %-12s %s\n", "", detail);
+	if (detail != NULL) {
+		gchar *safe = fs_cli_out_safe (detail);
+
+		printf ("  %-12s %s\n", "", safe);
+		g_free (safe);
+	}
 	printf ("  %-12s %s\n", "Switch", config->enabled
 	        ? "on" : "off: no list is downloaded or enforced");
 	printf ("  %-12s %s\n", "Proxy", config->proxy != NULL ? config->proxy
@@ -770,7 +799,7 @@ intel_terms (gint argc, gchar **argv)
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else {
-		printf ("%s\n", text);
+		print_safe (text, "\n");
 	}
 	g_free (text);
 	fs_intel_config_free (config);
@@ -905,7 +934,7 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 			fs_cli_print_json (out);
 			g_string_free (out, TRUE);
 		} else {
-			printf ("%s\n\n", text);
+			print_safe (text, "\n\n");
 		}
 		fs_cli_error ("%s", error->message);
 		{
@@ -956,14 +985,15 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 		const FsIntelListConf *l = fs_intel_config_list (config, id);
 		const FsIntelLocationConf *g = fs_intel_config_location (config, id);
 		FsIntelDir d = f != NULL ? f->dir : l != NULL ? l->dir : g->dir;
+		gchar *label = fs_cli_out_safe (fs_intel_config_label (config, id));
 
 		if (enable)
 			printf ("%s+%s %s turned on (%s: %s).\n", fs_cli_green (),
-			        fs_cli_reset (), fs_intel_config_label (config, id),
-			        dir_word (d), dir_prose (d));
+			        fs_cli_reset (), label, dir_word (d), dir_prose (d));
 		else
 			printf ("%s-%s %s turned off.\n", fs_cli_red (),
-			        fs_cli_reset (), fs_intel_config_label (config, id));
+			        fs_cli_reset (), label);
+		g_free (label);
 		if (newly_accepted)
 			printf ("Terms accepted now; `stockfw intel terms %s' shows "
 			        "them again.\n", id);
@@ -1158,9 +1188,14 @@ intel_add_feed (gint argc, gchar **argv)
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else if (!fs_cli.quiet) {
+		gchar *safe_name = fs_cli_out_safe (name);
+		gchar *safe_url = fs_cli_out_safe (shown);
+
 		printf ("%s+%s %s (%s) from %s, %s: %s.\n", fs_cli_green (),
-		        fs_cli_reset (), name, id, shown, dir_word (dir),
+		        fs_cli_reset (), safe_name, id, safe_url, dir_word (dir),
 		        dir_prose (dir));
+		g_free (safe_url);
+		g_free (safe_name);
 		printf ("%sYou typed the address, which is the consent to contact "
 		        "that host.  Not live yet: run `" FS_CLI_SUDO "stockfw intel update "
 		        "--feed %s', then `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
@@ -1386,10 +1421,13 @@ unexpected:
 				  r->outcome == FS_INTEL_NOT_DUE ? fs_cli_dim ()
 				: fs_cli_red ();
 			gchar *n = grouped (r->entries);
+			/* The message can quote what the server sent. */
+			gchar *message = fs_cli_out_safe (r->message);
 
 			printf ("  %-18s %s%-13s%s %10s entries  %s\n", r->id, color,
 			        outcome_word (r->outcome), fs_cli_reset (), n,
-			        r->message != NULL ? r->message : "");
+			        message);
+			g_free (message);
 			if (accept[i] != NULL)
 				printf ("%s  To take this copy anyway: " FS_CLI_SUDO "stockfw "
 				        "intel update --feed %s --now %s%s\n",
@@ -1479,12 +1517,14 @@ intel_apply_dry (FsIntelConfig *config)
 			        rs->sets->len, rs->sets->len == 1 ? "" : "s", digest);
 		for (guint i = 0; i < rs->sets->len; i++) {
 			const FsIntelSet *set = g_ptr_array_index (rs->sets, i);
+			gchar *label = fs_cli_out_safe (set->label);
 
 			printf ("  %-24s %-5s %u IPv4 and %u IPv6 ranges  %s%s%s\n",
 			        set->id, dir_word (set->dir),
 			        fs_range_set_count4 (set->ranges),
 			        fs_range_set_count6 (set->ranges), fs_cli_dim (),
-			        set->label != NULL ? set->label : "", fs_cli_reset ());
+			        label, fs_cli_reset ());
+			g_free (label);
 		}
 		notes_print (notes);
 		printf ("%sNothing was changed (dry run).%s\n", fs_cli_dim (),
@@ -1582,10 +1622,12 @@ intel_apply (gint argc, gchar **argv)
 			        "(fingerprint %s).\n", fs_cli_green (), fs_cli_reset (),
 			        o->sets, o->sets == 1 ? "" : "s", o->count4,
 			        o->count6, o->digest);
+		gchar *safe = fs_cli_out_safe (detail);
+
 		notes_print (o->notes);
 		printf ("  %-12s %s%s%s  %s\n", "Now", state_color (state),
-		        fs_intel_state_to_string (state), fs_cli_reset (),
-		        detail != NULL ? detail : "");
+		        fs_intel_state_to_string (state), fs_cli_reset (), safe);
+		g_free (safe);
 	} else {
 		fs_cli_error ("%s", error != NULL ? error->message
 		              : "the blocklists could not be applied");
@@ -1730,9 +1772,10 @@ intel_import (gint argc, gchar **argv)
 		g_string_free (out, TRUE);
 	} else if (!fs_cli.quiet) {
 		gchar *n = grouped (stats.entries);
+		gchar *safe_name = fs_cli_out_safe (name);
 
 		printf ("%s+%s %s (%s): %s entr%s, %s: %s.\n", fs_cli_green (),
-		        fs_cli_reset (), name, id, n,
+		        fs_cli_reset (), safe_name, id, n,
 		        stats.entries == 1 ? "y" : "ies", dir_word (dir),
 		        dir_prose (dir));
 		if (stats.invalid > 0)
@@ -1754,6 +1797,7 @@ intel_import (gint argc, gchar **argv)
 			        stats.protected_hits == 1 ? "y" : "ies");
 		printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
 		        fs_cli_dim (), fs_cli_reset ());
+		g_free (safe_name);
 		g_free (n);
 	}
 	g_free (id);
@@ -1799,8 +1843,11 @@ intel_remove (gint argc, gchar **argv)
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else if (!fs_cli.quiet) {
+		gchar *safe = fs_cli_out_safe (label);
+
 		printf ("%s-%s %s (%s) removed, with its stored copy.\n",
-		        fs_cli_red (), fs_cli_reset (), label, argv[0]);
+		        fs_cli_red (), fs_cli_reset (), safe, argv[0]);
+		g_free (safe);
 		printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
 		        fs_cli_dim (), fs_cli_reset ());
 	}

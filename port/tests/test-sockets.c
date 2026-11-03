@@ -7,6 +7,8 @@
  *   test-sockets --ssh-ports     prints fs_hostnet_ssh_listen_ports()
  *   test-sockets --session ADDR  "yes" when fs_hostnet_read() keeps ADDR
  *                                as a session, else "no"
+ *   test-sockets --own PORT      prints "own=" and fs_hostnet_own_ssh_peers()
+ *                                for sshd on PORT, the SSH variables unset
  *
  * Built and run by tests/test-core.sh against src/core. */
 #include <glib.h>
@@ -215,6 +217,27 @@ main (int argc, char **argv)
 		printf ("%s\n", fs_range_set_contains_text (host->sessions, argv[2])
 		        ? "yes" : "no");
 		fs_hostnet_free (host);
+		return 0;
+	}
+	if (argc == 3 && strcmp (argv[1], "--own") == 0) {
+		/* Run as a child of tests/fake-sshd.py --exec: the session's
+		 * peer from the sshd ancestor, with no $SSH_CONNECTION (as
+		 * under sudo). */
+		GArray *ports = g_array_new (FALSE, FALSE, sizeof (guint16));
+		guint16 port = (guint16) g_ascii_strtoull (argv[2], NULL, 10);
+		FsRangeSet *own;
+		gchar *text;
+
+		g_unsetenv ("SSH_CONNECTION");
+		g_unsetenv ("SSH_CLIENT");
+		g_array_append_val (ports, port);
+		own = fs_hostnet_own_ssh_peers (ports);
+		text = fs_range_set_to_text (own);
+		g_strstrip (text);
+		printf ("own=%s\n", text);
+		g_free (text);
+		fs_range_set_free (own);
+		g_array_unref (ports);
 		return 0;
 	}
 

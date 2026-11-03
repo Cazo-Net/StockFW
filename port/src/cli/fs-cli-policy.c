@@ -911,17 +911,17 @@ service_default_port (const gchar *name, const gchar **canonical)
 static void
 lockout_note_after_edit (const FsPolicy *policy)
 {
-	FsRangeSet *peers = NULL;
+	FsRangeSet *own = NULL, *peers = NULL;
 	GArray *ports = NULL;
 	FsSettings *settings;
 	FsLockoutReport *report;
 
 	if (geteuid () != 0 || fs_cli.json)
 		return;
-	fs_lockout_sessions (&peers, &ports);
+	fs_lockout_sessions (&own, &peers, &ports);
 	settings = fs_settings_new ();
 	fs_settings_load_prefs (settings);
-	report = fs_lockout_check (policy, settings, peers, ports);
+	report = fs_lockout_check_own (policy, settings, own, peers, ports);
 	if (fs_lockout_report_cuts (report))
 		warn ("once applied, this policy would block your SSH session "
 		      "from %s to port %u: %s", report->worst->peer,
@@ -929,6 +929,7 @@ lockout_note_after_edit (const FsPolicy *policy)
 		      fs_whatif_verdict_name (report->verdict));
 	fs_lockout_report_free (report);
 	fs_settings_free (settings);
+	fs_range_set_free (own);
 	fs_range_set_free (peers);
 	g_array_unref (ports);
 }
@@ -1638,7 +1639,7 @@ static gboolean
 lockout_guard (const FsPolicy *policy, gboolean yes, gboolean report_only,
                const gchar *verb, GString *json, gint *status)
 {
-	FsRangeSet *peers = NULL;
+	FsRangeSet *own = NULL, *peers = NULL;
 	GArray *ports = NULL;
 	FsSettings *settings = fs_settings_new ();
 	FsLockoutReport *report;
@@ -1646,8 +1647,10 @@ lockout_guard (const FsPolicy *policy, gboolean yes, gboolean report_only,
 	gchar *ref = NULL;
 
 	fs_settings_load_prefs (settings);
-	fs_lockout_sessions (&peers, &ports);
-	report = fs_lockout_check (policy, settings, peers, ports);
+	fs_lockout_sessions (&own, &peers, &ports);
+	/* This session's own peer first, so a busy host's other sessions
+	 * cannot push it past the cap. */
+	report = fs_lockout_check_own (policy, settings, own, peers, ports);
 
 	if (report->worst != NULL && report->worst->policy_kind >= 0)
 		ref = fs_cli_rule_ref ((FsRuleKind) report->worst->policy_kind,
@@ -1657,12 +1660,15 @@ lockout_guard (const FsPolicy *policy, gboolean yes, gboolean report_only,
 		const FsLockoutPair *w = report->worst;
 		gchar *port_text = g_strdup_printf ("%u", w->port);
 		GPtrArray *rows = policy->kinds[FS_RULE_INBOUND_ALLOW_SERVICE];
+		/* The reason can name a rule after the policy's rows. */
+		gchar *why = fs_cli_out_safe (ref != NULL ? ref
+		                              : w->reason != NULL ? w->reason
+		                              : "no rule allows it");
 
 		warn ("this policy would block your SSH session");
 		g_printerr ("  from %s to port %u: %s (%s)\n", w->peer, w->port,
-		            fs_whatif_verdict_name (w->verdict),
-		            ref != NULL ? ref
-		            : w->reason != NULL ? w->reason : "no rule allows it");
+		            fs_whatif_verdict_name (w->verdict), why);
+		g_free (why);
 		/* The rows that name that port, and whom they let in. */
 		for (guint i = 0; i < rows->len; i++) {
 			const FsRule *r = g_ptr_array_index (rows, i);
@@ -1725,6 +1731,8 @@ lockout_guard (const FsPolicy *policy, gboolean yes, gboolean report_only,
 			g_string_append_c (json, ',');
 			fs_json_kv_uint (json, "peers", report->pairs->len);
 			g_string_append_c (json, ',');
+			fs_json_kv_uint (json, "skipped", report->skipped);
+			g_string_append_c (json, ',');
 			fs_json_kv_bool (json, "confirmed", confirmed);
 		}
 		g_string_append_c (json, '}');
@@ -1734,6 +1742,7 @@ lockout_guard (const FsPolicy *policy, gboolean yes, gboolean report_only,
 		*status = FS_EXIT_FAILURE;
 	g_free (ref);
 	fs_lockout_report_free (report);
+	fs_range_set_free (own);
 	fs_range_set_free (peers);
 	g_array_unref (ports);
 	fs_settings_free (settings);
@@ -2250,9 +2259,12 @@ start_or_stop (gint argc, gchar **argv, gboolean start)
 
 		/* The lockout guard, on what the start installs: the
 		 * journal when there is one, else the file.  A journal that
-		 * cannot be read is refused by the gate below. */
-		if (fs_apply_hold_reason () == NULL &&
-		    (journal_ok || !have_journal) &&
+		 * cannot be read is refused by the gate below.  Held
+		 * (audit-only), a start with a journal still installs it
+		 * (fs_firewall_start_lifting), so it is guarded too; only a
+		 * held start with no journal leaves the firewall alone. */
+		if ((fs_apply_hold_reason () == NULL
+		     ? (journal_ok || !have_journal) : journal_ok) &&
 		    !lockout_guard (journal_ok ? journal : policy,
 		                    yes, FALSE, "Start", lock, &status)) {
 			fs_policy_free (lift);
@@ -2532,8 +2544,16 @@ fs_cli_cmd_simulate (gint argc, gchar **argv)
 			: result->verdict == FS_WHATIF_BLOCKED ? fs_cli_red ()
 			                                       : fs_cli_amber ();
 
+		gchar *raw;
+
 		refs_in_actions (result);
-		text = fs_whatif_result_describe (result);
+		/* The description names rules after the policy's rows (a
+		 * service name, a comment, a host), which may come from any
+		 * writer of the policy files: through fs_cli_out_safe, line
+		 * by line, as `policy list' shows them. */
+		raw = fs_whatif_result_describe (result);
+		text = fs_cli_out_safe_lines (raw);
+		g_free (raw);
 		rest = strchr (text, '\n');
 
 		/* The summary names the verdict; it gets the colour. */

@@ -131,8 +131,21 @@ GHashTable *fs_hostnet_socket_owners (const GList *sockets);
  * sshd listener can be seen (not root and sshd is another user's, or
  * no sshd).  fs_hostnet_read() keeps the sessions on these ports as
  * well as on 22, so moving sshd to 2222 does not lose the session
- * running an apply (master plan, PR 1 adjustment 4). */
+ * running an apply (master plan, PR 1 adjustment 4).  A listener is
+ * sshd's when any process holding it is sshd, not only the first one
+ * found: with systemd socket activation (ssh.socket) pid 1 holds it
+ * too. */
 GArray     *fs_hostnet_ssh_listen_ports (void);
+
+/* The client address(es) of the SSH session this process itself runs
+ * in: fs_hostnet_parse_ssh_env() over $SSH_CONNECTION and $SSH_CLIENT,
+ * and on Linux the established connections to one of `ports' (guint16;
+ * sshd's ports) held by an sshd or sshd-session among this process's
+ * ancestors, so the session is found under sudo, which drops the
+ * variables (and reading another user's sshd needs root, which sudo
+ * gives).  The lockout guard asks about these before any other peer.
+ * Normalized; may be empty.  fs_range_set_free. */
+FsRangeSet *fs_hostnet_own_ssh_peers (const GArray *ports);
 
 G_END_DECLS
 
