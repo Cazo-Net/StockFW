@@ -1064,6 +1064,37 @@ row_with (GtkWidget *root, const gchar *name, const gchar *needle)
 	return NULL;
 }
 
+/* A row's identity, not its address.  A destroyed row's memory can be
+ * handed straight to the row built in its place -- the Windows heap
+ * does this now and then, glibc almost never -- so "!= the old
+ * pointer" cannot tell a rebuilt row from the one it replaced (that
+ * read a real rebuild as "not rebuilt" on Windows CI, and would read
+ * a rebuild as "the same widget").  A tag on the old row and its
+ * "destroy" signal can. */
+static void
+on_tagged_destroy (GtkWidget *w, gpointer flag)
+{
+	(void) w;
+	*(gboolean *) flag = TRUE;
+}
+
+static void
+tag_row (GtkWidget *row, const gchar *tag, gboolean *destroyed)
+{
+	*destroyed = FALSE;
+	if (row == NULL)
+		return;
+	g_object_set_data (G_OBJECT (row), tag, GINT_TO_POINTER (1));
+	g_signal_connect (row, "destroy", G_CALLBACK (on_tagged_destroy),
+	                  destroyed);
+}
+
+static gboolean
+has_tag (GtkWidget *row, const gchar *tag)
+{
+	return row != NULL && g_object_get_data (G_OBJECT (row), tag) != NULL;
+}
+
 static const gchar *
 text_of (GtkWidget *root, const gchar *name)
 {
@@ -1641,6 +1672,7 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 	{
 		GtkWidget *intel = row_with (page, "findings-list", "smoke list");
 		GtkWidget *dis = NULL, *f, *nrow;
+		static gboolean intel_gone, beacon_gone;
 
 		if (intel != NULL) {
 			press_enter (top, intel);
@@ -1649,10 +1681,13 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 		if (dis != NULL)
 			gtk_widget_grab_focus (dis);
 		pump (30);
+		tag_row (intel, "smoke-old-intel-row", &intel_gone);
+		tag_row (row, "smoke-old-beacon-row", &beacon_gone);
 		fs_copilot_view_refresh ();
 		pump (60);
-		CHECK (dis != NULL && focus_of (top) == dis &&
-		       row_with (page, "findings-list", "smoke list") == intel,
+		CHECK (dis != NULL && focus_of (top) == dis && !intel_gone &&
+		       has_tag (row_with (page, "findings-list", "smoke list"),
+		                "smoke-old-intel-row"),
 		       "page: a refresh with nothing new keeps the row and its "
 		       "focused button");
 
@@ -1661,7 +1696,10 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 		pump (60);
 		nrow = row_with (page, "findings-list", "smoke list");
 		f = focus_of (top);
-		CHECK (nrow != NULL && nrow != intel,
+		/* Not "nrow != intel": the new row may sit at the old one's
+		 * address (see tag_row). */
+		CHECK (nrow != NULL && intel_gone &&
+		       !has_tag (nrow, "smoke-old-intel-row"),
 		       "page: a row that shows a new event is rebuilt");
 		CHECK (nrow != NULL && f != NULL &&
 		       g_strcmp0 (gtk_widget_get_name (f), "cp-dismiss") == 0 &&
@@ -1672,8 +1710,9 @@ test_page (FsPolicy *policy, FsCopilot *copilot)
 		CHECK (nrow != NULL && gtk_revealer_get_reveal_child (
 		           GTK_REVEALER (named (nrow, "cp-drawer"))),
 		       "page: the rebuilt row stays open");
-		CHECK (row != NULL &&
-		       row_with (page, "findings-list", "near-fixed interval") == row,
+		CHECK (row != NULL && !beacon_gone &&
+		       row_with (page, "findings-list", "near-fixed interval") == row &&
+		       has_tag (row, "smoke-old-beacon-row"),
 		       "page: the row that did not change is the same widget");
 		/* Looked up again: a broken build may have replaced it. */
 		row = row_with (page, "findings-list", "near-fixed interval");

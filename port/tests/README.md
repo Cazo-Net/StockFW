@@ -223,6 +223,17 @@ the list kept; CSV export writes the filtered rows; sorting by port is
 numeric both ways and a live event lands in sorted place; the history
 files are written.  Timings are printed as `measure:` lines.
 
+The list checks count and order only the rows the smoke puts in, so
+after the reason-strip check the smoke turns the page's Monitor switch
+(`events-monitor`) off.  On Windows the live source is the real
+Security log, where any connection the runner makes is an event; one
+(local port 32526) once landed in the port sort check on Windows CI.
+On Linux the source is the scratch kernel log the smoke tails as root,
+and only the feed-order check turns Monitor on again, for its own
+lines.  The switch, not `fs_hitview_stop()`: a stop behind the
+switch's back is what the page's watchdog reports as "Event monitoring
+stopped.", as it should for a source that dies on its own.
+
 History is off until switched on (checked), so the smoke switches it on
 in a scratch settings folder.  On Linux it also fills the disk in the
 middle of the session (`RLIMIT_FSIZE`): the strip says history is not
@@ -2006,7 +2017,15 @@ delivered inside the open drawer (through `gtk_propagate_event`, so
 the list box's own click gesture sees it) leaves it open, and the same
 click on the head closes it; a refresh with nothing new keeps every
 row widget and the focused button; a row that shows a new event is
-rebuilt, stays open, and gets the focus back on the same button.  A
+rebuilt, stays open, and gets the focus back on the same button.  "The
+same row" and "a new row" are told by a tag set on the old row and its
+`destroy` signal, never by comparing pointers: the row built in place
+of a destroyed one can get its memory, and so its address.  The
+Windows heap does this now and then, which made a real rebuild read as
+"not rebuilt" on Windows CI; on Linux, preloading an allocator that
+hands back the block just freed (any `LD_PRELOAD` shim that reuses
+same-size frees first) shows the old pointer check failing and the tag
+check passing.  A
 child process repeats the page under `GTK_THEME=Adwaita:dark` and
 checks that it stays light (no dark class, dark title text, light
 card).  Set `FS_SHOT_DIR` to save screenshots.

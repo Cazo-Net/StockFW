@@ -1437,6 +1437,23 @@ pump_ms (guint ms)
 	} while (g_get_monotonic_time () < until);
 }
 
+/* [ monitor_switch ]
+ * The page's own Monitor switch, as a user flips it.  Not
+ * fs_hitview_stop(): that leaves the switch on, and the page's
+ * watchdog then reports "Event monitoring stopped." on the strip, as
+ * it should for a source that dies on its own. */
+static void
+monitor_switch (GtkWidget *page, gboolean on)
+{
+	GtkWidget *sw = find_named (page, "events-monitor");
+
+	CHECK (sw != NULL && GTK_IS_SWITCH (sw),
+	       "the page carries the Monitor switch");
+	if (sw != NULL && GTK_IS_SWITCH (sw))
+		gtk_switch_set_active (GTK_SWITCH (sw), on);
+	pump ();
+}
+
 /* [ check_feed_order ]
  * The Copilot sees every event, before the list's display filters:
  * with "skip repeats" on, ten identical attempts are one row on the
@@ -1444,7 +1461,7 @@ pump_ms (guint ms)
  * check-in is exactly a run of identical lines).  Runs where the
  * backend reads the scratch log (Linux as root). */
 static void
-check_feed_order (void)
+check_feed_order (GtkWidget *page)
 {
 	const gchar *line =
 		"Oct 11 14:30:00 kali kernel: [ 1234.5] STOCKFW-DROP "
@@ -1455,11 +1472,16 @@ check_feed_order (void)
 	guint rows0;
 	GString *ten;
 
-	if (log_file == NULL || !fs_hitview_active ()) {
+	if (log_file == NULL) {
 		printf ("skip: feed order (the backend is not reading the "
 		        "scratch log here)\n");
 		return;
 	}
+	/* main() switched the source off for the list checks: this check
+	 * is the one that wants it, on the scratch log alone. */
+	monitor_switch (page, TRUE);
+	CHECK (fs_hitview_active (),
+	       "feed order: Monitor on again tails the scratch log");
 
 	/* Repeats skipped; foreign traffic listed, so the one row the ten
 	 * lines make is there to count. */
@@ -1501,6 +1523,8 @@ check_feed_order (void)
 	       "feed order: and the list shows them as one row (got %u)",
 	       fs_hitview_count () - rows0);
 	fs_prefs_set_bool (FS_PREFS_SKIP_REDUNDANT, FALSE);
+	monitor_switch (page, FALSE);
+	fs_hitview_clear ();
 }
 
 int
@@ -1606,9 +1630,20 @@ main (int argc, char **argv)
 		       "no reason shown, so monitoring must really be running");
 	}
 
+	/* Every check from here on counts and orders the rows it put in
+	 * itself, so the live source is switched off: on Windows it is the
+	 * real Security log, where any connection the runner makes is an
+	 * event (a stranger's port 32526 once landed in the sort check), and
+	 * the Linux backend reads only the scratch log above, which
+	 * check_feed_order turns on for its own lines. */
+	monitor_switch (page, FALSE);
+	CHECK (!fs_hitview_active (),
+	       "the live source is off for the list checks");
+	fs_hitview_clear ();
+
 	check_list_behaviour (page);
 	check_filter_bar (page);
-	check_feed_order ();
+	check_feed_order (page);
 #ifndef G_OS_WIN32
 	check_history_failure (page);
 #endif
