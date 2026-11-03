@@ -34,6 +34,6 @@ cc "$HERE/test-logstart.c" \
    -o "$BUILD_DIR/test-logstart" \
    $BACKEND \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0) $PLATFORM_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $PLATFORM_LIBS
 
 "$BUILD_DIR/test-logstart"

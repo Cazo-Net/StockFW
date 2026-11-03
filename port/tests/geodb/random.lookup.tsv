@@ -1,0 +1,1744 @@
+3a46:30cc::	found	3a46:30cc::/30	US	65031	0	
+3a46:30cf:ffff:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc::/30	US	65031	0	
+3a46:30cb:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3a46:30d0::	none			0	0	
+3a46:30cd:ffff:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc::/30	US	65031	0	
+3de4:b75f:4600::	found	3de4:b75f:4600::/42	US	65033	0	
+3de4:b75f:47ff:ffff:ffff:ffff:ffff:ffff	found	3de4:b75f:4600::/39	ES	65009	1	Random AS 65009
+3de4:b75f:45ff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3de4:b75f:4800::	none			0	0	
+3de4:b75f:46ff:ffff:ffff:ffff:ffff:ffff	found	3de4:b75f:4600::/39	ES	65009	1	Random AS 65009
+3047:987b:3aa8:dc00::	found	3047:987b:3aa8:dc00::/55	GB	65032	0	
+3047:987b:3aa8:dfff:ffff:ffff:ffff:ffff	found	3047:987b:3aa8:dc00::/54		65039	0	
+3047:987b:3aa8:dbff:ffff:ffff:ffff:ffff	none			0	0	
+3047:987b:3aa8:e000::	none			0	0	
+3047:987b:3aa8:ddff:ffff:ffff:ffff:ffff	found	3047:987b:3aa8:dc00::/55	GB	65032	0	
+74.128.0.0	found	74.128.0.0/9	IT	65033	4	
+74.255.255.255	found	74.128.0.0/9	IT	65033	4	
+74.127.255.255	none			0	0	
+75.0.0.0	none			0	0	
+74.191.255.255	found	74.128.0.0/9	IT	65033	4	
+::ffff:74.128.0.0	found	74.128.0.0/9	IT	65033	4	
+3047:987b:3aa8:de00::	found	3047:987b:3aa8:dc00::/54		65039	0	
+3047:987b:3aa8:dcff:ffff:ffff:ffff:ffff	found	3047:987b:3aa8:dc00::/55	GB	65032	0	
+3a46:30cc:4600::	found	3a46:30cc:4600::/41	DE	65015	0	Random AS 65015
+3a46:30cc:46ff:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc:4600::/40		65026	0	Random AS 65026
+3a46:30cc:45ff:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc::/30	US	65031	0	
+3a46:30cc:4700::	found	3a46:30cc::/30	US	65031	0	
+3a46:30cc:467f:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc:4600::/41	DE	65015	0	Random AS 65015
+25a3:227f:ef36:2000::	found	25a3:227f:ef36:2000::/53	AT	65020	0	Random AS 65020
+25a3:227f:ef36:27ff:ffff:ffff:ffff:ffff	found	25a3:227f:ef36:2000::/53	AT	65020	0	Random AS 65020
+25a3:227f:ef36:1fff:ffff:ffff:ffff:ffff	none			0	0	
+25a3:227f:ef36:2800::	none			0	0	
+25a3:227f:ef36:23ff:ffff:ffff:ffff:ffff	found	25a3:227f:ef36:2000::/53	AT	65020	0	Random AS 65020
+3047:987b:3aa8:dc88::	found	3047:987b:3aa8:dc88::/61	FR	65039	0	
+3047:987b:3aa8:dc8f:ffff:ffff:ffff:ffff	found	3047:987b:3aa8:dc88::/61	FR	65039	0	
+3047:987b:3aa8:dc87:ffff:ffff:ffff:ffff	found	3047:987b:3aa8:dc00::/55	GB	65032	0	
+3047:987b:3aa8:dc90::	found	3047:987b:3aa8:dc00::/55	GB	65032	0	
+3047:987b:3aa8:dc8b:ffff:ffff:ffff:ffff	found	3047:987b:3aa8:dc88::/61	FR	65039	0	
+74.190.0.0	found	74.190.0.0/16	AT	65014	0	Random AS 65014
+74.190.255.255	found	74.190.0.0/16	AT	65014	0	Random AS 65014
+74.189.255.255	found	74.128.0.0/9	IT	65033	4	
+74.191.0.0	found	74.128.0.0/9	IT	65033	4	
+74.190.127.255	found	74.190.0.0/16	AT	65014	0	Random AS 65014
+::ffff:74.190.0.0	found	74.190.0.0/16	AT	65014	0	Random AS 65014
+139.160.0.0	found	139.160.0.0/12	US	65026	4	Random AS 65026
+139.175.255.255	found	139.160.0.0/12	US	65026	4	Random AS 65026
+139.159.255.255	none			0	0	
+139.176.0.0	none			0	0	
+139.167.255.255	found	139.160.0.0/12	US	65026	4	Random AS 65026
+::ffff:139.160.0.0	found	139.160.0.0/12	US	65026	4	Random AS 65026
+3212:5427:8000::	found	3212:5427:8000::/33	CH	65024	0	Random AS 65024
+3212:5427:ffff:ffff:ffff:ffff:ffff:ffff	found	3212:5427:e000::/35		65035	0	
+3212:5427:7fff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3212:5428::	none			0	0	
+3212:5427:bfff:ffff:ffff:ffff:ffff:ffff	found	3212:5427:8000::/33	CH	65024	0	Random AS 65024
+3a46:30cc:46d0::	found	3a46:30cc:46d0::/49	NL	65012	0	Random AS 65012
+3a46:30cc:46df:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0::/44	FR	65034	0	
+3a46:30cc:46cf:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc:4600::/40		65026	0	Random AS 65026
+3a46:30cc:46e0::	found	3a46:30cc:4600::/40		65026	0	Random AS 65026
+3a46:30cc:46d7:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0::/44	FR	65034	0	
+7.235.118.0	found	7.235.118.0/23	FR	65017	0	Random AS 65017
+7.235.119.255	found	7.235.118.0/23	FR	65017	0	Random AS 65017
+7.235.117.255	none			0	0	
+7.235.120.0	none			0	0	
+7.235.118.255	found	7.235.118.0/23	FR	65017	0	Random AS 65017
+::ffff:7.235.118.0	found	7.235.118.0/23	FR	65017	0	Random AS 65017
+3d7b:e855:4dc3:400::	found	3d7b:e855:4dc3:400::/54	CH	65000	0	Random AS 65000
+3d7b:e855:4dc3:7ff:ffff:ffff:ffff:ffff	found	3d7b:e855:4dc3:400::/54	CH	65000	0	Random AS 65000
+3d7b:e855:4dc3:3ff:ffff:ffff:ffff:ffff	none			0	0	
+3d7b:e855:4dc3:800::	none			0	0	
+3d7b:e855:4dc3:5ff:ffff:ffff:ffff:ffff	found	3d7b:e855:4dc3:400::/54	CH	65000	0	Random AS 65000
+3a46:30cc:46db:a800::	found	3a46:30cc:46db:a800::/55		65021	0	Random AS 65021
+3a46:30cc:46db:a9ff:ffff:ffff:ffff:ffff	found	3a46:30cc:46db:a800::/55		65021	0	Random AS 65021
+3a46:30cc:46db:a7ff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0::/44	FR	65034	0	
+3a46:30cc:46db:aa00::	found	3a46:30cc:46d0::/44	FR	65034	0	
+3a46:30cc:46db:a8ff:ffff:ffff:ffff:ffff	found	3a46:30cc:46db:a800::/55		65021	0	Random AS 65021
+3a46:30cc:46d6:a000::	found	3a46:30cc:46d6:a000::/53	IT	65010	8	Random AS 65010
+3a46:30cc:46d6:a7ff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d6:a000::/53	IT	65010	8	Random AS 65010
+3a46:30cc:46d6:9fff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0::/44	FR	65034	0	
+3a46:30cc:46d6:a800::	found	3a46:30cc:46d0::/44	FR	65034	0	
+3a46:30cc:46d6:a3ff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d6:a000::/53	IT	65010	8	Random AS 65010
+3d50:8331::	found	3d50:8331::/33	US	65010	2	Random AS 65010
+3d50:8331:7fff:ffff:ffff:ffff:ffff:ffff	found	3d50:8331::/33	US	65010	2	Random AS 65010
+3d50:8330:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3d50:8331:8000::	none			0	0	
+3d50:8331:3fff:ffff:ffff:ffff:ffff:ffff	found	3d50:8331::/33	US	65010	2	Random AS 65010
+25a3:227f:ef36:2600::	found	25a3:227f:ef36:2600::/58	IT	65025	0	Random AS 65025
+25a3:227f:ef36:263f:ffff:ffff:ffff:ffff	found	25a3:227f:ef36:2600::/58	IT	65025	0	Random AS 65025
+25a3:227f:ef36:25ff:ffff:ffff:ffff:ffff	found	25a3:227f:ef36:2000::/53	AT	65020	0	Random AS 65020
+25a3:227f:ef36:2640::	found	25a3:227f:ef36:2000::/53	AT	65020	0	Random AS 65020
+25a3:227f:ef36:261f:ffff:ffff:ffff:ffff	found	25a3:227f:ef36:2600::/58	IT	65025	0	Random AS 65025
+2f0f:519:37d4:a000::	found	2f0f:519:37d4:a000::/52	AT	65008	0	Random AS 65008
+2f0f:519:37d4:afff:ffff:ffff:ffff:ffff	found	2f0f:519:37d4:a000::/52	AT	65008	0	Random AS 65008
+2f0f:519:37d4:9fff:ffff:ffff:ffff:ffff	none			0	0	
+2f0f:519:37d4:b000::	none			0	0	
+2f0f:519:37d4:a7ff:ffff:ffff:ffff:ffff	found	2f0f:519:37d4:a000::/52	AT	65008	0	Random AS 65008
+3476:d75b:3cba:8300::	found	3476:d75b:3cba:8300::/58		65032	0	
+3476:d75b:3cba:833f:ffff:ffff:ffff:ffff	found	3476:d75b:3cba:8300::/58		65032	0	
+3476:d75b:3cba:82ff:ffff:ffff:ffff:ffff	none			0	0	
+3476:d75b:3cba:8340::	none			0	0	
+3476:d75b:3cba:831f:ffff:ffff:ffff:ffff	found	3476:d75b:3cba:8300::/58		65032	0	
+3476:d75b:3cba:8321:c000::	found	3476:d75b:3cba:8321:c000::/66	FR	65028	6	Random AS 65028
+3476:d75b:3cba:8321:ffff:ffff:ffff:ffff	found	3476:d75b:3cba:8321:c000::/66	FR	65028	6	Random AS 65028
+3476:d75b:3cba:8321:bfff:ffff:ffff:ffff	found	3476:d75b:3cba:8320::/61	GB	65033	0	
+3476:d75b:3cba:8322::	found	3476:d75b:3cba:8320::/61	GB	65033	0	
+3476:d75b:3cba:8321:dfff:ffff:ffff:ffff	found	3476:d75b:3cba:8321:c000::/66	FR	65028	6	Random AS 65028
+82.244.154.0	found	82.244.154.0/27		65001	0	Random AS 65001
+82.244.154.63	found	82.244.154.0/26	CH	65029	0	Random AS 65029
+82.244.153.255	none			0	0	
+82.244.154.64	none			0	0	
+82.244.154.31	found	82.244.154.0/27		65001	0	Random AS 65001
+::ffff:82.244.154.0	found	82.244.154.0/27		65001	0	Random AS 65001
+3212:5427:e000::	found	3212:5427:e000::/35		65035	0	
+3212:5427:dfff:ffff:ffff:ffff:ffff:ffff	found	3212:5427:8000::/33	CH	65024	0	Random AS 65024
+3212:5427:efff:ffff:ffff:ffff:ffff:ffff	found	3212:5427:e000::/35		65035	0	
+3e66:2684:c480::	found	3e66:2684:c480::/42	GB	65021	8	Random AS 65021
+3e66:2684:c4ff:ffff:ffff:ffff:ffff:ffff	found	3e66:2684:c480::/41	BE	65014	0	Random AS 65014
+3e66:2684:c47f:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3e66:2684:c500::	none			0	0	
+3e66:2684:c4bf:ffff:ffff:ffff:ffff:ffff	found	3e66:2684:c480::/42	GB	65021	8	Random AS 65021
+3a46:30cc:46d0:7fff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0::/49	NL	65012	0	Random AS 65012
+3a46:30cc:46d0:8000::	found	3a46:30cc:46d0::/44	FR	65034	0	
+3a46:30cc:46d0:3fff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0::/49	NL	65012	0	Random AS 65012
+3a46:30cc:46d3::	found	3a46:30cc:46d3::/49	ES	65016	1	Random AS 65016
+3a46:30cc:46d3:7fff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d3::/49	ES	65016	1	Random AS 65016
+3a46:30cc:46d2:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0::/44	FR	65034	0	
+3a46:30cc:46d3:8000::	found	3a46:30cc:46d0::/44	FR	65034	0	
+3a46:30cc:46d3:3fff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d3::/49	ES	65016	1	Random AS 65016
+125.148.248.0	found	125.148.248.0/23	CH	65035	0	
+125.148.251.255	found	125.148.248.0/22	AT	65005	0	Random AS 65005
+125.148.247.255	none			0	0	
+125.148.252.0	none			0	0	
+125.148.249.255	found	125.148.248.0/23	CH	65035	0	
+::ffff:125.148.248.0	found	125.148.248.0/23	CH	65035	0	
+3672:95db:9e9f:8000::	found	3672:95db:9e9f:8000::/51	DE	65033	4	
+3672:95db:9e9f:9fff:ffff:ffff:ffff:ffff	found	3672:95db:9e9f:9000::/52	NL	65031	8	
+3672:95db:9e9f:7fff:ffff:ffff:ffff:ffff	none			0	0	
+3672:95db:9e9f:a000::	none			0	0	
+3672:95db:9e9f:8fff:ffff:ffff:ffff:ffff	found	3672:95db:9e9f:8000::/51	DE	65033	4	
+3762:7ce:2154::	found	3762:7ce:2154::/46		65016	0	Random AS 65016
+3762:7ce:2157:ffff:ffff:ffff:ffff:ffff	found	3762:7ce:2154::/46		65016	0	Random AS 65016
+3762:7ce:2153:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3762:7ce:2158::	none			0	0	
+3762:7ce:2155:ffff:ffff:ffff:ffff:ffff	found	3762:7ce:2154::/46		65016	0	Random AS 65016
+3a46:30cc:46db:a86d:8000::	found	3a46:30cc:46db:a86d:8000::/65	BE	65024	1	Random AS 65024
+3a46:30cc:46db:a86d:ffff:ffff:ffff:ffff	found	3a46:30cc:46db:a86d:8000::/65	BE	65024	1	Random AS 65024
+3a46:30cc:46db:a86d:7fff:ffff:ffff:ffff	found	3a46:30cc:46db:a800::/55		65021	0	Random AS 65021
+3a46:30cc:46db:a86e::	found	3a46:30cc:46db:a800::/55		65021	0	Random AS 65021
+3a46:30cc:46db:a86d:bfff:ffff:ffff:ffff	found	3a46:30cc:46db:a86d:8000::/65	BE	65024	1	Random AS 65024
+3d50:8331:4800::	found	3d50:8331:4800::/37	BE	65021	0	Random AS 65021
+3d50:8331:4fff:ffff:ffff:ffff:ffff:ffff	found	3d50:8331:4800::/37	BE	65021	0	Random AS 65021
+3d50:8331:47ff:ffff:ffff:ffff:ffff:ffff	found	3d50:8331::/33	US	65010	2	Random AS 65010
+3d50:8331:5000::	found	3d50:8331::/33	US	65010	2	Random AS 65010
+3d50:8331:4bff:ffff:ffff:ffff:ffff:ffff	found	3d50:8331:4800::/37	BE	65021	0	Random AS 65021
+61.78.216.0	found	61.78.216.0/22	US	0	8	
+61.78.219.255	found	61.78.216.0/22	US	0	8	
+61.78.215.255	none			0	0	
+61.78.220.0	none			0	0	
+61.78.217.255	found	61.78.216.0/22	US	0	8	
+::ffff:61.78.216.0	found	61.78.216.0/22	US	0	8	
+3762:7ce:2156:a000::	found	3762:7ce:2156:a000::/53	BE	65014	0	Random AS 65014
+3762:7ce:2156:a7ff:ffff:ffff:ffff:ffff	found	3762:7ce:2156:a000::/53	BE	65014	0	Random AS 65014
+3762:7ce:2156:9fff:ffff:ffff:ffff:ffff	found	3762:7ce:2154::/46		65016	0	Random AS 65016
+3762:7ce:2156:a800::	found	3762:7ce:2154::/46		65016	0	Random AS 65016
+3762:7ce:2156:a3ff:ffff:ffff:ffff:ffff	found	3762:7ce:2156:a000::/53	BE	65014	0	Random AS 65014
+3d50:8331:4c00::	found	3d50:8331:4c00::/42	FR	65038	4	
+3d50:8331:4c3f:ffff:ffff:ffff:ffff:ffff	found	3d50:8331:4c00::/42	FR	65038	4	
+3d50:8331:4c40::	found	3d50:8331:4800::/37	BE	65021	0	Random AS 65021
+3d50:8331:4c1f:ffff:ffff:ffff:ffff:ffff	found	3d50:8331:4c00::/42	FR	65038	4	
+163.52.29.192	found	163.52.29.192/29	BE	65036	0	
+163.52.29.255	found	163.52.29.252/30	FR	65009	0	Random AS 65009
+163.52.29.191	none			0	0	
+163.52.30.0	none			0	0	
+163.52.29.223	found	163.52.29.192/27	IT	65010	0	Random AS 65010
+::ffff:163.52.29.192	found	163.52.29.192/29	BE	65036	0	
+3212:5427:a680::	found	3212:5427:a680::/41		65010	0	Random AS 65010
+3212:5427:a6ff:ffff:ffff:ffff:ffff:ffff	found	3212:5427:a680::/41		65010	0	Random AS 65010
+3212:5427:a67f:ffff:ffff:ffff:ffff:ffff	found	3212:5427:8000::/33	CH	65024	0	Random AS 65024
+3212:5427:a700::	found	3212:5427:8000::/33	CH	65024	0	Random AS 65024
+3212:5427:a6bf:ffff:ffff:ffff:ffff:ffff	found	3212:5427:a680::/41		65010	0	Random AS 65010
+25a3:227f:ef36:20e8::	found	25a3:227f:ef36:20e8::/64	ES	65011	2	Random AS 65011
+25a3:227f:ef36:20ef:ffff:ffff:ffff:ffff	found	25a3:227f:ef36:20e8::/61	US	65034	2	
+25a3:227f:ef36:20e7:ffff:ffff:ffff:ffff	found	25a3:227f:ef36:2000::/53	AT	65020	0	Random AS 65020
+25a3:227f:ef36:20f0::	found	25a3:227f:ef36:2000::/53	AT	65020	0	Random AS 65020
+25a3:227f:ef36:20eb:ffff:ffff:ffff:ffff	found	25a3:227f:ef36:20e8::/61	US	65034	2	
+49.121.75.48	found	49.121.75.48/28	US	65005	8	Random AS 65005
+49.121.75.63	found	49.121.75.60/30	US	65027	8	Random AS 65027
+49.121.75.47	none			0	0	
+49.121.75.64	none			0	0	
+49.121.75.55	found	49.121.75.48/28	US	65005	8	Random AS 65005
+::ffff:49.121.75.48	found	49.121.75.48/28	US	65005	8	Random AS 65005
+3476:d75b:3cba:830e::	found	3476:d75b:3cba:830e::/64	BE	65001	1	Random AS 65001
+3476:d75b:3cba:830e:ffff:ffff:ffff:ffff	found	3476:d75b:3cba:830e::/64	BE	65001	1	Random AS 65001
+3476:d75b:3cba:830d:ffff:ffff:ffff:ffff	found	3476:d75b:3cba:8300::/58		65032	0	
+3476:d75b:3cba:830f::	found	3476:d75b:3cba:8300::/58		65032	0	
+3476:d75b:3cba:830e:7fff:ffff:ffff:ffff	found	3476:d75b:3cba:830e:6000::/67	GB	65001	0	Random AS 65001
+3a46:30cc:46d6:a700::	found	3a46:30cc:46d6:a700::/58	CH	65019	1	Random AS 65019
+3a46:30cc:46d6:a73f:ffff:ffff:ffff:ffff	found	3a46:30cc:46d6:a700::/58	CH	65019	1	Random AS 65019
+3a46:30cc:46d6:a6ff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d6:a000::/53	IT	65010	8	Random AS 65010
+3a46:30cc:46d6:a740::	found	3a46:30cc:46d6:a000::/53	IT	65010	8	Random AS 65010
+3a46:30cc:46d6:a71f:ffff:ffff:ffff:ffff	found	3a46:30cc:46d6:a700::/58	CH	65019	1	Random AS 65019
+305e:4e34::	found	305e:4e34::/35	GB	65009	0	Random AS 65009
+305e:4e35:ffff:ffff:ffff:ffff:ffff:ffff	found	305e:4e34::/31	AT	65037	0	
+305e:4e33:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+305e:4e36::	none			0	0	
+305e:4e34:ffff:ffff:ffff:ffff:ffff:ffff	found	305e:4e34::/32		65036	8	
+3b02:287b:500::	found	3b02:287b:500::/42	BE	65024	0	Random AS 65024
+3b02:287b:53f:ffff:ffff:ffff:ffff:ffff	found	3b02:287b:520::/43	US	65000	12	Random AS 65000
+3b02:287b:4ff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3b02:287b:540::	none			0	0	
+3b02:287b:51f:ffff:ffff:ffff:ffff:ffff	found	3b02:287b:500::/42	BE	65024	0	Random AS 65024
+61.78.216.238	found	61.78.216.238/31	ES	65018	0	Random AS 65018
+61.78.216.239	found	61.78.216.238/31	ES	65018	0	Random AS 65018
+61.78.216.237	found	61.78.216.0/22	US	0	8	
+61.78.216.240	found	61.78.216.0/22	US	0	8	
+::ffff:61.78.216.238	found	61.78.216.238/31	ES	65018	0	Random AS 65018
+3a46:30cc:46d6:a088::	found	3a46:30cc:46d6:a088::/66	NL	65016	0	Random AS 65016
+3a46:30cc:46d6:a08f:ffff:ffff:ffff:ffff	found	3a46:30cc:46d6:a088::/61	NL	65023	0	Random AS 65023
+3a46:30cc:46d6:a087:ffff:ffff:ffff:ffff	found	3a46:30cc:46d6:a000::/53	IT	65010	8	Random AS 65010
+3a46:30cc:46d6:a090::	found	3a46:30cc:46d6:a000::/53	IT	65010	8	Random AS 65010
+3a46:30cc:46d6:a08b:ffff:ffff:ffff:ffff	found	3a46:30cc:46d6:a088::/61	NL	65023	0	Random AS 65023
+3476:d75b:3cba:8321:cd80::	found	3476:d75b:3cba:8321:cd80::/73	NL	65006	0	Random AS 65006
+3476:d75b:3cba:8321:cdff:ffff:ffff:ffff	found	3476:d75b:3cba:8321:cd80::/73	NL	65006	0	Random AS 65006
+3476:d75b:3cba:8321:cd7f:ffff:ffff:ffff	found	3476:d75b:3cba:8321:c000::/66	FR	65028	6	Random AS 65028
+3476:d75b:3cba:8321:ce00::	found	3476:d75b:3cba:8321:c000::/66	FR	65028	6	Random AS 65028
+3476:d75b:3cba:8321:cdbf:ffff:ffff:ffff	found	3476:d75b:3cba:8321:cd80::/73	NL	65006	0	Random AS 65006
+2ac8:14e0::	found	2ac8:14e0::/29	IT	65020	0	Random AS 65020
+2ac8:14e7:ffff:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e0::/29	IT	65020	0	Random AS 65020
+2ac8:14df:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+2ac8:14e8::	none			0	0	
+2ac8:14e3:ffff:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e0::/29	IT	65020	0	Random AS 65020
+74.190.217.224	found	74.190.217.224/27	ES	65026	0	Random AS 65026
+74.190.217.255	found	74.190.217.248/29	GB	65018	0	Random AS 65018
+74.190.217.223	found	74.190.0.0/16	AT	65014	0	Random AS 65014
+74.190.218.0	found	74.190.0.0/16	AT	65014	0	Random AS 65014
+74.190.217.239	found	74.190.217.224/27	ES	65026	0	Random AS 65026
+::ffff:74.190.217.224	found	74.190.217.224/27	ES	65026	0	Random AS 65026
+3136:f7e9:da3a:c000::	found	3136:f7e9:da3a:c000::/50	NL	65016	0	Random AS 65016
+3136:f7e9:da3a:ffff:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:c000::/50	NL	65016	0	Random AS 65016
+3136:f7e9:da3a:bfff:ffff:ffff:ffff:ffff	none			0	0	
+3136:f7e9:da3b::	none			0	0	
+3136:f7e9:da3a:dfff:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:c000::/50	NL	65016	0	Random AS 65016
+3672:95db:9e9f:9000::	found	3672:95db:9e9f:9000::/52	NL	65031	8	
+3672:95db:9e9f:97ff:ffff:ffff:ffff:ffff	found	3672:95db:9e9f:9000::/52	NL	65031	8	
+163.52.29.247	found	163.52.29.247/32		65000	0	Random AS 65000
+163.52.29.246	found	163.52.29.192/26	ES	65031	0	
+163.52.29.248	found	163.52.29.192/26	ES	65031	0	
+::ffff:163.52.29.247	found	163.52.29.247/32		65000	0	Random AS 65000
+3047:987b:3aa8:dc8c:d000::	found	3047:987b:3aa8:dc8c:d000::/69	DE	65022	0	Random AS 65022
+3047:987b:3aa8:dc8c:d7ff:ffff:ffff:ffff	found	3047:987b:3aa8:dc8c:d000::/69	DE	65022	0	Random AS 65022
+3047:987b:3aa8:dc8c:cfff:ffff:ffff:ffff	found	3047:987b:3aa8:dc88::/61	FR	65039	0	
+3047:987b:3aa8:dc8c:d800::	found	3047:987b:3aa8:dc88::/61	FR	65039	0	
+3047:987b:3aa8:dc8c:d3ff:ffff:ffff:ffff	found	3047:987b:3aa8:dc8c:d000::/69	DE	65022	0	Random AS 65022
+61.78.218.140	found	61.78.218.140/30		65002	0	Random AS 65002
+61.78.218.143	found	61.78.218.142/31	GB	65032	4	
+61.78.218.139	found	61.78.216.0/22	US	0	8	
+61.78.218.144	found	61.78.218.144/28	ES	65012	0	Random AS 65012
+61.78.218.141	found	61.78.218.140/30		65002	0	Random AS 65002
+::ffff:61.78.218.140	found	61.78.218.140/30		65002	0	Random AS 65002
+3a46:30cc:46d6:a720::	found	3a46:30cc:46d6:a720::/60	BE	65028	0	Random AS 65028
+3a46:30cc:46d6:a72f:ffff:ffff:ffff:ffff	found	3a46:30cc:46d6:a720::/60	BE	65028	0	Random AS 65028
+3a46:30cc:46d6:a730::	found	3a46:30cc:46d6:a700::/58	CH	65019	1	Random AS 65019
+3a46:30cc:46d6:a727:ffff:ffff:ffff:ffff	found	3a46:30cc:46d6:a720::/60	BE	65028	0	Random AS 65028
+3b02:287b:520::	found	3b02:287b:520::/43	US	65000	12	Random AS 65000
+3b02:287b:52f:ffff:ffff:ffff:ffff:ffff	found	3b02:287b:52e::/47	NL	65006	0	Random AS 65006
+3af3:4f45:7eb0::	found	3af3:4f45:7eb0::/44	DE	65014	0	Random AS 65014
+3af3:4f45:7ebf:ffff:ffff:ffff:ffff:ffff	found	3af3:4f45:7eb0::/44	DE	65014	0	Random AS 65014
+3af3:4f45:7eaf:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3af3:4f45:7ec0::	none			0	0	
+3af3:4f45:7eb7:ffff:ffff:ffff:ffff:ffff	found	3af3:4f45:7eb0::/44	DE	65014	0	Random AS 65014
+3a46:30cc:46c2::	found	3a46:30cc:46c2::/47		65011	0	Random AS 65011
+3a46:30cc:46c3:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc:46c2::/47		65011	0	Random AS 65011
+3a46:30cc:46c1:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc:4600::/40		65026	0	Random AS 65026
+3a46:30cc:46c4::	found	3a46:30cc:4600::/40		65026	0	Random AS 65026
+3a46:30cc:46c2:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc:46c2::/47		65011	0	Random AS 65011
+3476:d75b:3cba:8321:cdeb:4000::	found	3476:d75b:3cba:8321:cdeb:4000::/82	DE	65031	0	
+3476:d75b:3cba:8321:cdeb:7fff:ffff:ffff	found	3476:d75b:3cba:8321:cdeb:4000::/82	DE	65031	0	
+3476:d75b:3cba:8321:cdeb:3fff:ffff:ffff	found	3476:d75b:3cba:8321:cd80::/73	NL	65006	0	Random AS 65006
+3476:d75b:3cba:8321:cdeb:8000::	found	3476:d75b:3cba:8321:cd80::/73	NL	65006	0	Random AS 65006
+3476:d75b:3cba:8321:cdeb:5fff:ffff:ffff	found	3476:d75b:3cba:8321:cdeb:4000::/82	DE	65031	0	
+53.154.0.0	found	53.154.0.0/15	AT	65014	0	Random AS 65014
+53.155.255.255	found	53.154.0.0/15	AT	65014	0	Random AS 65014
+53.153.255.255	none			0	0	
+53.156.0.0	none			0	0	
+53.154.255.255	found	53.154.0.0/15	AT	65014	0	Random AS 65014
+::ffff:53.154.0.0	found	53.154.0.0/15	AT	65014	0	Random AS 65014
+2f0f:519:37d4:a760::	found	2f0f:519:37d4:a760::/59	IT	65013	0	Random AS 65013
+2f0f:519:37d4:a77f:ffff:ffff:ffff:ffff	found	2f0f:519:37d4:a77f:8000::/65	BE	65010	0	Random AS 65010
+2f0f:519:37d4:a75f:ffff:ffff:ffff:ffff	found	2f0f:519:37d4:a000::/52	AT	65008	0	Random AS 65008
+2f0f:519:37d4:a780::	found	2f0f:519:37d4:a000::/52	AT	65008	0	Random AS 65008
+2f0f:519:37d4:a76f:ffff:ffff:ffff:ffff	found	2f0f:519:37d4:a760::/59	IT	65013	0	Random AS 65013
+305e:4e35::	found	305e:4e34::/31	AT	65037	0	
+305e:4e34:7fff:ffff:ffff:ffff:ffff:ffff	found	305e:4e34::/32		65036	8	
+69.133.128.0	found	69.133.128.0/18	AT	65007	1	Random AS 65007
+69.133.191.255	found	69.133.128.0/18	AT	65007	1	Random AS 65007
+69.133.127.255	none			0	0	
+69.133.192.0	none			0	0	
+69.133.159.255	found	69.133.128.0/18	AT	65007	1	Random AS 65007
+::ffff:69.133.128.0	found	69.133.128.0/18	AT	65007	1	Random AS 65007
+181.51.64.0	found	181.51.64.0/20	ES	65029	0	Random AS 65029
+181.51.79.255	found	181.51.64.0/20	ES	65029	0	Random AS 65029
+181.51.63.255	none			0	0	
+181.51.80.0	none			0	0	
+181.51.71.255	found	181.51.64.0/20	ES	65029	0	Random AS 65029
+::ffff:181.51.64.0	found	181.51.64.0/20	ES	65029	0	Random AS 65029
+2ae2:9e0:3c31:9000::	found	2ae2:9e0:3c31:9000::/52	FR	65000	1	Random AS 65000
+2ae2:9e0:3c31:9fff:ffff:ffff:ffff:ffff	found	2ae2:9e0:3c31:9c00::/54		65008	0	Random AS 65008
+2ae2:9e0:3c31:8fff:ffff:ffff:ffff:ffff	none			0	0	
+2ae2:9e0:3c31:a000::	none			0	0	
+2ae2:9e0:3c31:97ff:ffff:ffff:ffff:ffff	found	2ae2:9e0:3c31:9000::/52	FR	65000	1	Random AS 65000
+3a46:30cc:46db:a813::	found	3a46:30cc:46db:a813::/64	BE	65038	0	
+3a46:30cc:46db:a813:ffff:ffff:ffff:ffff	found	3a46:30cc:46db:a813::/64	BE	65038	0	
+3a46:30cc:46db:a812:ffff:ffff:ffff:ffff	found	3a46:30cc:46db:a800::/55		65021	0	Random AS 65021
+3a46:30cc:46db:a814::	found	3a46:30cc:46db:a800::/55		65021	0	Random AS 65021
+3a46:30cc:46db:a813:7fff:ffff:ffff:ffff	found	3a46:30cc:46db:a813::/64	BE	65038	0	
+33bb:53a4:794f:1400::	found	33bb:53a4:794f:1400::/55	GB	65016	0	Random AS 65016
+33bb:53a4:794f:15ff:ffff:ffff:ffff:ffff	found	33bb:53a4:794f:1400::/55	GB	65016	0	Random AS 65016
+33bb:53a4:794f:13ff:ffff:ffff:ffff:ffff	none			0	0	
+33bb:53a4:794f:1600::	none			0	0	
+33bb:53a4:794f:14ff:ffff:ffff:ffff:ffff	found	33bb:53a4:794f:1400::/55	GB	65016	0	Random AS 65016
+2f0f:519:37d4:a770::	found	2f0f:519:37d4:a770::/61	CH	65015	2	Random AS 65015
+2f0f:519:37d4:a777:ffff:ffff:ffff:ffff	found	2f0f:519:37d4:a770::/61	CH	65015	2	Random AS 65015
+3c3a:1980::	found	3c3a:1980::/29	FR	65022	0	Random AS 65022
+3c3a:1987:ffff:ffff:ffff:ffff:ffff:ffff	found	3c3a:1980::/29	FR	65022	0	Random AS 65022
+3c3a:197f:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3c3a:1988::	none			0	0	
+3c3a:1983:ffff:ffff:ffff:ffff:ffff:ffff	found	3c3a:1980::/29	FR	65022	0	Random AS 65022
+3136:f7e9:da3a:ce00::	found	3136:f7e9:da3a:ce00::/55	DE	65025	0	Random AS 65025
+3136:f7e9:da3a:cfff:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce00::/55	DE	65025	0	Random AS 65025
+3136:f7e9:da3a:cdff:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:c000::/50	NL	65016	0	Random AS 65016
+3136:f7e9:da3a:d000::	found	3136:f7e9:da3a:c000::/50	NL	65016	0	Random AS 65016
+3136:f7e9:da3a:ceff:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce00::/55	DE	65025	0	Random AS 65025
+3476:d75b:3cba:830e:6000::	found	3476:d75b:3cba:830e:6000::/67	GB	65001	0	Random AS 65001
+3476:d75b:3cba:830e:5fff:ffff:ffff:ffff	found	3476:d75b:3cba:830e::/64	BE	65001	1	Random AS 65001
+3476:d75b:3cba:830e:8000::	found	3476:d75b:3cba:830e::/64	BE	65001	1	Random AS 65001
+3476:d75b:3cba:830e:6fff:ffff:ffff:ffff	found	3476:d75b:3cba:830e:6000::/67	GB	65001	0	Random AS 65001
+177.64.0.0	found	177.64.0.0/10	AT	65033	0	
+177.127.255.255	found	177.64.0.0/10	AT	65033	0	
+177.63.255.255	none			0	0	
+177.128.0.0	none			0	0	
+177.95.255.255	found	177.64.0.0/10	AT	65033	0	
+::ffff:177.64.0.0	found	177.64.0.0/10	AT	65033	0	
+3d7b:e855:4dc3:42a::	found	3d7b:e855:4dc3:42a::/63	GB	65014	4	Random AS 65014
+3d7b:e855:4dc3:42b:ffff:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a::/63	GB	65014	4	Random AS 65014
+3d7b:e855:4dc3:429:ffff:ffff:ffff:ffff	found	3d7b:e855:4dc3:400::/54	CH	65000	0	Random AS 65000
+3d7b:e855:4dc3:42c::	found	3d7b:e855:4dc3:400::/54	CH	65000	0	Random AS 65000
+3d7b:e855:4dc3:42a:ffff:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a::/63	GB	65014	4	Random AS 65014
+181.51.67.112	found	181.51.67.112/28	IT	0	0	
+181.51.67.127	found	181.51.67.112/28	IT	0	0	
+181.51.67.111	found	181.51.64.0/20	ES	65029	0	Random AS 65029
+181.51.67.128	found	181.51.64.0/20	ES	65029	0	Random AS 65029
+181.51.67.119	found	181.51.67.112/28	IT	0	0	
+::ffff:181.51.67.112	found	181.51.67.112/28	IT	0	0	
+43.119.194.0	found	43.119.194.0/26	US	65016	0	Random AS 65016
+43.119.194.63	found	43.119.194.32/27	GB	65033	0	
+43.119.193.255	none			0	0	
+43.119.194.64	none			0	0	
+43.119.194.31	found	43.119.194.0/26	US	65016	0	Random AS 65016
+::ffff:43.119.194.0	found	43.119.194.0/26	US	65016	0	Random AS 65016
+211.181.228.0	found	211.181.228.0/22	AT	65006	0	Random AS 65006
+211.181.231.255	found	211.181.228.0/22	AT	65006	0	Random AS 65006
+211.181.227.255	none			0	0	
+211.181.232.0	none			0	0	
+211.181.229.255	found	211.181.228.0/22	AT	65006	0	Random AS 65006
+::ffff:211.181.228.0	found	211.181.228.0/22	AT	65006	0	Random AS 65006
+2a6d:6000::	found	2a6d:6000::/19	AT	65027	0	Random AS 65027
+2a6d:7fff:ffff:ffff:ffff:ffff:ffff:ffff	found	2a6d:6000::/19	AT	65027	0	Random AS 65027
+2a6d:5fff:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+2a6d:8000::	none			0	0	
+2a6d:6fff:ffff:ffff:ffff:ffff:ffff:ffff	found	2a6d:6000::/19	AT	65027	0	Random AS 65027
+60.192.0.0	found	60.192.0.0/11	IT	65032	0	
+60.223.255.255	found	60.192.0.0/11	IT	65032	0	
+60.191.255.255	none			0	0	
+60.224.0.0	none			0	0	
+60.207.255.255	found	60.192.0.0/11	IT	65032	0	
+::ffff:60.192.0.0	found	60.192.0.0/11	IT	65032	0	
+25a3:227f:ef36:20e8:ffff:ffff:ffff:ffff	found	25a3:227f:ef36:20e8::/64	ES	65011	2	Random AS 65011
+25a3:227f:ef36:20e9::	found	25a3:227f:ef36:20e8::/61	US	65034	2	
+25a3:227f:ef36:20e8:7fff:ffff:ffff:ffff	found	25a3:227f:ef36:20e8::/64	ES	65011	2	Random AS 65011
+33bb:53a4:794f:1488::	found	33bb:53a4:794f:1488::/62	ES	65024	0	Random AS 65024
+33bb:53a4:794f:148b:ffff:ffff:ffff:ffff	found	33bb:53a4:794f:1488::/62	ES	65024	0	Random AS 65024
+33bb:53a4:794f:1487:ffff:ffff:ffff:ffff	found	33bb:53a4:794f:1400::/55	GB	65016	0	Random AS 65016
+33bb:53a4:794f:148c::	found	33bb:53a4:794f:1400::/55	GB	65016	0	Random AS 65016
+33bb:53a4:794f:1489:ffff:ffff:ffff:ffff	found	33bb:53a4:794f:1488::/62	ES	65024	0	Random AS 65024
+3476:d75b:3cba:8321:cdd4:4000::	found	3476:d75b:3cba:8321:cdd4:4000::/82	BE	65025	0	Random AS 65025
+3476:d75b:3cba:8321:cdd4:7fff:ffff:ffff	found	3476:d75b:3cba:8321:cdd4:4000::/82	BE	65025	0	Random AS 65025
+3476:d75b:3cba:8321:cdd4:3fff:ffff:ffff	found	3476:d75b:3cba:8321:cd80::/73	NL	65006	0	Random AS 65006
+3476:d75b:3cba:8321:cdd4:8000::	found	3476:d75b:3cba:8321:cd80::/73	NL	65006	0	Random AS 65006
+3476:d75b:3cba:8321:cdd4:5fff:ffff:ffff	found	3476:d75b:3cba:8321:cdd4:4000::/82	BE	65025	0	Random AS 65025
+3e66:2684:c4c0::	found	3e66:2684:c480::/41	BE	65014	0	Random AS 65014
+3e66:2684:c49f:ffff:ffff:ffff:ffff:ffff	found	3e66:2684:c480::/42	GB	65021	8	Random AS 65021
+3b02:287b:534::	found	3b02:287b:534::/49	AT	65014	1	Random AS 65014
+3b02:287b:534:7fff:ffff:ffff:ffff:ffff	found	3b02:287b:534::/49	AT	65014	1	Random AS 65014
+3b02:287b:533:ffff:ffff:ffff:ffff:ffff	found	3b02:287b:520::/43	US	65000	12	Random AS 65000
+3b02:287b:534:8000::	found	3b02:287b:534::/47		65038	0	
+3b02:287b:534:3fff:ffff:ffff:ffff:ffff	found	3b02:287b:534::/49	AT	65014	1	Random AS 65014
+36.88.0.0	found	36.88.0.0/17	GB	65017	0	Random AS 65017
+36.95.255.255	found	36.88.0.0/13		65009	0	Random AS 65009
+36.87.255.255	none			0	0	
+36.96.0.0	none			0	0	
+36.91.255.255	found	36.88.0.0/13		65009	0	Random AS 65009
+::ffff:36.88.0.0	found	36.88.0.0/17	GB	65017	0	Random AS 65017
+33bb:53a4:794f:1488:9700::	found	33bb:53a4:794f:1488:9700::/73	BE	65025	0	Random AS 65025
+33bb:53a4:794f:1488:977f:ffff:ffff:ffff	found	33bb:53a4:794f:1488:9700::/73	BE	65025	0	Random AS 65025
+33bb:53a4:794f:1488:96ff:ffff:ffff:ffff	found	33bb:53a4:794f:1488::/62	ES	65024	0	Random AS 65024
+33bb:53a4:794f:1488:9780::	found	33bb:53a4:794f:1488::/62	ES	65024	0	Random AS 65024
+33bb:53a4:794f:1488:973f:ffff:ffff:ffff	found	33bb:53a4:794f:1488:9700::/73	BE	65025	0	Random AS 65025
+163.52.29.252	found	163.52.29.252/31		65028	0	Random AS 65028
+163.52.29.251	found	163.52.29.192/26	ES	65031	0	
+163.52.29.253	found	163.52.29.252/31		65028	0	Random AS 65028
+::ffff:163.52.29.252	found	163.52.29.252/31		65028	0	Random AS 65028
+61.78.218.142	found	61.78.218.142/31	GB	65032	4	
+::ffff:61.78.218.142	found	61.78.218.142/31	GB	65032	4	
+164.171.165.160	found	164.171.165.160/27	AT	65005	0	Random AS 65005
+164.171.165.191	found	164.171.165.160/27	AT	65005	0	Random AS 65005
+164.171.165.159	none			0	0	
+164.171.165.192	none			0	0	
+164.171.165.175	found	164.171.165.168/29	DE	65012	8	Random AS 65012
+::ffff:164.171.165.160	found	164.171.165.160/27	AT	65005	0	Random AS 65005
+3a46:30cc:46c3:8700::	found	3a46:30cc:46c3:8700::/57		65008	0	Random AS 65008
+3a46:30cc:46c3:877f:ffff:ffff:ffff:ffff	found	3a46:30cc:46c3:8700::/57		65008	0	Random AS 65008
+3a46:30cc:46c3:86ff:ffff:ffff:ffff:ffff	found	3a46:30cc:46c2::/47		65011	0	Random AS 65011
+3a46:30cc:46c3:8780::	found	3a46:30cc:46c2::/47		65011	0	Random AS 65011
+3a46:30cc:46c3:873f:ffff:ffff:ffff:ffff	found	3a46:30cc:46c3:8700::/57		65008	0	Random AS 65008
+139.162.160.0	found	139.162.160.0/19	FR	65037	0	
+139.162.191.255	found	139.162.160.0/19	FR	65037	0	
+139.162.159.255	found	139.160.0.0/12	US	65026	4	Random AS 65026
+139.162.192.0	found	139.160.0.0/12	US	65026	4	Random AS 65026
+139.162.175.255	found	139.162.160.0/19	FR	65037	0	
+::ffff:139.162.160.0	found	139.162.160.0/19	FR	65037	0	
+3b02:287b:534:5a00::	found	3b02:287b:534:5a00::/55	US	65016	0	Random AS 65016
+3b02:287b:534:5bff:ffff:ffff:ffff:ffff	found	3b02:287b:534:5a00::/55	US	65016	0	Random AS 65016
+3b02:287b:534:59ff:ffff:ffff:ffff:ffff	found	3b02:287b:534::/49	AT	65014	1	Random AS 65014
+3b02:287b:534:5c00::	found	3b02:287b:534::/49	AT	65014	1	Random AS 65014
+3b02:287b:534:5aff:ffff:ffff:ffff:ffff	found	3b02:287b:534:5a00::/55	US	65016	0	Random AS 65016
+275c:4428:8000::	found	275c:4428:8000::/35	NL	65006	0	Random AS 65006
+275c:4428:9fff:ffff:ffff:ffff:ffff:ffff	found	275c:4428:8000::/35	NL	65006	0	Random AS 65006
+275c:4428:7fff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+275c:4428:a000::	none			0	0	
+275c:4428:8fff:ffff:ffff:ffff:ffff:ffff	found	275c:4428:8000::/35	NL	65006	0	Random AS 65006
+3476:d75b:3cba:8321:cdd4:4794::	found	3476:d75b:3cba:8321:cdd4:4794::/94	NL	65036	0	
+3476:d75b:3cba:8321:cdd4:4797:ffff:ffff	found	3476:d75b:3cba:8321:cdd4:4794::/94	NL	65036	0	
+3476:d75b:3cba:8321:cdd4:4793:ffff:ffff	found	3476:d75b:3cba:8321:cdd4:4000::/82	BE	65025	0	Random AS 65025
+3476:d75b:3cba:8321:cdd4:4798::	found	3476:d75b:3cba:8321:cdd4:4000::/82	BE	65025	0	Random AS 65025
+3476:d75b:3cba:8321:cdd4:4795:ffff:ffff	found	3476:d75b:3cba:8321:cdd4:4794::/94	NL	65036	0	
+49.121.75.60	found	49.121.75.60/31	GB	65028	0	Random AS 65028
+49.121.75.59	found	49.121.75.48/28	US	65005	8	Random AS 65005
+49.121.75.61	found	49.121.75.61/32	GB	65012	0	Random AS 65012
+::ffff:49.121.75.60	found	49.121.75.60/31	GB	65028	0	Random AS 65028
+29b7:1399:905f:1300::	found	29b7:1399:905f:1300::/56	FR	65037	0	
+29b7:1399:905f:13ff:ffff:ffff:ffff:ffff	found	29b7:1399:905f:1300::/56	FR	65037	0	
+29b7:1399:905f:12ff:ffff:ffff:ffff:ffff	none			0	0	
+29b7:1399:905f:1400::	none			0	0	
+29b7:1399:905f:137f:ffff:ffff:ffff:ffff	found	29b7:1399:905f:1300::/56	FR	65037	0	
+25a3:227f:ef36:20e8:1000::	found	25a3:227f:ef36:20e8:1000::/68	IT	65011	0	Random AS 65011
+25a3:227f:ef36:20e8:1fff:ffff:ffff:ffff	found	25a3:227f:ef36:20e8:1000::/68	IT	65011	0	Random AS 65011
+25a3:227f:ef36:20e8:fff:ffff:ffff:ffff	found	25a3:227f:ef36:20e8::/64	ES	65011	2	Random AS 65011
+25a3:227f:ef36:20e8:2000::	found	25a3:227f:ef36:20e8::/64	ES	65011	2	Random AS 65011
+25a3:227f:ef36:20e8:17ff:ffff:ffff:ffff	found	25a3:227f:ef36:20e8:1000::/68	IT	65011	0	Random AS 65011
+125.148.250.0	found	125.148.250.0/25		65007	4	Random AS 65007
+125.148.248.255	found	125.148.248.0/23	CH	65035	0	
+142.240.32.0	found	142.240.32.0/20	DE	65014	0	Random AS 65014
+142.240.47.255	found	142.240.32.0/20	DE	65014	0	Random AS 65014
+142.240.31.255	none			0	0	
+142.240.48.0	none			0	0	
+142.240.39.255	found	142.240.32.0/20	DE	65014	0	Random AS 65014
+::ffff:142.240.32.0	found	142.240.32.0/20	DE	65014	0	Random AS 65014
+3047:987b:3aa8:dc8a:1800::	found	3047:987b:3aa8:dc8a:1800::/70	DE	65033	2	
+3047:987b:3aa8:dc8a:1bff:ffff:ffff:ffff	found	3047:987b:3aa8:dc8a:1b80::/73	BE	65001	0	Random AS 65001
+3047:987b:3aa8:dc8a:17ff:ffff:ffff:ffff	found	3047:987b:3aa8:dc88::/61	FR	65039	0	
+3047:987b:3aa8:dc8a:1c00::	found	3047:987b:3aa8:dc88::/61	FR	65039	0	
+3047:987b:3aa8:dc8a:19ff:ffff:ffff:ffff	found	3047:987b:3aa8:dc8a:1800::/70	DE	65033	2	
+3047:987b:3aa8:dc8c:d400::	found	3047:987b:3aa8:dc8c:d400::/71	US	65010	1	Random AS 65010
+3047:987b:3aa8:dc8c:d5ff:ffff:ffff:ffff	found	3047:987b:3aa8:dc8c:d400::/71	US	65010	1	Random AS 65010
+3047:987b:3aa8:dc8c:d600::	found	3047:987b:3aa8:dc8c:d000::/69	DE	65022	0	Random AS 65022
+3047:987b:3aa8:dc8c:d4ff:ffff:ffff:ffff	found	3047:987b:3aa8:dc8c:d400::/71	US	65010	1	Random AS 65010
+3476:d75b:3cba:8321:cdd4:45f0::	found	3476:d75b:3cba:8321:cdd4:45f0::/92	FR	65014	0	Random AS 65014
+3476:d75b:3cba:8321:cdd4:45ff:ffff:ffff	found	3476:d75b:3cba:8321:cdd4:45f0::/92	FR	65014	0	Random AS 65014
+3476:d75b:3cba:8321:cdd4:45ef:ffff:ffff	found	3476:d75b:3cba:8321:cdd4:4000::/82	BE	65025	0	Random AS 65025
+3476:d75b:3cba:8321:cdd4:4600::	found	3476:d75b:3cba:8321:cdd4:4000::/82	BE	65025	0	Random AS 65025
+3476:d75b:3cba:8321:cdd4:45f7:ffff:ffff	found	3476:d75b:3cba:8321:cdd4:45f0::/92	FR	65014	0	Random AS 65014
+3a46:30cc:46db:a890::	found	3a46:30cc:46db:a890::/60		65039	0	
+3a46:30cc:46db:a89f:ffff:ffff:ffff:ffff	found	3a46:30cc:46db:a890::/60		65039	0	
+3a46:30cc:46db:a88f:ffff:ffff:ffff:ffff	found	3a46:30cc:46db:a800::/55		65021	0	Random AS 65021
+3a46:30cc:46db:a8a0::	found	3a46:30cc:46db:a800::/55		65021	0	Random AS 65021
+3a46:30cc:46db:a897:ffff:ffff:ffff:ffff	found	3a46:30cc:46db:a890::/60		65039	0	
+38fb:197::	found	38fb:197::/32	US	65022	0	Random AS 65022
+38fb:197:ffff:ffff:ffff:ffff:ffff:ffff	found	38fb:197::/32	US	65022	0	Random AS 65022
+38fb:196:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+38fb:198::	none			0	0	
+38fb:197:7fff:ffff:ffff:ffff:ffff:ffff	found	38fb:197::/32	US	65022	0	Random AS 65022
+3a46:30cc:46db:a813:2d00::	found	3a46:30cc:46db:a813:2d00::/72	BE	65016	0	Random AS 65016
+3a46:30cc:46db:a813:2dff:ffff:ffff:ffff	found	3a46:30cc:46db:a813:2d00::/72	BE	65016	0	Random AS 65016
+3a46:30cc:46db:a813:2cff:ffff:ffff:ffff	found	3a46:30cc:46db:a813::/64	BE	65038	0	
+3a46:30cc:46db:a813:2e00::	found	3a46:30cc:46db:a813::/64	BE	65038	0	
+3a46:30cc:46db:a813:2d7f:ffff:ffff:ffff	found	3a46:30cc:46db:a813:2d00::/72	BE	65016	0	Random AS 65016
+3136:f7e9:da3a:cf2b::	found	3136:f7e9:da3a:cf2b::/64	AT	65025	4	Random AS 65025
+3136:f7e9:da3a:cf2b:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:cf2b::/64	AT	65025	4	Random AS 65025
+3136:f7e9:da3a:cf2a:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce00::/55	DE	65025	0	Random AS 65025
+3136:f7e9:da3a:cf2c::	found	3136:f7e9:da3a:ce00::/55	DE	65025	0	Random AS 65025
+3136:f7e9:da3a:cf2b:7fff:ffff:ffff:ffff	found	3136:f7e9:da3a:cf2b::/64	AT	65025	4	Random AS 65025
+3e66:2684:c494::	found	3e66:2684:c494::/47	IT	65029	0	Random AS 65029
+3e66:2684:c495:ffff:ffff:ffff:ffff:ffff	found	3e66:2684:c494::/47	IT	65029	0	Random AS 65029
+3e66:2684:c493:ffff:ffff:ffff:ffff:ffff	found	3e66:2684:c480::/42	GB	65021	8	Random AS 65021
+3e66:2684:c496::	found	3e66:2684:c480::/42	GB	65021	8	Random AS 65021
+3e66:2684:c494:ffff:ffff:ffff:ffff:ffff	found	3e66:2684:c494::/47	IT	65029	0	Random AS 65029
+28c8:220::	found	28c8:220::/27		65025	8	Random AS 65025
+28c8:23f:ffff:ffff:ffff:ffff:ffff:ffff	found	28c8:220::/27		65025	8	Random AS 65025
+28c8:21f:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+28c8:240::	none			0	0	
+28c8:22f:ffff:ffff:ffff:ffff:ffff:ffff	found	28c8:220::/27		65025	8	Random AS 65025
+36.88.127.255	found	36.88.0.0/17	GB	65017	0	Random AS 65017
+36.88.128.0	found	36.88.0.0/13		65009	0	Random AS 65009
+36.88.63.255	found	36.88.0.0/17	GB	65017	0	Random AS 65017
+25a3:227f:ef36:20e8:8000::	found	25a3:227f:ef36:20e8:8000::/66	ES	65022	4	Random AS 65022
+25a3:227f:ef36:20e8:bfff:ffff:ffff:ffff	found	25a3:227f:ef36:20e8:8000::/66	ES	65022	4	Random AS 65022
+25a3:227f:ef36:20e8:c000::	found	25a3:227f:ef36:20e8::/64	ES	65011	2	Random AS 65011
+25a3:227f:ef36:20e8:9fff:ffff:ffff:ffff	found	25a3:227f:ef36:20e8:8000::/66	ES	65022	4	Random AS 65022
+3212:5427:d000::	found	3212:5427:d000::/38		65007	0	Random AS 65007
+3212:5427:d3ff:ffff:ffff:ffff:ffff:ffff	found	3212:5427:d000::/38		65007	0	Random AS 65007
+3212:5427:cfff:ffff:ffff:ffff:ffff:ffff	found	3212:5427:8000::/33	CH	65024	0	Random AS 65024
+3212:5427:d400::	found	3212:5427:8000::/33	CH	65024	0	Random AS 65024
+3212:5427:d1ff:ffff:ffff:ffff:ffff:ffff	found	3212:5427:d000::/38		65007	0	Random AS 65007
+3212:5427:e100::	found	3212:5427:e100::/40	AT	65024	2	Random AS 65024
+3212:5427:e1ff:ffff:ffff:ffff:ffff:ffff	found	3212:5427:e100::/40	AT	65024	2	Random AS 65024
+3212:5427:e0ff:ffff:ffff:ffff:ffff:ffff	found	3212:5427:e000::/35		65035	0	
+3212:5427:e200::	found	3212:5427:e000::/35		65035	0	
+3212:5427:e17f:ffff:ffff:ffff:ffff:ffff	found	3212:5427:e100::/40	AT	65024	2	Random AS 65024
+3a46:30cc:4680::	found	3a46:30cc:4600::/40		65026	0	Random AS 65026
+3a46:30cc:463f:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc:4600::/41	DE	65015	0	Random AS 65015
+25a3:227f:ef36:263d:1000::	found	25a3:227f:ef36:263d:1000::/69	US	65018	2	Random AS 65018
+25a3:227f:ef36:263d:1fff:ffff:ffff:ffff	found	25a3:227f:ef36:263d:1000::/68	ES	65027	0	Random AS 65027
+25a3:227f:ef36:263d:fff:ffff:ffff:ffff	found	25a3:227f:ef36:2600::/58	IT	65025	0	Random AS 65025
+25a3:227f:ef36:263d:2000::	found	25a3:227f:ef36:2600::/58	IT	65025	0	Random AS 65025
+25a3:227f:ef36:263d:17ff:ffff:ffff:ffff	found	25a3:227f:ef36:263d:1000::/69	US	65018	2	Random AS 65018
+181.51.67.120	found	181.51.67.120/31	CH	0	1	
+181.51.67.123	found	181.51.67.120/30	ES	65031	0	
+181.51.67.124	found	181.51.67.124/31	CH	65016	8	Random AS 65016
+181.51.67.121	found	181.51.67.120/31	CH	0	1	
+::ffff:181.51.67.120	found	181.51.67.120/31	CH	0	1	
+3a46:30cc:4675:4000::	found	3a46:30cc:4675:4000::/51	GB	65012	0	Random AS 65012
+3a46:30cc:4675:5fff:ffff:ffff:ffff:ffff	found	3a46:30cc:4675:4000::/51	GB	65012	0	Random AS 65012
+3a46:30cc:4675:3fff:ffff:ffff:ffff:ffff	found	3a46:30cc:4600::/41	DE	65015	0	Random AS 65015
+3a46:30cc:4675:6000::	found	3a46:30cc:4600::/41	DE	65015	0	Random AS 65015
+3a46:30cc:4675:4fff:ffff:ffff:ffff:ffff	found	3a46:30cc:4675:4000::/51	GB	65012	0	Random AS 65012
+305e:4e34:be00::	found	305e:4e34:be00::/39	FR	65014	0	Random AS 65014
+305e:4e34:bfff:ffff:ffff:ffff:ffff:ffff	found	305e:4e34:be00::/39	FR	65014	0	Random AS 65014
+305e:4e34:bdff:ffff:ffff:ffff:ffff:ffff	found	305e:4e34::/32		65036	8	
+305e:4e34:c000::	found	305e:4e34::/32		65036	8	
+305e:4e34:beff:ffff:ffff:ffff:ffff:ffff	found	305e:4e34:be00::/39	FR	65014	0	Random AS 65014
+52.80.0.0	found	52.80.0.0/12	FR	65016	0	Random AS 65016
+52.95.255.255	found	52.80.0.0/12	FR	65016	0	Random AS 65016
+52.79.255.255	none			0	0	
+52.96.0.0	none			0	0	
+52.87.255.255	found	52.80.0.0/12	FR	65016	0	Random AS 65016
+::ffff:52.80.0.0	found	52.80.0.0/12	FR	65016	0	Random AS 65016
+82.244.154.32	found	82.244.154.0/26	CH	65029	0	Random AS 65029
+82.244.154.15	found	82.244.154.0/27		65001	0	Random AS 65001
+74.216.0.0	found	74.216.0.0/14		65016	0	Random AS 65016
+74.219.255.255	found	74.216.0.0/14		65016	0	Random AS 65016
+74.215.255.255	found	74.128.0.0/9	IT	65033	4	
+74.220.0.0	found	74.128.0.0/9	IT	65033	4	
+74.217.255.255	found	74.216.0.0/14		65016	0	Random AS 65016
+::ffff:74.216.0.0	found	74.216.0.0/14		65016	0	Random AS 65016
+3136:f7e9:da3a:f000::	found	3136:f7e9:da3a:f000::/54	AT	65030	0	
+3136:f7e9:da3a:f3ff:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:f000::/54	AT	65030	0	
+3136:f7e9:da3a:efff:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:c000::/50	NL	65016	0	Random AS 65016
+3136:f7e9:da3a:f400::	found	3136:f7e9:da3a:c000::/50	NL	65016	0	Random AS 65016
+3136:f7e9:da3a:f1ff:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:f100::/56	IT	65000	8	Random AS 65000
+164.171.165.176	found	164.171.165.176/29	US	65017	1	Random AS 65017
+164.171.165.183	found	164.171.165.180/30	NL	65004	8	Random AS 65004
+164.171.165.184	found	164.171.165.160/27	AT	65005	0	Random AS 65005
+164.171.165.179	found	164.171.165.176/29	US	65017	1	Random AS 65017
+::ffff:164.171.165.176	found	164.171.165.176/29	US	65017	1	Random AS 65017
+3c70:fdc6:e000::	found	3c70:fdc6:e000::/35		65022	0	Random AS 65022
+3c70:fdc6:ffff:ffff:ffff:ffff:ffff:ffff	found	3c70:fdc6:e000::/35		65022	0	Random AS 65022
+3c70:fdc6:dfff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3c70:fdc7::	none			0	0	
+3c70:fdc6:efff:ffff:ffff:ffff:ffff:ffff	found	3c70:fdc6:e000::/35		65022	0	Random AS 65022
+3136:f7e9:da3a:ce80::	found	3136:f7e9:da3a:ce80::/60	AT	65028	0	Random AS 65028
+3136:f7e9:da3a:ce8f:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce80::/60	AT	65028	0	Random AS 65028
+3136:f7e9:da3a:ce7f:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce00::/55	DE	65025	0	Random AS 65025
+3136:f7e9:da3a:ce90::	found	3136:f7e9:da3a:ce00::/55	DE	65025	0	Random AS 65025
+3136:f7e9:da3a:ce87:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce87:f800::/69	DE	65039	0	
+3702:1fd4:4a45:e00::	found	3702:1fd4:4a45:e00::/55	AT	65025	6	Random AS 65025
+3702:1fd4:4a45:fff:ffff:ffff:ffff:ffff	found	3702:1fd4:4a45:e00::/55	AT	65025	6	Random AS 65025
+3702:1fd4:4a45:dff:ffff:ffff:ffff:ffff	none			0	0	
+3702:1fd4:4a45:1000::	none			0	0	
+3702:1fd4:4a45:eff:ffff:ffff:ffff:ffff	found	3702:1fd4:4a45:e00::/55	AT	65025	6	Random AS 65025
+97.160.0.0	found	97.160.0.0/16		65013	0	Random AS 65013
+97.160.255.255	found	97.160.0.0/16		65013	0	Random AS 65013
+97.159.255.255	none			0	0	
+97.161.0.0	none			0	0	
+97.160.127.255	found	97.160.0.0/16		65013	0	Random AS 65013
+::ffff:97.160.0.0	found	97.160.0.0/16		65013	0	Random AS 65013
+305e:4e34:1fff:ffff:ffff:ffff:ffff:ffff	found	305e:4e34::/35	GB	65009	0	Random AS 65009
+305e:4e34:2000::	found	305e:4e34::/32		65036	8	
+305e:4e34:fff:ffff:ffff:ffff:ffff:ffff	found	305e:4e34::/35	GB	65009	0	Random AS 65009
+8.139.0.0	found	8.139.0.0/17		65032	2	
+8.139.127.255	found	8.139.0.0/17		65032	2	
+8.138.255.255	none			0	0	
+8.139.128.0	none			0	0	
+8.139.63.255	found	8.139.0.0/17		65032	2	
+::ffff:8.139.0.0	found	8.139.0.0/17		65032	2	
+3517:c43d::	found	3517:c43d::/34		65034	0	
+3517:c43d:3fff:ffff:ffff:ffff:ffff:ffff	found	3517:c43d::/34		65034	0	
+3517:c43c:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3517:c43d:4000::	none			0	0	
+3517:c43d:1fff:ffff:ffff:ffff:ffff:ffff	found	3517:c43d::/34		65034	0	
+51.118.0.0	found	51.118.0.0/25	US	65030	4	
+51.118.0.127	found	51.118.0.0/25	US	65030	4	
+51.117.255.255	none			0	0	
+51.118.0.128	none			0	0	
+51.118.0.63	found	51.118.0.0/25	US	65030	4	
+::ffff:51.118.0.0	found	51.118.0.0/25	US	65030	4	
+164.171.165.168	found	164.171.165.168/29	DE	65012	8	Random AS 65012
+164.171.165.167	found	164.171.165.160/27	AT	65005	0	Random AS 65005
+164.171.165.171	found	164.171.165.168/29	DE	65012	8	Random AS 65012
+::ffff:164.171.165.168	found	164.171.165.168/29	DE	65012	8	Random AS 65012
+2e1c:e238:af62:5f00::	found	2e1c:e238:af62:5f00::/56	CH	65036	0	
+2e1c:e238:af62:5fff:ffff:ffff:ffff:ffff	found	2e1c:e238:af62:5fe0::/59		65037	0	
+2e1c:e238:af62:5eff:ffff:ffff:ffff:ffff	none			0	0	
+2e1c:e238:af62:6000::	none			0	0	
+2e1c:e238:af62:5f7f:ffff:ffff:ffff:ffff	found	2e1c:e238:af62:5f00::/56	CH	65036	0	
+125.148.250.127	found	125.148.250.0/25		65007	4	Random AS 65007
+125.148.250.128	found	125.148.248.0/22	AT	65005	0	Random AS 65005
+125.148.250.63	found	125.148.250.0/25		65007	4	Random AS 65007
+::ffff:125.148.250.0	found	125.148.250.0/25		65007	4	Random AS 65007
+3d7b:e855:4dc3:42a:e000::	found	3d7b:e855:4dc3:42a:e000::/68		65030	0	
+3d7b:e855:4dc3:42a:efff:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a:e000::/68		65030	0	
+3d7b:e855:4dc3:42a:dfff:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a::/63	GB	65014	4	Random AS 65014
+3d7b:e855:4dc3:42a:f000::	found	3d7b:e855:4dc3:42a::/63	GB	65014	4	Random AS 65014
+3d7b:e855:4dc3:42a:e7ff:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a:e000::/68		65030	0	
+33bb:53a4:794f:1488:9708::	found	33bb:53a4:794f:1488:9708::/78		65029	4	Random AS 65029
+33bb:53a4:794f:1488:970b:ffff:ffff:ffff	found	33bb:53a4:794f:1488:9708::/78		65029	4	Random AS 65029
+33bb:53a4:794f:1488:9707:ffff:ffff:ffff	found	33bb:53a4:794f:1488:9700::/73	BE	65025	0	Random AS 65025
+33bb:53a4:794f:1488:970c::	found	33bb:53a4:794f:1488:9700::/73	BE	65025	0	Random AS 65025
+33bb:53a4:794f:1488:9709:ffff:ffff:ffff	found	33bb:53a4:794f:1488:9708::/78		65029	4	Random AS 65029
+3047:987b:3aa8:dc8a:1a00::	found	3047:987b:3aa8:dc8a:1a00::/73	AT	65032	1	
+3047:987b:3aa8:dc8a:1a7f:ffff:ffff:ffff	found	3047:987b:3aa8:dc8a:1a00::/73	AT	65032	1	
+3047:987b:3aa8:dc8a:1a80::	found	3047:987b:3aa8:dc8a:1800::/70	DE	65033	2	
+3047:987b:3aa8:dc8a:1a3f:ffff:ffff:ffff	found	3047:987b:3aa8:dc8a:1a00::/73	AT	65032	1	
+2a3d:7a61:8db2:9710::	found	2a3d:7a61:8db2:9710::/61	US	65037	0	
+2a3d:7a61:8db2:9717:ffff:ffff:ffff:ffff	found	2a3d:7a61:8db2:9710::/61	US	65037	0	
+2a3d:7a61:8db2:970f:ffff:ffff:ffff:ffff	none			0	0	
+2a3d:7a61:8db2:9718::	none			0	0	
+2a3d:7a61:8db2:9713:ffff:ffff:ffff:ffff	found	2a3d:7a61:8db2:9710::/61	US	65037	0	
+2e03:4d00::	found	2e03:4d00::/26	GB	65022	0	Random AS 65022
+2e03:4d3f:ffff:ffff:ffff:ffff:ffff:ffff	found	2e03:4d00::/26	GB	65022	0	Random AS 65022
+2e03:4cff:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+2e03:4d40::	none			0	0	
+2e03:4d1f:ffff:ffff:ffff:ffff:ffff:ffff	found	2e03:4d00::/26	GB	65022	0	Random AS 65022
+46.64.0.0	found	46.64.0.0/11	IT	65016	0	Random AS 65016
+46.95.255.255	found	46.64.0.0/11	IT	65016	0	Random AS 65016
+46.63.255.255	none			0	0	
+46.96.0.0	none			0	0	
+46.79.255.255	found	46.64.0.0/11	IT	65016	0	Random AS 65016
+::ffff:46.64.0.0	found	46.64.0.0/11	IT	65016	0	Random AS 65016
+3047:987b:3aa8:dc8a:1a4d::	found	3047:987b:3aa8:dc8a:1a4d::/80	DE	65010	0	Random AS 65010
+3047:987b:3aa8:dc8a:1a4d:ffff:ffff:ffff	found	3047:987b:3aa8:dc8a:1a4d::/80	DE	65010	0	Random AS 65010
+3047:987b:3aa8:dc8a:1a4c:ffff:ffff:ffff	found	3047:987b:3aa8:dc8a:1a00::/73	AT	65032	1	
+3047:987b:3aa8:dc8a:1a4e::	found	3047:987b:3aa8:dc8a:1a00::/73	AT	65032	1	
+3047:987b:3aa8:dc8a:1a4d:7fff:ffff:ffff	found	3047:987b:3aa8:dc8a:1a4d::/80	DE	65010	0	Random AS 65010
+3d50:8331:4c07:2000::	found	3d50:8331:4c07:2000::/51	FR	65023	0	Random AS 65023
+3d50:8331:4c07:3fff:ffff:ffff:ffff:ffff	found	3d50:8331:4c07:2000::/51	FR	65023	0	Random AS 65023
+3d50:8331:4c07:1fff:ffff:ffff:ffff:ffff	found	3d50:8331:4c00::/42	FR	65038	4	
+3d50:8331:4c07:4000::	found	3d50:8331:4c00::/42	FR	65038	4	
+3d50:8331:4c07:2fff:ffff:ffff:ffff:ffff	found	3d50:8331:4c07:2000::/51	FR	65023	0	Random AS 65023
+3a46:30cc:46c3:875c::	found	3a46:30cc:46c3:875c::/62	IT	65017	0	Random AS 65017
+3a46:30cc:46c3:875f:ffff:ffff:ffff:ffff	found	3a46:30cc:46c3:875c::/62	IT	65017	0	Random AS 65017
+3a46:30cc:46c3:875b:ffff:ffff:ffff:ffff	found	3a46:30cc:46c3:8700::/57		65008	0	Random AS 65008
+3a46:30cc:46c3:8760::	found	3a46:30cc:46c3:8700::/57		65008	0	Random AS 65008
+3a46:30cc:46c3:875d:ffff:ffff:ffff:ffff	found	3a46:30cc:46c3:875c::/62	IT	65017	0	Random AS 65017
+164.171.165.180	found	164.171.165.180/30	NL	65004	8	Random AS 65004
+164.171.165.181	found	164.171.165.180/30	NL	65004	8	Random AS 65004
+::ffff:164.171.165.180	found	164.171.165.180/30	NL	65004	8	Random AS 65004
+3b02:287b:51f:2000::	found	3b02:287b:51f:2000::/51	IT	65038	0	
+3b02:287b:51f:3fff:ffff:ffff:ffff:ffff	found	3b02:287b:51f:2000::/51	IT	65038	0	
+3b02:287b:51f:1fff:ffff:ffff:ffff:ffff	found	3b02:287b:500::/42	BE	65024	0	Random AS 65024
+3b02:287b:51f:4000::	found	3b02:287b:500::/42	BE	65024	0	Random AS 65024
+3b02:287b:51f:2fff:ffff:ffff:ffff:ffff	found	3b02:287b:51f:2000::/51	IT	65038	0	
+2f0f:519:37d4:a778::	found	2f0f:519:37d4:a770::/60	NL	65001	0	Random AS 65001
+2f0f:519:37d4:a773:ffff:ffff:ffff:ffff	found	2f0f:519:37d4:a770::/61	CH	65015	2	Random AS 65015
+38cf:7fb2:db3:8000::	found	38cf:7fb2:db3:8000::/49	FR	65006	0	Random AS 65006
+38cf:7fb2:db3:ffff:ffff:ffff:ffff:ffff	found	38cf:7fb2:db3:8000::/49	FR	65006	0	Random AS 65006
+38cf:7fb2:db3:7fff:ffff:ffff:ffff:ffff	none			0	0	
+38cf:7fb2:db4::	none			0	0	
+38cf:7fb2:db3:bfff:ffff:ffff:ffff:ffff	found	38cf:7fb2:db3:8000::/49	FR	65006	0	Random AS 65006
+95.245.232.0	found	95.245.232.0/21	ES	65024	0	Random AS 65024
+95.245.239.255	found	95.245.232.0/21	ES	65024	0	Random AS 65024
+95.245.231.255	none			0	0	
+95.245.240.0	none			0	0	
+95.245.235.255	found	95.245.232.0/21	ES	65024	0	Random AS 65024
+::ffff:95.245.232.0	found	95.245.232.0/21	ES	65024	0	Random AS 65024
+163.52.29.224	found	163.52.29.192/26	ES	65031	0	
+163.52.29.207	found	163.52.29.192/27	IT	65010	0	Random AS 65010
+3047:987b:3aa8:dc8a:1a01::	found	3047:987b:3aa8:dc8a:1a01::/81		65029	0	Random AS 65029
+3047:987b:3aa8:dc8a:1a01:7fff:ffff:ffff	found	3047:987b:3aa8:dc8a:1a01::/81		65029	0	Random AS 65029
+3047:987b:3aa8:dc8a:1a00:ffff:ffff:ffff	found	3047:987b:3aa8:dc8a:1a00::/73	AT	65032	1	
+3047:987b:3aa8:dc8a:1a01:8000::	found	3047:987b:3aa8:dc8a:1a00::/73	AT	65032	1	
+3047:987b:3aa8:dc8a:1a01:3fff:ffff:ffff	found	3047:987b:3aa8:dc8a:1a01::/81		65029	0	Random AS 65029
+2ae2:9e0:3c31:9c00::	found	2ae2:9e0:3c31:9c00::/54		65008	0	Random AS 65008
+2ae2:9e0:3c31:9bff:ffff:ffff:ffff:ffff	found	2ae2:9e0:3c31:9000::/52	FR	65000	1	Random AS 65000
+2ae2:9e0:3c31:9dff:ffff:ffff:ffff:ffff	found	2ae2:9e0:3c31:9c00::/54		65008	0	Random AS 65008
+2ac8:14e5:a800::	found	2ac8:14e5:a800::/37	AT	65026	0	Random AS 65026
+2ac8:14e5:afff:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e5:ae00::/39	AT	65007	0	Random AS 65007
+2ac8:14e5:a7ff:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e0::/29	IT	65020	0	Random AS 65020
+2ac8:14e5:b000::	found	2ac8:14e0::/29	IT	65020	0	Random AS 65020
+2ac8:14e5:abff:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e5:a800::/37	AT	65026	0	Random AS 65026
+3bc4:1dc:a7b8:6000::	found	3bc4:1dc:a7b8:6000::/51	FR	65034	0	
+3bc4:1dc:a7b8:7fff:ffff:ffff:ffff:ffff	found	3bc4:1dc:a7b8:6000::/51	FR	65034	0	
+3bc4:1dc:a7b8:5fff:ffff:ffff:ffff:ffff	none			0	0	
+3bc4:1dc:a7b8:8000::	none			0	0	
+3bc4:1dc:a7b8:6fff:ffff:ffff:ffff:ffff	found	3bc4:1dc:a7b8:6000::/51	FR	65034	0	
+72.212.128.0	found	72.212.128.0/17	GB	65000	0	Random AS 65000
+72.212.255.255	found	72.212.128.0/17	GB	65000	0	Random AS 65000
+72.212.127.255	none			0	0	
+72.213.0.0	none			0	0	
+72.212.191.255	found	72.212.128.0/17	GB	65000	0	Random AS 65000
+::ffff:72.212.128.0	found	72.212.128.0/17	GB	65000	0	Random AS 65000
+3a46:30cc:46c2:4800::	found	3a46:30cc:46c2:4800::/58	GB	65022	1	Random AS 65022
+3a46:30cc:46c2:483f:ffff:ffff:ffff:ffff	found	3a46:30cc:46c2:4800::/58	GB	65022	1	Random AS 65022
+3a46:30cc:46c2:47ff:ffff:ffff:ffff:ffff	found	3a46:30cc:46c2::/47		65011	0	Random AS 65011
+3a46:30cc:46c2:4840::	found	3a46:30cc:46c2::/47		65011	0	Random AS 65011
+3a46:30cc:46c2:481f:ffff:ffff:ffff:ffff	found	3a46:30cc:46c2:4800::/58	GB	65022	1	Random AS 65022
+126.235.192.0	found	126.235.192.0/19	US	65005	1	Random AS 65005
+126.235.223.255	found	126.235.192.0/19	US	65005	1	Random AS 65005
+126.235.191.255	none			0	0	
+126.235.224.0	none			0	0	
+126.235.207.255	found	126.235.192.0/19	US	65005	1	Random AS 65005
+::ffff:126.235.192.0	found	126.235.192.0/19	US	65005	1	Random AS 65005
+3387:a1be::	found	3387:a1be::/31	US	65022	0	Random AS 65022
+3387:a1bf:ffff:ffff:ffff:ffff:ffff:ffff	found	3387:a1be::/31	US	65022	0	Random AS 65022
+3387:a1bd:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3387:a1c0::	none			0	0	
+3387:a1be:ffff:ffff:ffff:ffff:ffff:ffff	found	3387:a1be::/31	US	65022	0	Random AS 65022
+3136:f7e9:da3a:ce8c::	found	3136:f7e9:da3a:ce8c::/65	ES	65016	4	Random AS 65016
+3136:f7e9:da3a:ce8c:7fff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce8c::/65	ES	65016	4	Random AS 65016
+3136:f7e9:da3a:ce8b:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce80::/60	AT	65028	0	Random AS 65028
+3136:f7e9:da3a:ce8c:8000::	found	3136:f7e9:da3a:ce80::/60	AT	65028	0	Random AS 65028
+3136:f7e9:da3a:ce8c:3fff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce8c::/65	ES	65016	4	Random AS 65016
+3702:1fd4:4a45:eea:c000::	found	3702:1fd4:4a45:eea:c000::/66	ES	65016	0	Random AS 65016
+3702:1fd4:4a45:eea:ffff:ffff:ffff:ffff	found	3702:1fd4:4a45:eea:c000::/66	ES	65016	0	Random AS 65016
+3702:1fd4:4a45:eea:bfff:ffff:ffff:ffff	found	3702:1fd4:4a45:e00::/55	AT	65025	6	Random AS 65025
+3702:1fd4:4a45:eeb::	found	3702:1fd4:4a45:e00::/55	AT	65025	6	Random AS 65025
+3702:1fd4:4a45:eea:dfff:ffff:ffff:ffff	found	3702:1fd4:4a45:eea:c000::/66	ES	65016	0	Random AS 65016
+2fff:6740:a1fe:67a2::	found	2fff:6740:a1fe:67a2::/63		65027	9	Random AS 65027
+2fff:6740:a1fe:67a3:ffff:ffff:ffff:ffff	found	2fff:6740:a1fe:67a2::/63		65027	9	Random AS 65027
+2fff:6740:a1fe:67a1:ffff:ffff:ffff:ffff	none			0	0	
+2fff:6740:a1fe:67a4::	none			0	0	
+2fff:6740:a1fe:67a2:ffff:ffff:ffff:ffff	found	2fff:6740:a1fe:67a2::/63		65027	9	Random AS 65027
+21b2:85e0::	found	21b2:85e0::/31	DE	65020	0	Random AS 65020
+21b2:85e1:ffff:ffff:ffff:ffff:ffff:ffff	found	21b2:85e0::/31	DE	65020	0	Random AS 65020
+21b2:85df:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+21b2:85e2::	none			0	0	
+21b2:85e0:ffff:ffff:ffff:ffff:ffff:ffff	found	21b2:85e0::/31	DE	65020	0	Random AS 65020
+2d70:5d57:45c:c348::	found	2d70:5d57:45c:c348::/64	US	65038	0	
+2d70:5d57:45c:c348:ffff:ffff:ffff:ffff	found	2d70:5d57:45c:c348::/64	US	65038	0	
+2d70:5d57:45c:c347:ffff:ffff:ffff:ffff	none			0	0	
+2d70:5d57:45c:c349::	none			0	0	
+2d70:5d57:45c:c348:7fff:ffff:ffff:ffff	found	2d70:5d57:45c:c348::/64	US	65038	0	
+21b2:85e1:4000::	found	21b2:85e1:4000::/34	AT	65020	0	Random AS 65020
+21b2:85e1:7fff:ffff:ffff:ffff:ffff:ffff	found	21b2:85e1:4000::/34	AT	65020	0	Random AS 65020
+21b2:85e1:3fff:ffff:ffff:ffff:ffff:ffff	found	21b2:85e0::/31	DE	65020	0	Random AS 65020
+21b2:85e1:8000::	found	21b2:85e0::/31	DE	65020	0	Random AS 65020
+21b2:85e1:5fff:ffff:ffff:ffff:ffff:ffff	found	21b2:85e1:4000::/34	AT	65020	0	Random AS 65020
+181.51.67.125	found	181.51.67.124/31	CH	65016	8	Random AS 65016
+181.51.67.126	found	181.51.67.112/28	IT	0	0	
+::ffff:181.51.67.124	found	181.51.67.124/31	CH	65016	8	Random AS 65016
+97.160.223.192	found	97.160.223.192/26	IT	65010	0	Random AS 65010
+97.160.223.255	found	97.160.223.192/26	IT	65010	0	Random AS 65010
+97.160.223.191	found	97.160.0.0/16		65013	0	Random AS 65013
+97.160.224.0	found	97.160.0.0/16		65013	0	Random AS 65013
+97.160.223.223	found	97.160.223.192/26	IT	65010	0	Random AS 65010
+::ffff:97.160.223.192	found	97.160.223.192/26	IT	65010	0	Random AS 65010
+222c:749c:1550::	found	222c:749c:1550::/46	CH	65038	0	
+222c:749c:1553:ffff:ffff:ffff:ffff:ffff	found	222c:749c:1550::/46	CH	65038	0	
+222c:749c:154f:ffff:ffff:ffff:ffff:ffff	none			0	0	
+222c:749c:1554::	none			0	0	
+222c:749c:1551:ffff:ffff:ffff:ffff:ffff	found	222c:749c:1550::/46	CH	65038	0	
+3047:987b:3aa8:dc8a:1b80::	found	3047:987b:3aa8:dc8a:1b80::/73	BE	65001	0	Random AS 65001
+3047:987b:3aa8:dc8a:1b7f:ffff:ffff:ffff	found	3047:987b:3aa8:dc8a:1800::/70	DE	65033	2	
+3047:987b:3aa8:dc8a:1bbf:ffff:ffff:ffff	found	3047:987b:3aa8:dc8a:1b80::/73	BE	65001	0	Random AS 65001
+3908:aca8:7907:8000::	found	3908:aca8:7907:8000::/51	NL	65038	0	
+3908:aca8:7907:9fff:ffff:ffff:ffff:ffff	found	3908:aca8:7907:8000::/51	NL	65038	0	
+3908:aca8:7907:7fff:ffff:ffff:ffff:ffff	none			0	0	
+3908:aca8:7907:a000::	none			0	0	
+3908:aca8:7907:8fff:ffff:ffff:ffff:ffff	found	3908:aca8:7907:8000::/51	NL	65038	0	
+30ea:f690:6040::	found	30ea:f690:6040::/44	ES	65010	0	Random AS 65010
+30ea:f690:604f:ffff:ffff:ffff:ffff:ffff	found	30ea:f690:6040::/44	ES	65010	0	Random AS 65010
+30ea:f690:603f:ffff:ffff:ffff:ffff:ffff	none			0	0	
+30ea:f690:6050::	none			0	0	
+30ea:f690:6047:ffff:ffff:ffff:ffff:ffff	found	30ea:f690:6040::/44	ES	65010	0	Random AS 65010
+163.52.29.216	found	163.52.29.216/30	FR	65030	1	
+163.52.29.219	found	163.52.29.216/30	FR	65030	1	
+163.52.29.215	found	163.52.29.192/27	IT	65010	0	Random AS 65010
+163.52.29.220	found	163.52.29.192/27	IT	65010	0	Random AS 65010
+163.52.29.217	found	163.52.29.216/30	FR	65030	1	
+::ffff:163.52.29.216	found	163.52.29.216/30	FR	65030	1	
+2ac8:14e7:bc00::	found	2ac8:14e7:bc00::/39	GB	65025	0	Random AS 65025
+2ac8:14e7:bdff:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e7:bc00::/39	GB	65025	0	Random AS 65025
+2ac8:14e7:bbff:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e0::/29	IT	65020	0	Random AS 65020
+2ac8:14e7:be00::	found	2ac8:14e0::/29	IT	65020	0	Random AS 65020
+2ac8:14e7:bcff:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e7:bc00::/39	GB	65025	0	Random AS 65025
+3476:d75b:3cba:8321:cdd4:4795:4600:0	found	3476:d75b:3cba:8321:cdd4:4795:4600:0/104	IT	65034	0	
+3476:d75b:3cba:8321:cdd4:4795:46ff:ffff	found	3476:d75b:3cba:8321:cdd4:4795:4600:0/104	IT	65034	0	
+3476:d75b:3cba:8321:cdd4:4795:45ff:ffff	found	3476:d75b:3cba:8321:cdd4:4794::/94	NL	65036	0	
+3476:d75b:3cba:8321:cdd4:4795:4700:0	found	3476:d75b:3cba:8321:cdd4:4794::/94	NL	65036	0	
+3476:d75b:3cba:8321:cdd4:4795:467f:ffff	found	3476:d75b:3cba:8321:cdd4:4795:4600:0/104	IT	65034	0	
+275c:4428:9c60::	found	275c:4428:9c60::/43	GB	65012	8	Random AS 65012
+275c:4428:9c7f:ffff:ffff:ffff:ffff:ffff	found	275c:4428:9c60::/43	GB	65012	8	Random AS 65012
+275c:4428:9c5f:ffff:ffff:ffff:ffff:ffff	found	275c:4428:8000::/35	NL	65006	0	Random AS 65006
+275c:4428:9c80::	found	275c:4428:8000::/35	NL	65006	0	Random AS 65006
+275c:4428:9c6f:ffff:ffff:ffff:ffff:ffff	found	275c:4428:9c60::/43	GB	65012	8	Random AS 65012
+3d48::	found	3d48::/17		65039	0	
+3d48:7fff:ffff:ffff:ffff:ffff:ffff:ffff	found	3d48::/17		65039	0	
+3d47:ffff:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3d48:8000::	none			0	0	
+3d48:3fff:ffff:ffff:ffff:ffff:ffff:ffff	found	3d48::/17		65039	0	
+147.245.57.208	found	147.245.57.208/29	NL	65029	4	Random AS 65029
+147.245.57.215	found	147.245.57.208/29	NL	65029	4	Random AS 65029
+147.245.57.207	none			0	0	
+147.245.57.216	none			0	0	
+147.245.57.211	found	147.245.57.208/29	NL	65029	4	Random AS 65029
+::ffff:147.245.57.208	found	147.245.57.208/29	NL	65029	4	Random AS 65029
+74.190.217.248	found	74.190.217.248/32	US	65014	0	Random AS 65014
+74.190.217.247	found	74.190.217.224/27	ES	65026	0	Random AS 65026
+74.190.217.251	found	74.190.217.248/29	GB	65018	0	Random AS 65018
+::ffff:74.190.217.248	found	74.190.217.248/32	US	65014	0	Random AS 65014
+222.238.0.0	found	222.238.0.0/23	FR	65022	0	Random AS 65022
+222.238.1.255	found	222.238.1.0/24	ES	65031	0	
+222.237.255.255	none			0	0	
+222.238.2.0	none			0	0	
+222.238.0.255	found	222.238.0.0/23	FR	65022	0	Random AS 65022
+::ffff:222.238.0.0	found	222.238.0.0/23	FR	65022	0	Random AS 65022
+3a46:30cc:46d0:3880::	found	3a46:30cc:46d0:3880::/58	BE	65029	0	Random AS 65029
+3a46:30cc:46d0:38bf:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0:3880::/58	BE	65029	0	Random AS 65029
+3a46:30cc:46d0:387f:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0::/49	NL	65012	0	Random AS 65012
+3a46:30cc:46d0:38c0::	found	3a46:30cc:46d0::/49	NL	65012	0	Random AS 65012
+3a46:30cc:46d0:389f:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0:3880::/58	BE	65029	0	Random AS 65029
+3047:987b:3aa8:df11:4000::	found	3047:987b:3aa8:df11:4000::/66	CH	65037	2	
+3047:987b:3aa8:df11:7fff:ffff:ffff:ffff	found	3047:987b:3aa8:df11:4000::/66	CH	65037	2	
+3047:987b:3aa8:df11:3fff:ffff:ffff:ffff	found	3047:987b:3aa8:dc00::/54		65039	0	
+3047:987b:3aa8:df11:8000::	found	3047:987b:3aa8:dc00::/54		65039	0	
+3047:987b:3aa8:df11:5fff:ffff:ffff:ffff	found	3047:987b:3aa8:df11:4000::/66	CH	65037	2	
+2769:f00::	found	2769:f00::/28	NL	65036	0	
+2769:f7f:ffff:ffff:ffff:ffff:ffff:ffff	found	2769:f00::/25	ES	65008	0	Random AS 65008
+2769:eff:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+2769:f80::	none			0	0	
+2769:f3f:ffff:ffff:ffff:ffff:ffff:ffff	found	2769:f00::/25	ES	65008	0	Random AS 65008
+3f49:dfe2:c180::	found	3f49:dfe2:c180::/44	ES	65002	0	Random AS 65002
+3f49:dfe2:c18f:ffff:ffff:ffff:ffff:ffff	found	3f49:dfe2:c180::/44	ES	65002	0	Random AS 65002
+3f49:dfe2:c17f:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3f49:dfe2:c190::	none			0	0	
+3f49:dfe2:c187:ffff:ffff:ffff:ffff:ffff	found	3f49:dfe2:c180::/44	ES	65002	0	Random AS 65002
+3d7b:e855:4dc3:42a:e990::	found	3d7b:e855:4dc3:42a:e990::/76	GB	65020	0	Random AS 65020
+3d7b:e855:4dc3:42a:e99f:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a:e990::/76	GB	65020	0	Random AS 65020
+3d7b:e855:4dc3:42a:e98f:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a:e000::/68		65030	0	
+3d7b:e855:4dc3:42a:e9a0::	found	3d7b:e855:4dc3:42a:e000::/68		65030	0	
+3d7b:e855:4dc3:42a:e997:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a:e990::/76	GB	65020	0	Random AS 65020
+3476:d75b:3cba:830e:6e24::	found	3476:d75b:3cba:830e:6e24::/79	GB	65028	0	Random AS 65028
+3476:d75b:3cba:830e:6e25:ffff:ffff:ffff	found	3476:d75b:3cba:830e:6e24::/79	GB	65028	0	Random AS 65028
+3476:d75b:3cba:830e:6e23:ffff:ffff:ffff	found	3476:d75b:3cba:830e:6000::/67	GB	65001	0	Random AS 65001
+3476:d75b:3cba:830e:6e26::	found	3476:d75b:3cba:830e:6000::/67	GB	65001	0	Random AS 65001
+3476:d75b:3cba:830e:6e24:ffff:ffff:ffff	found	3476:d75b:3cba:830e:6e24::/79	GB	65028	0	Random AS 65028
+3476:d75b:3cba:8304:4000::	found	3476:d75b:3cba:8304:4000::/66	AT	65002	0	Random AS 65002
+3476:d75b:3cba:8304:7fff:ffff:ffff:ffff	found	3476:d75b:3cba:8304:4000::/66	AT	65002	0	Random AS 65002
+3476:d75b:3cba:8304:3fff:ffff:ffff:ffff	found	3476:d75b:3cba:8300::/58		65032	0	
+3476:d75b:3cba:8304:8000::	found	3476:d75b:3cba:8300::/58		65032	0	
+3476:d75b:3cba:8304:5fff:ffff:ffff:ffff	found	3476:d75b:3cba:8304:4000::/66	AT	65002	0	Random AS 65002
+2c36:e205:c100::	found	2c36:e205:c100::/41	US	65035	0	
+2c36:e205:c17f:ffff:ffff:ffff:ffff:ffff	found	2c36:e205:c100::/41	US	65035	0	
+2c36:e205:c0ff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+2c36:e205:c180::	none			0	0	
+2c36:e205:c13f:ffff:ffff:ffff:ffff:ffff	found	2c36:e205:c100::/41	US	65035	0	
+3e66:2684:c494:8a00::	found	3e66:2684:c494:8a00::/56	AT	65038	12	
+3e66:2684:c494:8aff:ffff:ffff:ffff:ffff	found	3e66:2684:c494:8a00::/56	AT	65038	12	
+3e66:2684:c494:89ff:ffff:ffff:ffff:ffff	found	3e66:2684:c494::/47	IT	65029	0	Random AS 65029
+3e66:2684:c494:8b00::	found	3e66:2684:c494::/47	IT	65029	0	Random AS 65029
+3e66:2684:c494:8a7f:ffff:ffff:ffff:ffff	found	3e66:2684:c494:8a00::/56	AT	65038	12	
+81.250.196.0	found	81.250.196.0/22	IT	65030	4	
+81.250.199.255	found	81.250.196.0/22	IT	65030	4	
+81.250.195.255	none			0	0	
+81.250.200.0	none			0	0	
+81.250.197.255	found	81.250.196.0/22	IT	65030	4	
+::ffff:81.250.196.0	found	81.250.196.0/22	IT	65030	4	
+3a46:30cd:4000::	found	3a46:30cd:4000::/34	US	65013	0	Random AS 65013
+3a46:30cd:7fff:ffff:ffff:ffff:ffff:ffff	found	3a46:30cd:4000::/34	US	65013	0	Random AS 65013
+3a46:30cd:3fff:ffff:ffff:ffff:ffff:ffff	found	3a46:30cc::/30	US	65031	0	
+3a46:30cd:8000::	found	3a46:30cc::/30	US	65031	0	
+3a46:30cd:5fff:ffff:ffff:ffff:ffff:ffff	found	3a46:30cd:4000::/34	US	65013	0	Random AS 65013
+81.132.0.0	found	81.132.0.0/16	GB	65026	0	Random AS 65026
+81.132.255.255	found	81.132.0.0/16	GB	65026	0	Random AS 65026
+81.131.255.255	none			0	0	
+81.133.0.0	none			0	0	
+81.132.127.255	found	81.132.0.0/16	GB	65026	0	Random AS 65026
+::ffff:81.132.0.0	found	81.132.0.0/16	GB	65026	0	Random AS 65026
+3a46:30cc:46dc:ce00::	found	3a46:30cc:46dc:ce00::/56	BE	65008	0	Random AS 65008
+3a46:30cc:46dc:ceff:ffff:ffff:ffff:ffff	found	3a46:30cc:46dc:ce00::/56	BE	65008	0	Random AS 65008
+3a46:30cc:46dc:cdff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0::/44	FR	65034	0	
+3a46:30cc:46dc:cf00::	found	3a46:30cc:46d0::/44	FR	65034	0	
+3a46:30cc:46dc:ce7f:ffff:ffff:ffff:ffff	found	3a46:30cc:46dc:ce00::/56	BE	65008	0	Random AS 65008
+74.219.96.0	found	74.219.96.0/20	IT	65002	0	Random AS 65002
+74.219.111.255	found	74.219.96.0/20	IT	65002	0	Random AS 65002
+74.219.95.255	found	74.216.0.0/14		65016	0	Random AS 65016
+74.219.112.0	found	74.216.0.0/14		65016	0	Random AS 65016
+74.219.103.255	found	74.219.96.0/20	IT	65002	0	Random AS 65002
+::ffff:74.219.96.0	found	74.219.96.0/20	IT	65002	0	Random AS 65002
+3b02:287b:534:2100::	found	3b02:287b:534:2100::/59	GB	65022	0	Random AS 65022
+3b02:287b:534:211f:ffff:ffff:ffff:ffff	found	3b02:287b:534:2100::/59	GB	65022	0	Random AS 65022
+3b02:287b:534:20ff:ffff:ffff:ffff:ffff	found	3b02:287b:534::/49	AT	65014	1	Random AS 65014
+3b02:287b:534:2120::	found	3b02:287b:534::/49	AT	65014	1	Random AS 65014
+3b02:287b:534:210f:ffff:ffff:ffff:ffff	found	3b02:287b:534:2100::/59	GB	65022	0	Random AS 65022
+2c36:e205:c17c::	found	2c36:e205:c17c::/49	NL	65037	0	
+2c36:e205:c17c:7fff:ffff:ffff:ffff:ffff	found	2c36:e205:c17c::/49	NL	65037	0	
+2c36:e205:c17b:ffff:ffff:ffff:ffff:ffff	found	2c36:e205:c100::/41	US	65035	0	
+2c36:e205:c17c:8000::	found	2c36:e205:c100::/41	US	65035	0	
+2c36:e205:c17c:3fff:ffff:ffff:ffff:ffff	found	2c36:e205:c17c::/49	NL	65037	0	
+61.78.218.159	found	61.78.218.144/28	ES	65012	0	Random AS 65012
+61.78.218.160	found	61.78.216.0/22	US	0	8	
+61.78.218.151	found	61.78.218.144/28	ES	65012	0	Random AS 65012
+::ffff:61.78.218.144	found	61.78.218.144/28	ES	65012	0	Random AS 65012
+76.107.192.0	found	76.107.192.0/19	ES	65028	0	Random AS 65028
+76.107.223.255	found	76.107.192.0/19	ES	65028	0	Random AS 65028
+76.107.191.255	none			0	0	
+76.107.224.0	none			0	0	
+76.107.207.255	found	76.107.192.0/19	ES	65028	0	Random AS 65028
+::ffff:76.107.192.0	found	76.107.192.0/19	ES	65028	0	Random AS 65028
+96.0.128.0	found	96.0.128.0/17	GB	65020	0	Random AS 65020
+96.0.255.255	found	96.0.128.0/17	GB	65020	0	Random AS 65020
+96.0.127.255	none			0	0	
+96.1.0.0	none			0	0	
+96.0.191.255	found	96.0.128.0/17	GB	65020	0	Random AS 65020
+::ffff:96.0.128.0	found	96.0.128.0/17	GB	65020	0	Random AS 65020
+25a3:227f:ef36:263d:1800::	found	25a3:227f:ef36:263d:1000::/68	ES	65027	0	Random AS 65027
+25a3:227f:ef36:263d:13ff:ffff:ffff:ffff	found	25a3:227f:ef36:263d:1000::/69	US	65018	2	Random AS 65018
+2c36:e205:c178::	found	2c36:e205:c178::/48	ES	65026	0	Random AS 65026
+2c36:e205:c178:ffff:ffff:ffff:ffff:ffff	found	2c36:e205:c178::/48	ES	65026	0	Random AS 65026
+2c36:e205:c177:ffff:ffff:ffff:ffff:ffff	found	2c36:e205:c100::/41	US	65035	0	
+2c36:e205:c179::	found	2c36:e205:c100::/41	US	65035	0	
+2c36:e205:c178:7fff:ffff:ffff:ffff:ffff	found	2c36:e205:c178::/48	ES	65026	0	Random AS 65026
+43.119.194.32	found	43.119.194.32/27	GB	65033	0	
+43.119.194.47	found	43.119.194.32/27	GB	65033	0	
+::ffff:43.119.194.32	found	43.119.194.32/27	GB	65033	0	
+2d1c:3fff:f6a8::	found	2d1c:3fff:f6a8::/45	NL	65039	0	
+2d1c:3fff:f6af:ffff:ffff:ffff:ffff:ffff	found	2d1c:3fff:f6a8::/45	NL	65039	0	
+2d1c:3fff:f6a7:ffff:ffff:ffff:ffff:ffff	none			0	0	
+2d1c:3fff:f6b0::	none			0	0	
+2d1c:3fff:f6ab:ffff:ffff:ffff:ffff:ffff	found	2d1c:3fff:f6a8::/45	NL	65039	0	
+163.52.29.199	found	163.52.29.192/29	BE	65036	0	
+163.52.29.200	found	163.52.29.192/27	IT	65010	0	Random AS 65010
+163.52.29.195	found	163.52.29.192/29	BE	65036	0	
+222.238.0.144	found	222.238.0.144/28	AT	65018	0	Random AS 65018
+222.238.0.159	found	222.238.0.144/28	AT	65018	0	Random AS 65018
+222.238.0.143	found	222.238.0.0/23	FR	65022	0	Random AS 65022
+222.238.0.160	found	222.238.0.0/23	FR	65022	0	Random AS 65022
+222.238.0.151	found	222.238.0.144/28	AT	65018	0	Random AS 65018
+::ffff:222.238.0.144	found	222.238.0.144/28	AT	65018	0	Random AS 65018
+3672:95db:9e9f:8be8::	found	3672:95db:9e9f:8be8::/62	ES	65021	0	Random AS 65021
+3672:95db:9e9f:8bef:ffff:ffff:ffff:ffff	found	3672:95db:9e9f:8be8::/61	IT	65027	4	Random AS 65027
+3672:95db:9e9f:8be7:ffff:ffff:ffff:ffff	found	3672:95db:9e9f:8000::/51	DE	65033	4	
+3672:95db:9e9f:8bf0::	found	3672:95db:9e9f:8000::/51	DE	65033	4	
+3672:95db:9e9f:8beb:ffff:ffff:ffff:ffff	found	3672:95db:9e9f:8be8::/62	ES	65021	0	Random AS 65021
+46.234.185.0	found	46.234.185.0/25	US	65028	8	Random AS 65028
+46.234.185.127	found	46.234.185.0/25	US	65028	8	Random AS 65028
+46.234.184.255	none			0	0	
+46.234.185.128	none			0	0	
+46.234.185.63	found	46.234.185.0/25	US	65028	8	Random AS 65028
+::ffff:46.234.185.0	found	46.234.185.0/25	US	65028	8	Random AS 65028
+3b02:287b:51f:3000::	found	3b02:287b:51f:3000::/53	DE	65024	0	Random AS 65024
+3b02:287b:51f:37ff:ffff:ffff:ffff:ffff	found	3b02:287b:51f:3000::/53	DE	65024	0	Random AS 65024
+3b02:287b:51f:3800::	found	3b02:287b:51f:2000::/51	IT	65038	0	
+3b02:287b:51f:33ff:ffff:ffff:ffff:ffff	found	3b02:287b:51f:3000::/53	DE	65024	0	Random AS 65024
+21b2:85e1:500::	found	21b2:85e1:500::/41	GB	65010	0	Random AS 65010
+21b2:85e1:57f:ffff:ffff:ffff:ffff:ffff	found	21b2:85e1:500::/41	GB	65010	0	Random AS 65010
+21b2:85e1:4ff:ffff:ffff:ffff:ffff:ffff	found	21b2:85e0::/31	DE	65020	0	Random AS 65020
+21b2:85e1:580::	found	21b2:85e0::/31	DE	65020	0	Random AS 65020
+21b2:85e1:53f:ffff:ffff:ffff:ffff:ffff	found	21b2:85e1:500::/41	GB	65010	0	Random AS 65010
+2b4a:592e:b8c0::	found	2b4a:592e:b8c0::/43	AT	65001	0	Random AS 65001
+2b4a:592e:b8df:ffff:ffff:ffff:ffff:ffff	found	2b4a:592e:b8c0::/43	AT	65001	0	Random AS 65001
+2b4a:592e:b8bf:ffff:ffff:ffff:ffff:ffff	none			0	0	
+2b4a:592e:b8e0::	none			0	0	
+2b4a:592e:b8cf:ffff:ffff:ffff:ffff:ffff	found	2b4a:592e:b8c0::/43	AT	65001	0	Random AS 65001
+39.31.39.232	found	39.31.39.232/29	GB	65008	4	Random AS 65008
+39.31.39.239	found	39.31.39.232/29	GB	65008	4	Random AS 65008
+39.31.39.231	none			0	0	
+39.31.39.240	none			0	0	
+39.31.39.235	found	39.31.39.232/29	GB	65008	4	Random AS 65008
+::ffff:39.31.39.232	found	39.31.39.232/29	GB	65008	4	Random AS 65008
+49.121.75.62	found	49.121.75.60/30	US	65027	8	Random AS 65027
+::ffff:49.121.75.61	found	49.121.75.61/32	GB	65012	0	Random AS 65012
+3136:f7e9:da3a:f100::	found	3136:f7e9:da3a:f100::/56	IT	65000	8	Random AS 65000
+3136:f7e9:da3a:f0ff:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:f000::/54	AT	65030	0	
+3136:f7e9:da3a:f200::	found	3136:f7e9:da3a:f000::/54	AT	65030	0	
+3136:f7e9:da3a:f17f:ffff:ffff:ffff:ffff	found	3136:f7e9:da3a:f100::/56	IT	65000	8	Random AS 65000
+38cf:7fb2:db3:bf40::	found	38cf:7fb2:db3:bf40::/58	BE	65008	0	Random AS 65008
+38cf:7fb2:db3:bf7f:ffff:ffff:ffff:ffff	found	38cf:7fb2:db3:bf40::/58	BE	65008	0	Random AS 65008
+38cf:7fb2:db3:bf3f:ffff:ffff:ffff:ffff	found	38cf:7fb2:db3:8000::/49	FR	65006	0	Random AS 65006
+38cf:7fb2:db3:bf80::	found	38cf:7fb2:db3:8000::/49	FR	65006	0	Random AS 65006
+38cf:7fb2:db3:bf5f:ffff:ffff:ffff:ffff	found	38cf:7fb2:db3:bf40::/58	BE	65008	0	Random AS 65008
+43.119.194.60	found	43.119.194.60/31	CH	65021	0	Random AS 65021
+43.119.194.61	found	43.119.194.60/31	CH	65021	0	Random AS 65021
+43.119.194.59	found	43.119.194.32/27	GB	65033	0	
+43.119.194.62	found	43.119.194.32/27	GB	65033	0	
+::ffff:43.119.194.60	found	43.119.194.60/31	CH	65021	0	Random AS 65021
+35f9:6d71::	found	35f9:6d71::/36	FR	65036	0	
+35f9:6d71:fff:ffff:ffff:ffff:ffff:ffff	found	35f9:6d71::/36	FR	65036	0	
+35f9:6d70:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+35f9:6d71:1000::	none			0	0	
+35f9:6d71:7ff:ffff:ffff:ffff:ffff:ffff	found	35f9:6d71::/36	FR	65036	0	
+101.185.0.0	found	101.185.0.0/20	ES	65011	0	Random AS 65011
+101.185.15.255	found	101.185.0.0/20	ES	65011	0	Random AS 65011
+101.184.255.255	none			0	0	
+101.185.16.0	none			0	0	
+101.185.7.255	found	101.185.0.0/20	ES	65011	0	Random AS 65011
+::ffff:101.185.0.0	found	101.185.0.0/20	ES	65011	0	Random AS 65011
+3a46:30cc:46c3:8739::	found	3a46:30cc:46c3:8739::/64	GB	65031	4	
+3a46:30cc:46c3:8739:ffff:ffff:ffff:ffff	found	3a46:30cc:46c3:8739::/64	GB	65031	4	
+3a46:30cc:46c3:8738:ffff:ffff:ffff:ffff	found	3a46:30cc:46c3:8700::/57		65008	0	Random AS 65008
+3a46:30cc:46c3:873a::	found	3a46:30cc:46c3:8700::/57		65008	0	Random AS 65008
+3a46:30cc:46c3:8739:7fff:ffff:ffff:ffff	found	3a46:30cc:46c3:8739::/64	GB	65031	4	
+2cca:c49b:a822:9740::	found	2cca:c49b:a822:9740::/58	BE	65002	0	Random AS 65002
+2cca:c49b:a822:977f:ffff:ffff:ffff:ffff	found	2cca:c49b:a822:9740::/58	BE	65002	0	Random AS 65002
+2cca:c49b:a822:973f:ffff:ffff:ffff:ffff	none			0	0	
+2cca:c49b:a822:9780::	none			0	0	
+2cca:c49b:a822:975f:ffff:ffff:ffff:ffff	found	2cca:c49b:a822:9740::/58	BE	65002	0	Random AS 65002
+219.160.0.0	found	219.160.0.0/18	BE	65019	0	Random AS 65019
+219.160.63.255	found	219.160.0.0/18	BE	65019	0	Random AS 65019
+219.159.255.255	none			0	0	
+219.160.64.0	none			0	0	
+219.160.31.255	found	219.160.0.0/18	BE	65019	0	Random AS 65019
+::ffff:219.160.0.0	found	219.160.0.0/18	BE	65019	0	Random AS 65019
+219.228.64.0	found	219.228.64.0/22	NL	65010	0	Random AS 65010
+219.228.67.255	found	219.228.64.0/22	NL	65010	0	Random AS 65010
+219.228.63.255	none			0	0	
+219.228.68.0	none			0	0	
+219.228.65.255	found	219.228.64.0/22	NL	65010	0	Random AS 65010
+::ffff:219.228.64.0	found	219.228.64.0/22	NL	65010	0	Random AS 65010
+5.144.0.0	found	5.144.0.0/12	BE	65034	2	
+5.159.255.255	found	5.144.0.0/12	BE	65034	2	
+5.143.255.255	none			0	0	
+5.160.0.0	none			0	0	
+5.151.255.255	found	5.144.0.0/12	BE	65034	2	
+::ffff:5.144.0.0	found	5.144.0.0/12	BE	65034	2	
+3de4:b75f:467f:ffff:ffff:ffff:ffff:ffff	found	3de4:b75f:4600::/41	NL	65027	2	Random AS 65027
+3de4:b75f:4680::	found	3de4:b75f:4600::/39	ES	65009	1	Random AS 65009
+3de4:b75f:463f:ffff:ffff:ffff:ffff:ffff	found	3de4:b75f:4600::/42	US	65033	0	
+2d47:28bc:cb9e:8000::	found	2d47:28bc:cb9e:8000::/49		0	0	
+2d47:28bc:cb9e:ffff:ffff:ffff:ffff:ffff	found	2d47:28bc:cb9e:8000::/49		0	0	
+2d47:28bc:cb9e:7fff:ffff:ffff:ffff:ffff	none			0	0	
+2d47:28bc:cb9f::	none			0	0	
+2d47:28bc:cb9e:bfff:ffff:ffff:ffff:ffff	found	2d47:28bc:cb9e:8000::/49		0	0	
+3a46:30cc:46d0:1c00::	found	3a46:30cc:46d0:1c00::/56	IT	65022	0	Random AS 65022
+3a46:30cc:46d0:1cff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0:1c00::/56	IT	65022	0	Random AS 65022
+3a46:30cc:46d0:1bff:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0::/49	NL	65012	0	Random AS 65012
+3a46:30cc:46d0:1d00::	found	3a46:30cc:46d0::/49	NL	65012	0	Random AS 65012
+3a46:30cc:46d0:1c7f:ffff:ffff:ffff:ffff	found	3a46:30cc:46d0:1c00::/56	IT	65022	0	Random AS 65022
+3387:a1be:1e40::	found	3387:a1be:1e40::/42	FR	65002	0	Random AS 65002
+3387:a1be:1e7f:ffff:ffff:ffff:ffff:ffff	found	3387:a1be:1e40::/42	FR	65002	0	Random AS 65002
+3387:a1be:1e3f:ffff:ffff:ffff:ffff:ffff	found	3387:a1be::/31	US	65022	0	Random AS 65022
+3387:a1be:1e80::	found	3387:a1be::/31	US	65022	0	Random AS 65022
+3387:a1be:1e5f:ffff:ffff:ffff:ffff:ffff	found	3387:a1be:1e40::/42	FR	65002	0	Random AS 65002
+2ac8:14e7:bd89::	found	2ac8:14e7:bd89::/50	CH	65027	0	Random AS 65027
+2ac8:14e7:bd89:3fff:ffff:ffff:ffff:ffff	found	2ac8:14e7:bd89::/50	CH	65027	0	Random AS 65027
+2ac8:14e7:bd88:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e7:bc00::/39	GB	65025	0	Random AS 65025
+2ac8:14e7:bd89:4000::	found	2ac8:14e7:bc00::/39	GB	65025	0	Random AS 65025
+2ac8:14e7:bd89:1fff:ffff:ffff:ffff:ffff	found	2ac8:14e7:bd89::/50	CH	65027	0	Random AS 65027
+2a8b:814e::	found	2a8b:814e::/31	CH	65025	0	Random AS 65025
+2a8b:814f:ffff:ffff:ffff:ffff:ffff:ffff	found	2a8b:814e::/31	CH	65025	0	Random AS 65025
+2a8b:814d:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+2a8b:8150::	none			0	0	
+2a8b:814e:ffff:ffff:ffff:ffff:ffff:ffff	found	2a8b:814e::/31	CH	65025	0	Random AS 65025
+180.0.0.0	found	180.0.0.0/10	ES	65007	8	Random AS 65007
+180.63.255.255	found	180.60.0.0/14	IT	65019	0	Random AS 65019
+179.255.255.255	none			0	0	
+180.64.0.0	none			0	0	
+180.31.255.255	found	180.0.0.0/10	ES	65007	8	Random AS 65007
+::ffff:180.0.0.0	found	180.0.0.0/10	ES	65007	8	Random AS 65007
+211.181.230.114	found	211.181.230.114/32	AT	65000	0	Random AS 65000
+211.181.230.113	found	211.181.228.0/22	AT	65006	0	Random AS 65006
+211.181.230.115	found	211.181.228.0/22	AT	65006	0	Random AS 65006
+::ffff:211.181.230.114	found	211.181.230.114/32	AT	65000	0	Random AS 65000
+2ac8:14e5:ae00::	found	2ac8:14e5:ae00::/39	AT	65007	0	Random AS 65007
+2ac8:14e5:adff:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e5:a800::/37	AT	65026	0	Random AS 65026
+2ac8:14e5:aeff:ffff:ffff:ffff:ffff:ffff	found	2ac8:14e5:ae00::/39	AT	65007	0	Random AS 65007
+3b02:287b:534:2119::	found	3b02:287b:534:2119::/68	ES	65005	0	Random AS 65005
+3b02:287b:534:2119:fff:ffff:ffff:ffff	found	3b02:287b:534:2119::/68	ES	65005	0	Random AS 65005
+3b02:287b:534:2118:ffff:ffff:ffff:ffff	found	3b02:287b:534:2100::/59	GB	65022	0	Random AS 65022
+3b02:287b:534:2119:1000::	found	3b02:287b:534:2100::/59	GB	65022	0	Random AS 65022
+3b02:287b:534:2119:7ff:ffff:ffff:ffff	found	3b02:287b:534:2119::/68	ES	65005	0	Random AS 65005
+3476:d75b:3cba:8320::	found	3476:d75b:3cba:8320::/61	GB	65033	0	
+3476:d75b:3cba:8327:ffff:ffff:ffff:ffff	found	3476:d75b:3cba:8320::/61	GB	65033	0	
+3476:d75b:3cba:8328::	found	3476:d75b:3cba:8300::/58		65032	0	
+3476:d75b:3cba:8323:ffff:ffff:ffff:ffff	found	3476:d75b:3cba:8320::/61	GB	65033	0	
+2f0f:519:37d4:a771:6800::	found	2f0f:519:37d4:a771:6800::/69	FR	65027	0	Random AS 65027
+2f0f:519:37d4:a771:6fff:ffff:ffff:ffff	found	2f0f:519:37d4:a771:6800::/69	FR	65027	0	Random AS 65027
+2f0f:519:37d4:a771:67ff:ffff:ffff:ffff	found	2f0f:519:37d4:a770::/61	CH	65015	2	Random AS 65015
+2f0f:519:37d4:a771:7000::	found	2f0f:519:37d4:a770::/61	CH	65015	2	Random AS 65015
+2f0f:519:37d4:a771:6bff:ffff:ffff:ffff	found	2f0f:519:37d4:a771:6800::/69	FR	65027	0	Random AS 65027
+170.128.0.0	found	170.128.0.0/9	BE	65012	0	Random AS 65012
+170.255.255.255	found	170.128.0.0/9	BE	65012	0	Random AS 65012
+170.127.255.255	none			0	0	
+171.0.0.0	none			0	0	
+170.191.255.255	found	170.128.0.0/9	BE	65012	0	Random AS 65012
+::ffff:170.128.0.0	found	170.128.0.0/9	BE	65012	0	Random AS 65012
+181.51.67.122	found	181.51.67.120/30	ES	65031	0	
+2f0f:519:37d4:a779:c000::	found	2f0f:519:37d4:a779:c000::/66	DE	65019	0	Random AS 65019
+2f0f:519:37d4:a779:ffff:ffff:ffff:ffff	found	2f0f:519:37d4:a779:c000::/66	DE	65019	0	Random AS 65019
+2f0f:519:37d4:a779:bfff:ffff:ffff:ffff	found	2f0f:519:37d4:a770::/60	NL	65001	0	Random AS 65001
+2f0f:519:37d4:a77a::	found	2f0f:519:37d4:a770::/60	NL	65001	0	Random AS 65001
+2f0f:519:37d4:a779:dfff:ffff:ffff:ffff	found	2f0f:519:37d4:a779:c000::/66	DE	65019	0	Random AS 65019
+3908:aca8:7907:9eb4::	found	3908:aca8:7907:9eb4::/62	CH	65013	0	Random AS 65013
+3908:aca8:7907:9eb7:ffff:ffff:ffff:ffff	found	3908:aca8:7907:9eb4::/62	CH	65013	0	Random AS 65013
+3908:aca8:7907:9eb3:ffff:ffff:ffff:ffff	found	3908:aca8:7907:8000::/51	NL	65038	0	
+3908:aca8:7907:9eb8::	found	3908:aca8:7907:8000::/51	NL	65038	0	
+3908:aca8:7907:9eb5:ffff:ffff:ffff:ffff	found	3908:aca8:7907:9eb4::/62	CH	65013	0	Random AS 65013
+21.191.64.0	found	21.191.64.0/18	ES	65028	4	Random AS 65028
+21.191.127.255	found	21.191.64.0/18	ES	65028	4	Random AS 65028
+21.191.63.255	none			0	0	
+21.191.128.0	none			0	0	
+21.191.95.255	found	21.191.64.0/18	ES	65028	4	Random AS 65028
+::ffff:21.191.64.0	found	21.191.64.0/18	ES	65028	4	Random AS 65028
+3047:987b:3aa8:df11:5000::	found	3047:987b:3aa8:df11:5000::/69		65006	2	Random AS 65006
+3047:987b:3aa8:df11:57ff:ffff:ffff:ffff	found	3047:987b:3aa8:df11:5000::/69		65006	2	Random AS 65006
+3047:987b:3aa8:df11:4fff:ffff:ffff:ffff	found	3047:987b:3aa8:df11:4000::/66	CH	65037	2	
+3047:987b:3aa8:df11:5800::	found	3047:987b:3aa8:df11:4000::/66	CH	65037	2	
+3047:987b:3aa8:df11:53ff:ffff:ffff:ffff	found	3047:987b:3aa8:df11:5000::/69		65006	2	Random AS 65006
+3476:d75b:3cba:8323:8000::	found	3476:d75b:3cba:8323:8000::/66	BE	65001	0	Random AS 65001
+3476:d75b:3cba:8323:bfff:ffff:ffff:ffff	found	3476:d75b:3cba:8323:8000::/66	BE	65001	0	Random AS 65001
+3476:d75b:3cba:8323:7fff:ffff:ffff:ffff	found	3476:d75b:3cba:8320::/61	GB	65033	0	
+3476:d75b:3cba:8323:c000::	found	3476:d75b:3cba:8320::/61	GB	65033	0	
+3476:d75b:3cba:8323:9fff:ffff:ffff:ffff	found	3476:d75b:3cba:8323:8000::/66	BE	65001	0	Random AS 65001
+2910:47cf:ef9b:4000::	found	2910:47cf:ef9b:4000::/51	US	65005	0	Random AS 65005
+2910:47cf:ef9b:5fff:ffff:ffff:ffff:ffff	found	2910:47cf:ef9b:4000::/51	US	65005	0	Random AS 65005
+2910:47cf:ef9b:3fff:ffff:ffff:ffff:ffff	none			0	0	
+2910:47cf:ef9b:6000::	none			0	0	
+2910:47cf:ef9b:4fff:ffff:ffff:ffff:ffff	found	2910:47cf:ef9b:4000::/51	US	65005	0	Random AS 65005
+2c36:e205:c14b:2000::	found	2c36:e205:c14b:2000::/51	US	65008	0	Random AS 65008
+2c36:e205:c14b:3fff:ffff:ffff:ffff:ffff	found	2c36:e205:c14b:2000::/51	US	65008	0	Random AS 65008
+2c36:e205:c14b:1fff:ffff:ffff:ffff:ffff	found	2c36:e205:c100::/41	US	65035	0	
+2c36:e205:c14b:4000::	found	2c36:e205:c100::/41	US	65035	0	
+2c36:e205:c14b:2fff:ffff:ffff:ffff:ffff	found	2c36:e205:c14b:2000::/51	US	65008	0	Random AS 65008
+3a46:30cc:46d6:a088:3fff:ffff:ffff:ffff	found	3a46:30cc:46d6:a088::/66	NL	65016	0	Random AS 65016
+3a46:30cc:46d6:a088:4000::	found	3a46:30cc:46d6:a088::/61	NL	65023	0	Random AS 65023
+3a46:30cc:46d6:a088:1fff:ffff:ffff:ffff	found	3a46:30cc:46d6:a088::/66	NL	65016	0	Random AS 65016
+2fff:6740:a1fe:67a2:2000::	found	2fff:6740:a1fe:67a2:2000::/67	BE	65031	0	
+2fff:6740:a1fe:67a2:3fff:ffff:ffff:ffff	found	2fff:6740:a1fe:67a2:2000::/67	BE	65031	0	
+2fff:6740:a1fe:67a2:1fff:ffff:ffff:ffff	found	2fff:6740:a1fe:67a2::/63		65027	9	Random AS 65027
+2fff:6740:a1fe:67a2:4000::	found	2fff:6740:a1fe:67a2::/63		65027	9	Random AS 65027
+2fff:6740:a1fe:67a2:2fff:ffff:ffff:ffff	found	2fff:6740:a1fe:67a2:2000::/67	BE	65031	0	
+2d0e:9052:2296:8000::	found	2d0e:9052:2296:8000::/49		65011	0	Random AS 65011
+2d0e:9052:2296:ffff:ffff:ffff:ffff:ffff	found	2d0e:9052:2296:8000::/49		65011	0	Random AS 65011
+2d0e:9052:2296:7fff:ffff:ffff:ffff:ffff	none			0	0	
+2d0e:9052:2297::	none			0	0	
+2d0e:9052:2296:bfff:ffff:ffff:ffff:ffff	found	2d0e:9052:2296:8000::/49		65011	0	Random AS 65011
+3476:d75b:3cba:8321:cda0::	found	3476:d75b:3cba:8321:cda0::/76	BE	65028	0	Random AS 65028
+3476:d75b:3cba:8321:cdaf:ffff:ffff:ffff	found	3476:d75b:3cba:8321:cda0::/76	BE	65028	0	Random AS 65028
+3476:d75b:3cba:8321:cd9f:ffff:ffff:ffff	found	3476:d75b:3cba:8321:cd80::/73	NL	65006	0	Random AS 65006
+3476:d75b:3cba:8321:cdb0::	found	3476:d75b:3cba:8321:cd80::/73	NL	65006	0	Random AS 65006
+3476:d75b:3cba:8321:cda7:ffff:ffff:ffff	found	3476:d75b:3cba:8321:cda0::/76	BE	65028	0	Random AS 65028
+3de4:b75f:4640::	found	3de4:b75f:4600::/41	NL	65027	2	Random AS 65027
+3de4:b75f:461f:ffff:ffff:ffff:ffff:ffff	found	3de4:b75f:4600::/42	US	65033	0	
+3c70:fdc6:e880::	found	3c70:fdc6:e880::/41	NL	65016	0	Random AS 65016
+3c70:fdc6:e8ff:ffff:ffff:ffff:ffff:ffff	found	3c70:fdc6:e880::/41	NL	65016	0	Random AS 65016
+3c70:fdc6:e87f:ffff:ffff:ffff:ffff:ffff	found	3c70:fdc6:e000::/35		65022	0	Random AS 65022
+3c70:fdc6:e900::	found	3c70:fdc6:e000::/35		65022	0	Random AS 65022
+3c70:fdc6:e8bf:ffff:ffff:ffff:ffff:ffff	found	3c70:fdc6:e880::/41	NL	65016	0	Random AS 65016
+163.52.29.204	found	163.52.29.204/32	CH	65034	0	
+163.52.29.203	found	163.52.29.192/27	IT	65010	0	Random AS 65010
+163.52.29.205	found	163.52.29.192/27	IT	65010	0	Random AS 65010
+::ffff:163.52.29.204	found	163.52.29.204/32	CH	65034	0	
+74.190.217.249	found	74.190.217.248/29	GB	65018	0	Random AS 65018
+2f0f:519:37d4:a77f:8000::	found	2f0f:519:37d4:a77f:8000::/65	BE	65010	0	Random AS 65010
+2f0f:519:37d4:a77f:7fff:ffff:ffff:ffff	found	2f0f:519:37d4:a770::/60	NL	65001	0	Random AS 65001
+2f0f:519:37d4:a77f:bfff:ffff:ffff:ffff	found	2f0f:519:37d4:a77f:8000::/65	BE	65010	0	Random AS 65010
+35f9:6d71:3a::	found	35f9:6d71:3a::/47	FR	65039	0	
+35f9:6d71:3b:ffff:ffff:ffff:ffff:ffff	found	35f9:6d71:3a::/47	FR	65039	0	
+35f9:6d71:39:ffff:ffff:ffff:ffff:ffff	found	35f9:6d71::/36	FR	65036	0	
+35f9:6d71:3c::	found	35f9:6d71::/36	FR	65036	0	
+35f9:6d71:3a:ffff:ffff:ffff:ffff:ffff	found	35f9:6d71:3a::/47	FR	65039	0	
+21.191.74.208	found	21.191.74.208/29	GB	65035	0	
+21.191.74.215	found	21.191.74.208/29	GB	65035	0	
+21.191.74.207	found	21.191.64.0/18	ES	65028	4	Random AS 65028
+21.191.74.216	found	21.191.64.0/18	ES	65028	4	Random AS 65028
+21.191.74.211	found	21.191.74.208/29	GB	65035	0	
+::ffff:21.191.74.208	found	21.191.74.208/29	GB	65035	0	
+46.80.0.0	found	46.80.0.0/14	NL	65025	0	Random AS 65025
+46.83.255.255	found	46.80.0.0/14	NL	65025	0	Random AS 65025
+46.84.0.0	found	46.64.0.0/11	IT	65016	0	Random AS 65016
+46.81.255.255	found	46.80.0.0/14	NL	65025	0	Random AS 65025
+::ffff:46.80.0.0	found	46.80.0.0/14	NL	65025	0	Random AS 65025
+222.238.1.0	found	222.238.1.0/24	ES	65031	0	
+222.238.1.127	found	222.238.1.0/24	ES	65031	0	
+::ffff:222.238.1.0	found	222.238.1.0/24	ES	65031	0	
+46.80.192.0	found	46.80.192.0/19		65016	0	Random AS 65016
+46.80.223.255	found	46.80.192.0/19		65016	0	Random AS 65016
+46.80.191.255	found	46.80.0.0/14	NL	65025	0	Random AS 65025
+46.80.224.0	found	46.80.0.0/14	NL	65025	0	Random AS 65025
+46.80.207.255	found	46.80.192.0/19		65016	0	Random AS 65016
+::ffff:46.80.192.0	found	46.80.192.0/19		65016	0	Random AS 65016
+3f49:dfe2:c18b:a800::	found	3f49:dfe2:c18b:a800::/53	BE	65020	8	Random AS 65020
+3f49:dfe2:c18b:afff:ffff:ffff:ffff:ffff	found	3f49:dfe2:c18b:a800::/53	BE	65020	8	Random AS 65020
+3f49:dfe2:c18b:a7ff:ffff:ffff:ffff:ffff	found	3f49:dfe2:c180::/44	ES	65002	0	Random AS 65002
+3f49:dfe2:c18b:b000::	found	3f49:dfe2:c180::/44	ES	65002	0	Random AS 65002
+3f49:dfe2:c18b:abff:ffff:ffff:ffff:ffff	found	3f49:dfe2:c18b:a800::/53	BE	65020	8	Random AS 65020
+2769:f01:8000::	found	2769:f01:8000::/34	GB	65015	0	Random AS 65015
+2769:f01:bfff:ffff:ffff:ffff:ffff:ffff	found	2769:f01:8000::/34	GB	65015	0	Random AS 65015
+2769:f01:7fff:ffff:ffff:ffff:ffff:ffff	found	2769:f00::/28	NL	65036	0	
+2769:f01:c000::	found	2769:f00::/28	NL	65036	0	
+2769:f01:9fff:ffff:ffff:ffff:ffff:ffff	found	2769:f01:8000::/34	GB	65015	0	Random AS 65015
+3ebf:480::	found	3ebf:480::/25	BE	65028	4	Random AS 65028
+3ebf:4ff:ffff:ffff:ffff:ffff:ffff:ffff	found	3ebf:480::/25	BE	65028	4	Random AS 65028
+3ebf:47f:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+3ebf:500::	none			0	0	
+3ebf:4bf:ffff:ffff:ffff:ffff:ffff:ffff	found	3ebf:480::/25	BE	65028	4	Random AS 65028
+105.25.0.0	found	105.25.0.0/20	FR	65035	0	
+105.25.15.255	found	105.25.0.0/20	FR	65035	0	
+105.24.255.255	none			0	0	
+105.25.16.0	none			0	0	
+105.25.7.255	found	105.25.0.0/20	FR	65035	0	
+::ffff:105.25.0.0	found	105.25.0.0/20	FR	65035	0	
+3b02:287b:52e::	found	3b02:287b:52e::/47	NL	65006	0	Random AS 65006
+3b02:287b:52d:ffff:ffff:ffff:ffff:ffff	found	3b02:287b:520::/43	US	65000	12	Random AS 65000
+3b02:287b:530::	found	3b02:287b:520::/43	US	65000	12	Random AS 65000
+3b02:287b:52e:ffff:ffff:ffff:ffff:ffff	found	3b02:287b:52e::/47	NL	65006	0	Random AS 65006
+111.6.0.0	found	111.6.0.0/16	NL	65003	0	Random AS 65003
+111.6.255.255	found	111.6.0.0/16	NL	65003	0	Random AS 65003
+111.5.255.255	none			0	0	
+111.7.0.0	none			0	0	
+111.6.127.255	found	111.6.0.0/16	NL	65003	0	Random AS 65003
+::ffff:111.6.0.0	found	111.6.0.0/16	NL	65003	0	Random AS 65003
+173.105.150.0	found	173.105.150.0/24	IT	65023	0	Random AS 65023
+173.105.150.255	found	173.105.150.0/24	IT	65023	0	Random AS 65023
+173.105.149.255	none			0	0	
+173.105.151.0	none			0	0	
+173.105.150.127	found	173.105.150.0/24	IT	65023	0	Random AS 65023
+::ffff:173.105.150.0	found	173.105.150.0/24	IT	65023	0	Random AS 65023
+3136:f7e9:da3a:ce87:f800::	found	3136:f7e9:da3a:ce87:f800::/69	DE	65039	0	
+3136:f7e9:da3a:ce87:f7ff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce80::/60	AT	65028	0	Random AS 65028
+3136:f7e9:da3a:ce88::	found	3136:f7e9:da3a:ce80::/60	AT	65028	0	Random AS 65028
+3136:f7e9:da3a:ce87:fbff:ffff:ffff:ffff	found	3136:f7e9:da3a:ce87:f800::/69	DE	65039	0	
+229c:27c5:5550::	found	229c:27c5:5550::/48	AT	65008	0	Random AS 65008
+229c:27c5:5551:ffff:ffff:ffff:ffff:ffff	found	229c:27c5:5550::/47	ES	65027	1	Random AS 65027
+229c:27c5:554f:ffff:ffff:ffff:ffff:ffff	none			0	0	
+229c:27c5:5552::	none			0	0	
+229c:27c5:5550:ffff:ffff:ffff:ffff:ffff	found	229c:27c5:5550::/48	AT	65008	0	Random AS 65008
+155.231.32.224	found	155.231.32.224/28	NL	65011	4	Random AS 65011
+155.231.32.239	found	155.231.32.224/28	NL	65011	4	Random AS 65011
+155.231.32.223	none			0	0	
+155.231.32.240	none			0	0	
+155.231.32.231	found	155.231.32.224/28	NL	65011	4	Random AS 65011
+::ffff:155.231.32.224	found	155.231.32.224/28	NL	65011	4	Random AS 65011
+3a8d:6a65:a1e5:93d0::	found	3a8d:6a65:a1e5:93d0::/60	GB	65031	1	
+3a8d:6a65:a1e5:93df:ffff:ffff:ffff:ffff	found	3a8d:6a65:a1e5:93d0::/60	GB	65031	1	
+3a8d:6a65:a1e5:93cf:ffff:ffff:ffff:ffff	none			0	0	
+3a8d:6a65:a1e5:93e0::	none			0	0	
+3a8d:6a65:a1e5:93d7:ffff:ffff:ffff:ffff	found	3a8d:6a65:a1e5:93d0::/60	GB	65031	1	
+67.78.0.0	found	67.78.0.0/15	FR	65036	0	
+67.79.255.255	found	67.78.0.0/15	FR	65036	0	
+67.77.255.255	none			0	0	
+67.80.0.0	none			0	0	
+67.78.255.255	found	67.78.0.0/15	FR	65036	0	
+::ffff:67.78.0.0	found	67.78.0.0/15	FR	65036	0	
+3212:5427:fe80::	found	3212:5427:fe80::/43	ES	65038	2	
+3212:5427:fe9f:ffff:ffff:ffff:ffff:ffff	found	3212:5427:fe80::/43	ES	65038	2	
+3212:5427:fe7f:ffff:ffff:ffff:ffff:ffff	found	3212:5427:e000::/35		65035	0	
+3212:5427:fea0::	found	3212:5427:e000::/35		65035	0	
+3212:5427:fe8f:ffff:ffff:ffff:ffff:ffff	found	3212:5427:fe80::/43	ES	65038	2	
+36ce:a3eb:30e6:e000::	found	36ce:a3eb:30e6:e000::/51	ES	65015	2	Random AS 65015
+36ce:a3eb:30e6:ffff:ffff:ffff:ffff:ffff	found	36ce:a3eb:30e6:e000::/51	ES	65015	2	Random AS 65015
+36ce:a3eb:30e6:dfff:ffff:ffff:ffff:ffff	none			0	0	
+36ce:a3eb:30e7::	none			0	0	
+36ce:a3eb:30e6:efff:ffff:ffff:ffff:ffff	found	36ce:a3eb:30e6:e000::/51	ES	65015	2	Random AS 65015
+125.148.249.176	found	125.148.249.176/28	AT	65023	4	Random AS 65023
+125.148.249.191	found	125.148.249.176/28	AT	65023	4	Random AS 65023
+125.148.249.175	found	125.148.248.0/23	CH	65035	0	
+125.148.249.192	found	125.148.248.0/23	CH	65035	0	
+125.148.249.183	found	125.148.249.176/28	AT	65023	4	Random AS 65023
+::ffff:125.148.249.176	found	125.148.249.176/28	AT	65023	4	Random AS 65023
+229c:27c5:5551::	found	229c:27c5:5550::/47	ES	65027	1	Random AS 65027
+229c:27c5:5550:7fff:ffff:ffff:ffff:ffff	found	229c:27c5:5550::/48	AT	65008	0	Random AS 65008
+3d7b:e855:4dc3:42a:ed13::	found	3d7b:e855:4dc3:42a:ed13::/80		65037	0	
+3d7b:e855:4dc3:42a:ed13:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a:ed13::/80		65037	0	
+3d7b:e855:4dc3:42a:ed12:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a:e000::/68		65030	0	
+3d7b:e855:4dc3:42a:ed14::	found	3d7b:e855:4dc3:42a:e000::/68		65030	0	
+3d7b:e855:4dc3:42a:ed13:7fff:ffff:ffff	found	3d7b:e855:4dc3:42a:ed13::/80		65037	0	
+275c:4428:9c78::	found	275c:4428:9c78::/48		65027	0	Random AS 65027
+275c:4428:9c78:ffff:ffff:ffff:ffff:ffff	found	275c:4428:9c78::/48		65027	0	Random AS 65027
+275c:4428:9c77:ffff:ffff:ffff:ffff:ffff	found	275c:4428:9c60::/43	GB	65012	8	Random AS 65012
+275c:4428:9c79::	found	275c:4428:9c60::/43	GB	65012	8	Random AS 65012
+275c:4428:9c78:7fff:ffff:ffff:ffff:ffff	found	275c:4428:9c78::/48		65027	0	Random AS 65027
+222.238.0.155	found	222.238.0.155/32	CH	65002	1	Random AS 65002
+222.238.0.154	found	222.238.0.144/28	AT	65018	0	Random AS 65018
+222.238.0.156	found	222.238.0.144/28	AT	65018	0	Random AS 65018
+::ffff:222.238.0.155	found	222.238.0.155/32	CH	65002	1	Random AS 65002
+180.60.0.0	found	180.60.0.0/14	IT	65019	0	Random AS 65019
+180.59.255.255	found	180.0.0.0/10	ES	65007	8	Random AS 65007
+180.61.255.255	found	180.60.0.0/14	IT	65019	0	Random AS 65019
+::ffff:180.60.0.0	found	180.60.0.0/14	IT	65019	0	Random AS 65019
+2e1c:e238:af62:5f71::	found	2e1c:e238:af62:5f71::/64	AT	65033	0	
+2e1c:e238:af62:5f71:ffff:ffff:ffff:ffff	found	2e1c:e238:af62:5f71::/64	AT	65033	0	
+2e1c:e238:af62:5f70:ffff:ffff:ffff:ffff	found	2e1c:e238:af62:5f00::/56	CH	65036	0	
+2e1c:e238:af62:5f72::	found	2e1c:e238:af62:5f00::/56	CH	65036	0	
+2e1c:e238:af62:5f71:7fff:ffff:ffff:ffff	found	2e1c:e238:af62:5f71::/64	AT	65033	0	
+144.64.0.0	found	144.64.0.0/10	CH	65007	0	Random AS 65007
+144.127.255.255	found	144.64.0.0/10	CH	65007	0	Random AS 65007
+144.63.255.255	none			0	0	
+144.128.0.0	none			0	0	
+144.95.255.255	found	144.64.0.0/10	CH	65007	0	Random AS 65007
+::ffff:144.64.0.0	found	144.64.0.0/10	CH	65007	0	Random AS 65007
+3672:95db:9e9f:8bec::	found	3672:95db:9e9f:8be8::/61	IT	65027	4	Random AS 65027
+3672:95db:9e9f:8be9:ffff:ffff:ffff:ffff	found	3672:95db:9e9f:8be8::/62	ES	65021	0	Random AS 65021
+3b02:287b:535:ffff:ffff:ffff:ffff:ffff	found	3b02:287b:534::/47		65038	0	
+3b02:287b:536::	found	3b02:287b:520::/43	US	65000	12	Random AS 65000
+3b02:287b:534:ffff:ffff:ffff:ffff:ffff	found	3b02:287b:534::/47		65038	0	
+3d7b:e855:4dc3:42b::	found	3d7b:e855:4dc3:42b::/69	GB	65026	0	Random AS 65026
+3d7b:e855:4dc3:42b:7ff:ffff:ffff:ffff	found	3d7b:e855:4dc3:42b::/69	GB	65026	0	Random AS 65026
+3d7b:e855:4dc3:42b:800::	found	3d7b:e855:4dc3:42a::/63	GB	65014	4	Random AS 65014
+3d7b:e855:4dc3:42b:3ff:ffff:ffff:ffff	found	3d7b:e855:4dc3:42b::/69	GB	65026	0	Random AS 65026
+179.113.74.92	found	179.113.74.92/30	US	65030	0	
+179.113.74.95	found	179.113.74.92/30	US	65030	0	
+179.113.74.91	none			0	0	
+179.113.74.96	none			0	0	
+179.113.74.93	found	179.113.74.92/30	US	65030	0	
+::ffff:179.113.74.92	found	179.113.74.92/30	US	65030	0	
+2ae2:9e0:3c31:9d4c::	found	2ae2:9e0:3c31:9d4c::/62	GB	65012	2	Random AS 65012
+2ae2:9e0:3c31:9d4f:ffff:ffff:ffff:ffff	found	2ae2:9e0:3c31:9d4c::/62	GB	65012	2	Random AS 65012
+2ae2:9e0:3c31:9d4b:ffff:ffff:ffff:ffff	found	2ae2:9e0:3c31:9c00::/54		65008	0	Random AS 65008
+2ae2:9e0:3c31:9d50::	found	2ae2:9e0:3c31:9c00::/54		65008	0	Random AS 65008
+2ae2:9e0:3c31:9d4d:ffff:ffff:ffff:ffff	found	2ae2:9e0:3c31:9d4c::/62	GB	65012	2	Random AS 65012
+3136:f7e9:da3a:ce87:fd0a::	found	3136:f7e9:da3a:ce87:fd0a::/79	IT	65001	0	Random AS 65001
+3136:f7e9:da3a:ce87:fd0b:ffff:ffff:ffff	found	3136:f7e9:da3a:ce87:fd0a::/79	IT	65001	0	Random AS 65001
+3136:f7e9:da3a:ce87:fd09:ffff:ffff:ffff	found	3136:f7e9:da3a:ce87:f800::/69	DE	65039	0	
+3136:f7e9:da3a:ce87:fd0c::	found	3136:f7e9:da3a:ce87:f800::/69	DE	65039	0	
+3136:f7e9:da3a:ce87:fd0a:ffff:ffff:ffff	found	3136:f7e9:da3a:ce87:fd0a::/79	IT	65001	0	Random AS 65001
+25bc:c33f:1390::	found	25bc:c33f:1390::/46	ES	65007	0	Random AS 65007
+25bc:c33f:1393:ffff:ffff:ffff:ffff:ffff	found	25bc:c33f:1390::/46	ES	65007	0	Random AS 65007
+25bc:c33f:138f:ffff:ffff:ffff:ffff:ffff	none			0	0	
+25bc:c33f:1394::	none			0	0	
+25bc:c33f:1391:ffff:ffff:ffff:ffff:ffff	found	25bc:c33f:1390::/46	ES	65007	0	Random AS 65007
+3d50:8331:4c07:3f80::	found	3d50:8331:4c07:3f80::/59	GB	65033	0	
+3d50:8331:4c07:3f9f:ffff:ffff:ffff:ffff	found	3d50:8331:4c07:3f90::/60	BE	65028	0	Random AS 65028
+3d50:8331:4c07:3f7f:ffff:ffff:ffff:ffff	found	3d50:8331:4c07:2000::/51	FR	65023	0	Random AS 65023
+3d50:8331:4c07:3fa0::	found	3d50:8331:4c07:2000::/51	FR	65023	0	Random AS 65023
+3d50:8331:4c07:3f8f:ffff:ffff:ffff:ffff	found	3d50:8331:4c07:3f80::/59	GB	65033	0	
+163.52.29.254	found	163.52.29.252/30	FR	65009	0	Random AS 65009
+3a46:30cc:46dc:ce16::	found	3a46:30cc:46dc:ce16::/64	DE	65017	8	Random AS 65017
+3a46:30cc:46dc:ce16:ffff:ffff:ffff:ffff	found	3a46:30cc:46dc:ce16::/64	DE	65017	8	Random AS 65017
+3a46:30cc:46dc:ce15:ffff:ffff:ffff:ffff	found	3a46:30cc:46dc:ce00::/56	BE	65008	0	Random AS 65008
+3a46:30cc:46dc:ce17::	found	3a46:30cc:46dc:ce00::/56	BE	65008	0	Random AS 65008
+3a46:30cc:46dc:ce16:7fff:ffff:ffff:ffff	found	3a46:30cc:46dc:ce16::/64	DE	65017	8	Random AS 65017
+125.148.250.88	found	125.148.250.88/29		65037	0	
+125.148.250.95	found	125.148.250.88/29		65037	0	
+125.148.250.87	found	125.148.250.0/25		65007	4	Random AS 65007
+125.148.250.96	found	125.148.250.0/25		65007	4	Random AS 65007
+125.148.250.91	found	125.148.250.88/29		65037	0	
+::ffff:125.148.250.88	found	125.148.250.88/29		65037	0	
+3d7b:e855:4dc3:42a:6400::	found	3d7b:e855:4dc3:42a:6400::/70		65021	0	Random AS 65021
+3d7b:e855:4dc3:42a:67ff:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a:6400::/70		65021	0	Random AS 65021
+3d7b:e855:4dc3:42a:63ff:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a::/63	GB	65014	4	Random AS 65014
+3d7b:e855:4dc3:42a:6800::	found	3d7b:e855:4dc3:42a::/63	GB	65014	4	Random AS 65014
+3d7b:e855:4dc3:42a:65ff:ffff:ffff:ffff	found	3d7b:e855:4dc3:42a:6400::/70		65021	0	Random AS 65021
+222.115.120.192	found	222.115.120.192/27	AT	65018	0	Random AS 65018
+222.115.120.223	found	222.115.120.192/27	AT	65018	0	Random AS 65018
+222.115.120.191	none			0	0	
+222.115.120.224	none			0	0	
+222.115.120.207	found	222.115.120.192/27	AT	65018	0	Random AS 65018
+::ffff:222.115.120.192	found	222.115.120.192/27	AT	65018	0	Random AS 65018
+155.231.32.232	found	155.231.32.232/30	IT	65038	0	
+155.231.32.235	found	155.231.32.232/30	IT	65038	0	
+155.231.32.236	found	155.231.32.224/28	NL	65011	4	Random AS 65011
+155.231.32.233	found	155.231.32.232/30	IT	65038	0	
+::ffff:155.231.32.232	found	155.231.32.232/30	IT	65038	0	
+2e1c:e238:af62:5fe0::	found	2e1c:e238:af62:5fe0::/59		65037	0	
+2e1c:e238:af62:5fdf:ffff:ffff:ffff:ffff	found	2e1c:e238:af62:5f00::/56	CH	65036	0	
+2e1c:e238:af62:5fef:ffff:ffff:ffff:ffff	found	2e1c:e238:af62:5fe0::/59		65037	0	
+219.29.0.0	found	219.29.0.0/16	GB	65021	0	Random AS 65021
+219.29.255.255	found	219.29.0.0/16	GB	65021	0	Random AS 65021
+219.28.255.255	none			0	0	
+219.30.0.0	none			0	0	
+219.29.127.255	found	219.29.0.0/16	GB	65021	0	Random AS 65021
+::ffff:219.29.0.0	found	219.29.0.0/16	GB	65021	0	Random AS 65021
+2769:f0f:ffff:ffff:ffff:ffff:ffff:ffff	found	2769:f00::/28	NL	65036	0	
+2769:f10::	found	2769:f00::/25	ES	65008	0	Random AS 65008
+2769:f07:ffff:ffff:ffff:ffff:ffff:ffff	found	2769:f00::/28	NL	65036	0	
+3d50:8331:4c07:3f90::	found	3d50:8331:4c07:3f90::/60	BE	65028	0	Random AS 65028
+3d50:8331:4c07:3f97:ffff:ffff:ffff:ffff	found	3d50:8331:4c07:3f90::/60	BE	65028	0	Random AS 65028
+145.115.241.0	found	145.115.241.0/24	GB	65037	0	
+145.115.241.255	found	145.115.241.0/24	GB	65037	0	
+145.115.240.255	none			0	0	
+145.115.242.0	none			0	0	
+145.115.241.127	found	145.115.241.0/24	GB	65037	0	
+::ffff:145.115.241.0	found	145.115.241.0/24	GB	65037	0	
+333a:97bc:a740::	found	333a:97bc:a740::/42	IT	65039	0	
+333a:97bc:a77f:ffff:ffff:ffff:ffff:ffff	found	333a:97bc:a740::/42	IT	65039	0	
+333a:97bc:a73f:ffff:ffff:ffff:ffff:ffff	none			0	0	
+333a:97bc:a780::	none			0	0	
+333a:97bc:a75f:ffff:ffff:ffff:ffff:ffff	found	333a:97bc:a740::/42	IT	65039	0	
+17.153.236.56	found	17.153.236.56/30	GB	65018	0	Random AS 65018
+17.153.236.59	found	17.153.236.56/30	GB	65018	0	Random AS 65018
+17.153.236.55	none			0	0	
+17.153.236.60	none			0	0	
+17.153.236.57	found	17.153.236.56/30	GB	65018	0	Random AS 65018
+::ffff:17.153.236.56	found	17.153.236.56/30	GB	65018	0	Random AS 65018
+79.9.0.0	found	79.9.0.0/16	AT	65022	0	Random AS 65022
+79.9.255.255	found	79.9.0.0/16	AT	65022	0	Random AS 65022
+79.8.255.255	none			0	0	
+79.10.0.0	none			0	0	
+79.9.127.255	found	79.9.0.0/16	AT	65022	0	Random AS 65022
+::ffff:79.9.0.0	found	79.9.0.0/16	AT	65022	0	Random AS 65022
+3517:c43d:860::	found	3517:c43d:860::/44	NL	65033	8	
+3517:c43d:86f:ffff:ffff:ffff:ffff:ffff	found	3517:c43d:860::/44	NL	65033	8	
+3517:c43d:85f:ffff:ffff:ffff:ffff:ffff	found	3517:c43d::/34		65034	0	
+3517:c43d:870::	found	3517:c43d::/34		65034	0	
+3517:c43d:867:ffff:ffff:ffff:ffff:ffff	found	3517:c43d:860::/44	NL	65033	8	
+2e03:4d20::	found	2e03:4d20::/28	DE	65032	8	
+2e03:4d2f:ffff:ffff:ffff:ffff:ffff:ffff	found	2e03:4d20::/28	DE	65032	8	
+2e03:4d30::	found	2e03:4d00::/26	GB	65022	0	Random AS 65022
+2e03:4d27:ffff:ffff:ffff:ffff:ffff:ffff	found	2e03:4d20::/28	DE	65032	8	
+30ea:f690:604a:8000::	found	30ea:f690:604a:8000::/49	CH	65018	2	Random AS 65018
+30ea:f690:604a:ffff:ffff:ffff:ffff:ffff	found	30ea:f690:604a:8000::/49	CH	65018	2	Random AS 65018
+30ea:f690:604a:7fff:ffff:ffff:ffff:ffff	found	30ea:f690:6040::/44	ES	65010	0	Random AS 65010
+30ea:f690:604b::	found	30ea:f690:6040::/44	ES	65010	0	Random AS 65010
+30ea:f690:604a:bfff:ffff:ffff:ffff:ffff	found	30ea:f690:604a:8000::/49	CH	65018	2	Random AS 65018
+139.173.32.0	found	139.173.32.0/20		65028	0	Random AS 65028
+139.173.47.255	found	139.173.32.0/20		65028	0	Random AS 65028
+139.173.31.255	found	139.160.0.0/12	US	65026	4	Random AS 65026
+139.173.48.0	found	139.160.0.0/12	US	65026	4	Random AS 65026
+139.173.39.255	found	139.173.32.0/20		65028	0	Random AS 65028
+::ffff:139.173.32.0	found	139.173.32.0/20		65028	0	Random AS 65028
+2c1c:d27c:53f5:40d0::	found	2c1c:d27c:53f5:40d0::/60	US	65004	0	Random AS 65004
+2c1c:d27c:53f5:40df:ffff:ffff:ffff:ffff	found	2c1c:d27c:53f5:40d0::/60	US	65004	0	Random AS 65004
+2c1c:d27c:53f5:40cf:ffff:ffff:ffff:ffff	none			0	0	
+2c1c:d27c:53f5:40e0::	none			0	0	
+2c1c:d27c:53f5:40d7:ffff:ffff:ffff:ffff	found	2c1c:d27c:53f5:40d0::/60	US	65004	0	Random AS 65004
+231.163.103.204	none			0	0	
+247.93.153.193	none			0	0	
+380b:b7e2:1cc1:728e:fda7:5929:9d86:881b	none			0	0	
+124.190.84.183	none			0	0	
+34bd:2683:9014:7fa9:dde8:2daa:2d59:1f88	none			0	0	
+173.222.255.168	none			0	0	
+359f:f88:8d1f:f10a:a0c7:3425:6df8:a6e4	none			0	0	
+3133:279f:2fe6:7d5e:249c:b0f4:6e8d:c1d2	none			0	0	
+199.23.198.79	none			0	0	
+2c77:5bb:b477:7344:3452:b08c:89c1:43bd	none			0	0	
+3e6e:f907:80eb:9c08:4450:431b:3244:5ad8	none			0	0	
+29b4:8ecf:7a41:330b:8265:52a8:c5f3:4ece	none			0	0	
+75.44.46.221	none			0	0	
+3248:8e30:85bc:7d1d:9f8:38a4:41ea:9849	none			0	0	
+106.135.206.154	none			0	0	
+3d5f:7719:6f40:ee3a:531c:d338:6240:9b13	none			0	0	
+1.30.214.228	none			0	0	
+2d12:8d4:59ca:576d:9e9f:8705:cdfa:5302	none			0	0	
+320e:e34d:9a52:f75:5fb8:da7b:7f2d:bd8f	none			0	0	
+158.144.182.20	none			0	0	
+2855:d224:3a29:b86b:ab60:d99:7b3e:93d4	none			0	0	
+197.13.142.62	none			0	0	
+2484:da33:1b6b:97bb:c73d:baf6:95d4:a139	none			0	0	
+2ceb:5cab:b9e6:c2c8:8cec:7de1:32bd:134a	none			0	0	
+132.237.203.74	none			0	0	
+29c2:9fac:f266:7c5f:b03a:755:a3d2:a645	none			0	0	
+115.230.245.107	none			0	0	
+385b:aaf3:9754:b8dd:c5e:af43:d398:6963	none			0	0	
+2729:431:5493:8214:6bed:8bb6:c2f1:1a75	none			0	0	
+133.18.118.204	none			0	0	
+3038:6b1f:d5ab:67bb:51c2:4a4c:a0e8:d3b6	none			0	0	
+3679:9f85:4c14:226e:a56e:2737:bf91:5f8f	none			0	0	
+36f5:25f4:a6bd:5d1:5855:ddfc:946e:3a2d	none			0	0	
+209.37.100.63	none			0	0	
+29b5:8278:7c25:8591:d2ba:c6cd:48ac:2f90	none			0	0	
+248.88.72.169	none			0	0	
+7.76.51.164	none			0	0	
+43.138.220.238	none			0	0	
+42.43.2.217	none			0	0	
+230.138.119.165	none			0	0	
+3f4b:5658:ccf5:5ade:1aeb:ecce:c831:2b5f	none			0	0	
+33.210.48.32	none			0	0	
+32da:1ea2:1531:8a77:ae12:926:e6c6:727	none			0	0	
+150.146.238.124	none			0	0	
+33c3:9f6:8130:fed6:48f4:8dda:1a08:c875	none			0	0	
+2650:bbf3:1c96:976f:d32a:85ab:bea1:8b91	none			0	0	
+16.79.255.53	none			0	0	
+38.108.161.101	none			0	0	
+69.40.21.241	none			0	0	
+2064:e2fd:c324:2eb6:b11c:339d:80fb:cc77	none			0	0	
+22c5:687d:94e9:e733:f0fe:8a44:3e77:be5d	none			0	0	
+69.231.175.133	none			0	0	
+3a67:7fc4:6add:d4ce:5267:7a9d:8471:2822	none			0	0	
+235.9.111.93	none			0	0	
+3bf4:4597:63da:2172:1311:433:6c08:a1ec	none			0	0	
+3f84:41ed:1146:9d8d:9109:a026:55ce:de9e	none			0	0	
+32d4:9b98:4a1b:e116:ed0a:dec3:1dcd:f1be	none			0	0	
+223.221.120.155	none			0	0	
+35.80.108.178	none			0	0	
+199.54.253.248	none			0	0	
+219.206.221.189	none			0	0	
+3151:4917:a059:948a:1b32:efdf:a550:f9	none			0	0	
+3002:1486:ce10:bb4f:dfb2:4782:e6ee:89be	none			0	0	
+52.67.129.53	none			0	0	
+3e84:972e:2b20:5383:28ce:5611:5b8f:4c60	none			0	0	
+157.233.20.51	none			0	0	
+3094:db8c:a11b:e3de:b845:e9fd:9ae0:e6b	none			0	0	
+190.142.76.74	none			0	0	
+254.142.166.253	none			0	0	
+391c:79dd:d211:dca3:286c:2b8:210f:9df7	none			0	0	
+2d60:2f53:43eb:63d1:8c18:ed42:44db:dfa5	none			0	0	
+188.128.216.117	none			0	0	
+52.40.232.159	none			0	0	
+110.80.176.243	none			0	0	
+127.205.23.239	none			0	0	
+6.241.13.47	none			0	0	
+197.107.108.131	none			0	0	
+22f8:3205:df69:9035:51a7:8071:e892:53f3	none			0	0	
+77.105.37.248	none			0	0	
+3fcc:d5cd:5f4d:2713:889b:382d:2216:e7ca	none			0	0	
+167.144.249.248	none			0	0	
+299a:8e69:8bd0:47f7:11cd:70ee:2e57:a897	none			0	0	
+3c0d:21a2:1c3c:e58d:4a77:89b:1ca6:b867	none			0	0	
+65.199.21.65	none			0	0	
+24e9:26ce:6d78:8aa6:f01:4f67:5119:eca	none			0	0	
+3c48:c14a:128c:421a:8b71:c3b6:2f44:209d	none			0	0	
+126.177.68.189	none			0	0	
+117.77.160.23	none			0	0	
+39a3:fc6b:172e:208:4f3c:5cca:472d:43ec	none			0	0	
+121.74.106.165	none			0	0	
+3adb:eaeb:dff3:56c5:a7a6:d740:efb6:3422	none			0	0	
+30b4:a090:caf5:ce83:d78d:c773:7f46:8ad3	none			0	0	
+2f7d:9473:18df:19e9:ec0:146:8a9e:5a3c	none			0	0	
+9.0.211.111	none			0	0	
+26b7:381a:5243:e066:f188:d57d:f503:2726	none			0	0	
+3e58:c26:3b28:a2c4:fdde:c068:6862:1b3f	none			0	0	
+224.77.138.123	none			0	0	
+147.133.187.160	none			0	0	
+2426:954b:742e:a2f1:7df8:e8a9:d533:5d24	none			0	0	
+245.208.135.170	none			0	0	
+130.173.30.47	none			0	0	
+3e2c:73c7:9fe5:e520:b669:4c1f:7264:a480	none			0	0	
+96.138.107.148	none			0	0	
+3b92:2d59:768a:4e7d:c121:51af:4a58:9045	none			0	0	
+205.157.100.134	none			0	0	
+35aa:34ce:da7f:52d3:2b88:2782:3c31:909b	none			0	0	
+2601:1433:fccf:7544:79b3:3f07:3661:dd6d	none			0	0	
+2c0b:f445:9aa1:77fb:1fbf:29f4:4db:537	none			0	0	
+186.126.9.111	none			0	0	
+3e53:c579:7069:645:b456:c270:9e0f:eadf	none			0	0	
+164.162.24.15	none			0	0	
+27c3:3a65:ade3:2dfa:8ea7:a7a8:db18:12bd	none			0	0	
+334d:9f1d:46f8:61a6:483:411c:8895:a88f	none			0	0	
+56.245.148.110	none			0	0	
+3192:1f34:a07c:a90:1020:3979:47bb:258b	none			0	0	
+163.83.111.28	none			0	0	
+35ac:505a:58df:66d5:5246:892a:70e8:6619	none			0	0	
+58.110.204.46	none			0	0	
+304a:613b:5ccf:293d:afca:4e3b:724e:ebe5	none			0	0	
+2c2b:bb4a:f710:e85d:d154:41d8:1fc3:897	none			0	0	
+196.10.219.206	none			0	0	
+102.70.152.193	none			0	0	
+129.74.57.230	none			0	0	
+198.79.181.72	none			0	0	
+2c8d:544a:8624:53b9:e72e:a348:dd3:c664	none			0	0	
+31c4:1cf8:e336:60d1:7404:4fd8:90bc:df31	none			0	0	
+156.51.220.105	none			0	0	
+2ef1:768b:65a6:959c:d572:f3bc:554:6e45	none			0	0	
+2325:caed:10c3:ef4e:a140:82e2:45a2:1fc8	none			0	0	
+3fbb:4c84:1ba6:835a:73f1:c41e:fc78:e83	none			0	0	
+30e7:7a2b:7c52:49fa:7be2:8006:8aa7:7154	none			0	0	
+82.108.188.12	none			0	0	
+211.181.231.84	found	211.181.228.0/22	AT	65006	0	Random AS 65006
+2b34:2e37:49c9:e5d8:8c63:2ab8:1b10:c495	none			0	0	
+97.166.11.130	none			0	0	
+3b99:32d6:7a0:6001:29b5:f096:d618:62ec	none			0	0	
+22f9:df82:6222:8067:cd6d:aec5:1dc9:5a6b	none			0	0	
+3f8e:42c5:1c80:409f:3cc0:2405:19c7:f279	none			0	0	
+3608:5eae:b5d1:6216:e3d8:1e84:19b1:bf7a	none			0	0	
+73.61.107.164	none			0	0	
+53.37.186.154	none			0	0	
+252.68.91.117	none			0	0	
+3362:b402:cbe5:dc3e:228d:9e1d:6f39:35c5	none			0	0	
+145.9.214.78	none			0	0	
+76.155.208.159	none			0	0	
+39ca:27:d84b:cc8e:dbc9:9ae8:164e:2f39	none			0	0	
+197.12.37.58	none			0	0	
+56.24.212.45	none			0	0	
+245a:68d8:116b:9dcb:6dc6:b5b4:8c06:17b	none			0	0	
+3411:e8b2:d1ce:db83:b188:a4c9:ccbf:a5c0	none			0	0	
+22ca:2d01:913:3ec1:3b86:ee6f:330:3771	none			0	0	
+2435:82ab:6c30:beea:5b2a:68d5:dc8d:bd68	none			0	0	
+250.196.153.162	none			0	0	
+238.171.165.28	none			0	0	
+3f65:5406:d70d:449e:c0c4:abc4:35f5:ca53	none			0	0	
+230.113.24.232	none			0	0	
+3bbc:b9e0:5ae:179f:4de:6ee6:aab7:1db3	none			0	0	
+102.118.72.211	none			0	0	
+23.50.74.157	none			0	0	
+3c5b:9c53:843f:370:702d:fcec:abcd:c15f	none			0	0	
+176.3.229.81	none			0	0	
+2b50:1951:a4ab:a5a5:dc0e:99d:eebb:6aa0	none			0	0	
+11.63.31.143	none			0	0	
+243.107.104.173	none			0	0	
+175.31.26.45	none			0	0	
+3597:84db:54ed:70e3:ed9d:731f:23c1:157c	none			0	0	
+3058:408b:7bec:5c35:92cb:17dd:8c60:4277	none			0	0	
+21.26.133.201	none			0	0	
+34ff:9ad0:8659:c518:c4fc:a0d6:40d7:1097	none			0	0	
+36f1:1cce:9001:886a:5da6:f86c:9dc1:aa3c	none			0	0	
+2bb2:2442:72d4:ccdf:f73a:8db4:a5ea:5730	none			0	0	
+275c:4428:94a1:a0af:f409:143e:a62e:ae7a	found	275c:4428:8000::/35	NL	65006	0	Random AS 65006
+2a32:844e:aae6:f3d0:1a86:4005:2a16:d96b	none			0	0	
+366f:618d:2855:59b:8303:6723:2f2b:5291	none			0	0	
+32ac:f6b7:4041:7be1:84e:9051:8c27:595d	none			0	0	
+110.23.51.36	none			0	0	
+23ba:d0f8:c9d:a6b1:8fc7:5c0a:2e73:5b2b	none			0	0	
+142.21.224.131	none			0	0	
+29b7:1399:905f:13de:b3e8:a330:e32d:36f2	found	29b7:1399:905f:1300::/56	FR	65037	0	
+43.218.13.218	none			0	0	
+2d9b:5f41:949b:df09:bbd9:ea59:79d0:2f22	none			0	0	
+200.59.127.91	none			0	0	
+3b98:6939:6359:f12d:fb3a:5967:6924:7be3	none			0	0	
+166.165.193.42	none			0	0	
+137.23.45.21	none			0	0	
+2e58:890f:71f0:ef4a:8ef0:2131:64b8:4838	none			0	0	
+38ef:b745:f77f:ccbf:a424:f0ec:3b78:1c5	none			0	0	
+203.195.78.184	none			0	0	
+2df2:295e:f0ae:6307:219e:19e9:f88a:2ac6	none			0	0	
+3561:6519:12f8:798:5c9b:a281:9bf:9ef3	none			0	0	
+2a20:5b63:9886:7988:571e:ae2b:1776:4d2b	none			0	0	
+133.215.64.75	none			0	0	
+2f30:f676:29b2:1982:c1a7:29e8:a20a:cb4f	none			0	0	
+2ecf:4da8:cd74:b3c2:5177:a7a7:bf7:afc6	none			0	0	
+238.111.75.20	none			0	0	
+41.110.76.132	none			0	0	
+3ee1:1837:85a4:e479:948e:920f:85a1:d4e4	none			0	0	
+215.158.102.183	none			0	0	
+2b2a:ca66:4abb:3440:c8c7:b680:d3e3:8b90	none			0	0	
+3f6a:cb02:d95f:e480:f6fd:9dc:7b80:ece3	none			0	0	
+217.249.123.9	none			0	0	
+42.249.207.55	none			0	0	
+136.107.49.124	none			0	0	
+220.247.167.171	none			0	0	
+133.171.203.35	none			0	0	
+154.228.238.242	none			0	0	
+210.221.194.119	none			0	0	
+2d41:f1ed:42d9:811c:3b9b:7ca1:4887:8c2	none			0	0	
+27c6:1e08:a07a:3fd7:8105:41fb:d250:b97	none			0	0	
+134.147.138.100	none			0	0	
+6.252.198.146	none			0	0	
+33eb:3395:ba36:6edb:f48d:3b9c:384d:a4e1	none			0	0	
+143.129.77.64	none			0	0	
+2cad:7354:4e52:425d:8a6c:e78e:9971:f29f	none			0	0	
+100.194.85.5	none			0	0	
+49.186.159.70	none			0	0	
+21fe:1b8d:a0d3:913:3b98:8bee:9f1b:43b4	none			0	0	
+24ae:e62a:94a9:daa2:469f:36f9:6f0a:deb9	none			0	0	
+3233:9fda:9f3f:1be1:ae6d:301a:f1e1:edf4	none			0	0	
+28.96.21.148	none			0	0	
+57.119.137.217	none			0	0	
+117.3.117.209	none			0	0	
+21.171.142.22	none			0	0	
+210.80.119.45	none			0	0	
+128.130.150.104	none			0	0	
+44.176.193.25	none			0	0	
+3a80:7d25:a2de:10e1:cec:5fda:8aa8:e802	none			0	0	
+3009:207e:3f92:6658:3694:6921:e2de:3a0d	none			0	0	
+7.83.43.45	none			0	0	
+33d8:eb6f:7a31:f02f:901a:dc43:d8c6:1ac7	none			0	0	
+122.240.170.201	none			0	0	
+82.226.2.251	none			0	0	
+3e61:e9d1:aa4d:6af4:aa18:6f18:2673:92ff	none			0	0	
+58.173.39.91	none			0	0	
+3cd1:eb4a:5636:a261:27ea:8db3:9289:a76e	none			0	0	
+114.35.149.191	none			0	0	
+138.3.141.0	none			0	0	
+52.88.52.131	found	52.80.0.0/12	FR	65016	0	Random AS 65016
+103.248.157.195	none			0	0	
+2b63:bdac:3a6:a66a:2b7f:e4ec:6209:f1e9	none			0	0	
+136.220.250.189	none			0	0	
+27f2:58e6:e34a:b36c:4d5b:230e:69c1:63f	none			0	0	
+203.187.217.12	none			0	0	
+3d8d:448d:ed7d:c16c:a749:d9a2:38:340f	none			0	0	
+3004:4d4b:a573:a089:bfe7:f9d1:5a0a:6a71	none			0	0	
+3baf:9dc7:1c1a:407a:f00f:147c:332b:206c	none			0	0	
+2d2f:286:5c73:418f:672:ab22:3be0:b958	none			0	0	
+8.99.125.96	none			0	0	
+3449:f12:ba41:2ea:92ef:ef69:9771:842e	none			0	0	
+39db:6ae2:922b:9f60:4ece:143b:67e1:d613	none			0	0	
+3e24:1454:24c6:49a8:2157:834e:6c25:69ac	none			0	0	
+208e:8d8d:e947:6006:227c:28c3:4df4:47da	none			0	0	
+246e:4e14:ff03:97fd:821b:9f2c:a06c:d228	none			0	0	
+3291:43e4:a118:e21d:e194:2ee9:9e06:8263	none			0	0	
+101.161.126.101	none			0	0	
+96.192.132.1	none			0	0	
+24c2:6ce:8c0d:26f1:f6d6:30c3:88a5:b66d	none			0	0	
+3cdb:5b80:5ad9:199d:1c71:7a68:3a7e:2fda	none			0	0	
+108.30.203.89	none			0	0	
+75.216.200.158	none			0	0	
+2222:d38d:4ac9:2f23:f0b0:5d06:455c:7f03	none			0	0	
+129.8.151.72	none			0	0	
+39d3:d213:499b:7408:f52c:3c8e:3a06:4f01	none			0	0	
+156.144.79.194	none			0	0	
+138.83.213.110	none			0	0	
+227.238.218.158	none			0	0	
+3a44:ac5c:3376:42:8a84:d971:81a2:760	none			0	0	
+2dfd:989a:9b4b:869c:5659:5d5f:2101:5a30	none			0	0	
+22.252.12.244	none			0	0	
+34.234.81.53	none			0	0	
+2ef7:c42f:c993:c895:2ed3:a07f:3262:a9c4	none			0	0	
+3def:6d61:75a3:ea3d:e1de:2c7b:ee0:670c	none			0	0	
+138.50.226.5	none			0	0	
+167.229.14.150	none			0	0	
+3cd2:cc8e:7d7:2950:4e79:89ce:3df1:9d1b	none			0	0	
+31c5:cb69:889e:99d6:27e:33ec:905b:9bcc	none			0	0	
+17.57.202.137	none			0	0	
+3421:acfa:9213:bb05:98e5:11e2:601:628a	none			0	0	
+163.47.174.251	none			0	0	
+220.126.106.253	none			0	0	
+29.190.86.144	none			0	0	
+93.196.27.8	none			0	0	
+128.231.147.237	none			0	0	
+2bca:3726:f845:816e:1456:e69c:cfcf:2ef7	none			0	0	
+51.4.235.252	none			0	0	
+208.59.145.110	none			0	0	
+145.34.13.69	none			0	0	
+232.248.147.165	none			0	0	
+29.225.55.171	none			0	0	
+204.190.199.138	none			0	0	
+23a5:e4ee:2712:e4c0:401c:cd7c:feb7:1ac8	none			0	0	
+210.139.149.81	none			0	0	
+3897:e952:811e:2361:a82b:b356:5fb:a423	none			0	0	
+43.31.122.87	none			0	0	
+2879:107f:3ec0:74bf:1884:f5b1:7bb6:7f77	none			0	0	
+3702:7dcf:5d87:f7a8:e52:78e3:9a71:489f	none			0	0	
+83.154.34.192	none			0	0	
+68.7.214.123	none			0	0	
+57.249.189.87	none			0	0	
+27.183.115.247	none			0	0	
+0.0.0.0	none			0	0	
+255.255.255.255	none			0	0	
+::	none			0	0	
+::1	none			0	0	
+ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+::ffff:0.0.0.0	none			0	0	
+::ffff:255.255.255.255	none			0	0	
+10.255.255.255	none			0	0	
+11.0.0.0	none			0	0	

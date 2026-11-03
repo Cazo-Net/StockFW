@@ -35,6 +35,7 @@
 #include "core/fs-hostnet.h"
 #include "core/fs-intelset.h"
 #include "core/fs-iprange.h"
+#include "core/fs-geodb.h"
 
 G_BEGIN_DECLS
 
@@ -105,6 +106,29 @@ typedef struct
 	gint64     imported_at;
 } FsIntelListConf;
 
+/* A location rule (design 13.3): countries or network owners (ASes)
+ * from the location database, compiled into a set at every build. */
+typedef enum
+{
+	FS_INTEL_LOCATION_COUNTRY = 1,   /* id "country-<slug>"             */
+	FS_INTEL_LOCATION_ASN     = 2    /* id "asn-<slug>"                 */
+} FsIntelLocationKind;
+
+#define FS_INTEL_LOCATION_MAX_VALUES 1000u
+
+typedef struct
+{
+	gchar              *id;
+	gchar              *name;       /* as the user typed it            */
+	FsIntelLocationKind kind;
+	gchar             **countries;  /* COUNTRY: upper-case codes,
+	                                 * NULL-terminated, no duplicates  */
+	GArray             *asns;       /* ASN: guint32, ascending, no 0,
+	                                 * no duplicates; NULL for COUNTRY  */
+	gboolean            enabled;
+	FsIntelDir          dir;
+} FsIntelLocationConf;
+
 typedef struct
 {
 	gboolean    enabled;      /* master switch; default TRUE             */
@@ -114,6 +138,10 @@ typedef struct
 	                           * catalog's direction), then custom feeds */
 	GPtrArray  *lists;        /* FsIntelListConf*                        */
 	FsRangeSet *exceptions;   /* normalized; never blocked               */
+	/* Round 2 (design 13.2): the location database and its rules.     */
+	gboolean    geo_enabled;      /* download it, use it; default FALSE  */
+	gint64      geo_accepted_at;  /* its terms accepted, unix s; 0 never */
+	GPtrArray  *locations;        /* FsIntelLocationConf*                */
 } FsIntelConfig;
 
 FsIntelConfig *fs_intel_config_new  (void);           /* the defaults   */
@@ -292,7 +320,16 @@ void fs_intel_update_result_free (FsIntelUpdateResult *result);
  * enabled + accepted check, so a default configuration makes no
  * request at all [S14].  One audit line per feed attempted.  Returns
  * FsIntelUpdateResult* in config order (GPtrArray with a free func);
- * never NULL. */
+ * never NULL.
+ *
+ * The location database (design 13.5): with only_id FS_INTEL_GEO_ID
+ * just the database (FAILED, without a request, while it is off); with
+ * only_id NULL it comes after the feeds while it is on.  It is
+ * downloaded only with the master switch on, the database on and its
+ * terms accepted (NEEDS_CONSENT otherwise), at most once a day unless
+ * FS_INTEL_UPDATE_NOW; REFUSED keeps the copy in use (an older one, a
+ * bad signature, a copy from the future).  Its result's id is
+ * FS_INTEL_GEO_ID and its entries 0; one audit line per attempt. */
 GPtrArray *fs_intel_update (const FsIntelConfig *config,
                             const gchar *only_id, guint flags,
                             gint64 now);
@@ -312,7 +349,19 @@ GPtrArray *fs_intel_update (const FsIntelConfig *config,
  * subset feeds both on.  Over FS_INTEL_MAX_INTERVALS or
  * FS_INTEL_MAX_UNION4: NULL with FS_INTEL_ERR_TOO_BIG naming the
  * largest sets.  A tampered stored list: NULL with
- * FS_INTEL_ERR_TAMPERED. */
+ * FS_INTEL_ERR_TAMPERED.
+ *
+ * After the lists, while the location database is on (design 13.6):
+ * one set per enabled location rule, the copy in use enumerated for its
+ * countries or AS numbers, minus the same subtractions (exceptions win),
+ * outbound rules also in 64:ff9b::/96.  Notes: a database not yet
+ * downloaded (the rules are not enforced), a stale copy, a code the
+ * database does not name, a rule that matches nothing, and the anycast
+ * prefixes each rule kept.  Location sets have their own limit,
+ * FS_INTEL_MAX_LOCATION_INTERVALS over all of them (NULL with
+ * FS_INTEL_ERR_TOO_BIG), and do not count toward the lists' caps.  A
+ * copy in use that no longer verifies: NULL with FS_INTEL_ERR_TAMPERED
+ * (fail closed: the kernel keeps what it had). */
 FsIntelRuleset *fs_intel_build (const FsIntelConfig *config,
                                 const FsHostNet *host,
                                 GPtrArray **notes, GError **error);
@@ -337,10 +386,12 @@ void fs_intel_outcome_free (FsIntelOutcome *outcome);
 
 /* Every host a download contacts, to keep reachable (design 6.4,
  * [S7.2]): each enabled feed's host (a catalog feed's, or the host of a
- * custom feed's URL), and -- when some feed is enabled and a proxy is
- * configured -- the proxy's host, since every download connects to the
- * proxy rather than to the feed.  Duplicates once.  NULL-terminated,
- * never NULL; g_strfreev(). */
+ * custom feed's URL), the location database's host
+ * (location.ipfire.org) while it is on and its terms accepted (13.5),
+ * and -- when any of those is there and a proxy is configured -- the
+ * proxy's host, since every download connects to the proxy rather than
+ * to the feed.  Duplicates once.  NULL-terminated, never NULL;
+ * g_strfreev(). */
 gchar **fs_intel_update_hosts (const FsIntelConfig *config);
 
 /* Build and enforce.  hold non-empty => nothing reaches the backend,
@@ -464,13 +515,40 @@ const gchar *fs_intel_counts_unavailable (const FsBackend *backend);
 
 typedef struct
 {
-	GPtrArray *sources;      /* gchar* ids of enabled sources listing it */
-	FsIntelDir dir;          /* union of their directions; 0 none        */
+	GPtrArray *sources;      /* gchar* ids of enabled feeds and local
+	                          * lists listing it                         */
+	FsIntelDir dir;          /* union of the directions of sources and
+	                          * locations; 0 none                        */
 	gboolean   is_protected; /* fs_range_protected()                     */
 	gboolean   is_exception;
 	gboolean   is_host;      /* kept reachable by `host'                 */
-	gboolean   blocked;      /* listed and none of the three above: what
-	                          * the configuration asks for              */
+	gboolean   blocked;      /* listed or located, and none of the three
+	                          * above: what the configuration asks for  */
+	/* Round 2 (design 13.8), filled while the location database is on
+	 * and a usable copy is in the store: */
+	GPtrArray *locations;    /* gchar* ids of enabled location rules
+	                          * holding it; never NULL after a lookup   */
+	gboolean   geo_found;    /* the database has a network for it        */
+	gchar      country[3];   /* registered in; "" none                   */
+	gchar     *country_name; /* NULL when the database names none        */
+	guint32    asn;          /* 0 none                                   */
+	gchar     *as_name;      /* NULL when unnamed                        */
+	guint      geo_flags;    /* FS_GEODB_FLAG_*                          */
+	gchar     *network;      /* the matching network, "a.b.c.0/24"       */
+	gboolean   geo_via_nat64; /* a NAT64 address the database does not
+	                           * name itself: country, AS, network and
+	                           * flags are those of the IPv4 address it
+	                           * carries                                 */
+	/* Review GEO-1: the copy in use is missing or no longer verifies,
+	 * yet applied.state says location sets are in the kernel (a build
+	 * fails closed and leaves them there).  Their membership cannot be
+	 * read, so the lookup says "may be blocked", never "not blocked". */
+	gboolean   geo_unknown;  /* the copy in use cannot be read           */
+	GPtrArray *locations_unknown; /* gchar* ids of enabled location
+	                          * rules in force in the kernel that may
+	                          * hold it; never NULL after a lookup; empty
+	                          * for an exception, protected space or
+	                          * this computer's addresses               */
 
 	/* What the kernel does, filled by fs_intel_lookup_live() only
 	 * (fs_intel_lookup leaves them zero / NULL). */
@@ -493,8 +571,16 @@ typedef struct
 } FsIntelLookup;
 
 /* FALSE when `addr' is not a single address (v4, v6, v4-mapped v6).
- * Reads the enabled sources' stored lists: the configuration's answer.
- * host may be NULL. */
+ * Reads the enabled sources' stored lists and, while the location
+ * database is on, the copy in use (cached as for fs_intel_geo_lookup):
+ * the enabled location rules that hold the address -- for a NAT64
+ * address, the IPv4 address inside it, for rules that block outbound,
+ * as the build maps it -- and its country, AS and network (for a NAT64
+ * address the database does not name, those of the IPv4 address it
+ * carries, with geo_via_nat64 set).  When the copy in use cannot be
+ * read while location sets are applied, `locations_unknown' names
+ * them (geo_unknown).  This is the configuration's answer; what the
+ * kernel does is fs_intel_lookup_live().  host may be NULL. */
 gboolean fs_intel_lookup (const FsIntelConfig *config,
                           const FsHostNet *host, const gchar *addr,
                           FsIntelLookup *result);
@@ -504,16 +590,155 @@ gboolean fs_intel_lookup (const FsIntelConfig *config,
  * the sets applied.state says were given to the kernel, each only while
  * its stored list is still the one it was built from (applied.state
  * records each set's list digest and the exceptions applied with it).
- * Creates nothing. */
+ * A location rule's set is asked through the copy of the location
+ * database in use, while that copy and the rule's values are the ones
+ * the set was built from; otherwise `uncertain'.  Creates nothing. */
 void     fs_intel_lookup_live (const FsBackend *backend,
                                const FsIntelConfig *config,
                                const gchar *addr, FsIntelLookup *result);
 void     fs_intel_lookup_clear (FsIntelLookup *result);
 
 /* "Blocked by threat intel: Spamhaus DROP (IPv4), Feodo Tracker" or
- * NULL when not blocked.  Caller frees. */
+ * NULL when not blocked.  With location rules whose membership cannot
+ * be read (locations_unknown), "May be blocked by threat intel: High-
+ * risk countries (the location database in use cannot be read)." on
+ * its own or after the sentence.  Caller frees. */
 gchar   *fs_intel_lookup_sentence (const FsIntelConfig *config,
                                    const FsIntelLookup *result);
+
+/* ---- Round 2: the location database and location rules (design 13) - */
+
+/* The id of the location database in update results and labels. */
+#define FS_INTEL_GEO_ID "location"
+/* At most this many intervals over every location set (13.6). */
+#define FS_INTEL_MAX_LOCATION_INTERVALS 500000u
+
+/* Whether country and network-owner blocking can work here: FALSE on
+ * Windows in 1.0.7 (design 13.10). */
+gboolean fs_intel_geo_supported (void);
+/* Where it is not (fs_intel_geo_supported FALSE): the one sentence
+ * every surface shows instead of the controls.  On Windows "Blocking by
+ * country or network owner is not supported on Windows in this version.
+ * Blocklists are.": a platform limit, not a promise.  Translated;
+ * static. */
+const gchar *fs_intel_geo_unsupported_text (void);
+
+/* What kind of source an id names (design 13.7). */
+typedef enum
+{
+	FS_INTEL_KIND_UNKNOWN = 0,
+	FS_INTEL_KIND_FEED,          /* catalog feed                         */
+	FS_INTEL_KIND_CUSTOM,        /* "custom-"                            */
+	FS_INTEL_KIND_LIST,          /* "local-"                             */
+	FS_INTEL_KIND_COUNTRY,       /* "country-"                           */
+	FS_INTEL_KIND_ASN            /* "asn-"                               */
+} FsIntelSourceKind;
+
+/* From the id alone (its prefix, or the catalog). */
+FsIntelSourceKind fs_intel_source_kind (const gchar *id);
+
+/* The consent text for the location database (13.2): the host, how
+ * often, what the host learns, the size, the licence status,
+ * "registered in", anycast.  Plain text, translated.  Caller frees. */
+gchar *fs_intel_geo_consent_text (const FsIntelConfig *config);
+/* One line for every screen that shows location data: where it comes
+ * from and its licence status (13.1).  Caller frees. */
+gchar *fs_intel_geo_attribution (void);
+
+/* Turn the location database on.  Terms never accepted need
+ * accept_terms (then geo_accepted_at becomes now); without it
+ * FS_INTEL_ERR_CONSENT and nothing changes.  Where it cannot work
+ * (fs_intel_geo_supported), FS_INTEL_ERR_UNSUPPORTED.  Off keeps the
+ * rules and enforces none of them. */
+gboolean fs_intel_config_enable_geo  (FsIntelConfig *config,
+                                      gboolean accept_terms,
+                                      GError **error);
+void     fs_intel_config_disable_geo (FsIntelConfig *config);
+
+FsIntelLocationConf *fs_intel_config_location (const FsIntelConfig *config,
+                                               const gchar *id);
+
+/* A location rule: id "country-<slug of name>" or "asn-<slug>", enabled,
+ * in `dir'.  values: country codes (two letters, any case) for COUNTRY,
+ * AS numbers ("13335" or "AS13335") for ASN; 1 to
+ * FS_INTEL_LOCATION_MAX_VALUES after duplicates are dropped.  Needs the
+ * database's terms accepted (FS_INTEL_ERR_CONSENT otherwise); a bad
+ * value or name is FS_INTEL_ERR_INVALID naming it; a name whose id is
+ * already a rule is refused.  The config is not saved: the caller
+ * saves.  *id_out (nullable) receives the id. */
+gboolean fs_intel_config_add_location (FsIntelConfig *config,
+                                       const gchar *name,
+                                       FsIntelLocationKind kind,
+                                       const gchar *const *values,
+                                       FsIntelDir dir, gchar **id_out,
+                                       GError **error);
+/* Replace a rule's values (the same rules as add). */
+gboolean fs_intel_config_set_location_values (FsIntelConfig *config,
+                                              const gchar *id,
+                                              const gchar *const *values,
+                                              GError **error);
+
+/* The location database in the store. */
+typedef struct
+{
+	gboolean present;        /* a copy that verifies and checks is there */
+	gint64   created_at;     /* of the copy in use; 0 none               */
+	gboolean stale;          /* older than FS_GEODB_STALE_S at `now'      */
+	gint64   attempted_at;   /* last update attempt; 0 never             */
+	gint64   fetched_at;     /* last successful update; 0 never          */
+	gchar   *last_error;     /* the last attempt failed: why             */
+	gchar   *refused;        /* the last download was refused: why       */
+	gchar   *damaged;        /* the copy in use fails verify/check: why  */
+	gchar   *license;        /* as the file declares it                  */
+	guint    networks, countries, ases;
+} FsIntelGeoStatus;
+
+/* FALSE (error set) only when the store cannot be opened. */
+gboolean fs_intel_geo_status (FsIntelGeoStatus *status, gint64 now,
+                              GError **error);
+void     fs_intel_geo_status_clear (FsIntelGeoStatus *status);
+
+/* The picker, from the copy in use: every country (FsGeodbCountry*,
+ * ascending by code) and an AS search (FsGeodbAs*, as
+ * fs_geodb_search_as).  NULL with an error when there is no usable
+ * copy.  Caller unrefs. */
+GPtrArray *fs_intel_geo_countries (GError **error);
+GPtrArray *fs_intel_geo_search_as (const gchar *query, guint max,
+                                   GError **error);
+
+/* What a selection covers (design 13.6). */
+typedef struct
+{
+	guint   prefixes4, prefixes6;   /* the fewest CIDR prefixes          */
+	guint64 addresses4;
+	guint64 addresses6;             /* saturating                        */
+	guint   anycast_prefixes;       /* prefixes of the part that lies in
+	                                 * networks flagged anycast          */
+	guint64 anycast_addresses4;
+	guint64 anycast_addresses6;     /* saturating                        */
+} FsIntelLocationStats;
+
+/* The picker's preview: `values' as fs_intel_config_add_location takes
+ * them, against the copy in use, after the protected ranges and the
+ * config's exceptions are taken out (config nullable; this computer's
+ * own addresses are not taken out: they depend on where it is when it
+ * applies).  FALSE with an error for a bad value or no usable copy. */
+gboolean fs_intel_location_stats (const FsIntelConfig *config,
+                                  FsIntelLocationKind kind,
+                                  const gchar *const *values,
+                                  FsIntelLocationStats *stats,
+                                  GError **error);
+
+/* One address to its registered country, AS and flags, from the copy
+ * in use, without evaluating any rule: the cheap call for events and
+ * connections.  The opened database is cached per process and reopened
+ * only when location.db changes (device, inode, size, mtime).  FALSE
+ * with an error when the database is off in `config', there is no
+ * usable copy, or `addr' is not an address; TRUE with match->found
+ * FALSE when no network holds it.  Clear with fs_geodb_match_clear(). */
+gboolean fs_intel_geo_lookup (const FsIntelConfig *config,
+                              const gchar *addr, FsGeodbMatch *match,
+                              GError **error);
 
 /* ---- applied journal ------------------------------------------------- */
 

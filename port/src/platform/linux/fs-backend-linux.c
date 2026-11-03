@@ -1107,12 +1107,15 @@ intel_ready (GError **error)
  * The table in the kernel now.  First `nft -j list chains inet': the
  * script puts the digest on every chain, and listing chains never
  * loads a set element (milliseconds; `nft -j list tables' loads them
- * all, about 2 s at 240k intervals, against a 10 s timeout).  Any
+ * all: about 2 s at 240k intervals, 11 to 13 s with a large country's
+ * 600,000 elements, past the listing timeout -- design 13.7).  Any
  * other answer is read again from `nft -j list tables': a table whose
  * chains carry no common digest (an older StockFW's, or changed by
  * hand) by its own comment, and no chain of ours at all because a
  * table without chains still is a table -- that listing is cheap when
- * there is no table, so the common "not loaded" case stays fast.
+ * there is no table, so the common "not loaded" case stays fast.  A
+ * table found that way with no chain of ours blocks nothing, whatever
+ * its comment says: present, with no digest, so it reads "differs".
  * UNKNOWN, with error, when it cannot be read -- never
  * ABSENT: a listing nobody could read says nothing about the kernel.
  * *digest (caller frees) is set only for PRESENT, and may still be
@@ -1122,8 +1125,8 @@ intel_read_live (gchar **digest, GError **error)
 {
 	static const gchar *const chains[] = { "-j", "list", "chains", "inet",
 	                                       NULL };
-	static const gchar *const args[] = { "-j", "list", "tables", NULL };
-	FsIntelLive live;
+	static const gchar *const tables[] = { "-j", "list", "tables", NULL };
+	FsIntelLive live, by_chains;
 	gchar *json;
 
 	*digest = NULL;
@@ -1134,22 +1137,31 @@ intel_read_live (gchar **digest, GError **error)
 	                       error);
 	if (json == NULL)
 		return FS_INTEL_LIVE_UNKNOWN;
-	live = fs_intelset_nft_parse_live_chains (json, digest);
+	by_chains = fs_intelset_nft_parse_live_chains (json, digest);
 	g_free (json);
-	if (live == FS_INTEL_LIVE_PRESENT && *digest != NULL)
-		return live;
+	if (by_chains == FS_INTEL_LIVE_UNKNOWN) {
+		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+		                     "nft printed a chain listing that could not "
+		                     "be read");
+		return by_chains;
+	}
+	if (by_chains == FS_INTEL_LIVE_PRESENT && *digest != NULL)
+		return by_chains;
 	g_clear_pointer (digest, g_free);
 
-	json = fs_nft_capture (args, intel_timeout (INTEL_LIST_TIMEOUT_MS),
+	json = fs_nft_capture (tables, intel_timeout (INTEL_LIST_TIMEOUT_MS),
 	                       error);
 	if (json == NULL)
 		return FS_INTEL_LIVE_UNKNOWN;
-
 	live = fs_intelset_nft_parse_live_state (json, digest);
 	if (live == FS_INTEL_LIVE_UNKNOWN)
 		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
 		                     "nft printed a table listing that could not "
 		                     "be read");
+	/* A table with no chain of ours blocks nothing, whatever its own
+	 * comment says: present, with no digest, so it reads "differs". */
+	if (live == FS_INTEL_LIVE_PRESENT && by_chains == FS_INTEL_LIVE_ABSENT)
+		g_clear_pointer (digest, g_free);
 	g_free (json);
 	return live;
 }

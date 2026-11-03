@@ -76,6 +76,16 @@ fi
 [ -z "$missing" ]
 ok_case $? "the SVG loader's own DLLs are staged too${missing:+ (missing:$missing)}"
 
+# The location database reader's libraries (xz, OpenSSL) are staged by
+# name, whether or not the exe imports them yet.
+geodb_dlls=0
+for pattern in 'liblzma-*.dll' 'libcrypto-*-x64.dll'; do
+  # shellcheck disable=SC2086
+  ls build/$pattern > /dev/null 2>&1 && geodb_dlls=$((geodb_dlls + 1))
+done
+[ "$geodb_dlls" -eq 2 ]
+ok_case $? "liblzma and libcrypto (the location database reader) are staged"
+
 # A UI smoke from build/, with nothing on PATH but Windows.
 ninja -C build fs-activity-smoke > /dev/null 2>&1
 sysroot="$(cygpath -u "${SYSTEMROOT:-C:\\Windows}")"

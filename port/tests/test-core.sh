@@ -2988,8 +2988,10 @@ static void test_threat_intel (void)
 	CHECK (count_insights (c, FS_INSIGHT_THREAT_INTEL) == 3,
 	       "intel: the next hour starts a new roll-up");
 
-	intel_feed (c, "In", "198.51.100.5", "192.168.1.7", "Location block",
-	            h0 + 3710);
+	/* A country or network rule's block, as fs_intel_rule_text
+	 * names it (the same marker and id space as a list). */
+	intel_feed (c, "In", "198.51.100.5", "192.168.1.7",
+	            "Threat intel: High risk countries", h0 + 3710);
 	CHECK (count_insights (c, FS_INSIGHT_THREAT_INTEL) == 4,
 	       "intel: a country block is its own roll-up");
 
@@ -11191,16 +11193,44 @@ fi
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} "$BUILD_DIR/test-core.c" \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-core" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 
 # Keep rule files out of the real rules directory.
 export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
 rm -rf "$STOCKFW_RULES_DIR"
 
-"$BUILD_DIR/test-core"
+core_rc=0
+"$BUILD_DIR/test-core" || core_rc=$?
+
+# The location database reader (tests/test-geodb.c), a test build of
+# src/core: FS_GEODB_TESTING lets it verify with the fixtures' test key.
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} -DFS_GEODB_TESTING=1 tests/test-geodb.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   -o "$BUILD_DIR/test-geodb" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+geodb_rc=0
+"$BUILD_DIR/test-geodb" tests/geodb > "$BUILD_DIR/geodb.log" 2>&1 || geodb_rc=$?
+grep -E '^(FAIL|SKIP)|checks,|test-geodb:' "$BUILD_DIR/geodb.log" || true
+
+# Country and network-owner rules in the engine (tests/test-intel-geo.c,
+# design section 13), the same test build of src/core: its databases
+# are signed with a key the test makes.
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} -DFS_GEODB_TESTING=1 tests/test-intel-geo.c \
+   -I src -I tests \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   -o "$BUILD_DIR/test-intel-geo" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+intelgeo_rc=0
+"$BUILD_DIR/test-intel-geo" > "$BUILD_DIR/intel-geo.log" 2>&1 || intelgeo_rc=$?
+grep -E '^(FAIL|SKIP)|checks,|test-intel-geo:' "$BUILD_DIR/intel-geo.log" || true
 
 # The What-If engine's golden table (tests/test-whatif.c): the reading of
 # a line, both firewall models, the Linux model pinned to the generator,
@@ -11208,12 +11238,12 @@ rm -rf "$STOCKFW_RULES_DIR"
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-whatif.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-whatif" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
-
-"$BUILD_DIR/test-whatif"
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+whatif_rc=0
+"$BUILD_DIR/test-whatif" || whatif_rc=$?
 
 # The Copilot's policy health check (tests/test-health.c): exact coverage,
 # the golden table on both platform models, every fix verified by the
@@ -11221,12 +11251,12 @@ cc ${STOCKFW_TEST_CFLAGS:-} tests/test-whatif.c \
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} tests/test-health.c \
    -I src \
-   $(pkg-config --cflags glib-2.0 gio-2.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-health" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
-
-"$BUILD_DIR/test-health"
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+health_rc=0
+"$BUILD_DIR/test-health" || health_rc=$?
 
 # Wording guard: the Copilot is a set of fixed rules, and nothing in the
 # program or the docs may call it AI.  The one sentence that says there
@@ -11239,3 +11269,6 @@ if [ -n "$WORDING_HITS" ]; then
   exit 1
 fi
 echo "ok:   wording guard: no \"AI\" claims in src, docs or README"
+
+[ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ] && [ "$intelgeo_rc" -eq 0 ] \
+  && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]

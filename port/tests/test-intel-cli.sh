@@ -45,7 +45,13 @@
 #     applies;
 #   - not root: apply and clear exit 3 and touch nothing; status with a
 #     root-only store exits 3 and says needs-root;
-#   - `stockfw status' carries the same state (plain and --json).
+#   - `stockfw status' carries the same state (plain and --json);
+#   - countries and networks (`intel geo', section 10, the signed test
+#     databases of tests/geodb through a stand-in curl): consent first,
+#     never a store for a refusal; update, unchanged, an older copy
+#     refused; status, search, add, list, remove; apply into the
+#     country's sets with the anycast note; lookups with "registered
+#     in", NAT64 and a damaged copy; nobody exits 3; off empties them.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -246,6 +252,30 @@ check '[ $rc -eq 0 ] && grep -q "from www.spamhaus.org once a day" <<<"$out" && 
       "intel terms: the host, how often, and the terms page"
 run intel terms nosuch
 check '[ $rc -eq 2 ]' "intel terms of an unknown feed: exit 2"
+# The location database: read-only commands, refusals and consent
+# never create the store either.
+run intel geo
+check '[ $rc -eq 0 ] && grep -q "^  Location  *off" <<<"$out" && grep -q "registered, not where a computer is" <<<"$out" && [ ! -e /var/lib/stockfw ]' \
+      "intel geo (status): off, exit 0, the \"registered\" sentence, no store"
+run --json intel geo status
+check '[ $rc -eq 0 ] && [ "$(jget "d[\"supported\"], d[\"enabled\"], d[\"database\"][\"present\"], d[\"rules\"], d[\"url\"]")" = "True False False [] https://location.ipfire.org/databases/1/location.db.xz" ] && [ ! -e /var/lib/stockfw ]' \
+      "intel geo status --json: supported, off, no database, no rules; no store"
+run intel geo terms
+check '[ $rc -eq 0 ] && grep -q "location.ipfire.org" <<<"$out" && [ ! -e /var/lib/stockfw ]' "intel geo terms: names location.ipfire.org; no store"
+run intel geo search Example
+check '[ $rc -eq 1 ] && grep -q "not been downloaded" <<<"$err" && [ ! -e /var/lib/stockfw ]' "geo search with no database: exit 1, says why; no store"
+run intel geo on
+check '[ $rc -eq 2 ] && grep -q "location.ipfire.org" <<<"$out" && grep -q "accept-terms" <<<"$err" && [ ! -e /var/lib/stockfw ]' \
+      "geo on without --accept-terms: exit 2, the terms shown, the flag named, no store"
+run --json intel geo on
+check '[ $rc -eq 2 ] && [ "$(jget "d[\"needs_consent\"], d[\"enabled\"], \"location.ipfire.org\" in d[\"terms\"]")" = "True False True" ] && [ ! -e /var/lib/stockfw ]' \
+      "  ... as JSON: needs_consent, the terms, exit 2"
+run intel geo add country DE
+check '[ $rc -eq 2 ] && grep -q "accept-terms" <<<"$err" && [ ! -e /var/lib/stockfw ]' "geo add before consent: exit 2, no store"
+run intel geo off
+check '[ $rc -eq 0 ] && [ ! -e /var/lib/stockfw ]' "geo off with nothing on: exit 0, no store"
+run intel geo frobnicate
+check '[ $rc -eq 2 ]' "an unknown geo action: exit 2"
 
 # ----------------------------------------------- 2. consent, ids, values
 run intel enable spamhaus-drop
@@ -520,6 +550,176 @@ check '[ $rc -eq 0 ] && [ "$(requests)" = "$before" ]' "update with the switch o
 S -q intel on
 run intel remove "$FEED"
 check '[ $rc -eq 0 ] && [ ! -e "$STORE/$FEED.list" ] && [ ! -e "$STORE/$FEED.state" ]' "remove the custom feed: its files are gone"
+
+# ------------------------------------- 10. countries and networks
+# The database comes from a stand-in curl (STOCKFW_TEST_CURL) that logs
+# its arguments and prints the file in $GEO/serve: the test databases
+# of tests/geodb, xz'd, signed with k1's key (STOCKFW_TEST_GEODB_KEY).
+# curl runs as nobody: everything it touches is world-readable.
+GEO="$W/geo"
+mkdir -p "$GEO"
+chmod 755 "$GEO"
+: > "$GEO/curl.log"
+chmod 666 "$GEO/curl.log"
+printf '#!/bin/sh\necho "$*" >> %s/curl.log\nexec cat %s/serve\n' "$GEO" "$GEO" > "$GEO/curl"
+chmod 755 "$GEO/curl"
+for db in small small-older small-newer; do
+  py "import lzma, sys
+open(sys.argv[2], 'wb').write(lzma.compress(open(sys.argv[1], 'rb').read(), format=lzma.FORMAT_XZ))" \
+     "$PORT/tests/geodb/$db.db" "$GEO/$db.db.xz" || die "could not xz $db.db"
+done
+chmod 644 "$GEO"/*.xz
+geo_serve() { cp "$GEO/$1.db.xz" "$GEO/serve.new" && chmod 644 "$GEO/serve.new" && mv "$GEO/serve.new" "$GEO/serve"; }
+geo_requests() { wc -l < "$GEO/curl.log"; }
+export STOCKFW_TEST_GEODB_KEY="$PORT/tests/geodb/k1.pub"
+export STOCKFW_TEST_CURL="$GEO/curl"
+geo_serve small
+S -q intel on
+
+run intel geo update
+check '[ $rc -eq 2 ] && grep -q "geo on --accept-terms" <<<"$err" && [ "$(geo_requests)" = 0 ]' \
+      "geo update with the database off: exit 2, the way to turn it on, no request"
+run --json intel geo on --accept-terms
+check '[ $rc -eq 0 ] && [ "$(jget "d[\"enabled\"], d[\"terms_accepted_now\"], d[\"database_present\"]")" = "True True False" ] && [ "$(geo_requests)" = 0 ]' \
+      "geo on --accept-terms: on, accepted now, nothing downloaded by the switch"
+run --json intel geo update --no-apply
+check '[ $rc -eq 0 ] && [ "$(jget "[(r[\"id\"], r[\"outcome\"]) for r in d[\"results\"]]")" = "[('"'location'"', '"'updated'"')]" ] && [ "$(geo_requests)" = 1 ] && grep -q "location.ipfire.org/databases/1/location.db.xz" "$GEO/curl.log"' \
+      "geo update: downloaded from location.ipfire.org, updated"
+check 'cmp -s "$PORT/tests/geodb/small.db" "$STORE/location.db" && [ "$(stat -c %a "$STORE/location.db")" = 600 ]' \
+      "  ... the stored copy is the signed database, 0600"
+run intel geo update --no-apply
+check '[ $rc -eq 0 ] && grep -q "^  location  *unchanged" <<<"$out" && [ "$(geo_requests)" = 2 ]' "geo update again: fetched (--now), unchanged"
+run intel update
+check '[ $rc -eq 0 ] && [ "$(geo_requests)" = 2 ]' "intel update without --now: the database is not due (at most daily), no request"
+geo_serve small-older
+run --json intel geo update --no-apply
+check '[ $rc -eq 1 ] && [ "$(jget "d[\"results\"][0][\"outcome\"]")" = refused ] && cmp -s "$PORT/tests/geodb/small.db" "$STORE/location.db"' \
+      "an older database: refused, exit 1, the copy in use kept"
+geo_serve small
+run --json intel geo status
+check '[ $rc -eq 0 ] && [ "$(jget "d[\"enabled\"], d[\"database\"][\"present\"], d[\"database\"][\"created_at\"], d[\"database\"][\"stale\"], d[\"database\"][\"licence\"], d[\"database\"][\"networks\"], d[\"database\"][\"countries\"], bool(d[\"database\"][\"refused\"])")" = "True True 1700000000 True CC0-1.0 17 7 True" ]' \
+      "geo status --json: the copy's date, stale, licence, 17 networks, 7 countries, the refusal"
+check '[ -n "$(jget "d[\"attribution\"]")" ] && grep -q "IPFire" <<<"$(jget "d[\"attribution\"]")"' "  ... and the attribution"
+run intel geo status
+check '[ $rc -eq 0 ] && grep -q "copy of 2023-11-14: 17 networks, 7 countries" <<<"$out" && grep -q "out of date (older than 30 days), still used by the rules" <<<"$out" && grep -q "refused" <<<"$out" && grep -q "IPFire" <<<"$out"' \
+      "geo status: the copy's day, out of date and still used (it is on), the refusal, the attribution"
+
+run --json intel geo search ex
+check '[ $rc -eq 0 ] && [ "$(jget "[a[\"asn\"] for a in d[\"ases\"]], [c[\"code\"] for c in d[\"countries\"]]")" = "[64500, 64501] []" ]' \
+      "geo search ex: the ASes whose name has it ($(jget 'd["ases"]'))"
+run --json intel geo search nether
+check '[ $rc -eq 0 ] && [ "$(jget "[c[\"code\"] for c in d[\"countries\"]]")" = "['"'NL'"']" ]' "geo search nether: the Netherlands"
+run intel geo search
+check '[ $rc -eq 2 ]' "geo search with no text: exit 2"
+
+run --json intel geo add country NL --dir in
+check '[ $rc -eq 0 ] && [ "$(jget "d[\"id\"], d[\"name\"], d[\"values\"], d[\"direction\"], d[\"enabled\"]")" = "country-netherlands Netherlands ['"'NL'"'] in True" ]' \
+      "geo add country NL --dir in: country-netherlands, named from the database"
+run intel geo add asn 64500,AS64501
+check '[ $rc -eq 0 ] && grep -q "(asn-" <<<"$out" && grep -q "AS64500, AS64501" <<<"$out"' "geo add asn with two values: one rule, both named"
+ASN_ID="$(grep -o '(asn-[a-z0-9-]*)' <<<"$out" | tr -d '()')"
+run intel geo add country XQ
+check '[ $rc -eq 0 ] && grep -q "names no country XQ" <<<"$out"' "geo add of a code the database lacks: saved, and says so"
+XQ_ID="$(grep -o '(country-[a-z0-9-]*)' <<<"$out" | tr -d '()')"
+run intel geo add country NLD
+check '[ $rc -eq 2 ]' "geo add country NLD (not two letters): exit 2"
+run intel geo add asn ASX
+check '[ $rc -eq 2 ]' "geo add asn ASX: exit 2"
+run intel geo add country NL --dir sideways
+check '[ $rc -eq 2 ]' "geo add --dir sideways: exit 2"
+run intel geo add region NL
+check '[ $rc -eq 2 ]' "geo add region: exit 2"
+run --json intel geo list
+check '[ $rc -eq 0 ] && [ "$(jget "sorted((r[\"id\"], r[\"status\"]) for r in d[\"rules\"])")" = "[('"'$ASN_ID'"', '"'not-applied'"'), ('"'country-netherlands'"', '"'not-applied'"'), ('"'$XQ_ID'"', '"'not-applied'"')]" ]' \
+      "geo list --json: three rules, not applied yet"
+run intel geo remove "$XQ_ID"
+check '[ $rc -eq 0 ] && grep -q "removed" <<<"$out"' "geo remove: the rule is gone"
+run intel geo remove spamhaus-drop
+check '[ $rc -eq 2 ]' "geo remove of a feed id: exit 2"
+
+run intel apply
+check '[ $rc -eq 0 ] && has_element s_country_netherlands_6 2c0f:f000::1 && has_element s_country_netherlands_4 192.0.2.10' \
+      "apply: the country's networks are in its sets"
+check 'grep -q "anycast" <<<"$out"' "  ... and the apply says the Netherlands includes anycast networks"
+check '! has_element s_country_netherlands_4 198.51.100.7' "  ... and nothing of another country"
+run --json intel geo list
+check '[ $rc -eq 0 ] && [ "$(jget "[r[\"status\"] for r in d[\"rules\"] if r[\"id\"] == \"country-netherlands\"]")" = "['"'in-force'"']" ]' \
+      "geo list --json after apply: the country rule is in-force"
+# The live rules gone behind StockFW's back: the record of the last
+# apply still lists the rule, but no surface may call it in force.
+nft delete table inet stockfw_intel
+run --json intel geo list
+check '[ $rc -eq 0 ] && [ "$(jget "[r[\"status\"] for r in d[\"rules\"] if r[\"id\"] == \"country-netherlands\"]")" = "['"'not-in-force'"']" ]' \
+      "the table deleted by hand: geo list --json says not-in-force, never in-force ($(jget 'd["rules"]'))"
+run intel geo list
+check '[ $rc -eq 0 ] && grep -q "not-in-force" <<<"$out" && ! grep -qw "in-force" <<<"$(sed "s/not-in-force//g" <<<"$out")"' \
+      "  ... and so does the plain list"
+run --json intel status
+check '[ "$(jget "[r[\"status\"] for r in d[\"location\"][\"rules\"] if r[\"id\"] == \"country-netherlands\"]")" = "['"'not-in-force'"']" ]' \
+      "  ... and the location object of intel status --json (/api/intel)"
+run intel apply
+check '[ $rc -eq 0 ] && has_element s_country_netherlands_4 192.0.2.10' "apply again: the country's sets are back"
+run --json intel lookup 192.0.2.10
+check '[ $rc -eq 5 ] && [ "$(jget "d[\"blocked\"], [l[\"id\"] for l in d[\"locations\"]], d[\"location\"][\"country\"], d[\"location\"][\"asn\"], d[\"location\"][\"anycast\"], d[\"location\"][\"meaning\"]")" = "True ['"'country-netherlands'"'] NL 64504 False registered in" ]' \
+      "lookup in a blocked country: exit 5, the rule, NL, AS64504, not anycast, \"registered in\" ($(jget 'd["location"]'))"
+run intel lookup 2c0f:f000::1
+check '[ $rc -eq 5 ] && grep -q "^  Registered in  *Netherlands (NL)" <<<"$out" && grep -q "^  Network  *2c0f:f000::/20, anycast" <<<"$out" && grep -q "IPFire" <<<"$out" && grep -q "not where the computer is" <<<"$out"' \
+      "lookup (plain) of the anycast network: Registered in, anycast, the meaning, the attribution"
+run --json intel lookup 64:ff9b::c000:20a
+check '[ "$(jget "d[\"location\"][\"country\"], d[\"location\"][\"asn\"], d[\"location\"][\"via_nat64\"]")" = "NL 64504 True" ]' \
+      "lookup of a NAT64 address: the IPv4 address's country and network, via_nat64"
+run --json intel lookup 198.51.100.6
+check '[ $rc -eq 0 ] && [ "$(jget "d[\"location\"][\"found\"], d[\"locations\"]")" = "False []" ]' "lookup of an address the database lacks: found false, exit 0"
+run intel lookup 10.0.0.1
+check '[ $rc -eq 0 ] && grep -q "^  Registered in  *Germany (DE)" <<<"$out"' "lookup of 10.0.0.1: registered in Germany (the test database says so)"
+run intel lookup 10.1.0.1
+check '[ $rc -eq 0 ] && grep -q "^LISTED, NOT BLOCKED.*never blocked" <<<"$out" && grep -q "^  Registered in  *United States (US)" <<<"$out"' \
+      "lookup of 10.1.0.1 (AS64501, private space): listed, never blocked, registered in the US"
+run intel lookup 2001:db8:2::1
+check '[ $rc -eq 5 ] && grep -q "AS64501 Example Two GmbH" <<<"$out" && grep -q "AS64500, AS64501" <<<"$out"' \
+      "lookup in a blocked network (AS64501): exit 5, the network and the rule"
+
+# The copy in use damaged: lookups say unknown, never "not listed".
+cp "$STORE/location.db" "$W/location.db.good"
+py "import sys
+p = sys.argv[1]; b = bytearray(open(p, 'rb').read()); b[len(b) // 2] ^= 0xff; open(p, 'wb').write(b)" "$STORE/location.db"
+run --json intel lookup 192.0.2.10
+check '[ "$(jget "d[\"location\"][\"unknown\"], d[\"locations_unknown\"] != []")" = "True True" ]' \
+      "the database damaged: lookup says unknown ($(jget 'd["location"]'))"
+cp "$W/location.db.good" "$STORE/location.db"
+cmp -s "$W/location.db.good" "$STORE/location.db" || die "could not restore location.db"
+
+run --json intel disable country-netherlands
+check '[ $rc -eq 0 ] && [ "$(jget "d[\"enabled\"]")" = False ]' "intel disable country-netherlands: off"
+run --json intel enable country-netherlands --direction out
+check '[ $rc -eq 0 ] && [ "$(jget "d[\"enabled\"], d[\"direction\"]")" = "True out" ]' "intel enable country-netherlands --direction out: on, out"
+run --json intel status
+check '[ "$(jget "d[\"location\"][\"enabled\"], len(d[\"location\"][\"rules\"])")" = "True 2" ]' "intel status --json: the location object, two rules"
+
+out="$(nobody intel geo on --accept-terms 2>&1)"; rc=$?
+check '[ $rc -eq 3 ]' "geo on as nobody: exit 3"
+out="$(nobody intel geo add country DE 2>&1)"; rc=$?
+check '[ $rc -eq 3 ]' "geo add as nobody: exit 3"
+out="$(nobody intel geo search nether 2>&1)"; rc=$?
+check '[ $rc -eq 3 ]' "geo search as nobody: exit 3 (the store is root's; the README says sudo)"
+out="$(nobody intel lookup 192.0.2.10 2>&1)"; rc=$?
+check '[ $rc -eq 3 ]' "lookup as nobody: exit 3"
+
+run intel geo off
+check '[ $rc -eq 0 ] && has_element s_country_netherlands_6 2c0f:f000::1' "geo off: saved, the kernel untouched until apply"
+run intel geo status
+check '[ $rc -eq 0 ] && grep -q "out of date (older than 30 days)" <<<"$out" && ! grep -q "still used\|still enforced" <<<"$out"' \
+      "geo status with the database off: out of date, never \"still used\""
+run intel apply
+check '[ $rc -eq 0 ] && ! has_element s_country_netherlands_6 2c0f:f000::1 && ! has_element s_country_netherlands_4 192.0.2.10' \
+      "apply with the database off: the country sets are gone"
+run --json intel lookup 192.0.2.10
+check '[ $rc -eq 0 ] && [ "$(jget "d[\"location\"]")" = None ]' "lookup with the database off: no location, exit 0"
+run intel geo on
+check '[ $rc -eq 0 ]' "geo on again: the terms stay accepted"
+run intel geo remove country-netherlands
+check '[ $rc -eq 0 ]' "geo remove country-netherlands"
+unset STOCKFW_TEST_CURL STOCKFW_TEST_GEODB_KEY
 
 echo ""
 if [ "$fails" -eq 0 ]; then

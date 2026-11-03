@@ -2889,12 +2889,14 @@ sentinel_hit_is_blocked (const FsHit *hit)
 	return hit_is_blocked_marker (hit);
 }
 
+/* A list's block and a country or network rule's block both carry
+ * "Threat intel: <name>" (fs_intel_rule_text: one log marker, one
+ * id space for lists and location rules). */
 static gboolean
 hit_rule_is_intel (const FsHit *hit)
 {
 	return hit->rule != NULL &&
-	       (g_str_has_prefix (hit->rule, "Threat intel:") ||
-	        g_str_has_prefix (hit->rule, "Location block"));
+	       g_str_has_prefix (hit->rule, "Threat intel:");
 }
 
 /* [ sentinel_beacon_check ]

@@ -1085,7 +1085,10 @@ test_live (void)
 	       "live: the digest pointer may be NULL");
 }
 
-/* `nft -j list chains inet' as nft 1.0.9 printed it for a table this
+/* The chains reader (design 13.7): `nft -j list chains inet', which nft
+ * prints without fetching a set element.
+ *
+ * `nft -j list chains inet' as nft 1.0.9 printed it for a table this
  * StockFW wrote (every chain carries the digest), with a decoy chain of
  * another table that carries a different one. */
 #define CHAIN_JSON(table, name, comment) \
@@ -1158,6 +1161,88 @@ test_live_chains (void)
 	               "Error: x\n{\"nftables\": []}", UNKNOWN, NULL);
 }
 
+#define D32 "0123456789abcdef0123456789abcdef"
+#define CHAIN(fam, tab, name, extra) \
+	"{\"chain\": {\"family\": \"" fam "\", \"table\": \"" tab "\", " \
+	"\"name\": \"" name "\", \"handle\": 1" extra "}}"
+#define HOOKED ", \"type\": \"filter\", \"hook\": \"input\", " \
+	"\"prio\": -10, \"policy\": \"accept\""
+
+/* More of the same, from the country/AS branch: the system's own
+ * table beside ours, comments that are not digests, escaped names. */
+static void
+test_chains_live_more (void)
+{
+	/* What nft 1.0.9 prints for our table beside the system's own. */
+	expect_chains ("ours, with the digest on input",
+	               "{\"nftables\": [{\"metainfo\": {\"version\": \"1.0.9\", "
+	               "\"json_schema_version\": 1}}, "
+	               CHAIN ("inet", "stockfw", "input", HOOKED) ", "
+	               CHAIN ("inet", "stockfw_intel", "input",
+	                      ", \"comment\": \"sfw:" D32 "\"" HOOKED) ", "
+	               CHAIN ("inet", "stockfw_intel", "output",
+	                      ", \"comment\": \"sfw:" D32 "\"" HOOKED) "]}",
+	               PRESENT, D32);
+	expect_chains ("input and output with two digests: none",
+	               "{\"nftables\": ["
+	               CHAIN ("inet", "stockfw_intel", "output",
+	                      ", \"comment\": \"sfw:ffffffffffffffffffffffffffffffff\"")
+	               ", "
+	               CHAIN ("inet", "stockfw_intel", "input",
+	                      ", \"comment\": \"sfw:" D32 "\"") "]}",
+	               PRESENT, NULL);
+	expect_chains ("ours, input without a comment (an older StockFW)",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw_intel", "input",
+	                                         HOOKED) "]}", PRESENT, NULL);
+	expect_chains ("ours, one chain only, with the digest",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw_intel", "output",
+	               ", \"comment\": \"sfw:" D32 "\"") "]}", PRESENT, D32);
+	expect_chains ("a comment that is not a digest",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw_intel", "input",
+	               ", \"comment\": \"made by hand\"") "]}", PRESENT, NULL);
+	expect_chains ("a comment that is not a string",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw_intel", "input",
+	               ", \"comment\": 7") "]}", PRESENT, NULL);
+
+	/* Not ours. */
+	expect_chains ("no chains at all", "{\"nftables\": []}", ABSENT, NULL);
+	expect_chains ("only family ip",
+	               "{\"nftables\": [" CHAIN ("ip", "stockfw_intel", "input",
+	               ", \"comment\": \"sfw:" D32 "\"") "]}", ABSENT, NULL);
+	expect_chains ("only table stockfw_intel2",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw_intel2", "input",
+	               ", \"comment\": \"sfw:" D32 "\"") "]}", ABSENT, NULL);
+	expect_chains ("a chain object without its table",
+	               "{\"nftables\": [{\"chain\": {\"family\": \"inet\", "
+	               "\"name\": \"input\", \"comment\": \"sfw:" D32 "\"}}]}",
+	               ABSENT, NULL);
+	expect_chains ("a table object, not a chain",
+	               "{\"nftables\": [{\"table\": {\"family\": \"inet\", "
+	               "\"name\": \"stockfw_intel\", \"comment\": \"sfw:" D32
+	               "\"}}]}", ABSENT, NULL);
+	expect_chains ("an escaped table name is not ours",
+	               "{\"nftables\": [" CHAIN ("inet", "stockfw\\u005fintel",
+	               "input", ", \"comment\": \"sfw:" D32 "\"") "]}",
+	               ABSENT, NULL);
+
+	/* Unreadable says nothing about the kernel. */
+	expect_chains ("NULL", NULL, UNKNOWN, NULL);
+	expect_chains ("empty text", "", UNKNOWN, NULL);
+	expect_chains ("no nftables list", "{}", UNKNOWN, NULL);
+	expect_chains ("truncated", "{\"nftables\": ["
+	               CHAIN ("inet", "stockfw_intel", "input", ""), UNKNOWN, NULL);
+	expect_chains ("trailing garbage", "{\"nftables\": []} x", UNKNOWN, NULL);
+	expect_chains ("a warning line first", "Warning\n{\"nftables\": []}",
+	               UNKNOWN, NULL);
+	CHECK (fs_intelset_nft_parse_live_chains ("{\"nftables\": ["
+	       CHAIN ("inet", "stockfw_intel", "input", "") "]}", NULL) ==
+	       FS_INTEL_LIVE_PRESENT, "chains: the digest pointer may be NULL");
+}
+
+#undef HOOKED
+#undef CHAIN
+#undef D32
+
 int
 main (void)
 {
@@ -1170,6 +1255,7 @@ main (void)
 	test_counters ();
 	test_live ();
 	test_live_chains ();
+	test_chains_live_more ();
 
 	g_print ("\n%s: %u failure(s)\n", failures ? "FAILED" : "PASSED",
 	         failures);

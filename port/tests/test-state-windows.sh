@@ -155,7 +155,7 @@ int main (int argc, char **argv)
 EOF
 
 CF="$(pkg-config --cflags gtk+-3.0 glib-2.0 gobject-2.0 gio-2.0)"
-LF="$(pkg-config --libs gtk+-3.0 glib-2.0 gobject-2.0 gio-2.0)"
+LF="$(pkg-config --libs gtk+-3.0 glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
 
 gcc -o "$BUILD_DIR/test-state" \
 	-I "$PORT/src" $CF \

@@ -27,6 +27,11 @@ message(STATUS "StockFW platform backend: ${FS_PLATFORM}")
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0 glib-2.0 gio-2.0)
 pkg_check_modules(GETTEXT IMPORTED_TARGET glib-2.0)
+# The location database reader (core/fs-geodb.c, 1.0.7 threat intel
+# round 2): liblzma unpacks the download, libcrypto verifies IPFire's
+# signature.  Windows (MSYS2 UCRT64): mingw-w64-ucrt-x86_64-xz and
+# mingw-w64-ucrt-x86_64-openssl; the DLLs are staged beside the exe.
+pkg_check_modules(GEODB REQUIRED IMPORTED_TARGET liblzma libcrypto)
 
 # ------------------------------------------------------------------ core
 # Portable: no OS headers, no GTK. Shared by both backends and the UI.
@@ -64,11 +69,12 @@ add_library(fs-core STATIC
   src/core/fs-fetch.c
   src/core/fs-hostnet.c
   src/core/fs-intel.c
+  src/core/fs-geodb.c
   src/core/fs-intelwin.c
   src/core/fs-winstore.c
 )
 target_include_directories(fs-core PUBLIC src resources)
-target_link_libraries(fs-core PUBLIC PkgConfig::GTK3)
+target_link_libraries(fs-core PUBLIC PkgConfig::GTK3 PkgConfig::GEODB)
 # The engine names itself to feed servers ("StockFW/<version>").
 target_compile_definitions(fs-core PRIVATE FS_VERSION="${PROJECT_VERSION}")
 
@@ -79,7 +85,7 @@ pkg_check_modules(GLIBONLY REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0)
 get_target_property(FS_CORE_SOURCES fs-core SOURCES)
 add_library(fs-core-nogui STATIC EXCLUDE_FROM_ALL ${FS_CORE_SOURCES})
 target_include_directories(fs-core-nogui PUBLIC src resources)
-target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY)
+target_link_libraries(fs-core-nogui PUBLIC PkgConfig::GLIBONLY PkgConfig::GEODB)
 target_compile_definitions(fs-core-nogui PRIVATE
                            FS_VERSION="${PROJECT_VERSION}")
 if(WIN32)
@@ -651,26 +657,34 @@ if(FS_PLATFORM STREQUAL "linux")
   # FS_FETCH_TESTING only so $STOCKFW_TEST_CACERT can name the test
   # server's CA (the fs-fetch-test arrangement); the backend copy has no
   # test hook.
+  # Its own fs-geodb.c too, with FS_GEODB_TESTING: the location
+  # database the test writes is signed with a key made at run time.
   add_executable(fs-intel-e2e-driver EXCLUDE_FROM_ALL
     tests/intel-e2e-driver.c
     src/core/fs-fetch.c
+    src/core/fs-geodb.c
     src/platform/linux/fs-backend-linux.c
   )
+  target_include_directories(fs-intel-e2e-driver PRIVATE tests)
   target_link_libraries(fs-intel-e2e-driver PRIVATE fs-core-nogui)
   target_compile_definitions(fs-intel-e2e-driver PRIVATE
                              FS_FETCH_TESTING=1
+                             FS_GEODB_TESTING=1
                              FS_VERSION="${PROJECT_VERSION}")
   # `stockfw intel' end to end (tests/test-intel-cli.sh): the real CLI
   # sources and release backend, with a copy of fs-fetch.c compiled with
   # FS_FETCH_TESTING so $STOCKFW_TEST_CACERT can name the test server's
-  # CA (the fs-intel-e2e-driver arrangement).  Never installed: the
-  # `stockfw' that ships has no test hook.
+  # CA (the fs-intel-e2e-driver arrangement), and of fs-geodb.c compiled
+  # with FS_GEODB_TESTING so $STOCKFW_TEST_GEODB_KEY can name the key
+  # the test databases (tests/geodb) are signed with.  Never installed:
+  # the `stockfw' that ships has no test hook.
   add_executable(stockfw-intel-test EXCLUDE_FROM_ALL
     src/cli/fs-cli-main.c
     src/cli/fs-cli-cmds.c
     src/cli/fs-cli-intel.c
     src/cli/fs-dashboard.c
     src/core/fs-fetch.c
+    src/core/fs-geodb.c
     ${FS_BACKEND_SOURCES}
   )
   target_include_directories(stockfw-intel-test PRIVATE
@@ -679,6 +693,7 @@ if(FS_PLATFORM STREQUAL "linux")
                         PkgConfig::GIO)
   target_compile_definitions(stockfw-intel-test PRIVATE
                              FS_FETCH_TESTING=1
+                             FS_GEODB_TESTING=1
                              FS_VERSION="${PROJECT_VERSION}")
 endif()
 
@@ -688,8 +703,12 @@ endif()
 # their override, the editors, lookup, Add exception, and that the
 # work runs off the main loop.  INTEL_SMOKE_SHOTS=<dir> writes a PNG of
 # each state.  Run under xvfb-run as root or with STOCKFW_TEST_SAFE_DIR.
+# Its own fs-geodb.c, compiled with FS_GEODB_TESTING, so the countries
+# and networks card can be driven with the test databases in
+# tests/geodb (signed with tests/geodb/k1.pub's key).
 add_executable(fs-intelview-smoke EXCLUDE_FROM_ALL
   tests/ui-intelview-smoke.c
+  src/core/fs-geodb.c
   ${FS_UI_SOURCES}
 )
 target_include_directories(fs-intelview-smoke PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
@@ -697,7 +716,39 @@ target_link_libraries(fs-intelview-smoke PRIVATE fs-core PkgConfig::GTK3)
 target_compile_definitions(fs-intelview-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
   FS_PLATFORM_NAME="${FS_PLATFORM}"
+  FS_GEODB_TESTING=1
+  FS_TEST_GEODB_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/geodb"
 )
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-intelview-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+
+# ---------------------------------------- 1.0.7 threat intel, round 2
+# The location database reader (tests/test-geodb.c; the README says how
+# to run it with tests/test-geodb.sh, which writes reference databases
+# with python3-location).  Its own copies of fs-geodb.c, compiled with
+# FS_GEODB_TESTING (the only build that can verify with a test key, or
+# check a buffer without its signature), and of fs-fetch.c, compiled
+# with FS_FETCH_TESTING (so the update test can stand a recorder in for
+# curl); the copies in fs-core-nogui are not pulled in.
+add_executable(fs-geodb-test EXCLUDE_FROM_ALL
+  tests/test-geodb.c
+  src/core/fs-geodb.c
+  src/core/fs-fetch.c
+)
+target_link_libraries(fs-geodb-test PRIVATE fs-core-nogui)
+target_compile_definitions(fs-geodb-test PRIVATE FS_GEODB_TESTING=1
+                           FS_FETCH_TESTING=1
+                           FS_VERSION="${PROJECT_VERSION}")
+# Country and network-owner rules in the engine (tests/test-intel-geo.c,
+# design section 13): databases written and signed by the test
+# (tests/geodb-writer.h), a fake backend and fake downloaders.  Its own
+# copy of fs-geodb.c, compiled with FS_GEODB_TESTING so the reader
+# trusts the key the test makes.  `ninja fs-intel-geo-test'.
+add_executable(fs-intel-geo-test EXCLUDE_FROM_ALL
+  tests/test-intel-geo.c
+  src/core/fs-geodb.c
+)
+target_include_directories(fs-intel-geo-test PRIVATE tests)
+target_link_libraries(fs-intel-geo-test PRIVATE fs-core-nogui)
+target_compile_definitions(fs-intel-geo-test PRIVATE FS_GEODB_TESTING=1)

@@ -223,6 +223,17 @@ the list kept; CSV export writes the filtered rows; sorting by port is
 numeric both ways and a live event lands in sorted place; the history
 files are written.  Timings are printed as `measure:` lines.
 
+The list checks count and order only the rows the smoke puts in, so
+after the reason-strip check the smoke turns the page's Monitor switch
+(`events-monitor`) off.  On Windows the live source is the real
+Security log, where any connection the runner makes is an event; one
+(local port 32526) once landed in the port sort check on Windows CI.
+On Linux the source is the scratch kernel log the smoke tails as root,
+and only the feed-order check turns Monitor on again, for its own
+lines.  The switch, not `fs_hitview_stop()`: a stop behind the
+switch's back is what the page's watchdog reports as "Event monitoring
+stopped.", as it should for a source that dies on its own.
+
 History is off until switched on (checked), so the smoke switches it on
 in a scratch settings folder.  On Linux it also fills the disk in the
 middle of the session (`RLIMIT_FSIZE`): the strip says history is not
@@ -1016,16 +1027,20 @@ check that failed is in brackets):
   "Accept smaller list", and `/api/intel`; Events offers "Add
   exception"; What-If says it does not consult the lists; the Linux,
   Windows, CLI and background topics name the table, the group,
-  `stockfw intel lookup` and the hourly update check.  Exactly one
-  FS_HELP_SOON callout is left, on the threat-intel topic; it is about
-  blocking by country or network owner (ASN): its first sentence names
-  country and ASN and says "not in this build" without the word
-  "intel", and no part of it says "blocklist", in any case; the
-  topic's summary no longer says "not available in this build"; no
-  other block or summary mentions 1.0.7 or says "in this build",
-  "planned" or "coming", in any case, and the
-  callout's heading reads "Not in this build" (this build is 1.0.7, so
-  "Coming in 1.0.7" was false).  (Re-injected: the pre-PR #18
+  `stockfw intel lookup` and the hourly update check.  Blocking by
+  country or network owner is described as present too: the switch
+  "Use the location database" and its dialog, "is registered, not where
+  the computer using it is", the "Anycast" mark, the licence as the
+  file declares it and unconfirmed, "downloaded at most once a day",
+  Windows "not supported on Windows in this version of StockFW", and
+  the CLI topic's `stockfw intel geo`.  No FS_HELP_SOON callout is
+  left in any topic (the last one, on country and ASN blocking, went
+  with the page and the command); the threat-intel summary names
+  countries and does not say "available" or "build"; no block or
+  summary mentions 1.0.7 or says "in this build", "planned" or
+  "coming", in any case; and the shown threat-intel topic has
+  "Countries and networks" with the licence line and no "Not in this
+  build" heading.  (Re-injected: the pre-PR #18
   `fs-helpcontent.c`, which fails the fifteen threat-intel H8 checks,
   the changed H7 one and H4's Next; before that, the branch's pre-merge
   `fs-helpcontent.c` and the old heading, which failed the fourteen
@@ -2002,7 +2017,15 @@ delivered inside the open drawer (through `gtk_propagate_event`, so
 the list box's own click gesture sees it) leaves it open, and the same
 click on the head closes it; a refresh with nothing new keeps every
 row widget and the focused button; a row that shows a new event is
-rebuilt, stays open, and gets the focus back on the same button.  A
+rebuilt, stays open, and gets the focus back on the same button.  "The
+same row" and "a new row" are told by a tag set on the old row and its
+`destroy` signal, never by comparing pointers: the row built in place
+of a destroyed one can get its memory, and so its address.  The
+Windows heap does this now and then, which made a real rebuild read as
+"not rebuilt" on Windows CI; on Linux, preloading an allocator that
+hands back the block just freed (any `LD_PRELOAD` shim that reuses
+same-size frees first) shows the old pointer check failing and the tag
+check passing.  A
 child process repeats the page under `GTK_THEME=Adwaita:dark` and
 checks that it stays light (no dark class, dark title text, light
 card).  Set `FS_SHOT_DIR` to save screenshots.
@@ -2437,6 +2460,213 @@ the failures, then restores the file with `cp` and checks it with
 The sanitizer build (`build-asan`, Debug, `-fsanitize=address,undefined`)
 runs `fs-intel-test` clean.
 
+## The location database reader (`fs-geodb-test`, `tests/test-geodb.sh`)
+
+```sh
+cd port
+ninja -C build-linux fs-geodb-test
+./build-linux/fs-geodb-test tests/geodb      # the suite (also run by tests/test-core.sh)
+bash tests/test-geodb.sh                     # libloc, IPFire's file, xz, curl, libFuzzer
+STOCKFW_GEODB_REQUIRE=1 FUZZ_SECONDS=300 bash tests/test-geodb.sh   # CI: no SKIP allowed
+bash tests/test-geodb.sh --regen             # rewrite tests/geodb with new test keys
+```
+
+`src/core/fs-geodb.c` reads IPFire's location database (1.0.7 design,
+section 12).  `fs-geodb-test` is built from it with `FS_GEODB_TESTING`,
+the only build that can verify with a test key
+(`fs_geodb_testing_set_key`) or check a buffer without its signature
+(`fs_geodb_testing_open_unverified`, for the mutation loop and the
+fuzzer).  `tests/test-geodb.sh` proves that the release objects
+(fs-core, fs-core-nogui) define neither.
+
+The fixtures in `tests/geodb` are written by libloc's own writer
+(`tests/geodb-fixtures.py`, python3-location, with
+`tests/geodb-faketime.c` to fix the creation time), signed with two
+P-521 test keys whose private halves were thrown away (`k1.pub`,
+`k2.pub`).  Next to each `.db` are the answers libloc's reader gives
+(`.lookup.tsv`, `.enum.txt`, `.meta.txt`).  The malformed files are
+made by the suite from those fixtures and re-signed with a key made at
+run time, so that each one gets past the signature and reaches the
+structural check it is aimed at.  The shell test regenerates every
+fixture with fresh keys and checks that the committed ones are what
+the generator writes.
+
+Needs: liblzma and libcrypto (both linked); for the shell test
+python3-location and `location`, libloc-database (IPFire's file of
+2022-10-29), xz, openssl, and clang with libFuzzer (libclang-rt-dev).
+Each part SKIPs without its tool, unless `STOCKFW_GEODB_REQUIRE=1`.
+No case uses the network: the download goes to a stand-in for curl
+(`STOCKFW_TEST_CURL`, honoured only by the `FS_FETCH_TESTING` build).
+
+| Area | What it pins down |
+|---|---|
+| golden | every lookup and every enumeration of the generated databases (IPv4 and IPv6, nested networks, adjacent halves, a /32 and a /128, the last address of each family, flags, unnamed ASes, AS 2^31-1, an IPv6 `::/8` and `::/0` covering the IPv4 subtree, an empty database, 300 random networks) is libloc's answer; enumeration agrees with lookup address by address |
+| IPFire's file | the 2022-10-29 copy verifies with the pinned key (slot 2 only) and agrees with libloc on 8,000 lookups and 12 flattened searches; `location lookup` agrees on 8.8.8.8, 1.1.1.1, 2a00:1450::1 and 2606:4700::1 |
+| signature | either slot; a wrong key, a key made now, a P-256 key; a bit flipped in the magic, every header field, each signature field and the body; appended and cut bytes; the zeroing rule (lengths and full slots zeroed, the 32 reserved bytes signed); no usable slot is "not signed"; libloc's `location verify` accepts what the test signer signs and refuses it with another key or one byte changed |
+| malformed | truncation at 484 places; every section offset and length pushed outside the file, onto the header or onto another section; offsets and lengths near 2^32; trie loops and shared subtrees; children and networks out of range; chains 128 deep (fine), 129 and 4,000 deep (refused); strings at the 4,096-byte limit, one past it, and unterminated; unsorted and duplicate tables; bad codes; creation time 0 and 2^63; all FORMAT, never a crash |
+| enumeration edge | `::/8` in a database with no IPv4 subtree: the IPv6 set is `::/8` without `::ffff:0:0/96`, and the IPv4 set is empty |
+| mutation and fuzzing | a deterministic mutation loop (seed 1077, 4,000 cases by default, `STOCKFW_GEODB_MUTATIONS` to change it; 1,000 in the shell test on fresh fixtures) where whatever opens must give sane answers, and libFuzzer (`tests/fuzz-geodb.c`) with ASan and UBSan from every fixture; the suite itself runs clean under ASan and UBSan (4,000 mutations) |
+| xz | round trip; `xz -9e`; a 64 MiB dictionary (fine) and a 128 MiB one (over the 96 MiB decoder limit); a 39 KB bomb that unpacks to 256 MiB + 1 (TOO_LARGE, never more than the cap written); exactly 256 MiB (fine); corrupt, cut, padded, concatenated and empty streams |
+| freshness | `fs_geodb_judge`: newer, the same second, one second older, from 1970, a day and a second ahead (checked first), the end of time; staleness at 30 days |
+| install | first copy, the same copy, a rollback by one second, a copy from the future, a non-database, a bomb, a download over 64 MB, a relative store, a store or copy in use that is a symbolic link, a damaged copy in use; after each, `location.db` is byte for byte as expected and nothing else is in the store |
+| floor (review GEO-ROLLBACK-1) | with `min_created` at the newest copy accepted: the copy in use damaged or deleted, an older good copy is still a rollback; the copy accepted last repairs a missing or damaged copy and is then "unchanged"; a floor one second past the copy in use refuses it; with no floor (0) a damaged copy counts as none |
+| stale temporary files (review GEO-TMP-LEAK-2) | `.location.db.<x>.tmp` files left by a killed install are removed by the next install; a symbolic link of that name, its target, another name and `.location.db..tmp` are not; a second install waits for the store's `flock`, then runs |
+| download | `fs_geodb_update` with a fake downloader, and with the real `fs_fetch` and a curl stand-in: one request for `FS_GEODB_URL`, `--max-filesize 67108864`, no proxy unless given |
+
+Teeth, each injected into the real `fs-geodb.c` by a scratch script
+that checks the old text occurs once, rebuilds `fs-geodb-test`, runs
+the suite, then restores the file with `cp` and proves it with `cmp`.
+Every one made the suite fail:
+
+| Bug re-injected | Checks that failed |
+|---|---|
+| open skips the signature step | 52, among them `small.db (libloc's writer, key 1) verifies with key 1, slot 1`, `the 2022-10-29 copy is signed in slot 2 only, and that is enough` |
+| the 32 reserved bytes zeroed too | `zeroing: a bit flipped in reserved byte 0: SIGNATURE`, `... byte 31: SIGNATURE` |
+| only the signature's own bytes zeroed, not the whole slot | `zeroing: bytes after the signature inside its slot are not signed`, `zeroing: garbage in slot 2 with a length of 137 does not stop slot 1` |
+| the signature lengths not zeroed | 143, among them `IPFire's own database verifies with the pinned key and passes every check`, and every fixture fails to open |
+| no usable slot accepted as unsigned | `both slots empty: SIGNATURE, "not signed"`, `both lengths past the slot: SIGNATURE` |
+| only slot 1 tried | `small-two.db verifies with key 2 in slot 2`, `zeroing: slot 1 removed, slot 2 alone verifies`, IPFire's own file |
+| any EC curve accepted as the key | `a file signed with a P-256 key, checked with that key: SIGNATURE, the key is not P-521` |
+| sections may overlap | `the pool starting inside the countries: FORMAT` |
+| sections may overlap the header | `the network section starts on the header's last byte`, `the pool section starts at 0 (the magic)`, `the pool section starts in the header` |
+| a section's end computed in 32 bits (it wraps) | the suite dies with SIGSEGV right after `the AS section length 0xffffffff: FORMAT` |
+| depth limit 129 | `a chain 129 nodes deep: FORMAT` |
+| no visited set in the tree check | `a node whose two children are the same node (a shared branch): FORMAT`, the mutation loop |
+| strings need no NUL | `the pool's last string without its NUL ...: FORMAT`, `a vendor of 4,097 bytes: FORMAT` |
+| string limit off by one | `a vendor of 4,096 bytes: opens` |
+| AS order unchecked | `two ASes swapped (not ascending): FORMAT`, `an AS number twice: FORMAT` |
+| country order unchecked | `two countries swapped: FORMAT`, `a country code twice: FORMAT` |
+| creation time unchecked | `created_at 0: FORMAT`, `created_at 2^63: FORMAT` |
+| the same second judged older | `judge: the same second`, `install: the same copy again` |
+| no rollback check | `judge: one second older`, `judge: from 1970`, `install: a copy one second older (rollback)` and 9 more |
+| no future check | `judge: a day and a second ahead ...`, `judge: the end of time` and 2 more |
+| the xz cap checked after the write | `xz: 39184 bytes that unpack to 256 MiB + 1: TOO_LARGE, ... never more than the cap`, `xz: a 1 MiB cap and 1 MiB + 1 of data` |
+| no xz memory limit | `xz: a 128 MiB dictionary is over the decoder's memory limit (96 MiB): XZ` and one more |
+| data after the xz stream accepted | `xz: data after the stream: XZ`, `xz: stream padding after the stream`, `xz: two streams back to back` |
+| install does not judge | `install: the same copy again`, `install: a copy one second older (rollback)`, `install: a newer copy more than a day ahead of the clock` and 8 more |
+| install renames before it verifies | 15, among them `install: a first copy`, `install: a copy one second older (rollback)` |
+| install leaves the temporary file | 13 `install: ...` checks (`nothing else is left in the store`) |
+| install ignores the floor (judges against the copy in use only) | `install: floor: the copy in use damaged, an older good copy is still a rollback` and 2 more; fs-intel-geo-test `rollback floor: ...` (4) |
+| the copy accepted last cannot repair a damaged or missing copy | `install: floor: the copy accepted last (created at the floor) repairs a missing copy` and 4 more |
+| no sweep of stale temporary files | `install: the temporary files of an install that was killed are removed` and 2 more |
+| the sweep removes any file type | `install: the sweep removes nothing else (a symbolic link, another name, the target of the link)` |
+| the sweep ignores the name prefix | the same check (found no check with a 9-byte name, so the other name is now longer than the pattern's minimum) |
+| no lock around an install | `install: a second install waits for the store's lock, then runs` |
+| no download size cap | `install: a download over 64 MB: REFUSED` |
+| lookup keeps the least specific network | `8.8.8.8 is in 8.8.8.0/24, registered in US, AS15169 ...` and every golden lookup set |
+| IPv4 looked up from the root of the trie | `edge6: ::/0 is an IPv6 network and never answers for an IPv4 address` and 3 more |
+| enumeration not flattened (a nested network of another country counted) | `small.db: 22 enumerations ... are exactly libloc's flattened search, merged` and 6 more |
+| IPv4-mapped space left in the IPv6 set | `::/8 and no IPv4 subtree: enumerate gives ::/8 without ::ffff:0:0/96, and no IPv4` (added after this tooth found no check) |
+| control and format characters kept in names | `small: 192.0.2.77 -> ... (a BEL in the AS name is shown as ?)`, `... (a bidi override in the name is shown as ?)` and 5 more |
+| symbolic links followed | `a symbolic link to a good database: IO, not followed` |
+| the size cap exclusive | `exactly 256 MiB is read (and is no database: FORMAT)` |
+
+## Country and network-owner rules (`fs-intel-geo-test`, `tests/test-intel-e2e.sh` section 12)
+
+```sh
+cd port
+ninja -C build-linux fs-intel-geo-test
+./build-linux/fs-intel-geo-test              # also run by tests/test-core.sh
+ninja -C build-linux fs-intel-e2e-driver fs-intel-backend-driver fs-intelset-test
+sudo bash tests/test-intel-e2e.sh            # section 12 is the location rules
+sudo bash tests/test-intel-backend.sh
+./build-linux/fs-intelset-test
+STOCKFW_E2E_GEO_LARGE=100000 sudo bash tests/test-intel-e2e.sh   # a smaller "large country"
+```
+
+The engine half of round 2 (1.0.7 design, section 13): location rules
+in `intel.conf`, the database's consent, download and state, the sets
+built from it, their enforcement through the Linux slots, and the
+lookup.  The tests write their own location databases with
+`tests/geodb-writer.h` (a header-only writer of IPFire's format v1,
+signed with a P-521 key made at run time, and xz-packed), so they need
+no fixture and no network.  Both `fs-intel-geo-test` and
+`fs-intel-e2e-driver` are built with their own copy of `fs-geodb.c`
+compiled with `FS_GEODB_TESTING`, the only build that can be told to
+trust a test key.
+
+`fs-intel-geo-test` (GLib, liblzma, libcrypto; no root, no network;
+the downloads and the backend are fakes) checks:
+
+| Area | What it pins down |
+|---|---|
+| wording | the attribution names IPFire and the declared licence and says it is not confirmed; the consent text names the host, how often, what the server learns, "registered", anycast and exceptions; the defaults are off and never consented; source kinds and set names by id; on Windows, "not supported on Windows in this version" |
+| config | `[geo]` and `[location <id>]` round trip; refusals for a key of the wrong kind, bad or missing values, a bad id or name, more than 1,000 values; codes and AS numbers are normalised, deduplicated and sorted |
+| consent | no rule and no enabling without the terms accepted; a config that says enabled but never accepted downloads nothing |
+| no network | the default configuration, the database off, no consent, the master switch off: no request at all; the database's host (and the proxy) is in `fs_intel_update_hosts` only while it is on |
+| updates | updated, unchanged, not due within a day, refused (rollback, another key, not xz, from the future), failed (first line only); after each refusal or failure the same copy is in use; the status keeps the last error and success; every attempt is an audit line; with the copy in use damaged or deleted, a signed copy 400 days old and one a day older than the floor are refused, `geodb.state` keeps the newest creation time accepted, and the copy accepted last repairs it (review GEO-ROLLBACK-1, GEO-2) |
+| build | each set is the enumeration minus the protected ranges, the exceptions and this computer's addresses (exceptions win; the notes say which rule named them); outbound sets also in 64:ff9b::/96 and inbound ones not; lists and rules in one rule set, lists first; rules that match nothing are enforced empty with a note; anycast is kept and counted after the subtractions, with its note; a missing database leaves every rule unenforced with a note; a copy that no longer verifies fails the build; a stale copy is still used, with a note |
+| limits | 300,001 intervals and 2^27 addresses of a country build (the lists' caps do not apply); above 500,000 entries in all, NAT64 copies included, the build fails and names the largest rules |
+| lookup | country, AS, network, anycast flag and the rules holding an address; NAT64 addresses only for outbound rules, located by the IPv4 address inside them (`via=nat64`, review GEO-3); exceptions, protected space and this computer's addresses located but not blocked; `fs_intel_geo_lookup`; the cache follows a new copy; nothing while the database is off; the picker's preview counts; with the copy in use damaged or deleted after an apply, "may be blocked" for the rules in the kernel, never "not blocked", except for an exception or protected space, and nothing after Stop (review GEO-1) |
+| gate | the apply loads lists and rules in one table; the state names both; a hold keeps the rules out; counters carry across a replace; Stop and Start take the rule sets out and back; rules on with the database off read "off", and say why; a platform without slots says blocklists and location blocking are not available |
+
+`tests/test-intel-e2e.sh` section 12 (root, `unshare -n -m`, real nft,
+real packets) adds what only the kernel can show.  Rules are refused
+without consent, and nothing is downloaded while the database is off.
+The copy is stored 0600.  A country rule (in), an AS rule (out) and a
+country rule (both) drop and refuse exactly their packets, while this
+computer, its gateway, the DNS server and the SSH peers inside those
+countries stay reachable.  An exception inside a country wins, the
+counters are per rule, and the lookup agrees (a NAT64 address is
+located by the IPv4 address inside it).  With one byte of the copy in
+use changed, the apply is refused, the kernel keeps the sets, and the
+lookup of an address the kernel drops says "may be blocked"; with the
+copy damaged or deleted, an older copy signed with the same key
+(`older.db.xz` from `geo-make`) is refused, and the copy accepted last
+repairs it.  A country of 400,000
+networks applies (about 3.6 s here) and its state is read in under
+3 s (about 30 ms here).  IPv6 is checked in the sets, and with packets
+when the kernel has IPv6 on the veth pair.  The machine these were
+written on has none, so the IPv6 packet checks did not run there; the
+test prints a note when it leaves them out.
+
+`fs-intelset-test` adds the chain listing parser: our table present
+with the digest on its input chain, the digest taken from input and
+not from output, no input chain or no comment (present without a
+digest), other families and tables, a chain object without its table,
+a table object, an escaped name (absent), and unreadable text
+(unknown).  `tests/test-intel-backend.sh` checks that the slots list
+chains, and that a table carrying the applied digest but no chains is
+not taken for the applied one.
+
+Teeth, each injected into the real file by a scratch script that checks
+the old text occurs once, rebuilds the target, runs the test, then
+restores the file with `cp` and proves it with `cmp`.  Every one made
+the named test fail:
+
+| Bug re-injected | Test | First check that failed |
+|---|---|---|
+| location sets skip the exceptions and kept addresses (`add_set`) | fs-intel-geo-test | `the country set is the enumeration minus the protected ranges, the exceptions and this computer's addresses` |
+| protected ranges not taken out of location sets | fs-intel-geo-test | the same check (10/8 is in the set) |
+| a rule added without consent | fs-intel-geo-test | `a location rule before the database's terms were accepted: CONSENT, nothing added` |
+| a download without consent | fs-intel-geo-test | `on without consent: needs consent, no request` |
+| `fs_intel_update (only "location")` while the database is off | fs-intel-geo-test | `asking for the database while it is off: failed, no request` |
+| a full update downloads the database while it is off | fs-intel-geo-test | `the default configuration: no result, no request at all` |
+| anycast not counted | fs-intel-geo-test | `anycast is kept and counted after the exception ...: the note says so` |
+| inbound rules mapped into 64:ff9b::/96 too | fs-intel-geo-test | the country set check (inbound Atlantis gains NAT64 entries) |
+| the location limit four times higher | fs-intel-geo-test | `outbound, with its NAT64 copy, it passes 500,000: refused, naming the rule` |
+| lookup holds a NAT64 address for inbound rules | fs-intel-geo-test | `lookup 64:ff9b::c633:6409: a NAT64 address in XA: no inbound rule holds it` (now `... located by its IPv4 address, yet no inbound rule holds it`) |
+| the database's host not kept reachable | fs-intel-geo-test | `the database's host and the proxy are kept reachable while it is on` |
+| rules built while the database is off | fs-intel-geo-test | `the database turned off: only the list is built` |
+| a copy that no longer verifies treated as missing (fail open) | fs-intel-geo-test | `a copy in use that no longer verifies fails the build` |
+| no rollback check (`fs-geodb.c`) | fs-intel-geo-test | `an older copy is refused, even with accept-shrink` |
+| the engine passes no floor (GEO-ROLLBACK-1) | fs-intel-geo-test | `rollback floor: one byte of the copy in use damaged, a signed copy 400 days old is still refused` and 3 more |
+| the same | test-intel-e2e.sh | `the copy in use damaged: an older signed copy is refused, the damaged copy is left as it was` and 2 more |
+| a refusal lowers the floor in `geodb.state` (GEO-2) | fs-intel-geo-test | `rollback floor: the copy in use deleted, the old copy is still refused and nothing is installed`, `rollback floor: geodb.state still records the newest copy accepted` and 1 more |
+| install ignores the floor (`fs-geodb.c`) | fs-intel-geo-test | `rollback floor: one byte of the copy in use damaged ...` and 3 more (and 3 in fs-geodb-test) |
+| the copy accepted last cannot repair (`fs-geodb.c`) | fs-intel-geo-test | `rollback floor: the copy last accepted (the same second) repairs it`, `and the lookup is certain again` |
+| lookup says nothing when the copy in use cannot be read (GEO-1) | fs-intel-geo-test | `lookup with the copy in use damaged while Atlantis is in the kernel: never "not blocked"`, `... deleted ...` |
+| the same | test-intel-e2e.sh | `lookup 198.51.100.10 with the copy damaged: may be blocked, and the kernel does drop it`, `... deleted ...` |
+| the sentence leaves out unreadable rules | fs-intel-geo-test | the same two checks |
+| unreadable rules named for an exception or protected space | fs-intel-geo-test | `lookup of 198.51.100.7 with the copy damaged: no sentence` and 3 more |
+| unreadable rules named after Stop | fs-intel-geo-test | `after Stop, a missing copy claims nothing` |
+| a NAT64 address not located by its IPv4 address (GEO-3) | fs-intel-geo-test | `lookup 64:ff9b::c633:6482: its NAT64 form: the outbound rule holds it, and it is located by its IPv4 address`, `lookup 64:ff9b::c633:6409: ...` |
+| the same | test-intel-e2e.sh | `lookup 64:ff9b::c633:6482: located by its IPv4 address, blocked outbound, as its set holds it` |
+| no digest comment on the chains | fs-intelset-test | `golden: an IN set, IPv4 only` and every golden |
+| the chain parser ignores the family | fs-intelset-test | `chains: only family ip -> absent` |
+| the digest taken from any chain | fs-intelset-test | `chains: the digest comes from input, not output` |
+| a table without chains read with its table digest | test-intel-backend.sh | `a table with the applied digest but no chains: not applied, and live reads it without a digest` |
+| the live check reads `list tables` again | test-intel-e2e.sh | `the state of a table with 400000 elements is read in 6409 ms, without listing them` |
 ## `stockfw intel`: the threat-intel command line and dashboard panel (`tests/test-intel-cli.sh`, `tests/test-cli.sh`)
 
 ```
@@ -3002,3 +3232,149 @@ Not covered:
 - The Status page's Stop and Start worker (`intel_job_done` reading the
   state again, the not-in-force dialog after Start) runs on the real
   backend and is built, not run; the smoke checks what it calls.
+
+## Country and network-owner rules merged with threat intel on Windows (design 13.15)
+
+```sh
+ninja -C build-linux fs-intel-geo-test fs-intelset-test fs-intel-backend-driver
+./build-linux/fs-intel-geo-test
+./build-linux/fs-intelset-test
+sudo bash tests/test-intel-backend.sh   # the driver must be readable by nobody for the "not root" part
+```
+
+The merge kept Round 3's chain reader (one digest on every chain, `nft -j list chains inet`) and
+Round 2's rule that a table with no chain of ours reads present without a digest, and taught
+`fs_intel_lookup_live` to ask a location set through the database copy it was built from. Each
+check below was seen failing with its bug put back in a copy of the source, then the copy was
+restored with `cp` and checked with `cmp`.
+
+| bug put back | test | check that fails |
+|---|---|---|
+| `fs_intel_lookup_live` reads a location set as a stored list | fs-intel-geo-test | `live: an address in the country set is blocked now, by it, and nothing is pending`, `live: an address of another country is not blocked, and that is certain`, `live: a rule turned off but not applied still blocks, and the change is pending` |
+| the location set's input digest leaves out the rule's values | fs-intel-geo-test | `live: the rule's countries changed since the apply: pending and uncertain, never a plain no` |
+| enabled location rules missing from the live lookup's "changed since" | fs-intel-geo-test | `live: an address in the country set is blocked now, ...`, `live: an address of another country is not blocked, ...` |
+| a table with no chain of ours keeps its table comment's digest | test-intel-backend.sh | `a table with the applied digest but no chains: not applied, and live reads it without a digest` |
+
+fs-intelset-test runs both branches' chain-listing cases (`test_live_chains`, `test_chains_live_more`)
+under Round 3's rule: two chains with different digests, or one without, give no digest.
+
+## Countries and networks on the page, the command line and in Help (design 13.16)
+
+```sh
+ninja -C build-linux fs-intelview-smoke fs-help-smoke stockfw stockfw-intel-test
+xvfb-run -a ./build-linux/fs-intelview-smoke
+xvfb-run -a ./build-linux/fs-help-smoke
+bash tests/test-cli.sh
+sudo bash tests/test-intel-cli.sh   # STOCKFW_INTEL_CLI must name a copy nobody can run
+```
+
+Everything here uses the signed test databases in `tests/geodb`
+(`small.db`, `small-older.db`), signed with `k1`'s key.  The release
+build pins IPFire's key and has no way to change it; the test builds
+compile `fs-geodb.c` with `FS_GEODB_TESTING`, so `fs-intelview-smoke`
+sets `k1.pub` with `fs_geodb_set_key` and replaces the downloader with
+`fs_geodb_set_fetcher` (it xz's `small.db` in memory and counts the
+requests), and `stockfw-intel-test` reads the key from
+`$STOCKFW_TEST_GEODB_KEY` (an absolute path).  `test-intel-cli.sh`
+section 10 serves the xz'd databases through a stand-in curl
+(`STOCKFW_TEST_CURL`) that logs each request and prints the file;
+curl runs as nobody, so the files are world-readable.
+
+- `fs-intelview-smoke` (`check_geo`): the card's controls on Linux; no
+  picker before consent; the licence line; the consent dialog's text
+  (host, how often, what it learns, the licence as declared and
+  unconfirmed, "registered in", anycast), Cancel (nothing downloaded),
+  Accept (one download from the IPFire URL); the date and state; the
+  picker's 7 countries and the "Example" AS search; Netherlands picked
+  with "in": in force, its networks, and the "Anycast" chip whose
+  tooltip reads "Includes 1 anycast network (IPv6) ..."; "de" typed in
+  full (Germany, no chip); AS64500 picked from the search; three rules;
+  text that names nothing; the lookup of `2c0f:f000::1` (the rule,
+  "Registered in", anycast, the licence line); Remove (page, config and
+  kernel); Update database (a second request); off (rules kept, sets
+  gone); on again without a second dialog; a platform without it
+  (the sentence `fs_intel_geo_unsupported_text()` and no control that
+  acts).  GTK prints a Gdk-CRITICAL for an entry with a completion in
+  an offscreen window at every allocation; the smoke drops only that
+  message and fails on any other critical.
+- `test-intel-cli.sh` section 1: `intel geo`, `geo status --json`,
+  `geo terms`, `geo search` (exit 1), `geo on` without
+  `--accept-terms` (exit 2, plain and JSON), `geo add` before consent
+  (exit 2), `geo off` and an unknown action, none of which creates the
+  store.  Section 10: `geo update` with the database off (exit 2, no
+  request); `geo on --accept-terms` (no download by the switch);
+  `geo update` (one request to the IPFire URL, `location.db` is the
+  signed file, 0600), again (unchanged), `intel update` without
+  `--now` (no request: at most daily); an older copy refused (exit 1,
+  the copy in use byte for byte); `geo status` (date, stale, licence,
+  counts, the refusal, the attribution; plain and JSON); `geo search`;
+  `geo add` (named from the database, two ASes in one rule, a code the
+  database lacks with its note, bad values exit 2); `geo list`;
+  `geo remove` (and of a feed id: exit 2); `intel apply` (the
+  country's networks in `s_country_netherlands_4`/`_6`, nothing of
+  another country, the anycast note); lookups (exit 5 and "registered
+  in" in JSON; "Registered in", the anycast network, the meaning and the
+  attribution in text; NAT64; an address the database lacks; private
+  space listed but never blocked; an AS rule); a damaged copy (unknown;
+  restored with `cp` and `cmp`); `intel disable`/`enable` by a rule's
+  id; `intel status --json`'s `location`; `geo on`/`add` as nobody
+  (exit 3); `geo off` then `apply` (the sets leave the kernel, the
+  lookup's `location` is null); on again; remove.
+- `test-cli.sh` (no root, no download): `intel geo` with its sentence;
+  `geo on` without consent (exit 2, nothing accepted); `geo add` before
+  consent; `geo search` with no database (exit 1); consent then a rule
+  (`no-database`); `intel status --json`'s `location`; a lookup with no
+  copy (`found` false with the reason); `/api/intel`'s read-only
+  `location` object.
+- `fs-help-smoke` H8, above.
+
+Each check below was seen failing with its bug put back in the source
+(the original kept in a copy); the file was then restored from the
+copy with `cp` and checked with `cmp`.  The table was re-run in full
+after the work-in-progress commit, on the tree as committed.  `geo_pick`
+in the smoke no longer emits "match-selected" for a row it did not
+find: with the countries bug put back, the smoke used to crash on an
+unset iterator instead of reporting the failures.  The eleven rows from "a location
+rule's status" to "the card says an old copy" were added with the
+review fixes and each was seen failing the same way.  The smoke reads
+the completion's own filtered model (the tree view in its popup, after
+`gtk_entry_completion_complete`), so the rows it counts are the ones
+GTK offers, with the key GTK normalizes and casefolds.
+
+| bug put back | test | check that fails |
+|---|---|---|
+| `geo on` without `--accept-terms` creates the store (`load_config (on, ...)`) | test-intel-cli.sh | `geo on without --accept-terms: exit 2, the terms shown, the flag named, no store` |
+| `geo on` passes TRUE for the consent | test-intel-cli.sh | the same, and the JSON one |
+| `geo add` creates the store before the consent check | test-intel-cli.sh | `geo add before consent: exit 2, no store` |
+| the lookup's attribution line left out | test-intel-cli.sh | `lookup (plain) of the anycast network: Registered in, anycast, the meaning, the attribution` |
+| the lookup's JSON `unknown` always false | test-intel-cli.sh | `the database damaged: lookup says unknown` |
+| the lookup's JSON `via_nat64` always false | test-intel-cli.sh | `lookup of a NAT64 address: the IPv4 address's country and network, via_nat64` |
+| the apply's anycast note never written | test-intel-cli.sh | `... and the apply says the Netherlands includes anycast networks` |
+| `/api/intel` without its `location` object | test-cli.sh | `intel: the location fields, read-only (rules, database, attribution)` (and `intel status --json carries the location object`) |
+| the page turns the database on without the consent dialog | fs-intelview-smoke | `geo: turning it on asks first: ...`, `geo: Accept turns it on and downloads it once` |
+| the page never shows the anycast chip | fs-intelview-smoke | `geo: a rule whose set holds an anycast network carries the warning, with the count on hover` |
+| the card's licence line empty | fs-intelview-smoke | `geo: the card carries the licence line` |
+| the card's controls shown where the platform has none | fs-intelview-smoke | `geo: a platform without it shows its sentence (...) and no control` |
+| the picker's countries never filled from the copy in use (`geo_fill_countries` returns at once) | fs-intelview-smoke | `geo: the picker lists the database's 7 countries, code and name`, `geo: "Netherlands (NL)" is in the picker's list`, and the add that follows |
+| Block ignores the direction chosen (always both) | fs-intelview-smoke | `geo: its row says where the country's ranges are registered and the direction (...)` |
+| a location rule's status "in-force" from StockFW's record alone (`location_status` ignores the overall state) | test-intel-cli.sh | `the table deleted by hand: geo list --json says not-in-force, never in-force` |
+| `geo status` says an old copy is "still used by the rules" with the database off | test-intel-cli.sh | `geo status with the database off: out of date, never "still used"` |
+| the picker's row keys lowered as ASCII (`g_ascii_strdown`, not `geo_fold`) | fs-intelview-smoke | `geo: an accented name completes typed in either case` |
+| the completion's match function never matches | fs-intelview-smoke | `geo: the completion offers the Netherlands for "nl" ... and "Nether" ..., AS64500 for "64500"` |
+| a name typed in full compared as ASCII (`geo_find_row` with `g_ascii_strcasecmp`) | fs-intelview-smoke | `geo: a name typed in full in another case finds its row and blocks AS64502` |
+| Enter in the entry adds a rule while Block is greyed out | fs-intelview-smoke | `geo: Enter while Block is greyed out adds nothing` |
+| the entry, direction and Block back on one line (entry 34 characters) | fs-intelview-smoke | `geo: the picker needs 623 px, within a 640 px window's card` |
+| a rule's Remove button without its accessible name | fs-intelview-smoke | `geo: its Remove button's accessible name names the rule` |
+| the anycast count only in the chip's tooltip | fs-intelview-smoke | `geo: the row says how many anycast networks in words, for the keyboard and screen readers` |
+| a country rule's row without "Registered in" | fs-intelview-smoke | `geo: its row says where the country's ranges are registered and the direction` |
+| the card says an old copy "is still used" with the database off | fs-intelview-smoke | `geo: turned off, the rules are kept, say they block nothing, ...` |
+| the "Not in this build" callout put back on the threat-intel topic | fs-help-smoke | `[H8] no "Not in this build" callout in any topic ...`, `[H8] the threat-intel topic shows "Countries and networks" ...` |
+| the anycast mark's name left out of the help | fs-help-smoke | `[H8] countries: the anycast warning and its mark` |
+| the help says "not available on Windows yet" | fs-help-smoke | `[H8] countries: Windows does not support it, said as a limit` |
+
+Not verified: a download from the real `location.ipfire.org` (every
+test uses the test databases and a stand-in downloader); the page on
+a desktop with a screen reader (it runs offscreen under Xvfb); the
+time the per-rule statistics take for a large country of IPFire's full
+database in the page; the card on Windows (checked through a
+Windows-like backend on Linux).

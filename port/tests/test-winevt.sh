@@ -31,10 +31,10 @@ fi
 
 cc -O2 -Wall -Wextra -Wno-unused-parameter tests/test-winevt.c \
    -I src -I tests \
-   $(pkg-config --cflags glib-2.0 gio-2.0) \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-winevt" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 
 export STOCKFW_RULES_DIR="$BUILD_DIR/rules"
 "$BUILD_DIR/test-winevt" "$@"

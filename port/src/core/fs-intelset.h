@@ -99,7 +99,8 @@ gchar *fs_intelset_nft_set_name (const gchar *id, FsAddrFamily family);
  *   	set <name> { type ipv4_addr; flags interval; }   one per family
  *   	...                                              that has ranges
  *   	chain input   { type filter hook input priority filter - 10;
- *   	                policy accept;  iif "lo" accept  <rules> }
+ *   	                policy accept;  comment "sfw:<digest>"
+ *   	                iif "lo" accept  <rules> }
  *   	chain output  { ... oif "lo" accept <rules> }
  *   	chain forward { ... <rules> }
  *   }

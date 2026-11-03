@@ -1,0 +1,6 @@
+filter cc=- asn=- flags=1
+filter cc=- asn=- flags=2
+filter cc=- asn=- flags=4
+filter cc=- asn=- flags=8
+filter cc=- asn=- flags=0
+filter cc=- asn=- flags=0

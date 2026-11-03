@@ -759,7 +759,7 @@ cc "$BUILD_DIR/test-adversarial.c" \
    $(pkg-config --cflags glib-2.0) \
    -o "$BUILD_DIR/test-adversarial" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 
 # Keep rule/journal/audit files out of the real directories.
 export STOCKFW_RULES_DIR="$BUILD_DIR/rules"

@@ -399,12 +399,23 @@ exec "$REAL_NFT" "\$@"
 EOF
 cat > "$W/usurp/nft" <<EOF
 #!/bin/bash
-# Loads, then something else replaces the table at once.
+# Loads, then something else replaces the table at once, with a
+# digest on the table and on its input chain, where the live check
+# reads it (design 13.7).
 case " \$* " in *" -f "*) ;; *) exec "$REAL_NFT" "\$@" ;; esac
 "$REAL_NFT" "\$@" || exit
-printf 'table inet stockfw_intel {}\ndelete table inet stockfw_intel\ntable inet stockfw_intel {\n\tcomment "sfw:00000000000000000000000000000000"\n}\n' | "$REAL_NFT" -f -
+printf 'table inet stockfw_intel {}\ndelete table inet stockfw_intel\ntable inet stockfw_intel {\n\tcomment "sfw:00000000000000000000000000000000"\n\tchain input {\n\t\ttype filter hook input priority filter - 10; policy accept;\n\t\tcomment "sfw:00000000000000000000000000000000"\n\t}\n}\n' | "$REAL_NFT" -f -
 EOF
-chmod +x "$W/chatty/nft" "$W/usurp/nft"
+mkdir -p "$W/bare"
+cat > "$W/bare/nft" <<EOF
+#!/bin/bash
+# Loads, then something else replaces the table with one that has our
+# digest on the table but no chain at all: it blocks nothing.
+case " \$* " in *" -f "*) ;; *) exec "$REAL_NFT" "\$@" ;; esac
+"$REAL_NFT" "\$@" || exit
+printf 'table inet stockfw_intel {}\ndelete table inet stockfw_intel\ntable inet stockfw_intel {\n\tcomment "sfw:%s"\n}\n' "\$STOCKFW_BARE_DIGEST" | "$REAL_NFT" -f -
+EOF
+chmod +x "$W/chatty/nft" "$W/usurp/nft" "$W/bare/nft"
 check '[ "$(drv_with chatty live)" = unknown ]' "a listing that cannot be read is unknown, not absent"
 out="$(drv_with chatty apply "$F_A")"; rc=$?
 check '[ $rc -eq 1 ] && grep -q "could not be read back to confirm it" <<<"$out"' \
@@ -413,6 +424,10 @@ check '[ "$(drv live)" = "present $D_A" ]' "(it did load: the honest answer was 
 out="$(drv_with usurp apply "$F_B")"; rc=$?
 check '[ $rc -eq 1 ] && grep -q "not the one applied (fingerprint 00000000000000000000000000000000, not $D_B)" <<<"$out"' \
       "nft accepted the load but another table is there now: not reported as applied (${out:0:120})"
+export STOCKFW_BARE_DIGEST="$D_A"
+out="$(drv_with bare apply "$F_A")"; rc=$?
+check '[ $rc -eq 1 ] && grep -q "not the one applied (fingerprint none, not $D_A)" <<<"$out" && [ "$(drv live)" = "present without digest" ]' \
+      "a table with the applied digest but no chains: not applied, and live reads it without a digest (${out:0:120})"
 
 # --------------------------------------------------- 10. the empty rule set
 drv apply "$F_B" >/dev/null
@@ -455,9 +470,12 @@ check '[ "$(drv live)" = "present $D_B" ]' "and none of them changed the kernel"
 drv clear >/dev/null
 
 # --------------------------------------------- 13. reading stays cheap
-# Every listing the slots ran: the tables (names and comments only) and
+# Every listing the slots ran: the chains (names and comments only), the
+# tables (names and comments only, when no chain of ours is listed) and
 # our chains (rules only).  Never a table, a set or the ruleset, which
-# would print every element [S8.3].
+# would print every element [S8.3].  `list tables' itself fetches every
+# element in nft 1.0.9 (design 13.7), so a table that is there must be
+# read from `list chains' alone.
 lists="$(grep -v -- "-f -" "$W/nft.log" | sort -u)"
 odd="$(grep -v -x -e "-j list chains inet" -e "-j list tables" -e "list chain inet stockfw_intel input" \
   -e "list chain inet stockfw_intel output" -e "list chain inet stockfw_intel forward" <<<"$lists")"

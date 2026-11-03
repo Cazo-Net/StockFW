@@ -401,7 +401,10 @@ fs_intelset_nft_script (const FsIntelRuleset *ruleset)
 		return g_string_free (out, FALSE);
 
 	/* The comment is how the state check knows this table is the one
-	 * StockFW applied [S10]. */
+	 * StockFW applied [S10].  Each chain carries it too: nft 1.0.9
+	 * fetches every set element to list tables (seconds for a large
+	 * country), but lists chains without them, so the live check reads
+	 * the chains (design 13.7). */
 	digest = fs_intel_ruleset_digest (ruleset);
 	g_string_append_printf (out, "table inet " FS_INTEL_NFT_TABLE " {\n"
 	                        "\tcomment \"" FS_INTEL_DIGEST_TAG "%s\"\n",

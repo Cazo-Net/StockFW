@@ -63,8 +63,26 @@
 #     the Stop fails and the state is unknown, never off; with no store
 #     at all, a Stop creates none;
 #   - the master switch off clears the table, no request is made, the
-#     carried counts stay; one audit line per attempt.
-# IPv6 is checked as rule text only: no IPv6 packet is sent here.
+#     carried counts stay; one audit line per attempt;
+#   - country and network-owner rules (design section 13), from a
+#     location database the driver writes and signs: no rule without
+#     consent and no download while the database is off; the signed copy
+#     is stored 0600; a country rule (in), an AS rule (out) and a country
+#     rule (both) drop and refuse exactly the packets of their networks
+#     and directions, while this computer, its gateway, the DNS server
+#     and the SSH peers inside those countries stay reachable; an
+#     exception inside a country wins; the counters are per rule; the
+#     lookup gives country, AS, network, anycast and the rules (a NAT64
+#     address by the IPv4 address inside it); with one byte of the copy
+#     in use changed, the apply is refused, the kernel keeps the sets
+#     and the lookup says "may be blocked", never "not blocked"; with
+#     the copy damaged or deleted, an older copy signed with the same
+#     key is still a rollback, and the copy accepted last repairs it; a
+#     country of GEO_LARGE (400,000) networks loads and its state is
+#     read in under 3 s; the database off stops the rules.
+# IPv6 is checked as rule text, and for the location rules also with
+# packets when the kernel has IPv6 on the veth pair (it says so when
+# not).
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -216,7 +234,8 @@ def ready(path):
 mode = sys.argv[1]
 if mode == "send":         # send SRC|- DST PORT COUNT: prints the refused
     src, dst, port, count = sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    fam = socket.AF_INET6 if ":" in dst else socket.AF_INET
+    s = socket.socket(fam, socket.SOCK_DGRAM)
     if src != "-":
         s.bind((src, 0))
     refused = 0
@@ -230,15 +249,16 @@ elif mode == "recv":       # recv LOG PORT ADDR...: "<dst> <src>" a datagram
     path, port = sys.argv[2], int(sys.argv[3])
     socks = {}
     for a in sys.argv[4:]:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s = socket.socket(socket.AF_INET6 if ":" in a else socket.AF_INET,
+                          socket.SOCK_DGRAM)
         s.bind((a, port))
         socks[s] = a
     ready(path + ".ready")
     while True:
         r, _, _ = select.select(list(socks), [], [])
         for s in r:
-            _, (src, _) = s.recvfrom(2048)
-            log(path, "%s %s" % (socks[s], src))
+            _, peer = s.recvfrom(2048)
+            log(path, "%s %s" % (socks[s], peer[0]))
 elif mode == "tcp-listen":  # tcp-listen ADDR PORT READY: accept, hold
     s = socket.socket()
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -708,6 +728,210 @@ check '[ "$(grep -c " | intel-suspend | source=e2e-test result=ok" "$W/audit.log
       "and one per suspend, feed update attempt and import"
 check '[ $CLI_RAN = 0 ] || { [ "$(grep -c " | intel-suspend | source=cli result=ok" "$W/audit.log")" = 3 ] && [ "$(grep -c " | intel-apply | source=cli result=ok" "$W/audit.log")" = 2 ]; }' \
       "the command line's stops and starts are audited as source=cli"
+
+# ----------------------------- 12. country and network-owner rules
+# Design section 13.  The driver writes a location database for this
+# test's addresses (198.51.100.0/25 Atlantis XA AS64500, .128/25
+# Brigadoon XB AS64501, 203.0.113.0/24 Cockaigne XC anycast, this
+# computer's 192.0.2.0/24 XA, 2001:db8:a::/48 XA, 2001:db8:b::/48 XB)
+# plus GEO_LARGE networks of a country "Large" (XL), signs it with a key
+# made now, and the engine is told to trust that key (a test build of
+# the reader: $STOCKFW_TEST_GEODB_KEY).  The download of FS_GEODB_URL is
+# answered from the file; everything after it is the release path:
+# verify, install in the store, enumerate, build, load, packets.
+GEO_LARGE="${STOCKFW_E2E_GEO_LARGE:-400000}"
+G="$W/geo"
+mkdir -p "$G"
+check '[ "$(drv geo-make "$G" "$GEO_LARGE")" = made ]' \
+      "a location database for the test's addresses is written and signed ($GEO_LARGE networks of Large)"
+export STOCKFW_TEST_GEODB_KEY="$G/key.pem"
+drv master on >/dev/null
+drv disable "$FEED" >/dev/null
+drv disable "$LOCAL" >/dev/null
+
+# Off by default: no rule without consent, no download while off.
+out="$(drv geo-rule Atlantis country XA in)"; rc=$?
+check '[ $rc -eq 1 ] && grep -q "^error consent: " <<<"$out"' \
+      "a country rule before the database's terms are accepted: refused (${out:0:90})"
+out="$(drv geo-update "$G/location.db.xz")"
+check '[ "$out" = "location failed 0 The location database is turned off." ] && [ ! -e "$STORE/location.db" ]' \
+      "the database off: an update downloads nothing and stores nothing ($out)"
+check '[ "$(drv update)" = nothing ]' "the database off: a full update has nothing to do"
+
+# On, with consent; the copy is checked and stored.
+check '[ "$(drv geo-enable)" = ok ]' "the database turned on, its terms accepted"
+out="$(drv geo-update "$G/location.db.xz")"
+check 'grep -q "^location updated 0 Updated: the copy of [0-9-]* is in use\.$" <<<"$out" && [ "$(stat -c %a "$STORE/location.db")" = 600 ]' \
+      "the signed copy is verified and stored, 0600 ($out)"
+out="$(drv geo-update "$G/location.db.xz")"
+check 'grep -q "^location unchanged " <<<"$out"' "the same copy again: unchanged ($out)"
+
+check '[ "$(drv geo-rule Atlantis country XA in | head -1)" = "added country-atlantis" ]' "a country rule, inbound"
+check '[ "$(drv geo-rule Beta asn AS64501 out | head -1)" = "added asn-beta" ]' "a network-owner (AS) rule, outbound"
+check '[ "$(drv geo-rule Cockaigne country xc both | head -1)" = "added country-cockaigne" ]' "a country rule, both ways"
+
+before=$(loads)
+out="$(apply)"
+check 'grep -q "^result ok digest=[0-9a-f]\{32\} sets=3 " <<<"$out" && [ $(( $(loads) - before )) -eq 1 ]' \
+      "the apply builds three location sets in one nft transaction ($(head -1 <<<"$out"))"
+check 'grep -q "^note: Cockaigne includes [0-9]* anycast prefix" <<<"$out"' \
+      "the anycast network is kept, with a note ($(grep anycast <<<"$out" | head -1 | cut -c1-80))"
+for want in \
+  "Kept reachable: 192.0.2.1 (this computer's own address), although Atlantis lists it." \
+  "Kept reachable: 192.0.2.2 (a default gateway), although Atlantis lists it." \
+  "Kept reachable: 203.0.113.53 (a DNS server in use), although Cockaigne lists it." \
+  "Kept reachable: 198.51.100.22, 198.51.100.33 (an SSH session to this computer), although Atlantis lists it."; do
+  check 'grep -q -x -F "note: $want" <<<"$out"' "note: $want"
+done
+out_state="$(drv state)"
+check '[ "$out_state" = "enforced: 3 location rules are enforced: Atlantis, Beta, Cockaigne." ]' "state: enforced ($out_state)"
+
+check '[ "$(in_from 198.51.100.10 2)" = 0 ]' "in from an address registered in Atlantis: 0 of 2 arrive"
+check '[ "$(in_from 198.51.100.100 1)" = 0 ]' "in from another Atlantis address: 0 of 1 arrive"
+check '[ "$(in_from 198.51.100.130 2)" = 2 ]' "in from an address in Brigadoon (only an outbound AS rule): 2 of 2 arrive"
+check '[ "$(in_from 203.0.113.140 1)" = 0 ]' "in from Cockaigne (both ways): 0 of 1 arrive"
+check '[ "$(in_from 198.51.100.22 1)" = 1 ]' "in from the SSH client (in Atlantis): it arrives"
+check '[ "$(in_from 192.0.2.2 1)" = 1 ]' "in from the gateway (in Atlantis): it arrives"
+check '[ "$(out_to 198.51.100.10 2)" = "0 2" ]' "out to Atlantis (an inbound rule): 2 of 2 arrive"
+check '[ "$(out_to 198.51.100.130 2)" = "2 0" ]' "out to AS64501: 2 of 2 refused at once"
+check '[ "$(out_to 198.51.100.200 1)" = "1 0" ]' "out to another AS64501 address: refused"
+check '[ "$(out_to 203.0.113.140 1)" = "1 0" ]' "out to Cockaigne (both ways): refused"
+check '[ "$(out_to 203.0.113.53 1)" = "0 1" ]' "out to the DNS server (in Cockaigne): it arrives"
+
+# Exceptions win over a location rule.
+drv except 198.51.100.100 >/dev/null
+out="$(apply)"
+check 'grep -q -F "note: Not blocked, by exception: 198.51.100.100 (listed by Atlantis)." <<<"$out"' \
+      "an exception inside a country: the note says so"
+check '[ "$(in_from 198.51.100.100 2)" = 2 ] && [ "$(in_from 198.51.100.10 1)" = 0 ]' \
+      "the excepted address arrives, the rest of the country is still dropped"
+
+c="$(drv counters | grep -E "^(country|asn)-" | tr '\n' ' ')"
+check '[ "$c" = "asn-beta 3 114 country-atlantis 4 152 country-cockaigne 2 76 " ]' \
+      "the counters are exactly the packets the rules stopped, per rule and across the replace ($c)"
+
+glk() { drv geo-lookup "$1" | tr '\n' ' '; }
+check '[ "$(glk 198.51.100.10)" = "cc=XA asn=64500 net=198.51.100.0/25 anycast=0 locations=country-atlantis dir=in blocked=1 Blocked by threat intel: Atlantis " ]' \
+      "lookup 198.51.100.10: Atlantis, AS64500, blocked inbound ($(glk 198.51.100.10))"
+check '[ "$(glk 198.51.100.130)" = "cc=XB asn=64501 net=198.51.100.128/25 anycast=0 locations=asn-beta dir=out blocked=1 Blocked by threat intel: Beta " ]' \
+      "lookup 198.51.100.130: Brigadoon, AS64501, blocked outbound ($(glk 198.51.100.130))"
+check 'grep -q "^cc=XC asn=64502 net=203.0.113.0/24 anycast=1 locations=country-cockaigne dir=both blocked=1 " <<<"$(glk 203.0.113.140)"' \
+      "lookup 203.0.113.140: anycast, both ways ($(glk 203.0.113.140))"
+check 'grep -q "^cc=XA asn=64500 .* blocked=0" <<<"$(glk 198.51.100.100)" && grep -q "^cc=XC .* blocked=0" <<<"$(glk 203.0.113.53)"' \
+      "lookup: the exception and the DNS server are located but not blocked"
+# Review GEO-3: a NAT64 address is located by the IPv4 address inside it.
+check '[ "$(glk 64:ff9b::c633:6482)" = "cc=XB asn=64501 net=198.51.100.128/25 anycast=0 nat64=1 locations=asn-beta dir=out blocked=1 Blocked by threat intel: Beta " ] && has_element s_asn_beta_6 64:ff9b::c633:6482' \
+      "lookup 64:ff9b::c633:6482: located by its IPv4 address, blocked outbound, as its set holds it ($(glk 64:ff9b::c633:6482))"
+
+# Review GEO-1: the copy in use stops verifying after an apply.  The
+# apply fails closed and the kernel keeps the country sets, so the
+# lookup must not say "not blocked" for an address the kernel drops.
+flip_byte() {  # FILE OFFSET-FROM-END
+  local sz off b
+  sz=$(stat -c %s "$1"); off=$((sz - $2))
+  b=$(dd if="$1" bs=1 skip=$off count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+  printf "$(printf '\\%03o' $((b ^ 1)))" | dd of="$1" bs=1 seek=$off conv=notrunc 2>/dev/null
+}
+MAYBE_ATL="cc=- asn=0 net=- anycast=0 locations=- dir=- blocked=0 maybe=country-atlantis,asn-beta,country-cockaigne May be blocked by threat intel: Atlantis, Beta, Cockaigne (the location database in use cannot be read). "
+flip_byte "$STORE/location.db" 20
+out="$(apply)"
+check 'grep -q "^error tampered: The location database in use cannot be trusted" <<<"$out" && [ "$(drv state)" = "enforced: 3 location rules are enforced: Atlantis, Beta, Cockaigne." ] && has_element s_country_atlantis_4 198.51.100.10' \
+      "one byte of the copy in use changed: the apply is refused and the kernel keeps the sets ($(head -1 <<<"$out" | cut -c1-90))"
+check '[ "$(glk 198.51.100.10)" = "$MAYBE_ATL" ] && [ "$(in_from 198.51.100.10 1)" = 0 ]' \
+      "lookup 198.51.100.10 with the copy damaged: may be blocked, and the kernel does drop it ($(glk 198.51.100.10))"
+check 'grep -q "blocked=0 $" <<<"$(glk 198.51.100.100)" && grep -q "blocked=0 $" <<<"$(glk 203.0.113.53)"' \
+      "lookup with the copy damaged: the exception and the DNS server are still not blocked, with no maybe"
+
+# Review GEO-ROLLBACK-1 / GEO-2: an older copy signed with the same key
+# is a rollback, whether the copy in use is damaged or gone.
+cp "$STORE/location.db" "$W/damaged.db"
+out="$(drv geo-update "$G/older.db.xz")"
+check 'grep -q "^location refused 0 Refused: .*an older copy never replaces a newer one\.$" <<<"$out" && cmp -s "$STORE/location.db" "$W/damaged.db"' \
+      "the copy in use damaged: an older signed copy is refused, the damaged copy is left as it was ($out)"
+rm -f "$STORE/location.db"
+out="$(drv geo-update "$G/older.db.xz")"
+check 'grep -q "^location refused 0 Refused: .*an older copy never replaces a newer one\.$" <<<"$out" && [ ! -e "$STORE/location.db" ]' \
+      "the copy in use deleted: an older signed copy is still refused ($out)"
+check '[ "$(glk 198.51.100.10)" = "$MAYBE_ATL" ] && [ "$(in_from 198.51.100.10 1)" = 0 ]' \
+      "lookup 198.51.100.10 with the copy deleted: may be blocked, and the kernel does drop it"
+out="$(drv geo-update "$G/location.db.xz")"
+check 'grep -q "^location updated 0 " <<<"$out" && grep -q "^result ok " <<<"$(apply)"' \
+      "the copy accepted last repairs it, and the apply goes through again ($out)"
+check '[ "$(glk 198.51.100.10)" = "cc=XA asn=64500 net=198.51.100.0/25 anycast=0 locations=country-atlantis dir=in blocked=1 Blocked by threat intel: Atlantis " ]' \
+      "and the lookup is certain again ($(glk 198.51.100.10))"
+
+# IPv6: in the sets (and outbound also in 64:ff9b::/96); packets when
+# this kernel has IPv6.
+check 'has_element s_country_atlantis_6 2001:db8:a::10 && has_element s_asn_beta_6 2001:db8:b::10 && has_element s_asn_beta_6 64:ff9b::c633:6482 && ! has_element s_country_atlantis_6 64:ff9b::c633:640a && ! has_element s_country_atlantis_6 2001:db8:b::10' \
+      "IPv6: the networks are in their rule's set; only the outbound rule is mapped into 64:ff9b::/96"
+if ip addr add 2001:db8:1::1/64 dev v0 nodad 2>/dev/null &&
+   peer ip addr add 2001:db8:1::2/64 dev v1 nodad 2>/dev/null &&
+   peer ip addr add 2001:db8:a::10/128 dev lo 2>/dev/null &&
+   peer ip addr add 2001:db8:b::10/128 dev lo 2>/dev/null &&
+   ip -6 route add default via 2001:db8:1::2 dev v0 2>/dev/null; then
+  python3 -I "$W/net.py" recv "$W/a6.log" 9999 2001:db8:1::1 &
+  PIDS="$PIDS $!"
+  nsenter -t "$PEER" -n python3 -I "$W/net.py" recv "$W/b6.log" 9 2001:db8:a::10 2001:db8:b::10 &
+  PIDS="$PIDS $!"
+  { wait_for "$W/a6.log.ready" && wait_for "$W/b6.log.ready"; } || bad "the IPv6 receivers did not start"
+  apply >/dev/null   # this computer's new address is kept reachable
+  in6() {
+    local before after
+    before=$(seen "$W/a6.log" "2001:db8:1::1 $1")
+    peer python3 -I "$W/net.py" send "$1" 2001:db8:1::1 9999 "$2" >/dev/null
+    sleep 0.3
+    after=$(seen "$W/a6.log" "2001:db8:1::1 $1")
+    echo $((after - before))
+  }
+  out6() {
+    local before after refused
+    before=$(seen "$W/b6.log" "$1 2001:db8:1::1")
+    refused=$(python3 -I "$W/net.py" send - "$1" 9 "$2")
+    sleep 0.3
+    after=$(seen "$W/b6.log" "$1 2001:db8:1::1")
+    echo "$refused $((after - before))"
+  }
+  check '[ "$(in6 2001:db8:a::10 2)" = 0 ] && [ "$(in6 2001:db8:b::10 2)" = 2 ]' \
+        "IPv6 in: from Atlantis dropped, from Brigadoon arrives"
+  check '[ "$(out6 2001:db8:b::10 2)" = "2 0" ] && [ "$(out6 2001:db8:a::10 2)" = "0 2" ]' \
+        "IPv6 out: to AS64501 refused, to Atlantis arrives"
+else
+  echo "note: this kernel has no IPv6 on the veth pair: IPv6 is checked in the sets only"
+fi
+
+# A large country loads, and is read back, within the backend's
+# timeouts.  `nft list tables' fetches every element (seconds here), so
+# the state check reads the digest from the chains (design 13.7).
+check '[ "$(drv geo-rule Large country XL in | head -1)" = "added country-large" ]' "a rule for Large ($GEO_LARGE networks)"
+t0=$(date +%s%N)
+out="$(apply)"
+ms_apply=$(( ($(date +%s%N) - t0) / 1000000 ))
+check 'grep -q "^result ok " <<<"$out" && [ "$("$REAL_NFT" -j list set inet stockfw_intel s_country_large_4 | grep -o "\"prefix\"" | wc -l)" = "$GEO_LARGE" ]' \
+      "the large country is enforced: $GEO_LARGE prefixes in its set, applied in $ms_apply ms ($(head -1 <<<"$out"))"
+t0=$(date +%s%N)
+out_state="$(drv state)"
+ms_state=$(( ($(date +%s%N) - t0) / 1000000 ))
+check '[ "$out_state" = "enforced: 4 location rules are enforced: Atlantis, Beta, Cockaigne, Large." ] && [ $ms_state -lt 3000 ]' \
+      "the state of a table with $GEO_LARGE elements is read in $ms_state ms, without listing them ($out_state)"
+check '[ "$(in_from 198.51.100.10 1)" = 0 ] && [ "$(in_from 198.51.100.130 1)" = 1 ]' \
+      "the small rules still hold beside it"
+drv disable country-large >/dev/null
+t0=$(date +%s%N)
+out="$(apply)"
+ms_apply=$(( ($(date +%s%N) - t0) / 1000000 ))
+check 'grep -q "^result ok " <<<"$out" && ! "$REAL_NFT" list set inet stockfw_intel s_country_large_4 >/dev/null 2>&1' \
+      "and the replace that drops it ($ms_apply ms)"
+
+# The database off: its rules stop, the rest of the engine goes on.
+check '[ "$(drv geo-disable)" = ok ]' "the database turned off"
+out="$(apply)"
+check 'grep -q "^result ok digest=[0-9a-f]* sets=0 " <<<"$out" && [ "$(in_from 198.51.100.10 1)" = 1 ]' \
+      "the database off: no location set, the packets arrive ($(head -1 <<<"$out"))"
+out_state="$(drv state)"
+check '[ "$out_state" = "off: No blocklist is turned on; the location rules are not enforced because the location database is off." ]' \
+      "state: off, and it says why the rules are not enforced ($out_state)"
+check '[ "$(grep -c " | intel-update | .*location" "$W/audit.log")" -ge 2 ]' \
+      "every database update attempt is an audit line"
 
 echo
 if [ $fails -eq 0 ]; then echo "PASSED: 0 failure(s)"; else echo "FAILED: $fails failure(s)"; fi

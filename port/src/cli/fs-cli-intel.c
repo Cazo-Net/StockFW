@@ -8,8 +8,11 @@
  * the honest state all live there, so this file decides only what to
  * print and which exit status to give.
  *
- * Read-only commands (status, feeds, lists, exceptions, lookup, terms)
- * never create the store: where no list was ever turned on they show
+ * `stockfw intel geo ...' does the same for blocking by country or
+ * network owner (design 13.11), Linux only in 1.0.7.
+ *
+ * Read-only commands (status, feeds, lists, exceptions, lookup, terms,
+ * geo status, geo search, geo list) never create the store: where no list was ever turned on they show
  * the defaults.  Commands that change the kernel (apply, clear) need
  * root; the others need whatever the store needs (root on Linux).
  *--------------------------------------------------------------------*/
@@ -27,6 +30,11 @@
 #define SOURCE "cli"
 
 /* FS_CLI_LIVE, FS_CLI_SUDO, FS_CLI_RIGHTS: fs-cli.h. */
+
+static void     geo_json        (GString *out, const FsIntelConfig *config,
+                                 FsIntelState state);
+static gboolean geo_status_read (FsIntelGeoStatus *st, GError **error);
+static gchar   *day_text        (gint64 t);
 
 /* ------------------------------------------------------------- helpers */
 
@@ -453,7 +461,16 @@ fs_cli_intel_json (GString *out, gboolean with_sources)
 		g_hash_table_unref (counters);
 		g_ptr_array_unref (srcs);
 	}
-	g_string_append (out, "]}");
+	g_string_append_c (out, ']');
+	if (with_sources) {
+		/* Country and network-owner blocking (design 13.11), read
+		 * only: the switch, the database in the store, the licence
+		 * line, and the rules. */
+		g_string_append_c (out, ',');
+		fs_json_key (out, "location");
+		geo_json (out, config, state);
+	}
+	g_string_append_c (out, '}');
 	g_free (detail);
 	fs_intel_config_free (config);
 }
@@ -523,6 +540,28 @@ intel_status (gint argc, gchar **argv)
 		printf ("  %-12s %saudit-only: applies are recorded, " FS_CLI_LIVE " "
 		        "is left untouched%s\n", "Apply mode", fs_cli_amber (),
 		        fs_cli_reset ());
+
+	if (fs_intel_geo_supported () &&
+	    (config->geo_enabled || config->locations->len > 0)) {
+		FsIntelGeoStatus st;
+		guint on = 0;
+
+		for (guint i = 0; i < config->locations->len; i++)
+			on += ((FsIntelLocationConf *) g_ptr_array_index (
+				config->locations, i))->enabled ? 1 : 0;
+		if (geo_status_read (&st, NULL)) {
+			gchar *day = day_text (st.created_at);
+
+			printf ("  %-12s %s; %u of %u country or network rules on; "
+			        "database %s%s (`stockfw intel geo')\n", "Location",
+			        config->geo_enabled ? "on" : "off", on,
+			        config->locations->len,
+			        st.present ? "of " : "not downloaded",
+			        st.present ? day : "");
+			g_free (day);
+			fs_intel_geo_status_clear (&st);
+		}
+	}
 
 	srcs = sources_of (config, TRUE);
 	if (srcs->len == 0) {
@@ -783,7 +822,8 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 	if (config == NULL)
 		return fail (error, verb);
 
-	is_list = fs_intel_config_list (config, id) != NULL;
+	is_list = fs_intel_config_list (config, id) != NULL ||
+	          fs_intel_config_location (config, id) != NULL;
 	if (!enable) {
 		ok = is_list ? fs_intel_config_set_enabled (config, id, FALSE,
 		                                            &error)
@@ -803,7 +843,9 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 	                            FS_INTEL_ERR_CONSENT)) {
 		/* Never a way around the consent [S14]: show the terms and
 		 * say how to accept them; nothing is saved. */
-		gchar *text = fs_intel_consent_text (config, id);
+		gboolean location = fs_intel_config_location (config, id) != NULL;
+		gchar *text = location ? fs_intel_geo_consent_text (config)
+		                       : fs_intel_consent_text (config, id);
 
 		if (fs_cli.json) {
 			GString *out = g_string_new ("{");
@@ -819,8 +861,14 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 			printf ("%s\n\n", text);
 		}
 		fs_cli_error ("%s", error->message);
-		fs_cli_hint ("read the terms above; to accept them: "
-		             FS_CLI_SUDO "stockfw intel enable %s --accept-terms", id);
+		if (location)
+			fs_cli_hint ("read the terms above; to accept them: "
+			             FS_CLI_SUDO "stockfw intel geo on "
+			             "--accept-terms");
+		else
+			fs_cli_hint ("read the terms above; to accept them: "
+			             FS_CLI_SUDO "stockfw intel enable %s "
+			             "--accept-terms", id);
 		g_free (text);
 		g_clear_error (&error);
 		fs_intel_config_free (config);
@@ -841,11 +889,13 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 		GString *out = g_string_new ("{");
 		const FsIntelFeedConf *f = fs_intel_config_feed (config, id);
 		const FsIntelListConf *l = fs_intel_config_list (config, id);
+		const FsIntelLocationConf *g = fs_intel_config_location (config, id);
 
 		fs_json_kv_str (out, "id", id);                         g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "enabled", enable);               g_string_append_c (out, ',');
 		fs_json_kv_str (out, "direction",
-		                dir_word (f != NULL ? f->dir : l->dir)); g_string_append_c (out, ',');
+		                dir_word (f != NULL ? f->dir : l != NULL ? l->dir
+		                          : g->dir));                   g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "terms_accepted_now", newly_accepted);
 		g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "applied", FALSE);                g_string_append_c (out, ',');
@@ -857,7 +907,8 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 	} else if (!fs_cli.quiet) {
 		const FsIntelFeedConf *f = fs_intel_config_feed (config, id);
 		const FsIntelListConf *l = fs_intel_config_list (config, id);
-		FsIntelDir d = f != NULL ? f->dir : l->dir;
+		const FsIntelLocationConf *g = fs_intel_config_location (config, id);
+		FsIntelDir d = f != NULL ? f->dir : l != NULL ? l->dir : g->dir;
 
 		if (enable)
 			printf ("%s+%s %s turned on (%s: %s).\n", fs_cli_green (),
@@ -1113,8 +1164,9 @@ intel_update (gint argc, gchar **argv)
 		else {
 			fs_cli_error ("unexpected argument for intel update: %s",
 			              argv[i]);
-			fs_cli_hint ("options are --feed ID, --now, --accept-shrink, "
-			             "--accept-coverage and --no-apply");
+			fs_cli_hint ("options are --feed ID (or location), --now, "
+			             "--accept-shrink, --accept-coverage and "
+			             "--no-apply");
 			return FS_EXIT_USAGE;
 		}
 	}
@@ -1122,7 +1174,21 @@ intel_update (gint argc, gchar **argv)
 	config = load_config (FALSE, &error);
 	if (config == NULL)
 		return fail (error, "update");
-	if (only != NULL) {
+	if (only != NULL && strcmp (only, FS_INTEL_GEO_ID) == 0) {
+		/* The location database (`intel geo update'). */
+		if (!fs_intel_geo_supported ()) {
+			fs_intel_config_free (config);
+			fs_cli_error ("%s", fs_intel_geo_unsupported_text ());
+			return FS_EXIT_FAILURE;
+		}
+		if (!config->geo_enabled) {
+			fs_intel_config_free (config);
+			fs_cli_error ("the location database is turned off");
+			fs_cli_hint ("turn it on first: " FS_CLI_SUDO "stockfw intel "
+			             "geo on --accept-terms");
+			return FS_EXIT_USAGE;
+		}
+	} else if (only != NULL) {
 		FsIntelFeedConf *f = fs_intel_config_feed (config, only);
 
 		if (f == NULL) {
@@ -1925,7 +1991,1187 @@ intel_except (gint argc, gchar **argv, gboolean add)
 	return FS_EXIT_OK;
 }
 
+/* ------------------------------------------- countries and networks */
+
+/* `stockfw intel geo': blocking by the country an address range is
+ * registered in, or by the network that owns it (its AS number), from
+ * IPFire's location database (design section 13).  Linux only in
+ * 1.0.7: elsewhere every command says so (fs_intel_geo_supported). */
+
+static const gchar *
+location_kind_word (FsIntelLocationKind kind)
+{
+	return kind == FS_INTEL_LOCATION_COUNTRY ? "country" : "asn";
+}
+
+/* "DE, FR" or "AS64500, AS64501". */
+static gchar *
+location_values_text (const FsIntelLocationConf *l)
+{
+	GString *out = g_string_new (NULL);
+
+	if (l->kind == FS_INTEL_LOCATION_COUNTRY) {
+		for (guint i = 0; l->countries != NULL && l->countries[i] != NULL;
+		     i++)
+			g_string_append_printf (out, "%s%s", i ? ", " : "",
+			                        l->countries[i]);
+	} else {
+		for (guint i = 0; l->asns != NULL && i < l->asns->len; i++)
+			g_string_append_printf (out, "%sAS%u", i ? ", " : "",
+			                        g_array_index (l->asns, guint32, i));
+	}
+	return g_string_free (out, FALSE);
+}
+
+static void
+location_values_json (GString *out, const FsIntelLocationConf *l)
+{
+	g_string_append (out, "\"values\":[");
+	if (l->kind == FS_INTEL_LOCATION_COUNTRY) {
+		for (guint i = 0; l->countries != NULL && l->countries[i] != NULL;
+		     i++) {
+			if (i > 0)
+				g_string_append_c (out, ',');
+			fs_json_string (out, l->countries[i]);
+		}
+	} else {
+		for (guint i = 0; l->asns != NULL && i < l->asns->len; i++)
+			g_string_append_printf (out, "%s%u", i ? "," : "",
+			                        g_array_index (l->asns, guint32, i));
+	}
+	g_string_append_c (out, ']');
+}
+
+/* The database in the store, read without creating the store: with no
+ * store, an empty status (nothing was ever downloaded).  FALSE with an
+ * error only when the store cannot be read (not root). */
+static gboolean
+geo_status_read (FsIntelGeoStatus *st, GError **error)
+{
+	if (!fs_intel_store_exists ()) {
+		memset (st, 0, sizeof *st);
+		return TRUE;
+	}
+	return fs_intel_geo_status (st, g_get_real_time () / G_USEC_PER_SEC,
+	                            error);
+}
+
+/* The location database is in use: threat intel on, the database
+ * switch on and its terms accepted (the engine's geo_usable). */
+static gboolean
+geo_in_use (const FsIntelConfig *config)
+{
+	return config->enabled && config->geo_enabled &&
+	       config->geo_accepted_at > 0;
+}
+
+/* A rule's status word: off, database-off (the database is turned
+ * off, so nothing is enforced), no-database (not downloaded yet),
+ * not-applied (not in the rule set last applied), in-force (in that
+ * rule set, and the live rules are that rule set: the state is
+ * enforced) or not-in-force (applied, but the live rules are missing,
+ * differ or cannot be read; never "in-force" from the record alone). */
+static const gchar *
+location_status (const FsIntelConfig *config, const FsIntelLocationConf *l,
+                 const FsIntelGeoStatus *st, FsIntelState state)
+{
+	if (!l->enabled)
+		return "off";
+	if (!geo_in_use (config))
+		return "database-off";
+	if (st == NULL || !st->present)
+		return "no-database";
+	if (!fs_intel_applied_has (l->id))
+		return "not-applied";
+	return state == FS_INTEL_STATE_ENFORCED ? "in-force" : "not-in-force";
+}
+
+static void
+location_json (GString *out, const FsIntelConfig *config,
+               const FsIntelLocationConf *l, const FsIntelGeoStatus *st,
+               FsIntelState state)
+{
+	g_string_append_c (out, '{');
+	fs_json_kv_str (out, "id", l->id);                     g_string_append_c (out, ',');
+	fs_json_kv_str (out, "name", l->name);                 g_string_append_c (out, ',');
+	fs_json_kv_str (out, "kind", location_kind_word (l->kind));
+	g_string_append_c (out, ',');
+	location_values_json (out, l);                         g_string_append_c (out, ',');
+	fs_json_kv_str (out, "direction", dir_word (l->dir));  g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "enabled", l->enabled);          g_string_append_c (out, ',');
+	fs_json_kv_str (out, "status", location_status (config, l, st, state));
+	g_string_append_c (out, '}');
+}
+
+/* {supported, enabled, terms_accepted_at, url, database{...},
+ * attribution, rules[]}: `intel geo status --json' and the "location"
+ * object of /api/intel.  Read-only; creates nothing.  state is the
+ * overall state (fs_intel_state), which the rules' status words need. */
+static void
+geo_json (GString *out, const FsIntelConfig *config, FsIntelState state)
+{
+	FsIntelGeoStatus st;
+	GError *error = NULL;
+	gboolean have = geo_status_read (&st, &error);
+	gchar *attribution = fs_intel_geo_attribution ();
+
+	g_string_append_c (out, '{');
+	fs_json_kv_bool (out, "supported", fs_intel_geo_supported ());
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "unsupported_reason", fs_intel_geo_supported ()
+	                ? NULL : fs_intel_geo_unsupported_text ());
+	g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "enabled", config->geo_enabled);
+	g_string_append_c (out, ',');
+	kv_time (out, "terms_accepted_at", config->geo_accepted_at);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "url", FS_GEODB_URL);
+	g_string_append_c (out, ',');
+	fs_json_key (out, "database");
+	if (!have) {
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "error", error->message);
+		g_string_append_c (out, '}');
+		g_clear_error (&error);
+	} else {
+		g_string_append_c (out, '{');
+		fs_json_kv_bool (out, "present", st.present);    g_string_append_c (out, ',');
+		kv_time (out, "created_at", st.created_at);      g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "stale", st.stale);        g_string_append_c (out, ',');
+		kv_time (out, "updated_at", st.fetched_at);      g_string_append_c (out, ',');
+		kv_time (out, "attempted_at", st.attempted_at);  g_string_append_c (out, ',');
+		fs_json_kv_str (out, "last_error", st.last_error); g_string_append_c (out, ',');
+		fs_json_kv_str (out, "refused", st.refused);     g_string_append_c (out, ',');
+		fs_json_kv_str (out, "damaged", st.damaged);     g_string_append_c (out, ',');
+		fs_json_kv_str (out, "licence", st.license);     g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "networks", st.networks);  g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "countries", st.countries); g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "ases", st.ases);
+		g_string_append_c (out, '}');
+	}
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "attribution", attribution);
+	g_string_append (out, ",\"rules\":[");
+	for (guint i = 0; i < config->locations->len; i++) {
+		if (i > 0)
+			g_string_append_c (out, ',');
+		location_json (out, config, g_ptr_array_index (config->locations, i),
+		               have ? &st : NULL, state);
+	}
+	g_string_append (out, "]}");
+	g_free (attribution);
+	if (have)
+		fs_intel_geo_status_clear (&st);
+}
+
+/* Every location command starts here: FALSE (and the platform's
+ * sentence, exit 1) where the feature does not exist. */
+static gboolean
+geo_check_supported (gint *status)
+{
+	if (fs_intel_geo_supported ())
+		return TRUE;
+	fs_cli_error ("%s", fs_intel_geo_unsupported_text ());
+	*status = FS_EXIT_FAILURE;
+	return FALSE;
+}
+
+/* "2023-11-14" for a creation time. */
+static gchar *
+day_text (gint64 t)
+{
+	GDateTime *dt = t > 0 ? g_date_time_new_from_unix_utc (t) : NULL;
+	gchar *out;
+
+	if (dt == NULL)
+		return g_strdup ("?");
+	out = g_date_time_format (dt, "%Y-%m-%d");
+	g_date_time_unref (dt);
+	return out;
+}
+
+static void
+geo_print_rules (const FsIntelConfig *config, const FsIntelGeoStatus *st,
+                 FsIntelState state)
+{
+	static const gchar *headers[] = {
+		"ID", "ON", "KIND", "DIR", "BLOCKED", "STATUS", "VALUES", "NAME"
+	};
+	GPtrArray *rows;
+	GHashTable *counters;
+
+	if (config->locations->len == 0) {
+		printf ("No country or network rule yet.  `" FS_CLI_SUDO "stockfw "
+		        "intel geo add country CODE' adds one; `stockfw intel "
+		        "geo search TEXT' finds codes and AS numbers.\n");
+		return;
+	}
+	counters = fs_intel_counters (fs_backend ());
+	rows = g_ptr_array_new_with_free_func ((GDestroyNotify) g_strfreev);
+	for (guint i = 0; i < config->locations->len; i++) {
+		const FsIntelLocationConf *l =
+			g_ptr_array_index (config->locations, i);
+		gchar **row = g_new0 (gchar *, 9);
+
+		row[0] = g_strdup (l->id);
+		row[1] = g_strdup (l->enabled ? "on" : "-");
+		row[2] = g_strdup (location_kind_word (l->kind));
+		row[3] = g_strdup (dir_word (l->dir));
+		row[4] = blocked_text (g_hash_table_lookup (counters, l->id));
+		row[5] = g_strdup (location_status (config, l, st, state));
+		row[6] = location_values_text (l);
+		row[7] = g_strdup (l->name);
+		g_ptr_array_add (rows, row);
+	}
+	fs_cli_table (headers, 8, rows, 48);
+	counts_note ();
+	g_ptr_array_unref (rows);
+	g_hash_table_unref (counters);
+}
+
+static gint
+geo_status (gint argc, gchar **argv)
+{
+	FsIntelConfig *config;
+	FsIntelGeoStatus st;
+	GError *error = NULL;
+	gchar *attribution, *t;
+	gint status = FS_EXIT_OK;
+
+	(void) argv;
+	if (argc > 0) {
+		fs_cli_error ("intel geo status takes no arguments");
+		return FS_EXIT_USAGE;
+	}
+	config = load_config (FALSE, &error);
+	if (config == NULL)
+		return fail (error, "geo status");
+	if (fs_cli.json) {
+		GString *out = g_string_new (NULL);
+
+		geo_json (out, config, fs_intel_state (fs_backend (), config,
+		                                       NULL));
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+		fs_intel_config_free (config);
+		return FS_EXIT_OK;
+	}
+	if (!fs_intel_geo_supported ()) {
+		printf ("  %-13s %s%s%s\n", "Location", fs_cli_dim (),
+		        fs_intel_geo_unsupported_text (), fs_cli_reset ());
+		fs_intel_config_free (config);
+		return FS_EXIT_OK;
+	}
+	if (!geo_status_read (&st, &error)) {
+		fs_intel_config_free (config);
+		return fail (error, "geo status");
+	}
+	t = time_text (config->geo_accepted_at);
+	printf ("  %-13s %s\n", "Location", config->geo_enabled
+	        ? "on" : "off: the location database is not downloaded or used");
+	printf ("  %-13s %s\n", "Terms", config->geo_accepted_at > 0 ? t
+	        : "not accepted (`stockfw intel geo terms' shows them)");
+	g_free (t);
+	if (st.present) {
+		gchar *day = day_text (st.created_at);
+		gchar *n = grouped (st.networks);
+
+		printf ("  %-13s copy of %s: %s networks, %u countries, %u "
+		        "ASes%s%s%s\n", "Database", day, n, st.countries, st.ases,
+		        st.stale ? fs_cli_amber () : "",
+		        !st.stale ? "" : geo_in_use (config)
+		        ? "; out of date (older than 30 days), still used by "
+		          "the rules" : "; out of date (older than 30 days)",
+		        st.stale ? fs_cli_reset () : "");
+		g_free (day);
+		g_free (n);
+	} else if (st.damaged != NULL) {
+		printf ("  %-13s %scannot be used: %s%s\n", "Database",
+		        fs_cli_red (), st.damaged, fs_cli_reset ());
+	} else {
+		printf ("  %-13s not downloaded yet%s\n", "Database",
+		        config->geo_enabled ? " (`" FS_CLI_SUDO "stockfw intel geo "
+		                              "update')" : "");
+	}
+	t = time_text (st.fetched_at);
+	printf ("  %-13s %s", "Updated", t);
+	g_free (t);
+	if (st.attempted_at > 0 && st.attempted_at != st.fetched_at) {
+		t = time_text (st.attempted_at);
+		printf (" (last attempt %s)", t);
+		g_free (t);
+	}
+	printf ("\n");
+	if (st.refused != NULL)
+		printf ("  %-13s %srefused: %s%s\n", "Last update",
+		        fs_cli_amber (), st.refused, fs_cli_reset ());
+	else if (st.last_error != NULL)
+		printf ("  %-13s %sfailed: %s%s\n", "Last update", fs_cli_red (),
+		        st.last_error, fs_cli_reset ());
+	printf ("  %-13s %s\n\n", "Source", FS_GEODB_URL);
+	geo_print_rules (config, &st, fs_intel_state (fs_backend (), config,
+	                                              NULL));
+	attribution = fs_intel_geo_attribution ();
+	printf ("\n%sA country is where an address range is registered, not "
+	        "where a computer is.\n%s%s\n", fs_cli_dim (), attribution,
+	        fs_cli_reset ());
+	g_free (attribution);
+	fs_intel_geo_status_clear (&st);
+	fs_intel_config_free (config);
+	return status;
+}
+
+static gint
+geo_terms (gint argc, gchar **argv)
+{
+	FsIntelConfig *config;
+	GError *error = NULL;
+	gchar *text;
+	gint status = FS_EXIT_OK;
+
+	(void) argv;
+	if (argc > 0) {
+		fs_cli_error ("intel geo terms takes no arguments");
+		return FS_EXIT_USAGE;
+	}
+	if (!geo_check_supported (&status))
+		return status;
+	config = load_config (FALSE, &error);
+	if (config == NULL)
+		return fail (error, "geo terms");
+	text = fs_intel_geo_consent_text (config);
+	if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+
+		kv_time (out, "accepted_at", config->geo_accepted_at);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "terms", text);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else {
+		printf ("%s\n", text);
+	}
+	g_free (text);
+	fs_intel_config_free (config);
+	return FS_EXIT_OK;
+}
+
+/* `geo on [--accept-terms]', `geo off': the location database's switch.
+ * Turning it on the first time needs its terms accepted, exactly like a
+ * feed: without --accept-terms the terms are shown, nothing is saved
+ * and the exit status is 2. */
+static gint
+geo_switch (gint argc, gchar **argv, gboolean on)
+{
+	FsIntelConfig *config;
+	GError *error = NULL;
+	gboolean accept = FALSE, newly = FALSE;
+	gint status = FS_EXIT_OK;
+	FsIntelGeoStatus st;
+
+	for (gint i = 0; i < argc; i++) {
+		if (on && strcmp (argv[i], "--accept-terms") == 0) {
+			accept = TRUE;
+		} else {
+			fs_cli_error ("unexpected argument for intel geo %s: %s",
+			              on ? "on" : "off", argv[i]);
+			if (on)
+				fs_cli_hint ("the only option is --accept-terms");
+			return FS_EXIT_USAGE;
+		}
+	}
+	if (on && !geo_check_supported (&status))
+		return status;
+	/* A refusal must not create the store: only an accepted switch,
+	 * or one that was accepted before (and so has a store), saves;
+	 * and off with no store has nothing to turn off. */
+	config = load_config (on && accept, &error);
+	if (config == NULL)
+		return fail (error, on ? "geo on" : "geo off");
+	if (on) {
+		newly = config->geo_accepted_at <= 0 && accept;
+		if (!fs_intel_config_enable_geo (config, accept, &error)) {
+			if (g_error_matches (error, FS_INTEL_ERROR,
+			                     FS_INTEL_ERR_CONSENT)) {
+				gchar *text = fs_intel_geo_consent_text (config);
+
+				if (fs_cli.json) {
+					GString *out = g_string_new ("{");
+
+					fs_json_kv_bool (out, "enabled", FALSE);
+					g_string_append_c (out, ',');
+					fs_json_kv_bool (out, "needs_consent", TRUE);
+					g_string_append_c (out, ',');
+					fs_json_kv_str (out, "terms", text);
+					g_string_append_c (out, '}');
+					fs_cli_print_json (out);
+					g_string_free (out, TRUE);
+				} else {
+					printf ("%s\n\n", text);
+				}
+				fs_cli_error ("%s", error->message);
+				fs_cli_hint ("read the terms above; to accept them: "
+				             FS_CLI_SUDO "stockfw intel geo on "
+				             "--accept-terms");
+				g_free (text);
+				g_clear_error (&error);
+				fs_intel_config_free (config);
+				return FS_EXIT_USAGE;
+			}
+			fs_intel_config_free (config);
+			return fail (error, "geo on");
+		}
+	} else {
+		fs_intel_config_disable_geo (config);
+	}
+	if ((on || fs_intel_store_exists ()) && !save_config (config, &status)) {
+		fs_intel_config_free (config);
+		return status;
+	}
+	if (!geo_status_read (&st, NULL))
+		memset (&st, 0, sizeof st);
+	if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+
+		fs_json_kv_bool (out, "enabled", on);              g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "terms_accepted_now", newly); g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "database_present", st.present);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "applied", FALSE);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else if (!fs_cli.quiet) {
+		printf ("The location database is turned %s.\n", on ? "on" : "off");
+		if (newly)
+			printf ("Terms accepted now; `stockfw intel geo terms' shows "
+			        "them again.\n");
+		if (on && !st.present)
+			printf ("%sNot downloaded yet: run `" FS_CLI_SUDO "stockfw intel "
+			        "geo update', then `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
+			        fs_cli_dim (), fs_cli_reset ());
+		else if (on)
+			printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel "
+			        "apply'.%s\n", fs_cli_dim (), fs_cli_reset ());
+		else
+			printf ("%sYour rules are kept and enforce nothing.  Not live "
+			        "yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
+			        fs_cli_dim (), fs_cli_reset ());
+	}
+	fs_intel_geo_status_clear (&st);
+	fs_intel_config_free (config);
+	return FS_EXIT_OK;
+}
+
+/* `geo update [--no-apply]': download the database now (intel update
+ * --feed location --now).  `intel update' alone also updates it, at
+ * most once a day. */
+static gint
+geo_update (gint argc, gchar **argv)
+{
+	gchar *args[4] = { (gchar *) "--feed", (gchar *) FS_INTEL_GEO_ID,
+	                   (gchar *) "--now", NULL };
+	gint n = 3;
+
+	for (gint i = 0; i < argc; i++) {
+		if (strcmp (argv[i], "--no-apply") == 0 && n == 3) {
+			args[n++] = (gchar *) "--no-apply";
+		} else {
+			fs_cli_error ("unexpected argument for intel geo update: %s",
+			              argv[i]);
+			fs_cli_hint ("the only option is --no-apply");
+			return FS_EXIT_USAGE;
+		}
+	}
+	return intel_update (n, args);
+}
+
+/* ASCII case-insensitive "contains". */
+static gboolean
+contains_ci (const gchar *hay, const gchar *needle)
+{
+	gchar *a = g_ascii_strdown (hay != NULL ? hay : "", -1);
+	gchar *b = g_ascii_strdown (needle, -1);
+	gboolean hit = strstr (a, b) != NULL;
+
+	g_free (a);
+	g_free (b);
+	return hit;
+}
+
+/* The copy in use, or the error that says why there is none; never
+ * creates the store. */
+static gboolean
+geo_need_database (GError **error)
+{
+	if (fs_intel_store_exists ())
+		return TRUE;
+	g_set_error_literal (error, FS_INTEL_ERROR, FS_INTEL_ERR_STORE,
+	                     "The location database has not been downloaded "
+	                     "yet.");
+	return FALSE;
+}
+
+static gint
+geo_search (gint argc, gchar **argv)
+{
+	const gchar *text = NULL;
+	guint max = 50;
+	GError *error = NULL;
+	GPtrArray *countries, *ases, *hits;
+	gchar *attribution;
+	gint status = FS_EXIT_OK;
+
+	for (gint i = 0; i < argc; i++) {
+		if (strcmp (argv[i], "--max") == 0 && i + 1 < argc) {
+			gchar *end = NULL;
+			guint64 v = g_ascii_strtoull (argv[++i], &end, 10);
+
+			if (end == NULL || *end != '\0' || v == 0 || v > 100000) {
+				fs_cli_error ("--max takes a number from 1 to 100000, "
+				              "not \"%s\"", argv[i]);
+				return FS_EXIT_USAGE;
+			}
+			max = (guint) v;
+		} else if (argv[i][0] == '-' && argv[i][1] == '-') {
+			fs_cli_error ("unknown option for intel geo search: %s",
+			              argv[i]);
+			return FS_EXIT_USAGE;
+		} else if (text == NULL) {
+			text = argv[i];
+		} else {
+			fs_cli_error ("intel geo search takes one text; quote one "
+			              "with spaces");
+			return FS_EXIT_USAGE;
+		}
+	}
+	if (text == NULL || *text == '\0') {
+		fs_cli_error ("usage: stockfw intel geo search TEXT [--max N]");
+		fs_cli_hint ("a country's code or name (DE, germany), an AS "
+		             "number (AS13335) or part of a network's name");
+		return FS_EXIT_USAGE;
+	}
+	if (!geo_check_supported (&status))
+		return status;
+	if (!geo_need_database (&error))
+		goto failed;
+	countries = fs_intel_geo_countries (&error);
+	if (countries == NULL)
+		goto failed;
+	ases = fs_intel_geo_search_as (text, max, &error);
+	if (ases == NULL) {
+		g_ptr_array_unref (countries);
+		goto failed;
+	}
+	hits = g_ptr_array_new ();
+	for (guint i = 0; i < countries->len; i++) {
+		FsGeodbCountry *c = g_ptr_array_index (countries, i);
+
+		if (g_ascii_strcasecmp (c->code, text) == 0 ||
+		    contains_ci (c->name, text))
+			g_ptr_array_add (hits, c);
+	}
+	attribution = fs_intel_geo_attribution ();
+	if (fs_cli.json) {
+		GString *out = g_string_new ("{\"countries\":[");
+
+		for (guint i = 0; i < hits->len; i++) {
+			FsGeodbCountry *c = g_ptr_array_index (hits, i);
+
+			if (i > 0)
+				g_string_append_c (out, ',');
+			g_string_append_c (out, '{');
+			fs_json_kv_str (out, "code", c->code);  g_string_append_c (out, ',');
+			fs_json_kv_str (out, "name", c->name);  g_string_append_c (out, ',');
+			fs_json_kv_str (out, "continent",
+			                *c->continent ? c->continent : NULL);
+			g_string_append_c (out, '}');
+		}
+		g_string_append (out, "],\"ases\":[");
+		for (guint i = 0; i < ases->len; i++) {
+			FsGeodbAs *a = g_ptr_array_index (ases, i);
+
+			if (i > 0)
+				g_string_append_c (out, ',');
+			g_string_append_c (out, '{');
+			fs_json_kv_uint (out, "asn", a->asn);  g_string_append_c (out, ',');
+			fs_json_kv_str (out, "name", a->name);
+			g_string_append_c (out, '}');
+		}
+		g_string_append (out, "],");
+		fs_json_kv_str (out, "attribution", attribution);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else if (hits->len == 0 && ases->len == 0) {
+		printf ("Nothing in the location database matches \"%s\".\n", text);
+	} else {
+		static const gchar *headers[] = { "KIND", "VALUE", "NAME" };
+		GPtrArray *rows = g_ptr_array_new_with_free_func (
+			(GDestroyNotify) g_strfreev);
+
+		for (guint i = 0; i < hits->len; i++) {
+			FsGeodbCountry *c = g_ptr_array_index (hits, i);
+			gchar **row = g_new0 (gchar *, 4);
+
+			row[0] = g_strdup ("country");
+			row[1] = g_strdup (c->code);
+			row[2] = g_strdup (c->name != NULL ? c->name : "");
+			g_ptr_array_add (rows, row);
+		}
+		for (guint i = 0; i < ases->len; i++) {
+			FsGeodbAs *a = g_ptr_array_index (ases, i);
+			gchar **row = g_new0 (gchar *, 4);
+
+			row[0] = g_strdup ("asn");
+			row[1] = g_strdup_printf ("AS%u", a->asn);
+			row[2] = g_strdup (a->name != NULL ? a->name : "");
+			g_ptr_array_add (rows, row);
+		}
+		fs_cli_table (headers, 3, rows, 60);
+		g_ptr_array_unref (rows);
+		if (ases->len == max)
+			printf ("%sThe first %u networks; --max N shows more.%s\n",
+			        fs_cli_dim (), max, fs_cli_reset ());
+	}
+	if (!fs_cli.json)
+		printf ("%s%s%s\n", fs_cli_dim (), attribution, fs_cli_reset ());
+	g_free (attribution);
+	g_ptr_array_unref (hits);
+	g_ptr_array_unref (ases);
+	g_ptr_array_unref (countries);
+	return FS_EXIT_OK;
+
+failed:
+	status = fail (error, "geo search");
+	fs_cli_hint ("turn it on and download it: " FS_CLI_SUDO "stockfw intel "
+	             "geo on --accept-terms, then " FS_CLI_SUDO "stockfw intel geo "
+	             "update");
+	return status;
+}
+
+/* The rule's name when --name is not given: the country's name (or
+ * its code without a database), "AS13335 Cloudflare" (or "AS13335"),
+ * and the values joined for more than one. */
+static gchar *
+location_default_name (FsIntelLocationKind kind, gchar **values)
+{
+	GPtrArray *countries = NULL;
+	gchar *out = NULL;
+
+	if (g_strv_length (values) != 1) {
+		GString *joined = g_string_new (NULL);
+
+		for (guint i = 0; values[i] != NULL; i++) {
+			const gchar *v = values[i];
+
+			if (kind == FS_INTEL_LOCATION_ASN &&
+			    g_ascii_strncasecmp (v, "AS", 2) == 0)
+				v += 2;
+			if (kind == FS_INTEL_LOCATION_ASN)
+				g_string_append_printf (joined, "%sAS%s",
+				                        i ? ", " : "", v);
+			else {
+				gchar *up = g_ascii_strup (v, -1);
+
+				g_string_append_printf (joined, "%s%s",
+				                        i ? ", " : "", up);
+				g_free (up);
+			}
+		}
+		return g_string_free (joined, FALSE);
+	}
+	if (kind == FS_INTEL_LOCATION_COUNTRY) {
+		countries = fs_intel_store_exists ()
+		            ? fs_intel_geo_countries (NULL) : NULL;
+		for (guint i = 0; countries != NULL && i < countries->len; i++) {
+			FsGeodbCountry *c = g_ptr_array_index (countries, i);
+
+			if (g_ascii_strcasecmp (c->code, values[0]) == 0 &&
+			    c->name != NULL && *c->name != '\0')
+				out = g_strdup (c->name);
+		}
+		if (countries != NULL)
+			g_ptr_array_unref (countries);
+		return out != NULL ? out : g_ascii_strup (values[0], -1);
+	} else {
+		const gchar *v = values[0];
+		GPtrArray *ases;
+
+		if (g_ascii_strncasecmp (v, "AS", 2) == 0)
+			v += 2;
+		ases = fs_intel_store_exists ()
+		       ? fs_intel_geo_search_as (v, 0, NULL) : NULL;
+		for (guint i = 0; ases != NULL && i < ases->len; i++) {
+			FsGeodbAs *a = g_ptr_array_index (ases, i);
+
+			if (g_strcmp0 (v, "") != 0 &&
+			    a->asn == g_ascii_strtoull (v, NULL, 10) &&
+			    a->name != NULL && *a->name != '\0')
+				out = g_strdup_printf ("AS%u %s", a->asn, a->name);
+		}
+		if (ases != NULL)
+			g_ptr_array_unref (ases);
+		return out != NULL ? out : g_strdup_printf ("AS%s", v);
+	}
+}
+
+/* Notes for values the copy in use does not name (the rule is saved
+ * anyway: the next copy may name them, and the build notes it too). */
+static GPtrArray *
+location_unknown_notes (const FsIntelLocationConf *l)
+{
+	GPtrArray *notes = g_ptr_array_new_with_free_func (g_free);
+	GPtrArray *countries;
+
+	if (!fs_intel_store_exists ())
+		return notes;
+	if (l->kind == FS_INTEL_LOCATION_COUNTRY) {
+		countries = fs_intel_geo_countries (NULL);
+		if (countries == NULL)
+			return notes;
+		for (guint i = 0; l->countries[i] != NULL; i++) {
+			gboolean known = FALSE;
+
+			for (guint j = 0; j < countries->len && !known; j++)
+				known = strcmp (((FsGeodbCountry *)
+				                 g_ptr_array_index (countries, j))->code,
+				                l->countries[i]) == 0;
+			if (!known)
+				g_ptr_array_add (notes, g_strdup_printf (
+					"the location database names no country %s; the "
+					"rule blocks nothing for it", l->countries[i]));
+		}
+		g_ptr_array_unref (countries);
+	} else {
+		for (guint i = 0; i < l->asns->len; i++) {
+			guint32 asn = g_array_index (l->asns, guint32, i);
+			gchar *q = g_strdup_printf ("%u", asn);
+			GPtrArray *a = fs_intel_geo_search_as (q, 0, NULL);
+			gboolean known = FALSE;
+
+			for (guint j = 0; a != NULL && j < a->len && !known; j++)
+				known = ((FsGeodbAs *) g_ptr_array_index (a, j))->asn ==
+				        asn;
+			if (a != NULL && !known)
+				g_ptr_array_add (notes, g_strdup_printf (
+					"the location database names no AS%u; its networks "
+					"may still be listed under that number", asn));
+			if (a != NULL)
+				g_ptr_array_unref (a);
+			g_free (q);
+		}
+	}
+	return notes;
+}
+
+static gint
+geo_add (gint argc, gchar **argv)
+{
+	FsIntelLocationKind kind = 0;
+	FsIntelDir dir = FS_INTEL_DIR_BOTH;
+	const gchar *name = NULL;
+	GPtrArray *values = g_ptr_array_new_with_free_func (g_free);
+	FsIntelConfig *config = NULL;
+	GError *error = NULL;
+	gchar *id = NULL, *auto_name = NULL;
+	GPtrArray *notes = NULL;
+	gint status = FS_EXIT_OK;
+	const FsIntelLocationConf *l;
+
+	for (gint i = 0; i < argc; i++) {
+		if ((strcmp (argv[i], "--dir") == 0 ||
+		     strcmp (argv[i], "--direction") == 0) && i + 1 < argc) {
+			if (!parse_dir (argv[++i], &dir))
+				goto usage_quiet;
+		} else if (strcmp (argv[i], "--name") == 0 && i + 1 < argc) {
+			name = argv[++i];
+		} else if (argv[i][0] == '-' && argv[i][1] == '-') {
+			fs_cli_error ("unknown option for intel geo add: %s", argv[i]);
+			fs_cli_hint ("options are --dir in|out|both and --name NAME");
+			goto usage_quiet;
+		} else if (kind == 0) {
+			if (strcmp (argv[i], "country") == 0)
+				kind = FS_INTEL_LOCATION_COUNTRY;
+			else if (strcmp (argv[i], "asn") == 0 ||
+			         strcmp (argv[i], "as") == 0)
+				kind = FS_INTEL_LOCATION_ASN;
+			else {
+				fs_cli_error ("intel geo add takes country or asn first, "
+				              "not \"%s\"", argv[i]);
+				goto usage;
+			}
+		} else {
+			/* "DE,FR" and "DE FR" alike. */
+			gchar **parts = g_strsplit (argv[i], ",", -1);
+
+			for (guint j = 0; parts[j] != NULL; j++) {
+				g_strstrip (parts[j]);
+				if (*parts[j] != '\0')
+					g_ptr_array_add (values, g_strdup (parts[j]));
+			}
+			g_strfreev (parts);
+		}
+	}
+	if (kind == 0 || values->len == 0) {
+		fs_cli_error ("intel geo add needs a kind and at least one value");
+		goto usage;
+	}
+	g_ptr_array_add (values, NULL);
+	if (!geo_check_supported (&status))
+		goto out;
+	/* Never create the store for a rule the consent check refuses:
+	 * accepted terms mean a store already exists. */
+	config = load_config (FALSE, &error);
+	if (config == NULL) {
+		status = fail (error, "geo add");
+		goto out;
+	}
+	if (name == NULL)
+		name = auto_name = location_default_name (kind,
+		                                          (gchar **) values->pdata);
+	if (!fs_intel_config_add_location (config, name, kind,
+	                                   (const gchar *const *) values->pdata,
+	                                   dir, &id, &error)) {
+		gboolean consent = g_error_matches (error, FS_INTEL_ERROR,
+		                                    FS_INTEL_ERR_CONSENT);
+
+		status = fail (error, "geo add");
+		if (consent)
+			fs_cli_hint ("read `stockfw intel geo terms', then accept "
+			             "them: " FS_CLI_SUDO "stockfw intel geo on "
+			             "--accept-terms");
+		goto out;
+	}
+	if (!save_config (config, &status))
+		goto out;
+	l = fs_intel_config_location (config, id);
+	notes = location_unknown_notes (l);
+	if (!config->geo_enabled)
+		g_ptr_array_add (notes, g_strdup ("the location database is turned "
+		                                  "off: this rule is enforced once "
+		                                  "`stockfw intel geo on' turns it "
+		                                  "on"));
+	if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+
+		fs_json_kv_str (out, "id", id);                g_string_append_c (out, ',');
+		fs_json_kv_str (out, "name", l->name);         g_string_append_c (out, ',');
+		fs_json_kv_str (out, "kind", location_kind_word (kind));
+		g_string_append_c (out, ',');
+		location_values_json (out, l);                 g_string_append_c (out, ',');
+		fs_json_kv_str (out, "direction", dir_word (dir)); g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "enabled", TRUE);        g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "applied", FALSE);       g_string_append_c (out, ',');
+		fs_json_key (out, "notes");
+		notes_json (out, notes);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else if (!fs_cli.quiet) {
+		gchar *v = location_values_text (l);
+
+		printf ("%s+%s %s (%s): %s, %s: %s.\n", fs_cli_green (),
+		        fs_cli_reset (), l->name, id, v, dir_word (dir),
+		        dir_prose (dir));
+		g_free (v);
+		notes_print (notes);
+		printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
+		        fs_cli_dim (), fs_cli_reset ());
+	}
+	goto out;
+
+usage:
+	fs_cli_hint ("usage: stockfw intel geo add country|asn VALUE... "
+	             "[--dir in|out|both] [--name NAME]");
+usage_quiet:
+	status = FS_EXIT_USAGE;
+out:
+	if (notes != NULL)
+		g_ptr_array_unref (notes);
+	g_ptr_array_unref (values);
+	g_free (auto_name);
+	g_free (id);
+	fs_intel_config_free (config);
+	return status;
+}
+
+static gint
+geo_remove (gint argc, gchar **argv)
+{
+	FsIntelConfig *config;
+	GError *error = NULL;
+	gchar *label;
+	gint status = FS_EXIT_OK;
+	FsIntelSourceKind kind;
+
+	if (argc != 1) {
+		fs_cli_error ("usage: stockfw intel geo remove ID");
+		fs_cli_hint ("`stockfw intel geo list' shows the ids");
+		return FS_EXIT_USAGE;
+	}
+	kind = fs_intel_source_kind (argv[0]);
+	if (kind != FS_INTEL_KIND_COUNTRY && kind != FS_INTEL_KIND_ASN) {
+		fs_cli_error ("%s is not a country or network rule", argv[0]);
+		fs_cli_hint ("`stockfw intel remove ID' removes a local list or "
+		             "custom feed");
+		return FS_EXIT_USAGE;
+	}
+	config = load_config (FALSE, &error);
+	if (config == NULL)
+		return fail (error, "geo remove");
+	label = g_strdup (fs_intel_config_label (config, argv[0]));
+	if (!fs_intel_config_remove (config, argv[0], &error)) {
+		g_free (label);
+		fs_intel_config_free (config);
+		status = fail (error, "geo remove");
+		return status;
+	}
+	if (!save_config (config, &status)) {
+		g_free (label);
+		fs_intel_config_free (config);
+		return status;
+	}
+	if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+
+		fs_json_kv_str (out, "id", argv[0]);    g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "removed", TRUE); g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "applied", FALSE);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else if (!fs_cli.quiet) {
+		printf ("%s-%s %s (%s) removed.\n", fs_cli_red (), fs_cli_reset (),
+		        label, argv[0]);
+		printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
+		        fs_cli_dim (), fs_cli_reset ());
+	}
+	g_free (label);
+	fs_intel_config_free (config);
+	return FS_EXIT_OK;
+}
+
+static gint
+geo_list (gint argc, gchar **argv)
+{
+	FsIntelConfig *config;
+	FsIntelGeoStatus st;
+	GError *error = NULL;
+	gboolean have;
+	FsIntelState state;
+
+	(void) argv;
+	if (argc > 0) {
+		fs_cli_error ("intel geo list takes no arguments");
+		return FS_EXIT_USAGE;
+	}
+	config = load_config (FALSE, &error);
+	if (config == NULL)
+		return fail (error, "geo list");
+	have = geo_status_read (&st, NULL);
+	state = fs_intel_state (fs_backend (), config, NULL);
+	if (fs_cli.json) {
+		GString *out = g_string_new ("{\"rules\":[");
+
+		for (guint i = 0; i < config->locations->len; i++) {
+			if (i > 0)
+				g_string_append_c (out, ',');
+			location_json (out, config,
+			               g_ptr_array_index (config->locations, i),
+			               have ? &st : NULL, state);
+		}
+		g_string_append (out, "]}");
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else {
+		geo_print_rules (config, have ? &st : NULL, state);
+	}
+	if (have)
+		fs_intel_geo_status_clear (&st);
+	fs_intel_config_free (config);
+	return FS_EXIT_OK;
+}
+
+static gint
+intel_geo (gint argc, gchar **argv)
+{
+	const gchar *sub = argc > 0 ? argv[0] : "status";
+	gint n = argc > 0 ? argc - 1 : 0;
+	gchar **rest = argv + 1;
+
+	if (strcmp (sub, "status") == 0)  return geo_status (n, rest);
+	if (strcmp (sub, "terms") == 0)   return geo_terms (n, rest);
+	if (strcmp (sub, "on") == 0)      return geo_switch (n, rest, TRUE);
+	if (strcmp (sub, "off") == 0)     return geo_switch (n, rest, FALSE);
+	if (strcmp (sub, "update") == 0)  return geo_update (n, rest);
+	if (strcmp (sub, "search") == 0)  return geo_search (n, rest);
+	if (strcmp (sub, "add") == 0)     return geo_add (n, rest);
+	if (strcmp (sub, "remove") == 0 ||
+	    strcmp (sub, "rm") == 0)      return geo_remove (n, rest);
+	if (strcmp (sub, "list") == 0 ||
+	    strcmp (sub, "rules") == 0)   return geo_list (n, rest);
+	fs_cli_error ("unknown intel geo action: %s", sub);
+	fs_cli_hint ("see `stockfw help intel'");
+	return FS_EXIT_USAGE;
+}
+
 /* -------------------------------------------------------------- lookup */
+
+/* Whether the lookup consulted the location database (design 13.8):
+ * on, its terms accepted, the master switch on, and the platform. */
+static gboolean
+lookup_geo_on (const FsIntelConfig *config)
+{
+	return fs_intel_geo_supported () && config->enabled &&
+	       config->geo_enabled && config->geo_accepted_at > 0;
+}
+
+/* Why the lookup has no location for the address, when it consulted
+ * the database and it found none: the copy is missing, or no network
+ * holds the address.  Caller frees. */
+static gchar *
+lookup_geo_missing (const FsIntelConfig *config, const gchar *addr)
+{
+	FsGeodbMatch m;
+	GError *error = NULL;
+	gchar *why;
+
+	if (!fs_intel_geo_lookup (config, addr, &m, &error)) {
+		why = g_strdup (error->message);
+		g_clear_error (&error);
+		return why;
+	}
+	fs_geodb_match_clear (&m);
+	return g_strdup ("the location database has no network for it");
+}
+
+/* "Germany (DE)", "DE", or NULL when the network names no country. */
+static gchar *
+lookup_country_text (const FsIntelLookup *r)
+{
+	if (r->country[0] == '\0')
+		return NULL;
+	if (r->country_name != NULL && *r->country_name != '\0')
+		return g_strdup_printf ("%s (%s)", r->country_name, r->country);
+	return g_strdup (r->country);
+}
+
+/* "AS64500 Example One", "AS64500", or NULL. */
+static gchar *
+lookup_as_text (const FsIntelLookup *r)
+{
+	if (r->asn == 0)
+		return NULL;
+	if (r->as_name != NULL && *r->as_name != '\0')
+		return g_strdup_printf ("AS%u %s", r->asn, r->as_name);
+	return g_strdup_printf ("AS%u", r->asn);
+}
+
+static void
+lookup_geo_print (const FsIntelConfig *config, const FsIntelLookup *r,
+                  const gchar *addr)
+{
+	gchar *attribution, *c, *a;
+
+	if (!lookup_geo_on (config))
+		return;
+	if (r->geo_unknown) {
+		printf ("  %-14s %sunknown: the location database in use cannot "
+		        "be read%s\n", "Registered in", fs_cli_amber (),
+		        fs_cli_reset ());
+	} else if (!r->geo_found) {
+		gchar *why = lookup_geo_missing (config, addr);
+
+		printf ("  %-14s unknown: %s\n", "Registered in", why);
+		g_free (why);
+		return;
+	} else {
+		c = lookup_country_text (r);
+		a = lookup_as_text (r);
+		printf ("  %-14s %s\n", "Registered in",
+		        c != NULL ? c : "no country (the database names none)");
+		printf ("  %-14s %s%s%s%s\n", "Network",
+		        r->network != NULL ? r->network : "?",
+		        a != NULL ? ", " : "", a != NULL ? a : "",
+		        (r->geo_flags & FS_GEODB_FLAG_ANYCAST)
+		        ? ", anycast (answered from many places)" : "");
+		if (r->geo_via_nat64)
+			printf ("  %-14s a NAT64 address: the country and network "
+			        "are those of the IPv4 address it carries\n", "");
+		g_free (c);
+		g_free (a);
+	}
+	attribution = fs_intel_geo_attribution ();
+	printf ("%s  \"Registered in\" is where the range is registered, not "
+	        "where the computer is.\n  %s%s\n", fs_cli_dim (), attribution,
+	        fs_cli_reset ());
+	g_free (attribution);
+}
+
+static void
+lookup_geo_json (GString *out, const FsIntelConfig *config,
+                 const FsIntelLookup *r, const gchar *addr)
+{
+	gchar *attribution;
+
+	g_string_append (out, "\"locations\":[");
+	for (guint i = 0; i < r->locations->len; i++) {
+		const gchar *id = g_ptr_array_index (r->locations, i);
+
+		if (i > 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "id", id);   g_string_append_c (out, ',');
+		fs_json_kv_str (out, "name", fs_intel_config_label (config, id));
+		g_string_append_c (out, '}');
+	}
+	g_string_append (out, "],\"locations_unknown\":[");
+	for (guint i = 0; i < r->locations_unknown->len; i++) {
+		if (i > 0)
+			g_string_append_c (out, ',');
+		fs_json_string (out, g_ptr_array_index (r->locations_unknown, i));
+	}
+	g_string_append (out, "],");
+	fs_json_key (out, "location");
+	if (!lookup_geo_on (config)) {
+		g_string_append (out, "null");
+		return;
+	}
+	g_string_append_c (out, '{');
+	fs_json_kv_bool (out, "found", r->geo_found);       g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "unknown", r->geo_unknown);   g_string_append_c (out, ',');
+	if (!r->geo_found && !r->geo_unknown) {
+		gchar *why = lookup_geo_missing (config, addr);
+
+		fs_json_kv_str (out, "why_none", why);
+		g_string_append_c (out, ',');
+		g_free (why);
+	}
+	fs_json_kv_str (out, "country", r->country[0] ? r->country : NULL);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "country_name", r->country_name);
+	g_string_append_c (out, ',');
+	if (r->asn != 0)
+		fs_json_kv_uint (out, "asn", r->asn);
+	else
+		g_string_append (out, "\"asn\":null");
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "as_name", r->as_name);        g_string_append_c (out, ',');
+	fs_json_kv_str (out, "network", r->network);        g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "anycast",
+	                 (r->geo_flags & FS_GEODB_FLAG_ANYCAST) != 0);
+	g_string_append_c (out, ',');
+	fs_json_kv_uint (out, "flags", r->geo_flags);       g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "via_nat64", r->geo_via_nat64); g_string_append_c (out, ',');
+	fs_json_kv_str (out, "meaning", "registered in");    g_string_append_c (out, ',');
+	attribution = fs_intel_geo_attribution ();
+	fs_json_kv_str (out, "attribution", attribution);
+	g_free (attribution);
+	g_string_append_c (out, '}');
+}
+
 
 static gint
 intel_lookup (gint argc, gchar **argv)
@@ -2001,7 +3247,9 @@ intel_lookup (gint argc, gchar **argv)
 			fs_json_kv_str (out, "name", fs_intel_config_label (config, id));
 			g_string_append_c (out, '}');
 		}
-		g_string_append (out, "]}");
+		g_string_append (out, "],");
+		lookup_geo_json (out, config, &r, argv[0]);
+		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else {
@@ -2045,8 +3293,14 @@ intel_lookup (gint argc, gchar **argv)
 			        "(threat intel %s).\n", fs_cli_amber (),
 			        fs_cli_reset (), sentence, dir_word (r.dir), why,
 			        fs_intel_state_to_string (r.state));
-		} else if (r.sources->len == 0)
-			printf ("%sNOT LISTED%s  no list that is turned on holds %s.\n",
+		} else if (r.locations_unknown->len > 0 && !r.blocked) {
+			/* Review GEO-1: never "not listed" for what cannot be
+			 * read. */
+			printf ("%sMAYBE BLOCKED%s  %s\n", fs_cli_amber (),
+			        fs_cli_reset (), sentence);
+		} else if (r.sources->len == 0 && r.locations->len == 0)
+			printf ("%sNOT LISTED%s  no list or country or network rule "
+			        "that is turned on holds %s.\n",
 			        fs_cli_green (), fs_cli_reset (), argv[0]);
 		else {
 			GString *names = g_string_new (NULL);
@@ -2064,11 +3318,19 @@ intel_lookup (gint argc, gchar **argv)
 				g_string_append_printf (names, "%s%s", i ? ", " : "",
 				                        fs_intel_config_label (config, id));
 			}
+			for (guint i = 0; i < r.locations->len; i++) {
+				const gchar *id = g_ptr_array_index (r.locations, i);
+
+				g_string_append_printf (names, "%s%s",
+				                        names->len ? ", " : "",
+				                        fs_intel_config_label (config, id));
+			}
 			printf ("%sLISTED, NOT BLOCKED%s  %s holds %s, but %s.\n",
 			        fs_cli_amber (), fs_cli_reset (), names->str, argv[0],
 			        why);
 			g_string_free (names, TRUE);
 		}
+		lookup_geo_print (config, &r, argv[0]);
 		if (r.blocked || r.in_force)
 			printf ("%sA mistake?  `" FS_CLI_SUDO "stockfw intel except %s' lets it "
 			        "through.%s\n", fs_cli_dim (), argv[0], fs_cli_reset ());
@@ -2111,6 +3373,7 @@ fs_cli_cmd_intel (gint argc, gchar **argv)
 	if (strcmp (sub, "unexcept") == 0)        return intel_except (n, rest, FALSE);
 	if (strcmp (sub, "exceptions") == 0)      return intel_exceptions (n, rest);
 	if (strcmp (sub, "lookup") == 0)          return intel_lookup (n, rest);
+	if (strcmp (sub, "geo") == 0)             return intel_geo (n, rest);
 
 	fs_cli_error ("unknown intel action: %s", sub);
 	fs_cli_hint ("see `stockfw help intel'");

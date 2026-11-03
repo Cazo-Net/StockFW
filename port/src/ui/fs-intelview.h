@@ -4,7 +4,8 @@
  * its licence and credit, its entries, its last and next update, its
  * status (a refused update offers the override that lets it in), its
  * blocked count and its switch; Update now; the allow list
- * (exceptions) and your own blocklist; imported lists; and a lookup.
+ * (exceptions) and your own blocklist; imported lists; blocking by
+ * country or network owner (Linux); and a lookup.
  *
  * Everything that touches the store, the network or the kernel runs in
  * a worker thread (GTask), one job at a time, with progress on the
@@ -72,6 +73,11 @@ gboolean fs_intelview_busy (void);
 
 /* The import file chooser is skipped when this is set (tests). */
 void fs_intelview_set_import_path (const gchar *path);
+
+/* Whether the page offers blocking by country or network owner: 1 or
+ * 0 stands in for fs_intel_geo_supported() (the smoke test shows the
+ * Windows card on Linux this way); -1, the default, asks the engine. */
+void fs_intelview_set_geo_supported (gint supported);
 
 G_END_DECLS
 
