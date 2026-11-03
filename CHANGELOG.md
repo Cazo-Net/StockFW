@@ -198,8 +198,11 @@ It is still read-only and still listens on 127.0.0.1 only.
   Trusted Types, `Permissions-Policy` and `Cross-Origin-Embedder-Policy`.
 - **`--origin-port N`** for `ssh -L N:127.0.0.1:PORT`: the dashboard
   also answers as `127.0.0.1:N`.
-- **WSL:** a browser on the Windows side is refused, with a hint;
-  `--allow-windows` (WSL only) lets it in and the page says so. A
+- **WSL: a browser on the Windows side is refused by default.** It gets
+  a short page (403) that says to start the dashboard with
+  `--allow-windows` or to use a browser inside WSL, and the terminal
+  says the same once. `--allow-windows` (WSL only) lets it in and the
+  page says so. A
   connection whose program has already closed it is never let in that
   way.
 

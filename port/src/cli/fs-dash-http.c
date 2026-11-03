@@ -214,6 +214,53 @@ peer_still_open (GSocketConnection *connection)
 /* The slot group of peers without a socket owner (WSL, 2B). */
 #define OWNERLESS_UID ((uid_t) -1)
 
+/* [ refuse_with_page ]
+ * WSL without --allow-windows: the browser on the Windows side gets a
+ * short page that says how to let it in, not a dropped connection.  The
+ * page is fixed text, nothing of the request is parsed or echoed; what
+ * came in is only drained, so the close does not reset the answer away. */
+static void
+refuse_with_page (GSocketConnection *connection)
+{
+	static const gchar body[] =
+		"<!doctype html><title>StockFW dashboard</title>"
+		"<p>This browser runs on the Windows side of WSL, and the "
+		"dashboard does not let it in by default.</p><p>Start it with "
+		"<code>stockfw dashboard --allow-windows</code> to let it in, or "
+		"open the link with a browser inside WSL.</p>"
+		"<p>The terminal says the same.</p>\n";
+	gchar *page = g_strdup_printf (
+		"HTTP/1.1 403 Forbidden\r\n"
+		"Content-Type: text/html; charset=utf-8\r\n"
+		"Content-Security-Policy: default-src 'none'\r\n"
+		"X-Content-Type-Options: nosniff\r\n"
+		"Cache-Control: no-store\r\n"
+		"Connection: close\r\n"
+		"Content-Length: %" G_GSIZE_FORMAT "\r\n"
+		"\r\n%s", sizeof body - 1, body);
+	GSocket *sock = g_socket_connection_get_socket (connection);
+	gchar sink[4096];
+	gsize sent = 0, len = strlen (page);
+
+	g_socket_set_blocking (sock, FALSE);
+	for (guint i = 0; i < 4; i++)
+		if (g_socket_receive (sock, sink, sizeof sink, NULL, NULL) <= 0)
+			break;
+	while (sent < len) {
+		gssize n = g_socket_send (sock, page + sent, len - sent, NULL,
+		                          NULL);
+
+		if (n <= 0)
+			break;
+		sent += (gsize) n;
+	}
+	g_free (page);
+	g_socket_shutdown (sock, FALSE, TRUE, NULL);
+	for (guint i = 0; i < 4; i++)
+		if (g_socket_receive (sock, sink, sizeof sink, NULL, NULL) <= 0)
+			break;
+}
+
 /* [ peer_allowed ] -- the accept-time checks, before any byte is read. */
 static gboolean
 peer_allowed (FsDashHttp *http, GSocketConnection *connection, uid_t *uid,
@@ -262,6 +309,7 @@ peer_allowed (FsDashHttp *http, GSocketConnection *connection, uid_t *uid,
 			} else if (found == FS_DASH_PEER_ABSENT &&
 			           http->ownerless_refused != NULL) {
 				http->ownerless_refused (NULL, http->ownerless_data);
+				refuse_with_page (connection);
 			}
 		}
 		g_free (text);

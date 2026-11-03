@@ -589,8 +589,15 @@ if [ "$ROOT" = 1 ]; then
   # owner, as Windows' relay is expected to.
   export STOCKFW_TEST_WSL=1 STOCKFW_TEST_OWNERLESS_UID=65534
   start_dash "$W/stockfw-test" "$DPORT"
-  check "WSL, fail-closed: a peer with no socket owner is closed at accept (000)" \
-    [ "$(as_nobody curl -sS -o /dev/null -w '%{http_code}' "$B/" 2>/dev/null)" = 000 ]
+  wsl_refused_page () {
+    local out
+    out=$(as_nobody curl -sS -w '\n%{http_code}' "$B/?code=0123" 2>/dev/null)
+    [ "$(printf '%s' "$out" | tail -n 1)" = 403 ] &&
+      printf '%s' "$out" | grep -q -- '--allow-windows' &&
+      ! printf '%s' "$out" | grep -q -e 0123 -e fingerprint
+  }
+  check "WSL, fail-closed: a peer with no socket owner gets 403 and a page naming --allow-windows, nothing else" \
+    wsl_refused_page
   sleep 0.3
   check "  ...and the terminal says how to let it in" \
     grep -q -- '--allow-windows' "$W/dash.txt"
