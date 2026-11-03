@@ -3196,6 +3196,12 @@ t "3E: ...y stops it" bash -c "grep -q '^0 Firewall stopped' '$E/stop2' && ! ipt
 "$S" stop < /dev/null > "$E/stop3" 2>&1; rc=$?
 t "3E: stop with no terminal on stdin and no --yes stops as before (rc $rc)" \
   bash -c "[ $rc -eq 0 ] && ! grep -q 'Stop the firewall' '$E/stop3' && ! iptables -S INBOUND > /dev/null 2>&1"
+# A script or service whose stdin is a pipe that stays open (no EOF)
+# must not wait for an answer either: the prompt is only for a terminal.
+"$S" start > /dev/null 2>&1
+timeout 10 "$S" stop < <(sleep 20) > "$E/stop3p" 2>&1; rc=$?
+t "3E: stop with an open pipe on stdin never waits for input (rc $rc, 124 = hung)" \
+  bash -c "[ $rc -eq 0 ] && ! grep -q 'Stop the firewall' '$E/stop3p' && ! iptables -S INBOUND > /dev/null 2>&1"
 "$S" start > /dev/null 2>&1
 python3 -I - "$S" > "$E/stop4" 2>&1 <<'PY'
 import os, subprocess, sys
