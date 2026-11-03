@@ -25,11 +25,13 @@
 
 #include <glib.h>
 #include "core/fs-apply.h"
+#include "core/fs-autoblock.h"
 #include "core/fs-backend.h"
 #include "core/fs-intel.h"
 #include "core/fs-lockout.h"
 #include "core/fs-prefs.h"
 #include "core/fs-rules.h"
+#include "core/fs-whatif.h"
 
 G_BEGIN_DECLS
 
@@ -132,6 +134,27 @@ typedef struct
 	 * copilot and sentinel, 4C event and What-If actions, 4D trust and
 	 * intel), so the packages merge without touching each other. */
 	/* === PR4-B === */
+	/* sentinel.lift, and sentinel.mode when it lifts (detect) */
+	FsAutoblockLift *lift;
+	/* sentinel.mode: the mode before and after */
+	gchar           *mode_was;
+	gchar           *mode;
+	/* copilot.block, copilot.fix, copilot.undo: the change log entry
+	 * written (or undone), 0 for none; change_error when the change was
+	 * made but could not be written to the log */
+	guint            change_id;
+	gchar           *change_error;
+	gchar           *change_kind;  /* undo: "health-fix", "block-rule" */
+	/* copilot.fix: what the fix was */
+	gchar           *fix_label;
+	gchar           *fix_before;
+	gchar           *fix_after;
+	gchar           *fix_whatif;   /* the finding's What-If line        */
+	/* copilot.block: the What-If line and its verdicts before and
+	 * after the rule (the check that it blocks what it should) */
+	gchar           *whatif_line;
+	FsWhatIfVerdict  whatif_before;
+	FsWhatIfVerdict  whatif_after;
 	/* === end PR4-B === */
 	/* === PR4-C === */
 	/* === end PR4-C === */
@@ -162,6 +185,21 @@ typedef struct
  *   settings.set    keys as, values as, reset as (keys back to
  *                   the table's default)                     (root)
  *   settings.apply  yes b                                    (root)
+ * PR 4, 4B (all root, except copilot.fix and copilot.undo of a fix,
+ * which only save the policy, as policy.replace does):
+ *   sentinel.lift   target s | all b | expired b (one of them)
+ *   sentinel.mode   mode s ("auto", "detect"); detect lifts every block
+ *   copilot.block   kind s (outbound-deny-to), csv s, whatif s, yes b:
+ *                   checked by What-If (ALLOWED now, BLOCKED with the
+ *                   rule), saved, put live by fs_firewall_add_live and
+ *                   logged in the change log (fs-changelog.h)
+ *   copilot.fix     number u (1-based, in fs_health_check's order),
+ *                   before s, after s, label s: the finding is checked
+ *                   again under the lock, and CONFLICT when its fix is
+ *                   not the one the caller showed; saved and logged
+ *   copilot.undo    id u: a change of the log put back (a fix: the
+ *                   policy saved again; a block: removed and lifted
+ *                   live through fs_firewall_lift_live)
  * An unknown op is USAGE. */
 FsControlResult *fs_control_do (const FsControlActor *actor,
                                 const gchar *op, GVariant *params);

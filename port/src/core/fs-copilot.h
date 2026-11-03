@@ -339,6 +339,12 @@ gboolean   fs_copilot_baseline_dest_established (FsCopilot *copilot,
 gboolean   fs_copilot_beacon_recheck (FsCopilot *copilot,
                                       FsInsight *insight);
 
+/* "What is checked": one sentence per check, its numbers taken from
+ * the constants the checks use, so the text cannot drift from the
+ * engine.  NULL-ended; g_strfreev.  (PR 4, 4B: `stockfw copilot
+ * checks'.) */
+gchar    **fs_copilot_checks (void);
+
 G_END_DECLS
 
 #endif /* FS_COPILOT_H */

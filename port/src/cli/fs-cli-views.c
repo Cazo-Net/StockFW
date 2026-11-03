@@ -796,8 +796,10 @@ block_why (const FsCliSentinelBlock *b)
 	return c;
 }
 
-static gint
-fs_cli_cmd_sentinel (gint argc, gchar **argv)
+/* [ fs_cli_sentinel_list ] -- `sentinel [list]'; the command itself
+ * is in fs-cli-copilot.c (PR 4, 4B). */
+gint
+fs_cli_sentinel_list (gint argc, gchar **argv)
 {
 	static const gchar *const subs[] = { "list", NULL };
 	gchar *path, *mode;
@@ -821,8 +823,7 @@ fs_cli_cmd_sentinel (gint argc, gchar **argv)
 			if (best != NULL)
 				fs_cli_hint ("did you mean `sentinel %s'?", best);
 			else
-				fs_cli_hint ("this version only lists Sentinel's blocks: "
-				             "`sentinel list'");
+				fs_cli_hint ("stockfw sentinel list|lift|mode");
 			return FS_EXIT_USAGE;
 		}
 		fs_cli_error ("unexpected argument: %s", argv[i]);
@@ -939,7 +940,7 @@ fs_cli_cmd_sentinel (gint argc, gchar **argv)
 		}
 		if (!fs_cli.quiet && !fs_cli.plain && rows->len > 0)
 			fprintf (stderr, "%sA block lifts %u minutes after it was "
-			         "staged.  This list is read-only.%s\n",
+			         "staged.  `stockfw sentinel lift' lifts it now.%s\n",
 			         fs_cli_dim (), FS_AUTOBLOCK_TTL_S / 60,
 			         fs_cli_reset ());
 	}
@@ -972,9 +973,6 @@ static const FsCliOption audit_opts[] = {
 	{ NULL, FALSE, NULL }
 };
 
-static const FsCliOption sentinel_opts[] = {
-	{ NULL, FALSE, NULL }
-};
 /* === end WP-C commands === */
 
 const FsCliCommandDef fs_cli_views_commands[] = {
@@ -997,15 +995,6 @@ const FsCliCommandDef fs_cli_views_commands[] = {
 "one, and must name a regular file.  Exit 1 when there is no log.\n",
 	  audit_opts, NULL },
 
-	{ "sentinel", fs_cli_cmd_sentinel,
-"Usage: stockfw sentinel [list] [--json]\n"
-"\n"
-"Sentinel's staged blocks, read from its state file and never\n"
-"changed: the address, the rule (as KIND:N in `policy list'), when it\n"
-"was staged, when it lifts (ten minutes later) and why.  The header\n"
-"gives Sentinel's mode (auto or detect).  Lifting a block by hand is\n"
-"not in this version.\n",
-	  sentinel_opts, NULL },
 	/* === end WP-C commands === */
 	{ NULL, NULL, NULL, NULL, NULL }
 };

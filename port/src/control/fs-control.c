@@ -9,8 +9,11 @@
  * of this one, never overwritten.
  *--------------------------------------------------------------------*/
 #include "control/fs-control.h"
+#include "control/fs-changelog.h"
 #include "core/fs-audit.h"
 #include "core/fs-autoblock.h"
+#include "core/fs-copilot.h"
+#include "core/fs-health.h"
 #include "core/fs-hostnet.h"
 #include "core/fs-iprange.h"
 #include "core/fs-json.h"
@@ -1246,6 +1249,567 @@ op_settings_apply (FsControlResult *r, const FsControlActor *actor,
  * helpers and fs_intel_exceptions_from_text (4A). */
 
 /* === PR4-B === */
+
+/* [ live_context ]
+ * The backend's context for a live edit (add_live, lift_live): the
+ * policy as saved and the settings that are live -- the journal's when
+ * it records them (3B), else the saved preferences -- so a live edit
+ * never carries a settings change nobody applied. */
+static void
+live_context (const FsPolicy *policy)
+{
+	FsSettings *settings = fs_settings_from_journal (NULL);
+
+	if (settings == NULL) {
+		settings = fs_settings_new ();
+		fs_settings_load_prefs (settings);
+	}
+	hand_context (policy_copy (policy), settings);
+}
+
+/* [ live_failed ] -- an outcome that is neither OK, held nor a dry
+ * run (a stopped firewall's "recorded for the next start"). */
+static gboolean
+live_failed (const FsApplyOutcome *o)
+{
+	return o != NULL && !o->held && o->result != FS_APPLY_OK &&
+	       o->result != FS_APPLY_DRY_RUN;
+}
+
+/* [ lift_done ] -- the status of a lift helper's result. */
+static void
+lift_done (FsControlResult *r, FsAutoblockLift *lift, const GError *error)
+{
+	r->lift = lift;
+	if (lift == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s",
+		      error != NULL ? error->message : "the lift did not run");
+		return;
+	}
+	if (live_failed (lift->outcome)) {
+		fail (r, lift->outcome->result == FS_APPLY_NO_PRIVILEGE
+		      ? FS_CONTROL_NEED_ROOT : FS_CONTROL_FAILED, NULL,
+		      "the blocks left the policy, but the firewall was not "
+		      "changed: %s", error != NULL ? error->message
+		      : fs_util_apply_result_to_string (
+		            (int) lift->outcome->result));
+		return;
+	}
+	if (!lift->state_saved)
+		fail (r, FS_CONTROL_FAILED, NULL,
+		      "Sentinel's state file could not be written");
+}
+
+/* [ op_sentinel_lift ] -- G8, A16: `sentinel lift TARGET|--all|
+ * --expired'. */
+static void
+op_sentinel_lift (FsControlResult *r, const FsControlActor *actor,
+                  GVariant *params)
+{
+	const gchar *target = p_str (params, "target");
+	gboolean all = p_bool (params, "all");
+	gboolean expired = p_bool (params, "expired");
+	FsAutoblockLift *lift;
+	FsPolicyLock *lock;
+	GError *error = NULL;
+
+	if ((target != NULL && *target != '\0') + all + expired != 1) {
+		fail (r, FS_CONTROL_USAGE, NULL,
+		      "name one of target, all or expired");
+		return;
+	}
+	if (!need_root (r, actor))
+		return;
+	lock = fs_policy_lock (&error);
+	if (lock == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		g_error_free (error);
+		return;
+	}
+	r->policy = load_policy (r, TRUE, NULL);
+	if (r->policy == NULL) {
+		fs_policy_unlock (lock);
+		return;
+	}
+	fs_prefs_load ();
+	live_context (r->policy);
+	if (all)
+		lift = fs_autoblock_lift_all (fs_backend (), r->policy, NULL,
+		                              actor->channel,
+		                              fs_apply_hold_reason (), &error);
+	else if (expired)
+		lift = fs_autoblock_lift_expired (fs_backend (), r->policy,
+		                                  g_get_real_time () /
+		                                  G_USEC_PER_SEC, actor->channel,
+		                                  fs_apply_hold_reason (), &error);
+	else
+		lift = fs_autoblock_lift_for_dest (fs_backend (), r->policy,
+		                                   target, "lifted by user",
+		                                   actor->channel,
+		                                   fs_apply_hold_reason (),
+		                                   &error);
+	lift_done (r, lift, error);
+	g_clear_error (&error);
+	fs_policy_unlock (lock);
+}
+
+/* [ op_sentinel_mode ] -- G1: the mode saved; "detect" lifts every
+ * block Sentinel staged, as the Copilot page's switch does. */
+static void
+op_sentinel_mode (FsControlResult *r, const FsControlActor *actor,
+                  GVariant *params)
+{
+	const gchar *mode = p_str (params, "mode");
+	const gchar *keys[1] = { FS_PREFS_SENTINEL_MODE };
+	const gchar *values[1];
+	FsPolicyLock *lock;
+	GError *error = NULL;
+	gboolean bad = FALSE;
+
+	if (g_strcmp0 (mode, "auto") != 0 && g_strcmp0 (mode, "detect") != 0) {
+		fail (r, FS_CONTROL_USAGE, NULL,
+		      "Sentinel's mode is auto or detect, not %s",
+		      mode != NULL ? mode : "(none)");
+		return;
+	}
+	if (!need_root (r, actor))
+		return;
+	lock = fs_policy_lock (&error);
+	if (lock == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		g_error_free (error);
+		return;
+	}
+	fs_prefs_load ();
+	r->mode_was = fs_prefs_get_string (FS_PREFS_SENTINEL_MODE, "auto");
+	if (r->mode_was == NULL || *r->mode_was == '\0') {
+		g_free (r->mode_was);
+		r->mode_was = g_strdup ("auto");
+	}
+	values[0] = mode;
+	if (!fs_prefs_set_persist (keys, values, 1, &bad, &error)) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		g_clear_error (&error);
+		fs_policy_unlock (lock);
+		return;
+	}
+	r->prefs_unreadable = bad;
+	r->mode = g_strdup (mode);
+	{
+		gchar *detail = g_strdup_printf ("%s -> %s (%s)", r->mode_was,
+		                                 mode, actor->channel);
+
+		fs_audit_log ("sentinel mode", detail);
+		g_free (detail);
+	}
+
+	if (strcmp (mode, "detect") == 0) {
+		FsAutoblockLift *lift;
+
+		r->policy = load_policy (r, TRUE, NULL);
+		if (r->policy == NULL) {
+			/* The mode is saved; the blocks stay until they
+			 * expire.  r says why. */
+			fs_policy_unlock (lock);
+			return;
+		}
+		live_context (r->policy);
+		lift = fs_autoblock_lift_all (fs_backend (), r->policy,
+		                              "Sentinel switched to detect only",
+		                              actor->channel,
+		                              fs_apply_hold_reason (), &error);
+		lift_done (r, lift, error);
+		g_clear_error (&error);
+	}
+	fs_policy_unlock (lock);
+}
+
+/* [ whatif_verdict ] -- `line' against `policy' with the saved
+ * preferences, the firewall taken as running the policy. */
+static FsWhatIfVerdict
+whatif_verdict (const FsControlActor *actor, const FsPolicy *policy,
+                const FsSettings *settings, const gchar *line)
+{
+	FsWhatIfContext *ctx = fs_whatif_context_new (
+		fs_whatif_native_platform (), policy, settings);
+	FsWhatIfResult *w;
+	FsWhatIfVerdict v;
+
+	fs_copilot_whatif_observe (ctx, fs_backend (), actor->uid == 0);
+	ctx->firewall = FS_WHATIF_FW_RUNNING;
+	ctx->live = FS_WHATIF_LIVE_YES;
+	w = fs_whatif_simulate_text (ctx, line);
+	v = w->verdict;
+	fs_whatif_result_free (w);
+	fs_whatif_context_free (ctx);
+	return v;
+}
+
+/* [ block_verdicts ]
+ * The What-If check of a block rule (ui/fs-copilot.c block_rule_verify):
+ * `line' against the saved policy, then with `rule' added.  The rule is
+ * a help only when it turns ALLOWED into BLOCKED. */
+static void
+block_verdicts (FsControlResult *r, const FsControlActor *actor,
+                const FsPolicy *policy, const FsRule *rule,
+                const gchar *line)
+{
+	FsSettings *settings = fs_settings_new ();
+	FsPolicy *with = policy_copy (policy);
+
+	fs_settings_load_prefs (settings);
+	r->whatif_before = whatif_verdict (actor, policy, settings, line);
+	fs_policy_add (with, (FsRule *) rule);   /* copied */
+	r->whatif_after = whatif_verdict (actor, with, settings, line);
+	fs_policy_free (with);
+	fs_settings_free (settings);
+}
+
+/* [ op_copilot_block ] -- G7: "Block outbound to this address". */
+static void
+op_copilot_block (FsControlResult *r, const FsControlActor *actor,
+                  GVariant *params)
+{
+	const gchar *csv = p_str (params, "csv");
+	const gchar *line = p_str (params, "whatif");
+	FsRuleKind kind;
+	FsPolicyLock *lock;
+	FsPolicy *add, *journal;
+	GError *error = NULL;
+
+	if (!fs_control_kind_parse (p_str (params, "kind"), &kind) ||
+	    kind != FS_RULE_OUTBOUND_DENY_TO) {
+		fail (r, FS_CONTROL_USAGE, NULL,
+		      "a Copilot block is an outbound-deny-to rule");
+		return;
+	}
+	if (csv == NULL || line == NULL || *line == '\0') {
+		fail (r, FS_CONTROL_USAGE, NULL,
+		      "a Copilot block needs its rule and its What-If line");
+		return;
+	}
+	r->rule = fs_rule_from_csv (kind, csv);
+	if (r->rule == NULL) {
+		fail (r, FS_CONTROL_USAGE, NULL, "the rule could not be read");
+		return;
+	}
+	/* The user's own rule now, not Sentinel's: a "Sentinel:" comment
+	 * would let a later lift for the address take it out
+	 * (fs_autoblock_lift_for_dest). */
+	if (r->rule->comment != NULL &&
+	    g_str_has_prefix (r->rule->comment, "Sentinel:")) {
+		gchar *c = g_strconcat ("Copilot:",
+		                        r->rule->comment + strlen ("Sentinel:"),
+		                        NULL);
+
+		g_free (r->rule->comment);
+		r->rule->comment = c;
+	}
+	if (!rule_checked (r, r->rule))
+		return;
+	r->whatif_line = g_strdup (line);
+	r->whatif_before = r->whatif_after = FS_WHATIF_ERROR;
+	if (!need_root (r, actor))
+		return;
+
+	lock = fs_policy_lock (&error);
+	if (lock == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		g_error_free (error);
+		return;
+	}
+	fs_prefs_load ();
+	r->policy = load_policy (r, TRUE, NULL);
+	if (r->policy == NULL)
+		goto out;
+	if (fs_policy_contains (r->policy, r->rule)) {
+		r->already = TRUE;
+		r->number = rule_number (r->policy, r->rule);
+		fail (r, FS_CONTROL_USAGE, NULL,
+		      "that rule is already in your policy");
+		goto out;
+	}
+
+	/* Checked again now, on the policy as it is under the lock. */
+	block_verdicts (r, actor, r->policy, r->rule, line);
+	if (r->whatif_before != FS_WHATIF_ALLOWED) {
+		fail (r, FS_CONTROL_USAGE, NULL,
+		      "What-If says \"%s\" is %s already, so a block rule would "
+		      "change nothing", line,
+		      fs_whatif_verdict_name (r->whatif_before));
+		goto out;
+	}
+	if (r->whatif_after != FS_WHATIF_BLOCKED) {
+		fail (r, FS_CONTROL_USAGE, NULL,
+		      "What-If says the rule would leave \"%s\" %s", line,
+		      fs_whatif_verdict_name (r->whatif_after));
+		goto out;
+	}
+
+	/* The lockout guard, on what goes live: the journal plus the rule. */
+	journal = fs_policy_new ();
+	if (fs_apply_hold_reason () == NULL &&
+	    fs_apply_journal_load (journal, NULL)) {
+		FsSettings *settings = fs_settings_from_journal (NULL);
+		gboolean ok;
+
+		if (settings == NULL) {
+			settings = fs_settings_new ();
+			fs_settings_load_prefs (settings);
+		}
+		if (!fs_policy_contains (journal, r->rule))
+			fs_policy_add (journal, r->rule);
+		ok = guard (r, journal, settings, p_bool (params, "yes"));
+		fs_settings_free (settings);
+		if (!ok) {
+			fs_policy_free (journal);
+			goto out;
+		}
+	}
+	fs_policy_free (journal);
+
+	if (!fs_policy_add_persist (r->policy, r->rule)) {
+		save_failed (r);
+		goto out;
+	}
+	r->saved = TRUE;
+	r->number = rule_number (r->policy, r->rule);
+	{
+		gchar *row = fs_rule_to_csv (r->rule);
+		gchar *detail = g_strdup_printf ("%s (%s)", row, actor->channel);
+
+		fs_audit_log ("copilot block rule added", detail);
+		g_free (detail);
+		r->change_id = fs_changelog_add_block_rule (kind, row,
+		                                            actor->channel,
+		                                            &error);
+		g_free (row);
+		if (r->change_id == 0) {
+			r->change_error = g_strdup (error->message);
+			g_clear_error (&error);
+		}
+	}
+
+	add = fs_policy_new ();
+	fs_policy_add (add, r->rule);
+	live_context (r->policy);
+	r->outcome = fs_firewall_add_live (fs_backend (), add, actor->channel,
+	                                   fs_apply_hold_reason (), &error);
+	fs_policy_free (add);
+	if (r->outcome == NULL && error != NULL)
+		fail (r, FS_CONTROL_FAILED, NULL,
+		      "the rule is saved, but it was not put live: %s",
+		      error->message);
+	else if (live_failed (r->outcome))
+		fail (r, r->outcome->result == FS_APPLY_NO_PRIVILEGE
+		      ? FS_CONTROL_NEED_ROOT : FS_CONTROL_FAILED, NULL,
+		      "the rule is saved, but it was not put live: %s",
+		      error != NULL ? error->message
+		      : fs_util_apply_result_to_string (
+		            (int) r->outcome->result));
+	g_clear_error (&error);
+out:
+	fs_policy_unlock (lock);
+}
+
+/* [ health_findings ] -- the Copilot page's health check on `policy',
+ * with the context `copilot health' builds. */
+static GPtrArray *
+health_findings (const FsControlActor *actor, const FsPolicy *policy)
+{
+	FsSettings *settings = fs_settings_new ();
+	FsWhatIfContext *ctx;
+	GPtrArray *findings;
+	gchar *prefix;
+
+	fs_settings_load_prefs (settings);
+	ctx = fs_whatif_context_new (fs_whatif_native_platform (), policy,
+	                             settings);
+	fs_copilot_whatif_observe (ctx, fs_backend (), actor->uid == 0);
+	prefix = fs_health_lan_prefix_auto (fs_backend ());
+	findings = fs_health_check (ctx, prefix);
+	g_free (prefix);
+	fs_whatif_context_free (ctx);
+	fs_settings_free (settings);
+	return findings;
+}
+
+/* [ op_copilot_fix ] -- G11: a health fix, made only when the check,
+ * run again under the lock, still offers the fix the caller showed. */
+static void
+op_copilot_fix (FsControlResult *r, const FsControlActor *actor,
+                GVariant *params)
+{
+	guint number = p_uint (params, "number");
+	const gchar *before = p_str (params, "before");
+	const gchar *after = p_str (params, "after");
+	const gchar *label = p_str (params, "label");
+	FsPolicyLock *lock;
+	GPtrArray *findings = NULL;
+	const FsHealthFinding *f;
+	FsHealthUndo *undo = NULL;
+	GError *error = NULL;
+	gchar *why = NULL;
+
+	if (number == 0 || before == NULL || label == NULL) {
+		fail (r, FS_CONTROL_USAGE, NULL,
+		      "a fix needs the finding's number, its before row and its "
+		      "label");
+		return;
+	}
+	lock = fs_policy_lock (&error);
+	if (lock == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		g_error_free (error);
+		return;
+	}
+	fs_prefs_load ();
+	r->policy = load_policy (r, TRUE, NULL);
+	if (r->policy == NULL)
+		goto out;
+	findings = health_findings (actor, r->policy);
+	f = number <= findings->len ? g_ptr_array_index (findings, number - 1)
+	                            : NULL;
+	if (f == NULL || f->fix == FS_HEALTH_FIX_NONE || !f->verified ||
+	    g_strcmp0 (f->fix_before, before) != 0 ||
+	    g_strcmp0 (f->fix_after, after) != 0 ||
+	    g_strcmp0 (f->fix_label, label) != 0) {
+		fail (r, FS_CONTROL_CONFLICT, NULL,
+		      "the policy changed since the check, and finding %u no "
+		      "longer offers that fix; nothing was written", number);
+		goto out;
+	}
+	r->fix_label = g_strdup (f->fix_label);
+	r->fix_before = g_strdup (f->fix_before);
+	r->fix_after = g_strdup (f->fix_after);
+	r->fix_whatif = g_strdup (f->whatif_line);
+	if (!fs_health_fix_apply (r->policy, f, &undo, &why)) {
+		fail (r, FS_CONTROL_FAILED, NULL, "nothing was changed: %s",
+		      why != NULL ? why : "?");
+		g_free (why);
+		goto out;
+	}
+	r->saved = TRUE;
+	r->change_id = fs_changelog_add_health_fix (undo, actor->channel,
+	                                            &error);
+	if (r->change_id == 0) {
+		r->change_error = g_strdup (error->message);
+		g_clear_error (&error);
+	}
+	fs_health_undo_free (undo);
+out:
+	if (findings != NULL)
+		g_ptr_array_unref (findings);
+	fs_policy_unlock (lock);
+}
+
+/* [ op_copilot_undo ] -- G13: a change of the log put back. */
+static void
+op_copilot_undo (FsControlResult *r, const FsControlActor *actor,
+                 GVariant *params)
+{
+	guint id = p_uint (params, "id");
+	FsPolicyLock *lock;
+	FsChange *c;
+	GError *error = NULL;
+	gchar *why = NULL;
+
+	lock = fs_policy_lock (&error);
+	if (lock == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		g_error_free (error);
+		return;
+	}
+	c = fs_changelog_find (id, &error);
+	if (c == NULL) {
+		if (error != NULL)
+			fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		else
+			fail (r, FS_CONTROL_USAGE, NULL,
+			      "there is no change %u in the change log", id);
+		g_clear_error (&error);
+		fs_policy_unlock (lock);
+		return;
+	}
+	r->change_id = c->id;
+	r->change_kind = g_strdup (fs_change_kind_name (c->kind));
+	r->fix_label = g_strdup (c->label);
+	if (c->undone_at != 0) {
+		fail (r, FS_CONTROL_USAGE, NULL, "change %u was undone already",
+		      id);
+		goto out;
+	}
+	if (c->kind == FS_CHANGE_BLOCK_RULE && !need_root (r, actor))
+		goto out;
+
+	fs_prefs_load ();
+	r->policy = load_policy (r, TRUE, NULL);
+	if (r->policy == NULL)
+		goto out;
+
+	if (c->kind == FS_CHANGE_HEALTH_FIX) {
+		r->fix_before = g_strdup (c->undo->before_csv);
+		r->fix_after = g_strdup (c->undo->after_csv);
+		if (!fs_health_undo_apply (r->policy, c->undo, &why)) {
+			fail (r, FS_CONTROL_FAILED, NULL, "nothing was changed: %s",
+			      why != NULL ? why : "?");
+			g_free (why);
+			goto out;
+		}
+	} else {
+		FsRule *rule = fs_rule_from_csv (c->rule_kind, c->csv);
+		FsPolicy *lift;
+
+		if (rule == NULL || !fs_policy_contains (r->policy, rule)) {
+			fs_rule_free (rule);
+			fail (r, FS_CONTROL_FAILED, NULL,
+			      "the rule is no longer in the policy; nothing was "
+			      "changed");
+			goto out;
+		}
+		if (!fs_policy_remove_persist (r->policy, rule)) {
+			fs_rule_free (rule);
+			save_failed (r);
+			goto out;
+		}
+		r->rule = rule;
+		{
+			gchar *detail = g_strdup_printf ("%s (%s)", c->csv,
+			                                 actor->channel);
+
+			fs_audit_log ("copilot block rule undone", detail);
+			g_free (detail);
+		}
+		lift = fs_policy_new ();
+		fs_policy_add (lift, rule);
+		live_context (r->policy);
+		r->outcome = fs_firewall_lift_live (fs_backend (), lift,
+		                                    actor->channel,
+		                                    fs_apply_hold_reason (),
+		                                    &error);
+		fs_policy_free (lift);
+		if (r->outcome == NULL && error != NULL)
+			fail (r, FS_CONTROL_FAILED, NULL,
+			      "the rule left the policy, but not the firewall: %s",
+			      error->message);
+		else if (live_failed (r->outcome))
+			fail (r, FS_CONTROL_FAILED, NULL,
+			      "the rule left the policy, but not the firewall: %s",
+			      error != NULL ? error->message
+			      : fs_util_apply_result_to_string (
+			            (int) r->outcome->result));
+		g_clear_error (&error);
+	}
+	r->saved = TRUE;
+	if (!fs_changelog_mark_undone (c->id, actor->channel, &error)) {
+		r->change_error = g_strdup (error->message);
+		g_clear_error (&error);
+	}
+out:
+	fs_change_free (c);
+	fs_policy_unlock (lock);
+}
+
 /* === end PR4-B === */
 
 /* === PR4-C === */
@@ -1275,6 +1839,11 @@ static const struct
 	{ "settings.apply", op_settings_apply },
 	/* PR 4: each package adds its ops between its markers. */
 	/* === PR4-B === */
+	{ "sentinel.lift",  op_sentinel_lift },
+	{ "sentinel.mode",  op_sentinel_mode },
+	{ "copilot.block",  op_copilot_block },
+	{ "copilot.fix",    op_copilot_fix },
+	{ "copilot.undo",   op_copilot_undo },
 	/* === end PR4-B === */
 	/* === PR4-C === */
 	/* === end PR4-C === */
@@ -1343,6 +1912,16 @@ fs_control_result_free (FsControlResult *r)
 	fs_policy_free (r->lockout_policy);
 	fs_prefs_check_free (r->check);
 	/* === PR4-B === */
+	fs_autoblock_lift_free (r->lift);
+	g_free (r->mode_was);
+	g_free (r->mode);
+	g_free (r->change_error);
+	g_free (r->change_kind);
+	g_free (r->fix_label);
+	g_free (r->fix_before);
+	g_free (r->fix_after);
+	g_free (r->fix_whatif);
+	g_free (r->whatif_line);
 	/* === end PR4-B === */
 	/* === PR4-C === */
 	/* === end PR4-C === */
@@ -1396,6 +1975,65 @@ issues_json (GString *out, const gchar *key, const GPtrArray *list)
 	}
 	g_string_append_c (out, ']');
 }
+
+/* === PR4-B === */
+/* [ lift_json ] -- ,"lift":{rows, removed, gone, kept, state_saved,
+ * lifted[{kind, csv}], firewall{...}|null}. */
+static void
+lift_json (GString *out, const FsAutoblockLift *lift)
+{
+	gboolean first = TRUE;
+
+	g_string_append (out, ",\"lift\":{");
+	fs_json_kv_uint (out, "rows", lift->rows);
+	g_string_append_c (out, ',');
+	fs_json_kv_uint (out, "removed", lift->removed);
+	g_string_append_c (out, ',');
+	fs_json_kv_uint (out, "gone", lift->gone);
+	g_string_append_c (out, ',');
+	fs_json_kv_uint (out, "kept", lift->kept);
+	g_string_append_c (out, ',');
+	fs_json_kv_bool (out, "state_saved", lift->state_saved);
+	g_string_append (out, ",\"lifted\":[");
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		for (guint i = 0; i < lift->lifted->kinds[k]->len; i++) {
+			gchar *csv = fs_rule_to_csv (
+				g_ptr_array_index (lift->lifted->kinds[k], i));
+
+			if (!first)
+				g_string_append_c (out, ',');
+			first = FALSE;
+			g_string_append_c (out, '{');
+			fs_json_kv_str (out, "kind", kind_names[k]);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "csv", csv);
+			g_string_append_c (out, '}');
+			g_free (csv);
+		}
+	g_string_append (out, "],\"firewall\":");
+	if (lift->outcome == NULL) {
+		g_string_append (out, "null");
+	} else {
+		const FsApplyOutcome *o = lift->outcome;
+
+		g_string_append_c (out, '{');
+		fs_json_kv_bool (out, "applied", o->applied);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "held", o->held);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "hold_reason", o->hold_reason);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "recorded_for_next_start",
+		                 !o->held && o->result == FS_APPLY_DRY_RUN &&
+		                 o->firewall_was == FS_FW_STOPPED);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "result", fs_util_apply_result_to_string (
+		                    (int) o->result));
+		g_string_append_c (out, '}');
+	}
+	g_string_append_c (out, '}');
+}
+/* === end PR4-B === */
 
 gchar *
 fs_control_result_json (const FsControlResult *r)
@@ -1508,6 +2146,52 @@ fs_control_result_json (const FsControlResult *r)
 		fs_json_kv_bool (out, "unreadable_kept", r->prefs_unreadable);
 	}
 	/* === PR4-B === */
+	if (r->lift != NULL)
+		lift_json (out, r->lift);
+	if (g_strcmp0 (r->op, "sentinel.mode") == 0) {
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "mode_was", r->mode_was);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "mode", r->mode);
+	}
+	if (g_str_has_prefix (r->op, "copilot.")) {
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "saved", r->saved);
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "change_id", r->change_id);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "change_error", r->change_error);
+	}
+	if (g_strcmp0 (r->op, "copilot.undo") == 0) {
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "change_kind", r->change_kind);
+	}
+	if (g_strcmp0 (r->op, "copilot.fix") == 0 ||
+	    g_strcmp0 (r->op, "copilot.undo") == 0) {
+		g_string_append (out, ",\"fix\":{");
+		fs_json_kv_str (out, "label", r->fix_label);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "before", r->fix_before);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "after", r->fix_after);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "whatif", r->fix_whatif);
+		g_string_append_c (out, '}');
+	}
+	if (r->whatif_line != NULL) {
+		gboolean asked = r->whatif_before != FS_WHATIF_ERROR ||
+		                 r->whatif_after != FS_WHATIF_ERROR;
+
+		g_string_append (out, ",\"whatif\":{");
+		fs_json_kv_str (out, "line", r->whatif_line);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "before", asked
+		                ? fs_whatif_verdict_name (r->whatif_before) : NULL);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "after", asked
+		                ? fs_whatif_verdict_name (r->whatif_after) : NULL);
+		g_string_append_c (out, '}');
+	}
 	/* === end PR4-B === */
 	/* === PR4-C === */
 	/* === end PR4-C === */

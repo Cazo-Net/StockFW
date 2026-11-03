@@ -207,6 +207,7 @@ static FsInsight *threat_intel_check (FsCopilot *copilot, const FsHit *hit,
 #define FS_SENTINEL_BEACON_AUTO_MIN    8    /* contacts before auto-block */
 #define FS_SCAN_PORTS_60S              12   /* distinct local ports, 60 s */
 #define FS_SCAN_PORTS_10M              25   /* distinct local ports, 10 min */
+#define FS_SCAN_SHORT_WINDOW_S         60   /* the short scan window, s  */
 #define FS_SCAN_WINDOW_S               600
 #define FS_SCAN_MAX_EVENTS             512  /* per source                */
 #define FS_SCAN_MAX_SOURCES            1024 /* then the stalest goes     */
@@ -3416,7 +3417,7 @@ scan_judge (FsCopilot *copilot, const gchar *subject, gboolean aggregate,
 			const ScanEv *e = &g_array_index (st->ev, ScanEv, i);
 
 			g_hash_table_add (d600, GUINT_TO_POINTER (e->port));
-			if (e->sec >= sec - 60)
+			if (e->sec >= sec - FS_SCAN_SHORT_WINDOW_S)
 				g_hash_table_add (d60, GUINT_TO_POINTER (e->port));
 			if (e->src != NULL)
 				g_hash_table_add (srcs, (gpointer) e->src);
@@ -4051,4 +4052,75 @@ create_insight (FsInsightType type,
 	insight->destination = destination ? g_strdup (destination) : NULL;
 	insight->count = 1;
 	return insight;
+}
+
+/* [ fs_copilot_checks ]
+ * "What is checked", built from the constants the checks above use, so
+ * the words cannot drift from the engine (master plan G5).  The
+ * desktop app keeps its own text (ui/fs-copilot.c); the terminal and
+ * the daemon read this. */
+gchar **
+fs_copilot_checks (void)
+{
+	GPtrArray *out = g_ptr_array_new ();
+	gint cv = (gint) (FS_SENTINEL_BEACON_MAX_CV * 100.0 + 0.5);
+
+	g_ptr_array_add (out, g_strdup_printf (
+#ifdef G_OS_WIN32
+		"Contacts at a near-fixed interval: %d or more, %d s to %d min "
+		"apart, timing varying under %d %% (auto-block needs %d, to an "
+		"unknown public address no other program uses and your policy "
+		"does not allow). DNS to this computer's own DNS servers is not "
+		"timed.",
+#else
+		"Contacts at a near-fixed interval: %d or more, %d s to %d min "
+		"apart, timing varying under %d %% (auto-block needs %d, to an "
+		"unknown public address that traffic on other ports does not use "
+		"and your policy does not allow). DNS to this computer's own DNS "
+		"servers is not timed.",
+#endif
+		FS_SENTINEL_BEACON_MIN_SAMPLES, FS_SENTINEL_BEACON_MIN_MEAN_S,
+		FS_SENTINEL_BEACON_MAX_MEAN_S / 60, cv,
+		FS_SENTINEL_BEACON_AUTO_MIN));
+	g_ptr_array_add (out, g_strdup_printf (
+		"Fan-out: one program reaching %d or more hosts in %d s, or %d "
+		"refused hosts. When the log names a port's service instead of a "
+		"program, only the refused hosts count.",
+		FS_SENTINEL_FANOUT_LIMIT, FS_SENTINEL_FANOUT_WINDOW_S,
+		FS_SENTINEL_FANOUT_BLOCKED));
+	g_ptr_array_add (out, g_strdup_printf (
+		"Inbound scan: one source trying %d ports in %d s, or %d in %d "
+		"min. Addresses of one IPv6 /64 are also counted together.",
+		FS_SCAN_PORTS_60S, FS_SCAN_SHORT_WINDOW_S, FS_SCAN_PORTS_10M,
+		FS_SCAN_WINDOW_S / 60));
+	{
+		GString *names = g_string_new (NULL);
+
+		for (guint i = 0; i < G_N_ELEMENTS (login_ports); i++)
+			g_string_append_printf (names, "%s%s", i == 0 ? ""
+			                        : i + 1 == G_N_ELEMENTS (login_ports)
+			                        ? " or " : ", ",
+			                        login_ports[i].name);
+		g_ptr_array_add (out, g_strdup_printf (
+			"Login attempts: %d in %d min from one source to %s, on "
+			"their usual ports or the ports your policy names for them, "
+			"and whether your policy lets that source in.",
+			FS_BRUTE_ATTEMPTS, FS_BRUTE_WINDOW_S / 60, names->str));
+		g_string_free (names, TRUE);
+	}
+	g_ptr_array_add (out, g_strdup (
+		"Block list or country rule hits, outbound and inbound."));
+	g_ptr_array_add (out, g_strdup_printf (
+		"A known app using a new port, a new public destination (after %d "
+		"days and %d connections), a new hour (after %d hours seen), or a "
+		"rate spike (after %d windows of %d min).",
+		(gint) (FS_NEWDEST_MIN_AGE_S / 86400), FS_NEWDEST_MIN_CONNECTIONS,
+		FS_BEHAVIOR_HOURS_MIN_DISTINCT, FS_BEHAVIOR_RATE_MIN_BUCKETS,
+		FS_BEHAVIOR_WINDOW_S / 60));
+	g_ptr_array_add (out, g_strdup (
+		"Policy health: duplicates, rules another rule covers, allows a "
+		"deny overrides, wide or risky inbound allows, deny rules that "
+		"reach nothing."));
+	g_ptr_array_add (out, NULL);
+	return (gchar **) g_ptr_array_free (out, FALSE);
 }

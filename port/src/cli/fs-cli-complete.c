@@ -34,8 +34,11 @@ static const gchar *intel_geo_subs[] = {
 	"status", "terms", "on", "off", "update", "search", "add", "list",
 	"remove", NULL
 };
-static const gchar *copilot_subs[]  = { "health", NULL };
-static const gchar *sentinel_subs[] = { "list", NULL };
+static const gchar *copilot_subs[]  = {
+	"health", "scan", "show", "block", "checks", "changes", NULL
+};
+static const gchar *sentinel_subs[] = { "list", "lift", "mode", NULL };
+static const gchar *sentinel_modes[] = { "auto", "detect", NULL };
 static const gchar *config_subs[] = {
 	"list", "get", "set", "reset", "apply", "devices", "audit-only", NULL
 };
@@ -279,6 +282,8 @@ emit_positional (Out *o, const FsCliCommandDef *def, GPtrArray *pos)
 	} else if (strcmp (name, "sentinel") == 0) {
 		if (pos->len == 0)
 			emit_all (o, sentinel_subs);
+		else if (pos->len == 1 && strcmp (p0, "mode") == 0)
+			emit_all (o, sentinel_modes);
 	} else if (strcmp (name, "dashboard") == 0) {
 		if (pos->len == 0)
 			emit_all (o, dashboard_subs);
@@ -467,7 +472,9 @@ static const struct { const gchar *name, *what; } environment[] = {
 	{ "STOCKFW_EVENTS_DIR",
 	  "The event history the desktop app keeps (events --history)." },
 	{ "STOCKFW_AUTOBLOCK_FILE",
-	  "Sentinel's state file (sentinel list)." },
+	  "Sentinel's state file (sentinel list and lift)." },
+	{ "STOCKFW_CHANGELOG_FILE",
+	  "The changes copilot block and copilot health --fix made, instead of ~/.config/stockfw/copilot-changes.jsonl (copilot changes)." },
 	{ "STOCKFW_INTEL_DIR",
 	  "The threat-intel store, instead of /var/lib/stockfw/intel." },
 	{ "STOCKFW_LAN_PREFIX",
@@ -612,7 +619,7 @@ fs_cli_man_main (gint argc, gchar **argv)
 		"address.\n"
 		".TP\n.B 6\nsimulate: DEPENDS (allowed in some cases).\n"
 		".TP\n.B 7\ncopilot health: findings at or above "
-		"\\-\\-severity.\n");
+		"\\-\\-severity; copilot scan: findings.\n");
 
 	g_string_append (out, ".SH ENVIRONMENT\n");
 	for (guint i = 0; i < G_N_ELEMENTS (environment); i++) {

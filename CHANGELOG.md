@@ -239,6 +239,16 @@ into `/usr/local/share/doc/stockfw/`.
   list and the firewall. On Linux neither step starts a stopped
   firewall: the change waits for the next start instead.
 <!-- PR4-B -->
+- **Copilot and Sentinel in the terminal.** `stockfw copilot scan`
+  finds what the Copilot page finds, from the kernel log or the saved
+  history; `copilot show ID` explains one finding and `copilot block ID`
+  puts its block on the firewall without the rest of the saved policy.
+  `copilot health --fix N` makes a policy fix, and `copilot changes
+  --undo ID` takes a fix or a block back. `copilot checks` lists what
+  the checks look for. `stockfw sentinel lift` takes Sentinel's blocks
+  down (one address, all, or the expired ones), and `sentinel mode
+  detect` switches it to detect only, lifting its blocks. Questions are
+  asked only on a terminal; elsewhere pass `--yes`.
 <!-- PR4-C -->
 <!-- PR4-D -->
 <!-- PR4-E -->
