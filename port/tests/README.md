@@ -922,7 +922,7 @@ ESTABLISHED filter dropped, loopback addresses in own.
 The footer's Help button is checked to be there on both platforms'
 page sets; what it opens is checked in `fs-help-smoke` below.  The
 About credits are checked here too: the creator line reads exactly
-"Stock Team & Qusai - Creator & Original Developer", and no credit
+"Stockfw Team - Creator & Original Developer", and no credit
 carries an e-mail address.
 
 ## Help and About (`fs-help-smoke`)
@@ -978,7 +978,7 @@ check that failed is in brackets):
 - H6: one Help window; asking again moves and raises it.  (Re-injected:
   a new window each time.)
 - A1: About is a dialog transient for the main window and not modal,
-  one at a time; the first credit reads exactly "Stock Team & Qusai -
+  one at a time; the first credit reads exactly "Stockfw Team -
   Creator & Original Developer", the three credits on this base are
   shown, nothing in it has an `@`; the licence summary names both
   texts the source carries (GPL v2 in `COPYING`, Apache 2.0 in
@@ -3508,7 +3508,7 @@ New checks in `test-core.sh` (end of the script):
   README, `CHANGELOG.md`, `RELEASING.md`, `AUTHORS` and `CREDITS`;
 - **credits guard**: no file in the repository (`git grep`) carries the
   creator's full name or e-mail address, and `AUTHORS`, `CREDITS`, the
-  README and `fs-aboutdialog.c` name "Stock Team & Qusai";
+  README and `fs-aboutdialog.c` name "Stockfw Team";
 - **privacy guard**: Help > Your data names the location database next
   to the blocklists as a download, and the Threat Intel topic says no
   list *and not the location database* means no network request.
@@ -3525,7 +3525,7 @@ Teeth (each in a copy of one file, restored with `cp` and checked with
 | "AI-powered" line in `installer/build_installer.sh` | wording guard |
 | the creator's surname in `AUTHORS` | credits guard (full name) |
 | the old personal e-mail address in the README credits | credits guard (e-mail) |
-| "Stock Team & Qusai" removed from `CREDITS` | credits guard (credit line) |
+| "Stockfw Team" removed from `CREDITS` | credits guard (credit line) |
 | the old Help text (both sentences) | privacy guard, Your data |
 | the old Threat Intel sentence only | privacy guard, Threat Intel |
 | `test-state-windows.sh` without its platform guard | it fails on Linux (`windows.h`) |

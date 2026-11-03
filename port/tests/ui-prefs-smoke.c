@@ -2004,7 +2004,7 @@ check_about_and_theme (void)
 	 * About window itself is covered by fs-help-smoke. */
 	CHECK (credits != NULL && credits[0] != NULL, "About has credits");
 	CHECK (credits != NULL && g_strcmp0 (credits[0],
-	       "Stock Team & Qusai - Creator & Original Developer") == 0,
+	       "Stockfw Team - Creator & Original Developer") == 0,
 	       "the creator line reads as written");
 	for (guint i = 0; credits != NULL && credits[i] != NULL; i++)
 		CHECK (strchr (credits[i], '@') == NULL,

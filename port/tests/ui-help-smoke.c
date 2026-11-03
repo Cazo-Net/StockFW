@@ -1430,8 +1430,8 @@ check_about (void)
 	credit = find_named (about, "about-credit-0");
 	CHECK (credit != NULL && g_strcmp0 (gtk_label_get_text (
 	       GTK_LABEL (credit)),
-	       "Stock Team & Qusai - Creator & Original Developer") == 0,
-	       "[A1] the first credit reads exactly \"Stock Team & Qusai - "
+	       "Stockfw Team - Creator & Original Developer") == 0,
+	       "[A1] the first credit reads exactly \"Stockfw Team - "
 	       "Creator & Original Developer\"");
 	{
 		guint shown = 0;

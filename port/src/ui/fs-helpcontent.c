@@ -1507,7 +1507,7 @@ static const FsHelpBlock about[] = {
 	  "Linux. It began as a port of an earlier GPL firewall tool for "
 	  "Linux and has been rebuilt on GTK 3.") },
 	{ FS_HELP_HEAD, N_("Credits") },
-	{ FS_HELP_ITEM, N_("Stock Team &amp; Qusai - Creator &amp; Original "
+	{ FS_HELP_ITEM, N_("Stockfw Team - Creator &amp; Original "
 	  "Developer") },
 	{ FS_HELP_ITEM, N_("H3xCore - Developer") },
 	{ FS_HELP_ITEM, N_("Stock Team - GTK3 Port, Windows Backend, "

@@ -11442,7 +11442,7 @@ if [ -n "$WORDING_HITS" ]; then
 fi
 echo "ok:   wording guard: no \"AI\" claims in src, installers, docs, README or CHANGELOG"
 
-# Credits: "Stock Team & Qusai - Creator & Original Developer", never the
+# Credits: "Stockfw Team - Creator & Original Developer", never the
 # creator's full name or e-mail address, anywhere in the repository
 # (the legacy tree included).
 if git -C .. rev-parse --git-dir > /dev/null 2>&1; then
@@ -11457,8 +11457,8 @@ if [ -n "$NAME_HITS" ]; then
   exit 1
 fi
 for f in ../AUTHORS ../CREDITS ../README.md src/ui/fs-aboutdialog.c; do
-  if ! grep -q 'Stock Team & Qusai' "$f"; then
-    echo "FAIL: $f does not credit \"Stock Team & Qusai\""
+  if ! grep -q 'Stockfw Team' "$f"; then
+    echo "FAIL: $f does not credit \"Stockfw Team\""
     exit 1
   fi
 done
@@ -11471,7 +11471,7 @@ for f in src/ui/fs-aboutdialog.c src/ui/fs-helpcontent.c; do
     exit 1
   fi
 done
-echo "ok:   credits guard: Stock Team & Qusai, no full name, no e-mail address"
+echo "ok:   credits guard: Stockfw Team, no full name, no e-mail address"
 
 # Privacy (DOCS-HELP-07): the location database downloads as a
 # blocklist does, so "Your data" and the threat-intel topic must name it
