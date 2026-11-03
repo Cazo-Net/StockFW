@@ -1424,15 +1424,40 @@ check "audit -f --json: a new line arrives as one NDJSON object" c_py "
 import shutil
 shutil.copy('$C/audit.log', '$C/follow.log')
 env = dict(CENV, STOCKFW_AUDIT_FILE='$C/follow.log')
+import select
 p = subprocess.Popen(['$S', '--json', 'audit', '-f', '-n', '1'], stdout=subprocess.PIPE, text=True, env=env)
-first = json.loads(p.stdout.readline())
+def line_within(s):
+    # A missed line fails in seconds instead of hanging the job.
+    if not select.select([p.stdout], [], [], s)[0]:
+        p.kill(); p.wait(); raise AssertionError('no line within %d s' % s)
+    return p.stdout.readline()
+first = json.loads(line_within(10))
 with open('$C/follow.log', 'a') as f:
     f.write('2026-11-03T10:00:00Z | firewall stopped | cli | stop | stopped\n')
-line = p.stdout.readline()
+line = line_within(10)
 p.terminate(); p.wait(timeout=5)
 e = json.loads(line)
 assert first['action'] == 'sentinel auto-block', first
 assert e['action'] == 'firewall stopped' and e['origin'] == 'cli' and e['epoch'] == datetime.datetime(2026, 11, 3, 10, tzinfo=datetime.timezone.utc).timestamp(), e"
+check "audit -f: a line still being written when it starts arrives whole, once" c_py "
+import select, time
+with open('$C/partial.log', 'w') as f:
+    f.write('2026-11-03T10:30:00Z | firewall stopped | cli | stop | stopped\n2026-11-03T11:00:00Z | firewall sta')
+env = dict(CENV, STOCKFW_AUDIT_FILE='$C/partial.log')
+p = subprocess.Popen(['$S', '--json', 'audit', '-f', '-n', '0'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+def line_within(s):
+    if not select.select([p.stdout], [], [], s)[0]:
+        p.kill(); p.wait(); raise AssertionError('no line within %d s' % s)
+    return p.stdout.readline()
+hist = [json.loads(line_within(10))]
+time.sleep(1)
+with open('$C/partial.log', 'a') as f:
+    f.write('rted | cli | start | started\n')
+e = json.loads(line_within(10))
+p.terminate(); out, err = p.communicate(timeout=5)
+assert [h['action'] for h in hist] == ['firewall stopped'], hist
+assert e['action'] == 'firewall started' and e['origin'] == 'cli' and e['epoch'] == datetime.datetime(2026, 11, 3, 11, tzinfo=datetime.timezone.utc).timestamp(), e
+assert 'damaged' not in err, err"
 if [ "$(id -u)" = 0 ] && command -v unshare > /dev/null; then
   # A real apply, in a private network namespace: the newest apply entry
   # is that apply, from cli.  The firewall was stopped there, so the gate
