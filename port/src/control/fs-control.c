@@ -2645,7 +2645,7 @@ fs_control_result_free (FsControlResult *r)
 	g_free (r->whatif_line);
 	/* === end PR4-B === */
 	/* === PR4-C === */
-	fs_autoblock_lift_free (r->lift);
+	/* r->lift (shared with 4B) is freed above */
 	g_free (r->lift_error);
 	/* === end PR4-C === */
 	/* === PR4-D === */
@@ -2874,7 +2874,9 @@ fs_control_result_json (const FsControlResult *r)
 		fs_json_kv_bool (out, "unreadable_kept", r->prefs_unreadable);
 	}
 	/* === PR4-B === */
-	if (r->lift != NULL)
+	/* 4C's ops write their own "lift" object below */
+	if (r->lift != NULL && !g_str_has_prefix (r->op, "rule.") &&
+	    g_strcmp0 (r->op, "whatif.lift") != 0)
 		lift_json (out, r->lift);
 	if (g_strcmp0 (r->op, "sentinel.mode") == 0) {
 		g_string_append_c (out, ',');
@@ -2930,7 +2932,9 @@ fs_control_result_json (const FsControlResult *r)
 		g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "live_none", r->live_none);
 	}
-	if (r->lift != NULL || r->lift_error != NULL) {
+	if ((g_str_has_prefix (r->op, "rule.") ||
+	     g_strcmp0 (r->op, "whatif.lift") == 0) &&
+	    (r->lift != NULL || r->lift_error != NULL)) {
 		const FsApplyOutcome *o = r->lift != NULL ? r->lift->outcome : NULL;
 
 		g_string_append (out, ",\"lift\":{");

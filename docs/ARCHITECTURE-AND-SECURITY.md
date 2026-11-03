@@ -1253,16 +1253,15 @@ A second front end over the same engine — fs-core and the platform backend, li
 
 **Overview, events and activity (15.4.4).** `status` starts with the Overview's verdict; `stop` asks on a terminal (`--yes`); `interfaces --no-virtual`; `events --collapse-repeats`, `--for-me`, `--prefs-filters`, `--stats` and `--clear-history [--yes]`; and the new `activity [--range 15m|1h|6h|24h] [--device DEV] [--table]`.
 
-**Terminal actions (15.5).** The core under PR 4's commands is in 15.5.1 and adds no command itself. Each package lists its commands here:
-<!-- PR4-B: copilot and sentinel commands (15.5.2) -->
+**Terminal actions (15.5).** The core under PR 4's commands is in 15.5.1 and adds no command itself. The commands each package adds follow.
+
 **Copilot and Sentinel (15.5.2).** `copilot health [--fix N [--yes]]`, `copilot scan [--since TIME] [--history]`, `copilot show ID`, `copilot block ID [--yes]`, `copilot checks` and `copilot changes [--undo ID]`; `sentinel [list]`, `sentinel lift TARGET|--all|--expired` and `sentinel mode [auto|detect]`. `copilot block`, `sentinel lift` and `sentinel mode` need root.
-<!-- PR4-C: events act and simulate --do (15.5.3) -->
-`events act block-dest|block-service|allow-dest|trust-source|untrust-source [filters] [--pick N] [--both] [--no-apply] [--yes]` turns an event into a rule, and `simulate QUERY --do N [--yes]` runs the What-If fix numbered N (15.5.3).
-<!-- PR4-D: trust and intel editors (15.5.4) -->
+
+**Event and What-If actions (15.5.3).** `events act block-dest|block-service|allow-dest|trust-source|untrust-source [filters] [--pick N] [--both] [--no-apply] [--yes]` turns an event into a rule, and `simulate QUERY --do N [--yes]` runs the What-If fix numbered N.
+
 **Trust and blocklist editors (15.5.4).** `trust [list]`, `trust check [PATH...]` (exit 1 on CHANGED or GONE), `trust inspect PATH...`, `trust attest PATH [--yes]` and `trust forget PATH [--yes]`, per user and without root; `intel exceptions --set FILE|-`, `intel import FILE|- --name NAME` (empty input removes the list), a NEXT column in `intel feeds`, and `--apply` on the threat-intel saves.
 
-<!-- PR4-E: help topics and about (15.5.5) -->
-`help topics`, `help TOPIC`, `help topic TOPIC` and `help --search WORD...` print the desktop app's help topics (also as the page `stockfw-topics(7)`), and `about [--credits|--licences|--system]` prints the About window (15.5.5).
+**Help and About (15.5.5).** `help topics`, `help TOPIC`, `help topic TOPIC` and `help --search WORD...` print the desktop app's help topics (also as the page `stockfw-topics(7)`), and `about [--credits|--licences|--system]` prints the About window.
 
 ### 13.6 The Local Dashboard: Threat Model and Controls
 
@@ -2369,6 +2368,14 @@ Nothing here asks a question or reads stdin. Every topic string goes through `fs
 **[Verified]** `tests/test-help-text.c` (run by `test-core.sh`, GLib and `fs-helpcontent.c` only), 19 checks: the renderer (tags, named and numeric entities, a stray `<` and `&`, `<span>` and unknown tags, a link with markup in its text, an entity in an href, an `<a>` left open, NULL); 25 topics, each rendered with no tag or entity left; the 42 `help:` links, each naming a topic; every "see also" id naming a topic; the four desktop app topics; O4, no other topic's title or summary naming a tray, a window, a Ctrl+ key or sign-in; and the sections. `test-cli.sh` block PR4-E, 22 checks: every topic id renders with its title first, its summary and no markup; no line over 80 columns in the list, all 25 topics, a search, `help` and `about`, piped; a topic within 60 columns on a 60-column terminal; every link printed as a command, and each of those commands printing that topic; `help events` still the command's help with the pointer line; the list with the desktop app topics apart and the rest naming no tray, window, Ctrl+ or sign-in; the desktop note; search found and not found (exit 1), no word and an unknown topic (exit 2, with "did you mean"); `--json` for a topic; completion of topics, `topic` and `--search`; `about` with the About window's credits in its order, the licence and the website; both licence texts; `about --system` as four lines with no GTK and no user or host name; one option at a time; help and about returning with stdin an open pipe that is never written or closed; `__man topics` equal to the built page, one section per topic, named in `stockfw(1)`, installed by `cmake --install`, and read by `groff -ww` with no warning; and the wording guard over all of it. `fs-help-smoke` (the desktop Help and About windows) passes with the topics linked from `fs-core`: 178 checks, no failure. Every new check above fails with its control removed (each file copied aside, the bug patched in, rebuilt and run, then put back with `cp` and checked with `cmp`): the named entities not read (unit, and the "no markup left" check); a link always printed as `stockfw help ID` (the link check: `help policy` prints the command's help, not the topic); links printed as their text alone; no wrapping; no desktop app topics (unit, O4 and the list check); a credit that differs from the About window; a topic winning over a command of the same name; completion offering no topics; the desktop topics left out of the man page; `about` reading stdin (the open-pipe check times out); a search that finds nothing exiting 0; and the desktop note left out.
 
 **Not verified.** Nothing here was run on Windows, and there were no Windows headers in this container to compile against. `fs-helpcontent.c` was already built into the Windows app, and what was added to it uses GLib calls only. Windows CI builds it into `fs-core`, and the `StockFW` target takes the licence header from `src/core`.
+
+#### 15.5.6 The packages together
+
+4B to 4E were written side by side on 4A and merged in that order. Two places clashed and were joined. 4B and 4C each gave the control result a `lift` field for the Sentinel blocks an op lifts; there is now one, freed once, and the JSON of each op writes one `"lift"` object, its own: 4B's for `sentinel.*` and `copilot.*`, 4C's for `rule.*` and `whatif.lift`. 4B and 4C each exported the check for a StockFW window running as root; 4C's `fs_cli_root_gui_running` is kept and 4B's wrapper is gone. The completion tables and `fs-cli.h` took all four packages' lines.
+
+**[Verified]** Built from a clean directory with no warning, then `test-cli.sh` (506 checks), `test-core.sh`, `test-intel-cli.sh` and `test-dashboard.sh` passed as root. Two checks were added to block PR4-C (live, private network namespace): `events act allow-dest --json` and `sentinel lift --json` each print one `"lift"` object with their own fields. Each fails with its control removed (the file copied aside, the guard taken out, rebuilt and run, then put back with `cp` and checked with `cmp`): with 4B's object written for every op, the allow-dest check fails; with 4C's, the sentinel check fails.
+
+**Not verified.** Nothing was run on Windows. The merge changed no file in `src/core`.
 
 ---
 

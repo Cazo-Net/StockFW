@@ -307,10 +307,8 @@ gint fs_cli_man_main      (gint argc, gchar **argv);
 /* `sentinel [list]' (fs-cli-views.c); fs-cli-copilot.c registers the
  * `sentinel' command and hands it list. */
 gint     fs_cli_sentinel_list    (gint argc, gchar **argv);
-/* Is a StockFW window running as root (fs-cli-config.c)?  It keeps its
- * own copy of the settings, the policy and Sentinel's list, and writes
- * them back when it saves. */
-gboolean fs_cli_root_gui_running (void);
+/* fs_cli_root_gui_running (fs-cli-config.c, declared below) also
+ * covers the policy and Sentinel's list the window writes back. */
 /* === end PR4-B === */
 
 gint fs_cli_cmd_status      (gint argc, gchar **argv);

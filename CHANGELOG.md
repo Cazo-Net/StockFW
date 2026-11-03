@@ -229,7 +229,6 @@ into `/usr/local/share/doc/stockfw/`.
   shown as no data, not as zero. The saved history is used only while
   a copy of StockFW writes it; a history nobody writes now shows no
   data after its last event.
-<!-- PR4-A -->
 - **A block can go live without the rest of the saved policy.** A new
   core step (for `copilot block`, `events act` and, later, Sentinel)
   puts only the new block on the firewall, with what was already live:
@@ -238,7 +237,6 @@ into `/usr/local/share/doc/stockfw/`.
   ten minutes ran out) works the same way, from the policy, the Sentinel
   list and the firewall. On Linux neither step starts a stopped
   firewall: the change waits for the next start instead.
-<!-- PR4-B -->
 - **Copilot and Sentinel in the terminal.** `stockfw copilot scan`
   finds what the Copilot page finds, from the kernel log or the saved
   history; `copilot show ID` explains one finding and `copilot block ID`
@@ -249,7 +247,6 @@ into `/usr/local/share/doc/stockfw/`.
   down (one address, all, or the expired ones), and `sentinel mode
   detect` switches it to detect only, lifting its blocks. Questions are
   asked only on a terminal; elsewhere pass `--yes`.
-<!-- PR4-C -->
 - **New `stockfw events act`.** Block, allow or trust from an event, as
   the Events page does: `block-dest`, `block-service`, `allow-dest`,
   `trust-source` and `untrust-source`. It shows the event and the rule
@@ -263,7 +260,6 @@ into `/usr/local/share/doc/stockfw/`.
   apply or a Sentinel lift. Other fixes print the command to run.
 - Both ask only on a terminal. Without one they need `--yes`, and they
   never wait for input.
-<!-- PR4-D -->
 - **New `stockfw trust`: the Trust page in a terminal.** `trust` (or
   `trust list`) and `trust check` hash every file you attested again and
   say whether it still matches, changed (CHANGED) or is missing (GONE);
@@ -294,7 +290,6 @@ into `/usr/local/share/doc/stockfw/`.
 - **`intel feeds` says when each feed is due.** A new NEXT column
   ("due now", or the time `intel update` downloads it next) and `due`
   and `next_update_at` in `--json`.
-<!-- PR4-E -->
 - **The desktop app's help in the terminal.** `stockfw help topics`
   lists the 25 topics of the Help window, `stockfw help TOPIC` prints
   one (a link to another topic is printed as the command that shows

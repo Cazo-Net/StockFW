@@ -3691,6 +3691,22 @@ t "allow-dest: the state row and Sentinel's policy row are gone" \
 "$S" events act untrust-source --yes < /dev/null > "$C/untrust.out" 2>&1; rc=$?
 t "untrust-source: the row is removed and off the firewall (rc $rc)" \
   bash -c "[ $rc -eq 0 ] && ! live | grep -q '203.0.113.80' && ! grep -q 203.0.113.80 '$STOCKFW_RULES_DIR/inbound/allow-from'"
+
+# --- 4B and 4C share the result's lift: each op's --json has one
+# "lift" object, its own (a duplicate key would be read as the last).
+for a in 203.0.113.72 203.0.113.73; do
+  "$S" -q policy add outbound-deny-to "$a" --comment "Sentinel: test"
+done
+"$S" apply --yes < /dev/null > /dev/null 2>&1
+{ echo "S,$(date +%s),6,203.0.113.72, Sentinel: test"
+  echo "S,$(date +%s),6,203.0.113.73, Sentinel: test"; } > "$STOCKFW_AUTOBLOCK_FILE"
+echo "$(date -u +%Y-%m-%dT%H:%M:%S+00:00) host kernel: [4.0] STOCKFW-DROP IN= OUT=eth0 SRC=10.0.0.5 DST=203.0.113.72 LEN=60 PROTO=TCP SPT=50002 DPT=443 SYN" >> "$STOCKFW_LOG_FILE"
+"$S" --json events act allow-dest --addr 203.0.113.72 --yes < /dev/null > "$C/lift1.json" 2> /dev/null; rc=$?
+t "allow-dest --json: one \"lift\" object, with the rule.allow fields (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && [ \"\$(grep -o '\"lift\":' '$C/lift1.json' | wc -l)\" -eq 1 ] && grep -q '\"lift\":{\"rows\":1,\"removed\":1,\"kept\":0,\"live\"' '$C/lift1.json'"
+"$S" --json sentinel lift 203.0.113.73 < /dev/null > "$C/lift2.json" 2> /dev/null; rc=$?
+t "sentinel lift --json: one \"lift\" object, with the sentinel.lift fields (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && [ \"\$(grep -o '\"lift\":' '$C/lift2.json' | wc -l)\" -eq 1 ] && grep -q '\"lift\":{\"rows\":1,\"removed\":1,\"gone\"' '$C/lift2.json'"
 exit "$f"
 LIVE
   unshare -n bash "$C/live.sh" "$S" "$BUILD/stockfw-act-test" "$C" > "$C/live.log" 2>&1

@@ -3733,7 +3733,10 @@ the usage errors, the numbered list when there is more than one rule,
 the refusal without a terminal (stdin an open pipe, under `timeout`),
 the question on a pseudo-terminal, and, as root in a private network
 namespace, a held `--do` start, a refused fix, a block live alone, an
-`allow-dest` that lifts Sentinel's block and an untrust.
+`allow-dest` that lifts Sentinel's block and an untrust. Two checks
+there, added when 4B to 4E were merged, see that `events act allow-dest
+--json` and `sentinel lift --json` each print one `"lift"` object, their
+own (4B and 4C share the field).
 `stockfw-act-test` is the CLI built with `FS_ACT_TESTING`: there
 `STOCKFW_TEST_FIX_PORT` replaces a fix's port, so the test can give
 `--do` a fix the safety check refuses. It is not installed.

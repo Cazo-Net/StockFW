@@ -158,8 +158,8 @@ typedef struct
 	/* === end PR4-B === */
 	/* === PR4-C === */
 	/* rule.allow (with lift_dest) and whatif.lift: Sentinel's blocks
-	 * lifted (fs_autoblock_lift_for_dest); its outcome is its own */
-	FsAutoblockLift *lift;
+	 * lifted (fs_autoblock_lift_for_dest) go in `lift' above (4B's
+	 * field, shared); its outcome is its own */
 	gchar           *lift_error;   /* rule.allow: the lift was refused  */
 	/* rule.block, rule.untrust: the firewall was not touched, with no
 	 * error: no journal (nothing on record as live; `journal' says),

@@ -298,7 +298,8 @@ gui_probe (const gchar *name)
  * here can be undone by it, and its window does not show the change.
  * Found by its instance socket (core/fs-instance.c): an abstract name
  * "stockfw-gui-<uid>" (or $STOCKFW_INSTANCE_NAME), whose owner is
- * root.  `events act' and `simulate --do' (4C) ask it too. */
+ * root.  The copilot and sentinel commands (4B), `events act' and
+ * `simulate --do' (4C) ask it too. */
 gboolean
 fs_cli_root_gui_running (void)
 {
@@ -326,14 +327,6 @@ fs_cli_root_gui_running (void)
 	g_free (contents);
 	return found;
 }
-
-/* === PR4-B === */
-gboolean
-fs_cli_root_gui_running (void)
-{
-	return root_gui_running ();
-}
-/* === end PR4-B === */
 
 static void
 root_gui_warning (gboolean running)
