@@ -114,7 +114,21 @@ GPtrArray *
 fs_cli_audit_read (const gchar *path, guint *lines_total, guint *bad_lines,
                    GError **error)
 {
+	return fs_cli_audit_read_upto (path, lines_total, bad_lines, NULL,
+	                               error);
+}
+
+/* [ fs_cli_audit_read_upto ]
+ * As fs_cli_audit_read.  With `consumed', only whole lines are read and
+ * *consumed is the byte offset just past the last one: where a follower
+ * must go on reading.  Taking that offset from a later stat would count
+ * a line written in between as read, and it would never be shown. */
+GPtrArray *
+fs_cli_audit_read_upto (const gchar *path, guint *lines_total,
+                        guint *bad_lines, goffset *consumed, GError **error)
+{
 	gchar *text = NULL;
+	gsize len = 0;
 	gchar **lines;
 	GPtrArray *out;
 
@@ -122,8 +136,20 @@ fs_cli_audit_read (const gchar *path, guint *lines_total, guint *bad_lines,
 		*lines_total = 0;
 	if (bad_lines != NULL)
 		*bad_lines = 0;
-	if (!g_file_get_contents (path, &text, NULL, error))
+	if (consumed != NULL)
+		*consumed = 0;
+	if (!g_file_get_contents (path, &text, &len, error))
 		return NULL;
+	if (consumed != NULL) {
+		gsize whole = len;
+
+		while (whole > 0 && text[whole - 1] != '\n')
+			whole--;
+
+		/* A line still being written is left for the follower. */
+		text[whole] = '\0';
+		*consumed = (goffset) whole;
+	}
 
 	out = g_ptr_array_new_with_free_func (
 		(GDestroyNotify) fs_cli_audit_entry_free);
@@ -543,6 +569,7 @@ fs_cli_cmd_audit (gint argc, gchar **argv)
 	AuditFilter filter = { NULL, NULL, 0, 0 };
 	GPtrArray *all, *shown;
 	guint total = 0, bad = 0;
+	goffset read_upto = 0;
 	gchar *path;
 	GError *error = NULL;
 	gint rc = FS_EXIT_OK;
@@ -640,7 +667,8 @@ fs_cli_cmd_audit (gint argc, gchar **argv)
 		sudo_user_note (path);
 	}
 
-	all = fs_cli_audit_read (path, &total, &bad, &error);
+	all = fs_cli_audit_read_upto (path, &total, &bad,
+	                              follow ? &read_upto : NULL, &error);
 	if (all == NULL) {
 		if (g_error_matches (error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
 			fs_cli_error ("nothing recorded yet: there is no audit log "
@@ -733,11 +761,9 @@ fs_cli_cmd_audit (gint argc, gchar **argv)
 	fflush (stdout);
 
 	if (follow) {
-		AuditFollow f = { path, 0, g_string_new (NULL), &filter, NULL };
-		GStatBuf st;
-
-		if (g_stat (path, &st) == 0)
-			f.offset = (goffset) st.st_size;
+		/* Go on from what the history read, not from a later stat. */
+		AuditFollow f = { path, read_upto, g_string_new (NULL), &filter,
+		                  NULL };
 		if (!fs_cli.json && !fs_cli.quiet)
 			fprintf (stderr, "%sFollowing %s -- Ctrl-C to stop.%s\n",
 			         fs_cli_dim (), path, fs_cli_reset ());

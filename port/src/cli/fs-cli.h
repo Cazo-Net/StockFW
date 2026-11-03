@@ -483,6 +483,11 @@ GPtrArray       *fs_cli_audit_read       (const gchar *path,
                                           guint *lines_total,
                                           guint *bad_lines,
                                           GError **error);
+GPtrArray       *fs_cli_audit_read_upto  (const gchar *path,
+                                          guint *lines_total,
+                                          guint *bad_lines,
+                                          goffset *consumed,
+                                          GError **error);
 /* The newest apply, start or stop entry of fs_audit_path(), or NULL. */
 FsCliAuditEntry *fs_cli_audit_last_apply (void);
 /* {"time","epoch","action","origin","detail"[,"raw"]} */
