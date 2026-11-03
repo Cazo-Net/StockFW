@@ -147,7 +147,6 @@ into `/usr/local/share/doc/stockfw/`.
   builds `stockfw` and its manual page without GTK, and does not look
   for GTK at all. The default still builds the desktop app too. CI
   checks that `stockfw` needs no GTK, GDK, Pango or cairo library.
-<!-- PR3-A -->
 - **One writer at a time.** Every change the command line makes goes
   through one control layer and holds a lock (`/run/stockfw/apply.lock`
   and a `.lock` file beside the rules) from the moment it reads the
@@ -156,9 +155,8 @@ into `/usr/local/share/doc/stockfw/`.
 - **The CLI now writes preferences (root's copy).** Root's settings file
   can be changed from the command line, one key at a time, and the keys
   it does not name are kept as they are on disk. The same checks as the
-  Preferences window apply, with its own reasons (`stockfw config`
-  comes with the next part of this work). A settings file that cannot
-  be read is kept as `.bad`.
+  Preferences window apply, with its own reasons (`stockfw config`,
+  below). A settings file that cannot be read is kept as `.bad`.
 - **A comma or a line break in a rule field is refused.** The rule
   files have no quoting, so such a row would read back as other fields
   or as two rows. The check is now in the core, so every writer of the
@@ -169,7 +167,6 @@ into `/usr/local/share/doc/stockfw/`.
   that was saved and never applied no longer goes live at the next
   boot. A journal from before this change has no settings, and then
   the saved settings are used, as before.
-<!-- PR3-C -->
 - **`stockfw config`: the Preferences settings from the terminal.**
   `config list`, `get`, `set NAME VALUE...`, `reset`, `apply`,
   `devices` and `audit-only on|off`. The CLI now writes preferences
@@ -185,7 +182,6 @@ into `/usr/local/share/doc/stockfw/`.
   does not go live at the next boot either.
 - `config set` warns when a StockFW window runs as root: it keeps its
   own copy of the settings and can write it back.
-<!-- PR3-D -->
 - **`stockfw policy edit`.** It changes a rule in place: the rule keeps
   its number and its comment (unless `--comment` is given), and the
   policy is saved once. `-` keeps a field as it is. A rule that another
@@ -200,7 +196,28 @@ into `/usr/local/share/doc/stockfw/`.
   The SSH check runs first, on the policy the change would give. If the
   change would block your SSH session, nothing is saved unless you
   confirm or pass `--yes`.
-<!-- PR3-E -->
+- **`status` starts with the verdict.** Its first line is the Overview's
+  verdict ("This computer is protected", "IPv6 is not protected", ...)
+  with the reasons under it, and `--json` has a `verdict` object. A
+  test holds the window's card and the terminal to the same table.
+- **`stop` asks first on a terminal.** It says what stopping takes away
+  and asks `Stop the firewall? [y/N]`; Enter keeps the firewall
+  running. `--yes` skips the question, and without a terminal (scripts,
+  the boot unit) it stops as before.
+- **`interfaces --no-virtual`** leaves out bridges, veth, tun and other
+  virtual adapters.
+- **The Events filters in `events`.** `--collapse-repeats` and
+  `--for-me` are the Preferences window's "Hide repeated events" and
+  "Skip events not addressed to this computer", and `--prefs-filters`
+  takes both from the preferences. `--stats` counts what was read, shown
+  and hidden, in and out, and shows the saved history's size, folder and
+  why it is not being written. `--clear-history` shows the same, asks,
+  and deletes it (`--yes` without a terminal).
+- **New `stockfw activity`.** Blocked and allowed events over the last
+  15 minutes, hour, 6 hours or day as a sparkline or a table, the counts
+  of the last hour and day, and the throughput now. It is rebuilt from
+  the saved history or the kernel log, and a time it could not see is
+  shown as no data, not as zero.
 
 ### Fixed
 

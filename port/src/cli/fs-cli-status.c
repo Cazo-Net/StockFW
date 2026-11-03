@@ -19,6 +19,8 @@
 #include "core/fs-netparse.h"
 #include "core/fs-script.h"
 #include "core/fs-util.h"
+#include "core/fs-verdict.h"
+#include "core/fs-netplace.h"
 
 #include <glib-unix.h>
 #include <errno.h>
@@ -288,6 +290,135 @@ print_settings (GHashTable *values)
 	g_string_free (s, TRUE);
 }
 
+/* ------------------------------------------------------------- verdict */
+
+/* [ status_verdict ]
+ * The Overview's verdict (B3, A24), from what this command read: the
+ * firewall state (unknown without root), the IPv6 answer as the
+ * desktop app takes it (no slot: not known, so the families are not
+ * judged apart), the network place where the backend has profiles,
+ * the audit-only hold and the blocklist sentence. */
+static FsVerdictResult *
+status_verdict (FsFirewallState state, gboolean ipv6_known, FsIpv6State ipv6,
+                const gchar *ipv6_detail, const gchar *hold)
+{
+	const FsBackend *backend = fs_backend ();
+	FsVerdictInput in;
+	FsVerdictResult *v;
+	FsNetworkPlace *place = NULL;
+	gchar *intel;
+
+	memset (&in, 0, sizeof in);
+	in.state = state;
+	in.backend_usable = backend->available != NULL && backend->available ();
+	in.ipv6_known = ipv6_known;
+	in.ipv6 = ipv6;
+	in.ipv6_detail = ipv6_detail;
+	in.display_name = backend->display_name;
+	in.hold_reason = hold;
+	if (backend->network_place != NULL &&
+	    backend->get_profile_enabled != NULL) {
+		place = backend->network_place ();
+		for (gint i = 0; place != NULL && i < FS_PROFILE_COUNT; i++) {
+			gboolean enabled = FALSE;
+
+			if (!backend->get_profile_enabled (i, &enabled))
+				continue;
+			in.profiles_known |= FS_PROFILE_BIT (i);
+			if (enabled)
+				in.profiles_on |= FS_PROFILE_BIT (i);
+		}
+	}
+	in.place = place;
+	intel = fs_intel_summary (backend);
+	in.intel_summary = intel;
+	v = fs_verdict_compute (&in);
+	g_free (intel);
+	if (place != NULL)
+		fs_network_place_free (place);
+	return v;
+}
+
+/* [ indent_wrap ] -- text indented by `indent' spaces, every line
+ * of it, and wrapped to the terminal's width (none in a pipe). */
+static gchar *
+indent_wrap (const gchar *text, guint indent)
+{
+	guint width = fs_cli_term_width ();
+	gchar **words = g_strsplit (text, " ", -1);
+	GString *out = g_string_new (NULL);
+	guint col = 0;
+
+	for (guint w = 0; words[w] != NULL; w++) {
+		guint len = (guint) g_utf8_strlen (words[w], -1);
+
+		if (*words[w] == '\0')
+			continue;
+		if (col == 0 || (width > indent + 10 && col + 1 + len > width)) {
+			if (col > 0)
+				g_string_append_c (out, '\n');
+			for (guint i = 0; i < indent; i++)
+				g_string_append_c (out, ' ');
+			col = indent;
+		} else {
+			g_string_append_c (out, ' ');
+			col++;
+		}
+		g_string_append (out, words[w]);
+		col += len;
+	}
+	g_strfreev (words);
+	return g_string_free (out, FALSE);
+}
+
+/* [ print_verdict ] -- line 1 of `status': the dot and the card's
+ * title in the verdict's colour, then its sentences, wrapped. */
+static void
+print_verdict (const FsVerdictResult *v)
+{
+	const gchar *dot, *color;
+	gchar *title = fs_cli_out_safe (v->title);
+	gchar *body = fs_cli_out_safe (v->body);
+	gchar *wrapped;
+
+	switch (v->level) {
+	case FS_VERDICT_LEVEL_OK:
+		dot = fs_cli_sym (FS_CLI_SYM_ON); color = fs_cli_green ();
+		break;
+	case FS_VERDICT_LEVEL_BAD:
+		dot = fs_cli_sym (FS_CLI_SYM_OFF); color = fs_cli_red ();
+		break;
+	case FS_VERDICT_LEVEL_WARN:
+		dot = "!"; color = fs_cli_amber ();
+		break;
+	default:
+		dot = "?"; color = fs_cli_amber ();
+		break;
+	}
+	printf ("%s%s%s %s%s\n", color, fs_cli_bold (), dot, title,
+	        fs_cli_reset ());
+	if (*body) {
+		wrapped = indent_wrap (body, 2);
+		printf ("%s%s%s\n", fs_cli_dim (), wrapped, fs_cli_reset ());
+		g_free (wrapped);
+	}
+	g_free (title);
+	g_free (body);
+}
+
+static void
+verdict_json (GString *out, const FsVerdictResult *v)
+{
+	g_string_append_c (out, '{');
+	fs_json_kv_str (out, "level", fs_verdict_level_name (v->level));
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "key", v->key);     g_string_append_c (out, ',');
+	fs_json_kv_str (out, "word", v->word);   g_string_append_c (out, ',');
+	fs_json_kv_str (out, "title", v->title); g_string_append_c (out, ',');
+	fs_json_kv_str (out, "body", v->body);
+	g_string_append_c (out, '}');
+}
+
 /* -------------------------------------------------------------- status */
 
 gint
@@ -316,6 +447,7 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 	const gchar *blocked_source = NULL;
 	FsBootUnit boot = fs_autostart_boot_unit ();
 	const gchar *host = g_get_host_name ();
+	FsVerdictResult *verdict = NULL;
 
 	for (gint i = 1; i < argc; i++) {
 		if (!fs_cli_is_option_at (argv, i)) {
@@ -391,12 +523,19 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 		                        "IPv4 and IPv6.");
 	}
 
+	/* Line 1 (and "verdict" in --json): the Overview's judgement. */
+	verdict = status_verdict (state, backend->ipv6_state != NULL, ipv6,
+	                          ipv6_detail, hold);
+
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{");
 
 		fs_json_kv_str (out, "version", FS_VERSION);       g_string_append_c (out, ',');
 		fs_json_kv_str (out, "backend", backend->name);   g_string_append_c (out, ',');
 		fs_json_kv_str (out, "state", state_word);        g_string_append_c (out, ',');
+		fs_json_key (out, "verdict");
+		verdict_json (out, verdict);
+		g_string_append_c (out, ',');
 		fs_json_key (out, "ipv6");
 		g_string_append_c (out, '{');
 		fs_json_kv_str (out, "state", fs_ipv6_state_to_string (ipv6));  g_string_append_c (out, ',');
@@ -549,7 +688,8 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 			dot = "?"; color = fs_cli_amber ();
 		}
 
-		printf ("%sStockFW %s%s  %s%s %s %s%s\n\n", fs_cli_bold (),
+		print_verdict (verdict);
+		printf ("\n%sStockFW %s%s  %s%s %s %s%s\n\n", fs_cli_bold (),
 		        FS_VERSION, fs_cli_reset (), fs_cli_dim (),
 		        backend->display_name, fs_cli_sym (FS_CLI_SYM_SEP),
 		        safe_host, fs_cli_reset ());
@@ -786,6 +926,7 @@ fs_cli_cmd_status (gint argc, gchar **argv)
 	}
 
 done:
+	fs_verdict_result_free (verdict);
 	g_list_free_full (stats, (GDestroyNotify) fs_iface_stat_free);
 	g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
 	g_free (ipv6_detail);
@@ -803,6 +944,54 @@ done:
 }
 
 /* === end WP-C === */
+
+/* ---------------------------------------------------------------- stop */
+
+/* [ fs_cli_stop_consequence ] -- what a stop takes away, in the words
+ * of the desktop app's "Pause protection?" (B5), for this backend. */
+const gchar *
+fs_cli_stop_consequence (void)
+{
+	if (fs_backend ()->start_applies_policy)
+		return "StockFW takes its rules out of the firewall.  Until you "
+		       "start it again, the ports and addresses your policy "
+		       "blocks are no longer blocked, and threat-intel "
+		       "blocklists are taken down too.  `stockfw start' puts "
+		       "the last applied policy back.";
+	return "Windows Defender Firewall is switched off for every network "
+	       "profile (Domain, Private and Public).  Until you start it "
+	       "again, nothing is filtered.  Your rules are kept.";
+}
+
+/* [ fs_cli_stop_confirm ] -- see fs-cli.h. */
+gboolean
+fs_cli_stop_confirm (gboolean yes)
+{
+	const FsBackend *backend = fs_backend ();
+	gchar answer[16] = "";
+	gchar *text;
+
+	if (yes || !isatty (STDIN_FILENO))
+		return TRUE;
+	/* Stopped already: there is no protection to pause. */
+	if (backend->get_state != NULL &&
+	    backend->get_state () == FS_FW_STOPPED)
+		return TRUE;
+
+	text = indent_wrap (fs_cli_stop_consequence (), 2);
+	fprintf (stderr, "%sPause protection?%s\n%s\n", fs_cli_bold (),
+	         fs_cli_reset (), text);
+	g_free (text);
+	/* Enter must not switch a firewall off: No is the default. */
+	fprintf (stderr, "Stop the firewall? [y/N] ");
+	fflush (stderr);
+	if (fgets (answer, sizeof answer, stdin) != NULL &&
+	    (g_ascii_strcasecmp (g_strstrip (answer), "y") == 0 ||
+	     g_ascii_strcasecmp (answer, "yes") == 0))
+		return TRUE;
+	fs_cli_error ("not stopped: the firewall was left as it was");
+	return FALSE;
+}
 
 /* ------------------------------------------------------------ snapshot */
 
@@ -856,7 +1045,14 @@ const FsCliCommandDef fs_cli_status_commands[] = {
 	{ "status", fs_cli_cmd_status,
 "Usage: stockfw status [-v] [--utc] [--json]\n"
 "\n"
-"Shows the firewall state, whether the saved policy is the one that\n"
+"The first line is the verdict of the desktop app's Overview: \"This\n"
+"computer is protected\", \"IPv6 is not protected\", \"This computer is\n"
+"not protected\" or \"The firewall's state is unknown\" (without root),\n"
+"with its reasons under it: IPv6, audit-only mode holding changes, and\n"
+"whether the threat-intel blocklists are in force.  --json gives it as\n"
+"\"verdict\": {level, key, word, title, body}.\n"
+"\n"
+"Then it shows the firewall state, whether the saved policy is the one that\n"
 "is live (or how many changes are not applied yet), the last apply,\n"
 "start or stop from the audit log, how many packets were blocked\n"
 "today and the last one, whether audit-only mode holds applies back,\n"

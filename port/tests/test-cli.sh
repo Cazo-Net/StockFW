@@ -2724,7 +2724,350 @@ rm -rf "$Q"
 # === end PR3-D ===
 
 # === PR3-E ===
-# Overview, events and activity (package 3E): filled by its package.
+# Overview, events and activity (master plan, PR 3, package 3E): the
+# verdict on line 1 of `status', `stop' asking on a terminal,
+# `interfaces --no-virtual', the Events page's two filters and the
+# history's numbers in `events', and `activity' rebuilt from a fixture
+# history.  Scratch directories of its own; what changes a firewall or
+# adds a device runs in a private network (and mount) namespace.
+E="$(mktemp -d /tmp/stockfw-pr3e-XXXXXX)"; chmod 755 "$E"
+e_env () { env XDG_CONFIG_HOME="$E/config" STOCKFW_RULES_DIR="$E/rules" \
+               STOCKFW_EVENTS_DIR="$E/no-history" "$@"; }
+mkdir -p "$E/config/stockfw"
+
+# --- status: line 1 is the Overview's verdict, the same as --json's.
+check "PR3-E: status line 1 is the verdict title, and --json carries the verdict" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config', STOCKFW_RULES_DIR='$E/rules')
+t = subprocess.run(['$S', 'status'], capture_output=True, text=True, env=env)
+d = json.loads(subprocess.run(['$S', '--json', 'status'], capture_output=True, text=True, env=env).stdout)
+v = d['verdict']
+assert set(v) == {'level', 'key', 'word', 'title', 'body'}, v
+assert v['level'] in ('ok', 'warn', 'bad', 'unknown') and v['title'] and v['body'], v
+first = t.stdout.splitlines()[0]
+assert first.endswith(' ' + v['title']), (first, v)
+assert t.stdout.splitlines()[1].strip() == v['body'] or v['body'].startswith(t.stdout.splitlines()[1].strip()), t.stdout
+assert 'StockFW ' in t.stdout.splitlines()[3], t.stdout"
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null; then
+  cp "$S" "$E/stockfw-copy"; chmod 755 "$E/stockfw-copy"
+  check "PR3-E: as a user who cannot read the firewall, line 1 says the state is unknown" \
+    bash -c "setpriv --reuid=65534 --regid=65534 --clear-groups env HOME=/nonexistent XDG_CONFIG_HOME='$E/nobody' '$E/stockfw-copy' status 2> /dev/null | head -1 | grep -q \"The firewall's state is unknown\$\""
+fi
+
+# --- events: the fixture history.  One UTC day file per day, lines as
+# core/fs-eventlog.c writes them (FNV-1a checksum).
+EH="$E/history"
+py "
+import os, time, datetime
+H = '$EH'
+os.makedirs(H, mode=0o700)
+def fnv(b):
+    h = 2166136261
+    for c in b:
+        h = ((h ^ c) * 16777619) & 0xffffffff
+    return h
+def line(epoch, d, port, src, dst, proto, service):
+    stamp = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    f = [str(epoch * 10000000), stamp, d, 'eth0' if d == 'in' else '', 'eth0' if d == 'out' else '',
+         port, src, dst, '60', '0x00', proto, service, 'STOCKFW-DROP']
+    body = '\t'.join(f)
+    return body + '\t%08x\n' % fnv(body.encode())
+now = int(time.time())
+ev = [  # (seconds ago, dir, port, src, dst, service)
+  (10800, 'in', '22',  '203.0.113.5', '198.51.100.1', 'SSH [BLOCKED]'),
+  (10790, 'in', '22',  '203.0.113.5', '198.51.100.1', 'SSH [BLOCKED]'),
+  (10780, 'in', '23',  '203.0.113.6', '198.51.100.1', 'Telnet [BLOCKED]'),
+  (10770, 'in', '22',  '203.0.113.5', '198.51.100.1', 'SSH [BLOCKED]'),
+  (1800,  'in', '137', '198.51.100.7', '198.51.100.255', 'NetBIOS [BLOCKED]'),
+  (1795,  'in', '137', '198.51.100.7', '198.51.100.255', 'NetBIOS [BLOCKED]'),
+  (1790,  'out', '443', '198.51.100.1', '203.0.113.9', 'HTTPS'),
+  (310,   'in', '3389', '203.0.113.8', '198.51.100.1', 'Remote Desktop [BLOCKED]'),
+  (300,   'in', '3389', '203.0.113.8', '198.51.100.1', 'Remote Desktop [BLOCKED]'),
+]
+days = {}
+for ago, d, port, src, dst, svc in ev:
+    e = now - ago
+    day = datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime('%Y-%m-%d')
+    days.setdefault(day, []).append(line(e, d, port, src, dst, 'TCP' if port != '137' else 'UDP', svc))
+for day, lines in days.items():
+    with open(os.path.join(H, 'events-%s-000.log' % day), 'w') as f:
+        f.write('# StockFW event history 1\n' + ''.join(lines))
+open('$E/now', 'w').write(str(now))
+"
+
+check "PR3-E: events --collapse-repeats hides an event the same as the one before it (9 -> 6)" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+def ports(*a):
+    return [e['port'] for e in json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '-n', '100', *a], capture_output=True, text=True, env=env).stdout)]
+assert ports() == ['22', '22', '23', '22', '137', '137', '443', '3389', '3389'], ports()
+assert ports('--collapse-repeats') == ['22', '23', '22', '137', '443', '3389'], ports('--collapse-repeats')
+# The filters run before the list's own: a repeat of a hidden event
+# is still a repeat of the one let through.
+assert ports('--collapse-repeats', '--port', '22') == ['22', '22'], ports('--collapse-repeats', '--port', '22')
+r = subprocess.run(['$S', 'events', '--history-dir', '$EH', '--collapse-repeats'], capture_output=True, text=True, env=env)
+assert r.returncode == 0 and 'Hidden: 3 repeats, 0 not for this computer.' in r.stderr, r"
+
+check "PR3-E: --prefs-filters takes Hide repeated events from the preferences" py "
+import json, subprocess, os
+open('$E/config/stockfw/stockfw.conf', 'w').write('[client]\nfilter/redundant=true\nfilter/not_for_firewall=false\n')
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '-n', '100', '--prefs-filters'], capture_output=True, text=True, env=env).stdout)
+assert len(d) == 6, d
+open('$E/config/stockfw/stockfw.conf', 'w').write('[client]\nfilter/redundant=false\nfilter/not_for_firewall=false\n')
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '-n', '100', '--prefs-filters'], capture_output=True, text=True, env=env).stdout)
+assert len(d) == 9, d
+os.remove('$E/config/stockfw/stockfw.conf')"
+
+check "PR3-E: events --stats counts what each filter hid, in and out, and the history's usage and problem" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '--stats', '--collapse-repeats', '--dir', 'in'], capture_output=True, text=True, env=env).stdout)
+assert d['read'] == 9 and d['shown'] == 5 and d['hidden'] == {'repeats': 3, 'not_for_me': 0, 'filters': 1}, d
+assert d['inbound'] == {'blocked': 5, 'allowed': 0} and d['outbound'] == {'blocked': 0, 'allowed': 0}, d
+h = d['history']
+assert h['dir'] == '$EH' and h['files'] >= 1 and h['bytes'] > 0 and not h['being_written'], h
+assert h['problem'].startswith('Keep event history is off'), h
+t = subprocess.run(['$S', 'events', '--history-dir', '$EH', '--stats'], capture_output=True, text=True, env=env).stdout
+assert 'in %d file' % h['files'] in t and 'in $EH.' in t and 'Not being written: Keep event history is off' in t, t
+import re
+assert '9 read from $EH, 9 shown' in t and re.search(r'Outbound +0 blocked, 1 allowed', t), t"
+
+check "PR3-E: --stats sees a writer that holds the history's lock: no problem then" py "
+import fcntl, json, subprocess, os
+fd = os.open('$EH/.lock', os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '--stats'], capture_output=True, text=True, env=env).stdout)
+os.close(fd)
+assert d['history']['being_written'] and d['history']['problem'] is None, d['history']
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$EH', '--stats'], capture_output=True, text=True, env=env).stdout)
+assert not d['history']['being_written'], d['history']"
+
+check "PR3-E: events usage errors: --clear-history with --stats, --yes alone, --stats with -f" bash -c "
+  '$S' events --clear-history --stats 2> '$E/err'; [ \$? -eq 2 ] && grep -q 'cannot be used with --stats' '$E/err' &&
+  '$S' events --yes 2> '$E/err'; [ \$? -eq 2 ] && grep -q 'goes with --clear-history' '$E/err' &&
+  '$S' events --stats -f 2> /dev/null; [ \$? -eq 2 ]"
+
+# --- activity: the fixture history gives the expected series.
+check "PR3-E: activity --range 1h: the fixture's series point by point, the tiles, no data nowhere" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+now = int(open('$E/now').read())
+r = subprocess.run(['$S', '--json', 'activity', '--history-dir', '$EH', '--range', '1h', '--no-rate'], capture_output=True, text=True, env=env)
+d = json.loads(r.stdout)
+assert d['source'] == 'history' and d['range_s'] == 3600 and d['step_s'] == 60 and d['points'] == 60, d
+assert d['counting_since'] == now - 10800, (d['counting_since'], now)
+start, step = d['start_epoch'], d['step_s']
+want_b = [0] * 60; want_a = [0] * 60
+for ago, blocked in [(1800, 1), (1795, 1), (1790, 0), (310, 1), (300, 1)]:
+    i = (now - ago - start) // step
+    if 0 <= i < 60:
+        (want_b if blocked else want_a)[i] += 1
+assert d['blocked'] == want_b, (d['blocked'], want_b)
+assert d['allowed'] == want_a, (d['allowed'], want_a)
+assert d['totals'] == {'blocked_1h': 4, 'blocked_24h': 8, 'allowed_1h': 1, 'allowed_24h': 1}, d['totals']
+assert d['network'] is None and any('saved history' in n for n in d['notes']), d"
+
+check "PR3-E: activity --range 24h: points before the history begins are no data (null), not zero" py "
+import json, subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config')
+now = int(open('$E/now').read())
+d = json.loads(subprocess.run(['$S', '--json', 'activity', '--history-dir', '$EH', '--range', '24h', '--no-rate'], capture_output=True, text=True, env=env).stdout)
+start, step, n = d['start_epoch'], d['step_s'], d['points']
+since = d['counting_since']
+for i, v in enumerate(d['blocked']):
+    covered = start + (i + 1) * step > since
+    assert (v is None) == (not covered), (i, v, since, start, step)
+assert sum(v for v in d['blocked'] if v) == 8 and d['blocked'].count(None) > 0, d['blocked']"
+
+check "PR3-E: activity text: a sparkline per series, the tiles, notes on stderr; --table one row a point" py "
+import subprocess, os
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config', LC_ALL='C.UTF-8')
+r = subprocess.run(['$S', 'activity', '--history-dir', '$EH', '--no-rate'], capture_output=True, text=True, env=env)
+assert r.returncode == 0, r
+lines = r.stdout.splitlines()
+assert lines[0].startswith('Activity') and 'last hour' in lines[0], r.stdout
+assert lines[1].lstrip().startswith('Blocked') and '█' in lines[1] and 'max 2' in lines[1], r.stdout
+assert any('4 in the last hour' in l and '8 in 24 h' in l for l in lines), r.stdout
+assert 'note: Counted from the saved history in $EH' in r.stderr, r.stderr
+import json
+a = ['activity', '--history-dir', '$EH', '--range', '15m', '--no-rate']
+d = json.loads(subprocess.run(['$S', '--json'] + a, capture_output=True, text=True, env=env).stdout)
+t = subprocess.run(['$S', '--plain'] + a + ['--table'], capture_output=True, text=True, env=env).stdout
+rows = t.splitlines()
+assert len(rows) == d['points'] and [int(x.split('\t')[1]) for x in rows] == d['blocked'], (t, d)
+assert sum(d['blocked']) == 2, d"
+
+check "PR3-E: activity --range 2h is a usage error with a suggestion; --device must exist" bash -c "
+  '$S' activity --history-dir '$EH' --range 2h 2> '$E/err'; [ \$? -eq 2 ] && grep -q 'wants 15m, 1h, 6h or 24h' '$E/err' &&
+  '$S' activity --history-dir '$EH' --device nosuchdev0 2> '$E/err'; [ \$? -eq 2 ] && grep -q \"no adapter \\\`nosuchdev0'\" '$E/err'"
+
+check "PR3-E: activity reads the kernel log when no history is kept, counting from its first line" py "
+import json, subprocess, os, time
+now = int(time.time())
+def kl(ago, port):
+    t = time.localtime(now - ago)
+    return time.strftime('%b ', t) + ('%2d ' % t.tm_mday) + time.strftime('%H:%M:%S', t) + \
+        ' vm kernel: [1.0] STOCKFW-DROP IN=eth0 OUT= MAC= SRC=203.0.113.5 DST=198.51.100.1 LEN=60 TOS=0x00 PREC=0x00 TTL=50 ID=1 PROTO=TCP SPT=40000 DPT=%d WINDOW=1024 RES=0x00 SYN URGP=0\n' % port
+open('$E/kern.log', 'w').write(kl(1200, 22) + kl(600, 23) + kl(120, 22))
+env = dict(os.environ, XDG_CONFIG_HOME='$E/config', STOCKFW_EVENTS_DIR='$E/no-history', STOCKFW_LOG_FILE='$E/kern.log')
+r = subprocess.run(['$S', '--json', 'activity', '--no-rate'], capture_output=True, text=True, env=env)
+d = json.loads(r.stdout)
+assert d['source'] == 'kernel_log' and d['source_path'] == '$E/kern.log', d
+assert abs(d['counting_since'] - (now - 1200)) <= 1 and sum(v or 0 for v in d['blocked']) == 3, d
+assert d['blocked'].count(None) > 0 and d['totals']['blocked_1h'] == 3, d"
+
+# --- events --clear-history: usage first, a question, nothing without --yes.
+e_tty () {   # e_tty <answer> <args...>: stdin is a terminal
+  python3 -I - "$@" <<'PYEOF'
+import os, subprocess, sys
+m, s = os.openpty()
+p = subprocess.Popen(sys.argv[2:], stdin=s, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+os.close(s)
+os.write(m, sys.argv[1].encode())
+out, err = p.communicate(timeout=60)
+os.close(m)
+sys.stdout.write(out.decode()); sys.stderr.write(err.decode())
+sys.exit(p.returncode)
+PYEOF
+}
+n_files () { ls "$EH" | grep -c '^events-'; }
+before=$(n_files)
+check "PR3-E: --clear-history without a terminal and without --yes: refused, usage shown, nothing deleted" \
+  bash -c "'$S' events --clear-history --history-dir '$EH' < /dev/null > '$E/out' 2> '$E/err'; [ \$? -eq 1 ] &&
+           grep -q 'in $EH.' '$E/out' && grep -q 'Not being written: ' '$E/out' && grep -q 'pass --yes' '$E/err' &&
+           [ \$(ls '$EH' | grep -c '^events-') -eq $before ]"
+check "PR3-E: --clear-history on a terminal: Enter and n keep the history" \
+  bash -c "$(declare -f e_tty); e_tty \$'\\n' '$S' events --clear-history --history-dir '$EH' > /dev/null 2> '$E/err'; [ \$? -eq 1 ] &&
+           grep -q 'Delete the saved event history' '$E/err' && grep -q 'not deleted' '$E/err' &&
+           e_tty \$'n\\n' '$S' events --clear-history --history-dir '$EH' > /dev/null 2>&1; [ \$? -eq 1 ] &&
+           [ \$(ls '$EH' | grep -c '^events-') -eq $before ]"
+check "PR3-E: --clear-history while another copy writes the folder: nothing deleted (exit 1)" py "
+import fcntl, os, subprocess
+fd = os.open('$EH/.lock', os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+r = subprocess.run(['$S', 'events', '--clear-history', '--history-dir', '$EH', '--yes'], capture_output=True, text=True)
+os.close(fd)
+assert r.returncode == 1 and 'another copy of StockFW' in r.stderr, r
+assert len([f for f in os.listdir('$EH') if f.startswith('events-')]) == $before"
+check "PR3-E: --clear-history on a terminal, answered y: every history file goes" \
+  bash -c "$(declare -f e_tty); e_tty \$'y\\n' '$S' events --clear-history --history-dir '$EH' > '$E/out' 2>&1 &&
+           grep -q 'Deleted $before history file' '$E/out' && [ \$(ls '$EH' | grep -c '^events-') -eq 0 ]"
+check "PR3-E: --clear-history --json on an empty folder: deleted 0, the usage" py "
+import json, subprocess
+d = json.loads(subprocess.run(['$S', '--json', 'events', '--clear-history', '--history-dir', '$EH', '--yes'], capture_output=True, text=True).stdout)
+assert d['deleted'] == 0 and d['history']['files'] == 0 and d['error'] is None, d"
+
+# --- live, as root, in a private network namespace: --for-me against
+# this computer's own address, interfaces --no-virtual, and stop.
+if [ "$(id -u)" = 0 ] && command -v iptables > /dev/null 2>&1 &&
+   unshare -n -m true 2> /dev/null; then
+  cat > "$E/live.sh" <<'LIVE'
+S="$1"; E="$2"
+f=0
+ok () { echo "ok:   $1"; }
+no () { echo "FAIL: $1"; f=$((f+1)); }
+t () { local what="$1"; shift; if "$@"; then ok "$what"; else no "$what"; fi; }
+export STOCKFW_RULES_DIR="$E/live" STOCKFW_APPLIED_FILE="$E/live.applied"
+export STOCKFW_AUDIT_FILE="$E/live.audit" STOCKFW_AUTOBLOCK_FILE="$E/live.autoblocks"
+export STOCKFW_RUN_DIR="$E/run" STOCKFW_EVENTS_DIR="$E/no-history"
+export HOME="$E/home" XDG_CONFIG_HOME="$E/home/.config"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+# The adapters' type and state come from sysfs: this namespace's own.
+mount -t sysfs sysfs /sys
+ip link set lo up
+ip link add dummy0 type veth peer name dummy1 && ip link set dummy0 up &&
+  ip link set dummy1 up && ip addr add 198.51.100.1/24 dev dummy0
+
+# A history written now: in to us, in to the broadcast, out from us.
+python3 -I - "$E/fm" <<'PY'
+import os, sys, time, datetime
+H = sys.argv[1]; os.makedirs(H, mode=0o700)
+def fnv(b):
+    h = 2166136261
+    for c in b: h = ((h ^ c) * 16777619) & 0xffffffff
+    return h
+now = int(time.time()); out = []
+for i, (d, port, src, dst, svc) in enumerate([
+        ('in', '22', '203.0.113.5', '198.51.100.1', 'SSH [BLOCKED]'),
+        ('in', '137', '198.51.100.7', '198.51.100.255', 'NetBIOS [BLOCKED]'),
+        ('out', '443', '198.51.100.1', '203.0.113.9', 'HTTPS'),
+        ('in', '5353', '198.51.100.7', '224.0.0.251', 'mDNS [BLOCKED]')]):
+    e = now - 60 + i
+    st = datetime.datetime.fromtimestamp(e, datetime.timezone.utc)
+    body = '\t'.join([str(e * 10000000), st.strftime('%Y-%m-%dT%H:%M:%SZ'), d, '', '', port, src, dst, '60', '0x00', 'UDP', svc, 'STOCKFW-DROP'])
+    out.append(body + '\t%08x\n' % fnv(body.encode()))
+day = datetime.datetime.fromtimestamp(now - 60, datetime.timezone.utc).strftime('%Y-%m-%d')
+open(os.path.join(H, 'events-%s-000.log' % day), 'w').write('# StockFW event history 1\n' + ''.join(out))
+PY
+ports () { "$S" --json events --history-dir "$E/fm" -n 10 "$@" |
+           python3 -I -c 'import json,sys; print(" ".join(e["port"] for e in json.load(sys.stdin)))'; }
+t "3E: events --for-me keeps what is addressed to 198.51.100.1 and what it sent ($(ports --for-me))" \
+  [ "$(ports --for-me)" = "22 443" ]
+t "3E: ...and without it every event is listed" [ "$(ports)" = "22 137 443 5353" ]
+t "3E: --stats counts the two not for this computer" \
+  bash -c "'$S' --json events --history-dir '$E/fm' --stats --for-me | python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d[\"hidden\"][\"not_for_me\"] == 2 and d[\"shown\"] == 2, d'"
+
+# interfaces --no-virtual: dummy0 (a veth) is virtual.
+t "3E: interfaces lists dummy0 as Virtual" \
+  bash -c "'$S' --json interfaces | python3 -I -c 'import json,sys; assert any(i[\"device\"] == \"dummy0\" and i[\"type\"] == \"Virtual\" for i in json.load(sys.stdin))'"
+t "3E: interfaces --no-virtual leaves it out, and says why the list is empty" \
+  bash -c "'$S' --json interfaces --no-virtual | python3 -I -c 'import json,sys; assert not any(i[\"device\"] == \"dummy0\" for i in json.load(sys.stdin))' &&
+           '$S' interfaces --no-virtual > '$E/iout' 2>&1 && ! grep -q dummy0 '$E/iout' && grep -q 'but virtual ones' '$E/iout'"
+
+# stop: asks on a terminal, Cancel by default.
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" apply > /dev/null 2>&1
+chain () { iptables -S INBOUND > /dev/null 2>&1; }
+t "3E: the firewall runs (INBOUND chain present)" chain
+python3 -I - "$S" > "$E/stop1" 2>&1 <<'PY'
+import os, subprocess, sys
+for answer in (b'\n', b'n\n'):
+    m, s = os.openpty()
+    p = subprocess.Popen([sys.argv[1], 'stop'], stdin=s, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    os.close(s); os.write(m, answer)
+    out, err = p.communicate(timeout=60); os.close(m)
+    print(p.returncode, repr(err.decode()))
+PY
+t "3E: stop on a terminal shows Pause protection? and asks [y/N]" \
+  grep -q 'Pause protection?.*Stop the firewall? \[y/N\]' "$E/stop1"
+t "3E: ...Enter and n leave it running (exit 1, chain present)" \
+  bash -c "[ \$(grep -c '^1 .*not stopped' '$E/stop1') -eq 2 ] && iptables -S INBOUND > /dev/null 2>&1"
+python3 -I - "$S" > "$E/stop2" 2>&1 <<'PY'
+import os, subprocess, sys
+m, s = os.openpty()
+p = subprocess.Popen([sys.argv[1], 'stop'], stdin=s, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+os.close(s); os.write(m, b'y\n')
+out, err = p.communicate(timeout=60); os.close(m)
+print(p.returncode, out.decode())
+PY
+t "3E: ...y stops it" bash -c "grep -q '^0 Firewall stopped' '$E/stop2' && ! iptables -S INBOUND > /dev/null 2>&1"
+"$S" start > /dev/null 2>&1
+"$S" stop < /dev/null > "$E/stop3" 2>&1; rc=$?
+t "3E: stop with no terminal on stdin and no --yes stops as before (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && ! grep -q 'Stop the firewall' '$E/stop3' && ! iptables -S INBOUND > /dev/null 2>&1"
+"$S" start > /dev/null 2>&1
+python3 -I - "$S" > "$E/stop4" 2>&1 <<'PY'
+import os, subprocess, sys
+m, s = os.openpty()
+p = subprocess.Popen([sys.argv[1], 'stop', '--yes'], stdin=s, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+os.close(s)
+out, err = p.communicate(timeout=60); os.close(m)
+print(p.returncode, repr(err.decode()))
+PY
+t "3E: stop --yes on a terminal does not ask" \
+  bash -c "grep -q '^0 ' '$E/stop4' && ! grep -q 'Stop the firewall' '$E/stop4' && ! iptables -S INBOUND > /dev/null 2>&1"
+exit "$f"
+LIVE
+  unshare -n -m bash "$E/live.sh" "$S" "$E" > "$E/live.log" 2>&1
+  live_rc=$?
+  sed 's/^\(ok:   \|FAIL: \)3E: /\1PR3-E: /' "$E/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the 3E live checks need root, iptables and unshare"
+fi
+rm -rf "$E"
 # === end PR3-E ===
 
 echo ""
