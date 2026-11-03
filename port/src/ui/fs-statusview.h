@@ -29,8 +29,9 @@ FsFirewallState fs_statusview_get_state (void);
  * back (`stockfw stop' in a terminal, Windows Firewall switched off in
  * its own settings), show the new state here, in the sidebar and in
  * the tray.  The tray calls it when its menu opens and on its slow
- * timer: a menu that says "On" over a stopped firewall is worse than
- * no menu. */
+ * timer, which runs whether or not an icon is up (fs-tray.c): a menu
+ * or an Overview that says "On" over a stopped firewall is worse than
+ * none. */
 void           fs_statusview_reread_state (void);
 
 /* After the firewall started (start TRUE) or stopped: the threat-intel

@@ -54,11 +54,12 @@ where StockFW running as root looks for them (`/usr/sbin`, `/usr/bin`,
     sudo /usr/local/bin/StockFW     the full tool, including applying rules
 
 Use the full path with `sudo`. `sudo` runs commands with its own search
-path (`Defaults secure_path` in `/etc/sudoers`), which on Debian and Kali
-is typically `/usr/sbin:/usr/bin:/sbin:/bin` and does **not** include
-`/usr/local/bin`. On such a system the shorter `sudo StockFW` reports
-"command not found" even though plain `StockFW` works — because your
-login shell's PATH includes `/usr/local/bin` while sudo's does not.
+path (`Defaults secure_path` in `/etc/sudoers`), which on some systems
+(Fedora, RHEL, and the Kali StockFW was first tested on) does **not**
+include `/usr/local/bin`. On such a system the shorter `sudo StockFW`
+reports "command not found" even though plain `StockFW` works — because
+your login shell's PATH includes `/usr/local/bin` while sudo's does not.
+`install.sh` checks yours and warns when it is one of them.
 
 If `sudo StockFW` works on your system, keep using it; the full path is
 always correct either way. This installer does not edit `/etc/sudoers`:
@@ -72,6 +73,38 @@ installer deliberately ships no polkit policy or setuid wrapper: a GUI
 able to silently rewrite the entire firewall is a worse security posture
 than one that asks for root openly. Grant privilege by launching with
 `sudo`, or through your desktop environment's own mechanism.
+
+`StockFW` (capitals) is the window app and takes options only
+(`StockFW --help`). Commands such as `status` and `dashboard` belong to
+the command-line tool `stockfw`, in lowercase: `StockFW dashboard` stops
+with a message saying so.
+
+### Before installing, from the unpacked folder
+
+`sudo` never looks in the current folder, so name the program with
+`./`:
+
+    ./StockFW                       the window app, read-only
+    sudo ./StockFW                  the full tool
+    sudo ./cli/stockfw dashboard    the local dashboard, with live events
+
+### Wayland desktops and WSL
+
+Started without `sudo` on Wayland (GNOME and KDE Plasma by default, and
+WSL's WSLg), StockFW runs on GTK's Wayland side, which has no tray area:
+it shows no tray icon, closing the window quits it, and Preferences
+greys the two tray switches with the reason.
+
+Started with `sudo`, it runs on the desktop's X11 side (XWayland)
+instead, because `sudo` drops the Wayland settings. There the tray
+switches stay on offer, but an icon appears only where the desktop shows
+X11 tray icons (WSLg and a plain GNOME desktop do not); without one,
+closing still quits. On an X11 session the icon shows where the desktop
+has a system tray (Xfce, MATE, Cinnamon, KDE Plasma); GNOME has none
+unless an extension adds one.
+
+Under WSL a `dconf-WARNING ... unable to open file '/etc/dconf/db/local'`
+line at start comes from WSL's own settings setup and is harmless.
 
 ## After a reboot: the boot service
 
@@ -141,7 +174,9 @@ Every command takes `--json`.  `stockfw help <command>` has the details.
 `stockfw dashboard` serves a read-only page on 127.0.0.1 only, behind a
 token that changes every run, and opens it in your browser (never as
 root: under `sudo` it prints the address instead).  The same `sudo`
-search-path note as above applies: use `sudo /usr/local/bin/stockfw`.
+search-path note as above applies: `sudo /usr/local/bin/stockfw` always
+works.  Under WSL, open the printed address in your Windows browser and
+leave the terminal running while you use it.
 
 ## Uninstall
 

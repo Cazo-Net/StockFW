@@ -1182,6 +1182,52 @@ start gate itself (`fs_firewall_start_safe`) and the boot-time expiry
 of Sentinel rows (`fs_autoblock_expire`).
 
 
+## No tray, and words the app does not take (`tests/test-notray.sh`)
+
+```sh
+cd port
+ninja -C build-linux StockFW fs-prefs-fake-smoke
+bash tests/test-notray.sh   # broadwayd (libgtk-3-bin) for the desktop part
+```
+
+Drives the real `StockFW` binary, with the same scratch directories,
+private instance name and (as root) private network namespace as
+`test-instance.sh`.
+
+First, `StockFW dashboard` -- a command meant for the command-line tool
+`stockfw` -- must exit 2 at once with a message naming
+`sudo /usr/local/bin/stockfw dashboard` and `sudo ./cli/stockfw
+dashboard`, and never reach GApplication, whose only answer was "This
+application can not open files".  It is checked with no display and
+again with one.  While a stand-in listener (python3) holds the instance
+name, nothing may connect to it: a binary that went for the name before
+refusing the word would (looking for the name after the process exits
+proves nothing, an abstract socket being gone by then).  A word after
+an option is refused the same way, and `--version` alone still works.
+
+Then, on a Broadway display (a GDK backend that is not X11, the same
+case as Wayland, GNOME, KDE Plasma and WSL's WSLg), a `--background`
+start with "Show a tray icon" on must make no tray icon, show its window
+instead of hiding it, still run the slow re-read of the firewall's state
+(`STOCKFW_TRAY_REFRESH_S=1`; it used to start with the icon), print no
+Gtk-CRITICAL or warning (`G_DEBUG=fatal-criticals` makes a critical a
+crash), refuse `StockFW dashboard` with exit 2 while it runs rather than
+hand it over, and quit cleanly with `--quit`.  Last, `fs-prefs-fake-smoke`
+runs on Broadway, where its tray check wants both tray switches greyed
+with the reason shown.
+
+The Broadway display binds HTTP to 127.0.0.1 and counts as up only once
+broadwayd's own (abstract) socket is listening and broadwayd still runs:
+it prints "Listening on" before binding its HTTP port and exits when the
+port is taken, so the next display number is tried.
+
+The desktop part SKIPs without broadwayd; `STOCKFW_NOTRAY_REQUIRE=1`
+(set in CI) makes that a failure.  Teeth: against the 1.0.7 binary the
+test fails 16 checks (the stray word reaches GApplication or a
+running copy; the tray icon's Gtk-CRITICAL kills the background start;
+Preferences offers the switches).
+
+
 ## One StockFW per user (`tests/test-instance.sh`)
 
 ```sh

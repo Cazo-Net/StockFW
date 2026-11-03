@@ -68,6 +68,7 @@
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
 #include "ui/fs-hitview.h"
+#include "ui/fs-tray.h"
 #include "ui/fs-helpwindow.h"
 #include "fs-theme-css.h"   /* generated from src/ui/fs-theme.css */
 
@@ -980,6 +981,21 @@ check_pages (GtkWidget *win, const gchar *tag)
 		       fs_autostart_enabled (),
 		       "[%s] the sign-in switch shows what the system says (%d)",
 		       tag, fs_autostart_enabled ());
+	}
+	{
+		/* Where the desktop has no tray (Wayland, WSLg, Broadway:
+		 * fs_tray_supported) both tray switches are greyed, the
+		 * reason under the first; with one (X11, Windows) the first
+		 * is live and no reason shows.  tests/test-notray.sh runs
+		 * this smoke on Broadway for the first half. */
+		gboolean can = fs_tray_supported ();
+
+		CHECK (sensitive (win, FS_PREFS_ENABLE_TRAY_ICON) == can &&
+		       reason_shown (win, FS_PREFS_ENABLE_TRAY_ICON) == !can &&
+		       (can || !sensitive (win, FS_PREFS_MINIMIZE_TO_TRAY)),
+		       "[%s] the tray switches follow the desktop (%s)", tag,
+		       can ? "it has a tray: live, no reason"
+		           : "no tray: both greyed, the reason shown");
 	}
 	{
 		/* 1.0.7: the footer has a Help button (it opens the topic

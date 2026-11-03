@@ -64,7 +64,7 @@ jobs:
             xdotool stalonetray desktop-file-utils \
             liblzma-dev libssl-dev xz-utils \
             python3-location location libloc-database clang libclang-rt-dev \
-            nsis gcc-mingw-w64-x86-64
+            nsis gcc-mingw-w64-x86-64 libgtk-3-bin
 
       - name: Build
         run: |
@@ -134,6 +134,18 @@ jobs:
           # notification area; xdotool reads which windows are on screen.
           ninja -C build-linux StockFW
           xvfb-run -a bash tests/test-instance.sh
+
+      - name: No tray (Broadway, as on Wayland and WSL) and stray words (real binary)
+        working-directory: port
+        env:
+          NO_AT_BRIDGE: "1"
+          STOCKFW_NOTRAY_REQUIRE: "1"
+        run: |
+          # broadwayd (libgtk-3-bin) gives a GDK backend that is not
+          # X11, where GTK has no tray: the case of Wayland desktops and
+          # WSLg.  STOCKFW_NOTRAY_REQUIRE turns its SKIP into a failure.
+          ninja -C build-linux StockFW fs-prefs-fake-smoke
+          bash tests/test-notray.sh
 
       - name: Start at sign-in (XDG autostart entry)
         working-directory: port

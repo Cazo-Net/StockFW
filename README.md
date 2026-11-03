@@ -240,9 +240,10 @@ sudo stockfw intel import mylist.txt --name "My list" # your own list, no networ
 
 `stockfw help intel` lists every action. Each one takes `--json`.
 Where `sudo stockfw` says *command not found*, write
-`sudo /usr/local/bin/stockfw`: on some systems (Debian, Kali) sudo's own
-search path (`secure_path`) leaves out `/usr/local/bin`, where the Linux
-installer puts StockFW ([its README](port/installer/linux/README.md)).
+`sudo /usr/local/bin/stockfw`: on some systems (Fedora, RHEL, some Kali
+installs) sudo's own search path (`secure_path`) leaves out
+`/usr/local/bin`, where the Linux installer puts StockFW
+([its README](port/installer/linux/README.md)).
 The same holds for every `sudo stockfw` and `sudo StockFW` below.
 Downloads connect to each feed's host directly. Behind a proxy, set it
 with `sudo stockfw intel proxy http://proxy.example:3128` (`none` removes

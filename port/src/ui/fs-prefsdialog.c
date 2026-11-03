@@ -1029,19 +1029,28 @@ build_general (PrefsWin *win, GtkWidget *nav)
 		_("How the StockFW window behaves, and what happens when it "
 		  "opens."));
 	GtkWidget *card;
-	Row *tray;
+	Row *tray, *minimize;
 
 	card = card_new (cards, _("Window and tray"));
 	tray = add_switch (win, card, FS_PREFS_ENABLE_TRAY_ICON,
 		_("Show a tray icon"),
 		_("Puts StockFW in the notification area, with a menu to open "
-		  "the window or quit."), NULL);
-	add_switch (win, card, FS_PREFS_MINIMIZE_TO_TRAY,
+		  "the window or quit."),
+		_("This desktop has no tray area StockFW can use (Wayland, "
+		  "including WSL), so no icon is shown and closing the window "
+		  "quits."));
+	minimize = add_switch (win, card, FS_PREFS_MINIMIZE_TO_TRAY,
 		_("Close and minimize to the tray"),
 		_("Closing or minimizing hides the window in the tray instead "
 		  "of quitting, so event monitoring and Sentinel keep running. "
 		  "Needs the tray icon; where the desktop has no tray area, "
-		  "closing quits."), NULL)->master = tray;
+		  "closing quits."), NULL);
+	minimize->master = tray;
+	/* Nothing to change where no icon can be made (fs-tray.c): both
+	 * greyed, the reason under the first.  A value saved on an X11
+	 * session is kept for the next one. */
+	set_blocked (tray, !fs_tray_supported ());
+	set_blocked (minimize, !fs_tray_supported ());
 
 	card = card_new (cards, _("Firewall"));
 	add_switch (win, card, FS_PREFS_START_ON_GUI,

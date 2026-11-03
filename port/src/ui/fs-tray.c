@@ -49,6 +49,9 @@
 #ifdef G_OS_WIN32
 #include <windows.h>
 #endif
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
 
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 
@@ -710,12 +713,15 @@ on_embedded_changed (GObject *icon, GParamSpec *pspec, gpointer data)
 }
 
 /* The slow timer: the firewall's state asked again, the tooltip's
- * count, and midnight resetting it. */
+ * count, and midnight resetting it.  It runs with or without an icon
+ * (fs_tray_sync); the debug line is what tests/test-notray.sh reads. */
 static gboolean
 on_refresh_timer (gpointer data)
 {
 	(void) data;
 
+	g_debug ("slow refresh: the firewall's state read again%s",
+	         tray_icon != NULL ? "" : " (no tray icon)");
 	fs_statusview_reread_state ();
 	fs_tray_refresh ();
 	return G_SOURCE_CONTINUE;
@@ -771,13 +777,47 @@ refresh_period (void)
 	return TRAY_REFRESH_S;
 }
 
+/* [ fs_tray_supported ] -- can this desktop hold a tray icon at all?
+ * GtkStatusIcon has a notification area only on X11 (the XEmbed tray)
+ * and on Windows.  On Wayland -- GNOME, KDE Plasma, WSL's WSLg -- and
+ * on Broadway GTK has none: the icon would never show, and creating it
+ * prints "Gtk-CRITICAL: gtk_widget_get_scale_factor: assertion
+ * 'GTK_IS_WIDGET (widget)' failed" at every start.  There no icon is
+ * made, so the window stays the way in and closing it quits
+ * (fs_tray_hide_on_close fails closed without an icon). */
+gboolean
+fs_tray_supported (void)
+{
+#ifdef G_OS_WIN32
+	return TRUE;
+#elif defined GDK_WINDOWING_X11
+	GdkDisplay *display = gdk_display_get_default ();
+
+	return display != NULL && GDK_IS_X11_DISPLAY (display);
+#else
+	return FALSE;
+#endif
+}
+
 /* [ create_icon ] -- only from fs_tray_sync(), window already known.
  * The icon reuses the window's logo so the tray and the title bar
- * agree; the themed fallback covers a window without one. */
+ * agree; the themed fallback covers a window without one.  Nothing is
+ * made where the desktop has no tray (fs_tray_supported). */
 static void
 create_icon (void)
 {
-	GdkPixbuf *logo = gtk_window_get_icon (tray_window);
+	GdkPixbuf *logo;
+
+	if (!fs_tray_supported ()) {
+		g_debug ("no tray icon: this desktop (GDK backend %s) has no "
+		         "notification area GTK can use",
+		         gdk_display_get_default () != NULL
+		         ? G_OBJECT_TYPE_NAME (gdk_display_get_default ())
+		         : "none");
+		return;
+	}
+
+	logo = gtk_window_get_icon (tray_window);
 
 	tray_icon = logo != NULL
 	          ? gtk_status_icon_new_from_pixbuf (logo)
@@ -790,9 +830,6 @@ create_icon (void)
 	g_signal_connect (tray_icon, "notify::embedded",
 	                  G_CALLBACK (on_embedded_changed), NULL);
 	update_tooltip ();
-	if (tray_timer == 0)
-		tray_timer = g_timeout_add_seconds (refresh_period (),
-		                                    on_refresh_timer, NULL);
 #ifdef G_OS_WIN32
 	/* An elevated copy does not receive a medium-integrity Explorer's
 	 * broadcasts unless it says so; without "TaskbarCreated" GTK never
@@ -809,10 +846,6 @@ create_icon (void)
 static void
 destroy_icon (void)
 {
-	if (tray_timer != 0) {
-		g_source_remove (tray_timer);
-		tray_timer = 0;
-	}
 #ifdef G_OS_WIN32
 	if (win32_watch != 0) {
 		g_source_remove (win32_watch);
@@ -849,6 +882,16 @@ fs_tray_sync (void)
 	if (tray_window == NULL)
 		return;
 
+	/* The slow timer runs whenever the window is known, icon or not:
+	 * it is also how the Overview and the sidebar learn of a firewall
+	 * stopped from outside (`stockfw stop' in a terminal,
+	 * fs-statusview.h), which a desktop with no tray (Wayland) or the
+	 * tray switched off must not lose.  Only fs_tray_uninstall()
+	 * stops it. */
+	if (tray_timer == 0)
+		tray_timer = g_timeout_add_seconds (refresh_period (),
+		                                    on_refresh_timer, NULL);
+
 	want = fs_prefs_bool (FS_PREFS_ENABLE_TRAY_ICON);
 
 	if (want && tray_icon == NULL)
@@ -860,6 +903,10 @@ fs_tray_sync (void)
 void
 fs_tray_uninstall (void)
 {
+	if (tray_timer != 0) {
+		g_source_remove (tray_timer);
+		tray_timer = 0;
+	}
 	destroy_icon ();
 }
 
