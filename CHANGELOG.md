@@ -140,6 +140,20 @@ into `/usr/local/share/doc/stockfw/`.
 - `tests/full-suite.sh` uses one build directory and runs every suite on
   Linux as well as Windows; CI runs the threat-intel, country and
   downloader suites it had left out.
+- Event history: events that arrive while the history is being read
+  back reach the history file even when the list has already dropped
+  them, and history limits saved meanwhile are applied when Delete
+  history or signing out finishes the read early.
+- `stockfw dashboard` says to open the printed URL when it has started a
+  browser, which a snap or Flatpak browser may need.
+- Windows: a build run from its build folder finds its GTK runtime
+  again.
+- Credits: the port is credited to the Stock Team in About and Help.
+  The Windows file properties, the installer and both licence files
+  carry one copyright line.
+- Packages: the Linux installer also checks for ATK, the packaged README
+  links to the repository at the release tag, the Windows packager stops
+  without `strip`, and the Linux README gives full paths under `sudo`.
 
 ## [1.0.6] - development version, shipped as part of 1.0.7
 
