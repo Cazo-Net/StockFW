@@ -56,6 +56,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-intel.h"
 #include "core/fs-hostnet.h"
 #include "core/fs-toolpath.h"
+#include "core/fs-lockout.h"
 #include <stdlib.h>
 
 static int failures = 0;
@@ -8571,14 +8572,21 @@ read_lf (const gchar *path)
 
 static void test_cli_platform_words (void)
 {
+	/* The commands are split over several files since the command
+	 * registry (cli-plan.md WP-A): Stop and Start in fs-cli-policy.c,
+	 * the root hint in fs-cli-cmds.c, the sudo prefix in fs-cli-out.c. */
 	gchar *cmds = read_lf ("src/cli/fs-cli-cmds.c");
+	gchar *policy = read_lf ("src/cli/fs-cli-policy.c");
+	gchar *out_c = read_lf ("src/cli/fs-cli-out.c");
 	gchar *intel = read_lf ("src/cli/fs-cli-intel.c");
 	gchar *hdr = read_lf ("src/cli/fs-cli.h");
 	const gchar *win;
 
-	CHECK (cmds != NULL && intel != NULL && hdr != NULL,
+	CHECK (cmds != NULL && policy != NULL && out_c != NULL &&
+	       intel != NULL && hdr != NULL,
 	       "cli words: the CLI sources are readable");
-	if (cmds == NULL || intel == NULL || hdr == NULL)
+	if (cmds == NULL || policy == NULL || out_c == NULL || intel == NULL ||
+	    hdr == NULL)
 		goto out;
 	win = strstr (hdr, "#elif defined G_OS_WIN32");
 	CHECK (win != NULL &&
@@ -8588,18 +8596,21 @@ static void test_cli_platform_words (void)
 	       strstr (win, "opened as administrator") != NULL,
 	       "cli words: fs-cli.h names Windows Firewall and an "
 	       "administrator prompt for Windows");
-	CHECK (strstr (cmds, "\"the kernel does not hold them\"") == NULL &&
-	       strstr (cmds, "FS_CLI_LIVE \" does not hold \"") != NULL,
-	       "cli words: Stop and Start's blocklist error in fs-cli-cmds.c "
+	CHECK (strstr (policy, "\"the kernel does not hold them\"") == NULL &&
+	       strstr (policy, "FS_CLI_LIVE \" does not hold \"") != NULL,
+	       "cli words: Stop and Start's blocklist error in fs-cli-policy.c "
 	       "names the platform's firewall (FS_CLI_LIVE)");
 	CHECK (strstr (cmds, "\"run it with sudo, e.g.") == NULL &&
-	       strstr (cmds, "FS_CLI_RIGHTS \", e.g. `\" FS_CLI_SUDO") != NULL,
+	       strstr (cmds, "FS_CLI_RIGHTS \", e.g. `%s'\"") != NULL &&
+	       strstr (out_c, "const gchar *sudo = FS_CLI_SUDO;") != NULL,
 	       "cli words: the root hint in fs-cli-cmds.c is the platform's "
-	       "(FS_CLI_RIGHTS, FS_CLI_SUDO)");
+	       "(FS_CLI_RIGHTS, and FS_CLI_SUDO in fs_cli_sudo_hint)");
 	CHECK (strstr (intel, "#define FS_CLI_LIVE") == NULL,
 	       "cli words: one definition, in fs-cli.h");
 out:
 	g_free (cmds);
+	g_free (policy);
+	g_free (out_c);
 	g_free (intel);
 	g_free (hdr);
 }
@@ -11225,6 +11236,334 @@ static void test_toolpath (void)
 #endif
 }
 
+/* === WP-B === */
+/* Policy truth and safe changes (cli-plan.md WP-B): the problem report
+ * of the policy loader, the apply gate with the firewall stopped, and
+ * the lockout guard. */
+
+/* [ test_policy_load_report ]
+ * Each line that is not a rule comes back with its file, its line
+ * number and a reason in words; the rules around it still load. */
+static void test_policy_load_report (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (), "stockfw-wpb-report",
+	                               NULL);
+	gchar *old = g_strdup (g_getenv ("STOCKFW_RULES_DIR"));
+	gchar *path;
+	FsPolicy *policy = fs_policy_new ();
+	GPtrArray *problems = NULL;
+	const FsPolicyProblem *p;
+	gint malformed = -1;
+
+	g_setenv ("STOCKFW_RULES_DIR", dir, TRUE);
+	path = fs_util_rules_path ("inbound/allow-service");
+	fs_util_ensure_parent_dir (path);
+	g_file_set_contents (path,
+		"SSH, 22, Anyone, fine\n"
+		"garbage line without commas\n"
+		"FTP, 99999, Anyone,\n"
+		"SSH,,Anyone\n"
+		"Frobnicator,,Anyone\n", -1, NULL);
+
+	CHECK (fs_policy_load_report (policy, &problems),
+	       "report: the file loads");
+	CHECK (problems != NULL && problems->len == 3,
+	       "report: three lines are not rules (got %u)",
+	       problems != NULL ? problems->len : 0);
+	CHECK (fs_policy_count (policy, FS_RULE_INBOUND_ALLOW_SERVICE) == 2,
+	       "report: the good row and the portless known service load "
+	       "(got %u)", fs_policy_count (policy,
+	                                    FS_RULE_INBOUND_ALLOW_SERVICE));
+	if (problems != NULL && problems->len == 3) {
+		p = g_ptr_array_index (problems, 0);
+		CHECK (p->line == 2 &&
+		       g_strcmp0 (p->file, "inbound/allow-service") == 0 &&
+		       g_strcmp0 (p->reason,
+		                  "expected NAME, PORT, FOR (no commas)") == 0 &&
+		       g_strcmp0 (p->text, "garbage line without commas") == 0,
+		       "report: line 2 has no commas (%u, %s)", p->line,
+		       p->reason);
+		p = g_ptr_array_index (problems, 1);
+		CHECK (p->line == 3 &&
+		       g_strcmp0 (p->reason,
+		                  "port \"99999\" is out of range (1-65535)") == 0,
+		       "report: line 3's port is out of range (%u, %s)",
+		       p->line, p->reason);
+		p = g_ptr_array_index (problems, 2);
+		CHECK (p->line == 5 &&
+		       g_strcmp0 (p->reason, "no port, and \"Frobnicator\" is "
+		                  "not a known service") == 0,
+		       "report: line 5 names no port and no known service "
+		       "(%u, %s)", p->line, p->reason);
+	}
+	g_ptr_array_unref (problems);
+
+	/* The old entry point counts the same lines. */
+	CHECK (fs_policy_load (policy, &malformed) && malformed == 3,
+	       "report: fs_policy_load counts the same three (got %d)",
+	       malformed);
+
+	/* The journal keeps the F-1 check only: a portless row a 1.0.7
+	 * apply recorded must not make the boot start refuse (Q6). */
+	{
+		FsRule *r = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                              "Frobnicator,,Anyone");
+
+		CHECK (!fs_rule_fields_sane (r) && fs_rule_addresses_sane (r),
+		       "report: a portless unknown service is not a policy row, "
+		       "but its addresses are sane for the journal");
+		fs_rule_free (r);
+	}
+
+	fs_policy_free (policy);
+	g_free (path);
+	if (old != NULL)
+		g_setenv ("STOCKFW_RULES_DIR", old, TRUE);
+	else
+		g_unsetenv ("STOCKFW_RULES_DIR");
+	g_free (old);
+	g_free (dir);
+}
+
+static FsFirewallState wpb_state = FS_FW_RUNNING;
+static FsFirewallState wpb_get_state (void) { return wpb_state; }
+
+static const FsBackend fake_backend_stateful = {
+	.name = "fake-state",
+	.display_name = "scripted fake backend that reads its state",
+	.start_applies_policy = TRUE,
+	.available = fake_available,
+	.get_state = wpb_get_state,
+	.apply_rules = fake_apply_rules,
+	.apply_delta = fake_apply_delta,
+};
+
+/* [ test_apply_while_stopped ]
+ * The journal says what the last apply put live, not what is live now.
+ * With the firewall stopped the gate must load the whole policy (which
+ * starts it) instead of finding "no change" against the journal. */
+static void test_apply_while_stopped (void)
+{
+	gchar *dir = g_build_filename (g_get_tmp_dir (), "stockfw-wpb-a1",
+	                               NULL);
+	gchar *file = g_build_filename (dir, "applied.csv", NULL);
+	gchar *audit_file = g_build_filename (dir, "audit.log", NULL);
+	FsPolicy *policy;
+	FsApplyOutcome *o;
+	gchar *log;
+
+	g_mkdir_with_parents (dir, 0700);
+	remove (file);
+	remove (audit_file);
+	g_setenv ("STOCKFW_APPLIED_FILE", file, TRUE);
+	g_setenv ("STOCKFW_AUDIT_FILE", audit_file, TRUE);
+	fake_reset ();
+	policy = gate_policy_two ();
+
+	/* Running: the first apply is whole, the second finds no change. */
+	wpb_state = FS_FW_RUNNING;
+	o = fs_policy_apply_safe (&fake_backend_stateful, policy, "wpb", NULL,
+	                          NULL);
+	CHECK (o->applied && fake_full_calls == 1,
+	       "A1: the first apply goes out whole");
+	fs_apply_outcome_free (o);
+	o = fs_policy_apply_safe (&fake_backend_stateful, policy, "wpb", NULL,
+	                          NULL);
+	CHECK (o->applied && o->narrow && fake_full_calls == 1 &&
+	       fake_delta_calls == 0 && o->firewall_was == FS_FW_RUNNING,
+	       "A1: running and unchanged: the narrow no-change path, the "
+	       "backend untouched");
+	fs_apply_outcome_free (o);
+
+	/* Stopped: the same unchanged policy goes out whole. */
+	wpb_state = FS_FW_STOPPED;
+	o = fs_policy_apply_safe (&fake_backend_stateful, policy, "wpb", NULL,
+	                          NULL);
+	CHECK (o->applied && !o->narrow && fake_full_calls == 2 &&
+	       o->firewall_was == FS_FW_STOPPED,
+	       "A1: stopped: the whole policy is applied (full calls %d, "
+	       "narrow %d)", fake_full_calls, o->narrow);
+	fs_apply_outcome_free (o);
+	log = gate_audit_read ();
+	CHECK (log != NULL && strstr (log, "| full (firewall was stopped) |")
+	                      != NULL,
+	       "A1: the audit line says the firewall was stopped");
+	g_free (log);
+
+	/* Unknown (no root to read it): whole too, never "no change". */
+	wpb_state = FS_FW_NONE;
+	o = fs_policy_apply_safe (&fake_backend_stateful, policy, "wpb", NULL,
+	                          NULL);
+	CHECK (o->applied && !o->narrow && fake_full_calls == 3,
+	       "A1: a state that cannot be read takes the whole apply");
+	fs_apply_outcome_free (o);
+
+	/* A backend that cannot read its state keeps the narrow path. */
+	o = fs_policy_apply_safe (&fake_backend, policy, "wpb", NULL, NULL);
+	CHECK (o->applied && o->narrow && fake_full_calls == 3 &&
+	       o->firewall_was == FS_FW_NONE,
+	       "A1: no get_state: the narrow path as before");
+	fs_apply_outcome_free (o);
+
+	fake_reset ();
+	fs_policy_free (policy);
+	g_unsetenv ("STOCKFW_APPLIED_FILE");
+	g_unsetenv ("STOCKFW_AUDIT_FILE");
+	remove (file);
+	remove (audit_file);
+	g_rmdir (dir);
+	g_free (audit_file);
+	g_free (file);
+	g_free (dir);
+}
+
+/* [ test_lockout_check ]
+ * Each SSH peer is asked about as a new connection on each port.
+ * The addresses are public documentation ranges: the Windows model
+ * blocks reserved sources such as 192.168/16 on Public networks, so a
+ * LAN peer is DEPENDS there, not ALLOWED. */
+static void test_lockout_check (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *ssh = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+	                                "SSH, 22, 203.0.113.0/24, admin");
+	FsRangeSet *peers = fs_range_set_new ();
+	FsRangeSet *lan = fs_range_set_new ();
+	FsRangeSet *none = fs_range_set_new ();
+	GArray *ports = g_array_new (FALSE, FALSE, sizeof (guint16));
+	GArray *other = g_array_new (FALSE, FALSE, sizeof (guint16));
+	guint16 p22 = 22, p2222 = 2222;
+	FsLockoutReport *r;
+
+	fs_policy_add (policy, ssh);
+	fs_range_set_add_text (peers, "10.0.0.5");
+	fs_range_set_add_text (lan, "203.0.113.20");
+	g_array_append_val (ports, p22);
+	g_array_append_val (other, p2222);
+
+	r = fs_lockout_check (policy, NULL, peers, ports);
+	CHECK (r->checked && fs_lockout_report_cuts (r) &&
+	       r->verdict == FS_WHATIF_BLOCKED && r->worst != NULL &&
+	       g_strcmp0 (r->worst->peer, "10.0.0.5") == 0 &&
+	       r->worst->port == 22,
+	       "lockout: a peer outside the SSH row's network is cut");
+	fs_lockout_report_free (r);
+
+	r = fs_lockout_check (policy, NULL, lan, ports);
+	CHECK (r->checked && !fs_lockout_report_cuts (r) &&
+	       r->worst != NULL && r->worst->policy_kind ==
+	       FS_RULE_INBOUND_ALLOW_SERVICE && r->worst->policy_index == 0,
+	       "lockout: a peer inside it is allowed, by that row");
+	fs_lockout_report_free (r);
+
+	r = fs_lockout_check (policy, NULL, lan, other);
+	CHECK (fs_lockout_report_cuts (r),
+	       "lockout: sshd on another port is cut by a port-22 row");
+	fs_lockout_report_free (r);
+
+	r = fs_lockout_check (policy, NULL, none, ports);
+	CHECK (!r->checked && !fs_lockout_report_cuts (r) &&
+	       g_strcmp0 (r->why_not, "not an SSH session") == 0,
+	       "lockout: no peer, no check");
+	fs_lockout_report_free (r);
+
+	/* Peers next to each other are one range once normalized (as
+	 * fs_hostnet_read leaves them): each address is still asked
+	 * about, not only the first. */
+	{
+		FsRule *ssh6 = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE,
+		                                 "SSH, 22, 2001:db8::/127,");
+		FsRangeSet *pair4 = fs_range_set_new ();
+		FsRangeSet *pair6 = fs_range_set_new ();
+
+		fs_policy_add (policy, ssh6);
+		fs_range_set_add_text (pair4, "203.0.113.255");
+		fs_range_set_add_text (pair4, "203.0.114.0");
+		fs_range_set_normalize (pair4);
+		fs_range_set_add_text (pair6, "2001:db8::1");
+		fs_range_set_add_text (pair6, "2001:db8::2");
+		fs_range_set_normalize (pair6);
+
+		r = fs_lockout_check (policy, NULL, pair4, ports);
+		CHECK (pair4->v4->len == 1 && r->pairs->len == 2 &&
+		       fs_lockout_report_cuts (r) && r->worst != NULL &&
+		       g_strcmp0 (r->worst->peer, "203.0.114.0") == 0,
+		       "lockout: of two adjacent IPv4 peers (one range), the "
+		       "second, outside the LAN, is cut");
+		fs_lockout_report_free (r);
+
+		r = fs_lockout_check (policy, NULL, pair6, ports);
+		CHECK (pair6->v6->len == 1 && r->pairs->len == 2 &&
+		       fs_lockout_report_cuts (r) && r->worst != NULL &&
+		       g_strcmp0 (r->worst->peer, "2001:db8::2") == 0,
+		       "lockout: the same for two adjacent IPv6 peers");
+		fs_lockout_report_free (r);
+
+		fs_range_set_free (pair6);
+		fs_range_set_free (pair4);
+		fs_rule_free (ssh6);
+	}
+
+	/* A busy jump host (docs 15.2, review notes): 70 sessions from the
+	 * SSH row's network sort before the admin's own peer, 203.0.114.5, which the SSH
+	 * row does not let in.  Capped at 64, the plain check never asks
+	 * about it and says ALLOWED; the session's own peer is asked about
+	 * first, outside the cap, and the report counts what it left out. */
+	{
+		FsRangeSet *busy = fs_range_set_new ();
+		FsRangeSet *own = fs_range_set_new ();
+
+		for (guint i = 1; i <= 70; i++) {
+			gchar *a = g_strdup_printf ("203.0.113.%u", i);
+
+			fs_range_set_add_text (busy, a);
+			g_free (a);
+		}
+		fs_range_set_add_text (busy, "203.0.114.5");
+		fs_range_set_normalize (busy);
+		fs_range_set_add_text (own, "203.0.114.5");
+
+		r = fs_lockout_check (policy, NULL, busy, ports);
+		CHECK (r->checked && !fs_lockout_report_cuts (r) &&
+		       r->pairs->len == FS_LOCKOUT_MAX_PEERS && r->skipped == 7,
+		       "lockout: past the cap, the plain check stops at %u peers "
+		       "and counts 7 not asked (%u, skipped %u)",
+		       FS_LOCKOUT_MAX_PEERS, r->pairs->len, r->skipped);
+		fs_lockout_report_free (r);
+
+		r = fs_lockout_check_own (policy, NULL, own, busy, ports);
+		CHECK (r->checked && fs_lockout_report_cuts (r) &&
+		       r->verdict == FS_WHATIF_BLOCKED && r->worst != NULL &&
+		       g_strcmp0 (r->worst->peer, "203.0.114.5") == 0 &&
+		       r->worst->own &&
+		       r->pairs->len == FS_LOCKOUT_MAX_PEERS + 1 &&
+		       r->skipped == 6,
+		       "lockout: the session's own peer is asked about first, "
+		       "past a busy host's 70 others, and is cut (%s, %u pairs, "
+		       "skipped %u)", r->worst != NULL ? r->worst->peer : "-",
+		       r->pairs->len, r->skipped);
+		fs_lockout_report_free (r);
+
+		fs_range_set_free (own);
+		fs_range_set_free (busy);
+	}
+
+	CHECK (fs_lockout_env_port ("10.0.0.5 50000 10.0.0.1 2222") == 2222 &&
+	       fs_lockout_env_port ("10.0.0.5 50000 10.0.0.1") == 0 &&
+	       fs_lockout_env_port ("a b c 99999") == 0 &&
+	       fs_lockout_env_port (NULL) == 0,
+	       "lockout: the server port of $SSH_CONNECTION");
+
+	g_array_unref (other);
+	g_array_unref (ports);
+	fs_range_set_free (none);
+	fs_range_set_free (lan);
+	fs_range_set_free (peers);
+	fs_rule_free (ssh);
+	fs_policy_free (policy);
+}
+/* === end WP-B === */
+
 int main (void)
 {
 	gchar *run_dir = make_run_dir ();
@@ -11340,6 +11679,11 @@ int main (void)
 	test_hostnet_onlink ();
 	test_winstore_sddl ();
 	test_toolpath ();
+	/* === WP-B === */
+	test_policy_load_report ();
+	test_apply_while_stopped ();
+	test_lockout_check ();
+	/* === end WP-B === */
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);
@@ -11432,13 +11776,29 @@ health_rc=0
 # too (the Windows installer once carried a changelog promising
 # "AI-powered" detection), so they are read as well.  site/ is the
 # website's own tree and has its own checks.
-WORDING_HITS="$(grep -rnE '\bAI\b|AI-' src docs installer ../docs ../README.md \
+WORDING_HITS="$(grep -rnE '\bAI\b|AI-' src docs installer contrib ../docs ../README.md \
   ../CHANGELOG.md ../RELEASING.md ../AUTHORS ../CREDITS 2>/dev/null \
   | grep -v 'There is no AI model' || true)"
 if [ -n "$WORDING_HITS" ]; then
   echo "FAIL: \"AI\" wording in the program, the installers or the docs:"
   echo "$WORDING_HITS"
   exit 1
+fi
+# The manual page and the completion words are printed by `stockfw'
+# from its tables in src/cli (read above), and contrib/ holds the
+# completion scripts.  When a build is at hand, what it prints is read
+# too.
+SFW="${STOCKFW_BUILD:-build-linux}/stockfw"
+if [ -x "$SFW" ]; then
+  GEN_HITS="$( { "$SFW" __man; "$SFW" __complete ''
+                 for c in $("$SFW" __complete ''); do
+                   "$SFW" __complete "$c" -; "$SFW" __complete "$c" ''
+                 done; } 2>/dev/null | grep -nE '\bAI\b|AI-' || true)"
+  if [ -n "$GEN_HITS" ]; then
+    echo "FAIL: \"AI\" wording in what stockfw __man or __complete prints:"
+    echo "$GEN_HITS"
+    exit 1
+  fi
 fi
 echo "ok:   wording guard: no \"AI\" claims in src, installers, docs, README or CHANGELOG"
 
@@ -11492,7 +11852,7 @@ echo "ok:   privacy guard: Help names the location database as a download"
 # the program's own and the current folder (Windows).
 SPAWN_HITS="$(grep -nE 'G_SPAWN_SEARCH_PATH|g_find_program_in_path' \
   src/platform/linux/fs-backend-linux.c src/core/fs-nftset.c \
-  src/cli/fs-cli-cmds.c src/cli/fs-dashboard.c || true)"
+  src/cli/*.c || true)"
 if [ -n "$SPAWN_HITS" ]; then
   echo "FAIL: a system tool is found through PATH:"
   echo "$SPAWN_HITS"
@@ -11504,6 +11864,147 @@ if ! tr -d '\r' < src/platform/windows/fs-backend-windows.c \
   exit 1
 fi
 echo "ok:   spawn guard: system tools by absolute path (Linux root, Windows)"
+
+# The command line (cli-plan.md, WP-A).  A hint that says a bare
+# `sudo stockfw' may find another copy, or none, on root's PATH: hints
+# come from fs_cli_sudo_hint, with the full path.
+SUDO_HITS="$(grep -n '`sudo stockfw' src/cli/*.c src/cli/*.h || true)"
+if [ -n "$SUDO_HITS" ]; then
+  echo "FAIL: a bare \`sudo stockfw' hint in src/cli (use fs_cli_sudo_hint):"
+  echo "$SUDO_HITS"
+  exit 1
+fi
+echo "ok:   cli guard: no bare \`sudo stockfw' hint in src/cli"
+# "--" is the parser's (fs-cli-main.c drops it); a command that looks
+# for it again would read a dash word after it as an option.
+DASH_HITS="$(grep -nE 'strcmp \(argv\[[a-z0-9_ +]*\], "--"\)' src/cli/*.c \
+  | grep -v '^src/cli/fs-cli-main\.c:' || true)"
+if [ -n "$DASH_HITS" ]; then
+  echo "FAIL: a command looks for \"--\" itself (fs_cli_is_positional is the way):"
+  echo "$DASH_HITS"
+  exit 1
+fi
+echo "ok:   cli guard: only fs-cli-main.c handles \"--\""
+# The option tables are what completion and the man page are made of:
+# every option a command reads with fs_cli_take_opt is a value option
+# of the table in the same file, and every value option of a table is
+# read there.
+if ! python3 -I - src/cli/*.c <<'PYEOF'
+import re, sys
+bad = []
+for path in sys.argv[1:]:
+    src = open(path, encoding='utf-8').read()
+    taken = set(re.findall(r'fs_cli_take_opt\s*\([^;"]*?"(-[^"]*)"', src))
+    table = set(re.findall(r'\{\s*"(-[^"]*)",\s*TRUE\s*,', src))
+    for o in sorted(taken - table):
+        bad.append('%s: %s is read by fs_cli_take_opt but is not a value option of its table' % (path, o))
+    for o in sorted(table - taken):
+        bad.append('%s: %s is a value option of the table but no fs_cli_take_opt reads it' % (path, o))
+for b in bad:
+    print('FAIL: ' + b)
+sys.exit(1 if bad else 0)
+PYEOF
+then
+  exit 1
+fi
+echo "ok:   cli guard: fs_cli_take_opt options and the option tables agree"
+
+# === WP-D ===
+# The socket tables (cli-plan.md WP-D): the UDP parser, the listening
+# test, port names, the connection rows' new fields, and the SSH
+# sessions an apply keeps on every port sshd listens on
+# (tests/test-sockets.c, a test build of src/core).
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} tests/test-sockets.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   -o "$BUILD_DIR/test-sockets" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+if ! "$BUILD_DIR/test-sockets"; then
+  exit 1
+fi
+# Live (Linux): a listener named sshd on a free port, with a session
+# from 127.0.0.3.  The port is found from the socket's owner, and the
+# session on it is kept, as one on 22 always was.
+if [ "$(uname -s)" = Linux ] && command -v python3 > /dev/null; then
+  rm -f "$BUILD_DIR/sshd-in"
+  mkfifo "$BUILD_DIR/sshd-in"
+  python3 -I tests/fake-sshd.py < "$BUILD_DIR/sshd-in" > "$BUILD_DIR/sshd-port" &
+  SSHD_PID=$!
+  exec 7> "$BUILD_DIR/sshd-in"
+  for _ in $(seq 50); do [ -s "$BUILD_DIR/sshd-port" ] && break; sleep 0.1; done
+  SSHD_PORT="$(cat "$BUILD_DIR/sshd-port")"
+  SSHD_PORTS="$("$BUILD_DIR/test-sockets" --ssh-ports)"
+  SSHD_SESSION="$("$BUILD_DIR/test-sockets" --session 127.0.0.3)"
+  exec 7>&-
+  wait "$SSHD_PID" 2> /dev/null || true
+  case ",$SSHD_PORTS," in
+    *",$SSHD_PORT,"*) ;;
+    *) echo "FAIL: sshd's port $SSHD_PORT is not among the ssh ports ($SSHD_PORTS)"; exit 1 ;;
+  esac
+  if [ "$SSHD_SESSION" != yes ]; then
+    echo "FAIL: the session to sshd on port $SSHD_PORT is not kept"
+    exit 1
+  fi
+  echo "ok:   hostnet: sshd found on port $SSHD_PORT by its owner, and its session kept"
+
+  # Socket activation (ssh.socket; docs 15.2, review notes): a lower
+  # pid that is not sshd (systemd, pid 1) holds the listener too.  Any
+  # holder that is sshd makes it sshd's port, not only the first.
+  rm -f "$BUILD_DIR/sshd-in" "$BUILD_DIR/sshd-port"
+  mkfifo "$BUILD_DIR/sshd-in"
+  python3 -I tests/fake-sshd.py --activated < "$BUILD_DIR/sshd-in" > "$BUILD_DIR/sshd-port" &
+  SSHD_PID=$!
+  exec 7> "$BUILD_DIR/sshd-in"
+  for _ in $(seq 50); do [ -s "$BUILD_DIR/sshd-port" ] && break; sleep 0.1; done
+  SSHD_PORT="$(cat "$BUILD_DIR/sshd-port")"
+  SSHD_PORTS="$("$BUILD_DIR/test-sockets" --ssh-ports)"
+  SSHD_SESSION="$("$BUILD_DIR/test-sockets" --session 127.0.0.3)"
+  exec 7>&-
+  wait "$SSHD_PID" 2> /dev/null || true
+  case ",$SSHD_PORTS," in
+    *",$SSHD_PORT,"*) ;;
+    *) echo "FAIL: socket-activated sshd's port $SSHD_PORT is not among the ssh ports ($SSHD_PORTS)"; exit 1 ;;
+  esac
+  if [ "$SSHD_SESSION" != yes ]; then
+    echo "FAIL: the session to socket-activated sshd on port $SSHD_PORT is not kept"
+    exit 1
+  fi
+  echo "ok:   hostnet: socket-activated sshd on port $SSHD_PORT (an earlier non-sshd holder) is found, its session kept"
+
+  # The session this process runs in, with no $SSH_CONNECTION (sudo
+  # drops it): the connection its sshd ancestor holds on sshd's port.
+  # The lockout guard asks about it before any other peer.
+  rm -f "$BUILD_DIR/sshd-in" "$BUILD_DIR/sshd-port"
+  mkfifo "$BUILD_DIR/sshd-in"
+  env -u SSH_CONNECTION -u SSH_CLIENT python3 -I tests/fake-sshd.py --exec "$BUILD_DIR/test-sockets" --own \
+    < "$BUILD_DIR/sshd-in" > "$BUILD_DIR/sshd-port" &
+  SSHD_PID=$!
+  exec 7> "$BUILD_DIR/sshd-in"
+  for _ in $(seq 50); do [ -s "$BUILD_DIR/sshd-port" ] && break; sleep 0.1; done
+  SSHD_OWN="$(cat "$BUILD_DIR/sshd-port")"
+  exec 7>&-
+  wait "$SSHD_PID" 2> /dev/null || true
+  if [ "$SSHD_OWN" != "own=127.0.0.3" ]; then
+    echo "FAIL: the session's own peer from its sshd ancestor is not 127.0.0.3 ($SSHD_OWN)"
+    exit 1
+  fi
+  echo "ok:   hostnet: the session's own peer (127.0.0.3) is read from its sshd ancestor, no \$SSH_CONNECTION"
+  rm -f "$BUILD_DIR/sshd-in" "$BUILD_DIR/sshd-port"
+fi
+# `stockfw interfaces': a rate is the bytes over the real time between
+# the two samples.  1.0.7 divided the first --watch frame, measured over
+# one second, by 2.0, and showed half the rate.
+IFACE_BODY="$(awk '/^fs_cli_cmd_interfaces /,/^}/' src/cli/fs-cli-events.c)"
+if printf '%s\n' "$IFACE_BODY" | grep -nE 'print_interfaces \([^;]*[0-9]\.[0-9]' ||
+   [ "$(printf '%s\n' "$IFACE_BODY" | grep -c 't_now - t_before')" -lt 2 ] ||
+   [ "$(printf '%s\n' "$IFACE_BODY" | grep -c 'g_get_monotonic_time')" -lt 2 ]; then
+  echo "FAIL: interfaces divides by a fixed interval, not the time measured"
+  exit 1
+fi
+echo "ok:   cli guard: interfaces rates use the time measured between samples"
+# === end WP-D ===
 
 [ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ] && [ "$intelgeo_rc" -eq 0 ] \
   && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]

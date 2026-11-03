@@ -43,8 +43,9 @@ void        fs_hostnet_free (FsHostNet *host);
  *                /run/systemd/resolve/resolv.conf and
  *                /run/NetworkManager/no-stub-resolv.conf;
  *   sessions     fs_hostnet_parse_ssh_env() over $SSH_CONNECTION and
- *                $SSH_CLIENT, plus fs_hostnet_parse_tcp_peers() over
- *                /proc/net/tcp and /proc/net/tcp6 for local port 22;
+ *                $SSH_CLIENT, plus fs_hostnet_parse_tcp_peers_on() over
+ *                /proc/net/tcp and /proc/net/tcp6 for local port 22 and
+ *                every port fs_hostnet_ssh_listen_ports() finds;
  *   update_hosts every host in `hosts' (NULL-terminated, may be NULL)
  *                looked up with getaddrinfo (AF_UNSPEC); a host that
  *                does not resolve adds nothing.
@@ -106,6 +107,45 @@ FsRangeSet *fs_hostnet_parse_ssh_env (const gchar *ssh_connection,
  * IPv6 address comes out as IPv4. */
 FsRangeSet *fs_hostnet_parse_tcp_peers (const gchar *text, gboolean v6,
                                         guint local_port);
+
+/* The same for any of several local ports (a GArray of guint16): the
+ * peers of every established connection to sshd, wherever it listens.
+ * NULL or empty ports: an empty set. */
+FsRangeSet *fs_hostnet_parse_tcp_peers_on (const gchar *text, gboolean v6,
+                                           const GArray *ports);
+
+/* ---- sockets and their owners (Linux; elsewhere empty) ------------- */
+
+/* socket inode -> program name, for every process whose fd table this
+ * account may list: the executable's basename, or the kernel's comm
+ * name when the exe link cannot be read (another user's process).
+ * `sockets' (a GList of FsNetSocket*, fs-netparse.h) names the inodes
+ * wanted; NULL asks for every socket.  Keys are gint64*, values
+ * strings (g_int64_hash); g_hash_table_unref.  The Linux backend's
+ * connection list and `stockfw listening' read owners through this. */
+GHashTable *fs_hostnet_socket_owners (const GList *sockets);
+
+/* The TCP ports sshd listens on, from /proc/net/tcp and tcp6 and the
+ * owner of each LISTEN socket (a process whose executable or comm name
+ * is "sshd").  A GArray of guint16, sorted, no repeats; empty when no
+ * sshd listener can be seen (not root and sshd is another user's, or
+ * no sshd).  fs_hostnet_read() keeps the sessions on these ports as
+ * well as on 22, so moving sshd to 2222 does not lose the session
+ * running an apply (master plan, PR 1 adjustment 4).  A listener is
+ * sshd's when any process holding it is sshd, not only the first one
+ * found: with systemd socket activation (ssh.socket) pid 1 holds it
+ * too. */
+GArray     *fs_hostnet_ssh_listen_ports (void);
+
+/* The client address(es) of the SSH session this process itself runs
+ * in: fs_hostnet_parse_ssh_env() over $SSH_CONNECTION and $SSH_CLIENT,
+ * and on Linux the established connections to one of `ports' (guint16;
+ * sshd's ports) held by an sshd or sshd-session among this process's
+ * ancestors, so the session is found under sudo, which drops the
+ * variables (and reading another user's sshd needs root, which sudo
+ * gives).  The lockout guard asks about these before any other peer.
+ * Normalized; may be empty.  fs_range_set_free. */
+FsRangeSet *fs_hostnet_own_ssh_peers (const GArray *ports);
 
 G_END_DECLS
 

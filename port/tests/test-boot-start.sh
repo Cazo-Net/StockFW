@@ -152,7 +152,7 @@ check "unapplied: stockfw start succeeds (rc=$rc)" [ "$rc" -eq 0 ]
 check "unapplied: the applied block is back" in_kernel "203.0.113.9"
 check "unapplied: the SSH allow saved but never applied is NOT in the kernel" \
 	bash -c "! iptables -S | grep -q -- '--dport 22'"
-grep -qi "not applied" "$SCRATCH/unapplied.log" &&
+grep -qi "not live yet (stockfw policy diff)" "$SCRATCH/unapplied.log" &&
 	ok "unapplied: the output says the saved changes are not live" ||
 	fail "unapplied: the output says the saved changes are not live ($(cat "$SCRATCH/unapplied.log"))"
 "$CLI" stop > /dev/null 2>&1

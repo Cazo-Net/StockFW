@@ -1,0 +1,16 @@
+#compdef stockfw
+#
+# zsh completion for stockfw(1).
+#
+# A thin wrapper: stockfw itself prints the words that fit
+# (`stockfw __complete WORD...'), from the same tables its parser reads.
+# Installed as share/zsh/site-functions/_stockfw.
+
+local -a cands
+cands=("${(@f)$(command ${words[1]} __complete "${(@)words[2,CURRENT]}" 2>/dev/null)}")
+cands=(${cands:#})
+if (( ${#cands} )); then
+  compadd -Q -- "${cands[@]}"
+else
+  _files
+fi

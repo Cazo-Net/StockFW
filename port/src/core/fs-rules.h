@@ -89,9 +89,22 @@ FsFamily fs_rule_coverage (const FsRule *rule, gboolean names_resolved,
  * on entry the capacity, on return the number written. */
 const gchar * const *fs_rule_columns (FsRuleKind kind, gint *num_columns);
 
-/* TRUE when a rule's host and port fields could name real ones (F-1).
- * Used by the policy loader and by the apply gate's journal loader. */
+/* Why a rule is not one the policy may hold, in a few plain words
+ * ("port \"99999\" is out of range (1-65535)"), or NULL when it is
+ * fine: a host or port field that cannot name a real one (F-1), or a
+ * service row with no port whose name is not a known service (the
+ * generator writes nothing for such a row).  g_free. */
+gchar   *fs_rule_problem (const FsRule *rule);
+
+/* fs_rule_problem () == NULL.  Used by the policy loader and by
+ * every place that writes a row. */
 gboolean fs_rule_fields_sane (const FsRule *rule);
+
+/* The host and port fields alone (F-1), without the service rule: the
+ * apply gate's journal loader uses it, so a journal written by an
+ * older release stays readable and a start at boot finds what was
+ * live. */
+gboolean fs_rule_addresses_sane (const FsRule *rule);
 
 /* Serialise / parse.  Both return newly allocated strings. */
 gchar   *fs_rule_to_csv   (const FsRule *rule);
@@ -107,8 +120,29 @@ FsPolicy *fs_policy_new  (void);
 void      fs_policy_free (FsPolicy *policy);
 void      fs_policy_clear (FsPolicy *policy);
 
+/* One line of a rule file that is not a rule.  file is the path
+ * relative to the rules directory ("inbound/allow-service"), line
+ * counts from 1, text is the line (stripped), reason says why in a few
+ * words ("expected NAME, PORT, FOR (no commas)"). */
+typedef struct
+{
+	gchar *file;
+	guint  line;
+	gchar *text;
+	gchar *reason;
+} FsPolicyProblem;
+
+void      fs_policy_problem_free (FsPolicyProblem *problem);
+
 /* Reads every rule file.  Missing files are not an error: an empty
- * policy is valid.  Malformed lines are counted in *malformed. */
+ * policy is valid.  Lines that are not rules are left out, and when
+ * problems is not NULL it receives a new array of FsPolicyProblem*,
+ * in file then line order (empty when all is well; unref it).  Prints
+ * nothing.  TRUE when at least one rule file exists. */
+gboolean  fs_policy_load_report (FsPolicy *policy, GPtrArray **problems);
+
+/* fs_policy_load_report, with each problem printed on stderr (the
+ * desktop app's log) and counted in *malformed. */
 gboolean  fs_policy_load  (FsPolicy *policy, gint *malformed);
 gboolean  fs_policy_save  (FsPolicy *policy);
 

@@ -13,6 +13,141 @@ into `/usr/local/share/doc/stockfw/`.
 
 ## [Unreleased]
 
+### Command line (stockfw)
+
+- **Options are read the way you meant them.** The word after an option
+  that takes a value is that value: `--comment -h` saves the comment
+  `-h`. Everything after `--` is a plain word. An option a command does
+  not know is refused (exit 2) instead of being ignored or, in
+  `simulate`, folded into the question. A mistyped command or option
+  gets "did you mean ...?".
+- **New global options.** `--plain` (`-H`) prints tab-separated rows
+  with no header and no colour, `--full` (`-l`) never cuts a column,
+  and `--color=auto|always|never` sets colour. Colour on stdout now
+  follows stdout alone. `-q` leaves out hints, notes and legends, and
+  `stockfw -q simulate ...` prints only the verdict word.
+- **Tables fit the terminal, and only the terminal.** A pipe or a file
+  gets every character. IPv6 addresses in `events` are shown short.
+  Symbols fall back to ASCII outside a UTF-8 locale.
+- **Hints you can run.** A hint that needs root names the program by its
+  full path and repeats your words, so `sudo` finds it.
+- **Text from logs and comments is escaped.** Control characters and
+  bidi controls are printed as `\xNN` or `\uNNNN`, never raw. That
+  includes the rows of `events --csv`, the rule names in `simulate`'s
+  answer, and threat-intel list and feed names in `status`,
+  `intel status`, `intel apply` and `intel import`.
+- `stockfw version` prints one line: `stockfw 1.0.7 · Linux (nftables)`.
+  `help help`, `help version` and `help intel geo` work.
+- **`apply` after `stop` starts the firewall again.** Before, it compared
+  the policy with the last apply, found no change and left the firewall
+  stopped. Now a stopped (or unreadable) firewall gets the whole policy,
+  and the audit line says why. This is a core fix, so the desktop app's
+  Apply gets it too.
+- **Lines that are not rules are named.** `stockfw check` lists each
+  one with its file, line and reason (exit 1). `apply` refuses them,
+  the dry run too (exit 2). `SSH,,Anyone` still loads, because a known
+  service needs no port. A port such as 99999 is reported once, as an
+  error.
+- **Rules have references.** `inbound-allow-service:2` (also `#2` or
+  `KIND 2`) works in `policy show`, `policy remove`, `policy list`,
+  `simulate --json` (`rule_ref`) and `copilot health --json`.
+  `policy add` and `remove` echo the reference and check the rule's own
+  traffic.
+- **`stockfw policy diff`** shows the saved policy against the applied
+  one. `apply --dry-run` lists the rows it would add and remove, and
+  says which forwards would be left out.
+- **The lockout guard.** Over SSH, `apply` and `start` check that the
+  new policy still lets your session in. If it would not, they ask on a
+  terminal, and without one they refuse unless you pass `--yes`.
+  This works under `sudo` too, where `SSH_CONNECTION` is gone: your own
+  session is found through the sshd it runs under and is always checked
+  first, however many other SSH sessions the computer has. It finds
+  sshd on any port, also when systemd starts it (`ssh.socket`). In
+  audit-only mode, `start` still puts the last applied policy live, so
+  the check runs there too.
+- `start` and `stop` say "Already running" or "Already stopped" and
+  write no audit line of their own when there is nothing to do. A
+  `stop` on a stopped firewall still takes threat-intel blocklists
+  down, and that is logged as `intel-suspend`.
+- `policy add` and `policy remove` refuse (exit 2) while a line of the
+  rule files is not a rule, and name it. Saving would have deleted
+  that line without a word.
+- `simulate --applied` asks the applied policy, not the saved one.
+  `copilot health --severity info|warning|critical` sets the level that
+  gives exit 7.
+- **`stockfw status` says whether what you saved is live**: "12 rules,
+  live" or "1 change not applied". New lines show the last apply, start
+  or stop, the packets blocked today and the last one, and whether
+  `stockfw.service` puts the rules back at boot. `status -v` adds the
+  firewall settings, the event history and Sentinel; `status -q` prints
+  one line. The JSON only gains fields.
+- **Monitoring is decided by what you can read, not by your user id.**
+  A user in the `adm` group now sees "reading /var/log/kern.log", and
+  `monitoring_available` in `status --json` is true. The dashboard
+  follows a readable log file itself when it is not run as root.
+- **New `stockfw audit`** reads the audit log: `-n`, `--since`,
+  `--until`, `--action`, `--grep`, `-r`, `-f`, `--utc`, `--file` and
+  `--json`. Damaged lines are counted, never dropped silently.
+- **New `stockfw sentinel list`** shows Sentinel's staged blocks and when
+  each lifts. It only reads; `simulate` now also knows about these
+  blocks.
+- `--since` and `--until` take an ISO time without seconds, such as
+  `2026-11-02T23:30Z`.
+- **`events` triage.** `--summary` counts the events of a window (the
+  last 24 hours by default) per source and per port, with a bar per
+  hour; `--by` and `--top` choose the tables. `--wide` adds the devices,
+  length and ToS, `--csv` writes what the desktop app exports (control
+  characters escaped, as everywhere in the tool), `-r`
+  puts the newest first and `--utc` prints ISO times. `--port` takes a
+  list (`22,443,8000:8100`) and `--dir` takes `both`.
+- **`events` refuses what it cannot answer.** `--blocked` with
+  `--allowed`, and a `--proto` other than tcp, udp, icmp or icmpv6,
+  are usage errors (exit 2) instead of the last flag winning.
+- **`events -f` lines up and stops honestly.** Live rows use the
+  table's columns. When the event reader stops, `-f` says why and exits
+  1 instead of waiting forever. Ctrl-C prints how many events were seen.
+- **The RULE column** names the threat-intel list that blocked an
+  event, and never the log marker. Events JSON gains `length`, `tos`,
+  `epoch` and `rule_name`.
+- **Port names.** 3389 is Remote Desktop and 161 is SNMP in the event
+  and connection lists (they read "Unknown"), and so are other
+  well-known ports. This also changes the desktop app's Events page.
+- **New command `stockfw listening`.** Every open TCP and UDP port, the
+  program behind it, and whether the policy lets the LAN and the
+  internet reach it, with the rule that decides.
+- **`connections`** shows both ports and the TCP state, filters with
+  `--addr`, `--port`, `--program`, `--dir`, `--state` and `--no-local`,
+  counts with `--by remote|program|port`, and adds connected UDP with
+  `--udp`. The "?" legend now goes to stderr.
+- **`interfaces`** measures the rate over the real time between two
+  samples (the first `--watch` frame showed half the rate), stops on
+  SIGTERM, clears the screen on any terminal and never in a pipe, and
+  prints its banner on stderr. `--watch=SECS`, `-c COUNT` and `--all`
+  are new; adapters that are down are hidden unless `--all` is given.
+  With `--json --watch` each frame is one line.
+- **SSH sessions on any port are kept.** The addresses a blocklist must
+  never cut now include the clients of sshd on every port it listens
+  on, not only port 22.
+- **`events -f` shows a status line on a terminal.** Under the rows,
+  on stderr: the firewall state, live or pending, HELD (audit-only),
+  blocked today, Sentinel and where the events come from. It is
+  redrawn after each event and every few seconds. `--no-status-line`
+  turns it off, and it is never shown with `--json`, `--csv`, `-q`,
+  `TERM=dumb` or in a pipe, so `--json` output is still one event per
+  line and nothing else.
+- **`man stockfw`, and completion for bash and zsh.** The manual page
+  lists every command and option, the exit codes, the environment
+  variables and the files. `stockfw` writes it itself from the same
+  tables its parser reads, so it cannot fall behind. Completion asks
+  `stockfw` too, and offers commands, options, values such as the
+  `--by` keys, and your own rule references
+  (`policy remove inbound-allow-service:2`). The Linux installer puts
+  all three in `/usr/local/share` and the uninstaller removes them.
+- **A build of the command line alone.** `cmake -DFS_BUILD_GUI=OFF`
+  builds `stockfw` and its manual page without GTK, and does not look
+  for GTK at all. The default still builds the desktop app too. CI
+  checks that `stockfw` needs no GTK, GDK, Pango or cairo library.
+
 ### Fixed
 
 - **Wayland desktops and WSL: no tray icon, no start-up warning.** GTK

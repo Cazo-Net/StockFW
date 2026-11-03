@@ -1355,8 +1355,11 @@ fs_event_parse_time_spec (const gchar *text, gint64 now_us, gboolean end,
 		GDateTime *dt;
 
 		iso[10] = 'T';
-		if (len == 16) {
-			gchar *longer = g_strconcat (iso, ":00", NULL);
+		/* No seconds: "...T09:00" or "...T09:00Z" / "+01:00" (GLib
+		 * wants them). */
+		if (len == 16 || iso[16] != ':') {
+			gchar *longer = g_strdup_printf ("%.16s:00%s", iso,
+			                                 iso + 16);
 
 			g_free (iso);
 			iso = longer;

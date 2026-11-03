@@ -239,7 +239,7 @@ journal_load (FsPolicy *policy, guint *translation, GError **error)
 		                         g_ptr_array_index (fields, 1));
 		g_ptr_array_unref (fields);
 
-		if (rule != NULL && !fs_rule_fields_sane (rule)) {
+		if (rule != NULL && !fs_rule_addresses_sane (rule)) {
 			fs_rule_free (rule);
 			rule = NULL;
 		}
@@ -677,6 +677,7 @@ apply_gate (const FsBackend *backend, FsPolicy *policy,
 	gboolean have_before;
 	gboolean settings = (settings_swap != NULL);
 	gboolean pending = FALSE;
+	gboolean stopped = FALSE;
 	guint translation = 0;
 	gchar *desc;
 	const gchar *mode = settings ? "full, settings" : "full";
@@ -730,6 +731,22 @@ apply_gate (const FsBackend *backend, FsPolicy *policy,
 		goto out;
 	}
 
+	/* What is live now.  The journal records the last apply, and a
+	 * stop since then left nothing of it on the firewall: a delta
+	 * against it would find "no change" and leave the firewall
+	 * stopped (1.0.7).  Where a start installs the policy, only a
+	 * firewall the backend reads as running takes the narrow path. */
+	if (backend->start_applies_policy && backend->get_state != NULL) {
+		outcome->firewall_was = backend->get_state ();
+		if (outcome->firewall_was != FS_FW_RUNNING) {
+			stopped = TRUE;
+			if (!outcome->settings)
+				mode = outcome->firewall_was == FS_FW_STOPPED
+				     ? "full (firewall was stopped)"
+				     : "full (firewall state unknown)";
+		}
+	}
+
 	/* Narrow path -- including the best case of all: nothing changed,
 	 * so the firewall is not touched at all.  Never for a settings
 	 * change, nor while settings are pending: those rules are not
@@ -740,11 +757,11 @@ apply_gate (const FsBackend *backend, FsPolicy *policy,
 	 * rows would find nothing to change and leave them in force.  The
 	 * full apply clears every StockFW rule and writes the set again.
 	 * The rollback target stays the journal's rows either way. */
-	if (have_before && !outcome->settings &&
+	if (have_before && !outcome->settings && !stopped &&
 	    translation != FS_FWRULE_TRANSLATION)
 		mode = "full (rule translation upgrade)";
 
-	if (have_before && !outcome->settings &&
+	if (have_before && !outcome->settings && !stopped &&
 	    translation == FS_FWRULE_TRANSLATION) {
 		delta = fs_policy_delta (before, policy);
 

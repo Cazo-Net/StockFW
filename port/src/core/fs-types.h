@@ -60,6 +60,11 @@ typedef struct
 	gchar *service;     /* well-known name for the remote port      */
 	gchar *program;     /* owning process, when it could be read    */
 	gchar *direction;   /* "Inbound" / "Outbound"                   */
+	/* Added in 1.0.8 (cli-plan.md D4).  A backend that cannot tell
+	 * leaves them 0 and NULL (the Windows backend does). */
+	guint  local_port;
+	guint  remote_port;
+	gchar *state;       /* "ESTABLISHED", "SYN_SENT"...; NULL for UDP */
 } FsConnection;
 
 void fs_connection_free (FsConnection *c);

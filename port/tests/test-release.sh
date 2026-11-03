@@ -20,6 +20,7 @@
 # 5. Linux tarball, when build-linux/ (or STOCKFW_BUILD_DIR) holds both
 #    binaries: the real packager, into a scratch directory, then the
 #    archive itself -- install.sh, StockFW and cli/stockfw executable,
+#    the manual page and completion beside cli/stockfw,
 #    binaries stripped, the unpacked StockFW reports the version, the
 #    changelog, README and licence are the real ones.
 #    STOCKFW_REQUIRE_PACKAGE=1 turns a missing build into a failure (CI).
@@ -309,7 +310,8 @@ if [ -x "$BUILD/StockFW" ] && [ -x "$BUILD/stockfw" ] &&
 			check "$(yes_if [ "$m" = "-rwxr-xr-x" ])" "the archive has $exe as -rwxr-xr-x (it is '$m')"
 		done
 		for doc in README.md README-project.md CHANGELOG.md LICENSE.txt \
-		           stockfw.service stockfw.desktop stockfw-icon.png; do
+		           stockfw.service stockfw.desktop stockfw-icon.png \
+		           cli/stockfw.1 cli/stockfw.bash cli/_stockfw; do
 			m="$(mode_of "$doc")"
 			check "$(yes_if [ "$m" = "-rw-r--r--" ])" "the archive has $doc as -rw-r--r-- (it is '$m')"
 		done
@@ -352,6 +354,12 @@ if [ -x "$BUILD/StockFW" ] && [ -x "$BUILD/stockfw" ] &&
 		got="$(timeout 10 "$U/cli/stockfw" --version 2>/dev/null)"
 		case "$got" in "stockfw $V "*) r=0 ;; *) r=1 ;; esac
 		check $r "the unpacked stockfw --version says $V ('$got')"
+		cmp -s "$U/cli/stockfw.bash" "$PORT_DIR/contrib/completion/stockfw.bash" &&
+		cmp -s "$U/cli/_stockfw" "$PORT_DIR/contrib/completion/_stockfw"
+		check $? "the archive carries the bash and zsh completion"
+		"$U/cli/stockfw" __man 2>/dev/null | cmp -s - "$U/cli/stockfw.1" &&
+		grep -q '^\.TH STOCKFW 1 ' "$U/cli/stockfw.1"
+		check $? "the archive's cli/stockfw.1 is the unpacked tool's own manual page"
 		cmp -s "$U/CHANGELOG.md" "$ROOT/CHANGELOG.md"
 		check $? "the archive carries CHANGELOG.md"
 		cmp -s "$U/README-project.md" "$SCRATCH/readme-pkg.md"

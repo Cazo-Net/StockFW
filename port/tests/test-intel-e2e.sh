@@ -664,8 +664,10 @@ if [ -x "$CLI" ] && command -v iptables >/dev/null; then
   # applied before (the start gate): give it one rule of its own, in
   # the scratch directory, never /etc/stockfw.
   cli -q policy add inbound-allow-service SSH 22 Anyone > /dev/null
+  # The firewall of this namespace has no StockFW chains yet, so stop
+  # says "Already stopped." (15.2.2); it still takes the lists down.
   out="$(cli stop)"; rc=$?
-  check '[ $rc -eq 0 ] && grep -q -x "Firewall stopped." <<<"$out" && [ "$(live)" = absent ] && grep -q "^suspended: " <<<"$(drv state)"' \
+  check '[ $rc -eq 0 ] && grep -q -x -e "Firewall stopped." -e "Already stopped." <<<"$out" && [ "$(live)" = absent ] && grep -q "^suspended: " <<<"$(drv state)"' \
         "stockfw stop: the firewall stops, the lists are removed and suspended ($out)"
   out="$(counted cli start)"; rc=$?
   check '[ $rc -eq 0 ] && grep -q -x "Blocklists applied (2 lists)." <<<"$out" && [ "$(live)" = "$D2G" ] && grep -q "^enforced: " <<<"$(drv state)"' \

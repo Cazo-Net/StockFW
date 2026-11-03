@@ -211,6 +211,9 @@ linux_only "DOWNLOADER, PURE PARTS (fs-fetch-test golden)" run_bin fs-fetch-test
 windows_only "THREAT INTEL (Windows Firewall rules)" run_intel_windows
 
 run_sh "CLI + DASHBOARD (Linux)" tests/test-cli.sh
+# The command-line tool built with FS_BUILD_GUI=OFF and GTK hidden from
+# pkg-config: no GTK library in it.  A second configure and build.
+linux_only "CLI WITHOUT GTK (FS_BUILD_GUI=OFF)" run_sh tests/test-nogui-build.sh
 # Linux with a display (xvfb-run); prints SKIP elsewhere.
 run_sh "SINGLE INSTANCE + BACKGROUND (Linux, real binary)" tests/test-instance.sh
 # A desktop with no tray (Broadway standing in for Wayland and WSLg),

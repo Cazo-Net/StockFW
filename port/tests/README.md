@@ -59,10 +59,18 @@ cd port
 bash tests/test-cli.sh
 ```
 
-Linux only, no root needed.  Builds the `stockfw` target through CMake
-and drives the real binary against scratch rules and config directories
-and a fixture kernel log, so it never touches `/etc/stockfw` or the live
-firewall (`apply` only runs with `--dry-run`).
+Linux only.  Builds the whole tree in the build directory through CMake
+(the man page and `cmake --install` need more than the `stockfw`
+target) and drives the real binary against scratch rules and config
+directories and a fixture kernel log, so it never touches
+`/etc/stockfw` or the host's firewall.  Without root, `apply` only runs
+with `--dry-run`.  As root, more parts run: the live event line and
+`events -f` (under `script`), the lockout guard under `sudo`, and real
+`apply`, `start` and `stop`, these only in a private network namespace
+(`unshare -n`).  A root-only part that cannot run prints `skip:`; CI
+runs the script as root and fails on such a line.  The midnight check
+of the live event line builds `tests/fake-clock.c`, an `LD_PRELOAD`
+shim that moves the wall clock (not the timers) of `stockfw`.
 
 It pins down the documented exit codes, policy editing (the service
 shorthand, refused commas, mistyped options and bad hosts), the
