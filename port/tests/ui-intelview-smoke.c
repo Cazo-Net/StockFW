@@ -2006,7 +2006,24 @@ main (int argc, char **argv)
 	refresh ();
 
 	/* ---- countries and networks ---- */
-	check_geo ();
+	/* Country and network blocking is Linux-only in 1.0.7: on Windows
+	 * the card says so and offers no control, and that is what is
+	 * checked there; the full card is checked where it exists. */
+	if (fs_intel_geo_supported ()) {
+		check_geo ();
+	} else {
+		CHECK (visible ("intel-geo") && visible ("intel-geo-unsupported") &&
+		       strcmp (text_of ("intel-geo-unsupported"),
+		               fs_intel_geo_unsupported_text ()) == 0 &&
+		       !visible ("intel-geo-controls") &&
+		       !gtk_widget_is_visible (find (page, "intel-geo-switch")) &&
+		       !gtk_widget_is_visible (find (page, "intel-geo-add")),
+		       "geo: this platform shows the unsupported sentence "
+		       "(\"%s\") and no control",
+		       text_of ("intel-geo-unsupported"));
+		printf ("SKIP: the countries and networks card's controls "
+		        "(Linux only in this release)\n");
+	}
 
 	/* ---- unsupported (no intel slots) ---- */
 	fs_intelview_set_backend (&bare_backend);
