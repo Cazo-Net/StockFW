@@ -21,7 +21,7 @@
 /* ------------------------------------------------------- vocabulary */
 
 static const gchar *policy_subs[] = {
-	"list", "show", "add", "remove", "diff", NULL
+	"list", "show", "add", "edit", "remove", "diff", "init", NULL
 };
 static const gchar *intel_subs[] = {
 	"status", "feeds", "terms", "enable", "disable", "on", "off",
@@ -259,6 +259,7 @@ emit_positional (Out *o, const FsCliCommandDef *def, GPtrArray *pos)
 		if (pos->len == 0) {
 			emit_all (o, policy_subs);
 		} else if (pos->len == 1 && (strcmp (p0, "remove") == 0 ||
+		                             strcmp (p0, "edit") == 0 ||
 		                             strcmp (p0, "show") == 0)) {
 			emit_refs (o);
 		} else if (pos->len == 1 && strcmp (p0, "add") == 0) {

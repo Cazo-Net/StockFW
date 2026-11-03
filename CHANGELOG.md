@@ -186,6 +186,20 @@ into `/usr/local/share/doc/stockfw/`.
 - `config set` warns when a StockFW window runs as root: it keeps its
   own copy of the settings and can write it back.
 <!-- PR3-D -->
+- **`stockfw policy edit`.** It changes a rule in place: the rule keeps
+  its number and its comment (unless `--comment` is given), and the
+  policy is saved once. `-` keeps a field as it is. A rule that another
+  command changed in the meantime is refused, not overwritten.
+- **`stockfw policy init`.** It saves the default rules that the desktop
+  app starts from (DHCP and DNS out), so a computer without the desktop
+  app can start from them too. It does not replace a policy that has
+  rules unless `--force` is given. `policy list` now points at it
+  instead of saying to open the desktop app once.
+- **`--apply` on `policy add`, `edit` and `remove`.** It saves and then
+  applies, as `stockfw apply` does, under the same lock. It needs root.
+  The SSH check runs first, on the policy the change would give. If the
+  change would block your SSH session, nothing is saved unless you
+  confirm or pass `--yes`.
 <!-- PR3-E -->
 
 ### Fixed

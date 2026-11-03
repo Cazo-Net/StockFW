@@ -414,6 +414,81 @@ intel_follow (FsControlResult *r, const FsControlActor *actor,
 	fs_intel_outcome_free (o);
 }
 
+/* [ apply_now ]
+ * `policy' under `settings' through the gate, the policy lock held by
+ * the caller; both are taken (the backend keeps them as its context).
+ * The guard has run already. */
+static void
+apply_now (FsControlResult *r, const FsControlActor *actor,
+           FsPolicy *policy, FsSettings *settings)
+{
+	GError *error = NULL;
+
+	hand_context (policy, settings);
+	r->outcome = fs_policy_apply_safe (fs_backend (), policy,
+	                                   actor->channel,
+	                                   fs_apply_hold_reason (), &error);
+
+	if (r->outcome->held || r->outcome->result == FS_APPLY_OK) {
+		r->status = FS_CONTROL_OK;
+	} else {
+		r->status = r->outcome->result == FS_APPLY_NO_PRIVILEGE
+		          ? FS_CONTROL_NEED_ROOT : FS_CONTROL_FAILED;
+		g_free (r->error);
+		r->error = g_strdup (error != NULL ? error->message
+		           : fs_util_apply_result_to_string (
+		                 (int) r->outcome->result));
+	}
+	/* An apply that started a stopped firewall brings the blocklists
+	 * back, as a start does. */
+	if (r->outcome->applied && r->outcome->firewall_was == FS_FW_STOPPED)
+		intel_follow (r, actor, TRUE);
+
+	g_clear_error (&error);
+}
+
+/* [ edit_guard ]
+ * 3D, "apply" on an edit: before anything is saved, root is checked
+ * and the lockout guard runs on `after', the policy the edit gives.
+ * FALSE: refused (NEED_ROOT, or CONFIRM), nothing changed.  TRUE when
+ * the edit may go on, or when no apply was asked for. */
+static gboolean
+edit_guard (FsControlResult *r, const FsControlActor *actor,
+            GVariant *params, const FsPolicy *after)
+{
+	FsSettings *settings;
+	gboolean ok = TRUE;
+
+	if (!p_bool (params, "apply"))
+		return TRUE;
+	if (!need_root (r, actor))
+		return FALSE;
+	fs_prefs_load ();
+	settings = fs_settings_new ();
+	fs_settings_load_prefs (settings);
+	/* Held, the firewall is not touched: no session to keep. */
+	if (fs_apply_hold_reason () == NULL)
+		ok = guard (r, after, settings, p_bool (params, "yes"));
+	fs_settings_free (settings);
+	return ok;
+}
+
+/* [ edit_apply ]
+ * After a saved edit (or none: "already"), still under the lock: the
+ * saved policy as it now is goes through the gate, as `apply' does. */
+static void
+edit_apply (FsControlResult *r, const FsControlActor *actor,
+            GVariant *params)
+{
+	FsSettings *settings;
+
+	if (!p_bool (params, "apply"))
+		return;
+	settings = fs_settings_new ();
+	fs_settings_load_prefs (settings);
+	apply_now (r, actor, policy_copy (r->policy), settings);
+}
+
 /* ---------------------------------------------------------- the ops */
 
 static void
@@ -428,7 +503,6 @@ op_policy_add (FsControlResult *r, const FsControlActor *actor,
 	GError *error = NULL;
 	gboolean ok;
 
-	(void) actor;
 	if (!fs_control_kind_parse (p_str (params, "kind"), &kind)) {
 		fail (r, FS_CONTROL_USAGE, NULL, "not a rule kind: %s",
 		      p_str (params, "kind") != NULL ? p_str (params, "kind")
@@ -471,8 +545,25 @@ op_policy_add (FsControlResult *r, const FsControlActor *actor,
 	    (r->twin == NULL || fs_policy_contains (r->policy, r->twin))) {
 		r->already = TRUE;
 		r->number = rule_number (r->policy, rule);
+		if (edit_guard (r, actor, params, r->policy))
+			edit_apply (r, actor, params);
 		fs_policy_unlock (lock);
 		return;
+	}
+
+	if (p_bool (params, "apply")) {
+		FsPolicy *after = policy_copy (r->policy);
+
+		if (!fs_policy_contains (after, rule))
+			fs_policy_add (after, rule);
+		if (r->twin != NULL && !fs_policy_contains (after, r->twin))
+			fs_policy_add (after, r->twin);
+		ok = edit_guard (r, actor, params, after);
+		fs_policy_free (after);
+		if (!ok) {
+			fs_policy_unlock (lock);
+			return;
+		}
 	}
 
 	/* The policy stores copies (fs_policy_add), so the rules stay the
@@ -480,15 +571,18 @@ op_policy_add (FsControlResult *r, const FsControlActor *actor,
 	ok = r->twin != NULL
 	   ? fs_policy_add_persist_pair (r->policy, rule, r->twin)
 	   : fs_policy_add_persist (r->policy, rule);
-	fs_policy_unlock (lock);
 
 	if (!ok) {
+		fs_policy_unlock (lock);
 		save_failed (r);
 		return;
 	}
+	r->saved = TRUE;
 	r->number = rule_number (r->policy, rule);
 	if (r->twin != NULL)
 		r->twin_number = rule_number (r->policy, r->twin);
+	edit_apply (r, actor, params);
+	fs_policy_unlock (lock);
 }
 
 /* [ take_row ] -- the row a remove or an edit names, checked against
@@ -538,7 +632,6 @@ op_policy_remove (FsControlResult *r, const FsControlActor *actor,
 	GError *error = NULL;
 	gboolean ok;
 
-	(void) actor;
 	lock = fs_policy_lock (&error);
 	if (lock == NULL) {
 		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
@@ -552,10 +645,26 @@ op_policy_remove (FsControlResult *r, const FsControlActor *actor,
 	}
 
 	r->rule = fs_rule_copy (row);
+	if (p_bool (params, "apply")) {
+		FsPolicy *after = policy_copy (r->policy);
+
+		fs_policy_remove (after, r->rule);
+		ok = edit_guard (r, actor, params, after);
+		fs_policy_free (after);
+		if (!ok) {
+			fs_policy_unlock (lock);
+			return;
+		}
+	}
 	ok = fs_policy_remove_persist (r->policy, r->rule);
-	fs_policy_unlock (lock);
-	if (!ok)
+	if (!ok) {
+		fs_policy_unlock (lock);
 		save_failed (r);
+		return;
+	}
+	r->saved = TRUE;
+	edit_apply (r, actor, params);
+	fs_policy_unlock (lock);
 }
 
 static void
@@ -571,7 +680,6 @@ op_policy_replace (FsControlResult *r, const FsControlActor *actor,
 	const gchar **fields;
 	const gchar *comment = p_str (params, "comment");
 
-	(void) actor;
 	lock = fs_policy_lock (&error);
 	if (lock == NULL) {
 		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
@@ -600,13 +708,78 @@ op_policy_replace (FsControlResult *r, const FsControlActor *actor,
 		return;
 	}
 
+	if (p_bool (params, "apply")) {
+		FsPolicy *after = policy_copy (r->policy);
+		GPtrArray *rows = after->kinds[kind];
+		gboolean ok;
+
+		/* The row in place, as fs_policy_replace_persist will put it
+		 * (the copy holds rows in the same order). */
+		fs_rule_free (g_ptr_array_index (rows, r->number - 1));
+		g_ptr_array_index (rows, r->number - 1) = fs_rule_copy (rule);
+		ok = edit_guard (r, actor, params, after);
+		fs_policy_free (after);
+		if (!ok) {
+			fs_policy_unlock (lock);
+			return;
+		}
+	}
+
 	if (!fs_policy_replace_persist (r->policy, r->old, rule, &error)) {
 		fail (r, g_error_matches (error, FS_RULES_ERROR,
 		                          FS_RULES_ERR_SAVE)
 		         ? FS_CONTROL_FAILED : FS_CONTROL_USAGE,
 		      NULL, "%s", error->message);
 		g_error_free (error);
+		fs_policy_unlock (lock);
+		return;
 	}
+	r->saved = TRUE;
+	edit_apply (r, actor, params);
+	fs_policy_unlock (lock);
+}
+
+/* [ op_policy_init ]
+ * A1/A19: the default rules a first run of the desktop app seeds
+ * (fs_policy_install_defaults), saved.  A saved policy that holds a
+ * rule, or a line that is not one, is replaced only with "force". */
+static void
+op_policy_init (FsControlResult *r, const FsControlActor *actor,
+                GVariant *params)
+{
+	FsPolicyLock *lock;
+	GError *error = NULL;
+	gboolean on_disk = FALSE;
+	guint had;
+
+	(void) actor;
+	lock = fs_policy_lock (&error);
+	if (lock == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		g_error_free (error);
+		return;
+	}
+	r->policy = load_policy (r, FALSE, &on_disk);
+	had = policy_total (r->policy);
+	if ((had > 0 || r->problems != NULL) && !p_bool (params, "force")) {
+		fail (r, FS_CONTROL_USAGE,
+		      "pass --force to replace it with the default rules",
+		      "a policy is saved already in %s (%u rule%s%s)",
+		      fs_util_rules_dir (), had, had == 1 ? "" : "s",
+		      r->problems != NULL ? ", and lines that are not rules"
+		                          : "");
+		fs_policy_unlock (lock);
+		return;
+	}
+
+	fs_policy_install_defaults (r->policy);
+	if (!fs_policy_save (r->policy)) {
+		fs_policy_unlock (lock);
+		save_failed (r);
+		return;
+	}
+	r->saved = TRUE;
+	r->dropped = had;
 	fs_policy_unlock (lock);
 }
 
@@ -656,26 +829,7 @@ op_apply (FsControlResult *r, const FsControlActor *actor, GVariant *params)
 		return;
 	}
 
-	hand_context (policy, settings);
-	r->outcome = fs_policy_apply_safe (fs_backend (), policy,
-	                                   actor->channel,
-	                                   fs_apply_hold_reason (), &error);
-
-	if (r->outcome->held || r->outcome->result == FS_APPLY_OK) {
-		r->status = FS_CONTROL_OK;
-	} else {
-		r->status = r->outcome->result == FS_APPLY_NO_PRIVILEGE
-		          ? FS_CONTROL_NEED_ROOT : FS_CONTROL_FAILED;
-		r->error = g_strdup (error != NULL ? error->message
-		           : fs_util_apply_result_to_string (
-		                 (int) r->outcome->result));
-	}
-	/* An apply that started a stopped firewall brings the blocklists
-	 * back, as a start does. */
-	if (r->outcome->applied && r->outcome->firewall_was == FS_FW_STOPPED)
-		intel_follow (r, actor, TRUE);
-
-	g_clear_error (&error);
+	apply_now (r, actor, policy, settings);
 	fs_policy_unlock (lock);
 }
 
@@ -1096,6 +1250,7 @@ static const struct
 	{ "policy.add",     op_policy_add },
 	{ "policy.remove",  op_policy_remove },
 	{ "policy.replace", op_policy_replace },
+	{ "policy.init",    op_policy_init },
 	{ "apply",          op_apply },
 	{ "firewall.start", op_start },
 	{ "firewall.stop",  op_stop },
@@ -1235,6 +1390,14 @@ fs_control_result_json (const FsControlResult *r)
 			rule_json (out, "old", r->old, r->number);
 		g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "already", r->already);
+	}
+	if (g_str_has_prefix (r->op, "policy.")) {
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "saved", r->saved);
+	}
+	if (g_strcmp0 (r->op, "policy.init") == 0) {
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "dropped", r->dropped);
 	}
 	if (r->problems != NULL) {
 		g_string_append (out, ",\"problems\":[");
