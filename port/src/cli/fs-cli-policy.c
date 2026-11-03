@@ -2146,7 +2146,7 @@ start_or_stop (gint argc, gchar **argv, gboolean start)
 	GString *lock;
 
 	for (gint i = 1; i < argc; i++) {
-		if (start && fs_cli_is_option_at (argv, i) &&
+		if (fs_cli_is_option_at (argv, i) &&
 		    (strcmp (argv[i], "--yes") == 0 ||
 		     strcmp (argv[i], "-y") == 0)) {
 			yes = TRUE;
@@ -2162,6 +2162,9 @@ start_or_stop (gint argc, gchar **argv, gboolean start)
 
 	if (geteuid () != 0)
 		return fs_cli_need_root (start ? "start" : "stop");
+	/* A stop asks first on a terminal, as Pause protection does (B5). */
+	if (!start && !fs_cli_stop_confirm (yes))
+		return FS_EXIT_FAILURE;
 
 	/* The bodies are the control layer's (firewall.start, which takes
 	 * the journal's settings, 3B; firewall.stop). */
@@ -2981,14 +2984,19 @@ const FsCliCommandDef fs_cli_policy_commands[] = {
 	  start_opts, NULL },
 
 	{ "stop", fs_cli_cmd_stop,
-"Usage: stockfw stop\n"
+"Usage: stockfw stop [--yes]\n"
 "\n"
 "Removes StockFW's own chains, and its threat-intel blocklists until\n"
 "the next start.  Rules owned by Docker, libvirt or anything else are\n"
-"left alone.  When it is stopped already, the stop is not logged, but\n"
-"threat-intel blocklists are still taken down; with threat intel set\n"
-"up, that writes an intel-suspend line to the audit log.  Needs root.\n",
-	  no_opts, NULL },
+"left alone.  On a terminal it first says what stopping takes away and\n"
+"asks \"Stop the firewall? [y/N]\"; Enter or any answer but y leaves it\n"
+"running (exit 1).  --yes skips the question; with no terminal on\n"
+"stdin (a script, the boot unit) it stops without asking, as before.\n"
+"When it is stopped already, nothing is asked and the stop is not\n"
+"logged, but threat-intel blocklists are still taken down; with threat\n"
+"intel set up, that writes an intel-suspend line to the audit log.\n"
+"Needs root.\n",
+	  start_opts, NULL },
 
 	{ "simulate", fs_cli_cmd_simulate,
 "Usage: stockfw simulate \"<traffic>\" [--assume-running] [--applied]\n"

@@ -172,6 +172,28 @@ into `/usr/local/share/doc/stockfw/`.
 <!-- PR3-C -->
 <!-- PR3-D -->
 <!-- PR3-E -->
+- **`status` starts with the verdict.** Its first line is the Overview's
+  verdict ("This computer is protected", "IPv6 is not protected", ...)
+  with the reasons under it, and `--json` has a `verdict` object. A
+  test holds the window's card and the terminal to the same table.
+- **`stop` asks first on a terminal.** It says what stopping takes away
+  and asks `Stop the firewall? [y/N]`; Enter keeps the firewall
+  running. `--yes` skips the question, and without a terminal (scripts,
+  the boot unit) it stops as before.
+- **`interfaces --no-virtual`** leaves out bridges, veth, tun and other
+  virtual adapters.
+- **The Events filters in `events`.** `--collapse-repeats` and
+  `--for-me` are the Preferences window's "Hide repeated events" and
+  "Skip events not addressed to this computer", and `--prefs-filters`
+  takes both from the preferences. `--stats` counts what was read, shown
+  and hidden, in and out, and shows the saved history's size, folder and
+  why it is not being written. `--clear-history` shows the same, asks,
+  and deletes it (`--yes` without a terminal).
+- **New `stockfw activity`.** Blocked and allowed events over the last
+  15 minutes, hour, 6 hours or day as a sparkline or a table, the counts
+  of the last hour and day, and the throughput now. It is rebuilt from
+  the saved history or the kernel log, and a time it could not see is
+  shown as no data, not as zero.
 
 ### Fixed
 

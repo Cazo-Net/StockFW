@@ -302,6 +302,7 @@ if(FS_PLATFORM STREQUAL "linux")
     src/cli/fs-dashboard.c
     src/cli/fs-cli-complete.c
     src/cli/fs-cli-config.c
+    src/cli/fs-cli-activity.c
     src/control/fs-control.c
   )
   add_executable(stockfw
@@ -614,6 +615,20 @@ target_include_directories(fs-overview-place-smoke PRIVATE
                            "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(fs-overview-place-smoke PRIVATE fs-core PkgConfig::GTK3)
 target_compile_definitions(fs-overview-place-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+# The verdict golden table (tests/verdict-golden.h, PR 3) against the
+# Overview card: the window and `stockfw status' (fs_verdict_compute)
+# must say the same while both exist.  Supplies fs_backend() itself.
+add_executable(fs-verdict-smoke EXCLUDE_FROM_ALL
+  tests/ui-verdict-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-verdict-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-verdict-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-verdict-smoke PRIVATE
   FS_VERSION="${PROJECT_VERSION}"
   FS_PLATFORM_NAME="${FS_PLATFORM}"
 )

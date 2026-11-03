@@ -58,6 +58,7 @@ static const gchar *feed_formats[] = {
 	"plain", "spamhaus-json", "dshield", NULL
 };
 static const gchar *color_words[] = { "auto", "always", "never", NULL };
+static const gchar *range_words[] = { "15m", "1h", "6h", "24h", NULL };
 
 /* ------------------------------------------------------- candidates */
 
@@ -214,6 +215,8 @@ emit_values (Out *o, const gchar *command, const gchar *opt)
 	} else if (strcmp (opt, "--color") == 0 ||
 	           strcmp (opt, "--colour") == 0) {
 		emit_all (o, color_words);
+	} else if (strcmp (opt, "--range") == 0) {
+		emit_all (o, range_words);
 	}
 }
 

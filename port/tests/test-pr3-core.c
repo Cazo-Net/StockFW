@@ -28,6 +28,7 @@
 #include "core/fs-types.h"
 #include "core/fs-util.h"
 #include "core/fs-verdict.h"
+#include "verdict-golden.h"
 
 #ifndef G_OS_WIN32
 #include <fcntl.h>
@@ -476,64 +477,24 @@ test_prefs_validate (void)
 
 /* ------------------------------------------------------------ verdict */
 
-typedef struct
-{
-	FsFirewallState state;
-	gboolean        usable;
-	gboolean        v6_known;
-	FsIpv6State     v6;
-	const gchar    *hold;
-	FsVerdictLevel  level;
-	const gchar    *key;
-	const gchar    *word;
-	const gchar    *in_body;
-} VerdictRow;
-
-static const VerdictRow verdict_rows[] = {
-	{ FS_FW_STOPPED, TRUE, TRUE, FS_IPV6_FILTERED, NULL,
-	  FS_VERDICT_LEVEL_BAD, "stopped", "Not protected",
-	  "The firewall is stopped" },
-	{ FS_FW_NONE, FALSE, FALSE, FS_IPV6_UNKNOWN, NULL,
-	  FS_VERDICT_LEVEL_UNKNOWN, "unknown", "State unknown",
-	  "not available to this account" },
-	{ FS_FW_RUNNING, TRUE, TRUE, FS_IPV6_FILTERED, NULL,
-	  FS_VERDICT_LEVEL_OK, "protected", "Protected", "IPv4 and IPv6" },
-	{ FS_FW_RUNNING, TRUE, TRUE, FS_IPV6_ABSENT, NULL,
-	  FS_VERDICT_LEVEL_OK, "protected", "Protected", "has no IPv6" },
-	{ FS_FW_RUNNING, TRUE, TRUE, FS_IPV6_UNFILTERED, NULL,
-	  FS_VERDICT_LEVEL_WARN, "ipv6-unprotected", "IPv6 not protected",
-	  "IPv6 traffic passes unfiltered" },
-	{ FS_FW_RUNNING, TRUE, TRUE, FS_IPV6_UNKNOWN, NULL,
-	  FS_VERDICT_LEVEL_OK, "running", "Running", "could not check" },
-	{ FS_FW_LOCKED, TRUE, TRUE, FS_IPV6_FILTERED, NULL,
-	  FS_VERDICT_LEVEL_OK, "protected", "Protected",
-	  "Policy changes are locked." },
-	{ FS_FW_RUNNING, TRUE, TRUE, FS_IPV6_FILTERED, "audit-only mode",
-	  FS_VERDICT_LEVEL_OK, "protected", "Protected",
-	  "Policy changes are held: audit-only mode." },
-};
-
+/* The golden table is shared with the desktop app's Overview smoke
+ * (tests/ui-verdict-smoke.c), so both answer from the same rows. */
 static void
 test_verdict (void)
 {
-	for (guint i = 0; i < G_N_ELEMENTS (verdict_rows); i++) {
-		const VerdictRow *row = &verdict_rows[i];
+	for (guint i = 0; i < G_N_ELEMENTS (verdict_golden); i++) {
+		const VerdictGolden *row = &verdict_golden[i];
 		FsVerdictInput in;
 		FsVerdictResult *v;
+		gchar *why;
 
-		memset (&in, 0, sizeof in);
-		in.state = row->state;
-		in.backend_usable = row->usable;
-		in.ipv6_known = row->v6_known;
-		in.ipv6 = row->v6;
-		in.hold_reason = row->hold;
-		in.display_name = "test firewall";
+		verdict_golden_input (row, &in);
 		v = fs_verdict_compute (&in);
-		CHECK (v->level == row->level && g_strcmp0 (v->key, row->key) == 0 &&
-		       g_strcmp0 (v->word, row->word) == 0 &&
-		       strstr (v->body, row->in_body) != NULL,
-		       "verdict row %u: %s/%s \"%s\" (body: %s)", i,
-		       fs_verdict_level_name (v->level), v->key, v->word, v->body);
+		why = verdict_golden_mismatch (row, v->level, v->key, v->word,
+		                               v->title, v->body);
+		CHECK (why == NULL, "verdict golden row %u (%s): %s", i, row->key,
+		       why != NULL ? why : "as the table says");
+		g_free (why);
 		fs_verdict_result_free (v);
 	}
 

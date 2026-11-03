@@ -276,6 +276,7 @@ extern const FsCliCommandDef fs_cli_views_commands[];      /* fs-cli-views.c  */
 extern const FsCliCommandDef fs_cli_intel_commands[];      /* fs-cli-intel.c  */
 extern const FsCliCommandDef fs_cli_dashboard_commands[];  /* fs-dashboard.c  */
 extern const FsCliCommandDef fs_cli_config_commands[];     /* fs-cli-config.c */
+extern const FsCliCommandDef fs_cli_activity_commands[];   /* fs-cli-activity.c */
 
 /* Every command, in the order the tables are joined (*n of them). */
 const FsCliCommandDef * const *fs_cli_all_commands (guint *n);
@@ -304,6 +305,14 @@ gint fs_cli_cmd_connections (gint argc, gchar **argv);
 gint fs_cli_cmd_interfaces  (gint argc, gchar **argv);
 gint fs_cli_cmd_dashboard   (gint argc, gchar **argv);
 gint fs_cli_cmd_intel       (gint argc, gchar **argv);
+gint fs_cli_cmd_activity    (gint argc, gchar **argv);
+
+/* `stop' on a terminal (B5): the consequence text, then "Stop the
+ * firewall? [y/N]" on stderr, No by default.  TRUE to go on: --yes,
+ * no terminal on stdin (as before), a firewall that is stopped
+ * already, or the answer y.  FALSE prints why (fs-cli-status.c). */
+const gchar *fs_cli_stop_consequence (void);
+gboolean     fs_cli_stop_confirm     (gboolean yes);
 
 /* Help for a topic: the main help for NULL, NULL for an unknown one.
  * Topics are the commands, their aliases, "help" and "version". */
