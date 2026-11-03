@@ -8571,14 +8571,21 @@ read_lf (const gchar *path)
 
 static void test_cli_platform_words (void)
 {
+	/* The commands are split over several files since the command
+	 * registry (cli-plan.md WP-A): Stop and Start in fs-cli-policy.c,
+	 * the root hint in fs-cli-cmds.c, the sudo prefix in fs-cli-out.c. */
 	gchar *cmds = read_lf ("src/cli/fs-cli-cmds.c");
+	gchar *policy = read_lf ("src/cli/fs-cli-policy.c");
+	gchar *out_c = read_lf ("src/cli/fs-cli-out.c");
 	gchar *intel = read_lf ("src/cli/fs-cli-intel.c");
 	gchar *hdr = read_lf ("src/cli/fs-cli.h");
 	const gchar *win;
 
-	CHECK (cmds != NULL && intel != NULL && hdr != NULL,
+	CHECK (cmds != NULL && policy != NULL && out_c != NULL &&
+	       intel != NULL && hdr != NULL,
 	       "cli words: the CLI sources are readable");
-	if (cmds == NULL || intel == NULL || hdr == NULL)
+	if (cmds == NULL || policy == NULL || out_c == NULL || intel == NULL ||
+	    hdr == NULL)
 		goto out;
 	win = strstr (hdr, "#elif defined G_OS_WIN32");
 	CHECK (win != NULL &&
@@ -8588,18 +8595,21 @@ static void test_cli_platform_words (void)
 	       strstr (win, "opened as administrator") != NULL,
 	       "cli words: fs-cli.h names Windows Firewall and an "
 	       "administrator prompt for Windows");
-	CHECK (strstr (cmds, "\"the kernel does not hold them\"") == NULL &&
-	       strstr (cmds, "FS_CLI_LIVE \" does not hold \"") != NULL,
-	       "cli words: Stop and Start's blocklist error in fs-cli-cmds.c "
+	CHECK (strstr (policy, "\"the kernel does not hold them\"") == NULL &&
+	       strstr (policy, "FS_CLI_LIVE \" does not hold \"") != NULL,
+	       "cli words: Stop and Start's blocklist error in fs-cli-policy.c "
 	       "names the platform's firewall (FS_CLI_LIVE)");
 	CHECK (strstr (cmds, "\"run it with sudo, e.g.") == NULL &&
-	       strstr (cmds, "FS_CLI_RIGHTS \", e.g. `\" FS_CLI_SUDO") != NULL,
+	       strstr (cmds, "FS_CLI_RIGHTS \", e.g. `%s'\"") != NULL &&
+	       strstr (out_c, "const gchar *sudo = FS_CLI_SUDO;") != NULL,
 	       "cli words: the root hint in fs-cli-cmds.c is the platform's "
-	       "(FS_CLI_RIGHTS, FS_CLI_SUDO)");
+	       "(FS_CLI_RIGHTS, and FS_CLI_SUDO in fs_cli_sudo_hint)");
 	CHECK (strstr (intel, "#define FS_CLI_LIVE") == NULL,
 	       "cli words: one definition, in fs-cli.h");
 out:
 	g_free (cmds);
+	g_free (policy);
+	g_free (out_c);
 	g_free (intel);
 	g_free (hdr);
 }
@@ -11492,7 +11502,7 @@ echo "ok:   privacy guard: Help names the location database as a download"
 # the program's own and the current folder (Windows).
 SPAWN_HITS="$(grep -nE 'G_SPAWN_SEARCH_PATH|g_find_program_in_path' \
   src/platform/linux/fs-backend-linux.c src/core/fs-nftset.c \
-  src/cli/fs-cli-cmds.c src/cli/fs-dashboard.c || true)"
+  src/cli/*.c || true)"
 if [ -n "$SPAWN_HITS" ]; then
   echo "FAIL: a system tool is found through PATH:"
   echo "$SPAWN_HITS"
@@ -11504,6 +11514,50 @@ if ! tr -d '\r' < src/platform/windows/fs-backend-windows.c \
   exit 1
 fi
 echo "ok:   spawn guard: system tools by absolute path (Linux root, Windows)"
+
+# The command line (cli-plan.md, WP-A).  A hint that says a bare
+# `sudo stockfw' may find another copy, or none, on root's PATH: hints
+# come from fs_cli_sudo_hint, with the full path.
+SUDO_HITS="$(grep -n '`sudo stockfw' src/cli/*.c src/cli/*.h || true)"
+if [ -n "$SUDO_HITS" ]; then
+  echo "FAIL: a bare \`sudo stockfw' hint in src/cli (use fs_cli_sudo_hint):"
+  echo "$SUDO_HITS"
+  exit 1
+fi
+echo "ok:   cli guard: no bare \`sudo stockfw' hint in src/cli"
+# "--" is the parser's (fs-cli-main.c drops it); a command that looks
+# for it again would read a dash word after it as an option.
+DASH_HITS="$(grep -nE 'strcmp \(argv\[[a-z0-9_ +]*\], "--"\)' src/cli/*.c \
+  | grep -v '^src/cli/fs-cli-main\.c:' || true)"
+if [ -n "$DASH_HITS" ]; then
+  echo "FAIL: a command looks for \"--\" itself (fs_cli_is_positional is the way):"
+  echo "$DASH_HITS"
+  exit 1
+fi
+echo "ok:   cli guard: only fs-cli-main.c handles \"--\""
+# The option tables are what completion and the man page are made of:
+# every option a command reads with fs_cli_take_opt is a value option
+# of the table in the same file, and every value option of a table is
+# read there.
+if ! python3 -I - src/cli/*.c <<'PYEOF'
+import re, sys
+bad = []
+for path in sys.argv[1:]:
+    src = open(path, encoding='utf-8').read()
+    taken = set(re.findall(r'fs_cli_take_opt\s*\([^;"]*?"(-[^"]*)"', src))
+    table = set(re.findall(r'\{\s*"(-[^"]*)",\s*TRUE\s*,', src))
+    for o in sorted(taken - table):
+        bad.append('%s: %s is read by fs_cli_take_opt but is not a value option of its table' % (path, o))
+    for o in sorted(table - taken):
+        bad.append('%s: %s is a value option of the table but no fs_cli_take_opt reads it' % (path, o))
+for b in bad:
+    print('FAIL: ' + b)
+sys.exit(1 if bad else 0)
+PYEOF
+then
+  exit 1
+fi
+echo "ok:   cli guard: fs_cli_take_opt options and the option tables agree"
 
 [ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ] && [ "$intelgeo_rc" -eq 0 ] \
   && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]

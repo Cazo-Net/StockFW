@@ -771,6 +771,154 @@ p = s.getsockname()[1]
 r = subprocess.run(['$S', 'dashboard', '--no-open', '--port', str(p)], capture_output=True, text=True, timeout=10)
 assert r.returncode == 1 and 'error' in r.stderr, (r.returncode, r.stderr)"
 
+# Each work package of the next release keeps its tests between its
+# own markers (cli-plan.md section 4), so the packages never touch one
+# another's lines.
+
+# === WP-A ===
+# The parser and the output helpers (cli-plan.md section 4, WP-A).
+# A rules directory of its own, readable by nobody (the hints below
+# are checked as uid 65534 when the suite runs as root).
+A="$(mktemp -d /tmp/stockfw-wpa-XXXXXX)"; chmod 755 "$A"
+A_ENV=(env STOCKFW_RULES_DIR="$A/rules" STOCKFW_LOG_FILE="$A/kern.log")
+a_run () { "${A_ENV[@]}" "$@"; }
+a_rc () { local want="$1"; shift; a_run "$@" > "$TMP/out" 2> "$TMP/err"; [ "$?" -eq "$want" ]; }
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null; then
+  a_nobody () { setpriv --reuid=65534 --regid=65534 --clear-groups "${A_ENV[@]}" "$@"; }
+else
+  a_nobody () { a_run "$@"; }
+fi
+# Kernel-log lines with IPv6 addresses written out in full, as some
+# loggers print them: the table must show them short and still fit.
+py "
+import datetime
+now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+def at(m): return (now - datetime.timedelta(minutes=m)).strftime('%Y-%m-%dT%H:%M:%S+00:00')
+open('$A/kern.log', 'w').write('\n'.join([
+ at(3) + ' host kernel: [1.0] STOCKFW-DROP IN=eth0 OUT= SRC=203.0.113.5 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40000 DPT=22 SYN',
+ at(2) + ' host kernel: [2.0] STOCKFW-DROP IN=eth0 OUT= SRC=2001:0db8:0000:0000:0000:0000:0000:0042 DST=2001:0db8:0000:0000:0000:0000:0000:0001 LEN=60 TC=0 HOPLIMIT=64 FLOWLBL=0 PROTO=TCP SPT=40001 DPT=3389 SYN',
+ at(1) + ' host kernel: [3.0] STOCKFW-DROP IN=eth0 OUT= SRC=198.51.100.70 DST=10.0.0.5 LEN=40 PROTO=TCP SPT=40002 DPT=445 SYN',
+]) + '\n')
+"
+a_run "$S" policy add inbound-allow-service SSH 22 Anyone > /dev/null
+chmod -R a+rX "$A"
+
+a_comment_h () { a_rc 0 "$S" policy add outbound-deny-to 198.51.100.6 --comment -h &&
+                 ! grep -q '^Usage' "$TMP/out"; }
+check "parser: --comment -h saves the comment \"-h\" (exit 0), it is not a request for help" a_comment_h
+check "  ...and policy list --json shows comment \"-h\"" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_RULES_DIR='$A/rules')
+d = json.loads(subprocess.run(['$S', '--json', 'policy', 'list'], capture_output=True, text=True, env=env).stdout)
+assert [r['comment'] for r in d['rules'] if r['target'] == '198.51.100.6'] == ['-h'], d"
+check "parser: --comment --json and --comment=-x are both saved as comments" py "
+import json, os, subprocess
+env = dict(os.environ, STOCKFW_RULES_DIR='$A/rules')
+for args in (['198.51.100.7', '--comment', '--json'], ['198.51.100.8', '--comment=-x']):
+    r = subprocess.run(['$S', 'policy', 'add', 'outbound-deny-to', *args], capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and r.stdout.startswith('+ '), (args, r)
+d = json.loads(subprocess.run(['$S', '--json', 'policy', 'list'], capture_output=True, text=True, env=env).stdout)
+c = {r['target']: r['comment'] for r in d['rules']}
+assert c.get('198.51.100.7') == '--json' and c.get('198.51.100.8') == '-x', c"
+a_dashdash () { a_rc 2 "$S" policy add outbound-deny-to -- -x &&
+                grep -q 'not a valid address' "$TMP/err" && ! grep -q 'unknown option' "$TMP/err"; }
+check "parser: after --, \"-x\" is a field: \"not a valid address\" (exit 2), not \"unknown option\"" a_dashdash
+a_needs_value () { a_rc 2 "$S" policy list --kind && grep -q -- '--kind needs a value' "$TMP/err" &&
+                   a_rc 2 "$S" dashboard --port && grep -q -- '--port needs a value' "$TMP/err"; }
+check "parser: an option with no value says it needs one (policy list --kind, dashboard --port: exit 2)" a_needs_value
+a_typo_opt () { a_rc 2 "$S" simulate --assume-runing inbound ssh &&
+                grep -q 'did you mean --assume-running' "$TMP/err"; }
+check "parser: simulate --assume-runing is refused with \"did you mean\" (exit 2), not folded into the question" a_typo_opt
+check "  ...and simulate --assume-running -- \"inbound ssh\" answers (ALLOWED, exit 0)" \
+  a_rc 0 "$S" simulate --assume-running -- "inbound ssh from 198.51.100.4"
+check "parser: -q simulate prints the verdict word alone" \
+  bash -c "[ \"\$(STOCKFW_RULES_DIR='$A/rules' '$S' -q simulate --assume-running inbound ssh from 198.51.100.4)\" = ALLOWED ]"
+check "parser: \`stauts' gives \"did you mean \`stockfw status'\" (exit 2) and runs nothing" \
+  bash -c "STOCKFW_RULES_DIR='$A/rules' STOCKFW_LOG_FILE='$A/missing.log' '$S' stauts > '$TMP/out' 2> '$TMP/err'; [ \$? -eq 2 ] &&
+           grep -q \"did you mean \\\`stockfw status'\" '$TMP/err' && [ ! -s '$TMP/out' ] && ! grep -q 'Firewall' '$TMP/err'"
+a_frob () { a_rc 2 "$S" --frob status && grep -q 'unknown option --frob' "$TMP/err" &&
+            ! grep -q 'unknown command' "$TMP/err"; }
+check "parser: --frob before a command is an unknown option, not an unknown command" a_frob
+check "help: \`help help', \`help version' and \`help intel geo' exit 0" \
+  bash -c "'$S' help help > /dev/null && '$S' help version > /dev/null && '$S' help intel geo | grep -q 'intel geo search'"
+check "version: one line, \"stockfw N <sep> backend\", no nested brackets" \
+  bash -c "'$S' version | grep -Eq '^stockfw [0-9.]+ (·|-) [^(]+\\(' && ! '$S' version | grep -q '(.*(.*))'"
+check "output: the comment's ESC and U+202E are printed escaped, never raw" \
+  bash -c "STOCKFW_RULES_DIR='$A/rules' '$S' policy add outbound-deny-to 198.51.100.9 --comment \"\$(printf 'a\\033[31mred\\342\\200\\256X')\" > /dev/null &&
+           STOCKFW_RULES_DIR='$A/rules' '$S' policy list > '$TMP/esc.txt' &&
+           grep -qF 'a\\x1b[31mred\\u202eX' '$TMP/esc.txt' &&
+           ! grep -q \$'\\033' '$TMP/esc.txt' && ! grep -q \$'\\342\\200\\256' '$TMP/esc.txt'"
+a_root_hint () { a_nobody "$S" apply > /dev/null 2> "$TMP/err"; [ "$?" -eq 3 ] &&
+                 grep -qF "sudo $S apply'" "$TMP/err" && ! grep -q '`sudo stockfw' "$TMP/err"; }
+check "output: a root hint names this program by its full path and repeats the arguments" a_root_hint
+check "output: an event table piped gets every character, whatever COLUMNS says" \
+  bash -c "COLUMNS=40 STOCKFW_LOG_FILE='$A/kern.log' '$S' events | cat > '$TMP/ev.txt' &&
+           grep -q '2001:db8::42' '$TMP/ev.txt' && ! grep -qE '…|\\.\\.\\.' '$TMP/ev.txt'"
+check "output: IPv6 addresses are shown short (2001:db8::42, not 2001:0db8:0000:...)" \
+  bash -c "STOCKFW_LOG_FILE='$A/kern.log' '$S' events | grep -q '2001:db8::42  *2001:db8::1 '"
+check "output: --plain events: no ESC, exactly 8 tabs per row, no header" py "
+import os, subprocess
+env = dict(os.environ, STOCKFW_LOG_FILE='$A/kern.log', COLUMNS='40')
+out = subprocess.run(['script', '-qec', '$S --plain events', '/dev/null'], capture_output=True, env=env).stdout if os.path.exists('/usr/bin/script') else subprocess.run(['$S', '--plain', 'events'], capture_output=True, env=env).stdout
+rows = [l for l in out.decode().replace('\r', '').split('\n') if l]
+assert b'\x1b' not in out and len(rows) == 3, out
+assert all(r.count('\t') == 8 for r in rows) and not rows[0].startswith('TIME'), rows"
+check "output: --color=always colours a pipe" \
+  bash -c "STOCKFW_LOG_FILE='$A/kern.log' '$S' --color=always events | grep -q \$'\\033\\['"
+if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null || [ "$(id -u)" != 0 ]; then
+  check "output: LC_ALL=C status (uid 65534 as root) is ASCII only" py "
+import os, subprocess
+cmd = ['$S', 'status']
+if os.getuid() == 0:
+    cmd = ['setpriv', '--reuid=65534', '--regid=65534', '--clear-groups'] + cmd
+env = dict(os.environ, LC_ALL='C', STOCKFW_RULES_DIR='$A/rules', STOCKFW_LOG_FILE='$A/kern.log')
+r = subprocess.run(cmd, capture_output=True, env=env)
+assert r.returncode == 0 and b'Firewall' in r.stdout, r
+bad = [l for l in (r.stdout + r.stderr).split(b'\n') if any(c > 127 for c in l)]
+assert not bad, bad"
+fi
+if command -v script > /dev/null; then
+  # A terminal of 80 columns (stty inside script: the harness may have
+  # none), and the widest line of each output, colour codes taken out.
+  a_width () { py "
+import os, re, subprocess, sys
+env = dict(os.environ, STOCKFW_RULES_DIR='$A/rules', STOCKFW_LOG_FILE='$A/kern.log', COLUMNS='80')
+out = subprocess.run(['script', '-qec', 'stty cols 80 rows 24 2>/dev/null; $S $1', '/dev/null'],
+                     capture_output=True, env=env).stdout.decode('utf-8', 'replace')
+lines = [re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', l.rstrip('\r')) for l in out.split('\n')]
+long = [l for l in lines if len(l) > 80]
+assert lines and not long, long"; }
+  check "output: on an 80-column terminal \`help' fits" a_width "help"
+  check "  ...and \`help intel'" a_width "help intel"
+  check "  ...and \`events' with IPv6 rows" a_width "events"
+  check "  ...and \`intel feeds', the legend included" a_width "intel feeds"
+  check "output: colour follows stdout alone: events 2>/dev/null on a terminal is coloured" py "
+import os, subprocess
+env = dict(os.environ, STOCKFW_LOG_FILE='$A/kern.log')
+env.pop('NO_COLOR', None)
+out = subprocess.run(['script', '-qec', '$S events 2>/dev/null', '/dev/null'], capture_output=True, env=env).stdout
+assert b'\x1b[' in out, out"
+else
+  echo "skip: 80-column and terminal colour checks (no script(1))"
+fi
+rm -rf "$A"
+# === end WP-A ===
+
+# === WP-B ===
+# === end WP-B ===
+
+# === WP-C ===
+# === end WP-C ===
+
+# === WP-D ===
+# === end WP-D ===
+
+# === WP-F ===
+# === end WP-F ===
+
+# === WP-E ===
+# === end WP-E ===
+
 echo ""
 if [ "$fails" -eq 0 ]; then
   echo "PASSED: 0 failure(s)"

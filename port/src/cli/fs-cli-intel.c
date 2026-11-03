@@ -23,6 +23,7 @@
 #include "core/fs-intel.h"
 #include "core/fs-json.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -55,6 +56,25 @@ exit_for (const GError *error)
 	return FS_EXIT_FAILURE;
 }
 
+/* [ run_text ] -- a command to paste: "sudo /full/path/stockfw ARGS"
+ * (fs_cli_sudo_hint).  g_free. */
+static gchar *
+run_text (const gchar *format, ...) G_GNUC_PRINTF (1, 2);
+
+static gchar *
+run_text (const gchar *format, ...)
+{
+	va_list ap;
+	gchar *args, *text;
+
+	va_start (ap, format);
+	args = g_strdup_vprintf (format, ap);
+	va_end (ap);
+	text = fs_cli_sudo_hint (args);
+	g_free (args);
+	return text;
+}
+
 /* [ fail ] -- print an engine error with a hint where one helps; frees
  * it and returns the exit status. */
 static gint
@@ -63,9 +83,16 @@ fail (GError *error, const gchar *what)
 	gint status = exit_for (error);
 
 	fs_cli_error ("%s", error != NULL ? error->message : what);
-	if (status == FS_EXIT_NEED_ROOT)
-		fs_cli_hint (FS_CLI_RIGHTS ", e.g. `" FS_CLI_SUDO
-		             "stockfw intel %s'", what);
+	if (status == FS_EXIT_NEED_ROOT) {
+		/* The user's own command again (fs_cli_need_root). */
+		gchar *args = fs_cli_user_args ();
+		gchar *again = *args != '\0' ? fs_cli_sudo_hint (args)
+		                              : run_text ("intel %s", what);
+
+		fs_cli_hint (FS_CLI_RIGHTS ", e.g. `%s'", again);
+		g_free (again);
+		g_free (args);
+	}
 	else if (g_error_matches (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNKNOWN))
 		fs_cli_hint ("`stockfw intel feeds' and `stockfw intel lists' "
 		             "show the ids");
@@ -681,15 +708,28 @@ intel_feeds (gint argc, gchar **argv)
 		}
 		fs_cli_table (headers, 8, rows, 60);
 		g_ptr_array_unref (rows);
-		if (!config->enabled)
-			printf ("\n%sThreat intel is switched off: `" FS_CLI_SUDO "stockfw "
-			        "intel on' switches it on.%s\n", fs_cli_amber (),
-			        fs_cli_reset ());
-		printf ("\n%sTurning a feed on needs its terms accepted: `stockfw "
-		        "intel terms ID' shows them, `" FS_CLI_SUDO "stockfw intel enable ID "
-		        "--accept-terms' turns it on.  Lists contain mistakes: "
-		        "`stockfw intel except ADDRESS' lets one through.%s\n",
-		        fs_cli_dim (), fs_cli_reset ());
+		/* The legends: wrapped to the terminal, left out under -q. */
+		if (!config->enabled && !fs_cli.quiet) {
+			gchar *text = g_strdup ("Threat intel is switched off: `"
+			                        FS_CLI_SUDO "stockfw intel on' "
+			                        "switches it on.");
+			gchar *wrapped = fs_cli_wrap (text, 0);
+
+			printf ("\n%s%s%s\n", fs_cli_amber (), wrapped, fs_cli_reset ());
+			g_free (wrapped);
+			g_free (text);
+		}
+		if (!fs_cli.quiet) {
+			gchar *wrapped = fs_cli_wrap (
+				"Turning a feed on needs its terms accepted: `stockfw "
+				"intel terms ID' shows them, `" FS_CLI_SUDO "stockfw "
+				"intel enable ID --accept-terms' turns it on.  Lists "
+				"contain mistakes: `stockfw intel except ADDRESS' lets "
+				"one through.", 0);
+
+			printf ("\n%s%s%s\n", fs_cli_dim (), wrapped, fs_cli_reset ());
+			g_free (wrapped);
+		}
 	}
 
 	g_hash_table_unref (counters);
@@ -789,14 +829,21 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 	const gchar *verb = enable ? "enable" : "disable";
 
 	for (gint i = 0; i < argc; i++) {
-		if (enable && strcmp (argv[i], "--accept-terms") == 0) {
+		const gchar *v = NULL;
+		gint bad = FS_EXIT_OK;
+
+		if (enable && fs_cli_is_option_at (argv, i) &&
+		    strcmp (argv[i], "--accept-terms") == 0) {
 			accept = TRUE;
-		} else if (enable && (strcmp (argv[i], "--direction") == 0 ||
-		                      strcmp (argv[i], "--dir") == 0) &&
-		           i + 1 < argc) {
-			if (!parse_dir (argv[++i], &dir))
+		} else if (enable &&
+		           (fs_cli_take_opt (argc, argv, &i, "--direction", &v,
+		                             &bad) ||
+		            fs_cli_take_opt (argc, argv, &i, "--dir", &v, &bad))) {
+			if (v == NULL)
+				return bad;
+			if (!parse_dir (v, &dir))
 				return FS_EXIT_USAGE;
-		} else if (argv[i][0] == '-') {
+		} else if (fs_cli_is_option_at (argv, i)) {
 			fs_cli_error ("unknown option for intel %s: %s", verb,
 			              argv[i]);
 			if (enable)
@@ -861,14 +908,14 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 			printf ("%s\n\n", text);
 		}
 		fs_cli_error ("%s", error->message);
-		if (location)
-			fs_cli_hint ("read the terms above; to accept them: "
-			             FS_CLI_SUDO "stockfw intel geo on "
-			             "--accept-terms");
-		else
-			fs_cli_hint ("read the terms above; to accept them: "
-			             FS_CLI_SUDO "stockfw intel enable %s "
-			             "--accept-terms", id);
+		{
+			gchar *run = location
+			             ? run_text ("intel geo on --accept-terms")
+			             : run_text ("intel enable %s --accept-terms", id);
+
+			fs_cli_hint ("read the terms above; to accept them: %s", run);
+			g_free (run);
+		}
 		g_free (text);
 		g_clear_error (&error);
 		fs_intel_config_free (config);
@@ -1047,17 +1094,24 @@ intel_add_feed (gint argc, gchar **argv)
 	gint status = FS_EXIT_OK;
 
 	for (gint i = 0; i < argc; i++) {
-		if ((strcmp (argv[i], "--direction") == 0 ||
-		     strcmp (argv[i], "--dir") == 0) && i + 1 < argc) {
-			if (!parse_dir (argv[++i], &dir))
+		const gchar *v = NULL;
+		gint bad = FS_EXIT_OK;
+
+		if (fs_cli_take_opt (argc, argv, &i, "--direction", &v, &bad) ||
+		    fs_cli_take_opt (argc, argv, &i, "--dir", &v, &bad)) {
+			if (v == NULL)
+				return bad;
+			if (!parse_dir (v, &dir))
 				return FS_EXIT_USAGE;
-		} else if (strcmp (argv[i], "--format") == 0 && i + 1 < argc) {
-			if (!fs_feed_format_from_string (argv[++i], &format)) {
+		} else if (fs_cli_take_opt (argc, argv, &i, "--format", &v, &bad)) {
+			if (v == NULL)
+				return bad;
+			if (!fs_feed_format_from_string (v, &format)) {
 				fs_cli_error ("the format must be plain, spamhaus-json "
-				              "or dshield, not \"%s\"", argv[i]);
+				              "or dshield, not \"%s\"", v);
 				return FS_EXIT_USAGE;
 			}
-		} else if (argv[i][0] == '-' && argv[i][1] == '-') {
+		} else if (fs_cli_is_option_at (argv, i) && argv[i][1] == '-') {
 			fs_cli_error ("unknown option for intel add-feed: %s",
 			              argv[i]);
 			fs_cli_hint ("options are --format and --direction");
@@ -1151,8 +1205,15 @@ intel_update (gint argc, gchar **argv)
 	GError *apply_error = NULL;
 
 	for (gint i = 0; i < argc; i++) {
-		if (strcmp (argv[i], "--feed") == 0 && i + 1 < argc)
-			only = argv[++i];
+		const gchar *v = NULL;
+		gint bad = FS_EXIT_OK;
+
+		if (fs_cli_take_opt (argc, argv, &i, "--feed", &v, &bad)) {
+			if (v == NULL)
+				return bad;
+			only = v;
+		} else if (fs_cli_is_positional_at (argv, i))
+			goto unexpected;
 		else if (strcmp (argv[i], "--now") == 0)
 			flags |= FS_INTEL_UPDATE_NOW;
 		else if (strcmp (argv[i], "--accept-shrink") == 0)
@@ -1162,6 +1223,7 @@ intel_update (gint argc, gchar **argv)
 		else if (strcmp (argv[i], "--no-apply") == 0)
 			no_apply = TRUE;
 		else {
+unexpected:
 			fs_cli_error ("unexpected argument for intel update: %s",
 			              argv[i]);
 			fs_cli_hint ("options are --feed ID (or location), --now, "
@@ -1184,8 +1246,12 @@ intel_update (gint argc, gchar **argv)
 		if (!config->geo_enabled) {
 			fs_intel_config_free (config);
 			fs_cli_error ("the location database is turned off");
-			fs_cli_hint ("turn it on first: " FS_CLI_SUDO "stockfw intel "
-			             "geo on --accept-terms");
+			{
+				gchar *run = run_text ("intel geo on --accept-terms");
+
+				fs_cli_hint ("turn it on first: %s", run);
+				g_free (run);
+			}
 			return FS_EXIT_USAGE;
 		}
 	} else if (only != NULL) {
@@ -1209,8 +1275,12 @@ intel_update (gint argc, gchar **argv)
 		if (!f->enabled) {
 			fs_intel_config_free (config);
 			fs_cli_error ("%s is turned off", only);
-			fs_cli_hint ("turn it on first: " FS_CLI_SUDO "stockfw intel enable %s",
-			             only);
+			{
+				gchar *run = run_text ("intel enable %s", only);
+
+				fs_cli_hint ("turn it on first: %s", run);
+				g_free (run);
+			}
 			return FS_EXIT_USAGE;
 		}
 	}
@@ -1590,13 +1660,21 @@ intel_import (gint argc, gchar **argv)
 	gint status = FS_EXIT_OK;
 
 	for (gint i = 0; i < argc; i++) {
-		if (strcmp (argv[i], "--name") == 0 && i + 1 < argc) {
-			name = argv[++i];
-		} else if ((strcmp (argv[i], "--direction") == 0 ||
-		            strcmp (argv[i], "--dir") == 0) && i + 1 < argc) {
-			if (!parse_dir (argv[++i], &dir))
+		const gchar *v = NULL;
+		gint bad = FS_EXIT_OK;
+
+		if (fs_cli_take_opt (argc, argv, &i, "--name", &v, &bad)) {
+			if (v == NULL)
+				return bad;
+			name = v;
+		} else if (fs_cli_take_opt (argc, argv, &i, "--direction", &v,
+		                            &bad) ||
+		           fs_cli_take_opt (argc, argv, &i, "--dir", &v, &bad)) {
+			if (v == NULL)
+				return bad;
+			if (!parse_dir (v, &dir))
 				return FS_EXIT_USAGE;
-		} else if (argv[i][0] == '-' && argv[i][1] == '-') {
+		} else if (fs_cli_is_option_at (argv, i) && argv[i][1] == '-') {
 			fs_cli_error ("unknown option for intel import: %s", argv[i]);
 			fs_cli_hint ("options are --name NAME and --direction "
 			             "in|out|both");
@@ -2411,9 +2489,14 @@ geo_switch (gint argc, gchar **argv, gboolean on)
 					printf ("%s\n\n", text);
 				}
 				fs_cli_error ("%s", error->message);
-				fs_cli_hint ("read the terms above; to accept them: "
-				             FS_CLI_SUDO "stockfw intel geo on "
-				             "--accept-terms");
+				{
+					gchar *run = run_text ("intel geo on "
+					                       "--accept-terms");
+
+					fs_cli_hint ("read the terms above; to accept "
+					             "them: %s", run);
+					g_free (run);
+				}
 				g_free (text);
 				g_clear_error (&error);
 				fs_intel_config_free (config);
@@ -2524,17 +2607,24 @@ geo_search (gint argc, gchar **argv)
 	gint status = FS_EXIT_OK;
 
 	for (gint i = 0; i < argc; i++) {
-		if (strcmp (argv[i], "--max") == 0 && i + 1 < argc) {
-			gchar *end = NULL;
-			guint64 v = g_ascii_strtoull (argv[++i], &end, 10);
+		const gchar *text_v = NULL;
+		gint bad = FS_EXIT_OK;
 
-			if (end == NULL || *end != '\0' || v == 0 || v > 100000) {
+		if (fs_cli_take_opt (argc, argv, &i, "--max", &text_v, &bad)) {
+			gchar *end = NULL;
+			guint64 v;
+
+			if (text_v == NULL)
+				return bad;
+			v = g_ascii_strtoull (text_v, &end, 10);
+			if (!g_ascii_isdigit (*text_v) || end == NULL ||
+			    *end != '\0' || v == 0 || v > 100000) {
 				fs_cli_error ("--max takes a number from 1 to 100000, "
-				              "not \"%s\"", argv[i]);
+				              "not \"%s\"", text_v);
 				return FS_EXIT_USAGE;
 			}
 			max = (guint) v;
-		} else if (argv[i][0] == '-' && argv[i][1] == '-') {
+		} else if (fs_cli_is_option_at (argv, i) && argv[i][1] == '-') {
 			fs_cli_error ("unknown option for intel geo search: %s",
 			              argv[i]);
 			return FS_EXIT_USAGE;
@@ -2645,9 +2735,14 @@ geo_search (gint argc, gchar **argv)
 
 failed:
 	status = fail (error, "geo search");
-	fs_cli_hint ("turn it on and download it: " FS_CLI_SUDO "stockfw intel "
-	             "geo on --accept-terms, then " FS_CLI_SUDO "stockfw intel geo "
-	             "update");
+	{
+		gchar *on = run_text ("intel geo on --accept-terms");
+		gchar *update = run_text ("intel geo update");
+
+		fs_cli_hint ("turn it on and download it: %s, then %s", on, update);
+		g_free (on);
+		g_free (update);
+	}
 	return status;
 }
 
@@ -2781,13 +2876,20 @@ geo_add (gint argc, gchar **argv)
 	const FsIntelLocationConf *l;
 
 	for (gint i = 0; i < argc; i++) {
-		if ((strcmp (argv[i], "--dir") == 0 ||
-		     strcmp (argv[i], "--direction") == 0) && i + 1 < argc) {
-			if (!parse_dir (argv[++i], &dir))
+		const gchar *v = NULL;
+		gint bad = FS_EXIT_OK;
+
+		if (fs_cli_take_opt (argc, argv, &i, "--dir", &v, &bad) ||
+		    fs_cli_take_opt (argc, argv, &i, "--direction", &v, &bad)) {
+			if (v == NULL)
 				goto usage_quiet;
-		} else if (strcmp (argv[i], "--name") == 0 && i + 1 < argc) {
-			name = argv[++i];
-		} else if (argv[i][0] == '-' && argv[i][1] == '-') {
+			if (!parse_dir (v, &dir))
+				goto usage_quiet;
+		} else if (fs_cli_take_opt (argc, argv, &i, "--name", &v, &bad)) {
+			if (v == NULL)
+				goto usage_quiet;
+			name = v;
+		} else if (fs_cli_is_option_at (argv, i) && argv[i][1] == '-') {
 			fs_cli_error ("unknown option for intel geo add: %s", argv[i]);
 			fs_cli_hint ("options are --dir in|out|both and --name NAME");
 			goto usage_quiet;
@@ -2839,9 +2941,13 @@ geo_add (gint argc, gchar **argv)
 
 		status = fail (error, "geo add");
 		if (consent)
+		{
+			gchar *run = run_text ("intel geo on --accept-terms");
+
 			fs_cli_hint ("read `stockfw intel geo terms', then accept "
-			             "them: " FS_CLI_SUDO "stockfw intel geo on "
-			             "--accept-terms");
+			             "them: %s", run);
+			g_free (run);
+		}
 		goto out;
 	}
 	if (!save_config (config, &status))
@@ -3379,3 +3485,99 @@ fs_cli_cmd_intel (gint argc, gchar **argv)
 	fs_cli_hint ("see `stockfw help intel'");
 	return FS_EXIT_USAGE;
 }
+
+/* ------------------------------------------------------- the commands */
+
+static const FsCliOption intel_opts[] = {
+	{ "--direction",       TRUE,  NULL       },
+	{ "--dir",             TRUE,  NULL       },
+	{ "--accept-terms",    FALSE, NULL       },
+	{ "--format",          TRUE,  "add-feed" },
+	{ "--feed",            TRUE,  "update"   },
+	{ "--now",             FALSE, "update"   },
+	{ "--accept-shrink",   FALSE, "update"   },
+	{ "--accept-coverage", FALSE, "update"   },
+	{ "--no-apply",        FALSE, NULL       },
+	{ "--dry-run",         FALSE, "apply"    },
+	{ "-n",                FALSE, "apply"    },
+	{ "--name",            TRUE,  NULL       },
+	{ "--max",             TRUE,  "geo"      },
+	{ NULL, FALSE, NULL }
+};
+
+const FsCliCommandDef fs_cli_intel_commands[] = {
+	{ "intel", fs_cli_cmd_intel,
+"Usage: stockfw intel [status]                     State, and the lists turned on\n"
+"       stockfw intel feeds                        Every feed: on/off, licence,\n"
+"                                                  credit, entries, last update\n"
+"       stockfw intel terms FEED                   What turning FEED on means\n"
+"       stockfw intel enable ID [--direction D] [--accept-terms]\n"
+"       stockfw intel disable ID\n"
+"       stockfw intel on | off                     The master switch\n"
+"       stockfw intel add-feed NAME URL [--format F] [--direction D]\n"
+"       stockfw intel proxy [URL|none]             The download proxy\n"
+"       stockfw intel update [--feed ID] [--now] [--accept-shrink]\n"
+"                            [--accept-coverage] [--no-apply]\n"
+"       stockfw intel apply [--dry-run]            Load the lists into the kernel\n"
+"       stockfw intel clear                        Remove them from the kernel\n"
+"       stockfw intel import FILE --name NAME [--direction D]\n"
+"       stockfw intel lists | list show [ID]       Your own lists, one's ranges\n"
+"       stockfw intel remove ID                    A local list or custom feed\n"
+"       stockfw intel except | unexcept ADDRESS...  Never block / block again\n"
+"       stockfw intel exceptions\n"
+"       stockfw intel lookup ADDRESS               Which lists hold it; blocked?\n"
+"       stockfw intel geo [status]                 Blocking by country or network\n"
+"       stockfw intel geo terms | on [--accept-terms] | off\n"
+"       stockfw intel geo update [--no-apply]      Download the location database\n"
+"       stockfw intel geo search TEXT [--max N]    Country codes, AS numbers\n"
+"       stockfw intel geo add country|asn VALUE... [--dir D] [--name NAME]\n"
+"       stockfw intel geo list | remove ID         The country and network rules\n"
+"\n"
+"Blocklists of addresses known for attacks, botnets or abuse, blocked\n"
+"in the kernel before the policy sees a packet (Linux, nftables).  Every\n"
+"feed is off until you turn it on and accept its terms: `intel terms'\n"
+"says which host it is downloaded from, how often, what that host\n"
+"learns, and its licence.  With nothing turned on StockFW makes no\n"
+"network request at all.\n"
+"\n"
+"D is in (stops them connecting to you), out (stops you connecting to\n"
+"them) or both.  `intel list add' and `intel list remove' are the same\n"
+"as import and remove.  Changes to the configuration are saved and take\n"
+"effect with `intel apply'; `update' downloads the feeds that are due\n"
+"(--now: all of them) and, when the lists are enforced, the firewall\n"
+"runs and audit-only mode is off, enforces the new copies.  A copy that\n"
+"shrank to almost nothing or rolled back to an older date is refused\n"
+"unless --accept-shrink; one whose coverage jumped needs\n"
+"--accept-coverage.  Addresses this computer needs (its own network,\n"
+"gateways, DNS servers, SSH sessions, the download servers) are never\n"
+"blocked, and `apply' says which ones a list named.\n"
+"\n"
+"Downloads connect to each feed's host directly; behind a proxy, set it\n"
+"with `intel proxy http://HOST:PORT' ([intel] proxy= in intel.conf).\n"
+"A proxy with a user name or password is refused: curl's command line\n"
+"is readable by every local user.\n"
+"\n"
+"`intel geo' blocks addresses by the country their range is registered\n"
+"in (not where a computer is) or by the network that owns them (its AS\n"
+"number), from IPFire's signed location database (location.ipfire.org,\n"
+"about 6 MB).  It is off until `geo on --accept-terms'; `geo terms' says\n"
+"what turning it on means and the licence the file declares.  Then\n"
+"`intel update' downloads the database at most once a day, `geo update'\n"
+"at once.  A rule holds countries (DE, or DE,FR) or AS numbers (13335 or\n"
+"AS13335); D defaults to both.  `intel enable' and `intel disable' turn\n"
+"a rule on and off by its id; `apply' puts the rules in force with the\n"
+"lists.  Rules that cover anycast networks may block services outside\n"
+"what you chose; `apply' notes how many.  `intel lookup' shows where an\n"
+"address is registered and which network owns it.  Linux only: on\n"
+"Windows 1.0.7 does not have it.\n"
+"\n"
+"Exit status: 0 done, 1 failed (update: a feed or the location database\n"
+"failed or was refused; geo search: no database yet; apply: the kernel\n"
+"refused; geo on Windows), 2 usage (unknown id, terms not accepted),\n"
+"3 needs root, 5 lookup: a list blocks the address.  Audit-only mode\n"
+"holds `apply' (exit 0, nothing loaded).  `clear', like `stockfw stop',\n"
+"is not held.  `apply' and `clear' need root.\n",
+	  intel_opts, NULL },
+
+	{ NULL, NULL, NULL, NULL, NULL }
+};

@@ -36,7 +36,7 @@
 
 **Chapter 14: 1.0.7 Addendum** · 14.1 IPv6 on Linux: One Policy, Two Families, One Rollback · 14.2 Windows Rule Translation: Protocols, Port Specs and Sides · 14.3 The What-If Engine: Two Models, Every Case, Verified Fixes · 14.4 Help, About, and the Preferences Redesign · 14.5 The Copilot: Fixed Rules, Shown Evidence, Verified Fixes · 14.6 Threat-Intel Blocklists on Linux and Windows, and Country and Network Blocking on Linux · 14.7 Events at Volume: Event Store, History on Disk, Windows Burst Capture · 14.8 Release Review: Where System Tools Come From, and the Dashboard Token · 14.9 Release Packaging: One Version, Real Documents, Runnable Installers · 14.10 Release Review: What StockFW Contacts, Credits, and One Test Runner · 14.11 Second Release Review: History While It Loads, the Dashboard's Launch Page, Credits and Packaging
 
-**Chapter 15: After 1.0.7 (unreleased)** · 15.1 Wayland and WSL: No Tray Icon, and Words the Window App Does Not Take
+**Chapter 15: After 1.0.7 (unreleased)** · 15.1 Wayland and WSL: No Tray Icon, and Words the Window App Does Not Take · 15.2 The command line made truthful
 
 ---
 
@@ -1831,6 +1831,44 @@ The owner ran the 1.0.7 Linux tarball under WSL (Kali, WSLg) on 2026-11-03 and r
 **Tests and CI.** `tests/test-notray.sh` runs in `full-suite.sh` (Linux) and as its own CI step, which installs `libgtk-3-bin` for `broadwayd` and sets `STOCKFW_NOTRAY_REQUIRE=1` so a missing `broadwayd` fails instead of skipping. As root the script runs in a private network namespace; as a user the backend cannot touch the firewall. Its Broadway display binds HTTP to 127.0.0.1 only, and counts as up only once broadwayd's own socket is listening and broadwayd still runs: broadwayd prints "Listening on" before it binds its HTTP port and exits when that port is taken, so the first version took a dead display for a live one when two runs met (review). **[Verified]** Teeth: against the 1.0.7 binary the test fails 16 checks (the word reaches GApplication or a running copy; the critical kills the background start, exit 133; the Preferences switches stay live).
 
 **Not verified.** No real Wayland compositor or WSLg session ran the fixed build here; Broadway exercises the same GTK code path (a GDK display that is not X11), and the `sudo` case rests on sudo's documented `env_keep` list and a GTK probe run with that environment. The Windows build of the changed files was compiled (`-fsyntax-only` against the MSYS2 headers), not run; the Windows CI job runs it.
+
+### 15.2 The command line made truthful
+
+The `stockfw` tool (13.5) said things that were not so: a value that started with a dash was read as an option, a mistyped option became part of a question, a hint told you to run `sudo stockfw` where `sudo` would not find it, and text from a log or a comment went to the terminal raw. This section is filled one work package at a time.
+
+#### 15.2.1 Foundations (WP-A)
+
+**One table per file.** Each command file (`fs-cli-policy.c`, `fs-cli-status.c`, `fs-cli-events.c`, `fs-cli-intel.c`, `fs-dashboard.c`, and the empty `fs-cli-views.c` for 15.2.3) has its own NULL-ended table of commands: name, function, help text, and the options it takes, each marked "takes a value" or not. `fs-cli-main.c` joins the tables for lookup, `help` and did-you-mean. `fs-cli-cmds.c` keeps only shared helpers, and the output helpers moved to the new `fs-cli-out.c`. All new files are in `CMakeLists.txt` from the start, so the later packages only add code. `fs-cli-status.c` has the `FsCliStatusSnapshot` struct and a stub `fs_cli_status_snapshot()` that 15.2.3 fills.
+
+**The parser.** Global flags (`--json`, `--plain`/`-H`, `--full`/`-l`, `--color[=WHEN]`, `--no-color`, `-q`, `-h`, `-V`) are read anywhere on the line, with three exceptions. The word after an option that takes a value is that value, so `policy add ... --comment -h` saves the comment `-h` and `--comment --json` saves `--json`. Everything after `--` is a plain word: `policy add outbound-deny-to -- -x` gives "not a valid address", not "unknown option". A dash word before the command is an unknown option (`--frob status`), not an unknown command. A command's own option is taken with `fs_cli_take_opt`, which also reads `--opt=value` and says "`--kind needs a value`" when the value is missing. An option a command does not know is refused with exit 2; `simulate --assume-runing ...` used to fold the typo into the question and now says "did you mean --assume-running?". Unknown commands and options get one suggestion when exactly one name is within two edits (Damerau-Levenshtein): `stauts` → "did you mean `stockfw status'?". `help help`, `help version` and `help intel geo` work.
+
+**Output.** Text from outside (log fields, comments, device names, rule summaries) goes through `fs_cli_out_safe`: C0 controls, DEL and bytes that are not UTF-8 become `\xNN`, C1 controls and bidi controls (U+200E/F, U+202A–U+202E, U+2066–U+2069) become `\uNNNN`. A backslash is left as it is, so escaping twice changes nothing. Tables fit the terminal only when stdout is a terminal (`TIOCGWINSZ`, then `COLUMNS`); a pipe or a file gets every character. The flexible column shrinks first, then the widest, never below its header. `--plain` prints tab-separated rows with no header and no colour, for `cut` and `awk`. `--full` turns cutting off. Colour on stdout follows stdout alone (`events 2>/dev/null` on a terminal is coloured); colour in messages on stderr follows stderr. Symbols (●, ↓, →, …, ·) fall back to ASCII when the locale is not UTF-8. `-q` leaves out hints, notes and legends; `-q simulate` prints only the verdict word, for `if [ "$(stockfw -q simulate ...)" = BLOCKED ]`. IPv6 addresses in event rows are shown in short form. `stockfw version` prints one line: `stockfw 1.0.7 · Linux (nftables)`.
+
+**Hints that work.** A hint that needs root now names this program by its full path (from `/proc/self/exe`) and repeats the words you typed: `sudo /home/me/StockFW/cli/stockfw apply`, not `sudo stockfw apply`, which `sudo`'s `secure_path` may not find (12.11). As root the hint leaves out `sudo`. The intel help and legends are wrapped to 80 columns.
+
+**Where the source and the plan differ.** (1) The plan has `fs_cli_term_width` fall back to `$COLUMNS` when stdout is not a terminal; its own test wants a pipe never cut, so a pipe gets width 0 (no fitting) and `COLUMNS` counts only on a terminal. (2) The plan has `fs_cli_sudo_hint` return an empty string as root; it returns the full path without `sudo`, which is still a command you can run. (3) Sentinel rows in the what-if helper are left to 15.2.3. (4) `fs_cli.utc` exists but `--utc` is not yet a flag; 15.2.3 and 15.2.4 add it. (5) An option's `sub` field is not used to decide whether it takes a value: within one command an option name always takes one or never does. (6) Guidance printed on stdout by `intel` (not hints) still reads `sudo stockfw ...`.
+
+**[Verified]** `tests/test-cli.sh` (the WP-A block: 24 new checks, 153 in all, as root with checks that drop to uid 65534) and `tests/test-core.sh` (three new guards: no bare `` `sudo stockfw `` hint in `src/cli`, only `fs-cli-main.c` handles `--`, and every `fs_cli_take_opt` option literal is in its file's table). Teeth: 22 controls were each taken out one at a time, the tool rebuilt and the suite run; every one made its check fail. They were: the value-option rule, `--` making the rest plain words, `simulate` refusing unknown options, did-you-mean, `help help`, "needs a value", no width for a pipe, the terminal width on a terminal, the ASCII symbols, the C0 and the bidi escaping, the full-path hint, `-q simulate`, colour following stdout, `--color=always`, `--plain`, short IPv6, an unknown option before the command, the version line, and the three guards.
+
+#### 15.2.2 Policy (WP-B)
+
+(filled by its package)
+
+#### 15.2.3 Status, audit and Sentinel (WP-C)
+
+(filled by its package)
+
+#### 15.2.4 Events, sockets and interfaces (WP-D)
+
+(filled by its package)
+
+#### 15.2.5 The live event line (WP-F)
+
+(filled by its package)
+
+#### 15.2.6 Completion, man page and the no-GTK build (WP-E)
+
+(filled by its package)
 
 ---
 

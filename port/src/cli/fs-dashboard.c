@@ -1171,18 +1171,31 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 	guint sample_id;
 
 	for (gint i = 1; i < argc; i++) {
-		if ((strcmp (argv[i], "--port") == 0 || strcmp (argv[i], "-p") == 0)
-		    && i + 1 < argc) {
-			gchar *end = NULL;
-			guint64 p = g_ascii_strtoull (argv[++i], &end, 10);
+		const gchar *v = NULL;
+		gint bad = FS_EXIT_OK;
 
-			if (end == NULL || *end != '\0' || p == 0 || p > 65535) {
+		if (fs_cli_take_opt (argc, argv, &i, "--port", &v, &bad) ||
+		    fs_cli_take_opt (argc, argv, &i, "-p", &v, &bad)) {
+			gchar *end = NULL;
+			guint64 p;
+
+			if (v == NULL)
+				return bad;
+			p = g_ascii_strtoull (v, &end, 10);
+			if (!g_ascii_isdigit (*v) || end == NULL || *end != '\0' ||
+			    p == 0 || p > 65535) {
 				fs_cli_error ("--port wants a number from 1 to 65535");
 				return FS_EXIT_USAGE;
 			}
 			want_port = (guint16) p;
-		} else if (strcmp (argv[i], "--no-open") == 0) {
+		} else if (fs_cli_is_option_at (argv, i) &&
+		           strcmp (argv[i], "--no-open") == 0) {
 			no_open = TRUE;
+		} else if (fs_cli_is_option_at (argv, i)) {
+			fs_cli_unknown_option ("dashboard", argv[i]);
+			fs_cli_hint ("there is deliberately no --bind: the dashboard "
+			             "only ever listens on 127.0.0.1");
+			return FS_EXIT_USAGE;
 		} else {
 			fs_cli_error ("unexpected argument: %s", argv[i]);
 			fs_cli_hint ("there is deliberately no --bind: the dashboard "
@@ -1263,9 +1276,15 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 		        "Listening", dash.port);
 		printf ("  %-11s %s\n", "Events",
 		        dash.monitor_note != NULL ? dash.monitor_note : "-");
-		if (!dash.monitoring && geteuid () != 0)
-			printf ("  %-11s %srun `sudo stockfw dashboard' for live "
-			        "events%s\n", "", fs_cli_dim (), fs_cli_reset ());
+		if (!dash.monitoring && geteuid () != 0) {
+			gchar *args = fs_cli_user_args ();
+			gchar *again = fs_cli_sudo_hint (args);
+
+			printf ("  %-11s %srun `%s' for live events%s\n", "",
+			        fs_cli_dim (), again, fs_cli_reset ());
+			g_free (again);
+			g_free (args);
+		}
 	}
 
 	if (!no_open && !open_browser (&dash, url) && !fs_cli.json) {
@@ -1323,3 +1342,31 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 
 	return FS_EXIT_OK;
 }
+
+/* ------------------------------------------------------- the commands */
+
+static const FsCliOption dashboard_opts[] = {
+	{ "--port",    TRUE,  NULL },
+	{ "-p",        TRUE,  NULL },
+	{ "--no-open", FALSE, NULL },
+	{ NULL, FALSE, NULL }
+};
+
+const FsCliCommandDef fs_cli_dashboard_commands[] = {
+	{ "dashboard", fs_cli_cmd_dashboard,
+"Usage: stockfw dashboard [--port N] [--no-open] [--json]\n"
+"\n"
+"Serves a live dashboard -- status, the Policy activity and Network I/O\n"
+"graphs, recent events, connections, the policy, the threat-intel\n"
+"blocklists and the what-if simulator -- and opens it in your browser.\n"
+"\n"
+"Security: it listens on 127.0.0.1 only, every API call needs a token\n"
+"generated for this run (it is in the URL printed at start), requests\n"
+"for any other Host are refused, and the API is read-only: changing\n"
+"the firewall stays with `stockfw apply' and the desktop app.  Under\n"
+"sudo the browser is not started as root; open the printed URL\n"
+"yourself.  Stop it with Ctrl-C.\n",
+	  dashboard_opts, NULL },
+
+	{ NULL, NULL, NULL, NULL, NULL }
+};

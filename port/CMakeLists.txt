@@ -268,11 +268,21 @@ if(FS_PLATFORM STREQUAL "linux")
   set_property(DIRECTORY APPEND PROPERTY
                CMAKE_CONFIGURE_DEPENDS src/cli/dashboard.html)
 
-  add_executable(stockfw
+  # One file per group of commands, each exporting its own command
+  # table (fs-cli.h); fs-cli-main.c joins them.
+  set(FS_CLI_SOURCES
     src/cli/fs-cli-main.c
+    src/cli/fs-cli-out.c
     src/cli/fs-cli-cmds.c
+    src/cli/fs-cli-policy.c
+    src/cli/fs-cli-status.c
+    src/cli/fs-cli-events.c
+    src/cli/fs-cli-views.c
     src/cli/fs-cli-intel.c
     src/cli/fs-dashboard.c
+  )
+  add_executable(stockfw
+    ${FS_CLI_SOURCES}
     ${FS_BACKEND_SOURCES}
   )
   target_include_directories(stockfw PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
@@ -698,10 +708,7 @@ if(FS_PLATFORM STREQUAL "linux")
   # first on PATH is the one run as root.  Never installed:
   # the `stockfw' that ships has no test hook.
   add_executable(stockfw-intel-test EXCLUDE_FROM_ALL
-    src/cli/fs-cli-main.c
-    src/cli/fs-cli-cmds.c
-    src/cli/fs-cli-intel.c
-    src/cli/fs-dashboard.c
+    ${FS_CLI_SOURCES}
     src/core/fs-fetch.c
     src/core/fs-geodb.c
     ${FS_TOOLPATH_TEST_SOURCE}

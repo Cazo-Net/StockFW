@@ -1,5 +1,8 @@
-/*---[ fs-cli-cmds.c ]---------------------------------------------------
- * The `stockfw' commands, except the dashboard (fs-dashboard.c).
+/*---[ fs-cli-cmds.c ]------------------------------------------------------
+ * Helpers the `stockfw' commands share: rule kinds, the policy,
+ * What-If, the kernel log, event rows.  The commands themselves live in
+ * fs-cli-policy.c, fs-cli-status.c, fs-cli-events.c, fs-cli-views.c,
+ * fs-cli-intel.c and fs-dashboard.c.
  *--------------------------------------------------------------------*/
 #include "cli/fs-cli.h"
 #include "core/fs-apply.h"
@@ -19,8 +22,13 @@
 #include "core/fs-util.h"
 
 #include <glib-unix.h>
+#include <glib/gstdio.h>
+#include <gio/gio.h>
 #include <errno.h>
 #include <fcntl.h>
+#ifndef G_OS_WIN32
+#include <grp.h>
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -45,6 +53,12 @@ fs_cli_kind_name (FsRuleKind kind)
 	return (kind >= 0 && kind < FS_RULE_N_KINDS) ? kind_names[kind] : "?";
 }
 
+const gchar * const *
+fs_cli_kind_names (void)
+{
+	return kind_names;
+}
+
 gboolean
 fs_cli_kind_parse (const gchar *name, FsRuleKind *kind)
 {
@@ -56,16 +70,6 @@ fs_cli_kind_parse (const gchar *name, FsRuleKind *kind)
 	}
 
 	return FALSE;
-}
-
-/* [ kind_field_count ] -- fields before the comment, per kind. */
-static gint
-kind_field_count (FsRuleKind kind)
-{
-	gint n = 0;
-
-	fs_rule_columns (kind, &n);
-	return n - 1;
 }
 
 gchar *
@@ -114,24 +118,24 @@ fs_cli_load_policy (gboolean *on_disk, gint *malformed)
 gint
 fs_cli_need_root (const gchar *what)
 {
-	fs_cli_error ("%s needs root privileges", what);
-	fs_cli_hint (FS_CLI_RIGHTS ", e.g. `" FS_CLI_SUDO "stockfw %s'",
-	             what);
-	return FS_EXIT_NEED_ROOT;
-}
+	/* The user's own command again, with sudo and this program's full
+	 * path: a bare program name may find another copy, or none, on
+	 * root's PATH. */
+	gchar *args = fs_cli_user_args ();
+	gchar *again = fs_cli_sudo_hint (*args != '\0' ? args : what);
 
-/* [ need_root ] -- the uniform refusal for privileged commands. */
-static gint
-need_root (const gchar *what)
-{
-	return fs_cli_need_root (what);
+	fs_cli_error ("%s needs root privileges", what);
+	fs_cli_hint (FS_CLI_RIGHTS ", e.g. `%s'", again);
+	g_free (again);
+	g_free (args);
+	return FS_EXIT_NEED_ROOT;
 }
 
 /* [ backend_context ]
  * The Linux backend builds iptables rules from the policy and the
  * Advanced Options settings; hand it both, as the app does at start. */
-static FsSettings *
-backend_context (FsPolicy *policy)
+FsSettings *
+fs_cli_backend_context (FsPolicy *policy)
 {
 	FsSettings *settings = fs_settings_new ();
 
@@ -141,8 +145,8 @@ backend_context (FsPolicy *policy)
 	return settings;
 }
 
-static guint
-policy_total (const FsPolicy *policy)
+guint
+fs_cli_policy_total (const FsPolicy *policy)
 {
 	guint total = 0;
 
@@ -153,8 +157,8 @@ policy_total (const FsPolicy *policy)
 }
 
 /* [ hit_row_json ] -- one event as a JSON object. */
-static void
-hit_row_json (GString *out, const FsHit *hit)
+void
+fs_cli_hit_row_json (GString *out, const FsHit *hit)
 {
 	gchar *service = fs_hit_service_name (hit);
 
@@ -175,8 +179,8 @@ hit_row_json (GString *out, const FsHit *hit)
 }
 
 /* [ local_time ] -- an event's ISO UTC stamp in local time. */
-static gchar *
-local_time (const gchar *iso)
+gchar *
+fs_cli_local_time (const gchar *iso)
 {
 	GDateTime *utc, *local;
 	gchar *text;
@@ -188,6 +192,13 @@ local_time (const gchar *iso)
 	if (utc == NULL)
 		return g_strdup (iso);
 
+	if (fs_cli.utc) {
+		text = fs_cli_time_text (g_date_time_to_unix (utc),
+		                         FS_CLI_TIME_ISO);
+		g_date_time_unref (utc);
+		return text;
+	}
+
 	local = g_date_time_to_local (utc);
 	text  = g_date_time_format (local, "%b %d %H:%M:%S");
 	g_date_time_unref (local);
@@ -197,8 +208,8 @@ local_time (const gchar *iso)
 }
 
 /* [ append_lines_json ] -- "a\nb" as ["a","b"]; NULL as []. */
-static void
-append_lines_json (GString *out, const gchar *text)
+void
+fs_cli_append_lines_json (GString *out, const gchar *text)
 {
 	gchar **lines = g_strsplit (text != NULL ? text : "", "\n", -1);
 	gboolean first = TRUE;
@@ -217,1031 +228,232 @@ append_lines_json (GString *out, const gchar *text)
 }
 
 /* [ print_notes ] -- an apply's notes, one amber line each. */
-static void
-print_notes (const gchar *notes)
+void
+fs_cli_print_notes (const gchar *notes)
 {
 	gchar **lines;
 
-	if (notes == NULL)
+	/* -q: no notes (cli-plan.md section 4, A1). */
+	if (notes == NULL || fs_cli.quiet)
 		return;
 
 	lines = g_strsplit (notes, "\n", -1);
-	for (gint i = 0; lines[i] != NULL; i++)
-		if (*lines[i] != '\0')
-			printf ("%snote:%s %s\n", fs_cli_amber (), fs_cli_reset (),
-			        lines[i]);
+	for (gint i = 0; lines[i] != NULL; i++) {
+		gchar *safe;
+
+		if (*lines[i] == '\0')
+			continue;
+		safe = fs_cli_out_safe (lines[i]);
+		printf ("%snote:%s %s\n", fs_cli_amber (), fs_cli_reset (), safe);
+		g_free (safe);
+	}
 	g_strfreev (lines);
 }
 
-/* -------------------------------------------------------------- status */
+/* ------------------------------------------------------- policy state */
 
-gint
-fs_cli_cmd_status (gint argc, gchar **argv)
+const gchar *
+fs_cli_live_name (FsCliLive live)
 {
-	const FsBackend *backend = fs_backend ();
-	gboolean root = (geteuid () == 0);
-	gboolean on_disk;
-	gint malformed;
-	FsPolicy *policy;
-	FsFirewallState state = FS_FW_NONE;
-	const gchar *hold = fs_apply_hold_reason ();
-	GList *stats = NULL, *conns = NULL;
-	const gchar *state_word;
-	FsIpv6State ipv6;
-	gchar *ipv6_detail = NULL;
-
-	if (argc > 1) {
-		fs_cli_error ("status takes no arguments");
-		return FS_EXIT_USAGE;
+	switch (live) {
+	case FS_CLI_LIVE_SAME:       return "same";
+	case FS_CLI_LIVE_PENDING:    return "pending";
+	case FS_CLI_LIVE_NO_JOURNAL: return "no_journal";
+	case FS_CLI_LIVE_STOPPED:    return "stopped";
+	default:                     return "unknown";
 	}
-
-	policy = fs_cli_load_policy (&on_disk, &malformed);
-
-	/* Reading netfilter needs CAP_NET_ADMIN.  Without it the backend
-	 * would answer "stopped" for a firewall it could not see; say
-	 * "unknown" instead. */
-	if (root)
-		state = backend->get_state ();
-
-	switch (state) {
-	case FS_FW_RUNNING: state_word = "running"; break;
-	case FS_FW_STOPPED: state_word = "stopped"; break;
-	case FS_FW_LOCKED:  state_word = "locked";  break;
-	default:            state_word = "unknown"; break;
-	}
-
-	if (backend->list_interface_stats != NULL)
-		stats = backend->list_interface_stats ();
-	if (backend->list_connections != NULL)
-		conns = backend->list_connections ();
-
-	/* IPv6: Linux answers (1.0.7); a backend without the slot covers
-	 * both families with every rule (Windows Firewall). */
-	if (backend->ipv6_state != NULL) {
-		ipv6 = backend->ipv6_state (&ipv6_detail);
-	} else {
-		ipv6 = FS_IPV6_FILTERED;
-		ipv6_detail = g_strdup ("Windows Firewall applies every rule to "
-		                        "IPv4 and IPv6.");
-	}
-
-	if (fs_cli.json) {
-		GString *out = g_string_new ("{");
-
-		fs_json_kv_str (out, "version", FS_VERSION);       g_string_append_c (out, ',');
-		fs_json_kv_str (out, "backend", backend->name);   g_string_append_c (out, ',');
-		fs_json_kv_str (out, "state", state_word);        g_string_append_c (out, ',');
-		fs_json_key (out, "ipv6");
-		g_string_append_c (out, '{');
-		fs_json_kv_str (out, "state", fs_ipv6_state_to_string (ipv6));  g_string_append_c (out, ',');
-		fs_json_kv_str (out, "detail", ipv6_detail);
-		g_string_append (out, "},");
-		fs_json_kv_bool (out, "root", root);              g_string_append_c (out, ',');
-		fs_json_kv_str (out, "rules_dir", fs_util_rules_dir ()); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "policy_saved", on_disk);   g_string_append_c (out, ',');
-		fs_json_kv_int (out, "malformed_rules", malformed); g_string_append_c (out, ',');
-		fs_json_key (out, "rules");
-		g_string_append_c (out, '{');
-		for (gint k = 0; k < FS_RULE_N_KINDS; k++) {
-			if (k > 0)
-				g_string_append_c (out, ',');
-			fs_json_kv_uint (out, fs_cli_kind_name ((FsRuleKind) k),
-			                 fs_policy_count (policy, (FsRuleKind) k));
-		}
-		g_string_append (out, "},");
-		fs_json_kv_str (out, "apply_hold", hold);         g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "monitoring_available", root); g_string_append_c (out, ',');
-		fs_json_kv_uint (out, "connections", g_list_length (conns));
-		g_string_append_c (out, ',');
-		/* Threat intel: the state the kernel is in, never just the
-		 * configuration (design 6.6). */
-		fs_json_key (out, "intel");
-		fs_cli_intel_json (out, FALSE);
-		g_string_append (out, ",\"interfaces\":[");
-		for (GList *l = stats; l != NULL; l = l->next) {
-			FsIfaceStat *s = l->data;
-
-			if (l != stats)
-				g_string_append_c (out, ',');
-			g_string_append_c (out, '{');
-			fs_json_kv_str (out, "device", s->device);   g_string_append_c (out, ',');
-			fs_json_kv_str (out, "type", s->kind);       g_string_append_c (out, ',');
-			fs_json_kv_str (out, "ip", s->ip);           g_string_append_c (out, ',');
-			fs_json_kv_bool (out, "up", s->up);          g_string_append_c (out, ',');
-			fs_json_kv_uint (out, "received", s->received); g_string_append_c (out, ',');
-			fs_json_kv_uint (out, "sent", s->sent);
-			g_string_append_c (out, '}');
-		}
-		g_string_append (out, "]}");
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-	} else {
-		const gchar *dot, *color;
-
-		if (state == FS_FW_RUNNING) {
-			dot = "●"; color = fs_cli_green ();
-		} else if (state == FS_FW_STOPPED) {
-			dot = "○"; color = fs_cli_red ();
-		} else {
-			dot = "?"; color = fs_cli_amber ();
-		}
-
-		printf ("%sStockFW %s%s  %s%s%s\n\n", fs_cli_bold (), FS_VERSION,
-		        fs_cli_reset (), fs_cli_dim (), backend->display_name,
-		        fs_cli_reset ());
-
-		printf ("  %-12s %s%s %s%s", "Firewall", color, dot, state_word,
-		        fs_cli_reset ());
-		if (!root)
-			printf ("%s  (reading the firewall needs root)%s",
-			        fs_cli_dim (), fs_cli_reset ());
-		printf ("\n");
-
-		/* IPv6 gets its own line: "running" says nothing about a
-		 * family that passes unfiltered. */
-		{
-			const gchar *c6 = ipv6 == FS_IPV6_FILTERED ? fs_cli_green ()
-			                : ipv6 == FS_IPV6_UNFILTERED ? fs_cli_amber ()
-			                : fs_cli_dim ();
-			const gchar *w6 = ipv6 == FS_IPV6_FILTERED ? "filtered"
-			                : ipv6 == FS_IPV6_UNFILTERED ? "not filtered"
-			                : ipv6 == FS_IPV6_ABSENT ? "none on this system"
-			                : "unknown";
-
-			printf ("  %-12s %s%s%s", "IPv6", c6, w6, fs_cli_reset ());
-			if (ipv6_detail != NULL && ipv6 != FS_IPV6_FILTERED &&
-			    ipv6 != FS_IPV6_ABSENT)
-				printf ("%s  (%s)%s", fs_cli_dim (), ipv6_detail,
-				        fs_cli_reset ());
-			printf ("\n");
-		}
-
-		if (on_disk) {
-			printf ("  %-12s %u rule%s in %s\n", "Policy",
-			        policy_total (policy),
-			        policy_total (policy) == 1 ? "" : "s",
-			        fs_util_rules_dir ());
-			for (gint k = 0; k < FS_RULE_N_KINDS; k++) {
-				guint n = fs_policy_count (policy, (FsRuleKind) k);
-
-				if (n > 0)
-					printf ("  %-12s %s%3u  %s%s\n", "", fs_cli_dim (), n,
-					        fs_cli_kind_name ((FsRuleKind) k),
-					        fs_cli_reset ());
-			}
-		} else {
-			printf ("  %-12s none saved yet in %s\n", "Policy",
-			        fs_util_rules_dir ());
-		}
-
-		if (malformed > 0)
-			printf ("  %-12s %s%d malformed rule%s skipped%s\n", "",
-			        fs_cli_amber (), malformed, malformed == 1 ? "" : "s",
-			        fs_cli_reset ());
-
-		fs_cli_intel_status_line ();
-
-		printf ("  %-12s %s\n", "Apply mode",
-		        hold != NULL ? "audit-only: applies are recorded, the "
-		                       "firewall is left untouched"
-		                     : "live");
-
-		printf ("  %-12s %s\n", "Monitoring",
-		        root ? "available (stockfw events -f, stockfw dashboard)"
-		             : "needs root to read the kernel log");
-
-		for (GList *l = stats; l != NULL; l = l->next) {
-			FsIfaceStat *s = l->data;
-			gchar *rx = fs_cli_format_bytes (s->received);
-			gchar *tx = fs_cli_format_bytes (s->sent);
-
-			printf ("  %-12s %-10s %-15s ↓ %s  ↑ %s%s\n",
-			        l == stats ? "Adapters" : "", s->device,
-			        s->ip ? s->ip : "-", rx, tx,
-			        s->up ? "" : "  (down)");
-			g_free (rx);
-			g_free (tx);
-		}
-
-		printf ("  %-12s %u active\n", "Connections", g_list_length (conns));
-	}
-
-	g_list_free_full (stats, (GDestroyNotify) fs_iface_stat_free);
-	g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
-	g_free (ipv6_detail);
-	fs_policy_free (policy);
-
-	return FS_EXIT_OK;
 }
 
-/* -------------------------------------------------------------- policy */
-
-static gint
-policy_list (gint argc, gchar **argv)
+FsCliLive
+fs_cli_policy_state (const FsPolicy *saved, FsPolicy **applied_out,
+                     gboolean *settings_pending)
 {
-	FsRuleKind only = FS_RULE_N_KINDS;
-	gboolean on_disk;
-	gint malformed;
-	FsPolicy *policy;
-	gboolean names = (fs_backend ()->fw_honors & FS_FWHON_HOST_NAMES) != 0;
+	FsPolicy *applied = fs_policy_new ();
+	GError *error = NULL;
+	FsCliLive live;
 
-	for (gint i = 0; i < argc; i++) {
-		if (strcmp (argv[i], "--kind") == 0 && i + 1 < argc) {
-			if (!fs_cli_kind_parse (argv[++i], &only)) {
-				fs_cli_error ("unknown rule kind: %s", argv[i]);
-				fs_cli_hint ("see `stockfw help policy' for the kinds");
-				return FS_EXIT_USAGE;
-			}
-		} else {
-			fs_cli_error ("unexpected argument: %s", argv[i]);
-			return FS_EXIT_USAGE;
-		}
+	if (applied_out != NULL)
+		*applied_out = NULL;
+	if (settings_pending != NULL)
+		*settings_pending = FALSE;
+
+	if (!fs_apply_journal_load (applied, &error)) {
+		live = g_error_matches (error, FS_APPLY_ERROR,
+		                        FS_APPLY_ERR_NO_JOURNAL)
+		       ? FS_CLI_LIVE_NO_JOURNAL : FS_CLI_LIVE_UNKNOWN;
+		g_clear_error (&error);
+		fs_policy_free (applied);
+		return live;
 	}
 
-	policy = fs_cli_load_policy (&on_disk, &malformed);
+	if (settings_pending != NULL)
+		*settings_pending = fs_apply_settings_pending ();
 
-	if (fs_cli.json) {
-		GString *out = g_string_new ("{");
-
-		fs_json_kv_str (out, "rules_dir", fs_util_rules_dir ());
-		g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "saved", on_disk);
-		g_string_append (out, ",\"rules\":[");
-		{
-			gboolean first = TRUE;
-
-			for (gint k = 0; k < FS_RULE_N_KINDS; k++) {
-				GPtrArray *rules = policy->kinds[k];
-
-				if (only != FS_RULE_N_KINDS && (gint) only != k)
-					continue;
-
-				for (guint i = 0; i < rules->len; i++) {
-					FsRule *r = g_ptr_array_index (rules, i);
-
-					if (!first)
-						g_string_append_c (out, ',');
-					first = FALSE;
-					g_string_append_c (out, '{');
-					fs_json_kv_str (out, "kind", fs_cli_kind_name (r->kind)); g_string_append_c (out, ',');
-					fs_json_kv_uint (out, "number", i + 1);   g_string_append_c (out, ',');
-					fs_json_kv_str (out, "service", r->service); g_string_append_c (out, ',');
-					fs_json_kv_str (out, "port", r->port);    g_string_append_c (out, ',');
-					fs_json_kv_str (out, "target", r->target); g_string_append_c (out, ',');
-					fs_json_kv_str (out, "to", r->to);        g_string_append_c (out, ',');
-					fs_json_kv_str (out, "to_port", r->to_port); g_string_append_c (out, ',');
-					fs_json_kv_str (out, "comment", r->comment);
-					g_string_append_c (out, ',');
-					{
-						gchar *why = NULL;
-						FsFamily fam = fs_rule_coverage (r, names, &why);
-
-						fs_json_key (out, "covers");
-						g_string_append_c (out, '[');
-						if (fam & FS_FAMILY_IPV4)
-							g_string_append (out, "\"ipv4\"");
-						if (fam == FS_FAMILY_BOTH)
-							g_string_append_c (out, ',');
-						if (fam & FS_FAMILY_IPV6)
-							g_string_append (out, "\"ipv6\"");
-						g_string_append (out, "],");
-						fs_json_kv_str (out, "covers_why", why);
-						g_free (why);
-					}
-					g_string_append_c (out, '}');
-				}
-			}
-		}
-		g_string_append (out, "]}");
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-		fs_policy_free (policy);
-		return FS_EXIT_OK;
-	}
-
-	if (!on_disk) {
-		printf ("No policy saved yet in %s.\n", fs_util_rules_dir ());
-		printf ("%sAdd a rule with `stockfw policy add', or open the "
-		        "desktop app once to seed the defaults.%s\n",
-		        fs_cli_dim (), fs_cli_reset ());
-		fs_policy_free (policy);
-		return FS_EXIT_OK;
-	}
-
-	for (gint k = 0; k < FS_RULE_N_KINDS; k++) {
-		GPtrArray *rules = policy->kinds[k];
-
-		if (only != FS_RULE_N_KINDS && (gint) only != k)
-			continue;
-		if (only == FS_RULE_N_KINDS && rules->len == 0)
-			continue;
-
-		printf ("%s%s%s %s(%u)%s\n", fs_cli_bold (),
-		        fs_cli_kind_name ((FsRuleKind) k), fs_cli_reset (),
-		        fs_cli_dim (), rules->len, fs_cli_reset ());
-
-		for (guint i = 0; i < rules->len; i++) {
-			FsRule *r = g_ptr_array_index (rules, i);
-			gchar *summary = fs_cli_rule_summary (r);
-
-			FsFamily fam = fs_rule_coverage (r, names, NULL);
-
-			printf ("  %3u  %s", i + 1, summary);
-			printf ("  %s[%s]%s",
-			        fam == FS_FAMILY_NONE ? fs_cli_amber () : fs_cli_dim (),
-			        fam == FS_FAMILY_NONE ? "covers nothing"
-			                              : fs_util_families_label (fam),
-			        fs_cli_reset ());
-			if (r->comment != NULL && *r->comment != '\0')
-				printf ("  %s# %s%s", fs_cli_dim (), r->comment,
-				        fs_cli_reset ());
-			printf ("\n");
-			g_free (summary);
-		}
-
-		if (rules->len == 0)
-			printf ("  %s(none)%s\n", fs_cli_dim (), fs_cli_reset ());
-	}
-
-	if (policy_total (policy) == 0 && only == FS_RULE_N_KINDS)
-		printf ("The policy in %s is empty.\n", fs_util_rules_dir ());
-
-	if (malformed > 0)
-		fs_cli_hint ("%d malformed rule%s in %s %s skipped", malformed,
-		             malformed == 1 ? "" : "s", fs_util_rules_dir (),
-		             malformed == 1 ? "was" : "were");
-
-	fs_policy_free (policy);
-	return FS_EXIT_OK;
-}
-
-/* [ service_default_port ]
- * The port of a well-known service named case-insensitively ("ssh",
- * "HTTPS"), or NULL when the name is unknown or the service spans
- * several ports (Samba, NFS) -- those need an explicit port. */
-static const gchar *
-service_default_port (const gchar *name, const gchar **canonical)
-{
-	guint n = 0;
-	const FsService *list = fs_service_user_list (&n);
-
-	for (guint i = 0; i < n; i++) {
-		if (g_ascii_strcasecmp (list[i].name, name) != 0)
-			continue;
-
-		for (const gchar *p = list[i].ports; *p != '\0'; p++)
-			if (!g_ascii_isdigit (*p))
-				return NULL;
-
-		*canonical = list[i].name;
-		return list[i].ports;
-	}
-
-	return NULL;
-}
-
-static gint
-policy_add (gint argc, gchar **argv)
-{
-	FsRuleKind kind;
-	const gchar *comment = "";
-	gboolean both = FALSE;
-	GPtrArray *fields;
-	gint want;
-	FsRule *rule, *twin = NULL;
-	FsPolicy *policy;
-	gchar *csv, *summary;
-	gboolean ok, paired;
-
-	if (argc < 1 || !fs_cli_kind_parse (argv[0], &kind)) {
-		fs_cli_error (argc < 1 ? "policy add needs a rule kind"
-		                       : "unknown rule kind: %s",
-		              argc < 1 ? "" : argv[0]);
-		fs_cli_hint ("see `stockfw help policy' for the kinds and their "
-		             "fields");
-		return FS_EXIT_USAGE;
-	}
-
-	want = kind_field_count (kind);
-	fields = g_ptr_array_new ();
-
-	for (gint i = 1; i < argc; i++) {
-		if (strcmp (argv[i], "--comment") == 0 && i + 1 < argc)
-			comment = argv[++i];
-		else if (strcmp (argv[i], "--both") == 0)
-			both = TRUE;
-		else if (argv[i][0] == '-' && argv[i][1] == '-') {
-			/* Never let a mistyped option become a rule field. */
-			fs_cli_error ("unknown option for policy add: %s%s", argv[i],
-			              strcmp (argv[i], "--comment") == 0
-			              ? " (it needs a value)" : "");
-			fs_cli_hint ("options are --comment TEXT and --both");
-			g_ptr_array_unref (fields);
-			return FS_EXIT_USAGE;
-		} else
-			g_ptr_array_add (fields, argv[i]);
-	}
-
-	/* "policy add inbound-allow-service SSH": a known single-port
-	 * service needs no port, and a missing FOR means anyone -- the
-	 * same defaults the desktop app's Add dialog starts from. */
-	if (want == 3 && fields->len == 1 && kind != FS_RULE_INBOUND_FORWARD) {
-		const gchar *canonical = NULL;
-		const gchar *port = service_default_port (
-		                        g_ptr_array_index (fields, 0), &canonical);
-
-		if (port == NULL) {
-			fs_cli_error ("no single default port for \"%s\"",
-			              (const gchar *) g_ptr_array_index (fields, 0));
-			fs_cli_hint ("give the port too: stockfw policy add %s %s "
-			             "PORT Anyone", argv[0],
-			             (const gchar *) g_ptr_array_index (fields, 0));
-			g_ptr_array_unref (fields);
-			return FS_EXIT_USAGE;
-		}
-		g_ptr_array_index (fields, 0) = (gpointer) canonical;
-		g_ptr_array_add (fields, (gpointer) port);
-		g_ptr_array_add (fields, (gpointer) "Anyone");
-	}
-
-	if ((gint) fields->len != want) {
-		gint n = 0;
-		const gchar * const *labels = fs_rule_columns (kind, &n);
-		GString *expect = g_string_new (NULL);
-
-		for (gint c = 0; c < want; c++)
-			g_string_append_printf (expect, "%s<%s>",
-			                        c ? " " : "", labels[c]);
-
-		fs_cli_error ("%s takes %d field%s, got %u", argv[0], want,
-		              want == 1 ? "" : "s", fields->len);
-		fs_cli_hint ("stockfw policy add %s %s [--comment TEXT]",
-		             argv[0], expect->str);
-		g_string_free (expect, TRUE);
-		g_ptr_array_unref (fields);
-		return FS_EXIT_USAGE;
-	}
-
-	/* The policy files are comma-separated with no quoting: a comma
-	 * inside a field would silently become a field boundary. */
-	g_ptr_array_add (fields, (gpointer) comment);
-	for (guint i = 0; i < fields->len; i++) {
-		const gchar *f = g_ptr_array_index (fields, i);
-
-		if (strpbrk (f, ",\n\r") != NULL) {
-			fs_cli_error ("a field may not contain a comma or a line "
-			              "break: \"%s\"", f);
-			g_ptr_array_unref (fields);
-			return FS_EXIT_USAGE;
-		}
-	}
-
-	g_ptr_array_add (fields, NULL);
-	csv = g_strjoinv (",", (gchar **) fields->pdata);
-	g_ptr_array_unref (fields);
-
-	rule = fs_rule_from_csv (kind, csv);
-	g_free (csv);
-
-	if (rule == NULL || !fs_rule_fields_sane (rule)) {
-		fs_cli_error ("not a valid %s rule: check the host, port or "
-		              "range", fs_cli_kind_name (kind));
-		fs_cli_hint ("hosts are addresses, networks (10.0.0.0/8) or "
-		             "\"Anyone\"; ports are 1-65535 or a range 1024:2048");
-		fs_rule_free (rule);
-		return FS_EXIT_USAGE;
-	}
-
-	if (both) {
-		twin = fs_rule_counterpart (rule);
-		if (twin == NULL) {
-			fs_cli_error ("%s has no opposite-direction twin; --both "
-			              "only applies to allow rules",
-			              fs_cli_kind_name (kind));
-			fs_rule_free (rule);
-			return FS_EXIT_USAGE;
-		}
-	}
-
-	policy = fs_cli_load_policy (NULL, NULL);
-	summary = fs_cli_rule_summary (rule);
-
-	if (fs_policy_contains (policy, rule) &&
-	    (twin == NULL || fs_policy_contains (policy, twin))) {
-		if (!fs_cli.quiet)
-			printf ("Already in the policy: %s %s\n",
-			        fs_cli_kind_name (kind), summary);
-		fs_rule_free (rule);
-		fs_rule_free (twin);
-		g_free (summary);
-		fs_policy_free (policy);
-		return FS_EXIT_OK;
-	}
-
-	/* The policy stores copies (fs_policy_add), so the rules stay ours
-	 * to free whether the save works or not. */
-	paired = twin != NULL;
-	if (paired)
-		ok = fs_policy_add_persist_pair (policy, rule, twin);
+	/* Reading netfilter needs root; without it "stopped" is a guess. */
+	if (geteuid () == 0 && fs_backend ()->get_state != NULL &&
+	    fs_backend ()->get_state () == FS_FW_STOPPED)
+		live = FS_CLI_LIVE_STOPPED;
+	else if (saved != NULL && fs_whatif_policy_same (saved, applied))
+		live = FS_CLI_LIVE_SAME;
 	else
-		ok = fs_policy_add_persist (policy, rule);
-	fs_rule_free (rule);
-	fs_rule_free (twin);
+		live = FS_CLI_LIVE_PENDING;
 
-	if (!ok) {
-		fs_cli_error ("could not save the policy in %s",
-		              fs_util_rules_dir ());
-		if (geteuid () != 0 &&
-		    g_str_has_prefix (fs_util_rules_dir (), "/etc"))
-			fs_cli_hint ("%s is root's; run with sudo",
-			             fs_util_rules_dir ());
-		g_free (summary);
-		fs_policy_free (policy);
-		return FS_EXIT_FAILURE;
-	}
-
-	if (fs_cli.json) {
-		GString *out = g_string_new ("{");
-
-		fs_json_kv_bool (out, "added", TRUE);           g_string_append_c (out, ',');
-		fs_json_kv_str (out, "kind", fs_cli_kind_name (kind)); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "both_directions", paired); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "applied", FALSE);
-		g_string_append_c (out, '}');
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-	} else if (!fs_cli.quiet) {
-		printf ("%s+%s %s %s%s\n", fs_cli_green (), fs_cli_reset (),
-		        fs_cli_kind_name (kind), summary,
-		        paired ? "  (and its opposite direction)" : "");
-		printf ("%sSaved in %s.  Not live yet: run `sudo stockfw apply'.%s\n",
-		        fs_cli_dim (), fs_util_rules_dir (), fs_cli_reset ());
-	}
-
-	g_free (summary);
-	fs_policy_free (policy);
-	return FS_EXIT_OK;
+	if (applied_out != NULL)
+		*applied_out = applied;
+	else
+		fs_policy_free (applied);
+	return live;
 }
 
-static gint
-policy_remove (gint argc, gchar **argv)
+/* ------------------------------------------------------- references */
+
+gchar *
+fs_cli_rule_ref (FsRuleKind kind, guint number)
 {
-	FsRuleKind kind;
-	FsPolicy *policy;
+	return g_strdup_printf ("%s:%u", fs_cli_kind_name (kind), number);
+}
+
+/* [ ref_number ] -- a 1-based rule number, digits only. */
+static gboolean
+ref_number (const gchar *text, guint *number)
+{
 	gchar *end = NULL;
 	guint64 n;
-	FsRule *rule, *copy;
-	gchar *summary;
 
-	if (argc != 2 || !fs_cli_kind_parse (argv[0], &kind)) {
-		fs_cli_error ("usage: stockfw policy remove KIND N");
-		fs_cli_hint ("`stockfw policy list --kind KIND' shows the numbers");
-		return FS_EXIT_USAGE;
-	}
-
-	n = g_ascii_strtoull (argv[1], &end, 10);
-	policy = fs_cli_load_policy (NULL, NULL);
-
-	if (end == NULL || *end != '\0' || n == 0 ||
-	    n > policy->kinds[kind]->len) {
-		fs_cli_error ("%s has no rule number %s (it has %u)",
-		              fs_cli_kind_name (kind), argv[1],
-		              policy->kinds[kind]->len);
-		fs_policy_free (policy);
-		return FS_EXIT_USAGE;
-	}
-
-	rule = g_ptr_array_index (policy->kinds[kind], n - 1);
-	copy = fs_rule_copy (rule);
-	summary = fs_cli_rule_summary (copy);
-
-	if (!fs_policy_remove_persist (policy, copy)) {
-		fs_cli_error ("could not save the policy in %s",
-		              fs_util_rules_dir ());
-		fs_rule_free (copy);
-		g_free (summary);
-		fs_policy_free (policy);
-		return FS_EXIT_FAILURE;
-	}
-
-	if (fs_cli.json) {
-		GString *out = g_string_new ("{");
-
-		fs_json_kv_bool (out, "removed", TRUE); g_string_append_c (out, ',');
-		fs_json_kv_str (out, "kind", fs_cli_kind_name (kind));
-		g_string_append_c (out, '}');
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-	} else if (!fs_cli.quiet) {
-		printf ("%s-%s %s %s\n", fs_cli_red (), fs_cli_reset (),
-		        fs_cli_kind_name (kind), summary);
-		printf ("%sSaved.  Not live yet: run `sudo stockfw apply'.%s\n",
-		        fs_cli_dim (), fs_cli_reset ());
-	}
-
-	fs_rule_free (copy);
-	g_free (summary);
-	fs_policy_free (policy);
-	return FS_EXIT_OK;
+	if (text == NULL || !g_ascii_isdigit (*text))
+		return FALSE;
+	n = g_ascii_strtoull (text, &end, 10);
+	if (end == NULL || *end != '\0' || n == 0 || n > G_MAXUINT)
+		return FALSE;
+	*number = (guint) n;
+	return TRUE;
 }
 
-gint
-fs_cli_cmd_policy (gint argc, gchar **argv)
+gboolean
+fs_cli_rule_ref_parse (const gchar *text, const gchar *next_arg,
+                       FsRuleKind *kind, guint *number, gboolean *used_next)
 {
-	const gchar *sub = argc > 1 ? argv[1] : "list";
+	const gchar *sep;
 
-	if (strcmp (sub, "list") == 0 || strcmp (sub, "ls") == 0)
-		return policy_list (argc > 1 ? argc - 2 : 0, argv + 2);
-	if (strcmp (sub, "add") == 0)
-		return policy_add (argc - 2, argv + 2);
-	if (strcmp (sub, "remove") == 0 || strcmp (sub, "rm") == 0)
-		return policy_remove (argc - 2, argv + 2);
+	if (used_next != NULL)
+		*used_next = FALSE;
+	if (text == NULL)
+		return FALSE;
 
-	if (g_str_has_prefix (sub, "--"))
-		return policy_list (argc - 1, argv + 1);
+	/* KIND:N, and KIND#N as typed in a shell without EXTENDED_GLOB. */
+	sep = strpbrk (text, ":#");
+	if (sep != NULL) {
+		gchar *name = g_strndup (text, (gsize) (sep - text));
+		gboolean ok = fs_cli_kind_parse (name, kind) &&
+		              ref_number (sep + 1, number);
 
-	fs_cli_error ("unknown policy action: %s", sub);
-	fs_cli_hint ("policy list | policy add | policy remove");
-	return FS_EXIT_USAGE;
+		g_free (name);
+		return ok;
+	}
+
+	/* KIND N, as two words. */
+	if (fs_cli_kind_parse (text, kind) && ref_number (next_arg, number)) {
+		if (used_next != NULL)
+			*used_next = TRUE;
+		return TRUE;
+	}
+	return FALSE;
 }
 
-/* --------------------------------------------------------------- apply */
+/* ------------------------------------------------------- the kernel log */
 
-gint
-fs_cli_cmd_apply (gint argc, gchar **argv)
-{
-	gboolean dry_run = FALSE;
-	FsPolicy *policy;
-	FsSettings *settings;
-	FsApplyOutcome *outcome;
-	GError *error = NULL;
-	gboolean on_disk;
-	gint status;
-	gchar *desc;
-
-	for (gint i = 1; i < argc; i++) {
-		if (strcmp (argv[i], "--dry-run") == 0 ||
-		    strcmp (argv[i], "-n") == 0) {
-			dry_run = TRUE;
-		} else {
-			fs_cli_error ("unexpected argument: %s", argv[i]);
-			return FS_EXIT_USAGE;
-		}
-	}
-
-	policy = fs_cli_load_policy (&on_disk, NULL);
-
-	if (!on_disk) {
-		fs_cli_error ("no policy saved in %s -- nothing to apply",
-		              fs_util_rules_dir ());
-		if (geteuid () == 0 && g_getenv ("SUDO_USER") != NULL)
-			fs_cli_hint ("as root the policy is read from /etc/stockfw; "
-			             "a policy edited without sudo lives in "
-			             "~/.stockfw");
-		fs_policy_free (policy);
-		return FS_EXIT_FAILURE;
-	}
-
-	if (dry_run) {
-		FsPolicyImpact *impact = fs_policy_impact_preview (policy);
-
-		desc = fs_policy_impact_describe (impact);
-		if (fs_cli.json) {
-			GString *out = g_string_new ("{");
-
-			fs_json_kv_bool (out, "dry_run", TRUE);       g_string_append_c (out, ',');
-			fs_json_kv_uint (out, "added", impact->added); g_string_append_c (out, ',');
-			fs_json_kv_uint (out, "removed", impact->removed); g_string_append_c (out, ',');
-			fs_json_kv_uint (out, "unchanged", impact->unchanged); g_string_append_c (out, ',');
-			fs_json_kv_str (out, "impact", desc);
-			g_string_append_c (out, '}');
-			fs_cli_print_json (out);
-			g_string_free (out, TRUE);
-		} else {
-			printf ("Would apply: %s\n", desc);
-			printf ("%sNothing was changed (dry run).%s\n",
-			        fs_cli_dim (), fs_cli_reset ());
-		}
-		g_free (desc);
-		fs_policy_impact_free (impact);
-		fs_policy_free (policy);
-		return FS_EXIT_OK;
-	}
-
-	if (geteuid () != 0) {
-		fs_policy_free (policy);
-		return need_root ("apply");
-	}
-
-	settings = backend_context (policy);
-	outcome = fs_policy_apply_safe (fs_backend (), policy, "cli",
-	                                fs_apply_hold_reason (), &error);
-	desc = fs_policy_impact_describe (outcome->impact);
-
-	if (outcome->held) {
-		status = FS_EXIT_OK;
-	} else if (outcome->result == FS_APPLY_OK) {
-		status = FS_EXIT_OK;
-	} else if (outcome->result == FS_APPLY_NO_PRIVILEGE) {
-		status = FS_EXIT_NEED_ROOT;
-	} else {
-		status = FS_EXIT_FAILURE;
-	}
-
-	if (fs_cli.json) {
-		GString *out = g_string_new ("{");
-
-		fs_json_kv_bool (out, "applied", outcome->applied);   g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "held", outcome->held);         g_string_append_c (out, ',');
-		fs_json_kv_str (out, "hold_reason", outcome->hold_reason); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "narrow", outcome->narrow);     g_string_append_c (out, ',');
-		fs_json_kv_str (out, "result",
-		                fs_util_apply_result_to_string ((int) outcome->result));
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "impact", desc);                 g_string_append_c (out, ',');
-		fs_json_kv_str (out, "error", error ? error->message : NULL); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "rollback_attempted", outcome->rollback_attempted); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "rollback_verified", outcome->rollback_verified);
-		g_string_append_c (out, ',');
-		fs_json_key (out, "notes");
-		append_lines_json (out, outcome->notes);
-		g_string_append_c (out, '}');
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-	} else if (outcome->held) {
-		printf ("%sHeld:%s %s.  The firewall was left untouched.\n",
-		        fs_cli_amber (), fs_cli_reset (), outcome->hold_reason);
-		printf ("Recorded in the audit log: %s\n", desc);
-	} else if (outcome->result == FS_APPLY_OK) {
-		if (outcome->impact->added == 0 && outcome->impact->removed == 0)
-			printf ("Nothing to change: the policy already matches the "
-			        "firewall.\n");
-		else
-			printf ("%sApplied%s (%s): %s\n", fs_cli_green (),
-			        fs_cli_reset (),
-			        outcome->narrow ? "only the changes" : "whole policy",
-			        desc);
-		print_notes (outcome->notes);
-	} else {
-		fs_cli_error ("%s", error != NULL ? error->message
-		              : fs_util_apply_result_to_string ((int) outcome->result));
-		if (outcome->rollback_attempted && outcome->rollback_verified)
-			fs_cli_hint ("the firewall was restored to the last applied "
-			             "policy, and that restore was verified");
-		else if (outcome->rollback_attempted)
-			fs_cli_error ("the rollback ALSO failed: the firewall may be "
-			              "inconsistent -- check `stockfw status'");
-		else
-			fs_cli_hint ("no applied policy was recorded, so there was "
-			             "nothing to roll back to");
-	}
-
-	g_free (desc);
-	g_clear_error (&error);
-	fs_apply_outcome_free (outcome);
-	fs_settings_free (settings);
-	fs_policy_free (policy);
-
-	return status;
-}
-
-/* --------------------------------------------------------- start / stop */
-
-/* [ intel_follow ]
- * The threat-intel blocklists follow the user's Stop and Start (design
- * 6.5): after the firewall stopped they are removed and recorded as
- * suspended (fs_intel_suspend); after it started they are applied again
- * through the gate, under the same hold as any apply (fs_intel_resume).
- * Nothing happens where no list was ever turned on.  Appends an "intel"
- * member to `json' when given, else prints; FALSE when the blocklists
- * did not follow. */
+#ifndef G_OS_WIN32
+/* [ in_group ] -- is this process a member of the named group? */
 static gboolean
-intel_follow (gboolean start, GString *json)
+in_group (const gchar *name)
 {
-	const FsBackend *backend = fs_backend ();
-	FsIntelOutcome *o = NULL;
-	GError *error = NULL;
-	GString *notes = g_string_new (NULL);
-	const gchar *result;
-	gboolean ok;
+	struct group *gr = getgrnam (name);
+	gid_t groups[256];
+	gint n;
 
-	if (start) {
-		o = fs_intel_resume (backend, "cli", fs_apply_hold_reason (),
-		                     &error);
-		ok = error == NULL && (o == NULL || o->result != FS_APPLY_FAILED);
-		if (o == NULL)
-			result = error != NULL ? "failed" : "none";
-		else if (o->held)
-			result = "held";
-		else
-			result = o->result == FS_APPLY_OK ? "applied" : "failed";
-	} else {
-		ok = fs_intel_suspend (backend, "cli", &error);
-		result = ok ? "suspended" : "failed";
+	if (gr == NULL)
+		return FALSE;
+	if (getegid () == gr->gr_gid)
+		return TRUE;
+	n = getgroups (G_N_ELEMENTS (groups), groups);
+	for (gint i = 0; i < n; i++)
+		if (groups[i] == gr->gr_gid)
+			return TRUE;
+	return FALSE;
+}
+#endif
+
+/* [ try_open ] -- can the file be opened for reading, now, by us? */
+static gboolean
+try_open (const gchar *path, gchar **problem)
+{
+	int fd = g_open (path, O_RDONLY | O_CLOEXEC, 0);
+
+	if (fd >= 0) {
+		close (fd);
+		return TRUE;
 	}
-	for (guint i = 0; o != NULL && o->notes != NULL && i < o->notes->len;
-	     i++)
-		g_string_append_printf (notes, "%s\n",
-		                        (gchar *) g_ptr_array_index (o->notes, i));
-
-	if (json != NULL) {
-		g_string_append_c (json, ',');
-		fs_json_key (json, "intel");
-		g_string_append_c (json, '{');
-		fs_json_kv_bool (json, "ok", ok);
-		g_string_append_c (json, ',');
-		fs_json_kv_str (json, "result", result);
-		g_string_append_c (json, ',');
-		fs_json_kv_str (json, "hold", o != NULL ? o->hold_reason : NULL);
-		g_string_append_c (json, ',');
-		fs_json_kv_str (json, "error", error ? error->message : NULL);
-		g_string_append_c (json, ',');
-		fs_json_key (json, "notes");
-		append_lines_json (json, notes->str);
-		g_string_append_c (json, '}');
-	} else if (!ok) {
-		fs_cli_error ("the blocklists could not be %s: %s",
-		              start ? "applied" : "removed",
-		              error != NULL ? error->message
-		                            : FS_CLI_LIVE " does not hold "
-		                              "them");
-		print_notes (notes->str);
-	} else if (o != NULL && o->held) {
-		printf ("%snote:%s blocklists not applied: %s\n", fs_cli_amber (),
-		        fs_cli_reset (), o->hold_reason);
-	} else if (o != NULL) {
-		if (!fs_cli.quiet)
-			printf ("Blocklists applied (%u list%s).\n", o->sets,
-			        o->sets == 1 ? "" : "s");
-		print_notes (notes->str);
-	}
-
-	g_string_free (notes, TRUE);
-	g_clear_error (&error);
-	fs_intel_outcome_free (o);
-	return ok;
+	if (problem != NULL)
+		*problem = g_strdup_printf ("cannot read %s: %s", path,
+		                            g_strerror (errno));
+	return FALSE;
 }
 
-static gint
-start_or_stop (gint argc, gboolean start)
+gboolean
+fs_cli_log_readable (gchar **source, gchar **problem)
 {
-	FsPolicy *policy;
-	FsSettings *settings;
-	GError *error = NULL;
-	gboolean ok, intel_ok = TRUE, on_disk = FALSE;
-	gint malformed = 0;
-	gchar *notes;
-	GString *out = NULL;
+	const gchar *override = g_getenv ("STOCKFW_LOG_FILE");
 
-	if (argc > 1) {
-		fs_cli_error ("%s takes no arguments", start ? "start" : "stop");
-		return FS_EXIT_USAGE;
+	if (source != NULL)
+		*source = NULL;
+	if (problem != NULL)
+		*problem = NULL;
+
+	/* The same order fs_cli_log_history reads in. */
+	if (override != NULL && *override != '\0') {
+		if (source != NULL)
+			*source = g_strdup (override);
+		return try_open (override, problem);
+	}
+	if (g_file_test ("/var/log/kern.log", G_FILE_TEST_EXISTS)) {
+		if (source != NULL)
+			*source = g_strdup ("/var/log/kern.log");
+		return try_open ("/var/log/kern.log", problem);
 	}
 
-	if (geteuid () != 0)
-		return need_root (start ? "start" : "stop");
-
-	/* Load first, always: the backend starts from the policy it was
-	 * handed, and an unloaded one is an empty one. */
-	policy = fs_cli_load_policy (&on_disk, &malformed);
-	settings = backend_context (policy);
-
-	if (start) {
-		FsApplyOutcome *outcome;
-		FsPolicy *lift = fs_policy_new ();
-		gchar *mode = fs_prefs_get_string (FS_PREFS_SENTINEL_MODE,
-		                                   "auto");
-		gchar *journal = fs_apply_journal_path ();
-		gboolean have_journal = g_file_test (journal,
-		                                     G_FILE_TEST_EXISTS);
-
-		g_free (journal);
-
-		/* Sentinel's blocks whose ten minutes ran out while nothing
-		 * was running to lift them (a reboot) come out of the file,
-		 * and the start leaves every one of them out of what it
-		 * installs. */
-		fs_autoblock_expire (policy, g_get_real_time () / G_USEC_PER_SEC,
-		                     g_strcmp0 (mode, "auto") != 0, lift);
-		g_free (mode);
-
-		if (fs_backend ()->start_applies_policy && !have_journal &&
-		    (!on_disk || malformed > 0)) {
-			/* Nothing was ever applied, so this start would be the
-			 * first apply of the file: refused when there is no
-			 * file or a line of it could not be read, rather than
-			 * starting a policy that is empty or missing rules. */
-			fs_audit_log ("firewall start refused",
-			              !on_disk
-			              ? "cli | refused | no policy saved and none "
-			                "applied before"
-			              : "cli | refused | malformed lines in the "
-			                "saved policy and none applied before");
-			if (!on_disk)
-				g_set_error (&error, FS_APPLY_ERROR, 0,
-				             "no policy saved in %s and none applied "
-				             "before, so there is nothing to start",
-				             fs_util_rules_dir ());
-			else
-				g_set_error (&error, FS_APPLY_ERROR, 0,
-				             "%d line(s) of the policy in %s could not "
-				             "be read and no policy was applied before; "
-				             "fix them, then run `stockfw apply'",
-				             malformed, fs_util_rules_dir ());
-			ok = FALSE;
-			notes = NULL;
-			fs_policy_free (lift);
-			goto report;
-		}
-
-		/* Through the start gate: the last APPLIED policy is what
-		 * starts (changes saved but not applied stay off, held or
-		 * not), audit-only mode is honoured, and the start is on the
-		 * audit record. */
-		outcome = fs_firewall_start_lifting (fs_backend (), policy, lift,
-		                                     "cli",
-		                                     fs_apply_hold_reason (),
-		                                     &error);
-		fs_policy_free (lift);
-		ok = (outcome->result == FS_APPLY_OK);
-		if (outcome->result == FS_APPLY_DRY_RUN && error == NULL)
-			g_set_error (&error, FS_APPLY_ERROR, 0,
-			             "held (%s) and no policy was ever applied, "
-			             "so there is nothing safe to start with",
-			             outcome->hold_reason);
-		else if (!ok && error == NULL)
-			g_set_error_literal (&error, FS_APPLY_ERROR, 0,
-				fs_util_apply_result_to_string (
-					(int) outcome->result));
-		notes = ok ? g_strdup (outcome->notes) : NULL;
-		if (ok && outcome->held && !fs_cli.json && !fs_cli.quiet)
-			printf ("%sHeld:%s %s.  Started with the last applied "
-			        "policy; later changes stay held.\n",
-			        fs_cli_amber (), fs_cli_reset (),
-			        outcome->hold_reason);
-		else if (ok && have_journal &&
-		         fs_backend ()->start_applies_policy &&
-		         (outcome->impact->added > 0 ||
-		          outcome->impact->removed > 0) &&
-		         !fs_cli.json && !fs_cli.quiet)
-			printf ("%sNot applied:%s the saved policy has changes "
-			        "that are not live.  Started with the last "
-			        "applied policy; `stockfw apply --dry-run' lists "
-			        "them, `stockfw apply' puts them live.\n",
-			        fs_cli_amber (), fs_cli_reset ());
-		fs_apply_outcome_free (outcome);
-	} else {
-		ok = fs_firewall_stop_logged (fs_backend (), "cli", &error);
-		notes = NULL;
-	}
-
-report:
-	if (fs_cli.json) {
-		out = g_string_new ("{");
-		fs_json_kv_bool (out, "ok", ok);  g_string_append_c (out, ',');
-		fs_json_kv_str (out, "error", error ? error->message : NULL);
-		g_string_append_c (out, ',');
-		fs_json_key (out, "notes");
-		append_lines_json (out, notes);
-	} else if (ok) {
-		if (!fs_cli.quiet)
-			printf ("Firewall %s.\n", start ? "started" : "stopped");
-		print_notes (notes);
-	} else {
-		fs_cli_error ("could not %s the firewall: %s",
-		              start ? "start" : "stop",
-		              error ? error->message : "unknown error");
-	}
-
-	/* Only once the firewall itself did what was asked: a Start that
-	 * failed applies no blocklist, a Stop that failed removes none. */
-	if (ok)
-		intel_ok = intel_follow (start, out);
-
-	if (out != NULL) {
-		g_string_append_c (out, '}');
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-	}
-
-	g_clear_error (&error);
-	g_free (notes);
-	fs_settings_free (settings);
-	fs_policy_free (policy);
-
-	return ok && intel_ok ? FS_EXIT_OK : FS_EXIT_FAILURE;
+	if (source != NULL)
+		*source = g_strdup ("the journal");
+#ifndef G_OS_WIN32
+	if (geteuid () == 0 || in_group ("systemd-journal") ||
+	    in_group ("adm"))
+		return TRUE;
+#endif
+	if (problem != NULL)
+		*problem = g_strdup ("the journal's kernel messages are for root "
+		                     "and the systemd-journal and adm groups");
+	return FALSE;
 }
-
-gint fs_cli_cmd_start (gint argc, gchar **argv) { return start_or_stop (argc, TRUE); }
-gint fs_cli_cmd_stop  (gint argc, gchar **argv) { return start_or_stop (argc, FALSE); }
-
-/* ------------------------------------------------------------ simulate */
+/* ------------------------------------------------------------ what-if */
 
 /* [ fs_cli_whatif ] */
 FsWhatIfResult *
 fs_cli_whatif (const gchar *line, gboolean assume_running)
 {
 	FsPolicy *policy = fs_cli_load_policy (NULL, NULL);
+	FsWhatIfResult *result = fs_cli_whatif_policy (policy, line,
+	                                               assume_running);
+
+	fs_policy_free (policy);
+	return result;
+}
+
+/* [ fs_cli_whatif_policy ]
+ * Sentinel's staged blocks are not added yet: their reader is WP-C's
+ * (cli-plan.md A3). */
+FsWhatIfResult *
+fs_cli_whatif_policy (const FsPolicy *policy, const gchar *line,
+                      gboolean assume_running)
+{
 	FsSettings *settings = fs_settings_new ();
 	FsWhatIfContext *ctx;
 	FsWhatIfResult *result;
@@ -1261,7 +473,6 @@ fs_cli_whatif (const gchar *line, gboolean assume_running)
 
 	fs_whatif_context_free (ctx);
 	fs_settings_free (settings);
-	fs_policy_free (policy);
 	return result;
 }
 
@@ -1505,81 +716,7 @@ fs_cli_whatif_json (GString *out, const FsWhatIfResult *r,
 	}
 	g_string_append (out, "]}");
 }
-
-gint
-fs_cli_cmd_simulate (gint argc, gchar **argv)
-{
-	FsWhatIfResult *result;
-	GPtrArray *words = g_ptr_array_new ();
-	gboolean assume_running = FALSE;
-	gchar *line;
-	gint status;
-
-	for (gint i = 1; i < argc; i++) {
-		if (strcmp (argv[i], "--assume-running") == 0)
-			assume_running = TRUE;
-		else
-			g_ptr_array_add (words, argv[i]);
-	}
-	g_ptr_array_add (words, NULL);
-
-	if (words->len < 2) {
-		g_ptr_array_free (words, TRUE);
-		fs_cli_error ("simulate needs a description of the traffic");
-		fs_cli_hint ("stockfw simulate \"allow ssh from 192.168.1.50 on "
-		             "port 22\"");
-		return FS_EXIT_USAGE;
-	}
-
-	/* Unquoted words are one line, as the user would have typed it. */
-	line = g_strjoinv (" ", (gchar **) words->pdata);
-	g_ptr_array_free (words, TRUE);
-
-	result = fs_cli_whatif (line, assume_running);
-
-	switch (result->verdict) {
-	case FS_WHATIF_ALLOWED: status = FS_EXIT_OK;      break;
-	case FS_WHATIF_BLOCKED: status = FS_EXIT_BLOCKED; break;
-	case FS_WHATIF_DEPENDS: status = FS_EXIT_DEPENDS; break;
-	case FS_WHATIF_ERROR:
-	default:                status = FS_EXIT_USAGE;   break;
-	}
-
-	if (fs_cli.json) {
-		GString *out = g_string_new (NULL);
-
-		fs_cli_whatif_json (out, result, line);
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-	} else if (result->verdict == FS_WHATIF_ERROR) {
-		fs_cli_error ("%s", result->error);
-		fs_cli_hint ("stockfw simulate \"allow ssh from 192.168.1.50 on "
-		             "port 22\"");
-	} else {
-		gchar *text = fs_whatif_result_describe (result);
-		gchar *rest = strchr (text, '\n');
-		const gchar *colour =
-			result->verdict == FS_WHATIF_ALLOWED ? fs_cli_green ()
-			: result->verdict == FS_WHATIF_BLOCKED ? fs_cli_red ()
-			                                       : fs_cli_amber ();
-
-		/* The summary names the verdict; it gets the colour. */
-		if (rest != NULL)
-			*rest++ = '\0';
-		printf ("%s%s%s\n%s", colour, text, fs_cli_reset (),
-		        rest != NULL ? rest : "");
-		printf ("%sA simulation only: nothing was written.%s\n",
-		        fs_cli_dim (), fs_cli_reset ());
-		g_free (text);
-	}
-
-	fs_whatif_result_free (result);
-	g_free (line);
-
-	return status;
-}
-
-/* -------------------------------------------------------------- events */
+/* ---------------------------------------------------------- kernel log */
 
 /* [ read_tail_lines ] -- the last max_lines lines of a text. */
 static gchar **
@@ -1796,859 +933,55 @@ fs_cli_log_history (guint max_lines, gint64 *complete_from, GError **error)
 	return hits;
 }
 
-typedef struct
+/* [ hit_row ] -- one event as table cells (caller frees with g_strfreev). */
+/* [ address_text ] -- an address as the table shows it: IPv6 in its
+ * short form (2001:db8::1, not 2001:0db8:0000:...). */
+static gchar *
+address_text (const gchar *text)
 {
-	FsEventQuery *query;     /* NULL: every event */
-	guint         printed;
-} EventsState;
+	GInetAddress *a;
+	gchar *out;
 
-/* [ hit_passes ]
- * The filters of `stockfw events', the same query the Events page
- * runs.  A kernel-log stamp that cannot be read has no time, so it
- * fails a --since or --until. */
-static gboolean
-hit_passes (const FsEventQuery *query, const FsHit *hit)
-{
-	gint64 ticks = 0;
-
-	if (query == NULL)
-		return TRUE;
-	if (fs_event_time_parse (hit->time, &ticks) == FS_EVENT_TIME_OTHER)
-		ticks = 0;
-	return fs_eventquery_match_hit (query, hit, ticks / 10);
+	if (text == NULL || *text == '\0')
+		return g_strdup ("-");
+	if (strchr (text, ':') == NULL)
+		return g_strdup (text);
+	a = g_inet_address_new_from_string (text);
+	if (a == NULL)
+		return g_strdup (text);
+	out = g_inet_address_to_string (a);
+	g_object_unref (a);
+	return out;
 }
 
-/* [ hit_row ] -- one event as table cells (caller frees with g_strfreev). */
-static gchar **
-hit_row (const FsHit *hit)
+gchar **
+fs_cli_hit_row (const FsHit *hit)
 {
 	gchar **row = g_new0 (gchar *, 10);
 	gboolean blocked = fs_hit_is_blocked (hit);
 	gchar *service = fs_hit_service_name (hit);
 
-	row[0] = local_time (hit->time);
+	row[0] = fs_cli_local_time (hit->time);
 	row[1] = g_strdup (blocked ? "BLOCKED" : "ALLOWED");
 	row[2] = g_strdup (g_ascii_strcasecmp (hit->direction ? hit->direction
 	                                                      : "in", "in") == 0
 	                   ? "in" : "out");
-	row[3] = g_strdup (hit->source ? hit->source : "-");
-	row[4] = g_strdup (hit->destination ? hit->destination : "-");
+	row[3] = address_text (hit->source);
+	row[4] = address_text (hit->destination);
 	row[5] = g_strdup (hit->port ? hit->port : "-");
 	row[6] = service;
 	row[7] = g_strdup (hit->protocol ? hit->protocol : "-");
 	/* Why it was dropped, when the log says: "Threat intel: <list>". */
 	row[8] = g_strdup (hit->rule != NULL && *hit->rule ? hit->rule : "-");
 
+	/* Log fields are what the kernel printed, interface names and
+	 * list names included: nothing reaches the terminal raw. */
+	for (guint i = 0; i < 9; i++) {
+		gchar *safe = fs_cli_out_safe (row[i]);
+
+		g_free (row[i]);
+		row[i] = safe;
+	}
 	return row;
 }
 
-static void
-print_hit (const FsHit *hit, EventsState *st)
-{
-	if (!hit_passes (st->query, hit))
-		return;
-
-	if (fs_cli.json) {
-		GString *out = g_string_new (NULL);
-
-		hit_row_json (out, hit);
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-	} else {
-		/* Live lines cannot be sized to the widest row that has not
-		 * arrived yet: IPv4-wide columns, longer values push on. */
-		gchar **row = hit_row (hit);
-		gboolean blocked = fs_hit_is_blocked (hit);
-
-		printf ("%s%s%s  %s%-7s%s  %-3s  %-15s → %-15s  %-5s  %s/%s%s%s\n",
-		        fs_cli_dim (), row[0], fs_cli_reset (),
-		        blocked ? fs_cli_red () : fs_cli_green (), row[1],
-		        fs_cli_reset (), row[2], row[3], row[4], row[5], row[6],
-		        row[7], hit->rule != NULL && *hit->rule ? "  " : "",
-		        hit->rule != NULL && *hit->rule ? hit->rule : "");
-		g_strfreev (row);
-	}
-
-	fflush (stdout);
-	st->printed++;
-}
-
-static void
-on_live_hit (const FsHit *hit, gpointer data)
-{
-	print_hit (hit, data);
-}
-
-static gboolean
-on_sigint (gpointer data)
-{
-	g_main_loop_quit (data);
-	return G_SOURCE_REMOVE;
-}
-
-/* The newest `want' matching events of the saved history, oldest
- * first.  The hit's strings are only lent for the call: kept ones are
- * copied. */
-typedef struct
-{
-	const FsEventQuery *query;
-	GQueue              kept;
-	guint               want;
-	guint               matched;
-} HistoryScan;
-
-static void
-on_history_hit (const FsHit *hit, gint64 ticks, gpointer data)
-{
-	HistoryScan *scan = data;
-
-	if (scan->query != NULL &&
-	    !fs_eventquery_match_hit (scan->query, hit, ticks / 10))
-		return;
-
-	scan->matched++;
-	if (scan->want == 0)
-		return;
-	g_queue_push_tail (&scan->kept, fs_hit_copy (hit));
-	if (scan->kept.length > scan->want)
-		fs_hit_free (g_queue_pop_head (&scan->kept));
-}
-
-static GPtrArray *
-read_saved_history (const gchar *dir, const FsEventFilter *filter,
-                    const FsEventQuery *query, guint want,
-                    FsEventLogStats *stats)
-{
-	HistoryScan scan = { query, G_QUEUE_INIT, want, 0 };
-	GPtrArray *hits = g_ptr_array_new_with_free_func (
-		(GDestroyNotify) fs_hit_free);
-
-	fs_eventlog_foreach (dir, filter->since_us, filter->until_us,
-	                     on_history_hit, &scan, stats);
-	while (scan.kept.length > 0)
-		g_ptr_array_add (hits, g_queue_pop_head (&scan.kept));
-	return hits;
-}
-
-/* [ take_value ]
- * The value of an option, as "--opt VALUE" or "--opt=VALUE".  NULL
- * when argv[*i] is not that option. */
-static const gchar *
-take_value (gint argc, gchar **argv, gint *i, const gchar *opt,
-            gboolean *missing)
-{
-	gsize n = strlen (opt);
-
-	if (strcmp (argv[*i], opt) == 0) {
-		if (*i + 1 >= argc) {
-			*missing = TRUE;
-			return NULL;
-		}
-		return argv[++*i];
-	}
-	if (strncmp (argv[*i], opt, n) == 0 && argv[*i][n] == '=')
-		return argv[*i] + n + 1;
-	return NULL;
-}
-
-gint
-fs_cli_cmd_events (gint argc, gchar **argv)
-{
-	guint count = 20;
-	gboolean follow = FALSE, saved = FALSE, missing = FALSE;
-	const gchar *since = NULL, *until = NULL, *dir_opt = NULL;
-	FsEventFilter filter = { 0 };
-	EventsState st = { NULL, 0 };
-	FsEventLogStats stats = { 0 };
-	GPtrArray *history = NULL;
-	gchar *dir = NULL;
-	GError *error = NULL;
-	gint64 now = g_get_real_time ();
-	gint rc = FS_EXIT_OK;
-
-	for (gint i = 1; i < argc; i++) {
-		const gchar *v;
-
-		if ((v = take_value (argc, argv, &i, "-n", &missing)) != NULL ||
-		    (v = take_value (argc, argv, &i, "--lines", &missing))
-		    != NULL) {
-			gchar *end = NULL;
-			guint64 n = g_ascii_strtoull (v, &end, 10);
-
-			if (!g_ascii_isdigit (*v) || end == NULL || *end != '\0' ||
-			    n > FS_EVENTSTORE_MAX_CAPACITY) {
-				fs_cli_error ("-n wants a number up to %u",
-				              FS_EVENTSTORE_MAX_CAPACITY);
-				return FS_EXIT_USAGE;
-			}
-			count = (guint) n;
-		} else if ((v = take_value (argc, argv, &i, "--since", &missing))
-		           != NULL) {
-			since = v;
-		} else if ((v = take_value (argc, argv, &i, "--until", &missing))
-		           != NULL) {
-			until = v;
-		} else if ((v = take_value (argc, argv, &i, "--grep", &missing))
-		           != NULL) {
-			filter.text = v;
-		} else if ((v = take_value (argc, argv, &i, "--proto", &missing))
-		           != NULL) {
-			filter.protocol = v;
-		} else if ((v = take_value (argc, argv, &i, "--port", &missing))
-		           != NULL) {
-			filter.port = v;
-		} else if ((v = take_value (argc, argv, &i, "--addr", &missing))
-		           != NULL) {
-			filter.address = v;
-		} else if ((v = take_value (argc, argv, &i, "--history-dir",
-		                            &missing)) != NULL) {
-			dir_opt = v;
-			saved = TRUE;
-		} else if ((v = take_value (argc, argv, &i, "--dir", &missing))
-		           != NULL) {
-			if (g_ascii_strcasecmp (v, "in") == 0)
-				filter.direction = FS_EVQ_DIR_IN;
-			else if (g_ascii_strcasecmp (v, "out") == 0)
-				filter.direction = FS_EVQ_DIR_OUT;
-			else {
-				fs_cli_error ("--dir wants in or out, not `%s'", v);
-				return FS_EXIT_USAGE;
-			}
-		} else if (missing) {
-			break;
-		} else if (strcmp (argv[i], "-f") == 0 ||
-		           strcmp (argv[i], "--follow") == 0) {
-			follow = TRUE;
-		} else if (strcmp (argv[i], "--history") == 0) {
-			saved = TRUE;
-		} else if (strcmp (argv[i], "--blocked") == 0) {
-			filter.action = FS_EVQ_ACTION_BLOCKED;
-		} else if (strcmp (argv[i], "--allowed") == 0) {
-			filter.action = FS_EVQ_ACTION_ALLOWED;
-		} else {
-			fs_cli_error ("unexpected argument: %s", argv[i]);
-			return FS_EXIT_USAGE;
-		}
-		if (missing)
-			break;
-	}
-	if (missing) {
-		fs_cli_error ("%s wants a value", argv[argc - 1]);
-		return FS_EXIT_USAGE;
-	}
-
-	if (since != NULL &&
-	    !fs_event_parse_time_spec (since, now, FALSE, &filter.since_us,
-	                               &error)) {
-		fs_cli_error ("--since: %s", error->message);
-		g_error_free (error);
-		return FS_EXIT_USAGE;
-	}
-	if (until != NULL &&
-	    !fs_event_parse_time_spec (until, now, TRUE, &filter.until_us,
-	                               &error)) {
-		fs_cli_error ("--until: %s", error->message);
-		g_error_free (error);
-		return FS_EXIT_USAGE;
-	}
-	st.query = fs_eventquery_new (&filter, &error);
-	if (st.query == NULL) {
-		fs_cli_error ("%s", error->message);
-		g_error_free (error);
-		return FS_EXIT_USAGE;
-	}
-	if (fs_eventquery_is_empty (st.query))
-		g_clear_pointer (&st.query, fs_eventquery_free);
-
-	if (saved) {
-		/* The history the desktop app saves for this account (root's
-		 * own under sudo: point --history-dir at the user's). */
-		dir = dir_opt != NULL ? g_strdup (dir_opt)
-		                      : fs_eventlog_default_dir ();
-		if (!g_file_test (dir, G_FILE_TEST_IS_DIR)) {
-			fs_cli_error ("no saved event history in %s", dir);
-			fs_cli_hint ("the desktop app saves it while Preferences > "
-			             "Events > Keep event history is on%s",
-			             geteuid () == 0 && g_getenv ("SUDO_USER")
-			             ? "; under sudo this is root's folder, give "
-			               "--history-dir for yours" : "");
-			rc = FS_EXIT_FAILURE;
-			goto out;
-		}
-		history = read_saved_history (dir, &filter, st.query, count,
-		                              &stats);
-	} else if (count > 0) {
-		/* With a filter, look further back so N matches can be
-		 * found, then keep the newest N of them. */
-		history = fs_cli_log_history (st.query != NULL
-		                              ? MAX (count, 100000u) : count,
-		                              NULL, &error);
-
-		if (history == NULL) {
-			fs_cli_error ("%s", error->message);
-			g_error_free (error);
-			if (geteuid () != 0)
-				fs_cli_hint ("try `sudo stockfw events', or "
-				             "`stockfw events --history' for the "
-				             "history the desktop app saved");
-			rc = geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
-			goto out;
-		}
-		if (st.query != NULL) {
-			GPtrArray *kept = g_ptr_array_new_with_free_func (
-				(GDestroyNotify) fs_hit_free);
-
-			for (guint i = 0; i < history->len; i++) {
-				FsHit *hit = g_ptr_array_index (history, i);
-
-				if (hit_passes (st.query, hit)) {
-					g_ptr_array_index (history, i) = NULL;
-					g_ptr_array_add (kept, hit);
-				}
-			}
-			g_ptr_array_unref (history);
-			history = kept;
-		}
-		while (history->len > count)
-			g_ptr_array_remove_index (history, 0);
-	}
-
-	if (history != NULL && count > 0) {
-		if (fs_cli.json && !follow) {
-			GString *out = g_string_new ("[");
-
-			for (guint i = 0; i < history->len; i++) {
-				if (out->len > 1)
-					g_string_append_c (out, ',');
-				hit_row_json (out, g_ptr_array_index (history, i));
-			}
-			g_string_append_c (out, ']');
-			fs_cli_print_json (out);
-			g_string_free (out, TRUE);
-		} else if (fs_cli.json) {
-			/* --follow --json: the history as NDJSON too. */
-			for (guint i = 0; i < history->len; i++)
-				print_hit (g_ptr_array_index (history, i), &st);
-		} else {
-			static const gchar *headers[] = {
-				"TIME", "VERDICT", "DIR", "SOURCE", "DESTINATION",
-				"PORT", "SERVICE", "PROTO", "RULE"
-			};
-			GPtrArray *rows = g_ptr_array_new_with_free_func (
-				(GDestroyNotify) g_strfreev);
-
-			for (guint i = 0; i < history->len; i++)
-				g_ptr_array_add (rows,
-				                 hit_row (g_ptr_array_index (history,
-				                                             i)));
-
-			st.printed = rows->len;
-			if (rows->len > 0)
-				fs_cli_table (headers, 9, rows, 40);
-			g_ptr_array_unref (rows);
-
-			if (st.printed == 0 && !fs_cli.quiet)
-				printf ("%s%s%s\n", fs_cli_dim (),
-				        saved ? "No saved events match."
-				        : st.query != NULL
-				        ? "No StockFW events in the kernel log match."
-				        : "No StockFW events in the kernel log yet.",
-				        fs_cli_reset ());
-		}
-	}
-	if (saved && stats.bad_lines > 0 && !fs_cli.quiet && !fs_cli.json)
-		fprintf (stderr, "%s%u damaged or cut-short line(s) in the "
-		         "history were skipped.%s\n", fs_cli_dim (),
-		         stats.bad_lines, fs_cli_reset ());
-
-	if (follow) {
-		const FsBackend *backend = fs_backend ();
-		GMainLoop *loop;
-
-		if (backend->log_start == NULL ||
-		    !backend->log_start (on_live_hit, &st, &error)) {
-			fs_cli_error ("cannot follow events: %s",
-			              error ? error->message : "no event source");
-			g_clear_error (&error);
-			rc = geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
-			goto out;
-		}
-
-		if (!fs_cli.json && !fs_cli.quiet)
-			fprintf (stderr, "%sFollowing new events -- Ctrl-C to stop.%s\n",
-			         fs_cli_dim (), fs_cli_reset ());
-
-		loop = g_main_loop_new (NULL, FALSE);
-		g_unix_signal_add (SIGINT, on_sigint, loop);
-		g_unix_signal_add (SIGTERM, on_sigint, loop);
-		g_main_loop_run (loop);
-		g_main_loop_unref (loop);
-
-		backend->log_stop ();
-	}
-
-out:
-	if (history != NULL)
-		g_ptr_array_unref (history);
-	if (st.query != NULL)
-		fs_eventquery_free (st.query);
-	g_free (dir);
-	return rc;
-}
-
-/* --------------------------------------------------------- connections */
-
-gint
-fs_cli_cmd_connections (gint argc, gchar **argv)
-{
-	const FsBackend *backend = fs_backend ();
-	GList *conns;
-
-	if (argc > 1) {
-		fs_cli_error ("connections takes no arguments");
-		return FS_EXIT_USAGE;
-	}
-
-	if (backend->list_connections == NULL) {
-		fs_cli_error ("this backend cannot list connections");
-		return FS_EXIT_FAILURE;
-	}
-
-	conns = backend->list_connections ();
-
-	if (fs_cli.json) {
-		GString *out = g_string_new ("[");
-
-		for (GList *l = conns; l != NULL; l = l->next) {
-			FsConnection *c = l->data;
-
-			if (l != conns)
-				g_string_append_c (out, ',');
-			g_string_append_c (out, '{');
-			fs_json_kv_str (out, "local", c->source);          g_string_append_c (out, ',');
-			fs_json_kv_str (out, "remote", c->destination);    g_string_append_c (out, ',');
-			fs_json_kv_str (out, "port", c->port);             g_string_append_c (out, ',');
-			fs_json_kv_str (out, "protocol", c->protocol);     g_string_append_c (out, ',');
-			fs_json_kv_str (out, "service", c->service);       g_string_append_c (out, ',');
-			fs_json_kv_str (out, "program", c->program);       g_string_append_c (out, ',');
-			fs_json_kv_str (out, "direction", c->direction);
-			g_string_append_c (out, '}');
-		}
-		g_string_append_c (out, ']');
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-	} else if (conns == NULL) {
-		if (!fs_cli.quiet)
-			printf ("No active TCP connections.\n");
-	} else {
-		static const gchar *headers[] = {
-			"LOCAL", "REMOTE", "PORT", "SERVICE", "DIRECTION", "PROGRAM"
-		};
-		GPtrArray *rows = g_ptr_array_new_with_free_func (g_free);
-		gboolean unknown_owner = FALSE;
-
-		for (GList *l = conns; l != NULL; l = l->next) {
-			FsConnection *c = l->data;
-			gchar **row = g_new0 (gchar *, 7);
-
-			row[0] = c->source;
-			row[1] = c->destination;
-			row[2] = c->port;
-			row[3] = c->service;
-			row[4] = c->direction;
-			row[5] = c->program;
-			g_ptr_array_add (rows, row);
-
-			if (g_strcmp0 (c->program, "?") == 0)
-				unknown_owner = TRUE;
-		}
-
-		fs_cli_table (headers, 6, rows, 40);
-		g_ptr_array_unref (rows);
-
-		if (unknown_owner && geteuid () != 0 && !fs_cli.quiet)
-			printf ("%s\"?\" is another user's program; root can see "
-			        "every owner.%s\n", fs_cli_dim (), fs_cli_reset ());
-	}
-
-	g_list_free_full (conns, (GDestroyNotify) fs_connection_free);
-	return FS_EXIT_OK;
-}
-
-/* ---------------------------------------------------------- interfaces */
-
-static void
-print_interfaces (GList *now, GList *before, gdouble seconds)
-{
-	if (fs_cli.json) {
-		GString *out = g_string_new ("[");
-
-		for (GList *l = now; l != NULL; l = l->next) {
-			FsIfaceStat *s = l->data;
-			gdouble rx = 0, tx = 0;
-
-			for (GList *b = before; b != NULL; b = b->next) {
-				FsIfaceStat *p = b->data;
-
-				if (g_strcmp0 (p->device, s->device) == 0 &&
-				    s->received >= p->received && s->sent >= p->sent) {
-					rx = (gdouble) (s->received - p->received) / seconds;
-					tx = (gdouble) (s->sent - p->sent) / seconds;
-				}
-			}
-
-			if (l != now)
-				g_string_append_c (out, ',');
-			g_string_append_c (out, '{');
-			fs_json_kv_str (out, "device", s->device);     g_string_append_c (out, ',');
-			fs_json_kv_str (out, "type", s->kind);         g_string_append_c (out, ',');
-			fs_json_kv_str (out, "ip", s->ip);             g_string_append_c (out, ',');
-			fs_json_kv_bool (out, "up", s->up);            g_string_append_c (out, ',');
-			fs_json_kv_uint (out, "received", s->received); g_string_append_c (out, ',');
-			fs_json_kv_uint (out, "sent", s->sent);        g_string_append_c (out, ',');
-			g_string_append_printf (out, "\"rx_per_s\":%.0f,\"tx_per_s\":%.0f",
-			                        rx, tx);
-			g_string_append_c (out, '}');
-		}
-		g_string_append_c (out, ']');
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-		return;
-	}
-
-	{
-		static const gchar *headers[] = {
-			"ADAPTER", "TYPE", "ADDRESS", "RECEIVED", "SENT",
-			"↓ NOW", "↑ NOW"
-		};
-		GPtrArray *rows = g_ptr_array_new_with_free_func (
-			(GDestroyNotify) g_strfreev);
-
-		for (GList *l = now; l != NULL; l = l->next) {
-			FsIfaceStat *s = l->data;
-			gchar **row = g_new0 (gchar *, 8);
-			gdouble rx = 0, tx = 0;
-
-			for (GList *b = before; b != NULL; b = b->next) {
-				FsIfaceStat *p = b->data;
-
-				if (g_strcmp0 (p->device, s->device) == 0 &&
-				    s->received >= p->received && s->sent >= p->sent) {
-					rx = (gdouble) (s->received - p->received) / seconds;
-					tx = (gdouble) (s->sent - p->sent) / seconds;
-				}
-			}
-
-			row[0] = g_strconcat (s->device, s->up ? "" : " (down)", NULL);
-			row[1] = g_strdup (s->kind ? s->kind : "-");
-			row[2] = g_strdup (s->ip ? s->ip : "-");
-			row[3] = fs_cli_format_bytes (s->received);
-			row[4] = fs_cli_format_bytes (s->sent);
-			row[5] = fs_cli_format_rate (rx);
-			row[6] = fs_cli_format_rate (tx);
-			g_ptr_array_add (rows, row);
-		}
-
-		if (rows->len == 0)
-			printf ("No network adapters with traffic counters.\n");
-		else
-			fs_cli_table (headers, 7, rows, 32);
-		g_ptr_array_unref (rows);
-	}
-}
-
-static gboolean watch_stop = FALSE;
-
-static gboolean
-on_watch_signal (gpointer data)
-{
-	(void) data;
-	watch_stop = TRUE;
-	return G_SOURCE_CONTINUE;
-}
-
-gint
-fs_cli_cmd_interfaces (gint argc, gchar **argv)
-{
-	const FsBackend *backend = fs_backend ();
-	gboolean watch = FALSE;
-	GList *before, *now;
-
-	for (gint i = 1; i < argc; i++) {
-		if (strcmp (argv[i], "--watch") == 0 || strcmp (argv[i], "-w") == 0) {
-			watch = TRUE;
-		} else {
-			fs_cli_error ("unexpected argument: %s", argv[i]);
-			return FS_EXIT_USAGE;
-		}
-	}
-
-	if (backend->list_interface_stats == NULL) {
-		fs_cli_error ("this backend has no traffic counters");
-		return FS_EXIT_FAILURE;
-	}
-
-	before = backend->list_interface_stats ();
-	g_usleep (G_USEC_PER_SEC);
-	now = backend->list_interface_stats ();
-
-	if (!watch) {
-		print_interfaces (now, before, 1.0);
-	} else {
-		g_unix_signal_add (SIGINT, on_watch_signal, NULL);
-
-		while (!watch_stop) {
-			if (!fs_cli.json && fs_cli.color)
-				printf ("\033[H\033[2J");
-			print_interfaces (now, before, 2.0);
-			if (!fs_cli.json)
-				printf ("%sRefreshing every 2 s -- Ctrl-C to stop.%s\n",
-				        fs_cli_dim (), fs_cli_reset ());
-			fflush (stdout);
-
-			g_list_free_full (before, (GDestroyNotify) fs_iface_stat_free);
-			before = now;
-
-			for (gint t = 0; t < 20 && !watch_stop; t++) {
-				g_usleep (G_USEC_PER_SEC / 10);
-				while (g_main_context_iteration (NULL, FALSE))
-					;
-			}
-			now = backend->list_interface_stats ();
-		}
-	}
-
-	g_list_free_full (before, (GDestroyNotify) fs_iface_stat_free);
-	g_list_free_full (now, (GDestroyNotify) fs_iface_stat_free);
-
-	return FS_EXIT_OK;
-}
-
-/* ------------------------------------------------------------- copilot */
-
-/* "checks":[{probe, before, after}, ...]: a fix's What-If checks. */
-static void
-health_checks_json (GString *out, const GPtrArray *checks)
-{
-	g_string_append (out, "\"checks\":[");
-	for (guint k = 0; checks != NULL && k < checks->len; k++) {
-		const FsHealthCheck *c = g_ptr_array_index (checks, k);
-
-		if (k > 0)
-			g_string_append_c (out, ',');
-		g_string_append_c (out, '{');
-		fs_json_kv_str (out, "probe", c->probe);
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "before", fs_whatif_verdict_name (c->before));
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "after", fs_whatif_verdict_name (c->after));
-		g_string_append_c (out, '}');
-	}
-	g_string_append_c (out, ']');
-}
-
-/* [ health_json ] -- one schema, shared with the dashboard if it ever
- * serves it: version, the rule count, the platform model, findings. */
-static void
-health_json (GString *out, const GPtrArray *findings, guint rules,
-             FsWhatIfPlatform platform)
-{
-	g_string_append (out, "{\"version\":1,");
-	fs_json_kv_uint (out, "policy_rules", rules);
-	g_string_append_c (out, ',');
-	fs_json_kv_str (out, "platform",
-	                platform == FS_WHATIF_WINDOWS_BLOCK_WINS
-	                ? "windows-block-wins" : "linux-first-match");
-	g_string_append (out, ",\"findings\":[");
-	for (guint i = 0; i < findings->len; i++) {
-		const FsHealthFinding *f = g_ptr_array_index (findings, i);
-
-		if (i > 0)
-			g_string_append_c (out, ',');
-		g_string_append_c (out, '{');
-		fs_json_kv_str (out, "kind", fs_health_kind_name (f->kind));
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "severity",
-		                fs_health_severity_name (f->severity));
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "title", f->title);
-		g_string_append (out, ",\"rule\":{");
-		fs_json_kv_str (out, "kind",
-		                fs_health_rule_kind_name ((FsRuleKind) f->policy_kind));
-		g_string_append_c (out, ',');
-		fs_json_kv_uint (out, "index", (guint64) MAX (f->policy_index, 0));
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "csv", f->rule_csv);
-		g_string_append (out, "},");
-		if (f->other_csv != NULL && f->other_kind >= 0) {
-			g_string_append (out, "\"other\":{");
-			fs_json_kv_str (out, "kind", fs_health_rule_kind_name (
-				(FsRuleKind) f->other_kind));
-			g_string_append_c (out, ',');
-			fs_json_kv_uint (out, "index",
-			                 (guint64) MAX (f->other_index, 0));
-			g_string_append_c (out, ',');
-			fs_json_kv_str (out, "csv", f->other_csv);
-			g_string_append (out, "},");
-		}
-		fs_json_kv_str (out, "why", f->why);
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "evidence", f->evidence);
-		g_string_append_c (out, ',');
-		fs_json_kv_str (out, "whatif", f->whatif_line);
-		g_string_append (out, ",\"fix\":");
-		if (f->fix == FS_HEALTH_FIX_NONE) {
-			g_string_append (out, "null,");
-			fs_json_kv_str (out, "no_fix_reason", f->no_fix_reason);
-			/* A fix that was tried and failed its checks: what it
-			 * would have changed and the checks, which the reason
-			 * points to. */
-			if (f->checks != NULL && f->checks->len > 0) {
-				g_string_append (out, ",\"tried\":{");
-				fs_json_kv_str (out, "before", f->fix_before);
-				g_string_append_c (out, ',');
-				fs_json_kv_str (out, "after", f->fix_after);
-				g_string_append_c (out, ',');
-				health_checks_json (out, f->checks);
-				g_string_append_c (out, '}');
-			}
-		} else {
-			g_string_append_c (out, '{');
-			fs_json_kv_str (out, "label", f->fix_label);
-			g_string_append_c (out, ',');
-			fs_json_kv_str (out, "before", f->fix_before);
-			g_string_append_c (out, ',');
-			fs_json_kv_str (out, "after", f->fix_after);
-			g_string_append_c (out, ',');
-			fs_json_kv_bool (out, "verified", f->verified);
-			g_string_append_c (out, ',');
-			health_checks_json (out, f->checks);
-			g_string_append_c (out, '}');
-		}
-		g_string_append_c (out, '}');
-	}
-	g_string_append (out, "]}");
-}
-
-/* [ copilot_health ]
- * The Copilot page's policy health check on the saved policy, with the
- * same What-If context `simulate' builds.  It writes nothing: a fix is
- * printed with the checks that verify it, and making it stays with the
- * desktop app (or `stockfw policy').  Exit 0 with no findings, 7 with
- * findings, 2 when the policy cannot be read in full. */
-static gint
-copilot_health (void)
-{
-	gint malformed = 0;
-	FsPolicy *policy = fs_cli_load_policy (NULL, &malformed);
-	FsSettings *settings;
-	FsWhatIfContext *ctx;
-	GPtrArray *findings;
-	gchar *prefix;
-	guint rules = 0;
-	gint status;
-
-	if (malformed > 0) {
-		fs_cli_error ("%d policy row(s) could not be read, so the check "
-		              "would be incomplete", malformed);
-		fs_cli_hint ("see `stockfw policy list'");
-		fs_policy_free (policy);
-		return FS_EXIT_USAGE;
-	}
-	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
-		rules += policy->kinds[k]->len;
-
-	settings = fs_settings_new ();
-	fs_settings_load_prefs (settings);
-	ctx = fs_whatif_context_new (fs_whatif_native_platform (), policy,
-	                             settings);
-	fs_copilot_whatif_observe (ctx, fs_backend (), geteuid () == 0);
-	prefix = fs_health_lan_prefix_auto (fs_backend ());
-	findings = fs_health_check (ctx, prefix);
-	status = findings->len > 0 ? FS_EXIT_FINDINGS : FS_EXIT_OK;
-
-	if (fs_cli.json) {
-		GString *out = g_string_new (NULL);
-
-		health_json (out, findings, rules, ctx->platform);
-		fs_cli_print_json (out);
-		g_string_free (out, TRUE);
-	} else {
-		printf ("%s%u rules checked, %u finding%s%s\n", fs_cli_bold (),
-		        rules, findings->len, findings->len == 1 ? "" : "s",
-		        fs_cli_reset ());
-		for (guint i = 0; i < findings->len; i++) {
-			const FsHealthFinding *f = g_ptr_array_index (findings, i);
-			const gchar *colour =
-				f->severity == FS_COPILOT_CRITICAL ? fs_cli_red ()
-				: f->severity == FS_COPILOT_WARNING ? fs_cli_amber ()
-				                                    : fs_cli_dim ();
-
-			printf ("\n%s[%s]%s %s\n", colour,
-			        fs_health_severity_name (f->severity),
-			        fs_cli_reset (), f->title);
-			printf ("  rule:  %s #%d: %s\n",
-			        fs_health_rule_kind_name ((FsRuleKind) f->policy_kind),
-			        f->policy_index + 1, f->rule_csv);
-			if (f->why != NULL)
-				printf ("  why:   %s\n", f->why);
-			if (f->fix != FS_HEALTH_FIX_NONE && f->verified) {
-				printf ("  fix:   %s: %s -> %s\n", f->fix_label,
-				        f->fix_before,
-				        f->fix_after != NULL ? f->fix_after : "(removed)");
-				for (guint k = 0; k < f->checks->len; k++) {
-					const FsHealthCheck *c =
-						g_ptr_array_index (f->checks, k);
-
-					printf ("         checked: %s: %s -> %s\n", c->probe,
-					        fs_whatif_verdict_name (c->before),
-					        fs_whatif_verdict_name (c->after));
-				}
-			} else if (f->no_fix_reason != NULL) {
-				printf ("  %sno fix offered: %s%s\n", fs_cli_dim (),
-				        f->no_fix_reason, fs_cli_reset ());
-				if (f->checks != NULL && f->checks->len > 0)
-					printf ("  tried: %s -> %s\n", f->fix_before,
-					        f->fix_after != NULL ? f->fix_after
-					                             : "(removed)");
-				for (guint k = 0; f->checks != NULL &&
-				                  k < f->checks->len; k++) {
-					const FsHealthCheck *c =
-						g_ptr_array_index (f->checks, k);
-
-					printf ("         checked: %s: %s -> %s\n", c->probe,
-					        fs_whatif_verdict_name (c->before),
-					        fs_whatif_verdict_name (c->after));
-				}
-			}
-		}
-		if (findings->len == 0)
-			printf ("No overlaps, conflicts or open risky services.\n");
-		printf ("%sA check only: nothing was written. Fixes are made on "
-		        "the Copilot page.%s\n", fs_cli_dim (), fs_cli_reset ());
-	}
-
-	g_ptr_array_unref (findings);
-	g_free (prefix);
-	fs_whatif_context_free (ctx);
-	fs_settings_free (settings);
-	fs_policy_free (policy);
-	return status;
-}
-
-/* [ fs_cli_cmd_copilot ] */
-gint
-fs_cli_cmd_copilot (gint argc, gchar **argv)
-{
-	if (argc < 2 || strcmp (argv[1], "health") != 0) {
-		fs_cli_error ("copilot needs a subcommand");
-		fs_cli_hint ("stockfw copilot health [--json]");
-		return FS_EXIT_USAGE;
-	}
-	if (argc > 2) {
-		fs_cli_error ("unexpected argument: %s", argv[2]);
-		fs_cli_hint ("stockfw copilot health [--json]");
-		return FS_EXIT_USAGE;
-	}
-	return copilot_health ();
-}

@@ -13,6 +13,36 @@ into `/usr/local/share/doc/stockfw/`.
 
 ## [Unreleased]
 
+### Command line (stockfw)
+
+<!-- WP-A -->
+- **Options are read the way you meant them.** The word after an option
+  that takes a value is that value: `--comment -h` saves the comment
+  `-h`. Everything after `--` is a plain word. An option a command does
+  not know is refused (exit 2) instead of being ignored or, in
+  `simulate`, folded into the question. A mistyped command or option
+  gets "did you mean ...?".
+- **New global options.** `--plain` (`-H`) prints tab-separated rows
+  with no header and no colour, `--full` (`-l`) never cuts a column,
+  and `--color=auto|always|never` sets colour. Colour on stdout now
+  follows stdout alone. `-q` leaves out hints, notes and legends, and
+  `stockfw -q simulate ...` prints only the verdict word.
+- **Tables fit the terminal, and only the terminal.** A pipe or a file
+  gets every character. IPv6 addresses in `events` are shown short.
+  Symbols fall back to ASCII outside a UTF-8 locale.
+- **Hints you can run.** A hint that needs root names the program by its
+  full path and repeats your words, so `sudo` finds it.
+- **Text from logs and comments is escaped.** Control characters and
+  bidi controls are printed as `\xNN` or `\uNNNN`, never raw.
+- `stockfw version` prints one line: `stockfw 1.0.7 · Linux (nftables)`.
+  `help help`, `help version` and `help intel geo` work.
+<!-- WP-B -->
+<!-- WP-C -->
+<!-- WP-D -->
+<!-- WP-F -->
+<!-- WP-E -->
+
+
 ### Fixed
 
 - **Wayland desktops and WSL: no tray icon, no start-up warning.** GTK
