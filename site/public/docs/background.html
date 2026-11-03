@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Background and the tray · StockFW</title>
-<meta name="description" content="Keeping StockFW running after the window closes: the tray icon and its menu, what the tooltip tells you, what Quit does and does not do, and where tray icons do not work.">
+<title>Background, tray and sign-in · StockFW</title>
+<meta name="description" content="Keeping StockFW running after the window closes: the tray icon and its menu, starting hidden, one copy per user, Start at sign-in on Windows and Linux, the Linux boot service, and what Quit does and does not do.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
-<meta property="og:title" content="Background and the tray · StockFW">
-<meta property="og:description" content="Keeping StockFW running after the window closes: the tray icon and its menu, what the tooltip tells you, what Quit does and does not do, and where tray icons do not work.">
+<meta property="og:title" content="Background, tray and sign-in · StockFW">
+<meta property="og:description" content="Keeping StockFW running after the window closes: the tray icon and its menu, starting hidden, one copy per user, Start at sign-in on Windows and Linux, the Linux boot service, and what Quit does and does not do.">
 <meta property="og:type" content="website">
 <link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
@@ -64,7 +64,8 @@
 			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
 			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
 			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
-			<li><a href="../docs/background.html" aria-current="page"><span>Background and the tray</span></a></li>
+			<li><a href="../docs/background.html" aria-current="page"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
 		</ul>
 		<h2>Protection</h2>
 		<ul>
@@ -92,40 +93,52 @@
 		</button>
 		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
 		<article class="prose">
-<h1>Background and the tray</h1>
-<p class="lede">The firewall engine runs whether StockFW is open or not; StockFW in the background is what keeps watching events, learning behaviour and, in auto mode, letting Sentinel act. The tray icon is how you know it is there and how you get it back.</p>
+<h1>Background, tray and sign-in</h1>
+<p class="lede">The firewall engine runs whether StockFW is open or not; StockFW in the background is what keeps watching events, learning, and, in auto mode, letting Sentinel act. The tray icon is how you know it is there and how you get it back.</p>
 
 <h2 id="turning-it-on">Turning it on<a class="anchor" href="#turning-it-on" aria-label="Link to this section">#</a></h2>
-<p>Two settings on the <a href="../docs/preferences.html">Interface preference page</a>, both on by default: <em>Show a tray icon</em> and <em>Minimize to the tray</em>. With both on, closing or minimising the window hides it and StockFW keeps running. With the icon off, closing the window quits the program; StockFW will not hide a window it cannot give back, because a background process with no way to reopen it would be a zombie with root rights. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-tray-smoke</span></p>
+<p>Two settings on <a href="../docs/preferences.html">Preferences › General</a>, both on by default: <em>Show a tray icon</em> and <em>Close and minimize to the tray</em>. With both on, closing or minimising the window hides it and StockFW keeps running. With the icon off, closing the window quits the program; StockFW will not hide a window it cannot give back, because a background process with no way to reopen it would be a zombie with root rights. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-tray-smoke</span></p>
+
+<h2 id="starting-hidden">Starting hidden<a class="anchor" href="#starting-hidden" aria-label="Link to this section">#</a></h2>
+<p><code>StockFW --background</code> (or <code>--minimized</code>) starts StockFW in the notification area with the window hidden. The Events page and everything behind it are built whether or not the window is shown, so a hidden copy lists and saves events exactly as a visible one does. If no notification area takes the icon, the window is shown instead, so nothing runs invisibly. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-instance.sh</span></p>
+
+<h2 id="one-copy-per-user">One copy per user<a class="anchor" href="#one-copy-per-user" aria-label="Link to this section">#</a></h2>
+<p>Starting StockFW again does not start a second one: the launch hands over to the running copy and brings its window forward, then exits. <code>StockFW --quit</code> asks the running copy to quit cleanly, saving its settings on the way. A launch with more rights takes over from a copy with fewer: <code>sudo StockFW</code> replaces your unprivileged copy, and on Windows <em>StockFW (Elevated)</em> replaces the ordinary one, after the old copy has closed its files. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-instance.sh</span></p>
 
 <h2 id="the-icon-and-its-tooltip">The icon and its tooltip<a class="anchor" href="#the-icon-and-its-tooltip" aria-label="Link to this section">#</a></h2>
 <p>The tooltip reads <em>StockFW, Protected</em> or <em>StockFW, Not protected</em>, with the engine’s name, from the same state the Overview shows; when the state cannot be read it says <em>Firewall state is unknown</em> rather than guessing. The icon follows the state too, so the answer to “is my firewall running?” is one glance.</p>
 
 <h2 id="the-menu">The menu<a class="anchor" href="#the-menu" aria-label="Link to this section">#</a></h2>
 <ul>
+<li>A <strong>status header</strong>: the firewall state and the last few blocks, live.</li>
 <li><strong>Open StockFW</strong> brings the window back.</li>
-<li><strong>About StockFW</strong> shows the version and credits.</li>
-<li><strong>Quit StockFW</strong> ends the program. It does <em>not</em> stop the firewall: the engine keeps enforcing whatever was last applied, exactly as it would if StockFW crashed. To stop filtering, open the window and press <strong>Stop firewall</strong>, or run <code>sudo stockfw stop</code>.</li>
+<li><strong>Pause protection</strong> and <strong>Pause Sentinel</strong>, and <strong>Start firewall</strong> or <strong>Stop firewall</strong>, so the common actions never need the window. What the running copy cannot do, because it has no root or administrator rights, is greyed with the reason rather than offered and failed.</li>
+<li><strong>Start at sign-in</strong>, a switch; see below.</li>
+<li><strong>Preferences</strong>, <strong>Help</strong> (opens the Help window at the “Running in the background” topic, leaving the main window hidden) and <strong>About StockFW</strong>.</li>
+<li><strong>Quit StockFW</strong> ends the program. It does <em>not</em> stop the firewall: the engine keeps enforcing whatever was last applied, exactly as it would if StockFW crashed. To stop filtering, use <strong>Stop firewall</strong> here or in the window, or run <code>sudo stockfw stop</code>.</li>
 </ul>
-<p>The tray menu also shows the firewall state, the last few blocks and the Sentinel mode, and has <strong>Start firewall</strong> and <strong>Stop firewall</strong>, so the common actions never need the window. Quit stays a plain quit.</p>
+
+<h2 id="sign-in">Start at sign-in<a class="anchor" href="#sign-in" aria-label="Link to this section">#</a></h2>
+<p>From the tray menu, from <em>Preferences › General</em>, or with <code>StockFW --enable-autostart</code> and <code>--disable-autostart</code>. On Windows it is a Task Scheduler task that runs without administrator rights, so no UAC prompt appears at sign-in; on Linux it is an XDG autostart entry in <code>~/.config/autostart</code>. Both start the unprivileged copy in the background: it monitors and learns, shows the firewall state as it can read it, and the elevated shortcut or <code>sudo</code> is still what changes the firewall. The uninstaller removes your entry. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-autostart.sh</span></p>
+
+<h2 id="at-boot-before-anyone-signs-in">At boot, before anyone signs in<a class="anchor" href="#at-boot-before-anyone-signs-in" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Windows</span> Windows Firewall rules persist, so StockFW’s rules are in force from boot. <span class="plat">Linux</span> iptables rules are gone at boot, so the Linux installer enables <code>stockfw.service</code>, which loads the last policy applied as root before the network comes up. The service and StockFW in the tray are separate things: one puts the rules back, the other watches them. <a href="../docs/install-linux.html#at-boot">At boot</a> has the details. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-boot-start.sh</span></p>
 
 <h2 id="what-runs-in-the-background">What runs in the background<a class="anchor" href="#what-runs-in-the-background" aria-label="Link to this section">#</a></h2>
 <ul>
-<li>Event monitoring, and everything fed by it: the Activity counters, the Copilot’s baseline, Sentinel’s detectors.</li>
+<li>Event monitoring, and everything fed by it: the Activity counters, the Copilot’s checks and what it learns, Sentinel’s detectors, and the event history if you keep one.</li>
 <li>Sentinel’s ten-minute expiry timer for auto-blocks.</li>
-<li><span class="plat">Linux</span> The hourly check for threat-intel feed updates, for the feeds you have turned on.</li>
+<li>The hourly check for threat-intel feed updates, for the feeds you have turned on.</li>
+<li>Saving: settings and what the Copilot has learned are written every five minutes when they changed, and when the session ends, so a crash loses at most five minutes.</li>
 </ul>
-<p>Memory stays flat: the Activity series are fixed-size rings, the Events list keeps 2,000 rows, the Copilot keeps 200 insights, and a 150-second soak at full event rate found no growth. <span class="ev ev-measured" title="A number from an experiment that was actually run."><b>Measured</b> 150-second soak, docs chapter 9</span></p>
+<p>Memory stays flat: the Activity series are fixed-size rings, the Events list is a fixed ring of the size you chose (about 7 MB at the default 100,000), the Copilot keeps the last 100 changes, and a 150-second soak at full event rate found no growth. <span class="ev ev-measured" title="A number from an experiment that was actually run."><b>Measured</b> 150-second soak, docs chapter 9</span></p>
 
 <h2 id="where-the-icon-cannot-appear">Where the icon cannot appear<a class="anchor" href="#where-the-icon-cannot-appear" aria-label="Link to this section">#</a></h2>
-<p>A tray needs a tray host. GNOME has not shipped one since 3.26; the <em>AppIndicator</em> extension restores it, and KDE, XFCE, MATE, Cinnamon and Windows have one built in. Without a host the icon simply does not show, the window keeps working, and closing it quits, so nothing is lost. The project’s own tray test fails on a headless machine for this reason, and is expected to. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></p>
-
-<h2 id="starting-at-login">Starting at login<a class="anchor" href="#starting-at-login" aria-label="Link to this section">#</a></h2>
-<p>StockFW does not install itself as a login item or a service. On Windows the elevated shortcut needs a UAC prompt, which a silent start cannot give, so an autostart entry would start the unprivileged copy. On Linux a desktop autostart entry under <code>~/.config/autostart/</code> runs as you, not as root, with the same limits. If you want the firewall itself in force at boot, see <a href="../docs/faq.html#reboot">what happens at reboot</a>.</p>
+<p>A tray needs a tray host. GNOME has not shipped one since 3.26; the <em>AppIndicator</em> extension restores it, and KDE, XFCE, MATE, Cinnamon and Windows have one built in. Without a host the icon simply does not show, the window keeps working (a hidden start shows it), and closing it quits, so nothing is lost. The project’s own tray test fails on a headless machine for this reason, and is expected to. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></p>
 
 		</article>
 		<footer class="doc-foot">
-			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/preferences.html"><span>Previous</span><strong>Preferences</strong></a><a class="next" href="../docs/security.html"><span>Next</span><strong>Security model</strong></a></nav>
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/preferences.html"><span>Previous</span><strong>Preferences</strong></a><a class="next" href="../docs/help.html"><span>Next</span><strong>Help and About</strong></a></nav>
 			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/background.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
@@ -133,11 +146,14 @@
 		<h2>On this page</h2>
 		<ul>
 			<li class="lvl2"><a href="#turning-it-on">Turning it on</a></li>
+			<li class="lvl2"><a href="#starting-hidden">Starting hidden</a></li>
+			<li class="lvl2"><a href="#one-copy-per-user">One copy per user</a></li>
 			<li class="lvl2"><a href="#the-icon-and-its-tooltip">The icon and its tooltip</a></li>
 			<li class="lvl2"><a href="#the-menu">The menu</a></li>
+			<li class="lvl2"><a href="#sign-in">Start at sign-in</a></li>
+			<li class="lvl2"><a href="#at-boot-before-anyone-signs-in">At boot, before anyone signs in</a></li>
 			<li class="lvl2"><a href="#what-runs-in-the-background">What runs in the background</a></li>
 			<li class="lvl2"><a href="#where-the-icon-cannot-appear">Where the icon cannot appear</a></li>
-			<li class="lvl2"><a href="#starting-at-login">Starting at login</a></li>
 		</ul>
 	</aside>
 </div>

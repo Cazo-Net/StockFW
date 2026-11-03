@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Threat-intel blocklists · StockFW</title>
-<meta name="description" content="Blocking known-bad address ranges from published feeds: which feeds, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.">
+<meta name="description" content="Blocking known-bad address ranges from published feeds on Linux and Windows: which feeds, how consent and downloads work, what can never be blocked, how the lists reach nftables or Windows Firewall, and how to tell what the engine is really doing.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Threat-intel blocklists · StockFW">
-<meta property="og:description" content="Blocking known-bad address ranges from published feeds: which feeds, how consent and downloads work, what can never be blocked, how the lists reach nftables, and how to tell what the kernel is really doing.">
+<meta property="og:description" content="Blocking known-bad address ranges from published feeds on Linux and Windows: which feeds, how consent and downloads work, what can never be blocked, how the lists reach nftables or Windows Firewall, and how to tell what the engine is really doing.">
 <meta property="og:type" content="website">
 <link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
@@ -64,7 +64,8 @@
 			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
 			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
 			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
-			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
 		</ul>
 		<h2>Protection</h2>
 		<ul>
@@ -95,7 +96,9 @@
 <h1>Threat-intel blocklists</h1>
 <p class="lede">A policy says what <em>you</em> allow. A blocklist says what the wider community has seen attacking, hosting botnet controllers or spraying brute-force logins, as address ranges that are refused on sight. StockFW brings well-known feeds in, off until you turn each one on, with the same discipline as the rest of the app: nothing silent, nothing that cannot be undone, and the kernel’s real state shown rather than the configuration.</p>
 
-<p><span class="plat">Linux</span> Blocklists are enforced on Linux, through nftables. On Windows the Threat Intel page says blocklists are not available there, and the policy alone is in force. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span> The design, with its review findings, is <code>docs/1.0.7-threat-intel-design.md</code> in the repository.</p>
+<figure class="shot"><img src="../assets/screens/intel.webp" alt="The Threat Intel page: a state card reading Off with the Use blocklists switch, tiles for lists on, entries, blocked and last update, and the Blocklists card listing Spamhaus DROP for IPv4 and IPv6, abuse.ch Feodo Tracker and DShield, each with its tags, terms link, data credit and an off switch." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Every list is off until you turn it on and accept its terms. The state card says what the kernel is really doing, not what is configured.</figcaption></figure>
+
+<p><span class="plat">Linux</span> On Linux the lists are one nftables table of StockFW’s own. <span class="plat">Windows</span> On Windows they are Windows Firewall rules in StockFW’s own rule group, <em>StockFW Threat Intel</em>. The engine, the store’s formats, the build of the rule set and every safety subtraction are the same code on both. Blocking by <a href="../docs/country-blocking.html">country or network owner</a> is Linux only in this version. The design, with its review findings, is <code>docs/design/1.0.7-threat-intel-design.md</code> in the repository.</p>
 
 <h2 id="the-feeds">The feeds<a class="anchor" href="#the-feeds" aria-label="Link to this section">#</a></h2>
 <p>Every feed is off until you switch it on and accept its terms. A feed is fetched from its own publisher or not at all: no mirrors, no aggregator of StockFW’s own. Each entry carries the host it contacts, its information and terms pages, the licence <em>where it has been verified</em> (otherwise “See the provider’s terms”), whether it is for non-commercial use only, its format, its default direction and how often it updates.</p>
@@ -115,10 +118,10 @@
 </table>
 </div>
 <p>A custom feed is any URL that passes the URL rule, with a name, a format and a direction; typing the URL is your consent for that host. A local list is a CSV or plain file you import yourself, with no network involved.</p>
-<p><strong>Direction</strong> means what it means for Windows’ stateful rules: <em>in</em> stops them connecting to you, <em>out</em> stops you connecting to them, <em>both</em> does both. Replies to connections you opened are never affected by an <em>in</em> list.</p>
+<p><strong>Direction</strong> means what it means for a stateful firewall: <em>in</em> stops them connecting to you, <em>out</em> stops you connecting to them, <em>both</em> does both. Replies to connections you opened are never affected by an <em>in</em> list.</p>
 
 <h2 id="consent">Consent<a class="anchor" href="#consent" aria-label="Link to this section">#</a></h2>
-<p>The first time you turn a feed on, a dialog says which host will be contacted and how often, what that host learns (your public address and the string <code>StockFW/<em>version</em></code>), the licence and a link to the terms, and that lists contain mistakes and how to make an exception. Only after Accept does anything download. Updates run hourly in the desktop app and from <code>stockfw intel update</code> for cron or a timer; a failed or refused update never removes the previous copy.</p>
+<p>The first time you turn a feed on, a dialog says which host will be contacted and how often, what that host learns (your public address and the string <code>StockFW/<em>version</em></code>), the licence and a link to the terms, and that lists contain mistakes and how to make an exception. Only after Accept does anything download; with nothing turned on StockFW makes no network request at all. Downloads use <code>curl</code> from the system folder, by absolute path, with size caps and timeouts; behind a proxy, set it on the page or with <code>stockfw intel proxy</code> (one with a user name or password is refused, because a command line is readable by every local user). While StockFW runs it checks hourly for feeds that are due; while it is closed nothing updates them except <code>stockfw intel update</code> from cron or a timer. A failed or refused update never removes the previous copy, and a copy that shrank to almost nothing, rolled back to an older date or jumped in coverage is refused until you accept it.</p>
 
 <h2 id="what-a-feed-is-checked-for">What a feed is checked for<a class="anchor" href="#what-a-feed-is-checked-for" aria-label="Link to this section">#</a></h2>
 <p>A downloaded file is text from the internet and is treated as hostile until it has passed every guard: a 64 MB size cap before it is read; strict parsing (addresses, CIDRs and <code>a-b</code> ranges, never names); no single IPv4 interval wider than a /8 and no IPv6 interval wider than a /16; no more than an eighth of the IPv4 space in one list; a list that is empty or mostly unparseable is refused and the set keeps what it had; and a sudden shrink is judged against the previous size. Content dates are read where a format has one, and a list older than seven update intervals is marked stale. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-feed.c</span></p>
@@ -129,45 +132,47 @@
 <li>loopback, link-local, multicast, the private ranges, carrier NAT, the reserved and documentation ranges, and the NAT64 prefixes;</li>
 <li>your own exceptions;</li>
 <li>this computer’s own addresses, its connected prefixes and its default gateways;</li>
-<li>the DNS servers in use, read from <code>/etc/resolv.conf</code> and, when those are loopback stubs, from systemd-resolved’s and NetworkManager’s real lists;</li>
-<li>the peer of your SSH session and every established inbound SSH connection, so a list cannot lock you out of the machine you are configuring it on;</li>
+<li>the DNS servers in use, on Linux read from <code>/etc/resolv.conf</code> and, when those are loopback stubs, from systemd-resolved’s and NetworkManager’s real lists, on Windows from the adapters;</li>
+<li>the peer of your SSH or Remote Desktop session and every established inbound SSH or RDP connection, so a list cannot lock you out of the machine you are configuring it on;</li>
 <li>the feeds’ own hosts, so a list cannot block its own updates.</li>
 </ul>
 <p>Then, for sets that block outbound, each IPv4 interval is also added to the IPv6 set inside <code>64:ff9b::/96</code>, so NAT64 does not bypass the list. Over all sets there are at most 300,000 intervals; above that the build fails and names the largest sets.</p>
 
-<h2 id="how-it-reaches-the-kernel">How it reaches the kernel<a class="anchor" href="#how-it-reaches-the-kernel" aria-label="Link to this section">#</a></h2>
+<h2 id="how-it-reaches-the-engine">How it reaches the engine<a class="anchor" href="#how-it-reaches-the-engine" aria-label="Link to this section">#</a></h2>
 <p><span class="plat">Linux</span> One nftables table, <code>inet stockfw_intel</code>, owned by StockFW and replaced in a single <code>nft -f -</code> transaction, so it applies whole or not at all and a failed apply leaves the previous table in force. The script goes to <code>nft</code> on standard input through <code>GSubprocess</code>; no shell ever sees an address. Three base chains at priority <code>filter - 10</code> run <em>before</em> the iptables policy, so a listed address is refused even if a policy rule would have allowed it. Inbound drops are silent to the outside; outbound blocks reject with <em>administratively prohibited</em>, so a local program fails at once instead of hanging. Each blocking rule logs with the prefix <code>STOCKFW-TI <em>list</em></code>, rate-limited, and carries a counter. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-intelset.sh</span></p>
-<p>The policy and the lists never touch each other’s tables. Applying, reloading or clearing the policy leaves the threat-intel table alone. The user-facing <strong>Stop firewall</strong> suspends the lists as well, and <strong>Start</strong> resumes them, because “stop the firewall” should mean what it says. On Linux nothing survives a reboot, policy or lists, until Start is pressed; the page and <a href="../docs/faq.html#reboot">the FAQ</a> say so.</p>
+<p><span class="plat">Windows</span> On Windows the rules are written and read in-process through the firewall’s COM interfaces (no <code>netsh</code>, no PowerShell), all in the group <em>StockFW Threat Intel</em>; the policy’s rules are named <code>StockFW-…</code> outside it, so neither apply nor clear touches the other. Each rule blocks one direction and one address family for at most a thousand ranges, and the whole set is replaced as one unit. Windows Firewall keeps no per-rule count, so the page says it cannot show how many connections each list blocked, and the Security log names no list, so an Events row on Windows shows the block without the list’s name. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span> The store is <code>%ProgramData%\StockFW\intel</code>, readable by administrators only. There is no <code>stockfw intel</code> on Windows; the page is the whole tool there.</p>
+<p>The policy and the lists never touch each other. Applying, reloading or clearing the policy leaves the threat-intel table or rule group alone. The user-facing <strong>Stop firewall</strong> suspends the lists as well, and <strong>Start</strong> resumes them, because “stop the firewall” should mean what it says. On Linux the boot service brings the lists back with the policy; see <a href="../docs/faq.html#reboot">the FAQ</a>.</p>
 
 <h2 id="what-the-kernel-is-really-doing">What the kernel is really doing<a class="anchor" href="#what-the-kernel-is-really-doing" aria-label="Link to this section">#</a></h2>
-<p>The table carries a digest of the rule set that produced it. Every surface compares the live table with what StockFW last applied and shows one of these states, never just the configuration:</p>
+<p>The table, or the rule group, carries a digest of the rule set that produced it. Every surface compares what is live with what StockFW last applied and shows one of these states, never just the configuration:</p>
 <div class="tbl-wrap">
 <table class="tbl">
 <thead><tr><th>State</th><th>Meaning</th></tr></thead>
 <tbody>
 <tr><td>off</td><td>The master switch is off, or no list is enabled.</td></tr>
 <tr><td>enforced</td><td>The live table is the one StockFW last applied.</td></tr>
-<tr><td>not loaded</td><td>Something should be enforced but the table is missing: a reboot, or someone ran <code>nft flush ruleset</code>.</td></tr>
-<tr><td>differs</td><td>A table is there, but not the one StockFW applied.</td></tr>
+<tr><td>not loaded</td><td>Something should be enforced but the table or rule group is missing: a reboot without the boot service, or someone ran <code>nft flush ruleset</code>.</td></tr>
+<tr><td>differs</td><td>A table or rule group is there, but not the one StockFW applied.</td></tr>
 <tr><td>suspended</td><td>You stopped the firewall, so the lists are off on purpose.</td></tr>
-<tr><td>unsupported, needs root, unknown</td><td>Cannot enforce here, cannot read the kernel, cannot tell.</td></tr>
+<tr><td>unsupported, needs rights, unknown</td><td>Cannot enforce here (<code>nft</code> missing), cannot read the engine without root or administrator rights, cannot tell.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Counters survive updates: before a set is replaced, its live count is added to the list’s carried total, so “blocked 1,204 since 3 November” stays true.</p>
+<p><span class="plat">Linux</span> Counters survive updates: before a set is replaced, its live count is added to the list’s carried total, so “blocked 1,204 since 3 November” stays true.</p>
 
 <h2 id="where-it-shows-up">Where it shows up<a class="anchor" href="#where-it-shows-up" aria-label="Link to this section">#</a></h2>
 <ul>
-<li><strong>Threat Intel page:</strong> the state in words, the master switch, each feed with its licence, direction, entry count, content age, status and blocks; Update now and Apply; local lists; exceptions; a lookup box; the notes from the last build.</li>
-<li><strong>Events:</strong> a block by a list shows the list’s name as its rule. For such an address the right-click <em>Allow</em> becomes <em>Add exception</em>, because an allow rule would not beat the list.</li>
-<li><strong>Overview:</strong> one line with the state and how many lists are enforced.</li>
-<li><strong>What-if:</strong> an address the policy allows but a list blocks is answered “Blocked by threat intel: <em>list</em>”.</li>
-<li><strong>Command line:</strong> <code>stockfw intel status | feeds | enable | disable | update | apply | clear | import | remove | except | unexcept | exceptions | lookup | on | off</code>, each with <code>--json</code>; <code>stockfw status</code> gains an <code>intel</code> object.</li>
+<li><strong>Threat Intel page:</strong> the state in words, the master switch, each feed with its licence, direction, entry count, content age, status and blocks; Update now and Apply; your own lists; exceptions; a lookup box that says which lists hold an address and whether it is blocked right now; the <em>Countries and networks</em> card; the notes from the last build. Every job runs off the main thread, so the page never freezes on a download.</li>
+<li><strong>Events:</strong> <span class="plat">Linux</span> a block by a list shows the list’s name as its rule, and for such an address the right-click <em>Allow</em> becomes <em>Add exception</em>, because an allow rule would not beat the list. <span class="plat">Windows</span> The Security log names no list, so the row shows the block only.</li>
+<li><strong>Overview and dashboard:</strong> one line with the state and how many lists are enforced; the dashboard’s <code>/api/intel</code>.</li>
+<li><strong>Copilot:</strong> a <em>Block list</em> finding when a list blocked a connection (Linux, where the event names the list). It offers neither <em>Ask What-If</em> nor a block, because the address is blocked already.</li>
+<li><strong>What-If</strong> does not consult the lists: it answers from the policy and says so under <em>Good to know</em>. The lookup box is the question to ask about a listed address.</li>
+<li><strong>Command line:</strong> <span class="plat">Linux</span> <code>stockfw intel status | feeds | terms | enable | disable | on | off | add-feed | proxy | update | apply | clear | import | lists | remove | except | unexcept | exceptions | lookup</code> and <code>stockfw intel geo …</code>, each with <code>--json</code>; <code>stockfw status</code> gains an <code>intel</code> object. <code>intel lookup</code> exits 5 when the address is blocked, so a script can branch on it.</li>
 <li><strong>Audit log:</strong> every apply, update, consent, exception and suspend is a line.</li>
 </ul>
 
 <h2 id="files">Files<a class="anchor" href="#files" aria-label="Link to this section">#</a></h2>
-<p><span class="plat">Linux</span> <code>/var/lib/stockfw/intel/</code>, owned by root, mode 0700: <code>intel.conf</code> (switches, feeds, custom feeds, local lists, exceptions), one <code>.list</code> and one <code>.state</code> per list, and <code>applied.state</code> for what the kernel was last given. Files are opened without following symlinks, read with a size cap, and written to a fresh name then renamed. A stored list is re-checked against the guards when loaded, so a tampered file is an error, not a block.</p>
+<p><span class="plat">Linux</span> <code>/var/lib/stockfw/intel/</code>, owned by root, mode 0700. <span class="plat">Windows</span> <code>%ProgramData%\StockFW\intel</code>, administrators and SYSTEM only. In both: <code>intel.conf</code> (switches, feeds, custom feeds, local lists, exceptions, the proxy, the country and network rules), one <code>.list</code> and one <code>.state</code> per list, the location database, and <code>applied.state</code> for what the engine was last given. Files are opened without following symlinks, read with a size cap, and written to a fresh name then renamed. A stored list is re-checked against the guards when loaded, so a tampered file is an error, not a block. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-intel.c</span></p>
 
 		</article>
 		<footer class="doc-foot">
@@ -182,7 +187,7 @@
 			<li class="lvl2"><a href="#consent">Consent</a></li>
 			<li class="lvl2"><a href="#what-a-feed-is-checked-for">What a feed is checked for</a></li>
 			<li class="lvl2"><a href="#what-can-never-be-blocked">What can never be blocked</a></li>
-			<li class="lvl2"><a href="#how-it-reaches-the-kernel">How it reaches the kernel</a></li>
+			<li class="lvl2"><a href="#how-it-reaches-the-engine">How it reaches the engine</a></li>
 			<li class="lvl2"><a href="#what-the-kernel-is-really-doing">What the kernel is really doing</a></li>
 			<li class="lvl2"><a href="#where-it-shows-up">Where it shows up</a></li>
 			<li class="lvl2"><a href="#files">Files</a></li>

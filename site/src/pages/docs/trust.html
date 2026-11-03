@@ -7,7 +7,7 @@ description: The Trust page: inspecting a program’s hash and signature, scanni
 <h1>Trust</h1>
 <p class="lede">A firewall decides by address and port, but the question behind most of its events is “do I trust the program that made this connection?”. The Trust page answers that for one file at a time: who signed it, what its hash is, and whether it is still the file you approved.</p>
 
-[[shot:trust|The Trust page: a path box with Inspect, Refresh list and Scan processes buttons, a report for /usr/bin/nc.openbsd with its SHA-256 and “Matches the attested baseline”, and a baseline list of three programs marked in sync.|Three attested programs, all in sync with their baseline. On Linux the signature line reads “not checked” rather than guessing.]]
+[[shot:trust|The Trust page: a path box with Inspect, Refresh list and Scan processes buttons, a report for /usr/bin/nc.openbsd with its SHA-256, size, modification time and “Matches the attested baseline”, and a baseline list of three programs, curl, nc.openbsd and python3.13, each marked in sync.|Three attested programs, all in sync with their baseline. On Linux there is no code signature to read, so Publisher says “no signer” rather than guessing.]]
 
 <h2>Inspect a file</h2>
 <p>Type or paste a path and press <strong>Inspect</strong>. The report shows the file, its publisher, its signature state, the SHA-256 of its bytes, size, modification time, and how it compares with the baseline. Hashing a large executable takes a moment and runs off the main thread; the page says “Hashing and checking the signature…” and refuses a second task until the first finishes, so two reports can never be mixed up. [[verified:ui-trustview-smoke]]</p>

@@ -64,7 +64,8 @@
 			<li><a href="../docs/simulator.html" aria-current="page"><span>What-if simulator</span></a></li>
 			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
 			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
-			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
 		</ul>
 		<h2>Protection</h2>
 		<ul>
@@ -195,7 +196,7 @@ A simulation only: nothing was written.
 <ul>
 <li>It answers from StockFW’s own policy and preferences, not from the engine. A rule someone added directly in <code>wf.msc</code> or with <code>iptables</code> is not seen. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></li>
 <li>It answers about a <em>new</em> connection. Replies to a connection already open are always allowed, and the trace says so in its first step.</li>
-<li><span class="plat">Linux</span> Threat-intel blocklists are enforced before the policy, in their own table, and the simulator does not consult them: an address a list blocks can be answered ALLOWED here. The Threat Intel page’s lookup box answers that question. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></li>
+<li>Threat-intel blocklists and the country and network rules are enforced before the policy, in their own table on Linux and their own rule group on Windows, and the simulator does not consult them: an address a list blocks can be answered ALLOWED here, and the window’s <em>Good to know</em> card says so. The Threat Intel page’s lookup box and <code>stockfw intel lookup</code> answer that question. The Copilot knows the difference: a finding about an address a list already blocks offers neither <em>Ask What-If</em> nor a block. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></li>
 </ul>
 
 		</article>

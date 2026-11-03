@@ -64,7 +64,8 @@
 			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
 			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
 			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
-			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
 		</ul>
 		<h2>Protection</h2>
 		<ul>
@@ -105,7 +106,7 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
   Events      Live, with history from the kernel log
 
   Ctrl-C stops the dashboard.</code></pre></div>
-<p>Without <code>--port</code> the system picks a free port. The URL carries the token for this run in its fragment; the page moves it into session storage and strips it from the address bar, then sends it with every API call. Under <code>sudo</code> the browser is not started as root, so you open the printed URL yourself. <code>--no-open</code> never tries. Ctrl-C stops it; nothing is left behind.</p>
+<p>Without <code>--port</code> the system picks a free port. The URL carries the token for this run in its fragment; the page moves it into session storage and strips it from the address bar, then sends it with every API call. The browser is not given the URL on its command line, where every local user could read it: StockFW writes a private launch page under your runtime directory and opens that, and it forwards the browser to the URL and is deleted as soon as the token has been used. A browser that cannot read files there (a snap or Flatpak browser, Firefox on a default Ubuntu desktop among them) shows an error instead; the terminal says so, and the printed URL works in it. Under <code>sudo</code> the browser is not started as root, so you open the printed URL yourself. <code>--no-open</code> never tries. Ctrl-C stops it; nothing is left behind.</p>
 
 <h2 id="what-is-on-the-page">What is on the page<a class="anchor" href="#what-is-on-the-page" aria-label="Link to this section">#</a></h2>
 <ul>
@@ -159,7 +160,7 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 <p>A request without the token, or with a wrong one, gets <code>401 Unauthorized</code> and no body worth reading.</p>
 
 <h2 id="threat-intel">Threat intel<a class="anchor" href="#threat-intel" aria-label="Link to this section">#</a></h2>
-<p><span class="plat">Linux</span> The threat-intel state and the enforced lists are shown too, read-only like everything else: whether enforcement is on, each enabled feed with its last update, and how many ranges the kernel holds.</p>
+<p><span class="plat">Linux</span> The threat-intel state and the enforced lists are shown too, read-only like everything else, from <code>/api/intel</code>: whether enforcement is on, each enabled feed with its last update, and how many ranges the kernel holds.</p>
 
 		</article>
 		<footer class="doc-foot">

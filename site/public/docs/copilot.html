@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Copilot · StockFW</title>
-<meta name="description" content="The Copilot page: how the behaviour baseline is learned, the twelve kinds of insight, Sentinel’s beacon and fan-out detectors, what auto-block may and may not do, and the audit trail behind it.">
+<meta name="description" content="The Copilot page: the fixed rules it runs over the event log and the policy, the evidence behind every finding, the policy health check with verified fixes, what Sentinel may block on its own, and the audit trail behind it.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Copilot · StockFW">
-<meta property="og:description" content="The Copilot page: how the behaviour baseline is learned, the twelve kinds of insight, Sentinel’s beacon and fan-out detectors, what auto-block may and may not do, and the audit trail behind it.">
+<meta property="og:description" content="The Copilot page: the fixed rules it runs over the event log and the policy, the evidence behind every finding, the policy health check with verified fixes, what Sentinel may block on its own, and the audit trail behind it.">
 <meta property="og:type" content="website">
 <link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
@@ -64,7 +64,8 @@
 			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
 			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
 			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
-			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
 		</ul>
 		<h2>Protection</h2>
 		<ul>
@@ -93,72 +94,94 @@
 		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
 		<article class="prose">
 <h1>Copilot</h1>
-<p class="lede">A local analyst that reads the same events the Events page shows, learns what each program normally does, and tells you when something steps outside that. It is a parser and a set of counters, not a language model: it has no network, no account and no prompt, so it works on an air-gapped machine and cannot be talked into anything.</p>
+<p class="lede">A set of fixed rules that run on this computer over the event log and the saved policy. It is not an AI model and has no network, no account and no prompt: it works on an air-gapped machine, sends nothing anywhere and cannot be talked into anything. Every finding names the rule that raised it, the numbers it measured next to the limits, and the events behind it.</p>
 
-<figure class="shot"><img src="../assets/screens/copilot.webp" alt="The Copilot page: Sentinel mode set to “Detect + auto-block”, four tiles (apps learned, active insights, events analysed, policy rules), two warning insights about an unusual port and an unusual destination, and the What-if simulator box." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Two findings after a scan: a program using a port it never used, and a first contact with a new destination. Neither stages a rule by itself.</figcaption></figure>
+<figure class="shot"><img src="../assets/screens/copilot.webp" alt="The Copilot page: a Sentinel control set to Detect + auto-block, four tiles (Needs attention 2, Policy health 0, Auto-blocks active 0, Services learned 11), and three findings: a Critical port scan of 18 ports from 203.0.113.50, Critical repeated SMB, RDP, FTP, Telnet, VNC and SSH attempts from the same source, and Info repeated SSH attempts from 198.51.100.23." width="1349" height="780" loading="lazy" decoding="async"><figcaption>After a port scan and two rounds of login attempts on the staged network. Each row says what was seen, what What-If says about it, and when.</figcaption></figure>
 
 <h2 id="what-is-on-the-page">What is on the page<a class="anchor" href="#what-is-on-the-page" aria-label="Link to this section">#</a></h2>
 <ul>
-<li><strong>Sentinel:</strong> <em>Detect only</em> or <em>Detect + auto-block</em>. Detect only is the default and reports without touching the policy.</li>
-<li><strong>Run analysis</strong> looks at the current policy and the events seen so far and lists what it finds. Sentinel’s detectors run on every event regardless.</li>
-<li>Four tiles: <em>Apps learned</em>, <em>Active insights</em>, <em>Events analyzed</em>, <em>Policy rules</em>.</li>
-<li><strong>Insights and suggestions:</strong> a table of findings with title, type, severity, description, program and status. Double-click a row for the full explanation. <em>Apply selected rule</em> stages the rule a finding suggests, after showing it; <em>Clear insights</em> empties the list; <em>Undo auto-block</em> lifts what Sentinel staged.</li>
-<li><strong>What-If simulator:</strong> a question about a connection in plain words, with <em>Read as</em> chips showing how the line was understood, the verdict in one row, and <strong>Details</strong> opening the What-If window beside the page. It has <a href="../docs/simulator.html">its own page</a>.</li>
+<li><strong>Sentinel:</strong> <em>Detect only</em> or <em>Detect + auto-block</em>, with one sentence on what auto-block can do. Auto-block only stages outbound blocks to unknown public addresses, for ten minutes; everything else waits for you.</li>
+<li><strong>Four tiles:</strong> <em>Needs attention</em> counts the Critical and Warning findings; <em>Policy health</em> counts the health check's findings, leaving out the expected “no effect in this mode” notes; <em>Auto-blocks active</em>; and <em>Apps learned</em>, or <em>Services learned</em> on Linux, where the log names no program.</li>
+<li><strong>Findings:</strong> each row has a severity pill, a title, one sentence on what was seen, and the check and time. Click a row, or press <kbd>Enter</kbd> on it, to open its evidence drawer.</li>
+<li><strong>Policy health:</strong> overlaps, conflicts and open risky services in the saved policy, with <strong>Check again</strong>, <strong>Show rule</strong> and, where one is safe, <strong>Fix</strong>.</li>
+<li><strong>What-If simulator:</strong> a question about a connection in plain words. It has <a href="../docs/simulator.html">its own page</a>.</li>
+<li><strong>Changes made by the Copilot:</strong> every block it staged and every fix it made, newest first, each with <strong>Undo</strong>. An undone change, and a block that lifted, stay in the list marked with how and when they ended; the last 100 are kept.</li>
 </ul>
+<p>The list follows the events once a second and is updated in place: a row is rebuilt only when what it shows changed, and the keyboard focus stays on the same control. When there is nothing to show, the page says why: no events yet, monitoring off with the reason the Events page gives, or “No findings from N events… This is not a guarantee that nothing is wrong”, with the list of what is checked. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-copilot-smoke</span></p>
 
-<h2 id="the-baseline">The baseline<a class="anchor" href="#the-baseline" aria-label="Link to this section">#</a></h2>
-<p>Every event is attributed to a program (on Windows the event carries its path; on Linux the connection table does), and each program gets a profile: the ports it has used, the destinations it has contacted, the hours of the day it is active, and how many connections it makes per ten-minute window. The profile is written to <code>behavior.csv</code> in your profile folder and read back at the next start, so what was learned survives a restart.</p>
-<p>The profile is deliberately bounded: 256 programs, 256 ports and 1,024 destinations each. When a program reaches a cap its profile is marked <em>partial</em>, and the novelty findings (“first time on this port”) go quiet for it, because a truncated baseline cannot honestly claim “never seen before”. Findings about hours need four distinct hours of history first; findings about rate need eight completed windows and at least ten events in the window being judged. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
+<h2 id="the-evidence-drawer">The evidence drawer<a class="anchor" href="#the-evidence-drawer" aria-label="Link to this section">#</a></h2>
+<figure class="shot"><img src="../assets/screens/copilot-drawer.webp" alt="The port-scan finding opened: under What we saw, a table of twelve events with time, direction, remote address, port, protocol and verdict, all from 203.0.113.50 and all Blocked, with the line The last 12 of 24 matching events." width="1349" height="780" loading="lazy" decoding="async"><figcaption>What we saw: up to twelve of the events behind the finding, each with its own time and verdict.</figcaption></figure>
+<figure class="shot"><img src="../assets/screens/copilot-lower.webp" alt="The rest of the drawer: Why flagged (18 distinct ports in the last 60 seconds, the limit is 12), Could be harmless, Auto-block (not blocked automatically: Sentinel never changes inbound rules), and the buttons Ask What-If, Show in Events, Dismiss; below it the Policy health card with one Info note that an outbound allow rule has no effect in this mode, and the What-If simulator." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Why flagged puts the measured numbers next to the limits. The health note under it explains itself and offers no fix, because the rows are right as they are.</figcaption></figure>
+<p>Every drawer has the same parts: <em>What we saw</em>, the events behind the finding; <em>In full</em>, the whole story in prose; <em>Why flagged</em>, the measured numbers next to the limits; <em>Could be harmless</em>, the innocent explanation; and <em>Auto-block</em>, what Sentinel did or why it did not. The text can be selected and copied, and a click inside the drawer does not close it. The actions:</p>
+<dl>
+<dt>Block outbound to this address</dt>
+<dd>Offered only when What-If says the finding's connection is ALLOWED now and BLOCKED with the row, checked again just before writing, and confirmed in a dialog that prints the literal row. The row is saved with rollback on failure, pushed through the <a href="../docs/policy.html#apply-step-by-step">apply gate</a>, audited, and listed under Changes with Undo.</dd>
+<dt>Ask What-If</dt>
+<dd>Puts the finding's connection into the What-If card, so you can see what the policy would do with it. A finding about an address a blocklist or a country rule already blocks has no such button, because What-If does not consult the lists and the address is blocked already.</dd>
+<dt>Show in Events</dt>
+<dd>Opens the Events page filtered to the finding's events.</dd>
+<dt>Dismiss</dt>
+<dd>Takes the finding off the list for this session. Dismissals are not saved.</dd>
+</dl>
 
-<h2 id="the-insights">The insights<a class="anchor" href="#the-insights" aria-label="Link to this section">#</a></h2>
+<h2 id="the-checks">The checks<a class="anchor" href="#the-checks" aria-label="Link to this section">#</a></h2>
+<p>Counting is per program on Windows, where the Security log names the program. On Linux the kernel log names no program, so the key is the port's service name, <code>https</code> or <code>ssh</code>, and several programs on one port share one history. These checks run on every event and need no history:</p>
 <div class="tbl-wrap">
 <table class="tbl">
-<thead><tr><th>Type</th><th>What it means</th><th>Carries a rule?</th></tr></thead>
+<thead><tr><th>Check</th><th>Trigger</th><th>Severity</th></tr></thead>
 <tbody>
-<tr><td>New App</td><td>A program made its first connection.</td><td>No</td></tr>
-<tr><td>Unusual Port</td><td>A known program used a port it never used before.</td><td>Suggests an allow for review</td></tr>
-<tr><td>Unusual Dest</td><td>A known program contacted a destination it never contacted before.</td><td>Suggests an allow for review</td></tr>
-<tr><td>Unusual Volume</td><td>A program’s connection rate jumped far above its established rate.</td><td>No</td></tr>
-<tr><td>Unusual Time</td><td>Activity at an hour the program has never been active at.</td><td>No</td></tr>
-<tr><td>Rule Conflict, Redundant Rule, Missing Rule, Optimization</td><td>Findings about the policy itself: rules that contradict, duplicate or could be merged, and traffic no rule describes.</td><td>Sometimes, always shown first</td></tr>
-<tr><td>Suspicious</td><td>Behaviour that matches the shape of malware traffic.</td><td>No</td></tr>
-<tr><td>Beacon</td><td>Sentinel: metronomic outbound contact with one host. See below.</td><td>A deny, the only kind that can auto-stage</td></tr>
-<tr><td>Fan-Out</td><td>Sentinel: a burst of distinct destinations, the shape of a scan or a spreading worm.</td><td>Never: a line, not a judgement</td></tr>
+<tr><td>Port scan</td><td>One source reaching 12 distinct local ports in a minute, or 25 in ten minutes. The addresses of one IPv6 /64 are also counted together. One new report per source per hour; later probes update the open finding.</td><td>Info when every probe was refused, Warning when any reached an allowed port</td></tr>
+<tr><td>Login attempts</td><td>One source, 10 inbound attempts in five minutes across SSH, RDP, VNC, Telnet, FTP and SMB, on their usual ports and on the ports your inbound rules give those services.</td><td>Critical when the policy lets that source in on one of those ports and some attempts were refused; Warning or Info otherwise, and the sentence says which case applies</td></tr>
+<tr><td>Timed contacts (beacon)</td><td>Outbound only. Six or more contacts with one destination, port and protocol at a mean interval of 10 seconds to 10 minutes and a spread of at most 30 percent of the mean. Time sync and DNS to this computer's own resolvers are never timed.</td><td>Warning; Critical when a blocklist or country rule also matched it</td></tr>
+<tr><td>Fan-out</td><td>Outbound, per program: 60 distinct hosts, or 10 distinct refused hosts, within a minute. Where the key is a service name, only the refused hosts count, because a busy page in any browser reaches 60 hosts.</td><td>Warning</td></tr>
+<tr><td>Blocklist hit</td><td>An event a threat-intel list or a country or network rule blocked. See <a href="../docs/threat-intel.html">Threat intel</a>.</td><td>Warning for outbound; inbound drops roll up into one Info finding per list per hour</td></tr>
 </tbody>
 </table>
 </div>
-<p>Severities are Info, Warning and Critical. The list keeps the newest 200 findings. A finding that suggests an <em>allow</em> is only ever a suggestion: nothing on this page can open the firewall without you pressing a button and reading the rule in a Yes/No dialog first. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-adversarial.sh</span></p>
+<p>Once a program or service has ten recorded events, four baseline signals join in: the first use of a port, a new public destination (after 50 connections over seven days, and not for a key that meets 20 new hosts a week), the first activity in an hour of the day, and a connection rate more than three times the usual. One signal is Info, two or more are Warning, and a baseline finding never carries a rule: an unusual connection is not answered with an allow, and a block is your decision. Two different checks on the same subject within an hour make both findings Critical. The list holds at most 200 findings. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
+<p>The baseline is written to <code>behavior.csv</code> by the five-minute save as well as on quit, so a crash loses at most five minutes of learning. It is bounded to 256 programs, 256 ports and 1,024 destinations each; a profile that hits a cap is marked partial and the novelty signals go quiet for it, because a truncated baseline cannot honestly claim “never seen before”.</p>
 
-<h2 id="sentinel">Sentinel<a class="anchor" href="#sentinel" aria-label="Link to this section">#</a></h2>
-<p>Sentinel watches outbound traffic for the two signatures of a program that is no longer working for you. It is egress-only by design: an inbound scan is the Events page’s business, and the engine already drops it.</p>
-<dl class="cols">
-<dt>Beacon</dt>
-<dd>Six or more contacts with the same host and port, at a mean interval between 10 seconds and 10 minutes, with a coefficient of variation of 0.30 or less. A human clicking, a browser’s jittered keep-alives and git’s background fetches do not pass that regularity test; a command-and-control callback does. The finding is Critical and carries a deny rule for the destination.</dd>
-<dt>Fan-out</dt>
-<dd>Sixty distinct destinations within sixty seconds, or ten distinct destinations the firewall <em>blocked</em> within sixty seconds. The finding is Critical and deliberately carries no rule, because “block everything this program touched” is a decision for you, not for a counter. A package manager pulling from 59 mirrors reports nothing; the 60th reports a line.</dd>
-</dl>
-<p>Both thresholds are pinned by the adversarial suite, which plays a blocked port scan, a single-host port sweep, a command-and-control beacon, a replay of a real incident, benign developer tools, an exfiltration burst and a failed apply through the detectors, and asserts that only the beacon would ever reach the firewall unattended. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-adversarial.sh</span></p>
+<h2 id="policy-health">Policy health<a class="anchor" href="#policy-health" aria-label="Link to this section">#</a></h2>
+<p>A pure check over the saved policy, run when you open the page and on <strong>Check again</strong>. Coverage is exact: the same direction, every protocol and port inside, every address inside; a row that names a host by name never covers anything.</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Check</th><th>Severity</th><th>Fix offered</th></tr></thead>
+<tbody>
+<tr><td>Duplicate: the same rule twice</td><td>Info</td><td>Remove the later copy</td></tr>
+<tr><td>Shadowed: an earlier rule with the same action already covers it</td><td>Info</td><td>Remove the shadowed row</td></tr>
+<tr><td>Unreachable: an allow covered by a deny</td><td>Warning</td><td>None: you meant one of the two, so both are shown</td></tr>
+<tr><td>No effect: outbound allows while outgoing is allowed by default</td><td>Info</td><td>None</td></tr>
+<tr><td>Broad: an inbound allow from anyone over more than 100 ports</td><td>Warning</td><td>Narrow to the local network</td></tr>
+<tr><td>Risky service open to anyone: FTP, Telnet, RPC, NetBIOS, SMB, SQL Server, Docker, MySQL, RDP, PostgreSQL, VNC, Redis, Elasticsearch or MongoDB (SSH is Info)</td><td>Critical</td><td>Narrow to the local network</td></tr>
+<tr><td>Reaches no family: a host name on Windows, a forward to a name or a range</td><td>Warning for a deny, which silently blocks nothing</td><td>None</td></tr>
+</tbody>
+</table>
+</div>
+<p>Every fix is tried by the <a href="../docs/simulator.html">What-If engine</a> before it is offered: a set of probes is answered against the policy as it is and with the fix made. A removal is offered only if no verdict changes; a narrowing only if every local-network probe keeps its answer and the outside probe goes from ALLOWED to BLOCKED. Otherwise the finding says “No fix offered” and why, as the note in the screenshot does. <strong>Fix</strong> shows the before and after rows and the checks, asks, writes through the apply gate, and can be undone from Changes by content, not by position. The same check runs from the command line as <code>stockfw copilot health</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-health.c</span></p>
 
-<h2 id="auto-block-and-what-it-may-never-do">Auto-block, and what it may never do<a class="anchor" href="#auto-block-and-what-it-may-never-do" aria-label="Link to this section">#</a></h2>
-<p>With Sentinel set to <em>Detect + auto-block</em>, a beacon’s deny rule is staged into the policy and pushed through the <a href="../docs/policy.html#apply-step-by-step">apply gate</a> without waiting for you. Because that is the one place where StockFW acts on its own, it is fenced on every side:</p>
+<h2 id="sentinel-the-one-automatic-action">Sentinel: the one automatic action<a class="anchor" href="#sentinel-the-one-automatic-action" aria-label="Link to this section">#</a></h2>
+<p>With <em>Detect + auto-block</em>, the default, a beacon's deny rule can be staged into the policy and pushed through the apply gate without waiting for you. Because that is the one place where StockFW acts on its own, it is fenced on every side:</p>
 <ul>
-<li><strong>Only a deny, only for a public stranger.</strong> Auto-block can tighten the policy, never loosen it. A destination that is loopback, link-local, multicast, a private LAN range, carrier NAT, a reserved range, or an IPv4-mapped IPv6 address standing for any of those, is never auto-blocked, and neither is anything that does not parse as an address. A destination this program has contacted three or more times before the current run is <em>established</em>, and established traffic is reported, never blocked. That is the browser-talking-to-a-CDN case. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_sentinel_auto_gates</span></li>
-<li><strong>Ten minutes.</strong> Every staged block expires ten minutes after it was staged. The staging record is written to the <code>autoblocks</code> file as it changes, so a block survives a restart with its <em>original</em> clock: a restart grants no fresh ten minutes, and a block that expired while StockFW was closed is taken out at the next start, with an audit line saying so. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-copilot-smoke</span></li>
-<li><strong>No loops.</strong> Once a block is taken down, by expiry, by Undo, by your own Allow or by switching to Detect only, the same rule cannot be staged again in this session. The incident that shaped these rules was a ten-minute block that re-staged itself every ten minutes for two days.</li>
-<li><strong>Your Allow wins.</strong> Allowing a destination from the Events page first lifts any Sentinel block for it, then pushes the allow, so both reach the firewall together. On Windows a block rule outranks an allow rule, so without this your Allow would have changed nothing on the wire.</li>
-<li><strong>Detect means detect.</strong> Switching Sentinel out of auto mode takes every staged block down at once.</li>
-<li><strong>Your rules are never touched.</strong> Sentinel’s rows carry a <code>Sentinel:</code> comment and are the only rows it will ever remove.</li>
+<li><strong>Only a beacon, only a deny, only for a public stranger.</strong> The finding needs at least eight contacts. The destination is never loopback, link-local, multicast, a private range, carrier NAT, a reserved range or anything that does not parse as an address; never one of this computer's DNS servers or gateways; never a host your policy allows outbound by name, because on Windows a block outranks an allow; and never a host this program, or any other program, had three or more connections with before. The gates are judged when the finding is made and again at the moment it stages. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_sentinel_auto_gates</span></li>
+<li><strong>Ten minutes.</strong> Every staged block lifts ten minutes after it was staged, whether or not the window is shown. The staging record is written to the <code>autoblocks</code> file, so a block survives a restart with its <em>original</em> clock, and a block that expired while StockFW was closed is taken out at the next start, or by <code>stockfw start</code> at boot, with an audit line. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-copilot-smoke</span></li>
+<li><strong>No loops.</strong> Once a block is taken down, by expiry, by Undo, by your own Allow or by switching to Detect only, the same rule is not staged again in this session.</li>
+<li><strong>Your Allow wins.</strong> Allowing a destination from the Events page or from What-If lifts any Sentinel block for it before the allow is pushed.</li>
+<li><strong>Detect means detect.</strong> Switching to <em>Detect only</em>, or <em>Pause Sentinel</em> in the tray menu, takes every staged block down at once.</li>
+<li><strong>Your rules are never touched.</strong> Sentinel removes only rows it staged itself.</li>
 </ul>
-<p>In the <em>Status</em> column a staged rule reads <em>Auto-blocked</em>; the <em>Undo auto-block</em> button lifts the selected one at once.</p>
+<p>The adversarial suite plays a blocked port scan, a port sweep, a command-and-control beacon, a replay of a real incident, benign developer tools and an exfiltration burst through the detectors, and asserts that only the beacon would ever reach the firewall unattended. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-adversarial.sh</span></p>
 
 <h2 id="the-audit-trail">The audit trail<a class="anchor" href="#the-audit-trail" aria-label="Link to this section">#</a></h2>
-<p>Every stage, push, undo, expiry, restore at start-up and mode switch is one line in <code>audit.log</code>: <code>sentinel auto-block</code>, <code>sentinel auto-block is live</code>, <code>sentinel auto-block staged, not live</code>, <code>sentinel rule removed</code>, <code>sentinel auto-blocks restored</code>, and the failure variants. The file is only ever appended to. <a href="../docs/files.html#audit-log">Files and formats</a> describes the line.</p>
+<p>Every stage, push, undo, expiry, restore at start-up, mode switch, health fix and manual block is one line in <code>audit.log</code>, which is only ever appended to. <a href="../docs/files.html#audit-log">Files and formats</a> describes the line.</p>
 
 <h2 id="honest-limits">Honest limits<a class="anchor" href="#honest-limits" aria-label="Link to this section">#</a></h2>
 <ul>
-<li>On Linux the kernel log carries no program name, so profiles are keyed by what the connection table can attribute; a connection that closes before the next poll is counted without a program. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></li>
-<li>Sentinel has no inbound scan detector, by design.</li>
-<li>The behaviour analysis is heuristic. It is explained in plain words so you can judge it; it is not a verdict about the program’s intent.</li>
+<li>The Copilot sees only what the firewall logs. On Linux accepted connections are logged at most ten a second and an explicit deny row is not logged at all; Windows is read every five seconds, so beacon intervals are known to within about five seconds. A slow or low-volume pattern can stay below every limit.</li>
+<li>Without “Log allowed connections” on Linux, or with auditing turned off by policy on Windows, only refused traffic is seen.</li>
+<li>On Linux two programs on one port are one key, and the tile says <em>Services learned</em>. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></li>
+<li>The scan and login checks remember at most 1,024 sources each; a scan spread over more addresses than that, or over many IPv4 addresses each below the limits, is not reported.</li>
+<li>On Windows no event names the rule that blocked it, so the blocklist check is silent there. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></li>
+<li>No finding means none of the checks matched, not that the computer is safe. The page says so.</li>
 </ul>
 
 		</article>
@@ -171,10 +194,10 @@
 		<h2>On this page</h2>
 		<ul>
 			<li class="lvl2"><a href="#what-is-on-the-page">What is on the page</a></li>
-			<li class="lvl2"><a href="#the-baseline">The baseline</a></li>
-			<li class="lvl2"><a href="#the-insights">The insights</a></li>
-			<li class="lvl2"><a href="#sentinel">Sentinel</a></li>
-			<li class="lvl2"><a href="#auto-block-and-what-it-may-never-do">Auto-block, and what it may never do</a></li>
+			<li class="lvl2"><a href="#the-evidence-drawer">The evidence drawer</a></li>
+			<li class="lvl2"><a href="#the-checks">The checks</a></li>
+			<li class="lvl2"><a href="#policy-health">Policy health</a></li>
+			<li class="lvl2"><a href="#sentinel-the-one-automatic-action">Sentinel: the one automatic action</a></li>
 			<li class="lvl2"><a href="#the-audit-trail">The audit trail</a></li>
 			<li class="lvl2"><a href="#honest-limits">Honest limits</a></li>
 		</ul>

@@ -156,7 +156,7 @@
 						<li><p>Virtual adapters (containers, VMs, VPN) are hidden by default and counted, so a laptop with Docker does not read like a server farm.</p></li>
 					</ul>
 				</div>
-				<figure class="shot"><img src="./assets/screens/overview.webp" alt="The Overview page: a green card reading “This computer is protected”, counters for inbound and outbound events, a table of open connections with their programs, the network adapters and the recent blocks." width="1180" height="780" loading="lazy" decoding="async"><figcaption>The Overview page in StockFW 1.0.7. The traffic is real: a staged network with a scanner on the outside and two services on the inside.</figcaption></figure>
+				<figure class="shot"><img src="./assets/screens/overview.webp" alt="The Overview page: a green card reading “This computer is protected”, counters for inbound and outbound events, a table of open connections with their programs, the network adapters and the recent blocks." width="1349" height="780" loading="lazy" decoding="async"><figcaption>The Overview page in StockFW 1.0.7. The traffic is real: a staged network with a scanner on the outside and two services on the inside.</figcaption></figure>
 			</div>
 
 			<div class="shell-panel" id="tour-events" role="tabpanel" aria-labelledby="tab-events">
@@ -169,11 +169,11 @@
 					</div>
 					<ul class="claims">
 						<li><p>Right-click a row to block or allow that destination, block that service to it, or trust an inbound source. The dialog prints the exact rule before anything is written.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_eventrule_builders</span></li>
-						<li><p>Rows land newest first by their own time stamp, duplicates are refused, and the list keeps 2,000 rows. The system log stays the archive.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-hitview-smoke</span></li>
+						<li><p>Rows land newest first by their own time stamp, duplicates are refused, and the list keeps 100,000 rows by default, up to a million. Turn on event history and they are saved to files only your account can read.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-hitview-smoke</span></li>
 						<li><p>On Linux the list is read straight from the kernel ring buffer, so it works on WSL, in containers and on systems without a syslog daemon.</p></li>
 					</ul>
 				</div>
-				<figure class="shot"><img src="./assets/screens/events.webp" alt="The Events page: 211 events in a table of time, direction, interface, port, source, destination, protocol and service; blocked rows are highlighted red." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Blocked rows in red. The filter box, the monitor switch, Clear and Refresh sit above the list.</figcaption></figure>
+				<figure class="shot"><img src="./assets/screens/events.webp" alt="The Events page: 310 events in a table of time, direction, interface, port, source, destination, protocol and service; blocked rows are highlighted red. Above the list sit the search box, the Monitor switch, Clear, Refresh, a filter bar for direction, verdict, protocol, port, address and time, Reset and Export CSV." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Blocked rows in red. The filter bar narrows by direction, verdict, protocol, port, address or CIDR block and time, and Export CSV writes what is shown.</figcaption></figure>
 			</div>
 
 			<div class="shell-panel" id="tour-activity" role="tabpanel" aria-labelledby="tab-activity">
@@ -190,7 +190,7 @@
 						<li><p>Throughput comes from the adapters’ own byte counters. No packet capture, no trace session, no elevation.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></li>
 					</ul>
 				</div>
-				<figure class="shot"><img src="./assets/screens/activity.webp" alt="The Activity page: three tiles for blocked, allowed and current throughput, then two line graphs, Policy activity and Network I/O, with a shaded “no data” band before the app started." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Fifteen minutes of a port scan arriving while a download runs. The grey band on the left is time the app did not observe.</figcaption></figure>
+				<figure class="shot"><img src="./assets/screens/activity.webp" alt="The Activity page: 15 min selected, three tiles for blocked, allowed and current throughput, then two line graphs, Policy activity and Network I/O, each with a flat line until a burst of scans and connections and a drop back to zero." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Fifteen minutes on the staged network: a few minutes of scans and connections, then quiet. The throughput tile reads zero because the traffic has just stopped.</figcaption></figure>
 			</div>
 
 			<div class="shell-panel" id="tour-policy" role="tabpanel" aria-labelledby="tab-policy">
@@ -207,7 +207,7 @@
 						<li><p>Audit-only mode stages changes and writes the audit line while leaving the firewall untouched, so you can rehearse a policy.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></li>
 					</ul>
 				</div>
-				<figure class="shot"><img src="./assets/screens/policy.webp" alt="The Policy page: cards for “Allow connections from host”, “Allow inbound service” and “Forward service”, each a table with a Covers column reading IPv4 only, IPv6 only or IPv4 + IPv6." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Each rule says what it covers. The IPv6 range covers IPv6 only; “Anyone” covers both families.</figcaption></figure>
+				<figure class="shot"><img src="./assets/screens/policy.webp" alt="The Policy page: cards for “Allow connections from host”, “Allow inbound service” and “Forward service”, each a table with a Covers column reading IPv4 only, IPv6 only or IPv4 + IPv6." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Each rule says what it covers. The IPv6 range covers IPv6 only; “Anyone” covers both families.</figcaption></figure>
 			</div>
 
 			<div class="shell-panel" id="tour-copilot" role="tabpanel" aria-labelledby="tab-copilot">
@@ -215,16 +215,16 @@
 					<div>
 						<h3>Copilot</h3>
 						<p class="q">What should I do about it?</p>
-						<p>A local, rule-based analyst. It learns each program’s usual ports, destinations and hours, and flags the first time something steps outside them. Sentinel watches for the two signatures of a compromised program: a metronomic beacon and a fan-out scan. The What-if simulator answers a plain-language question against your real policy.</p>
-						<a class="more" href="./docs/copilot.html">Insights, Sentinel and auto-block</a>
+						<p>Fixed checks over the event log and your policy: port scans, repeated login attempts, timed contacts, fan-out, blocklist hits and the first time a program steps outside its habits. Every finding opens a drawer with the events behind it and the numbers next to the limits. A policy health check finds duplicate, shadowed, unreachable and risky rules and offers only fixes What-If has verified.</p>
+						<a class="more" href="./docs/copilot.html">Findings, policy health and auto-block</a>
 					</div>
 					<ul class="claims">
 						<li><p>No model, no network. The Copilot is a deterministic parser and a set of counters. It works on an air-gapped machine and cannot be prompt-injected because there is no prompt.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></li>
 						<li><p>Auto-block can only ever tighten the policy, for ten minutes, with one-click undo, and never for your own network, multicast, loopback or a destination the program already used regularly.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-adversarial.sh</span></li>
-						<li><p>Every suggestion prints the literal rule and waits for your Yes. There is no “apply all”.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_insight_apply</span></li>
+						<li><p>Every block and fix prints the literal rule and waits for your Yes, and “Changes made by the Copilot” lists each one with Undo. There is no “apply all”.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-health.c</span></li>
 					</ul>
 				</div>
-				<figure class="shot"><img src="./assets/screens/copilot.webp" alt="The Copilot page: Sentinel mode set to “Detect + auto-block”, tiles for apps learned, active insights, events analysed and policy rules, two warning insights about an unusual port and an unusual destination, and the What-if simulator box." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Two findings after a scan: a program using a port it never used, and a first contact with a new destination. Neither stages a rule by itself.</figcaption></figure>
+				<figure class="shot"><img src="./assets/screens/copilot.webp" alt="The Copilot page: Sentinel set to Detect + auto-block, tiles for Needs attention, Policy health, Auto-blocks active and Services learned, and three findings: a Critical port scan, Critical repeated login attempts and Info repeated SSH attempts." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Three findings after a port scan and two rounds of login attempts. None of them stages a rule by itself: Sentinel never changes inbound rules.</figcaption></figure>
 			</div>
 
 			<div class="shell-panel" id="tour-trust" role="tabpanel" aria-labelledby="tab-trust">
@@ -241,7 +241,7 @@
 						<li><p>Every attest and forget is an append-only line in the audit log, next to the policy changes.</p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_audit_log</span></li>
 					</ul>
 				</div>
-				<figure class="shot"><img src="./assets/screens/trust.webp" alt="The Trust page: a path box with Inspect, Refresh list and Scan processes buttons, a report for /usr/bin/nc.openbsd with its SHA-256 and “Matches the attested baseline”, and a baseline list of three programs marked in sync." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Three attested programs, all in sync with their baseline. On Linux the signature line reads “not checked” rather than guessing.</figcaption></figure>
+				<figure class="shot"><img src="./assets/screens/trust.webp" alt="The Trust page: a path box with Inspect, Refresh list and Scan processes buttons, a report for /usr/bin/nc.openbsd with its SHA-256, size, modification time and “Matches the attested baseline”, and a baseline list of three programs, curl, nc.openbsd and python3.13, each marked in sync." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Three attested programs, all in sync with their baseline. On Linux there is no code signature to read, so Publisher says “no signer” rather than guessing.</figcaption></figure>
 			</div>
 		</div>
 	</div>
@@ -332,10 +332,12 @@ Nothing was changed (dry run).</code></pre></div>
 					<tr><td>Events come from</td><td>Security log events 5156 (allowed) and 5157 (blocked)</td><td>The kernel ring buffer, <code>/dev/kmsg</code>, with the policy’s own LOG rules</td></tr>
 					<tr><td>IPv6</td><td>Filtered; Windows Firewall covers both families</td><td>Filtered with the same policy, neighbour discovery always allowed</td></tr>
 					<tr><td>Firewall profiles</td><td>Domain, Private and Public, switched from the Overview</td><td>One firewall state</td></tr>
-					<tr><td>Preferences pages offered</td><td>ICMP Filtering, Advanced Options</td><td>Network, ICMP, ToS, Advanced</td></tr>
+					<tr><td>Preferences pages offered</td><td>General, Events, Policy, ICMP, Protection</td><td>Those, plus Firewall and Network</td></tr>
 					<tr><td>Program signatures (Trust)</td><td>Authenticode, offline</td><td>Hash and baseline only; signature reads “not checked”</td></tr>
-					<tr><td>Command line and dashboard</td><td>Not yet; the desktop app is the front end</td><td><code>stockfw</code> with every command and <code>--json</code></td></tr>
-					<tr><td>Threat-intel blocklists and country blocking</td><td>Not on Windows; the Threat Intel page says so</td><td>nftables sets built from the feeds and countries you enable</td></tr>
+					<tr><td>Command line and dashboard</td><td>Not on Windows; the desktop app is the front end</td><td><code>stockfw</code> with every command and <code>--json</code></td></tr>
+					<tr><td>Threat-intel blocklists</td><td>A Windows Firewall rule group built from the feeds you enable</td><td>One nftables table built from the feeds and lists you enable</td></tr>
+					<tr><td>Country and network blocking</td><td>Not on Windows; the Threat Intel page says so</td><td>From IPFire’s signed location database</td></tr>
+					<tr><td>Start at sign-in</td><td>A per-user scheduled task, without administrator rights</td><td>An autostart entry, plus a boot service for the rules</td></tr>
 					<tr><td>Install</td><td>NSIS installer with the GTK runtime bundled</td><td>Tarball with <code>install.sh</code>; GTK from your distribution</td></tr>
 				</tbody>
 			</table>
@@ -353,10 +355,13 @@ Nothing was changed (dry run).</code></pre></div>
 		<div class="next-grid">
 			<div class="next-card"><h3>IPv6 on Linux</h3><p>One policy loaded into both families in one step, rolled back together if either half is refused. Neighbour discovery, router adverts and DHCPv6 replies always pass.</p></div>
 			<div class="next-card"><h3>The redesigned desktop app</h3><p>A sidebar, an Overview that answers “am I protected?” in one sentence, and every page rebuilt as cards. The screenshots on this site are of it.</p></div>
-			<div class="next-card"><h3>What each rule covers</h3><p>A Covers column on the Policy page, an IPv6 line on the Overview, and <code>covers</code> in the CLI’s JSON, so a rule can never silently apply to fewer addresses than you think.</p></div>
-			<div class="next-card"><h3>Threat-intel blocklists</h3><p>Opt in to well-known feeds such as Spamhaus DROP and abuse.ch Feodo Tracker. StockFW downloads, checks and loads them into nftables sets; events say which list blocked a connection. Off until you turn it on.</p></div>
+			<div class="next-card"><h3>The Copilot, reworked</h3><p>Fixed checks with the evidence shown, a policy health check with verified fixes, and a list of every change it made with Undo. No model, no network, and it says so.</p></div>
+			<div class="next-card"><h3>Threat-intel blocklists</h3><p>Opt in to well-known feeds such as Spamhaus DROP and abuse.ch Feodo Tracker, on Windows and Linux. StockFW downloads, checks and loads them; on Linux events say which list blocked a connection. Off until you turn it on.</p></div>
 			<div class="next-card"><h3>Country and network-owner blocking</h3><p>Block by registered country or by the network that announces an address, from an offline, signed location database. The picker warns about anycast networks.</p></div>
-			<div class="next-card"><h3>Background mode and the tray</h3><p>Keep protecting after the window closes, with a tray menu that shows state and recent blocks. The Preferences dialog and the What-if window match the new look.</p></div>
+			<div class="next-card"><h3>Background mode and sign-in</h3><p>Keep protecting after the window closes, start hidden at sign-in, and on Linux let the boot service put the rules back before the network comes up. One copy per user.</p></div>
+			<div class="next-card"><h3>Events at volume, with history</h3><p>100,000 events in the list, a filter bar, CSV export, and an optional history on disk that only your account can read and the command line can search.</p></div>
+			<div class="next-card"><h3>Help and About</h3><p>A searchable Help window that opens with F1 at the page you are on and works offline, and an About window with the credits, the licence summary and Copy system info.</p></div>
+			<div class="next-card"><h3>Preferences redesigned</h3><p>Seven pages in two groups, a line on what each is for, and a mark on every row that will change before you press Save.</p></div>
 		</div>
 	</div>
 </section>
