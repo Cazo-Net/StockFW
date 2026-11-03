@@ -459,8 +459,9 @@ static const FsHelpBlock whatif[] = {
 	  "that someone wrote with iptables directly, can also allow or "
 	  "block the connection.") },
 	{ FS_HELP_NOTE, N_("The answer does not consult the "
-	  "<a href=\"help:threat-intel\">threat-intel blocklists</a>. To "
-	  "see whether a list blocks an address, use <b>Look up an "
+	  "<a href=\"help:threat-intel\">threat-intel blocklists</a> or "
+	  "the country and network rules. To see whether one of them "
+	  "blocks an address, use <b>Look up an "
 	  "address</b> on the Threat Intel page, or <tt>stockfw intel "
 	  "lookup</tt> on Linux.") },
 	{ FS_HELP_HEAD, N_("Fixing it") },

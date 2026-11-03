@@ -1476,7 +1476,7 @@ Lift Sentinel's Block confirms, lifts, applies and asks again in the same way. T
 
 - The Windows model has not been checked against a running Windows Firewall. It is built from the same compiled rules netsh receives, but Windows' own and other programs' rules are unknown to it, and the answer says so.
 - IPv6 is pinned as rule text but not probed live, because the test kernel has no IPv6 stack.
-- Threat-intel sets are not probed live, and the blocklists of 14.6 are not part of either model: an address on an enabled list is answered by the policy alone (`stockfw intel lookup` answers for the lists). Forwards are probed live, since the second review (below).
+- Threat-intel sets are not probed live, and the blocklists and country/network rules of 14.6 are not part of either model: an address on an enabled list or in a blocked country or network is answered by the policy alone (`stockfw intel lookup` answers for the lists and the rules). Forwards are probed live, since the second review (below).
 
 #### 14.3.1 The Second Review
 
