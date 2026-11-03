@@ -881,6 +881,90 @@ geo_rows_of_kind (GtkTreeModel *model, gint kind)
 	return n;
 }
 
+/* The completion's own filtered model: the tree view in its popup,
+ * whose model filters the picker's store (GTK keeps it private). */
+static GtkTreeModel *
+geo_filtered_in (GtkWidget *w, GtkTreeModel *store)
+{
+	if (GTK_IS_TREE_VIEW (w)) {
+		GtkTreeModel *m = gtk_tree_view_get_model (GTK_TREE_VIEW (w));
+
+		if (GTK_IS_TREE_MODEL_FILTER (m) &&
+		    gtk_tree_model_filter_get_model (GTK_TREE_MODEL_FILTER (m))
+		    == store)
+			return m;
+	}
+	if (GTK_IS_CONTAINER (w)) {
+		GList *kids = gtk_container_get_children (GTK_CONTAINER (w));
+		GtkTreeModel *hit = NULL;
+
+		for (GList *k = kids; k != NULL && hit == NULL; k = k->next)
+			hit = geo_filtered_in (k->data, store);
+		g_list_free (kids);
+		return hit;
+	}
+	return NULL;
+}
+
+/* The rows the completion offers for `typed', as GTK filters them
+ * (its key normalized and casefolded, then the page's match
+ * function); *has is set when one of them reads `want'.  The entry's
+ * text is set and the completion run at once, before the search's
+ * timer can change the networks. */
+static guint
+geo_offered (const gchar *typed, const gchar *want, gboolean *has)
+{
+	GtkWidget *entry = find (page, "intel-geo-entry");
+	GtkEntryCompletion *c = gtk_entry_get_completion (GTK_ENTRY (entry));
+	GtkTreeModel *store = gtk_entry_completion_get_model (c);
+	GtkTreeModel *filtered = NULL;
+	GList *tops;
+	GtkTreeIter it;
+	gboolean valid;
+	guint n = 0;
+
+	*has = FALSE;
+	gtk_entry_set_text (GTK_ENTRY (entry), typed);
+	gtk_entry_completion_complete (c);
+	tops = gtk_window_list_toplevels ();
+	for (GList *t = tops; t != NULL && filtered == NULL; t = t->next)
+		filtered = geo_filtered_in (t->data, store);
+	g_list_free (tops);
+	if (filtered == NULL)
+		return 0;
+	valid = gtk_tree_model_get_iter_first (filtered, &it);
+	while (valid) {
+		gchar *text = NULL;
+
+		gtk_tree_model_get (filtered, &it, 0, &text, -1);
+		*has = *has || g_strcmp0 (text, want) == 0;
+		g_free (text);
+		n++;
+		valid = gtk_tree_model_iter_next (filtered, &it);
+	}
+	return n;
+}
+
+/* The id of the saved rule that blocks `asn'; NULL when none does. */
+static gchar *
+geo_rule_of_asn (guint32 asn)
+{
+	FsIntelConfig *c = fs_intel_config_load (NULL);
+	gchar *id = NULL;
+
+	for (guint i = 0; c != NULL && i < c->locations->len && id == NULL;
+	     i++) {
+		FsIntelLocationConf *l = g_ptr_array_index (c->locations, i);
+
+		for (guint j = 0; l->asns != NULL && j < l->asns->len; j++)
+			if (g_array_index (l->asns, guint32, j) == asn)
+				id = g_strdup (l->id);
+	}
+	if (c != NULL)
+		fs_intel_config_free (c);
+	return id;
+}
+
 /* Pick `text' in the completion, as a click on its row does. */
 static void
 geo_pick (const gchar *text)
@@ -998,6 +1082,81 @@ check_geo (void)
 	       "geo: typing \"Example\" searches the networks: AS64500 and "
 	       "AS64501 (%u network rows)",
 	       geo_rows_of_kind (model, FS_INTEL_LOCATION_ASN));
+	/* The completion offers rows by code, by name, by AS number, in
+	 * any case and with accents composed or not (GTK hands the match
+	 * function its key decomposed and casefolded). */
+	{
+		gboolean has_nl, has_name, has_as, has_acc, has_up;
+		guint by_code = geo_offered ("nl", "Netherlands (NL)", &has_nl);
+		guint by_name = geo_offered ("Nether", "Netherlands (NL)",
+		                             &has_name);
+		guint by_as = geo_offered ("64500", "AS64500 Example One",
+		                           &has_as);
+
+		CHECK (by_code >= 1 && has_nl && by_name == 1 && has_name &&
+		       by_as == 1 && has_as,
+		       "geo: the completion offers the Netherlands for \"nl\" "
+		       "(%u rows) and \"Nether\" (%u), AS64500 for \"64500\" "
+		       "(%u)", by_code, by_name, by_as);
+		gtk_entry_set_text (GTK_ENTRY (entry), "T\xc3\xa9st");
+		pump_ms (400);
+		geo_offered ("t\xc3\xa9st \xc3\xbcn", "AS64502 T\xc3\xa9st "
+		             "\xc3\x9cn\xc3\xaf" "code", &has_acc);
+		geo_offered ("T\xc3\x89ST", "AS64502 T\xc3\xa9st "
+		             "\xc3\x9cn\xc3\xaf" "code", &has_up);
+		CHECK (has_acc && has_up,
+		       "geo: an accented name completes typed in either case "
+		       "(\"t\xc3\xa9st \xc3\xbcn\" %d, \"T\xc3\x89ST\" %d)",
+		       has_acc, has_up);
+		/* Typed in full in another case, and Block: that row, not
+		 * "pick a country or network". */
+		gtk_entry_set_text (GTK_ENTRY (entry), "as64502 t\xc3\xa9st "
+		                    "\xc3\xbcn\xc3\xaf" "code");
+		click ("intel-geo-add");
+		gchar *x = geo_rule_of_asn (64502);
+		CHECK (x != NULL,
+		       "geo: a name typed in full in another case finds its "
+		       "row and blocks AS64502 (\"%s\")",
+		       text_of ("intel-message"));
+		/* Taken away again: the counts below start from none. */
+		if (x != NULL) {
+			gchar *button = g_strdup_printf ("geo-remove-%s", x);
+
+			next_response = GTK_RESPONSE_ACCEPT;
+			click (button);
+			g_free (button);
+			g_free (x);
+		}
+		CHECK (geo_conf (&on, &rules) && rules == 0,
+		       "geo: ... and removed again (%u rules)", rules);
+	}
+	/* The page fits a 640 px window: the picker wraps under its
+	 * entry. */
+	{
+		gint min = 0;
+
+		gtk_widget_get_preferred_width (find (page, "intel-geo-picker"),
+		                                &min, NULL);
+		CHECK (min <= 640 - 64 - 40,
+		       "geo: the picker needs %d px, within a 640 px window's "
+		       "card", min);
+	}
+	/* Enter in the entry while Block is greyed out adds nothing. */
+	{
+		GtkWidget *add = find (page, "intel-geo-add");
+		guint before = 0;
+
+		geo_conf (&on, &before);
+		gtk_widget_set_sensitive (add, FALSE);
+		gtk_entry_set_text (GTK_ENTRY (entry), "fr");
+		g_signal_emit_by_name (entry, "activate");
+		wait_idle ();
+		CHECK (geo_conf (&on, &rules) && rules == before &&
+		       find (page, "geo-row-country-france") == NULL,
+		       "geo: Enter while Block is greyed out adds nothing (%u "
+		       "rules, %u before)", rules, before);
+		gtk_widget_set_sensitive (add, TRUE);
+	}
 	/* Add: Netherlands, inbound, picked from the list. */
 	gtk_entry_set_text (GTK_ENTRY (entry), "Nether");
 	geo_pick ("Netherlands (NL)");
@@ -1016,11 +1175,24 @@ check_geo (void)
 	       "geo: Block adds the rule and puts it in force (%s)",
 	       kern.last_sets ? kern.last_sets : "nothing applied");
 	t = g_strdup (text_of ("geo-facts-country-netherlands"));
-	CHECK (strstr (t, "Netherlands (NL)") != NULL &&
+	CHECK (strstr (t, "Registered in Netherlands (NL)") != NULL &&
 	       strstr (t, "Stops them connecting to you.") != NULL,
-	       "geo: its row names the country and the direction (\"%s\")",
-	       t);
+	       "geo: its row says where the country's ranges are registered "
+	       "and the direction (\"%s\")", t);
+	CHECK (strstr (t, "1 anycast network, which may block services "
+	                  "elsewhere") != NULL,
+	       "geo: the row says how many anycast networks in words, for "
+	       "the keyboard and screen readers (\"%s\")", t);
 	g_free (t);
+	{
+		AtkObject *a = gtk_widget_get_accessible (
+			find (page, "geo-remove-country-netherlands"));
+		const gchar *an = a != NULL ? atk_object_get_name (a) : NULL;
+
+		CHECK (g_strcmp0 (an, "Remove Netherlands") == 0,
+		       "geo: its Remove button's accessible name names the "
+		       "rule (\"%s\")", an != NULL ? an : "none");
+	}
 	CHECK (strcmp (text_of ("geo-status-country-netherlands"),
 	               "In force.") == 0,
 	       "geo: and says it is in force (\"%s\")",
@@ -1102,6 +1274,9 @@ check_geo (void)
 	gtk_switch_set_active (GTK_SWITCH (sw), FALSE);
 	wait_idle ();
 	CHECK (geo_conf (&on, &rules) && !on && rules == 2 &&
+	       strstr (text_of ("intel-geo-state"), "more than 30 days old")
+	       != NULL &&
+	       strstr (text_of ("intel-geo-state"), "still used") == NULL &&
 	       strstr (text_of ("geo-status-country-netherlands"),
 	               "location database is off") != NULL &&
 	       strstr (kern.last_sets, "country-netherlands") == NULL,

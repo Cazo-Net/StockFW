@@ -285,11 +285,11 @@ it on and accept what that means:
 stockfw intel geo terms                       # the host, how often, what it learns, the licence
 sudo stockfw intel geo on --accept-terms
 sudo stockfw intel geo update                 # download the database now
-stockfw intel geo search nether               # find a country or a network by name
+sudo stockfw intel geo search nether          # find a country or a network by name
 sudo stockfw intel geo add country NL --dir in
 sudo stockfw intel geo add asn 64500
 sudo stockfw intel apply
-stockfw intel lookup 192.0.2.10               # registered in, the network, and whether a rule blocks it
+sudo stockfw intel lookup 192.0.2.10          # registered in, the network, and whether a rule blocks it
 ```
 
 - **Registered, not located.** A country is where an address range is

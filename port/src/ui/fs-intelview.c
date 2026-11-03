@@ -2417,6 +2417,24 @@ text_view_text (GtkWidget *view)
 
 /* ---------------------------------------------- countries and networks */
 
+/* The picker's comparison form of a text: what GtkEntryCompletion
+ * hands the match function (G_NORMALIZE_ALL, then casefolded), so
+ * "curaç", "åland" and "türk" find their rows as "nl" finds the
+ * Netherlands.  Never NULL; invalid UTF-8 compares as given, lowered. */
+static gchar *
+geo_fold (const gchar *text)
+{
+	gchar *norm = g_utf8_normalize (text != NULL ? text : "", -1,
+	                                G_NORMALIZE_ALL);
+	gchar *out;
+
+	if (norm == NULL)
+		return g_ascii_strdown (text != NULL ? text : "", -1);
+	out = g_utf8_casefold (norm, -1);
+	g_free (norm);
+	return out;
+}
+
 /* "Germany (DE)" for a country rule's values, "AS64500 Example One"
  * for a network rule's, from the copy in use where it names them. */
 static gchar *
@@ -2574,7 +2592,10 @@ geo_rule_row (const Snapshot *s, const FsIntelLocationConf *l,
 	gtk_box_pack_start (GTK_BOX (text), head, FALSE, FALSE, 0);
 
 	x = geo_values_text (s, l);
-	g_string_append (t, x);
+	if (l->kind == FS_INTEL_LOCATION_COUNTRY)
+		g_string_append_printf (t, _("Registered in %s"), x);
+	else
+		g_string_append (t, x);
 	g_free (x);
 	g_string_append (t, DOT);
 	g_string_append (t, dir_sentence (l->dir));
@@ -2597,6 +2618,18 @@ geo_rule_row (const Snapshot *s, const FsIntelLocationConf *l,
 			                        (gulong) MIN (stats->addresses4,
 			                                      G_MAXULONG)), n);
 			g_free (n);
+		}
+		/* The anycast count in words too: the chip's tooltip is
+		 * for the mouse, and this line is read by the keyboard and
+		 * screen readers. */
+		if (stats->anycast_prefixes > 0) {
+			g_string_append (t, DOT);
+			g_string_append_printf (t, g_dngettext (NULL,
+			        "%u anycast network, which may block services "
+			        "elsewhere",
+			        "%u anycast networks, which may block services "
+			        "elsewhere", stats->anycast_prefixes),
+			        stats->anycast_prefixes);
 		}
 	}
 	g_string_append (t, DOT);
@@ -2623,6 +2656,11 @@ geo_rule_row (const Snapshot *s, const FsIntelLocationConf *l,
 	b = gtk_button_new_with_label (_("Remove"));
 	add_class (b, "fs-link");
 	gtk_widget_set_valign (b, GTK_ALIGN_CENTER);
+	/* A screen reader hears which rule it removes, not "Remove" once
+	 * per row. */
+	name = g_strdup_printf (_("Remove %s"), l->name);
+	atk_object_set_name (gtk_widget_get_accessible (b), name);
+	g_free (name);
 	name = g_strdup_printf ("geo-remove-%s", l->id);
 	gtk_widget_set_name (b, name);
 	g_free (name);
@@ -2683,8 +2721,10 @@ geo_state_text (const Snapshot *s, gint *level)
 		if (s->geo.stale) {
 			*level = 1;
 			g_string_append_c (t, ' ');
-			g_string_append (t, _("It is more than 30 days old; it is "
-			                      "still used."));
+			g_string_append (t, geo_on (s->config)
+			                 ? _("It is more than 30 days old; it is "
+			                     "still used.")
+			                 : _("It is more than 30 days old."));
 		} else if (s->config->geo_enabled) {
 			*level = 0;
 		}
@@ -2742,7 +2782,7 @@ geo_fill_countries (const Snapshot *s)
 		const gchar *name = c->name != NULL && *c->name != '\0'
 		                    ? c->name : c->code;
 		gchar *shown = g_strdup_printf ("%s (%s)", name, c->code);
-		gchar *key = g_ascii_strdown (shown, -1);
+		gchar *key = geo_fold (shown);
 
 		gtk_list_store_insert_with_values (geo_store, NULL, -1,
 			GEO_COL_TEXT, shown, GEO_COL_KIND,
@@ -2779,7 +2819,7 @@ geo_fill_ases (const GPtrArray *ases)
 		               ? g_strdup_printf ("AS%u %s", a->asn, a->name)
 		               : g_strdup_printf ("AS%u", a->asn);
 		gchar *value = g_strdup_printf ("%u", a->asn);
-		gchar *key = g_ascii_strdown (shown, -1);
+		gchar *key = geo_fold (shown);
 
 		gtk_list_store_insert_with_values (geo_store, NULL, -1,
 			GEO_COL_TEXT, shown, GEO_COL_KIND,
@@ -3333,7 +3373,8 @@ geo_pick_clear (void)
 	g_clear_pointer (&geo_pick_text, g_free);
 }
 
-/* A row matches when its text holds what was typed, in any case. */
+/* A row matches when its text holds what was typed, in any case and
+ * with or without accents composed (both sides through geo_fold). */
 static gboolean
 geo_match (GtkEntryCompletion *completion, const gchar *key,
            GtkTreeIter *iter, gpointer data)
@@ -3344,7 +3385,7 @@ geo_match (GtkEntryCompletion *completion, const gchar *key,
 
 	(void) data;
 	gtk_tree_model_get (model, iter, GEO_COL_KEY, &row_key, -1);
-	typed = g_ascii_strdown (key != NULL ? key : "", -1);
+	typed = geo_fold (key);
 	g_strstrip (typed);
 	hit = row_key != NULL && *typed != '\0' && strstr (row_key, typed) != NULL;
 	g_free (typed);
@@ -3407,40 +3448,47 @@ on_geo_entry_changed (GtkEditable *editable, gpointer data)
 }
 
 /* The row of the picker's model whose text, name or code is `text'
- * (any case); FALSE when none is. */
+ * (any case, accents composed or not); FALSE when none is. */
 static gboolean
 geo_find_row (const gchar *text, FsIntelLocationKind *kind, gchar **value,
               gchar **name)
 {
 	GtkTreeIter it;
 	gboolean valid;
+	gchar *want;
 
 	if (geo_store == NULL)
 		return FALSE;
+	want = geo_fold (text);
 	valid = gtk_tree_model_get_iter_first (GTK_TREE_MODEL (geo_store), &it);
 	while (valid) {
-		gchar *t = NULL, *v = NULL, *n = NULL;
+		gchar *t = NULL, *v = NULL, *n = NULL, *ft, *fn;
 		gint k;
 		gboolean hit;
 
 		gtk_tree_model_get (GTK_TREE_MODEL (geo_store), &it,
 		                    GEO_COL_TEXT, &t, GEO_COL_VALUE, &v,
 		                    GEO_COL_NAME, &n, GEO_COL_KIND, &k, -1);
-		hit = g_ascii_strcasecmp (t, text) == 0 ||
-		      g_ascii_strcasecmp (n, text) == 0 ||
-		      (k == FS_INTEL_LOCATION_COUNTRY &&
+		ft = geo_fold (t);
+		fn = geo_fold (n);
+		hit = strcmp (ft, want) == 0 || strcmp (fn, want) == 0 ||
+		      (k == FS_INTEL_LOCATION_COUNTRY && v != NULL &&
 		       g_ascii_strcasecmp (v, text) == 0);
 		g_free (t);
+		g_free (ft);
+		g_free (fn);
 		if (hit) {
 			*kind = (FsIntelLocationKind) k;
 			*value = v;
 			*name = n;
+			g_free (want);
 			return TRUE;
 		}
 		g_free (v);
 		g_free (n);
 		valid = gtk_tree_model_iter_next (GTK_TREE_MODEL (geo_store), &it);
 	}
+	g_free (want);
 	return FALSE;
 }
 
@@ -3460,11 +3508,13 @@ geo_parse_asn (const gchar *text)
 	       ? (guint32) v : 0;
 }
 
+/* Block, or Enter in the entry: the entry stays usable while Block is
+ * greyed out (busy, or threat intel off), so Enter does nothing then,
+ * as the button would. */
 static void
 on_geo_add_clicked (GtkButton *button, gpointer data)
 {
-	gchar *text = g_strstrip (g_strdup (
-		gtk_entry_get_text (GTK_ENTRY (geo_entry))));
+	gchar *text;
 	FsIntelLocationKind kind = 0;
 	gchar *value = NULL, *name = NULL, *line;
 	const gchar *dir_id;
@@ -3473,6 +3523,9 @@ on_geo_add_clicked (GtkButton *button, gpointer data)
 
 	(void) button;
 	(void) data;
+	if (geo_add_button == NULL || !gtk_widget_is_sensitive (geo_add_button))
+		return;
+	text = g_strstrip (g_strdup (gtk_entry_get_text (GTK_ENTRY (geo_entry))));
 	if (geo_pick_text != NULL && strcmp (text, geo_pick_text) == 0) {
 		kind = geo_pick_kind;
 		value = g_strdup (geo_pick_value);
@@ -3579,13 +3632,14 @@ build_geo_card (void)
 	gtk_box_pack_start (GTK_BOX (geo_picker_row),
 	                    label_new (_("Block a country or network"),
 	                               "profile-label", 0.0), FALSE, FALSE, 0);
-	row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+	/* The entry on its own line, the direction and Block under it: on
+	 * one line they were wider than a 640 px window. */
 	geo_entry = gtk_entry_new ();
 	gtk_widget_set_name (geo_entry, "intel-geo-entry");
 	gtk_entry_set_placeholder_text (GTK_ENTRY (geo_entry),
 	                                _("Germany, DE, AS64500 or a "
 	                                  "network's name"));
-	gtk_entry_set_width_chars (GTK_ENTRY (geo_entry), 34);
+	gtk_entry_set_width_chars (GTK_ENTRY (geo_entry), 20);
 	atk_object_set_name (gtk_widget_get_accessible (geo_entry),
 	                     _("Country or network to block"));
 	geo_store = gtk_list_store_new (GEO_N_COLS, G_TYPE_STRING, G_TYPE_INT,
@@ -3606,7 +3660,9 @@ build_geo_card (void)
 	                  G_CALLBACK (on_geo_entry_changed), NULL);
 	g_signal_connect (geo_entry, "activate",
 	                  G_CALLBACK (on_geo_add_clicked), NULL);
-	gtk_box_pack_start (GTK_BOX (row), geo_entry, FALSE, FALSE, 0);
+	gtk_box_pack_start (GTK_BOX (geo_picker_row), geo_entry, FALSE, FALSE,
+	                    0);
+	row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
 	geo_dir_combo = gtk_combo_box_text_new ();
 	gtk_widget_set_name (geo_dir_combo, "intel-geo-dir");
 	gtk_combo_box_text_append (GTK_COMBO_BOX_TEXT (geo_dir_combo), "both",

@@ -601,8 +601,8 @@ check '[ $rc -eq 0 ] && [ "$(jget "d[\"enabled\"], d[\"database\"][\"present\"],
       "geo status --json: the copy's date, stale, licence, 17 networks, 7 countries, the refusal"
 check '[ -n "$(jget "d[\"attribution\"]")" ] && grep -q "IPFire" <<<"$(jget "d[\"attribution\"]")"' "  ... and the attribution"
 run intel geo status
-check '[ $rc -eq 0 ] && grep -q "copy of 2023-11-14: 17 networks, 7 countries" <<<"$out" && grep -q "out of date" <<<"$out" && grep -q "refused" <<<"$out" && grep -q "IPFire" <<<"$out"' \
-      "geo status: the copy's day, out of date, the refusal, the attribution"
+check '[ $rc -eq 0 ] && grep -q "copy of 2023-11-14: 17 networks, 7 countries" <<<"$out" && grep -q "out of date (older than 30 days), still used by the rules" <<<"$out" && grep -q "refused" <<<"$out" && grep -q "IPFire" <<<"$out"' \
+      "geo status: the copy's day, out of date and still used (it is on), the refusal, the attribution"
 
 run --json intel geo search ex
 check '[ $rc -eq 0 ] && [ "$(jget "[a[\"asn\"] for a in d[\"ases\"]], [c[\"code\"] for c in d[\"countries\"]]")" = "[64500, 64501] []" ]' \
@@ -642,6 +642,23 @@ check '[ $rc -eq 0 ] && has_element s_country_netherlands_6 2c0f:f000::1 && has_
       "apply: the country's networks are in its sets"
 check 'grep -q "anycast" <<<"$out"' "  ... and the apply says the Netherlands includes anycast networks"
 check '! has_element s_country_netherlands_4 198.51.100.7' "  ... and nothing of another country"
+run --json intel geo list
+check '[ $rc -eq 0 ] && [ "$(jget "[r[\"status\"] for r in d[\"rules\"] if r[\"id\"] == \"country-netherlands\"]")" = "['"'in-force'"']" ]' \
+      "geo list --json after apply: the country rule is in-force"
+# The live rules gone behind StockFW's back: the record of the last
+# apply still lists the rule, but no surface may call it in force.
+nft delete table inet stockfw_intel
+run --json intel geo list
+check '[ $rc -eq 0 ] && [ "$(jget "[r[\"status\"] for r in d[\"rules\"] if r[\"id\"] == \"country-netherlands\"]")" = "['"'not-in-force'"']" ]' \
+      "the table deleted by hand: geo list --json says not-in-force, never in-force ($(jget 'd["rules"]'))"
+run intel geo list
+check '[ $rc -eq 0 ] && grep -q "not-in-force" <<<"$out" && ! grep -qw "in-force" <<<"$(sed "s/not-in-force//g" <<<"$out")"' \
+      "  ... and so does the plain list"
+run --json intel status
+check '[ "$(jget "[r[\"status\"] for r in d[\"location\"][\"rules\"] if r[\"id\"] == \"country-netherlands\"]")" = "['"'not-in-force'"']" ]' \
+      "  ... and the location object of intel status --json (/api/intel)"
+run intel apply
+check '[ $rc -eq 0 ] && has_element s_country_netherlands_4 192.0.2.10' "apply again: the country's sets are back"
 run --json intel lookup 192.0.2.10
 check '[ $rc -eq 5 ] && [ "$(jget "d[\"blocked\"], [l[\"id\"] for l in d[\"locations\"]], d[\"location\"][\"country\"], d[\"location\"][\"asn\"], d[\"location\"][\"anycast\"], d[\"location\"][\"meaning\"]")" = "True ['"'country-netherlands'"'] NL 64504 False registered in" ]' \
       "lookup in a blocked country: exit 5, the rule, NL, AS64504, not anycast, \"registered in\" ($(jget 'd["location"]'))"
@@ -683,9 +700,16 @@ out="$(nobody intel geo on --accept-terms 2>&1)"; rc=$?
 check '[ $rc -eq 3 ]' "geo on as nobody: exit 3"
 out="$(nobody intel geo add country DE 2>&1)"; rc=$?
 check '[ $rc -eq 3 ]' "geo add as nobody: exit 3"
+out="$(nobody intel geo search nether 2>&1)"; rc=$?
+check '[ $rc -eq 3 ]' "geo search as nobody: exit 3 (the store is root's; the README says sudo)"
+out="$(nobody intel lookup 192.0.2.10 2>&1)"; rc=$?
+check '[ $rc -eq 3 ]' "lookup as nobody: exit 3"
 
 run intel geo off
 check '[ $rc -eq 0 ] && has_element s_country_netherlands_6 2c0f:f000::1' "geo off: saved, the kernel untouched until apply"
+run intel geo status
+check '[ $rc -eq 0 ] && grep -q "out of date (older than 30 days)" <<<"$out" && ! grep -q "still used\|still enforced" <<<"$out"' \
+      "geo status with the database off: out of date, never \"still used\""
 run intel apply
 check '[ $rc -eq 0 ] && ! has_element s_country_netherlands_6 2c0f:f000::1 && ! has_element s_country_netherlands_4 192.0.2.10' \
       "apply with the database off: the country sets are gone"

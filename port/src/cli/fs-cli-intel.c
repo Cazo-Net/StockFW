@@ -31,7 +31,8 @@
 
 /* FS_CLI_LIVE, FS_CLI_SUDO, FS_CLI_RIGHTS: fs-cli.h. */
 
-static void     geo_json        (GString *out, const FsIntelConfig *config);
+static void     geo_json        (GString *out, const FsIntelConfig *config,
+                                 FsIntelState state);
 static gboolean geo_status_read (FsIntelGeoStatus *st, GError **error);
 static gchar   *day_text        (gint64 t);
 
@@ -467,7 +468,7 @@ fs_cli_intel_json (GString *out, gboolean with_sources)
 		 * line, and the rules. */
 		g_string_append_c (out, ',');
 		fs_json_key (out, "location");
-		geo_json (out, config);
+		geo_json (out, config, state);
 	}
 	g_string_append_c (out, '}');
 	g_free (detail);
@@ -2055,26 +2056,40 @@ geo_status_read (FsIntelGeoStatus *st, GError **error)
 	                            error);
 }
 
+/* The location database is in use: threat intel on, the database
+ * switch on and its terms accepted (the engine's geo_usable). */
+static gboolean
+geo_in_use (const FsIntelConfig *config)
+{
+	return config->enabled && config->geo_enabled &&
+	       config->geo_accepted_at > 0;
+}
+
 /* A rule's status word: off, database-off (the database is turned
  * off, so nothing is enforced), no-database (not downloaded yet),
- * in-force (in the rule set the kernel was given) or not-applied. */
+ * not-applied (not in the rule set last applied), in-force (in that
+ * rule set, and the live rules are that rule set: the state is
+ * enforced) or not-in-force (applied, but the live rules are missing,
+ * differ or cannot be read; never "in-force" from the record alone). */
 static const gchar *
 location_status (const FsIntelConfig *config, const FsIntelLocationConf *l,
-                 const FsIntelGeoStatus *st)
+                 const FsIntelGeoStatus *st, FsIntelState state)
 {
 	if (!l->enabled)
 		return "off";
-	if (!config->enabled || !config->geo_enabled ||
-	    config->geo_accepted_at <= 0)
+	if (!geo_in_use (config))
 		return "database-off";
 	if (st == NULL || !st->present)
 		return "no-database";
-	return fs_intel_applied_has (l->id) ? "in-force" : "not-applied";
+	if (!fs_intel_applied_has (l->id))
+		return "not-applied";
+	return state == FS_INTEL_STATE_ENFORCED ? "in-force" : "not-in-force";
 }
 
 static void
 location_json (GString *out, const FsIntelConfig *config,
-               const FsIntelLocationConf *l, const FsIntelGeoStatus *st)
+               const FsIntelLocationConf *l, const FsIntelGeoStatus *st,
+               FsIntelState state)
 {
 	g_string_append_c (out, '{');
 	fs_json_kv_str (out, "id", l->id);                     g_string_append_c (out, ',');
@@ -2084,15 +2099,16 @@ location_json (GString *out, const FsIntelConfig *config,
 	location_values_json (out, l);                         g_string_append_c (out, ',');
 	fs_json_kv_str (out, "direction", dir_word (l->dir));  g_string_append_c (out, ',');
 	fs_json_kv_bool (out, "enabled", l->enabled);          g_string_append_c (out, ',');
-	fs_json_kv_str (out, "status", location_status (config, l, st));
+	fs_json_kv_str (out, "status", location_status (config, l, st, state));
 	g_string_append_c (out, '}');
 }
 
 /* {supported, enabled, terms_accepted_at, url, database{...},
  * attribution, rules[]}: `intel geo status --json' and the "location"
- * object of /api/intel.  Read-only; creates nothing. */
+ * object of /api/intel.  Read-only; creates nothing.  state is the
+ * overall state (fs_intel_state), which the rules' status words need. */
 static void
-geo_json (GString *out, const FsIntelConfig *config)
+geo_json (GString *out, const FsIntelConfig *config, FsIntelState state)
 {
 	FsIntelGeoStatus st;
 	GError *error = NULL;
@@ -2140,7 +2156,7 @@ geo_json (GString *out, const FsIntelConfig *config)
 		if (i > 0)
 			g_string_append_c (out, ',');
 		location_json (out, config, g_ptr_array_index (config->locations, i),
-		               have ? &st : NULL);
+		               have ? &st : NULL, state);
 	}
 	g_string_append (out, "]}");
 	g_free (attribution);
@@ -2175,7 +2191,8 @@ day_text (gint64 t)
 }
 
 static void
-geo_print_rules (const FsIntelConfig *config, const FsIntelGeoStatus *st)
+geo_print_rules (const FsIntelConfig *config, const FsIntelGeoStatus *st,
+                 FsIntelState state)
 {
 	static const gchar *headers[] = {
 		"ID", "ON", "KIND", "DIR", "BLOCKED", "STATUS", "VALUES", "NAME"
@@ -2201,7 +2218,7 @@ geo_print_rules (const FsIntelConfig *config, const FsIntelGeoStatus *st)
 		row[2] = g_strdup (location_kind_word (l->kind));
 		row[3] = g_strdup (dir_word (l->dir));
 		row[4] = blocked_text (g_hash_table_lookup (counters, l->id));
-		row[5] = g_strdup (location_status (config, l, st));
+		row[5] = g_strdup (location_status (config, l, st, state));
 		row[6] = location_values_text (l);
 		row[7] = g_strdup (l->name);
 		g_ptr_array_add (rows, row);
@@ -2232,7 +2249,8 @@ geo_status (gint argc, gchar **argv)
 	if (fs_cli.json) {
 		GString *out = g_string_new (NULL);
 
-		geo_json (out, config);
+		geo_json (out, config, fs_intel_state (fs_backend (), config,
+		                                       NULL));
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 		fs_intel_config_free (config);
@@ -2261,8 +2279,9 @@ geo_status (gint argc, gchar **argv)
 		printf ("  %-13s copy of %s: %s networks, %u countries, %u "
 		        "ASes%s%s%s\n", "Database", day, n, st.countries, st.ases,
 		        st.stale ? fs_cli_amber () : "",
-		        st.stale ? "; out of date (older than 30 days), still "
-		                   "enforced" : "",
+		        !st.stale ? "" : geo_in_use (config)
+		        ? "; out of date (older than 30 days), still used by "
+		          "the rules" : "; out of date (older than 30 days)",
 		        st.stale ? fs_cli_reset () : "");
 		g_free (day);
 		g_free (n);
@@ -2290,7 +2309,8 @@ geo_status (gint argc, gchar **argv)
 		printf ("  %-13s %sfailed: %s%s\n", "Last update", fs_cli_red (),
 		        st.last_error, fs_cli_reset ());
 	printf ("  %-13s %s\n\n", "Source", FS_GEODB_URL);
-	geo_print_rules (config, &st);
+	geo_print_rules (config, &st, fs_intel_state (fs_backend (), config,
+	                                              NULL));
 	attribution = fs_intel_geo_attribution ();
 	printf ("\n%sA country is where an address range is registered, not "
 	        "where a computer is.\n%s%s\n", fs_cli_dim (), attribution,
@@ -2940,6 +2960,7 @@ geo_list (gint argc, gchar **argv)
 	FsIntelGeoStatus st;
 	GError *error = NULL;
 	gboolean have;
+	FsIntelState state;
 
 	(void) argv;
 	if (argc > 0) {
@@ -2950,6 +2971,7 @@ geo_list (gint argc, gchar **argv)
 	if (config == NULL)
 		return fail (error, "geo list");
 	have = geo_status_read (&st, NULL);
+	state = fs_intel_state (fs_backend (), config, NULL);
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{\"rules\":[");
 
@@ -2958,13 +2980,13 @@ geo_list (gint argc, gchar **argv)
 				g_string_append_c (out, ',');
 			location_json (out, config,
 			               g_ptr_array_index (config->locations, i),
-			               have ? &st : NULL);
+			               have ? &st : NULL, state);
 		}
 		g_string_append (out, "]}");
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else {
-		geo_print_rules (config, have ? &st : NULL);
+		geo_print_rules (config, have ? &st : NULL, state);
 	}
 	if (have)
 		fs_intel_geo_status_clear (&st);

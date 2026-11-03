@@ -2918,7 +2918,12 @@ copy with `cp` and checked with `cmp`.  The table was re-run in full
 after the work-in-progress commit, on the tree as committed.  `geo_pick`
 in the smoke no longer emits "match-selected" for a row it did not
 find: with the countries bug put back, the smoke used to crash on an
-unset iterator instead of reporting the failures.
+unset iterator instead of reporting the failures.  The eleven rows from "a location
+rule's status" to "the card says an old copy" were added with the
+review fixes and each was seen failing the same way.  The smoke reads
+the completion's own filtered model (the tree view in its popup, after
+`gtk_entry_completion_complete`), so the rows it counts are the ones
+GTK offers, with the key GTK normalizes and casefolds.
 
 | bug put back | test | check that fails |
 |---|---|---|
@@ -2935,7 +2940,18 @@ unset iterator instead of reporting the failures.
 | the card's licence line empty | fs-intelview-smoke | `geo: the card carries the licence line` |
 | the card's controls shown where the platform has none | fs-intelview-smoke | `geo: a platform without it shows its sentence (...) and no control` |
 | the picker's countries never filled from the copy in use (`geo_fill_countries` returns at once) | fs-intelview-smoke | `geo: the picker lists the database's 7 countries, code and name`, `geo: "Netherlands (NL)" is in the picker's list`, and the add that follows |
-| Block ignores the direction chosen (always both) | fs-intelview-smoke | `geo: its row names the country and the direction (...)` |
+| Block ignores the direction chosen (always both) | fs-intelview-smoke | `geo: its row says where the country's ranges are registered and the direction (...)` |
+| a location rule's status "in-force" from StockFW's record alone (`location_status` ignores the overall state) | test-intel-cli.sh | `the table deleted by hand: geo list --json says not-in-force, never in-force` |
+| `geo status` says an old copy is "still used by the rules" with the database off | test-intel-cli.sh | `geo status with the database off: out of date, never "still used"` |
+| the picker's row keys lowered as ASCII (`g_ascii_strdown`, not `geo_fold`) | fs-intelview-smoke | `geo: an accented name completes typed in either case` |
+| the completion's match function never matches | fs-intelview-smoke | `geo: the completion offers the Netherlands for "nl" ... and "Nether" ..., AS64500 for "64500"` |
+| a name typed in full compared as ASCII (`geo_find_row` with `g_ascii_strcasecmp`) | fs-intelview-smoke | `geo: a name typed in full in another case finds its row and blocks AS64502` |
+| Enter in the entry adds a rule while Block is greyed out | fs-intelview-smoke | `geo: Enter while Block is greyed out adds nothing` |
+| the entry, direction and Block back on one line (entry 34 characters) | fs-intelview-smoke | `geo: the picker needs 623 px, within a 640 px window's card` |
+| a rule's Remove button without its accessible name | fs-intelview-smoke | `geo: its Remove button's accessible name names the rule` |
+| the anycast count only in the chip's tooltip | fs-intelview-smoke | `geo: the row says how many anycast networks in words, for the keyboard and screen readers` |
+| a country rule's row without "Registered in" | fs-intelview-smoke | `geo: its row says where the country's ranges are registered and the direction` |
+| the card says an old copy "is still used" with the database off | fs-intelview-smoke | `geo: turned off, the rules are kept, say they block nothing, ...` |
 | the "Not in this build" callout put back on the threat-intel topic | fs-help-smoke | `[H8] no "Not in this build" callout in any topic ...`, `[H8] the threat-intel topic shows "Countries and networks" ...` |
 | the anycast mark's name left out of the help | fs-help-smoke | `[H8] countries: the anycast warning and its mark` |
 | the help says "not available on Windows yet" | fs-help-smoke | `[H8] countries: Windows does not support it, said as a limit` |
