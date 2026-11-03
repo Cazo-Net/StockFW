@@ -306,22 +306,24 @@ ok "$BINDIR/stockfw-uninstall"
 # --- summary -------------------------------------------------------------
 # The launch command is given as an absolute path on purpose.  sudo runs
 # with its own search path (Defaults secure_path in sudoers), which on
-# Debian/Kali is typically "/usr/sbin:/usr/bin:/sbin:/bin" and does NOT
-# include /usr/local/bin -- so the bare "sudo StockFW" that a user will
-# naturally type fails with "command not found" even though "StockFW"
-# works perfectly as an ordinary user.  The absolute path is correct on
-# every system regardless of how sudoers is configured.
+# some systems (Fedora and RHEL, and the Kali StockFW was first tested
+# on) does NOT include /usr/local/bin -- so the bare "sudo StockFW" that
+# a user will naturally type fails with "command not found" even though
+# "StockFW" works perfectly as an ordinary user.  The absolute path is
+# correct on every system regardless of how sudoers is configured.
 SUDO_CMD="$BINDIR/StockFW"
 
 # Detect that exact trap and say so, rather than letting the user
 # rediscover it.  Reading sudoers is only possible as root, which is
-# where we already are.
+# where we already are.  Both spellings count: Debian and Ubuntu write
+# secure_path="..." and RHEL and Fedora secure_path = ... (spaces, no
+# quotes); tests/test-release.sh feeds this function each one.
 sudo_path_has_bindir () {
     local sp
-    sp=$( { grep -hE '^[[:space:]]*Defaults[[:space:]]+secure_path=' \
+    sp=$( { grep -hE '^[[:space:]]*Defaults[[:space:]]+secure_path[[:space:]]*=' \
                  /etc/sudoers /etc/sudoers.d/* 2>/dev/null \
            || true; } \
-         | sed -n 's/.*secure_path="\([^"]*\)".*/\1/p' \
+         | sed -nE 's/.*secure_path[[:space:]]*=[[:space:]]*"?([^"[:space:]]*)"?.*/\1/p' \
          | tr ':' '\n' )
     [ -z "$sp" ] && return 0   # no secure_path set: sudo inherits PATH
     printf '%s\n' "$sp" | grep -qxF "$BINDIR"

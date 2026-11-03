@@ -213,6 +213,9 @@ windows_only "THREAT INTEL (Windows Firewall rules)" run_intel_windows
 run_sh "CLI + DASHBOARD (Linux)" tests/test-cli.sh
 # Linux with a display (xvfb-run); prints SKIP elsewhere.
 run_sh "SINGLE INSTANCE + BACKGROUND (Linux, real binary)" tests/test-instance.sh
+# A desktop with no tray (Broadway standing in for Wayland and WSLg),
+# and words the window app does not take; needs broadwayd for the first.
+linux_only "NO TRAY DESKTOP + STRAY WORDS (Linux, real binary)" run_sh tests/test-notray.sh
 # Linux only, and only as root; each prints SKIP elsewhere.
 run_sh "APPLY (Linux, live iptables)" tests/test-apply-linux.sh
 run_sh "APPLY DUAL-STACK (Linux, IPv4 + IPv6, private netns)" tests/test-apply-dual.sh

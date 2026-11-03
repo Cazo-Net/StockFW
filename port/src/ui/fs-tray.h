@@ -40,6 +40,14 @@ void fs_tray_set_window (GtkWindow *window);
  * startup and again whenever the Preferences dialog is accepted. */
 void fs_tray_sync (void);
 
+/* TRUE where GTK can have a tray icon at all: an X11 display (also
+ * XWayland, as under sudo on a Wayland desktop) and Windows.  FALSE on
+ * Wayland (GNOME, KDE Plasma, WSLg) and Broadway, where GTK has no
+ * notification area; there no icon is made and closing the window
+ * quits.  Whether a tray is really showing the icon is
+ * fs_tray_active()'s question. */
+gboolean fs_tray_supported (void);
+
 /* Remove the icon; safe to call when none is up. */
 void fs_tray_uninstall (void);
 

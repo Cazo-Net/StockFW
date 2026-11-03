@@ -11,6 +11,41 @@ which records the evidence behind every entry here (Chapter 14 for
 beside `StockFW.exe`, and the Linux tarball carries it and installs it
 into `/usr/local/share/doc/stockfw/`.
 
+## [Unreleased]
+
+### Fixed
+
+- **Wayland desktops and WSL: no tray icon, no start-up warning.** GTK
+  has a tray only on X11 and Windows. Started on Wayland (GNOME and KDE
+  Plasma by default, and WSL's WSLg), StockFW tried to make one anyway,
+  printed `Gtk-CRITICAL: gtk_widget_get_scale_factor: assertion
+  'GTK_IS_WIDGET (widget)' failed` at every start, and showed no icon.
+  It now makes no icon there: a background start shows the window,
+  closing the window quits, and Preferences greys both tray switches
+  with the reason. Under `sudo` StockFW runs on XWayland instead, where
+  the tray works as on X11.
+- **The window keeps up with a firewall stopped from outside, with or
+  without a tray icon.** The once-a-minute re-read of the firewall's
+  state (how `stockfw stop` in a terminal reaches the Overview and the
+  sidebar) ran only while a tray icon existed. It now runs whenever the
+  window is open, so it also works on Wayland and with "Show a tray
+  icon" off.
+- **`StockFW dashboard` says what to run instead.** The window app takes
+  options only; a word such as `dashboard` reached GTK, which answered
+  only "This application can not open files". It now exits with status 2
+  before doing anything else and names the command-line tool:
+  `sudo ./cli/stockfw dashboard` from the unpacked folder, or
+  `sudo /usr/local/bin/stockfw dashboard` once installed.
+- **`install.sh` warns on Fedora and RHEL too.** Its check of `sudo`'s
+  `secure_path` read only the quoted `secure_path="..."` form, so the
+  unquoted `secure_path = ...` that RHEL and Fedora write gave no
+  warning that `sudo StockFW` would say "command not found".
+- The Linux README has a section on running from the unpacked folder
+  and one on Wayland and WSL. It and the project README no longer say
+  that every Debian and Kali `sudo` leaves out `/usr/local/bin`
+  (Ubuntu's default includes it; Fedora, RHEL and some Kali systems
+  leave it out).
+
 ## [1.0.7] - 2026-11-03
 
 ### Added

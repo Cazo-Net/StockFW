@@ -169,6 +169,34 @@ EOF
 check "$(yes_if [ ! -s "$SCRATCH/anchors.txt" ])" "every in-page link in README.md lands on a heading (broken: $(echo $(cat "$SCRATCH/anchors.txt")))"
 
 # ---------------------------------------------------------------- 3. modes
+# install.sh's secure_path reader (its summary warns when sudo cannot find
+# StockFW by name): the function itself, run on each sudoers spelling.
+# RHEL and Fedora write it unquoted with spaces around '=', which an
+# earlier reader did not see, so it never warned there.
+FN="$SCRATCH/sudo-path-fn.sh"
+sed -n '/^sudo_path_has_bindir () {/,/^}/p' "$PORT_DIR/installer/linux/install.sh" \
+	| sed 's|/etc/sudoers /etc/sudoers.d/\*|"$SUDOERS_TEST"|' > "$FN"
+grep -q 'SUDOERS_TEST' "$FN"
+check $? "install.sh has sudo_path_has_bindir reading /etc/sudoers and sudoers.d"
+sudo_case () {   # sudo_case <want: has|lacks> <label> <sudoers text>
+	printf '%s\n' "$3" > "$SCRATCH/sudoers.test"
+	if ( BINDIR=/usr/local/bin SUDOERS_TEST="$SCRATCH/sudoers.test"
+	     . "$FN"; sudo_path_has_bindir ); then got=has; else got=lacks; fi
+	check "$(yes_if [ "$got" = "$1" ])" "install.sh reads $2 as: /usr/local/bin $1 (got $got)"
+}
+sudo_case has   "Debian/Ubuntu's quoted secure_path" \
+	'Defaults	secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'
+sudo_case lacks "a quoted secure_path without it" \
+	'Defaults secure_path="/usr/sbin:/usr/bin:/sbin:/bin"'
+sudo_case lacks "RHEL/Fedora's unquoted 'secure_path = ...'" \
+	'Defaults    secure_path = /sbin:/bin:/usr/sbin:/usr/bin'
+sudo_case has   "an unquoted secure_path with it" \
+	'Defaults secure_path=/usr/local/bin:/usr/bin:/bin'
+sudo_case has   "no secure_path at all (sudo keeps PATH)" \
+	'Defaults env_reset'
+sudo_case has   "a commented-out secure_path" \
+	'# Defaults secure_path="/usr/sbin:/usr/bin"'
+
 ENTRY="installer/linux/install.sh installer/linux/build_installer_linux.sh
        installer/build_installer.sh tools/build-linux.sh tools/stage-runtime-dlls.sh"
 for f in $ENTRY; do

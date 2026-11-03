@@ -73,6 +73,26 @@ static const GOptionEntry options[] = {
 	{ NULL, 0, 0, 0, NULL, NULL, NULL }
 };
 
+/* [ unknown_argument ] -- a word that is not an option: say what the
+ * window app is, where the command-line tool is, and exit 2 (the
+ * usual status for a usage error) without starting anything. */
+static int
+unknown_argument (const gchar *word)
+{
+	g_printerr ("StockFW: \"%s\" is not an option of the StockFW window "
+	            "app.\n", word);
+#ifndef G_OS_WIN32
+	g_printerr ("Commands such as \"dashboard\" belong to the command-line "
+	            "tool, stockfw, in lowercase:\n"
+	            "  sudo /usr/local/bin/stockfw dashboard   once installed "
+	            "(sudo ./install.sh)\n"
+	            "  sudo ./cli/stockfw dashboard            from the "
+	            "unpacked release folder\n");
+#endif
+	g_printerr ("The window app's own options: StockFW --help\n");
+	return 2;
+}
+
 /* [ on_activate ] */
 static void
 on_activate (GtkApplication *app, gpointer data)
@@ -319,6 +339,13 @@ main (int argc, char *argv[])
 	}
 
 	g_option_context_free (ctx);
+
+	/* The window app takes options only.  A word left over is most
+	 * often a command meant for the command-line tool (`StockFW
+	 * dashboard' for `stockfw dashboard'); handed on, GApplication
+	 * would only say "This application can not open files". */
+	if (argc > 1)
+		return unknown_argument (argv[1]);
 
 	if (opt_version) {
 		g_print ("StockFW %s (%s backend)\n",

@@ -827,7 +827,11 @@ hidden_start_begin (void)
 	GtkStatusIcon *icon = fs_tray_icon ();
 
 	if (icon == NULL) {
-		/* "Show a tray icon" is off: nothing to hide behind. */
+		/* "Show a tray icon" is off, or the desktop has no tray
+		 * (Wayland, WSLg: fs_tray_supported): nothing to hide
+		 * behind.  The debug line is what tests/test-notray.sh
+		 * reads, a Broadway display having no window list. */
+		g_debug ("background start: no tray icon, the window is shown");
 		gtk_widget_show (fsapp.window);
 		return;
 	}

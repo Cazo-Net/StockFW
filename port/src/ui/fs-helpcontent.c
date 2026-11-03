@@ -629,7 +629,9 @@ static const FsHelpBlock prefs_general[] = {
 	{ FS_HELP_HEAD, N_("Window and tray") },
 	{ FS_HELP_ITEM, N_("<b>Show a tray icon</b> (on by default): puts "
 	  "StockFW in the notification area, with a menu to open the window "
-	  "or quit.") },
+	  "or quit. Where StockFW runs on Wayland (including WSL), this and "
+	  "the next setting are greyed; elsewhere, if no icon appears, the "
+	  "desktop has no tray area and closing quits.") },
 	{ FS_HELP_ITEM, N_("<b>Close and minimize to the tray</b> (on by "
 	  "default): closing or minimizing hides the window in the tray "
 	  "instead of quitting, so event monitoring and Sentinel keep "
@@ -1048,6 +1050,14 @@ static const FsHelpBlock background[] = {
 	  "hides the window only when the icon really appeared; where the "
 	  "desktop has no notification area, closing quits, so StockFW is "
 	  "never left running with no way back.") },
+	{ FS_HELP_PARA, N_("Wayland desktops (GNOME and KDE Plasma by "
+	  "default, and WSL on Windows) give GTK no notification area. There "
+	  "StockFW shows no tray icon, Preferences greys both tray settings, "
+	  "and closing the window quits. Started with sudo, StockFW runs on "
+	  "the desktop's X11 side instead: the settings stay on offer, but an "
+	  "icon shows only where the desktop displays X11 tray icons. On an "
+	  "X11 session the icon shows where the desktop has a system tray; "
+	  "GNOME has none unless an extension adds one.") },
 	{ FS_HELP_HEAD, N_("The tray menu") },
 	{ FS_HELP_PARA, N_("Right-click the icon for the menu. The firewall's "
 	  "state is read again each time it opens.") },
