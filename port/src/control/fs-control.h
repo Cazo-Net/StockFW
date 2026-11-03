@@ -167,6 +167,34 @@ typedef struct
 	gboolean         live_none;
 	/* === end PR4-C === */
 	/* === PR4-D === */
+	/* Threat intel (4D).  The terminal reads files and stdin itself
+	 * and sends their text: an op never opens a path it is given.
+	 *   intel.apply           the saved blocklists in force, as the
+	 *                         Threat Intel page does after a save
+	 *                         (F0)                              (root)
+	 *   intel.exceptions.set  text s (the whole allow list; "#"
+	 *                         starts a comment; empty: none), apply b
+	 *   intel.import          name s, text s (empty or blank: the list
+	 *                         of that name is removed), dir s (in,
+	 *                         out, both; absent keeps the list's),
+	 *                         what s (the input's name in messages),
+	 *                         apply b
+	 * The editors need root only with apply, checked before anything
+	 * is saved; otherwise the store decides (NEED_ROOT where it is
+	 * root's).  A text that does not read is USAGE, nothing written.
+	 * intel_apply is NULL when no apply was asked for, else "applied",
+	 * "held" (audit-only), "stopped" (the firewall is not running:
+	 * nothing was loaded, the lists go in force when it starts) or
+	 * "failed". */
+	const gchar     *intel_apply;
+	FsIntelOutcome  *intel_outcome;  /* the gate's answer, when it ran  */
+	gboolean         intel_saved;    /* the configuration was written   */
+	gchar           *intel_id;       /* import: the list's id           */
+	gchar           *intel_name;     /* import: the list's name         */
+	gboolean         intel_removed;  /* import: empty text removed it   */
+	FsIntelDir       intel_dir;      /* import: the list's direction    */
+	FsFeedParseStats intel_stats;    /* import                          */
+	FsRangeSet      *intel_exceptions; /* exceptions.set: as saved      */
 	/* === end PR4-D === */
 } FsControlResult;
 

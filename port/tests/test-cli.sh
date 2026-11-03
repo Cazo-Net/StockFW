@@ -3704,6 +3704,132 @@ rm -rf "$C"
 # === end PR4-C ===
 
 # === PR4-D ===
+# Trust and the blocklist editors (master plan PR 4, 4D).  `trust' is
+# the Trust page per user: attest, change the file, `check' exits 1 and
+# says CHANGED; attest never waits for an answer without a terminal.
+# `intel exceptions --set' takes the page's allow-list text, comments
+# and all; `intel import - --name "My blocklist"' is the page's "Your
+# blocklist" (local-my-blocklist), and empty input removes it; `intel
+# feeds' says when each feed is due.  --apply against the kernel is
+# tests/test-intel-cli.sh (a private namespace).
+D4="$(mktemp -d)"
+D4_XDG="$XDG_CONFIG_HOME"; D4_AUDIT="${STOCKFW_AUDIT_FILE-}"
+export XDG_CONFIG_HOME="$D4/config" STOCKFW_AUDIT_FILE="$D4/audit.log"
+# d4_open_stdin <args...>: run with stdin an open pipe that is never
+# written or closed; the exit status, or 124 when it waits for input.
+d4_open_stdin () {
+  python3 -I - "$@" <<'PYEOF'
+import subprocess, sys
+p = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+try:
+    rc = p.wait(timeout=10)
+except subprocess.TimeoutExpired:
+    p.kill(); p.wait(); rc = 124
+sys.stderr.write(p.stderr.read().decode())
+p.stdin.close()
+sys.exit(rc)
+PYEOF
+}
+unset STOCKFW_TRUST_FILE
+printf 'tool v1\n' > "$D4/tool"
+TF="$D4/config/stockfw/trust.csv"
+check "PR4-D: trust with no baseline: empty, exit 0" \
+  bash -c "'$S' trust > '$D4/out' 2>&1 && grep -q 'The baseline is empty' '$D4/out'"
+# stdin an open pipe that never ends: the command must not wait for it.
+check "PR4-D: trust attest without a terminal and without --yes: refused at once (exit 1), names --yes, nothing written" \
+  bash -c "$(declare -f d4_open_stdin); d4_open_stdin '$S' trust attest '$D4/tool' 2> '$D4/err'; [ \$? -eq 1 ] &&
+           grep -q -- 'pass --yes' '$D4/err' && [ ! -e '$TF' ]"
+check "PR4-D: trust attest on a terminal, Enter: not attested" \
+  bash -c "$(declare -f e_tty); e_tty \$'\\n' '$S' trust attest '$D4/tool' > /dev/null 2> '$D4/err'; [ \$? -eq 1 ] &&
+           grep -q 'Attest this file as trusted' '$D4/err' && grep -q 'SHA-256: ' '$D4/err' && ! grep -qs tool '$TF'"
+check "PR4-D: trust attest --yes: recorded, with an audit line" \
+  bash -c "'$S' trust attest '$D4/tool' --yes > '$D4/out' && grep -q '^Attested ' '$D4/out' &&
+           grep -q '$D4/tool' '$TF' && grep -q ' | trust-attest | path=$D4/tool ' '$D4/audit.log'"
+check "PR4-D: trust check: matches, exit 0" \
+  bash -c "'$S' trust check > '$D4/out' && grep -q 'matches' '$D4/out'"
+printf 'tool v2\n' > "$D4/tool"
+check "PR4-D: the file modified: trust check exits 1 and says CHANGED" \
+  bash -c "'$S' trust check > '$D4/out'; [ \$? -eq 1 ] && grep -q 'CHANGED' '$D4/out'"
+check "PR4-D: ...and --json says changed, with both hashes" py "
+import json, subprocess
+r = subprocess.run(['$S', '--json', 'trust', 'check'], capture_output=True, text=True)
+d = json.loads(r.stdout)
+f = d['files'][0]
+assert r.returncode == 1 and d['changed'] == 1 and f['status'] == 'changed', r
+assert f['sha256'] != f['baseline_sha256'] and len(f['sha256']) == 64, f"
+check "PR4-D: trust inspect: the page's report, baseline CHANGED" \
+  bash -c "'$S' trust inspect '$D4/tool' > '$D4/out' && grep -q '^  SHA-256 ' '$D4/out' && grep -q '^  Baseline   CHANGED' '$D4/out'"
+rm "$D4/tool"
+check "PR4-D: the file gone: check exits 1, GONE" \
+  bash -c "'$S' trust check > '$D4/out'; [ \$? -eq 1 ] && grep -q 'GONE' '$D4/out'"
+check "PR4-D: trust forget without a terminal and without --yes: refused, kept" \
+  bash -c "$(declare -f d4_open_stdin); d4_open_stdin '$S' trust forget '$D4/tool' 2> /dev/null; [ \$? -eq 1 ] && grep -q '$D4/tool' '$TF'"
+check "PR4-D: trust forget --yes: gone from the baseline, audited; check is 0 again" \
+  bash -c "'$S' -q trust forget '$D4/tool' --yes && ! grep -q '$D4/tool' '$TF' &&
+           grep -q ' | trust-forget | path=$D4/tool ' '$D4/audit.log' && '$S' trust check > /dev/null"
+check "PR4-D: under sudo the command says the baseline is root's" \
+  bash -c "[ \$(id -u) != 0 ] || { SUDO_USER=someone '$S' trust list 2>&1 >/dev/null | grep -q \"root's trust baseline\"; }"
+check "PR4-D: trust completion lists the actions" \
+  bash -c "'$S' __complete trust '' | grep -qx attest && '$S' __complete trust '' | grep -qx check"
+
+if [ -n "$INTEL_BASE" ]; then
+  export STOCKFW_INTEL_DIR="$INTEL_BASE/intel4d"
+  check "PR4-D: intel exceptions --set - takes '203.0.113.6 # mail' (the comment cut)" py "
+import json, subprocess
+r = subprocess.run(['$S', '--json', 'intel', 'exceptions', '--set', '-'], input='203.0.113.6 # mail\n\n# a note\n198.51.100.0/28\n', capture_output=True, text=True)
+assert r.returncode == 0, r
+d = json.loads(r.stdout)
+assert d['exceptions'] == ['198.51.100.0/28', '203.0.113.6'] and d['applied'] is False and d['apply'] is None, d
+d = json.loads(subprocess.run(['$S', '--json', 'intel', 'exceptions'], capture_output=True, text=True).stdout)
+assert d['exceptions'] == ['198.51.100.0/28', '203.0.113.6'], d"
+  cp "$STOCKFW_INTEL_DIR/intel.conf" "$D4/conf.before"
+  check "PR4-D: a line that does not read: exit 2, named by its number, nothing saved" \
+    bash -c "printf '203.0.113.7\nnot an address\n' | '$S' intel exceptions --set - > /dev/null 2> '$D4/err'; [ \$? -eq 2 ] &&
+             grep -q 'line 2' '$D4/err' && cmp -s '$D4/conf.before' '$STOCKFW_INTEL_DIR/intel.conf'"
+  printf '198.51.100.9\n' > "$D4/allow.txt"
+  check "PR4-D: --set FILE replaces the whole list" \
+    bash -c "'$S' intel exceptions --set '$D4/allow.txt' > '$D4/out' && '$S' intel exceptions | grep -qx '198.51.100.9' &&
+             ! '$S' intel exceptions | grep -q 203.0.113.6"
+  check "PR4-D: empty input clears it" \
+    bash -c "'$S' intel exceptions --set - < /dev/null > /dev/null && '$S' intel exceptions | grep -q '^No exception'"
+  check "PR4-D: intel import - --name \"My blocklist\": id local-my-blocklist" py "
+import json, subprocess
+r = subprocess.run(['$S', '--json', 'intel', 'import', '-', '--name', 'My blocklist'], input='203.0.113.80\n198.51.100.64/28 # spam\n', capture_output=True, text=True)
+assert r.returncode == 0, r
+d = json.loads(r.stdout)
+assert d['id'] == 'local-my-blocklist' and d['entries'] == 2 and not d['removed'], d
+l = json.loads(subprocess.run(['$S', '--json', 'intel', 'lists'], capture_output=True, text=True).stdout)['lists']
+assert [x['id'] for x in l] == ['local-my-blocklist'], l"
+  check "PR4-D: ...empty input removes it, with its stored copy" py "
+import json, os, subprocess
+r = subprocess.run(['$S', 'intel', 'import', '-', '--name', 'My blocklist'], input='', capture_output=True, text=True)
+assert r.returncode == 0 and 'removed: the input was empty' in r.stdout, r
+l = json.loads(subprocess.run(['$S', '--json', 'intel', 'lists'], capture_output=True, text=True).stdout)['lists']
+assert l == [], l
+assert not os.path.exists('$STOCKFW_INTEL_DIR/local-my-blocklist.list')"
+  check "PR4-D: ...and again: nothing to remove, exit 0" \
+    bash -c "'$S' intel import - --name 'My blocklist' < /dev/null | grep -q 'nothing to remove'"
+  check "PR4-D: intel import of a FILE still works (read by the terminal)" \
+    bash -c "printf '203.0.113.81\n198.51.100.70\n' > '$D4/list.txt' && '$S' intel import '$D4/list.txt' --name 'From file' | grep -q '(local-from-file): 2 entries'"
+  check "PR4-D: intel feeds: a NEXT column; a feed on and never downloaded is due now" py "
+import json, re, subprocess
+subprocess.run(['$S', '-q', 'intel', 'enable', 'feodo', '--accept-terms'], check=True)
+d = json.loads(subprocess.run(['$S', '--json', 'intel', 'feeds'], capture_output=True, text=True).stdout)
+f = {x['id']: x for x in d['feeds']}
+assert f['feodo']['due'] is True and f['feodo']['next_update_at'] is None, f['feodo']
+assert f['dshield']['due'] is False and f['dshield']['next_update_at'] is None, f['dshield']
+t = subprocess.run(['$S', 'intel', 'feeds'], capture_output=True, text=True).stdout.splitlines()
+assert re.search(r'UPDATED +NEXT +STATUS', t[0]) and re.search(r'LICENCE +CREDIT$', t[0].rstrip()), t[0]
+assert [l for l in t if l.startswith('feodo ')][0].split()[5:7] == ['due', 'now'], t"
+  check "PR4-D: --apply is in intel's option table and help" \
+    bash -c "'$S' __complete intel except 1 -- | grep -qx -- --apply && '$S' help intel | grep -q 'exceptions \\[--set FILE|- \\[--apply\\]\\]'"
+  unset STOCKFW_INTEL_DIR
+else
+  echo "skip: PR4-D intel checks: no folder for an intel store"
+fi
+export XDG_CONFIG_HOME="$D4_XDG"
+if [ -n "$D4_AUDIT" ]; then export STOCKFW_AUDIT_FILE="$D4_AUDIT"; else unset STOCKFW_AUDIT_FILE; fi
+rm -rf "$D4"
 # === end PR4-D ===
 
 # === PR4-E ===

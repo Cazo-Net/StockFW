@@ -2760,6 +2760,27 @@ fs_intel_source_is_due (const FsIntelConfig *config, const gchar *id,
 	return due;
 }
 
+gint64
+fs_intel_source_next_due (const FsIntelConfig *config, const gchar *id,
+                          gint64 now)
+{
+	gint64 interval = source_interval (config, id);
+	FsIntelSourceState *s;
+	gint64 next;
+
+	if (interval <= 0)
+		return -1;
+	s = fs_intel_source_state (id);
+	/* The rule of is_due: never fetched, or the clock went back, is
+	 * due now; otherwise one interval after the last attempt. */
+	if (is_due (s, interval, now))
+		next = 0;
+	else
+		next = s->attempted_at + interval;
+	fs_intel_source_state_free (s);
+	return next;
+}
+
 gboolean
 fs_intel_source_is_stale (const FsIntelConfig *config, const gchar *id,
                           gint64 now)
@@ -2895,11 +2916,15 @@ fs_intel_exceptions_from_text (const gchar *text, GError **error)
 	return set;
 }
 
-gboolean
-fs_intel_import_list (FsIntelConfig *config, const gchar *path,
-                      const gchar *name, FsIntelDir dir,
-                      FsFeedParseStats *stats, gchar **id_out,
-                      GError **error)
+/* [ import_common ]
+ * The body of both imports: the file at `path' (read here), or, with
+ * path NULL, the `text' of `text_len' bytes a caller read itself.
+ * `what' names the input in the messages and the audit line. */
+static gboolean
+import_common (FsIntelConfig *config, const gchar *path,
+               const gchar *text, gsize text_len, const gchar *what,
+               const gchar *name, FsIntelDir dir,
+               FsFeedParseStats *stats, gchar **id_out, GError **error)
 {
 	FsFeedParseStats st = { 0 };
 	FsIntelSourceState *s = NULL, *old;
@@ -2912,7 +2937,8 @@ fs_intel_import_list (FsIntelConfig *config, const gchar *path,
 	gsize len = 0;
 	gint64 now = g_get_real_time () / G_USEC_PER_SEC;
 
-	g_return_val_if_fail (config != NULL && path != NULL, FALSE);
+	g_return_val_if_fail (config != NULL && what != NULL, FALSE);
+	g_return_val_if_fail (path != NULL || text != NULL, FALSE);
 	if (id_out != NULL)
 		*id_out = NULL;
 	if (!name_is_acceptable (name)) {
@@ -2945,7 +2971,17 @@ fs_intel_import_list (FsIntelConfig *config, const gchar *path,
 		g_free (id);
 		return FALSE;
 	}
-	data = read_user_file (path, &len, error);
+	if (path != NULL) {
+		data = read_user_file (path, &len, error);
+	} else if (text_len > FS_FEED_MAX_BYTES) {
+		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
+		             _("%s is larger than 32 MiB."), what);
+	} else {
+		data = g_malloc (text_len + 1);
+		memcpy (data, text, text_len);
+		data[text_len] = '\0';
+		len = text_len;
+	}
 	if (data == NULL)
 		goto out;
 	set = fs_feed_parse_csv (data, len, &st, &local);
@@ -2953,7 +2989,7 @@ fs_intel_import_list (FsIntelConfig *config, const gchar *path,
 		*stats = st;
 	if (set == NULL) {
 		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
-		             _("%s was not imported: %s"), path,
+		             _("%s was not imported: %s"), what,
 		             local ? local->message : "");
 		g_clear_error (&local);
 		goto out;
@@ -2961,7 +2997,7 @@ fs_intel_import_list (FsIntelConfig *config, const gchar *path,
 	if (fs_range_set_is_empty (set)) {
 		g_set_error (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID,
 		             _("%s holds no address that could be blocked."),
-		             path);
+		             what);
 		goto out;
 	}
 	digest = list_write (&store, id, set, error);
@@ -3005,7 +3041,7 @@ fs_intel_import_list (FsIntelConfig *config, const gchar *path,
 	ok = TRUE;
 	{
 		gchar *detail = g_strdup_printf ("%s: %u entries from %s", id,
-		                                 st.entries, path);
+		                                 st.entries, what);
 		audit ("intel-import", detail);
 		g_free (detail);
 	}
@@ -3017,6 +3053,44 @@ out:
 	g_free (id);
 	g_free (digest);
 	return ok;
+}
+
+gboolean
+fs_intel_import_list (FsIntelConfig *config, const gchar *path,
+                      const gchar *name, FsIntelDir dir,
+                      FsFeedParseStats *stats, gchar **id_out,
+                      GError **error)
+{
+	g_return_val_if_fail (path != NULL, FALSE);
+	return import_common (config, path, NULL, 0, path, name, dir, stats,
+	                      id_out, error);
+}
+
+gboolean
+fs_intel_import_text (FsIntelConfig *config, const gchar *text, gsize len,
+                      const gchar *what, const gchar *name, FsIntelDir dir,
+                      FsFeedParseStats *stats, gchar **id_out,
+                      GError **error)
+{
+	g_return_val_if_fail (text != NULL, FALSE);
+	return import_common (config, NULL, text, len,
+	                      what != NULL ? what : "the text", name, dir,
+	                      stats, id_out, error);
+}
+
+FsIntelListConf *
+fs_intel_config_list_by_name (const FsIntelConfig *config,
+                              const gchar *name)
+{
+	if (config == NULL || name == NULL)
+		return NULL;
+	for (guint i = 0; i < config->lists->len; i++) {
+		FsIntelListConf *l = g_ptr_array_index (config->lists, i);
+
+		if (l->name != NULL && same_name (l->name, name))
+			return l;
+	}
+	return NULL;
 }
 
 /* ============================================================ updates */

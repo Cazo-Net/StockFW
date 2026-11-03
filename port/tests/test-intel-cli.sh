@@ -563,6 +563,54 @@ if command -v iptables >/dev/null; then
   check '[ "$(live)" = absent ] && [ "$(jget "d[\"state\"]")" = suspended ] && [ "$(grep -n " | intel-suspend | source=cli" "$W/audit.log" | tail -1 | cut -d: -f1)" -gt "$(grep -n " | intel-apply | source=cli" "$W/audit.log" | tail -1 | cut -d: -f1)" ]' \
         "a Stop during an apply waits for it, then the lists are down and suspended ($(jget 'd["state"]'))"
   S -q intel unexcept 198.51.100.77
+
+  # === PR4-D ===
+  # When a feed is due (F7), and --apply on a save (F0): with the
+  # firewall running the saved change is in force at once, through the
+  # gate; audit-only mode holds it; stopped, nothing is loaded (the
+  # lists go in force at the next start), as on the Threat Intel page.
+  run --json intel feeds
+  check '[ "$(jget "[(x[\"due\"], x[\"next_update_at\"] - x[\"attempted_at\"]) for x in d[\"feeds\"] if x[\"id\"] == \"$FEED\"][0]")" = "False 86400" ]' \
+        "PR4-D: feeds: the custom feed is next due a day after its last attempt"
+  NEXT_AT="$(jget "[x[\"attempted_at\"] for x in d[\"feeds\"] if x[\"id\"] == \"$FEED\"][0] + 86400")"
+  run intel feeds
+  check 'grep -q "^$FEED .* $(date -d "@$NEXT_AT" "+%Y-%m-%d %H:%M")  " <<<"$out"' \
+        "  ... and the table's NEXT column says when"
+  EXC0="$(S --json intel exceptions | py 'import json,sys; print("\n".join(json.load(sys.stdin)["exceptions"]))')"
+  S -q start
+  S intel apply > /dev/null
+  run intel except 198.51.100.12
+  check '[ $rc -eq 0 ] && has_element s_custom_cli_feed_4 198.51.100.12 && grep -q "Not live yet" <<<"$out"' \
+        "PR4-D: except without --apply: saved, the kernel still blocks it"
+  n_applies=$(audit_lines intel-apply)
+  run --json intel except 198.51.100.13 --apply
+  check '[ $rc -eq 0 ] && [ "$(jget "d[\"applied\"], d[\"apply\"][\"result\"]")" = "True applied" ] && ! has_element s_custom_cli_feed_4 198.51.100.12 && ! has_element s_custom_cli_feed_4 198.51.100.13' \
+        "PR4-D: except --apply: in force at once (both exceptions)"
+  check '[ "$(audit_lines intel-apply)" = $((n_applies + 1)) ]' "  ... through the gate: one intel-apply audit line"
+  out="$(printf '203.0.113.77 # mine\n' | "$CLI" --json intel import - --name "My blocklist" --apply 2>"$W/err")"; rc=$?; err="$(cat "$W/err")"
+  check '[ $rc -eq 0 ] && [ "$(jget "d[\"id\"], d[\"applied\"]")" = "local-my-blocklist True" ] && has_element s_local_my_blocklist_4 203.0.113.77' \
+        "PR4-D: import - --name \"My blocklist\" --apply: its set is in the kernel"
+  S intel apply > /dev/null
+  had_set=no; has_element s_local_my_blocklist_4 203.0.113.77 && had_set=yes
+  out="$("$CLI" intel import - --name "My blocklist" --apply < /dev/null 2>"$W/err")"; rc=$?; err="$(cat "$W/err")"
+  check '[ $rc -eq 0 ] && [ $had_set = yes ] && grep -q "removed: the input was empty" <<<"$out" && ! nft list set inet stockfw_intel s_local_my_blocklist_4 >/dev/null 2>&1' \
+        "PR4-D: empty input with --apply: the list and its set are gone"
+  out="$(printf '198.51.100.14 # mail\n' | "$CLI" intel exceptions --set - --apply 2>"$W/err")"; rc=$?; err="$(cat "$W/err")"
+  check '[ $rc -eq 0 ] && grep -q "^Applied" <<<"$out" && ! has_element s_custom_cli_feed_4 198.51.100.14 && has_element s_custom_cli_feed_4 198.51.100.12' \
+        "PR4-D: exceptions --set - --apply: the new allow list in force (the old one gone)"
+  mkdir -p "$XDG_CONFIG_HOME/stockfw"
+  printf '[client]\npolicy_audit_only=true\n' > "$XDG_CONFIG_HOME/stockfw/stockfw.conf"
+  D5="$(live)"
+  run intel except 198.51.100.15 --apply
+  check '[ $rc -eq 0 ] && grep -q "^Held: audit-only" <<<"$out" && [ "$(live)" = "$D5" ] && has_element s_custom_cli_feed_4 198.51.100.15' \
+        "PR4-D: --apply in audit-only mode: held, exit 0, the kernel untouched"
+  rm "$XDG_CONFIG_HOME/stockfw/stockfw.conf"
+  run stop
+  run intel unexcept 198.51.100.15 --apply
+  check '[ $rc -eq 0 ] && grep -q "put in force when it starts" <<<"$out" && [ "$(live)" = absent ]' \
+        "PR4-D: --apply with the firewall stopped: saved, nothing loaded"
+  printf '%s\n' "$EXC0" | S -q intel exceptions --set -
+  # === end PR4-D ===
 else
   echo "skip: update with the firewall running (no iptables)"
 fi
