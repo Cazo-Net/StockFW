@@ -40,6 +40,11 @@ static const gchar *config_subs[] = {
 	"list", "get", "set", "reset", "apply", "devices", "audit-only", NULL
 };
 static const gchar *dashboard_subs[] = { "link", NULL };
+/* === PR4-D === */
+static const gchar *trust_subs[] = {
+	"list", "check", "inspect", "attest", "forget", NULL
+};
+/* === end PR4-D === */
 
 static const gchar *events_by[] = {
 	"src", "dst", "port", "service", "dir", "rule", "hour", NULL
@@ -311,6 +316,11 @@ emit_positional (Out *o, const FsCliCommandDef *def, GPtrArray *pos)
 			           strcmp (p1, "remove") == 0)
 				emit_intel_ids (o, INTEL_LOCATIONS);
 		}
+	/* === PR4-D === */
+	} else if (strcmp (name, "trust") == 0) {
+		if (pos->len == 0)
+			emit_all (o, trust_subs);
+	/* === end PR4-D === */
 	} else if (strcmp (name, "config") == 0) {
 		/* set NAME VALUE NAME VALUE...: a name, then a value. */
 		if (pos->len == 0) {

@@ -241,6 +241,36 @@ into `/usr/local/share/doc/stockfw/`.
 <!-- PR4-B -->
 <!-- PR4-C -->
 <!-- PR4-D -->
+- **New `stockfw trust`: the Trust page in a terminal.** `trust` (or
+  `trust list`) and `trust check` hash every file you attested again and
+  say whether it still matches, changed (CHANGED) or is missing (GONE);
+  `check` exits 1 for either, so a script can watch a program for
+  changes. `trust inspect PATH` shows a file's hash, size, date and
+  baseline, `trust attest PATH` records it and `trust forget PATH`
+  takes it out, each with an audit line. The baseline is your own
+  (`~/.config/stockfw/trust.csv`) and needs no root; under `sudo` it
+  is root's, and the command says so. Attest and forget ask first on a
+  terminal; without one they need `--yes` and never wait for input. On
+  Linux there is no signature check: the baseline tells you that a
+  file changed, not who made it.
+- **The Threat Intel page's editors.** `intel exceptions --set FILE|-`
+  replaces the whole allow list with a text, one address, network or
+  range a line, `#` starting a comment (`203.0.113.6 # mail`); a line
+  that does not read changes nothing (exit 2) and empty input clears
+  the list. `intel import` reads standard input with `-`, and
+  `--name "My blocklist"` is the page's "Your blocklist"
+  (`local-my-blocklist`); empty input removes the list of that name.
+- **`--apply` on threat-intel changes.** `intel enable`, `disable`,
+  `on`, `off`, `import`, `remove`, `except`, `unexcept` and
+  `exceptions --set` take `--apply`: the saved change goes in force at
+  once, as the Threat Intel page does after a save. It needs root
+  (checked before anything is saved), audit-only mode holds it, and
+  with the firewall stopped nothing is loaded: the lists go in force
+  when it starts. Without `--apply` nothing changed: the change is
+  saved and `intel apply` puts it in force.
+- **`intel feeds` says when each feed is due.** A new NEXT column
+  ("due now", or the time `intel update` downloads it next) and `due`
+  and `next_update_at` in `--json`.
 <!-- PR4-E -->
 
 ### Dashboard (stockfw dashboard)

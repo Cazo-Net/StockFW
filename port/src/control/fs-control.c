@@ -1252,6 +1252,276 @@ op_settings_apply (FsControlResult *r, const FsControlActor *actor,
 /* === end PR4-C === */
 
 /* === PR4-D === */
+
+/* [ p_text ] -- a text param as a string (s) or as bytes (ay): a file
+ * the terminal read may hold bytes that are not UTF-8 (a comment in
+ * Latin-1), which a GVariant string cannot carry.  Borrowed. */
+static const gchar *
+p_text (GVariant *params, const gchar *key)
+{
+	const gchar *s = NULL;
+
+	if (params == NULL)
+		return NULL;
+	if (g_variant_lookup (params, key, "&s", &s) ||
+	    g_variant_lookup (params, key, "^&ay", &s))
+		return s;
+	return NULL;
+}
+
+/* [ intel_fail ] -- an engine error as the op's status; frees it.  A
+ * store that needs root is NEED_ROOT, a bad request (unknown id, a
+ * value that does not read) USAGE, anything else FAILED. */
+static void
+intel_fail (FsControlResult *r, GError *error, const gchar *what)
+{
+	FsControlStatus status = FS_CONTROL_FAILED;
+
+	if (g_error_matches (error, FS_INTEL_ERROR, FS_INTEL_ERR_NEEDS_ROOT))
+		status = FS_CONTROL_NEED_ROOT;
+	else if (g_error_matches (error, FS_INTEL_ERROR, FS_INTEL_ERR_UNKNOWN) ||
+	         g_error_matches (error, FS_INTEL_ERROR, FS_INTEL_ERR_INVALID) ||
+	         g_error_matches (error, FS_INTEL_ERROR, FS_INTEL_ERR_CONSENT))
+		status = FS_CONTROL_USAGE;
+	fail (r, status, NULL, "%s", error != NULL ? error->message : what);
+	g_clear_error (&error);
+}
+
+/* [ intel_put_in_force ]
+ * After a save (F0), under the lock the caller holds: the blocklists
+ * in force while the firewall runs, through the gate (its hold, its
+ * audit line), as the Threat Intel page's apply_now does.  With the
+ * firewall stopped nothing is loaded: fs_intel_resume puts the saved
+ * lists in force at the next start, and loading them now would block
+ * while the firewall is off. */
+static void
+intel_put_in_force (FsControlResult *r, const FsControlActor *actor,
+                    const FsIntelConfig *config)
+{
+	const FsBackend *backend = fs_backend ();
+	FsFirewallState st = backend->get_state != NULL ? backend->get_state ()
+	                                                : FS_FW_NONE;
+	GError *error = NULL;
+
+	if (st != FS_FW_RUNNING && st != FS_FW_LOCKED && st != FS_FW_HIT) {
+		r->intel_apply = "stopped";
+		return;
+	}
+	r->intel_outcome = fs_intel_apply_safe (backend, config, NULL,
+	                                        actor->channel,
+	                                        fs_apply_hold_reason (), &error);
+	if (r->intel_outcome != NULL && r->intel_outcome->held) {
+		r->intel_apply = "held";
+	} else if (r->intel_outcome != NULL &&
+	           r->intel_outcome->result == FS_APPLY_OK) {
+		r->intel_apply = "applied";
+	} else {
+		r->intel_apply = "failed";
+		fail (r, FS_CONTROL_FAILED, NULL, "the lists were not put in "
+		      "force: %s", error != NULL ? error->message
+		      : "the firewall refused them");
+	}
+	g_clear_error (&error);
+}
+
+/* [ intel_begin ]
+ * Root first when an apply is asked for (nothing saved without it),
+ * then the policy lock: the intel store comes after it in the lock
+ * order.  NULL: refused, r says why. */
+static FsPolicyLock *
+intel_begin (FsControlResult *r, const FsControlActor *actor,
+             gboolean apply)
+{
+	FsPolicyLock *lock;
+	GError *error = NULL;
+
+	if (apply && !need_root (r, actor))
+		return NULL;
+	lock = fs_policy_lock (&error);
+	if (lock == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		g_error_free (error);
+	}
+	return lock;
+}
+
+/* [ op_intel_apply ] -- the saved blocklists, in force (F0). */
+static void
+op_intel_apply (FsControlResult *r, const FsControlActor *actor,
+                GVariant *params)
+{
+	FsPolicyLock *lock = intel_begin (r, actor, TRUE);
+	FsIntelConfig *config;
+	GError *error = NULL;
+
+	(void) params;
+	if (lock == NULL)
+		return;
+	config = fs_intel_config_load (&error);
+	if (config == NULL) {
+		intel_fail (r, error, "the configuration could not be read");
+	} else {
+		intel_put_in_force (r, actor, config);
+		fs_intel_config_free (config);
+	}
+	fs_policy_unlock (lock);
+}
+
+/* [ op_intel_exceptions_set ] (F11)
+ * The whole allow list replaced by `text', read as the page's editor
+ * reads it (fs_intel_exceptions_from_text).  A line that does not read
+ * refuses the whole text, before anything is written. */
+static void
+op_intel_exceptions_set (FsControlResult *r, const FsControlActor *actor,
+                         GVariant *params)
+{
+	const gchar *text = p_text (params, "text");
+	gboolean apply = p_bool (params, "apply");
+	FsPolicyLock *lock;
+	FsIntelConfig *config;
+	FsRangeSet *set;
+	GError *error = NULL;
+
+	if (text == NULL) {
+		fail (r, FS_CONTROL_USAGE, NULL, "intel.exceptions.set needs text");
+		return;
+	}
+	set = fs_intel_exceptions_from_text (text, &error);
+	if (set == NULL) {
+		/* Whatever the reader says, it is the request that is wrong. */
+		fail (r, FS_CONTROL_USAGE, NULL, "%s", error != NULL ? error->message
+		      : "the text does not read");
+		g_clear_error (&error);
+		return;
+	}
+	lock = intel_begin (r, actor, apply);
+	if (lock == NULL) {
+		fs_range_set_free (set);
+		return;
+	}
+	config = fs_intel_config_load (&error);
+	if (config == NULL) {
+		fs_range_set_free (set);
+		intel_fail (r, error, "the configuration could not be read");
+		fs_policy_unlock (lock);
+		return;
+	}
+	fs_range_set_free (config->exceptions);
+	config->exceptions = set;
+	if (!fs_intel_config_save (config, &error)) {
+		intel_fail (r, error, "the configuration could not be saved");
+	} else {
+		r->intel_saved = TRUE;
+		r->intel_exceptions = fs_range_set_copy (config->exceptions);
+		if (apply)
+			intel_put_in_force (r, actor, config);
+	}
+	fs_intel_config_free (config);
+	fs_policy_unlock (lock);
+}
+
+/* [ op_intel_import ] (F12, F13)
+ * A local list from `text', replacing the list of the same name; an
+ * empty (or blank) text removes that list, as the page's "Your
+ * blocklist" editor does. */
+static void
+op_intel_import (FsControlResult *r, const FsControlActor *actor,
+                 GVariant *params)
+{
+	const gchar *name = p_str (params, "name");
+	const gchar *text = p_text (params, "text");
+	const gchar *dir_s = p_str (params, "dir");
+	const gchar *what = p_str (params, "what");
+	gboolean apply = p_bool (params, "apply");
+	FsIntelDir dir = 0;
+	FsPolicyLock *lock;
+	FsIntelConfig *config;
+	GError *error = NULL;
+	gchar *blank;
+	gboolean empty;
+
+	if (name == NULL || *name == '\0' || text == NULL) {
+		fail (r, FS_CONTROL_USAGE, NULL, "intel.import needs name and text");
+		return;
+	}
+	if (dir_s != NULL) {
+		if (strcmp (dir_s, "in") == 0)
+			dir = FS_INTEL_DIR_IN;
+		else if (strcmp (dir_s, "out") == 0)
+			dir = FS_INTEL_DIR_OUT;
+		else if (strcmp (dir_s, "both") == 0)
+			dir = FS_INTEL_DIR_BOTH;
+		else {
+			fail (r, FS_CONTROL_USAGE, NULL,
+			      "the direction must be in, out or both");
+			return;
+		}
+	}
+	blank = g_strstrip (g_strdup (text));
+	empty = *blank == '\0';
+	g_free (blank);
+	r->intel_name = g_strdup (name);
+
+	lock = intel_begin (r, actor, apply);
+	if (lock == NULL)
+		return;
+	if (empty && !fs_intel_store_exists ()) {
+		/* Nothing was ever stored: no list to remove, and no store
+		 * is made for nothing. */
+		fs_policy_unlock (lock);
+		return;
+	}
+	config = fs_intel_config_load (&error);
+	if (config == NULL) {
+		intel_fail (r, error, "the configuration could not be read");
+		fs_policy_unlock (lock);
+		return;
+	}
+	if (empty) {
+		FsIntelListConf *l = fs_intel_config_list_by_name (config, name);
+
+		if (l == NULL) {
+			/* Not there: removed already.  Nothing to write. */
+			fs_intel_config_free (config);
+			fs_policy_unlock (lock);
+			return;
+		}
+		r->intel_id = g_strdup (l->id);
+		r->intel_dir = l->dir;
+		g_free (r->intel_name);
+		r->intel_name = g_strdup (l->name);
+		if (!fs_intel_config_remove (config, r->intel_id, &error)) {
+			intel_fail (r, error, "the list could not be removed");
+			fs_intel_config_free (config);
+			fs_policy_unlock (lock);
+			return;
+		}
+		r->intel_removed = TRUE;
+	} else if (!fs_intel_import_text (config, text, strlen (text),
+	                                  what != NULL ? what : "the text",
+	                                  name, dir, &r->intel_stats,
+	                                  &r->intel_id, &error)) {
+		intel_fail (r, error, "the list was not imported");
+		fs_intel_config_free (config);
+		fs_policy_unlock (lock);
+		return;
+	} else {
+		const FsIntelListConf *l = fs_intel_config_list (config,
+		                                                 r->intel_id);
+
+		r->intel_dir = l != NULL ? l->dir : FS_INTEL_DIR_BOTH;
+	}
+	if (!fs_intel_config_save (config, &error)) {
+		intel_fail (r, error, "the configuration could not be saved");
+	} else {
+		r->intel_saved = TRUE;
+		if (apply)
+			intel_put_in_force (r, actor, config);
+	}
+	fs_intel_config_free (config);
+	fs_policy_unlock (lock);
+}
+
 /* === end PR4-D === */
 
 /* ------------------------------------------------------------ the door */
@@ -1279,6 +1549,9 @@ static const struct
 	/* === PR4-C === */
 	/* === end PR4-C === */
 	/* === PR4-D === */
+	{ "intel.apply",          op_intel_apply },
+	{ "intel.exceptions.set", op_intel_exceptions_set },
+	{ "intel.import",         op_intel_import },
 	/* === end PR4-D === */
 };
 
@@ -1347,6 +1620,11 @@ fs_control_result_free (FsControlResult *r)
 	/* === PR4-C === */
 	/* === end PR4-C === */
 	/* === PR4-D === */
+	fs_intel_outcome_free (r->intel_outcome);
+	g_free (r->intel_id);
+	g_free (r->intel_name);
+	if (r->intel_exceptions != NULL)
+		fs_range_set_free (r->intel_exceptions);
 	/* === end PR4-D === */
 	g_free (r);
 }
@@ -1512,6 +1790,58 @@ fs_control_result_json (const FsControlResult *r)
 	/* === PR4-C === */
 	/* === end PR4-C === */
 	/* === PR4-D === */
+	if (g_str_has_prefix (r->op, "intel.")) {
+		const FsIntelOutcome *o = r->intel_outcome;
+
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "saved", r->intel_saved);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "applied",
+		                 g_strcmp0 (r->intel_apply, "applied") == 0);
+		g_string_append (out, ",\"apply\":");
+		if (r->intel_apply == NULL) {
+			g_string_append (out, "null");
+		} else {
+			g_string_append_c (out, '{');
+			fs_json_kv_str (out, "result", r->intel_apply);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "hold_reason",
+			                o != NULL ? o->hold_reason : NULL);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "digest", o != NULL ? o->digest : NULL);
+			g_string_append_c (out, ',');
+			fs_json_kv_uint (out, "sets", o != NULL ? o->sets : 0);
+			g_string_append_c (out, '}');
+		}
+	}
+	if (g_strcmp0 (r->op, "intel.import") == 0) {
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "id", r->intel_id);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "name", r->intel_name);
+		g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "removed", r->intel_removed);
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "entries", r->intel_stats.entries);
+	}
+	if (r->intel_exceptions != NULL) {
+		gchar *text = fs_range_set_to_text (r->intel_exceptions);
+		gchar **lines = g_strsplit (text, "\n", -1);
+		gboolean first = TRUE;
+
+		g_string_append (out, ",\"exceptions\":[");
+		for (guint i = 0; lines[i] != NULL; i++) {
+			if (*lines[i] == '\0')
+				continue;
+			if (!first)
+				g_string_append_c (out, ',');
+			first = FALSE;
+			fs_json_string (out, lines[i]);
+		}
+		g_string_append_c (out, ']');
+		g_strfreev (lines);
+		g_free (text);
+	}
 	/* === end PR4-D === */
 	g_string_append_c (out, '}');
 	return g_string_free (out, FALSE);

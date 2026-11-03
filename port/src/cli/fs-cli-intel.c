@@ -17,15 +17,19 @@
  * root; the others need whatever the store needs (root on Linux).
  *--------------------------------------------------------------------*/
 #include "cli/fs-cli.h"
+#include "control/fs-control.h"
 #include "core/fs-apply.h"
 #include "core/fs-feed.h"
 #include "core/fs-hostnet.h"
 #include "core/fs-intel.h"
 #include "core/fs-json.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define SOURCE "cli"
@@ -111,13 +115,23 @@ load_config (gboolean create, GError **error)
 	return fs_intel_config_load (error);
 }
 
+/* PR 4, 4D (F0): `--apply' on a save.  The dispatcher sets
+ * apply_after (root checked, the policy lock held) and save_config,
+ * once the file is written, sends intel.apply; the command then prints
+ * after_apply in place of its "Not live yet" line. */
+static gboolean         apply_after;
+static FsControlResult *after_apply;
+
 static gboolean
 save_config (const FsIntelConfig *config, gint *status)
 {
 	GError *error = NULL;
 
-	if (fs_intel_config_save (config, &error))
+	if (fs_intel_config_save (config, &error)) {
+		if (apply_after && after_apply == NULL)
+			after_apply = fs_control_do (NULL, "intel.apply", NULL);
 		return TRUE;
+	}
 	*status = fail (error, "save");
 	return FALSE;
 }
@@ -234,6 +248,196 @@ notes_print (const GPtrArray *notes)
 	}
 }
 
+/* === PR4-D === */
+
+/* [ apply_json ] -- "applied" and "apply" of a save: false and null
+ * when nothing was applied (no --apply), else what intel.apply did. */
+static void
+apply_json (GString *out, const FsControlResult *r)
+{
+	const FsIntelOutcome *o = r != NULL ? r->intel_outcome : NULL;
+
+	fs_json_kv_bool (out, "applied", r != NULL &&
+	                 g_strcmp0 (r->intel_apply, "applied") == 0);
+	g_string_append (out, ",\"apply\":");
+	if (r == NULL) {
+		g_string_append (out, "null");
+		return;
+	}
+	g_string_append_c (out, '{');
+	fs_json_kv_str (out, "result", r->intel_apply != NULL ? r->intel_apply
+	                                                      : "failed");
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "hold_reason", o != NULL ? o->hold_reason : NULL);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "digest", o != NULL ? o->digest : NULL);
+	g_string_append_c (out, ',');
+	fs_json_kv_uint (out, "sets", o != NULL ? o->sets : 0);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "error", r->status == FS_CONTROL_OK ? NULL
+	                                                         : r->error);
+	g_string_append_c (out, ',');
+	fs_json_key (out, "notes");
+	notes_json (out, o != NULL ? o->notes : NULL);
+	g_string_append_c (out, '}');
+}
+
+/* [ apply_print ]
+ * After a save: `not_live' (dim) when nothing was applied, else what
+ * the apply did, in the Threat Intel page's words.  A failure goes to
+ * stderr (apply_status gives the exit status). */
+static void
+apply_print (const FsControlResult *r, const gchar *not_live)
+{
+	const FsIntelOutcome *o = r != NULL ? r->intel_outcome : NULL;
+
+	if (r == NULL) {
+		printf ("%s%s%s\n", fs_cli_dim (), not_live, fs_cli_reset ());
+		return;
+	}
+	if (g_strcmp0 (r->intel_apply, "applied") == 0 && o != NULL) {
+		if (o->sets == 0)
+			printf ("%sApplied:%s no list is turned on, so no blocklist "
+			        "is loaded.\n", fs_cli_green (), fs_cli_reset ());
+		else
+			printf ("%sApplied%s %u list%s: %u IPv4 and %u IPv6 ranges "
+			        "(fingerprint %s).\n", fs_cli_green (),
+			        fs_cli_reset (), o->sets, o->sets == 1 ? "" : "s",
+			        o->count4, o->count6, o->digest);
+		notes_print (o->notes);
+	} else if (g_strcmp0 (r->intel_apply, "held") == 0 && o != NULL) {
+		gchar *why = fs_cli_out_safe (o->hold_reason);
+
+		printf ("%sHeld:%s %s.  " FS_CLI_LIVE_CAP " was left untouched.\n",
+		        fs_cli_amber (), fs_cli_reset (), why);
+		g_free (why);
+		notes_print (o->notes);
+	} else if (g_strcmp0 (r->intel_apply, "stopped") == 0) {
+		printf ("%sThe firewall is not running: the lists are put in "
+		        "force when it starts.%s\n", fs_cli_dim (), fs_cli_reset ());
+	}
+	/* "failed", or refused before the apply: apply_status reports it. */
+}
+
+/* [ apply_status ] -- the exit status of the apply after a save, and
+ * its error on stderr (once; a JSON document carries it already). */
+static gint
+apply_status (const FsControlResult *r)
+{
+	if (r == NULL || r->status == FS_CONTROL_OK)
+		return FS_EXIT_OK;
+	if (!fs_cli.json) {
+		fs_cli_error ("saved, but %s", r->error != NULL ? r->error
+		              : "the lists were not put in force");
+		if (r->intel_outcome != NULL && !fs_cli.quiet)
+			notes_print (r->intel_outcome->notes);
+		fs_cli_hint (FS_CLI_LIVE " keeps what it held before; "
+		             "`stockfw intel status' shows what that is");
+	}
+	switch (r->status) {
+	case FS_CONTROL_NEED_ROOT: return FS_EXIT_NEED_ROOT;
+	case FS_CONTROL_USAGE:     return FS_EXIT_USAGE;
+	default:                   return FS_EXIT_FAILURE;
+	}
+}
+
+/* [ op_status ] -- an op that did not run (nothing saved): its error,
+ * with the sudo hint for a store that needs root; the exit status. */
+static gint
+op_status (const FsControlResult *r, const gchar *what)
+{
+	switch (r->status) {
+	case FS_CONTROL_OK:
+		return FS_EXIT_OK;
+	case FS_CONTROL_NEED_ROOT:
+		if (g_str_has_suffix (r->error != NULL ? r->error : "",
+		                      "needs root privileges"))
+			return fs_cli_need_root (what);
+		fs_cli_error ("%s", r->error);
+		{
+			gchar *args = fs_cli_user_args ();
+			gchar *again = fs_cli_sudo_hint (args);
+
+			fs_cli_hint (FS_CLI_RIGHTS ", e.g. `%s'", again);
+			g_free (again);
+			g_free (args);
+		}
+		return FS_EXIT_NEED_ROOT;
+	case FS_CONTROL_USAGE:
+		fs_cli_error ("%s", r->error);
+		return FS_EXIT_USAGE;
+	default:
+		fs_cli_error ("%s", r->error != NULL ? r->error : "failed");
+		return FS_EXIT_FAILURE;
+	}
+}
+
+/* [ read_input ]
+ * FILE, or "-" for standard input, read here as the user who runs the
+ * command: the control layer never opens a path it is given.  A FILE
+ * must be a regular file; at most FS_FEED_MAX_BYTES, and no NUL byte
+ * (it would cut the text).  NULL with the error printed. */
+static gchar *
+read_input (const gchar *path, gsize *len)
+{
+	gboolean in = strcmp (path, "-") == 0;
+	int fd = in ? STDIN_FILENO
+	            : open (path, O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NONBLOCK);
+	GByteArray *buf;
+	struct stat st;
+	gchar *safe = fs_cli_out_safe (in ? "standard input" : path);
+
+	if (fd < 0) {
+		fs_cli_error ("cannot open %s: %s", safe, g_strerror (errno));
+		g_free (safe);
+		return NULL;
+	}
+	if (!in && (fstat (fd, &st) != 0 || !S_ISREG (st.st_mode))) {
+		fs_cli_error ("%s is not a regular file", safe);
+		close (fd);
+		g_free (safe);
+		return NULL;
+	}
+	if (!in)
+		fcntl (fd, F_SETFL, fcntl (fd, F_GETFL) & ~O_NONBLOCK);
+	buf = g_byte_array_new ();
+	for (;;) {
+		guint8 chunk[64 * 1024];
+		ssize_t got = read (fd, chunk, sizeof chunk);
+
+		if (got < 0 && errno == EINTR)
+			continue;
+		if (got < 0) {
+			fs_cli_error ("cannot read %s: %s", safe, g_strerror (errno));
+			break;
+		}
+		if (got == 0) {
+			*len = buf->len;
+			if (memchr (buf->data, '\0', buf->len) != NULL) {
+				fs_cli_error ("%s holds a NUL byte: not a text list", safe);
+				break;
+			}
+			if (!in)
+				close (fd);
+			g_free (safe);
+			g_byte_array_append (buf, (const guint8 *) "", 1);
+			return (gchar *) g_byte_array_free (buf, FALSE);
+		}
+		if (buf->len + (gsize) got > FS_FEED_MAX_BYTES) {
+			fs_cli_error ("%s is larger than 32 MiB", safe);
+			break;
+		}
+		g_byte_array_append (buf, chunk, (guint) got);
+	}
+	if (!in)
+		close (fd);
+	g_free (safe);
+	g_byte_array_free (buf, TRUE);
+	return NULL;
+}
+
+/* === end PR4-D === */
+
 /* ------------------------------------------------------------ sources */
 
 /* One feed or local list, as every listing shows it. */
@@ -321,6 +525,37 @@ src_status (const FsIntelConfig *config, const Src *s, gint64 now)
 		return "stale";
 	return "ok";
 }
+
+/* === PR4-D === */
+/* [ src_next_due ] (F7)
+ * When `intel update' (without --now) downloads a feed next: 0 when it
+ * is due now, -1 when it is not downloaded at all (switched off, its
+ * terms not accepted, or threat intel off), else the unix time. */
+static gint64
+src_next_due (const FsIntelConfig *config, const Src *s, gint64 now)
+{
+	gint64 next;
+
+	if (s->feed == NULL || !s->enabled || !config->enabled ||
+	    s->feed->accepted_at <= 0)
+		return -1;
+	next = fs_intel_source_next_due (config, s->id, now);
+	return next < 0 ? -1 : next;
+}
+
+/* "due now", the local time, or "-". */
+static gchar *
+src_next_text (const FsIntelConfig *config, const Src *s, gint64 now)
+{
+	gint64 next = src_next_due (config, s, now);
+
+	if (next < 0)
+		return g_strdup ("-");
+	if (next == 0)
+		return g_strdup ("due now");
+	return time_text (next);
+}
+/* === end PR4-D === */
 
 /* The `intel update' flag that takes a refused copy anyway (design 4.5),
  * from the override the engine recorded with the refusal: the same one
@@ -422,6 +657,15 @@ src_json (GString *out, const FsIntelConfig *config, const Src *s,
 	fs_json_kv_bool (out, "stale", s->feed != NULL && st != NULL &&
 	                 fs_intel_source_is_stale (config, s->id, now));
 	g_string_append_c (out, ',');
+	if (s->feed != NULL) {
+		/* PR 4, 4D (F7): when `intel update' downloads it next. */
+		gint64 next = src_next_due (config, s, now);
+
+		fs_json_kv_bool (out, "due", next == 0);
+		g_string_append_c (out, ',');
+		kv_time (out, "next_update_at", next);
+		g_string_append_c (out, ',');
+	}
 	fs_json_kv_str (out, "last_error", st != NULL ? st->last_error : NULL); g_string_append_c (out, ',');
 	fs_json_kv_str (out, "refused", st != NULL ? st->refused : NULL); g_string_append_c (out, ',');
 	fs_json_kv_str (out, "accept_with", accept_flag (st));     g_string_append_c (out, ',');
@@ -703,8 +947,8 @@ intel_feeds (gint argc, gchar **argv)
 		g_string_free (out, TRUE);
 	} else {
 		static const gchar *headers[] = {
-			"ID", "ON", "DIR", "ENTRIES", "UPDATED", "STATUS", "LICENCE",
-			"CREDIT"
+			"ID", "ON", "DIR", "ENTRIES", "UPDATED", "NEXT", "STATUS",
+			"LICENCE", "CREDIT"
 		};
 		GPtrArray *rows = g_ptr_array_new_with_free_func (
 			(GDestroyNotify) g_strfreev);
@@ -715,7 +959,7 @@ intel_feeds (gint argc, gchar **argv)
 
 			if (s->list != NULL)
 				continue;
-			row = g_new0 (gchar *, 9);
+			row = g_new0 (gchar *, 10);
 			row[0] = g_strdup (s->id);
 			row[1] = g_strdup (s->enabled ? "on" : "-");
 			row[2] = g_strdup (dir_word (s->dir));
@@ -723,19 +967,20 @@ intel_feeds (gint argc, gchar **argv)
 			                          : g_strdup ("-");
 			row[4] = time_text (s->state != NULL ? s->state->fetched_at
 			                                     : 0);
-			row[5] = g_strdup (src_status (config, s, now));
-			row[6] = src_licence (s);
+			row[5] = src_next_text (config, s, now);
+			row[6] = g_strdup (src_status (config, s, now));
+			row[7] = src_licence (s);
 			if (s->info != NULL) {
-				row[7] = g_strdup (s->info->credit);
+				row[8] = g_strdup (s->info->credit);
 			} else {
 				gchar *shown = fs_feed_url_redacted (s->feed->url);
 
-				row[7] = g_strdup_printf ("%s (%s)", s->name, shown);
+				row[8] = g_strdup_printf ("%s (%s)", s->name, shown);
 				g_free (shown);
 			}
 			g_ptr_array_add (rows, row);
 		}
-		fs_cli_table (headers, 8, rows, 60);
+		fs_cli_table (headers, 9, rows, 60);
 		g_ptr_array_unref (rows);
 		/* The legends: wrapped to the terminal, left out under -q. */
 		if (!config->enabled && !fs_cli.quiet) {
@@ -974,7 +1219,7 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 		                          : g->dir));                   g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "terms_accepted_now", newly_accepted);
 		g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "applied", FALSE);                g_string_append_c (out, ',');
+		apply_json (out, after_apply);                          g_string_append_c (out, ',');
 		fs_json_key (out, "notes");
 		notes_json (out, notes);
 		g_string_append_c (out, '}');
@@ -999,12 +1244,12 @@ intel_enable (gint argc, gchar **argv, gboolean enable)
 			        "them again.\n", id);
 		notes_print (notes);
 		if (enable && f != NULL)
-			printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel update', "
-			        "then `" FS_CLI_SUDO "stockfw intel apply'.%s\n", fs_cli_dim (),
-			        fs_cli_reset ());
+			apply_print (after_apply, "Not live yet: run `" FS_CLI_SUDO
+			             "stockfw intel update', then `" FS_CLI_SUDO
+			             "stockfw intel apply'.");
 		else
-			printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
-			        fs_cli_dim (), fs_cli_reset ());
+			apply_print (after_apply, "Not live yet: run `" FS_CLI_SUDO
+			             "stockfw intel apply'.");
 	}
 
 	if (notes != NULL)
@@ -1038,14 +1283,14 @@ intel_switch (gint argc, gboolean on)
 		GString *out = g_string_new ("{");
 
 		fs_json_kv_bool (out, "master", on);     g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "applied", FALSE);
+		apply_json (out, after_apply);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else if (!fs_cli.quiet) {
-		printf ("Threat intel switched %s.  %sNot live yet: run `" FS_CLI_SUDO
-		        "stockfw intel apply'.%s\n", on ? "on" : "off",
-		        fs_cli_dim (), fs_cli_reset ());
+		printf ("Threat intel switched %s.\n", on ? "on" : "off");
+		apply_print (after_apply, "Not live yet: run `" FS_CLI_SUDO
+		             "stockfw intel apply'.");
 	}
 	fs_intel_config_free (config);
 	return FS_EXIT_OK;
@@ -1690,16 +1935,21 @@ intel_clear (gint argc, gchar **argv)
 
 /* --------------------------------------------------------- local lists */
 
+/* `intel import FILE|- --name NAME [--direction D] [--apply]': the
+ * text goes to intel.import, read here (the control layer never opens
+ * a path).  Empty or blank input removes the list of that name, as the
+ * Threat Intel page's "Your blocklist" editor does (F12). */
 static gint
 intel_import (gint argc, gchar **argv)
 {
-	const gchar *path = NULL, *name = NULL;
+	const gchar *path = NULL, *name = NULL, *dir_s = NULL;
+	gboolean apply = FALSE;
 	FsIntelDir dir = 0;
-	FsIntelConfig *config;
-	GError *error = NULL;
-	FsFeedParseStats stats = { 0 };
-	gchar *id = NULL;
-	gint status = FS_EXIT_OK;
+	FsControlResult *r;
+	GVariantBuilder b;
+	gchar *text, *what;
+	gsize len = 0;
+	gint status;
 
 	for (gint i = 0; i < argc; i++) {
 		const gchar *v = NULL;
@@ -1716,10 +1966,14 @@ intel_import (gint argc, gchar **argv)
 				return bad;
 			if (!parse_dir (v, &dir))
 				return FS_EXIT_USAGE;
+			dir_s = dir_word (dir);
+		} else if (fs_cli_is_option_at (argv, i) &&
+		           strcmp (argv[i], "--apply") == 0) {
+			apply = TRUE;
 		} else if (fs_cli_is_option_at (argv, i) && argv[i][1] == '-') {
 			fs_cli_error ("unknown option for intel import: %s", argv[i]);
-			fs_cli_hint ("options are --name NAME and --direction "
-			             "in|out|both");
+			fs_cli_hint ("options are --name NAME, --direction "
+			             "in|out|both and --apply");
 			return FS_EXIT_USAGE;
 		} else if (path == NULL) {
 			path = argv[i];
@@ -1729,80 +1983,105 @@ intel_import (gint argc, gchar **argv)
 		}
 	}
 	if (path == NULL || name == NULL) {
-		fs_cli_error ("usage: stockfw intel import FILE --name NAME "
-		              "[--direction in|out|both]");
+		fs_cli_error ("usage: stockfw intel import FILE|- --name NAME "
+		              "[--direction in|out|both] [--apply]");
 		return FS_EXIT_USAGE;
 	}
-
-	config = load_config (TRUE, &error);
-	if (config == NULL)
-		return fail (error, "import");
-	/* dir 0 (no --direction): a list imported again keeps its
-	 * direction -- the engine finds it by name in any case or spacing,
-	 * as it does to replace it -- and a new one blocks both ways. */
-	if (!fs_intel_import_list (config, path, name, dir, &stats, &id,
-	                           &error)) {
-		fs_intel_config_free (config);
-		return fail (error, "import");
+	if (!g_utf8_validate (name, -1, NULL)) {
+		fs_cli_error ("the list name is not UTF-8 text");
+		return FS_EXIT_USAGE;
 	}
-	{
-		const FsIntelListConf *l = fs_intel_config_list (config, id);
+	/* Root before anything is read or saved: an apply needs it. */
+	if (apply && geteuid () != 0)
+		return fs_cli_need_root ("intel import --apply");
+	text = read_input (path, &len);
+	if (text == NULL)
+		return FS_EXIT_USAGE;
+	what = g_strdup (strcmp (path, "-") == 0 ? "standard input" : path);
 
-		dir = l != NULL ? l->dir : FS_INTEL_DIR_BOTH;
-	}
-	if (!save_config (config, &status)) {
-		g_free (id);
-		fs_intel_config_free (config);
+	g_variant_builder_init (&b, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add (&b, "{sv}", "name", g_variant_new_string (name));
+	g_variant_builder_add (&b, "{sv}", "text",
+	                       g_variant_new_bytestring (text));
+	if (g_utf8_validate (what, -1, NULL))
+		g_variant_builder_add (&b, "{sv}", "what",
+		                       g_variant_new_string (what));
+	if (dir_s != NULL)
+		g_variant_builder_add (&b, "{sv}", "dir",
+		                       g_variant_new_string (dir_s));
+	g_variant_builder_add (&b, "{sv}", "apply", g_variant_new_boolean (apply));
+	r = fs_control_do (NULL, "intel.import", g_variant_builder_end (&b));
+	g_free (text);
+	g_free (what);
+
+	if (!r->intel_saved && r->status != FS_CONTROL_OK) {
+		status = op_status (r, "intel import");
+		fs_control_result_free (r);
 		return status;
 	}
+
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{");
+		const FsFeedParseStats *st = &r->intel_stats;
 
-		fs_json_kv_str (out, "id", id);                    g_string_append_c (out, ',');
-		fs_json_kv_str (out, "name", name);                g_string_append_c (out, ',');
-		fs_json_kv_str (out, "direction", dir_word (dir)); g_string_append_c (out, ',');
-		fs_json_kv_uint (out, "entries", stats.entries);   g_string_append_c (out, ',');
-		fs_json_kv_uint (out, "invalid", stats.invalid);   g_string_append_c (out, ',');
-		fs_json_kv_uint (out, "too_broad", stats.too_broad); g_string_append_c (out, ',');
-		fs_json_kv_uint (out, "protected", stats.protected_hits);
+		fs_json_kv_str (out, "id", r->intel_id);           g_string_append_c (out, ',');
+		fs_json_kv_str (out, "name", r->intel_name);       g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "removed", r->intel_removed); g_string_append_c (out, ',');
+		fs_json_kv_str (out, "direction", r->intel_id != NULL
+		                ? dir_word (r->intel_dir) : NULL); g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "entries", st->entries);     g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "invalid", st->invalid);     g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "too_broad", st->too_broad); g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "protected", st->protected_hits);
 		g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "applied", FALSE);
+		apply_json (out, apply ? r : NULL);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
 	} else if (!fs_cli.quiet) {
-		gchar *n = grouped (stats.entries);
-		gchar *safe_name = fs_cli_out_safe (name);
+		gchar *safe_name = fs_cli_out_safe (r->intel_name);
 
-		printf ("%s+%s %s (%s): %s entr%s, %s: %s.\n", fs_cli_green (),
-		        fs_cli_reset (), safe_name, id, n,
-		        stats.entries == 1 ? "y" : "ies", dir_word (dir),
-		        dir_prose (dir));
-		if (stats.invalid > 0)
-			printf ("%snote:%s %u line%s did not parse (the first is line "
-			        "%u) and %s skipped.\n", fs_cli_amber (),
-			        fs_cli_reset (), stats.invalid,
-			        stats.invalid == 1 ? "" : "s", stats.first_invalid,
-			        stats.invalid == 1 ? "was" : "were");
-		if (stats.too_broad > 0)
-			printf ("%snote:%s %u entr%s too broad to block and "
-			        "left out.\n", fs_cli_amber (), fs_cli_reset (),
-			        stats.too_broad,
-			        stats.too_broad == 1 ? "y was" : "ies were");
-		if (stats.protected_hits > 0)
-			printf ("%snote:%s %u entr%s overlapped addresses that are "
-			        "never blocked (private, loopback, multicast ...); "
-			        "that part was left out.\n", fs_cli_amber (),
-			        fs_cli_reset (), stats.protected_hits,
-			        stats.protected_hits == 1 ? "y" : "ies");
-		printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
-		        fs_cli_dim (), fs_cli_reset ());
+		if (r->intel_removed) {
+			printf ("%s-%s %s (%s) removed: the input was empty.\n",
+			        fs_cli_red (), fs_cli_reset (), safe_name, r->intel_id);
+		} else if (r->intel_id == NULL) {
+			printf ("No list is called \"%s\": the input was empty, so "
+			        "there is nothing to remove.\n", safe_name);
+		} else {
+			const FsFeedParseStats *st = &r->intel_stats;
+			gchar *n = grouped (st->entries);
+
+			printf ("%s+%s %s (%s): %s entr%s, %s: %s.\n", fs_cli_green (),
+			        fs_cli_reset (), safe_name, r->intel_id, n,
+			        st->entries == 1 ? "y" : "ies", dir_word (r->intel_dir),
+			        dir_prose (r->intel_dir));
+			if (st->invalid > 0)
+				printf ("%snote:%s %u line%s did not parse (the first is "
+				        "line %u) and %s skipped.\n", fs_cli_amber (),
+				        fs_cli_reset (), st->invalid,
+				        st->invalid == 1 ? "" : "s", st->first_invalid,
+				        st->invalid == 1 ? "was" : "were");
+			if (st->too_broad > 0)
+				printf ("%snote:%s %u entr%s too broad to block and "
+				        "left out.\n", fs_cli_amber (), fs_cli_reset (),
+				        st->too_broad,
+				        st->too_broad == 1 ? "y was" : "ies were");
+			if (st->protected_hits > 0)
+				printf ("%snote:%s %u entr%s overlapped addresses that "
+				        "are never blocked (private, loopback, multicast "
+				        "...); that part was left out.\n", fs_cli_amber (),
+				        fs_cli_reset (), st->protected_hits,
+				        st->protected_hits == 1 ? "y" : "ies");
+			g_free (n);
+		}
 		g_free (safe_name);
-		g_free (n);
+		if (r->intel_saved)
+			apply_print (apply ? r : NULL, "Not live yet: run `"
+			             FS_CLI_SUDO "stockfw intel apply'.");
 	}
-	g_free (id);
-	fs_intel_config_free (config);
-	return FS_EXIT_OK;
+	status = apply ? apply_status (r) : FS_EXIT_OK;
+	fs_control_result_free (r);
+	return status;
 }
 
 static gint
@@ -1838,7 +2117,7 @@ intel_remove (gint argc, gchar **argv)
 
 		fs_json_kv_str (out, "id", argv[0]);    g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "removed", TRUE); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "applied", FALSE);
+		apply_json (out, after_apply);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
@@ -1848,8 +2127,8 @@ intel_remove (gint argc, gchar **argv)
 		printf ("%s-%s %s (%s) removed, with its stored copy.\n",
 		        fs_cli_red (), fs_cli_reset (), safe, argv[0]);
 		g_free (safe);
-		printf ("%sNot live yet: run `" FS_CLI_SUDO "stockfw intel apply'.%s\n",
-		        fs_cli_dim (), fs_cli_reset ());
+		apply_print (after_apply, "Not live yet: run `" FS_CLI_SUDO
+		             "stockfw intel apply'.");
 	}
 	g_free (label);
 	fs_intel_config_free (config);
@@ -2018,17 +2297,96 @@ exceptions_json (GString *out, const FsRangeSet *set)
 	g_free (text);
 }
 
+/* `intel exceptions' lists the allow list; `--set FILE|-' replaces
+ * it with the whole text, as the Threat Intel page's editor does: a
+ * '#' starts a comment, a line that does not read refuses the text
+ * (nothing saved), empty text is no exception (F11). */
 static gint
 intel_exceptions (gint argc, gchar **argv)
 {
 	FsIntelConfig *config;
 	GError *error = NULL;
+	const gchar *set_from = NULL;
+	gboolean apply = FALSE;
 
-	(void) argv;
-	if (argc > 0) {
-		fs_cli_error ("intel exceptions takes no arguments");
+	for (gint i = 0; i < argc; i++) {
+		const gchar *v = NULL;
+		gint bad = FS_EXIT_OK;
+
+		if (fs_cli_take_opt (argc, argv, &i, "--set", &v, &bad)) {
+			if (v == NULL)
+				return bad;
+			set_from = v;
+		} else if (fs_cli_is_option_at (argv, i) &&
+		           strcmp (argv[i], "--apply") == 0) {
+			apply = TRUE;
+		} else {
+			fs_cli_error ("intel exceptions takes --set FILE|- and "
+			              "--apply only");
+			fs_cli_hint ("`intel except ADDRESS' adds one address");
+			return FS_EXIT_USAGE;
+		}
+	}
+	if (apply && set_from == NULL) {
+		fs_cli_error ("--apply goes with --set");
 		return FS_EXIT_USAGE;
 	}
+	if (set_from != NULL) {
+		FsControlResult *r;
+		GVariantBuilder b;
+		gsize len = 0;
+		gchar *text;
+		gint status;
+
+		if (apply && geteuid () != 0)
+			return fs_cli_need_root ("intel exceptions --set --apply");
+		text = read_input (set_from, &len);
+		if (text == NULL)
+			return FS_EXIT_USAGE;
+		g_variant_builder_init (&b, G_VARIANT_TYPE_VARDICT);
+		g_variant_builder_add (&b, "{sv}", "text",
+		                       g_variant_new_bytestring (text));
+		g_variant_builder_add (&b, "{sv}", "apply",
+		                       g_variant_new_boolean (apply));
+		r = fs_control_do (NULL, "intel.exceptions.set",
+		                   g_variant_builder_end (&b));
+		g_free (text);
+		if (!r->intel_saved) {
+			status = op_status (r, "intel exceptions --set");
+			if (r->status == FS_CONTROL_USAGE)
+				fs_cli_hint ("each line: an address, a network "
+				             "(198.51.100.0/24) or a range "
+				             "(192.0.2.10-192.0.2.20); '#' starts a "
+				             "comment; nothing was saved");
+			fs_control_result_free (r);
+			return status;
+		}
+		if (fs_cli.json) {
+			GString *out = g_string_new ("{");
+
+			apply_json (out, apply ? r : NULL);
+			g_string_append (out, ",\"exceptions\":");
+			exceptions_json (out, r->intel_exceptions);
+			g_string_append_c (out, '}');
+			fs_cli_print_json (out);
+			g_string_free (out, TRUE);
+		} else if (!fs_cli.quiet) {
+			if (fs_range_set_is_empty (r->intel_exceptions)) {
+				printf ("Saved: no exception.\n");
+			} else {
+				gchar *t = fs_range_set_to_text (r->intel_exceptions);
+
+				printf ("Saved.  Never blocked by a list:\n%s", t);
+				g_free (t);
+			}
+			apply_print (apply ? r : NULL, "Not live yet: run `"
+			             FS_CLI_SUDO "stockfw intel apply'.");
+		}
+		status = apply ? apply_status (r) : FS_EXIT_OK;
+		fs_control_result_free (r);
+		return status;
+	}
+
 	config = load_config (FALSE, &error);
 	if (config == NULL)
 		return fail (error, "exceptions");
@@ -2099,7 +2457,7 @@ intel_except (gint argc, gchar **argv, gboolean add)
 	if (fs_cli.json) {
 		GString *out = g_string_new ("{");
 
-		fs_json_kv_bool (out, "applied", FALSE);
+		apply_json (out, after_apply);
 		g_string_append (out, ",\"exceptions\":");
 		exceptions_json (out, config->exceptions);
 		g_string_append_c (out, '}');
@@ -2109,8 +2467,8 @@ intel_except (gint argc, gchar **argv, gboolean add)
 		for (gint i = 0; i < argc; i++)
 			printf ("%s%s%s %s\n", add ? fs_cli_green () : fs_cli_red (),
 			        add ? "+" : "-", fs_cli_reset (), argv[i]);
-		printf ("%sSaved.  Not live yet: run `" FS_CLI_SUDO "stockfw intel "
-		        "apply'.%s\n", fs_cli_dim (), fs_cli_reset ());
+		apply_print (after_apply, "Saved.  Not live yet: run `" FS_CLI_SUDO
+		             "stockfw intel apply'.");
 	}
 	fs_intel_config_free (config);
 	return FS_EXIT_OK;
@@ -3091,7 +3449,7 @@ geo_remove (gint argc, gchar **argv)
 
 		fs_json_kv_str (out, "id", argv[0]);    g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "removed", TRUE); g_string_append_c (out, ',');
-		fs_json_kv_bool (out, "applied", FALSE);
+		apply_json (out, after_apply);
 		g_string_append_c (out, '}');
 		fs_cli_print_json (out);
 		g_string_free (out, TRUE);
@@ -3498,12 +3856,78 @@ intel_lookup (gint argc, gchar **argv)
 
 /* ------------------------------------------------------------ dispatch */
 
+/* === PR4-D === */
+/* [ take_apply ]
+ * Takes "--apply" (as an option, never a word after "--") out of the
+ * n words at `rest', which are the command's own argv; TRUE when it
+ * was there.  The words after it move down one, and so does the "--"
+ * mark, so fs_cli_is_option_at still reads them as before. */
+static gboolean
+take_apply (gint *n, gchar **rest)
+{
+	for (gint i = 0; i < *n; i++) {
+		if (!fs_cli_is_option_at (rest, i) ||
+		    strcmp (rest[i], "--apply") != 0)
+			continue;
+		memmove (&rest[i], &rest[i + 1],
+		         (gsize) (*n - i) * sizeof (gchar *));
+		(*n)--;
+		fs_cli.argc--;
+		if (fs_cli.positional_from != G_MAXINT)
+			fs_cli.positional_from--;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+static gint intel_dispatch (const gchar *sub, gint n, gchar **rest);
+
+/* [ fs_cli_cmd_intel ]
+ * `--apply' on the saves that take it (F0): root first, then the
+ * policy lock for the whole command, so the save and the apply after
+ * it are one change; save_config sends intel.apply (after_apply). */
 gint
 fs_cli_cmd_intel (gint argc, gchar **argv)
 {
 	const gchar *sub = argc > 1 ? argv[1] : "status";
 	gint n = argc > 1 ? argc - 2 : 0;
 	gchar **rest = argv + 2;
+	static const gchar *applies[] = {
+		"enable", "disable", "on", "off", "remove", "rm", "except",
+		"unexcept", NULL
+	};
+	gboolean takes = g_strv_contains (applies, sub) ||
+	                 (strcmp (sub, "list") == 0 && n > 0 &&
+	                  (strcmp (rest[0], "remove") == 0 ||
+	                   strcmp (rest[0], "rm") == 0));
+	FsPolicyLock *lock;
+	GError *error = NULL;
+	gint status;
+
+	if (!takes || !take_apply (&n, rest))
+		return intel_dispatch (sub, n, rest);
+	if (geteuid () != 0)
+		return fs_cli_need_root ("intel --apply");
+	lock = fs_policy_lock (&error);
+	if (lock == NULL) {
+		fs_cli_error ("%s", error->message);
+		g_error_free (error);
+		return FS_EXIT_FAILURE;
+	}
+	apply_after = TRUE;
+	status = intel_dispatch (sub, n, rest);
+	apply_after = FALSE;
+	fs_policy_unlock (lock);
+	if (status == FS_EXIT_OK)
+		status = apply_status (after_apply);
+	g_clear_pointer (&after_apply, fs_control_result_free);
+	return status;
+}
+/* === end PR4-D === */
+
+static gint
+intel_dispatch (const gchar *sub, gint n, gchar **rest)
+{
 
 	if (strcmp (sub, "status") == 0)          return intel_status (n, rest);
 	if (strcmp (sub, "feeds") == 0)           return intel_feeds (n, rest);
@@ -3549,6 +3973,8 @@ static const FsCliOption intel_opts[] = {
 	{ "-n",                FALSE, "apply"    },
 	{ "--name",            TRUE,  NULL       },
 	{ "--max",             TRUE,  "geo"      },
+	{ "--set",             TRUE,  "exceptions" },
+	{ "--apply",           FALSE, NULL       },
 	{ NULL, FALSE, NULL }
 };
 
@@ -3556,22 +3982,24 @@ const FsCliCommandDef fs_cli_intel_commands[] = {
 	{ "intel", fs_cli_cmd_intel,
 "Usage: stockfw intel [status]                     State, and the lists turned on\n"
 "       stockfw intel feeds                        Every feed: on/off, licence,\n"
-"                                                  credit, entries, last update\n"
+"                                                  credit, entries, last and\n"
+"                                                  next update\n"
 "       stockfw intel terms FEED                   What turning FEED on means\n"
-"       stockfw intel enable ID [--direction D] [--accept-terms]\n"
-"       stockfw intel disable ID\n"
-"       stockfw intel on | off                     The master switch\n"
+"       stockfw intel enable ID [--direction D] [--accept-terms] [--apply]\n"
+"       stockfw intel disable ID [--apply]\n"
+"       stockfw intel on | off [--apply]           The master switch\n"
 "       stockfw intel add-feed NAME URL [--format F] [--direction D]\n"
 "       stockfw intel proxy [URL|none]             The download proxy\n"
 "       stockfw intel update [--feed ID] [--now] [--accept-shrink]\n"
 "                            [--accept-coverage] [--no-apply]\n"
 "       stockfw intel apply [--dry-run]            Load the lists into the kernel\n"
 "       stockfw intel clear                        Remove them from the kernel\n"
-"       stockfw intel import FILE --name NAME [--direction D]\n"
+"       stockfw intel import FILE|- --name NAME [--direction D] [--apply]\n"
 "       stockfw intel lists | list show [ID]       Your own lists, one's ranges\n"
-"       stockfw intel remove ID                    A local list or custom feed\n"
-"       stockfw intel except | unexcept ADDRESS...  Never block / block again\n"
-"       stockfw intel exceptions\n"
+"       stockfw intel remove ID [--apply]          A local list or custom feed\n"
+"       stockfw intel except | unexcept ADDRESS... [--apply]\n"
+"                                                  Never block / block again\n"
+"       stockfw intel exceptions [--set FILE|- [--apply]]\n"
 "       stockfw intel lookup ADDRESS               Which lists hold it; blocked?\n"
 "       stockfw intel geo [status]                 Blocking by country or network\n"
 "       stockfw intel geo terms | on [--accept-terms] | off\n"
@@ -3590,8 +4018,17 @@ const FsCliCommandDef fs_cli_intel_commands[] = {
 "D is in (stops them connecting to you), out (stops you connecting to\n"
 "them) or both.  `intel list add' and `intel list remove' are the same\n"
 "as import and remove.  Changes to the configuration are saved and take\n"
-"effect with `intel apply'; `update' downloads the feeds that are due\n"
-"(--now: all of them) and, when the lists are enforced, the firewall\n"
+"effect with `intel apply', or at once with --apply, as the Threat Intel\n"
+"page does after a save (root; with the firewall stopped the lists go in\n"
+"force when it starts; audit-only mode holds it).  `import FILE|-' reads\n"
+"a file or standard input and replaces the list of that name; empty\n"
+"input removes it (--name \"My blocklist\" is the page's \"Your\n"
+"blocklist\", id local-my-blocklist).  `exceptions --set FILE|-'\n"
+"replaces the whole allow list: one address, network or range a line,\n"
+"'#' starts a comment, empty input clears it, and a line that does not\n"
+"read changes nothing.  `update' downloads the feeds that are due\n"
+"(--now: all of them; `feeds' shows when each is due next) and, when\n"
+"the lists are enforced, the firewall\n"
 "runs and audit-only mode is off, enforces the new copies.  A copy that\n"
 "shrank to almost nothing or rolled back to an older date is refused\n"
 "unless --accept-shrink; one whose coverage jumped needs\n"
