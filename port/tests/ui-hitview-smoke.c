@@ -1503,6 +1503,119 @@ check_feed_order (void)
 	fs_prefs_set_bool (FS_PREFS_SKIP_REDUNDANT, FALSE);
 }
 
+/* [ wait_history ] -- the main loop, until the history worker's result
+ * is installed (or the seconds run out).  FALSE when it never was. */
+static gboolean
+wait_history (gdouble seconds)
+{
+	gint64 end = g_get_monotonic_time () + (gint64) (seconds * G_USEC_PER_SEC);
+
+	while (fs_hitview_history_pending () &&
+	       g_get_monotonic_time () < end)
+		g_main_context_iteration (NULL, FALSE), g_usleep (2000);
+	return !fs_hitview_history_pending ();
+}
+
+/* Events in the list whose destination is dst. */
+static guint
+count_dest (const gchar *dst)
+{
+	FsEventStore *st = fs_hitview_store ();
+	guint n = fs_eventstore_length (st), hits = 0;
+	guint64 first = fs_eventstore_first_seq (st);
+
+	for (guint i = 0; i < n; i++)
+		if (g_strcmp0 (fs_eventstore_field (st, first + i,
+		                                    FS_EV_DESTINATION), dst) == 0)
+			hits++;
+	return hits;
+}
+
+static void
+write_history (FsEventLog *log, const gchar *dst, gint64 t0, guint n)
+{
+	for (guint i = 0; i < n; i++) {
+		FsHit h = { 0 };
+		gchar stamp[FS_EVENT_TIME_BUF];
+
+		fs_event_time_format (t0 + (gint64) i * 10000000,
+		                      FS_EVENT_TIME_SECS, stamp);
+		h.time = stamp;
+		h.direction = (gchar *) "Out";
+		h.destination = (gchar *) dst;
+		fs_eventlog_append (log, &h, t0 + (gint64) i * 10000000);
+	}
+	fs_eventlog_flush (log, NULL);
+}
+
+/* [ check_history_retry ]
+ * CORRECTNESS-3 (1.0.7 release review): another copy holds the history
+ * when this one opens it.  Nothing is read then; the retry that takes
+ * the history over once that copy lets go reads it back, under what
+ * the list holds already: the older days appear, an event newer than
+ * the list's oldest is not listed twice, and the count says so. */
+static void
+check_history_retry (void)
+{
+	gchar *dir = fs_eventlog_default_dir ();
+	FsEventLog *other;
+	GError *error = NULL;
+	FsHit live = { 0 };
+	gchar stamp[FS_EVENT_TIME_BUF];
+	const gint64 now = g_get_real_time () * 10;
+	guint before, waited = 0;
+
+	fs_hitview_shutdown ();               /* this copy lets go ...      */
+	other = fs_eventlog_open (dir, 30, 0, &error);   /* ... another has it */
+	CHECK (other != NULL, "retry: a second writer takes the history (%s)",
+	       error != NULL ? error->message : "ok");
+	g_clear_error (&error);
+	if (other == NULL) {
+		g_free (dir);
+		return;
+	}
+	write_history (other, "203.0.113.77", now - 7200LL * 10000000, 50);
+
+	fs_hitview_clear ();
+	before = fs_hitview_history_loaded ();
+	fs_hitview_apply_settings ();         /* opens: in use, retries    */
+	CHECK (wait_history (10) && fs_hitview_history_problem () != NULL,
+	       "retry: while the other copy has it, the page says history "
+	       "is not saved (%s)", fs_hitview_history_problem ());
+
+	/* What this copy sees meanwhile, and what the other one writes
+	 * after it (newer than anything in the list: listed once, live). */
+	fs_event_time_format (now, FS_EVENT_TIME_SECS, stamp);
+	live.time = stamp;
+	live.direction = (gchar *) "Out";
+	live.destination = (gchar *) "203.0.113.78";
+	fs_hitview_append (&live);
+	write_history (other, "203.0.113.77", now + 600LL * 10000000, 1);
+	fs_eventlog_close (other);
+
+	/* The retry runs every five seconds. */
+	while ((fs_hitview_history_problem () != NULL ||
+	        fs_hitview_history_pending ()) && waited < 120) {
+		wait_history (0.1);
+		g_main_context_iteration (NULL, FALSE);
+		g_usleep (50000);
+		waited++;
+	}
+	CHECK (fs_hitview_history_problem () == NULL,
+	       "retry: once the other copy lets go, this one writes again");
+	CHECK (count_dest ("203.0.113.77") == 50,
+	       "retry: the earlier history appears in the list, and the "
+	       "event newer than the list's oldest is not added (%u of 50)",
+	       count_dest ("203.0.113.77"));
+	CHECK (count_dest ("203.0.113.78") == 1,
+	       "retry: the event seen meanwhile stays, once (%u)",
+	       count_dest ("203.0.113.78"));
+	CHECK (fs_hitview_history_loaded () >= before + 50,
+	       "retry: the count of events read back says so (%u, was %u)",
+	       fs_hitview_history_loaded (), before);
+	g_free (dir);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1567,12 +1680,53 @@ main (int argc, char **argv)
 #endif
 	copilot = fs_copilot_new ();
 
-	page = fs_hitview_page ();
+	{
+		gint64 t = g_get_monotonic_time ();
+		FsHit h = { 0 };
+		gchar stamp[FS_EVENT_TIME_BUF];
 
+		page = fs_hitview_page ();
+		t = g_get_monotonic_time () - t;
+
+		/* CORRECTNESS-1 (1.0.7 release review): the page is built
+		 * before the window is shown, and the history is opened and
+		 * read on a worker, never on the main thread: the page is
+		 * back with the history still to come, and the main loop
+		 * lists it. */
+		CHECK (fs_hitview_history_pending () &&
+		       fs_hitview_history_loaded () == 0,
+		       "the page is built without waiting for the history "
+		       "(%.1f ms; the main loop lists it)", t / 1000.0);
+
+		/* An event that arrives while history is read. */
+		fs_event_time_format (g_get_real_time () * 10,
+		                      FS_EVENT_TIME_SECS, stamp);
+		h.time = stamp;
+		h.direction = (gchar *) "Out";
+		h.destination = (gchar *) "203.0.113.79";
+		fs_hitview_append (&h);
+	}
+	CHECK (wait_history (20), "the history worker finishes");
 	CHECK (fs_hitview_history_loaded () == 500 &&
-	       fs_hitview_count () >= 500,
-	       "the 500 events of an earlier session are listed at start "
-	       "(%u read back)", fs_hitview_history_loaded ());
+	       fs_hitview_count () == 501 &&
+	       count_dest ("203.0.113.79") == 1,
+	       "the 500 events of an earlier session are listed, with the "
+	       "one that arrived meanwhile (%u read back, %u listed)",
+	       fs_hitview_history_loaded (), fs_hitview_count ());
+	fs_hitview_flush_history ();
+	{
+		gchar *dir = fs_hitview_history_dir ();
+		guint lines = 0;
+		FsEventLogStats st;
+		FsEventStore *probe = fs_eventstore_new (FS_EVENTSTORE_MIN_CAPACITY);
+
+		lines = fs_eventlog_load_recent (dir, probe, 100000, &st);
+		CHECK (lines == 501,
+		       "...and the one that arrived meanwhile went to the "
+		       "history file too, once (%u events in it)", lines);
+		fs_eventstore_free (probe);
+		g_free (dir);
+	}
 	fs_hitview_clear ();
 
 	/* What fs-app.c:119 does when the page is added to the window. */
@@ -1615,6 +1769,7 @@ main (int argc, char **argv)
 	check_scale (page);
 	check_sorted_burst ();
 	check_rows_churn ();
+	check_history_retry ();
 
 	fs_hitview_stop ();
 	gtk_widget_destroy (page);

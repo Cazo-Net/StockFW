@@ -3391,3 +3391,10 @@ Windows-like backend on Linux).
   country or network rule dropped, also when an open beacon finding is
   updated.  Teeth: putting the What-If line back, or not clearing the
   earlier report's block, fails them.
+- The Events page start (`fs-hitview-smoke`): the page is back before
+  the history is read; the saved events and one that arrived meanwhile
+  are listed, that one saved once.  Teeth: loading synchronously in
+  `build_store` fails "built without waiting".  The retry after another
+  copy let go (`check_history_retry`) lists the 50 older saved events
+  and not the one newer than the list.  Teeth: a retry that installs the
+  writer only lists 0 of 50; dropping the cutoff lists 51.
