@@ -1410,9 +1410,15 @@ per process:
   fixed through `STOCKFW_RESOLV_CONF` and `STOCKFW_ROUTE_FILE`): the
   window is hidden as "Minimize to the tray" hides it (directly, since
   xvfb has no notification area for the icon to embed in), and then
-  the Copilot must keep working.  A Sentinel block restored with three
-  seconds left is lifted from the policy and the staged list on time,
-  and audited; seven timed contacts fed into the app's Copilot and the
+  the Copilot must keep working.  A Sentinel block restored with 12
+  seconds of its ten minutes left is in the policy once the window is
+  hidden (a precondition: 12 s covers the start-up, which took over
+  3 s on the Windows runner; with too little left the boot restore
+  already takes it out as "expired while StockFW was not running" and
+  the timer under test never runs), is lifted from the policy and the
+  staged list by the expiry timer (waited for up to 4 s past its due
+  time, and not before it), and audited "expired after 10 minutes";
+  seven timed contacts fed into the app's Copilot and the
   eighth delivered through the Events page's own callback stage a
   Sentinel block (policy, staged list, apply gate); the periodic save
   writes what was learned; the tray's "Pause Sentinel auto-block for 1

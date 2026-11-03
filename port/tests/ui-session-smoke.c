@@ -57,6 +57,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "core/fs-autoblock.h"
 #include "core/fs-backend.h"
 #include "core/fs-eventlog.h"
 #include "core/fs-copilot.h"
@@ -262,6 +263,16 @@ audit_count (const gchar *needle)
 static gchar *prefs_file = NULL;
 static gchar *baseline_file = NULL;
 
+/* The background scenario's restored block: how much of its ten
+ * minutes is left when the scenario starts, and when (wall clock) it
+ * was staged.  The margin has to cover the whole start-up, prepare()
+ * to the first check: a block that is already past its ten minutes at
+ * the boot restore is taken out there, as "expired while StockFW was
+ * not running", and never reaches the timer this scenario is about.
+ * On the Windows runner the start-up alone has taken over 3 s. */
+#define BG_TTL_LEFT_S 12
+static gint64 bg_staged_epoch = 0;
+
 static void
 feed_event (void)
 {
@@ -340,16 +351,16 @@ prepare (void)
 
 	/* Sentinel staged a block a minute ago (nine minutes left), so
 	 * the restore re-arms it and there is a staged list to write.  In
-	 * the background scenario it was staged nine minutes and 57
-	 * seconds ago: its ten minutes run out while the window is
-	 * hidden. */
+	 * the background scenario it has BG_TTL_LEFT_S seconds of its ten
+	 * minutes left: they run out while the window is hidden. */
 	policy = fs_policy_new ();
 	put_rule (policy, FS_RULE_OUTBOUND_DENY_TO, SENTINEL_CSV);
 	fs_policy_save (policy);
 	fs_policy_free (policy);
+	bg_staged_epoch = now - (FS_AUTOBLOCK_TTL_S - BG_TTL_LEFT_S);
 	rows = g_strdup_printf ("S,%" G_GINT64_FORMAT ",%d,%s\n",
 	                        g_strcmp0 (scenario, "background") == 0
-	                        ? now - 597 : now - 60,
+	                        ? bg_staged_epoch : now - 60,
 	                        (int) FS_RULE_OUTBOUND_DENY_TO, SENTINEL_CSV);
 	path = in_scratch ("autoblocks");
 	g_file_set_contents (path, rows, -1, NULL);
@@ -547,18 +558,52 @@ check_background (void)
 	CHECK (!gtk_widget_get_visible (GTK_WIDGET (win)) &&
 	       visible_windows () == 0,
 	       "(the window is hidden; nothing of StockFW is on screen)");
-	CHECK (policy_has ("203.0.113.9") &&
-	       file_has (list, "203.0.113.9"),
-	       "(the restored Sentinel block is in the policy, about 3 s "
-	       "left)");
+	{
+		gint64 due = bg_staged_epoch + FS_AUTOBLOCK_TTL_S;
+		gdouble left = (gdouble) due -
+		               (gdouble) g_get_real_time () / G_USEC_PER_SEC;
+
+		/* A precondition, not the point: if this fails, the
+		 * start-up outran BG_TTL_LEFT_S and the boot restore took
+		 * the block out ("1 expired while StockFW was not running"
+		 * in its audit line, where it must say 0). */
+		CHECK (policy_has ("203.0.113.9") &&
+		       file_has (list, "203.0.113.9") &&
+		       audit_count (" 0 expired while StockFW was not "
+		                    "running") == 1,
+		       "(the restored Sentinel block is in the policy, "
+		       "%.1f s of its ten minutes left)", left);
+	}
 	CHECK (log_cb != NULL,
 	       "the Events page keeps monitoring with the window hidden");
 
-	/* 1. Expiry runs while hidden. */
-	wait_s (4.5);
-	CHECK (!policy_has ("203.0.113.9") && !file_has (list, "203.0.113.9"),
-	       "a Sentinel block whose ten minutes ran out while the window "
-	       "was hidden is lifted from the policy and the staged list");
+	/* 1. Expiry runs while hidden: wait for it, up to a few seconds
+	 * past its due time (the timer works in whole seconds and comes
+	 * back a second late on purpose), and check it is not early. */
+	{
+		gint64 due = bg_staged_epoch + FS_AUTOBLOCK_TTL_S;
+		gint64 deadline_us = (due + 4) * G_USEC_PER_SEC;
+		gboolean lifted = FALSE;
+		gdouble at;
+
+		while (g_get_real_time () < deadline_us) {
+			wait_s (0.1);
+			if (!policy_has ("203.0.113.9") &&
+			    !file_has (list, "203.0.113.9")) {
+				lifted = TRUE;
+				break;
+			}
+		}
+		at = (gdouble) g_get_real_time () / G_USEC_PER_SEC -
+		     (gdouble) due;
+		CHECK (lifted,
+		       "a Sentinel block whose ten minutes ran out while the "
+		       "window was hidden is lifted from the policy and the "
+		       "staged list (%+.1f s from its due time)", at);
+		/* The staging second is whole: due may be up to 1 s early. */
+		CHECK (!lifted || at >= -1.0,
+		       "...not before its ten minutes were up (%+.1f s)", at);
+	}
 	CHECK (audit_count ("expired after 10 minutes") == 1,
 	       "...and audited (%u)", audit_count ("expired after 10 minutes"));
 
