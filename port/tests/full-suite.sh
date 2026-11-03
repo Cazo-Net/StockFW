@@ -227,7 +227,7 @@ linux_only "LOCATION DATABASE vs LIBLOC + FUZZER (Linux)" run_sh tests/test-geod
 # Start at sign-in (XDG entry; the sudo half as root), the boot unit and
 # `stockfw start' live in a private netns (root), the Linux installer in
 # a private mount namespace (root).
-run_sh "START AT SIGN-IN (Linux, real binary)" tests/test-autostart.sh
+linux_only "START AT SIGN-IN (Linux, real binary)" run_sh tests/test-autostart.sh
 run_sh "BOOT START (unit + stockfw start, private netns)" tests/test-boot-start.sh
 run_sh "LINUX INSTALLER (boot unit, private mount ns)" tests/test-linux-install.sh
 

@@ -11465,7 +11465,7 @@ done
 # The port's own credit reads "Stock Team" too: About and Help said
 # "StockFW Project - GTK3 Port, ..." (release review, problem 1).
 for f in src/ui/fs-aboutdialog.c src/ui/fs-helpcontent.c; do
-  if ! tr -d '\n\t' < "$f" | sed 's/"  *"//g' | grep -q 'Stock Team - GTK3 Port, Windows Backend, Copilot' ||
+  if ! tr -d '\r\n\t' < "$f" | sed 's/"  *"//g' | grep -q 'Stock Team - GTK3 Port, Windows Backend, Copilot' ||
      grep -q 'StockFW Project' "$f"; then
     echo "FAIL: $f does not credit \"Stock Team - GTK3 Port, Windows Backend, Copilot\""
     exit 1
