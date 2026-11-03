@@ -93,13 +93,16 @@ jobs:
           bash tests/test-uaf-analyze.sh
           ninja -C build-linux fs-intel-test fs-netplace-test fs-nftset-load \
             fs-whatif-test fs-feed-test fs-intelset-test fs-fetch-test \
-            fs-hostnet-test fs-backend-probe
+            fs-hostnet-test fs-backend-probe fs-fetch-spawn-test
           ./build-linux/fs-intel-test
           ./build-linux/fs-netplace-test
           ./build-linux/fs-whatif-test
           ./build-linux/fs-feed-test
           ./build-linux/fs-intelset-test
           ./build-linux/fs-fetch-test golden
+          # How curl is started and read, against a fake curl (the
+          # Windows job checks there is no console window).
+          ./build-linux/fs-fetch-spawn-test
           # As the runner's user here; the root step below runs it again
           # for its live part.
           ./build-linux/fs-hostnet-test

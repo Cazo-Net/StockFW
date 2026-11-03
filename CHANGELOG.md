@@ -150,6 +150,14 @@ into `/usr/local/share/doc/stockfw/`.
 
 ### Fixed
 
+- **Windows: no console windows during threat-intel updates.** Turning
+  on a blocklist, "Update now", and the daily update each downloaded
+  every list through `curl.exe`, and each download opened a black
+  console window for a moment. curl is now started hidden, the way
+  StockFW already starts `netsh` and `wevtutil`, so nothing flashes on
+  the screen. The download itself is unchanged: the same curl from the
+  Windows system folder, the same arguments, environment, size cap and
+  time limit.
 - **Wayland desktops and WSL: no tray icon, no start-up warning.** GTK
   has a tray only on X11 and Windows. Started on Wayland (GNOME and KDE
   Plasma by default, and WSL's WSLg), StockFW tried to make one anyway,

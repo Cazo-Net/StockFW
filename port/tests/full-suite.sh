@@ -148,7 +148,8 @@ run_intel_windows () {
 # fs-intel-test (POSIX modes on the store) and fs-fetch-test (the Linux
 # curl argv, environment and account) are written for Linux; the
 # location database reader runs on both inside test-core.sh.
-UNITS="fs-netplace-test fs-feed-test fs-intelset-test fs-hostnet-test"
+UNITS="fs-netplace-test fs-feed-test fs-intelset-test fs-hostnet-test
+       fs-fetch-spawn-test fs-fake-curl"
 SMOKES="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke
         fs-theme-smoke fs-trustview-smoke fs-copilot-smoke
         fs-statusview-smoke fs-activity-smoke fs-overview-place-smoke
@@ -209,6 +210,10 @@ run_bin "WHAT A LIST MUST NEVER CUT (fs-hostnet-test)" fs-hostnet-test
 linux_only "THREAT INTEL ENGINE (fs-intel-test)" run_bin fs-intel-test
 linux_only "DOWNLOADER, PURE PARTS (fs-fetch-test golden)" run_bin fs-fetch-test golden
 windows_only "THREAT INTEL (Windows Firewall rules)" run_intel_windows
+# How the downloader starts curl, against a fake curl: on Windows, no
+# console window (CREATE_NO_WINDOW).  SKIP as root on Linux, where curl
+# runs as nobody (test-fetch.sh covers that).
+run_bin "DOWNLOADER START (fs-fetch-spawn-test, fake curl)" fs-fetch-spawn-test
 
 run_sh "CLI + DASHBOARD (Linux)" tests/test-cli.sh
 # The command-line tool built with FS_BUILD_GUI=OFF and GTK hidden from
