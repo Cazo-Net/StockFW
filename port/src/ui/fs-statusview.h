@@ -53,6 +53,22 @@ void           fs_statusview_set_policy (FsPolicy *policy);
 gboolean       fs_statusview_firewall_start (GtkWidget *parent,
                                              const gchar *source);
 
+/* What a start through the gate came to, for a caller that says it
+ * again in its own words (the What-If window): a hold and a failure
+ * both leave the firewall stopped, but they are not the same news. */
+typedef enum
+{
+	FS_START_RUNNING = 0,  /* started                                  */
+	FS_START_RUNNING_HELD, /* started with the last applied policy;
+	                        * changes since then stay held (Linux)     */
+	FS_START_HELD,         /* not started: held, nothing applied before */
+	FS_START_FAILED        /* not started: refused or failed            */
+} FsStartReport;
+
+/* fs_statusview_firewall_start, saying which of the above happened. */
+FsStartReport  fs_statusview_firewall_start_report (GtkWidget *parent,
+                                                    const gchar *source);
+
 /* Stop ("pause") the firewall: ALWAYS asks first, in a dialog that
  * says what stopping does on this platform, with Cancel as the
  * default.  TRUE only when the user agreed and the stop worked. */

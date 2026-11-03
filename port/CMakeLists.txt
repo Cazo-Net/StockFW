@@ -745,6 +745,24 @@ target_compile_definitions(fs-session-smoke PRIVATE
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-session-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+# H12: the What-If card's "Start the firewall" through the start gate,
+# against the real app and a fake backend that reads "stopped" and
+# counts starts: audit-only holds it and it is audited, with the
+# Linux and the Windows start models.  Supplies fs_backend() itself.
+add_executable(fs-whatif-start-smoke EXCLUDE_FROM_ALL
+  tests/ui-whatif-start-smoke.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-whatif-start-smoke PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-whatif-start-smoke PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-whatif-start-smoke PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-whatif-start-smoke PRIVATE ${FS_BACKEND_LIBS})
+endif()
 endif() # FS_BUILD_GUI
 
 # ---------------------------------------- 1.0.7 threat intel, round 1
