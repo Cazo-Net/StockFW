@@ -76,8 +76,9 @@ It pins down the documented exit codes, policy editing (the service
 shorthand, refused commas, mistyped options and bad hosts), the
 simulator's verdicts, the kernel-log history, every `--json` document
 parsed back, and the dashboard's security model: loopback only, the
-per-run token (header only, never the query string or the page), the
-Host check against DNS rebinding, GET/HEAD only, the 16 KB request-head
+session key (header only, never the query string or the page; the
+launch code read from the launch file, since the link is never printed
+to a pipe), the Host check against DNS rebinding, GET/HEAD only, the 16 KB request-head
 cap, the CSP nonce, and the dashboard leaving its own sockets out of the
 connection list.  `stockfw events` is checked with its filters
 against the kernel log, and `--history` against a history folder the
@@ -86,6 +87,62 @@ across days, `-n` keeping the newest, `--since`/`--until` by day and
 by stamp, every filter, a damaged and a cut-short line skipped and
 counted, unreadable filters refused with exit 2, and a missing folder
 named with where it would be.
+
+As root, the dashboard runs here as `sudo` runs it, with
+`SUDO_UID=65533`, and a `curl` first on `PATH` makes every request as
+uid 65533: the dashboard reads no other account's connections.  Its
+`$XDG_RUNTIME_DIR` is a directory of that uid, where the launch file
+and the link socket go.
+
+## Dashboard server and credentials (`tests/test-dashboard.sh`)
+
+```sh
+cd port
+sudo STOCKFW_BUILD=build-linux bash tests/test-dashboard.sh
+```
+
+Linux only.  It also builds `stockfw-dash-test` (the
+same sources with `FS_DASH_TESTING`: a test clock, a WSL switch and an
+"ownerless" uid) and `fs-dash-auth-test` (`tests/dash-auth-test.c`, the
+session rules on a clock of its own).  Starts the dashboard from a copy of
+`stockfw` in a directory every account can read, with `SUDO_UID=65533`
+when run as root, and checks `src/cli/fs-dash-http.c` (docs 15.3.1):
+with 32 slow senders holding connections a valid request answers
+within 1 s; a head or a body trickled in is cut off after 5 s;
+`Host: localhost:PORT`, two `Host` headers, `Upgrade`,
+`Transfer-Encoding` and a body over 64 KB are refused.  As root it
+also checks that connections from root, from `nobody` and from
+127.0.0.2 get no byte back even with a session, and that the dashboard
+refuses to start as root without `SUDO_UID`.  Without root those
+checks print `skip:`.
+
+For `src/cli/fs-dash-auth.c` and the page (docs 15.3.2, 15.3.3): piped
+or with `--json`, no hex string of 32 characters or more is printed,
+and on a terminal (a pty) the link is; the launch file is 0600 in a
+0700 directory and is gone once its code is used, or at 121 s on the
+test clock; a code used twice gets 410 and ends every session; an
+unknown code 401; POST without or with a foreign `Origin`, with
+`Sec-Fetch-Site` `same-site`, `cross-site` or missing gets 403,
+`text/plain` 415, no `Content-Length` 411, `OPTIONS` 405 with no CORS
+header; a GET with a foreign `Origin` or a cross-site or same-site
+`Sec-Fetch-Site` gets 403; `--origin-port N` lets in `Host` and
+`Origin` 127.0.0.1:N (via `ssh`) and nothing else; a key from the last
+run gets 401; reads stop at 12 h on the test clock; `dashboard link`
+prints a path on a pipe and a link on a terminal; the new headers are
+sent; the release `stockfw` has no test hook in it.  As root: the
+link socket answers no other uid, and on a pretend WSL a peer with no
+socket owner is closed unless `--allow-windows` is given.
+
+From the review of PR 2 (docs 15.3.4): with `--allow-windows`, a
+request from another account that closes at once is not read (the
+dashboard is held with `SIGSTOP` meanwhile; once normally, once in a
+network namespace that keeps no `TIME_WAIT` entries); with 40,000
+`TIME_WAIT` entries (in a namespace of its own) 20 requests answer
+within 2 s; empty lines before the request line are skipped, under
+`G_DEBUG=fatal-criticals`; SIGHUP removes the socket and launch files;
+`dashboard link` skips the socket of a killed dashboard and prints the
+`--origin-port` link.  The root-only parts need `unshare`, `nsenter`,
+`ip` and `sysctl`; the whole script now takes about 3 minutes.
 
 
 ## Event store and history (`tests/test-eventstore.sh`)
@@ -224,7 +281,9 @@ Builds the real Events page with its history in a scratch folder
 saved events back at start, then appends 100,000 events into the shown
 list and checks: the list's model is the virtual one (no GtkListStore,
 no filter copy) in fixed-height mode; appending reads only the visible
-cells; a scroll frame at 100,000 rows costs what it costs at 1,000;
+cells; a scroll frame at 100,000 rows costs what it costs at 1,000
+(measured up to three times, so one stall on a busy CI machine does
+not decide it; every attempt is printed);
 the port, CIDR, protocol and combined filters give the store's own
 count, label included, and every shown row matches; live events at the
 cap land or are left out as the filter says; a bad port is refused and
@@ -764,6 +823,34 @@ case instead of only being printed.
 | words | a curl exiting 60 is TLS with curl's own text, without its `curl: (60)` prefix; a missing curl is NO_CURL (also the real lookup, with `/usr/bin/curl` hidden); a curl flooding stderr still gives one short line, and 64 MiB of it raises the caller's peak memory by less than 32 MiB (keeping it all costs over 64); every message is printable ASCII: an escape sequence, a tab or DEL in curl's text becomes `?` |
 | leftovers | 2 to 4 fetches in a row of each outcome (a body, the cap, TLS, HTTP, the timer's kill, no curl, PRIVILEGE) leave the caller with no more descriptors than after the first, and no curl running |
 | release | the release objects of `fs-fetch.c` (fs-core, fs-core-nogui) name neither `STOCKFW_TEST_CURL` nor `STOCKFW_TEST_CACERT`; the test object does (the control) |
+
+### How curl is started (`fs-fetch-spawn-test`, Windows and Linux)
+
+```sh
+ninja -C build-linux fs-fetch-spawn-test   # also builds fs-fake-curl
+./build-linux/fs-fetch-spawn-test          # not as root
+```
+
+`tests/test-fetch-spawn.c` runs `fs_fetch()` against
+`tests/fake-curl.c` in curl's place (`fs-fake-curl` next to the test,
+or the path given as the first argument).  The fake is plain C without
+GLib, because on Windows `fs_fetch()` gives curl no `PATH`; it reads
+only `--url` and acts on its path (`/ok`, `/bytes/N`, `/exit6`, `/hang`,
+`/stderr-flood`, `/argv`, `/env`, `/cwd`).  On Windows the test calls
+`FreeConsole()` first, as the window app has no console, and checks
+that the fake started by `fs_fetch()` has no console window on the
+screen, then starts the same fake through `GSubprocess` (how curl was
+started before the fix) and checks that it does get one: the control
+that proves the first check can fail.  On both platforms: the body at
+and under the cap, TOO_LARGE one byte over, exit 6 and 22, a hanging
+curl killed at the deadline, 4 MiB on stderr, user agents with spaces,
+quotes and backslashes reaching curl unchanged, the environment exactly
+`fs_fetch_envp()`, the working folder (`/`, or the Windows system
+folder), a missing curl as NO_CURL, and no handle or descriptor left
+after twenty downloads.  As root on Linux it prints SKIP: curl would run
+as `nobody`, which `test-fetch.sh` covers.  `full-suite.sh` runs it on
+both; CI runs it as the runner's user on Linux and in `full-suite.sh` on
+Windows.
 
 Teeth, each re-injected into `fs-fetch.c` and seen failing, then
 restored (checked with `cmp`) and green again.  After the dash, the

@@ -67,4 +67,14 @@ Bump `CONFIG["release"]` (the newest GitHub release), `CONFIG["version"]`
 (what the docs describe) and `CONFIG["next"]` in `build.py`, update
 `src/pages/changelog.html` and `download.html`, rebuild, commit
 `public/`.  The site is self-contained and can be served from any
-static host, including GitHub Pages pointed at `site/public/`.
+static host.
+
+## Going live
+
+`.github/workflows/pages.yml` publishes `public/` to GitHub Pages
+whenever a change under `site/` reaches `main` (or when it is started by
+hand from the Actions tab).  It does not build anything: it runs
+`build.py --check` and fails if the committed `public/` is stale, then
+uploads `public/` as the Pages artifact.  Pages has to be switched on
+once in the repository settings (Settings > Pages > Source: GitHub
+Actions) before the first run can publish.

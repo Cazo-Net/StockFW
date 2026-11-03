@@ -44,6 +44,7 @@ static const gchar *main_help =
 "  intel <action>             Threat-intel blocklists (stockfw help intel)\n"
 "  config list|get|set|apply  The Preferences settings; set them (root)\n"
 "  dashboard [--port N]       Serve the local web dashboard and open it\n"
+"  dashboard link             A new link to the running dashboard\n"
 "  help [command]             Help for one command\n"
 "  version                    Print the version\n"
 "\n"

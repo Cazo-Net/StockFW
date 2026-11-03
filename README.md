@@ -148,8 +148,8 @@ built.
   `simulate`, `events [-f]`, `connections`, `interfaces`, every one with
   `--json` and stable exit codes (`simulate` exits 5 when the traffic
   would be blocked). `stockfw dashboard` serves a read-only web
-  dashboard on **127.0.0.1 only**, behind a token that changes every
-  run, with the same graphs, live events, connections, the simulator
+  dashboard on **127.0.0.1 only**, behind a one-use link and a session
+  key, with the same graphs, live events, connections, the simulator
   and the policy — see [below](#command-line-and-dashboard-linux).
   After 1.0.7 (not released yet): `check`, `policy diff`, `audit`,
   `listening`, `sentinel list` and `events --summary`, a guard against
@@ -496,13 +496,22 @@ sudo ./build-linux/stockfw events -f --json                   # NDJSON, live
 ```
 
 The dashboard's security model: it binds 127.0.0.1 and nothing else;
-each run makes a 128-bit token, passed in the URL fragment (never sent
-to the server or logged) and then as a request header compared in
-constant time; the `Host` header must name 127.0.0.1 or localhost on
-its port, so a DNS-rebinding page cannot reach it; GET and HEAD only,
-a 16 KB cap on request heads, a 10 s timeout and 32 connections at
-most; a per-run CSP nonce with `default-src 'none'`; and it never opens
-a browser as root. It is read-only: changes go through `stockfw policy`
+the link it prints holds a 128-bit code that works once, for 2 minutes,
+in the URL fragment (never sent to the server or logged); the page
+swaps it for a 256-bit session key, sent as a request header and
+compared in constant time; the link is printed only to a terminal
+(piped, you get the path of a 0600 launch file), and `stockfw dashboard
+link` makes a new one; a link used twice ends every session; the page
+and the terminal show the same start fingerprint; it reads only connections from 127.0.0.1 whose socket
+belongs to your account (under `sudo`, the account that ran it; never
+root), and closes any other at once; the `Host` header must be exactly
+127.0.0.1 on its port, so a DNS-rebinding page cannot reach it; the
+one POST needs the page's own `Origin`, `Sec-Fetch-Site: same-origin`
+and a JSON body; GET and HEAD only for the API, a 16 KB cap on request heads, 5 s for the head and 5 s for a
+body, and at most 16 unfinished requests per account, a new one closing
+the oldest; a per-run CSP nonce with `default-src 'none'` and Trusted
+Types; and it never
+opens a browser as root. It is read-only: changes go through `stockfw policy`
 and `stockfw apply`, which use the same gate as the desktop app.
 
 `xz` and `openssl` (liblzma and libcrypto) read and verify the location

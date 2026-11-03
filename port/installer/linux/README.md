@@ -203,12 +203,27 @@ to your shell's start-up file:
     source /usr/local/share/bash-completion/completions/stockfw      # ~/.bashrc
     fpath+=(/usr/local/share/zsh/site-functions); autoload -Uz compinit; compinit   # ~/.zshrc
 
-`stockfw dashboard` serves a read-only page on 127.0.0.1 only, behind a
-token that changes every run, and opens it in your browser (never as
-root: under `sudo` it prints the address instead).  The same `sudo`
-search-path note as above applies: `sudo /usr/local/bin/stockfw` always
-works.  Under WSL, open the printed address in your Windows browser and
-leave the terminal running while you use it.
+`stockfw dashboard` serves a read-only page on 127.0.0.1 only and
+opens it in your browser (never as root: under `sudo` it prints the
+link instead).  The link holds a code that works once, for 2 minutes;
+the page swaps it for a session that lasts the day.  The link is
+printed only when the output goes to a terminal: piped or with
+`--json`, you get the path of a launch file (0600) to open instead.
+If the link has expired or a tab was closed, run `stockfw dashboard
+link` as yourself, without `sudo`, in another terminal for a new one.
+A link used twice ends every session.  Check that the fingerprint at
+the top of the page is the one the terminal shows.  It answers only
+your own account: under `sudo`, the account that ran `sudo`.  Run it
+with `sudo` from your own account, not from a root shell, where it
+refuses to start.  Open the address exactly as printed, with
+`127.0.0.1`: `localhost` is refused.  The same `sudo` search-path note
+as above applies: `sudo /usr/local/bin/stockfw` always works.  Under
+WSL, a browser on the Windows side is refused by default, since its
+connection does not come from your Linux account; a browser inside WSL
+works, and `stockfw dashboard --allow-windows` lets the Windows side
+in.  Over SSH, run `ssh -L 8443:127.0.0.1:PORT host` and start the
+dashboard with `--origin-port 8443`; never forward with `-g` or
+`0.0.0.0`.  Leave the terminal running while you use it.
 
 ## Uninstall
 
