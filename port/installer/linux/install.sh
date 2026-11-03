@@ -80,7 +80,9 @@ ok "binary is a Linux ELF executable"
 
 # --- dependency check: sonames via ldconfig ------------------------------
 # The binaries' own NEEDED entries (StockFW and cli/stockfw), the C
-# library aside; tests/test-release.sh compares this list with readelf.  libgtk-3.so.0 and
+# library aside, in any build type (a build linked without --as-needed
+# also names cairo-gobject, harfbuzz and zlib, which GTK3 brings);
+# tests/test-release.sh compares this list with readelf.  libgtk-3.so.0 and
 # libgdk-3.so.0 both come from the GTK3 package; listed separately
 # because a stripped install can carry one without the other.
 # liblzma and libcrypto (1.0.7) read the location database; a system
@@ -88,7 +90,8 @@ ok "binary is a Linux ELF executable"
 # and StockFW and the boot service would then fail to start at all.
 NEEDED="libgtk-3.so.0 libgdk-3.so.0 libgdk_pixbuf-2.0.so.0
         libpango-1.0.so.0 libpangocairo-1.0.so.0 libcairo.so.2
-        libatk-1.0.so.0 libglib-2.0.so.0 libgobject-2.0.so.0 libgio-2.0.so.0
+        libatk-1.0.so.0 libcairo-gobject.so.2 libharfbuzz.so.0 libz.so.1
+        libglib-2.0.so.0 libgobject-2.0.so.0 libgio-2.0.so.0
         liblzma.so.5 libcrypto.so.3"
 
 MISSING=""
