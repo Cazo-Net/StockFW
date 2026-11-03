@@ -1148,6 +1148,15 @@ lock_files (GError **error)
 		goto out;
 	policy_fd_apply = fd;
 
+	/* No rules directory: nothing there to guard, and apply.lock
+	 * already orders every writer.  It is not made just for the lock:
+	 * a start or an apply (the gate takes the lock too) must not
+	 * create an empty policy folder where there was none. */
+	if (rules != NULL && !g_file_test (fs_util_rules_dir (),
+	                                   G_FILE_TEST_IS_DIR)) {
+		g_free (rules);
+		rules = NULL;
+	}
 	if (rules != NULL) {
 		if (!fs_util_ensure_parent_dir (rules) && geteuid () == 0) {
 			g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_LOCK,
