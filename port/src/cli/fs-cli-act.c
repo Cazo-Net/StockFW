@@ -181,6 +181,26 @@ say (const gchar *format, ...)
 	g_free (text);
 }
 
+/* [ say_lead ] -- say() after a coloured lead word ("Saved", "Live:"):
+ * the colour stays outside the escaped text, or the terminal would
+ * show its escape bytes as \x1b text. */
+static void G_GNUC_PRINTF (3, 4)
+say_lead (const gchar *colour, const gchar *lead, const gchar *format, ...)
+{
+	va_list args;
+	gchar *text, *safe;
+
+	if (fs_cli.quiet || fs_cli.json)
+		return;
+	va_start (args, format);
+	text = g_strdup_vprintf (format, args);
+	va_end (args);
+	safe = fs_cli_out_safe_lines (text);
+	printf ("%s%s%s %s\n", colour, lead, fs_cli_reset (), safe);
+	g_free (safe);
+	g_free (text);
+}
+
 /* "outbound-deny-to  203.0.113.9  (Blocked from event view)" */
 static gchar *
 rule_text (const FsRule *rule)
@@ -433,8 +453,8 @@ report (ActWay way, const FsControlResult *r, gboolean no_apply)
 			say ("Already in the policy, nothing was added: %s  %s",
 			     ref != NULL ? ref : "", text);
 		else
-			say ("%sSaved%s %s  %s", fs_cli_green (), fs_cli_reset (),
-			     ref != NULL ? ref : "", text);
+			say_lead (fs_cli_green (), "Saved", "%s  %s",
+			          ref != NULL ? ref : "", text);
 		if (r->twin != NULL && r->saved) {
 			gchar *tref = fs_cli_rule_ref (r->twin->kind, r->twin_number);
 			gchar *ttext = rule_summary (r->twin);
@@ -486,9 +506,9 @@ report (ActWay way, const FsControlResult *r, gboolean no_apply)
 			say (way == ACT_BLOCK ? "It was live already."
 			                      : "It was not live.");
 	} else if (o->held) {
-		say ("%sHeld:%s %s.  The firewall was left untouched; the change "
-		     "is saved.", fs_cli_amber (), fs_cli_reset (),
-		     o->hold_reason != NULL ? o->hold_reason : "?");
+		say_lead (fs_cli_amber (), "Held:", "%s.  The firewall was left "
+		          "untouched; the change is saved.",
+		          o->hold_reason != NULL ? o->hold_reason : "?");
 	} else if (o->result == FS_APPLY_DRY_RUN &&
 	           o->firewall_was == FS_FW_STOPPED) {
 		say ("The firewall is stopped: the change is recorded for the "
@@ -496,8 +516,8 @@ report (ActWay way, const FsControlResult *r, gboolean no_apply)
 	} else if (o->result == FS_APPLY_OK) {
 		gchar *desc = fs_policy_impact_describe (o->impact);
 
-		say ("%sLive:%s only this change went out (%s).", fs_cli_green (),
-		     fs_cli_reset (), desc);
+		say_lead (fs_cli_green (), "Live:", "only this change went out "
+		          "(%s).", desc);
 		g_free (desc);
 		fs_cli_print_notes (o->notes);
 	} else {
@@ -527,6 +547,24 @@ send (const gchar *op, GVariant *base, gboolean live, gboolean yes,
 	actor = fs_control_actor_self ("cli");
 	g_variant_dict_init (&d, base);
 	return fs_control_do (&actor, op, g_variant_dict_end (&d));
+}
+
+/* [ run_lock ] -- the guard's "lockout" member in the reply.  An allow
+ * that goes live has had its preview's "lockout" put at the top level
+ * (fs_cli_apply_preview), so its own goes under "apply", as on success:
+ * one object never carries the same key twice. */
+static void
+run_lock (GString *json, const GString *lock, gboolean nested)
+{
+	if (lock->len == 0)
+		return;
+	if (!nested) {
+		g_string_append (json, lock->str);
+		return;
+	}
+	g_string_append (json, ",\"apply\":{");
+	g_string_append (json, lock->str + 1);   /* without its comma */
+	g_string_append_c (json, '}');
 }
 
 /* [ run_rule ]
@@ -575,7 +613,7 @@ run_rule (ActWay way, const FsRule *rule, gboolean both, gboolean no_apply,
 			g_string_append (json, ",\"done\":false,");
 			fs_json_kv_str (json, "error", "refused: it would block an "
 			                "SSH session (pass --yes)");
-			g_string_append (json, lock->str);
+			run_lock (json, lock, way == ACT_ALLOW && !no_apply);
 		} else {
 			fs_cli_hint ("nothing was saved: the policy files are as they "
 			             "were");
@@ -600,7 +638,7 @@ run_rule (ActWay way, const FsRule *rule, gboolean both, gboolean no_apply,
 			if (r->status == FS_CONTROL_OK)
 				status = fs_cli_apply_status (r->outcome);
 		} else {
-			g_string_append (json, lock->str);
+			run_lock (json, lock, way == ACT_ALLOW && !no_apply);
 		}
 		g_free (res);
 	} else {
@@ -1150,12 +1188,14 @@ do_lift (const FsWhatIfAction *act, guint n, gboolean yes)
 	} else {
 		const FsApplyOutcome *o = r->lift->outcome;
 
-		say ("%sLifted%s Sentinel's block of %s (%u).", fs_cli_green (),
-		     fs_cli_reset (), act->target, r->lift->rows);
+		/* Rows out of Sentinel's file, or policy rows it no longer
+		 * names (an earlier session's): the larger is the count. */
+		say_lead (fs_cli_green (), "Lifted", "Sentinel's block of %s (%u).",
+		          act->target, MAX (r->lift->rows, r->lift->removed));
 		if (o != NULL && o->held)
-			say ("%sHeld:%s %s.  It stays live until the next start.",
-			     fs_cli_amber (), fs_cli_reset (),
-			     o->hold_reason != NULL ? o->hold_reason : "?");
+			say_lead (fs_cli_amber (), "Held:", "%s.  It stays live until "
+			          "the next start.",
+			          o->hold_reason != NULL ? o->hold_reason : "?");
 		else if (o == NULL)
 			say ("It was not live.");
 	}

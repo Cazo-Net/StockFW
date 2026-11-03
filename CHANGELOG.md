@@ -260,6 +260,17 @@ into `/usr/local/share/doc/stockfw/`.
   apply or a Sentinel lift. Other fixes print the command to run.
 - Both ask only on a terminal. Without one they need `--yes`, and they
   never wait for input.
+- **A block, an untrust or a lift sends only itself.** A Firewall
+  setting you saved with `config set` and did not apply stays off when
+  `events act`, `sentinel lift`, `copilot block` or `simulate --do` put
+  a rule live or take one off, and it is still shown as waiting: the
+  next `apply` or `config apply` sends it. Before, `events act` and
+  `simulate --do` sent it with the rule, and every one of them recorded
+  it as applied.
+- `sentinel lift` counts the blocks of an earlier session it lifted
+  ("Lifted 1", not "Lifted 0"). `events act` shows its green and amber
+  words in colour, not as `\x1b[32m` text, and its `--json` never has
+  the same key twice.
 - **New `stockfw trust`: the Trust page in a terminal.** `trust` (or
   `trust list`) and `trust check` hash every file you attested again and
   say whether it still matches, changed (CHANGED) or is missing (GONE);

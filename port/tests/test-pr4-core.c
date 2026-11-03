@@ -26,6 +26,7 @@
 #include "core/fs-backend.h"
 #include "core/fs-intel.h"
 #include "core/fs-iprange.h"
+#include "core/fs-prefs.h"
 #include "core/fs-rules.h"
 #include "core/fs-util.h"
 
@@ -600,6 +601,95 @@ test_exceptions_text (void)
 	fs_range_set_free (set);
 }
 
+/* ------------------------------------------- live edits and settings */
+
+/* The value the journal records for one setting (NULL: none). */
+static gchar *
+journal_setting (const gchar *key)
+{
+	GHashTable *rec = fs_apply_journal_settings ();
+	gchar *v = rec != NULL ? g_strdup (g_hash_table_lookup (rec, key))
+	                       : NULL;
+
+	if (rec != NULL)
+		g_hash_table_unref (rec);
+	return v;
+}
+
+/* A running firewall, a settings change saved and not applied: a live
+ * edit whose backend was given the journal's settings keeps the record
+ * as it is, so the change stays pending for the next apply (review of
+ * PR 4: the record must say what the backend was given). */
+static void
+test_live_keeps_settings (void)
+{
+	const gchar *key = FS_PREFS_FW_ICMP_ECHO_REQUEST;
+	FsRule *mine = rule_to (FS_RULE_OUTBOUND_DENY_TO, "198.51.100.1", "");
+	FsRule *block = rule_to (FS_RULE_OUTBOUND_DENY_TO, "203.0.113.60",
+	                         "copilot");
+	FsRule *other = rule_to (FS_RULE_OUTBOUND_DENY_TO, "203.0.113.61",
+	                         "copilot");
+	FsPolicy *live = policy_of (mine, NULL, NULL, NULL);
+	FsPolicy *add = policy_of (block, NULL, NULL, NULL);
+	FsPolicy *add2 = policy_of (other, NULL, NULL, NULL);
+	FsApplyOutcome *o;
+	GError *error = NULL;
+	gchar *v;
+
+	fs_prefs_set_bool (key, TRUE);
+	fs_apply_journal_save (live, NULL);
+	fs_prefs_set_bool (key, FALSE);          /* saved, not applied */
+	CHECK (fs_apply_settings_pending (),
+	       "keeps: (a settings change is pending)");
+
+	fake_reset (FS_FW_RUNNING);
+	fs_firewall_live_keeps_settings (TRUE);
+	o = fs_firewall_add_live (&fake_linux, add, "test", NULL, &error);
+	CHECK (o != NULL && o->result == FS_APPLY_OK && fake_applies == 1,
+	       "keeps: add_live on a running firewall goes out");
+	v = journal_setting (key);
+	CHECK (g_strcmp0 (v, "true") == 0,
+	       "keeps: add_live records the settings the backend was given "
+	       "(echo_request=%s), not the saved ones", v != NULL ? v : "-");
+	g_free (v);
+	CHECK (fs_apply_settings_pending (),
+	       "keeps: ...so the saved change is still pending");
+	fs_apply_outcome_free (o);
+	g_clear_error (&error);
+
+	fake_reset (FS_FW_RUNNING);
+	o = fs_firewall_lift_live (&fake_linux, add, "test", NULL, &error);
+	v = journal_setting (key);
+	CHECK (o != NULL && o->result == FS_APPLY_OK &&
+	       g_strcmp0 (v, "true") == 0 && fs_apply_settings_pending (),
+	       "keeps: lift_live too (echo_request=%s)", v != NULL ? v : "-");
+	g_free (v);
+	fs_apply_outcome_free (o);
+	g_clear_error (&error);
+
+	/* The default: a caller that gave the backend the saved settings
+	 * (the desktop app) has those recorded. */
+	fs_firewall_live_keeps_settings (FALSE);
+	fake_reset (FS_FW_RUNNING);
+	o = fs_firewall_add_live (&fake_linux, add2, "test", NULL, &error);
+	v = journal_setting (key);
+	CHECK (o != NULL && g_strcmp0 (v, "false") == 0 &&
+	       !fs_apply_settings_pending (),
+	       "keeps: off, the saved settings are recorded (echo_request=%s)",
+	       v != NULL ? v : "-");
+	g_free (v);
+	fs_apply_outcome_free (o);
+	g_clear_error (&error);
+
+	fs_prefs_set_bool (key, TRUE);
+	fs_policy_free (add2);
+	fs_policy_free (add);
+	fs_policy_free (live);
+	fs_rule_free (other);
+	fs_rule_free (block);
+	fs_rule_free (mine);
+}
+
 /* ------------------------------------------------------------- main */
 
 static void
@@ -655,6 +745,7 @@ main (void)
 	g_free (sub);
 
 	test_add_live ();
+	test_live_keeps_settings ();
 	test_lift_helpers ();
 	test_exceptions_text ();
 

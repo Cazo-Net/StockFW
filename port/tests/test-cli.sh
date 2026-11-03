@@ -3982,6 +3982,143 @@ check "PR4-E: no \"AI\" wording in the topics page or what help and about print"
   bash -c "! cat '$H/topics.7' '$H'/topic-* '$H/list' | grep -nE '\\bAI\\b|AI-' && ! '$S' about | grep -qE '\\bAI\\b'"
 # === end PR4-E ===
 
+# --- PR 4 review: what the final pass fixed (ARCHITECTURE 15.5.7).
+#  - a block, an untrust, a lift (events act, sentinel lift, simulate
+#    --do) keeps a saved, unapplied settings change off the firewall and
+#    pending in the journal; the next apply sends it;
+#  - sentinel lift counts the policy rows of an earlier session;
+#  - a colour terminal sees colour, not \x1b text;
+#  - --json never has the "lockout" key twice in one object;
+#  - empty input to the intel editors is clean under UBSan.
+R="$(mktemp -d /tmp/stockfw-pr4r-XXXXXX)"; chmod 755 "$R"
+r_now=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+cat > "$R/kern.log" <<EOF
+$r_now host kernel: [1.0] STOCKFW-DROP IN= OUT=eth0 SRC=10.0.0.5 DST=203.0.113.71 LEN=60 PROTO=TCP SPT=50001 DPT=443 SYN
+$r_now host kernel: [2.0] STOCKFW-DROP IN=eth0 OUT= SRC=203.0.113.80 DST=10.0.0.5 LEN=60 PROTO=TCP SPT=40000 DPT=22 SYN
+EOF
+check "review: --color=always: events act prints a green Saved, not its escape bytes as text" \
+  bash -c "env STOCKFW_RULES_DIR='$R/c-rules' STOCKFW_APPLIED_FILE='$R/c-applied' STOCKFW_AUDIT_FILE='$R/c-audit' \
+             STOCKFW_RUN_DIR='$R/run' STOCKFW_LOG_FILE='$R/kern.log' \
+             '$S' --color=always events act block-dest --addr 203.0.113.71 --no-apply --yes < /dev/null > '$R/c.out' 2>&1 &&
+           grep -q \$'^\\033\\[32mSaved\\033\\[0m outbound-deny-to:1' '$R/c.out' && ! grep -qF '\\x1b' '$R/c.out'"
+# Empty input to the intel editors: read_input must not hand memchr a
+# NULL buffer.  A build with -fsanitize=undefined reports it on stderr;
+# a plain build passes either way.
+if [ -n "$INTEL_BASE" ]; then
+  check "review: empty input to intel exceptions --set - and intel import -: no runtime error" \
+    bash -c "export STOCKFW_INTEL_DIR='$INTEL_BASE/intel-review'
+             '$S' intel exceptions --set - < /dev/null > /dev/null 2> '$R/u1' &&
+             '$S' intel import - --name 'Empty' < /dev/null > /dev/null 2> '$R/u2' &&
+             ! grep -q 'runtime error' '$R/u1' '$R/u2'"
+else
+  echo "skip: review: no intel store directory passes the ownership check"
+fi
+if [ "$(id -u)" = 0 ] && command -v iptables > /dev/null 2>&1 &&
+   command -v ip > /dev/null 2>&1 && unshare -n true 2> /dev/null; then
+  cat > "$R/live.sh" <<'LIVE'
+S="$1"; R="$2"
+f=0
+t () { local what="$1"; shift; if "$@"; then echo "ok:   $what"; else echo "FAIL: $what"; f=$((f+1)); fi; }
+export STOCKFW_RULES_DIR="$R/rules" STOCKFW_APPLIED_FILE="$R/applied"
+export STOCKFW_AUDIT_FILE="$R/audit" STOCKFW_AUTOBLOCK_FILE="$R/autoblocks"
+export STOCKFW_RUN_DIR="$R/run" HOME="$R/home" XDG_CONFIG_HOME="$R/home/.config"
+export STOCKFW_LOG_FILE="$R/kern.log" STOCKFW_CHANGELOG_FILE="$R/changes.jsonl"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+mkdir -p "$HOME"
+ip link set lo up
+ping_ok () { iptables-save | grep -q 'icmp-type 8 '; }
+kept () { grep -q '^# setting /apps/stockfw/firewall/icmp/echo_request=true' "$STOCKFW_APPLIED_FILE"; }
+"$S" -q policy add inbound-allow-service SSH 22 Anyone
+"$S" -q policy add inbound-allow-from 203.0.113.80
+"$S" -q policy add outbound-deny-to 203.0.113.77 --comment "Sentinel: test"
+"$S" -q policy add outbound-deny-to 203.0.113.78 --comment "Sentinel: test"
+"$S" apply --yes < /dev/null > /dev/null 2>&1
+"$S" config set echo_request off > /dev/null 2>&1
+t "(applied, echo requests allowed; then echo_request off saved, not applied)" \
+  bash -c "$(declare -f ping_ok kept); ping_ok && kept"
+
+"$S" --color=always events act block-dest --addr 203.0.113.71 --yes < /dev/null > "$R/block.out" 2>&1; rc=$?
+t "events act block-dest: the block is live (rc $rc)" \
+  bash -c "[ $rc -eq 0 ] && iptables-save | grep -q -- '-d 203.0.113.71/32 -j DROP'"
+t "  ...the unapplied echo_request off did not go live with it, and the journal still records on" \
+  bash -c "$(declare -f ping_ok kept); ping_ok && kept"
+t "  ...a colour terminal gets a green Live:, not \\x1b text" \
+  bash -c "grep -q \$'^\\033\\[32mLive:\\033\\[0m only this change went out' '$R/block.out' && ! grep -qF '\\x1b' '$R/block.out'"
+
+"$S" events act untrust-source --addr 203.0.113.80 --yes < /dev/null > "$R/untrust.out" 2>&1; rc=$?
+t "events act untrust-source: off the firewall, the setting still not live (rc $rc)" \
+  bash -c "$(declare -f ping_ok kept); [ $rc -eq 0 ] && ! iptables-save | grep -q 203.0.113.80 && ping_ok && kept"
+
+rm -f "$STOCKFW_AUTOBLOCK_FILE"
+"$S" sentinel lift 203.0.113.77 < /dev/null > "$R/lift.out" 2>&1; rc=$?
+t "sentinel lift, a policy row of an earlier session (no state file): counted as 1 (rc $rc: $(head -1 "$R/lift.out"))" \
+  bash -c "[ $rc -eq 0 ] && grep -q '^Lifted 1 Sentinel block: 203.0.113.77\\.' '$R/lift.out' && ! iptables-save | grep -q 203.0.113.77"
+t "  ...the setting still not live, the journal still records on" \
+  bash -c "$(declare -f ping_ok kept); ping_ok && kept"
+
+echo "S,$(date +%s),6,203.0.113.78, Sentinel: test" > "$STOCKFW_AUTOBLOCK_FILE"
+Q="outbound tcp 443 to 203.0.113.78"
+"$S" --json simulate "$Q" > "$R/q.json"
+n=$(python3 -I -c '
+import json, sys
+k = 0
+for a in json.load(open(sys.argv[1]))["answers"]:
+    for x in a["actions"]:
+        k += 1
+        if x["kind"] == "lift-sentinel":
+            print(k); sys.exit(0)
+' "$R/q.json")
+"$S" simulate "$Q" --do "${n:-0}" --yes < /dev/null > "$R/do.out" 2>&1; rc=$?
+t "simulate --do N on the lift-sentinel fix (${n:-none}): lifted, the setting still not live (rc $rc)" \
+  bash -c "$(declare -f ping_ok kept); [ -n '$n' ] && [ $rc -eq 0 ] && ! iptables-save | grep -q 203.0.113.78 && ping_ok && kept"
+
+"$S" apply --yes < /dev/null > "$R/apply.out" 2>&1; rc=$?
+t "the next apply still sees the setting pending and sends it (rc $rc)" \
+  bash -c "$(declare -f ping_ok); [ $rc -eq 0 ] && ! ping_ok &&
+           grep -q '^# setting /apps/stockfw/firewall/icmp/echo_request=false' '$STOCKFW_APPLIED_FILE'"
+
+# --json allow-dest refused on a terminal at the lockout question: the
+# object has one "lockout" at the top (the preview's) and the guard's
+# own under "apply".
+"$S" -q policy remove inbound-allow-service 1 > /dev/null 2>&1
+"$S" -q policy add inbound-allow-service SSH 22 192.168.1.0/24
+python3 -I - "$S" > "$R/lk.json" 2> "$R/lk.err" <<'PYEOF'
+import os, subprocess, sys
+m, s = os.openpty()
+env = dict(os.environ, SSH_CONNECTION='10.0.0.5 50000 10.0.0.1 22')
+p = subprocess.Popen([sys.argv[1], '--json', 'events', 'act', 'allow-dest',
+                      '--addr', '203.0.113.71'], stdin=s, stdout=subprocess.PIPE,
+                     stderr=subprocess.PIPE, env=env)
+os.close(s)
+os.write(m, b'y\nn\n')
+out, err = p.communicate(timeout=60)
+os.close(m)
+sys.stdout.write(out.decode()); sys.stderr.write(err.decode())
+sys.exit(p.returncode)
+PYEOF
+rc=$?
+t "events act --json, refused at the lockout question: no key twice in one object (rc $rc)" \
+  python3 -I -c '
+import json, sys
+def strict(pairs):
+    keys = [k for k, _ in pairs]
+    assert len(keys) == len(set(keys)), keys
+    return dict(pairs)
+o = json.load(open(sys.argv[1]), object_pairs_hook=strict)
+assert o["done"] is False and "lockout" in o, o
+assert o["apply"]["lockout"]["confirmed"] is False, o
+' "$R/lk.json"
+exit "$f"
+LIVE
+  unshare -n bash "$R/live.sh" "$S" "$R" > "$R/live.log" 2>&1
+  live_rc=$?
+  sed 's/^\(ok:   \|FAIL: \)/\1review: /' "$R/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the review live checks need root, iptables, ip and unshare"
+fi
+rm -rf "$R"
+
 echo ""
 if [ "$fails" -eq 0 ]; then
   echo "PASSED: 0 failure(s)"

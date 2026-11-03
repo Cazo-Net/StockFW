@@ -1380,6 +1380,16 @@ journal_only (FsPolicy *live, const FsPolicy *before, const gchar *source,
 	return outcome;
 }
 
+/* See fs_firewall_live_keeps_settings. */
+static gboolean live_keeps_settings = FALSE;
+
+/* [ fs_firewall_live_keeps_settings ] */
+void
+fs_firewall_live_keeps_settings (gboolean keep)
+{
+	live_keeps_settings = keep;
+}
+
 /* [ live_edit ]
  * fs_firewall_add_live (add != NULL) and fs_firewall_lift_live
  * (lift != NULL): the journal read, the edit and the apply under one
@@ -1417,9 +1427,19 @@ live_edit (const FsBackend *backend, const FsPolicy *add,
 		                        add != NULL ? "rule(s) added"
 		                                    : "rule(s) lifted",
 		                        n, error);
-	else
+	else {
+		/* The record says what the backend was given: the journal's
+		 * own settings when the caller handed it those. */
+		GHashTable *recorded = live_keeps_settings
+		                     ? fs_apply_journal_settings () : NULL;
+
+		journal_record_override = recorded;
 		outcome = fs_policy_apply_safe (backend, live, source, hold,
 		                                error);
+		journal_record_override = NULL;
+		if (recorded != NULL)
+			g_hash_table_unref (recorded);
+	}
 
 out:
 	fs_policy_free (before);

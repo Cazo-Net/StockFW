@@ -104,6 +104,8 @@ hand_context (FsPolicy *policy, FsSettings *settings)
 	ctx_policy = policy;
 	ctx_settings = settings;
 	set_context_func (policy, settings);
+	/* Saved preferences, unless live_context says otherwise. */
+	fs_firewall_live_keeps_settings (FALSE);
 	if (old_p != policy)
 		fs_policy_free (old_p);
 	if (old_s != settings)
@@ -1260,11 +1262,15 @@ live_context (const FsPolicy *policy)
 {
 	FsSettings *settings = fs_settings_from_journal (NULL);
 
+	gboolean recorded = (settings != NULL);
+
 	if (settings == NULL) {
 		settings = fs_settings_new ();
 		fs_settings_load_prefs (settings);
 	}
 	hand_context (policy_copy (policy), settings);
+	/* The journal then keeps the settings it records (fs-apply.h). */
+	fs_firewall_live_keeps_settings (recorded);
 }
 
 /* [ live_failed ] -- an outcome that is neither OK, held nor a dry
@@ -1985,10 +1991,13 @@ journal_edit (const FsPolicy *add, FsRule *drop)
 }
 
 /* [ act_guard ] -- the lockout guard on `after' (taken), unless a hold
- * keeps the firewall untouched or there is no `after'.  FALSE: CONFIRM,
+ * keeps the firewall untouched or there is no `after'.  `live_edit':
+ * `after' goes out through add_live or lift_live, under the settings
+ * that are live (live_context), not the saved ones.  FALSE: CONFIRM,
  * nothing changed. */
 static gboolean
-act_guard (FsControlResult *r, GVariant *params, FsPolicy *after)
+act_guard (FsControlResult *r, GVariant *params, FsPolicy *after,
+           gboolean live_edit)
 {
 	FsSettings *settings;
 	gboolean ok = TRUE;
@@ -1996,7 +2005,9 @@ act_guard (FsControlResult *r, GVariant *params, FsPolicy *after)
 	if (after == NULL)
 		return TRUE;
 	if (fs_apply_hold_reason () == NULL) {
-		settings = saved_settings ();
+		settings = live_edit ? fs_settings_from_journal (NULL) : NULL;
+		if (settings == NULL)
+			settings = saved_settings ();
 		ok = guard (r, after, settings, p_bool (params, "yes"));
 		fs_settings_free (settings);
 	}
@@ -2073,9 +2084,9 @@ op_rule_block (FsControlResult *r, const FsControlActor *actor,
 		fs_policy_add (add, r->twin);
 
 	/* Guarded on what will be live: the journal plus the rows. */
-	if ((!live || act_guard (r, params, journal_edit (add, NULL))) &&
+	if ((!live || act_guard (r, params, journal_edit (add, NULL), TRUE)) &&
 	    act_save (r, actor, params) && live) {
-		hand_context (policy_copy (r->policy), saved_settings ());
+		live_context (r->policy);
 		r->outcome = fs_firewall_add_live (fs_backend (), add,
 		                                   actor->channel,
 		                                   fs_apply_hold_reason (), &error);
@@ -2111,7 +2122,7 @@ op_rule_allow (FsControlResult *r, const FsControlActor *actor,
 			fs_policy_add (after, r->rule);
 		if (r->twin != NULL && !fs_policy_contains (after, r->twin))
 			fs_policy_add (after, r->twin);
-		if (!act_guard (r, params, after)) {
+		if (!act_guard (r, params, after, FALSE)) {
 			fs_policy_unlock (lock);
 			return;
 		}
@@ -2190,7 +2201,7 @@ op_rule_untrust (FsControlResult *r, const FsControlActor *actor,
 	r->rule = fs_rule_copy (row);
 
 	/* Guarded on what will be live: the journal less the row. */
-	if (live && !act_guard (r, params, journal_edit (NULL, r->rule))) {
+	if (live && !act_guard (r, params, journal_edit (NULL, r->rule), TRUE)) {
 		fs_policy_unlock (lock);
 		return;
 	}
@@ -2206,7 +2217,7 @@ op_rule_untrust (FsControlResult *r, const FsControlActor *actor,
 		FsPolicy *lift = fs_policy_new ();
 
 		fs_policy_add (lift, r->rule);
-		hand_context (policy_copy (r->policy), saved_settings ());
+		live_context (r->policy);
 		r->outcome = fs_firewall_lift_live (fs_backend (), lift,
 		                                    actor->channel,
 		                                    fs_apply_hold_reason (), &error);
@@ -2236,7 +2247,7 @@ op_whatif_lift (FsControlResult *r, const FsControlActor *actor,
 	if (lock == NULL)
 		return;
 
-	hand_context (policy_copy (r->policy), saved_settings ());
+	live_context (r->policy);
 	r->lift = fs_autoblock_lift_for_dest (fs_backend (), r->policy, target,
 	                                      "lifted from What-If",
 	                                      actor->channel,

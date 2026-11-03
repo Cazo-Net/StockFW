@@ -413,7 +413,8 @@ read_input (const gchar *path, gsize *len)
 		}
 		if (got == 0) {
 			*len = buf->len;
-			if (memchr (buf->data, '\0', buf->len) != NULL) {
+			if (buf->len > 0 &&
+			    memchr (buf->data, '\0', buf->len) != NULL) {
 				fs_cli_error ("%s holds a NUL byte: not a text list", safe);
 				break;
 			}

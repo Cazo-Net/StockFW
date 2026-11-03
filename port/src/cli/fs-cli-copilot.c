@@ -1520,8 +1520,13 @@ lift_print (const FsControlResult *r, const gchar *what)
 	if (l->rows == 0 && l->removed == 0) {
 		say ("", "", "Nothing to lift: %s.", what);
 	} else {
-		say ("", "", "Lifted %u Sentinel block%s: %s.", l->rows,
-		     l->rows == 1 ? "" : "s",
+		/* Rows out of Sentinel's file, or policy rows it no longer
+		 * names (an earlier session's): the larger is the count, as
+		 * `events act' counts it. */
+		guint n = MAX (l->rows, l->removed);
+
+		say ("", "", "Lifted %u Sentinel block%s: %s.", n,
+		     n == 1 ? "" : "s",
 		     targets->len > 0 ? targets->str : "(none in the policy)");
 		live_words (l->outcome, "None of them was live, so the firewall "
 		            "was not changed.");
