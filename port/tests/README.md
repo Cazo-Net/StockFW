@@ -190,8 +190,9 @@ full batch counting a skip though it reached the cursor fails "no
 record condition (fallback)".
 
 On Windows `tests/test-winlog.sh` runs the same fake log through the
-real spawn: `fake-wevtutil.exe` (built beside the test, found before
-System32) answers for `STOCKFW_FAKE_WEVTUTIL_LOG` ("first last"),
+real spawn: `fake-wevtutil.exe` (built beside the test; the test build
+runs a tool from `STOCKFW_TEST_TOOL_DIR`, which the test points there,
+while the release build runs System32's only) answers for `STOCKFW_FAKE_WEVTUTIL_LOG` ("first last"),
 honours the query's `EventRecordID>`, `/c:` and `/rd:`, pads with NULs
 and records its arguments; with `STOCKFW_FAKE_WEVTUTIL_NO_RECORDID=1`
 it refuses a query with the record condition (exit 15001).  The test starts monitoring, checks a burst
@@ -3359,3 +3360,29 @@ a desktop with a screen reader (it runs offscreen under Xvfb); the
 time the per-rule statistics take for a large country of IPFire's full
 database in the page; the card on Windows (checked through a
 Windows-like backend on Linux).
+
+## Release review: tool paths, the dashboard token, the Events page start (1.0.7)
+
+- `test_toolpath` (`test-core.sh`): the Windows mapping of a bare tool
+  name to System32 and the names it refuses; the fixed-directory search;
+  as root, a fake `iptables-restore` first on `PATH` is not the one
+  found.  Teeth: `fixed_dirs_only` returning FALSE fails the root check;
+  `fs_toolpath_windows` returning the bare name fails the mapping.
+- Spawn guard (`test-core.sh`): no `G_SPAWN_SEARCH_PATH` or
+  `g_find_program_in_path` in the Linux backend, `fs-nftset.c`,
+  `fs-cli-cmds.c` or `fs-dashboard.c`, and `spawn_capture` maps
+  `argv[0]`.  Teeth: `G_SPAWN_SEARCH_PATH` put back in
+  `run_command_quiet` fails it; `spawn_capture` running `argv[0]` as
+  given fails it.
+- Planted tools (`test-apply-linux.sh`, live, as root): fakes of every
+  firewall tool first on `PATH`; none runs and the real
+  `iptables-restore` loads the rules.  Teeth: `fixed_dirs_only`
+  returning FALSE makes the fakes run and the rules stay unloaded.
+  The drivers that need a fake tool first on `PATH` are test builds
+  (`FS_TOOLPATH_TESTING`, see `CMakeLists.txt` and `test-apply-dual.sh`).
+- Dashboard launch page (`test-cli.sh`, as `nobody` when run as root,
+  with a fake `xdg-open`): the token is in none of xdg-open's
+  arguments, the page is 0600 in a 0700 directory under
+  `$XDG_RUNTIME_DIR` and redirects to the printed URL, and it is gone
+  once the token is used.  Teeth: handing xdg-open the URL again fails
+  five checks.

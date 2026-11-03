@@ -61,6 +61,7 @@
 #include "core/fs-i18n.h"
 #include "core/fs-util.h"
 #include "core/fs-winevt.h"
+#include "core/fs-toolpath.h"
 #include "netfw-compat.h"
 
 /* Linked through CMake: ole32, oleaut32, iphlpapi, ws2_32 */
@@ -389,8 +390,9 @@ append_spawn_arg (GString *cmd, const gchar *arg)
 
 /* [ build_command_line ]
  * The full command line for CreateProcessW.  May contain arguments
- * with spaces; argv[0] is looked up through the standard search order
- * when it carries no directory, exactly as g_spawn did. */
+ * with spaces.  argv[0] here is already the full path spawn_capture
+ * resolved: the program itself is named by lpApplicationName, so no
+ * search order is involved. */
 static gchar *
 build_command_line (gchar **argv)
 {
@@ -500,7 +502,15 @@ read_handle_output (HANDLE handle, gsize max_bytes, gboolean *truncated)
  * -- the same value g_spawn_sync reported on Windows, so
  * ERROR_ACCESS_DENIED (5) from an unprivileged wevtutil still means
  * what it always did -- or ERROR_TIMEOUT (1460) when the budget ran
- * out and the child was killed. */
+ * out and the child was killed.
+ *
+ * argv[0] is a bare tool name (netsh.exe, wevtutil.exe, auditpol.exe)
+ * and runs as <GetSystemDirectoryW()>\<name>, passed as both
+ * lpApplicationName and the command line's first word: CreateProcess's
+ * own search would look in StockFW's folder and the current folder
+ * before System32, and a planted netsh.exe there would run elevated
+ * (1.0.7 release review, SECURITY-1; fs-toolpath.h).  A tool missing
+ * from System32 is an error, never looked for anywhere else. */
 static gboolean
 spawn_capture_max (gchar **argv, gint timeout_ms, gsize out_max,
                    gboolean *out_truncated,
@@ -520,6 +530,9 @@ spawn_capture_max (gchar **argv, gint timeout_ms, gsize out_max,
 	PPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
 	gchar *cmd_line = NULL;
 	gunichar2 *wide_cmd = NULL;
+	gunichar2 *wide_program = NULL;
+	gchar *program = NULL;
+	gchar **argv_full = NULL;
 	gchar *out_text = NULL;
 	gchar *err_text = NULL;
 	GQuark quark = g_quark_from_static_string ("fs-backend-windows");
@@ -538,7 +551,48 @@ spawn_capture_max (gchar **argv, gint timeout_ms, gsize out_max,
 	if (out_truncated != NULL)
 		*out_truncated = FALSE;
 
-	cmd_line = build_command_line (argv);
+	{
+		wchar_t sys[MAX_PATH + 1];
+		UINT n = GetSystemDirectoryW (sys, G_N_ELEMENTS (sys));
+		gchar *system_dir = n > 0 && n < G_N_ELEMENTS (sys)
+			? g_utf16_to_utf8 ((const gunichar2 *) sys, (glong) n,
+			                   NULL, NULL, NULL)
+			: NULL;
+
+		const gchar *test_dir = fs_toolpath_test_dir ();
+
+		/* Test builds only: a fake tool (test-winlog's wevtutil). */
+		if (test_dir != NULL) {
+			program = fs_toolpath_windows (test_dir, argv[0]);
+			if (program != NULL &&
+			    !g_file_test (program, G_FILE_TEST_IS_REGULAR))
+				g_clear_pointer (&program, g_free);
+		}
+		if (program == NULL)
+			program = fs_toolpath_windows (system_dir, argv[0]);
+		g_free (system_dir);
+	}
+	if (program != NULL)
+		wide_program = g_utf8_to_utf16 (program, -1, NULL, NULL, NULL);
+	if (wide_program == NULL ||
+	    GetFileAttributesW ((const wchar_t *) wide_program) ==
+	    INVALID_FILE_ATTRIBUTES) {
+		if (error != NULL)
+			g_set_error (error, quark, ERROR_FILE_NOT_FOUND,
+			             "Could not run %s: it is not in the Windows "
+			             "system folder", argv[0]);
+		g_free (wide_program);
+		g_free (program);
+		return FALSE;
+	}
+
+	/* The same argv with the full path first, for the command line. */
+	argv_full = g_new0 (gchar *, g_strv_length (argv) + 1);
+	argv_full[0] = program;
+	for (guint i = 1; argv[i] != NULL; i++)
+		argv_full[i] = argv[i];
+	cmd_line = build_command_line (argv_full);
+	g_free (argv_full);
 
 	wide_cmd = g_utf8_to_utf16 (cmd_line, -1, NULL, NULL, NULL);
 	g_free (cmd_line);
@@ -547,6 +601,8 @@ spawn_capture_max (gchar **argv, gint timeout_ms, gsize out_max,
 		if (error != NULL)
 			g_set_error_literal (error, quark, 0,
 			                     "The command line is not valid UTF-8");
+		g_free (wide_program);
+		g_free (program);
 		return FALSE;
 	}
 
@@ -624,7 +680,8 @@ spawn_capture_max (gchar **argv, gint timeout_ms, gsize out_max,
 
 	memset (&pi, 0, sizeof pi);
 
-	if (!CreateProcessW (NULL, wide_cmd, NULL, NULL, TRUE,
+	if (!CreateProcessW ((const wchar_t *) wide_program, wide_cmd,
+	                     NULL, NULL, TRUE,
 	                     CREATE_NO_WINDOW |
 	                     (use_attrs ? EXTENDED_STARTUPINFO_PRESENT : 0),
 	                     NULL, NULL, &si.StartupInfo, &pi)) {
@@ -719,6 +776,8 @@ out:
 	g_free (out_text);
 	g_free (err_text);
 	g_free (wide_cmd);
+	g_free (wide_program);
+	g_free (program);
 
 	return wait_result == WAIT_OBJECT_0 || wait_result == WAIT_TIMEOUT;
 }

@@ -55,6 +55,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-winstore.h"
 #include "core/fs-intel.h"
 #include "core/fs-hostnet.h"
+#include "core/fs-toolpath.h"
 #include <stdlib.h>
 
 static int failures = 0;
@@ -11059,6 +11060,132 @@ make_run_dir (void)
 	return tmpl;
 }
 
+/* SECURITY-1 and SECURITY-2 (1.0.7 release review): where the system
+ * tools come from.  Root never searches the PATH it was given; Windows
+ * runs a bare tool name from System32, never through CreateProcess's
+ * search of the program's and the current folder. */
+static void test_toolpath (void)
+{
+	gchar *t;
+
+	/* Windows: the pure mapping. */
+	t = fs_toolpath_windows ("C:\\Windows\\system32", "netsh.exe");
+	CHECK (g_strcmp0 (t, "C:\\Windows\\system32\\netsh.exe") == 0,
+	       "toolpath: netsh.exe runs from System32 (%s)", t);
+	g_free (t);
+	t = fs_toolpath_windows ("C:\\Windows\\system32\\", "wevtutil.exe");
+	CHECK (g_strcmp0 (t, "C:\\Windows\\system32\\wevtutil.exe") == 0,
+	       "toolpath: a trailing backslash is not doubled (%s)", t);
+	g_free (t);
+	t = fs_toolpath_windows ("C:\\Windows\\system32", "auditpol.exe");
+	CHECK (g_strcmp0 (t, "C:\\Windows\\system32\\auditpol.exe") == 0,
+	       "toolpath: auditpol.exe runs from System32 (%s)", t);
+	g_free (t);
+	t = fs_toolpath_windows ("C:\\Windows\\system32",
+	                         "C:\\Windows\\system32\\curl.exe");
+	CHECK (g_strcmp0 (t, "C:\\Windows\\system32\\curl.exe") == 0,
+	       "toolpath: a full path is kept (%s)", t);
+	g_free (t);
+	t = fs_toolpath_windows ("C:\\Windows\\system32", "\\\\srv\\s\\x.exe");
+	CHECK (g_strcmp0 (t, "\\\\srv\\s\\x.exe") == 0,
+	       "toolpath: a UNC path is kept (%s)", t);
+	g_free (t);
+	{
+		static const gchar *const refused[] = {
+			"bin\\netsh.exe", ".\\netsh.exe", "C:netsh.exe",
+			"tools/netsh.exe", "", ".", "..", NULL
+		};
+
+		for (guint i = 0; refused[i] != NULL; i++) {
+			t = fs_toolpath_windows ("C:\\Windows\\system32",
+			                         refused[i]);
+			CHECK (t == NULL, "toolpath: [%s] is refused, never "
+			       "searched for (%s)", refused[i], t);
+			g_free (t);
+		}
+	}
+	t = fs_toolpath_windows (NULL, "netsh.exe");
+	CHECK (t == NULL, "toolpath: no System32 known, nothing runs");
+	g_free (t);
+	t = fs_toolpath_windows ("", "netsh.exe");
+	CHECK (t == NULL, "toolpath: an empty System32 runs nothing");
+	g_free (t);
+
+#ifndef G_OS_WIN32
+	{
+		gchar *dir = g_dir_make_tmp ("toolpath-XXXXXX", NULL);
+		gchar *bin = g_build_filename (dir, "bin", NULL);
+		gchar *tool = g_build_filename (bin, "iptables-restore", NULL);
+		gchar *plain = g_build_filename (bin, "nft", NULL);
+		gchar *dirs = g_strdup_printf ("relative:.::%s:/usr/bin", bin);
+		const gchar *old = g_getenv ("PATH");
+		gchar *saved = g_strdup (old);
+		gchar *p;
+
+		g_mkdir_with_parents (bin, 0700);
+		g_file_set_contents (tool, "#!/bin/sh\nexit 0\n", -1, NULL);
+		g_chmod (tool, 0755);
+		g_file_set_contents (plain, "not a program\n", -1, NULL);
+		g_chmod (plain, 0644);
+
+		p = fs_toolpath_search ("iptables-restore", dirs);
+		CHECK (g_strcmp0 (p, tool) == 0,
+		       "toolpath: search takes the first absolute directory "
+		       "holding the tool (%s)", p);
+		g_free (p);
+		p = fs_toolpath_search ("nft", bin);
+		CHECK (p == NULL, "toolpath: a file that is not executable "
+		       "is not a tool (%s)", p);
+		g_free (p);
+		p = fs_toolpath_search ("../bin/iptables-restore", bin);
+		CHECK (p == NULL, "toolpath: a name with a folder is refused");
+		g_free (p);
+		p = fs_toolpath_search ("iptables-restore", "bin:.:");
+		CHECK (p == NULL, "toolpath: relative and empty entries "
+		       "(the current directory) are never searched (%s)", p);
+		g_free (p);
+
+		/* The fake tool first on PATH, as `sudo -E' would pass it. */
+		g_setenv ("PATH", bin, TRUE);
+		p = fs_toolpath_find ("iptables-restore");
+		if (geteuid () == 0) {
+			CHECK (p == NULL || (!g_str_has_prefix (p, dir) &&
+			       (g_str_has_prefix (p, "/usr/sbin/") ||
+			        g_str_has_prefix (p, "/usr/bin/") ||
+			        g_str_has_prefix (p, "/sbin/") ||
+			        g_str_has_prefix (p, "/bin/"))),
+			       "toolpath: as root the PATH is not searched; "
+			       "the tool comes from the system directories (%s)",
+			       p);
+			CHECK (strcmp (fs_toolpath_where (),
+			               "in /usr/sbin, /usr/bin, /sbin or /bin") == 0,
+			       "toolpath: the messages name those directories");
+		} else {
+			CHECK (g_strcmp0 (p, tool) == 0,
+			       "toolpath: not root, the PATH is used (%s)", p);
+			CHECK (strcmp (fs_toolpath_where (), "on PATH") == 0,
+			       "toolpath: the messages say PATH");
+		}
+		g_free (p);
+		p = fs_toolpath_find ("/tmp/iptables-restore");
+		CHECK (p == NULL, "toolpath: find takes a bare name only");
+		g_free (p);
+		g_setenv ("PATH", saved != NULL ? saved : "/usr/bin:/bin", TRUE);
+
+		g_unlink (tool);
+		g_unlink (plain);
+		g_rmdir (bin);
+		g_rmdir (dir);
+		g_free (saved);
+		g_free (dirs);
+		g_free (plain);
+		g_free (tool);
+		g_free (bin);
+		g_free (dir);
+	}
+#endif
+}
+
 int main (void)
 {
 	gchar *run_dir = make_run_dir ();
@@ -11173,6 +11300,7 @@ int main (void)
 	test_intelwin_review ();
 	test_hostnet_onlink ();
 	test_winstore_sddl ();
+	test_toolpath ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);
@@ -11269,6 +11397,24 @@ if [ -n "$WORDING_HITS" ]; then
   exit 1
 fi
 echo "ok:   wording guard: no \"AI\" claims in src, docs or README"
+
+# SECURITY-1 and SECURITY-2: the spawns that run system tools go through
+# fs-toolpath, never a PATH search (root) or CreateProcess's search of
+# the program's own and the current folder (Windows).
+SPAWN_HITS="$(grep -nE 'G_SPAWN_SEARCH_PATH|g_find_program_in_path' \
+  src/platform/linux/fs-backend-linux.c src/core/fs-nftset.c \
+  src/cli/fs-cli-cmds.c src/cli/fs-dashboard.c || true)"
+if [ -n "$SPAWN_HITS" ]; then
+  echo "FAIL: a system tool is found through PATH:"
+  echo "$SPAWN_HITS"
+  exit 1
+fi
+if ! tr -d '\r' < src/platform/windows/fs-backend-windows.c \
+     | grep -q 'fs_toolpath_windows (system_dir, argv\[0\])'; then
+  echo "FAIL: spawn_capture no longer maps argv[0] to System32"
+  exit 1
+fi
+echo "ok:   spawn guard: system tools by absolute path (Linux root, Windows)"
 
 [ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ] && [ "$intelgeo_rc" -eq 0 ] \
   && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]

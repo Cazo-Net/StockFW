@@ -6,6 +6,7 @@
 #include "core/fs-audit.h"
 #include "core/fs-autoblock.h"
 #include "core/fs-prefs.h"
+#include "core/fs-toolpath.h"
 #include "core/fs-copilot.h"
 #include "core/fs-eventlog.h"
 #include "core/fs-eventstore.h"
@@ -1669,7 +1670,10 @@ fs_cli_log_history (guint max_lines, gint64 *complete_from, GError **error)
 	} else {
 		/* argv, no shell: nothing here is ever interpolated. */
 		gchar *n = g_strdup_printf ("%u", MAX (max_lines * 4, 2000u));
-		gchar *argv[] = { (gchar *) "journalctl", (gchar *) "-k",
+		/* By its full path: as root from the system directories
+		 * only, never the caller's PATH [S0]. */
+		gchar *journalctl = fs_toolpath_find ("journalctl");
+		gchar *argv[] = { journalctl, (gchar *) "-k",
 		                  (gchar *) "-o", (gchar *) "short",
 		                  (gchar *) "--no-pager", (gchar *) "-n", n,
 		                  NULL };
@@ -1677,8 +1681,15 @@ fs_cli_log_history (guint max_lines, gint64 *complete_from, GError **error)
 		gint wait = 0;
 		gboolean spawned, journal_ok;
 
-		spawned = g_spawn_sync (NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
-		                        NULL, NULL, &text, &err, &wait, &local);
+		if (journalctl == NULL) {
+			spawned = FALSE;
+			g_set_error (&local, G_SPAWN_ERROR, G_SPAWN_ERROR_NOENT,
+			             "journalctl was not found %s",
+			             fs_toolpath_where ());
+		} else
+			spawned = g_spawn_sync (NULL, argv, NULL, 0, NULL, NULL,
+			                        &text, &err, &wait, &local);
+		g_free (journalctl);
 		g_free (n);
 		journal_ok = spawned && g_spawn_check_wait_status (wait, NULL) &&
 		             (err == NULL ||

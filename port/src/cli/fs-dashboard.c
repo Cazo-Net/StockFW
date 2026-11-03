@@ -23,6 +23,13 @@
  *   - The API is read-only.  Changing the firewall stays with
  *     `stockfw apply' and the desktop app, where a human confirms it.
  *     The what-if simulator is a question, not a change.
+ *   - The token never travels in an argument list, where any local
+ *     account could read it from /proc/<pid>/cmdline of xdg-open or of
+ *     the browser it starts (1.0.7 release review, SECURITY-3).  The
+ *     browser is handed a 0600 file in a fresh 0700 directory under
+ *     $XDG_RUNTIME_DIR that redirects to the URL with the token in the
+ *     fragment; it is removed once the token has been used, and when
+ *     the dashboard stops.  The terminal still prints the whole URL.
  *   - The page is compiled into the binary and carries a strict
  *     Content-Security-Policy with a per-run nonce: no external script,
  *     style, font or image can load, so nothing leaves the machine.
@@ -34,11 +41,15 @@
 #include "core/fs-json.h"
 #include "core/fs-netparse.h"
 #include "core/fs-util.h"
+#include "core/fs-toolpath.h"
 #include "stockfw-logo-64.h"
 #include "fs-dashboard-html.h"
 
 #include <gio/gio.h>
 #include <glib-unix.h>
+#include <glib/gstdio.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -76,6 +87,9 @@ typedef struct
 
 	guint              open_connections;
 	GMainLoop         *loop;
+
+	gchar             *launch_dir;   /* the browser's redirect page:   */
+	gchar             *launch_file;  /* removed once the token is used */
 } Dash;
 
 typedef struct
@@ -85,6 +99,8 @@ typedef struct
 	GString           *head;
 	guint8             buffer[4096];
 } Conn;
+
+static void launch_page_remove (Dash *dash);
 
 /* --------------------------------------------------------------- secrets */
 
@@ -902,6 +918,9 @@ handle_request (Conn *conn)
 		goto out_params;
 	}
 	g_free (token);
+	/* The browser got here with the token: its redirect page, which
+	 * holds the token too, has done its job. */
+	launch_page_remove (dash);
 
 	if (strcmp (path, "/api/summary") == 0) {
 		respond_json (conn, 200, summary_json (dash), head_only);
@@ -1026,25 +1045,117 @@ on_quit_signal (gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+/* [ launch_page_write ]
+ * The page the browser is opened on: a 0600 file, in a directory of its
+ * own made 0700 under $XDG_RUNTIME_DIR (GLib falls back to the cache
+ * directory without one), that sends the browser on to `url'.  The
+ * token is in the file, never in xdg-open's or the browser's argument
+ * list.  NULL when it cannot be written: nothing is opened then. */
+static gchar *
+launch_page_write (Dash *dash, const gchar *url)
+{
+	gchar *tmpl = g_build_filename (g_get_user_runtime_dir (),
+	                                "stockfw-dashboard-XXXXXX", NULL);
+	gchar *path, *html;
+	gssize left;
+	const gchar *at;
+	gint fd;
+
+	if (g_mkdtemp_full (tmpl, 0700) == NULL) {
+		g_free (tmpl);
+		return NULL;
+	}
+	path = g_build_filename (tmpl, "open.html", NULL);
+	fd = open (path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+	           0600);
+	if (fd < 0) {
+		g_rmdir (tmpl);
+		g_free (tmpl);
+		g_free (path);
+		return NULL;
+	}
+	/* url is ours: digits, hex and fixed text, nothing to escape. */
+	html = g_strdup_printf (
+		"<!doctype html>\n<meta charset=\"utf-8\">\n"
+		"<meta name=\"referrer\" content=\"no-referrer\">\n"
+		"<meta http-equiv=\"refresh\" content=\"0;url=%s\">\n"
+		"<title>StockFW dashboard</title>\n"
+		"<script>location.replace(\"%s\");</script>\n"
+		"<p><a href=\"%s\">Open the StockFW dashboard</a></p>\n",
+		url, url, url);
+	at = html;
+	left = (gssize) strlen (html);
+	while (left > 0) {
+		gssize n = write (fd, at, (gsize) left);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		at += n;
+		left -= n;
+	}
+	close (fd);
+	g_free (html);
+	if (left != 0) {
+		g_unlink (path);
+		g_rmdir (tmpl);
+		g_free (tmpl);
+		g_free (path);
+		return NULL;
+	}
+	dash->launch_dir = tmpl;
+	dash->launch_file = path;
+	return path;
+}
+
+/* [ launch_page_remove ] -- once the token was used, and at the end. */
+static void
+launch_page_remove (Dash *dash)
+{
+	if (dash->launch_file == NULL)
+		return;
+	g_unlink (dash->launch_file);
+	g_rmdir (dash->launch_dir);
+	g_clear_pointer (&dash->launch_file, g_free);
+	g_clear_pointer (&dash->launch_dir, g_free);
+}
+
 /* [ open_browser ]
  * xdg-open for the invoking user.  Never as root: a browser running as
  * root is a far bigger attack surface than anything it would show, so
- * under sudo the URL is printed and opening it is left to the user. */
+ * under sudo the URL is printed and opening it is left to the user.
+ * xdg-open gets the launch page's path, never the URL with the token
+ * (see the top of this file). */
 static gboolean
-open_browser (const gchar *url)
+open_browser (Dash *dash, const gchar *url)
 {
-	gchar *argv[] = { (gchar *) "xdg-open", (gchar *) url, NULL };
+	gchar *argv[] = { NULL, NULL, NULL };
+	gchar *page;
+	gboolean ok;
 
 	if (geteuid () == 0)
 		return FALSE;
 	if (g_getenv ("DISPLAY") == NULL && g_getenv ("WAYLAND_DISPLAY") == NULL)
 		return FALSE;
 
-	return g_spawn_async (NULL, argv, NULL,
-	                      G_SPAWN_SEARCH_PATH |
-	                      G_SPAWN_STDOUT_TO_DEV_NULL |
-	                      G_SPAWN_STDERR_TO_DEV_NULL,
-	                      NULL, NULL, NULL, NULL);
+	argv[0] = fs_toolpath_find ("xdg-open");
+	if (argv[0] == NULL)
+		return FALSE;
+	page = launch_page_write (dash, url);
+	if (page == NULL) {
+		g_free (argv[0]);
+		return FALSE;
+	}
+	argv[1] = page;
+	ok = g_spawn_async (NULL, argv, NULL,
+	                    G_SPAWN_STDOUT_TO_DEV_NULL |
+	                    G_SPAWN_STDERR_TO_DEV_NULL,
+	                    NULL, NULL, NULL, NULL);
+	g_free (argv[0]);
+	if (!ok)
+		launch_page_remove (dash);
+	return ok;
 }
 
 gint
@@ -1157,7 +1268,7 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 			        "events%s\n", "", fs_cli_dim (), fs_cli_reset ());
 	}
 
-	if (!no_open && !open_browser (url) && !fs_cli.json) {
+	if (!no_open && !open_browser (&dash, url) && !fs_cli.json) {
 		if (geteuid () == 0)
 			printf ("\n  Open the URL above in your browser (it is not "
 			        "started as root).\n");
@@ -1182,6 +1293,7 @@ fs_cli_cmd_dashboard (gint argc, gchar **argv)
 	if (dash.monitoring && fs_backend ()->log_stop != NULL)
 		fs_backend ()->log_stop ();
 
+	launch_page_remove (&dash);
 	g_main_loop_unref (dash.loop);
 	g_object_unref (dash.service);
 	g_queue_free_full (dash.recent, (GDestroyNotify) fs_hit_free);

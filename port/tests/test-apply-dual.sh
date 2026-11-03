@@ -178,7 +178,11 @@ CEOF
 
 CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0)"
 LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
-gcc -o "$BUILD_DIR/dual" -I "$PORT/src" $CF "$BUILD_DIR/dual.c" \
+# fs-toolpath.c with FS_TOOLPATH_TESTING: root then takes its tools from
+# PATH, so the fake ip6tables-restore below is the one that runs.  The
+# release build takes them from the system directories only.
+gcc -o "$BUILD_DIR/dual" -I "$PORT/src" $CF -DFS_TOOLPATH_TESTING=1 \
+	"$BUILD_DIR/dual.c" "$PORT/src/core/fs-toolpath.c" \
 	"$PORT/src/platform/linux/fs-backend-linux.c" \
 	"$PORT/build-linux/libfs-core.a" $LF 2> "$BUILD_DIR/cc.log"
 CHECK $? "harness compiles against the real Linux backend"

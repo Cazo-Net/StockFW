@@ -3,6 +3,7 @@
  *--------------------------------------------------------------------*/
 
 #include "core/fs-nftset.h"
+#include "core/fs-toolpath.h"
 
 #include <gio/gio.h>
 #include <glib/gstdio.h>
@@ -322,9 +323,20 @@ nft_spawn (const gchar *const *args, const gchar *input, guint timeout_ms,
 	NftRun run;
 	GError *local = NULL;
 	gboolean ok = FALSE, finished;
+	/* By its full path: as root from the system directories only,
+	 * never the PATH of whoever started us [S0]. */
+	gchar *nft = fs_toolpath_find ("nft");
 
+	if (nft == NULL) {
+		g_ptr_array_unref (argv);
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+		             "Could not run nft (is the nftables package "
+		             "installed?): nft was not found %s",
+		             fs_toolpath_where ());
+		return FALSE;
+	}
 	memset (&run, 0, sizeof run);
-	g_ptr_array_add (argv, (gpointer) "nft");
+	g_ptr_array_add (argv, nft);
 	for (guint i = 0; args[i] != NULL; i++)
 		g_ptr_array_add (argv, (gpointer) args[i]);
 	g_ptr_array_add (argv, NULL);
@@ -343,8 +355,8 @@ nft_spawn (const gchar *const *args, const gchar *input, guint timeout_ms,
 	g_main_context_push_thread_default (ctx);
 
 	/* An argv, not a command line: no shell ever sees an argument,
-	 * and a script travels on stdin.  nft is found on PATH, as the
-	 * backend finds iptables-restore. */
+	 * and a script travels on stdin.  nft is the absolute path found
+	 * above, as the backend finds iptables-restore. */
 	run.proc = g_subprocess_newv ((const gchar *const *) argv->pdata,
 	                              flags, &local);
 	if (run.proc == NULL) {
@@ -420,6 +432,7 @@ out:
 	g_clear_object (&run.proc);
 	g_clear_pointer (&stdin_bytes, g_bytes_unref);
 	g_ptr_array_unref (argv);
+	g_free (nft);
 	return ok;
 }
 

@@ -1,8 +1,9 @@
 /* A stand-in wevtutil.exe for test-winlog's end-to-end test.
  *
- * CreateProcess searches the calling process's directory before
- * System32, so this binary -- built next to the test -- answers the
- * backend's probe and every poll.  That exercises the whole production
+ * The test build of the backend runs a tool from $STOCKFW_TEST_TOOL_DIR
+ * before System32's (FS_TOOLPATH_TESTING, fs-toolpath.h), and
+ * test-winlog points that at its own folder, so this binary -- built
+ * next to the test -- answers the backend's probe and every poll.  That exercises the whole production
  * path (spawn_capture_max, temp-file capture, NUL stripping, XML
  * parsing, the record cursor, worker thread + main-loop delivery)
  * without Administrator rights to read the real Security log.

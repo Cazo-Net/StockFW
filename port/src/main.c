@@ -30,6 +30,8 @@
 #ifndef G_OS_WIN32
 #include <glib-unix.h>
 #include <signal.h>
+#else
+#include <windows.h>
 #endif
 
 #include "core/fs-prefs.h"
@@ -245,6 +247,18 @@ main (int argc, char *argv[])
 	GOptionContext *ctx;
 	FsInstanceRole role;
 	int status;
+
+#ifdef G_OS_WIN32
+	/* Before anything loads a DLL or starts a program (1.0.7 release
+	 * review, SECURITY-1): a DLL is looked for in StockFW's own folder
+	 * (where the runtime is staged), System32 and folders added with
+	 * AddDllDirectory -- never the current folder or PATH -- and a
+	 * child started by a bare name never comes from the current
+	 * folder.  spawn_capture() already names System32 itself; these
+	 * guard whatever else might not (fs-toolpath.h). */
+	SetDefaultDllDirectories (LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+	SetEnvironmentVariableW (L"NoDefaultCurrentDirectoryInExePath", L"1");
+#endif
 
 	setlocale (LC_ALL, "");
 
