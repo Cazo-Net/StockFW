@@ -130,7 +130,7 @@ jobs:
                   fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
                   fs-overview-place-smoke fs-verdict-smoke
                   fs-startup-smoke fs-traymenu-smoke fs-session-smoke
-                  fs-help-smoke fs-intelview-smoke"
+                  fs-help-smoke fs-intelview-smoke fs-whatif-start-smoke"
           ninja -C build-linux $smokes
           for t in $smokes; do
             echo "== $t"
@@ -202,6 +202,20 @@ jobs:
           strict tests/test-whatif-live.sh
           strict tests/test-logstart-events.sh
           strict tests/test-logstart-kmsg.sh
+          # H12: the What-If "Start the firewall" through the start gate.
+          # As the runner's user it prints SKIP (the What-If trusts a
+          # "stopped" reading only from root); here it must run.  Fake
+          # backend: no firewall is touched.
+          ninja -C build-linux fs-whatif-start-smoke
+          log="$(mktemp)"
+          sudo env NO_AT_BRIDGE=1 xvfb-run -a ./build-linux/fs-whatif-start-smoke \
+            > "$log" 2>&1 && rc=0 || rc=$?
+          cat "$log"
+          if grep -q '^SKIP' "$log"; then
+            echo "::error::fs-whatif-start-smoke was skipped on CI"
+            exit 1
+          fi
+          [ "$rc" -eq 0 ] || exit "$rc"
           # 1.0.7 threat intel and countries: the nft sets, the Linux
           # backend's slots, the engine end to end with real downloads
           # from a local HTTPS server, `stockfw intel', and the

@@ -290,6 +290,13 @@ It is still read-only and still listens on 127.0.0.1 only.
 
 ### Fixed
 
+- **The What-If "Start the firewall" button now obeys audit-only mode
+  and the Policy Lock (H12).** It started the firewall directly, so a
+  hold did not stop it, nothing was written to the audit log, and on
+  Linux saved changes that were never applied went live. It now starts
+  the firewall the same way as the Overview's Start button: held when a
+  hold is on, the last applied policy on Linux, and an audit line every
+  time. The What-If window says what happened.
 - **Windows: no console windows during threat-intel updates.** Turning
   on a blocklist, "Update now", and the daily update each downloaded
   every list through `curl.exe`, and each download opened a black

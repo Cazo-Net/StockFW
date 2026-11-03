@@ -1299,6 +1299,37 @@ start gate itself (`fs_firewall_start_safe`) and the boot-time expiry
 of Sentinel rows (`fs_autoblock_expire`).
 
 
+## The What-If start goes through the start gate (`fs-whatif-start-smoke`, H12)
+
+```sh
+cd port
+ninja -C build-linux fs-whatif-start-smoke
+sudo xvfb-run -a ./build-linux/fs-whatif-start-smoke   # display; root on Linux
+```
+
+Runs the real `fs_app_activate()` against a fake backend that reads
+"stopped" and counts starts and applies.  It asks the What-If card
+`inbound tcp 8443 from 203.0.113.20`, opens Details, presses "Start the
+firewall" and says Yes.  One process per scenario:
+
+| Scenario | What must happen |
+|---|---|
+| held | audit-only on, Linux model, nothing applied before: no start and no apply, the audit line `firewall start held` with `what-if \| held`, the "not started" dialog, and the window says why |
+| journal | audit-only on, Linux model, a policy applied before: the journal goes in (the allow saved but never applied stays off), `start()` is never called, the audit line says `held` |
+| windows | audit-only on, Windows model (start only switches enforcement on): one start, and the audit line names the hold |
+| unheld | audit-only off: one start, audited |
+
+On Linux the What-If trusts a "stopped" reading only from root, so as
+another user the smoke prints SKIP.  CI runs it with `sudo` in the
+Linux job, where a SKIP fails the job, and on Windows through
+`full-suite.sh`.  `test-core.sh` (`test_no_direct_start_in_ui`) also
+checks that no file in `src/ui` calls the backend's `start` directly.
+
+Teeth: put back `fs_backend ()->start (...)` in `whatif_start_firewall`
+and all four scenarios fail (a start while held, no audit line), and
+so do both `test-core.sh` checks.
+
+
 ## No tray, and words the app does not take (`tests/test-notray.sh`)
 
 ```sh

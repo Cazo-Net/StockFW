@@ -4906,12 +4906,19 @@ whatif_open_rule (GtkWidget *window, const FsWhatIfAction *act)
     whatif_log ("\n[=] The rule is selected on the Policy page.\n", "dim");
 }
 
-/* [ whatif_start_firewall ] */
+/* [ whatif_start_firewall ]
+ * Through the start gate (fs_statusview_firewall_start ->
+ * fs_firewall_start_safe), like the Overview's Start button and the
+ * tray's Resume: audit-only mode and the Policy Lock hold it, it is
+ * audited, and the "last applied" journal decides what goes live
+ * (H12).  The gate reports a hold or a failure in its own dialog;
+ * the log says what happened. */
 static void
 whatif_start_firewall (const FsWhatIfResult *result,
                        const FsWhatIfAction *act)
 {
-    GError *error = NULL;
+    GtkWidget *parent;
+    const gchar *hold;
 
     if (!act->verified)
         return;
@@ -4922,17 +4929,31 @@ whatif_start_firewall (const FsWhatIfResult *result,
         return;
     }
 
-    if (!fs_backend ()->start (&error)) {
-        whatif_log ("\n[!] The firewall did not start: ", "red");
-        whatif_log (error != NULL ? error->message : "no reason given",
-                    "red");
-        whatif_log ("\n", NULL);
-        g_clear_error (&error);
+    parent = whatif_window != NULL
+             ? whatif_window : gtk_widget_get_toplevel (sim_output);
+    hold = fs_policyview_hold_reason ();
+    if (!fs_statusview_firewall_start (parent, "what-if")) {
+        if (hold != NULL) {
+            whatif_log ("\n[=] The firewall was not started. Changes are "
+                        "held (", "orange");
+            whatif_log (hold, "orange");
+            whatif_log ("); the message says why.\n", "orange");
+        } else {
+            whatif_log ("\n[!] The firewall did not start; the message "
+                        "says why.\n", "red");
+        }
         return;
     }
 
-    fs_statusview_set_state (fs_backend ()->get_state ());
-    whatif_log ("\n[OK] The firewall was started.\n", "green");
+    if (hold != NULL) {
+        whatif_log ("\n[OK] The firewall was started with the last "
+                    "applied policy. Changes since then stay held (",
+                    "orange");
+        whatif_log (hold, "orange");
+        whatif_log (").\n", "orange");
+    } else {
+        whatif_log ("\n[OK] The firewall was started.\n", "green");
+    }
     whatif_ask_again (result, act->gives);
 }
 
