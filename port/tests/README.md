@@ -101,7 +101,7 @@ cd port
 sudo STOCKFW_BUILD=build-linux bash tests/test-dashboard.sh
 ```
 
-Linux only; takes about 40 s.  It also builds `stockfw-dash-test` (the
+Linux only.  It also builds `stockfw-dash-test` (the
 same sources with `FS_DASH_TESTING`: a test clock, a WSL switch and an
 "ownerless" uid) and `fs-dash-auth-test` (`tests/dash-auth-test.c`, the
 session rules on a clock of its own).  Starts the dashboard from a copy of
@@ -112,7 +112,7 @@ within 1 s; a head or a body trickled in is cut off after 5 s;
 `Host: localhost:PORT`, two `Host` headers, `Upgrade`,
 `Transfer-Encoding` and a body over 64 KB are refused.  As root it
 also checks that connections from root, from `nobody` and from
-127.0.0.2 get no byte back even with the token, and that the dashboard
+127.0.0.2 get no byte back even with a session, and that the dashboard
 refuses to start as root without `SUDO_UID`.  Without root those
 checks print `skip:`.
 
@@ -132,6 +132,17 @@ prints a path on a pipe and a link on a terminal; the new headers are
 sent; the release `stockfw` has no test hook in it.  As root: the
 link socket answers no other uid, and on a pretend WSL a peer with no
 socket owner is closed unless `--allow-windows` is given.
+
+From the review of PR 2 (docs 15.3.4): with `--allow-windows`, a
+request from another account that closes at once is not read (the
+dashboard is held with `SIGSTOP` meanwhile; once normally, once in a
+network namespace that keeps no `TIME_WAIT` entries); with 40,000
+`TIME_WAIT` entries (in a namespace of its own) 20 requests answer
+within 2 s; empty lines before the request line are skipped, under
+`G_DEBUG=fatal-criticals`; SIGHUP removes the socket and launch files;
+`dashboard link` skips the socket of a killed dashboard and prints the
+`--origin-port` link.  The root-only parts need `unshare`, `nsenter`,
+`ip` and `sysctl`; the whole script now takes about 3 minutes.
 
 
 ## Event store and history (`tests/test-eventstore.sh`)

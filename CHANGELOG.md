@@ -164,7 +164,7 @@ It is still read-only and still listens on 127.0.0.1 only.
   to the account that ran `sudo`). Connections from root or any other
   account are closed at once, unread, even with a valid link. As root
   without `sudo`, `stockfw dashboard` now refuses to start and says why.
-  Under WSL, a browser on the Windows side may be refused for now.
+  Under WSL, see the WSL entry below.
 - **Use the address as printed.** `http://localhost:PORT` is no longer
   accepted, only `http://127.0.0.1:PORT`: another account could listen
   on `[::1]` at the same port and catch a browser sent to `localhost`.
@@ -180,7 +180,16 @@ It is still read-only and still listens on 127.0.0.1 only.
   end up in logs. The launch file is deleted once it is used, or after
   2 minutes.
 - **`stockfw dashboard link`** gets a new link from the running
-  dashboard, over a socket only your account can use.
+  dashboard, over a socket only your account can use. With
+  `--origin-port N` it prints the link for port N too. It skips
+  dashboards that are no longer running.
+- **Closing the terminal stops the dashboard cleanly** (SIGHUP), so its
+  link socket and launch files are removed.
+- **Many sockets on the machine no longer slow the dashboard.** The
+  check of who owns a connection is one kernel lookup, not a read of
+  the whole socket table, which another account could fill.
+- A request that starts with empty lines is read as RFC 9112 asks
+  (they are skipped).
 - **A fingerprint** shown in the terminal and at the top of the page,
   so you can tell the page comes from your dashboard.
 - **Stricter browser checks.** The session request must come from the
@@ -190,7 +199,9 @@ It is still read-only and still listens on 127.0.0.1 only.
 - **`--origin-port N`** for `ssh -L N:127.0.0.1:PORT`: the dashboard
   also answers as `127.0.0.1:N`.
 - **WSL:** a browser on the Windows side is refused, with a hint;
-  `--allow-windows` (WSL only) lets it in and the page says so.
+  `--allow-windows` (WSL only) lets it in and the page says so. A
+  connection whose program has already closed it is never let in that
+  way.
 
 ### Fixed
 
