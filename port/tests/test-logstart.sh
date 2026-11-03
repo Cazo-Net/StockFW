@@ -22,7 +22,7 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
   BACKEND="src/platform/windows/fs-backend-windows.c src/platform/windows/fs-trust-win.c"
-  PLATFORM_LIBS="-lws2_32 -lole32 -loleaut32 -liphlpapi -lwintrust -lcrypt32"
+  PLATFORM_LIBS="-lws2_32 -lole32 -loleaut32 -liphlpapi -lwintrust -lcrypt32 -ladvapi32 -lshell32"
 else
   BACKEND=src/platform/linux/fs-backend-linux.c
   PLATFORM_LIBS=""

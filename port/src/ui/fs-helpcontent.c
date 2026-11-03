@@ -139,14 +139,33 @@ static const FsHelpBlock events[] = {
 	{ FS_HELP_ITEM, N_("<b>Monitor</b> turns event reading on and off. If "
 	  "it cannot run, a strip above the list says why, most often that "
 	  "it needs administrator or root rights.") },
-	{ FS_HELP_ITEM, N_("Type in the filter box to keep only rows that "
-	  "mention a host, port or protocol. The count then shows both "
-	  "numbers, such as <i>3 of 1200 events</i>, so an empty result is "
+	{ FS_HELP_ITEM, N_("Type in the search box to keep only rows where "
+	  "a column contains that text, such as a host, port or service.") },
+	{ FS_HELP_ITEM, N_("The filters below it narrow the list further, "
+	  "and a row must match them all: direction, blocked or allowed, "
+	  "protocol, a port or a range (<tt>1000-2000</tt>), an address or "
+	  "a block (<tt>10.0.0.0/8</tt>), and a time span with <b>From</b> "
+	  "and <b>To</b> (<tt>15m</tt>, <tt>2h</tt>, <tt>3d</tt>, a date, or "
+	  "a date and time). <b>Reset</b> clears them.") },
+	{ FS_HELP_ITEM, N_("While a filter is set the count shows both "
+	  "numbers, such as <i>3 of 1,200 events</i>, so an empty result is "
 	  "not mistaken for a quiet firewall.") },
-	{ FS_HELP_ITEM, N_("<b>Clear</b> empties the list. <b>Refresh</b> "
-	  "reads the recent events again.") },
-	{ FS_HELP_PARA, N_("The list keeps the newest 2,000 events. The "
-	  "system's own log stays the full record.") },
+	{ FS_HELP_ITEM, N_("<b>Export CSV</b> saves the rows the list shows, "
+	  "filtered and in their order, to a file only your account can "
+	  "read.") },
+	{ FS_HELP_ITEM, N_("<b>Clear</b> empties the list; saved history is "
+	  "kept. <b>Refresh</b> reads the recent events again.") },
+	{ FS_HELP_HEAD, N_("How much is kept") },
+	{ FS_HELP_PARA, N_("The list keeps the newest 100,000 events, and up "
+	  "to 1,000,000 if you raise <b>Events kept in the list</b> in "
+	  "<a href=\"help:prefs-events\">Preferences</a>. Past that the "
+	  "oldest go.") },
+	{ FS_HELP_PARA, N_("With <b>Keep event history</b> on (it is off "
+	  "until you turn it on), every listed event is also saved to files "
+	  "only your account can read, for 30 days or 200 MB by default. "
+	  "When StockFW starts the newest of them fill the list again, and "
+	  "<tt>stockfw events --history</tt> searches further back with the "
+	  "same filters. The system's own log stays the full record.") },
 	{ FS_HELP_HEAD, N_("From an event to a rule") },
 	{ FS_HELP_PARA, N_("Right-click a row to turn it into a rule. StockFW "
 	  "offers only what that event can express:") },
@@ -164,8 +183,12 @@ static const FsHelpBlock events[] = {
 	{ FS_HELP_HEAD, N_("What gets listed") },
 	{ FS_HELP_PARA, N_("On Windows, StockFW reads the Security log's "
 	  "connection events (5156 for allowed, 5157 for blocked) every five "
-	  "seconds. Windows writes them only while connection auditing is "
-	  "on, and StockFW turns it on when it runs as administrator.") },
+	  "seconds: every one since the last read, up to 10,000 at a time. "
+	  "Windows writes them only while connection auditing is on, and "
+	  "StockFW turns it on when it runs as administrator.") },
+	{ FS_HELP_NOTE, N_("If more arrive at once than one read takes, the "
+	  "newest are listed and the count says <i>(up to N skipped)</i> for "
+	  "the older ones of that burst.") },
 	{ FS_HELP_PARA, N_("On Linux, StockFW reads the kernel log and lists "
 	  "only the packets its own rules logged. Packets dropped by the "
 	  "inbound default, and by <b>Block outgoing unless allowed</b>, are "
@@ -184,7 +207,8 @@ static const FsHelpBlock events[] = {
 	  "Their row names the list, such as "
 	  "<i>Threat intel: Spamhaus DROP (IPv4)</i>, and right-clicking it "
 	  "offers <b>Add exception</b>, which puts the address on the allow "
-	  "list.") },
+	  "list. A block by one of your country or network rules is logged "
+	  "and named the same way, with the rule's name.") },
 	{ FS_HELP_PARA, N_("On Windows the Security log does not name the rule "
 	  "that blocked a connection, so Events cannot say which list blocked "
 	  "an address. Look the address up on the Threat Intel page "
@@ -293,31 +317,87 @@ static const FsHelpBlock policy[] = {
 };
 
 static const FsHelpBlock copilot[] = {
-	{ FS_HELP_PARA, N_("The Copilot page learns what each program usually "
-	  "does on the network and points out what is new or unusual. It all "
-	  "runs on this computer: nothing is sent anywhere, and no language "
-	  "model is involved.") },
-	{ FS_HELP_HEAD, N_("Insights and suggestions") },
-	{ FS_HELP_PARA, N_("Each insight has a type (such as New App, Unusual "
-	  "Port, Unusual Dest, Beacon or Fan-Out), a severity and a "
-	  "description. Double-click one to read the whole explanation.") },
-	{ FS_HELP_PARA, N_("Some insights come with a suggested rule. Select "
-	  "the insight and press <b>Apply selected rule</b>: StockFW shows "
-	  "the exact rule and adds nothing until you say yes. <b>Clear "
-	  "insights</b> empties the list.") },
-	{ FS_HELP_PARA, N_("The counts at the top say how many programs "
-	  "StockFW has learned, how many insights are open, how many events "
-	  "it has analysed and how many rules your policy has. What it "
-	  "learned is saved when StockFW quits and read back when it starts, "
-	  "so a restart does not call every program new.") },
-	{ FS_HELP_HEAD, N_("Policy analysis") },
-	{ FS_HELP_PARA, N_("<b>Run analysis</b> reads your rules and recent "
-	  "events and reports conflicts, redundant rules and missing ones, "
-	  "with a suggestion where it has one.") },
+	{ FS_HELP_PARA, N_("The Copilot page is a set of fixed rules that run "
+	  "on this computer, over the firewall's event log and your saved "
+	  "policy. Each rule is a count compared with a written limit, so the "
+	  "same events always give the same findings. Nothing is sent "
+	  "anywhere, and no language model is involved.") },
+	{ FS_HELP_PARA, N_("Four tiles sit at the top: <b>Needs attention</b> "
+	  "(the Critical and Warning findings, from the events and from the "
+	  "policy), <b>Policy health</b>, <b>Auto-blocks active</b>, and "
+	  "<b>Apps learned</b>, which reads <b>Services learned</b> on Linux, "
+	  "where the log names a port's service rather than a program.") },
+	{ FS_HELP_HEAD, N_("What it looks for") },
+	{ FS_HELP_ITEM, N_("<b>Beacon</b> and <b>Fan-Out</b> in outgoing "
+	  "traffic: see <a href=\"help:sentinel\">Sentinel</a>.") },
+	{ FS_HELP_ITEM, N_("<b>Inbound port scan</b>: one address reaching 12 "
+	  "different ports of this computer within a minute, or 25 within ten "
+	  "minutes. Info when every probe was refused, Warning when one "
+	  "reached an allowed port.") },
+	{ FS_HELP_ITEM, N_("<b>Login attempts</b>: one address making 10 "
+	  "connections in five minutes to SSH, RDP, VNC, Telnet, FTP or SMB, "
+	  "counted together. The log cannot tell a failed login from a good "
+	  "one, so the severity rests on what was refused and on whether your "
+	  "policy lets that address in: Critical when attempts from the "
+	  "internet were refused and the policy lets that address in.") },
+	{ FS_HELP_ITEM, N_("<b>Something new for a program</b>, once it has a "
+	  "history: a port it never used, a public address it never "
+	  "contacted, an hour of the day it was never active, or far more "
+	  "connections than usual. What it learned is saved, so a restart "
+	  "does not call every program new.") },
+	{ FS_HELP_ITEM, N_("<b>Block list</b>, on Linux: traffic one of your "
+	  "<a href=\"help:threat-intel\">threat-intel blocklists</a> or "
+	  "country or network rules stopped. Outbound, one finding per "
+	  "program and address; inbound, one finding per list or rule per "
+	  "hour. On Windows the log does not name the list, so this check "
+	  "finds nothing there.") },
+	{ FS_HELP_PARA, N_("Scans and login attempts are reported only: the "
+	  "Copilot never changes an inbound rule, and no finding offers an "
+	  "Allow. Two different checks on the same address within an hour "
+	  "make both findings Critical.") },
+	{ FS_HELP_HEAD, N_("A finding") },
+	{ FS_HELP_PARA, N_("Each finding has a severity in a word (Info, "
+	  "Warning or Critical). Click it, or press Enter, to open what was "
+	  "seen, why it was flagged with the numbers next to the limits, what "
+	  "could make it harmless, what Sentinel did, and the events behind "
+	  "it.") },
+	{ FS_HELP_PARA, N_("<b>Block outbound to this address</b> is offered "
+	  "only when What-If says the block would change the answer from "
+	  "allowed to blocked; it shows the rule and asks first. <b>Ask "
+	  "What-If</b>, <b>Show in Events</b> and <b>Dismiss</b> change "
+	  "nothing. Findings are kept while StockFW runs; dismissals are not "
+	  "saved.") },
+	{ FS_HELP_HEAD, N_("Policy health") },
+	{ FS_HELP_PARA, N_("The Policy health card checks your saved rules: "
+	  "duplicates, rules another rule already covers, allows a deny "
+	  "cancels, outbound allows that have no effect while outbound is "
+	  "open, inbound allows over more than 100 ports, risky services "
+	  "such as RDP, SMB or a database open to anyone, and rows that match "
+	  "neither IPv4 nor IPv6. <b>Check again</b> runs it on the policy as it is "
+	  "now.") },
+	{ FS_HELP_PARA, N_("A fix is offered only when What-If, asked before "
+	  "and after the change, shows it does what it says: a removal "
+	  "changes no answer, and a narrowing to the local network keeps the "
+	  "local answers and blocks the internet. <b>Fix…</b> shows the rule "
+	  "before and after and the checks, and writes nothing until you say "
+	  "yes. Otherwise the row says <b>No fix offered</b> and why.") },
+	{ FS_HELP_PARA, N_("On Linux, <tt>stockfw copilot health</tt> runs the "
+	  "same check from the <a href=\"help:cli\">command line</a> and "
+	  "writes nothing.") },
+	{ FS_HELP_HEAD, N_("Changes and Undo") },
+	{ FS_HELP_PARA, N_("<b>Changes made by the Copilot</b> lists, newest "
+	  "first, every block Sentinel put in place, every block you made "
+	  "from a finding and every health fix. <b>Undo</b> takes a block out "
+	  "or puts the fixed rule back as it was. A change that expired or "
+	  "was undone stays in the list, marked with when it ended.") },
+	{ FS_HELP_NOTE, N_("No finding means none of the checks matched, not "
+	  "that nothing is wrong. The Copilot sees only what the firewall "
+	  "logs: allowed connections appear only while their logging is "
+	  "on.") },
 	{ FS_HELP_PARA, N_("<a href=\"help:whatif\">What-If</a> and "
 	  "<a href=\"help:sentinel\">Sentinel</a> live on this page too, and "
 	  "each has its own topic.") },
-	{ FS_HELP_SEE, "whatif sentinel trust" },
+	{ FS_HELP_SEE, "whatif sentinel policy" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -405,41 +485,56 @@ static const FsHelpBlock whatif[] = {
 
 static const FsHelpBlock sentinel[] = {
 	{ FS_HELP_PARA, N_("Sentinel reads the same events as the Events page "
-	  "and looks for two patterns in outgoing traffic:") },
+	  "and looks for two patterns in outgoing traffic, counted per "
+	  "program (per port's service on Linux):") },
 	{ FS_HELP_ITEM, N_("<b>Beacon</b>: a program contacting the same host "
 	  "and port at very regular intervals, at least six times, between "
 	  "10 seconds and 10 minutes apart. Malware checking in with whoever "
 	  "controls it looks like this; people and most programs do not keep "
-	  "such exact time.") },
-	{ FS_HELP_ITEM, N_("<b>Fan-Out</b>: this computer contacting 60 or "
-	  "more different hosts within a minute, or 10 or more that were "
-	  "blocked. That looks like a scan.") },
+	  "such exact time. Time sync (port 123), and DNS to this computer's "
+	  "own DNS servers, are never timed.") },
+	{ FS_HELP_ITEM, N_("<b>Fan-Out</b>: one program contacting 60 or more "
+	  "different hosts within a minute, or 10 or more that were blocked. "
+	  "On Linux only the blocked ones count, because one port's service "
+	  "covers every browser.") },
 	{ FS_HELP_HEAD, N_("Modes") },
-	{ FS_HELP_PARA, N_("The <b>Sentinel</b> menu on the Copilot page has "
-	  "two modes. <b>Detect only</b> reports what it sees and changes "
-	  "nothing. <b>Detect + auto-block</b>, the default, also blocks a "
-	  "beacon's destination for ten minutes.") },
-	{ FS_HELP_PARA, N_("An automatic block is an outbound deny rule added "
-	  "to your policy and applied at once. It is lifted after ten "
-	  "minutes, or straight away with <b>Undo auto-block</b>. A block "
-	  "that was lifted is not put back while StockFW keeps running.") },
-	{ FS_HELP_HEAD, N_("What Sentinel never blocks") },
-	{ FS_HELP_ITEM, N_("Private networks, loopback, link-local and "
-	  "multicast addresses, and anything it cannot recognise as a public "
-	  "address.") },
-	{ FS_HELP_ITEM, N_("A destination the program had already used at "
-	  "least three times before the regular pattern began.") },
-	{ FS_HELP_ITEM, N_("Anything found by Fan-Out: it is reported, never "
-	  "blocked.") },
+	{ FS_HELP_PARA, N_("The switch at the top of the Copilot page has two "
+	  "modes. <b>Detect only</b> reports what it sees and changes "
+	  "nothing. <b>Detect + auto-block</b>, the default, can also block "
+	  "a beacon's destination for ten minutes.") },
+	{ FS_HELP_PARA, N_("An automatic block is one outbound deny rule for "
+	  "one address, added to your policy and applied the same way as "
+	  "your own changes. It is lifted after ten minutes, or straight away "
+	  "with <b>Undo block</b> on the finding or <b>Undo</b> under "
+	  "<b>Changes made by the Copilot</b>. A block that was lifted is not "
+	  "put back while StockFW keeps running.") },
+	{ FS_HELP_HEAD, N_("When it blocks, and when it never does") },
+	{ FS_HELP_PARA, N_("It blocks only a beacon seen at least eight times, "
+	  "and only when every check below still passes at the moment it "
+	  "blocks, not just when the beacon was first seen. Otherwise the "
+	  "finding says which check held it back.") },
+	{ FS_HELP_ITEM, N_("Private networks, loopback, link-local, multicast "
+	  "and reserved addresses, and anything that is not a plain public "
+	  "address, are never blocked.") },
+	{ FS_HELP_ITEM, N_("Nor are this computer's DNS servers and default "
+	  "gateways, on any port.") },
+	{ FS_HELP_ITEM, N_("Nor a host your policy allows: an outbound allow "
+	  "rule for it, or for a network around it, is the last word.") },
+	{ FS_HELP_ITEM, N_("Nor a host the program had already used at least "
+	  "three times before, or that another program has used three times "
+	  "or more: the block would apply to every program.") },
+	{ FS_HELP_ITEM, N_("Nor anything found by Fan-Out, a scan or login "
+	  "attempts: those are reported, never blocked.") },
 	{ FS_HELP_ITEM, N_("Your own rules: Sentinel never changes, expires "
 	  "or removes them.") },
-	{ FS_HELP_PARA, N_("Your Allow is the last word: allowing a "
-	  "destination on the Events page lifts Sentinel's block on it. "
-	  "Switching to <b>Detect only</b> lifts every automatic block.") },
+	{ FS_HELP_PARA, N_("Allowing a destination on the Events page or from "
+	  "What-If lifts Sentinel's block on it. Switching to <b>Detect "
+	  "only</b> lifts every automatic block.") },
 	{ FS_HELP_NOTE, N_("Every block, lift and expiry is written to the "
 	  "audit log (audit.log, next to the settings file). The list of "
 	  "automatic blocks is saved too, so after a restart each block keeps "
-	  "only the time it had left.") },
+	  "only the time it had left, and one whose time ran out is removed "
+	  "before the firewall starts.") },
 	{ FS_HELP_WARN, N_("Sentinel watches outgoing traffic only, and only "
 	  "what the event log shows. It is an early warning, not a "
 	  "guarantee: a program that varies its timing, or talks to an "
@@ -574,9 +669,23 @@ static const FsHelpBlock prefs_events[] = {
 	  "computer</b> (on by default): leaves out broadcasts and traffic "
 	  "meant for other machines. Connections this computer starts are "
 	  "always listed.") },
+	{ FS_HELP_ITEM, N_("<b>Events kept in the list</b> (100,000 by "
+	  "default, up to 1,000,000): the newest events the list holds. "
+	  "Each takes about 75 bytes of memory, so 100,000 is about "
+	  "7 MB.") },
+	{ FS_HELP_ITEM, N_("<b>Keep event history</b> (off by default): "
+	  "saves every listed event to files only your account can read, "
+	  "also while the window is hidden in the notification area. At "
+	  "start the newest are read back into the list.") },
+	{ FS_HELP_ITEM, N_("<b>Keep history for (days)</b> and <b>History "
+	  "size limit (MB)</b> (30 days and 200 MB by default): older files "
+	  "are deleted, then the oldest until the rest fit.") },
+	{ FS_HELP_ITEM, N_("<b>Delete history</b> deletes every saved file, "
+	  "after asking. While another copy of StockFW is saving the "
+	  "history it deletes nothing and says so.") },
 	{ FS_HELP_NOTE, N_("The Activity graphs count what the Events list "
-	  "takes in, so these settings change them too.") },
-	{ FS_HELP_SEE, "events activity preferences" },
+	  "takes in, so the first two settings change them too.") },
+	{ FS_HELP_SEE, "events activity preferences cli" },
 	{ FS_HELP_END, NULL }
 };
 
@@ -1027,6 +1136,10 @@ static const FsHelpBlock cli[] = {
 	  "answers as if the firewall were running.") },
 	{ FS_HELP_ITEM, N_("<tt>stockfw events -f</tt>: follow events live "
 	  "(root).") },
+	{ FS_HELP_ITEM, N_("<tt>stockfw events --history</tt>: the history "
+	  "the app saves, with the Events page's filters (<tt>--since</tt>, "
+	  "<tt>--port</tt>, <tt>--addr</tt>, <tt>--blocked</tt> and more). "
+	  "It is your account's own, so it needs no root.") },
 	{ FS_HELP_ITEM, N_("<tt>stockfw connections</tt> and <tt>stockfw "
 	  "interfaces</tt>: open connections, and adapters with their "
 	  "traffic.") },
@@ -1039,7 +1152,8 @@ static const FsHelpBlock cli[] = {
 	{ FS_HELP_PARA, N_("Every command takes <tt>--json</tt> for scripts. "
 	  "Exit codes: 0 success, 1 failure, 2 usage error, 3 needs root, "
 	  "5 simulate says blocked or a list blocks the address now, "
-	  "6 simulate says it depends.") },
+	  "6 simulate says it depends, 7 <tt>copilot health</tt> found "
+	  "something.") },
 	{ FS_HELP_HEAD, N_("Threat-intel blocklists") },
 	{ FS_HELP_ITEM, N_("<tt>stockfw intel</tt> or <tt>stockfw intel "
 	  "status</tt>: the lists' state, read from the kernel, and the lists "
@@ -1295,7 +1409,8 @@ static const FsHelpBlock troubleshooting[] = {
 	  "are not logged, so a quiet list does not mean they blocked "
 	  "nothing. Threat-intel blocks are logged at a limited "
 	  "rate.") },
-	{ FS_HELP_ITEM, N_("Clear the filter box, and check <b>Hide repeated "
+	{ FS_HELP_ITEM, N_("Clear the search box and the filters "
+	  "(<b>Reset</b>), and check <b>Hide repeated "
 	  "events</b> and <b>Skip events not addressed to this computer</b> "
 	  "in <a href=\"help:prefs-events\">Preferences</a>.") },
 	{ FS_HELP_HEAD, N_("A blocklist blocks something you need") },
@@ -1435,8 +1550,9 @@ static const FsHelpTopic topics[] = {
 	{ "events", NULL, NULL,
 	  N_("Events"),
 	  N_("Each connection your rules allowed or blocked, as it happens."),
-	  N_("log monitor filter right-click rule block allow trust "
-	     "5156 5157 kernel"),
+	  N_("log monitor filter search export csv history skipped cidr "
+	     "port time right-click rule block allow trust 5156 5157 "
+	     "kernel"),
 	  events },
 	{ "activity", NULL, NULL,
 	  N_("Activity graphs"),
@@ -1463,7 +1579,8 @@ static const FsHelpTopic topics[] = {
 	{ "copilot", NULL, NULL,
 	  N_("Copilot"),
 	  N_("Insights from your traffic, and a check of your rules."),
-	  N_("insights suggestions analysis baseline learned unusual"),
+	  N_("findings insights baseline learned unusual scan login brute "
+	     "force health fix undo changes evidence"),
 	  copilot },
 	{ "whatif", NULL, NULL,
 	  N_("What-If"),
@@ -1498,8 +1615,10 @@ static const FsHelpTopic topics[] = {
 	  prefs_general },
 	{ "prefs-events", "preferences", NULL,
 	  N_("Events settings"),
-	  N_("What the Events list leaves out."),
-	  N_("repeated duplicate broadcast hide skip"),
+	  N_("What the Events list leaves out, how much it keeps, and the "
+	     "history on disk."),
+	  N_("repeated duplicate broadcast hide skip history disk days size "
+	     "delete keep memory"),
 	  prefs_events },
 	{ "prefs-policy", "preferences", NULL,
 	  N_("Policy settings"),

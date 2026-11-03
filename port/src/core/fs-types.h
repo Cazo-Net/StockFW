@@ -79,7 +79,8 @@ typedef struct
 	gchar *protocol;
 	gchar *service;
 	/* 1.0.7: what blocked it, when the log line says so
-	 * ("Threat intel: Spamhaus DROP", "Location block").  NULL
+	 * ("Threat intel: Spamhaus DROP", or a country or network
+	 * rule's "Threat intel: <its name>").  NULL
 	 * for policy events and on platforms whose log cannot tell. */
 	gchar *rule;
 } FsHit;

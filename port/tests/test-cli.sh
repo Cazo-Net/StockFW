@@ -174,6 +174,93 @@ assert d['verdict'] == 'ALLOWED' and d['answers'][0]['origin'] == 'stopped', d
 assert d['notes'][0].startswith('Once the firewall runs: BLOCKED'), d['notes']"
 fi
 
+# --------------------------------------------------------- copilot health
+# A policy of its own, so the findings are exactly the ones planted.
+# The machine is fixed too: the local network a narrowing uses
+# (STOCKFW_LAN_PREFIX) and this computer's own addresses
+# (STOCKFW_LOCAL_ADDRESSES, one on that network).  Every private
+# address of the computer is a LAN the fix must keep reachable, so with
+# the real adapters a CI runner's 10.1.0.x would decide the answer.
+# It must write nothing.
+CP_RULES="$TMP/rules-cp"
+mkdir -p "$CP_RULES"
+CP_ENV="STOCKFW_RULES_DIR='$CP_RULES' STOCKFW_LAN_PREFIX=192.168.1.0/24 STOCKFW_LOCAL_ADDRESSES=192.168.1.5"
+cp_run () { STOCKFW_RULES_DIR="$CP_RULES" STOCKFW_LAN_PREFIX=192.168.1.0/24 \
+            STOCKFW_LOCAL_ADDRESSES=192.168.1.5 "$@"; }
+cp_snap () { (cd "$CP_RULES" && find . -type f -exec md5sum {} + | sort; stat -c '%n %y' .; ls -lA --time-style=full-iso -R .) > "$1"; }
+# cp_json_at <local addresses> <python>: runs `stockfw --json copilot
+# health' in the fixed environment with those addresses as this
+# computer's, then the python on r (the process) and d (the document);
+# a failed check prints the document it read.  cp_json: on the LAN only.
+cp_json_at () { py "
+import json, os, subprocess, sys
+env = dict(os.environ, STOCKFW_RULES_DIR='$CP_RULES',
+           STOCKFW_LAN_PREFIX='192.168.1.0/24',
+           STOCKFW_LOCAL_ADDRESSES='$1')
+r = subprocess.run(['$S', '--json', 'copilot', 'health'], env=env,
+                   capture_output=True, text=True)
+try:
+    d = json.loads(r.stdout)
+$(printf '%s\n' "$2" | sed 's/^/    /')
+except Exception:
+    print('--- stockfw --json copilot health (exit %d) printed:' % r.returncode, file=sys.stderr)
+    print(r.stdout + r.stderr, file=sys.stderr)
+    raise"; }
+cp_json () { cp_json_at 192.168.1.5 "$1"; }
+
+check "help lists copilot" bash -c "'$S' help | grep -q 'copilot health'"
+check "copilot with no subcommand is a usage error (exit 2)" rc_is 2 "$S" copilot
+check "copilot health with a stray argument is a usage error (exit 2)" \
+  rc_is 2 "$S" copilot health now
+check "copilot health on an empty policy: no findings (exit 0)" \
+  rc_is 0 cp_run "$S" copilot health
+check "  ...and --json says so" cp_json "
+assert d['version'] == 1 and d['findings'] == [] and d['policy_rules'] == 0, d"
+cp_run "$S" policy add inbound-allow-service RDP 3389 Anyone > /dev/null
+cp_snap "$TMP/cp-before"
+check "copilot health with RDP open to anyone: findings (exit 7)" \
+  rc_is 7 cp_run "$S" copilot health
+check "  ...--json parses: risky_open, critical, a verified narrowing" cp_json "
+assert r.returncode == 7, r.returncode
+f = [x for x in d['findings'] if x['kind'] == 'risky_open']
+assert len(f) == 1, d
+f = f[0]
+assert f['severity'] == 'critical' and f['rule']['csv'] == 'RDP, 3389, Anyone', f
+assert f['rule']['kind'] == 'inbound_allow_service' and f['rule']['index'] == 0, f
+fx = f['fix']
+assert fx is not None, f
+assert fx['verified'] and fx['after'] == 'RDP, 3389, 192.168.1.0/24', fx
+outside = [c for c in fx['checks'] if '203.0.113.10' in c['probe']]
+assert outside and outside[0]['before'] == 'ALLOWED' and outside[0]['after'] == 'BLOCKED', fx
+lan = [c for c in fx['checks'] if '192.168.1.20' in c['probe']]
+assert lan and all(c['before'] == c['after'] for c in lan), fx"
+check "  ...the text output names the fix and says nothing was written" \
+  bash -c "$CP_ENV '$S' copilot health > '$TMP/cp-text';
+           grep -q 'fix:   Narrow to 192.168.1.0/24' '$TMP/cp-text' &&
+           grep -q 'nothing was written' '$TMP/cp-text' ||
+           { cat '$TMP/cp-text' >&2; false; }"
+# A computer on two private networks (a CI runner's 10.1.0.x beside the
+# LAN): narrowing to one would cut the other off, so no fix is offered,
+# and the checks the reason points to are printed.
+check "  ...on a second private network no narrowing is offered, and the failed check is shown" \
+  cp_json_at 192.168.1.5,10.1.0.42 "
+f = [x for x in d['findings'] if x['kind'] == 'risky_open'][0]
+assert f['fix'] is None and 'did not give the promised' in f['no_fix_reason'], f
+t = f['tried']
+assert t['after'] == 'RDP, 3389, 192.168.1.0/24', t
+other = [c for c in t['checks'] if '10.1.0.20' in c['probe']]
+assert other and other[0]['before'] == 'ALLOWED' and other[0]['after'] == 'BLOCKED', t"
+check "  ...and the text output lists that check under the reason" \
+  bash -c "STOCKFW_RULES_DIR='$CP_RULES' STOCKFW_LAN_PREFIX=192.168.1.0/24 STOCKFW_LOCAL_ADDRESSES=192.168.1.5,10.1.0.42 '$S' copilot health > '$TMP/cp-text2';
+           grep -q 'no fix offered' '$TMP/cp-text2' &&
+           grep -q 'checked: Inbound TCP port 3389 from 10.1.0.20: ALLOWED -> BLOCKED' '$TMP/cp-text2' ||
+           { cat '$TMP/cp-text2' >&2; false; }"
+cp_snap "$TMP/cp-after"
+check "copilot health writes nothing (rules files and their times unchanged)" \
+  cmp -s "$TMP/cp-before" "$TMP/cp-after"
+check "copilot health in text mode shows the word for the severity" \
+  bash -c "$CP_ENV '$S' copilot health | grep -q '^\[critical\] RDP (3389) is open to the internet'"
+
 # --------------------------------------------------------- apply (dry run only)
 check "apply --dry-run previews and changes nothing" \
   bash -c "'$S' apply --dry-run | grep -q 'Nothing was changed'"
@@ -196,6 +283,95 @@ ev = json.loads(subprocess.run(['$S', '--json', 'events', '-n', '1'], capture_ou
 assert len(ev) == 1 and ev[0]['port'] == '443', ev"
 check "events as a table has a header and a BLOCKED row per event" \
   bash -c "[ \$('$S' events -n 50 | grep -c BLOCKED) -eq 4 ]"
+
+check "events with a filter looks further back and keeps what matches" py "
+import json, subprocess
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '-n', '1', '--port', '445'], capture_output=True, text=True).stdout)
+assert [e['port'] for e in ev] == ['445'], ev
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '-n', '50', '--dir', 'out'], capture_output=True, text=True).stdout)
+assert [e['port'] for e in ev] == ['443'], ev
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '-n', '50', '--allowed'], capture_output=True, text=True).stdout)
+assert ev == [], ev"
+
+# --------------------------------------------------------- events --history
+# The history the desktop app saves (core/fs-eventlog.c): one file per
+# UTC day, a tab-separated line per event with an FNV-1a checksum.
+# Written here by hand, so the test also pins the file format.
+H="$TMP/history"
+py "
+import os
+H = '$H'
+os.makedirs(H, mode=0o700)
+def fnv(b):
+    h = 2166136261
+    for c in b:
+        h = ((h ^ c) * 16777619) & 0xffffffff
+    return h
+def line(stamp, ticks, d, port, src, dst, proto, service):
+    f = [str(ticks), stamp, d, 'eth0' if d == 'in' else '', 'eth0' if d == 'out' else '',
+         port, src, dst, '60', '0x00', proto, service, 'STOCKFW-DROP']
+    body = '\t'.join(f)
+    return body + '\t%08x\n' % fnv(body.encode())
+def t(day, hh, mm):
+    import datetime
+    dt = datetime.datetime(2026, 10, day, hh, mm, tzinfo=datetime.timezone.utc)
+    return dt.strftime('%Y-%m-%dT%H:%M:%SZ'), int(dt.timestamp()) * 10000000
+ev30 = [
+  line(*t(30, 9, 0), 'in', '22', '203.0.113.5', '10.0.0.5', 'TCP', 'SSH [BLOCKED]'),
+  line(*t(30, 9, 5), 'in', '3389', '198.51.100.7', '10.0.0.5', 'TCP', 'Remote Desktop [BLOCKED]'),
+]
+ev31 = [
+  line(*t(31, 8, 0), 'out', '443', '10.0.0.5', '203.0.113.9', 'TCP', 'HTTPS'),
+  line(*t(31, 8, 1), 'in', '22', '10.1.2.3', '10.0.0.5', 'TCP', 'SSH [BLOCKED]'),
+]
+with open(os.path.join(H, 'events-2026-10-30-000.log'), 'w') as f:
+    f.write('# StockFW event history 1\n' + ''.join(ev30))
+bad = ev31[0][:-9] + 'deadbeef\n'           # checksum does not match
+cut = ev31[1][:40]                           # a crash mid-write
+with open(os.path.join(H, 'events-2026-10-31-000.log'), 'w') as f:
+    f.write('# StockFW event history 1\n' + ev31[1] + bad + ev31[0] + cut)
+"
+check "events --history reads the saved days oldest first, a damaged and a cut-short line skipped" py "
+import json, subprocess
+r = subprocess.run(['$S', 'events', '--history-dir', '$H', '-n', '100'], capture_output=True, text=True)
+assert r.returncode == 0 and r.stdout.count('BLOCKED') == 3 and 'ALLOWED' in r.stdout, r
+assert '2 damaged or cut-short line(s)' in r.stderr, r.stderr
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$H', '-n', '100'], capture_output=True, text=True).stdout)
+assert [e['port'] for e in ev] == ['22', '3389', '22', '443'], ev
+assert ev[0]['service'] == 'SSH' and ev[0]['blocked'] and not ev[3]['blocked'], ev"
+check "  ...-n keeps the newest" py "
+import json, subprocess
+ev = json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$H', '-n', '2'], capture_output=True, text=True).stdout)
+assert [e['port'] for e in ev] == ['22', '443'], ev"
+check "  ...--since and --until by day, the --until day taken whole" py "
+import json, subprocess
+def q(*a): return [e['port'] for e in json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$H', *a], capture_output=True, text=True).stdout)]
+assert q('--since', '2026-10-31') == ['22', '443'], q('--since', '2026-10-31')
+assert q('--until', '2026-10-30') == ['22', '3389']
+assert q('--since', '2026-10-30T09:05:00Z', '--until', '2026-10-31T08:01:00Z') == ['3389', '443']"
+check "  ...--port, --dir, --addr (CIDR), --proto, --grep, --blocked and --allowed" py "
+import json, subprocess
+def q(*a): return [e['port'] for e in json.loads(subprocess.run(['$S', '--json', 'events', '--history-dir', '$H', '-n', '100', *a], capture_output=True, text=True).stdout)]
+assert q('--port', '22') == ['22', '22']
+assert q('--port', '400-4000') == ['3389', '443']
+assert q('--dir', 'out') == ['443']
+assert q('--addr', '10.1.0.0/16') == ['22']
+assert q('--addr', '203.0.113.0/24') == ['22', '443']
+assert q('--proto', 'udp') == []
+assert q('--grep', 'remote desk') == ['3389']
+assert q('--blocked', '--dir', 'in', '--port', '22') == ['22', '22']
+assert q('--allowed') == ['443']"
+check "a filter that cannot be read is a usage error, not an empty answer" bash -c "
+  '$S' events --history-dir '$H' --port 70000 2> '$TMP/err'; [ \$? -eq 2 ] && grep -q 'port' '$TMP/err' &&
+  '$S' events --history-dir '$H' --since yesterday-ish 2> /dev/null; [ \$? -eq 2 ] &&
+  '$S' events --history-dir '$H' --addr example.com 2> /dev/null; [ \$? -eq 2 ] &&
+  '$S' events --history-dir '$H' --dir sideways 2> /dev/null; [ \$? -eq 2 ] &&
+  '$S' events --history-dir '$H' --port 2> /dev/null; [ \$? -eq 2 ]"
+check "no saved history is said plainly, with where it would be" bash -c "
+  STOCKFW_EVENTS_DIR='$TMP/none' '$S' events --history 2> '$TMP/err'; [ \$? -eq 1 ] &&
+  grep -q 'no saved event history in $TMP/none' '$TMP/err' && grep -q 'Keep event history' '$TMP/err'"
+check "--history follows STOCKFW_EVENTS_DIR and needs no root" bash -c "
+  [ \$(STOCKFW_EVENTS_DIR='$H' '$S' --json events --history | python3 -I -c 'import json,sys; print(len(json.load(sys.stdin)))') -eq 4 ]"
 
 # --------------------------------------------------------- read-only views
 check "connections --json parses" \

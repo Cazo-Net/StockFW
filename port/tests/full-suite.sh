@@ -26,6 +26,18 @@ section () {
   echo "############ $1 ############"
 }
 
+# The tail a section prints is too short to diagnose a failure on a
+# runner no one can log in to: a failing suite also prints its whole
+# output (every FAIL line, compiler and linker errors, the command that
+# died), in a foldable group on GitHub Actions.
+full_output () {   # full_output <label> <what> <exit code> <file>
+  echo "----- full output of $2 (exit $3) -----"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::group::$1: full output"; fi
+  cat "$4"
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::endgroup::"; fi
+  echo "----- end of $2 -----"
+}
+
 run_sh () {   # run_sh <label> <script> [pattern]
   local label="$1" script="$2" pattern="${3:-PASSED|FAILED|PASSED:|tests run|failure}"
   local rc=0
@@ -34,10 +46,15 @@ run_sh () {   # run_sh <label> <script> [pattern]
   grep -E "$pattern" "$TMP/last-suite.txt" | tail -6
   echo "exit=$rc  (ok checks: $(grep -c '^ok:' "$TMP/last-suite.txt"))"
   grep "^FAIL" "$TMP/last-suite.txt" | head -10
-  [ "$rc" -eq 0 ] || fails=$((fails+1))
+  if [ "$rc" -ne 0 ]; then
+    fails=$((fails+1))
+    full_output "$label" "$script" "$rc" "$TMP/last-suite.txt"
+  fi
 }
 
 run_sh "CORE"        tests/test-core.sh
+run_sh "EVENT STORE + HISTORY" tests/test-eventstore.sh
+run_sh "WINDOWS EVENT LOG READER (fake log, any platform)" tests/test-winevt.sh
 run_sh "P4 ADVERSARIAL" tests/test-adversarial.sh
 run_sh "LOG START"   tests/test-logstart.sh
 run_sh "LOG EVENTS (file)" tests/test-logstart-events.sh
@@ -98,7 +115,10 @@ rc=0
 ninja -C build fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
 echo "ninja exit=$rc"
 grep "error:" "$TMP/last-ninja.txt" | head -5
-[ "$rc" -eq 0 ] || fails=$((fails+1))
+if [ "$rc" -ne 0 ]; then
+  fails=$((fails+1))
+  full_output "UI SMOKE TARGETS" "ninja" "$rc" "$TMP/last-ninja.txt"
+fi
 
 for exe in fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke; do
   rc=0
@@ -108,7 +128,10 @@ for exe in fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-t
   # A smoke that fails on a GLib or GTK warning only reports how many it
   # saw; the warnings themselves are in its output, so show them.
   [ "$rc" -eq 0 ] || grep -E -A1 "(WARNING|CRITICAL) \*\*" "$TMP/last-suite.txt" | head -12
-  [ "$rc" -eq 0 ] || fails=$((fails+1))
+  if [ "$rc" -ne 0 ]; then
+    fails=$((fails+1))
+    full_output "$exe" "$exe" "$rc" "$TMP/last-suite.txt"
+  fi
 done
 
 section "SUMMARY"

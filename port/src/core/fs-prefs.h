@@ -25,6 +25,13 @@ G_BEGIN_DECLS
 
 #define FS_PREFS_SKIP_REDUNDANT          "/apps/stockfw/client/filter/redundant"
 #define FS_PREFS_SKIP_NOT_FOR_FIREWALL   "/apps/stockfw/client/filter/not_for_firewall"
+/* 1.0.7: how many events the Events list keeps (a number, stored as
+ * text: 1000..1000000), and the history on disk -- on or off, how many
+ * days, how many megabytes (core/fs-eventlog.h). */
+#define FS_PREFS_EVENTS_MAX              "/apps/stockfw/client/events/max_events"
+#define FS_PREFS_EVENTS_HISTORY          "/apps/stockfw/client/events/keep_history"
+#define FS_PREFS_EVENTS_HISTORY_DAYS     "/apps/stockfw/client/events/history_days"
+#define FS_PREFS_EVENTS_HISTORY_MB       "/apps/stockfw/client/events/history_mb"
 #define FS_PREFS_APPLY_POLICY_INSTANTLY  "/apps/stockfw/client/policy_auto_apply"
 /* P3 audit-only testing mode: changes reach the policy file and the
  * audit log but never the firewall, until the user turns it off. */
@@ -92,6 +99,11 @@ const FsPrefSpec *fs_prefs_spec  (const gchar *key);
 /* Table-backed readers: the stored value, or the table's default. */
 gboolean  fs_prefs_bool   (const gchar *key);
 gchar    *fs_prefs_string (const gchar *key);
+
+/* A number setting (a FS_PREF_STRING row holding digits): the stored
+ * value clamped to min..max, or the table's default when the stored
+ * text is not a number. */
+guint     fs_prefs_uint   (const gchar *key, guint min, guint max);
 
 /* TRUE when the settings file holds key at all. */
 gboolean  fs_prefs_has_key (const gchar *key);

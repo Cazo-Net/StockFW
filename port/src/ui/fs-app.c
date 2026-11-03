@@ -895,6 +895,11 @@ save_state (gboolean everything)
 	}
 
 	fs_copilot_autoblocks_flush ();
+
+	/* Events still queued for the history file (it is flushed every
+	 * second anyway; this is for a sign-out that ends us next). */
+	if (everything)
+		fs_hitview_flush_history ();
 }
 
 static guint
@@ -969,6 +974,12 @@ on_shutdown (GApplication *app, gpointer data)
 
 	if (!quit_started)
 		save_state (FALSE);
+
+	/* The last second of events into the history file, and the
+	 * history folder's writer lock let go, before the instance name
+	 * is (main.c releases it after the loop): a copy taking over finds
+	 * the history free. */
+	fs_hitview_shutdown ();
 
 	free_state ();
 }
@@ -1149,8 +1160,10 @@ fs_app_activate (GtkApplication *app)
 	}
 
 	add_page (_("Copilot"),
-	          _("Learns each program's usual traffic, flags what is "
-	            "unusual, and tries rule changes before you make them."),
+	          _("Checks the event log and the policy with fixed rules on "
+	            "this computer, shows the events and the rule behind each "
+	            "finding, and tries rule changes before you make them. "
+	            "Nothing is sent anywhere."),
 	          fs_copilot_page (copilot, policy), TRUE);
 
 	/* P6 (false-outage hardening): the Sentinel staged-block list is
@@ -1231,6 +1244,9 @@ fs_app_reload_settings (void)
 
 	/* The Preferences dialog may have toggled the tray switches. */
 	fs_tray_sync ();
+
+	/* ... and changed the list size or the history settings. */
+	fs_hitview_apply_settings ();
 }
 
 /* [ settings_swap ]

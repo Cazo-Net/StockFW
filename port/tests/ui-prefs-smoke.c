@@ -58,6 +58,7 @@
 #include <string.h>
 
 #include "core/fs-prefs.h"
+#include "core/fs-eventlog.h"
 #include "core/fs-backend.h"
 #include "core/fs-i18n.h"
 #include "core/fs-rules.h"
@@ -66,6 +67,7 @@
 #include "core/fs-autostart.h"
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
+#include "ui/fs-hitview.h"
 #include "ui/fs-helpwindow.h"
 #include "fs-theme-css.h"   /* generated from src/ui/fs-theme.css */
 
@@ -1489,6 +1491,93 @@ drive_dependencies (GtkWidget *win)
 	click (win, "prefs-cancel");
 }
 
+/* ========================================================= events */
+
+static gchar *events_usage_before = NULL;
+static gchar *events_usage_after = NULL;
+static gboolean events_days_live_on = FALSE;
+static gboolean events_days_live_off = TRUE;
+static gboolean events_mb_live_off = TRUE;
+static gdouble events_max_shown = 0;
+static gboolean events_history_on_at_first = TRUE;
+static gboolean events_days_live_at_first = TRUE;
+static gdouble events_days_top = 0, events_mb_top = 0;
+
+static gchar *
+label_of (GtkWidget *win, const gchar *name)
+{
+	GtkWidget *w = find_named (win, name);
+
+	return g_strdup (w != NULL && GTK_IS_LABEL (w)
+	                 ? gtk_label_get_text (GTK_LABEL (w)) : "");
+}
+
+static void
+set_spin (GtkWidget *win, const gchar *key, gdouble value)
+{
+	GtkWidget *w = find_named (win, key);
+
+	if (w != NULL && GTK_IS_SPIN_BUTTON (w))
+		gtk_spin_button_set_value (GTK_SPIN_BUTTON (w), value);
+	else
+		CHECK (FALSE, "number for %s exists", key);
+}
+
+/* [ events_step ]
+ * Runs from an idle, not from the tick: Delete history asks first, and
+ * the tick (a source that is busy while it drives) must be free to
+ * answer that question. */
+static gboolean
+events_step (gpointer data)
+{
+	GtkWidget *win = data;
+	GtkWidget *w = find_named (win, FS_PREFS_EVENTS_MAX);
+
+	if (w != NULL && GTK_IS_SPIN_BUTTON (w))
+		events_max_shown =
+			gtk_spin_button_get_value (GTK_SPIN_BUTTON (w));
+
+	events_usage_before = label_of (win, "events-history-usage");
+	click (win, "events-history-clear");      /* asks; the tick says OK */
+	events_usage_after = label_of (win, "events-history-usage");
+
+	/* The rows' tops are the limits the app goes by. */
+	w = find_named (win, FS_PREFS_EVENTS_HISTORY_DAYS);
+	if (w != NULL && GTK_IS_SPIN_BUTTON (w))
+		gtk_spin_button_get_range (GTK_SPIN_BUTTON (w), NULL,
+		                           &events_days_top);
+	w = find_named (win, FS_PREFS_EVENTS_HISTORY_MB);
+	if (w != NULL && GTK_IS_SPIN_BUTTON (w))
+		gtk_spin_button_get_range (GTK_SPIN_BUTTON (w), NULL,
+		                           &events_mb_top);
+
+	/* Off at first; on, off, and back where it started. */
+	w = find_named (win, FS_PREFS_EVENTS_HISTORY);
+	events_history_on_at_first = w == NULL || !GTK_IS_SWITCH (w) ||
+	                             gtk_switch_get_active (GTK_SWITCH (w));
+	events_days_live_at_first = sensitive (win,
+	                                       FS_PREFS_EVENTS_HISTORY_DAYS);
+	set_switch (win, FS_PREFS_EVENTS_HISTORY, TRUE);
+	events_days_live_on = sensitive (win, FS_PREFS_EVENTS_HISTORY_DAYS);
+	set_switch (win, FS_PREFS_EVENTS_HISTORY, FALSE);
+	events_days_live_off = sensitive (win, FS_PREFS_EVENTS_HISTORY_DAYS);
+	events_mb_live_off = sensitive (win, FS_PREFS_EVENTS_HISTORY_MB);
+
+	set_spin (win, FS_PREFS_EVENTS_MAX, 250000);
+	set_spin (win, FS_PREFS_EVENTS_HISTORY_DAYS, 7);
+	/* Past the row's own limit: shown and saved as the limit. */
+	set_spin (win, FS_PREFS_EVENTS_HISTORY_MB, 999999);
+	snap (win, "events", "prefs-events");
+	click (win, "prefs-save");
+	return G_SOURCE_REMOVE;
+}
+
+static void
+drive_events (GtkWidget *win)
+{
+	g_idle_add (events_step, win);
+}
+
 /* One firewall setting flipped and saved. */
 static void
 drive_flip_echo (GtkWidget *win)
@@ -1985,6 +2074,9 @@ main (int argc, char **argv)
 		static Scenario windows_run = { "windows", drive_windows,
 		                                ANSWER_NONE,
 		                                FALSE, FALSE, FALSE, NULL };
+		static Scenario events_run = { "events", drive_events,
+		                               ANSWER_NONE,
+		                               FALSE, FALSE, FALSE, NULL };
 		static Scenario cancel_run = { "cancel", drive_cancel,
 		                               ANSWER_NONE,
 		                               FALSE, FALSE, FALSE, NULL };
@@ -2131,6 +2223,73 @@ main (int argc, char **argv)
 		/* ---- The window's dependencies are the generator's ---- */
 		seed ("");
 		run_scenario (&deps_run);
+
+		/* ---- Events: list size, history, Delete history ---- */
+		{
+			gchar *hist = g_build_filename (dir, "events", NULL);
+			gchar *file = g_build_filename (hist,
+				"events-2026-11-01-000.log", NULL);
+			gchar *other = g_build_filename (hist, "notes.txt", NULL);
+
+			g_mkdir_with_parents (hist, 0700);
+			g_setenv ("STOCKFW_EVENTS_DIR", hist, TRUE);
+			g_file_set_contents (file, "# StockFW event history 1\n",
+			                     -1, NULL);
+			g_file_set_contents (other, "mine\n", -1, NULL);
+			seed ("");
+			run_scenario (&events_run);
+
+			CHECK (events_max_shown == 100000,
+			       "the list size shows its default, 100000 (%.0f)",
+			       events_max_shown);
+			CHECK (events_usage_before != NULL &&
+			       strstr (events_usage_before, "in 1 file") != NULL &&
+			       strstr (events_usage_before, hist) != NULL,
+			       "Saved history names what is there and where (%s)",
+			       events_usage_before);
+			CHECK (events_run.reported &&
+			       !g_file_test (file, G_FILE_TEST_EXISTS) &&
+			       g_file_test (other, G_FILE_TEST_EXISTS),
+			       "Delete history asks, then deletes the history "
+			       "file and nothing else in the folder");
+			CHECK (events_usage_after != NULL &&
+			       strstr (events_usage_after, "No saved history")
+			       != NULL,
+			       "...and the row says so at once (%s)",
+			       events_usage_after);
+			CHECK (!events_history_on_at_first &&
+			       !events_days_live_at_first,
+			       "Keep event history is off until switched on");
+			CHECK (events_days_live_on && !events_days_live_off &&
+			       !events_mb_live_off,
+			       "days and size are live only while history is on");
+			CHECK (events_days_top == FS_EVENTLOG_MAX_DAYS &&
+			       events_mb_top == FS_EVENTLOG_MAX_MB,
+			       "the days and size rows go up to the limits the "
+			       "app keeps to (%.0f days, %.0f MB)",
+			       events_days_top, events_mb_top);
+			keys = disk_table_keys ();
+			CHECK (strstr (keys, "client/events/max_events=250000;")
+			       != NULL &&
+			       strstr (keys, "client/events/history_days=7;")
+			       != NULL &&
+			       strstr (keys, "client/events/history_mb=10000;")
+			       != NULL &&
+			       strstr (keys, "keep_history") == NULL,
+			       "Save writes the numbers changed, clamped to the "
+			       "row's range, and not the switch turned off and "
+			       "on again (%s)", keys);
+			CHECK (fs_prefs_uint (FS_PREFS_EVENTS_MAX,
+			                      1000, 1000000) == 250000,
+			       "the saved list size reads back as a number");
+			g_free (keys);
+			g_remove (other);
+			g_rmdir (hist);
+			g_unsetenv ("STOCKFW_EVENTS_DIR");
+			g_free (hist);
+			g_free (file);
+			g_free (other);
+		}
 
 		/* ---- Apply now: under the policy that is live ----
 		 * The journal says one outbound block is live; the loaded

@@ -33,6 +33,7 @@ the tests never touches a real `/etc/stockfw`.
 | start on open | the app's one start goes through the start gate (`fs_firewall_start_lifting` in `start_at_launch`), only after the policy is loaded and Sentinel's expired blocks are out of it; no direct backend start (read from `fs-app.c`) |
 | Windows rules | policy rows to netsh rules and argv, refusals, the upgrade apply (see below) |
 | threat intel on Windows | blocklist rules: plan, chunking, read-back verdicts, in force, on-link prefixes (see below) |
+| Copilot | detections with evidence, the policy health check and its verified fixes, the wording guard (see below) |
 
 ## Event source (`tests/test-logstart.sh`)
 
@@ -70,8 +71,178 @@ parsed back, and the dashboard's security model: loopback only, the
 per-run token (header only, never the query string or the page), the
 Host check against DNS rebinding, GET/HEAD only, the 16 KB request-head
 cap, the CSP nonce, and the dashboard leaving its own sockets out of the
-connection list.
+connection list.  `stockfw events` is checked with its filters
+against the kernel log, and `--history` against a history folder the
+test writes by hand (so the file format is pinned too): oldest first
+across days, `-n` keeping the newest, `--since`/`--until` by day and
+by stamp, every filter, a damaged and a cut-short line skipped and
+counted, unreadable filters refused with exit 2, and a missing folder
+named with where it would be.
 
+
+## Event store and history (`tests/test-eventstore.sh`)
+
+```sh
+cd port
+bash tests/test-eventstore.sh               # the checks
+bash tests/test-eventstore.sh bench 100000  # timings and memory
+bash tests/test-eventstore.sh bench 1000000
+```
+
+Compiles `src/core/*.c` by hand, like `test-core.sh`; GLib only.  It
+pins down `core/fs-eventstore.c` (the ring buffer behind the Events
+list) and `core/fs-eventlog.c` (the history on disk):
+
+- times: both backend stamps read and written back exactly, anything
+  else kept as text; every `--since`/From form.
+- the ring: the oldest goes first, the evict callback sees it still
+  readable, growing and shrinking keep the newest, 1,000,000 is the cap.
+- interning: one copy of each string, freed with its last event, ids
+  reused; a query's cached answer is not reused for a new string that
+  got an old id.
+- duplicates: the same row twice is one event, as before.
+- filters: text (the columns the list shows, the time as shown
+  included, the rule not; `--grep` the same), direction, verdict,
+  protocol, port (single, range, colon), address (v4 and v6 CIDR,
+  ranges; names and /33 refused), time window, and every combination
+  agreeing with the store-free check the command line uses.
+- CSV: the header, quoting, formula-looking fields defused (a leading
+  minus too, unless the whole field is a plain number: `-1+1` and the
+  DDE payload `-2+3+cmd|' /C calc'!A0` are defused, `-5` and `-1.25`
+  are not), mode 0600.
+- history: round trip with escapes and a text stamp; a cut-short last
+  line and a damaged middle line skipped and counted, the next write
+  starting on a fresh line; folder 0700 and files 0600 (a loosened file
+  put back); age and size limits (a file that is not ours left alone);
+  the bounded load at start reads only the newest files it needs.
+- history at volume: 460,000 events in a day under the 1 MB cap go past
+  part 999, and usage, the cap, the load and Delete history all see
+  part 1000 and after; a restart after the cap took the day's first
+  parts goes on after the highest part, so the start shows the newest
+  and the cap deletes the oldest; no part grows past its size; an event
+  stamped a year ahead is filed under today, and a file named for a
+  later day (from before) is capped and aged by when it was written;
+  under the 10,000 MB cap a part stops at 32 MB and the start reads
+  only the bytes of the 1,000 events it loads.
+- a full disk (Linux; `RLIMIT_FSIZE` makes write() fail as ENOSPC
+  would): the problem is said and the lost events counted, the next try
+  waits out the back-off, then history goes on; new limits (Preferences
+  > Save) try again at once; every event is either in the history or
+  counted as lost.
+- one writer per folder: a second log on the same folder is refused
+  (`FS_EVENTLOG_ERROR_IN_USE`, "another copy of StockFW is saving the
+  history") while the first is open, from this process and from a
+  forked child; once the child is killed without closing (a crash) the
+  system has dropped its lock and the folder opens again.  The lock file
+  is 0600, not counted as history and not deleted by Delete history.
+
+Teeth: open the lock without `flock()` and "a second log on the same
+folder is refused while it is open" fails.
+
+## The Windows event log reader (`tests/test-winevt.sh`)
+
+```sh
+cd port
+bash tests/test-winevt.sh
+```
+
+Runs `core/fs-winevt.c`, the logic of the Windows backend's
+Security-log reader, on any platform, against a fake log
+(`tests/winevt-fixture.h`: records first..last in wevtutil's raw
+`/f:xml` shape, 5156 and 5157 alternating, a 4624 logon every
+thousandth).  Until 1.0.7 the backend read the newest ten events every
+five seconds (`/c:10`), so a burst of 4,000 reached the Events list as
+ten.  It checks:
+
+- parsing: a 5156 and a 5157 give the rows the text reader gave (port
+  is the destination port, In and Out the local and remote side by
+  direction, `%%14592`/`%%14593` and the rendered words, protocol
+  names, the program's file name as the service, `[BLOCKED]` on 5157,
+  `&amp;` and `&#233;` unescaped, the time from `TimeCreated`); another
+  event id or no `DestAddress` gives no row; double quotes, a BOM and
+  an `EventID` with attributes are read; a cut-short last element is
+  left out and said.
+- the command: the poll's exact argv (`/q:` with `EventRecordID>N`,
+  `/c:10000`, `/rd:true`, `/f:xml`), no metacharacter in the query, and
+  the probe's argv (the newest record of any kind).
+- polls against the fake log: the start skips what was there; a burst
+  of 4,000 arrives whole, oldest first, once, and all 4,000 land in an
+  event store; the same log again delivers nothing; a burst of 30,000
+  delivers the newest 10,000 and counts the gap below them as skipped
+  (an upper bound: the gap holds the logons too); a cut-short read
+  counts what it lost; a cleared log (newest record below the cursor)
+  sends the cursor back to 0 and the records since the clear arrive,
+  once; rollover needs nothing; overlapping batches in both orders give
+  each record once; a timed-out read halves the next request down to
+  500 and good reads double it back; when the event log refuses the
+  record condition, the newest records read without it deliver only
+  what is new and a full batch that reaches back past the cursor (also
+  over a logon record) counts nothing as skipped.  Parsing 10,000 events must take
+  well under a poll (about 75 ms here).
+
+Teeth (each restored with `cp` and checked with `cmp`): `/c:10` fails
+"poll argv"; taking records at the cursor (`>=`) fails "once each";
+no sort fails "oldest first"; no skip count fails "skipped: the record
+gap"; no clear check fails "cleared"; no halving fails "timeout: half";
+the time looked for outside `<System>` fails "the time is
+TimeCreated's SystemTime"; no `&amp;` fails "&amp; unescaped"; a
+full batch counting a skip though it reached the cursor fails "no
+record condition (fallback)".
+
+On Windows `tests/test-winlog.sh` runs the same fake log through the
+real spawn: `fake-wevtutil.exe` (built beside the test, found before
+System32) answers for `STOCKFW_FAKE_WEVTUTIL_LOG` ("first last"),
+honours the query's `EventRecordID>`, `/c:` and `/rd:`, pads with NULs
+and records its arguments; with `STOCKFW_FAKE_WEVTUTIL_NO_RECORDID=1`
+it refuses a query with the record condition (exit 15001).  The test starts monitoring, checks a burst
+of 4,000 arrives whole and in order, nothing twice, 10,000 of a
+30,000 burst with the skip shown through `log_skipped`, the records
+after a clear, that a refused record condition still brings the new
+records once with nothing counted as skipped, and that the query
+reached wevtutil as one argument.
+
+## Events list at scale (`fs-hitview-smoke`)
+
+```sh
+cd port
+ninja -C build-linux fs-hitview-smoke
+xvfb-run -a -s "-screen 0 1280x900x24" ./build-linux/fs-hitview-smoke
+STOCKFW_EVENTS_SHOTS=/some/dir xvfb-run -a ./build-linux/fs-hitview-smoke
+```
+
+Builds the real Events page with its history in a scratch folder
+(`STOCKFW_EVENTS_DIR`).  Besides the page's older checks, it reads 500
+saved events back at start, then appends 100,000 events into the shown
+list and checks: the list's model is the virtual one (no GtkListStore,
+no filter copy) in fixed-height mode; appending reads only the visible
+cells; a scroll frame at 100,000 rows costs what it costs at 1,000;
+the port, CIDR, protocol and combined filters give the store's own
+count, label included, and every shown row matches; live events at the
+cap land or are left out as the filter says; a bad port is refused and
+the list kept; CSV export writes the filtered rows; sorting by port is
+numeric both ways and a live event lands in sorted place; the history
+files are written.  Timings are printed as `measure:` lines.
+
+History is off until switched on (checked), so the smoke switches it on
+in a scratch settings folder.  On Linux it also fills the disk in the
+middle of the session (`RLIMIT_FSIZE`): the strip says history is not
+being saved within seconds, and with room again the history goes on
+and the strip goes back to what it said.
+
+At the list's largest, 1,000,000 events in a real view, a burst of
+5,000 live events under the port sort and under the source sort must
+cost about what it costs under the time sort (within 6 times, plus 20
+us).  Before the row list was kept in chunks each such event moved up
+to the whole row array twice, about 200 us at this size.  After those
+bursts, and after 360,000 adds and drops at 20,000 rows (chunks split
+and joined many times), the rows must be exactly those a sort from
+scratch gives.
+
+The Preferences smoke (below) covers Preferences > Events: the list
+size, the history switch (off at first) with its days and size rows
+live only while it is on and going up to the limits the app keeps to
+(3,650 days, 10,000 MB), values clamped to the row's range, and Delete
+history asking first, then deleting only history files.
 
 ## Where the computer is connected (`fs-netplace-test`, `fs-overview-place-smoke`)
 
@@ -1041,6 +1212,13 @@ half from uid 65534 and half from root, do not hold up a show or a
 launch with `SUDO_UID=65534` makes it quit cleanly and takes its place,
 after which the user launching again only raises root's window.
 
+With Keep event history on, the test also reads which processes hold
+the history folder's writer lock (`/proc/*/fd`): the first copy does;
+after a second launch hands over, still only the first copy (the
+handoff never opens the history); a hidden `--background` copy has it
+open and a second `--minimized` launch does not; after `--quit` no
+process holds it.
+
 Teeth: read from a connection before checking who it is (as 1.0.7
 did) and five "silent" checks fail; skip the takeover in `main()`
 and five "takeover" checks fail; install the SIGHUP handler over
@@ -1224,6 +1402,33 @@ per process:
   own; the quit closes it as Cancel would (the moved setting is not
   saved) instead of waiting for it, and the Copilot's state is still
   intact.
+- `history`: started as `--background` starts it (window hidden) with
+  Keep event history on.  A burst of 4,000 events fed through the
+  app's monitor callback is all in the Events list and, within a
+  second, all in the history file, the window still hidden; a second
+  writer on the folder is refused while the app runs; a skip count from
+  the backend (`log_skipped`) shows beside the count as "(up to 1,234
+  skipped)" with a tooltip; ten events fed right before `fs_app_quit()`
+  are in the file after the run, and the folder's lock is free again.
+- `background` (`STOCKFW_AUTOSAVE_S=1`; the DNS server and gateway
+  fixed through `STOCKFW_RESOLV_CONF` and `STOCKFW_ROUTE_FILE`): the
+  window is hidden as "Minimize to the tray" hides it (directly, since
+  xvfb has no notification area for the icon to embed in), and then
+  the Copilot must keep working.  A Sentinel block restored with 12
+  seconds of its ten minutes left is in the policy once the window is
+  hidden (a precondition: 12 s covers the start-up, which took over
+  3 s on the Windows runner; with too little left the boot restore
+  already takes it out as "expired while StockFW was not running" and
+  the timer under test never runs), is lifted from the policy and the
+  staged list by the expiry timer (waited for up to 4 s past its due
+  time, and not before it), and audited "expired after 10 minutes";
+  seven timed contacts fed into the app's Copilot and the
+  eighth delivered through the Events page's own callback stage a
+  Sentinel block (policy, staged list, apply gate); the periodic save
+  writes what was learned; the tray's "Pause Sentinel auto-block for 1
+  hour" is offered, pauses, the menu then offers Resume, and a second
+  timed series stages nothing while paused; no window or dialog came
+  up meanwhile (the tray icon's own window aside).
 
 No scenario stops the firewall.  `test-core.sh` pins
 `fs_prefs_dirty()`.
@@ -1239,7 +1444,23 @@ on the Stop path fails its check; freeing the state in the quit
 instead of in shutdown fails "sametick" (a timer due in the same loop
 pass as the quit found freed memory); leave the Preferences window out
 of the quit and "the quit closes the Preferences window" and
-"promptly" fail.
+"promptly" fail.  For `history`: no `fs_hitview_shutdown()` in
+`on_shutdown` fails "the quit let the folder go"; without it and
+without the flush in `save_state(TRUE)` "written on the way out"
+fails (4,000 lines, not 4,010); no `flock()` fails "no second
+writer"; no skip text fails "skipped show beside the count".
+
+Teeth for `background`, each re-injected in the real file, seen
+failing with `fs-session-smoke background`, restored with `cp` and
+proved with `cmp`:
+
+| Bug re-injected | Checks that caught it |
+|---|---|
+| the Copilot fed only while the Events page is on screen (`fs-hitview.c`) | "an event delivered while hidden reaches the Copilot (7 seen)", "the contact that completes a timed series is staged ...", "what the Copilot learned while hidden is written ..." |
+| the expiry timer waits while the Copilot page is not on screen (`fs-copilot.c`) | "a Sentinel block whose ten minutes ran out while the window was hidden is lifted ...", "...and audited (0)" |
+| the periodic save skipped while the window is hidden (`fs-app.c`) | "what the Copilot learned while hidden is written by the periodic save" |
+| Sentinel's automatic pass run only while the Events page is on screen (`fs-hitview.c`) | "the contact that completes a timed series is staged as a Sentinel block while the window is hidden" |
+
 ## Windows rule translation (`tests/test-core.sh`)
 
 ```sh
@@ -1693,6 +1914,182 @@ checked with `cmp`:
 
 The run is also clean under AddressSanitizer and UBSan (LeakSanitizer
 on), and passes as root and as an ordinary user.
+## The Copilot (`tests/test-health.c`, `test-core.sh`, `fs-copilot-smoke`)
+
+```sh
+cd port
+bash tests/test-core.sh                     # detections, then test-health.c, then the wording guard
+ninja -C build-linux fs-health-test         # test-health.c through CMake
+ninja -C build-linux fs-copilot-smoke fs-hitview-smoke
+xvfb-run -a ./build-linux/fs-copilot-smoke  # section 8: the page; a dark run in a child
+xvfb-run -a ./build-linux/fs-hitview-smoke  # feed order (as root)
+bash tests/test-cli.sh                      # stockfw copilot health
+```
+
+The Copilot is a set of fixed rules; the design is
+`docs/ARCHITECTURE-AND-SECURITY.md` chapter 4 (every detection, its
+limits, Sentinel's gates, what each platform's log shows) and section
+14.5 (the 1.0.7 rework, the health check and the page).  That the
+Copilot keeps working with the window hidden is `fs-session-smoke`'s
+`background` scenario (Session safety, above).
+
+`test-health.c` (pure GLib) pins the policy health check
+(`core/fs-health.c`):
+
+- exact coverage: a port range covers a port inside it, a network an
+  address inside it, TCP never covers UDP, a host name never covers or
+  is covered;
+- a golden table, one small policy per check, on both platform models:
+  duplicate, shadowed, unreachable, no effect, broad (101 ports is,
+  100 is not), risky open (RDP Critical, SSH Info), a forward to a risky
+  port, a deny by host name on Windows;
+- every fix verified by the What-If engine, with its probes and their
+  verdicts before and after, and the refusals: a narrowing that would
+  also block a LAN host, a narrowing another row undoes, no known LAN,
+  a removal that would change a verdict;
+- apply and undo, by content, proved with the rules file's bytes,
+  including an undo after the user removed another row in between.
+
+`test-core.sh` adds the detections: the inbound scan (12 distinct ports
+in 60 s reports; 11 ports tried twice do not), repeated login attempts
+(10 in 5 minutes report; 10 over 6 minutes do not; Critical when the
+policy admits the source; never auto-applicable), block-list hits
+(outbound Warning naming the list; inbound rolled up per list per
+hour), dedup by key, beacons per app (two apps polling one host are two
+series; port 123 is never reported; auto-block needs 8 contacts),
+fan-out per app, and that on a mixed corpus only the beacon's deny is
+auto-applicable and no anomaly offers an allow.
+`test_copilot_review_fixes` (F1 to F10) adds: DNS on 53 and 853 to a
+configured resolver is not timed, and a resolver on another port, the
+default gateway and a stub resolver with an unknown upstream are never
+auto-blocked, also at `fs_insight_is_auto_safe` (the resolver, route
+and stub files come from `STOCKFW_RESOLV_CONF`, `STOCKFW_RESOLVED_CONF`
+and `STOCKFW_ROUTE_FILE`; main sets `STOCKFW_RESOLV_CONF=/dev/null` so
+the host's own network never decides a result); a destination another
+program has recorded connections to is withheld; allowed inbound probes
+and refused probes teach the profile nothing; 260 new-port findings
+evict behavior findings first; with 1024 sources tracked a new scanner
+and a new login source are still seen; 40 addresses of one /64 make one
+aggregate finding naming them; allowed-only login attempts from a
+public source the policy admits are a Warning; SSH on a port the policy
+names, and 9 attempts on SSH plus 9 on RDP from one source, report;
+the new-destination times survive a restart; later probes update the
+open scan and login findings; each beacon evidence row has its own
+verdict, and TCP and UDP to one port are two series; a busy service
+name ("https") does not trip fan-out without refused hosts.  The
+mixed-corpus and fan-out tests feed program names (`scanner.exe`).
+Its last step is the
+wording guard: `\bAI\b` or `AI-` anywhere in `src`, `docs` or the
+README fails the suite, except the one sentence that says there is no
+AI model.
+
+`fs-copilot-smoke` section 8 drives the page with applies on hold
+(as root, in a network namespace of its own; on Windows against the
+section 7 stand-in, a known firewall on a Private network, for every
+section that calls `whatif_isolate`; `STOCKFW_LAN_PREFIX` fixes the
+LAN and `STOCKFW_LOCAL_ADDRESSES` this computer's addresses, so a
+runner's own 10.1.0.x or Public profile cannot decide the checks): the tiles follow the data (no constant), each finding
+row has a pill with a word and an ATK name "Severity: title", the
+drawer opens by click and by a real Enter key event and shows evidence
+rows, an unverified fix has no button and says why, Fix asks first (No
+writes nothing; Yes writes exactly the after row, audited), Undo puts
+the rules files back byte for byte, the block offered from a finding is
+checked by What-If first, and the empty states (no events, all clear
+with "This is not a guarantee", monitoring off with its reason).  It
+also checks: the Policy health tile counts the rows but not the "no
+effect in this mode" notes (found by their own words, not a flag the
+page sets) and says the notes are below; Needs attention counts the
+Critical and Warning health rows; Show rule's ATK name names its row;
+an undone change stays in Changes marked "Undone at" with no Undo; the
+evidence cells are selectable and out of the Tab order; a click
+delivered inside the open drawer (through `gtk_propagate_event`, so
+the list box's own click gesture sees it) leaves it open, and the same
+click on the head closes it; a refresh with nothing new keeps every
+row widget and the focused button; a row that shows a new event is
+rebuilt, stays open, and gets the focus back on the same button.  A
+child process repeats the page under `GTK_THEME=Adwaita:dark` and
+checks that it stays light (no dark class, dark title text, light
+card).  Set `FS_SHOT_DIR` to save screenshots.
+
+`fs-hitview-smoke` checks the feed order as root: with "skip repeats"
+on, 10 identical log lines give the Copilot 10 events while the list
+shows 1 row.
+
+`test-cli.sh` checks `stockfw copilot health`: usage errors exit 2, a
+clean policy exits 0, RDP open to anyone exits 7 with a verified
+narrowing in `--json`, and the rules directory (files and times) is
+unchanged afterwards.  The local network (`STOCKFW_LAN_PREFIX`) and
+this computer's addresses (`STOCKFW_LOCAL_ADDRESSES`) are fixed: with
+the real adapters, a CI runner's 10.1.0.x is a second private network
+the narrowing would cut off, so no fix was offered and the check read
+`fix: null` (seen on GitHub's Ubuntu runner, and reproduced as a
+normal user in a network namespace with 10.1.0.42/16 and 172.17.0.1/16).
+That case is now a check of its own: with 192.168.1.5 and 10.1.0.42
+no narrowing is offered, `tried` holds the failed 10.1.0.20 check, and
+the text prints it under the reason.  A failed check prints the JSON
+it read.
+
+Teeth, each re-injected, seen failing, and restored with `cp` (proved
+with `cmp`):
+
+| Bug re-injected | Checks that caught it |
+|---|---|
+| coverage ignores the protocol (`fs-health.c`) | "TCP 8080 and UDP 8080 are not the same rule", both models |
+| fix verification skipped: `verified` forced TRUE | "a narrowing that also blocks a LAN host gets no fix", "no narrowing while another row still opens the port", both models |
+| the narrowing writes `0.0.0.0/0` | 18 checks, among them "the fix narrows the row to the LAN, verified" and "checked: 203.0.113.10:3389 ALLOWED -> BLOCKED" |
+| a host-name deny not flagged on Windows (the design's "Windows model treated as first match" row is replaced by this one: the unreachable golden rows already run on both models) | "windows: a deny by host name blocks nothing on Windows" |
+| Undo finds the row by index, not by content | "undo: by content, the right row is restored (not row 2)" |
+| the scan counts events, not distinct ports | "scan: 11 distinct ports do not (22 events ...)" |
+| the brute-force window never expires | "brute: 10 attempts over 6 minutes do not (the window expires)" |
+| the beacon keyed without the app | "two apps polling one destination are two series" |
+| the NTP guard removed | "NTP (port 123) is never reported as a beacon" |
+| inbound block-list hits not rolled up | 5 intel checks, among them "three inbound drops in an hour roll up into one finding" |
+| anomaly findings carry an auto-applicable allow row | "a mixed corpus: only the beacon's deny is auto-applicable", and 31 "offers no rule" checks |
+| "AI-powered" put back in the About dialog | the wording guard |
+| the Copilot fed after the skip-repeats filter (`fs-hitview.c`) | "feed order: ... 10 identical events still reach the Copilot as 10 (got 1)" |
+| a constant in the Policy health tile (`fs-copilot.c`) | "page: the Policy health tile counts the findings but not the ... notes", "page: the tile follows the check" |
+| DNS over TLS (853) timed like any port | "F1: DNS (53) and DNS over TLS ...", "F1: DNS over TLS to a configured ..." |
+| resolvers and the gateway not withheld | "F1: a resolver on any other port ...", "F1: the default gateway ..." |
+| `fs_insight_is_auto_safe` ignores the resolvers and gateway | "F1: fs_insight_is_auto_safe refuses ..." |
+| systemd-resolved's upstream list not read | "F1: DNS (53) and DNS over TLS ..." |
+| a stub with an unknown upstream auto-blocked | "F1: behind a stub with an unknown upstream ..." |
+| only the program's own history checked | "F2: a destination another program ..." |
+| new-port signal on inbound events | "F3: allowed inbound probes ..." |
+| refused probes recorded in the profile | "F4: refused probes teach the profile no destinations" |
+| the 200 cap evicts the oldest finding of any kind | "F3: 260 new-port findings ..." |
+| the scan table refuses new sources when full | "F4: with 1024 sources ..." |
+| no IPv6 /64 aggregate | "F4: 40 addresses of one /64 ...", "F4: its evidence names ..." |
+| the login table refuses new sources when full | "F4: with the login table full ..." |
+| allowed-only attempts always Info | "F5: allowed connections only ..." |
+| login ports from the policy ignored | "F6: SSH on 2222 ..." |
+| login attempts counted per port | "F6: 9 on SSH and 9 on RDP ..." |
+| new-destination times not saved | "F7: behavior.csv keeps ...", "F7: after a restart ..." |
+| an open finding not updated within the hour | "F8: the 11th and 12th ...", "F8: the open scan finding ..." |
+| every beacon evidence row copies the latest verdict | "F9: seven allowed contacts ..." |
+| the protocol left out of the beacon key | "F9: TCP and UDP to one port ..." |
+| a service-name key counts any host for fan-out | "F10: one busy page ..." |
+| the findings list rebuilt on every refresh (`fs-copilot.c`) | "page: a refresh with nothing new keeps the row and its focused button", "page: the row that did not change is the same widget" |
+| the focus not put back after a row is rebuilt | "page: when the focused row changes, the focus goes to the same button in its new row" |
+| the page given the dark class again | "dark: the page stays light like the rest of the app" |
+| the evidence cells' colour rule removed (`fs-theme.css`) | "dark: the evidence cells are dark text on the light card (48 of 54 light)" |
+| Undo removes the change from the list | "page: the undone change stays in Changes ..." |
+| Needs attention skips the health rows | "page: Needs attention counts the policy's Critical rows", "page: Needs attention counts the Warning finding ..." |
+| the health tile counts the "no effect" notes | "page: the Policy health tile counts the findings but not the ... notes" and 3 more |
+| the drawer guard lets the click through | "page: a click inside the open drawer leaves it open" |
+| drawer text not selectable | "page: the evidence cells are selectable text ...", "page: what Sentinel did can be selected and copied" |
+| Show rule without its ATK name | "page: Show rule's accessible name names the row" |
+| the tile note does not say the notes are below | "page: the tile's note says the notes are below" |
+| the auto pass does not judge the gates again (`fs-copilot.c`, UI) | "R1: resume does not block a host brave.exe now uses", "R1: the switch to auto-block does not block ...", "R2: resume does not stage a deny over the user's allow" and 3 more |
+| `fs_copilot_beacon_recheck` passes every beacon unjudged | "R1: another program's later use of the host withholds ...", "R2: an allow row added later ...", and the same 6 smoke checks |
+| the user's allow row not a gate | "R2: a beacon to a host the policy allows ...", "R2: an allow row added later ...", "R2: a new beacon to an allowed host stages nothing" and 4 more |
+| a Linux service key called a program in the withheld text | "R3: another service key is named as a port's traffic ...", "R3: a service key's own history ..." |
+| `test-core` writes its settings under the shared temp dir | "the settings, baseline and audit files go to a directory only this run owns ..."; run as a normal user next to a root-owned `/tmp/stockfw`, 86 checks fail and the program crashes |
+
+Since the review of 1.0.7, the staging pass asks `fs_copilot_beacon_recheck`
+before it writes, so a pass that runs late (a tray pause ending, a switch
+from Detect only, a retry) judges the beacon's gates with that moment's
+baseline, network and policy. `test-core.sh` makes its own temp dir for
+each run and removes it at the end.
 
 ## Threat-intel backend slots on Linux (`tests/test-intel-backend.sh`)
 

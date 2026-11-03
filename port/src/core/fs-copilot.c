@@ -1,9 +1,13 @@
 /*---[ fs-copilot.c ]---------------------------------------------------
- * Smart Firewall Copilot - Implementation.
+ * Copilot: rule-based, local analysis of the event log.
  *
- * Learns application network behavior, detects anomalies, suggests
- * rules with natural-language explanations, and simulates "what-if"
- * scenarios before applying.
+ * Keeps a per-application baseline (ports, destinations, hours, rate)
+ * and runs a fixed set of checks on every event: first use of a port,
+ * new public destinations, rate spikes, timed check-ins (beacons),
+ * fan-out, inbound port scans, repeated login attempts and traffic a
+ * block list stopped.  Each check is a threshold written below; each
+ * finding carries the events behind it, the numbers next to the limit,
+ * and what else could explain it.  Nothing here leaves the computer.
  *--------------------------------------------------------------------*/
 
 #include "core/fs-copilot.h"
@@ -14,6 +18,8 @@
 #include "core/fs-rules.h"
 #include "core/fs-apply.h"
 #include "core/fs-netplace.h"
+#include "core/fs-iprange.h"
+#include "core/fs-hostnet.h"
 
 #include <gio/gio.h>
 #include <time.h>
@@ -33,20 +39,109 @@ struct _FsCopilot
 
 	/* Configuration. */
 	gboolean learning_enabled;
-	gdouble anomaly_threshold;      /* Standard deviations for anomaly */
 	guint min_samples_for_baseline; /* Min connections before analyzing */
 
 	/* Sentinel (1.0.4): covert-channel and fan-out state.  Arrival
 	 * times are bucketed to whole seconds, so a polled batch of
 	 * records counts as one moment instead of a fake burst. */
-	GHashTable *beacon_stamps;      /* "host:port" -> GArray<gint64> */
-	GHashTable *beacon_reported;    /* "host:port" -> TRUE           */
-	GHashTable *fanout_seen;        /* host -> last bucketed second  */
-	GHashTable *fanout_blocked;     /* blocked host -> bucketed sec  */
-	gboolean    fanout_reported;    /* current window already told   */
+	GHashTable *beacon_stamps;      /* "app|host:port/proto" ->
+	                                 * GArray<BeaconEv>                 */
+	GHashTable *beacon_reported;    /* same key -> stage 1 / 2          */
+	GHashTable *beacon_total;       /* same key -> contacts ever timed
+	                                 * (the stamps keep the newest 32) */
+	GHashTable *fanout;             /* app -> FanoutState*              */
+
+	/* 1.0.7: inbound checks and report memory. */
+	GHashTable *scan;               /* source -> ScanState*             */
+	GHashTable *brute;              /* source -> GArray<BruteEv>        */
+	GHashTable *reported_at;        /* "check|subject" -> unix sec      */
+	guint64     events_seen;
+
+	/* The DNS servers and default gateways this computer uses.  DNS
+	 * (53, 853) to a resolver is never timed, and no automatic block
+	 * ever targets a resolver or a gateway, on any port.  Read from
+	 * the system (fs_hostnet_read) and again at most once a minute,
+	 * unless a caller or the environment fixed them. */
+	FsRangeSet *resolvers;
+	FsRangeSet *gateways;
+	gboolean    net_fixed;
+	gint64      net_read_at;        /* monotonic seconds                */
 };
 
+typedef struct
+{
+	GHashTable *seen;               /* host -> last bucketed second     */
+	GHashTable *blocked;            /* blocked host -> bucketed second  */
+	gboolean    reported;           /* current window already told      */
+	gint64      last;               /* newest second, for eviction      */
+} FanoutState;
+
+typedef struct
+{
+	gint64       sec;               /* monotonic second                 */
+	gint64       unix_sec;
+	guint        port;
+	gboolean     blocked;
+	const gchar *proto;             /* static string                    */
+	const gchar *src;               /* an aggregate's member (a key of
+	                                 * its members table), else NULL    */
+} ScanEv;
+
+typedef struct
+{
+	GArray     *ev;                 /* ScanEv, oldest first             */
+	GHashTable *members;            /* IPv6 /64 only: its addresses     */
+} ScanState;
+
+typedef struct
+{
+	gint64   sec;
+	gint64   unix_sec;
+	gboolean blocked;
+	guint    port;
+} BruteEv;
+
+/* One timed contact, as its own log line had it. */
+typedef struct
+{
+	gint64   sec;                   /* monotonic second                 */
+	gboolean blocked;
+	gchar   *rule;                  /* what blocked it, or NULL         */
+} BeaconEv;
+
+static void
+beacon_ev_clear (gpointer data)
+{
+	BeaconEv *b = data;
+
+	g_free (b->rule);
+	b->rule = NULL;
+}
+
+static void
+fanout_state_free (gpointer data)
+{
+	FanoutState *f = data;
+
+	g_hash_table_unref (f->seen);
+	g_hash_table_unref (f->blocked);
+	g_free (f);
+}
+
+static void
+scan_state_free (gpointer data)
+{
+	ScanState *st = data;
+
+	g_array_unref (st->ev);
+	if (st->members != NULL)
+		g_hash_table_unref (st->members);
+	g_free (st);
+}
+
 /* Forward declarations. */
+static void copilot_read_network (FsCopilot *copilot);
+static gboolean hit_is_blocked_marker (const FsHit *hit);
 static FsAppProfile *app_profile_new (const gchar *name, const gchar *path,
                                       gint64 now_unix);
 static void app_profile_free (FsAppProfile *profile);
@@ -65,13 +160,11 @@ static gboolean rate_spike_take (FsAppProfile *profile, gint64 now_unix);
 static void behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
                               const gchar *app_name,
                               const gchar *remote_ip, guint port,
-                              gint64 now_unix);
+                              gint64 now_unix, const FsHit *hit,
+                              gboolean inbound);
 static void emit_insight (FsCopilot *copilot, FsInsight *insight);
 static gboolean sentinel_hit_is_inbound (const FsHit *hit);
 static void hit_app_key (const FsHit *hit, gchar *buf, gsize size);
-static gboolean sentinel_dest_auto_ok (FsCopilot *copilot,
-                                       const gchar *app,
-                                       const gchar *dest);
 static FsInsight *create_insight (FsInsightType type,
                                   FsCopilotSeverity severity,
                                   const gchar *title,
@@ -98,10 +191,34 @@ static FsInsight *create_insight (FsInsightType type,
 
 static FsInsight *sentinel_beacon_check (FsCopilot *copilot,
                                          const FsHit *hit,
-                                         gint64 now_us);
+                                         gint64 now_us, gint64 now_unix);
 static FsInsight *sentinel_fanout_check (FsCopilot *copilot,
                                          const FsHit *hit,
-                                         gint64 now_us);
+                                         gint64 now_us, gint64 now_unix);
+static FsInsight *inbound_scan_check (FsCopilot *copilot, const FsHit *hit,
+                                      gint64 now_us, gint64 now_unix,
+                                      FsInsight **net_out);
+static FsInsight *brute_force_check (FsCopilot *copilot, const FsHit *hit,
+                                     gint64 now_us, gint64 now_unix);
+static FsInsight *threat_intel_check (FsCopilot *copilot, const FsHit *hit,
+                                      gint64 now_unix);
+
+/* ---- 1.0.7 checks (exercised by tests/test-core.sh) ---------------- */
+#define FS_SENTINEL_BEACON_AUTO_MIN    8    /* contacts before auto-block */
+#define FS_SCAN_PORTS_60S              12   /* distinct local ports, 60 s */
+#define FS_SCAN_PORTS_10M              25   /* distinct local ports, 10 min */
+#define FS_SCAN_WINDOW_S               600
+#define FS_SCAN_MAX_EVENTS             512  /* per source                */
+#define FS_SCAN_MAX_SOURCES            1024 /* then the stalest goes     */
+#define FS_SCAN_MAX_MEMBERS            256  /* addresses named per /64   */
+#define FS_BRUTE_ATTEMPTS              10   /* attempts ...              */
+#define FS_BRUTE_WINDOW_S              300  /* ... inside 5 minutes      */
+#define FS_BRUTE_MAX_KEYS              1024
+#define FS_REPORT_QUIET_S              3600 /* one report per hour       */
+#define FS_NEWDEST_MIN_CONNECTIONS     50   /* profile size ...          */
+#define FS_NEWDEST_MIN_AGE_S           (7 * 86400) /* ... and age        */
+#define FS_NEWDEST_CHURN               20   /* new hosts in 7 days: browser-like */
+#define FS_FANOUT_MAX_APPS             256
 
 /* ---- Behavior analysis bounds (P2) -------------------------------
  * Every structure here is bounded (Chapter 9):256 applications,
@@ -127,7 +244,6 @@ fs_copilot_new (void)
 	copilot->insights = NULL;
 	copilot->policy = NULL;
 	copilot->learning_enabled = TRUE;
-	copilot->anomaly_threshold = 2.0;       /* 2 standard deviations */
 	copilot->min_samples_for_baseline = 10; /* Need 10 connections baseline */
 
 	copilot->beacon_stamps = g_hash_table_new_full (
@@ -135,13 +251,183 @@ fs_copilot_new (void)
 		(GDestroyNotify) g_array_unref);
 	copilot->beacon_reported = g_hash_table_new_full (
 		g_str_hash, g_str_equal, g_free, NULL);
-	copilot->fanout_seen = g_hash_table_new_full (
+	copilot->beacon_total = g_hash_table_new_full (
 		g_str_hash, g_str_equal, g_free, NULL);
-	copilot->fanout_blocked = g_hash_table_new_full (
-		g_str_hash, g_str_equal, g_free, NULL);
-	copilot->fanout_reported = FALSE;
+	copilot->fanout = g_hash_table_new_full (
+		g_str_hash, g_str_equal, g_free, fanout_state_free);
+	copilot->scan = g_hash_table_new_full (
+		g_str_hash, g_str_equal, g_free, scan_state_free);
+	copilot->brute = g_hash_table_new_full (
+		g_str_hash, g_str_equal, g_free,
+		(GDestroyNotify) g_array_unref);
+	copilot->reported_at = g_hash_table_new_full (
+		g_str_hash, g_str_equal, g_free, g_free);
+
+	/* DNS to the resolvers is periodic by nature, and the resolvers
+	 * and gateways are what the computer cannot do without. */
+	copilot_read_network (copilot);
 
 	return copilot;
+}
+
+/* ---- the resolvers and gateways ---------------------------------- */
+
+/* The last copilot's resolvers and gateways, for fs_insight_is_auto_safe,
+ * which judges an insight on its own.  One copilot runs in the app. */
+G_LOCK_DEFINE_STATIC (infra);
+static FsRangeSet      *infra_set   = NULL;
+static const FsCopilot *infra_owner = NULL;
+
+static void
+copilot_publish_network (FsCopilot *copilot)
+{
+	FsRangeSet *all = fs_range_set_new ();
+
+	if (copilot->resolvers != NULL)
+		fs_range_set_union (all, copilot->resolvers);
+	if (copilot->gateways != NULL)
+		fs_range_set_union (all, copilot->gateways);
+	fs_range_set_normalize (all);
+
+	G_LOCK (infra);
+	if (infra_set != NULL)
+		fs_range_set_free (infra_set);
+	infra_set = all;
+	infra_owner = copilot;
+	G_UNLOCK (infra);
+}
+
+static void
+copilot_take_network (FsCopilot *copilot, FsRangeSet *resolvers,
+                      FsRangeSet *gateways)
+{
+	if (copilot->resolvers != NULL)
+		fs_range_set_free (copilot->resolvers);
+	if (copilot->gateways != NULL)
+		fs_range_set_free (copilot->gateways);
+	copilot->resolvers = resolvers;
+	copilot->gateways = gateways;
+	copilot_publish_network (copilot);
+}
+
+static gchar *
+read_env_file (const gchar *var)
+{
+	const gchar *path = g_getenv (var);
+	gchar *text = NULL;
+
+	if (path == NULL || *path == '\0' ||
+	    !g_file_get_contents (path, &text, NULL, NULL))
+		return NULL;
+	return text;
+}
+
+/* [ copilot_read_network ]
+ * STOCKFW_RESOLV_CONF set (tests): that file, STOCKFW_RESOLVED_CONF as
+ * systemd-resolved's upstream list and STOCKFW_ROUTE_FILE as
+ * /proc/net/route, and nothing else, ever again.  Otherwise the system
+ * (fs_hostnet_read): resolv.conf, and behind a local stub
+ * (127.0.0.53) the upstream servers systemd-resolved and
+ * NetworkManager list; the default gateways; on Windows, every
+ * adapter's DNS servers and gateways. */
+static void
+copilot_read_network (FsCopilot *copilot)
+{
+	gchar *rc = read_env_file ("STOCKFW_RESOLV_CONF");
+
+	copilot->net_read_at = g_get_monotonic_time () / G_USEC_PER_SEC;
+	if (rc != NULL || g_getenv ("STOCKFW_RESOLV_CONF") != NULL) {
+		gchar *resolved = read_env_file ("STOCKFW_RESOLVED_CONF");
+		gchar *route = read_env_file ("STOCKFW_ROUTE_FILE");
+
+		fs_copilot_set_network (copilot, rc, resolved, route);
+		g_free (resolved);
+		g_free (route);
+	} else {
+		FsHostNet *h = fs_hostnet_read (NULL);
+
+		copilot_take_network (copilot, fs_range_set_copy (h->resolvers),
+		                      fs_range_set_copy (h->gateways));
+		fs_hostnet_free (h);
+	}
+	g_free (rc);
+}
+
+/* Networks change (a laptop moves): the system's lists are read again
+ * at most once a minute. */
+static void
+copilot_network_fresh (FsCopilot *copilot)
+{
+	gint64 now = g_get_monotonic_time () / G_USEC_PER_SEC;
+
+	if (!copilot->net_fixed && now - copilot->net_read_at >= 60)
+		copilot_read_network (copilot);
+}
+
+/* [ fs_copilot_set_network ] */
+void
+fs_copilot_set_network (FsCopilot *copilot, const gchar *resolv_conf,
+                        const gchar *resolved, const gchar *route)
+{
+	if (copilot == NULL)
+		return;
+	copilot->net_fixed = TRUE;
+	copilot_take_network (copilot,
+	                      fs_hostnet_parse_resolvers (resolv_conf, resolved,
+	                                                  NULL),
+	                      route != NULL ? fs_hostnet_parse_route (route)
+	                                    : fs_range_set_new ());
+}
+
+/* [ fs_copilot_set_resolvers ] */
+void
+fs_copilot_set_resolvers (FsCopilot *copilot, const gchar *resolv_conf)
+{
+	fs_copilot_set_network (copilot, resolv_conf, NULL, NULL);
+}
+
+/* An address that is one of this computer's resolvers or gateways. */
+static gboolean
+copilot_is_infrastructure (FsCopilot *copilot, const gchar *addr)
+{
+	return (copilot->resolvers != NULL &&
+	        fs_range_set_contains_text (copilot->resolvers, addr)) ||
+	       (copilot->gateways != NULL &&
+	        fs_range_set_contains_text (copilot->gateways, addr));
+}
+
+/* TRUE when the resolver list names no server off this computer: only
+ * a local stub (127.0.0.53) whose upstream could not be read, or
+ * nothing at all.  DNS then goes to servers this computer does not
+ * know, and no DNS destination may be blocked automatically. */
+static gboolean
+copilot_dns_upstream_unknown (FsCopilot *copilot)
+{
+	const FsRangeSet *r = copilot->resolvers;
+
+	if (r == NULL)
+		return TRUE;
+	for (guint i = 0; i < r->v4->len; i++) {
+		const FsRange4 *x = &g_array_index (r->v4, FsRange4, i);
+
+		if ((x->start >> 24) != 127 || (x->end >> 24) != 127)
+			return FALSE;
+	}
+	for (guint i = 0; i < r->v6->len; i++) {
+		const FsRange6 *x = &g_array_index (r->v6, FsRange6, i);
+
+		if (x->start.hi != 0 || x->start.lo != 1 ||
+		    x->end.hi != 0 || x->end.lo != 1)
+			return FALSE;
+	}
+	return TRUE;
+}
+
+/* [ fs_copilot_events_seen ] */
+guint64
+fs_copilot_events_seen (FsCopilot *copilot)
+{
+	return copilot != NULL ? copilot->events_seen : 0;
 }
 
 /* [ fs_copilot_set_policy ]
@@ -174,8 +460,23 @@ fs_copilot_free (FsCopilot *copilot)
 	g_hash_table_unref (copilot->profiles);
 	g_hash_table_unref (copilot->beacon_stamps);
 	g_hash_table_unref (copilot->beacon_reported);
-	g_hash_table_unref (copilot->fanout_seen);
-	g_hash_table_unref (copilot->fanout_blocked);
+	g_hash_table_unref (copilot->beacon_total);
+	g_hash_table_unref (copilot->fanout);
+	g_hash_table_unref (copilot->scan);
+	g_hash_table_unref (copilot->brute);
+	g_hash_table_unref (copilot->reported_at);
+	if (copilot->resolvers != NULL)
+		fs_range_set_free (copilot->resolvers);
+	if (copilot->gateways != NULL)
+		fs_range_set_free (copilot->gateways);
+	G_LOCK (infra);
+	if (infra_owner == copilot) {
+		if (infra_set != NULL)
+			fs_range_set_free (infra_set);
+		infra_set = NULL;
+		infra_owner = NULL;
+	}
+	G_UNLOCK (infra);
 	g_list_free_full (copilot->insights, (GDestroyNotify) fs_insight_free);
 	g_free (copilot);
 }
@@ -303,30 +604,45 @@ fs_copilot_feed_event_full (FsCopilot *copilot, const FsHit *hit,
 		                     profile);
 	}
 
-	app_profile_record_connection (profile, remote_ip, port, protocol,
-	                               inbound, 0, now_unix);
+	/* A refused inbound attempt is a stranger's choice of port and
+	 * address, not something the program did: it counts as activity,
+	 * but it teaches the profile no port and no destination (a scan
+	 * would otherwise fill both sets and mark the profile partial). */
+	if (inbound && hit_is_blocked_marker (hit))
+		app_profile_record_connection (profile, NULL, 0, protocol,
+		                               inbound, 0, now_unix);
+	else
+		app_profile_record_connection (profile, remote_ip, port,
+		                               protocol, inbound, 0, now_unix);
+
+	copilot->events_seen++;
 
 	/* Sentinel runs on every event, baseline or not: a control
 	 * channel has to be caught in its first minutes, not after the
-	 * learning baseline has had its 10 samples. */
+	 * learning baseline has had its 10 samples.  The inbound checks
+	 * and the block-list check run on every event too. */
 	{
-		FsInsight *beacon = sentinel_beacon_check (copilot, hit, now_us);
-		FsInsight *fanout = sentinel_fanout_check (copilot, hit, now_us);
+		FsInsight *found[6];
 
-		if (beacon != NULL) {
-			beacon->timestamp = now_unix;
-			emit_insight (copilot, beacon);
-		}
-		if (fanout != NULL) {
-			fanout->timestamp = now_unix;
-			emit_insight (copilot, fanout);
+		found[0] = sentinel_beacon_check (copilot, hit, now_us, now_unix);
+		found[1] = sentinel_fanout_check (copilot, hit, now_us, now_unix);
+		found[2] = inbound_scan_check (copilot, hit, now_us, now_unix,
+		                               &found[5]);
+		found[3] = brute_force_check (copilot, hit, now_us, now_unix);
+		found[4] = threat_intel_check (copilot, hit, now_unix);
+
+		for (guint i = 0; i < G_N_ELEMENTS (found); i++) {
+			if (found[i] == NULL)
+				continue;
+			found[i]->timestamp = now_unix;
+			emit_insight (copilot, found[i]);
 		}
 	}
 
 	/* Judge the event against the baseline once it has one. */
 	if (profile->total_connections >= copilot->min_samples_for_baseline)
 		behavior_analyze (copilot, profile, app_name, remote_ip,
-		                  port, now_unix);
+		                  port, now_unix, hit, inbound);
 }
 
 /* [ fs_copilot_get_insights ] */
@@ -556,7 +872,22 @@ fs_copilot_whatif_observe (FsWhatIfContext *ctx, const FsBackend *backend,
 		}
 	}
 
-	if (backend->list_interfaces != NULL) {
+	/* STOCKFW_LOCAL_ADDRESSES (tests): this computer's addresses, comma
+	 * separated, instead of its adapters'; set and empty means none.
+	 * Each private one is a LAN the health check probes, so a suite
+	 * that fixes STOCKFW_LAN_PREFIX fixes these too, or the machine
+	 * running it would decide whether a narrowing is verified. */
+	if (g_getenv ("STOCKFW_LOCAL_ADDRESSES") != NULL) {
+		gchar **addrs = g_strsplit (g_getenv ("STOCKFW_LOCAL_ADDRESSES"),
+		                            ",", -1);
+
+		for (gint i = 0; addrs[i] != NULL; i++) {
+			g_strstrip (addrs[i]);
+			if (*addrs[i] != '\0')
+				fs_whatif_context_add_local_address (ctx, addrs[i]);
+		}
+		g_strfreev (addrs);
+	} else if (backend->list_interfaces != NULL) {
 		GList *ifaces = backend->list_interfaces ();
 
 		for (GList *l = ifaces; l != NULL; l = l->next) {
@@ -883,6 +1214,19 @@ fs_copilot_baseline_save (FsCopilot *copilot, const gchar *path,
 				g_string_append_c (out, '\n');
 			}
 		}
+
+		/* first contacts with new hosts in the last 7 days, oldest
+		 * first: the "meets new hosts all the time" memory, so a
+		 * browser is still one after a restart */
+		for (guint i = 0; p->new_dest_times != NULL &&
+		     i < p->new_dest_times->len; i++) {
+			g_snprintf (num[0], sizeof num[0], "%" G_GINT64_FORMAT,
+			            g_array_index (p->new_dest_times, gint64, i));
+			fs_util_csv_append_field (out, app, TRUE);
+			fs_util_csv_append_field (out, "newdest", FALSE);
+			fs_util_csv_append_field (out, num[0], FALSE);
+			g_string_append_c (out, '\n');
+		}
 	}
 
 	g_list_free (names);
@@ -956,7 +1300,8 @@ fs_copilot_baseline_load (FsCopilot *copilot, const gchar *path,
 		    g_strcmp0 (kind, "partial") != 0 &&
 		    g_strcmp0 (kind, "port") != 0 &&
 		    g_strcmp0 (kind, "dest") != 0 &&
-		    g_strcmp0 (kind, "hour") != 0) {
+		    g_strcmp0 (kind, "hour") != 0 &&
+		    g_strcmp0 (kind, "newdest") != 0) {
 			g_ptr_array_unref (fields);
 			continue;
 		}
@@ -1056,6 +1401,21 @@ fs_copilot_baseline_load (FsCopilot *copilot, const gchar *path,
 					                     slot);
 				}
 			}
+		} else if (g_strcmp0 (kind, "newdest") == 0) {
+			if (fields->len >= 3 &&
+			    parse_u64 (g_ptr_array_index (fields, 2), &a) &&
+			    a <= (guint64) G_MAXINT64) {
+				gint64 t = (gint64) a;
+				guint at = p->new_dest_times->len;
+
+				/* kept sorted, at most 64, newest kept */
+				while (at > 0 && g_array_index (p->new_dest_times,
+				                                gint64, at - 1) > t)
+					at--;
+				g_array_insert_val (p->new_dest_times, at, t);
+				if (p->new_dest_times->len > 64)
+					g_array_remove_index (p->new_dest_times, 0);
+			}
 		}
 		/* Unknown kinds were skipped above: a newer format still
 		 * loads what this reader understands. */
@@ -1080,7 +1440,46 @@ fs_insight_free (FsInsight *insight)
 	g_free (insight->destination);
 	g_free (insight->suggested_rule);
 	g_free (insight->rule_csv);
+	g_free (insight->key);
+	g_free (insight->subject);
+	g_free (insight->why);
+	g_free (insight->benign);
+	g_free (insight->withheld);
+	g_free (insight->whatif_line);
+	g_free (insight->events_filter);
+	if (insight->evidence != NULL)
+		g_ptr_array_unref (insight->evidence);
 	g_free (insight);
+}
+
+/* [ fs_evidence_free ] */
+void
+fs_evidence_free (FsEvidence *ev)
+{
+	if (ev == NULL)
+		return;
+	g_free (ev->remote);
+	g_free (ev->protocol);
+	g_free (ev->rule);
+	g_free (ev);
+}
+
+/* [ fs_insight_type_name ] */
+const gchar *
+fs_insight_type_name (FsInsightType type)
+{
+	switch (type) {
+	case FS_INSIGHT_UNUSUAL_PORT:        return _("New port");
+	case FS_INSIGHT_UNUSUAL_DESTINATION: return _("New destination");
+	case FS_INSIGHT_UNUSUAL_VOLUME:      return _("Connection rate");
+	case FS_INSIGHT_UNUSUAL_TIME:        return _("New hour");
+	case FS_INSIGHT_BEACON:              return _("Timed contacts");
+	case FS_INSIGHT_FANOUT:              return _("Fan-out");
+	case FS_INSIGHT_INBOUND_SCAN:        return _("Port scan");
+	case FS_INSIGHT_BRUTE_FORCE:         return _("Login attempts");
+	case FS_INSIGHT_THREAT_INTEL:        return _("Block list");
+	default:                             return _("Finding");
+	}
 }
 
 /* [ fs_simulation_result_free ] */
@@ -1144,7 +1543,9 @@ fs_insight_apply (const FsInsight *insight, FsPolicy *policy)
  * auto-blocked (multicast, loopback, link-local, the private LAN).
  * These are protocol infrastructure and the user's own machines --
  * the 2026-10-10 incident was exactly this: Windows' own LLMNR
- * multicast and two LAN hosts auto-blocked as "beacons". */
+ * multicast and two LAN hosts auto-blocked as "beacons".  The DNS
+ * servers and default gateways of the newest copilot are refused the
+ * same way, whatever their address class. */
 gboolean
 fs_insight_is_auto_safe (const FsInsight *insight)
 {
@@ -1164,6 +1565,16 @@ fs_insight_is_auto_safe (const FsInsight *insight)
 		return FALSE;
 
 	safe = !fs_sentinel_dest_never_auto_block (rule->target);
+
+	/* Nor this computer's own DNS servers and default gateways: a
+	 * block on them, on any port, cuts the computer off. */
+	if (safe) {
+		G_LOCK (infra);
+		if (infra_set != NULL &&
+		    fs_range_set_contains_text (infra_set, rule->target))
+			safe = FALSE;
+		G_UNLOCK (infra);
+	}
 	fs_rule_free (rule);
 
 	return safe;
@@ -1351,19 +1762,31 @@ hit_app_key (const FsHit *hit, gchar *buf, gsize size)
 		g_strlcpy (buf, "Unknown", size);
 }
 
-/* [ sentinel_dest_auto_ok ] -- both P6 gates in one verdict: the
- * destination class and the established baseline. */
+/* [ key_is_program_on_port ] / [ hit_key_is_program ]
+ * Whether the profile key names a program (the Windows log's
+ * Application Name, "brave.exe") rather than the port's service name
+ * ("https", "Unknown"), which is all a Linux log line carries and which
+ * every program on that port shares. */
 static gboolean
-sentinel_dest_auto_ok (FsCopilot *copilot, const gchar *app,
-                       const gchar *dest)
+key_is_program_on_port (const gchar *port_text, const gchar *key)
 {
-	if (fs_sentinel_dest_never_auto_block (dest))
-		return FALSE;
+	glong port = port_text != NULL ? strtol (port_text, NULL, 10) : 0;
+	gchar *svc;
+	gboolean program;
 
-	if (fs_copilot_baseline_dest_established (copilot, app, dest))
+	if (g_strcmp0 (key, "Unknown") == 0 || g_strcmp0 (key, _("Unknown")) == 0)
 		return FALSE;
+	svc = port > 0 && port <= 65535 ? fs_service_lookup_port ((gint) port)
+	                                : NULL;
+	program = svc == NULL || g_ascii_strcasecmp (svc, key) != 0;
+	g_free (svc);
+	return program;
+}
 
-	return TRUE;
+static gboolean
+hit_key_is_program (const FsHit *hit, const gchar *key)
+{
+	return key_is_program_on_port (hit->port, key);
 }
 
 /* [ sentinel_dest_auto_ok_before_run ]
@@ -1391,6 +1814,223 @@ sentinel_dest_auto_ok_before_run (FsCopilot *copilot, const gchar *app,
 	return before < FS_SENTINEL_BASELINE_DEST_MIN;
 }
 
+/* [ sentinel_dest_established_elsewhere ]
+ * The block a beacon stages is "deny outbound to dest": every program,
+ * every port.  So a destination ANOTHER program's baseline holds as
+ * established (a browser's CDN, an update server) is never blocked
+ * automatically because a newer program polls it.  Returns that
+ * program and its count, or NULL. */
+static const gchar *
+sentinel_dest_established_elsewhere (FsCopilot *copilot, const gchar *app,
+                                     const gchar *dest, guint *count_out)
+{
+	GHashTableIter it;
+	gpointer k, v;
+	const gchar *best = NULL;
+	guint best_n = 0;
+
+	g_hash_table_iter_init (&it, copilot->profiles);
+	while (g_hash_table_iter_next (&it, &k, &v)) {
+		FsAppProfile *p = v;
+		guint *n;
+
+		if (g_strcmp0 (k, app) == 0)
+			continue;
+		n = g_hash_table_lookup (p->common_destinations, dest);
+		if (n != NULL && *n >= FS_SENTINEL_BASELINE_DEST_MIN &&
+		    (*n > best_n ||
+		     (*n == best_n && g_strcmp0 (k, best) < 0))) {
+			best = k;
+			best_n = *n;
+		}
+	}
+	if (count_out != NULL)
+		*count_out = best_n;
+	return best;
+}
+
+/* [ key_names_program ]
+ * A profile key seen without its port: a program unless it is one of
+ * the names a Linux log line can carry instead (a service name from
+ * the port table, ICMP, ICMPv6, "Unknown"). */
+static gboolean
+key_names_program (const gchar *key)
+{
+	if (key == NULL || g_strcmp0 (key, "Unknown") == 0 ||
+	    g_strcmp0 (key, _("Unknown")) == 0 ||
+	    g_ascii_strcasecmp (key, "ICMP") == 0 ||
+	    g_ascii_strcasecmp (key, "ICMPv6") == 0)
+		return FALSE;
+	return fs_service_find (key) == NULL;
+}
+
+/* [ policy_allows_dest ]
+ * TRUE when the policy holds an outbound "allow to host" row of the
+ * user's whose target names this destination: the same address, or a
+ * network or range around it.  "Anyone" rows do not count (they say
+ * nothing about this host).  A Sentinel block is "deny outbound to
+ * host", and on Windows a block outranks an allow, so staging one over
+ * such a row would silently overrule the user's own Allow. */
+static gboolean
+policy_allows_dest (const FsPolicy *policy, const gchar *dest)
+{
+	GPtrArray *rows;
+
+	if (policy == NULL || dest == NULL)
+		return FALSE;
+	rows = policy->kinds[FS_RULE_OUTBOUND_ALLOW_TO];
+	for (guint i = 0; rows != NULL && i < rows->len; i++) {
+		const FsRule *r = g_ptr_array_index (rows, i);
+		FsRangeSet *set;
+		gboolean hit;
+
+		if (r->target == NULL || *r->target == '\0' ||
+		    fs_util_target_is_anyone (r->target))
+			continue;
+		if (g_ascii_strcasecmp (r->target, dest) == 0)
+			return TRUE;
+		set = fs_range_set_new ();
+		hit = fs_range_set_add_text (set, r->target);
+		if (hit) {
+			fs_range_set_normalize (set);
+			hit = fs_range_set_contains_text (set, dest);
+		}
+		fs_range_set_free (set);
+		if (hit)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+/* [ beacon_auto_withheld ]
+ * The beacon's automatic-block gates, in one place, so the finding
+ * when it is made and Sentinel's pass when it stages (which can be
+ * much later: after a tray pause, a switch from Detect only, a failed
+ * write's retry) judge with the same rules and the same, current,
+ * facts.  NULL when the automatic block may go ahead; otherwise why
+ * not, as the drawer shows it.  `run' is how many contacts the timed
+ * run holds in all (its samples are the suspicion, not history), and
+ * `stamps' how many the series holds now. */
+static gchar *
+beacon_auto_withheld (FsCopilot *copilot, const gchar *app,
+                      const gchar *dst, const gchar *port,
+                      guint run, guint stamps)
+{
+	guint portnum = port != NULL ? (guint) strtoul (port, NULL, 10) : 0;
+	gboolean dns_port = portnum == 53 || portnum == 853;
+	gboolean program = key_is_program_on_port (port, app);
+	const gchar *other;
+	guint other_n = 0;
+
+	if (stamps < FS_SENTINEL_BEACON_AUTO_MIN)
+		return g_strdup_printf (
+			_("Report only for now: an automatic block waits for %d "
+			  "contacts, and there are %u."),
+			FS_SENTINEL_BEACON_AUTO_MIN, stamps);
+	if (fs_sentinel_dest_never_auto_block (dst))
+		return g_strdup (
+			_("Report only: the destination is on the local network "
+			  "or is network infrastructure, which is never blocked "
+			  "automatically."));
+	if (copilot_is_infrastructure (copilot, dst))
+		return g_strdup (
+			_("Report only: this address is one of this computer's "
+			  "DNS servers or its default gateway, which are never "
+			  "blocked automatically."));
+	if (dns_port && copilot_dns_upstream_unknown (copilot))
+		return g_strdup (
+			_("Report only: DNS on this computer goes through a "
+			  "local resolver whose upstream servers could not be "
+			  "read, and this may be one of them."));
+	if (policy_allows_dest (copilot->policy, dst))
+		return g_strdup (
+			_("Report only: you allowed this destination in your "
+			  "policy, and an automatic block would overrule your "
+			  "allow."));
+	if (!sentinel_dest_auto_ok_before_run (copilot, app, dst, run))
+		return g_strdup (program
+			? _("Report only: this program already talked to this "
+			    "destination before the run, so it is normal traffic "
+			    "for it.")
+			: _("Report only: traffic on this port already reached "
+			    "this destination before the run, so it is normal "
+			    "traffic for it."));
+	other = sentinel_dest_established_elsewhere (copilot, app, dst,
+	                                             &other_n);
+	if (other != NULL)
+		return key_names_program (other)
+			? g_strdup_printf (
+				_("Report only: %s has %u recorded connections to "
+				  "this destination, and the block would apply to "
+				  "every program."), other, other_n)
+			: g_strdup_printf (
+				_("Report only: traffic on the %s port (any program) "
+				  "has %u recorded connections to this destination, "
+				  "and the block would apply to every program."),
+				other, other_n);
+	return NULL;
+}
+
+/* [ fs_copilot_beacon_recheck ] -- see fs-copilot.h. */
+gboolean
+fs_copilot_beacon_recheck (FsCopilot *copilot, FsInsight *insight)
+{
+	const gchar *series, *bar, *colon, *slash;
+	GArray *stamps;
+	gchar *app, *dst, *port, *why;
+	guint run, n;
+
+	if (copilot == NULL || insight == NULL)
+		return FALSE;
+	if (!insight->auto_applicable)
+		return FALSE;
+	if (insight->type != FS_INSIGHT_BEACON)
+		return TRUE;
+
+	/* "beacon|app|dst:port/proto": the series key after "beacon|". */
+	if (insight->key == NULL ||
+	    !g_str_has_prefix (insight->key, "beacon|"))
+		goto refuse;
+	series = insight->key + strlen ("beacon|");
+	bar    = strrchr (series, '|');
+	colon  = bar != NULL ? strrchr (bar, ':') : NULL;
+	slash  = colon != NULL ? strchr (colon, '/') : NULL;
+	if (bar == NULL || colon == NULL || slash == NULL)
+		goto refuse;
+
+	stamps = g_hash_table_lookup (copilot->beacon_stamps, series);
+	n   = stamps != NULL ? stamps->len : insight->count;
+	run = GPOINTER_TO_UINT (g_hash_table_lookup (copilot->beacon_total,
+	                                             series));
+	if (run < n)
+		run = n;
+
+	app  = g_strndup (series, (gsize) (bar - series));
+	dst  = g_strndup (bar + 1, (gsize) (colon - bar - 1));
+	port = g_strndup (colon + 1, (gsize) (slash - colon - 1));
+	copilot_network_fresh (copilot);
+	why  = beacon_auto_withheld (copilot, app, dst, port, run, n);
+	g_free (app);
+	g_free (dst);
+	g_free (port);
+	if (why == NULL)
+		return TRUE;
+
+	g_free (insight->withheld);
+	insight->withheld = why;
+	insight->auto_applicable = FALSE;
+	return FALSE;
+
+refuse:
+	/* A beacon whose series cannot be read back cannot be re-judged,
+	 * and what cannot be re-judged is not blocked automatically. */
+	g_free (insight->withheld);
+	insight->withheld = g_strdup (
+		_("Report only: the finding could not be checked again."));
+	insight->auto_applicable = FALSE;
+	return FALSE;
+}
+
 /* [ app_profile_new ] */
 static FsAppProfile *
 app_profile_new (const gchar *name, const gchar *path, gint64 now_unix)
@@ -1410,6 +2050,7 @@ app_profile_new (const gchar *name, const gchar *path, gint64 now_unix)
 	profile->hourly_activity = g_hash_table_new_full (g_direct_hash, g_direct_equal,
                                                       NULL, g_free);
 	profile->first_seen = (guint64) now_unix;
+	profile->new_dest_times = g_array_new (FALSE, FALSE, sizeof (gint64));
 	return profile;
 }
 
@@ -1425,6 +2066,8 @@ app_profile_free (FsAppProfile *profile)
 	g_hash_table_unref (profile->common_ports);
 	g_hash_table_unref (profile->common_destinations);
 	g_hash_table_unref (profile->hourly_activity);
+	if (profile->new_dest_times != NULL)
+		g_array_unref (profile->new_dest_times);
 	g_free (profile);
 }
 
@@ -1724,36 +2367,92 @@ brief_hours (FsAppProfile *profile)
 	return g_string_free (out, FALSE);
 }
 
+static FsEvidence *evidence_from_hit (const FsHit *hit, gboolean inbound,
+                                      gint64 when);
+static void insight_add_evidence (FsInsight *insight, FsEvidence *ev);
+static gboolean hit_is_blocked_marker (const FsHit *hit);
+
+/* [ newdest_churn ]
+ * How many first contacts the app made in the last seven days, after
+ * forgetting older ones.  Bounded: only the newest 64 are kept, which
+ * is far past the churn limit. */
+static guint
+newdest_churn (FsAppProfile *profile, gint64 now_unix)
+{
+	GArray *t = profile->new_dest_times;
+
+	while (t->len > 0 &&
+	       g_array_index (t, gint64, 0) < now_unix - FS_NEWDEST_MIN_AGE_S)
+		g_array_remove_index (t, 0);
+	return t->len;
+}
+
+static void
+newdest_note (FsAppProfile *profile, gint64 now_unix)
+{
+	g_array_append_val (profile->new_dest_times, now_unix);
+	if (profile->new_dest_times->len > 64)
+		g_array_remove_index (profile->new_dest_times, 0);
+}
+
 /* [ behavior_analyze ]
- * P2's whole point: correlate, don't chain.  Every signal this event
- * raises -- new port, new destination, first activity in an hour,
- * rate far above the app's own -- goes into ONE finding whose
- * description lists each signal with its numbers, so the reader sees
- * what fired and why together.  Two or more signals on one event
- * escalate to CRITICAL: that is what correlation buys.  A correlated
- * finding carries no suggested rule; a single port/destination one
- * keeps the legacy allow suggestion (an outbound service allow,
- * never auto-safe, so the Sentinel path cannot stage it). */
+ * Correlate, don't chain.  Every signal this event raises goes into ONE
+ * finding whose description lists each signal with its numbers.
+ *
+ *   new port         the app's first use of a port (count == 1), once
+ *                    the profile has its 10-event baseline;
+ *   new destination  a first contact with a public address, only for a
+ *                    profile at least 7 days old with 50 connections,
+ *                    not capped, and not "browser-like" (20 or more new
+ *                    hosts in 7 days); one finding per app per hour;
+ *   new hour         the first activity in an hour, once 4 hours are
+ *                    known;
+ *   rate spike       this 10-minute bucket far above the app's own
+ *                    rate (connections, not bytes: the logs carry no
+ *                    byte counts).
+ *
+ * Each signal alone is Info; two together are a Warning.  A finding
+ * here never carries a rule: an anomaly is not answered by allowing it,
+ * and a block is the user's call (Ask What-If shows what it would do). */
 static void
 behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
                   const gchar *app_name, const gchar *remote_ip,
-                  guint port, gint64 now_unix)
+                  guint port, gint64 now_unix, const FsHit *hit,
+                  gboolean inbound)
 {
 	gboolean sig_port, sig_dest, sig_hour, sig_rate;
 	GPtrArray *lines;
+	GPtrArray *whys;
 	GString *desc;
 	FsInsightType type;
 	FsCopilotSeverity severity;
 	FsInsight *insight;
-	const gchar *title;
-	gchar *owned_title = NULL;
-	gchar *dest_owned = NULL;
+	gchar *title;
 	guint n, i;
+	gint64 age = now_unix - (gint64) profile->first_seen;
 
-	sig_port = !profile->baseline_partial &&
+	(void) copilot;
+
+	/* Inbound, the remote host picks the local port: a stranger's
+	 * probe is not the program "using" a port (and a scan would be
+	 * hundreds of such findings), so the signal is outbound only, like
+	 * the new-destination one.  The scan check reports inbound ports. */
+	sig_port = !profile->baseline_partial && !inbound &&
 	           is_novel_port (profile, port);
-	sig_dest = !profile->baseline_partial &&
+	sig_dest = !profile->baseline_partial && !inbound &&
 	           is_novel_destination (profile, remote_ip);
+	if (sig_dest) {
+		guint churn = newdest_churn (profile, now_unix);
+
+		newdest_note (profile, now_unix);
+		if (profile->total_connections < FS_NEWDEST_MIN_CONNECTIONS ||
+		    age < FS_NEWDEST_MIN_AGE_S ||
+		    churn >= FS_NEWDEST_CHURN ||
+		    fs_range_set_contains_text (fs_range_protected (),
+		                                remote_ip) ||
+		    fs_sentinel_dest_never_auto_block (remote_ip))
+			sig_dest = FALSE;
+	}
 	sig_hour = is_novel_hour (profile, now_unix);
 	sig_rate = rate_spike_take (profile, now_unix);
 
@@ -1761,22 +2460,32 @@ behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
 		return;
 
 	lines = g_ptr_array_new_with_free_func (g_free);
+	whys = g_ptr_array_new_with_free_func (g_free);
 
 	if (sig_port) {
 		gchar *known = brief_ports (profile);
 
 		g_ptr_array_add (lines, g_strdup_printf (
-			_("first use of port %u -- before this, the baseline "
-			  "knew %s"),
+			_("first use of port %u. Before this, the baseline knew "
+			  "%s"),
 			port, known));
+		g_ptr_array_add (whys, g_strdup_printf (
+			_("port %u had 0 earlier uses in %" G_GUINT64_FORMAT
+			  " recorded connections"), port,
+			profile->total_connections - 1));
 		g_free (known);
 	}
 	if (sig_dest) {
 		g_ptr_array_add (lines, g_strdup_printf (
-			_("first contact with %s -- the baseline knew %u "
+			_("first contact with %s. The baseline knew %u "
 			  "destinations"),
 			remote_ip,
 			g_hash_table_size (profile->common_destinations) - 1));
+		g_ptr_array_add (whys, g_strdup_printf (
+			_("a public address never seen in %" G_GUINT64_FORMAT
+			  " connections over %" G_GINT64_FORMAT " days (the check "
+			  "needs 50 connections and 7 days)"),
+			profile->total_connections - 1, age / 86400));
 	}
 	if (sig_hour) {
 		GDateTime *dt = g_date_time_new_from_unix_local (now_unix);
@@ -1784,16 +2493,25 @@ behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
 		gint hour = dt != NULL ? g_date_time_get_hour (dt) : 0;
 
 		g_ptr_array_add (lines, g_strdup_printf (
-			_("first activity at %02d:00 -- established hours: %s"),
+			_("first activity at %02d:00. Established hours: %s"),
 			hour, hours));
+		g_ptr_array_add (whys, g_strdup_printf (
+			_("no earlier activity at %02d:00, with %u other hours known "
+			  "(the check needs 4)"), hour,
+			g_hash_table_size (profile->hourly_activity) - 1));
 		g_free (hours);
 		if (dt != NULL)
 			g_date_time_unref (dt);
 	}
 	if (sig_rate) {
 		g_ptr_array_add (lines, g_strdup_printf (
-			_("%u connections in the last 10 minutes -- the usual "
+			_("%u connections in the last 10 minutes. The usual "
 			  "rate is about %u per 10 minutes"),
+			profile->rate_window_count,
+			profile->rate_ema_milli / 1000));
+		g_ptr_array_add (whys, g_strdup_printf (
+			_("%u connections in this 10-minute bucket; the limit is 3 "
+			  "times the usual %u plus 5, and at least 10"),
 			profile->rate_window_count,
 			profile->rate_ema_milli / 1000));
 	}
@@ -1804,26 +2522,25 @@ behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
 	     : sig_dest ? FS_INSIGHT_UNUSUAL_DESTINATION
 	     : sig_rate ? FS_INSIGHT_UNUSUAL_VOLUME
 	     :            FS_INSIGHT_UNUSUAL_TIME;
-	severity = n > 1 ? FS_COPILOT_CRITICAL
-	         : (type == FS_INSIGHT_UNUSUAL_TIME ? FS_COPILOT_INFO
-	                                             : FS_COPILOT_WARNING);
+	severity = n > 1 ? FS_COPILOT_WARNING : FS_COPILOT_INFO;
 
-	if (n > 1) {
-		title = owned_title = g_strdup_printf (
-			_("Multiple signals for %s"), app_name);
-	} else if (sig_port) {
-		title = _("Unusual port for application");
-	} else if (sig_dest) {
-		title = _("Unusual destination");
-	} else if (sig_rate) {
-		title = _("Unusual connection rate");
-	} else {
-		title = _("Activity at unusual time");
-	}
+	if (n > 1)
+		title = g_strdup_printf (_("Several changes at once for %s"),
+		                         app_name);
+	else if (sig_port)
+		title = g_strdup_printf (_("%s used port %u for the first time"),
+		                         app_name, port);
+	else if (sig_dest)
+		title = g_strdup_printf (_("New destinations for %s"), app_name);
+	else if (sig_rate)
+		title = g_strdup_printf (_("Connection rate spike for %s"),
+		                         app_name);
+	else
+		title = g_strdup_printf (_("%s active at a new hour"), app_name);
 
 	desc = g_string_new (NULL);
 	g_string_append_printf (desc,
-	                        _("%s deviates from its established "
+	                        _("%s differs from its established "
 	                          "baseline:"),
 	                        app_name);
 	for (i = 0; i < n; i++)
@@ -1831,66 +2548,328 @@ behavior_analyze (FsCopilot *copilot, FsAppProfile *profile,
 		                        (const gchar *)
 		                        g_ptr_array_index (lines, i));
 
-	if (sig_dest && remote_ip != NULL && *remote_ip != '\0')
-		dest_owned = g_strdup (remote_ip);
-	else if (sig_port && remote_ip != NULL && *remote_ip != '\0')
-		dest_owned = g_strdup_printf ("%s:%u", remote_ip, port);
-
 	insight = create_insight (type, severity, title,
 	                          g_string_free (desc, FALSE), app_name,
-	                          dest_owned);
+	                          (sig_dest || sig_port) ? remote_ip : NULL);
+	g_free (title);
 
-	if (n == 1 && port != 0 && remote_ip != NULL &&
-	    *remote_ip != '\0' && (sig_port || sig_dest)) {
-		if (sig_port)
-			insight->suggested_rule = g_strdup_printf (
-				_("Allow %s on port %u for %s"),
-				app_name, port, remote_ip);
-		else
-			insight->suggested_rule = g_strdup_printf (
-				_("Allow %s to connect to %s"),
-				app_name, remote_ip);
-		insight->rule_csv = g_strdup_printf ("%s, %u, %s, %s",
-		                                     app_name, port,
-		                                     remote_ip,
-		                                     _("Auto-generated by Copilot"));
-		/* P6: same two gates as Sentinel's own blocks -- an
-		 * established baseline destination is never auto-staged. */
-		insight->auto_applicable =
-			sentinel_dest_auto_ok (copilot, app_name, remote_ip);
+	{
+		GString *w = g_string_new (NULL);
+
+		for (i = 0; i < whys->len; i++) {
+			const gchar *t = g_ptr_array_index (whys, i);
+
+			if (i > 0)
+				g_string_append (w, "; ");
+			g_string_append_c (w, g_ascii_toupper (t[0]));
+			g_string_append (w, t + 1);
+		}
+		g_string_append_c (w, '.');
+		insight->why = g_string_free (w, FALSE);
 	}
+	insight->benign = g_strdup (
+		sig_rate && n == 1
+		? _("Updates, backups, syncs and page loads with many parts make "
+		    "bursts of connections too.")
+		: _("Updates, new features and new servers of the same service "
+		    "change what a program talks to."));
+
+	/* The dedup key: a new destination in the same hour joins the open
+	 * finding; every other signal is one finding per subject. */
+	if (sig_dest && n == 1)
+		insight->key = g_strdup_printf ("dest|%s|%" G_GINT64_FORMAT,
+		                                app_name, now_unix / 3600);
+	else if (sig_port)
+		insight->key = g_strdup_printf ("port|%s|%u", app_name, port);
+	else if (sig_rate)
+		insight->key = g_strdup_printf ("rate|%s|%" G_GUINT64_FORMAT,
+		                                app_name,
+		                                profile->rate_window_start);
+	else
+		insight->key = g_strdup_printf ("hour|%s|%" G_GINT64_FORMAT,
+		                                app_name, now_unix / 3600);
+	insight->subject = g_strdup (app_name);
+	if (remote_ip != NULL && *remote_ip != '\0') {
+		const gchar *proto = hit->protocol != NULL &&
+			g_ascii_strcasecmp (hit->protocol, "UDP") == 0
+			? "udp" : "tcp";
+
+		insight->events_filter = g_strdup (remote_ip);
+		if (port != 0)
+			insight->whatif_line = g_strdup_printf (
+				inbound ? "inbound %s port %u from %s"
+				        : "outbound %s port %u to %s",
+				proto, port, remote_ip);
+	}
+	insight_add_evidence (insight, evidence_from_hit (hit, inbound,
+	                                                  now_unix));
 
 	insight->timestamp = now_unix;
 	emit_insight (copilot, insight);
 
 	g_ptr_array_unref (lines);
-	g_free (owned_title);
-	g_free (dest_owned);
+	g_ptr_array_unref (whys);
 }
 
-/* [ emit_insight ]
- * Every insight enters through here: the list is bounded (Chapter
- * 9).  The oldest falls off at the cap, so a scanning flood cannot
- * grow the list without end. */
-static void
-emit_insight (FsCopilot *copilot, FsInsight *insight)
+/* The four baseline signals are one check (behavior); every other
+ * type is its own.  Escalation needs two different checks. */
+static gint
+insight_family (FsInsightType type)
 {
-	copilot->insights = g_list_prepend (copilot->insights, insight);
-
-	while (g_list_length (copilot->insights) > FS_COPILOT_MAX_INSIGHTS) {
-		GList *oldest = g_list_last (copilot->insights);
-
-		fs_insight_free (oldest->data);
-		copilot->insights = g_list_delete_link (copilot->insights,
-		                                        oldest);
+	switch (type) {
+	case FS_INSIGHT_UNUSUAL_PORT:
+	case FS_INSIGHT_UNUSUAL_DESTINATION:
+	case FS_INSIGHT_UNUSUAL_VOLUME:
+	case FS_INSIGHT_UNUSUAL_TIME:
+		return -1;
+	default:
+		return (gint) type;
 	}
 }
 
-/* ---- Sentinel: covert-channel and fan-out detection ---------------- */
+/* [ emit_insight ]
+ * Every finding enters through here.
+ *
+ *   - Dedup: a finding whose key matches an open one updates it (count,
+ *     evidence, numbers, auto-block state) instead of adding a row, so
+ *     a long run is one finding that grows, not a list that floods.
+ *   - Escalation: two DIFFERENT checks on the same subject within an
+ *     hour make both Critical, and each says so (the four baseline
+ *     signals count as one check).
+ *   - Bound: the list holds at most 200; the oldest falls off. */
+static void
+emit_insight (FsCopilot *copilot, FsInsight *insight)
+{
+	GList *l;
+
+	if (insight->count == 0)
+		insight->count = 1;
+
+	if (insight->key != NULL) {
+		for (l = copilot->insights; l != NULL; l = l->next) {
+			FsInsight *old = l->data;
+
+			if (g_strcmp0 (old->key, insight->key) != 0)
+				continue;
+
+			/* A check that re-reports its whole run (timed contacts,
+			 * a scan, login attempts) replaces the evidence; the
+			 * others add their event to it. */
+			if (insight->type == FS_INSIGHT_BEACON ||
+			    insight->type == FS_INSIGHT_INBOUND_SCAN ||
+			    insight->type == FS_INSIGHT_BRUTE_FORCE) {
+				old->count = insight->count;
+				if (old->evidence != NULL)
+					g_ptr_array_set_size (old->evidence, 0);
+			} else {
+				old->count += insight->count;
+			}
+			old->timestamp = insight->timestamp;
+			if (insight->severity > old->severity)
+				old->severity = insight->severity;
+#define TAKE(f) do { if (insight->f != NULL) { g_free (old->f); \
+                     old->f = insight->f; insight->f = NULL; } } while (0)
+			TAKE (title);
+			TAKE (description);
+			TAKE (why);
+			TAKE (benign);
+			TAKE (suggested_rule);
+			TAKE (rule_csv);
+			TAKE (whatif_line);
+#undef TAKE
+			g_free (old->withheld);
+			old->withheld = insight->withheld;
+			insight->withheld = NULL;
+			old->rule_kind = insight->rule_kind;
+			old->auto_applicable = insight->auto_applicable;
+			while (insight->evidence != NULL &&
+			       insight->evidence->len > 0)
+				insight_add_evidence (old,
+					g_ptr_array_steal_index (insight->evidence, 0));
+			fs_insight_free (insight);
+
+			/* Keep it at the top: it is the newest news. */
+			copilot->insights = g_list_remove_link (copilot->insights, l);
+			copilot->insights = g_list_concat (l, copilot->insights);
+			return;
+		}
+	}
+
+	if (insight->subject != NULL) {
+		for (l = copilot->insights; l != NULL; l = l->next) {
+			FsInsight *old = l->data;
+			gchar *note;
+
+			if (insight_family (old->type) ==
+			    insight_family (insight->type) ||
+			    g_strcmp0 (old->subject, insight->subject) != 0 ||
+			    insight->timestamp - old->timestamp > FS_REPORT_QUIET_S)
+				continue;
+
+			insight->severity = FS_COPILOT_CRITICAL;
+			note = g_strdup_printf (
+				_("%s Also flagged as \"%s\" within the hour, so this is "
+				  "Critical."), insight->why != NULL ? insight->why : "",
+				fs_insight_type_name (old->type));
+			g_free (insight->why);
+			insight->why = note;
+			if (old->severity != FS_COPILOT_CRITICAL) {
+				old->severity = FS_COPILOT_CRITICAL;
+				note = g_strdup_printf (
+					_("%s Also flagged as \"%s\" within the hour, so this "
+					  "is Critical."), old->why != NULL ? old->why : "",
+					fs_insight_type_name (insight->type));
+				g_free (old->why);
+				old->why = note;
+			}
+			break;
+		}
+	}
+
+	copilot->insights = g_list_prepend (copilot->insights, insight);
+
+	/* The bound.  What falls off first is the oldest baseline finding
+	 * (new port, destination, hour, rate): those are Info-level and
+	 * there can be many.  A Sentinel, scan, login or block-list
+	 * finding goes only when nothing else is left, so a flood of
+	 * small findings can never push the one that matters out. */
+	while (g_list_length (copilot->insights) > FS_COPILOT_MAX_INSIGHTS) {
+		GList *victim = NULL;
+
+		for (l = g_list_last (copilot->insights); l != NULL; l = l->prev)
+			if (insight_family (((FsInsight *) l->data)->type) == -1) {
+				victim = l;
+				break;
+			}
+		if (victim == NULL)
+			victim = g_list_last (copilot->insights);
+
+		fs_insight_free (victim->data);
+		copilot->insights = g_list_delete_link (copilot->insights,
+		                                        victim);
+	}
+}
+
+/* ---- evidence ----------------------------------------------------- */
+
+static gboolean
+hit_is_blocked_marker (const FsHit *hit)
+{
+	return hit->service != NULL &&
+	       strstr (hit->service, " [BLOCKED]") != NULL;
+}
+
+/* [ evidence_from_hit ] -- one row of "What we saw". */
+static FsEvidence *
+evidence_from_hit (const FsHit *hit, gboolean inbound, gint64 when)
+{
+	FsEvidence *ev = g_new0 (FsEvidence, 1);
+	const gchar *remote = inbound ? hit->source : hit->destination;
+
+	ev->when = when;
+	ev->inbound = inbound;
+	ev->remote = g_strdup (remote != NULL ? remote : "");
+	ev->port = hit->port != NULL ? (guint) strtoul (hit->port, NULL, 10)
+	                             : 0;
+	if (ev->port > 65535)
+		ev->port = 0;
+	ev->protocol = g_strdup (hit->protocol != NULL ? hit->protocol : "");
+	ev->blocked = hit_is_blocked_marker (hit) ||
+	              (hit->rule != NULL && *hit->rule != '\0');
+	ev->rule = g_strdup (hit->rule);
+	return ev;
+}
+
+static void
+insight_add_evidence (FsInsight *insight, FsEvidence *ev)
+{
+	if (ev == NULL)
+		return;
+	if (insight->evidence == NULL)
+		insight->evidence = g_ptr_array_new_with_free_func (
+			(GDestroyNotify) fs_evidence_free);
+	g_ptr_array_add (insight->evidence, ev);
+	while (insight->evidence->len > FS_INSIGHT_MAX_EVIDENCE)
+		g_ptr_array_remove_index (insight->evidence, 0);
+}
+
+/* [ reported_recently ] -- once per subject per hour; takes the slot. */
+static gboolean
+report_take (FsCopilot *copilot, const gchar *what, gint64 now_unix)
+{
+	gint64 *at = g_hash_table_lookup (copilot->reported_at, what);
+
+	if (at != NULL && now_unix - *at < FS_REPORT_QUIET_S)
+		return FALSE;
+
+	if (g_hash_table_size (copilot->reported_at) > 4096) {
+		GHashTableIter it;
+		gpointer k, v;
+
+		g_hash_table_iter_init (&it, copilot->reported_at);
+		while (g_hash_table_iter_next (&it, &k, &v))
+			if (now_unix - *(gint64 *) v >= FS_REPORT_QUIET_S)
+				g_hash_table_iter_remove (&it);
+	}
+	at = g_new (gint64, 1);
+	*at = now_unix;
+	g_hash_table_insert (copilot->reported_at, g_strdup (what), at);
+	return TRUE;
+}
+
+/* The class of a remote address, for the inbound checks. */
+typedef enum { ADDR_PUBLIC, ADDR_LAN, ADDR_IGNORE } AddrClass;
+
+static AddrClass
+addr_class (const gchar *text)
+{
+	guint32 a;
+	FsU128 v6;
+	FsAddrFamily fam;
+
+	if (text == NULL || *text == '\0')
+		return ADDR_IGNORE;
+	fam = fs_addr_parse (text, &a, &v6);
+	if (fam == FS_AF_V4) {
+		guint8 o0 = a >> 24, o1 = (a >> 16) & 255;
+
+		if (o0 == 0 || o0 == 127 || o0 >= 224 ||
+		    (o0 == 169 && o1 == 254))
+			return ADDR_IGNORE;
+		if (o0 == 10 || (o0 == 172 && (o1 & 0xf0) == 16) ||
+		    (o0 == 192 && o1 == 168) || (o0 == 100 && (o1 & 0xc0) == 64))
+			return ADDR_LAN;
+		return ADDR_PUBLIC;
+	}
+	if (fam == FS_AF_V6) {
+		guint16 top = (guint16) (v6.hi >> 48);
+
+		if ((v6.hi == 0 && v6.lo <= 1) || (top & 0xffc0) == 0xfe80 ||
+		    (top & 0xff00) == 0xff00)
+			return ADDR_IGNORE;
+		if ((top & 0xfe00) == 0xfc00)
+			return ADDR_LAN;
+		return ADDR_PUBLIC;
+	}
+	return ADDR_IGNORE;
+}
+
+static gdouble
+sqrt_d (gdouble x)
+{
+	gdouble r = x > 1.0 ? x : 1.0;
+
+	if (x <= 0.0)
+		return 0.0;
+	for (gint i = 0; i < 60; i++)
+		r = 0.5 * (r + x / r);
+	return r;
+}
+
+/* ---- Sentinel: timed contacts and fan-out ------------------------- */
 
 /* [ sentinel_hit_is_inbound ]
- * The rogue-agent problem is egress: what leaves the host.  Sentinel
- * watches outbound events only. */
+ * The Windows backend writes "in"/"out"; the parser "In"/"Out". */
 static gboolean
 sentinel_hit_is_inbound (const FsHit *hit)
 {
@@ -1902,31 +2881,55 @@ sentinel_hit_is_inbound (const FsHit *hit)
 }
 
 /* [ sentinel_hit_is_blocked ]
- * The Windows backend appends " [BLOCKED]" to the service field of
- * dropped events; blocked fan-out is the strongest scan signal. */
+ * The backends append " [BLOCKED]" to the service field of dropped
+ * events; blocked fan-out is the strongest scan signal. */
 static gboolean
 sentinel_hit_is_blocked (const FsHit *hit)
 {
-	return hit->service != NULL &&
-	       strstr (hit->service, " [BLOCKED]") != NULL;
+	return hit_is_blocked_marker (hit);
+}
+
+/* A list's block and a country or network rule's block both carry
+ * "Threat intel: <name>" (fs_intel_rule_text: one log marker, one
+ * id space for lists and location rules). */
+static gboolean
+hit_rule_is_intel (const FsHit *hit)
+{
+	return hit->rule != NULL &&
+	       g_str_has_prefix (hit->rule, "Threat intel:");
 }
 
 /* [ sentinel_beacon_check ]
  * Regularity, not content: a host contacted every N seconds with
- * metronomic intervals is running a check-in loop, because humans,
- * page loads and even scheduled jobs jitter.  Arrival times are
- * bucketed to whole seconds (a polled batch is one moment), the
- * interval series is capped, and each host:port is reported once. */
+ * near-fixed intervals.  Per application and destination:port, so two
+ * programs polling one server are two series.  Arrival times are
+ * bucketed to whole seconds (a polled batch is one moment), the series
+ * is capped at 32; each contact keeps its own refused flag and rule,
+ * and TCP and UDP are separate series.  Reported at 6 regular contacts;
+ * the automatic block waits for 8 (the report is updated when they
+ * arrive).  NTP (port 123) and DNS or DNS over TLS (53, 853) to this
+ * computer's resolvers are periodic by nature and never timed.  The
+ * automatic block is withheld for the LAN and infrastructure, for this
+ * computer's resolvers and gateways on any port, for DNS while the
+ * upstream resolvers are unknown, for a destination the user's policy
+ * allows outbound, and for a destination this program or ANY other
+ * program already has a history with (the block applies to every
+ * program).  The gates are in beacon_auto_withheld, which the staging
+ * pass asks again (fs_copilot_beacon_recheck). */
 static FsInsight *
-sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us)
+sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
+                       gint64 now_unix)
 {
 	const gchar *dst, *port;
+	gchar app_buf[256];
 	gchar *key;
 	gboolean key_owned = FALSE;
 	GArray *stamps;
 	gint64 sec, last, sum = 0;
-	gdouble mean, var = 0.0;
-	guint i, n_diff;
+	gdouble mean, var = 0.0, cv;
+	guint i, n_diff, portnum;
+	gint stage, want;
+	gboolean udp, dns_port;
 
 	if (sentinel_hit_is_inbound (hit))
 		return NULL;
@@ -1936,72 +2939,134 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us)
 	if (dst == NULL || *dst == '\0' || port == NULL || *port == '\0')
 		return NULL;
 
+	portnum = (guint) strtoul (port, NULL, 10);
+	if (portnum == 123)
+		return NULL;                    /* time sync runs on a timer */
+	copilot_network_fresh (copilot);
+	dns_port = portnum == 53 || portnum == 853;
+	if (dns_port && copilot->resolvers != NULL &&
+	    fs_range_set_contains_text (copilot->resolvers, dst))
+		return NULL;                    /* our own resolvers: DNS and
+	                                         * DNS over TLS            */
+
+	hit_app_key (hit, app_buf, sizeof app_buf);
 	sec = now_us / G_USEC_PER_SEC;
-	key = g_strdup_printf ("%s:%s", dst, port);
+	udp = hit->protocol != NULL &&
+	      g_ascii_strcasecmp (hit->protocol, "UDP") == 0;
+	key = g_strdup_printf ("%s|%s:%s/%s", app_buf, dst, port,
+	                       udp ? "udp" : "tcp");
 
 	stamps = g_hash_table_lookup (copilot->beacon_stamps, key);
 	if (stamps == NULL) {
-		stamps = g_array_new (FALSE, TRUE, sizeof (gint64));
+		stamps = g_array_new (FALSE, TRUE, sizeof (BeaconEv));
+		g_array_set_clear_func (stamps, beacon_ev_clear);
 		g_hash_table_insert (copilot->beacon_stamps, key, stamps);
 		key_owned = TRUE;
 	}
 
-	if (stamps->len == 0) {
-		g_array_append_val (stamps, sec);
-	} else {
-		last = g_array_index (stamps, gint64, stamps->len - 1);
+	last = stamps->len > 0
+	       ? g_array_index (stamps, BeaconEv, stamps->len - 1).sec : -1;
+	if (stamps->len == 0 || last < sec) {
+		BeaconEv b;
 
-		if (last < sec) {
-			g_array_append_val (stamps, sec);
-			if (stamps->len > FS_SENTINEL_BEACON_MAX_STAMPS)
-				g_array_remove_index (stamps, 0);
-		}
-		/* last == sec: same-second batch, no new information. */
+		/* Each contact keeps what its own log line said. */
+		b.sec = sec;
+		b.blocked = hit_is_blocked_marker (hit) ||
+		            (hit->rule != NULL && *hit->rule != '\0');
+		b.rule = hit->rule != NULL && *hit->rule != '\0'
+		         ? g_strdup (hit->rule) : NULL;
+		g_array_append_val (stamps, b);
+		if (stamps->len > FS_SENTINEL_BEACON_MAX_STAMPS)
+			g_array_remove_index (stamps, 0);
+		g_hash_table_insert (copilot->beacon_total, g_strdup (key),
+			GUINT_TO_POINTER (GPOINTER_TO_UINT (g_hash_table_lookup (
+				copilot->beacon_total, key)) + 1));
 	}
+	/* last == sec: same-second batch, no new information. */
 
 	if (stamps->len < FS_SENTINEL_BEACON_MIN_SAMPLES)
 		goto out;
 
 	n_diff = stamps->len - 1;
 	for (i = 0; i < n_diff; i++)
-		sum += g_array_index (stamps, gint64, i + 1) -
-		       g_array_index (stamps, gint64, i);
+		sum += g_array_index (stamps, BeaconEv, i + 1).sec -
+		       g_array_index (stamps, BeaconEv, i).sec;
 
 	mean = (gdouble) sum / n_diff;
 	for (i = 0; i < n_diff; i++) {
-		gdouble d = (gdouble) (g_array_index (stamps, gint64, i + 1) -
-		                       g_array_index (stamps, gint64, i));
+		gdouble d = (gdouble) (g_array_index (stamps, BeaconEv, i + 1).sec -
+		                       g_array_index (stamps, BeaconEv, i).sec);
 
 		var += (d - mean) * (d - mean);
 	}
 
-	/* Regularity as cv^2 against the threshold -- no sqrt(), so no
-	 * libm dependency in the test build. */
 	if (mean < FS_SENTINEL_BEACON_MIN_MEAN_S ||
 	    mean > FS_SENTINEL_BEACON_MAX_MEAN_S ||
 	    var / n_diff > (FS_SENTINEL_BEACON_MAX_CV *
 	                    FS_SENTINEL_BEACON_MAX_CV) * mean * mean)
 		goto out;
 
-	if (g_hash_table_contains (copilot->beacon_reported, key))
+	/* Stage 1: reported.  Stage 2: reported with enough contacts for
+	 * the automatic block to be considered. */
+	stage = GPOINTER_TO_INT (g_hash_table_lookup (copilot->beacon_reported,
+	                                              key));
+	want = stamps->len >= FS_SENTINEL_BEACON_AUTO_MIN ? 2 : 1;
+	if (stage >= want)
 		goto out;
-
 	g_hash_table_insert (copilot->beacon_reported, g_strdup (key),
-	                     GINT_TO_POINTER (1));
+	                     GINT_TO_POINTER (want));
+	cv = mean > 0 ? sqrt_d (var / n_diff) / mean : 0.0;
 
 	{
+		gboolean intel = hit_rule_is_intel (hit);
+		gchar *title = g_strdup_printf (
+			_("Contacts at a near-fixed interval: %s to %s"),
+			app_buf, dst);
 		FsInsight *insight = create_insight (
-			FS_INSIGHT_BEACON, FS_COPILOT_CRITICAL,
-			_("Periodic beacon traffic detected"),
+			FS_INSIGHT_BEACON,
+			intel ? FS_COPILOT_CRITICAL : FS_COPILOT_WARNING,
+			title,
 			g_strdup_printf (
-				_("Connection to %s:%s repeated %u times at "
-				  "near-identical intervals of about %d "
-				  "seconds. Traffic this metronomic is the "
-				  "signature of a control channel checking "
-				  "in. StockFW suggests blocking further "
-				  "outbound traffic to this destination."),
-				dst, port, stamps->len, (gint) (mean + 0.5)),
-			hit->service, dst);
+				_("%s contacted %s on port %s %u times, about every "
+				  "%d seconds. Malware check-ins look like this, but so "
+				  "do update checks and keep-alives."),
+				app_buf, dst, port, stamps->len, (gint) (mean + 0.5)),
+			app_buf, dst);
+		guint first = stamps->len > FS_INSIGHT_MAX_EVIDENCE
+		              ? stamps->len - FS_INSIGHT_MAX_EVIDENCE : 0;
+
+		g_free (title);
+		insight->why = g_strdup_printf (
+			_("%u contacts; mean interval %d s (the check looks at 10 to "
+			  "600 s); variation %.2f of the mean (the limit is %.2f)%s."),
+			stamps->len, (gint) (mean + 0.5), cv,
+			FS_SENTINEL_BEACON_MAX_CV,
+			intel ? _("; the destination is also on a block list") : "");
+		insight->benign = g_strdup (
+			_("Update checks, keep-alives, time sync, push notifications "
+			  "and telemetry also run on a timer."));
+		insight->key = g_strdup_printf ("beacon|%s", key);
+		insight->count = stamps->len;
+		insight->subject = g_strdup (dst);
+		insight->events_filter = g_strdup (dst);
+		insight->whatif_line = g_strdup_printf (
+			"outbound %s port %s to %s", udp ? "udp" : "tcp", port, dst);
+		/* One row per contact, from that contact's own record: its
+		 * time, whether it was refused and by what. */
+		for (i = first; i < stamps->len; i++) {
+			const BeaconEv *b = &g_array_index (stamps, BeaconEv, i);
+			FsEvidence *ev = g_new0 (FsEvidence, 1);
+
+			/* the wall time, from the monotonic gap to now */
+			ev->when = now_unix - (sec - b->sec);
+			ev->inbound = FALSE;
+			ev->remote = g_strdup (dst);
+			ev->port = portnum <= 65535 ? portnum : 0;
+			ev->protocol = g_strdup (udp ? "UDP" : "TCP");
+			ev->blocked = b->blocked;
+			ev->rule = g_strdup (b->rule);
+			insight_add_evidence (insight, ev);
+		}
 
 		insight->suggested_rule = g_strdup_printf (
 			_("Block outbound traffic to %s"), dst);
@@ -2010,17 +3075,15 @@ sentinel_beacon_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us)
 		insight->rule_kind = FS_RULE_OUTBOUND_DENY_TO;
 
 		/* P6: the finding is always reported; the automatic block is
-		 * withheld when the destination is protocol infrastructure
-		 * (multicast, loopback, the LAN) or when the application's
-		 * own baseline -- beyond this very run -- already knows it. */
-		{
-			gchar app_buf[256];
-
-			hit_app_key (hit, app_buf, sizeof app_buf);
-			insight->auto_applicable =
-				sentinel_dest_auto_ok_before_run (
-					copilot, app_buf, dst, stamps->len);
-		}
+		 * withheld for the reasons beacon_auto_withheld gives.  The
+		 * staging pass asks the same question again with the facts of
+		 * that moment (fs_copilot_beacon_recheck). */
+		insight->withheld = beacon_auto_withheld (
+			copilot, app_buf, dst, port,
+			MAX (stamps->len, GPOINTER_TO_UINT (g_hash_table_lookup (
+				copilot->beacon_total, key))),
+			stamps->len);
+		insight->auto_applicable = insight->withheld == NULL;
 
 		if (!key_owned)
 			g_free (key);
@@ -2034,20 +3097,24 @@ out:
 }
 
 /* [ sentinel_fanout_check ]
- * One program reaching many distinct hosts inside a short window is a
- * scan, a worm or data leaving by many doors.  Blocked hosts count on
- * their own, lower, threshold: legitimate bulk traffic is mostly
- * allowed, scanning is mostly refused.  One report per window; the
- * episode ends when the window empties. */
+ * One program (one service on Linux) reaching many distinct hosts
+ * inside a minute: 60 hosts, or 10 refused hosts.  Kept per app, so a
+ * busy machine with many programs does not add up to one "burst".  One
+ * report per window per app; the episode ends when the window empties.
+ * No single guilty host exists, so this carries no rule. */
 static FsInsight *
-sentinel_fanout_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us)
+sentinel_fanout_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
+                       gint64 now_unix)
 {
 	const gchar *dst;
+	gchar app_buf[256];
 	gint64 sec, window_start;
 	guint n_any, n_blocked;
 	GHashTableIter iter;
 	gpointer k, v;
+	FanoutState *st;
 	FsInsight *insight;
+	gboolean program;
 
 	if (sentinel_hit_is_inbound (hit))
 		return NULL;
@@ -2056,64 +3123,880 @@ sentinel_fanout_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us)
 	if (dst == NULL || *dst == '\0')
 		return NULL;
 
-	sec         = now_us / G_USEC_PER_SEC;
+	hit_app_key (hit, app_buf, sizeof app_buf);
+	sec          = now_us / G_USEC_PER_SEC;
 	window_start = sec - FS_SENTINEL_FANOUT_WINDOW_S;
 
-	g_hash_table_iter_init (&iter, copilot->fanout_seen);
+	st = g_hash_table_lookup (copilot->fanout, app_buf);
+	if (st == NULL) {
+		if (g_hash_table_size (copilot->fanout) >= FS_FANOUT_MAX_APPS) {
+			g_hash_table_iter_init (&iter, copilot->fanout);
+			while (g_hash_table_iter_next (&iter, &k, &v))
+				if (((FanoutState *) v)->last < window_start)
+					g_hash_table_iter_remove (&iter);
+			if (g_hash_table_size (copilot->fanout) >=
+			    FS_FANOUT_MAX_APPS)
+				return NULL;
+		}
+		st = g_new0 (FanoutState, 1);
+		st->seen = g_hash_table_new_full (g_str_hash, g_str_equal,
+		                                  g_free, NULL);
+		st->blocked = g_hash_table_new_full (g_str_hash, g_str_equal,
+		                                     g_free, NULL);
+		g_hash_table_insert (copilot->fanout, g_strdup (app_buf), st);
+	}
+
+	g_hash_table_iter_init (&iter, st->seen);
 	while (g_hash_table_iter_next (&iter, &k, &v)) {
 		if (GPOINTER_TO_INT (v) < window_start)
 			g_hash_table_iter_remove (&iter);
 	}
 
-	g_hash_table_iter_init (&iter, copilot->fanout_blocked);
+	g_hash_table_iter_init (&iter, st->blocked);
 	while (g_hash_table_iter_next (&iter, &k, &v)) {
 		if (GPOINTER_TO_INT (v) < window_start)
 			g_hash_table_iter_remove (&iter);
 	}
 
 	/* An emptied window starts a fresh episode. */
-	if (g_hash_table_size (copilot->fanout_seen) == 0)
-		copilot->fanout_reported = FALSE;
+	if (g_hash_table_size (st->seen) == 0)
+		st->reported = FALSE;
 
-	g_hash_table_insert (copilot->fanout_seen, g_strdup (dst),
+	g_hash_table_insert (st->seen, g_strdup (dst),
 	                     GINT_TO_POINTER ((gint) sec));
+	st->last = sec;
 
 	if (sentinel_hit_is_blocked (hit))
-		g_hash_table_insert (copilot->fanout_blocked, g_strdup (dst),
+		g_hash_table_insert (st->blocked, g_strdup (dst),
 		                     GINT_TO_POINTER ((gint) sec));
 
-	n_any     = g_hash_table_size (copilot->fanout_seen);
-	n_blocked = g_hash_table_size (copilot->fanout_blocked);
+	n_any     = g_hash_table_size (st->seen);
+	n_blocked = g_hash_table_size (st->blocked);
+	program   = hit_key_is_program (hit, app_buf);
 
+	/* A key that is a port's service name ("https", what Linux logs
+	 * carry) stands for every program using that port, so a busy page
+	 * in any browser reaches 60 hosts.  There only refused hosts
+	 * count; the any-host limit needs a real program name. */
 	if (n_blocked < FS_SENTINEL_FANOUT_BLOCKED &&
-	    n_any < FS_SENTINEL_FANOUT_LIMIT)
+	    (!program || n_any < FS_SENTINEL_FANOUT_LIMIT))
 		return NULL;
 
-	if (copilot->fanout_reported)
+	if (st->reported)
 		return NULL;
 
-	copilot->fanout_reported = TRUE;
+	st->reported = TRUE;
 
-	insight = create_insight (
-		FS_INSIGHT_FANOUT, FS_COPILOT_CRITICAL,
-		_("Burst of distinct destinations"),
-		g_strdup_printf (
-			_("In the last %d seconds this host contacted %u "
-			  "distinct remote hosts, %u of them while being "
-			  "blocked. One program fanning out like this is a "
-			  "scan, a worm or data leaving by many doors. "
-			  "Right-click a row in Events to block a host."),
-			FS_SENTINEL_FANOUT_WINDOW_S, n_any, n_blocked),
-		hit->service, NULL);
+	{
+		gchar *title = g_strdup_printf (
+			_("%s reached %u hosts in a minute"), app_buf, n_any);
+
+		insight = create_insight (
+			FS_INSIGHT_FANOUT, FS_COPILOT_WARNING, title,
+			g_strdup_printf (
+				_("In the last %d seconds %s contacted %u distinct "
+				  "remote hosts, %u of them refused. Scans and worms "
+				  "look like this. Right-click a row in Events to block "
+				  "a host."),
+				FS_SENTINEL_FANOUT_WINDOW_S, app_buf, n_any, n_blocked),
+			app_buf, NULL);
+		g_free (title);
+	}
+	insight->why = program
+		? g_strdup_printf (
+			_("%u distinct hosts (the limit is %d) and %u refused hosts "
+			  "(the limit is %d) in %d seconds."),
+			n_any, FS_SENTINEL_FANOUT_LIMIT, n_blocked,
+			FS_SENTINEL_FANOUT_BLOCKED, FS_SENTINEL_FANOUT_WINDOW_S)
+		: g_strdup_printf (
+			_("%u refused hosts (the limit is %d) among %u distinct hosts "
+			  "in %d seconds. %s is a port's service name, which covers "
+			  "every program on that port, so only refused hosts count."),
+			n_blocked, FS_SENTINEL_FANOUT_BLOCKED, n_any,
+			FS_SENTINEL_FANOUT_WINDOW_S, app_buf);
+	insight->benign = g_strdup (
+		_("Browsers opening a busy page, peer-to-peer programs and "
+		  "network discovery reach many hosts quickly too."));
+	insight->key = g_strdup_printf ("fanout|%s|%" G_GINT64_FORMAT, app_buf,
+	                                sec);
+	insight->subject = g_strdup (app_buf);
+	insight->events_filter = g_strdup (app_buf);
+	insight_add_evidence (insight, evidence_from_hit (hit, FALSE,
+	                                                  now_unix));
 
 	/* No single guilty host exists, so this detection carries no
 	 * rule: auto-block must never guess. */
-	insight->suggested_rule = g_strdup (
-		_("Review the events and block the hosts that should not "
-		  "be reached"));
+	insight->suggested_rule = NULL;
 	insight->rule_csv = NULL;
 	insight->auto_applicable = FALSE;
+	insight->withheld = g_strdup (
+		_("Report only: there is no single host to block."));
 
+	return insight;
+}
+
+/* ---- inbound checks ----------------------------------------------- */
+
+/* [ insight_open ] -- whether a finding with this key is on the list. */
+static gboolean
+insight_open (FsCopilot *copilot, const gchar *key)
+{
+	for (GList *l = copilot->insights; l != NULL; l = l->next)
+		if (g_strcmp0 (((FsInsight *) l->data)->key, key) == 0)
+			return TRUE;
+	return FALSE;
+}
+
+/* [ report_or_update ]
+ * The once-per-hour report memory says whether a NEW finding may be
+ * raised.  When it may not, a finding still open under the same key is
+ * updated instead (its count, ports and evidence grow with the run), so
+ * a 40-port scan never reads "12 ports" because the first report came
+ * at 12.  FALSE: nothing to emit. */
+static gboolean
+report_or_update (FsCopilot *copilot, const gchar *key, gint64 now_unix)
+{
+	if (report_take (copilot, key, now_unix))
+		return TRUE;
+	return insight_open (copilot, key);
+}
+
+/* [ scan_state_newest ] -- the newest event's second, or G_MININT64. */
+static gint64
+scan_state_newest (const ScanState *st)
+{
+	return st->ev->len > 0
+	       ? g_array_index (st->ev, ScanEv, st->ev->len - 1).sec
+	       : G_MININT64;
+}
+
+/* [ scan_state_get ]
+ * The state for one subject (a source address, or an IPv6 /64).  When
+ * the table is full, expired subjects go first and then the one heard
+ * from longest ago: a full table never makes the check deaf to a new
+ * scanner (it used to refuse every newcomer once 1024 sources sat in
+ * the window). */
+static ScanState *
+scan_state_get (FsCopilot *copilot, const gchar *subject, gint64 sec,
+                gboolean aggregate)
+{
+	ScanState *st = g_hash_table_lookup (copilot->scan, subject);
+
+	if (st != NULL)
+		return st;
+
+	if (g_hash_table_size (copilot->scan) >= FS_SCAN_MAX_SOURCES) {
+		GHashTableIter it;
+		gpointer k, v, oldest_k = NULL;
+		gint64 oldest = G_MAXINT64;
+
+		g_hash_table_iter_init (&it, copilot->scan);
+		while (g_hash_table_iter_next (&it, &k, &v))
+			if (scan_state_newest (v) < sec - FS_SCAN_WINDOW_S)
+				g_hash_table_iter_remove (&it);
+		if (g_hash_table_size (copilot->scan) >= FS_SCAN_MAX_SOURCES) {
+			g_hash_table_iter_init (&it, copilot->scan);
+			while (g_hash_table_iter_next (&it, &k, &v))
+				if (scan_state_newest (v) < oldest) {
+					oldest = scan_state_newest (v);
+					oldest_k = k;
+				}
+			if (oldest_k != NULL)
+				g_hash_table_remove (copilot->scan, oldest_k);
+		}
+	}
+	st = g_new0 (ScanState, 1);
+	st->ev = g_array_new (FALSE, FALSE, sizeof (ScanEv));
+	if (aggregate)
+		st->members = g_hash_table_new_full (g_str_hash, g_str_equal,
+		                                     g_free, NULL);
+	g_hash_table_insert (copilot->scan, g_strdup (subject), st);
+	return st;
+}
+
+/* [ v6_net64 ] -- "2001:db8:1:2::/64" for a public IPv6 source, else
+ * NULL.  A scanner that rotates its address inside one /64 (any IPv6
+ * host can) is one scanner. */
+static gchar *
+v6_net64 (const gchar *src)
+{
+	guint32 v4;
+	FsU128 v6;
+	guint8 b[16];
+	GInetAddress *a;
+	gchar *text, *out;
+
+	if (fs_addr_parse (src, &v4, &v6) != FS_AF_V6)
+		return NULL;
+	for (gint i = 0; i < 8; i++)
+		b[i] = (guint8) (v6.hi >> (56 - 8 * i));
+	memset (b + 8, 0, 8);
+	a = g_inet_address_new_from_bytes (b, G_SOCKET_FAMILY_IPV6);
+	text = g_inet_address_to_string (a);
+	out = g_strdup_printf ("%s/64", text);
+	g_free (text);
+	g_object_unref (a);
+	return out;
+}
+
+/* [ scan_judge ]
+ * One subject's run: record the event, trim the window, and build the
+ * finding when the run crosses a limit.  `display' is what the finding
+ * names; `members' counts the addresses of an aggregate. */
+static FsInsight *
+scan_judge (FsCopilot *copilot, const gchar *subject, gboolean aggregate,
+            const gchar *src, const FsHit *hit, guint port, AddrClass cls,
+            gint64 sec, gint64 now_unix)
+{
+	ScanState *st = scan_state_get (copilot, subject, sec, aggregate);
+	ScanEv ev;
+	GHashTable *d60, *d600;
+	GString *ports_list, *allowed_list;
+	guint n_blocked = 0, n60, n600, n_members = 0;
+	FsInsight *insight;
+	gchar *what;
+
+	ev.sec = sec;
+	ev.unix_sec = now_unix;
+	ev.port = port;
+	ev.blocked = hit_is_blocked_marker (hit);
+	ev.proto = hit->protocol != NULL &&
+	           g_ascii_strcasecmp (hit->protocol, "UDP") == 0 ? "UDP" : "TCP";
+	ev.src = NULL;
+	if (st->members != NULL) {
+		gpointer stored = NULL;
+
+		if (g_hash_table_lookup_extended (st->members, src, &stored, NULL))
+			ev.src = stored;
+		else if (g_hash_table_size (st->members) < FS_SCAN_MAX_MEMBERS) {
+			stored = g_strdup (src);
+			g_hash_table_add (st->members, stored);
+			ev.src = stored;
+		}
+	}
+	g_array_append_val (st->ev, ev);
+	while (st->ev->len > 0 &&
+	       (st->ev->len > FS_SCAN_MAX_EVENTS ||
+	        g_array_index (st->ev, ScanEv, 0).sec < sec - FS_SCAN_WINDOW_S))
+		g_array_remove_index (st->ev, 0);
+
+	d60 = g_hash_table_new (g_direct_hash, g_direct_equal);
+	d600 = g_hash_table_new (g_direct_hash, g_direct_equal);
+	{
+		GHashTable *srcs = g_hash_table_new (g_direct_hash,
+		                                     g_direct_equal);
+
+		for (guint i = 0; i < st->ev->len; i++) {
+			const ScanEv *e = &g_array_index (st->ev, ScanEv, i);
+
+			g_hash_table_add (d600, GUINT_TO_POINTER (e->port));
+			if (e->sec >= sec - 60)
+				g_hash_table_add (d60, GUINT_TO_POINTER (e->port));
+			if (e->src != NULL)
+				g_hash_table_add (srcs, (gpointer) e->src);
+		}
+		n_members = g_hash_table_size (srcs);
+		g_hash_table_unref (srcs);
+	}
+	n60 = g_hash_table_size (d60);
+	n600 = g_hash_table_size (d600);
+	g_hash_table_unref (d60);
+	g_hash_table_unref (d600);
+
+	if (n60 < FS_SCAN_PORTS_60S && n600 < FS_SCAN_PORTS_10M)
+		return NULL;
+	/* An aggregate stands for SEVERAL addresses; one address alone is
+	 * already its own subject. */
+	if (aggregate && n_members < 2)
+		return NULL;
+
+	what = g_strdup_printf ("scan|%s", subject);
+	if (!report_or_update (copilot, what, now_unix)) {
+		g_free (what);
+		return NULL;
+	}
+
+	/* The ports, in the order first seen; the ones that got through. */
+	ports_list = g_string_new (NULL);
+	allowed_list = g_string_new (NULL);
+	{
+		GHashTable *listed = g_hash_table_new (g_direct_hash,
+		                                       g_direct_equal);
+		GHashTable *ok = g_hash_table_new (g_direct_hash, g_direct_equal);
+		guint shown = 0;
+
+		for (guint i = 0; i < st->ev->len; i++) {
+			const ScanEv *e = &g_array_index (st->ev, ScanEv, i);
+
+			if (e->blocked)
+				n_blocked++;
+			else if (!g_hash_table_contains (ok,
+			                                 GUINT_TO_POINTER (e->port))) {
+				g_hash_table_add (ok, GUINT_TO_POINTER (e->port));
+				g_string_append_printf (allowed_list, "%s%u",
+				                        allowed_list->len ? ", " : "",
+				                        e->port);
+			}
+			if (g_hash_table_contains (listed, GUINT_TO_POINTER (e->port)))
+				continue;
+			g_hash_table_add (listed, GUINT_TO_POINTER (e->port));
+			if (shown++ < 20)
+				g_string_append_printf (ports_list, "%s%u",
+				                        ports_list->len ? ", " : "",
+				                        e->port);
+		}
+		if (shown > 20)
+			g_string_append (ports_list, ", ...");
+		g_hash_table_unref (listed);
+		g_hash_table_unref (ok);
+	}
+
+	{
+		gchar *who = aggregate
+			? g_strdup_printf (_("%s (%u addresses)"), subject, n_members)
+			: g_strdup (subject);
+		gchar *title = g_strdup_printf (
+			_("%s probed %u ports on this computer"), who, n600);
+
+		insight = create_insight (
+			FS_INSIGHT_INBOUND_SCAN,
+			(cls == ADDR_LAN || allowed_list->len == 0)
+			? FS_COPILOT_INFO : FS_COPILOT_WARNING,
+			title,
+			allowed_list->len == 0
+			? g_strdup_printf (
+				_("%s tried %u different local ports (%s). Every attempt "
+				  "the log shows was refused."), who, n600,
+				ports_list->str)
+			: g_strdup_printf (
+				_("%s tried %u different local ports (%s). Some got "
+				  "through to ports your policy allows: %s. Check that "
+				  "those services are meant to be reachable."), who,
+				n600, ports_list->str, allowed_list->str),
+			NULL, subject);
+		g_free (title);
+		g_free (who);
+	}
+	insight->why = g_strdup_printf (
+		_("%u distinct ports in the last 60 seconds (the limit is %d) and "
+		  "%u in 10 minutes (the limit is %d), from %s; %u of %u "
+		  "attempts refused%s."),
+		n60, FS_SCAN_PORTS_60S, n600, FS_SCAN_PORTS_10M,
+		aggregate ? _("one IPv6 /64 network") : _("one source"),
+		n_blocked, st->ev->len,
+		cls == ADDR_LAN ? _("; the source is on the local network") : "");
+	insight->benign = g_strdup (
+		_("Network scanners you run yourself, monitoring tools, printers "
+		  "and some games probe many ports too."));
+	insight->key = what;
+	insight->subject = g_strdup (subject);
+	insight->events_filter = g_strdup (aggregate ? src : subject);
+	insight->whatif_line = g_strdup_printf ("inbound tcp port %u from %s",
+	                                        port, src);
+	insight->withheld = g_strdup (
+		_("Report only: the policy blocks inbound traffic by default, and "
+		  "Sentinel never changes inbound rules."));
+	{
+		guint first = st->ev->len > FS_INSIGHT_MAX_EVIDENCE
+		              ? st->ev->len - FS_INSIGHT_MAX_EVIDENCE : 0;
+
+		for (guint i = first; i < st->ev->len; i++) {
+			const ScanEv *e = &g_array_index (st->ev, ScanEv, i);
+			FsEvidence *row = g_new0 (FsEvidence, 1);
+
+			row->when = e->unix_sec;
+			row->inbound = TRUE;
+			row->remote = g_strdup (e->src != NULL ? e->src : subject);
+			row->port = e->port;
+			row->protocol = g_strdup (e->proto);
+			row->blocked = e->blocked;
+			insight_add_evidence (insight, row);
+		}
+	}
+	insight->count = st->ev->len;
+	g_string_free (ports_list, TRUE);
+	g_string_free (allowed_list, TRUE);
+	return insight;
+}
+
+/* [ inbound_scan_check ]
+ * One source reaching many distinct local ports: 12 in 60 seconds, or
+ * 25 in 10 minutes.  Counts DISTINCT ports, never events, so a retry
+ * storm on one port is not a scan.  ICMP, loopback, multicast and
+ * link-local sources are ignored; a LAN source is Info.  A public IPv6
+ * source is also counted with the rest of its /64, so a scanner that
+ * rotates addresses inside it is still one scanner (*net_out gets that
+ * finding; it needs two or more addresses).  One new report per subject
+ * per hour; later events update the open finding.  The policy has no
+ * inbound deny, so this never changes the policy: its action is the
+ * health check. */
+static FsInsight *
+inbound_scan_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
+                    gint64 now_unix, FsInsight **net_out)
+{
+	const gchar *src;
+	guint port;
+	gint64 sec = now_us / G_USEC_PER_SEC;
+	AddrClass cls;
+	FsInsight *own;
+	gchar *net64;
+
+	*net_out = NULL;
+	if (!sentinel_hit_is_inbound (hit))
+		return NULL;
+	src = hit->source;
+	port = hit->port != NULL ? (guint) strtoul (hit->port, NULL, 10) : 0;
+	if (port == 0 || port > 65535)
+		return NULL;
+	cls = addr_class (src);
+	if (cls == ADDR_IGNORE || g_strcmp0 (src, hit->destination) == 0)
+		return NULL;
+
+	own = scan_judge (copilot, src, FALSE, src, hit, port, cls, sec,
+	                  now_unix);
+
+	net64 = cls == ADDR_PUBLIC ? v6_net64 (src) : NULL;
+	if (net64 != NULL) {
+		*net_out = scan_judge (copilot, net64, TRUE, src, hit, port, cls,
+		                       sec, now_unix);
+		g_free (net64);
+	}
+	return own;
+}
+
+static const struct { guint port; const gchar *name; } login_ports[] = {
+	{ 22, "SSH" }, { 3389, "RDP" }, { 5900, "VNC" }, { 23, "Telnet" },
+	{ 21, "FTP" }, { 445, "SMB" },
+};
+
+/* The login service a policy row names, by its service name. */
+static const gchar *
+login_service_name (const gchar *service)
+{
+	static const struct { const gchar *word; const gchar *name; } names[] = {
+		{ "ssh", "SSH" }, { "rdp", "RDP" }, { "remote desktop", "RDP" },
+		{ "ms-wbt-server", "RDP" }, { "vnc", "VNC" },
+		{ "telnet", "Telnet" }, { "ftp", "FTP" }, { "smb", "SMB" },
+		{ "microsoft-ds", "SMB" },
+	};
+	gchar *low;
+	const gchar *found = NULL;
+
+	if (service == NULL)
+		return NULL;
+	low = g_ascii_strdown (service, -1);
+	g_strstrip (low);
+	for (guint i = 0; i < G_N_ELEMENTS (names) && found == NULL; i++)
+		if (g_strcmp0 (low, names[i].word) == 0)
+			found = names[i].name;
+	g_free (low);
+	return found;
+}
+
+/* [ login_port_name ]
+ * The login service on a local port: the fixed list, then the policy's
+ * inbound service rows that name SSH, RDP, VNC, Telnet, FTP or SMB on
+ * a port of their own ("SSH, 2222, Anyone"; a range of up to 16 ports
+ * counts too).  NULL when the port is no login port. */
+static const gchar *
+login_port_name (FsCopilot *copilot, guint port)
+{
+	for (guint i = 0; i < G_N_ELEMENTS (login_ports); i++)
+		if (login_ports[i].port == port)
+			return login_ports[i].name;
+	if (copilot->policy == NULL)
+		return NULL;
+	for (gint k = FS_RULE_INBOUND_ALLOW_SERVICE;
+	     k <= FS_RULE_INBOUND_FORWARD; k++) {
+		GPtrArray *rows = copilot->policy->kinds[k];
+
+		for (guint i = 0; rows != NULL && i < rows->len; i++) {
+			const FsRule *r = g_ptr_array_index (rows, i);
+			const gchar *name = login_service_name (r->service);
+			const gchar *ptext = r->port;
+			gchar *end = NULL;
+			gulong lo, hi;
+
+			if (name == NULL || ptext == NULL)
+				continue;
+			lo = strtoul (ptext, &end, 10);
+			hi = lo;
+			if (end != NULL && *end == '-')
+				hi = strtoul (end + 1, &end, 10);
+			if (end == NULL || *end != '\0' || lo == 0 || hi < lo ||
+			    hi - lo >= 16)
+				continue;
+			if (port >= lo && port <= hi)
+				return name;
+		}
+	}
+	return NULL;
+}
+
+/* [ brute_force_check ]
+ * Repeated connections to login services: one source, 10 or more
+ * inbound TCP connections in 5 minutes, counted across every login
+ * port together (9 on SSH and 9 on RDP are 18), on 22, 3389, 5900, 23,
+ * 21, 445 or a port the policy gives SSH, RDP, VNC, Telnet, FTP or
+ * SMB.  The log cannot tell a failed login from a good one, so the
+ * severity rests on the refused attempts:
+ *   none refused       "connections", Info; Warning from the internet
+ *                      when the policy lets the source in;
+ *   some refused       Critical from the internet when the policy lets
+ *                      the source in (Warning from the LAN); Warning
+ *                      when some were allowed and some refused;
+ *   all refused        Info.
+ * "Lets the source in" is What-If's ALLOWED, or its DEPENDS when the
+ * log shows connections this computer let in: the Copilot asks What-If
+ * without the network in use, and on Windows an inbound from a private
+ * address depends on it (StockFW blocks reserved sources on Public
+ * networks), while an allowed connection in the log is the answer for
+ * the network this computer was on.
+ * Never carries a rule. */
+static FsInsight *
+brute_force_check (FsCopilot *copilot, const FsHit *hit, gint64 now_us,
+                   gint64 now_unix)
+{
+	const gchar *src, *name;
+	guint port;
+	gint64 sec = now_us / G_USEC_PER_SEC;
+	GArray *st;
+	BruteEv ev;
+	AddrClass cls;
+	guint n_blocked = 0;
+	FsWhatIfVerdict verdict = FS_WHATIF_ERROR;
+	FsCopilotSeverity sev;
+	FsInsight *insight;
+	GString *services, *ports;
+	gchar *what;
+	gboolean none_refused, lets_in;
+
+	if (!sentinel_hit_is_inbound (hit))
+		return NULL;
+	if (hit->protocol != NULL && g_ascii_strcasecmp (hit->protocol, "TCP"))
+		return NULL;
+	port = hit->port != NULL ? (guint) strtoul (hit->port, NULL, 10) : 0;
+	if (port == 0 || port > 65535)
+		return NULL;
+	name = login_port_name (copilot, port);
+	src = hit->source;
+	cls = addr_class (src);
+	if (name == NULL || cls == ADDR_IGNORE)
+		return NULL;
+
+	st = g_hash_table_lookup (copilot->brute, src);
+	if (st == NULL) {
+		if (g_hash_table_size (copilot->brute) >= FS_BRUTE_MAX_KEYS) {
+			GHashTableIter it;
+			gpointer k, v, oldest_k = NULL;
+			gint64 oldest = G_MAXINT64;
+
+			/* Expired sources first, then the one heard from
+			 * longest ago: never deaf to a newcomer. */
+			g_hash_table_iter_init (&it, copilot->brute);
+			while (g_hash_table_iter_next (&it, &k, &v)) {
+				GArray *o = v;
+
+				if (o->len == 0 ||
+				    g_array_index (o, BruteEv, o->len - 1).sec <=
+				    sec - FS_BRUTE_WINDOW_S)
+					g_hash_table_iter_remove (&it);
+			}
+			g_hash_table_iter_init (&it, copilot->brute);
+			while (g_hash_table_size (copilot->brute) >=
+			       FS_BRUTE_MAX_KEYS &&
+			       g_hash_table_iter_next (&it, &k, &v)) {
+				GArray *o = v;
+				gint64 last = g_array_index (o, BruteEv,
+				                             o->len - 1).sec;
+
+				if (last < oldest) {
+					oldest = last;
+					oldest_k = k;
+				}
+			}
+			if (g_hash_table_size (copilot->brute) >=
+			    FS_BRUTE_MAX_KEYS && oldest_k != NULL)
+				g_hash_table_remove (copilot->brute, oldest_k);
+		}
+		st = g_array_new (FALSE, FALSE, sizeof (BruteEv));
+		g_hash_table_insert (copilot->brute, g_strdup (src), st);
+	}
+
+	ev.sec = sec;
+	ev.unix_sec = now_unix;
+	ev.blocked = hit_is_blocked_marker (hit);
+	ev.port = port;
+	g_array_append_val (st, ev);
+	/* The window: attempts older than five minutes no longer count. */
+	while (st->len > 0 &&
+	       (st->len > 64 ||
+	        g_array_index (st, BruteEv, 0).sec <= sec - FS_BRUTE_WINDOW_S))
+		g_array_remove_index (st, 0);
+
+	if (st->len < FS_BRUTE_ATTEMPTS)
+		return NULL;
+	what = g_strdup_printf ("brute|%s", src);
+	if (!report_or_update (copilot, what, now_unix)) {
+		g_free (what);
+		return NULL;
+	}
+
+	/* The services and ports tried, in the order first seen. */
+	services = g_string_new (NULL);
+	ports = g_string_new (NULL);
+	{
+		GHashTable *seen_port = g_hash_table_new (g_direct_hash,
+		                                          g_direct_equal);
+		GHashTable *seen_name = g_hash_table_new (g_str_hash,
+		                                          g_str_equal);
+
+		for (guint i = 0; i < st->len; i++) {
+			const BruteEv *e = &g_array_index (st, BruteEv, i);
+			const gchar *n = login_port_name (copilot, e->port);
+
+			if (e->blocked)
+				n_blocked++;
+			if (n == NULL)
+				n = name;
+			if (!g_hash_table_contains (seen_name, n)) {
+				g_hash_table_add (seen_name, (gpointer) n);
+				g_string_append_printf (services, "%s%s",
+				                        services->len ? _(" and ") : "",
+				                        n);
+			}
+			if (!g_hash_table_contains (seen_port,
+			                            GUINT_TO_POINTER (e->port))) {
+				g_hash_table_add (seen_port,
+				                  GUINT_TO_POINTER (e->port));
+				g_string_append_printf (ports, "%s%u",
+				                        ports->len ? ", " : "", e->port);
+			}
+		}
+		g_hash_table_unref (seen_port);
+		g_hash_table_unref (seen_name);
+	}
+
+	/* Would the policy let this source in, on any of those ports? */
+	if (copilot->policy != NULL) {
+		GHashTable *asked = g_hash_table_new (g_direct_hash,
+		                                      g_direct_equal);
+
+		for (guint i = 0; i < st->len; i++) {
+			guint p = g_array_index (st, BruteEv, i).port;
+			FsWhatIfContext *ctx;
+			FsWhatIfQuery *q;
+			FsWhatIfResult *r;
+
+			if (g_hash_table_contains (asked, GUINT_TO_POINTER (p)))
+				continue;
+			g_hash_table_add (asked, GUINT_TO_POINTER (p));
+			ctx = fs_whatif_context_new (fs_whatif_native_platform (),
+			                             copilot->policy, NULL);
+			q = fs_whatif_query_new ();
+			ctx->firewall = FS_WHATIF_FW_RUNNING;
+			q->direction = FS_WHATIF_DIR_INBOUND;
+			q->protocol = FS_WHATIF_PROTO_TCP;
+			q->port = p;
+			q->host = g_strdup (src);
+			q->text = g_strdup_printf ("inbound tcp port %u from %s", p,
+			                           src);
+			r = fs_whatif_simulate (ctx, q);
+			/* ALLOWED on any port wins; BLOCKED needs every
+			 * port; an unclear answer stays unclear. */
+			if (r->verdict == FS_WHATIF_ALLOWED)
+				verdict = FS_WHATIF_ALLOWED;
+			else if (verdict == FS_WHATIF_ERROR ||
+			         (verdict == FS_WHATIF_BLOCKED &&
+			          r->verdict != FS_WHATIF_BLOCKED))
+				verdict = r->verdict;
+			fs_whatif_result_free (r);
+			fs_whatif_query_free (q);
+			fs_whatif_context_free (ctx);
+		}
+		g_hash_table_unref (asked);
+	}
+
+	none_refused = n_blocked == 0;
+	/* Some connections were let in, and What-If says "it depends":
+	 * the log answers it for the network in use. */
+	lets_in = verdict == FS_WHATIF_ALLOWED ||
+	          (verdict == FS_WHATIF_DEPENDS && n_blocked < st->len);
+	if (none_refused)
+		sev = lets_in && cls != ADDR_LAN
+		      ? FS_COPILOT_WARNING : FS_COPILOT_INFO;
+	else if (lets_in)
+		sev = cls == ADDR_LAN ? FS_COPILOT_WARNING : FS_COPILOT_CRITICAL;
+	else
+		sev = n_blocked < st->len && cls != ADDR_LAN ? FS_COPILOT_WARNING
+		                                             : FS_COPILOT_INFO;
+	{
+		gchar *title;
+		gint64 span = g_array_index (st, BruteEv, st->len - 1).sec -
+		              g_array_index (st, BruteEv, 0).sec;
+
+		if (none_refused)
+			title = g_strdup_printf (
+				lets_in
+				? _("Repeated %s connections from %s, which the policy "
+				    "lets in")
+				: _("Repeated %s connections from %s"),
+				services->str, src);
+		else
+			title = g_strdup_printf (
+				lets_in
+				? _("Repeated %s attempts from %s, and the policy lets "
+				    "it in")
+				: _("Repeated %s attempts from %s"),
+				services->str, src);
+
+		insight = create_insight (
+			FS_INSIGHT_BRUTE_FORCE, sev, title,
+			g_strdup_printf (
+				_("%s made %u connections to %s (%s %s) in %"
+				  G_GINT64_FORMAT " seconds, %u of them refused. %s %s"),
+				src, st->len, services->str,
+				strchr (ports->str, ',') != NULL ? _("ports") : _("port"),
+				ports->str, span, n_blocked,
+				verdict == FS_WHATIF_ALLOWED
+				? _("What-If says your policy allows this source on this "
+				    "port, so the connections can reach the login prompt.")
+				: verdict == FS_WHATIF_BLOCKED
+				? _("What-If says your policy blocks this source on this "
+				    "port.")
+				: lets_in
+				? _("What-If says the answer depends, for example on the "
+				    "network in use, and the log shows this computer let "
+				    "some of these connections in.")
+				: _("What-If could not say whether your policy lets this "
+				    "source in."),
+				none_refused
+				? _("The log cannot tell a failed login from a good one, "
+				    "so this may be your own use, such as a deploy or a "
+				    "sync job.")
+				: _("Allowed attempts appear only when allowed-event "
+				    "logging is on.")),
+			NULL, src);
+		g_free (title);
+	}
+	insight->why = g_strdup_printf (
+		_("%u connections in 5 minutes to login ports (%s; the limit is "
+		  "%d, counted across all of them); %u refused; What-If for this "
+		  "source: %s%s."),
+		st->len, ports->str, FS_BRUTE_ATTEMPTS, n_blocked,
+		fs_whatif_verdict_name (verdict),
+		cls == ADDR_LAN ? _("; the source is on the local network") : "");
+	insight->benign = g_strdup (
+		_("A saved password that is out of date, a backup or sync job, a "
+		  "deploy tool or a monitoring check can connect many times."));
+	insight->key = what;
+	insight->subject = g_strdup (src);
+	insight->events_filter = g_strdup (src);
+	insight->whatif_line = g_strdup_printf ("inbound tcp port %u from %s",
+	                                        port, src);
+	insight->withheld = g_strdup (
+		_("Report only: Sentinel never changes inbound rules. If the "
+		  "policy lets this source in, the policy health check offers a "
+		  "verified narrowing."));
+	{
+		guint first = st->len > FS_INSIGHT_MAX_EVIDENCE
+		              ? st->len - FS_INSIGHT_MAX_EVIDENCE : 0;
+
+		for (guint i = first; i < st->len; i++) {
+			const BruteEv *e = &g_array_index (st, BruteEv, i);
+			FsEvidence *row = g_new0 (FsEvidence, 1);
+
+			row->when = e->unix_sec;
+			row->inbound = TRUE;
+			row->remote = g_strdup (src);
+			row->port = e->port;
+			row->protocol = g_strdup ("TCP");
+			row->blocked = e->blocked;
+			insight_add_evidence (insight, row);
+		}
+	}
+	insight->count = st->len;
+	g_string_free (services, TRUE);
+	g_string_free (ports, TRUE);
+	return insight;
+}
+
+/* [ threat_intel_check ]
+ * Traffic a block list or a country rule stopped, when the log line
+ * says so (hit->rule).  Outbound: one finding per app and destination
+ * (a program on this computer tried to reach a listed address).
+ * Inbound: rolled up to one finding per list per hour, because the
+ * internet's background noise would otherwise fill the page.  Costs
+ * nothing when those engines are off. */
+static FsInsight *
+threat_intel_check (FsCopilot *copilot, const FsHit *hit, gint64 now_unix)
+{
+	gboolean inbound;
+	gchar app_buf[256];
+	const gchar *remote;
+	FsInsight *insight;
+
+	(void) copilot;
+
+	if (!hit_rule_is_intel (hit))
+		return NULL;
+	inbound = sentinel_hit_is_inbound (hit);
+	remote = inbound ? hit->source : hit->destination;
+	if (remote == NULL || *remote == '\0')
+		return NULL;
+	hit_app_key (hit, app_buf, sizeof app_buf);
+
+	if (inbound) {
+		gchar *title = g_strdup_printf (
+			_("Inbound connections dropped by %s"), hit->rule);
+
+		insight = create_insight (
+			FS_INSIGHT_THREAT_INTEL, FS_COPILOT_INFO, title,
+			g_strdup_printf (
+				_("Hosts on %s tried to connect to this computer and were "
+				  "dropped. This is mostly background noise from the "
+				  "internet; the count and the latest ones are below."),
+				hit->rule),
+			NULL, NULL);
+		g_free (title);
+		insight->key = g_strdup_printf ("intel-in|%s|%" G_GINT64_FORMAT,
+		                                hit->rule, now_unix / 3600);
+		insight->why = g_strdup_printf (
+			_("The log names the rule that dropped them: %s."),
+			hit->rule);
+		insight->benign = g_strdup (
+			_("Listed addresses are often shared or reused; a dropped "
+			  "inbound attempt has not reached anything."));
+		insight->events_filter = g_strdup (hit->rule);
+	} else {
+		gchar *title = g_strdup_printf (
+			_("%s tried to reach %s, which %s blocks"), app_buf, remote,
+			hit->rule);
+
+		insight = create_insight (
+			FS_INSIGHT_THREAT_INTEL, FS_COPILOT_WARNING, title,
+			g_strdup_printf (
+				_("A program on this computer (%s) tried to connect to "
+				  "%s, an address on %s. The connection was blocked."),
+				app_buf, remote, hit->rule),
+			app_buf, remote);
+		g_free (title);
+		insight->key = g_strdup_printf ("intel|%s|%s", app_buf, remote);
+		insight->subject = g_strdup (remote);
+		insight->why = g_strdup_printf (
+			_("The log names the rule that blocked it: %s."), hit->rule);
+		insight->benign = g_strdup (
+			_("Block lists include shared hosting and advertising "
+			  "addresses that ordinary pages load."));
+		insight->events_filter = g_strdup (remote);
+		insight->whatif_line = g_strdup_printf (
+			"outbound tcp port %s to %s",
+			hit->port != NULL && *hit->port ? hit->port : "443", remote);
+	}
+	insight->withheld = g_strdup (
+		_("Nothing to stage: the block list already blocks it."));
+	insight_add_evidence (insight, evidence_from_hit (hit, inbound,
+	                                                  now_unix));
 	return insight;
 }
 
@@ -2130,16 +4013,13 @@ create_insight (FsInsightType type,
 	insight->type = type;
 	insight->severity = severity;
 	insight->title = g_strdup (title);
-	/* Every caller passes a freshly formatted string here (and a
-	 * literal for the title), so the description is taken over as it
-	 * stands -- the g_strdup this used to do leaked one string per
-	 * insight. */
+	/* Every caller passes a freshly formatted string here, so the
+	 * description is taken over as it stands. */
 	insight->description = description;
-	/* Legacy suggestions are CSV rows shaped as outbound service
-	 * allows; Sentinel block suggestions override this with the deny
-	 * kind they were built for. */
-	insight->rule_kind = FS_RULE_OUTBOUND_ALLOW_SERVICE;
+	/* Only Sentinel's deny rows carry a rule; they set the kind. */
+	insight->rule_kind = FS_RULE_OUTBOUND_DENY_TO;
 	insight->application = g_strdup (app_name);
 	insight->destination = destination ? g_strdup (destination) : NULL;
+	insight->count = 1;
 	return insight;
 }

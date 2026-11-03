@@ -46,6 +46,7 @@ add_library(fs-core STATIC
   src/core/fs-fwrule.c
   src/core/fs-whatif.c
   src/core/fs-copilot.c
+  src/core/fs-health.c
   src/core/fs-eventrule.c
   src/core/fs-audit.c
   src/core/fs-trust.c
@@ -56,6 +57,9 @@ add_library(fs-core STATIC
   src/core/fs-iprange.c
   src/core/fs-nftset.c
   src/core/fs-netplace.c
+  src/core/fs-eventstore.c
+  src/core/fs-eventlog.c
+  src/core/fs-winevt.c
   src/core/fs-autoblock.c
   src/core/fs-instance.c
   src/core/fs-autostart.c
@@ -95,6 +99,8 @@ endif()
 # shell32 (its %ProgramData% lookup) are Windows system libraries: no
 # package to install, nothing to stage.  fs-autostart.c registers the
 # sign-in task through the Task Scheduler's COM API: ole32 + oleaut32.
+# fs-util.c gives the event history and its exports an owner-only DACL:
+# advapi32.
 if(WIN32)
   target_link_libraries(fs-core PUBLIC ws2_32 iphlpapi advapi32 shell32
                         ole32 oleaut32)
@@ -174,6 +180,7 @@ add_executable(StockFW
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
+  src/ui/fs-eventmodel.c
   src/ui/fs-activityview.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
@@ -289,6 +296,7 @@ set(FS_UI_ONLY_SOURCES
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
+  src/ui/fs-eventmodel.c
   src/ui/fs-activityview.c
   src/ui/fs-copilot.c
   src/ui/fs-simviz.c
@@ -523,6 +531,11 @@ target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)
 # fixes it offers (test-whatif.c; test-core.sh runs it too).  GLib only.
 add_executable(fs-whatif-test EXCLUDE_FROM_ALL tests/test-whatif.c)
 target_link_libraries(fs-whatif-test PRIVATE fs-core-nogui)
+# The Copilot's policy health check: exact coverage, the golden table on
+# both platform models, and every fix verified by the What-If engine
+# (test-health.c; test-core.sh runs it too).  GLib only.
+add_executable(fs-health-test EXCLUDE_FROM_ALL tests/test-health.c)
+target_link_libraries(fs-health-test PRIVATE fs-core-nogui)
 # The Overview against a fake backend that answers the way Windows does
 # (profiles, the profile in use, the network's name), so the Windows
 # half of the page is exercised on any platform.  The test supplies

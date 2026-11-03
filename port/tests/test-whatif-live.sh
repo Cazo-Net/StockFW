@@ -272,8 +272,8 @@ main (int argc, char **argv)
 }
 CEOF
 
-CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0)"
-LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0)"
+CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
+LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
 # shellcheck disable=SC2086
 cc ${STOCKFW_TEST_CFLAGS:-} -o "$BUILD_DIR/whatif-live" -I "$PORT/src" $CF \
 	"$BUILD_DIR/whatif-live.c" "$PORT/src/platform/linux/fs-backend-linux.c" \

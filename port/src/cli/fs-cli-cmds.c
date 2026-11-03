@@ -7,7 +7,10 @@
 #include "core/fs-autoblock.h"
 #include "core/fs-prefs.h"
 #include "core/fs-copilot.h"
+#include "core/fs-eventlog.h"
+#include "core/fs-eventstore.h"
 #include "core/fs-intel.h"
+#include "core/fs-health.h"
 #include "core/fs-service.h"
 #include "core/fs-json.h"
 #include "core/fs-netparse.h"
@@ -1784,9 +1787,25 @@ fs_cli_log_history (guint max_lines, gint64 *complete_from, GError **error)
 
 typedef struct
 {
-	gboolean only_blocked;
-	guint    printed;
+	FsEventQuery *query;     /* NULL: every event */
+	guint         printed;
 } EventsState;
+
+/* [ hit_passes ]
+ * The filters of `stockfw events', the same query the Events page
+ * runs.  A kernel-log stamp that cannot be read has no time, so it
+ * fails a --since or --until. */
+static gboolean
+hit_passes (const FsEventQuery *query, const FsHit *hit)
+{
+	gint64 ticks = 0;
+
+	if (query == NULL)
+		return TRUE;
+	if (fs_event_time_parse (hit->time, &ticks) == FS_EVENT_TIME_OTHER)
+		ticks = 0;
+	return fs_eventquery_match_hit (query, hit, ticks / 10);
+}
 
 /* [ hit_row ] -- one event as table cells (caller frees with g_strfreev). */
 static gchar **
@@ -1815,7 +1834,7 @@ hit_row (const FsHit *hit)
 static void
 print_hit (const FsHit *hit, EventsState *st)
 {
-	if (st->only_blocked && !fs_hit_is_blocked (hit))
+	if (!hit_passes (st->query, hit))
 		return;
 
 	if (fs_cli.json) {
@@ -1856,59 +1875,241 @@ on_sigint (gpointer data)
 	return G_SOURCE_REMOVE;
 }
 
+/* The newest `want' matching events of the saved history, oldest
+ * first.  The hit's strings are only lent for the call: kept ones are
+ * copied. */
+typedef struct
+{
+	const FsEventQuery *query;
+	GQueue              kept;
+	guint               want;
+	guint               matched;
+} HistoryScan;
+
+static void
+on_history_hit (const FsHit *hit, gint64 ticks, gpointer data)
+{
+	HistoryScan *scan = data;
+
+	if (scan->query != NULL &&
+	    !fs_eventquery_match_hit (scan->query, hit, ticks / 10))
+		return;
+
+	scan->matched++;
+	if (scan->want == 0)
+		return;
+	g_queue_push_tail (&scan->kept, fs_hit_copy (hit));
+	if (scan->kept.length > scan->want)
+		fs_hit_free (g_queue_pop_head (&scan->kept));
+}
+
+static GPtrArray *
+read_saved_history (const gchar *dir, const FsEventFilter *filter,
+                    const FsEventQuery *query, guint want,
+                    FsEventLogStats *stats)
+{
+	HistoryScan scan = { query, G_QUEUE_INIT, want, 0 };
+	GPtrArray *hits = g_ptr_array_new_with_free_func (
+		(GDestroyNotify) fs_hit_free);
+
+	fs_eventlog_foreach (dir, filter->since_us, filter->until_us,
+	                     on_history_hit, &scan, stats);
+	while (scan.kept.length > 0)
+		g_ptr_array_add (hits, g_queue_pop_head (&scan.kept));
+	return hits;
+}
+
+/* [ take_value ]
+ * The value of an option, as "--opt VALUE" or "--opt=VALUE".  NULL
+ * when argv[*i] is not that option. */
+static const gchar *
+take_value (gint argc, gchar **argv, gint *i, const gchar *opt,
+            gboolean *missing)
+{
+	gsize n = strlen (opt);
+
+	if (strcmp (argv[*i], opt) == 0) {
+		if (*i + 1 >= argc) {
+			*missing = TRUE;
+			return NULL;
+		}
+		return argv[++*i];
+	}
+	if (strncmp (argv[*i], opt, n) == 0 && argv[*i][n] == '=')
+		return argv[*i] + n + 1;
+	return NULL;
+}
+
 gint
 fs_cli_cmd_events (gint argc, gchar **argv)
 {
 	guint count = 20;
-	gboolean follow = FALSE;
-	EventsState st = { FALSE, 0 };
-	GPtrArray *history;
+	gboolean follow = FALSE, saved = FALSE, missing = FALSE;
+	const gchar *since = NULL, *until = NULL, *dir_opt = NULL;
+	FsEventFilter filter = { 0 };
+	EventsState st = { NULL, 0 };
+	FsEventLogStats stats = { 0 };
+	GPtrArray *history = NULL;
+	gchar *dir = NULL;
 	GError *error = NULL;
+	gint64 now = g_get_real_time ();
+	gint rc = FS_EXIT_OK;
 
 	for (gint i = 1; i < argc; i++) {
-		if ((strcmp (argv[i], "-n") == 0 || strcmp (argv[i], "--lines") == 0)
-		    && i + 1 < argc) {
-			gchar *end = NULL;
-			guint64 v = g_ascii_strtoull (argv[++i], &end, 10);
+		const gchar *v;
 
-			if (end == NULL || *end != '\0' || v > 100000) {
-				fs_cli_error ("-n wants a number up to 100000");
+		if ((v = take_value (argc, argv, &i, "-n", &missing)) != NULL ||
+		    (v = take_value (argc, argv, &i, "--lines", &missing))
+		    != NULL) {
+			gchar *end = NULL;
+			guint64 n = g_ascii_strtoull (v, &end, 10);
+
+			if (!g_ascii_isdigit (*v) || end == NULL || *end != '\0' ||
+			    n > FS_EVENTSTORE_MAX_CAPACITY) {
+				fs_cli_error ("-n wants a number up to %u",
+				              FS_EVENTSTORE_MAX_CAPACITY);
 				return FS_EXIT_USAGE;
 			}
-			count = (guint) v;
+			count = (guint) n;
+		} else if ((v = take_value (argc, argv, &i, "--since", &missing))
+		           != NULL) {
+			since = v;
+		} else if ((v = take_value (argc, argv, &i, "--until", &missing))
+		           != NULL) {
+			until = v;
+		} else if ((v = take_value (argc, argv, &i, "--grep", &missing))
+		           != NULL) {
+			filter.text = v;
+		} else if ((v = take_value (argc, argv, &i, "--proto", &missing))
+		           != NULL) {
+			filter.protocol = v;
+		} else if ((v = take_value (argc, argv, &i, "--port", &missing))
+		           != NULL) {
+			filter.port = v;
+		} else if ((v = take_value (argc, argv, &i, "--addr", &missing))
+		           != NULL) {
+			filter.address = v;
+		} else if ((v = take_value (argc, argv, &i, "--history-dir",
+		                            &missing)) != NULL) {
+			dir_opt = v;
+			saved = TRUE;
+		} else if ((v = take_value (argc, argv, &i, "--dir", &missing))
+		           != NULL) {
+			if (g_ascii_strcasecmp (v, "in") == 0)
+				filter.direction = FS_EVQ_DIR_IN;
+			else if (g_ascii_strcasecmp (v, "out") == 0)
+				filter.direction = FS_EVQ_DIR_OUT;
+			else {
+				fs_cli_error ("--dir wants in or out, not `%s'", v);
+				return FS_EXIT_USAGE;
+			}
+		} else if (missing) {
+			break;
 		} else if (strcmp (argv[i], "-f") == 0 ||
 		           strcmp (argv[i], "--follow") == 0) {
 			follow = TRUE;
+		} else if (strcmp (argv[i], "--history") == 0) {
+			saved = TRUE;
 		} else if (strcmp (argv[i], "--blocked") == 0) {
-			st.only_blocked = TRUE;
+			filter.action = FS_EVQ_ACTION_BLOCKED;
+		} else if (strcmp (argv[i], "--allowed") == 0) {
+			filter.action = FS_EVQ_ACTION_ALLOWED;
 		} else {
 			fs_cli_error ("unexpected argument: %s", argv[i]);
 			return FS_EXIT_USAGE;
 		}
+		if (missing)
+			break;
+	}
+	if (missing) {
+		fs_cli_error ("%s wants a value", argv[argc - 1]);
+		return FS_EXIT_USAGE;
 	}
 
-	if (count > 0) {
-		history = fs_cli_log_history (count, NULL, &error);
+	if (since != NULL &&
+	    !fs_event_parse_time_spec (since, now, FALSE, &filter.since_us,
+	                               &error)) {
+		fs_cli_error ("--since: %s", error->message);
+		g_error_free (error);
+		return FS_EXIT_USAGE;
+	}
+	if (until != NULL &&
+	    !fs_event_parse_time_spec (until, now, TRUE, &filter.until_us,
+	                               &error)) {
+		fs_cli_error ("--until: %s", error->message);
+		g_error_free (error);
+		return FS_EXIT_USAGE;
+	}
+	st.query = fs_eventquery_new (&filter, &error);
+	if (st.query == NULL) {
+		fs_cli_error ("%s", error->message);
+		g_error_free (error);
+		return FS_EXIT_USAGE;
+	}
+	if (fs_eventquery_is_empty (st.query))
+		g_clear_pointer (&st.query, fs_eventquery_free);
+
+	if (saved) {
+		/* The history the desktop app saves for this account (root's
+		 * own under sudo: point --history-dir at the user's). */
+		dir = dir_opt != NULL ? g_strdup (dir_opt)
+		                      : fs_eventlog_default_dir ();
+		if (!g_file_test (dir, G_FILE_TEST_IS_DIR)) {
+			fs_cli_error ("no saved event history in %s", dir);
+			fs_cli_hint ("the desktop app saves it while Preferences > "
+			             "Events > Keep event history is on%s",
+			             geteuid () == 0 && g_getenv ("SUDO_USER")
+			             ? "; under sudo this is root's folder, give "
+			               "--history-dir for yours" : "");
+			rc = FS_EXIT_FAILURE;
+			goto out;
+		}
+		history = read_saved_history (dir, &filter, st.query, count,
+		                              &stats);
+	} else if (count > 0) {
+		/* With a filter, look further back so N matches can be
+		 * found, then keep the newest N of them. */
+		history = fs_cli_log_history (st.query != NULL
+		                              ? MAX (count, 100000u) : count,
+		                              NULL, &error);
 
 		if (history == NULL) {
 			fs_cli_error ("%s", error->message);
 			g_error_free (error);
 			if (geteuid () != 0)
-				fs_cli_hint ("try `sudo stockfw events'");
-			return geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
+				fs_cli_hint ("try `sudo stockfw events', or "
+				             "`stockfw events --history' for the "
+				             "history the desktop app saved");
+			rc = geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
+			goto out;
 		}
+		if (st.query != NULL) {
+			GPtrArray *kept = g_ptr_array_new_with_free_func (
+				(GDestroyNotify) fs_hit_free);
 
+			for (guint i = 0; i < history->len; i++) {
+				FsHit *hit = g_ptr_array_index (history, i);
+
+				if (hit_passes (st.query, hit)) {
+					g_ptr_array_index (history, i) = NULL;
+					g_ptr_array_add (kept, hit);
+				}
+			}
+			g_ptr_array_unref (history);
+			history = kept;
+		}
+		while (history->len > count)
+			g_ptr_array_remove_index (history, 0);
+	}
+
+	if (history != NULL && count > 0) {
 		if (fs_cli.json && !follow) {
 			GString *out = g_string_new ("[");
 
 			for (guint i = 0; i < history->len; i++) {
-				const FsHit *hit = g_ptr_array_index (history, i);
-
-				if (st.only_blocked && !fs_hit_is_blocked (hit))
-					continue;
 				if (out->len > 1)
 					g_string_append_c (out, ',');
-				hit_row_json (out, hit);
+				hit_row_json (out, g_ptr_array_index (history, i));
 			}
 			g_string_append_c (out, ']');
 			fs_cli_print_json (out);
@@ -1925,13 +2126,10 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			GPtrArray *rows = g_ptr_array_new_with_free_func (
 				(GDestroyNotify) g_strfreev);
 
-			for (guint i = 0; i < history->len; i++) {
-				const FsHit *hit = g_ptr_array_index (history, i);
-
-				if (st.only_blocked && !fs_hit_is_blocked (hit))
-					continue;
-				g_ptr_array_add (rows, hit_row (hit));
-			}
+			for (guint i = 0; i < history->len; i++)
+				g_ptr_array_add (rows,
+				                 hit_row (g_ptr_array_index (history,
+				                                             i)));
 
 			st.printed = rows->len;
 			if (rows->len > 0)
@@ -1939,12 +2137,18 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			g_ptr_array_unref (rows);
 
 			if (st.printed == 0 && !fs_cli.quiet)
-				printf ("%sNo StockFW events in the kernel log yet.%s\n",
-				        fs_cli_dim (), fs_cli_reset ());
+				printf ("%s%s%s\n", fs_cli_dim (),
+				        saved ? "No saved events match."
+				        : st.query != NULL
+				        ? "No StockFW events in the kernel log match."
+				        : "No StockFW events in the kernel log yet.",
+				        fs_cli_reset ());
 		}
-
-		g_ptr_array_unref (history);
 	}
+	if (saved && stats.bad_lines > 0 && !fs_cli.quiet && !fs_cli.json)
+		fprintf (stderr, "%s%u damaged or cut-short line(s) in the "
+		         "history were skipped.%s\n", fs_cli_dim (),
+		         stats.bad_lines, fs_cli_reset ());
 
 	if (follow) {
 		const FsBackend *backend = fs_backend ();
@@ -1955,7 +2159,8 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 			fs_cli_error ("cannot follow events: %s",
 			              error ? error->message : "no event source");
 			g_clear_error (&error);
-			return geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
+			rc = geteuid () != 0 ? FS_EXIT_NEED_ROOT : FS_EXIT_FAILURE;
+			goto out;
 		}
 
 		if (!fs_cli.json && !fs_cli.quiet)
@@ -1971,7 +2176,13 @@ fs_cli_cmd_events (gint argc, gchar **argv)
 		backend->log_stop ();
 	}
 
-	return FS_EXIT_OK;
+out:
+	if (history != NULL)
+		g_ptr_array_unref (history);
+	if (st.query != NULL)
+		fs_eventquery_free (st.query);
+	g_free (dir);
+	return rc;
 }
 
 /* --------------------------------------------------------- connections */
@@ -2200,4 +2411,233 @@ fs_cli_cmd_interfaces (gint argc, gchar **argv)
 	g_list_free_full (now, (GDestroyNotify) fs_iface_stat_free);
 
 	return FS_EXIT_OK;
+}
+
+/* ------------------------------------------------------------- copilot */
+
+/* "checks":[{probe, before, after}, ...]: a fix's What-If checks. */
+static void
+health_checks_json (GString *out, const GPtrArray *checks)
+{
+	g_string_append (out, "\"checks\":[");
+	for (guint k = 0; checks != NULL && k < checks->len; k++) {
+		const FsHealthCheck *c = g_ptr_array_index (checks, k);
+
+		if (k > 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "probe", c->probe);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "before", fs_whatif_verdict_name (c->before));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "after", fs_whatif_verdict_name (c->after));
+		g_string_append_c (out, '}');
+	}
+	g_string_append_c (out, ']');
+}
+
+/* [ health_json ] -- one schema, shared with the dashboard if it ever
+ * serves it: version, the rule count, the platform model, findings. */
+static void
+health_json (GString *out, const GPtrArray *findings, guint rules,
+             FsWhatIfPlatform platform)
+{
+	g_string_append (out, "{\"version\":1,");
+	fs_json_kv_uint (out, "policy_rules", rules);
+	g_string_append_c (out, ',');
+	fs_json_kv_str (out, "platform",
+	                platform == FS_WHATIF_WINDOWS_BLOCK_WINS
+	                ? "windows-block-wins" : "linux-first-match");
+	g_string_append (out, ",\"findings\":[");
+	for (guint i = 0; i < findings->len; i++) {
+		const FsHealthFinding *f = g_ptr_array_index (findings, i);
+
+		if (i > 0)
+			g_string_append_c (out, ',');
+		g_string_append_c (out, '{');
+		fs_json_kv_str (out, "kind", fs_health_kind_name (f->kind));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "severity",
+		                fs_health_severity_name (f->severity));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "title", f->title);
+		g_string_append (out, ",\"rule\":{");
+		fs_json_kv_str (out, "kind",
+		                fs_health_rule_kind_name ((FsRuleKind) f->policy_kind));
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "index", (guint64) MAX (f->policy_index, 0));
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "csv", f->rule_csv);
+		g_string_append (out, "},");
+		if (f->other_csv != NULL && f->other_kind >= 0) {
+			g_string_append (out, "\"other\":{");
+			fs_json_kv_str (out, "kind", fs_health_rule_kind_name (
+				(FsRuleKind) f->other_kind));
+			g_string_append_c (out, ',');
+			fs_json_kv_uint (out, "index",
+			                 (guint64) MAX (f->other_index, 0));
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "csv", f->other_csv);
+			g_string_append (out, "},");
+		}
+		fs_json_kv_str (out, "why", f->why);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "evidence", f->evidence);
+		g_string_append_c (out, ',');
+		fs_json_kv_str (out, "whatif", f->whatif_line);
+		g_string_append (out, ",\"fix\":");
+		if (f->fix == FS_HEALTH_FIX_NONE) {
+			g_string_append (out, "null,");
+			fs_json_kv_str (out, "no_fix_reason", f->no_fix_reason);
+			/* A fix that was tried and failed its checks: what it
+			 * would have changed and the checks, which the reason
+			 * points to. */
+			if (f->checks != NULL && f->checks->len > 0) {
+				g_string_append (out, ",\"tried\":{");
+				fs_json_kv_str (out, "before", f->fix_before);
+				g_string_append_c (out, ',');
+				fs_json_kv_str (out, "after", f->fix_after);
+				g_string_append_c (out, ',');
+				health_checks_json (out, f->checks);
+				g_string_append_c (out, '}');
+			}
+		} else {
+			g_string_append_c (out, '{');
+			fs_json_kv_str (out, "label", f->fix_label);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "before", f->fix_before);
+			g_string_append_c (out, ',');
+			fs_json_kv_str (out, "after", f->fix_after);
+			g_string_append_c (out, ',');
+			fs_json_kv_bool (out, "verified", f->verified);
+			g_string_append_c (out, ',');
+			health_checks_json (out, f->checks);
+			g_string_append_c (out, '}');
+		}
+		g_string_append_c (out, '}');
+	}
+	g_string_append (out, "]}");
+}
+
+/* [ copilot_health ]
+ * The Copilot page's policy health check on the saved policy, with the
+ * same What-If context `simulate' builds.  It writes nothing: a fix is
+ * printed with the checks that verify it, and making it stays with the
+ * desktop app (or `stockfw policy').  Exit 0 with no findings, 7 with
+ * findings, 2 when the policy cannot be read in full. */
+static gint
+copilot_health (void)
+{
+	gint malformed = 0;
+	FsPolicy *policy = fs_cli_load_policy (NULL, &malformed);
+	FsSettings *settings;
+	FsWhatIfContext *ctx;
+	GPtrArray *findings;
+	gchar *prefix;
+	guint rules = 0;
+	gint status;
+
+	if (malformed > 0) {
+		fs_cli_error ("%d policy row(s) could not be read, so the check "
+		              "would be incomplete", malformed);
+		fs_cli_hint ("see `stockfw policy list'");
+		fs_policy_free (policy);
+		return FS_EXIT_USAGE;
+	}
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		rules += policy->kinds[k]->len;
+
+	settings = fs_settings_new ();
+	fs_settings_load_prefs (settings);
+	ctx = fs_whatif_context_new (fs_whatif_native_platform (), policy,
+	                             settings);
+	fs_copilot_whatif_observe (ctx, fs_backend (), geteuid () == 0);
+	prefix = fs_health_lan_prefix_auto (fs_backend ());
+	findings = fs_health_check (ctx, prefix);
+	status = findings->len > 0 ? FS_EXIT_FINDINGS : FS_EXIT_OK;
+
+	if (fs_cli.json) {
+		GString *out = g_string_new (NULL);
+
+		health_json (out, findings, rules, ctx->platform);
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else {
+		printf ("%s%u rules checked, %u finding%s%s\n", fs_cli_bold (),
+		        rules, findings->len, findings->len == 1 ? "" : "s",
+		        fs_cli_reset ());
+		for (guint i = 0; i < findings->len; i++) {
+			const FsHealthFinding *f = g_ptr_array_index (findings, i);
+			const gchar *colour =
+				f->severity == FS_COPILOT_CRITICAL ? fs_cli_red ()
+				: f->severity == FS_COPILOT_WARNING ? fs_cli_amber ()
+				                                    : fs_cli_dim ();
+
+			printf ("\n%s[%s]%s %s\n", colour,
+			        fs_health_severity_name (f->severity),
+			        fs_cli_reset (), f->title);
+			printf ("  rule:  %s #%d: %s\n",
+			        fs_health_rule_kind_name ((FsRuleKind) f->policy_kind),
+			        f->policy_index + 1, f->rule_csv);
+			if (f->why != NULL)
+				printf ("  why:   %s\n", f->why);
+			if (f->fix != FS_HEALTH_FIX_NONE && f->verified) {
+				printf ("  fix:   %s: %s -> %s\n", f->fix_label,
+				        f->fix_before,
+				        f->fix_after != NULL ? f->fix_after : "(removed)");
+				for (guint k = 0; k < f->checks->len; k++) {
+					const FsHealthCheck *c =
+						g_ptr_array_index (f->checks, k);
+
+					printf ("         checked: %s: %s -> %s\n", c->probe,
+					        fs_whatif_verdict_name (c->before),
+					        fs_whatif_verdict_name (c->after));
+				}
+			} else if (f->no_fix_reason != NULL) {
+				printf ("  %sno fix offered: %s%s\n", fs_cli_dim (),
+				        f->no_fix_reason, fs_cli_reset ());
+				if (f->checks != NULL && f->checks->len > 0)
+					printf ("  tried: %s -> %s\n", f->fix_before,
+					        f->fix_after != NULL ? f->fix_after
+					                             : "(removed)");
+				for (guint k = 0; f->checks != NULL &&
+				                  k < f->checks->len; k++) {
+					const FsHealthCheck *c =
+						g_ptr_array_index (f->checks, k);
+
+					printf ("         checked: %s: %s -> %s\n", c->probe,
+					        fs_whatif_verdict_name (c->before),
+					        fs_whatif_verdict_name (c->after));
+				}
+			}
+		}
+		if (findings->len == 0)
+			printf ("No overlaps, conflicts or open risky services.\n");
+		printf ("%sA check only: nothing was written. Fixes are made on "
+		        "the Copilot page.%s\n", fs_cli_dim (), fs_cli_reset ());
+	}
+
+	g_ptr_array_unref (findings);
+	g_free (prefix);
+	fs_whatif_context_free (ctx);
+	fs_settings_free (settings);
+	fs_policy_free (policy);
+	return status;
+}
+
+/* [ fs_cli_cmd_copilot ] */
+gint
+fs_cli_cmd_copilot (gint argc, gchar **argv)
+{
+	if (argc < 2 || strcmp (argv[1], "health") != 0) {
+		fs_cli_error ("copilot needs a subcommand");
+		fs_cli_hint ("stockfw copilot health [--json]");
+		return FS_EXIT_USAGE;
+	}
+	if (argc > 2) {
+		fs_cli_error ("unexpected argument: %s", argv[2]);
+		fs_cli_hint ("stockfw copilot health [--json]");
+		return FS_EXIT_USAGE;
+	}
+	return copilot_health ();
 }

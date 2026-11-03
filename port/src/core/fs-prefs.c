@@ -350,6 +350,12 @@ static const FsPrefSpec prefs_table[] = {
 	/* Events */
 	SPEC_BOOL (FS_PREFS_SKIP_REDUNDANT,          FALSE, FALSE),
 	SPEC_BOOL (FS_PREFS_SKIP_NOT_FOR_FIREWALL,   TRUE,  FALSE),
+	SPEC_STRING (FS_PREFS_EVENTS_MAX,            "100000", FALSE),
+	/* Off until chosen: a month of addresses, ports and devices on
+	 * disk is the user's call, not an upgrade's. */
+	SPEC_BOOL (FS_PREFS_EVENTS_HISTORY,          FALSE, FALSE),
+	SPEC_STRING (FS_PREFS_EVENTS_HISTORY_DAYS,   "30",  FALSE),
+	SPEC_STRING (FS_PREFS_EVENTS_HISTORY_MB,     "200", FALSE),
 
 	/* Policy.  Auto-apply is off: the original asked for an explicit
 	 * Apply, and applying on every edit is noisy when not elevated. */
@@ -430,6 +436,26 @@ fs_prefs_string (const gchar *key)
 	                      g_strdup (""));
 
 	return fs_prefs_get_string (key, spec->string_default);
+}
+
+guint
+fs_prefs_uint (const gchar *key, guint min, guint max)
+{
+	const FsPrefSpec *spec = fs_prefs_spec (key);
+	gchar *text, *end = NULL;
+	guint64 value;
+
+	g_return_val_if_fail (spec != NULL && spec->type == FS_PREF_STRING,
+	                      min);
+
+	text = fs_prefs_get_string (key, spec->string_default);
+	g_strstrip (text);
+	value = g_ascii_strtoull (text, &end, 10);
+	if (!g_ascii_isdigit (*text) || end == NULL || *end != '\0')
+		value = g_ascii_strtoull (spec->string_default, NULL, 10);
+	g_free (text);
+
+	return (guint) CLAMP (value, (guint64) min, (guint64) max);
 }
 
 gboolean
