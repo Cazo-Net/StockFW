@@ -1,19 +1,23 @@
 # StockFW continuous integration: build and test on Linux and on Windows
 # (MSYS2 UCRT64, the toolchain the README documents), and keep the
 # Windows installer and the Linux tarball each run produces, so a build
-# can be tried without setting anything up first.  RELEASING.md takes
-# the release assets from the run on main of the tagged commit.
+# can be tried without setting anything up first.
 #
 # It runs for every pull request (on the pull request merged into its
 # base, so what is tested is what merging would give), for pushes to
-# main, and by hand from the Actions tab.  Work-in-progress branches
-# without a pull request are not built.
+# main, for version tags (vX.Y.Z), and by hand from the Actions tab.
+# Work-in-progress branches without a pull request are not built.  On a
+# version tag, once both jobs pass, the release job drafts the GitHub
+# release from that run's artifacts (RELEASING.md).
 
 name: StockFW CI
 
 on:
   push:
     branches: [main]
+    # A version tag builds and tests both platforms on the tagged commit
+    # and then drafts the GitHub release (the release job at the end).
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
   workflow_dispatch:
 
@@ -207,17 +211,51 @@ jobs:
   windows:
     name: Windows build, tests and installer
     runs-on: windows-latest
-    timeout-minutes: 45
+    # 45 minutes for the job itself, plus room for one MSYS2 retry.
+    timeout-minutes: 55
     defaults:
       run:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: msys2/setup-msys2@v2
+      # MSYS2 setup downloads its package databases from mirror.msys2.org,
+      # which sometimes stalls ("Operation too slow ... failed to
+      # synchronize all databases").  That fails the job before any of our
+      # code is built, so a stalled mirror is retried once after a pause,
+      # into a fresh directory, instead of turning the run red.  A second
+      # failure still fails the job.
+      - name: Set up MSYS2
+        id: msys2
+        continue-on-error: true
+        uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
+          install: >-
+            git
+            base-devel
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-gtk3
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-nsis
+            mingw-w64-ucrt-x86_64-xz
+            mingw-w64-ucrt-x86_64-openssl
+
+      - name: Wait before retrying MSYS2 setup
+        if: steps.msys2.outcome == 'failure'
+        shell: pwsh
+        run: Start-Sleep -Seconds 60
+
+      - name: Set up MSYS2 (retry)
+        if: steps.msys2.outcome == 'failure'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          location: D:\msys2-retry
           install: >-
             git
             base-devel
@@ -267,3 +305,72 @@ jobs:
           path: port/installer/nsis/StockFW-*-Setup.exe
           if-no-files-found: error
           retention-days: 30
+
+  # A pushed tag vX.Y.Z runs both jobs above on the tagged commit and then
+  # drafts the GitHub release from their artifacts: the Windows installer,
+  # the Linux tarball and SHA256SUMS.txt, with the notes taken from the
+  # version's section of CHANGELOG.md.  It only drafts: a person reads the
+  # draft and presses Publish.  It refuses a tag that does not match the
+  # version in port/CMakeLists.txt or a version whose CHANGELOG section has
+  # no date, and it runs only when both jobs passed.
+  release:
+    name: Draft the GitHub release
+    needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag, the version and the changelog
+        id: v
+        run: |
+          version="$(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9][0-9.]*\).*/\1/p' port/CMakeLists.txt | head -n 1)"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the version in port/CMakeLists.txt ($version)"
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\] - [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no dated section for $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the Linux tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: StockFW-${{ steps.v.outputs.version }}-linux-x86_64
+          path: release
+
+      - name: Fetch the Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: StockFW-windows-installer
+          path: release
+
+      - name: Checksums and release notes
+        working-directory: release
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          exe="StockFW-$V-Setup.exe"
+          tgz="StockFW-$V-linux-x86_64.tar.gz"
+          ls -l
+          test -f "$exe" && test -f "$tgz"
+          sha256sum -c "$tgz.sha256"
+          sha256sum "$exe" "$tgz" > SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+          awk -v v="$V" 'index($0, "## [" v "]") == 1 {f=1; next} /^## /{f=0} f' \
+            ../CHANGELOG.md > notes.md
+          test -s notes.md
+
+      - name: Draft the release
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "StockFW $V" --notes-file notes.md \
+            "StockFW-$V-Setup.exe" "StockFW-$V-linux-x86_64.tar.gz" SHA256SUMS.txt

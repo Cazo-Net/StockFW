@@ -56,9 +56,7 @@ builds and tests on Linux and Windows. Each run keeps two artifacts:
   the changelog section, the licence list);
 - `StockFW-windows-installer`: `StockFW-1.0.7-Setup.exe`.
 
-Merge only when both jobs pass. The merge to `main` runs CI again; the
-release assets come from **that** run, so they are built from the
-commit that is tagged.
+Merge only when both jobs pass.
 
 ## 4. Tag
 
@@ -68,33 +66,45 @@ git tag -a v1.0.7 -m "StockFW 1.0.7"
 git push origin v1.0.7
 ```
 
-CI has no tag trigger; the tag marks the commit whose `main` run made the
-assets.
+The tag starts CI on the tagged commit (`.github/workflows/ci.yml`, tags
+`vX.Y.Z`). Both jobs build and test again, so the assets are built from
+exactly the commit that is tagged.
 
-## 5. Collect the assets and write the checksums
+## 5. The release job drafts the release
 
-From the `main` run of the tagged commit, download both artifacts
-(Actions > the run > Artifacts, or `gh run download <run-id>`) and
-unzip them into one empty folder:
+When both jobs pass, the `release` job:
 
-```sh
-mkdir release && cd release
-gh run download <run-id> -n StockFW-1.0.7-linux-x86_64
-gh run download <run-id> -n StockFW-windows-installer
-sha256sum -c StockFW-1.0.7-linux-x86_64.tar.gz.sha256
-sha256sum StockFW-1.0.7-Setup.exe StockFW-1.0.7-linux-x86_64.tar.gz > SHA256SUMS.txt
-sha256sum -c SHA256SUMS.txt
-```
+- refuses a tag that is not `v` plus the version in `port/CMakeLists.txt`,
+  and a version whose `CHANGELOG.md` section has no date;
+- downloads that run's two artifacts, checks the tarball against its
+  `.sha256`, and writes `SHA256SUMS.txt` for the installer and the tarball;
+- takes the release notes from the version's `CHANGELOG.md` section;
+- creates a **draft** release named `StockFW 1.0.7` with exactly
+  `StockFW-1.0.7-Setup.exe`, `StockFW-1.0.7-linux-x86_64.tar.gz` and
+  `SHA256SUMS.txt`.
 
-Check the names before going on: exactly `StockFW-1.0.7-Setup.exe`,
-`StockFW-1.0.7-linux-x86_64.tar.gz` and `SHA256SUMS.txt`.
+If either job fails, there is no draft: fix the cause, delete the tag
+(`git push origin :refs/tags/v1.0.7`, `git tag -d v1.0.7`), and tag the
+fixed commit.
 
 ## 6. Publish the release
 
-The release notes are the `## [1.0.7]` section of `CHANGELOG.md`:
+Open the draft (Releases > Drafts), check the notes and the three asset
+names, and press **Publish release**. From the command line:
 
 ```sh
-awk '/^## \[1\.0\.7\]/{f=1;next} /^## /{f=0} f' ../CHANGELOG.md > notes.md
+gh release view v1.0.7          # the draft, its notes and assets
+gh release edit v1.0.7 --draft=false
+```
+
+Doing it by hand instead (no release job): download both artifacts from
+the tag's run (`gh run download <run-id> -n StockFW-1.0.7-linux-x86_64`
+and `-n StockFW-windows-installer`), then
+
+```sh
+sha256sum -c StockFW-1.0.7-linux-x86_64.tar.gz.sha256
+sha256sum StockFW-1.0.7-Setup.exe StockFW-1.0.7-linux-x86_64.tar.gz > SHA256SUMS.txt
+awk '/^## \[1\.0\.7\]/{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
 gh release create v1.0.7 --title "StockFW 1.0.7" --notes-file notes.md \
     StockFW-1.0.7-Setup.exe StockFW-1.0.7-linux-x86_64.tar.gz SHA256SUMS.txt
 ```
