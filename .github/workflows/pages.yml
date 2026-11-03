@@ -1,0 +1,54 @@
+# StockFW website: publish site/public to GitHub Pages.
+#
+# The site is a static build committed under site/public (site/README.md).
+# This workflow runs only when something under site/ reaches main, or
+# when started by hand from the Actions tab.  It never builds the site
+# itself: `site/build.py --check` fails the run if the committed
+# site/public is not what site/src would produce, so what goes online is
+# exactly what was reviewed.  No schedule, no other trigger.
+#
+# Before the first run, Pages must be switched on once in the repository
+# settings (Settings > Pages > Source: GitHub Actions); until then the
+# deploy step fails and nothing is published.
+
+name: Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Publish site/public
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that site/public matches site/src
+        run: python3 site/build.py --check
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/public
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

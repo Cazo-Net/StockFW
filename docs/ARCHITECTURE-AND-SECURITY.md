@@ -809,6 +809,8 @@ flowchart TD
 
 Current status, stated honestly: the **local** pipeline (build → suite → teeth → package) is executed and green on the maintainer's machine; **automated CI and code signing are roadmap, not yet in place** (Chapter 10). Consequences of unsigned binaries today: SmartScreen/Defender warnings on download, which is a real adoption cost and is treated as a launch blocker for any commercial distribution. Penetration-testing posture is covered by Chapter 5's structural analysis plus the teeth-tested regression suite; an external assessment is a commercialization step (Chapter 10), not a claim of current completeness.
 
+**The website goes live (after 1.0.7).** The owner approved GitHub Pages and made the repository public on 2026-11-03, so the site's links into it (downloads from the GitHub release, the source, issues) work for visitors. `.github/workflows/pages.yml` publishes the committed `site/public/`. It runs only on a push to `main` that touches `site/**` or the workflow file, and by hand from the Actions tab; there is no schedule and it does not run for pull requests, so work in progress sends no mail. Its permissions are the three Pages needs and no more (`contents: read`, `pages: write`, `id-token: write`), and the concurrency group `pages` serialises deploys without cancelling a running one. The job builds nothing: `python3 site/build.py --check` fails the run when `site/public/` is not what `site/src/` produces, so what goes online is exactly what was reviewed, and `actions/upload-pages-artifact` and `actions/deploy-pages` then publish it as it is. Pages has to be switched on once in the repository settings, with GitHub Actions as the source; until then the deploy step fails and nothing is published. The site loads nothing from a third party and stores nothing in the browser (`site/README.md`), so publishing it adds no data flow to StockFW itself.
+
 ---
 
 ## Chapter 9: Performance & Scalability
@@ -1807,7 +1809,7 @@ A code review and a release review of the branch with 14.8 to 14.10 in it found 
 
 **`sudo` and `/usr/local/bin` (problem 4).** The Linux README says to use the full path under `sudo` where sudo's `secure_path` leaves out `/usr/local/bin`, yet gave `sudo stockfw-uninstall` and `sudo stockfw stop`; both are now full paths, as is `install.sh`'s no-systemd hint. The root README keeps the short `sudo stockfw intel ...` forms and says once, before them, to write `sudo /usr/local/bin/stockfw` where the short form says *command not found*.
 
-**For the website (not changed here).** `site/` still links the old `docs/1.0.7-threat-intel-design.md` path (now `docs/design/1.0.7-threat-intel-design.md`); the website has its own owner.
+**For the website.** `site/` now links `docs/design/1.0.7-threat-intel-design.md`, the moved path.
 
 **Not verified.** No Windows computer ran the DLL-folder change or the strip step. Whether a given snap or Flatpak browser opens the launch page was not tried on a desktop; the hint covers both outcomes.
 
