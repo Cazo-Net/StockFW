@@ -323,12 +323,13 @@ Firewall: running.  Make it live: /usr/local/bin/stockfw apply</pre>
 		<div class="sec-head">
 			<p class="label">New in {{version}}</p>
 			<h2>What 1.0.8 adds.</h2>
-			<p>The terminal release: on Linux, <code>stockfw</code> does from a terminal what the window does, and says what is true. The <a href="{{root}}changelog.html">changelog</a> has the full list, and the <a href="{{root}}docs/cli.html">command line page</a> covers each command with its real output.</p>
+			<p>The terminal release: on Linux, <code>stockfw</code> does from a terminal what the window does, settings included, and says what is true. The <a href="{{root}}changelog.html">changelog</a> has the full list, and the <a href="{{root}}docs/cli.html">command line page</a> covers each command with its real output.</p>
 		</div>
 		<div class="next-grid">
 			<div class="next-card"><h3>The live event line</h3><p><code>stockfw events -f</code> prints new events in the table’s columns with a status line under them: firewall state, live or pending, blocked today, Sentinel and the event source. Pipes and <code>--json</code> get events and nothing else.</p></div>
 			<div class="next-card"><h3>Is what I saved live?</h3><p><code>stockfw status</code> says “9 rules, live” or “1 change not applied”, the last apply, the blocks today and whether the boot service puts the rules back. <code>policy diff</code> shows the difference; rules have references such as <code>inbound-allow-service:2</code>.</p></div>
 			<div class="next-card"><h3>Who can reach this port?</h3><p><code>stockfw listening</code> lists every open port, the program behind it and whether the policy lets the LAN and the internet reach it, with the rule that decides.</p></div>
+			<div class="next-card"><h3>Settings and rules, edited from the terminal</h3><p><code>stockfw config</code> reads and sets the Preferences with the window’s own checks; <code>policy edit</code> changes a rule in place; <code>--apply</code> saves and applies under one lock. Boot uses the settings last applied.</p></div>
 			<div class="next-card"><h3>The audit log and Sentinel, from the terminal</h3><p><code>stockfw audit</code> reads every apply, start and stop with filters and follow mode; <code>stockfw sentinel list</code> shows the staged blocks and when each lifts.</p></div>
 			<div class="next-card"><h3>The lockout guard</h3><p>Over SSH, <code>apply</code> and <code>start</code> check that the new policy still lets your session in, under <code>sudo</code> too and with sshd on any port. They ask on a terminal and refuse in a script unless you pass <code>--yes</code>.</p></div>
 			<div class="next-card"><h3>Events triage</h3><p><code>events --summary</code> counts a window per source and per port with a bar per hour; <code>--wide</code>, <code>--csv</code>, port lists and ISO times. The RULE column names the blocklist that blocked an event.</p></div>

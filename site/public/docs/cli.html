@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Command line · StockFW</title>
-<meta name="description" content="The stockfw command on Linux: every command with its real output, the live event line, the audit log and Sentinel from the terminal, open ports and who can reach them, the lockout guard over SSH, exit codes you can branch on, JSON, the manual page and completion, and the app’s own flags on both platforms.">
+<meta name="description" content="The stockfw command on Linux: every command with its real output, the Preferences settings from the terminal, editing rules in place, the live event line, the audit log and Sentinel from the terminal, open ports and who can reach them, the lockout guard over SSH, exit codes you can branch on, JSON, the manual page and completion, and the app’s own flags on both platforms.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Command line · StockFW">
-<meta property="og:description" content="The stockfw command on Linux: every command with its real output, the live event line, the audit log and Sentinel from the terminal, open ports and who can reach them, the lockout guard over SSH, exit codes you can branch on, JSON, the manual page and completion, and the app’s own flags on both platforms.">
+<meta property="og:description" content="The stockfw command on Linux: every command with its real output, the Preferences settings from the terminal, editing rules in place, the live event line, the audit log and Sentinel from the terminal, open ports and who can reach them, the lockout guard over SSH, exit codes you can branch on, JSON, the manual page and completion, and the app’s own flags on both platforms.">
 <meta property="og:type" content="website">
 <link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
@@ -94,7 +94,7 @@
 		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Command line</p>
 		<article class="prose">
 <h1>Command line</h1>
-<p class="lede"><code>stockfw</code> is the desktop app without the display: the same policy files, the same simulator, the same apply gate. A rule added here is the rule the Policy page shows, and an apply here writes the same audit line. It is the tool for a server, an SSH session or WSL, where there is no window to open. <span class="plat">Linux</span> There is no Windows command line; on Windows, use the app.</p>
+<p class="lede"><code>stockfw</code> is the desktop app without the display: the same policy files, the same settings, the same simulator, the same apply gate. A rule added here is the rule the Policy page shows, a setting changed here is the one the Preferences window shows, and an apply here writes the same audit line. It is the tool for a server, an SSH session or WSL, where there is no window to open. <span class="plat">Linux</span> There is no Windows command line; on Windows, use the app.</p>
 
 <div class="code" data-copy="commands"><div class="code-head"><span>stockfw --help</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>Usage: stockfw [--json] [--plain] [--color=WHEN] [-q] &lt;command&gt; [args]
 
@@ -116,7 +116,9 @@ Commands:
   audit [-n N] [-f]          The audit log: every apply, start and stop
   sentinel [list]            Sentinel's staged blocks (read-only)
   intel &lt;action&gt;             Threat-intel blocklists (stockfw help intel)
+  config list|get|set|apply  The Preferences settings; set them (root)
   dashboard [--port N]       Serve the local web dashboard and open it
+  dashboard link             A new link to the running dashboard
   help [command]             Help for one command
   version                    Print the version
 
@@ -160,6 +162,9 @@ stockfw: hint: see `stockfw help simulate'; a word that starts with a dash goes 
 
 <h2 id="status">status<a class="anchor" href="#status" aria-label="Link to this section">#</a></h2>
 <div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw status</span>
+● This computer is protected
+  Your policy is in force for IPv4 and IPv6.
+
 StockFW 1.0.8  Linux (iptables) - web1
 
   Firewall     ● running
@@ -176,9 +181,9 @@ StockFW 1.0.8  Linux (iptables) - web1
 
 <span class="p">$ </span><span class="cmd">stockfw status -q</span>
 running, live</code></pre></div>
-<p>The <em>Policy</em> line says whether what you saved is what is live: “9 rules, live”, “1 change not applied (stockfw policy diff)”, “never applied”, or “settings changed since the last apply” when the Firewall preferences you saved are not the ones that went out. <em>Last apply</em> is the newest apply, start or stop in the audit log, with <code>cli</code> or <code>gui</code>. <em>Blocked</em> counts since local midnight, from the saved <a href="../docs/events.html#history">event history</a> while it is kept and otherwise from the kernel log. <em>Monitoring</em> is decided by what your account can actually read, tried rather than guessed from your user id: a user in the <code>adm</code> group sees “reading /var/log/kern.log”. <em>At boot</em> says whether <code>stockfw.service</code> is enabled, installed but off, or absent. Reading the firewall state needs root; without it the state is <em>unknown</em>, not guessed. <code>-v</code> adds the rules directory, the firewall settings (outbound mode, DROP or REJECT, ICMP, logging, interfaces, NAT), the event history and Sentinel. With <code>--json</code> the 1.0.7 keys are unchanged and new ones are added: <code>live</code> (<code>live</code>, <code>pending</code>, <code>never</code>…) with <code>pending</code> counts, <code>last_apply</code>, <code>blocked_today</code> with <code>last_block</code>, <code>monitoring</code> with its <code>source</code>, <code>boot_unit</code> and <code>host</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
+<p>The first line is the <strong>verdict</strong> of the app’s <a href="../docs/overview.html">Overview</a>, from the same table: “This computer is protected”, “IPv6 is not protected”, “This computer is not protected” or “The firewall’s state is unknown”, with its reasons under it; <code>--json</code> has it as a <code>verdict</code> object with <code>level</code>, <code>key</code>, <code>title</code> and <code>body</code>. A test holds the window’s card and the terminal to one golden table, so the two cannot drift. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-verdict-smoke</span> The <em>Policy</em> line says whether what you saved is what is live: “9 rules, live”, “1 change not applied (stockfw policy diff)”, “never applied”, or “settings changed since the last apply” when the Firewall preferences you saved are not the ones that went out. <em>Last apply</em> is the newest apply, start or stop in the audit log, with <code>cli</code> or <code>gui</code>. <em>Blocked</em> counts since local midnight, from the saved <a href="../docs/events.html#history">event history</a> while it is kept and otherwise from the kernel log. <em>Monitoring</em> is decided by what your account can actually read, tried rather than guessed from your user id: a user in the <code>adm</code> group sees “reading /var/log/kern.log”. <em>At boot</em> says whether <code>stockfw.service</code> is enabled, installed but off, or absent. Reading the firewall state needs root; without it the state is <em>unknown</em>, not guessed. <code>-v</code> adds the rules directory, the firewall settings (outbound mode, DROP or REJECT, ICMP, logging, interfaces, NAT), the event history and Sentinel. With <code>--json</code> the 1.0.7 keys are unchanged and new ones are added: <code>live</code> (<code>live</code>, <code>pending</code>, <code>never</code>…) with <code>pending</code> counts, <code>last_apply</code>, <code>blocked_today</code> with <code>last_block</code>, <code>monitoring</code> with its <code>source</code>, <code>boot_unit</code> and <code>host</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
 
-<h2 id="policy">policy list, show, add, remove, diff<a class="anchor" href="#policy" aria-label="Link to this section">#</a></h2>
+<h2 id="policy">policy list, show, add, edit, remove, diff, init<a class="anchor" href="#policy" aria-label="Link to this section">#</a></h2>
 <div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw policy add inbound-allow-service SSH 22 192.168.1.0/24 --comment "admin LAN"</span>
 Added inbound-allow-service:1  SSH  port 22  for 192.168.1.0/24  [IPv4 only]
 Check: inbound tcp port 22 from 192.168.1.1 -&gt; ALLOWED (saved policy)
@@ -221,6 +226,30 @@ Check: outbound tcp to 198.51.100.66 -&gt; ALLOWED (saved policy)
 Not live yet: /usr/local/bin/stockfw apply   (preview: stockfw policy diff)</code></pre></div>
 <p>Every rule has a <strong>reference</strong>, <code>KIND:N</code>, numbered as <code>policy list</code> shows it; <code>KIND#N</code> and <code>KIND N</code> work too. <code>show</code> prints one rule with what it covers and whether it is live. <code>add</code> and <code>remove</code> echo the reference and run a What-If check of the rule’s own traffic on the saved policy, so you see at once that the rule does what you meant. <code>list</code> takes a kind, <code>in</code> or <code>out</code>, <code>--grep TEXT</code> for the rows that hold TEXT, and <code>--status</code> to mark each row <em>live</em> or <em>pending</em>. <code>diff</code> shows the saved policy against the applied one: <code>+</code> rows to add, <code>-</code> rows to take away, numbered as applied.</p>
 <p>The kinds and their fields are those of the <a href="../docs/policy.html#the-rule-kinds">Policy page</a>: <code>inbound-allow-from HOST</code>, <code>inbound-allow-service SERVICE PORT FOR</code>, <code>inbound-forward SERVICE FIREWALL-PORT TO PORT</code>, <code>outbound-allow-to HOST</code>, <code>outbound-allow-from HOST</code>, <code>outbound-allow-service SERVICE PORT FOR</code>, <code>outbound-deny-to HOST</code>, <code>outbound-deny-from HOST</code>, <code>outbound-deny-service SERVICE PORT FOR</code>. <em>FOR</em> is a host, a network or <code>Anyone</code>. <code>--both</code> adds the opposite-direction twin of an allow rule as one change.</p>
+<h3 id="policy-edit">Editing a rule in place<a class="anchor" href="#policy-edit" aria-label="Link to this section">#</a></h3>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw policy edit outbound-deny-to:1 198.51.100.67</span>
+Changed outbound-deny-to:1  198.51.100.67  [IPv4 only]
+  was: 198.51.100.66
+Check: outbound tcp to 198.51.100.67 -&gt; BLOCKED (saved policy)
+Not live yet: /usr/local/bin/stockfw apply   (preview: stockfw policy diff)
+
+<span class="p">$ </span><span class="cmd">sudo stockfw policy edit inbound-allow-service:1 - 2222 -</span>
+<span class="p">$ </span><span class="cmd">sudo stockfw policy edit outbound-deny-to:1 --comment 'old bad host'</span>
+
+<span class="p">$ </span><span class="cmd">sudo stockfw policy add outbound-deny-to 203.0.113.99 --apply</span>
+Added outbound-deny-to:2  203.0.113.99  [IPv4 only]
+Check: outbound tcp to 203.0.113.99 -&gt; BLOCKED (saved policy)
+Applied (only the changes): +1 added (0 allow, 1 block), -0 removed (0 allow, 0 block), =9 unchanged</code></pre></div>
+<p><code>policy edit REF [FIELD…]</code> changes one rule where it is: same kind, same number, the comment kept unless <code>--comment</code> is given (<code>--comment ''</code> clears it), one save. Give all the fields in the order <code>add</code> takes them, with <code>-</code> for one that stays as it is, or none to change only the comment. A rule that another command changed in the meantime is refused, not overwritten. <code>--apply</code> on <code>add</code>, <code>edit</code> and <code>remove</code> is the window’s “Save and apply”: it saves and then applies through the same gate as <code>stockfw apply</code>, under one lock, so nothing can land between the save and the apply; it needs root, and the <a href="#lockout">SSH check</a> runs first on the policy the change would give, so nothing is saved if it would cut your session unless you confirm or pass <code>--yes</code>.</p>
+<p><strong>One writer at a time.</strong> Every change holds a lock from the moment it reads the policy until it has saved it (<code>/run/stockfw/apply.lock</code> and a <code>.lock</code> file beside the rules); two <code>policy add</code> commands at once both keep their rule, and the desktop app’s applies, starts and stops take the same lock, so a window and a terminal never apply at the same moment. A comma, a line break or a leading <code>#</code> in a field or comment is refused before anything is written, because the rule files have no quoting and such a row would read back as something else. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-pr3-core.c</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
+<div class="code" data-copy="commands"><div class="code-head"><span>A computer that never ran the desktop app</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw policy init</span>
+Saved the default rules in /etc/stockfw:
+  outbound-allow-service:1  DHCP  port 67-68  for Anyone  [IPv4 + IPv6]
+  outbound-allow-service:2  DNS  port 53  for Anyone  [IPv4 + IPv6]
+Nothing comes in unless a rule allows it.  Add what this computer serves,
+for example: stockfw policy add inbound-allow-service SSH
+Not live yet: /usr/local/bin/stockfw apply   (preview: stockfw policy diff)</code></pre></div>
+<p><code>policy init</code> saves the default rules the desktop app starts from, DHCP and DNS out, so a server without the app can start from them too. It refuses to replace a policy that has rules unless <code>--force</code> is given.</p>
 <p>Validation fails closed, with the same rules as the app:</p>
 <div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw policy add inbound-allow-service SSH 80abc Anyone</span>
 stockfw: error: not a valid inbound-allow-service rule: check the host, port or range
@@ -228,6 +257,51 @@ stockfw: hint: hosts are addresses, networks (10.0.0.0/8) or "Anyone"; ports are
 <span class="p">$ </span><span class="cmd">echo $?</span>
 2</code></pre></div>
 <p><code>policy list --json</code> gives every rule with its kind, number, <code>ref</code>, fields, comment, <code>covers</code> (<code>["ipv4"]</code>, <code>["ipv6"]</code> or both) and <code>covers_why</code>, the sentence the Policy page shows as a tooltip. The same <code>rule_ref</code> names the deciding rule in <code>simulate --json</code> and <code>copilot health --json</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
+
+<h2 id="config">config: the Preferences settings from the terminal<a class="anchor" href="#config" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw config list --firewall</span>
+SETTING                            VALUE   DEFAULT  APPLIED
+firewall.ext_if                    -       -        -
+firewall.int_if                    -       -        -
+firewall.nat                       off     off      off
+firewall.icmp.enable               on      on       on
+firewall.icmp.echo_request         on      on       on
+firewall.icmp.echo_reply           on      on       on
+firewall.icmp.traceroute           on      on       on
+firewall.icmp.mstraceroute         on      on       on
+firewall.icmp.unreachable          on      on       on
+firewall.icmp.timestamping         off     off      off
+firewall.icmp.masking              off     off      off
+firewall.icmp.redirection          off     off      off
+firewall.icmp.source_quenches      off     off      off
+firewall.deny_packets              on      on       on
+firewall.restrictive_outbound      off     off      off
+firewall.log_allowed               on      on       on
+firewall.block_external_broadcast  off     off      off
+firewall.block_internal_broadcast  off     off      off
+firewall.block_non_routables       on      on       on
+
+<span class="p">$ </span><span class="cmd">sudo stockfw config set deny_packets reject</span>
+firewall.deny_packets: on -&gt; off
+Saved, not applied: the firewall, and a boot, keep the settings last applied until the next apply: `stockfw config apply', or a policy apply (`stockfw apply', --apply), which sends them too.
+
+<span class="p">$ </span><span class="cmd">sudo stockfw config set nat on</span>
+stockfw: error: firewall.nat: Needs both devices: choose an Internet device and a local network device above.
+stockfw: hint: choose both devices in the same call: `stockfw config set nat on ext_if DEVICE int_if DEVICE' (`stockfw config devices' lists them)
+stockfw: hint: help topic: prefs-network; nothing was saved
+<span class="p">$ </span><span class="cmd">echo $?</span>
+2
+
+<span class="p">$ </span><span class="cmd">sudo stockfw config apply</span>
+Firewall settings to apply:
+  firewall.deny_packets              on -&gt; off
+Impact: 4 firewall rules added, 4 removed.
+Under the policy last applied.
+Applied the firewall settings under the last applied policy.
+A boot now starts with these settings: they are the last applied.</code></pre></div>
+<p>The settings of the <a href="../docs/preferences.html">Preferences window</a>, read and written from the terminal. <code>list</code> shows each setting this firewall acts on, its value, its default and, for a firewall setting, the value last applied (<code>--firewall</code>: those only; <code>--changed</code>: the ones not at their default). A setting is named by its dotted name (<code>firewall.icmp.echo_request</code>), its key (<code>firewall/nat</code>) or its last part when that is unique (<code>nat</code>, <code>ext_if</code>). A switch takes <code>on</code>/<code>off</code>; <code>deny_packets</code> takes <code>drop</code> or <code>reject</code>, <code>restrictive_outbound</code> takes <code>block</code> or <code>allow</code>; a device is a name from <code>config devices</code>.</p>
+<p><code>set</code>, <code>reset</code>, <code>audit-only on|off</code> and <code>apply</code> write <strong>root’s copy</strong> of the settings, the one the firewall, the boot unit and <code>apply</code> run as root read, so they need root. They follow the window’s rules and refuse with its reasons and the Help topic of its page: connection sharing needs both devices (set them in the same call), the broadcast and reserved-address blocks need the Internet device, an ICMP type needs ICMP filtering on, the history limits need the history on. Only the settings you name are written, so two <code>set</code> calls at once each keep their own; a settings file that cannot be read is kept as <code>stockfw.conf.bad</code>. <code>set</code> warns when a StockFW window runs as root, because the window keeps its own copy and writes it back when it saves.</p>
+<p><strong>Saved is not applied.</strong> A firewall setting you save is not in force until an apply sends it: <code>config apply</code> (or <code>set --apply</code>) shows what changes and how many firewall rules that adds and removes, runs the <a href="#lockout">SSH check</a>, and applies the settings under the policy last applied, so policy edits you have not applied stay off. A policy apply (<code>stockfw apply</code>, or <code>--apply</code> on an edit) sends the saved settings too, as the desktop app’s Apply does, and says so: “The saved firewall settings went out with it.” <strong>Boot uses the settings last applied</strong>: <code>stockfw start</code>, which the boot unit runs, brings back the firewall settings recorded with the last apply, so a setting saved and never applied does not go live at the next boot either. Audit-only mode holds a settings apply like any other. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-pr3-core.c</span></p>
 
 <h2 id="check">check: lines that are not rules<a class="anchor" href="#check" aria-label="Link to this section">#</a></h2>
 <div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw check</span>
@@ -262,6 +336,9 @@ Applied (only the changes): +1 added (1 allow, 0 block), -0 removed (0 allow, 0 
 Nothing to change: the policy already matches the firewall.
 
 <span class="p">$ </span><span class="cmd">sudo stockfw stop</span>
+Pause protection?
+  StockFW takes its rules out of the firewall. Until you start it again, the ports and addresses your policy blocks are no longer blocked, and threat-intel blocklists are taken down too. `stockfw start' puts the last applied policy back.
+Stop the firewall? [y/N] y
 Firewall stopped.
 <span class="p">$ </span><span class="cmd">sudo stockfw stop</span>
 Already stopped.
@@ -272,7 +349,7 @@ Would apply: +0 added (0 allow, 0 block), -0 removed (0 allow, 0 block), =9 unch
 Nothing was changed (dry run).
 <span class="p">$ </span><span class="cmd">sudo stockfw apply</span>
 Applied (whole policy; the firewall was stopped and is now running): +0 added (0 allow, 0 block), -0 removed (0 allow, 0 block), =9 unchanged</code></pre></div>
-<p><code>apply</code> goes through the gate described on the <a href="../docs/policy.html#apply-step-by-step">Policy page</a>: only what changed is touched, a refused apply is rolled back to the last applied policy and the rollback is verified, and every attempt is one audit line with the source <code>cli</code>. <strong>An apply after a stop starts the firewall again</strong> with the whole policy, and the audit line says why (“full (firewall was stopped)”); the desktop app’s Apply shares the gate and so gets the same behaviour. When Audit-only is on in the app, <code>apply</code> records the change and leaves the firewall alone: “Held: audit-only mode is on.  The firewall was left untouched.” <code>--dry-run</code> lists the rows it would add and remove and says which forwards would be left out; <code>-v</code> adds the chains it would write. <code>start</code> loads the last <em>applied</em> policy and starts the firewall, so saved changes you never applied stay off; <code>stop</code> removes StockFW’s own chains and nothing else. “Already running” and “Already stopped” write no audit line of their own, except that a stop on a stopped firewall still takes the threat-intel blocklists down and logs that as <code>intel-suspend</code>. All three need root and exit 3 without it. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-apply-linux.sh</span></p>
+<p><code>apply</code> goes through the gate described on the <a href="../docs/policy.html#apply-step-by-step">Policy page</a>: only what changed is touched, a refused apply is rolled back to the last applied policy and the rollback is verified, and every attempt is one audit line with the source <code>cli</code>. <strong>An apply after a stop starts the firewall again</strong> with the whole policy, and the audit line says why (“full (firewall was stopped)”); the desktop app’s Apply shares the gate and so gets the same behaviour. When Audit-only is on in the app, <code>apply</code> records the change and leaves the firewall alone: “Held: audit-only mode is on.  The firewall was left untouched.” <code>--dry-run</code> lists the rows it would add and remove and says which forwards would be left out; <code>-v</code> adds the chains it would write. <code>start</code> loads the last <em>applied</em> policy, with the firewall settings recorded at that apply, and starts the firewall, so saved changes you never applied stay off; <code>stop</code> removes StockFW’s own chains and nothing else. On a terminal <code>stop</code> first says what stopping takes away and asks, as the window’s “Pause protection?” does; Enter keeps the firewall running (exit 1). <code>--yes</code> skips the question, and with no terminal on standard input (a script, cron, the boot unit) it stops without asking, as before, and never reads standard input. “Already running” and “Already stopped” write no audit line of their own, except that a stop on a stopped firewall still takes the threat-intel blocklists down and logs that as <code>intel-suspend</code>. All three need root and exit 3 without it. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-apply-linux.sh</span></p>
 
 <h3 id="lockout">The lockout guard over SSH<a class="anchor" href="#lockout" aria-label="Link to this section">#</a></h3>
 <div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw apply</span>
@@ -335,7 +412,20 @@ TIME                     VERDICT  DIR  IN    OUT   SOURCE        DESTINATION   P
   --proto P             tcp, udp, icmp or icmpv6
   --port P              443, 1000-2000, 1000:2000, or a list: 22,443,8000:8100
   --addr A              source or destination in A: an address, a CIDR block or a-b
-  --blocked, --allowed  the verdict (one of them)</code></pre></div>
+  --blocked, --allowed  the verdict (one of them)
+  --collapse-repeats    hide an event with the same port, protocol, source and destination
+                        as the one before it ("Hide repeated events" in Preferences)
+  --for-me              hide inbound events to addresses that are not this computer's
+                        ("Skip events not addressed to this computer")
+  --prefs-filters       both, as the preferences set them (under sudo, root's)</code></pre></div>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw events --stats --collapse-repeats</span>
+Events      233 read from /dev/kmsg, 221 shown
+  Inbound   194 blocked, 26 allowed
+  Outbound  1 blocked, 0 allowed
+  Hidden    12 repeats, 0 not for this computer (off), 0 by the filters
+History     No saved history in /root/.local/share/stockfw/events.
+            Not being written: Keep event history is off (Preferences > Events).</code></pre></div>
+<p><code>--stats</code> counts what was read, shown and hidden, inbound and outbound, blocked and allowed, then the saved history’s size and folder and why it is not being written. <code>--clear-history</code> shows the same, asks on a terminal, and deletes the history (<code>--yes</code> without a terminal); it deletes nothing while a copy of StockFW is writing the folder. The two Events-page filters run where the window runs them, on the stream before the list’s own filters, so they also shape <code>-f</code> and <code>--summary</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
 
 <h3 id="events-history">Saved history<a class="anchor" href="#events-history" aria-label="Link to this section">#</a></h3>
 <p><code>--history</code> reads the <a href="../docs/events.html#history">history the desktop app saves</a> instead, from <code>~/.local/share/stockfw/events</code>, so no root is needed; under <code>sudo</code> that is root’s history, and <code>--history-dir DIR</code> reads another folder. A long history is streamed, never held in memory. With no saved history the command says so and points at the Preferences switch that turns it on.</p>
@@ -369,6 +459,24 @@ running · live · blocked today 45 · Sentinel auto, 1 staged · from /dev/kmsg
 ^C
 3 events (2 blocked) in 12 s</code></pre></div>
 <p><code>-f</code> keeps printing new events in the table’s columns until Ctrl-C, which prints how many events were seen. On a terminal a <strong>status line</strong> on standard error sits under the rows and is redrawn after each event and every few seconds: the firewall state, whether the saved policy is live (or “changes pending”, “never applied”, “settings pending”), <strong>HELD (audit-only)</strong> while audit-only holds applies back, the blocks since midnight, Sentinel’s mode and how many blocks it has staged, and where the events come from. It is cut to the terminal’s width so it never wraps, and cleared before anything else is printed, so it is never left behind in your scrollback. <code>--no-status-line</code> turns it off, and it is never shown with <code>--json</code>, <code>--csv</code>, <code>-q</code>, <code>TERM=dumb</code> or in a pipe, so <code>stockfw events -f --json | jq</code> gets one event object per line and nothing else. When the event reader stops, <code>-f</code> says why and exits 1 instead of waiting forever. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
+
+<h2 id="activity">activity<a class="anchor" href="#activity" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw activity</span>
+Activity  last hour · 1 min per point
+  Blocked  ▁▄▂▄▂▁▄▃▄▃▃▂▄▅▃▃▄▆▃▅▁▂█▆▂▆▃▃▄▄▅▁▄▂▄▃▁▄▆▆▄▂▆▃▃▄▃▂▂▂▁▃▇▃▂▂▃▁▃▃  max 7
+  Allowed  ▁▂▁▁▂▁▁▁▁▅▁▅▁▁▂▁▁▂▂▂▁▁▁▁▂▅▁▂▁▁▁█▂▁▁▂▁▂▂▁▂▂▂▁▂▁▂▂▁▂▁▂▁▁▁▁▁▁▂▁  max 3
+           Nov 03 20:51:00                                          now
+
+  Blocked  140 in the last hour · 194 in 24 h · counting since Nov 02 21:50:50
+  Allowed  30 in the last hour · 31 in 24 h
+  Network  ↓ 1.4 kB/s  ↑ 376 B/s  (all adapters, now)
+
+<span class="p">$ </span><span class="cmd">stockfw activity --history --table --range 15m</span>
+TIME             BLOCKED  ALLOWED
+Nov 03 21:49:00  1        1
+Nov 03 21:49:30  1        0
+Nov 03 21:50:00  1        0</code></pre></div>
+<p>The <a href="../docs/activity.html">Activity page</a> in the terminal: blocked and allowed events per point over the last 15 minutes, hour, 6 hours or day (<code>--range</code>) as a sparkline or a table, the counts of the last hour and day and since when they count, and the throughput now of every adapter or of <code>--device</code>. There is no resident process yet to keep the series, so each run rebuilds them, from the saved event history while a copy of StockFW writes it (or with <code>--history</code>) and otherwise from the kernel log. A point before the source could have seen anything, or after the last event of a history nobody writes now, is shown as no data, never as zero, and <code>null</code> in <code>--json</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
 
 <h2 id="audit">audit<a class="anchor" href="#audit" aria-label="Link to this section">#</a></h2>
 <div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw audit -n 4</span>
@@ -442,7 +550,7 @@ REMOTE        COUNT
 Refreshing every 5 s -- Ctrl-C to stop.
 ADAPTER  TYPE      ADDRESS       RECEIVED  SENT      ↓ NOW     ↑ NOW
 eth0     Ethernet  192.168.1.20  84.5 MB   270.4 MB  237 B/s   198 B/s</code></pre></div>
-<p><code>connections</code> shows both ends with their ports, the service, the direction (decided by what is listening), the TCP state and the owning program, IPv4 and IPv6; <code>--udp</code> adds connected UDP sockets. Filters: <code>--addr</code> (either end), <code>--port</code>, <code>--program NAME</code>, <code>--dir in|out</code>, <code>--state ESTABLISHED|SYN_SENT|…</code> and <code>--no-local</code>; <code>--by remote|program|port</code> gives one row per key with a COUNT. Programs owned by other users are readable only as root; the cell reads <code>?</code> and the legend goes to standard error. <code>interfaces</code> shows the adapters that are up with the rate measured over the real time between two samples; <code>--all</code> adds the ones that are down, <code>--watch[=SECS]</code> refreshes (default 2 s) until Ctrl-C, clearing the screen on a terminal and never in a pipe, <code>-c COUNT</code> stops after that many frames, and with <code>--json --watch</code> each frame is one line. <code>stockfw net</code> is an alias. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-sockets.c</span></p>
+<p><code>connections</code> shows both ends with their ports, the service, the direction (decided by what is listening), the TCP state and the owning program, IPv4 and IPv6; <code>--udp</code> adds connected UDP sockets. Filters: <code>--addr</code> (either end), <code>--port</code>, <code>--program NAME</code>, <code>--dir in|out</code>, <code>--state ESTABLISHED|SYN_SENT|…</code> and <code>--no-local</code>; <code>--by remote|program|port</code> gives one row per key with a COUNT. Programs owned by other users are readable only as root; the cell reads <code>?</code> and the legend goes to standard error. <code>interfaces</code> shows the adapters that are up with the rate measured over the real time between two samples; <code>--all</code> adds the ones that are down, <code>--no-virtual</code> leaves out bridges, veth, tun and other virtual adapters as the Overview hides them, <code>--watch[=SECS]</code> refreshes (default 2 s) until Ctrl-C, clearing the screen on a terminal and never in a pipe, <code>-c COUNT</code> stops after that many frames, and with <code>--json --watch</code> each frame is one line. <code>stockfw net</code> is an alias. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-sockets.c</span></p>
 
 <h2 id="dashboard">dashboard<a class="anchor" href="#dashboard" aria-label="Link to this section">#</a></h2>
 <div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw dashboard</span>
@@ -497,6 +605,7 @@ src  service</code></pre></div>
 <tr><td><code>STOCKFW_AUTOBLOCK_FILE</code></td><td>Sentinel’s staging record. <code>stockfw sentinel list</code> reads it.</td></tr>
 <tr><td><code>STOCKFW_EVENTS_DIR</code></td><td>Where the event history is read from and written to, instead of <code>~/<wbr>.local/<wbr>share/<wbr>stockfw/<wbr>events</code>.</td></tr>
 <tr><td><code>STOCKFW_LOG_FILE</code></td><td>Read events from this file instead of the kernel ring buffer (for tests and relocated logs).</td></tr>
+<tr><td><code>STOCKFW_RUN_DIR</code></td><td>Where the apply lock lives, instead of <code>/run/<wbr>stockfw</code>.</td></tr>
 <tr><td><code>STOCKFW_LAN_PREFIX</code></td><td>The LAN network <code>listening</code> and the health check ask about, instead of the one found from the adapters.</td></tr>
 <tr><td><code>STOCKFW_ASSUME_IPV6</code></td><td><code>1</code> loads the IPv6 payload on a kernel without an IPv6 stack (tests).</td></tr>
 <tr><td><code>XDG_CONFIG_HOME</code></td><td>Where <code>stockfw/<wbr>stockfw.conf</code> and the logs go, as usual.</td></tr>
@@ -545,7 +654,7 @@ stockfw intel geo list | remove ID         The country and network rules</code><
 <p>These belong to the desktop program, <code>StockFW</code>, on Windows and Linux alike. It takes options only: a word such as <code>StockFW dashboard</code> exits with status 2 and names the command you meant, <code>sudo /usr/local/bin/stockfw dashboard</code>. A second launch brings the running copy’s window forward instead of starting another; a launch with more rights takes over from it. See <a href="../docs/background.html">Background, tray and sign-in</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-instance.sh</span></p>
 
 <h2 id="tests">Tests<a class="anchor" href="#tests" aria-label="Link to this section">#</a></h2>
-<p><code>tests/test-cli.sh</code> drives every command above against a scratch policy and a fixture log, checks the exit codes and the JSON, runs <code>copilot health</code> with the local network fixed, runs real applies, starts and stops in a private network namespace, follows <code>events -f</code> under a real terminal and reads the raw bytes of its status line, checks the lockout guard with a fake <code>sshd</code>, compares the manual page and completion against the command tables, and `tests/test-dashboard.sh` starts a dashboard and exercises its owner, link, session, Host and deadline checks as the served account, as root and as another user. It runs as the build user and again as root, and the root run fails if a root-only part is skipped. <code>tests/test-intel-cli.sh</code> does the same for <code>intel</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
+<p><code>tests/test-cli.sh</code> drives every command above against a scratch policy and a fixture log, checks the exit codes and the JSON, runs <code>copilot health</code> with the local network fixed, runs real applies, starts and stops in a private network namespace, follows <code>events -f</code> under a real terminal and reads the raw bytes of its status line, checks the lockout guard with a fake <code>sshd</code>, holds the policy lock while two writers race, runs <code>config set</code> refusals against the Preferences rules, compares the manual page and completion against the command tables, and `tests/test-dashboard.sh` starts a dashboard and exercises its owner, link, session, Host and deadline checks as the served account, as root and as another user. It runs as the build user and again as root, and the root run fails if a root-only part is skipped. <code>tests/test-intel-cli.sh</code> does the same for <code>intel</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
 
 		</article>
 		<footer class="doc-foot">
@@ -559,7 +668,9 @@ stockfw intel geo list | remove ID         The country and network rules</code><
 			<li class="lvl2"><a href="#before-you-start-whose-policy">Before you start: whose policy?</a></li>
 			<li class="lvl2"><a href="#options">How options are read</a></li>
 			<li class="lvl2"><a href="#status">status</a></li>
-			<li class="lvl2"><a href="#policy">policy list, show, add, remove, diff</a></li>
+			<li class="lvl2"><a href="#policy">policy list, show, add, edit, remove, diff, init</a></li>
+			<li class="lvl3"><a href="#policy-edit">Editing a rule in place</a></li>
+			<li class="lvl2"><a href="#config">config: the Preferences settings from the terminal</a></li>
 			<li class="lvl2"><a href="#check">check: lines that are not rules</a></li>
 			<li class="lvl2"><a href="#apply">apply, start, stop</a></li>
 			<li class="lvl3"><a href="#lockout">The lockout guard over SSH</a></li>
@@ -568,6 +679,7 @@ stockfw intel geo list | remove ID         The country and network rules</code><
 			<li class="lvl3"><a href="#events-history">Saved history</a></li>
 			<li class="lvl3"><a href="#events-summary">Triage with --summary</a></li>
 			<li class="lvl3"><a href="#events-follow">The live event line: events -f</a></li>
+			<li class="lvl2"><a href="#activity">activity</a></li>
 			<li class="lvl2"><a href="#audit">audit</a></li>
 			<li class="lvl2"><a href="#sentinel">sentinel list</a></li>
 			<li class="lvl2"><a href="#copilot-health">copilot health</a></li>
