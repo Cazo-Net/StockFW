@@ -505,6 +505,9 @@ fs_cli_man_main (gint argc, gchar **argv)
 		".\\\" Do not edit: change the help texts in src/cli instead.\n");
 	g_string_append_printf (out,
 		".TH STOCKFW 1 \"\" \"StockFW %s\" \"User Commands\"\n", FS_VERSION);
+	/* No hyphenation: a word broken at the line end prints U+2010, so
+	 * an option copied from the page (--history) would not be one. */
+	g_string_append (out, ".nh\n");
 
 	g_string_append (out, ".SH NAME\nstockfw \\- the StockFW firewall from the "
 	                      "command line\n");

@@ -1906,11 +1906,11 @@ assert b'\x1b[K' not in out and b'blocked today' not in out, out"
 
   f_run json plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" --json events -n 1 -f'
   check "events -f --json on a terminal: no status line" f_none json
-  f_run nostat plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" events -n 1 -f --no-status-line'
+  f_run nostat plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" --full events -n 1 -f --no-status-line'
   check "events -f --no-status-line: no status line" f_none nostat
-  f_run quiet plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" -q events -n 1 -f'
+  f_run quiet plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" --full -q events -n 1 -f'
   check "events -q -f: no status line" f_none quiet
-  f_run dumb plain 'stty rows 20 cols 100; TERM=dumb timeout -s INT 30 "$S" events -n 1 -f'
+  f_run dumb plain 'stty rows 20 cols 100; TERM=dumb timeout -s INT 30 "$S" --full events -n 1 -f'
   check "events -f with TERM=dumb: no status line" f_none dumb
   f_run pipe plain 'stty rows 20 cols 100; timeout -s INT 30 "$S" events -n 1 -f | cat'
   check "events -f into a pipe: no status line" f_none pipe
@@ -2114,7 +2114,7 @@ if command -v groff > /dev/null; then
   # the page (--dry-run) is not the option the parser knows.
   groff -man -Tutf8 "$E/stockfw.1" 2> /dev/null | sed 's/\x1b\[[0-9;]*m//g' > "$E/page.txt"
   check "  ...and options print with ASCII dashes, ready to copy" \
-    bash -c "grep -q -- 'stockfw apply \\[--dry-run' '$E/page.txt' && ! grep -q \$'\\u2010' '$E/page.txt'"
+    bash -c "grep -q -- 'stockfw apply \\[--dry-run' '$E/page.txt' && ! LC_ALL=C grep -q \$'\\xe2\\x80\\x90' '$E/page.txt'"
 else
   echo "skip: groff is not installed; the page is not formatted"
 fi
