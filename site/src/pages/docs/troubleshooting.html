@@ -13,6 +13,10 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <dd>You are changing the firewall without the rights to do it. The change is saved and will be applied the next time Apply runs with rights. On Windows use the <em>StockFW (Elevated)</em> shortcut; on Linux run <code>sudo /usr/local/bin/StockFW</code> or <code>sudo stockfw apply</code>. Nothing was half-applied.</dd>
 <dt>“sudo: StockFW: command not found”</dt>
 <dd>[[linux]] <code>sudo</code> does not search <code>/usr/local/bin</code> on Debian, Kali and Ubuntu. Type the full path: <code>sudo /usr/local/bin/StockFW</code>. The installer warns about this and deliberately does not edit <code>sudoers</code>; see <a href="{{root}}docs/install-linux.html#why-the-full-path-after-sudo">why</a>.</dd>
+<dt>“libcrypto.so.3 is OpenSSL 3” from install.sh</dt>
+<dd>[[linux]] The distribution ships only OpenSSL 1.1 (Debian 11, Ubuntu 20.04). StockFW 1.0.7 links OpenSSL 3 and liblzma 5 to read the signed location database, and the installer stops before copying anything rather than install a program and a boot service that could not start. Upgrade the distribution, or build from source against the libraries it has.</dd>
+<dt>“nft not found” or “curl not found” from install.sh</dt>
+<dd>[[linux]] A warning, not a failure. Without <code>nft</code> the threat-intel lists and country rules cannot be loaded, and without <code>curl</code> they cannot be downloaded; the Threat Intel page says so. <code>sudo apt install nftables curl</code>.</dd>
 <dt>“Windows protected your PC” when running the installer</dt>
 <dd>The installer is not code-signed yet. Check the SHA-256 against the download page, then <em>More info</em>, <em>Run anyway</em>.</dd>
 </dl>
@@ -27,6 +31,10 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <dd>Read the sentence under the empty list. “Waiting for the first event” means nothing has been blocked or logged yet; try an inbound connection from another machine to a closed port. On Linux, allowed connections are logged only with <em>Log allowed connections</em> on; otherwise the page shows drops and rejects only.</dd>
 <dt>No events in WSL2, a container or a network namespace</dt>
 <dd>[[linux]] The kernel delivers firewall log lines from a non-initial network namespace only when <code>net.netfilter.nf_log_all_netns=1</code>. Set it on the host: <code>sudo sysctl -w net.netfilter.nf_log_all_netns=1</code>. WSL2’s kernel also needs the netfilter log modules; a stock Ubuntu WSL image has them.</dd>
+<dt>“(up to N skipped)” next to the event count</dt>
+<dd>[[win]] More than 10,000 Security-log records arrived in one five-second poll. The newest 10,000 were read and the rest counted as an upper bound; the Security log keeps them all. On Linux the kernel log is read as it streams and nothing is skipped.</dd>
+<dt>“Another copy of StockFW is saving the history”</dt>
+<dd>Two copies of StockFW are running on the same account’s history folder, and only one may write it. The second lists events but saves nothing, and takes over by itself once the first is gone. <code>StockFW --quit</code> asks the running copy to quit.</dd>
 <dt>The Program column is empty</dt>
 <dd>[[linux]] The kernel log carries no program name. The Overview’s connection table names programs for connections that are open; the Events page cannot for ones that are not. [[gap]]</dd>
 </dl>
@@ -60,9 +68,11 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <h2>Copilot and Sentinel</h2>
 <dl>
 <dt>Sentinel blocked something I use</dt>
-<dd>Select the finding and press <strong>Undo auto-block</strong>, or right-click the destination on the Events page and <em>Allow destination</em>: your Allow lifts the block and the two reach the firewall together. The block would have expired by itself in ten minutes; it cannot come back in this session. If it happens often, set Sentinel to <em>Detect only</em>, which takes every staged block down at once. Sentinel never blocks loopback, your LAN, multicast or a destination the program has used before; if it did, that is a bug worth <a href="{{repo}}/issues">reporting</a> with the audit lines.</dd>
-<dt>No insights appear</dt>
-<dd>The baseline needs history: four distinct hours before it judges hours, eight ten-minute windows before it judges rate. Novelty findings go quiet for a program whose profile is marked partial. <strong>Run analysis</strong> only reports what the policy and the events so far support.</dd>
+<dd>Press <strong>Undo</strong> on it under <em>Changes made by the Copilot</em>, or right-click the destination on the Events page and <em>Allow destination</em>: your Allow lifts the block and the two reach the firewall together. The block would have expired by itself in ten minutes; it cannot come back in this session. If it happens often, set Sentinel to <em>Detect only</em>, which takes every staged block down at once. Sentinel never blocks loopback, your LAN, multicast or a destination the program has used before; if it did, that is a bug worth <a href="{{repo}}/issues">reporting</a> with the audit lines.</dd>
+<dt>No findings appear</dt>
+<dd>The page says why: no events yet, monitoring off (with the reason the Events page gives), or “No findings from N events”, which means none of the fixed checks matched, not that the computer is safe. Allowed traffic is seen only when allowed-event logging is on; without it the login check sees only refused attempts. A slow pattern can stay below every limit; the limits are on <a href="{{root}}docs/copilot.html">the Copilot page</a>.</dd>
+<dt>A health finding says “no fix offered”</dt>
+<dd>The fix was tried against the policy with the What-If engine and one of its checks failed, for example a narrowing that would have cut off a second private network this computer is on. The failed check is printed under the finding. Nothing was changed.</dd>
 </dl>
 
 <h2>Tray and window</h2>
@@ -70,15 +80,17 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <dt>No tray icon</dt>
 <dd>Your desktop has no tray host (GNOME without the AppIndicator extension, or a headless session). The window works as usual and closing it quits. See <a href="{{root}}docs/background.html">Background and the tray</a>.</dd>
 <dt>I closed the window and the app is still running</dt>
-<dd>That is <em>Minimize to the tray</em>. Open it from the tray icon, or quit from the tray menu. Quitting does not stop the firewall.</dd>
+<dd>That is <em>Minimize to the tray</em>. Open it from the tray icon, start StockFW again (a second launch brings the running copy forward), or run <code>StockFW --quit</code>. Quitting does not stop the firewall.</dd>
+<dt>StockFW does not start at sign-in</dt>
+<dd>Turn it on in the tray menu or on <em>Preferences › General</em>, or run <code>StockFW --enable-autostart</code>. On Windows it is a Task Scheduler task without administrator rights; on Linux an entry in <code>~/.config/autostart</code>. Both start the unprivileged copy in the background, which monitors and learns; changing the firewall still needs the elevated shortcut or <code>sudo</code>.</dd>
 </dl>
 
 <h2>Command line and dashboard</h2>
 <dl>
 <dt>“cannot listen on 127.0.0.1:8080”</dt>
 <dd>The port is taken. Leave out <code>--port</code> and the system picks a free one.</dd>
-<dt>The dashboard did not open a browser</dt>
-<dd>Under <code>sudo</code> StockFW will not start a browser as root. Copy the printed URL into your own browser. The token is in it.</dd>
+<dt>The dashboard did not open a browser, or the browser shows a file error</dt>
+<dd>Under <code>sudo</code> StockFW will not start a browser as root. A snap or Flatpak browser cannot read the private launch page StockFW hands it. In both cases copy the printed URL into your browser; the token is in it.</dd>
 <dt>The dashboard page shows “Unauthorized”</dt>
 <dd>The browser tab lost the token: the <code>#token=…</code> fragment was cut from the URL before the page loaded, the tab was reopened in a new session, or the URL is from an earlier run. Start again and open the freshly printed URL.</dd>
 </dl>
@@ -86,10 +98,10 @@ description: What a message means and what to do: privileges, monitoring, sudo�
 <h2>Uninstalling and starting over</h2>
 <dl>
 <dt>Rules are still in the firewall after uninstalling</dt>
-<dd>By design the uninstaller leaves the engine as it is. Press <strong>Stop firewall</strong> before uninstalling, or afterwards: on Linux <code>sudo iptables -D INPUT -j INBOUND; sudo iptables -F INBOUND; sudo iptables -X INBOUND</code> and the same for <code>OUTBOUND</code> and the nat chains; on Windows delete the <code>StockFW-</code> rules in <code>wf.msc</code>.</dd>
+<dd>By design the uninstaller leaves the engine as it is. Press <strong>Stop firewall</strong> before uninstalling, or afterwards: on Linux <code>sudo iptables -D INPUT -j INBOUND; sudo iptables -F INBOUND; sudo iptables -X INBOUND</code> and the same for <code>OUTBOUND</code> and the nat chains, plus <code>sudo nft delete table inet stockfw_intel</code> if lists were on; on Windows delete the <code>StockFW-</code> rules and the <em>StockFW Threat Intel</em> group in <code>wf.msc</code>.</dd>
 <dt>Start from scratch</dt>
 <dd>Stop the firewall, close the app, delete the two directories listed in <a href="{{root}}docs/files.html">Files and formats</a>. The next start is a first run.</dd>
 </dl>
 
 <h2>Reporting a problem</h2>
-<p>Open an issue on <a href="{{repo}}/issues">GitHub</a> with the version (<em>About StockFW</em> or <code>stockfw version</code>), the platform, what you did, what the app said, and the relevant lines of <code>audit.log</code>. Nothing in the audit log is secret, but read it before pasting; it names your rules’ targets.</p>
+<p>Open an issue on <a href="{{repo}}/issues">GitHub</a> with the system info (<em>About StockFW › Copy system info</em> copies the StockFW and GTK versions, the platform and the backend, and nothing about you or your computer’s name), what you did, what the app said, and the relevant lines of <code>audit.log</code>. Nothing in the audit log is secret, but read it before pasting; it names your rules’ targets.</p>

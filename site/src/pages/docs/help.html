@@ -1,0 +1,49 @@
+---
+title: Help and About
+section: Using the app
+order: 18
+description: The Help window built into StockFW, which works offline and opens at the page you are on with F1, the keyboard shortcuts, and the About window with the credits, the licence summary and Copy system info.
+---
+<h1>Help and About</h1>
+<p class="lede">StockFW carries its own help. It is a window, not a web page: every topic is compiled into the program, nothing is fetched, and it works on a computer with no Internet connection. This site covers the same ground at more length; the Help window is what you reach for while the app is in front of you.</p>
+
+<h2>The Help window</h2>
+[[shot:help|The Help window: a dark sidebar with a search field and topics grouped under Start here, Using StockFW, Settings and More, with Getting started selected; a light page with the title, a Good to know callout about administrator rights, and numbered First steps.|The window opens at Getting started, or at the topic for the page you pressed F1 on.]]
+<p>Open it with <kbd>F1</kbd> from any page of the main window and it lands on the topic for that page. The <strong>Help</strong> item at the bottom of the sidebar, the <strong>Help</strong> button and <kbd>F1</kbd> in Preferences (the topic for the settings page shown), and <strong>Help</strong> in the tray menu (the topic on running in the background) open the same window.</p>
+<ul>
+<li><strong>Topics:</strong> Getting started; Overview and status, Events, Activity graphs, Policy, Threat intel, Copilot, What-If, Sentinel and Trust; Preferences with one topic per settings page; Running in the background; Command line and dashboard; Linux notes and Windows notes; Troubleshooting, Keyboard shortcuts, and About and credits.</li>
+<li><strong>Search</strong> looks through titles, summaries, text and extra keywords, and <kbd>Enter</kbd> opens the first topic found.</li>
+<li><strong>Back and Forward</strong>, also <kbd>Alt</kbd>+<kbd>Left</kbd> and <kbd>Alt</kbd>+<kbd>Right</kbd>, keep a history as you follow links between topics. A link to anything outside the help opens in your browser.</li>
+<li>There is one Help window. It is not modal: it takes input while Preferences is open, stays open when Preferences closes, and from the tray it opens on its own with the main window left hidden.</li>
+</ul>
+<p>The help describes the build in front of you. It is checked against the program: a smoke test opens every topic, follows every link, searches, walks Back and Forward, presses <kbd>F1</kbd> on every page including Threat Intel, and reads the sentences the release reviews corrected, so the help cannot drift from the code without a test failing. [[verified:fs-help-smoke]]</p>
+
+<h2>Keyboard shortcuts</h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Where</th><th>Keys</th><th>What they do</th></tr></thead>
+<tbody>
+<tr><td rowspan="8">Main window</td><td><kbd>F1</kbd></td><td>Help for the page you are on</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>,</kbd></td><td>Preferences</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>Quit StockFW</td></tr>
+<tr><td><kbd>Alt</kbd>+<kbd>A</kbd></td><td>Policy: apply the policy</td></tr>
+<tr><td><kbd>Alt</kbd>+<kbd>C</kbd></td><td>Events: clear the list</td></tr>
+<tr><td><kbd>Alt</kbd>+<kbd>F</kbd></td><td>Events: read recent events again</td></tr>
+<tr><td><kbd>Left</kbd> <kbd>Right</kbd> <kbd>Home</kbd> <kbd>End</kbd></td><td>Activity: read one interval of the graph at a time</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Trust: inspect the path you typed</td></tr>
+<tr><td rowspan="2">Preferences</td><td><kbd>F1</kbd></td><td>Help for the page shown</td></tr>
+<tr><td><kbd>Escape</kbd></td><td>Cancel and close</td></tr>
+<tr><td rowspan="5">Help</td><td><kbd>Ctrl</kbd>+<kbd>F</kbd></td><td>Search the help</td></tr>
+<tr><td><kbd>Escape</kbd></td><td>Clear the search</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Open the first topic found</td></tr>
+<tr><td><kbd>Alt</kbd>+<kbd>Left</kbd>, <kbd>Alt</kbd>+<kbd>Right</kbd></td><td>Back, Forward</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>W</kbd></td><td>Close Help</td></tr>
+<tr><td>About</td><td><kbd>Escape</kbd></td><td>Close it</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>About</h2>
+[[shot:about|The About window: the StockFW logo, Version 1.0.7, one line on what it does, a Credits card listing Stockfw Team as Creator & Original Developer, H3xCore as Developer and Stock Team for the GTK3 port, Windows backend and Copilot, a Licence card with a View licence texts button, the project link, and Copy system info and Close buttons.|About: the credits, the licence summary with both texts one click away, and Copy system info.]]
+<p><strong>About StockFW</strong> at the bottom of the sidebar shows the version, the credits and a licence summary that is true to the source: the tree carries the GNU General Public License version 2 (<code>COPYING</code>) and the Apache License 2.0 (<code>LICENSE</code>), the code it was ported from was released under the GPL version 2 or any later version, and which licence covers which part is still under review. <strong>View licence texts</strong> shows both texts, compiled into the program. The installers ship the same summary followed by both texts, and a test reads the staged file back. [[verified:test-licence-texts.sh]]</p>
+<p><strong>Copy system info</strong> puts the StockFW and GTK versions, the platform and the firewall backend on the clipboard, for a bug report. It copies nothing about you: no user name, host name or home folder. The About window is not modal and there is one at a time.</p>

@@ -11,11 +11,11 @@ description: A guided first session with StockFW: check that you are protected, 
 <li>
 <strong>Read the Overview</strong>
 <p>The green or red card at the top answers the question you opened the app for. On a fresh install it says the firewall is stopped; press <strong>Start firewall</strong>. The card turns green, and the two small tiles say whether IPv4 and IPv6 traffic are filtered. On Linux, if <code>ip6tables</code> is missing, the IPv6 tile tells you instead of pretending.</p>
-[[shot:overview|The Overview page with a green “This computer is protected” card, event counters, open connections and recent blocks.|After Start: protected, both families filtered, nine rules in force.]]
+[[shot:overview|The Overview page with a green “This computer is protected” card, event counters, open connections and recent blocks.|After Start: protected, both families filtered, the policy in force.]]
 </li>
 <li>
 <strong>Watch the Events page for a minute</strong>
-<p>Every connection the firewall decided appears as it happens. Red rows were blocked. Type part of an address, a port or a program name into the filter and the list narrows while you type; the count reads “3 of 1200 events” so an empty filter result cannot be mistaken for a quiet firewall. If the list stays empty, it tells you why: monitoring is off, or nothing matched.</p>
+<p>Every connection the firewall decided appears as it happens. Red rows were blocked. Type part of an address, a port or a program name into the filter and the list narrows while you type; the count reads “3 of 1200 events” so an empty filter result cannot be mistaken for a quiet firewall. The filter bar also narrows by direction, verdict, protocol, port and address. If the list stays empty, it tells you why: monitoring is off, or nothing matched.</p>
 </li>
 <li>
 <strong>Turn an event into a rule</strong>
@@ -38,8 +38,8 @@ description: A guided first session with StockFW: check that you are protected, 
 [[shot:whatif-blocked|The What-If window for a blocked inbound connection: a red BLOCKED badge, the packet bounced back by the wall, a “What you can do” card offering “Create allow rule” with the exact row it would add, and a “Why” card in which the default drop decides.|A question, not a change: nothing is written by asking, and the offered fix shows its row before you decide.]]
 </li>
 <li>
-<strong>Set up the tray</strong>
-<p>Open <strong>Preferences</strong> from the bottom of the sidebar. On the Interface page, <em>Show a tray icon</em> and <em>Minimize to the tray</em> keep StockFW running when you close the window. The tray icon’s tooltip carries the firewall state, so a glance answers the question the app exists for.</p>
+<strong>Let it run in the background</strong>
+<p>Open <strong>Preferences</strong> from the bottom of the sidebar. On the General page, <em>Show a tray icon</em> and <em>Close and minimize to the tray</em> keep StockFW running when you close the window, and <em>Start StockFW in the background when I sign in</em> brings it back at your next sign-in. The tray icon’s tooltip carries the firewall state, so a glance answers the question the app exists for. Press <kbd>F1</kbd> on any page for the built-in help.</p>
 </li>
 </ol>
 

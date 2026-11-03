@@ -64,7 +64,8 @@
 			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
 			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
 			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
-			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
 		</ul>
 		<h2>Protection</h2>
 		<ul>
@@ -95,7 +96,7 @@
 <h1>Overview</h1>
 <p class="lede">The first page answers one question, “is this computer protected?”, in one sentence, and then shows the four things you would check next.</p>
 
-<figure class="shot"><img src="../assets/screens/overview.webp" alt="The Overview page: a green protection card with Stop firewall and View events buttons and four tiles, a row of counters, the open connections table, the network adapters card and the recent blocks list." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Protected, both families filtered, nine rules, one adapter, live connections with their programs.</figcaption></figure>
+<figure class="shot"><img src="../assets/screens/overview.webp" alt="The Overview page: a green protection card with Stop firewall and View events buttons and four tiles reading IPv4 Filtered, IPv6 Filtered, Policy 10 rules and Engine Linux (iptables); counters for inbound and outbound events, open connections and traffic now; the open connections table, the network adapters card and the recent blocks list." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Protected, both families filtered, ten rules in force, one virtual adapter hidden and counted, and the last blocks with their source and time.</figcaption></figure>
 
 <h2 id="the-protection-card">The protection card<a class="anchor" href="#the-protection-card" aria-label="Link to this section">#</a></h2>
 <p>Green with a shield when the firewall is running and your policy is in force; red when it is stopped. The sentence under the heading says what that means for traffic, and the four tiles break it down:</p>
@@ -128,7 +129,7 @@
 <p>The button in the top corner. While the policy is locked, every Apply, from any page or from the command line, becomes a dry run: the change is measured and saved, an audit line reads “policy held, firewall untouched”, and the engine is left exactly as it is. Use it when you are editing a policy you do not want to apply piecemeal. Audit-only mode on the Policy page does the same thing from the other side. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></p>
 
 <h2 id="the-sidebar">The sidebar<a class="anchor" href="#the-sidebar" aria-label="Link to this section">#</a></h2>
-<p>The bottom of the sidebar repeats the verdict, <em>Protected</em> or <em>Not protected</em>, with the engine’s name, so it is visible from every page. <em>Preferences</em> and <em>About StockFW</em> sit above it.</p>
+<p>The sidebar lists the pages: Overview, Events, Activity, Policy, Threat Intel, Copilot and Trust. Its bottom repeats the verdict, <em>Protected</em> or <em>Not protected</em>, with the engine’s name, so it is visible from every page. <em>Preferences</em>, <em>Help</em> and <em>About StockFW</em> sit above it; <kbd>F1</kbd> opens the help at the topic for the page you are on.</p>
 
 		</article>
 		<footer class="doc-foot">

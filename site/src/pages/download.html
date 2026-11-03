@@ -11,8 +11,8 @@ description: StockFW 1.0.7 for Windows and Linux: the installer, the Linux tarba
 <table class="tbl">
 <thead><tr><th>Platform</th><th>File</th><th>Notes</th></tr></thead>
 <tbody>
-<tr><td>Windows 10 and 11, 64-bit</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-Setup.exe">StockFW-{{release}}-Setup.exe</a></td><td>NSIS installer. Bundles the GTK3 runtime, so nothing else needs installing.</td></tr>
-<tr><td>Linux x86-64</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-linux-x86_64.tar.gz">StockFW-{{release}}-linux-x86_64.tar.gz</a></td><td>Tarball with <code>install.sh</code>. Needs GTK3, <code>iptables</code> and <code>ip6tables</code> from your distribution.</td></tr>
+<tr><td>Windows 10 and 11, 64-bit</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-Setup.exe">StockFW-{{release}}-Setup.exe</a></td><td>NSIS installer. Bundles the GTK3 runtime, so nothing else needs installing, and ships the README, the changelog and the licence texts.</td></tr>
+<tr><td>Linux x86-64</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-linux-x86_64.tar.gz">StockFW-{{release}}-linux-x86_64.tar.gz</a></td><td>Tarball with <code>install.sh</code>, about 1.2 MB. Needs GTK 3, liblzma, OpenSSL 3, <code>iptables</code> and <code>ip6tables</code> from your distribution; installs a boot service that puts the rules back after a restart.</td></tr>
 <tr><td>Checksums</td><td><a href="{{repo}}/releases/download/v{{release}}/SHA256SUMS.txt">SHA256SUMS.txt</a></td><td>SHA-256 of both files.</td></tr>
 </tbody>
 </table>
@@ -32,7 +32,7 @@ StockFW-{{release}}-linux-x86_64.tar.gz: OK</pre>
 <h3 id="requirements">Requirements</h3>
 <dl>
 <dt>Windows</dt><dd>Windows 10 or 11, 64-bit. Windows Defender Firewall must be present (it always is). To change rules, run the <em>StockFW (Elevated)</em> shortcut; everything else works without administrator rights.</dd>
-<dt>Linux</dt><dd>An x86-64 distribution with GTK 3 (<code>libgtk-3-0</code>), <code>iptables</code> and <code>ip6tables</code>; <code>nft</code> for threat-intel blocklists. Tested on Debian, Kali, Ubuntu and WSL2. Reading events and applying rules need root; <code>sudo /usr/local/bin/StockFW</code> is the full tool.</dd>
+<dt>Linux</dt><dd>An x86-64 distribution with GTK 3 (<code>libgtk-3-0</code>), liblzma (<code>liblzma5</code>) and OpenSSL 3 (<code>libssl3</code>, which provides <code>libcrypto.so.3</code>; Debian 11 and Ubuntu 20.04 ship only OpenSSL 1.1 and are refused by the installer), <code>iptables</code> and <code>ip6tables</code>; <code>nft</code> and <code>curl</code> for threat-intel blocklists and country blocking. Tested on Debian, Kali, Ubuntu and WSL2. Reading events and applying rules need root; <code>sudo /usr/local/bin/StockFW</code> is the full tool.</dd>
 </dl>
 <p>Step-by-step instructions: <a href="{{root}}docs/install-windows.html">Install on Windows</a>, <a href="{{root}}docs/install-linux.html">Install on Linux</a>.</p>
 
@@ -41,7 +41,7 @@ StockFW-{{release}}-linux-x86_64.tar.gz: OK</pre>
 
 <h3 id="build-windows">Build on Windows (MSYS2)</h3>
 <p>Install <a href="https://www.msys2.org/">MSYS2</a>, open the <strong>UCRT64</strong> shell (as administrator if you want to apply rules from the build), then:</p>
-<pre data-lang="sh" data-title="MSYS2 UCRT64 shell">$ pacman -S --needed base-devel git mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake}
+<pre data-lang="sh" data-title="MSYS2 UCRT64 shell">$ pacman -S --needed base-devel git mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake,xz,openssl}
 $ git clone --branch v{{release}} {{repo}}.git
 $ cd StockFW/port
 $ cmake -S . -B build -G Ninja
@@ -50,14 +50,14 @@ $ ./build/StockFW.exe</pre>
 <p>To make the installer from the build, run <code>installer/build_installer.sh</code>; it stages the GTK runtime beside the executable and fails if any launcher still carries old branding.</p>
 
 <h3 id="build-linux">Build on Linux</h3>
-<pre data-lang="sh" data-title="Debian, Kali, Ubuntu, WSL2">$ sudo apt install build-essential cmake ninja-build git libgtk-3-dev iptables nftables
+<pre data-lang="sh" data-title="Debian, Kali, Ubuntu, WSL2">$ sudo apt install build-essential cmake ninja-build pkg-config git libgtk-3-dev liblzma-dev libssl-dev iptables nftables curl
 $ git clone --branch v{{release}} {{repo}}.git
 $ cd StockFW/port
 $ cmake -S . -B build-linux -G Ninja
 $ cmake --build build-linux
 $ sudo ./build-linux/StockFW                      # the desktop app
 $ ./build-linux/stockfw status                    # the command line</pre>
-<p>To make the same tarball the release ships, run <code>installer/linux/build_installer_linux.sh</code> after building.</p>
+<p>To make the same tarball the release ships, run <code>tools/build-linux.sh</code> (a stripped Release build) and then <code>installer/linux/build_installer_linux.sh</code>. <code>tests/test-release.sh</code> checks the result against the version in <code>CMakeLists.txt</code>, the changelog section and the licence list, as CI does for every release.</p>
 
 <h2 id="uninstall">Uninstall</h2>
 <dl>

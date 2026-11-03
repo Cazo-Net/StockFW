@@ -64,7 +64,8 @@
 			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
 			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
 			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
-			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
 		</ul>
 		<h2>Protection</h2>
 		<ul>
@@ -101,7 +102,7 @@
 <dt>Does anything leave my computer?</dt>
 <dd>Nothing. There is no telemetry, no update check, no account and no network client. The dashboard listens on 127.0.0.1 only. The threat-intel feature downloads lists, each only after you turn it on and accept its publisher’s terms. <a href="../docs/security.html">The security model</a> spells this out.</dd>
 <dt>Is the Copilot an AI?</dt>
-<dd>Not in the sense of a language model. It is a deterministic parser for what-if questions and a set of per-program counters with explained thresholds. It works offline and cannot be prompt-injected because there is no prompt. </dd>
+<dd>No. It is a set of fixed rules that run on this computer over the event log and the saved policy: no model, no network, no telemetry. Every finding names the rule that raised it, the numbers it measured next to their limits, and the events behind it, and every fix it offers was checked by the What-If engine first. It works offline and cannot be talked into anything because there is no prompt. <a href="../docs/copilot.html">The Copilot page</a>.</dd>
 <dt>Why is there no “deny inbound” rule kind?</dt>
 <dd>Because inbound is denied by default. Every inbound rule is an exception that allows something; to block a source again you remove the allow. Outbound is the mirror image: allowed by default, with deny rules as the exceptions, and an optional restrictive mode that flips it.</dd>
 <dt>Where is the Windows command line?</dt>
@@ -113,9 +114,11 @@
 <h2 id="reboot">Reboot and persistence<a class="anchor" href="#reboot" aria-label="Link to this section">#</a></h2>
 <dl>
 <dt>What happens to my rules at reboot?</dt>
-<dd><span class="plat">Windows</span> Windows Firewall rules persist; StockFW’s rules are ordinary rules in it, so they are in force from boot, before any program runs. <span class="plat">Linux</span> iptables rules live in the kernel and are gone at boot. StockFW does not install a boot service, so the policy is in force again when you press <strong>Start firewall</strong>, run <code>sudo stockfw start</code>, or turn on <em>Start firewall on program startup</em> and start the app. To have it at boot without StockFW running, add <code>stockfw start</code> to a systemd unit or <code>rc.local</code>. StockFW does not ship such a unit. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
+<dd><span class="plat">Windows</span> Windows Firewall rules persist; StockFW’s rules are ordinary rules in it, so they are in force from boot, before any program runs. <span class="plat">Linux</span> iptables rules live in the kernel and are gone at boot, so the Linux installer enables <code>stockfw.service</code>, which runs <code>stockfw start</code> before the network comes up and loads the last policy applied as root. Threat-intel lists come back with it. A policy saved but never applied waits for the next Apply. <a href="../docs/install-linux.html#at-boot">At boot</a> has the details. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-boot-start.sh</span></dd>
+<dt>Is there help inside the app?</dt>
+<dd>Yes. <kbd>F1</kbd>, or <em>Help</em> in the sidebar, opens a Help window at the topic for the page you are on, with a searchable list of topics, Back and Forward, and links between topics. It is built into the program and works offline. <a href="../docs/help.html">Help and About</a>.</dd>
 <dt>If StockFW crashes, am I unprotected?</dt>
-<dd>No. The engine keeps the last applied rules. What you lose is monitoring, learning and Sentinel until you start it again.</dd>
+<dd>No. The engine keeps the last applied rules. What you lose is monitoring, learning and Sentinel until you start it again. Settings and what the Copilot has learned are saved every five minutes when they change, so a crash loses at most five minutes of learning.</dd>
 </dl>
 
 <h2 id="linux">Linux<a class="anchor" href="#linux" aria-label="Link to this section">#</a></h2>
@@ -127,7 +130,7 @@
 <dt>Why root, and not polkit or a setuid helper?</dt>
 <dd>Because a desktop program that can silently rewrite the firewall is a worse posture than one that asks for root openly. StockFW never raises its own rights. <a href="../docs/install-linux.html#why-there-is-no-polkit-policy-or-setuid-helper">More</a>.</dd>
 <dt>Which distributions?</dt>
-<dd>Tested on Debian, Kali, Ubuntu and WSL2. Anything with GTK 3 and iptables should work; the installer checks libraries by soname, not by package name, so renamed packages do not fail it.</dd>
+<dd>Tested on Debian, Kali, Ubuntu and WSL2. Anything with GTK 3, liblzma 5, OpenSSL 3 and iptables should work; the installer checks libraries by soname, not by package name, so renamed packages do not fail it. Debian 11 and Ubuntu 20.04 ship only OpenSSL 1.1 and are refused.</dd>
 </dl>
 
 <h2 id="windows">Windows<a class="anchor" href="#windows" aria-label="Link to this section">#</a></h2>
@@ -143,7 +146,7 @@
 <h2 id="versions">Versions<a class="anchor" href="#versions" aria-label="Link to this section">#</a></h2>
 <dl>
 <dt>Which version do these pages describe?</dt>
-<dd>1.0.7, the release on the <a href="../download.html">download page</a>. The app shows its version in the sidebar and in <em>About</em>; <code>stockfw status</code> prints it.</dd>
+<dd>1.0.7, the release on the <a href="../download.html">download page</a>. The app shows its version in the sidebar and in <em>About StockFW</em>, whose <em>Copy system info</em> copies it with the GTK version, the platform and the backend; <code>stockfw version</code> prints it.</dd>
 <dt>What do the stamps on these pages mean?</dt>
 <dd>“Verified” names an automated test that proves the sentence, “Measured” gives a number from an experiment that was run, and “Limit” marks something StockFW does not do. <a href="../docs/index.html">The welcome page</a> explains each.</dd>
 </dl>

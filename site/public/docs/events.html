@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Events · StockFW</title>
-<meta name="description" content="The Events page: where events come from on Windows and Linux, the columns, the filter, repeated-event suppression, and turning an event into a rule with a right-click.">
+<meta name="description" content="The Events page: where events come from on Windows and Linux, the columns, the filter bar and CSV export, the 100,000-event list, the optional history on disk, and turning an event into a rule with a right-click.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Events · StockFW">
-<meta property="og:description" content="The Events page: where events come from on Windows and Linux, the columns, the filter, repeated-event suppression, and turning an event into a rule with a right-click.">
+<meta property="og:description" content="The Events page: where events come from on Windows and Linux, the columns, the filter bar and CSV export, the 100,000-event list, the optional history on disk, and turning an event into a rule with a right-click.">
 <meta property="og:type" content="website">
 <link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
@@ -64,7 +64,8 @@
 			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
 			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
 			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
-			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
 		</ul>
 		<h2>Protection</h2>
 		<ul>
@@ -95,44 +96,51 @@
 <h1>Events</h1>
 <p class="lede">Every connection the firewall allowed or blocked, as it happens. StockFW does not capture packets; it reads the verdicts your operating system already records and shows them unchanged, so each row can be checked against the system’s own log.</p>
 
-[[shot:events|The Events page: a count of 211 events, a filter box, the Monitor switch, Clear and Refresh, and a table of time, direction, interface, port, source, destination, protocol and service with blocked rows in red.|Blocked rows are red and carry the [BLOCKED] marker that every other part of the app keys on.]]
+[[shot:events|The Events page: a count of 12 events, a search box, the Monitor switch, Clear and Refresh, a filter bar with direction, verdict, protocol, port, address, From and To, Reset and Export CSV, and a table of time, direction, interfaces, port, source, destination, protocol and service with blocked rows in red.|Blocked rows are red and carry the [BLOCKED] marker that every other part of the app keys on. The filter bar narrows the list by direction, verdict, protocol, port, address and time.]]
 
 <h2 id="where-the-events-come-from">Where the events come from<a class="anchor" href="#where-the-events-come-from" aria-label="Link to this section">#</a></h2>
 <dl class="cols">
 <dt><span class="plat">Windows</span></dt>
-<dd>The Security event log, events <strong>5156</strong> (the Windows Filtering Platform permitted a connection) and <strong>5157</strong> (it blocked one). StockFW runs <code>wevtutil</code> every five seconds, asking for at most ten new records in text form, splits and de-duplicates them, and hands them on. Each record carries the program path, both addresses, the ports, the protocol and the direction, so the Events page on Windows names the program. The audit policy that makes Windows write these events is switched on the first time the elevated app runs; see <a href="../docs/install-windows.html#enable-monitoring">Enable monitoring</a>.</dd>
+<dd>The Security event log, events <strong>5156</strong> (the Windows Filtering Platform permitted a connection) and <strong>5157</strong> (it blocked one). StockFW runs <code>wevtutil</code> from the system folder every five seconds and reads every record after the last one it delivered, up to 10,000 a poll, newest first and shown oldest first, so a burst arrives whole. Past that cap the newest 10,000 are read and the gap is counted, as an upper bound, next to the event count (“up to N skipped”). Each record carries the program path, both addresses, the ports, the protocol and the direction, so the Events page on Windows names the program; the In and Out columns hold this computer’s address and the other side’s. The audit policy that makes Windows write these events is switched on the first time the elevated app runs; see <a href="../docs/install-windows.html#enable-monitoring">Enable monitoring</a>.</dd>
 <dt><span class="plat">Linux</span></dt>
-<dd>The kernel log. StockFW’s own rules log what they drop and reject with the prefixes <code>STOCKFW-DROP</code> and <code>STOCKFW-REJECT</code>, and, when <em>Log allowed connections</em> is on, the first packet of each newly allowed connection with <code>STOCKFW-ALLOW</code>, rate-limited to ten a second. The page reads those lines from the kernel ring buffer (<code>/dev/kmsg</code>) directly, which needs root and works on WSL, in containers and on minimal systems; lines without the prefix are ignored, so unrelated kernel messages never appear. The kernel log carries no program name, so the Program column is empty on Linux; the Overview’s connection table names programs instead. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
+<dd>The kernel log. StockFW’s own rules log what they drop and reject with the prefixes <code>STOCKFW-DROP</code> and <code>STOCKFW-REJECT</code>, and, when <em>Log allowed connections</em> is on, the first packet of each newly allowed connection with <code>STOCKFW-ALLOW</code>, rate-limited to ten a second. A block by a threat-intel list or a country or network rule logs with <code>STOCKFW-TI</code> and the list’s id, so the row names the list as its rule. The page reads those lines from the kernel ring buffer (<code>/dev/kmsg</code>) directly, which needs root and works on WSL, in containers and on minimal systems, and it never skips a line; lines without a StockFW prefix are ignored, so unrelated kernel messages never appear. The kernel log carries no program name, so there is no Program column on Linux; the Overview’s connection table names programs instead. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
 </dl>
-<p>Only the ten-record cap on Windows is a sampling limit: under a flood of thousands of connections a second, the page shows a steady sample rather than every row, by design, so the app cannot be made to freeze. The system log remains the complete archive.</p>
 
 <h2 id="the-columns">The columns<a class="anchor" href="#the-columns" aria-label="Link to this section">#</a></h2>
-<p>Time (the event’s own time, in local <code>HH:MM:SS</code>), direction (<code>in</code> or <code>out</code>), the interfaces in and out, the local port, source and destination addresses, protocol, and the service name looked up from the port, with <code>[BLOCKED]</code> appended on a blocked row. On Windows there is also the program. Rows are inserted newest first by their time stamp, so an event that arrives late still lands in the right place. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-hitview-smoke</span></p>
+<p>Time (the event’s own time, in local <code>HH:MM:SS</code>), direction (<code>in</code> or <code>out</code>), the interfaces in and out (on Windows, this computer’s address and the other side’s), the local port, source and destination addresses, protocol, and the service name looked up from the port, with <code>[BLOCKED]</code> appended on a blocked row and, after it, the rule that blocked it when a list did. On Windows there is also the program. Every column sorts, and rows are inserted newest first by their time stamp, so an event that arrives late still lands in the right place. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-hitview-smoke</span></p>
 
-<h2 id="filter-monitor-clear-refresh">Filter, Monitor, Clear, Refresh<a class="anchor" href="#filter-monitor-clear-refresh" aria-label="Link to this section">#</a></h2>
+<h2 id="how-many-it-keeps">How many it keeps<a class="anchor" href="#how-many-it-keeps" aria-label="Link to this section">#</a></h2>
+<p>The list holds <strong>100,000</strong> events by default and up to <strong>1,000,000</strong> (<em>Preferences › Events › Events kept in the list</em>), and stays responsive at that size: the rows live in a ring buffer outside the toolkit, each string is kept once (about 75 bytes an event, so 100,000 is about 7 MB), the view copies no rows, and a live event under any sort order moves at most one small block. The oldest event goes first. The same row twice in a row is one event. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-hitview-smoke</span></p>
+
+<h2 id="search-filters-export">Search, filters, export<a class="anchor" href="#search-filters-export" aria-label="Link to this section">#</a></h2>
 <ul>
-<li><strong>Filter</strong> narrows the list as you type: a case-insensitive match against any column. The count reads “3 of 1200 events” while a filter is active, so an empty result is never mistaken for an idle firewall. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_filter_match</span></li>
+<li><strong>Search</strong> narrows the list as you type: a case-insensitive match against any column the list shows, the blocking list’s name included. The count reads “3 of 1,200 events” while a filter is active, so an empty result is never mistaken for an idle firewall. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_filter_match</span></li>
+<li><strong>The filter bar</strong> adds direction, verdict (blocked, allowed or both), protocol, a port or a range (<code>1000-2000</code>), an address or a CIDR block (<code>10.0.0.0/8</code>, <code>fd00::/8</code>), and a time range (<em>From</em> and <em>To</em>). Every filter must match. <strong>Reset</strong> clears them all. The command line has the same filters: <code>stockfw events --since 1d --port 22 --dir in</code>.</li>
+<li><strong>Export CSV</strong> writes the rows that match the current filters to a file only your account can read (RFC 4180; a cell a spreadsheet would run as a formula is written as text).</li>
 <li><strong>Monitor</strong> starts and stops reading the log. When it cannot start, because you are not root on Linux or the audit policy is off on Windows, the page says so and how to fix it instead of showing nothing.</li>
-<li><strong>Clear</strong> empties the list and forgets which rows it has seen; <strong>Refresh</strong> reads again now.</li>
+<li><strong>Clear</strong> empties the list and forgets which rows it has seen; the history on disk, if you keep one, is not touched. <strong>Refresh</strong> reads again now.</li>
 </ul>
 <p>An empty list always explains itself: waiting for the first event, monitoring off, or nothing matches the filter.</p>
 
+<h2 id="history">History on disk<a class="anchor" href="#history" aria-label="Link to this section">#</a></h2>
+<p><em>Keep event history</em> on <em>Preferences › Events</em> is off until you turn it on. On, every event the list accepts is also appended to a file: one file per day under <code>~/.local/share/stockfw/events</code> on Linux and <code>%LOCALAPPDATA%\stockfw\events</code> on Windows, readable by your account only, flushed once a second and at once when the session ends, each line with a checksum so a line cut short by a crash is skipped rather than misread. Files older than 30 days, or beyond 200 MB in all (both adjustable on the same page), are deleted oldest first; <em>Delete history</em> asks first and deletes only history files. When StockFW starts, the newest events are read back into the list on a worker thread, so the window is up before the history is in, and a burst that arrives while it loads still reaches the file whole. Only one copy of StockFW writes a given history; a second copy on the same account says so and saves nothing until the first is gone. <code>stockfw events --history</code> searches the saved files without root. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-eventstore.sh</span></p>
+
 <h2 id="repeated-events-and-noise">Repeated events and noise<a class="anchor" href="#repeated-events-and-noise" aria-label="Link to this section">#</a></h2>
-<p>Two preferences on the <em>Interface › Events</em> page shape the list. <em>Hide repeated events</em> drops a row when the same source, port and verdict arrived a moment ago, so a port scan becomes a few rows rather than thousands. <em>Skip events that are not for the firewall</em> filters records the firewall subsystem did not produce. Beyond that, the list keeps the newest 2,000 rows and drops the oldest; it is a window, not an archive.</p>
+<p>Two settings on <em>Preferences › Events</em> shape the list. <em>Hide repeated events</em> drops a row when the same source, port and verdict arrived a moment ago, so a port scan becomes a few rows rather than thousands. <em>Skip events that are not for the firewall</em> filters records the firewall subsystem did not produce. The Copilot is fed before these display filters, so hiding repeats never hides a scan from the detections.</p>
 <p>De-duplication happens three times for three reasons: the reader refuses to deliver the same record twice, the list refuses to insert the same row twice (so a monitor that is stopped and restarted does not repeat itself), and the preference above hides visually identical connections. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-hitview-smoke</span></p>
 
 <h2 id="right-click-from-an-event-to-a-rule">Right-click: from an event to a rule<a class="anchor" href="#right-click-from-an-event-to-a-rule" aria-label="Link to this section">#</a></h2>
 <p>The menu offers only what that row can express, so it can never promise a rule the policy cannot hold:</p>
 <ul>
-<li><strong>Outbound rows:</strong> <em>Block destination (all traffic)</em>, <em>Allow destination (all traffic)</em>, and <em>Block this service to the destination</em>, where the service is taken from the row’s port.</li>
+<li><strong>Outbound rows:</strong> <em>Block destination (all traffic)</em>, <em>Allow destination (all traffic)</em>, and <em>Block this service to the destination</em>, where the service is taken from the row’s port. On a row a threat-intel list blocked, <em>Allow</em> becomes <em>Add exception</em>, because an allow rule would not beat the list.</li>
 <li><strong>Inbound rows:</strong> <em>Trust source (inbound allow)</em>, or <em>Remove trust for this source</em> when a trust rule for it already exists. There is no inbound-deny rule kind, because inbound is denied by default; removing the trust is what blocks the source again.</li>
 </ul>
-<figure class="shot"><img src="../assets/screens/events-menu.webp" alt="The Events page with the right-click menu open on a blocked inbound row from 203.0.113.50, offering “Trust 203.0.113.50 (inbound allow)”." width="1180" height="780" loading="lazy" decoding="async"><figcaption>On an inbound row the only offer is to trust the source. Blocking it is already the default.</figcaption></figure>
+<figure class="shot"><img src="../assets/screens/events-menu.webp" alt="The Events page with the right-click menu open on a blocked inbound VNC row from 203.0.113.50, offering “Trust 203.0.113.50 (inbound allow)”." width="1349" height="780" loading="lazy" decoding="async"><figcaption>On an inbound row the only offer is to trust the source. Blocking it is already the default.</figcaption></figure>
 <p>Choosing an entry opens a dialog that prints the exact rule, as it will be written to the policy file. Where the rule kind has an opposite-direction twin, the dialog also carries the <em>Direction</em> setting: one direction by default, or <em>Bi-directional</em>, which stages the twin as part of the same change. After Yes, the rule is saved (and taken back out if the save fails), the Policy page reloads, and the change is pushed through the apply gate. The result dialog distinguishes <em>live</em> from <em>staged, not live yet: administrator privileges are required</em>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_eventrule_builders</span></p>
 <p>Allowing a destination also lifts any block Sentinel staged for it, before the allow is pushed, so the two reach the firewall together; on Windows a block rule outranks an allow, so without this your Allow would have changed nothing on the wire. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-copilot-smoke</span></p>
 
 <h2 id="what-else-reads-the-events">What else reads the events<a class="anchor" href="#what-else-reads-the-events" aria-label="Link to this section">#</a></h2>
-<p>The Activity page counts exactly the rows this page lists, after its filters and duplicate check, each at its own time. The Copilot feeds every row into its per-program baselines and Sentinel’s detectors. The Overview’s counters and recent-blocks card are the same stream, summarised.</p>
+<p>The Activity page counts exactly the rows this page lists, after its duplicate check, each at its own time. The Copilot reads every row for its checks and Sentinel’s detectors. The Overview’s counters and recent-blocks card are the same stream, summarised. All of it runs whether the window is shown or hidden in the tray.</p>
 
 		</article>
 		<footer class="doc-foot">
@@ -145,7 +153,9 @@
 		<ul>
 			<li class="lvl2"><a href="#where-the-events-come-from">Where the events come from</a></li>
 			<li class="lvl2"><a href="#the-columns">The columns</a></li>
-			<li class="lvl2"><a href="#filter-monitor-clear-refresh">Filter, Monitor, Clear, Refresh</a></li>
+			<li class="lvl2"><a href="#how-many-it-keeps">How many it keeps</a></li>
+			<li class="lvl2"><a href="#search-filters-export">Search, filters, export</a></li>
+			<li class="lvl2"><a href="#history">History on disk</a></li>
 			<li class="lvl2"><a href="#repeated-events-and-noise">Repeated events and noise</a></li>
 			<li class="lvl2"><a href="#right-click-from-an-event-to-a-rule">Right-click: from an event to a rule</a></li>
 			<li class="lvl2"><a href="#what-else-reads-the-events">What else reads the events</a></li>

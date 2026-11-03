@@ -5,12 +5,13 @@ order: 3
 description: Installing StockFW on Debian, Kali, Ubuntu or WSL2 from the tarball, running it as root without widening sudo, and where it keeps its files.
 ---
 <h1>Install on Linux</h1>
-<p class="lede">The Linux build is a small tarball: the desktop app, the <code>stockfw</code> command line, a menu entry and an install script. GTK comes from your distribution, so the download is under 200 KB.</p>
+<p class="lede">The Linux build is one tarball of about 1.2 MB: the desktop app, the <code>stockfw</code> command line, a boot service, a menu entry, the README, the changelog, the licence texts and an install script. GTK comes from your distribution.</p>
 
 <h2>Before you start</h2>
 <ul>
 <li>An x86-64 distribution with GTK 3. Debian, Kali, Ubuntu and WSL2 are what it is tested on.</li>
-<li><code>iptables</code> and <code>ip6tables</code>, and <code>nft</code> if you want threat-intel blocklists. On current distributions both are the nftables-backed versions, which is fine: StockFW’s rules land in nftables through them.</li>
+<li>liblzma 5 and OpenSSL 3 (<code>liblzma.so.5</code> and <code>libcrypto.so.3</code>), which read the signed location database. A distribution that ships only OpenSSL 1.1, such as Debian 11 or Ubuntu 20.04, is refused by the installer before anything is copied, because the app and the boot service could not start there.</li>
+<li><code>iptables</code> and <code>ip6tables</code>, and <code>nft</code> and <code>curl</code> if you want threat-intel blocklists or country blocking. On current distributions <code>iptables</code> is the nftables-backed version, which is fine: StockFW’s rules land in nftables through it.</li>
 <li>Root, for reading the kernel log and for changing rules. Everything else works as your own user.</li>
 </ul>
 
@@ -21,10 +22,10 @@ $ tar xzf StockFW-{{release}}-linux-x86_64.tar.gz
 $ cd StockFW-{{release}}-linux-x86_64
 $ sudo ./install.sh</pre>
 <p>The script checks that every library the binary links against is present, by soname rather than by package name, because Debian and Ubuntu renamed <code>libgtk-3-0</code> to <code>libgtk-3-0t64</code> and a package check would wrongly fail a working system. If something is missing, it names the library and stops:</p>
-<pre data-lang="sh">$ sudo apt install libgtk-3-0 libgdk-pixbuf-2.0-0   # Debian, Kali, Ubuntu
-$ sudo dnf install gtk3                              # Fedora
-$ sudo pacman -S gtk3                                # Arch</pre>
-<p><code>iptables</code> is checked separately and only warned about: without it the app still runs, reads, simulates and shows the policy; only applying needs it.</p>
+<pre data-lang="sh">$ sudo apt install libgtk-3-0 libgdk-pixbuf-2.0-0 liblzma5 libssl3   # Debian, Kali, Ubuntu
+$ sudo dnf install gtk3 xz-libs openssl-libs                           # Fedora
+$ sudo pacman -S gtk3 xz openssl                                       # Arch</pre>
+<p><code>iptables</code>, <code>nft</code> and <code>curl</code> are checked separately and only warned about: without <code>iptables</code> the app still runs, reads, simulates and shows the policy, and only applying needs it; without <code>nft</code> or <code>curl</code> the threat-intel lists cannot be turned on, and the Threat Intel page says so.</p>
 
 <h2>What gets installed</h2>
 <div class="tbl-wrap">
@@ -35,7 +36,8 @@ $ sudo pacman -S gtk3                                # Arch</pre>
 <tr><td><code>/usr/local/bin/stockfw</code></td><td>The command line and local dashboard. The two names differ only in case; they are staged apart in the tarball so a case-insensitive filesystem cannot merge them.</td></tr>
 <tr><td><code>/usr/local/share/applications/stockfw.desktop</code></td><td>The menu entry (Settings › StockFW). It starts the unprivileged app.</td></tr>
 <tr><td><code>/usr/local/share/icons/hicolor/{48x48,128x128,256x256}/apps/stockfw.png</code></td><td>Icons.</td></tr>
-<tr><td><code>/usr/local/share/doc/stockfw/LICENSE.txt</code></td><td>Licence text.</td></tr>
+<tr><td><code>/etc/systemd/system/stockfw.service</code></td><td>The boot service, enabled by the installer: it runs <code>stockfw start</code> before the network comes up and loads the last applied policy, so the rules are back after a restart. See <a href="#at-boot">At boot</a>.</td></tr>
+<tr><td><code>/usr/local/share/doc/stockfw/LICENSE.txt</code>, <code>CHANGELOG.md</code></td><td>The licence summary with both licence texts, and the changelog.</td></tr>
 <tr><td><code>/usr/local/bin/stockfw-uninstall</code></td><td>Removes all of the above.</td></tr>
 </tbody>
 </table>
@@ -52,6 +54,10 @@ $ sudo /usr/local/bin/StockFW      # as root: the full tool</pre>
 
 <h3>Why there is no polkit policy or setuid helper</h3>
 <p>StockFW expects to already be root when it changes the firewall and never re-executes itself through <code>sudo</code>. A desktop program that can silently rewrite the whole firewall is a worse security posture than one that asks for root openly, so the installer ships neither a polkit rule nor a setuid wrapper. Grant privilege by launching with <code>sudo</code>, or through your desktop environment’s own mechanism.</p>
+
+<h2 id="at-boot">At boot</h2>
+<p>iptables rules live in the kernel only, so a reboot empties them. The installer puts in and enables <code>stockfw.service</code>, which runs <code>stockfw start</code> once, before any network interface comes up, so the machine is never on the network unfiltered between boot and sign-in. It starts the last policy that was <em>applied</em> as root (<code>/etc/stockfw/applied.csv</code>): a policy that was saved but never applied, or held by Audit-only or the Lock, waits for the next Apply, and on a machine where nobody has applied a policy yet the service does nothing. There is no stop action on purpose: stopping the unit or shutting down never takes the rules away; <code>sudo stockfw stop</code> does. A deny rule that names a host by name cannot be looked up before the network is up, so it is left out at boot, <code>journalctl -u stockfw</code> says which, and it goes in with the next apply. [[verified:test-boot-start.sh]]</p>
+<p>The policy edited in StockFW started <em>without</em> <code>sudo</code> lives in <code>~/.stockfw</code> and is not what the service loads; see the next section.</p>
 
 <h2>Two homes: yours and root’s</h2>
 <p>The policy lives in a directory that depends on who is running the program:</p>
@@ -80,11 +86,11 @@ $ sudo /usr/local/bin/StockFW      # as root: the full tool</pre>
 <p>The policy logs what it drops, rejects and, with <em>Log allowed connections</em> on, newly allows, and the Events page reads those lines from the kernel ring buffer (<code>/dev/kmsg</code>) directly, so it works on WSL, in containers and on systems without rsyslog or journald. Root is required.</p>
 
 <h2>Update</h2>
-<p>Unpack the new tarball and run its <code>install.sh</code> again. Your policy and preferences are outside <code>/usr/local</code> and are kept.</p>
+<p>Unpack the new tarball and run its <code>install.sh</code> again. Your policy, preferences and event history are outside <code>/usr/local</code> and are kept; the boot service is replaced.</p>
 
 <h2>Uninstall</h2>
 <pre data-lang="sh">$ sudo /usr/local/bin/stockfw-uninstall</pre>
-<p>Removes the binaries, the menu entry, the icons and the licence. It leaves your policy in <code>/etc/stockfw</code> or <code>~/.stockfw</code>, and any rules currently loaded in the kernel: press <strong>Stop firewall</strong> or run <code>sudo stockfw stop</code> first if you want those gone.</p>
+<p>Removes exactly what the installer created: the binaries, the boot service (disabled and deleted), the menu entry, the icons, the licence and the changelog, and your own start-at-sign-in entry. A running StockFW is asked to quit first so it saves its settings. It leaves your policy in <code>/etc/stockfw</code> or <code>~/.stockfw</code>, your preferences and event history, and any rules currently loaded in the kernel: press <strong>Stop firewall</strong> or run <code>sudo stockfw stop</code> first if you want those gone.</p>
 
 <h2>Build it yourself</h2>
 <p>StockFW builds with CMake and Ninja in a few commands. See <a href="{{root}}download.html#build-linux">Build on Linux</a>.</p>

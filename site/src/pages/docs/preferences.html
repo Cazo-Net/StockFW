@@ -2,98 +2,110 @@
 title: Preferences
 section: Using the app
 order: 17
-description: Every setting in the Preferences dialog, page by page, what each one does on Windows and on Linux, and why some controls are shown disabled instead of being removed.
+description: Every setting in the Preferences window, page by page, what each one does on Windows and on Linux, how a change is marked before it is saved, and how saved firewall settings reach the engine.
 ---
 <h1>Preferences</h1>
-<p class="lede">Open it from the bottom of the sidebar or with <kbd>Ctrl</kbd>+<kbd>,</kbd>. The dialog has two groups, <em>Interface</em> for how the program behaves and <em>Firewall</em> for what the engine does. A control that cannot work on your platform is shown disabled with a sentence saying why, so you never flip a switch that does nothing.</p>
+<p class="lede">Open it from the bottom of the sidebar or with <kbd>Ctrl</kbd>+<kbd>,</kbd>. The window has a dark sidebar with two groups, <em>StockFW</em> for how the program behaves and <em>Firewall</em> for what the engine does, and each page opens with a line on what it is for. A row that cannot work on your platform is greyed with the reason, and a page the platform cannot act on is not offered at all, so you never flip a switch that does nothing.</p>
 
-<h2>Interface</h2>
-[[shot:prefs-interface|The Preferences dialog on the Interface page: Show a tray icon and Minimize to the tray, both on, with a note that closing the window keeps StockFW running.|The Interface page. The sidebar lists Interface, Events, Policy, Firewall, Network Settings, ICMP Filtering, ToS Filtering and Advanced Options.]]
+<h2>How the window works</h2>
+[[shot:prefs-general|The Preferences window on the General page: a dark sidebar listing General, Events and Policy under StockFW and Firewall, Network, ICMP and Protection under Firewall; cards for Window and tray, Firewall and Background; a footer with Help, No changes, Cancel and Save.|The General page on Linux. On Windows the sidebar has no Firewall or Network page.]]
+<ul>
+<li><strong>Changes are marked where they are.</strong> A row you changed gets a bar on its left, its page gets a dot in the sidebar, and the footer counts what <strong>Save</strong> will write. <strong>Cancel</strong> writes nothing.</li>
+<li><strong>Help</strong> in the footer, or <kbd>F1</kbd>, opens the <a href="{{root}}docs/help.html">Help window</a> at the topic for the page you are on. Help stays open when Preferences closes.</li>
+<li>The settings live in one text file, <code>stockfw.conf</code>. See <a href="#storage">where they are stored</a>.</li>
+</ul>
+<p>[[verified:ui-prefs-smoke]] The grouped sidebar, the page heads, the centred column and the change marks are checked on both platforms.</p>
+
+<h2>StockFW › General</h2>
 <dl>
 <dt>Show a tray icon</dt>
-<dd>On by default. Puts StockFW in the notification area with the firewall state in its tooltip.</dd>
-<dt>Minimize to the tray</dt>
-<dd>On by default. With the icon shown, closing or minimising the window keeps StockFW running in the background; the tray menu opens it again or quits. See <a href="{{root}}docs/background.html">Background and the tray</a>.</dd>
+<dd>On by default. Puts StockFW in the notification area, with a menu to open the window, pause protection, reach every page or quit.</dd>
+<dt>Close and minimize to the tray</dt>
+<dd>On by default. Closing or minimising the window hides it in the tray instead of quitting, so event monitoring and Sentinel keep running. It needs the tray icon; where the desktop has no tray area, closing quits. See <a href="{{root}}docs/background.html">Background, tray and sign-in</a>.</dd>
+<dt>Start the firewall when StockFW opens</dt>
+<dd>Off by default. Turns the firewall on each time StockFW starts, through the same gate as the Start button, so an empty policy is never applied on the way. Off, the firewall is left as it was.</dd>
+<dt>Start StockFW in the background when I sign in</dt>
+<dd>Off by default. Puts StockFW in the notification area when you sign in to the desktop. On Windows it registers a per-user scheduled task that runs without administrator rights, so the sign-in copy only shows the state; start StockFW (Elevated) for monitoring and changes and it takes over. On Linux it writes an autostart entry that runs without root, so that copy shows the firewall's state as unknown, never as Off. The note under the switch says whether your firewall rules depend on this: on Windows they never do, and on Linux it reads the state of the <a href="{{root}}docs/install-linux.html#at-boot">boot service</a> (enabled, installed but not enabled, or missing). The switch is greyed with the reason where this copy cannot change it. [[verified:test-autostart.sh]]</dd>
 </dl>
 
-<h3>Interface › Events</h3>
-[[shot:prefs-events|The Events preference page: Hide repeated events off, Skip events that are not for the firewall on, and the disabled Ignored hosts and Ignored ports lists with a note.|The two filters that shape the Events list, and two lists that are honestly disabled.]]
+<h2>StockFW › Events</h2>
+[[shot:prefs-events|The Events preference page: Hide repeated events, Skip events not addressed to this computer, Events kept in the list set to 100000, Keep event history, Keep history for 30 days, History size limit 200 MB, and a Delete history button.|What the list shows, how much it keeps, and whether events are saved to disk.]]
 <dl>
 <dt>Hide repeated events</dt>
-<dd>Off by default. Drops a row when the same source, port and verdict arrived a moment ago, so a scan does not flood the list.</dd>
-<dt>Skip events that are not for the firewall</dt>
-<dd>On by default. Leaves out records the firewall subsystem did not produce.</dd>
-<dt>Ignored hosts, Ignored ports</dt>
-<dd>Shown disabled. The original program had these lists; this version has not wired them up yet, and says so instead of showing an empty box that would accept entries and ignore them. [[gap]]</dd>
+<dd>Off by default. Leaves out a hit that repeats the one just before it, so a scan does not flood the list. The Copilot still sees every event.</dd>
+<dt>Skip events not addressed to this computer</dt>
+<dd>On by default. Leaves out broadcasts and traffic meant for other machines.</dd>
+<dt>Events kept in the list</dt>
+<dd>100,000 by default, up to 1,000,000. Past this the oldest go. Each event costs about 75 bytes of memory, so the default is a few megabytes.</dd>
+<dt>Keep event history</dt>
+<dd>Off by default. Saves every listed event to daily files only your account can read, so a restart does not empty the Events page. <em>Keep history for (days)</em>, 30 by default, deletes older files; <em>History size limit (MB)</em>, 200 by default, deletes the oldest files past that size whatever their age. The <em>Saved history</em> row says how much is on disk and <strong>Delete history</strong> removes it after asking. See <a href="{{root}}docs/events.html#history">History on disk</a>. [[verified:test-eventstore.sh]]</dd>
 </dl>
 
-<h3>Interface › Policy</h3>
-[[shot:prefs-policy|The Policy preference page with one switch, Apply policy changes immediately, and its explanation.|One switch, with its consequence spelled out.]]
+<h2>StockFW › Policy</h2>
+[[shot:prefs-policy|The Policy preference page: a switch Apply policy changes immediately, and a Testing card showing Audit-only testing mode Off with a button Change on the Policy page.|When changes to your rules reach the firewall. The audit-only mode is shown here but changed on the Policy page.]]
 <dl>
 <dt>Apply policy changes immediately</dt>
-<dd>On by default. Each rule you add, edit or remove is pushed to the firewall as soon as it is saved, through the same gate and with the same audit line as the Apply button. Off, every change waits for <strong>Apply policy</strong>, and the Policy page shows what is staged.</dd>
+<dd>Each rule you add, edit or remove on the Policy page goes to the firewall as soon as it is saved, through the same gate and with the same audit line as the Apply button. Off, every change waits for <strong>Apply policy</strong>, and the Policy page shows what is staged.</dd>
+<dt>Audit-only testing mode</dt>
+<dd>Shown read-only with its state, On or Off. On, policy changes are saved and written to the audit log but the firewall is not changed. It is a safety control, so it is switched on the <a href="{{root}}docs/policy.html#audit-only-and-lock">Policy page</a>, where the Lock on the Overview page is also explained; the button here takes you there.</dd>
 </dl>
 
-<h2>Firewall</h2>
+<h2>Firewall › Firewall</h2>
+<p>[[linux]] This page is offered on Linux only. Windows Firewall always drops silently, leaves the outbound default to its network profiles and logs through its own audit policy, so there is nothing here it could act on.</p>
+[[shot:prefs-firewall|The Firewall preference page: Answer to a blocked connection set to Drop silently, Connections from this computer set to Allow all outgoing, and Log allowed connections on.|How blocked connections are answered, and what may leave this computer.]]
 <dl>
-<dt>Start/restart firewall on program startup</dt>
-<dd>Off by default. When the app starts, it reads the saved policy and starts the firewall through the apply gate, so an empty policy is never applied on the way.</dd>
-<dt>Start/restart firewall on dial-out, on DHCP lease renewal</dt>
-<dd>Shown disabled: not implemented in this version. Windows starts its own firewall before any program runs, so there is nothing to restore at boot there; on Linux, see <a href="{{root}}docs/faq.html#reboot">what happens at reboot</a>.</dd>
+<dt>Answer to a blocked connection</dt>
+<dd><em>Drop silently</em>: the sender hears nothing, as if this computer were not there. <em>Reject with an error</em>: the sender is told at once that the connection was refused.</dd>
+<dt>Connections from this computer</dt>
+<dd><em>Allow all outgoing</em>, the default, or <em>Block outgoing unless allowed</em>. In the restrictive mode only connections that an outbound allow rule on the Policy page names can leave this computer; everything else is blocked, including software updates, until you allow it, and the page says so in a warning when you pick it. Your outbound deny rules apply either way.</dd>
+<dt>Log allowed connections</dt>
+<dd>On by default. Records the first packet of each new connection your policy allows, at most ten a second, so Events, Activity and the Copilot see allowed traffic as well as blocked. Off, the Copilot's login and beacon checks see only refused traffic.</dd>
 </dl>
 
-<h3>Firewall › Network Settings</h3>
-<p>[[linux]] This page is offered on Linux only. Windows has no equivalent that the app can drive honestly, so it is not shown there rather than shown inert.</p>
-[[shot:prefs-network|The Network Settings page: two device pickers, Internet connected network device and Local network connected device, each listing the real adapters with their addresses, and switches for connection sharing and DHCP.|The pickers list what is really attached. eth0 here is the staged network’s only adapter.]]
+<h2>Firewall › Network</h2>
+<p>[[linux]] Offered on Linux only. Windows has no equivalent that the app can drive honestly, so the page is not shown there rather than shown inert.</p>
+[[shot:prefs-network|The Network preference page: two device pickers, Internet device and Local network device, listing the real adapters, and a switch Share the Internet connection (NAT).|The pickers list what is really attached. eth0 here is the staged network’s only adapter.]]
 <dl>
-<dt>Internet connected network device</dt>
-<dd>The external interface, or <em>Any device</em>. Needed for port forwards and for the “reserved addresses on public interfaces” block. The list is read from the system, so only real adapters appear.</dd>
-<dt>Local network connected device</dt>
-<dd>The internal interface in router mode. Traffic arriving on it is accepted.</dd>
-<dt>Enable Internet connection sharing</dt>
-<dd>Router mode: forwarding between the two interfaces with masquerading (IPv4 only). Port forwards need this.</dd>
-<dt>Enable DHCP for the local network</dt>
-<dd>Shown disabled: the built-in DHCP server of the original is not carried over.</dd>
+<dt>Internet device</dt>
+<dd>The adapter that connects this computer to the Internet. Needed for port forwards and for the blocks on the Protection page. A device marked <em>not present</em> is not connected right now.</dd>
+<dt>Local network device</dt>
+<dd>The adapter that faces your own network. Only used for connection sharing; traffic arriving on it is accepted.</dd>
+<dt>Share the Internet connection (NAT)</dt>
+<dd>Lets devices on your local network reach the Internet through this computer, IPv4 only. It needs both devices chosen. Port forwards need this.</dd>
 </dl>
 
-<h3>Firewall › ICMP Filtering</h3>
-[[shot:prefs-icmp|The ICMP Filtering page: Enable ICMP filtering on, and a list of nine ICMP packet types with check boxes, three of them marked IPv4 only.|Each type says whether it exists in ICMPv6. The note under the list says what IPv6 always allows.]]
-<p><em>Enable ICMP filtering</em> turns the page on. With it off, ICMP is left to the engine’s defaults. With it on, only the ticked types may arrive:</p>
+<h2>Firewall › ICMP</h2>
+[[shot:prefs-icmp|The ICMP preference page: Filter ICMP messages on, a note about IPv6, and a list of allowed message types with switches: Echo request, Echo reply, Host unreachable, Traceroute, Windows traceroute, Redirection.|Each type has one line saying what it lets in. The note under the master switch says what IPv6 always allows.]]
+<p><em>Filter ICMP messages</em> turns the page on. Off, every ICMP message is let in. On, only the types switched on below may arrive:</p>
 <div class="tbl-wrap">
 <table class="tbl">
-<thead><tr><th>Type</th><th>Default</th><th>Notes</th></tr></thead>
+<thead><tr><th>Type</th><th>Default</th><th>What it lets in</th></tr></thead>
 <tbody>
-<tr><td>Echo request (ping)</td><td>on</td><td>Lets others ping you. Linux rate-limits it to one a second.</td></tr>
-<tr><td>Echo reply (pong)</td><td>on</td><td>Answers to your own pings.</td></tr>
-<tr><td>Traceroute</td><td>on</td><td>UDP port 33434, which Unix traceroute uses; not ICMP at all, kept here because the original kept it here.</td></tr>
-<tr><td>MS Traceroute</td><td>on</td><td>Destination-unreachable, which Windows <code>tracert</code> needs.</td></tr>
-<tr><td>Unreachable</td><td>on</td><td>Destination-unreachable in general. On IPv6, address-unreachable.</td></tr>
-<tr><td>Redirection</td><td>off</td><td>Router redirects, rate-limited. Leave off unless you know your network uses them.</td></tr>
-<tr><td>Timestamping, Address Masking, Source Quenching</td><td>off</td><td>IPv4 only; ICMPv6 has no such messages, and the labels say so.</td></tr>
+<tr><td>Echo request (ping)</td><td>on</td><td>Other computers may ping this one. Linux rate-limits it to one a second.</td></tr>
+<tr><td>Echo reply</td><td>on</td><td>Echo replies this computer did not ask for. Replies to your own pings get through either way.</td></tr>
+<tr><td>Host unreachable</td><td>on</td><td>“Host unreachable” reports not about a connection this computer made. Reports about your own connections get through either way.</td></tr>
+<tr><td>Traceroute</td><td>on</td><td>UDP port 33434, where Unix-style traceroute probes arrive. Not ICMP at all, kept here because the original kept it here.</td></tr>
+<tr><td>Windows traceroute</td><td>on</td><td>Every “destination unreachable” report, which Windows <code>tracert</code> needs. Traceroute and tracert from this computer do not need it.</td></tr>
+<tr><td>Redirection</td><td>off</td><td>Routers may send traffic another way. Seldom needed, and open to abuse.</td></tr>
+<tr><td>Timestamping, Address masking, Source quenching</td><td>off</td><td>IPv4 only, and the labels say so. Obsolete; timestamping also gives away the clock.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Two things are never filtered while ICMP filtering is on, because the network stops working without them: time-exceeded and parameter-problem on IPv4, and on IPv6 the whole of neighbour discovery, router advertisements, packet-too-big, multicast listener reports and DHCPv6 replies. The page says so under the list.</p>
-<p>[[win]] Windows Firewall applies the same choices as rules without the rate limits the Linux backend adds. [[verified:test-core.sh]]</p>
+<p>[[linux]] IPv6 uses the same choices. Neighbour discovery, router advertisements, “packet too big” and DHCPv6 replies are always allowed, because IPv6 stops working without them; time-exceeded and parameter-problem are always allowed on IPv4 for the same reason. The page says so under the switch.</p>
+<p>[[win]] The choices become allow rules beside Windows' own, for IPv4 only; Windows' own rules may still allow some types you switch off, ICMPv6 is left to Windows, and nothing is rate-limited. The page carries both notes. [[verified:test-core.sh]]</p>
 
-<h3>Firewall › ToS Filtering</h3>
-<p>[[linux]] Type-of-service marking is not wired into the rule generator in this version, so every control on this page is disabled and the page says so at the top. It is kept so the layout matches the original; nothing you set here has an effect. [[gap]]</p>
-
-<h3>Firewall › Advanced Options</h3>
-[[shot:prefs-advanced|The Advanced Options page: Preferred packet rejection method (Reject with error packet or Drop silently), Block broadcasts from external and internal network, Block traffic from reserved addresses on public interfaces, and Log allowed connections.|The Linux page. On Windows the rejection method is fixed and the logging switch is absent, with a note for each.]]
+<h2>Firewall › Protection</h2>
+[[shot:prefs-protection|The Protection preference page: Block broadcasts from the Internet side, Block broadcasts from the local network, and Block reserved source addresses, each with a note on when it takes effect.|Extra blocks for traffic that should never arrive. The two broadcast switches exist on Linux only.]]
 <dl>
-<dt>Preferred packet rejection method</dt>
-<dd><em>Reject with error packet</em> tells the sender at once that the connection is refused; <em>Drop silently</em> lets it time out. [[linux]] only: Windows Firewall always drops silently and has no per-rule reject, and the page says so.</dd>
-<dt>Block broadcasts from external network, from internal network</dt>
-<dd>Drop broadcast traffic arriving on the external or the internal interface.</dd>
-<dt>Block traffic from reserved addresses on public interfaces</dt>
-<dd>Anti-spoofing: drop packets that arrive on the external interface claiming a private or reserved source address. Needs an external interface on the Network Settings page (Linux) or applies to the Public profile (Windows).</dd>
-<dt>Log allowed connections</dt>
-<dd>[[linux]] Logs the first packet of each newly allowed connection, at most ten a second, so the Events page and the Activity graph can show allowed traffic and not only blocks. Windows logs allowed connections through its own audit policy and has no switch here.</dd>
+<dt>Block broadcasts from the Internet side, from the local network</dt>
+<dd>[[linux]] Drop broadcast packets arriving on the Internet device, or on the local network device while the connection is shared. Each has no effect until the device it names is chosen on the Network page, and the note under it says so. Windows does not offer these switches: a Windows Firewall rule matches the sender's address, and no packet is sent from the broadcast address, so a rule there would block nothing. [[verified:test-core.sh]]</dd>
+<dt>Block reserved source addresses</dt>
+<dd>Anti-spoofing. On Linux it drops packets on the Internet device that claim to come from private or loopback ranges (10/8, 172.16/12, 192.168/16, 127/8), which cannot be genuine there. On Windows it applies on networks Windows treats as public, and there it blocks every inbound connection from those ranges even when an allow rule of yours lets them in, because a Windows block wins over an allow. Windows uses the public profile for new networks and most café and hotel Wi-Fi, where other devices have such addresses.</dd>
 </dl>
 
-<h2>How settings reach the firewall</h2>
-<p>Interface settings take effect when you press <strong>Accept</strong>. Firewall settings compile into rules, so they are pushed with the next Apply, through the same gate as the policy; on Windows they become rules named <code>StockFW …</code> (with a space, where policy rules have a hyphen) so the two sets can never collide. [[verified:test-core.sh]]</p>
+<h2 id="apply">How firewall settings reach the engine</h2>
+<p>Settings on the StockFW pages take effect when you press <strong>Save</strong>. Settings on the Firewall pages compile into rules, so after Save the window asks <em>Apply the new firewall settings now?</em> <strong>Apply now</strong> puts them in place under the policy that is live, with the same checks as Apply policy; changes on the Policy page that are not applied yet stay pending. <strong>Later</strong> keeps the previous settings until the policy is next applied or, on Linux, the firewall is started. A failed apply puts the previous rules back and says so. On Windows the settings become rules named <code>StockFW …</code> with a space, where policy rules have a hyphen, so the two sets can never collide. [[verified:test-core.sh]]</p>
+<p>A What-If fix that changes one of these switches opens Preferences at the page that holds it. See <a href="{{root}}docs/simulator.html">What-If</a>.</p>
 
-<h2>Where they are stored</h2>
-<p>A plain ini file, <code>stockfw.conf</code>, with a <code>[client]</code> and a <code>[firewall]</code> group: <code>%APPDATA%\stockfw\stockfw.conf</code> on Windows, <code>~/.config/stockfw/stockfw.conf</code> on Linux (<code>/root/.config/stockfw/</code> when run as root). You can edit it with the app closed; a missing key takes its default. See <a href="{{root}}docs/files.html#stockfw-conf">Files and formats</a>.</p>
+<h2 id="storage">Where they are stored</h2>
+<p>A plain ini file, <code>stockfw.conf</code>, with a <code>[client]</code> and a <code>[firewall]</code> group: <code>%APPDATA%\stockfw\stockfw.conf</code> on Windows, <code>~/.config/stockfw/stockfw.conf</code> on Linux (<code>/root/.config/stockfw/</code> when run as root). Start at sign-in is not a row in it: it is the scheduled task or the autostart entry itself. You can edit the file with the app closed; a missing key takes its default. See <a href="{{root}}docs/files.html#stockfw-conf">Files and formats</a>.</p>

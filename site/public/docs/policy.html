@@ -64,7 +64,8 @@
 			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
 			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
 			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
-			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
 		</ul>
 		<h2>Protection</h2>
 		<ul>
@@ -95,7 +96,7 @@
 <h1>Policy</h1>
 <p class="lede">Your rules, grouped by kind, each one a row you can read. Saving a rule changes a file in your profile; pressing <strong>Apply</strong> changes the firewall, after showing you what will change.</p>
 
-<figure class="shot"><img src="../assets/screens/policy.webp" alt="The Policy page with Apply policy and Audit-only buttons and three rule groups as cards: Allow connections from host, Allow inbound service and Forward service, each with a Covers column." width="1180" height="780" loading="lazy" decoding="async"><figcaption>Rules are grouped by kind. Point at a Covers cell and the tooltip says why a rule reaches the families it does.</figcaption></figure>
+<figure class="shot"><img src="../assets/screens/policy.webp" alt="The Policy page with Apply policy and Audit-only buttons and three rule groups as cards: Allow connections from host, Allow inbound service and Forward service, each with a Covers column." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Rules are grouped by kind. Point at a Covers cell and the tooltip says why a rule reaches the families it does.</figcaption></figure>
 
 <h2 id="how-to-think-about-it">How to think about it<a class="anchor" href="#how-to-think-about-it" aria-label="Link to this section">#</a></h2>
 <p>The engine’s defaults do most of the work: new inbound connections are denied unless a rule allows them, new outbound connections are allowed unless a rule denies them, and replies to connections that are already open always pass. StockFW rules are exceptions to those defaults, which is why the kinds are named the way they are: <em>allow inbound</em>, <em>deny outbound</em>. There is no inbound-deny kind because inbound is already denied; to stop trusting a host you remove its allow.</p>

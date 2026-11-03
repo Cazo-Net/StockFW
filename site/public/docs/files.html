@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Files and formats · StockFW</title>
-<meta name="description" content="Every file StockFW keeps, where it is on each platform, and its exact format: the policy files, the applied journal, preferences, the audit log, the Trust baseline, the behaviour baseline and Sentinel’s staging record.">
+<meta name="description" content="Every file StockFW keeps, where it is on each platform, and its exact format: the policy files, the applied journal, preferences, the audit log, the event history, the Trust baseline, the behaviour baseline, Sentinel’s staging record, the threat-intel store and the sign-in entries.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Files and formats · StockFW">
-<meta property="og:description" content="Every file StockFW keeps, where it is on each platform, and its exact format: the policy files, the applied journal, preferences, the audit log, the Trust baseline, the behaviour baseline and Sentinel’s staging record.">
+<meta property="og:description" content="Every file StockFW keeps, where it is on each platform, and its exact format: the policy files, the applied journal, preferences, the audit log, the event history, the Trust baseline, the behaviour baseline, Sentinel’s staging record, the threat-intel store and the sign-in entries.">
 <meta property="og:type" content="website">
 <link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
@@ -64,7 +64,8 @@
 			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
 			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
 			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
-			<li><a href="../docs/background.html"><span>Background and the tray</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
 		</ul>
 		<h2>Protection</h2>
 		<ul>
@@ -106,7 +107,17 @@
 </tbody>
 </table>
 </div>
-<p><code>STOCKFW_RULES_DIR</code> overrides the first column; <code>XDG_CONFIG_HOME</code> the second on Linux; and <code>STOCKFW_AUDIT_FILE</code>, <code>STOCKFW_TRUST_FILE</code> and <code>STOCKFW_AUTOBLOCK_FILE</code> point single files elsewhere.</p>
+<p><code>STOCKFW_RULES_DIR</code> overrides the first column; <code>XDG_CONFIG_HOME</code> the second on Linux; and <code>STOCKFW_AUDIT_FILE</code>, <code>STOCKFW_TRUST_FILE</code> and <code>STOCKFW_AUTOBLOCK_FILE</code> point single files elsewhere. Three more places hold the rest:</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>What</th><th>Windows</th><th>Linux</th></tr></thead>
+<tbody>
+<tr><td><a href="#event-history">Event history</a></td><td><code>%LOCALAPPDATA%\<wbr>stockfw\<wbr>events\</code></td><td><code>~/<wbr>.local/<wbr>share/<wbr>stockfw/<wbr>events/</code> (<code>STOCKFW_EVENTS_DIR</code> overrides)</td></tr>
+<tr><td><a href="#intel-store">Threat-intel store</a></td><td><code>%ProgramData%\<wbr>StockFW\<wbr>intel\</code></td><td><code>/var/<wbr>lib/<wbr>stockfw/<wbr>intel/</code></td></tr>
+<tr><td><a href="#sign-in">Start at sign-in</a></td><td>Task Scheduler folder <code>\StockFW</code>, one task per user</td><td><code>~/<wbr>.config/<wbr>autostart/<wbr>stockfw.desktop</code>; the boot service is <code>/etc/<wbr>systemd/<wbr>system/<wbr>stockfw.service</code></td></tr>
+</tbody>
+</table>
+</div>
 
 <h2 id="policy-files">The policy<a class="anchor" href="#policy-files" aria-label="Link to this section">#</a></h2>
 <p>One file per rule kind, no extension, under <code>inbound/</code> and <code>outbound/</code>. A file that does not exist is an empty kind.</p>
@@ -143,6 +154,10 @@ enable_tray_icon=true
 minimize_to_tray=true
 filter/redundant=false
 filter/not_for_firewall=true
+events/max_events=100000
+events/keep_history=false
+events/history_days=30
+events/history_mb=200
 policy_auto_apply=true
 policy_audit_only=false
 start_firewall_on_gui=false
@@ -155,10 +170,11 @@ icmp/enable=true
 icmp/echo_request=true
 deny_packets=true
 block_external_broadcast=false
+block_internal_broadcast=false
 block_non_routables=true
 restrictive_outbound=false
 log_allowed=true</code></pre></div>
-<p>A missing key takes its default. The <a href="../docs/preferences.html">Preferences page</a> describes each setting.</p>
+<p>A missing key takes its default. The file is written when you press Save, every five minutes while StockFW runs if something changed, and when the session ends. The <a href="../docs/preferences.html">Preferences page</a> describes each setting.</p>
 
 <h2 id="audit-log">The audit log<a class="anchor" href="#audit-log" aria-label="Link to this section">#</a></h2>
 <p><code>audit.log</code>, append-only, one line per thing StockFW did to the firewall or the baselines:</p>
@@ -169,6 +185,11 @@ log_allowed=true</code></pre></div>
 2026-11-02T17:01:19Z | sentinel rule removed | outbound-deny-to 198.51.100.77: expired after 10 minutes
 2026-11-02T17:05:02Z | trust-attest | /usr/bin/nc.openbsd sha256=…</code></pre></div>
 <p>The three fields are the time in UTC, the action, and the detail, separated by <code> | </code>. Actions include <code>policy applied</code>, <code>policy applied, with notes</code>, <code>policy apply failed</code>, <code>policy apply refused</code>, <code>policy apply: no change</code>, <code>policy held, firewall untouched</code>, <code>event rule added</code>, <code>event rule added (bi-directional twin)</code>, <code>event trust removed</code>, the <code>sentinel …</code> family and <code>trust-attest</code> / <code>trust-forget</code>. Line breaks and the separator inside a detail are escaped, so a tool’s error text can never read as a second, forged entry. The app only ever appends; rotation is yours. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></p>
+
+<h2 id="event-history">The event history<a class="anchor" href="#event-history" aria-label="Link to this section">#</a></h2>
+<p>Written only while <em>Keep event history</em> is on. One file per UTC day, split into parts so no single file grows past a twentieth of the size cap: <code>events-2026-11-03-001.log</code>, the part number three digits or more. Each line is one event, tab-separated, with a checksum at the end:</p>
+<div class="code" data-copy="all"><div class="code-head"><span>events-2026-11-03-001.log</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>ticks  time  direction  in  out  port  source  destination  length  tos  protocol  service  rule  checksum</code></pre></div>
+<p><code>ticks</code> is the time in 100-nanosecond units since 1970 UTC; text fields escape backslash, tab and line breaks; the checksum is FNV-1a 32 of everything before it, in hex. A line cut short by a crash fails its checksum and is skipped, and the next writer starts a fresh line. The folder is created owner-only, and one copy of StockFW at a time holds a lock on <code>.lock</code> inside it, so no event is saved twice. Files older than the day limit, and the oldest files past the size cap, are deleted when the log opens or passes the cap. <code>stockfw events --history</code> reads these files; see <a href="../docs/events.html#history">History on disk</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-eventstore.sh</span></p>
 
 <h2 id="trust-csv">The Trust baseline<a class="anchor" href="#trust-csv" aria-label="Link to this section">#</a></h2>
 <p><code>trust.csv</code>: quoted CSV, eight fields per row, one row per attested path.</p>
@@ -191,9 +212,15 @@ curl,partial,1</code></pre></div>
 <div class="code" data-copy="all"><div class="code-head"><span>autoblocks</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>S,1762094279,7,198.51.100.77, Sentinel: beacon 6 contacts</code></pre></div>
 <p>Four fields: <code>S</code>, the staging time in unix seconds, the rule kind’s number, and the rule’s own CSV line last, so its commas survive the split. At start-up, rows older than ten minutes are taken out of the policy with an audit line; fresh rows are re-armed with their original time. Deleting this file loses the tracking of staged rows, not the rows themselves, which the destination gates and the next Apply then govern. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-copilot-smoke</span></p>
 
+<h2 id="intel-store">The threat-intel store<a class="anchor" href="#intel-store" aria-label="Link to this section">#</a></h2>
+<p><code>intel.conf</code> (which feeds are on, their direction, your consent, the proxy, the country and network rules) and one downloaded copy per feed with its checksum and date, in <code>/var/lib/stockfw/intel/</code> on Linux and <code>%ProgramData%\StockFW\intel\</code> on Windows, where only an administrator can write. Your own lists are kept beside them. On Linux the store is root’s, which is why <code>stockfw intel</code> changes need <code>sudo</code>. See <a href="../docs/threat-intel.html">Threat intel</a>.</p>
+
+<h2 id="sign-in">Start at sign-in<a class="anchor" href="#sign-in" aria-label="Link to this section">#</a></h2>
+<p>On Windows, a task in the Task Scheduler folder <code>\StockFW</code>, one per user, that starts <code>StockFW.exe --background</code> at that account’s sign-in without administrator rights. On Linux, <code>~/.config/autostart/stockfw.desktop</code>. Both are written by the switch in Preferences › General, the tray menu or <code>--enable-autostart</code>, and removed by the uninstaller. The Linux boot service, <code>/etc/systemd/system/stockfw.service</code>, is separate: it runs <code>stockfw start</code> before the network comes up and only when <code>/etc/stockfw/applied.csv</code> exists. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-autostart.sh</span></p>
+
 <h2 id="in-the-engine">In the engine<a class="anchor" href="#in-the-engine" aria-label="Link to this section">#</a></h2>
 <ul>
-<li><span class="plat">Windows</span> Rules named <code>StockFW-…</code> are policy rules; <code>StockFW …</code> (with a space) are Preferences rules. StockFW owns everything with those prefixes and nothing else. <code>wf.msc</code> or <code>netsh advfirewall firewall show rule name=all</code> lists them.</li>
+<li><span class="plat">Windows</span> Rules named <code>StockFW-…</code> are policy rules; <code>StockFW …</code> (with a space) are Preferences rules; rules in the group <em>StockFW Threat Intel</em> are the blocklists. StockFW owns everything with those prefixes and nothing else. <code>wf.msc</code> or <code>netsh advfirewall firewall show rule name=all</code> lists them.</li>
 <li><span class="plat">Linux</span> Chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>FORWARD</code> (router mode), <code>PREROUTING</code> and <code>POSTROUTING</code>; log prefixes <code>STOCKFW-DROP</code>, <code>STOCKFW-REJECT</code> and <code>STOCKFW-ALLOW</code>. The nftables table <code>inet stockfw_intel</code> for threat intel, with the log prefix <code>STOCKFW-TI</code>. <code>nft list ruleset</code> shows all of it.</li>
 </ul>
 
@@ -214,9 +241,12 @@ curl,partial,1</code></pre></div>
 			<li class="lvl2"><a href="#applied-csv">The applied journal</a></li>
 			<li class="lvl2"><a href="#stockfw-conf">Preferences</a></li>
 			<li class="lvl2"><a href="#audit-log">The audit log</a></li>
+			<li class="lvl2"><a href="#event-history">The event history</a></li>
 			<li class="lvl2"><a href="#trust-csv">The Trust baseline</a></li>
 			<li class="lvl2"><a href="#behavior-csv">The behaviour baseline</a></li>
 			<li class="lvl2"><a href="#autoblocks">Sentinel’s staging record</a></li>
+			<li class="lvl2"><a href="#intel-store">The threat-intel store</a></li>
+			<li class="lvl2"><a href="#sign-in">Start at sign-in</a></li>
 			<li class="lvl2"><a href="#in-the-engine">In the engine</a></li>
 			<li class="lvl2"><a href="#backing-up">Backing up</a></li>
 		</ul>
