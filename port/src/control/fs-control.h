@@ -127,6 +127,16 @@ typedef struct
 	/* settings.set */
 	FsPrefsCheck    *check;
 	gboolean         prefs_unreadable; /* kept as .bad, defaults written */
+
+	/* PR 4: each package adds its fields between its markers (4B
+	 * copilot and sentinel, 4C event and What-If actions, 4D trust and
+	 * intel), so the packages merge without touching each other. */
+	/* === PR4-B === */
+	/* === end PR4-B === */
+	/* === PR4-C === */
+	/* === end PR4-C === */
+	/* === PR4-D === */
+	/* === end PR4-D === */
 } FsControlResult;
 
 /* [ fs_control_do ]

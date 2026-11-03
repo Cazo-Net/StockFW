@@ -226,6 +226,19 @@ gboolean fs_intel_import_list (FsIntelConfig *config, const gchar *path,
                                FsFeedParseStats *stats, gchar **id_out,
                                GError **error);
 
+/* [ fs_intel_exceptions_from_text ] (PR 4, 4A; F11)
+ * The allow list (exceptions) from the whole text of an editor, a file
+ * or stdin, as the Threat Intel page's editor takes it: each line is
+ * cut at its first '#', so "203.0.113.6 # mail" is the address alone
+ * (the comment is dropped, never kept), then the text is read with
+ * fs_range_set_from_text: blank lines are skipped, and any other line
+ * that is not an address, a CIDR or a range refuses the whole text
+ * (NULL, *error names the line by its number).  Empty text is an empty
+ * set: no exceptions.  Normalized; fs_range_set_free.  The config is
+ * not touched: the caller puts the set in config->exceptions and saves. */
+FsRangeSet *fs_intel_exceptions_from_text (const gchar *text,
+                                           GError **error);
+
 /* ---- per-source state (design 6.1) ---------------------------------- */
 
 typedef struct

@@ -305,6 +305,9 @@ if(FS_PLATFORM STREQUAL "linux")
     src/cli/fs-cli-complete.c
     src/cli/fs-cli-config.c
     src/cli/fs-cli-activity.c
+    src/cli/fs-cli-copilot.c
+    src/cli/fs-cli-trust.c
+    src/cli/fs-cli-help.c
     src/control/fs-control.c
   )
   add_executable(stockfw
@@ -774,6 +777,14 @@ if(FS_PLATFORM STREQUAL "linux")
   target_compile_definitions(fs-intel-backend-driver PRIVATE
                              FS_BACKEND_TESTING=1
                              FS_TOOLPATH_TESTING=1)
+  # PR 4 (4A) against the real backend: fs_firewall_add_live and the
+  # Sentinel lift helpers, driven by tests/test-cli.sh in a private
+  # network namespace.  Never installed.
+  add_executable(fs-pr4-live-driver EXCLUDE_FROM_ALL
+    tests/pr4-live-driver.c
+    ${FS_BACKEND_SOURCES}
+  )
+  target_link_libraries(fs-pr4-live-driver PRIVATE fs-core-nogui)
   # The engine end to end (tests/test-intel-e2e.sh): the default
   # downloader, the real store, this computer read live and the release
   # backend.  Its own copy of fs-fetch.c is compiled with

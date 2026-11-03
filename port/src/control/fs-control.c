@@ -1238,6 +1238,22 @@ op_settings_apply (FsControlResult *r, const FsControlActor *actor,
 	fs_policy_unlock (lock);
 }
 
+/* ----------------------------------------------------------- PR 4 ops */
+
+/* Each package of PR 4 writes its op functions between its markers:
+ * 4B copilot and sentinel, 4C event and What-If actions, 4D trust and
+ * intel.  Core gives them fs_firewall_add_live, the fs_autoblock_lift_*
+ * helpers and fs_intel_exceptions_from_text (4A). */
+
+/* === PR4-B === */
+/* === end PR4-B === */
+
+/* === PR4-C === */
+/* === end PR4-C === */
+
+/* === PR4-D === */
+/* === end PR4-D === */
+
 /* ------------------------------------------------------------ the door */
 
 typedef void (*OpFunc) (FsControlResult *r, const FsControlActor *actor,
@@ -1257,6 +1273,13 @@ static const struct
 	{ "firewall.stop",  op_stop },
 	{ "settings.set",   op_settings_set },
 	{ "settings.apply", op_settings_apply },
+	/* PR 4: each package adds its ops between its markers. */
+	/* === PR4-B === */
+	/* === end PR4-B === */
+	/* === PR4-C === */
+	/* === end PR4-C === */
+	/* === PR4-D === */
+	/* === end PR4-D === */
 };
 
 FsControlResult *
@@ -1319,6 +1342,12 @@ fs_control_result_free (FsControlResult *r)
 	fs_lockout_report_free (r->lockout);
 	fs_policy_free (r->lockout_policy);
 	fs_prefs_check_free (r->check);
+	/* === PR4-B === */
+	/* === end PR4-B === */
+	/* === PR4-C === */
+	/* === end PR4-C === */
+	/* === PR4-D === */
+	/* === end PR4-D === */
 	g_free (r);
 }
 
@@ -1478,6 +1507,12 @@ fs_control_result_json (const FsControlResult *r)
 		g_string_append_c (out, ',');
 		fs_json_kv_bool (out, "unreadable_kept", r->prefs_unreadable);
 	}
+	/* === PR4-B === */
+	/* === end PR4-B === */
+	/* === PR4-C === */
+	/* === end PR4-C === */
+	/* === PR4-D === */
+	/* === end PR4-D === */
 	g_string_append_c (out, '}');
 	return g_string_free (out, FALSE);
 }

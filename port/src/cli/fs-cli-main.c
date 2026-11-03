@@ -95,6 +95,9 @@ static const FsCliCommandDef * const tables[] = {
 	fs_cli_dashboard_commands,
 	fs_cli_config_commands,
 	fs_cli_activity_commands,
+	fs_cli_copilot_commands,
+	fs_cli_trust_commands,
+	fs_cli_help_commands,
 };
 
 const FsCliCommandDef * const *

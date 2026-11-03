@@ -11785,6 +11785,20 @@ cc ${STOCKFW_TEST_CFLAGS:-} tests/test-pr3-core.c \
 pr3_rc=0
 TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr3-core" || pr3_rc=$?
 
+# PR 4's core API (tests/test-pr4-core.c, package 4A): fs_firewall_add_live
+# (the journal plus the rows, never the saved file; a stopped firewall is
+# not started), the Sentinel lift helpers and the allow-list text.  Its
+# scratch files go under $BUILD_DIR (TMPDIR), removed on exit.
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} tests/test-pr4-core.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   -o "$BUILD_DIR/test-pr4-core" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+pr4_rc=0
+TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr4-core" || pr4_rc=$?
+
 # Wording guard: the Copilot is a set of fixed rules, and nothing in the
 # program or the docs may call it AI.  The one sentence that says there
 # is no AI model is allowed.
@@ -12071,4 +12085,5 @@ fi
 echo "ok:   dashboard guard: no innerHTML, document.write, eval, WebSocket, EventSource or on* handlers in dashboard.html (T14)"
 
 [ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ] && [ "$intelgeo_rc" -eq 0 ] \
-  && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] && [ "$pr3_rc" -eq 0 ]
+  && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] && [ "$pr3_rc" -eq 0 ] \
+  && [ "$pr4_rc" -eq 0 ]

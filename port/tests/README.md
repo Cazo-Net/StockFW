@@ -3695,3 +3695,28 @@ Teeth (each in a copy of one file, restored with `cp` and checked with
 | `fs-backend-probe` as an executable again | `ninja fs-backend-probe` fails to link |
 | `sum` passed bare to `%s` in `ui-intelview-smoke.c` | `-Wformat-overflow` "argument is null" |
 | the staged `StockFW` left out in `test-linux-install.sh` | `install.sh succeeds` fails |
+
+## Live add and lift (`test-pr4-core.c`, `fs-pr4-live-driver`)
+
+```sh
+cd port
+bash tests/test-core.sh          # runs test-pr4-core.c
+sudo bash tests/test-cli.sh      # block PR4-A builds and runs the driver
+```
+
+`test-pr4-core.c` drives `fs_firewall_add_live`, `fs_firewall_lift_live`,
+the Sentinel lift helpers (`fs_autoblock_lift_all`, `_for_dest`,
+`_expired`) and `fs_intel_exceptions_from_text` against a scripted
+backend whose state the test sets (running, stopped).  The PR4-A block of
+`test-cli.sh` runs `tests/pr4-live-driver.c` with the real Linux backend
+in a private network namespace: a saved inbound allow that nobody
+applied stays off the firewall while an added block goes live, a stopped
+firewall is not started, and the lift helpers take Sentinel's blocks off
+the firewall, the policy file and the state file.
+
+Teeth, each seen failing when re-injected: add_live loading the saved
+file instead of the journal; no stopped-firewall branch; the journal's
+settings record not kept; no due row for a rule still live; no
+earlier-session rows in `lift_for_dest`; the lift never reaching the
+firewall; `lift_expired` taking fresh rows; the comment not cut from the
+allow-list text.

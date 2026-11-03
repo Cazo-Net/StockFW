@@ -36,7 +36,7 @@
 
 **Chapter 14: 1.0.7 Addendum** · 14.1 IPv6 on Linux: One Policy, Two Families, One Rollback · 14.2 Windows Rule Translation: Protocols, Port Specs and Sides · 14.3 The What-If Engine: Two Models, Every Case, Verified Fixes · 14.4 Help, About, and the Preferences Redesign · 14.5 The Copilot: Fixed Rules, Shown Evidence, Verified Fixes · 14.6 Threat-Intel Blocklists on Linux and Windows, and Country and Network Blocking on Linux · 14.7 Events at Volume: Event Store, History on Disk, Windows Burst Capture · 14.8 Release Review: Where System Tools Come From, and the Dashboard Token · 14.9 Release Packaging: One Version, Real Documents, Runnable Installers · 14.10 Release Review: What StockFW Contacts, Credits, and One Test Runner · 14.11 Second Release Review: History While It Loads, the Dashboard's Launch Page, Credits and Packaging
 
-**Chapter 15: After 1.0.7 (unreleased)** · 15.1 Wayland and WSL: No Tray Icon, and Words the Window App Does Not Take · 15.2 The command line made truthful · 15.3 Dashboard hardening · 15.4 Terminal control: settings and policy editing
+**Chapter 15: After 1.0.7 (unreleased)** · 15.1 Wayland and WSL: No Tray Icon, and Words the Window App Does Not Take · 15.2 The command line made truthful · 15.3 Dashboard hardening · 15.4 Terminal control: settings and policy editing · 15.5 Terminal actions: Copilot, Sentinel, Trust, Help and About
 
 ---
 
@@ -1006,6 +1006,8 @@ Sentinel answers the rogue-agent case: a compromised or malicious process must b
 - **The auto path**: on each event feed (and on page refresh) an auto-applicable insight whose rule is not already in the policy is staged with the same add/save/rollback helper the tests exercise, the firewall push is attempted immediately, and the audit log records truthfully — `sentinel auto-block is live` vs `sentinel auto-block staged, not live`. Rules the *user* already put in the policy are never adopted, never expired, never undone by Sentinel. A failed save is rate-limited to one attempt per minute and one audit line per episode, so a broken disk cannot become a log-spam vector. P6 (12.9) added the session cooldown — a rule retired by expiry, Undo, user allow or mode switch is never re-staged while this session runs — and the two hooks that take blocks down: the Events page's Allow lifts Sentinel's rows for that destination before its push, and leaving auto mode lifts everything staged.
 - **Time-box and Undo**: every staged block carries its staging time; the earliest-deadline timer lifts it after **10 minutes** (and the *Undo Auto-Block* button lifts the most recent one immediately), both persisted with rollback, both audited (`sentinel auto-block removed` / `... expired after 10 minutes`). The false-positive cost is therefore bounded at ten minutes of a deny — the safe direction. P6 (12.9) made the bound real: the staged list is persisted (`%APPDATA%\StockFW\autoblocks`) and reconciled at boot, expiry *retires* into the session cooldown instead of inviting an immediate re-stage, and a restart re-arms only the **remaining** TTL — never a fresh ten minutes. **[Verified]** `test_insight_apply` (stage, duplicate refusal, empty-suggestion refusal), `test_audit_log` (append-only ISO-8601 lines), `fs-copilot-smoke` (restore, cooldown, lifts).
 
+**After 1.0.7 (15.5.1).** A block can now go live without the policy file: `fs_firewall_add_live` applies the journal (what is live) plus the new rows, so an allow that was saved and never applied does not ride along. Sentinel's push moves to it in PR 5. The Undo, the switch to detect mode and the Allow-lift have window-free twins in core, `fs_autoblock_lift_all`, `fs_autoblock_lift_for_dest` and `fs_autoblock_lift_expired`, which edit the state file and the policy file and take the rules off the firewall with `fs_firewall_lift_live`. On a stopped Linux firewall neither starts it: the journal alone changes.
+
 ### 11.4 F-1/F-3 Hygiene
 
 - **F-1 — validation at load**: `fs_util_is_valid_host()`/`fs_util_is_valid_port()` are now called in `fs_policy_load()` (`rule_fields_sane`, `fs-rules.c`): a row whose host or port cannot name a real endpoint is rejected at load and counted as malformed, before netsh's own parser ever sees it. Empty still means *any* and survives. The validators were extended to the formats the policy files already used but they rejected: IPv6 (via `inet_pton`), CIDR (`192.168.1.0/24`, prefix ≤ 32/128, addresses only — not hostnames), and the hyphen port range the default ruleset ships (`67-68`). **[Verified]** `test_policy_load_validation_f1` plus the host/port unit checks (including the IPv6 trust rule surviving a load end-to-end).
@@ -1175,6 +1177,8 @@ From 2026-10-08 to 2026-10-10 StockFW locked this machine out of legitimate site
 
 **Honest limits.** The netsh label match assumes English `netsh` output (the same caveat the elevation matcher carries); a deleted state file loses the tracking of what was staged — the policy rows themselves are then governed by the destination gates and the next clear, not by a phantom record; the cooldown is session-scoped by design (see B), so a restart with a still-gated, still-uncooled insight may stage again — which is now a fresh decision under gates A/C rather than a loop; hostname destinations can never auto-block (Sentinel hits carry literal IPs, so this costs nothing); and Windows' block-beats-allow precedence is platform behavior — the fix lifts the block, it does not pretend the precedence changed.
 
+**After 1.0.7 (15.5.1).** The persisted state (C), the dest lift (D) and detect-means-detect (F) can now be done without the window: `fs_autoblock_lift_for_dest`, `fs_autoblock_lift_all` and `fs_autoblock_lift_expired` in `core/fs-autoblock.c` remove the state rows and Sentinel's policy rows and take the rules off the firewall through `fs_firewall_lift_live`, never the policy file. A rule that is still live after the lift (held by audit-only mode, or the lift failed) keeps a state row dated as already due, so the next start leaves it out and no block is left that nothing manages. The user's own rows are never touched, as in D. The session cooldown (B) is the window's own and is not kept by these helpers; the daemon (PR 7) brings it back for a Sentinel that runs without a window.
+
 ---
 
 ### 12.10 Detection Validation: the P4 Adversarial Suite
@@ -1248,6 +1252,12 @@ A second front end over the same engine — fs-core and the platform backend, li
 **Policy editing (15.4.3).** `policy edit REF [FIELD...] [--comment TEXT]` changes a rule in place, `policy init [--force]` saves the default rules, and `policy add`, `edit` and `remove` take `--apply [--yes]`.
 
 **Overview, events and activity (15.4.4).** `status` starts with the Overview's verdict; `stop` asks on a terminal (`--yes`); `interfaces --no-virtual`; `events --collapse-repeats`, `--for-me`, `--prefs-filters`, `--stats` and `--clear-history [--yes]`; and the new `activity [--range 15m|1h|6h|24h] [--device DEV] [--table]`.
+
+**Terminal actions (15.5).** The core under PR 4's commands is in 15.5.1 and adds no command itself. Each package lists its commands here:
+<!-- PR4-B: copilot and sentinel commands (15.5.2) -->
+<!-- PR4-C: events act and simulate --do (15.5.3) -->
+<!-- PR4-D: trust and intel editors (15.5.4) -->
+<!-- PR4-E: help topics and about (15.5.5) -->
 
 ### 13.6 The Local Dashboard: Threat Model and Controls
 
@@ -2236,6 +2246,50 @@ A review of the merged packages found the following. Each is fixed, and each fix
 - **Words.** 15.4.1 named the Events filters by the wrong labels; they are "Hide repeated events" and "Skip events not addressed to this computer", as in the window. A sentence in 13.5 had a capital letter after a semicolon.
 
 **Not verified.** Nothing here was run on Windows; the core, the app, the Windows backend and `test-pr3-core.c` were compiled and linked here against Windows headers with MinGW, with no warning. The race between a window and a terminal was not run end to end; the core test holds the lock with a test descriptor instead.
+
+### 15.5 Terminal actions: Copilot, Sentinel, Trust, Help and About
+
+The terminal gets the desktop app's actions: blocking and allowing from an event, the Copilot's findings and fixes, lifting Sentinel's blocks, the Trust page, the blocklist editors, Help and About (the master plan's PR 4). The work comes in five packages, one subsection each. 4A puts the live add and the lift helpers in core; 4B to 4E build the commands on them. As in 15.4, `tests/test-cli.sh` has one block per package (`# === PR4-A ===` and so on).
+
+#### 15.5.1 Live add and lift (4A)
+
+**Add live.** `fs_firewall_add_live (backend, rows, source, hold, error)` (`core/fs-apply.c`) is the mirror of `fs_firewall_lift_live`. The journal, which is what is live, plus the rows goes through `fs_policy_apply_safe`, so on a running firewall the narrow path adds those rules and nothing else. The policy file is never applied here: a saved allow that nobody applied stays off the firewall. Nor is it written: the caller saves the rows itself (`fs_policy_add_persist_pair`). It returns NULL, with nothing touched and nothing audited, when the rows are empty, when there is no journal (nothing is on record as live; the saved rows go out with the next apply, or with the first start, which installs the file) and when every row is already live. Every row is checked by `fs_rule_validate` before the backend is called, as in every gate (15.4.1). `copilot block` (4B) and `events act block-*` (4C) use it, and from PR 5 so does Sentinel's push.
+
+**A stopped firewall is not started.** On Linux an apply is a start. So on a backend whose start installs the policy, when the backend reads the firewall as stopped and nothing holds changes, both live edits change only the journal, which is the policy the next start installs. The settings the journal records are kept as they are, so a boot still brings back the settings last applied (15.4.1). The outcome is `FS_APPLY_DRY_RUN` with `applied` and `held` FALSE and `firewall_was` `FS_FW_STOPPED`, and the audit line is "firewall stopped, change recorded for the next start, firewall untouched". Without this, a block added while the firewall was stopped would not be live after the next start, because the start installs the journal, and a block lifted while it was stopped would come back with it. `fs_firewall_lift_live` used to apply here, and so start the firewall. Its one caller, the desktop app's launch, already checks that the firewall runs before calling it, so the app's behaviour does not change. A hold (audit-only mode, the Policy Lock) leaves the journal as it is: the outcome is the gate's held `FS_APPLY_DRY_RUN`.
+
+**Lift helpers.** `fs_autoblock_lift_all`, `fs_autoblock_lift_for_dest` and `fs_autoblock_lift_expired` (`core/fs-autoblock.c`) take Sentinel's blocks down the way the app's Undo, its switch to "Detect only" and an Allow from the Events page do, without a window. Under the policy lock:
+
+1. the rows chosen leave the state file, and their rules leave the policy file (each removal audited, "sentinel auto-block removed", with the reason);
+2. `fs_firewall_lift_live` takes the rules off the firewall: the journal less those rules, never the policy file;
+3. a rule that is still live afterwards (the lift was held or failed) keeps a row in the state file, dated so that it is already due (now less ten minutes). `stockfw start`, the app's restore and the next `lift_expired` then leave it out or take it off, so no block stays live that nothing manages.
+
+`lift_for_dest` also takes out the outbound-deny-to rows that Sentinel wrote for the address in an earlier session (a comment starting `Sentinel:`), as `fs_copilot_lift_auto_blocks_for_dest` does. The user's own rows for the address are never touched. It takes a reason, so `sentinel lift TARGET` is not recorded as an allow. Each call writes one summary line, "sentinel auto-blocks lifted", with the source, the reason, the counts and what happened on the firewall. `lift_expired` keeps a stamp from the future, as the start does. The helpers never prompt, never print and never start a stopped firewall. `fs_autoblock_expire`, the start's own pass, now reads the rows with the same code; what it does and the lines it writes are unchanged.
+
+**The allow-list text.** `fs_intel_exceptions_from_text()` (`core/fs-intel.c`) reads the whole text of the allow list as the Threat Intel page's editor does: each line is cut at its first `#`, so `203.0.113.6 # mail` is the address alone, and then `fs_range_set_from_text` reads it strictly. A line that is not an address, a CIDR or a range refuses the whole text and is named by its number. Empty text is no exceptions. The window is unchanged. `intel exceptions --set FILE|-` (4D) uses it.
+
+**Prepared for the other packages.** `src/cli/fs-cli-copilot.c` (4B), `fs-cli-trust.c` (4D) and `fs-cli-help.c` (4E) exist with empty command tables, already joined in `fs-cli-main.c` and built by CMake, so completion and the man page follow each command as it is added. `src/control/fs-control.c` and `.h` have a marked place per package for its ops, its result fields, their JSON and their freeing. `test-cli.sh` and `CHANGELOG.md` have a marked block per package.
+
+**Where the source and the plan differ.** (1) The plan says add_live is "the journal plus the rows". That is so on a running firewall; on a stopped Linux firewall the journal alone changes (above), and `fs_firewall_lift_live` now does the same. (2) `lift_for_dest` takes a reason. (3) The desktop app keeps its list of staged blocks in memory while it runs and writes the state file from it, and it holds its own copy of the policy. A lift from the terminal while a window runs can be undone by the window's next save of either file. Until the daemon (PR 7) is the only writer, the commands of 4B and 4C should warn when a StockFW window runs as root, as `config set` does (15.4.2).
+
+**[Verified]** `tests/test-pr4-core.c` (run by `test-core.sh`), 33 checks with a scripted backend: add_live with no journal, on a running firewall (journal plus the block live, the saved inbound allow not, the journal records the block), with the row already live, held, on a stopped firewall (not started, the journal has the block and keeps the settings it records, the audit line), a row with a comma refused before the backend; lift_live on a stopped firewall; `lift_expired` (only the expired row, out of the file and the state, the journal less it applied, not the allow), `lift_for_dest` (Sentinel's row from an earlier session lifted, the user's own row for the same address kept), `lift_all` held (one row kept as due, and the next start's pass leaves the rule out), `lift_all` live, `lift_for_dest` on a stopped firewall, no state file, the audit lines; the allow-list text (comments, CRLF, IPv6, a bad line named by number, empty and NULL). `test-cli.sh` block PR4-A, 12 checks against the real backend in a private network namespace (`tests/pr4-live-driver.c`): a saved, unapplied inbound allow and an add_live block, so the block is live and the allow is not, nor is the policy file written; add_live on a stopped firewall does not start it, and the next start brings the block and not the allow; as a control, `apply` of the saved file does put the allow live; `lift_for_dest` and `lift_expired` take the right Sentinel blocks off the firewall, the policy file and the state file. Every check above fails with its control removed (the file copied aside, the old code patched in, rebuilt and run, then put back and checked with `cmp`): add_live loading the saved file instead of the journal (the unit and the live allow checks fail, the plan's own teeth), no stopped-firewall branch (both "not started" checks), the settings record not kept, no due row for a rule still live, no earlier-session rows in `lift_for_dest`, the lift never reaching the firewall (unit and live), `lift_expired` taking fresh rows (unit and live) and the comment not cut from the allow-list text. The unit test runs clean under AddressSanitizer and UBSan.
+
+**Not verified.** Nothing here was run on Windows. `fs-apply.c`, `fs-autoblock.c`, `fs-intel.c` and `test-pr4-core.c` were compiled here with MinGW against Windows GLib headers, with no new warning; Windows CI runs `test-core.sh`, which runs the unit test there.
+
+#### 15.5.2 Copilot and Sentinel (4B)
+
+(filled by its package)
+
+#### 15.5.3 Event and What-If actions (4C)
+
+(filled by its package)
+
+#### 15.5.4 Trust and intel (4D)
+
+(filled by its package)
+
+#### 15.5.5 Help and About (4E)
+
+(filled by its package)
 
 ---
 

@@ -2870,6 +2870,31 @@ read_user_file (const gchar *path, gsize *len, GError **error)
 #endif
 }
 
+/* [ fs_intel_exceptions_from_text ]
+ * Each line cut at its first '#' (the Threat Intel page's editor does
+ * the same, ui/fs-intelview.c strip_comments), then the strict reader.
+ * The lines stay where they were, so an error names the line the user
+ * typed. */
+FsRangeSet *
+fs_intel_exceptions_from_text (const gchar *text, GError **error)
+{
+	gchar **lines = g_strsplit (text != NULL ? text : "", "\n", -1);
+	gchar *bare;
+	FsRangeSet *set;
+
+	for (guint i = 0; lines[i] != NULL; i++) {
+		gchar *hash = strchr (lines[i], '#');
+
+		if (hash != NULL)
+			*hash = '\0';
+	}
+	bare = g_strjoinv ("\n", lines);
+	g_strfreev (lines);
+	set = fs_range_set_from_text (bare, error);
+	g_free (bare);
+	return set;
+}
+
 gboolean
 fs_intel_import_list (FsIntelConfig *config, const gchar *path,
                       const gchar *name, FsIntelDir dir,

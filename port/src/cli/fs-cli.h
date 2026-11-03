@@ -281,6 +281,10 @@ extern const FsCliCommandDef fs_cli_intel_commands[];      /* fs-cli-intel.c  */
 extern const FsCliCommandDef fs_cli_dashboard_commands[];  /* fs-dashboard.c  */
 extern const FsCliCommandDef fs_cli_config_commands[];     /* fs-cli-config.c */
 extern const FsCliCommandDef fs_cli_activity_commands[];   /* fs-cli-activity.c */
+/* PR 4: one table per package, empty until the package fills it. */
+extern const FsCliCommandDef fs_cli_copilot_commands[];    /* fs-cli-copilot.c (4B) */
+extern const FsCliCommandDef fs_cli_trust_commands[];      /* fs-cli-trust.c (4D) */
+extern const FsCliCommandDef fs_cli_help_commands[];       /* fs-cli-help.c (4E) */
 /* The setting names `config list' shows, NULL-ended (completion). */
 const gchar * const *fs_cli_config_names (void);
 

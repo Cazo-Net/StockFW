@@ -3219,6 +3219,89 @@ fi
 rm -rf "$E"
 # === end PR3-E ===
 
+# === PR4-A ===
+# Live add and lift in core (master plan PR 4, 4A), against the real
+# backend through tests/pr4-live-driver.c, in a private network
+# namespace: fs_firewall_add_live puts the journal plus the block live,
+# never the saved file (a saved inbound allow nobody applied stays off),
+# and does not start a stopped firewall; the Sentinel lift helpers take
+# a block off the firewall, the policy file and the state file.  The
+# unit tests are tests/test-pr4-core.c (test-core.sh).
+L="$(mktemp -d /tmp/stockfw-pr4a-XXXXXX)"; chmod 755 "$L"
+if [ "$(id -u)" = 0 ] && command -v iptables > /dev/null 2>&1 &&
+   command -v ip > /dev/null 2>&1 && unshare -n true 2> /dev/null &&
+   cmake --build "$BUILD" --target fs-pr4-live-driver > /dev/null 2>&1; then
+  cat > "$L/live.sh" <<'LIVE'
+S="$1"; D="$2"; L="$3"
+f=0
+t () { local what="$1"; shift; if "$@"; then echo "ok:   $what"; else echo "FAIL: $what"; f=$((f+1)); fi; }
+export STOCKFW_RULES_DIR="$L/rules" STOCKFW_APPLIED_FILE="$L/applied"
+export STOCKFW_AUDIT_FILE="$L/audit" STOCKFW_AUTOBLOCK_FILE="$L/autoblocks"
+export STOCKFW_RUN_DIR="$L/run" HOME="$L/home" XDG_CONFIG_HOME="$L/home/.config"
+unset SSH_CONNECTION SSH_CLIENT STOCKFW_INTEL_DIR
+mkdir -p "$HOME"
+ip link set lo up
+live () { iptables-save | grep -v '^#'; }
+export -f live
+"$S" -q policy add outbound-deny-to 198.51.100.20
+"$S" apply < /dev/null > /dev/null 2>&1
+# Saved, never applied: an inbound allow for SSH from 203.0.113.0/24.
+"$S" -q policy add inbound-allow-service SSH 22 203.0.113.0/24
+"$D" add-block 203.0.113.50 > "$L/add.out" 2>&1; rc=$?
+t "add_live: the block is live (rc $rc: $(cat "$L/add.out"))" bash -c "[ $rc -eq 0 ] && grep -q '^applied=1' '$L/add.out' && live | grep -q '203.0.113.50'"
+t "add_live: ...the saved, unapplied inbound allow is not" bash -c "! live | grep -q '203.0.113.0/24'"
+t "add_live: ...the user's own block is still there" bash -c "live | grep -q '198.51.100.20'"
+t "add_live: ...and the policy file is not written" bash -c "! grep -rq '203.0.113.50' '$STOCKFW_RULES_DIR'"
+# Stopped: not started; the next start installs the journal, block in.
+"$S" stop < /dev/null > /dev/null 2>&1
+"$D" add-block 203.0.113.51 > "$L/add2.out" 2>&1; rc=$?
+t "add_live on a stopped firewall does not start it (rc $rc: $(cat "$L/add2.out"))" bash -c "[ $rc -eq 0 ] && grep -q '^applied=0 held=0 result=recorded-for-next-start' '$L/add2.out' && ! iptables -S INBOUND > /dev/null 2>&1"
+"$S" start < /dev/null > /dev/null 2>&1
+t "  ...the next start brings the block, still not the allow" bash -c "live | grep -q '203.0.113.51' && live | grep -q '203.0.113.50' && ! live | grep -q '203.0.113.0/24'"
+# The control: a whole apply of the file does put the allow live, so
+# the checks above can see it.
+"$S" apply < /dev/null > /dev/null 2>&1
+t "control: \`apply' of the saved file puts the allow live" bash -c "live | grep -q '203.0.113.0/24'"
+# Sentinel's blocks: one fresh, one expired, one more fresh.
+now=$(date +%s)
+for a in 203.0.113.60 203.0.113.61 203.0.113.62; do
+  "$S" -q policy add outbound-deny-to "$a" --comment "Sentinel: test"
+done
+"$S" apply < /dev/null > /dev/null 2>&1
+{ echo "S,$((now - 100)),6,203.0.113.60, Sentinel: test"
+  echo "S,$((now - 700)),6,203.0.113.61, Sentinel: test"
+  echo "S,$((now - 100)),6,203.0.113.62, Sentinel: test"; } > "$STOCKFW_AUTOBLOCK_FILE"
+t "lift: the three Sentinel blocks are live" bash -c "live | grep -q 203.0.113.60 && live | grep -q 203.0.113.61 && live | grep -q 203.0.113.62"
+"$D" lift-dest 203.0.113.60 > "$L/lift.out" 2>&1; rc=$?
+t "lift_for_dest: off the firewall (rc $rc: $(cat "$L/lift.out"))" bash -c "[ $rc -eq 0 ] && grep -q 'rows=1 removed=1' '$L/lift.out' && ! live | grep -q 203.0.113.60"
+t "  ...out of the policy file and the state file; the others stay" bash -c "! grep -rq 203.0.113.60 '$STOCKFW_RULES_DIR' && ! grep -q 203.0.113.60 '$STOCKFW_AUTOBLOCK_FILE' && grep -q 203.0.113.61 '$STOCKFW_AUTOBLOCK_FILE' && live | grep -q 203.0.113.62"
+"$D" lift-expired > "$L/exp.out" 2>&1; rc=$?
+t "lift_expired: the expired one is off, the fresh one stays live (rc $rc: $(cat "$L/exp.out"))" bash -c "[ $rc -eq 0 ] && ! live | grep -q 203.0.113.61 && live | grep -q 203.0.113.62 && grep -q 203.0.113.62 '$STOCKFW_AUTOBLOCK_FILE' && ! grep -q 203.0.113.61 '$STOCKFW_AUTOBLOCK_FILE'"
+t "  ...and the allow applied earlier is still live (nothing else changed)" bash -c "live | grep -q '203.0.113.0/24'"
+exit "$f"
+LIVE
+  unshare -n bash "$L/live.sh" "$S" "$BUILD/fs-pr4-live-driver" "$L" > "$L/live.log" 2>&1
+  live_rc=$?
+  sed 's/^\(ok:   \|FAIL: \)/\1PR4-A: /' "$L/live.log"
+  fails=$((fails + live_rc))
+else
+  echo "skip: the 4A live checks need root, iptables, ip, unshare and the fs-pr4-live-driver target"
+fi
+rm -rf "$L"
+# === end PR4-A ===
+
+# === PR4-B ===
+# === end PR4-B ===
+
+# === PR4-C ===
+# === end PR4-C ===
+
+# === PR4-D ===
+# === end PR4-D ===
+
+# === PR4-E ===
+# === end PR4-E ===
+
 echo ""
 if [ "$fails" -eq 0 ]; then
   echo "PASSED: 0 failure(s)"

@@ -229,6 +229,19 @@ into `/usr/local/share/doc/stockfw/`.
   shown as no data, not as zero. The saved history is used only while
   a copy of StockFW writes it; a history nobody writes now shows no
   data after its last event.
+<!-- PR4-A -->
+- **A block can go live without the rest of the saved policy.** A new
+  core step (for `copilot block`, `events act` and, later, Sentinel)
+  puts only the new block on the firewall, with what was already live:
+  a rule you saved and never applied, such as an allow, stays off. Taking
+  Sentinel's blocks down (all of them, one address, or the ones whose
+  ten minutes ran out) works the same way, from the policy, the Sentinel
+  list and the firewall. On Linux neither step starts a stopped
+  firewall: the change waits for the next start instead.
+<!-- PR4-B -->
+<!-- PR4-C -->
+<!-- PR4-D -->
+<!-- PR4-E -->
 
 ### Dashboard (stockfw dashboard)
 
