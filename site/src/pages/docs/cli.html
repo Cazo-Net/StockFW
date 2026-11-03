@@ -356,7 +356,22 @@ eth0     Ethernet  192.168.1.20  84.5 MB   270.4 MB  237 B/s   198 B/s</pre>
 <p><code>connections</code> shows both ends with their ports, the service, the direction (decided by what is listening), the TCP state and the owning program, IPv4 and IPv6; <code>--udp</code> adds connected UDP sockets. Filters: <code>--addr</code> (either end), <code>--port</code>, <code>--program NAME</code>, <code>--dir in|out</code>, <code>--state ESTABLISHED|SYN_SENT|…</code> and <code>--no-local</code>; <code>--by remote|program|port</code> gives one row per key with a COUNT. Programs owned by other users are readable only as root; the cell reads <code>?</code> and the legend goes to standard error. <code>interfaces</code> shows the adapters that are up with the rate measured over the real time between two samples; <code>--all</code> adds the ones that are down, <code>--watch[=SECS]</code> refreshes (default 2 s) until Ctrl-C, clearing the screen on a terminal and never in a pipe, <code>-c COUNT</code> stops after that many frames, and with <code>--json --watch</code> each frame is one line. <code>stockfw net</code> is an alias. [[verified:test-cli.sh]] [[verified:test-sockets.c]]</p>
 
 <h2 id="dashboard">dashboard</h2>
-<p><code>stockfw dashboard [--port N] [--no-open]</code> serves the <a href="{{root}}docs/dashboard.html">local dashboard</a> and opens it in your browser. There is deliberately no <code>--bind</code>. When it is not run as root and a kernel log file is readable to your account, the dashboard follows that file itself, so monitoring works for a user in the <code>adm</code> group.</p>
+<pre data-lang="sh">$ stockfw dashboard
+StockFW dashboard  http://127.0.0.1:43977/#code=312fe461dddc3119a4c28c0ae4e40b59
+
+  Listening   127.0.0.1:43977 only, read-only
+  Link        one use, for 2 minutes; `stockfw dashboard link' makes a new one
+  Fingerprint EA07-05C5-61E0 (the page shows the same)
+  Events      Live, with history from /var/log/kern.log
+
+  Open the link above in your browser.
+
+  Ctrl-C stops the dashboard.
+
+$ stockfw dashboard link
+http://127.0.0.1:43977/#code=796e07cec3c56f510f01df6dd4fa788b
+  One use, for 2 minutes.  Fingerprint B150-4979-89E1.</pre>
+<p><code>stockfw dashboard [--port N] [--no-open] [--origin-port N] [--allow-windows]</code> serves the <a href="{{root}}docs/dashboard.html">local dashboard</a> and opens it in your browser; <code>stockfw dashboard link</code> gets a fresh one-use link from the running dashboard. Run it as yourself or with <code>sudo</code> from your account, never as plain root. The link is printed only to a terminal; in a pipe or with <code>--json</code> you get the path of a launch file to open instead. There is deliberately no <code>--bind</code>. When it is not run as root and a kernel log file is readable to your account, the dashboard follows that file itself, so monitoring works for a user in the <code>adm</code> group. The security model, WSL and SSH forwarding are on the <a href="{{root}}docs/dashboard.html">dashboard page</a>. [[verified:test-dashboard.sh]]</p>
 
 <h2 id="man">The manual page and completion</h2>
 <pre data-lang="sh">$ man stockfw
@@ -441,4 +456,4 @@ stockfw intel geo list | remove ID         The country and network rules</pre>
 <p>These belong to the desktop program, <code>StockFW</code>, on Windows and Linux alike. It takes options only: a word such as <code>StockFW dashboard</code> exits with status 2 and names the command you meant, <code>sudo /usr/local/bin/stockfw dashboard</code>. A second launch brings the running copy’s window forward instead of starting another; a launch with more rights takes over from it. See <a href="{{root}}docs/background.html">Background, tray and sign-in</a>. [[verified:test-instance.sh]]</p>
 
 <h2>Tests</h2>
-<p><code>tests/test-cli.sh</code> drives every command above against a scratch policy and a fixture log, checks the exit codes and the JSON, runs <code>copilot health</code> with the local network fixed, runs real applies, starts and stops in a private network namespace, follows <code>events -f</code> under a real terminal and reads the raw bytes of its status line, checks the lockout guard with a fake <code>sshd</code>, compares the manual page and completion against the command tables, and starts a dashboard and exercises its token and Host checks. It runs as the build user and again as root, and the root run fails if a root-only part is skipped. <code>tests/test-intel-cli.sh</code> does the same for <code>intel</code>. [[verified:test-cli.sh]] [[verified:test-core.sh]]</p>
+<p><code>tests/test-cli.sh</code> drives every command above against a scratch policy and a fixture log, checks the exit codes and the JSON, runs <code>copilot health</code> with the local network fixed, runs real applies, starts and stops in a private network namespace, follows <code>events -f</code> under a real terminal and reads the raw bytes of its status line, checks the lockout guard with a fake <code>sshd</code>, compares the manual page and completion against the command tables, and `tests/test-dashboard.sh` starts a dashboard and exercises its owner, link, session, Host and deadline checks as the served account, as root and as another user. It runs as the build user and again as root, and the root run fails if a root-only part is skipped. <code>tests/test-intel-cli.sh</code> does the same for <code>intel</code>. [[verified:test-cli.sh]] [[verified:test-core.sh]]</p>

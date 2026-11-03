@@ -281,7 +281,7 @@ Saved /etc/stockfw vs applied 2026-11-03 18:11:57 UTC
 = 9 rules unchanged
 Firewall: running.  Make it live: /usr/local/bin/stockfw apply</pre>
 			<div class="cli-side">
-				<p><code>stockfw dashboard</code> serves a read-only web page from the binary itself: the same graphs, live events, connections, the simulator and the policy, on <code>127.0.0.1</code> only, behind a token that changes every run. It is a window onto the firewall, not a way to change it: writes stay with <code>stockfw policy</code> and <code>stockfw apply</code>.</p>
+				<p><code>stockfw dashboard</code> serves a read-only web page from the binary itself: the same graphs, live events, connections, the simulator and the policy, on <code>127.0.0.1</code> only, for your own account only, behind a link that works once and a session that lasts the day. It is a window onto the firewall, not a way to change it: writes stay with <code>stockfw policy</code> and <code>stockfw apply</code>.</p>
 				[[shot:dashboard|The local web dashboard: a firewall tile reading Running, blocked and throughput tiles, the two graphs, recent events, active connections, the what-if simulator and the policy, all on one page.|The dashboard in a browser, served by the binary itself.]]
 				<p>[[verified:test-cli.sh, 52 checks on the dashboard’s security model]]</p>
 				<a class="btn btn-line btn-small" href="{{root}}docs/cli.html">Every command, with examples</a>

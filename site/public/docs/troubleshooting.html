@@ -187,9 +187,15 @@
 <dt>“the event reader stopped” from <code>stockfw events -f</code></dt>
 <dd><span class="plat">Linux</span> The kernel log could no longer be read (the file named by <code>STOCKFW_LOG_FILE</code> was removed, or <code>/dev/kmsg</code> refused). The command says why and exits 1 rather than waiting forever; fix the source and start it again.</dd>
 <dt>The dashboard did not open a browser, or the browser shows a file error</dt>
-<dd>Under <code>sudo</code> StockFW will not start a browser as root. A snap or Flatpak browser cannot read the private launch page StockFW hands it. In both cases copy the printed URL into your browser; the token is in it.</dd>
-<dt>The dashboard page shows “Unauthorized”</dt>
-<dd>The browser tab lost the token: the <code>#token=…</code> fragment was cut from the URL before the page loaded, the tab was reopened in a new session, or the URL is from an earlier run. Start again and open the freshly printed URL.</dd>
+<dd>Under <code>sudo</code> StockFW will not start a browser as root. A snap or Flatpak browser cannot read the private launch file StockFW hands it. In both cases open the printed link in your browser, or run <code>stockfw dashboard link</code> for a fresh one.</dd>
+<dt>“This link has expired” or “This link was already used”</dt>
+<dd>A link works once, for two minutes. Run <code>stockfw dashboard link</code> for a new one. A link that was <em>already used</em> ends every open session and the terminal says so; if you did not open it twice yourself, someone else saw the link.</dd>
+<dt>The dashboard page says the session ended, or shows “Unauthorized”</dt>
+<dd>Sessions end after 12 hours, when the dashboard restarts, and when a link is used twice. Run <code>stockfw dashboard link</code> and open the new link in the same browser.</dd>
+<dt>“the dashboard does not serve uid 0”</dt>
+<dd>You started it as plain root. Run it as yourself, or with <code>sudo</code> from your own account: it then serves the account that ran <code>sudo</code>.</dd>
+<dt>The browser shows nothing, or a page saying Windows browsers are not let in</dt>
+<dd>Use <code>http://127.0.0.1:<em>port</em></code> as printed, not <code>localhost</code>. Under WSL, a browser on the Windows side is refused unless the dashboard was started with <code>--allow-windows</code>; a browser inside WSL works as it is. See <a href="../docs/dashboard.html#wsl">the dashboard page</a>.</dd>
 </dl>
 
 <h2 id="uninstalling-and-starting-over">Uninstalling and starting over<a class="anchor" href="#uninstalling-and-starting-over" aria-label="Link to this section">#</a></h2>

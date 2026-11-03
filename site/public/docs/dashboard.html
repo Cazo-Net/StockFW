@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Dashboard · StockFW</title>
-<meta name="description" content="The local web dashboard served by stockfw dashboard: what it shows, how to open it, why it binds 127.0.0.1 only with a per-run token, the read-only API, and the backfill from the kernel log.">
+<meta name="description" content="The local web dashboard served by stockfw dashboard: what it shows, the one-use link and the session that replaces it, the fingerprint, why only your own account on 127.0.0.1 is served, the read-only API, WSL, SSH port forwarding, and the backfill from the kernel log.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Dashboard · StockFW">
-<meta property="og:description" content="The local web dashboard served by stockfw dashboard: what it shows, how to open it, why it binds 127.0.0.1 only with a per-run token, the read-only API, and the backfill from the kernel log.">
+<meta property="og:description" content="The local web dashboard served by stockfw dashboard: what it shows, the one-use link and the session that replaces it, the fingerprint, why only your own account on 127.0.0.1 is served, the read-only API, WSL, SSH port forwarding, and the backfill from the kernel log.">
 <meta property="og:type" content="website">
 <link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
@@ -99,14 +99,47 @@
 <figure class="shot"><img src="../assets/screens/dashboard.webp" alt="The dashboard in a browser: a Firewall tile reading Running, blocked and throughput tiles, the Policy activity and Network I/O graphs, recent events, active connections, the what-if simulator and the policy." width="1280" height="1150" loading="lazy" decoding="async"><figcaption>Light theme. The page is one HTML file compiled into the binary; nothing is loaded from anywhere else.</figcaption></figure>
 
 <h2 id="start-it">Start it<a class="anchor" href="#start-it" aria-label="Link to this section">#</a></h2>
-<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo stockfw dashboard</span>
-StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd13
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw dashboard</span>
+StockFW dashboard  http://127.0.0.1:43977/#code=312fe461dddc3119a4c28c0ae4e40b59
 
-  Listening   127.0.0.1:43977 only, read-only, this run's token
-  Events      Live, with history from the kernel log
+  Listening   127.0.0.1:43977 only, read-only
+  Link        one use, for 2 minutes; `stockfw dashboard link' makes a new one
+  Fingerprint EA07-05C5-61E0 (the page shows the same)
+  Events      The kernel log cannot be read without root privileges.  Start StockFW as root to see incoming and outbound traffic.
+              run `sudo /usr/local/bin/stockfw dashboard' for live events
 
-  Ctrl-C stops the dashboard.</code></pre></div>
-<p>Without <code>--port</code> the system picks a free port. The URL carries the token for this run in its fragment; the page moves it into session storage and strips it from the address bar, then sends it with every API call. The browser is not given the URL on its command line, where every local user could read it: StockFW writes a private launch page under your runtime directory and opens that, and it forwards the browser to the URL and is deleted as soon as the token has been used. A browser that cannot read files there (a snap or Flatpak browser, Firefox on a default Ubuntu desktop among them) shows an error instead; the terminal says so, and the printed URL works in it. Under <code>sudo</code> the browser is not started as root, so you open the printed URL yourself. <code>--no-open</code> never tries. Ctrl-C stops it; nothing is left behind.</p>
+  Open the link above in your browser.
+
+  Ctrl-C stops the dashboard.
+
+<span class="p">$ </span><span class="cmd">sudo stockfw dashboard</span>
+StockFW dashboard  http://127.0.0.1:43981/
+
+  Listening   127.0.0.1:43981 only, read-only
+  Link file   /run/user/1000/stockfw-dashboard-5V1UX3/open.html
+              open it in your browser: one use, for 2 minutes
+  Fingerprint 587A-CB3E-C247 (the page shows the same)
+  Serves      uid 1000 only (SUDO_UID)
+  Events      Live, with history from the kernel log</code></pre></div>
+<p>Without <code>--port</code> the system picks a free port. Run it <strong>as yourself</strong>, or with <code>sudo</code> from your own account for live events; as plain root it refuses to start and says why, because a browser does not run as root. Under <code>sudo</code> the browser is not started as root, so you open the link yourself, and the dashboard serves the account that ran <code>sudo</code>. <code>--no-open</code> never starts a browser. Ctrl-C stops it, and so does closing the terminal; nothing is left behind.</p>
+
+<h3 id="link">The link works once<a class="anchor" href="#link" aria-label="Link to this section">#</a></h3>
+<p>The link holds a <strong>code</strong> that works once, for two minutes. It travels in the URL fragment, which browsers never send to a server. The page swaps it for a <strong>session</strong>, a key it keeps in session storage and sends with every API call; reads keep working for 12 hours, so a monitoring tab lasts the day. The link is printed only when the output is a terminal. Piped, or with <code>--json</code>, you get the path of a <strong>launch file</strong> instead, a private file (0600) in your runtime directory that sends the browser on to the link, so the code never ends up in a log or in an argument list. A browser that is started gets that file, as before. The launch file is deleted once its code is used, or after two minutes.</p>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">stockfw dashboard | cat</span>
+StockFW dashboard  http://127.0.0.1:43978/
+
+  Listening   127.0.0.1:43978 only, read-only
+  Link file   /run/user/1000/stockfw-dashboard-YREAY3/open.html
+              open it in your browser: one use, for 2 minutes
+  Fingerprint 65C1-2C66-305A (the page shows the same)
+
+<span class="p">$ </span><span class="cmd">stockfw dashboard --json --no-open</span>
+{"url":"http://127.0.0.1:43979/","port":43979,"link_file":"/run/user/1000/stockfw-dashboard-8BC5X3/open.html","fingerprint":"43D6-26AA-4862","monitoring":false}
+
+<span class="p">$ </span><span class="cmd">stockfw dashboard link</span>
+http://127.0.0.1:43980/#code=796e07cec3c56f510f01df6dd4fa788b
+  One use, for 2 minutes.  Fingerprint B150-4979-89E1.</code></pre></div>
+<p>When the link has expired, a tab was closed, or you want a second tab, <code>stockfw dashboard link</code> asks the running dashboard for a fresh link, over a socket only your account can use; with more than one dashboard running it needs <code>--port N</code>. A link used twice gets a “link used” page, ends <em>every</em> session, and the terminal says so: a second use means someone else saw the link. The <strong>fingerprint</strong> is shown in the terminal and at the top of the page, so you can check that the page you are looking at came from your dashboard and not from another local server. Use the address as printed, <code>http://127.0.0.1:<em>port</em></code>; <code>localhost</code> is not accepted. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-dashboard.sh</span></p>
 
 <h2 id="what-is-on-the-page">What is on the page<a class="anchor" href="#what-is-on-the-page" aria-label="Link to this section">#</a></h2>
 <ul>
@@ -115,52 +148,66 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 <li><strong>Recent events</strong>, newest first, with a filter box, and <strong>Active connections</strong> with their programs. The dashboard hides its own sockets: they exist only because someone is looking.</li>
 <li><strong>What-if simulator:</strong> the same grammar and verdicts as the app and the command line. Nothing is written.</li>
 <li><strong>Policy:</strong> the saved rules, grouped by kind, with their Covers.</li>
-<li>A <strong>theme</strong> button: system, light or dark.</li>
+<li><strong>Threat intel:</strong> whether enforcement is on, each enabled feed with its last update, and how many ranges the kernel holds.</li>
+<li>The <strong>fingerprint</strong> of this run, at the top, to compare with the terminal; and a <strong>theme</strong> button: system, light or dark.</li>
 </ul>
 
 <figure class="shot"><img src="../assets/screens/dashboard-dark.webp" alt="The dashboard in the dark theme, the same tiles, graphs and tables." width="1280" height="1150" loading="lazy" decoding="async"><figcaption>Dark theme. The graph colours were checked for contrast in both.</figcaption></figure>
 
-<h2 id="backfill">Backfill<a class="anchor" href="#backfill" aria-label="Link to this section">#</a></h2>
-<p>The app’s Activity graphs start when the app starts. The dashboard can read the kernel log for the events StockFW’s rules logged before it was started, so its history begins before the browser was opened, and the no-data band is shorter or absent. The log stays the archive; the dashboard only reads it.</p>
+<h2 id="backfill-and-monitoring-without-root">Backfill and monitoring without root<a class="anchor" href="#backfill-and-monitoring-without-root" aria-label="Link to this section">#</a></h2>
+<p>The app’s Activity graphs start when the app starts. The dashboard can read the kernel log for the events StockFW’s rules logged before it was started, so its history begins before the browser was opened, and the no-data band is shorter or absent. The log stays the archive; the dashboard only reads it. Started as your own user, the dashboard follows a kernel log file your account can read, such as <code>/var/log/kern.log</code> for a user in the <code>adm</code> group, so live events do not always need <code>sudo</code>; when nothing is readable the terminal says so and prints the <code>sudo</code> command to run.</p>
 
 <h2 id="why-it-is-safe-to-run">Why it is safe to run<a class="anchor" href="#why-it-is-safe-to-run" aria-label="Link to this section">#</a></h2>
-<p>A page that shows your firewall is a page an attacker would like to read, or to use as a lever. The dashboard is designed so that neither works, and a test exercises each point. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
-<dl class="cols">
-<dt>Loopback only</dt>
-<dd>It binds <code>127.0.0.1</code>. There is no option to listen anywhere else; <code>--bind</code> does not exist, and asking for it prints why. Someone on your network cannot reach it. To use it from another machine, forward the port over SSH.</dd>
-<dt>A token for this run</dt>
-<dd>128 bits from the kernel’s random source, new every start. Every <code>/api/</code> call must carry it in an <code>X-StockFW-Token</code> header, compared in constant time. The token arrives in the URL fragment, which browsers never send to a server; the page moves it into session storage and strips it from the address bar. A custom header cannot be sent cross-origin without a CORS preflight, which this server never answers, so another site open in the same browser cannot read the API or ride the token.</dd>
+<p>A page that shows your firewall is a page an attacker would like to read, or to use as a lever. The dashboard is designed so that neither works, and a test exercises each point: the project’s dashboard suite makes the requests as the served account, as root and as another user, and checks what each gets. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-dashboard.sh</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></p>
+<dl>
+<dt>Loopback only, and only your account</dt>
+<dd>It binds <code>127.0.0.1</code>; there is no option to listen anywhere else, and asking for <code>--bind</code> prints why. Before a byte is read, the dashboard asks the kernel who owns the connecting socket: it must come from <code>127.0.0.1</code> exactly and belong to the account being served, never to root or to any other account. Anything else is closed at once, unread, even with a valid link. To use it from another machine, forward the port over SSH.</dd>
+<dt>A one-use link and a session</dt>
+<dd>The code is 128 bits from the kernel’s random source, good for one use within two minutes; the session key is 256 bits, lives in the process’s memory only, and is sent in an <code>X-StockFW-Session</code> header compared in constant time. There are no cookies. At most four sessions are open at once, reads work for 12 hours, and a restart ends them all. A code used twice ends every session.</dd>
 <dt>Host check</dt>
-<dd>Only <code>127.0.0.1:<em>port</em></code> and <code>localhost:<em>port</em></code> are accepted as the <code>Host</code> header. A hostile name re-pointed at 127.0.0.1, the DNS-rebinding trick, is refused before any path is looked at.</dd>
+<dd>Exactly one <code>Host</code> header, equal to <code>127.0.0.1:<em>port</em></code>, else the request is refused before any path is looked at. <code>localhost</code> is refused on purpose: the server binds IPv4 only, another account could listen on <code>[::1]</code> at the same port, and a browser sent to <code>localhost</code> may go there first. A hostile name re-pointed at 127.0.0.1, the DNS-rebinding trick, fails the same check.</dd>
+<dt>The page’s own requests only</dt>
+<dd>The one <code>POST</code>, which swaps the code for a session, must carry the page’s own <code>Origin</code>, <code>Sec-Fetch-Site: same-origin</code> and a JSON body, which a form on another site cannot send. An API request that names another site in <code>Origin</code> is refused even with a valid session, and <code>OPTIONS</code> gets 405 with no CORS header, ever, so another site open in the same browser cannot read the API or ride the session.</dd>
 <dt>Read-only</dt>
 <dd>The API has no write endpoint. Changing the firewall stays with <code>stockfw apply</code> and the desktop app, which need root; the dashboard can be left running without that worry.</dd>
 <dt>Nothing from elsewhere</dt>
-<dd>The page is compiled into the binary and carries a strict Content-Security-Policy with a per-run nonce, so no external script, style, font or image can load. It works offline and sets no cookies.</dd>
-<dt>Small on purpose</dt>
-<dd>GET and HEAD only, a 16 KB cap on the request head, a ten-second socket timeout and at most 32 connections at once. There is nothing to overflow and nothing to keep busy.</dd>
+<dd>The page is compiled into the binary and carries a strict Content-Security-Policy with a per-run nonce and Trusted Types, a <code>Permissions-Policy</code> that denies camera, microphone, location and clipboard reading, and <code>Cross-Origin-Embedder-Policy</code>. No external script, style, font or image can load; the page builds every node from text and never parses HTML. It works offline and sets no cookies.</dd>
+<dt>Slow senders cannot lock you out</dt>
+<dd>The request head must arrive within five seconds and a body within five more; a body is at most 64 KB; <code>Upgrade</code> (WebSocket) and <code>Transfer-Encoding</code> are refused; at most 16 unfinished requests per account, and a new one closes the oldest. With 32 connections dripping a byte at a time, a normal request is still answered within a second. The owner lookup is one kernel query, not a read of the whole socket table, so a machine with many sockets does not slow it either.</dd>
 </dl>
 
+<h2 id="wsl">WSL<a class="anchor" href="#wsl" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Linux</span> Under WSL, a browser on the Windows side reaches the dashboard through Windows’ localhost relay, which has no socket on the Linux side, so the owner check cannot name it. By default it is refused: the browser gets a short page saying to start the dashboard with <code>--allow-windows</code> or to use a browser inside WSL, and the terminal says the same once. <code>stockfw dashboard --allow-windows</code> lets such browsers in, in a slot group of their own; the page says so, they still need the link, and connections from root or another Linux account stay refused. Off WSL the option is a usage error. How the relay looks on every Windows build was not measured by the project, and the page says when it is in force. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-dashboard.sh</span></p>
+
+<h2 id="ssh">Over SSH<a class="anchor" href="#ssh" aria-label="Link to this section">#</a></h2>
+<div class="code" data-copy="commands"><div class="code-head"><span>Terminal</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code>you@laptop$ ssh -L 8080:127.0.0.1:43977 server
+you@server$ stockfw dashboard --port 43977 --no-open --origin-port 8080</code></pre></div>
+<p>Forward the port and start the dashboard with <code>--origin-port N</code>, the port on your end: the dashboard then also answers to <code>127.0.0.1:N</code>, and <code>stockfw dashboard link --origin-port N</code> prints the link for that port. The forwarded connection belongs to the SSH user on the server, so it passes the owner check when that is the account being served. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-dashboard.sh</span></p>
+
 <h2 id="the-api">The API<a class="anchor" href="#the-api" aria-label="Link to this section">#</a></h2>
-<p>Every endpoint is <code>GET</code>, needs the token, and returns JSON:</p>
+<p>Every endpoint below is <code>GET</code>, needs the session key, and returns JSON:</p>
 <div class="tbl-wrap">
 <table class="tbl">
 <thead><tr><th>Path</th><th>Returns</th></tr></thead>
 <tbody>
-<tr><td><code>/api/<wbr>summary</code></td><td>Firewall state, IPv6 state, rule counts, totals.</td></tr>
+<tr><td><code>/api/<wbr>summary</code></td><td>Firewall state, IPv6 state, rule counts, totals, the fingerprint, whether monitoring is live and from where.</td></tr>
 <tr><td><code>/api/<wbr>activity</code></td><td>The per-interval series for both graphs, for the requested range.</td></tr>
 <tr><td><code>/api/<wbr>events</code></td><td>Recent events.</td></tr>
 <tr><td><code>/api/<wbr>connections</code></td><td>Established connections with programs.</td></tr>
 <tr><td><code>/api/<wbr>interfaces</code></td><td>Adapters with counters and rates.</td></tr>
 <tr><td><code>/api/<wbr>policy</code></td><td>The saved policy, as <code>stockfw policy list --json</code> prints it.</td></tr>
 <tr><td><code>/api/<wbr>simulate?q=…</code></td><td>A what-if verdict, as <code>stockfw simulate --json</code> prints it.</td></tr>
+<tr><td><code>/api/<wbr>intel</code></td><td>Threat-intel state, the enabled feeds and the ranges the kernel holds.</td></tr>
+<tr><td><code>POST /<wbr>api/<wbr>session</code>, <code>POST /<wbr>api/<wbr>session/<wbr>end</code></td><td>Swap a code for a session key (the page does this), and end a session.</td></tr>
 </tbody>
 </table>
 </div>
-<div class="code" data-copy="commands"><div class="code-head"><span>From a script on the same machine</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">curl -s -H "X-StockFW-Token: $TOKEN" http://127.0.0.1:43977/api/summary</span></code></pre></div>
-<p>A request without the token, or with a wrong one, gets <code>401 Unauthorized</code> and no body worth reading.</p>
-
-<h2 id="threat-intel">Threat intel<a class="anchor" href="#threat-intel" aria-label="Link to this section">#</a></h2>
-<p><span class="plat">Linux</span> The threat-intel state and the enforced lists are shown too, read-only like everything else, from <code>/api/intel</code>: whether enforcement is on, each enabled feed with its last update, and how many ranges the kernel holds.</p>
+<div class="code" data-copy="commands"><div class="code-head"><span>From a script on the same machine</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">KEY=$(curl -s -X POST http://127.0.0.1:43977/api/session \</span>
+    -H "Origin: http://127.0.0.1:43977" -H "Sec-Fetch-Site: same-origin" \
+    -H "Sec-Fetch-Mode: cors" -H "Sec-Fetch-Dest: empty" \
+    -H "Content-Type: application/json" -d '{"code":"'"$CODE"'"}' | jq -r .session)
+<span class="p">$ </span><span class="cmd">curl -s -H "X-StockFW-Session: $KEY" http://127.0.0.1:43977/api/summary</span></code></pre></div>
+<p><code>$CODE</code> is the code from a fresh <code>stockfw dashboard link</code>, read from the launch file when the output is not a terminal; it works once. A request without a session key, or with a wrong one, gets <code>401 Unauthorized</code>; a code that was already used gets <code>410</code>. Keys are never on a command line the way <code>ps</code> would show: pass them through a variable or a file.</p>
 
 		</article>
 		<footer class="doc-foot">
@@ -172,11 +219,13 @@ StockFW dashboard  http://127.0.0.1:43977/#token=287cebbf9d83ed6af523f96b7cc3dd1
 		<h2>On this page</h2>
 		<ul>
 			<li class="lvl2"><a href="#start-it">Start it</a></li>
+			<li class="lvl3"><a href="#link">The link works once</a></li>
 			<li class="lvl2"><a href="#what-is-on-the-page">What is on the page</a></li>
-			<li class="lvl2"><a href="#backfill">Backfill</a></li>
+			<li class="lvl2"><a href="#backfill-and-monitoring-without-root">Backfill and monitoring without root</a></li>
 			<li class="lvl2"><a href="#why-it-is-safe-to-run">Why it is safe to run</a></li>
+			<li class="lvl2"><a href="#wsl">WSL</a></li>
+			<li class="lvl2"><a href="#ssh">Over SSH</a></li>
 			<li class="lvl2"><a href="#the-api">The API</a></li>
-			<li class="lvl2"><a href="#threat-intel">Threat intel</a></li>
 		</ul>
 	</aside>
 </div>
