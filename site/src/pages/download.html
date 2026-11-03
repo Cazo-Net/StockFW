@@ -11,8 +11,8 @@ description: StockFW 1.0.7 for Windows and Linux: the installer, the Linux tarba
 <table class="tbl">
 <thead><tr><th>Platform</th><th>File</th><th>Notes</th></tr></thead>
 <tbody>
-<tr><td>Windows 10 and 11, 64-bit</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-Setup.exe">StockFW-{{release}}-Setup.exe</a></td><td>NSIS installer. Bundles the GTK3 runtime, so nothing else needs installing, and ships the README, the changelog and the licence texts.</td></tr>
-<tr><td>Linux x86-64</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-linux-x86_64.tar.gz">StockFW-{{release}}-linux-x86_64.tar.gz</a></td><td>Tarball with <code>install.sh</code>, about 1.2 MB. Needs GTK 3, liblzma, OpenSSL 3, <code>iptables</code> and <code>ip6tables</code> from your distribution; installs a boot service that puts the rules back after a restart.</td></tr>
+<tr><td>Windows 10 and 11, 64-bit</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-Setup.exe">StockFW-{{release}}-Setup.exe</a></td><td>NSIS installer, about 45 MB. Bundles the GTK3 runtime, so nothing else needs installing, and ships the README, the changelog and the licence texts.</td></tr>
+<tr><td>Linux x86-64</td><td><a href="{{repo}}/releases/download/v{{release}}/StockFW-{{release}}-linux-x86_64.tar.gz">StockFW-{{release}}-linux-x86_64.tar.gz</a></td><td>Tarball with <code>install.sh</code>, about 1.2 MB. Needs GTK 3, liblzma, OpenSSL 3, <code>iptables</code> and <code>ip6tables</code> from your distribution; installs a boot service that puts the rules back after a restart. You can try it before installing: unpacked, <code>./StockFW</code> opens the app and <code>sudo ./cli/stockfw dashboard</code> serves the dashboard.</td></tr>
 <tr><td>Checksums</td><td><a href="{{repo}}/releases/download/v{{release}}/SHA256SUMS.txt">SHA256SUMS.txt</a></td><td>SHA-256 of both files.</td></tr>
 </tbody>
 </table>
