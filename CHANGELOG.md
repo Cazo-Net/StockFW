@@ -148,8 +148,74 @@ into `/usr/local/share/doc/stockfw/`.
   for GTK at all. The default still builds the desktop app too. CI
   checks that `stockfw` needs no GTK, GDK, Pango or cairo library.
 
+### Dashboard (stockfw dashboard)
+
+It is still read-only and still listens on 127.0.0.1 only.
+
+- **Slow connections can no longer lock you out.** Until now, 32
+  connections that sent a byte every few seconds kept the dashboard
+  from answering anyone, for as long as they liked. Now the request
+  head must arrive within 5 s and a body within 5 s more, and when 16
+  connections from one account are still sending, a new one closes the
+  oldest. With 32 such connections open, a normal request is answered
+  within 1 s.
+- **Only your own account is served.** A connection is read only when
+  it comes from 127.0.0.1 and its socket belongs to you (under `sudo`,
+  to the account that ran `sudo`). Connections from root or any other
+  account are closed at once, unread, even with a valid link. As root
+  without `sudo`, `stockfw dashboard` now refuses to start and says why.
+  Under WSL, see the WSL entry below.
+- **Use the address as printed.** `http://localhost:PORT` is no longer
+  accepted, only `http://127.0.0.1:PORT`: another account could listen
+  on `[::1]` at the same port and catch a browser sent to `localhost`.
+- Requests with `Upgrade` (WebSocket) or `Transfer-Encoding` get 400,
+  and a body over 64 KB gets 413.
+- **A link that works once.** The printed link now holds a code that
+  works once, for 2 minutes; the page swaps it for a session key, sent
+  in a header. Reads keep working for 12 hours. The per-run token is
+  gone. A link used twice ends every session, and the terminal says
+  so. Sessions end when the dashboard stops.
+- **The link is printed only to a terminal.** Piped, or with `--json`,
+  the output names a launch file (0600) instead, so the code does not
+  end up in logs. The launch file is deleted once it is used, or after
+  2 minutes.
+- **`stockfw dashboard link`** gets a new link from the running
+  dashboard, over a socket only your account can use. With
+  `--origin-port N` it prints the link for port N too. It skips
+  dashboards that are no longer running.
+- **Closing the terminal stops the dashboard cleanly** (SIGHUP), so its
+  link socket and launch files are removed.
+- **Many sockets on the machine no longer slow the dashboard.** The
+  check of who owns a connection is one kernel lookup, not a read of
+  the whole socket table, which another account could fill.
+- A request that starts with empty lines is read as RFC 9112 asks
+  (they are skipped).
+- **A fingerprint** shown in the terminal and at the top of the page,
+  so you can tell the page comes from your dashboard.
+- **Stricter browser checks.** The session request must come from the
+  page itself (`Origin`, `Sec-Fetch-*`, JSON). An API request from
+  another site is refused even with a valid session. New headers:
+  Trusted Types, `Permissions-Policy` and `Cross-Origin-Embedder-Policy`.
+- **`--origin-port N`** for `ssh -L N:127.0.0.1:PORT`: the dashboard
+  also answers as `127.0.0.1:N`.
+- **WSL: a browser on the Windows side is refused by default.** It gets
+  a short page (403) that says to start the dashboard with
+  `--allow-windows` or to use a browser inside WSL, and the terminal
+  says the same once. `--allow-windows` (WSL only) lets it in and the
+  page says so. A
+  connection whose program has already closed it is never let in that
+  way.
+
 ### Fixed
 
+- **Windows: no console windows during threat-intel updates.** Turning
+  on a blocklist, "Update now", and the daily update each downloaded
+  every list through `curl.exe`, and each download opened a black
+  console window for a moment. curl is now started hidden, the way
+  StockFW already starts `netsh` and `wevtutil`, so nothing flashes on
+  the screen. The download itself is unchanged: the same curl from the
+  Windows system folder, the same arguments, environment, size cap and
+  time limit.
 - **Wayland desktops and WSL: no tray icon, no start-up warning.** GTK
   has a tray only on X11 and Windows. Started on Wayland (GNOME and KDE
   Plasma by default, and WSL's WSLg), StockFW tried to make one anyway,

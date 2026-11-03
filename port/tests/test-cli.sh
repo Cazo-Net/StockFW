@@ -5,7 +5,7 @@
 # (or a script) would: the exit codes `stockfw help' documents, the
 # policy files the desktop app shares, the simulator's verdicts, the
 # kernel-log history, every --json document parsed back, and the
-# dashboard's security model -- 127.0.0.1 only, a per-run token,
+# dashboard's security model -- 127.0.0.1 only, a one-use launch code and a session key,
 # DNS-rebinding defence, GET/HEAD only, a capped request head and a
 # nonce-locked CSP.  `stockfw intel' too, as far as it goes without the
 # kernel: feeds with licence and credit, consent, local lists,
@@ -48,10 +48,12 @@ S="$BUILD/stockfw"
 TMP="$(mktemp -d)"
 DASH_PID=""
 INTEL_BASE=""
+DW=""
 cleanup () {
   [ -n "$DASH_PID" ] && kill "$DASH_PID" 2>/dev/null
   rm -rf "$TMP"
   [ -n "$INTEL_BASE" ] && rm -rf "$INTEL_BASE"
+  [ -n "$DW" ] && rm -rf "$DW"
 }
 trap cleanup EXIT
 
@@ -605,103 +607,151 @@ else
 fi
 
 # --------------------------------------------------------- dashboard
+# The dashboard reads only connections whose socket belongs to the
+# account it serves: its own, or SUDO_UID under sudo, never uid 0
+# (docs 15.3.1; tests/test-dashboard.sh tests that part).  As root it
+# runs here the way sudo runs it, with SUDO_UID=65533, and every
+# request is made as uid 65533: a `curl' first on PATH does that (uid
+# DASH_PEER_UID when set), and peer_py runs Python as that uid.  The
+# answers are written to $DW, which that uid can write.  Its runtime
+# directory ($DW/run) holds the launch file: with stdout piped, the
+# link with the code is never printed (15.3.2), so the code is read
+# from there and swapped for a session key as the page would.
+DW="$(mktemp -d /tmp/stockfw-dash-XXXXXX)"; chmod 755 "$DW"
+mkdir "$DW/bin"
+mkdir -m 700 "$DW/run"
+REAL_CURL="$(command -v curl)"
+DASH_ENV=(env XDG_RUNTIME_DIR="$DW/run")
+DASH_UID="$(id -u)"
+peer_py () { py "$1"; }
+if [ "$(id -u)" = 0 ]; then
+  DASH_UID=65533
+  DASH_ENV=(env SUDO_UID=65533 XDG_RUNTIME_DIR="$DW/run")
+  chown 65533:65533 "$DW" "$DW/run"
+  peer_py () { setpriv --reuid=65533 --regid=65533 --clear-groups python3 -I -c "$1"; }
+fi
+cat > "$DW/bin/curl" <<CEOF
+#!/bin/sh
+if [ "\$(id -u)" = 0 ]; then
+  u="\${DASH_PEER_UID:-$DASH_UID}"
+  exec setpriv --reuid="\$u" --regid="\$u" --clear-groups "$REAL_CURL" "\$@"
+fi
+exec "$REAL_CURL" "\$@"
+CEOF
+chmod 755 "$DW/bin/curl"
+SAVED_PATH="$PATH"
+export PATH="$DW/bin:$PATH"
+
 DPORT=$(py 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
-"$S" dashboard --no-open --port "$DPORT" > "$TMP/dash.txt" 2>&1 &
+"${DASH_ENV[@]}" "$S" dashboard --no-open --port "$DPORT" > "$TMP/dash.txt" 2>&1 &
 DASH_PID=$!
 for _ in $(seq 1 50); do
-  grep -q '#token=' "$TMP/dash.txt" 2>/dev/null && break
+  grep -q 'Ctrl-C' "$TMP/dash.txt" 2>/dev/null && break
   sleep 0.1
 done
-URL=$(grep -o 'http://[^ ]*' "$TMP/dash.txt")
-TOKEN=${URL##*#token=}
+URL=$(grep -o 'http://[^ ]*' "$TMP/dash.txt" | head -1)
+LINK_FILE=$(sed -n 's/^  Link file   //p' "$TMP/dash.txt")
+CODE=$(grep -oE '#code=[0-9a-f]{32}' "$LINK_FILE" 2>/dev/null | head -1 | cut -d= -f2)
 B="http://127.0.0.1:$DPORT"
+# dash_session <code>: the session key the page would get for it.
+dash_session () {
+  curl -sS -X POST -H "Origin: $B" -H 'Sec-Fetch-Site: same-origin' \
+    -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' \
+    -H 'Content-Type: application/json' --data "{\"code\":\"$1\"}" "$B/api/session" |
+    python3 -I -c 'import json,sys; print(json.load(sys.stdin)["session"])'
+}
+SKEY=$(dash_session "$CODE")
 
-check "dashboard prints a 127.0.0.1 URL with a 128-bit token" \
-  bash -c "[[ '$URL' == http://127.0.0.1:$DPORT/#token=* ]] && [[ '$TOKEN' =~ ^[0-9a-f]{32}$ ]]"
+check "dashboard prints a 127.0.0.1 URL and, on a pipe, a launch file with a 128-bit code" \
+  bash -c "[ '$URL' = 'http://127.0.0.1:$DPORT/' ] && [[ '$CODE' =~ ^[0-9a-f]{32}$ ]] && ! grep -qE '[0-9a-f]{32}' '$TMP/dash.txt'"
+check "  ...which the page swaps for a 256-bit session key" \
+  bash -c "[[ '$SKEY' =~ ^[0-9a-f]{64}$ ]]"
 check "it listens on loopback only" \
   bash -c "ss -ltnH 2>/dev/null | grep ':$DPORT ' | grep -qv '127.0.0.1:$DPORT' && exit 1; exit 0"
 
 code () { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
 
-check "the page loads without the token (it holds no data)" \
-  bash -c "[ \$(curl -sS -o '$TMP/page.html' -w '%{http_code}' '$B/') = 200 ]"
-check "  ...and the token is not in it" bash -c "! grep -q '$TOKEN' '$TMP/page.html'"
+check "the page loads without a session (it holds no data)" \
+  bash -c "[ \$(curl -sS -o '$DW/page.html' -w '%{http_code}' '$B/') = 200 ]"
+check "  ...and neither the code nor the key is in it" bash -c "! grep -q '$CODE' '$DW/page.html' && ! grep -q '$SKEY' '$DW/page.html'"
 check "  ...and its scripts carry this run's CSP nonce" py "
 import re, subprocess
 h = subprocess.run(['curl', '-sS', '-D', '-', '-o', '/dev/null', '$B/'], capture_output=True, text=True).stdout
 csp = re.search(r'Content-Security-Policy: (.*)', h).group(1)
 nonce = re.search(r\"'nonce-([0-9a-f]{32})'\", csp).group(1)
-page = open('$TMP/page.html').read()
+page = open('$DW/page.html').read()
 assert \"default-src 'none'\" in csp and \"frame-ancestors 'none'\" in csp, csp
 assert page.count('nonce=\"' + nonce + '\"') >= 2 and '{{NONCE}}' not in page"
-check "the API refuses a request without the token (401)" \
+check "the API refuses a request without a session (401)" \
   bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' '$B/api/summary') = 401 ]"
-check "  ...and a wrong token (401)" \
-  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Token: 0123456789abcdef0123456789abcdef' '$B/api/summary') = 401 ]"
-check "  ...and the token in the query string (401: headers only)" \
-  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' '$B/api/summary?token=$TOKEN') = 401 ]"
-check "the token unlocks the API (200)" \
-  bash -c "[ \$(curl -sS -o '$TMP/s.json' -w '%{http_code}' -H 'X-StockFW-Token: $TOKEN' '$B/api/summary') = 200 ]"
-check "a foreign Host header is refused even with the token (DNS rebinding, 403)" \
-  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: attacker.example:$DPORT' -H 'X-StockFW-Token: $TOKEN' '$B/api/summary') = 403 ]"
-check "localhost:PORT is accepted as a Host" \
-  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: localhost:$DPORT' -H 'X-StockFW-Token: $TOKEN' '$B/api/summary') = 200 ]"
+check "  ...and a wrong key (401)" \
+  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Session: $(printf '0123456789abcdef%.0s' 1 2 3 4)' '$B/api/summary') = 401 ]"
+check "  ...and the key in the query string (401: headers only)" \
+  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' '$B/api/summary?session=$SKEY') = 401 ]"
+check "  ...and the launch code itself (401: it only opens a session)" \
+  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Session: $CODE' '$B/api/summary') = 401 ]"
+check "the session key unlocks the API (200)" \
+  bash -c "[ \$(curl -sS -o '$DW/s.json' -w '%{http_code}' -H 'X-StockFW-Session: $SKEY' '$B/api/summary') = 200 ]"
+check "a foreign Host header is refused even with a session (DNS rebinding, 403)" \
+  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: attacker.example:$DPORT' -H 'X-StockFW-Session: $SKEY' '$B/api/summary') = 403 ]"
+check "localhost:PORT is refused as a Host (403): another account may hold [::1]:PORT" \
+  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: localhost:$DPORT' -H 'X-StockFW-Session: $SKEY' '$B/api/summary') = 403 ]"
 check "POST is refused (405): the dashboard is read-only" \
-  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'X-StockFW-Token: $TOKEN' '$B/api/summary') = 405 ]"
-check "a request head over 16 KB is refused (431), however it is split" py "
+  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'X-StockFW-Session: $SKEY' '$B/api/summary') = 405 ]"
+check "a request head over 16 KB is refused (431), however it is split" peer_py "
 import socket
 s = socket.create_connection(('127.0.0.1', $DPORT))
 s.sendall(b'GET / HTTP/1.1\r\nHost: 127.0.0.1:$DPORT\r\nX: ' + b'a' * 20000 + b'\r\n\r\n')
 assert s.recv(64).startswith(b'HTTP/1.1 431'), 'not 431'"
 check "a path outside the API is 404, not a file read" \
-  bash -c "[ \$(curl -sS --path-as-is -o /dev/null -w '%{http_code}' -H 'X-StockFW-Token: $TOKEN' '$B/../../etc/passwd') = 404 ]"
+  bash -c "[ \$(curl -sS --path-as-is -o /dev/null -w '%{http_code}' -H 'X-StockFW-Session: $SKEY' '$B/../../etc/passwd') = 404 ]"
 
-api () { curl -sS -H "X-StockFW-Token: $TOKEN" "$B/api/$1"; }
+api () { curl -sS -H "X-StockFW-Session: $SKEY" "$B/api/$1"; }
 check "summary says whether IPv6 is filtered, and logs allowed traffic by default" py "
-import json; d = json.load(open('$TMP/s.json'))
+import json; d = json.load(open('$DW/s.json'))
 assert d['ipv6']['state'] in ('filtered', 'not-filtered', 'absent', 'unknown') and d['ipv6']['detail'], d
 assert d['logs_allowed'] is True, d"
 check "summary counts the fixture's blocked events and the saved policy" py "
-import json; d = json.load(open('$TMP/s.json'))
+import json; d = json.load(open('$DW/s.json'))
 assert d['blocked_24h'] == 4 and d['blocked_1h'] == 4, d
 assert d['policy_saved'] is True and d['rules'] == 2, d"
 check "activity: blocked events land in the graph, honest no-data before the log starts" py "
 import json, subprocess
-d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/activity?range=3600'],
+d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Session: $SKEY', '$B/api/activity?range=3600'],
                               capture_output=True, text=True).stdout)
 b, cov = d['events']['blocked'], d['events']['covered']
 assert sum(b) == 4, sum(b)
 assert cov[0] == 0 and cov[-1] > 0, (cov[:3], cov[-3:])"
 check "events: newest first, marker cut, verdict in its own field" py "
 import json, subprocess
-ev = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/events?limit=10'],
+ev = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Session: $SKEY', '$B/api/events?limit=10'],
                                capture_output=True, text=True).stdout)
 assert [e['port'] for e in ev] == ['443', '3389', '445', '22'], ev
 assert ev[3]['service'] == 'SSH' and all(e['blocked'] for e in ev)"
 check "simulate over the API answers BLOCKED for the denied host" py "
 import json, subprocess, urllib.parse
 q = urllib.parse.quote('outbound tcp to 203.0.113.9 port 443')
-d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN',
+d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Session: $SKEY',
                                '$B/api/simulate?assume_running=1&q=' + q],
                               capture_output=True, text=True).stdout)
 assert d['verdict'] == 'BLOCKED', d"
 check "simulate over the API answers DEPENDS for a split question" py "
 import json, subprocess, urllib.parse
 q = urllib.parse.quote('outbound tcp port 443')
-d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN',
+d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Session: $SKEY',
                                '$B/api/simulate?assume_running=1&q=' + q],
                               capture_output=True, text=True).stdout)
 assert d['verdict'] == 'DEPENDS', d"
 check "simulate over the API refuses an unreadable line (400)" \
-  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Token: $TOKEN' '$B/api/simulate?q=hello') = 400 ]"
+  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Session: $SKEY' '$B/api/simulate?q=hello') = 400 ]"
 check "simulate refuses an over-long question (400)" \
-  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Token: $TOKEN' '$B/api/simulate?q=$(printf 'a%.0s' $(seq 1 400))') = 400 ]"
+  bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -H 'X-StockFW-Session: $SKEY' '$B/api/simulate?q=$(printf 'a%.0s' $(seq 1 400))') = 400 ]"
 if [ -n "$INTEL_BASE" ]; then
-  check "intel: the API needs the token (401)" \
+  check "intel: the API needs a session (401)" \
     bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' '$B/api/intel') = 401 ]"
   check "intel: the state and the lists turned on, with licence and credit" py "
 import json, subprocess
-d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/intel'],
+d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Session: $SKEY', '$B/api/intel'],
                               capture_output=True, text=True).stdout)
 assert d['state'] in ('not-loaded', 'needs-root', 'unknown', 'differs') and d['detail'], d
 by = {l['id']: l for l in d['lists']}
@@ -710,31 +760,31 @@ assert by['feodo']['licence'] == 'CC0' and 'abuse.ch' in by['feodo']['credit']
 assert by['local-cli-list']['name'] == 'CLI list' and by['local-cli-list']['entries'] == 2"
   check "intel: the location fields, read-only (rules, database, attribution)" py "
 import json, subprocess
-d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/intel'],
+d = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Session: $SKEY', '$B/api/intel'],
                               capture_output=True, text=True).stdout)
 g = d['location']
 assert g['enabled'] and g['database']['present'] is False and 'IPFire' in g['attribution'], g
 assert [(x['id'], x['direction'], x['status']) for x in g['rules']] == [('country-de', 'in', 'no-database')], g"
   check "intel: POST is refused (405): the panel is read-only" \
-    bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'X-StockFW-Token: $TOKEN' '$B/api/intel') = 405 ]"
+    bash -c "[ \$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'X-StockFW-Session: $SKEY' '$B/api/intel') = 405 ]"
   check "the page has the blocklist panel and asks for /api/intel" \
-    bash -c "grep -q 'id=\"h-intel\"' '$TMP/page.html' && grep -q '/api/intel' '$TMP/page.html'"
+    bash -c "grep -q 'id=\"h-intel\"' '$DW/page.html' && grep -q '/api/intel' '$DW/page.html'"
 fi
 check "the dashboard's own sockets are not listed as connections" py "
 import json, subprocess
-c = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/connections'],
+c = json.loads(subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Session: $SKEY', '$B/api/connections'],
                               capture_output=True, text=True).stdout)
 assert not [x for x in c if x['port'] == '$DPORT' and x['remote'].startswith('127.')], c"
 check "every JSON endpoint parses" py "
 import json, subprocess
 for p in ('summary', 'activity?range=900', 'activity?range=86400', 'events', 'connections', 'interfaces', 'policy', 'intel'):
-    out = subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Token: $TOKEN', '$B/api/' + p], capture_output=True, text=True).stdout
+    out = subprocess.run(['curl', '-sS', '-H', 'X-StockFW-Session: $SKEY', '$B/api/' + p], capture_output=True, text=True).stdout
     json.loads(out)"
 
 kill "$DASH_PID" 2>/dev/null; wait "$DASH_PID" 2>/dev/null; DASH_PID=""
 
 # The browser is opened on a 0600 page that redirects to the URL, never
-# with the token in an argument list, where any local account could read
+# with the code in an argument list, where any local account could read
 # it from /proc/<pid>/cmdline (1.0.7 release review, SECURITY-3).  The
 # dashboard never starts a browser as root, so as root this part runs
 # as nobody, from a copy of the binary nobody can reach.
@@ -762,24 +812,26 @@ $AS env -i PATH="$OD/bin:/usr/bin:/bin" DISPLAY=:99 XDG_RUNTIME_DIR="$OD/run" \
   HOME="$OD/run" XDG_CONFIG_HOME="$OD/run/cfg" STOCKFW_RULES_DIR="$OD/run/rules" \
   "$OD/stockfw" dashboard --port "$OPORT" > "$OD/out" 2>&1 &
 DASH_PID=$!
-for _ in $(seq 1 50); do [ -s "$OD/seen/argv" ] && break; sleep 0.1; done
-OURL=$(grep -o 'http://[^ ]*' "$OD/out" | head -1)
-OTOKEN=${OURL##*#token=}
+for _ in $(seq 1 50); do [ -s "$OD/seen/argv" ] && grep -q 'Ctrl-C' "$OD/out" && break; sleep 0.1; done
 OPAGE=$(cat "$OD/seen/argv" 2>/dev/null)
-check "dashboard: the terminal still prints the whole URL with the token" \
-  bash -c "[[ '$OTOKEN' =~ ^[0-9a-f]{32}$ ]]"
+OCODE=$(grep -oE '#code=[0-9a-f]{32}' "$OD/seen/page.html" | head -1 | cut -d= -f2)
+OURL="http://127.0.0.1:$OPORT/#code=$OCODE"
+check "dashboard: the terminal names the launch file, the page xdg-open got" \
+  bash -c "[[ '$OCODE' =~ ^[0-9a-f]{32}$ ]] && grep -qF 'Link file   $OPAGE' '$OD/out'"
 check "  ...xdg-open was started on a page under \$XDG_RUNTIME_DIR ($OPAGE)" \
   bash -c "[[ '$OPAGE' == '$OD/run/stockfw-dashboard-'*/open.html ]]"
-check "  ...and the token is in no argument xdg-open got" \
-  bash -c "[ -s '$OD/seen/cmdline' ] && ! grep -q '$OTOKEN' '$OD/seen/cmdline'"
+check "  ...and the code is in no argument xdg-open got" \
+  bash -c "[ -s '$OD/seen/cmdline' ] && ! grep -q '$OCODE' '$OD/seen/cmdline'"
 check "  ...the page is 0600 in a 0700 directory" \
   bash -c "[ \"\$(cat '$OD/seen/mode')\" = 600 ] && [ \"\$(cat '$OD/seen/dirmode')\" = 700 ]"
-check "  ...and sends the browser on to the URL with the token" \
-  bash -c "grep -qF 'location.replace(\"$OURL\")' '$OD/seen/page.html' && grep -qF 'url=$OURL\"' '$OD/seen/page.html'"
-check "  ...and the terminal says to open the URL if the browser cannot read the page" \
-  bash -c "grep -q 'A browser was started' '$OD/out' && grep -q 'open the URL' '$OD/out'"
-check "  ...it stays until the token is used" bash -c "[ -f '$OPAGE' ]"
-curl -sS -o /dev/null -H "X-StockFW-Token: $OTOKEN" "http://127.0.0.1:$OPORT/api/summary"
+check "  ...and sends the browser on to the URL with the code, one way only (no script)" \
+  bash -c "grep -qF 'href=\"$OURL\"' '$OD/seen/page.html' && grep -qF 'url=$OURL\"' '$OD/seen/page.html' && ! grep -q '<script' '$OD/seen/page.html'"
+check "  ...and the terminal says to open the link file if the browser cannot read the page" \
+  bash -c "grep -q 'A browser was started' '$OD/out' && grep -q 'open the link' '$OD/out'"
+check "  ...it stays until the code is used" bash -c "[ -f '$OPAGE' ]"
+DASH_PEER_UID=65534 curl -sS -o /dev/null -X POST -H "Origin: http://127.0.0.1:$OPORT" \
+  -H 'Sec-Fetch-Site: same-origin' -H 'Sec-Fetch-Mode: cors' -H 'Sec-Fetch-Dest: empty' \
+  -H 'Content-Type: application/json' --data "{\"code\":\"$OCODE\"}" "http://127.0.0.1:$OPORT/api/session"
 check "  ...and is removed, with its directory, once it is" \
   bash -c "[ ! -e '$OPAGE' ] && [ ! -e \"\$(dirname '$OPAGE')\" ]"
 kill "$DASH_PID" 2>/dev/null; wait "$DASH_PID" 2>/dev/null; DASH_PID=""
@@ -788,11 +840,14 @@ check "  ...and nothing is left in the runtime directory when it stops" \
 rm -rf "$OD"
 
 check "a second dashboard on a busy port fails cleanly (exit 1)" py "
-import socket, subprocess
+import os, socket, subprocess
 s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(1)
 p = s.getsockname()[1]
-r = subprocess.run(['$S', 'dashboard', '--no-open', '--port', str(p)], capture_output=True, text=True, timeout=10)
-assert r.returncode == 1 and 'error' in r.stderr, (r.returncode, r.stderr)"
+r = subprocess.run(['$S', 'dashboard', '--no-open', '--port', str(p)], capture_output=True, text=True, timeout=10,
+                   env=dict(os.environ, SUDO_UID='65533'))
+assert r.returncode == 1 and 'cannot listen' in r.stderr, (r.returncode, r.stderr)"
+export PATH="$SAVED_PATH"
+rm -rf "$DW"
 
 # Each work package of the next release keeps its tests between its
 # own markers (cli-plan.md section 4), so the packages never touch one
@@ -1528,20 +1583,33 @@ assert r.returncode == 5 and 'lifts by itself' in r.stdout, r"
 # dashboard: monitoring by readability, and live rows from the file.
 if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null || [ "$(id -u)" != 0 ]; then
   check "dashboard: as uid 65534 with a readable log, monitoring is on and new lines arrive" c_py "
-import socket, urllib.request
+import socket
 s = socket.socket(); s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]; s.close()
 pre = $C_AS
-p = subprocess.Popen(pre + ['$S', 'dashboard', '--no-open', '--port', str(port)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=CENV)
+import re
+run_dir = '$C/run'
+os.makedirs(run_dir, mode=0o700, exist_ok=True)
+if pre:
+    os.chown(run_dir, 65534, 65534)
+p = subprocess.Popen(pre + ['$S', 'dashboard', '--no-open', '--port', str(port)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                     env=dict(CENV, XDG_RUNTIME_DIR=run_dir))
 try:
-    url = ''
+    link = ''
     for _ in range(50):
         line = p.stdout.readline()
-        if '#token=' in line:
-            url = line; break
-    token = url.split('#token=')[1].split()[0]
+        if line.startswith('  Link file '):
+            link = line.split()[2]; break
+    code = re.search(r'#code=([0-9a-f]{32})', open(link).read()).group(1)
+    r = subprocess.run(pre + ['curl', '-sS', '--max-time', '5', '-X', 'POST', '-H', 'Origin: http://127.0.0.1:%d' % port,
+                              '-H', 'Sec-Fetch-Site: same-origin', '-H', 'Sec-Fetch-Mode: cors', '-H', 'Sec-Fetch-Dest: empty',
+                              '-H', 'Content-Type: application/json', '--data', json.dumps({'code': code}),
+                              'http://127.0.0.1:%d/api/session' % port], capture_output=True, text=True)
+    token = json.loads(r.stdout)['session']
     def get(path):
-        req = urllib.request.Request('http://127.0.0.1:%d%s' % (port, path), headers={'X-StockFW-Token': token})
-        return json.loads(urllib.request.urlopen(req, timeout=5).read())
+        # As the dashboard's own account: it reads no other (15.3.1).
+        r = subprocess.run(pre + ['curl', '-sS', '--max-time', '5', '-H', 'X-StockFW-Session: ' + token,
+                                  'http://127.0.0.1:%d%s' % (port, path)], capture_output=True, text=True)
+        return json.loads(r.stdout)
     d = get('/api/summary')
     assert d['monitoring'] is True and d['root'] is False and 'readable without root' in d['monitor_note'], d
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S+00:00')
@@ -2170,8 +2238,9 @@ check "  ...and NAME, SYNOPSIS, EXIT STATUS, ENVIRONMENT, FILES and EXAMPLES" \
   bash -c "for s in NAME SYNOPSIS '\"EXIT STATUS\"' ENVIRONMENT FILES EXAMPLES; do grep -qx \".SH \$s\" '$E/stockfw.1' || exit 1; done"
 check "  ...with the exit codes 0 1 2 3 5 6 7 and no 4" \
   bash -c "[ \"\$(sed -n '/^\\.SH \"EXIT STATUS\"/,/^\\.SH ENV/p' '$E/stockfw.1' | grep -A1 '^\\.TP' | grep '^\\.B' | tr -d '.B \n')\" = 0123567 ]"
+# (STOCKFW_TEST_* are read only by the stockfw-dash-test build.)
 check "  ...names every STOCKFW_ variable src/cli reads" \
-  bash -c "for v in \$(grep -oh 'getenv (\"STOCKFW_[A-Z_]*' src/cli/*.c | sed 's/.*\"//' | sort -u); do grep -q \"^\\.B \$v\\\$\" '$E/stockfw.1' || { echo \"missing \$v\"; exit 1; }; done"
+  bash -c "for v in \$(grep -oh 'getenv (\"STOCKFW_[A-Z_]*' src/cli/*.c | sed 's/.*\"//' | grep -v '^STOCKFW_TEST_' | sort -u); do grep -q \"^\\.B \$v\\\$\" '$E/stockfw.1' || { echo \"missing \$v\"; exit 1; }; done"
 check "  ...is the page the build wrote" cmp -s "$E/stockfw.1" "$BUILD/stockfw.1"
 check "  ...SEE ALSO names no StockFW(1) page (there is none)" \
   bash -c "! grep -q '^\\.BR StockFW' '$E/stockfw.1' && grep -q '^\\.BR nft (8),' '$E/stockfw.1'"
