@@ -8,26 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* sshd's listening ports, from the listening sockets and their owners
- * (fs-netparse, the `listening' work).  Declared here as well so this
- * file builds before that lands; the two declarations are the same. */
-GArray *fs_hostnet_ssh_listen_ports (void);
-
-#if defined __GNUC__ && !defined G_OS_WIN32
-/* A stand-in until the real one is linked: port 22 only, which is what
- * fs_hostnet_read() watches today.  Weak, so the real definition wins
- * as soon as it exists; remove this when it does. */
-__attribute__ ((weak)) GArray *
-fs_hostnet_ssh_listen_ports (void)
-{
-	GArray *ports = g_array_new (FALSE, FALSE, sizeof (guint16));
-	guint16 ssh = 22;
-
-	g_array_append_val (ports, ssh);
-	return ports;
-}
-#endif
-
 static void
 pair_free (FsLockoutPair *pair)
 {

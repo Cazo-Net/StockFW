@@ -1173,6 +1173,23 @@ before=$(snap)
 "$S" apply < /dev/null > "$B/sudo.out" 2>&1; rc=$?
 t "lockout under sudo: a peer in the TCP table, no SSH_CONNECTION: refused (rc $rc)" bash -c "[ $rc -eq 1 ] && [ '$(snap)' = '$before' ] && grep -q 'from 10.0.0.5 to port 22' '$B/sudo.out'"
 kill "$peer" 2> /dev/null; wait "$peer" 2> /dev/null
+# sshd on port 2222 under sudo (master plan, PR 1): the port comes from
+# the listener's owner (fs_hostnet_ssh_listen_ports, 15.2.4), the peer
+# from the TCP table.  The SSH row allows port 22 only, from the LAN.
+python3 -I -c '
+import ctypes, socket, time
+ctypes.CDLL(None).prctl(15, b"sshd", 0, 0, 0)
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("10.0.0.1", 2222)); s.listen()
+c = socket.socket(); c.bind(("10.0.0.5", 0)); c.connect(("10.0.0.1", 2222)); a, _ = s.accept()
+print("up", flush=True); time.sleep(30)' > "$B/sshd2222.out" &
+peer=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q up "$B/sshd2222.out" 2>/dev/null && break; sleep 0.2; done
+"$S" -q policy add outbound-deny-to 198.51.100.7 2> /dev/null
+before=$(snap)
+"$S" apply < /dev/null > "$B/sudo2222.out" 2>&1; rc=$?
+t "lockout under sudo, sshd on 2222: refused (rc $rc), the firewall untouched" bash -c "[ $rc -eq 1 ] && [ '$(snap)' = '$before' ] && grep -q 'from 10.0.0.5 to port 2222' '$B/sudo2222.out'"
+kill "$peer" 2> /dev/null; wait "$peer" 2> /dev/null
 exit "$f"
 LIVE
   unshare -n bash "$B/live.sh" "$S" "$B" > "$B/live.log" 2>&1
@@ -1302,15 +1319,17 @@ e = json.loads(line)
 assert first['action'] == 'sentinel auto-block', first
 assert e['action'] == 'firewall stopped' and e['origin'] == 'cli' and e['epoch'] == datetime.datetime(2026, 11, 3, 10, tzinfo=datetime.timezone.utc).timestamp(), e"
 if [ "$(id -u)" = 0 ] && command -v unshare > /dev/null; then
-  # A real apply, in a private network namespace: the newest entry is
-  # that apply, from cli.
-  check "audit: after a real apply (netns), the last entry is an apply from cli" c_py "
+  # A real apply, in a private network namespace: the newest apply entry
+  # is that apply, from cli.  The firewall was stopped there, so the gate
+  # applies the whole policy and says why (15.2.2, A1); the blocklists may
+  # follow it with an intel-apply line of their own, hence --action policy.
+  check "audit: after a real apply (netns), the newest apply entry is from cli" c_py "
 env = {k: v for k, v in CENV.items() if k != 'STOCKFW_APPLIED_FILE'}
 env.update(STOCKFW_AUDIT_FILE='$C/netns-audit.log', STOCKFW_RULES_DIR='$C/netns-rules')
-r = subprocess.run(['unshare', '-n', 'sh', '-c', '\"\$0\" policy add inbound-allow-service SSH 22 Anyone >/dev/null && \"\$0\" apply >/dev/null 2>&1 && \"\$0\" --json audit -n 1', '$S'], capture_output=True, text=True, env=env, timeout=60)
+r = subprocess.run(['unshare', '-n', 'sh', '-c', '\"\$0\" policy add inbound-allow-service SSH 22 Anyone >/dev/null && \"\$0\" apply >/dev/null 2>&1 && \"\$0\" --json audit --action policy -n 1', '$S'], capture_output=True, text=True, env=env, timeout=60)
 d = json.loads(r.stdout)
 e = d['entries'][-1]
-assert e['action'] == 'policy applied' and e['origin'] == 'cli' and e['detail'].startswith('full | +1 added'), d"
+assert e['action'] == 'policy applied' and e['origin'] == 'cli' and e['detail'].startswith('full (firewall was stopped) | +1 added'), d"
 fi
 
 # status: the journal fixture holds the saved rules -> live.
