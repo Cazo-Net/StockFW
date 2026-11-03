@@ -1,7 +1,8 @@
 # StockFW continuous integration: build and test on Linux and on Windows
 # (MSYS2 UCRT64, the toolchain the README documents), and keep the
-# Windows installer each run produces so a build can be tried without
-# setting MSYS2 up first.
+# Windows installer and the Linux tarball each run produces, so a build
+# can be tried without setting anything up first.  RELEASING.md takes
+# the release assets from the run on main of the tagged commit.
 #
 # It runs for every pull request (on the pull request merged into its
 # base, so what is tested is what merging would give), for pushes to
@@ -49,7 +50,8 @@ jobs:
             iptables nftables xvfb xauth \
             xdotool stalonetray desktop-file-utils \
             liblzma-dev libssl-dev xz-utils \
-            python3-location location libloc-database clang libclang-rt-dev
+            python3-location location libloc-database clang libclang-rt-dev \
+            nsis gcc-mingw-w64-x86-64
 
       - name: Build
         run: |
@@ -66,11 +68,19 @@ jobs:
           bash tests/test-cli.sh
           bash tests/test-logstart.sh
           bash tests/test-licence-texts.sh
+          bash tests/test-uaf-analyze.sh
           ninja -C build-linux fs-intel-test fs-netplace-test fs-nftset-load \
-            fs-whatif-test
+            fs-whatif-test fs-feed-test fs-intelset-test fs-fetch-test \
+            fs-hostnet-test fs-backend-probe
           ./build-linux/fs-intel-test
           ./build-linux/fs-netplace-test
           ./build-linux/fs-whatif-test
+          ./build-linux/fs-feed-test
+          ./build-linux/fs-intelset-test
+          ./build-linux/fs-fetch-test golden
+          # As the runner's user here; the root step below runs it again
+          # for its live part.
+          ./build-linux/fs-hostnet-test
 
       - name: Location database reader (libloc, IPFire's file, fuzzer)
         working-directory: port
@@ -94,7 +104,7 @@ jobs:
                   fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
                   fs-overview-place-smoke
                   fs-startup-smoke fs-traymenu-smoke fs-session-smoke
-                  fs-help-smoke"
+                  fs-help-smoke fs-intelview-smoke"
           ninja -C build-linux $smokes
           for t in $smokes; do
             echo "== $t"
@@ -134,16 +144,65 @@ jobs:
             fi
             return "$rc"
           }
+          # The threat-intel drivers run some checks as nobody, which
+          # must be able to reach them: ubuntu-24.04 makes home
+          # directories 0750, so every directory above the checkout gets
+          # o+x (search only, nothing becomes readable).
+          ninja -C build-linux fs-nftset-load fs-intelset-driver \
+            fs-intel-backend-driver fs-intel-e2e-driver stockfw-intel-test \
+            fs-fetch-test fs-hostnet-test
+          d="$PWD"
+          while [ "$d" != / ]; do sudo chmod o+x "$d"; d="$(dirname "$d")"; done
           strict tests/test-apply-linux.sh
           strict tests/test-apply-dual.sh
           strict tests/test-nftset.sh
           strict tests/test-whatif-live.sh
+          strict tests/test-logstart-events.sh
+          strict tests/test-logstart-kmsg.sh
+          # 1.0.7 threat intel and countries: the nft sets, the Linux
+          # backend's slots, the engine end to end with real downloads
+          # from a local HTTPS server, `stockfw intel', and the
+          # downloader (curl as nobody), each in private namespaces.
+          strict tests/test-intelset.sh
+          strict tests/test-intel-backend.sh
+          strict tests/test-intel-e2e.sh
+          strict tests/test-intel-cli.sh
+          strict tests/test-fetch.sh
+          sudo ./build-linux/fs-hostnet-test
           # The boot unit and `stockfw start' as the unit runs it; the
           # Linux installer in a private mount namespace; start at
           # sign-in written as root on a user's behalf.
           strict tests/test-boot-start.sh
           strict tests/test-linux-install.sh
           strict tests/test-autostart.sh
+
+      # The release tarball: its own Release build (the tests above ran
+      # on the default RelWithDebInfo one), packaged and stripped by the
+      # packager, then checked as a user gets it -- install.sh runnable
+      # as ./install.sh, the version, the changelog, the licence list.
+      # nsis and gcc-mingw-w64 above let test-release.sh compile
+      # StockFW.nsi and the version resource here as well (windres needs
+      # the MinGW preprocessor and windows.h, not binutils alone).
+      - name: Build and check the Linux tarball
+        id: tarball
+        working-directory: port
+        run: |
+          export STOCKFW_BUILD_DIR="$PWD/build-release"
+          bash tools/build-linux.sh
+          bash installer/linux/build_installer_linux.sh
+          STOCKFW_REQUIRE_PACKAGE=1 bash tests/test-release.sh
+          version="$(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9][0-9.]*\).*/\1/p' CMakeLists.txt | head -n 1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the Linux tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockFW-${{ steps.tarball.outputs.version }}-linux-x86_64
+          path: |
+            port/installer/linux/dist/StockFW-*-linux-x86_64.tar.gz
+            port/installer/linux/dist/StockFW-*-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
 
   windows:
     name: Windows build, tests and installer

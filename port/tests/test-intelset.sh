@@ -41,7 +41,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PORT="$(dirname "$HERE")"
-DRV="${STOCKFW_INTELSET_DRIVER:-$PORT/build-linux/fs-intelset-driver}"
+DRV="${STOCKFW_INTELSET_DRIVER:-${STOCKFW_BUILD:-$PORT/build-linux}/fs-intelset-driver}"
 
 if [ "${STOCKFW_IN_NETNS:-}" != 1 ]; then
   if [ "$(id -u)" != 0 ]; then

@@ -62,21 +62,25 @@ sed -n '/^# 6\. Create LICENSE.txt/,/^done$/p' "$PORT_DIR/installer/build_instal
 	> "$SCRATCH/nsis-step.sh"
 grep -q 'cat > "$STAGE_DIR/LICENSE.txt"' "$SCRATCH/nsis-step.sh"
 check $? "the NSIS licence step was found in build_installer.sh"
-( PORT_DIR="$PORT_DIR" STAGE_DIR="$STAGE_DIR"; . "$SCRATCH/nsis-step.sh" ) > /dev/null
+( PORT_DIR="$PORT_DIR" STAGE_DIR="$STAGE_DIR" VERSION="9.8.7"; . "$SCRATCH/nsis-step.sh" ) > /dev/null
 check_staged "$STAGE_DIR/LICENSE.txt" "Windows installer"
+grep -qx 'Version 9.8.7' "$STAGE_DIR/LICENSE.txt"
+check $? "Windows installer: LICENSE.txt names the version it is built for"
 grep -q 'MUI_PAGE_LICENSE.*stage\\LICENSE.txt' "$PORT_DIR/installer/nsis/StockFW.nsi"
 check $? "the NSIS licence page shows that staged file"
 
 # --- Linux: the licence lines of build_installer_linux.sh.
 STAGE="$SCRATCH/linux"
 mkdir -p "$STAGE"
-sed -n '/^cp "\$LINUX_DIR\/LICENSE.txt"/,/^done$/p' \
+sed -n '/^sed "s\/@VERSION@\/\$VERSION\/" "\$LINUX_DIR\/LICENSE.txt"/,/^done$/p' \
 	"$PORT_DIR/installer/linux/build_installer_linux.sh" > "$SCRATCH/linux-step.sh"
 grep -q 'LICENSE.txt' "$SCRATCH/linux-step.sh"
 check $? "the Linux licence step was found in build_installer_linux.sh"
-( LINUX_DIR="$PORT_DIR/installer/linux" PORT_DIR_ROOT="$ROOT" STAGE="$STAGE"; \
+( LINUX_DIR="$PORT_DIR/installer/linux" PORT_DIR_ROOT="$ROOT" STAGE="$STAGE" VERSION="9.8.7"; \
   . "$SCRATCH/linux-step.sh" ) > /dev/null
 check_staged "$STAGE/LICENSE.txt" "Linux installer"
+grep -qx 'Version 9.8.7' "$STAGE/LICENSE.txt"
+check $? "Linux installer: LICENSE.txt names the version it is built for"
 
 ! grep -Eqi 'GPL-?3|GPLv3|version 3 of the License' "$PORT_DIR/installer/linux/README.md"
 check $? "the Linux installer README claims no GPL 3"

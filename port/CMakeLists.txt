@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(stockfw
-        VERSION 1.0.6
+        VERSION 1.0.7
         DESCRIPTION "Firewall configuration tool (Windows + Linux port)"
         LANGUAGES C)
 
@@ -72,6 +72,7 @@ add_library(fs-core STATIC
   src/core/fs-geodb.c
   src/core/fs-intelwin.c
   src/core/fs-winstore.c
+  src/core/fs-toolpath.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 target_link_libraries(fs-core PUBLIC PkgConfig::GTK3 PkgConfig::GEODB)
@@ -124,9 +125,11 @@ if(FS_PLATFORM STREQUAL "windows")
   set(FS_BACKEND_LIBS ole32 oleaut32 iphlpapi ws2_32 wintrust crypt32)
 endif()
 
-# Standalone build of the backend alone, for quick compile checks.
+# Standalone build of the backend alone, for quick compile checks
+# (`ninja fs-backend-probe').  An object library: the backend has no
+# main(), so an executable of it could never link.
 if(FS_BACKEND_SOURCES)
-  add_executable(fs-backend-probe EXCLUDE_FROM_ALL ${FS_BACKEND_SOURCES})
+  add_library(fs-backend-probe OBJECT EXCLUDE_FROM_ALL ${FS_BACKEND_SOURCES})
   target_link_libraries(fs-backend-probe PRIVATE fs-core)
 endif()
 
@@ -520,8 +523,15 @@ if(WIN32)
                         ${FS_BACKEND_LIBS})
 endif()
 # Driver for tests/test-nftset.sh (real nft in a network namespace).
-add_executable(fs-nftset-load EXCLUDE_FROM_ALL tests/nftset-load.c)
+# The test drivers that put a fake nft or iptables tool first on PATH
+# carry their own copy of fs-toolpath.c compiled with
+# FS_TOOLPATH_TESTING: the only build in which root searches PATH.
+# Release builds take root's tools from the system directories only.
+set(FS_TOOLPATH_TEST_SOURCE src/core/fs-toolpath.c)
+add_executable(fs-nftset-load EXCLUDE_FROM_ALL tests/nftset-load.c
+               ${FS_TOOLPATH_TEST_SOURCE})
 target_link_libraries(fs-nftset-load PRIVATE fs-core-nogui)
+target_compile_definitions(fs-nftset-load PRIVATE FS_TOOLPATH_TESTING=1)
 # Where this computer is connected: the Overview's words for it and the
 # "profile in use is off" judgement (test-netplace.c).  GLib only.
 add_executable(fs-netplace-test EXCLUDE_FROM_ALL tests/test-netplace.c)
@@ -612,15 +622,17 @@ if(FS_BACKEND_LIBS)
 endif()
 
 # ---------------------------------------- 1.0.7 threat intel, round 1
-# Design: docs/1.0.7-threat-intel-design.md (revision 2).  Every target
+# Design: docs/design/1.0.7-threat-intel-design.md (revision 2).  Every target
 # below is a test; `ninja <name>' builds it, the README says how to run.
 #
 # The nftables rendering (pure) and a driver for the live namespace
 # test tests/test-intelset.sh.
 add_executable(fs-intelset-test EXCLUDE_FROM_ALL tests/test-intelset.c)
 target_link_libraries(fs-intelset-test PRIVATE fs-core-nogui)
-add_executable(fs-intelset-driver EXCLUDE_FROM_ALL tests/intelset-driver.c)
+add_executable(fs-intelset-driver EXCLUDE_FROM_ALL tests/intelset-driver.c
+               ${FS_TOOLPATH_TEST_SOURCE})
 target_link_libraries(fs-intelset-driver PRIVATE fs-core-nogui)
+target_compile_definitions(fs-intelset-driver PRIVATE FS_TOOLPATH_TESTING=1)
 # Feeds: catalog, formats, guards, the update judge (pure).
 add_executable(fs-feed-test EXCLUDE_FROM_ALL tests/test-feed.c)
 target_link_libraries(fs-feed-test PRIVATE fs-core-nogui)
@@ -647,16 +659,19 @@ if(FS_PLATFORM STREQUAL "linux")
   add_executable(fs-intel-backend-driver EXCLUDE_FROM_ALL
     tests/intel-backend-driver.c
     src/platform/linux/fs-backend-linux.c
+    ${FS_TOOLPATH_TEST_SOURCE}
   )
   target_link_libraries(fs-intel-backend-driver PRIVATE fs-core-nogui)
   target_compile_definitions(fs-intel-backend-driver PRIVATE
-                             FS_BACKEND_TESTING=1)
+                             FS_BACKEND_TESTING=1
+                             FS_TOOLPATH_TESTING=1)
   # The engine end to end (tests/test-intel-e2e.sh): the default
   # downloader, the real store, this computer read live and the release
   # backend.  Its own copy of fs-fetch.c is compiled with
   # FS_FETCH_TESTING only so $STOCKFW_TEST_CACERT can name the test
-  # server's CA (the fs-fetch-test arrangement); the backend copy has no
-  # test hook.
+  # server's CA (the fs-fetch-test arrangement), and fs-toolpath.c
+  # with FS_TOOLPATH_TESTING so its fake nft on PATH is used; the
+  # backend copy has no test hook.
   # Its own fs-geodb.c too, with FS_GEODB_TESTING: the location
   # database the test writes is signed with a key made at run time.
   add_executable(fs-intel-e2e-driver EXCLUDE_FROM_ALL
@@ -664,11 +679,13 @@ if(FS_PLATFORM STREQUAL "linux")
     src/core/fs-fetch.c
     src/core/fs-geodb.c
     src/platform/linux/fs-backend-linux.c
+    ${FS_TOOLPATH_TEST_SOURCE}
   )
   target_include_directories(fs-intel-e2e-driver PRIVATE tests)
   target_link_libraries(fs-intel-e2e-driver PRIVATE fs-core-nogui)
   target_compile_definitions(fs-intel-e2e-driver PRIVATE
                              FS_FETCH_TESTING=1
+                             FS_TOOLPATH_TESTING=1
                              FS_GEODB_TESTING=1
                              FS_VERSION="${PROJECT_VERSION}")
   # `stockfw intel' end to end (tests/test-intel-cli.sh): the real CLI
@@ -676,7 +693,9 @@ if(FS_PLATFORM STREQUAL "linux")
   # FS_FETCH_TESTING so $STOCKFW_TEST_CACERT can name the test server's
   # CA (the fs-intel-e2e-driver arrangement), and of fs-geodb.c compiled
   # with FS_GEODB_TESTING so $STOCKFW_TEST_GEODB_KEY can name the key
-  # the test databases (tests/geodb) are signed with.  Never installed:
+  # the test databases (tests/geodb) are signed with, and of
+  # fs-toolpath.c compiled with FS_TOOLPATH_TESTING so a slowed nft
+  # first on PATH is the one run as root.  Never installed:
   # the `stockfw' that ships has no test hook.
   add_executable(stockfw-intel-test EXCLUDE_FROM_ALL
     src/cli/fs-cli-main.c
@@ -685,6 +704,7 @@ if(FS_PLATFORM STREQUAL "linux")
     src/cli/fs-dashboard.c
     src/core/fs-fetch.c
     src/core/fs-geodb.c
+    ${FS_TOOLPATH_TEST_SOURCE}
     ${FS_BACKEND_SOURCES}
   )
   target_include_directories(stockfw-intel-test PRIVATE
@@ -693,6 +713,7 @@ if(FS_PLATFORM STREQUAL "linux")
                         PkgConfig::GIO)
   target_compile_definitions(stockfw-intel-test PRIVATE
                              FS_FETCH_TESTING=1
+                             FS_TOOLPATH_TESTING=1
                              FS_GEODB_TESTING=1
                              FS_VERSION="${PROJECT_VERSION}")
 endif()

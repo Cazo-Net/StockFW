@@ -439,12 +439,15 @@ fs_instance_release (void)
 		listen_source = 0;
 	}
 	if (clients != NULL) {
-		while (clients->len > 0) {
-			Client *c = g_ptr_array_index (clients, 0);
+		/* Detach the list first: every client is freed exactly once,
+		 * and the use-after-free sweep (tests/test-uaf-all.sh), which
+		 * cannot tell one array slot from the next, sees that too. */
+		GPtrArray *old = clients;
 
-			g_ptr_array_remove_index_fast (clients, 0);
-			client_free (c);
-		}
+		clients = g_ptr_array_new ();
+		g_ptr_array_foreach (old, (GFunc) (void (*) (void)) client_free,
+		                     NULL);
+		g_ptr_array_free (old, TRUE);
 	}
 	if (listen_fd >= 0) {
 		close (listen_fd);

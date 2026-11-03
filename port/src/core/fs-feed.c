@@ -1,7 +1,7 @@
 /*---[ fs-feed.c ]-------------------------------------------------------
  * Threat-intel feeds: the catalog, the three formats, the parse guards,
  * the URL rule and the update judge.  See fs-feed.h; the design is
- * docs/1.0.7-threat-intel-design.md, section 4.
+ * docs/design/1.0.7-threat-intel-design.md, section 4.
  *
  * A feed body is bytes from the internet, so every line takes the same
  * path: split, classified by its format, parsed strictly (fs_range_parse,

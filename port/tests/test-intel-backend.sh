@@ -45,8 +45,8 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PORT="$(dirname "$HERE")"
-DRV="${STOCKFW_INTEL_BACKEND_DRIVER:-$PORT/build-linux/fs-intel-backend-driver}"
-LOADER="${STOCKFW_NFTSET_LOAD:-$PORT/build-linux/fs-nftset-load}"
+DRV="${STOCKFW_INTEL_BACKEND_DRIVER:-${STOCKFW_BUILD:-$PORT/build-linux}/fs-intel-backend-driver}"
+LOADER="${STOCKFW_NFTSET_LOAD:-${STOCKFW_BUILD:-$PORT/build-linux}/fs-nftset-load}"
 
 if [ "${STOCKFW_IN_NETNS:-}" != 1 ]; then
   if [ "$(id -u)" != 0 ]; then

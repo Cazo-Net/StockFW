@@ -40,11 +40,20 @@
 #include <lzma.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef G_OS_WIN32
+#include <windows.h>
+#include <aclapi.h>
+#include <sddl.h>
+#endif
+#ifndef G_OS_WIN32
+#include <unistd.h>
+#endif
 
 #include "core/fs-backend.h"
 #include "core/fs-feed.h"
 #include "core/fs-geodb.h"
 #include "core/fs-intel.h"
+#include "core/fs-winstore.h"
 #include "core/fs-intelset.h"
 #include "core/fs-netparse.h"
 #include "core/fs-prefs.h"
@@ -507,8 +516,63 @@ rm_rf (const gchar *path)
 	g_rmdir (path);
 }
 
+#ifdef G_OS_WIN32
+/* Gives `dir' a protected access list: SYSTEM, Administrators and this
+ * account, nobody else.  A new folder inherits its parent's list, and
+ * on the CI runner (D:\a, under a drive root that lets Users create
+ * folders and files) that lets Users change it, which the engine
+ * rightly refuses as a store parent (design 11.5). */
+static gboolean
+protect_dir (const gchar *dir)
+{
+	HANDLE token = NULL;
+	DWORD len = 0;
+	TOKEN_USER *tu = NULL;
+	LPSTR me = NULL;
+	gchar *sddl = NULL;
+	gunichar2 *w = NULL;
+	PSECURITY_DESCRIPTOR sd = NULL;
+	PACL dacl = NULL;
+	BOOL present = FALSE, defaulted = FALSE;
+	gboolean ok = FALSE;
+
+	if (!OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token))
+		return FALSE;
+	GetTokenInformation (token, TokenUser, NULL, 0, &len);
+	tu = g_malloc0 (len ? len : 1);
+	if (len != 0 &&
+	    GetTokenInformation (token, TokenUser, tu, len, &len) &&
+	    ConvertSidToStringSidA (tu->User.Sid, &me)) {
+		sddl = g_strdup_printf ("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+		                        "(A;OICI;FA;;;%s)", me);
+		w = g_utf8_to_utf16 (dir, -1, NULL, NULL, NULL);
+		if (w != NULL &&
+		    ConvertStringSecurityDescriptorToSecurityDescriptorA (
+			    sddl, SDDL_REVISION_1, &sd, NULL) &&
+		    GetSecurityDescriptorDacl (sd, &present, &dacl,
+		                               &defaulted) && present &&
+		    SetNamedSecurityInfoW ((LPWSTR) w, SE_FILE_OBJECT,
+		                           DACL_SECURITY_INFORMATION |
+		                           PROTECTED_DACL_SECURITY_INFORMATION,
+		                           NULL, NULL, dacl, NULL)
+		    == ERROR_SUCCESS)
+			ok = TRUE;
+	}
+	if (sd != NULL)
+		LocalFree (sd);
+	if (me != NULL)
+		LocalFree (me);
+	g_free (w);
+	g_free (sddl);
+	g_free (tu);
+	CloseHandle (token);
+	return ok;
+}
+#endif
+
 /* A scratch directory the engine accepts as a store parent (StrictModes:
- * no parent writable by others, so not under /tmp). */
+ * no parent writable by others, so not under /tmp; on Windows, one with
+ * its own protected access list). */
 static gboolean
 make_base (const gchar *argv0)
 {
@@ -531,6 +595,13 @@ make_base (const gchar *argv0)
 			g_free (tmpl);
 			continue;
 		}
+#ifdef G_OS_WIN32
+		if (!protect_dir (dir)) {
+			rm_rf (dir);
+			g_free (dir);
+			continue;
+		}
+#endif
 		probe = g_build_filename (dir, "probe", NULL);
 		g_setenv ("STOCKFW_INTEL_DIR", probe, TRUE);
 		got = fs_intel_dir (NULL);
@@ -1036,13 +1107,13 @@ check_geo (void)
 	       strstr (last_dialog_text, "once a day") != NULL &&
 	       strstr (last_dialog_text, "public IP address") != NULL &&
 	       strstr (last_dialog_text, "CC BY-SA 4.0") != NULL &&
-	       strstr (last_dialog_text, "has not confirmed") != NULL &&
+	       strstr (last_dialog_text, "IPFire has confirmed") != NULL &&
 	       strstr (last_dialog_text, "where an address range is "
 	                                 "registered, not where a computer "
 	                                 "is") != NULL &&
 	       strstr (last_dialog_text, "anycast") != NULL,
 	       "geo: turning it on asks first: the host, how often, what it "
-	       "learns, the licence as the file declares it (unconfirmed), "
+	       "learns, the licence as IPFire confirmed it, "
 	       "\"registered in\", anycast");
 	CHECK (geo_fetches == 0 && geo_conf (&on, &rules) && !on &&
 	       !gtk_switch_get_active (GTK_SWITCH (sw)),
@@ -1178,11 +1249,11 @@ check_geo (void)
 	CHECK (strstr (t, "Registered in Netherlands (NL)") != NULL &&
 	       strstr (t, "Stops them connecting to you.") != NULL,
 	       "geo: its row says where the country's ranges are registered "
-	       "and the direction (\"%s\")", t);
+	       "and the direction (\"%s\")", t != NULL ? t : "(null)");
 	CHECK (strstr (t, "1 anycast network, which may block services "
 	                  "elsewhere") != NULL,
 	       "geo: the row says how many anycast networks in words, for "
-	       "the keyboard and screen readers (\"%s\")", t);
+	       "the keyboard and screen readers (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	{
 		AtkObject *a = gtk_widget_get_accessible (
@@ -1248,7 +1319,7 @@ check_geo (void)
 	       strstr (t, "anycast") != NULL &&
 	       strstr (t, attribution) != NULL,
 	       "geo: the lookup names the rule, \"Registered in\", anycast "
-	       "and the licence line (\"%s\")", t);
+	       "and the licence line (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	shot ("11-countries.png");
 
@@ -1409,7 +1480,7 @@ main (int argc, char **argv)
 	CHECK (!fs_intel_store_exists (),
 	       "opening the page creates no store (Stop and Start stay no-ops)");
 	t = feed_text ("status", "spamhaus-drop");
-	CHECK (strcmp (t, "Off.") == 0, "a feed that is off says so (\"%s\")", t);
+	CHECK (strcmp (t, "Off.") == 0, "a feed that is off says so (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	{
 		GtkWidget *row = find (page, "feed-row-firehol-level1");
@@ -1453,7 +1524,7 @@ main (int argc, char **argv)
 	       "Cancel at the consent dialog: nothing downloaded, nothing "
 	       "applied, no store");
 	t = feed_text ("status", "spamhaus-drop");
-	CHECK (strcmp (t, "Off.") == 0, "and the feed is still off (\"%s\")", t);
+	CHECK (strcmp (t, "Off.") == 0, "and the feed is still off (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 
 	next_response = GTK_RESPONSE_ACCEPT;
@@ -1476,14 +1547,14 @@ main (int argc, char **argv)
 	       text_of ("intel-state-title"));
 	t = feed_text ("status", "spamhaus-drop");
 	CHECK (strcmp (t, "Up to date and in force.") == 0,
-	       "the feed: \"Up to date and in force.\" (\"%s\")", t);
+	       "the feed: \"Up to date and in force.\" (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	t = feed_text ("facts", "spamhaus-drop");
 	CHECK (strstr (t, "10 entries") && strstr (t, "updated just now") &&
 	       strstr (t, "next update in 24 h") &&
 	       strstr (t, "Nothing blocked yet"),
 	       "its facts: entries, last and next update, nothing blocked "
-	       "(\"%s\")", t);
+	       "(\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	CHECK (!visible ("intel-progress"), "the progress line goes when done");
 
@@ -1492,7 +1563,7 @@ main (int argc, char **argv)
 	refresh ();
 	t = feed_text ("facts", "spamhaus-drop");
 	CHECK (strstr (t, "Blocked 1,234 packets since") != NULL,
-	       "blocked counter per feed (\"%s\")", t);
+	       "blocked counter per feed (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	CHECK (strcmp (text_of ("intel-tile-2"), "1,234") == 0 &&
 	       strcmp (text_of ("intel-tile-0"), "1") == 0,
@@ -1529,7 +1600,7 @@ main (int argc, char **argv)
 	click ("intel-update");
 	t = feed_text ("status", "spamhaus-drop");
 	CHECK (strstr (t, "The last update was refused") != NULL,
-	       "a list that shrank to 1 of 10 is refused (\"%s\")", t);
+	       "a list that shrank to 1 of 10 is refused (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	CHECK (visible ("feed-accept-spamhaus-drop") &&
 	       strcmp (gtk_button_get_label (GTK_BUTTON (
@@ -1545,7 +1616,7 @@ main (int argc, char **argv)
 	CHECK (strstr (t, "1 entry") != NULL &&
 	       find (page, "feed-accept-spamhaus-drop") == NULL,
 	       "Accept smaller list lets the copy in, and the button goes "
-	       "(\"%s\")", t);
+	       "(\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	CHECK (kern.apply_calls > calls, "and the smaller list is applied");
 
@@ -1556,7 +1627,7 @@ main (int argc, char **argv)
 	CHECK (strstr (t, "failed") && strstr (t, "Could not resolve host") &&
 	       strstr (t, "is kept and in force") && !strstr (t, "still used"),
 	       "a failed download says so and keeps the copy, in force while "
-	       "it is (\"%s\")", t);
+	       "it is (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	serve ("spamhaus-drop", b10);
 
@@ -1599,7 +1670,7 @@ main (int argc, char **argv)
 	CHECK (strstr (t, "is kept.") && !strstr (t, "in force") &&
 	       !strstr (t, "still used"),
 	       "paused: the failed update's copy is kept, not said to be used "
-	       "(\"%s\")", t);
+	       "(\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	lookup ("45.1.0.9");
 	CHECK (strstr (text_of ("intel-lookup-result"), "Spamhaus DROP (IPv4)") &&
@@ -1667,7 +1738,7 @@ main (int argc, char **argv)
 	       !visible ("intel-message") && strstr (kern.last_sets, "feodo") == NULL &&
 	       strstr (t, "not in force") && strstr (t, "locked"),
 	       "held under the Lock: after a refresh the feodo row says it is "
-	       "not in force, and why (\"%s\")", t);
+	       "not in force, and why (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	shot ("06c-held-feodo-on.png");
 	{
@@ -1678,7 +1749,7 @@ main (int argc, char **argv)
 		CHECK (sum != NULL && strstr (sum, "except 1 list") != NULL &&
 		       strstr (sum, "not applied yet") != NULL,
 		       "held under the Lock: the summary names the list that is "
-		       "on but not in force (\"%s\")", sum);
+		       "on but not in force (\"%s\")", sum != NULL ? sum : "(null)");
 		g_free (sum);
 	}
 	{
@@ -1714,13 +1785,13 @@ main (int argc, char **argv)
 	refresh ();
 	t = feed_text ("status", "feodo");
 	CHECK (strstr (t, "press Apply") != NULL,
-	       "released, not applied yet: \"press Apply\" (\"%s\")", t);
+	       "released, not applied yet: \"press Apply\" (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	click ("intel-apply");
 	t = feed_text ("status", "feodo");
 	CHECK (strstr (kern.last_sets, "feodo") != NULL &&
 	       strstr (t, "in force") && !strstr (t, "not in force"),
-	       "applied: the row says in force (\"%s\")", t);
+	       "applied: the row says in force (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	flip ("feodo", FALSE);
 	CHECK (strstr (kern.last_sets, "feodo") == NULL,
@@ -1800,9 +1871,22 @@ main (int argc, char **argv)
 	/* ---- unknown ---- */
 	kern.unknown = TRUE;
 	refresh ();
-	CHECK (strcmp (text_of ("intel-state-title"), "Unknown") == 0,
-	       "the kernel cannot be read: \"Unknown\" (got \"%s\")",
-	       text_of ("intel-state-title"));
+	/* Root sees "Unknown"; without rights the same unreadable kernel
+	 * is "Needs administrator rights" (fs_intel_state), which is what
+	 * the CI's non-root smoke run sees. */
+	{
+#ifdef G_OS_WIN32
+		gboolean admin = fs_winstore_is_admin ();
+#else
+		gboolean admin = geteuid () == 0;
+#endif
+		const gchar *want = admin ? "Unknown"
+		                          : "Needs administrator rights";
+
+		CHECK (strcmp (text_of ("intel-state-title"), want) == 0,
+		       "the kernel cannot be read: \"%s\" (got \"%s\")",
+		       want, text_of ("intel-state-title"));
+	}
 	shot ("09-unknown.png");
 	kern.unknown = FALSE;
 
@@ -1821,14 +1905,14 @@ main (int argc, char **argv)
 		CHECK (sum != NULL && strstr (sum, "not in force") != NULL &&
 		       strstr (sum, WIN_NOT_IN_FORCE) != NULL,
 		       "windows: the Overview and tray summary says not in "
-		       "force, with the reason (\"%s\")", sum);
+		       "force, with the reason (\"%s\")", sum != NULL ? sum : "(null)");
 		g_free (sum);
 	}
 	t = feed_text ("facts", "spamhaus-drop");
 	CHECK (strstr (t, fs_intel_counts_unavailable (&win_backend)) != NULL &&
 	       strstr (t, "Nothing blocked") == NULL &&
 	       strstr (t, "Blocked ") == NULL,
-	       "windows: no count per feed, the reason instead (\"%s\")", t);
+	       "windows: no count per feed, the reason instead (\"%s\")", t != NULL ? t : "(null)");
 	g_free (t);
 	CHECK (strcmp (text_of ("intel-tile-2"), "n/a") == 0,
 	       "windows: the Blocked tile says n/a, never 0 (\"%s\")",
@@ -1861,7 +1945,7 @@ main (int argc, char **argv)
 		gchar *sum = fs_intelview_summary ();
 
 		CHECK (sum != NULL && strstr (sum, "changed outside") != NULL,
-		       "windows: ... and the summary says so (\"%s\")", sum);
+		       "windows: ... and the summary says so (\"%s\")", sum != NULL ? sum : "(null)");
 		g_free (sum);
 	}
 	kern.live = FS_INTEL_LIVE_PRESENT;
@@ -1873,7 +1957,7 @@ main (int argc, char **argv)
 		gchar *sum = fs_intelview_summary ();
 
 		CHECK (sum != NULL && strstr (sum, "are in force") != NULL,
-		       "windows: ... summary: in force (\"%s\")", sum);
+		       "windows: ... summary: in force (\"%s\")", sum != NULL ? sum : "(null)");
 		g_free (sum);
 	}
 	{
@@ -1922,7 +2006,24 @@ main (int argc, char **argv)
 	refresh ();
 
 	/* ---- countries and networks ---- */
-	check_geo ();
+	/* Country and network blocking is Linux-only in 1.0.7: on Windows
+	 * the card says so and offers no control, and that is what is
+	 * checked there; the full card is checked where it exists. */
+	if (fs_intel_geo_supported ()) {
+		check_geo ();
+	} else {
+		CHECK (visible ("intel-geo") && visible ("intel-geo-unsupported") &&
+		       strcmp (text_of ("intel-geo-unsupported"),
+		               fs_intel_geo_unsupported_text ()) == 0 &&
+		       !visible ("intel-geo-controls") &&
+		       !gtk_widget_is_visible (find (page, "intel-geo-switch")) &&
+		       !gtk_widget_is_visible (find (page, "intel-geo-add")),
+		       "geo: this platform shows the unsupported sentence "
+		       "(\"%s\") and no control",
+		       text_of ("intel-geo-unsupported"));
+		printf ("SKIP: the countries and networks card's controls "
+		        "(Linux only in this release)\n");
+	}
 
 	/* ---- unsupported (no intel slots) ---- */
 	fs_intelview_set_backend (&bare_backend);

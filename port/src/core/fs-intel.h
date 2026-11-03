@@ -1,7 +1,7 @@
 /*---[ fs-intel.h ]------------------------------------------------------
  * The threat-intel engine (1.0.7): configuration, the store, updates,
  * building the rule set, the apply gate, the lifecycle, the honest
- * state, and lookups.  Design: docs/1.0.7-threat-intel-design.md,
+ * state, and lookups.  Design: docs/design/1.0.7-threat-intel-design.md,
  * section 6 (and 4, 5, 7 for the pieces it drives).
  *
  *   config   which feeds and local lists are on, in which direction,

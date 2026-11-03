@@ -57,9 +57,12 @@ fi
 # path, so this analysis must too, or src/ui/fs-app.c could never be
 # examined here.
 BUILD_INC=""
-if [ -d "$PORT/build" ]; then
-	BUILD_INC="-I $PORT/build"
-fi
+for b in "${STOCKFW_BUILD:-}" "$PORT/build" "$PORT/build-linux"; do
+	if [ -n "$b" ] && [ -f "$b/fs-theme-css.h" ]; then
+		BUILD_INC="-I $b"
+		break
+	fi
+done
 
 gcc -fanalyzer -Dg_free=free \
 	-Wno-analyzer-malloc-leak \

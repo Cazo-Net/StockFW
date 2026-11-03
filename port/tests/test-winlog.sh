@@ -32,7 +32,12 @@ fi
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
+# FS_TOOLPATH_TESTING: the test build may run a tool from
+# $STOCKFW_TEST_TOOL_DIR (test-winlog.c sets it to its own folder, where
+# the fake wevtutil.exe below sits).  The release build runs netsh,
+# wevtutil and auditpol from System32 only.
 cc "$HERE/test-winlog.c" \
+   -DFS_TOOLPATH_TESTING=1 \
    -I src \
    $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
    -o "$BUILD_DIR/test-winlog" \
@@ -41,8 +46,9 @@ cc "$HERE/test-winlog.c" \
    $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) -lws2_32 -lole32 -loleaut32 -liphlpapi -lwintrust -lcrypt32 -ladvapi32 -lshell32
 
 # The end-to-end test needs a fake wevtutil.exe beside the test
-# binary: CreateProcess searches the process's own directory before
-# System32, so the backend's probe and poll run against canned
+# binary: the test build runs a tool from $STOCKFW_TEST_TOOL_DIR, which
+# test-winlog.c points at its own folder, so the backend's probe and
+# poll run against canned
 # (byte-honest) records without Administrator rights to read the real
 # Security log.
 cc -I "$HERE" "$HERE/fake-wevtutil.c" -o "$BUILD_DIR/wevtutil.exe"

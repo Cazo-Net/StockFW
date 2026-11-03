@@ -54,15 +54,16 @@ test_wording (void)
 	gchar *t = fs_intel_geo_consent_text (c);
 
 	CHECK (strstr (a, "IPFire") != NULL && strstr (a, "CC BY-SA 4.0") &&
-	       strstr (a, "not confirmed") != NULL &&
-	       strstr (a, "commercial") != NULL,
-	       "the attribution names IPFire and the licence, and says it is "
-	       "not confirmed (%s)", a);
+	       strstr (a, "IPFire has confirmed") != NULL &&
+	       strstr (a, "not confirmed") == NULL &&
+	       strstr (a, "same licence") != NULL,
+	       "the attribution names IPFire and the licence, says IPFire "
+	       "confirmed it and what it asks (%s)", a);
 	CHECK (strstr (t, "location.ipfire.org") != NULL &&
 	       strstr (t, "once a day") != NULL &&
 	       strstr (t, "public IP address") != NULL &&
 	       strstr (t, "StockFW/") != NULL &&
-	       strstr (t, "not confirmed") != NULL &&
+	       strstr (t, "IPFire has confirmed") != NULL &&
 	       strstr (t, "registered") != NULL &&
 	       strstr (t, "anycast") != NULL &&
 	       strstr (t, "exception") != NULL,

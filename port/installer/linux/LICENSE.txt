@@ -1,5 +1,5 @@
 StockFW Firewall Configuration Tool
-Version 1.0.6
+Version @VERSION@
 
 Copyright (C) 2024-2026 StockFW Project
 
@@ -22,12 +22,19 @@ Cairo (LGPL v2.1 / MPL v1.1)
 Pango (LGPL v2.1)
 HarfBuzz (MIT)
 gdk-pixbuf (LGPL v2.1)
+liblzma from XZ Utils (BSD Zero Clause License, 0BSD; releases before
+  5.6 are in the public domain) -- unpacks the location database
+OpenSSL libcrypto 3 (Apache License 2.0; the full text is the Apache
+  License 2.0 at the end of this file; copyright The OpenSSL Project
+  Authors) -- verifies the location database signature
 
 These are linked dynamically and provided by your distribution's own
 packages; they are not bundled with this installer.
 
-Linux kernel netfilter / iptables (GPL v2) -- invoked as an external
-program, not linked.
+Linux kernel netfilter / iptables and nftables (GPL v2) -- invoked as
+external programs, not linked.
+curl (curl licence, MIT-style) -- invoked as an external program to
+download threat-intel feeds and the location database, not linked.
 
 ---
 

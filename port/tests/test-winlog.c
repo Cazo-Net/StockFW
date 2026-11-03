@@ -284,7 +284,7 @@ test_poll_async (void)
 /* [ test_e2e_delivery ]
  * End-to-end through every stage the production path uses, without
  * needing Administrator rights: a fake wevtutil.exe sits beside the
- * test binary (CreateProcess finds it before System32) and answers
+ * test binary ($STOCKFW_TEST_TOOL_DIR points there) and answers
  * like a Security log holding the records STOCKFW_FAKE_WEVTUTIL_LOG
  * names ("first last", tests/winevt-fixture.h), honouring the
  * query's EventRecordID>, /c: and /rd:, with NUL padding.  log_start's
@@ -640,6 +640,19 @@ main (int argc, char **argv)
 		Sleep (200);   /* let the released console settle */
 		run_spawn_probe ();
 		return failures ? 1 : 0;
+	}
+
+	/* The fake wevtutil.exe beside this binary stands in for
+	 * System32's: a test build runs a tool from $STOCKFW_TEST_TOOL_DIR
+	 * (fs-toolpath.h); the release build runs System32's only. */
+	{
+		gchar *self = self_exe ();
+		gchar *dir = self != NULL ? g_path_get_dirname (self) : NULL;
+
+		if (dir != NULL)
+			g_setenv ("STOCKFW_TEST_TOOL_DIR", dir, TRUE);
+		g_free (dir);
+		g_free (self);
 	}
 
 	test_spawn_output_capture ();

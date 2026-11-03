@@ -1,6 +1,6 @@
 /*---[ fs-hostnet.c ]----------------------------------------------------
  * What a blocklist must never cut on this computer.  See fs-hostnet.h
- * and docs/1.0.7-threat-intel-design.md, section 6.4.
+ * and docs/design/1.0.7-threat-intel-design.md, section 6.4.
  *
  * Two halves.  The parsers are pure (text in, set out) and build on
  * every platform, so the tests pin them against fixtures modelled on

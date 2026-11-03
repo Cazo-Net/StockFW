@@ -3,11 +3,25 @@
 # Every section reports its own exit code; the script exits non-zero
 # if anything failed.
 #
-#   cd port && bash tests/full-suite.sh
+#   cd port && bash tests/full-suite.sh                 # Windows (MSYS2)
+#   cd port && sudo xvfb-run -a bash tests/full-suite.sh  # Linux
 #
-# Windows (MSYS2/UCRT64): every suite including the UI smokes.
-# The build directory must already exist
-# (cmake -S . -B build -G Ninja).
+# One build directory for every suite: build/ on Windows (MSYS2/UCRT64),
+# build-linux/ on Linux, or $STOCKFW_BUILD on either.  It is configured
+# (cmake -G Ninja) if it does not exist yet, and every target the suites
+# run is built into it first.  STOCKFW_BUILD is exported, so each suite
+# below that reads a build (the CLI, the apply and intel drivers, the
+# installer test, the UI smokes) reads this one.
+#
+# Platform: a suite that belongs to the other platform prints SKIP and
+# passes.  On Linux the live suites (apply, nft, threat intel, fetch,
+# the installer, boot start) need root, and each runs in a private
+# network or mount namespace; as another user they print SKIP.  The UI
+# smokes and test-instance.sh need a display: run under xvfb-run -a.
+# fs-tray-smoke needs a notification area, which a bare X server does
+# not have, so it runs on Windows only (as in CI); STOCKFW_TRAY_SMOKE=1
+# runs it on Linux too, for a desktop session that has one.
+# FUZZ_SECONDS (default 30 here) is how long test-geodb.sh's fuzzer runs.
 
 export PATH="/ucrt64/bin:$PATH"
 
@@ -15,15 +29,34 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 PORT="$(dirname "$HERE")"
 cd "$PORT" || exit 1
 
+if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
+  WINDOWS=1
+  BUILD="${STOCKFW_BUILD:-$PORT/build}"
+  EXE=.exe
+else
+  WINDOWS=0
+  BUILD="${STOCKFW_BUILD:-$PORT/build-linux}"
+  EXE=
+fi
+case "$BUILD" in /*) ;; *) BUILD="$PORT/$BUILD" ;; esac
+export STOCKFW_BUILD="$BUILD"
+export FUZZ_SECONDS="${FUZZ_SECONDS:-30}"
+
 TMP="$(mktemp -d)"
 # A test child can still hold one of the scratch files for a moment;
 # failing to remove the scratch dir must not turn a green run red.
 trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
 fails=0
+verdicts=""
 
 section () {
   echo ""
   echo "############ $1 ############"
+}
+
+verdict () {   # verdict <label> <PASS|FAIL|SKIP>
+  verdicts="$verdicts$2  $1
+"
 }
 
 # The tail a section prints is too short to diagnose a failure on a
@@ -38,105 +71,183 @@ full_output () {   # full_output <label> <what> <exit code> <file>
   echo "----- end of $2 -----"
 }
 
+# A suite that printed SKIP and exited 0 passed without running; the
+# summary says SKIP for it, so a green verdict never hides one.
+judge () {   # judge <label> <exit code> <output file> <what>
+  if [ "$2" -ne 0 ]; then
+    fails=$((fails+1))
+    verdict "$1" FAIL
+    full_output "$1" "$4" "$2" "$3"
+  elif grep -q '^SKIP' "$3" && ! grep -q '^ok:' "$3"; then
+    verdict "$1" SKIP
+  else
+    verdict "$1" PASS
+  fi
+}
+
 run_sh () {   # run_sh <label> <script> [pattern]
-  local label="$1" script="$2" pattern="${3:-PASSED|FAILED|PASSED:|tests run|failure}"
+  local label="$1" script="$2" pattern="${3:-PASSED|FAILED|PASSED:|tests run|failure|SKIP}"
   local rc=0
   section "$label"
   bash "$script" > "$TMP/last-suite.txt" 2>&1 || rc=$?
   grep -E "$pattern" "$TMP/last-suite.txt" | tail -6
   echo "exit=$rc  (ok checks: $(grep -c '^ok:' "$TMP/last-suite.txt"))"
   grep "^FAIL" "$TMP/last-suite.txt" | head -10
-  if [ "$rc" -ne 0 ]; then
-    fails=$((fails+1))
-    full_output "$label" "$script" "$rc" "$TMP/last-suite.txt"
+  judge "$label" "$rc" "$TMP/last-suite.txt" "$script"
+}
+
+run_bin () {   # run_bin <label> <target> [args...]
+  local label="$1" target="$2" rc=0
+  shift 2
+  section "$label"
+  if [ ! -x "$BUILD/$target$EXE" ]; then
+    echo "FAIL: $BUILD/$target$EXE was not built"
+    echo "not built" > "$TMP/last-suite.txt"
+    judge "$label" 1 "$TMP/last-suite.txt" "$target"
+    return
+  fi
+  "$BUILD/$target$EXE" "$@" > "$TMP/last-suite.txt" 2>&1 || rc=$?
+  grep -E "PASSED|FAILED|checks|passed|failed|SKIP" "$TMP/last-suite.txt" | tail -4
+  echo "exit=$rc  (ok checks: $(grep -c '^ok' "$TMP/last-suite.txt"))"
+  grep "^FAIL" "$TMP/last-suite.txt" | head -10
+  judge "$label" "$rc" "$TMP/last-suite.txt" "$target"
+}
+
+linux_only () {   # linux_only <label> <command...>
+  if [ "$WINDOWS" -eq 1 ]; then
+    section "$1"; echo "SKIP: Linux only"; verdict "$1" SKIP
+  else
+    "$2" "$1" "${@:3}"
   fi
 }
+
+windows_only () {
+  if [ "$WINDOWS" -eq 0 ]; then
+    section "$1"; echo "SKIP: Windows only"; verdict "$1" SKIP
+  else
+    "$2" "$1" "${@:3}"
+  fi
+}
+
+# Threat intel on the real Windows Firewall (Round 3): the backend's
+# blocklist rules applied, read back through INetFwRules, cleared.
+# Prints SKIP in a shell that is not elevated, which fails instead when
+# STOCKFW_REQUIRE_WINDOWS_INTEL=1 (the CI sets it).  Rules that cannot
+# be read always fail.  This runs only on the CI's Windows runner, so
+# on a failure its whole output is printed, unfiltered (the details --
+# the rules that differ, an unexpected ACE -- go to stdout with the
+# FAIL lines, indented under them).
+run_intel_windows () {
+  run_bin "$1" fs-intel-windows-test
+}
+
+# ------------------------------------------------------------- the build
+# Unit binaries, Linux drivers for the live suites, the UI smokes,
+# fs-intel-windows-test on Windows, and fs-backend-probe (the backend
+# compiled on its own).
+# fs-intel-test (POSIX modes on the store) and fs-fetch-test (the Linux
+# curl argv, environment and account) are written for Linux; the
+# location database reader runs on both inside test-core.sh.
+UNITS="fs-netplace-test fs-feed-test fs-intelset-test fs-hostnet-test"
+SMOKES="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke
+        fs-theme-smoke fs-trustview-smoke fs-copilot-smoke
+        fs-statusview-smoke fs-activity-smoke fs-overview-place-smoke
+        fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke
+        fs-intelview-smoke"
+if [ "$WINDOWS" -eq 1 ] || [ "${STOCKFW_TRAY_SMOKE:-}" = 1 ]; then
+  SMOKES="$SMOKES fs-tray-smoke"
+fi
+if [ "$WINDOWS" -eq 1 ]; then
+  EXTRA="fs-intel-windows-test"
+else
+  UNITS="$UNITS fs-intel-test fs-fetch-test fs-geodb-test"
+  EXTRA="fs-nftset-load fs-intelset-driver fs-intel-backend-driver
+         fs-intel-e2e-driver stockfw-intel-test"
+fi
+
+section "BUILD ($BUILD)"
+rc=0
+{
+  if [ ! -f "$BUILD/build.ninja" ]; then
+    cmake -S "$PORT" -B "$BUILD" -G Ninja || exit 1
+  fi
+  ninja -C "$BUILD" || exit 1
+  # -k 0: one target that does not build must not hide the others;
+  # each suite that needs it then fails on its own.
+  # shellcheck disable=SC2086
+  ninja -k 0 -C "$BUILD" $UNITS $SMOKES $EXTRA fs-backend-probe
+} > "$TMP/last-ninja.txt" 2>&1 || rc=$?
+echo "build exit=$rc"
+grep -E "error:|FAILED:" "$TMP/last-ninja.txt" | head -10
+judge "BUILD" "$rc" "$TMP/last-ninja.txt" "the build"
 
 run_sh "CORE"        tests/test-core.sh
 run_sh "EVENT STORE + HISTORY" tests/test-eventstore.sh
 run_sh "WINDOWS EVENT LOG READER (fake log, any platform)" tests/test-winevt.sh
 run_sh "P4 ADVERSARIAL" tests/test-adversarial.sh
 run_sh "LOG START"   tests/test-logstart.sh
+# Linux, root: the log reader against a file and against /dev/kmsg.
 run_sh "LOG EVENTS (file)" tests/test-logstart-events.sh
 run_sh "LOG EVENTS (/dev/kmsg)" tests/test-logstart-kmsg.sh
 run_sh "WINLOG + SPAWN PROBE" tests/test-winlog.sh
 run_sh "INSTALLER SPAWN" tests/test-installer-spawn.sh
 run_sh "LICENCE TEXTS (installers match About)" tests/test-licence-texts.sh
-run_sh "STAGED RUNTIME (build/ on its own)" tests/test-staged-runtime.sh "PASSED|FAILED|SKIP"
-run_sh "BACKEND COMPILE (state-windows)" tests/test-state-windows.sh "compiled|PASSED|FAILED|ok:"
+# The release checks and the analyser sweep have run on Linux only so
+# far (CI's Linux job runs test-release.sh on the real tarball).
+linux_only "RELEASE (versions, documents, modes, packages)" run_sh tests/test-release.sh
+run_sh "STAGED RUNTIME (build/ on its own)" tests/test-staged-runtime.sh
+run_sh "BACKEND COMPILE (state-windows)" tests/test-state-windows.sh "compiled|PASSED|FAILED|ok:|SKIP"
 run_sh "UAF ANALYZE" tests/test-uaf-analyze.sh
+linux_only "UAF SWEEP (every source file)" run_sh tests/test-uaf-all.sh
+
+# Unit binaries of 1.0.7 threat intel (fs-hostnet-test reads the IP
+# Helper tables on Windows and the kernel's on Linux).
+run_bin "ADDRESS PLACES (fs-netplace-test)" fs-netplace-test
+run_bin "FEED PARSERS (fs-feed-test)" fs-feed-test
+run_bin "INTEL SET SCRIPT (fs-intelset-test)" fs-intelset-test
+run_bin "WHAT A LIST MUST NEVER CUT (fs-hostnet-test)" fs-hostnet-test
+linux_only "THREAT INTEL ENGINE (fs-intel-test)" run_bin fs-intel-test
+linux_only "DOWNLOADER, PURE PARTS (fs-fetch-test golden)" run_bin fs-fetch-test golden
+windows_only "THREAT INTEL (Windows Firewall rules)" run_intel_windows
+
 run_sh "CLI + DASHBOARD (Linux)" tests/test-cli.sh
 # Linux with a display (xvfb-run); prints SKIP elsewhere.
-run_sh "SINGLE INSTANCE + BACKGROUND (Linux, real binary)" tests/test-instance.sh "PASSED|FAILED|SKIP"
-# Linux only, and only as root; both print SKIP elsewhere.
-run_sh "APPLY (Linux, live iptables)" tests/test-apply-linux.sh "PASSED|FAILED|SKIP"
-run_sh "APPLY DUAL-STACK (Linux, IPv4 + IPv6, private netns)" tests/test-apply-dual.sh "PASSED|FAILED|SKIP"
-run_sh "WHAT-IF vs KERNEL (Linux, private netns)" tests/test-whatif-live.sh "PASSED|FAILED|SKIP"
+run_sh "SINGLE INSTANCE + BACKGROUND (Linux, real binary)" tests/test-instance.sh
+# Linux only, and only as root; each prints SKIP elsewhere.
+run_sh "APPLY (Linux, live iptables)" tests/test-apply-linux.sh
+run_sh "APPLY DUAL-STACK (Linux, IPv4 + IPv6, private netns)" tests/test-apply-dual.sh
+run_sh "WHAT-IF vs KERNEL (Linux, private netns)" tests/test-whatif-live.sh
+run_sh "NFT SETS (Linux, private netns)" tests/test-nftset.sh
+run_sh "INTEL SETS (Linux, nft, private netns)" tests/test-intelset.sh
+run_sh "INTEL BACKEND (Linux, nft + iptables, private netns)" tests/test-intel-backend.sh
+run_sh "INTEL END TO END (Linux, private namespaces)" tests/test-intel-e2e.sh
+run_sh "STOCKFW INTEL CLI (Linux, private namespaces)" tests/test-intel-cli.sh
+run_sh "DOWNLOADER (Linux, curl as nobody, private namespaces)" tests/test-fetch.sh
+linux_only "LOCATION DATABASE vs LIBLOC + FUZZER (Linux)" run_sh tests/test-geodb.sh
 # Start at sign-in (XDG entry; the sudo half as root), the boot unit and
 # `stockfw start' live in a private netns (root), the Linux installer in
 # a private mount namespace (root).
-run_sh "START AT SIGN-IN (Linux, real binary)" tests/test-autostart.sh "PASSED|FAILED|SKIP"
-run_sh "BOOT START (unit + stockfw start, private netns)" tests/test-boot-start.sh "PASSED|FAILED|SKIP"
-run_sh "LINUX INSTALLER (boot unit, private mount ns)" tests/test-linux-install.sh "PASSED|FAILED|SKIP"
+linux_only "START AT SIGN-IN (Linux, real binary)" run_sh tests/test-autostart.sh
+run_sh "BOOT START (unit + stockfw start, private netns)" tests/test-boot-start.sh
+run_sh "LINUX INSTALLER (boot unit, private mount ns)" tests/test-linux-install.sh
 
-# Threat intel on the real Windows Firewall (Round 3): the backend's
-# blocklist rules applied, read back through INetFwRules, cleared.
-# Windows only; prints SKIP in a shell that is not elevated, which
-# fails instead when STOCKFW_REQUIRE_WINDOWS_INTEL=1 (the CI sets it).
-# Rules that cannot be read always fail.
-section "THREAT INTEL (Windows Firewall rules)"
-if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
-  rc=0
-  ninja -C build fs-intel-windows-test > "$TMP/last-ninja.txt" 2>&1 || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    ./build/fs-intel-windows-test > "$TMP/last-suite.txt" 2>&1 || rc=$?
-    grep -E "PASSED|FAILED|SKIP" "$TMP/last-suite.txt" | tail -4
-    echo "exit=$rc  (ok checks: $(grep -c '^ok:' "$TMP/last-suite.txt"))"
-    # This test runs only on the CI's Windows runner, so the log is all
-    # there is to read: on a failure, its whole output, unfiltered (the
-    # details it prints -- the rules that differ, an unexpected ACE --
-    # go to stdout with the FAIL lines, indented under them).
-    if [ "$rc" -ne 0 ]; then
-      echo "----- fs-intel-windows-test, whole output -----"
-      cat "$TMP/last-suite.txt"
-      echo "----- end of fs-intel-windows-test output -----"
-    fi
-  else
-    echo "ninja exit=$rc"
-    grep "error" "$TMP/last-ninja.txt" | head -5
-  fi
-  [ "$rc" -eq 0 ] || fails=$((fails+1))
-else
-  echo "ok:   skipped (Windows only)"
-fi
-
-section "UI SMOKE TARGETS"
-rc=0
-ninja -C build fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke > "$TMP/last-ninja.txt" 2>&1 || rc=$?
-echo "ninja exit=$rc"
-grep "error:" "$TMP/last-ninja.txt" | head -5
-if [ "$rc" -ne 0 ]; then
-  fails=$((fails+1))
-  full_output "UI SMOKE TARGETS" "ninja" "$rc" "$TMP/last-ninja.txt"
-fi
-
-for exe in fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke fs-trustview-smoke fs-tray-smoke fs-copilot-smoke fs-statusview-smoke fs-activity-smoke fs-startup-smoke fs-traymenu-smoke fs-session-smoke fs-help-smoke; do
-  rc=0
-  "./build/$exe" > "$TMP/last-suite.txt" 2>&1 || rc=$?
-  echo "--- $exe exit=$rc"
-  grep -E "PASSED|FAILED|^[0-9]+ ?failure|^FAIL" "$TMP/last-suite.txt" | tail -8
+for exe in $SMOKES; do
+  run_bin "UI SMOKE $exe" "$exe"
   # A smoke that fails on a GLib or GTK warning only reports how many it
   # saw; the warnings themselves are in its output, so show them.
-  [ "$rc" -eq 0 ] || grep -E -A1 "(WARNING|CRITICAL) \*\*" "$TMP/last-suite.txt" | head -12
-  if [ "$rc" -ne 0 ]; then
-    fails=$((fails+1))
-    full_output "$exe" "$exe" "$rc" "$TMP/last-suite.txt"
-  fi
+  grep -E -A1 "(WARNING|CRITICAL) \*\*" "$TMP/last-suite.txt" | head -12
 done
+if [ "$WINDOWS" -eq 0 ] && [ "${STOCKFW_TRAY_SMOKE:-}" != 1 ]; then
+  section "UI SMOKE fs-tray-smoke"
+  echo "SKIP: needs a notification area; Windows runs it (STOCKFW_TRAY_SMOKE=1 to run it here)"
+  verdict "UI SMOKE fs-tray-smoke" SKIP
+fi
 
 section "SUMMARY"
+printf '%s' "$verdicts"
+echo ""
 if [ "$fails" -eq 0 ]; then
-  echo "ALL SUITES PASSED"
+  echo "ALL SUITES PASSED ($(printf '%s' "$verdicts" | grep -c '^SKIP') skipped on this platform or account)"
 else
   echo "$fails suite(s) FAILED"
 fi

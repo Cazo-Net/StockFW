@@ -56,7 +56,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PORT="$(dirname "$HERE")"
-CLI="${STOCKFW_INTEL_CLI:-$PORT/build-linux/stockfw-intel-test}"
+CLI="${STOCKFW_INTEL_CLI:-${STOCKFW_BUILD:-$PORT/build-linux}/stockfw-intel-test}"
 
 if [ "${STOCKFW_IN_NETNS:-}" != 1 ]; then
   if [ "$(id -u)" != 0 ]; then

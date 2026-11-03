@@ -13,9 +13,27 @@ dialog; and a Copilot layer that can answer "why is this blocked?"
 (analysis), "what would happen if?" (what-if simulation) and propose
 rules — without a shell prompt.
 
+## Start here
+
+| | |
+|---|---|
+| **Code** | Everything StockFW builds and ships lives in [`port/`](port/): the GTK3 app, the `stockfw` command line, both backends, the installers and the tests. |
+| **Build** | [Build](#build) below: CMake + Ninja on Linux and on Windows (MSYS2 UCRT64). |
+| **Install** | Linux: [`port/installer/linux/README.md`](port/installer/linux/README.md) (the tarball and `sudo ./install.sh`). Windows: `StockFW-<version>-Setup.exe` from the release page. |
+| **Docs** | [`docs/README.md`](docs/README.md), the index of every document. |
+| **Changes** | [`CHANGELOG.md`](CHANGELOG.md). |
+| **Release** | [`RELEASING.md`](RELEASING.md): the steps and the asset names. |
+
+The autotools files at the top level (`configure.in`, `Makefile.am`,
+`autogen.sh` and the rest), `src/`, `po/`, `pixmaps/`, `scripts/`,
+`stockfw.spec*`, `stockfw.desktop*`, `stockfw.pam`, `stockfw.console`,
+`stockfw.schemas.in` and `fedora.init` are the **legacy GPL tree** the
+port started from. They are kept for licensing and history and are not
+built.
+
 ## Features
 
-- **Status** — real profile state at a glance: on Windows the three
+- **Overview** — real profile state at a glance: on Windows the three
   firewall profiles (Domain, Private, Public) with enable/disable, on
   Linux the filter-table posture. The app's logo is embedded in the
   executable, so an installed copy and a development build render
@@ -133,13 +151,13 @@ rules — without a shell prompt.
   dashboard on **127.0.0.1 only**, behind a token that changes every
   run, with the same graphs, live events, connections, the simulator
   and the policy — see [below](#command-line-and-dashboard-linux).
-- **Threat-intel blocklists** *(Linux, 1.0.7, opt-in)* — block
+- **Threat-intel blocklists** *(Linux and Windows, 1.0.7, opt-in)* — block
   addresses that well-known public lists name as hijacked networks,
   botnet servers or attackers, plus your own lists, in the kernel
   before the policy sees a packet. Every feed is off until you turn it
   on and accept its terms; with nothing on, StockFW makes no network
   request. A **Threat Intel** page, `stockfw intel` and a read-only
-  dashboard card — see [below](#threat-intel-blocklists-linux-107).
+  dashboard card — see [below](#threat-intel-blocklists-linux-and-windows-107).
 - **Countries and networks** *(Linux, 1.0.7, opt-in)* — block the
   address ranges registered in a country, or held by a network (AS),
   from IPFire's signed location database — see
@@ -221,6 +239,11 @@ sudo stockfw intel import mylist.txt --name "My list" # your own list, no networ
 ```
 
 `stockfw help intel` lists every action. Each one takes `--json`.
+Where `sudo stockfw` says *command not found*, write
+`sudo /usr/local/bin/stockfw`: on some systems (Debian, Kali) sudo's own
+search path (`secure_path`) leaves out `/usr/local/bin`, where the Linux
+installer puts StockFW ([its README](port/installer/linux/README.md)).
+The same holds for every `sudo stockfw` and `sudo StockFW` below.
 Downloads connect to each feed's host directly. Behind a proxy, set it
 with `sudo stockfw intel proxy http://proxy.example:3128` (`none` removes
 it); it is kept as `[intel] proxy=` in `/var/lib/stockfw/intel/intel.conf`
@@ -239,7 +262,7 @@ stops you connecting to them, *both* does both. Outbound blocks are
 rejected so programs fail at once instead of hanging.
 
 **After a reboot** nothing is loaded, policy or lists, until the
-firewall is started again (Status page, `stockfw start`, or
+firewall is started again (Overview page, `stockfw start`, or
 start-on-open). Start loads the lists with the policy, and Stop removes
 both.
 
@@ -306,9 +329,11 @@ It does not:
   other local users can read while a download runs. Do not put a
   secret in a custom feed's URL. A proxy with a user name and password
   in it is refused;
-- answer from What-If, Copilot or `stockfw simulate` yet: these still
-  judge the policy alone. Ask `stockfw intel lookup` or the page's
-  lookup box;
+- answer from What-If, Copilot or `stockfw simulate`: these judge the
+  policy alone and consult neither the blocklists nor the country and
+  network rules, so they can say *allowed* for an address a list or a
+  country rule drops. Ask `stockfw intel lookup` or the page's lookup
+  box;
 - block by country or network owner on Windows. On Linux it does; see
   the next section.
 
@@ -344,10 +369,14 @@ sudo stockfw intel lookup 192.0.2.10          # registered in, the network, and 
   keeps the copy in use. Lookups read the local copy and make no
   request.
 - **Licence and attribution.** Location data: IPFire location database
-  (https://location.ipfire.org/). The file declares the licence CC
-  BY-SA 4.0; StockFW has not confirmed it, so commercial use may need
-  IPFire's permission. The page, the CLI and every lookup that shows
+  (https://location.ipfire.org/), licensed CC BY-SA 4.0, as IPFire
+  has confirmed: credit IPFire and share any changed copy under the
+  same licence. The page, the CLI and every lookup that shows
   location data carry this line.
+- **What-If, the Copilot and `stockfw simulate`** do not consult these
+  rules (or the blocklists): they judge the policy alone, so they can
+  answer *allowed* for a host in a blocked country. `stockfw intel
+  lookup` says whether a rule blocks an address.
 - **Windows** does not support country or network blocking in 1.0.7, a
   limit of that platform; the card says so and has no controls. The
   blocklists work there.
@@ -423,7 +452,7 @@ Chapter 5.
 
 ```sh
 pacman -S --needed base-devel \
-    mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake}
+    mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake,xz,openssl}
 
 cd port
 cmake -S . -B build -G Ninja
@@ -436,7 +465,8 @@ Run the toolchain from the UCRT64 shell.
 ### Linux (Debian / Kali / WSL2)
 
 ```sh
-sudo apt install build-essential cmake ninja-build libgtk-3-dev
+sudo apt install build-essential cmake ninja-build pkg-config \
+    libgtk-3-dev liblzma-dev libssl-dev
 
 cd port
 cmake -S . -B build-linux -G Ninja
@@ -469,16 +499,36 @@ most; a per-run CSP nonce with `default-src 'none'`; and it never opens
 a browser as root. It is read-only: changes go through `stockfw policy`
 and `stockfw apply`, which use the same gate as the desktop app.
 
+`xz` and `openssl` (liblzma and libcrypto) read and verify the location
+database behind country and network blocking; CMake stops if
+pkg-config cannot find them.
+
 ### Installer (Windows, NSIS)
 
 ```sh
-cd port/installer
-./build_installer.sh
+cd port
+cmake -S . -B build -G Ninja && cmake --build build
+bash installer/build_installer.sh      # installer/nsis/StockFW-<version>-Setup.exe
 ```
 
-The installer bundles the full GTK3 runtime and the spawn helpers into
-`$INSTDIR` and fails the build if any staged launcher still carries the
-old branding.
+The installer bundles the full GTK3 runtime, liblzma, libcrypto and the
+spawn helpers into `$INSTDIR`, with the project README, `CHANGELOG.md`
+and `LICENSE.txt`. The version comes from `port/CMakeLists.txt`. The
+build stops if any staged launcher still carries the old branding.
+
+### Installer (Linux, tarball)
+
+```sh
+cd port
+bash tools/build-linux.sh                       # Release build into build-linux/
+bash installer/linux/build_installer_linux.sh   # installer/linux/dist/StockFW-<version>-linux-x86_64.tar.gz
+```
+
+The binaries are stripped as they are staged, and the packager checks
+that `install.sh`, `StockFW` and `cli/stockfw` are executable inside the
+archive. `cmake --install` puts only the two binaries in place;
+`install.sh` is the supported install, with the desktop entry, icons,
+boot service and uninstaller.
 
 ## Tests
 
@@ -487,20 +537,32 @@ Every claim in the documentation is graded `[Verified]` / `[Measured]` /
 
 ```sh
 cd port
-bash tests/full-suite.sh             # every suite below, one pass, one verdict
-bash tests/test-core.sh              # rule engine, CSV, copilot detections + policy health, sentinel, event-rule, what-if, direction pairing
-bash tests/test-winlog.sh            # Security-log parsing + dedup
-bash tests/test-logstart.sh          # event stream start-up
-bash tests/test-installer-spawn.sh   # staged spawn helpers
-bash tests/test-state-windows.sh     # per-profile backend compile
-bash tests/test-uaf-analyze.sh       # analyzer proves the UAF fix
-bash tests/test-cli.sh               # Linux: stockfw CLI + dashboard security model
-bash tests/test-intel-cli.sh         # Linux, root: stockfw intel end to end (private namespaces)
+sudo xvfb-run -a bash tests/full-suite.sh   # Linux: every suite, one build, one verdict
+bash tests/full-suite.sh                    # Windows (MSYS2 UCRT64), elevated shell
+```
 
-ninja -C build fs-ui-smoke fs-hitview-smoke fs-activity-smoke
-./build/fs-ui-smoke                  # UI wiring smoke
-./build/fs-hitview-smoke             # hit-view rendering + filter smoke
-./build/fs-activity-smoke            # Activity page: counting, no-data, drawing
+`tests/full-suite.sh` uses one build directory — `build-linux/` on
+Linux, `build/` on Windows, or `$STOCKFW_BUILD` — configures it if it is
+missing, builds every target the suites need, and then runs every suite
+in `port/tests/` that belongs to the platform: the core and engine
+suites, the unit binaries, the CLI and dashboard, the live firewall,
+threat-intel, country and downloader suites (Linux, as root, each in
+private namespaces), the installers, and every UI smoke. The summary
+lists PASS, FAIL or SKIP for each suite; a suite of the other platform,
+or one that needs root or a display it does not have, says SKIP.
+`fs-tray-smoke` needs a notification area and runs on Windows (or with
+`STOCKFW_TRAY_SMOKE=1`). [`port/tests/README.md`](port/tests/README.md)
+describes each suite. A few of them on their own:
+
+```sh
+bash tests/test-core.sh              # rule engine, CSV, copilot detections + policy health, sentinel, event-rule, what-if, direction pairing
+bash tests/test-winlog.sh            # Windows: Security-log parsing + dedup
+bash tests/test-cli.sh               # Linux: stockfw CLI + dashboard security model
+sudo bash tests/test-intel-cli.sh    # Linux, root: stockfw intel end to end (private namespaces)
+
+ninja -C build-linux fs-ui-smoke fs-hitview-smoke
+xvfb-run -a ./build-linux/fs-ui-smoke       # UI wiring smoke
+xvfb-run -a ./build-linux/fs-hitview-smoke  # hit-view rendering + filter smoke
 ```
 
 The suites include *teeth* tests: known bugs are re-injected to prove the
@@ -509,6 +571,8 @@ cannot fail is not a green suite.
 
 ## Documentation
 
+[`docs/README.md`](docs/README.md) lists every document. The main ones:
+
 - [`docs/ARCHITECTURE-AND-SECURITY.md`](docs/ARCHITECTURE-AND-SECURITY.md)
   — full architecture and security document: data flow, backends,
   privilege model with file:line evidence, findings register,
@@ -516,6 +580,7 @@ cannot fail is not a green suite.
 - [`docs/PORTING.md`](docs/PORTING.md) — porting notes and prerequisites.
 - [`port/docs/ELEVATED.md`](port/docs/ELEVATED.md) — the elevated helper
   protocol.
+- [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASING.md`](RELEASING.md).
 
 ## License
 
@@ -527,13 +592,12 @@ the license ultimately declared for their portion.
 
 ## Credits
 
-- **Stockfw Team** — Creator & Original
-  Developer
+- **Stockfw Team** — Creator & Original Developer
 - **H3xCore** — Developer
-- **StockFW Project** — GTK3 port, Windows backend, Copilot
+- **Stock Team** — GTK3 port, Windows backend, Copilot
 - **Threat-intel data** — the blocklists belong to their publishers:
   The Spamhaus Project, abuse.ch, DShield.org (SANS Internet Storm
   Center), FireHOL IP lists, blocklist.de, Emerging Threats, CINS Army
   and The Tor Project. StockFW does not ship their data; it downloads
   a list only after you turn it on (see
-  [Threat-intel blocklists](#threat-intel-blocklists-linux-107)).
+  [Threat-intel blocklists](#threat-intel-blocklists-linux-and-windows-107)).

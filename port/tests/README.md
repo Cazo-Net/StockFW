@@ -190,8 +190,9 @@ full batch counting a skip though it reached the cursor fails "no
 record condition (fallback)".
 
 On Windows `tests/test-winlog.sh` runs the same fake log through the
-real spawn: `fake-wevtutil.exe` (built beside the test, found before
-System32) answers for `STOCKFW_FAKE_WEVTUTIL_LOG` ("first last"),
+real spawn: `fake-wevtutil.exe` (built beside the test; the test build
+runs a tool from `STOCKFW_TEST_TOOL_DIR`, which the test points there,
+while the release build runs System32's only) answers for `STOCKFW_FAKE_WEVTUTIL_LOG` ("first last"),
 honours the query's `EventRecordID>`, `/c:` and `/rd:`, pads with NULs
 and records its arguments; with `STOCKFW_FAKE_WEVTUTIL_NO_RECORDID=1`
 it refuses a query with the record condition (exit 15001).  The test starts monitoring, checks a burst
@@ -921,7 +922,7 @@ ESTABLISHED filter dropped, loopback addresses in own.
 The footer's Help button is checked to be there on both platforms'
 page sets; what it opens is checked in `fs-help-smoke` below.  The
 About credits are checked here too: the creator line reads exactly
-"Stock Team & Qusai - Creator & Original Developer", and no credit
+"Stockfw Team - Creator & Original Developer", and no credit
 carries an e-mail address.
 
 ## Help and About (`fs-help-smoke`)
@@ -977,7 +978,7 @@ check that failed is in brackets):
 - H6: one Help window; asking again moves and raises it.  (Re-injected:
   a new window each time.)
 - A1: About is a dialog transient for the main window and not modal,
-  one at a time; the first credit reads exactly "Stock Team & Qusai -
+  one at a time; the first credit reads exactly "Stockfw Team -
   Creator & Original Developer", the three credits on this base are
   shown, nothing in it has an `@`; the licence summary names both
   texts the source carries (GPL v2 in `COPYING`, Apache 2.0 in
@@ -1030,8 +1031,8 @@ check that failed is in brackets):
   `stockfw intel lookup` and the hourly update check.  Blocking by
   country or network owner is described as present too: the switch
   "Use the location database" and its dialog, "is registered, not where
-  the computer using it is", the "Anycast" mark, the licence as the
-  file declares it and unconfirmed, "downloaded at most once a day",
+  the computer using it is", the "Anycast" mark, the licence as
+  IPFire confirmed it (CC BY-SA 4.0), "downloaded at most once a day",
   Windows "not supported on Windows in this version of StockFW", and
   the CLI topic's `stockfw intel geo`.  No FS_HELP_SOON callout is
   left in any topic (the last one, on country and ASN blocking, went
@@ -2590,7 +2591,7 @@ the downloads and the backend are fakes) checks:
 
 | Area | What it pins down |
 |---|---|
-| wording | the attribution names IPFire and the declared licence and says it is not confirmed; the consent text names the host, how often, what the server learns, "registered", anycast and exceptions; the defaults are off and never consented; source kinds and set names by id; on Windows, "not supported on Windows in this version" |
+| wording | the attribution names IPFire and the licence and says IPFire confirmed it; the consent text names the host, how often, what the server learns, "registered", anycast and exceptions; the defaults are off and never consented; source kinds and set names by id; on Windows, "not supported on Windows in this version" |
 | config | `[geo]` and `[location <id>]` round trip; refusals for a key of the wrong kind, bad or missing values, a bad id or name, more than 1,000 values; codes and AS numbers are normalised, deduplicated and sorted |
 | consent | no rule and no enabling without the terms accepted; a config that says enabled but never accepted downloads nothing |
 | no network | the default configuration, the database off, no consent, the master switch off: no request at all; the database's host (and the proxy) is in `fs_intel_update_hosts` only while it is on |
@@ -3282,8 +3283,8 @@ curl runs as nobody, so the files are world-readable.
 
 - `fs-intelview-smoke` (`check_geo`): the card's controls on Linux; no
   picker before consent; the licence line; the consent dialog's text
-  (host, how often, what it learns, the licence as declared and
-  unconfirmed, "registered in", anycast), Cancel (nothing downloaded),
+  (host, how often, what it learns, the licence as IPFire
+  confirmed it, "registered in", anycast), Cancel (nothing downloaded),
   Accept (one download from the IPFire URL); the date and state; the
   picker's 7 countries and the "Example" AS search; Netherlands picked
   with "in": in force, its networks, and the "Anycast" chip whose
@@ -3378,3 +3379,156 @@ a desktop with a screen reader (it runs offscreen under Xvfb); the
 time the per-rule statistics take for a large country of IPFire's full
 database in the page; the card on Windows (checked through a
 Windows-like backend on Linux).
+
+## Release review: tool paths, the dashboard token, the Events page start (1.0.7)
+
+- `test_toolpath` (`test-core.sh`): the Windows mapping of a bare tool
+  name to System32 and the names it refuses; the fixed-directory search;
+  as root, a fake `iptables-restore` first on `PATH` is not the one
+  found.  Teeth: `fixed_dirs_only` returning FALSE fails the root check;
+  `fs_toolpath_windows` returning the bare name fails the mapping.
+- Spawn guard (`test-core.sh`): no `G_SPAWN_SEARCH_PATH` or
+  `g_find_program_in_path` in the Linux backend, `fs-nftset.c`,
+  `fs-cli-cmds.c` or `fs-dashboard.c`, and `spawn_capture` maps
+  `argv[0]`.  Teeth: `G_SPAWN_SEARCH_PATH` put back in
+  `run_command_quiet` fails it; `spawn_capture` running `argv[0]` as
+  given fails it.
+- Planted tools (`test-apply-linux.sh`, live, as root): fakes of every
+  firewall tool first on `PATH`; none runs and the real
+  `iptables-restore` loads the rules.  Teeth: `fixed_dirs_only`
+  returning FALSE makes the fakes run and the rules stay unloaded.
+  The drivers that need a fake tool first on `PATH` are test builds
+  (`FS_TOOLPATH_TESTING`, see `CMakeLists.txt` and `test-apply-dual.sh`).
+- Dashboard launch page (`test-cli.sh`, as `nobody` when run as root,
+  with a fake `xdg-open`): the token is in none of xdg-open's
+  arguments, the page is 0600 in a 0700 directory under
+  `$XDG_RUNTIME_DIR` and redirects to the printed URL, and it is gone
+  once the token is used.  Teeth: handing xdg-open the URL again fails
+  five checks.
+- Block-list findings (`test_threat_intel`, `test_sentinel_beacon` in
+  `test-core.sh`): no What-If line and no block for traffic a list or a
+  country or network rule dropped, also when an open beacon finding is
+  updated.  Teeth: putting the What-If line back, or not clearing the
+  earlier report's block, fails them.
+- The Events page start (`fs-hitview-smoke`): the page is back before
+  the history is read; the saved events and one that arrived meanwhile
+  are listed, that one saved once.  Teeth: loading synchronously in
+  `build_store` fails "built without waiting".  The retry after another
+  copy let go (`check_history_retry`) lists the 50 older saved events
+  and not the one newer than the list.  Teeth: a retry that installs the
+  writer only lists 0 of 50; dropping the cutoff lists 51.
+
+## Release packaging (`tests/test-release.sh`, 1.0.7)
+
+```sh
+cd port
+bash tests/test-release.sh                     # source checks; the tarball too when build-linux/ is built
+STOCKFW_BUILD_DIR=build-release STOCKFW_REQUIRE_PACKAGE=1 bash tests/test-release.sh   # as CI runs it
+```
+
+What it checks (architecture document 14.9):
+
+- Version: every `#define FS_VERSION` fallback and `-DFS_VERSION`
+  literal in `src/`, `tests/` and `tools/` equals `project(VERSION)`;
+  `stockfw.rc.in` takes all four fields from `@PROJECT_VERSION*@`, is
+  configured as CMake does it and compiled with windres (when
+  installed); `StockFW.nsi` has no APP_VERSION of its own and stops
+  without one; `build_installer.sh` passes `-DAPP_VERSION` and names no
+  version; the Linux `LICENSE.txt` is a `@VERSION@` template; the Linux
+  README names only this version and the tarball's real name.
+- Docs: a `## [<version>]` section in `CHANGELOG.md`, which does not call
+  the Copilot AI; the three asset names in `RELEASING.md`; every in-page
+  link in `README.md` lands on a heading (GitHub's anchor rules).
+- Modes: the shell entry points are executable on disk and 100755 in git.
+- Windows installer, run on its own: the documentation step stages the
+  root README and CHANGELOG byte for byte; the licence step writes the
+  version and lists liblzma and OpenSSL libcrypto; with makensis,
+  `StockFW.nsi` compiles with `-DAPP_VERSION` against stand-in stage
+  files into `StockFW-<version>-Setup.exe` (file properties
+  `<version>.0`), and fails without APP_VERSION or without
+  `CHANGELOG.md`.
+- Linux tarball, with a Linux build: the real packager into a scratch
+  directory; `install.sh`, `StockFW` and `cli/stockfw` are
+  `-rwxr-xr-x` in the archive and the documents `-rw-r--r--`; neither
+  binary has `.symtab` or `.debug_info`; both report the version; the
+  README, project README, changelog and licence are the real ones;
+  `./install.sh` runs directly (as a non-root user, where it stops at
+  its root check); the `.sha256` matches. The archive listing is printed.
+
+`tests/test-linux-install.sh` (root, private mount namespace) also
+checks that the install summary reports `nft` and `curl`, and, with a
+stand-in `ldconfig` that hides `libcrypto.so.3`, that `install.sh` fails,
+names the library and installs nothing. `tests/test-licence-texts.sh`
+checks the version line of both licence files.
+
+Teeth (each in a copy of the tree, restored with `cp` and checked with
+`cmp`):
+
+| Bug put back | Fails |
+|---|---|
+| `#define FS_VERSION "1.0.6"` in `main.c` | the `main.c` fallback, every FS_VERSION literal |
+| `!define APP_VERSION "1.0.6"` in `StockFW.nsi` | no APP_VERSION of its own; makensis compile, output name, file properties |
+| `FILEVERSION 1,0,5,0` in `stockfw.rc.in` | no literal version, all four fields, the configured `.rc` |
+| the old documentation step (stub README) | stages the project README, stages CHANGELOG.md |
+| makensis without `-DAPP_VERSION` | passes `-DAPP_VERSION` |
+| OpenSSL missing from the Windows licence list | lists liblzma and OpenSSL libcrypto |
+| liblzma missing from the Linux `LICENSE.txt` | the archive's licence lists them |
+| `cp` of a 0644 `install.sh` in the packager | executable on disk, packages, `install.sh` is `-rwxr-xr-x` |
+| the packager's `strip` line removed | no symbol table (both binaries) |
+| the old `#threat-intel-blocklists-linux-107` anchor | every in-page link lands |
+| no `## [1.0.7]` changelog section | the changelog section, packages, the archive's name |
+| `libcrypto.so.3` dropped from `install.sh`'s list | (`test-linux-install.sh`) fails, names it, installs nothing |
+
+## Release review: what StockFW contacts, credits, one test runner (1.0.7)
+
+`tests/full-suite.sh` is the one runner on both platforms:
+
+```sh
+cd port
+sudo xvfb-run -a bash tests/full-suite.sh   # Linux (build-linux/, or $STOCKFW_BUILD)
+bash tests/full-suite.sh                    # Windows, MSYS2 UCRT64 (build/, or $STOCKFW_BUILD)
+```
+
+It configures the build directory if it is missing, builds every target
+the suites run (the unit binaries, the Linux drivers, the UI smokes,
+`fs-backend-probe`), exports `STOCKFW_BUILD` so every suite reads that
+one build, and ends with PASS, FAIL or SKIP for each suite. Suites of
+the other platform print SKIP; `fs-tray-smoke` runs on Windows (or with
+`STOCKFW_TRAY_SMOKE=1`); `test-geodb.sh`'s fuzzer runs `FUZZ_SECONDS`
+(30 by default here). Run as root on Linux, the live suites each make
+their own private namespaces. Two checks depend on the host rather
+than the code: `test-logstart-kmsg.sh` needs kernel log lines, which a
+network namespace only produces with `net.netfilter.nf_log_all_netns=1`,
+and `test-cli.sh`'s "interfaces lists at least one adapter" needs a
+physical adapter, which a fresh network namespace does not have.
+
+New checks in `test-core.sh` (end of the script):
+
+- **wording guard**, widened: `src`, `docs`, `installer`, `../docs`, the
+  README, `CHANGELOG.md`, `RELEASING.md`, `AUTHORS` and `CREDITS`;
+- **credits guard**: no file in the repository (`git grep`) carries the
+  creator's full name or e-mail address, and `AUTHORS`, `CREDITS`, the
+  README and `fs-aboutdialog.c` name "Stockfw Team";
+- **privacy guard**: Help > Your data names the location database next
+  to the blocklists as a download, and the Threat Intel topic says no
+  list *and not the location database* means no network request.
+
+`test-state-windows.sh` prints SKIP off Windows; `test-linux-install.sh`
+stages `install.sh` with the tested build's binaries, as the tarball
+lays them out.
+
+Teeth (each in a copy of one file, restored with `cp` and checked with
+`cmp`):
+
+| Bug put back | Fails |
+|---|---|
+| "AI-powered" line in `installer/build_installer.sh` | wording guard |
+| the creator's surname in `AUTHORS` | credits guard (full name) |
+| the old personal e-mail address in the README credits | credits guard (e-mail) |
+| "Stockfw Team" removed from `CREDITS` | credits guard (credit line) |
+| the old Help text (both sentences) | privacy guard, Your data |
+| the old Threat Intel sentence only | privacy guard, Threat Intel |
+| `test-state-windows.sh` without its platform guard | it fails on Linux (`windows.h`) |
+| `fs-backend-probe` as an executable again | `ninja fs-backend-probe` fails to link |
+| `sum` passed bare to `%s` in `ui-intelview-smoke.c` | `-Wformat-overflow` "argument is null" |
+| the staged `StockFW` left out in `test-linux-install.sh` | `install.sh succeeds` fails |

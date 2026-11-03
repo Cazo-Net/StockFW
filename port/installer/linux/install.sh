@@ -2,7 +2,7 @@
 # StockFW Linux installer
 #
 #   sudo ./install.sh          install
-#   sudo ./uninstall.sh        remove (installed by this script)
+#   sudo /usr/local/bin/stockfw-uninstall   remove (installed by this script)
 #
 # What it does:
 #   - checks the runtime libraries the binary actually links against,
@@ -79,12 +79,20 @@ fi
 ok "binary is a Linux ELF executable"
 
 # --- dependency check: sonames via ldconfig ------------------------------
-# The binary's own NEEDED entries, in link order.  libgtk-3.so.0 and
+# The binaries' own NEEDED entries (StockFW and cli/stockfw), the C
+# library aside, in any build type (a build linked without --as-needed
+# also names cairo-gobject, harfbuzz and zlib, which GTK3 brings);
+# tests/test-release.sh compares this list with readelf.  libgtk-3.so.0 and
 # libgdk-3.so.0 both come from the GTK3 package; listed separately
 # because a stripped install can carry one without the other.
+# liblzma and libcrypto (1.0.7) read the location database; a system
+# with only OpenSSL 1.1 (Debian 11, Ubuntu 20.04) has no libcrypto.so.3,
+# and StockFW and the boot service would then fail to start at all.
 NEEDED="libgtk-3.so.0 libgdk-3.so.0 libgdk_pixbuf-2.0.so.0
         libpango-1.0.so.0 libpangocairo-1.0.so.0 libcairo.so.2
-        libglib-2.0.so.0 libgobject-2.0.so.0 libgio-2.0.so.0"
+        libatk-1.0.so.0 libcairo-gobject.so.2 libharfbuzz.so.0 libz.so.1
+        libglib-2.0.so.0 libgobject-2.0.so.0 libgio-2.0.so.0
+        liblzma.so.5 libcrypto.so.3"
 
 MISSING=""
 for so in $NEEDED; do
@@ -101,23 +109,63 @@ if [ -n "$MISSING" ]; then
     printf 'Install them with your package manager.  Package names vary by\n'
     printf 'distro (Debian/Ubuntu use libgtk-3-0t64, Fedora uses gtk3), so\n'
     printf 'this installer reports sonames, not package names:\n\n'
-    printf '  Debian/Kali/Ubuntu:  sudo apt install libgtk-3-0 libgdk-pixbuf-2.0-0\n'
-    printf '  Fedora:              sudo dnf install gtk3\n'
-    printf '  Arch:                sudo pacman -S gtk3\n'
+    printf '  Debian/Kali/Ubuntu:  sudo apt install libgtk-3-0 libgdk-pixbuf-2.0-0 liblzma5 libssl3\n'
+    printf '  Fedora:              sudo dnf install gtk3 xz-libs openssl-libs\n'
+    printf '  Arch:                sudo pacman -S gtk3 xz openssl\n'
+    case "$MISSING" in
+    *libcrypto.so.3*)
+        printf '\nlibcrypto.so.3 is OpenSSL 3.  A distribution that ships only\n'
+        printf 'OpenSSL 1.1 (Debian 11, Ubuntu 20.04) cannot run this build.\n' ;;
+    esac
     exit 1
 fi
 ok "all runtime libraries present"
 
-# --- iptables: present, but only a warning -------------------------------
-# Not fatal: the GUI reads and simulates fine without it, and the app
-# reports the missing backend itself in the Status page.  Installing a
-# firewall tool that then hard-fails because the distro ships nftables
-# would be the wrong call.
-if command -v iptables >/dev/null 2>&1; then
-    ok "iptables found ($(command -v iptables))"
+# --- external tools: present, but only warnings ---------------------------
+# Not fatal: the GUI reads and simulates fine without them, and the app
+# reports a missing backend itself.  Installing a firewall tool that then
+# hard-fails because one optional tool is absent would be the wrong call.
+#
+# Looked for where StockFW running as root looks, not on this shell's
+# PATH: as root it runs these only from fixed system folders.
+find_tool () {   # <name> <dir>...: print the first executable match
+    local name="$1" d
+    shift
+    for d in "$@"; do
+        if [ -x "$d/$name" ] && [ -f "$d/$name" ]; then
+            printf '%s\n' "$d/$name"
+            return 0
+        fi
+    done
+    return 1
+}
+SYSDIRS="/usr/sbin /usr/bin /sbin /bin"
+
+# shellcheck disable=SC2086
+if t="$(find_tool iptables $SYSDIRS)"; then
+    ok "iptables found ($t)"
 else
-    warn "iptables not on PATH -- the app will run but cannot apply rules"
-    warn "install it:  sudo apt install iptables"
+    warn "iptables not found in $SYSDIRS -- the app will run but cannot apply rules"
+    warn "install it:  sudo apt install iptables   (Fedora: dnf, Arch: pacman -S iptables)"
+fi
+# Threat-intel blocklists and country and network blocking load an
+# nftables table; without nft they cannot be turned on.
+# shellcheck disable=SC2086
+if t="$(find_tool nft $SYSDIRS)"; then
+    ok "nft found ($t)"
+else
+    warn "nft not found in $SYSDIRS -- threat-intel blocklists and country"
+    warn "and network blocking will not work; the firewall policy still does"
+    warn "install it:  sudo apt install nftables   (Fedora/Arch: nftables)"
+fi
+# The blocklists and the location database are downloaded with curl,
+# which StockFW runs only as /usr/bin/curl or /bin/curl.
+if t="$(find_tool curl /usr/bin /bin)"; then
+    ok "curl found ($t)"
+else
+    warn "curl not found in /usr/bin or /bin -- threat-intel lists and the"
+    warn "location database cannot be downloaded"
+    warn "install it:  sudo apt install curl"
 fi
 
 # --- install -------------------------------------------------------------
@@ -176,7 +224,7 @@ if [ -x "$BINDIR/stockfw" ] && [ -f "$HERE/stockfw.service" ] &&
     fi
 else
     warn "no systemd: firewall rules will NOT come back after a reboot"
-    warn "until StockFW is started with sudo (or 'sudo stockfw start' runs)"
+    warn "until StockFW is started with sudo (or 'sudo $BINDIR/stockfw start' runs)"
 fi
 
 install -Dm644 "$HERE/stockfw.desktop" "$DATADIR/applications/$APPID.desktop"
@@ -197,6 +245,11 @@ done
 
 install -Dm644 "$HERE/LICENSE.txt" "$DATADIR/doc/stockfw/LICENSE.txt"
 ok "$DATADIR/doc/stockfw/LICENSE.txt"
+# What changed in this release; optional, an older payload has none.
+if [ -f "$HERE/CHANGELOG.md" ]; then
+    install -Dm644 "$HERE/CHANGELOG.md" "$DATADIR/doc/stockfw/CHANGELOG.md"
+    ok "$DATADIR/doc/stockfw/CHANGELOG.md"
+fi
 
 # refresh the desktop/icon caches if the tools exist; absence is fine
 command -v update-desktop-database >/dev/null 2>&1 \
@@ -240,6 +293,8 @@ rm -f "\$PREFIX/share/icons/hicolor/48x48/apps/stockfw.png"
 rm -f "\$PREFIX/share/icons/hicolor/128x128/apps/stockfw.png"
 rm -f "\$PREFIX/share/icons/hicolor/256x256/apps/stockfw.png"
 rm -f "\$PREFIX/share/doc/stockfw/LICENSE.txt"
+rm -f "\$PREFIX/share/doc/stockfw/CHANGELOG.md"
+rmdir "\$PREFIX/share/doc/stockfw" 2>/dev/null || true
 rm -f "\$PREFIX/bin/stockfw-uninstall"
 command -v update-desktop-database >/dev/null 2>&1 \\
     && update-desktop-database "\$PREFIX/share/applications" >/dev/null 2>&1 || true

@@ -23,7 +23,7 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
 #ifndef FS_VERSION
-#define FS_VERSION "1.0.6"
+#define FS_VERSION "1.0.7"
 #endif
 #ifndef FS_PLATFORM_NAME
 #define FS_PLATFORM_NAME "unknown"
@@ -85,9 +85,9 @@ const gchar * const *
 fs_dialogs_about_credits (void)
 {
 	static const gchar *const credits[] = {
-		"Stock Team & Qusai - Creator & Original Developer",
+		"Stockfw Team - Creator & Original Developer",
 		"H3xCore - Developer",
-		"StockFW Project - GTK3 Port, Windows Backend, Copilot",
+		"Stock Team - GTK3 Port, Windows Backend, Copilot",
 		NULL
 	};
 

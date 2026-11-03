@@ -1,7 +1,8 @@
 # Build directories
 build/
 port/build/
-port/build-*/
+# No trailing slash: a build directory may be a symbolic link.
+port/build-*
 port/installer/nsis/stage/
 port/installer/nsis/*.exe
 port/installer/linux/dist/
@@ -22,12 +23,20 @@ Thumbs.db
 *.temp
 *.log
 
-# CMake
+# CMake (build trees only; a CMake module checked in under port/ stays
+# visible, so no blanket *.cmake)
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-Makefile
-*.cmake
+CTestTestfile.cmake
+
+# The legacy autotools tree's configure output (not built; Makefile.am
+# and Makefile.in are tracked)
+/Makefile
+/src/Makefile
+/po/Makefile
+/pixmaps/Makefile
+/scripts/Makefile
 
 # Compiled objects
 *.o

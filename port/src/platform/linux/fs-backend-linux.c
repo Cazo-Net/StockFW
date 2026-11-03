@@ -27,6 +27,7 @@
 #include "core/fs-intel.h"
 #include "core/fs-intelset.h"
 #include "core/fs-nftset.h"
+#include "core/fs-toolpath.h"
 
 #include <gio/gio.h>
 
@@ -71,6 +72,21 @@ static FsPolicy    *current_policy = NULL;
 
 /* -------------------------------------------------------------- helpers */
 
+/* [ resolve_tool ]
+ * argv[0] (a bare tool name) replaced by the program to run, from
+ * fs_toolpath_find(): as root /usr/sbin, /usr/bin, /sbin or /bin only,
+ * never the PATH whoever started us passed down [S0].  FALSE, argv
+ * untouched, when the tool is not there.  *owned is what to free. */
+static gboolean
+resolve_tool (gchar **argv, gchar **owned)
+{
+	*owned = fs_toolpath_find (argv[0]);
+	if (*owned == NULL)
+		return FALSE;
+	argv[0] = *owned;
+	return TRUE;
+}
+
 /* [ run_command_quiet ]
  * Runs argv with stdout and stderr discarded; its exit status, or -1 if
  * it could not be started.  Used by the probes and the delete-until-it-
@@ -81,11 +97,19 @@ run_command_quiet (gchar **argv)
 {
 	GError *error = NULL;
 	gint status = 0;
+	gchar *name = argv[0];
+	gchar *path;
+	gboolean spawned;
 
-	if (!g_spawn_sync (NULL, argv, NULL,
-	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
-	                   G_SPAWN_STDERR_TO_DEV_NULL,
-	                   NULL, NULL, NULL, NULL, &status, &error)) {
+	if (!resolve_tool (argv, &path))
+		return -1;
+	spawned = g_spawn_sync (NULL, argv, NULL,
+	                        G_SPAWN_STDOUT_TO_DEV_NULL |
+	                        G_SPAWN_STDERR_TO_DEV_NULL,
+	                        NULL, NULL, NULL, NULL, &status, &error);
+	argv[0] = name;
+	g_free (path);
+	if (!spawned) {
 		g_clear_error (&error);
 		return -1;
 	}
@@ -136,35 +160,39 @@ require_root (GError **error)
 }
 
 /* [ have_iptables ]
- * Whether the iptables binary is on PATH.  Callers that silence
+ * Whether the iptables binary is where fs_toolpath_find() looks (as
+ * root: the system directories only).  Callers that silence
  * iptables' own output still need to distinguish "nothing to do" from
  * "there is no firewall tool here at all". */
 static gboolean
 have_iptables (GError **error)
 {
-	gchar *argv[] = { (gchar *) "iptables", (gchar *) "--version", NULL };
+	gchar *argv[] = { NULL, (gchar *) "--version", NULL };
 	GError *local = NULL;
 	/* The lookup returns the path it found, which is ours to free:
 	 * testing it inline leaked one string per apply. */
-	gchar *found = g_find_program_in_path ("iptables");
+	gchar *found = fs_toolpath_find ("iptables");
+	gboolean spawned;
 
 	if (found == NULL) {
-		g_set_error_literal (error,
-		                     g_quark_from_static_string ("fs-backend-linux"),
-		                     0,
-		                     "iptables was not found on PATH.");
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-linux"),
+		             0, "iptables was not found %s.",
+		             fs_toolpath_where ());
 		return FALSE;
 	}
-	g_free (found);
+	argv[0] = found;
 
 	/* A present but unusable binary (missing kernel support, broken
 	 * alternatives link) still deserves a message.  The probe's own
 	 * output is discarded so it cannot leak into whatever the caller
 	 * is printing. */
-	if (!g_spawn_sync (NULL, argv, NULL,
-	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
-	                   G_SPAWN_STDERR_TO_DEV_NULL,
-	                   NULL, NULL, NULL, NULL, NULL, &local)) {
+	spawned = g_spawn_sync (NULL, argv, NULL,
+	                        G_SPAWN_STDOUT_TO_DEV_NULL |
+	                        G_SPAWN_STDERR_TO_DEV_NULL,
+	                        NULL, NULL, NULL, NULL, NULL, &local);
+	g_free (found);
+	if (!spawned) {
 		g_clear_error (&local);
 		g_set_error_literal (error,
 		                     g_quark_from_static_string ("fs-backend-linux"),
@@ -367,8 +395,8 @@ kernel_has_ipv6 (void)
 static gboolean
 have_ip6tables (void)
 {
-	gchar *a = g_find_program_in_path ("ip6tables");
-	gchar *b = g_find_program_in_path ("ip6tables-restore");
+	gchar *a = fs_toolpath_find ("ip6tables");
+	gchar *b = fs_toolpath_find ("ip6tables-restore");
 	gboolean ok = (a != NULL && b != NULL);
 
 	g_free (a);
@@ -382,16 +410,24 @@ have_ip6tables (void)
 static gboolean
 run_restore (const Family *f, const gchar *payload, gchar **why)
 {
-	const gchar *argv[] = { f->restore, "-w", "--noflush", NULL };
+	gchar *tool = fs_toolpath_find (f->restore);
+	const gchar *argv[] = { tool, "-w", "--noflush", NULL };
 	GSubprocess *proc;
 	GError *error = NULL;
 	gchar *err = NULL;
 	gboolean ok;
 
+	if (tool == NULL) {
+		*why = g_strdup_printf ("%s was not found %s", f->restore,
+		                        fs_toolpath_where ());
+		return FALSE;
+	}
+	/* By its full path, so GLib does not search PATH for it. */
 	proc = g_subprocess_newv (argv,
 	                          G_SUBPROCESS_FLAGS_STDIN_PIPE |
 	                          G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
 	                          G_SUBPROCESS_FLAGS_STDERR_PIPE, &error);
+	g_free (tool);
 	if (proc == NULL) {
 		*why = g_strdup (error->message);
 		g_error_free (error);
@@ -593,13 +629,16 @@ take_snapshot (const Family *f, const gchar *table,
 	gchar **lines;
 	GString *decl, *rules;
 	gboolean seen[8] = { FALSE };
+	gchar *tool = NULL;
+	gboolean spawned;
 
 	memset (snap, 0, sizeof (*snap));
 
-	if (!g_spawn_sync (NULL, argv, NULL,
-	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDERR_TO_DEV_NULL,
-	                   NULL, NULL, &text, NULL, &status, NULL) ||
-	    !g_spawn_check_wait_status (status, NULL)) {
+	spawned = resolve_tool (argv, &tool) &&
+	          g_spawn_sync (NULL, argv, NULL, G_SPAWN_STDERR_TO_DEV_NULL,
+	                        NULL, NULL, &text, NULL, &status, NULL);
+	g_free (tool);
+	if (!spawned || !g_spawn_check_wait_status (status, NULL)) {
 		g_free (text);
 		return;
 	}
@@ -1092,11 +1131,12 @@ intel_ready (GError **error)
 		return FALSE;
 	}
 
-	nft = g_find_program_in_path ("nft");
+	nft = fs_toolpath_find ("nft");
 	if (nft == NULL) {
-		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-		                     "nft was not found on PATH. Install the "
-		                     "nftables package to use blocklists.");
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+		             "nft was not found %s. Install the nftables "
+		             "package to use blocklists.",
+		             fs_toolpath_where ());
 		return FALSE;
 	}
 	g_free (nft);

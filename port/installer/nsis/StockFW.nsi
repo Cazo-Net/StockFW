@@ -9,7 +9,14 @@
 !endif
 
 !define APP_NAME "StockFW"
-!define APP_VERSION "1.0.6"
+;
+; APP_VERSION comes from the build: build_installer.sh reads the project
+; VERSION from CMakeLists.txt and passes -DAPP_VERSION=<it>.  There is no
+; default here on purpose: a literal once stayed at the previous release
+; while the exe moved on.  Run makensis by hand with -DAPP_VERSION=x.y.z.
+!ifndef APP_VERSION
+  !error "APP_VERSION is not defined: build with installer/build_installer.sh, or pass -DAPP_VERSION=x.y.z"
+!endif
 !define APP_PUBLISHER "StockFW Project"
 !define APP_WEBSITE "https://github.com/stockfw/stockfw"
 !define APP_EXE "StockFW.exe"
@@ -25,7 +32,7 @@ VIAddVersionKey /LANG=0 "ProductVersion" "${APP_VERSION}"
 VIAddVersionKey /LANG=0 "FileVersion" "${APP_VERSION_FULL}"
 VIAddVersionKey /LANG=0 "FileDescription" "${APP_NAME} Setup"
 VIAddVersionKey /LANG=0 "CompanyName" "${APP_PUBLISHER}"
-VIAddVersionKey /LANG=0 "LegalCopyright" "(C) 04-10-2026 StockFW Project"
+VIAddVersionKey /LANG=0 "LegalCopyright" "Copyright (C) 2024-2026 StockFW Project"
 
 ;------------------------------------------------------------------------------
 ; Modern UI 2 Configuration
@@ -144,9 +151,11 @@ Section "Main Application" SecMain
     File "${PROJECT_DIR}\installer\nsis\stage\StockFW-elevated.cmd"
     File "${PROJECT_DIR}\installer\nsis\stage\StockFW-elevated.ps1"
 
-    ; Documentation
+    ; Documentation, and the licence page's text (both licences in full,
+    ; which also covers the bundled OpenSSL libcrypto's Apache-2.0 terms)
     File "${PROJECT_DIR}\installer\nsis\stage\README.md"
-    File /nonfatal "${PROJECT_DIR}\installer\nsis\stage\CHANGELOG.md"
+    File "${PROJECT_DIR}\installer\nsis\stage\CHANGELOG.md"
+    File "${PROJECT_DIR}\installer\nsis\stage\LICENSE.txt"
 
     ; Write uninstaller
     WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -383,6 +392,7 @@ NotRunning:
     Delete "$INSTDIR\StockFW-elevated.ps1"
     Delete "$INSTDIR\README.md"
     Delete "$INSTDIR\CHANGELOG.md"
+    Delete "$INSTDIR\LICENSE.txt"
 
     ; Remove ALL DLLs in install root
     Delete "$INSTDIR\*.dll"

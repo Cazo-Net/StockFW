@@ -74,8 +74,12 @@ guint fs_hitview_clear_history (GError **error);
 gchar       *fs_hitview_history_dir (void);
 const gchar *fs_hitview_history_problem (void);
 
-/* How many events were read from history when the page was built. */
+/* How many events were read back from history: at the page build, or
+ * at a retry that took the history over from another copy. */
 guint fs_hitview_history_loaded (void);
+/* TRUE while the history is being opened and read back on its worker
+ * thread; the main loop installs the result. */
+gboolean fs_hitview_history_pending (void);
 
 /* Writes out what is queued for the history file and closes it (quit). */
 void fs_hitview_shutdown (void);

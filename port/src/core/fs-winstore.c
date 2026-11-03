@@ -1,6 +1,6 @@
 /*---[ fs-winstore.c ]---------------------------------------------------
  * The threat-intel store on Windows.  See fs-winstore.h and
- * docs/1.0.7-threat-intel-design.md, section 11.5.
+ * docs/design/1.0.7-threat-intel-design.md, section 11.5.
  *
  * [Unverified on Windows here] This file is compiled and linked for
  * Windows in the development container (mingw), and run on the CI's

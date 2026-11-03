@@ -27,7 +27,7 @@
 G_BEGIN_DECLS
 
 #ifndef FS_VERSION
-#define FS_VERSION "1.0.6"
+#define FS_VERSION "1.0.7"
 #endif
 
 /* Where the blocklists are enforced, and how a command gets the rights

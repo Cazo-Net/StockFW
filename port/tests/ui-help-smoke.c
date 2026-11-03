@@ -73,7 +73,7 @@
 #include <string.h>
 
 #ifndef FS_VERSION
-#define FS_VERSION "1.0.6"
+#define FS_VERSION "1.0.7"
 #endif
 
 static int failures = 0;
@@ -650,9 +650,8 @@ check_merged_107 (void)
 		  "<b>Anycast</b> mark",
 		  "countries: the anycast warning and its mark" },
 		{ "threat-intel", "CC BY-SA 4.0 licence",
-		  "The file declares the licence CC BY-SA 4.0; StockFW has not "
-		  "confirmed it",
-		  "countries: the licence as the file declares it, unconfirmed" },
+		  "licensed CC BY-SA 4.0, as IPFire has confirmed",
+		  "countries: the licence, as IPFire confirmed it" },
 		{ "threat-intel", "every hour",
 		  "downloaded at most once a day",
 		  "countries: the database is downloaded at most once a day" },
@@ -1431,8 +1430,8 @@ check_about (void)
 	credit = find_named (about, "about-credit-0");
 	CHECK (credit != NULL && g_strcmp0 (gtk_label_get_text (
 	       GTK_LABEL (credit)),
-	       "Stock Team & Qusai - Creator & Original Developer") == 0,
-	       "[A1] the first credit reads exactly \"Stock Team & Qusai - "
+	       "Stockfw Team - Creator & Original Developer") == 0,
+	       "[A1] the first credit reads exactly \"Stockfw Team - "
 	       "Creator & Original Developer\"");
 	{
 		guint shown = 0;

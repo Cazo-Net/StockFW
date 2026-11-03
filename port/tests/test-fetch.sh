@@ -64,7 +64,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PORT="$(dirname "$HERE")"
-DRV="${FS_FETCH_TEST:-$PORT/build-linux/fs-fetch-test}"
+DRV="${FS_FETCH_TEST:-${STOCKFW_BUILD:-$PORT/build-linux}/fs-fetch-test}"
 
 if [ "${STOCKFW_IN_NETNS:-}" != 1 ]; then
   if [ "$(id -u)" != 0 ]; then
@@ -404,11 +404,23 @@ check '[ "$(lines "$W/proxy.log")" -eq "$proxy_before" ]' \
 check '[ ! -e "$W/flags/keylog" ]' \
   "no TLS key log was written (SSLKEYLOGFILE never reached curl)"
 
+# The passwd files below replace /etc/passwd for one command, but glibc
+# asks every source nsswitch.conf names, and nss-systemd (Ubuntu, the
+# CI runner) makes up an account `nobody' whatever /etc/passwd says.
+# So those commands also get an nsswitch.conf that reads files only.
+if [ -f /etc/nsswitch.conf ]; then
+  sed -E 's/^(passwd|group|shadow|gshadow):.*/\1: files/' \
+    /etc/nsswitch.conf > "$W/nsswitch-files"
+  NSS=("$W/nsswitch-files" /etc/nsswitch.conf)
+else
+  NSS=()
+fi
+
 echo "== a curlrc in the home directory of the account curl runs as"
 awk -F: -v OFS=: -v home="$W/home" '$1 == "nobody" { $6 = home } 1' \
   /etc/passwd > "$W/passwd-home"
 if command -v setpriv >/dev/null; then
-  unshare -m bash -c "$MNT" _ "$W/passwd-home" /etc/passwd -- \
+  unshare -m bash -c "$MNT" _ "$W/passwd-home" /etc/passwd "${NSS[@]}" -- \
     setpriv --reuid=nobody --regid="$(id -g nobody)" --clear-groups \
     env -i "$REAL_CURL" -s -o /dev/null --max-time 10 \
     https://127.0.0.1:8443/small
@@ -416,7 +428,7 @@ if command -v setpriv >/dev/null; then
   check '[ $rc -eq 0 ]' \
     "control: curl as nobody without -q reads that curlrc and trusts the server"
 fi
-drive unshare -m bash -c "$MNT" _ "$W/passwd-home" /etc/passwd -- \
+drive unshare -m bash -c "$MNT" _ "$W/passwd-home" /etc/passwd "${NSS[@]}" -- \
   "$DRV" fetch --what "nobody's own curlrc says insecure" --expect TLS \
   --msg "SSL certificate problem" https://127.0.0.1:8443/small
 
@@ -585,7 +597,7 @@ awk -F: '$1 != "nobody"' /etc/passwd > "$W/passwd-none"
 awk -F: -v OFS=: '$1 == "nobody" { $3 = 0 } 1' /etc/passwd > "$W/passwd-root"
 awk -F: -v OFS=: '$1 == "nobody" { $4 = 0 } 1' /etc/passwd > "$W/passwd-gid0"
 awk -F: -v OFS=: '$1 == "nobody" { $3 = 4294967295 } 1' /etc/passwd > "$W/passwd-bad"
-unshare -m bash -c "$MNT" _ "$W/passwd-none" /etc/passwd -- \
+unshare -m bash -c "$MNT" _ "$W/passwd-none" /etc/passwd "${NSS[@]}" -- \
   getent passwd nobody >/dev/null
 rc=$?
 check '[ $rc -ne 0 ]' "control: with that passwd there is no account nobody"
@@ -596,31 +608,31 @@ drive env STOCKFW_TEST_CURL="$W/bin/spawned" "$DRV" fetch \
 check '[ -e "$W/flags/spawned" ]' \
   "  and it left its flag: \"nothing was started\" below means something"
 rm -f "$W/flags/spawned"
-drive unshare -m bash -c "$MNT" _ "$W/passwd-none" /etc/passwd -- \
+drive unshare -m bash -c "$MNT" _ "$W/passwd-none" /etc/passwd "${NSS[@]}" -- \
   env STOCKFW_TEST_CURL="$W/bin/spawned" "$DRV" fetch \
   --what "root, no account nobody" --expect PRIVILEGE --msg "no account" \
   https://127.0.0.1:8443/small
 check '[ ! -e "$W/flags/spawned" ]' "  and nothing was started"
 rm -f "$W/flags/spawned"   # each case its own flag: a failure names its case
-drive unshare -m bash -c "$MNT" _ "$W/passwd-root" /etc/passwd -- \
+drive unshare -m bash -c "$MNT" _ "$W/passwd-root" /etc/passwd "${NSS[@]}" -- \
   env STOCKFW_TEST_CURL="$W/bin/spawned" "$DRV" fetch \
   --what "root, nobody has uid 0" --expect PRIVILEGE \
   --msg "root's user or group id" https://127.0.0.1:8443/small
 check '[ ! -e "$W/flags/spawned" ]' "  and nothing was started"
 rm -f "$W/flags/spawned"
-drive unshare -m bash -c "$MNT" _ "$W/passwd-gid0" /etc/passwd -- \
+drive unshare -m bash -c "$MNT" _ "$W/passwd-gid0" /etc/passwd "${NSS[@]}" -- \
   env STOCKFW_TEST_CURL="$W/bin/spawned" "$DRV" fetch \
   --what "root, nobody's group is 0" --expect PRIVILEGE \
   --msg "root's user or group id" https://127.0.0.1:8443/small
 check '[ ! -e "$W/flags/spawned" ]' "  and nothing was started"
 rm -f "$W/flags/spawned"
-drive unshare -m bash -c "$MNT" _ "$W/passwd-bad" /etc/passwd -- \
+drive unshare -m bash -c "$MNT" _ "$W/passwd-bad" /etc/passwd "${NSS[@]}" -- \
   env STOCKFW_TEST_CURL="$W/bin/spawned" "$DRV" fetch \
   --what "root, a nobody the child cannot become" --expect PRIVILEGE \
   --msg "could not be started as" https://127.0.0.1:8443/small
 check '[ ! -e "$W/flags/spawned" ]' \
   "  and the stand-in never ran: the child stopped before exec"
-drive unshare -m bash -c "$MNT" _ "$W/passwd-bad" /etc/passwd -- \
+drive unshare -m bash -c "$MNT" _ "$W/passwd-bad" /etc/passwd "${NSS[@]}" -- \
   "$DRV" fetch --what "root, a nobody the child cannot become, again" \
   --repeat 3 --expect PRIVILEGE https://127.0.0.1:8443/small
 

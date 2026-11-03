@@ -55,6 +55,7 @@ cat > "$BUILD_DIR/test-core.c" <<'EOF'
 #include "core/fs-winstore.h"
 #include "core/fs-intel.h"
 #include "core/fs-hostnet.h"
+#include "core/fs-toolpath.h"
 #include <stdlib.h>
 
 static int failures = 0;
@@ -1854,6 +1855,42 @@ static void test_sentinel_beacon (void)
 	CHECK (beacon != NULL && beacon->severity == FS_COPILOT_CRITICAL &&
 	       strstr (beacon->why, "block list") != NULL,
 	       "a beacon to a listed address is Critical and says why");
+	/* CORRECTNESS-2 (1.0.7 release review): What-If does not consult
+	 * the lists or the country and network rules, so it would answer
+	 * "Allowed" and a block rule would look like a change. */
+	CHECK (beacon != NULL && beacon->whatif_line == NULL &&
+	       beacon->rule_csv == NULL && beacon->suggested_rule == NULL &&
+	       !beacon->auto_applicable && beacon->withheld != NULL &&
+	       strstr (beacon->withheld, "already blocks it") != NULL,
+	       "a beacon a list blocks offers no What-If line and no block "
+	       "(%s)", beacon != NULL ? beacon->withheld : "none");
+	fs_copilot_free (copilot);
+
+	/* Reported first while allowed, then blocked by a country rule:
+	 * the block and the What-If line of the first report go. */
+	copilot = fs_copilot_new ();
+	hit.destination = "203.0.113.67";
+	hit.rule = NULL;
+	for (i = 0; i < 6; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	CHECK (beacon != NULL && beacon->whatif_line != NULL &&
+	       beacon->rule_csv != NULL,
+	       "an allowed beacon offers What-If and a block");
+	hit.rule = "Threat intel: Country CN";
+	for (i = 6; i < 10; i++)
+		fs_copilot_feed_event_at (copilot, &hit,
+		                          t0 + (gint64) i * 60 * G_USEC_PER_SEC);
+	beacon = find_insight (copilot, FS_INSIGHT_BEACON);
+	CHECK (count_insights (copilot, FS_INSIGHT_BEACON) == 1 &&
+	       beacon != NULL && beacon->severity == FS_COPILOT_CRITICAL &&
+	       beacon->whatif_line == NULL && beacon->rule_csv == NULL &&
+	       beacon->suggested_rule == NULL && !beacon->auto_applicable,
+	       "once a country rule blocks it, the same finding drops the "
+	       "block and the What-If line (%s)",
+	       beacon != NULL && beacon->rule_csv != NULL ? beacon->rule_csv
+	                                                  : "none");
 	fs_copilot_free (copilot);
 	hit.rule = NULL;
 }
@@ -2969,6 +3006,9 @@ static void test_threat_intel (void)
 	       "intel: outbound is a Warning naming the list and the app");
 	CHECK (ins != NULL && ins->rule_csv == NULL && !ins->auto_applicable,
 	       "intel: nothing to stage, the list already blocks it");
+	CHECK (ins != NULL && ins->whatif_line == NULL,
+	       "intel: no Ask What-If: What-If does not consult the lists "
+	       "or the country and network rules (CORRECTNESS-2)");
 
 	intel_feed (c, "In", "198.51.100.1", "192.168.1.7",
 	            "Threat intel: FireHOL level 1", h0 + 10);
@@ -11059,6 +11099,132 @@ make_run_dir (void)
 	return tmpl;
 }
 
+/* SECURITY-1 and SECURITY-2 (1.0.7 release review): where the system
+ * tools come from.  Root never searches the PATH it was given; Windows
+ * runs a bare tool name from System32, never through CreateProcess's
+ * search of the program's and the current folder. */
+static void test_toolpath (void)
+{
+	gchar *t;
+
+	/* Windows: the pure mapping. */
+	t = fs_toolpath_windows ("C:\\Windows\\system32", "netsh.exe");
+	CHECK (g_strcmp0 (t, "C:\\Windows\\system32\\netsh.exe") == 0,
+	       "toolpath: netsh.exe runs from System32 (%s)", t);
+	g_free (t);
+	t = fs_toolpath_windows ("C:\\Windows\\system32\\", "wevtutil.exe");
+	CHECK (g_strcmp0 (t, "C:\\Windows\\system32\\wevtutil.exe") == 0,
+	       "toolpath: a trailing backslash is not doubled (%s)", t);
+	g_free (t);
+	t = fs_toolpath_windows ("C:\\Windows\\system32", "auditpol.exe");
+	CHECK (g_strcmp0 (t, "C:\\Windows\\system32\\auditpol.exe") == 0,
+	       "toolpath: auditpol.exe runs from System32 (%s)", t);
+	g_free (t);
+	t = fs_toolpath_windows ("C:\\Windows\\system32",
+	                         "C:\\Windows\\system32\\curl.exe");
+	CHECK (g_strcmp0 (t, "C:\\Windows\\system32\\curl.exe") == 0,
+	       "toolpath: a full path is kept (%s)", t);
+	g_free (t);
+	t = fs_toolpath_windows ("C:\\Windows\\system32", "\\\\srv\\s\\x.exe");
+	CHECK (g_strcmp0 (t, "\\\\srv\\s\\x.exe") == 0,
+	       "toolpath: a UNC path is kept (%s)", t);
+	g_free (t);
+	{
+		static const gchar *const refused[] = {
+			"bin\\netsh.exe", ".\\netsh.exe", "C:netsh.exe",
+			"tools/netsh.exe", "", ".", "..", NULL
+		};
+
+		for (guint i = 0; refused[i] != NULL; i++) {
+			t = fs_toolpath_windows ("C:\\Windows\\system32",
+			                         refused[i]);
+			CHECK (t == NULL, "toolpath: [%s] is refused, never "
+			       "searched for (%s)", refused[i], t);
+			g_free (t);
+		}
+	}
+	t = fs_toolpath_windows (NULL, "netsh.exe");
+	CHECK (t == NULL, "toolpath: no System32 known, nothing runs");
+	g_free (t);
+	t = fs_toolpath_windows ("", "netsh.exe");
+	CHECK (t == NULL, "toolpath: an empty System32 runs nothing");
+	g_free (t);
+
+#ifndef G_OS_WIN32
+	{
+		gchar *dir = g_dir_make_tmp ("toolpath-XXXXXX", NULL);
+		gchar *bin = g_build_filename (dir, "bin", NULL);
+		gchar *tool = g_build_filename (bin, "iptables-restore", NULL);
+		gchar *plain = g_build_filename (bin, "nft", NULL);
+		gchar *dirs = g_strdup_printf ("relative:.::%s:/usr/bin", bin);
+		const gchar *old = g_getenv ("PATH");
+		gchar *saved = g_strdup (old);
+		gchar *p;
+
+		g_mkdir_with_parents (bin, 0700);
+		g_file_set_contents (tool, "#!/bin/sh\nexit 0\n", -1, NULL);
+		g_chmod (tool, 0755);
+		g_file_set_contents (plain, "not a program\n", -1, NULL);
+		g_chmod (plain, 0644);
+
+		p = fs_toolpath_search ("iptables-restore", dirs);
+		CHECK (g_strcmp0 (p, tool) == 0,
+		       "toolpath: search takes the first absolute directory "
+		       "holding the tool (%s)", p);
+		g_free (p);
+		p = fs_toolpath_search ("nft", bin);
+		CHECK (p == NULL, "toolpath: a file that is not executable "
+		       "is not a tool (%s)", p);
+		g_free (p);
+		p = fs_toolpath_search ("../bin/iptables-restore", bin);
+		CHECK (p == NULL, "toolpath: a name with a folder is refused");
+		g_free (p);
+		p = fs_toolpath_search ("iptables-restore", "bin:.:");
+		CHECK (p == NULL, "toolpath: relative and empty entries "
+		       "(the current directory) are never searched (%s)", p);
+		g_free (p);
+
+		/* The fake tool first on PATH, as `sudo -E' would pass it. */
+		g_setenv ("PATH", bin, TRUE);
+		p = fs_toolpath_find ("iptables-restore");
+		if (geteuid () == 0) {
+			CHECK (p == NULL || (!g_str_has_prefix (p, dir) &&
+			       (g_str_has_prefix (p, "/usr/sbin/") ||
+			        g_str_has_prefix (p, "/usr/bin/") ||
+			        g_str_has_prefix (p, "/sbin/") ||
+			        g_str_has_prefix (p, "/bin/"))),
+			       "toolpath: as root the PATH is not searched; "
+			       "the tool comes from the system directories (%s)",
+			       p);
+			CHECK (strcmp (fs_toolpath_where (),
+			               "in /usr/sbin, /usr/bin, /sbin or /bin") == 0,
+			       "toolpath: the messages name those directories");
+		} else {
+			CHECK (g_strcmp0 (p, tool) == 0,
+			       "toolpath: not root, the PATH is used (%s)", p);
+			CHECK (strcmp (fs_toolpath_where (), "on PATH") == 0,
+			       "toolpath: the messages say PATH");
+		}
+		g_free (p);
+		p = fs_toolpath_find ("/tmp/iptables-restore");
+		CHECK (p == NULL, "toolpath: find takes a bare name only");
+		g_free (p);
+		g_setenv ("PATH", saved != NULL ? saved : "/usr/bin:/bin", TRUE);
+
+		g_unlink (tool);
+		g_unlink (plain);
+		g_rmdir (bin);
+		g_rmdir (dir);
+		g_free (saved);
+		g_free (dirs);
+		g_free (plain);
+		g_free (tool);
+		g_free (bin);
+		g_free (dir);
+	}
+#endif
+}
+
 int main (void)
 {
 	gchar *run_dir = make_run_dir ();
@@ -11173,6 +11339,7 @@ int main (void)
 	test_intelwin_review ();
 	test_hostnet_onlink ();
 	test_winstore_sddl ();
+	test_toolpath ();
 
 	printf ("\n%s: %d failure(s)\n", failures ? "FAILED" : "PASSED",
 	        failures);
@@ -11261,14 +11428,82 @@ health_rc=0
 # Wording guard: the Copilot is a set of fixed rules, and nothing in the
 # program or the docs may call it AI.  The one sentence that says there
 # is no AI model is allowed.
-WORDING_HITS="$(grep -rnE '\bAI\b|AI-' src ../docs ../README.md 2>/dev/null \
+# The installers, their documents and the release notes ship to users
+# too (the Windows installer once carried a changelog promising
+# "AI-powered" detection), so they are read as well.  site/ is the
+# website's own tree and has its own checks.
+WORDING_HITS="$(grep -rnE '\bAI\b|AI-' src docs installer ../docs ../README.md \
+  ../CHANGELOG.md ../RELEASING.md ../AUTHORS ../CREDITS 2>/dev/null \
   | grep -v 'There is no AI model' || true)"
 if [ -n "$WORDING_HITS" ]; then
-  echo "FAIL: \"AI\" wording in the program or the docs:"
+  echo "FAIL: \"AI\" wording in the program, the installers or the docs:"
   echo "$WORDING_HITS"
   exit 1
 fi
-echo "ok:   wording guard: no \"AI\" claims in src, docs or README"
+echo "ok:   wording guard: no \"AI\" claims in src, installers, docs, README or CHANGELOG"
+
+# Credits: "Stockfw Team - Creator & Original Developer", never the
+# creator's full name or e-mail address, anywhere in the repository
+# (the legacy tree included).
+if git -C .. rev-parse --git-dir > /dev/null 2>&1; then
+  NAME_HITS="$(git -C .. grep -nIi -e 'fethalrahma[n]' -e 'qusaifo[x]' || true)"
+else
+  NAME_HITS="$(grep -rnIi -e 'fethalrahma[n]' -e 'qusaifo[x]' .. \
+    --exclude-dir=.git --exclude-dir='build*' 2>/dev/null || true)"
+fi
+if [ -n "$NAME_HITS" ]; then
+  echo "FAIL: a credit carries the creator's full name or e-mail address:"
+  echo "$NAME_HITS"
+  exit 1
+fi
+for f in ../AUTHORS ../CREDITS ../README.md src/ui/fs-aboutdialog.c; do
+  if ! grep -q 'Stockfw Team' "$f"; then
+    echo "FAIL: $f does not credit \"Stockfw Team\""
+    exit 1
+  fi
+done
+# The port's own credit reads "Stock Team" too: About and Help said
+# "StockFW Project - GTK3 Port, ..." (release review, problem 1).
+for f in src/ui/fs-aboutdialog.c src/ui/fs-helpcontent.c; do
+  if ! tr -d '\r\n\t' < "$f" | sed 's/"  *"//g' | grep -q 'Stock Team - GTK3 Port, Windows Backend, Copilot' ||
+     grep -q 'StockFW Project' "$f"; then
+    echo "FAIL: $f does not credit \"Stock Team - GTK3 Port, Windows Backend, Copilot\""
+    exit 1
+  fi
+done
+echo "ok:   credits guard: Stockfw Team, no full name, no e-mail address"
+
+# Privacy (DOCS-HELP-07): the location database downloads as a
+# blocklist does, so "Your data" and the threat-intel topic must name it
+# wherever they say what StockFW downloads.
+PRIV="$(tr -d '\r\n\t' < src/ui/fs-helpcontent.c | sed 's/"  *"//g')"
+case "$PRIV" in
+  *'nothing unless you turn on a <a href=\"help:threat-intel\">threat-intel blocklist</a> or the location database'*) ;;
+  *) echo "FAIL: Help > Your data says only a blocklist downloads anything"; exit 1 ;;
+esac
+case "$PRIV" in
+  *'While no list and not the location database is on, StockFW makes no network request'*) ;;
+  *) echo "FAIL: Help > Threat intel says no list means no network request"; exit 1 ;;
+esac
+echo "ok:   privacy guard: Help names the location database as a download"
+
+# SECURITY-1 and SECURITY-2: the spawns that run system tools go through
+# fs-toolpath, never a PATH search (root) or CreateProcess's search of
+# the program's own and the current folder (Windows).
+SPAWN_HITS="$(grep -nE 'G_SPAWN_SEARCH_PATH|g_find_program_in_path' \
+  src/platform/linux/fs-backend-linux.c src/core/fs-nftset.c \
+  src/cli/fs-cli-cmds.c src/cli/fs-dashboard.c || true)"
+if [ -n "$SPAWN_HITS" ]; then
+  echo "FAIL: a system tool is found through PATH:"
+  echo "$SPAWN_HITS"
+  exit 1
+fi
+if ! tr -d '\r' < src/platform/windows/fs-backend-windows.c \
+     | grep -q 'fs_toolpath_windows (system_dir, argv\[0\])'; then
+  echo "FAIL: spawn_capture no longer maps argv[0] to System32"
+  exit 1
+fi
+echo "ok:   spawn guard: system tools by absolute path (Linux root, Windows)"
 
 [ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ] && [ "$intelgeo_rc" -eq 0 ] \
   && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]

@@ -107,10 +107,15 @@ iptables on Linux and the Windows Firewall API on Windows.
 ## Build environments
 
 - **Windows**: MSYS2 — `winget install MSYS2.MSYS2`, then
-  `pacman -S --needed base-devel mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake}`.
+  `pacman -S --needed base-devel mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake,xz,openssl}`.
   Produces a native Windows GTK3 binary in `port/build/`.
-- **Linux**: WSL2 Ubuntu + `build-essential cmake ninja-build libgtk-3-dev`.
-  Produces a native Linux GTK3 binary.
+- **Linux**: WSL2 Ubuntu + `build-essential cmake ninja-build pkg-config
+  libgtk-3-dev liblzma-dev libssl-dev`. Produces a native Linux GTK3
+  binary.
+
+liblzma (`xz`) and libcrypto (`openssl`) are required (1.0.7): they read
+and verify the location database. CMake stops at configure time when
+pkg-config cannot find them.
 
 Both use the same `CMakeLists.txt`.
 

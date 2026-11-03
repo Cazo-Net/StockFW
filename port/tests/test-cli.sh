@@ -709,6 +709,61 @@ for p in ('summary', 'activity?range=900', 'activity?range=86400', 'events', 'co
     json.loads(out)"
 
 kill "$DASH_PID" 2>/dev/null; wait "$DASH_PID" 2>/dev/null; DASH_PID=""
+
+# The browser is opened on a 0600 page that redirects to the URL, never
+# with the token in an argument list, where any local account could read
+# it from /proc/<pid>/cmdline (1.0.7 release review, SECURITY-3).  The
+# dashboard never starts a browser as root, so as root this part runs
+# as nobody, from a copy of the binary nobody can reach.
+OD="$(mktemp -d /tmp/stockfw-open-XXXXXX)"; chmod 755 "$OD"
+mkdir -p "$OD/bin" "$OD/run" "$OD/seen"
+cp "$S" "$OD/stockfw"
+cat > "$OD/bin/xdg-open" <<'XEOF'
+#!/bin/sh
+d="$(dirname "$0")/../seen"
+tr '\0' '\n' < /proc/$$/cmdline > "$d/cmdline"
+stat -c '%a' "$1" > "$d/mode"
+stat -c '%a' "$(dirname "$1")" > "$d/dirmode"
+cp "$1" "$d/page.html"
+printf '%s\n' "$1" > "$d/argv"
+XEOF
+chmod 755 "$OD/bin/xdg-open"
+chmod 700 "$OD/run"
+AS=""
+if [ "$(id -u)" = 0 ]; then
+  chown 65534:65534 "$OD/run" "$OD/seen"
+  AS="setpriv --reuid=65534 --regid=65534 --clear-groups"
+fi
+OPORT=$(py 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+$AS env -i PATH="$OD/bin:/usr/bin:/bin" DISPLAY=:99 XDG_RUNTIME_DIR="$OD/run" \
+  HOME="$OD/run" XDG_CONFIG_HOME="$OD/run/cfg" STOCKFW_RULES_DIR="$OD/run/rules" \
+  "$OD/stockfw" dashboard --port "$OPORT" > "$OD/out" 2>&1 &
+DASH_PID=$!
+for _ in $(seq 1 50); do [ -s "$OD/seen/argv" ] && break; sleep 0.1; done
+OURL=$(grep -o 'http://[^ ]*' "$OD/out" | head -1)
+OTOKEN=${OURL##*#token=}
+OPAGE=$(cat "$OD/seen/argv" 2>/dev/null)
+check "dashboard: the terminal still prints the whole URL with the token" \
+  bash -c "[[ '$OTOKEN' =~ ^[0-9a-f]{32}$ ]]"
+check "  ...xdg-open was started on a page under \$XDG_RUNTIME_DIR ($OPAGE)" \
+  bash -c "[[ '$OPAGE' == '$OD/run/stockfw-dashboard-'*/open.html ]]"
+check "  ...and the token is in no argument xdg-open got" \
+  bash -c "[ -s '$OD/seen/cmdline' ] && ! grep -q '$OTOKEN' '$OD/seen/cmdline'"
+check "  ...the page is 0600 in a 0700 directory" \
+  bash -c "[ \"\$(cat '$OD/seen/mode')\" = 600 ] && [ \"\$(cat '$OD/seen/dirmode')\" = 700 ]"
+check "  ...and sends the browser on to the URL with the token" \
+  bash -c "grep -qF 'location.replace(\"$OURL\")' '$OD/seen/page.html' && grep -qF 'url=$OURL\"' '$OD/seen/page.html'"
+check "  ...and the terminal says to open the URL if the browser cannot read the page" \
+  bash -c "grep -q 'A browser was started' '$OD/out' && grep -q 'open the URL' '$OD/out'"
+check "  ...it stays until the token is used" bash -c "[ -f '$OPAGE' ]"
+curl -sS -o /dev/null -H "X-StockFW-Token: $OTOKEN" "http://127.0.0.1:$OPORT/api/summary"
+check "  ...and is removed, with its directory, once it is" \
+  bash -c "[ ! -e '$OPAGE' ] && [ ! -e \"\$(dirname '$OPAGE')\" ]"
+kill "$DASH_PID" 2>/dev/null; wait "$DASH_PID" 2>/dev/null; DASH_PID=""
+check "  ...and nothing is left in the runtime directory when it stops" \
+  bash -c "[ -z \"\$(ls -A '$OD/run' | grep stockfw-dashboard)\" ]"
+rm -rf "$OD"
+
 check "a second dashboard on a busy port fails cleanly (exit 1)" py "
 import socket, subprocess
 s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(1)

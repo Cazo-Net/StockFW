@@ -99,7 +99,7 @@ gcc -o "$BUILD_DIR/test-apply" \
 	-I "$PORT/src" $CF \
 	"$BUILD_DIR/test-apply.c" \
 	"$PORT/src/platform/linux/fs-backend-linux.c" \
-	"$PORT/build-linux/libfs-core.a" \
+	"${STOCKFW_BUILD:-$PORT/build-linux}/libfs-core.a" \
 	$LF 2> "$BUILD_DIR/cc.log"
 
 CHECK $? "test program compiles against the real Linux backend"
@@ -174,6 +174,28 @@ dupes="$(iptables -S INPUT | grep -c -- '-j INBOUND')"
 CHECK $([ "$dupes" = "1" ]; echo $?) \
 	"re-applying does not stack duplicate jumps (got $dupes)"
 
+# ------------------------------ root never runs a tool from its PATH
+# `sudo -E' or a sudoers without secure_path hands root the user's PATH.
+# Tools planted first on it must not run: as root the release backend
+# takes iptables, ip6tables, their -save/-restore and nft from
+# /usr/sbin, /usr/bin, /sbin or /bin only (1.0.7 release review,
+# SECURITY-2).  Each fake records that it ran and claims success.
+mkdir -p "$BUILD_DIR/planted"
+for tool in iptables iptables-save iptables-restore ip6tables \
+            ip6tables-save ip6tables-restore nft journalctl; do
+	printf '#!/bin/sh\necho "%s $*" >> "%s/planted.log"\nexit 0\n' \
+		"$tool" "$BUILD_DIR" > "$BUILD_DIR/planted/$tool"
+	chmod 755 "$BUILD_DIR/planted/$tool"
+done
+iptables -F INBOUND
+output="$(PATH="$BUILD_DIR/planted:$PATH" "$BUILD_DIR/test-apply" 2>/dev/null)"
+CHECK $([ "$output" = "APPLIED" ]; echo $?) \
+	"with tools planted first on PATH, the apply still succeeds ($output)"
+CHECK $([ ! -e "$BUILD_DIR/planted.log" ]; echo $?) \
+	"  ...and not one planted tool ran ($(head -c 120 "$BUILD_DIR/planted.log" 2>/dev/null))"
+iptables -S INBOUND | grep -q '\-j DROP'
+CHECK $? "  ...the real iptables-restore loaded the rules again"
+
 # ----------------------------------------------------------------- stop
 cat > "$BUILD_DIR/stop.c" <<'EOF'
 #include <glib.h>
@@ -195,7 +217,7 @@ gcc -o "$BUILD_DIR/stop" \
 	-I "$PORT/src" $CF \
 	"$BUILD_DIR/stop.c" \
 	"$PORT/src/platform/linux/fs-backend-linux.c" \
-	"$PORT/build-linux/libfs-core.a" \
+	"${STOCKFW_BUILD:-$PORT/build-linux}/libfs-core.a" \
 	$LF 2> "$BUILD_DIR/stop.log"
 
 "$BUILD_DIR/stop" >/dev/null 2>"$BUILD_DIR/stop.err"

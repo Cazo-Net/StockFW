@@ -60,7 +60,12 @@ static FsEventModel *emodel = NULL;
 /* [ history ]
  * Accepted events are also appended to the history files
  * (fs-eventlog.c) and the newest are read back when the page is built,
- * so the list survives a restart.  Flushed every second. */
+ * so the list survives a restart.  Flushed every second.
+ *
+ * Opening the history (which prunes it) and reading it back happen on
+ * a worker thread, never on the GTK main thread: the page is built
+ * before the window is shown, and a large history held the window back
+ * (1.0.7 release review, CORRECTNESS-1).  See history_load_start. */
 static FsEventLog   *elog = NULL;
 static guint         elog_flush_id = 0;
 static guint         elog_retry_id = 0;   /* another copy holds it */
@@ -992,9 +997,14 @@ on_history_flush (gpointer data)
 	return G_SOURCE_CONTINUE;
 }
 
+static void history_load_finish_now (gboolean settle);
+
 static void
 history_close (void)
 {
+	/* A load in progress holds the folder's lock: let it land first,
+	 * so what it opened is closed here and not left behind. */
+	history_load_finish_now (FALSE);
 	if (elog_flush_id != 0) {
 		g_source_remove (elog_flush_id);
 		elog_flush_id = 0;
@@ -1010,11 +1020,303 @@ history_close (void)
 }
 
 static void history_open (void);
+static void model_detach (void);
+static void model_attach (void);
+
+/* [ HistoryLoad ]
+ * One open-and-read-back of the history on a worker thread.  The main
+ * thread fills in what to do, the worker fills in the results and then
+ * asks the main loop to install them (on_history_loaded), or the main
+ * thread joins it first when it cannot wait (history_load_finish_now:
+ * quit, Delete history, history switched off). */
+typedef struct
+{
+	/* in */
+	gchar        *dir;
+	guint         days;
+	guint64       max_bytes;
+	guint         capacity;
+	gboolean      have_cutoff;   /* the list held events already ...  */
+	gint64        cutoff;        /* ... the oldest of them, in ticks: */
+	                             /* only older history is listed      */
+	/* out */
+	FsEventLog   *log;
+	GError       *error;
+	FsEventStore *store;         /* the history read back, or NULL     */
+	guint         loaded;        /* events in store from history       */
+	gint64        newest;        /* the newest of them, ticks; 0: none */
+	/* state */
+	GThread      *thread;
+	gboolean      installed;     /* results taken by the main thread   */
+	gboolean      discard_rows;  /* the list was cleared meanwhile     */
+	guint64       next_seq;      /* the store's next seq at the start  */
+	GArray       *pending;       /* PendingHit: events that arrived    */
+	                             /* meanwhile, main thread only        */
+} HistoryLoad;
+
+/* An event that arrived while the history was being opened, kept for
+ * the history file: the list may drop it before the load lands (a burst
+ * bigger than the list), and it must still be written (code review,
+ * finding 3).  At most HISTORY_PENDING_MAX are kept. */
+typedef struct
+{
+	FsHit *hit;
+	gint64 ticks;
+} PendingHit;
+
+#define HISTORY_PENDING_MAX FS_EVENTSTORE_MAX_CAPACITY
+
+static HistoryLoad *history_job = NULL;
+
+static void
+history_load_free (HistoryLoad *job)
+{
+	if (job->log != NULL)
+		fs_eventlog_close (job->log);
+	if (job->store != NULL)
+		fs_eventstore_free (job->store);
+	g_clear_error (&job->error);
+	g_free (job->dir);
+	for (guint i = 0; i < job->pending->len; i++)
+		fs_hit_free (g_array_index (job->pending, PendingHit, i).hit);
+	g_array_free (job->pending, TRUE);
+	g_free (job);
+}
+
+static gboolean on_history_loaded (gpointer data);
+static gboolean on_history_retry (gpointer data);
+
+/* [ history_load_thread ]
+ * Worker: open (and so prune) the history, then read the newest events
+ * back into a store of its own.  Touches nothing the main thread owns. */
+static gpointer
+history_load_thread (gpointer data)
+{
+	HistoryLoad *job = data;
+
+	job->log = fs_eventlog_open (job->dir, job->days, job->max_bytes,
+	                             &job->error);
+	if (job->log != NULL) {
+		FsEventStore *read = fs_eventstore_new (job->capacity);
+		guint n;
+		guint64 first;
+
+		fs_eventlog_load_recent (job->dir, read, job->capacity, NULL);
+		n = fs_eventstore_length (read);
+		first = fs_eventstore_first_seq (read);
+		for (guint i = 0; i < n; i++) {
+			gint64 t = fs_eventstore_ticks (read, first + i);
+
+			if (t > job->newest)
+				job->newest = t;
+		}
+		if (!job->have_cutoff) {
+			job->store = read;
+			job->loaded = n;
+		} else {
+			/* The list already holds what this copy saw while
+			 * another one held the history (a retry): only what
+			 * is older than all of it is added, so an event both
+			 * copies saw is not listed twice (CORRECTNESS-3). */
+			job->store = fs_eventstore_new (job->capacity);
+			for (guint i = 0; i < n; i++) {
+				guint64 seq = first + i;
+				FsHit *hit;
+
+				if (fs_eventstore_ticks (read, seq) >= job->cutoff)
+					continue;
+				hit = fs_eventstore_get_hit (read, seq);
+				if (fs_eventstore_append (
+					job->store, hit,
+					fs_eventstore_time_us (read, seq)) != 0)
+					job->loaded++;
+				fs_hit_free (hit);
+			}
+			fs_eventstore_free (read);
+		}
+	}
+	g_idle_add (on_history_loaded, job);
+	return NULL;
+}
+
+/* [ history_load_install ]
+ * Main thread, the worker done: the log becomes this page's writer and
+ * the history read back goes under the events that arrived meanwhile.
+ * Events were not written while there was no writer: the ones newer
+ * than the newest history event are written now, those the list held
+ * before the load started and every one that arrived while it ran
+ * (job->pending), also when the list has dropped it since. */
+static void
+history_load_install (HistoryLoad *job)
+{
+	g_thread_join (job->thread);
+	job->thread = NULL;
+	job->installed = TRUE;
+	if (history_job == job)
+		history_job = NULL;
+
+	g_clear_pointer (&history_problem, g_free);
+	if (job->log == NULL) {
+		history_problem = g_strdup (job->error != NULL
+		                            ? job->error->message : job->dir);
+		if (g_error_matches (job->error, FS_EVENTLOG_ERROR,
+		                     FS_EVENTLOG_ERROR_IN_USE) &&
+		    elog_retry_id == 0)
+			elog_retry_id = g_timeout_add_seconds (
+				5, on_history_retry, NULL);
+		return;
+	}
+
+	elog = job->log;
+	job->log = NULL;
+	if (elog_flush_id == 0)
+		elog_flush_id = g_timeout_add_seconds (1, on_history_flush, NULL);
+
+	if (estore == NULL) {
+		for (guint i = 0; i < job->pending->len; i++) {
+			PendingHit *p = &g_array_index (job->pending,
+			                                PendingHit, i);
+
+			if (p->ticks > job->newest)
+				fs_eventlog_append (elog, p->hit, p->ticks);
+		}
+		return;
+	}
+
+	{
+		FsEventStore *merged = job->store;
+		guint n = fs_eventstore_length (estore);
+		guint64 first = fs_eventstore_first_seq (estore);
+
+		job->store = NULL;
+		if (job->discard_rows || merged == NULL) {
+			if (merged != NULL)
+				fs_eventstore_free (merged);
+			merged = fs_eventstore_new (fs_eventstore_capacity (estore));
+		} else {
+			history_loaded += job->loaded;
+			fs_eventstore_set_capacity (merged,
+			                            fs_eventstore_capacity (estore));
+		}
+		for (guint i = 0; i < n; i++) {
+			guint64 seq = first + i;
+			gint64 ticks = fs_eventstore_ticks (estore, seq);
+			FsHit *hit = fs_eventstore_get_hit (estore, seq);
+
+			if (seq < job->next_seq && ticks > job->newest)
+				fs_eventlog_append (elog, hit, ticks);
+			fs_eventstore_append (merged, hit,
+			                      fs_eventstore_time_us (estore, seq));
+			fs_hit_free (hit);
+		}
+		for (guint i = 0; i < job->pending->len; i++) {
+			PendingHit *p = &g_array_index (job->pending,
+			                                PendingHit, i);
+
+			if (p->ticks > job->newest)
+				fs_eventlog_append (elog, p->hit, p->ticks);
+		}
+
+		model_detach ();
+		g_object_unref (emodel);      /* lets go of the old store */
+		fs_eventstore_free (estore);
+		estore = merged;
+		emodel = fs_event_model_new (estore);
+		fs_hitview_refilter_now ();   /* the filter, and attach */
+		model_attach ();
+		update_count_label ();
+	}
+}
+
+/* [ history_load_settle ]
+ * After a load was installed: the settings saved while it ran (limits,
+ * or history off; fs_hitview_apply_settings could not apply them, see
+ * history_open), and the strip.  A failed open is not started again
+ * here: the retry timer does that for a folder in use. */
+static void
+history_load_settle (void)
+{
+	if (elog != NULL || !fs_prefs_bool (FS_PREFS_EVENTS_HISTORY))
+		history_open ();
+	history_warning_sync ();
+}
+
+/* [ on_history_loaded ] -- the worker's result, in the main loop. */
+static gboolean
+on_history_loaded (gpointer data)
+{
+	HistoryLoad *job = data;
+
+	if (!job->installed) {
+		history_load_install (job);
+		history_load_settle ();
+	}
+	history_load_free (job);
+	return G_SOURCE_REMOVE;
+}
+
+/* [ history_load_finish_now ]
+ * For whoever cannot wait for the main loop: waits for the worker and
+ * installs its results here.  The idle it queued finds them taken and
+ * only frees the job, so what it would have done after the install is
+ * done here too (settle), except while closing (quit), where the page
+ * may be gone: Delete history and the sign-out flush used to leave
+ * limits saved during the load unapplied (code review, finding 2). */
+static void
+history_load_finish_now (gboolean settle)
+{
+	HistoryLoad *job = history_job;
+
+	if (job != NULL && !job->installed) {
+		history_load_install (job);
+		if (settle)
+			history_load_settle ();
+	}
+}
+
+/* [ history_load_start ]
+ * Opens and reads back the history on a worker (CORRECTNESS-1).  The
+ * list may already hold events (a retry after another copy let go, or
+ * live events): the history goes under them, see the thread. */
+static void
+history_load_start (void)
+{
+	HistoryLoad *job = g_new0 (HistoryLoad, 1);
+	guint mb = fs_prefs_uint (FS_PREFS_EVENTS_HISTORY_MB,
+	                          FS_EVENTLOG_MIN_MB, FS_EVENTLOG_MAX_MB);
+
+	job->dir = fs_eventlog_default_dir ();
+	job->days = fs_prefs_uint (FS_PREFS_EVENTS_HISTORY_DAYS,
+	                           FS_EVENTLOG_MIN_DAYS, FS_EVENTLOG_MAX_DAYS);
+	job->max_bytes = (guint64) mb * 1024 * 1024;
+	job->capacity = estore != NULL ? fs_eventstore_capacity (estore)
+	                               : FS_EVENTSTORE_MIN_CAPACITY;
+	job->pending = g_array_new (FALSE, FALSE, sizeof (PendingHit));
+	job->next_seq = estore != NULL
+		? fs_eventstore_first_seq (estore) + fs_eventstore_length (estore)
+		: 0;
+	if (estore != NULL && fs_eventstore_length (estore) > 0) {
+		guint n = fs_eventstore_length (estore);
+		guint64 first = fs_eventstore_first_seq (estore);
+
+		job->have_cutoff = TRUE;
+		job->cutoff = G_MAXINT64;
+		for (guint i = 0; i < n; i++)
+			job->cutoff = MIN (job->cutoff,
+			                   fs_eventstore_ticks (estore, first + i));
+	}
+	history_job = job;
+	job->thread = g_thread_new ("stockfw-history", history_load_thread,
+	                            job);
+}
 
 /* [ on_history_retry ]
  * Another copy of StockFW had the history (FS_EVENTLOG_ERROR_IN_USE):
  * try again every few seconds, so this copy takes over writing once
- * that one has gone, and the page stops saying it does not save. */
+ * that one has gone, and the page stops saying it does not save.  A
+ * retry that opens it also reads the saved history back, under what
+ * the list already holds (CORRECTNESS-3): it used to open the writer
+ * only, and the earlier days never appeared. */
 static gboolean
 on_history_retry (gpointer data)
 {
@@ -1027,8 +1329,8 @@ on_history_retry (gpointer data)
 }
 
 /* [ history_open ]
- * Opens the history folder under the saved limits, or closes it when
- * history is switched off.  Opening prunes it to the limits. */
+ * Starts opening the history folder under the saved limits, or closes
+ * it when history is switched off.  Opening prunes it to the limits. */
 static void
 history_open (void)
 {
@@ -1048,28 +1350,18 @@ history_open (void)
 		return;
 	}
 
-	{
-		gchar *dir = fs_eventlog_default_dir ();
-		GError *error = NULL;
+	/* The worker picks the limits up when it lands (on_history_loaded
+	 * calls this again). */
+	if (history_job != NULL)
+		return;
 
-		elog = fs_eventlog_open (dir, days, (guint64) mb * 1024 * 1024,
-		                         &error);
-		g_clear_pointer (&history_problem, g_free);
-		if (elog == NULL)
-			history_problem = g_strdup (error != NULL ? error->message
-			                                          : dir);
-		if (elog == NULL &&
-		    g_error_matches (error, FS_EVENTLOG_ERROR,
-		                     FS_EVENTLOG_ERROR_IN_USE) &&
-		    elog_retry_id == 0)
-			elog_retry_id = g_timeout_add_seconds (
-				5, on_history_retry, NULL);
-		g_clear_error (&error);
-		g_free (dir);
-	}
+	history_load_start ();
+}
 
-	if (elog != NULL && elog_flush_id == 0)
-		elog_flush_id = g_timeout_add_seconds (1, on_history_flush, NULL);
+gboolean
+fs_hitview_history_pending (void)
+{
+	return history_job != NULL;
 }
 
 void
@@ -1081,6 +1373,7 @@ fs_hitview_shutdown (void)
 void
 fs_hitview_flush_history (void)
 {
+	history_load_finish_now (TRUE);
 	if (elog != NULL)
 		fs_eventlog_flush (elog, NULL);
 }
@@ -1091,6 +1384,8 @@ fs_hitview_clear_history (GError **error)
 	gchar *dir;
 	guint removed;
 
+	/* Our own load holds the lock: not "another copy". */
+	history_load_finish_now (TRUE);
 	if (elog != NULL)
 		return fs_eventlog_clear (elog, error);
 
@@ -1150,8 +1445,16 @@ fs_hitview_append (const FsHit *hit)
 	if (seq == 0)
 		return FALSE;
 
-	if (elog != NULL)
+	if (elog != NULL) {
 		fs_eventlog_append (elog, hit, fs_eventstore_ticks (estore, seq));
+	} else if (history_job != NULL &&
+	           history_job->pending->len < HISTORY_PENDING_MAX) {
+		/* No writer while the history is opened: kept for it. */
+		PendingHit p = { fs_hit_copy (hit),
+		                 fs_eventstore_ticks (estore, seq) };
+
+		g_array_append_val (history_job->pending, p);
+	}
 
 	/* Placed by time (or the chosen column), not by arrival: a batch
 	 * comes newest first.  No follow-scroll: the newest row goes to
@@ -1184,7 +1487,10 @@ fs_hitview_clear (void)
 		model_detach ();
 		/* The rows go, and so does what they stood for: a Reload
 		 * re-reads the tail instead of suppressing it as a
-		 * duplicate.  The history files are not touched. */
+		 * duplicate.  The history files are not touched, and history
+		 * still being read back is not listed after the clear. */
+		if (history_job != NULL)
+			history_job->discard_rows = TRUE;
 		fs_eventstore_clear (estore);
 		fs_event_model_rebuild (emodel);
 		model_attach ();
@@ -1978,8 +2284,10 @@ filter_combo (GtkWidget *row, const gchar *name, const gchar *const *items)
 }
 
 /* [ build_store ]
- * The store at the size Preferences gives, filled from history when
- * history is kept, then the model over it. */
+ * The store at the size Preferences gives and the model over it.  When
+ * history is kept, a worker opens it and reads it back
+ * (history_load_start): the window is not held back for it, and the
+ * events arrive under the live ones once read (CORRECTNESS-1). */
 static void
 build_store (void)
 {
@@ -1992,16 +2300,9 @@ build_store (void)
 
 	estore = fs_eventstore_new (cap);
 	history_loaded = 0;
+	emodel = fs_event_model_new (estore);
 
 	history_open ();
-	if (elog != NULL) {
-		FsEventLogStats stats;
-
-		history_loaded = fs_eventlog_load_recent (fs_eventlog_dir (elog),
-		                                          estore, cap, &stats);
-	}
-
-	emodel = fs_event_model_new (estore);
 }
 
 /* Fixed widths, so the view can run in fixed-height mode: it never

@@ -350,7 +350,10 @@ static const FsHelpBlock copilot[] = {
 	  "country or network rules stopped. Outbound, one finding per "
 	  "program and address; inbound, one finding per list or rule per "
 	  "hour. On Windows the log does not name the list, so this check "
-	  "finds nothing there.") },
+	  "finds nothing there. These findings, and a timed-contacts finding "
+	  "for an address a list or rule blocks, offer neither <b>Ask "
+	  "What-If</b> nor a block: What-If does not consult the lists or "
+	  "the rules, and the address is blocked already.") },
 	{ FS_HELP_PARA, N_("Scans and login attempts are reported only: the "
 	  "Copilot never changes an inbound rule, and no finding offers an "
 	  "Allow. Two different checks on the same address within an hour "
@@ -843,7 +846,8 @@ static const FsHelpBlock threat_intel[] = {
 	{ FS_HELP_STEP, N_("Press <b>Accept and turn on</b>. StockFW downloads "
 	  "the list, checks it and puts it in force.") },
 	{ FS_HELP_PARA, N_("Every list is off until you turn it on. While no "
-	  "list is on, StockFW makes no network request for threat intel. "
+	  "list and not the location database is on, StockFW makes no "
+	  "network request for threat intel. "
 	  "Each download goes over HTTPS to the host the dialog names. That "
 	  "host sees this computer's public IP address and that it runs "
 	  "StockFW and which version. Nothing else is sent. With a download "
@@ -1014,9 +1018,9 @@ static const FsHelpBlock threat_intel[] = {
 	  "card shows the copy's date; a copy older than 30 days is marked "
 	  "out of date and still used.") },
 	{ FS_HELP_NOTE, N_("Location data: IPFire location database "
-	  "(location.ipfire.org). The file declares the licence CC BY-SA "
-	  "4.0; StockFW has not confirmed it, so commercial use may need "
-	  "IPFire's permission. The card, the command line and every lookup "
+	  "(location.ipfire.org), licensed CC BY-SA 4.0, as IPFire has "
+	  "confirmed: credit IPFire and share any changed copy under the "
+	  "same licence. The card, the command line and every lookup "
 	  "that shows location data carry this line.") },
 	{ FS_HELP_PARA, N_("On Linux, <tt>stockfw intel geo</tt> does the "
 	  "same: <tt>sudo stockfw intel geo on --accept-terms</tt>, "
@@ -1503,10 +1507,10 @@ static const FsHelpBlock about[] = {
 	  "Linux. It began as a port of an earlier GPL firewall tool for "
 	  "Linux and has been rebuilt on GTK 3.") },
 	{ FS_HELP_HEAD, N_("Credits") },
-	{ FS_HELP_ITEM, N_("Stock Team &amp; Qusai - Creator &amp; Original "
+	{ FS_HELP_ITEM, N_("Stockfw Team - Creator &amp; Original "
 	  "Developer") },
 	{ FS_HELP_ITEM, N_("H3xCore - Developer") },
-	{ FS_HELP_ITEM, N_("StockFW Project - GTK3 Port, Windows Backend, "
+	{ FS_HELP_ITEM, N_("Stock Team - GTK3 Port, Windows Backend, "
 	  "Copilot") },
 	{ FS_HELP_HEAD, N_("Licence") },
 	{ FS_HELP_PARA, N_("The source carries two licence texts: the GNU "
@@ -1520,9 +1524,13 @@ static const FsHelpBlock about[] = {
 	{ FS_HELP_PARA, N_("StockFW works offline and has no telemetry: it "
 	  "sends nothing about you or your traffic anywhere. It downloads "
 	  "nothing unless you turn on a "
-	  "<a href=\"help:threat-intel\">threat-intel blocklist</a>; each "
-	  "download shows the host the list comes from this computer's public "
-	  "address and the StockFW version. Its files stay on this "
+	  "<a href=\"help:threat-intel\">threat-intel blocklist</a> or the "
+	  "location database for countries and networks, and each of those "
+	  "asks first; each download shows the host it comes from this "
+	  "computer's public address and the StockFW version. On Linux a "
+	  "rule that names a host instead of an address is looked up with "
+	  "your DNS server when the policy is applied, and a link opens in your "
+	  "browser only when you click it. Its files stay on this "
 	  "computer: the policy, the settings, the audit log, the trust "
 	  "baseline, the blocklists and what the Copilot has learned.") },
 	{ FS_HELP_PARA, N_("The project lives at "

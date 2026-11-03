@@ -8,7 +8,7 @@
  * and every verdict it would draw from what it reads back, on any
  * platform.  The COM calls themselves live in
  * platform/windows/fs-backend-windows.c.  Design:
- * docs/1.0.7-threat-intel-design.md, section 11.
+ * docs/design/1.0.7-threat-intel-design.md, section 11.
  *
  * The shape on the firewall, per apply ("generation", gNNNNNNNN):
  *

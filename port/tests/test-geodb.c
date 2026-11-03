@@ -1,6 +1,6 @@
 /*---[ test-geodb.c ]----------------------------------------------------
  * The location database reader (src/core/fs-geodb.c), 1.0.7 threat
- * intel round 2.  Design: docs/1.0.7-threat-intel-design.md, section
+ * intel round 2.  Design: docs/design/1.0.7-threat-intel-design.md, section
  * 11; how to run: tests/README.md.
  *
  *   fs-geodb-test [fixture dir]          the suite (default tests/geodb)
