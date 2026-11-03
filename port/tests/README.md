@@ -3720,3 +3720,32 @@ settings record not kept; no due row for a rule still live; no
 earlier-session rows in `lift_for_dest`; the lift never reaching the
 firewall; `lift_expired` taking fresh rows; the comment not cut from the
 allow-list text.
+
+## Help and About (`test-help-text.c`, block PR4-E)
+
+```sh
+cd port
+bash tests/test-core.sh          # runs test-help-text.c
+bash tests/test-cli.sh           # block PR4-E
+```
+
+`test-help-text.c` checks `fs_help_markup_to_text` (tags, entities, a
+stray `<` or `&`, links handed to the caller) and every topic of
+`src/core/fs-helpcontent.c`: rendered with no markup left, every
+`help:` link and "see also" id naming a topic, the four "Desktop app
+topics", and no other topic's title or summary naming a tray, a window,
+a Ctrl+ key or sign-in (O4).  The PR4-E block of `test-cli.sh` runs
+`stockfw help` and `stockfw about`: every topic renders, no line is
+over 80 columns (and a topic fits a 60-column terminal), every link is
+printed as a command that prints its topic, `help events` stays the
+command's help, the About credits are the About window's, the commands
+return with stdin an open pipe, and `stockfw-topics(7)` is the page the
+build installs and groff reads without a warning.
+
+Teeth, each seen failing when re-injected: entities not read; a link
+always printed as `stockfw help ID`; links printed as their text alone;
+no wrapping; no desktop app topics; a credit that differs from the
+About window; a topic winning over a command of the same name;
+completion offering no topics; the desktop topics left out of the man
+page; `about` reading stdin; a search that finds nothing exiting 0;
+the desktop note left out.

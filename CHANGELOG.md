@@ -242,6 +242,19 @@ into `/usr/local/share/doc/stockfw/`.
 <!-- PR4-C -->
 <!-- PR4-D -->
 <!-- PR4-E -->
+- **The desktop app's help in the terminal.** `stockfw help topics`
+  lists the 25 topics of the Help window, `stockfw help TOPIC` prints
+  one (a link to another topic is printed as the command that shows
+  it), and `stockfw help --search WORD` finds words in them. Topics
+  about the desktop app's own windows are listed apart, as "Desktop
+  app topics". The same topics are installed as the manual page
+  `stockfw-topics(7)`. Where a command has a topic's name, such as
+  `events`, `stockfw help events` is still the command's help and
+  points to `stockfw help topic events`.
+- **New `stockfw about`.** The version, credits, licence and website
+  of the About window; `--licences` prints both licence texts in full,
+  and `--system` prints lines for a bug report that name no user,
+  host or address.
 
 ### Dashboard (stockfw dashboard)
 

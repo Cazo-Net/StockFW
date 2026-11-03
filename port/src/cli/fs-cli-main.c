@@ -46,6 +46,8 @@ static const gchar *main_help =
 "  dashboard [--port N]       Serve the local web dashboard and open it\n"
 "  dashboard link             A new link to the running dashboard\n"
 "  help [command]             Help for one command\n"
+"  help topics | TOPIC        The guide: each page and setting explained\n"
+"  about [--system]           Version, credits, licence; bug report lines\n"
 "  version                    Print the version\n"
 "\n"
 "Global options:\n"
@@ -70,13 +72,6 @@ static const gchar *main_help =
 "network, except `stockfw intel update' downloading the blocklists and\n"
 "the location database you turned on; the dashboard listens on\n"
 "127.0.0.1 only.\n";
-
-static const gchar *help_help =
-"Usage: stockfw help [COMMAND]\n"
-"\n"
-"Prints the help for one command, or the list of commands.  A\n"
-"subcommand shows its command's help: `stockfw help intel geo'.  The\n"
-"same text is printed by `stockfw COMMAND --help'.\n";
 
 static const gchar *version_help =
 "Usage: stockfw version   (or stockfw --version, -V)\n"
@@ -132,7 +127,8 @@ fs_cli_find_command (const gchar *name)
 	return NULL;
 }
 
-/* [ command_names ] -- every name and alias, then "help", "version". */
+/* [ command_names ] -- every name and alias (`help' is a command of
+ * fs-cli-help.c since PR 4), then "version". */
 static GPtrArray *
 command_names (void)
 {
@@ -145,7 +141,6 @@ command_names (void)
 		if (all[i]->alias != NULL)
 			g_ptr_array_add (names, (gpointer) all[i]->alias);
 	}
-	g_ptr_array_add (names, (gpointer) "help");
 	g_ptr_array_add (names, (gpointer) "version");
 	return names;
 }
@@ -157,8 +152,6 @@ fs_cli_command_help (const gchar *command)
 
 	if (command == NULL)
 		return main_help;
-	if (strcmp (command, "help") == 0)
-		return help_help;
 	if (strcmp (command, "version") == 0)
 		return version_help;
 
@@ -559,21 +552,6 @@ main (int argc, char *argv[])
 			        fs_backend ()->display_name);
 		}
 		g_ptr_array_unref (rest);
-		return FS_EXIT_OK;
-	}
-
-	if (g_strcmp0 (command, "help") == 0) {
-		const gchar *topic = rest->len > 1 ? g_ptr_array_index (rest, 1)
-		                                   : NULL;
-		const gchar *text = fs_cli_command_help (topic);
-
-		if (text == NULL) {
-			status = unknown_word ("no such command", topic);
-			g_ptr_array_unref (rest);
-			return status;
-		}
-		g_ptr_array_unref (rest);
-		fputs (text, stdout);
 		return FS_EXIT_OK;
 	}
 
