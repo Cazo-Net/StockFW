@@ -898,38 +898,73 @@ devices_present (void)
 	return (gchar **) g_ptr_array_free (names, FALSE);
 }
 
+/* [ default_text ] -- a table row's default as settings.set takes it. */
+static const gchar *
+default_text (const FsPrefSpec *spec)
+{
+	if (spec->type == FS_PREF_BOOL)
+		return spec->bool_default ? "true" : "false";
+	return spec->string_default != NULL ? spec->string_default : "";
+}
+
 /* [ op_settings_set ]
  * Root's copy of the preferences (master plan: the CLI writes
  * preferences, root's copy).  Validated as the Preferences window
- * would, then only the keys given are written (fs_prefs_set_persist). */
+ * would, then only the keys given are written (fs_prefs_set_persist).
+ * "reset" names keys that go back to the table's default: checked as
+ * that value, and removed from the file.  Turning audit-only mode on
+ * or off is written to the audit log with the actor's channel. */
 static void
 op_settings_set (FsControlResult *r, const FsControlActor *actor,
                  GVariant *params)
 {
-	gsize nk = 0, nv = 0;
+	gsize nk = 0, nv = 0, nr = 0;
 	const gchar **keys = p_strv (params, "keys", &nk);
 	const gchar **values = p_strv (params, "values", &nv);
+	const gchar **reset = p_strv (params, "reset", &nr);
 	const FsBackend *backend = fs_backend ();
 	gchar **devices;
 	GError *error = NULL;
-	GPtrArray *wk, *wv;
+	GPtrArray *ck, *cv, *wk, *wv;
 	GHashTableIter it;
 	gpointer k, v;
+	gboolean audit_before;
 
 	if (!need_root (r, actor))
 		goto out;
-	if (keys == NULL || nk == 0 || nk != nv) {
+	if (nk != nv || nk + nr == 0) {
 		fail (r, FS_CONTROL_USAGE, NULL,
 		      "settings.set needs as many values as keys");
 		goto out;
 	}
 
+	/* The set to check: the values given, and each reset key as its
+	 * default. */
+	ck = g_ptr_array_new ();
+	cv = g_ptr_array_new ();
+	for (gsize i = 0; i < nk; i++) {
+		g_ptr_array_add (ck, (gpointer) keys[i]);
+		g_ptr_array_add (cv, (gpointer) values[i]);
+	}
+	for (gsize i = 0; i < nr; i++) {
+		const FsPrefSpec *spec = fs_prefs_spec (reset[i]);
+
+		g_ptr_array_add (ck, (gpointer) reset[i]);
+		g_ptr_array_add (cv, (gpointer) (spec != NULL
+		                                 ? default_text (spec) : ""));
+	}
+
 	fs_prefs_load ();
+	audit_before = fs_apply_audit_only ();
 	devices = devices_present ();
-	r->check = fs_prefs_validate (keys, values, (guint) nk,
-	                              backend->fw_sections, backend->fw_honors,
+	r->check = fs_prefs_validate ((const gchar * const *) ck->pdata,
+	                              (const gchar * const *) cv->pdata,
+	                              ck->len, backend->fw_sections,
+	                              backend->fw_honors,
 	                              (const gchar * const *) devices);
 	g_strfreev (devices);
+	g_ptr_array_unref (ck);
+	g_ptr_array_unref (cv);
 	if (r->check->refusals->len > 0) {
 		const FsPrefsIssue *first = g_ptr_array_index (r->check->refusals,
 		                                               0);
@@ -942,14 +977,25 @@ op_settings_set (FsControlResult *r, const FsControlActor *actor,
 	wv = g_ptr_array_new ();
 	g_hash_table_iter_init (&it, r->check->values);
 	while (g_hash_table_iter_next (&it, &k, &v)) {
+		gboolean is_reset = FALSE;
+
+		for (gsize i = 0; i < nr && !is_reset; i++)
+			is_reset = g_strcmp0 (reset[i], k) == 0;
 		g_ptr_array_add (wk, k);
-		g_ptr_array_add (wv, v);
+		g_ptr_array_add (wv, is_reset ? NULL : v);
 	}
 	if (!fs_prefs_set_persist ((const gchar * const *) wk->pdata,
 	                           (const gchar * const *) wv->pdata, wk->len,
 	                           &r->prefs_unreadable, &error)) {
 		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
 		g_error_free (error);
+	} else if (fs_apply_audit_only () != audit_before) {
+		gchar *line = g_strdup_printf ("%s | %s", actor->channel,
+		                               fs_apply_audit_only () ? "on"
+		                                                      : "off");
+
+		fs_audit_log ("audit-only mode", line);
+		g_free (line);
 	}
 	g_ptr_array_unref (wk);
 	g_ptr_array_unref (wv);
@@ -957,6 +1003,7 @@ op_settings_set (FsControlResult *r, const FsControlActor *actor,
 out:
 	g_free (keys);
 	g_free (values);
+	g_free (reset);
 }
 
 /* [ op_settings_apply ] (J36)

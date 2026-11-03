@@ -1259,6 +1259,8 @@ drive_linux (GtkWidget *win)
 	click (win, "prefs-save");
 }
 
+static gboolean honoured_agrees (GtkWidget *win, const gchar *tag);
+
 static void
 drive_windows (GtkWidget *win)
 {
@@ -1309,6 +1311,9 @@ drive_windows (GtkWidget *win)
 	       "there (ACC-2)");
 	CHECK (sensitive (win, FS_PREFS_FW_BLOCK_NON_ROUTABLES),
 	       "Windows reserved-source switch is live (no device needed)");
+	CHECK (honoured_agrees (win, "windows"),
+	       "Windows: the window has a row for exactly the firewall "
+	       "settings fs_prefs_key_honoured offers (PR 3)");
 
 	set_switch (win, FS_PREFS_FW_FILTER_ICMP, FALSE);
 	click (win, "prefs-save");
@@ -1602,6 +1607,128 @@ drive_dependencies (GtkWidget *win)
 	       "fs_prefs_validate (the terminal's check) refuses exactly the "
 	       "rows the window disables, with the window's reasons (%u/%u "
 	       "combinations)", same, n);
+	click (win, "prefs-cancel");
+}
+
+/* [ honoured_agrees ] (PR 3, J0)
+ * The window has a row for a firewall setting exactly when
+ * fs_prefs_key_honoured says this backend acts on it, so `stockfw
+ * config' offers what the window offers. */
+static gboolean
+honoured_agrees (GtkWidget *win, const gchar *tag)
+{
+	const FsBackend *b = fs_backend ();
+	guint n;
+	const FsPrefSpec *specs = fs_prefs_specs (&n);
+	gboolean agree = TRUE;
+
+	for (guint i = 0; i < n; i++) {
+		gboolean row, honoured;
+
+		if (!specs[i].firewall)
+			continue;
+		row = find_named (win, specs[i].key) != NULL;
+		honoured = fs_prefs_key_honoured (specs[i].key, b->fw_sections,
+		                                  b->fw_honors);
+		if (row != honoured) {
+			g_print ("       [%s] %s: window %s, validator %s\n", tag,
+			         specs[i].key, row ? "has a row" : "has none",
+			         honoured ? "honoured" : "not honoured");
+			agree = FALSE;
+		}
+	}
+	return agree;
+}
+
+/* One case of the parity table: the window's controls set to these
+ * values, then each `probe' row: is it live in the window exactly when
+ * fs_prefs_validate takes a change to it, given the same values? */
+typedef struct
+{
+	const gchar *what;
+	const gchar *ext, *intf;     /* devices ("" for none)              */
+	gboolean     icmp, history;  /* the master switches                */
+} ParityCase;
+
+static gboolean
+parity_row (GtkWidget *win, const ParityCase *pc, const gchar *probe,
+            const gchar *probe_value)
+{
+	const FsBackend *b = fs_backend ();
+	const gchar *keys[5] = { FS_PREFS_FW_EXT_IF, FS_PREFS_FW_INT_IF,
+	                         FS_PREFS_FW_FILTER_ICMP,
+	                         FS_PREFS_EVENTS_HISTORY, probe };
+	const gchar *values[5] = { pc->ext, pc->intf, pc->icmp ? "on" : "off",
+	                           pc->history ? "on" : "off", probe_value };
+	FsPrefsCheck *c = fs_prefs_validate (keys, values, 5, b->fw_sections,
+	                                     b->fw_honors, NULL);
+	const FsPrefsIssue *no = issue_for (c->refusals, probe);
+	gboolean live = sensitive (win, probe);
+	gboolean agree = (no == NULL) == live;
+
+	if (!agree)
+		g_print ("       %s, %s=%s: validator %s, window %s\n", pc->what,
+		         probe, probe_value, no != NULL ? no->reason : "accepts",
+		         live ? "live" : "disabled");
+	fs_prefs_check_free (c);
+	return agree;
+}
+
+static guint parity_cases = 0, parity_agree = 0;
+static gboolean parity_rows_agree = FALSE;
+
+/* [ drive_parity ]
+ * A table of cases over the dependencies the Preferences window
+ * enforces -- sharing and the devices, the ICMP types under "Filter
+ * ICMP messages", the history limits under "Keep event history" -- each
+ * compared with fs_prefs_validate, which `stockfw config set' runs. */
+static void
+drive_parity (GtkWidget *win)
+{
+	static const ParityCase cases[] = {
+		{ "no devices, all on",      "",     "",     TRUE,  TRUE  },
+		{ "Internet only, ICMP off", "eth1", "",     FALSE, TRUE  },
+		{ "local only, history off", "",     "eth0", TRUE,  FALSE },
+		{ "both, both off",          "eth1", "eth0", FALSE, FALSE },
+		{ "both, all on",            "eth1", "eth0", TRUE,  TRUE  },
+	};
+	static const gchar *icmp_types[] = {
+		FS_PREFS_FW_ICMP_ECHO_REQUEST, FS_PREFS_FW_ICMP_ECHO_REPLY,
+		FS_PREFS_FW_ICMP_TRACEROUTE, FS_PREFS_FW_ICMP_MSTRACEROUTE,
+		FS_PREFS_FW_ICMP_UNREACHABLE, FS_PREFS_FW_ICMP_TIMESTAMPING,
+		FS_PREFS_FW_ICMP_MASKING, FS_PREFS_FW_ICMP_REDIRECTION,
+		FS_PREFS_FW_ICMP_SOURCE_QUENCHES,
+	};
+
+	parity_rows_agree = honoured_agrees (win, "linux");
+	for (guint k = 0; k < G_N_ELEMENTS (cases); k++) {
+		const ParityCase *pc = &cases[k];
+		gchar *days = fs_prefs_string (FS_PREFS_EVENTS_HISTORY_DAYS);
+		gchar *mb = fs_prefs_string (FS_PREFS_EVENTS_HISTORY_MB);
+		gboolean ok = TRUE;
+
+		set_combo (win, FS_PREFS_FW_EXT_IF, pc->ext);
+		set_combo (win, FS_PREFS_FW_INT_IF, pc->intf);
+		set_switch (win, FS_PREFS_FW_FILTER_ICMP, pc->icmp);
+		set_switch (win, FS_PREFS_EVENTS_HISTORY, pc->history);
+
+		/* Sharing turned on (from what is stored). */
+		ok &= parity_row (win, pc, FS_PREFS_FW_NAT,
+		                  fs_prefs_bool (FS_PREFS_FW_NAT) ? "off" : "on");
+		for (guint t = 0; t < G_N_ELEMENTS (icmp_types); t++)
+			ok &= parity_row (win, pc, icmp_types[t],
+			                  fs_prefs_bool (icmp_types[t]) ? "off"
+			                                                : "on");
+		ok &= parity_row (win, pc, FS_PREFS_EVENTS_HISTORY_DAYS,
+		                  g_strcmp0 (days, "7") == 0 ? "8" : "7");
+		ok &= parity_row (win, pc, FS_PREFS_EVENTS_HISTORY_MB,
+		                  g_strcmp0 (mb, "100") == 0 ? "150" : "100");
+		parity_cases++;
+		if (ok)
+			parity_agree++;
+		g_free (days);
+		g_free (mb);
+	}
 	click (win, "prefs-cancel");
 }
 
@@ -2337,6 +2464,32 @@ main (int argc, char **argv)
 		/* ---- The window's dependencies are the generator's ---- */
 		seed ("");
 		run_scenario (&deps_run);
+
+		/* ---- PR 3: fs_prefs_validate against the window, a table of
+		 * cases, from two stored states ---- */
+		{
+			static Scenario parity_a = { "parity-defaults", drive_parity,
+			                             ANSWER_NONE,
+			                             FALSE, FALSE, FALSE, NULL };
+			static Scenario parity_b = { "parity-stored-on", drive_parity,
+			                             ANSWER_NONE,
+			                             FALSE, FALSE, FALSE, NULL };
+
+			seed ("");
+			run_scenario (&parity_a);
+			CHECK (parity_rows_agree,
+			       "Linux: the window has a row for exactly the firewall "
+			       "settings fs_prefs_key_honoured offers");
+			seed ("[client]\nevents/keep_history=true\n"
+			      "events/history_days=7\n[firewall]\nnat=true\n"
+			      "icmp/enable=false\nicmp/timestamping=true\n");
+			run_scenario (&parity_b);
+			CHECK (parity_cases == 10 && parity_agree == parity_cases,
+			       "fs_prefs_validate (`stockfw config set') refuses a "
+			       "change exactly where the window disables the row: "
+			       "sharing, the ICMP types, the history limits "
+			       "(%u/%u cases)", parity_agree, parity_cases);
+		}
 
 		/* ---- Events: list size, history, Delete history ---- */
 		{
