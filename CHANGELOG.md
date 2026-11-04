@@ -264,9 +264,7 @@ into `/usr/local/share/doc/stockfw/`.
   setting you saved with `config set` and did not apply stays off when
   `events act`, `sentinel lift`, `copilot block` or `simulate --do` put
   a rule live or take one off, and it is still shown as waiting: the
-  next `apply` or `config apply` sends it. Before, `events act` and
-  `simulate --do` sent it with the rule, and every one of them recorded
-  it as applied.
+  next `apply` or `config apply` sends it.
 - **Every change from PR 4's commands asks the same way.** `events
   act`, `simulate --do`, `copilot block`, `copilot health --fix`,
   `copilot changes --undo`, `sentinel lift`, `sentinel mode auto|detect`
@@ -278,10 +276,10 @@ into `/usr/local/share/doc/stockfw/`.
 - **A stopped firewall says so, and stays stopped.** With the firewall
   stopped, a command that adds or lifts a rule prints one line: "The
   firewall is stopped: the change is saved and goes live at the next
-  start; the firewall stays stopped." `events act allow-dest` and
-  `trust-source`, and `simulate --do` on an allow fix, started a
-  stopped firewall (they applied the whole policy); now the rule is
-  recorded for the next start, as a block is. In audit-only mode the
+  start; the firewall stays stopped." This holds for allows too
+  (`events act allow-dest` and `trust-source`, and `simulate --do` on an
+  allow fix): the rule is recorded for the next start, as a block is,
+  and the firewall is never started by them. In audit-only mode the
   line says the firewall was not changed and how the change goes live.
 - `sentinel lift` counts the blocks of an earlier session it lifted
   ("Lifted 1", not "Lifted 0"). `events act` shows its green and amber
