@@ -1617,6 +1617,10 @@ check_history_retry (void)
 	guint before, waited = 0;
 
 	fs_hitview_shutdown ();               /* this copy lets go ...      */
+	/* Only this check's events in the history: the earlier checks'
+	 * hundred thousand are newer than the ones below, and the retry
+	 * keeps the newest events older than the list. */
+	fs_eventlog_clear_dir (dir, NULL);
 	other = fs_eventlog_open (dir, 30, 0, &error);   /* ... another has it */
 	CHECK (other != NULL, "retry: a second writer takes the history (%s)",
 	       error != NULL ? error->message : "ok");
