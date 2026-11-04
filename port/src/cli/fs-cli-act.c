@@ -135,32 +135,13 @@ warn (const gchar *format, ...)
 	g_free (text);
 }
 
-/* [ confirm ]
- * --yes goes on.  A terminal on stdin is asked "QUESTION [y/N]" (No by
- * default).  Without a terminal nothing is asked and nothing waited
- * for: refused, with --yes named.  TRUE to go on. */
+/* [ confirm ] -- the rule every PR 4 change follows
+ * (fs_cli_change_confirm): [y/N] on a terminal, --yes skips it, and
+ * with no terminal it is refused at once, naming --yes. */
 static gboolean
 confirm (const gchar *question, gboolean yes)
 {
-	gchar answer[16] = "";
-
-	if (yes)
-		return TRUE;
-	fflush (stdout);
-	if (!isatty (0)) {
-		act_error ("refused: there is no terminal to ask on, and "
-		              "nothing was changed");
-		fs_cli_hint ("pass --yes to do it without a question");
-		return FALSE;
-	}
-	g_printerr ("%s [y/N] ", question);
-	fflush (stderr);
-	if (fgets (answer, sizeof answer, stdin) != NULL &&
-	    (g_ascii_strcasecmp (g_strstrip (answer), "y") == 0 ||
-	     g_ascii_strcasecmp (answer, "yes") == 0))
-		return TRUE;
-	act_error ("not done: nothing was changed");
-	return FALSE;
+	return fs_cli_change_confirm (question, yes);
 }
 
 /* [ say ] -- one line of the action's own text, from outside text. */
@@ -345,6 +326,11 @@ preview (ActWay way, const FsRule *rule, const FsRule *twin,
 	FsPolicy *saved = fs_cli_load_policy (NULL, NULL);
 	FsPolicy *journal = fs_policy_new ();
 	gboolean have = fs_apply_journal_load (journal, NULL);
+	/* PR 4 review: a stopped firewall is not started; the change is
+	 * recorded for the next start (fs_firewall_live_records_only). */
+	gboolean stopped = !no_apply &&
+	                   fs_firewall_live_records_only (fs_backend (),
+	                                                  fs_apply_hold_reason ());
 	gboolean already = fs_policy_contains (saved, rule) &&
 	                   (twin == NULL || fs_policy_contains (saved, twin));
 	guint sentinel = lift_dest != NULL
@@ -353,6 +339,8 @@ preview (ActWay way, const FsRule *rule, const FsRule *twin,
 	if (way == ACT_UNTRUST) {
 		say ("It is removed from the policy%s.",
 		     no_apply ? " (--no-apply: only saved)"
+		     : stopped ? " and recorded for the next start: the firewall "
+		                 "is stopped, and is not started"
 		     : have ? " and taken off the firewall alone: the last "
 		              "applied policy less this rule"
 		            : "; nothing was applied yet, so the firewall is not "
@@ -368,6 +356,9 @@ preview (ActWay way, const FsRule *rule, const FsRule *twin,
 		if (no_apply)
 			say ("It is saved only (--no-apply): it goes live with the "
 			     "next `stockfw apply'.");
+		else if (stopped)
+			say ("It is saved and recorded for the next start: the "
+			     "firewall is stopped, and is not started.");
 		else if (!have)
 			say ("It is saved.  Nothing was applied yet, so it goes live "
 			     "with the next `stockfw apply' or `stockfw start'.");
@@ -387,6 +378,14 @@ preview (ActWay way, const FsRule *rule, const FsRule *twin,
 				     "--no-apply %s lifted.", sentinel == 1 ? "" : "s",
 				     lift_dest, sentinel == 1 ? "s" : "",
 				     sentinel == 1 ? "it is" : "they are");
+		} else if (stopped) {
+			if (sentinel > 0)
+				say ("Sentinel's block%s of %s %s lifted first (%u).",
+				     sentinel == 1 ? "" : "s", lift_dest,
+				     sentinel == 1 ? "is" : "are", sentinel);
+			say ("It is saved and recorded for the next start, with what "
+			     "was last applied: the firewall is stopped, and is not "
+			     "started (no whole apply).");
 		} else {
 			FsPolicy *after = fs_policy_new ();
 
@@ -413,6 +412,8 @@ preview (ActWay way, const FsRule *rule, const FsRule *twin,
 	if (json != NULL) {
 		g_string_append_c (json, ',');
 		fs_json_kv_bool (json, "journal", have);
+		g_string_append_c (json, ',');
+		fs_json_kv_bool (json, "firewall_stopped", stopped);
 		g_string_append_c (json, ',');
 		fs_json_kv_uint (json, "sentinel_blocks", sentinel);
 	}
@@ -485,7 +486,9 @@ report (ActWay way, const FsControlResult *r, gboolean no_apply)
 		act_error ("Sentinel's block could not be lifted: %s",
 		              r->lift_error);
 
-	if (way == ACT_ALLOW) {
+	/* An allow is a whole apply, unless the firewall is stopped: then
+	 * it was a live edit (recorded for the next start), told below. */
+	if (way == ACT_ALLOW && !r->live_none && !fs_cli_live_stopped (o)) {
 		if (o != NULL)
 			fs_cli_apply_print (r);
 		else if (r->error != NULL)
@@ -494,25 +497,24 @@ report (ActWay way, const FsControlResult *r, gboolean no_apply)
 		       ? fs_cli_apply_status (o) : status;
 	}
 
-	/* A block, or an untrust: the live edit. */
+	/* A block, or an untrust (or an allow on a stopped firewall): the
+	 * live edit. */
 	if (o == NULL) {
 		if (r->status != FS_CONTROL_OK)
 			act_error ("not live: %s", r->error != NULL ? r->error : "?");
+		else if (fs_cli_live_stopped (NULL))
+			fs_cli_say_stopped ();
 		else if (!r->journal)
 			say ("Not live yet: nothing was applied before, so it goes "
 			     "live with the next `stockfw apply' or `stockfw "
 			     "start'.");
 		else
-			say (way == ACT_BLOCK ? "It was live already."
-			                      : "It was not live.");
+			say (way != ACT_UNTRUST ? "It was live already."
+			                        : "It was not live.");
 	} else if (o->held) {
-		say_lead (fs_cli_amber (), "Held:", "%s.  The firewall was left "
-		          "untouched; the change is saved.",
-		          o->hold_reason != NULL ? o->hold_reason : "?");
-	} else if (o->result == FS_APPLY_DRY_RUN &&
-	           o->firewall_was == FS_FW_STOPPED) {
-		say ("The firewall is stopped: the change is recorded for the "
-		     "next start, and the firewall stays stopped.");
+		fs_cli_say_held (o->hold_reason, FALSE);
+	} else if (fs_cli_live_stopped (o)) {
+		fs_cli_say_stopped ();
 	} else if (o->result == FS_APPLY_OK) {
 		gchar *desc = fs_policy_impact_describe (o->impact);
 
@@ -1193,9 +1195,9 @@ do_lift (const FsWhatIfAction *act, guint n, gboolean yes)
 		say_lead (fs_cli_green (), "Lifted", "Sentinel's block of %s (%u).",
 		          act->target, MAX (r->lift->rows, r->lift->removed));
 		if (o != NULL && o->held)
-			say_lead (fs_cli_amber (), "Held:", "%s.  It stays live until "
-			          "the next start.",
-			          o->hold_reason != NULL ? o->hold_reason : "?");
+			fs_cli_say_held (o->hold_reason, TRUE);
+		else if (fs_cli_live_stopped (o))
+			fs_cli_say_stopped ();
 		else if (o == NULL)
 			say ("It was not live.");
 	}

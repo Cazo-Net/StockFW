@@ -3851,6 +3851,31 @@ terminal check; no numbering; several rules not listed; `--pick`
 without `act`; a block applied as a full apply; the untrust row not
 lifted; no audit line; no "already" check; no completion.
 
+## The lead's two rules for PR 4 (block PR4-R)
+
+```sh
+cd port
+sudo bash tests/test-cli.sh      # block PR4-R: root, iptables, unshare
+```
+
+Every PR 4 command that changes the firewall, live in a private network
+namespace. With stdin a pipe that stays open (`timeout 10 CMD <
+<(sleep 20)`) and no `--yes`, each is refused at once (exit 1, not 124),
+names `--yes`, and changes nothing (policy, journal, Sentinel's file,
+change log, audit log, intel store, trust baseline, preferences and
+`iptables-save` hashed before and after). On a pseudo-terminal Enter is
+No. With the firewall stopped, each live add or lift prints the stopped
+line exactly once, leaves the firewall stopped and changes the journal;
+the next `start` puts every change live. In audit-only mode a block and
+a Sentinel lift print their held lines.
+
+Teeth, each seen failing when re-injected: `rule.allow` applying the
+whole policy on a stopped firewall; no terminal check in
+`fs_cli_change_confirm` (the commands hang); no question in `sentinel
+lift`, `sentinel mode`, `copilot changes --undo` and intel `--apply`;
+no stopped line in `copilot`, `simulate --do` (lift) and `events act`;
+the held line's last words.
+
 ## Help and About (`test-help-text.c`, block PR4-E)
 
 ```sh
