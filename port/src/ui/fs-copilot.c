@@ -149,6 +149,38 @@ static gboolean   auto_block_failed_once = FALSE;
  * decision instead of inheriting a grudge. */
 static GHashTable *auto_block_cooldown = NULL;  /* "kind|csv" -> TRUE */
 
+/* The clock the Sentinel engine reads and arms its timers on: GLib's,
+ * unless a test hands in a fake one (fs_copilot_sentinel_set_clock).
+ * Wrapped, so the table is a constant on every platform. */
+static gint64 glib_monotonic_us (void) { return g_get_monotonic_time (); }
+static gint64 glib_real_us (void) { return g_get_real_time (); }
+
+static guint
+glib_timeout_ms (guint ms, GSourceFunc fn, gpointer data)
+{
+    return g_timeout_add (ms, fn, data);
+}
+
+static guint
+glib_timeout_s (guint s, GSourceFunc fn, gpointer data)
+{
+    return g_timeout_add_seconds (s, fn, data);
+}
+
+static gboolean glib_source_remove (guint id) { return g_source_remove (id); }
+
+static const FsSentinelClock glib_clock = {
+    glib_monotonic_us, glib_real_us, glib_timeout_ms, glib_timeout_s,
+    glib_source_remove
+};
+static const FsSentinelClock *sentinel_clock = &glib_clock;
+
+void
+fs_copilot_sentinel_set_clock (const FsSentinelClock *clock)
+{
+    sentinel_clock = clock != NULL ? clock : &glib_clock;
+}
+
 /* Changes made from this page (block rules added, health fixes), for
  * the Changes card.  Live auto-blocks are listed from auto_blocks; one
  * that ends is kept here (AUTO_BLOCK) so the card, the audit view the
@@ -3007,7 +3039,7 @@ auto_block_retire (AutoBlock *ab, const gchar *why)
 static gboolean
 auto_block_expire_cb (gpointer data)
 {
-    gint64 now = g_get_monotonic_time ();
+    gint64 now = sentinel_clock->monotonic_us ();
     gboolean dropped = FALSE;
     guint i;
 
@@ -3055,7 +3087,7 @@ auto_block_expire_cb (gpointer data)
                 next = due;
         }
 
-        auto_block_expiry_id = g_timeout_add (
+        auto_block_expiry_id = sentinel_clock->timeout_ms (
             (guint) (((next - now) / G_USEC_PER_SEC) * 1000 + 1000),
             auto_block_expire_cb, NULL);
     }
@@ -3081,7 +3113,7 @@ fs_copilot_sentinel_auto_pass (void)
     if (auto_blocks == NULL)
         auto_blocks = g_ptr_array_new_with_free_func (auto_block_free);
 
-    now = g_get_monotonic_time ();
+    now = sentinel_clock->monotonic_us ();
 
     /* While the disk is refusing writes, do not hammer it once per
      * event: one attempt per minute, one audit line per episode. */
@@ -3162,14 +3194,14 @@ fs_copilot_sentinel_auto_pass (void)
         ab->csv   = g_strdup (ins->rule_csv);
         ab->title = g_strdup (ins->title);
         ab->at_us = now;
-        ab->at_epoch = g_get_real_time () / G_USEC_PER_SEC;
+        ab->at_epoch = sentinel_clock->real_us () / G_USEC_PER_SEC;
         g_ptr_array_add (auto_blocks, ab);
 
         fs_audit_log ("sentinel auto-block", ins->rule_csv);
         changed = TRUE;
 
         if (auto_block_expiry_id == 0)
-            auto_block_expiry_id = g_timeout_add_seconds (
+            auto_block_expiry_id = sentinel_clock->timeout_s (
                 FS_AUTOBLOCK_TTL_S, auto_block_expire_cb, NULL);
     }
 
@@ -3344,7 +3376,7 @@ fs_copilot_autoblocks_restore (FsPolicy *policy, FsPolicy *due)
         return FALSE;              /* nothing was staged last session */
     }
 
-    now_epoch = g_get_real_time () / G_USEC_PER_SEC;
+    now_epoch = sentinel_clock->real_us () / G_USEC_PER_SEC;
     lines = g_strsplit (contents, "\n", -1);
 
     if (auto_blocks == NULL)
@@ -3383,7 +3415,7 @@ fs_copilot_autoblocks_restore (FsPolicy *policy, FsPolicy *due)
         ab->at_epoch = epoch;
         /* Backdate the monotonic clock from the wall clock: the TTL
          * counts from staging, not from boot. */
-        ab->at_us    = g_get_monotonic_time () -
+        ab->at_us    = sentinel_clock->monotonic_us () -
                        (now_epoch - epoch) * G_USEC_PER_SEC;
         g_strfreev (parts);
 
@@ -3454,11 +3486,12 @@ fs_copilot_autoblocks_restore (FsPolicy *policy, FsPolicy *due)
                 next = due;
         }
 
-        remain_s = (next - g_get_monotonic_time ()) / G_USEC_PER_SEC;
+        remain_s = (next - sentinel_clock->monotonic_us ()) /
+                   G_USEC_PER_SEC;
         if (remain_s < 1)
             remain_s = 1;
 
-        auto_block_expiry_id = g_timeout_add_seconds (
+        auto_block_expiry_id = sentinel_clock->timeout_s (
             (guint) remain_s, auto_block_expire_cb, NULL);
     }
 
@@ -3493,7 +3526,7 @@ fs_copilot_sentinel_can_pause (void)
 gboolean
 fs_copilot_sentinel_paused (gint64 *seconds_left)
 {
-    gint64 now = g_get_monotonic_time ();
+    gint64 now = sentinel_clock->monotonic_us ();
 
     if (sentinel_paused_until <= now) {
         if (seconds_left != NULL)
@@ -3522,7 +3555,7 @@ fs_copilot_sentinel_pause (guint seconds)
     gboolean was_paused = fs_copilot_sentinel_paused (NULL);
 
     if (sentinel_resume_id != 0) {
-        g_source_remove (sentinel_resume_id);
+        sentinel_clock->source_remove (sentinel_resume_id);
         sentinel_resume_id = 0;
     }
 
@@ -3540,9 +3573,9 @@ fs_copilot_sentinel_pause (guint seconds)
         return;
     }
 
-    sentinel_paused_until = g_get_monotonic_time () +
+    sentinel_paused_until = sentinel_clock->monotonic_us () +
                             (gint64) seconds * G_USEC_PER_SEC;
-    sentinel_resume_id = g_timeout_add_seconds (seconds,
+    sentinel_resume_id = sentinel_clock->timeout_s (seconds,
                                                 sentinel_resume_cb, NULL);
     {
         gchar *detail = g_strdup_printf (

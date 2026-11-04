@@ -763,6 +763,24 @@ target_compile_definitions(fs-whatif-start-smoke PRIVATE
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-whatif-start-smoke PRIVATE ${FS_BACKEND_LIBS})
 endif()
+# PR 5 gate: the Sentinel engine on a fake clock (stage, expiry after
+# 600 s, cooldown, pause, retire, push, restore on the original clock),
+# written before the engine moves to core.  Supplies fs_backend()
+# itself.  Needs a display while the engine lives on the Copilot page.
+add_executable(fs-sentinel-test EXCLUDE_FROM_ALL
+  tests/test-sentinel.c
+  ${FS_UI_ONLY_SOURCES}
+)
+target_include_directories(fs-sentinel-test PRIVATE
+                           "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(fs-sentinel-test PRIVATE fs-core PkgConfig::GTK3)
+target_compile_definitions(fs-sentinel-test PRIVATE
+  FS_VERSION="${PROJECT_VERSION}"
+  FS_PLATFORM_NAME="${FS_PLATFORM}"
+)
+if(FS_BACKEND_LIBS)
+  target_link_libraries(fs-sentinel-test PRIVATE ${FS_BACKEND_LIBS})
+endif()
 endif() # FS_BUILD_GUI
 
 # ---------------------------------------- 1.0.7 threat intel, round 1

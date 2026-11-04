@@ -74,6 +74,23 @@ gboolean fs_copilot_lift_all_auto_blocks (const gchar *why);
  * firewall. */
 gboolean fs_copilot_lift_auto_blocks_for_dest (const gchar *dest);
 
+/* The clock Sentinel reads and arms its timers on: the monotonic and
+ * the wall clock in microseconds, and the timers that expire blocks
+ * and end a pause.  GLib's own by default.  A test hands in a fake
+ * clock to run ten minutes in no time (tests/test-sentinel.c); NULL
+ * puts GLib's back.  Every field must be set.  It becomes
+ * fs_sentinel_set_clock when the engine moves to core (PR 5). */
+typedef struct
+{
+    gint64   (*monotonic_us)   (void);
+    gint64   (*real_us)        (void);
+    guint    (*timeout_ms)     (guint ms, GSourceFunc fn, gpointer data);
+    guint    (*timeout_s)      (guint s, GSourceFunc fn, gpointer data);
+    gboolean (*source_remove)  (guint id);
+} FsSentinelClock;
+
+void fs_copilot_sentinel_set_clock (const FsSentinelClock *clock);
+
 G_END_DECLS
 
 #endif /* FS_COPILOT_VIEW_H */
