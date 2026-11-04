@@ -23,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.7</span>
+			<span class="brand-ver">1.0.8</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -134,12 +134,13 @@
 <p>Memory stays flat: the Activity series are fixed-size rings, the Events list is a fixed ring of the size you chose (about 7 MB at the default 100,000), the Copilot keeps the last 100 changes, and a 150-second soak at full event rate found no growth. <span class="ev ev-measured" title="A number from an experiment that was actually run."><b>Measured</b> 150-second soak, docs chapter 9</span></p>
 
 <h2 id="where-the-icon-cannot-appear">Where the icon cannot appear<a class="anchor" href="#where-the-icon-cannot-appear" aria-label="Link to this section">#</a></h2>
-<p>A tray needs a tray host. GNOME has not shipped one since 3.26; the <em>AppIndicator</em> extension restores it, and KDE, XFCE, MATE, Cinnamon and Windows have one built in. Without a host the icon simply does not show, the window keeps working (a hidden start shows it), and closing it quits, so nothing is lost. The project’s own tray test fails on a headless machine for this reason, and is expected to. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></p>
+<p>A tray needs a tray host and an X11 display. GNOME has not shipped a host since 3.26; the <em>AppIndicator</em> extension restores it, and KDE, XFCE, MATE, Cinnamon and Windows have one built in. Without a host the icon simply does not show, the window keeps working (a hidden start shows it), and closing it quits, so nothing is lost. The project’s own tray test fails on a headless machine for this reason, and is expected to. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></p>
+<p><span class="plat">Linux</span> GTK has a tray only on X11 and Windows. On a Wayland session (GNOME and KDE Plasma by default, and WSL’s WSLg) StockFW does not try to make one: a background start shows the window, closing the window quits, and Preferences greys both tray switches with the reason. The once-a-minute re-read of the firewall’s state, which is how <code>stockfw stop</code> in a terminal reaches the Overview and the sidebar, runs whenever the window is open, with or without a tray icon. Under <code>sudo</code> StockFW runs on XWayland, because <code>sudo</code> drops the Wayland display variables, so the tray works there as on X11. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-notray.sh</span></p>
 
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/preferences.html"><span>Previous</span><strong>Preferences</strong></a><a class="next" href="../docs/help.html"><span>Next</span><strong>Help and About</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/background.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.8.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/background.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
