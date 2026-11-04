@@ -229,6 +229,106 @@ into `/usr/local/share/doc/stockfw/`.
   shown as no data, not as zero. The saved history is used only while
   a copy of StockFW writes it; a history nobody writes now shows no
   data after its last event.
+- **A block can go live without the rest of the saved policy.** A new
+  core step (for `copilot block`, `events act` and, later, Sentinel)
+  puts only the new block on the firewall, with what was already live:
+  a rule you saved and never applied, such as an allow, stays off. Taking
+  Sentinel's blocks down (all of them, one address, or the ones whose
+  ten minutes ran out) works the same way, from the policy, the Sentinel
+  list and the firewall. On Linux neither step starts a stopped
+  firewall: the change waits for the next start instead.
+- **Copilot and Sentinel in the terminal.** `stockfw copilot scan`
+  finds what the Copilot page finds, from the kernel log or the saved
+  history; `copilot show ID` explains one finding and `copilot block ID`
+  puts its block on the firewall without the rest of the saved policy.
+  `copilot health --fix N` makes a policy fix, and `copilot changes
+  --undo ID` takes a fix or a block back. `copilot checks` lists what
+  the checks look for. `stockfw sentinel lift` takes Sentinel's blocks
+  down (one address, all, or the expired ones), and `sentinel mode
+  detect` switches it to detect only, lifting its blocks. Questions are
+  asked only on a terminal; elsewhere pass `--yes`.
+- **New `stockfw events act`.** Block, allow or trust from an event, as
+  the Events page does: `block-dest`, `block-service`, `allow-dest`,
+  `trust-source` and `untrust-source`. It shows the event and the rule
+  and asks first. A block goes live alone, so a rule you saved and
+  never applied stays off. An allow shows the whole apply first, and
+  `allow-dest` also lifts Sentinel's block of that address. With several
+  rules to choose from, `--pick N` chooses one.
+- **New `stockfw simulate ... --do N`.** `simulate` numbers its fixes,
+  and `--do N` runs one: a new rule (only one StockFW checks as safe), a
+  start (through the normal start, so audit-only mode holds it), an
+  apply or a Sentinel lift. Other fixes print the command to run.
+- Both ask only on a terminal. Without one they need `--yes`, and they
+  never wait for input.
+- **A block, an untrust or a lift sends only itself.** A Firewall
+  setting you saved with `config set` and did not apply stays off when
+  `events act`, `sentinel lift`, `copilot block` or `simulate --do` put
+  a rule live or take one off, and it is still shown as waiting: the
+  next `apply` or `config apply` sends it.
+- **Every change from PR 4's commands asks the same way.** `events
+  act`, `simulate --do`, `copilot block`, `copilot health --fix`,
+  `copilot changes --undo`, `sentinel lift`, `sentinel mode auto|detect`
+  and the threat-intel saves with `--apply` ask `[y/N]` on a terminal,
+  No by default, and `--yes` skips the question. With no terminal and
+  no `--yes` they stop at once, change nothing, name `--yes` and never
+  read standard input. `copilot changes --undo`, `sentinel lift`,
+  `sentinel mode` and intel `--apply` did not ask before.
+- **A stopped firewall says so, and stays stopped.** With the firewall
+  stopped, a command that adds or lifts a rule prints one line: "The
+  firewall is stopped: the change is saved and goes live at the next
+  start; the firewall stays stopped." This holds for allows too
+  (`events act allow-dest` and `trust-source`, and `simulate --do` on an
+  allow fix): the rule is recorded for the next start, as a block is,
+  and the firewall is never started by them. In audit-only mode the
+  line says the firewall was not changed and how the change goes live.
+- `sentinel lift` counts the blocks of an earlier session it lifted
+  ("Lifted 1", not "Lifted 0"). `events act` shows its green and amber
+  words in colour, not as `\x1b[32m` text, and its `--json` never has
+  the same key twice.
+- **New `stockfw trust`: the Trust page in a terminal.** `trust` (or
+  `trust list`) and `trust check` hash every file you attested again and
+  say whether it still matches, changed (CHANGED) or is missing (GONE);
+  `check` exits 1 for either, so a script can watch a program for
+  changes. `trust inspect PATH` shows a file's hash, size, date and
+  baseline, `trust attest PATH` records it and `trust forget PATH`
+  takes it out, each with an audit line. The baseline is your own
+  (`~/.config/stockfw/trust.csv`) and needs no root; under `sudo` it
+  is root's, and the command says so. Attest and forget ask first on a
+  terminal; without one they need `--yes` and never wait for input. On
+  Linux there is no signature check: the baseline tells you that a
+  file changed, not who made it.
+- **The Threat Intel page's editors.** `intel exceptions --set FILE|-`
+  replaces the whole allow list with a text, one address, network or
+  range a line, `#` starting a comment (`203.0.113.6 # mail`); a line
+  that does not read changes nothing (exit 2) and empty input clears
+  the list. `intel import` reads standard input with `-`, and
+  `--name "My blocklist"` is the page's "Your blocklist"
+  (`local-my-blocklist`); empty input removes the list of that name.
+- **`--apply` on threat-intel changes.** `intel enable`, `disable`,
+  `on`, `off`, `import`, `remove`, `except`, `unexcept` and
+  `exceptions --set` take `--apply`: the saved change goes in force at
+  once, as the Threat Intel page does after a save. It needs root
+  (checked before anything is saved), audit-only mode holds it, and
+  with the firewall stopped nothing is loaded: the lists go in force
+  when it starts. It asks first on a terminal; without one it needs
+  `--yes`. Without `--apply` nothing changed: the change is
+  saved and `intel apply` puts it in force.
+- **`intel feeds` says when each feed is due.** A new NEXT column
+  ("due now", or the time `intel update` downloads it next) and `due`
+  and `next_update_at` in `--json`.
+- **The desktop app's help in the terminal.** `stockfw help topics`
+  lists the 25 topics of the Help window, `stockfw help TOPIC` prints
+  one (a link to another topic is printed as the command that shows
+  it), and `stockfw help --search WORD` finds words in them. Topics
+  about the desktop app's own windows are listed apart, as "Desktop
+  app topics". The same topics are installed as the manual page
+  `stockfw-topics(7)`. Where a command has a topic's name, such as
+  `events`, `stockfw help events` is still the command's help and
+  points to `stockfw help topic events`.
+- **New `stockfw about`.** The version, credits, licence and website
+  of the About window; `--licences` prints both licence texts in full,
+  and `--system` prints lines for a bug report that name no user,
+  host or address.
 
 ### Dashboard (stockfw dashboard)
 

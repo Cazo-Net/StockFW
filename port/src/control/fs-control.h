@@ -25,11 +25,13 @@
 
 #include <glib.h>
 #include "core/fs-apply.h"
+#include "core/fs-autoblock.h"
 #include "core/fs-backend.h"
 #include "core/fs-intel.h"
 #include "core/fs-lockout.h"
 #include "core/fs-prefs.h"
 #include "core/fs-rules.h"
+#include "core/fs-whatif.h"
 
 G_BEGIN_DECLS
 
@@ -127,6 +129,73 @@ typedef struct
 	/* settings.set */
 	FsPrefsCheck    *check;
 	gboolean         prefs_unreadable; /* kept as .bad, defaults written */
+
+	/* PR 4: each package adds its fields between its markers (4B
+	 * copilot and sentinel, 4C event and What-If actions, 4D trust and
+	 * intel), so the packages merge without touching each other. */
+	/* === PR4-B === */
+	/* sentinel.lift, and sentinel.mode when it lifts (detect) */
+	FsAutoblockLift *lift;
+	/* sentinel.mode: the mode before and after */
+	gchar           *mode_was;
+	gchar           *mode;
+	/* copilot.block, copilot.fix, copilot.undo: the change log entry
+	 * written (or undone), 0 for none; change_error when the change was
+	 * made but could not be written to the log */
+	guint            change_id;
+	gchar           *change_error;
+	gchar           *change_kind;  /* undo: "health-fix", "block-rule" */
+	/* copilot.fix: what the fix was */
+	gchar           *fix_label;
+	gchar           *fix_before;
+	gchar           *fix_after;
+	gchar           *fix_whatif;   /* the finding's What-If line        */
+	/* copilot.block: the What-If line and its verdicts before and
+	 * after the rule (the check that it blocks what it should) */
+	gchar           *whatif_line;
+	FsWhatIfVerdict  whatif_before;
+	FsWhatIfVerdict  whatif_after;
+	/* === end PR4-B === */
+	/* === PR4-C === */
+	/* rule.allow (with lift_dest) and whatif.lift: Sentinel's blocks
+	 * lifted (fs_autoblock_lift_for_dest) go in `lift' above (4B's
+	 * field, shared); its outcome is its own */
+	gchar           *lift_error;   /* rule.allow: the lift was refused  */
+	/* rule.block, rule.untrust: the firewall was not touched, with no
+	 * error: no journal (nothing on record as live; `journal' says),
+	 * or nothing to change on it                                     */
+	gboolean         live_none;
+	/* === end PR4-C === */
+	/* === PR4-D === */
+	/* Threat intel (4D).  The terminal reads files and stdin itself
+	 * and sends their text: an op never opens a path it is given.
+	 *   intel.apply           the saved blocklists in force, as the
+	 *                         Threat Intel page does after a save
+	 *                         (F0)                              (root)
+	 *   intel.exceptions.set  text s (the whole allow list; "#"
+	 *                         starts a comment; empty: none), apply b
+	 *   intel.import          name s, text s (empty or blank: the list
+	 *                         of that name is removed), dir s (in,
+	 *                         out, both; absent keeps the list's),
+	 *                         what s (the input's name in messages),
+	 *                         apply b
+	 * The editors need root only with apply, checked before anything
+	 * is saved; otherwise the store decides (NEED_ROOT where it is
+	 * root's).  A text that does not read is USAGE, nothing written.
+	 * intel_apply is NULL when no apply was asked for, else "applied",
+	 * "held" (audit-only), "stopped" (the firewall is not running:
+	 * nothing was loaded, the lists go in force when it starts) or
+	 * "failed". */
+	const gchar     *intel_apply;
+	FsIntelOutcome  *intel_outcome;  /* the gate's answer, when it ran  */
+	gboolean         intel_saved;    /* the configuration was written   */
+	gchar           *intel_id;       /* import: the list's id           */
+	gchar           *intel_name;     /* import: the list's name         */
+	gboolean         intel_removed;  /* import: empty text removed it   */
+	FsIntelDir       intel_dir;      /* import: the list's direction    */
+	FsFeedParseStats intel_stats;    /* import                          */
+	FsRangeSet      *intel_exceptions; /* exceptions.set: as saved      */
+	/* === end PR4-D === */
 } FsControlResult;
 
 /* [ fs_control_do ]
@@ -152,6 +221,21 @@ typedef struct
  *   settings.set    keys as, values as, reset as (keys back to
  *                   the table's default)                     (root)
  *   settings.apply  yes b                                    (root)
+ * PR 4, 4B (all root, except copilot.fix and copilot.undo of a fix,
+ * which only save the policy, as policy.replace does):
+ *   sentinel.lift   target s | all b | expired b (one of them)
+ *   sentinel.mode   mode s ("auto", "detect"); detect lifts every block
+ *   copilot.block   kind s (outbound-deny-to), csv s, whatif s, yes b:
+ *                   checked by What-If (ALLOWED now, BLOCKED with the
+ *                   rule), saved, put live by fs_firewall_add_live and
+ *                   logged in the change log (fs-changelog.h)
+ *   copilot.fix     number u (1-based, in fs_health_check's order),
+ *                   before s, after s, label s: the finding is checked
+ *                   again under the lock, and CONFLICT when its fix is
+ *                   not the one the caller showed; saved and logged
+ *   copilot.undo    id u: a change of the log put back (a fix: the
+ *                   policy saved again; a block: removed and lifted
+ *                   live through fs_firewall_lift_live)
  * An unknown op is USAGE. */
 FsControlResult *fs_control_do (const FsControlActor *actor,
                                 const gchar *op, GVariant *params);

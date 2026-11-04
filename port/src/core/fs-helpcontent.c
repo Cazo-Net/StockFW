@@ -1,5 +1,6 @@
 /*---[ fs-helpcontent.c ]-------------------------------------------------
- * The Help window's topics.  See fs-helpcontent.h for the format.
+ * The help topics.  See fs-helpcontent.h for the format.  Moved from
+ * src/ui in PR 4 (4E), so `stockfw help' prints the same topics.
  *
  * Rules for this file:
  *   - Say what the build in front of the reader does today.  A feature
@@ -15,7 +16,7 @@
  *     the help smoke checks every link resolves.
  *--------------------------------------------------------------------*/
 
-#include "ui/fs-helpcontent.h"
+#include "core/fs-helpcontent.h"
 #include "core/fs-i18n.h"
 
 #include <string.h>
@@ -1739,4 +1740,167 @@ fs_help_topic_find (const gchar *id)
 			return &topics[i];
 
 	return NULL;
+}
+
+const gchar *
+fs_help_topic_section_at (guint index)
+{
+	const gchar *section = NULL;
+
+	if (index >= G_N_ELEMENTS (topics))
+		return NULL;
+	for (guint i = 0; i <= index; i++)
+		if (topics[i].section != NULL)
+			section = topics[i].section;
+	return section;
+}
+
+/* The topics that describe the desktop app's windows rather than the
+ * firewall: the tray and sign-in, the Preferences window as a window,
+ * and its keys.  PR 12 rewrites them or leaves them out on Linux. */
+gboolean
+fs_help_topic_desktop_only (const FsHelpTopic *topic)
+{
+	static const gchar *const ids[] = {
+		"preferences", "prefs-general", "background", "shortcuts"
+	};
+
+	if (topic == NULL || topic->id == NULL)
+		return FALSE;
+	for (guint i = 0; i < G_N_ELEMENTS (ids); i++)
+		if (strcmp (topic->id, ids[i]) == 0)
+			return TRUE;
+	return FALSE;
+}
+
+/* ------------------------------------------------------- plain text */
+
+/* [ read_entity ] -- the entity at p ("&amp;" ...) as a character in
+ * out; the bytes it took, or 0 when p starts no entity known here. */
+static gsize
+read_entity (const gchar *p, GString *out)
+{
+	static const struct { const gchar *name; gchar c; } named[] = {
+		{ "&amp;", '&' }, { "&lt;", '<' }, { "&gt;", '>' },
+		{ "&quot;", '"' }, { "&apos;", '\'' }
+	};
+	const gchar *semi;
+
+	for (guint i = 0; i < G_N_ELEMENTS (named); i++)
+		if (strncmp (p, named[i].name, strlen (named[i].name)) == 0) {
+			g_string_append_c (out, named[i].c);
+			return strlen (named[i].name);
+		}
+	semi = strchr (p, ';');
+	if (p[1] == '#' && semi != NULL && semi - p <= 10) {
+		gboolean hex = p[2] == 'x' || p[2] == 'X';
+		const gchar *digits = p + (hex ? 3 : 2);
+		gchar *end = NULL;
+		guint64 c;
+
+		if (digits == semi || !g_ascii_isxdigit (*digits))
+			return 0;
+		c = g_ascii_strtoull (digits, &end, hex ? 16 : 10);
+		if (end != semi || c == 0 || c > 0x10FFFF ||
+		    !g_unichar_validate ((gunichar) c))
+			return 0;
+		g_string_append_unichar (out, (gunichar) c);
+		return (gsize) (semi - p) + 1;
+	}
+	return 0;
+}
+
+/* [ tag_href ] -- the href="..." of an <a ...> tag (the text between
+ * '<' and '>'), entities read; NULL when it has none. */
+static gchar *
+tag_href (const gchar *tag, gsize len)
+{
+	gchar *copy = g_strndup (tag, len);
+	gchar *at = strstr (copy, "href=");
+	gchar *href = NULL;
+
+	if (at != NULL && (at[5] == '"' || at[5] == '\'')) {
+		gchar quote = at[5];
+		gchar *start = at + 6;
+		gchar *end = strchr (start, quote);
+
+		if (end != NULL) {
+			*end = '\0';
+			href = fs_help_markup_to_text (start, NULL, NULL);
+		}
+	}
+	g_free (copy);
+	return href;
+}
+
+gchar *
+fs_help_markup_to_text (const gchar *markup, FsHelpLinkFunc link,
+                        gpointer user_data)
+{
+	GString *out = g_string_new (NULL);
+	GString *link_text = NULL;   /* inside <a>: its text so far */
+	gchar *href = NULL;
+	const gchar *p = markup != NULL ? markup : "";
+
+	while (*p != '\0') {
+		GString *to = link_text != NULL ? link_text : out;
+
+		if (*p == '&') {
+			gsize used = read_entity (p, to);
+
+			if (used == 0) {
+				g_string_append_c (to, '&');
+				used = 1;
+			}
+			p += used;
+			continue;
+		}
+		if (*p == '<') {
+			const gchar *close = strchr (p, '>');
+			const gchar *name = p + 1;
+			gboolean end_tag = *name == '/';
+			gsize name_len;
+
+			if (end_tag)
+				name++;
+			name_len = strspn (name, "abcdefghijklmnopqrstuvwxyz");
+			if (close == NULL || name_len == 0 ||
+			    (name[name_len] != '>' && name[name_len] != ' ')) {
+				/* a '<' that starts no tag: kept as written */
+				g_string_append_c (to, '<');
+				p++;
+				continue;
+			}
+			if (name_len == 1 && name[0] == 'a') {
+				if (!end_tag && link_text == NULL) {
+					href = tag_href (p + 1, (gsize) (close - p - 1));
+					link_text = g_string_new (NULL);
+				} else if (end_tag && link_text != NULL) {
+					gchar *text = g_string_free (link_text, FALSE);
+					gchar *shown = NULL;
+
+					link_text = NULL;
+					if (link != NULL && href != NULL)
+						shown = link (href, text, user_data);
+					g_string_append (out, shown != NULL ? shown : text);
+					g_free (shown);
+					g_free (text);
+					g_clear_pointer (&href, g_free);
+				}
+			}
+			/* <b>, <i>, <tt>, <span ...> and any other tag: dropped */
+			p = close + 1;
+			continue;
+		}
+		g_string_append_c (to, *p);
+		p++;
+	}
+
+	/* An <a> left open: its text as it is. */
+	if (link_text != NULL) {
+		g_string_append (out, link_text->str);
+		g_string_free (link_text, TRUE);
+	}
+	g_free (href);
+	return g_string_free (out, FALSE);
 }

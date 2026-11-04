@@ -16,7 +16,8 @@ maintained code is in [`port/`](../port/); the top-level autotools files,
 | The website, `site/` | The same material for users, built by `site/build.py`. |
 
 The app has its own Help window (F1), compiled in from
-`port/src/ui/fs-helpcontent.c`.
+`port/src/core/fs-helpcontent.c`. The command-line tool prints the
+same topics (`stockfw help topics`, and the page `stockfw-topics(7)`).
 
 ## Understand and change it
 

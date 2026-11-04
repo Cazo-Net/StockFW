@@ -6,6 +6,7 @@
  *                                WORD (it may be empty); the shell
  *                                scripts in contrib/completion call it
  *   stockfw __man                the manual page stockfw(1), in roff
+ *   stockfw __man topics         the help topics as stockfw-topics(7)
  *
  * fs-cli-main.c runs them before it parses anything, and neither is in
  * a table, so `help', the command list and did-you-mean never show
@@ -14,6 +15,7 @@
 #include "cli/fs-cli.h"
 #include "core/fs-intel.h"
 #include "core/fs-netparse.h"
+#include "core/fs-helpcontent.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -34,12 +36,27 @@ static const gchar *intel_geo_subs[] = {
 	"status", "terms", "on", "off", "update", "search", "add", "list",
 	"remove", NULL
 };
-static const gchar *copilot_subs[]  = { "health", NULL };
-static const gchar *sentinel_subs[] = { "list", NULL };
+static const gchar *copilot_subs[]  = {
+	"health", "scan", "show", "block", "checks", "changes", NULL
+};
+static const gchar *sentinel_subs[] = { "list", "lift", "mode", NULL };
+static const gchar *sentinel_modes[] = { "auto", "detect", NULL };
 static const gchar *config_subs[] = {
 	"list", "get", "set", "reset", "apply", "devices", "audit-only", NULL
 };
 static const gchar *dashboard_subs[] = { "link", NULL };
+/* PR 4, 4C: `events act ACTION'. */
+static const gchar *events_subs[] = { "act", NULL };
+static const gchar *events_actions[] = {
+	"block-dest", "block-service", "allow-dest", "trust-source",
+	"untrust-source", NULL
+};
+/* === PR4-D === */
+static const gchar *trust_subs[] = {
+	"list", "check", "inspect", "attest", "forget", NULL
+};
+/* === end PR4-D === */
+static const gchar *help_subs[] = { "topics", "topic", NULL };
 
 static const gchar *events_by[] = {
 	"src", "dst", "port", "service", "dir", "rule", "hour", NULL
@@ -279,9 +296,16 @@ emit_positional (Out *o, const FsCliCommandDef *def, GPtrArray *pos)
 	} else if (strcmp (name, "sentinel") == 0) {
 		if (pos->len == 0)
 			emit_all (o, sentinel_subs);
+		else if (pos->len == 1 && strcmp (p0, "mode") == 0)
+			emit_all (o, sentinel_modes);
 	} else if (strcmp (name, "dashboard") == 0) {
 		if (pos->len == 0)
 			emit_all (o, dashboard_subs);
+	} else if (strcmp (name, "events") == 0) {
+		if (pos->len == 0)
+			emit_all (o, events_subs);
+		else if (pos->len == 1 && strcmp (p0, "act") == 0)
+			emit_all (o, events_actions);
 	} else if (strcmp (name, "intel") == 0) {
 		if (pos->len == 0) {
 			emit_all (o, intel_subs);
@@ -311,6 +335,11 @@ emit_positional (Out *o, const FsCliCommandDef *def, GPtrArray *pos)
 			           strcmp (p1, "remove") == 0)
 				emit_intel_ids (o, INTEL_LOCATIONS);
 		}
+	/* === PR4-D === */
+	} else if (strcmp (name, "trust") == 0) {
+		if (pos->len == 0)
+			emit_all (o, trust_subs);
+	/* === end PR4-D === */
 	} else if (strcmp (name, "config") == 0) {
 		/* set NAME VALUE NAME VALUE...: a name, then a value. */
 		if (pos->len == 0) {
@@ -392,9 +421,17 @@ fs_cli_complete_main (gint argc, gchar **argv)
 			emit_globals (&o);
 		else
 			emit_commands (&o);
-	} else if (is_help) {
-		if (pos->len == 0)
+	} else if (is_help && !(cur[0] == '-' && !positional)) {
+		/* a command, or a topic of the guide (PR 4, 4E) */
+		if (pos->len == 0) {
 			emit_commands (&o);
+			emit_all (&o, help_subs);
+		}
+		if (pos->len == 0 ||
+		    (pos->len == 1 && g_str_has_prefix (g_ptr_array_index (pos, 0),
+		                                        "topic")))
+			for (guint i = 0; i < fs_help_topic_count (); i++)
+				emit (&o, fs_help_topic_nth (i)->id);
 	} else if (def == NULL) {
 		/* an unknown command: nothing to offer */
 	} else if (cur[0] == '-' && !positional) {
@@ -467,7 +504,9 @@ static const struct { const gchar *name, *what; } environment[] = {
 	{ "STOCKFW_EVENTS_DIR",
 	  "The event history the desktop app keeps (events --history)." },
 	{ "STOCKFW_AUTOBLOCK_FILE",
-	  "Sentinel's state file (sentinel list)." },
+	  "Sentinel's state file (sentinel list and lift)." },
+	{ "STOCKFW_CHANGELOG_FILE",
+	  "The changes copilot block and copilot health --fix made, instead of ~/.config/stockfw/copilot-changes.jsonl (copilot changes)." },
 	{ "STOCKFW_INTEL_DIR",
 	  "The threat-intel store, instead of /var/lib/stockfw/intel." },
 	{ "STOCKFW_LAN_PREFIX",
@@ -527,6 +566,9 @@ fs_cli_man_main (gint argc, gchar **argv)
 	GString *out = g_string_new (NULL);
 	const gchar *main_help = fs_cli_command_help (NULL);
 
+	if (argc > 0 && strcmp (argv[0], "topics") == 0)
+		return fs_cli_help_man_topics ();
+
 	g_string_append (out,
 		".\\\" stockfw(1), made by `stockfw __man' from the command tables.\n"
 		".\\\" Do not edit: change the help texts in src/cli instead.\n");
@@ -582,8 +624,6 @@ fs_cli_man_main (gint argc, gchar **argv)
 		}
 	}
 
-	g_string_append (out, ".SH \"STOCKFW HELP\"\n");
-	roff_verbatim (out, fs_cli_command_help ("help"));
 	g_string_append (out, ".SH \"STOCKFW VERSION\"\n");
 	roff_verbatim (out, fs_cli_command_help ("version"));
 
@@ -612,7 +652,7 @@ fs_cli_man_main (gint argc, gchar **argv)
 		"address.\n"
 		".TP\n.B 6\nsimulate: DEPENDS (allowed in some cases).\n"
 		".TP\n.B 7\ncopilot health: findings at or above "
-		"\\-\\-severity.\n");
+		"\\-\\-severity; copilot scan: findings.\n");
 
 	g_string_append (out, ".SH ENVIRONMENT\n");
 	for (guint i = 0; i < G_N_ELEMENTS (environment); i++) {
@@ -642,7 +682,8 @@ fs_cli_man_main (gint argc, gchar **argv)
 	}
 
 	g_string_append (out, ".SH \"SEE ALSO\"\n");
-	g_string_append (out, ".BR nft (8),\n.BR iptables (8).\n"
+	g_string_append (out, ".BR stockfw\\-topics (7),\n"
+	                      ".BR nft (8),\n.BR iptables (8).\n"
 	                      "The desktop app, \\fBStockFW\\fR, has no manual "
 	                      "page of its own, and a build with "
 	                      "FS_BUILD_GUI=OFF has no desktop app. Shell "

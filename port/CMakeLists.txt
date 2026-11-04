@@ -87,6 +87,7 @@ add_library(fs-core STATIC
   src/core/fs-prefs-check.c
   src/core/fs-verdict.c
   src/core/fs-eventfilter.c
+  src/core/fs-helpcontent.c
 )
 target_include_directories(fs-core PUBLIC src resources)
 pkg_check_modules(GLIBONLY REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0)
@@ -167,8 +168,11 @@ set_property(DIRECTORY APPEND PROPERTY
              CMAKE_CONFIGURE_DEPENDS src/ui/fs-theme.css)
 
 # The two licence texts at the top of the repository, compiled into
-# fs-licence-text.h (build tree) for the About window's "View licence".
-# COPYING has form feeds between its pages; they are dropped.
+# fs-licence-text.h (build tree) for the About window's "View licence"
+# and for `stockfw about --licences' (master plan PR 4, 4E), so it is
+# made with or without the desktop app.  The template is in src/core,
+# beside the help topics both front ends print.  COPYING has form feeds
+# between its pages; they are dropped.
 string(ASCII 12 FS_FORM_FEED)
 foreach(FS_LIC COPYING LICENSE)
   set(FS_LIC_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../${FS_LIC}")
@@ -186,7 +190,7 @@ foreach(FS_LIC COPYING LICENSE)
   string(REPLACE "\n" "\\n" FS_LIC_TEXT "${FS_LIC_TEXT}")
   set(FS_LICENCE_${FS_LIC} "${FS_LIC_TEXT}")
 endforeach()
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/ui/fs-licence-text.h.in"
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/core/fs-licence-text.h.in"
                "${CMAKE_CURRENT_BINARY_DIR}/fs-licence-text.h" @ONLY)
 
 # -------------------------------------------------------------------- app
@@ -198,7 +202,6 @@ add_executable(StockFW
   src/ui/fs-aboutdialog.c
   src/ui/fs-prefsdialog.c
   src/ui/fs-helpwindow.c
-  src/ui/fs-helpcontent.c
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
@@ -305,7 +308,12 @@ if(FS_PLATFORM STREQUAL "linux")
     src/cli/fs-cli-complete.c
     src/cli/fs-cli-config.c
     src/cli/fs-cli-activity.c
+    src/cli/fs-cli-copilot.c
+    src/cli/fs-cli-trust.c
+    src/cli/fs-cli-help.c
+    src/cli/fs-cli-act.c
     src/control/fs-control.c
+    src/control/fs-changelog.c
   )
   add_executable(stockfw
     ${FS_CLI_SOURCES}
@@ -330,6 +338,19 @@ if(FS_PLATFORM STREQUAL "linux")
   target_compile_definitions(stockfw-dash-test PRIVATE
                              FS_VERSION="${PROJECT_VERSION}" FS_DASH_TESTING=1)
 
+  # `simulate --do' (PR 4, 4C) with one test hook: compiled with
+  # FS_ACT_TESTING, $STOCKFW_TEST_FIX_PORT widens the port of the fix
+  # about to be written, so tests/test-cli.sh can see the refusal of a
+  # rule fs_whatif_row_is_safe does not allow.  Never installed.
+  add_executable(stockfw-act-test EXCLUDE_FROM_ALL
+    ${FS_CLI_SOURCES}
+    ${FS_BACKEND_SOURCES}
+  )
+  target_include_directories(stockfw-act-test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(stockfw-act-test PRIVATE fs-core-nogui PkgConfig::GIO)
+  target_compile_definitions(stockfw-act-test PRIVATE
+                             FS_VERSION="${PROJECT_VERSION}" FS_ACT_TESTING=1)
+
   # The session rules of fs-dash-auth.c on a clock of the test's own.
   add_executable(fs-dash-auth-test EXCLUDE_FROM_ALL
     tests/dash-auth-test.c
@@ -347,11 +368,21 @@ if(FS_PLATFORM STREQUAL "linux")
     DEPENDS stockfw
     COMMENT "Writing the manual page stockfw.1"
     VERBATIM)
+  # The help topics as one page, stockfw-topics(7) (PR 4, 4E): the
+  # same text `stockfw help TOPIC' prints, from core/fs-helpcontent.c.
+  add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stockfw-topics.7"
+    COMMAND stockfw __man topics > "${CMAKE_CURRENT_BINARY_DIR}/stockfw-topics.7"
+    DEPENDS stockfw
+    COMMENT "Writing the manual page stockfw-topics.7"
+    VERBATIM)
   add_custom_target(stockfw-man ALL
-    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/stockfw.1")
+    DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/stockfw.1"
+            "${CMAKE_CURRENT_BINARY_DIR}/stockfw-topics.7")
   include(GNUInstallDirs)
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/stockfw.1"
           DESTINATION "${CMAKE_INSTALL_MANDIR}/man1")
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/stockfw-topics.7"
+          DESTINATION "${CMAKE_INSTALL_MANDIR}/man7")
   install(FILES contrib/completion/stockfw.bash
           DESTINATION "${CMAKE_INSTALL_DATADIR}/bash-completion/completions"
           RENAME stockfw)
@@ -374,7 +405,6 @@ set(FS_UI_ONLY_SOURCES
   src/ui/fs-aboutdialog.c
   src/ui/fs-prefsdialog.c
   src/ui/fs-helpwindow.c
-  src/ui/fs-helpcontent.c
   src/ui/fs-statusview.c
   src/ui/fs-policyview.c
   src/ui/fs-hitview.c
@@ -792,6 +822,14 @@ if(FS_PLATFORM STREQUAL "linux")
   target_compile_definitions(fs-intel-backend-driver PRIVATE
                              FS_BACKEND_TESTING=1
                              FS_TOOLPATH_TESTING=1)
+  # PR 4 (4A) against the real backend: fs_firewall_add_live and the
+  # Sentinel lift helpers, driven by tests/test-cli.sh in a private
+  # network namespace.  Never installed.
+  add_executable(fs-pr4-live-driver EXCLUDE_FROM_ALL
+    tests/pr4-live-driver.c
+    ${FS_BACKEND_SOURCES}
+  )
+  target_link_libraries(fs-pr4-live-driver PRIVATE fs-core-nogui)
   # The engine end to end (tests/test-intel-e2e.sh): the default
   # downloader, the real store, this computer read live and the release
   # backend.  Its own copy of fs-fetch.c is compiled with

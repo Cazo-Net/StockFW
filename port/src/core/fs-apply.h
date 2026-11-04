@@ -196,12 +196,71 @@ FsApplyOutcome *fs_firewall_start_safe (const FsBackend *backend,
  * the firewall sees is their removal.  The policy FILE is never
  * applied here: it may hold changes nobody applied.  NULL (nothing
  * touched, nothing audited) when there is no journal or none of the
- * rules is in it; otherwise the apply's outcome, caller-owned. */
+ * rules is in it; otherwise the apply's outcome, caller-owned.  A
+ * firewall that is stopped is not started: see the note after
+ * fs_firewall_add_live. */
 FsApplyOutcome *fs_firewall_lift_live (const FsBackend *backend,
                                        const FsPolicy *lift,
                                        const gchar *source,
                                        const gchar *hold,
                                        GError **error);
+
+/* [ fs_firewall_add_live ] (PR 4, 4A)
+ * The mirror of fs_firewall_lift_live: put the rules in `add' on the
+ * firewall and nothing else.  The journal -- what is live -- plus
+ * those rules goes through fs_policy_apply_safe(), so the only change
+ * the firewall sees is their addition.  The policy FILE is never
+ * applied here: it may hold changes nobody applied (an allow, say),
+ * and a block must not carry them live.  Nor is it written: the
+ * caller saves the rows itself (fs_policy_add_persist_pair), before
+ * or after.  Used by `copilot block', `events act block-*' and, from
+ * PR 5, Sentinel's push.
+ *
+ * NULL (nothing touched, nothing audited) when `add' is NULL or
+ * empty, when there is no journal (nothing is on record as live; the
+ * saved rows go out with the next apply, or the first start, which
+ * installs the file) or when every rule is already in the journal.
+ * Otherwise a caller-owned outcome. */
+FsApplyOutcome *fs_firewall_add_live (const FsBackend *backend,
+                                      const FsPolicy *add,
+                                      const gchar *source,
+                                      const gchar *hold,
+                                      GError **error);
+
+/* Both live edits on a backend whose start installs the policy
+ * (Linux), with a firewall the backend reads as STOPPED and no hold:
+ * there an apply IS a start, and a firewall the user stopped is not
+ * started behind their back.  The journal is the policy the next start
+ * installs, so it alone is changed (with the settings it records kept)
+ * and the firewall is untouched: the outcome has result
+ * FS_APPLY_DRY_RUN, applied FALSE, held FALSE and firewall_was
+ * FS_FW_STOPPED, and the audit line says "recorded for the next
+ * start".  Without this a block saved while the firewall is stopped
+ * would never go live at the next start (it installs the journal), and
+ * a lifted block would come back with it.  A hold (audit-only, the
+ * Policy Lock) keeps the journal unchanged too: the outcome is the
+ * gate's held DRY_RUN. */
+
+/* [ fs_firewall_live_records_only ] (PR 4 review)
+ * TRUE when a live edit now would only record the change for the next
+ * start (the case above): a backend whose start installs the policy,
+ * a firewall it reads as STOPPED, and no hold.  Callers that would
+ * otherwise apply a whole policy (an allow from the Events page or
+ * What-If) use it to leave a stopped firewall stopped too. */
+gboolean fs_firewall_live_records_only (const FsBackend *backend,
+                                        const gchar *hold);
+
+/* [ fs_firewall_live_keeps_settings ] (PR 4 review)
+ * TRUE: the caller gave the backend the settings the journal records
+ * (fs_settings_from_journal), so a live edit on a running firewall
+ * keeps that record as it is, as the stopped path above does.  The
+ * settings saved and not applied stay pending (fs_apply_settings_
+ * pending) and go out with the next apply, never with a block or a
+ * lift.  FALSE (the default): the journal records the saved
+ * preferences, which is right for a caller that gave the backend
+ * those.  The control layer (src/control) sets it with each context
+ * it hands the backend. */
+void fs_firewall_live_keeps_settings (gboolean keep);
 
 /* Stop the firewall, on the record.  Never held: a hold keeps policy
  * CHANGES off the firewall, while stopping is the user's own way out

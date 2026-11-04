@@ -1312,34 +1312,169 @@ out:
 	return outcome;
 }
 
+/* [ journal_plus ] -- add every rule of `add' that `journal' does not
+ * hold yet (in memory only).  Returns how many were added. */
+static guint
+journal_plus (FsPolicy *journal, const FsPolicy *add)
+{
+	guint added = 0;
+
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++) {
+		GPtrArray *rules = add->kinds[k];
+
+		for (guint i = 0; rules != NULL && i < rules->len; i++) {
+			FsRule *rule = g_ptr_array_index (rules, i);
+
+			if (!fs_policy_contains (journal, rule)) {
+				fs_policy_add (journal, rule);  /* a copy */
+				added++;
+			}
+		}
+	}
+	return added;
+}
+
+/* [ journal_only ]
+ * A live edit on a stopped firewall that a start would install from
+ * the journal (see fs-apply.h): the journal becomes `live', the
+ * firewall is untouched.  The settings the journal records are kept
+ * as they are, so the next start still brings back the settings last
+ * applied. */
+static FsApplyOutcome *
+journal_only (FsPolicy *live, const FsPolicy *before, const gchar *source,
+              const gchar *what, guint n, GError **error)
+{
+	FsApplyOutcome *outcome = g_new0 (FsApplyOutcome, 1);
+	GHashTable *recorded = fs_apply_journal_settings ();
+	gchar *desc, *count, *detail;
+	gboolean ok;
+
+	outcome->impact = fs_policy_impact (before, live);
+	outcome->firewall_was = FS_FW_STOPPED;
+	desc = fs_policy_impact_describe (outcome->impact);
+	count = g_strdup_printf ("%u %s", n, what);
+
+	journal_record_override = recorded;
+	ok = fs_apply_journal_save (live, error);
+	journal_record_override = NULL;
+	if (recorded != NULL)
+		g_hash_table_unref (recorded);
+
+	if (ok) {
+		outcome->result = FS_APPLY_DRY_RUN;
+		detail = apply_detail (source, "firewall stopped", count,
+		                       "recorded for the next start", desc);
+		fs_audit_log ("firewall stopped, change recorded for the next "
+		              "start, firewall untouched", detail);
+	} else {
+		outcome->result = FS_APPLY_FAILED;
+		detail = apply_detail (source, "firewall stopped", count,
+		                       "the journal could not be saved",
+		                       (error != NULL && *error != NULL)
+		                       ? (*error)->message : NULL);
+		fs_audit_log ("firewall stopped, change NOT recorded", detail);
+	}
+	g_free (detail);
+	g_free (count);
+	g_free (desc);
+	return outcome;
+}
+
+/* See fs_firewall_live_keeps_settings. */
+static gboolean live_keeps_settings = FALSE;
+
+/* [ fs_firewall_live_keeps_settings ] */
+void
+fs_firewall_live_keeps_settings (gboolean keep)
+{
+	live_keeps_settings = keep;
+}
+
+/* [ live_edit ]
+ * fs_firewall_add_live (add != NULL) and fs_firewall_lift_live
+ * (lift != NULL): the journal read, the edit and the apply under one
+ * hold of the lock. */
+static FsApplyOutcome *
+live_edit (const FsBackend *backend, const FsPolicy *add,
+           const FsPolicy *lift, const gchar *source, const gchar *hold,
+           GError **error)
+{
+	const FsPolicy *rows = add != NULL ? add : lift;
+	FsPolicy *live, *before;
+	FsApplyOutcome *outcome = NULL;
+	FsPolicyLock *lock;
+	guint n;
+
+	lock = gate_lock (rows, source, &outcome, error);
+	if (lock == NULL)
+		return outcome;
+
+	/* Nothing on record as live: nothing to add to or take off. */
+	live = fs_policy_new ();
+	before = fs_policy_new ();
+	if (!fs_apply_journal_load (live, NULL))
+		goto out;
+	fs_apply_journal_load (before, NULL);
+	n = add != NULL ? journal_plus (live, add) : journal_minus (live, lift);
+	if (n == 0)
+		goto out;
+
+	if (fs_firewall_live_records_only (backend, hold))
+		outcome = journal_only (live, before, source,
+		                        add != NULL ? "rule(s) added"
+		                                    : "rule(s) lifted",
+		                        n, error);
+	else {
+		/* The record says what the backend was given: the journal's
+		 * own settings when the caller handed it those. */
+		GHashTable *recorded = live_keeps_settings
+		                     ? fs_apply_journal_settings () : NULL;
+
+		journal_record_override = recorded;
+		outcome = fs_policy_apply_safe (backend, live, source, hold,
+		                                error);
+		journal_record_override = NULL;
+		if (recorded != NULL)
+			g_hash_table_unref (recorded);
+	}
+
+out:
+	fs_policy_free (before);
+	fs_policy_free (live);
+	fs_policy_unlock (lock);
+	return outcome;
+}
+
+/* [ fs_firewall_live_records_only ] (PR 4 review) */
+gboolean
+fs_firewall_live_records_only (const FsBackend *backend, const gchar *hold)
+{
+	return (hold == NULL || *hold == '\0') && backend != NULL &&
+	       backend->start_applies_policy && backend->available != NULL &&
+	       backend->available () && backend->get_state != NULL &&
+	       backend->get_state () == FS_FW_STOPPED;
+}
+
 /* [ fs_firewall_lift_live ] */
 FsApplyOutcome *
 fs_firewall_lift_live (const FsBackend *backend, const FsPolicy *lift,
                        const gchar *source, const gchar *hold,
                        GError **error)
 {
-	FsPolicy *live;
-	FsApplyOutcome *outcome = NULL;
-	FsPolicyLock *lock;
-
 	if (lift == NULL)
 		return NULL;
+	return live_edit (backend, NULL, lift, source, hold, error);
+}
 
-	/* The journal read and the apply under one hold of the lock. */
-	lock = gate_lock (lift, source, &outcome, error);
-	if (lock == NULL)
-		return outcome;
-
-	/* Nothing on record as live: nothing to take off. */
-	live = fs_policy_new ();
-	if (fs_apply_journal_load (live, NULL) &&
-	    journal_minus (live, lift) > 0)
-		outcome = fs_policy_apply_safe (backend, live, source, hold,
-		                                error);
-
-	fs_policy_free (live);
-	fs_policy_unlock (lock);
-	return outcome;
+/* [ fs_firewall_add_live ] */
+FsApplyOutcome *
+fs_firewall_add_live (const FsBackend *backend, const FsPolicy *add,
+                      const gchar *source, const gchar *hold,
+                      GError **error)
+{
+	if (add == NULL)
+		return NULL;
+	return live_edit (backend, add, NULL, source, hold, error);
 }
 
 /* [ fs_firewall_stop_logged ] */

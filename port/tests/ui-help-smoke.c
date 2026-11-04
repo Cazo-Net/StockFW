@@ -61,7 +61,7 @@
 
 #include "ui/fs-app.h"
 #include "ui/fs-dialogs.h"
-#include "ui/fs-helpcontent.h"
+#include "core/fs-helpcontent.h"
 #include "ui/fs-helpwindow.h"
 #include "core/fs-backend.h"
 #include "core/fs-prefs.h"

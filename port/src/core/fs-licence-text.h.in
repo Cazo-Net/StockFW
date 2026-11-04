@@ -1,9 +1,9 @@
 /* Generated from ../COPYING and ../LICENSE at configure time -- do not
  * edit this file; it follows the two files in the source tree.
  *
- * The About window's "View licence" shows these texts.  They are
- * compiled in for the same reason as the stylesheet: the installed
- * program has no data files beside it. */
+ * The About window's "View licence" and `stockfw about --licences'
+ * show these texts.  They are compiled in for the same reason as the
+ * stylesheet: the installed program has no data files beside it. */
 #ifndef FS_LICENCE_TEXT_H
 #define FS_LICENCE_TEXT_H
 

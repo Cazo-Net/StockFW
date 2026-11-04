@@ -30,6 +30,7 @@
 #define FS_CLI_H
 
 #include <glib.h>
+#include "core/fs-apply.h"
 #include "core/fs-backend.h"
 #include "core/fs-rules.h"
 #include "core/fs-whatif.h"
@@ -238,6 +239,34 @@ void        fs_cli_append_lines_json (GString *out, const gchar *text);
 /* An apply's notes, one amber "note:" line each (none under -q). */
 void        fs_cli_print_notes     (const gchar *notes);
 
+/* [ PR 4 review: the two rules of a change ] (fs-cli-cmds.c)
+ *
+ * fs_cli_change_confirm: the question of every PR 4 command that
+ * changes the firewall.  --yes goes on.  A terminal on stdin is asked
+ * "QUESTION [y/N]" on stderr, No by default.  With no terminal nothing
+ * is asked, stdin is never read, and the change is refused with a
+ * message that names --yes.  TRUE to go on.
+ *
+ * fs_cli_live_stopped: TRUE when a live add or lift found the firewall
+ * stopped -- its outcome recorded the change for the next start
+ * (DRY_RUN, firewall_was STOPPED), or there was nothing to do on the
+ * firewall (NULL) and the backend reads it as stopped.  Then the
+ * command prints FS_CLI_STOPPED_LINE, once, and nothing else about the
+ * firewall: the change is never left pending without a word.
+ *
+ * fs_cli_say_held: the hold's line (audit-only mode, the Policy Lock):
+ * the firewall was not changed; `sentinel' for a lift of Sentinel's
+ * blocks, which stay live until the next start (or `sentinel lift
+ * --expired'), else the saved change goes live with `stockfw apply'
+ * once the hold ends.  None of them prints under -q or --json. */
+#define FS_CLI_STOPPED_LINE \
+	"The firewall is stopped: the change is saved and goes live at the " \
+	"next start; the firewall stays stopped."
+gboolean    fs_cli_change_confirm  (const gchar *question, gboolean yes);
+gboolean    fs_cli_live_stopped    (const FsApplyOutcome *outcome);
+void        fs_cli_say_stopped     (void);
+void        fs_cli_say_held        (const gchar *reason, gboolean sentinel);
+
 /* Threat intel (fs-cli-intel.c), for `stockfw status' and the
  * dashboard: one JSON object {state, detail, master, hold, lists[]}
  * (lists: the sources turned on, when with_sources), and the status
@@ -281,6 +310,10 @@ extern const FsCliCommandDef fs_cli_intel_commands[];      /* fs-cli-intel.c  */
 extern const FsCliCommandDef fs_cli_dashboard_commands[];  /* fs-dashboard.c  */
 extern const FsCliCommandDef fs_cli_config_commands[];     /* fs-cli-config.c */
 extern const FsCliCommandDef fs_cli_activity_commands[];   /* fs-cli-activity.c */
+/* PR 4: one table per package, empty until the package fills it. */
+extern const FsCliCommandDef fs_cli_copilot_commands[];    /* fs-cli-copilot.c (4B) */
+extern const FsCliCommandDef fs_cli_trust_commands[];      /* fs-cli-trust.c (4D) */
+extern const FsCliCommandDef fs_cli_help_commands[];       /* fs-cli-help.c (4E) */
 /* The setting names `config list' shows, NULL-ended (completion). */
 const gchar * const *fs_cli_config_names (void);
 
@@ -298,6 +331,14 @@ const gchar * const *fs_cli_global_flags (guint *n);
 gint fs_cli_complete_main (gint argc, gchar **argv);
 gint fs_cli_man_main      (gint argc, gchar **argv);
 /* === end WP-E === */
+
+/* === PR4-B === */
+/* `sentinel [list]' (fs-cli-views.c); fs-cli-copilot.c registers the
+ * `sentinel' command and hands it list. */
+gint     fs_cli_sentinel_list    (gint argc, gchar **argv);
+/* fs_cli_root_gui_running (fs-cli-config.c, declared below) also
+ * covers the policy and Sentinel's list the window writes back. */
+/* === end PR4-B === */
 
 gint fs_cli_cmd_status      (gint argc, gchar **argv);
 gint fs_cli_cmd_policy      (gint argc, gchar **argv);
@@ -320,8 +361,10 @@ gint fs_cli_cmd_activity    (gint argc, gchar **argv);
 const gchar *fs_cli_stop_consequence (void);
 gboolean     fs_cli_stop_confirm     (gboolean yes);
 
-/* Help for a topic: the main help for NULL, NULL for an unknown one.
- * Topics are the commands, their aliases, "help" and "version". */
+/* Help for a command: the main help for NULL, NULL for an unknown one.
+ * Commands are those of the tables, their aliases and "version";
+ * `stockfw help' itself is fs-cli-help.c's (PR 4, 4E), which also
+ * prints the guide's topics. */
 const gchar *fs_cli_command_help (const gchar *command);
 
 /* ----------------------------------------------------------- parsing */
@@ -558,6 +601,50 @@ gint fs_cli_cmd_listening (gint argc, gchar **argv);
 
 /* === WP-E === */
 /* === end WP-E === */
+
+/* === PR4-C === */
+/* Event and What-If actions (fs-cli-act.c, 4C). */
+
+/* `events act ACTION': block-dest, block-service, allow-dest,
+ * trust-source, untrust-source.  _usage prints the error for a missing
+ * or unknown action (given may be NULL). */
+gboolean fs_cli_events_act_known (const gchar *action);
+void     fs_cli_events_act_usage (const gchar *given);
+/* The action on one of `events' (FsHit*, oldest first, as the filters
+ * of `events' kept them; may be NULL): the newest event of each rule,
+ * picked by `pick' (1-based; 0: the only one), shown, asked about and
+ * sent to the control layer.  Returns the exit status. */
+gint     fs_cli_events_act (const gchar *action, GPtrArray *events,
+                            guint pick, gboolean both, gboolean no_apply,
+                            gboolean yes);
+
+/* `simulate --do N': N read (an error printed when it is not 1 or
+ * more); the answer's text with each fix numbered ("  1 [create-allow]
+ * ..."); and fix N run.  `result' answers `line' against the saved
+ * policy. */
+gboolean fs_cli_simulate_do_number    (const gchar *text, guint *n);
+gchar   *fs_cli_whatif_number_actions (const FsWhatIfResult *result,
+                                       const gchar *text);
+gint     fs_cli_simulate_do           (const FsWhatIfResult *result,
+                                       const gchar *line,
+                                       gboolean assume_running, guint n,
+                                       gboolean yes);
+
+/* The What-If context fs_cli_whatif_policy asks in (fs-cli-cmds.c);
+ * *settings_out is borrowed by it: free it after the context. */
+FsWhatIfContext *fs_cli_whatif_context (const FsPolicy *policy,
+                                        gboolean assume_running,
+                                        FsSettings **settings_out);
+
+/* fs-cli-config.c: is a StockFW window running as root? */
+gboolean fs_cli_root_gui_running (void);
+/* === end PR4-C === */
+
+/* === PR4-E === */
+/* `stockfw __man topics' (fs-cli-complete.c): the help topics as the
+ * page stockfw-topics(7), written by fs-cli-help.c. */
+gint fs_cli_help_man_topics (void);
+/* === end PR4-E === */
 
 G_END_DECLS
 

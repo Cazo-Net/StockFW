@@ -11837,6 +11837,33 @@ cc ${STOCKFW_TEST_CFLAGS:-} tests/test-pr3-core.c \
 pr3_rc=0
 TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr3-core" || pr3_rc=$?
 
+# PR 4's core API (tests/test-pr4-core.c, package 4A): fs_firewall_add_live
+# (the journal plus the rows, never the saved file; a stopped firewall is
+# not started), the Sentinel lift helpers and the allow-list text.  Its
+# scratch files go under $BUILD_DIR (TMPDIR), removed on exit.
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} tests/test-pr4-core.c \
+   -I src \
+   $(pkg-config --cflags glib-2.0 gio-2.0 liblzma libcrypto) \
+   -o "$BUILD_DIR/test-pr4-core" \
+   src/core/*.c \
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
+pr4_rc=0
+TMPDIR="$BUILD_DIR" "$BUILD_DIR/test-pr4-core" || pr4_rc=$?
+
+# === PR4-E ===
+# The help topics as plain text (tests/test-help-text.c, package 4E):
+# the markup renderer, every topic rendered with no markup left and
+# every help: link naming a topic, and the "Desktop app topics".
+# shellcheck disable=SC2086
+cc ${STOCKFW_TEST_CFLAGS:-} tests/test-help-text.c src/core/fs-helpcontent.c \
+   -I src $(pkg-config --cflags glib-2.0) \
+   -o "$BUILD_DIR/test-help-text" \
+   $(pkg-config --libs glib-2.0) $EXTRA_LIBS
+pr4e_rc=0
+"$BUILD_DIR/test-help-text" || pr4e_rc=$?
+# === end PR4-E ===
+
 # Wording guard: the Copilot is a set of fixed rules, and nothing in the
 # program or the docs may call it AI.  The one sentence that says there
 # is no AI model is allowed.
@@ -11892,7 +11919,7 @@ for f in ../AUTHORS ../CREDITS ../README.md src/ui/fs-aboutdialog.c; do
 done
 # The port's own credit reads "Stock Team" too: About and Help said
 # "StockFW Project - GTK3 Port, ..." (release review, problem 1).
-for f in src/ui/fs-aboutdialog.c src/ui/fs-helpcontent.c; do
+for f in src/ui/fs-aboutdialog.c src/core/fs-helpcontent.c src/cli/fs-cli-help.c; do
   if ! tr -d '\r\n\t' < "$f" | sed 's/"  *"//g' | grep -q 'Stock Team - GTK3 Port, Windows Backend, Copilot' ||
      grep -q 'StockFW Project' "$f"; then
     echo "FAIL: $f does not credit \"Stock Team - GTK3 Port, Windows Backend, Copilot\""
@@ -11904,7 +11931,7 @@ echo "ok:   credits guard: Stockfw Team, no full name, no e-mail address"
 # Privacy (DOCS-HELP-07): the location database downloads as a
 # blocklist does, so "Your data" and the threat-intel topic must name it
 # wherever they say what StockFW downloads.
-PRIV="$(tr -d '\r\n\t' < src/ui/fs-helpcontent.c | sed 's/"  *"//g')"
+PRIV="$(tr -d '\r\n\t' < src/core/fs-helpcontent.c | sed 's/"  *"//g')"
 case "$PRIV" in
   *'nothing unless you turn on a <a href=\"help:threat-intel\">threat-intel blocklist</a> or the location database'*) ;;
   *) echo "FAIL: Help > Your data says only a blocklist downloads anything"; exit 1 ;;
@@ -12123,4 +12150,5 @@ fi
 echo "ok:   dashboard guard: no innerHTML, document.write, eval, WebSocket, EventSource or on* handlers in dashboard.html (T14)"
 
 [ "$core_rc" -eq 0 ] && [ "$geodb_rc" -eq 0 ] && [ "$intelgeo_rc" -eq 0 ] \
-  && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] && [ "$pr3_rc" -eq 0 ]
+  && [ "$whatif_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] && [ "$pr3_rc" -eq 0 ] \
+  && [ "$pr4_rc" -eq 0 ] && [ "$pr4e_rc" -eq 0 ]

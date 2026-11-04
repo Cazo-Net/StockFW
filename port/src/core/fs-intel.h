@@ -226,6 +226,37 @@ gboolean fs_intel_import_list (FsIntelConfig *config, const gchar *path,
                                FsFeedParseStats *stats, gchar **id_out,
                                GError **error);
 
+/* [ fs_intel_import_text ] (PR 4, 4D; F12)
+ * fs_intel_import_list for a text a caller read itself (stdin, or a
+ * file the terminal read as the user, so root never opens a path it
+ * was given): `len' bytes, at most FS_FEED_MAX_BYTES.  `what' names
+ * the input in the messages and the audit line ("standard input").
+ * Otherwise the same: same id, same replace-by-name, the config is NOT
+ * saved. */
+gboolean fs_intel_import_text (FsIntelConfig *config, const gchar *text,
+                               gsize len, const gchar *what,
+                               const gchar *name, FsIntelDir dir,
+                               FsFeedParseStats *stats, gchar **id_out,
+                               GError **error);
+
+/* The local list of that name, compared as an import compares it (any
+ * case, any spacing); NULL when there is none.  Borrowed. */
+FsIntelListConf *fs_intel_config_list_by_name (const FsIntelConfig *config,
+                                               const gchar *name);
+
+/* [ fs_intel_exceptions_from_text ] (PR 4, 4A; F11)
+ * The allow list (exceptions) from the whole text of an editor, a file
+ * or stdin, as the Threat Intel page's editor takes it: each line is
+ * cut at its first '#', so "203.0.113.6 # mail" is the address alone
+ * (the comment is dropped, never kept), then the text is read with
+ * fs_range_set_from_text: blank lines are skipped, and any other line
+ * that is not an address, a CIDR or a range refuses the whole text
+ * (NULL, *error names the line by its number).  Empty text is an empty
+ * set: no exceptions.  Normalized; fs_range_set_free.  The config is
+ * not touched: the caller puts the set in config->exceptions and saves. */
+FsRangeSet *fs_intel_exceptions_from_text (const gchar *text,
+                                           GError **error);
+
 /* ---- per-source state (design 6.1) ---------------------------------- */
 
 typedef struct
@@ -274,6 +305,12 @@ FsRangeSet *fs_intel_source_load (const gchar *id, GError **error);
  * older than 7 intervals, from content_date when known, else from
  * fetched_at.  `now' in unix seconds. */
 gboolean fs_intel_source_is_due   (const FsIntelConfig *config,
+                                   const gchar *id, gint64 now);
+/* (PR 4, 4D; F7) When `intel update' next downloads the source
+ * without --now, in unix seconds: 0 when it is due now, -1 for a
+ * source with no schedule (a local list, an unknown id).  The rule of
+ * fs_intel_source_is_due, so the two never disagree. */
+gint64   fs_intel_source_next_due (const FsIntelConfig *config,
                                    const gchar *id, gint64 now);
 gboolean fs_intel_source_is_stale (const FsIntelConfig *config,
                                    const gchar *id, gint64 now);
