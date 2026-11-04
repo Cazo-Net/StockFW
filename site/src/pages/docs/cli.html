@@ -19,18 +19,21 @@ Commands:
   apply [--dry-run]          Push the saved policy to the firewall (root)
   start | stop               Start or stop the firewall (root)
   simulate "&lt;traffic&gt;"       What-if: would this traffic be allowed?
-  copilot health             Check the policy for overlaps and risks
+  copilot health|scan|...    Policy health, findings, fixes, undo
   events [-n N] [-f]         Recent firewall events; --history for saved
   connections                Active TCP connections and their programs
   listening                  Open ports, their programs and who can reach them
   interfaces [--watch]       Network adapters with traffic and rates
   audit [-n N] [-f]          The audit log: every apply, start and stop
-  sentinel [list]            Sentinel's staged blocks (read-only)
+  sentinel [list|lift|mode]  Sentinel's blocks: list or lift; its mode
   intel &lt;action&gt;             Threat-intel blocklists (stockfw help intel)
   config list|get|set|apply  The Preferences settings; set them (root)
+  trust [list|check|...]     Files you attested: changed since? (per user)
   dashboard [--port N]       Serve the local web dashboard and open it
   dashboard link             A new link to the running dashboard
   help [command]             Help for one command
+  help topics | TOPIC        The guide: each page and setting explained
+  about [--system]           Version, credits, licence; bug report lines
   version                    Print the version
 
 Global options:
@@ -48,7 +51,7 @@ Exit status:
   0  success          2  usage error           5  simulate: BLOCKED;
   1  failure          3  needs root privileges    intel lookup: blocked
                                                6  simulate: DEPENDS
-                                               7  copilot health: findings
+                                               7  copilot: findings
 
 Policy files live in ~/.stockfw (or /etc/stockfw when run as root) --
 the same files the desktop app edits.  Nothing here talks to the
@@ -293,6 +296,23 @@ BLOCKED
 $ echo $?
 5</pre>
 <p>Exit 0 means ALLOWED, 5 BLOCKED and 6 DEPENDS, so a script can branch without parsing; 2 means the line could not be read. With <code>-q</code> only the verdict word is printed. The plain output is the window in text: the verdict in a sentence with the deciding rule as <code>KIND:N</code>, how the line was read with a confidence, then for each direction the trace (<code>-</code> skipped, <code>*</code> a note, <code>=&gt;</code> the deciding step) and the checked fixes in brackets. The JSON carries the same, with <code>read_as</code>, <code>rule_ref</code>, and under <code>answers</code> every direction’s <code>trace</code>, <code>cases</code> and <code>actions</code>, each action with the exact policy row it would write. The sentence grammar is on the <a href="{{root}}docs/simulator.html">simulator page</a>. Simulating reads the saved policy and needs no root; <code>--applied</code> asks the last applied policy instead; reading whether the firewall is running does need root, so <code>--assume-running</code> answers for the firewall as it would run. Sentinel’s staged blocks are part of the answer, with when each lifts. [[verified:test-whatif.c]] [[verified:test-cli.sh]]</p>
+<h3 id="simulate-do">Running a fix: --do N</h3>
+<pre data-lang="sh">$ sudo stockfw simulate "ssh from 203.0.113.99" --do 1
+ALLOWED. The firewall is not running, so nothing is filtered.
+Read as: host 203.0.113.99; service SSH: TCP port 22; inbound (confidence 90%)
+
+Inbound TCP port 22 (SSH) from 203.0.113.99 to this computer: ALLOWED
+  The firewall is not running, so nothing is filtered.
+  How it was decided:
+    =&gt; the firewall is not running: nothing is filtered
+  1 [create-allow] Allow inbound TCP port 22 from 203.0.113.99: Adds one row to the policy (Inbound: allow service): inbound TCP port 22 from 203.0.113.99. Checked: with it this question is allowed once the firewall runs, and nothing else changes. On Linux the row also applies to traffic this computer forwards to other machines.
+  2 [start-firewall] Start the firewall: The firewall is not running, so nothing is filtered. This is allowed only because of that. Once it runs, the rules decide: this is blocked.
+
+Good to know:
+  - Once the firewall runs: BLOCKED. No rule lets it in, so the default drops it.
+  …
+Do fix 1? [y/N]</pre>
+<p>The fixes are numbered in the answer, and <code>--do N</code> runs one, as the What-If window’s buttons do: a new rule (only one StockFW itself writes, one address or block, one port, one protocol, checked as safe before it is offered), a start of the firewall (through the normal start gate, so audit-only mode holds it and the audit log gets a line), an apply, or a Sentinel lift. Any other fix prints the command to run instead. The question is answered against the policy as it is now and the fix is shown before anything changes; on a terminal it asks <code>[y/N]</code>, and without one it needs <code>--yes</code>. Without <code>--do</code> nothing is ever written. [[verified:test-pr4-core.c]] [[verified:test-cli.sh]]</p>
 <pre data-lang="sh" data-title="In a deployment script">if ! stockfw simulate "inbound https from 0.0.0.0/0" >/dev/null; then
     echo "port 443 would be closed; refusing to deploy" >&amp;2
     exit 1
@@ -337,6 +357,23 @@ Events      233 read from /dev/kmsg, 221 shown
 History     No saved history in /root/.local/share/stockfw/events.
             Not being written: Keep event history is off (Preferences > Events).</pre>
 <p><code>--stats</code> counts what was read, shown and hidden, inbound and outbound, blocked and allowed, then the saved history’s size and folder and why it is not being written. <code>--clear-history</code> shows the same, asks on a terminal, and deletes the history (<code>--yes</code> without a terminal); it deletes nothing while a copy of StockFW is writing the folder. The two Events-page filters run where the window runs them, on the stream before the list’s own filters, so they also shape <code>-f</code> and <code>--summary</code>. [[verified:test-cli.sh]]</p>
+
+<h3 id="events-act">Acting on an event: events act</h3>
+<pre data-lang="sh">$ sudo stockfw events act block-dest --addr 198.51.100.5 --dir out
+Event:
+TIME             VERDICT  DIR  SOURCE        DESTINATION   PORT  SERVICE  PROTO  RULE
+Nov 04 01:30:08  ALLOWED  out  192.168.1.20  198.51.100.5  443   HTTPS    TCP    -
+Rule: outbound-deny-to  198.51.100.5  (Blocked from event view)
+It is saved and recorded for the next start: the firewall is stopped, and is not started.
+Add it? [y/N] y
+Saved outbound-deny-to:2  198.51.100.5  (Blocked from event view)
+The firewall is stopped: the change is saved and goes live at the next start; the firewall stays stopped.
+
+$ sudo stockfw events act block-dest --addr 198.51.100.5 --dir out &lt;/dev/null
+Event:
+  …
+stockfw: error: refused: there is no terminal to ask on, so nothing was changed; pass --yes to do it without a question</pre>
+<p><code>events act</code> turns one event into a rule, as the Events page’s menu does. The action is <code>block-dest</code> (outbound: deny all traffic to its destination), <code>block-service</code> (its service and port to that destination), <code>allow-dest</code> (allow its destination; Sentinel’s blocks of it are lifted), <code>trust-source</code> (inbound: allow its source) or <code>untrust-source</code> (remove the inbound allow for its source). The events the filters keep are the choice, newest first; events that give the same rule count once, and with more than one rule to choose from it lists them and <code>--pick N</code> takes one. The event and the rule are shown first. <strong>A block goes live alone</strong>: the last applied policy plus the new row, so a rule you saved and never applied stays off, and so does a Firewall setting saved with <code>config set</code> and not applied. An allow is saved and the saved policy is applied, so the whole apply is shown first. With the firewall stopped the rule is recorded for the next start and the firewall is not started. <code>--no-apply</code> only saves. [[verified:test-pr4-core.c]] [[verified:test-cli.sh]]</p>
 
 <h3 id="events-history">Saved history</h3>
 <p><code>--history</code> reads the <a href="{{root}}docs/events.html#history">history the desktop app saves</a> instead, from <code>~/.local/share/stockfw/events</code>, so no root is needed; under <code>sudo</code> that is root’s history, and <code>--history-dir DIR</code> reads another folder. A long history is streamed, never held in memory. With no saved history the command says so and points at the Preferences switch that turns it on.</p>
@@ -401,7 +438,7 @@ TIME                 ACTION                   FROM  DETAIL
 $ sudo stockfw audit --action apply --since 7d --json | jq -r '.entries[] | [.time, .detail] | @tsv'</pre>
 <p>The audit log that the <a href="{{root}}docs/copilot.html#the-audit-trail">Policy page</a> appends to, read from the terminal: every apply, start and stop, and what threat intel, Sentinel, the health check and Trust did. The last N entries (default 20, <code>0</code> for all), oldest first; <code>-r</code> puts the newest first, <code>--since</code> and <code>--until</code> take the same time words as <code>events</code>, <code>--action apply|start|stop|intel|sentinel|health|trust|policy</code> keeps one kind, <code>--grep TEXT</code> keeps entries that hold TEXT, <code>-f</code> follows new entries (one object per line with <code>--json</code>), <code>--utc</code> prints ISO times and <code>--file PATH</code> reads another log. FROM is <code>cli</code> or <code>gui</code> where the line says so. The log is your account’s own (<code>STOCKFW_AUDIT_FILE</code> overrides it), so no root is needed; under <code>sudo</code> it is root’s. With <code>--json</code>: <code>file</code>, <code>lines_total</code>, <code>bad_lines</code> and the <code>entries</code>, each with <code>time</code>, <code>epoch</code>, <code>action</code>, <code>origin</code>, <code>detail</code> and the <code>raw</code> line. A damaged line is counted, never dropped silently. Exit 1 when there is no log yet. [[verified:test-cli.sh]]</p>
 
-<h2 id="sentinel">sentinel list</h2>
+<h2 id="sentinel">sentinel list, lift, mode</h2>
 <pre data-lang="sh">$ stockfw sentinel list
 Sentinel auto  - /root/.config/stockfw/autoblocks
 TARGET        KIND                  STAGED           LIFTS            WHY
@@ -410,9 +447,20 @@ TARGET        KIND                  STAGED           LIFTS            WHY
 $ stockfw sentinel list
 Sentinel detect  - /home/you/.config/stockfw/autoblocks
 Nothing staged.</pre>
-<p><a href="{{root}}docs/copilot.html#sentinel-the-one-automatic-action">Sentinel’s</a> staged blocks, read from its state file and never changed: the address, the rule as a <code>KIND:N</code> reference while it is still in the policy, when it was staged, when it lifts (ten minutes later, or “due since …” once that has passed) and why. The header gives Sentinel’s mode, <em>auto</em> or <em>detect</em>. <code>--json</code> gives <code>mode</code>, <code>file</code>, <code>ttl_seconds</code> and the <code>blocks</code>. Lifting a block by hand from the command line is not in this version; the Copilot page’s Undo does it. [[gap]] [[verified:test-cli.sh]]</p>
+<p><a href="{{root}}docs/copilot.html#sentinel-the-one-automatic-action">Sentinel’s</a> staged blocks, read from its state file and never changed: the address, the rule as a <code>KIND:N</code> reference while it is still in the policy, when it was staged, when it lifts (ten minutes later, or “due since …” once that has passed) and why. The header gives Sentinel’s mode, <em>auto</em> or <em>detect</em>. <code>--json</code> gives <code>mode</code>, <code>file</code>, <code>ttl_seconds</code> and the <code>blocks</code>. [[verified:test-cli.sh]]</p>
+<pre data-lang="sh">$ sudo stockfw sentinel lift 203.0.113.9
+Lift Sentinel's block of 203.0.113.9? [y/N] y
+Lifted 1: 203.0.113.9
 
-<h2 id="copilot-health">copilot health</h2>
+$ sudo stockfw sentinel lift --expired --yes
+Nothing to lift: Sentinel has no block staged.
+
+$ stockfw sentinel mode
+auto
+$ sudo stockfw sentinel mode detect --yes</pre>
+<p><code>sentinel lift</code> takes Sentinel’s blocks down now: those for one address (also the ones it wrote in an earlier session; your own rules are never touched), <code>--all</code> of them, or the <code>--expired</code> ones whose ten minutes are up. Each comes out of the state file and the policy and off the firewall, and the rest of what is live is not touched: a rule you saved and never applied stays off. A stopped firewall is not started; the lift is saved and goes live at the next start. <code>sentinel mode</code> prints the mode; <code>mode auto</code> lets Sentinel block and <code>mode detect</code> only reports and lifts every block now, as the Copilot page’s switch does. Lift and a mode change ask <code>[y/N]</code> on a terminal, No by default, and need <code>--yes</code> without one; both need root. A StockFW window running as root keeps its own list and may write it back, so close it first. The second sample above is composed from the tool’s own messages; the other lines are real output. [[verified:test-pr4-core.c]] [[verified:test-cli.sh]]</p>
+
+<h2 id="copilot-health">copilot health, and --fix</h2>
 <pre data-lang="sh">$ stockfw copilot health
 9 rules checked, 1 finding
 
@@ -420,7 +468,7 @@ Nothing staged.</pre>
   rule:  outbound-allow-to:1: 192.0.2.10, backup server
   why:   Outbound traffic is allowed by default (restrictive outbound is off in the Firewall preferences), so outbound allow rows change nothing until it is turned on. This is expected for the default policy.
   no fix offered: the rows are right as they are, and take effect when restrictive outbound is turned on.
-A check only: nothing was written. Fixes are made on the Copilot page.
+A check only: nothing was written. Make a fix with `stockfw copilot health --fix N', or with `stockfw policy remove' and `stockfw policy add'.
 $ echo $?
 7
 
@@ -429,7 +477,86 @@ $ stockfw copilot health --severity warning; echo $?
 [info] 1 outbound allow rule has no effect in this mode
   …
 0</pre>
-<p>The <a href="{{root}}docs/copilot.html#policy-health">policy health check</a> of the Copilot page, on the saved policy: duplicates, shadowed rows, allows a deny makes unreachable, outbound allows that do nothing in the current mode, broad or risky inbound allows from anyone, and deny rules that reach no address family. It writes nothing; fixes are made on the Copilot page. Exit 0 means no findings, 7 findings, and 2 a policy that could not be read in full. <code>--severity info|warning|critical</code> sets the level that gives exit 7, so a deployment script can ignore notes and still stop on a warning. With <code>--json</code> each finding carries <code>kind</code>, <code>severity</code>, <code>title</code>, <code>rule</code> (with its <code>rule_ref</code>, <code>index</code> from 0 and the row’s <code>csv</code>), <code>why</code>, <code>evidence</code>, <code>whatif</code>, and either <code>fix</code> with its before and after rows and the What-If checks that verified it, or <code>no_fix_reason</code>. [[verified:test-cli.sh]] [[verified:test-health.c]]</p>
+<p>The <a href="{{root}}docs/copilot.html#policy-health">policy health check</a> of the Copilot page, on the saved policy: duplicates, shadowed rows, allows a deny makes unreachable, outbound allows that do nothing in the current mode, broad or risky inbound allows from anyone, and deny rules that reach no address family. It writes nothing, unless <code>--fix N</code> is given: finding N’s fix is shown with the What-If checks that verified it, confirmed, checked again and saved (not applied: run <code>stockfw apply</code>), and logged in <code>copilot changes</code>. Exit 0 means no findings, 7 findings, and 2 a policy that could not be read in full. <code>--severity info|warning|critical</code> sets the level that gives exit 7, so a deployment script can ignore notes and still stop on a warning. With <code>--json</code> each finding carries <code>kind</code>, <code>severity</code>, <code>title</code>, <code>rule</code> (with its <code>rule_ref</code>, <code>index</code> from 0 and the row’s <code>csv</code>), <code>why</code>, <code>evidence</code>, <code>whatif</code>, and either <code>fix</code> with its before and after rows and the What-If checks that verified it, or <code>no_fix_reason</code>. [[verified:test-cli.sh]] [[verified:test-health.c]]</p>
+
+<h2 id="copilot">copilot scan, show, block, checks, changes</h2>
+<pre data-lang="sh">$ sudo stockfw copilot scan
+A replay of the events on record, without the desktop app's learned baseline.  `stockfw copilot show ID' gives one in full.
+303 events from the kernel log, 24 findings
+ID        SEVERITY  TYPE             SUBJECT         SEEN  TITLE
+8e31aa78  warning   Timed contacts   203.0.113.50    8     Contacts at a near-fixed interval: Unknown to 203.0.113.50
+aee9f60d  info      New port         Unknown         1     Unknown used port 8443 for the first time
+8f0fd14b  info      Port scan        203.0.113.99    12    203.0.113.99 probed 12 ports on this computer
+64b6cb85  info      New hour         Samba (SMB)     1     Samba (SMB) active at a new hour
+…
+
+$ sudo stockfw copilot show 8e31aa78
+8e31aa78  [warning] Timed contacts
+            Contacts at a near-fixed interval: Unknown to 203.0.113.50
+
+Program:    Unknown
+About:      203.0.113.50
+In full:    Unknown contacted 203.0.113.50 on port 8443 8 times, about every 60 seconds. Malware check-ins look like this, but so do update checks and keep-alives.
+Why:        8 contacts; mean interval 60 s (the check looks at 10 to 600 s); variation 0.00 of the mean (the limit is 0.30).
+Harmless?   Update checks, keep-alives, time sync, push notifications and telemetry also run on a timer.
+Sentinel:   Sentinel may block this automatically, for 10 minutes, when its mode is auto.
+
+What was seen (8 events, the last 8):
+TIME             DIR  REMOTE        PORT  PROTO  RESULT   RULE
+Nov 04 01:31:05  out  203.0.113.50  8443  TCP    allowed
+Nov 04 01:32:05  out  203.0.113.50  8443  TCP    allowed
+…
+
+$ sudo stockfw copilot block 8e31aa78
+Rule:     outbound-deny-to: 203.0.113.50, Copilot: periodic beacon
+What-If:  "outbound tcp port 8443 to 203.0.113.50" is checked before it is saved: it must be ALLOWED now and BLOCKED with the rule.
+Add it? [y/N] y
+Block rule added as outbound-deny-to:2.
+The firewall is stopped: the change is saved and goes live at the next start; the firewall stays stopped.
+Undo it: stockfw copilot changes --undo 1
+
+$ sudo stockfw copilot changes
+Undo one with `stockfw copilot changes --undo ID'.  Sentinel's own blocks are in `stockfw sentinel'.
+ID  WHEN             CHANGE                                                    STATE
+1   Nov 04 01:32:15  Block rule added: 203.0.113.50, Copilot: periodic beacon  in force
+
+$ sudo stockfw copilot changes --undo 1 --yes
+Undone: Block rule added: 203.0.113.50, Copilot: periodic beacon.
+The firewall is stopped: the change is saved and goes live at the next start; the firewall stays stopped.
+
+$ sudo stockfw copilot block 8f0fd14b --yes
+stockfw: error: this finding has no block rule to offer</pre>
+<p>The <a href="{{root}}docs/copilot.html">Copilot page</a> in a terminal, with the same fixed checks and no model. <code>scan</code> replays the events on record (the kernel log as root or a reader of it, or with <code>--history</code> the history the desktop app saved; <code>--since T</code> starts there) into a fresh Copilot with the saved policy, so findings that need the app’s learned baseline (new port, new destination, new hour, rate) are rare. Each finding has an ID, and the same events give the same ID. <code>show ID</code> gives one in full: what was seen, why it was flagged, why it could be harmless, what Sentinel did, and ready <code>simulate</code> and <code>events</code> lines. <code>block ID</code> adds the finding’s outbound block rule after What-If says the traffic is ALLOWED now and BLOCKED with it, saves it and puts only that rule live; an inbound finding has no block to offer, since the policy already blocks inbound traffic by default. <code>checks</code> prints what the checks look for, with the engine’s own numbers. <code>changes</code> lists what <code>block</code> and <code>health --fix</code> did, kept in a file (<code>STOCKFW_CHANGELOG_FILE</code>), and <code>--undo ID</code> puts one back, lifting a block from the firewall too. Every change asks <code>[y/N]</code> on a terminal, No by default; with no terminal it is refused at once unless <code>--yes</code> is given, and standard input is never read. <code>health</code> and <code>scan</code> exit 0 with no findings and 7 with findings. The prompt lines in the samples are composed; everything else is the tool’s output. [[verified:test-pr4-core.c]] [[verified:test-cli.sh]]</p>
+
+<h2 id="trust">trust: the Trust page in a terminal</h2>
+<pre data-lang="sh">$ stockfw trust attest ~/bin/backup.sh --yes
+Attested /home/you/bin/backup.sh (SHA-256 427f93cafd9cc19be6eec03e590c9c6cdf9f688a5eaf21fa8d72351e2b15fd05), and recorded in the audit log.
+
+$ stockfw trust
+PATH                     PUBLISHER    SHA-256                                                           STATUS
+/home/you/bin/backup.sh  (no signer)  427f93cafd9cc19be6eec03e590c9c6cdf9f688a5eaf21fa8d72351e2b15fd05  matches
+
+1 attested in /home/you/.config/stockfw/trust.csv: 1 match, 0 changed, 0 gone.
+
+$ stockfw trust check; echo $?
+PATH                     PUBLISHER    SHA-256                                                           STATUS
+/home/you/bin/backup.sh  (no signer)  b76bc275a9bcda0dd1b7d1b8f23b23b3dab292ca219f59371ad83657e4c9aa3a  CHANGED
+
+1 attested in /home/you/.config/stockfw/trust.csv: 0 matches, 1 changed, 0 gone.
+1
+
+$ stockfw trust inspect ~/bin/backup.sh
+  File       /home/you/bin/backup.sh
+  Publisher  (no signer)
+  Signature  Not an executable
+  SHA-256    b76bc275a9bcda0dd1b7d1b8f23b23b3dab292ca219f59371ad83657e4c9aa3a
+  Size       5 B
+  Modified   2026-11-04 01:32:15 UTC
+  Baseline   CHANGED since attestation.  The baseline has hash 427f93cafd9cc19be6eec03e590c9c6cdf9f688a5eaf21fa8d72351e2b15fd05; the file on disk no longer matches it.
+
+$ stockfw trust forget ~/bin/backup.sh --yes
+Forgotten: /home/you/bin/backup.sh is no longer in the baseline; recorded in the audit log.</pre>
+<p>The <a href="{{root}}docs/trust.html">Trust page</a> without a window. A file you <code>attest</code> is recorded with its SHA-256; <code>check</code> (and <code>list</code>, the default) hash every attested file again and say whether it still matches, changed since you attested it (CHANGED) or is missing (GONE). <code>check</code> exits 1 for either, so a cron job can watch a program for changes. <code>inspect PATH</code> shows a file’s hash, size, date and baseline state, and <code>forget PATH</code> takes it out. The baseline is your own, <code>trust.csv</code> in your config folder or <code>$STOCKFW_TRUST_FILE</code>, and needs no root; under <code>sudo</code> it is root’s, and the command says so. Attest and forget ask on a terminal and need <code>--yes</code> without one. On Linux there is no signature check: the baseline tells you that a file changed, not who made it. The paths in the sample were shortened; the hashes and messages are real. [[verified:test-pr4-core.c]] [[verified:test-cli.sh]]</p>
 
 <h2 id="listening">listening: open ports and who can reach them</h2>
 <pre data-lang="sh">$ sudo stockfw listening
@@ -481,6 +608,88 @@ http://127.0.0.1:43977/#code=796e07cec3c56f510f01df6dd4fa788b
   One use, for 2 minutes.  Fingerprint B150-4979-89E1.</pre>
 <p><code>stockfw dashboard [--port N] [--no-open] [--origin-port N] [--allow-windows]</code> serves the <a href="{{root}}docs/dashboard.html">local dashboard</a> and opens it in your browser; <code>stockfw dashboard link</code> gets a fresh one-use link from the running dashboard. Run it as yourself or with <code>sudo</code> from your account, never as plain root. The link is printed only to a terminal; in a pipe or with <code>--json</code> you get the path of a launch file to open instead. There is deliberately no <code>--bind</code>. When it is not run as root and a kernel log file is readable to your account, the dashboard follows that file itself, so monitoring works for a user in the <code>adm</code> group. The security model, WSL and SSH forwarding are on the <a href="{{root}}docs/dashboard.html">dashboard page</a>. [[verified:test-dashboard.sh]]</p>
 
+<h2 id="help-topics">The guide in the terminal: help topics, help TOPIC, about</h2>
+<pre data-lang="sh">$ stockfw help topics
+The StockFW guide: the topics the desktop app's Help shows. Type what a line
+starts with after `stockfw help' to read that topic; `stockfw help --search
+WORD' finds words in them.
+
+Start here
+  getting-started         Getting started
+
+Using StockFW
+  overview                Overview and status
+  topic events            Events
+  topic activity          Activity graphs
+  topic policy            Policy
+  threat-intel            Threat intel
+  topic copilot           Copilot
+  whatif                  What-If
+  topic sentinel          Sentinel
+  topic trust             Trust
+
+Settings
+  prefs-events            Events settings
+  prefs-policy            Policy settings
+  prefs-firewall          Firewall settings
+  prefs-network           Network settings
+  prefs-icmp              ICMP
+  prefs-protection        Protection
+
+More
+  cli                     Command line and dashboard
+
+Platforms
+  linux                   Linux notes
+  windows                 Windows notes
+
+Reference
+  troubleshooting         Troubleshooting
+  topic about             About and credits
+
+Desktop app topics
+About the desktop app's own windows, which a terminal does not have:
+  preferences             Preferences
+  prefs-general           General
+  background              Running in the background
+  shortcuts               Keyboard shortcuts
+
+$ stockfw help --search lift
+  topic events            Events
+    Each connection your rules allowed or blocked, as it happens.
+  whatif                  What-If
+    Ask whether a connection would be allowed, before it happens.
+  topic sentinel          Sentinel
+    Watches outgoing traffic for a program calling home or scanning, and can
+    block it for ten minutes.
+
+$ stockfw about
+StockFW {{version}} - Linux (iptables)
+Configures the firewall your system already has and shows what it allows and
+blocks.
+
+Credits
+  Stockfw Team - Creator &amp; Original Developer
+  H3xCore - Developer
+  Stock Team - GTK3 Port, Windows Backend, Copilot
+
+Licence
+  StockFW is free software and comes with no warranty. Its source carries two
+  licence texts: the GNU General Public License version 2 (COPYING) and the
+  Apache License 2.0 (LICENSE). …
+  Both texts: stockfw about --licences
+
+Website
+  https://github.com/Cazo-Net/StockFW
+
+$ stockfw about --system
+StockFW {{version}}
+GLib 2.80.0 (built with 2.80.0)
+Platform: Ubuntu 24.04.5 LTS (linux build)
+Firewall backend: Linux (iptables)
+stockfw: hint: these lines name no user, host or address: paste them into a bug report as they are</pre>
+<p>The 25 topics of the desktop app’s <a href="{{root}}docs/help.html">Help window</a>, in the terminal. <code>help topics</code> lists them, <code>help TOPIC</code> prints one (a link to another topic is printed as the command that shows it), and <code>help --search WORD</code> finds words in them. Topics about the desktop app’s own windows are listed apart. Where a command has a topic’s name, such as <code>events</code>, <code>stockfw help events</code> is still the command’s help and points to <code>stockfw help topic events</code>. The same topics are installed as the manual page <code>stockfw-topics(7)</code>, written by the tool like <code>stockfw(1)</code>. <code>about</code> is the About window: version, credits, licence and website; <code>--licences</code> prints both licence texts in full and <code>--system</code> the lines for a bug report, which name no user, host or address. [[verified:test-help-text.c]] [[verified:test-cli.sh]]</p>
+
 <h2 id="man">The manual page and completion</h2>
 <pre data-lang="sh">$ man stockfw
 $ stockfw policy remove inbound-allow-&lt;Tab&gt;
@@ -502,6 +711,8 @@ $ sudo cmake --install build-cli</pre>
 <li><code>--plain</code> (<code>-H</code>) gives tab-separated rows without a header; <code>--full</code> (<code>-l</code>) never cuts a cell.</li>
 <li>Errors go to standard error as <code>stockfw: error: …</code>, usually followed by <code>stockfw: hint: …</code> saying what to do, with the full path of the program when it needs root.</li>
 <li><code>-q</code> keeps only the essential line, leaves out hints, notes and legends, and with <code>simulate</code> prints only the verdict word.</li>
+<li>Every command that changes something (<code>events act</code>, <code>simulate --do</code>, <code>copilot block</code>, <code>copilot health --fix</code>, <code>copilot changes --undo</code>, <code>sentinel lift</code>, <code>sentinel mode</code>, <code>trust attest</code> and <code>forget</code>, and the <code>intel</code> saves with <code>--apply</code>) asks <code>[y/N]</code> on a terminal, No by default, and <code>--yes</code> skips the question. With no terminal on standard input and no <code>--yes</code> it stops at once, changes nothing, names <code>--yes</code> and never reads standard input.</li>
+<li>With the firewall stopped, a command that adds or lifts a rule prints one line: “The firewall is stopped: the change is saved and goes live at the next start; the firewall stays stopped.” None of them starts the firewall. In audit-only mode the line says the firewall was not changed and how the change goes live.</li>
 <li><code>stockfw version</code> prints one line: <code>stockfw {{version}} - Linux (iptables)</code>, or <code>(nftables)</code> for that backend.</li>
 </ul>
 
@@ -529,7 +740,7 @@ $ sudo cmake --install build-cli</pre>
 
 <h2 id="intel">intel</h2>
 <pre data-lang="sh" data-title="stockfw help intel (the command list)">stockfw intel [status]                     State, and the lists turned on
-stockfw intel feeds                        Every feed: on/off, licence, credit, entries, last update
+stockfw intel feeds                        Every feed: on/off, licence, credit, entries, last update, next
 stockfw intel terms FEED                   What turning FEED on means
 stockfw intel enable ID [--direction D] [--accept-terms]
 stockfw intel disable ID
@@ -539,11 +750,12 @@ stockfw intel proxy [URL|none]             The download proxy
 stockfw intel update [--feed ID] [--now] [--accept-shrink] [--accept-coverage] [--no-apply]
 stockfw intel apply [--dry-run]            Load the lists into the kernel
 stockfw intel clear                        Remove them from the kernel
-stockfw intel import FILE --name NAME [--direction D]
+stockfw intel import FILE|- --name NAME [--direction D] [--apply]
 stockfw intel lists | list show [ID]       Your own lists (and one's ranges)
-stockfw intel remove ID                    A local list or custom feed
-stockfw intel except | unexcept ADDRESS... Never block / block again
-stockfw intel exceptions
+stockfw intel remove ID [--apply]          A local list or custom feed
+stockfw intel except | unexcept ADDRESS... [--apply]
+                                           Never block / block again
+stockfw intel exceptions [--set FILE|- [--apply]]
 stockfw intel lookup ADDRESS               Which lists hold it; blocked?
 stockfw intel geo [status]                 Blocking by country or network
 stockfw intel geo terms | on [--accept-terms] | off
@@ -553,6 +765,16 @@ stockfw intel geo add country|asn VALUE... [--dir D] [--name NAME]
 stockfw intel geo list | remove ID         The country and network rules</pre>
 <p><code>stockfw intel</code> manages <a href="{{root}}docs/threat-intel.html">threat-intel blocklists</a> and <a href="{{root}}docs/country-blocking.html">country and network rules</a>, each command with <code>--json</code>. Every feed is off until you turn it on: <code>terms</code> says which host a feed is downloaded from, how often, what that host learns and its licence, and <code>enable</code> records your consent before anything is downloaded. <code>update</code> fetches the feeds that are due (<code>--now</code>: all of them) and, when the lists are enforced and audit-only is off, puts the new copies in force; a copy that shrank to almost nothing or rolled back to an older date is refused unless <code>--accept-shrink</code>, and one whose coverage jumped needs <code>--accept-coverage</code>. <code>D</code> is <code>in</code>, <code>out</code> or <code>both</code>. A proxy with a user name or password is refused, because curl’s command line is readable by every local user. List and feed names are escaped like every other text from outside.</p>
 <p><code>intel geo</code> blocks by the country a range is registered in, or by the network that owns it, from IPFire’s signed location database; it is off until <code>geo on --accept-terms</code>, and <code>intel update</code> then downloads the database at most once a day. <code>lookup</code> exits 5 when the address is blocked, and <code>simulate</code> answers from the policy alone, so it does not consult the lists. Changing the sets needs root, like every other change to the kernel. [[verified:test-intel-cli.sh]]</p>
+<pre data-lang="sh">$ printf '198.51.100.7   # office vpn\n192.0.2.0/24\n' | sudo stockfw intel exceptions --set -
+Saved.  Never blocked by a list:
+192.0.2.0/24
+198.51.100.7
+Not live yet: run `sudo stockfw intel apply'.
+
+$ printf 'allow 198.51.100.7\n' | sudo stockfw intel exceptions --set -
+stockfw: error: line 1: not an address, CIDR or range: allow 198.51.100.7
+stockfw: hint: each line: an address, a network (198.51.100.0/24) or a range (192.0.2.10-192.0.2.20); '#' starts a comment; nothing was saved</pre>
+<p>The Threat Intel page’s editors have their terminal form. <code>exceptions --set FILE|-</code> replaces the whole allow list with a text, one address, network or range a line, <code>#</code> starting a comment; a line that does not read changes nothing (exit 2) and empty input clears the list. <code>import -</code> reads a list from standard input, and <code>--name "My blocklist"</code> is the page’s “Your blocklist”. <code>enable</code>, <code>disable</code>, <code>on</code>, <code>off</code>, <code>import</code>, <code>remove</code>, <code>except</code>, <code>unexcept</code> and <code>exceptions --set</code> take <code>--apply</code>, which puts the saved change in force at once, as the page does after a save: it needs root, checked before anything is saved, asks on a terminal, audit-only mode holds it, and with the firewall stopped the lists go in force when it starts. <code>intel feeds</code> has a NEXT column: “due now”, or when <code>intel update</code> downloads the feed next. [[verified:test-intel-cli.sh]]</p>
 
 <h2 id="app-flags">The app’s own flags</h2>
 <pre data-lang="sh" data-title="StockFW --help (both platforms)">  -V, --version            Show the program version and exit
@@ -565,4 +787,4 @@ stockfw intel geo list | remove ID         The country and network rules</pre>
 <p>These belong to the desktop program, <code>StockFW</code>, on Windows and Linux alike. It takes options only: a word such as <code>StockFW dashboard</code> exits with status 2 and names the command you meant, <code>sudo /usr/local/bin/stockfw dashboard</code>. A second launch brings the running copy’s window forward instead of starting another; a launch with more rights takes over from it. See <a href="{{root}}docs/background.html">Background, tray and sign-in</a>. [[verified:test-instance.sh]]</p>
 
 <h2>Tests</h2>
-<p><code>tests/test-cli.sh</code> drives every command above against a scratch policy and a fixture log, checks the exit codes and the JSON, runs <code>copilot health</code> with the local network fixed, runs real applies, starts and stops in a private network namespace, follows <code>events -f</code> under a real terminal and reads the raw bytes of its status line, checks the lockout guard with a fake <code>sshd</code>, holds the policy lock while two writers race, runs <code>config set</code> refusals against the Preferences rules, compares the manual page and completion against the command tables, and `tests/test-dashboard.sh` starts a dashboard and exercises its owner, link, session, Host and deadline checks as the served account, as root and as another user. It runs as the build user and again as root, and the root run fails if a root-only part is skipped. <code>tests/test-intel-cli.sh</code> does the same for <code>intel</code>. [[verified:test-cli.sh]] [[verified:test-core.sh]]</p>
+<p><code>tests/test-cli.sh</code> drives every command above against a scratch policy and a fixture log, checks the exit codes and the JSON, runs <code>copilot health</code> with the local network fixed, runs real applies, starts and stops in a private network namespace, follows <code>events -f</code> under a real terminal and reads the raw bytes of its status line, checks the lockout guard with a fake <code>sshd</code>, holds the policy lock while two writers race, runs <code>config set</code> refusals against the Preferences rules, compares the manual page and completion against the command tables, and `tests/test-dashboard.sh` starts a dashboard and exercises its owner, link, session, Host and deadline checks as the served account, as root and as another user. It runs as the build user and again as root, and the root run fails if a root-only part is skipped. <code>tests/test-intel-cli.sh</code> does the same for <code>intel</code>. <code>tests/test-pr4-core.c</code> covers the core step that puts one block live alone and the Sentinel lift on a stopped and a running firewall, and <code>tests/test-help-text.c</code> checks every help topic against the desktop app’s. [[verified:test-cli.sh]] [[verified:test-pr4-core.c]] [[verified:test-core.sh]]</p>

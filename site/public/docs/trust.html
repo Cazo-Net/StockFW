@@ -133,6 +133,7 @@
 <p><code>trust.csv</code> in your profile folder, one quoted row per path: path, SHA-256, size, modification time, signature state, publisher, first seen, last seen. Paths compare without regard to letter case, because Windows paths do. A row that does not parse is skipped, never the whole file; a missing file is an empty baseline. <code>STOCKFW_TRUST_FILE</code> points the app and the tests at another file. See <a href="../docs/files.html#trust-csv">Files and formats</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_trust_engine</span></p>
 
 <h2 id="what-it-is-for">What it is for<a class="anchor" href="#what-it-is-for" aria-label="Link to this section">#</a></h2>
+<p>The same baseline is read and written from the terminal by <a href="../docs/cli.html#trust"><code>stockfw trust</code></a>: <code>check</code> exits 1 when an attested file changed or is gone, so a script can watch it. On Linux there is no signature check there either.</p>
 <p>Trust does not change the firewall. It gives you a second kind of evidence next to the Events page: when the Copilot reports a program doing something new, Inspect tells you whether the program itself is still what it was. The two together are how you tell an update from a replacement.</p>
 
 		</article>
