@@ -1419,10 +1419,7 @@ live_edit (const FsBackend *backend, const FsPolicy *add,
 	if (n == 0)
 		goto out;
 
-	if ((hold == NULL || *hold == '\0') && backend != NULL &&
-	    backend->start_applies_policy && backend->available != NULL &&
-	    backend->available () && backend->get_state != NULL &&
-	    backend->get_state () == FS_FW_STOPPED)
+	if (fs_firewall_live_records_only (backend, hold))
 		outcome = journal_only (live, before, source,
 		                        add != NULL ? "rule(s) added"
 		                                    : "rule(s) lifted",
@@ -1446,6 +1443,16 @@ out:
 	fs_policy_free (live);
 	fs_policy_unlock (lock);
 	return outcome;
+}
+
+/* [ fs_firewall_live_records_only ] (PR 4 review) */
+gboolean
+fs_firewall_live_records_only (const FsBackend *backend, const gchar *hold)
+{
+	return (hold == NULL || *hold == '\0') && backend != NULL &&
+	       backend->start_applies_policy && backend->available != NULL &&
+	       backend->available () && backend->get_state != NULL &&
+	       backend->get_state () == FS_FW_STOPPED;
 }
 
 /* [ fs_firewall_lift_live ] */

@@ -121,6 +121,30 @@ load_config (gboolean create, GError **error)
  * after_apply in place of its "Not live yet" line. */
 static gboolean         apply_after;
 static FsControlResult *after_apply;
+/* PR 4 review: --yes (or -y), taken out of the words by the dispatcher
+ * (fs_cli_cmd_intel): it skips the question of an --apply. */
+static gboolean         apply_yes;
+
+/* The question of a save with --apply (fs_cli_change_confirm): [y/N]
+ * on a terminal, --yes skips it, and with no terminal it is refused at
+ * once, naming --yes, before anything is read or saved. */
+static gboolean
+apply_confirm (void)
+{
+	return fs_cli_change_confirm ("Save this change and put the blocklists "
+	                              "in force now?", apply_yes);
+}
+
+/* --yes without --apply: a usage error (the save alone does not ask). */
+static gboolean
+yes_without_apply (const gchar *what)
+{
+	if (!apply_yes)
+		return FALSE;
+	fs_cli_error ("--yes goes with --apply (%s without --apply only saves, "
+	              "and does not ask)", what);
+	return TRUE;
+}
 
 static gboolean
 save_config (const FsIntelConfig *config, gint *status)
@@ -313,8 +337,10 @@ apply_print (const FsControlResult *r, const gchar *not_live)
 		g_free (why);
 		notes_print (o->notes);
 	} else if (g_strcmp0 (r->intel_apply, "stopped") == 0) {
-		printf ("%sThe firewall is not running: the lists are put in "
-		        "force when it starts.%s\n", fs_cli_dim (), fs_cli_reset ());
+		/* The one line of a change on a stopped firewall (PR 4 review):
+		 * fs_intel_resume puts the saved lists in force at the start. */
+		printf ("%s%s%s\n", fs_cli_dim (), FS_CLI_STOPPED_LINE,
+		        fs_cli_reset ());
 	}
 	/* "failed", or refused before the apply: apply_status reports it. */
 }
@@ -1992,9 +2018,14 @@ intel_import (gint argc, gchar **argv)
 		fs_cli_error ("the list name is not UTF-8 text");
 		return FS_EXIT_USAGE;
 	}
-	/* Root before anything is read or saved: an apply needs it. */
+	if (!apply && yes_without_apply ("intel import"))
+		return FS_EXIT_USAGE;
+	/* Root before anything is read or saved: an apply needs it.  Then
+	 * the question, before standard input is read. */
 	if (apply && geteuid () != 0)
 		return fs_cli_need_root ("intel import --apply");
+	if (apply && !apply_confirm ())
+		return FS_EXIT_FAILURE;
 	text = read_input (path, &len);
 	if (text == NULL)
 		return FS_EXIT_USAGE;
@@ -2332,6 +2363,8 @@ intel_exceptions (gint argc, gchar **argv)
 		fs_cli_error ("--apply goes with --set");
 		return FS_EXIT_USAGE;
 	}
+	if (!apply && yes_without_apply ("intel exceptions"))
+		return FS_EXIT_USAGE;
 	if (set_from != NULL) {
 		FsControlResult *r;
 		GVariantBuilder b;
@@ -2341,6 +2374,8 @@ intel_exceptions (gint argc, gchar **argv)
 
 		if (apply && geteuid () != 0)
 			return fs_cli_need_root ("intel exceptions --set --apply");
+		if (apply && !apply_confirm ())
+			return FS_EXIT_FAILURE;
 		text = read_input (set_from, &len);
 		if (text == NULL)
 			return FS_EXIT_USAGE;
@@ -3864,11 +3899,12 @@ intel_lookup (gint argc, gchar **argv)
  * was there.  The words after it move down one, and so does the "--"
  * mark, so fs_cli_is_option_at still reads them as before. */
 static gboolean
-take_apply (gint *n, gchar **rest)
+take_flag (gint *n, gchar **rest, const gchar *flag, const gchar *alias)
 {
 	for (gint i = 0; i < *n; i++) {
 		if (!fs_cli_is_option_at (rest, i) ||
-		    strcmp (rest[i], "--apply") != 0)
+		    (strcmp (rest[i], flag) != 0 &&
+		     (alias == NULL || strcmp (rest[i], alias) != 0)))
 			continue;
 		memmove (&rest[i], &rest[i + 1],
 		         (gsize) (*n - i) * sizeof (gchar *));
@@ -3879,6 +3915,12 @@ take_apply (gint *n, gchar **rest)
 		return TRUE;
 	}
 	return FALSE;
+}
+
+static gboolean
+take_apply (gint *n, gchar **rest)
+{
+	return take_flag (n, rest, "--apply", NULL);
 }
 
 static gint intel_dispatch (const gchar *sub, gint n, gchar **rest);
@@ -3901,14 +3943,31 @@ fs_cli_cmd_intel (gint argc, gchar **argv)
 	                 (strcmp (sub, "list") == 0 && n > 0 &&
 	                  (strcmp (rest[0], "remove") == 0 ||
 	                   strcmp (rest[0], "rm") == 0));
+	/* The saves that read --apply themselves (import, exceptions --set)
+	 * take --yes here too. */
+	gboolean own = strcmp (sub, "import") == 0 ||
+	               strcmp (sub, "exceptions") == 0 ||
+	               (strcmp (sub, "list") == 0 && n > 0 &&
+	                (strcmp (rest[0], "add") == 0 ||
+	                 strcmp (rest[0], "import") == 0));
 	FsPolicyLock *lock;
 	GError *error = NULL;
 	gint status;
 
-	if (!takes || !take_apply (&n, rest))
+	apply_yes = (takes || own) && take_flag (&n, rest, "--yes", "-y");
+	if (own || !takes)
 		return intel_dispatch (sub, n, rest);
+	if (!take_apply (&n, rest)) {
+		if (yes_without_apply ("intel"))
+			return FS_EXIT_USAGE;
+		return intel_dispatch (sub, n, rest);
+	}
 	if (geteuid () != 0)
 		return fs_cli_need_root ("intel --apply");
+	/* PR 4 review: the question, before the lock and before anything
+	 * is saved. */
+	if (!apply_confirm ())
+		return FS_EXIT_FAILURE;
 	lock = fs_policy_lock (&error);
 	if (lock == NULL) {
 		fs_cli_error ("%s", error->message);
@@ -3976,6 +4035,8 @@ static const FsCliOption intel_opts[] = {
 	{ "--max",             TRUE,  "geo"      },
 	{ "--set",             TRUE,  "exceptions" },
 	{ "--apply",           FALSE, NULL       },
+	{ "--yes",             FALSE, NULL       },
+	{ "-y",                FALSE, NULL       },
 	{ NULL, FALSE, NULL }
 };
 
@@ -3986,7 +4047,8 @@ const FsCliCommandDef fs_cli_intel_commands[] = {
 "                                                  credit, entries, last and\n"
 "                                                  next update\n"
 "       stockfw intel terms FEED                   What turning FEED on means\n"
-"       stockfw intel enable ID [--direction D] [--accept-terms] [--apply]\n"
+"       stockfw intel enable ID [--direction D] [--accept-terms]\n"
+"                                  [--apply [--yes]]\n"
 "       stockfw intel disable ID [--apply]\n"
 "       stockfw intel on | off [--apply]           The master switch\n"
 "       stockfw intel add-feed NAME URL [--format F] [--direction D]\n"
@@ -4021,7 +4083,11 @@ const FsCliCommandDef fs_cli_intel_commands[] = {
 "as import and remove.  Changes to the configuration are saved and take\n"
 "effect with `intel apply', or at once with --apply, as the Threat Intel\n"
 "page does after a save (root; with the firewall stopped the lists go in\n"
-"force when it starts; audit-only mode holds it).  `import FILE|-' reads\n"
+"force when it starts; audit-only mode holds it).  A save with --apply\n"
+"asks [y/N] on a terminal, No by default; --yes skips the question; with\n"
+"no terminal on stdin it is refused at once unless --yes is given, before\n"
+"anything is read or saved.  A save without --apply does not ask.\n"
+"`import FILE|-' reads\n"
 "a file or standard input and replaces the list of that name; empty\n"
 "input removes it (--name \"My blocklist\" is the page's \"Your\n"
 "blocklist\", id local-my-blocklist).  `exceptions --set FILE|-'\n"

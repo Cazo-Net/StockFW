@@ -1830,7 +1830,10 @@ out:
  *                 (fs_autoblock_lift_for_dest, C14); then the saved
  *                 policy is applied, as `apply' does: an allow widens
  *                 what gets through, so the terminal shows the whole
- *                 apply before it asks
+ *                 apply before it asks.  With the firewall stopped
+ *                 (fs_firewall_live_records_only) nothing is applied:
+ *                 the rows are recorded for the next start through
+ *                 fs_firewall_add_live, and the firewall stays stopped
  *   rule.untrust  the inbound-allow-from row for "target" is removed and
  *                 taken off the firewall alone (fs_firewall_lift_live,
  *                 C15)
@@ -2104,8 +2107,9 @@ op_rule_allow (FsControlResult *r, const FsControlActor *actor,
 	gboolean live = !p_bool (params, "no_apply");
 	const gchar *dest = p_str (params, "lift_dest");
 	FsPolicyLock *lock;
-	FsPolicy *after;
+	FsPolicy *after, *add;
 	GError *error = NULL;
+	gboolean record;
 
 	if (!act_rows (r, params, FALSE))
 		return;
@@ -2115,19 +2119,37 @@ op_rule_allow (FsControlResult *r, const FsControlActor *actor,
 	if (lock == NULL)
 		return;
 
-	/* Guarded on what will be live: the whole saved policy, rows in. */
+	/* PR 4 review: a stopped firewall stays stopped.  An apply there
+	 * would start it (on Linux an apply IS a start), so the rows are
+	 * only recorded for the next start, as a block is (add_live). */
+	record = live && fs_firewall_live_records_only (fs_backend (),
+	                                                fs_apply_hold_reason ());
+	add = fs_policy_new ();
+	fs_policy_add (add, r->rule);
+	if (r->twin != NULL)
+		fs_policy_add (add, r->twin);
+
+	/* Guarded on what will be live: the whole saved policy, rows in
+	 * (or, stopped, the journal plus the rows: what the start puts
+	 * back). */
 	if (live) {
-		after = policy_copy (r->policy);
-		if (!fs_policy_contains (after, r->rule))
-			fs_policy_add (after, r->rule);
-		if (r->twin != NULL && !fs_policy_contains (after, r->twin))
-			fs_policy_add (after, r->twin);
-		if (!act_guard (r, params, after, FALSE)) {
+		if (record) {
+			after = journal_edit (add, NULL);
+		} else {
+			after = policy_copy (r->policy);
+			if (!fs_policy_contains (after, r->rule))
+				fs_policy_add (after, r->rule);
+			if (r->twin != NULL && !fs_policy_contains (after, r->twin))
+				fs_policy_add (after, r->twin);
+		}
+		if (!act_guard (r, params, after, record)) {
+			fs_policy_free (add);
 			fs_policy_unlock (lock);
 			return;
 		}
 	}
 	if (!act_save (r, actor, params) || !live) {
+		fs_policy_free (add);
 		fs_policy_unlock (lock);
 		return;
 	}
@@ -2149,7 +2171,17 @@ op_rule_allow (FsControlResult *r, const FsControlActor *actor,
 		r->policy = load_policy (r, FALSE, NULL);
 	}
 
-	apply_now (r, actor, policy_copy (r->policy), saved_settings ());
+	if (record) {
+		live_context (r->policy);
+		r->outcome = fs_firewall_add_live (fs_backend (), add,
+		                                   actor->channel,
+		                                   fs_apply_hold_reason (), &error);
+		live_result (r, error);
+		g_clear_error (&error);
+	} else {
+		apply_now (r, actor, policy_copy (r->policy), saved_settings ());
+	}
+	fs_policy_free (add);
 	if (r->lift_error != NULL && r->status == FS_CONTROL_OK)
 		fail (r, FS_CONTROL_FAILED, NULL,
 		      "Sentinel's block of %s could not be lifted: %s", dest,

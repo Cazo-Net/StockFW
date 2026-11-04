@@ -283,6 +283,67 @@ fs_cli_append_lines_json (GString *out, const gchar *text)
 	g_strfreev (lines);
 }
 
+/* [ fs_cli_change_confirm ] -- see fs-cli.h. */
+gboolean
+fs_cli_change_confirm (const gchar *question, gboolean yes)
+{
+	gchar answer[16] = "";
+
+	if (yes)
+		return TRUE;
+	fflush (stdout);
+	if (!isatty (STDIN_FILENO)) {
+		fs_cli_error ("refused: there is no terminal to ask on, so nothing "
+		              "was changed; pass --yes to do it without a question");
+		return FALSE;
+	}
+	fprintf (stderr, "%s [y/N] ", question);
+	fflush (stderr);
+	if (fgets (answer, sizeof answer, stdin) != NULL &&
+	    (g_ascii_strcasecmp (g_strstrip (answer), "y") == 0 ||
+	     g_ascii_strcasecmp (answer, "yes") == 0))
+		return TRUE;
+	fs_cli_error ("not done: nothing was changed");
+	return FALSE;
+}
+
+/* [ fs_cli_live_stopped ] -- see fs-cli.h. */
+gboolean
+fs_cli_live_stopped (const FsApplyOutcome *o)
+{
+	if (o != NULL)
+		return !o->held && o->result == FS_APPLY_DRY_RUN &&
+		       o->firewall_was == FS_FW_STOPPED;
+	return fs_firewall_live_records_only (fs_backend (), NULL);
+}
+
+/* [ fs_cli_say_stopped ] -- see fs-cli.h. */
+void
+fs_cli_say_stopped (void)
+{
+	if (!fs_cli.quiet && !fs_cli.json)
+		printf ("%s\n", FS_CLI_STOPPED_LINE);
+}
+
+/* [ fs_cli_say_held ] -- see fs-cli.h.  The reason is the hold's own
+ * text: through fs_cli_out_safe. */
+void
+fs_cli_say_held (const gchar *reason, gboolean sentinel)
+{
+	gchar *safe;
+
+	if (fs_cli.quiet || fs_cli.json)
+		return;
+	safe = fs_cli_out_safe (reason != NULL ? reason : "held");
+	printf ("%sHeld:%s %s.  The firewall was not changed; %s\n",
+	        fs_cli_amber (), fs_cli_reset (), safe,
+	        sentinel ? "the block stays live until the next start or "
+	                   "`stockfw sentinel lift --expired'."
+	                 : "the change is saved, and `stockfw apply' puts it "
+	                   "live once the hold ends.");
+	g_free (safe);
+}
+
 /* [ print_notes ] -- an apply's notes, one amber line each. */
 void
 fs_cli_print_notes (const gchar *notes)

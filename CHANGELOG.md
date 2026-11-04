@@ -267,6 +267,22 @@ into `/usr/local/share/doc/stockfw/`.
   next `apply` or `config apply` sends it. Before, `events act` and
   `simulate --do` sent it with the rule, and every one of them recorded
   it as applied.
+- **Every change from PR 4's commands asks the same way.** `events
+  act`, `simulate --do`, `copilot block`, `copilot health --fix`,
+  `copilot changes --undo`, `sentinel lift`, `sentinel mode auto|detect`
+  and the threat-intel saves with `--apply` ask `[y/N]` on a terminal,
+  No by default, and `--yes` skips the question. With no terminal and
+  no `--yes` they stop at once, change nothing, name `--yes` and never
+  read standard input. `copilot changes --undo`, `sentinel lift`,
+  `sentinel mode` and intel `--apply` did not ask before.
+- **A stopped firewall says so, and stays stopped.** With the firewall
+  stopped, a command that adds or lifts a rule prints one line: "The
+  firewall is stopped: the change is saved and goes live at the next
+  start; the firewall stays stopped." `events act allow-dest` and
+  `trust-source`, and `simulate --do` on an allow fix, started a
+  stopped firewall (they applied the whole policy); now the rule is
+  recorded for the next start, as a block is. In audit-only mode the
+  line says the firewall was not changed and how the change goes live.
 - `sentinel lift` counts the blocks of an earlier session it lifted
   ("Lifted 1", not "Lifted 0"). `events act` shows its green and amber
   words in colour, not as `\x1b[32m` text, and its `--json` never has
@@ -296,7 +312,8 @@ into `/usr/local/share/doc/stockfw/`.
   once, as the Threat Intel page does after a save. It needs root
   (checked before anything is saved), audit-only mode holds it, and
   with the firewall stopped nothing is loaded: the lists go in force
-  when it starts. Without `--apply` nothing changed: the change is
+  when it starts. It asks first on a terminal; without one it needs
+  `--yes`. Without `--apply` nothing changed: the change is
   saved and `intel apply` puts it in force.
 - **`intel feeds` says when each feed is due.** A new NEXT column
   ("due now", or the time `intel update` downloads it next) and `due`

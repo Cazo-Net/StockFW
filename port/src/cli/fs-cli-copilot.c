@@ -88,28 +88,12 @@ cmd_line (const gchar *words, const gchar *arg)
 
 /* [ ask ] -- `question' [y/N] on a terminal; --yes goes on; with no
  * terminal on stdin nothing is asked and the change is refused, naming
- * --yes.  TRUE to go on. */
+ * --yes (fs_cli_change_confirm, the rule of every PR 4 change).  TRUE
+ * to go on. */
 static gboolean
-ask (const gchar *question, const gchar *refused, gboolean yes)
+ask (const gchar *question, gboolean yes)
 {
-	gchar answer[16] = "";
-
-	if (yes)
-		return TRUE;
-	if (!isatty (STDIN_FILENO)) {
-		fs_cli_error ("refused: no terminal to ask on; pass --yes to %s",
-		              refused);
-		return FALSE;
-	}
-	fprintf (stderr, "%s [y/N] ", question);
-	fflush (stderr);
-	if (fgets (answer, sizeof answer, stdin) == NULL ||
-	    (g_ascii_strcasecmp (g_strstrip (answer), "y") != 0 &&
-	     g_ascii_strcasecmp (answer, "yes") != 0)) {
-		fs_cli_error ("not done: nothing was changed");
-		return FALSE;
-	}
-	return TRUE;
+	return fs_cli_change_confirm (question, yes);
 }
 
 /* [ window_warning ] -- a StockFW window running as root keeps its own
@@ -155,21 +139,20 @@ op_exit (FsControlResult *r)
 	}
 }
 
-/* [ live_words ] -- what a live edit did to the firewall. */
+/* [ live_words ] -- what a live edit did to the firewall.  A stopped
+ * firewall gets the one line every live add and lift prints
+ * (FS_CLI_STOPPED_LINE); `sentinel': a lift of Sentinel's blocks. */
 static void
-live_words (const FsApplyOutcome *o, const gchar *none)
+live_words (const FsApplyOutcome *o, const gchar *none, gboolean sentinel)
 {
 	if (fs_cli.quiet)
 		return;
-	if (o == NULL)
+	if (o != NULL && o->held)
+		fs_cli_say_held (o->hold_reason, sentinel);
+	else if (fs_cli_live_stopped (o))
+		fs_cli_say_stopped ();
+	else if (o == NULL)
 		printf ("%s\n", none);
-	else if (o->held)
-		say ("", "", "Held (%s): the firewall was not changed.",
-		     o->hold_reason != NULL ? o->hold_reason : "held");
-	else if (o->result == FS_APPLY_DRY_RUN &&
-	         o->firewall_was == FS_FW_STOPPED)
-		printf ("The firewall is stopped: the change is recorded for the "
-		        "next start, and the firewall was left stopped.\n");
 	else if (o->result == FS_APPLY_OK)
 		printf ("The firewall was changed (%s).\n",
 		        o->applied ? "live now" : "no change was needed");
@@ -399,7 +382,7 @@ health_fix (const GPtrArray *findings, guint number, gboolean yes)
 		printf ("  Checked by What-If (before -> after):\n");
 		print_checks (f->checks, "    ");
 	}
-	if (!ask ("Make this fix and save the policy?", "make the fix", yes))
+	if (!ask ("Make this fix and save the policy?", yes))
 		return FS_EXIT_FAILURE;
 	window_warning ();
 
@@ -1096,7 +1079,7 @@ copilot_block (const ScanOpts *o, const gchar *want, gboolean yes)
 		     ins->whatif_line);
 	}
 	question = g_strdup ("Add this block rule, save it and put it live?");
-	if (!ask (question, "add the block rule", yes)) {
+	if (!ask (question, yes)) {
 		g_free (question);
 		rc = FS_EXIT_FAILURE;
 		goto out;
@@ -1129,7 +1112,7 @@ copilot_block (const ScanOpts *o, const gchar *want, gboolean yes)
 			say ("", "", "This block would cut the SSH session from %s.",
 			     peer);
 		}
-		if (yes || !ask ("Block anyway?", "block anyway", FALSE))
+		if (yes || !ask ("Block anyway?", FALSE))
 			break;
 	}
 	rc = op_exit (r);
@@ -1139,7 +1122,7 @@ copilot_block (const ScanOpts *o, const gchar *want, gboolean yes)
 		say ("", "", "Block rule added as %s.", ref);
 		g_free (ref);
 		live_words (r->outcome, "Nothing was applied before, so the rule "
-		            "goes live with the next `stockfw apply'.");
+		            "goes live with the next `stockfw apply'.", FALSE);
 		if (r->change_id > 0)
 			printf ("Undo it: stockfw copilot changes --undo %u\n",
 			        r->change_id);
@@ -1198,7 +1181,7 @@ copilot_checks (void)
 /* [ copilot_changes ] -- G13: "Changes made by the Copilot", from the
  * change log; with --undo ID, one of them put back. */
 static gint
-copilot_changes (guint undo)
+copilot_changes (guint undo, gboolean yes)
 {
 	GPtrArray *all;
 	guint bad = 0;
@@ -1218,6 +1201,22 @@ copilot_changes (guint undo)
 			g_free (path);
 			return fs_cli_need_root ("copilot changes --undo");
 		}
+		/* PR 4 review: an undo changes the policy, and a block's undo
+		 * the firewall: it asks, as every change does. */
+		{
+			gchar *q = g_strdup_printf (
+				c != NULL && c->kind == FS_CHANGE_BLOCK_RULE
+				? "Undo change %u and take its block off the firewall?"
+				: "Undo change %u and save the policy?", undo);
+			gboolean go = ask (q, yes);
+
+			g_free (q);
+			if (!go) {
+				fs_change_free (c);
+				g_free (path);
+				return FS_EXIT_FAILURE;
+			}
+		}
 		fs_change_free (c);
 		window_warning ();
 		g_variant_builder_init (&b, G_VARIANT_TYPE_VARDICT);
@@ -1232,7 +1231,7 @@ copilot_changes (guint undo)
 				        "live.\n");
 			else
 				live_words (r->outcome, "The rule was not live, so the "
-				            "firewall was not changed.");
+				            "firewall was not changed.", FALSE);
 		}
 		if (r->status == FS_CONTROL_OK && r->change_error != NULL)
 			fs_cli_error ("undone, but the change log could not be "
@@ -1455,7 +1454,8 @@ fs_cli_cmd_copilot (gint argc, gchar **argv)
 		           strcmp (argv[i], "--history") == 0) {
 			scan.history = TRUE;
 		} else if ((strcmp (sub, "health") == 0 ||
-		            strcmp (sub, "block") == 0) &&
+		            strcmp (sub, "block") == 0 ||
+		            strcmp (sub, "changes") == 0) &&
 		           !fs_cli_is_positional (i) &&
 		           (strcmp (argv[i], "--yes") == 0 ||
 		            strcmp (argv[i], "-y") == 0)) {
@@ -1484,8 +1484,12 @@ fs_cli_cmd_copilot (gint argc, gchar **argv)
 		return copilot_scan (&scan);
 	if (strcmp (sub, "checks") == 0)
 		return copilot_checks ();
+	if (strcmp (sub, "changes") == 0 && yes && undo == 0) {
+		fs_cli_error ("--yes goes with --undo");
+		return FS_EXIT_USAGE;
+	}
 	if (strcmp (sub, "changes") == 0)
-		return copilot_changes (undo);
+		return copilot_changes (undo, yes);
 	if (id == NULL) {
 		fs_cli_error ("copilot %s needs a finding's ID", sub);
 		fs_cli_hint ("`stockfw copilot scan' lists them");
@@ -1529,7 +1533,7 @@ lift_print (const FsControlResult *r, const gchar *what)
 		     n == 1 ? "" : "s",
 		     targets->len > 0 ? targets->str : "(none in the policy)");
 		live_words (l->outcome, "None of them was live, so the firewall "
-		            "was not changed.");
+		            "was not changed.", TRUE);
 		if (l->kept > 0)
 			printf ("%u block%s still live %s kept in Sentinel's file, "
 			        "due now: the next `stockfw sentinel lift --expired' "
@@ -1545,7 +1549,7 @@ static gint
 sentinel_lift (gint argc, gchar **argv)
 {
 	const gchar *target = NULL;
-	gboolean all = FALSE, expired = FALSE;
+	gboolean all = FALSE, expired = FALSE, yes = FALSE;
 	FsControlActor actor = fs_control_actor_self ("cli");
 	FsControlResult *r;
 	GVariantBuilder b;
@@ -1555,6 +1559,10 @@ sentinel_lift (gint argc, gchar **argv)
 	for (gint i = 2; i < argc; i++) {
 		if (!fs_cli_is_positional (i) && strcmp (argv[i], "--all") == 0)
 			all = TRUE;
+		else if (!fs_cli_is_positional (i) &&
+		         (strcmp (argv[i], "--yes") == 0 ||
+		          strcmp (argv[i], "-y") == 0))
+			yes = TRUE;
 		else if (!fs_cli_is_positional (i) &&
 		         strcmp (argv[i], "--expired") == 0)
 			expired = TRUE;
@@ -1581,6 +1589,22 @@ sentinel_lift (gint argc, gchar **argv)
 	}
 	if (geteuid () != 0)
 		return fs_cli_need_root ("sentinel lift");
+	{
+		gchar *q = target != NULL
+		           ? g_strdup_printf ("Lift Sentinel's blocks of %s and take "
+		                              "them off the firewall?", target)
+		           : g_strdup (all ? "Lift all of Sentinel's blocks and take "
+		                             "them off the firewall?"
+		                           : "Lift Sentinel's blocks whose time ran "
+		                             "out and take them off the firewall?");
+		gchar *safe = fs_cli_out_safe (q);
+		gboolean go = ask (safe, yes);
+
+		g_free (safe);
+		g_free (q);
+		if (!go)
+			return FS_EXIT_FAILURE;
+	}
 	window_warning ();
 
 	g_variant_builder_init (&b, G_VARIANT_TYPE_VARDICT);
@@ -1610,9 +1634,15 @@ sentinel_mode (gint argc, gchar **argv)
 	FsControlResult *r;
 	GVariantBuilder b;
 	const gchar *want = NULL;
+	gboolean yes = FALSE;
 	gint rc;
 
 	for (gint i = 2; i < argc; i++) {
+		if (!fs_cli_is_positional (i) &&
+		    (strcmp (argv[i], "--yes") == 0 || strcmp (argv[i], "-y") == 0)) {
+			yes = TRUE;
+			continue;
+		}
 		if (fs_cli_is_option_at (argv, i)) {
 			fs_cli_unknown_option ("sentinel", argv[i]);
 			return FS_EXIT_USAGE;
@@ -1622,6 +1652,11 @@ sentinel_mode (gint argc, gchar **argv)
 			return FS_EXIT_USAGE;
 		}
 		want = argv[i];
+	}
+	if (want == NULL && yes) {
+		fs_cli_error ("--yes goes with a mode: sentinel mode auto|detect "
+		              "--yes");
+		return FS_EXIT_USAGE;
 	}
 	if (want == NULL) {
 		gchar *mode;
@@ -1651,6 +1686,12 @@ sentinel_mode (gint argc, gchar **argv)
 	}
 	if (geteuid () != 0)
 		return fs_cli_need_root ("sentinel mode");
+	if (!ask (strcmp (want, "detect") == 0
+	          ? "Switch Sentinel to detect only, and lift all its blocks "
+	            "off the firewall now?"
+	          : "Let Sentinel block outbound contacts by itself (auto)?",
+	          yes))
+		return FS_EXIT_FAILURE;
 	window_warning ();
 	g_variant_builder_init (&b, G_VARIANT_TYPE_VARDICT);
 	g_variant_builder_add (&b, "{sv}", "mode", g_variant_new_string (want));
@@ -1716,12 +1757,18 @@ static const FsCliOption copilot_opts[] = {
 	{ "--yes",      FALSE, "block" },
 	{ "-y",         FALSE, "block" },
 	{ "--undo",     TRUE,  "changes" },
+	{ "--yes",      FALSE, "changes" },
+	{ "-y",         FALSE, "changes" },
 	{ NULL, FALSE, NULL }
 };
 
 static const FsCliOption sentinel_opts[] = {
 	{ "--all",     FALSE, "lift" },
 	{ "--expired", FALSE, "lift" },
+	{ "--yes",     FALSE, "lift" },
+	{ "-y",        FALSE, "lift" },
+	{ "--yes",     FALSE, "mode" },
+	{ "-y",        FALSE, "mode" },
 	{ NULL, FALSE, NULL }
 };
 
@@ -1736,7 +1783,7 @@ const FsCliCommandDef fs_cli_copilot_commands[] = {
 "       stockfw copilot show ID [--since T] [--history]\n"
 "       stockfw copilot block ID [--yes] [--since T] [--history]\n"
 "       stockfw copilot checks\n"
-"       stockfw copilot changes [--undo ID]\n"
+"       stockfw copilot changes [--undo ID [--yes]]\n"
 "\n"
 "The Copilot page in a terminal.  These are fixed rules, not a model.\n"
 "\n"
@@ -1765,14 +1812,15 @@ const FsCliCommandDef fs_cli_copilot_commands[] = {
 "           the traffic is ALLOWED now and BLOCKED with it; saves it and\n"
 "           puts only that rule live (root).  Saved changes nobody\n"
 "           applied stay off the firewall.  On a stopped firewall it is\n"
-"           recorded for the next start\n"
+"           saved and goes live at the next start; it stays stopped\n"
 "  checks   what the checks look for, with the engine's own numbers\n"
 "  changes  the changes made by `copilot block' and `copilot health\n"
 "           --fix', kept in a file (STOCKFW_CHANGELOG_FILE); --undo ID\n"
 "           puts one back (a block is also lifted from the firewall)\n"
 "\n"
-"A change asks on a terminal; with no terminal on stdin it is refused\n"
-"unless --yes is given.  Undo does not ask.\n"
+"Every change (--fix, block, --undo) asks [y/N] on a terminal, No by\n"
+"default; --yes skips the question.  With no terminal on stdin it is\n"
+"refused at once unless --yes is given, and stdin is never read.\n"
 "\n"
 "Exits: health and scan 0 with no findings, 7 with findings (health: at\n"
 "or above --severity, info by default); 2 when the policy cannot be\n"
@@ -1782,8 +1830,8 @@ const FsCliCommandDef fs_cli_copilot_commands[] = {
 
 	{ "sentinel", fs_cli_cmd_sentinel,
 "Usage: stockfw sentinel [list] [--json]\n"
-"       stockfw sentinel lift TARGET | --all | --expired\n"
-"       stockfw sentinel mode [auto|detect]\n"
+"       stockfw sentinel lift TARGET | --all | --expired [--yes]\n"
+"       stockfw sentinel mode [auto|detect [--yes]]\n"
 "\n"
 "  list   Sentinel's staged blocks, read from its state file: the\n"
 "         address, the rule (as KIND:N in `policy list'), when it was\n"
@@ -1794,10 +1842,15 @@ const FsCliCommandDef fs_cli_copilot_commands[] = {
 "         are never touched), --all of them, or the --expired ones (ten\n"
 "         minutes are up).  Each comes out of the state file and the\n"
 "         policy, and off the firewall; the rest of what is live is not\n"
-"         touched, and a stopped firewall is not started (root).\n"
+"         touched.  A stopped firewall is not started: the lift is\n"
+"         saved and goes live at the next start (root).\n"
 "  mode   prints the mode; `auto' lets Sentinel block, `detect' only\n"
 "         reports, and lifts every block now, as the Copilot page's\n"
 "         switch does (root).\n"
+"\n"
+"Lift and a mode change ask [y/N] on a terminal, No by default; --yes\n"
+"skips the question.  With no terminal on stdin they are refused at\n"
+"once unless --yes is given, and stdin is never read.\n"
 "\n"
 "A StockFW window running as root keeps its own list and policy and\n"
 "may write them back: close it first.\n",

@@ -30,6 +30,7 @@
 #define FS_CLI_H
 
 #include <glib.h>
+#include "core/fs-apply.h"
 #include "core/fs-backend.h"
 #include "core/fs-rules.h"
 #include "core/fs-whatif.h"
@@ -237,6 +238,34 @@ gchar      *fs_cli_local_time      (const gchar *iso);
 void        fs_cli_append_lines_json (GString *out, const gchar *text);
 /* An apply's notes, one amber "note:" line each (none under -q). */
 void        fs_cli_print_notes     (const gchar *notes);
+
+/* [ PR 4 review: the two rules of a change ] (fs-cli-cmds.c)
+ *
+ * fs_cli_change_confirm: the question of every PR 4 command that
+ * changes the firewall.  --yes goes on.  A terminal on stdin is asked
+ * "QUESTION [y/N]" on stderr, No by default.  With no terminal nothing
+ * is asked, stdin is never read, and the change is refused with a
+ * message that names --yes.  TRUE to go on.
+ *
+ * fs_cli_live_stopped: TRUE when a live add or lift found the firewall
+ * stopped -- its outcome recorded the change for the next start
+ * (DRY_RUN, firewall_was STOPPED), or there was nothing to do on the
+ * firewall (NULL) and the backend reads it as stopped.  Then the
+ * command prints FS_CLI_STOPPED_LINE, once, and nothing else about the
+ * firewall: the change is never left pending without a word.
+ *
+ * fs_cli_say_held: the hold's line (audit-only mode, the Policy Lock):
+ * the firewall was not changed; `sentinel' for a lift of Sentinel's
+ * blocks, which stay live until the next start (or `sentinel lift
+ * --expired'), else the saved change goes live with `stockfw apply'
+ * once the hold ends.  None of them prints under -q or --json. */
+#define FS_CLI_STOPPED_LINE \
+	"The firewall is stopped: the change is saved and goes live at the " \
+	"next start; the firewall stays stopped."
+gboolean    fs_cli_change_confirm  (const gchar *question, gboolean yes);
+gboolean    fs_cli_live_stopped    (const FsApplyOutcome *outcome);
+void        fs_cli_say_stopped     (void);
+void        fs_cli_say_held        (const gchar *reason, gboolean sentinel);
 
 /* Threat intel (fs-cli-intel.c), for `stockfw status' and the
  * dashboard: one JSON object {state, detail, master, hold, lists[]}

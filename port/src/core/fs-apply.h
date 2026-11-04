@@ -241,6 +241,15 @@ FsApplyOutcome *fs_firewall_add_live (const FsBackend *backend,
  * Policy Lock) keeps the journal unchanged too: the outcome is the
  * gate's held DRY_RUN. */
 
+/* [ fs_firewall_live_records_only ] (PR 4 review)
+ * TRUE when a live edit now would only record the change for the next
+ * start (the case above): a backend whose start installs the policy,
+ * a firewall it reads as STOPPED, and no hold.  Callers that would
+ * otherwise apply a whole policy (an allow from the Events page or
+ * What-If) use it to leave a stopped firewall stopped too. */
+gboolean fs_firewall_live_records_only (const FsBackend *backend,
+                                        const gchar *hold);
+
 /* [ fs_firewall_live_keeps_settings ] (PR 4 review)
  * TRUE: the caller gave the backend the settings the journal records
  * (fs_settings_from_journal), so a live edit on a running firewall
