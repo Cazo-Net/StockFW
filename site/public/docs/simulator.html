@@ -23,7 +23,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.7</span>
+			<span class="brand-ver">1.0.8</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
@@ -159,7 +159,7 @@ ping from 10.0.0.9</code></pre></div>
 <li><strong>Create allow rule</strong> or <strong>Create block rule</strong>, when a single row gives you the verdict you asked for. The exact row is printed under the offer, as the Policy page would show it (“Rule to add (Allow inbound service): TCP, 8443, Anyone, What-If: allow TCP 8443”). A created allow always names one port and one protocol: never portless, never every port for anyone.</li>
 <li><strong>Open rule in Policy</strong>, when a rule of yours is what blocks or allows it, so you can edit or remove that rule yourself.</li>
 <li><strong>Lift Sentinel block</strong>, with the minutes it has left, when the decision is one of Sentinel’s auto-blocks.</li>
-<li><strong>Open ICMP settings</strong> or <strong>Open Advanced Options</strong>, when a Firewall preference decides, and <strong>Start the firewall</strong> or <strong>Apply policy</strong> when the firewall is stopped or the saved policy is not the one loaded.</li>
+<li><strong>Open ICMP settings</strong> or <strong>Open Advanced Options</strong>, when a Firewall preference decides, and <strong>Start the firewall</strong> or <strong>Apply policy</strong> when the firewall is stopped or the saved policy is not the one loaded. <em>Start the firewall</em> goes through the same start gate as the Overview’s Start button: Audit-only and the Policy Lock hold it, on Linux the last applied policy goes live and on Windows the firewall is switched on with its rules unchanged, the question says which, and every start writes an audit line.</li>
 </ul>
 <p>When nothing is offered, the card says why: “Nothing to change: this is already allowed”; a block that comes before any allow StockFW could add, so the block itself has to change; a built-in rule that keeps the computer working; or a DEPENDS answer that no single change resolves.</p>
 <p>Pressing a <em>Create</em> button shows the row once more in a Yes/No dialog. After Yes, the engine checks the row again against the policy as it is by then, writes it, and pushes it through the same apply gate as the Policy page. The result is reported in the window and in the card’s <em>What changed</em> log, and it distinguishes “the row exists” from “the firewall enforces it”, because a rule staged for a later Apply is not yet in force. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_apply_gate</span></p>
@@ -202,7 +202,7 @@ A simulation only: nothing was written.
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/copilot.html"><span>Previous</span><strong>Copilot</strong></a><a class="next" href="../docs/trust.html"><span>Next</span><strong>Trust</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/simulator.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.8.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/simulator.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">

@@ -229,17 +229,21 @@ layout: home
 		<div class="sec-head">
 			<p class="label">Command line and dashboard · [[linux]]</p>
 			<h2>The same engine, from a terminal.</h2>
-			<p><code>stockfw</code> drives the same policy files, simulator and apply gate as the desktop app, so a rule added in a script is the rule the Policy page shows. Every command takes <code>--json</code>, and exit codes are stable: <code>simulate</code> exits 5 when the traffic would be blocked.</p>
+			<p><code>stockfw</code> drives the same policy files, simulator and apply gate as the desktop app, so a rule added in a script is the rule the Policy page shows. It says whether what you saved is live, follows events with a status line, shows who can reach each open port, and reads the audit log. Every command takes <code>--json</code>, and exit codes are stable: <code>simulate</code> exits 5 when the traffic would be blocked. There is a manual page and completion for bash and zsh.</p>
 		</div>
 		<div class="cli-grid">
-			<pre data-lang="term" data-title="Terminal · real output">$ stockfw status
-StockFW 1.0.7  Linux (iptables)
+			<pre data-lang="term" data-title="Terminal · real output">$ sudo stockfw status
+StockFW {{version}}  Linux (iptables) - web1
 
   Firewall     ● running
   IPv6         filtered
-  Policy       9 rules in /etc/stockfw
+  Policy       9 rules, live
+  Last apply   2026-11-03 18:11  policy applied (cli)
+  Blocked      today 45 - last TCP 23 to 203.0.113.9 at 18:04
+  Threat intel off  (No blocklist is turned on.)
   Apply mode   live
-  Monitoring   available (stockfw events -f, stockfw dashboard)
+  Monitoring   reading /dev/kmsg
+  At boot      stockfw.service enabled: the rules are put back at boot
   Adapters     eth0       192.168.1.20    ↓ 37.5 MB  ↑ 652.9 kB
   Connections  3 active
 
@@ -257,17 +261,27 @@ A simulation only: nothing was written.
 $ echo $?
 5
 
-$ stockfw events -n 3 --blocked
-TIME             VERDICT  DIR  SOURCE         DESTINATION   PORT  SERVICE      PROTO
-Nov 02 16:31:03  <span class="hi">BLOCKED</span>  in   203.0.113.51   192.168.1.20  445   Samba (SMB)  TCP
-Nov 02 16:31:04  <span class="hi">BLOCKED</span>  in   203.0.113.50   192.168.1.20  5900  VNC          TCP
-Nov 02 16:31:04  <span class="hi">BLOCKED</span>  in   198.51.100.23  192.168.1.20  3306  Unknown      TCP
+$ sudo stockfw events -n 3 --blocked
+TIME             VERDICT  DIR  SOURCE         DESTINATION   PORT  SERVICE         PROTO  RULE
+Nov 03 15:10:18  <span class="hi">BLOCKED</span>  in   203.0.113.5    192.168.1.20  3389  Remote Desktop  TCP    -
+Nov 03 16:09:18  <span class="hi">BLOCKED</span>  in   198.51.100.7   192.168.1.20  161   SNMP            TCP    -
+Nov 03 18:04:18  <span class="hi">BLOCKED</span>  out  192.168.1.20   203.0.113.9   23    Telnet          TCP    -
 
-$ sudo stockfw apply --dry-run
-Would apply: +0 added (0 allow, 0 block), -0 removed (0 allow, 0 block), =9 unchanged
-Nothing was changed (dry run).</pre>
+$ sudo stockfw listening
+Asked of the applied policy, for a LAN address (192.168.1.10, a sample) and an internet address (203.0.113.10).
+PORT      PROGRAM   LISTENS ON  FROM LAN  FROM INTERNET  DECIDED BY
+22/tcp    sshd      0.0.0.0     ALLOWED   <span class="hi">BLOCKED</span>        inbound-allow-service:1
+443/tcp   nginx     0.0.0.0     ALLOWED   ALLOWED        inbound-allow-service:2
+5432/tcp  postgres  0.0.0.0     <span class="hi">BLOCKED</span>   <span class="hi">BLOCKED</span>        default inbound block
+1 port reachable from the internet - 1 from the LAN only - 1 blocked
+
+$ sudo stockfw policy diff
+Saved /etc/stockfw vs applied 2026-11-03 18:11:57 UTC
++ inbound-allow-from:1  192.168.1.1  [IPv4 only]
+= 9 rules unchanged
+Firewall: running.  Make it live: /usr/local/bin/stockfw apply</pre>
 			<div class="cli-side">
-				<p><code>stockfw dashboard</code> serves a read-only web page from the binary itself: the same graphs, live events, connections, the simulator and the policy, on <code>127.0.0.1</code> only, behind a token that changes every run. It is a window onto the firewall, not a way to change it: writes stay with <code>stockfw policy</code> and <code>stockfw apply</code>.</p>
+				<p><code>stockfw dashboard</code> serves a read-only web page from the binary itself: the same graphs, live events, connections, the simulator and the policy, on <code>127.0.0.1</code> only, for your own account only, behind a link that works once and a session that lasts the day. It is a window onto the firewall, not a way to change it: writes stay with <code>stockfw policy</code> and <code>stockfw apply</code>.</p>
 				[[shot:dashboard|The local web dashboard: a firewall tile reading Running, blocked and throughput tiles, the two graphs, recent events, active connections, the what-if simulator and the policy, all on one page.|The dashboard in a browser, served by the binary itself.]]
 				<p>[[verified:test-cli.sh, 52 checks on the dashboard’s security model]]</p>
 				<a class="btn btn-line btn-small" href="{{root}}docs/cli.html">Every command, with examples</a>
@@ -308,8 +322,31 @@ Nothing was changed (dry run).</pre>
 	<div class="wrap">
 		<div class="sec-head">
 			<p class="label">New in {{version}}</p>
-			<h2>What 1.0.7 adds.</h2>
-			<p>The biggest changes in this release. The <a href="{{root}}changelog.html">changelog</a> has the full list, and the documentation covers each in depth.</p>
+			<h2>What 1.0.8 adds.</h2>
+			<p>The terminal release: on Linux, <code>stockfw</code> does from a terminal what the window does, settings included, and says what is true. The <a href="{{root}}changelog.html">changelog</a> has the full list, and the <a href="{{root}}docs/cli.html">command line page</a> covers each command with its real output.</p>
+		</div>
+		<div class="next-grid">
+			<div class="next-card"><h3>The live event line</h3><p><code>stockfw events -f</code> prints new events in the table’s columns with a status line under them: firewall state, live or pending, blocked today, Sentinel and the event source. Pipes and <code>--json</code> get events and nothing else.</p></div>
+			<div class="next-card"><h3>Is what I saved live?</h3><p><code>stockfw status</code> says “9 rules, live” or “1 change not applied”, the last apply, the blocks today and whether the boot service puts the rules back. <code>policy diff</code> shows the difference; rules have references such as <code>inbound-allow-service:2</code>.</p></div>
+			<div class="next-card"><h3>Who can reach this port?</h3><p><code>stockfw listening</code> lists every open port, the program behind it and whether the policy lets the LAN and the internet reach it, with the rule that decides.</p></div>
+			<div class="next-card"><h3>Settings and rules, edited from the terminal</h3><p><code>stockfw config</code> reads and sets the Preferences with the window’s own checks; <code>policy edit</code> changes a rule in place; <code>--apply</code> saves and applies under one lock. Boot uses the settings last applied.</p></div>
+			<div class="next-card"><h3>The Copilot, Sentinel and Trust, from the terminal</h3><p><code>stockfw copilot scan</code> finds what the Copilot page finds and <code>copilot block</code> puts a verified block live alone; <code>sentinel lift</code> takes a block down; <code>events act</code> turns an event into a rule; <code>trust check</code> says whether an attested file changed. Each asks first, or takes <code>--yes</code> in a script.</p></div>
+			<div class="next-card"><h3>The audit log and the guide, from the terminal</h3><p><code>stockfw audit</code> reads every apply, start and stop with filters and follow mode; <code>stockfw help topics</code> prints the Help window’s 25 topics, also installed as <code>man stockfw-topics</code>.</p></div>
+			<div class="next-card"><h3>The lockout guard</h3><p>Over SSH, <code>apply</code> and <code>start</code> check that the new policy still lets your session in, under <code>sudo</code> too and with sshd on any port. They ask on a terminal and refuse in a script unless you pass <code>--yes</code>.</p></div>
+			<div class="next-card"><h3>Events triage</h3><p><code>events --summary</code> counts a window per source and per port with a bar per hour; <code>--wide</code>, <code>--csv</code>, port lists and ISO times. The RULE column names the blocklist that blocked an event.</p></div>
+			<div class="next-card"><h3>Honest options and tables</h3><p>A value that starts with a dash is a value, an unknown option is refused, a typo gets a suggestion, tables fit the terminal and only the terminal, and text from logs is escaped before it reaches your screen.</p></div>
+			<div class="next-card"><h3>man stockfw and completion</h3><p>A manual page written by the tool from its own command tables, and bash and zsh completion that offers commands, options, values and your own rule references.</p></div>
+			<div class="next-card"><h3>Wayland and WSL</h3><p>No tray icon is attempted where GTK has none, so the start-up warning is gone, a background start shows the window, and the window keeps up with a firewall stopped from a terminal.</p></div>
+		</div>
+	</div>
+</section>
+
+<section class="sec" id="in-1-0-7">
+	<div class="wrap">
+		<div class="sec-head">
+			<p class="label">Since 1.0.7</p>
+			<h2>What 1.0.7 brought.</h2>
+			<p>The previous release rebuilt the desktop app; all of it is in {{version}} too.</p>
 		</div>
 		<div class="next-grid">
 			<div class="next-card"><h3>IPv6 on Linux</h3><p>One policy loaded into both families in one step, rolled back together if either half is refused. Neighbour discovery, router adverts and DHCPv6 replies always pass.</p></div>
