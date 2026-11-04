@@ -21,7 +21,13 @@ void fs_copilot_view_refresh (void);
 /* Called from the events feed to update the stats counter. */
 void fs_copilot_note_event (void);
 
-/* Sentinel auto-block pass: stages every auto-applicable insight
+/* Sentinel.  The engine is core/fs-sentinel.h (PR 5); the functions
+ * below are the page's callers of it, under their old names.  They
+ * hand the engine the backend, the hold reason
+ * (fs_policyview_hold_reason) and a refresh callback that redraws
+ * this page.
+ *
+ * Sentinel auto-block pass: stages every auto-applicable insight
  * (that is not already in the policy) when Sentinel is in auto mode.
  * Returns TRUE when something was staged, so the caller knows whether
  * the insights list needs rebuilding. */
@@ -73,23 +79,6 @@ gboolean fs_copilot_lift_all_auto_blocks (const gchar *why);
  * anything changed -- the caller's push then takes it to the
  * firewall. */
 gboolean fs_copilot_lift_auto_blocks_for_dest (const gchar *dest);
-
-/* The clock Sentinel reads and arms its timers on: the monotonic and
- * the wall clock in microseconds, and the timers that expire blocks
- * and end a pause.  GLib's own by default.  A test hands in a fake
- * clock to run ten minutes in no time (tests/test-sentinel.c); NULL
- * puts GLib's back.  Every field must be set.  It becomes
- * fs_sentinel_set_clock when the engine moves to core (PR 5). */
-typedef struct
-{
-    gint64   (*monotonic_us)   (void);
-    gint64   (*real_us)        (void);
-    guint    (*timeout_ms)     (guint ms, GSourceFunc fn, gpointer data);
-    guint    (*timeout_s)      (guint s, GSourceFunc fn, gpointer data);
-    gboolean (*source_remove)  (guint id);
-} FsSentinelClock;
-
-void fs_copilot_sentinel_set_clock (const FsSentinelClock *clock);
 
 G_END_DECLS
 

@@ -71,6 +71,7 @@ add_library(fs-core STATIC
   src/core/fs-eventlog.c
   src/core/fs-winevt.c
   src/core/fs-autoblock.c
+  src/core/fs-sentinel.c
   src/core/fs-instance.c
   src/core/fs-autostart.c
   src/core/fs-blocktally.c
@@ -656,6 +657,12 @@ target_link_libraries(fs-whatif-test PRIVATE fs-core-nogui)
 # (test-health.c; test-core.sh runs it too).  GLib only.
 add_executable(fs-health-test EXCLUDE_FROM_ALL tests/test-health.c)
 target_link_libraries(fs-health-test PRIVATE fs-core-nogui)
+# The Sentinel engine (core/fs-sentinel.c) on a fake clock, the gate of
+# PR 5: stage, expiry after 600 s, cooldown, pause, retire, the push
+# through fs_firewall_add_live, restore on the original clock
+# (test-sentinel.c).  Supplies fs_backend() itself.  GLib only.
+add_executable(fs-sentinel-test EXCLUDE_FROM_ALL tests/test-sentinel.c)
+target_link_libraries(fs-sentinel-test PRIVATE fs-core-nogui)
 if(FS_BUILD_GUI)
 # The Overview against a fake backend that answers the way Windows does
 # (profiles, the profile in use, the network's name), so the Windows
@@ -762,24 +769,6 @@ target_compile_definitions(fs-whatif-start-smoke PRIVATE
 )
 if(FS_BACKEND_LIBS)
   target_link_libraries(fs-whatif-start-smoke PRIVATE ${FS_BACKEND_LIBS})
-endif()
-# PR 5 gate: the Sentinel engine on a fake clock (stage, expiry after
-# 600 s, cooldown, pause, retire, push, restore on the original clock),
-# written before the engine moves to core.  Supplies fs_backend()
-# itself.  Needs a display while the engine lives on the Copilot page.
-add_executable(fs-sentinel-test EXCLUDE_FROM_ALL
-  tests/test-sentinel.c
-  ${FS_UI_ONLY_SOURCES}
-)
-target_include_directories(fs-sentinel-test PRIVATE
-                           "${CMAKE_CURRENT_BINARY_DIR}")
-target_link_libraries(fs-sentinel-test PRIVATE fs-core PkgConfig::GTK3)
-target_compile_definitions(fs-sentinel-test PRIVATE
-  FS_VERSION="${PROJECT_VERSION}"
-  FS_PLATFORM_NAME="${FS_PLATFORM}"
-)
-if(FS_BACKEND_LIBS)
-  target_link_libraries(fs-sentinel-test PRIVATE ${FS_BACKEND_LIBS})
 endif()
 endif() # FS_BUILD_GUI
 

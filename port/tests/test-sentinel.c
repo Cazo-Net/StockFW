@@ -1,8 +1,11 @@
 /*---[ test-sentinel.c ]--------------------------------------------------
  * The Sentinel engine on a fake clock (the gate of PR 5).
  *
- * Written before the engine moves out of ui/fs-copilot.c into core, and
- * against what it does now, so the move can be checked against it.
+ * Written before the engine moved out of ui/fs-copilot.c into core
+ * (core/fs-sentinel.c), against what it did then, so the move could be
+ * checked against it.  After the move its checks are as they were; the
+ * engine block below, the build lines and what came with dropping GTK
+ * (no gtk_init, no page) changed, and two more parts pin the push.
  * Ten minutes, an hour of pause and a restart all run in no time: the
  * engine reads its clocks and arms its timers through the clock this
  * test hands in, and the timers fire only when the test moves the
@@ -34,6 +37,12 @@
  *   push     a held push (audit-only) does not reach the backend and
  *            says "staged, not live" with the reason; a failed push
  *            says "staged, not live" with the result;
+ *   unapplied (a third process) the push gives the firewall what is
+ *            live (the journal) plus the block, never the policy file:
+ *            an allow saved and never applied stays off the firewall,
+ *            when the block goes on and when it comes off again;
+ *   nojournal (a fourth) with nothing ever applied there is no
+ *            record to add to: the push is the first apply, as before;
  *   restore  (a second process, a restart) a row past its ten minutes
  *            comes out of the policy and is handed back as due; a
  *            fresh row keeps its ORIGINAL clock: staged 300 s before
@@ -42,30 +51,33 @@
  *            clock runs years ahead of the real one, so a restore
  *            that read the real clock would drop every row.
  *
- * Not pinned on purpose: WHAT a push gives the firewall beyond the
- * staged block.  Today it is the whole policy, unapplied edits
- * included; PR 5 moves the push to fs_firewall_add_live, which leaves
- * them out.  Nor is the resume that the pause's own timer does: it
- * fires once the pause is over, when the engine already reads "not
- * paused", so today it neither audits nor catches up (with GLib's
- * second timers that depends on rounding).
+ * Before PR 5 the push applied the whole policy file, unapplied edits
+ * included; it now goes through fs_firewall_add_live and
+ * fs_firewall_lift_live, and the "unapplied" part pins that.  So a push
+ * needs a journal: the engine starts after a first apply, as the app
+ * does.
  *
- * The engine is reached through the few calls under "the engine" below;
- * when it moves to core only those lines change.  Needs a display for
- * now (the engine still lives on the Copilot page): run it under
- * xvfb-run.  Everything it writes goes to a scratch directory.
+ * Not pinned on purpose: the resume that the pause's own timer does: it
+ * fires once the pause is over, when the engine already reads "not
+ * paused", so it neither audits nor catches up (with GLib's second
+ * timers that depends on rounding).
+ *
+ * The engine is reached through the few calls under "the engine" below.
+ * GLib only: no GTK and no display.  Everything it writes goes to a
+ * scratch directory.
  *--------------------------------------------------------------------*/
 
-#include <gtk/gtk.h>
+#include <glib.h>
 #include <glib/gstdio.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "core/fs-apply.h"
 #include "core/fs-backend.h"
 #include "core/fs-copilot.h"
 #include "core/fs-rules.h"
-#include "ui/fs-copilot.h"
+#include "core/fs-sentinel.h"
 
 static int failures = 0;
 
@@ -298,27 +310,48 @@ fs_backend_set_context (FsPolicy *policy, FsSettings *settings)
 
 static FsCopilot *copilot = NULL;
 static FsPolicy  *policy = NULL;
-static GtkWidget *page = NULL;
+static gboolean   started = FALSE;
+
+/* The hold the desktop app hands in is fs_policyview_hold_reason:
+ * audit-only mode first, then the Policy Lock (not used here). */
+static const FsSentinelHooks engine_hooks = {
+	fs_backend, fs_apply_hold_reason, NULL
+};
 
 static void
 engine_start (void)
 {
 	gint malformed = 0;
+	FsApplyOutcome *first;
 
-	fs_copilot_sentinel_set_clock (&fake_clock);
+	fs_sentinel_set_clock (&fake_clock);
+	fs_sentinel_set_hooks (&engine_hooks);
 	policy = fs_policy_new ();
 	fs_policy_load (policy, &malformed);   /* FALSE: nothing saved yet */
 	copilot = fs_copilot_new ();
-	page = fs_copilot_page (copilot, policy);
-	g_object_ref_sink (page);
+	fs_copilot_set_policy (copilot, policy);
+	fs_sentinel_set_mode ("auto");
+	fs_sentinel_attach (copilot, policy);
+	/* The app applied a policy before: the journal says what is live,
+	 * and a push adds to it or lifts from it. */
+	first = fs_policy_apply_safe (fs_backend (), policy, "test", NULL,
+	                              NULL);
+	started = first != NULL && first->applied;
+	fs_apply_outcome_free (first);
 }
 
-#define engine_pass()           fs_copilot_sentinel_auto_pass ()
-#define engine_restore(due)     fs_copilot_autoblocks_restore (policy, (due))
-#define engine_pause(s)         fs_copilot_sentinel_pause (s)
-#define engine_paused(left)     fs_copilot_sentinel_paused (left)
-#define engine_lift_all(why)    fs_copilot_lift_all_auto_blocks (why)
-#define engine_lift_dest(dest)  fs_copilot_lift_auto_blocks_for_dest (dest)
+static void
+engine_stop (void)
+{
+	fs_sentinel_attach (NULL, NULL);
+}
+
+#define engine_pass()           fs_sentinel_auto_pass ()
+#define engine_restore(due)     fs_sentinel_restore (policy, (due))
+#define engine_pause(s)         fs_sentinel_pause (s)
+#define engine_paused(left)     fs_sentinel_paused (left)
+#define engine_lift_all(why)    fs_sentinel_lift_all (why)
+#define engine_lift_dest(dest)  fs_sentinel_lift_for_dest (dest)
 
 /* ------------------------------------------------------------- helpers */
 
@@ -484,13 +517,11 @@ has_block (const gchar *dest)
 }
 
 static gboolean
-pushed_block (const gchar *dest)
+pushed_rule (FsRuleKind kind, const gchar *csv)
 {
-	gchar *csv = block_csv (dest);
-	FsRule *rule = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, csv);
+	FsRule *rule = fs_rule_from_csv (kind, csv);
 	gchar *norm = fs_rule_to_csv (rule);
-	gchar *key = g_strdup_printf ("%d|%s", (int) FS_RULE_OUTBOUND_DENY_TO,
-	                              norm);
+	gchar *key = g_strdup_printf ("%d|%s", (int) kind, norm);
 	gboolean hit = FALSE;
 
 	for (guint i = 0; pushed != NULL && i < pushed->len && !hit; i++)
@@ -498,6 +529,15 @@ pushed_block (const gchar *dest)
 	fs_rule_free (rule);
 	g_free (norm);
 	g_free (key);
+	return hit;
+}
+
+static gboolean
+pushed_block (const gchar *dest)
+{
+	gchar *csv = block_csv (dest);
+	gboolean hit = pushed_rule (FS_RULE_OUTBOUND_DENY_TO, csv);
+
 	g_free (csv);
 	return hit;
 }
@@ -546,7 +586,7 @@ test_session (void)
 	guint before, tried;
 
 	engine_start ();
-	CHECK (page != NULL, "the engine starts (on the Copilot page)");
+	CHECK (started, "the engine starts (after a first apply)");
 
 	/* ---- stage ---- */
 	feed_beacon (DEST_A, 100000);
@@ -706,7 +746,82 @@ test_session (void)
 	       "push: a failed push is audited as not live");
 	push_fails = FALSE;
 
-	g_object_unref (page);
+	engine_stop ();
+}
+
+/* ------------------------------------------------- an unapplied allow */
+
+/* An inbound allow the user saved and never applied. */
+#define SAVED_ALLOW "SSH, 22, 198.51.100.0/24, saved and not applied"
+
+static gboolean
+journal_has (FsRuleKind kind, const gchar *csv)
+{
+	FsPolicy *live = fs_policy_new ();
+	gboolean in = fs_apply_journal_load (live, NULL) &&
+	              policy_has (live, kind, csv);
+
+	fs_policy_free (live);
+	return in;
+}
+
+static void
+test_unapplied (void)
+{
+	guint before;
+
+	engine_start ();
+	put_rule (policy, FS_RULE_INBOUND_ALLOW_SERVICE, SAVED_ALLOW);
+	fs_policy_save (policy);
+
+	feed_beacon (DEST_A, 100000);
+	before = pushes;
+	CHECK (engine_pass () && has_block (DEST_A),
+	       "unapplied: the pass stages the block");
+	CHECK (pushes == before + 1 && pushed_block (DEST_A),
+	       "unapplied: one push, and it holds the block");
+	CHECK (!pushed_rule (FS_RULE_INBOUND_ALLOW_SERVICE, SAVED_ALLOW),
+	       "unapplied: the allow saved and never applied is not pushed "
+	       "with the block");
+	CHECK (journal_has (FS_RULE_OUTBOUND_DENY_TO,
+	                    DEST_A ", Sentinel: periodic beacon") &&
+	       !journal_has (FS_RULE_INBOUND_ALLOW_SERVICE, SAVED_ALLOW),
+	       "unapplied: the journal records the block, not the allow");
+	advance (TTL_S);
+	CHECK (pushes == before + 2 && !pushed_block (DEST_A) &&
+	       !pushed_rule (FS_RULE_INBOUND_ALLOW_SERVICE, SAVED_ALLOW),
+	       "unapplied: the expiry takes the block off and leaves the "
+	       "allow off too");
+	CHECK (policy_has (policy, FS_RULE_INBOUND_ALLOW_SERVICE, SAVED_ALLOW),
+	       "unapplied: the allow stays saved, for the next apply");
+
+	engine_stop ();
+}
+
+/* Nothing was ever applied: no journal, nothing to add the block to.
+ * The push is then the first apply, as before PR 5, and writes the
+ * journal. */
+static void
+test_nojournal (void)
+{
+	gchar *path = g_strdup (g_getenv ("STOCKFW_APPLIED_FILE"));
+	guint before;
+
+	engine_start ();
+	g_unlink (path);
+	feed_beacon (DEST_A, 100000);
+	before = pushes;
+	CHECK (engine_pass () && has_block (DEST_A),
+	       "no journal: the pass stages the block");
+	CHECK (pushes == before + 1 && pushed_block (DEST_A) &&
+	       audit_count ("sentinel auto-block is live") == 1,
+	       "no journal: the push is the first apply, and it is live");
+	CHECK (journal_has (FS_RULE_OUTBOUND_DENY_TO,
+	                    DEST_A ", Sentinel: periodic beacon"),
+	       "no journal: that apply writes the journal");
+
+	g_free (path);
+	engine_stop ();
 }
 
 /* --------------------------------------------------------- the restart */
@@ -760,12 +875,12 @@ test_restore (void)
 	fs_policy_free (due);
 	g_free (fresh);
 	g_free (stale);
-	g_object_unref (page);
+	engine_stop ();
 }
 
 /* ---------------------------------------------------------------- main */
 
-/* A GLib or GTK warning on the way is a failure too. */
+/* A GLib warning on the way is a failure too. */
 static guint warnings = 0;
 
 static GLogWriterOutput
@@ -813,24 +928,29 @@ main (int argc, char **argv)
 		/* One process each: the restore is a restart. */
 		bad += run_child (argv[0], "session");
 		bad += run_child (argv[0], "restore");
+		bad += run_child (argv[0], "unapplied");
+		bad += run_child (argv[0], "nojournal");
 		printf ("\ntest-sentinel: %s\n", bad ? "FAILED" : "PASSED");
 		return bad ? 1 : 0;
 	}
 
 	g_log_set_writer_func (count_warnings, NULL, NULL);
 	isolate ();
-	gtk_init (&argc, &argv);
 
 	if (strcmp (argv[1], "session") == 0)
 		test_session ();
 	else if (strcmp (argv[1], "restore") == 0)
 		test_restore ();
+	else if (strcmp (argv[1], "unapplied") == 0)
+		test_unapplied ();
+	else if (strcmp (argv[1], "nojournal") == 0)
+		test_nojournal ();
 	else {
 		printf ("FAIL: no part called %s\n", argv[1]);
 		failures++;
 	}
 
-	CHECK (warnings == 0, "no GLib or GTK warning (%u)", warnings);
+	CHECK (warnings == 0, "no GLib warning (%u)", warnings);
 	rm_rf (scratch);
 	g_free (scratch);
 	printf ("%s part: %d failure(s)\n", argv[1], failures);

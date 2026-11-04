@@ -1299,22 +1299,26 @@ start gate itself (`fs_firewall_start_safe`) and the boot-time expiry
 of Sentinel rows (`fs_autoblock_expire`).
 
 
-## The Sentinel engine on a fake clock (`fs-sentinel-test`, PR 5 gate)
+## The Sentinel engine on a fake clock (`fs-sentinel-test`, PR 5)
 
 ```sh
 cd port
 ninja -C build-linux fs-sentinel-test
-xvfb-run -a ./build-linux/fs-sentinel-test     # needs a display for now
+./build-linux/fs-sentinel-test          # GLib only: no display needed
 ```
 
-Written before the Sentinel engine moves from `src/ui/fs-copilot.c` to
-core, against what it does today, so the move can be checked against
-it.  The engine reads its clocks and arms its timers through the clock
-the test hands in (`fs_copilot_sentinel_set_clock`), so ten minutes, an
-hour of pause and a restart run in no time; a fake backend counts the
-pushes and keeps what each was given.  The fake wall clock runs years
-ahead of the real one, so any read of the real clock shows.  Two
-processes: the session, then a restart.
+Written as the gate of PR 5, before the Sentinel engine moved from
+`src/ui/fs-copilot.c` to `src/core/fs-sentinel.c`, against what it did
+then.  After the move its checks are as they were: its engine block,
+its build lines and what came with dropping GTK (no `gtk_init`, no
+page) changed, and it gained the two parts that pin the push.  The engine reads its clocks
+and arms its timers through the clock the test hands in
+(`fs_sentinel_set_clock`), so ten minutes, an hour of pause and a
+restart run in no time; a fake backend counts the pushes and keeps what
+each was given.  The fake wall clock runs years ahead of the real one,
+so any read of the real clock shows.  The engine starts after one apply,
+as the app does, so there is a journal for the push to add to.  Four
+processes: the session, a restart, an unapplied allow, no journal.
 
 | Part | What must happen |
 |---|---|
@@ -1325,23 +1329,31 @@ processes: the session, then a restart.
 | retire | lift-all: out of the policy and the state file, one push, cooled; the Allow-lift retires the staged block and Sentinel's old row, never the user's own rule, and leaves the push to its caller; the expiry timer left behind pushes nothing |
 | push | held by audit-only: the backend is not called, audited as "staged, not live" with the reason; a failing backend: audited as not live |
 | restore | a restart: the row 700 s old comes out of the policy and is handed back as due; the row 300 s old stays and lifts 300 s after the restart, not 600 s |
+| unapplied | an inbound allow saved and never applied: the push holds the block and not the allow, the journal records the block and not the allow, the expiry's push leaves the allow off too, and the allow stays saved |
+| nojournal | nothing ever applied: the push is the first apply (as before PR 5), is live, and writes the journal |
 
-Not pinned on purpose: what a push gives the firewall beyond the staged
-block (today the whole policy; PR 5 moves the push to
-`fs_firewall_add_live`), and the resume the pause's own timer does (it
-fires when the engine already reads "not paused", so today it neither
-audits nor catches up).
+Not pinned on purpose: the resume the pause's own timer does (it fires
+when the engine already reads "not paused", so it neither audits nor
+catches up).
 
-Teeth (each patched into `src/ui/fs-copilot.c`, rebuilt, run, restored
-with `cp` and checked with `cmp`; every one fails the test): the
-restore resets the clock to the restart (the fresh row lifts 600 s
-after it, late); no expiry timer at stage; expiry one step late (`>`
-for `>=`); expiry does not push; expiry pushes with nothing dropped;
-retire does not rewrite the state file; retire does not cool; the
-pause does not gate the pass; the resume by hand does not catch up; no
-push at stage; the push ignores the hold; lift-all does not push; the
-stage or the restore reads the real wall clock; the Allow-lift ignores
-the `Sentinel:` comment.
+Teeth of the gate (each patched into `src/ui/fs-copilot.c` before the
+move, rebuilt, run, restored with `cp` and checked with `cmp`; every one
+failed the test): the restore resets the clock to the restart (the
+fresh row lifts 600 s after it, late); no expiry timer at stage; expiry
+one step late (`>` for `>=`); expiry does not push; expiry pushes with
+nothing dropped; retire does not rewrite the state file; retire does
+not cool; the pause does not gate the pass; the resume by hand does not
+catch up; no push at stage; the push ignores the hold; lift-all does
+not push; the stage or the restore reads the real wall clock; the
+Allow-lift ignores the `Sentinel:` comment.
+
+Teeth after the move (patched into `src/core/fs-sentinel.c` the same
+way; every one fails the test): the push at stage applies the policy
+file, as before PR 5 (3 `unapplied` checks: the allow goes live); the
+expiry's push applies the policy file (1); no first apply when there is
+no journal (2 `nojournal` checks); the restore resets the clock (2);
+expiry `>` for `>=` (8); retire does not cool (8); the push ignores the
+hold hook (3).
 
 
 ## The What-If start goes through the start gate (`fs-whatif-start-smoke`, H12)
