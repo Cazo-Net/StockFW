@@ -1317,8 +1317,10 @@ and arms its timers through the clock the test hands in
 restart run in no time; a fake backend counts the pushes and keeps what
 each was given.  The fake wall clock runs years ahead of the real one,
 so any read of the real clock shows.  The engine starts after one apply,
-as the app does, so there is a journal for the push to add to.  Four
-processes: the session, a restart, an unapplied allow, no journal.
+as the app does, so there is a journal for the push to add to.  Seven
+processes: the session, a restart, an unapplied allow, no journal, and
+three from the review: an unapplied setting, Undo, a lift with no
+record.
 
 | Part | What must happen |
 |---|---|
@@ -1331,6 +1333,9 @@ processes: the session, a restart, an unapplied allow, no journal.
 | restore | a restart: the row 700 s old comes out of the policy and is handed back as due; the row 300 s old stays and lifts 300 s after the restart, not 600 s |
 | unapplied | an inbound allow saved and never applied: the push holds the block and not the allow, the journal records the block and not the allow, the expiry's push leaves the allow off too, and the allow stays saved |
 | nojournal | nothing ever applied: the push is the first apply (as before PR 5), is live, and writes the journal |
+| settings | a firewall setting saved and not applied: the settings hook gets the journal's settings for the push and is reset after; the journal still records the applied value, so the saved one stays pending, at the stage and at the expiry |
+| undo | `fs_sentinel_undo` with an allow saved and never applied: the block leaves the policy and the state file and is cooled, one push without the block, and the allow stays off the firewall and the journal |
+| nolift | the journal is deleted while the block is live: the expiry still pushes without the block (it applies the policy), audited; a block missing from the journal: lift-all pushes nothing and says "not on record as live" |
 
 Not pinned on purpose: the resume the pause's own timer does (it fires
 when the engine already reads "not paused", so it neither audits nor
@@ -1353,7 +1358,10 @@ file, as before PR 5 (3 `unapplied` checks: the allow goes live); the
 expiry's push applies the policy file (1); no first apply when there is
 no journal (2 `nojournal` checks); the restore resets the clock (2);
 expiry `>` for `>=` (8); retire does not cool (8); the push ignores the
-hold hook (3).
+hold hook (3).  From the review: the settings hook is never called (4
+`settings` checks); Undo applies the policy file (1 `undo` check); a
+lift with no journal goes to lift_live (3 `nolift` checks); the "not on
+record as live" line is renamed (1).
 
 
 ## The What-If start goes through the start gate (`fs-whatif-start-smoke`, H12)

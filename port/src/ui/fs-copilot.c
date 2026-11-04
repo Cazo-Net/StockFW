@@ -474,18 +474,17 @@ text_view_append (GtkWidget *scrolled, const gchar *text, const gchar *tag)
  * The apply gate, reported into a card's strip
  * ===================================================================== */
 static void
-cp_push (const gchar *why, GtkWidget *strip, const gchar *done)
+cp_report (FsApplyOutcome *outcome, const GError *error, GtkWidget *strip,
+           const gchar *done)
 {
-    GError *error = NULL;
-    FsApplyOutcome *outcome;
     gchar *text;
 
-    if (copilot_policy == NULL)
-        return;
-
-    outcome = fs_policy_apply_safe (fs_backend (), copilot_policy, why,
-                                    fs_policyview_hold_reason (), &error);
-    if (outcome->applied) {
+    if (outcome == NULL) {
+        /* A lift of a block that was not on record as live. */
+        text = g_strdup_printf (_("%s Saved. It was not on the firewall, "
+                                  "so nothing there changed."), done);
+        strip_set (strip, "ok", text);
+    } else if (outcome->applied) {
         text = g_strdup_printf (_("%s Saved, and %s."), done,
                                 apply_result_text (outcome->result));
         strip_set (strip, outcome->result == FS_APPLY_OK ? "ok" : "warn",
@@ -495,6 +494,13 @@ cp_push (const gchar *why, GtkWidget *strip, const gchar *done)
                                   "it is not on the firewall yet."),
                                 done, outcome->hold_reason);
         strip_set (strip, "warn", text);
+    } else if (outcome->result == FS_APPLY_DRY_RUN &&
+               outcome->firewall_was == FS_FW_STOPPED) {
+        /* A live edit on a stopped firewall (fs-apply.h). */
+        text = g_strdup_printf (_("%s Saved. The firewall is stopped, so "
+                                  "the change is recorded for its next "
+                                  "start."), done);
+        strip_set (strip, "ok", text);
     } else {
         text = g_strdup_printf (
             _("%s Saved, but it is not live: %s%s%s. %s"), done,
@@ -511,7 +517,41 @@ cp_push (const gchar *why, GtkWidget *strip, const gchar *done)
         strip_set (strip, "bad", text);
     }
     g_free (text);
+}
+
+static void
+cp_push (const gchar *why, GtkWidget *strip, const gchar *done)
+{
+    GError *error = NULL;
+    FsApplyOutcome *outcome;
+
+    if (copilot_policy == NULL)
+        return;
+
+    outcome = fs_policy_apply_safe (fs_backend (), copilot_policy, why,
+                                    fs_policyview_hold_reason (), &error);
+    cp_report (outcome, error, strip, done);
     fs_apply_outcome_free (outcome);
+    g_clear_error (&error);
+}
+
+/* [ cp_undo_auto_block ]
+ * The Undo of one Sentinel block: the engine retires it and takes it
+ * off the firewall alone (the journal less the block), so a change
+ * saved and never applied does not go live with the Undo. */
+static void
+cp_undo_auto_block (FsSentinelBlock *ab, GtkWidget *strip,
+                    const gchar *done)
+{
+    GError *error = NULL;
+    FsApplyOutcome *outcome = NULL;
+
+    sentinel_hooks ();
+    if (!fs_sentinel_undo (ab, "undone by user", &outcome, &error))
+        return;
+    cp_report (outcome, error, strip, done);
+    if (outcome != NULL)
+        fs_apply_outcome_free (outcome);
     g_clear_error (&error);
 }
 
@@ -854,8 +894,7 @@ on_undo_block_clicked (GtkButton *btn, gpointer data)
         return;
     }
     done = g_strdup_printf (_("Automatic block lifted: %s."), ab->csv);
-    fs_sentinel_retire (ab, "undone by user");
-    cp_push ("sentinel auto-block undone", findings_strip, done);
+    cp_undo_auto_block (ab, findings_strip, done);
     g_free (done);
     verify_cache_clear ();
     refresh_insights ();
@@ -1946,8 +1985,7 @@ on_change_undo_clicked (GtkButton *btn, gpointer data)
             return;
         }
         done = g_strdup_printf (_("Automatic block lifted: %s."), ab->csv);
-        fs_sentinel_retire (ab, "undone by user");
-        cp_push ("sentinel auto-block undone", changes_strip, done);
+        cp_undo_auto_block (ab, changes_strip, done);
     } else {
         CpChange *c = ref;
 
@@ -2733,7 +2771,8 @@ static void
 sentinel_hooks (void)
 {
     static const FsSentinelHooks h = {
-        fs_backend, fs_policyview_hold_reason, sentinel_refresh
+        fs_backend, fs_policyview_hold_reason, sentinel_refresh,
+        fs_app_backend_settings
     };
 
     fs_sentinel_set_hooks (&h);

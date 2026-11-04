@@ -26,7 +26,7 @@
 static gchar      sentinel_mode[16] = "auto";
 static FsCopilot *engine_copilot = NULL;
 static FsPolicy  *engine_policy = NULL;
-static FsSentinelHooks hooks = { NULL, NULL, NULL };
+static FsSentinelHooks hooks = { NULL, NULL, NULL, NULL };
 
 static GPtrArray *auto_blocks       = NULL;  /* FsSentinelBlock*, freed */
 static guint      auto_block_expiry_id = 0;
@@ -326,7 +326,55 @@ rows_empty (const FsPolicy *rows)
 	return TRUE;
 }
 
-/* [ auto_block_push ]
+/* [ journal_holds ] -- TRUE when the journal records every row. */
+static gboolean
+journal_holds (const FsPolicy *rows)
+{
+	FsPolicy *live = fs_policy_new ();
+	gboolean all = fs_apply_journal_load (live, NULL);
+
+	for (gint k = 0; all && k < FS_RULE_N_KINDS; k++)
+		for (guint i = 0; all && i < rows->kinds[k]->len; i++)
+			all = fs_policy_contains (live,
+				g_ptr_array_index (rows->kinds[k], i));
+	fs_policy_free (live);
+	return all;
+}
+
+/* [ live_push ]
+ * fs_firewall_add_live or fs_firewall_lift_live, with the backend
+ * given the settings that are live.  The desktop app's backend holds
+ * the SAVED preferences, which may hold a change saved and not applied
+ * (Preferences, "Later").  When the journal records the settings it
+ * went out with, the settings hook puts those in the backend for this
+ * one push and the journal keeps that record
+ * (fs_firewall_live_keeps_settings), so the saved change stays pending
+ * and goes out with the next apply, not with a block or a lift. */
+static FsApplyOutcome *
+live_push (const FsBackend *backend, const FsPolicy *rows, gboolean add,
+           const gchar *source, const gchar *hold, GError **error)
+{
+	FsSettings *live = hooks.settings != NULL
+	                 ? fs_settings_from_journal (NULL) : NULL;
+	FsApplyOutcome *outcome;
+
+	if (live != NULL) {
+		hooks.settings (live);
+		fs_firewall_live_keeps_settings (TRUE);
+	}
+	outcome = add ? fs_firewall_add_live (backend, rows, source, hold,
+	                                      error)
+	              : fs_firewall_lift_live (backend, rows, source, hold,
+	                                       error);
+	if (live != NULL) {
+		fs_firewall_live_keeps_settings (FALSE);
+		hooks.settings (NULL);
+		fs_settings_free (live);
+	}
+	return outcome;
+}
+
+/* [ block_push ]
  * Put the blocks just staged (`add') on the firewall, or take the
  * blocks just lifted off it, and record honestly whether that went
  * live -- through the gate, so a held or rolled-back push never gets
@@ -341,72 +389,107 @@ rows_empty (const FsPolicy *rows)
  * journal that cannot be read is not guessed at: the block is staged,
  * not live.
  *
- * When add_live or lift_live has nothing to do (NULL): a lift of rows
- * that were never live needs no line, and an add of rows already live
- * is live. */
-static void
-auto_block_push (const FsPolicy *rows, gboolean add)
+ * A lift with no journal, or one that cannot be read, cannot start
+ * from the record, and the block may be on the firewall all the same
+ * (an apply that went out and whose journal could not be saved).  It
+ * then applies the policy, which no longer holds the block, as the
+ * push did before PR 5, so a block does not outlive its ten minutes
+ * for want of a record.  Not on a firewall that a start installs
+ * (Linux) while it is stopped: nothing is on it, and an apply there
+ * would start it.
+ *
+ * When add_live or lift_live has nothing to do (NULL): an add of rows
+ * already live is live; a lift of rows that are not on record as live
+ * says so.  Every push leaves an audit line.  The outcome, or NULL, is
+ * the caller's. */
+static FsApplyOutcome *
+block_push (const FsPolicy *rows, gboolean add, const gchar *source,
+            GError **error)
 {
 	const FsBackend *backend;
 	const gchar *hold;
-	GError *error = NULL;
 	FsApplyOutcome *outcome;
+	FsPolicy *live;
+	GError *journal_error = NULL;
+	gboolean have, none;
 
 	if (engine_policy == NULL || rows == NULL || rows_empty (rows))
-		return;
+		return NULL;
 
 	backend = hooks.backend != NULL ? hooks.backend () : NULL;
 	hold = hooks.hold != NULL ? hooks.hold () : NULL;
 
+	live = fs_policy_new ();
+	have = fs_apply_journal_load (live, &journal_error);
+	none = !have && g_error_matches (journal_error, FS_APPLY_ERROR,
+	                                 FS_APPLY_ERR_NO_JOURNAL);
+	fs_policy_free (live);
+	g_clear_error (&journal_error);
+
 	if (add) {
-		FsPolicy *live = fs_policy_new ();
-		GError *journal_error = NULL;
-		gboolean have = fs_apply_journal_load (live, &journal_error);
-		gboolean none = !have &&
-			g_error_matches (journal_error, FS_APPLY_ERROR,
-			                 FS_APPLY_ERR_NO_JOURNAL);
-
-		fs_policy_free (live);
-		g_clear_error (&journal_error);
-
 		if (!have && !none) {
 			fs_audit_log ("sentinel auto-block staged, not live",
 			              "the record of what is live cannot be "
 			              "read");
-			return;
+			return NULL;
 		}
 		outcome = none
 		        ? fs_policy_apply_safe (backend, engine_policy,
-		                                "sentinel auto-block", hold,
-		                                &error)
-		        : fs_firewall_add_live (backend, rows,
-		                                "sentinel auto-block", hold,
-		                                &error);
+		                                source, hold, error)
+		        : live_push (backend, rows, TRUE, source, hold, error);
+	} else if (have) {
+		outcome = live_push (backend, rows, FALSE, source, hold, error);
+	} else if (backend != NULL && backend->start_applies_policy &&
+	           backend->get_state != NULL &&
+	           backend->get_state () == FS_FW_STOPPED) {
+		outcome = NULL;
 	} else {
-		outcome = fs_firewall_lift_live (backend, rows,
-		                                 "sentinel auto-block", hold,
-		                                 &error);
+		fs_audit_log ("sentinel auto-block lift applies the policy",
+		              none ? "there is no record of what is live"
+		                   : "the record of what is live cannot be "
+		                     "read");
+		outcome = fs_policy_apply_safe (backend, engine_policy, source,
+		                                hold, error);
 	}
 
 	if (outcome == NULL) {
 		if (add)
 			fs_audit_log ("sentinel auto-block is live",
 			              "already live");
-		g_clear_error (&error);
-		return;
+		else
+			fs_audit_log ("sentinel auto-block lifted, not on "
+			              "record as live",
+			              "nothing on the firewall changed");
+		return NULL;
 	}
 
-	if (outcome->applied)
+	if (outcome->applied) {
 		fs_audit_log ("sentinel auto-block is live",
 		              fs_util_apply_result_to_string ((int) outcome->result));
-	else if (outcome->held)
+		if (add && !journal_holds (rows))
+			fs_audit_log ("sentinel auto-block not on record",
+			              "the record of what is live was not "
+			              "saved; a full apply clears the block");
+	} else if (outcome->held)
 		fs_audit_log ("sentinel auto-block staged, not live",
 		              outcome->hold_reason);
 	else
 		fs_audit_log ("sentinel auto-block staged, not live",
 		              fs_util_apply_result_to_string ((int) outcome->result));
 
-	fs_apply_outcome_free (outcome);
+	return outcome;
+}
+
+/* [ auto_block_push ] -- block_push, for a caller that keeps nothing. */
+static void
+auto_block_push (const FsPolicy *rows, gboolean add)
+{
+	GError *error = NULL;
+	FsApplyOutcome *outcome = block_push (rows, add,
+	                                      "sentinel auto-block", &error);
+
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
 	g_clear_error (&error);
 }
 
@@ -501,6 +584,30 @@ fs_sentinel_retire (FsSentinelBlock *block, const gchar *why)
 	if (!fs_sentinel_holds (block))
 		return FALSE;
 	auto_block_retire (block, why, NULL);
+	return TRUE;
+}
+
+/* [ fs_sentinel_undo ] */
+gboolean
+fs_sentinel_undo (FsSentinelBlock *block, const gchar *why,
+                  FsApplyOutcome **outcome, GError **error)
+{
+	FsPolicy *rows;
+	FsApplyOutcome *o;
+
+	if (outcome != NULL)
+		*outcome = NULL;
+	if (!fs_sentinel_holds (block))
+		return FALSE;
+
+	rows = fs_policy_new ();
+	auto_block_retire (block, why, rows);
+	o = block_push (rows, FALSE, "sentinel auto-block undone", error);
+	if (outcome != NULL)
+		*outcome = o;
+	else if (o != NULL)
+		fs_apply_outcome_free (o);
+	fs_policy_free (rows);
 	return TRUE;
 }
 

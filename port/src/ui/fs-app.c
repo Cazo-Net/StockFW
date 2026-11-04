@@ -1270,6 +1270,14 @@ fs_app_policy (void)
 	return policy;
 }
 
+void
+fs_app_backend_settings (FsSettings *live)
+{
+	if (policy == NULL || settings == NULL)
+		return;
+	fs_backend_set_context (policy, live != NULL ? live : settings);
+}
+
 FsApplyOutcome *
 fs_app_apply_settings (FsPolicy *under, const FsSettings *previous,
                        const gchar *hold, GError **error)

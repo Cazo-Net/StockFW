@@ -26,7 +26,13 @@
  * push applied the whole policy file, unapplied edits included.  With
  * no journal at all (nothing was ever applied) there is nothing to add
  * to: the push then applies the policy, as the first apply or the first
- * start does, and that writes the journal.
+ * start does, and that writes the journal.  A lift with no journal, or
+ * one that cannot be read, applies the policy too (it no longer holds
+ * the block), so a block does not outlive its ten minutes for want of
+ * a record.  The Undo button's lift (fs_sentinel_undo) goes the same
+ * way as the expiry.  Each push hands the backend the settings the
+ * journal records (the settings hook), so a firewall setting saved and
+ * not applied does not ride along either.
  *
  * Everything runs on the thread of the GLib main loop that fires the
  * timers.
@@ -35,6 +41,7 @@
 #define FS_SENTINEL_H
 
 #include <glib.h>
+#include "core/fs-apply.h"
 #include "core/fs-backend.h"
 #include "core/fs-copilot.h"
 #include "core/fs-rules.h"
@@ -100,6 +107,15 @@ typedef struct
 	void             (*refresh) (FsSentinelEvent event,
 	                             const FsSentinelBlock *block,
 	                             const gchar *why);
+	/* Put `settings' in the backend's context for one push, then
+	 * (NULL) the caller's own back; may be NULL.  The engine calls it
+	 * around each add or lift with the settings the journal records
+	 * (fs_settings_from_journal) and owns them.  The desktop app's
+	 * context holds the SAVED preferences, which may hold a change
+	 * nobody applied; with this hook that change stays pending.
+	 * Without it the push goes out with whatever the context holds
+	 * and the journal records the saved preferences. */
+	void             (*settings) (FsSettings *settings);
 } FsSentinelHooks;
 
 /* The hooks are copied; NULL clears them. */
@@ -153,10 +169,19 @@ gboolean fs_sentinel_lift_all (const gchar *why);
  * changed. */
 gboolean fs_sentinel_lift_for_dest (const gchar *dest);
 
-/* Retire one staged block (the Undo button): out of the policy, into
- * the cooldown, out of the list and the state file.  No push: the
- * caller pushes.  FALSE when `block' is not staged (any more). */
+/* Retire one staged block: out of the policy, into the cooldown, out
+ * of the list and the state file.  No push: the caller pushes.  FALSE
+ * when `block' is not staged (any more). */
 gboolean fs_sentinel_retire (FsSentinelBlock *block, const gchar *why);
+
+/* The Undo button: retire one staged block as fs_sentinel_retire does,
+ * then take it off the firewall alone, as its expiry does (the journal
+ * less the block, never the policy file).  *outcome (may be NULL) gets
+ * the push's outcome, caller-owned, or NULL when nothing on the
+ * firewall changed (the block was not on record as live).  FALSE, with
+ * nothing done, when `block' is not staged (any more). */
+gboolean fs_sentinel_undo (FsSentinelBlock *block, const gchar *why,
+                           FsApplyOutcome **outcome, GError **error);
 
 /* The staged blocks. */
 guint            fs_sentinel_count (void);

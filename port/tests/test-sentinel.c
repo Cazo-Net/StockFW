@@ -43,6 +43,17 @@
  *            when the block goes on and when it comes off again;
  *   nojournal (a fourth) with nothing ever applied there is no
  *            record to add to: the push is the first apply, as before;
+ *   settings (a fifth, from the PR 5 review) a firewall setting saved
+ *            and not applied stays pending: the settings hook gives the
+ *            backend the journal's settings for each push, and the
+ *            journal keeps recording those;
+ *   undo     (a sixth, from the review) the Undo button's lift takes
+ *            the block off alone, as the expiry does: an allow saved
+ *            and never applied stays off;
+ *   nolift   (a seventh, from the review) a lift with no journal still
+ *            takes the block off (it applies the policy, which no
+ *            longer holds it), and a lift of a block that is not on
+ *            record as live says so in the audit log;
  *   restore  (a second process, a restart) a row past its ten minutes
  *            comes out of the policy and is handed back as due; a
  *            fresh row keeps its ORIGINAL clock: staged 300 s before
@@ -76,6 +87,7 @@
 #include "core/fs-apply.h"
 #include "core/fs-backend.h"
 #include "core/fs-copilot.h"
+#include "core/fs-prefs.h"
 #include "core/fs-rules.h"
 #include "core/fs-sentinel.h"
 
@@ -315,7 +327,7 @@ static gboolean   started = FALSE;
 /* The hold the desktop app hands in is fs_policyview_hold_reason:
  * audit-only mode first, then the Policy Lock (not used here). */
 static const FsSentinelHooks engine_hooks = {
-	fs_backend, fs_apply_hold_reason, NULL
+	fs_backend, fs_apply_hold_reason, NULL, NULL
 };
 
 static void
@@ -824,6 +836,173 @@ test_nojournal (void)
 	engine_stop ();
 }
 
+/* ---------------------------------------------- a setting not applied */
+
+static guint settings_in = 0;
+static guint settings_out = 0;
+
+/* The desktop app's hook puts the settings in the backend's context;
+ * this fake backend has none, so the hook only counts. */
+static void
+settings_hook (FsSettings *settings)
+{
+	if (settings != NULL)
+		settings_in++;
+	else
+		settings_out++;
+}
+
+static const FsSentinelHooks settings_hooks = {
+	fs_backend, fs_apply_hold_reason, NULL, settings_hook
+};
+
+static gchar *
+journal_setting (const gchar *key)
+{
+	GHashTable *rec = fs_apply_journal_settings ();
+	gchar *v = rec != NULL ? g_strdup (g_hash_table_lookup (rec, key))
+	                       : NULL;
+
+	if (rec != NULL)
+		g_hash_table_unref (rec);
+	return v;
+}
+
+static void
+test_settings (void)
+{
+	const gchar *key = FS_PREFS_FW_ICMP_ECHO_REQUEST;
+	guint before;
+	gchar *v;
+
+	fs_prefs_set_bool (key, TRUE);
+	engine_start ();                  /* the first apply records it */
+	fs_sentinel_set_hooks (&settings_hooks);
+	fs_prefs_set_bool (key, FALSE);   /* saved, not applied */
+	CHECK (fs_apply_settings_pending (),
+	       "settings: (a firewall setting is saved and not applied)");
+
+	feed_beacon (DEST_A, 100000);
+	before = pushes;
+	CHECK (engine_pass () && pushes == before + 1 && pushed_block (DEST_A),
+	       "settings: the block goes live");
+	v = journal_setting (key);
+	CHECK (g_strcmp0 (v, "true") == 0 && fs_apply_settings_pending (),
+	       "settings: the journal still records the applied setting "
+	       "(echo_request=%s), so the saved one stays pending",
+	       v != NULL ? v : "-");
+	g_free (v);
+	CHECK (settings_in == 1 && settings_out == 1,
+	       "settings: the backend had the journal's settings for the "
+	       "push, and its own back after (%u in, %u out)",
+	       settings_in, settings_out);
+
+	advance (TTL_S);
+	v = journal_setting (key);
+	CHECK (pushes == before + 2 && !pushed_block (DEST_A) &&
+	       g_strcmp0 (v, "true") == 0 && fs_apply_settings_pending (),
+	       "settings: the expiry's lift keeps the record too "
+	       "(echo_request=%s)", v != NULL ? v : "-");
+	g_free (v);
+	CHECK (settings_in == 2 && settings_out == 2,
+	       "settings: the lift went through the hook (%u in, %u out)",
+	       settings_in, settings_out);
+
+	fs_prefs_set_bool (key, TRUE);
+	engine_stop ();
+}
+
+/* ------------------------------------------------------- the Undo button */
+
+static void
+test_undo (void)
+{
+	FsSentinelBlock *block;
+	FsApplyOutcome *outcome = NULL;
+	gchar *csv = block_csv (DEST_A);
+	guint before;
+
+	engine_start ();
+	put_rule (policy, FS_RULE_INBOUND_ALLOW_SERVICE, SAVED_ALLOW);
+	fs_policy_save (policy);
+
+	feed_beacon (DEST_A, 100000);
+	CHECK (engine_pass () && has_block (DEST_A) &&
+	       journal_has (FS_RULE_OUTBOUND_DENY_TO, csv),
+	       "undo: the block is staged and live");
+	block = fs_sentinel_find (FS_RULE_OUTBOUND_DENY_TO, csv);
+	before = pushes;
+	CHECK (fs_sentinel_undo (block, "undone by user", &outcome, NULL),
+	       "undo: the staged block is undone");
+	CHECK (!has_block (DEST_A) && state_rows () == 0 &&
+	       fs_sentinel_cooled (FS_RULE_OUTBOUND_DENY_TO, csv),
+	       "undo: out of the policy and the state file, and cooled");
+	CHECK (outcome != NULL && outcome->applied && pushes == before + 1 &&
+	       !pushed_block (DEST_A),
+	       "undo: one push, without the block");
+	CHECK (!pushed_rule (FS_RULE_INBOUND_ALLOW_SERVICE, SAVED_ALLOW) &&
+	       !journal_has (FS_RULE_INBOUND_ALLOW_SERVICE, SAVED_ALLOW) &&
+	       !journal_has (FS_RULE_OUTBOUND_DENY_TO, csv),
+	       "undo: the allow saved and never applied stays off the "
+	       "firewall");
+	if (outcome != NULL)
+		fs_apply_outcome_free (outcome);
+
+	g_free (csv);
+	engine_stop ();
+}
+
+/* ------------------------------------------ a lift with no record of it */
+
+static void
+test_nolift (void)
+{
+	gchar *path = g_strdup (g_getenv ("STOCKFW_APPLIED_FILE"));
+	gchar *csv = block_csv (DEST_B);
+	guint before;
+
+	engine_start ();
+	feed_beacon (DEST_A, 100000);
+	CHECK (engine_pass () && pushed_block (DEST_A),
+	       "no record: the block is live");
+	/* The journal is gone (its save failed, say): the block is on the
+	 * firewall and nothing records it. */
+	g_unlink (path);
+	before = pushes;
+	advance (TTL_S);
+	CHECK (!has_block (DEST_A) && pushes == before + 1 &&
+	       !pushed_block (DEST_A),
+	       "no record: the expiry still takes the block off the "
+	       "firewall");
+	CHECK (audit_count ("sentinel auto-block lift applies the policy") == 1,
+	       "no record: audited");
+
+	/* A block the journal does not hold: the lift says so. */
+	feed_beacon (DEST_B, 200000);
+	CHECK (engine_pass () && journal_has (FS_RULE_OUTBOUND_DENY_TO, csv),
+	       "no record: a second block is live");
+	{
+		FsPolicy *live = fs_policy_new ();
+		FsRule *rule = fs_rule_from_csv (FS_RULE_OUTBOUND_DENY_TO, csv);
+
+		fs_apply_journal_load (live, NULL);
+		fs_policy_remove (live, rule);
+		fs_apply_journal_save (live, NULL);
+		fs_rule_free (rule);
+		fs_policy_free (live);
+	}
+	before = pushes;
+	CHECK (engine_lift_all ("lifted by user") && pushes == before,
+	       "no record: lift-all of a block not on record pushes nothing");
+	CHECK (audit_count ("sentinel auto-block lifted, not on record as "
+	                    "live") == 1,
+	       "no record: and says so in the audit log");
+
+	g_free (csv);
+	g_free (path);
+	engine_stop ();
+}
+
 /* --------------------------------------------------------- the restart */
 
 static void
@@ -930,6 +1109,9 @@ main (int argc, char **argv)
 		bad += run_child (argv[0], "restore");
 		bad += run_child (argv[0], "unapplied");
 		bad += run_child (argv[0], "nojournal");
+		bad += run_child (argv[0], "settings");
+		bad += run_child (argv[0], "undo");
+		bad += run_child (argv[0], "nolift");
 		printf ("\ntest-sentinel: %s\n", bad ? "FAILED" : "PASSED");
 		return bad ? 1 : 0;
 	}
@@ -945,6 +1127,12 @@ main (int argc, char **argv)
 		test_unapplied ();
 	else if (strcmp (argv[1], "nojournal") == 0)
 		test_nojournal ();
+	else if (strcmp (argv[1], "settings") == 0)
+		test_settings ();
+	else if (strcmp (argv[1], "undo") == 0)
+		test_undo ();
+	else if (strcmp (argv[1], "nolift") == 0)
+		test_nolift ();
 	else {
 		printf ("FAIL: no part called %s\n", argv[1]);
 		failures++;
