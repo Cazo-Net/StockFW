@@ -1,7 +1,7 @@
 /*---[ fs-autoblock.h ]--------------------------------------------------
  * Sentinel's persisted auto-block list, the part that needs no UI.
  *
- * Sentinel (src/ui/fs-copilot.c) stages a block into the policy and
+ * Sentinel (core/fs-sentinel.c) stages a block into the policy and
  * writes one row per staged block to a small state file, so a restart
  * can still lift it ten minutes after it was staged.  The app's own
  * boot restore does that and more (re-arming the timer, the session

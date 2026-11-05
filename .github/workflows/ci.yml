@@ -130,7 +130,8 @@ jobs:
                   fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
                   fs-overview-place-smoke fs-verdict-smoke
                   fs-startup-smoke fs-traymenu-smoke fs-session-smoke
-                  fs-help-smoke fs-intelview-smoke fs-whatif-start-smoke"
+                  fs-help-smoke fs-intelview-smoke fs-whatif-start-smoke
+                  fs-sentinel-test"
           ninja -C build-linux $smokes
           for t in $smokes; do
             echo "== $t"

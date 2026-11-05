@@ -400,6 +400,22 @@ It is still read-only and still listens on 127.0.0.1 only.
   is reported as a failure, not as held. The question before the start
   no longer says it "loads the saved policy": on Linux it says the last
   applied policy goes live, on Windows that the firewall is switched on.
+- **Sentinel's automatic block no longer puts unapplied changes live
+  (Linux and Windows).** When Sentinel blocked an address, it applied
+  the whole saved policy to the firewall, so an allow or another change
+  that was saved and never applied went live with the block. Now only
+  the block goes on the firewall, added to the policy that is live (the
+  last one applied), and when its ten minutes run out, or you lift it
+  with Undo or by leaving auto mode, only the block comes off. Rules
+  and firewall settings that were saved and not applied (for example
+  with "Later" in Preferences) stay off until you apply them. If
+  nothing was ever applied, there is no live policy to add to, and the
+  block goes out with the saved policy, as before; a block lifted then
+  comes off the same way, so it never outlives its ten minutes. Allow
+  on the Events page still applies the saved policy, as before. The
+  engine behind Sentinel moved out of the window into the shared core,
+  so the daemon can run it later; nothing else changes in what it
+  does.
 - **Windows: no console windows during threat-intel updates.** Turning
   on a blocklist, "Update now", and the daily update each downloaded
   every list through `curl.exe`, and each download opened a black

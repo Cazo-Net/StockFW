@@ -21,7 +21,13 @@ void fs_copilot_view_refresh (void);
 /* Called from the events feed to update the stats counter. */
 void fs_copilot_note_event (void);
 
-/* Sentinel auto-block pass: stages every auto-applicable insight
+/* Sentinel.  The engine is core/fs-sentinel.h (PR 5); the functions
+ * below are the page's callers of it, under their old names.  They
+ * hand the engine the backend, the hold reason
+ * (fs_policyview_hold_reason) and a refresh callback that redraws
+ * this page.
+ *
+ * Sentinel auto-block pass: stages every auto-applicable insight
  * (that is not already in the policy) when Sentinel is in auto mode.
  * Returns TRUE when something was staged, so the caller knows whether
  * the insights list needs rebuilding. */

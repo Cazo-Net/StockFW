@@ -76,6 +76,11 @@ void fs_app_reload_settings (void);
  * (and with it the policy) is loaded.  Borrowed. */
 FsPolicy *fs_app_policy (void);
 
+/* Sentinel's settings hook (core/fs-sentinel.h): `live' into the
+ * backend's context for one push, or NULL to put the saved settings
+ * back.  Does nothing before the main window has loaded them. */
+void fs_app_backend_settings (FsSettings *live);
+
 /* Pushes `under' to the firewall with the settings just reloaded,
  * through the apply gate (fs_settings_apply_safe).  `under' is the
  * policy to apply them with: Preferences passes the last applied one
