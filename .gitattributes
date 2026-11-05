@@ -1,0 +1,53 @@
+# Line-ending rules.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# core.autocrlf=true (the Windows default) writes CRLF into the working
+# tree at checkout.  For most files that is harmless: the C "clean" filter
+# normalises them back to LF on commit, so the blobs stay correct.
+#
+# Shell scripts are the exception, and they fail *loudly* on Linux:
+#
+#     $ bash tools/build-linux.sh
+#     tools/build-linux.sh: line 20: set: pipefail: invalid option name
+#
+# because "set -euo pipefail" becomes "set -euo pipefail\r" and bash reads
+# the option name as "pipefail\r".  Nothing about the file looks wrong --
+# the script simply refuses to run, and only when executed by a real
+# Linux bash (MSYS2 tolerates it, which is why it goes unnoticed on
+# Windows and only shows up in WSL or CI).
+#
+# Every .sh blob in this repository is already pure LF, so pinning the
+# working tree to LF changes no committed byte: this rule is a checkout
+# instruction, not a content rewrite.  It also means a contributor who
+# clones on Windows and builds in WSL gets working scripts.
+#
+# Verified: after adding this, `git status` reports no modification to any
+# pre-existing file -- only this file is new.
+
+*.sh            text eol=lf
+
+# Files that must never be line-converted at all.  Git detects most of
+# these by content, but stating it removes the guesswork for any asset
+# that happens to lack a NUL byte.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.webp          binary
+*.ico           binary
+*.icns          binary
+*.exe           binary
+*.dll           binary
+*.a             binary
+*.o             binary
+*.obj           binary
+*.lib           binary
+*.zip           binary
+*.tar.gz        binary
+*.tgz           binary
+*.7z            binary
+*.pdf           binary
+*.ttf           binary
+*.woff          binary
+*.woff2         binary
