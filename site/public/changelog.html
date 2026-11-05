@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Changelog · StockFW</title>
-<meta name="description" content="What changed in each StockFW version, up to the current 1.0.8 release.">
+<meta name="description" content="What changed in each StockFW version, up to the current 1.0.7 release.">
 <meta name="color-scheme" content="light">
 <meta name="theme-color" content="#ffffff">
 <meta property="og:title" content="Changelog · StockFW">
-<meta property="og:description" content="What changed in each StockFW version, up to the current 1.0.8 release.">
+<meta property="og:description" content="What changed in each StockFW version, up to the current 1.0.7 release.">
 <meta property="og:type" content="website">
 <link rel="icon" href="./assets/img/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="./assets/img/apple-touch-icon.png">
@@ -23,7 +23,7 @@
 		<a class="brand" href="./index.html">
 			<img src="./assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.8</span>
+			<span class="brand-ver">1.0.7</span>
 		</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="./index.html#tour">Features</a>
@@ -49,7 +49,7 @@
 	<div class="wrap">
 		<p class="label">Changelog</p>
 		<h1>Changelog</h1>
-		<p>What changed in each StockFW version, up to the current 1.0.8 release.</p>
+		<p>What changed in each StockFW version, up to the current 1.0.7 release.</p>
 	</div>
 </section>
 <div class="page-body">
@@ -57,8 +57,11 @@
 <div class="prose">
 <p class="lede">Each release also adds a chapter to <a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">the architecture and security document</a>, which records the evidence behind every claim below. This page is the short version.</p>
 
-<!-- RELEASE DAY: replace DATE below with the v1.0.8 release date -->
-<h2 id="v1-0-8">1.0.8 · DATE · current release<a class="anchor" href="#v1-0-8" aria-label="Link to this section">#</a></h2>
+<!-- UNRELEASED: v1.0.8 has no tag and no GitHub release yet. This section
+     is work merged to main and filed under [Unreleased] in CHANGELOG.md.
+     On release day: give it the date, call it the current release, and
+     drop the "current release" marker from 1.0.7 below. -->
+<h2 id="v1-0-8">1.0.8 · unreleased · in development<a class="anchor" href="#v1-0-8" aria-label="Link to this section">#</a></h2>
 <p>The terminal release. On Linux, <code>stockfw</code> now does from a terminal what the window does, and says what is true: whether the saved policy is live, who can reach each open port, what the audit log holds, and what Sentinel has staged. Every sample on the <a href="./docs/cli.html">command line page</a> is this release’s real output.</p>
 <h3 id="added">Added<a class="anchor" href="#added" aria-label="Link to this section">#</a></h3>
 <ul>
@@ -101,7 +104,7 @@
 <li><code>events</code> refuses <code>--blocked</code> with <code>--allowed</code> and an unknown <code>--proto</code> (exit 2) instead of letting the last flag win; the first <code>interfaces --watch</code> frame showed half the rate.</li>
 </ul>
 
-<h2 id="v1-0-7">1.0.7 · 3 November 2026<a class="anchor" href="#v1-0-7" aria-label="Link to this section">#</a></h2>
+<h2 id="v1-0-7">1.0.7 · 3 November 2026 · current release<a class="anchor" href="#v1-0-7" aria-label="Link to this section">#</a></h2>
 <h3 id="added-2">Added<a class="anchor" href="#added-2" aria-label="Link to this section">#</a></h3>
 <ul>
 <li><strong>The What-If engine.</strong> A parser that reads a question the way you say it and shows how it read it; an engine that models your platform’s firewall (first match on Linux, block wins on Windows) together with the Firewall preferences, Sentinel’s blocks, whether the firewall runs and whether the saved policy is live; DEPENDS answers that spell out the split; the whole trace of rules checked; and fixes verified against the policy before they are offered. A window beside the page, not over it, and the same answer from <code>stockfw simulate</code>, with exit 6 for DEPENDS. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-whatif.c</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-simviz-smoke</span></li>

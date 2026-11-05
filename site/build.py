@@ -32,9 +32,9 @@ LAYOUTS = SRC / "layouts"
 PAGES = SRC / "pages"
 
 CONFIG = {
-    "version": "1.0.8",          # the release these pages describe
-    "next": "1.0.7",             # unused since the site became the 1.0.7 site; kept for old pages
-    "release": "1.0.8",          # the GitHub release the download page points at
+    "version": "1.0.7",          # the release these pages describe
+    "next": "1.0.8",             # the release in development; no template reads it, kept for old pages
+    "release": "1.0.7",          # the GitHub release the download page points at
     "repo": "https://github.com/Cazo-Net/StockFW",
     "site_name": "StockFW",
 }
