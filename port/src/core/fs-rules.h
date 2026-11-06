@@ -45,6 +45,7 @@ typedef struct
 	gchar      *to;         /* forward destination host         */
 	gchar      *to_port;    /* forward destination port         */
 	gchar      *comment;
+	gboolean    enabled;    /* FALSE means #off: on disk        */
 } FsRule;
 
 FsRule *fs_rule_new  (FsRuleKind kind);
@@ -166,6 +167,17 @@ gboolean  fs_policy_add_persist_pair (FsPolicy *policy, FsRule *rule,
 /* TRUE when a rule identical to the one passed in is already stored.
  * Identity is the CSV form, the same way fs_policy_remove matches. */
 gboolean  fs_policy_contains (const FsPolicy *policy, const FsRule *rule);
+
+/* A view of the policy containing only enabled rules.  Every engine
+ * that decides or writes (generators, What-If, health, journal, impact)
+ * reads this, never the raw policy.  Caller frees with fs_policy_free. */
+FsPolicy *fs_policy_active_view (const FsPolicy *policy);
+
+/* Enable or disable a rule.  The rule must already be in the policy.
+ * Returns TRUE and persists the change, or FALSE when the rule is not
+ * found or the save fails (the policy is unchanged in that case). */
+gboolean  fs_policy_set_enabled (FsPolicy *policy, const FsRule *rule,
+                                  gboolean enabled);
 
 void      fs_policy_install_defaults (FsPolicy *policy);
 

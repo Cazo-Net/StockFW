@@ -85,6 +85,7 @@ fs_rule_new (FsRuleKind kind)
 	FsRule *rule = g_new0 (FsRule, 1);
 
 	rule->kind = kind;
+	rule->enabled = TRUE;
 
 	return rule;
 }
@@ -104,6 +105,7 @@ fs_rule_copy (const FsRule *rule)
 	copy->to      = g_strdup (rule->to);
 	copy->to_port = g_strdup (rule->to_port);
 	copy->comment = g_strdup (rule->comment);
+	copy->enabled = rule->enabled;
 
 	return copy;
 }
@@ -509,9 +511,20 @@ fs_policy_load_report (FsPolicy *policy, GPtrArray **problems)
 			FsRule *rule = NULL;
 			gchar *line = g_strstrip (lines[i]);
 			gchar *why;
+			gboolean enabled = TRUE;
 
-			if (*line == '\0' || *line == '#')
+			if (*line == '\0')
 				continue;
+
+			/* A plain comment line. */
+			if (*line == '#' && !g_str_has_prefix (line, "#off:"))
+				continue;
+
+			/* A rule that is switched off: #off: + the CSV row. */
+			if (g_str_has_prefix (line, "#off:")) {
+				enabled = FALSE;
+				line = g_strstrip (line + 5);  /* skip "#off:" */
+			}
 
 			/* F-1 and the service rule: a row that cannot name a
 			 * valid host, port or service is rejected here, not
@@ -532,6 +545,7 @@ fs_policy_load_report (FsPolicy *policy, GPtrArray **problems)
 				continue;
 			}
 
+			rule->enabled = enabled;
 			g_ptr_array_add (policy->kinds[kind], rule);
 		}
 
@@ -612,6 +626,10 @@ fs_policy_save (FsPolicy *policy)
 			/* Skip rows that carry no information at all: every
 			 * field empty gives a row of just separators. */
 			if (csv != NULL && strspn (csv, ", ") < strlen (csv)) {
+				/* A rule that is switched off: write #off: + the CSV. */
+				if (!rule->enabled)
+					g_string_append (out, "#off:");
+
 				g_string_append (out, csv);
 				g_string_append_c (out, '\n');
 			}
@@ -1320,5 +1338,93 @@ fs_policy_replace_nth_persist (FsPolicy *policy, gint nth, const FsRule *old,
 
 	fs_policy_unlock (lock);
 	fs_rule_free (was);
+	return TRUE;
+}
+/*---[ fs-rules-enabled.c ]----------------------------------------------
+ * Rule enable/disable support: fs_policy_active_view and
+ * fs_policy_set_enabled, which belong in fs-rules.c but are kept
+ * separate during development to make the patch cleaner.
+ *--------------------------------------------------------------------*/
+
+#include "core/fs-rules.h"
+#include <string.h>
+
+/* [ fs_policy_active_view ]
+ * A view of the policy containing only enabled rules.  Every engine
+ * that decides or writes (generators, What-If, health, journal, impact)
+ * reads this, never the raw policy. */
+FsPolicy *
+fs_policy_active_view (const FsPolicy *policy)
+{
+	FsPolicy *view;
+
+	if (policy == NULL)
+		return NULL;
+
+	view = fs_policy_new ();
+
+	for (gint kind = 0; kind < FS_RULE_N_KINDS; kind++) {
+		for (guint i = 0; i < policy->kinds[kind]->len; i++) {
+			FsRule *rule = g_ptr_array_index (policy->kinds[kind], i);
+
+			if (rule->enabled)
+				g_ptr_array_add (view->kinds[kind], fs_rule_copy (rule));
+		}
+	}
+
+	return view;
+}
+
+/* [ fs_policy_set_enabled ]
+ * Enable or disable a rule.  The rule must already be in the policy.
+ * Returns TRUE and persists the change, or FALSE when the rule is not
+ * found or the save fails (the policy is unchanged in that case). */
+gboolean
+fs_policy_set_enabled (FsPolicy *policy, const FsRule *rule, gboolean enabled)
+{
+	FsRule *stored;
+	gboolean was_enabled;
+	gchar *csv;
+
+	if (policy == NULL || rule == NULL)
+		return FALSE;
+
+	if (rule->kind < 0 || rule->kind >= FS_RULE_N_KINDS)
+		return FALSE;
+
+	/* Find the rule by its CSV form (same matching as fs_policy_remove). */
+	csv = fs_rule_to_csv (rule);
+	stored = NULL;
+
+	for (guint i = 0; i < policy->kinds[rule->kind]->len; i++) {
+		FsRule *r = g_ptr_array_index (policy->kinds[rule->kind], i);
+		gchar *r_csv = fs_rule_to_csv (r);
+
+		if (g_strcmp0 (csv, r_csv) == 0) {
+			stored = r;
+			g_free (r_csv);
+			break;
+		}
+		g_free (r_csv);
+	}
+
+	g_free (csv);
+
+	if (stored == NULL)
+		return FALSE;
+
+	/* Already in the desired state: success. */
+	if (stored->enabled == enabled)
+		return TRUE;
+
+	/* Change state and persist; roll back if save fails. */
+	was_enabled = stored->enabled;
+	stored->enabled = enabled;
+
+	if (!fs_policy_save (policy)) {
+		stored->enabled = was_enabled;
+		return FALSE;
+	}
+
 	return TRUE;
 }
