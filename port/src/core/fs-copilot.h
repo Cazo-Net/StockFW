@@ -1,10 +1,13 @@
 /*---[ fs-copilot.h ]---------------------------------------------------
- * Smart Firewall Copilot - AI-powered network behavior analysis.
+ * Copilot: rule-based, local analysis of the event log and the policy.
+ * Every finding states the rule that raised it and the events behind
+ * it.
  *
- * A unique innovation: no other firewall GUI has an AI copilot that
- * learns application network behavior, detects anomalies, suggests
- * rules with natural-language explanations, and simulates "what-if"
- * scenarios before applying.
+ * It is a set of fixed, documented checks (thresholds and counts, see
+ * the FS_SENTINEL_* and FS_BEHAVIOR_* constants in fs-copilot.c), not a
+ * model: the same events always give the same findings.  It runs on
+ * this computer and sends nothing anywhere.  The policy half is
+ * fs-health.h; "would this be allowed?" is fs-whatif.h.
  *--------------------------------------------------------------------*/
 #ifndef FS_COPILOT_H
 #define FS_COPILOT_H
@@ -13,6 +16,8 @@
 #include "core/fs-types.h"
 #include "core/fs-rules.h"
 #include "core/fs-fwrule.h"
+#include "core/fs-whatif.h"
+#include "core/fs-backend.h"
 
 G_BEGIN_DECLS
 
@@ -24,44 +29,75 @@ typedef enum
 	FS_COPILOT_CRITICAL
 } FsCopilotSeverity;
 
-/* Types of insights the copilot can generate. */
+/* What the Copilot reports.  Each type is one documented check. */
 typedef enum
 {
-	FS_INSIGHT_NEW_APPLICATION,      /* App seen for first time */
-	FS_INSIGHT_UNUSUAL_PORT,         /* App using unexpected port */
-	FS_INSIGHT_UNUSUAL_DESTINATION,  /* App talking to new IP/region */
-	FS_INSIGHT_UNUSUAL_VOLUME,       /* Sudden spike in traffic */
-	FS_INSIGHT_UNUSUAL_TIME,         /* Activity at unusual hours */
-	FS_INSIGHT_RULE_CONFLICT,        /* Rules that contradict */
-	FS_INSIGHT_REDUNDANT_RULE,       /* Rule covered by another */
-	FS_INSIGHT_MISSING_RULE,         /* Traffic not covered by any rule */
-	FS_INSIGHT_SUSPICIOUS_BEHAVIOR,  /* Potential malware/C2 */
-	FS_INSIGHT_RULE_OPTIMIZATION,    /* Rules can be merged/simplified */
-	FS_INSIGHT_BEACON,               /* Periodic callback traffic: covert channel */
-	FS_INSIGHT_FANOUT                /* Burst of distinct destinations: scan/spread */
+	FS_INSIGHT_UNUSUAL_PORT,         /* first use of a port by a known app   */
+	FS_INSIGHT_UNUSUAL_DESTINATION,  /* new public destination, known app    */
+	FS_INSIGHT_UNUSUAL_VOLUME,       /* connection rate spike                */
+	FS_INSIGHT_UNUSUAL_TIME,         /* first activity in a new hour         */
+	FS_INSIGHT_BEACON,               /* contacts at a near-fixed interval    */
+	FS_INSIGHT_FANOUT,               /* one app, many hosts in a minute      */
+	FS_INSIGHT_INBOUND_SCAN,         /* one source, many local ports         */
+	FS_INSIGHT_BRUTE_FORCE,          /* repeated attempts on a login port    */
+	FS_INSIGHT_THREAT_INTEL          /* traffic a block list or country rule hit */
 } FsInsightType;
 
-/* A single insight from the copilot. */
+/* One event behind a finding, as the log gave it. */
+typedef struct
+{
+	gint64    when;          /* unix seconds                          */
+	gboolean  inbound;
+	gchar    *remote;        /* the other end                         */
+	guint     port;          /* 0 = none (ICMP)                       */
+	gchar    *protocol;
+	gboolean  blocked;
+	gchar    *rule;          /* what blocked it, when the log says    */
+} FsEvidence;
+
+void fs_evidence_free (FsEvidence *ev);
+
+#define FS_INSIGHT_MAX_EVIDENCE 12
+
+/* A single finding. */
 typedef struct
 {
 	FsInsightType        type;
 	FsCopilotSeverity    severity;
-	gchar               *title;           /* Short human-readable title */
-	gchar               *description;     /* Detailed explanation */
-	gchar               *application;     /* App name/path if known */
-	gchar               *destination;     /* Remote host/port if applicable */
-	gchar               *suggested_rule;  /* Natural-language rule suggestion */
-	gchar               *rule_csv;        /* CSV rule ready to apply */
+	gchar               *title;           /* one line                       */
+	gchar               *description;     /* what was seen, in sentences    */
+	gchar               *application;     /* app (Windows) or service (Linux) */
+	gchar               *destination;     /* the remote host, if one        */
+	gchar               *suggested_rule;  /* the rule in words, or NULL     */
+	gchar               *rule_csv;        /* a deny row, or NULL            */
 	FsRuleKind          rule_kind;        /* policy kind rule_csv parses as */
-	guint64              timestamp;       /* When detected */
-	gboolean             auto_applicable; /* Can be applied without review */
+	guint64              timestamp;       /* last updated, unix seconds     */
+	gboolean             auto_applicable; /* Sentinel may stage it (deny only) */
+
+	/* 1.0.7: the evidence and the reasoning. */
+	gchar               *key;             /* "type|app|subject": a new event
+	                                       * for an open finding updates it */
+	gchar               *subject;         /* the host or app it is about    */
+	gchar               *why;             /* the numbers next to the limits */
+	gchar               *benign;          /* "Could be harmless because"    */
+	gchar               *withheld;        /* why Sentinel will not auto-block,
+	                                       * or NULL                        */
+	gchar               *whatif_line;     /* a line for the What-If card    */
+	gchar               *events_filter;   /* text for the Events filter     */
+	GPtrArray           *evidence;        /* FsEvidence*, newest last, at most
+	                                       * FS_INSIGHT_MAX_EVIDENCE        */
+	guint                count;           /* events that matched so far     */
 } FsInsight;
 
-/* A "what-if" simulation result. */
+/* A "what-if" simulation result: the What-If engine's answer
+ * (fs-whatif.h) with the fields older callers read. */
 typedef struct
 {
 	gchar               *scenario;        /* Human-readable scenario */
-	gboolean             would_block;     /* Would traffic be blocked? */
+	FsWhatIfVerdict      verdict;         /* ALLOWED / BLOCKED / DEPENDS /
+	                                       * ERROR (a line that could
+	                                       * not be read)             */
+	gboolean             would_block;     /* verdict == BLOCKED       */
 	gchar               *matching_rule;   /* Which rule would match */
 	gchar               *explanation;     /* Why, as one log sentence */
 	gchar               *reason;          /* Why, without the
@@ -70,22 +106,10 @@ typedef struct
 	                                       * visualizer shows under
 	                                       * "Explanation"            */
 	guint                affected_connections; /* Est. connections affected */
+	FsWhatIfResult      *whatif;          /* the whole answer: both
+	                                       * directions, trace, cases,
+	                                       * verified actions (owned)  */
 } FsSimulationResult;
-
-/* A parsed What-If Simulator line: the grammar is deliberately small
- * (direction keywords, a host, a port or service name, a protocol) so
- * that what the simulator evaluates is always what the user typed --
- * plain data, freed with fs_scenario_free. */
-typedef struct
-{
-	gboolean inbound;    /* TRUE when the traffic arrives at us         */
-	guint    port;       /* service port; 0 when the line named none   */
-	gchar   *protocol;   /* "TCP", "UDP" or "ICMP"                      */
-	gchar   *remote_ip;  /* address or CIDR the line named, or NULL     */
-	gchar   *app;        /* application/service the line named, or NULL */
-	gboolean had_port;   /* the line actually carried a port            */
-	gboolean had_addr;   /* the line actually carried an address        */
-} FsScenario;
 
 /* Application behavior profile learned over time. */
 typedef struct
@@ -115,6 +139,13 @@ typedef struct
 	guint               rate_buckets;         /* buckets closed so far           */
 	guint64             rate_reported;        /* bucket already reported, 0 none */
 	gboolean            baseline_partial;
+
+	/* 1.0.7: first contacts with new destinations in the last 7 days
+	 * (unix seconds, the newest 64, saved in behavior.csv as "newdest"
+	 * rows).  20 or more marks the app as one that meets new hosts all
+	 * the time (a browser), and new-destination findings stay quiet for
+	 * it, after a restart too. */
+	GArray             *new_dest_times;
 } FsAppProfile;
 
 /* Opaque copilot context. */
@@ -140,14 +171,47 @@ void fs_copilot_feed_event_at (FsCopilot *copilot, const FsHit *hit,
 void fs_copilot_feed_event_full (FsCopilot *copilot, const FsHit *hit,
                                  gint64 now_us, gint64 now_unix);
 
-/* Get current insights (caller frees with g_list_free_full + fs_insight_free). */
+/* The current findings, newest first.  The list is the caller's (free
+ * with g_list_free); the findings stay the copilot's. */
 GList *fs_copilot_get_insights (FsCopilot *copilot);
+
+/* How many events have been fed since the copilot was made. */
+guint64 fs_copilot_events_seen (FsCopilot *copilot);
+
+/* The DNS servers and default gateways this computer uses.  Sentinel
+ * does not time DNS (port 53) or DNS over TLS (853) to a resolver, and
+ * never blocks a resolver or a gateway automatically, on any port
+ * (fs_insight_is_auto_safe refuses them too).  When the only resolver
+ * is a local stub whose upstream is unknown, no DNS destination is
+ * blocked automatically.
+ *
+ * fs_copilot_new reads them from the system with fs_hostnet_read
+ * (resolv.conf and, behind a 127.0.0.53 stub, systemd-resolved's and
+ * NetworkManager's upstream lists, /proc/net/route; on Windows every
+ * adapter's DNS servers and gateways) and again at most once a minute.
+ * With STOCKFW_RESOLV_CONF set it reads that file instead, with
+ * STOCKFW_RESOLVED_CONF as the upstream list and STOCKFW_ROUTE_FILE as
+ * /proc/net/route, and never re-reads (tests).
+ *
+ * fs_copilot_set_network takes the texts (resolv.conf, the upstream
+ * list, /proc/net/route; any may be NULL) and fixes them; set_resolvers
+ * is set_network with resolv.conf only. */
+void fs_copilot_set_network (FsCopilot *copilot, const gchar *resolv_conf,
+                             const gchar *resolved, const gchar *route);
+void fs_copilot_set_resolvers (FsCopilot *copilot, const gchar *resolv_conf);
+
+/* "Unusual port", "Beacon", ... */
+const gchar *fs_insight_type_name (FsInsightType type);
 
 /* Clear all insights. */
 void fs_copilot_clear_insights (FsCopilot *copilot);
 
-/* Run a "what-if" simulation: given current rules + a hypothetical packet,
- * would it be allowed or blocked? */
+/* Run a "what-if" simulation for one probe given field by field
+ * (protocol "TCP" / "UDP" / "ICMP" or NULL for either, port 0 for any,
+ * remote_ip an address, a block or NULL for any host) with the What-If
+ * engine: the native platform's model, the attached policy and
+ * fresh-install Firewall preferences.  A remote_ip that is not an
+ * address gives an ERROR verdict.  Never NULL. */
 FsSimulationResult *fs_copilot_simulate (FsCopilot *copilot,
                                          const gchar *app_name,
                                          const gchar *remote_ip,
@@ -155,31 +219,36 @@ FsSimulationResult *fs_copilot_simulate (FsCopilot *copilot,
                                          const gchar *protocol,
                                          gboolean inbound);
 
-/* Parse one What-If line into its scenario fields.  Returns NULL only
- * for NULL/empty input; a line that names nothing still parses, with
- * the had_port/had_addr flags clear and the documented defaults
- * (outbound, any host, any port).  Caller frees with fs_scenario_free. */
-FsScenario *fs_copilot_parse_scenario (const gchar *text);
-void        fs_scenario_free (FsScenario *scenario);
-
-/* Parse a What-If line and run it against the policy in one step.
- * Returns NULL when the line is empty.  When parsed_out is non-NULL it
- * receives the scenario for the caller to free; otherwise the scenario
- * is freed here. */
+/* Parse a What-If line and run it, as above.  NULL only for an empty
+ * line; a line that cannot be read gives an ERROR verdict carrying the
+ * parser's message.  parsed_out, when not NULL, receives a copy of the
+ * query the line was read as (NULL on an error) for the caller to free
+ * with fs_whatif_query_free. */
 FsSimulationResult *fs_copilot_simulate_text (FsCopilot *copilot,
                                               const gchar *text,
-                                              FsScenario **parsed_out);
+                                              FsWhatIfQuery **parsed_out);
 
-/* The "how to allow this" sentence for a parsed scenario: "Allow
- * inbound TCP port 22 from 192.168.1.5."  Returns a newly allocated
- * string, NULL only for NULL input.  Presentation reads this so the
- * suggestion and the tests speak the same words. */
-gchar *fs_copilot_allow_suggestion (const FsScenario *scenario);
+/* Fills in what a What-If context can learn from the backend: whether
+ * the firewall runs, this computer's addresses, and on Windows the
+ * network profiles in force, which of them are on and their default
+ * actions.  Slots the backend lacks leave their part unknown, and the
+ * answer says what it assumed.  state_reliable FALSE when the backend's
+ * "stopped" cannot be trusted (on Linux without root every chain reads
+ * as missing): a stopped reading then stays unknown, because answering
+ * "allowed, the firewall is off" for a firewall that runs would be
+ * wrong in the dangerous direction.  With STOCKFW_LOCAL_ADDRESSES set
+ * (tests; comma separated, empty for none) those are this computer's
+ * addresses and no adapter is read. */
+void fs_copilot_whatif_observe (FsWhatIfContext *ctx,
+                                const FsBackend *backend,
+                                gboolean state_reliable);
 
-/* The policy rule that would let a parsed scenario through: the
- * service-allow kind of the scenario's direction, the scenario's port
- * and host.  Caller frees with fs_rule_free; NULL for NULL input. */
-FsRule *fs_copilot_allow_rule_for (const FsScenario *scenario);
+/* Whether `saved' is the policy the firewall has loaded: held when
+ * hold_reason is set (audit-only mode, the Policy Lock), otherwise the
+ * apply journal compared row by row (live, or changed since), unknown
+ * without a journal. */
+void fs_copilot_whatif_live (FsWhatIfContext *ctx, const FsPolicy *saved,
+                             const gchar *hold_reason);
 
 /* Get learned profile for an application (or NULL if unknown). */
 const FsAppProfile *fs_copilot_get_profile (FsCopilot *copilot,
@@ -250,10 +319,31 @@ gboolean   fs_sentinel_dest_never_auto_block (const gchar *dest);
  * least FS_SENTINEL_BASELINE_DEST_MIN connections from `app' to
  * `dest': an established destination is normal traffic, and Sentinel
  * reports (but never automatically blocks) even metronomic traffic to
- * it. */
+ * it.  The beacon check also withholds when ANY other program's
+ * baseline holds the destination, because the block it stages applies
+ * to every program and every port. */
 gboolean   fs_copilot_baseline_dest_established (FsCopilot *copilot,
                                                  const gchar *app,
                                                  const gchar *dest);
+
+/* Sentinel's last word before it stages a finding's block, asked at
+ * that moment and not when the finding was made: a pass can run much
+ * later (when a tray pause ends, on a switch from Detect only, on the
+ * retry after a failed write), and by then another program may use
+ * the destination or the user may have allowed it.  For a beacon the
+ * finding's automatic-block gates are judged again with the current
+ * baseline, network and policy; when one now withholds, the finding is
+ * updated (auto_applicable FALSE, withheld says why) and FALSE is
+ * returned.  Other findings keep their flag.  FALSE for a finding not
+ * marked auto_applicable. */
+gboolean   fs_copilot_beacon_recheck (FsCopilot *copilot,
+                                      FsInsight *insight);
+
+/* "What is checked": one sentence per check, its numbers taken from
+ * the constants the checks use, so the text cannot drift from the
+ * engine.  NULL-ended; g_strfreev.  (PR 4, 4B: `stockfw copilot
+ * checks'.) */
+gchar    **fs_copilot_checks (void);
 
 G_END_DECLS
 

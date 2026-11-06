@@ -1,460 +1,593 @@
 /*---[ fs-cli-main.c ]---------------------------------------------------
- * `stockfw': argument handling, help, and the shared output helpers.
+ * `stockfw': the command registry, the argument parser and help.
+ *
+ * Each command file exports a table of its commands (FsCliCommandDef,
+ * fs-cli.h) with their help and the options they take; this file joins
+ * the tables.  The parser reads the global flags wherever they are,
+ * except where a word is the value of a command's option or comes
+ * after "--", which is dropped: the command sees everything after it
+ * as plain words (fs_cli_is_positional).
  *--------------------------------------------------------------------*/
 #include "cli/fs-cli.h"
 #include "core/fs-prefs.h"
 
 #include <locale.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
-FsCliOptions fs_cli = { FALSE, FALSE, FALSE };
-
-/* --------------------------------------------------------------- output */
-
-void
-fs_cli_error (const gchar *format, ...)
-{
-	va_list args;
-	gchar *text;
-
-	va_start (args, format);
-	text = g_strdup_vprintf (format, args);
-	va_end (args);
-
-	fprintf (stderr, "stockfw: %serror:%s %s\n",
-	         fs_cli.color ? "\033[1;31m" : "",
-	         fs_cli.color ? "\033[0m" : "", text);
-	g_free (text);
-}
-
-void
-fs_cli_hint (const gchar *format, ...)
-{
-	va_list args;
-	gchar *text;
-
-	va_start (args, format);
-	text = g_strdup_vprintf (format, args);
-	va_end (args);
-
-	fprintf (stderr, "stockfw: %shint:%s %s\n",
-	         fs_cli.color ? "\033[1;33m" : "",
-	         fs_cli.color ? "\033[0m" : "", text);
-	g_free (text);
-}
-
-const gchar *fs_cli_bold  (void) { return fs_cli.color ? "\033[1m"  : ""; }
-const gchar *fs_cli_dim   (void) { return fs_cli.color ? "\033[2m"  : ""; }
-const gchar *fs_cli_red   (void) { return fs_cli.color ? "\033[31m" : ""; }
-const gchar *fs_cli_green (void) { return fs_cli.color ? "\033[32m" : ""; }
-const gchar *fs_cli_amber (void) { return fs_cli.color ? "\033[33m" : ""; }
-const gchar *fs_cli_reset (void) { return fs_cli.color ? "\033[0m"  : ""; }
-
-gchar *
-fs_cli_format_bytes (guint64 bytes)
-{
-	static const gchar *units[] = { "B", "kB", "MB", "GB", "TB", "PB" };
-	gdouble value = (gdouble) bytes;
-	guint unit = 0;
-
-	while (value >= 1000.0 && unit < G_N_ELEMENTS (units) - 1) {
-		value /= 1000.0;
-		unit++;
-	}
-
-	if (unit == 0)
-		return g_strdup_printf ("%" G_GUINT64_FORMAT " B", bytes);
-
-	return g_strdup_printf ("%.1f %s", value, units[unit]);
-}
-
-gchar *
-fs_cli_format_rate (gdouble bytes_per_second)
-{
-	gchar *size;
-	gchar *text;
-
-	if (bytes_per_second < 0)
-		bytes_per_second = 0;
-
-	size = fs_cli_format_bytes ((guint64) (bytes_per_second + 0.5));
-	text = g_strconcat (size, "/s", NULL);
-	g_free (size);
-
-	return text;
-}
-
-/* [ cell_text ] -- a cell cut to max_width characters with an ellipsis. */
-static gchar *
-cell_text (const gchar *cell, guint max_width)
-{
-	glong len;
-
-	if (cell == NULL)
-		cell = "";
-
-	len = g_utf8_strlen (cell, -1);
-	if (max_width == 0 || len <= (glong) max_width)
-		return g_strdup (cell);
-
-	{
-		const gchar *end = g_utf8_offset_to_pointer (cell, max_width - 1);
-		gchar *cut = g_strndup (cell, (gsize) (end - cell));
-		gchar *text = g_strconcat (cut, "…", NULL);
-
-		g_free (cut);
-		return text;
-	}
-}
-
-void
-fs_cli_table (const gchar * const *headers, guint n_cols, GPtrArray *rows,
-              guint max_width)
-{
-	guint *widths = g_new0 (guint, n_cols);
-	GPtrArray *cells = g_ptr_array_new_with_free_func (
-		(GDestroyNotify) g_strfreev);
-
-	for (guint c = 0; c < n_cols; c++)
-		widths[c] = (guint) g_utf8_strlen (headers[c], -1);
-
-	for (guint r = 0; r < rows->len; r++) {
-		gchar **row = g_ptr_array_index (rows, r);
-		gchar **cut = g_new0 (gchar *, n_cols + 1);
-
-		for (guint c = 0; c < n_cols; c++) {
-			cut[c] = cell_text (row[c], max_width);
-			widths[c] = MAX (widths[c],
-			                 (guint) g_utf8_strlen (cut[c], -1));
-		}
-		g_ptr_array_add (cells, cut);
-	}
-
-	/* Header. */
-	printf ("%s", fs_cli_bold ());
-	for (guint c = 0; c < n_cols; c++) {
-		if (c + 1 < n_cols)
-			printf ("%-*s  ", (gint) (widths[c] + strlen (headers[c]) -
-			                          g_utf8_strlen (headers[c], -1)),
-			        headers[c]);
-		else
-			printf ("%s", headers[c]);
-	}
-	printf ("%s\n", fs_cli_reset ());
-
-	for (guint r = 0; r < cells->len; r++) {
-		gchar **row = g_ptr_array_index (cells, r);
-
-		for (guint c = 0; c < n_cols; c++) {
-			if (c + 1 < n_cols) {
-				/* printf pads by bytes; pad by characters. */
-				glong chars = g_utf8_strlen (row[c], -1);
-
-				printf ("%s%*s  ", row[c],
-				        (gint) (widths[c] - (guint) chars), "");
-			} else {
-				printf ("%s", row[c]);
-			}
-		}
-		printf ("\n");
-	}
-
-	g_ptr_array_unref (cells);
-	g_free (widths);
-}
-
-void
-fs_cli_print_json (GString *json)
-{
-	fwrite (json->str, 1, json->len, stdout);
-	fputc ('\n', stdout);
-}
+FsCliOptions fs_cli = { FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE,
+                        0, NULL, G_MAXINT, NULL, 0, NULL };
 
 /* ----------------------------------------------------------------- help */
 
 static const gchar *main_help =
-"Usage: stockfw [--json] [--no-color] [-q] <command> [arguments]\n"
+"Usage: stockfw [--json] [--plain] [--color=WHEN] [-q] <command> [args]\n"
 "\n"
 "StockFW from the command line: the same policy, simulator and apply\n"
 "gate as the desktop app, without a display.\n"
 "\n"
 "Commands:\n"
-"  status                     Firewall state, policy and monitoring at a glance\n"
-"  policy list|add|remove     Read and edit the traffic policy\n"
+"  status                     Firewall state, policy and monitoring\n"
+"  policy list|show|add|...   Read, edit and diff the traffic policy\n"
+"  check                      Lines of the policy files that are not rules\n"
 "  apply [--dry-run]          Push the saved policy to the firewall (root)\n"
 "  start | stop               Start or stop the firewall (root)\n"
-"  simulate \"<traffic>\"       What-if: would this traffic be allowed or blocked?\n"
-"  events [-n N] [-f]         Recent firewall events; -f follows live (root)\n"
+"  simulate \"<traffic>\"       What-if: would this traffic be allowed?\n"
+"  copilot health|scan|...    Policy health, findings, fixes, undo\n"
+"  events [-n N] [-f]         Recent firewall events; --history for saved\n"
 "  connections                Active TCP connections and their programs\n"
-"  interfaces [--watch]       Network adapters with traffic counters and rates\n"
+"  listening                  Open ports, their programs and who can reach them\n"
+"  interfaces [--watch]       Network adapters with traffic and rates\n"
+"  audit [-n N] [-f]          The audit log: every apply, start and stop\n"
+"  sentinel [list|lift|mode]  Sentinel's blocks: list or lift; its mode\n"
+"  intel <action>             Threat-intel blocklists (stockfw help intel)\n"
+"  config list|get|set|apply  The Preferences settings; set them (root)\n"
+/* === PR4-D === */
+"  trust [list|check|...]     Files you attested: changed since? (per user)\n"
+/* === end PR4-D === */
 "  dashboard [--port N]       Serve the local web dashboard and open it\n"
+"  dashboard link             A new link to the running dashboard\n"
 "  help [command]             Help for one command\n"
+"  help topics | TOPIC        The guide: each page and setting explained\n"
+"  about [--system]           Version, credits, licence; bug report lines\n"
 "  version                    Print the version\n"
 "\n"
 "Global options:\n"
-"  --json        Machine-readable output (one JSON document; NDJSON for -f)\n"
-"  --no-color    Plain output (also honoured: NO_COLOR, TERM=dumb, pipes)\n"
-"  -q, --quiet   Only errors and the essential result\n"
-"  -h, --help    This help;  -V, --version  the version\n"
+"  --json          Machine-readable output (one JSON document; NDJSON\n"
+"                  for -f)\n"
+"  --plain, -H     Tables as tab-separated rows, no header, no colour\n"
+"  --full, -l      Never cut a table cell to fit the terminal\n"
+"  --color=WHEN    auto (the default), always or never; --no-color is\n"
+"                  never (NO_COLOR and TERM=dumb are honoured too)\n"
+"  -q, --quiet     Only errors and the result: no hints or notes\n"
+"  -h, --help      This help;  -V, --version  the version\n"
+"  --              The end of the options: what follows is plain words\n"
 "\n"
 "Exit status:\n"
-"  0  success          2  usage error           5  simulate: BLOCKED\n"
-"  1  failure          3  needs root privileges\n"
+"  0  success          2  usage error           5  simulate: BLOCKED;\n"
+"  1  failure          3  needs root privileges    intel lookup: blocked\n"
+"                                               6  simulate: DEPENDS\n"
+"                                               7  copilot: findings\n"
 "\n"
 "Policy files live in ~/.stockfw (or /etc/stockfw when run as root) --\n"
 "the same files the desktop app edits.  Nothing here talks to the\n"
-"network: the dashboard listens on 127.0.0.1 only.\n";
+"network, except `stockfw intel update' downloading the blocklists and\n"
+"the location database you turned on; the dashboard listens on\n"
+"127.0.0.1 only.\n";
 
-typedef struct
-{
-	const gchar  *name;
-	FsCliCommand  run;
-	const gchar  *help;
-} CommandDef;
+static const gchar *version_help =
+"Usage: stockfw version   (or stockfw --version, -V)\n"
+"\n"
+"Prints the version and the firewall backend this build drives.  With\n"
+"--json: {\"version\":\"...\",\"backend\":\"...\"}.\n";
 
-static const CommandDef commands[] = {
-	{ "status", fs_cli_cmd_status,
-"Usage: stockfw status [--json]\n"
-"\n"
-"Shows the firewall state, the backend, how many rules the saved policy\n"
-"holds and where it lives, whether audit-only mode holds applies back,\n"
-"whether live event monitoring is available, and the adapters and\n"
-"connection count.  Reading the firewall state needs root; without it\n"
-"the state is reported as unknown rather than guessed.\n" },
+/* ------------------------------------------------------- the registry */
 
-	{ "policy", fs_cli_cmd_policy,
-"Usage: stockfw policy list [--kind KIND] [--json]\n"
-"       stockfw policy add KIND FIELD... [--comment TEXT] [--both]\n"
-"       stockfw policy remove KIND N\n"
-"\n"
-"Edits the saved policy -- the files the desktop app's Policy page\n"
-"shows.  Changes are validated (hosts, ports and ranges fail closed)\n"
-"and saved; nothing reaches the firewall until `stockfw apply'.\n"
-"\n"
-"Kinds and their fields:\n"
-"  inbound-allow-from      HOST\n"
-"  inbound-allow-service   SERVICE PORT FOR\n"
-"  inbound-forward         SERVICE FIREWALL-PORT TO PORT\n"
-"  outbound-allow-to       HOST\n"
-"  outbound-allow-from     HOST\n"
-"  outbound-allow-service  SERVICE PORT FOR\n"
-"  outbound-deny-to        HOST\n"
-"  outbound-deny-from      HOST\n"
-"  outbound-deny-service   SERVICE PORT FOR\n"
-"\n"
-"FOR is a host, a network (192.168.1.0/24) or \"Anyone\".  --both also\n"
-"adds the opposite-direction twin of an allow rule, as one change.\n"
-"N is the rule's number in `stockfw policy list --kind KIND'.\n"
-"\n"
-"Examples:\n"
-"  stockfw policy add inbound-allow-service SSH 22 192.168.1.0/24 --comment admin\n"
-"  stockfw policy add outbound-deny-to 203.0.113.9\n"
-"  stockfw policy remove outbound-deny-to 1\n" },
-
-	{ "apply", fs_cli_cmd_apply,
-"Usage: stockfw apply [--dry-run] [--json]\n"
-"\n"
-"Pushes the saved policy to the firewall through the same apply gate\n"
-"the desktop app uses: only what changed is touched, a failed apply is\n"
-"rolled back to the last applied policy and the rollback is verified,\n"
-"and every attempt is one line in the audit log.  When audit-only mode\n"
-"is on (Policy page), the firewall is left untouched and the would-be\n"
-"change is recorded.  --dry-run only reports the impact.  Needs root.\n" },
-
-	{ "start", fs_cli_cmd_start,
-"Usage: stockfw start\n"
-"\n"
-"Builds the firewall from the saved policy and starts it.  Needs root.\n" },
-
-	{ "stop", fs_cli_cmd_stop,
-"Usage: stockfw stop\n"
-"\n"
-"Removes StockFW's own chains.  Rules owned by Docker, libvirt or\n"
-"anything else are left alone.  Needs root.\n" },
-
-	{ "simulate", fs_cli_cmd_simulate,
-"Usage: stockfw simulate \"<traffic>\" [--json]\n"
-"\n"
-"Answers ALLOWED or BLOCKED for a described packet against the saved\n"
-"policy, the way the Copilot page's What-If Simulator does.  It writes\n"
-"nothing: it is a question, not a change.  Exits 0 for ALLOWED and 5\n"
-"for BLOCKED, so scripts can branch on it.\n"
-"\n"
-"Examples:\n"
-"  stockfw simulate \"allow ssh from 192.168.1.50 on port 22\"\n"
-"  stockfw simulate \"inbound rdp\"\n"
-"  stockfw simulate \"outbound tcp to 203.0.113.9 port 443\"\n" },
-
-	{ "events", fs_cli_cmd_events,
-"Usage: stockfw events [-n N] [-f|--follow] [--blocked] [--json]\n"
-"\n"
-"The last N (default 20) packets StockFW's rules dropped or rejected,\n"
-"read from the kernel log -- the log stays the archive.  -f keeps\n"
-"following new events until Ctrl-C (with --json, one object per line).\n"
-"Reading the kernel log usually needs root (or the adm group).\n" },
-
-	{ "connections", fs_cli_cmd_connections,
-"Usage: stockfw connections [--json]\n"
-"\n"
-"Connected TCP sockets (IPv4 and IPv6) with the remote service, the\n"
-"direction and the owning program.  Another user's program shows as\n"
-"\"?\" unless run as root.\n" },
-
-	{ "interfaces", fs_cli_cmd_interfaces,
-"Usage: stockfw interfaces [--watch] [--json]\n"
-"\n"
-"Network adapters with their type, address, total traffic and the\n"
-"current rate (measured over one second).  --watch refreshes every two\n"
-"seconds until Ctrl-C.  Alias: stockfw net\n" },
-
-	{ "dashboard", fs_cli_cmd_dashboard,
-"Usage: stockfw dashboard [--port N] [--no-open] [--json]\n"
-"\n"
-"Serves a live dashboard -- status, the Policy activity and Network I/O\n"
-"graphs, recent events, connections, the policy and the what-if\n"
-"simulator -- and opens it in your browser.\n"
-"\n"
-"Security: it listens on 127.0.0.1 only, every API call needs a token\n"
-"generated for this run (it is in the URL printed at start), requests\n"
-"for any other Host are refused, and the API is read-only: changing\n"
-"the firewall stays with `stockfw apply' and the desktop app.  Under\n"
-"sudo the browser is not started as root; open the printed URL\n"
-"yourself.  Stop it with Ctrl-C.\n" },
+static const FsCliCommandDef * const tables[] = {
+	fs_cli_status_commands,
+	fs_cli_policy_commands,
+	fs_cli_events_commands,
+	fs_cli_views_commands,
+	fs_cli_intel_commands,
+	fs_cli_dashboard_commands,
+	fs_cli_config_commands,
+	fs_cli_activity_commands,
+	fs_cli_copilot_commands,
+	fs_cli_trust_commands,
+	fs_cli_help_commands,
 };
+
+const FsCliCommandDef * const *
+fs_cli_all_commands (guint *n)
+{
+	static GPtrArray *all = NULL;
+
+	if (all == NULL) {
+		all = g_ptr_array_new ();
+		for (guint t = 0; t < G_N_ELEMENTS (tables); t++)
+			for (const FsCliCommandDef *d = tables[t]; d->name != NULL;
+			     d++)
+				g_ptr_array_add (all, (gpointer) d);
+	}
+	if (n != NULL)
+		*n = all->len;
+	return (const FsCliCommandDef * const *) all->pdata;
+}
+
+const FsCliCommandDef *
+fs_cli_find_command (const gchar *name)
+{
+	guint n;
+	const FsCliCommandDef * const *all = fs_cli_all_commands (&n);
+
+	if (name == NULL)
+		return NULL;
+	for (guint i = 0; i < n; i++)
+		if (strcmp (all[i]->name, name) == 0 ||
+		    g_strcmp0 (all[i]->alias, name) == 0)
+			return all[i];
+	return NULL;
+}
+
+/* [ command_names ] -- every name and alias (`help' is a command of
+ * fs-cli-help.c since PR 4), then "version". */
+static GPtrArray *
+command_names (void)
+{
+	guint n;
+	const FsCliCommandDef * const *all = fs_cli_all_commands (&n);
+	GPtrArray *names = g_ptr_array_new ();
+
+	for (guint i = 0; i < n; i++) {
+		g_ptr_array_add (names, (gpointer) all[i]->name);
+		if (all[i]->alias != NULL)
+			g_ptr_array_add (names, (gpointer) all[i]->alias);
+	}
+	g_ptr_array_add (names, (gpointer) "version");
+	return names;
+}
 
 const gchar *
 fs_cli_command_help (const gchar *command)
 {
+	const FsCliCommandDef *def;
+
 	if (command == NULL)
 		return main_help;
+	if (strcmp (command, "version") == 0)
+		return version_help;
 
-	if (strcmp (command, "net") == 0)
-		command = "interfaces";
-
-	for (guint i = 0; i < G_N_ELEMENTS (commands); i++)
-		if (strcmp (commands[i].name, command) == 0)
-			return commands[i].help;
-
-	return NULL;
+	def = fs_cli_find_command (command);
+	return def != NULL ? def->help : NULL;
 }
 
-/* [ want_color ] */
+/* ------------------------------------------------------- did you mean */
+
+/* [ edit_distance ] -- Damerau-Levenshtein (optimal string alignment)
+ * over bytes: a swapped pair of letters counts once. */
+static guint
+edit_distance (const gchar *a, const gchar *b)
+{
+	gsize la = strlen (a), lb = strlen (b);
+	guint *d;
+	guint result;
+
+	if (la > 64 || lb > 64)
+		return G_MAXUINT;
+
+	d = g_new0 (guint, (la + 1) * (lb + 1));
+#define D(i, j) d[(i) * (lb + 1) + (j)]
+	for (gsize i = 0; i <= la; i++)
+		D (i, 0) = (guint) i;
+	for (gsize j = 0; j <= lb; j++)
+		D (0, j) = (guint) j;
+	for (gsize i = 1; i <= la; i++) {
+		for (gsize j = 1; j <= lb; j++) {
+			guint cost = a[i - 1] == b[j - 1] ? 0 : 1;
+			guint v = MIN (D (i - 1, j) + 1, D (i, j - 1) + 1);
+
+			v = MIN (v, D (i - 1, j - 1) + cost);
+			if (i > 1 && j > 1 && a[i - 1] == b[j - 2] &&
+			    a[i - 2] == b[j - 1])
+				v = MIN (v, D (i - 2, j - 2) + 1);
+			D (i, j) = v;
+		}
+	}
+	result = D (la, lb);
+#undef D
+	g_free (d);
+	return result;
+}
+
+const gchar *
+fs_cli_suggest (const gchar *word, const gchar * const *candidates, guint n)
+{
+	const gchar *best = NULL;
+	guint best_d = 3;
+	gboolean tie = FALSE;
+
+	if (word == NULL || *word == '\0')
+		return NULL;
+
+	for (guint i = 0; i < n; i++) {
+		guint dist;
+
+		if (candidates[i] == NULL || strcmp (candidates[i], word) == 0)
+			continue;
+		dist = edit_distance (word, candidates[i]);
+		if (dist < best_d) {
+			best = candidates[i];
+			best_d = dist;
+			tie = FALSE;
+		} else if (dist == best_d && best != NULL &&
+		           strcmp (best, candidates[i]) != 0) {
+			tie = TRUE;
+		}
+	}
+	return tie ? NULL : best;
+}
+
+/* ------------------------------------------------------- global flags */
+
+static const gchar *global_flags[] = {
+	"--json", "--plain", "-H", "--full", "-l", "--color", "--colour",
+	"--no-color", "--no-colour", "-q", "--quiet", "-h", "--help",
+	"-V", "--version",
+};
+
+const gchar * const *
+fs_cli_global_flags (guint *n)
+{
+	if (n != NULL)
+		*n = G_N_ELEMENTS (global_flags);
+	return global_flags;
+}
+
+typedef enum { COLOR_AUTO, COLOR_ALWAYS, COLOR_NEVER } ColorMode;
+
+typedef struct
+{
+	ColorMode color;
+	gboolean  bad_color;      /* --color=WHEN with an unknown WHEN */
+	gboolean  want_help;
+	gboolean  want_version;
+} Globals;
+
+/* [ take_global ] -- TRUE when `a' is a global flag (it is applied). */
 static gboolean
-want_color (gboolean disabled)
+take_global (const gchar *a, Globals *g)
+{
+	if (strcmp (a, "--json") == 0) {
+		fs_cli.json = TRUE;
+	} else if (strcmp (a, "--plain") == 0 || strcmp (a, "-H") == 0) {
+		fs_cli.plain = TRUE;
+	} else if (strcmp (a, "--full") == 0 || strcmp (a, "-l") == 0) {
+		fs_cli.full = TRUE;
+	} else if (strcmp (a, "--no-color") == 0 ||
+	           strcmp (a, "--no-colour") == 0) {
+		g->color = COLOR_NEVER;
+	} else if (strcmp (a, "--color") == 0 || strcmp (a, "--colour") == 0) {
+		g->color = COLOR_ALWAYS;
+	} else if (g_str_has_prefix (a, "--color=") ||
+	           g_str_has_prefix (a, "--colour=")) {
+		const gchar *when = strchr (a, '=') + 1;
+
+		if (strcmp (when, "auto") == 0)
+			g->color = COLOR_AUTO;
+		else if (strcmp (when, "always") == 0)
+			g->color = COLOR_ALWAYS;
+		else if (strcmp (when, "never") == 0)
+			g->color = COLOR_NEVER;
+		else
+			g->bad_color = TRUE;
+	} else if (strcmp (a, "-q") == 0 || strcmp (a, "--quiet") == 0) {
+		fs_cli.quiet = TRUE;
+	} else if (strcmp (a, "-h") == 0 || strcmp (a, "--help") == 0) {
+		g->want_help = TRUE;
+	} else if (strcmp (a, "-V") == 0 || strcmp (a, "--version") == 0) {
+		g->want_version = TRUE;
+	} else {
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/* [ set_colour ]
+ * Colour on stdout depends on stdout alone, and on stderr on stderr
+ * alone: `stockfw events 2>/dev/null' on a terminal keeps its colour.
+ * NO_COLOR and TERM=dumb turn the automatic choice off; --color=always
+ * wins over both.  JSON and --plain are never coloured. */
+static void
+set_colour (ColorMode mode)
 {
 	const gchar *term = g_getenv ("TERM");
+	gboolean auto_ok = g_getenv ("NO_COLOR") == NULL &&
+	                   (term == NULL || strcmp (term, "dumb") != 0);
 
-	if (disabled || g_getenv ("NO_COLOR") != NULL)
-		return FALSE;
-	if (term != NULL && strcmp (term, "dumb") == 0)
+	fs_cli.color = !fs_cli.json && !fs_cli.plain &&
+	               (mode == COLOR_ALWAYS ||
+	                (mode == COLOR_AUTO && auto_ok &&
+	                 isatty (STDOUT_FILENO)));
+	fs_cli.color_err = mode == COLOR_ALWAYS ||
+	                   (mode == COLOR_AUTO && auto_ok &&
+	                    isatty (STDERR_FILENO));
+}
+
+/* [ option_takes_value ]
+ * Does `a' name one of def's options that takes its value as the next
+ * word ("--comment TEXT")?  "--comment=TEXT" carries its own.  The
+ * subcommand is not asked: within one command an option name always
+ * takes a value or never does (`policy --kind X' has none yet). */
+static gboolean
+option_takes_value (const FsCliCommandDef *def, const gchar *a)
+{
+	if (def == NULL || def->opts == NULL || strchr (a, '=') != NULL)
 		return FALSE;
 
-	return isatty (STDOUT_FILENO) && isatty (STDERR_FILENO);
+	for (const FsCliOption *o = def->opts; o->name != NULL; o++)
+		if (o->takes_value && strcmp (o->name, a) == 0)
+			return TRUE;
+	return FALSE;
+}
+
+/* ------------------------------------------------------- for commands */
+
+gboolean
+fs_cli_is_positional_at (gchar **argv, gint i)
+{
+	if (fs_cli.argv == NULL || argv == NULL ||
+	    argv < fs_cli.argv || argv > fs_cli.argv + fs_cli.argc)
+		return FALSE;
+	return (argv - fs_cli.argv) + i >= fs_cli.positional_from;
+}
+
+gboolean
+fs_cli_is_positional (gint i)
+{
+	return fs_cli_is_positional_at (fs_cli.argv, i);
+}
+
+gboolean
+fs_cli_is_option_at (gchar **argv, gint i)
+{
+	return argv[i] != NULL && argv[i][0] == '-' && argv[i][1] != '\0' &&
+	       !fs_cli_is_positional_at (argv, i);
+}
+
+gboolean
+fs_cli_take_opt (gint argc, gchar **argv, gint *i, const gchar *opt,
+                 const gchar **value, gint *status)
+{
+	const gchar *a = argv[*i];
+	gsize n = strlen (opt);
+
+	if (fs_cli_is_positional_at (argv, *i))
+		return FALSE;
+
+	if (strcmp (a, opt) == 0) {
+		if (*i + 1 >= argc) {
+			*value = NULL;
+			fs_cli_error ("%s needs a value", opt);
+			fs_cli_hint ("see `stockfw help %s'",
+			             fs_cli.command != NULL ? fs_cli.command : "");
+			*status = FS_EXIT_USAGE;
+			return TRUE;
+		}
+		*value = argv[++*i];
+		return TRUE;
+	}
+	if (strncmp (a, opt, n) == 0 && a[n] == '=') {
+		*value = a + n + 1;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+void
+fs_cli_unknown_option (const gchar *command, const gchar *arg)
+{
+	gchar *word = g_strdup (arg != NULL ? arg : "");
+	gchar *first = g_strdup (command != NULL ? command : "");
+	gchar *space = strchr (first, ' ');
+	gchar *eq = strchr (word, '=');
+	const FsCliCommandDef *def;
+	GPtrArray *names = g_ptr_array_new ();
+	const gchar *best;
+
+	if (space != NULL)
+		*space = '\0';
+	if (eq != NULL)
+		*eq = '\0';
+
+	def = fs_cli_find_command (first);
+	for (const FsCliOption *o = def != NULL ? def->opts : NULL;
+	     o != NULL && o->name != NULL; o++)
+		g_ptr_array_add (names, (gpointer) o->name);
+	for (guint i = 0; i < G_N_ELEMENTS (global_flags); i++)
+		g_ptr_array_add (names, (gpointer) global_flags[i]);
+
+	best = fs_cli_suggest (word, (const gchar * const *) names->pdata,
+	                       names->len);
+	if (best != NULL)
+		fs_cli_error ("unknown option for %s: %s (did you mean %s?)",
+		              command, arg, best);
+	else
+		fs_cli_error ("unknown option for %s: %s", command, arg);
+	fs_cli_hint ("see `stockfw help %s'; a word that starts with a dash "
+	             "goes after --", first);
+
+	g_ptr_array_unref (names);
+	g_free (first);
+	g_free (word);
+}
+
+/* ------------------------------------------------------------- main */
+
+/* [ unknown_word ] -- an unknown command or help topic, with the
+ * closest name. */
+static gint
+unknown_word (const gchar *what, const gchar *word)
+{
+	GPtrArray *names = command_names ();
+	const gchar *best = fs_cli_suggest (word,
+		(const gchar * const *) names->pdata, names->len);
+
+	if (best != NULL)
+		fs_cli_error ("%s: %s (did you mean `stockfw %s'?)", what, word,
+		              best);
+	else
+		fs_cli_error ("%s: %s", what, word);
+	fs_cli_hint ("run `stockfw help' for the list of commands");
+	g_ptr_array_unref (names);
+	return FS_EXIT_USAGE;
 }
 
 int
 main (int argc, char *argv[])
 {
-	gboolean no_color = FALSE, want_help = FALSE, want_version = FALSE;
+	Globals g = { COLOR_AUTO, FALSE, FALSE, FALSE };
 	GPtrArray *rest;
-	const gchar *command;
+	const gchar *command = NULL, *unknown = NULL;
+	const FsCliCommandDef *def;
+	gboolean positional = FALSE, value_next = FALSE;
+	gint cmd_at = argc, positional_from = G_MAXINT;
 	gint status;
 
 	setlocale (LC_ALL, "");
 
-	/* Global flags may appear anywhere; everything else is passed to
-	 * the command in order.  "--" ends option scanning, so a policy
-	 * comment or a what-if line may start with a dash. */
-	rest = g_ptr_array_new ();
+	/* Completion and the manual page (fs-cli-complete.c): hidden, made
+	 * from the same tables, and never parsed as a command line. */
+	if (argc > 1 && strcmp (argv[1], "__complete") == 0)
+		return fs_cli_complete_main (argc - 2, argv + 2);
+	if (argc > 1 && strcmp (argv[1], "__man") == 0)
+		return fs_cli_man_main (argc - 2, argv + 2);
+
+	fs_cli.user_argc = argc - 1;
+	fs_cli.user_argv = argv + 1;
+
+	/* 1. The command: the first word that is not a global flag.  A
+	 * dash word before it is an unknown option, not a command. */
 	for (gint i = 1; i < argc; i++) {
 		const gchar *a = argv[i];
 
 		if (strcmp (a, "--") == 0) {
-			for (gint j = i; j < argc; j++)
-				g_ptr_array_add (rest, argv[j]);
+			if (i + 1 < argc) {
+				cmd_at = i + 1;
+				positional = TRUE;
+				positional_from = 1;
+			}
 			break;
-		} else if (strcmp (a, "--json") == 0) {
-			fs_cli.json = TRUE;
-		} else if (strcmp (a, "--no-color") == 0 ||
-		           strcmp (a, "--no-colour") == 0) {
-			no_color = TRUE;
-		} else if (strcmp (a, "-q") == 0 || strcmp (a, "--quiet") == 0) {
-			fs_cli.quiet = TRUE;
-		} else if (strcmp (a, "-h") == 0 || strcmp (a, "--help") == 0) {
-			want_help = TRUE;
-		} else if (strcmp (a, "-V") == 0 || strcmp (a, "--version") == 0) {
-			want_version = TRUE;
-		} else {
-			g_ptr_array_add (rest, argv[i]);
 		}
+		if (take_global (a, &g))
+			continue;
+		if (a[0] == '-' && a[1] != '\0') {
+			if (unknown == NULL)
+				unknown = a;
+			continue;
+		}
+		cmd_at = i;
+		break;
+	}
+	command = cmd_at < argc ? argv[cmd_at] : NULL;
+	def = fs_cli_find_command (command);
+
+	/* 2. The command's words.  The word after one of its options that
+	 * takes a value is that value, never a global flag; "--" is
+	 * dropped and everything after it is a plain word. */
+	rest = g_ptr_array_new ();
+	if (command != NULL)
+		g_ptr_array_add (rest, (gpointer) command);
+	for (gint i = cmd_at + 1; i < argc; i++) {
+		const gchar *a = argv[i];
+
+		if (positional || value_next) {
+			value_next = FALSE;
+			g_ptr_array_add (rest, (gpointer) a);
+			continue;
+		}
+		if (strcmp (a, "--") == 0) {
+			positional = TRUE;
+			positional_from = (gint) rest->len;
+			continue;
+		}
+		if (take_global (a, &g))
+			continue;
+		if (a[0] == '-' && option_takes_value (def, a))
+			value_next = TRUE;
+		g_ptr_array_add (rest, (gpointer) a);
 	}
 
-	fs_cli.color = want_color (no_color || fs_cli.json);
-	command = rest->len > 0 ? g_ptr_array_index (rest, 0) : NULL;
+	set_colour (g.color);
+	fs_cli.argc = (gint) rest->len;
+	fs_cli.positional_from = positional_from;
+	fs_cli.command = command;
 
-	if (want_version || g_strcmp0 (command, "version") == 0) {
+	if (g.bad_color) {
+		fs_cli_error ("--color takes auto, always or never");
+		g_ptr_array_unref (rest);
+		return FS_EXIT_USAGE;
+	}
+
+	if (unknown != NULL) {
+		const gchar *best = fs_cli_suggest (unknown, global_flags,
+		                                    G_N_ELEMENTS (global_flags));
+
+		if (best != NULL)
+			fs_cli_error ("unknown option %s (did you mean %s?)",
+			              unknown, best);
+		else
+			fs_cli_error ("unknown option %s", unknown);
+		fs_cli_hint ("a command's own options go after it; see "
+		             "`stockfw help%s%s'", command != NULL ? " " : "",
+		             def != NULL ? def->name : "");
+		g_ptr_array_unref (rest);
+		return FS_EXIT_USAGE;
+	}
+
+	if (g.want_version || g_strcmp0 (command, "version") == 0) {
 		if (fs_cli.json) {
 			printf ("{\"version\":\"%s\",\"backend\":\"%s\"}\n",
 			        FS_VERSION, fs_backend ()->name);
 		} else {
-			printf ("stockfw %s (%s)\n", FS_VERSION,
+			printf ("stockfw %s %s %s\n", FS_VERSION,
+			        fs_cli_sym (FS_CLI_SYM_SEP),
 			        fs_backend ()->display_name);
 		}
 		g_ptr_array_unref (rest);
 		return FS_EXIT_OK;
 	}
 
-	if (g_strcmp0 (command, "help") == 0) {
-		const gchar *topic = rest->len > 1 ? g_ptr_array_index (rest, 1)
-		                                   : NULL;
-		const gchar *text = fs_cli_command_help (topic);
-
-		g_ptr_array_unref (rest);
-		if (text == NULL) {
-			fs_cli_error ("no such command: %s", topic);
-			fs_cli_hint ("run `stockfw help' for the list");
-			return FS_EXIT_USAGE;
-		}
-		fputs (text, stdout);
-		return FS_EXIT_OK;
-	}
-
 	if (command == NULL) {
 		g_ptr_array_unref (rest);
-		fputs (main_help, want_help ? stdout : stderr);
-		return want_help ? FS_EXIT_OK : FS_EXIT_USAGE;
+		fputs (main_help, g.want_help ? stdout : stderr);
+		return g.want_help ? FS_EXIT_OK : FS_EXIT_USAGE;
 	}
 
-	if (strcmp (command, "net") == 0)
-		command = "interfaces";
-
-	for (guint i = 0; i < G_N_ELEMENTS (commands); i++) {
-		if (strcmp (commands[i].name, command) != 0)
-			continue;
-
-		if (want_help) {
-			fputs (commands[i].help, stdout);
-			g_ptr_array_unref (rest);
-			return FS_EXIT_OK;
-		}
-
-		/* Preferences (audit-only mode, Advanced Options) are the
-		 * desktop app's; read them, never write them from here. */
-		fs_prefs_load ();
-
-		g_ptr_array_add (rest, NULL);
-		status = commands[i].run ((gint) rest->len - 1,
-		                          (gchar **) rest->pdata);
+	if (def == NULL) {
+		status = unknown_word ("unknown command", command);
 		g_ptr_array_unref (rest);
-		fflush (stdout);
 		return status;
 	}
 
-	fs_cli_error ("unknown command: %s", command);
-	fs_cli_hint ("run `stockfw help' for the list of commands");
+	if (g.want_help) {
+		fputs (def->help, stdout);
+		g_ptr_array_unref (rest);
+		return FS_EXIT_OK;
+	}
+
+	/* Preferences (audit-only mode, Advanced Options): read them here.
+	 * The terminal writes them (root's copy) only through the control
+	 * layer, fs_prefs_set_persist under the lock, never with
+	 * fs_prefs_save on this snapshot. */
+	fs_prefs_load ();
+
+	g_ptr_array_add (rest, NULL);
+	fs_cli.argv = (gchar **) rest->pdata;
+	fs_cli.command = def->name;
+	status = def->run (fs_cli.argc, fs_cli.argv);
+	fs_cli.argv = NULL;
 	g_ptr_array_unref (rest);
-	return FS_EXIT_USAGE;
+	fflush (stdout);
+	return status;
 }

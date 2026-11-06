@@ -13,6 +13,9 @@
 #ifdef G_OS_WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
+#include <aclapi.h>
+#include <sddl.h>
 #else
 #include <sys/types.h>
 #include <unistd.h>
@@ -555,6 +558,133 @@ fs_util_rules_dir (void)
 	return cached;
 }
 
+#ifdef G_OS_WIN32
+/* The string SID of the user this process runs as ("S-1-5-21-..."),
+ * looked up once; NULL when the token cannot be read. */
+static const gchar *
+own_sid (void)
+{
+	static gsize once = 0;
+	static gchar *sid_text = NULL;
+
+	if (g_once_init_enter (&once)) {
+		HANDLE token = NULL;
+		union {
+			TOKEN_USER user;
+			BYTE       raw[256];
+		} buf;
+		DWORD len = 0;
+		LPSTR text = NULL;
+
+		if (OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY,
+		                      &token)) {
+			if (GetTokenInformation (token, TokenUser, &buf,
+			                         sizeof buf, &len) &&
+			    ConvertSidToStringSidA (buf.user.User.Sid, &text)) {
+				sid_text = g_strdup (text);
+				LocalFree (text);
+			}
+			CloseHandle (token);
+		}
+		g_once_init_leave (&once, 1);
+	}
+	return sid_text;
+}
+#endif
+
+/* [ fs_util_make_private ] -- see fs-util.h. */
+gboolean
+fs_util_make_private (const gchar *path, gboolean is_dir)
+{
+#ifdef G_OS_WIN32
+	const gchar *sid = own_sid ();
+	PSECURITY_DESCRIPTOR sd = NULL;
+	PACL dacl = NULL;
+	BOOL present = FALSE, defaulted = FALSE;
+	gunichar2 *wide;
+	gchar *sddl;
+	DWORD rc;
+
+	g_return_val_if_fail (path != NULL, FALSE);
+
+	if (sid == NULL) {
+		errno = EACCES;
+		return FALSE;
+	}
+	/* P: protected, nothing inherited from the parent.  OICI: files
+	 * and folders created inside get the same entry. */
+	sddl = g_strdup_printf ("D:P(A;%s;FA;;;%s)", is_dir ? "OICI" : "",
+	                        sid);
+	if (!ConvertStringSecurityDescriptorToSecurityDescriptorA (
+	            sddl, SDDL_REVISION_1, &sd, NULL) ||
+	    !GetSecurityDescriptorDacl (sd, &present, &dacl, &defaulted) ||
+	    !present || dacl == NULL) {
+		g_free (sddl);
+		if (sd != NULL)
+			LocalFree (sd);
+		errno = EINVAL;
+		return FALSE;
+	}
+	g_free (sddl);
+
+	wide = g_utf8_to_utf16 (path, -1, NULL, NULL, NULL);
+	if (wide == NULL) {
+		LocalFree (sd);
+		errno = EINVAL;
+		return FALSE;
+	}
+	rc = SetNamedSecurityInfoW ((LPWSTR) wide, SE_FILE_OBJECT,
+	                            DACL_SECURITY_INFORMATION |
+	                            PROTECTED_DACL_SECURITY_INFORMATION,
+	                            NULL, NULL, dacl, NULL);
+	g_free (wide);
+	LocalFree (sd);
+
+	switch (rc) {
+	case ERROR_SUCCESS:
+	case ERROR_NOT_SUPPORTED:      /* FAT and others: no ACLs at all */
+	case ERROR_INVALID_FUNCTION:
+		return TRUE;
+	case ERROR_FILE_NOT_FOUND:
+	case ERROR_PATH_NOT_FOUND:
+		errno = ENOENT;
+		return FALSE;
+	case ERROR_ACCESS_DENIED:
+		errno = EACCES;
+		return FALSE;
+	default:
+		errno = EIO;
+		return FALSE;
+	}
+#else
+	g_return_val_if_fail (path != NULL, FALSE);
+
+	return g_chmod (path, is_dir ? 0700 : 0600) == 0;
+#endif
+}
+
+/* [ fs_util_privileged ] -- see fs-util.h. */
+gboolean
+fs_util_privileged (void)
+{
+#ifdef G_OS_WIN32
+	HANDLE token = NULL;
+	TOKEN_ELEVATION elevation;
+	DWORD len = 0;
+	gboolean elevated = FALSE;
+
+	if (!OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token))
+		return FALSE;
+	if (GetTokenInformation (token, TokenElevation, &elevation,
+	                         sizeof elevation, &len))
+		elevated = elevation.TokenIsElevated != 0;
+	CloseHandle (token);
+	return elevated;
+#else
+	return geteuid () == 0;
+#endif
+}
+
 gchar *
 fs_util_rules_path (const gchar *relative)
 {
@@ -566,12 +696,15 @@ fs_util_rules_path (const gchar *relative)
 	return g_build_filename (dir, relative, NULL);
 }
 
-/* [ name_is_ours ] -- every spelling our rule names have shipped
+/* [ fs_netsh_rule_name_is_ours ] -- every spelling our rule names have shipped
  * with: the "StockFW- " prefix (netsh-safe, ':' rewritten to '-')
  * and the older "StockFW " space prefix. */
-static gboolean
-name_is_ours (const gchar *name)
+gboolean
+fs_netsh_rule_name_is_ours (const gchar *name)
 {
+	if (name == NULL)
+		return FALSE;
+
 	return g_str_has_prefix (name, "StockFW-") ||
 	       g_str_has_prefix (name, "StockFW ");
 }
@@ -616,7 +749,7 @@ fs_netsh_rule_names_extract (const gchar *output)
 			name = g_strstrip (line);
 		}
 
-		if (name != NULL && *name != '\0' && name_is_ours (name))
+		if (name != NULL && *name != '\0' && fs_netsh_rule_name_is_ours (name))
 			g_hash_table_add (names, g_strdup (name));
 	}
 

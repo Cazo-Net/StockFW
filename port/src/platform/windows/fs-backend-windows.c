@@ -10,6 +10,8 @@
  *                    categories, for the Overview (1.0.7)
  *   INetFwRules      rule listing
  *   INetFwRule       creating / editing allow and block rules
+ *   INetFwRules/INetFwRule  the threat-intel blocklist rules (1.0.7
+ *                    Round 3), written and read back in-process
  *
  * Rules are applied through the COM API where possible; two commands
  * still have to be run as processes -- netsh for rule CRUD and
@@ -47,13 +49,19 @@
 
 #include <stdio.h>   /* _snwprintf */
 
+#include <gio/gio.h>   /* G_IO_ERROR: the threat-intel slots' domain */
+
 #include "core/fs-backend.h"
+#include "core/fs-intelset.h"
+#include "core/fs-intelwin.h"
 #include "core/fs-netplace.h"
 #include "core/fs-fwrule.h"
 #include "core/fs-settings-plan.h"
 #include "core/fs-service.h"
 #include "core/fs-i18n.h"
 #include "core/fs-util.h"
+#include "core/fs-winevt.h"
+#include "core/fs-toolpath.h"
 #include "netfw-compat.h"
 
 /* Linked through CMake: ole32, oleaut32, iphlpapi, ws2_32 */
@@ -237,6 +245,18 @@ firewalled_reload (GError **error)
  * command line interface.  It is stable across SDK versions, needs no
  * header shims, and its failure messages are already good enough to
  * show the user.
+ *
+ * 1.0.7 Round 3: the first point above was a misreading.  Microsoft
+ * documents INetFwRules as Add(INetFwRule *), Remove(BSTR name) and
+ * Item(BSTR name, INetFwRule **), exactly as MinGW-w64 declares it;
+ * the "corrected" vtable netfw-compat.h used to carry had the
+ * signatures of a different interface and was never used.  The
+ * threat-intel slots at the end of this file drive INetFwRules and
+ * INetFwRule through MinGW's declarations, with every vtable slot they
+ * call pinned to its documented position at compile time
+ * (netfw-compat.h), so a header that disagreed would stop the build
+ * instead of crashing the process.  The policy rules stay on netsh
+ * here; moving them is a separate change.
  * ------------------------------------------------------------------ */
 
 /* [ netsh_safe_name ]
@@ -274,12 +294,22 @@ netsh_safe_name (const gchar *name)
  * wedged child instead of hanging the caller.
  * ------------------------------------------------------------------ */
 
-/* Budgets.  wevtutil answers a ten-record query well under a second
+/* Budgets.  wevtutil answers a one-record query well under a second
  * when it works at all, so ten seconds means "wedged" and killing it
- * costs nothing but that poll's results.  netsh reconfigures the
+ * costs nothing but that probe.  A poll may read FS_WINEVT_POLL_CAP
+ * (10,000) events, which takes a few seconds on a slow disk: thirty
+ * seconds before it counts as wedged, and the next poll then asks for
+ * half as many (fs_winevt_poll_done).  netsh reconfigures the
  * firewall and can legitimately take a while on a loaded machine. */
-#define SPAWN_TIMEOUT_WEVTUTIL_MS 10000
-#define SPAWN_TIMEOUT_NETSH_MS    30000
+#define SPAWN_TIMEOUT_WEVTUTIL_MS      10000
+#define SPAWN_TIMEOUT_WEVTUTIL_POLL_MS 30000
+#define SPAWN_TIMEOUT_NETSH_MS         30000
+
+/* What a child may hand back.  A poll of 10,000 events in XML is
+ * about 15 MB; anything bigger is cut there (and the cut is counted as
+ * skipped events, never parsed as half an event). */
+#define SPAWN_OUTPUT_MAX       (16 * 1024 * 1024)
+#define SPAWN_OUTPUT_MAX_POLL  (64 * 1024 * 1024)
 
 /* [ win32_error_text ]
  * The system's own message for a GetLastError() code, trimmed of the
@@ -360,8 +390,9 @@ append_spawn_arg (GString *cmd, const gchar *arg)
 
 /* [ build_command_line ]
  * The full command line for CreateProcessW.  May contain arguments
- * with spaces; argv[0] is looked up through the standard search order
- * when it carries no directory, exactly as g_spawn did. */
+ * with spaces.  argv[0] here is already the full path spawn_capture
+ * resolved: the program itself is named by lpApplicationName, so no
+ * search order is involved. */
 static gchar *
 build_command_line (gchar **argv)
 {
@@ -380,9 +411,11 @@ build_command_line (gchar **argv)
 /* [ read_handle_output ]
  * Whatever the child wrote to the temp file.  The file object (and
  * its write offset) is shared with the child through inheritance, so
- * the offset sits at the end after the wait -- rewind first. */
+ * the offset sits at the end after the wait -- rewind first.
+ * *truncated is set when the output was longer than the cap and was
+ * cut: a caller must never take a cut-off output as complete. */
 static gchar *
-read_handle_output (HANDLE handle)
+read_handle_output (HANDLE handle, gsize max_bytes, gboolean *truncated)
 {
 	LARGE_INTEGER size;
 	LARGE_INTEGER zero;
@@ -399,10 +432,16 @@ read_handle_output (HANDLE handle)
 	if (!GetFileSizeEx (handle, &size) || size.QuadPart < 0)
 		return NULL;
 
-	/* A ten-record text query is a few kilobytes; a child gone wrong
-	 * must not get to allocate gigabytes of heap for us. */
-	if (size.QuadPart > 16 * 1024 * 1024)
-		size.QuadPart = 16 * 1024 * 1024;
+	/* A ten-record text query is a few kilobytes and a poll of 10,000
+	 * records about 15 MB; a child gone wrong must not get to allocate
+	 * gigabytes of heap for us.  What is cut is reported, never passed
+	 * off as the whole output (review W3: `netsh show rule name=all'
+	 * printed every address of every blocklist rule and could run past
+	 * the cap). */
+	if ((guint64) size.QuadPart > (guint64) max_bytes) {
+		size.QuadPart = (LONGLONG) max_bytes;
+		*truncated = TRUE;
+	}
 
 	text = g_malloc ((gsize) size.QuadPart + 1);
 
@@ -463,11 +502,20 @@ read_handle_output (HANDLE handle)
  * -- the same value g_spawn_sync reported on Windows, so
  * ERROR_ACCESS_DENIED (5) from an unprivileged wevtutil still means
  * what it always did -- or ERROR_TIMEOUT (1460) when the budget ran
- * out and the child was killed. */
+ * out and the child was killed.
+ *
+ * argv[0] is a bare tool name (netsh.exe, wevtutil.exe, auditpol.exe)
+ * and runs as <GetSystemDirectoryW()>\<name>, passed as both
+ * lpApplicationName and the command line's first word: CreateProcess's
+ * own search would look in StockFW's folder and the current folder
+ * before System32, and a planted netsh.exe there would run elevated
+ * (1.0.7 release review, SECURITY-1; fs-toolpath.h).  A tool missing
+ * from System32 is an error, never looked for anywhere else. */
 static gboolean
-spawn_capture (gchar **argv, gint timeout_ms,
-               gchar **standard_output, gchar **standard_error,
-               gint *exit_status, GError **error)
+spawn_capture_max (gchar **argv, gint timeout_ms, gsize out_max,
+                   gboolean *out_truncated,
+                   gchar **standard_output, gchar **standard_error,
+                   gint *exit_status, GError **error)
 {
 	SECURITY_ATTRIBUTES sa;
 	STARTUPINFOEXW si;
@@ -482,6 +530,9 @@ spawn_capture (gchar **argv, gint timeout_ms,
 	PPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
 	gchar *cmd_line = NULL;
 	gunichar2 *wide_cmd = NULL;
+	gunichar2 *wide_program = NULL;
+	gchar *program = NULL;
+	gchar **argv_full = NULL;
 	gchar *out_text = NULL;
 	gchar *err_text = NULL;
 	GQuark quark = g_quark_from_static_string ("fs-backend-windows");
@@ -490,13 +541,58 @@ spawn_capture (gchar **argv, gint timeout_ms,
 	gboolean use_attrs = FALSE;
 	DWORD wait_result = WAIT_FAILED;   /* early exits must return FALSE */
 	DWORD code = 0;
+	gboolean out_cut = FALSE;
+	gboolean err_cut = FALSE;
 
 	if (standard_output != NULL)
 		*standard_output = NULL;
 	if (standard_error != NULL)
 		*standard_error = NULL;
+	if (out_truncated != NULL)
+		*out_truncated = FALSE;
 
-	cmd_line = build_command_line (argv);
+	{
+		wchar_t sys[MAX_PATH + 1];
+		UINT n = GetSystemDirectoryW (sys, G_N_ELEMENTS (sys));
+		gchar *system_dir = n > 0 && n < G_N_ELEMENTS (sys)
+			? g_utf16_to_utf8 ((const gunichar2 *) sys, (glong) n,
+			                   NULL, NULL, NULL)
+			: NULL;
+
+		const gchar *test_dir = fs_toolpath_test_dir ();
+
+		/* Test builds only: a fake tool (test-winlog's wevtutil). */
+		if (test_dir != NULL) {
+			program = fs_toolpath_windows (test_dir, argv[0]);
+			if (program != NULL &&
+			    !g_file_test (program, G_FILE_TEST_IS_REGULAR))
+				g_clear_pointer (&program, g_free);
+		}
+		if (program == NULL)
+			program = fs_toolpath_windows (system_dir, argv[0]);
+		g_free (system_dir);
+	}
+	if (program != NULL)
+		wide_program = g_utf8_to_utf16 (program, -1, NULL, NULL, NULL);
+	if (wide_program == NULL ||
+	    GetFileAttributesW ((const wchar_t *) wide_program) ==
+	    INVALID_FILE_ATTRIBUTES) {
+		if (error != NULL)
+			g_set_error (error, quark, ERROR_FILE_NOT_FOUND,
+			             "Could not run %s: it is not in the Windows "
+			             "system folder", argv[0]);
+		g_free (wide_program);
+		g_free (program);
+		return FALSE;
+	}
+
+	/* The same argv with the full path first, for the command line. */
+	argv_full = g_new0 (gchar *, g_strv_length (argv) + 1);
+	argv_full[0] = program;
+	for (guint i = 1; argv[i] != NULL; i++)
+		argv_full[i] = argv[i];
+	cmd_line = build_command_line (argv_full);
+	g_free (argv_full);
 
 	wide_cmd = g_utf8_to_utf16 (cmd_line, -1, NULL, NULL, NULL);
 	g_free (cmd_line);
@@ -505,6 +601,8 @@ spawn_capture (gchar **argv, gint timeout_ms,
 		if (error != NULL)
 			g_set_error_literal (error, quark, 0,
 			                     "The command line is not valid UTF-8");
+		g_free (wide_program);
+		g_free (program);
 		return FALSE;
 	}
 
@@ -582,7 +680,8 @@ spawn_capture (gchar **argv, gint timeout_ms,
 
 	memset (&pi, 0, sizeof pi);
 
-	if (!CreateProcessW (NULL, wide_cmd, NULL, NULL, TRUE,
+	if (!CreateProcessW ((const wchar_t *) wide_program, wide_cmd,
+	                     NULL, NULL, TRUE,
 	                     CREATE_NO_WINDOW |
 	                     (use_attrs ? EXTENDED_STARTUPINFO_PRESENT : 0),
 	                     NULL, NULL, &si.StartupInfo, &pi)) {
@@ -623,8 +722,24 @@ spawn_capture (gchar **argv, gint timeout_ms,
 
 	CloseHandle (pi.hProcess);
 
-	out_text = read_handle_output (out_handle);
-	err_text = read_handle_output (err_handle);
+	out_text = read_handle_output (out_handle, out_max, &out_cut);
+	err_text = read_handle_output (err_handle, SPAWN_OUTPUT_MAX, &err_cut);
+	if (out_truncated != NULL)
+		*out_truncated = out_cut;
+	if (err_cut || (out_cut && out_truncated == NULL)) {
+		/* The child ran, but what it said cannot be used whole.  Only
+		 * a caller that asked for out_truncated (the event poll, which
+		 * counts what it could not read) takes a cut stdout. */
+		if (error != NULL)
+			g_set_error (error, quark, 0,
+			             "The output of %s was longer than %u MiB and "
+			             "was cut off, so it was not used",
+			             argv[0],
+			             (guint) ((err_cut ? SPAWN_OUTPUT_MAX : out_max)
+			                      / (1024 * 1024)));
+		wait_result = WAIT_FAILED;
+		goto out;
+	}
 
 	if (out_text == NULL)
 		out_text = g_strdup ("");
@@ -661,8 +776,21 @@ out:
 	g_free (out_text);
 	g_free (err_text);
 	g_free (wide_cmd);
+	g_free (wide_program);
+	g_free (program);
 
 	return wait_result == WAIT_OBJECT_0 || wait_result == WAIT_TIMEOUT;
+}
+
+/* [ spawn_capture ] -- spawn_capture_max with the usual 16 MB. */
+static gboolean
+spawn_capture (gchar **argv, gint timeout_ms,
+               gchar **standard_output, gchar **standard_error,
+               gint *exit_status, GError **error)
+{
+	return spawn_capture_max (argv, timeout_ms, SPAWN_OUTPUT_MAX, NULL,
+	                          standard_output, standard_error,
+	                          exit_status, error);
 }
 
 /* [ run_netsh ]
@@ -964,11 +1092,21 @@ netsh_delete_one (const gchar *rule_name, GError **error)
 	return ok;
 }
 
+static gboolean com_list_our_names (GHashTable **sink, GError **error);
+
 /* [ netsh_list_our_names ]
- * One enumeration pass: ask netsh for every rule and parse out the
- * names that are ours.  Returns FS_APPLY_OK with *sink set (an empty
- * table is a valid result: none of ours exist), or a failure verdict
- * with *sink NULL. */
+ * One enumeration pass over every rule, keeping the names that are
+ * ours.  Returns FS_APPLY_OK with *sink set (an empty table is a valid
+ * result: none of ours exist), or a failure verdict with *sink NULL.
+ *
+ * The list comes from INetFwRules in this process (names only), not
+ * from `netsh advfirewall firewall show rule name=all' (review W3):
+ * netsh prints every address of every rule, and the threat-intel rules
+ * can hold some 300,000 of them, which ran past the 16 MiB output cap
+ * and the 30 s netsh budget, so names printed after the cut were never
+ * seen and the clear "verified" zero with stale rules still active.
+ * netsh is only the fallback when COM itself cannot be used, and a
+ * cut-off output is now an error there (spawn_capture). */
 static FsApplyResult
 netsh_list_our_names (GHashTable **sink, GError **error)
 {
@@ -976,6 +1114,9 @@ netsh_list_our_names (GHashTable **sink, GError **error)
 	gint status = 0;
 
 	*sink = NULL;
+
+	if (com_list_our_names (sink, NULL))
+		return FS_APPLY_OK;
 
 	{
 		gchar *args[] = {
@@ -1058,8 +1199,18 @@ firewalled_clear_rules (GError **error)
 			GError *local = NULL;
 
 			/* A name netsh cannot find is a clean no-op; the next
-			 * enumeration is what decides whether it worked. */
+			 * enumeration is what decides whether it worked.  Only
+			 * a missing elevation ends the clear at once: the list
+			 * now comes from COM, which a standard user may read,
+			 * so the delete is where that shows (review W3). */
 			netsh_delete_one ((const gchar *) iter->data, &local);
+			if (local != NULL &&
+			    netsh_needs_elevation (local->message)) {
+				g_propagate_error (error, local);
+				g_list_free (names);
+				g_hash_table_destroy (ours);
+				return FS_APPLY_NO_PRIVILEGE;
+			}
 			g_clear_error (&local);
 		}
 
@@ -1165,7 +1316,7 @@ firewalled_apply_rules (const FsPolicy *policy, GError **error)
 	fs_fwrule_list_free (rules);
 
 	/* P5: the Preferences settings this backend honors (the ICMP
-	 * allow-list, broadcast blocks, reserved-source blocks) become
+	 * allow-list, the reserved-source block) become
 	 * rules of their own.  firewalled_clear_rules() above already
 	 * retired the previous copies -- they carry the same "StockFW"
 	 * prefix the rule lifecycle owns -- and the apply gate is still
@@ -1791,6 +1942,12 @@ firewalled_list_connections (void)
  * thread that runs the query and hands the result back to the main
  * loop with g_idle_add, so neither the child's runtime nor a hang can
  * freeze the UI.
+ *
+ * 1.0.7: each poll reads every 5156/5157 event after the last record
+ * it saw (by EventRecordID, up to 10,000 a poll), not the newest ten,
+ * so a burst of thousands reaches the list.  The query, the XML
+ * parsing, the skip count and the log-clear check are in
+ * core/fs-winevt.c, where the tests run them on every platform.
  * ------------------------------------------------------------------ */
 
 static guint     log_source_id = 0;
@@ -1812,225 +1969,71 @@ static gpointer  log_user_data = NULL;
 static gboolean poll_in_flight = FALSE;
 static guint    log_generation = 0;
 
+/* Where the reader is in the Security log, and what it skipped. */
+static FsWinEvtCursor log_cursor;
+
 /* One finished (or timed out) query, waiting for the main loop. */
 typedef struct {
-	gchar *output;
-	gchar *err_text;
-	gint   exit_code;
-	guint  generation;
+	gchar   *output;
+	gchar   *err_text;
+	gchar   *newest_output;  /* the probe after an empty poll, or NULL */
+	gint     exit_code;
+	gboolean truncated;      /* output past SPAWN_OUTPUT_MAX_POLL      */
+	guint64  after;          /* the record the query read after        */
+	guint    asked;          /* /c: of the query                       */
+	guint    generation;
 } PollResult;
 
-/* Records already handed to the UI.  The query re-reads the latest ten
- * events on every poll, so each poll must drop whatever earlier ones
- * delivered.  Remembering a single timestamp was not enough: the batch
- * shifts as new events arrive, and the old check only recognised the
- * one record that happened to carry that exact timestamp -- everything
- * else was re-announced, so the list filled with copies every five
- * seconds.  Bounded well above the ten the query ever returns. */
-#define SEEN_RECORDS_MAX 64
-static GHashTable *seen_records = NULL;     /* record text -> TRUE      */
-static GQueue      seen_order = G_QUEUE_INIT; /* oldest at the tail     */
-
-/* [ parse_firewall_event ]
- * wevtutil text output from the Security log has the shape:
- *
- *   Date: 2026-10-06T10:58:39.1040000Z
- *   Event ID: 5157
- *   ...
- *   Description:
- *   The Windows Filtering Platform has blocked a connection.
- *
- *   Application Information:
- *       Process ID:     11964
- *       Application Name:  \device\harddiskvolume9\...brave.exe
- *
- *   Network Information:
- *       Direction:      Inbound
- *       Source Address:     fe80::...
- *       Source Port:        5353
- *       Destination Address: ff02::fb
- *       Destination Port:   5353
- *       Protocol:       17
- *
- * Pull the labelled fields out of it. */
-static gboolean
-parse_firewall_event (const gchar *text, FsHit *hit)
-{
-	gchar **lines = g_strsplit (text, "\r\n", -1);
-	gboolean got_address = FALSE;
-	gboolean is_blocked = FALSE;
-	gchar *app_path = NULL;
-	gchar *direction_str = NULL;
-
-	/* Detect blocked vs permitted from the description. */
-	if (strstr (text, "blocked a connection") != NULL)
-		is_blocked = TRUE;
-
-	for (gint i = 0; lines[i] != NULL; i++) {
-		gchar *line = g_strstrip (lines[i]);
-		gchar *colon;
-
-		if (line == NULL || *line == '\0')
-			continue;
-
-		/* Timestamp line. */
-		if (g_str_has_prefix (line, "Date:")) {
-			hit->time = g_strdup (g_strstrip (line + 5));
-			continue;
-		}
-
-		colon = strchr (line, ':');
-		if (colon == NULL)
-			continue;
-
-		*colon = '\0';
-		line = g_strstrip (line);
-
-		{
-			const gchar *value = g_strstrip (colon + 1);
-
-			if (g_strcmp0 (line, "Protocol") == 0) {
-				gchar *sp = strchr (value, ' ');
-				if (sp != NULL)
-					*sp = '\0';
-				hit->protocol = g_strdup (value);
-			} else if (g_strcmp0 (line, "Source Address") == 0) {
-				hit->source = g_strdup (value);
-			} else if (g_strcmp0 (line, "Destination Address") == 0) {
-				hit->destination = g_strdup (value);
-				got_address = TRUE;
-			} else if (g_strcmp0 (line, "Destination Port") == 0) {
-				/* DPT=: the port the original displayed -- the
-				 * service port for inbound, the remote port for
-				 * outbound.  The source port is an ephemeral
-				 * client port and was never shown; putting it in
-				 * "port" made every service lookup miss. */
-				hit->port = g_strdup (value);
-			} else if (g_strcmp0 (line, "Direction") == 0) {
-				direction_str = g_strdup (value);
-			} else if (g_strcmp0 (line, "Application Name") == 0) {
-				app_path = g_strdup (value);
-			}
-		}
-	}
-
-	g_strfreev (lines);
-
-	if (!got_address) {
-		g_clear_pointer (&hit->time, g_free);
-		g_clear_pointer (&hit->in, g_free);
-		g_clear_pointer (&hit->out, g_free);
-		g_clear_pointer (&hit->source, g_free);
-		g_clear_pointer (&hit->destination, g_free);
-		g_clear_pointer (&hit->port, g_free);
-		g_clear_pointer (&hit->protocol, g_free);
-		g_clear_pointer (&hit->service, g_free);
-		g_clear_pointer (&direction_str, g_free);
-		g_clear_pointer (&app_path, g_free);
-		return FALSE;
-	}
-
-	/* Direction. */
-	gboolean inbound;
-
-	if (direction_str != NULL) {
-		inbound = g_ascii_strncasecmp (direction_str, "Inbound", 7) == 0;
-		g_free (direction_str);
-	} else {
-		inbound = TRUE;
-	}
-	hit->direction = g_strdup (inbound ? "in" : "out");
-
-	/* The original's In/Out columns showed the interface a packet
-	 * arrived on and left on (IN=, OUT=).  Event 5156/5157 carries no
-	 * interface, so show the local side under In and the remote side
-	 * under Out -- the same local/remote reading, direction aware. */
-	if (inbound) {
-		hit->in  = g_strdup (hit->destination ? hit->destination : "?");
-		hit->out = g_strdup (hit->source ? hit->source : "?");
-	} else {
-		hit->in  = g_strdup (hit->source ? hit->source : "?");
-		hit->out = g_strdup (hit->destination ? hit->destination : "?");
-	}
-
-	/* Protocol: numeric to name.  Replace in place -- assigning a new
-	 * string over the old one leaked the numeric original on every
-	 * event. */
-	if (hit->protocol != NULL) {
-		const gchar *name = NULL;
-
-		if (g_strcmp0 (hit->protocol, "6") == 0)
-			name = "TCP";
-		else if (g_strcmp0 (hit->protocol, "17") == 0)
-			name = "UDP";
-		else if (g_strcmp0 (hit->protocol, "1") == 0)
-			name = "ICMP";
-
-		if (name != NULL) {
-			g_free (hit->protocol);
-			hit->protocol = g_strdup (name);
-		}
-	}
-
-	/* Service name from port. */
-	hit->service = fs_service_lookup_port (atoi (hit->port ? hit->port : "0"));
-	if (hit->service == NULL)
-		hit->service = g_strdup (_("Unknown"));
-
-	/* Use application name as service if available (more specific). */
-	if (app_path != NULL) {
-		/* Extract the exe name from the full path. */
-		const gchar *base = strrchr (app_path, '\\');
-		base = base ? base + 1 : app_path;
-		if (*base != '\0') {
-			g_free (hit->service);
-			hit->service = g_strdup (base);
-		}
-		g_free (app_path);
-	}
-
-	/* Mark blocked events with a visible marker. */
-	if (is_blocked) {
-		gchar *old = hit->service;
-		hit->service = g_strdup_printf ("%s [BLOCKED]", old ? old : "?");
-		g_free (old);
-	}
-
-	return TRUE;
-}
-
 /* [ run_wevtutil ]
- * One Security-log query, with both output streams captured.
+ * One wevtutil run (argv from core/fs-winevt.c), with both output
+ * streams captured.
  *
- * Goes through spawn_capture(), so the query opens no console window
- * and cannot hang the caller beyond the spawn budget.  On Windows the
- * raw process exit code lands in *exit_code, so 5 here really is
- * ERROR_ACCESS_DENIED. */
+ * Goes through spawn_capture_max(), so the query opens no console
+ * window and cannot hang the caller beyond the spawn budget.  On
+ * Windows the raw process exit code lands in *exit_code, so 5 here
+ * really is ERROR_ACCESS_DENIED. */
 static gboolean
-run_wevtutil (gchar **standard_output, gchar **standard_error,
-              gint *exit_code, GError **error)
+run_wevtutil (gchar **args, gint timeout_ms, gsize out_max,
+              gboolean *truncated, gchar **standard_output,
+              gchar **standard_error, gint *exit_code, GError **error)
 {
-	gchar *args[] = {
-		"wevtutil.exe", "qe", "Security",
-		"/q:*[System[(EventID=5156 or EventID=5157)]]",
-		"/c:10", "/rd:true", "/f:text", NULL
-	};
 	gint status = 0;
 
-	if (standard_output != NULL)
-		*standard_output = NULL;
-	if (standard_error != NULL)
-		*standard_error = NULL;
-
-	if (!spawn_capture (args, SPAWN_TIMEOUT_WEVTUTIL_MS,
-	                    standard_output, standard_error,
-	                    &status, error))
+	if (!spawn_capture_max (args, timeout_ms, out_max, truncated,
+	                        standard_output, standard_error,
+	                        &status, error))
 		return FALSE;
 
 	if (exit_code != NULL)
 		*exit_code = status;
 
 	return TRUE;
+}
+
+/* [ run_probe ] -- the newest record of any kind (fs_winevt_probe_argv). */
+static gboolean
+run_probe (gchar **standard_output, gchar **standard_error,
+           gint *exit_code, GError **error)
+{
+	gchar **args = fs_winevt_probe_argv ();
+	gboolean ok = run_wevtutil (args, SPAWN_TIMEOUT_WEVTUTIL_MS,
+	                            SPAWN_OUTPUT_MAX, NULL, standard_output,
+	                            standard_error, exit_code, error);
+
+	g_strfreev (args);
+	return ok;
+}
+
+/* [ newest_record ] -- the record number in a probe's output, 0 when
+ * the log holds nothing. */
+static guint64
+newest_record (const gchar *output)
+{
+	GPtrArray *events = fs_winevt_parse_xml (output, NULL);
+	guint64 newest = fs_winevt_newest (events);
+
+	g_ptr_array_unref (events);
+	return newest;
 }
 
 /* [ security_log_denied ]
@@ -2045,150 +2048,16 @@ security_log_denied (gint exit_code, const gchar *stderr_text)
 	        strstr (stderr_text, "Access is denied") != NULL);
 }
 
-/* [ free_hit_fields ]
- * "hit" is a stack local; fs_hit_free would g_free() the struct itself
- * and corrupt the heap.  Free only the strings parse allocated. */
-static void
-free_hit_fields (FsHit *hit)
-{
-	g_clear_pointer (&hit->time, g_free);
-	g_clear_pointer (&hit->direction, g_free);
-	g_clear_pointer (&hit->in, g_free);
-	g_clear_pointer (&hit->out, g_free);
-	g_clear_pointer (&hit->source, g_free);
-	g_clear_pointer (&hit->destination, g_free);
-	g_clear_pointer (&hit->port, g_free);
-	g_clear_pointer (&hit->protocol, g_free);
-	g_clear_pointer (&hit->service, g_free);
-}
-
-/* [ record_seen ] / [ remember_record ]
- * The de-duplication the poll loop runs every record through.  Kept as
- * named functions so tests can drive them directly: the old inline
- * "does the record text contain the last timestamp" check re-delivered
- * almost everything on every poll, and that bug was invisible without
- * feeding it two identical batches. */
-static gboolean
-record_seen (const gchar *record)
-{
-	return seen_records != NULL &&
-	       g_hash_table_contains (seen_records, record);
-}
-
-static void
-remember_record (const gchar *record)
-{
-	gchar *key;
-
-	if (seen_records == NULL)
-		seen_records = g_hash_table_new_full (g_str_hash, g_str_equal,
-		                                       g_free, NULL);
-
-	/* Bounded: the query only ever returns SEEN_RECORDS_MAX-ish
-	 * records, so the table holds a batch or two, never history. */
-	while (g_queue_get_length (&seen_order) >= SEEN_RECORDS_MAX) {
-		gchar *oldest = g_queue_pop_tail (&seen_order);
-
-		g_hash_table_remove (seen_records, oldest);
-	}
-
-	key = g_strdup (record);
-	g_queue_push_head (&seen_order, key);
-	g_hash_table_insert (seen_records, key, GINT_TO_POINTER (1));
-}
-
-static void
-forget_all_records (void)
-{
-	g_queue_clear (&seen_order);
-	g_clear_pointer (&seen_records, g_hash_table_destroy);
-}
-
-/* [ split_firewall_records ]
- * Cuts wevtutil /f:text output into one record per event, at every
- * line starting with "Event[" -- wevtutil's own record marker.
- *
- * Blank lines are NOT record separators: a 5156/5157 record carries
- * them inside its Description block (headline sentence, then the
- * field sections).  The old blank-line split chopped every record in
- * two -- the header half has no addresses and was dropped, the field
- * half had no Date -- which on screen is an empty list no matter how
- * much traffic there is.  Output without the marker falls back to the
- * old split so an oddly shaped batch still yields something. */
-static GPtrArray *
-split_firewall_records (const gchar *output)
-{
-	GPtrArray *records = g_ptr_array_new_with_free_func (g_free);
-	gchar **lines;
-	GString *current = NULL;
-	gboolean saw_marker = FALSE;
-
-	if (output == NULL || *output == '\0')
-		return records;
-
-	lines = g_strsplit (output, "\r\n", -1);
-
-	for (gint i = 0; lines[i] != NULL; i++) {
-		if (g_str_has_prefix (lines[i], "Event[")) {
-			saw_marker = TRUE;
-			if (current != NULL)
-				g_ptr_array_add (records,
-				                 g_string_free (current, FALSE));
-			current = g_string_new (NULL);
-
-			/* The marker itself is the record's POSITION in this
-			 * batch (Event[0] is the newest), and the positions move
-			 * every time a new event arrives: an event that was
-			 * Event[3] last poll is Event[4] this poll.  Keeping the
-			 * line in the record text made every shifted record a
-			 * "new" record to the de-duplication below, so one fresh
-			 * event re-delivered the whole batch as duplicates --
-			 * the same rows over and over in the list.  The content
-			 * after the marker is identical for the same event on
-			 * every poll, so that is what the record is made of. */
-			continue;
-		}
-
-		if (current == NULL)
-			current = g_string_new (NULL);  /* text before marker */
-
-		g_string_append (current, lines[i]);
-		g_string_append (current, "\r\n");
-	}
-
-	if (current != NULL)
-		g_ptr_array_add (records, g_string_free (current, FALSE));
-
-	g_strfreev (lines);
-
-	if (!saw_marker) {
-		gchar **chunks;
-		GPtrArray *fallback = g_ptr_array_new_with_free_func (g_free);
-
-		g_ptr_array_unref (records);
-		records = fallback;
-
-		chunks = g_strsplit (output, "\r\n\r\n", -1);
-		for (gint i = 0; chunks[i] != NULL; i++) {
-			if (*chunks[i] != '\0')
-				g_ptr_array_add (records, g_strdup (chunks[i]));
-		}
-		g_strfreev (chunks);
-	}
-
-	return records;
-}
-
 /* [ poll_deliver ]
  * Runs on the GTK main loop (g_idle_add) -- the only place that may
- * touch the callback, the seen-set and GTK, since the worker thread
+ * touch the callback, the cursor and GTK, since the worker thread
  * goes near none of them. */
 static gboolean
 poll_deliver (gpointer data)
 {
 	PollResult *result = data;
-	GPtrArray *records;
-	guint new_events = 0;
+	GPtrArray *events, *fresh;
+	gboolean cut = FALSE;
 
 	/* Release the in-flight guard first: even a discarded result
 	 * means the worker is done. */
@@ -2199,6 +2068,15 @@ poll_deliver (gpointer data)
 	if (result->generation != log_generation)
 		goto out;
 
+	/* Killed at the budget: ask for fewer next time.  The cursor did
+	 * not move, but the next poll still reads the newest first: a
+	 * backlog larger than the halved request loses its older part,
+	 * and that part is counted as skipped (fs_winevt_take). */
+	if (result->exit_code == ERROR_TIMEOUT) {
+		fs_winevt_poll_done (&log_cursor, TRUE);
+		goto out;
+	}
+
 	if (result->exit_code != 0) {
 		/* firewalled_log_start() checks this before it starts the
 		 * timer, so reaching here means the right to read the log was
@@ -2208,49 +2086,37 @@ poll_deliver (gpointer data)
 		goto out;
 	}
 
+	fs_winevt_poll_done (&log_cursor, FALSE);
+
+	/* A poll with nothing above the cursor brought the newest record
+	 * of any kind: below the cursor, the log was cleared, and the
+	 * batch in hand (all of it after the clear) is read from the
+	 * start. */
+	if (result->newest_output != NULL)
+		fs_winevt_check_newest (&log_cursor,
+		                        newest_record (result->newest_output));
+
 	if (result->output == NULL)
 		goto out;
 
-	records = split_firewall_records (result->output);
+	events = fs_winevt_parse_xml (result->output, &cut);
+	fresh = fs_winevt_take (&log_cursor, events, result->asked,
+	                        cut || result->truncated);
 
-	for (guint i = 0; i < records->len; i++) {
-		const gchar *record = g_ptr_array_index (records, i);
-		FsHit hit = { 0 };
-		guint len = strlen (record);
-
-		if (len < 40)
-			continue;
-
-		/* Drop anything an earlier poll already delivered: the query
-		 * re-reads the latest ten events every time. */
-		if (record_seen (record))
-			continue;
-
-		/* Remember before parsing: a record we cannot parse is still
-		 * delivered again next poll, and would otherwise be parsed
-		 * (and rejected) forever. */
-		remember_record (record);
-
-		if (!parse_firewall_event (record, &hit)) {
-			free_hit_fields (&hit);
-			continue;
-		}
+	for (guint i = 0; i < fresh->len; i++) {
+		const FsWinEvent *e = g_ptr_array_index (fresh, i);
 
 		if (log_callback != NULL)
-			log_callback (&hit, log_user_data);
-
-		new_events++;
-
-		free_hit_fields (&hit);
+			log_callback (e->hit, log_user_data);
 	}
 
-	g_ptr_array_unref (records);
+	g_ptr_array_unref (fresh);
+	g_ptr_array_unref (events);
 
 out:
-	(void) new_events;
-
 	g_free (result->output);
 	g_free (result->err_text);
+	g_free (result->newest_output);
 	g_free (result);
 
 	return G_SOURCE_REMOVE;
@@ -2258,15 +2124,53 @@ out:
 
 /* [ poll_worker ]
  * The worker thread itself: all it does is run wevtutil -- a plain
- * Win32 spawn through spawn_capture(), no COM, no GTK, no shared
- * state -- and post the result to the main loop. */
+ * Win32 spawn through spawn_capture_max(), no COM, no GTK, no shared
+ * state (the cursor was copied into the result at dispatch) -- and
+ * post the result to the main loop.  A poll that finds nothing also
+ * asks for the newest record of any kind, for the log-clear check. */
 static gpointer
 poll_worker (gpointer data)
 {
 	PollResult *result = data;
+	gchar **args = fs_winevt_poll_argv (result->after, result->asked);
 
-	run_wevtutil (&result->output, &result->err_text,
+	run_wevtutil (args, SPAWN_TIMEOUT_WEVTUTIL_POLL_MS,
+	              SPAWN_OUTPUT_MAX_POLL, &result->truncated,
+	              &result->output, &result->err_text,
 	              &result->exit_code, NULL);
+	g_strfreev (args);
+
+	/* A query this Windows will not take (an event log service that
+	 * refuses the EventRecordID condition): ask for the newest
+	 * records without it, fewer of them, and let fs_winevt_take drop
+	 * what was delivered already.  Not for a refusal of rights or a
+	 * timeout, which the plain query would meet as well. */
+	if (result->exit_code != 0 && result->exit_code != ERROR_TIMEOUT &&
+	    result->exit_code != ERROR_ACCESS_DENIED && result->after > 0) {
+		g_clear_pointer (&result->output, g_free);
+		g_clear_pointer (&result->err_text, g_free);
+		result->asked = MIN (result->asked, FS_WINEVT_FALLBACK_CAP);
+		args = fs_winevt_poll_argv (0, result->asked);
+		run_wevtutil (args, SPAWN_TIMEOUT_WEVTUTIL_POLL_MS,
+		              SPAWN_OUTPUT_MAX_POLL, &result->truncated,
+		              &result->output, &result->err_text,
+		              &result->exit_code, NULL);
+		g_strfreev (args);
+	}
+
+	/* Nothing above the cursor: an empty poll, or in the fallback a
+	 * batch of only old records, which is also what a log cleared and
+	 * filled again answers.  The probe tells which. */
+	if (result->exit_code == 0 &&
+	    fs_winevt_needs_probe (result->output, result->after)) {
+		gchar *err_text = NULL;
+		gint code = -1;
+
+		if (!run_probe (&result->newest_output, &err_text, &code,
+		                NULL) || code != 0)
+			g_clear_pointer (&result->newest_output, g_free);
+		g_free (err_text);
+	}
 
 	g_idle_add (poll_deliver, result);
 	return NULL;
@@ -2290,6 +2194,9 @@ poll_events (gpointer data)
 
 	result = g_new0 (PollResult, 1);
 	result->generation = log_generation;
+	result->after = log_cursor.last_id;
+	result->asked = log_cursor.cap != 0 ? log_cursor.cap
+	                                      : FS_WINEVT_POLL_CAP;
 
 	poll_in_flight = TRUE;
 
@@ -2353,7 +2260,7 @@ firewalled_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 	 * five second timer anyway would tell the user the opposite of the
 	 * truth: monitoring would read as switched on while nothing could
 	 * ever arrive. */
-	if (!run_wevtutil (&output, &err_text, &exit_code, &local_error)) {
+	if (!run_probe (&output, &err_text, &exit_code, &local_error)) {
 		/* spawn_capture()'s message already names the program and the
 		 * Windows error ("Could not run wevtutil.exe: ..."). */
 		if (local_error != NULL)
@@ -2367,8 +2274,6 @@ firewalled_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 		g_clear_pointer (&err_text, g_free);
 		return FALSE;
 	}
-
-	g_clear_pointer (&output, g_free);
 
 	if (err_text != NULL)
 		g_strstrip (err_text);
@@ -2395,10 +2300,17 @@ firewalled_log_start (FsLogFunc callback, gpointer user_data, GError **error)
 					? err_text : _("no detail"));
 
 		g_clear_pointer (&err_text, g_free);
+		g_clear_pointer (&output, g_free);
 		return FALSE;
 	}
 
 	g_clear_pointer (&err_text, g_free);
+
+	/* Start after the newest record now: what came before is either
+	 * in the saved history already or from before this session.  A
+	 * stop and start in one session starts after "now" again. */
+	fs_winevt_cursor_init (&log_cursor, newest_record (output));
+	g_clear_pointer (&output, g_free);
 
 	/* The log is readable; make sure Windows is recording into it. */
 	ensure_filtering_audit ();
@@ -2430,13 +2342,20 @@ firewalled_log_stop (void)
 
 	log_callback = NULL;
 	log_user_data = NULL;
-	forget_all_records ();
 }
 
 static gboolean
 firewalled_log_active (void)
 {
 	return log_source_id != 0;
+}
+
+/* [ firewalled_log_skipped ] -- FsBackend.log_skipped: the upper bound
+ * fs_winevt_take counted when a poll came back full. */
+static guint64
+firewalled_log_skipped (void)
+{
+	return log_cursor.skipped;
 }
 
 static gboolean
@@ -2498,6 +2417,94 @@ firewalled_get_profile_enabled (gint profile, gboolean *enabled)
 	if (enabled != NULL)
 		*enabled = (on != VARIANT_FALSE);
 
+	return TRUE;
+}
+
+/* [ firewalled_get_profile_defaults ]
+ * One profile's default inbound and outbound actions, for the What-If:
+ * what Windows Firewall does with traffic no rule matches.  FALSE when
+ * the profile id is unknown or either COM call fails, so the What-If
+ * says it assumed Windows' own default instead of guessing quietly. */
+static gboolean
+firewalled_get_profile_defaults (gint profile, gboolean *inbound_block,
+                                 gboolean *outbound_block)
+{
+	INetFwPolicy2 *policy = NULL;
+	HRESULT hr;
+	NET_FW_ACTION in_action = NET_FW_ACTION_BLOCK;
+	NET_FW_ACTION out_action = NET_FW_ACTION_ALLOW;
+	NET_FW_PROFILE_TYPE2 type;
+
+	if (profile < 0 || profile >= FS_PROFILE_COUNT)
+		return FALSE;
+
+	type = profile_from_index (profile);
+
+	CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
+
+	hr = CoCreateInstance (&FS_CLSID_NetFwPolicy2, NULL, CLSCTX_ALL,
+	                       &FS_IID_INetFwPolicy2, (void **) &policy);
+
+	if (FAILED (hr) || policy == NULL) {
+		CoUninitialize ();
+		return FALSE;
+	}
+
+	hr = policy->lpVtbl->get_DefaultInboundAction (policy, type, &in_action);
+	if (SUCCEEDED (hr))
+		hr = policy->lpVtbl->get_DefaultOutboundAction (policy, type,
+		                                                &out_action);
+
+	policy->lpVtbl->Release (policy);
+	CoUninitialize ();
+
+	if (FAILED (hr))
+		return FALSE;
+
+	if (inbound_block != NULL)
+		*inbound_block = (in_action == NET_FW_ACTION_BLOCK);
+	if (outbound_block != NULL)
+		*outbound_block = (out_action == NET_FW_ACTION_BLOCK);
+
+	return TRUE;
+}
+
+/* [ firewalled_get_profile_block_all_inbound ]
+ * Whether one profile has "Block all incoming connections" switched on:
+ * Windows then refuses inbound traffic whatever the allow rules say, so
+ * the What-If must not answer ALLOWED from the rules alone.  FALSE when
+ * the profile id is unknown or the COM call fails. */
+static gboolean
+firewalled_get_profile_block_all_inbound (gint profile, gboolean *on)
+{
+	INetFwPolicy2 *policy = NULL;
+	HRESULT hr;
+	VARIANT_BOOL block = VARIANT_FALSE;
+
+	if (profile < 0 || profile >= FS_PROFILE_COUNT)
+		return FALSE;
+
+	CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
+
+	hr = CoCreateInstance (&FS_CLSID_NetFwPolicy2, NULL, CLSCTX_ALL,
+	                       &FS_IID_INetFwPolicy2, (void **) &policy);
+
+	if (FAILED (hr) || policy == NULL) {
+		CoUninitialize ();
+		return FALSE;
+	}
+
+	hr = policy->lpVtbl->get_BlockAllInboundTraffic (
+		policy, profile_from_index (profile), &block);
+
+	policy->lpVtbl->Release (policy);
+	CoUninitialize ();
+
+	if (FAILED (hr))
+		return FALSE;
+
+	if (on != NULL)
+		*on = (block != VARIANT_FALSE);
 	return TRUE;
 }
 
@@ -2769,6 +2776,900 @@ firewalled_network_place (void)
 /* Designated initialisers, not positional: adding a field to FsBackend
  * then leaves every backend correct instead of silently shifting every
  * entry after the insertion point. */
+/* =====================================================================
+ * Threat intel (1.0.7 Round 3, design section 11)
+ *
+ * The blocklists are Windows Firewall rules of their own, in the rule
+ * group FS_INTELWIN_GROUP, written and read in-process through
+ * INetFwPolicy2 / INetFwRules / INetFwRule -- never netsh or
+ * PowerShell, which would flash a console and could not be told apart
+ * from the user's own commands.  What the rules are (names, address
+ * chunks, the manifest) and what a read-back means are decided in
+ * core/fs-intelwin.c, where the core suite checks them; this part only
+ * moves them across COM.
+ *
+ * The policy above never names that group (its rules are "StockFW-..."
+ * and netsh's clear keeps to that prefix), and these slots never touch
+ * a rule outside it, so applying or clearing either never touches the
+ * other [N6, P0].
+ *
+ * An apply writes the new rules first and removes the old ones after:
+ * a refused rule takes the new ones out again and leaves the old ones
+ * in force, and an old rule that cannot be removed leaves more
+ * blocking, never less.  What the firewall holds afterwards, read back
+ * whole, is the answer, not what the calls said [S10].
+ *
+ * [Unverified on Windows here] Compiled and linked with mingw in the
+ * development container; tests/test-intel-windows.c drives these slots
+ * against the real firewall on the CI's Windows runner.
+ * ================================================================== */
+
+typedef struct
+{
+	gboolean       uninit;    /* CoUninitialize at the end            */
+	INetFwPolicy2 *policy;
+	INetFwRules   *rules;
+} FwIntel;
+
+/* One sentence for a COM failure; access denied gets its own code, so
+ * the engine and the UI can say "run as administrator". */
+static void
+intel_hr_error (GError **error, HRESULT hr, const gchar *what)
+{
+	gchar *msg;
+
+	if (error == NULL || *error != NULL)
+		return;
+	if (hr == E_ACCESSDENIED ||
+	    hr == HRESULT_FROM_WIN32 (ERROR_ACCESS_DENIED)) {
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
+		             "%s: changing Windows Firewall rules requires "
+		             "administrator rights. Run StockFW as "
+		             "administrator.", what);
+		return;
+	}
+	msg = g_win32_error_message ((gint) hr);
+	g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+	             "%s: %s (0x%08lx)", what,
+	             msg != NULL && *msg ? msg : "error",
+	             (unsigned long) hr);
+	g_free (msg);
+}
+
+static void
+fw_intel_close (FwIntel *fw)
+{
+	if (fw->rules != NULL)
+		fw->rules->lpVtbl->Release (fw->rules);
+	if (fw->policy != NULL)
+		fw->policy->lpVtbl->Release (fw->policy);
+	if (fw->uninit)
+		CoUninitialize ();
+	memset (fw, 0, sizeof *fw);
+}
+
+/* COM on this thread, the policy and its rule collection.  A thread
+ * that already joined the multithreaded apartment (RPC_E_CHANGED_MODE)
+ * can use the objects as it is, and must not be uninitialized by us. */
+static gboolean
+fw_intel_open (FwIntel *fw, gboolean want_rules, GError **error)
+{
+	HRESULT hr;
+
+	memset (fw, 0, sizeof *fw);
+	hr = CoInitializeEx (NULL, COINIT_APARTMENTTHREADED);
+	if (FAILED (hr) && hr != RPC_E_CHANGED_MODE) {
+		intel_hr_error (error, hr, "COM could not be started");
+		return FALSE;
+	}
+	fw->uninit = SUCCEEDED (hr);
+
+	hr = CoCreateInstance (&FS_CLSID_NetFwPolicy2, NULL,
+	                       CLSCTX_INPROC_SERVER, &FS_IID_INetFwPolicy2,
+	                       (void **) &fw->policy);
+	if (FAILED (hr) || fw->policy == NULL) {
+		intel_hr_error (error, FAILED (hr) ? hr : E_FAIL,
+		                "Windows Firewall could not be reached");
+		fw_intel_close (fw);
+		return FALSE;
+	}
+	if (!want_rules)
+		return TRUE;
+	hr = fw->policy->lpVtbl->get_Rules (fw->policy, &fw->rules);
+	if (FAILED (hr) || fw->rules == NULL) {
+		intel_hr_error (error, FAILED (hr) ? hr : E_FAIL,
+		                "The Windows Firewall rules could not be read");
+		fw_intel_close (fw);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static BSTR
+bstr_new (const gchar *utf8)
+{
+	gunichar2 *w = g_utf8_to_utf16 (utf8 != NULL ? utf8 : "", -1, NULL,
+	                                NULL, NULL);
+	BSTR b = w != NULL ? SysAllocString ((const OLECHAR *) w) : NULL;
+
+	g_free (w);
+	return b;
+}
+
+/* UTF-8 copy of a BSTR, which is freed; NULL for NULL. */
+static gchar *
+bstr_take (BSTR b)
+{
+	gchar *s = NULL;
+
+	if (b != NULL)
+		s = g_utf16_to_utf8 ((const gunichar2 *) b,
+		                     (glong) SysStringLen (b), NULL, NULL, NULL);
+	SysFreeString (b);
+	return s;
+}
+
+/* Elements in a VARIANT holding a list (interfaces), 0 for none. */
+static guint
+variant_count (const VARIANT *v)
+{
+	if ((v->vt & VT_ARRAY) != 0 && v->parray != NULL) {
+		LONG lo = 0, hi = -1;
+
+		if (SUCCEEDED (SafeArrayGetLBound (v->parray, 1, &lo)) &&
+		    SUCCEEDED (SafeArrayGetUBound (v->parray, 1, &hi)) &&
+		    hi >= lo)
+			return (guint) (hi - lo + 1);
+		return 0;
+	}
+	if (v->vt == VT_BSTR)
+		return v->bstrVal != NULL && SysStringLen (v->bstrVal) > 0;
+	return v->vt == VT_EMPTY || v->vt == VT_NULL ? 0 : 1;
+}
+
+/* A string property that must be empty to keep a rule whole. */
+static gboolean
+bstr_is_set (HRESULT hr, BSTR b)
+{
+	gboolean set = SUCCEEDED (hr) && b != NULL && SysStringLen (b) > 0;
+
+	SysFreeString (b);
+	return set;
+}
+
+/* INetFwRule3's conditions: an app package, the owner or authorized
+ * users, remote users or machines, or IPsec flags.  Any of them makes
+ * the rule apply to less than everything.  A Windows without
+ * INetFwRule3 (7) has none of them. */
+static gboolean
+rule_has_conditions (INetFwRule *r)
+{
+	INetFwRule3 *r3 = NULL;
+	BSTR b;
+	LONG flags = 0;
+	gboolean any = FALSE;
+
+	if (FAILED (r->lpVtbl->QueryInterface (r, &FS_IID_INetFwRule3,
+	                                       (void **) &r3)) || r3 == NULL)
+		return FALSE;
+	b = NULL;
+	any |= bstr_is_set (r3->lpVtbl->get_LocalAppPackageId (r3, &b), b);
+	b = NULL;
+	any |= bstr_is_set (r3->lpVtbl->get_LocalUserOwner (r3, &b), b);
+	b = NULL;
+	any |= bstr_is_set (r3->lpVtbl->get_LocalUserAuthorizedList (r3, &b),
+	                    b);
+	b = NULL;
+	any |= bstr_is_set (r3->lpVtbl->get_RemoteUserAuthorizedList (r3, &b),
+	                    b);
+	b = NULL;
+	any |= bstr_is_set (r3->lpVtbl->get_RemoteMachineAuthorizedList (r3,
+	                                                                 &b),
+	                    b);
+	if (SUCCEEDED (r3->lpVtbl->get_SecureFlags (r3, &flags)) && flags != 0)
+		any = TRUE;
+	r3->lpVtbl->Release (r3);
+	return any;
+}
+
+/* Everything about one rule that can narrow or undo a block. */
+static FsIntelWinSeen *
+seen_from_rule (INetFwRule *r, gchar *grouping)
+{
+	FsIntelWinSeen *s = fs_intelwin_seen_new ();
+	NET_FW_RULE_DIRECTION dir = 0;
+	NET_FW_ACTION action = NET_FW_ACTION_MAX;
+	VARIANT_BOOL on = VARIANT_FALSE;
+	LONG value = 0;
+	VARIANT v;
+	BSTR b;
+
+	s->grouping = grouping;
+	b = NULL; r->lpVtbl->get_Name (r, &b);           s->name = bstr_take (b);
+	b = NULL; r->lpVtbl->get_Description (r, &b);    s->description = bstr_take (b);
+	b = NULL; r->lpVtbl->get_LocalAddresses (r, &b); s->local_addresses = bstr_take (b);
+	b = NULL; r->lpVtbl->get_RemoteAddresses (r, &b);s->remote_addresses = bstr_take (b);
+	b = NULL; r->lpVtbl->get_LocalPorts (r, &b);     s->local_ports = bstr_take (b);
+	b = NULL; r->lpVtbl->get_RemotePorts (r, &b);    s->remote_ports = bstr_take (b);
+	b = NULL; r->lpVtbl->get_ApplicationName (r, &b);s->application = bstr_take (b);
+	b = NULL; r->lpVtbl->get_ServiceName (r, &b);    s->service = bstr_take (b);
+	b = NULL; r->lpVtbl->get_InterfaceTypes (r, &b); s->interface_types = bstr_take (b);
+
+	/* A property that cannot be read counts as wrong: -1 matches no
+	 * direction, action or protocol. */
+	s->direction = SUCCEEDED (r->lpVtbl->get_Direction (r, &dir))
+	               ? (gint) dir : -1;
+	s->action = SUCCEEDED (r->lpVtbl->get_Action (r, &action))
+	            ? (gint) action : -1;
+	s->enabled = SUCCEEDED (r->lpVtbl->get_Enabled (r, &on)) &&
+	             on != VARIANT_FALSE;
+	s->profiles = SUCCEEDED (r->lpVtbl->get_Profiles (r, &value))
+	              ? (glong) value : 0;
+	value = 0;
+	s->protocol = SUCCEEDED (r->lpVtbl->get_Protocol (r, &value))
+	              ? (glong) value : -1;
+	VariantInit (&v);
+	if (SUCCEEDED (r->lpVtbl->get_Interfaces (r, &v)))
+		s->interfaces = variant_count (&v) > 0;
+	else
+		s->interfaces = TRUE;
+	VariantClear (&v);
+	s->conditions = rule_has_conditions (r);
+	return s;
+}
+
+static void
+rule_release (gpointer p)
+{
+	INetFwRule *r = p;
+
+	if (r != NULL)
+		r->lpVtbl->Release (r);
+}
+
+/* Counts a name under its case-folded key (fs_intelwin_name_key), so
+ * names that differ only in case count as one (review W6). */
+static void
+name_count (GHashTable *names, const gchar *name)
+{
+	gpointer n;
+	gchar *key;
+
+	if (names == NULL || name == NULL)
+		return;
+	key = fs_intelwin_name_key (name);
+	n = g_hash_table_lookup (names, key);
+	g_hash_table_replace (names, key,
+	                      GUINT_TO_POINTER (GPOINTER_TO_UINT (n) + 1));
+}
+
+static guint
+name_lookup (GHashTable *names, const gchar *name)
+{
+	gchar *key = fs_intelwin_name_key (name);
+	guint n = GPOINTER_TO_UINT (g_hash_table_lookup (names, key));
+
+	g_free (key);
+	return n;
+}
+
+/* One pass over every rule on the firewall.  Ours (the group) are read
+ * whole into `ours' (FsIntelWinSeen*), with their rule objects at the
+ * same index in `objs' when it is not NULL; every rule's name, ours or
+ * not, is counted in `names' (name -> count) when it is not NULL. */
+static gboolean
+fw_intel_list (FwIntel *fw, GPtrArray *ours, GPtrArray *objs,
+               GHashTable *names, GError **error)
+{
+	IUnknown *unk = NULL;
+	IEnumVARIANT *en = NULL;
+	HRESULT hr;
+	gboolean ok = TRUE;
+
+	hr = fw->rules->lpVtbl->get__NewEnum (fw->rules, &unk);
+	if (FAILED (hr) || unk == NULL) {
+		intel_hr_error (error, FAILED (hr) ? hr : E_FAIL,
+		                "The Windows Firewall rules could not be listed");
+		return FALSE;
+	}
+	hr = unk->lpVtbl->QueryInterface (unk, &FS_IID_IEnumVARIANT,
+	                                  (void **) &en);
+	unk->lpVtbl->Release (unk);
+	if (FAILED (hr) || en == NULL) {
+		intel_hr_error (error, FAILED (hr) ? hr : E_FAIL,
+		                "The Windows Firewall rules could not be listed");
+		return FALSE;
+	}
+
+	for (;;) {
+		VARIANT v;
+		ULONG got = 0;
+		INetFwRule *r = NULL;
+
+		VariantInit (&v);
+		hr = en->lpVtbl->Next (en, 1, &v, &got);
+		if (FAILED (hr)) {
+			intel_hr_error (error, hr, "The Windows Firewall rules "
+			                "could not be listed");
+			ok = FALSE;
+			break;
+		}
+		if (hr != S_OK || got == 0)
+			break;
+		if (v.vt == VT_DISPATCH && v.pdispVal != NULL &&
+		    SUCCEEDED (v.pdispVal->lpVtbl->QueryInterface (
+			    v.pdispVal, &FS_IID_INetFwRule, (void **) &r)) &&
+		    r != NULL) {
+			BSTR b = NULL;
+			gchar *group;
+
+			r->lpVtbl->get_Grouping (r, &b);
+			group = bstr_take (b);
+			if (fs_intelwin_in_group (group)) {
+				FsIntelWinSeen *s = seen_from_rule (r, group);
+
+				g_ptr_array_add (ours, s);
+				name_count (names, s->name);
+				if (objs != NULL) {
+					r->lpVtbl->AddRef (r);
+					g_ptr_array_add (objs, r);
+				}
+			} else {
+				g_free (group);
+				if (names != NULL) {
+					gchar *name;
+
+					b = NULL;
+					r->lpVtbl->get_Name (r, &b);
+					name = bstr_take (b);
+					name_count (names, name);
+					g_free (name);
+				}
+			}
+			r->lpVtbl->Release (r);
+		}
+		VariantClear (&v);
+	}
+	en->lpVtbl->Release (en);
+	return ok;
+}
+
+/* [ com_list_our_names ]
+ * The names of the policy's own rules (fs_netsh_rule_name_is_ours),
+ * read through INetFwRules: one name per rule, no addresses, so the
+ * size of the blocklist rules cannot cut the list short.  Rules in the
+ * threat-intel group are skipped unread.  TRUE with *sink set, or
+ * FALSE with *sink NULL when the rules cannot be listed. */
+static gboolean
+com_list_our_names (GHashTable **sink, GError **error)
+{
+	FwIntel fw;
+	IUnknown *unk = NULL;
+	IEnumVARIANT *en = NULL;
+	GHashTable *names;
+	HRESULT hr;
+	gboolean ok = TRUE;
+
+	*sink = NULL;
+	if (!fw_intel_open (&fw, TRUE, error))
+		return FALSE;
+	hr = fw.rules->lpVtbl->get__NewEnum (fw.rules, &unk);
+	if (SUCCEEDED (hr) && unk != NULL) {
+		hr = unk->lpVtbl->QueryInterface (unk, &FS_IID_IEnumVARIANT,
+		                                  (void **) &en);
+		unk->lpVtbl->Release (unk);
+	}
+	if (FAILED (hr) || en == NULL) {
+		intel_hr_error (error, FAILED (hr) ? hr : E_FAIL,
+		                "The Windows Firewall rules could not be listed");
+		fw_intel_close (&fw);
+		return FALSE;
+	}
+	names = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+	for (;;) {
+		VARIANT v;
+		ULONG got = 0;
+		INetFwRule *r = NULL;
+
+		VariantInit (&v);
+		hr = en->lpVtbl->Next (en, 1, &v, &got);
+		if (FAILED (hr)) {
+			intel_hr_error (error, hr, "The Windows Firewall rules "
+			                "could not be listed");
+			ok = FALSE;
+			break;
+		}
+		if (hr != S_OK || got == 0)
+			break;
+		if (v.vt == VT_DISPATCH && v.pdispVal != NULL &&
+		    SUCCEEDED (v.pdispVal->lpVtbl->QueryInterface (
+			    v.pdispVal, &FS_IID_INetFwRule, (void **) &r)) &&
+		    r != NULL) {
+			BSTR bg = NULL, bn = NULL;
+			gchar *group, *name = NULL;
+
+			r->lpVtbl->get_Grouping (r, &bg);
+			group = bstr_take (bg);
+			if (!fs_intelwin_in_group (group)) {
+				r->lpVtbl->get_Name (r, &bn);
+				name = bstr_take (bn);
+			}
+			if (name != NULL && fs_netsh_rule_name_is_ours (name))
+				g_hash_table_add (names, name);
+			else
+				g_free (name);
+			g_free (group);
+			r->lpVtbl->Release (r);
+		}
+		VariantClear (&v);
+	}
+	en->lpVtbl->Release (en);
+	fw_intel_close (&fw);
+	if (!ok) {
+		g_hash_table_destroy (names);
+		return FALSE;
+	}
+	*sink = names;
+	return TRUE;
+}
+
+/* Reads our rules back and judges them (fs_intelwin_read). */
+static gboolean
+fw_intel_read (FwIntel *fw, FsIntelWinRead *out, GError **error)
+{
+	GPtrArray *seen = g_ptr_array_new_with_free_func (fs_intelwin_seen_free);
+	gboolean ok = fw_intel_list (fw, seen, NULL, NULL, error);
+
+	if (ok)
+		fs_intelwin_read (seen, out);
+	g_ptr_array_unref (seen);
+	return ok;
+}
+
+/* Creates one rule.  Unset properties keep their defaults: every
+ * protocol, port, local address, program and interface type. */
+static HRESULT
+fw_intel_add (FwIntel *fw, const FsIntelWinRule *r)
+{
+	INetFwRule *rule = NULL;
+	BSTR name, desc, group, remote;
+	HRESULT hr;
+
+	hr = CoCreateInstance (&FS_CLSID_NetFwRule, NULL, CLSCTX_INPROC_SERVER,
+	                       &FS_IID_INetFwRule, (void **) &rule);
+	if (FAILED (hr) || rule == NULL)
+		return FAILED (hr) ? hr : E_FAIL;
+	name = bstr_new (r->name);
+	desc = bstr_new (r->description);
+	group = bstr_new (FS_INTELWIN_GROUP);
+	remote = bstr_new (r->remote);
+	if (name == NULL || desc == NULL || group == NULL || remote == NULL)
+		hr = E_OUTOFMEMORY;
+	if (SUCCEEDED (hr))
+		hr = rule->lpVtbl->put_Name (rule, name);
+	if (SUCCEEDED (hr))
+		hr = rule->lpVtbl->put_Description (rule, desc);
+	if (SUCCEEDED (hr))
+		hr = rule->lpVtbl->put_Grouping (rule, group);
+	if (SUCCEEDED (hr))
+		hr = rule->lpVtbl->put_Direction (rule,
+		                                  (NET_FW_RULE_DIRECTION) r->dir);
+	if (SUCCEEDED (hr))
+		hr = rule->lpVtbl->put_Action (rule, NET_FW_ACTION_BLOCK);
+	if (SUCCEEDED (hr))
+		hr = rule->lpVtbl->put_Profiles (rule, NET_FW_PROFILE2_ALL);
+	if (SUCCEEDED (hr))
+		hr = rule->lpVtbl->put_RemoteAddresses (rule, remote);
+	if (SUCCEEDED (hr))
+		hr = rule->lpVtbl->put_Enabled (rule, r->enabled ? VARIANT_TRUE
+		                                                 : VARIANT_FALSE);
+	if (SUCCEEDED (hr))
+		hr = fw->rules->lpVtbl->Add (fw->rules, rule);
+	SysFreeString (name);
+	SysFreeString (desc);
+	SysFreeString (group);
+	SysFreeString (remote);
+	rule->lpVtbl->Release (rule);
+	return hr;
+}
+
+/* Which of our rules a removal takes. */
+typedef gboolean (*FwIntelPick) (const FsIntelWinSeen *seen,
+                                 const gchar *gen);
+
+static gboolean
+pick_all (const FsIntelWinSeen *seen, const gchar *gen)
+{
+	return TRUE;
+}
+
+static gboolean
+pick_other_gen (const FsIntelWinSeen *seen, const gchar *gen)
+{
+	return g_strcmp0 (fs_intelwin_name_gen (seen->name), gen) != 0;
+}
+
+static gboolean
+pick_gen (const FsIntelWinSeen *seen, const gchar *gen)
+{
+	return g_strcmp0 (fs_intelwin_name_gen (seen->name), gen) == 0;
+}
+
+/* Lists the firewall and removes the rules of ours `pick' takes.
+ * INetFwRules::Remove goes by name, and Windows lets two rules share a
+ * name: a rule whose name any other rule also has is first renamed, on
+ * the rule object itself, to a name nothing else has, so the removal
+ * can only take that rule -- never a user's rule that happens to share
+ * it.  Returns how many could not be removed (G_MAXUINT when the list
+ * could not be read); the first failure goes to *error. */
+static guint
+fw_intel_remove (FwIntel *fw, FwIntelPick pick, const gchar *gen,
+                 GError **error)
+{
+	GPtrArray *seen = g_ptr_array_new_with_free_func (fs_intelwin_seen_free);
+	GPtrArray *objs = g_ptr_array_new_with_free_func (rule_release);
+	GHashTable *names = g_hash_table_new_full (g_str_hash, g_str_equal,
+	                                           g_free, NULL);
+	guint failed = 0;
+
+	if (!fw_intel_list (fw, seen, objs, names, error)) {
+		failed = G_MAXUINT;
+		goto out;
+	}
+	for (guint i = 0; i < seen->len; i++) {
+		const FsIntelWinSeen *s = g_ptr_array_index (seen, i);
+		INetFwRule *r = g_ptr_array_index (objs, i);
+		gchar *unique = NULL;
+		const gchar *name = s->name;
+		HRESULT hr = S_OK;
+		BSTR b;
+
+		if (!pick (s, gen))
+			continue;
+		if (name == NULL || name_lookup (names, name) != 1) {
+			unique = g_strdup_printf ("%sremoving %08x%08x",
+			                          FS_INTELWIN_PREFIX,
+			                          g_random_int (), g_random_int ());
+			b = bstr_new (unique);
+			hr = r->lpVtbl->put_Name (r, b);
+			SysFreeString (b);
+			name = unique;
+		}
+		if (SUCCEEDED (hr)) {
+			b = bstr_new (name);
+			hr = fw->rules->lpVtbl->Remove (fw->rules, b);
+			SysFreeString (b);
+		}
+		if (FAILED (hr)) {
+			gchar *what = g_strdup_printf (
+				"The blocklist rule \"%s\" could not be removed",
+				s->name != NULL ? s->name : "");
+
+			intel_hr_error (error, hr, what);
+			g_free (what);
+			failed++;
+		}
+		g_free (unique);
+	}
+out:
+	g_hash_table_destroy (names);
+	g_ptr_array_unref (objs);
+	g_ptr_array_unref (seen);
+	return failed;
+}
+
+/* Whether Windows Firewall enforces rules now (core/fs-intelwin.h).
+ * The service through the service manager (a standard user may ask),
+ * the rest through the policy; what cannot be read stays "unknown",
+ * and fs_intelwin_not_in_force never reports an unknown as in force. */
+static void
+fw_intel_force (FsIntelWinForce *f)
+{
+	SC_HANDLE scm, svc;
+	FwIntel fw;
+
+	memset (f, 0, sizeof *f);
+	for (guint i = 0; i < 3; i++)
+		f->enabled[i] = -1;
+
+	scm = OpenSCManagerW (NULL, NULL, SC_MANAGER_CONNECT);
+	if (scm != NULL) {
+		svc = OpenServiceW (scm, L"MpsSvc", SERVICE_QUERY_STATUS);
+		if (svc != NULL) {
+			SERVICE_STATUS st;
+
+			if (QueryServiceStatus (svc, &st)) {
+				f->service_known = TRUE;
+				f->service_running = st.dwCurrentState ==
+				                     SERVICE_RUNNING;
+			}
+			CloseServiceHandle (svc);
+		}
+		CloseServiceHandle (scm);
+	}
+
+	if (!fw_intel_open (&fw, FALSE, NULL))
+		return;
+	{
+		LONG types = 0;
+		NET_FW_MODIFY_STATE ms = NET_FW_MODIFY_STATE_OK;
+
+		if (SUCCEEDED (fw.policy->lpVtbl->get_CurrentProfileTypes (
+			    fw.policy, &types))) {
+			f->current = (glong) types;
+			f->policy_read = TRUE;
+		}
+		for (guint i = 0; i < G_N_ELEMENTS (profiles); i++) {
+			VARIANT_BOOL on = VARIANT_FALSE;
+			VARIANT ex;
+
+			if (SUCCEEDED (fw.policy->lpVtbl->get_FirewallEnabled (
+				    fw.policy, profiles[i], &on)))
+				f->enabled[i] = on != VARIANT_FALSE ? 1 : 0;
+			VariantInit (&ex);
+			if (SUCCEEDED (fw.policy->lpVtbl->get_ExcludedInterfaces (
+				    fw.policy, profiles[i], &ex)))
+				f->excluded[i] = variant_count (&ex);
+			VariantClear (&ex);
+		}
+		if (SUCCEEDED (fw.policy->lpVtbl->get_LocalPolicyModifyState (
+			    fw.policy, &ms))) {
+			f->gp_read = TRUE;
+			f->gp_override = ms == NET_FW_MODIFY_STATE_GP_OVERRIDE;
+		}
+	}
+	fw_intel_close (&fw);
+}
+
+/* [ firewalled_intel_not_in_force ] -- see FsBackend.intel_not_in_force. */
+static gchar *
+firewalled_intel_not_in_force (void)
+{
+	FsIntelWinForce f;
+
+	fw_intel_force (&f);
+	return fs_intelwin_not_in_force (&f);
+}
+
+/* [ firewalled_intel_live ] -- see FsBackend.intel_live.
+ * ABSENT, PRESENT (with the digest) or PARTIAL from the rules read
+ * back whole; INACTIVE when there are rules of ours and the firewall
+ * does not enforce them on a network in use; UNKNOWN when they cannot
+ * be read (the service stopped: intel_not_in_force then says so). */
+static FsIntelLive
+firewalled_intel_live (gchar **digest)
+{
+	FwIntel fw;
+	FsIntelWinRead r;
+	FsIntelLive live;
+	gchar *why;
+
+	if (digest != NULL)
+		*digest = NULL;
+	if (!fw_intel_open (&fw, TRUE, NULL))
+		return FS_INTEL_LIVE_UNKNOWN;
+	if (!fw_intel_read (&fw, &r, NULL)) {
+		fw_intel_close (&fw);
+		return FS_INTEL_LIVE_UNKNOWN;
+	}
+	fw_intel_close (&fw);
+
+	live = r.live;
+	if (live != FS_INTEL_LIVE_ABSENT) {
+		why = firewalled_intel_not_in_force ();
+		if (why != NULL)
+			live = FS_INTEL_LIVE_INACTIVE;
+		g_free (why);
+	}
+	if (digest != NULL && r.live == FS_INTEL_LIVE_PRESENT) {
+		*digest = r.digest;
+		r.digest = NULL;
+	}
+	fs_intelwin_read_clear (&r);
+	return live;
+}
+
+/* [ firewalled_intel_apply ] -- see FsBackend.intel_apply. */
+static gboolean
+firewalled_intel_apply (const FsIntelRuleset *ruleset, GError **error)
+{
+	FwIntel fw;
+	FsIntelWinRead before, after;
+	FsIntelWinPlan *plan = NULL;
+	GError *add_error = NULL, *old_error = NULL, *read_error = NULL;
+	gchar *want = NULL, *gen = NULL;
+	guint old_left = 0;
+	gboolean ok = FALSE, read_ok;
+
+	g_return_val_if_fail (ruleset != NULL, FALSE);
+	memset (&before, 0, sizeof before);
+	memset (&after, 0, sizeof after);
+
+	if (!fw_intel_open (&fw, TRUE, error))
+		return FALSE;
+	if (!fw_intel_read (&fw, &before, error)) {
+		fw_intel_close (&fw);
+		return FALSE;
+	}
+	/* The empty rule set leaves no rule at all. */
+	if (ruleset->sets->len > 0)
+		want = fs_intel_ruleset_digest (ruleset);
+
+	/* Exactly these rules are there, whole: nothing to do.  Writing
+	 * them again would cost hundreds of firewall calls on every
+	 * hourly re-apply, and there are no counters for a replacement to
+	 * reset (Windows counts nothing per rule). */
+	if (want != NULL ? before.live == FS_INTEL_LIVE_PRESENT &&
+	                   g_strcmp0 (before.digest, want) == 0
+	                 : before.live == FS_INTEL_LIVE_ABSENT) {
+		ok = TRUE;
+		goto out;
+	}
+
+	if (want != NULL) {
+		g_ptr_array_add (before.gens, NULL);
+		gen = fs_intelwin_gen_new (g_random_int (),
+		                           (const gchar *const *) before.gens->pdata);
+		g_ptr_array_remove_index (before.gens, before.gens->len - 1);
+		plan = fs_intelwin_plan (ruleset, gen, FS_INTELWIN_MAX_TOKENS,
+		                         FS_INTELWIN_MAX_CHARS);
+		if (plan == NULL) {
+			g_set_error_literal (error, G_IO_ERROR,
+			                     G_IO_ERROR_INVALID_ARGUMENT,
+			                     "The blocklist rule set cannot be "
+			                     "loaded: a list id is invalid or "
+			                     "repeated. Nothing was changed.");
+			goto out;
+		}
+		/* The new rules first, the manifest last: until it is
+		 * written the new generation reads as incomplete, never as
+		 * a rule set. */
+		for (guint i = 0; i < plan->rules->len; i++) {
+			const FsIntelWinRule *r = g_ptr_array_index (plan->rules, i);
+			HRESULT hr = fw_intel_add (&fw, r);
+
+			if (FAILED (hr)) {
+				gchar *what = g_strdup_printf (
+					"Windows Firewall refused the blocklist rule "
+					"\"%s\"", r->name);
+
+				intel_hr_error (&add_error, hr, what);
+				g_free (what);
+				break;
+			}
+		}
+		if (add_error != NULL) {
+			/* Take the new rules out again.  The old ones were never
+			 * touched, so what was in force still is.  Remove
+			 * succeeds for a name it does not find, so the firewall
+			 * is listed again and only no rule of the new
+			 * generation left is "nothing was changed" (review W6). */
+			GPtrArray *rb = g_ptr_array_new_with_free_func (
+				fs_intelwin_seen_free);
+			guint left = fw_intel_remove (&fw, pick_gen, gen, NULL);
+			gboolean listed = fw_intel_list (&fw, rb, NULL, NULL, NULL);
+
+			if (listed)
+				left = fs_intelwin_count_gen (rb, gen);
+			g_ptr_array_unref (rb);
+			if (listed && left == 0)
+				g_set_error (error, add_error->domain,
+				             add_error->code,
+				             "%s. Nothing was changed: the blocklists "
+				             "loaded before are still in force.",
+				             add_error->message);
+			else if (!listed)
+				g_set_error (error, add_error->domain,
+				             add_error->code,
+				             "%s. The blocklists loaded before were not "
+				             "touched, but StockFW could not read the "
+				             "firewall back to check that the new rules "
+				             "were taken out again; apply again to tidy "
+				             "them.",
+				             add_error->message);
+			else
+				g_set_error (error, add_error->domain,
+				             add_error->code,
+				             "%s. The blocklists loaded before are "
+				             "still in force, and some of the new "
+				             "rules could not be taken out again: "
+				             "they block more, never less. Apply "
+				             "again to tidy them.",
+				             add_error->message);
+			goto out;
+		}
+	}
+
+	/* Then everything of ours that is not the new generation (all of
+	 * it for the empty rule set).  A rule that will not go blocks
+	 * more than the new rule set, never less. */
+	old_left = fw_intel_remove (&fw, want != NULL ? pick_other_gen
+	                                              : pick_all,
+	                            gen, &old_error);
+
+	/* What the firewall holds now decides [S10]. */
+	read_ok = fw_intel_read (&fw, &after, &read_error);
+	ok = read_ok && (want != NULL
+	                 ? after.live == FS_INTEL_LIVE_PRESENT &&
+	                   g_strcmp0 (after.digest, want) == 0
+	                 : after.live == FS_INTEL_LIVE_ABSENT);
+	if (!ok) {
+		if (!read_ok)
+			g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+			             "The blocklist rules were written, but could "
+			             "not be read back to confirm them: %s",
+			             read_error->message);
+		else if (old_left > 0 && old_error != NULL)
+			g_set_error (error, old_error->domain, old_error->code,
+			             "%s. %s", old_error->message,
+			             want != NULL
+			             ? "The new blocklists are in force, and older "
+			               "StockFW blocklist rules are still there "
+			               "too; apply again to remove them."
+			             : "Some StockFW blocklist rules are still in "
+			               "force.");
+		else
+			g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+			             "Windows Firewall does not hold the blocklist "
+			             "rules just written: %s",
+			             after.why != NULL ? after.why
+			                               : "they could not be found.");
+	}
+out:
+	fw_intel_close (&fw);
+	g_clear_error (&add_error);
+	g_clear_error (&old_error);
+	g_clear_error (&read_error);
+	fs_intelwin_plan_free (plan);
+	fs_intelwin_read_clear (&before);
+	fs_intelwin_read_clear (&after);
+	g_free (want);
+	g_free (gen);
+	return ok;
+}
+
+/* [ firewalled_intel_clear ] -- see FsBackend.intel_clear.
+ * Every rule in the group, and nothing else; then the firewall is
+ * listed again, and only none left is success. */
+static gboolean
+firewalled_intel_clear (GError **error)
+{
+	FwIntel fw;
+	GError *local = NULL;
+	GPtrArray *seen;
+	guint left;
+	gboolean ok;
+
+	if (!fw_intel_open (&fw, TRUE, error))
+		return FALSE;
+	left = fw_intel_remove (&fw, pick_all, NULL, &local);
+	if (left == G_MAXUINT) {
+		g_propagate_error (error, local);
+		fw_intel_close (&fw);
+		return FALSE;
+	}
+	seen = g_ptr_array_new_with_free_func (fs_intelwin_seen_free);
+	ok = fw_intel_list (&fw, seen, NULL, NULL, local == NULL ? error : NULL);
+	if (ok && seen->len > 0) {
+		ok = FALSE;
+		if (local != NULL)
+			g_set_error (error, local->domain, local->code,
+			             "%s. %u StockFW blocklist rules are still in "
+			             "force.", local->message, seen->len);
+		else
+			g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+			             "%u StockFW blocklist rules could not be "
+			             "removed and are still in force.", seen->len);
+	} else if (!ok && local != NULL) {
+		g_propagate_error (error, local);
+		local = NULL;
+	}
+	g_clear_error (&local);
+	g_ptr_array_unref (seen);
+	fw_intel_close (&fw);
+	return ok;
+}
+
 static const FsBackend windows_backend = {
 	.name                  = "windows",
 	.display_name          = "Windows Defender Firewall",
@@ -2797,11 +3698,22 @@ static const FsBackend windows_backend = {
 	.log_start             = firewalled_log_start,
 	.log_stop              = firewalled_log_stop,
 	.log_active            = firewalled_log_active,
+	.log_skipped           = firewalled_log_skipped,
 	.dhcp_set_enabled      = firewalled_dhcp_set_enabled,
 	.get_profile_enabled   = firewalled_get_profile_enabled,
 	.set_profile_enabled   = firewalled_set_profile_enabled,
 	.network_place         = firewalled_network_place,
-	.trust_signature       = fs_trust_win_signature
+	.trust_signature       = fs_trust_win_signature,
+	/* Threat intel, Round 3 (design section 11).  intel_counters stays
+	 * NULL: Windows Firewall keeps no count per rule, and a NULL slot
+	 * is how the engine and the surfaces learn that counts are not
+	 * available (fs_intel_counts_unavailable), never "blocked 0". */
+	.intel_apply           = firewalled_intel_apply,
+	.intel_clear           = firewalled_intel_clear,
+	.intel_live            = firewalled_intel_live,
+	.intel_not_in_force    = firewalled_intel_not_in_force,
+	.get_profile_defaults  = firewalled_get_profile_defaults,
+	.get_profile_block_all_inbound = firewalled_get_profile_block_all_inbound
 };
 
 const FsBackend *

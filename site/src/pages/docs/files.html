@@ -1,0 +1,139 @@
+---
+title: Files and formats
+section: Reference
+order: 40
+description: Every file StockFW keeps, where it is on each platform, and its exact format: the policy files, the applied journal, preferences, the audit log, the event history, the Trust baseline, the behaviour baseline, Sentinel’s staging record, the threat-intel store and the sign-in entries.
+---
+<h1>Files and formats</h1>
+<p class="lede">StockFW keeps everything as plain text you can read, copy, diff and back up. There is no database and no registry blob. This page is the format reference; nothing here is needed to use the app.</p>
+
+<h2>Where</h2>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Platform</th><th>Policy and journal</th><th>Preferences, logs, baselines</th></tr></thead>
+<tbody>
+<tr><td>Windows</td><td><code>%LOCALAPPDATA%\stockfw\</code></td><td><code>%APPDATA%\stockfw\</code></td></tr>
+<tr><td>Linux, as your user</td><td><code>~/.stockfw/</code></td><td><code>~/.config/stockfw/</code></td></tr>
+<tr><td>Linux, as root</td><td><code>/etc/stockfw/</code></td><td><code>/root/.config/stockfw/</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>STOCKFW_RULES_DIR</code> overrides the first column; <code>XDG_CONFIG_HOME</code> the second on Linux; and <code>STOCKFW_AUDIT_FILE</code>, <code>STOCKFW_TRUST_FILE</code> and <code>STOCKFW_AUTOBLOCK_FILE</code> point single files elsewhere. Three more places hold the rest:</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>What</th><th>Windows</th><th>Linux</th></tr></thead>
+<tbody>
+<tr><td><a href="#event-history">Event history</a></td><td><code>%LOCALAPPDATA%\stockfw\events\</code></td><td><code>~/.local/share/stockfw/events/</code> (<code>STOCKFW_EVENTS_DIR</code> overrides)</td></tr>
+<tr><td><a href="#intel-store">Threat-intel store</a></td><td><code>%ProgramData%\StockFW\intel\</code></td><td><code>/var/lib/stockfw/intel/</code></td></tr>
+<tr><td><a href="#sign-in">Start at sign-in</a></td><td>Task Scheduler folder <code>\StockFW</code>, one task per user</td><td><code>~/.config/autostart/stockfw.desktop</code>; the boot service is <code>/etc/systemd/system/stockfw.service</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="policy-files">The policy</h2>
+<p>One file per rule kind, no extension, under <code>inbound/</code> and <code>outbound/</code>. A file that does not exist is an empty kind.</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>File</th><th>Columns</th></tr></thead>
+<tbody>
+<tr><td><code>inbound/allow-from</code></td><td>host, comment</td></tr>
+<tr><td><code>inbound/allow-service</code></td><td>service, port, for, comment</td></tr>
+<tr><td><code>inbound/forward</code></td><td>service, firewall port, to, port, comment</td></tr>
+<tr><td><code>outbound/allow-to</code>, <code>outbound/allow-from</code>, <code>outbound/deny-to</code>, <code>outbound/deny-from</code></td><td>host, comment</td></tr>
+<tr><td><code>outbound/allow-service</code>, <code>outbound/deny-service</code></td><td>service, port, for, comment</td></tr>
+</tbody>
+</table>
+</div>
+<pre data-lang="text" data-title="inbound/allow-service">SSH, 22, 192.168.1.0/24, admin LAN
+HTTPS, 443, Anyone, web server</pre>
+<pre data-lang="text" data-title="inbound/forward">Web, 8080, 192.168.1.30, 80, lab box</pre>
+<p>Comma-separated, one rule per line, a space after each comma on write and optional on read. The comment is the last field and may be empty. A field may not contain a comma or a line break, and the app refuses to save one that does, because it would become another field. Ports are digits only (a range is <code>1024:2048</code>); a host is an address, a CIDR network, <code>Anyone</code>, or a host name that does not start with a hyphen. A line that does not parse is skipped at load and counted (“2 malformed policy rules were skipped”); saving writes back only the rules that parsed, and never rewrites a bad line into something else. [[verified:test_policy_load_validation_f1]]</p>
+<p>Round trip is exact: what you save is what loads. You may edit these files by hand with the app closed; the Policy page shows the result, and nothing reaches the firewall until Apply.</p>
+
+<h2 id="applied-csv">The applied journal</h2>
+<p><code>applied.csv</code> next to the policy: the last policy the engine accepted. Apply measures its impact against this file, not against the saved policy, and rolls back to it when the engine refuses.</p>
+<pre data-lang="text" data-title="applied.csv"># StockFW applied policy journal v1
+inbound-allow-service, "SSH, 22, 192.168.1.0/24, admin LAN"
+outbound-deny-to, "198.51.100.66, known bad host"</pre>
+<p>One row per applied rule: the kind, then the rule’s own line as one quoted field. A row that cannot be trusted fails the whole load, and an apply then refuses rather than roll back to something unverifiable; the dialog says so. The file is rewritten after every successful apply. If it is missing, the next apply counts every rule as added, which is also what happens on a fresh install. [[verified:test_apply_gate]]</p>
+
+<h2 id="stockfw-conf">Preferences</h2>
+<p><code>stockfw.conf</code>, an ini file with two groups. Keys keep the names the original program used, so a setting is easy to find:</p>
+<pre data-lang="ini" data-title="stockfw.conf">[client]
+first_run=false
+enable_tray_icon=true
+minimize_to_tray=true
+filter/redundant=false
+filter/not_for_firewall=true
+events/max_events=100000
+events/keep_history=false
+events/history_days=30
+events/history_mb=200
+policy_auto_apply=true
+policy_audit_only=false
+start_firewall_on_gui=false
+
+[firewall]
+ext_if=eth0
+int_if=
+nat=false
+icmp/enable=true
+icmp/echo_request=true
+deny_packets=true
+block_external_broadcast=false
+block_internal_broadcast=false
+block_non_routables=true
+restrictive_outbound=false
+log_allowed=true</pre>
+<p>A missing key takes its default. The file is written when you press Save, every five minutes while StockFW runs if something changed, and when the session ends. The <a href="{{root}}docs/preferences.html">Preferences page</a> describes each setting.</p>
+
+<h2 id="audit-log">The audit log</h2>
+<p><code>audit.log</code>, append-only, one line per thing StockFW did to the firewall or the baselines:</p>
+<pre data-lang="text" data-title="audit.log">2026-11-02T16:40:12Z | policy applied | source=Policy page mode=live +1 added (1 allow, 0 block), -0 removed (0 allow, 0 block), =8 unchanged
+2026-11-02T16:41:03Z | policy held, firewall untouched | source=cli mode=audit-only +0 added ... =9 unchanged
+2026-11-02T16:44:50Z | event rule added | outbound-deny-to 203.0.113.9 (Events page) live
+2026-11-02T16:51:19Z | sentinel auto-block | outbound-deny-to 198.51.100.77 beacon 6 contacts, mean 30 s
+2026-11-02T17:01:19Z | sentinel rule removed | outbound-deny-to 198.51.100.77: expired after 10 minutes
+2026-11-02T17:05:02Z | trust-attest | /usr/bin/nc.openbsd sha256=…</pre>
+<p>The three fields are the time in UTC, the action, and the detail, separated by <code> | </code>. Actions include <code>policy applied</code>, <code>policy applied, with notes</code>, <code>policy apply failed</code>, <code>policy apply refused</code>, <code>policy apply: no change</code>, <code>policy held, firewall untouched</code>, <code>event rule added</code>, <code>event rule added (bi-directional twin)</code>, <code>event trust removed</code>, the <code>sentinel …</code> family and <code>trust-attest</code> / <code>trust-forget</code>. Line breaks and the separator inside a detail are escaped, so a tool’s error text can never read as a second, forged entry. The app only ever appends; rotation is yours. [[verified:test_apply_gate]]</p>
+
+<h2 id="event-history">The event history</h2>
+<p>Written only while <em>Keep event history</em> is on. One file per UTC day, split into parts so no single file grows past a twentieth of the size cap: <code>events-2026-11-03-001.log</code>, the part number three digits or more. Each line is one event, tab-separated, with a checksum at the end:</p>
+<pre data-lang="text" data-title="events-2026-11-03-001.log">ticks  time  direction  in  out  port  source  destination  length  tos  protocol  service  rule  checksum</pre>
+<p><code>ticks</code> is the time in 100-nanosecond units since 1970 UTC; text fields escape backslash, tab and line breaks; the checksum is FNV-1a 32 of everything before it, in hex. A line cut short by a crash fails its checksum and is skipped, and the next writer starts a fresh line. The folder is created owner-only, and one copy of StockFW at a time holds a lock on <code>.lock</code> inside it, so no event is saved twice. Files older than the day limit, and the oldest files past the size cap, are deleted when the log opens or passes the cap. <code>stockfw events --history</code> reads these files; see <a href="{{root}}docs/events.html#history">History on disk</a>. [[verified:test-eventstore.sh]]</p>
+
+<h2 id="trust-csv">The Trust baseline</h2>
+<p><code>trust.csv</code>: quoted CSV, eight fields per row, one row per attested path.</p>
+<pre data-lang="text" data-title="trust.csv">"C:\Program Files\Mozilla Firefox\firefox.exe","9f3b…c1","68425616","1761840000","valid","Mozilla Corporation","1762085102","1762091840"</pre>
+<p>Path, SHA-256, size, modification time (unix seconds), signature state (<code>valid</code>, <code>invalid</code>, <code>unsigned</code>, <code>na</code>, <code>unknown</code>), publisher, first seen, last seen. A row with a different number of fields is skipped, never the file. [[verified:test_trust_engine]]</p>
+
+<h2 id="behavior-csv">The behaviour baseline</h2>
+<p><code>behavior.csv</code>: what the Copilot has learned, one fact per row, keyed by program.</p>
+<pre data-lang="text" data-title="behavior.csv">firefox,meta,1342,98304,2211840,1762080000,1762091830
+firefox,rate,1762091400,7,6250,41,0
+firefox,port,443,1288
+firefox,port,80,41
+firefox,dest,104.16.4.34,212
+firefox,hour,14,301
+curl,partial,1</pre>
+<p>Row kinds: <code>meta</code> (totals and first/last seen), <code>rate</code> (the connection-frequency state), <code>port</code>, <code>dest</code> and <code>hour</code> (counts), and <code>partial</code> (the profile was capped and can no longer claim novelty). Rows of an unknown kind are ignored, so an older version can read a newer file. Delete the file to start learning from scratch.</p>
+
+<h2 id="autoblocks">Sentinel’s staging record</h2>
+<p><code>autoblocks</code>: what Sentinel has staged and when, rewritten on every stage and every retirement.</p>
+<pre data-lang="text" data-title="autoblocks">S,1762094279,7,198.51.100.77, Sentinel: beacon 6 contacts</pre>
+<p>Four fields: <code>S</code>, the staging time in unix seconds, the rule kind’s number, and the rule’s own CSV line last, so its commas survive the split. At start-up, rows older than ten minutes are taken out of the policy with an audit line; fresh rows are re-armed with their original time. Deleting this file loses the tracking of staged rows, not the rows themselves, which the destination gates and the next Apply then govern. [[verified:fs-copilot-smoke]]</p>
+
+<h2 id="intel-store">The threat-intel store</h2>
+<p><code>intel.conf</code> (which feeds are on, their direction, your consent, the proxy, the country and network rules) and one downloaded copy per feed with its checksum and date, in <code>/var/lib/stockfw/intel/</code> on Linux and <code>%ProgramData%\StockFW\intel\</code> on Windows, where only an administrator can write. Your own lists are kept beside them. On Linux the store is root’s, which is why <code>stockfw intel</code> changes need <code>sudo</code>. See <a href="{{root}}docs/threat-intel.html">Threat intel</a>.</p>
+
+<h2 id="sign-in">Start at sign-in</h2>
+<p>On Windows, a task in the Task Scheduler folder <code>\StockFW</code>, one per user, that starts <code>StockFW.exe --background</code> at that account’s sign-in without administrator rights. On Linux, <code>~/.config/autostart/stockfw.desktop</code>. Both are written by the switch in Preferences › General, the tray menu or <code>--enable-autostart</code>, and removed by the uninstaller. The Linux boot service, <code>/etc/systemd/system/stockfw.service</code>, is separate: it runs <code>stockfw start</code> before the network comes up and only when <code>/etc/stockfw/applied.csv</code> exists. [[verified:test-autostart.sh]]</p>
+
+<h2>In the engine</h2>
+<ul>
+<li>[[win]] Rules named <code>StockFW-…</code> are policy rules; <code>StockFW …</code> (with a space) are Preferences rules; rules in the group <em>StockFW Threat Intel</em> are the blocklists. StockFW owns everything with those prefixes and nothing else. <code>wf.msc</code> or <code>netsh advfirewall firewall show rule name=all</code> lists them.</li>
+<li>[[linux]] Chains <code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code> and <code>STOCKFW-SNAT</code>, hooked from <code>INPUT</code>, <code>OUTPUT</code>, <code>FORWARD</code> (router mode), <code>PREROUTING</code> and <code>POSTROUTING</code>; log prefixes <code>STOCKFW-DROP</code>, <code>STOCKFW-REJECT</code> and <code>STOCKFW-ALLOW</code>. The nftables table <code>inet stockfw_intel</code> for threat intel, with the log prefix <code>STOCKFW-TI</code>. <code>nft list ruleset</code> shows all of it.</li>
+</ul>
+
+<h2>Backing up</h2>
+<p>Copy the two directories. Restoring the policy directory onto another machine and pressing Apply reproduces the firewall there; the journal will count every rule as added, which is correct. The baselines and the audit log are per machine and worth keeping for their history, not for restoring.</p>

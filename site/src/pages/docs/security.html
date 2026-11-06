@@ -1,0 +1,68 @@
+---
+title: Security model
+section: Protection
+order: 20
+description: How StockFW protects you and how it protects itself: trust boundaries, the apply gate, why user-level code cannot change the firewall, what tampering with its files can and cannot do, and what it never sends anywhere.
+---
+<h1>Security model</h1>
+<p class="lede">StockFW is a privileged program by nature: when it is allowed to, it rewrites the firewall. This page explains the boundaries it keeps, so you can judge for yourself whether running it makes your computer safer. Every claim here is spelled out with its evidence in the <a href="{{repo}}/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">architecture and security document</a>, chapter 5 and the release addenda.</p>
+
+<h2>What it is, in one paragraph</h2>
+<p>StockFW contains no packet filter, no driver and no service. It configures the engine your operating system already has, through the tools that system documents (<code>netsh advfirewall</code> and the firewall COM interfaces on Windows; <code>iptables-restore</code>, <code>ip6tables-restore</code> and <code>nft</code> on Linux), and it reads the verdicts that engine already logs. If StockFW is closed, crashes or is uninstalled, the engine keeps enforcing whatever was last applied. Nothing StockFW does can make the firewall <em>less</em> enforced by failing.</p>
+
+<h2>Three boundaries</h2>
+<dl>
+<dt>Enforcement</dt>
+<dd>Anything that changes firewall state must run with administrator or root rights, and StockFW contains no code that raises its own rights: no <code>runas</code>, no <code>ShellExecute</code>, no <code>sudo</code>, no setuid helper, no polkit rule. The Windows manifest says <code>asInvoker</code>. Elevation happens only when you choose the elevated shortcut and answer the UAC prompt, or type <code>sudo</code>. [[verified:test-installer-spawn.sh]]</dd>
+<dt>Input</dt>
+<dd>Text from the system (event logs), from disk (policy files, preferences, journals) and from you (the policy editor, the simulator) is untrusted until it has been parsed into typed values. Ports are digits only; addresses are parsed with <code>inet_pton</code> and never resolved by the engine; every generated Linux rule line passes a character whitelist before it reaches a restore payload; every Windows argument is one argv token quoted by the exact inverse of the child’s parser. There is no shell anywhere: not <code>system()</code>, not <code>cmd /c</code>, not <code>sh -c</code>. [[verified:test_restore_plan]]</dd>
+<dt>Display</dt>
+<dd>What the app shows is derived data. An event is text in a list, never markup and never a command, so a hostile program cannot make the Events page do something by choosing what to connect to.</dd>
+</dl>
+
+<h2>One gate</h2>
+<p>Every path that can change the firewall, the Apply button, an event’s right-click menu, a Copilot suggestion, Sentinel’s auto-block, the Preferences dialog and <code>stockfw apply</code>, calls one function. It measures the change against the journal of what is live, honours Audit-only and Lock, touches only the rules that changed, rolls back to the journal if the engine refuses and verifies the rollback instead of assuming it, and appends one line to the audit log. There is no second door, and the gate is tested with a scripted fake backend through every branch. [[verified:test_apply_gate]]</p>
+
+<h2>Why a program running as you cannot change the firewall</h2>
+<p>The interesting attacker is not someone on the network, who can only generate traffic for StockFW to display. It is malware already running with your rights, trying to make the <em>elevated</em> StockFW install its rules. The walk-through from the architecture document:</p>
+<ol>
+<li>It rewrites the policy files with permissive rows. Nothing happens: there is no file watcher, and the files are read when the app loads them. The rows are visible on the Policy page.</li>
+<li>It presses Apply in the unprivileged window. The engine refuses, the app says “Administrator privileges required”, and the rows never reached a privileged process.</li>
+<li>It sends clicks to the elevated window. Windows’ UIPI drops input from a lower-integrity process.</li>
+<li>It plants a fake <code>netsh.exe</code> or <code>iptables</code> on the search path. On Windows every tool is started by its full path in the system folder (<code>netsh</code>, <code>wevtutil</code>, <code>auditpol</code>, <code>curl</code>), never from the program’s own folder or the current one, and DLLs load only from StockFW’s folder and System32. On Linux a root StockFW runs <code>iptables</code>, <code>ip6tables</code>, <code>nft</code>, <code>journalctl</code> and <code>curl</code> only from <code>/usr/sbin</code>, <code>/usr/bin</code>, <code>/sbin</code> or <code>/bin</code>, whatever <code>PATH</code> says, so a script planted in <code>~/.local/bin</code> under <code>sudo -E</code> never runs. The installed program sits in a folder only administrators can write. [[verified:test-core.sh]]</li>
+<li>It races the temporary files the app uses to capture tool output. They are created atomically and reopened share-read; a planted file causes a sharing violation and the error path.</li>
+</ol>
+<p>Each step is a structural dead end, not a detection. The same reasoning holds on Linux with root in place of administrator, where additionally the installer never widens <code>sudo</code>’s search path or installs any helper. [[verified:test-installer-spawn.sh]]</p>
+
+<h2>What tampering with the files buys</h2>
+<p>The policy and preferences are your files, in your profile, writable by you. That is a deliberate choice (back up by copying, audit with <code>diff</code>), and its consequence is stated plainly: <strong>file integrity is not a security boundary in StockFW; the Apply button is.</strong></p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>If someone…</th><th>Then…</th></tr></thead>
+<tbody>
+<tr><td>rewrites the policy while StockFW is closed</td><td>nothing changes until you open the app, see the rows, and press Apply with privileges.</td></tr>
+<tr><td>rewrites it while StockFW is open</td><td>the in-memory policy wins on the next save; a later load counts malformed rows; Apply still needs the button.</td></tr>
+<tr><td>deletes a file</td><td>the app reports it; the engine keeps its rules.</td></tr>
+<tr><td>replaces it with garbage</td><td>rows that do not parse are skipped and counted, never half-applied.</td></tr>
+<tr><td>edits the journal</td><td>a row that cannot be trusted fails the journal load, and the apply refuses rather than roll back to a lie. [[verified:test_apply_gate]]</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>The Copilot cannot be talked into anything</h2>
+<p>There is no language model and no prompt. The what-if parser recognises a dozen words; the behaviour analysis is counters. An attacker’s only input is the traffic it generates, which becomes rows and numbers, never instructions. Everything the Copilot proposes is printed as the exact rule in a Yes/No dialog, allow rules are never applied without that dialog, and the one autonomous action, Sentinel’s auto-block, can only add a deny for a public destination, expires in ten minutes, and is fenced as described on <a href="{{root}}docs/copilot.html">the Copilot page</a>. [[verified:test-adversarial.sh]]</p>
+
+<h2>What leaves your computer</h2>
+<p>Nothing on its own. StockFW has no telemetry, no analytics, no update check and no account. The only processes it starts are local system tools. Event data lives in memory and on screen, and on disk only if you turn <em>Keep event history</em> on; the policy records intent, not history; the audit log records what StockFW did, not what you connected to. What it downloads, each only after you turn it on and accept: threat-intel feeds, from their publishers and no mirror, and IPFire’s location database for country blocking; the consent dialog says what the publisher learns (your public address and <code>StockFW/<em>version</em></code>). Beyond that, a Linux rule that names a host looks the name up in DNS when it is applied, and a link you click in Help opens in your browser. The <em>Your data</em> topic in the app’s Help says the same.</p>
+<p>One machine setting outside the firewall is changed, and disclosed when it happens: on Windows, enabling monitoring turns on the <em>Filtering Platform Connection</em> audit subcategory with <code>auditpol</code>.</p>
+
+<h2>The local dashboard</h2>
+<p><code>stockfw dashboard</code> is the one place StockFW listens on a socket. It binds <code>127.0.0.1</code> only and has no option to bind anything else; before a byte is read it asks the kernel who owns the connecting socket and closes anything that is not your own account on 127.0.0.1 (never root, never another user); the link it prints holds a 128-bit code that works once, for two minutes, which the page swaps for a 256-bit session key sent in a header and compared in constant time; a link used twice ends every session; a request whose <code>Host</code> header is not exactly <code>127.0.0.1:<em>port</em></code> is refused, which closes DNS rebinding (<code>localhost</code> is refused too, since another account could listen on <code>[::1]</code>); the one <code>POST</code> needs the page’s own <code>Origin</code> and <code>Sec-Fetch-Site: same-origin</code>; and the API is read-only, so even with a session a page cannot change the firewall. The code never appears on a command line: the link is printed only to a terminal, a pipe gets the path of a private launch file (mode 0600, in a fresh private directory) instead, the browser is handed that file, and it is deleted once the code has been used. Requests have deadlines and per-account slots, so slow senders cannot lock you out. <a href="{{root}}docs/dashboard.html">Dashboard</a>. [[verified:test-dashboard.sh]]</p>
+
+<h2>Honest limits</h2>
+<ul>
+<li>The installer is not code-signed yet; check the SHA-256 on the download page. The licence texts both installers ship are the About window’s summary followed by both licence files in full, and a test fails the build if they drift. [[gap]]</li>
+<li>There is no private disclosure address yet. Report security problems as a <a href="{{repo}}/issues">GitHub issue</a>; if the details are sensitive, say so in the issue without them and ask for a private channel. [[gap]]</li>
+<li>The netsh output parser assumes English Windows. On another locale a refused rule is still refused; only the explanation may be less specific.</li>
+<li>Protection of your profile at rest (disk encryption) is the operating system’s job, not StockFW’s.</li>
+</ul>

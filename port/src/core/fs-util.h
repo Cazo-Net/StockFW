@@ -74,10 +74,27 @@ gboolean fs_util_remove_line_from_file (const gchar *path, gint position);
 /* Ensures every parent directory of path exists. */
 gboolean fs_util_ensure_parent_dir (const gchar *path);
 
+/* [ fs_util_make_private ]
+ * Makes path readable and writable by this account only: mode 0700
+ * (a folder) or 0600 (a file) on POSIX; on Windows a protected DACL
+ * (no inherited entries) with one entry, full control for the user
+ * the process runs as, inherited by what is created inside a folder.
+ * Returns FALSE with errno set when it could not; on Windows a file
+ * system without ACLs (FAT) counts as done, as there is nothing to
+ * set. */
+gboolean fs_util_make_private (const gchar *path, gboolean is_dir);
+
 /* Directory holding the generated policy files.  Overridable with the
  * STOCKFW_RULES_DIR environment variable so the app can run
  * unprivileged for development. */
 const gchar *fs_util_rules_dir (void);
+
+/* TRUE when this process may change the firewall itself: root on
+ * Linux, an elevated (administrator) token on Windows.  A copy without
+ * it can still read and show a great deal; it cannot apply, start or
+ * stop, and the UI greys what needs it rather than letting it fail
+ * after a confirmation. */
+gboolean fs_util_privileged (void);
 
 /* Convenience: build a path below the rules directory. */
 gchar *fs_util_rules_path (const gchar *relative);
@@ -134,6 +151,13 @@ GPtrArray *fs_util_csv_split_line (const gchar *line);
  * label match assumes English netsh output.  Returns a new GHashTable
  * of name strings (caller destroys with g_hash_table_destroy). */
 GHashTable *fs_netsh_rule_names_extract (const gchar *output);
+
+/* Whether a firewall rule name is one of the policy's own: every
+ * spelling they have shipped with ("StockFW-", the older "StockFW ").
+ * The threat-intel rules ("SFW-TI ...") never are.  The Windows backend
+ * lists the policy's rules through INetFwRules with this (review W3),
+ * and fs_netsh_rule_names_extract keeps only names it accepts. */
+gboolean fs_netsh_rule_name_is_ours (const gchar *name);
 
 G_END_DECLS
 

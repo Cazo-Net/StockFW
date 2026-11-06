@@ -1,0 +1,25 @@
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="{{root}}index.html">
+			<img src="{{root}}assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">{{version}}</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="{{root}}index.html#tour"{{cur_home}}>Features</a>
+			<a href="{{root}}docs/index.html"{{cur_docs}}>Docs</a>
+			<a href="{{root}}download.html"{{cur_download}}>Download</a>
+			<a href="{{root}}changelog.html"{{cur_changelog}}>Changelog</a>
+			<a href="{{repo}}">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>

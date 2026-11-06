@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Questions and answers · StockFW</title>
+<meta name="description" content="Short answers to the questions people ask first: whether StockFW replaces the system firewall, what happens at reboot, what it sends anywhere, whether the Copilot is an AI, nftables, Docker, licences and versions.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Questions and answers · StockFW">
+<meta property="og:description" content="Short answers to the questions people ask first: whether StockFW replaces the system firewall, what happens at reboot, what it sends anywhere, whether the Copilot is an AI, nftables, Docker, licences and versions.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html" aria-current="page"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Reference
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Reference</p>
+		<article class="prose">
+<h1>Questions and answers</h1>
+
+<h2 id="about-the-product">About the product<a class="anchor" href="#about-the-product" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>Does StockFW replace Windows Firewall or iptables?</dt>
+<dd>No. It configures them. The engine your system already has keeps doing the filtering, which is why StockFW has no driver, needs no reboot, and leaves the firewall exactly as it was when it is closed, crashes or is uninstalled.</dd>
+<dt>Does anything leave my computer?</dt>
+<dd>Nothing. There is no telemetry, no update check, no account and no network client. The dashboard listens on 127.0.0.1 only. The threat-intel feature downloads lists, each only after you turn it on and accept its publisher’s terms. <a href="../docs/security.html">The security model</a> spells this out.</dd>
+<dt>Is the Copilot an AI?</dt>
+<dd>No. It is a set of fixed rules that run on this computer over the event log and the saved policy: no model, no network, no telemetry. Every finding names the rule that raised it, the numbers it measured next to their limits, and the events behind it, and every fix it offers was checked by the What-If engine first. It works offline and cannot be talked into anything because there is no prompt. <a href="../docs/copilot.html">The Copilot page</a>.</dd>
+<dt>Why is there no “deny inbound” rule kind?</dt>
+<dd>Because inbound is denied by default. Every inbound rule is an exception that allows something; to block a source again you remove the allow. Outbound is the mirror image: allowed by default, with deny rules as the exceptions, and an optional restrictive mode that flips it.</dd>
+<dt>Where is the Windows command line?</dt>
+<dd>There is none. <code>stockfw</code> is Linux only; on Windows, the app is the whole tool. The core it links against is portable, so the gap is a packaging one, not a design one. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
+<dt>Which licence?</dt>
+<dd>The repository carries two texts: the inherited GPLv2 in <code>COPYING</code> for the original code, and Apache-2.0 in <code>LICENSE</code>. The README says which applies to what, and the question of a single licence for the whole is open. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
+</dl>
+
+<h2 id="reboot">Reboot and persistence<a class="anchor" href="#reboot" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>What happens to my rules at reboot?</dt>
+<dd><span class="plat">Windows</span> Windows Firewall rules persist; StockFW’s rules are ordinary rules in it, so they are in force from boot, before any program runs. <span class="plat">Linux</span> iptables rules live in the kernel and are gone at boot, so the Linux installer enables <code>stockfw.service</code>, which runs <code>stockfw start</code> before the network comes up and loads the last policy applied as root. Threat-intel lists come back with it. A policy saved but never applied waits for the next Apply. <a href="../docs/install-linux.html#at-boot">At boot</a> has the details. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-boot-start.sh</span></dd>
+<dt>Is there help inside the app?</dt>
+<dd>Yes. <kbd>F1</kbd>, or <em>Help</em> in the sidebar, opens a Help window at the topic for the page you are on, with a searchable list of topics, Back and Forward, and links between topics. It is built into the program and works offline. <a href="../docs/help.html">Help and About</a>.</dd>
+<dt>If StockFW crashes, am I unprotected?</dt>
+<dd>No. The engine keeps the last applied rules. What you lose is monitoring, learning and Sentinel until you start it again. Settings and what the Copilot has learned are saved every five minutes when they change, so a crash loses at most five minutes of learning.</dd>
+</dl>
+
+<h2 id="linux">Linux<a class="anchor" href="#linux" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>iptables or nftables?</dt>
+<dd>StockFW drives <code>iptables</code> and <code>ip6tables</code>, which on every current distribution are the nftables-backed versions, so its rules land in nftables and <code>nft list ruleset</code> shows them. The threat-intel sets use <code>nft</code> directly, in their own table. The policy itself has no native nftables backend. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
+<dt>Does it fight with ufw, firewalld, Docker or libvirt?</dt>
+<dd>StockFW owns its own chains (<code>INBOUND</code>, <code>OUTBOUND</code>, <code>STOCKFW-DNAT</code>, <code>STOCKFW-SNAT</code>) and replaces only those; rules other tools keep in the same tables are not touched, and the loads use <code>--noflush</code>. Two tools both setting a default policy on <code>INPUT</code> will still disagree about what the default is, so run one host firewall manager at a time; ufw and firewalld are alternatives to StockFW, Docker and libvirt coexist with it.</dd>
+<dt>Why root, and not polkit or a setuid helper?</dt>
+<dd>Because a desktop program that can silently rewrite the firewall is a worse posture than one that asks for root openly. StockFW never raises its own rights. <a href="../docs/install-linux.html#why-there-is-no-polkit-policy-or-setuid-helper">More</a>.</dd>
+<dt>Which distributions?</dt>
+<dd>Tested on Debian, Kali, Ubuntu and WSL2. Anything with GTK 3, liblzma 5, OpenSSL 3 and iptables should work; the installer checks libraries by soname, not by package name, so renamed packages do not fail it. Debian 11 and Ubuntu 20.04 ship only OpenSSL 1.1 and are refused.</dd>
+</dl>
+
+<h2 id="windows">Windows<a class="anchor" href="#windows" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>Why two shortcuts?</dt>
+<dd>The ordinary one runs with your rights and can read, edit and simulate; the elevated one asks for administrator rights once and can change the firewall. Keeping them separate means a program running as you cannot borrow the elevated window. <a href="../docs/install-windows.html">Install on Windows</a>.</dd>
+<dt>Why is the installer not signed?</dt>
+<dd>A code-signing certificate is a cost the project has not taken on yet. Check the SHA-256 on the download page instead; it tells you the same thing a signature would. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></dd>
+<dt>Does it work with a third-party antivirus firewall?</dt>
+<dd>StockFW manages the Windows engine. If another product has replaced Windows Firewall as the active firewall, StockFW’s rules exist but that product decides.</dd>
+</dl>
+
+<h2 id="versions">Versions<a class="anchor" href="#versions" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>Which version do these pages describe?</dt>
+<dd>1.0.7, the release on the <a href="../download.html">download page</a>. The app shows its version in the sidebar and in <em>About StockFW</em>, whose <em>Copy system info</em> copies it with the GTK version, the platform and the backend; <code>stockfw version</code> prints it.</dd>
+<dt>What do the stamps on these pages mean?</dt>
+<dd>“Verified” names an automated test that proves the sentence, “Measured” gives a number from an experiment that was run, and “Limit” marks something StockFW does not do. <a href="../docs/index.html">The welcome page</a> explains each.</dd>
+</dl>
+
+<h2 id="something-else">Something else?<a class="anchor" href="#something-else" aria-label="Link to this section">#</a></h2>
+<p>If the <a href="../docs/troubleshooting.html">troubleshooting page</a> does not have it, <a href="https://github.com/Cazo-Net/StockFW/issues">open an issue</a>. Questions are welcome there too; they become documentation.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/troubleshooting.html"><span>Previous</span><strong>Troubleshooting</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/faq.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#about-the-product">About the product</a></li>
+			<li class="lvl2"><a href="#reboot">Reboot and persistence</a></li>
+			<li class="lvl2"><a href="#linux">Linux</a></li>
+			<li class="lvl2"><a href="#windows">Windows</a></li>
+			<li class="lvl2"><a href="#versions">Versions</a></li>
+			<li class="lvl2"><a href="#something-else">Something else?</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stockfw Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

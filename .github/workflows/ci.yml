@@ -1,26 +1,40 @@
 # StockFW continuous integration: build and test on Linux and on Windows
 # (MSYS2 UCRT64, the toolchain the README documents), and keep the
-# Windows installer each run produces so a build can be tried without
-# setting MSYS2 up first.
+# Windows installer and the Linux tarball each run produces, so a build
+# can be tried without setting anything up first.
 #
 # It runs for every pull request (on the pull request merged into its
 # base, so what is tested is what merging would give), for pushes to
-# main, and by hand from the Actions tab.  Work-in-progress branches
-# without a pull request are not built.
+# main, for version tags (vX.Y.Z), and by hand from the Actions tab.
+# Work-in-progress branches without a pull request are not built.  On a
+# version tag, once both jobs pass, the release job drafts the GitHub
+# release from that run's artifacts (RELEASING.md).
 
 name: StockFW CI
 
 on:
   push:
     branches: [main]
+    # A version tag builds and tests both platforms on the tagged commit
+    # and then drafts the GitHub release (the release job at the end).
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
   workflow_dispatch:
+    inputs:
+      draft_release:
+        description: >-
+          Also draft the GitHub release for the version in
+          port/CMakeLists.txt (main only; the tag is made when you publish)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # The event is part of the group, so a push to main never cancels a
+  # release run started by hand on main, nor the other way round.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -38,28 +52,70 @@ jobs:
           # them out, yet every desktop has them: the Adwaita theme draws
           # some of its marks (the radio bullet, for one) from SVG files.
           # Without the loader GTK warns, and the smoke tests count any
-          # GTK warning as a failure.
+          # GTK warning as a failure.  fonts-dejavu-core is named, not
+          # left to the runner image: the Help layout tests measure text,
+          # and DejaVu Sans is wider than most, so they run in a known
+          # wide font rather than whatever sans the image happens to have.
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config libgtk-3-dev \
-            librsvg2-common shared-mime-info \
-            iptables nftables xvfb xauth
+            librsvg2-common shared-mime-info fonts-dejavu-core \
+            iptables nftables xvfb xauth \
+            xdotool stalonetray desktop-file-utils \
+            liblzma-dev libssl-dev xz-utils \
+            python3-location location libloc-database clang libclang-rt-dev \
+            nsis gcc-mingw-w64-x86-64 libgtk-3-bin strace
 
       - name: Build
         run: |
           cmake -S port -B port/build-linux -G Ninja
           ninja -C port/build-linux
 
+      - name: Command-line tool without GTK (FS_BUILD_GUI=OFF)
+        working-directory: port
+        run: |
+          # Configures with GTK hidden from pkg-config, builds fs-core
+          # and stockfw, and checks with readelf -d that stockfw needs
+          # no GTK, GDK, Pango or cairo library; the default (ON) must
+          # still refuse to configure without GTK.
+          bash tests/test-nogui-build.sh
+
       - name: Core, adversarial and command-line tests
         working-directory: port
         run: |
           bash tests/test-core.sh
+          bash tests/test-eventstore.sh
+          bash tests/test-winevt.sh
           bash tests/test-adversarial.sh
           bash tests/test-cli.sh
+          bash tests/test-dashboard.sh
           bash tests/test-logstart.sh
-          ninja -C build-linux fs-intel-test fs-netplace-test fs-nftset-load
+          bash tests/test-licence-texts.sh
+          bash tests/test-uaf-analyze.sh
+          ninja -C build-linux fs-intel-test fs-netplace-test fs-nftset-load \
+            fs-whatif-test fs-feed-test fs-intelset-test fs-fetch-test \
+            fs-hostnet-test fs-backend-probe fs-fetch-spawn-test
           ./build-linux/fs-intel-test
           ./build-linux/fs-netplace-test
+          ./build-linux/fs-whatif-test
+          ./build-linux/fs-feed-test
+          ./build-linux/fs-intelset-test
+          ./build-linux/fs-fetch-test golden
+          # How curl is started and read, against a fake curl (the
+          # Windows job checks there is no console window).
+          ./build-linux/fs-fetch-spawn-test
+          # As the runner's user here; the root step below runs it again
+          # for its live part.
+          ./build-linux/fs-hostnet-test
+
+      - name: Location database reader (libloc, IPFire's file, fuzzer)
+        working-directory: port
+        run: |
+          # Every part runs here: STOCKFW_GEODB_REQUIRE makes a missing
+          # tool a failure instead of a skip.
+          ninja -C build-linux fs-geodb-test
+          ./build-linux/fs-geodb-test tests/geodb
+          STOCKFW_GEODB_REQUIRE=1 FUZZ_SECONDS=120 bash tests/test-geodb.sh
 
       - name: UI smoke tests on a virtual display
         working-directory: port
@@ -69,21 +125,54 @@ jobs:
           # fs-tray-smoke is left out on Linux: it checks that the icon
           # is embedded in a notification area, and a bare X server has
           # none.  The Windows job runs it.
-          smokes="fs-ui-smoke fs-hitview-smoke fs-simviz-smoke fs-theme-smoke
-                  fs-trustview-smoke fs-copilot-smoke fs-statusview-smoke
-                  fs-activity-smoke fs-overview-place-smoke"
+          smokes="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke
+                  fs-simviz-smoke fs-theme-smoke fs-trustview-smoke
+                  fs-copilot-smoke fs-statusview-smoke fs-activity-smoke
+                  fs-overview-place-smoke fs-verdict-smoke
+                  fs-startup-smoke fs-traymenu-smoke fs-session-smoke
+                  fs-help-smoke fs-intelview-smoke fs-whatif-start-smoke
+                  fs-sentinel-test"
           ninja -C build-linux $smokes
           for t in $smokes; do
             echo "== $t"
             xvfb-run -a "./build-linux/$t"
           done
 
+      - name: One instance, background start and --quit (real binary)
+        working-directory: port
+        env:
+          NO_AT_BRIDGE: "1"
+        run: |
+          # As the runner's user: the backend is unavailable, so the app
+          # cannot touch the firewall.  stalonetray stands in for the
+          # notification area; xdotool reads which windows are on screen.
+          ninja -C build-linux StockFW
+          xvfb-run -a bash tests/test-instance.sh
+
+      - name: No tray (Broadway, as on Wayland and WSL) and stray words (real binary)
+        working-directory: port
+        env:
+          NO_AT_BRIDGE: "1"
+          STOCKFW_NOTRAY_REQUIRE: "1"
+        run: |
+          # broadwayd (libgtk-3-bin) gives a GDK backend that is not
+          # X11, where GTK has no tray: the case of Wayland desktops and
+          # WSLg.  STOCKFW_NOTRAY_REQUIRE turns its SKIP into a failure.
+          ninja -C build-linux StockFW fs-prefs-fake-smoke
+          bash tests/test-notray.sh
+
+      - name: Start at sign-in (XDG autostart entry)
+        working-directory: port
+        run: |
+          bash tests/test-autostart.sh
+
       - name: Live firewall tests as root, each in a private network namespace
         working-directory: port
         run: |
           # These print SKIP and pass when root, iptables or nft is
           # missing.  Everything is installed here, so a skip means the
-          # test did not run, and that fails the job.
+          # test did not run, and that fails the job.  With "parts",
+          # a lower-case "skip:" line (some checks not run) fails too.
           strict () {
             local log rc
             log="$(mktemp)"
@@ -93,23 +182,125 @@ jobs:
               echo "::error::$1 was skipped on CI"
               return 1
             fi
+            if [ "${2:-}" = parts ] && grep -q '^skip:' "$log"; then
+              echo "::error::$1 skipped root-only checks on CI"
+              return 1
+            fi
             return "$rc"
           }
+          # The threat-intel drivers run some checks as nobody, which
+          # must be able to reach them: ubuntu-24.04 makes home
+          # directories 0750, so every directory above the checkout gets
+          # o+x (search only, nothing becomes readable).
+          ninja -C build-linux fs-nftset-load fs-intelset-driver \
+            fs-intel-backend-driver fs-intel-e2e-driver stockfw-intel-test \
+            fs-fetch-test fs-hostnet-test
+          d="$PWD"
+          while [ "$d" != / ]; do sudo chmod o+x "$d"; d="$(dirname "$d")"; done
           strict tests/test-apply-linux.sh
           strict tests/test-apply-dual.sh
           strict tests/test-nftset.sh
+          strict tests/test-whatif-live.sh
+          strict tests/test-logstart-events.sh
+          strict tests/test-logstart-kmsg.sh
+          # H12: the What-If "Start the firewall" through the start gate.
+          # As the runner's user it prints SKIP (the What-If trusts a
+          # "stopped" reading only from root); here it must run.  Fake
+          # backend: no firewall is touched.
+          ninja -C build-linux fs-whatif-start-smoke
+          log="$(mktemp)"
+          sudo env NO_AT_BRIDGE=1 xvfb-run -a ./build-linux/fs-whatif-start-smoke \
+            > "$log" 2>&1 && rc=0 || rc=$?
+          cat "$log"
+          if grep -q '^SKIP' "$log"; then
+            echo "::error::fs-whatif-start-smoke was skipped on CI"
+            exit 1
+          fi
+          [ "$rc" -eq 0 ] || exit "$rc"
+          # 1.0.7 threat intel and countries: the nft sets, the Linux
+          # backend's slots, the engine end to end with real downloads
+          # from a local HTTPS server, `stockfw intel', and the
+          # downloader (curl as nobody), each in private namespaces.
+          strict tests/test-intelset.sh
+          strict tests/test-intel-backend.sh
+          strict tests/test-intel-e2e.sh
+          strict tests/test-intel-cli.sh
+          strict tests/test-fetch.sh
+          # The dashboard's HTTP server as root: it serves SUDO_UID, and
+          # connections from root and nobody are closed at accept.  Its
+          # root-only checks say "skip:" when they cannot run (no
+          # setpriv): here that fails the job.
+          strict tests/test-dashboard.sh parts
+          sudo ./build-linux/fs-hostnet-test
+          # The boot unit and `stockfw start' as the unit runs it; the
+          # Linux installer in a private mount namespace; start at
+          # sign-in written as root on a user's behalf.
+          strict tests/test-boot-start.sh
+          strict tests/test-linux-install.sh
+          strict tests/test-autostart.sh
+          # The command-line tool as root: the live event line of
+          # events -f, the lockout guard under sudo, real apply, start
+          # and stop (in a private namespace).  Its root-only parts say
+          # "skip:" in lower case when they cannot run; here every one
+          # of them must run, so such a line fails the job.
+          log="$(mktemp)"
+          sudo bash tests/test-cli.sh > "$log" 2>&1 && rc=0 || rc=$?
+          cat "$log"
+          if grep -E '^skip: .*(root|script\(1\)|stty|unshare|C compiler|strace)' "$log"; then
+            echo "::error::tests/test-cli.sh skipped root-only checks on CI"
+            exit 1
+          fi
+          [ "$rc" -eq 0 ] || exit "$rc"
+
+      # The release tarball: its own Release build (the tests above ran
+      # on the default RelWithDebInfo one), packaged and stripped by the
+      # packager, then checked as a user gets it -- install.sh runnable
+      # as ./install.sh, the version, the changelog, the licence list.
+      # nsis and gcc-mingw-w64 above let test-release.sh compile
+      # StockFW.nsi and the version resource here as well (windres needs
+      # the MinGW preprocessor and windows.h, not binutils alone).
+      - name: Build and check the Linux tarball
+        id: tarball
+        working-directory: port
+        run: |
+          export STOCKFW_BUILD_DIR="$PWD/build-release"
+          bash tools/build-linux.sh
+          bash installer/linux/build_installer_linux.sh
+          STOCKFW_REQUIRE_PACKAGE=1 bash tests/test-release.sh
+          version="$(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9][0-9.]*\).*/\1/p' CMakeLists.txt | head -n 1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the Linux tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockFW-${{ steps.tarball.outputs.version }}-linux-x86_64
+          path: |
+            port/installer/linux/dist/StockFW-*-linux-x86_64.tar.gz
+            port/installer/linux/dist/StockFW-*-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
 
   windows:
     name: Windows build, tests and installer
     runs-on: windows-latest
-    timeout-minutes: 45
+    # 45 minutes for the job itself, plus room for one MSYS2 retry.
+    timeout-minutes: 55
     defaults:
       run:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: msys2/setup-msys2@v2
+      # MSYS2 setup downloads its package databases from mirror.msys2.org,
+      # which sometimes stalls ("Operation too slow ... failed to
+      # synchronize all databases").  That fails the job before any of our
+      # code is built, so a stalled mirror is retried once after a pause,
+      # into a fresh directory, instead of turning the run red.  A second
+      # failure still fails the job.
+      - name: Set up MSYS2
+        id: msys2
+        continue-on-error: true
+        uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
@@ -122,6 +313,32 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-nsis
+            mingw-w64-ucrt-x86_64-xz
+            mingw-w64-ucrt-x86_64-openssl
+
+      - name: Wait before retrying MSYS2 setup
+        if: steps.msys2.outcome == 'failure'
+        shell: pwsh
+        run: Start-Sleep -Seconds 60
+
+      - name: Set up MSYS2 (retry)
+        if: steps.msys2.outcome == 'failure'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          location: D:\msys2-retry
+          install: >-
+            git
+            base-devel
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-gtk3
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-nsis
+            mingw-w64-ucrt-x86_64-xz
+            mingw-w64-ucrt-x86_64-openssl
 
       - name: Build
         id: build
@@ -131,6 +348,11 @@ jobs:
           cmake --build build
 
       - name: Every test suite (tests/full-suite.sh)
+        env:
+          # The runner is elevated and its firewall service runs, so the
+          # threat-intel test on the real Windows Firewall must run:
+          # with this set, every SKIP of fs-intel-windows-test fails.
+          STOCKFW_REQUIRE_WINDOWS_INTEL: "1"
         run: |
           cd port
           bash tests/full-suite.sh
@@ -155,3 +377,146 @@ jobs:
           path: port/installer/nsis/StockFW-*-Setup.exe
           if-no-files-found: error
           retention-days: 30
+
+  # The release job puts this run's artifacts into the GitHub release:
+  # the Windows installer, the Linux tarball and SHA256SUMS.txt, with the
+  # notes taken from the version's section of CHANGELOG.md.  It runs only
+  # when both jobs passed, in one of two ways:
+  #
+  # - a pushed tag vX.Y.Z (the tag must match the version in
+  #   port/CMakeLists.txt);
+  # - "Run workflow" on main with "draft_release" ticked (no git needed),
+  #   for tag v<version>.  If that tag already exists, every file that goes
+  #   into the packages must be the same on main as on the tag.
+  #
+  # With no release for the tag, it creates a draft (a person reads it and
+  # presses Publish; a draft for a tag that does not exist yet names the
+  # commit that was built, and GitHub creates the tag on Publish).  With a
+  # release that lacks some of the three assets (one made on the website,
+  # for instance), it uploads them and fills in empty notes, and leaves
+  # the release published or draft as it was.  With all three assets
+  # present it changes nothing.  Either way it refuses a version whose
+  # CHANGELOG section has no date.
+  release:
+    name: Draft the GitHub release
+    needs: [linux, windows]
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.draft_release &&
+       github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the version, the tag, the changelog and the release
+        id: v
+        run: |
+          version="$(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9][0-9.]*\).*/\1/p' port/CMakeLists.txt | head -n 1)"
+          tag="v$version"
+          if ! grep -q "^## \[$version\] - [0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no dated section for $version"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the version in port/CMakeLists.txt ($version)"
+              exit 1
+            fi
+            tag_exists=yes
+          elif [ -n "$(git ls-remote --tags origin "refs/tags/$tag")" ]; then
+            tag_exists=yes
+            git fetch --no-tags --depth=1 origin "+refs/tags/$tag:refs/tags/$tag"
+            if ! git diff --quiet "$tag" HEAD -- . ':(exclude).github' \
+                 ':(exclude)site' ':(exclude)docs' ':(exclude)RELEASING.md'; then
+              echo "::error::main differs from tag $tag in files the packages are built from:"
+              git diff --stat "$tag" HEAD -- . ':(exclude).github' \
+                ':(exclude)site' ':(exclude)docs' ':(exclude)RELEASING.md'
+              exit 1
+            fi
+          else
+            tag_exists=no
+          fi
+          want="StockFW-$version-Setup.exe StockFW-$version-linux-x86_64.tar.gz SHA256SUMS.txt"
+          if gh release view "$tag" --json assets --jq '.assets[].name' > have.txt 2>/dev/null; then
+            missing=0
+            for a in $want; do grep -qxF "$a" have.txt || missing=1; done
+            if [ "$missing" = 0 ]; then
+              echo "::notice::$tag already has its release with all three assets; nothing is changed"
+              action=none
+            else
+              action=fill
+            fi
+          elif [ "$tag_exists" = yes ]; then
+            action=draft-tag
+          else
+            action=draft-commit
+          fi
+          echo "$tag: $action"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the Linux tarball
+        if: steps.v.outputs.action != 'none'
+        uses: actions/download-artifact@v4
+        with:
+          name: StockFW-${{ steps.v.outputs.version }}-linux-x86_64
+          path: release
+
+      - name: Fetch the Windows installer
+        if: steps.v.outputs.action != 'none'
+        uses: actions/download-artifact@v4
+        with:
+          name: StockFW-windows-installer
+          path: release
+
+      - name: Checksums and release notes
+        if: steps.v.outputs.action != 'none'
+        working-directory: release
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          exe="StockFW-$V-Setup.exe"
+          tgz="StockFW-$V-linux-x86_64.tar.gz"
+          ls -l
+          test -f "$exe" && test -f "$tgz"
+          sha256sum -c "$tgz.sha256"
+          sha256sum "$exe" "$tgz" > SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+          awk -v v="$V" 'index($0, "## [" v "]") == 1 {f=1; next} /^## /{f=0} f' \
+            ../CHANGELOG.md > notes.md
+          test -s notes.md
+
+      - name: Draft or fill the release
+        if: steps.v.outputs.action != 'none'
+        working-directory: release
+        env:
+          V: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+          ACTION: ${{ steps.v.outputs.action }}
+        run: |
+          files="StockFW-$V-Setup.exe StockFW-$V-linux-x86_64.tar.gz SHA256SUMS.txt"
+          case "$ACTION" in
+          draft-tag)
+            gh release create "$TAG" --draft --verify-tag \
+              --title "StockFW $V" --notes-file notes.md $files ;;
+          draft-commit)
+            gh release create "$TAG" --draft --target="$GITHUB_SHA" \
+              --title "StockFW $V" --notes-file notes.md $files ;;
+          fill)
+            # All three together, so SHA256SUMS.txt always matches the
+            # two files beside it.
+            gh release upload "$TAG" --clobber $files
+            if [ -z "$(gh release view "$TAG" --json body --jq .body)" ]; then
+              gh release edit "$TAG" --notes-file notes.md
+            fi
+            if [ -z "$(gh release view "$TAG" --json name --jq .name)" ]; then
+              gh release edit "$TAG" --title "StockFW $V"
+            fi ;;
+          esac
+          gh release view "$TAG" --json assets --jq '.assets[].name'

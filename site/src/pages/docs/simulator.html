@@ -1,0 +1,111 @@
+---
+title: What-if simulator
+section: Using the app
+order: 15
+description: Asking the firewall a question in plain words: how a line is read, how the answer is reached the way your platform’s firewall would reach it, what the What-If window shows, the one-click fixes it checks before offering, and the stockfw simulate command.
+---
+<h1>What-if simulator</h1>
+<p class="lede">Type a sentence about a connection and StockFW tells you whether your firewall would allow it or block it, which rule decides, every rule it checked on the way, and what you can do about it. It is a question, not a change: asking writes nothing.</p>
+
+[[shot:whatif-allowed|The What-If window for “Can 192.168.1.50 reach my SSH?”: a green ALLOWED badge, the sentence “Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer”, a diagram of a LAN host sending a packet through the StockFW wall to this computer, a “What you can do” card reading “Nothing to change: this is already allowed”, a “The connection” card with direction, protocol, from, to, port and firewall model, and a “Why” card in which rule 11, “StockFW: Allow SSH (inbound, 192.168.1.50) (TCP)”, is marked DECIDES.|Allowed by a rule. The rule’s name is the one the Policy page and the engine use, and “Why” lists every rule that was checked before it.]]
+
+<h2>Where it lives</h2>
+<p>At the bottom of the <a href="{{root}}docs/copilot.html">Copilot</a> page, in the <a href="{{root}}docs/dashboard.html">dashboard</a>, and as <code>stockfw simulate</code> on the <a href="{{root}}docs/cli.html">command line</a>. All three run the same engine against the same policy files and the same firewall preferences, and the command-line tests assert that they agree. [[verified:test-cli.sh]]</p>
+<p>On the Copilot page the card keeps what you typed, so a question is refined rather than retyped. Under the entry, <em>Try</em> offers three example questions, and <em>Read as</em> shows, as chips, how your line was understood: the direction, the protocol, the port or service, the host, and, dashed, anything the line left open. The answer is one row: the verdict badge, one sentence, and <strong>Details</strong>, which opens the What-If window beside the page. The window is not modal, and asking again refreshes it in place. The last five questions stay listed, each one click from being asked again.</p>
+
+[[shot:whatif-card|The What-If card on the Copilot page: an entry holding “Can 192.168.1.50 reach my SSH?”, a Simulate button, three Try chips, Read as chips reading Inbound, TCP, SSH · port 22 and From 192.168.1.50 (LAN host), a red BLOCKED row saying “Saved policy, applies on hold: BLOCKED. No rule lets it in, so the default drops it.” with a Details button, and a Recent list.|The card on the Copilot page. Here the saved policy is not the one in force, because applies are on hold, and the answer says so before the verdict.]]
+
+<h2>How to phrase a question</h2>
+<p>Write it the way you would say it. The parser looks for the pieces below and ignores filler such as <em>please</em>, <em>I want</em> or <em>can you</em>; the order of words does not matter. Everything it recognised is shown back to you as <em>Read as</em>, so what gets evaluated is always what you typed, never a guess. [[verified:test-whatif.c]]</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>You write</th><th>It means</th></tr></thead>
+<tbody>
+<tr><td><code>inbound</code>, <code>incoming</code>, <code>ingress</code>; <code>outbound</code>, <code>outgoing</code>, <code>egress</code></td><td>The direction. Without one, the question is answered <em>both ways</em>, one tab per direction.</td></tr>
+<tr><td><code>from 192.168.1.50</code>, <code>to 8.8.8.8</code>, <code>reach</code>, <code>access</code>, an address, a network such as <code>192.168.1.0/24</code>, or <code>[2001:db8::5]:443</code></td><td>The remote end. <code>internet</code>, <code>outside</code>, <code>anyone</code> or <code>anywhere</code> means any host. Without a host, the host is left open.</td></tr>
+<tr><td><code>port 22</code>, <code>22 port</code>, <code>:443</code>, or a service name: <code>SSH</code>, <code>RDP</code>, <code>HTTPS</code>, <code>DNS</code>, <code>Telnet</code></td><td>The port. A service name is looked up to its port and protocol (“SSH · port 22”); a number wins over a name when both appear.</td></tr>
+<tr><td><code>udp</code>, <code>icmp</code>, <code>ping</code></td><td>The protocol. A named service brings its own; a bare port is TCP; <code>ping</code> is ICMP echo request.</td></tr>
+<tr><td><code>allow</code>, <code>permit</code>, <code>open</code>, <code>let</code>; <code>block</code>, <code>deny</code>, <code>drop</code>, <code>reject</code></td><td>What you <em>want</em>. The answer still says what the firewall does now; the verb decides which fix is offered. “Is … allowed?” and “Can … reach …?” are plain questions.</td></tr>
+</tbody>
+</table>
+</div>
+<pre data-lang="text" data-title="Sentences that work">Can 192.168.1.50 reach my SSH?
+Is outbound DNS to 8.8.8.8 allowed?
+block RDP from the internet
+allow tcp port 8443 inbound
+outbound tcp port 443
+ping from 10.0.0.9</pre>
+<p>Whatever a line leaves open stays open. “<code>outbound tcp port 443</code>” names no host, so it is answered for every host your rules distinguish, and when they disagree the verdict is <em>DEPENDS</em> with the split spelled out. A line with nothing recognisable in it is an error, not an “outbound to anywhere” guess: the window says “StockFW could not read this question” and shows how to ask.</p>
+
+<h2>How a verdict is reached</h2>
+<ol>
+<li>The line is parsed into a question: direction, protocol, port, host, your verb, and what was left open.</li>
+<li>Everything else that changes the answer is gathered: the Firewall preferences (ICMP types, the reject method, restrictive outbound, interfaces and NAT, the broadcast and reserved-source blocks), whether the firewall is running, whether the saved policy is the one actually loaded, Sentinel’s auto-blocks with their expiry, and on Windows the network profiles in force with their default actions.</li>
+<li>The policy is evaluated by a model of <em>your</em> firewall. [[linux]] The INBOUND and OUTBOUND chains exactly as StockFW writes them, in order; the first rule that matches decides. The model renders itself as iptables lines and the test suite compares those with the real generator’s output, so the two cannot drift apart. [[verified:test-whatif.c]] [[win]] The policy as Windows Firewall rules plus the profile-scoped preference rules; any matching block wins over any allow, and with neither the profile’s default action decides.</li>
+<li>For each field the line left open, a representative of every range a rule draws on that field is tried. If they all agree, that is the answer. If not, the answer is DEPENDS: “Blocked for most hosts; allowed from 10.0.0.0/8 by rule ‘…’”.</li>
+<li>The answer carries the whole trace (every rule checked, skipped or matched), the deciding step, one plain sentence, and the fixes. A fix that would change the policy is offered only after the engine has re-run the question with the new row in place and found exactly the verdict you asked for, with nothing else changed.</li>
+</ol>
+<p>The policy it reads is the <em>saved</em> one, so you can rehearse a change before Apply: add a rule, ask, and only then push. When the saved policy is not what the firewall is running, the answer says so first (“Saved policy, applies on hold”), and when the firewall is stopped it says that nothing is filtered right now and what the verdict would be once it runs. [[verified:ui-simviz-smoke]]</p>
+
+[[shot:whatif-blocked|The What-If window for “allow tcp port 8443 inbound”: a red BLOCKED badge, “Inbound TCP port 8443 from any host to this computer”, the sentence “You asked to allow this. It is currently BLOCKED. No rule lets it in, so the default drops it.”, a “What you can do” card offering “Allow inbound TCP port 8443 from anyone” with a Create allow rule button and the exact row it would add, and a “Why” card ending in “Default: drop silently”, marked DECIDES.|Blocked by the default. The fix was checked before it was offered, and the exact policy row it would write is printed under it.]]
+
+<h2>The window</h2>
+<p>The window is one scrolling page of cards.</p>
+<ul>
+<li><strong>The verdict.</strong> A badge reading <em>ALLOWED</em>, <em>BLOCKED</em> or <em>DEPENDS</em>, the connection in one sentence (“Inbound TCP port 22 (SSH) from 192.168.1.50 to this computer”), what you typed, and the answer in one line that names the deciding rule. When the answer rests on something that is not the live firewall, an amber strip says so.</li>
+<li><strong>Both ways.</strong> A line asked without a direction gets one tab per direction, each with its own verdict.</li>
+<li><strong>The diagram.</strong> Where the traffic starts, the StockFW wall, where it is going. Each card says what it is (“This computer”, “LAN host 192.168.1.50”, “Internet host”, “Any host”) and which network it sits on; the far card names the port. The packet plays the verdict: it reaches the wall, and then passes through to a glowing destination, or bounces back off a red wall as the far line turns grey, or waits at an amber wall under a question mark when the answer depends. The round button replays it. With animations off, the final frame is drawn at once. [[verified:ui-simviz-smoke]]</li>
+<li><strong>What you can do.</strong> The fixes, described below.</li>
+<li><strong>The connection.</strong> Direction, protocol, from, to, port or service, the firewall model (“Linux iptables: the first matching rule decides” or “Windows Firewall: any matching block wins”), whether the firewall is running, whether the saved policy is live, and on Windows the profile in force.</li>
+<li><strong>Why.</strong> The trace as a numbered list. Rules that did not match are folded into one line (“Rules 1 to 10 did not match”) that opens on a click; the deciding step is highlighted and marked <em>DECIDES</em>; a rule from your policy carries an <em>Open in Policy</em> link to its row. For a DEPENDS answer the cases come first, each with its own badge and the rule that decides it.</li>
+<li><strong>Good to know.</strong> Everything the answer had to assume, such as “No valid internet-facing interface is set, so the reserved-address and broadcast blocks are not in force.”</li>
+</ul>
+<p>The window does not block the app behind it; <kbd>Esc</kbd> or <strong>Close</strong> dismisses it, and asking another question refreshes it in place. It is drawn with no images, in a light and a dark palette picked from your theme.</p>
+
+[[shot:whatif-depends|The What-If window for “inbound ssh”: an amber DEPENDS badge, the answer “Blocked for most hosts; allowed from 10.0.0.0/8 by rule ‘StockFW: Allow SSH (inbound, 10.0.0.0/8) (TCP)’”, the packet waiting at an amber wall, a Create allow rule offer for anyone, and a “Why” card that lists the two cases with their own badges before the trace.|An answer that depends on what the line left open. Both cases are spelled out, and the one fix that resolves them is offered.]]
+
+<h2>What you can do</h2>
+<p>Every fix in this card was checked before it was offered, and each has one button.</p>
+<ul>
+<li><strong>Create allow rule</strong> or <strong>Create block rule</strong>, when a single row gives you the verdict you asked for. The exact row is printed under the offer, as the Policy page would show it (“Rule to add (Allow inbound service): TCP, 8443, Anyone, What-If: allow TCP 8443”). A created allow always names one port and one protocol: never portless, never every port for anyone.</li>
+<li><strong>Open rule in Policy</strong>, when a rule of yours is what blocks or allows it, so you can edit or remove that rule yourself.</li>
+<li><strong>Lift Sentinel block</strong>, with the minutes it has left, when the decision is one of Sentinel’s auto-blocks.</li>
+<li><strong>Open ICMP settings</strong> or <strong>Open Advanced Options</strong>, when a Firewall preference decides, and <strong>Start the firewall</strong> or <strong>Apply policy</strong> when the firewall is stopped or the saved policy is not the one loaded. <em>Start the firewall</em> goes through the same start gate as the Overview’s Start button: Audit-only and the Policy Lock hold it, on Linux the last applied policy goes live and on Windows the firewall is switched on with its rules unchanged, the question says which, and every start writes an audit line.</li>
+</ul>
+<p>When nothing is offered, the card says why: “Nothing to change: this is already allowed”; a block that comes before any allow StockFW could add, so the block itself has to change; a built-in rule that keeps the computer working; or a DEPENDS answer that no single change resolves.</p>
+<p>Pressing a <em>Create</em> button shows the row once more in a Yes/No dialog. After Yes, the engine checks the row again against the policy as it is by then, writes it, and pushes it through the same apply gate as the Policy page. The result is reported in the window and in the card’s <em>What changed</em> log, and it distinguishes “the row exists” from “the firewall enforces it”, because a rule staged for a later Apply is not yet in force. [[verified:test_apply_gate]]</p>
+
+[[shot:whatif-outbound-blocked|The What-If window for “allow outbound tcp to 203.0.113.9 port 443”: BLOCKED, “You asked to allow this. It is currently BLOCKED. Rule ‘StockFW: Block outbound (203.0.113.9)’ blocks it.”, a packet from this computer bounced at the wall before an Internet host, a “What you can do” card offering “Open rule in Policy”, and a “Why” card in which rule 4 decides.|Blocked by one of your own rules. No new allow could override it, so the fix is to open that rule.]]
+
+<h2>From a script</h2>
+<pre data-lang="sh">$ stockfw simulate "inbound rdp from 203.0.113.50"
+BLOCKED. No rule lets it in, so the default drops it.
+Read as: host 203.0.113.50; service Remote Desktop: TCP port 3389; inbound (confidence 90%)
+
+Inbound TCP port 3389 (Remote Desktop) from 203.0.113.50 to this computer: BLOCKED
+  No rule lets it in, so the default drops it.
+  How it was decided:
+    - StockFW: Allow inbound (192.168.1.1): 203.0.113.50 is not 192.168.1.1
+    - StockFW: Allow inbound (192.0.2.10): 203.0.113.50 is not 192.0.2.10
+    - StockFW: Allow SSH (inbound, 192.168.1.0/24) (TCP): only for port 22
+    - StockFW: Allow SSH (inbound, 192.168.1.0/24) (UDP): only for UDP; this is TCP
+    - StockFW: Allow HTTPS (inbound) (TCP): only for port 443
+    - StockFW: Allow HTTPS (inbound) (UDP): only for UDP; this is TCP
+    - StockFW: Allow Web (inbound): only for traffic a port forward redirected
+    * Default: log: logged; the next rule decides
+    =&gt; Default: drop silently: matches: drops it
+  [create-allow] Allow inbound TCP port 3389 from 203.0.113.50: Adds one row to the policy (Inbound: allow service): inbound TCP port 3389 from 203.0.113.50. Checked: with it this question is allowed, and nothing changes except inbound TCP port 3389 from 203.0.113.50.
+
+Good to know:
+  - No valid internet-facing interface is set, so the reserved-address and broadcast blocks are not in force.
+A simulation only: nothing was written.
+$ echo $?
+5</pre>
+<p>The exit status is 0 for ALLOWED, 5 for BLOCKED and 6 for DEPENDS, so a deployment script can refuse to continue when a port it needs would be closed, and a 2 means the line could not be read. <code>--json</code> gives the whole answer as one object: the verdict and summary, the question as read, every direction’s trace, cases and checked actions. <code>--assume-running</code> answers for the firewall as it runs, for scripts that are not root and cannot read the live chains. See <a href="{{root}}docs/cli.html#simulate">the command line reference</a>.</p>
+
+<h2>What it does not know</h2>
+<ul>
+<li>It answers from StockFW’s own policy and preferences, not from the engine. A rule someone added directly in <code>wf.msc</code> or with <code>iptables</code> is not seen. [[gap]]</li>
+<li>It answers about a <em>new</em> connection. Replies to a connection already open are always allowed, and the trace says so in its first step.</li>
+<li>Threat-intel blocklists and the country and network rules are enforced before the policy, in their own table on Linux and their own rule group on Windows, and the simulator does not consult them: an address a list blocks can be answered ALLOWED here, and the window’s <em>Good to know</em> card says so. The Threat Intel page’s lookup box and <code>stockfw intel lookup</code> answer that question. The Copilot knows the difference: a finding about an address a list already blocks offers neither <em>Ask What-If</em> nor a block. [[gap]]</li>
+</ul>

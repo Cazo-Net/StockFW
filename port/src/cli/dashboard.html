@@ -259,6 +259,8 @@ td.allowed { color: var(--good); font-weight: 650; }
 .kind li .n { color: var(--text-3); width: 22px; text-align: right; flex: none; font-variant-numeric: tabular-nums; }
 .kind li .c { color: var(--text-3); }
 
+.fp { color: var(--text-2); font-size: 13px; margin: 0 0 12px; }
+.fp strong { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .04em; }
 footer { color: var(--text-3); font-size: 12px; text-align: center; padding: 24px; }
 .muted { color: var(--text-3); }
 code {
@@ -295,6 +297,8 @@ code {
 
 <main>
   <div class="banner" id="banner" role="alert"></div>
+  <p class="fp" id="fp" hidden>Fingerprint <strong id="fp-value"></strong>: the terminal that started this dashboard shows the same. If it does not, close this page.</p>
+  <p class="fp" id="wsl" hidden>Browsers on the Windows side are let in (<code>--allow-windows</code>).</p>
 
   <div class="filters" role="group" aria-label="Filters">
     <div class="seg" id="range" role="group" aria-label="Time range">
@@ -422,6 +426,20 @@ code {
       <div class="hd"><div><h2 id="h-policy">Policy</h2><p id="policy-sub">Saved rules</p></div></div>
       <div class="bd" id="policy"></div>
     </section>
+
+    <section class="card" aria-labelledby="h-intel">
+      <div class="hd"><div><h2 id="h-intel">Threat-intel blocklists</h2><p id="intel-sub">What the kernel enforces</p></div></div>
+      <div class="bd">
+        <div id="intel-state"></div>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>List</th><th>Direction</th><th>Entries</th><th>Updated</th><th>Blocked</th><th>Status</th></tr></thead>
+            <tbody id="intel"></tbody>
+          </table>
+        </div>
+        <p class="note">Read-only. Change the lists with <code>stockfw intel</code> or the desktop app.</p>
+      </div>
+    </section>
   </div>
 </main>
 
@@ -430,15 +448,40 @@ code {
 <script nonce="{{NONCE}}">
 "use strict";
 (function () {
-  /* ------------------------------------------------------------ token */
-  var token = null;
-  var m = /(?:^#|&)token=([0-9a-f]{32})/.exec(location.hash);
+  /* --------------------------------------------------- session (2C) */
+  /* The link carries a launch code in its fragment, which the browser
+   * never sends.  It is swapped once, by POST, for a session key that
+   * goes with every request as X-StockFW-Session.  The key is kept in
+   * sessionStorage only; no cookie is ever set. */
+  var session = null, launchCode = null;
+  var m = /(?:^#|&)code=([0-9a-f]{32})(?:&|$)/.exec(location.hash);
+  if (location.hash) history.replaceState(null, "", location.pathname);
   if (m) {
-    token = m[1];
-    try { sessionStorage.setItem("stockfw.token", token); } catch (e) {}
-    history.replaceState(null, "", location.pathname);
+    launchCode = m[1];
   } else {
-    try { token = sessionStorage.getItem("stockfw.token"); } catch (e) {}
+    try { session = sessionStorage.getItem("stockfw.session"); } catch (e) {}
+    if (session && !/^[0-9a-f]{64}$/.test(session)) session = null;
+  }
+  function forgetSession() {
+    session = null;
+    try { sessionStorage.removeItem("stockfw.session"); } catch (e) {}
+  }
+  function openSession(code) {
+    return fetch("/api/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code }),
+      cache: "no-store",
+      credentials: "omit"
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (b) {
+        if (!r.ok) throw { status: r.status, body: b };
+        if (!/^[0-9a-f]{64}$/.test(b.session || "")) throw { status: 401, body: b };
+        session = b.session;
+        try { sessionStorage.setItem("stockfw.session", session); } catch (e) {}
+        return b;
+      });
+    });
   }
 
   var state = { range: 3600, device: "", filter: "", events: [], failures: 0, lastOk: 0, summary: null };
@@ -451,10 +494,25 @@ code {
     if (text !== undefined && text !== null) n.textContent = String(text);
     return n;
   }
+  /* The only two places where script sets an attribute named by a
+     variable, or a style.  Both check the name, and setStyle the value;
+     the source guard in test-core.sh allows these two lines and no
+     other attribute or style write by a computed name (T14). */
+  var BAD_ATTR = /^(on|href$|src$|style$|action$|formaction$|xlink:)/i;
   function svg(tag, attrs) {
     var n = document.createElementNS("http://www.w3.org/2000/svg", tag);
-    for (var k in attrs) n.setAttribute(k, attrs[k]);
+    for (var k in attrs) {
+      if (BAD_ATTR.test(k)) throw new Error("svg: attribute " + k);
+      n.setAttribute(k, attrs[k]); /* gate:attr */
+    }
     return n;
+  }
+  var STYLE_OK = { background: 1, display: 1, left: 1, top: 1 };
+  function setStyle(n, prop, value) {
+    value = String(value);
+    if (!STYLE_OK.hasOwnProperty(prop) || /url|expression|image|[;:{}\\<>"'@]/i.test(value))
+      throw new Error("setStyle: " + prop);
+    n.style[prop] = value; /* gate:style */
   }
   function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
   function fmtBytes(b) {
@@ -491,11 +549,19 @@ code {
     return p;
   }
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+  /* One listener per node and event, replaced on each render (no on*
+   * properties or attributes anywhere: the source guard bans them). */
+  function handle(node, type, fn) {
+    var k = "fsOn" + type;
+    if (node[k]) node.removeEventListener(type, node[k]);
+    node[k] = fn;
+    node.addEventListener(type, fn);
+  }
 
   /* ------------------------------------------------------------ API */
   function api(path) {
-    if (!token) return Promise.reject({ status: 401 });
-    return fetch(path, { headers: { "X-StockFW-Token": token }, cache: "no-store" })
+    if (!session) return Promise.reject({ status: 401 });
+    return fetch(path, { headers: { "X-StockFW-Session": session }, cache: "no-store", credentials: "omit" })
       .then(function (r) {
         if (!r.ok) return r.json().catch(function () { return {}; }).then(function (b) { throw { status: r.status, body: b }; });
         return r.json();
@@ -665,7 +731,7 @@ code {
       tip.appendChild(el("div", "t", hhmm(from) + "–" + hhmm(from + opts.step)));
       rates.forEach(function (r, si) {
         var row = el("div", "r");
-        var k = el("i", "key"); k.style.background = opts.series[si].color;
+        var k = el("i", "key"); setStyle(k, "background", opts.series[si].color);
         row.appendChild(k);
         row.appendChild(el("b", null, r[i] === null ? "no data" : opts.fmt(r[i])));
         row.appendChild(el("span", null, opts.series[si].label));
@@ -674,18 +740,18 @@ code {
         dots[si].setAttribute("cx", px); dots[si].setAttribute("cy", y(r[i]));
         dots[si].setAttribute("visibility", "visible");
       });
-      tip.style.display = "block";
+      setStyle(tip, "display", "block");
       var scale = host.clientWidth / W;
       var left = px * scale + 14;
       if (left + tip.offsetWidth > host.clientWidth) left = px * scale - tip.offsetWidth - 14;
-      tip.style.left = Math.max(0, left) + "px";
-      tip.style.top = (M.t + 6) + "px";
+      setStyle(tip, "left", Math.max(0, left) + "px");
+      setStyle(tip, "top", (M.t + 6) + "px");
       host.dataset.idx = i;
     }
     function hide() {
       cross.setAttribute("visibility", "hidden");
       dots.forEach(function (d) { d.setAttribute("visibility", "hidden"); });
-      tip.style.display = "none";
+      setStyle(tip, "display", "none");
       delete host.dataset.idx;
     }
     function idxAt(ev) {
@@ -695,14 +761,14 @@ code {
     }
     hit.addEventListener("pointermove", function (ev) { show(Math.max(0, Math.min(n - 1, idxAt(ev)))); });
     hit.addEventListener("pointerleave", hide);
-    host.onkeydown = function (ev) {
+    handle(host, "keydown", function (ev) {
       var cur = host.dataset.idx !== undefined ? Number(host.dataset.idx) : n - 1;
       if (ev.key === "ArrowLeft") { show(Math.max(0, cur - 1)); ev.preventDefault(); }
       else if (ev.key === "ArrowRight") { show(Math.min(n - 1, cur + 1)); ev.preventDefault(); }
       else if (ev.key === "Escape") hide();
-    };
-    host.onfocus = function () { show(n - 1); };
-    host.onblur = hide;
+    });
+    handle(host, "focus", function () { show(n - 1); });
+    handle(host, "blur", hide);
   }
 
   function legend(id, series) {
@@ -710,7 +776,7 @@ code {
     clear(lg);
     series.forEach(function (s) {
       var sp = el("span");
-      var k = el("i", "key"); k.style.background = s.color;
+      var k = el("i", "key"); setStyle(k, "background", s.color);
       sp.appendChild(k);
       sp.appendChild(document.createTextNode(s.label));
       lg.appendChild(sp);
@@ -780,7 +846,7 @@ code {
       var t = $("table-" + b.dataset.table), c = $("chart-" + b.dataset.table);
       var on = !t.classList.contains("show");
       t.classList.toggle("show", on);
-      c.style.display = on ? "none" : "";
+      setStyle(c, "display", on ? "none" : "");
       b.setAttribute("aria-expanded", on ? "true" : "false");
       b.textContent = on ? "Chart" : "Table";
       if (!on) renderCharts();
@@ -817,12 +883,14 @@ code {
       : "Monitoring off · run with sudo";
     $("t-rx").textContent = fmtRate(sm.rx_per_s);
     $("t-tx").textContent = fmtRate(sm.tx_per_s);
-    $("k-rx").style.background = css("--rx");
-    $("k-tx").style.background = css("--tx");
+    setStyle($("k-rx"), "background", css("--rx"));
+    setStyle($("k-tx"), "background", css("--tx"));
     $("t-conns").textContent = fmtNum(sm.connections);
     $("t-rules").textContent = sm.policy_saved ? fmtNum(sm.rules) + " rules" : "None";
     $("t-rules-d").textContent = sm.rules_dir;
     $("footer").textContent = "Read-only · listening on " + location.host + " only · no data leaves this machine · StockFW " + sm.version;
+    showFingerprint(sm.fingerprint);
+    $("wsl").hidden = !sm.allow_windows;
   }
 
   /* -------------------------------------------------------- events */
@@ -831,7 +899,7 @@ code {
     clear(tb);
     var f = state.filter.toLowerCase(), shown = 0;
     state.events.forEach(function (e) {
-      var hay = [e.source, e.destination, e.port, e.service, e.protocol, e.direction].join(" ").toLowerCase();
+      var hay = [e.source, e.destination, e.port, e.service, e.protocol, e.direction, e.rule].join(" ").toLowerCase();
       if (f && hay.indexOf(f) < 0) return;
       shown++;
       var tr = el("tr");
@@ -841,7 +909,7 @@ code {
       tr.appendChild(el("td", "mono", e.source || "–"));
       tr.appendChild(el("td", "mono", e.destination || "–"));
       tr.appendChild(el("td", null, e.port || "–"));
-      tr.appendChild(el("td", null, (e.service || "") + (e.protocol ? " · " + e.protocol : "")));
+      tr.appendChild(el("td", null, (e.service || "") + (e.protocol ? " · " + e.protocol : "") + (e.rule ? " · " + e.rule : "")));
       tb.appendChild(tr);
     });
     if (shown === 0) {
@@ -909,6 +977,51 @@ code {
       host.appendChild(el("p", "note", "Audit-only mode is on: applies are recorded but the firewall is left untouched."));
   }
 
+  var INTEL_STATE = {
+    "enforced": ["good", "Enforced", ICON_OK],
+    "off": ["warn", "Off", ICON_Q],
+    "suspended": ["warn", "Suspended", ICON_Q],
+    "not-loaded": ["bad", "Not loaded", ICON_X],
+    "differs": ["bad", "Differs", ICON_X],
+    "unsupported": ["warn", "Not available", ICON_Q],
+    "needs-root": ["warn", "Needs root", ICON_Q],
+    "not-in-force": ["bad", "Not in force", ICON_X],
+    "unknown": ["warn", "Unknown", ICON_Q]
+  };
+  var DIR_WORDS = { "in": "In: stops them connecting", "out": "Out: stops you connecting", "both": "Both directions" };
+  function renderIntel(t) {
+    var head = $("intel-state");
+    clear(head);
+    var k = INTEL_STATE[t.state] || INTEL_STATE.unknown;
+    head.appendChild(pill(k[0], k[1], k[2]));
+    head.appendChild(el("p", "note", t.detail || t.error || ""));
+    $("intel-sub").textContent = t.lists.length ? t.lists.length + (t.lists.length === 1 ? " list turned on" : " lists turned on") : "No list turned on";
+    var tb = $("intel");
+    clear(tb);
+    t.lists.forEach(function (l) {
+      var tr = el("tr"), name = el("td");
+      name.appendChild(el("div", null, l.name));
+      var credit = l.kind === "local" ? "Your own list" : l.kind === "custom" ? "Custom feed" : l.credit;
+      var lic = l.kind === "catalog" ? (l.licence || "see the provider's terms") + (l.noncommercial ? ", non-commercial" : "") : "";
+      name.appendChild(el("div", "muted", credit + (lic ? " · " + lic : "")));
+      tr.appendChild(name);
+      tr.appendChild(el("td", null, DIR_WORDS[l.direction] || l.direction));
+      tr.appendChild(el("td", null, fmtNum(l.entries)));
+      tr.appendChild(el("td", l.updated_at ? null : "muted", l.updated_at ? new Date(l.updated_at * 1000).toLocaleString() : "never"));
+      var counted = l.blocked_packets !== null && l.blocked_packets !== undefined;
+      var b = el("td", counted ? null : "muted", counted ? fmtNum(l.blocked_packets) : "n/a");
+      if (!counted && t.counts_unavailable) b.title = t.counts_unavailable;
+      else if (l.counted_since) b.title = "since " + new Date(l.counted_since * 1000).toLocaleString();
+      tr.appendChild(b);
+      tr.appendChild(el("td", l.status === "ok" ? null : "muted", l.status.replace(/-/g, " ")));
+      tb.appendChild(tr);
+    });
+    if (!t.lists.length) {
+      var tr = el("tr", "empty-row"), td = el("td", null, "No blocklist is turned on. Every feed is off until you turn it on and accept its terms.");
+      td.colSpan = 6; tr.appendChild(td); tb.appendChild(tr);
+    }
+  }
+
   function renderDevices(devs) {
     var sel = $("device"), cur = state.device;
     var have = Array.prototype.map.call(sel.options, function (o) { return o.value; }).join("|");
@@ -925,13 +1038,16 @@ code {
     api("/api/simulate?q=" + encodeURIComponent(q)).then(function (r) {
       clear(v);
       v.className = "verdict show";
-      v.appendChild(r.verdict === "BLOCKED" ? pill("bad", "Blocked", ICON_X) : pill("good", "Allowed", ICON_OK));
+      v.appendChild(r.verdict === "ALLOWED" ? pill("good", "Allowed", ICON_OK)
+                    : r.verdict === "BLOCKED" ? pill("bad", "Blocked", ICON_X)
+                    : pill("warn", "Depends", ICON_Q));
       var dl = el("dl");
       function row(k, val) { if (!val) return; dl.appendChild(el("dt", null, k)); dl.appendChild(el("dd", null, val)); }
-      row("Packet", r.direction + " " + (r.protocol || "TCP") + (r.port !== null ? " port " + r.port : "") + (r.remote ? (r.direction === "inbound" ? " from " : " to ") + r.remote : ""));
+      row("Traffic", r.scenario);
+      row("Answer", r.summary);
       row("Rule", r.rule);
-      row("Why", r.reason);
-      row("To allow", r.suggestion);
+      row("Fix", r.suggestion);
+      (r.notes || []).forEach(function (n) { row("Note", n); });
       v.appendChild(dl);
     }).catch(function (e) {
       clear(v);
@@ -961,10 +1077,20 @@ code {
   $("device").addEventListener("change", function (ev) { state.device = ev.target.value; refreshActivity(); });
 
   /* -------------------------------------------------------- refresh */
+  var NEW_LINK = " Run stockfw dashboard link in the terminal for a new link (it works once, for 2 minutes).";
+  function showFingerprint(fp) {
+    if (typeof fp !== "string" || !/^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(fp)) return;
+    $("fp-value").textContent = fp;
+    $("fp").hidden = false;
+  }
   function onError(e) {
-    if (e && e.status === 401) {
-      setLive("down", "Not authorised");
-      banner("This page has no valid access token for the running dashboard. Open the exact address that stockfw dashboard printed in your terminal; it changes every run.", true);
+    if (e && (e.status === 401 || e.status === 410)) {
+      forgetSession();
+      setLive("down", "Not signed in");
+      if (e.status === 410)
+        banner("This link was already used or has expired." + NEW_LINK, true);
+      else
+        banner("This page has no valid session for the running dashboard. Sessions end when the dashboard stops, after 12 hours, or when a link is used twice." + NEW_LINK, true);
       return true;
     }
     state.failures++;
@@ -998,6 +1124,7 @@ code {
       api("/api/connections").then(renderConns)
     ];
     if (ticks % 6 === 0) jobs.push(api("/api/policy").then(renderPolicy));
+    if (ticks % 6 === 0) jobs.push(api("/api/intel").then(renderIntel));
     ticks++;
     return Promise.all(jobs).then(function () {
       state.failures = 0;
@@ -1011,7 +1138,13 @@ code {
     refresh().then(function () { setTimeout(loop, 5000); }, function () { /* 401: stop polling */ });
   }
 
-  if (!token) {
+  if (launchCode) {
+    openSession(launchCode).then(function (b) {
+      showFingerprint(b.fingerprint);
+      loop();
+    }, function (e) { onError(e.status ? e : {}); });
+    launchCode = null;
+  } else if (!session) {
     onError({ status: 401 });
   } else {
     loop();

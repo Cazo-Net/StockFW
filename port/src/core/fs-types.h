@@ -50,6 +50,12 @@ typedef struct
 
 void fs_iface_stat_free (FsIfaceStat *s);
 
+/* Adapters that are not hardware: Docker and libvirt bridges, veth
+ * pairs, Hyper-V switches, VPN tunnels, loopback (kind "Virtual",
+ * "Tunnel" or "Loopback").  Real, but noise on a page that answers "is
+ * this computer protected" (B12; `stockfw interfaces --no-virtual'). */
+gboolean fs_netif_is_virtual (const FsIfaceStat *stat);
+
 /* One row of the Status page's "Active connections" panel. */
 typedef struct
 {
@@ -60,6 +66,11 @@ typedef struct
 	gchar *service;     /* well-known name for the remote port      */
 	gchar *program;     /* owning process, when it could be read    */
 	gchar *direction;   /* "Inbound" / "Outbound"                   */
+	/* Added in 1.0.8 (cli-plan.md D4).  A backend that cannot tell
+	 * leaves them 0 and NULL (the Windows backend does). */
+	guint  local_port;
+	guint  remote_port;
+	gchar *state;       /* "ESTABLISHED", "SYN_SENT"...; NULL for UDP */
 } FsConnection;
 
 void fs_connection_free (FsConnection *c);
@@ -79,7 +90,8 @@ typedef struct
 	gchar *protocol;
 	gchar *service;
 	/* 1.0.7: what blocked it, when the log line says so
-	 * ("Threat intel: Spamhaus DROP", "Location block").  NULL
+	 * ("Threat intel: Spamhaus DROP", or a country or network
+	 * rule's "Threat intel: <its name>").  NULL
 	 * for policy events and on platforms whose log cannot tell. */
 	gchar *rule;
 } FsHit;

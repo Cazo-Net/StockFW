@@ -17,7 +17,7 @@ main (int argc, char **argv)
 		return 2;
 	}
 	if (!fs_nftset_load_csv (argv[1],
-	                         argc > 2 ? argv[2] : FS_NFT_INTEL_TABLE,
+	                         argc > 2 ? argv[2] : FS_NFT_BLOCKLIST_TABLE,
 	                         argc > 3 ? argv[3] : "blocklist",
 	                         &st, &error)) {
 		g_print ("error: %s\n", error->message);

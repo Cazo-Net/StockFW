@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Background, tray and sign-in · StockFW</title>
+<meta name="description" content="Keeping StockFW running after the window closes: the tray icon and its menu, starting hidden, one copy per user, Start at sign-in on Windows and Linux, the Linux boot service, and what Quit does and does not do.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Background, tray and sign-in · StockFW">
+<meta property="og:description" content="Keeping StockFW running after the window closes: the tray icon and its menu, starting hidden, one copy per user, Start at sign-in on Windows and Linux, the Linux boot service, and what Quit does and does not do.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html" aria-current="page"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Using the app
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
+		<article class="prose">
+<h1>Background, tray and sign-in</h1>
+<p class="lede">The firewall engine runs whether StockFW is open or not; StockFW in the background is what keeps watching events, learning, and, in auto mode, letting Sentinel act. The tray icon is how you know it is there and how you get it back.</p>
+
+<h2 id="turning-it-on">Turning it on<a class="anchor" href="#turning-it-on" aria-label="Link to this section">#</a></h2>
+<p>Two settings on <a href="../docs/preferences.html">Preferences › General</a>, both on by default: <em>Show a tray icon</em> and <em>Close and minimize to the tray</em>. With both on, closing or minimising the window hides it and StockFW keeps running. With the icon off, closing the window quits the program; StockFW will not hide a window it cannot give back, because a background process with no way to reopen it would be a zombie with root rights. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-tray-smoke</span></p>
+
+<h2 id="starting-hidden">Starting hidden<a class="anchor" href="#starting-hidden" aria-label="Link to this section">#</a></h2>
+<p><code>StockFW --background</code> (or <code>--minimized</code>) starts StockFW in the notification area with the window hidden. The Events page and everything behind it are built whether or not the window is shown, so a hidden copy lists and saves events exactly as a visible one does. If no notification area takes the icon, the window is shown instead, so nothing runs invisibly. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-instance.sh</span></p>
+
+<h2 id="one-copy-per-user">One copy per user<a class="anchor" href="#one-copy-per-user" aria-label="Link to this section">#</a></h2>
+<p>Starting StockFW again does not start a second one: the launch hands over to the running copy and brings its window forward, then exits. <code>StockFW --quit</code> asks the running copy to quit cleanly, saving its settings on the way. A launch with more rights takes over from a copy with fewer: <code>sudo StockFW</code> replaces your unprivileged copy, and on Windows <em>StockFW (Elevated)</em> replaces the ordinary one, after the old copy has closed its files. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-instance.sh</span></p>
+
+<h2 id="the-icon-and-its-tooltip">The icon and its tooltip<a class="anchor" href="#the-icon-and-its-tooltip" aria-label="Link to this section">#</a></h2>
+<p>The tooltip reads <em>StockFW, Protected</em> or <em>StockFW, Not protected</em>, with the engine’s name, from the same state the Overview shows; when the state cannot be read it says <em>Firewall state is unknown</em> rather than guessing. The icon follows the state too, so the answer to “is my firewall running?” is one glance.</p>
+
+<h2 id="the-menu">The menu<a class="anchor" href="#the-menu" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>A <strong>status header</strong>: the firewall state and the last few blocks, live.</li>
+<li><strong>Open StockFW</strong> brings the window back.</li>
+<li><strong>Pause protection</strong> and <strong>Pause Sentinel</strong>, and <strong>Start firewall</strong> or <strong>Stop firewall</strong>, so the common actions never need the window. What the running copy cannot do, because it has no root or administrator rights, is greyed with the reason rather than offered and failed.</li>
+<li><strong>Start at sign-in</strong>, a switch; see below.</li>
+<li><strong>Preferences</strong>, <strong>Help</strong> (opens the Help window at the “Running in the background” topic, leaving the main window hidden) and <strong>About StockFW</strong>.</li>
+<li><strong>Quit StockFW</strong> ends the program. It does <em>not</em> stop the firewall: the engine keeps enforcing whatever was last applied, exactly as it would if StockFW crashed. To stop filtering, use <strong>Stop firewall</strong> here or in the window, or run <code>sudo stockfw stop</code>.</li>
+</ul>
+
+<h2 id="sign-in">Start at sign-in<a class="anchor" href="#sign-in" aria-label="Link to this section">#</a></h2>
+<p>From the tray menu, from <em>Preferences › General</em>, or with <code>StockFW --enable-autostart</code> and <code>--disable-autostart</code>. On Windows it is a Task Scheduler task that runs without administrator rights, so no UAC prompt appears at sign-in; on Linux it is an XDG autostart entry in <code>~/.config/autostart</code>. Both start the unprivileged copy in the background: it monitors and learns, shows the firewall state as it can read it, and the elevated shortcut or <code>sudo</code> is still what changes the firewall. The uninstaller removes your entry. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-autostart.sh</span></p>
+
+<h2 id="at-boot-before-anyone-signs-in">At boot, before anyone signs in<a class="anchor" href="#at-boot-before-anyone-signs-in" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Windows</span> Windows Firewall rules persist, so StockFW’s rules are in force from boot. <span class="plat">Linux</span> iptables rules are gone at boot, so the Linux installer enables <code>stockfw.service</code>, which loads the last policy applied as root before the network comes up. The service and StockFW in the tray are separate things: one puts the rules back, the other watches them. <a href="../docs/install-linux.html#at-boot">At boot</a> has the details. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-boot-start.sh</span></p>
+
+<h2 id="what-runs-in-the-background">What runs in the background<a class="anchor" href="#what-runs-in-the-background" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>Event monitoring, and everything fed by it: the Activity counters, the Copilot’s checks and what it learns, Sentinel’s detectors, and the event history if you keep one.</li>
+<li>Sentinel’s ten-minute expiry timer for auto-blocks.</li>
+<li>The hourly check for threat-intel feed updates, for the feeds you have turned on.</li>
+<li>Saving: settings and what the Copilot has learned are written every five minutes when they changed, and when the session ends, so a crash loses at most five minutes.</li>
+</ul>
+<p>Memory stays flat: the Activity series are fixed-size rings, the Events list is a fixed ring of the size you chose (about 7 MB at the default 100,000), the Copilot keeps the last 100 changes, and a 150-second soak at full event rate found no growth. <span class="ev ev-measured" title="A number from an experiment that was actually run."><b>Measured</b> 150-second soak, docs chapter 9</span></p>
+
+<h2 id="where-the-icon-cannot-appear">Where the icon cannot appear<a class="anchor" href="#where-the-icon-cannot-appear" aria-label="Link to this section">#</a></h2>
+<p>A tray needs a tray host and an X11 display. GNOME has not shipped a host since 3.26; the <em>AppIndicator</em> extension restores it, and KDE, XFCE, MATE, Cinnamon and Windows have one built in. Without a host the icon simply does not show, the window keeps working (a hidden start shows it), and closing it quits, so nothing is lost. The project’s own tray test fails on a headless machine for this reason, and is expected to. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></p>
+<p><span class="plat">Linux</span> GTK has a tray only on X11 and Windows. On a Wayland session (GNOME and KDE Plasma by default, and WSL’s WSLg) StockFW does not try to make one: a background start shows the window, closing the window quits, and Preferences greys both tray switches with the reason. The once-a-minute re-read of the firewall’s state, which is how <code>stockfw stop</code> in a terminal reaches the Overview and the sidebar, runs whenever the window is open, with or without a tray icon. Under <code>sudo</code> StockFW runs on XWayland, because <code>sudo</code> drops the Wayland display variables, so the tray works there as on X11. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-notray.sh</span></p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/preferences.html"><span>Previous</span><strong>Preferences</strong></a><a class="next" href="../docs/help.html"><span>Next</span><strong>Help and About</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/background.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#turning-it-on">Turning it on</a></li>
+			<li class="lvl2"><a href="#starting-hidden">Starting hidden</a></li>
+			<li class="lvl2"><a href="#one-copy-per-user">One copy per user</a></li>
+			<li class="lvl2"><a href="#the-icon-and-its-tooltip">The icon and its tooltip</a></li>
+			<li class="lvl2"><a href="#the-menu">The menu</a></li>
+			<li class="lvl2"><a href="#sign-in">Start at sign-in</a></li>
+			<li class="lvl2"><a href="#at-boot-before-anyone-signs-in">At boot, before anyone signs in</a></li>
+			<li class="lvl2"><a href="#what-runs-in-the-background">What runs in the background</a></li>
+			<li class="lvl2"><a href="#where-the-icon-cannot-appear">Where the icon cannot appear</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stockfw Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

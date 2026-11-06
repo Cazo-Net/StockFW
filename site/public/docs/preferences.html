@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Preferences · StockFW</title>
+<meta name="description" content="Every setting in the Preferences window, page by page, what each one does on Windows and on Linux, how a change is marked before it is saved, and how saved firewall settings reach the engine.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Preferences · StockFW">
+<meta property="og:description" content="Every setting in the Preferences window, page by page, what each one does on Windows and on Linux, how a change is marked before it is saved, and how saved firewall settings reach the engine.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html" aria-current="page"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Using the app
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
+		<article class="prose">
+<h1>Preferences</h1>
+<p class="lede">Open it from the bottom of the sidebar or with <kbd>Ctrl</kbd>+<kbd>,</kbd>. The window has a dark sidebar with two groups, <em>StockFW</em> for how the program behaves and <em>Firewall</em> for what the engine does, and each page opens with a line on what it is for. A row that cannot work on your platform is greyed with the reason, and a page the platform cannot act on is not offered at all, so you never flip a switch that does nothing.</p>
+
+<h2 id="how-the-window-works">How the window works<a class="anchor" href="#how-the-window-works" aria-label="Link to this section">#</a></h2>
+<figure class="shot"><img src="../assets/screens/prefs-general.webp" alt="The Preferences window on the General page: a dark sidebar listing General, Events and Policy under StockFW and Firewall, Network, ICMP and Protection under Firewall; cards for Window and tray, Firewall and Background; a footer with Help, No changes, Cancel and Save." width="900" height="780" loading="lazy" decoding="async"><figcaption>The General page on Linux. On Windows the sidebar has no Firewall or Network page.</figcaption></figure>
+<ul>
+<li><strong>Changes are marked where they are.</strong> A row you changed gets a bar on its left, its page gets a dot in the sidebar, and the footer counts what <strong>Save</strong> will write. <strong>Cancel</strong> writes nothing.</li>
+<li><strong>Help</strong> in the footer, or <kbd>F1</kbd>, opens the <a href="../docs/help.html">Help window</a> at the topic for the page you are on. Help stays open when Preferences closes.</li>
+<li>The settings live in one text file, <code>stockfw.conf</code>. See <a href="#storage">where they are stored</a>.</li>
+</ul>
+<p><span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-prefs-smoke</span> The grouped sidebar, the page heads, the centred column and the change marks are checked on both platforms.</p>
+
+<h2 id="stockfw-general">StockFW › General<a class="anchor" href="#stockfw-general" aria-label="Link to this section">#</a></h2>
+<dl>
+<dt>Show a tray icon</dt>
+<dd>On by default. Puts StockFW in the notification area, with a menu to open the window, pause protection, reach every page or quit.</dd>
+<dt>Close and minimize to the tray</dt>
+<dd>On by default. Closing or minimising the window hides it in the tray instead of quitting, so event monitoring and Sentinel keep running. It needs the tray icon; where the desktop has no tray area, closing quits. See <a href="../docs/background.html">Background, tray and sign-in</a>.</dd>
+<dt>Start the firewall when StockFW opens</dt>
+<dd>Off by default. Turns the firewall on each time StockFW starts, through the same gate as the Start button, so an empty policy is never applied on the way. Off, the firewall is left as it was.</dd>
+<dt>Start StockFW in the background when I sign in</dt>
+<dd>Off by default. Puts StockFW in the notification area when you sign in to the desktop. On Windows it registers a per-user scheduled task that runs without administrator rights, so the sign-in copy only shows the state; start StockFW (Elevated) for monitoring and changes and it takes over. On Linux it writes an autostart entry that runs without root, so that copy shows the firewall's state as unknown, never as Off. The note under the switch says whether your firewall rules depend on this: on Windows they never do, and on Linux it reads the state of the <a href="../docs/install-linux.html#at-boot">boot service</a> (enabled, installed but not enabled, or missing). The switch is greyed with the reason where this copy cannot change it. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-autostart.sh</span></dd>
+</dl>
+
+<h2 id="stockfw-events">StockFW › Events<a class="anchor" href="#stockfw-events" aria-label="Link to this section">#</a></h2>
+<figure class="shot"><img src="../assets/screens/prefs-events.webp" alt="The Events preference page: Hide repeated events, Skip events not addressed to this computer, Events kept in the list set to 100000, Keep event history, Keep history for 30 days, History size limit 200 MB, and a Delete history button." width="900" height="780" loading="lazy" decoding="async"><figcaption>What the list shows, how much it keeps, and whether events are saved to disk.</figcaption></figure>
+<dl>
+<dt>Hide repeated events</dt>
+<dd>Off by default. Leaves out a hit that repeats the one just before it, so a scan does not flood the list. The Copilot still sees every event.</dd>
+<dt>Skip events not addressed to this computer</dt>
+<dd>On by default. Leaves out broadcasts and traffic meant for other machines.</dd>
+<dt>Events kept in the list</dt>
+<dd>100,000 by default, up to 1,000,000. Past this the oldest go. Each event costs about 75 bytes of memory, so the default is a few megabytes.</dd>
+<dt>Keep event history</dt>
+<dd>Off by default. Saves every listed event to daily files only your account can read, so a restart does not empty the Events page. <em>Keep history for (days)</em>, 30 by default, deletes older files; <em>History size limit (MB)</em>, 200 by default, deletes the oldest files past that size whatever their age. The <em>Saved history</em> row says how much is on disk and <strong>Delete history</strong> removes it after asking. See <a href="../docs/events.html#history">History on disk</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-eventstore.sh</span></dd>
+</dl>
+
+<h2 id="stockfw-policy">StockFW › Policy<a class="anchor" href="#stockfw-policy" aria-label="Link to this section">#</a></h2>
+<figure class="shot"><img src="../assets/screens/prefs-policy.webp" alt="The Policy preference page: a switch Apply policy changes immediately, and a Testing card showing Audit-only testing mode Off with a button Change on the Policy page." width="900" height="780" loading="lazy" decoding="async"><figcaption>When changes to your rules reach the firewall. The audit-only mode is shown here but changed on the Policy page.</figcaption></figure>
+<dl>
+<dt>Apply policy changes immediately</dt>
+<dd>Each rule you add, edit or remove on the Policy page goes to the firewall as soon as it is saved, through the same gate and with the same audit line as the Apply button. Off, every change waits for <strong>Apply policy</strong>, and the Policy page shows what is staged.</dd>
+<dt>Audit-only testing mode</dt>
+<dd>Shown read-only with its state, On or Off. On, policy changes are saved and written to the audit log but the firewall is not changed. It is a safety control, so it is switched on the <a href="../docs/policy.html#audit-only-and-lock">Policy page</a>, where the Lock on the Overview page is also explained; the button here takes you there.</dd>
+</dl>
+
+<h2 id="firewall-firewall">Firewall › Firewall<a class="anchor" href="#firewall-firewall" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Linux</span> This page is offered on Linux only. Windows Firewall always drops silently, leaves the outbound default to its network profiles and logs through its own audit policy, so there is nothing here it could act on.</p>
+<figure class="shot"><img src="../assets/screens/prefs-firewall.webp" alt="The Firewall preference page: Answer to a blocked connection set to Drop silently, Connections from this computer set to Allow all outgoing, and Log allowed connections on." width="900" height="780" loading="lazy" decoding="async"><figcaption>How blocked connections are answered, and what may leave this computer.</figcaption></figure>
+<dl>
+<dt>Answer to a blocked connection</dt>
+<dd><em>Drop silently</em>: the sender hears nothing, as if this computer were not there. <em>Reject with an error</em>: the sender is told at once that the connection was refused.</dd>
+<dt>Connections from this computer</dt>
+<dd><em>Allow all outgoing</em>, the default, or <em>Block outgoing unless allowed</em>. In the restrictive mode only connections that an outbound allow rule on the Policy page names can leave this computer; everything else is blocked, including software updates, until you allow it, and the page says so in a warning when you pick it. Your outbound deny rules apply either way.</dd>
+<dt>Log allowed connections</dt>
+<dd>On by default. Records the first packet of each new connection your policy allows, at most ten a second, so Events, Activity and the Copilot see allowed traffic as well as blocked. Off, the Copilot's login and beacon checks see only refused traffic.</dd>
+</dl>
+
+<h2 id="firewall-network">Firewall › Network<a class="anchor" href="#firewall-network" aria-label="Link to this section">#</a></h2>
+<p><span class="plat">Linux</span> Offered on Linux only. Windows has no equivalent that the app can drive honestly, so the page is not shown there rather than shown inert.</p>
+<figure class="shot"><img src="../assets/screens/prefs-network.webp" alt="The Network preference page: two device pickers, Internet device and Local network device, listing the real adapters, and a switch Share the Internet connection (NAT)." width="900" height="780" loading="lazy" decoding="async"><figcaption>The pickers list what is really attached. eth0 here is the staged network’s only adapter.</figcaption></figure>
+<dl>
+<dt>Internet device</dt>
+<dd>The adapter that connects this computer to the Internet. Needed for port forwards and for the blocks on the Protection page. A device marked <em>not present</em> is not connected right now.</dd>
+<dt>Local network device</dt>
+<dd>The adapter that faces your own network. Only used for connection sharing; traffic arriving on it is accepted.</dd>
+<dt>Share the Internet connection (NAT)</dt>
+<dd>Lets devices on your local network reach the Internet through this computer, IPv4 only. It needs both devices chosen. Port forwards need this.</dd>
+</dl>
+
+<h2 id="firewall-icmp">Firewall › ICMP<a class="anchor" href="#firewall-icmp" aria-label="Link to this section">#</a></h2>
+<figure class="shot"><img src="../assets/screens/prefs-icmp.webp" alt="The ICMP preference page: Filter ICMP messages on, a note about IPv6, and a list of allowed message types with switches: Echo request, Echo reply, Host unreachable, Traceroute, Windows traceroute, Redirection." width="900" height="780" loading="lazy" decoding="async"><figcaption>Each type has one line saying what it lets in. The note under the master switch says what IPv6 always allows.</figcaption></figure>
+<p><em>Filter ICMP messages</em> turns the page on. Off, every ICMP message is let in. On, only the types switched on below may arrive:</p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Type</th><th>Default</th><th>What it lets in</th></tr></thead>
+<tbody>
+<tr><td>Echo request (ping)</td><td>on</td><td>Other computers may ping this one. Linux rate-limits it to one a second.</td></tr>
+<tr><td>Echo reply</td><td>on</td><td>Echo replies this computer did not ask for. Replies to your own pings get through either way.</td></tr>
+<tr><td>Host unreachable</td><td>on</td><td>“Host unreachable” reports not about a connection this computer made. Reports about your own connections get through either way.</td></tr>
+<tr><td>Traceroute</td><td>on</td><td>UDP port 33434, where Unix-style traceroute probes arrive. Not ICMP at all, kept here because the original kept it here.</td></tr>
+<tr><td>Windows traceroute</td><td>on</td><td>Every “destination unreachable” report, which Windows <code>tracert</code> needs. Traceroute and tracert from this computer do not need it.</td></tr>
+<tr><td>Redirection</td><td>off</td><td>Routers may send traffic another way. Seldom needed, and open to abuse.</td></tr>
+<tr><td>Timestamping, Address masking, Source quenching</td><td>off</td><td>IPv4 only, and the labels say so. Obsolete; timestamping also gives away the clock.</td></tr>
+</tbody>
+</table>
+</div>
+<p><span class="plat">Linux</span> IPv6 uses the same choices. Neighbour discovery, router advertisements, “packet too big” and DHCPv6 replies are always allowed, because IPv6 stops working without them; time-exceeded and parameter-problem are always allowed on IPv4 for the same reason. The page says so under the switch.</p>
+<p><span class="plat">Windows</span> The choices become allow rules beside Windows' own, for IPv4 only; Windows' own rules may still allow some types you switch off, ICMPv6 is left to Windows, and nothing is rate-limited. The page carries both notes. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
+
+<h2 id="firewall-protection">Firewall › Protection<a class="anchor" href="#firewall-protection" aria-label="Link to this section">#</a></h2>
+<figure class="shot"><img src="../assets/screens/prefs-protection.webp" alt="The Protection preference page: Block broadcasts from the Internet side, Block broadcasts from the local network, and Block reserved source addresses, each with a note on when it takes effect." width="900" height="780" loading="lazy" decoding="async"><figcaption>Extra blocks for traffic that should never arrive. The two broadcast switches exist on Linux only.</figcaption></figure>
+<dl>
+<dt>Block broadcasts from the Internet side, from the local network</dt>
+<dd><span class="plat">Linux</span> Drop broadcast packets arriving on the Internet device, or on the local network device while the connection is shared. Each has no effect until the device it names is chosen on the Network page, and the note under it says so. Windows does not offer these switches: a Windows Firewall rule matches the sender's address, and no packet is sent from the broadcast address, so a rule there would block nothing. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></dd>
+<dt>Block reserved source addresses</dt>
+<dd>Anti-spoofing. On Linux it drops packets on the Internet device that claim to come from private or loopback ranges (10/8, 172.16/12, 192.168/16, 127/8), which cannot be genuine there. On Windows it applies on networks Windows treats as public, and there it blocks every inbound connection from those ranges even when an allow rule of yours lets them in, because a Windows block wins over an allow. Windows uses the public profile for new networks and most café and hotel Wi-Fi, where other devices have such addresses.</dd>
+</dl>
+
+<h2 id="apply">How firewall settings reach the engine<a class="anchor" href="#apply" aria-label="Link to this section">#</a></h2>
+<p>Settings on the StockFW pages take effect when you press <strong>Save</strong>. Settings on the Firewall pages compile into rules, so after Save the window asks <em>Apply the new firewall settings now?</em> <strong>Apply now</strong> puts them in place under the policy that is live, with the same checks as Apply policy; changes on the Policy page that are not applied yet stay pending. <strong>Later</strong> keeps the previous settings until the policy is next applied or, on Linux, the firewall is started. A failed apply puts the previous rules back and says so. On Windows the settings become rules named <code>StockFW …</code> with a space, where policy rules have a hyphen, so the two sets can never collide. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></p>
+<p>A What-If fix that changes one of these switches opens Preferences at the page that holds it. See <a href="../docs/simulator.html">What-If</a>.</p>
+<p><span class="plat">Linux</span> The same settings can be read and set from a terminal with <a href="../docs/cli.html#config"><code>stockfw config</code></a>, with the same checks and reasons as this window; it writes root’s copy, and a saved firewall setting is applied by <code>config apply</code> or the next policy apply, as here.</p>
+
+<h2 id="storage">Where they are stored<a class="anchor" href="#storage" aria-label="Link to this section">#</a></h2>
+<p>A plain ini file, <code>stockfw.conf</code>, with a <code>[client]</code> and a <code>[firewall]</code> group: <code>%APPDATA%\stockfw\stockfw.conf</code> on Windows, <code>~/.config/stockfw/stockfw.conf</code> on Linux (<code>/root/.config/stockfw/</code> when run as root). Start at sign-in is not a row in it: it is the scheduled task or the autostart entry itself. You can edit the file with the app closed; a missing key takes its default. See <a href="../docs/files.html#stockfw-conf">Files and formats</a>.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/trust.html"><span>Previous</span><strong>Trust</strong></a><a class="next" href="../docs/background.html"><span>Next</span><strong>Background, tray and sign-in</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/preferences.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#how-the-window-works">How the window works</a></li>
+			<li class="lvl2"><a href="#stockfw-general">StockFW › General</a></li>
+			<li class="lvl2"><a href="#stockfw-events">StockFW › Events</a></li>
+			<li class="lvl2"><a href="#stockfw-policy">StockFW › Policy</a></li>
+			<li class="lvl2"><a href="#firewall-firewall">Firewall › Firewall</a></li>
+			<li class="lvl2"><a href="#firewall-network">Firewall › Network</a></li>
+			<li class="lvl2"><a href="#firewall-icmp">Firewall › ICMP</a></li>
+			<li class="lvl2"><a href="#firewall-protection">Firewall › Protection</a></li>
+			<li class="lvl2"><a href="#apply">How firewall settings reach the engine</a></li>
+			<li class="lvl2"><a href="#storage">Where they are stored</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stockfw Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

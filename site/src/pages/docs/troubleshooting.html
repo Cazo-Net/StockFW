@@ -1,0 +1,121 @@
+---
+title: Troubleshooting
+section: Reference
+order: 41
+description: What a message means and what to do: privileges, monitoring, sudo’s search path, the two policy homes, IPv6 not filtered, malformed rules, a refused apply, a Sentinel block you did not want, the tray, the dashboard, and WSL and containers.
+---
+<h1>Troubleshooting</h1>
+<p class="lede">StockFW tries to say what is wrong in the place where it is wrong. This page collects those messages, says what each one means, and what fixes it.</p>
+
+<h2>Privileges</h2>
+<dl>
+<dt>“Administrator privileges required”, “Not live yet: run `sudo stockfw apply’”, exit status 3</dt>
+<dd>You are changing the firewall without the rights to do it. The change is saved and will be applied the next time Apply runs with rights. On Windows use the <em>StockFW (Elevated)</em> shortcut; on Linux run <code>sudo /usr/local/bin/StockFW</code> or <code>sudo stockfw apply</code>. Nothing was half-applied.</dd>
+<dt>“sudo: StockFW: command not found”</dt>
+<dd>[[linux]] <code>sudo</code> does not search <code>/usr/local/bin</code> on Fedora, RHEL and some Kali systems (Ubuntu’s default includes it). Type the full path: <code>sudo /usr/local/bin/StockFW</code>. The installer warns about this and deliberately does not edit <code>sudoers</code>; see <a href="{{root}}docs/install-linux.html#why-the-full-path-after-sudo">why</a>.</dd>
+<dt>“libcrypto.so.3 is OpenSSL 3” from install.sh</dt>
+<dd>[[linux]] The distribution ships only OpenSSL 1.1 (Debian 11, Ubuntu 20.04). StockFW links OpenSSL 3 and liblzma 5 to read the signed location database, and the installer stops before copying anything rather than install a program and a boot service that could not start. Upgrade the distribution, or build from source against the libraries it has.</dd>
+<dt>“nft not found” or “curl not found” from install.sh</dt>
+<dd>[[linux]] A warning, not a failure. Without <code>nft</code> the threat-intel lists and country rules cannot be loaded, and without <code>curl</code> they cannot be downloaded; the Threat Intel page says so. <code>sudo apt install nftables curl</code>.</dd>
+<dt>“Windows protected your PC” when running the installer</dt>
+<dd>The installer is not code-signed yet. Check the SHA-256 against the download page, then <em>More info</em>, <em>Run anyway</em>.</dd>
+</dl>
+
+<h2>Events</h2>
+<dl>
+<dt>“Monitoring is not available” on Windows</dt>
+<dd>The audit policy that makes Windows write firewall events is off. Open the elevated app once; it enables it. Or run <code>auditpol /set /subcategory:"Filtering Platform Connection" /success:enable /failure:enable</code> in an administrator PowerShell. See <a href="{{root}}docs/install-windows.html#enable-monitoring">Enable monitoring</a>. If a domain policy forces auditing off, StockFW cannot override it and says so.</dd>
+<dt>“Monitoring is not available” on Linux</dt>
+<dd>The kernel log needs root. Start the app with <code>sudo</code>, or add yourself to the <code>adm</code> group for the command line’s <code>events</code>.</dd>
+<dt>The list stays empty although the firewall is running</dt>
+<dd>Read the sentence under the empty list. “Waiting for the first event” means nothing has been blocked or logged yet; try an inbound connection from another machine to a closed port. On Linux, allowed connections are logged only with <em>Log allowed connections</em> on; otherwise the page shows drops and rejects only.</dd>
+<dt>No events in WSL2, a container or a network namespace</dt>
+<dd>[[linux]] The kernel delivers firewall log lines from a non-initial network namespace only when <code>net.netfilter.nf_log_all_netns=1</code>. Set it on the host: <code>sudo sysctl -w net.netfilter.nf_log_all_netns=1</code>. WSL2’s kernel also needs the netfilter log modules; a stock Ubuntu WSL image has them.</dd>
+<dt>“(up to N skipped)” next to the event count</dt>
+<dd>[[win]] More than 10,000 Security-log records arrived in one five-second poll. The newest 10,000 were read and the rest counted as an upper bound; the Security log keeps them all. On Linux the kernel log is read as it streams and nothing is skipped.</dd>
+<dt>“Another copy of StockFW is saving the history”</dt>
+<dd>Two copies of StockFW are running on the same account’s history folder, and only one may write it. The second lists events but saves nothing, and takes over by itself once the first is gone. <code>StockFW --quit</code> asks the running copy to quit.</dd>
+<dt>The Program column is empty</dt>
+<dd>[[linux]] The kernel log carries no program name. The Overview’s connection table names programs for connections that are open; the Events page cannot for ones that are not. [[gap]]</dd>
+</dl>
+
+<h2>Policy and Apply</h2>
+<dl>
+<dt>A rule I added is not applied</dt>
+<dd>[[linux]] Check which policy you edited. As yourself the policy is <code>~/.stockfw</code>; as root it is <code>/etc/stockfw</code>. <code>stockfw status</code> prints the directory in use. Pick one identity for policy work; see <a href="{{root}}docs/install-linux.html#two-homes-yours-and-root-s">Two homes</a>.</dd>
+<dt>“N malformed policy rules were skipped”</dt>
+<dd>A line in a policy file did not parse: a non-numeric port, a host name starting with a hyphen, a stray comma. The line was skipped, not guessed at. Open the file named in the message, fix or delete the line, reload. Saving from the app writes only the rules that parsed. <a href="{{root}}docs/files.html#policy-files">The format</a>.</dd>
+<dt>Apply says “policy held, firewall untouched”</dt>
+<dd><em>Audit-only</em> on the Policy page or <em>Lock policy</em> on the Overview is on. The change was measured and recorded; the engine was left alone. Turn the hold off and Apply again.</dd>
+<dt>Apply failed and “the last good policy was restored”</dt>
+<dd>The engine refused a rule. The dialog carries the tool’s own message; on Windows it is often a target netsh cannot parse, on Linux a rule the kernel lacks a module for. The policy on the wire is what it was before you pressed Apply. The audit log has the line.</dd>
+<dt>“The forward to 192.168.1.30 was left out: no external interface is set”</dt>
+<dd>Port forwards need router mode: set the <em>Internet connected network device</em> and <em>Enable Internet connection sharing</em> on the Network Settings preference page.</dd>
+<dt>“NOT BLOCKED: <em>name</em> could not be looked up”</dt>
+<dd>A deny rule’s target is a host name that did not resolve while the firewall was being started, so it was left out rather than refuse to start at all. Fix the name or use the address, then Apply again; while the firewall is running, the same failure refuses the apply and keeps the old addresses blocked instead.</dd>
+<dt>A host-name rule covers nothing on Windows</dt>
+<dd>[[win]] Windows Firewall takes addresses only. Use the address, or one rule per address. The Covers column warns.</dd>
+</dl>
+
+<h2>IPv6</h2>
+<dl>
+<dt>The IPv6 tile reads “Not filtered: ip6tables is not installed”</dt>
+<dd>[[linux]] <code>sudo apt install iptables</code> brings <code>ip6tables</code> on Debian-family systems; <code>dnf install iptables-nft</code> on Fedora. Then Apply again. Until then only IPv4 is filtered, and the app says so rather than pretending. [[gap]]</dd>
+<dt>“None on this system”</dt>
+<dd>The kernel has no IPv6 stack. Nothing to filter, nothing wrong.</dd>
+</dl>
+
+<h2>Copilot and Sentinel</h2>
+<dl>
+<dt>Sentinel blocked something I use</dt>
+<dd>Press <strong>Undo</strong> on it under <em>Changes made by the Copilot</em>, or right-click the destination on the Events page and <em>Allow destination</em>: your Allow lifts the block and the two reach the firewall together. The block would have expired by itself in ten minutes; it cannot come back in this session. If it happens often, set Sentinel to <em>Detect only</em>, which takes every staged block down at once. Sentinel never blocks loopback, your LAN, multicast or a destination the program has used before; if it did, that is a bug worth <a href="{{repo}}/issues">reporting</a> with the audit lines.</dd>
+<dt>No findings appear</dt>
+<dd>The page says why: no events yet, monitoring off (with the reason the Events page gives), or “No findings from N events”, which means none of the fixed checks matched, not that the computer is safe. Allowed traffic is seen only when allowed-event logging is on; without it the login check sees only refused attempts. A slow pattern can stay below every limit; the limits are on <a href="{{root}}docs/copilot.html">the Copilot page</a>.</dd>
+<dt>A health finding says “no fix offered”</dt>
+<dd>The fix was tried against the policy with the What-If engine and one of its checks failed, for example a narrowing that would have cut off a second private network this computer is on. The failed check is printed under the finding. Nothing was changed.</dd>
+</dl>
+
+<h2>Tray and window</h2>
+<dl>
+<dt>No tray icon</dt>
+<dd>Your desktop has no tray host (GNOME without the AppIndicator extension, or a headless session). The window works as usual and closing it quits. See <a href="{{root}}docs/background.html">Background and the tray</a>.</dd>
+<dt>No tray icon on Wayland or in WSL, and both tray switches are greyed out</dt>
+<dd>[[linux]] GTK has a tray only on X11 and Windows. On a Wayland session (GNOME and KDE Plasma by default, and WSL’s WSLg) StockFW makes no icon: a background start shows the window, closing the window quits, and Preferences greys <em>Show a tray icon</em> and <em>Close and minimize to the tray</em> with the reason. Under <code>sudo</code> StockFW runs on XWayland instead, where the tray works as on X11. No <code>Gtk-CRITICAL</code> line is printed at start. [[verified:test-notray.sh]]</dd>
+<dt>“This application can not open files” after <code>StockFW dashboard</code> or <code>StockFW status</code></dt>
+<dd>[[linux]] That was the 1.0.7 message. The window app takes options only; a word such as <code>dashboard</code> belongs to the command-line tool. It now exits with status 2 and names the command you meant: <code>sudo ./cli/stockfw dashboard</code> from the unpacked folder, or <code>sudo /usr/local/bin/stockfw dashboard</code> once installed.</dd>
+<dt>I closed the window and the app is still running</dt>
+<dd>That is <em>Minimize to the tray</em>. Open it from the tray icon, start StockFW again (a second launch brings the running copy forward), or run <code>StockFW --quit</code>. Quitting does not stop the firewall.</dd>
+<dt>StockFW does not start at sign-in</dt>
+<dd>Turn it on in the tray menu or on <em>Preferences › General</em>, or run <code>StockFW --enable-autostart</code>. On Windows it is a Task Scheduler task without administrator rights; on Linux an entry in <code>~/.config/autostart</code>. Both start the unprivileged copy in the background, which monitors and learns; changing the firewall still needs the elevated shortcut or <code>sudo</code>.</dd>
+</dl>
+
+<h2>Command line and dashboard</h2>
+<dl>
+<dt>“cannot listen on 127.0.0.1:8080”</dt>
+<dd>The port is taken. Leave out <code>--port</code> and the system picks a free one.</dd>
+<dt>“Not live yet” in <code>stockfw status</code>, or <code>stockfw apply</code> after <code>stockfw stop</code> says nothing changed</dt>
+<dd>[[linux]] <code>stockfw status</code> says “N changes not applied”: run <code>stockfw policy diff</code> to see them and <code>sudo stockfw apply</code> to make them live. An apply after a stop now loads the whole policy and starts the firewall again; in 1.0.7 it compared the policy with the last apply, found no change and left the firewall stopped.</dd>
+<dt>“the event reader stopped” from <code>stockfw events -f</code></dt>
+<dd>[[linux]] The kernel log could no longer be read (the file named by <code>STOCKFW_LOG_FILE</code> was removed, or <code>/dev/kmsg</code> refused). The command says why and exits 1 rather than waiting forever; fix the source and start it again.</dd>
+<dt>The dashboard did not open a browser, or the browser shows a file error</dt>
+<dd>Under <code>sudo</code> StockFW will not start a browser as root. A snap or Flatpak browser cannot read the private launch file StockFW hands it. In both cases open the printed link in your browser, or run <code>stockfw dashboard link</code> for a fresh one.</dd>
+<dt>“This link has expired” or “This link was already used”</dt>
+<dd>A link works once, for two minutes. Run <code>stockfw dashboard link</code> for a new one. A link that was <em>already used</em> ends every open session and the terminal says so; if you did not open it twice yourself, someone else saw the link.</dd>
+<dt>The dashboard page says the session ended, or shows “Unauthorized”</dt>
+<dd>Sessions end after 12 hours, when the dashboard restarts, and when a link is used twice. Run <code>stockfw dashboard link</code> and open the new link in the same browser.</dd>
+<dt>“the dashboard does not serve uid 0”</dt>
+<dd>You started it as plain root. Run it as yourself, or with <code>sudo</code> from your own account: it then serves the account that ran <code>sudo</code>.</dd>
+<dt>The browser shows nothing, or a page saying Windows browsers are not let in</dt>
+<dd>Use <code>http://127.0.0.1:<em>port</em></code> as printed, not <code>localhost</code>. Under WSL, a browser on the Windows side is refused unless the dashboard was started with <code>--allow-windows</code>; a browser inside WSL works as it is. See <a href="{{root}}docs/dashboard.html#wsl">the dashboard page</a>.</dd>
+</dl>
+
+<h2>Uninstalling and starting over</h2>
+<dl>
+<dt>Rules are still in the firewall after uninstalling</dt>
+<dd>By design the uninstaller leaves the engine as it is. Press <strong>Stop firewall</strong> before uninstalling, or afterwards: on Linux <code>sudo iptables -D INPUT -j INBOUND; sudo iptables -F INBOUND; sudo iptables -X INBOUND</code> and the same for <code>OUTBOUND</code> and the nat chains, plus <code>sudo nft delete table inet stockfw_intel</code> if lists were on; on Windows delete the <code>StockFW-</code> rules and the <em>StockFW Threat Intel</em> group in <code>wf.msc</code>.</dd>
+<dt>Start from scratch</dt>
+<dd>Stop the firewall, close the app, delete the two directories listed in <a href="{{root}}docs/files.html">Files and formats</a>. The next start is a first run.</dd>
+</dl>
+
+<h2>Reporting a problem</h2>
+<p>Open an issue on <a href="{{repo}}/issues">GitHub</a> with the system info (<em>About StockFW › Copy system info</em> copies the StockFW and GTK versions, the platform and the backend, and nothing about you or your computer’s name), what you did, what the app said, and the relevant lines of <code>audit.log</code>. Nothing in the audit log is secret, but read it before pasting; it names your rules’ targets.</p>

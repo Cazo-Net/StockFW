@@ -1,0 +1,12 @@
+created_at	1700000000
+vendor	edge
+description	edge
+license	CC0-1.0
+country	DE	EU	Germany
+country	FR	EU	France
+country	IT	EU	Italy
+country	US	NA	United States
+as	1	One
+as	2	Two
+as	3	Three
+as	4	Four

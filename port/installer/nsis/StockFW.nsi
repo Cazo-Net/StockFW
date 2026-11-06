@@ -9,7 +9,14 @@
 !endif
 
 !define APP_NAME "StockFW"
-!define APP_VERSION "1.0.6"
+;
+; APP_VERSION comes from the build: build_installer.sh reads the project
+; VERSION from CMakeLists.txt and passes -DAPP_VERSION=<it>.  There is no
+; default here on purpose: a literal once stayed at the previous release
+; while the exe moved on.  Run makensis by hand with -DAPP_VERSION=x.y.z.
+!ifndef APP_VERSION
+  !error "APP_VERSION is not defined: build with installer/build_installer.sh, or pass -DAPP_VERSION=x.y.z"
+!endif
 !define APP_PUBLISHER "StockFW Project"
 !define APP_WEBSITE "https://github.com/stockfw/stockfw"
 !define APP_EXE "StockFW.exe"
@@ -25,7 +32,7 @@ VIAddVersionKey /LANG=0 "ProductVersion" "${APP_VERSION}"
 VIAddVersionKey /LANG=0 "FileVersion" "${APP_VERSION_FULL}"
 VIAddVersionKey /LANG=0 "FileDescription" "${APP_NAME} Setup"
 VIAddVersionKey /LANG=0 "CompanyName" "${APP_PUBLISHER}"
-VIAddVersionKey /LANG=0 "LegalCopyright" "(C) 04-10-2026 StockFW Project"
+VIAddVersionKey /LANG=0 "LegalCopyright" "Copyright (C) 2024-2026 StockFW Project"
 
 ;------------------------------------------------------------------------------
 ; Modern UI 2 Configuration
@@ -94,6 +101,7 @@ ShowInstDetails show
 ; Variables
 ;------------------------------------------------------------------------------
 Var PreviousUninstall
+Var PreviousInstDir
 Var StartMenuFolder
 Var CreateDesktopShortcut
 Var RunAfterInstall
@@ -143,9 +151,11 @@ Section "Main Application" SecMain
     File "${PROJECT_DIR}\installer\nsis\stage\StockFW-elevated.cmd"
     File "${PROJECT_DIR}\installer\nsis\stage\StockFW-elevated.ps1"
 
-    ; Documentation
+    ; Documentation, and the licence page's text (both licences in full,
+    ; which also covers the bundled OpenSSL libcrypto's Apache-2.0 terms)
     File "${PROJECT_DIR}\installer\nsis\stage\README.md"
-    File /nonfatal "${PROJECT_DIR}\installer\nsis\stage\CHANGELOG.md"
+    File "${PROJECT_DIR}\installer\nsis\stage\CHANGELOG.md"
+    File "${PROJECT_DIR}\installer\nsis\stage\LICENSE.txt"
 
     ; Write uninstaller
     WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -182,6 +192,24 @@ Section "Desktop Shortcut" SecDesktop
     CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
 SectionEnd
 
+; Ticked by default.  StockFW.exe registers a Task Scheduler task for the
+; account signed in at this desktop (src/core/fs-autostart.c; with
+; over-the-shoulder elevation that is not the account running this
+; installer): at that account's sign-in it starts
+; "StockFW.exe --background" WITHOUT elevation, in the notification area,
+; showing the firewall's state.  The installer already runs elevated,
+; which changing the task folder needs.  A failure is reported and does
+; not fail the install: the option is also in StockFW's tray menu.
+Section "Start StockFW in the background when I sign in" SecAutostart
+    DetailPrint "Setting ${APP_NAME} to start in the background at sign-in..."
+    ClearErrors
+    ExecWait '"$INSTDIR\${APP_EXE}" --enable-autostart' $0
+    ${If} ${Errors}
+    ${OrIf} $0 != 0
+        DetailPrint "Could not set up start at sign-in (exit code $0).  Turn it on later from the ${APP_NAME} tray menu."
+    ${EndIf}
+SectionEnd
+
 ;------------------------------------------------------------------------------
 ; Section Descriptions (disabled to avoid MUI2 warnings)
 ;------------------------------------------------------------------------------
@@ -205,9 +233,26 @@ Function .onInit
         IDYES UninstallPrevious IDNO NoPreviousInstall
 
     UninstallPrevious:
+    ; Run the old uninstaller TO THE END before anything is installed.
+    ; Started plainly, an NSIS uninstaller copies itself to %TEMP%,
+    ; relaunches and returns at once, so its steps (asking the running
+    ; StockFW to quit, removing the sign-in tasks, deleting files) would
+    ; race the new install and could delete what it just set up.  A copy
+    ; run with _?=<install dir> runs in place and ExecWait waits for it;
+    ; it is a copy so the original uninstall.exe can still be deleted.
+    ; _?= must be the last argument, unquoted.
+    ReadRegStr $PreviousInstDir HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}" "InstallLocation"
     ClearErrors
-    ExecWait '"$PreviousUninstall" /S'
-    IfErrors NoPreviousInstall
+    ${If} $PreviousInstDir != ""
+    ${AndIf} ${FileExists} "$PreviousInstDir\uninstall.exe"
+        InitPluginsDir
+        CopyFiles /SILENT "$PreviousInstDir\uninstall.exe" "$PLUGINSDIR\previous-uninstall.exe"
+        ExecWait '"$PLUGINSDIR\previous-uninstall.exe" /S _?=$PreviousInstDir'
+        Delete "$PLUGINSDIR\previous-uninstall.exe"
+    ${Else}
+        ; No install location recorded: the old way, which does not wait.
+        ExecWait '"$PreviousUninstall" /S'
+    ${EndIf}
     Goto NoPreviousInstall
 
     NoPreviousInstall:
@@ -300,9 +345,19 @@ AskFirst:
     Quit
 
 CloseApp:
-    ; Graceful first -- taskkill without /F posts WM_CLOSE, so the app gets to
+    ; Cleanest first: "StockFW.exe --quit" asks the running copy to quit
+    ; through its own instance channel (src/core/fs-instance.c), so it
+    ; saves its settings and Sentinel's state and leaves the firewall on;
+    ; it returns once that copy is gone, or after 15 seconds.  A copy it
+    ; cannot reach -- another user's -- falls through to taskkill.
+    DetailPrint "${APP_EXE} is running; asking it to quit before removing files."
+    ExecWait '"$INSTDIR\${APP_EXE}" --quit' $R8
+    Call un.WaitForExit
+    StrCmp $R7 0 NotRunning
+
+    ; Then graceful -- taskkill without /F posts WM_CLOSE, so the app gets to
     ; exit on its own terms and may refuse.  Only force it if it ignores that.
-    DetailPrint "${APP_EXE} is running; closing it before removing files."
+    DetailPrint "${APP_EXE} is still running; closing it before removing files."
     nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM ${APP_EXE}'
     Pop $R7
     Pop $R8
@@ -322,6 +377,13 @@ CloseApp:
     Quit
 
 NotRunning:
+    ; Start at sign-in: every user's task in the \StockFW Task Scheduler
+    ; folder, and the folder.  Before the files go -- it is StockFW.exe
+    ; that removes them -- and whatever the outcome, since a task left
+    ; behind would only fail to start a program that is gone.
+    DetailPrint "Removing ${APP_NAME}'s sign-in tasks..."
+    ExecWait '"$INSTDIR\${APP_EXE}" --remove-all-autostart' $R8
+
     ; Remove files
     Delete "$INSTDIR\${APP_EXE}"
     Delete "$INSTDIR\uninstall.exe"
@@ -330,6 +392,7 @@ NotRunning:
     Delete "$INSTDIR\StockFW-elevated.ps1"
     Delete "$INSTDIR\README.md"
     Delete "$INSTDIR\CHANGELOG.md"
+    Delete "$INSTDIR\LICENSE.txt"
 
     ; Remove ALL DLLs in install root
     Delete "$INSTDIR\*.dll"

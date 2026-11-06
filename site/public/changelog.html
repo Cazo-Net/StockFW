@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en" data-root="./">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Changelog · StockFW</title>
+<meta name="description" content="What changed in each StockFW version, up to the current 1.0.7 release.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Changelog · StockFW">
+<meta property="og:description" content="What changed in each StockFW version, up to the current 1.0.7 release.">
+<meta property="og:type" content="website">
+<link rel="icon" href="./assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="./assets/img/apple-touch-icon.png">
+<link rel="preload" href="./assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="./assets/css/site.css">
+
+</head>
+<body class="layout-page">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="./index.html">
+			<img src="./assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="./index.html#tour">Features</a>
+			<a href="./docs/index.html">Docs</a>
+			<a href="./download.html">Download</a>
+			<a href="./changelog.html" aria-current="page">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<section class="page-head">
+	<div class="wrap">
+		<p class="label">Changelog</p>
+		<h1>Changelog</h1>
+		<p>What changed in each StockFW version, up to the current 1.0.7 release.</p>
+	</div>
+</section>
+<div class="page-body">
+	<div class="wrap">
+<div class="prose">
+<p class="lede">Each release also adds a chapter to <a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">the architecture and security document</a>, which records the evidence behind every claim below. This page is the short version.</p>
+
+<!-- UNRELEASED: v1.0.8 has no tag and no GitHub release yet. This section
+     is work merged to main and filed under [Unreleased] in CHANGELOG.md.
+     On release day: give it the date, call it the current release, and
+     drop the "current release" marker from 1.0.7 below. -->
+<h2 id="v1-0-8">1.0.8 · unreleased · in development<a class="anchor" href="#v1-0-8" aria-label="Link to this section">#</a></h2>
+<p>The terminal release. On Linux, <code>stockfw</code> now does from a terminal what the window does, and says what is true: whether the saved policy is live, who can reach each open port, what the audit log holds, and what Sentinel has staged. Every sample on the <a href="./docs/cli.html">command line page</a> is this release’s real output.</p>
+<h3 id="added">Added<a class="anchor" href="#added" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>The live event line.</strong> <code>stockfw events -f</code> prints new events in the table’s columns and, on a terminal, keeps a status line under them: firewall state, live or pending, HELD (audit-only), blocked today, Sentinel and the event source. Never shown with <code>--json</code>, <code>--csv</code>, <code>-q</code> or in a pipe, so machine output stays one event per line. When the reader stops, <code>-f</code> says why and exits 1. <a href="./docs/cli.html#events-follow">The live event line</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong>Events triage.</strong> <code>events --summary</code> counts a window per source and per port with a bar per hour (<code>--by</code>, <code>--top</code>); <code>--wide</code>, <code>--csv</code>, <code>-r</code>, <code>--utc</code>; <code>--port</code> takes a list and <code>--dir</code> takes <code>both</code>. The RULE column names the threat-intel list that blocked an event; 3389 is Remote Desktop and 161 is SNMP, in the terminal and on the Events page. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong><code>stockfw status</code> says whether what you saved is live</strong>: “12 rules, live” or “1 change not applied”, the last apply, start or stop, the packets blocked today and the last one, and whether <code>stockfw.service</code> puts the rules back at boot. <code>-v</code> adds the firewall settings, the event history and Sentinel; <code>-q</code> prints one line. Monitoring is decided by what your account can read, tried rather than guessed from your user id. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong>New commands.</strong> <code>stockfw audit</code> reads the audit log with filters and <code>-f</code>; <code>stockfw sentinel list</code> shows Sentinel’s staged blocks and when each lifts; <code>stockfw listening</code> shows every open port, the program behind it and whether the policy lets the LAN and the internet reach it, with the rule that decides; <code>stockfw check</code> lists the lines of the policy files that are not rules. <a href="./docs/cli.html#audit">audit</a>, <a href="./docs/cli.html#sentinel">sentinel</a>, <a href="./docs/cli.html#listening">listening</a>, <a href="./docs/cli.html#check">check</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong>Rules have references.</strong> <code>inbound-allow-service:2</code> works in <code>policy show</code>, <code>remove</code>, <code>list --status</code>, <code>simulate --json</code> and <code>copilot health --json</code>; <code>add</code> and <code>remove</code> echo the reference and check the rule’s own traffic. <code>policy diff</code> shows the saved policy against the applied one, and <code>apply --dry-run</code> lists the rows it would add and remove. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong>The lockout guard.</strong> Over SSH, <code>apply</code> and <code>start</code> check that the new policy still lets your session in, under <code>sudo</code> too, with sshd on any port; they ask on a terminal and refuse without one unless <code>--yes</code> is given. SSH clients on every port sshd listens on are in the set a blocklist may never cut. <a href="./docs/cli.html#lockout">The lockout guard</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-hostnet.c</span></li>
+<li><strong>Global options and honest tables.</strong> <code>--plain</code>, <code>--full</code> and <code>--color=auto|always|never</code>; tables fit the terminal and only the terminal; symbols fall back to ASCII; a hint that needs root names the program by its full path. Text from logs and comments is escaped before it reaches the terminal, everywhere. <code>-q simulate</code> prints only the verdict word; <code>copilot health --severity</code> sets the level that gives exit 7; <code>simulate --applied</code> asks the applied policy. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong><code>connections</code> and <code>interfaces</code>, in detail.</strong> Both ports and the TCP state, filters by address, port, program, direction and state, counts with <code>--by</code>, connected UDP with <code>--udp</code>; rates measured over the real time between samples, <code>--watch=SECS</code>, <code>-c COUNT</code>, <code>--all</code>, one line per frame with <code>--json</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-sockets.c</span></li>
+<li><strong><code>man stockfw</code>, and completion for bash and zsh.</strong> The manual page is written by the tool from the same tables its parser reads, so it cannot fall behind; completion offers commands, options, values and your own rule references. The Linux installer puts all three under <code>/usr/local/share</code>. <a href="./docs/cli.html#man">Manual page and completion</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong>Settings from the terminal: <code>stockfw config</code>.</strong> <code>list</code>, <code>get</code>, <code>set</code>, <code>reset</code>, <code>apply</code>, <code>devices</code> and <code>audit-only on|off</code>. <code>set</code> writes root’s copy of the Preferences, one key at a time, with the window’s checks and reasons. Saved is not applied: <code>config apply</code> shows what changes and how many rules, checks your SSH session, and applies under the policy last applied; a policy apply sends the saved settings too and says so. <strong>Boot uses the settings last applied</strong>, so a setting saved and never applied does not go live at the next boot. <a href="./docs/cli.html#config">config</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-pr3-core.c</span></li>
+<li><strong>Policy editing in place, and one writer at a time.</strong> <code>policy edit</code> changes a rule where it is, keeping its number and comment; <code>policy init</code> saves the default rules on a computer without the desktop app; <code>--apply</code> on <code>add</code>, <code>edit</code> and <code>remove</code> saves and applies under one lock, with the SSH check first. Every change holds the policy lock from read to save, and the desktop app’s applies take the same lock. A comma, a line break or a leading <code>#</code> in a rule field is refused before anything is written. <a href="./docs/cli.html#policy-edit">Editing a rule</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-pr3-core.c</span></li>
+<li><strong><code>status</code> starts with the verdict</strong> of the Overview (“This computer is protected”…), held to the window’s card by one golden table; <code>stop</code> asks first on a terminal, as “Pause protection?” does, and stops without asking in a script; <code>interfaces --no-virtual</code>; the Events page’s two filters in <code>events</code> (<code>--collapse-repeats</code>, <code>--for-me</code>, <code>--prefs-filters</code>), <code>--stats</code> and <code>--clear-history</code>; and <strong>new <code>stockfw activity</code></strong>, the Activity page as a sparkline or a table, with no data shown as no data. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-verdict-smoke</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong>The Copilot and Sentinel in the terminal.</strong> <code>stockfw copilot scan</code> finds what the Copilot page finds, from the kernel log or the saved history; <code>copilot show ID</code> explains one finding and <code>copilot block ID</code> puts its block live without the rest of the saved policy; <code>copilot health --fix N</code> makes a policy fix, <code>copilot changes --undo ID</code> takes a fix or a block back, <code>copilot checks</code> lists what the checks look for. <code>sentinel lift</code> takes Sentinel’s blocks down (one address, all, or the expired ones) and <code>sentinel mode detect</code> switches it to detect only. <a href="./docs/cli.html#copilot">copilot</a>, <a href="./docs/cli.html#sentinel">sentinel</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-pr4-core.c</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong>Act on an event, run a What-If fix.</strong> <code>stockfw events act block-dest|block-service|allow-dest|trust-source|untrust-source</code> turns an event into a rule as the Events page does, showing the event and the rule first; <code>simulate … --do N</code> runs fix N of the answer. A block goes live alone, so a rule or Firewall setting you saved and never applied stays off; an allow shows the whole apply first. <a href="./docs/cli.html#events-act">events act</a>, <a href="./docs/cli.html#simulate-do">simulate --do</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-pr4-core.c</span></li>
+<li><strong>One way to ask, one line for a stopped firewall.</strong> Every change from these commands, and the threat-intel saves with <code>--apply</code>, asks <code>[y/N]</code> on a terminal, No by default; <code>--yes</code> skips the question, and with no terminal and no <code>--yes</code> they stop at once and never read standard input. With the firewall stopped they print “The firewall is stopped: the change is saved and goes live at the next start; the firewall stays stopped.” and never start it. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong><code>stockfw trust</code>: the Trust page in a terminal.</strong> <code>trust</code> and <code>trust check</code> hash every attested file again and say matches, CHANGED or GONE, with exit 1 for either, so a script can watch a program; <code>inspect</code>, <code>attest</code> and <code>forget</code>, each with an audit line. Your own baseline, no root. <a href="./docs/cli.html#trust">trust</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-pr4-core.c</span></li>
+<li><strong>The Help window’s topics in the terminal, and <code>stockfw about</code>.</strong> <code>help topics</code> lists the 25 topics, <code>help TOPIC</code> prints one, <code>help --search WORD</code> finds words in them; the same text is installed as <code>stockfw-topics(7)</code>. <code>about</code> prints the version, credits, licence and website, <code>--licences</code> both licence texts and <code>--system</code> bug-report lines that name no user, host or address. <a href="./docs/cli.html#help-topics">help topics</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-help-text.c</span></li>
+<li><strong>The Threat Intel page’s editors.</strong> <code>intel exceptions --set FILE|-</code> replaces the allow list from a text, <code>intel import -</code> reads a list from standard input, and <code>--apply</code> on the intel saves puts the change in force at once as the page does; <code>intel feeds</code> says when each feed is due next. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-intel-cli.sh</span></li>
+<li><strong>The dashboard, hardened.</strong> It serves your own account only: a connection from root or another user is closed unread, and as plain root it refuses to start. The link holds a code that works once, for two minutes, printed only to a terminal (a pipe gets a private launch file); the page swaps it for a session that reads for 12 hours; <code>stockfw dashboard link</code> makes a new link; a link used twice ends every session and the terminal says so; a fingerprint in the terminal and on the page lets you check they match. Only <code>http://127.0.0.1:PORT</code> is accepted, not <code>localhost</code>. Request deadlines and per-account slots mean slow senders cannot lock you out; the one <code>POST</code> needs the page’s own <code>Origin</code>; Trusted Types and two more headers. <code>--origin-port N</code> for <code>ssh -L</code>; under WSL a Windows-side browser is refused unless <code>--allow-windows</code>. Closing the terminal stops it cleanly. Still read-only, still 127.0.0.1 only. <a href="./docs/dashboard.html">Dashboard</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-dashboard.sh</span></li>
+<li><strong>A build of the command line alone.</strong> <code>cmake -DFS_BUILD_GUI=OFF</code> builds <code>stockfw</code> and its manual page without GTK. CI checks that <code>stockfw</code> needs no GTK, GDK, Pango or cairo library. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-nogui-build.sh</span></li>
+</ul>
+<h3 id="changed">Changed<a class="anchor" href="#changed" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>Options are read the way you meant them.</strong> The word after an option that takes a value is that value; everything after <code>--</code> is a plain word; an unknown option is refused (exit 2) instead of ignored or folded into a <code>simulate</code> question; a typo gets “did you mean…?”.</li>
+<li><strong><code>apply</code> after <code>stop</code> starts the firewall again.</strong> A stopped or unreadable firewall gets the whole policy and the audit line says why. A core fix, so the desktop app’s Apply gets it too.</li>
+<li><strong>Lines that are not rules are named</strong>, with their file, line and reason. <code>apply</code> refuses them, and so do <code>policy add</code> and <code>remove</code>, which would have deleted such a line without a word. <code>SSH,,Anyone</code> still loads.</li>
+<li><code>start</code> and <code>stop</code> say “Already running” or “Already stopped” and write no audit line of their own; a stop on a stopped firewall still takes the blocklists down, logged as <code>intel-suspend</code>. <code>--since</code> and <code>--until</code> take an ISO time without seconds. <code>stockfw version</code> prints one line.</li>
+<li>The Linux README and the installer no longer say that every Debian and Kali <code>sudo</code> leaves out <code>/usr/local/bin</code>; Ubuntu’s default includes it, Fedora, RHEL and some Kali systems leave it out.</li>
+</ul>
+<h3 id="fixed">Fixed<a class="anchor" href="#fixed" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>Wayland desktops and WSL: no tray icon, no start-up warning.</strong> GTK has a tray only on X11 and Windows; StockFW no longer tries to make one on Wayland (GNOME, KDE Plasma, WSLg), so the <code>Gtk-CRITICAL</code> line at every start is gone, a background start shows the window, and Preferences greys both tray switches with the reason. <a href="./docs/background.html">Background, tray and sign-in</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-notray.sh</span></li>
+<li><strong>The window keeps up with a firewall stopped from outside</strong>, with or without a tray icon: the once-a-minute re-read of the firewall state ran only while a tray icon existed.</li>
+<li><strong>The What-If “Start the firewall” button obeys Audit-only and the Policy Lock.</strong> It started the firewall directly, so a hold did not stop it, nothing reached the audit log, and on Linux saved changes never applied went live. It now starts through the Overview’s start gate: held when a hold is on, the last applied policy on Linux, an audit line every time, and a failed start reported as a failure. The question before the start says what happens on each platform. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-simviz-smoke</span></li>
+<li><code>StockFW dashboard</code> says what to run instead of GTK’s “This application can not open files”, and exits with status 2.</li>
+<li><code>install.sh</code> reads <code>sudo</code>’s <code>secure_path</code> in the unquoted form RHEL and Fedora write, so the warning appears there too.</li>
+<li><code>events</code> refuses <code>--blocked</code> with <code>--allowed</code> and an unknown <code>--proto</code> (exit 2) instead of letting the last flag win; the first <code>interfaces --watch</code> frame showed half the rate.</li>
+</ul>
+
+<h2 id="v1-0-7">1.0.7 · 3 November 2026 · current release<a class="anchor" href="#v1-0-7" aria-label="Link to this section">#</a></h2>
+<h3 id="added-2">Added<a class="anchor" href="#added-2" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>The What-If engine.</strong> A parser that reads a question the way you say it and shows how it read it; an engine that models your platform’s firewall (first match on Linux, block wins on Windows) together with the Firewall preferences, Sentinel’s blocks, whether the firewall runs and whether the saved policy is live; DEPENDS answers that spell out the split; the whole trace of rules checked; and fixes verified against the policy before they are offered. A window beside the page, not over it, and the same answer from <code>stockfw simulate</code>, with exit 6 for DEPENDS. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-whatif.c</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-simviz-smoke</span></li>
+<li><strong>Preferences redesigned.</strong> A grouped sidebar, a title and purpose line on every page, settings in titled groups, change marks before you save, and firewall settings applied under the last applied policy. <a href="./docs/preferences.html">Preferences</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-prefs-smoke</span></li>
+<li><strong>Background mode and the tray.</strong> <code>StockFW --background</code> starts in the notification area; the tray menu shows the firewall state and today’s blocks, the last five blocks, every page, Pause protection, Pause Sentinel, Start at sign-in and Help. If no notification area takes the icon, the window is shown instead. <a href="./docs/background.html">Background, tray and sign-in</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-traymenu-smoke</span></li>
+<li><strong>One StockFW per user.</strong> Starting it again brings the running copy forward; <code>StockFW --quit</code> asks it to quit cleanly; a launch with more rights takes over from the copy without them. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-instance.sh</span></li>
+<li><strong>Start at sign-in.</strong> A Task Scheduler task that runs without administrator rights on Windows, an autostart entry on Linux; set from the tray, Preferences › General or <code>--enable-autostart</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-autostart.sh</span></li>
+<li><strong>Boot service on Linux.</strong> The installer installs and enables <code>stockfw.service</code>, which puts the last applied policy back before the network comes up. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-boot-start.sh</span></li>
+<li><strong>Saving while running.</strong> Settings and the Copilot’s baseline are written every five minutes when they changed, and when the session ends. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-session-smoke</span></li>
+<li><strong>Help and About.</strong> A Help window with a searchable sidebar, Back and Forward and links between topics, opened with <kbd>F1</kbd> at the topic for the page shown, working offline. An About window with the credits, a licence summary that matches the source, both licence texts and Copy system info. <a href="./docs/help.html">Help and About</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-help-smoke</span></li>
+<li><strong>The Copilot, reworked.</strong> Fixed checks, no model, no network: port scans, repeated login attempts, timed contacts, fan-out, blocklist hits and baseline changes, each with a severity, an evidence drawer and actions; a block is offered only when What-If confirms it. A policy health check that reports duplicate, shadowed, unreachable and no-effect rules, broad allows, risky services open to the Internet and denies that reach no family, with fixes What-If has verified; “Changes made by the Copilot” with Undo; <code>stockfw copilot health</code>. <a href="./docs/copilot.html">Copilot</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-health.c</span></li>
+<li><strong>Events at volume.</strong> The list holds 100,000 events by default and up to 1,000,000; a filter bar on direction, verdict, protocol, port or range, address or CIDR block and time; the filtered rows export to CSV; on Windows every event in a burst is read, up to 10,000 per poll. <a href="./docs/events.html">Events</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-hitview-smoke</span></li>
+<li><strong>Event history.</strong> Off by default; on, events are saved to daily files only your account can read, kept 30 days or 200 MB, read back at start on a worker thread, and searched by <code>stockfw events --history</code>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-eventstore.sh</span></li>
+<li><strong>Threat-intel blocklists on Linux and Windows.</strong> Opt-in public lists (Spamhaus DROP, abuse.ch Feodo Tracker, DShield, FireHOL, blocklist.de, Emerging Threats, CINS Army, Tor exits) and your own; each feed off until you accept its terms; strict parsing; protected ranges never blocked; one nftables table on Linux, a Windows Firewall rule group on Windows; a Threat Intel page, <code>stockfw intel</code>, a dashboard card, and Linux events that name the list. <a href="./docs/threat-intel.html">Threat intel</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-feed.c</span> <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-intelset.sh</span></li>
+<li><strong>Country and network blocking on Linux</strong> from IPFire’s signed location database (CC BY-SA 4.0), with an anycast warning, <code>stockfw intel geo</code> and a lookup that says “registered in”. Not on Windows in this version. <a href="./docs/country-blocking.html">Country and network blocking</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-geodb.sh</span></li>
+<li><strong>IPv6 on Linux.</strong> One apply loads the policy into <code>iptables</code> and <code>ip6tables</code>, each in one atomic step; a refused IPv6 half rolls the IPv4 half back. Each rule shows which families it covers, and the Overview says whether IPv6 is filtered. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-apply-dual.sh</span></li>
+<li><strong>The new look.</strong> A dark sidebar replaces the tab band, a new Overview answers “is this computer protected?”, every page is rebuilt as cards, and there is a new logo. The Windows Overview shows the firewall profile and the network in force.</li>
+<li><strong>Continuous integration.</strong> Linux and Windows builds and test suites on every pull request, with the Windows installer and the Linux tarball kept as artifacts.</li>
+</ul>
+<h3 id="changed-2">Changed<a class="anchor" href="#changed-2" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Linux events are read from the kernel ring buffer (<code>/dev/kmsg</code>), allowed new connections are logged too, and an empty Events list says why.</li>
+<li>Windows rules use real protocols, port specs and sides; a rule is refused rather than widened.</li>
+<li>Router mode on Linux uses its own NAT chains, replaced on every apply.</li>
+<li>As root, StockFW runs <code>iptables</code>, <code>ip6tables</code>, <code>nft</code> and <code>journalctl</code> only from the system directories; on Windows it runs <code>netsh</code>, <code>wevtutil</code> and <code>auditpol</code> only from System32. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-core.sh</span></li>
+<li><code>stockfw dashboard</code> hands the browser a private launch page, so the token is on no command line.</li>
+<li>The Linux tarball’s binaries are stripped; the installer checks for <code>liblzma.so.5</code> and <code>libcrypto.so.3</code> and warns when <code>nft</code> or <code>curl</code> is missing. The Windows installer ships the README, this changelog and the licence file.</li>
+</ul>
+<h3 id="fixed-2">Fixed<a class="anchor" href="#fixed-2" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Generator bugs on Linux: outbound host rules that were never added, hyphenated port ranges, router-mode denies that were bypassed, forwards dropped after DNAT.</li>
+<li>The Windows broadcast-block settings no longer create rules that block nothing; the switches are offered on Linux only.</li>
+<li>The Copilot no longer offers Ask What-If or a block for traffic a list or a country rule already blocks.</li>
+<li>Help says what StockFW downloads: the location database as well as the blocklists, each only after you accept, plus DNS lookups of host names in Linux rules.</li>
+<li>Event history keeps events that arrive while it is being read back, and applies limits saved meanwhile.</li>
+<li>Credits: the port is credited to the Stock Team in About and Help; the Windows file properties, the installer and both licence files carry one copyright line.</li>
+</ul>
+
+<h2 id="v1-0-6">1.0.6 · development version, shipped as part of 1.0.7<a class="anchor" href="#v1-0-6" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Activity page</strong> with two graphs over 15 minutes to 24 hours: events per minute (allowed and blocked) and adapter throughput, a crosshair, a table view, and a shaded “no data” band for time before the app started. Series are kept in 10-second slots for 24 hours at a fixed memory cost. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-activity-smoke</span></li>
+<li><strong>The <code>stockfw</code> command line</strong> on Linux: <code>status</code>, <code>policy list|add|remove</code>, <code>apply [--dry-run]</code>, <code>start</code>, <code>stop</code>, <code>simulate</code>, <code>events [-n N] [-f] [--blocked]</code>, <code>connections</code>, <code>interfaces [--watch]</code>, <code>dashboard</code>; <code>--json</code> everywhere; exit codes 0, 1, 2, 3 and 5. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-cli.sh</span></li>
+<li><strong>The local dashboard:</strong> a read-only page served from the binary on 127.0.0.1 only, behind a per-run token carried in the URL fragment and a custom header, with a Host check against DNS rebinding, GET and HEAD only, request-size and connection caps, and a per-run CSP nonce. Never opens a browser as root.</li>
+<li><strong>Linux events made truthful:</strong> the right fields in the right columns, the <code>[BLOCKED]</code> marker every consumer keys on, the kernel’s own time stamp, lines split across reads carried over.</li>
+<li><strong>Real network and connection panels on Linux</strong> from <code>/proc/net/dev</code>, sysfs and <code>/proc/net/tcp</code>, with the owning program found through <code>/proc/&lt;pid&gt;/fd</code>, and direction decided by the LISTEN table rather than guessed from port numbers.</li>
+<li>Desktop fixes: literal mnemonics on buttons, a Windows path suggested on Linux, frame titles striking through their borders, a blank Events list that now says whether it is waiting, off or filtered to nothing, and a window that opened too small.</li>
+<li>The Linux installer ships and installs the command line.</li>
+</ul>
+
+<h2 id="v1-0-5">1.0.5 · 11 October 2026 · the hardening release<a class="anchor" href="#v1-0-5" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Sentinel “no false outages”.</strong> After a 2026-10-10 incident in which auto-block locked the machine out of legitimate sites, six fixes: destination gates (never your own network, multicast, loopback, link-local or a destination the program already used regularly), a session cooldown so an expired block is not re-staged a second later, persisted staging reconciled at start-up with the remaining time honoured, the user’s Allow lifting Sentinel’s block, a text-format <code>netsh</code> parser with verified clearing (the old one deleted nothing and stacked 479 rules), and detect mode lifting every staged block. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_sentinel_auto_gates</span></li>
+<li><strong>Application trust engine</strong> (the Trust page): streamed SHA-256, Authenticode verdict and signer on Windows, a baseline with five honest outcomes (new, unchanged, changed, gone, unreadable), attest and forget with audit lines, and a scan of running processes.</li>
+<li><strong>Explainable behaviour analysis:</strong> per-program baselines of ports, destinations, hours and rate, persisted across restarts; one finding per event listing every signal with its numbers; bounded tables that go quiet rather than cry wolf when full.</li>
+<li><strong>Safe policy enforcement:</strong> one apply gate for every path, an applied-policy journal, impact measured against what is live, a narrow delta path, audit-only testing mode, the Lock honoured at every apply site, verified rollback, and one audit line per attempt.</li>
+<li><strong>What-if simulator</strong> developed from a stub into the Copilot’s centrepiece, with verdicts that follow Windows Firewall precedence (block beats allow, shadowed allows reported), CIDR containment, and the Simulation Visualizer window. The conversational “AI Assistant” box was removed.</li>
+<li><strong>Bi-directional rules:</strong> a Direction setting on pairable rule kinds that stages the opposite-direction twin as one all-or-nothing save.</li>
+<li><strong>System tray</strong> with close-to-tray behind a gate that fails closed, and the two Preferences switches made real. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> fs-tray-smoke</span> <span class="plat">Windows</span></li>
+<li><strong>Preferences made real on Windows:</strong> ICMP Filtering and Advanced Options compile to profile-scoped firewall rules through a portable settings plan; pages Windows cannot honour stay hidden rather than inert.</li>
+<li><strong>The P4 adversarial suite:</strong> 49 checks over seven named scenarios (blocked port scan, single-host sweep, C2 beacon, the incident replay, benign developer tools, exfil burst, rule rollback). <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test-adversarial.sh</span></li>
+<li>Linux first-run fixes: <code>sudo</code>’s search path explained instead of patched, a leaking <code>iptables</code> probe silenced, a profile box Linux could never honour hidden for good.</li>
+</ul>
+
+<h2 id="v1-0-4">1.0.4 · October 2026<a class="anchor" href="#v1-0-4" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Event → Rule in one click:</strong> right-click an event to block or allow its destination, block that service to it, or trust an inbound source, with the exact rule printed first and an honest “live” or “staged, needs administrator” result.</li>
+<li><strong>Events filter bar</strong> with “3 of 1200 events” counts.</li>
+<li><strong>Sentinel:</strong> beacon detection (metronomic egress to one host and port) and fan-out detection (60 distinct destinations, or 10 distinct blocked ones, in 60 seconds), with auto-block time-boxed to ten minutes and one-click undo, every action in an append-only <code>audit.log</code>.</li>
+<li>Policy rows validated at load (hosts, ports, ranges, IPv6, CIDR) before <code>netsh</code> ever sees them; control characters stripped from rule names.</li>
+</ul>
+
+</div>
+
+	</div>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="./index.html">
+					<img src="./assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="./index.html#tour">Features</a></li>
+					<li><a href="./download.html">Download</a></li>
+					<li><a href="./changelog.html">Changelog</a></li>
+					<li><a href="./index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="./docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="./docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="./docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="./docs/cli.html">Command line</a></li>
+					<li><a href="./docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="./docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stockfw Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="./assets/js/site.js" defer></script>
+
+</body>
+</html>

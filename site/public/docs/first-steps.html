@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Your first ten minutes · StockFW</title>
+<meta name="description" content="A guided first session with StockFW: check that you are protected, watch events arrive, add a rule, apply it with an impact preview, and ask the simulator a question.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Your first ten minutes · StockFW">
+<meta property="og:description" content="A guided first session with StockFW: check that you are protected, watch events arrive, add a rule, apply it with an impact preview, and ask the simulator a question.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html" aria-current="page"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Get started
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Get started</p>
+		<article class="prose">
+<h1>Your first ten minutes</h1>
+<p class="lede">This walk-through uses the real app on a small network, so what you see here is what you will see on your own computer. Start the app with the rights to change the firewall: <em>StockFW (Elevated)</em> on Windows, <code>sudo /usr/local/bin/StockFW</code> on Linux.</p>
+
+<ol class="steps">
+<li>
+<strong>Read the Overview</strong>
+<p>The green or red card at the top answers the question you opened the app for. On a fresh install it says the firewall is stopped; press <strong>Start firewall</strong>. The card turns green, and the two small tiles say whether IPv4 and IPv6 traffic are filtered. On Linux, if <code>ip6tables</code> is missing, the IPv6 tile tells you instead of pretending.</p>
+<figure class="shot"><img src="../assets/screens/overview.webp" alt="The Overview page with a green “This computer is protected” card, event counters, open connections and recent blocks." width="1349" height="780" loading="lazy" decoding="async"><figcaption>After Start: protected, both families filtered, the policy in force.</figcaption></figure>
+</li>
+<li>
+<strong>Watch the Events page for a minute</strong>
+<p>Every connection the firewall decided appears as it happens. Red rows were blocked. Type part of an address, a port or a program name into the filter and the list narrows while you type; the count reads “3 of 1200 events” so an empty filter result cannot be mistaken for a quiet firewall. The filter bar also narrows by direction, verdict, protocol, port and address. If the list stays empty, it tells you why: monitoring is off, or nothing matched.</p>
+</li>
+<li>
+<strong>Turn an event into a rule</strong>
+<p>Right-click a row. For an outbound connection you can block or allow the destination, or block just that service to it; for an inbound one you can trust the source. A dialog prints the exact rule it is about to write, you answer Yes or No, and the result says plainly whether the rule is live or only saved for the next Apply.</p>
+<figure class="shot"><img src="../assets/screens/events-menu.webp" alt="The Events page with a right-click menu open on a blocked inbound row, offering to trust the source." width="1349" height="780" loading="lazy" decoding="async"><figcaption>The right-click menu offers only what that row can express.</figcaption></figure>
+</li>
+<li>
+<strong>Add a rule by hand</strong>
+<p>Open <strong>Policy</strong>. Rules are grouped by kind. In <em>Allow inbound service</em>, press <strong>Add</strong>, choose SSH on port 22 and type your LAN, for example <code>192.168.1.0/24</code>, as who it is for. The row appears with its <em>Covers</em> column reading “IPv4 only”, because that network is an IPv4 network. A rule for “Anyone” covers both families.</p>
+<figure class="shot"><img src="../assets/screens/policy.webp" alt="The Policy page with rule groups as cards, each a table with a Covers column." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Each rule says what it reaches, and why on hover.</figcaption></figure>
+</li>
+<li>
+<strong>Apply, and read the impact first</strong>
+<p>Press <strong>Apply policy</strong>. Before anything happens, a dialog counts what will change against what is actually live: “+1 added (1 allow, 0 block), −0 removed, =8 unchanged”. Say Yes and the rule reaches the firewall; the result dialog reports what the engine said. If the engine refuses, the last good policy is put back and the dialog says whether that worked. Every attempt is one line in <code>audit.log</code>.</p>
+<p>Not ready to change anything? Press <strong>Audit-only</strong> first. Apply then stages the change and writes the audit line while the firewall stays exactly as it is.</p>
+</li>
+<li>
+<strong>Ask the simulator</strong>
+<p>Open <strong>Copilot</strong> and type a question into the What-If card the way you would say it: <code>inbound rdp from 203.0.113.50</code>. <em>Read as</em> shows how the line was understood, and the answer appears in one row: ALLOWED or BLOCKED, and the rule that decides it, or that no rule matched and the default applied. <strong>Details</strong> opens the window beside the page: the packet travelling from the source to the wall, every rule that was checked, and, under <em>What you can do</em>, the fixes StockFW has verified, such as the one allow rule that would let this in, printed exactly as it would be written. Asking writes nothing; a fix runs only when you press its button and confirm.</p>
+<figure class="shot"><img src="../assets/screens/whatif-blocked.webp" alt="The What-If window for a blocked inbound connection: a red BLOCKED badge, the packet bounced back by the wall, a “What you can do” card offering “Create allow rule” with the exact row it would add, and a “Why” card in which the default drop decides." width="720" height="1136" loading="lazy" decoding="async"><figcaption>A question, not a change: nothing is written by asking, and the offered fix shows its row before you decide.</figcaption></figure>
+</li>
+<li>
+<strong>Let it run in the background</strong>
+<p>Open <strong>Preferences</strong> from the bottom of the sidebar. On the General page, <em>Show a tray icon</em> and <em>Close and minimize to the tray</em> keep StockFW running when you close the window, and <em>Start StockFW in the background when I sign in</em> brings it back at your next sign-in. The tray icon’s tooltip carries the firewall state, so a glance answers the question the app exists for. Press <kbd>F1</kbd> on any page for the built-in help.</p>
+</li>
+</ol>
+
+<h2 id="where-to-go-next">Where to go next<a class="anchor" href="#where-to-go-next" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><a href="../docs/policy.html">Policy</a> explains every rule kind, what “Covers” means, and what Apply does step by step.</li>
+<li><a href="../docs/copilot.html">Copilot</a> explains insights, Sentinel and auto-block, and why none of it can open a port without you.</li>
+<li>On Linux, <a href="../docs/cli.html">the command line</a> does everything above from a terminal or a script, and <a href="../docs/dashboard.html">the dashboard</a> shows it in a browser.</li>
+</ul>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/install-linux.html"><span>Previous</span><strong>Install on Linux</strong></a><a class="next" href="../docs/overview.html"><span>Next</span><strong>Overview</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/first-steps.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stockfw Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

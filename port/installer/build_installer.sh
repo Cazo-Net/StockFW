@@ -13,9 +13,31 @@ BUILD_DIR="$PORT_DIR/build"
 INSTALLER_DIR="$PORT_DIR/installer/nsis"
 STAGE_DIR="$INSTALLER_DIR/stage"
 RESOURCES_DIR="$INSTALLER_DIR/resources"
+ROOT_DIR="$(cd "$PORT_DIR/.." && pwd)"
+
+# The version: CMakeLists.txt's project VERSION is the one source of
+# truth.  It names the installer, its file properties, the Add/Remove
+# Programs entry (passed to makensis as APP_VERSION), the licence page
+# and the changelog check below.  A build directory configured from an
+# older checkout would package an exe of another version, so the two
+# must agree.
+VERSION="$(sed -n 's/^[[:space:]]*VERSION[[:space:]]\{1,\}\([0-9][0-9.]*\).*/\1/p' \
+           "$PORT_DIR/CMakeLists.txt" | head -n 1)"
+if [ -z "$VERSION" ]; then
+    echo "ERROR: no project VERSION in $PORT_DIR/CMakeLists.txt" >&2
+    exit 1
+fi
+if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    BUILT="$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$BUILD_DIR/CMakeCache.txt")"
+    if [ -n "$BUILT" ] && [ "$BUILT" != "$VERSION" ]; then
+        echo "ERROR: $BUILD_DIR was configured for $BUILT, the source is $VERSION" >&2
+        echo "       cmake -S . -B build -G Ninja && cmake --build build" >&2
+        exit 1
+    fi
+fi
 
 echo "=========================================="
-echo "StockFW Installer Build Script"
+echo "StockFW Installer Build Script ($VERSION)"
 echo "=========================================="
 
 # Clean and create staging directory
@@ -28,6 +50,17 @@ mkdir -p "$STAGE_DIR/gtk-runtime/etc"
 # 1. Copy main executable (rename to StockFW.exe)
 echo "[1/7] Copying main executable..."
 cp "$BUILD_DIR/StockFW.exe" "$STAGE_DIR/StockFW.exe"
+# The release carries no debug information: a RelWithDebInfo exe is
+# mostly DWARF.  Only the staged copy is stripped; build/ keeps its
+# symbols for debugging.  No strip stops the build, as the Linux
+# packager does: it used to warn and ship the unstripped exe.
+if ! command -v strip >/dev/null 2>&1; then
+    echo "ERROR: strip not found; StockFW.exe would ship with debug information" >&2
+    echo "       Install binutils (pacman -S mingw-w64-ucrt-x86_64-binutils)" >&2
+    exit 1
+fi
+strip --strip-unneeded "$STAGE_DIR/StockFW.exe"
+echo "  Stripped StockFW.exe"
 
 # 2. Copy GTK3 runtime dependencies - copy ALL DLLs (no whitelist)
 echo "[2/7] Copying GTK3 runtime (ALL DLLs)..."
@@ -48,6 +81,17 @@ fi
 # actually imported, extra DLLs are harmless
 cp "$MSYS_ROOT"/bin/*.dll "$STAGE_DIR/gtk-runtime/bin/" 2>/dev/null
 echo "  Copied $(ls "$STAGE_DIR/gtk-runtime/bin/"*.dll | wc -l) DLLs"
+
+# The location database reader needs liblzma (xz) and OpenSSL's
+# libcrypto; an installer without them would install a program that
+# cannot read the database, so their absence stops the build.
+for pattern in 'liblzma-*.dll' 'libcrypto-*-x64.dll'; do
+    if ! ls "$STAGE_DIR/gtk-runtime/bin/"$pattern >/dev/null 2>&1; then
+        echo "ERROR: $pattern is not in $MSYS_ROOT/bin" >&2
+        echo "  pacman -S mingw-w64-ucrt-x86_64-xz mingw-w64-ucrt-x86_64-openssl" >&2
+        exit 1
+    fi
+done
 
 # GLib does not call CreateProcess itself: it starts child processes
 # through gspawn-win64-helper.exe, resolved like any other program --
@@ -128,24 +172,20 @@ done
 
 # 6. Create LICENSE.txt
 echo "[6/7] Creating license file..."
-cat > "$STAGE_DIR/LICENSE.txt" << 'EOF'
+cat > "$STAGE_DIR/LICENSE.txt" << EOF
 StockFW Firewall Configuration Tool
-Version 1.0.6
+Version $VERSION
 
 Copyright (C) 2024-2026 StockFW Project
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+StockFW is free software and comes with no warranty. Its source
+carries two licence texts: the GNU General Public License version 2
+(COPYING) and the Apache License 2.0 (LICENSE). The code it was ported
+from was released under the GNU GPL, version 2 or any later version.
+Which licence covers which part is still being reviewed.
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+This is the same summary the About window shows. Both licence texts
+follow in full at the end of this file.
 
 ---
 
@@ -169,6 +209,11 @@ brotli (MIT)
 freetype (FTL)
 fontconfig (MIT)
 pcre2 (BSD)
+liblzma from XZ Utils (BSD Zero Clause License, 0BSD; releases before
+  5.6 are in the public domain) -- unpacks the location database
+OpenSSL libcrypto 3 (Apache License 2.0; the full text is the Apache
+  License 2.0 at the end of this file; copyright The OpenSSL Project
+  Authors) -- verifies the location database signature
 
 Windows Firewall API (Microsoft - system component)
 NSIS (zlib license)
@@ -177,73 +222,39 @@ NSIS (zlib license)
 
 Icons and branding derived from original project assets.
 EOF
+# The licence texts the source carries, in full, after the summary:
+# the installer's licence page is the first licence a user reads, and
+# it must say what the About window says (tests/test-licence-texts.sh).
+for text in COPYING LICENSE; do
+    if [ ! -s "$PORT_DIR/../$text" ]; then
+        echo "ERROR: $text is missing from the source tree" >&2
+        exit 1
+    fi
+    printf '\n---\n\n%s\n\n' "$text" >> "$STAGE_DIR/LICENSE.txt"
+    cat "$PORT_DIR/../$text" >> "$STAGE_DIR/LICENSE.txt"
+done
 
 # 7. Copy documentation
 echo "[7/7] Copying documentation..."
-cp "$PORT_DIR/README.md" "$STAGE_DIR/" 2>/dev/null || echo "# StockFW Firewall Tool" > "$STAGE_DIR/README.md"
-# Create minimal CHANGELOG.md if not exists
-if [ ! -f "$PORT_DIR/CHANGELOG.md" ]; then
-    cat > "$STAGE_DIR/CHANGELOG.md" << 'EOF'
-# StockFW Changelog
-
-## Version 1.0.6 (2026)
-- Activity page: Policy activity (events per minute, allowed and
-  blocked) and Network I/O (throughput per adapter) graphs over
-  15 minutes to 24 hours, with a crosshair, a table view, and an
-  honest "no data" stretch before the app started
-- Linux: dropped packets are named and marked blocked like on
-  Windows, events carry their own time, port and direction, and
-  the Network and Connections panels show real data
-- Linux command-line tool `stockfw` and its local, read-only web
-  dashboard (Linux build only)
-- Desktop UI fixes: Policy buttons no longer print "_Add", frame
-  titles readable, an empty Events list says why, larger window
-
-## Version 1.0.5 (2026)
-- Sentinel false-outage hardening: auto-block refuses whole
-  destination classes (your own network, loopback, multicast,
-  protocol infrastructure, anything unclassifiable), never
-  re-stages a rule it just took down, persists its staged blocks
-  across restarts with their *remaining* time, and an Allow in the
-  event view lifts Sentinel's block for that destination - it can
-  no longer lock you out of legitimate sites
-- Application trust engine: signed/unsigned identification,
-  SHA-256, publisher identity, attested baselines that notice
-  unexpected changes
-- Explainable behavior analysis: per-application baselines and
-  correlated, sentence-level findings on the Copilot page
-- Safe policy enforcement: apply gate with impact preview, an
-  applied-policy journal, narrow delta application and verified
-  rollback
-- System tray and background operation (close/minimize to tray,
-  firewall-state tooltip, Open/Quit menu)
-- Preferences made real on Windows: ICMP, broadcast, profile,
-  port-range and notification settings apply for real; pages
-  Windows cannot honor stay hidden rather than greyed
-- What-If Simulator: type a line like "allow SSH from 192.168.1.50
-  on port 22" and get a BLOCKED/ALLOWED verdict against the real
-  policy (block precedence, shadowed-allow reporting, CIDR
-  coverage) without writing anything
-- Bi-directional Direction setting on the pairable rule kinds: one
-  option, one all-or-nothing save for both directions
-- AI Assistant pane removed from the Copilot page; status messages
-  live in the Policy Analysis log
-- Canonical test runner tests/full-suite.sh (653 core checks)
-
-## Version 1.0.4 (2026)
-- Event -> Rule one-click staging, Events filter bar
-- Sentinel detect/auto-block with time-boxed undo
-- Initial release of StockFW
-- GTK3-based firewall configuration tool
-- Smart Firewall Copilot with AI-powered anomaly detection
-- Windows Defender Firewall backend (netsh)
-- Linux iptables backend
-- Per-profile firewall control (Domain/Private/Public)
-- Policy rule management with CSV import/export
-- Elevated launcher for admin operations
-EOF
-else
-    cp "$PORT_DIR/CHANGELOG.md" "$STAGE_DIR/"
+# The project README (the Documentation shortcut opens it) and the
+# changelog, from the repository root.  Both are required: until 1.0.7
+# this step looked for port/README.md, which does not exist, and
+# silently shipped a one-line stub plus a changelog kept in a heredoc
+# here that had fallen a release behind.
+for doc in README.md CHANGELOG.md; do
+    if [ ! -s "$ROOT_DIR/$doc" ]; then
+        echo "ERROR: $doc is missing from the repository root" >&2
+        exit 1
+    fi
+    cp "$ROOT_DIR/$doc" "$STAGE_DIR/$doc"
+done
+# Installed without docs/ and port/ beside it: the README's relative
+# links point at the repository at this release's tag instead.
+sh "$PORT_DIR/tools/readme-for-package.sh" "$VERSION" \
+    "$ROOT_DIR/README.md" "$STAGE_DIR/README.md"
+if ! grep -q "^## \[$VERSION\]" "$STAGE_DIR/CHANGELOG.md"; then
+    echo "ERROR: CHANGELOG.md has no section for $VERSION" >&2
+    exit 1
 fi
 
 # Generate gdk-pixbuf.loaders.cache
@@ -289,10 +300,13 @@ echo "Using NSIS: $NSIS_CMD"
 # above, so the relative path lands on port/, and an MSYS2 shell would
 # mangle a leading-slash /D argument into a file name anyway
 # ("Can't open script C:/msys64/DPROJECT_DIR=...").
-"$NSIS_CMD" "$NSIS_SCRIPT"
+#
+# APP_VERSION is passed with "-D", not "/D": makensis takes either, and
+# an MSYS2 shell leaves an argument without a leading slash alone.
+"$NSIS_CMD" "-DAPP_VERSION=$VERSION" "$NSIS_SCRIPT"
 
 echo ""
 echo "=========================================="
 echo "Installer built successfully!"
-echo "Output: $INSTALLER_DIR/StockFW-1.0.6-Setup.exe"
+echo "Output: $INSTALLER_DIR/StockFW-$VERSION-Setup.exe"
 echo "=========================================="

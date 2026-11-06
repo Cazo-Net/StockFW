@@ -25,9 +25,58 @@ gboolean       fs_statusview_policy_locked (void);
 
 void           fs_statusview_set_state (FsFirewallState state);
 FsFirewallState fs_statusview_get_state (void);
+/* Ask the backend again and, if the firewall changed state behind our
+ * back (`stockfw stop' in a terminal, Windows Firewall switched off in
+ * its own settings), show the new state here, in the sidebar and in
+ * the tray.  The tray calls it when its menu opens and on its slow
+ * timer, which runs whether or not an icon is up (fs-tray.c): a menu
+ * or an Overview that says "On" over a stopped firewall is worse than
+ * none. */
+void           fs_statusview_reread_state (void);
+
+/* After the firewall started (start TRUE) or stopped: the threat-intel
+ * blocklists follow (fs_intel_resume under fs_intelview_hold_reason(), or
+ * fs_intel_suspend), in a worker, one job at a time, in order; an
+ * error dialog if they could not.  `source' names the caller in the
+ * audit log. */
+void           fs_statusview_intel_follow (gboolean start,
+                                           const gchar *source);
 
 /* The policy whose rules the Overview counts.  Not owned. */
 void           fs_statusview_set_policy (FsPolicy *policy);
+
+/* Start the firewall through the start gate (core/fs-apply.h), as the
+ * Overview's power button and the tray's "Resume protection" both do.
+ * Reports the outcome in a dialog over `parent' when there is one to
+ * report (held, failed, notes) and refreshes the state.  `source' names
+ * the control in the audit line.  TRUE when the firewall now runs. */
+gboolean       fs_statusview_firewall_start (GtkWidget *parent,
+                                             const gchar *source);
+
+/* What a start through the gate came to, for a caller that says it
+ * again in its own words (the What-If window): a hold and a failure
+ * both leave the firewall stopped, but they are not the same news. */
+typedef enum
+{
+	FS_START_RUNNING = 0,  /* started                                  */
+	FS_START_RUNNING_HELD, /* started with the last applied policy;
+	                        * changes since then stay held (Linux)     */
+	FS_START_HELD,         /* not started: held, nothing applied before */
+	FS_START_FAILED        /* not started: refused or failed            */
+} FsStartReport;
+
+/* fs_statusview_firewall_start, saying which of the above happened. */
+FsStartReport  fs_statusview_firewall_start_report (GtkWidget *parent,
+                                                    const gchar *source);
+
+/* Stop ("pause") the firewall: ALWAYS asks first, in a dialog that
+ * says what stopping does on this platform, with Cancel as the
+ * default.  TRUE only when the user agreed and the stop worked. */
+gboolean       fs_statusview_firewall_stop  (GtkWidget *parent,
+                                             const gchar *source);
+
+/* The confirmation's explanation for this platform (borrowed). */
+const gchar   *fs_statusview_stop_consequence (void);
 
 /* How the Overview judges the machine right now, for anything that
  * shows the same verdict elsewhere (the sidebar).  One judgement, so
@@ -61,6 +110,10 @@ void fs_statusview_note_block    (const FsHit *hit);
 /* The Recent blocks card's rows, newest first, as "title\ndetail".
  * For tests.  Free with g_strfreev. */
 gchar **fs_statusview_recent_blocks (void);
+
+/* The Threat Intel page read a new blocklist state: the verdict card
+ * says it again (fs_intelview_summary). */
+void fs_statusview_intel_changed (void);
 
 G_END_DECLS
 

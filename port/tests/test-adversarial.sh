@@ -162,8 +162,8 @@ test_scan_blocked_fanout (void)
 	CHECK (count_insights (c, FS_INSIGHT_FANOUT) == 1,
 	       "scan: 12 refused hosts inside the window report one fan-out");
 	ins = find_insight (c, FS_INSIGHT_FANOUT);
-	CHECK (ins != NULL && ins->severity == FS_COPILOT_CRITICAL,
-	       "scan: the fan-out report is CRITICAL");
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING,
+	       "scan: the fan-out report is a Warning (report only)");
 	CHECK (ins != NULL && ins->rule_csv == NULL &&
 	       !ins->auto_applicable,
 	       "scan: fan-out carries no rule -- nothing to auto-stage from it");
@@ -203,8 +203,8 @@ test_scan_blocked_fanout (void)
 /* =====================================================================
  * 2. Single-host port sweep: one host, many ports.  Fan-out counts
  *    distinct hosts by design, so the sweep surfaces where it honestly
- *    belongs -- the behavior layer's first-use-of-port findings, whose
- *    suggestion is an allow, and an allow is never auto-safe.
+ *    belongs -- the behavior layer's first-use-of-port findings, which
+ *    offer no rule at all (an anomaly is not answered with an allow).
  * ===================================================================== */
 
 static void
@@ -243,9 +243,10 @@ test_port_sweep_single_host (void)
 	       "sweep: one host is not a fan-out (fan-out counts hosts)");
 
 	ins = find_insight (c, FS_INSIGHT_UNUSUAL_PORT);
-	CHECK (ins != NULL && ins->suggested_rule != NULL &&
-	       strstr (ins->suggested_rule, "Allow") != NULL,
-	       "sweep: the finding suggests an allow, honestly -- no deny is invented");
+	CHECK (ins != NULL && ins->suggested_rule == NULL &&
+	       ins->rule_csv == NULL && ins->whatif_line != NULL,
+	       "sweep: the finding offers no rule (no allow, no invented deny), "
+	       "only a What-If line");
 	CHECK (ins != NULL && !fs_insight_is_auto_safe (ins),
 	       "sweep: an allow-shaped suggestion is never auto-safe");
 	CHECK (would_stage (c) == 0,
@@ -280,8 +281,14 @@ test_beacon_c2_fires (void)
 	CHECK (count_insights (c, FS_INSIGHT_BEACON) == 1,
 	       "beacon: the real C2 check-in loop is caught");
 	ins = find_insight (c, FS_INSIGHT_BEACON);
-	CHECK (ins != NULL && ins->severity == FS_COPILOT_CRITICAL,
-	       "beacon: the C2 report is CRITICAL");
+	CHECK (ins != NULL && ins->severity == FS_COPILOT_WARNING,
+	       "beacon: the report is a Warning (timing alone is not proof)");
+	CHECK (would_stage (c) == 0,
+	       "beacon: at six contacts it is reported, not staged");
+
+	for (i = 6; i < 8; i++)
+		feed (c, hit, (gint64) i * 60);
+	ins = find_insight (c, FS_INSIGHT_BEACON);
 	CHECK (ins != NULL && ins->auto_applicable &&
 	       fs_insight_is_auto_safe (ins),
 	       "beacon: a public stranger with no baseline stays stageable");
@@ -333,7 +340,7 @@ test_incident_replay_no_outage (void)
 		hit->destination = (gchar *) corpus[i].dest;
 		hit->port = (gchar *) corpus[i].port;
 
-		for (k = 0; k < 6; k++)
+		for (k = 0; k < 8; k++)
 			feed (c, hit, (gint64) k * 60);
 
 		/* The timing detector fires -- and that is correct: it is a
@@ -371,7 +378,7 @@ test_incident_replay_no_outage (void)
 		       "replay: twenty-seven recorded connections establish the CDN");
 
 		hit->port = (gchar *) "8443";       /* a fresh ticking port */
-		for (k = 0; k < 6; k++)
+		for (k = 0; k < 8; k++)
 			feed (c, hit, 400 + (gint64) k * 60);
 
 		CHECK (count_insights (c, FS_INSIGHT_BEACON) == 1,
@@ -481,7 +488,7 @@ test_exfil_volume_burst (void)
 	 * jittered cadence (exact 20-second spacing would itself be a
 	 * beacon -- the engine is right to object to that too). */
 	for (b = 0; b < 9; b++)
-		for (k = 0; k < 6; k++)
+		for (k = 0; k < 8; k++)
 			feed (c, hit, (gint64) b * 600 + learn_offsets[k]);
 
 	/* The burst: sixty connections inside the tenth bucket. */
@@ -744,7 +751,7 @@ EOF
 
 EXTRA_LIBS=""
 if [ "${OS:-}" = "Windows_NT" ] || [ -d /ucrt64 ]; then
-  EXTRA_LIBS="-lws2_32"
+  EXTRA_LIBS="-lws2_32 -liphlpapi -ladvapi32 -lshell32 -lole32 -loleaut32"
 fi
 
 cc "$BUILD_DIR/test-adversarial.c" \
@@ -752,7 +759,7 @@ cc "$BUILD_DIR/test-adversarial.c" \
    $(pkg-config --cflags glib-2.0) \
    -o "$BUILD_DIR/test-adversarial" \
    src/core/*.c \
-   $(pkg-config --libs glib-2.0 gio-2.0) $EXTRA_LIBS
+   $(pkg-config --libs glib-2.0 gio-2.0 liblzma libcrypto) $EXTRA_LIBS
 
 # Keep rule/journal/audit files out of the real directories.
 export STOCKFW_RULES_DIR="$BUILD_DIR/rules"

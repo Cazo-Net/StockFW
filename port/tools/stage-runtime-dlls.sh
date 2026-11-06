@@ -95,6 +95,32 @@ fi
 
 echo "stage-runtime-dlls: $copied DLL(s) -> $BUILD"
 
+# The location database reader (src/core/fs-geodb.c) needs liblzma and
+# OpenSSL's libcrypto.  They are staged by name, not only when ldd sees
+# them: the linker drops an unused object of a static library, so the
+# closure above lists them only once the app calls the reader, and a
+# build that started calling it must not ship without them.
+geodb=0
+for pattern in 'liblzma-*.dll' 'libcrypto-*-x64.dll'; do
+  # shellcheck disable=SC2086
+  found="$(cd "$TOOL_BIN" && ls $pattern 2>/dev/null | head -1)"
+  if [ -z "$found" ]; then
+    echo "stage-runtime-dlls: $pattern missing from $TOOL_BIN" >&2
+    echo "  (pacman -S mingw-w64-ucrt-x86_64-xz mingw-w64-ucrt-x86_64-openssl)" >&2
+    exit 1
+  fi
+  cp -f "$TOOL_BIN/$found" "$BUILD/"
+  geodb=$((geodb + 1))
+  # and what it imports from the toolchain (libcrypto: zlib, for one)
+  for dep in $(objdump -p "$TOOL_BIN/$found" 2>/dev/null |
+               sed -n 's/^[[:space:]]*DLL Name: //p' | tr -d '\r'); do
+    if [ -f "$TOOL_BIN/$dep" ] && [ ! -f "$BUILD/$dep" ]; then
+      cp -f "$TOOL_BIN/$dep" "$BUILD/"
+    fi
+  done
+done
+echo "stage-runtime-dlls: $geodb location database DLL(s) (xz, OpenSSL)"
+
 # GLib does not call CreateProcess itself: it starts children through
 # gspawn-win64-helper.exe, resolved like any other program -- the
 # executable's own directory first, then PATH.  ldd can never report

@@ -33,8 +33,15 @@ CHECK() {
 
 export PATH="/ucrt64/bin:$PATH"
 
-if [ ! -f "$PORT/build/libfs-core.a" ]; then
-	echo "SKIP: build/libfs-core.a not present (build the project first)"
+# The Windows backend needs <windows.h>: MSYS2 only, as test-winlog.sh.
+if [ "${OS:-}" != "Windows_NT" ] && [ ! -d /ucrt64 ]; then
+	echo "SKIP: Windows only (the backend compiled here is fs-backend-windows.c)"
+	exit 0
+fi
+
+B="${STOCKFW_BUILD:-$PORT/build}"
+if [ ! -f "$B/libfs-core.a" ]; then
+	echo "SKIP: $B/libfs-core.a not present (build the project first)"
 	exit 0
 fi
 
@@ -155,14 +162,14 @@ int main (int argc, char **argv)
 EOF
 
 CF="$(pkg-config --cflags gtk+-3.0 glib-2.0 gobject-2.0 gio-2.0)"
-LF="$(pkg-config --libs gtk+-3.0 glib-2.0 gobject-2.0 gio-2.0)"
+LF="$(pkg-config --libs gtk+-3.0 glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
 
 gcc -o "$BUILD_DIR/test-state" \
 	-I "$PORT/src" $CF \
 	"$BUILD_DIR/test-state.c" \
 	"$PORT/src/platform/windows/fs-backend-windows.c" \
 	"$PORT/src/platform/windows/fs-trust-win.c" \
-	"$PORT/build/libfs-core.a" \
+	"$B/libfs-core.a" \
 	$LF -lole32 -loleaut32 -liphlpapi -lws2_32 -lwintrust -lcrypt32 \
 	2> "$BUILD_DIR/cc.log"
 

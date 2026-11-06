@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en" data-root="../">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Trust · StockFW</title>
+<meta name="description" content="The Trust page: inspecting a program’s hash and signature, scanning running processes, attesting a baseline, noticing when an attested file changes, and what differs between Windows and Linux.">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Trust · StockFW">
+<meta property="og:description" content="The Trust page: inspecting a program’s hash and signature, scanning running processes, attesting a baseline, noticing when an attested file changes, and what differs between Windows and Linux.">
+<meta property="og:type" content="website">
+<link rel="icon" href="../assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../assets/img/apple-touch-icon.png">
+<link rel="preload" href="../assets/fonts/archivo-var-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+</head>
+<body class="layout-docs">
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-head">
+	<div class="wrap">
+		<a class="brand" href="../index.html">
+			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+			<span class="brand-name">StockFW</span>
+			<span class="brand-ver">1.0.7</span>
+		</a>
+		<nav class="site-nav" id="site-nav" aria-label="Site">
+			<a href="../index.html#tour">Features</a>
+			<a href="../docs/index.html" aria-current="page">Docs</a>
+			<a href="../download.html">Download</a>
+			<a href="../changelog.html">Changelog</a>
+			<a href="https://github.com/Cazo-Net/StockFW">GitHub</a>
+		</nav>
+		<div class="head-tools">
+			<button class="icon-btn search-btn" type="button" data-search-open aria-label="Search the documentation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+				<span>Search docs</span><kbd>/</kbd>
+			</button>
+			<button class="icon-btn menu-btn" id="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Menu">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+<div class="docs">
+	<nav class="docs-rail" id="docs-rail" aria-label="Documentation">
+		<h2>Get started</h2>
+		<ul>
+			<li><a href="../docs/index.html"><span>Welcome</span></a></li>
+			<li><a href="../docs/install-windows.html"><span>Install on Windows</span></a></li>
+			<li><a href="../docs/install-linux.html"><span>Install on Linux</span></a></li>
+			<li><a href="../docs/first-steps.html"><span>Your first ten minutes</span></a></li>
+		</ul>
+		<h2>Using the app</h2>
+		<ul>
+			<li><a href="../docs/overview.html"><span>Overview</span></a></li>
+			<li><a href="../docs/events.html"><span>Events</span></a></li>
+			<li><a href="../docs/activity.html"><span>Activity</span></a></li>
+			<li><a href="../docs/policy.html"><span>Policy</span></a></li>
+			<li><a href="../docs/copilot.html"><span>Copilot</span></a></li>
+			<li><a href="../docs/simulator.html"><span>What-if simulator</span></a></li>
+			<li><a href="../docs/trust.html" aria-current="page"><span>Trust</span></a></li>
+			<li><a href="../docs/preferences.html"><span>Preferences</span></a></li>
+			<li><a href="../docs/background.html"><span>Background, tray and sign-in</span></a></li>
+			<li><a href="../docs/help.html"><span>Help and About</span></a></li>
+		</ul>
+		<h2>Protection</h2>
+		<ul>
+			<li><a href="../docs/security.html"><span>Security model</span></a></li>
+			<li><a href="../docs/ipv6.html"><span>IPv6</span></a></li>
+			<li><a href="../docs/threat-intel.html"><span>Threat-intel blocklists</span></a></li>
+			<li><a href="../docs/country-blocking.html"><span>Country and network-owner blocking</span></a></li>
+		</ul>
+		<h2>Command line</h2>
+		<ul>
+			<li><a href="../docs/cli.html"><span>Command line</span></a></li>
+			<li><a href="../docs/dashboard.html"><span>Dashboard</span></a></li>
+		</ul>
+		<h2>Reference</h2>
+		<ul>
+			<li><a href="../docs/files.html"><span>Files and formats</span></a></li>
+			<li><a href="../docs/troubleshooting.html"><span>Troubleshooting</span></a></li>
+			<li><a href="../docs/faq.html"><span>Questions and answers</span></a></li>
+		</ul>
+	</nav>
+	<div class="docs-main">
+		<button class="rail-toggle" id="rail-btn" type="button" aria-expanded="false" aria-controls="docs-rail">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+			Documentation: Using the app
+		</button>
+		<p class="crumbs"><a href="../docs/index.html">Docs</a> / Using the app</p>
+		<article class="prose">
+<h1>Trust</h1>
+<p class="lede">A firewall decides by address and port, but the question behind most of its events is “do I trust the program that made this connection?”. The Trust page answers that for one file at a time: who signed it, what its hash is, and whether it is still the file you approved.</p>
+
+<figure class="shot"><img src="../assets/screens/trust.webp" alt="The Trust page: a path box with Inspect, Refresh list and Scan processes buttons, a report for /usr/bin/nc.openbsd with its SHA-256, size, modification time and “Matches the attested baseline”, and a baseline list of three programs, curl, nc.openbsd and python3.13, each marked in sync." width="1349" height="780" loading="lazy" decoding="async"><figcaption>Three attested programs, all in sync with their baseline. On Linux there is no code signature to read, so Publisher says “no signer” rather than guessing.</figcaption></figure>
+
+<h2 id="inspect-a-file">Inspect a file<a class="anchor" href="#inspect-a-file" aria-label="Link to this section">#</a></h2>
+<p>Type or paste a path and press <strong>Inspect</strong>. The report shows the file, its publisher, its signature state, the SHA-256 of its bytes, size, modification time, and how it compares with the baseline. Hashing a large executable takes a moment and runs off the main thread; the page says “Hashing and checking the signature…” and refuses a second task until the first finishes, so two reports can never be mixed up. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> ui-trustview-smoke</span></p>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead><tr><th>Signature line</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>Signed and verified</td><td>An Authenticode signature whose digest matches the file and whose chain stands.</td></tr>
+<tr><td>Signed but invalid</td><td>There is a signature, but it does not hold: the file was edited after signing, the certificate expired or is distrusted. This is the interesting negative.</td></tr>
+<tr><td>Not signed</td><td>A Windows executable with no signature.</td></tr>
+<tr><td>Not an executable</td><td>No <code>MZ</code> header. Hashing it still makes sense; signing does not apply.</td></tr>
+<tr><td>Signature not checked</td><td>No signature provider on this platform. This is what Linux shows, honestly, instead of “unsigned”.</td></tr>
+</tbody>
+</table>
+</div>
+<p><span class="plat">Windows</span> The check uses <code>WinVerifyTrust</code> and <code>CryptQueryObject</code> with revocation lookups turned off, so it never touches the network and never hangs on a machine without one. The publisher is the signer’s display name. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_trust_engine</span></p>
+<p><span class="plat">Linux</span> There is no platform signature to read, so the page offers the hash, the file facts and the baseline. Package-manager signatures (dpkg, rpm) are not consulted. <span class="ev ev-gap" title="A limit StockFW has today, stated so it is not mistaken for a feature."><b>Known gap</b></span></p>
+
+<h2 id="scan-running-processes">Scan running processes<a class="anchor" href="#scan-running-processes" aria-label="Link to this section">#</a></h2>
+<p><strong>Scan processes</strong> lists the executable behind every process this account can see and assesses each against the baseline, so a new or changed program shows up without you knowing its path. On Linux the paths come from <code>/proc/&lt;pid&gt;/exe</code>; processes owned by other users are readable only as root, and the status line says so when the list is empty for that reason.</p>
+
+<h2 id="attest-and-forget">Attest and forget<a class="anchor" href="#attest-and-forget" aria-label="Link to this section">#</a></h2>
+<p><strong>Attest</strong> records the inspected file, its hash, its publisher and the time in the baseline, after a dialog that shows the path and the hash and says that the attestation goes to the audit log. From then on the file’s row reads one of:</p>
+<ul>
+<li><strong>in sync</strong>: the bytes on disk match the attested hash;</li>
+<li><strong>CHANGED</strong>: same path, different bytes. The report says which hash the baseline remembers. An update you installed produces this too, which is the point: you look, and attest again if it was you;</li>
+<li><strong>missing</strong>: attested earlier, now gone;</li>
+<li><strong>unreadable</strong>: the file could not be read at all;</li>
+<li><strong>new</strong>: never attested.</li>
+</ul>
+<p><strong>Forget</strong> removes a path from the baseline, with the same kind of confirmation. <strong>Refresh list</strong> reassesses every row. Both attest and forget append a line to <code>audit.log</code> (<code>trust-attest</code>, <code>trust-forget</code>). If the baseline cannot be written, the page says “Attested in memory, but not saved to disk” rather than pretending.</p>
+
+<h2 id="the-baseline-file">The baseline file<a class="anchor" href="#the-baseline-file" aria-label="Link to this section">#</a></h2>
+<p><code>trust.csv</code> in your profile folder, one quoted row per path: path, SHA-256, size, modification time, signature state, publisher, first seen, last seen. Paths compare without regard to letter case, because Windows paths do. A row that does not parse is skipped, never the whole file; a missing file is an empty baseline. <code>STOCKFW_TRUST_FILE</code> points the app and the tests at another file. See <a href="../docs/files.html#trust-csv">Files and formats</a>. <span class="ev ev-verified" title="An automated test in the StockFW repository proves this claim."><b>Verified</b> test_trust_engine</span></p>
+
+<h2 id="what-it-is-for">What it is for<a class="anchor" href="#what-it-is-for" aria-label="Link to this section">#</a></h2>
+<p>The same baseline is read and written from the terminal by <a href="../docs/cli.html#trust"><code>stockfw trust</code></a>: <code>check</code> exits 1 when an attested file changed or is gone, so a script can watch it. On Linux there is no signature check there either.</p>
+<p>Trust does not change the firewall. It gives you a second kind of evidence next to the Events page: when the Copilot reports a program doing something new, Inspect tells you whether the program itself is still what it was. The two together are how you tell an update from a replacement.</p>
+
+		</article>
+		<footer class="doc-foot">
+			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/simulator.html"><span>Previous</span><strong>What-if simulator</strong></a><a class="next" href="../docs/preferences.html"><span>Next</span><strong>Preferences</strong></a></nav>
+			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/trust.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+		</footer>
+	</div>
+	<aside class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li class="lvl2"><a href="#inspect-a-file">Inspect a file</a></li>
+			<li class="lvl2"><a href="#scan-running-processes">Scan running processes</a></li>
+			<li class="lvl2"><a href="#attest-and-forget">Attest and forget</a></li>
+			<li class="lvl2"><a href="#the-baseline-file">The baseline file</a></li>
+			<li class="lvl2"><a href="#what-it-is-for">What it is for</a></li>
+		</ul>
+	</aside>
+</div>
+
+</main>
+<footer class="site-foot">
+	<div class="wrap">
+		<div class="foot-grid">
+			<div class="foot-brand">
+				<a class="brand" href="../index.html">
+					<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
+					<span class="brand-name">StockFW</span>
+				</a>
+				<p>A firewall manager for Windows and Linux. It drives the firewall your system already has, shows what it allowed and blocked, and works entirely offline.</p>
+			</div>
+			<div>
+				<h2>Product</h2>
+				<ul>
+					<li><a href="../index.html#tour">Features</a></li>
+					<li><a href="../download.html">Download</a></li>
+					<li><a href="../changelog.html">Changelog</a></li>
+					<li><a href="../index.html#next">New in 1.0.7</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Documentation</h2>
+				<ul>
+					<li><a href="../docs/install-windows.html">Install on Windows</a></li>
+					<li><a href="../docs/install-linux.html">Install on Linux</a></li>
+					<li><a href="../docs/first-steps.html">Your first ten minutes</a></li>
+					<li><a href="../docs/cli.html">Command line</a></li>
+					<li><a href="../docs/faq.html">Questions and answers</a></li>
+				</ul>
+			</div>
+			<div>
+				<h2>Project</h2>
+				<ul>
+					<li><a href="https://github.com/Cazo-Net/StockFW">Source code on GitHub</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/issues">Report a problem</a></li>
+					<li><a href="../docs/security.html">Security model</a></li>
+					<li><a href="https://github.com/Cazo-Net/StockFW/blob/main/docs/ARCHITECTURE-AND-SECURITY.md">Architecture document</a></li>
+				</ul>
+			</div>
+		</div>
+		<div class="foot-note">
+			<span>Made by Stockfw Team.</span>
+			<span class="mono">This site sets no cookies and loads nothing from other servers.</span>
+		</div>
+	</div>
+</footer>
+
+<a class="top-btn" id="top-btn" href="#main" aria-label="Back to top" hidden>
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg>
+</a>
+<dialog class="search-dialog" id="search" aria-label="Search the documentation">
+	<div class="search-box">
+		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg>
+		<input id="search-input" type="search" placeholder="Search the docs, e.g. simulate, IPv6, tray" autocomplete="off" spellcheck="false" aria-controls="search-results">
+		<form method="dialog"><button class="copy-btn search-close" type="submit">Esc</button></form>
+	</div>
+	<ul class="search-results" id="search-results" aria-live="polite"></ul>
+	<div class="search-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> to move</span><span><kbd>Enter</kbd> to open</span><span><kbd>/</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd> opens search anywhere</span></div>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+
+</body>
+</html>

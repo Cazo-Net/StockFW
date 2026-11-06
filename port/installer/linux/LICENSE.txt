@@ -1,20 +1,16 @@
 StockFW Firewall Configuration Tool
-Version 1.0.6
+Version @VERSION@
 
 Copyright (C) 2024-2026 StockFW Project
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+StockFW is free software and comes with no warranty. Its source
+carries two licence texts: the GNU General Public License version 2
+(COPYING) and the Apache License 2.0 (LICENSE). The code it was ported
+from was released under the GNU GPL, version 2 or any later version.
+Which licence covers which part is still being reviewed.
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+This is the same summary the About window shows. Both licence texts
+follow in full at the end of this file.
 
 ---
 
@@ -26,12 +22,19 @@ Cairo (LGPL v2.1 / MPL v1.1)
 Pango (LGPL v2.1)
 HarfBuzz (MIT)
 gdk-pixbuf (LGPL v2.1)
+liblzma from XZ Utils (BSD Zero Clause License, 0BSD; releases before
+  5.6 are in the public domain) -- unpacks the location database
+OpenSSL libcrypto 3 (Apache License 2.0; the full text is the Apache
+  License 2.0 at the end of this file; copyright The OpenSSL Project
+  Authors) -- verifies the location database signature
 
 These are linked dynamically and provided by your distribution's own
 packages; they are not bundled with this installer.
 
-Linux kernel netfilter / iptables (GPL v2) -- invoked as an external
-program, not linked.
+Linux kernel netfilter / iptables and nftables (GPL v2) -- invoked as
+external programs, not linked.
+curl (curl licence, MIT-style) -- invoked as an external program to
+download threat-intel feeds and the location database, not linked.
 
 ---
 

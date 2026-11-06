@@ -1,0 +1,30 @@
+---
+title: Country and network-owner blocking
+section: Protection
+order: 23
+description: Blocking traffic by the country an address is registered in or by the network that announces it: where the data comes from, how it is verified, what “country” honestly means for an address, and the anycast warning.
+---
+<h1>Country and network-owner blocking</h1>
+<p class="lede">Some servers have no business talking to any country but their own, and some attacks come from a handful of networks. StockFW has two more kinds of threat-intel set, built from an offline database rather than a feed: every address registered to a country, and every address announced by a network owner (an autonomous system).</p>
+
+<p>[[linux]] Country and network-owner sets are enforced on Linux, through the same nftables table as the <a href="{{root}}docs/threat-intel.html">blocklists</a>. On Windows the <em>Countries and networks</em> card says “Blocking by country or network owner is not supported on Windows in this version. Blocklists are.”, and shows no control that acts. [[gap]]</p>
+
+<h2>Where the data comes from</h2>
+<p>The <a href="https://location.ipfire.org/">IPFire Location database</a>: one file, about 6 MB compressed, published daily, no account needed, with IPv4 and IPv6 in one structure. For every range it gives the country of registration, the announcing network (AS number and name), and flags for anonymous proxies, satellite providers and <em>anycast</em> networks. It is the same database the IPFire firewall uses for its own country blocking.</p>
+<p>The file is signed inside its header with ECDSA over a SHA-256 of its contents, and StockFW verifies that signature against a pinned public key before reading a single record. A version check uses a DNS record the publisher maintains, and a downloaded file older than the one already on disk is refused, so a replayed old database cannot roll the data back. The reader unpacks with a strict size cap and bounds-checks every offset in the header before it trusts it.</p>
+<p>The database is published under the <a href="https://creativecommons.org/licenses/by-sa/4.0/">Creative Commons Attribution-ShareAlike 4.0</a> licence, as IPFire confirmed to the project. StockFW credits IPFire on the Threat Intel page and in <code>stockfw intel feeds</code>, and never changes the data it serves.</p>
+
+<h2>What “country” means</h2>
+<p>The country is where the address block is <em>registered</em>, from the regional registries, geofeeds and the publisher’s corrections. It is not a measurement of where a packet came from, and for a content network that announces one address from forty cities it cannot be. StockFW therefore says “registered in”, never “located in”, and the picker warns when a chosen country’s ranges include anycast networks: blocking such a country can block a service everyone uses, from everywhere. The same honesty applies to network owners: the AS name is the owner on record.</p>
+
+<h2>How it will work</h2>
+<ul>
+<li>On the Threat Intel page, a picker with autocompletion over countries and network owners, each with its flag and the number of ranges it would add. A chosen entry becomes a set with a direction, like a feed.</li>
+<li>The sets are built, subtracted, loaded and reported exactly like blocklists: the same protected ranges, the same exceptions, the same transaction into <code>inet stockfw_intel</code>, the same state table, the same events and audit lines. A country block that would include your own network, your DNS servers or your SSH peer loses those addresses and says so in the notes.</li>
+<li>The lookup box, the What-if simulator and the Events page name the country or owner that blocked an address.</li>
+<li><code>stockfw intel</code> gains the country and owner commands, with <code>--json</code>.</li>
+<li>The database updates on the same hourly check as the feeds, from the publisher only, after the same consent dialog.</li>
+</ul>
+
+<h2>What it is not</h2>
+<p>Not a geofence for a laptop that travels, and not a substitute for authentication: an attacker who wants to reach you from a blocked country rents a server in an allowed one. It removes background noise and narrows the field, which is worth having, and the app will describe it that way.</p>

@@ -22,8 +22,13 @@
 #include "core/fs-util.h"
 #include "core/fs-service.h"
 #include "core/fs-netparse.h"
+#include "core/fs-hostnet.h"
 #include "core/fs-i18n.h"
 #include "core/fs-script.h"
+#include "core/fs-intel.h"
+#include "core/fs-intelset.h"
+#include "core/fs-nftset.h"
+#include "core/fs-toolpath.h"
 
 #include <gio/gio.h>
 
@@ -68,6 +73,21 @@ static FsPolicy    *current_policy = NULL;
 
 /* -------------------------------------------------------------- helpers */
 
+/* [ resolve_tool ]
+ * argv[0] (a bare tool name) replaced by the program to run, from
+ * fs_toolpath_find(): as root /usr/sbin, /usr/bin, /sbin or /bin only,
+ * never the PATH whoever started us passed down [S0].  FALSE, argv
+ * untouched, when the tool is not there.  *owned is what to free. */
+static gboolean
+resolve_tool (gchar **argv, gchar **owned)
+{
+	*owned = fs_toolpath_find (argv[0]);
+	if (*owned == NULL)
+		return FALSE;
+	argv[0] = *owned;
+	return TRUE;
+}
+
 /* [ run_command_quiet ]
  * Runs argv with stdout and stderr discarded; its exit status, or -1 if
  * it could not be started.  Used by the probes and the delete-until-it-
@@ -78,11 +98,19 @@ run_command_quiet (gchar **argv)
 {
 	GError *error = NULL;
 	gint status = 0;
+	gchar *name = argv[0];
+	gchar *path;
+	gboolean spawned;
 
-	if (!g_spawn_sync (NULL, argv, NULL,
-	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
-	                   G_SPAWN_STDERR_TO_DEV_NULL,
-	                   NULL, NULL, NULL, NULL, &status, &error)) {
+	if (!resolve_tool (argv, &path))
+		return -1;
+	spawned = g_spawn_sync (NULL, argv, NULL,
+	                        G_SPAWN_STDOUT_TO_DEV_NULL |
+	                        G_SPAWN_STDERR_TO_DEV_NULL,
+	                        NULL, NULL, NULL, NULL, &status, &error);
+	argv[0] = name;
+	g_free (path);
+	if (!spawned) {
 		g_clear_error (&error);
 		return -1;
 	}
@@ -133,35 +161,39 @@ require_root (GError **error)
 }
 
 /* [ have_iptables ]
- * Whether the iptables binary is on PATH.  Callers that silence
+ * Whether the iptables binary is where fs_toolpath_find() looks (as
+ * root: the system directories only).  Callers that silence
  * iptables' own output still need to distinguish "nothing to do" from
  * "there is no firewall tool here at all". */
 static gboolean
 have_iptables (GError **error)
 {
-	gchar *argv[] = { (gchar *) "iptables", (gchar *) "--version", NULL };
+	gchar *argv[] = { NULL, (gchar *) "--version", NULL };
 	GError *local = NULL;
 	/* The lookup returns the path it found, which is ours to free:
 	 * testing it inline leaked one string per apply. */
-	gchar *found = g_find_program_in_path ("iptables");
+	gchar *found = fs_toolpath_find ("iptables");
+	gboolean spawned;
 
 	if (found == NULL) {
-		g_set_error_literal (error,
-		                     g_quark_from_static_string ("fs-backend-linux"),
-		                     0,
-		                     "iptables was not found on PATH.");
+		g_set_error (error,
+		             g_quark_from_static_string ("fs-backend-linux"),
+		             0, "iptables was not found %s.",
+		             fs_toolpath_where ());
 		return FALSE;
 	}
-	g_free (found);
+	argv[0] = found;
 
 	/* A present but unusable binary (missing kernel support, broken
 	 * alternatives link) still deserves a message.  The probe's own
 	 * output is discarded so it cannot leak into whatever the caller
 	 * is printing. */
-	if (!g_spawn_sync (NULL, argv, NULL,
-	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
-	                   G_SPAWN_STDERR_TO_DEV_NULL,
-	                   NULL, NULL, NULL, NULL, NULL, &local)) {
+	spawned = g_spawn_sync (NULL, argv, NULL,
+	                        G_SPAWN_STDOUT_TO_DEV_NULL |
+	                        G_SPAWN_STDERR_TO_DEV_NULL,
+	                        NULL, NULL, NULL, NULL, NULL, &local);
+	g_free (found);
+	if (!spawned) {
 		g_clear_error (&local);
 		g_set_error_literal (error,
 		                     g_quark_from_static_string ("fs-backend-linux"),
@@ -274,6 +306,12 @@ linux_available (void)
 static FsFirewallState
 linux_get_state (void)
 {
+	/* Without root iptables cannot be read at all.  That is "unknown",
+	 * not "stopped": the boot unit may well have the rules in force
+	 * while a copy without root (the one started at sign-in) looks. */
+	if (geteuid () != 0)
+		return FS_FW_NONE;
+
 	if (!chain_exists ())
 		return FS_FW_STOPPED;
 
@@ -358,8 +396,8 @@ kernel_has_ipv6 (void)
 static gboolean
 have_ip6tables (void)
 {
-	gchar *a = g_find_program_in_path ("ip6tables");
-	gchar *b = g_find_program_in_path ("ip6tables-restore");
+	gchar *a = fs_toolpath_find ("ip6tables");
+	gchar *b = fs_toolpath_find ("ip6tables-restore");
 	gboolean ok = (a != NULL && b != NULL);
 
 	g_free (a);
@@ -373,16 +411,24 @@ have_ip6tables (void)
 static gboolean
 run_restore (const Family *f, const gchar *payload, gchar **why)
 {
-	const gchar *argv[] = { f->restore, "-w", "--noflush", NULL };
+	gchar *tool = fs_toolpath_find (f->restore);
+	const gchar *argv[] = { tool, "-w", "--noflush", NULL };
 	GSubprocess *proc;
 	GError *error = NULL;
 	gchar *err = NULL;
 	gboolean ok;
 
+	if (tool == NULL) {
+		*why = g_strdup_printf ("%s was not found %s", f->restore,
+		                        fs_toolpath_where ());
+		return FALSE;
+	}
+	/* By its full path, so GLib does not search PATH for it. */
 	proc = g_subprocess_newv (argv,
 	                          G_SUBPROCESS_FLAGS_STDIN_PIPE |
 	                          G_SUBPROCESS_FLAGS_STDOUT_SILENCE |
 	                          G_SUBPROCESS_FLAGS_STDERR_PIPE, &error);
+	g_free (tool);
 	if (proc == NULL) {
 		*why = g_strdup (error->message);
 		g_error_free (error);
@@ -584,13 +630,16 @@ take_snapshot (const Family *f, const gchar *table,
 	gchar **lines;
 	GString *decl, *rules;
 	gboolean seen[8] = { FALSE };
+	gchar *tool = NULL;
+	gboolean spawned;
 
 	memset (snap, 0, sizeof (*snap));
 
-	if (!g_spawn_sync (NULL, argv, NULL,
-	                   G_SPAWN_SEARCH_PATH | G_SPAWN_STDERR_TO_DEV_NULL,
-	                   NULL, NULL, &text, NULL, &status, NULL) ||
-	    !g_spawn_check_wait_status (status, NULL)) {
+	spawned = resolve_tool (argv, &tool) &&
+	          g_spawn_sync (NULL, argv, NULL, G_SPAWN_STDERR_TO_DEV_NULL,
+	                        NULL, NULL, &text, NULL, &status, NULL);
+	g_free (tool);
+	if (!spawned || !g_spawn_check_wait_status (status, NULL)) {
 		g_free (text);
 		return;
 	}
@@ -724,7 +773,7 @@ load_family (const Family *f, const FsRestorePart *part, FamilySnap *snap,
 	 * unconditionally would send container and VM traffic, which their
 	 * own runtimes accept in other tables, into INBOUND's default drop
 	 * -- traffic that worked while IPv6 was not filtered at all. */
-	if (f->family == FS_FAMILY_IPV4 || (s != NULL && s->nat)) {
+	if (f->family == FS_FAMILY_IPV4 || fs_settings_sharing (s)) {
 		if (!ensure_jump (f, "filter", "FORWARD", "INBOUND")) {
 			*why = g_strdup ("could not hook INBOUND into FORWARD");
 			return FALSE;
@@ -764,6 +813,12 @@ linux_stop (GError **error)
 	if (!have_iptables (error))
 		return FALSE;
 
+	/* The threat-intel table is not touched here either: the policy
+	 * apply, reload and clear all come through here, and a policy
+	 * change must never drop the blocklists or their counters [N6].
+	 * Only the user's Stop removes them: the CLI's `stop' and the
+	 * status view's Stop call fs_intel_suspend after this slot, and
+	 * Start calls fs_intel_resume after `start'. */
 	teardown_filter (&FAMILY4);
 	teardown_nat (&FAMILY4);
 
@@ -872,7 +927,7 @@ linux_apply_rules (const FsPolicy *policy, GError **error)
 	if (result == FS_APPLY_OK) {
 		legacy_cleanup ();
 
-		if (current_settings->nat) {
+		if (fs_settings_sharing (current_settings)) {
 			linux_sysctl_forwarding ();
 			if (do6 && plan->v6.nat != NULL)
 				linux_sysctl_forwarding6 (current_settings->ext_device);
@@ -1007,6 +1062,430 @@ linux_clear_rules (GError **error)
 		return FS_APPLY_FAILED;
 
 	return (linux_stop (NULL) ? FS_APPLY_OK : FS_APPLY_FAILED);
+}
+
+/* ==================================================================
+ * Threat intel (1.0.7, design section 7)
+ *
+ * The blocklists live in one nftables table of their own, inet
+ * stockfw_intel, and these four slots are the only code here that
+ * runs nft.  The policy above runs iptables only, so applying,
+ * reloading, stopping or clearing the policy never touches the lists
+ * [N6, S10.2]; and these slots name no table but theirs, so Docker's,
+ * libvirt's, firewalld's, the iptables-nft tables holding the policy
+ * and the standalone helper's inet stockfw_blocklist are left alone.
+ *
+ * The kernel, not nft's exit status, is the answer.  An apply or a
+ * clear always ends by reading the live table back: a timeout can fire
+ * after nft committed, an nft killed by a signal may have been killed
+ * after, and a success is still only "applied" when the table in the
+ * kernel carries the digest that was asked for [S10].
+ *
+ * Errors are G_IO_ERROR: PERMISSION_DENIED (not root), NOT_FOUND (no
+ * nft), TIMED_OUT, INVALID_ARGUMENT (a rule set that cannot be
+ * rendered), FAILED (everything else).
+ * ================================================================== */
+
+/* Listings are small and the status pages read them on a timer, so
+ * they get less time than a load (FS_NFT_TIMEOUT_MS, design 7). */
+#define INTEL_LIST_TIMEOUT_MS 10000u
+
+static const gchar *const INTEL_CHAINS[] = { "input", "output", "forward",
+                                             NULL };
+
+/* [ intel_timeout ]
+ * Test builds only (FS_BACKEND_TESTING): $STOCKFW_TEST_NFT_TIMEOUT_MS
+ * replaces every nft timeout, so the tests' hanging nft is stopped in
+ * a second rather than a minute. */
+static guint
+intel_timeout (guint normal)
+{
+#ifdef FS_BACKEND_TESTING
+	const gchar *text = g_getenv ("STOCKFW_TEST_NFT_TIMEOUT_MS");
+
+	if (text != NULL) {
+		guint64 value = g_ascii_strtoull (text, NULL, 10);
+
+		if (value > 0 && value <= G_MAXUINT)
+			return (guint) value;
+	}
+#endif
+	return normal;
+}
+
+/* [ intel_ready ]
+ * Root and an nft to run, checked before anything is spawned: an nft
+ * that is not there, or a kernel that will not answer an ordinary
+ * user, gives a sentence the user can act on instead of nft's own
+ * complaint. */
+static gboolean
+intel_ready (GError **error)
+{
+	gchar *nft;
+
+	if (geteuid () != 0) {
+		g_set_error_literal (error, G_IO_ERROR,
+		                     G_IO_ERROR_PERMISSION_DENIED,
+		                     "Loading or reading the threat-intel "
+		                     "blocklists requires root privileges. Run "
+		                     "StockFW with sudo.");
+		return FALSE;
+	}
+
+	nft = fs_toolpath_find ("nft");
+	if (nft == NULL) {
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+		             "nft was not found %s. Install the nftables "
+		             "package to use blocklists.",
+		             fs_toolpath_where ());
+		return FALSE;
+	}
+	g_free (nft);
+	return TRUE;
+}
+
+/* [ intel_read_live ]
+ * The table in the kernel now.  First `nft -j list chains inet': the
+ * script puts the digest on every chain, and listing chains never
+ * loads a set element (milliseconds; `nft -j list tables' loads them
+ * all: about 2 s at 240k intervals, 11 to 13 s with a large country's
+ * 600,000 elements, past the listing timeout -- design 13.7).  Any
+ * other answer is read again from `nft -j list tables': a table whose
+ * chains carry no common digest (an older StockFW's, or changed by
+ * hand) by its own comment, and no chain of ours at all because a
+ * table without chains still is a table -- that listing is cheap when
+ * there is no table, so the common "not loaded" case stays fast.  A
+ * table found that way with no chain of ours blocks nothing, whatever
+ * its comment says: present, with no digest, so it reads "differs".
+ * UNKNOWN, with error, when it cannot be read -- never
+ * ABSENT: a listing nobody could read says nothing about the kernel.
+ * *digest (caller frees) is set only for PRESENT, and may still be
+ * NULL then. */
+static FsIntelLive
+intel_read_live (gchar **digest, GError **error)
+{
+	static const gchar *const chains[] = { "-j", "list", "chains", "inet",
+	                                       NULL };
+	static const gchar *const tables[] = { "-j", "list", "tables", NULL };
+	FsIntelLive live, by_chains;
+	gchar *json;
+
+	*digest = NULL;
+	if (!intel_ready (error))
+		return FS_INTEL_LIVE_UNKNOWN;
+
+	json = fs_nft_capture (chains, intel_timeout (INTEL_LIST_TIMEOUT_MS),
+	                       error);
+	if (json == NULL)
+		return FS_INTEL_LIVE_UNKNOWN;
+	by_chains = fs_intelset_nft_parse_live_chains (json, digest);
+	g_free (json);
+	if (by_chains == FS_INTEL_LIVE_UNKNOWN) {
+		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+		                     "nft printed a chain listing that could not "
+		                     "be read");
+		return by_chains;
+	}
+	if (by_chains == FS_INTEL_LIVE_PRESENT && *digest != NULL)
+		return by_chains;
+	g_clear_pointer (digest, g_free);
+
+	json = fs_nft_capture (tables, intel_timeout (INTEL_LIST_TIMEOUT_MS),
+	                       error);
+	if (json == NULL)
+		return FS_INTEL_LIVE_UNKNOWN;
+	live = fs_intelset_nft_parse_live_state (json, digest);
+	if (live == FS_INTEL_LIVE_UNKNOWN)
+		g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+		                     "nft printed a table listing that could not "
+		                     "be read");
+	/* A table with no chain of ours blocks nothing, whatever its own
+	 * comment says: present, with no digest, so it reads "differs". */
+	if (live == FS_INTEL_LIVE_PRESENT && by_chains == FS_INTEL_LIVE_ABSENT)
+		g_clear_pointer (digest, g_free);
+	g_free (json);
+	return live;
+}
+
+/* [ full_stop ]
+ * "." unless `text' already ends a sentence: nft's own messages
+ * sometimes do, and a message is often followed by another sentence. */
+static const gchar *
+full_stop (const gchar *text)
+{
+	gsize len = strlen (text);
+
+	return len > 0 && text[len - 1] == '.' ? "" : ".";
+}
+
+/* [ intel_in_force ]
+ * One sentence on what the kernel holds after a load or a removal that
+ * did not do what it was asked: the user must know whether the old
+ * lists still block, or nothing does.  Caller frees. */
+static gchar *
+intel_in_force (FsIntelLive live, const gchar *have, const GError *why)
+{
+	switch (live) {
+	case FS_INTEL_LIVE_PRESENT:
+		if (have == NULL)
+			return g_strdup ("A stockfw_intel table that StockFW did "
+			                 "not write is loaded.");
+		return g_strdup_printf ("The blocklists loaded before "
+		                        "(fingerprint %s) are still in force.",
+		                        have);
+	case FS_INTEL_LIVE_ABSENT:
+		return g_strdup ("No blocklists are loaded now.");
+	default:
+		return g_strdup_printf ("Whether any blocklists are loaded now "
+		                        "could not be read: %s%s",
+		                        why != NULL ? why->message
+		                                    : "no reason given",
+		                        why != NULL ? full_stop (why->message)
+		                                    : ".");
+	}
+}
+
+/* [ intel_settle ]
+ * The shared end of an apply and a clear: nft has run (`ran', with
+ * run_error when it did not end well) and the kernel was read back
+ * (`live', `have', read_error); `had' is the digest live before nft
+ * ran (NULL: none, or not read).  TRUE when the kernel holds what was
+ * asked for -- `want' as the digest, or no table when want is NULL --
+ * whatever nft said; otherwise FALSE with an error that says what went
+ * wrong and what is in force instead.
+ *
+ * One exception: nft failed and the kernel holds `want' because it held
+ * it before.  That is exactly what a transaction the kernel refused
+ * leaves behind when the rule set did not change (the hourly re-apply),
+ * so it is no proof the table was replaced: FALSE, saying the same
+ * lists are still in force, never a success nobody saw. */
+static gboolean
+intel_settle (const gchar *what, const gchar *want, const gchar *had,
+              gboolean ran, const GError *run_error, FsIntelLive live,
+              const gchar *have, const GError *read_error, GError **error)
+{
+	const gchar *said = run_error != NULL ? run_error->message
+	                                      : "nft failed without saying why";
+	gchar *now;
+
+	if (want == NULL ? live == FS_INTEL_LIVE_ABSENT
+	                 : live == FS_INTEL_LIVE_PRESENT &&
+	                   g_strcmp0 (have, want) == 0) {
+		if (ran)
+			return TRUE;
+		if (want != NULL && g_strcmp0 (had, want) == 0) {
+			g_set_error (error,
+			             run_error != NULL ? run_error->domain
+			                               : G_IO_ERROR,
+			             run_error != NULL ? run_error->code
+			                               : G_IO_ERROR_FAILED,
+			             "%s%s The same blocklists (fingerprint %s) "
+			             "were already loaded and are still in force.",
+			             said, full_stop (said), want);
+			return FALSE;
+		}
+		g_debug ("threat intel: the %s took effect although nft "
+		         "reported: %s", what, said);
+		return TRUE;
+	}
+
+	if (!ran) {
+		now = intel_in_force (live, have, read_error);
+		g_set_error (error,
+		             run_error != NULL ? run_error->domain : G_IO_ERROR,
+		             run_error != NULL ? run_error->code
+		                               : G_IO_ERROR_FAILED,
+		             "%s%s %s", said, full_stop (said), now);
+		g_free (now);
+		return FALSE;
+	}
+
+	/* nft said yes, and the kernel says otherwise -- or says
+	 * nothing.  Reporting the lists as loaded would claim a
+	 * protection nobody saw [S10]. */
+	if (live == FS_INTEL_LIVE_UNKNOWN)
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "nft accepted the %s, but the blocklist table "
+		             "could not be read back to confirm it: %s%s", what,
+		             read_error != NULL ? read_error->message
+		                                : "no reason given",
+		             read_error != NULL ? full_stop (read_error->message)
+		                                : ".");
+	else if (live == FS_INTEL_LIVE_ABSENT)
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "nft accepted the %s, but no blocklist table is "
+		             "loaded now: something removed it.", what);
+	else if (want == NULL)
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "nft accepted the %s, but a blocklist table "
+		             "(fingerprint %s) is still loaded.", what,
+		             have != NULL ? have : "none");
+	else
+		g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+		             "nft accepted the %s, but the blocklist table "
+		             "loaded now is not the one applied (fingerprint "
+		             "%s, not %s): something replaced it.", what,
+		             have != NULL ? have : "none", want);
+	return FALSE;
+}
+
+/* [ linux_intel_apply ] -- see FsBackend.intel_apply. */
+static gboolean
+linux_intel_apply (const FsIntelRuleset *ruleset, GError **error)
+{
+	GError *run_error = NULL, *read_error = NULL;
+	gchar *script, *want = NULL, *have = NULL, *had = NULL;
+	FsIntelLive live;
+	gboolean ran, ok;
+
+	g_return_val_if_fail (ruleset != NULL, FALSE);
+
+	if (!intel_ready (error))
+		return FALSE;
+
+	script = fs_intelset_nft_script (ruleset);
+	if (script == NULL) {
+		g_set_error_literal (error, G_IO_ERROR,
+		                     G_IO_ERROR_INVALID_ARGUMENT,
+		                     "The blocklist rule set cannot be loaded: a "
+		                     "list id is invalid or repeated. Nothing was "
+		                     "changed.");
+		return FALSE;
+	}
+
+	/* The empty rule set renders no table at all, so what must be
+	 * live afterwards is no table -- not a table with the empty rule
+	 * set's digest. */
+	if (ruleset->sets->len > 0)
+		want = fs_intel_ruleset_digest (ruleset);
+
+	/* What was live before: if nft fails and the same digest is live
+	 * afterwards, it may never have been replaced (intel_settle).  A
+	 * listing, never the elements. */
+	if (intel_read_live (&had, NULL) != FS_INTEL_LIVE_PRESENT)
+		g_clear_pointer (&had, g_free);
+
+	/* One nft call, one transaction: the script creates the table if
+	 * it is missing, deletes it and builds the new one, so the old
+	 * lists stay in force unless the new ones load whole.  Deleting
+	 * first in a call of its own would leave the computer without
+	 * any blocklist whenever the new ones are refused.  A re-apply of
+	 * the same digest replaces the table too: it repairs a table
+	 * edited behind StockFW's back, and it resets the counters, which
+	 * the engine carries over once it sees the table was replaced (a
+	 * counter lower than before) -- skipping it would make the engine
+	 * count the same packets again next time. */
+	ran = fs_nft_run_script_full (script, FALSE,
+	                              intel_timeout (FS_NFT_TIMEOUT_MS),
+	                              &run_error);
+	g_free (script);
+
+	live = intel_read_live (&have, &read_error);
+	ok = intel_settle ("blocklists", want, had, ran, run_error, live,
+	                   have, read_error, error);
+
+	g_clear_error (&run_error);
+	g_clear_error (&read_error);
+	g_free (have);
+	g_free (had);
+	g_free (want);
+	return ok;
+}
+
+/* [ linux_intel_clear ] -- see FsBackend.intel_clear. */
+static gboolean
+linux_intel_clear (GError **error)
+{
+	GError *run_error = NULL, *read_error = NULL;
+	gchar *script, *have = NULL;
+	FsIntelLive live;
+	gboolean ran, ok;
+
+	if (!intel_ready (error))
+		return FALSE;
+
+	/* Declares the table first, so removing a table that is not
+	 * there is not an error; names nothing else. */
+	script = fs_intelset_nft_clear_script ();
+	ran = fs_nft_run_script_full (script, FALSE,
+	                              intel_timeout (FS_NFT_TIMEOUT_MS),
+	                              &run_error);
+	g_free (script);
+
+	live = intel_read_live (&have, &read_error);
+	ok = intel_settle ("removal", NULL, NULL, ran, run_error, live, have,
+	                   read_error, error);
+
+	g_clear_error (&run_error);
+	g_clear_error (&read_error);
+	g_free (have);
+	return ok;
+}
+
+/* [ linux_intel_counters ] -- see FsBackend.intel_counters.
+ * One `nft list chain' per base chain, never the table or a set: those
+ * would print every element, hundreds of thousands of lines on a timer
+ * [S8.3].  A chain that cannot be listed (no table, not root, no nft,
+ * a timeout) makes the whole answer NULL: a partial count would read
+ * as fewer blocks. */
+static GHashTable *
+linux_intel_counters (void)
+{
+	GString *listing;
+	GHashTable *counters;
+
+	if (!intel_ready (NULL))
+		return NULL;
+
+	listing = g_string_new (NULL);
+	for (guint c = 0; INTEL_CHAINS[c] != NULL; c++) {
+		const gchar *args[] = { "list", "chain", "inet",
+		                        FS_INTEL_NFT_TABLE, INTEL_CHAINS[c],
+		                        NULL };
+		gchar *text = fs_nft_capture (args,
+		                              intel_timeout (INTEL_LIST_TIMEOUT_MS),
+		                              NULL);
+
+		if (text == NULL) {
+			g_string_free (listing, TRUE);
+			return NULL;
+		}
+		g_string_append (listing, text);
+		g_string_append_c (listing, '\n');
+		g_free (text);
+	}
+
+	counters = fs_intelset_nft_parse_counters (listing->str);
+	g_string_free (listing, TRUE);
+	return counters;
+}
+
+/* Why this thread's last linux_intel_live was UNKNOWN. */
+static GPrivate live_error = G_PRIVATE_INIT (g_free);
+
+/* [ linux_intel_live ] -- see FsBackend.intel_live. */
+static FsIntelLive
+linux_intel_live (gchar **digest)
+{
+	gchar *have = NULL;
+	GError *error = NULL;
+	FsIntelLive live = intel_read_live (&have, &error);
+
+	g_private_replace (&live_error, live == FS_INTEL_LIVE_UNKNOWN &&
+	                   error != NULL ? g_strdup (error->message) : NULL);
+	g_clear_error (&error);
+	if (digest != NULL)
+		*digest = have;
+	else
+		g_free (have);
+	return live;
+}
+
+/* [ linux_intel_live_error ] -- see FsBackend.intel_live_error. */
+static gchar *
+linux_intel_live_error (void)
+{
+	return g_strdup (g_private_get (&live_error));
 }
 
 static GList *
@@ -1220,123 +1699,6 @@ linux_list_interface_stats (void)
 	return stats;
 }
 
-/* [ program_for_pid ]
- * The executable's basename, as the Windows backend shows it; the
- * kernel's 15-character comm name when the exe link cannot be read
- * (another user's process, a kernel thread). */
-static gchar *
-program_for_pid (const gchar *pid)
-{
-	gchar *link = g_build_filename ("/proc", pid, "exe", NULL);
-	gchar *target = g_file_read_link (link, NULL);
-	gchar *name = NULL;
-
-	g_free (link);
-
-	if (target != NULL) {
-		/* A replaced binary reads "/usr/bin/foo (deleted)". */
-		if (g_str_has_suffix (target, " (deleted)"))
-			target[strlen (target) - strlen (" (deleted)")] = '\0';
-		name = g_path_get_basename (target);
-		g_free (target);
-		return name;
-	}
-
-	link = g_build_filename ("/proc", pid, "comm", NULL);
-	if (g_file_get_contents (link, &name, NULL, NULL))
-		g_strstrip (name);
-	else
-		name = NULL;
-	g_free (link);
-
-	return name;
-}
-
-/* [ socket_owners ]
- * socket inode -> program name, for every process whose fd table this
- * account may list.  Built only when there is a socket to look up, so
- * an idle machine does not walk /proc every refresh for nothing. */
-static GHashTable *
-socket_owners (const GList *sockets)
-{
-	GHashTable *wanted, *owners;
-	GDir *proc;
-	const gchar *pid;
-
-	wanted = g_hash_table_new (g_int64_hash, g_int64_equal);
-	for (const GList *l = sockets; l != NULL; l = l->next) {
-		FsNetSocket *s = l->data;
-
-		if (s->inode != 0)
-			g_hash_table_add (wanted, &s->inode);
-	}
-
-	owners = g_hash_table_new_full (g_int64_hash, g_int64_equal,
-	                                g_free, g_free);
-
-	if (g_hash_table_size (wanted) == 0) {
-		g_hash_table_unref (wanted);
-		return owners;
-	}
-
-	proc = g_dir_open ("/proc", 0, NULL);
-
-	while (proc != NULL && (pid = g_dir_read_name (proc)) != NULL) {
-		gchar *fd_path;
-		GDir *fds;
-		const gchar *fd;
-		gchar *program = NULL;
-
-		if (!g_ascii_isdigit (*pid))
-			continue;
-
-		fd_path = g_build_filename ("/proc", pid, "fd", NULL);
-		fds = g_dir_open (fd_path, 0, NULL);
-
-		while (fds != NULL && (fd = g_dir_read_name (fds)) != NULL) {
-			gchar *link = g_build_filename (fd_path, fd, NULL);
-			gchar *target = g_file_read_link (link, NULL);
-			guint64 inode;
-
-			g_free (link);
-
-			if (target != NULL &&
-			    sscanf (target, "socket:[%" G_GUINT64_FORMAT "]",
-			            &inode) == 1 &&
-			    g_hash_table_contains (wanted, &inode) &&
-			    !g_hash_table_contains (owners, &inode)) {
-				gint64 *key = g_new (gint64, 1);
-
-				if (program == NULL)
-					program = program_for_pid (pid);
-
-				*key = (gint64) inode;
-				g_hash_table_insert (owners, key,
-				                     g_strdup (program != NULL
-				                               ? program : "?"));
-			}
-
-			g_free (target);
-		}
-
-		if (fds != NULL)
-			g_dir_close (fds);
-		g_free (fd_path);
-		g_free (program);
-
-		/* Every socket placed: the rest of /proc cannot add one. */
-		if (g_hash_table_size (owners) == g_hash_table_size (wanted))
-			break;
-	}
-
-	if (proc != NULL)
-		g_dir_close (proc);
-
-	g_hash_table_unref (wanted);
-
-	return owners;
-}
-
 /* [ linux_list_connections ]
  * Connected TCP sockets, IPv4 and IPv6, with their owning program. */
 static GList *
@@ -1358,13 +1720,23 @@ linux_list_connections (void)
 		g_free (text);
 	}
 
-	owners = socket_owners (sockets);
+	/* No socket: nothing to look up (NULL would ask for every one). */
+	if (sockets == NULL)
+		return NULL;
+	owners = fs_hostnet_socket_owners (sockets);
 	list = fs_netparse_connections (sockets, owners);
 
 	g_hash_table_unref (owners);
 	g_list_free_full (sockets, (GDestroyNotify) fs_net_socket_free);
 
 	return list;
+}
+
+/* [ linux_socket_owners ] -- every socket this account can place. */
+static GHashTable *
+linux_socket_owners (void)
+{
+	return fs_hostnet_socket_owners (NULL);
 }
 
 /* ------------------------------------------------------------ syslog tail
@@ -1400,8 +1772,30 @@ static void
 deliver_log_line (const gchar *line)
 {
 	FsHit hit = { 0 };
+	gchar *intel_id = NULL;
 
-	if (*line == '\0' || !fs_netparse_log_line (line, &hit, NULL))
+	if (*line == '\0')
+		return;
+
+	/* A threat-intel block (design 7): shown only when the id is a set
+	 * of the rule set StockFW applied, so a stale or invented
+	 * "STOCKFW-TI" line is never attributed to a list [S17.3]. */
+	if (fs_netparse_intel_line (line, &hit, NULL, &intel_id)) {
+		if (!fs_intel_applied_has (intel_id)) {
+			g_free (intel_id);
+			fs_netparse_clear_hit (&hit);
+			return;
+		}
+		fs_netparse_name_blocked (&hit);
+		hit.rule = fs_intel_rule_text (intel_id);
+		g_free (intel_id);
+		if (log_callback != NULL)
+			log_callback (&hit, log_user_data);
+		fs_netparse_clear_hit (&hit);
+		return;
+	}
+
+	if (!fs_netparse_log_line (line, &hit, NULL))
 		return;
 
 	/* DROP/REJECT lines are blocked packets; since 1.0.7 the policy's
@@ -1823,16 +2217,21 @@ fs_backend_set_context (FsPolicy *policy, FsSettings *settings)
 static const FsBackend linux_backend = {
 	.name                  = "linux",
 	.display_name          = "Linux (iptables)",
-	/* Every Firewall sub-page: the generator reads all four (ToS is
-	 * offered as an admitted-dead page, matching the original's
-	 * layout).  REJECT vs DROP is a real iptables choice, and the
-	 * ICMP rules carry -m limit. */
+	/* Every settings page: the generator reads all three.  REJECT vs
+	 * DROP is a real iptables choice, the ICMP rules carry -m limit,
+	 * the outbound default is ours to set, and the ICMP choices are
+	 * the whole story for both families.  linux_start applies the
+	 * whole policy, so Start brings saved settings in too. */
 	.fw_sections           = FS_FWSEC_NETWORK | FS_FWSEC_ICMP |
-	                         FS_FWSEC_TOS | FS_FWSEC_ADVANCED,
+	                         FS_FWSEC_ADVANCED,
 	.fw_honors             = FS_FWHON_REJECT_METHOD |
 	                         FS_FWHON_RATE_LIMIT |
 	                         FS_FWHON_LOG_ALLOWED |
-	                         FS_FWHON_HOST_NAMES,
+	                         FS_FWHON_HOST_NAMES |
+	                         FS_FWHON_OUTBOUND_MODE |
+	                         FS_FWHON_ICMP_EXACT,
+	/* linux_start is linux_apply_rules (current_policy). */
+	.start_applies_policy  = TRUE,
 	.available             = linux_available,
 	.get_state             = linux_get_state,
 	.start                 = linux_start,
@@ -1843,6 +2242,7 @@ static const FsBackend linux_backend = {
 	.list_interfaces       = linux_list_interfaces,
 	.list_interface_stats  = linux_list_interface_stats,
 	.list_connections      = linux_list_connections,
+	.socket_owners         = linux_socket_owners,
 	.log_start             = linux_log_start,
 	.log_stop              = linux_log_stop,
 	.log_active            = linux_log_active,
@@ -1852,7 +2252,12 @@ static const FsBackend linux_backend = {
 	.get_profile_enabled   = linux_get_profile_enabled,
 	.set_profile_enabled   = linux_set_profile_enabled,
 	.ipv6_state            = linux_ipv6_state,
-	.apply_notes           = linux_apply_notes
+	.apply_notes           = linux_apply_notes,
+	.intel_apply           = linux_intel_apply,
+	.intel_clear           = linux_intel_clear,
+	.intel_counters        = linux_intel_counters,
+	.intel_live            = linux_intel_live,
+	.intel_live_error      = linux_intel_live_error
 };
 
 const FsBackend *

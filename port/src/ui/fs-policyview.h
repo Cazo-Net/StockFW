@@ -28,6 +28,11 @@ gboolean fs_policyview_save (FsPolicy *policy);
  * borrowed (static or preference-backed), never freed. */
 const gchar *fs_policyview_hold_reason (void);
 
+/* Selects row `index' of the rules of `kind' (as the policy store
+ * holds them) and scrolls to it -- the What-If's "Open rule in
+ * Policy".  FALSE when the page shows no such row. */
+gboolean fs_policyview_select (FsRuleKind kind, gint index);
+
 G_END_DECLS
 
 #endif /* FS_POLICYVIEW_H */

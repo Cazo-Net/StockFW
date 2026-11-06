@@ -40,6 +40,18 @@ fs_iface_stat_free (FsIfaceStat *s)
 	g_free (s);
 }
 
+/* [ fs_netif_is_virtual ]
+ * Written beside the Overview's adapter_is_virtual (ui/fs-statusview.c),
+ * which stays as it is: the same three kinds. */
+gboolean
+fs_netif_is_virtual (const FsIfaceStat *stat)
+{
+	return stat != NULL && stat->kind != NULL &&
+	       (strcmp (stat->kind, "Virtual") == 0 ||
+	        strcmp (stat->kind, "Tunnel") == 0 ||
+	        strcmp (stat->kind, "Loopback") == 0);
+}
+
 void
 fs_connection_free (FsConnection *c)
 {
@@ -53,6 +65,7 @@ fs_connection_free (FsConnection *c)
 	g_free (c->service);
 	g_free (c->program);
 	g_free (c->direction);
+	g_free (c->state);
 	g_free (c);
 }
 

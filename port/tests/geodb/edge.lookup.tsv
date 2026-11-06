@@ -1,0 +1,40 @@
+0.0.0.0	found	0.0.0.0/0	DE	2	0	Two
+ff:ffff:ffff:ffff:ffff:ffff:ffff:ffff	found	::/8	US	1	0	One
+100::	none			0	0	
+7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff	found	::/8	US	1	0	One
+255.255.255.255	found	0.0.0.0/0	DE	2	0	Two
+127.255.255.255	found	0.0.0.0/0	DE	2	0	Two
+::ffff:0.0.0.0	found	0.0.0.0/0	DE	2	0	Two
+1.2.3.4	found	1.2.3.4/32	FR	3	0	Three
+1.2.3.3	found	0.0.0.0/0	DE	2	0	Two
+1.2.3.5	found	0.0.0.0/0	DE	2	0	Two
+::ffff:1.2.3.4	found	1.2.3.4/32	FR	3	0	Three
+2001:db8::1	found	2001:db8::1/128	IT	4	0	Four
+2001:db8::	none			0	0	
+2001:db8::2	none			0	0	
+17.208.51.135	found	0.0.0.0/0	DE	2	0	Two
+2340:b8f:8084:540b:e887:d28a:d117:8634	none			0	0	
+2f99:9f53:8ce9:af11:290f:8fcb:a1e4:20b7	none			0	0	
+55.135.40.163	found	0.0.0.0/0	DE	2	0	Two
+200.26.214.252	found	0.0.0.0/0	DE	2	0	Two
+2845:d516:1fb6:cfa4:657:8fa8:3fb9:33cb	none			0	0	
+138.226.146.143	found	0.0.0.0/0	DE	2	0	Two
+38cf:7fb2:db3:ecb9:af04:aac0:d9b8:c5ff	none			0	0	
+157.175.144.154	found	0.0.0.0/0	DE	2	0	Two
+2df4:7a89:c8fe:30b0:3d29:fd80:4635:e334	none			0	0	
+260d:7716:6c1a:24eb:78cf:9f8c:4c92:724b	none			0	0	
+321a:bcd4:7388:47f7:5ff5:e9cc:94a3:b019	none			0	0	
+0.61.10.9	found	0.0.0.0/0	DE	2	0	Two
+250.160.81.47	found	0.0.0.0/0	DE	2	0	Two
+34.62.206.40	found	0.0.0.0/0	DE	2	0	Two
+86.134.232.163	found	0.0.0.0/0	DE	2	0	Two
+230.153.245.0	found	0.0.0.0/0	DE	2	0	Two
+3dd1:4d97:a0b0:b9f1:170:d18e:7954:1e1d	none			0	0	
+140.141.111.166	found	0.0.0.0/0	DE	2	0	Two
+27fa:8f0b:8545:e74c:25fd:8438:4e45:c129	none			0	0	
+::	found	::/8	US	1	0	One
+::1	found	::/8	US	1	0	One
+ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff	none			0	0	
+::ffff:255.255.255.255	found	0.0.0.0/0	DE	2	0	Two
+10.255.255.255	found	0.0.0.0/0	DE	2	0	Two
+11.0.0.0	found	0.0.0.0/0	DE	2	0	Two
