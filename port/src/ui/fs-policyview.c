@@ -685,6 +685,124 @@ on_apply_clicked (GtkButton *button, gpointer data)
 	apply_policy_now (TRUE);
 }
 
+/* [ policy_export_clicked ] -- the saved/current model as portable text. */
+static void
+on_export_clicked (GtkButton *button, gpointer data)
+{
+	GtkFileChooserNative *chooser;
+	GtkWidget *top = gtk_widget_get_toplevel (GTK_WIDGET (button));
+	GError *error = NULL;
+	gchar *text;
+
+	(void) data;
+	if (current_policy == NULL)
+		return;
+	text = fs_policy_export_text (current_policy, &error);
+	if (text == NULL) {
+		fs_dialogs_error (NULL, _("Could not export the policy"),
+		                  error != NULL ? error->message : NULL);
+		g_clear_error (&error);
+		return;
+	}
+	chooser = gtk_file_chooser_native_new (_("Export policy"),
+		GTK_IS_WINDOW (top) ? GTK_WINDOW (top) : NULL,
+		GTK_FILE_CHOOSER_ACTION_SAVE, _("_Export"), _("_Cancel"));
+	gtk_file_chooser_set_do_overwrite_confirmation (GTK_FILE_CHOOSER (chooser), TRUE);
+	gtk_file_chooser_set_current_name (GTK_FILE_CHOOSER (chooser), "stockfw-policy.txt");
+	if (gtk_native_dialog_run (GTK_NATIVE_DIALOG (chooser)) == GTK_RESPONSE_ACCEPT) {
+		gchar *path = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (chooser));
+		if (path != NULL && g_file_set_contents (path, text, -1, &error)) {
+			gchar *msg = g_strdup_printf (_("The policy was exported to\n%s"), path);
+			fs_dialogs_info (NULL, _("Policy exported"), msg);
+			g_free (msg);
+		} else {
+			fs_dialogs_error (NULL, _("Could not export the policy"),
+			                  error != NULL ? error->message : NULL);
+		}
+		g_clear_error (&error);
+		g_free (path);
+	}
+	g_object_unref (chooser);
+	g_free (text);
+}
+
+/* [ policy_import_clicked ] -- parse first; no file changes unless every
+ * input line is valid. The page owns its in-memory policy, so this is the
+ * UI equivalent of the control operation's merge/save transaction. */
+static void
+on_import_clicked (GtkButton *button, gpointer data)
+{
+	GtkFileChooserNative *chooser;
+	GtkWidget *top = gtk_widget_get_toplevel (GTK_WIDGET (button));
+
+	(void) data;
+	if (current_policy == NULL)
+		return;
+	chooser = gtk_file_chooser_native_new (_("Import policy"),
+		GTK_IS_WINDOW (top) ? GTK_WINDOW (top) : NULL,
+		GTK_FILE_CHOOSER_ACTION_OPEN, _("_Import"), _("_Cancel"));
+	if (gtk_native_dialog_run (GTK_NATIVE_DIALOG (chooser)) == GTK_RESPONSE_ACCEPT) {
+		gchar *path = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (chooser));
+		gchar *text = NULL;
+		GError *error = NULL;
+		GPtrArray *problems = NULL;
+		FsPolicy *incoming;
+		guint added = 0, duplicates = 0;
+
+		if (path == NULL || !g_file_get_contents (path, &text, NULL, &error)) {
+			fs_dialogs_error (NULL, _("Could not import the policy"),
+			                  error != NULL ? error->message : NULL);
+			goto import_out;
+		}
+		incoming = fs_policy_import_parse (text, &problems, &error);
+		if (incoming == NULL || (problems != NULL && problems->len > 0)) {
+			gchar *msg = g_strdup_printf (_("The import was refused: %u line(s) are invalid. "
+			                              "The saved policy was not changed."),
+			                              problems != NULL ? problems->len : 1);
+			fs_dialogs_error (NULL, _("Could not import the policy"), msg);
+			g_free (msg);
+			fs_policy_free (incoming);
+			goto import_out;
+		}
+		{
+			FsPolicy *before = fs_policy_new ();
+			gboolean merged;
+			for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+				for (guint i = 0; i < current_policy->kinds[k]->len; i++)
+					fs_policy_add (before, g_ptr_array_index (current_policy->kinds[k], i));
+			merged = fs_policy_merge (current_policy, incoming, FALSE, &added,
+			                         &duplicates, &error);
+			if (!merged || !fs_policy_save (current_policy)) {
+				fs_policy_clear (current_policy);
+				for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+					for (guint i = 0; i < before->kinds[k]->len; i++)
+						fs_policy_add (current_policy, g_ptr_array_index (before->kinds[k], i));
+				fs_policy_free (before);
+				fs_dialogs_error (NULL, _("Could not import the policy"),
+				                  error != NULL ? error->message : NULL);
+				fs_policy_free (incoming);
+				goto import_out;
+			}
+			fs_policy_free (before);
+		}
+		for (GList *iter = groups; iter != NULL; iter = iter->next)
+			refresh_group (iter->data, current_policy);
+		{
+			gchar *msg = g_strdup_printf (_("Imported %u rule(s). %u duplicate(s) were already present. "
+			                              "Press Apply policy to change the firewall."), added, duplicates);
+			fs_dialogs_info (NULL, _("Policy imported"), msg);
+			g_free (msg);
+		}
+		fs_policy_free (incoming);
+	import_out:
+		if (problems != NULL) g_ptr_array_unref (problems);
+		g_clear_error (&error);
+		g_free (text);
+		g_free (path);
+	}
+	g_object_unref (chooser);
+}
+
 /* [ maybe_apply_instantly ]
  * Called by every handler that changes the policy.  With the
  * preference on the change reaches the firewall at once instead of
@@ -845,6 +963,20 @@ fs_policyview_page (FsPolicy *policy)
 	                             "btn-primary");
 	g_signal_connect (button, "clicked", G_CALLBACK (on_apply_clicked),
 	                  NULL);
+	gtk_box_pack_start (GTK_BOX (bar), button, FALSE, FALSE, 0);
+
+	button = gtk_button_new_with_mnemonic (_("_Export"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
+	gtk_widget_set_tooltip_text (button, _("Save the whole policy as portable text."));
+	g_signal_connect (button, "clicked", G_CALLBACK (on_export_clicked), NULL);
+	gtk_box_pack_start (GTK_BOX (bar), button, FALSE, FALSE, 0);
+
+	button = gtk_button_new_with_mnemonic (_("_Import"));
+	gtk_style_context_add_class (gtk_widget_get_style_context (button),
+	                             "btn-subtle");
+	gtk_widget_set_tooltip_text (button, _("Merge a portable policy export; the firewall is not changed until Apply."));
+	g_signal_connect (button, "clicked", G_CALLBACK (on_import_clicked), NULL);
 	gtk_box_pack_start (GTK_BOX (bar), button, FALSE, FALSE, 0);
 
 	/* Audit-only (P3): the testing mode switch, beside the button it

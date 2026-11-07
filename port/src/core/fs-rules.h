@@ -147,6 +147,19 @@ gboolean  fs_policy_load_report (FsPolicy *policy, GPtrArray **problems);
 gboolean  fs_policy_load  (FsPolicy *policy, gint *malformed);
 gboolean  fs_policy_save  (FsPolicy *policy);
 
+/* Portable whole-policy exchange. Each data line is:
+ * KIND<TAB>on|off<TAB>CSV. Lines beginning with '#' are comments.
+ * The CSV remains deliberately unquoted, so fields retain the same
+ * safety rules as the on-disk policy. Returned text and policies belong
+ * to the caller. */
+gchar    *fs_policy_export_text (const FsPolicy *policy, GError **error);
+FsPolicy *fs_policy_import_parse (const gchar *text, GPtrArray **problems,
+                                  GError **error);
+gboolean  fs_policy_has_rule (const FsPolicy *policy, const FsRule *rule);
+gboolean  fs_policy_merge (FsPolicy *destination, const FsPolicy *source,
+                           gboolean replace, guint *added, guint *duplicates,
+                           GError **error);
+
 void      fs_policy_add    (FsPolicy *policy, FsRule *rule);
 gboolean  fs_policy_remove (FsPolicy *policy, FsRule *rule);
 

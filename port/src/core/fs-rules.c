@@ -652,6 +652,188 @@ fs_policy_save (FsPolicy *policy)
 	return ok;
 }
 
+/* [ policy_exchange_kind ] -- stable names for the portable exchange
+ * format. Keep this table independent of the control layer: core must
+ * remain usable by the desktop app and its tests. */
+static const gchar * const policy_exchange_kinds[FS_RULE_N_KINDS] = {
+	"inbound-allow-from", "inbound-allow-service", "inbound-forward",
+	"outbound-allow-to", "outbound-allow-from", "outbound-allow-service",
+	"outbound-deny-to", "outbound-deny-from", "outbound-deny-service"
+};
+
+static gint
+policy_exchange_kind (const gchar *name)
+{
+	for (gint i = 0; i < FS_RULE_N_KINDS; i++)
+		if (g_strcmp0 (name, policy_exchange_kinds[i]) == 0)
+			return i;
+	return -1;
+}
+
+gchar *
+fs_policy_export_text (const FsPolicy *policy, GError **error)
+{
+	GString *out;
+
+	if (policy == NULL) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+		                     "no policy to export");
+		return NULL;
+	}
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		for (guint i = 0; i < policy->kinds[k]->len; i++)
+			if (!fs_rule_validate (g_ptr_array_index (policy->kinds[k], i), error))
+				return NULL;
+
+	out = g_string_new ("# StockFW policy export v1\n");
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++) {
+		for (guint i = 0; i < policy->kinds[k]->len; i++) {
+			FsRule *rule = g_ptr_array_index (policy->kinds[k], i);
+			gchar *csv = fs_rule_to_csv (rule);
+
+			g_string_append_printf (out, "%s\t%s\t%s\n",
+			                        policy_exchange_kinds[k],
+			                        rule->enabled ? "on" : "off", csv);
+			g_free (csv);
+		}
+	}
+	return g_string_free (out, FALSE);
+}
+
+static void
+policy_import_problem (GPtrArray *problems, guint line, const gchar *text,
+                       const gchar *reason)
+{
+	FsPolicyProblem *p = g_new0 (FsPolicyProblem, 1);
+	p->file = g_strdup ("policy-export");
+	p->line = line;
+	p->text = g_strdup (text);
+	p->reason = g_strdup (reason);
+	g_ptr_array_add (problems, p);
+}
+
+FsPolicy *
+fs_policy_import_parse (const gchar *text, GPtrArray **problems, GError **error)
+{
+	FsPolicy *policy = fs_policy_new ();
+	GPtrArray *bad = g_ptr_array_new_with_free_func (
+		(GDestroyNotify) fs_policy_problem_free);
+	gchar **lines;
+
+	if (problems != NULL)
+		*problems = bad;
+	if (text == NULL) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+		                     "no policy text");
+		if (problems == NULL) g_ptr_array_unref (bad);
+		fs_policy_free (policy);
+		return NULL;
+	}
+	lines = g_strsplit (text, "\n", -1);
+	for (guint n = 0; lines[n] != NULL; n++) {
+		gchar *line = g_strstrip (lines[n]);
+		gchar **fields;
+		gint kind;
+		FsRule *rule;
+		gchar *why;
+
+		if (*line == '\0' || *line == '#')
+			continue;
+		fields = g_strsplit (line, "\t", 3);
+		if (g_strv_length (fields) != 3 ||
+		    (kind = policy_exchange_kind (fields[0])) < 0 ||
+		    (strcmp (fields[1], "on") != 0 && strcmp (fields[1], "off") != 0)) {
+			policy_import_problem (bad, n + 1, line,
+			                       "expected KIND<TAB>on|off<TAB>CSV");
+			g_strfreev (fields);
+			continue;
+		}
+		rule = fs_rule_from_csv ((FsRuleKind) kind, fields[2]);
+		why = rule == NULL ? g_strdup ("invalid CSV fields")
+		                   : fs_rule_problem (rule);
+		if (why == NULL && !fs_rule_validate (rule, NULL))
+			why = g_strdup ("a field contains a comma, line break or invalid prefix");
+		if (why != NULL || rule == NULL) {
+			policy_import_problem (bad, n + 1, line, why);
+			g_free (why);
+			fs_rule_free (rule);
+			g_strfreev (fields);
+			continue;
+		}
+		rule->enabled = strcmp (fields[1], "on") == 0;
+		fs_policy_add (policy, rule);
+		fs_rule_free (rule);
+		g_strfreev (fields);
+	}
+	g_strfreev (lines);
+	if (problems == NULL) {
+		if (bad->len > 0) {
+			g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+			             "policy export contains %u invalid line%s", bad->len,
+			             bad->len == 1 ? "" : "s");
+			g_ptr_array_unref (bad);
+			fs_policy_free (policy);
+			return NULL;
+		}
+		g_ptr_array_unref (bad);
+	}
+	return policy;
+}
+
+gboolean
+fs_policy_has_rule (const FsPolicy *policy, const FsRule *rule)
+{
+	return fs_policy_contains (policy, rule);
+}
+
+gboolean
+fs_policy_merge (FsPolicy *destination, const FsPolicy *source,
+                 gboolean replace, guint *added, guint *duplicates,
+                 GError **error)
+{
+	guint a = 0, d = 0;
+	FsPolicy *copy;
+
+	if (destination == NULL || source == NULL) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+		                     "no policy to merge");
+		return FALSE;
+	}
+	copy = fs_policy_new ();
+	if (!replace) {
+		for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+			for (guint i = 0; i < destination->kinds[k]->len; i++)
+				fs_policy_add (copy, g_ptr_array_index (destination->kinds[k], i));
+	}
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		for (guint i = 0; i < source->kinds[k]->len; i++) {
+			FsRule *rule = g_ptr_array_index (source->kinds[k], i);
+			gchar *why;
+			if (!fs_rule_validate (rule, error)) {
+				fs_policy_free (copy);
+				return FALSE;
+			}
+			why = fs_rule_problem (rule);
+			if (why != NULL) {
+				g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+				             "not a valid imported rule: %s", why);
+				g_free (why);
+				fs_policy_free (copy);
+				return FALSE;
+			}
+			if (fs_policy_contains (copy, rule)) { d++; continue; }
+			fs_policy_add (copy, rule); a++;
+		}
+	fs_policy_clear (destination);
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		for (guint i = 0; i < copy->kinds[k]->len; i++)
+			fs_policy_add (destination, g_ptr_array_index (copy->kinds[k], i));
+	fs_policy_free (copy);
+	if (added != NULL) *added = a;
+	if (duplicates != NULL) *duplicates = d;
+	return TRUE;
+}
+
 /* [ fs_policy_add ]
  * Stores a *copy*; the caller keeps ownership of the rule it passed in.
  * That way a rule built by a dialog can be inspected or discarded

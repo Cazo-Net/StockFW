@@ -183,6 +183,7 @@ grep -E "error:|FAILED:" "$TMP/last-ninja.txt" | head -10
 judge "BUILD" "$rc" "$TMP/last-ninja.txt" "the build"
 
 run_sh "CORE"        tests/test-core.sh
+run_sh "POLICY IO"   tests/test-policyio.sh
 run_sh "EVENT STORE + HISTORY" tests/test-eventstore.sh
 run_sh "WINDOWS EVENT LOG READER (fake log, any platform)" tests/test-winevt.sh
 run_sh "P4 ADVERSARIAL" tests/test-adversarial.sh

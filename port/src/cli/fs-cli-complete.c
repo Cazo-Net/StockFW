@@ -23,7 +23,8 @@
 /* ------------------------------------------------------- vocabulary */
 
 static const gchar *policy_subs[] = {
-	"list", "show", "add", "edit", "remove", "diff", "init", NULL
+	"list", "show", "add", "edit", "remove", "diff", "init",
+	"export", "import", NULL
 };
 static const gchar *intel_subs[] = {
 	"status", "feeds", "terms", "enable", "disable", "on", "off",
