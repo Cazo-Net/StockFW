@@ -606,8 +606,6 @@ Chapter 10 of the architecture document. Contributions are accepted under
 the license ultimately declared for their portion.
 
 ## Credits
-
-- **Stockfw Team** — Creator & Original Developer
 - **H3xCore** — Developer
 - **Stock Team** — GTK3 port, Windows backend, Copilot
 - **Threat-intel data** — the blocklists belong to their publishers:
