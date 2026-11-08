@@ -24,8 +24,7 @@
 		<a class="brand" href="../index.html">
 			<img src="../assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.7</span>
-		</a>
+					</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="../index.html#tour">Features</a>
 			<a href="../docs/index.html" aria-current="page">Docs</a>
@@ -169,7 +168,7 @@ stockfw: hint: see `stockfw help simulate'; a word that starts with a dash goes 
 ● This computer is protected
   Your policy is in force for IPv4 and IPv6.
 
-StockFW 1.0.7  Linux (iptables) - web1
+StockFW 1.0.8  Linux (iptables) - web1
 
   Firewall     ● running
   IPv6         filtered
@@ -754,7 +753,7 @@ About the desktop app's own windows, which a terminal does not have:
     block it for ten minutes.
 
 <span class="p">$ </span><span class="cmd">stockfw about</span>
-StockFW 1.0.7 - Linux (iptables)
+StockFW 1.0.8 - Linux (iptables)
 Configures the firewall your system already has and shows what it allows and
 blocks.
 
@@ -773,7 +772,7 @@ Website
   https://github.com/Cazo-Net/StockFW
 
 <span class="p">$ </span><span class="cmd">stockfw about --system</span>
-StockFW 1.0.7
+StockFW 1.0.8
 GLib 2.80.0 (built with 2.80.0)
 Platform: Ubuntu 24.04.5 LTS (linux build)
 Firewall backend: Linux (iptables)
@@ -803,7 +802,7 @@ src  service</code></pre></div>
 <li><code>-q</code> keeps only the essential line, leaves out hints, notes and legends, and with <code>simulate</code> prints only the verdict word.</li>
 <li>Every command that changes something (<code>events act</code>, <code>simulate --do</code>, <code>copilot block</code>, <code>copilot health --fix</code>, <code>copilot changes --undo</code>, <code>sentinel lift</code>, <code>sentinel mode</code>, <code>trust attest</code> and <code>forget</code>, and the <code>intel</code> saves with <code>--apply</code>) asks <code>[y/N]</code> on a terminal, No by default, and <code>--yes</code> skips the question. With no terminal on standard input and no <code>--yes</code> it stops at once, changes nothing, names <code>--yes</code> and never reads standard input.</li>
 <li>With the firewall stopped, a command that adds or lifts a rule prints one line: “The firewall is stopped: the change is saved and goes live at the next start; the firewall stays stopped.” None of them starts the firewall. In audit-only mode the line says the firewall was not changed and how the change goes live.</li>
-<li><code>stockfw version</code> prints one line: <code>stockfw 1.0.7 - Linux (iptables)</code>, or <code>(nftables)</code> for that backend.</li>
+<li><code>stockfw version</code> prints one line: <code>stockfw 1.0.8 - Linux (iptables)</code>, or <code>(nftables)</code> for that backend.</li>
 </ul>
 
 <h2 id="environment-variables">Environment variables<a class="anchor" href="#environment-variables" aria-label="Link to this section">#</a></h2>
@@ -882,7 +881,7 @@ stockfw: hint: each line: an address, a network (198.51.100.0/24) or a range (19
 		</article>
 		<footer class="doc-foot">
 			<nav class="pager" aria-label="Pages"><a class="prev" href="../docs/country-blocking.html"><span>Previous</span><strong>Country and network-owner blocking</strong></a><a class="next" href="../docs/dashboard.html"><span>Next</span><strong>Dashboard</strong></a></nav>
-			<p class="edit-line"><span>Describes StockFW 1.0.7.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/cli.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
+			<p class="edit-line"><span>Describes StockFW 1.0.8.</span><a href="https://github.com/Cazo-Net/StockFW/blob/main/site/src/pages/docs/cli.html">Edit this page on GitHub</a><a class="to-top" href="#main">Back to top ↑</a></p>
 		</footer>
 	</div>
 	<aside class="toc" aria-label="On this page">
