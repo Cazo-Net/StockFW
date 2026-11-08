@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(stockfw
-        VERSION 1.0.7
+        VERSION 1.0.8
         DESCRIPTION "Firewall configuration tool (Windows + Linux port)"
         LANGUAGES C)
 
@@ -648,6 +648,9 @@ target_compile_definitions(fs-nftset-load PRIVATE FS_TOOLPATH_TESTING=1)
 # "profile in use is off" judgement (test-netplace.c).  GLib only.
 add_executable(fs-txapply-test EXCLUDE_FROM_ALL tests/test-txapply.c)
 target_link_libraries(fs-txapply-test PRIVATE fs-core-nogui)
+
+add_executable(fs-perapp-test EXCLUDE_FROM_ALL tests/test-perapp.c)
+target_link_libraries(fs-perapp-test PRIVATE fs-core-nogui)
 
 add_executable(fs-netplace-test EXCLUDE_FROM_ALL tests/test-netplace.c)
 target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)

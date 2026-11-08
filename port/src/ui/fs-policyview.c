@@ -132,6 +132,7 @@ rule_fields (const FsRule *rule, const gchar **fields, gint max)
 		if (n < max) fields[n++] = rule->port;
 		if (n < max) fields[n++] = rule->target;
 		if (n < max) fields[n++] = rule->comment;
+		if (n < max) if (n < max) fields[n++] = rule->program;
 		break;
 
 	default:
@@ -165,6 +166,7 @@ rule_from_fields (FsRuleKind kind, gchar **fields, gint count)
 		rule->port    = g_strdup (count > 1 ? fields[1] : NULL);
 		rule->target  = g_strdup (count > 2 ? fields[2] : NULL);
 		rule->comment = g_strdup (count > 3 ? fields[3] : NULL);
+		rule->program = g_strdup (count > 4 ? fields[4] : NULL);
 		break;
 
 	default:
