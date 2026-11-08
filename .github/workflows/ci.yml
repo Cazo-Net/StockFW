@@ -283,8 +283,8 @@ jobs:
   windows:
     name: Windows build, tests and installer
     runs-on: windows-latest
-    # 45 minutes for the job itself, plus room for one MSYS2 retry.
-    timeout-minutes: 55
+    # 75 minutes for the job itself, plus room for one MSYS2 retry.
+    timeout-minutes: 90
     defaults:
       run:
         shell: msys2 {0}
