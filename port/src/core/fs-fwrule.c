@@ -40,6 +40,7 @@ fs_fwrule_free (FsFwRule *rule)
 	g_free (rule->remote_ports);
 	g_free (rule->remote_address);
 	g_free (rule->forward_address);
+	g_free (rule->program);
 
 	g_free (rule);
 }
@@ -509,7 +510,7 @@ static guint
 append_planned (GList **out, const PortPlan *plan, const gchar *base_name,
                 FsRuleDirection direction, FsRuleAction action,
                 gboolean ports_local, const gchar *remote_address,
-                const gchar *forward_address)
+                const gchar *forward_address, const gchar *program)
 {
 	struct { gboolean used; FsRuleProtocol proto; const gchar *ports;
 	         const gchar *suffix; } sides[2] = {
@@ -536,6 +537,7 @@ append_planned (GList **out, const PortPlan *plan, const gchar *base_name,
 			rule->remote_ports = g_strdup (sides[i].ports);
 
 		rule->remote_address = g_strdup (remote_address);
+		rule->program = g_strdup (program);
 		rule->name = pair ? g_strconcat (base_name, sides[i].suffix,
 		                                 NULL)
 		                  : g_strdup (base_name);
@@ -576,7 +578,7 @@ append_service_rows (GList **out, GPtrArray *refused, GPtrArray *rows,
 			count += append_planned (out, &plan, name, direction,
 			                         action,
 			                         direction == FS_DIR_INBOUND,
-			                         address, NULL);
+			                         address, NULL, row->program);
 		else if (refused != NULL)
 			g_ptr_array_add (refused, g_steal_pointer (&why));
 
@@ -648,7 +650,7 @@ append_forward_rows (GList **out, GPtrArray *refused, GPtrArray *rows)
 		                        &why))
 			count += append_planned (out, &plan, name,
 			                         FS_DIR_INBOUND, FS_ACTION_ALLOW,
-			                         TRUE, NULL, row->to);
+			                         TRUE, NULL, row->to, row->program);
 		else if (refused != NULL)
 			g_ptr_array_add (refused, g_steal_pointer (&why));
 
@@ -785,7 +787,8 @@ fs_fwrule_equal (const FsFwRule *a, const FsFwRule *b)
 	        g_strcmp0 (a->remote_ports, b->remote_ports) == 0 &&
 	        g_strcmp0 (a->local_address, b->local_address) == 0 &&
 	        g_strcmp0 (a->remote_address, b->remote_address) == 0 &&
-	        g_strcmp0 (a->forward_address, b->forward_address) == 0);
+	        g_strcmp0 (a->forward_address, b->forward_address) == 0 &&
+	        g_strcmp0 (a->program, b->program) == 0);
 }
 
 /* [ fs_fwrule_netsh_name ] -- see fs-fwrule.h. */
@@ -875,6 +878,14 @@ fs_fwrule_netsh_args (const FsFwRule *rule)
 	if (rule->remote_address != NULL && *rule->remote_address != '\0')
 		g_ptr_array_add (args, g_strdup_printf ("remoteip=%s",
 		                                        rule->remote_address));
+
+	/* program= names the executable this rule matches.  No quotes:
+	 * the args cross to netsh as separate argv elements through
+	 * CreateProcess, so no shell parses them; netsh reads an unquoted
+	 * path (spaces allowed) as the program value. */
+	if (rule->program != NULL && *rule->program != '\0')
+		g_ptr_array_add (args, g_strdup_printf ("program=%s",
+		                                        rule->program));
 
 	g_ptr_array_add (args, NULL);
 

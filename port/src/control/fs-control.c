@@ -496,6 +496,11 @@ edit_apply (FsControlResult *r, const FsControlActor *actor,
 
 /* ---------------------------------------------------------- the ops */
 
+/* Defined with the binary-text helpers below. Policy import uses a string
+ * today; the declaration keeps the control operation independent of the
+ * physical location of those helpers. */
+static const gchar *p_text (GVariant *params, const gchar *key);
+
 static void
 op_policy_add (FsControlResult *r, const FsControlActor *actor,
                GVariant *params)
@@ -742,6 +747,116 @@ op_policy_replace (FsControlResult *r, const FsControlActor *actor,
 	}
 	r->saved = TRUE;
 	edit_apply (r, actor, params);
+	fs_policy_unlock (lock);
+}
+
+static void
+op_policy_import (FsControlResult *r, const FsControlActor *actor,
+                  GVariant *params)
+{
+	const gchar *text = p_text (params, "text");
+	gboolean replace = p_bool (params, "replace");
+	gboolean apply = p_bool (params, "apply");
+	FsPolicyLock *lock;
+	GError *error = NULL;
+	FsPolicy *incoming;
+	GPtrArray *problems = NULL;
+	guint added = 0, duplicates = 0, rejected = 0;
+
+	if (text == NULL) {
+		fail (r, FS_CONTROL_USAGE, NULL, "policy.import needs text");
+		return;
+	}
+	incoming = fs_policy_import_parse (text, &problems, &error);
+	if (problems != NULL) {
+		rejected = problems->len;
+		r->problems = problems;
+	}
+	/* An import is all-or-nothing: a malformed line must never cause the
+	 * valid prefix to be saved while silently dropping the rest. */
+	if (incoming != NULL && rejected > 0) {
+		fs_policy_free (incoming);
+		fail (r, FS_CONTROL_USAGE, NULL,
+		      "the import contains %u invalid line%s", rejected,
+		      rejected == 1 ? "" : "s");
+		return;
+	}
+	if (incoming == NULL) {
+		fail (r, FS_CONTROL_USAGE, NULL, "%s",
+		      error != NULL ? error->message : "invalid policy export text");
+		g_clear_error (&error);
+		return;
+	}
+
+	if (apply && !need_root (r, actor)) {
+		fs_policy_free (incoming);
+		return;
+	}
+
+	lock = fs_policy_lock (&error);
+	if (lock == NULL) {
+		fail (r, FS_CONTROL_FAILED, NULL, "%s", error->message);
+		g_error_free (error);
+		fs_policy_free (incoming);
+		return;
+	}
+
+	r->policy = load_policy (r, FALSE, NULL);
+	if (r->policy == NULL) {
+		fs_policy_unlock (lock);
+		fs_policy_free (incoming);
+		return;
+	}
+
+	if (replace) {
+		added = policy_total (incoming);
+		fs_policy_clear (r->policy);
+		for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+			for (guint i = 0; i < incoming->kinds[k]->len; i++)
+				fs_policy_add (r->policy, g_ptr_array_index (incoming->kinds[k], i));
+	} else {
+		if (!fs_policy_merge (r->policy, incoming, FALSE, &added, &duplicates, &error)) {
+			fail (r, FS_CONTROL_FAILED, NULL, "%s", error != NULL ? error->message : "merge failed");
+			g_clear_error (&error);
+			fs_policy_unlock (lock);
+			fs_policy_free (incoming);
+			return;
+		}
+	}
+	fs_policy_free (incoming);
+
+	if (apply) {
+		FsSettings *settings;
+		if (!edit_guard (r, actor, params, r->policy)) {
+			fs_policy_unlock (lock);
+			return;
+		}
+		settings = fs_settings_new ();
+		fs_settings_load_prefs (settings);
+		if (!fs_policy_save (r->policy)) {
+			fs_settings_free (settings);
+			fs_policy_unlock (lock);
+			save_failed (r);
+			return;
+		}
+		r->saved = TRUE;
+		r->imported = added;
+		r->duplicates = duplicates;
+		r->rejected = rejected;
+		apply_now (r, actor, policy_copy (r->policy), settings);
+		fs_policy_unlock (lock);
+		return;
+	}
+
+	if (!fs_policy_save (r->policy)) {
+		fs_policy_unlock (lock);
+		save_failed (r);
+		return;
+	}
+	r->saved = TRUE;
+	r->imported = added;
+	r->duplicates = duplicates;
+	r->rejected = rejected;
 	fs_policy_unlock (lock);
 }
 
@@ -2589,6 +2704,7 @@ static const struct
 	{ "policy.remove",  op_policy_remove },
 	{ "policy.replace", op_policy_replace },
 	{ "policy.init",    op_policy_init },
+	{ "policy.import",  op_policy_import },
 	{ "apply",          op_apply },
 	{ "firewall.start", op_start },
 	{ "firewall.stop",  op_stop },
@@ -2837,6 +2953,14 @@ fs_control_result_json (const FsControlResult *r)
 	if (g_strcmp0 (r->op, "policy.init") == 0) {
 		g_string_append_c (out, ',');
 		fs_json_kv_uint (out, "dropped", r->dropped);
+	}
+	if (g_strcmp0 (r->op, "policy.import") == 0) {
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "imported", r->imported);
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "duplicates", r->duplicates);
+		g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "rejected", r->rejected);
 	}
 	if (r->problems != NULL) {
 		g_string_append (out, ",\"problems\":[");

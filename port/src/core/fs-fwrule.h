@@ -80,6 +80,12 @@ typedef struct
 	/* Port forwarding: local_ports on us -> forward_address. */
 	gboolean        forward;
 	gchar          *forward_address;
+
+	/* The program this rule is bound to (Windows: the full executable
+	 * path, e.g. C:\Program Files\App\app.exe).  NULL means the rule
+	 * applies to every program; set means this firewall rule matches
+	 * only this program. */
+	gchar          *program;
 } FsFwRule;
 
 FsFwRule *fs_fwrule_new  (void);

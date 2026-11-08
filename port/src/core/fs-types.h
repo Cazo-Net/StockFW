@@ -89,6 +89,11 @@ typedef struct
 	gchar *tos;
 	gchar *protocol;
 	gchar *service;
+	/* The full executable path the event was attributed to
+	 * (Windows Security log Application field), e.g.
+	 * C:\Program Files\App\app.exe.  Only set when the event source
+	 * names a program; NULL otherwise.  Caller frees with fs_hit_free. */
+	gchar *program;
 	/* 1.0.7: what blocked it, when the log line says so
 	 * ("Threat intel: Spamhaus DROP", or a country or network
 	 * rule's "Threat intel: <its name>").  NULL

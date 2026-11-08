@@ -148,7 +148,7 @@ run_intel_windows () {
 # fs-intel-test (POSIX modes on the store) and fs-fetch-test (the Linux
 # curl argv, environment and account) are written for Linux; the
 # location database reader runs on both inside test-core.sh.
-UNITS="fs-netplace-test fs-feed-test fs-intelset-test fs-hostnet-test
+UNITS="fs-txapply-test fs-netplace-test fs-feed-test fs-intelset-test fs-hostnet-test
        fs-fetch-spawn-test fs-fake-curl"
 SMOKES="fs-ui-smoke fs-prefs-fake-smoke fs-hitview-smoke fs-simviz-smoke
         fs-theme-smoke fs-trustview-smoke fs-copilot-smoke
@@ -183,6 +183,7 @@ grep -E "error:|FAILED:" "$TMP/last-ninja.txt" | head -10
 judge "BUILD" "$rc" "$TMP/last-ninja.txt" "the build"
 
 run_sh "CORE"        tests/test-core.sh
+run_sh "POLICY IO"   tests/test-policyio.sh
 run_sh "EVENT STORE + HISTORY" tests/test-eventstore.sh
 run_sh "WINDOWS EVENT LOG READER (fake log, any platform)" tests/test-winevt.sh
 run_sh "P4 ADVERSARIAL" tests/test-adversarial.sh
@@ -198,6 +199,7 @@ run_sh "LICENCE TEXTS (installers match About)" tests/test-licence-texts.sh
 linux_only "RELEASE (versions, documents, modes, packages)" run_sh tests/test-release.sh
 run_sh "STAGED RUNTIME (build/ on its own)" tests/test-staged-runtime.sh
 run_sh "BACKEND COMPILE (state-windows)" tests/test-state-windows.sh "compiled|PASSED|FAILED|ok:|SKIP"
+windows_only "TRANSACTIONAL WINDOWS APPLY (snapshot/rollback)" run_sh tests/test-apply-windows.sh
 run_sh "UAF ANALYZE" tests/test-uaf-analyze.sh
 linux_only "UAF SWEEP (every source file)" run_sh tests/test-uaf-all.sh
 

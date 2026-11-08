@@ -36,6 +36,8 @@
 #include <string.h>
 #include <unistd.h>
 
+static gint apply_status (const FsApplyOutcome *outcome);
+
 /* [ kind_field_count ] -- fields before the comment, per kind. */
 static gint
 kind_field_count (FsRuleKind kind)
@@ -1670,6 +1672,225 @@ policy_init (gint argc, gchar **argv)
 	return status;
 }
 
+static gint
+policy_export (gint argc, gchar **argv)
+{
+	const gchar *path = NULL;
+	gboolean on_disk = FALSE;
+	GPtrArray *problems = NULL;
+	FsPolicy *policy;
+	gchar *text;
+	GError *error = NULL;
+
+	for (gint i = 0; i < argc; i++) {
+		const gchar *v;
+		gint st = FS_EXIT_OK;
+		if (fs_cli_take_opt (argc, argv, &i, "--file", &v, &st) ||
+		    fs_cli_take_opt (argc, argv, &i, "-o", &v, &st)) {
+			if (v == NULL)
+				return st;
+			path = v;
+		} else if (fs_cli_is_option_at (argv, i)) {
+			fs_cli_unknown_option ("policy export", argv[i]);
+			return FS_EXIT_USAGE;
+		} else if (path == NULL) {
+			path = argv[i];
+		} else {
+			fs_cli_error ("unexpected argument: %s", argv[i]);
+			return FS_EXIT_USAGE;
+		}
+	}
+
+	policy = fs_cli_load_policy_report (&on_disk, &problems);
+	if (!on_disk) {
+		fs_cli_error ("no policy saved yet in %s", fs_util_rules_dir ());
+		g_ptr_array_unref (problems);
+		fs_policy_free (policy);
+		return FS_EXIT_FAILURE;
+	}
+	text = fs_policy_export_text (policy, &error);
+	g_ptr_array_unref (problems);
+	fs_policy_free (policy);
+	if (text == NULL) {
+		fs_cli_error ("export failed: %s", error != NULL ? error->message : "invalid rule");
+		g_clear_error (&error);
+		return FS_EXIT_FAILURE;
+	}
+
+	if (path != NULL && strcmp (path, "-") != 0) {
+		if (!g_file_set_contents (path, text, -1, &error)) {
+			fs_cli_error ("could not write %s: %s", path, error->message);
+			g_clear_error (&error);
+			g_free (text);
+			return FS_EXIT_FAILURE;
+		}
+		if (!fs_cli.quiet && !fs_cli.json)
+			printf ("Exported policy to %s\n", path);
+	} else {
+		fputs (text, stdout);
+	}
+	g_free (text);
+	return FS_EXIT_OK;
+}
+
+static gint
+policy_import (gint argc, gchar **argv)
+{
+	const gchar *path = NULL;
+	gboolean replace = FALSE;
+	gboolean dry_run = FALSE;
+	gboolean apply = FALSE;
+	gboolean yes = FALSE;
+	gchar *text = NULL;
+	GError *error = NULL;
+	GVariantBuilder b;
+	FsControlActor actor;
+	FsControlResult *r;
+	gint status = FS_EXIT_OK;
+
+	for (gint i = 0; i < argc; i++) {
+		const gchar *v;
+		gint st = FS_EXIT_OK;
+		if (fs_cli_take_opt (argc, argv, &i, "--file", &v, &st) ||
+		    fs_cli_take_opt (argc, argv, &i, "-f", &v, &st)) {
+			if (v == NULL)
+				return st;
+			path = v;
+		} else if (fs_cli_is_option_at (argv, i) && strcmp (argv[i], "--replace") == 0) {
+			replace = TRUE;
+		} else if (fs_cli_is_option_at (argv, i) && strcmp (argv[i], "--dry-run") == 0) {
+			dry_run = TRUE;
+		} else if (take_edit_opts (argv, i, &apply, &yes)) {
+			/* handled */
+		} else if (fs_cli_is_option_at (argv, i)) {
+			fs_cli_unknown_option ("policy import", argv[i]);
+			return FS_EXIT_USAGE;
+		} else if (path == NULL) {
+			path = argv[i];
+		} else {
+			fs_cli_error ("unexpected argument: %s", argv[i]);
+			return FS_EXIT_USAGE;
+		}
+	}
+
+	if (apply && geteuid () != 0)
+		return fs_cli_need_root ("policy import --apply");
+
+	if (path == NULL || strcmp (path, "-") == 0) {
+		GString *buf = g_string_new (NULL);
+		gchar chunk[4096];
+		size_t n;
+		while ((n = fread (chunk, 1, sizeof (chunk), stdin)) > 0)
+			g_string_append_len (buf, chunk, (gssize) n);
+		text = g_string_free (buf, FALSE);
+	} else {
+		if (!g_file_get_contents (path, &text, NULL, &error)) {
+			fs_cli_error ("cannot read %s: %s", path, error->message);
+			g_clear_error (&error);
+			return FS_EXIT_FAILURE;
+		}
+	}
+
+	if (dry_run) {
+		GPtrArray *problems = NULL;
+		FsPolicy *incoming = fs_policy_import_parse (text, &problems, &error);
+		guint added = 0, duplicates = 0;
+		FsPolicy *current;
+
+		if (incoming == NULL) {
+			fs_cli_error ("import failed: %s", error != NULL ? error->message : "invalid text");
+			g_clear_error (&error);
+			g_free (text);
+			return FS_EXIT_FAILURE;
+		}
+		if (problems != NULL && problems->len > 0) {
+			fs_cli_print_problems (problems);
+			fs_cli_error ("dry run refused: %u invalid import line%s", problems->len,
+			              problems->len == 1 ? "" : "s");
+			g_ptr_array_unref (problems);
+			fs_policy_free (incoming);
+			g_free (text);
+			return FS_EXIT_USAGE;
+		}
+		current = fs_cli_load_policy_report (NULL, NULL);
+		if (replace)
+			added = fs_cli_policy_total (incoming);
+		else
+			fs_policy_merge (current, incoming, FALSE, &added, &duplicates, NULL);
+
+		if (fs_cli.json) {
+			GString *out = g_string_new ("{");
+			fs_json_kv_bool (out, "dry_run", TRUE); g_string_append_c (out, ',');
+			fs_json_kv_bool (out, "replace", replace); g_string_append_c (out, ',');
+			fs_json_kv_uint (out, "imported", added); g_string_append_c (out, ',');
+			fs_json_kv_uint (out, "duplicates", duplicates); g_string_append_c (out, ',');
+			fs_json_kv_uint (out, "rejected", problems != NULL ? problems->len : 0);
+			g_string_append_c (out, '}');
+			fs_cli_print_json (out);
+			g_string_free (out, TRUE);
+		} else {
+			printf ("Dry run: would %s %u rule%s",
+			        replace ? "replace policy with" : "import",
+			        added, added == 1 ? "" : "s");
+			if (!replace)
+				printf (" (%u duplicate%s ignored)", duplicates, duplicates == 1 ? "" : "s");
+			if (problems != NULL && problems->len > 0)
+				printf (", %u rejected", problems->len);
+			printf ("\n");
+		}
+		if (problems != NULL) g_ptr_array_unref (problems);
+		fs_policy_free (current);
+		fs_policy_free (incoming);
+		g_free (text);
+		return FS_EXIT_OK;
+	}
+
+	g_variant_builder_init (&b, G_VARIANT_TYPE_VARDICT);
+	g_variant_builder_add (&b, "{sv}", "text", g_variant_new_string (text));
+	g_variant_builder_add (&b, "{sv}", "replace", g_variant_new_boolean (replace));
+	g_variant_builder_add (&b, "{sv}", "apply", g_variant_new_boolean (apply));
+	g_variant_builder_add (&b, "{sv}", "yes", g_variant_new_boolean (yes));
+	actor = fs_control_actor_self ("cli");
+	r = fs_control_do (&actor, "policy.import", g_variant_builder_end (&b));
+	g_free (text);
+
+	if (!r->saved) {
+		status = r->status == FS_CONTROL_USAGE ? FS_EXIT_USAGE : FS_EXIT_FAILURE;
+		fs_cli_error ("%s", r->error != NULL ? r->error : "import failed");
+		if (r->hint != NULL)
+			fs_cli_hint ("%s", r->hint);
+	} else if (fs_cli.json) {
+		GString *out = g_string_new ("{");
+		fs_json_kv_bool (out, "imported", TRUE); g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "replace", replace); g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "added", r->imported); g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "duplicates", r->duplicates); g_string_append_c (out, ',');
+		fs_json_kv_uint (out, "rejected", r->rejected); g_string_append_c (out, ',');
+		fs_json_kv_bool (out, "applied", apply);
+		g_string_append_c (out, '}');
+		fs_cli_print_json (out);
+		g_string_free (out, TRUE);
+	} else if (!fs_cli.quiet) {
+		printf ("%sImported%s %u rule%s", fs_cli_green (), fs_cli_reset (),
+		        r->imported, r->imported == 1 ? "" : "s");
+		if (!replace && r->duplicates > 0)
+			printf (" (%u duplicate%s ignored)", r->duplicates,
+			        r->duplicates == 1 ? "" : "s");
+		if (r->rejected > 0)
+			printf (", %u rejected line%s", r->rejected,
+			        r->rejected == 1 ? "" : "s");
+		printf ("\n");
+		if (apply) {
+			if (r->outcome != NULL)
+				status = apply_status (r->outcome);
+		} else
+			not_live_line ();
+	}
+
+	fs_control_result_free (r);
+	return status;
+}
+
 /* ------------------------------------------------- diff and the preview */
 
 /* [ Diff ] -- saved against applied, row by row (CSV identity, as the
@@ -2009,7 +2230,8 @@ fs_cli_cmd_policy (gint argc, gchar **argv)
 {
 	const gchar *sub = argc > 1 ? argv[1] : "list";
 	static const gchar * const subs[] = {
-		"list", "show", "add", "edit", "remove", "diff", "init"
+		"list", "show", "add", "edit", "remove", "diff", "init",
+		"export", "import"
 	};
 
 	if (strcmp (sub, "list") == 0 || strcmp (sub, "ls") == 0)
@@ -2026,6 +2248,10 @@ fs_cli_cmd_policy (gint argc, gchar **argv)
 		return policy_init (argc - 2, argv + 2);
 	if (strcmp (sub, "diff") == 0)
 		return policy_diff (argc - 2, argv + 2);
+	if (strcmp (sub, "export") == 0)
+		return policy_export (argc - 2, argv + 2);
+	if (strcmp (sub, "import") == 0)
+		return policy_import (argc - 2, argv + 2);
 
 	/* `policy --kind KIND' is `policy list --kind KIND', and so is
 	 * `policy in' or `policy inbound-allow-service'. */
@@ -2048,7 +2274,7 @@ fs_cli_cmd_policy (gint argc, gchar **argv)
 		else
 			fs_cli_error ("unknown policy action: %s", sub);
 	}
-	fs_cli_hint ("policy list | show | add | edit | remove | diff | init");
+	fs_cli_hint ("policy list | show | add | edit | remove | diff | init | export | import");
 	return FS_EXIT_USAGE;
 }
 
@@ -3219,6 +3445,15 @@ static const FsCliOption policy_opts[] = {
 	{ "--yes",     FALSE, "remove" },
 	{ "-y",        FALSE, "remove" },
 	{ "--force",   FALSE, "init" },
+	{ "--file",    TRUE,  "export" },
+	{ "-o",        TRUE,  "export" },
+	{ "--file",    TRUE,  "import" },
+	{ "-f",        TRUE,  "import" },
+	{ "--replace", FALSE, "import" },
+	{ "--dry-run", FALSE, "import" },
+	{ "--apply",   FALSE, "import" },
+	{ "--yes",     FALSE, "import" },
+	{ "-y",        FALSE, "import" },
 	{ NULL, FALSE, NULL }
 };
 
@@ -3264,6 +3499,9 @@ const FsCliCommandDef fs_cli_policy_commands[] = {
 "                          [--apply [--yes]]\n"
 "       stockfw policy remove REF [--apply [--yes]]\n"
 "       stockfw policy diff\n"
+"       stockfw policy export [--file FILE]\n"
+"       stockfw policy import [FILE|-] [--replace] [--dry-run]\n"
+"                          [--apply [--yes]]\n"
 "       stockfw policy init [--force]\n"
 "\n"
 "Edits the saved policy -- the files the desktop app's Policy page\n"
@@ -3286,6 +3524,10 @@ const FsCliCommandDef fs_cli_policy_commands[] = {
 "  remove  a rule, by its reference\n"
 "  diff    the saved policy against the applied one: + rows to add,\n"
 "          - rows to take away (numbered as applied)\n"
+"  export  writes a portable whole-policy text to stdout, or --file FILE\n"
+"  import  reads that text from FILE (or stdin as -); it merges by default,\n"
+"          ignores duplicate rows, and --replace replaces the policy.\n"
+"          --dry-run validates and counts without writing anything.\n"
 "  init    saves the default rules (DHCP and DNS out) the desktop app\n"
 "          starts from; --force replaces a policy that has rules\n"
 "\n"

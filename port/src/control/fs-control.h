@@ -108,6 +108,9 @@ typedef struct
 	                                * an "apply" after it may still have
 	                                * failed (status, error say so)     */
 	guint            dropped;      /* policy.init: rows it replaced     */
+	guint            imported;     /* policy.import: rules added        */
+	guint            duplicates;   /* policy.import: duplicates ignored */
+	guint            rejected;     /* policy.import: invalid lines      */
 
 	/* apply, firewall.start, firewall.stop, settings.apply */
 	FsApplyOutcome  *outcome;

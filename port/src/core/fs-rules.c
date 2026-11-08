@@ -7,6 +7,8 @@
 #include "core/fs-i18n.h"
 #include "core/fs-service.h"
 
+static gboolean kind_is_service (FsRuleKind kind);
+
 #include <string.h>
 #ifndef G_OS_WIN32
 #include <errno.h>
@@ -20,10 +22,10 @@
  * be reordered without a migration.  The UI reads the labels from here so
  * the tree view and the CSV can never drift apart. */
 static const gchar *in_allow_from_columns[]   = { N_("Allow connections from host"), N_("Comment"), NULL };
-static const gchar *in_allow_service_columns[]= { N_("Allow service"), N_("Port"), N_("For"), N_("Comment"), NULL };
+static const gchar *in_allow_service_columns[]= { N_("Allow service"), N_("Port"), N_("For"), N_("Comment"), N_("Program"), NULL };
 static const gchar *in_forward_columns[]      = { N_("Forward service"), N_("Firewall port"), N_("To"), N_("Port"), N_("Comment"), NULL };
 static const gchar *out_host_columns[]        = { N_("Host"), N_("Comment"), NULL };
-static const gchar *out_service_columns[]     = { N_("Allow service"), N_("Port"), N_("For"), N_("Comment"), NULL };
+static const gchar *out_service_columns[]     = { N_("Allow service"), N_("Port"), N_("For"), N_("Comment"), N_("Program"), NULL };
 
 static const gchar * const *
 columns_for (FsRuleKind kind, gint *num_columns)
@@ -85,6 +87,7 @@ fs_rule_new (FsRuleKind kind)
 	FsRule *rule = g_new0 (FsRule, 1);
 
 	rule->kind = kind;
+	rule->enabled = TRUE;
 
 	return rule;
 }
@@ -104,6 +107,8 @@ fs_rule_copy (const FsRule *rule)
 	copy->to      = g_strdup (rule->to);
 	copy->to_port = g_strdup (rule->to_port);
 	copy->comment = g_strdup (rule->comment);
+	copy->program = g_strdup (rule->program);
+	copy->enabled = rule->enabled;
 
 	return copy;
 }
@@ -120,6 +125,7 @@ fs_rule_free (FsRule *rule)
 	g_free (rule->to);
 	g_free (rule->to_port);
 	g_free (rule->comment);
+	g_free (rule->program);
 
 	g_free (rule);
 }
@@ -147,11 +153,15 @@ fs_rule_to_csv (const FsRule *rule)
 	case FS_RULE_INBOUND_ALLOW_SERVICE:
 	case FS_RULE_OUTBOUND_ALLOW_SERVICE:
 	case FS_RULE_OUTBOUND_DENY_SERVICE:
-		g_string_append_printf (out, "%s, %s, %s, %s",
+		/* service, port, target, comment, program.  program is new in
+		 * 1.0.8: older rule files have four fields and load fine with
+		 * program left NULL; new rows write it last. */
+		g_string_append_printf (out, "%s, %s, %s, %s, %s",
 		                        rule->service ? rule->service : "",
 		                        rule->port    ? rule->port    : "",
 		                        rule->target  ? rule->target  : "",
-		                        rule->comment ? rule->comment : "");
+		                        rule->comment ? rule->comment : "",
+		                        rule->program ? rule->program : "");
 		break;
 
 	default:
@@ -181,8 +191,13 @@ fs_rule_from_csv (FsRuleKind kind, const gchar *csv)
 	n_tokens = g_strv_length (tokens);
 
 	/* The original accepted rows with a missing trailing comment, so
-	 * allow fewer fields but reject more than the layout defines. */
-	if (n_tokens > (gsize) expected) {
+	 * allow fewer fields but reject more than the layout defines.
+	 * Service kinds accept an optional 5th program field for 1.0.8. */
+	gsize max_expected = expected;
+	if (kind_is_service (kind))
+		max_expected = 5;
+
+	if (n_tokens > max_expected) {
 		g_strfreev (tokens);
 		return NULL;
 	}
@@ -208,6 +223,18 @@ fs_rule_from_csv (FsRuleKind kind, const gchar *csv)
 		rule->port    = g_strdup (n_tokens > 1 ? tokens[1] : NULL);
 		rule->target  = g_strdup (n_tokens > 2 ? tokens[2] : NULL);
 		rule->comment = g_strdup (n_tokens > 3 ? tokens[3] : NULL);
+		{
+			const gchar *prog = n_tokens > 4 ? tokens[4] : NULL;
+
+			/* An empty field means "no program": fs_rule_to_csv writes
+			 * this column for every service row, so a NULL program
+			 * round-trips as "" -- which g_strcmp0 does not fold away,
+			 * and fs_policy_delta would then see a change that is not
+			 * there on every re-apply. */
+			if (prog != NULL && *prog == '\0')
+				prog = NULL;
+			rule->program = g_strdup (prog);
+		}
 		break;
 
 	default:
@@ -509,9 +536,20 @@ fs_policy_load_report (FsPolicy *policy, GPtrArray **problems)
 			FsRule *rule = NULL;
 			gchar *line = g_strstrip (lines[i]);
 			gchar *why;
+			gboolean enabled = TRUE;
 
-			if (*line == '\0' || *line == '#')
+			if (*line == '\0')
 				continue;
+
+			/* A plain comment line. */
+			if (*line == '#' && !g_str_has_prefix (line, "#off:"))
+				continue;
+
+			/* A rule that is switched off: #off: + the CSV row. */
+			if (g_str_has_prefix (line, "#off:")) {
+				enabled = FALSE;
+				line = g_strstrip (line + 5);  /* skip "#off:" */
+			}
 
 			/* F-1 and the service rule: a row that cannot name a
 			 * valid host, port or service is rejected here, not
@@ -532,6 +570,7 @@ fs_policy_load_report (FsPolicy *policy, GPtrArray **problems)
 				continue;
 			}
 
+			rule->enabled = enabled;
 			g_ptr_array_add (policy->kinds[kind], rule);
 		}
 
@@ -612,6 +651,10 @@ fs_policy_save (FsPolicy *policy)
 			/* Skip rows that carry no information at all: every
 			 * field empty gives a row of just separators. */
 			if (csv != NULL && strspn (csv, ", ") < strlen (csv)) {
+				/* A rule that is switched off: write #off: + the CSV. */
+				if (!rule->enabled)
+					g_string_append (out, "#off:");
+
 				g_string_append (out, csv);
 				g_string_append_c (out, '\n');
 			}
@@ -632,6 +675,188 @@ fs_policy_save (FsPolicy *policy)
 
 	fs_policy_unlock (lock);
 	return ok;
+}
+
+/* [ policy_exchange_kind ] -- stable names for the portable exchange
+ * format. Keep this table independent of the control layer: core must
+ * remain usable by the desktop app and its tests. */
+static const gchar * const policy_exchange_kinds[FS_RULE_N_KINDS] = {
+	"inbound-allow-from", "inbound-allow-service", "inbound-forward",
+	"outbound-allow-to", "outbound-allow-from", "outbound-allow-service",
+	"outbound-deny-to", "outbound-deny-from", "outbound-deny-service"
+};
+
+static gint
+policy_exchange_kind (const gchar *name)
+{
+	for (gint i = 0; i < FS_RULE_N_KINDS; i++)
+		if (g_strcmp0 (name, policy_exchange_kinds[i]) == 0)
+			return i;
+	return -1;
+}
+
+gchar *
+fs_policy_export_text (const FsPolicy *policy, GError **error)
+{
+	GString *out;
+
+	if (policy == NULL) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+		                     "no policy to export");
+		return NULL;
+	}
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		for (guint i = 0; i < policy->kinds[k]->len; i++)
+			if (!fs_rule_validate (g_ptr_array_index (policy->kinds[k], i), error))
+				return NULL;
+
+	out = g_string_new ("# StockFW policy export v1\n");
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++) {
+		for (guint i = 0; i < policy->kinds[k]->len; i++) {
+			FsRule *rule = g_ptr_array_index (policy->kinds[k], i);
+			gchar *csv = fs_rule_to_csv (rule);
+
+			g_string_append_printf (out, "%s\t%s\t%s\n",
+			                        policy_exchange_kinds[k],
+			                        rule->enabled ? "on" : "off", csv);
+			g_free (csv);
+		}
+	}
+	return g_string_free (out, FALSE);
+}
+
+static void
+policy_import_problem (GPtrArray *problems, guint line, const gchar *text,
+                       const gchar *reason)
+{
+	FsPolicyProblem *p = g_new0 (FsPolicyProblem, 1);
+	p->file = g_strdup ("policy-export");
+	p->line = line;
+	p->text = g_strdup (text);
+	p->reason = g_strdup (reason);
+	g_ptr_array_add (problems, p);
+}
+
+FsPolicy *
+fs_policy_import_parse (const gchar *text, GPtrArray **problems, GError **error)
+{
+	FsPolicy *policy = fs_policy_new ();
+	GPtrArray *bad = g_ptr_array_new_with_free_func (
+		(GDestroyNotify) fs_policy_problem_free);
+	gchar **lines;
+
+	if (problems != NULL)
+		*problems = bad;
+	if (text == NULL) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+		                     "no policy text");
+		if (problems == NULL) g_ptr_array_unref (bad);
+		fs_policy_free (policy);
+		return NULL;
+	}
+	lines = g_strsplit (text, "\n", -1);
+	for (guint n = 0; lines[n] != NULL; n++) {
+		gchar *line = g_strstrip (lines[n]);
+		gchar **fields;
+		gint kind;
+		FsRule *rule;
+		gchar *why;
+
+		if (*line == '\0' || *line == '#')
+			continue;
+		fields = g_strsplit (line, "\t", 3);
+		if (g_strv_length (fields) != 3 ||
+		    (kind = policy_exchange_kind (fields[0])) < 0 ||
+		    (strcmp (fields[1], "on") != 0 && strcmp (fields[1], "off") != 0)) {
+			policy_import_problem (bad, n + 1, line,
+			                       "expected KIND<TAB>on|off<TAB>CSV");
+			g_strfreev (fields);
+			continue;
+		}
+		rule = fs_rule_from_csv ((FsRuleKind) kind, fields[2]);
+		why = rule == NULL ? g_strdup ("invalid CSV fields")
+		                   : fs_rule_problem (rule);
+		if (why == NULL && !fs_rule_validate (rule, NULL))
+			why = g_strdup ("a field contains a comma, line break or invalid prefix");
+		if (why != NULL || rule == NULL) {
+			policy_import_problem (bad, n + 1, line, why);
+			g_free (why);
+			fs_rule_free (rule);
+			g_strfreev (fields);
+			continue;
+		}
+		rule->enabled = strcmp (fields[1], "on") == 0;
+		fs_policy_add (policy, rule);
+		fs_rule_free (rule);
+		g_strfreev (fields);
+	}
+	g_strfreev (lines);
+	if (problems == NULL) {
+		if (bad->len > 0) {
+			g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+			             "policy export contains %u invalid line%s", bad->len,
+			             bad->len == 1 ? "" : "s");
+			g_ptr_array_unref (bad);
+			fs_policy_free (policy);
+			return NULL;
+		}
+		g_ptr_array_unref (bad);
+	}
+	return policy;
+}
+
+gboolean
+fs_policy_has_rule (const FsPolicy *policy, const FsRule *rule)
+{
+	return fs_policy_contains (policy, rule);
+}
+
+gboolean
+fs_policy_merge (FsPolicy *destination, const FsPolicy *source,
+                 gboolean replace, guint *added, guint *duplicates,
+                 GError **error)
+{
+	guint a = 0, d = 0;
+	FsPolicy *copy;
+
+	if (destination == NULL || source == NULL) {
+		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+		                     "no policy to merge");
+		return FALSE;
+	}
+	copy = fs_policy_new ();
+	if (!replace) {
+		for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+			for (guint i = 0; i < destination->kinds[k]->len; i++)
+				fs_policy_add (copy, g_ptr_array_index (destination->kinds[k], i));
+	}
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		for (guint i = 0; i < source->kinds[k]->len; i++) {
+			FsRule *rule = g_ptr_array_index (source->kinds[k], i);
+			gchar *why;
+			if (!fs_rule_validate (rule, error)) {
+				fs_policy_free (copy);
+				return FALSE;
+			}
+			why = fs_rule_problem (rule);
+			if (why != NULL) {
+				g_set_error (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
+				             "not a valid imported rule: %s", why);
+				g_free (why);
+				fs_policy_free (copy);
+				return FALSE;
+			}
+			if (fs_policy_contains (copy, rule)) { d++; continue; }
+			fs_policy_add (copy, rule); a++;
+		}
+	fs_policy_clear (destination);
+	for (gint k = 0; k < FS_RULE_N_KINDS; k++)
+		for (guint i = 0; i < copy->kinds[k]->len; i++)
+			fs_policy_add (destination, g_ptr_array_index (copy->kinds[k], i));
+	fs_policy_free (copy);
+	if (added != NULL) *added = a;
+	if (duplicates != NULL) *duplicates = d;
+	return TRUE;
 }
 
 /* [ fs_policy_add ]
@@ -1003,7 +1228,7 @@ fs_rules_error_quark (void)
 gboolean
 fs_rule_validate (const FsRule *rule, GError **error)
 {
-	const gchar *fields[6];
+	const gchar *fields[7];
 
 	if (rule == NULL || rule->kind < 0 || rule->kind >= FS_RULE_N_KINDS) {
 		g_set_error_literal (error, FS_RULES_ERROR, FS_RULES_ERR_INVALID,
@@ -1017,6 +1242,7 @@ fs_rule_validate (const FsRule *rule, GError **error)
 	fields[3] = rule->to;
 	fields[4] = rule->to_port;
 	fields[5] = rule->comment;
+	fields[6] = rule->program;
 
 	/* The policy files are comma-separated with no quoting: a comma
 	 * inside a field would silently become a field boundary, and a
@@ -1320,5 +1546,93 @@ fs_policy_replace_nth_persist (FsPolicy *policy, gint nth, const FsRule *old,
 
 	fs_policy_unlock (lock);
 	fs_rule_free (was);
+	return TRUE;
+}
+/*---[ fs-rules-enabled.c ]----------------------------------------------
+ * Rule enable/disable support: fs_policy_active_view and
+ * fs_policy_set_enabled, which belong in fs-rules.c but are kept
+ * separate during development to make the patch cleaner.
+ *--------------------------------------------------------------------*/
+
+#include "core/fs-rules.h"
+#include <string.h>
+
+/* [ fs_policy_active_view ]
+ * A view of the policy containing only enabled rules.  Every engine
+ * that decides or writes (generators, What-If, health, journal, impact)
+ * reads this, never the raw policy. */
+FsPolicy *
+fs_policy_active_view (const FsPolicy *policy)
+{
+	FsPolicy *view;
+
+	if (policy == NULL)
+		return NULL;
+
+	view = fs_policy_new ();
+
+	for (gint kind = 0; kind < FS_RULE_N_KINDS; kind++) {
+		for (guint i = 0; i < policy->kinds[kind]->len; i++) {
+			FsRule *rule = g_ptr_array_index (policy->kinds[kind], i);
+
+			if (rule->enabled)
+				g_ptr_array_add (view->kinds[kind], fs_rule_copy (rule));
+		}
+	}
+
+	return view;
+}
+
+/* [ fs_policy_set_enabled ]
+ * Enable or disable a rule.  The rule must already be in the policy.
+ * Returns TRUE and persists the change, or FALSE when the rule is not
+ * found or the save fails (the policy is unchanged in that case). */
+gboolean
+fs_policy_set_enabled (FsPolicy *policy, const FsRule *rule, gboolean enabled)
+{
+	FsRule *stored;
+	gboolean was_enabled;
+	gchar *csv;
+
+	if (policy == NULL || rule == NULL)
+		return FALSE;
+
+	if (rule->kind < 0 || rule->kind >= FS_RULE_N_KINDS)
+		return FALSE;
+
+	/* Find the rule by its CSV form (same matching as fs_policy_remove). */
+	csv = fs_rule_to_csv (rule);
+	stored = NULL;
+
+	for (guint i = 0; i < policy->kinds[rule->kind]->len; i++) {
+		FsRule *r = g_ptr_array_index (policy->kinds[rule->kind], i);
+		gchar *r_csv = fs_rule_to_csv (r);
+
+		if (g_strcmp0 (csv, r_csv) == 0) {
+			stored = r;
+			g_free (r_csv);
+			break;
+		}
+		g_free (r_csv);
+	}
+
+	g_free (csv);
+
+	if (stored == NULL)
+		return FALSE;
+
+	/* Already in the desired state: success. */
+	if (stored->enabled == enabled)
+		return TRUE;
+
+	/* Change state and persist; roll back if save fails. */
+	was_enabled = stored->enabled;
+	stored->enabled = enabled;
+
+	if (!fs_policy_save (policy)) {
+		stored->enabled = was_enabled;
+		return FALSE;
+	}
+
 	return TRUE;
 }

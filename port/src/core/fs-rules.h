@@ -45,6 +45,13 @@ typedef struct
 	gchar      *to;         /* forward destination host         */
 	gchar      *to_port;    /* forward destination port         */
 	gchar      *comment;
+	/* The executable this rule is bound to (Windows: the full program
+	 * path, e.g. C:\Program Files\App\app.exe).  NULL means the rule is
+	 * not bound to any program and applies to every program.  The field
+	 * is meaningful for the service rule kinds; host and forward kinds
+	 * leave it NULL on disk. */
+	gchar      *program;
+	gboolean    enabled;    /* FALSE means #off: on disk        */
 } FsRule;
 
 FsRule *fs_rule_new  (FsRuleKind kind);
@@ -146,6 +153,19 @@ gboolean  fs_policy_load_report (FsPolicy *policy, GPtrArray **problems);
 gboolean  fs_policy_load  (FsPolicy *policy, gint *malformed);
 gboolean  fs_policy_save  (FsPolicy *policy);
 
+/* Portable whole-policy exchange. Each data line is:
+ * KIND<TAB>on|off<TAB>CSV. Lines beginning with '#' are comments.
+ * The CSV remains deliberately unquoted, so fields retain the same
+ * safety rules as the on-disk policy. Returned text and policies belong
+ * to the caller. */
+gchar    *fs_policy_export_text (const FsPolicy *policy, GError **error);
+FsPolicy *fs_policy_import_parse (const gchar *text, GPtrArray **problems,
+                                  GError **error);
+gboolean  fs_policy_has_rule (const FsPolicy *policy, const FsRule *rule);
+gboolean  fs_policy_merge (FsPolicy *destination, const FsPolicy *source,
+                           gboolean replace, guint *added, guint *duplicates,
+                           GError **error);
+
 void      fs_policy_add    (FsPolicy *policy, FsRule *rule);
 gboolean  fs_policy_remove (FsPolicy *policy, FsRule *rule);
 
@@ -166,6 +186,17 @@ gboolean  fs_policy_add_persist_pair (FsPolicy *policy, FsRule *rule,
 /* TRUE when a rule identical to the one passed in is already stored.
  * Identity is the CSV form, the same way fs_policy_remove matches. */
 gboolean  fs_policy_contains (const FsPolicy *policy, const FsRule *rule);
+
+/* A view of the policy containing only enabled rules.  Every engine
+ * that decides or writes (generators, What-If, health, journal, impact)
+ * reads this, never the raw policy.  Caller frees with fs_policy_free. */
+FsPolicy *fs_policy_active_view (const FsPolicy *policy);
+
+/* Enable or disable a rule.  The rule must already be in the policy.
+ * Returns TRUE and persists the change, or FALSE when the rule is not
+ * found or the save fails (the policy is unchanged in that case). */
+gboolean  fs_policy_set_enabled (FsPolicy *policy, const FsRule *rule,
+                                  gboolean enabled);
 
 void      fs_policy_install_defaults (FsPolicy *policy);
 

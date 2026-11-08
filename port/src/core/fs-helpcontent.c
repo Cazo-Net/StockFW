@@ -300,6 +300,13 @@ static const FsHelpBlock policy[] = {
 	  "allow that lets it in.") },
 	{ FS_HELP_NOTE, N_("A new deny stops new connections. On Linux a "
 	  "connection that is already open can carry on until it closes.") },
+	{ FS_HELP_HEAD, N_("Import and export") },
+	{ FS_HELP_PARA, N_("Use <b>Export</b> on the Policy page to save the "
+	  "whole policy as portable text. Import reads that same format, checks "
+	  "every line before saving anything, and keeps disabled rules. By "
+	  "default duplicate rules are ignored; replacing the policy requires "
+	  "an explicit choice. Import only saves: it never changes the firewall "
+	  "until you press <b>Apply policy</b>.") },
 	{ FS_HELP_HEAD, N_("Applying") },
 	{ FS_HELP_PARA, N_("<b>Apply policy</b> shows what will change and "
 	  "asks before it touches the firewall. If the firewall refuses the "

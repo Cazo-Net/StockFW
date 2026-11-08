@@ -126,7 +126,7 @@ static void test_rule_csv (void)
 	rule->comment = g_strdup ("from LAN");
 
 	csv = fs_rule_to_csv (rule);
-	CHECK (g_strcmp0 (csv, "SSH, 22, 192.168.1.0/24, from LAN") == 0,
+	CHECK (g_strcmp0 (csv, "SSH, 22, 192.168.1.0/24, from LAN, ") == 0,
 	       "service rule serialises as \"%s\"", csv);
 
 	back = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE, csv);
@@ -173,6 +173,92 @@ static void test_rule_csv (void)
 	CHECK (fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_FROM,
 	                         "a, b, c, d, e, f") == NULL,
 	       "over-long row rejected");
+
+	/* A service row with an empty 5th field is "no program", and the
+	 * journal writes exactly that for every rule without one.  Read
+	 * back as "" instead of NULL the policy compares changed against
+	 * itself, so every re-apply of an unchanged policy churns the
+	 * firewall: fs_fwrule_equal uses g_strcmp0, and fs-apply.c's
+	 * delta runs a narrow remove+add instead of reporting no change. */
+	{
+		FsPolicy *a = fs_policy_new ();
+		FsPolicy *b = fs_policy_new ();
+		FsPolicyDelta *d;
+		FsRule *r = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+		FsRule *loaded;
+		gchar *row;
+
+		r->service = g_strdup ("firefox");
+		r->port    = g_strdup ("443");
+		r->target  = g_strdup (FS_TARGET_ANY);
+		fs_policy_add (a, r);
+		fs_rule_free (r);
+
+		row = fs_rule_to_csv (g_ptr_array_index (
+			a->kinds[FS_RULE_OUTBOUND_ALLOW_SERVICE], 0));
+		loaded = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE, row);
+		CHECK (loaded != NULL && loaded->program == NULL,
+		       "an empty program field loads as NULL");
+		if (loaded != NULL)
+			fs_policy_add (b, loaded);
+		g_free (row);
+		fs_rule_free (loaded);
+
+		d = fs_policy_delta (b, a);
+		CHECK (d->empty,
+		       "an unchanged policy round-trips to an empty delta");
+		fs_policy_delta_free (d);
+		fs_policy_free (a);
+		fs_policy_free (b);
+	}
+}
+
+static void test_rule_csv_program (void)
+{
+	/* New rows write program as the fifth field. */
+	FsRule *rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+	gchar *csv;
+	FsRule *back;
+
+	rule->service = g_strdup ("firefox");
+	rule->port    = g_strdup ("443");
+	rule->target  = g_strdup (FS_TARGET_ANY);
+	rule->comment = g_strdup ("browser HTTPS");
+	rule->program = g_strdup ("C:\\Program Files\\Mozilla Firefox\\firefox.exe");
+
+	csv = fs_rule_to_csv (rule);
+	CHECK (g_strcmp0 (csv, "firefox, 443, Anyone, browser HTTPS, "
+			     "C:\\Program Files\\Mozilla Firefox\\firefox.exe") == 0,
+	       "service rule with program serialises as \"%s\"", csv);
+
+	back = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE, csv);
+	CHECK (back != NULL, "service rule with program parses back");
+	CHECK (back != NULL && g_strcmp0 (back->program,
+			  "C:\\Program Files\\Mozilla Firefox\\firefox.exe") == 0 &&
+		   g_strcmp0 (back->service, "firefox") == 0 &&
+		   g_strcmp0 (back->target, "Anyone") == 0 &&
+		   g_strcmp0 (back->comment, "browser HTTPS") == 0,
+	       "service round-trip preserves program field");
+
+	g_free (csv);
+	fs_rule_free (rule);
+	fs_rule_free (back);
+
+	/* Old 1.0.7 rows have four fields and load with program left NULL. */
+	back = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE,
+				 "firefox, 443, Anyone, browser HTTPS");
+	CHECK (back != NULL, "old four-field row still loads");
+	CHECK (back != NULL && back->program == NULL,
+	       "old row leaves program NULL");
+	fs_rule_free (back);
+
+	/* A program field containing a comma is rejected by validation. */
+	rule = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+	rule->service = g_strdup ("bad");
+	rule->program = g_strdup ("C:\\bad,path.exe");
+	CHECK (!fs_rule_validate (rule, NULL),
+	       "program field with comma is rejected");
+	fs_rule_free (rule);
 }
 
 static void test_policy_persist (void)
@@ -958,6 +1044,45 @@ static void test_fwrule_netsh_golden (void)
 		       "on (got %s)", name);
 		g_free (name);
 	}
+}
+
+/* P0-D: netsh program= is emitted for per-app rules, with spaces
+ * preserved (argv quoting handled by CreateProcess, no shell). */
+static void
+test_fwrule_netsh_program (void)
+{
+	FsPolicy *policy = fs_policy_new ();
+	FsRule *row = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+	FsFwRule *rule;
+	GStrv args;
+	gchar *joined;
+
+	row->service = g_strdup ("firefox");
+	row->port    = g_strdup ("443");
+	row->target  = g_strdup (FS_TARGET_ANY);
+	row->program = g_strdup ("C:\\Program Files\\Mozilla Firefox\\firefox.exe");
+	fs_policy_add (policy, row);
+	fs_rule_free (row);
+
+	rule = g_list_nth_data (fs_fwrule_from_policy (policy), 0);
+	CHECK (rule != NULL, "one rule compiled");
+	if (rule != NULL) {
+		args = fs_fwrule_netsh_args (rule);
+		CHECK (args != NULL, "netsh args produced");
+		if (args != NULL) {
+			joined = g_strjoinv ("|", args);
+			CHECK (strstr (joined,
+				"program=C:\\Program Files\\Mozilla Firefox\\firefox.exe") != NULL,
+				       "program= is in netsh args: %s", joined);
+			CHECK (strchr (joined, '"') == NULL,
+				       "no quote characters reach netsh");
+			g_free (joined);
+			g_strfreev (args);
+		}
+		fs_fwrule_free (rule);
+	}
+
+	fs_policy_free (policy);
 }
 
 static void test_service_lookup (void)
@@ -11652,6 +11777,7 @@ int main (void)
 	test_cli_platform_words ();
 	test_hosts ();
 	test_rule_csv ();
+	test_rule_csv_program ();
 	test_policy_persist ();
 	test_fwrule_ports ();
 	test_fwrule_services_golden ();
@@ -11659,6 +11785,7 @@ int main (void)
 	test_fwrule_expand ();
 	test_fwrule_forward ();
 	test_fwrule_netsh_golden ();
+	test_fwrule_netsh_program ();
 	test_service_lookup ();
 	test_script_generation ();
 	test_copilot_suggestion_apply ();
