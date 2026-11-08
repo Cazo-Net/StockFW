@@ -173,6 +173,44 @@ static void test_rule_csv (void)
 	CHECK (fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_FROM,
 	                         "a, b, c, d, e, f") == NULL,
 	       "over-long row rejected");
+
+	/* A service row with an empty 5th field is "no program", and the
+	 * journal writes exactly that for every rule without one.  Read
+	 * back as "" instead of NULL the policy compares changed against
+	 * itself, so every re-apply of an unchanged policy churns the
+	 * firewall: fs_fwrule_equal uses g_strcmp0, and fs-apply.c's
+	 * delta runs a narrow remove+add instead of reporting no change. */
+	{
+		FsPolicy *a = fs_policy_new ();
+		FsPolicy *b = fs_policy_new ();
+		FsPolicyDelta *d;
+		FsRule *r = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
+		FsRule *loaded;
+		gchar *row;
+
+		r->service = g_strdup ("firefox");
+		r->port    = g_strdup ("443");
+		r->target  = g_strdup (FS_TARGET_ANY);
+		fs_policy_add (a, r);
+		fs_rule_free (r);
+
+		row = fs_rule_to_csv (g_ptr_array_index (
+			a->kinds[FS_RULE_OUTBOUND_ALLOW_SERVICE], 0));
+		loaded = fs_rule_from_csv (FS_RULE_OUTBOUND_ALLOW_SERVICE, row);
+		CHECK (loaded != NULL && loaded->program == NULL,
+		       "an empty program field loads as NULL");
+		if (loaded != NULL)
+			fs_policy_add (b, loaded);
+		g_free (row);
+		fs_rule_free (loaded);
+
+		d = fs_policy_delta (b, a);
+		CHECK (d->empty,
+		       "an unchanged policy round-trips to an empty delta");
+		fs_policy_delta_free (d);
+		fs_policy_free (a);
+		fs_policy_free (b);
+	}
 }
 
 static void test_rule_csv_program (void)
@@ -1022,7 +1060,7 @@ test_fwrule_netsh_program (void)
 	row->service = g_strdup ("firefox");
 	row->port    = g_strdup ("443");
 	row->target  = g_strdup (FS_TARGET_ANY);
-	row->program = g_strdup ("C:\Program Files\Mozilla Firefox\firefox.exe");
+	row->program = g_strdup ("C:\\Program Files\\Mozilla Firefox\\firefox.exe");
 	fs_policy_add (policy, row);
 	fs_rule_free (row);
 
