@@ -28,6 +28,11 @@ if [ ! "${OS:-}" = "Windows_NT" ] && [ ! -d /ucrt64 ]; then
   exit 0
 fi
 
+if ! net session >/dev/null 2>&1; then
+  echo "SKIP: shell is not elevated, so the firewall rules cannot be changed."
+  exit 0
+fi
+
 BUILD_DIR="$(mktemp -d)"
 # Keep build dir on failure for debugging
 trap '[ $? -eq 0 ] && rm -rf "$BUILD_DIR" || echo "KEEP_BUILD_DIR=$BUILD_DIR"' EXIT

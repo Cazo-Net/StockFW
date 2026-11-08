@@ -42,7 +42,10 @@ fs_tx_apply (const FsTxOps *ops, gpointer user_data,
 	/* 1. Take snapshot before any destructive changes. */
 	snapshot = ops->snapshot (user_data, &local_err);
 	if (local_err != NULL) {
-		g_propagate_error (error, local_err);
+		if (error != NULL)
+			g_propagate_error (error, local_err);
+		else
+			g_clear_error (&local_err);
 		g_list_free_full (snapshot, (GDestroyNotify) fs_tx_rule_spec_free);
 		return FS_APPLY_FAILED;
 	}
@@ -50,11 +53,15 @@ fs_tx_apply (const FsTxOps *ops, gpointer user_data,
 	/* 2. Clear existing rules. */
 	clear_ok = ops->clear (user_data, &local_err);
 	if (!clear_ok) {
-		if (local_err != NULL)
-			g_propagate_error (error, local_err);
-		else
+		if (local_err != NULL) {
+			if (error != NULL)
+				g_propagate_error (error, local_err);
+			else
+				g_clear_error (&local_err);
+		} else {
 			g_set_error_literal (error, g_quark_from_static_string ("fs-txapply"),
 			                     0, "failed to clear existing firewall rules");
+		}
 		g_list_free_full (snapshot, (GDestroyNotify) fs_tx_rule_spec_free);
 		return FS_APPLY_PARTIAL;
 	}
@@ -104,13 +111,18 @@ fs_tx_apply (const FsTxOps *ops, gpointer user_data,
 		             first_err != NULL ? first_err->message : "");
 
 		if (!rollback_ok) {
+			const gchar *prev_msg = (error != NULL && *error != NULL) ? (*error)->message : "apply failed";
 			GError *combined = g_error_new (g_quark_from_static_string ("fs-txapply"), 0,
 				"%s; ROLLBACK FAILED%s%s",
-				(*error)->message,
+				prev_msg,
 				rollback_err != NULL ? ": " : "",
 				rollback_err != NULL ? rollback_err->message : "unknown reason");
-			g_clear_error (error);
-			*error = combined;
+			if (error != NULL) {
+				g_clear_error (error);
+				*error = combined;
+			} else {
+				g_error_free (combined);
+			}
 		}
 
 		g_clear_error (&first_err);

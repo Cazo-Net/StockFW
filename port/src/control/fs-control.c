@@ -265,13 +265,22 @@ rule_from_fields (FsControlResult *r, FsRuleKind kind,
 {
 	gint cols = 0;
 	gsize want;
+	gsize min_want, max_want;
 	FsRule *rule;
 
 	fs_rule_columns (kind, &cols);
 	want = cols > 0 ? (gsize) cols - 1 : 0;   /* less the comment */
-	if (n != want) {
-		fail (r, FS_CONTROL_USAGE, NULL, "%s takes %u field%s, got %u",
-		      kind_names[kind], (guint) want, want == 1 ? "" : "s",
+	min_want = want;
+	max_want = want;
+	if (kind == FS_RULE_INBOUND_ALLOW_SERVICE ||
+	    kind == FS_RULE_OUTBOUND_ALLOW_SERVICE ||
+	    kind == FS_RULE_OUTBOUND_DENY_SERVICE) {
+		max_want = want + 1; /* optional program field */
+	}
+
+	if (n < min_want || n > max_want) {
+		fail (r, FS_CONTROL_USAGE, NULL, "%s takes %u to %u field%s, got %u",
+		      kind_names[kind], (guint) min_want, (guint) max_want, max_want == 1 ? "" : "s",
 		      (guint) n);
 		return NULL;
 	}
@@ -290,6 +299,8 @@ rule_from_fields (FsControlResult *r, FsRuleKind kind,
 		rule->service = g_strdup (fields[0]);
 		rule->port    = g_strdup (fields[1]);
 		rule->target  = g_strdup (fields[2]);
+		if (n >= 4)
+			rule->program = g_strdup (fields[3]);
 		break;
 	default:
 		rule->target  = g_strdup (fields[0]);
@@ -303,6 +314,7 @@ rule_from_fields (FsControlResult *r, FsRuleKind kind,
 	if (rule->target)  g_strstrip (rule->target);
 	if (rule->to)      g_strstrip (rule->to);
 	if (rule->to_port) g_strstrip (rule->to_port);
+	if (rule->program) g_strstrip (rule->program);
 	g_strstrip (rule->comment);
 
 	return rule;
