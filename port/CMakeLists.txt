@@ -54,6 +54,7 @@ add_library(fs-core STATIC
   src/core/fs-settings-plan.c
   src/core/fs-service.c
   src/core/fs-fwrule.c
+  src/core/fs-txapply.c
   src/core/fs-whatif.c
   src/core/fs-copilot.c
   src/core/fs-health.c
@@ -645,6 +646,9 @@ target_link_libraries(fs-nftset-load PRIVATE fs-core-nogui)
 target_compile_definitions(fs-nftset-load PRIVATE FS_TOOLPATH_TESTING=1)
 # Where this computer is connected: the Overview's words for it and the
 # "profile in use is off" judgement (test-netplace.c).  GLib only.
+add_executable(fs-txapply-test EXCLUDE_FROM_ALL tests/test-txapply.c)
+target_link_libraries(fs-txapply-test PRIVATE fs-core-nogui)
+
 add_executable(fs-netplace-test EXCLUDE_FROM_ALL tests/test-netplace.c)
 target_link_libraries(fs-netplace-test PRIVATE fs-core-nogui)
 # The What-If engine's golden table: the reading of a line, both firewall
