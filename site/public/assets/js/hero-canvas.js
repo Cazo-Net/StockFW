@@ -1,4 +1,4 @@
-/* StockFW — Advanced 2077 Cyberpunk Hero Packet Simulation */
+/* StockFW — Ultimate 3D Cyberware Wireframe Grid & Packet Storm */
 
 (function () {
 	const canvas = document.getElementById('hero-canvas');
@@ -14,81 +14,77 @@
 		height = canvas.height = canvas.parentElement.offsetHeight;
 	});
 
-	let mouse = { x: width / 2, y: height / 2, active: false };
-
+	let mouse = { x: width / 2, y: height / 2, down: false };
 	canvas.addEventListener('mousemove', (e) => {
 		const rect = canvas.getBoundingClientRect();
 		mouse.x = e.clientX - rect.left;
 		mouse.y = e.clientY - rect.top;
-		mouse.active = true;
 	});
 
-	canvas.addEventListener('mouseleave', () => {
-		mouse.active = false;
-	});
+	// Grid & Horizon offset
+	let gridOffset = 0;
 
-	// Packets & Sparks
+	// Packets
 	const packets = [];
-	const sparks = [];
-	const numPackets = 55;
+	const particles = [];
 
-	const labels = ['TCP 22', 'HTTPS 443', 'DNS 53', 'SSH ALLOW', 'DROP', 'SYN_ACK', 'TLS_1.3'];
-
-	for (let i = 0; i < numPackets; i++) {
-		const isBlocked = Math.random() > 0.6;
+	for (let i = 0; i < 45; i++) {
 		packets.push({
-			x: Math.random() * (width * 0.5),
+			x: Math.random() * width,
 			y: Math.random() * height,
-			vx: Math.random() * 2 + 1,
-			vy: (Math.random() - 0.5) * 0.8,
-			label: labels[Math.floor(Math.random() * labels.length)],
-			color: isBlocked ? '#ff0033' : '#3fb950',
-			blocked: isBlocked,
-			bounced: false,
-			size: Math.random() * 2 + 2,
-			alpha: Math.random() * 0.8 + 0.2
+			speed: Math.random() * 3 + 2,
+			color: Math.random() > 0.4 ? '#ff0033' : '#00f0ff',
+			label: ['TCP 22', 'HTTPS 443', 'DNS 53', 'BLOCK', 'ALLOW'][Math.floor(Math.random() * 5)],
+			size: Math.random() * 2 + 1.5
 		});
 	}
 
-	function createSparks(x, y, color) {
-		for (let i = 0; i < 8; i++) {
-			sparks.push({
+	function explode(x, y, color) {
+		for (let i = 0; i < 12; i++) {
+			particles.push({
 				x: x,
 				y: y,
-				vx: (Math.random() - 0.5) * 6,
-				vy: (Math.random() - 0.5) * 6,
+				vx: (Math.random() - 0.5) * 8,
+				vy: (Math.random() - 0.5) * 8,
 				color: color,
 				life: 1.0,
-				decay: Math.random() * 0.05 + 0.02
+				decay: Math.random() * 0.04 + 0.02
 			});
 		}
 	}
 
 	function animate() {
-		ctx.clearRect(0, 0, width, height);
+		ctx.fillStyle = 'rgba(13, 17, 23, 0.25)';
+		ctx.fillRect(0, 0, width, height);
 
-		// Cyber Grid Matrix
-		ctx.strokeStyle = 'rgba(48, 54, 61, 0.2)';
+		// 1. Perspective Horizon Grid
+		gridOffset = (gridOffset + 1) % 40;
+		ctx.strokeStyle = 'rgba(255, 0, 51, 0.15)';
 		ctx.lineWidth = 1;
-		const gridSize = 50;
-		for (let x = 0; x < width; x += gridSize) {
+
+		// Vertical converging lines
+		const centerX = width * 0.75;
+		const horizonY = height * 0.5;
+		for (let x = 0; x <= width; x += 60) {
 			ctx.beginPath();
-			ctx.moveTo(x, 0);
-			ctx.lineTo(x, height);
-			ctx.stroke();
-		}
-		for (let y = 0; y < height; y += gridSize) {
-			ctx.beginPath();
-			ctx.moveTo(0, y);
-			ctx.lineTo(width, y);
+			ctx.moveTo(x, height);
+			ctx.lineTo(centerX + (x - centerX) * 0.2, horizonY);
 			ctx.stroke();
 		}
 
-		// Firewall Barrier Line (The Wall)
-		const wallX = width * 0.58;
-		ctx.shadowBlur = 15;
+		// Horizontal perspective lines
+		for (let y = horizonY; y <= height; y += (y - horizonY) * 0.15 + 4) {
+			ctx.beginPath();
+			ctx.moveTo(0, y + gridOffset * 0.2);
+			ctx.lineTo(width, y + gridOffset * 0.2);
+			ctx.stroke();
+		}
+
+		// 2. Central Firewall Barrier Wall
+		const wallX = width * 0.6;
+		ctx.shadowBlur = 20;
 		ctx.shadowColor = '#ff0033';
-		ctx.strokeStyle = 'rgba(255, 0, 51, 0.7)';
+		ctx.strokeStyle = '#ff0033';
 		ctx.lineWidth = 3;
 		ctx.beginPath();
 		ctx.moveTo(wallX, 0);
@@ -96,81 +92,58 @@
 		ctx.stroke();
 		ctx.shadowBlur = 0;
 
-		// Wall label
-		ctx.fillStyle = 'rgba(255, 0, 51, 0.8)';
-		ctx.font = '10px "IBM Plex Mono", monospace';
-		ctx.fillText('// STOCKFW WFP WALL', wallX + 8, 24);
-
-		// Render Packets
+		// 3. Packets Flowing & Colliding
 		for (let p of packets) {
-			p.x += p.vx;
-			p.y += p.vy;
+			p.x += p.speed;
 
-			// Mouse gravity attraction
-			if (mouse.active) {
-				let dx = mouse.x - p.x;
-				let dy = mouse.y - p.y;
-				let dist = Math.sqrt(dx * dx + dy * dy);
-				if (dist < 120) {
-					p.vx += (dx / dist) * 0.1;
-					p.vy += (dy / dist) * 0.1;
+			// Check firewall wall collision
+			if (p.x >= wallX && p.x <= wallX + p.speed) {
+				if (p.color === '#ff0033' || Math.random() > 0.3) {
+					p.speed *= -1.5; // Bounce back
+					explode(wallX, p.y, '#ff0033');
 				}
 			}
 
-			// Wall collision check
-			if (!p.bounced && p.x >= wallX) {
-				if (p.blocked) {
-					p.vx *= -1.8; // Bounce back aggressively
-					p.bounced = true;
-					p.color = '#ff0033';
-					createSparks(wallX, p.y, '#ff0033');
-				} else {
-					p.bounced = true;
-					p.color = '#3fb950';
-					createSparks(wallX, p.y, '#3fb950');
-				}
-			}
-
-			// Wrap around
-			if (p.x > width + 50 || p.x < -50 || p.y > height + 50 || p.y < -50) {
-				p.x = 20;
+			// Reset packet
+			if (p.x > width + 50 || p.x < -50) {
+				p.x = 10;
 				p.y = Math.random() * height;
-				p.vx = Math.random() * 2 + 1;
-				p.bounced = false;
-				p.blocked = Math.random() > 0.5;
-				p.color = p.blocked ? '#ff0033' : '#3fb950';
+				p.speed = Math.random() * 3 + 2;
+				p.color = Math.random() > 0.4 ? '#ff0033' : '#00f0ff';
 			}
 
 			// Draw packet node
 			ctx.fillStyle = p.color;
-			ctx.globalAlpha = p.alpha;
+			ctx.shadowBlur = 10;
+			ctx.shadowColor = p.color;
 			ctx.beginPath();
 			ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
 			ctx.fill();
+			ctx.shadowBlur = 0;
 
-			// Draw packet label trail
-			ctx.font = '9px "IBM Plex Mono", monospace';
+			ctx.fillStyle = '#c9d1d9';
+			ctx.font = '9px monospace';
 			ctx.fillText(p.label, p.x + 6, p.y + 3);
 		}
 
-		// Render Sparks
-		for (let i = sparks.length - 1; i >= 0; i--) {
-			let s = sparks[i];
-			s.x += s.vx;
-			s.y += s.vy;
-			s.life -= s.decay;
+		// 4. Explosion Particles
+		for (let i = particles.length - 1; i >= 0; i--) {
+			let pt = particles[i];
+			pt.x += pt.vx;
+			pt.y += pt.vy;
+			pt.life -= pt.decay;
 
-			if (s.life <= 0) {
-				sparks.splice(i, 1);
+			if (pt.life <= 0) {
+				particles.splice(i, 1);
 				continue;
 			}
 
-			ctx.fillStyle = s.color;
-			ctx.globalAlpha = s.life;
-			ctx.fillRect(s.x, s.y, 2, 2);
+			ctx.fillStyle = pt.color;
+			ctx.globalAlpha = pt.life;
+			ctx.fillRect(pt.x, pt.y, 3, 3);
 		}
-
 		ctx.globalAlpha = 1.0;
+
 		requestAnimationFrame(animate);
 	}
 
