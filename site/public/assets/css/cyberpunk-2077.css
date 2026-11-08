@@ -1,90 +1,75 @@
-/* StockFW — Cyberpunk 2077 Future Interface
- * Ultra-high-tech 2077 netrunner deck aesthetic.
- */
+/* StockFW — Pure Red & Black 2077 Minimalist Cyberware */
 
 :root {
-	/* 2077 Void & Neon Palette */
-	--cyber-bg: #030307;
-	--cyber-surface: #0a0b10;
-	--cyber-surface-2: #121420;
-	--cyber-cyan: #00f0ff;
-	--cyber-magenta: #ff0055;
-	--cyber-yellow: #fcee0a;
-	--cyber-green: #00ff66;
-	--cyber-line: #1a2238;
-	--cyber-line-glow: rgba(0, 240, 255, 0.3);
-	--cyber-text: #e0e6ed;
-	--cyber-muted: #8a99ad;
+	/* Pure Red & Black Theme */
+	--bg: #000000;
+	--surface: #0a0002;
+	--surface-2: #140005;
+	--ink: #f8fafc;
+	--ink-2: #cbd5e1;
+	--muted: #94a3b8;
+	--line: #290a12;
+	--line-strong: #ff0044;
 
-	/* Overriding StockFW site tokens for 2077 mode */
-	--bg: var(--cyber-bg);
-	--surface: var(--cyber-surface);
-	--surface-2: var(--cyber-surface-2);
-	--ink: var(--cyber-text);
-	--ink-2: #c0cdd8;
-	--muted: var(--cyber-muted);
-	--line: var(--cyber-line);
-	--line-strong: var(--cyber-cyan);
-
-	--wall: var(--cyber-magenta);
-	--wall-hover: #ff3377;
-	--wall-deep: #80002b;
-	--wall-tint: rgba(255, 0, 85, 0.15);
+	--wall: #ff0033;
+	--wall-hover: #ff1a4d;
+	--wall-deep: #80001a;
+	--wall-tint: rgba(255, 0, 51, 0.15);
 	--on-wall: #ffffff;
 
-	--allow: var(--cyber-green);
-	--allow-bg: rgba(0, 255, 102, 0.1);
-	--allow-line: var(--cyber-green);
-	--block: var(--cyber-magenta);
-	--block-bg: rgba(255, 0, 85, 0.1);
-	--block-line: var(--cyber-magenta);
-	--soon: var(--cyber-yellow);
-	--soon-bg: rgba(252, 238, 10, 0.1);
-	--soon-line: var(--cyber-yellow);
-	--link: var(--cyber-cyan);
+	--allow: #ff0033;
+	--allow-bg: rgba(255, 0, 51, 0.1);
+	--allow-line: rgba(255, 0, 51, 0.4);
+	--block: #ff0033;
+	--block-bg: rgba(255, 0, 51, 0.15);
+	--block-line: rgba(255, 0, 51, 0.5);
+	--soon: #ff6688;
+	--soon-bg: rgba(255, 102, 136, 0.1);
+	--soon-line: rgba(255, 102, 136, 0.4);
+	--link: #ff0033;
 
-	--night: #030307;
-	--night-2: #0a0b10;
-	--night-3: #121420;
-	--night-line: var(--cyber-cyan);
-	--on-night: var(--cyber-text);
-	--on-night-2: #c0cdd8;
-	--on-night-muted: var(--cyber-muted);
+	--night: #000000;
+	--night-2: #050001;
+	--night-3: #0f0003;
+	--night-line: #1f0006;
+	--on-night: #ffffff;
+	--on-night-2: #e2e8f0;
+	--on-night-muted: #94a3b8;
 
-	--code-bg: #05060a;
-	--code-ink: var(--cyber-cyan);
-	--code-dim: var(--cyber-muted);
-	--code-hi: var(--cyber-magenta);
-	--code-ok: var(--cyber-green);
+	--code-bg: #000000;
+	--code-ink: #ff0033;
+	--code-dim: #94a3b8;
+	--code-hi: #ff3366;
+	--code-ok: #ff0033;
 
-	--shadow: 0 0 20px rgba(0, 240, 255, 0.15), inset 0 0 15px rgba(0, 240, 255, 0.05);
-	--radius: 0px; /* Brutalist 2077 sharp corners */
+	--shadow: 0 0 30px rgba(255, 0, 51, 0.15), inset 0 0 15px rgba(255, 0, 51, 0.05);
+	--radius: 0px;
 }
 
-/* CRT Scanline Effect */
+/* CRT Scanline Overlay */
 body::before {
 	content: " ";
 	display: block;
 	position: fixed;
 	top: 0; left: 0; bottom: 0; right: 0;
-	background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03));
+	background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.35) 50%), linear-gradient(90deg, rgba(255, 0, 51, 0.03), rgba(0, 0, 0, 0.01), rgba(255, 0, 51, 0.03));
 	z-index: 99999;
 	background-size: 100% 3px, 6px 100%;
 	pointer-events: none;
 }
 
 body {
-	background-color: var(--cyber-bg);
-	color: var(--cyber-text);
+	background-color: var(--bg);
+	color: var(--ink);
 	font-family: var(--mono);
 	letter-spacing: 0.03em;
 }
 
-/* Brutalist Cyberpunk HUD Panels */
+/* Red & Black HUD Panels */
 .card, header, footer, pre, code, .hero, .box {
-	border: 1px solid var(--cyber-cyan) !important;
-	box-shadow: 0 0 15px rgba(0, 240, 255, 0.1);
-	position: relative;
+	background: var(--surface) !important;
+	border: 1px solid var(--wall) !important;
+	box-shadow: 0 0 20px rgba(255, 0, 51, 0.15);
 }
 
 .card::after, header::after {
@@ -92,21 +77,22 @@ body {
 	position: absolute;
 	bottom: -1px; right: -1px;
 	width: 8px; height: 8px;
-	background: var(--cyber-cyan);
+	background: var(--wall);
 }
 
-/* Neon Glow Headings */
+/* Red Glow Headings */
 h1, h2, h3, .logo-text {
-	text-shadow: 0 0 10px rgba(0, 240, 255, 0.6), 0 0 20px rgba(0, 240, 255, 0.3);
+	color: #fff;
+	text-shadow: 0 0 12px rgba(255, 0, 51, 0.8), 0 0 25px rgba(255, 0, 51, 0.4);
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
 }
 
-/* Buttons with 2077 Cyber Slant */
+/* Buttons */
 button, .btn, a.btn {
 	background: transparent;
-	color: var(--cyber-cyan);
-	border: 2px solid var(--cyber-cyan);
+	color: var(--ink);
+	border: 2px solid var(--wall);
 	clip-path: polygon(10% 0, 100% 0, 100% 70%, 90% 100%, 0 100%, 0 30%);
 	font-weight: 600;
 	text-transform: uppercase;
@@ -114,25 +100,29 @@ button, .btn, a.btn {
 }
 
 button:hover, .btn:hover, a.btn:hover {
-	background: var(--cyber-cyan);
-	color: var(--cyber-bg);
-	box-shadow: 0 0 25px var(--cyber-cyan);
+	background: var(--wall);
+	color: #000;
+	box-shadow: 0 0 30px var(--wall);
 }
 
 /* Terminal Cyber Matrix Output */
 pre {
 	background: var(--code-bg);
-	border-left: 4px solid var(--cyber-magenta) !important;
-	color: var(--cyber-green);
+	border-left: 4px solid var(--wall) !important;
+	color: #ff3366;
 }
 
-/* Live Telemetry Grid Indicator */
-.cyber-badge {
-	display: inline-block;
-	padding: 2px 8px;
-	background: rgba(0, 240, 255, 0.1);
-	border: 1px dashed var(--cyber-cyan);
-	color: var(--cyber-cyan);
-	font-size: var(--fs-xs);
-	text-transform: uppercase;
+/* Telemetry HUD Widget */
+.telemetry-hud {
+	position: relative;
+	background: linear-gradient(135deg, #050001, #0f0003);
+	border: 1px solid var(--wall);
+	padding: 18px 22px;
+	margin-top: 24px;
+	box-shadow: 0 0 30px rgba(255, 0, 51, 0.2);
+}
+
+.hud-stat .val {
+	color: var(--wall);
+	text-shadow: 0 0 12px rgba(255, 0, 51, 0.6);
 }
