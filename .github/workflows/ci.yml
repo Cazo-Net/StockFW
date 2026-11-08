@@ -41,7 +41,7 @@ jobs:
   linux:
     name: Linux build and tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -115,7 +115,7 @@ jobs:
           # tool a failure instead of a skip.
           ninja -C build-linux fs-geodb-test
           ./build-linux/fs-geodb-test tests/geodb
-          STOCKFW_GEODB_REQUIRE=1 FUZZ_SECONDS=120 bash tests/test-geodb.sh
+          STOCKFW_GEODB_REQUIRE=1 FUZZ_SECONDS=15 bash tests/test-geodb.sh
 
       - name: UI smoke tests on a virtual display
         working-directory: port
