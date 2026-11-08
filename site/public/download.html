@@ -24,8 +24,7 @@
 		<a class="brand" href="./index.html">
 			<img src="./assets/img/logo-64.png" alt="" width="34" height="34">
 			<span class="brand-name">StockFW</span>
-			<span class="brand-ver">1.0.7</span>
-		</a>
+					</a>
 		<nav class="site-nav" id="site-nav" aria-label="Site">
 			<a href="./index.html#tour">Features</a>
 			<a href="./docs/index.html">Docs</a>
@@ -56,16 +55,16 @@
 <div class="page-body">
 	<div class="wrap">
 <div class="prose">
-<h2 id="release">StockFW 1.0.7<a class="anchor" href="#release" aria-label="Link to this section">#</a></h2>
+<h2 id="release">StockFW 1.0.8<a class="anchor" href="#release" aria-label="Link to this section">#</a></h2>
 <p class="lede">Both downloads come from the project’s GitHub Releases page; this site does not host files. The size and SHA-256 of each file are listed on the release page next to it.</p>
 
 <div class="tbl-wrap">
 <table class="tbl">
 <thead><tr><th>Platform</th><th>File</th><th>Notes</th></tr></thead>
 <tbody>
-<tr><td>Windows 10 and 11, 64-bit</td><td><a href="https://github.com/Cazo-Net/StockFW/releases/download/v1.0.7/StockFW-1.0.7-Setup.exe">StockFW-1.0.7-Setup.exe</a></td><td>NSIS installer, about 45 MB. Bundles the GTK3 runtime, so nothing else needs installing, and ships the README, the changelog and the licence texts.</td></tr>
-<tr><td>Linux x86-64</td><td><a href="https://github.com/Cazo-Net/StockFW/releases/download/v1.0.7/StockFW-1.0.7-linux-x86_64.tar.gz">StockFW-1.0.7-linux-x86_64.tar.gz</a></td><td>Tarball with <code>install.sh</code>, about 1.2 MB. Needs GTK 3, liblzma, OpenSSL 3, <code>iptables</code> and <code>ip6tables</code> from your distribution; installs a boot service that puts the rules back after a restart. You can try it before installing: unpacked, <code>./<wbr>StockFW</code> opens the app and <code>sudo ./<wbr>cli/<wbr>stockfw dashboard</code> serves the dashboard.</td></tr>
-<tr><td>Checksums</td><td><a href="https://github.com/Cazo-Net/StockFW/releases/download/v1.0.7/SHA256SUMS.txt">SHA256SUMS.txt</a></td><td>SHA-256 of both files.</td></tr>
+<tr><td>Windows 10 and 11, 64-bit</td><td><a href="https://github.com/Cazo-Net/StockFW/releases/download/v1.0.8/StockFW-1.0.8-Setup.exe">StockFW-1.0.8-Setup.exe</a></td><td>NSIS installer, about 45 MB. Bundles the GTK3 runtime, so nothing else needs installing, and ships the README, the changelog and the licence texts.</td></tr>
+<tr><td>Linux x86-64</td><td><a href="https://github.com/Cazo-Net/StockFW/releases/download/v1.0.8/StockFW-1.0.8-linux-x86_64.tar.gz">StockFW-1.0.8-linux-x86_64.tar.gz</a></td><td>Tarball with <code>install.sh</code>, about 1.2 MB. Needs GTK 3, liblzma, OpenSSL 3, <code>iptables</code> and <code>ip6tables</code> from your distribution; installs a boot service that puts the rules back after a restart. You can try it before installing: unpacked, <code>./<wbr>StockFW</code> opens the app and <code>sudo ./<wbr>cli/<wbr>stockfw dashboard</code> serves the dashboard.</td></tr>
+<tr><td>Checksums</td><td><a href="https://github.com/Cazo-Net/StockFW/releases/download/v1.0.8/SHA256SUMS.txt">SHA256SUMS.txt</a></td><td>SHA-256 of both files.</td></tr>
 </tbody>
 </table>
 </div>
@@ -77,9 +76,9 @@
 
 <h3 id="verify">Check the download<a class="anchor" href="#verify" aria-label="Link to this section">#</a></h3>
 <p>Compare the output with the matching line in <code>SHA256SUMS.txt</code>.</p>
-<div class="code" data-copy="commands"><div class="code-head"><span>PowerShell (Windows)</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">PS> </span><span class="cmd">Get-FileHash .\StockFW-1.0.7-Setup.exe -Algorithm SHA256</span></code></pre></div>
+<div class="code" data-copy="commands"><div class="code-head"><span>PowerShell (Windows)</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">PS> </span><span class="cmd">Get-FileHash .\StockFW-1.0.8-Setup.exe -Algorithm SHA256</span></code></pre></div>
 <div class="code" data-copy="commands"><div class="code-head"><span>Terminal (Linux)</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sha256sum -c SHA256SUMS.txt --ignore-missing</span>
-StockFW-1.0.7-linux-x86_64.tar.gz: OK</code></pre></div>
+StockFW-1.0.8-linux-x86_64.tar.gz: OK</code></pre></div>
 
 <h3 id="requirements">Requirements<a class="anchor" href="#requirements" aria-label="Link to this section">#</a></h3>
 <dl class="cols">
@@ -89,12 +88,12 @@ StockFW-1.0.7-linux-x86_64.tar.gz: OK</code></pre></div>
 <p>Step-by-step instructions: <a href="./docs/install-windows.html">Install on Windows</a>, <a href="./docs/install-linux.html">Install on Linux</a>.</p>
 
 <h2 id="build">Build from source<a class="anchor" href="#build" aria-label="Link to this section">#</a></h2>
-<p>The release is built from the tag <code>v1.0.7</code> in the repository. The same code builds on either platform in a few commands.</p>
+<p>The release is built from the tag <code>v1.0.8</code> in the repository. The same code builds on either platform in a few commands.</p>
 
 <h3 id="build-windows">Build on Windows (MSYS2)<a class="anchor" href="#build-windows" aria-label="Link to this section">#</a></h3>
 <p>Install <a href="https://www.msys2.org/">MSYS2</a>, open the <strong>UCRT64</strong> shell (as administrator if you want to apply rules from the build), then:</p>
 <div class="code" data-copy="commands"><div class="code-head"><span>MSYS2 UCRT64 shell</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">pacman -S --needed base-devel git mingw-w64-ucrt-x86_64-{toolchain,gtk3,pkg-config,ninja,cmake,xz,openssl}</span>
-<span class="p">$ </span><span class="cmd">git clone --branch v1.0.7 https://github.com/Cazo-Net/StockFW.git</span>
+<span class="p">$ </span><span class="cmd">git clone --branch v1.0.8 https://github.com/Cazo-Net/StockFW.git</span>
 <span class="p">$ </span><span class="cmd">cd StockFW/port</span>
 <span class="p">$ </span><span class="cmd">cmake -S . -B build -G Ninja</span>
 <span class="p">$ </span><span class="cmd">cmake --build build</span>
@@ -103,7 +102,7 @@ StockFW-1.0.7-linux-x86_64.tar.gz: OK</code></pre></div>
 
 <h3 id="build-linux">Build on Linux<a class="anchor" href="#build-linux" aria-label="Link to this section">#</a></h3>
 <div class="code" data-copy="commands"><div class="code-head"><span>Debian, Kali, Ubuntu, WSL2</span><button class="copy-btn" type="button" hidden>Copy</button></div><pre><code><span class="p">$ </span><span class="cmd">sudo apt install build-essential cmake ninja-build pkg-config git libgtk-3-dev liblzma-dev libssl-dev iptables nftables curl</span>
-<span class="p">$ </span><span class="cmd">git clone --branch v1.0.7 https://github.com/Cazo-Net/StockFW.git</span>
+<span class="p">$ </span><span class="cmd">git clone --branch v1.0.8 https://github.com/Cazo-Net/StockFW.git</span>
 <span class="p">$ </span><span class="cmd">cd StockFW/port</span>
 <span class="p">$ </span><span class="cmd">cmake -S . -B build-linux -G Ninja</span>
 <span class="p">$ </span><span class="cmd">cmake --build build-linux</span>
