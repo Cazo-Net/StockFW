@@ -36,6 +36,8 @@
 #include <string.h>
 #include <unistd.h>
 
+static gint apply_status (const FsApplyOutcome *outcome);
+
 /* [ kind_field_count ] -- fields before the comment, per kind. */
 static gint
 kind_field_count (FsRuleKind kind)
