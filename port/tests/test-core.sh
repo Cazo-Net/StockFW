@@ -126,7 +126,13 @@ static void test_rule_csv (void)
 	rule->comment = g_strdup ("from LAN");
 
 	csv = fs_rule_to_csv (rule);
-	CHECK (g_strcmp0 (csv, "SSH, 22, 192.168.1.0/24, from LAN, ") == 0,
+	/* Four fields, as in 1.0.7: the Program column is optional and is
+	 * only written for a rule that actually binds an application
+	 * (test_rule_csv_program).  columns_for() reports 4 for a service
+	 * kind, and a program-less row written as 4 fields keeps the file
+	 * byte-identical to what 1.0.7 wrote, so an upgrade rewrites
+	 * nothing. */
+	CHECK (g_strcmp0 (csv, "SSH, 22, 192.168.1.0/24, from LAN") == 0,
 	       "service rule serialises as \"%s\"", csv);
 
 	back = fs_rule_from_csv (FS_RULE_INBOUND_ALLOW_SERVICE, csv);

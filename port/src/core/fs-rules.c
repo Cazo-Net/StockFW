@@ -153,15 +153,21 @@ fs_rule_to_csv (const FsRule *rule)
 	case FS_RULE_INBOUND_ALLOW_SERVICE:
 	case FS_RULE_OUTBOUND_ALLOW_SERVICE:
 	case FS_RULE_OUTBOUND_DENY_SERVICE:
-		/* service, port, target, comment, program.  program is new in
-		 * 1.0.8: older rule files have four fields and load fine with
-		 * program left NULL; new rows write it last. */
-		g_string_append_printf (out, "%s, %s, %s, %s, %s",
-		                        rule->service ? rule->service : "",
-		                        rule->port    ? rule->port    : "",
-		                        rule->target  ? rule->target  : "",
-		                        rule->comment ? rule->comment : "",
-		                        rule->program ? rule->program : "");
+		/* service, port, target, comment[, program].  Only write program
+		 * when present, so rules without an app binding remain 4 fields. */
+		if (rule->program != NULL && *rule->program != '\0')
+			g_string_append_printf (out, "%s, %s, %s, %s, %s",
+			                        rule->service ? rule->service : "",
+			                        rule->port    ? rule->port    : "",
+			                        rule->target  ? rule->target  : "",
+			                        rule->comment ? rule->comment : "",
+			                        rule->program);
+		else
+			g_string_append_printf (out, "%s, %s, %s, %s",
+			                        rule->service ? rule->service : "",
+			                        rule->port    ? rule->port    : "",
+			                        rule->target  ? rule->target  : "",
+			                        rule->comment ? rule->comment : "");
 		break;
 
 	default:

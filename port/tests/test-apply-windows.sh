@@ -105,7 +105,10 @@ main (void)
     FsPolicy *p = make_policy ();
     fs_backend_set_context (p, NULL);
     ares = b->apply_rules (p, &error);
-    CHECK (ares == FS_APPLY_OK, "first apply succeeds (got %d)", (int) ares);
+    CHECK (ares == FS_APPLY_OK, "first apply succeeds (got %d%s%s)",
+           (int) ares,
+           error != NULL && error->message != NULL ? ", " : "",
+           error != NULL && error->message != NULL ? error->message : "");
     g_clear_error (&error);
     fs_policy_free (p);
   }
@@ -115,7 +118,10 @@ main (void)
     FsPolicy *p = make_policy ();
     fs_backend_set_context (p, NULL);
     ares = b->apply_rules (p, &error);
-    CHECK (ares == FS_APPLY_OK, "re-apply succeeds (got %d)", (int) ares);
+    CHECK (ares == FS_APPLY_OK, "re-apply succeeds (got %d%s%s)",
+           (int) ares,
+           error != NULL && error->message != NULL ? ", " : "",
+           error != NULL && error->message != NULL ? error->message : "");
     g_clear_error (&error);
     fs_policy_free (p);
   }
@@ -133,13 +139,21 @@ main (void)
 
     fs_backend_set_context (p, NULL);
     ares = b->apply_rules (p, &error);
-    CHECK (ares == FS_APPLY_OK, "per-app rule apply succeeds (got %d)", (int) ares);
+    CHECK (ares == FS_APPLY_OK, "per-app rule apply succeeds (got %d%s%s)",
+           (int) ares,
+           error != NULL && error->message != NULL ? ", " : "",
+           error != NULL && error->message != NULL ? error->message : "");
     g_clear_error (&error);
     fs_policy_free (p);
   }
 
   /* 4. Failure: netsh add-rule fails with elevation error.
-   *    Expect FS_APPLY_PARTIAL or FS_APPLY_FAILED, never FS_APPLY_OK. */
+   *    Never FS_APPLY_OK -- that is what this check rules out.  When
+   *    nothing was created and netsh's output carries the elevation
+   *    phrase, netsh_needs_elevation() maps it to FS_APPLY_NO_PRIVILEGE
+   *    so the dialog can say "run as an administrator" instead of a bare
+   *    failure; FS_APPLY_PARTIAL is what it says when some rules did
+   *    land.  Both are failures. */
   {
     FsPolicy *p = fs_policy_new ();
     FsRule *r = fs_rule_new (FS_RULE_OUTBOUND_ALLOW_SERVICE);
@@ -153,8 +167,12 @@ main (void)
     g_setenv ("STOCKFW_FAKE_NETSH_LOG", "netsh.log", TRUE);
     g_setenv ("STOCKFW_FAKE_NETSH_FAIL_N", "1", TRUE);
     ares = b->apply_rules (p, &error);
-    CHECK (ares == FS_APPLY_PARTIAL || ares == FS_APPLY_FAILED,
-           "failing netsh does not report success (got %d)", (int) ares);
+    CHECK (ares == FS_APPLY_PARTIAL || ares == FS_APPLY_FAILED ||
+           ares == FS_APPLY_NO_PRIVILEGE,
+           "failing netsh does not report success (got %d%s%s)",
+           (int) ares,
+           error != NULL && error->message != NULL ? ", " : "",
+           error != NULL && error->message != NULL ? error->message : "");
     g_clear_error (&error);
     g_unsetenv ("STOCKFW_FAKE_NETSH_LOG");
     g_unsetenv ("STOCKFW_FAKE_NETSH_FAIL_N");
@@ -176,6 +194,12 @@ HARNESS_EOF
 CF="$(pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0)"
 LF="$(pkg-config --libs glib-2.0 gobject-2.0 gio-2.0 liblzma libcrypto)"
 
+# fs-toolpath.c must be compiled here as well: it lives in libfs-core.a,
+# which is built without FS_TOOLPATH_TESTING, so fs_toolpath_test_dir()
+# there returns NULL and every call goes to System32's real netsh -- the
+# fake is never reached, the policy lands on the machine instead, and the
+# later "policy beside big lists" check refuses to clear it.  CMake does
+# the same for fs-nftset-load (CMakeLists.txt, FS_TOOLPATH_TEST_SOURCE).
 cc -o "$BUILD_DIR/test-apply" \
    -DFS_TOOLPATH_TESTING=1 \
    -I "$PORT/src" $CF \
@@ -183,6 +207,7 @@ cc -o "$BUILD_DIR/test-apply" \
    "$PORT/src/platform/windows/fs-backend-windows.c" \
    "$PORT/src/platform/windows/fs-trust-win.c" \
    "$PORT/src/core/fs-fwrule.c" \
+   "$PORT/src/core/fs-toolpath.c" \
    "$PORT/build/libfs-core.a" \
    $LF -lole32 -loleaut32 -liphlpapi -lws2_32 -lwintrust -lcrypt32 \
    2> "$BUILD_DIR/cc.log"
