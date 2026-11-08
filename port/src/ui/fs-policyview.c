@@ -282,6 +282,61 @@ refresh_group (FsPolicyGroup *group, const FsPolicy *policy)
  * "Apply policy changes immediately" preference is on. */
 static void maybe_apply_instantly (void);
 
+static gboolean
+is_service_kind (FsRuleKind kind)
+{
+	return kind == FS_RULE_INBOUND_ALLOW_SERVICE ||
+	       kind == FS_RULE_OUTBOUND_ALLOW_SERVICE ||
+	       kind == FS_RULE_OUTBOUND_DENY_SERVICE;
+}
+
+static void
+on_bind_app_clicked (GtkButton *button, gpointer data)
+{
+	FsPolicyGroup *group = data;
+	gint row;
+	FsRule *rule;
+	GtkFileChooserNative *native;
+	gint res;
+
+	if (current_policy == NULL)
+		return;
+
+	row = selected_row (group);
+	if (row < 0 || (guint) row >= group->rules->len)
+		return;
+
+	rule = g_ptr_array_index (group->rules, row);
+	if (!is_service_kind (rule->kind))
+		return;
+
+	native = gtk_file_chooser_native_new (_("Select Application Executable"),
+	                                     GTK_WINDOW (gtk_widget_get_toplevel (GTK_WIDGET (button))),
+	                                     GTK_FILE_CHOOSER_ACTION_OPEN,
+	                                     _("_Select"),
+	                                     _("_Cancel"));
+
+	res = gtk_native_dialog_run (GTK_NATIVE_DIALOG (native));
+	if (res == GTK_RESPONSE_ACCEPT) {
+		gchar *filename = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (native));
+		if (filename != NULL) {
+			FsRule *new_rule = fs_rule_copy (rule);
+			g_free (new_rule->program);
+			new_rule->program = filename;
+
+			fs_policy_remove (current_policy, rule);
+			fs_policy_add (current_policy, new_rule);
+
+			fs_rule_free (new_rule);
+			refresh_group (group, current_policy);
+			select_row (group, row);
+			fs_policyview_save (current_policy);
+			maybe_apply_instantly ();
+		}
+	}
+	g_object_unref (native);
+}
+
 /* [ on_remove_clicked ] */
 static void
 on_remove_clicked (GtkButton *button, gpointer data)
@@ -935,6 +990,15 @@ build_group (FsRuleKind kind, const gchar *title)
 	g_signal_connect (button, "clicked", G_CALLBACK (on_remove_clicked),
 	                  group);
 	gtk_box_pack_start (GTK_BOX (button_box), button, FALSE, FALSE, 0);
+
+	if (is_service_kind (kind)) {
+		button = gtk_button_new_with_label (_("Bind App..."));
+		gtk_style_context_add_class (gtk_widget_get_style_context (button),
+		                             "btn-subtle");
+		g_signal_connect (button, "clicked", G_CALLBACK (on_bind_app_clicked),
+		                  group);
+		gtk_box_pack_start (GTK_BOX (button_box), button, FALSE, FALSE, 0);
+	}
 
 	gtk_box_pack_start (GTK_BOX (box), button_box, FALSE, FALSE, 0);
 
